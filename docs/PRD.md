@@ -306,6 +306,146 @@ pillar-csi 설치 시 각 노드에 추가 패키지 설치 없이 동작해야 
 
 iSCSI/NFS 사용 시 pillar-node는 시작 시 필요 도구의 존재를 감지하고, 없으면 구체적인 설치 안내와 함께 에러를 보고한다. 호스트에 패키지를 자동 설치하는 side effect는 발생시키지 않는다.
 
+### 3.4 커널 모듈 및 최소 커널 버전 요구사항
+
+각 Protocol과 Backend는 특정 커널 모듈과 최소 커널 버전을 요구한다. pillar-agent와 pillar-node는 시작 시 **모든 요구사항을 검사**하고, 결과를 StorageNode CR의 `status.capabilities`에 반영한다.
+
+#### Protocol별 커널 요구사항
+
+**NVMe-oF TCP Target (스토리지 노드, pillar-agent):**
+
+| 커널 모듈 | Kconfig | 최소 커널 | 용도 |
+|----------|---------|----------|------|
+| `nvmet` | `CONFIG_NVME_TARGET` | 4.8 | NVMe target 코어 |
+| `nvmet_tcp` | `CONFIG_NVME_TARGET_TCP` | 5.0 | TCP transport for target |
+| `configfs` | `CONFIG_CONFIGFS_FS` | 2.6.16 | nvmet 설정 인터페이스 |
+
+**NVMe-oF TCP Initiator (워커 노드, pillar-node):**
+
+| 커널 모듈 | Kconfig | 최소 커널 | 용도 |
+|----------|---------|----------|------|
+| `nvme_core` | `CONFIG_NVME_CORE` | 3.3 | NVMe 코어 (built-in일 수 있음) |
+| `nvme_fabrics` | `CONFIG_NVME_FABRICS` | 4.8 | NVMe-oF 프레임워크 |
+| `nvme_tcp` | `CONFIG_NVME_TCP` | 5.0 | TCP transport for host |
+
+**iSCSI Target (스토리지 노드, pillar-agent):**
+
+| 커널 모듈 | Kconfig | 최소 커널 | 용도 |
+|----------|---------|----------|------|
+| `target_core_mod` | `CONFIG_TARGET_CORE` | 2.6.38 | LIO target 코어 |
+| `iscsi_target_mod` | `CONFIG_ISCSI_TARGET` | 3.1 | iSCSI target fabric |
+| `target_core_iblock` | `CONFIG_TCM_IBLOCK` | 2.6.38 | 블록 디바이스 backstore |
+| `configfs` | `CONFIG_CONFIGFS_FS` | 2.6.16 | LIO 설정 인터페이스 |
+
+**iSCSI Initiator (워커 노드, pillar-node):**
+
+| 커널 모듈 | Kconfig | 최소 커널 | 용도 |
+|----------|---------|----------|------|
+| `scsi_transport_iscsi` | `CONFIG_SCSI_ISCSI_ATTRS` | 2.6.14 | iSCSI 전송 레이어 (built-in일 수 있음) |
+| `libiscsi` | `CONFIG_ISCSI_TCP` | 2.6.14 | iSCSI 라이브러리 |
+| `iscsi_tcp` | `CONFIG_ISCSI_TCP` | 2.6.14 | TCP 전송 드라이버 |
+
+**NFS Server (스토리지 노드, pillar-agent):**
+
+| 커널 모듈 | Kconfig | 최소 커널 | 용도 |
+|----------|---------|----------|------|
+| `nfsd` | `CONFIG_NFSD` | 2.2 | NFS 서버 |
+| `nfsv4` | `CONFIG_NFSD_V4` | 2.6 | NFSv4 지원 (권장) |
+
+**NFS Client (워커 노드, pillar-node):**
+
+| 커널 모듈 | Kconfig | 최소 커널 | 용도 |
+|----------|---------|----------|------|
+| `nfs` | `CONFIG_NFS_FS` | 2.2 | NFS 클라이언트 (대부분 built-in) |
+| `nfsv4` | `CONFIG_NFS_V4` | 2.6 | NFSv4 클라이언트 (권장) |
+
+#### Backend별 커널/호스트 요구사항
+
+| Backend | 호스트 바이너리 | 커널 모듈 | 최소 커널 |
+|---------|-------------|----------|----------|
+| **zfs-zvol** | `zfs`, `zpool` | `zfs` (out-of-tree, DKMS) | 3.10+ (ZFS on Linux 요구) |
+| **zfs-dataset** | `zfs`, `zpool` | `zfs` (out-of-tree, DKMS) | 3.10+ |
+| **lvm** | `lvcreate`, `lvremove`, `lvresize`, `lvs` | `dm_mod` | 2.6 |
+| **block-device** | 없음 | 없음 | - |
+| **directory** | 없음 | 없음 | - |
+
+#### Capability 검사 흐름
+
+pillar-agent와 pillar-node는 시작 시 다음을 자동 검사한다:
+
+```
+1. 커널 버전 확인 (uname)
+2. 각 커널 모듈 존재 여부 확인:
+   a. /sys/module/<name> 존재 → 이미 로드됨
+   b. modprobe --dry-run <name> 성공 → 로드 가능 (모듈 파일 존재)
+   c. 둘 다 실패 → 사용 불가
+3. 호스트 바이너리 존재 여부 확인 (which/PATH 검색)
+4. 호스트 데몬 상태 확인 (iSCSI: iscsid 프로세스 확인)
+5. 결과를 StorageNode CR status.capabilities에 반영
+```
+
+**StorageNode status 예시:**
+
+```yaml
+status:
+  capabilities:
+    backends:
+      - type: zfs-zvol
+        available: true
+        details:
+          zfsVersion: "2.4.1"
+          kernelModule: "loaded"
+      - type: lvm
+        available: false
+        reason: "lvcreate not found in PATH"
+    protocols:
+      - type: nvmeof-tcp
+        target:
+          available: true
+          kernelModules:
+            nvmet: loaded
+            nvmet_tcp: loaded
+        initiator:
+          available: true
+          kernelModules:
+            nvme_fabrics: loadable
+            nvme_tcp: loadable
+      - type: iscsi
+        target:
+          available: true
+          kernelModules:
+            target_core_mod: loaded
+            iscsi_target_mod: loaded
+        initiator:
+          available: false
+          reason: "iscsid daemon not running. Install: apt install open-iscsi && systemctl enable --now iscsid"
+      - type: nfs
+        target:
+          available: false
+          reason: "nfsd kernel module not available. Install: apt install nfs-kernel-server"
+        initiator:
+          available: true
+          kernelModules:
+            nfs: built-in
+```
+
+**에러 처리:**
+
+사용자가 사용 불가능한 기능을 요청하면 (예: NVMe-oF 모듈이 없는 노드에서 NVMe-oF StorageBinding 생성), controller가 즉시 구체적인 에러를 반환한다:
+
+```
+StorageBinding "fast-nvmeof" cannot be created:
+  Protocol "nvmeof-tcp" is not available on node "rpi4":
+    - Kernel module "nvme_tcp" not found.
+    - Required minimum kernel version: 5.0 (current: 6.12.62)
+    - Fix: Install nvme-extras-dkms package or enable CONFIG_NVME_TCP in kernel config.
+```
+
+이 에러는:
+1. StorageBinding CR의 `status.conditions`에 기록
+2. Kubernetes Event로 발행
+3. controller 로그에 출력
+
 ## 4. Backend 플러그인
 
 각 Backend는 다음 인터페이스를 구현한다:
