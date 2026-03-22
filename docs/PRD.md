@@ -269,7 +269,44 @@ spec:
 | 연결 끊김 시 수동 복구 | gRPC 자동 재연결 + health check |
 | 테스트: SSH 서버 목업 필요 | 테스트: gRPC 인터페이스 목업 (간편) |
 
-## 3. Backend 플러그인
+## 3. 구현 방식: Go 직접 호출 vs CLI exec
+
+각 컴포넌트가 시스템과 상호작용하는 방식을 정의한다. 원칙: **커널이 파일 인터페이스(configfs, sysfs, devfs)를 제공하면 Go에서 직접 파일 I/O로 호출한다. 데몬 기반 아키텍처면 CLI exec를 사용한다.**
+
+### 3.1 Agent 측 (스토리지 노드)
+
+| 컴포넌트 | 방식 | 이유 |
+|----------|------|------|
+| **nvmet (NVMe-oF target)** | Go 파일 I/O | `/sys/kernel/config/nvmet/` configfs를 mkdir, WriteFile, Symlink로 직접 조작. nvmetcli 불필요 |
+| **LIO (iSCSI target)** | Go 파일 I/O | `/sys/kernel/config/target/` configfs 직접 조작. targetcli 불필요 |
+| **ZFS** | CLI exec (`zfs`, `zpool`) | libzfs Go 바인딩(cgo)이 불안정. CLI가 안정적이고 `-H -p -o` 옵션으로 파싱 용이 |
+| **LVM** | CLI exec (`lvcreate` 등) | CLI가 표준 인터페이스 |
+| **NFS export** | Go 파일 I/O + exec | `/etc/exports` 직접 쓰기 + `exportfs -ra` exec |
+
+### 3.2 Node 측 (워커 노드)
+
+| 컴포넌트 | 방식 | 이유 |
+|----------|------|------|
+| **NVMe-oF initiator** | Go 파일 I/O | `/dev/nvme-fabrics`에 write로 connect, sysfs로 disconnect. 데몬/CLI 불필요 |
+| **iSCSI initiator** | CLI exec (`iscsiadm`) | iscsid 데몬 기반 아키텍처. iscsiadm → Unix socket → iscsid → netlink → 커널. Go로 직접 하려면 iscsid 재구현 수준 |
+| **NFS mount** | Go 라이브러리 | `k8s.io/mount-utils` 사용 |
+| **mkfs/mount/resize** | Go 라이브러리 | `k8s.io/mount-utils` — Kubernetes 공식 마운트 유틸리티 |
+
+### 3.3 호스트 의존성
+
+pillar-csi 설치 시 각 노드에 추가 패키지 설치 없이 동작해야 한다. 프로토콜별 호스트 의존성:
+
+| Protocol | 워커 노드 호스트 의존성 | 스토리지 노드 호스트 의존성 | 비고 |
+|----------|---------------------|----------------------|------|
+| **NVMe-oF TCP** | 커널 모듈만 (`nvme_tcp`, `nvme_fabrics`) | 커널 모듈만 (`nvmet`, `nvmet_tcp`) + ZFS 등 backend | **추가 패키지 불필요.** Go에서 파일 I/O로 모든 것 처리. nvme-extras-dkms로 커널 모듈 제공 |
+| **iSCSI** | `open-iscsi` 패키지 + `iscsid` 데몬 | 커널 모듈 (`target_core_mod` 등) | **호스트 패키지 필수.** iSCSI initiator가 데몬 기반 아키텍처이므로 회피 불가. pillar-node 시작 시 iscsid 미감지 시 명확한 에러 메시지 출력 |
+| **NFS** | `nfs-common` 패키지 | `nfs-kernel-server` 패키지 | **호스트 패키지 필수.** mount.nfs가 호스트에 필요 |
+
+**NVMe-oF TCP가 유일하게 호스트 추가 설치 없이 동작하는 프로토콜이다.** 이것이 Phase 1으로 선택한 이유 중 하나이다.
+
+iSCSI/NFS 사용 시 pillar-node는 시작 시 필요 도구의 존재를 감지하고, 없으면 구체적인 설치 안내와 함께 에러를 보고한다. 호스트에 패키지를 자동 설치하는 side effect는 발생시키지 않는다.
+
+## 4. Backend 플러그인
 
 각 Backend는 다음 인터페이스를 구현한다:
 
@@ -294,7 +331,7 @@ type Backend interface {
 }
 ```
 
-### 3.1 Backend 타입 매트릭스
+### 4.1 Backend 타입 매트릭스
 
 | Backend | VolumeType | 생성 방식 | 볼륨 경로 | 스냅샷 | 리사이즈 | 클론 |
 |---------|-----------|----------|----------|:---:|:---:|:---:|
@@ -304,7 +341,7 @@ type Backend interface {
 | **block-device** | Block | 기존 디바이스 사용 | `/dev/sdX` | X | X | X |
 | **directory** | Filesystem | `mkdir` | `/path/to/dir` | X | X | X |
 
-## 4. Protocol 플러그인
+## 5. Protocol 플러그인
 
 각 Protocol은 다음 인터페이스를 구현한다:
 
@@ -326,7 +363,7 @@ type ProtocolInitiator interface {
 }
 ```
 
-### 4.1 Protocol 호환성 매트릭스
+### 5.1 Protocol 호환성 매트릭스
 
 |  | NVMe-oF TCP | iSCSI | NFS |
 |--|:---:|:---:|:---:|
@@ -340,9 +377,9 @@ type ProtocolInitiator interface {
 
 StorageBinding 생성 시 호환되지 않는 조합이면 validation webhook이 거부한다.
 
-## 5. 볼륨 생명주기
+## 6. 볼륨 생명주기
 
-### 5.1 CreateVolume (PVC 생성 시)
+### 6.1 CreateVolume (PVC 생성 시)
 
 ```
 1. PVC 생성
@@ -360,18 +397,18 @@ StorageBinding 생성 시 호환되지 않는 조합이면 validation webhook이
    a. PV 생성, volumeContext에 ExportInfo 저장
 ```
 
-### 5.2 NodeStageVolume (Pod 스케줄링 시)
+### 6.2 NodeStageVolume (Pod 스케줄링 시)
 
 ```
 1. kubelet이 CSI NodeStageVolume 호출
 2. pillar-node:
    a. volumeContext에서 ExportInfo 추출
-   b. Protocol initiator로 연결 (예: nvme connect -t tcp -a <ip> -s <port> -n <nqn>)
+   b. Protocol initiator로 연결 (예: /dev/nvme-fabrics에 write로 NVMe-oF TCP connect)
    c. 로컬 블록 디바이스 생성됨 (예: /dev/nvme0n1)
    d. 파일시스템 포맷 (첫 사용 시) 및 staging 디렉토리에 마운트
 ```
 
-### 5.3 NodePublishVolume
+### 6.3 NodePublishVolume
 
 ```
 1. kubelet이 CSI NodePublishVolume 호출
@@ -379,7 +416,7 @@ StorageBinding 생성 시 호환되지 않는 조합이면 validation webhook이
    a. staging 디렉토리에서 pod 마운트 포인트로 bind mount
 ```
 
-## 6. 로드맵
+## 7. 로드맵
 
 ### Phase 1: ZFS zvol + NVMe-oF TCP (MVP)
 
@@ -399,18 +436,22 @@ StorageBinding 생성 시 호환되지 않는 조합이면 validation webhook이
 ### Phase 2: iSCSI Protocol
 
 **추가:**
-- pillar-agent: iSCSI target (LIO/targetcli) protocol 플러그인
-- pillar-node: iSCSI initiator (open-iscsi) protocol 플러그인
+- pillar-agent: iSCSI target (LIO configfs 직접 조작) protocol 플러그인
+- pillar-node: iSCSI initiator (`iscsiadm` CLI exec) protocol 플러그인
 - StorageProtocol type: iscsi
+
+**호스트 의존성:** 워커 노드에 `open-iscsi` 패키지 + `iscsid` 데몬 필요. pillar-node가 시작 시 감지하고, 없으면 설치 안내 에러 메시지 출력. 호스트 패키지 자동 설치는 하지 않음.
 
 ### Phase 3: ZFS Dataset + NFS
 
 **추가:**
 - pillar-agent: ZFS dataset backend 플러그인
-- pillar-agent: NFS export protocol 플러그인
-- pillar-node: NFS mount initiator 플러그인
+- pillar-agent: NFS export (/etc/exports 직접 쓰기 + exportfs exec) protocol 플러그인
+- pillar-node: NFS mount initiator (`k8s.io/mount-utils`) 플러그인
 - StorageProtocol type: nfs
 - ReadWriteMany(RWX) access mode 지원
+
+**호스트 의존성:** 워커 노드에 `nfs-common`, 스토리지 노드에 `nfs-kernel-server` 필요. 호스트 패키지 자동 설치는 하지 않음.
 
 ### Phase 4: 스냅샷/클론
 
@@ -432,34 +473,34 @@ StorageBinding 생성 시 호환되지 않는 조합이면 validation webhook이
 - directory (로컬 디렉토리 공유)
 - Btrfs subvolume
 
-## 7. 비기능 요구사항
+## 8. 비기능 요구사항
 
-### 7.1 성능
+### 8.1 성능
 
 - gRPC agent 통신 오버헤드: < 1ms (LAN)
 - 볼륨 프로비저닝 시간: < 5초 (ZFS zvol 기준)
 - NVMe-oF 데이터 패스에 pillar-csi 오버헤드 없음 (커널 레벨 프로토콜)
 
-### 7.2 안정성
+### 8.2 안정성
 
 - agent 연결 끊김 시 자동 재연결
 - 볼륨 생성 중 실패 시 정리 (orphan 방지)
 - 멱등성: 모든 CSI 오퍼레이션은 멱등적으로 구현
 - leader election: controller 고가용성
 
-### 7.3 보안
+### 8.3 보안
 
 - agent ↔ controller 간 mTLS 지원
 - PVC annotation 파라미터 validation (injection 방지)
 - RBAC: CRD별 세분화된 권한 설정
 
-### 7.4 관측성
+### 8.4 관측성
 
 - Prometheus 메트릭: 볼륨 수, 용량, 오퍼레이션 지연시간, 에러율
 - 구조화된 로깅 (JSON)
 - CRD status 필드에 상태 반영
 
-## 8. 기술 스택
+## 9. 기술 스택
 
 | 구성요소 | 기술 |
 |---------|------|
@@ -474,7 +515,7 @@ StorageBinding 생성 시 호환되지 않는 조합이면 validation webhook이
 | Helm | Helm 3 chart |
 | CI | GitHub Actions |
 
-## 9. 용어 정의
+## 10. 용어 정의
 
 | 용어 | 설명 |
 |------|------|
