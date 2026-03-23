@@ -25,6 +25,7 @@ import (
 // +kubebuilder:validation:Enum=zfs-zvol;zfs-dataset;lvm-lv;dir
 type BackendType string
 
+// Supported BackendType values.
 const (
 	BackendTypeZFSZvol    BackendType = "zfs-zvol"
 	BackendTypeZFSDataset BackendType = "zfs-dataset"

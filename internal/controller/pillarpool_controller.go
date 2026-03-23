@@ -14,6 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+// Package controller implements the Kubernetes reconciliation loops for
+// pillar-csi CRDs (PillarTarget, PillarPool, PillarProtocol, PillarBinding).
 package controller
 
 import (
@@ -27,7 +29,7 @@ import (
 	pillarcsiv1alpha1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
 )
 
-// PillarPoolReconciler reconciles a PillarPool object
+// PillarPoolReconciler reconciles a PillarPool object.
 type PillarPoolReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme

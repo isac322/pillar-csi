@@ -117,7 +117,7 @@ type PillarTargetStatus struct {
 	// +optional
 	AgentVersion string `json:"agentVersion,omitempty"`
 
-	// capabilities summarises what the connected agent is capable of.
+	// capabilities summarizes what the connected agent is capable of.
 	// +optional
 	Capabilities *AgentCapabilities `json:"capabilities,omitempty"`
 

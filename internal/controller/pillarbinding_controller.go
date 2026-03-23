@@ -27,7 +27,7 @@ import (
 	pillarcsiv1alpha1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
 )
 
-// PillarBindingReconciler reconciles a PillarBinding object
+// PillarBindingReconciler reconciles a PillarBinding object.
 type PillarBindingReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme

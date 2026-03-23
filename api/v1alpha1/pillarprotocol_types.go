@@ -24,6 +24,7 @@ import (
 // +kubebuilder:validation:Enum=nvmeof-tcp;iscsi;nfs
 type ProtocolType string
 
+// Supported ProtocolType values.
 const (
 	ProtocolTypeNVMeOFTCP ProtocolType = "nvmeof-tcp"
 	ProtocolTypeISCSI     ProtocolType = "iscsi"

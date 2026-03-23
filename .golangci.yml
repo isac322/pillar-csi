@@ -88,8 +88,6 @@ linters:
     - exptostd
     # Modernise outdated Go patterns automatically.
     - modernize
-    # Reject use of deprecated packages / symbols.
-    - staticcheck  # already listed but kept for clarity in review
 
     # --- Style & documentation ---
     # Comments must end with a period — enforced for public API consistency.
@@ -129,6 +127,11 @@ linters:
 
     govet:
       enable-all: true
+      disable:
+        # fieldalignment reorders struct fields for memory efficiency, which
+        # conflicts with the readability-first ordering of CRD API types;
+        # micro-optimisation at the expense of API clarity is not worth it here.
+        - fieldalignment
 
     staticcheck:
       # Enable all staticcheck, SA, S, QF, and ST analysers.
@@ -238,6 +241,7 @@ linters:
         - "^\\s*FIXME"
         - "^\\s*NOTE"
         - "^\\s*nolint"
+        - "^\\s*\\+"      # kubebuilder marker directives (e.g. +kubebuilder:, +groupName=)
       capital: true
 
     dupl:
@@ -255,6 +259,8 @@ linters:
     wrapcheck:
       # Don't require wrapping for stdlib or internal packages.
       ignore-sigs:
+        # controller-runtime builder.Complete() errors are already contextual.
+        - .Complete(
         - .Errorf(
         - errors.New(
         - errors.Unwrap(
@@ -296,6 +302,34 @@ linters:
       # noinlineerr is too noisy in test table-driven loops.
       - linters: [noinlineerr]
         path: "_test\\.go$"
+      # kubebuilder RBAC markers must stay on one line; wrapping is not valid syntax.
+      - linters: [lll]
+        source: "^// \\+kubebuilder:"
+      # json:",inline" is a well-known K8s embedding convention; revive struct-tag
+      # does not recognise it as valid, producing a false positive.
+      - linters: [revive]
+        text: "unknown option"
+      # Ginkgo/Gomega test suites are intentionally used with dot-imports per
+      # the official Ginkgo style guide.
+      - linters: [revive]
+        text: "dot-imports"
+        path: "_test\\.go$"
+      # Controller Reconcile stubs intentionally have unused receivers and
+      # parameters; both will be used once business logic is implemented.
+      - linters: [revive]
+        text: "unused-receiver"
+        path: "internal/controller/.*\\.go$"
+      - linters: [revive]
+        text: "unused-parameter"
+        path: "internal/controller/.*\\.go$"
+      # Test utilities that write to GinkgoWriter intentionally discard the
+      # error return; GinkgoWriter failures are non-actionable in tests.
+      - linters: [errcheck]
+        path: "test/utils/.*\\.go$"
+      # cmd/main.go is kubebuilder bootstrap with unavoidable flag-parsing
+      # boilerplate; a statement-count limit is not meaningful here.
+      - linters: [funlen]
+        path: "cmd/main\\.go$"
     paths:
       - vendor$
       - third_party$

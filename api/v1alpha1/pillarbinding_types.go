@@ -24,6 +24,7 @@ import (
 // +kubebuilder:validation:Enum=Delete;Retain
 type ReclaimPolicy string
 
+// Supported ReclaimPolicy values.
 const (
 	ReclaimPolicyDelete ReclaimPolicy = "Delete"
 	ReclaimPolicyRetain ReclaimPolicy = "Retain"
@@ -33,6 +34,7 @@ const (
 // +kubebuilder:validation:Enum=Immediate;WaitForFirstConsumer
 type VolumeBindingMode string
 
+// Supported VolumeBindingMode values.
 const (
 	VolumeBindingImmediate            VolumeBindingMode = "Immediate"
 	VolumeBindingWaitForFirstConsumer VolumeBindingMode = "WaitForFirstConsumer"
