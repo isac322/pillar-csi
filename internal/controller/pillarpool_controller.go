@@ -21,6 +21,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -40,12 +41,11 @@ import (
 )
 
 const (
-	// pillarPoolFinalizer is added to every PillarPool to prevent deletion
+	// Finalizer added to every PillarPool to prevent deletion
 	// while PillarBinding resources still reference it.
 	pillarPoolFinalizer = "pillar-csi.bhyoo.com/pool-protection"
 
-	// requeueAfterPoolDeletionBlock is how long to wait before re-checking
-	// whether blocking PillarBindings have been removed.
+	// Requeue interval before re-checking whether blocking PillarBindings have been removed.
 	requeueAfterPoolDeletionBlock = 10 * time.Second
 )
 
@@ -71,12 +71,15 @@ type PillarPoolReconciler struct {
 //     (stubbed False — awaiting gRPC agent integration in a later task).
 //  3. On deletion: blocks until no PillarBindings reference this pool, then
 //     removes the finalizer to allow the object to be garbage-collected.
+//
+//nolint:dupl // All four CRD controllers share identical Reconcile boilerplate; extraction requires reflection.
 func (r *PillarPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
 	// Fetch the PillarPool instance.
 	pool := &pillarcsiv1alpha1.PillarPool{}
-	if err := r.Get(ctx, req.NamespacedName, pool); err != nil {
+	err := r.Get(ctx, req.NamespacedName, pool)
+	if err != nil {
 		// Not found — already deleted, nothing to do.
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
@@ -92,7 +95,8 @@ func (r *PillarPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	if !controllerutil.ContainsFinalizer(pool, pillarPoolFinalizer) {
 		log.Info("Adding finalizer to PillarPool", "finalizer", pillarPoolFinalizer)
 		controllerutil.AddFinalizer(pool, pillarPoolFinalizer)
-		if err := r.Update(ctx, pool); err != nil {
+		err := r.Update(ctx, pool)
+		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to add finalizer: %w", err)
 		}
 		// Return after the update; controller-runtime will re-enqueue.
@@ -113,7 +117,12 @@ func (r *PillarPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 //  4. When the target is ready, evaluates PoolDiscovered from target.Status.DiscoveredPools
 //     and BackendSupported from target.Status.Capabilities.Backends.
 //  5. Sets Ready=True only when TargetReady, PoolDiscovered, and BackendSupported are all True.
-func (r *PillarPoolReconciler) reconcileNormal(ctx context.Context, pool *pillarcsiv1alpha1.PillarPool) (ctrl.Result, error) {
+//
+//nolint:funlen,gocognit,gocyclo // Multiple code paths (target-not-found, not-ready, all-ready) update many conditions.
+func (r *PillarPoolReconciler) reconcileNormal(
+	ctx context.Context,
+	pool *pillarcsiv1alpha1.PillarPool,
+) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
 	// Look up the referenced PillarTarget.
@@ -151,10 +160,13 @@ func (r *PillarPoolReconciler) reconcileNormal(ctx context.Context, pool *pillar
 			Status:             metav1.ConditionFalse,
 			ObservedGeneration: pool.Generation,
 			Reason:             "TargetNotFound",
-			Message:            fmt.Sprintf("PillarPool is not ready: PillarTarget %q was not found", pool.Spec.TargetRef),
+			Message: fmt.Sprintf(
+				"PillarPool is not ready: PillarTarget %q was not found", pool.Spec.TargetRef,
+			),
 		})
 
-		if statusErr := r.Status().Update(ctx, pool); statusErr != nil {
+		statusErr := r.Status().Update(ctx, pool)
+		if statusErr != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to update PillarPool status: %w", statusErr)
 		}
 		// No requeue — a PillarTarget watch will trigger reconcile when the target appears.
@@ -169,9 +181,12 @@ func (r *PillarPoolReconciler) reconcileNormal(ctx context.Context, pool *pillar
 			Status:             metav1.ConditionUnknown,
 			ObservedGeneration: pool.Generation,
 			Reason:             "TargetLookupError",
-			Message:            fmt.Sprintf("Failed to look up PillarTarget %q: %v", pool.Spec.TargetRef, err),
+			Message: fmt.Sprintf(
+				"Failed to look up PillarTarget %q: %v", pool.Spec.TargetRef, err,
+			),
 		})
-		if statusErr := r.Status().Update(ctx, pool); statusErr != nil {
+		statusErr := r.Status().Update(ctx, pool)
+		if statusErr != nil {
 			log.Error(statusErr, "Failed to update PillarPool status after target lookup error")
 		}
 		return ctrl.Result{}, fmt.Errorf("failed to get PillarTarget %q: %w", pool.Spec.TargetRef, err)
@@ -217,25 +232,32 @@ func (r *PillarPoolReconciler) reconcileNormal(ctx context.Context, pool *pillar
 			Status:             metav1.ConditionUnknown,
 			ObservedGeneration: pool.Generation,
 			Reason:             "TargetNotReady",
-			Message:            fmt.Sprintf("Cannot discover pool: PillarTarget %q is not yet Ready", pool.Spec.TargetRef),
+			Message: fmt.Sprintf(
+				"Cannot discover pool: PillarTarget %q is not yet Ready", pool.Spec.TargetRef,
+			),
 		})
 		meta.SetStatusCondition(&pool.Status.Conditions, metav1.Condition{
 			Type:               "BackendSupported",
 			Status:             metav1.ConditionUnknown,
 			ObservedGeneration: pool.Generation,
 			Reason:             "TargetNotReady",
-			Message:            fmt.Sprintf("Cannot verify backend support: PillarTarget %q is not yet Ready", pool.Spec.TargetRef),
+			Message: fmt.Sprintf(
+				"Cannot verify backend support: PillarTarget %q is not yet Ready", pool.Spec.TargetRef,
+			),
 		})
 		meta.SetStatusCondition(&pool.Status.Conditions, metav1.Condition{
 			Type:               "Ready",
 			Status:             metav1.ConditionFalse,
 			ObservedGeneration: pool.Generation,
 			Reason:             "TargetNotReady",
-			Message:            fmt.Sprintf("PillarPool is not ready: PillarTarget %q is not yet Ready", pool.Spec.TargetRef),
+			Message: fmt.Sprintf(
+				"PillarPool is not ready: PillarTarget %q is not yet Ready", pool.Spec.TargetRef,
+			),
 		})
 
-		if err := r.Status().Update(ctx, pool); err != nil {
-			return ctrl.Result{}, fmt.Errorf("failed to update PillarPool status: %w", err)
+		statusErr := r.Status().Update(ctx, pool)
+		if statusErr != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to update PillarPool status: %w", statusErr)
 		}
 		return ctrl.Result{}, nil
 	}
@@ -318,7 +340,8 @@ func (r *PillarPoolReconciler) reconcileNormal(ctx context.Context, pool *pillar
 		})
 	}
 
-	if err := r.Status().Update(ctx, pool); err != nil {
+	err = r.Status().Update(ctx, pool)
+	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to update PillarPool status: %w", err)
 	}
 
@@ -336,10 +359,16 @@ func (r *PillarPoolReconciler) reconcileNormal(ctx context.Context, pool *pillar
 // For backends that do not carry an explicit pool name (lvm-lv, dir), pool
 // discovery is considered satisfied once the target reports any pools,
 // because those backend types manage their own namespacing differently.
-func evaluatePoolDiscovered(pool *pillarcsiv1alpha1.PillarPool, target *pillarcsiv1alpha1.PillarTarget) (metav1.ConditionStatus, string, string) {
+func evaluatePoolDiscovered(
+	pool *pillarcsiv1alpha1.PillarPool,
+	target *pillarcsiv1alpha1.PillarTarget,
+) (status metav1.ConditionStatus, reason, message string) {
 	if len(target.Status.DiscoveredPools) == 0 {
 		return metav1.ConditionUnknown, "WaitingForAgentData",
-			fmt.Sprintf("PillarTarget %q has not yet reported any discovered pools; waiting for agent gRPC connection", pool.Spec.TargetRef)
+			fmt.Sprintf(
+				"PillarTarget %q has not yet reported any discovered pools; waiting for agent gRPC connection",
+				pool.Spec.TargetRef,
+			)
 	}
 
 	// Determine the expected pool name from the backend spec.
@@ -355,7 +384,10 @@ func evaluatePoolDiscovered(pool *pillarcsiv1alpha1.PillarPool, target *pillarcs
 		// Backend type does not carry an explicit pool name (e.g. lvm-lv, dir).
 		// Treat as discovered once the target reports it is responsive.
 		return metav1.ConditionTrue, "PoolDiscovered",
-			fmt.Sprintf("Backend type %q does not require a named pool for discovery validation", pool.Spec.Backend.Type)
+			fmt.Sprintf(
+				"Backend type %q does not require a named pool for discovery validation",
+				pool.Spec.Backend.Type,
+			)
 	}
 
 	// Search for the expected pool in the target's discovered list.
@@ -364,7 +396,10 @@ func evaluatePoolDiscovered(pool *pillarcsiv1alpha1.PillarPool, target *pillarcs
 		discoveredNames = append(discoveredNames, dp.Name)
 		if dp.Name == expectedPoolName {
 			return metav1.ConditionTrue, "PoolDiscovered",
-				fmt.Sprintf("Pool %q was found in PillarTarget %q discovered pools", expectedPoolName, pool.Spec.TargetRef)
+				fmt.Sprintf(
+					"Pool %q was found in PillarTarget %q discovered pools",
+					expectedPoolName, pool.Spec.TargetRef,
+				)
 		}
 	}
 
@@ -378,18 +413,24 @@ func evaluatePoolDiscovered(pool *pillarcsiv1alpha1.PillarPool, target *pillarcs
 //
 // Returns Unknown when the target has not yet reported any capabilities —
 // this happens before the agent gRPC connection is established.
-func evaluateBackendSupported(pool *pillarcsiv1alpha1.PillarPool, target *pillarcsiv1alpha1.PillarTarget) (metav1.ConditionStatus, string, string) {
+func evaluateBackendSupported(
+	pool *pillarcsiv1alpha1.PillarPool,
+	target *pillarcsiv1alpha1.PillarTarget,
+) (status metav1.ConditionStatus, reason, message string) {
 	if target.Status.Capabilities == nil || len(target.Status.Capabilities.Backends) == 0 {
 		return metav1.ConditionUnknown, "WaitingForAgentData",
-			fmt.Sprintf("PillarTarget %q has not yet reported agent capabilities; waiting for agent gRPC connection", pool.Spec.TargetRef)
+			fmt.Sprintf(
+				"PillarTarget %q has not yet reported agent capabilities; waiting for agent gRPC connection",
+				pool.Spec.TargetRef,
+			)
 	}
 
 	backendType := string(pool.Spec.Backend.Type)
-	for _, b := range target.Status.Capabilities.Backends {
-		if b == backendType {
-			return metav1.ConditionTrue, "BackendSupported",
-				fmt.Sprintf("Backend type %q is supported by PillarTarget %q", backendType, pool.Spec.TargetRef)
-		}
+	if slices.Contains(target.Status.Capabilities.Backends, backendType) {
+		return metav1.ConditionTrue, "BackendSupported",
+			fmt.Sprintf(
+				"Backend type %q is supported by PillarTarget %q", backendType, pool.Spec.TargetRef,
+			)
 	}
 
 	return metav1.ConditionFalse, "BackendNotSupported",
@@ -447,7 +488,7 @@ func syncCapacityFromTarget(
 		return false
 	}
 
-	cap := &pillarcsiv1alpha1.PoolCapacity{
+	poolCap := &pillarcsiv1alpha1.PoolCapacity{
 		Total:     found.Total,
 		Available: found.Available,
 	}
@@ -463,16 +504,19 @@ func syncCapacityFromTarget(
 		if used.Cmp(zero) < 0 {
 			used = zero
 		}
-		cap.Used = &used
+		poolCap.Used = &used
 	}
 
-	pool.Status.Capacity = cap
+	pool.Status.Capacity = poolCap
 	return true
 }
 
 // reconcileDelete handles the deletion flow.  The finalizer is only removed
 // once no PillarBindings reference this PillarPool.
-func (r *PillarPoolReconciler) reconcileDelete(ctx context.Context, pool *pillarcsiv1alpha1.PillarPool) (ctrl.Result, error) {
+func (r *PillarPoolReconciler) reconcileDelete(
+	ctx context.Context,
+	pool *pillarcsiv1alpha1.PillarPool,
+) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
 	// If our finalizer is not present (e.g. stripped manually), nothing to do.
@@ -484,7 +528,8 @@ func (r *PillarPoolReconciler) reconcileDelete(ctx context.Context, pool *pillar
 
 	// List all PillarBindings (cluster-scoped) and find those that reference this pool.
 	bindingList := &pillarcsiv1alpha1.PillarBindingList{}
-	if err := r.List(ctx, bindingList); err != nil {
+	err := r.List(ctx, bindingList)
+	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to list PillarBindings: %w", err)
 	}
 
@@ -511,7 +556,8 @@ func (r *PillarPoolReconciler) reconcileDelete(ctx context.Context, pool *pillar
 			Message:            msg,
 		})
 
-		if statusErr := r.Status().Update(ctx, pool); statusErr != nil {
+		statusErr := r.Status().Update(ctx, pool)
+		if statusErr != nil {
 			// Log but don't fail — the important thing is to requeue.
 			log.Error(statusErr, "Failed to update status while deletion is blocked")
 		}
@@ -524,7 +570,8 @@ func (r *PillarPoolReconciler) reconcileDelete(ctx context.Context, pool *pillar
 	// No referencing bindings — safe to remove the finalizer.
 	log.Info("No PillarBindings reference this pool; removing finalizer", "name", pool.Name)
 	controllerutil.RemoveFinalizer(pool, pillarPoolFinalizer)
-	if err := r.Update(ctx, pool); err != nil {
+	err = r.Update(ctx, pool)
+	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to remove finalizer from PillarPool: %w", err)
 	}
 
@@ -549,7 +596,8 @@ func (r *PillarPoolReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		}
 
 		poolList := &pillarcsiv1alpha1.PillarPoolList{}
-		if err := mgr.GetClient().List(ctx, poolList); err != nil {
+		err := mgr.GetClient().List(ctx, poolList)
+		if err != nil {
 			return nil
 		}
 

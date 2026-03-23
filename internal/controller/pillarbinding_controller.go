@@ -40,42 +40,40 @@ import (
 )
 
 const (
-	// pillarBindingFinalizer is added to every PillarBinding to prevent deletion
+	// Finalizer added to every PillarBinding to prevent deletion
 	// while PVCs still reference the generated StorageClass.
 	pillarBindingFinalizer = "pillar-csi.bhyoo.com/binding-protection"
 
-	// requeueAfterBindingDeletionBlock is how long to wait before re-checking
-	// whether blocking PVCs have been removed.
+	// Requeue interval before re-checking whether blocking PVCs have been removed.
 	requeueAfterBindingDeletionBlock = 10 * time.Second
 
-	// requeueAfterBindingNotReady is how long to wait before re-checking a
-	// binding whose pool or protocol is not yet found or not yet Ready.
-	// Watches on PillarPool/PillarProtocol will also re-enqueue the binding
-	// when those objects change, but the periodic requeue acts as a safety net
-	// for cases where the watch event is missed.
+	// Requeue interval before re-checking a binding whose pool or protocol
+	// is not yet found or not yet Ready. Watches on PillarPool/PillarProtocol
+	// will also re-enqueue the binding when those objects change, but the
+	// periodic requeue acts as a safety net for cases where the watch event is missed.
 	requeueAfterBindingNotReady = 15 * time.Second
 
-	// pillarCSIProvisioner is the CSI driver name used as the StorageClass provisioner.
+	// CSI driver name used as the StorageClass provisioner.
 	pillarCSIProvisioner = "pillar-csi.bhyoo.com"
 
 	// Condition type constants for PillarBinding status.conditions.
 
-	// conditionPoolReady is True when the referenced PillarPool is in Ready state.
+	// PoolReady: set to True when the referenced PillarPool is in Ready state.
 	conditionPoolReady = "PoolReady"
 
-	// conditionProtocolValid is True when the referenced PillarProtocol exists
+	// ProtocolValid: set to True when the referenced PillarProtocol exists
 	// and its Ready condition is True.
 	conditionProtocolValid = "ProtocolValid"
 
-	// conditionCompatible is True when the pool backend and protocol are
+	// Compatible: set to True when the pool backend and protocol are
 	// compatible (e.g. block-only backends are incompatible with NFS).
 	conditionCompatible = "Compatible"
 
-	// conditionStorageClassCreated is True when the Kubernetes StorageClass
+	// StorageClassCreated: set to True when the Kubernetes StorageClass
 	// has been successfully created and is owned by this PillarBinding.
 	conditionStorageClassCreated = "StorageClassCreated"
 
-	// conditionReady is True when all other conditions pass and the binding
+	// Ready: set to True when all other conditions pass and the binding
 	// is fully operational (StorageClass available for PVC provisioning).
 	conditionReady = "Ready"
 )
@@ -106,12 +104,15 @@ type PillarBindingReconciler struct {
 //  3. On deletion: blocks until no PVCs reference the generated StorageClass,
 //     then deletes the StorageClass and removes the finalizer to allow the
 //     object to be garbage-collected.
+//
+//nolint:dupl // All four CRD controllers share identical Reconcile boilerplate; extraction requires reflection.
 func (r *PillarBindingReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
 	// Fetch the PillarBinding instance.
 	binding := &pillarcsiv1alpha1.PillarBinding{}
-	if err := r.Get(ctx, req.NamespacedName, binding); err != nil {
+	err := r.Get(ctx, req.NamespacedName, binding)
+	if err != nil {
 		// Not found — already deleted, nothing to do.
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
@@ -127,7 +128,8 @@ func (r *PillarBindingReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	if !controllerutil.ContainsFinalizer(binding, pillarBindingFinalizer) {
 		log.Info("Adding finalizer to PillarBinding", "finalizer", pillarBindingFinalizer)
 		controllerutil.AddFinalizer(binding, pillarBindingFinalizer)
-		if err := r.Update(ctx, binding); err != nil {
+		err := r.Update(ctx, binding)
+		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to add finalizer: %w", err)
 		}
 		// Return after the update; controller-runtime will re-enqueue.
@@ -156,13 +158,19 @@ func storageClassNameFor(binding *pillarcsiv1alpha1.PillarBinding) string {
 //  3. Checks that the pool backend and protocol are compatible (Compatible condition).
 //  4. Creates or updates the owned StorageClass (StorageClassCreated condition).
 //  5. Sets the top-level Ready condition and updates status.storageClassName.
-func (r *PillarBindingReconciler) reconcileNormal(ctx context.Context, binding *pillarcsiv1alpha1.PillarBinding) (ctrl.Result, error) {
+//
+//nolint:funlen,gocognit,gocyclo // Pool/protocol validation, compatibility check, and SC management drive complexity.
+func (r *PillarBindingReconciler) reconcileNormal(
+	ctx context.Context,
+	binding *pillarcsiv1alpha1.PillarBinding,
+) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
 	// --- 1. Validate PillarPool (PoolReady condition) ---
 	pool := &pillarcsiv1alpha1.PillarPool{}
 	poolErr := r.Get(ctx, types.NamespacedName{Name: binding.Spec.PoolRef}, pool)
 
+	//nolint:dupl // Pool and Protocol switch blocks are structurally identical; extraction would add indirection.
 	switch {
 	case poolErr != nil && client.IgnoreNotFound(poolErr) == nil:
 		log.Info("Referenced PillarPool not found", "binding", binding.Name, "pool", binding.Spec.PoolRef)
@@ -174,8 +182,9 @@ func (r *PillarBindingReconciler) reconcileNormal(ctx context.Context, binding *
 			Message:            fmt.Sprintf("PillarPool %q was not found in the cluster", binding.Spec.PoolRef),
 		})
 		setBindingNotReady(binding, "PoolNotFound", fmt.Sprintf("PillarPool %q was not found", binding.Spec.PoolRef))
-		if err := r.Status().Update(ctx, binding); err != nil {
-			return ctrl.Result{}, fmt.Errorf("failed to update PillarBinding status: %w", err)
+		statusErr := r.Status().Update(ctx, binding)
+		if statusErr != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to update PillarBinding status: %w", statusErr)
 		}
 		// Requeue: no watch will trigger until the pool is created.
 		return ctrl.Result{RequeueAfter: requeueAfterBindingNotReady}, nil
@@ -189,7 +198,8 @@ func (r *PillarBindingReconciler) reconcileNormal(ctx context.Context, binding *
 			Reason:             "PoolLookupError",
 			Message:            fmt.Sprintf("Failed to look up PillarPool %q: %v", binding.Spec.PoolRef, poolErr),
 		})
-		if statusErr := r.Status().Update(ctx, binding); statusErr != nil {
+		statusErr := r.Status().Update(ctx, binding)
+		if statusErr != nil {
 			log.Error(statusErr, "Failed to update PillarBinding status after pool lookup error")
 		}
 		return ctrl.Result{}, fmt.Errorf("failed to get PillarPool %q: %w", binding.Spec.PoolRef, poolErr)
@@ -220,8 +230,9 @@ func (r *PillarBindingReconciler) reconcileNormal(ctx context.Context, binding *
 			Message:            msg,
 		})
 		setBindingNotReady(binding, "PoolNotReady", msg)
-		if err := r.Status().Update(ctx, binding); err != nil {
-			return ctrl.Result{}, fmt.Errorf("failed to update PillarBinding status: %w", err)
+		statusErr := r.Status().Update(ctx, binding)
+		if statusErr != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to update PillarBinding status: %w", statusErr)
 		}
 		// Requeue: pool watch will also re-enqueue when the pool becomes ready,
 		// but the periodic requeue acts as a safety net.
@@ -232,36 +243,50 @@ func (r *PillarBindingReconciler) reconcileNormal(ctx context.Context, binding *
 	protocol := &pillarcsiv1alpha1.PillarProtocol{}
 	protocolErr := r.Get(ctx, types.NamespacedName{Name: binding.Spec.ProtocolRef}, protocol)
 
+	//nolint:dupl // Pool and Protocol switch blocks are structurally identical; extraction would add indirection.
 	switch {
 	case protocolErr != nil && client.IgnoreNotFound(protocolErr) == nil:
-		log.Info("Referenced PillarProtocol not found", "binding", binding.Name, "protocol", binding.Spec.ProtocolRef)
+		log.Info("Referenced PillarProtocol not found",
+			"binding", binding.Name, "protocol", binding.Spec.ProtocolRef)
 		meta.SetStatusCondition(&binding.Status.Conditions, metav1.Condition{
 			Type:               conditionProtocolValid,
 			Status:             metav1.ConditionFalse,
 			ObservedGeneration: binding.Generation,
 			Reason:             "ProtocolNotFound",
-			Message:            fmt.Sprintf("PillarProtocol %q was not found in the cluster", binding.Spec.ProtocolRef),
+			Message: fmt.Sprintf(
+				"PillarProtocol %q was not found in the cluster", binding.Spec.ProtocolRef,
+			),
 		})
-		setBindingNotReady(binding, "ProtocolNotFound", fmt.Sprintf("PillarProtocol %q was not found", binding.Spec.ProtocolRef))
-		if err := r.Status().Update(ctx, binding); err != nil {
-			return ctrl.Result{}, fmt.Errorf("failed to update PillarBinding status: %w", err)
+		setBindingNotReady(
+			binding, "ProtocolNotFound",
+			fmt.Sprintf("PillarProtocol %q was not found", binding.Spec.ProtocolRef),
+		)
+		statusErr := r.Status().Update(ctx, binding)
+		if statusErr != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to update PillarBinding status: %w", statusErr)
 		}
 		// Requeue: no watch will trigger until the protocol is created.
 		return ctrl.Result{RequeueAfter: requeueAfterBindingNotReady}, nil
 
 	case protocolErr != nil:
-		log.Error(protocolErr, "Failed to get referenced PillarProtocol", "binding", binding.Name, "protocol", binding.Spec.ProtocolRef)
+		log.Error(protocolErr, "Failed to get referenced PillarProtocol",
+			"binding", binding.Name, "protocol", binding.Spec.ProtocolRef)
 		meta.SetStatusCondition(&binding.Status.Conditions, metav1.Condition{
 			Type:               conditionProtocolValid,
 			Status:             metav1.ConditionUnknown,
 			ObservedGeneration: binding.Generation,
 			Reason:             "ProtocolLookupError",
-			Message:            fmt.Sprintf("Failed to look up PillarProtocol %q: %v", binding.Spec.ProtocolRef, protocolErr),
+			Message: fmt.Sprintf(
+				"Failed to look up PillarProtocol %q: %v", binding.Spec.ProtocolRef, protocolErr,
+			),
 		})
-		if statusErr := r.Status().Update(ctx, binding); statusErr != nil {
+		statusErr := r.Status().Update(ctx, binding)
+		if statusErr != nil {
 			log.Error(statusErr, "Failed to update PillarBinding status after protocol lookup error")
 		}
-		return ctrl.Result{}, fmt.Errorf("failed to get PillarProtocol %q: %w", binding.Spec.ProtocolRef, protocolErr)
+		return ctrl.Result{}, fmt.Errorf(
+			"failed to get PillarProtocol %q: %w", binding.Spec.ProtocolRef, protocolErr,
+		)
 	}
 
 	// Protocol exists — check its Ready condition.
@@ -273,14 +298,19 @@ func (r *PillarBindingReconciler) reconcileNormal(ctx context.Context, binding *
 			Status:             metav1.ConditionTrue,
 			ObservedGeneration: binding.Generation,
 			Reason:             "ProtocolValid",
-			Message:            fmt.Sprintf("PillarProtocol %q is valid (type: %s)", binding.Spec.ProtocolRef, protocol.Spec.Type),
+			Message: fmt.Sprintf(
+				"PillarProtocol %q is valid (type: %s)", binding.Spec.ProtocolRef, protocol.Spec.Type,
+			),
 		})
 	} else {
 		msg := fmt.Sprintf("PillarProtocol %q exists but is not yet Ready", binding.Spec.ProtocolRef)
 		if protocolReadyCond != nil {
-			msg = fmt.Sprintf("PillarProtocol %q is not Ready: %s", binding.Spec.ProtocolRef, protocolReadyCond.Message)
+			msg = fmt.Sprintf(
+				"PillarProtocol %q is not Ready: %s", binding.Spec.ProtocolRef, protocolReadyCond.Message,
+			)
 		}
-		log.Info("Referenced PillarProtocol is not Ready", "binding", binding.Name, "protocol", binding.Spec.ProtocolRef)
+		log.Info("Referenced PillarProtocol is not Ready",
+			"binding", binding.Name, "protocol", binding.Spec.ProtocolRef)
 		meta.SetStatusCondition(&binding.Status.Conditions, metav1.Condition{
 			Type:               conditionProtocolValid,
 			Status:             metav1.ConditionFalse,
@@ -289,8 +319,9 @@ func (r *PillarBindingReconciler) reconcileNormal(ctx context.Context, binding *
 			Message:            msg,
 		})
 		setBindingNotReady(binding, "ProtocolNotReady", msg)
-		if err := r.Status().Update(ctx, binding); err != nil {
-			return ctrl.Result{}, fmt.Errorf("failed to update PillarBinding status: %w", err)
+		statusErr := r.Status().Update(ctx, binding)
+		if statusErr != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to update PillarBinding status: %w", statusErr)
 		}
 		// Requeue: protocol watch will also re-enqueue when the protocol becomes
 		// ready, but the periodic requeue acts as a safety net.
@@ -321,28 +352,34 @@ func (r *PillarBindingReconciler) reconcileNormal(ctx context.Context, binding *
 			Message:            compatMsg,
 		})
 		setBindingNotReady(binding, "Incompatible", compatMsg)
-		if err := r.Status().Update(ctx, binding); err != nil {
-			return ctrl.Result{}, fmt.Errorf("failed to update PillarBinding status: %w", err)
+		statusErr := r.Status().Update(ctx, binding)
+		if statusErr != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to update PillarBinding status: %w", statusErr)
 		}
 		return ctrl.Result{}, nil
 	}
 
 	// --- 4. Create / update owned StorageClass (StorageClassCreated condition) ---
 	scName := storageClassNameFor(binding)
-	if err := r.reconcileStorageClass(ctx, binding, pool, protocol, scName); err != nil {
-		log.Error(err, "Failed to reconcile StorageClass", "binding", binding.Name, "storageClass", scName)
+	scErr := r.reconcileStorageClass(ctx, binding, pool, protocol, scName)
+	if scErr != nil {
+		log.Error(scErr, "Failed to reconcile StorageClass", "binding", binding.Name, "storageClass", scName)
 		meta.SetStatusCondition(&binding.Status.Conditions, metav1.Condition{
 			Type:               conditionStorageClassCreated,
 			Status:             metav1.ConditionFalse,
 			ObservedGeneration: binding.Generation,
 			Reason:             "StorageClassError",
-			Message:            fmt.Sprintf("Failed to reconcile StorageClass %q: %v", scName, err),
+			Message:            fmt.Sprintf("Failed to reconcile StorageClass %q: %v", scName, scErr),
 		})
-		setBindingNotReady(binding, "StorageClassError", fmt.Sprintf("StorageClass %q could not be created/updated", scName))
-		if statusErr := r.Status().Update(ctx, binding); statusErr != nil {
+		setBindingNotReady(
+			binding, "StorageClassError",
+			fmt.Sprintf("StorageClass %q could not be created/updated", scName),
+		)
+		statusErr := r.Status().Update(ctx, binding)
+		if statusErr != nil {
 			log.Error(statusErr, "Failed to update PillarBinding status after StorageClass error")
 		}
-		return ctrl.Result{}, err
+		return ctrl.Result{}, scErr
 	}
 
 	meta.SetStatusCondition(&binding.Status.Conditions, metav1.Condition{
@@ -366,7 +403,8 @@ func (r *PillarBindingReconciler) reconcileNormal(ctx context.Context, binding *
 		),
 	})
 
-	if err := r.Status().Update(ctx, binding); err != nil {
+	err := r.Status().Update(ctx, binding)
+	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to update PillarBinding status: %w", err)
 	}
 
@@ -399,7 +437,10 @@ func (r *PillarBindingReconciler) reconcileNormal(ctx context.Context, binding *
 //
 // Returns a message describing the incompatibility (or an empty string when
 // compatible) and a boolean indicating whether the pair is compatible.
-func evaluateCompatibility(pool *pillarcsiv1alpha1.PillarPool, protocol *pillarcsiv1alpha1.PillarProtocol) (string, bool) {
+func evaluateCompatibility(
+	pool *pillarcsiv1alpha1.PillarPool,
+	protocol *pillarcsiv1alpha1.PillarProtocol,
+) (string, bool) {
 	backend := pool.Spec.Backend.Type
 	proto := protocol.Spec.Type
 
@@ -438,6 +479,8 @@ func evaluateCompatibility(pool *pillarcsiv1alpha1.PillarPool, protocol *pillarc
 // needs to provision and attach volumes.  They follow the key convention:
 //
 //	pillar-csi.bhyoo.com/<parameter-name>
+//
+//nolint:gocognit,gocyclo // ZFS params, three protocol branches, and two override layers drive the complexity.
 func buildStorageClassParams(
 	binding *pillarcsiv1alpha1.PillarBinding,
 	pool *pillarcsiv1alpha1.PillarPool,
@@ -538,8 +581,9 @@ func (r *PillarBindingReconciler) reconcileStorageClass(
 	op, err := controllerutil.CreateOrUpdate(ctx, r.Client, sc, func() error {
 		// Set owner reference so that the StorageClass is garbage-collected
 		// when the PillarBinding is deleted (after PVC blocking is resolved).
-		if err := controllerutil.SetControllerReference(binding, sc, r.Scheme); err != nil {
-			return fmt.Errorf("failed to set owner reference on StorageClass: %w", err)
+		setErr := controllerutil.SetControllerReference(binding, sc, r.Scheme)
+		if setErr != nil {
+			return fmt.Errorf("failed to set owner reference on StorageClass: %w", setErr)
 		}
 
 		sc.Provisioner = pillarCSIProvisioner
@@ -559,7 +603,7 @@ func (r *PillarBindingReconciler) reconcileStorageClass(
 		return nil
 	})
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to create or update StorageClass %q: %w", scName, err)
 	}
 
 	log.Info("StorageClass reconciled", "name", scName, "operation", op)
@@ -583,7 +627,10 @@ func setBindingNotReady(binding *pillarcsiv1alpha1.PillarBinding, reason, messag
 // Deletion is blocked until no PVCs reference the generated StorageClass
 // (to prevent orphaned volumes).  Once the StorageClass is no longer in use,
 // the finalizer is removed and Kubernetes can garbage-collect the object.
-func (r *PillarBindingReconciler) reconcileDelete(ctx context.Context, binding *pillarcsiv1alpha1.PillarBinding) (ctrl.Result, error) {
+func (r *PillarBindingReconciler) reconcileDelete(
+	ctx context.Context,
+	binding *pillarcsiv1alpha1.PillarBinding,
+) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
 	// If our finalizer is not present (e.g. stripped manually), nothing to do.
@@ -591,7 +638,8 @@ func (r *PillarBindingReconciler) reconcileDelete(ctx context.Context, binding *
 		return ctrl.Result{}, nil
 	}
 
-	log.Info("PillarBinding is being deleted — checking for PVCs that reference the StorageClass", "name", binding.Name)
+	log.Info("PillarBinding is being deleted — checking for PVCs that reference the StorageClass",
+		"name", binding.Name)
 
 	// Determine the StorageClass name from status (it was set during creation)
 	// or fall back to computing it from spec.
@@ -602,7 +650,8 @@ func (r *PillarBindingReconciler) reconcileDelete(ctx context.Context, binding *
 
 	// List all PVCs cluster-wide and find those that reference this StorageClass.
 	pvcList := &corev1.PersistentVolumeClaimList{}
-	if err := r.List(ctx, pvcList); err != nil {
+	err := r.List(ctx, pvcList)
+	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to list PersistentVolumeClaims: %w", err)
 	}
 
@@ -629,7 +678,8 @@ func (r *PillarBindingReconciler) reconcileDelete(ctx context.Context, binding *
 			Message:            msg,
 		})
 
-		if statusErr := r.Status().Update(ctx, binding); statusErr != nil {
+		statusErr := r.Status().Update(ctx, binding)
+		if statusErr != nil {
 			log.Error(statusErr, "Failed to update status while deletion is blocked")
 		}
 
@@ -638,24 +688,28 @@ func (r *PillarBindingReconciler) reconcileDelete(ctx context.Context, binding *
 
 	// No blocking PVCs — delete the owned StorageClass if it still exists.
 	sc := &storagev1.StorageClass{}
-	if err := r.Get(ctx, types.NamespacedName{Name: scName}, sc); err != nil {
-		if !errors.IsNotFound(err) {
-			return ctrl.Result{}, fmt.Errorf("failed to get StorageClass %q: %w", scName, err)
+	getErr := r.Get(ctx, types.NamespacedName{Name: scName}, sc)
+	if getErr != nil {
+		if !errors.IsNotFound(getErr) {
+			return ctrl.Result{}, fmt.Errorf("failed to get StorageClass %q: %w", scName, getErr)
 		}
 		// StorageClass already gone — nothing more to clean up.
 	} else {
 		// StorageClass exists — delete it explicitly (ownerRef GC may not fire
 		// instantly, and we want deterministic cleanup in the deletion path).
 		log.Info("Deleting owned StorageClass", "name", scName)
-		if err := r.Delete(ctx, sc); err != nil && !errors.IsNotFound(err) {
-			return ctrl.Result{}, fmt.Errorf("failed to delete StorageClass %q: %w", scName, err)
+		delErr := r.Delete(ctx, sc)
+		if delErr != nil && !errors.IsNotFound(delErr) {
+			return ctrl.Result{}, fmt.Errorf("failed to delete StorageClass %q: %w", scName, delErr)
 		}
 	}
 
 	// Safe to remove the finalizer.
-	log.Info("No PVCs reference StorageClass; removing finalizer", "binding", binding.Name, "storageClass", scName)
+	log.Info("No PVCs reference StorageClass; removing finalizer",
+		"binding", binding.Name, "storageClass", scName)
 	controllerutil.RemoveFinalizer(binding, pillarBindingFinalizer)
-	if err := r.Update(ctx, binding); err != nil {
+	err = r.Update(ctx, binding)
+	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to remove finalizer from PillarBinding: %w", err)
 	}
 
@@ -682,7 +736,8 @@ func (r *PillarBindingReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		}
 
 		bindingList := &pillarcsiv1alpha1.PillarBindingList{}
-		if err := mgr.GetClient().List(ctx, bindingList); err != nil {
+		err := mgr.GetClient().List(ctx, bindingList)
+		if err != nil {
 			return nil
 		}
 
@@ -706,7 +761,8 @@ func (r *PillarBindingReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		}
 
 		bindingList := &pillarcsiv1alpha1.PillarBindingList{}
-		if err := mgr.GetClient().List(ctx, bindingList); err != nil {
+		err := mgr.GetClient().List(ctx, bindingList)
+		if err != nil {
 			return nil
 		}
 
