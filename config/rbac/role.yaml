@@ -11,6 +11,8 @@ rules:
   verbs:
   - get
   - list
+  - patch
+  - update
   - watch
 - apiGroups:
   - pillar-csi.pillar-csi.bhyoo.com

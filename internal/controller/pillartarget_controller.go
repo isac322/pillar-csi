@@ -43,6 +43,10 @@ const (
 
 	// defaultAgentPort is the gRPC port used when no port override is set.
 	defaultAgentPort int32 = 9500
+
+	// storageNodeLabel is applied to the Kubernetes Node referenced by a
+	// PillarTarget to mark it as a pillar-csi storage node.
+	storageNodeLabel = "pillar-csi.bhyoo.com/storage-node"
 )
 
 // PillarTargetReconciler reconciles a PillarTarget object.
@@ -54,7 +58,7 @@ type PillarTargetReconciler struct {
 // +kubebuilder:rbac:groups=pillar-csi.pillar-csi.bhyoo.com,resources=pillartargets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=pillar-csi.pillar-csi.bhyoo.com,resources=pillartargets/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=pillar-csi.pillar-csi.bhyoo.com,resources=pillartargets/finalizers,verbs=update
-// +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch;update;patch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -97,8 +101,8 @@ func (r *PillarTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 }
 
 // reconcileNormal handles the steady-state reconciliation of a PillarTarget
-// that is not being deleted.  It resolves the agent address and updates the
-// NodeExists status condition.
+// that is not being deleted.  It resolves the agent address, updates the
+// NodeExists status condition, sets AgentConnected (stubbed), and derives Ready.
 func (r *PillarTargetReconciler) reconcileNormal(ctx context.Context, target *pillarcsiv1alpha1.PillarTarget) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
@@ -120,6 +124,24 @@ func (r *PillarTargetReconciler) reconcileNormal(ctx context.Context, target *pi
 		})
 		target.Status.ResolvedAddress = resolved
 
+		// AgentConnected: stubbed False until Task 3 implements actual gRPC dial.
+		meta.SetStatusCondition(&target.Status.Conditions, metav1.Condition{
+			Type:               "AgentConnected",
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: target.Generation,
+			Reason:             "AgentConnectionNotImplemented",
+			Message:            "Agent gRPC connection is not yet implemented; will be enabled in a future task",
+		})
+
+		// Ready: False because AgentConnected is False.
+		meta.SetStatusCondition(&target.Status.Conditions, metav1.Condition{
+			Type:               "Ready",
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: target.Generation,
+			Reason:             "AgentNotConnected",
+			Message:            "PillarTarget is not ready: agent gRPC connection has not been established",
+		})
+
 		if err := r.Status().Update(ctx, target); err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to update PillarTarget status: %w", err)
 		}
@@ -137,6 +159,20 @@ func (r *PillarTargetReconciler) reconcileNormal(ctx context.Context, target *pi
 			Reason:             "MissingSpec",
 			Message:            "Neither spec.nodeRef nor spec.external is set; exactly one must be provided",
 		})
+		meta.SetStatusCondition(&target.Status.Conditions, metav1.Condition{
+			Type:               "AgentConnected",
+			Status:             metav1.ConditionUnknown,
+			ObservedGeneration: target.Generation,
+			Reason:             "MissingSpec",
+			Message:            "Neither spec.nodeRef nor spec.external is set; cannot determine agent address",
+		})
+		meta.SetStatusCondition(&target.Status.Conditions, metav1.Condition{
+			Type:               "Ready",
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: target.Generation,
+			Reason:             "MissingSpec",
+			Message:            "PillarTarget spec is invalid: neither spec.nodeRef nor spec.external is set",
+		})
 		target.Status.ResolvedAddress = ""
 
 		if err := r.Status().Update(ctx, target); err != nil {
@@ -148,7 +184,8 @@ func (r *PillarTargetReconciler) reconcileNormal(ctx context.Context, target *pi
 
 // reconcileNodeRef fetches the referenced Kubernetes Node, resolves the agent
 // IP according to the addressType and optional CIDR filter, then updates the
-// NodeExists condition and resolvedAddress status fields.
+// NodeExists condition, resolvedAddress status fields, labels the node as a
+// storage node, and sets AgentConnected / Ready conditions (stubbed for now).
 func (r *PillarTargetReconciler) reconcileNodeRef(ctx context.Context, target *pillarcsiv1alpha1.PillarTarget) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 	nodeRef := target.Spec.NodeRef
@@ -167,6 +204,20 @@ func (r *PillarTargetReconciler) reconcileNodeRef(ctx context.Context, target *p
 				ObservedGeneration: target.Generation,
 				Reason:             "NodeNotFound",
 				Message:            fmt.Sprintf("Node %q was not found in the cluster", nodeRef.Name),
+			})
+			meta.SetStatusCondition(&target.Status.Conditions, metav1.Condition{
+				Type:               "AgentConnected",
+				Status:             metav1.ConditionFalse,
+				ObservedGeneration: target.Generation,
+				Reason:             "NodeNotFound",
+				Message:            fmt.Sprintf("Cannot connect to agent: Node %q was not found in the cluster", nodeRef.Name),
+			})
+			meta.SetStatusCondition(&target.Status.Conditions, metav1.Condition{
+				Type:               "Ready",
+				Status:             metav1.ConditionFalse,
+				ObservedGeneration: target.Generation,
+				Reason:             "NodeNotFound",
+				Message:            fmt.Sprintf("PillarTarget is not ready: Node %q was not found in the cluster", nodeRef.Name),
 			})
 			target.Status.ResolvedAddress = ""
 
@@ -210,6 +261,20 @@ func (r *PillarTargetReconciler) reconcileNodeRef(ctx context.Context, target *p
 				nodeRef.Name, nodeRef.AddressType, nodeRef.AddressSelector, resolveErr,
 			),
 		})
+		meta.SetStatusCondition(&target.Status.Conditions, metav1.Condition{
+			Type:               "AgentConnected",
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: target.Generation,
+			Reason:             "AddressNotResolved",
+			Message:            fmt.Sprintf("Cannot connect to agent: no resolvable address on Node %q", nodeRef.Name),
+		})
+		meta.SetStatusCondition(&target.Status.Conditions, metav1.Condition{
+			Type:               "Ready",
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: target.Generation,
+			Reason:             "AddressNotResolved",
+			Message:            fmt.Sprintf("PillarTarget is not ready: no resolvable address on Node %q", nodeRef.Name),
+		})
 		target.Status.ResolvedAddress = ""
 
 		if statusErr := r.Status().Update(ctx, target); statusErr != nil {
@@ -228,6 +293,19 @@ func (r *PillarTargetReconciler) reconcileNodeRef(ctx context.Context, target *p
 	log.Info("PillarTarget node address resolved",
 		"name", target.Name, "node", nodeRef.Name, "address", resolved)
 
+	// Label the node as a storage node (idempotent — only patch if label is absent).
+	if node.Labels == nil || node.Labels[storageNodeLabel] != "true" {
+		patch := client.MergeFrom(node.DeepCopy())
+		if node.Labels == nil {
+			node.Labels = make(map[string]string)
+		}
+		node.Labels[storageNodeLabel] = "true"
+		if patchErr := r.Patch(ctx, node, patch); patchErr != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to label node %q as storage node: %w", nodeRef.Name, patchErr)
+		}
+		log.Info("Labeled node as storage node", "node", nodeRef.Name, "label", storageNodeLabel)
+	}
+
 	meta.SetStatusCondition(&target.Status.Conditions, metav1.Condition{
 		Type:               "NodeExists",
 		Status:             metav1.ConditionTrue,
@@ -238,6 +316,25 @@ func (r *PillarTargetReconciler) reconcileNodeRef(ctx context.Context, target *p
 			nodeRef.Name, resolved,
 		),
 	})
+
+	// AgentConnected: stubbed False until Task 3 implements actual gRPC dial.
+	meta.SetStatusCondition(&target.Status.Conditions, metav1.Condition{
+		Type:               "AgentConnected",
+		Status:             metav1.ConditionFalse,
+		ObservedGeneration: target.Generation,
+		Reason:             "AgentConnectionNotImplemented",
+		Message:            "Agent gRPC connection is not yet implemented; will be enabled in a future task",
+	})
+
+	// Ready: False because AgentConnected is still False (stubbed).
+	meta.SetStatusCondition(&target.Status.Conditions, metav1.Condition{
+		Type:               "Ready",
+		Status:             metav1.ConditionFalse,
+		ObservedGeneration: target.Generation,
+		Reason:             "AgentNotConnected",
+		Message:            "PillarTarget is not ready: agent gRPC connection has not been established",
+	})
+
 	target.Status.ResolvedAddress = resolved
 
 	if err := r.Status().Update(ctx, target); err != nil {
@@ -247,14 +344,48 @@ func (r *PillarTargetReconciler) reconcileNodeRef(ctx context.Context, target *p
 	return ctrl.Result{}, nil
 }
 
-// reconcileDelete handles the deletion flow.  Currently the finalizer is
-// removed immediately; future steps will add blocking logic (e.g. wait until
-// all referencing PillarPools are gone).
+// reconcileDelete handles the deletion flow.  Removes the storage-node label
+// from the referenced Node (if applicable) before releasing the finalizer.
+// Future steps will add blocking logic (e.g. wait until referencing PillarPools
+// are gone).
 func (r *PillarTargetReconciler) reconcileDelete(ctx context.Context, target *pillarcsiv1alpha1.PillarTarget) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
 	if !controllerutil.ContainsFinalizer(target, pillarTargetFinalizer) {
 		return ctrl.Result{}, nil
+	}
+
+	// Remove the storage-node label from the referenced Kubernetes Node.
+	if target.Spec.NodeRef != nil {
+		node := &corev1.Node{}
+		err := r.Get(ctx, types.NamespacedName{Name: target.Spec.NodeRef.Name}, node)
+		switch {
+		case err == nil:
+			if node.Labels != nil {
+				if _, hasLabel := node.Labels[storageNodeLabel]; hasLabel {
+					patch := client.MergeFrom(node.DeepCopy())
+					delete(node.Labels, storageNodeLabel)
+					if patchErr := r.Patch(ctx, node, patch); patchErr != nil {
+						return ctrl.Result{}, fmt.Errorf(
+							"failed to remove storage-node label from Node %q: %w",
+							target.Spec.NodeRef.Name, patchErr,
+						)
+					}
+					log.Info("Removed storage-node label from node during deletion",
+						"node", target.Spec.NodeRef.Name, "label", storageNodeLabel)
+				}
+			}
+		case client.IgnoreNotFound(err) == nil:
+			// Node already gone — nothing to clean up.
+			log.Info("Referenced node not found during deletion cleanup; skipping label removal",
+				"name", target.Name, "node", target.Spec.NodeRef.Name)
+		default:
+			// Transient error — requeue so we retry label removal.
+			return ctrl.Result{}, fmt.Errorf(
+				"failed to get node %q for label cleanup: %w",
+				target.Spec.NodeRef.Name, err,
+			)
+		}
 	}
 
 	log.Info("PillarTarget is being deleted; removing finalizer", "name", target.Name)
