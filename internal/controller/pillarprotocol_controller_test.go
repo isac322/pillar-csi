@@ -51,7 +51,9 @@ var _ = Describe("PillarProtocol Controller", func() {
 						Name:      resourceName,
 						Namespace: "default",
 					},
-					// TODO(user): Specify other spec details if needed.
+					Spec: pillarcsiv1alpha1.PillarProtocolSpec{
+						Type: pillarcsiv1alpha1.ProtocolTypeNVMeOFTCP,
+					},
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 			}

@@ -51,7 +51,12 @@ var _ = Describe("PillarPool Controller", func() {
 						Name:      resourceName,
 						Namespace: "default",
 					},
-					// TODO(user): Specify other spec details if needed.
+					Spec: pillarcsiv1alpha1.PillarPoolSpec{
+						TargetRef: "test-target",
+						Backend: pillarcsiv1alpha1.BackendSpec{
+							Type: pillarcsiv1alpha1.BackendTypeZFSZvol,
+						},
+					},
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 			}
