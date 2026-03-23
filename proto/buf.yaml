@@ -8,6 +8,14 @@ lint:
   except:
     # Allow package names with underscores (pillar_csi.agent.v1)
     - PACKAGE_DIRECTORY_MATCH
+    # ExportVolume / ImportVolume use chunk-based message names
+    # (ExportVolumeChunk, ImportVolumeChunk) intentionally: they model a
+    # streaming protocol where each message is a data chunk rather than a
+    # traditional request/response envelope.  The STANDARD rule would require
+    # names like ExportVolumeResponse / ImportVolumeRequest, which would be
+    # misleading for server/client streaming RPCs.
+    - RPC_RESPONSE_STANDARD_NAME
+    - RPC_REQUEST_STANDARD_NAME
 breaking:
   use:
     - FILE

@@ -1,0 +1,34 @@
+# buf.gen.yaml — protobuf code-generation configuration.
+#
+# Run with:  make proto-gen
+#
+# Plugins are resolved from $(LOCALBIN) (./bin/) so no system-wide installation
+# is required.  The Makefile targets buf, protoc-gen-go, and protoc-gen-go-grpc
+# download and pin exact versions to ./bin/ automatically.
+#
+# Output is written to gen/go/ using source-relative paths so the on-disk
+# directory tree mirrors the proto package hierarchy
+# (gen/go/pillar_csi/agent/v1/agent.pb.go).  The go_package option in each
+# .proto file controls the Go import path.
+
+version: v2
+
+inputs:
+  - directory: proto
+
+plugins:
+  # protoc-gen-go: generates Go struct types and encoding/decoding from .proto.
+  - local: protoc-gen-go
+    out: gen/go
+    opt:
+      - paths=source_relative
+
+  # protoc-gen-go-grpc: generates gRPC client stubs and server interface from
+  # service definitions.  require_unimplemented_servers=true (default) makes
+  # the compiler reject server structs that omit newly added RPCs, preventing
+  # silent API drift.
+  - local: protoc-gen-go-grpc
+    out: gen/go
+    opt:
+      - paths=source_relative
+      - require_unimplemented_servers=true
