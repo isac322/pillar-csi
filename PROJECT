@@ -17,6 +17,9 @@ resources:
   kind: PillarTarget
   path: github.com/bhyoo/pillar-csi/api/v1alpha1
   version: v1alpha1
+  webhooks:
+    validation: true
+    webhookVersion: v1
 - api:
     crdVersion: v1
   controller: true
@@ -25,6 +28,9 @@ resources:
   kind: PillarPool
   path: github.com/bhyoo/pillar-csi/api/v1alpha1
   version: v1alpha1
+  webhooks:
+    validation: true
+    webhookVersion: v1
 - api:
     crdVersion: v1
   controller: true
@@ -33,6 +39,9 @@ resources:
   kind: PillarProtocol
   path: github.com/bhyoo/pillar-csi/api/v1alpha1
   version: v1alpha1
+  webhooks:
+    validation: true
+    webhookVersion: v1
 - api:
     crdVersion: v1
   controller: true

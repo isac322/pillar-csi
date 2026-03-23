@@ -1,0 +1,66 @@
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: validating-webhook-configuration
+webhooks:
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-pillar-csi-pillar-csi-bhyoo-com-v1alpha1-pillarpool
+  failurePolicy: Fail
+  name: vpillarpool-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - pillar-csi.pillar-csi.bhyoo.com
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - pillarpools
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-pillar-csi-pillar-csi-bhyoo-com-v1alpha1-pillarprotocol
+  failurePolicy: Fail
+  name: vpillarprotocol-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - pillar-csi.pillar-csi.bhyoo.com
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - pillarprotocols
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-pillar-csi-pillar-csi-bhyoo-com-v1alpha1-pillartarget
+  failurePolicy: Fail
+  name: vpillartarget-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - pillar-csi.pillar-csi.bhyoo.com
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - pillartargets
+  sideEffects: None

@@ -39,6 +39,7 @@ import (
 
 	pillarcsiv1alpha1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
 	"github.com/bhyoo/pillar-csi/internal/controller"
+	webhookv1alpha1 "github.com/bhyoo/pillar-csi/internal/webhook/v1alpha1"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -84,6 +85,27 @@ func setupControllers(mgr ctrl.Manager) error {
 	}).SetupWithManager(mgr)
 	if err != nil {
 		return fmt.Errorf("PillarBinding controller: %w", err)
+	}
+	// nolint:goconst
+	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
+		if err := webhookv1alpha1.SetupPillarTargetWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "PillarTarget")
+			os.Exit(1)
+		}
+	}
+	// nolint:goconst
+	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
+		if err := webhookv1alpha1.SetupPillarPoolWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "PillarPool")
+			os.Exit(1)
+		}
+	}
+	// nolint:goconst
+	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
+		if err := webhookv1alpha1.SetupPillarProtocolWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "PillarProtocol")
+			os.Exit(1)
+		}
 	}
 	// +kubebuilder:scaffold:builder
 	return nil
