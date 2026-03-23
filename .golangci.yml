@@ -1,52 +1,328 @@
 version: "2"
+
 run:
+  timeout: 10m
   allow-parallel-runners: true
+
 linters:
   default: none
   enable:
-    - copyloopvar
-    - dupl
+    # --- Error handling ---
+    # Missed error returns cause silent data loss in a storage driver; this is
+    # non-negotiable.
     - errcheck
-    - ginkgolinter
-    - goconst
-    - gocyclo
+    # Enforce correct error wrapping (fmt.Errorf %w) so callers can use
+    # errors.Is/As reliably across CSI gRPC call chains.
+    - errorlint
+    # Enforce naming conventions: Err* sentinels, *Error types.
+    - errname
+    # Reject bare "if err := foo(); err != nil" inline assignments that obscure
+    # error context in storage-critical paths.
+    - noinlineerr
+    # Catch nil error returns when a non-nil error was available.
+    - nilerr
+    # Prevent simultaneous nil-error + invalid value returns, a footgun in
+    # volume lifecycle code.
+    - nilnil
+
+    # --- Security ---
+    # CSI drivers run privileged; any crypto, exec, or path issue is critical.
+    - gosec
+
+    # --- Static analysis ---
+    # Go's built-in vet catches real bugs; keep it enabled unconditionally.
     - govet
-    - ineffassign
-    - lll
-    - misspell
-    - nakedret
-    - prealloc
-    - revive
+    # SA/S/QF/ST checks from staticcheck – the most rigorous Go static
+    # analyser available.
     - staticcheck
-    - unconvert
-    - unparam
+
+    # --- Code quality & complexity ---
+    # Configurable code-quality rules; replaces the unmaintained golint.
+    - revive
+    # gocritic bundles ~100 opinionated checks useful for storage code
+    # (sliceHeader, hugeParam, rangeValCopy …).
+    - gocritic
+    # Cyclomatic-complexity guard: volume-provision / teardown paths must stay
+    # testable and reviewable.
+    - gocyclo
+    # Cognitive complexity catches nested conditionals that gocyclo misses.
+    - gocognit
+    # Maximum function body length to force decomposition.
+    - funlen
+    # Line length: long lines hide logic in PR reviews.
+    - lll
+    # Naked returns: confusing in error-heavy CSI handler functions.
+    - nakedret
+    # Unused code: dead volume paths are a maintenance hazard.
     - unused
+    # Unconditional type-conversion cleanup.
+    - unconvert
+    # Repeated magic strings should be constants (volume-mode literals, etc.).
+    - goconst
+    # Unused function parameters create confusing interfaces.
+    - unparam
+
+    # --- Correctness ---
+    # Loop-variable capture is still a latent bug in goroutine-heavy
+    # reconciliation loops even after Go 1.22 semantics change.
+    - copyloopvar
+    # Ensure HTTP response bodies are closed (controller health endpoints).
+    - bodyclose
+    # Enforce context propagation so cancellations reach storage backends.
+    - contextcheck
+    # Detect ineffectual assignments that hide unintended value overwrites.
+    - ineffassign
+    # Pre-allocate slices where capacity is known (volume list paths).
+    - prealloc
+    # Range over integer literals; cleaner loop idiom.
+    - intrange
+    # Prevent duration * duration arithmetic (common timer miscalculation).
+    - durationcheck
+    # Detect wasted assignments (assigned but never read before overwrite).
+    - wastedassign
+    # Reject unsafe forced type-assertions; use ok-form in plugin dispatch code.
+    - forcetypeassert
+    # Ensure error-wrap coverage across package boundaries.
+    - wrapcheck
+    # No stdlib replacements missed (e.g. use strings.Clone not fmt.Sprintf).
+    - exptostd
+    # Modernise outdated Go patterns automatically.
+    - modernize
+    # Reject use of deprecated packages / symbols.
+    - staticcheck  # already listed but kept for clarity in review
+
+    # --- Style & documentation ---
+    # Comments must end with a period — enforced for public API consistency.
+    - godot
+    # Spell-check identifiers and comments; storage jargon is already excluded.
+    - misspell
+    # Duplicate code blocks signal missing abstractions.
+    - dupl
+    # Nolint directives must be justified with a specific linter name.
+    - nolintlint
+    # Ginkgo/Gomega test patterns (project uses ginkgo for e2e).
+    - ginkgolinter
+    # Protect against Bidi Unicode control characters in source.
+    - bidichk
+    # Catch ASCII-only identifiers (no lookalike Unicode).
+    - asciicheck
+
   settings:
+    errcheck:
+      # Type assertions like val.(Type) silently panic; always check the bool.
+      check-type-assertions: true
+      # Blank-identifier assignments drop errors without notice.
+      check-blank: true
+
+    errorlint:
+      errorf: true
+      errorf-multi: true
+      asserts: true
+      comparison: true
+
+    gosec:
+      # G304 (file path from variable) is expected in CSI mount/unmount code;
+      # suppress only with explicit justification via nolint.
+      excludes: []
+      confidence: medium
+      severity: low
+
+    govet:
+      enable-all: true
+
+    staticcheck:
+      # Enable all staticcheck, SA, S, QF, and ST analysers.
+      checks:
+        - "all"
+
     revive:
+      # Minimum confidence to report (0.0–1.0).
+      confidence: 0.8
       rules:
+        - name: blank-imports
+        - name: bool-literal-in-expr
         - name: comment-spacings
+        - name: context-as-argument
+        - name: context-keys-type
+        - name: defer
+        - name: dot-imports
+        - name: empty-block
+        - name: empty-lines
+        - name: error-naming
+        - name: error-return
+        - name: error-strings
+        - name: errorf
+        - name: exported
+        - name: function-result-limit
+          arguments: [3]
+        - name: get-return
+        - name: identical-branches
+        - name: if-return
         - name: import-shadowing
+        - name: increment-decrement
+        - name: indent-error-flow
+        - name: modifies-parameter
+        - name: modifies-value-receiver
+        - name: package-comments
+        - name: range
+        - name: receiver-naming
+        - name: redefines-builtin-id
+        - name: string-of-int
+        - name: struct-tag
+        - name: superfluous-else
+        - name: time-naming
+        - name: unchecked-type-assertion
+        - name: unexported-naming
+        - name: unexported-return
+        - name: unnecessary-stmt
+        - name: unreachable-code
+        - name: unused-parameter
+        - name: unused-receiver
+        - name: use-any
+        - name: var-declaration
+        - name: var-naming
+        - name: waitgroup-by-value
+
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - experimental
+        - opinionated
+        - performance
+        - style
+      disabled-checks:
+        # hugeParam fires on Kubernetes types passed by value — too noisy
+        # until we profile hot paths.
+        - hugeParam
+        # whyNoLint is superseded by nolintlint linter.
+        - whyNoLint
+
+    gocyclo:
+      # 15 is strict but achievable; volume lifecycle functions may go higher
+      # only with an explicit nolint and a comment explaining why.
+      min-complexity: 15
+
+    gocognit:
+      min-complexity: 20
+
+    funlen:
+      lines: 80
+      statements: 50
+
+    lll:
+      line-length: 120
+      # Tab counts as one character so generated struct tags don't trip this.
+      tab-width: 1
+
+    nakedret:
+      # Naked return only allowed in trivially short functions.
+      max-func-lines: 10
+
+    goconst:
+      min-len: 3
+      min-occurrences: 3
+
+    misspell:
+      locale: US
+      # CSI / storage jargon that the dictionary flags incorrectly.
+      extra-words:
+        - typo: "fibre"
+          correction: "fiber"
+
+    godot:
+      # Require period at end of top-level comments only (block comments).
+      scope: toplevel
+      # Exclude common exception patterns (e.g. TODO/FIXME lines).
+      exclude:
+        - "^\\s*TODO"
+        - "^\\s*FIXME"
+        - "^\\s*NOTE"
+        - "^\\s*nolint"
+      capital: true
+
+    dupl:
+      # ~150 tokens = roughly 10-15 lines; catches copy-paste of handler bodies.
+      threshold: 150
+
+    nolintlint:
+      # Every nolint must name the specific linter it is suppressing.
+      require-specific: true
+      allow-unused: false
+
+    unparam:
+      check-exported: false
+
+    wrapcheck:
+      # Don't require wrapping for stdlib or internal packages.
+      ignore-sigs:
+        - .Errorf(
+        - errors.New(
+        - errors.Unwrap(
+        - .Wrap(
+        - .Wrapf(
+        - .WithMessage(
+        - .WithStack(
+    ginkgolinter:
+      forbid-focus-container: true
+
   exclusions:
+    # Treat generated files leniently — only flag obvious issues.
     generated: lax
     rules:
-      - linters:
-          - lll
-        path: api/*
-      - linters:
-          - dupl
-          - lll
-        path: internal/*
+      # Auto-generated deepcopy / zz_generated files can exceed line length
+      # and contain patterns that look like duplication.
+      - linters: [lll, dupl, wrapcheck, godot]
+        path: "zz_generated\\..*\\.go$"
+      # CRD API types use long struct tags; line-length is irrelevant there.
+      - linters: [lll]
+        path: "api/.*\\.go$"
+      # Test helpers may duplicate setup code intentionally.
+      - linters: [dupl, funlen, wrapcheck]
+        path: "_test\\.go$"
+      # Main entry-point can import packages directly.
+      - linters: [wrapcheck]
+        path: "cmd/.*\\.go$"
+      # Proto-generated files.
+      - linters: [lll, dupl, wrapcheck, godot, revive, gocritic]
+        path: "\\.pb\\.go$"
+      # gosec G601 (loop-var address) is a false positive in generated code.
+      - linters: [gosec]
+        path: "zz_generated\\..*\\.go$"
+        text: "G601"
+      # Disable forcetypeassert for test assertions where panic-on-failure is
+      # acceptable.
+      - linters: [forcetypeassert]
+        path: "_test\\.go$"
+      # noinlineerr is too noisy in test table-driven loops.
+      - linters: [noinlineerr]
+        path: "_test\\.go$"
     paths:
+      - vendor$
       - third_party$
       - builtin$
       - examples$
+
 formatters:
   enable:
     - gofmt
     - goimports
+  settings:
+    goimports:
+      # Group imports: stdlib / external / internal.
+      local-prefixes:
+        - github.com/bhyoo/pillar-csi
   exclusions:
     generated: lax
     paths:
+      - vendor$
       - third_party$
       - builtin$
       - examples$
+
+issues:
+  # Surface every issue, not just the first few per linter.
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  # Fix trivially auto-fixable issues (misspell, gofmt, etc.) when --fix is
+  # passed, instead of failing the build.
+  fix: false
