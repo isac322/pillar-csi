@@ -39,7 +39,7 @@ var pillarbindinglog = logf.Log.WithName("pillarbinding-resource")
 // SetupPillarBindingWebhookWithManager registers the webhook for PillarBinding in the manager.
 func SetupPillarBindingWebhookWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewWebhookManagedBy(mgr).For(&pillarcsiv1alpha1.PillarBinding{}).
-		WithValidator(&PillarBindingCustomValidator{}).
+		WithValidator(&PillarBindingCustomValidator{Client: mgr.GetClient()}).
 		WithDefaulter(&PillarBindingCustomDefaulter{Client: mgr.GetClient()}).
 		Complete()
 }
@@ -122,26 +122,30 @@ func backendSupportsVolumeExpansion(bt pillarcsiv1alpha1.BackendType) bool {
 // NOTE: The +kubebuilder:object:generate=false marker prevents controller-gen from generating DeepCopy methods,
 // as this struct is used only for temporary operations and does not need to be deeply copied.
 type PillarBindingCustomValidator struct {
-	// TODO(user): Add more fields as needed for validation
+	// Client is used to look up referenced PillarPool and PillarProtocol resources in order
+	// to verify that the backend type and protocol type are compatible.
+	Client client.Client
 }
 
 var _ webhook.CustomValidator = &PillarBindingCustomValidator{}
 
 // ValidateCreate implements webhook.CustomValidator so a webhook will be registered for the type PillarBinding.
-func (v *PillarBindingCustomValidator) ValidateCreate(_ context.Context, obj runtime.Object) (admission.Warnings, error) {
+func (v *PillarBindingCustomValidator) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
 	pillarbinding, ok := obj.(*pillarcsiv1alpha1.PillarBinding)
 	if !ok {
 		return nil, fmt.Errorf("expected a PillarBinding object but got %T", obj)
 	}
 	pillarbindinglog.Info("Validation for PillarBinding upon creation", "name", pillarbinding.GetName())
 
-	// TODO(user): fill in your validation logic upon object creation.
+	if err := v.validateCompatibility(ctx, pillarbinding); err != nil {
+		return nil, err
+	}
 
 	return nil, nil
 }
 
 // ValidateUpdate implements webhook.CustomValidator so a webhook will be registered for the type PillarBinding.
-func (v *PillarBindingCustomValidator) ValidateUpdate(_ context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
+func (v *PillarBindingCustomValidator) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
 	newBinding, ok := newObj.(*pillarcsiv1alpha1.PillarBinding)
 	if !ok {
 		return nil, fmt.Errorf("expected a PillarBinding object for the newObj but got %T", newObj)
@@ -179,6 +183,15 @@ func (v *PillarBindingCustomValidator) ValidateUpdate(_ context.Context, oldObj,
 	if len(allErrs) > 0 {
 		return nil, allErrs.ToAggregate()
 	}
+
+	// Also verify that the new binding's backend-protocol combination is still valid.
+	// (poolRef and protocolRef are immutable, so this is only relevant when neither
+	// changed — but we still need to guard against a cluster state change between
+	// admission calls.)
+	if err := v.validateCompatibility(ctx, newBinding); err != nil {
+		return nil, err
+	}
+
 	return nil, nil
 }
 
@@ -193,4 +206,69 @@ func (v *PillarBindingCustomValidator) ValidateDelete(ctx context.Context, obj r
 	// TODO(user): fill in your validation logic upon object deletion.
 
 	return nil, nil
+}
+
+// validateCompatibility checks that the backend type of the referenced PillarPool
+// and the protocol type of the referenced PillarProtocol are a valid combination.
+// Block-device backends (zfs-zvol, lvm-lv) only work with block protocols
+// (nvmeof-tcp, iscsi); filesystem/directory backends (zfs-dataset, dir) only
+// work with the file protocol (nfs).
+//
+// If either referenced resource does not yet exist the check is skipped: the
+// controller will detect and surface the mismatch via status conditions once
+// both resources are available.
+func (v *PillarBindingCustomValidator) validateCompatibility(ctx context.Context, pb *pillarcsiv1alpha1.PillarBinding) error {
+	if v.Client == nil {
+		return nil
+	}
+
+	pool := &pillarcsiv1alpha1.PillarPool{}
+	if err := v.Client.Get(ctx, types.NamespacedName{Name: pb.Spec.PoolRef}, pool); err != nil {
+		// Pool not found yet — skip; controller reconciliation handles this case.
+		pillarbindinglog.V(1).Info("Skipping compatibility check: cannot fetch pool",
+			"poolRef", pb.Spec.PoolRef, "reason", err.Error())
+		return nil
+	}
+
+	protocol := &pillarcsiv1alpha1.PillarProtocol{}
+	if err := v.Client.Get(ctx, types.NamespacedName{Name: pb.Spec.ProtocolRef}, protocol); err != nil {
+		// Protocol not found yet — skip; controller reconciliation handles this case.
+		pillarbindinglog.V(1).Info("Skipping compatibility check: cannot fetch protocol",
+			"protocolRef", pb.Spec.ProtocolRef, "reason", err.Error())
+		return nil
+	}
+
+	backendType := pool.Spec.Backend.Type
+	protocolType := protocol.Spec.Type
+	if !isBackendProtocolCompatible(backendType, protocolType) {
+		return field.Invalid(
+			field.NewPath("spec", "protocolRef"),
+			pb.Spec.ProtocolRef,
+			fmt.Sprintf(
+				"backend type %q is incompatible with protocol type %q: "+
+					"block backends (zfs-zvol, lvm-lv) require block protocols (nvmeof-tcp, iscsi); "+
+					"file backends (zfs-dataset, dir) require the file protocol (nfs)",
+				backendType, protocolType,
+			),
+		)
+	}
+
+	return nil
+}
+
+// isBackendProtocolCompatible returns true when the given backend/protocol
+// pair is a valid combination.
+//
+// Compatibility matrix:
+//
+//	backend      | block protocols (nvmeof-tcp, iscsi) | file protocol (nfs)
+//	-------------|-------------------------------------|--------------------
+//	zfs-zvol     | ✓                                   | ✗
+//	lvm-lv       | ✓                                   | ✗
+//	zfs-dataset  | ✗                                   | ✓
+//	dir          | ✗                                   | ✓
+func isBackendProtocolCompatible(bt pillarcsiv1alpha1.BackendType, pt pillarcsiv1alpha1.ProtocolType) bool {
+	isBlockBackend := bt == pillarcsiv1alpha1.BackendTypeZFSZvol || bt == pillarcsiv1alpha1.BackendTypeLVMLV
+	isBlockProtocol := pt == pillarcsiv1alpha1.ProtocolTypeNVMeOFTCP || pt == pillarcsiv1alpha1.ProtocolTypeISCSI
+	return isBlockBackend == isBlockProtocol
 }

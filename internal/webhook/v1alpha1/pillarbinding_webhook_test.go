@@ -35,7 +35,7 @@ var _ = Describe("PillarBinding Webhook", func() {
 	BeforeEach(func() {
 		obj = &pillarcsiv1alpha1.PillarBinding{}
 		oldObj = &pillarcsiv1alpha1.PillarBinding{}
-		validator = PillarBindingCustomValidator{}
+		validator = PillarBindingCustomValidator{Client: k8sClient}
 		Expect(validator).NotTo(BeNil(), "Expected validator to be initialized")
 		defaulter = PillarBindingCustomDefaulter{Client: k8sClient}
 		Expect(defaulter).NotTo(BeNil(), "Expected defaulter to be initialized")
@@ -275,6 +275,290 @@ var _ = Describe("PillarBinding Webhook", func() {
 				},
 			}
 			_, err := validator.ValidateUpdate(ctx, oldObj, obj)
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	Context("When validating Backend-Protocol compatibility", func() {
+		It("Should admit block backend (zfs-zvol) with block protocol (nvmeof-tcp)", func() {
+			By("creating compatible pool and protocol resources")
+			pool := &pillarcsiv1alpha1.PillarPool{
+				ObjectMeta: metav1.ObjectMeta{Name: "compat-pool-zvol-nvme"},
+				Spec: pillarcsiv1alpha1.PillarPoolSpec{
+					TargetRef: "test-target",
+					Backend: pillarcsiv1alpha1.BackendSpec{
+						Type: pillarcsiv1alpha1.BackendTypeZFSZvol,
+						ZFS:  &pillarcsiv1alpha1.ZFSBackendConfig{Pool: "tank"},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, pool)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, pool) })
+
+			proto := &pillarcsiv1alpha1.PillarProtocol{
+				ObjectMeta: metav1.ObjectMeta{Name: "compat-proto-nvme"},
+				Spec:       pillarcsiv1alpha1.PillarProtocolSpec{Type: pillarcsiv1alpha1.ProtocolTypeNVMeOFTCP},
+			}
+			Expect(k8sClient.Create(ctx, proto)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, proto) })
+
+			obj.Name = "compat-binding-zvol-nvme"
+			obj.Spec = pillarcsiv1alpha1.PillarBindingSpec{
+				PoolRef:     "compat-pool-zvol-nvme",
+				ProtocolRef: "compat-proto-nvme",
+			}
+			_, err := validator.ValidateCreate(ctx, obj)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("Should admit block backend (lvm-lv) with block protocol (iscsi)", func() {
+			By("creating compatible pool and protocol resources")
+			pool := &pillarcsiv1alpha1.PillarPool{
+				ObjectMeta: metav1.ObjectMeta{Name: "compat-pool-lvm-iscsi"},
+				Spec: pillarcsiv1alpha1.PillarPoolSpec{
+					TargetRef: "test-target",
+					Backend:   pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeLVMLV},
+				},
+			}
+			Expect(k8sClient.Create(ctx, pool)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, pool) })
+
+			proto := &pillarcsiv1alpha1.PillarProtocol{
+				ObjectMeta: metav1.ObjectMeta{Name: "compat-proto-iscsi"},
+				Spec:       pillarcsiv1alpha1.PillarProtocolSpec{Type: pillarcsiv1alpha1.ProtocolTypeISCSI},
+			}
+			Expect(k8sClient.Create(ctx, proto)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, proto) })
+
+			obj.Name = "compat-binding-lvm-iscsi"
+			obj.Spec = pillarcsiv1alpha1.PillarBindingSpec{
+				PoolRef:     "compat-pool-lvm-iscsi",
+				ProtocolRef: "compat-proto-iscsi",
+			}
+			_, err := validator.ValidateCreate(ctx, obj)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("Should admit file backend (zfs-dataset) with file protocol (nfs)", func() {
+			By("creating compatible pool and protocol resources")
+			pool := &pillarcsiv1alpha1.PillarPool{
+				ObjectMeta: metav1.ObjectMeta{Name: "compat-pool-zfsds-nfs"},
+				Spec: pillarcsiv1alpha1.PillarPoolSpec{
+					TargetRef: "test-target",
+					Backend: pillarcsiv1alpha1.BackendSpec{
+						Type: pillarcsiv1alpha1.BackendTypeZFSDataset,
+						ZFS:  &pillarcsiv1alpha1.ZFSBackendConfig{Pool: "tank"},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, pool)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, pool) })
+
+			proto := &pillarcsiv1alpha1.PillarProtocol{
+				ObjectMeta: metav1.ObjectMeta{Name: "compat-proto-nfs"},
+				Spec:       pillarcsiv1alpha1.PillarProtocolSpec{Type: pillarcsiv1alpha1.ProtocolTypeNFS},
+			}
+			Expect(k8sClient.Create(ctx, proto)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, proto) })
+
+			obj.Name = "compat-binding-zfsds-nfs"
+			obj.Spec = pillarcsiv1alpha1.PillarBindingSpec{
+				PoolRef:     "compat-pool-zfsds-nfs",
+				ProtocolRef: "compat-proto-nfs",
+			}
+			_, err := validator.ValidateCreate(ctx, obj)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("Should admit file backend (dir) with file protocol (nfs)", func() {
+			By("creating compatible pool and protocol resources")
+			pool := &pillarcsiv1alpha1.PillarPool{
+				ObjectMeta: metav1.ObjectMeta{Name: "compat-pool-dir-nfs"},
+				Spec: pillarcsiv1alpha1.PillarPoolSpec{
+					TargetRef: "test-target",
+					Backend:   pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeDir},
+				},
+			}
+			Expect(k8sClient.Create(ctx, pool)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, pool) })
+
+			proto := &pillarcsiv1alpha1.PillarProtocol{
+				ObjectMeta: metav1.ObjectMeta{Name: "compat-proto-nfs2"},
+				Spec:       pillarcsiv1alpha1.PillarProtocolSpec{Type: pillarcsiv1alpha1.ProtocolTypeNFS},
+			}
+			Expect(k8sClient.Create(ctx, proto)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, proto) })
+
+			obj.Name = "compat-binding-dir-nfs"
+			obj.Spec = pillarcsiv1alpha1.PillarBindingSpec{
+				PoolRef:     "compat-pool-dir-nfs",
+				ProtocolRef: "compat-proto-nfs2",
+			}
+			_, err := validator.ValidateCreate(ctx, obj)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("Should deny block backend (zfs-zvol) with file protocol (nfs) on create", func() {
+			By("creating incompatible pool and protocol resources")
+			pool := &pillarcsiv1alpha1.PillarPool{
+				ObjectMeta: metav1.ObjectMeta{Name: "incompat-pool-zvol-nfs"},
+				Spec: pillarcsiv1alpha1.PillarPoolSpec{
+					TargetRef: "test-target",
+					Backend: pillarcsiv1alpha1.BackendSpec{
+						Type: pillarcsiv1alpha1.BackendTypeZFSZvol,
+						ZFS:  &pillarcsiv1alpha1.ZFSBackendConfig{Pool: "tank"},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, pool)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, pool) })
+
+			proto := &pillarcsiv1alpha1.PillarProtocol{
+				ObjectMeta: metav1.ObjectMeta{Name: "incompat-proto-nfs"},
+				Spec:       pillarcsiv1alpha1.PillarProtocolSpec{Type: pillarcsiv1alpha1.ProtocolTypeNFS},
+			}
+			Expect(k8sClient.Create(ctx, proto)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, proto) })
+
+			obj.Name = "incompat-binding-zvol-nfs"
+			obj.Spec = pillarcsiv1alpha1.PillarBindingSpec{
+				PoolRef:     "incompat-pool-zvol-nfs",
+				ProtocolRef: "incompat-proto-nfs",
+			}
+			_, err := validator.ValidateCreate(ctx, obj)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("incompatible"))
+		})
+
+		It("Should deny block backend (lvm-lv) with file protocol (nfs) on create", func() {
+			By("creating incompatible pool and protocol resources")
+			pool := &pillarcsiv1alpha1.PillarPool{
+				ObjectMeta: metav1.ObjectMeta{Name: "incompat-pool-lvm-nfs"},
+				Spec: pillarcsiv1alpha1.PillarPoolSpec{
+					TargetRef: "test-target",
+					Backend:   pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeLVMLV},
+				},
+			}
+			Expect(k8sClient.Create(ctx, pool)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, pool) })
+
+			proto := &pillarcsiv1alpha1.PillarProtocol{
+				ObjectMeta: metav1.ObjectMeta{Name: "incompat-proto-nfs2"},
+				Spec:       pillarcsiv1alpha1.PillarProtocolSpec{Type: pillarcsiv1alpha1.ProtocolTypeNFS},
+			}
+			Expect(k8sClient.Create(ctx, proto)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, proto) })
+
+			obj.Name = "incompat-binding-lvm-nfs"
+			obj.Spec = pillarcsiv1alpha1.PillarBindingSpec{
+				PoolRef:     "incompat-pool-lvm-nfs",
+				ProtocolRef: "incompat-proto-nfs2",
+			}
+			_, err := validator.ValidateCreate(ctx, obj)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("incompatible"))
+		})
+
+		It("Should deny file backend (zfs-dataset) with block protocol (nvmeof-tcp) on create", func() {
+			By("creating incompatible pool and protocol resources")
+			pool := &pillarcsiv1alpha1.PillarPool{
+				ObjectMeta: metav1.ObjectMeta{Name: "incompat-pool-zfsds-nvme"},
+				Spec: pillarcsiv1alpha1.PillarPoolSpec{
+					TargetRef: "test-target",
+					Backend: pillarcsiv1alpha1.BackendSpec{
+						Type: pillarcsiv1alpha1.BackendTypeZFSDataset,
+						ZFS:  &pillarcsiv1alpha1.ZFSBackendConfig{Pool: "tank"},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, pool)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, pool) })
+
+			proto := &pillarcsiv1alpha1.PillarProtocol{
+				ObjectMeta: metav1.ObjectMeta{Name: "incompat-proto-nvme"},
+				Spec:       pillarcsiv1alpha1.PillarProtocolSpec{Type: pillarcsiv1alpha1.ProtocolTypeNVMeOFTCP},
+			}
+			Expect(k8sClient.Create(ctx, proto)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, proto) })
+
+			obj.Name = "incompat-binding-zfsds-nvme"
+			obj.Spec = pillarcsiv1alpha1.PillarBindingSpec{
+				PoolRef:     "incompat-pool-zfsds-nvme",
+				ProtocolRef: "incompat-proto-nvme",
+			}
+			_, err := validator.ValidateCreate(ctx, obj)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("incompatible"))
+		})
+
+		It("Should deny file backend (dir) with block protocol (iscsi) on create", func() {
+			By("creating incompatible pool and protocol resources")
+			pool := &pillarcsiv1alpha1.PillarPool{
+				ObjectMeta: metav1.ObjectMeta{Name: "incompat-pool-dir-iscsi"},
+				Spec: pillarcsiv1alpha1.PillarPoolSpec{
+					TargetRef: "test-target",
+					Backend:   pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeDir},
+				},
+			}
+			Expect(k8sClient.Create(ctx, pool)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, pool) })
+
+			proto := &pillarcsiv1alpha1.PillarProtocol{
+				ObjectMeta: metav1.ObjectMeta{Name: "incompat-proto-iscsi"},
+				Spec:       pillarcsiv1alpha1.PillarProtocolSpec{Type: pillarcsiv1alpha1.ProtocolTypeISCSI},
+			}
+			Expect(k8sClient.Create(ctx, proto)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, proto) })
+
+			obj.Name = "incompat-binding-dir-iscsi"
+			obj.Spec = pillarcsiv1alpha1.PillarBindingSpec{
+				PoolRef:     "incompat-pool-dir-iscsi",
+				ProtocolRef: "incompat-proto-iscsi",
+			}
+			_, err := validator.ValidateCreate(ctx, obj)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("incompatible"))
+		})
+
+		It("Should admit creation when pool does not exist (defer to controller)", func() {
+			By("creating only the protocol, not the pool")
+			proto := &pillarcsiv1alpha1.PillarProtocol{
+				ObjectMeta: metav1.ObjectMeta{Name: "compat-proto-nopool"},
+				Spec:       pillarcsiv1alpha1.PillarProtocolSpec{Type: pillarcsiv1alpha1.ProtocolTypeNFS},
+			}
+			Expect(k8sClient.Create(ctx, proto)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, proto) })
+
+			obj.Name = "compat-binding-nopool"
+			obj.Spec = pillarcsiv1alpha1.PillarBindingSpec{
+				PoolRef:     "nonexistent-pool",
+				ProtocolRef: "compat-proto-nopool",
+			}
+			_, err := validator.ValidateCreate(ctx, obj)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("Should admit creation when protocol does not exist (defer to controller)", func() {
+			By("creating only the pool, not the protocol")
+			pool := &pillarcsiv1alpha1.PillarPool{
+				ObjectMeta: metav1.ObjectMeta{Name: "compat-pool-noproto"},
+				Spec: pillarcsiv1alpha1.PillarPoolSpec{
+					TargetRef: "test-target",
+					Backend: pillarcsiv1alpha1.BackendSpec{
+						Type: pillarcsiv1alpha1.BackendTypeZFSZvol,
+						ZFS:  &pillarcsiv1alpha1.ZFSBackendConfig{Pool: "tank"},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, pool)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, pool) })
+
+			obj.Name = "compat-binding-noproto"
+			obj.Spec = pillarcsiv1alpha1.PillarBindingSpec{
+				PoolRef:     "compat-pool-noproto",
+				ProtocolRef: "nonexistent-protocol",
+			}
+			_, err := validator.ValidateCreate(ctx, obj)
 			Expect(err).NotTo(HaveOccurred())
 		})
 	})
