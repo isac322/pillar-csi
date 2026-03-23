@@ -383,6 +383,283 @@ var _ = Describe("PillarPool Controller", func() {
 		})
 	})
 
+	Context("PoolDiscovered condition — target ready, no discovered pools yet", func() {
+		BeforeEach(func() {
+			createPool()
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		AfterEach(func() {
+			forceRemoveFinalizer()
+			deletePool()
+			deleteTarget()
+		})
+
+		It("should set PoolDiscovered=Unknown when target is Ready but has no discoveredPools", func() {
+			readyStatus := metav1.ConditionTrue
+			createTarget(&readyStatus, "all checks pass")
+			// Target has no DiscoveredPools in status (agent gRPC not connected).
+
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := fetchPool()
+			cond := findCondition(fetched, "PoolDiscovered")
+			Expect(cond).NotTo(BeNil(), "PoolDiscovered condition should be set")
+			Expect(cond.Status).To(Equal(metav1.ConditionUnknown))
+			Expect(cond.Reason).To(Equal("WaitingForAgentData"))
+			Expect(cond.Message).To(ContainSubstring(targetName))
+		})
+
+		It("should set BackendSupported=Unknown when target is Ready but has no capabilities", func() {
+			readyStatus := metav1.ConditionTrue
+			createTarget(&readyStatus, "all checks pass")
+			// Target has no Capabilities in status (agent gRPC not connected).
+
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := fetchPool()
+			cond := findCondition(fetched, "BackendSupported")
+			Expect(cond).NotTo(BeNil(), "BackendSupported condition should be set")
+			Expect(cond.Status).To(Equal(metav1.ConditionUnknown))
+			Expect(cond.Reason).To(Equal("WaitingForAgentData"))
+			Expect(cond.Message).To(ContainSubstring(targetName))
+		})
+
+		It("should set Ready=False when PoolDiscovered and BackendSupported are Unknown", func() {
+			readyStatus := metav1.ConditionTrue
+			createTarget(&readyStatus, "all checks pass")
+
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := fetchPool()
+			cond := findCondition(fetched, "Ready")
+			Expect(cond).NotTo(BeNil(), "Ready condition should be set")
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		})
+	})
+
+	Context("PoolDiscovered condition — target ready with discovered pools", func() {
+		const zfsPoolName = "hot-data"
+
+		// Helper: create pool with ZFS backend referencing a named ZFS pool.
+		createZFSPool := func() {
+			resource := &pillarcsiv1alpha1.PillarPool{}
+			err := k8sClient.Get(bctx, poolNamespacedName, resource)
+			if err != nil {
+				pool := &pillarcsiv1alpha1.PillarPool{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: poolName,
+					},
+					Spec: pillarcsiv1alpha1.PillarPoolSpec{
+						TargetRef: targetName,
+						Backend: pillarcsiv1alpha1.BackendSpec{
+							Type: pillarcsiv1alpha1.BackendTypeZFSZvol,
+							ZFS: &pillarcsiv1alpha1.ZFSBackendConfig{
+								Pool: zfsPoolName,
+							},
+						},
+					},
+				}
+				Expect(k8sClient.Create(bctx, pool)).To(Succeed())
+			}
+		}
+
+		// Helper: set target status to Ready with given discovered pools and capabilities.
+		setTargetReadyWithData := func(pools []pillarcsiv1alpha1.DiscoveredPool, backends []string) {
+			target := &pillarcsiv1alpha1.PillarTarget{}
+			err := k8sClient.Get(bctx, types.NamespacedName{Name: targetName}, target)
+			if err != nil {
+				resource := &pillarcsiv1alpha1.PillarTarget{
+					ObjectMeta: metav1.ObjectMeta{Name: targetName},
+					Spec: pillarcsiv1alpha1.PillarTargetSpec{
+						External: &pillarcsiv1alpha1.ExternalSpec{
+							Address: "192.0.2.10",
+							Port:    9500,
+						},
+					},
+				}
+				Expect(k8sClient.Create(bctx, resource)).To(Succeed())
+				Expect(k8sClient.Get(bctx, types.NamespacedName{Name: targetName}, target)).To(Succeed())
+			}
+			var caps *pillarcsiv1alpha1.AgentCapabilities
+			if backends != nil {
+				caps = &pillarcsiv1alpha1.AgentCapabilities{Backends: backends}
+			}
+			target.Status.ResolvedAddress = "192.0.2.10:9500"
+			target.Status.DiscoveredPools = pools
+			target.Status.Capabilities = caps
+			target.Status.Conditions = []metav1.Condition{
+				{
+					Type:               "Ready",
+					Status:             metav1.ConditionTrue,
+					Reason:             "AgentConnected",
+					Message:            "agent connected",
+					LastTransitionTime: metav1.Now(),
+				},
+			}
+			Expect(k8sClient.Status().Update(bctx, target)).To(Succeed())
+		}
+
+		BeforeEach(func() {
+			createZFSPool()
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		AfterEach(func() {
+			forceRemoveFinalizer()
+			deletePool()
+			deleteTarget()
+		})
+
+		It("should set PoolDiscovered=True when pool name is in target's discoveredPools", func() {
+			discoveredPools := []pillarcsiv1alpha1.DiscoveredPool{
+				{Name: zfsPoolName, Type: "zfs"},
+				{Name: "other-pool", Type: "zfs"},
+			}
+			setTargetReadyWithData(discoveredPools, []string{"zfs-zvol", "zfs-dataset"})
+
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := fetchPool()
+			cond := findCondition(fetched, "PoolDiscovered")
+			Expect(cond).NotTo(BeNil(), "PoolDiscovered condition should be set")
+			Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+			Expect(cond.Reason).To(Equal("PoolDiscovered"))
+			Expect(cond.Message).To(ContainSubstring(zfsPoolName))
+		})
+
+		It("should set PoolDiscovered=False when pool name is NOT in target's discoveredPools", func() {
+			discoveredPools := []pillarcsiv1alpha1.DiscoveredPool{
+				{Name: "other-pool", Type: "zfs"},
+				{Name: "another-pool", Type: "zfs"},
+			}
+			setTargetReadyWithData(discoveredPools, []string{"zfs-zvol"})
+
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := fetchPool()
+			cond := findCondition(fetched, "PoolDiscovered")
+			Expect(cond).NotTo(BeNil(), "PoolDiscovered condition should be set")
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cond.Reason).To(Equal("PoolNotFound"))
+			Expect(cond.Message).To(ContainSubstring(zfsPoolName))
+		})
+
+		It("should set BackendSupported=True when backend type is in target capabilities", func() {
+			discoveredPools := []pillarcsiv1alpha1.DiscoveredPool{
+				{Name: zfsPoolName, Type: "zfs"},
+			}
+			setTargetReadyWithData(discoveredPools, []string{"zfs-zvol", "zfs-dataset", "lvm-lv"})
+
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := fetchPool()
+			cond := findCondition(fetched, "BackendSupported")
+			Expect(cond).NotTo(BeNil(), "BackendSupported condition should be set")
+			Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+			Expect(cond.Reason).To(Equal("BackendSupported"))
+			Expect(cond.Message).To(ContainSubstring("zfs-zvol"))
+		})
+
+		It("should set BackendSupported=False when backend type is NOT in target capabilities", func() {
+			discoveredPools := []pillarcsiv1alpha1.DiscoveredPool{
+				{Name: zfsPoolName, Type: "zfs"},
+			}
+			// Target only supports lvm-lv but the pool uses zfs-zvol.
+			setTargetReadyWithData(discoveredPools, []string{"lvm-lv", "dir"})
+
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := fetchPool()
+			cond := findCondition(fetched, "BackendSupported")
+			Expect(cond).NotTo(BeNil(), "BackendSupported condition should be set")
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cond.Reason).To(Equal("BackendNotSupported"))
+			Expect(cond.Message).To(ContainSubstring("zfs-zvol"))
+		})
+
+		It("should set Ready=True when TargetReady, PoolDiscovered, and BackendSupported are all True", func() {
+			discoveredPools := []pillarcsiv1alpha1.DiscoveredPool{
+				{Name: zfsPoolName, Type: "zfs"},
+			}
+			setTargetReadyWithData(discoveredPools, []string{"zfs-zvol", "zfs-dataset"})
+
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := fetchPool()
+
+			Expect(findCondition(fetched, "TargetReady").Status).To(Equal(metav1.ConditionTrue))
+			Expect(findCondition(fetched, "PoolDiscovered").Status).To(Equal(metav1.ConditionTrue))
+			Expect(findCondition(fetched, "BackendSupported").Status).To(Equal(metav1.ConditionTrue))
+
+			readyCond := findCondition(fetched, "Ready")
+			Expect(readyCond).NotTo(BeNil())
+			Expect(readyCond.Status).To(Equal(metav1.ConditionTrue))
+			Expect(readyCond.Reason).To(Equal("AllConditionsMet"))
+		})
+
+		It("should set Ready=False when pool is not discovered even if backend is supported", func() {
+			// Pool not found in discovered pools.
+			discoveredPools := []pillarcsiv1alpha1.DiscoveredPool{
+				{Name: "other-pool", Type: "zfs"},
+			}
+			setTargetReadyWithData(discoveredPools, []string{"zfs-zvol"})
+
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := fetchPool()
+			readyCond := findCondition(fetched, "Ready")
+			Expect(readyCond).NotTo(BeNil())
+			Expect(readyCond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(readyCond.Reason).To(Equal("ConditionsNotMet"))
+		})
+	})
+
+	Context("PoolDiscovered condition — target not ready sets Unknown", func() {
+		BeforeEach(func() {
+			createPool()
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		AfterEach(func() {
+			forceRemoveFinalizer()
+			deletePool()
+			deleteTarget()
+		})
+
+		It("should set PoolDiscovered=Unknown and BackendSupported=Unknown when target exists but is not Ready", func() {
+			notReadyStatus := metav1.ConditionFalse
+			createTarget(&notReadyStatus, "agent disconnected")
+
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := fetchPool()
+
+			pdCond := findCondition(fetched, "PoolDiscovered")
+			Expect(pdCond).NotTo(BeNil())
+			Expect(pdCond.Status).To(Equal(metav1.ConditionUnknown))
+			Expect(pdCond.Reason).To(Equal("TargetNotReady"))
+
+			bsCond := findCondition(fetched, "BackendSupported")
+			Expect(bsCond).NotTo(BeNil())
+			Expect(bsCond.Status).To(Equal(metav1.ConditionUnknown))
+			Expect(bsCond.Reason).To(Equal("TargetNotReady"))
+		})
+	})
+
 	Context("Deletion blocking", func() {
 		const bindingName = "test-binding-for-pool"
 

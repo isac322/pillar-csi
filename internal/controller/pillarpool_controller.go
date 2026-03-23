@@ -108,8 +108,10 @@ func (r *PillarPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 // It:
 //  1. Looks up the PillarTarget named in spec.targetRef.
 //  2. Sets TargetReady based on whether the target exists and its Ready condition is True.
-//  3. Sets PoolDiscovered and BackendSupported to False (stubbed — gRPC not yet wired).
-//  4. Sets Ready to False because PoolDiscovered / BackendSupported are stubbed.
+//  3. When the target is not ready, sets PoolDiscovered and BackendSupported to Unknown.
+//  4. When the target is ready, evaluates PoolDiscovered from target.Status.DiscoveredPools
+//     and BackendSupported from target.Status.Capabilities.Backends.
+//  5. Sets Ready=True only when TargetReady, PoolDiscovered, and BackendSupported are all True.
 func (r *PillarPoolReconciler) reconcileNormal(ctx context.Context, pool *pillarcsiv1alpha1.PillarPool) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
@@ -206,40 +208,166 @@ func (r *PillarPoolReconciler) reconcileNormal(ctx context.Context, pool *pillar
 			Reason:             "TargetNotReady",
 			Message:            msg,
 		})
+
+		// When the target itself is not ready, pool discovery and backend
+		// verification cannot be performed; mark both Unknown.
+		meta.SetStatusCondition(&pool.Status.Conditions, metav1.Condition{
+			Type:               "PoolDiscovered",
+			Status:             metav1.ConditionUnknown,
+			ObservedGeneration: pool.Generation,
+			Reason:             "TargetNotReady",
+			Message:            fmt.Sprintf("Cannot discover pool: PillarTarget %q is not yet Ready", pool.Spec.TargetRef),
+		})
+		meta.SetStatusCondition(&pool.Status.Conditions, metav1.Condition{
+			Type:               "BackendSupported",
+			Status:             metav1.ConditionUnknown,
+			ObservedGeneration: pool.Generation,
+			Reason:             "TargetNotReady",
+			Message:            fmt.Sprintf("Cannot verify backend support: PillarTarget %q is not yet Ready", pool.Spec.TargetRef),
+		})
+		meta.SetStatusCondition(&pool.Status.Conditions, metav1.Condition{
+			Type:               "Ready",
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: pool.Generation,
+			Reason:             "TargetNotReady",
+			Message:            fmt.Sprintf("PillarPool is not ready: PillarTarget %q is not yet Ready", pool.Spec.TargetRef),
+		})
+
+		if err := r.Status().Update(ctx, pool); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to update PillarPool status: %w", err)
+		}
+		return ctrl.Result{}, nil
 	}
 
-	// PoolDiscovered: stubbed False until gRPC agent integration (Task 3).
+	// Target is ready — evaluate pool discovery and backend support from
+	// the target's reported status (populated by the target reconciler when
+	// the agent gRPC connection is established).
+
+	pdStatus, pdReason, pdMsg := evaluatePoolDiscovered(pool, target)
+	log.Info("PoolDiscovered evaluation", "pool", pool.Name, "status", pdStatus, "reason", pdReason)
 	meta.SetStatusCondition(&pool.Status.Conditions, metav1.Condition{
 		Type:               "PoolDiscovered",
-		Status:             metav1.ConditionFalse,
+		Status:             pdStatus,
 		ObservedGeneration: pool.Generation,
-		Reason:             "AgentConnectionNotImplemented",
-		Message:            "Pool discovery via agent gRPC is not yet implemented; will be enabled in a future task",
+		Reason:             pdReason,
+		Message:            pdMsg,
 	})
 
-	// BackendSupported: stubbed False until gRPC agent integration (Task 3).
+	bsStatus, bsReason, bsMsg := evaluateBackendSupported(pool, target)
+	log.Info("BackendSupported evaluation", "pool", pool.Name, "status", bsStatus, "reason", bsReason)
 	meta.SetStatusCondition(&pool.Status.Conditions, metav1.Condition{
 		Type:               "BackendSupported",
-		Status:             metav1.ConditionFalse,
+		Status:             bsStatus,
 		ObservedGeneration: pool.Generation,
-		Reason:             "AgentConnectionNotImplemented",
-		Message:            fmt.Sprintf("Backend support verification for type %q is not yet implemented; will be enabled in a future task", pool.Spec.Backend.Type),
+		Reason:             bsReason,
+		Message:            bsMsg,
 	})
 
-	// Ready: False because PoolDiscovered and BackendSupported are still stubbed.
-	meta.SetStatusCondition(&pool.Status.Conditions, metav1.Condition{
-		Type:               "Ready",
-		Status:             metav1.ConditionFalse,
-		ObservedGeneration: pool.Generation,
-		Reason:             "AgentConnectionNotImplemented",
-		Message:            "PillarPool is not ready: pool discovery and backend verification require agent gRPC connection (not yet implemented)",
-	})
+	// Ready is True only when all three positive conditions hold.
+	allReady := pdStatus == metav1.ConditionTrue && bsStatus == metav1.ConditionTrue
+	if allReady {
+		meta.SetStatusCondition(&pool.Status.Conditions, metav1.Condition{
+			Type:               "Ready",
+			Status:             metav1.ConditionTrue,
+			ObservedGeneration: pool.Generation,
+			Reason:             "AllConditionsMet",
+			Message:            "PillarPool is ready: target is reachable, pool is discovered, and backend is supported",
+		})
+	} else {
+		// Compute a descriptive message listing which conditions are not True.
+		var notReady []string
+		if pdStatus != metav1.ConditionTrue {
+			notReady = append(notReady, fmt.Sprintf("PoolDiscovered (%s: %s)", pdReason, pdMsg))
+		}
+		if bsStatus != metav1.ConditionTrue {
+			notReady = append(notReady, fmt.Sprintf("BackendSupported (%s: %s)", bsReason, bsMsg))
+		}
+		meta.SetStatusCondition(&pool.Status.Conditions, metav1.Condition{
+			Type:               "Ready",
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: pool.Generation,
+			Reason:             "ConditionsNotMet",
+			Message:            fmt.Sprintf("PillarPool is not ready: %s", strings.Join(notReady, "; ")),
+		})
+	}
 
 	if err := r.Status().Update(ctx, pool); err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to update PillarPool status: %w", err)
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// evaluatePoolDiscovered checks whether the pool named in spec.backend is
+// present in the target's status.discoveredPools list.
+//
+// When the target has not yet reported any discovered pools (i.e. agent gRPC
+// has not yet been established), it returns Unknown so that the caller can
+// distinguish "we haven't checked yet" from "pool is not there".
+//
+// For ZFS backends, the pool name is taken from spec.backend.zfs.pool.
+// For backends that do not carry an explicit pool name (lvm-lv, dir), pool
+// discovery is considered satisfied once the target reports any pools,
+// because those backend types manage their own namespacing differently.
+func evaluatePoolDiscovered(pool *pillarcsiv1alpha1.PillarPool, target *pillarcsiv1alpha1.PillarTarget) (metav1.ConditionStatus, string, string) {
+	if len(target.Status.DiscoveredPools) == 0 {
+		return metav1.ConditionUnknown, "WaitingForAgentData",
+			fmt.Sprintf("PillarTarget %q has not yet reported any discovered pools; waiting for agent gRPC connection", pool.Spec.TargetRef)
+	}
+
+	// Determine the expected pool name from the backend spec.
+	var expectedPoolName string
+	switch pool.Spec.Backend.Type {
+	case pillarcsiv1alpha1.BackendTypeZFSZvol, pillarcsiv1alpha1.BackendTypeZFSDataset:
+		if pool.Spec.Backend.ZFS != nil && pool.Spec.Backend.ZFS.Pool != "" {
+			expectedPoolName = pool.Spec.Backend.ZFS.Pool
+		}
+	}
+
+	if expectedPoolName == "" {
+		// Backend type does not carry an explicit pool name (e.g. lvm-lv, dir).
+		// Treat as discovered once the target reports it is responsive.
+		return metav1.ConditionTrue, "PoolDiscovered",
+			fmt.Sprintf("Backend type %q does not require a named pool for discovery validation", pool.Spec.Backend.Type)
+	}
+
+	// Search for the expected pool in the target's discovered list.
+	var discoveredNames []string
+	for _, dp := range target.Status.DiscoveredPools {
+		discoveredNames = append(discoveredNames, dp.Name)
+		if dp.Name == expectedPoolName {
+			return metav1.ConditionTrue, "PoolDiscovered",
+				fmt.Sprintf("Pool %q was found in PillarTarget %q discovered pools", expectedPoolName, pool.Spec.TargetRef)
+		}
+	}
+
+	return metav1.ConditionFalse, "PoolNotFound",
+		fmt.Sprintf("Pool %q was not found in PillarTarget %q discovered pools (found: [%s])",
+			expectedPoolName, pool.Spec.TargetRef, strings.Join(discoveredNames, ", "))
+}
+
+// evaluateBackendSupported checks whether the backend type declared in
+// spec.backend.type is listed in the target's capabilities.backends.
+//
+// Returns Unknown when the target has not yet reported any capabilities —
+// this happens before the agent gRPC connection is established.
+func evaluateBackendSupported(pool *pillarcsiv1alpha1.PillarPool, target *pillarcsiv1alpha1.PillarTarget) (metav1.ConditionStatus, string, string) {
+	if target.Status.Capabilities == nil || len(target.Status.Capabilities.Backends) == 0 {
+		return metav1.ConditionUnknown, "WaitingForAgentData",
+			fmt.Sprintf("PillarTarget %q has not yet reported agent capabilities; waiting for agent gRPC connection", pool.Spec.TargetRef)
+	}
+
+	backendType := string(pool.Spec.Backend.Type)
+	for _, b := range target.Status.Capabilities.Backends {
+		if b == backendType {
+			return metav1.ConditionTrue, "BackendSupported",
+				fmt.Sprintf("Backend type %q is supported by PillarTarget %q", backendType, pool.Spec.TargetRef)
+		}
+	}
+
+	return metav1.ConditionFalse, "BackendNotSupported",
+		fmt.Sprintf("Backend type %q is not in the supported backends list of PillarTarget %q (supported: [%s])",
+			backendType, pool.Spec.TargetRef, strings.Join(target.Status.Capabilities.Backends, ", "))
 }
 
 // reconcileDelete handles the deletion flow.  The finalizer is only removed
