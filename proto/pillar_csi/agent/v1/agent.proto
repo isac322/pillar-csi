@@ -32,6 +32,10 @@
 //   DeleteVolume (CSI)
 //     ├─ UnmountVolume(RPC) — unexport: tear down protocol target entry
 //     └─ DeleteVolume(RPC)  — backend: destroy zvol / LV / …
+//
+//   Cross-node migration / backup (out-of-band, not part of CSI spec)
+//     ├─ ExportVolume(RPC)  — server-stream: zfs send / dd out of volume
+//     └─ ImportVolume(RPC)  — client-stream: zfs receive / dd into volume
 
 syntax = "proto3";
 
@@ -125,6 +129,34 @@ service AgentService {
   //
   // Idempotent: if the ACL entry does not exist the agent MUST return success.
   rpc DenyInitiator(DenyInitiatorRequest) returns (DenyInitiatorResponse);
+
+  // ── Volume data migration ──────────────────────────────────────────────────
+
+  // ExportVolume streams the raw binary content of a backend volume to the
+  // caller.  Intended for cross-node volume migration and offline backup.
+  // The canonical implementation for ZFS backends is `zfs send`; for LVM it
+  // is `dd if=<lv>`.
+  //
+  // The volume SHOULD be quiesced (UnmountVolume called) before streaming to
+  // avoid data inconsistency.  The controller is responsible for quiescing.
+  //
+  // The response is a server-side stream of ExportVolumeChunk messages.  The
+  // first chunk (sequence == 0) carries the total_bytes field; subsequent
+  // chunks carry only data and sequence.  The final chunk sets eof = true.
+  rpc ExportVolume(ExportVolumeRequest) returns (stream ExportVolumeChunk);
+
+  // ImportVolume receives a binary data stream from the caller and writes it
+  // into a pre-existing backend volume.  The mirror operation of ExportVolume.
+  // The canonical implementation for ZFS backends is `zfs receive`; for LVM
+  // it is `dd of=<lv>`.
+  //
+  // The destination volume MUST already exist (StageVolume) and MUST NOT be
+  // exported (UnmountVolume must have been called) when this RPC is invoked.
+  //
+  // The request is a client-side stream of ImportVolumeChunk messages.  The
+  // first chunk (sequence == 0) carries volume_id and backend_type; subsequent
+  // chunks carry only data and sequence.  The final chunk sets eof = true.
+  rpc ImportVolume(stream ImportVolumeChunk) returns (ImportVolumeResponse);
 
   // ── State recovery ─────────────────────────────────────────────────────────
 
@@ -477,6 +509,76 @@ message UnmountVolumeRequest {
 }
 
 message UnmountVolumeResponse {}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ExportVolume — stream backend volume data out (backup / cross-node migration)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ExportVolumeRequest initiates a volume data export stream.
+message ExportVolumeRequest {
+  // Volume identifier: "<pool>/<volume-name>".
+  string volume_id = 1;
+
+  // Backend type (required for routing to the correct backend plugin).
+  BackendType backend_type = 2;
+
+  // Optional snapshot name to export from.
+  //   ZFS   → snapshot component, e.g. "snap0" → zfs send pool/vol@snap0
+  //   LVM   → LV snapshot name
+  // If empty the agent exports the current (live) state.  The caller is
+  // responsible for quiescing the volume before requesting a live export.
+  string snapshot_name = 3;
+}
+
+// ExportVolumeChunk is one piece of the server-side data stream.
+message ExportVolumeChunk {
+  // Monotonically increasing sequence number starting at 0.
+  uint64 sequence = 1;
+
+  // Raw binary payload for this chunk.
+  bytes data = 2;
+
+  // Set to true on the last chunk (data may still be non-empty).
+  bool eof = 3;
+
+  // Total volume size in bytes.  Populated only in the first chunk
+  // (sequence == 0).  May be 0 if the backend cannot determine it in advance
+  // (e.g. a compressed zfs-send stream).
+  int64 total_bytes = 4;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ImportVolume — stream data into a backend volume (restore / cross-node migration)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ImportVolumeChunk is one piece of the client-side data stream.
+// The first chunk (sequence == 0) MUST set volume_id and backend_type; those
+// fields are ignored on subsequent chunks.
+message ImportVolumeChunk {
+  // Volume identifier: "<pool>/<volume-name>".
+  // Required in the first chunk (sequence == 0).
+  string volume_id = 1;
+
+  // Backend type.
+  // Required in the first chunk (sequence == 0).
+  BackendType backend_type = 2;
+
+  // Monotonically increasing sequence number starting at 0.
+  uint64 sequence = 3;
+
+  // Raw binary payload for this chunk.
+  bytes data = 4;
+
+  // Set to true on the last chunk (data may still be non-empty).
+  bool eof = 5;
+}
+
+// ImportVolumeResponse is returned by the agent after the full stream has been
+// received and written to the backend volume.
+message ImportVolumeResponse {
+  // Total bytes written to the backend volume.
+  int64 bytes_written = 1;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AllowInitiator — grant access to a specific initiator
