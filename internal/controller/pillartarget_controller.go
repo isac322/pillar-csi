@@ -39,19 +39,18 @@ import (
 )
 
 const (
-	// pillarTargetFinalizer is added to every PillarTarget to prevent deletion
+	// Finalizer added to every PillarTarget to prevent deletion
 	// while PillarPool resources still reference it.
 	pillarTargetFinalizer = "pillar-csi.bhyoo.com/pillar-target-protection"
 
-	// defaultAgentPort is the gRPC port used when no port override is set.
+	// Default gRPC port used when no port override is set.
 	defaultAgentPort int32 = 9500
 
-	// storageNodeLabel is applied to the Kubernetes Node referenced by a
+	// Label applied to the Kubernetes Node referenced by a
 	// PillarTarget to mark it as a pillar-csi storage node.
 	storageNodeLabel = "pillar-csi.bhyoo.com/storage-node"
 
-	// requeueAfterTargetDeletionBlock is how long to wait before re-checking
-	// whether blocking PillarPools have been removed.
+	// Requeue interval before re-checking whether blocking PillarPools have been removed.
 	requeueAfterTargetDeletionBlock = 10 * time.Second
 )
 
@@ -75,12 +74,15 @@ type PillarTargetReconciler struct {
 //  2. On normal operation: resolves the node IP from nodeRef (or uses the
 //     external address directly) and updates the NodeExists status condition.
 //  3. On deletion: removes the finalizer to allow garbage collection.
+//
+//nolint:dupl // All four CRD controllers share identical Reconcile boilerplate; extraction requires reflection.
 func (r *PillarTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
 	// Fetch the PillarTarget instance.
 	target := &pillarcsiv1alpha1.PillarTarget{}
-	if err := r.Get(ctx, req.NamespacedName, target); err != nil {
+	err := r.Get(ctx, req.NamespacedName, target)
+	if err != nil {
 		// Not found — already deleted, nothing to do.
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
@@ -96,7 +98,8 @@ func (r *PillarTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	if !controllerutil.ContainsFinalizer(target, pillarTargetFinalizer) {
 		log.Info("Adding finalizer to PillarTarget", "finalizer", pillarTargetFinalizer)
 		controllerutil.AddFinalizer(target, pillarTargetFinalizer)
-		if err := r.Update(ctx, target); err != nil {
+		err := r.Update(ctx, target)
+		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to add finalizer: %w", err)
 		}
 		// Return after the update; controller-runtime will re-enqueue.
@@ -110,7 +113,10 @@ func (r *PillarTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 // reconcileNormal handles the steady-state reconciliation of a PillarTarget
 // that is not being deleted.  It resolves the agent address, updates the
 // NodeExists status condition, sets AgentConnected (stubbed), and derives Ready.
-func (r *PillarTargetReconciler) reconcileNormal(ctx context.Context, target *pillarcsiv1alpha1.PillarTarget) (ctrl.Result, error) {
+func (r *PillarTargetReconciler) reconcileNormal(
+	ctx context.Context,
+	target *pillarcsiv1alpha1.PillarTarget,
+) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
 	switch {
@@ -149,7 +155,8 @@ func (r *PillarTargetReconciler) reconcileNormal(ctx context.Context, target *pi
 			Message:            "PillarTarget is not ready: agent gRPC connection has not been established",
 		})
 
-		if err := r.Status().Update(ctx, target); err != nil {
+		err := r.Status().Update(ctx, target)
+		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to update PillarTarget status: %w", err)
 		}
 		return ctrl.Result{}, nil
@@ -182,7 +189,8 @@ func (r *PillarTargetReconciler) reconcileNormal(ctx context.Context, target *pi
 		})
 		target.Status.ResolvedAddress = ""
 
-		if err := r.Status().Update(ctx, target); err != nil {
+		err := r.Status().Update(ctx, target)
+		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to update PillarTarget status: %w", err)
 		}
 		return ctrl.Result{}, nil
@@ -193,7 +201,12 @@ func (r *PillarTargetReconciler) reconcileNormal(ctx context.Context, target *pi
 // IP according to the addressType and optional CIDR filter, then updates the
 // NodeExists condition, resolvedAddress status fields, labels the node as a
 // storage node, and sets AgentConnected / Ready conditions (stubbed for now).
-func (r *PillarTargetReconciler) reconcileNodeRef(ctx context.Context, target *pillarcsiv1alpha1.PillarTarget) (ctrl.Result, error) {
+//
+//nolint:funlen // Multiple distinct sub-paths (not found / addr error / success) require unavoidable length.
+func (r *PillarTargetReconciler) reconcileNodeRef(
+	ctx context.Context,
+	target *pillarcsiv1alpha1.PillarTarget,
+) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 	nodeRef := target.Spec.NodeRef
 
@@ -217,18 +230,23 @@ func (r *PillarTargetReconciler) reconcileNodeRef(ctx context.Context, target *p
 				Status:             metav1.ConditionFalse,
 				ObservedGeneration: target.Generation,
 				Reason:             "NodeNotFound",
-				Message:            fmt.Sprintf("Cannot connect to agent: Node %q was not found in the cluster", nodeRef.Name),
+				Message: fmt.Sprintf(
+					"Cannot connect to agent: Node %q was not found in the cluster", nodeRef.Name,
+				),
 			})
 			meta.SetStatusCondition(&target.Status.Conditions, metav1.Condition{
 				Type:               "Ready",
 				Status:             metav1.ConditionFalse,
 				ObservedGeneration: target.Generation,
 				Reason:             "NodeNotFound",
-				Message:            fmt.Sprintf("PillarTarget is not ready: Node %q was not found in the cluster", nodeRef.Name),
+				Message: fmt.Sprintf(
+					"PillarTarget is not ready: Node %q was not found in the cluster", nodeRef.Name,
+				),
 			})
 			target.Status.ResolvedAddress = ""
 
-			if statusErr := r.Status().Update(ctx, target); statusErr != nil {
+			statusErr := r.Status().Update(ctx, target)
+			if statusErr != nil {
 				return ctrl.Result{}, fmt.Errorf("failed to update PillarTarget status: %w", statusErr)
 			}
 			// No requeue — a Node watch will trigger reconcile when the node appears.
@@ -244,7 +262,8 @@ func (r *PillarTargetReconciler) reconcileNodeRef(ctx context.Context, target *p
 			Reason:             "NodeLookupError",
 			Message:            fmt.Sprintf("Failed to look up Node %q: %v", nodeRef.Name, err),
 		})
-		if statusErr := r.Status().Update(ctx, target); statusErr != nil {
+		statusErr := r.Status().Update(ctx, target)
+		if statusErr != nil {
 			log.Error(statusErr, "Failed to update PillarTarget status after node lookup error")
 		}
 		return ctrl.Result{}, fmt.Errorf("failed to get node %q: %w", nodeRef.Name, err)
@@ -273,18 +292,23 @@ func (r *PillarTargetReconciler) reconcileNodeRef(ctx context.Context, target *p
 			Status:             metav1.ConditionFalse,
 			ObservedGeneration: target.Generation,
 			Reason:             "AddressNotResolved",
-			Message:            fmt.Sprintf("Cannot connect to agent: no resolvable address on Node %q", nodeRef.Name),
+			Message: fmt.Sprintf(
+				"Cannot connect to agent: no resolvable address on Node %q", nodeRef.Name,
+			),
 		})
 		meta.SetStatusCondition(&target.Status.Conditions, metav1.Condition{
 			Type:               "Ready",
 			Status:             metav1.ConditionFalse,
 			ObservedGeneration: target.Generation,
 			Reason:             "AddressNotResolved",
-			Message:            fmt.Sprintf("PillarTarget is not ready: no resolvable address on Node %q", nodeRef.Name),
+			Message: fmt.Sprintf(
+				"PillarTarget is not ready: no resolvable address on Node %q", nodeRef.Name,
+			),
 		})
 		target.Status.ResolvedAddress = ""
 
-		if statusErr := r.Status().Update(ctx, target); statusErr != nil {
+		statusErr := r.Status().Update(ctx, target)
+		if statusErr != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to update PillarTarget status: %w", statusErr)
 		}
 		return ctrl.Result{}, nil
@@ -307,8 +331,11 @@ func (r *PillarTargetReconciler) reconcileNodeRef(ctx context.Context, target *p
 			node.Labels = make(map[string]string)
 		}
 		node.Labels[storageNodeLabel] = "true"
-		if patchErr := r.Patch(ctx, node, patch); patchErr != nil {
-			return ctrl.Result{}, fmt.Errorf("failed to label node %q as storage node: %w", nodeRef.Name, patchErr)
+		patchErr := r.Patch(ctx, node, patch)
+		if patchErr != nil {
+			return ctrl.Result{}, fmt.Errorf(
+				"failed to label node %q as storage node: %w", nodeRef.Name, patchErr,
+			)
 		}
 		log.Info("Labeled node as storage node", "node", nodeRef.Name, "label", storageNodeLabel)
 	}
@@ -344,7 +371,8 @@ func (r *PillarTargetReconciler) reconcileNodeRef(ctx context.Context, target *p
 
 	target.Status.ResolvedAddress = resolved
 
-	if err := r.Status().Update(ctx, target); err != nil {
+	err = r.Status().Update(ctx, target)
+	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to update PillarTarget status: %w", err)
 	}
 
@@ -358,7 +386,12 @@ func (r *PillarTargetReconciler) reconcileNodeRef(ctx context.Context, target *p
 // reconciler requeues until they are removed.  Only once no references remain
 // does it clean up the storage-node label on the referenced Node and release
 // the finalizer.
-func (r *PillarTargetReconciler) reconcileDelete(ctx context.Context, target *pillarcsiv1alpha1.PillarTarget) (ctrl.Result, error) {
+//
+//nolint:gocognit // Deletion flow branches across pool-reference check, node-label cleanup, and multiple error paths.
+func (r *PillarTargetReconciler) reconcileDelete(
+	ctx context.Context,
+	target *pillarcsiv1alpha1.PillarTarget,
+) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
 	if !controllerutil.ContainsFinalizer(target, pillarTargetFinalizer) {
@@ -369,7 +402,8 @@ func (r *PillarTargetReconciler) reconcileDelete(ctx context.Context, target *pi
 
 	// List all PillarPools (cluster-scoped) and find those that reference this target.
 	poolList := &pillarcsiv1alpha1.PillarPoolList{}
-	if err := r.List(ctx, poolList); err != nil {
+	err := r.List(ctx, poolList)
+	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to list PillarPools: %w", err)
 	}
 
@@ -398,14 +432,15 @@ func (r *PillarTargetReconciler) reconcileDelete(ctx context.Context, target *pi
 	// Remove the storage-node label from the referenced Kubernetes Node.
 	if target.Spec.NodeRef != nil {
 		node := &corev1.Node{}
-		err := r.Get(ctx, types.NamespacedName{Name: target.Spec.NodeRef.Name}, node)
+		nodeErr := r.Get(ctx, types.NamespacedName{Name: target.Spec.NodeRef.Name}, node)
 		switch {
-		case err == nil:
+		case nodeErr == nil:
 			if node.Labels != nil {
 				if _, hasLabel := node.Labels[storageNodeLabel]; hasLabel {
 					patch := client.MergeFrom(node.DeepCopy())
 					delete(node.Labels, storageNodeLabel)
-					if patchErr := r.Patch(ctx, node, patch); patchErr != nil {
+					patchErr := r.Patch(ctx, node, patch)
+					if patchErr != nil {
 						return ctrl.Result{}, fmt.Errorf(
 							"failed to remove storage-node label from Node %q: %w",
 							target.Spec.NodeRef.Name, patchErr,
@@ -415,7 +450,7 @@ func (r *PillarTargetReconciler) reconcileDelete(ctx context.Context, target *pi
 						"node", target.Spec.NodeRef.Name, "label", storageNodeLabel)
 				}
 			}
-		case client.IgnoreNotFound(err) == nil:
+		case client.IgnoreNotFound(nodeErr) == nil:
 			// Node already gone — nothing to clean up.
 			log.Info("Referenced node not found during deletion cleanup; skipping label removal",
 				"name", target.Name, "node", target.Spec.NodeRef.Name)
@@ -423,7 +458,7 @@ func (r *PillarTargetReconciler) reconcileDelete(ctx context.Context, target *pi
 			// Transient error — requeue so we retry label removal.
 			return ctrl.Result{}, fmt.Errorf(
 				"failed to get node %q for label cleanup: %w",
-				target.Spec.NodeRef.Name, err,
+				target.Spec.NodeRef.Name, nodeErr,
 			)
 		}
 	}
@@ -431,7 +466,8 @@ func (r *PillarTargetReconciler) reconcileDelete(ctx context.Context, target *pi
 	log.Info("PillarTarget deletion unblocked; removing finalizer", "name", target.Name)
 
 	controllerutil.RemoveFinalizer(target, pillarTargetFinalizer)
-	if err := r.Update(ctx, target); err != nil {
+	err = r.Update(ctx, target)
+	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to remove finalizer from PillarTarget: %w", err)
 	}
 
@@ -501,7 +537,8 @@ func (r *PillarTargetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		}
 
 		targetList := &pillarcsiv1alpha1.PillarTargetList{}
-		if err := mgr.GetClient().List(ctx, targetList); err != nil {
+		err := mgr.GetClient().List(ctx, targetList)
+		if err != nil {
 			return nil
 		}
 

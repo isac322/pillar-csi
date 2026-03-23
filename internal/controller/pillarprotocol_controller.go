@@ -38,12 +38,11 @@ import (
 )
 
 const (
-	// pillarProtocolFinalizer is added to every PillarProtocol to prevent
+	// Finalizer added to every PillarProtocol to prevent
 	// deletion while PillarBindings still reference it.
 	pillarProtocolFinalizer = "pillar-csi.bhyoo.com/protocol-protection"
 
-	// requeueAfterProtocolDeletionBlock is how long to wait before re-checking
-	// whether blocking PillarBindings have been removed.
+	// Requeue interval before re-checking whether blocking PillarBindings have been removed.
 	requeueAfterProtocolDeletionBlock = 10 * time.Second
 )
 
@@ -68,12 +67,15 @@ type PillarProtocolReconciler struct {
 //     set of activeTargets (via Binding→Pool→Target chain), then updates status.
 //  3. On deletion: blocks until no PillarBindings reference this protocol,
 //     then removes the finalizer to allow the object to be garbage-collected.
+//
+//nolint:dupl // All four CRD controllers share identical Reconcile boilerplate; extraction requires reflection.
 func (r *PillarProtocolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
 	// Fetch the PillarProtocol instance.
 	protocol := &pillarcsiv1alpha1.PillarProtocol{}
-	if err := r.Get(ctx, req.NamespacedName, protocol); err != nil {
+	err := r.Get(ctx, req.NamespacedName, protocol)
+	if err != nil {
 		// Not found — already deleted, nothing to do.
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
@@ -89,7 +91,8 @@ func (r *PillarProtocolReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	if !controllerutil.ContainsFinalizer(protocol, pillarProtocolFinalizer) {
 		log.Info("Adding finalizer to PillarProtocol", "finalizer", pillarProtocolFinalizer)
 		controllerutil.AddFinalizer(protocol, pillarProtocolFinalizer)
-		if err := r.Update(ctx, protocol); err != nil {
+		err := r.Update(ctx, protocol)
+		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to add finalizer: %w", err)
 		}
 		// Return after the update; controller-runtime will re-enqueue.
@@ -108,12 +111,16 @@ func (r *PillarProtocolReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 //  2. For each referencing binding, looks up its PillarPool to collect the
 //     pool's targetRef — building the deduplicated, sorted activeTargets list.
 //  3. Writes bindingCount, activeTargets, and the Ready condition to status.
-func (r *PillarProtocolReconciler) reconcileNormal(ctx context.Context, protocol *pillarcsiv1alpha1.PillarProtocol) (ctrl.Result, error) {
+func (r *PillarProtocolReconciler) reconcileNormal(
+	ctx context.Context,
+	protocol *pillarcsiv1alpha1.PillarProtocol,
+) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
 	// List all PillarBindings (cluster-scoped, no namespace filter).
 	bindingList := &pillarcsiv1alpha1.PillarBindingList{}
-	if err := r.List(ctx, bindingList); err != nil {
+	err := r.List(ctx, bindingList)
+	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to list PillarBindings: %w", err)
 	}
 
@@ -134,9 +141,10 @@ func (r *PillarProtocolReconciler) reconcileNormal(ctx context.Context, protocol
 	targetSet := make(map[string]struct{})
 	for poolName := range poolNames {
 		pool := &pillarcsiv1alpha1.PillarPool{}
-		if err := r.Get(ctx, types.NamespacedName{Name: poolName}, pool); err != nil {
-			if client.IgnoreNotFound(err) != nil {
-				return ctrl.Result{}, fmt.Errorf("failed to get PillarPool %q: %w", poolName, err)
+		poolErr := r.Get(ctx, types.NamespacedName{Name: poolName}, pool)
+		if poolErr != nil {
+			if client.IgnoreNotFound(poolErr) != nil {
+				return ctrl.Result{}, fmt.Errorf("failed to get PillarPool %q: %w", poolName, poolErr)
 			}
 			// Pool not found — binding may be in a degraded state; skip gracefully.
 			log.V(1).Info("Referenced PillarPool not found; skipping for activeTargets computation",
@@ -176,7 +184,8 @@ func (r *PillarProtocolReconciler) reconcileNormal(ctx context.Context, protocol
 		),
 	})
 
-	if err := r.Status().Update(ctx, protocol); err != nil {
+	err = r.Status().Update(ctx, protocol)
+	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to update PillarProtocol status: %w", err)
 	}
 
@@ -185,7 +194,10 @@ func (r *PillarProtocolReconciler) reconcileNormal(ctx context.Context, protocol
 
 // reconcileDelete handles the deletion flow.  The finalizer is only removed
 // once no PillarBindings reference this PillarProtocol.
-func (r *PillarProtocolReconciler) reconcileDelete(ctx context.Context, protocol *pillarcsiv1alpha1.PillarProtocol) (ctrl.Result, error) {
+func (r *PillarProtocolReconciler) reconcileDelete(
+	ctx context.Context,
+	protocol *pillarcsiv1alpha1.PillarProtocol,
+) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
 	// If our finalizer is not present (e.g. stripped manually), nothing to do.
@@ -197,7 +209,8 @@ func (r *PillarProtocolReconciler) reconcileDelete(ctx context.Context, protocol
 
 	// List all PillarBindings and find those that reference this protocol.
 	bindingList := &pillarcsiv1alpha1.PillarBindingList{}
-	if err := r.List(ctx, bindingList); err != nil {
+	err := r.List(ctx, bindingList)
+	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to list PillarBindings: %w", err)
 	}
 
@@ -216,6 +229,7 @@ func (r *PillarProtocolReconciler) reconcileDelete(ctx context.Context, protocol
 		)
 		log.Info(msg, "name", protocol.Name)
 
+		//nolint:gosec // BindingCount is bounded by available cluster resources and cannot realistically overflow int32.
 		protocol.Status.BindingCount = int32(len(referencingNames))
 		meta.SetStatusCondition(&protocol.Status.Conditions, metav1.Condition{
 			Type:               "Ready",
@@ -225,9 +239,10 @@ func (r *PillarProtocolReconciler) reconcileDelete(ctx context.Context, protocol
 			Message:            msg,
 		})
 
-		if err := r.Status().Update(ctx, protocol); err != nil {
+		statusErr := r.Status().Update(ctx, protocol)
+		if statusErr != nil {
 			// Log but don't fail — the important thing is to requeue.
-			log.Error(err, "Failed to update status while deletion is blocked")
+			log.Error(statusErr, "Failed to update status while deletion is blocked")
 		}
 
 		return ctrl.Result{RequeueAfter: requeueAfterProtocolDeletionBlock}, nil
@@ -236,7 +251,8 @@ func (r *PillarProtocolReconciler) reconcileDelete(ctx context.Context, protocol
 	// No referencing bindings — safe to remove the finalizer.
 	log.Info("No PillarBindings reference this protocol; removing finalizer", "name", protocol.Name)
 	controllerutil.RemoveFinalizer(protocol, pillarProtocolFinalizer)
-	if err := r.Update(ctx, protocol); err != nil {
+	err = r.Update(ctx, protocol)
+	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to remove finalizer from PillarProtocol: %w", err)
 	}
 
@@ -275,9 +291,10 @@ func (r *PillarProtocolReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		}
 
 		bindingList := &pillarcsiv1alpha1.PillarBindingList{}
-		if err := r.List(ctx, bindingList); err != nil {
+		listErr := r.List(ctx, bindingList)
+		if listErr != nil {
 			// Cannot propagate error from a watch handler; log and return empty.
-			logf.FromContext(ctx).Error(err,
+			logf.FromContext(ctx).Error(listErr,
 				"Failed to list PillarBindings while mapping PillarPool event to PillarProtocol",
 				"pool", pool.Name)
 			return nil

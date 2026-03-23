@@ -159,7 +159,7 @@ func storageClassNameFor(binding *pillarcsiv1alpha1.PillarBinding) string {
 //  4. Creates or updates the owned StorageClass (StorageClassCreated condition).
 //  5. Sets the top-level Ready condition and updates status.storageClassName.
 //
-//nolint:funlen,gocognit,gocyclo // Pool/protocol validation, compatibility check, and SC management drive complexity.
+//nolint:funlen,gocognit,gocyclo // Validation, compatibility, and StorageClass paths drive the complexity.
 func (r *PillarBindingReconciler) reconcileNormal(
 	ctx context.Context,
 	binding *pillarcsiv1alpha1.PillarBinding,
@@ -480,7 +480,7 @@ func evaluateCompatibility(
 //
 //	pillar-csi.bhyoo.com/<parameter-name>
 //
-//nolint:gocognit,gocyclo // ZFS params, three protocol branches, and two override layers drive the complexity.
+//nolint:gocognit,gocyclo // ZFS and protocol-specific param branches drive the complexity.
 func buildStorageClassParams(
 	binding *pillarcsiv1alpha1.PillarBinding,
 	pool *pillarcsiv1alpha1.PillarPool,

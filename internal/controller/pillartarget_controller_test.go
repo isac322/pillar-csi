@@ -80,7 +80,7 @@ var _ = Describe("PillarTarget Controller", func() {
 	deleteTarget := func() {
 		resource := &pillarcsiv1alpha1.PillarTarget{}
 		if err := k8sClient.Get(bctx, targetNamespacedName, resource); err == nil {
-			_ = k8sClient.Delete(bctx, resource)
+			Expect(k8sClient.Delete(bctx, resource)).To(Succeed())
 		}
 	}
 
@@ -89,7 +89,7 @@ var _ = Describe("PillarTarget Controller", func() {
 		resource := &pillarcsiv1alpha1.PillarTarget{}
 		if err := k8sClient.Get(bctx, targetNamespacedName, resource); err == nil {
 			controllerutil.RemoveFinalizer(resource, pillarTargetFinalizer)
-			_ = k8sClient.Update(bctx, resource)
+			Expect(k8sClient.Update(bctx, resource)).To(Succeed())
 		}
 	}
 
@@ -255,8 +255,8 @@ var _ = Describe("PillarTarget Controller", func() {
 			t := &pillarcsiv1alpha1.PillarTarget{}
 			if err := k8sClient.Get(bctx, externalNN, t); err == nil {
 				controllerutil.RemoveFinalizer(t, pillarTargetFinalizer)
-				_ = k8sClient.Update(bctx, t)
-				_ = k8sClient.Delete(bctx, t)
+				Expect(k8sClient.Update(bctx, t)).To(Succeed())
+				Expect(k8sClient.Delete(bctx, t)).To(Succeed())
 			}
 		})
 
@@ -339,8 +339,8 @@ var _ = Describe("PillarTarget Controller", func() {
 			t := &pillarcsiv1alpha1.PillarTarget{}
 			if err := k8sClient.Get(bctx, nodeRefNN, t); err == nil {
 				controllerutil.RemoveFinalizer(t, pillarTargetFinalizer)
-				_ = k8sClient.Update(bctx, t)
-				_ = k8sClient.Delete(bctx, t)
+				Expect(k8sClient.Update(bctx, t)).To(Succeed())
+				Expect(k8sClient.Delete(bctx, t)).To(Succeed())
 			}
 		})
 
@@ -439,15 +439,15 @@ var _ = Describe("PillarTarget Controller", func() {
 			if err := k8sClient.Get(bctx, nodeNN, node); err == nil {
 				if node.Labels != nil {
 					delete(node.Labels, storageNodeLabel)
-					_ = k8sClient.Update(bctx, node)
+					Expect(k8sClient.Update(bctx, node)).To(Succeed())
 				}
-				_ = k8sClient.Delete(bctx, node)
+				Expect(k8sClient.Delete(bctx, node)).To(Succeed())
 			}
 			t := &pillarcsiv1alpha1.PillarTarget{}
 			if err := k8sClient.Get(bctx, nodeRefFoundNN, t); err == nil {
 				controllerutil.RemoveFinalizer(t, pillarTargetFinalizer)
-				_ = k8sClient.Update(bctx, t)
-				_ = k8sClient.Delete(bctx, t)
+				Expect(k8sClient.Update(bctx, t)).To(Succeed())
+				Expect(k8sClient.Delete(bctx, t)).To(Succeed())
 			}
 		})
 

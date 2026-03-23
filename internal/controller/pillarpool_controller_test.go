@@ -83,7 +83,7 @@ var _ = Describe("PillarPool Controller", func() {
 	deletePool := func() {
 		resource := &pillarcsiv1alpha1.PillarPool{}
 		if err := k8sClient.Get(bctx, poolNamespacedName, resource); err == nil {
-			_ = k8sClient.Delete(bctx, resource)
+			Expect(k8sClient.Delete(bctx, resource)).To(Succeed())
 		}
 	}
 
@@ -92,7 +92,7 @@ var _ = Describe("PillarPool Controller", func() {
 		resource := &pillarcsiv1alpha1.PillarPool{}
 		if err := k8sClient.Get(bctx, poolNamespacedName, resource); err == nil {
 			controllerutil.RemoveFinalizer(resource, pillarPoolFinalizer)
-			_ = k8sClient.Update(bctx, resource)
+			Expect(k8sClient.Update(bctx, resource)).To(Succeed())
 		}
 	}
 
@@ -137,8 +137,8 @@ var _ = Describe("PillarPool Controller", func() {
 		resource := &pillarcsiv1alpha1.PillarTarget{}
 		if err := k8sClient.Get(bctx, types.NamespacedName{Name: targetName}, resource); err == nil {
 			controllerutil.RemoveFinalizer(resource, pillarTargetFinalizer)
-			_ = k8sClient.Update(bctx, resource)
-			_ = k8sClient.Delete(bctx, resource)
+			Expect(k8sClient.Update(bctx, resource)).To(Succeed())
+			Expect(k8sClient.Delete(bctx, resource)).To(Succeed())
 		}
 	}
 
@@ -752,15 +752,15 @@ var _ = Describe("PillarPool Controller", func() {
 			p := &pillarcsiv1alpha1.PillarPool{}
 			if err := k8sClient.Get(bctx, capPoolNN, p); err == nil {
 				controllerutil.RemoveFinalizer(p, pillarPoolFinalizer)
-				_ = k8sClient.Update(bctx, p)
-				_ = k8sClient.Delete(bctx, p)
+				Expect(k8sClient.Update(bctx, p)).To(Succeed())
+				Expect(k8sClient.Delete(bctx, p)).To(Succeed())
 			}
 			// Remove target.
 			t := &pillarcsiv1alpha1.PillarTarget{}
 			if err := k8sClient.Get(bctx, types.NamespacedName{Name: capTarget}, t); err == nil {
 				controllerutil.RemoveFinalizer(t, pillarTargetFinalizer)
-				_ = k8sClient.Update(bctx, t)
-				_ = k8sClient.Delete(bctx, t)
+				Expect(k8sClient.Update(bctx, t)).To(Succeed())
+				Expect(k8sClient.Delete(bctx, t)).To(Succeed())
 			}
 		})
 
@@ -917,8 +917,8 @@ var _ = Describe("PillarPool Controller", func() {
 				p := &pillarcsiv1alpha1.PillarPool{}
 				if err := k8sClient.Get(bctx, dirNN, p); err == nil {
 					controllerutil.RemoveFinalizer(p, pillarPoolFinalizer)
-					_ = k8sClient.Update(bctx, p)
-					_ = k8sClient.Delete(bctx, p)
+					Expect(k8sClient.Update(bctx, p)).To(Succeed())
+					Expect(k8sClient.Delete(bctx, p)).To(Succeed())
 				}
 			}()
 

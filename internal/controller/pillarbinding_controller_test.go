@@ -84,7 +84,7 @@ var _ = Describe("PillarBinding Controller", func() {
 	deleteBinding := func() {
 		resource := &pillarcsiv1alpha1.PillarBinding{}
 		if err := k8sClient.Get(bctx, bindingNamespacedName, resource); err == nil {
-			_ = k8sClient.Delete(bctx, resource)
+			Expect(k8sClient.Delete(bctx, resource)).To(Succeed())
 		}
 	}
 
@@ -93,7 +93,7 @@ var _ = Describe("PillarBinding Controller", func() {
 		resource := &pillarcsiv1alpha1.PillarBinding{}
 		if err := k8sClient.Get(bctx, bindingNamespacedName, resource); err == nil {
 			controllerutil.RemoveFinalizer(resource, pillarBindingFinalizer)
-			_ = k8sClient.Update(bctx, resource)
+			Expect(k8sClient.Update(bctx, resource)).To(Succeed())
 		}
 	}
 
@@ -137,8 +137,8 @@ var _ = Describe("PillarBinding Controller", func() {
 		resource := &pillarcsiv1alpha1.PillarPool{}
 		if err := k8sClient.Get(bctx, types.NamespacedName{Name: poolName}, resource); err == nil {
 			controllerutil.RemoveFinalizer(resource, pillarPoolFinalizer)
-			_ = k8sClient.Update(bctx, resource)
-			_ = k8sClient.Delete(bctx, resource)
+			Expect(k8sClient.Update(bctx, resource)).To(Succeed())
+			Expect(k8sClient.Delete(bctx, resource)).To(Succeed())
 		}
 	}
 
@@ -179,8 +179,8 @@ var _ = Describe("PillarBinding Controller", func() {
 		resource := &pillarcsiv1alpha1.PillarProtocol{}
 		if err := k8sClient.Get(bctx, types.NamespacedName{Name: protocolName}, resource); err == nil {
 			controllerutil.RemoveFinalizer(resource, pillarProtocolFinalizer)
-			_ = k8sClient.Update(bctx, resource)
-			_ = k8sClient.Delete(bctx, resource)
+			Expect(k8sClient.Update(bctx, resource)).To(Succeed())
+			Expect(k8sClient.Delete(bctx, resource)).To(Succeed())
 		}
 	}
 
@@ -537,7 +537,7 @@ var _ = Describe("PillarBinding Controller", func() {
 			// Clean up any StorageClass that may have been created.
 			sc := &storagev1.StorageClass{}
 			if err := k8sClient.Get(bctx, types.NamespacedName{Name: bindingName}, sc); err == nil {
-				_ = k8sClient.Delete(bctx, sc)
+				Expect(k8sClient.Delete(bctx, sc)).To(Succeed())
 			}
 		})
 
@@ -605,7 +605,6 @@ var _ = Describe("PillarBinding Controller", func() {
 			result, err := doReconcile()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.RequeueAfter).To(BeZero())
-			Expect(result.Requeue).To(BeFalse())
 		})
 	})
 
@@ -630,7 +629,7 @@ var _ = Describe("PillarBinding Controller", func() {
 			deleteProtocol()
 			sc := &storagev1.StorageClass{}
 			if err := k8sClient.Get(bctx, types.NamespacedName{Name: bindingName}, sc); err == nil {
-				_ = k8sClient.Delete(bctx, sc)
+				Expect(k8sClient.Delete(bctx, sc)).To(Succeed())
 			}
 		})
 
@@ -672,7 +671,8 @@ var _ = Describe("PillarBinding Controller", func() {
 			Expect(sc.Parameters).To(HaveKey("pillar-csi.bhyoo.com/backend-type"))
 			Expect(sc.Parameters["pillar-csi.bhyoo.com/backend-type"]).To(Equal(string(pillarcsiv1alpha1.BackendTypeZFSZvol)))
 			Expect(sc.Parameters).To(HaveKey("pillar-csi.bhyoo.com/protocol-type"))
-			Expect(sc.Parameters["pillar-csi.bhyoo.com/protocol-type"]).To(Equal(string(pillarcsiv1alpha1.ProtocolTypeNVMeOFTCP)))
+			Expect(sc.Parameters["pillar-csi.bhyoo.com/protocol-type"]).To(
+				Equal(string(pillarcsiv1alpha1.ProtocolTypeNVMeOFTCP)))
 		})
 
 		It("should default ReclaimPolicy to Delete", func() {
@@ -741,7 +741,7 @@ var _ = Describe("PillarBinding Controller", func() {
 			deleteProtocol()
 			sc := &storagev1.StorageClass{}
 			if err := k8sClient.Get(bctx, types.NamespacedName{Name: customSCName}, sc); err == nil {
-				_ = k8sClient.Delete(bctx, sc)
+				Expect(k8sClient.Delete(bctx, sc)).To(Succeed())
 			}
 		})
 
@@ -801,7 +801,7 @@ var _ = Describe("PillarBinding Controller", func() {
 			deleteProtocol()
 			sc := &storagev1.StorageClass{}
 			if err := k8sClient.Get(bctx, types.NamespacedName{Name: bindingName}, sc); err == nil {
-				_ = k8sClient.Delete(bctx, sc)
+				Expect(k8sClient.Delete(bctx, sc)).To(Succeed())
 			}
 		})
 
@@ -844,7 +844,7 @@ var _ = Describe("PillarBinding Controller", func() {
 			deleteProtocol()
 			sc := &storagev1.StorageClass{}
 			if err := k8sClient.Get(bctx, types.NamespacedName{Name: bindingName}, sc); err == nil {
-				_ = k8sClient.Delete(bctx, sc)
+				Expect(k8sClient.Delete(bctx, sc)).To(Succeed())
 			}
 		})
 
@@ -883,7 +883,7 @@ var _ = Describe("PillarBinding Controller", func() {
 			deleteProtocol()
 			sc := &storagev1.StorageClass{}
 			if err := k8sClient.Get(bctx, types.NamespacedName{Name: bindingName}, sc); err == nil {
-				_ = k8sClient.Delete(bctx, sc)
+				Expect(k8sClient.Delete(bctx, sc)).To(Succeed())
 			}
 		})
 
@@ -964,8 +964,8 @@ var _ = Describe("PillarBinding Controller", func() {
 			pvc := &corev1.PersistentVolumeClaim{}
 			if err := k8sClient.Get(bctx, types.NamespacedName{Name: pvcName, Namespace: testNamespace}, pvc); err == nil {
 				pvc.Finalizers = nil
-				_ = k8sClient.Update(bctx, pvc)
-				_ = k8sClient.Delete(bctx, pvc)
+				Expect(k8sClient.Update(bctx, pvc)).To(Succeed())
+				Expect(k8sClient.Delete(bctx, pvc)).To(Succeed())
 			}
 			Eventually(func() bool {
 				p := &corev1.PersistentVolumeClaim{}
@@ -979,7 +979,7 @@ var _ = Describe("PillarBinding Controller", func() {
 			deleteProtocol()
 			sc := &storagev1.StorageClass{}
 			if err := k8sClient.Get(bctx, types.NamespacedName{Name: bindingName}, sc); err == nil {
-				_ = k8sClient.Delete(bctx, sc)
+				Expect(k8sClient.Delete(bctx, sc)).To(Succeed())
 			}
 		})
 
@@ -1235,10 +1235,7 @@ var _ = Describe("PillarBinding Controller", func() {
 	})
 })
 
-// =============================================================================
-// Unit tests for evaluateCompatibility (no envtest / API server required)
-// =============================================================================
-
+// Unit tests for evaluateCompatibility — no envtest / API server required.
 var _ = Describe("evaluateCompatibility", func() {
 	// helpers to build minimal objects without persisting to a cluster.
 	makePool := func(backendType pillarcsiv1alpha1.BackendType) *pillarcsiv1alpha1.PillarPool {
@@ -1315,13 +1312,13 @@ var _ = Describe("evaluateCompatibility", func() {
 	})
 })
 
-// =============================================================================
-// Unit tests for buildStorageClassParams (no envtest / API server required)
-// =============================================================================
-
+// Unit tests for buildStorageClassParams — no envtest / API server required.
 var _ = Describe("buildStorageClassParams", func() {
 	// helpers to construct minimal in-memory objects.
-	makeBinding := func(poolRef, protocolRef string, overrides *pillarcsiv1alpha1.BindingOverrides) *pillarcsiv1alpha1.PillarBinding {
+	makeBinding := func(
+		poolRef, protocolRef string,
+		overrides *pillarcsiv1alpha1.BindingOverrides,
+	) *pillarcsiv1alpha1.PillarBinding {
 		return &pillarcsiv1alpha1.PillarBinding{
 			ObjectMeta: metav1.ObjectMeta{Name: "test-binding"},
 			Spec: pillarcsiv1alpha1.PillarBindingSpec{
@@ -1331,7 +1328,10 @@ var _ = Describe("buildStorageClassParams", func() {
 			},
 		}
 	}
-	makeZFSPool := func(targetRef, zfsPool, parentDataset string, backendType pillarcsiv1alpha1.BackendType) *pillarcsiv1alpha1.PillarPool {
+	makeZFSPool := func(
+		targetRef, zfsPool, parentDataset string,
+		backendType pillarcsiv1alpha1.BackendType,
+	) *pillarcsiv1alpha1.PillarPool {
 		return &pillarcsiv1alpha1.PillarPool{
 			Spec: pillarcsiv1alpha1.PillarPoolSpec{
 				TargetRef: targetRef,
