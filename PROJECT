@@ -8,4 +8,21 @@ layout:
 - go.kubebuilder.io/v4
 projectName: pillar-csi
 repo: github.com/bhyoo/pillar-csi
+resources:
+- api:
+    crdVersion: v1
+  controller: true
+  domain: pillar-csi.bhyoo.com
+  group: pillar-csi
+  kind: PillarTarget
+  path: github.com/bhyoo/pillar-csi/api/v1alpha1
+  version: v1alpha1
+- api:
+    crdVersion: v1
+  controller: true
+  domain: pillar-csi.bhyoo.com
+  group: pillar-csi
+  kind: PillarPool
+  path: github.com/bhyoo/pillar-csi/api/v1alpha1
+  version: v1alpha1
 version: "3"

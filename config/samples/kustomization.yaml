@@ -1,0 +1,5 @@
+## Append samples of your project ##
+resources:
+- pillar-csi_v1alpha1_pillartarget.yaml
+- pillar-csi_v1alpha1_pillarpool.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples

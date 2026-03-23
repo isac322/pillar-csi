@@ -1,0 +1,9 @@
+apiVersion: pillar-csi.pillar-csi.bhyoo.com/v1alpha1
+kind: PillarPool
+metadata:
+  labels:
+    app.kubernetes.io/name: pillar-csi
+    app.kubernetes.io/managed-by: kustomize
+  name: pillarpool-sample
+spec:
+  # TODO(user): Add fields here

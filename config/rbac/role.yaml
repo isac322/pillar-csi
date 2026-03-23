@@ -1,11 +1,35 @@
+---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  labels:
-    app.kubernetes.io/name: pillar-csi
-    app.kubernetes.io/managed-by: kustomize
   name: manager-role
 rules:
-- apiGroups: [""]
-  resources: ["pods"]
-  verbs: ["get", "list", "watch"]
+- apiGroups:
+  - pillar-csi.pillar-csi.bhyoo.com
+  resources:
+  - pillarpools
+  - pillartargets
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - pillar-csi.pillar-csi.bhyoo.com
+  resources:
+  - pillarpools/finalizers
+  - pillartargets/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - pillar-csi.pillar-csi.bhyoo.com
+  resources:
+  - pillarpools/status
+  - pillartargets/status
+  verbs:
+  - get
+  - patch
+  - update
