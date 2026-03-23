@@ -2,4 +2,6 @@
 resources:
 - pillar-csi_v1alpha1_pillartarget.yaml
 - pillar-csi_v1alpha1_pillarpool.yaml
+- pillar-csi_v1alpha1_pillarprotocol.yaml
+- pillar-csi_v1alpha1_pillarbinding.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples

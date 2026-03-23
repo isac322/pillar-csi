@@ -4,6 +4,8 @@
 resources:
 - bases/pillar-csi.pillar-csi.bhyoo.com_pillartargets.yaml
 - bases/pillar-csi.pillar-csi.bhyoo.com_pillarpools.yaml
+- bases/pillar-csi.pillar-csi.bhyoo.com_pillarprotocols.yaml
+- bases/pillar-csi.pillar-csi.bhyoo.com_pillarbindings.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:
