@@ -118,6 +118,9 @@ var _ = BeforeSuite(func() {
 	err = SetupPillarProtocolWebhookWithManager(mgr)
 	Expect(err).NotTo(HaveOccurred())
 
+	err = SetupPillarBindingWebhookWithManager(mgr)
+	Expect(err).NotTo(HaveOccurred())
+
 	// +kubebuilder:scaffold:webhook
 
 	go func() {

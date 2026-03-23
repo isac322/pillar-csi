@@ -107,6 +107,13 @@ func setupControllers(mgr ctrl.Manager) error {
 			os.Exit(1)
 		}
 	}
+	// nolint:goconst
+	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
+		if err := webhookv1alpha1.SetupPillarBindingWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "PillarBinding")
+			os.Exit(1)
+		}
+	}
 	// +kubebuilder:scaffold:builder
 	return nil
 }
