@@ -1,0 +1,13 @@
+version: v2
+modules:
+  - path: .
+    name: buf.build/bhyoo/pillar-csi
+lint:
+  use:
+    - STANDARD
+  except:
+    # Allow package names with underscores (pillar_csi.agent.v1)
+    - PACKAGE_DIRECTORY_MATCH
+breaking:
+  use:
+    - FILE

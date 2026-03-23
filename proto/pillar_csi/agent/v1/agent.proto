@@ -1,0 +1,574 @@
+// Copyright 2026 pillar-csi authors.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// AgentService is the gRPC API that pillar-controller calls on each
+// pillar-agent instance (one per storage node).  The agent is completely
+// stateless; the controller is the sole source of truth and re-drives the
+// agent to the desired state after any restart or crash.
+//
+// Volume lifecycle from the controller's perspective:
+//
+//   CreateVolume (CSI)
+//     ├─ StageVolume(RPC)  — backend: create zvol / LV / …
+//     └─ MountVolume(RPC)  — protocol target: export over NVMe-oF / iSCSI / NFS
+//
+//   ControllerPublishVolume (CSI)
+//     └─ AllowInitiator(RPC) — add initiator NQN/IQN/IP to ACL
+//
+//   ControllerUnpublishVolume (CSI)
+//     └─ DenyInitiator(RPC)  — remove initiator from ACL
+//
+//   DeleteVolume (CSI)
+//     ├─ UnmountVolume(RPC) — unexport: tear down protocol target entry
+//     └─ DeleteVolume(RPC)  — backend: destroy zvol / LV / …
+
+syntax = "proto3";
+
+package pillar_csi.agent.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/bhyoo/pillar-csi/gen/go/pillar_csi/agent/v1;agentv1";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Service
+// ─────────────────────────────────────────────────────────────────────────────
+
+// AgentService is implemented by pillar-agent (gRPC server, storage node) and
+// called by pillar-controller (gRPC client, Kubernetes cluster).
+//
+// All RPCs are idempotent — the controller may safely retry on any transient
+// error.
+service AgentService {
+  // ── Discovery ─────────────────────────────────────────────────────────────
+
+  // GetCapabilities returns the backend types and network protocols that this
+  // agent supports.  Called during PillarTarget reconciliation to populate
+  // status.capabilities and status.discoveredPools.
+  rpc GetCapabilities(GetCapabilitiesRequest) returns (GetCapabilitiesResponse);
+
+  // GetCapacity returns the current storage capacity of a specific pool.
+  // Used to populate PillarPool.status.capacity.
+  rpc GetCapacity(GetCapacityRequest) returns (GetCapacityResponse);
+
+  // ListVolumes returns all volumes (backend resources) currently known by the
+  // agent for a given pool.  Used for drift detection and recovery push.
+  rpc ListVolumes(ListVolumesRequest) returns (ListVolumesResponse);
+
+  // ListExports returns all currently active network exports (protocol target
+  // entries) for a given pool.  Paired with ListVolumes for full state audit.
+  rpc ListExports(ListExportsRequest) returns (ListExportsResponse);
+
+  // ── Volume backend lifecycle ───────────────────────────────────────────────
+
+  // StageVolume creates the backend storage resource (e.g. ZFS zvol, LVM LV)
+  // on the storage node.  This is the first step in the CreateVolume flow.
+  //
+  // Idempotent: if the volume already exists with the same parameters the
+  // agent MUST return success.
+  rpc StageVolume(StageVolumeRequest) returns (StageVolumeResponse);
+
+  // DeleteVolume destroys the backend storage resource.  The export MUST have
+  // been removed (UnmountVolume) before calling this RPC; the agent will
+  // return FAILED_PRECONDITION otherwise.
+  //
+  // Idempotent: if the volume does not exist, the agent MUST return success.
+  rpc DeleteVolume(DeleteVolumeRequest) returns (DeleteVolumeResponse);
+
+  // ExpandVolume resizes the backend storage resource to at least
+  // requested_bytes.  The agent returns the actual allocated size.
+  rpc ExpandVolume(ExpandVolumeRequest) returns (ExpandVolumeResponse);
+
+  // ── Protocol target (export) lifecycle ────────────────────────────────────
+
+  // MountVolume creates the network-protocol target entry that exposes the
+  // already-staged volume to the network (e.g. adds an NVMe-oF subsystem +
+  // namespace, or an iSCSI LUN, or an NFS export).
+  //
+  // Idempotent: if the export already exists with the same parameters the
+  // agent MUST return the existing ExportInfo and success.
+  rpc MountVolume(MountVolumeRequest) returns (MountVolumeResponse);
+
+  // UnmountVolume removes the network-protocol target entry (e.g. deletes the
+  // NVMe-oF subsystem or unexports the NFS path).  Initiator ACL entries are
+  // removed automatically.
+  //
+  // Idempotent: if the export does not exist, the agent MUST return success.
+  rpc UnmountVolume(UnmountVolumeRequest) returns (UnmountVolumeResponse);
+
+  // ── Initiator access control ───────────────────────────────────────────────
+
+  // AllowInitiator grants network access to a single initiator for an already-
+  // mounted volume.  Corresponds to CSI ControllerPublishVolume.
+  //
+  // The meaning of initiator_id depends on the protocol:
+  //   NVMe-oF TCP → host NQN   (added to allowed_hosts)
+  //   iSCSI       → IQN        (added to LIO ACL)
+  //   NFS         → client IP  (added to /etc/exports client list)
+  //
+  // Idempotent: if the ACL entry already exists the agent MUST return success.
+  rpc AllowInitiator(AllowInitiatorRequest) returns (AllowInitiatorResponse);
+
+  // DenyInitiator revokes network access for a single initiator.  Corresponds
+  // to CSI ControllerUnpublishVolume.
+  //
+  // Idempotent: if the ACL entry does not exist the agent MUST return success.
+  rpc DenyInitiator(DenyInitiatorRequest) returns (DenyInitiatorResponse);
+
+  // ── State recovery ─────────────────────────────────────────────────────────
+
+  // ReconcileState is called by the controller after an agent restart or node
+  // reboot to push the full desired state (volumes + exports + ACLs).  The
+  // agent applies every entry in order and returns per-item results.
+  //
+  // Because configfs is lost on reboot, this RPC re-creates all protocol
+  // target entries.  The agent MUST NOT return an error if configfs entries
+  // already exist — it reconciles to the desired state.
+  rpc ReconcileState(ReconcileStateRequest) returns (ReconcileStateResponse);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Shared types
+// ─────────────────────────────────────────────────────────────────────────────
+
+// BackendType enumerates the storage backend implementations.
+enum BackendType {
+  BACKEND_TYPE_UNSPECIFIED = 0;
+  // ZFS zvol (block device at /dev/zvol/pool/name).
+  BACKEND_TYPE_ZFS_ZVOL = 1;
+  // ZFS dataset (filesystem mount point).
+  BACKEND_TYPE_ZFS_DATASET = 2;
+  // LVM logical volume.
+  BACKEND_TYPE_LVM = 3;
+  // Pre-existing raw block device.
+  BACKEND_TYPE_BLOCK_DEVICE = 4;
+  // Pre-existing local directory.
+  BACKEND_TYPE_DIRECTORY = 5;
+}
+
+// ProtocolType enumerates the network storage protocols.
+enum ProtocolType {
+  PROTOCOL_TYPE_UNSPECIFIED = 0;
+  // NVMe over Fabrics / TCP (configfs /sys/kernel/config/nvmet/).
+  PROTOCOL_TYPE_NVMEOF_TCP = 1;
+  // iSCSI via Linux LIO (configfs /sys/kernel/config/target/iscsi/).
+  PROTOCOL_TYPE_ISCSI = 2;
+  // NFS v4 (kernel nfsd + /etc/exports).
+  PROTOCOL_TYPE_NFS = 3;
+  // SMB/CIFS (Samba).
+  PROTOCOL_TYPE_SMB = 4;
+}
+
+// VolumeCapability describes what the CSI consumer will do with the volume.
+enum VolumeAccessType {
+  VOLUME_ACCESS_TYPE_UNSPECIFIED = 0;
+  // Raw block device.
+  VOLUME_ACCESS_TYPE_BLOCK = 1;
+  // Mounted filesystem.
+  VOLUME_ACCESS_TYPE_MOUNT = 2;
+}
+
+// ZfsVolumeParams holds ZFS-specific creation parameters.  All string fields
+// map directly to ZFS properties; unknown keys are forwarded as-is to zfs(8).
+message ZfsVolumeParams {
+  // The ZFS pool (e.g. "hot-data").
+  string pool = 1;
+  // Parent dataset under which the volume is created (e.g. "k8s").
+  string parent_dataset = 2;
+  // ZFS properties to set at creation time.
+  // Example: {"compression": "lz4", "volblocksize": "8K"}.
+  map<string, string> properties = 3;
+}
+
+// LvmVolumeParams holds LVM-specific creation parameters.
+message LvmVolumeParams {
+  // LVM volume group name.
+  string volume_group = 1;
+  // Additional lvcreate flags, e.g. "--type thin".
+  repeated string extra_flags = 2;
+}
+
+// BackendParams is a oneof wrapper for backend-specific creation parameters.
+message BackendParams {
+  oneof params {
+    ZfsVolumeParams zfs = 1;
+    LvmVolumeParams lvm = 2;
+  }
+}
+
+// NvmeofTcpExportParams holds NVMe-oF TCP target configuration.
+message NvmeofTcpExportParams {
+  // IP address the NVMe-oF target will listen on.
+  // Resolved by the controller from PillarTarget.spec.nodeRef at runtime.
+  string bind_address = 1;
+  // TCP port (default: 4420).
+  int32 port = 2;
+  // Maximum I/O queue depth.
+  int32 max_queue_size = 3;
+  // In-capsule data size in bytes.
+  int32 in_capsule_data_size = 4;
+}
+
+// IscsiExportParams holds iSCSI LIO target configuration.
+message IscsiExportParams {
+  // IP address the iSCSI target will listen on.
+  string bind_address = 1;
+  // TCP port (default: 3260).
+  int32 port = 2;
+}
+
+// NfsExportParams holds NFS export configuration.
+message NfsExportParams {
+  // NFS protocol version, e.g. "4.2".
+  string version = 1;
+}
+
+// SmbExportParams holds SMB/CIFS export configuration.
+message SmbExportParams {
+  // Share name used in the UNC path.
+  string share_name = 1;
+}
+
+// ExportParams is a oneof wrapper for protocol-specific export parameters.
+message ExportParams {
+  oneof params {
+    NvmeofTcpExportParams nvmeof_tcp = 1;
+    IscsiExportParams iscsi = 2;
+    NfsExportParams nfs = 3;
+    SmbExportParams smb = 4;
+  }
+}
+
+// ExportInfo describes an active network export and is stored by the
+// controller in the PersistentVolume.spec.csi.volumeAttributes so that
+// pillar-node can connect to the volume during NodeStageVolume.
+message ExportInfo {
+  // Protocol-specific connection string:
+  //   NVMe-oF TCP → NQN of the subsystem
+  //   iSCSI       → IQN of the target
+  //   NFS         → exported path
+  //   SMB         → UNC path (\\server\share)
+  string target_id = 1;
+  // IP address of the storage node (resolved from PillarTarget).
+  string address = 2;
+  // Port the protocol target is listening on.
+  int32 port = 3;
+  // Protocol-specific namespace / LUN / path identifier.
+  // NVMe-oF: namespace ID (uint32 as string)
+  // iSCSI:   LUN number (uint32 as string)
+  // NFS:     export path
+  string volume_ref = 4;
+}
+
+// VolumeInfo summarises a backend volume for list / audit purposes.
+message VolumeInfo {
+  // Unique volume identifier within the agent: "<pool>/<volume-name>".
+  string volume_id = 1;
+  // Actual allocated size in bytes.
+  int64 capacity_bytes = 2;
+  // Path to the volume on the storage node.
+  //   ZFS zvol  → /dev/zvol/<pool>/<name>
+  //   LVM LV    → /dev/<vg>/<lv>
+  //   Directory → /path/to/dir
+  string device_path = 3;
+  // True if a network export (MountVolume) has been applied to this volume.
+  bool exported = 4;
+}
+
+// PoolInfo summarises a storage pool discovered by the agent.
+message PoolInfo {
+  // Pool name as understood by the backend (e.g. ZFS pool name).
+  string name = 1;
+  // Backend type of this pool.
+  BackendType backend_type = 2;
+  // Total capacity in bytes.
+  int64 total_bytes = 3;
+  // Available (free) capacity in bytes.
+  int64 available_bytes = 4;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GetCapabilities
+// ─────────────────────────────────────────────────────────────────────────────
+
+message GetCapabilitiesRequest {}
+
+message GetCapabilitiesResponse {
+  // Agent binary version string (semver).
+  string agent_version = 1;
+  // Backend types available on this node.
+  // A backend is absent if its kernel module / userspace tool failed to load.
+  repeated BackendType supported_backends = 2;
+  // Network protocols available on this node.
+  // A protocol is absent if its kernel module failed to load.
+  repeated ProtocolType supported_protocols = 3;
+  // Storage pools discovered by the agent.
+  repeated PoolInfo discovered_pools = 4;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GetCapacity
+// ─────────────────────────────────────────────────────────────────────────────
+
+message GetCapacityRequest {
+  // Backend type to query.
+  BackendType backend_type = 1;
+  // Pool name within the backend (e.g. ZFS pool name).
+  string pool_name = 2;
+}
+
+message GetCapacityResponse {
+  // Total capacity of the pool in bytes.
+  int64 total_bytes = 1;
+  // Available (free) capacity in bytes.
+  int64 available_bytes = 2;
+  // Used capacity in bytes.
+  int64 used_bytes = 3;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ListVolumes
+// ─────────────────────────────────────────────────────────────────────────────
+
+message ListVolumesRequest {
+  // Backend type to query.
+  BackendType backend_type = 1;
+  // Pool name to list volumes from.
+  string pool_name = 2;
+}
+
+message ListVolumesResponse {
+  repeated VolumeInfo volumes = 1;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ListExports
+// ─────────────────────────────────────────────────────────────────────────────
+
+message ListExportsRequest {
+  // Protocol type to query.
+  ProtocolType protocol_type = 1;
+}
+
+message ListExportsResponse {
+  // volume_id → ExportInfo for every active export of the given protocol.
+  map<string, ExportInfo> exports = 1;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// StageVolume — create backend storage resource
+// ─────────────────────────────────────────────────────────────────────────────
+
+// StageVolumeRequest asks the agent to create a backend storage resource.
+message StageVolumeRequest {
+  // Unique volume identifier within the agent: "<pool>/<volume-name>".
+  // Example: "hot-data/pvc-abc123"
+  string volume_id = 1;
+
+  // Requested storage size in bytes.
+  int64 capacity_bytes = 2;
+
+  // Backend implementation to use.
+  BackendType backend_type = 3;
+
+  // Backend-specific creation parameters (ZFS, LVM, …).
+  BackendParams backend_params = 4;
+
+  // Whether the volume will be used as raw block or mounted filesystem.
+  // Filesystem backends (ZFS dataset, directory) must be MOUNT.
+  // Block backends (zvol, LVM, block-device) can be either BLOCK or MOUNT.
+  VolumeAccessType access_type = 5;
+}
+
+message StageVolumeResponse {
+  // Path to the backend resource on the storage node.
+  string device_path = 1;
+
+  // Actual allocated size in bytes (may be >= requested).
+  int64 capacity_bytes = 2;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DeleteVolume — destroy backend storage resource
+// ─────────────────────────────────────────────────────────────────────────────
+
+message DeleteVolumeRequest {
+  // Unique volume identifier: "<pool>/<volume-name>".
+  string volume_id = 1;
+
+  // Backend type (required for routing to the correct backend plugin).
+  BackendType backend_type = 2;
+}
+
+message DeleteVolumeResponse {}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ExpandVolume — resize backend storage resource
+// ─────────────────────────────────────────────────────────────────────────────
+
+message ExpandVolumeRequest {
+  // Unique volume identifier: "<pool>/<volume-name>".
+  string volume_id = 1;
+
+  // Minimum required size in bytes after expansion.
+  int64 requested_bytes = 2;
+
+  // Backend type.
+  BackendType backend_type = 3;
+}
+
+message ExpandVolumeResponse {
+  // Actual size in bytes after expansion (>= requested_bytes).
+  int64 capacity_bytes = 1;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MountVolume — create protocol target entry (network export)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// MountVolumeRequest asks the agent to expose an already-staged volume over
+// a network storage protocol.
+message MountVolumeRequest {
+  // Volume identifier: "<pool>/<volume-name>".
+  string volume_id = 1;
+
+  // Network protocol to use for export.
+  ProtocolType protocol_type = 2;
+
+  // Protocol-specific export parameters (bind address, port, etc.).
+  ExportParams export_params = 3;
+
+  // Path to the backend resource (from StageVolumeResponse.device_path or the
+  // filesystem mount point for NFS/SMB backends).
+  string device_path = 4;
+
+  // Whether ACL-based access control is enabled.
+  // If false, any initiator may connect (allow_any_host / generate_node_acls).
+  bool acl_enabled = 5;
+}
+
+message MountVolumeResponse {
+  // Export information that the controller persists in the PV volumeContext
+  // so that pillar-node can connect during NodeStageVolume.
+  ExportInfo export_info = 1;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UnmountVolume — remove protocol target entry (network export)
+// ─────────────────────────────────────────────────────────────────────────────
+
+message UnmountVolumeRequest {
+  // Volume identifier: "<pool>/<volume-name>".
+  string volume_id = 1;
+
+  // Protocol type of the export to remove.
+  ProtocolType protocol_type = 2;
+}
+
+message UnmountVolumeResponse {}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AllowInitiator — grant access to a specific initiator
+// ─────────────────────────────────────────────────────────────────────────────
+
+message AllowInitiatorRequest {
+  // Volume identifier: "<pool>/<volume-name>".
+  string volume_id = 1;
+
+  // Protocol type of the export.
+  ProtocolType protocol_type = 2;
+
+  // Initiator identifier:
+  //   NVMe-oF TCP → host NQN (nqn.…)
+  //   iSCSI       → IQN (iqn.…)
+  //   NFS/SMB     → client IP address or CIDR
+  string initiator_id = 3;
+}
+
+message AllowInitiatorResponse {}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DenyInitiator — revoke access for a specific initiator
+// ─────────────────────────────────────────────────────────────────────────────
+
+message DenyInitiatorRequest {
+  // Volume identifier: "<pool>/<volume-name>".
+  string volume_id = 1;
+
+  // Protocol type of the export.
+  ProtocolType protocol_type = 2;
+
+  // Initiator identifier (same semantics as AllowInitiator).
+  string initiator_id = 3;
+}
+
+message DenyInitiatorResponse {}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ReconcileState — push full desired state after agent restart / node reboot
+// ─────────────────────────────────────────────────────────────────────────────
+
+// VolumeDesiredState is the complete desired state for a single volume.
+message VolumeDesiredState {
+  // Volume identifier: "<pool>/<volume-name>".
+  string volume_id = 1;
+
+  // Backend type.
+  BackendType backend_type = 2;
+
+  // Backend-specific parameters (used to verify / recreate if missing).
+  BackendParams backend_params = 3;
+
+  // Path to the backend resource on the storage node.
+  string device_path = 4;
+
+  // Protocol exports that must be active for this volume.
+  repeated ExportDesiredState exports = 5;
+}
+
+// ExportDesiredState is the desired state for a single export within a volume.
+message ExportDesiredState {
+  // Protocol type.
+  ProtocolType protocol_type = 1;
+
+  // Protocol-specific export parameters.
+  ExportParams export_params = 2;
+
+  // Initiators that currently have access (ACL entries to maintain).
+  repeated string allowed_initiators = 3;
+}
+
+message ReconcileStateRequest {
+  // Complete desired state for all volumes managed by this agent.
+  // The agent MUST NOT delete volumes that are not in this list during a
+  // single ReconcileState call — deletion is performed via DeleteVolume.
+  repeated VolumeDesiredState volumes = 1;
+}
+
+// ReconcileItemResult holds the result for a single volume during reconcile.
+message ReconcileItemResult {
+  // Volume identifier.
+  string volume_id = 1;
+  // True if the item was reconciled successfully.
+  bool success = 2;
+  // Human-readable error message when success == false.
+  string error_message = 3;
+}
+
+message ReconcileStateResponse {
+  // Per-volume reconciliation results.
+  repeated ReconcileItemResult results = 1;
+  // Timestamp at which the reconcile was completed on the agent.
+  google.protobuf.Timestamp reconciled_at = 2;
+}
