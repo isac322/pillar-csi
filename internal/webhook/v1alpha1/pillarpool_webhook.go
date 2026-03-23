@@ -21,6 +21,7 @@ import (
 	"fmt"
 
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
@@ -72,14 +73,42 @@ func (v *PillarPoolCustomValidator) ValidateCreate(_ context.Context, obj runtim
 
 // ValidateUpdate implements webhook.CustomValidator so a webhook will be registered for the type PillarPool.
 func (v *PillarPoolCustomValidator) ValidateUpdate(_ context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
-	pillarpool, ok := newObj.(*pillarcsiv1alpha1.PillarPool)
+	newPool, ok := newObj.(*pillarcsiv1alpha1.PillarPool)
 	if !ok {
 		return nil, fmt.Errorf("expected a PillarPool object for the newObj but got %T", newObj)
 	}
-	pillarpoollog.Info("Validation for PillarPool upon update", "name", pillarpool.GetName())
+	oldPool, ok := oldObj.(*pillarcsiv1alpha1.PillarPool)
+	if !ok {
+		return nil, fmt.Errorf("expected a PillarPool object for the oldObj but got %T", oldObj)
+	}
+	pillarpoollog.Info("Validation for PillarPool upon update", "name", newPool.GetName())
 
-	// TODO(user): fill in your validation logic upon object update.
+	var allErrs field.ErrorList
 
+	// spec.targetRef is immutable: the pool is bound to a specific storage target at creation.
+	// Moving a pool to a different target would change which physical storage is used,
+	// invalidating all existing volumes provisioned from this pool.
+	if oldPool.Spec.TargetRef != newPool.Spec.TargetRef {
+		allErrs = append(allErrs, field.Forbidden(
+			field.NewPath("spec", "targetRef"),
+			fmt.Sprintf("field is immutable; old value %q cannot be changed to %q",
+				oldPool.Spec.TargetRef, newPool.Spec.TargetRef),
+		))
+	}
+
+	// spec.backend.type is immutable: changing the backend driver type (e.g. zfs-zvol → lvm-lv)
+	// would silently break volumes that were provisioned using the original driver.
+	if oldPool.Spec.Backend.Type != newPool.Spec.Backend.Type {
+		allErrs = append(allErrs, field.Forbidden(
+			field.NewPath("spec", "backend", "type"),
+			fmt.Sprintf("field is immutable; old value %q cannot be changed to %q",
+				oldPool.Spec.Backend.Type, newPool.Spec.Backend.Type),
+		))
+	}
+
+	if len(allErrs) > 0 {
+		return nil, allErrs.ToAggregate()
+	}
 	return nil, nil
 }
 

@@ -21,6 +21,7 @@ import (
 	"fmt"
 
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
@@ -72,14 +73,32 @@ func (v *PillarProtocolCustomValidator) ValidateCreate(_ context.Context, obj ru
 
 // ValidateUpdate implements webhook.CustomValidator so a webhook will be registered for the type PillarProtocol.
 func (v *PillarProtocolCustomValidator) ValidateUpdate(_ context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
-	pillarprotocol, ok := newObj.(*pillarcsiv1alpha1.PillarProtocol)
+	newProtocol, ok := newObj.(*pillarcsiv1alpha1.PillarProtocol)
 	if !ok {
 		return nil, fmt.Errorf("expected a PillarProtocol object for the newObj but got %T", newObj)
 	}
-	pillarprotocollog.Info("Validation for PillarProtocol upon update", "name", pillarprotocol.GetName())
+	oldProtocol, ok := oldObj.(*pillarcsiv1alpha1.PillarProtocol)
+	if !ok {
+		return nil, fmt.Errorf("expected a PillarProtocol object for the oldObj but got %T", oldObj)
+	}
+	pillarprotocollog.Info("Validation for PillarProtocol upon update", "name", newProtocol.GetName())
 
-	// TODO(user): fill in your validation logic upon object update.
+	var allErrs field.ErrorList
 
+	// spec.type is immutable: each protocol type requires a distinct kernel subsystem and configfs
+	// namespace (NVMe-oF vs iSCSI vs NFS). Allowing type changes would orphan all volumes that were
+	// exported via the original protocol without any migration path.
+	if oldProtocol.Spec.Type != newProtocol.Spec.Type {
+		allErrs = append(allErrs, field.Forbidden(
+			field.NewPath("spec", "type"),
+			fmt.Sprintf("field is immutable; old value %q cannot be changed to %q",
+				oldProtocol.Spec.Type, newProtocol.Spec.Type),
+		))
+	}
+
+	if len(allErrs) > 0 {
+		return nil, allErrs.ToAggregate()
+	}
 	return nil, nil
 }
 

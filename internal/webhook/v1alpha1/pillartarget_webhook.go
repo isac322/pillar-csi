@@ -21,6 +21,7 @@ import (
 	"fmt"
 
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
@@ -72,14 +73,64 @@ func (v *PillarTargetCustomValidator) ValidateCreate(_ context.Context, obj runt
 
 // ValidateUpdate implements webhook.CustomValidator so a webhook will be registered for the type PillarTarget.
 func (v *PillarTargetCustomValidator) ValidateUpdate(_ context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
-	pillartarget, ok := newObj.(*pillarcsiv1alpha1.PillarTarget)
+	newTarget, ok := newObj.(*pillarcsiv1alpha1.PillarTarget)
 	if !ok {
 		return nil, fmt.Errorf("expected a PillarTarget object for the newObj but got %T", newObj)
 	}
-	pillartargetlog.Info("Validation for PillarTarget upon update", "name", pillartarget.GetName())
+	oldTarget, ok := oldObj.(*pillarcsiv1alpha1.PillarTarget)
+	if !ok {
+		return nil, fmt.Errorf("expected a PillarTarget object for the oldObj but got %T", oldObj)
+	}
+	pillartargetlog.Info("Validation for PillarTarget upon update", "name", newTarget.GetName())
 
-	// TODO(user): fill in your validation logic upon object update.
+	var allErrs field.ErrorList
 
+	// spec.nodeRef / spec.external form a discriminated union that identifies
+	// which physical agent this target connects to.  Switching between the two
+	// variants (or changing the core identity within the same variant) is
+	// equivalent to pointing the target at a completely different machine, which
+	// would silently break all PillarPools and PillarBindings that depend on it.
+
+	oldHasNodeRef := oldTarget.Spec.NodeRef != nil
+	newHasNodeRef := newTarget.Spec.NodeRef != nil
+
+	if oldHasNodeRef != newHasNodeRef {
+		// Discriminant switch: nodeRef ↔ external
+		allErrs = append(allErrs, field.Forbidden(
+			field.NewPath("spec"),
+			"cannot switch between nodeRef and external after creation; "+
+				"delete and recreate the PillarTarget instead",
+		))
+	} else if oldHasNodeRef {
+		// Both old and new use nodeRef — the node name identifies the agent host.
+		if oldTarget.Spec.NodeRef.Name != newTarget.Spec.NodeRef.Name {
+			allErrs = append(allErrs, field.Forbidden(
+				field.NewPath("spec", "nodeRef", "name"),
+				fmt.Sprintf("field is immutable; old value %q cannot be changed to %q",
+					oldTarget.Spec.NodeRef.Name, newTarget.Spec.NodeRef.Name),
+			))
+		}
+	} else if oldTarget.Spec.External != nil && newTarget.Spec.External != nil {
+		// Both old and new use external — the address+port pair identifies the agent host.
+		if oldTarget.Spec.External.Address != newTarget.Spec.External.Address {
+			allErrs = append(allErrs, field.Forbidden(
+				field.NewPath("spec", "external", "address"),
+				fmt.Sprintf("field is immutable; old value %q cannot be changed to %q",
+					oldTarget.Spec.External.Address, newTarget.Spec.External.Address),
+			))
+		}
+		if oldTarget.Spec.External.Port != newTarget.Spec.External.Port {
+			allErrs = append(allErrs, field.Forbidden(
+				field.NewPath("spec", "external", "port"),
+				fmt.Sprintf("field is immutable; old value %d cannot be changed to %d",
+					oldTarget.Spec.External.Port, newTarget.Spec.External.Port),
+			))
+		}
+	}
+
+	if len(allErrs) > 0 {
+		return nil, allErrs.ToAggregate()
+	}
 	return nil, nil
 }
 
