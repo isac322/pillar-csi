@@ -21,9 +21,11 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -41,8 +43,8 @@ var _ = Describe("PillarBinding Controller", func() {
 	)
 
 	var (
-		bctx               context.Context
-		reconciler         *PillarBindingReconciler
+		bctx                  context.Context
+		reconciler            *PillarBindingReconciler
 		bindingNamespacedName types.NamespacedName
 	)
 
@@ -608,6 +610,409 @@ var _ = Describe("PillarBinding Controller", func() {
 	})
 
 	// -------------------------------------------------------------------------
+	// Sub-AC 4d: StorageClass ownerReference and parameter derivation tests
+	// -------------------------------------------------------------------------
+
+	Context("StorageClass ownerReference and key properties", func() {
+		BeforeEach(func() {
+			createBinding()
+			// First reconcile adds finalizer.
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+			createPool(&trueStatus, "pool ready")
+			createProtocol(&trueStatus, "protocol ready")
+		})
+
+		AfterEach(func() {
+			forceRemoveBindingFinalizer()
+			deleteBinding()
+			deletePool()
+			deleteProtocol()
+			sc := &storagev1.StorageClass{}
+			if err := k8sClient.Get(bctx, types.NamespacedName{Name: bindingName}, sc); err == nil {
+				_ = k8sClient.Delete(bctx, sc)
+			}
+		})
+
+		It("should set an ownerReference pointing to the PillarBinding", func() {
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			sc := &storagev1.StorageClass{}
+			Expect(k8sClient.Get(bctx, types.NamespacedName{Name: bindingName}, sc)).To(Succeed())
+
+			Expect(sc.OwnerReferences).To(HaveLen(1), "StorageClass should have exactly one owner reference")
+			ownerRef := sc.OwnerReferences[0]
+			Expect(ownerRef.Kind).To(Equal("PillarBinding"))
+			Expect(ownerRef.Name).To(Equal(bindingName))
+			Expect(ownerRef.Controller).NotTo(BeNil())
+			Expect(*ownerRef.Controller).To(BeTrue(), "ownerReference should have controller=true")
+		})
+
+		It("should set provisioner to pillar-csi.bhyoo.com", func() {
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			sc := &storagev1.StorageClass{}
+			Expect(k8sClient.Get(bctx, types.NamespacedName{Name: bindingName}, sc)).To(Succeed())
+			Expect(sc.Provisioner).To(Equal(pillarCSIProvisioner))
+		})
+
+		It("should include pool and protocol refs in StorageClass parameters", func() {
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			sc := &storagev1.StorageClass{}
+			Expect(k8sClient.Get(bctx, types.NamespacedName{Name: bindingName}, sc)).To(Succeed())
+
+			Expect(sc.Parameters).To(HaveKey("pillar-csi.bhyoo.com/pool"))
+			Expect(sc.Parameters["pillar-csi.bhyoo.com/pool"]).To(Equal(poolName))
+			Expect(sc.Parameters).To(HaveKey("pillar-csi.bhyoo.com/protocol"))
+			Expect(sc.Parameters["pillar-csi.bhyoo.com/protocol"]).To(Equal(protocolName))
+			Expect(sc.Parameters).To(HaveKey("pillar-csi.bhyoo.com/backend-type"))
+			Expect(sc.Parameters["pillar-csi.bhyoo.com/backend-type"]).To(Equal(string(pillarcsiv1alpha1.BackendTypeZFSZvol)))
+			Expect(sc.Parameters).To(HaveKey("pillar-csi.bhyoo.com/protocol-type"))
+			Expect(sc.Parameters["pillar-csi.bhyoo.com/protocol-type"]).To(Equal(string(pillarcsiv1alpha1.ProtocolTypeNVMeOFTCP)))
+		})
+
+		It("should default ReclaimPolicy to Delete", func() {
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			sc := &storagev1.StorageClass{}
+			Expect(k8sClient.Get(bctx, types.NamespacedName{Name: bindingName}, sc)).To(Succeed())
+
+			Expect(sc.ReclaimPolicy).NotTo(BeNil())
+			Expect(*sc.ReclaimPolicy).To(Equal(corev1.PersistentVolumeReclaimDelete))
+		})
+
+		It("should default VolumeBindingMode to Immediate", func() {
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			sc := &storagev1.StorageClass{}
+			Expect(k8sClient.Get(bctx, types.NamespacedName{Name: bindingName}, sc)).To(Succeed())
+
+			Expect(sc.VolumeBindingMode).NotTo(BeNil())
+			Expect(*sc.VolumeBindingMode).To(Equal(storagev1.VolumeBindingImmediate))
+		})
+
+		It("should default AllowVolumeExpansion to true for block protocols", func() {
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			sc := &storagev1.StorageClass{}
+			Expect(k8sClient.Get(bctx, types.NamespacedName{Name: bindingName}, sc)).To(Succeed())
+
+			Expect(sc.AllowVolumeExpansion).NotTo(BeNil())
+			Expect(*sc.AllowVolumeExpansion).To(BeTrue(),
+				"AllowVolumeExpansion should default to true for block protocol (NVMeOF)")
+		})
+	})
+
+	// -------------------------------------------------------------------------
+	Context("StorageClass with custom name (spec.storageClass.name)", func() {
+		const customSCName = "my-custom-sc"
+
+		BeforeEach(func() {
+			// Create binding with an explicit StorageClass name.
+			resource := &pillarcsiv1alpha1.PillarBinding{
+				ObjectMeta: metav1.ObjectMeta{Name: bindingName},
+				Spec: pillarcsiv1alpha1.PillarBindingSpec{
+					PoolRef:     poolName,
+					ProtocolRef: protocolName,
+					StorageClass: pillarcsiv1alpha1.StorageClassTemplate{
+						Name: customSCName,
+					},
+				},
+			}
+			Expect(k8sClient.Create(bctx, resource)).To(Succeed())
+			// First reconcile adds finalizer.
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+			createPool(&trueStatus, "pool ready")
+			createProtocol(&trueStatus, "protocol ready")
+		})
+
+		AfterEach(func() {
+			forceRemoveBindingFinalizer()
+			deleteBinding()
+			deletePool()
+			deleteProtocol()
+			sc := &storagev1.StorageClass{}
+			if err := k8sClient.Get(bctx, types.NamespacedName{Name: customSCName}, sc); err == nil {
+				_ = k8sClient.Delete(bctx, sc)
+			}
+		})
+
+		It("should create the StorageClass under the custom name", func() {
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			sc := &storagev1.StorageClass{}
+			Expect(k8sClient.Get(bctx, types.NamespacedName{Name: customSCName}, sc)).To(Succeed(),
+				"StorageClass %q should be created", customSCName)
+			Expect(sc.Provisioner).To(Equal(pillarCSIProvisioner))
+		})
+
+		It("should set status.storageClassName to the custom name", func() {
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := fetchBinding()
+			Expect(fetched.Status.StorageClassName).To(Equal(customSCName))
+		})
+
+		It("should NOT create a StorageClass under the binding name", func() {
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			sc := &storagev1.StorageClass{}
+			err = k8sClient.Get(bctx, types.NamespacedName{Name: bindingName}, sc)
+			Expect(errors.IsNotFound(err)).To(BeTrue(),
+				"StorageClass %q should NOT be created when custom name is set", bindingName)
+		})
+	})
+
+	// -------------------------------------------------------------------------
+	Context("StorageClass with ReclaimPolicy=Retain", func() {
+		BeforeEach(func() {
+			res := &pillarcsiv1alpha1.PillarBinding{
+				ObjectMeta: metav1.ObjectMeta{Name: bindingName},
+				Spec: pillarcsiv1alpha1.PillarBindingSpec{
+					PoolRef:     poolName,
+					ProtocolRef: protocolName,
+					StorageClass: pillarcsiv1alpha1.StorageClassTemplate{
+						ReclaimPolicy: pillarcsiv1alpha1.ReclaimPolicyRetain,
+					},
+				},
+			}
+			Expect(k8sClient.Create(bctx, res)).To(Succeed())
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+			createPool(&trueStatus, "pool ready")
+			createProtocol(&trueStatus, "protocol ready")
+		})
+
+		AfterEach(func() {
+			forceRemoveBindingFinalizer()
+			deleteBinding()
+			deletePool()
+			deleteProtocol()
+			sc := &storagev1.StorageClass{}
+			if err := k8sClient.Get(bctx, types.NamespacedName{Name: bindingName}, sc); err == nil {
+				_ = k8sClient.Delete(bctx, sc)
+			}
+		})
+
+		It("should set StorageClass ReclaimPolicy to Retain", func() {
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			sc := &storagev1.StorageClass{}
+			Expect(k8sClient.Get(bctx, types.NamespacedName{Name: bindingName}, sc)).To(Succeed())
+
+			Expect(sc.ReclaimPolicy).NotTo(BeNil())
+			Expect(*sc.ReclaimPolicy).To(Equal(corev1.PersistentVolumeReclaimRetain))
+		})
+	})
+
+	// -------------------------------------------------------------------------
+	Context("StorageClass with VolumeBindingMode=WaitForFirstConsumer", func() {
+		BeforeEach(func() {
+			res := &pillarcsiv1alpha1.PillarBinding{
+				ObjectMeta: metav1.ObjectMeta{Name: bindingName},
+				Spec: pillarcsiv1alpha1.PillarBindingSpec{
+					PoolRef:     poolName,
+					ProtocolRef: protocolName,
+					StorageClass: pillarcsiv1alpha1.StorageClassTemplate{
+						VolumeBindingMode: pillarcsiv1alpha1.VolumeBindingWaitForFirstConsumer,
+					},
+				},
+			}
+			Expect(k8sClient.Create(bctx, res)).To(Succeed())
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+			createPool(&trueStatus, "pool ready")
+			createProtocol(&trueStatus, "protocol ready")
+		})
+
+		AfterEach(func() {
+			forceRemoveBindingFinalizer()
+			deleteBinding()
+			deletePool()
+			deleteProtocol()
+			sc := &storagev1.StorageClass{}
+			if err := k8sClient.Get(bctx, types.NamespacedName{Name: bindingName}, sc); err == nil {
+				_ = k8sClient.Delete(bctx, sc)
+			}
+		})
+
+		It("should set StorageClass VolumeBindingMode to WaitForFirstConsumer", func() {
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			sc := &storagev1.StorageClass{}
+			Expect(k8sClient.Get(bctx, types.NamespacedName{Name: bindingName}, sc)).To(Succeed())
+
+			Expect(sc.VolumeBindingMode).NotTo(BeNil())
+			Expect(*sc.VolumeBindingMode).To(Equal(storagev1.VolumeBindingWaitForFirstConsumer))
+		})
+	})
+
+	// -------------------------------------------------------------------------
+	Context("Deletion path — no blocking PVCs", func() {
+		BeforeEach(func() {
+			createBinding()
+			// First reconcile adds finalizer.
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+			createPool(&trueStatus, "pool ready")
+			createProtocol(&trueStatus, "protocol ready")
+			// Second reconcile creates the StorageClass and sets status.storageClassName.
+			_, err = doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+			// Mark the binding for deletion (sets DeletionTimestamp).
+			deleteBinding()
+		})
+
+		AfterEach(func() {
+			forceRemoveBindingFinalizer()
+			deleteBinding()
+			deletePool()
+			deleteProtocol()
+			sc := &storagev1.StorageClass{}
+			if err := k8sClient.Get(bctx, types.NamespacedName{Name: bindingName}, sc); err == nil {
+				_ = k8sClient.Delete(bctx, sc)
+			}
+		})
+
+		It("should delete the owned StorageClass and remove the finalizer", func() {
+			result, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(BeZero(), "should not requeue after clean deletion")
+
+			// StorageClass should be deleted.
+			sc := &storagev1.StorageClass{}
+			err = k8sClient.Get(bctx, types.NamespacedName{Name: bindingName}, sc)
+			Expect(errors.IsNotFound(err)).To(BeTrue(), "owned StorageClass should be deleted")
+
+			// Finalizer should be removed so the binding can be garbage-collected.
+			fetched := &pillarcsiv1alpha1.PillarBinding{}
+			err = k8sClient.Get(bctx, bindingNamespacedName, fetched)
+			if err == nil {
+				Expect(controllerutil.ContainsFinalizer(fetched, pillarBindingFinalizer)).To(BeFalse(),
+					"finalizer should be removed after clean deletion")
+			}
+		})
+	})
+
+	// -------------------------------------------------------------------------
+	Context("Deletion path — blocked by PVCs referencing the StorageClass", func() {
+		const testNamespace = "default"
+		const pvcName = "binding-deletion-blocker"
+
+		BeforeEach(func() {
+			// Guard: ensure any PVC left over from a previous run of this
+			// BeforeEach (within the same Context) is fully gone before
+			// attempting to create a new one with the same name, to avoid
+			// "object is being deleted" conflicts.
+			Eventually(func() bool {
+				p := &corev1.PersistentVolumeClaim{}
+				err := k8sClient.Get(bctx, types.NamespacedName{Name: pvcName, Namespace: testNamespace}, p)
+				return errors.IsNotFound(err)
+			}, "10s", "100ms").Should(BeTrue(), "PVC should not exist at BeforeEach start")
+
+			createBinding()
+			// First reconcile adds finalizer.
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+			createPool(&trueStatus, "pool ready")
+			createProtocol(&trueStatus, "protocol ready")
+			// Second reconcile creates the StorageClass.
+			_, err = doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Create a PVC that references the generated StorageClass.
+			scName := bindingName
+			pvc := &corev1.PersistentVolumeClaim{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      pvcName,
+					Namespace: testNamespace,
+				},
+				Spec: corev1.PersistentVolumeClaimSpec{
+					StorageClassName: &scName,
+					AccessModes:      []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+					Resources: corev1.VolumeResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceStorage: resource.MustParse("1Gi"),
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(bctx, pvc)).To(Succeed())
+
+			// Mark the binding for deletion.
+			deleteBinding()
+		})
+
+		AfterEach(func() {
+			// Remove any finalizers and delete the blocking PVC, then wait
+			// until the object is fully gone so the next BeforeEach can
+			// re-create it with the same name without hitting a "being deleted"
+			// conflict from the API server.
+			pvc := &corev1.PersistentVolumeClaim{}
+			if err := k8sClient.Get(bctx, types.NamespacedName{Name: pvcName, Namespace: testNamespace}, pvc); err == nil {
+				pvc.Finalizers = nil
+				_ = k8sClient.Update(bctx, pvc)
+				_ = k8sClient.Delete(bctx, pvc)
+			}
+			Eventually(func() bool {
+				p := &corev1.PersistentVolumeClaim{}
+				err := k8sClient.Get(bctx, types.NamespacedName{Name: pvcName, Namespace: testNamespace}, p)
+				return errors.IsNotFound(err)
+			}, "10s", "100ms").Should(BeTrue(), "PVC should be fully deleted before next test")
+
+			forceRemoveBindingFinalizer()
+			deleteBinding()
+			deletePool()
+			deleteProtocol()
+			sc := &storagev1.StorageClass{}
+			if err := k8sClient.Get(bctx, types.NamespacedName{Name: bindingName}, sc); err == nil {
+				_ = k8sClient.Delete(bctx, sc)
+			}
+		})
+
+		It("should block deletion and requeue while PVCs are present", func() {
+			result, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(requeueAfterBindingDeletionBlock))
+		})
+
+		It("should set Ready=False with reason DeletionBlocked", func() {
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := fetchBinding()
+			cond := findBindingCondition(fetched, conditionReady)
+			Expect(cond).NotTo(BeNil(), "Ready condition should be set during deletion block")
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cond.Reason).To(Equal("DeletionBlocked"))
+			Expect(cond.Message).To(ContainSubstring(pvcName))
+		})
+
+		It("should not remove the finalizer while PVCs are present", func() {
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := &pillarcsiv1alpha1.PillarBinding{}
+			Expect(k8sClient.Get(bctx, bindingNamespacedName, fetched)).To(Succeed())
+			Expect(controllerutil.ContainsFinalizer(fetched, pillarBindingFinalizer)).To(BeTrue(),
+				"finalizer should remain while PVCs are blocking deletion")
+		})
+	})
+
+	// -------------------------------------------------------------------------
 	Context("Incompatible backend/protocol — NFS with block backend", func() {
 		BeforeEach(func() {
 			createBinding()
@@ -907,5 +1312,265 @@ var _ = Describe("evaluateCompatibility", func() {
 		Expect(ok).To(BeFalse())
 		Expect(msg).To(ContainSubstring("NFS"))
 		Expect(msg).To(ContainSubstring(string(pillarcsiv1alpha1.BackendTypeDir)))
+	})
+})
+
+// =============================================================================
+// Unit tests for buildStorageClassParams (no envtest / API server required)
+// =============================================================================
+
+var _ = Describe("buildStorageClassParams", func() {
+	// helpers to construct minimal in-memory objects.
+	makeBinding := func(poolRef, protocolRef string, overrides *pillarcsiv1alpha1.BindingOverrides) *pillarcsiv1alpha1.PillarBinding {
+		return &pillarcsiv1alpha1.PillarBinding{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-binding"},
+			Spec: pillarcsiv1alpha1.PillarBindingSpec{
+				PoolRef:     poolRef,
+				ProtocolRef: protocolRef,
+				Overrides:   overrides,
+			},
+		}
+	}
+	makeZFSPool := func(targetRef, zfsPool, parentDataset string, backendType pillarcsiv1alpha1.BackendType) *pillarcsiv1alpha1.PillarPool {
+		return &pillarcsiv1alpha1.PillarPool{
+			Spec: pillarcsiv1alpha1.PillarPoolSpec{
+				TargetRef: targetRef,
+				Backend: pillarcsiv1alpha1.BackendSpec{
+					Type: backendType,
+					ZFS: &pillarcsiv1alpha1.ZFSBackendConfig{
+						Pool:          zfsPool,
+						ParentDataset: parentDataset,
+					},
+				},
+			},
+		}
+	}
+	makeProtocolNVMeOF := func(port int32) *pillarcsiv1alpha1.PillarProtocol {
+		return &pillarcsiv1alpha1.PillarProtocol{
+			Spec: pillarcsiv1alpha1.PillarProtocolSpec{
+				Type: pillarcsiv1alpha1.ProtocolTypeNVMeOFTCP,
+				NVMeOFTCP: &pillarcsiv1alpha1.NVMeOFTCPConfig{
+					Port: port,
+				},
+			},
+		}
+	}
+	makeProtocolISCSI := func(port int32) *pillarcsiv1alpha1.PillarProtocol {
+		return &pillarcsiv1alpha1.PillarProtocol{
+			Spec: pillarcsiv1alpha1.PillarProtocolSpec{
+				Type: pillarcsiv1alpha1.ProtocolTypeISCSI,
+				ISCSI: &pillarcsiv1alpha1.ISCSIConfig{
+					Port: port,
+				},
+			},
+		}
+	}
+	makeProtocolNFS := func(version string) *pillarcsiv1alpha1.PillarProtocol {
+		return &pillarcsiv1alpha1.PillarProtocol{
+			Spec: pillarcsiv1alpha1.PillarProtocolSpec{
+				Type: pillarcsiv1alpha1.ProtocolTypeNFS,
+				NFS:  &pillarcsiv1alpha1.NFSConfig{Version: version},
+			},
+		}
+	}
+
+	It("should include pool, protocol, backend-type, protocol-type, and target in params", func() {
+		binding := makeBinding("my-pool", "my-proto", nil)
+		pool := &pillarcsiv1alpha1.PillarPool{
+			Spec: pillarcsiv1alpha1.PillarPoolSpec{
+				TargetRef: "my-target",
+				Backend:   pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeLVMLV},
+			},
+		}
+		protocol := &pillarcsiv1alpha1.PillarProtocol{
+			Spec: pillarcsiv1alpha1.PillarProtocolSpec{Type: pillarcsiv1alpha1.ProtocolTypeISCSI},
+		}
+		params := buildStorageClassParams(binding, pool, protocol)
+
+		Expect(params["pillar-csi.bhyoo.com/pool"]).To(Equal("my-pool"))
+		Expect(params["pillar-csi.bhyoo.com/protocol"]).To(Equal("my-proto"))
+		Expect(params["pillar-csi.bhyoo.com/backend-type"]).To(Equal("lvm-lv"))
+		Expect(params["pillar-csi.bhyoo.com/protocol-type"]).To(Equal("iscsi"))
+		Expect(params["pillar-csi.bhyoo.com/target"]).To(Equal("my-target"))
+	})
+
+	It("should include zfs-pool and zfs-parent-dataset when ZFS backend is configured", func() {
+		binding := makeBinding("zfs-pool", "proto", nil)
+		pool := makeZFSPool("target", "tank", "volumes", pillarcsiv1alpha1.BackendTypeZFSZvol)
+		protocol := &pillarcsiv1alpha1.PillarProtocol{
+			Spec: pillarcsiv1alpha1.PillarProtocolSpec{Type: pillarcsiv1alpha1.ProtocolTypeNVMeOFTCP},
+		}
+		params := buildStorageClassParams(binding, pool, protocol)
+
+		Expect(params).To(HaveKey("pillar-csi.bhyoo.com/zfs-pool"))
+		Expect(params["pillar-csi.bhyoo.com/zfs-pool"]).To(Equal("tank"))
+		Expect(params).To(HaveKey("pillar-csi.bhyoo.com/zfs-parent-dataset"))
+		Expect(params["pillar-csi.bhyoo.com/zfs-parent-dataset"]).To(Equal("volumes"))
+	})
+
+	It("should not include zfs params when ZFS backend config is absent", func() {
+		binding := makeBinding("pool", "proto", nil)
+		pool := &pillarcsiv1alpha1.PillarPool{
+			Spec: pillarcsiv1alpha1.PillarPoolSpec{
+				TargetRef: "t",
+				Backend:   pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeLVMLV},
+			},
+		}
+		protocol := &pillarcsiv1alpha1.PillarProtocol{
+			Spec: pillarcsiv1alpha1.PillarProtocolSpec{Type: pillarcsiv1alpha1.ProtocolTypeISCSI},
+		}
+		params := buildStorageClassParams(binding, pool, protocol)
+
+		Expect(params).NotTo(HaveKey("pillar-csi.bhyoo.com/zfs-pool"))
+		Expect(params).NotTo(HaveKey("pillar-csi.bhyoo.com/zfs-parent-dataset"))
+	})
+
+	It("should include nvmeof-port for NVMeOF-TCP protocol", func() {
+		binding := makeBinding("pool", "proto", nil)
+		pool := &pillarcsiv1alpha1.PillarPool{
+			Spec: pillarcsiv1alpha1.PillarPoolSpec{
+				TargetRef: "t",
+				Backend:   pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeZFSZvol},
+			},
+		}
+		protocol := makeProtocolNVMeOF(4420)
+		params := buildStorageClassParams(binding, pool, protocol)
+
+		Expect(params).To(HaveKey("pillar-csi.bhyoo.com/nvmeof-port"))
+		Expect(params["pillar-csi.bhyoo.com/nvmeof-port"]).To(Equal("4420"))
+	})
+
+	It("should include iscsi-port for iSCSI protocol", func() {
+		binding := makeBinding("pool", "proto", nil)
+		pool := &pillarcsiv1alpha1.PillarPool{
+			Spec: pillarcsiv1alpha1.PillarPoolSpec{
+				TargetRef: "t",
+				Backend:   pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeZFSZvol},
+			},
+		}
+		protocol := makeProtocolISCSI(3260)
+		params := buildStorageClassParams(binding, pool, protocol)
+
+		Expect(params).To(HaveKey("pillar-csi.bhyoo.com/iscsi-port"))
+		Expect(params["pillar-csi.bhyoo.com/iscsi-port"]).To(Equal("3260"))
+	})
+
+	It("should include nfs-version for NFS protocol", func() {
+		binding := makeBinding("pool", "proto", nil)
+		pool := &pillarcsiv1alpha1.PillarPool{
+			Spec: pillarcsiv1alpha1.PillarPoolSpec{
+				TargetRef: "t",
+				Backend:   pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeDir},
+			},
+		}
+		protocol := makeProtocolNFS("4.2")
+		params := buildStorageClassParams(binding, pool, protocol)
+
+		Expect(params).To(HaveKey("pillar-csi.bhyoo.com/nfs-version"))
+		Expect(params["pillar-csi.bhyoo.com/nfs-version"]).To(Equal("4.2"))
+	})
+
+	It("should use protocol-level fsType for block protocols", func() {
+		binding := makeBinding("pool", "proto", nil)
+		pool := &pillarcsiv1alpha1.PillarPool{
+			Spec: pillarcsiv1alpha1.PillarPoolSpec{
+				TargetRef: "t",
+				Backend:   pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeZFSZvol},
+			},
+		}
+		protocol := &pillarcsiv1alpha1.PillarProtocol{
+			Spec: pillarcsiv1alpha1.PillarProtocolSpec{
+				Type:   pillarcsiv1alpha1.ProtocolTypeNVMeOFTCP,
+				FSType: "xfs",
+			},
+		}
+		params := buildStorageClassParams(binding, pool, protocol)
+
+		Expect(params).To(HaveKey("csi.storage.k8s.io/fstype"))
+		Expect(params["csi.storage.k8s.io/fstype"]).To(Equal("xfs"))
+	})
+
+	It("should use binding-override fsType over protocol-level fsType", func() {
+		overrides := &pillarcsiv1alpha1.BindingOverrides{FSType: "ext4"}
+		binding := makeBinding("pool", "proto", overrides)
+		pool := &pillarcsiv1alpha1.PillarPool{
+			Spec: pillarcsiv1alpha1.PillarPoolSpec{
+				TargetRef: "t",
+				Backend:   pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeZFSZvol},
+			},
+		}
+		protocol := &pillarcsiv1alpha1.PillarProtocol{
+			Spec: pillarcsiv1alpha1.PillarProtocolSpec{
+				Type:   pillarcsiv1alpha1.ProtocolTypeNVMeOFTCP,
+				FSType: "xfs", // protocol says xfs, binding overrides to ext4
+			},
+		}
+		params := buildStorageClassParams(binding, pool, protocol)
+
+		Expect(params["csi.storage.k8s.io/fstype"]).To(Equal("ext4"),
+			"binding override should win over protocol-level fsType")
+	})
+
+	It("should use protocol-level mkfsOptions for block protocols", func() {
+		binding := makeBinding("pool", "proto", nil)
+		pool := &pillarcsiv1alpha1.PillarPool{
+			Spec: pillarcsiv1alpha1.PillarPoolSpec{
+				TargetRef: "t",
+				Backend:   pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeLVMLV},
+			},
+		}
+		protocol := &pillarcsiv1alpha1.PillarProtocol{
+			Spec: pillarcsiv1alpha1.PillarProtocolSpec{
+				Type:        pillarcsiv1alpha1.ProtocolTypeISCSI,
+				MkfsOptions: []string{"-E", "lazy_itable_init=0"},
+			},
+		}
+		params := buildStorageClassParams(binding, pool, protocol)
+
+		Expect(params).To(HaveKey("pillar-csi.bhyoo.com/mkfs-options"))
+		Expect(params["pillar-csi.bhyoo.com/mkfs-options"]).To(Equal("-E lazy_itable_init=0"))
+	})
+
+	It("should use binding-override mkfsOptions over protocol-level mkfsOptions", func() {
+		overrides := &pillarcsiv1alpha1.BindingOverrides{
+			MkfsOptions: []string{"-m", "0"},
+		}
+		binding := makeBinding("pool", "proto", overrides)
+		pool := &pillarcsiv1alpha1.PillarPool{
+			Spec: pillarcsiv1alpha1.PillarPoolSpec{
+				TargetRef: "t",
+				Backend:   pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeLVMLV},
+			},
+		}
+		protocol := &pillarcsiv1alpha1.PillarProtocol{
+			Spec: pillarcsiv1alpha1.PillarProtocolSpec{
+				Type:        pillarcsiv1alpha1.ProtocolTypeISCSI,
+				MkfsOptions: []string{"-E", "lazy_itable_init=0"}, // overridden by binding
+			},
+		}
+		params := buildStorageClassParams(binding, pool, protocol)
+
+		Expect(params["pillar-csi.bhyoo.com/mkfs-options"]).To(Equal("-m 0"),
+			"binding mkfsOptions should override protocol-level mkfsOptions")
+	})
+
+	It("should NOT include fsType or mkfsOptions for NFS protocol", func() {
+		binding := makeBinding("pool", "proto", &pillarcsiv1alpha1.BindingOverrides{
+			FSType:      "ext4",
+			MkfsOptions: []string{"-E", "lazy_itable_init=0"},
+		})
+		pool := &pillarcsiv1alpha1.PillarPool{
+			Spec: pillarcsiv1alpha1.PillarPoolSpec{
+				TargetRef: "t",
+				Backend:   pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeDir},
+			},
+		}
+		protocol := makeProtocolNFS("4.1")
+		params := buildStorageClassParams(binding, pool, protocol)
+
+		Expect(params).NotTo(HaveKey("csi.storage.k8s.io/fstype"),
+			"NFS protocol should not include fsType param")
+		Expect(params).NotTo(HaveKey("pillar-csi.bhyoo.com/mkfs-options"),
+			"NFS protocol should not include mkfs-options param")
 	})
 })

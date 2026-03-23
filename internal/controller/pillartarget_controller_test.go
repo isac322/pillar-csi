@@ -35,8 +35,8 @@ var _ = Describe("PillarTarget Controller", func() {
 	const targetName = "test-target"
 
 	var (
-		bctx               context.Context
-		reconciler         *PillarTargetReconciler
+		bctx                 context.Context
+		reconciler           *PillarTargetReconciler
 		targetNamespacedName types.NamespacedName
 	)
 

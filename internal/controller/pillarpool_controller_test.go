@@ -40,8 +40,8 @@ var _ = Describe("PillarPool Controller", func() {
 	)
 
 	var (
-		bctx             context.Context
-		reconciler       *PillarPoolReconciler
+		bctx               context.Context
+		reconciler         *PillarPoolReconciler
 		poolNamespacedName types.NamespacedName
 	)
 

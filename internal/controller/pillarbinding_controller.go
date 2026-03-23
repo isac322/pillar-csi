@@ -444,9 +444,9 @@ func buildStorageClassParams(
 	protocol *pillarcsiv1alpha1.PillarProtocol,
 ) map[string]string {
 	params := map[string]string{
-		"pillar-csi.bhyoo.com/pool":         binding.Spec.PoolRef,
-		"pillar-csi.bhyoo.com/protocol":     binding.Spec.ProtocolRef,
-		"pillar-csi.bhyoo.com/backend-type": string(pool.Spec.Backend.Type),
+		"pillar-csi.bhyoo.com/pool":          binding.Spec.PoolRef,
+		"pillar-csi.bhyoo.com/protocol":      binding.Spec.ProtocolRef,
+		"pillar-csi.bhyoo.com/backend-type":  string(pool.Spec.Backend.Type),
 		"pillar-csi.bhyoo.com/protocol-type": string(protocol.Spec.Type),
 		"pillar-csi.bhyoo.com/target":        pool.Spec.TargetRef,
 	}
