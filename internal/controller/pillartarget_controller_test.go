@@ -21,7 +21,9 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -219,6 +221,329 @@ var _ = Describe("PillarTarget Controller", func() {
 			err = k8sClient.Get(bctx, targetNamespacedName, fetched)
 			Expect(errors.IsNotFound(err)).To(BeTrue(),
 				"PillarTarget should be deleted when no pools reference it")
+		})
+	})
+
+	// -----------------------------------------------------------------------
+	// External mode status conditions
+	// -----------------------------------------------------------------------
+	Context("External mode — status condition updates", func() {
+		const externalTargetName = "test-target-external"
+		externalNN := types.NamespacedName{Name: externalTargetName}
+
+		doExternalReconcile := func() (reconcile.Result, error) {
+			return reconciler.Reconcile(bctx, reconcile.Request{NamespacedName: externalNN})
+		}
+
+		BeforeEach(func() {
+			obj := &pillarcsiv1alpha1.PillarTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: externalTargetName},
+				Spec: pillarcsiv1alpha1.PillarTargetSpec{
+					External: &pillarcsiv1alpha1.ExternalSpec{
+						Address: "10.0.0.1",
+						Port:    9500,
+					},
+				},
+			}
+			Expect(k8sClient.Create(bctx, obj)).To(Succeed())
+			// First reconcile adds finalizer.
+			_, err := doExternalReconcile()
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		AfterEach(func() {
+			t := &pillarcsiv1alpha1.PillarTarget{}
+			if err := k8sClient.Get(bctx, externalNN, t); err == nil {
+				controllerutil.RemoveFinalizer(t, pillarTargetFinalizer)
+				_ = k8sClient.Update(bctx, t)
+				_ = k8sClient.Delete(bctx, t)
+			}
+		})
+
+		It("should set NodeExists=Unknown for an external-mode target", func() {
+			_, err := doExternalReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := &pillarcsiv1alpha1.PillarTarget{}
+			Expect(k8sClient.Get(bctx, externalNN, fetched)).To(Succeed())
+			cond := apimeta.FindStatusCondition(fetched.Status.Conditions, "NodeExists")
+			Expect(cond).NotTo(BeNil(), "NodeExists condition should be set")
+			Expect(cond.Status).To(Equal(metav1.ConditionUnknown),
+				"NodeExists should be Unknown for external-mode targets")
+			Expect(cond.Reason).To(Equal("ExternalMode"))
+		})
+
+		It("should set AgentConnected=False for an external-mode target (stubbed)", func() {
+			_, err := doExternalReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := &pillarcsiv1alpha1.PillarTarget{}
+			Expect(k8sClient.Get(bctx, externalNN, fetched)).To(Succeed())
+			cond := apimeta.FindStatusCondition(fetched.Status.Conditions, "AgentConnected")
+			Expect(cond).NotTo(BeNil(), "AgentConnected condition should be set")
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse),
+				"AgentConnected should be False until gRPC connection is implemented")
+		})
+
+		It("should set Ready=False for an external-mode target while AgentConnected is False", func() {
+			_, err := doExternalReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := &pillarcsiv1alpha1.PillarTarget{}
+			Expect(k8sClient.Get(bctx, externalNN, fetched)).To(Succeed())
+			cond := apimeta.FindStatusCondition(fetched.Status.Conditions, "Ready")
+			Expect(cond).NotTo(BeNil(), "Ready condition should be set")
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse),
+				"Ready should be False while AgentConnected is False")
+		})
+
+		It("should set status.resolvedAddress from spec.external address:port", func() {
+			_, err := doExternalReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := &pillarcsiv1alpha1.PillarTarget{}
+			Expect(k8sClient.Get(bctx, externalNN, fetched)).To(Succeed())
+			Expect(fetched.Status.ResolvedAddress).To(Equal("10.0.0.1:9500"),
+				"resolvedAddress should be address:port from spec.external")
+		})
+	})
+
+	// -----------------------------------------------------------------------
+	// NodeRef mode — status condition updates and node auto-labeling
+	// -----------------------------------------------------------------------
+	Context("NodeRef mode — node not found", func() {
+		const nodeRefTargetName = "test-target-noderef-missing"
+		nodeRefNN := types.NamespacedName{Name: nodeRefTargetName}
+
+		doNodeRefReconcile := func() (reconcile.Result, error) {
+			return reconciler.Reconcile(bctx, reconcile.Request{NamespacedName: nodeRefNN})
+		}
+
+		BeforeEach(func() {
+			obj := &pillarcsiv1alpha1.PillarTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: nodeRefTargetName},
+				Spec: pillarcsiv1alpha1.PillarTargetSpec{
+					NodeRef: &pillarcsiv1alpha1.NodeRefSpec{
+						Name:        "nonexistent-node",
+						AddressType: "InternalIP",
+					},
+				},
+			}
+			Expect(k8sClient.Create(bctx, obj)).To(Succeed())
+			// First reconcile adds finalizer.
+			_, err := doNodeRefReconcile()
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		AfterEach(func() {
+			t := &pillarcsiv1alpha1.PillarTarget{}
+			if err := k8sClient.Get(bctx, nodeRefNN, t); err == nil {
+				controllerutil.RemoveFinalizer(t, pillarTargetFinalizer)
+				_ = k8sClient.Update(bctx, t)
+				_ = k8sClient.Delete(bctx, t)
+			}
+		})
+
+		It("should set NodeExists=False when the referenced node does not exist", func() {
+			_, err := doNodeRefReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := &pillarcsiv1alpha1.PillarTarget{}
+			Expect(k8sClient.Get(bctx, nodeRefNN, fetched)).To(Succeed())
+			cond := apimeta.FindStatusCondition(fetched.Status.Conditions, "NodeExists")
+			Expect(cond).NotTo(BeNil(), "NodeExists condition should be set")
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse),
+				"NodeExists should be False when the referenced node does not exist")
+			Expect(cond.Reason).To(Equal("NodeNotFound"))
+		})
+
+		It("should set AgentConnected=False when the referenced node does not exist", func() {
+			_, err := doNodeRefReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := &pillarcsiv1alpha1.PillarTarget{}
+			Expect(k8sClient.Get(bctx, nodeRefNN, fetched)).To(Succeed())
+			cond := apimeta.FindStatusCondition(fetched.Status.Conditions, "AgentConnected")
+			Expect(cond).NotTo(BeNil(), "AgentConnected condition should be set")
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cond.Reason).To(Equal("NodeNotFound"))
+		})
+
+		It("should set Ready=False when the referenced node does not exist", func() {
+			_, err := doNodeRefReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := &pillarcsiv1alpha1.PillarTarget{}
+			Expect(k8sClient.Get(bctx, nodeRefNN, fetched)).To(Succeed())
+			cond := apimeta.FindStatusCondition(fetched.Status.Conditions, "Ready")
+			Expect(cond).NotTo(BeNil(), "Ready condition should be set")
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cond.Reason).To(Equal("NodeNotFound"))
+		})
+
+		It("should clear status.resolvedAddress when the node does not exist", func() {
+			_, err := doNodeRefReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := &pillarcsiv1alpha1.PillarTarget{}
+			Expect(k8sClient.Get(bctx, nodeRefNN, fetched)).To(Succeed())
+			Expect(fetched.Status.ResolvedAddress).To(BeEmpty(),
+				"resolvedAddress should be empty when the node is missing")
+		})
+	})
+
+	Context("NodeRef mode — node found and auto-labeling", func() {
+		const (
+			nodeRefFoundTargetName = "test-target-noderef-found"
+			nodeRefFoundNodeName   = "test-storage-node"
+		)
+		nodeRefFoundNN := types.NamespacedName{Name: nodeRefFoundTargetName}
+		nodeNN := types.NamespacedName{Name: nodeRefFoundNodeName}
+
+		doFoundReconcile := func() (reconcile.Result, error) {
+			return reconciler.Reconcile(bctx, reconcile.Request{NamespacedName: nodeRefFoundNN})
+		}
+
+		BeforeEach(func() {
+			// Create the node that the PillarTarget will reference.
+			node := &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{Name: nodeRefFoundNodeName},
+				Status: corev1.NodeStatus{
+					Addresses: []corev1.NodeAddress{
+						{Type: corev1.NodeInternalIP, Address: "192.168.1.10"},
+					},
+				},
+			}
+			Expect(k8sClient.Create(bctx, node)).To(Succeed())
+			// envtest doesn't run NodeStatus sub-resource automatically — patch status directly.
+			Expect(k8sClient.Status().Update(bctx, node)).To(Succeed())
+
+			obj := &pillarcsiv1alpha1.PillarTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: nodeRefFoundTargetName},
+				Spec: pillarcsiv1alpha1.PillarTargetSpec{
+					NodeRef: &pillarcsiv1alpha1.NodeRefSpec{
+						Name:        nodeRefFoundNodeName,
+						AddressType: "InternalIP",
+					},
+				},
+			}
+			Expect(k8sClient.Create(bctx, obj)).To(Succeed())
+			// First reconcile adds finalizer.
+			_, err := doFoundReconcile()
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		AfterEach(func() {
+			// Remove label from node before deletion to ensure clean state.
+			node := &corev1.Node{}
+			if err := k8sClient.Get(bctx, nodeNN, node); err == nil {
+				if node.Labels != nil {
+					delete(node.Labels, storageNodeLabel)
+					_ = k8sClient.Update(bctx, node)
+				}
+				_ = k8sClient.Delete(bctx, node)
+			}
+			t := &pillarcsiv1alpha1.PillarTarget{}
+			if err := k8sClient.Get(bctx, nodeRefFoundNN, t); err == nil {
+				controllerutil.RemoveFinalizer(t, pillarTargetFinalizer)
+				_ = k8sClient.Update(bctx, t)
+				_ = k8sClient.Delete(bctx, t)
+			}
+		})
+
+		It("should set NodeExists=True when the referenced node exists", func() {
+			_, err := doFoundReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := &pillarcsiv1alpha1.PillarTarget{}
+			Expect(k8sClient.Get(bctx, nodeRefFoundNN, fetched)).To(Succeed())
+			cond := apimeta.FindStatusCondition(fetched.Status.Conditions, "NodeExists")
+			Expect(cond).NotTo(BeNil(), "NodeExists condition should be set")
+			Expect(cond.Status).To(Equal(metav1.ConditionTrue),
+				"NodeExists should be True when the referenced node exists in the cluster")
+			Expect(cond.Reason).To(Equal("NodeFound"))
+		})
+
+		It("should populate status.resolvedAddress from the node's InternalIP", func() {
+			_, err := doFoundReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := &pillarcsiv1alpha1.PillarTarget{}
+			Expect(k8sClient.Get(bctx, nodeRefFoundNN, fetched)).To(Succeed())
+			Expect(fetched.Status.ResolvedAddress).To(Equal("192.168.1.10:9500"),
+				"resolvedAddress should be <nodeIP>:<defaultPort> when no port override is set")
+		})
+
+		It("should apply the storage-node label to the referenced node", func() {
+			_, err := doFoundReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			node := &corev1.Node{}
+			Expect(k8sClient.Get(bctx, nodeNN, node)).To(Succeed())
+			Expect(node.Labels).To(HaveKeyWithValue(storageNodeLabel, "true"),
+				"storage-node label should be applied to the referenced node")
+		})
+
+		It("should set AgentConnected=False (stubbed) even when node is found", func() {
+			_, err := doFoundReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := &pillarcsiv1alpha1.PillarTarget{}
+			Expect(k8sClient.Get(bctx, nodeRefFoundNN, fetched)).To(Succeed())
+			cond := apimeta.FindStatusCondition(fetched.Status.Conditions, "AgentConnected")
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse),
+				"AgentConnected should remain False until gRPC connection is implemented")
+		})
+
+		It("should set Ready=False (stubbed) even when node is found", func() {
+			_, err := doFoundReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := &pillarcsiv1alpha1.PillarTarget{}
+			Expect(k8sClient.Get(bctx, nodeRefFoundNN, fetched)).To(Succeed())
+			cond := apimeta.FindStatusCondition(fetched.Status.Conditions, "Ready")
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse),
+				"Ready should be False while AgentConnected is False (stub phase)")
+		})
+
+		It("should not duplicate the storage-node label on repeated reconciles", func() {
+			// Reconcile twice — label should still be present exactly once.
+			_, err := doFoundReconcile()
+			Expect(err).NotTo(HaveOccurred())
+			_, err = doFoundReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			node := &corev1.Node{}
+			Expect(k8sClient.Get(bctx, nodeNN, node)).To(Succeed())
+			Expect(node.Labels[storageNodeLabel]).To(Equal("true"),
+				"label value should remain 'true' after multiple reconciles")
+		})
+
+		It("should remove the storage-node label from the node on target deletion", func() {
+			// First ensure label is applied.
+			_, err := doFoundReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			node := &corev1.Node{}
+			Expect(k8sClient.Get(bctx, nodeNN, node)).To(Succeed())
+			Expect(node.Labels).To(HaveKey(storageNodeLabel), "label should be present before deletion")
+
+			// Trigger deletion.
+			Expect(k8sClient.Delete(bctx, &pillarcsiv1alpha1.PillarTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: nodeRefFoundTargetName},
+			})).To(Succeed())
+
+			// Reconcile — no blocking pools, finalizer removed.
+			_, err = doFoundReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Node label should be removed.
+			node = &corev1.Node{}
+			Expect(k8sClient.Get(bctx, nodeNN, node)).To(Succeed())
+			Expect(node.Labels).NotTo(HaveKey(storageNodeLabel),
+				"storage-node label should be removed when PillarTarget is deleted")
 		})
 	})
 })
