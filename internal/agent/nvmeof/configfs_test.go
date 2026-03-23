@@ -237,6 +237,121 @@ func TestNvmetTargetDefaultConfigfsRoot(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Subsystem and namespace tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TestCreateSubsystem verifies that createSubsystem creates the subsystem
+// directory and sets attr_allow_any_host to "1".
+func TestCreateSubsystem(t *testing.T) {
+	root := t.TempDir()
+	tgt := &NvmetTarget{
+		ConfigfsRoot: root,
+		SubsystemNQN: "nqn.2026-01.io.pillar-csi:pvc-abc123",
+		NamespaceID:  1,
+		DevicePath:   "/dev/zvol/tank/pvc-abc123",
+		BindAddress:  "10.0.0.1",
+		Port:         DefaultPort,
+	}
+
+	if err := tgt.createSubsystem(); err != nil {
+		t.Fatalf("createSubsystem: %v", err)
+	}
+
+	// Subsystem directory must exist.
+	subDir := tgt.subsystemDir()
+	fi, err := os.Stat(subDir)
+	if err != nil {
+		t.Fatalf("stat subsystemDir: %v", err)
+	}
+	if !fi.IsDir() {
+		t.Fatalf("subsystemDir is not a directory, mode=%s", fi.Mode())
+	}
+
+	// attr_allow_any_host must be "1".
+	assertFileContent(t, filepath.Join(subDir, "attr_allow_any_host"), "1")
+
+	// Calling again must be idempotent (no error).
+	if err := tgt.createSubsystem(); err != nil {
+		t.Fatalf("idempotent createSubsystem: %v", err)
+	}
+}
+
+// TestCreateNamespace verifies that createNamespace creates the namespace
+// directory and writes device_path and enable=1.
+func TestCreateNamespace(t *testing.T) {
+	root := t.TempDir()
+	tgt := &NvmetTarget{
+		ConfigfsRoot: root,
+		SubsystemNQN: "nqn.2026-01.io.pillar-csi:pvc-abc123",
+		NamespaceID:  1,
+		DevicePath:   "/dev/zvol/tank/pvc-abc123",
+		BindAddress:  "10.0.0.1",
+		Port:         DefaultPort,
+	}
+
+	// createSubsystem must be called first to create the subsystem directory.
+	if err := tgt.createSubsystem(); err != nil {
+		t.Fatalf("createSubsystem: %v", err)
+	}
+
+	if err := tgt.createNamespace(); err != nil {
+		t.Fatalf("createNamespace: %v", err)
+	}
+
+	// Namespace directory must exist.
+	nsDir := tgt.namespaceDir()
+	fi, err := os.Stat(nsDir)
+	if err != nil {
+		t.Fatalf("stat namespaceDir: %v", err)
+	}
+	if !fi.IsDir() {
+		t.Fatalf("namespaceDir is not a directory, mode=%s", fi.Mode())
+	}
+
+	// device_path must contain the device path.
+	assertFileContent(t, filepath.Join(nsDir, "device_path"), tgt.DevicePath)
+
+	// enable must be "1".
+	assertFileContent(t, filepath.Join(nsDir, "enable"), "1")
+
+	// Calling again must be idempotent (no error, values overwritten with same content).
+	if err := tgt.createNamespace(); err != nil {
+		t.Fatalf("idempotent createNamespace: %v", err)
+	}
+	assertFileContent(t, filepath.Join(nsDir, "device_path"), tgt.DevicePath)
+	assertFileContent(t, filepath.Join(nsDir, "enable"), "1")
+}
+
+// TestCreateSubsystemAndNamespaceNonDefaultNsid verifies that non-1 namespace
+// IDs are handled correctly (the directory name must reflect the actual nsid).
+func TestCreateSubsystemAndNamespaceNonDefaultNsid(t *testing.T) {
+	root := t.TempDir()
+	tgt := &NvmetTarget{
+		ConfigfsRoot: root,
+		SubsystemNQN: "nqn.2026-01.io.pillar-csi:pvc-xyz",
+		NamespaceID:  7,
+		DevicePath:   "/dev/zvol/tank/pvc-xyz",
+		BindAddress:  "10.0.0.2",
+		Port:         DefaultPort,
+	}
+
+	if err := tgt.createSubsystem(); err != nil {
+		t.Fatalf("createSubsystem: %v", err)
+	}
+	if err := tgt.createNamespace(); err != nil {
+		t.Fatalf("createNamespace: %v", err)
+	}
+
+	nsDir := tgt.namespaceDir()
+	// The leaf directory name must be "7".
+	if filepath.Base(nsDir) != "7" {
+		t.Errorf("expected namespace dir leaf to be %q, got %q", "7", filepath.Base(nsDir))
+	}
+	assertFileContent(t, filepath.Join(nsDir, "device_path"), "/dev/zvol/tank/pvc-xyz")
+	assertFileContent(t, filepath.Join(nsDir, "enable"), "1")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // test helpers
 // ─────────────────────────────────────────────────────────────────────────────
 

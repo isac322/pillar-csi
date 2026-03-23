@@ -224,3 +224,61 @@ func removeDir(path string) error {
 	}
 	return nil
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Subsystem and namespace management
+// ─────────────────────────────────────────────────────────────────────────────
+
+// createSubsystem creates the configfs subsystem directory for this target and
+// configures it to allow any host.  Specifically it:
+//
+//  1. Creates <nvmetRoot>/subsystems/<nqn>/ (the kernel instantiates the
+//     NVMe subsystem object when the directory appears).
+//  2. Writes "1" to attr_allow_any_host so that any initiator can connect
+//     without an explicit ACL entry.
+//
+// The operation is idempotent: if the directory already exists the mkdir is a
+// no-op; if attr_allow_any_host already contains "1" the write is a no-op at
+// the kernel level (configfs pseudo-files accept repeated identical writes).
+func (t *NvmetTarget) createSubsystem() error {
+	subDir := t.subsystemDir()
+	if err := mkdirAll(subDir); err != nil {
+		return fmt.Errorf("createSubsystem %q: %w", t.SubsystemNQN, err)
+	}
+	attrPath := filepath.Join(subDir, "attr_allow_any_host")
+	if err := writeFile(attrPath, "1"); err != nil {
+		return fmt.Errorf("createSubsystem %q: %w", t.SubsystemNQN, err)
+	}
+	return nil
+}
+
+// createNamespace creates the configfs namespace directory for this target and
+// activates it against the backing block device.  Specifically it:
+//
+//  1. Creates <subsystemDir>/namespaces/<nsid>/ (the kernel instantiates the
+//     namespace object when the directory appears).
+//  2. Writes t.DevicePath to the device_path pseudo-file so the kernel knows
+//     which block device backs this namespace.
+//  3. Writes "1" to enable to activate the namespace; the kernel will begin
+//     accepting I/O after this write.
+//
+// createNamespace must be called after createSubsystem because the namespace
+// directory lives inside the subsystem directory.
+//
+// The operation is idempotent: repeated calls with the same parameters produce
+// the same configfs state.
+func (t *NvmetTarget) createNamespace() error {
+	nsDir := t.namespaceDir()
+	if err := mkdirAll(nsDir); err != nil {
+		return fmt.Errorf("createNamespace %q ns=%d: %w", t.SubsystemNQN, t.NamespaceID, err)
+	}
+	devPath := filepath.Join(nsDir, "device_path")
+	if err := writeFile(devPath, t.DevicePath); err != nil {
+		return fmt.Errorf("createNamespace %q ns=%d: %w", t.SubsystemNQN, t.NamespaceID, err)
+	}
+	enablePath := filepath.Join(nsDir, "enable")
+	if err := writeFile(enablePath, "1"); err != nil {
+		return fmt.Errorf("createNamespace %q ns=%d: %w", t.SubsystemNQN, t.NamespaceID, err)
+	}
+	return nil
+}
