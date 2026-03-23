@@ -20,8 +20,8 @@
 // Volume lifecycle from the controller's perspective:
 //
 //   CreateVolume (CSI)
-//     ├─ StageVolume(RPC)  — backend: create zvol / LV / …
-//     └─ MountVolume(RPC)  — protocol target: export over NVMe-oF / iSCSI / NFS
+//     ├─ CreateVolume(RPC)  — backend: create zvol / LV / …
+//     └─ ExportVolume(RPC)  — protocol target: export over NVMe-oF / iSCSI / NFS
 //
 //   ControllerPublishVolume (CSI)
 //     └─ AllowInitiator(RPC) — add initiator NQN/IQN/IP to ACL
@@ -30,12 +30,12 @@
 //     └─ DenyInitiator(RPC)  — remove initiator from ACL
 //
 //   DeleteVolume (CSI)
-//     ├─ UnmountVolume(RPC) — unexport: tear down protocol target entry
-//     └─ DeleteVolume(RPC)  — backend: destroy zvol / LV / …
+//     ├─ UnexportVolume(RPC) — unexport: tear down protocol target entry
+//     └─ DeleteVolume(RPC)   — backend: destroy zvol / LV / …
 //
 //   Cross-node migration / backup (out-of-band, not part of CSI spec)
-//     ├─ ExportVolume(RPC)  — server-stream: zfs send / dd out of volume
-//     └─ ImportVolume(RPC)  — client-stream: zfs receive / dd into volume
+//     ├─ SendVolume(RPC)    — server-stream: zfs send / dd out of volume
+//     └─ ReceiveVolume(RPC) — client-stream: zfs receive / dd into volume
 
 syntax = "proto3";
 
@@ -74,17 +74,23 @@ service AgentService {
   // entries) for a given pool.  Paired with ListVolumes for full state audit.
   rpc ListExports(ListExportsRequest) returns (ListExportsResponse);
 
+  // HealthCheck returns the liveness and readiness status of the agent process
+  // and its subsystems (ZFS kernel module, NVMe-oF configfs, etc.).
+  // The controller uses this RPC to gate reconciliation and update
+  // PillarTarget.status.conditions.
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+
   // ── Volume backend lifecycle ───────────────────────────────────────────────
 
-  // StageVolume creates the backend storage resource (e.g. ZFS zvol, LVM LV)
+  // CreateVolume creates the backend storage resource (e.g. ZFS zvol, LVM LV)
   // on the storage node.  This is the first step in the CreateVolume flow.
   //
   // Idempotent: if the volume already exists with the same parameters the
   // agent MUST return success.
-  rpc StageVolume(StageVolumeRequest) returns (StageVolumeResponse);
+  rpc CreateVolume(CreateVolumeRequest) returns (CreateVolumeResponse);
 
   // DeleteVolume destroys the backend storage resource.  The export MUST have
-  // been removed (UnmountVolume) before calling this RPC; the agent will
+  // been removed (UnexportVolume) before calling this RPC; the agent will
   // return FAILED_PRECONDITION otherwise.
   //
   // Idempotent: if the volume does not exist, the agent MUST return success.
@@ -96,25 +102,25 @@ service AgentService {
 
   // ── Protocol target (export) lifecycle ────────────────────────────────────
 
-  // MountVolume creates the network-protocol target entry that exposes the
-  // already-staged volume to the network (e.g. adds an NVMe-oF subsystem +
+  // ExportVolume creates the network-protocol target entry that exposes the
+  // already-created volume to the network (e.g. adds an NVMe-oF subsystem +
   // namespace, or an iSCSI LUN, or an NFS export).
   //
   // Idempotent: if the export already exists with the same parameters the
   // agent MUST return the existing ExportInfo and success.
-  rpc MountVolume(MountVolumeRequest) returns (MountVolumeResponse);
+  rpc ExportVolume(ExportVolumeRequest) returns (ExportVolumeResponse);
 
-  // UnmountVolume removes the network-protocol target entry (e.g. deletes the
+  // UnexportVolume removes the network-protocol target entry (e.g. deletes the
   // NVMe-oF subsystem or unexports the NFS path).  Initiator ACL entries are
   // removed automatically.
   //
   // Idempotent: if the export does not exist, the agent MUST return success.
-  rpc UnmountVolume(UnmountVolumeRequest) returns (UnmountVolumeResponse);
+  rpc UnexportVolume(UnexportVolumeRequest) returns (UnexportVolumeResponse);
 
   // ── Initiator access control ───────────────────────────────────────────────
 
   // AllowInitiator grants network access to a single initiator for an already-
-  // mounted volume.  Corresponds to CSI ControllerPublishVolume.
+  // exported volume.  Corresponds to CSI ControllerPublishVolume.
   //
   // The meaning of initiator_id depends on the protocol:
   //   NVMe-oF TCP → host NQN   (added to allowed_hosts)
@@ -132,31 +138,31 @@ service AgentService {
 
   // ── Volume data migration ──────────────────────────────────────────────────
 
-  // ExportVolume streams the raw binary content of a backend volume to the
+  // SendVolume streams the raw binary content of a backend volume to the
   // caller.  Intended for cross-node volume migration and offline backup.
   // The canonical implementation for ZFS backends is `zfs send`; for LVM it
   // is `dd if=<lv>`.
   //
-  // The volume SHOULD be quiesced (UnmountVolume called) before streaming to
+  // The volume SHOULD be quiesced (UnexportVolume called) before streaming to
   // avoid data inconsistency.  The controller is responsible for quiescing.
   //
-  // The response is a server-side stream of ExportVolumeChunk messages.  The
+  // The response is a server-side stream of SendVolumeChunk messages.  The
   // first chunk (sequence == 0) carries the total_bytes field; subsequent
   // chunks carry only data and sequence.  The final chunk sets eof = true.
-  rpc ExportVolume(ExportVolumeRequest) returns (stream ExportVolumeChunk);
+  rpc SendVolume(SendVolumeRequest) returns (stream SendVolumeChunk);
 
-  // ImportVolume receives a binary data stream from the caller and writes it
-  // into a pre-existing backend volume.  The mirror operation of ExportVolume.
+  // ReceiveVolume receives a binary data stream from the caller and writes it
+  // into a pre-existing backend volume.  The mirror operation of SendVolume.
   // The canonical implementation for ZFS backends is `zfs receive`; for LVM
   // it is `dd of=<lv>`.
   //
-  // The destination volume MUST already exist (StageVolume) and MUST NOT be
-  // exported (UnmountVolume must have been called) when this RPC is invoked.
+  // The destination volume MUST already exist (CreateVolume) and MUST NOT be
+  // exported (UnexportVolume must have been called) when this RPC is invoked.
   //
-  // The request is a client-side stream of ImportVolumeChunk messages.  The
+  // The request is a client-side stream of ReceiveVolumeChunk messages.  The
   // first chunk (sequence == 0) carries volume_id and backend_type; subsequent
   // chunks carry only data and sequence.  The final chunk sets eof = true.
-  rpc ImportVolume(stream ImportVolumeChunk) returns (ImportVolumeResponse);
+  rpc ReceiveVolume(stream ReceiveVolumeChunk) returns (ReceiveVolumeResponse);
 
   // ── State recovery ─────────────────────────────────────────────────────────
 
@@ -314,7 +320,7 @@ message VolumeInfo {
   //   LVM LV    → /dev/<vg>/<lv>
   //   Directory → /path/to/dir
   string device_path = 3;
-  // True if a network export (MountVolume) has been applied to this volume.
+  // True if a network export (ExportVolume) has been applied to this volume.
   bool exported = 4;
 }
 
@@ -399,11 +405,38 @@ message ListExportsResponse {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// StageVolume — create backend storage resource
+// HealthCheck
 // ─────────────────────────────────────────────────────────────────────────────
 
-// StageVolumeRequest asks the agent to create a backend storage resource.
-message StageVolumeRequest {
+// SubsystemStatus reports the health of a single agent subsystem.
+message SubsystemStatus {
+  // Human-readable name of the subsystem (e.g. "zfs", "nvmet-configfs").
+  string name = 1;
+  // True if the subsystem is operational.
+  bool healthy = 2;
+  // Human-readable message (e.g. "zfs module loaded" or error description).
+  string message = 3;
+}
+
+message HealthCheckRequest {}
+
+message HealthCheckResponse {
+  // Overall health: true only when all subsystems are healthy.
+  bool healthy = 1;
+  // Per-subsystem health details.
+  repeated SubsystemStatus subsystems = 2;
+  // Agent binary version string (semver).
+  string agent_version = 3;
+  // Timestamp at which this health snapshot was taken by the agent.
+  google.protobuf.Timestamp checked_at = 4;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CreateVolume — create backend storage resource
+// ─────────────────────────────────────────────────────────────────────────────
+
+// CreateVolumeRequest asks the agent to create a backend storage resource.
+message CreateVolumeRequest {
   // Unique volume identifier within the agent: "<pool>/<volume-name>".
   // Example: "hot-data/pvc-abc123"
   string volume_id = 1;
@@ -423,7 +456,7 @@ message StageVolumeRequest {
   VolumeAccessType access_type = 5;
 }
 
-message StageVolumeResponse {
+message CreateVolumeResponse {
   // Path to the backend resource on the storage node.
   string device_path = 1;
 
@@ -466,12 +499,12 @@ message ExpandVolumeResponse {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// MountVolume — create protocol target entry (network export)
+// ExportVolume — create protocol target entry (network export)
 // ─────────────────────────────────────────────────────────────────────────────
 
-// MountVolumeRequest asks the agent to expose an already-staged volume over
+// ExportVolumeRequest asks the agent to expose an already-created volume over
 // a network storage protocol.
-message MountVolumeRequest {
+message ExportVolumeRequest {
   // Volume identifier: "<pool>/<volume-name>".
   string volume_id = 1;
 
@@ -481,7 +514,7 @@ message MountVolumeRequest {
   // Protocol-specific export parameters (bind address, port, etc.).
   ExportParams export_params = 3;
 
-  // Path to the backend resource (from StageVolumeResponse.device_path or the
+  // Path to the backend resource (from CreateVolumeResponse.device_path or the
   // filesystem mount point for NFS/SMB backends).
   string device_path = 4;
 
@@ -490,17 +523,17 @@ message MountVolumeRequest {
   bool acl_enabled = 5;
 }
 
-message MountVolumeResponse {
+message ExportVolumeResponse {
   // Export information that the controller persists in the PV volumeContext
   // so that pillar-node can connect during NodeStageVolume.
   ExportInfo export_info = 1;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// UnmountVolume — remove protocol target entry (network export)
+// UnexportVolume — remove protocol target entry (network export)
 // ─────────────────────────────────────────────────────────────────────────────
 
-message UnmountVolumeRequest {
+message UnexportVolumeRequest {
   // Volume identifier: "<pool>/<volume-name>".
   string volume_id = 1;
 
@@ -508,30 +541,30 @@ message UnmountVolumeRequest {
   ProtocolType protocol_type = 2;
 }
 
-message UnmountVolumeResponse {}
+message UnexportVolumeResponse {}
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ExportVolume — stream backend volume data out (backup / cross-node migration)
+// SendVolume — stream backend volume data out (backup / cross-node migration)
 // ─────────────────────────────────────────────────────────────────────────────
 
-// ExportVolumeRequest initiates a volume data export stream.
-message ExportVolumeRequest {
+// SendVolumeRequest initiates a volume data send stream.
+message SendVolumeRequest {
   // Volume identifier: "<pool>/<volume-name>".
   string volume_id = 1;
 
   // Backend type (required for routing to the correct backend plugin).
   BackendType backend_type = 2;
 
-  // Optional snapshot name to export from.
+  // Optional snapshot name to send from.
   //   ZFS   → snapshot component, e.g. "snap0" → zfs send pool/vol@snap0
   //   LVM   → LV snapshot name
-  // If empty the agent exports the current (live) state.  The caller is
-  // responsible for quiescing the volume before requesting a live export.
+  // If empty the agent sends the current (live) state.  The caller is
+  // responsible for quiescing the volume before requesting a live send.
   string snapshot_name = 3;
 }
 
-// ExportVolumeChunk is one piece of the server-side data stream.
-message ExportVolumeChunk {
+// SendVolumeChunk is one piece of the server-side data stream.
+message SendVolumeChunk {
   // Monotonically increasing sequence number starting at 0.
   uint64 sequence = 1;
 
@@ -548,13 +581,13 @@ message ExportVolumeChunk {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ImportVolume — stream data into a backend volume (restore / cross-node migration)
+// ReceiveVolume — stream data into a backend volume (restore / cross-node migration)
 // ─────────────────────────────────────────────────────────────────────────────
 
-// ImportVolumeChunk is one piece of the client-side data stream.
+// ReceiveVolumeChunk is one piece of the client-side data stream.
 // The first chunk (sequence == 0) MUST set volume_id and backend_type; those
 // fields are ignored on subsequent chunks.
-message ImportVolumeChunk {
+message ReceiveVolumeChunk {
   // Volume identifier: "<pool>/<volume-name>".
   // Required in the first chunk (sequence == 0).
   string volume_id = 1;
@@ -573,9 +606,9 @@ message ImportVolumeChunk {
   bool eof = 5;
 }
 
-// ImportVolumeResponse is returned by the agent after the full stream has been
+// ReceiveVolumeResponse is returned by the agent after the full stream has been
 // received and written to the backend volume.
-message ImportVolumeResponse {
+message ReceiveVolumeResponse {
   // Total bytes written to the backend volume.
   int64 bytes_written = 1;
 }
