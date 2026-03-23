@@ -117,7 +117,7 @@ spec:
                   agent.
                 type: string
               capabilities:
-                description: capabilities summarises what the connected agent is capable
+                description: capabilities summarizes what the connected agent is capable
                   of.
                 properties:
                   backends:
