@@ -674,5 +674,238 @@ var _ = Describe("PillarBinding Controller", func() {
 			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 			Expect(cond.Reason).To(Equal("Incompatible"))
 		})
+
+		It("should mention the incompatible backend type in the Compatible condition message", func() {
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := fetchBinding()
+			cond := findBindingCondition(fetched, conditionCompatible)
+			Expect(cond).NotTo(BeNil())
+			// Message should name the offending backend.
+			Expect(cond.Message).To(ContainSubstring(string(pillarcsiv1alpha1.BackendTypeZFSZvol)))
+		})
+	})
+
+	// -------------------------------------------------------------------------
+	Context("Incompatible backend/protocol — block protocol with dir backend", func() {
+		BeforeEach(func() {
+			createBinding()
+			// First reconcile to add finalizer.
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Create pool with dir backend (file-system only — cannot serve block devices).
+			dirPool := &pillarcsiv1alpha1.PillarPool{
+				ObjectMeta: metav1.ObjectMeta{Name: poolName},
+				Spec: pillarcsiv1alpha1.PillarPoolSpec{
+					TargetRef: "some-target",
+					Backend: pillarcsiv1alpha1.BackendSpec{
+						Type: pillarcsiv1alpha1.BackendTypeDir,
+					},
+				},
+			}
+			Expect(k8sClient.Create(bctx, dirPool)).To(Succeed())
+			fetchedPool := &pillarcsiv1alpha1.PillarPool{}
+			Expect(k8sClient.Get(bctx, types.NamespacedName{Name: poolName}, fetchedPool)).To(Succeed())
+			fetchedPool.Status.Conditions = []metav1.Condition{{
+				Type:               "Ready",
+				Status:             metav1.ConditionTrue,
+				Reason:             "TestReason",
+				Message:            "pool ready",
+				LastTransitionTime: metav1.Now(),
+			}}
+			Expect(k8sClient.Status().Update(bctx, fetchedPool)).To(Succeed())
+
+			// Use an NVMeOF-TCP protocol — incompatible with dir backend.
+			createProtocol(&trueStatus, "protocol ready")
+		})
+
+		AfterEach(func() {
+			forceRemoveBindingFinalizer()
+			deleteBinding()
+			deletePool()
+			deleteProtocol()
+		})
+
+		It("should set Compatible=False with reason Incompatible", func() {
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := fetchBinding()
+			cond := findBindingCondition(fetched, conditionCompatible)
+			Expect(cond).NotTo(BeNil(), "Compatible condition should be set")
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cond.Reason).To(Equal("Incompatible"))
+			Expect(cond.Message).To(ContainSubstring(string(pillarcsiv1alpha1.BackendTypeDir)))
+		})
+
+		It("should set Ready=False with reason Incompatible", func() {
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := fetchBinding()
+			cond := findBindingCondition(fetched, conditionReady)
+			Expect(cond).NotTo(BeNil(), "Ready condition should be set")
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cond.Reason).To(Equal("Incompatible"))
+		})
+
+		It("should not create a StorageClass when incompatible", func() {
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			sc := &storagev1.StorageClass{}
+			err = k8sClient.Get(bctx, types.NamespacedName{Name: bindingName}, sc)
+			Expect(errors.IsNotFound(err)).To(BeTrue(), "StorageClass should NOT be created when incompatible")
+		})
+	})
+
+	// -------------------------------------------------------------------------
+	Context("Incompatible backend/protocol — block protocol with zfs-dataset backend", func() {
+		BeforeEach(func() {
+			createBinding()
+			// First reconcile to add finalizer.
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Create pool with zfs-dataset backend (filesystem — cannot serve block devices).
+			dsPool := &pillarcsiv1alpha1.PillarPool{
+				ObjectMeta: metav1.ObjectMeta{Name: poolName},
+				Spec: pillarcsiv1alpha1.PillarPoolSpec{
+					TargetRef: "some-target",
+					Backend: pillarcsiv1alpha1.BackendSpec{
+						Type: pillarcsiv1alpha1.BackendTypeZFSDataset,
+						ZFS: &pillarcsiv1alpha1.ZFSBackendConfig{
+							Pool: "data",
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(bctx, dsPool)).To(Succeed())
+			fetchedPool := &pillarcsiv1alpha1.PillarPool{}
+			Expect(k8sClient.Get(bctx, types.NamespacedName{Name: poolName}, fetchedPool)).To(Succeed())
+			fetchedPool.Status.Conditions = []metav1.Condition{{
+				Type:               "Ready",
+				Status:             metav1.ConditionTrue,
+				Reason:             "TestReason",
+				Message:            "pool ready",
+				LastTransitionTime: metav1.Now(),
+			}}
+			Expect(k8sClient.Status().Update(bctx, fetchedPool)).To(Succeed())
+
+			// Use an NVMeOF-TCP protocol — incompatible with zfs-dataset backend.
+			createProtocol(&trueStatus, "protocol ready")
+		})
+
+		AfterEach(func() {
+			forceRemoveBindingFinalizer()
+			deleteBinding()
+			deletePool()
+			deleteProtocol()
+		})
+
+		It("should set Compatible=False with reason Incompatible", func() {
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := fetchBinding()
+			cond := findBindingCondition(fetched, conditionCompatible)
+			Expect(cond).NotTo(BeNil(), "Compatible condition should be set")
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cond.Reason).To(Equal("Incompatible"))
+			Expect(cond.Message).To(ContainSubstring(string(pillarcsiv1alpha1.BackendTypeZFSDataset)))
+		})
+
+		It("should set Ready=False with reason Incompatible", func() {
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := fetchBinding()
+			cond := findBindingCondition(fetched, conditionReady)
+			Expect(cond).NotTo(BeNil(), "Ready condition should be set")
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cond.Reason).To(Equal("Incompatible"))
+		})
+	})
+})
+
+// =============================================================================
+// Unit tests for evaluateCompatibility (no envtest / API server required)
+// =============================================================================
+
+var _ = Describe("evaluateCompatibility", func() {
+	// helpers to build minimal objects without persisting to a cluster.
+	makePool := func(backendType pillarcsiv1alpha1.BackendType) *pillarcsiv1alpha1.PillarPool {
+		return &pillarcsiv1alpha1.PillarPool{
+			Spec: pillarcsiv1alpha1.PillarPoolSpec{
+				TargetRef: "test-target",
+				Backend:   pillarcsiv1alpha1.BackendSpec{Type: backendType},
+			},
+		}
+	}
+	makeProtocol := func(protoType pillarcsiv1alpha1.ProtocolType) *pillarcsiv1alpha1.PillarProtocol {
+		return &pillarcsiv1alpha1.PillarProtocol{
+			Spec: pillarcsiv1alpha1.PillarProtocolSpec{Type: protoType},
+		}
+	}
+
+	// -------------------------------------------------------------------------
+	// Compatible pairs: block backends ↔ block protocols
+	DescribeTable("compatible combinations return (empty, true)",
+		func(backend pillarcsiv1alpha1.BackendType, proto pillarcsiv1alpha1.ProtocolType) {
+			msg, ok := evaluateCompatibility(makePool(backend), makeProtocol(proto))
+			Expect(ok).To(BeTrue(), "expected compatible, got incompatible: %s", msg)
+			Expect(msg).To(BeEmpty())
+		},
+		Entry("zfs-zvol + nvmeof-tcp", pillarcsiv1alpha1.BackendTypeZFSZvol, pillarcsiv1alpha1.ProtocolTypeNVMeOFTCP),
+		Entry("zfs-zvol + iscsi", pillarcsiv1alpha1.BackendTypeZFSZvol, pillarcsiv1alpha1.ProtocolTypeISCSI),
+		Entry("lvm-lv + nvmeof-tcp", pillarcsiv1alpha1.BackendTypeLVMLV, pillarcsiv1alpha1.ProtocolTypeNVMeOFTCP),
+		Entry("lvm-lv + iscsi", pillarcsiv1alpha1.BackendTypeLVMLV, pillarcsiv1alpha1.ProtocolTypeISCSI),
+		Entry("zfs-dataset + nfs", pillarcsiv1alpha1.BackendTypeZFSDataset, pillarcsiv1alpha1.ProtocolTypeNFS),
+		Entry("dir + nfs", pillarcsiv1alpha1.BackendTypeDir, pillarcsiv1alpha1.ProtocolTypeNFS),
+	)
+
+	// -------------------------------------------------------------------------
+	// Incompatible pairs
+	DescribeTable("incompatible combinations return (non-empty, false)",
+		func(backend pillarcsiv1alpha1.BackendType, proto pillarcsiv1alpha1.ProtocolType) {
+			msg, ok := evaluateCompatibility(makePool(backend), makeProtocol(proto))
+			Expect(ok).To(BeFalse(), "expected incompatible, got compatible for %s + %s", backend, proto)
+			Expect(msg).NotTo(BeEmpty(), "incompatibility message should not be empty")
+			// Message should mention the problematic backend type.
+			Expect(msg).To(ContainSubstring(string(backend)))
+		},
+		// NFS with block-only backends (Rule 1)
+		Entry("zfs-zvol + nfs", pillarcsiv1alpha1.BackendTypeZFSZvol, pillarcsiv1alpha1.ProtocolTypeNFS),
+		Entry("lvm-lv + nfs", pillarcsiv1alpha1.BackendTypeLVMLV, pillarcsiv1alpha1.ProtocolTypeNFS),
+		// Block protocols with file-only backends (Rule 2)
+		Entry("dir + nvmeof-tcp", pillarcsiv1alpha1.BackendTypeDir, pillarcsiv1alpha1.ProtocolTypeNVMeOFTCP),
+		Entry("dir + iscsi", pillarcsiv1alpha1.BackendTypeDir, pillarcsiv1alpha1.ProtocolTypeISCSI),
+		Entry("zfs-dataset + nvmeof-tcp", pillarcsiv1alpha1.BackendTypeZFSDataset, pillarcsiv1alpha1.ProtocolTypeNVMeOFTCP),
+		Entry("zfs-dataset + iscsi", pillarcsiv1alpha1.BackendTypeZFSDataset, pillarcsiv1alpha1.ProtocolTypeISCSI),
+	)
+
+	// -------------------------------------------------------------------------
+	// Verify message content for Rule 1 violation (NFS + block backend)
+	It("should mention NFS and suggest block protocols in Rule-1 message", func() {
+		msg, ok := evaluateCompatibility(
+			makePool(pillarcsiv1alpha1.BackendTypeZFSZvol),
+			makeProtocol(pillarcsiv1alpha1.ProtocolTypeNFS),
+		)
+		Expect(ok).To(BeFalse())
+		Expect(msg).To(ContainSubstring("NFS"))
+		Expect(msg).To(ContainSubstring("nvmeof-tcp"))
+	})
+
+	// Verify message content for Rule 2 violation (block protocol + file-only backend)
+	It("should mention block protocol and suggest NFS in Rule-2 message", func() {
+		msg, ok := evaluateCompatibility(
+			makePool(pillarcsiv1alpha1.BackendTypeDir),
+			makeProtocol(pillarcsiv1alpha1.ProtocolTypeNVMeOFTCP),
+		)
+		Expect(ok).To(BeFalse())
+		Expect(msg).To(ContainSubstring("NFS"))
+		Expect(msg).To(ContainSubstring(string(pillarcsiv1alpha1.BackendTypeDir)))
 	})
 })

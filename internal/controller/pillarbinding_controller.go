@@ -383,10 +383,19 @@ func (r *PillarBindingReconciler) reconcileNormal(ctx context.Context, binding *
 // protocol type are a valid combination.
 //
 // Compatibility rules:
-//   - NFS (file protocol) is incompatible with block-only backends
+//
+//  1. NFS (file protocol) is incompatible with block-only backends
 //     (zfs-zvol, lvm-lv) because those backends produce raw block devices
 //     that cannot be exported via NFS.
-//   - All other combinations are considered compatible.
+//
+//  2. Block protocols (nvmeof-tcp, iscsi) are incompatible with file-only
+//     backends (zfs-dataset, dir) because those backends expose filesystems
+//     or directories, not raw block devices that can be served as NVMe or
+//     iSCSI LUNs.
+//
+//  3. All other combinations are considered compatible:
+//     - zfs-zvol  / lvm-lv  + nvmeof-tcp / iscsi  → block ↔ block  ✓
+//     - zfs-dataset / dir   + nfs                  → file  ↔ file   ✓
 //
 // Returns a message describing the incompatibility (or an empty string when
 // compatible) and a boolean indicating whether the pair is compatible.
@@ -394,13 +403,26 @@ func evaluateCompatibility(pool *pillarcsiv1alpha1.PillarPool, protocol *pillarc
 	backend := pool.Spec.Backend.Type
 	proto := protocol.Spec.Type
 
-	// Block-only backends cannot be exported over NFS.
+	// Rule 1: Block-only backends cannot be exported over NFS.
 	if proto == pillarcsiv1alpha1.ProtocolTypeNFS {
 		switch backend {
 		case pillarcsiv1alpha1.BackendTypeZFSZvol, pillarcsiv1alpha1.BackendTypeLVMLV:
 			return fmt.Sprintf(
 				"Backend type %q produces raw block devices and cannot be exported via NFS (protocol %q); "+
 					"use zfs-dataset or dir for NFS, or switch to a block protocol (nvmeof-tcp, iscsi)",
+				backend, proto,
+			), false
+		}
+	}
+
+	// Rule 2: File-only backends cannot be exposed as block devices via
+	// NVMeOF-TCP or iSCSI.
+	if proto == pillarcsiv1alpha1.ProtocolTypeNVMeOFTCP || proto == pillarcsiv1alpha1.ProtocolTypeISCSI {
+		switch backend {
+		case pillarcsiv1alpha1.BackendTypeZFSDataset, pillarcsiv1alpha1.BackendTypeDir:
+			return fmt.Sprintf(
+				"Backend type %q is a filesystem-based backend and cannot be exposed as a block device via "+
+					"protocol %q; use zfs-zvol or lvm-lv for block protocols, or switch to NFS",
 				backend, proto,
 			), false
 		}
