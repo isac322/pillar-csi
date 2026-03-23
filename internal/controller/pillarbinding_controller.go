@@ -48,6 +48,13 @@ const (
 	// whether blocking PVCs have been removed.
 	requeueAfterBindingDeletionBlock = 10 * time.Second
 
+	// requeueAfterBindingNotReady is how long to wait before re-checking a
+	// binding whose pool or protocol is not yet found or not yet Ready.
+	// Watches on PillarPool/PillarProtocol will also re-enqueue the binding
+	// when those objects change, but the periodic requeue acts as a safety net
+	// for cases where the watch event is missed.
+	requeueAfterBindingNotReady = 15 * time.Second
+
 	// pillarCSIProvisioner is the CSI driver name used as the StorageClass provisioner.
 	pillarCSIProvisioner = "pillar-csi.bhyoo.com"
 
@@ -170,7 +177,8 @@ func (r *PillarBindingReconciler) reconcileNormal(ctx context.Context, binding *
 		if err := r.Status().Update(ctx, binding); err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to update PillarBinding status: %w", err)
 		}
-		return ctrl.Result{}, nil
+		// Requeue: no watch will trigger until the pool is created.
+		return ctrl.Result{RequeueAfter: requeueAfterBindingNotReady}, nil
 
 	case poolErr != nil:
 		log.Error(poolErr, "Failed to get referenced PillarPool", "binding", binding.Name, "pool", binding.Spec.PoolRef)
@@ -215,7 +223,9 @@ func (r *PillarBindingReconciler) reconcileNormal(ctx context.Context, binding *
 		if err := r.Status().Update(ctx, binding); err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to update PillarBinding status: %w", err)
 		}
-		return ctrl.Result{}, nil
+		// Requeue: pool watch will also re-enqueue when the pool becomes ready,
+		// but the periodic requeue acts as a safety net.
+		return ctrl.Result{RequeueAfter: requeueAfterBindingNotReady}, nil
 	}
 
 	// --- 2. Validate PillarProtocol (ProtocolValid condition) ---
@@ -236,7 +246,8 @@ func (r *PillarBindingReconciler) reconcileNormal(ctx context.Context, binding *
 		if err := r.Status().Update(ctx, binding); err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to update PillarBinding status: %w", err)
 		}
-		return ctrl.Result{}, nil
+		// Requeue: no watch will trigger until the protocol is created.
+		return ctrl.Result{RequeueAfter: requeueAfterBindingNotReady}, nil
 
 	case protocolErr != nil:
 		log.Error(protocolErr, "Failed to get referenced PillarProtocol", "binding", binding.Name, "protocol", binding.Spec.ProtocolRef)
@@ -281,7 +292,9 @@ func (r *PillarBindingReconciler) reconcileNormal(ctx context.Context, binding *
 		if err := r.Status().Update(ctx, binding); err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to update PillarBinding status: %w", err)
 		}
-		return ctrl.Result{}, nil
+		// Requeue: protocol watch will also re-enqueue when the protocol becomes
+		// ready, but the periodic requeue acts as a safety net.
+		return ctrl.Result{RequeueAfter: requeueAfterBindingNotReady}, nil
 	}
 
 	// --- 3. Check backend/protocol compatibility (Compatible condition) ---

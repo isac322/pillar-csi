@@ -21,8 +21,11 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	storagev1 "k8s.io/api/storage/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -31,57 +34,645 @@ import (
 )
 
 var _ = Describe("PillarBinding Controller", func() {
-	Context("When reconciling a resource", func() {
-		const resourceName = "test-resource"
+	const (
+		bindingName  = "test-binding"
+		poolName     = "test-binding-pool"
+		protocolName = "test-binding-protocol"
+	)
 
-		ctx := context.Background()
+	var (
+		bctx               context.Context
+		reconciler         *PillarBindingReconciler
+		bindingNamespacedName types.NamespacedName
+	)
 
-		typeNamespacedName := types.NamespacedName{
-			Name:      resourceName,
-			Namespace: "default", // TODO(user):Modify as needed
+	BeforeEach(func() {
+		bctx = context.Background()
+		reconciler = &PillarBindingReconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
 		}
-		pillarbinding := &pillarcsiv1alpha1.PillarBinding{}
+		bindingNamespacedName = types.NamespacedName{Name: bindingName}
+	})
 
-		BeforeEach(func() {
-			By("creating the custom resource for the Kind PillarBinding")
-			err := k8sClient.Get(ctx, typeNamespacedName, pillarbinding)
-			if err != nil && errors.IsNotFound(err) {
-				resource := &pillarcsiv1alpha1.PillarBinding{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      resourceName,
-						Namespace: "default",
-					},
-					Spec: pillarcsiv1alpha1.PillarBindingSpec{
-						PoolRef:     "test-pool",
-						ProtocolRef: "test-protocol",
-					},
-				}
-				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
+	// doReconcile triggers a single reconcile pass and returns result + error.
+	doReconcile := func() (reconcile.Result, error) {
+		return reconciler.Reconcile(bctx, reconcile.Request{NamespacedName: bindingNamespacedName})
+	}
+
+	// createBinding creates a minimal PillarBinding referencing poolName and protocolName.
+	createBinding := func() {
+		binding := &pillarcsiv1alpha1.PillarBinding{}
+		err := k8sClient.Get(bctx, bindingNamespacedName, binding)
+		if err != nil && errors.IsNotFound(err) {
+			resource := &pillarcsiv1alpha1.PillarBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: bindingName,
+				},
+				Spec: pillarcsiv1alpha1.PillarBindingSpec{
+					PoolRef:     poolName,
+					ProtocolRef: protocolName,
+				},
 			}
+			Expect(k8sClient.Create(bctx, resource)).To(Succeed())
+		}
+	}
+
+	// deleteBinding deletes the PillarBinding (ignoring not-found).
+	deleteBinding := func() {
+		resource := &pillarcsiv1alpha1.PillarBinding{}
+		if err := k8sClient.Get(bctx, bindingNamespacedName, resource); err == nil {
+			_ = k8sClient.Delete(bctx, resource)
+		}
+	}
+
+	// forceRemoveBindingFinalizer strips the finalizer so the object can be GC'd.
+	forceRemoveBindingFinalizer := func() {
+		resource := &pillarcsiv1alpha1.PillarBinding{}
+		if err := k8sClient.Get(bctx, bindingNamespacedName, resource); err == nil {
+			controllerutil.RemoveFinalizer(resource, pillarBindingFinalizer)
+			_ = k8sClient.Update(bctx, resource)
+		}
+	}
+
+	// createPool creates a PillarPool with an optional Ready condition.
+	// readyStatus == nil means no condition is set on the pool.
+	createPool := func(readyStatus *metav1.ConditionStatus, msg string) {
+		pool := &pillarcsiv1alpha1.PillarPool{}
+		err := k8sClient.Get(bctx, types.NamespacedName{Name: poolName}, pool)
+		if err != nil && errors.IsNotFound(err) {
+			resource := &pillarcsiv1alpha1.PillarPool{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: poolName,
+				},
+				Spec: pillarcsiv1alpha1.PillarPoolSpec{
+					TargetRef: "some-target",
+					Backend: pillarcsiv1alpha1.BackendSpec{
+						Type: pillarcsiv1alpha1.BackendTypeZFSZvol,
+					},
+				},
+			}
+			Expect(k8sClient.Create(bctx, resource)).To(Succeed())
+		}
+		if readyStatus != nil {
+			fetched := &pillarcsiv1alpha1.PillarPool{}
+			Expect(k8sClient.Get(bctx, types.NamespacedName{Name: poolName}, fetched)).To(Succeed())
+			fetched.Status.Conditions = []metav1.Condition{
+				{
+					Type:               "Ready",
+					Status:             *readyStatus,
+					Reason:             "TestReason",
+					Message:            msg,
+					LastTransitionTime: metav1.Now(),
+				},
+			}
+			Expect(k8sClient.Status().Update(bctx, fetched)).To(Succeed())
+		}
+	}
+
+	// deletePool deletes the PillarPool, removing any finalizer first.
+	deletePool := func() {
+		resource := &pillarcsiv1alpha1.PillarPool{}
+		if err := k8sClient.Get(bctx, types.NamespacedName{Name: poolName}, resource); err == nil {
+			controllerutil.RemoveFinalizer(resource, pillarPoolFinalizer)
+			_ = k8sClient.Update(bctx, resource)
+			_ = k8sClient.Delete(bctx, resource)
+		}
+	}
+
+	// createProtocol creates a PillarProtocol with an optional Ready condition.
+	// readyStatus == nil means no condition is set on the protocol.
+	createProtocol := func(readyStatus *metav1.ConditionStatus, msg string) {
+		protocol := &pillarcsiv1alpha1.PillarProtocol{}
+		err := k8sClient.Get(bctx, types.NamespacedName{Name: protocolName}, protocol)
+		if err != nil && errors.IsNotFound(err) {
+			resource := &pillarcsiv1alpha1.PillarProtocol{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: protocolName,
+				},
+				Spec: pillarcsiv1alpha1.PillarProtocolSpec{
+					Type: pillarcsiv1alpha1.ProtocolTypeNVMeOFTCP,
+				},
+			}
+			Expect(k8sClient.Create(bctx, resource)).To(Succeed())
+		}
+		if readyStatus != nil {
+			fetched := &pillarcsiv1alpha1.PillarProtocol{}
+			Expect(k8sClient.Get(bctx, types.NamespacedName{Name: protocolName}, fetched)).To(Succeed())
+			fetched.Status.Conditions = []metav1.Condition{
+				{
+					Type:               "Ready",
+					Status:             *readyStatus,
+					Reason:             "TestReason",
+					Message:            msg,
+					LastTransitionTime: metav1.Now(),
+				},
+			}
+			Expect(k8sClient.Status().Update(bctx, fetched)).To(Succeed())
+		}
+	}
+
+	// deleteProtocol deletes the PillarProtocol, removing any finalizer first.
+	deleteProtocol := func() {
+		resource := &pillarcsiv1alpha1.PillarProtocol{}
+		if err := k8sClient.Get(bctx, types.NamespacedName{Name: protocolName}, resource); err == nil {
+			controllerutil.RemoveFinalizer(resource, pillarProtocolFinalizer)
+			_ = k8sClient.Update(bctx, resource)
+			_ = k8sClient.Delete(bctx, resource)
+		}
+	}
+
+	// fetchBinding fetches the current PillarBinding from the API server.
+	fetchBinding := func() *pillarcsiv1alpha1.PillarBinding {
+		fetched := &pillarcsiv1alpha1.PillarBinding{}
+		Expect(k8sClient.Get(bctx, bindingNamespacedName, fetched)).To(Succeed())
+		return fetched
+	}
+
+	// findBindingCondition returns the named condition from a binding, or nil.
+	findBindingCondition := func(binding *pillarcsiv1alpha1.PillarBinding, condType string) *metav1.Condition {
+		return apimeta.FindStatusCondition(binding.Status.Conditions, condType)
+	}
+
+	trueStatus := metav1.ConditionTrue
+	falseStatus := metav1.ConditionFalse
+
+	// -------------------------------------------------------------------------
+	Context("Finalizer management", func() {
+		AfterEach(func() {
+			forceRemoveBindingFinalizer()
+			deleteBinding()
+		})
+
+		It("should add the binding-protection finalizer on first reconcile", func() {
+			createBinding()
+
+			result, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+			// After adding finalizer the reconciler returns immediately without requeue.
+			Expect(result.RequeueAfter).To(BeZero())
+
+			fetched := fetchBinding()
+			Expect(controllerutil.ContainsFinalizer(fetched, pillarBindingFinalizer)).To(BeTrue(),
+				"finalizer %q should be present after first reconcile", pillarBindingFinalizer)
+		})
+
+		It("should not duplicate the finalizer on subsequent reconciles", func() {
+			createBinding()
+
+			// First reconcile adds the finalizer.
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Second reconcile (normal path) should not duplicate.
+			_, err = doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := fetchBinding()
+			count := 0
+			for _, f := range fetched.Finalizers {
+				if f == pillarBindingFinalizer {
+					count++
+				}
+			}
+			Expect(count).To(Equal(1), "finalizer should appear exactly once")
+		})
+	})
+
+	// -------------------------------------------------------------------------
+	Context("PoolReady condition — pool does not exist", func() {
+		BeforeEach(func() {
+			createBinding()
+			// First reconcile to add finalizer.
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
 		})
 
 		AfterEach(func() {
-			// TODO(user): Cleanup logic after each test, like removing the resource instance.
-			resource := &pillarcsiv1alpha1.PillarBinding{}
-			err := k8sClient.Get(ctx, typeNamespacedName, resource)
-			Expect(err).NotTo(HaveOccurred())
-
-			By("Cleanup the specific resource instance PillarBinding")
-			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
+			forceRemoveBindingFinalizer()
+			deleteBinding()
+			deletePool()
 		})
-		It("should successfully reconcile the resource", func() {
-			By("Reconciling the created resource")
-			controllerReconciler := &PillarBindingReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
-			}
 
-			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: typeNamespacedName,
-			})
+		It("should set PoolReady=False with reason PoolNotFound when PillarPool is absent", func() {
+			// No pool created — binding references a non-existent pool.
+			result, err := doReconcile()
 			Expect(err).NotTo(HaveOccurred())
-			// TODO(user): Add more specific assertions depending on your controller's reconciliation logic.
-			// Example: If you expect a certain status condition after reconciliation, verify it here.
+
+			fetched := fetchBinding()
+			cond := findBindingCondition(fetched, conditionPoolReady)
+			Expect(cond).NotTo(BeNil(), "PoolReady condition should be set")
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cond.Reason).To(Equal("PoolNotFound"))
+			Expect(cond.Message).To(ContainSubstring(poolName))
+
+			// Requeue after a delay is expected when pool is not found.
+			Expect(result.RequeueAfter).To(Equal(requeueAfterBindingNotReady))
+		})
+
+		It("should set Ready=False when pool is absent", func() {
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := fetchBinding()
+			cond := findBindingCondition(fetched, conditionReady)
+			Expect(cond).NotTo(BeNil(), "Ready condition should be set")
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cond.Reason).To(Equal("PoolNotFound"))
+		})
+	})
+
+	// -------------------------------------------------------------------------
+	Context("PoolReady condition — pool exists but is not Ready", func() {
+		BeforeEach(func() {
+			createBinding()
+			// First reconcile to add finalizer.
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+			// Create pool with Ready=False.
+			createPool(&falseStatus, "target not found")
+		})
+
+		AfterEach(func() {
+			forceRemoveBindingFinalizer()
+			deleteBinding()
+			deletePool()
+		})
+
+		It("should set PoolReady=False with reason PoolNotReady", func() {
+			result, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := fetchBinding()
+			cond := findBindingCondition(fetched, conditionPoolReady)
+			Expect(cond).NotTo(BeNil(), "PoolReady condition should be set")
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cond.Reason).To(Equal("PoolNotReady"))
+			Expect(cond.Message).To(ContainSubstring(poolName))
+
+			// Requeue after a delay is expected when pool is not ready.
+			Expect(result.RequeueAfter).To(Equal(requeueAfterBindingNotReady))
+		})
+
+		It("should set Ready=False when pool is not ready", func() {
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := fetchBinding()
+			cond := findBindingCondition(fetched, conditionReady)
+			Expect(cond).NotTo(BeNil(), "Ready condition should be set")
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cond.Reason).To(Equal("PoolNotReady"))
+		})
+
+		It("should include the pool's failure message in PoolReady condition message", func() {
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := fetchBinding()
+			cond := findBindingCondition(fetched, conditionPoolReady)
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Message).To(ContainSubstring("target not found"))
+		})
+	})
+
+	// -------------------------------------------------------------------------
+	Context("PoolReady condition — pool exists with no Ready condition yet", func() {
+		BeforeEach(func() {
+			createBinding()
+			// First reconcile to add finalizer.
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+			// Create pool without any condition (nil readyStatus).
+			createPool(nil, "")
+		})
+
+		AfterEach(func() {
+			forceRemoveBindingFinalizer()
+			deleteBinding()
+			deletePool()
+		})
+
+		It("should set PoolReady=False when pool has no Ready condition", func() {
+			result, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := fetchBinding()
+			cond := findBindingCondition(fetched, conditionPoolReady)
+			Expect(cond).NotTo(BeNil(), "PoolReady condition should be set")
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cond.Reason).To(Equal("PoolNotReady"))
+
+			// Requeue expected.
+			Expect(result.RequeueAfter).To(Equal(requeueAfterBindingNotReady))
+		})
+	})
+
+	// -------------------------------------------------------------------------
+	Context("ProtocolValid condition — protocol does not exist", func() {
+		BeforeEach(func() {
+			createBinding()
+			// First reconcile to add finalizer.
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+			// Create a ready pool so pool validation passes.
+			createPool(&trueStatus, "pool is ready")
+		})
+
+		AfterEach(func() {
+			forceRemoveBindingFinalizer()
+			deleteBinding()
+			deletePool()
+			deleteProtocol()
+		})
+
+		It("should set ProtocolValid=False with reason ProtocolNotFound when PillarProtocol is absent", func() {
+			// No protocol created — binding references a non-existent protocol.
+			result, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := fetchBinding()
+			cond := findBindingCondition(fetched, conditionProtocolValid)
+			Expect(cond).NotTo(BeNil(), "ProtocolValid condition should be set")
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cond.Reason).To(Equal("ProtocolNotFound"))
+			Expect(cond.Message).To(ContainSubstring(protocolName))
+
+			// Requeue after a delay is expected when protocol is not found.
+			Expect(result.RequeueAfter).To(Equal(requeueAfterBindingNotReady))
+		})
+
+		It("should set Ready=False when protocol is absent", func() {
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := fetchBinding()
+			cond := findBindingCondition(fetched, conditionReady)
+			Expect(cond).NotTo(BeNil(), "Ready condition should be set")
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cond.Reason).To(Equal("ProtocolNotFound"))
+		})
+
+		It("should set PoolReady=True even when protocol is absent", func() {
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := fetchBinding()
+			cond := findBindingCondition(fetched, conditionPoolReady)
+			Expect(cond).NotTo(BeNil(), "PoolReady condition should be set")
+			Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+		})
+	})
+
+	// -------------------------------------------------------------------------
+	Context("ProtocolValid condition — protocol exists but is not Ready", func() {
+		BeforeEach(func() {
+			createBinding()
+			// First reconcile to add finalizer.
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+			// Create a ready pool so pool validation passes.
+			createPool(&trueStatus, "pool is ready")
+			// Create protocol with Ready=False.
+			createProtocol(&falseStatus, "protocol initialization failed")
+		})
+
+		AfterEach(func() {
+			forceRemoveBindingFinalizer()
+			deleteBinding()
+			deletePool()
+			deleteProtocol()
+		})
+
+		It("should set ProtocolValid=False with reason ProtocolNotReady", func() {
+			result, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := fetchBinding()
+			cond := findBindingCondition(fetched, conditionProtocolValid)
+			Expect(cond).NotTo(BeNil(), "ProtocolValid condition should be set")
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cond.Reason).To(Equal("ProtocolNotReady"))
+			Expect(cond.Message).To(ContainSubstring(protocolName))
+
+			// Requeue after a delay is expected when protocol is not ready.
+			Expect(result.RequeueAfter).To(Equal(requeueAfterBindingNotReady))
+		})
+
+		It("should set Ready=False when protocol is not ready", func() {
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := fetchBinding()
+			cond := findBindingCondition(fetched, conditionReady)
+			Expect(cond).NotTo(BeNil(), "Ready condition should be set")
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cond.Reason).To(Equal("ProtocolNotReady"))
+		})
+
+		It("should include the protocol's failure message in ProtocolValid condition message", func() {
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := fetchBinding()
+			cond := findBindingCondition(fetched, conditionProtocolValid)
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Message).To(ContainSubstring("protocol initialization failed"))
+		})
+	})
+
+	// -------------------------------------------------------------------------
+	Context("ProtocolValid condition — protocol exists with no Ready condition yet", func() {
+		BeforeEach(func() {
+			createBinding()
+			// First reconcile to add finalizer.
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+			createPool(&trueStatus, "pool is ready")
+			// Create protocol without any condition.
+			createProtocol(nil, "")
+		})
+
+		AfterEach(func() {
+			forceRemoveBindingFinalizer()
+			deleteBinding()
+			deletePool()
+			deleteProtocol()
+		})
+
+		It("should set ProtocolValid=False when protocol has no Ready condition", func() {
+			result, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := fetchBinding()
+			cond := findBindingCondition(fetched, conditionProtocolValid)
+			Expect(cond).NotTo(BeNil(), "ProtocolValid condition should be set")
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cond.Reason).To(Equal("ProtocolNotReady"))
+
+			// Requeue expected.
+			Expect(result.RequeueAfter).To(Equal(requeueAfterBindingNotReady))
+		})
+	})
+
+	// -------------------------------------------------------------------------
+	Context("Both pool and protocol are Ready", func() {
+		BeforeEach(func() {
+			createBinding()
+			// First reconcile to add finalizer.
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+			// Create ready pool and ready protocol.
+			createPool(&trueStatus, "pool ready")
+			createProtocol(&trueStatus, "protocol ready")
+		})
+
+		AfterEach(func() {
+			forceRemoveBindingFinalizer()
+			deleteBinding()
+			deletePool()
+			deleteProtocol()
+			// Clean up any StorageClass that may have been created.
+			sc := &storagev1.StorageClass{}
+			if err := k8sClient.Get(bctx, types.NamespacedName{Name: bindingName}, sc); err == nil {
+				_ = k8sClient.Delete(bctx, sc)
+			}
+		})
+
+		It("should set PoolReady=True and ProtocolValid=True", func() {
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := fetchBinding()
+			poolCond := findBindingCondition(fetched, conditionPoolReady)
+			Expect(poolCond).NotTo(BeNil(), "PoolReady condition should be set")
+			Expect(poolCond.Status).To(Equal(metav1.ConditionTrue))
+			Expect(poolCond.Reason).To(Equal("PoolReady"))
+
+			protoCond := findBindingCondition(fetched, conditionProtocolValid)
+			Expect(protoCond).NotTo(BeNil(), "ProtocolValid condition should be set")
+			Expect(protoCond.Status).To(Equal(metav1.ConditionTrue))
+			Expect(protoCond.Reason).To(Equal("ProtocolValid"))
+		})
+
+		It("should set Compatible=True for compatible backend/protocol types", func() {
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := fetchBinding()
+			compatCond := findBindingCondition(fetched, conditionCompatible)
+			Expect(compatCond).NotTo(BeNil(), "Compatible condition should be set")
+			Expect(compatCond.Status).To(Equal(metav1.ConditionTrue))
+		})
+
+		It("should set StorageClassCreated=True and create the StorageClass", func() {
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := fetchBinding()
+			scCond := findBindingCondition(fetched, conditionStorageClassCreated)
+			Expect(scCond).NotTo(BeNil(), "StorageClassCreated condition should be set")
+			Expect(scCond.Status).To(Equal(metav1.ConditionTrue))
+
+			// Verify the StorageClass was actually created.
+			sc := &storagev1.StorageClass{}
+			Expect(k8sClient.Get(bctx, types.NamespacedName{Name: bindingName}, sc)).To(Succeed())
+			Expect(sc.Provisioner).To(Equal(pillarCSIProvisioner))
+		})
+
+		It("should set Ready=True when all conditions pass", func() {
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := fetchBinding()
+			readyCond := findBindingCondition(fetched, conditionReady)
+			Expect(readyCond).NotTo(BeNil(), "Ready condition should be set")
+			Expect(readyCond.Status).To(Equal(metav1.ConditionTrue))
+			Expect(readyCond.Reason).To(Equal("AllConditionsMet"))
+		})
+
+		It("should set status.storageClassName when ready", func() {
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := fetchBinding()
+			Expect(fetched.Status.StorageClassName).To(Equal(bindingName))
+		})
+
+		It("should not requeue when everything is ready", func() {
+			result, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(BeZero())
+			Expect(result.Requeue).To(BeFalse())
+		})
+	})
+
+	// -------------------------------------------------------------------------
+	Context("Incompatible backend/protocol — NFS with block backend", func() {
+		BeforeEach(func() {
+			createBinding()
+			// First reconcile to add finalizer.
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Create pool with a block-only backend (zfs-zvol).
+			createPool(&trueStatus, "pool ready")
+
+			// Create an NFS protocol (incompatible with zfs-zvol).
+			protocol := &pillarcsiv1alpha1.PillarProtocol{}
+			err = k8sClient.Get(bctx, types.NamespacedName{Name: protocolName}, protocol)
+			if err != nil && errors.IsNotFound(err) {
+				resource := &pillarcsiv1alpha1.PillarProtocol{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: protocolName,
+					},
+					Spec: pillarcsiv1alpha1.PillarProtocolSpec{
+						Type: pillarcsiv1alpha1.ProtocolTypeNFS,
+					},
+				}
+				Expect(k8sClient.Create(bctx, resource)).To(Succeed())
+			}
+			fetched := &pillarcsiv1alpha1.PillarProtocol{}
+			Expect(k8sClient.Get(bctx, types.NamespacedName{Name: protocolName}, fetched)).To(Succeed())
+			fetched.Status.Conditions = []metav1.Condition{
+				{
+					Type:               "Ready",
+					Status:             metav1.ConditionTrue,
+					Reason:             "TestReason",
+					Message:            "protocol ready",
+					LastTransitionTime: metav1.Now(),
+				},
+			}
+			Expect(k8sClient.Status().Update(bctx, fetched)).To(Succeed())
+		})
+
+		AfterEach(func() {
+			forceRemoveBindingFinalizer()
+			deleteBinding()
+			deletePool()
+			deleteProtocol()
+		})
+
+		It("should set Compatible=False with reason Incompatible", func() {
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := fetchBinding()
+			cond := findBindingCondition(fetched, conditionCompatible)
+			Expect(cond).NotTo(BeNil(), "Compatible condition should be set")
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cond.Reason).To(Equal("Incompatible"))
+		})
+
+		It("should set Ready=False with reason Incompatible", func() {
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := fetchBinding()
+			cond := findBindingCondition(fetched, conditionReady)
+			Expect(cond).NotTo(BeNil(), "Ready condition should be set")
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cond.Reason).To(Equal("Incompatible"))
 		})
 	})
 })
