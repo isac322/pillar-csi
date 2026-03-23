@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -56,13 +57,15 @@ type PillarProtocolReconciler struct {
 // +kubebuilder:rbac:groups=pillar-csi.pillar-csi.bhyoo.com,resources=pillarprotocols/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=pillar-csi.pillar-csi.bhyoo.com,resources=pillarprotocols/finalizers,verbs=update
 // +kubebuilder:rbac:groups=pillar-csi.pillar-csi.bhyoo.com,resources=pillarbindings,verbs=get;list;watch
+// +kubebuilder:rbac:groups=pillar-csi.pillar-csi.bhyoo.com,resources=pillarpools,verbs=get;list;watch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
 //
 // For PillarProtocol the reconciler:
 //  1. Adds a finalizer on first creation.
-//  2. On normal operation: counts PillarBinding references and updates status.
+//  2. On normal operation: counts PillarBinding references and computes the
+//     set of activeTargets (via Binding→Pool→Target chain), then updates status.
 //  3. On deletion: blocks until no PillarBindings reference this protocol,
 //     then removes the finalizer to allow the object to be garbage-collected.
 func (r *PillarProtocolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -98,8 +101,13 @@ func (r *PillarProtocolReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 }
 
 // reconcileNormal handles the steady-state reconciliation of a PillarProtocol
-// that is not being deleted.  It counts PillarBinding references and updates
-// the status accordingly.
+// that is not being deleted.
+//
+// It:
+//  1. Lists all PillarBindings that reference this protocol to compute bindingCount.
+//  2. For each referencing binding, looks up its PillarPool to collect the
+//     pool's targetRef — building the deduplicated, sorted activeTargets list.
+//  3. Writes bindingCount, activeTargets, and the Ready condition to status.
 func (r *PillarProtocolReconciler) reconcileNormal(ctx context.Context, protocol *pillarcsiv1alpha1.PillarProtocol) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
@@ -109,18 +117,53 @@ func (r *PillarProtocolReconciler) reconcileNormal(ctx context.Context, protocol
 		return ctrl.Result{}, fmt.Errorf("failed to list PillarBindings: %w", err)
 	}
 
-	// Count references to this protocol.
+	// Count references to this protocol and collect the referenced pool names.
 	var count int32
+	poolNames := make(map[string]struct{})
 	for i := range bindingList.Items {
 		if bindingList.Items[i].Spec.ProtocolRef == protocol.Name {
 			count++
+			poolNames[bindingList.Items[i].Spec.PoolRef] = struct{}{}
 		}
 	}
 
 	log.Info("PillarProtocol binding count", "name", protocol.Name, "count", count)
 
-	// Build updated status.
+	// For each referenced pool, look up its targetRef to build activeTargets.
+	// We use a set to deduplicate (multiple bindings may share the same target).
+	targetSet := make(map[string]struct{})
+	for poolName := range poolNames {
+		pool := &pillarcsiv1alpha1.PillarPool{}
+		if err := r.Get(ctx, types.NamespacedName{Name: poolName}, pool); err != nil {
+			if client.IgnoreNotFound(err) != nil {
+				return ctrl.Result{}, fmt.Errorf("failed to get PillarPool %q: %w", poolName, err)
+			}
+			// Pool not found — binding may be in a degraded state; skip gracefully.
+			log.V(1).Info("Referenced PillarPool not found; skipping for activeTargets computation",
+				"protocol", protocol.Name, "pool", poolName)
+			continue
+		}
+		if pool.Spec.TargetRef != "" {
+			targetSet[pool.Spec.TargetRef] = struct{}{}
+		}
+	}
+
+	// Convert the set to a sorted slice for deterministic output.
+	activeTargets := make([]string, 0, len(targetSet))
+	for t := range targetSet {
+		activeTargets = append(activeTargets, t)
+	}
+	sort.Strings(activeTargets)
+
+	log.Info("PillarProtocol active targets",
+		"name", protocol.Name,
+		"activeTargets", activeTargets,
+		"count", len(activeTargets),
+	)
+
+	// Build updated status fields.
 	protocol.Status.BindingCount = count
+	protocol.Status.ActiveTargets = activeTargets
 
 	meta.SetStatusCondition(&protocol.Status.Conditions, metav1.Condition{
 		Type:               "Ready",
@@ -128,8 +171,8 @@ func (r *PillarProtocolReconciler) reconcileNormal(ctx context.Context, protocol
 		ObservedGeneration: protocol.Generation,
 		Reason:             "ProtocolConfigured",
 		Message: fmt.Sprintf(
-			"PillarProtocol is configured with type %q and referenced by %d binding(s)",
-			protocol.Spec.Type, count,
+			"PillarProtocol is configured with type %q; referenced by %d binding(s) across %d active target(s)",
+			protocol.Spec.Type, count, len(activeTargets),
 		),
 	})
 
@@ -201,9 +244,14 @@ func (r *PillarProtocolReconciler) reconcileDelete(ctx context.Context, protocol
 }
 
 // SetupWithManager sets up the controller with the Manager.
-// It also watches PillarBinding objects and re-enqueues the referenced
-// PillarProtocol whenever a binding is created, updated, or deleted — so that
-// the protocol's bindingCount and deletion-gate stay consistent.
+//
+// The controller watches:
+//   - PillarProtocol (primary resource)
+//   - PillarBinding: re-enqueues the referenced PillarProtocol whenever a
+//     binding is created, updated, or deleted — so that bindingCount and the
+//     deletion-gate stay consistent.
+//   - PillarPool: re-enqueues the PillarProtocol(s) reachable via Pool→Binding→Protocol
+//     whenever a pool changes — so that activeTargets stays consistent.
 func (r *PillarProtocolReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// mapBindingToProtocol extracts the protocolRef from a PillarBinding and
 	// returns a reconcile.Request for the referenced PillarProtocol.
@@ -217,12 +265,52 @@ func (r *PillarProtocolReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		}
 	}
 
+	// mapPoolToProtocol: when a PillarPool changes, find all PillarBindings
+	// that reference it, then collect the distinct set of protocolRefs and
+	// enqueue each for reconciliation so activeTargets is recomputed.
+	mapPoolToProtocol := func(ctx context.Context, obj client.Object) []reconcile.Request {
+		pool, ok := obj.(*pillarcsiv1alpha1.PillarPool)
+		if !ok {
+			return nil
+		}
+
+		bindingList := &pillarcsiv1alpha1.PillarBindingList{}
+		if err := r.List(ctx, bindingList); err != nil {
+			// Cannot propagate error from a watch handler; log and return empty.
+			logf.FromContext(ctx).Error(err,
+				"Failed to list PillarBindings while mapping PillarPool event to PillarProtocol",
+				"pool", pool.Name)
+			return nil
+		}
+
+		protocolSet := make(map[string]struct{})
+		for i := range bindingList.Items {
+			b := &bindingList.Items[i]
+			if b.Spec.PoolRef == pool.Name && b.Spec.ProtocolRef != "" {
+				protocolSet[b.Spec.ProtocolRef] = struct{}{}
+			}
+		}
+
+		reqs := make([]reconcile.Request, 0, len(protocolSet))
+		for name := range protocolSet {
+			reqs = append(reqs, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: name},
+			})
+		}
+		return reqs
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&pillarcsiv1alpha1.PillarProtocol{}).
 		// Re-enqueue the protocol whenever a referencing binding changes.
 		Watches(
 			&pillarcsiv1alpha1.PillarBinding{},
 			handler.EnqueueRequestsFromMapFunc(mapBindingToProtocol),
+		).
+		// Re-enqueue protocol(s) whenever a PillarPool changes (activeTargets may change).
+		Watches(
+			&pillarcsiv1alpha1.PillarPool{},
+			handler.EnqueueRequestsFromMapFunc(mapPoolToProtocol),
 		).
 		Named("pillarprotocol").
 		Complete(r)
