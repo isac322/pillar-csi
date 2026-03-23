@@ -30,8 +30,6 @@ import (
 	pillarcsiv1alpha1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
 )
 
-// nolint:unused
-// log is for logging in this package.
 var pillarprotocollog = logf.Log.WithName("pillarprotocol-resource")
 
 // SetupPillarProtocolWebhookWithManager registers the webhook for PillarProtocol in the manager.
@@ -44,7 +42,7 @@ func SetupPillarProtocolWebhookWithManager(mgr ctrl.Manager) error {
 // TODO(user): EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
 
 // TODO(user): change verbs to "verbs=create;update;delete" if you want to enable deletion validation.
-// NOTE: If you want to customise the 'path', use the flags '--defaulting-path' or '--validation-path'.
+// NOTE: If you want to customize the 'path', use the flags '--defaulting-path' or '--validation-path'.
 // +kubebuilder:webhook:path=/validate-pillar-csi-pillar-csi-bhyoo-com-v1alpha1-pillarprotocol,mutating=false,failurePolicy=fail,sideEffects=None,groups=pillar-csi.pillar-csi.bhyoo.com,resources=pillarprotocols,verbs=create;update,versions=v1alpha1,name=vpillarprotocol-v1alpha1.kb.io,admissionReviewVersions=v1
 
 // PillarProtocolCustomValidator struct is responsible for validating the PillarProtocol resource
@@ -59,7 +57,9 @@ type PillarProtocolCustomValidator struct {
 var _ webhook.CustomValidator = &PillarProtocolCustomValidator{}
 
 // ValidateCreate implements webhook.CustomValidator so a webhook will be registered for the type PillarProtocol.
-func (v *PillarProtocolCustomValidator) ValidateCreate(_ context.Context, obj runtime.Object) (admission.Warnings, error) {
+func (*PillarProtocolCustomValidator) ValidateCreate(
+	_ context.Context, obj runtime.Object,
+) (admission.Warnings, error) {
 	pillarprotocol, ok := obj.(*pillarcsiv1alpha1.PillarProtocol)
 	if !ok {
 		return nil, fmt.Errorf("expected a PillarProtocol object but got %T", obj)
@@ -72,7 +72,9 @@ func (v *PillarProtocolCustomValidator) ValidateCreate(_ context.Context, obj ru
 }
 
 // ValidateUpdate implements webhook.CustomValidator so a webhook will be registered for the type PillarProtocol.
-func (v *PillarProtocolCustomValidator) ValidateUpdate(_ context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
+func (*PillarProtocolCustomValidator) ValidateUpdate(
+	_ context.Context, oldObj, newObj runtime.Object,
+) (admission.Warnings, error) {
 	newProtocol, ok := newObj.(*pillarcsiv1alpha1.PillarProtocol)
 	if !ok {
 		return nil, fmt.Errorf("expected a PillarProtocol object for the newObj but got %T", newObj)
@@ -103,7 +105,9 @@ func (v *PillarProtocolCustomValidator) ValidateUpdate(_ context.Context, oldObj
 }
 
 // ValidateDelete implements webhook.CustomValidator so a webhook will be registered for the type PillarProtocol.
-func (v *PillarProtocolCustomValidator) ValidateDelete(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
+func (*PillarProtocolCustomValidator) ValidateDelete(
+	_ context.Context, obj runtime.Object,
+) (admission.Warnings, error) {
 	pillarprotocol, ok := obj.(*pillarcsiv1alpha1.PillarProtocol)
 	if !ok {
 		return nil, fmt.Errorf("expected a PillarProtocol object but got %T", obj)

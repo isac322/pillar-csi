@@ -20,6 +20,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	pillarcsiv1alpha1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
 )
@@ -63,7 +64,7 @@ var _ = Describe("PillarBinding Webhook", func() {
 				},
 			}
 			Expect(k8sClient.Create(ctx, pool)).To(Succeed())
-			DeferCleanup(func() { _ = k8sClient.Delete(ctx, pool) })
+			DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, pool))).To(Succeed()) })
 
 			By("creating a PillarBinding referencing the pool, without allowVolumeExpansion set")
 			obj.Name = "test-binding-zvol"
@@ -90,7 +91,7 @@ var _ = Describe("PillarBinding Webhook", func() {
 				},
 			}
 			Expect(k8sClient.Create(ctx, pool)).To(Succeed())
-			DeferCleanup(func() { _ = k8sClient.Delete(ctx, pool) })
+			DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, pool))).To(Succeed()) })
 
 			By("calling Default on a binding without allowVolumeExpansion")
 			obj.Name = "test-binding-lvm"
@@ -120,7 +121,7 @@ var _ = Describe("PillarBinding Webhook", func() {
 				},
 			}
 			Expect(k8sClient.Create(ctx, pool)).To(Succeed())
-			DeferCleanup(func() { _ = k8sClient.Delete(ctx, pool) })
+			DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, pool))).To(Succeed()) })
 
 			By("calling Default on a binding without allowVolumeExpansion")
 			obj.Name = "test-binding-zfs-ds"
@@ -147,7 +148,7 @@ var _ = Describe("PillarBinding Webhook", func() {
 				},
 			}
 			Expect(k8sClient.Create(ctx, pool)).To(Succeed())
-			DeferCleanup(func() { _ = k8sClient.Delete(ctx, pool) })
+			DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, pool))).To(Succeed()) })
 
 			By("calling Default on a binding without allowVolumeExpansion")
 			obj.Name = "test-binding-dir"
@@ -177,7 +178,7 @@ var _ = Describe("PillarBinding Webhook", func() {
 				},
 			}
 			Expect(k8sClient.Create(ctx, pool)).To(Succeed())
-			DeferCleanup(func() { _ = k8sClient.Delete(ctx, pool) })
+			DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, pool))).To(Succeed()) })
 
 			By("setting allowVolumeExpansion to false explicitly (opposite of backend default)")
 			falseVal := false
@@ -293,14 +294,14 @@ var _ = Describe("PillarBinding Webhook", func() {
 				},
 			}
 			Expect(k8sClient.Create(ctx, pool)).To(Succeed())
-			DeferCleanup(func() { _ = k8sClient.Delete(ctx, pool) })
+			DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, pool))).To(Succeed()) })
 
 			proto := &pillarcsiv1alpha1.PillarProtocol{
 				ObjectMeta: metav1.ObjectMeta{Name: "compat-proto-nvme"},
 				Spec:       pillarcsiv1alpha1.PillarProtocolSpec{Type: pillarcsiv1alpha1.ProtocolTypeNVMeOFTCP},
 			}
 			Expect(k8sClient.Create(ctx, proto)).To(Succeed())
-			DeferCleanup(func() { _ = k8sClient.Delete(ctx, proto) })
+			DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, proto))).To(Succeed()) })
 
 			obj.Name = "compat-binding-zvol-nvme"
 			obj.Spec = pillarcsiv1alpha1.PillarBindingSpec{
@@ -321,14 +322,14 @@ var _ = Describe("PillarBinding Webhook", func() {
 				},
 			}
 			Expect(k8sClient.Create(ctx, pool)).To(Succeed())
-			DeferCleanup(func() { _ = k8sClient.Delete(ctx, pool) })
+			DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, pool))).To(Succeed()) })
 
 			proto := &pillarcsiv1alpha1.PillarProtocol{
 				ObjectMeta: metav1.ObjectMeta{Name: "compat-proto-iscsi"},
 				Spec:       pillarcsiv1alpha1.PillarProtocolSpec{Type: pillarcsiv1alpha1.ProtocolTypeISCSI},
 			}
 			Expect(k8sClient.Create(ctx, proto)).To(Succeed())
-			DeferCleanup(func() { _ = k8sClient.Delete(ctx, proto) })
+			DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, proto))).To(Succeed()) })
 
 			obj.Name = "compat-binding-lvm-iscsi"
 			obj.Spec = pillarcsiv1alpha1.PillarBindingSpec{
@@ -352,14 +353,14 @@ var _ = Describe("PillarBinding Webhook", func() {
 				},
 			}
 			Expect(k8sClient.Create(ctx, pool)).To(Succeed())
-			DeferCleanup(func() { _ = k8sClient.Delete(ctx, pool) })
+			DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, pool))).To(Succeed()) })
 
 			proto := &pillarcsiv1alpha1.PillarProtocol{
 				ObjectMeta: metav1.ObjectMeta{Name: "compat-proto-nfs"},
 				Spec:       pillarcsiv1alpha1.PillarProtocolSpec{Type: pillarcsiv1alpha1.ProtocolTypeNFS},
 			}
 			Expect(k8sClient.Create(ctx, proto)).To(Succeed())
-			DeferCleanup(func() { _ = k8sClient.Delete(ctx, proto) })
+			DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, proto))).To(Succeed()) })
 
 			obj.Name = "compat-binding-zfsds-nfs"
 			obj.Spec = pillarcsiv1alpha1.PillarBindingSpec{
@@ -380,14 +381,14 @@ var _ = Describe("PillarBinding Webhook", func() {
 				},
 			}
 			Expect(k8sClient.Create(ctx, pool)).To(Succeed())
-			DeferCleanup(func() { _ = k8sClient.Delete(ctx, pool) })
+			DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, pool))).To(Succeed()) })
 
 			proto := &pillarcsiv1alpha1.PillarProtocol{
 				ObjectMeta: metav1.ObjectMeta{Name: "compat-proto-nfs2"},
 				Spec:       pillarcsiv1alpha1.PillarProtocolSpec{Type: pillarcsiv1alpha1.ProtocolTypeNFS},
 			}
 			Expect(k8sClient.Create(ctx, proto)).To(Succeed())
-			DeferCleanup(func() { _ = k8sClient.Delete(ctx, proto) })
+			DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, proto))).To(Succeed()) })
 
 			obj.Name = "compat-binding-dir-nfs"
 			obj.Spec = pillarcsiv1alpha1.PillarBindingSpec{
@@ -411,14 +412,14 @@ var _ = Describe("PillarBinding Webhook", func() {
 				},
 			}
 			Expect(k8sClient.Create(ctx, pool)).To(Succeed())
-			DeferCleanup(func() { _ = k8sClient.Delete(ctx, pool) })
+			DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, pool))).To(Succeed()) })
 
 			proto := &pillarcsiv1alpha1.PillarProtocol{
 				ObjectMeta: metav1.ObjectMeta{Name: "incompat-proto-nfs"},
 				Spec:       pillarcsiv1alpha1.PillarProtocolSpec{Type: pillarcsiv1alpha1.ProtocolTypeNFS},
 			}
 			Expect(k8sClient.Create(ctx, proto)).To(Succeed())
-			DeferCleanup(func() { _ = k8sClient.Delete(ctx, proto) })
+			DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, proto))).To(Succeed()) })
 
 			obj.Name = "incompat-binding-zvol-nfs"
 			obj.Spec = pillarcsiv1alpha1.PillarBindingSpec{
@@ -440,14 +441,14 @@ var _ = Describe("PillarBinding Webhook", func() {
 				},
 			}
 			Expect(k8sClient.Create(ctx, pool)).To(Succeed())
-			DeferCleanup(func() { _ = k8sClient.Delete(ctx, pool) })
+			DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, pool))).To(Succeed()) })
 
 			proto := &pillarcsiv1alpha1.PillarProtocol{
 				ObjectMeta: metav1.ObjectMeta{Name: "incompat-proto-nfs2"},
 				Spec:       pillarcsiv1alpha1.PillarProtocolSpec{Type: pillarcsiv1alpha1.ProtocolTypeNFS},
 			}
 			Expect(k8sClient.Create(ctx, proto)).To(Succeed())
-			DeferCleanup(func() { _ = k8sClient.Delete(ctx, proto) })
+			DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, proto))).To(Succeed()) })
 
 			obj.Name = "incompat-binding-lvm-nfs"
 			obj.Spec = pillarcsiv1alpha1.PillarBindingSpec{
@@ -472,14 +473,14 @@ var _ = Describe("PillarBinding Webhook", func() {
 				},
 			}
 			Expect(k8sClient.Create(ctx, pool)).To(Succeed())
-			DeferCleanup(func() { _ = k8sClient.Delete(ctx, pool) })
+			DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, pool))).To(Succeed()) })
 
 			proto := &pillarcsiv1alpha1.PillarProtocol{
 				ObjectMeta: metav1.ObjectMeta{Name: "incompat-proto-nvme"},
 				Spec:       pillarcsiv1alpha1.PillarProtocolSpec{Type: pillarcsiv1alpha1.ProtocolTypeNVMeOFTCP},
 			}
 			Expect(k8sClient.Create(ctx, proto)).To(Succeed())
-			DeferCleanup(func() { _ = k8sClient.Delete(ctx, proto) })
+			DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, proto))).To(Succeed()) })
 
 			obj.Name = "incompat-binding-zfsds-nvme"
 			obj.Spec = pillarcsiv1alpha1.PillarBindingSpec{
@@ -501,14 +502,14 @@ var _ = Describe("PillarBinding Webhook", func() {
 				},
 			}
 			Expect(k8sClient.Create(ctx, pool)).To(Succeed())
-			DeferCleanup(func() { _ = k8sClient.Delete(ctx, pool) })
+			DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, pool))).To(Succeed()) })
 
 			proto := &pillarcsiv1alpha1.PillarProtocol{
 				ObjectMeta: metav1.ObjectMeta{Name: "incompat-proto-iscsi"},
 				Spec:       pillarcsiv1alpha1.PillarProtocolSpec{Type: pillarcsiv1alpha1.ProtocolTypeISCSI},
 			}
 			Expect(k8sClient.Create(ctx, proto)).To(Succeed())
-			DeferCleanup(func() { _ = k8sClient.Delete(ctx, proto) })
+			DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, proto))).To(Succeed()) })
 
 			obj.Name = "incompat-binding-dir-iscsi"
 			obj.Spec = pillarcsiv1alpha1.PillarBindingSpec{
@@ -527,7 +528,7 @@ var _ = Describe("PillarBinding Webhook", func() {
 				Spec:       pillarcsiv1alpha1.PillarProtocolSpec{Type: pillarcsiv1alpha1.ProtocolTypeNFS},
 			}
 			Expect(k8sClient.Create(ctx, proto)).To(Succeed())
-			DeferCleanup(func() { _ = k8sClient.Delete(ctx, proto) })
+			DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, proto))).To(Succeed()) })
 
 			obj.Name = "compat-binding-nopool"
 			obj.Spec = pillarcsiv1alpha1.PillarBindingSpec{
@@ -551,7 +552,7 @@ var _ = Describe("PillarBinding Webhook", func() {
 				},
 			}
 			Expect(k8sClient.Create(ctx, pool)).To(Succeed())
-			DeferCleanup(func() { _ = k8sClient.Delete(ctx, pool) })
+			DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, pool))).To(Succeed()) })
 
 			obj.Name = "compat-binding-noproto"
 			obj.Spec = pillarcsiv1alpha1.PillarBindingSpec{

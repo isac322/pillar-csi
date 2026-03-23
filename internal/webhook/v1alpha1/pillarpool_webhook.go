@@ -30,8 +30,6 @@ import (
 	pillarcsiv1alpha1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
 )
 
-// nolint:unused
-// log is for logging in this package.
 var pillarpoollog = logf.Log.WithName("pillarpool-resource")
 
 // SetupPillarPoolWebhookWithManager registers the webhook for PillarPool in the manager.
@@ -44,7 +42,7 @@ func SetupPillarPoolWebhookWithManager(mgr ctrl.Manager) error {
 // TODO(user): EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
 
 // TODO(user): change verbs to "verbs=create;update;delete" if you want to enable deletion validation.
-// NOTE: If you want to customise the 'path', use the flags '--defaulting-path' or '--validation-path'.
+// NOTE: If you want to customize the 'path', use the flags '--defaulting-path' or '--validation-path'.
 // +kubebuilder:webhook:path=/validate-pillar-csi-pillar-csi-bhyoo-com-v1alpha1-pillarpool,mutating=false,failurePolicy=fail,sideEffects=None,groups=pillar-csi.pillar-csi.bhyoo.com,resources=pillarpools,verbs=create;update,versions=v1alpha1,name=vpillarpool-v1alpha1.kb.io,admissionReviewVersions=v1
 
 // PillarPoolCustomValidator struct is responsible for validating the PillarPool resource
@@ -59,7 +57,7 @@ type PillarPoolCustomValidator struct {
 var _ webhook.CustomValidator = &PillarPoolCustomValidator{}
 
 // ValidateCreate implements webhook.CustomValidator so a webhook will be registered for the type PillarPool.
-func (v *PillarPoolCustomValidator) ValidateCreate(_ context.Context, obj runtime.Object) (admission.Warnings, error) {
+func (*PillarPoolCustomValidator) ValidateCreate(_ context.Context, obj runtime.Object) (admission.Warnings, error) {
 	pillarpool, ok := obj.(*pillarcsiv1alpha1.PillarPool)
 	if !ok {
 		return nil, fmt.Errorf("expected a PillarPool object but got %T", obj)
@@ -72,7 +70,9 @@ func (v *PillarPoolCustomValidator) ValidateCreate(_ context.Context, obj runtim
 }
 
 // ValidateUpdate implements webhook.CustomValidator so a webhook will be registered for the type PillarPool.
-func (v *PillarPoolCustomValidator) ValidateUpdate(_ context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
+func (*PillarPoolCustomValidator) ValidateUpdate(
+	_ context.Context, oldObj, newObj runtime.Object,
+) (admission.Warnings, error) {
 	newPool, ok := newObj.(*pillarcsiv1alpha1.PillarPool)
 	if !ok {
 		return nil, fmt.Errorf("expected a PillarPool object for the newObj but got %T", newObj)
@@ -113,7 +113,7 @@ func (v *PillarPoolCustomValidator) ValidateUpdate(_ context.Context, oldObj, ne
 }
 
 // ValidateDelete implements webhook.CustomValidator so a webhook will be registered for the type PillarPool.
-func (v *PillarPoolCustomValidator) ValidateDelete(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
+func (*PillarPoolCustomValidator) ValidateDelete(_ context.Context, obj runtime.Object) (admission.Warnings, error) {
 	pillarpool, ok := obj.(*pillarcsiv1alpha1.PillarPool)
 	if !ok {
 		return nil, fmt.Errorf("expected a PillarPool object but got %T", obj)

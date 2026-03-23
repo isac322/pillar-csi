@@ -14,6 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+// Package v1alpha1 implements admission webhooks for the pillar-csi.bhyoo.com/v1alpha1 API group.
 package v1alpha1
 
 import (
@@ -32,8 +33,6 @@ import (
 	pillarcsiv1alpha1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
 )
 
-// nolint:unused
-// log is for logging in this package.
 var pillarbindinglog = logf.Log.WithName("pillarbinding-resource")
 
 // SetupPillarBindingWebhookWithManager registers the webhook for PillarBinding in the manager.
@@ -72,7 +71,8 @@ func (d *PillarBindingCustomDefaulter) Default(ctx context.Context, obj runtime.
 	// Auto-set allowVolumeExpansion from the referenced pool's backend type when
 	// the user has not explicitly configured the field.
 	if pillarbinding.Spec.StorageClass.AllowVolumeExpansion == nil {
-		if err := d.defaultAllowVolumeExpansion(ctx, pillarbinding); err != nil {
+		err := d.defaultAllowVolumeExpansion(ctx, pillarbinding)
+		if err != nil {
 			// The pool may not exist yet (e.g., created after the binding).
 			// Skip silently rather than blocking admission – the controller will
 			// reconcile the generated StorageClass once the pool becomes available.
@@ -87,12 +87,15 @@ func (d *PillarBindingCustomDefaulter) Default(ctx context.Context, obj runtime.
 
 // defaultAllowVolumeExpansion looks up the referenced PillarPool and writes
 // spec.storageClass.allowVolumeExpansion based on the pool's backend type.
-func (d *PillarBindingCustomDefaulter) defaultAllowVolumeExpansion(ctx context.Context, pb *pillarcsiv1alpha1.PillarBinding) error {
+func (d *PillarBindingCustomDefaulter) defaultAllowVolumeExpansion(
+	ctx context.Context, pb *pillarcsiv1alpha1.PillarBinding,
+) error {
 	if d.Client == nil {
 		return fmt.Errorf("defaulter client is nil, cannot look up PillarPool")
 	}
 	pool := &pillarcsiv1alpha1.PillarPool{}
-	if err := d.Client.Get(ctx, types.NamespacedName{Name: pb.Spec.PoolRef}, pool); err != nil {
+	err := d.Client.Get(ctx, types.NamespacedName{Name: pb.Spec.PoolRef}, pool)
+	if err != nil {
 		return fmt.Errorf("cannot look up PillarPool %q: %w", pb.Spec.PoolRef, err)
 	}
 	val := backendSupportsVolumeExpansion(pool.Spec.Backend.Type)
@@ -113,7 +116,7 @@ func backendSupportsVolumeExpansion(bt pillarcsiv1alpha1.BackendType) bool {
 }
 
 // TODO(user): change verbs to "verbs=create;update;delete" if you want to enable deletion validation.
-// NOTE: If you want to customise the 'path', use the flags '--defaulting-path' or '--validation-path'.
+// NOTE: If you want to customize the 'path', use the flags '--defaulting-path' or '--validation-path'.
 // +kubebuilder:webhook:path=/validate-pillar-csi-pillar-csi-bhyoo-com-v1alpha1-pillarbinding,mutating=false,failurePolicy=fail,sideEffects=None,groups=pillar-csi.pillar-csi.bhyoo.com,resources=pillarbindings,verbs=create;update,versions=v1alpha1,name=vpillarbinding-v1alpha1.kb.io,admissionReviewVersions=v1
 
 // PillarBindingCustomValidator struct is responsible for validating the PillarBinding resource
@@ -130,14 +133,17 @@ type PillarBindingCustomValidator struct {
 var _ webhook.CustomValidator = &PillarBindingCustomValidator{}
 
 // ValidateCreate implements webhook.CustomValidator so a webhook will be registered for the type PillarBinding.
-func (v *PillarBindingCustomValidator) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
+func (v *PillarBindingCustomValidator) ValidateCreate(
+	ctx context.Context, obj runtime.Object,
+) (admission.Warnings, error) {
 	pillarbinding, ok := obj.(*pillarcsiv1alpha1.PillarBinding)
 	if !ok {
 		return nil, fmt.Errorf("expected a PillarBinding object but got %T", obj)
 	}
 	pillarbindinglog.Info("Validation for PillarBinding upon creation", "name", pillarbinding.GetName())
 
-	if err := v.validateCompatibility(ctx, pillarbinding); err != nil {
+	err := v.validateCompatibility(ctx, pillarbinding)
+	if err != nil {
 		return nil, err
 	}
 
@@ -145,7 +151,9 @@ func (v *PillarBindingCustomValidator) ValidateCreate(ctx context.Context, obj r
 }
 
 // ValidateUpdate implements webhook.CustomValidator so a webhook will be registered for the type PillarBinding.
-func (v *PillarBindingCustomValidator) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
+func (v *PillarBindingCustomValidator) ValidateUpdate(
+	ctx context.Context, oldObj, newObj runtime.Object,
+) (admission.Warnings, error) {
 	newBinding, ok := newObj.(*pillarcsiv1alpha1.PillarBinding)
 	if !ok {
 		return nil, fmt.Errorf("expected a PillarBinding object for the newObj but got %T", newObj)
@@ -188,15 +196,16 @@ func (v *PillarBindingCustomValidator) ValidateUpdate(ctx context.Context, oldOb
 	// (poolRef and protocolRef are immutable, so this is only relevant when neither
 	// changed — but we still need to guard against a cluster state change between
 	// admission calls.)
-	if err := v.validateCompatibility(ctx, newBinding); err != nil {
-		return nil, err
+	compatErr := v.validateCompatibility(ctx, newBinding)
+	if compatErr != nil {
+		return nil, compatErr
 	}
 
 	return nil, nil
 }
 
 // ValidateDelete implements webhook.CustomValidator so a webhook will be registered for the type PillarBinding.
-func (v *PillarBindingCustomValidator) ValidateDelete(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
+func (*PillarBindingCustomValidator) ValidateDelete(_ context.Context, obj runtime.Object) (admission.Warnings, error) {
 	pillarbinding, ok := obj.(*pillarcsiv1alpha1.PillarBinding)
 	if !ok {
 		return nil, fmt.Errorf("expected a PillarBinding object but got %T", obj)
@@ -217,24 +226,28 @@ func (v *PillarBindingCustomValidator) ValidateDelete(ctx context.Context, obj r
 // If either referenced resource does not yet exist the check is skipped: the
 // controller will detect and surface the mismatch via status conditions once
 // both resources are available.
-func (v *PillarBindingCustomValidator) validateCompatibility(ctx context.Context, pb *pillarcsiv1alpha1.PillarBinding) error {
+func (v *PillarBindingCustomValidator) validateCompatibility(
+	ctx context.Context, pb *pillarcsiv1alpha1.PillarBinding,
+) error {
 	if v.Client == nil {
 		return nil
 	}
 
 	pool := &pillarcsiv1alpha1.PillarPool{}
-	if err := v.Client.Get(ctx, types.NamespacedName{Name: pb.Spec.PoolRef}, pool); err != nil {
+	poolErr := v.Client.Get(ctx, types.NamespacedName{Name: pb.Spec.PoolRef}, pool)
+	if poolErr != nil {
 		// Pool not found yet — skip; controller reconciliation handles this case.
 		pillarbindinglog.V(1).Info("Skipping compatibility check: cannot fetch pool",
-			"poolRef", pb.Spec.PoolRef, "reason", err.Error())
+			"poolRef", pb.Spec.PoolRef, "reason", poolErr.Error())
 		return nil
 	}
 
 	protocol := &pillarcsiv1alpha1.PillarProtocol{}
-	if err := v.Client.Get(ctx, types.NamespacedName{Name: pb.Spec.ProtocolRef}, protocol); err != nil {
+	protoErr := v.Client.Get(ctx, types.NamespacedName{Name: pb.Spec.ProtocolRef}, protocol)
+	if protoErr != nil {
 		// Protocol not found yet — skip; controller reconciliation handles this case.
 		pillarbindinglog.V(1).Info("Skipping compatibility check: cannot fetch protocol",
-			"protocolRef", pb.Spec.ProtocolRef, "reason", err.Error())
+			"protocolRef", pb.Spec.ProtocolRef, "reason", protoErr.Error())
 		return nil
 	}
 

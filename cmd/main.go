@@ -86,30 +86,24 @@ func setupControllers(mgr ctrl.Manager) error {
 	if err != nil {
 		return fmt.Errorf("PillarBinding controller: %w", err)
 	}
-	// nolint:goconst
 	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
-		if err := webhookv1alpha1.SetupPillarTargetWebhookWithManager(mgr); err != nil {
+		err = webhookv1alpha1.SetupPillarTargetWebhookWithManager(mgr)
+		if err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "PillarTarget")
 			os.Exit(1)
 		}
-	}
-	// nolint:goconst
-	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
-		if err := webhookv1alpha1.SetupPillarPoolWebhookWithManager(mgr); err != nil {
+		err = webhookv1alpha1.SetupPillarPoolWebhookWithManager(mgr)
+		if err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "PillarPool")
 			os.Exit(1)
 		}
-	}
-	// nolint:goconst
-	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
-		if err := webhookv1alpha1.SetupPillarProtocolWebhookWithManager(mgr); err != nil {
+		err = webhookv1alpha1.SetupPillarProtocolWebhookWithManager(mgr)
+		if err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "PillarProtocol")
 			os.Exit(1)
 		}
-	}
-	// nolint:goconst
-	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
-		if err := webhookv1alpha1.SetupPillarBindingWebhookWithManager(mgr); err != nil {
+		err = webhookv1alpha1.SetupPillarBindingWebhookWithManager(mgr)
+		if err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "PillarBinding")
 			os.Exit(1)
 		}

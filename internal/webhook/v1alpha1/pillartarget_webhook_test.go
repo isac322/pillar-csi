@@ -67,5 +67,4 @@ var _ = Describe("PillarTarget Webhook", func() {
 		//     Expect(validator.ValidateUpdate(ctx, oldObj, obj)).To(BeNil())
 		// })
 	})
-
 })

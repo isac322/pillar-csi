@@ -30,8 +30,6 @@ import (
 	pillarcsiv1alpha1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
 )
 
-// nolint:unused
-// log is for logging in this package.
 var pillartargetlog = logf.Log.WithName("pillartarget-resource")
 
 // SetupPillarTargetWebhookWithManager registers the webhook for PillarTarget in the manager.
@@ -44,7 +42,7 @@ func SetupPillarTargetWebhookWithManager(mgr ctrl.Manager) error {
 // TODO(user): EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
 
 // TODO(user): change verbs to "verbs=create;update;delete" if you want to enable deletion validation.
-// NOTE: If you want to customise the 'path', use the flags '--defaulting-path' or '--validation-path'.
+// NOTE: If you want to customize the 'path', use the flags '--defaulting-path' or '--validation-path'.
 // +kubebuilder:webhook:path=/validate-pillar-csi-pillar-csi-bhyoo-com-v1alpha1-pillartarget,mutating=false,failurePolicy=fail,sideEffects=None,groups=pillar-csi.pillar-csi.bhyoo.com,resources=pillartargets,verbs=create;update,versions=v1alpha1,name=vpillartarget-v1alpha1.kb.io,admissionReviewVersions=v1
 
 // PillarTargetCustomValidator struct is responsible for validating the PillarTarget resource
@@ -59,7 +57,7 @@ type PillarTargetCustomValidator struct {
 var _ webhook.CustomValidator = &PillarTargetCustomValidator{}
 
 // ValidateCreate implements webhook.CustomValidator so a webhook will be registered for the type PillarTarget.
-func (v *PillarTargetCustomValidator) ValidateCreate(_ context.Context, obj runtime.Object) (admission.Warnings, error) {
+func (*PillarTargetCustomValidator) ValidateCreate(_ context.Context, obj runtime.Object) (admission.Warnings, error) {
 	pillartarget, ok := obj.(*pillarcsiv1alpha1.PillarTarget)
 	if !ok {
 		return nil, fmt.Errorf("expected a PillarTarget object but got %T", obj)
@@ -72,7 +70,9 @@ func (v *PillarTargetCustomValidator) ValidateCreate(_ context.Context, obj runt
 }
 
 // ValidateUpdate implements webhook.CustomValidator so a webhook will be registered for the type PillarTarget.
-func (v *PillarTargetCustomValidator) ValidateUpdate(_ context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
+func (*PillarTargetCustomValidator) ValidateUpdate(
+	_ context.Context, oldObj, newObj runtime.Object,
+) (admission.Warnings, error) {
 	newTarget, ok := newObj.(*pillarcsiv1alpha1.PillarTarget)
 	if !ok {
 		return nil, fmt.Errorf("expected a PillarTarget object for the newObj but got %T", newObj)
@@ -94,14 +94,15 @@ func (v *PillarTargetCustomValidator) ValidateUpdate(_ context.Context, oldObj, 
 	oldHasNodeRef := oldTarget.Spec.NodeRef != nil
 	newHasNodeRef := newTarget.Spec.NodeRef != nil
 
-	if oldHasNodeRef != newHasNodeRef {
+	switch {
+	case oldHasNodeRef != newHasNodeRef:
 		// Discriminant switch: nodeRef ↔ external
 		allErrs = append(allErrs, field.Forbidden(
 			field.NewPath("spec"),
 			"cannot switch between nodeRef and external after creation; "+
 				"delete and recreate the PillarTarget instead",
 		))
-	} else if oldHasNodeRef {
+	case oldHasNodeRef:
 		// Both old and new use nodeRef — the node name identifies the agent host.
 		if oldTarget.Spec.NodeRef.Name != newTarget.Spec.NodeRef.Name {
 			allErrs = append(allErrs, field.Forbidden(
@@ -110,7 +111,7 @@ func (v *PillarTargetCustomValidator) ValidateUpdate(_ context.Context, oldObj, 
 					oldTarget.Spec.NodeRef.Name, newTarget.Spec.NodeRef.Name),
 			))
 		}
-	} else if oldTarget.Spec.External != nil && newTarget.Spec.External != nil {
+	case oldTarget.Spec.External != nil && newTarget.Spec.External != nil:
 		// Both old and new use external — the address+port pair identifies the agent host.
 		if oldTarget.Spec.External.Address != newTarget.Spec.External.Address {
 			allErrs = append(allErrs, field.Forbidden(
@@ -135,7 +136,7 @@ func (v *PillarTargetCustomValidator) ValidateUpdate(_ context.Context, oldObj, 
 }
 
 // ValidateDelete implements webhook.CustomValidator so a webhook will be registered for the type PillarTarget.
-func (v *PillarTargetCustomValidator) ValidateDelete(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
+func (*PillarTargetCustomValidator) ValidateDelete(_ context.Context, obj runtime.Object) (admission.Warnings, error) {
 	pillartarget, ok := obj.(*pillarcsiv1alpha1.PillarTarget)
 	if !ok {
 		return nil, fmt.Errorf("expected a PillarTarget object but got %T", obj)
