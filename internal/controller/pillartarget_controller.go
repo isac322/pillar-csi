@@ -20,6 +20,8 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -37,9 +39,9 @@ import (
 )
 
 const (
-	// pillarTargetFinalizer is added to every PillarTarget to support
-	// ordered deletion (e.g. blocked by referencing PillarPools in future steps).
-	pillarTargetFinalizer = "pillar-csi.bhyoo.com/target-protection"
+	// pillarTargetFinalizer is added to every PillarTarget to prevent deletion
+	// while PillarPool resources still reference it.
+	pillarTargetFinalizer = "pillar-csi.bhyoo.com/pillar-target-protection"
 
 	// defaultAgentPort is the gRPC port used when no port override is set.
 	defaultAgentPort int32 = 9500
@@ -47,6 +49,10 @@ const (
 	// storageNodeLabel is applied to the Kubernetes Node referenced by a
 	// PillarTarget to mark it as a pillar-csi storage node.
 	storageNodeLabel = "pillar-csi.bhyoo.com/storage-node"
+
+	// requeueAfterTargetDeletionBlock is how long to wait before re-checking
+	// whether blocking PillarPools have been removed.
+	requeueAfterTargetDeletionBlock = 10 * time.Second
 )
 
 // PillarTargetReconciler reconciles a PillarTarget object.
@@ -58,6 +64,7 @@ type PillarTargetReconciler struct {
 // +kubebuilder:rbac:groups=pillar-csi.pillar-csi.bhyoo.com,resources=pillartargets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=pillar-csi.pillar-csi.bhyoo.com,resources=pillartargets/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=pillar-csi.pillar-csi.bhyoo.com,resources=pillartargets/finalizers,verbs=update
+// +kubebuilder:rbac:groups=pillar-csi.pillar-csi.bhyoo.com,resources=pillarpools,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch;update;patch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
@@ -344,16 +351,49 @@ func (r *PillarTargetReconciler) reconcileNodeRef(ctx context.Context, target *p
 	return ctrl.Result{}, nil
 }
 
-// reconcileDelete handles the deletion flow.  Removes the storage-node label
-// from the referenced Node (if applicable) before releasing the finalizer.
-// Future steps will add blocking logic (e.g. wait until referencing PillarPools
-// are gone).
+// reconcileDelete handles the deletion flow.
+//
+// It first checks whether any PillarPool resources still reference this
+// PillarTarget via spec.targetRef.  If any do, deletion is blocked and the
+// reconciler requeues until they are removed.  Only once no references remain
+// does it clean up the storage-node label on the referenced Node and release
+// the finalizer.
 func (r *PillarTargetReconciler) reconcileDelete(ctx context.Context, target *pillarcsiv1alpha1.PillarTarget) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
 	if !controllerutil.ContainsFinalizer(target, pillarTargetFinalizer) {
 		return ctrl.Result{}, nil
 	}
+
+	log.Info("PillarTarget is being deleted — checking for referencing PillarPools", "name", target.Name)
+
+	// List all PillarPools (cluster-scoped) and find those that reference this target.
+	poolList := &pillarcsiv1alpha1.PillarPoolList{}
+	if err := r.List(ctx, poolList); err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to list PillarPools: %w", err)
+	}
+
+	var referencingPools []string
+	for i := range poolList.Items {
+		if poolList.Items[i].Spec.TargetRef == target.Name {
+			referencingPools = append(referencingPools, poolList.Items[i].Name)
+		}
+	}
+
+	if len(referencingPools) > 0 {
+		// Deletion is blocked — log the reason and requeue.
+		msg := fmt.Sprintf(
+			"Deletion blocked: PillarPool(s) [%s] still reference this target; delete them first",
+			strings.Join(referencingPools, ", "),
+		)
+		log.Info(msg, "name", target.Name)
+
+		// Requeue after a short delay so we re-check once the operator has had
+		// a chance to remove the blocking PillarPools.
+		return ctrl.Result{RequeueAfter: requeueAfterTargetDeletionBlock}, nil
+	}
+
+	// No remaining PillarPool references — proceed with cleanup.
 
 	// Remove the storage-node label from the referenced Kubernetes Node.
 	if target.Spec.NodeRef != nil {
@@ -388,7 +428,7 @@ func (r *PillarTargetReconciler) reconcileDelete(ctx context.Context, target *pi
 		}
 	}
 
-	log.Info("PillarTarget is being deleted; removing finalizer", "name", target.Name)
+	log.Info("PillarTarget deletion unblocked; removing finalizer", "name", target.Name)
 
 	controllerutil.RemoveFinalizer(target, pillarTargetFinalizer)
 	if err := r.Update(ctx, target); err != nil {
@@ -442,9 +482,15 @@ func resolveNodeAddress(node *corev1.Node, nodeRef *pillarcsiv1alpha1.NodeRefSpe
 }
 
 // SetupWithManager sets up the controller with the Manager.
-// It also watches Node objects and re-enqueues any PillarTarget that references
-// a changed node — so that NodeExists and resolvedAddress stay current when
-// nodes are added, updated, or removed.
+//
+// In addition to the primary PillarTarget watch it registers two secondary
+// watches:
+//   - Node objects: re-enqueues any PillarTarget whose spec.nodeRef.name
+//     matches the changed node so that NodeExists / resolvedAddress stay
+//     current when nodes appear, change, or disappear.
+//   - PillarPool objects: re-enqueues the PillarTarget named in the pool's
+//     spec.targetRef so that a deletion-blocked target is promptly unblocked
+//     when the last referencing pool is removed.
 func (r *PillarTargetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// mapNodeToTargets returns reconcile Requests for every PillarTarget whose
 	// spec.nodeRef.name matches the node that just changed.
@@ -471,12 +517,35 @@ func (r *PillarTargetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		return requests
 	}
 
+	// mapPoolToTarget re-enqueues the PillarTarget referenced by a changed
+	// PillarPool.  This ensures that when the last blocking pool is deleted the
+	// target's finalizer is removed promptly (instead of waiting for the
+	// RequeueAfter timer).
+	mapPoolToTarget := func(_ context.Context, obj client.Object) []reconcile.Request {
+		pool, ok := obj.(*pillarcsiv1alpha1.PillarPool)
+		if !ok {
+			return nil
+		}
+		if pool.Spec.TargetRef == "" {
+			return nil
+		}
+		return []reconcile.Request{
+			{NamespacedName: types.NamespacedName{Name: pool.Spec.TargetRef}},
+		}
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&pillarcsiv1alpha1.PillarTarget{}).
 		// Re-enqueue PillarTargets whenever the referenced Node changes.
 		Watches(
 			&corev1.Node{},
 			handler.EnqueueRequestsFromMapFunc(mapNodeToTargets),
+		).
+		// Re-enqueue a PillarTarget when any of its referencing PillarPools
+		// change (e.g. deletion) so deletion-blocking is lifted quickly.
+		Watches(
+			&pillarcsiv1alpha1.PillarPool{},
+			handler.EnqueueRequestsFromMapFunc(mapPoolToTarget),
 		).
 		Named("pillartarget").
 		Complete(r)
