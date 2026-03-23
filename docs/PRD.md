@@ -100,10 +100,19 @@ status:
   conditions:
     - type: NodeExists
       status: "True"
+      reason: NodeFound
+      message: "Node rock5bp exists"
+      lastTransitionTime: "2025-01-15T09:55:00Z"
     - type: AgentConnected
       status: "True"
+      reason: Connected
+      message: "gRPC connection established"
+      lastTransitionTime: "2025-01-15T10:00:00Z"
     - type: Ready
       status: "True"
+      reason: AllChecksPass
+      message: "Target is ready"
+      lastTransitionTime: "2025-01-15T10:00:00Z"
 ```
 
 **PillarTarget conditions:**
@@ -137,6 +146,8 @@ spec:
       properties:
         compression: lz4
         volblocksize: 8K
+        quota: 500G                    # 선택: ZFS quota
+        reservation: 100G             # 선택: ZFS reservation
 status:
   capacity:
     total: 712G
@@ -145,12 +156,24 @@ status:
   conditions:
     - type: TargetReady
       status: "True"
+      reason: TargetReady
+      message: "PillarTarget rock5bp is Ready"
+      lastTransitionTime: "2025-01-15T10:00:00Z"
     - type: PoolDiscovered
       status: "True"
+      reason: PoolFound
+      message: "Pool hot-data discovered on agent"
+      lastTransitionTime: "2025-01-15T10:00:00Z"
     - type: BackendSupported
       status: "True"
+      reason: Supported
+      message: "Backend zfs-zvol is supported by agent"
+      lastTransitionTime: "2025-01-15T10:00:00Z"
     - type: Ready
       status: "True"
+      reason: AllChecksPass
+      message: "Pool is ready"
+      lastTransitionTime: "2025-01-15T10:00:00Z"
 ```
 
 **PillarPool conditions:**
@@ -199,6 +222,10 @@ spec:
   iscsi:
     port: 3260
     acl: true
+    # iSCSI 타임아웃 파라미터 (pillar-csi가 합리적 기본값 제공)
+    loginTimeout: 15                   # 선택: 초 단위 (기본값: 15)
+    replacementTimeout: 120            # 선택: 초 단위 (기본값: 120)
+    nodeSessionTimeout: 120            # 선택: 초 단위 (기본값: 120)
 ```
 
 ```yaml
@@ -231,7 +258,7 @@ spec:
     name: fast-nvmeof
     reclaimPolicy: Delete
     volumeBindingMode: Immediate
-    allowVolumeExpansion: true
+    allowVolumeExpansion: true          # 선택: 미지정 시 backend capability에서 자동 결정
   overrides:
     backend:
       zfs:
@@ -240,18 +267,36 @@ spec:
     protocol:
       nvmeofTcp:
         maxQueueSize: 256              # protocol 기본값(128) 오버라이드
+    fsType: ext4                       # 선택: ext4(기본값) 또는 xfs. 블록 프로토콜 + volumeMode: Filesystem일 때만
+    mkfsOptions: ["-E", "lazy_itable_init=1"]  # 선택: mkfs 추가 옵션
 status:
+  storageClassName: fast-nvmeof
   conditions:
     - type: PoolReady
       status: "True"
+      reason: PoolReady
+      message: "PillarPool rock5bp-hot-data is Ready"
+      lastTransitionTime: "2025-01-15T10:00:00Z"
     - type: ProtocolValid
       status: "True"
+      reason: ProtocolExists
+      message: "PillarProtocol nvmeof-tcp exists"
+      lastTransitionTime: "2025-01-15T10:00:00Z"
     - type: Compatible
       status: "True"
+      reason: Compatible
+      message: "zfs-zvol is compatible with nvmeof-tcp"
+      lastTransitionTime: "2025-01-15T10:00:00Z"
     - type: StorageClassCreated
       status: "True"
+      reason: Created
+      message: "StorageClass fast-nvmeof created"
+      lastTransitionTime: "2025-01-15T10:01:00Z"
     - type: Ready
       status: "True"
+      reason: AllChecksPass
+      message: "Binding is ready"
+      lastTransitionTime: "2025-01-15T10:01:00Z"
 ```
 
 **PillarBinding conditions:**
@@ -269,20 +314,22 @@ status:
 
 #### 블록 프로토콜
 
-| 프로토콜 | 클라이언트 디바이스 | 기본 AccessMode | volumeMode |
-|----------|-----------------|----------------|------------|
-| NVMe-oF TCP | `/dev/nvmeXnY` | ReadWriteOnce (RWO) | Block 또는 Filesystem |
-| iSCSI | `/dev/sdX` | ReadWriteOnce (RWO) | Block 또는 Filesystem |
+| 프로토콜 | 클라이언트 디바이스 | AccessMode | volumeMode |
+|----------|-----------------|------------|------------|
+| NVMe-oF TCP | `/dev/nvmeXnY` | RWO, RWOP, ROX | Block 또는 Filesystem |
+| iSCSI | `/dev/sdX` | RWO, RWOP, ROX | Block 또는 Filesystem |
 
 - `volumeMode: Filesystem` → 블록 디바이스에 mkfs + mount
 - `volumeMode: Block` → raw 블록 디바이스를 Pod에 직접 제공
 
 #### 파일시스템 프로토콜
 
-| 프로토콜 | 클라이언트 마운트 | 기본 AccessMode | volumeMode |
-|----------|---------------|----------------|------------|
-| NFS | 마운트된 디렉토리 | ReadWriteMany (RWX) | Filesystem만 |
-| SMB | 마운트된 디렉토리 | ReadWriteMany (RWX) | Filesystem만 |
+| 프로토콜 | 클라이언트 마운트 | AccessMode | volumeMode |
+|----------|---------------|------------|------------|
+| NFS | 마운트된 디렉토리 | RWX, RWO, ROX | Filesystem만 |
+| SMB | 마운트된 디렉토리 | RWX, RWO, ROX | Filesystem만 |
+
+RWX는 Phase 3 (NFS)에서 지원한다.
 
 #### Backend-Protocol 호환성 매트릭스
 
@@ -312,6 +359,12 @@ PVC annotation (볼륨별 오버라이드)
 
 PillarBinding의 오버라이드는 CRD typed schema를 사용한다 (JSON string이 아님). Phase 1에서는 ZFS + NVMe-oF 필드를 정적으로 정의하고, 타입 추가 시 kubebuilder marker로 확장한다.
 
+오버라이드 가능 항목:
+- Backend 파라미터: ZFS properties(compression, volblocksize 등)
+- Protocol 파라미터: NVMe-oF/iSCSI 타임아웃, 큐 사이즈 등
+- fsType: ext4(기본값) 또는 xfs. 블록 프로토콜 + `volumeMode: Filesystem`일 때만
+- mkfsOptions: mkfs 추가 옵션
+
 **PVC annotation 오버라이드 범위 제한:** 튜닝 파라미터만 허용한다 (properties, maxQueueSize, fsType 등). 구조적 참조 변경(pool, parentDataset, type, port 등)은 controller가 CreateVolume 시점에 거부한다. CRD 필드 immutability 규칙과 동일 기준.
 
 PVC annotation 예시:
@@ -329,6 +382,9 @@ metadata:
     pillar-csi.bhyoo.com/protocol-override: |
       nvmeofTcp:
         maxQueueSize: 64
+    pillar-csi.bhyoo.com/fs-override: |
+      fsType: xfs
+      mkfsOptions: ["-K"]
 spec:
   storageClassName: fast-nvmeof
   accessModes: [ReadWriteOnce]
@@ -350,6 +406,9 @@ spec:
 │  │  • PillarTarget status 관리                             │ │
 │  │  • Target bind IP resolve (PillarTarget → Node IP)    │ │
 │  │  • StorageClass 자동 생성 (PillarBinding → SC)         │ │
+│  │  • 노드 label 관리 (PillarTarget ↔ storage-node)      │ │
+│  │  • CSI 작업 재시도 + 롤백 (exponential backoff)         │ │
+│  │  • Agent 복구: 연결 복구 시 전체 상태 push              │ │
 │  │  • CSI sidecars: provisioner, attacher, resizer,      │ │
 │  │    snapshotter                                        │ │
 │  └───────────────────────────────────────────────────────┘ │
@@ -362,12 +421,14 @@ spec:
 │  │    - NFS: mount.nfs / umount                          │ │
 │  │    - SMB: mount.cifs / umount                         │ │
 │  │  • 유저스페이스 도구 컨테이너 번들                         │ │
-│  │  • Init container: 커널 모듈 modprobe                   │ │
+│  │  • Init container: 커널 모듈 modprobe (best-effort)     │ │
 │  │  • CSI sidecar: node-driver-registrar                 │ │
 │  └───────────────────────────────────────────────────────┘ │
 │                                                           │
 │  ┌─ pillar-agent (DaemonSet, 스토리지 노드만) ───────────┐  │
-│  │  • gRPC server                                        │ │
+│  │  • nodeSelector: pillar-csi.bhyoo.com/storage-node    │ │
+│  │  • gRPC server (Phase 1: 평문, TLS 옵션 준비)          │ │
+│  │  • 완전 stateless — 복구 시 controller에서 상태 수신     │ │
 │  │  • Backend 플러그인: ZFS, LVM, directory 등            │ │
 │  │  • Protocol target 플러그인:                           │ │
 │  │    - NVMe-oF: nvmet configfs 직접 조작                 │ │
@@ -424,6 +485,13 @@ Agent는 **완전히 stateless**하다. 로컬 상태를 저장하지 않는다.
 | `/lib/modules` 읽기 마운트 (init) | modprobe용 |
 
 **Host network 불필요.** NVMe-oF/iSCSI target은 호스트 커널 레벨 서비스이므로, agent pod 네트워킹 모드와 무관하게 호스트 네트워크에서 listen한다. Target bind IP는 controller가 PillarTarget nodeRef에서 resolve하여 gRPC로 agent에 전달한다.
+
+#### gRPC 보안
+
+Phase 1에서는 평문 gRPC를 사용한다. TLS 지원은 아키텍처에 포함하되 Phase 1에서는 비활성 상태이다:
+- Agent와 controller 모두 TLS 인증서 경로 설정 옵션을 가진다
+- 설정 미지정 시 평문으로 동작 (Phase 1 기본값)
+- 향후 mTLS 활성화 시 코드 변경 없이 설정만으로 전환
 
 #### SSH 대비 gRPC의 장점
 
@@ -568,16 +636,19 @@ NVMe NQN: nqn.2024-01.com.bhyoo.pillar-csi:rock5bp:pvc-abc123
 3. pillar-controller:
    a. PillarBinding에서 poolRef, protocolRef 확인
    b. 파라미터 머지 (Pool → Protocol → Binding → PVC annotation)
+      - PVC annotation은 튜닝 파라미터만 허용, 구조적 참조 거부
    c. Backend-Protocol 호환성 검증
    d. PillarPool → PillarTarget → Node IP resolve
    e. gRPC로 agent에 CreateVolume + ExportVolume 요청
       (target bind IP도 함께 전달)
+   f. 중간 실패 시 롤백 (예: export 실패 → 생성된 볼륨 삭제)
 4. pillar-agent:
    a. Backend: 볼륨 생성 (예: zfs create -V 50G hot-data/k8s/pvc-xxx)
    b. Protocol: 볼륨 export (예: nvmet configfs에 subsystem/namespace/port 생성)
    c. ExportInfo 반환 (NQN, namespace ID 등)
 5. pillar-controller:
-   a. PV 생성, volumeContext에 ExportInfo 저장
+   a. Volume ID 생성: {target}/{pool}/{volume-name}
+   b. PV 생성, volumeContext에 ExportInfo 저장
 ```
 
 ### 5.2 ControllerPublishVolume (Pod 스케줄링)
@@ -585,11 +656,12 @@ NVMe NQN: nqn.2024-01.com.bhyoo.pillar-csi:rock5bp:pvc-abc123
 ```
 1. external-attacher → CSI ControllerPublishVolume
 2. pillar-controller:
-   a. 대상 노드의 initiator ID 조회 (NodeGetInfo에서 등록된 NQN/IQN)
-   b. PillarProtocol의 acl 설정 확인
-   c. acl=true: gRPC로 agent에 AllowInitiator 요청
+   a. Volume ID에서 target/pool 파싱하여 라우팅 대상 결정
+   b. 대상 노드의 initiator ID 조회 (NodeGetInfo에서 등록된 NQN/IQN)
+   c. PillarProtocol의 acl 설정 확인
+   d. acl=true: gRPC로 agent에 AllowInitiator 요청
       (NVMe-oF: allowed_hosts에 NQN symlink / iSCSI: ACL에 IQN)
-   d. acl=false: no-op
+   e. acl=false: no-op
 3. publish_context 반환
 ```
 
@@ -601,10 +673,15 @@ NVMe NQN: nqn.2024-01.com.bhyoo.pillar-csi:rock5bp:pvc-abc123
    a. volumeContext + publish_context에서 ExportInfo 추출
    b. Protocol initiator 연결:
       NVMe-oF: nvme connect -t tcp -a <ip> -s <port> -n <nqn>
+              (PillarProtocol 타임아웃 파라미터 적용:
+               --ctrl-loss-tmo, --reconnect-delay, --keep-alive-tmo)
       iSCSI: iscsiadm -m discovery + login
+             (타임아웃 파라미터 적용)
       NFS: mount.nfs <ip>:<path> <staging>
-   c. Block protocol + volumeMode=Filesystem: mkfs (첫 사용) + mount
+   c. Block protocol + volumeMode=Filesystem:
+      mkfs (첫 사용, fsType/mkfsOptions 적용) + mount
    d. Block protocol + volumeMode=Block: 디바이스 경로 기록
+   e. 커널 모듈 미로드 시 명확한 에러 반환
 ```
 
 ### 5.4 NodePublishVolume
@@ -682,7 +759,18 @@ PillarTarget ← PillarPool ← PillarBinding ← StorageClass ← PVC
 
 사용자는 역순(PVC → PillarBinding → PillarPool → PillarTarget)으로 삭제해야 한다.
 
-### 7.3 StorageClass 라이프사이클
+### 7.3 CRD Status Conditions
+
+모든 CRD status conditions는 K8s 표준 패턴을 따른다. 각 condition은 다음 필드를 가진다:
+- `type` — condition 타입 (예: Ready, AgentConnected)
+- `status` — "True", "False", "Unknown"
+- `reason` — 기계 판독 가능한 이유 코드
+- `message` — 사람이 읽을 수 있는 상세 메시지
+- `lastTransitionTime` — status가 마지막으로 변경된 시각
+
+이 정보가 트러블슈팅의 주요 수단이다 (7.6 에러/트러블슈팅 DX 참조).
+
+### 7.4 StorageClass 라이프사이클
 
 PillarBinding이 ownerReference로 StorageClass를 완전 관리한다:
 
@@ -693,18 +781,18 @@ PillarBinding이 ownerReference로 StorageClass를 완전 관리한다:
 
 StorageClass 이름은 PillarBinding의 `spec.storageClass.name`에서 사용자가 명시적으로 지정한다. `allowVolumeExpansion`은 backend capability에서 자동 결정되되, 사용자가 오버라이드할 수 있다.
 
-### 7.4 CSI 작업 실패 시 롤백/재시도
+### 7.5 CSI 작업 실패 시 롤백/재시도
 
 - **CreateVolume 중간 실패**: Agent에서 zvol 생성 성공 후 export 실패 시, controller가 생성된 리소스를 **자동 롤백(정리)**.
 - **재시도 정책**: Controller 자체 exponential backoff 재시도. 최대 횟수/타임아웃 설정 가능.
 - **Agent 미연결 시 DeleteVolume**: controller가 agent 재연결까지 재시도. 중간 상태는 CRD status conditions에 반영.
 - **볼륨 삭제**: 단순 `zfs destroy`. 데이터 와이핑 없음 (Phase 1).
 
-### 7.5 용량 관리
+### 7.6 용량 관리
 
 Controller는 사전 용량 검증을 하지 않는다. Agent에 요청을 보내고 `zfs create` 실패 시 에러를 반환한다. ZFS의 quota/reservation 기능은 PillarPool의 backend properties에서 설정 가능하다. Controller 레벨 quota (Pool별 최대 프로비저닝 제한)는 Phase 1 스코프 아님.
 
-### 7.6 에러/트러블슈팅 DX
+### 7.7 에러/트러블슈팅 DX
 
 **kubectl 네이티브만** 사용한다. 별도 CLI나 웹 대시보드를 제공하지 않는다.
 
