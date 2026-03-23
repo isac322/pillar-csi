@@ -23,6 +23,7 @@ import (
 	. "github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -657,6 +658,310 @@ var _ = Describe("PillarPool Controller", func() {
 			Expect(bsCond).NotTo(BeNil())
 			Expect(bsCond.Status).To(Equal(metav1.ConditionUnknown))
 			Expect(bsCond.Reason).To(Equal("TargetNotReady"))
+		})
+	})
+
+	// ──────────────────────────────────────────────────────────────────────────
+	// Capacity sync tests
+	// ──────────────────────────────────────────────────────────────────────────
+
+	Context("Capacity sync from DiscoveredPools", func() {
+		const (
+			capPoolName = "cap-pool"
+			capTarget   = "cap-pool-target"
+			capZFSPool  = "tank"
+		)
+
+		var capPoolNN types.NamespacedName
+
+		// quantityPtr returns a pointer to a parsed resource.Quantity.
+		quantityPtr := func(s string) *resource.Quantity {
+			q := resource.MustParse(s)
+			return &q
+		}
+
+		// createCapPool creates a PillarPool with a ZFS backend pointing at capZFSPool.
+		createCapPool := func() {
+			nn := types.NamespacedName{Name: capPoolName}
+			p := &pillarcsiv1alpha1.PillarPool{}
+			if err := k8sClient.Get(bctx, nn, p); err != nil && errors.IsNotFound(err) {
+				Expect(k8sClient.Create(bctx, &pillarcsiv1alpha1.PillarPool{
+					ObjectMeta: metav1.ObjectMeta{Name: capPoolName},
+					Spec: pillarcsiv1alpha1.PillarPoolSpec{
+						TargetRef: capTarget,
+						Backend: pillarcsiv1alpha1.BackendSpec{
+							Type: pillarcsiv1alpha1.BackendTypeZFSZvol,
+							ZFS:  &pillarcsiv1alpha1.ZFSBackendConfig{Pool: capZFSPool},
+						},
+					},
+				})).To(Succeed())
+			}
+		}
+
+		// setCapTarget creates (or updates) the PillarTarget with Ready=True and
+		// the supplied discovered pools / backends in status.
+		setCapTarget := func(pools []pillarcsiv1alpha1.DiscoveredPool, backends []string) {
+			t := &pillarcsiv1alpha1.PillarTarget{}
+			if err := k8sClient.Get(bctx, types.NamespacedName{Name: capTarget}, t); err != nil {
+				Expect(k8sClient.Create(bctx, &pillarcsiv1alpha1.PillarTarget{
+					ObjectMeta: metav1.ObjectMeta{Name: capTarget},
+					Spec: pillarcsiv1alpha1.PillarTargetSpec{
+						External: &pillarcsiv1alpha1.ExternalSpec{Address: "192.0.2.20", Port: 9500},
+					},
+				})).To(Succeed())
+				Expect(k8sClient.Get(bctx, types.NamespacedName{Name: capTarget}, t)).To(Succeed())
+			}
+			var caps *pillarcsiv1alpha1.AgentCapabilities
+			if backends != nil {
+				caps = &pillarcsiv1alpha1.AgentCapabilities{Backends: backends}
+			}
+			t.Status.ResolvedAddress = "192.0.2.20:9500"
+			t.Status.DiscoveredPools = pools
+			t.Status.Capabilities = caps
+			t.Status.Conditions = []metav1.Condition{{
+				Type:               "Ready",
+				Status:             metav1.ConditionTrue,
+				Reason:             "AgentConnected",
+				Message:            "agent connected",
+				LastTransitionTime: metav1.Now(),
+			}}
+			Expect(k8sClient.Status().Update(bctx, t)).To(Succeed())
+		}
+
+		doCapReconcile := func() (reconcile.Result, error) {
+			r := &PillarPoolReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			return r.Reconcile(bctx, reconcile.Request{NamespacedName: capPoolNN})
+		}
+
+		fetchCapPool := func() *pillarcsiv1alpha1.PillarPool {
+			p := &pillarcsiv1alpha1.PillarPool{}
+			Expect(k8sClient.Get(bctx, capPoolNN, p)).To(Succeed())
+			return p
+		}
+
+		BeforeEach(func() {
+			capPoolNN = types.NamespacedName{Name: capPoolName}
+			createCapPool()
+			// First reconcile adds the finalizer.
+			_, err := doCapReconcile()
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		AfterEach(func() {
+			// Force-remove finalizer so object can be GC'd.
+			p := &pillarcsiv1alpha1.PillarPool{}
+			if err := k8sClient.Get(bctx, capPoolNN, p); err == nil {
+				controllerutil.RemoveFinalizer(p, pillarPoolFinalizer)
+				_ = k8sClient.Update(bctx, p)
+				_ = k8sClient.Delete(bctx, p)
+			}
+			// Remove target.
+			t := &pillarcsiv1alpha1.PillarTarget{}
+			if err := k8sClient.Get(bctx, types.NamespacedName{Name: capTarget}, t); err == nil {
+				controllerutil.RemoveFinalizer(t, pillarTargetFinalizer)
+				_ = k8sClient.Update(bctx, t)
+				_ = k8sClient.Delete(bctx, t)
+			}
+		})
+
+		It("should populate Total, Available, and computed Used when DiscoveredPool has capacity", func() {
+			setCapTarget([]pillarcsiv1alpha1.DiscoveredPool{
+				{
+					Name:      capZFSPool,
+					Type:      "zfs",
+					Total:     quantityPtr("100Gi"),
+					Available: quantityPtr("75Gi"),
+				},
+			}, []string{"zfs-zvol", "zfs-dataset"})
+
+			_, err := doCapReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := fetchCapPool()
+			Expect(fetched.Status.Capacity).NotTo(BeNil(), "Capacity should be populated")
+			Expect(fetched.Status.Capacity.Total).NotTo(BeNil(), "Total should be set")
+			Expect(fetched.Status.Capacity.Available).NotTo(BeNil(), "Available should be set")
+			Expect(fetched.Status.Capacity.Used).NotTo(BeNil(), "Used should be computed")
+
+			// Verify values: 100Gi total, 75Gi available, 25Gi used.
+			expectedTotal := resource.MustParse("100Gi")
+			expectedAvail := resource.MustParse("75Gi")
+			expectedUsed := resource.MustParse("25Gi")
+			Expect(fetched.Status.Capacity.Total.Cmp(expectedTotal)).To(Equal(0),
+				"Total should equal 100Gi")
+			Expect(fetched.Status.Capacity.Available.Cmp(expectedAvail)).To(Equal(0),
+				"Available should equal 75Gi")
+			Expect(fetched.Status.Capacity.Used.Cmp(expectedUsed)).To(Equal(0),
+				"Used should equal Total - Available = 25Gi")
+		})
+
+		It("should set Used=0 when Available exceeds Total (corrupted agent data)", func() {
+			// Available > Total — guard against negative Used.
+			setCapTarget([]pillarcsiv1alpha1.DiscoveredPool{
+				{
+					Name:      capZFSPool,
+					Type:      "zfs",
+					Total:     quantityPtr("10Gi"),
+					Available: quantityPtr("20Gi"), // exceeds total
+				},
+			}, []string{"zfs-zvol"})
+
+			_, err := doCapReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := fetchCapPool()
+			Expect(fetched.Status.Capacity).NotTo(BeNil())
+			Expect(fetched.Status.Capacity.Used).NotTo(BeNil())
+			zero := resource.MustParse("0")
+			Expect(fetched.Status.Capacity.Used.Cmp(zero)).To(Equal(0),
+				"Used should be clamped to 0 when Available > Total")
+		})
+
+		It("should leave capacity nil when DiscoveredPool has no Total or Available", func() {
+			// Pool exists in DiscoveredPools but carries no capacity data.
+			setCapTarget([]pillarcsiv1alpha1.DiscoveredPool{
+				{Name: capZFSPool, Type: "zfs"}, // no Total/Available
+			}, []string{"zfs-zvol"})
+
+			_, err := doCapReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := fetchCapPool()
+			Expect(fetched.Status.Capacity).To(BeNil(),
+				"Capacity should remain nil when the discovered pool carries no capacity data")
+		})
+
+		It("should clear capacity when pool is no longer discovered", func() {
+			// First reconcile — pool discovered with capacity.
+			setCapTarget([]pillarcsiv1alpha1.DiscoveredPool{
+				{
+					Name:      capZFSPool,
+					Type:      "zfs",
+					Total:     quantityPtr("50Gi"),
+					Available: quantityPtr("40Gi"),
+				},
+			}, []string{"zfs-zvol"})
+			_, err := doCapReconcile()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fetchCapPool().Status.Capacity).NotTo(BeNil(), "Capacity should be set after first sync")
+
+			// Second reconcile — pool name no longer in discovered pools.
+			setCapTarget([]pillarcsiv1alpha1.DiscoveredPool{
+				{Name: "other-pool", Type: "zfs", Total: quantityPtr("10Gi"), Available: quantityPtr("10Gi")},
+			}, []string{"zfs-zvol"})
+			_, err = doCapReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := fetchCapPool()
+			Expect(fetched.Status.Capacity).To(BeNil(),
+				"Stale capacity should be cleared when pool is not discovered")
+		})
+
+		It("should clear capacity when pool transitions from discovered to not-discovered", func() {
+			// Start with capacity synced.
+			setCapTarget([]pillarcsiv1alpha1.DiscoveredPool{
+				{Name: capZFSPool, Type: "zfs", Total: quantityPtr("200Gi"), Available: quantityPtr("150Gi")},
+			}, []string{"zfs-zvol"})
+			_, err := doCapReconcile()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fetchCapPool().Status.Capacity).NotTo(BeNil())
+
+			// Target loses the pool (agent reported no pools).
+			t := &pillarcsiv1alpha1.PillarTarget{}
+			Expect(k8sClient.Get(bctx, types.NamespacedName{Name: capTarget}, t)).To(Succeed())
+			t.Status.DiscoveredPools = []pillarcsiv1alpha1.DiscoveredPool{}
+			Expect(k8sClient.Status().Update(bctx, t)).To(Succeed())
+
+			_, err = doCapReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := fetchCapPool()
+			Expect(fetched.Status.Capacity).To(BeNil(),
+				"Capacity should be cleared when DiscoveredPools becomes empty")
+		})
+
+		It("should set Total without Used when only Total is reported", func() {
+			setCapTarget([]pillarcsiv1alpha1.DiscoveredPool{
+				{
+					Name:  capZFSPool,
+					Type:  "zfs",
+					Total: quantityPtr("500Gi"),
+					// Available intentionally absent.
+				},
+			}, []string{"zfs-zvol"})
+
+			_, err := doCapReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := fetchCapPool()
+			Expect(fetched.Status.Capacity).NotTo(BeNil())
+			Expect(fetched.Status.Capacity.Total).NotTo(BeNil())
+			Expect(fetched.Status.Capacity.Available).To(BeNil(),
+				"Available should be nil when not reported by agent")
+			Expect(fetched.Status.Capacity.Used).To(BeNil(),
+				"Used should not be computed when Available is missing")
+		})
+
+		It("should sync capacity for non-ZFS backends using the first DiscoveredPool entry", func() {
+			// Create a dir-backend pool (no named pool).
+			dirPoolName := "dir-cap-pool"
+			dirNN := types.NamespacedName{Name: dirPoolName}
+			Expect(k8sClient.Create(bctx, &pillarcsiv1alpha1.PillarPool{
+				ObjectMeta: metav1.ObjectMeta{Name: dirPoolName},
+				Spec: pillarcsiv1alpha1.PillarPoolSpec{
+					TargetRef: capTarget,
+					Backend:   pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeDir},
+				},
+			})).To(Succeed())
+			defer func() {
+				p := &pillarcsiv1alpha1.PillarPool{}
+				if err := k8sClient.Get(bctx, dirNN, p); err == nil {
+					controllerutil.RemoveFinalizer(p, pillarPoolFinalizer)
+					_ = k8sClient.Update(bctx, p)
+					_ = k8sClient.Delete(bctx, p)
+				}
+			}()
+
+			setCapTarget([]pillarcsiv1alpha1.DiscoveredPool{
+				{
+					Name:      "host-dir",
+					Type:      "dir",
+					Total:     quantityPtr("1Ti"),
+					Available: quantityPtr("800Gi"),
+				},
+			}, []string{"dir"})
+
+			dirReconciler := &PillarPoolReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+
+			// First reconcile — adds finalizer.
+			_, err := dirReconciler.Reconcile(bctx, reconcile.Request{NamespacedName: dirNN})
+			Expect(err).NotTo(HaveOccurred())
+			// Second reconcile — normal path.
+			_, err = dirReconciler.Reconcile(bctx, reconcile.Request{NamespacedName: dirNN})
+			Expect(err).NotTo(HaveOccurred())
+
+			dirPool := &pillarcsiv1alpha1.PillarPool{}
+			Expect(k8sClient.Get(bctx, dirNN, dirPool)).To(Succeed())
+			Expect(dirPool.Status.Capacity).NotTo(BeNil(),
+				"dir-backend pool should pick up capacity from the first DiscoveredPool entry")
+			expectedTotal := resource.MustParse("1Ti")
+			Expect(dirPool.Status.Capacity.Total.Cmp(expectedTotal)).To(Equal(0))
+		})
+
+		It("should set Ready=True with synced capacity when all conditions pass", func() {
+			setCapTarget([]pillarcsiv1alpha1.DiscoveredPool{
+				{Name: capZFSPool, Type: "zfs", Total: quantityPtr("100Gi"), Available: quantityPtr("60Gi")},
+			}, []string{"zfs-zvol"})
+
+			_, err := doCapReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := fetchCapPool()
+			readyCond := meta.FindStatusCondition(fetched.Status.Conditions, "Ready")
+			Expect(readyCond).NotTo(BeNil())
+			Expect(readyCond.Status).To(Equal(metav1.ConditionTrue),
+				"Ready should be True when all sub-conditions pass and capacity is synced")
+			Expect(fetched.Status.Capacity).NotTo(BeNil())
 		})
 	})
 

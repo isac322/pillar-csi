@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -263,7 +264,33 @@ func (r *PillarPoolReconciler) reconcileNormal(ctx context.Context, pool *pillar
 		Message:            bsMsg,
 	})
 
-	// Ready is True only when all three positive conditions hold.
+	// --- Capacity sync from agent data ---
+	// When the pool is confirmed discovered we attempt to pull capacity
+	// (Total, Available, Used) from the matching DiscoveredPool entry that
+	// the target reconciler populates once the agent gRPC connection is
+	// established.  If the pool is not discovered (or its state is unknown)
+	// we clear any stale capacity so callers get an accurate picture.
+	if pdStatus == metav1.ConditionTrue {
+		if synced := syncCapacityFromTarget(pool, target); synced {
+			log.Info("Synced capacity from DiscoveredPool",
+				"pool", pool.Name,
+				"total", pool.Status.Capacity.Total,
+				"available", pool.Status.Capacity.Available,
+				"used", pool.Status.Capacity.Used,
+			)
+		} else {
+			log.V(1).Info("Pool is discovered but no capacity data available yet", "pool", pool.Name)
+		}
+	} else {
+		// Pool not yet discovered or state is unknown — clear stale capacity.
+		pool.Status.Capacity = nil
+	}
+
+	// --- Top-level Ready condition ---
+	// Ready is True only when TargetReady, PoolDiscovered, and BackendSupported
+	// are all True.  TargetReady is already confirmed True at this point in the
+	// code (the function returns early above when it is False), so we only need
+	// to check the two remaining conditions explicitly.
 	allReady := pdStatus == metav1.ConditionTrue && bsStatus == metav1.ConditionTrue
 	if allReady {
 		meta.SetStatusCondition(&pool.Status.Conditions, metav1.Condition{
@@ -368,6 +395,79 @@ func evaluateBackendSupported(pool *pillarcsiv1alpha1.PillarPool, target *pillar
 	return metav1.ConditionFalse, "BackendNotSupported",
 		fmt.Sprintf("Backend type %q is not in the supported backends list of PillarTarget %q (supported: [%s])",
 			backendType, pool.Spec.TargetRef, strings.Join(target.Status.Capabilities.Backends, ", "))
+}
+
+// syncCapacityFromTarget reads capacity data for this pool from the matching
+// entry in target.Status.DiscoveredPools and writes it to pool.Status.Capacity.
+//
+// Matching logic:
+//   - ZFS backends (zfs-zvol, zfs-dataset): match by pool name (spec.backend.zfs.pool).
+//   - Other backends (lvm-lv, dir): no named pool — match the first DiscoveredPool entry.
+//
+// The function computes Used = Total − Available when both quantities are present,
+// clamping the result at zero to protect against corrupted agent data.
+//
+// Returns true when capacity fields were updated, false when no matching entry
+// or no capacity data was found (both Total and Available are nil).
+func syncCapacityFromTarget(
+	pool *pillarcsiv1alpha1.PillarPool,
+	target *pillarcsiv1alpha1.PillarTarget,
+) bool {
+	if len(target.Status.DiscoveredPools) == 0 {
+		return false
+	}
+
+	// Resolve the pool name we expect to match (ZFS uses named pools; other
+	// backend types do not carry an explicit pool name).
+	var expectedName string
+	switch pool.Spec.Backend.Type {
+	case pillarcsiv1alpha1.BackendTypeZFSZvol, pillarcsiv1alpha1.BackendTypeZFSDataset:
+		if pool.Spec.Backend.ZFS != nil {
+			expectedName = pool.Spec.Backend.ZFS.Pool
+		}
+	}
+
+	// Walk the discovered pool list and find the first matching entry.
+	var found *pillarcsiv1alpha1.DiscoveredPool
+	for i := range target.Status.DiscoveredPools {
+		dp := &target.Status.DiscoveredPools[i]
+		if expectedName == "" || dp.Name == expectedName {
+			found = dp
+			break
+		}
+	}
+
+	if found == nil {
+		return false
+	}
+
+	// Require at least one capacity field; an entry with no capacity data
+	// (Total == nil && Available == nil) carries no actionable information.
+	if found.Total == nil && found.Available == nil {
+		return false
+	}
+
+	cap := &pillarcsiv1alpha1.PoolCapacity{
+		Total:     found.Total,
+		Available: found.Available,
+	}
+
+	// Compute Used = Total − Available when both values are present.
+	if found.Total != nil && found.Available != nil {
+		used := found.Total.DeepCopy()
+		used.Sub(*found.Available)
+
+		// Guard against negative Used that can arise from corrupted agent data
+		// (e.g. Available > Total due to a reporting race).
+		zero := resource.MustParse("0")
+		if used.Cmp(zero) < 0 {
+			used = zero
+		}
+		cap.Used = &used
+	}
+
+	pool.Status.Capacity = cap
+	return true
 }
 
 // reconcileDelete handles the deletion flow.  The finalizer is only removed
