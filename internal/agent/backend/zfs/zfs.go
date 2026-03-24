@@ -143,6 +143,28 @@ func New(pool, parentDataset string) *Backend {
 	}
 }
 
+// NewWithExecFn creates a Backend that delegates all ZFS command execution to
+// fn instead of running real zfs(8)/zpool(8) binaries.  This constructor is
+// intended for use in component and integration tests that need to simulate
+// ZFS command output without requiring a ZFS-capable host.
+//
+// Example:
+//
+//	b := zfs.NewWithExecFn("tank", "k8s", func(ctx context.Context, name string, args ...string) ([]byte, error) {
+//	    return []byte("10737418240"), nil
+//	})
+func NewWithExecFn(
+	pool, parentDataset string,
+	fn func(ctx context.Context, name string, args ...string) ([]byte, error),
+) *Backend {
+	return &Backend{
+		pool:          pool,
+		parentDataset: parentDataset,
+		exec:          execFunc(fn),
+		devZvolBase:   defaultDevZvolBase,
+	}
+}
+
 // datasetName returns the fully-qualified ZFS dataset name for a volume.
 // VolumeID is expected to be in the format "<pool>/<volume-name>" as used
 // throughout the agent gRPC API; the pool prefix is stripped before appending

@@ -470,6 +470,24 @@ func (s *ControllerServer) CreateVolume(
 		pvExists && existingPV.Status.ExportInfo != nil {
 		ei := existingPV.Status.ExportInfo
 		cap := existingPV.Spec.CapacityBytes
+
+		// CSI spec §5.1.1: if the existing volume doesn't satisfy the new
+		// capacity range, return AlreadyExists to signal incompatibility.
+		if cr := req.GetCapacityRange(); cr != nil {
+			if cr.GetRequiredBytes() > 0 && cap < cr.GetRequiredBytes() {
+				return nil, status.Errorf(codes.AlreadyExists,
+					"volume %q already exists with capacity %d bytes, which is less than "+
+						"the requested minimum %d bytes",
+					req.GetName(), cap, cr.GetRequiredBytes())
+			}
+			if cr.GetLimitBytes() > 0 && cap > cr.GetLimitBytes() {
+				return nil, status.Errorf(codes.AlreadyExists,
+					"volume %q already exists with capacity %d bytes, which exceeds "+
+						"the requested limit %d bytes",
+					req.GetName(), cap, cr.GetLimitBytes())
+			}
+		}
+
 		return &csi.CreateVolumeResponse{
 			Volume: &csi.Volume{
 				VolumeId:      volumeID,

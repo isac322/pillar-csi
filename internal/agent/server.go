@@ -83,11 +83,19 @@ var _ agentv1.AgentServiceServer = (*Server)(nil)
 // NewServer constructs an AgentService Server bound to the given backends and
 // configfs root directory.  An empty configfsRoot falls back to
 // /sys/kernel/config at runtime.
-func NewServer(backends map[string]backend.VolumeBackend, configfsRoot string) *Server {
-	return &Server{
+//
+// Zero or more ServerOption values may be passed to override defaults; options
+// are applied in order after the base Server is initialized.  This signature is
+// backward-compatible with callers that pass no options.
+func NewServer(backends map[string]backend.VolumeBackend, configfsRoot string, opts ...ServerOption) *Server {
+	s := &Server{
 		backends:     backends,
 		configfsRoot: configfsRoot,
 	}
+	for _, o := range opts {
+		o(s)
+	}
+	return s
 }
 
 // Register wires s into the provided gRPC server.
