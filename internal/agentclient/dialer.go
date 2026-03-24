@@ -79,6 +79,13 @@ type Dialer interface {
 	// After Close returns, calling Dial or HealthCheck returns an error.
 	Close() error
 
+	// GetCapabilities dials address, calls the agent's GetCapabilities RPC,
+	// and returns the response.  It is a convenience wrapper around Dial that
+	// allows callers to query agent capabilities and populate
+	// PillarTarget.status.capabilities / discoveredPools without importing
+	// agentv1 or the gRPC client directly.
+	GetCapabilities(ctx context.Context, address string) (*agentv1.GetCapabilitiesResponse, error)
+
 	// IsMTLS reports whether connections produced by this Dialer use mutual
 	// TLS authentication.  The PillarTarget controller uses this to populate
 	// the AgentConnected condition reason:
@@ -253,6 +260,29 @@ func (m *Manager) HealthCheck(
 	resp, err := client.HealthCheck(ctx, &agentv1.HealthCheckRequest{})
 	if err != nil {
 		return nil, fmt.Errorf("agentclient: HealthCheck %q: %w", address, err)
+	}
+	return resp, nil
+}
+
+// GetCapabilities dials address, issues a GetCapabilities RPC, and returns
+// the response.  The caller may use the result to populate
+// PillarTarget.status.capabilities and .discoveredPools.
+//
+// Any gRPC transport error (connection refused, timeout, etc.) is returned
+// as-is.  The caller should treat such errors as a non-fatal best-effort
+// failure and log accordingly rather than propagating them as reconcile errors.
+func (m *Manager) GetCapabilities(
+	ctx context.Context,
+	address string,
+) (*agentv1.GetCapabilitiesResponse, error) {
+	client, err := m.Dial(ctx, address)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := client.GetCapabilities(ctx, &agentv1.GetCapabilitiesRequest{})
+	if err != nil {
+		return nil, fmt.Errorf("agentclient: GetCapabilities %q: %w", address, err)
 	}
 	return resp, nil
 }

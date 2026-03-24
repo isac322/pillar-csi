@@ -504,6 +504,83 @@ func TestApplyWithACL(t *testing.T) {
 	}
 }
 
+// AclEnabled tests.
+
+// TestCreateSubsystem_AclEnabled_True verifies that createSubsystem writes
+// attr_allow_any_host = "0" when AclEnabled is true (ACL enforced from the
+// moment the subsystem is created, before any AllowHost call is made).
+func TestCreateSubsystem_AclEnabled_True(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	tgt := &NvmetTarget{
+		ConfigfsRoot: root,
+		SubsystemNQN: "nqn.2026-01.io.pillar-csi:pvc-acl-on",
+		NamespaceID:  1,
+		DevicePath:   "/dev/zvol/tank/pvc-acl-on",
+		BindAddress:  "10.0.0.8",
+		Port:         DefaultPort,
+		AclEnabled:   true, // ACL enforced
+	}
+
+	if err := tgt.createSubsystem(); err != nil {
+		t.Fatalf("createSubsystem: %v", err)
+	}
+
+	// attr_allow_any_host must be "0" — no initiator can connect until
+	// AllowHost is called.
+	assertFileContent(t, filepath.Join(tgt.subsystemDir(), "attr_allow_any_host"), "0")
+}
+
+// TestCreateSubsystem_AclEnabled_False verifies that createSubsystem writes
+// attr_allow_any_host = "1" when AclEnabled is false (open access; any
+// initiator may connect without an explicit ACL entry).
+func TestCreateSubsystem_AclEnabled_False(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	tgt := &NvmetTarget{
+		ConfigfsRoot: root,
+		SubsystemNQN: "nqn.2026-01.io.pillar-csi:pvc-acl-off",
+		NamespaceID:  1,
+		DevicePath:   "/dev/zvol/tank/pvc-acl-off",
+		BindAddress:  "10.0.0.9",
+		Port:         DefaultPort,
+		AclEnabled:   false, // allow any host
+	}
+
+	if err := tgt.createSubsystem(); err != nil {
+		t.Fatalf("createSubsystem: %v", err)
+	}
+
+	// attr_allow_any_host must be "1" — any initiator may connect.
+	assertFileContent(t, filepath.Join(tgt.subsystemDir(), "attr_allow_any_host"), "1")
+}
+
+// TestApply_AclEnabled_NoAllowedHosts verifies that Apply with AclEnabled=true
+// and an empty AllowedHosts slice still sets attr_allow_any_host = "0".
+// This is the normal ExportVolume flow: ACL is enabled but no initiators are
+// added yet (they are added later via AllowInitiator / AllowHost).
+func TestApply_AclEnabled_NoAllowedHosts(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	tgt := &NvmetTarget{
+		ConfigfsRoot: root,
+		SubsystemNQN: "nqn.2026-01.io.pillar-csi:pvc-acl-nodelay",
+		NamespaceID:  1,
+		DevicePath:   "/dev/zvol/tank/pvc-acl-nodelay",
+		BindAddress:  "10.0.0.10",
+		Port:         DefaultPort,
+		AclEnabled:   true,
+		AllowedHosts: nil, // no hosts yet
+	}
+
+	if err := tgt.Apply(); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	// attr_allow_any_host should be "0" even though no hosts were added yet.
+	assertFileContent(t, filepath.Join(tgt.subsystemDir(), "attr_allow_any_host"), "0")
+}
+
 // AllowHost / DenyHost tests.
 
 func TestAllowAndDenyHost(t *testing.T) {

@@ -1061,3 +1061,84 @@ func TestCSIController_GetCapabilities(t *testing.T) {
 		t.Errorf("capability %v missing from ControllerGetCapabilities response", missing)
 	}
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TestCSIController_CreateVolume_ACLToggle
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TestCSIController_CreateVolume_ACLDisabled verifies that the controller
+// passes AclEnabled=false to agent.ExportVolume when the StorageClass
+// parameter "pillar-csi.bhyoo.com/acl-enabled" is set to "false".
+//
+// This corresponds to PillarProtocol.spec.nvmeofTcp.acl = false, which tells
+// the agent to set attr_allow_any_host=1 so any initiator may connect without
+// an explicit AllowInitiator call.
+func TestCSIController_CreateVolume_ACLDisabled(t *testing.T) {
+	t.Parallel()
+	env := newCSIControllerTestEnv(t)
+	ctx := context.Background()
+
+	var capturedExportReq *agentv1.ExportVolumeRequest
+	env.agent.exportVolumeFn = func(_ context.Context, req *agentv1.ExportVolumeRequest) (*agentv1.ExportVolumeResponse, error) {
+		capturedExportReq = req
+		return &agentv1.ExportVolumeResponse{
+			ExportInfo: &agentv1.ExportInfo{
+				TargetId:  "nqn.2026-01.com.pillar-csi:acl-off-vol",
+				Address:   "192.168.1.10",
+				Port:      4420,
+				VolumeRef: "1",
+			},
+		}, nil
+	}
+
+	req := baseCSICreateVolumeRequest()
+	req.Parameters["pillar-csi.bhyoo.com/acl-enabled"] = "false"
+
+	_, err := env.srv.CreateVolume(ctx, req)
+	if err != nil {
+		t.Fatalf("CreateVolume: unexpected error: %v", err)
+	}
+
+	if capturedExportReq == nil {
+		t.Fatal("agent.ExportVolume was not called")
+	}
+	if capturedExportReq.GetAclEnabled() {
+		t.Errorf("ExportVolumeRequest.AclEnabled = true, want false when acl-enabled param is %q",
+			"false")
+	}
+}
+
+// TestCSIController_CreateVolume_ACLEnabled_Default verifies that the
+// controller defaults to AclEnabled=true when the acl-enabled StorageClass
+// parameter is absent (maintaining backward compatibility).
+func TestCSIController_CreateVolume_ACLEnabled_Default(t *testing.T) {
+	t.Parallel()
+	env := newCSIControllerTestEnv(t)
+	ctx := context.Background()
+
+	var capturedExportReq *agentv1.ExportVolumeRequest
+	env.agent.exportVolumeFn = func(_ context.Context, req *agentv1.ExportVolumeRequest) (*agentv1.ExportVolumeResponse, error) {
+		capturedExportReq = req
+		return &agentv1.ExportVolumeResponse{
+			ExportInfo: &agentv1.ExportInfo{
+				TargetId:  "nqn.2026-01.com.pillar-csi:acl-default-vol",
+				Address:   "192.168.1.10",
+				Port:      4420,
+				VolumeRef: "1",
+			},
+		}, nil
+	}
+
+	// Base request has no acl-enabled parameter — ACL should default to true.
+	_, err := env.srv.CreateVolume(ctx, baseCSICreateVolumeRequest())
+	if err != nil {
+		t.Fatalf("CreateVolume: unexpected error: %v", err)
+	}
+
+	if capturedExportReq == nil {
+		t.Fatal("agent.ExportVolume was not called")
+	}
+	if !capturedExportReq.GetAclEnabled() {
+		t.Errorf("ExportVolumeRequest.AclEnabled = false, want true (default) when acl-enabled param is absent")
+	}
+}

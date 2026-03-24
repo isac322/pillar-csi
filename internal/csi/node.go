@@ -264,6 +264,7 @@ func (n *NodeServer) NodeGetCapabilities(
 	caps := []csi.NodeServiceCapability_RPC_Type{
 		csi.NodeServiceCapability_RPC_STAGE_UNSTAGE_VOLUME,
 		csi.NodeServiceCapability_RPC_EXPAND_VOLUME,
+		csi.NodeServiceCapability_RPC_GET_VOLUME_STATS,
 	}
 
 	nodeCaps := make([]*csi.NodeServiceCapability, 0, len(caps))

@@ -49,6 +49,12 @@ type mockDialer struct {
 	// mtls controls whether IsMTLS() returns true, simulating an mTLS-enabled
 	// connection.  Set to true to test the "Authenticated" condition reason.
 	mtls bool
+	// capabilitiesResp, when non-nil, is returned by GetCapabilities.
+	// When nil, GetCapabilities returns a minimal empty response.
+	capabilitiesResp *agentv1.GetCapabilitiesResponse
+	// capabilitiesErr, when non-nil, is returned by GetCapabilities instead
+	// of a response.
+	capabilitiesErr error
 }
 
 // Ensure mockDialer satisfies the Dialer interface at compile time.
@@ -64,6 +70,17 @@ func (m *mockDialer) HealthCheck(_ context.Context, _ string) (*agentv1.HealthCh
 		return nil, m.err
 	}
 	return &agentv1.HealthCheckResponse{Healthy: m.healthy}, nil
+}
+
+func (m *mockDialer) GetCapabilities(_ context.Context, _ string) (*agentv1.GetCapabilitiesResponse, error) {
+	if m.capabilitiesErr != nil {
+		return nil, m.capabilitiesErr
+	}
+	if m.capabilitiesResp != nil {
+		return m.capabilitiesResp, nil
+	}
+	// Return a minimal empty response by default so existing tests are unaffected.
+	return &agentv1.GetCapabilitiesResponse{}, nil
 }
 
 func (m *mockDialer) Close() error { return nil }
@@ -1019,6 +1036,172 @@ var _ = Describe("PillarTarget Controller", func() {
 			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 			Expect(cond.Reason).To(Equal("HealthCheckFailed"),
 				"a non-TLS error on an mTLS dialer should still be reported as HealthCheckFailed")
+		})
+	})
+
+	// -----------------------------------------------------------------------
+	// GetCapabilities — AgentVersion / Capabilities / DiscoveredPools population
+	// -----------------------------------------------------------------------
+	//
+	// These tests verify that when the agent is healthy the controller calls
+	// GetCapabilities and populates status.agentVersion, status.capabilities,
+	// and status.discoveredPools from the response.
+	Context("GetCapabilities — status population when agent is healthy", func() {
+		const capsTargetName = "test-target-capabilities"
+		capsNN := types.NamespacedName{Name: capsTargetName}
+
+		var capsReconciler *PillarTargetReconciler
+
+		BeforeEach(func() {
+			capsReconciler = &PillarTargetReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				Dialer: &mockDialer{
+					healthy: true,
+					capabilitiesResp: &agentv1.GetCapabilitiesResponse{
+						AgentVersion: "v0.1.0",
+						SupportedBackends: []agentv1.BackendType{
+							agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
+						},
+						SupportedProtocols: []agentv1.ProtocolType{
+							agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
+						},
+						DiscoveredPools: []*agentv1.PoolInfo{
+							{
+								Name:           "tank",
+								BackendType:    agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
+								TotalBytes:     10 * 1024 * 1024 * 1024, // 10Gi
+								AvailableBytes: 8 * 1024 * 1024 * 1024,  // 8Gi
+							},
+						},
+					},
+				},
+			}
+
+			obj := &pillarcsiv1alpha1.PillarTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: capsTargetName},
+				Spec: pillarcsiv1alpha1.PillarTargetSpec{
+					External: &pillarcsiv1alpha1.ExternalSpec{
+						Address: "10.0.2.1",
+						Port:    9500,
+					},
+				},
+			}
+			Expect(k8sClient.Create(bctx, obj)).To(Succeed())
+			// First reconcile: adds finalizer.
+			_, err := capsReconciler.Reconcile(bctx, reconcile.Request{NamespacedName: capsNN})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		AfterEach(func() {
+			t := &pillarcsiv1alpha1.PillarTarget{}
+			if err := k8sClient.Get(bctx, capsNN, t); err == nil {
+				controllerutil.RemoveFinalizer(t, pillarTargetFinalizer)
+				Expect(k8sClient.Update(bctx, t)).To(Succeed())
+				Expect(k8sClient.Delete(bctx, t)).To(Succeed())
+			}
+		})
+
+		It("should populate status.agentVersion from GetCapabilities response", func() {
+			_, err := capsReconciler.Reconcile(bctx, reconcile.Request{NamespacedName: capsNN})
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := &pillarcsiv1alpha1.PillarTarget{}
+			Expect(k8sClient.Get(bctx, capsNN, fetched)).To(Succeed())
+			Expect(fetched.Status.AgentVersion).To(Equal("v0.1.0"),
+				"agentVersion should be populated from GetCapabilities response")
+		})
+
+		It("should populate status.capabilities.backends from GetCapabilities response", func() {
+			_, err := capsReconciler.Reconcile(bctx, reconcile.Request{NamespacedName: capsNN})
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := &pillarcsiv1alpha1.PillarTarget{}
+			Expect(k8sClient.Get(bctx, capsNN, fetched)).To(Succeed())
+			Expect(fetched.Status.Capabilities).NotTo(BeNil(),
+				"capabilities should be set when agent is healthy")
+			Expect(fetched.Status.Capabilities.Backends).To(ContainElement("zfs-zvol"),
+				"backends should include 'zfs-zvol' when agent reports BACKEND_TYPE_ZFS_ZVOL")
+		})
+
+		It("should populate status.capabilities.protocols from GetCapabilities response", func() {
+			_, err := capsReconciler.Reconcile(bctx, reconcile.Request{NamespacedName: capsNN})
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := &pillarcsiv1alpha1.PillarTarget{}
+			Expect(k8sClient.Get(bctx, capsNN, fetched)).To(Succeed())
+			Expect(fetched.Status.Capabilities).NotTo(BeNil())
+			Expect(fetched.Status.Capabilities.Protocols).To(ContainElement("nvmeof-tcp"),
+				"protocols should include 'nvmeof-tcp' when agent reports PROTOCOL_TYPE_NVMEOF_TCP")
+		})
+
+		It("should populate status.discoveredPools from GetCapabilities response", func() {
+			_, err := capsReconciler.Reconcile(bctx, reconcile.Request{NamespacedName: capsNN})
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := &pillarcsiv1alpha1.PillarTarget{}
+			Expect(k8sClient.Get(bctx, capsNN, fetched)).To(Succeed())
+			Expect(fetched.Status.DiscoveredPools).To(HaveLen(1),
+				"discoveredPools should contain one entry for the 'tank' pool")
+			pool := fetched.Status.DiscoveredPools[0]
+			Expect(pool.Name).To(Equal("tank"))
+			Expect(pool.Type).To(Equal("zfs-zvol"))
+			Expect(pool.Total).NotTo(BeNil(), "Total capacity should be set")
+			Expect(pool.Available).NotTo(BeNil(), "Available capacity should be set")
+		})
+	})
+
+	Context("GetCapabilities — status not populated when agent is unhealthy", func() {
+		const noCapTargetName = "test-target-no-capabilities"
+		noCapNN := types.NamespacedName{Name: noCapTargetName}
+
+		var noCapReconciler *PillarTargetReconciler
+
+		BeforeEach(func() {
+			noCapReconciler = &PillarTargetReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				// unhealthy agent: HealthCheck fails, so GetCapabilities is never called
+				Dialer: &mockDialer{
+					healthy: false,
+					capabilitiesResp: &agentv1.GetCapabilitiesResponse{
+						AgentVersion: "should-not-appear",
+					},
+				},
+			}
+
+			obj := &pillarcsiv1alpha1.PillarTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: noCapTargetName},
+				Spec: pillarcsiv1alpha1.PillarTargetSpec{
+					External: &pillarcsiv1alpha1.ExternalSpec{
+						Address: "10.0.2.2",
+						Port:    9500,
+					},
+				},
+			}
+			Expect(k8sClient.Create(bctx, obj)).To(Succeed())
+			// First reconcile: adds finalizer.
+			_, err := noCapReconciler.Reconcile(bctx, reconcile.Request{NamespacedName: noCapNN})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		AfterEach(func() {
+			t := &pillarcsiv1alpha1.PillarTarget{}
+			if err := k8sClient.Get(bctx, noCapNN, t); err == nil {
+				controllerutil.RemoveFinalizer(t, pillarTargetFinalizer)
+				Expect(k8sClient.Update(bctx, t)).To(Succeed())
+				Expect(k8sClient.Delete(bctx, t)).To(Succeed())
+			}
+		})
+
+		It("should NOT populate agentVersion when agent reports unhealthy", func() {
+			_, err := noCapReconciler.Reconcile(bctx, reconcile.Request{NamespacedName: noCapNN})
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := &pillarcsiv1alpha1.PillarTarget{}
+			Expect(k8sClient.Get(bctx, noCapNN, fetched)).To(Succeed())
+			Expect(fetched.Status.AgentVersion).To(BeEmpty(),
+				"agentVersion should not be set when the agent is unhealthy (HealthCheck returns false)")
 		})
 	})
 })

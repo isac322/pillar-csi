@@ -25,6 +25,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -36,6 +37,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	pillarcsiv1alpha1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
+	agentv1 "github.com/bhyoo/pillar-csi/gen/go/pillar_csi/agent/v1"
 	"github.com/bhyoo/pillar-csi/internal/agentclient"
 )
 
@@ -61,6 +63,9 @@ const (
 
 	// Timeout for a single agent health-check RPC call.
 	agentHealthCheckTimeout = 5 * time.Second
+
+	// Timeout for a single agent GetCapabilities RPC call.
+	agentCapabilitiesTimeout = 5 * time.Second
 )
 
 // PillarTargetReconciler reconciles a PillarTarget object.
@@ -167,6 +172,9 @@ func (r *PillarTargetReconciler) reconcileNormal(
 
 		// Ready: True only when the agent is reachable and healthy.
 		if connected {
+			// Best-effort: populate AgentVersion / Capabilities / DiscoveredPools.
+			r.populateCapabilitiesStatus(ctx, target, resolved)
+
 			meta.SetStatusCondition(&target.Status.Conditions, metav1.Condition{
 				Type:               "Ready",
 				Status:             metav1.ConditionTrue,
@@ -387,6 +395,9 @@ func (r *PillarTargetReconciler) reconcileNodeRef(
 
 	// Ready: True only when the agent is reachable and healthy.
 	if connected {
+		// Best-effort: populate AgentVersion / Capabilities / DiscoveredPools.
+		r.populateCapabilitiesStatus(ctx, target, resolved)
+
 		meta.SetStatusCondition(&target.Status.Conditions, metav1.Condition{
 			Type:               "Ready",
 			Status:             metav1.ConditionTrue,
@@ -525,6 +536,115 @@ func (r *PillarTargetReconciler) setAgentConnectedCondition(
 		})
 	}
 	return true
+}
+
+// populateCapabilitiesStatus calls GetCapabilities on the agent at address
+// and writes the result to target.Status.AgentVersion, .Capabilities, and
+// .DiscoveredPools.
+//
+// This is a best-effort operation: if GetCapabilities fails (e.g. the agent
+// does not yet implement the RPC or a transient error occurs) the error is
+// logged and the status fields are left unchanged.  The caller should not
+// treat this failure as a reconcile error.
+func (r *PillarTargetReconciler) populateCapabilitiesStatus(
+	ctx context.Context,
+	target *pillarcsiv1alpha1.PillarTarget,
+	address string,
+) {
+	log := logf.FromContext(ctx)
+
+	if r.Dialer == nil {
+		return
+	}
+
+	capCtx, capCancel := context.WithTimeout(ctx, agentCapabilitiesTimeout)
+	defer capCancel()
+
+	resp, err := r.Dialer.GetCapabilities(capCtx, address)
+	if err != nil {
+		log.Info("GetCapabilities RPC failed; capabilities status not updated",
+			"address", address, "error", err)
+		return
+	}
+
+	target.Status.AgentVersion = resp.GetAgentVersion()
+	target.Status.Capabilities = buildAgentCapabilities(resp)
+	target.Status.DiscoveredPools = buildDiscoveredPools(resp.GetDiscoveredPools())
+}
+
+// buildAgentCapabilities converts a GetCapabilitiesResponse into the
+// pillarcsiv1alpha1.AgentCapabilities status struct.
+func buildAgentCapabilities(resp *agentv1.GetCapabilitiesResponse) *pillarcsiv1alpha1.AgentCapabilities {
+	backends := make([]string, 0, len(resp.GetSupportedBackends()))
+	for _, bt := range resp.GetSupportedBackends() {
+		backends = append(backends, backendTypeToString(bt))
+	}
+	protocols := make([]string, 0, len(resp.GetSupportedProtocols()))
+	for _, pt := range resp.GetSupportedProtocols() {
+		protocols = append(protocols, protocolTypeToString(pt))
+	}
+	return &pillarcsiv1alpha1.AgentCapabilities{
+		Backends:  backends,
+		Protocols: protocols,
+	}
+}
+
+// buildDiscoveredPools converts a slice of PoolInfo protos to the
+// pillarcsiv1alpha1.DiscoveredPool status slice.
+func buildDiscoveredPools(pools []*agentv1.PoolInfo) []pillarcsiv1alpha1.DiscoveredPool {
+	result := make([]pillarcsiv1alpha1.DiscoveredPool, 0, len(pools))
+	for _, p := range pools {
+		dp := pillarcsiv1alpha1.DiscoveredPool{
+			Name: p.GetName(),
+			Type: backendTypeToString(p.GetBackendType()),
+		}
+		if total := p.GetTotalBytes(); total > 0 {
+			q := resource.NewQuantity(total, resource.BinarySI)
+			dp.Total = q
+		}
+		if avail := p.GetAvailableBytes(); avail > 0 {
+			q := resource.NewQuantity(avail, resource.BinarySI)
+			dp.Available = q
+		}
+		result = append(result, dp)
+	}
+	return result
+}
+
+// backendTypeToString converts an agentv1.BackendType proto enum to the
+// lowercase kebab-case string used in pillar-csi API types (e.g. "zfs-zvol").
+func backendTypeToString(bt agentv1.BackendType) string {
+	switch bt {
+	case agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL:
+		return "zfs-zvol"
+	case agentv1.BackendType_BACKEND_TYPE_ZFS_DATASET:
+		return "zfs-dataset"
+	case agentv1.BackendType_BACKEND_TYPE_LVM:
+		return "lvm-lv"
+	case agentv1.BackendType_BACKEND_TYPE_BLOCK_DEVICE:
+		return "block-device"
+	case agentv1.BackendType_BACKEND_TYPE_DIRECTORY:
+		return "dir"
+	default:
+		return strings.ToLower(bt.String())
+	}
+}
+
+// protocolTypeToString converts an agentv1.ProtocolType proto enum to the
+// lowercase kebab-case string used in pillar-csi API types (e.g. "nvmeof-tcp").
+func protocolTypeToString(pt agentv1.ProtocolType) string {
+	switch pt {
+	case agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP:
+		return "nvmeof-tcp"
+	case agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI:
+		return "iscsi"
+	case agentv1.ProtocolType_PROTOCOL_TYPE_NFS:
+		return "nfs"
+	case agentv1.ProtocolType_PROTOCOL_TYPE_SMB:
+		return "smb"
+	default:
+		return strings.ToLower(pt.String())
+	}
 }
 
 // isTLSHandshakeError returns true when err appears to originate from a TLS

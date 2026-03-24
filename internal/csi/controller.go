@@ -44,6 +44,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
+	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -238,6 +239,8 @@ func (s *ControllerServer) ControllerGetCapabilities(
 		csi.ControllerServiceCapability_RPC_EXPAND_VOLUME,
 		// SINGLE_NODE_MULTI_WRITER implies RWOP support per CSI spec §5.1.
 		csi.ControllerServiceCapability_RPC_SINGLE_NODE_MULTI_WRITER,
+		// GET_CAPACITY lets the CO schedule PVCs on nodes with sufficient space.
+		csi.ControllerServiceCapability_RPC_GET_CAPACITY,
 	}
 
 	caps := make([]*csi.ControllerServiceCapability, 0, len(rpcTypes))
@@ -342,6 +345,8 @@ func describeSupportedModes() string {
 const (
 	// StorageClass parameter keys written by PillarBindingReconciler.
 	paramPool         = "pillar-csi.bhyoo.com/pool"
+	paramBinding      = "pillar-csi.bhyoo.com/binding"
+	paramProtocol     = "pillar-csi.bhyoo.com/protocol"
 	paramBackendType  = "pillar-csi.bhyoo.com/backend-type"
 	paramProtocolType = "pillar-csi.bhyoo.com/protocol-type"
 	paramTarget       = "pillar-csi.bhyoo.com/target"
@@ -350,6 +355,29 @@ const (
 	paramNVMeOFPort   = "pillar-csi.bhyoo.com/nvmeof-port"
 	paramISCSIPort    = "pillar-csi.bhyoo.com/iscsi-port"
 	paramNFSVersion   = "pillar-csi.bhyoo.com/nfs-version"
+	paramLVMVG        = "pillar-csi.bhyoo.com/lvm-vg"
+
+	// paramACLEnabled controls NVMe-oF host NQN ACL enforcement.
+	// Value: "true" (default, ACL enforced) or "false" (allow_any_host=1).
+	// Set by the PillarBinding controller from the PillarProtocol NVMeOFTCPConfig.ACL field.
+	paramACLEnabled = "pillar-csi.bhyoo.com/acl-enabled"
+
+	// paramZFSPropPrefix is the key prefix used to pass individual ZFS
+	// properties through the merged parameter map to buildBackendParams.
+	// Example: "pillar-csi.bhyoo.com/zfs-prop.compression" = "lz4"
+	paramZFSPropPrefix = "pillar-csi.bhyoo.com/zfs-prop."
+
+	// paramPVCName / paramPVCNamespace are injected by external-provisioner
+	// when the --extra-create-metadata flag is set.  They allow CreateVolume
+	// to look up the originating PVC and read per-PVC annotation overrides.
+	paramPVCName      = "csi.storage.k8s.io/pvc-name"
+	paramPVCNamespace = "csi.storage.k8s.io/pvc-namespace"
+
+	// pvcAnnotationParamPrefix is the PVC annotation prefix for per-PVC
+	// parameter overrides (Layer 4 of the merge hierarchy).
+	// Example annotation: "pillar-csi.bhyoo.com/param.zfs-prop.compression=lz4"
+	// results in param key "pillar-csi.bhyoo.com/zfs-prop.compression" = "lz4".
+	pvcAnnotationParamPrefix = "pillar-csi.bhyoo.com/param."
 
 	// VolumeContext keys stored in the PersistentVolume and read by NodeStageVolume.
 	//
@@ -417,7 +445,17 @@ func (s *ControllerServer) CreateVolume(
 		}
 	}
 
-	params := req.GetParameters()
+	scParams := req.GetParameters()
+
+	// ── 4-level merge hierarchy: Pool → Protocol → Binding → PVC annotation ──
+	// mergeParamsFromCRDs augments the StorageClass params with data fetched
+	// live from the PillarBinding, PillarPool, and PillarProtocol CRDs and
+	// then overlays any per-PVC annotation overrides.  Falls back gracefully
+	// when the binding name is absent (e.g. manually-created StorageClasses).
+	params, err := s.mergeParamsFromCRDs(ctx, scParams)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "parameter merge failed: %v", err)
+	}
 
 	// ── Extract required routing parameters ──────────────────────────────────
 	targetName := params[paramTarget]
@@ -607,7 +645,7 @@ func (s *ControllerServer) CreateVolume(
 		ProtocolType: agentProtocolType,
 		ExportParams: buildExportParams(params, agentProtocolType, bindIP),
 		DevicePath:   devicePath,
-		AclEnabled:   true,
+		AclEnabled:   parseACLEnabled(params[paramACLEnabled]),
 	})
 	if err != nil {
 		// ExportVolume failed.  The PillarVolume CRD already records the
@@ -920,6 +958,126 @@ func (s *ControllerServer) deletePillarVolume(ctx context.Context, pvName string
 // Volume ID helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 4-level parameter merge hierarchy
+// ─────────────────────────────────────────────────────────────────────────────
+
+// mergeParamsFromCRDs builds the 4-level parameter merge hierarchy:
+//
+//	Layer 1 (Pool)    – ZFS properties from PillarPool.spec.backend.zfs.properties
+//	Layer 2 (Protocol)– (protocol params already captured in StorageClass at bind time)
+//	Layer 3 (Binding) – ZFS property overrides from PillarBinding.spec.overrides.backend.zfs
+//	Layer 4 (PVC)     – per-PVC annotation overrides prefixed with pvcAnnotationParamPrefix
+//
+// The StorageClass parameters (scParams) are the authoritative source for
+// routing metadata (target, backend-type, protocol-type, etc.) and serve as
+// the baseline.  ZFS properties (which are not stored in the StorageClass)
+// are fetched from the PillarPool CRD and layered on top, then Binding
+// overrides are applied, and finally per-PVC annotation overrides win over
+// everything else.
+//
+// When the binding name is absent from scParams the function returns a shallow
+// copy of scParams unchanged, preserving backward compatibility with
+// manually-crafted StorageClasses that do not reference a PillarBinding.
+func (s *ControllerServer) mergeParamsFromCRDs(
+	ctx context.Context,
+	scParams map[string]string,
+) (map[string]string, error) {
+	// Start with a copy of the StorageClass params so callers can freely mutate
+	// the returned map without affecting the original request parameters.
+	merged := make(map[string]string, len(scParams))
+	for k, v := range scParams {
+		merged[k] = v
+	}
+
+	bindingName := scParams[paramBinding]
+	if bindingName == "" {
+		// No binding reference — skip CRD lookups and go straight to PVC
+		// annotations (still useful even without a binding name).
+		s.applyPVCAnnotationOverrides(ctx, merged, scParams)
+		return merged, nil
+	}
+
+	// ── Fetch PillarBinding ───────────────────────────────────────────────────
+	binding := &v1alpha1.PillarBinding{}
+	if err := s.k8sClient.Get(ctx, types.NamespacedName{Name: bindingName}, binding); err != nil {
+		if k8serrors.IsNotFound(err) {
+			// Binding was deleted after the StorageClass was created — fall back
+			// to StorageClass params only.
+			s.applyPVCAnnotationOverrides(ctx, merged, scParams)
+			return merged, nil
+		}
+		return nil, fmt.Errorf("fetch PillarBinding %q: %w", bindingName, err)
+	}
+
+	// ── Layer 1: fetch PillarPool and apply ZFS properties ───────────────────
+	pool := &v1alpha1.PillarPool{}
+	if err := s.k8sClient.Get(ctx, types.NamespacedName{Name: binding.Spec.PoolRef}, pool); err != nil {
+		if k8serrors.IsNotFound(err) {
+			s.applyPVCAnnotationOverrides(ctx, merged, scParams)
+			return merged, nil
+		}
+		return nil, fmt.Errorf("fetch PillarPool %q: %w", binding.Spec.PoolRef, err)
+	}
+
+	// Apply Pool-level ZFS properties as the lowest-priority ZFS property layer.
+	if pool.Spec.Backend.ZFS != nil {
+		for k, v := range pool.Spec.Backend.ZFS.Properties {
+			merged[paramZFSPropPrefix+k] = v
+		}
+	}
+
+	// ── Layer 3: apply Binding ZFS property overrides ────────────────────────
+	// (Layer 2 — protocol params — are already embedded in the StorageClass.)
+	if binding.Spec.Overrides != nil &&
+		binding.Spec.Overrides.Backend != nil &&
+		binding.Spec.Overrides.Backend.ZFS != nil {
+		for k, v := range binding.Spec.Overrides.Backend.ZFS.Properties {
+			merged[paramZFSPropPrefix+k] = v
+		}
+	}
+
+	// ── Layer 4: PVC annotation overrides (highest priority) ─────────────────
+	s.applyPVCAnnotationOverrides(ctx, merged, scParams)
+
+	return merged, nil
+}
+
+// applyPVCAnnotationOverrides looks up the PVC identified by the
+// csi.storage.k8s.io/pvc-name and csi.storage.k8s.io/pvc-namespace
+// parameters (injected by external-provisioner --extra-create-metadata) and
+// copies annotations prefixed with pvcAnnotationParamPrefix into merged,
+// stripping the prefix.  This is the highest-priority override layer.
+//
+// Errors during the PVC lookup are silently ignored: the annotation override
+// is optional, and a missing PVC or API error should not fail provisioning.
+func (s *ControllerServer) applyPVCAnnotationOverrides(
+	ctx context.Context,
+	merged map[string]string,
+	scParams map[string]string,
+) {
+	pvcName := scParams[paramPVCName]
+	pvcNamespace := scParams[paramPVCNamespace]
+	if pvcName == "" || pvcNamespace == "" {
+		return
+	}
+
+	pvc := &corev1.PersistentVolumeClaim{}
+	if err := s.k8sClient.Get(ctx, types.NamespacedName{
+		Name:      pvcName,
+		Namespace: pvcNamespace,
+	}, pvc); err != nil {
+		// PVC lookup failure is non-fatal; skip annotation overrides.
+		return
+	}
+
+	for annotation, value := range pvc.Annotations {
+		if after, ok := strings.CutPrefix(annotation, pvcAnnotationParamPrefix); ok && after != "" {
+			merged[after] = value
+		}
+	}
+}
+
 // buildAgentVolumeID constructs the volume identifier used in all agent RPCs.
 //
 // For ZFS backends the format is "<zfs-pool>/<volume-name>" which matches the
@@ -1073,6 +1231,19 @@ func buildExportParams(
 	default:
 		return nil
 	}
+}
+
+// parseACLEnabled interprets the acl-enabled StorageClass parameter.
+//
+// The parameter is written by the PillarBinding controller using the value of
+// PillarProtocol.spec.nvmeofTcp.acl (or the iSCSI equivalent).  The default
+// behaviour when the key is absent or empty is true (ACL enforced), which
+// matches the protocol-type defaults in the CRD schema.
+//
+// Only the literal string "false" disables ACL; any other value (including
+// "true", "1", "yes", or an empty string) keeps ACL enabled.
+func parseACLEnabled(val string) bool {
+	return val != "false"
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1380,6 +1551,87 @@ func (s *ControllerServer) ControllerExpandVolume(
 	return &csi.ControllerExpandVolumeResponse{
 		CapacityBytes:         actualBytes,
 		NodeExpansionRequired: true,
+	}, nil
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GetCapacity
+// ─────────────────────────────────────────────────────────────────────────────
+
+// GetCapacity returns the available storage capacity of the pool identified by
+// the StorageClass parameters.
+//
+// The CO may call this before scheduling a PVC in order to pick a storage
+// backend that has enough space.  pillar-csi delegates the actual capacity
+// query to the pillar-agent running on the storage node.
+//
+// Required StorageClass parameters:
+//   - pillar-csi.bhyoo.com/target       — name of the PillarTarget
+//   - pillar-csi.bhyoo.com/pool         — pool name on the storage node
+//   - pillar-csi.bhyoo.com/backend-type — e.g. "zfs-zvol"
+func (s *ControllerServer) GetCapacity(
+	ctx context.Context,
+	req *csi.GetCapacityRequest,
+) (*csi.GetCapacityResponse, error) {
+	params := req.GetParameters()
+
+	targetName := params[paramTarget]
+	poolName := params[paramPool]
+	backendTypeStr := params[paramBackendType]
+
+	if targetName == "" {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"StorageClass parameter %q is required for GetCapacity", paramTarget)
+	}
+	if poolName == "" {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"StorageClass parameter %q is required for GetCapacity", paramPool)
+	}
+	if backendTypeStr == "" {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"StorageClass parameter %q is required for GetCapacity", paramBackendType)
+	}
+
+	agentBackendType := mapBackendType(backendTypeStr)
+
+	// ── Resolve the agent address from PillarTarget ───────────────────────────
+	target := &v1alpha1.PillarTarget{}
+	if err := s.k8sClient.Get(ctx, types.NamespacedName{Name: targetName}, target); err != nil {
+		if k8serrors.IsNotFound(err) {
+			return nil, status.Errorf(codes.NotFound,
+				"PillarTarget %q not found", targetName)
+		}
+		return nil, status.Errorf(codes.Internal,
+			"failed to get PillarTarget %q: %v", targetName, err)
+	}
+
+	agentAddr := target.Status.ResolvedAddress
+	if agentAddr == "" {
+		return nil, status.Errorf(codes.Unavailable,
+			"PillarTarget %q has no resolved address; agent may not be ready", targetName)
+	}
+
+	// ── Dial the agent ────────────────────────────────────────────────────────
+	agentClient, closer, err := s.dialAgent(ctx, agentAddr)
+	if err != nil {
+		return nil, status.Errorf(codes.Unavailable,
+			"failed to dial agent at %q: %v", agentAddr, err)
+	}
+	defer closer.Close()
+
+	// ── Query pool capacity ───────────────────────────────────────────────────
+	capResp, err := agentClient.GetCapacity(ctx, &agentv1.GetCapacityRequest{
+		BackendType: agentBackendType,
+		PoolName:    poolName,
+	})
+	if err != nil {
+		grpcSt, _ := status.FromError(err)
+		return nil, status.Errorf(grpcSt.Code(),
+			"agent GetCapacity(pool=%q) failed: %v", poolName, err)
+	}
+
+	return &csi.GetCapacityResponse{
+		AvailableCapacity: capResp.GetAvailableBytes(),
 	}, nil
 }
 
