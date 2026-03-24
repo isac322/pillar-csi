@@ -133,22 +133,21 @@ func (t *NvmetTarget) portSubsystemLink(portID uint32) string {
 	return filepath.Join(t.portDir(portID), "subsystems", t.SubsystemNQN)
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// configfs helper primitives
+// Configfs helper primitives.
 //
-// These wrappers keep the Apply/Remove logic easy to read and centralise
+// These wrappers keep the Apply/Remove logic easy to read and centralize
 // error-message formatting.  They are unexported because callers outside this
 // package never drive configfs directly.
-// ─────────────────────────────────────────────────────────────────────────────
 
 // writeFile writes content to the configfs pseudo-file at path, creating or
-// truncating it.  configfs pseudo-files are single-valued: each write
-// replaces the previous value.
+// truncating it.
+// Configfs pseudo-files are single-valued: each write replaces the previous value.
 //
 // The function is intentionally simple — it does not retry — because configfs
 // operations are synchronous kernel calls and transient errors are not expected.
 func writeFile(path, content string) error {
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+	err := os.WriteFile(path, []byte(content), 0o600)
+	if err != nil {
 		return fmt.Errorf("configfs write %q = %q: %w", path, content, err)
 	}
 	return nil
@@ -160,7 +159,8 @@ func writeFile(path, content string) error {
 // Creating a directory in the nvmet configfs tree causes the kernel to
 // instantiate the corresponding object (subsystem, namespace, host, port).
 func mkdirAll(path string) error {
-	if err := os.MkdirAll(path, 0o755); err != nil {
+	err := os.MkdirAll(path, 0o750)
+	if err != nil {
 		return fmt.Errorf("configfs mkdir %q: %w", path, err)
 	}
 	return nil
@@ -185,7 +185,8 @@ func symlink(oldname, newname string) error {
 		return fmt.Errorf("configfs symlink %q → %q: already points to %q", newname, oldname, existing)
 	case os.IsNotExist(err):
 		// newname does not exist — create it.
-		if linkErr := os.Symlink(oldname, newname); linkErr != nil {
+		linkErr := os.Symlink(oldname, newname)
+		if linkErr != nil {
 			return fmt.Errorf("configfs symlink %q → %q: %w", newname, oldname, linkErr)
 		}
 		return nil
@@ -209,7 +210,8 @@ func removeSymlink(path string) error {
 	if fi.Mode()&os.ModeSymlink == 0 {
 		return fmt.Errorf("configfs removeSymlink %q: not a symlink (mode=%s)", path, fi.Mode())
 	}
-	if err := os.Remove(path); err != nil {
+	err = os.Remove(path)
+	if err != nil {
 		return fmt.Errorf("configfs removeSymlink %q: %w", path, err)
 	}
 	return nil
@@ -219,15 +221,43 @@ func removeSymlink(path string) error {
 // destroys the associated object when the directory is removed.
 // It is a no-op when path does not exist (idempotent).
 func removeDir(path string) error {
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+	err := os.Remove(path)
+	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("configfs rmdir %q: %w", path, err)
 	}
 	return nil
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Subsystem and namespace management
-// ─────────────────────────────────────────────────────────────────────────────
+// bestEffort accepts an error value and discards it.  It is used to silence
+// errcheck for intentionally best-effort cleanup operations where failure is
+// expected and acceptable (e.g. removing files on a regular filesystem in tests).
+func bestEffort(_ error) {}
+
+// Port ID allocation.
+//
+// NVMe-oF configfs port IDs are arbitrary uint16 values.
+// We derive a stable ID from a hash of the bind address + port so that:
+//   - the same (address, port) pair always gets the same port ID
+//   - different pairs are unlikely to collide (FNV-1a hash mod 65535)
+//   - the ID is reused across Apply calls (idempotent)
+
+// stablePortID derives a deterministic configfs port ID from the bind address
+// and TCP port.  The result is in [1, 65535] because the kernel rejects 0.
+func stablePortID(addr string, port int32) uint32 {
+	// FNV-1a 32-bit hash for simplicity — collisions are acceptable because
+	// a single storage node typically has O(1) ports.
+	var h uint32 = 2166136261
+	for i := range len(addr) {
+		h ^= uint32(addr[i])
+		h *= 16777619
+	}
+	h ^= uint32(port) //nolint:gosec // G115: port in [1,65535]; overflow is intentional for FNV hash.
+	h *= 16777619
+	id := h%65535 + 1 // [1, 65535]
+	return id
+}
+
+// Subsystem and namespace management functions.
 
 // createSubsystem creates the configfs subsystem directory for this target and
 // configures it to allow any host.  Specifically it:
@@ -242,11 +272,13 @@ func removeDir(path string) error {
 // the kernel level (configfs pseudo-files accept repeated identical writes).
 func (t *NvmetTarget) createSubsystem() error {
 	subDir := t.subsystemDir()
-	if err := mkdirAll(subDir); err != nil {
+	err := mkdirAll(subDir)
+	if err != nil {
 		return fmt.Errorf("createSubsystem %q: %w", t.SubsystemNQN, err)
 	}
 	attrPath := filepath.Join(subDir, "attr_allow_any_host")
-	if err := writeFile(attrPath, "1"); err != nil {
+	err = writeFile(attrPath, "1")
+	if err != nil {
 		return fmt.Errorf("createSubsystem %q: %w", t.SubsystemNQN, err)
 	}
 	return nil
@@ -269,16 +301,256 @@ func (t *NvmetTarget) createSubsystem() error {
 // the same configfs state.
 func (t *NvmetTarget) createNamespace() error {
 	nsDir := t.namespaceDir()
-	if err := mkdirAll(nsDir); err != nil {
+	err := mkdirAll(nsDir)
+	if err != nil {
 		return fmt.Errorf("createNamespace %q ns=%d: %w", t.SubsystemNQN, t.NamespaceID, err)
 	}
 	devPath := filepath.Join(nsDir, "device_path")
-	if err := writeFile(devPath, t.DevicePath); err != nil {
+	err = writeFile(devPath, t.DevicePath)
+	if err != nil {
 		return fmt.Errorf("createNamespace %q ns=%d: %w", t.SubsystemNQN, t.NamespaceID, err)
 	}
 	enablePath := filepath.Join(nsDir, "enable")
-	if err := writeFile(enablePath, "1"); err != nil {
+	err = writeFile(enablePath, "1")
+	if err != nil {
 		return fmt.Errorf("createNamespace %q ns=%d: %w", t.SubsystemNQN, t.NamespaceID, err)
+	}
+	return nil
+}
+
+// createPort creates the configfs port directory for this target's bind
+// address and TCP port, then configures the transport attributes.
+//
+// The port ID is derived deterministically from (BindAddress, Port) via
+// stablePortID so the same port directory is reused across calls.
+//
+// After the port directory is created the function writes:
+//   - addr_trtype  = "tcp"
+//   - addr_adrfam  = "ipv4"  (TODO: detect IPv6 from BindAddress)
+//   - addr_traddr  = <BindAddress>
+//   - addr_trsvcid = <Port>
+//
+// The operation is idempotent: repeated calls with the same parameters
+// overwrite the pseudo-files with the same values.
+func (t *NvmetTarget) createPort() (uint32, error) {
+	port := t.Port
+	if port == 0 {
+		port = DefaultPort
+	}
+	portID := stablePortID(t.BindAddress, port)
+	pDir := t.portDir(portID)
+
+	err := mkdirAll(pDir)
+	if err != nil {
+		return 0, fmt.Errorf("createPort %s:%d: %w", t.BindAddress, port, err)
+	}
+
+	attrs := map[string]string{
+		"addr_trtype":  "tcp",
+		"addr_adrfam":  "ipv4",
+		"addr_traddr":  t.BindAddress,
+		"addr_trsvcid": fmt.Sprintf("%d", port),
+	}
+	for attr, val := range attrs {
+		err = writeFile(filepath.Join(pDir, attr), val)
+		if err != nil {
+			return 0, fmt.Errorf("createPort %s:%d attr %s: %w", t.BindAddress, port, attr, err)
+		}
+	}
+	return portID, nil
+}
+
+// linkSubsystemToPort creates a symlink in the port's subsystems/ directory
+// that points to the subsystem directory, activating the subsystem on that
+// port.  This is the last step in Apply — once the symlink exists, the kernel
+// starts accepting NVMe-oF TCP connections.
+func (t *NvmetTarget) linkSubsystemToPort(portID uint32) error {
+	linkPath := t.portSubsystemLink(portID)
+	target := t.subsystemDir()
+
+	// Ensure the ports/<id>/subsystems/ parent directory exists.
+	err := mkdirAll(filepath.Dir(linkPath))
+	if err != nil {
+		return fmt.Errorf("linkSubsystemToPort mkdir: %w", err)
+	}
+
+	return symlink(target, linkPath)
+}
+
+// Apply and Remove implement the full target lifecycle.
+
+// Apply creates the complete NVMe-oF TCP target entry in configfs.  The steps
+// are executed in dependency order:
+//
+//  1. Create subsystem (sets allow_any_host based on AllowedHosts)
+//  2. Create namespace (device_path + enable)
+//  3. Create port (transport attributes)
+//  4. Link subsystem to port (activates the target)
+//  5. If AllowedHosts is non-empty: create host entries and ACL symlinks,
+//     then set attr_allow_any_host = 0
+//
+// Every step is idempotent, so Apply can be called repeatedly to converge to
+// the desired state (useful for ReconcileState after reboot).
+func (t *NvmetTarget) Apply() error {
+	// 1. Subsystem — initially allow any host; tightened in step 5 if ACL needed.
+	err := t.createSubsystem()
+	if err != nil {
+		return fmt.Errorf("Apply: %w", err)
+	}
+
+	// 2. Namespace
+	err = t.createNamespace()
+	if err != nil {
+		return fmt.Errorf("Apply: %w", err)
+	}
+
+	// 3. Port
+	portID, err := t.createPort()
+	if err != nil {
+		return fmt.Errorf("Apply: %w", err)
+	}
+
+	// 4. Link subsystem → port
+	err = t.linkSubsystemToPort(portID)
+	if err != nil {
+		return fmt.Errorf("Apply: %w", err)
+	}
+
+	// 5. ACL: if AllowedHosts is set, add each host and disable allow_any_host.
+	if len(t.AllowedHosts) > 0 {
+		for _, host := range t.AllowedHosts {
+			err = t.AllowHost(host)
+			if err != nil {
+				return fmt.Errorf("Apply: %w", err)
+			}
+		}
+		attrPath := filepath.Join(t.subsystemDir(), "attr_allow_any_host")
+		err = writeFile(attrPath, "0")
+		if err != nil {
+			return fmt.Errorf("Apply: disable allow_any_host: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// scanAndRemovePortLinks scans <nvmetRoot>/ports/ for any port entries and
+// removes the subsystem symlink from each port's subsystems/ directory.
+// If the ports directory does not exist, the function returns nil.
+func (t *NvmetTarget) scanAndRemovePortLinks() error {
+	portsDir := filepath.Join(t.nvmetRoot(), "ports")
+	entries, err := os.ReadDir(portsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("scanAndRemovePortLinks: read ports dir: %w", err)
+	}
+	for _, entry := range entries {
+		linkPath := filepath.Join(portsDir, entry.Name(), "subsystems", t.SubsystemNQN)
+		err = removeSymlink(linkPath)
+		if err != nil {
+			return fmt.Errorf("scanAndRemovePortLinks: port %s: %w", entry.Name(), err)
+		}
+	}
+	return nil
+}
+
+// Remove tears down the NVMe-oF TCP target entry in configfs.  The steps are
+// executed in reverse dependency order:
+//
+//  1. Unlink subsystem from all ports (scans ports/ directory)
+//  2. Disable namespace (write "0" to enable)
+//  3. Remove namespace directory
+//  4. Remove allowed_hosts symlinks
+//  5. Remove subsystem directory
+//
+// Every step is idempotent — Remove can be called on an already-removed target
+// without error.
+func (t *NvmetTarget) Remove() error {
+	// 1. Unlink subsystem from all ports.
+	err := t.scanAndRemovePortLinks()
+	if err != nil {
+		return fmt.Errorf("Remove: %w", err)
+	}
+
+	// 2-3. Disable + remove namespace.
+	nsDir := t.namespaceDir()
+	enablePath := filepath.Join(nsDir, "enable")
+	// Write "0" to disable — ignore error if namespace doesn't exist.
+	bestEffort(writeFile(enablePath, "0"))
+	// On real configfs the kernel removes pseudo-files when the directory is
+	// removed; on a regular filesystem (tests) we must clean them up manually.
+	bestEffort(os.Remove(filepath.Join(nsDir, "device_path")))
+	bestEffort(os.Remove(enablePath))
+	err = removeDir(nsDir)
+	if err != nil {
+		return fmt.Errorf("Remove: namespace dir: %w", err)
+	}
+
+	// 4. Remove allowed_hosts symlinks.
+	for _, host := range t.AllowedHosts {
+		err = removeSymlink(t.allowedHostLink(host))
+		if err != nil {
+			return fmt.Errorf("Remove: allowed_host %q: %w", host, err)
+		}
+	}
+
+	// 5. Remove subsystem directory.
+	//    This may fail if the kernel requires all child directories to be
+	//    removed first; the namespace was already removed in step 3.
+	//    Clean up subsystem pseudo-files (tests only; kernel auto-removes).
+	bestEffort(removeDir(filepath.Join(t.subsystemDir(), "allowed_hosts")))
+	bestEffort(removeDir(filepath.Join(t.subsystemDir(), "namespaces")))
+	bestEffort(os.Remove(filepath.Join(t.subsystemDir(), "attr_allow_any_host")))
+	err = removeDir(t.subsystemDir())
+	if err != nil {
+		return fmt.Errorf("Remove: subsystem dir: %w", err)
+	}
+
+	return nil
+}
+
+// ACL management functions.
+
+// AllowHost grants the given host NQN access to this subsystem by:
+//  1. Creating <nvmetRoot>/hosts/<hostNQN>/ directory (the kernel instantiates
+//     the host object).
+//  2. Creating a symlink at <subsystemDir>/allowed_hosts/<hostNQN> →
+//     <nvmetRoot>/hosts/<hostNQN>.
+//
+// The operation is idempotent.
+func (t *NvmetTarget) AllowHost(hostNQN string) error {
+	hDir := t.hostDir(hostNQN)
+	err := mkdirAll(hDir)
+	if err != nil {
+		return fmt.Errorf("AllowHost %q: create host dir: %w", hostNQN, err)
+	}
+
+	// Ensure the allowed_hosts parent directory exists.
+	ahDir := filepath.Join(t.subsystemDir(), "allowed_hosts")
+	err = mkdirAll(ahDir)
+	if err != nil {
+		return fmt.Errorf("AllowHost %q: create allowed_hosts dir: %w", hostNQN, err)
+	}
+
+	linkPath := t.allowedHostLink(hostNQN)
+	err = symlink(hDir, linkPath)
+	if err != nil {
+		return fmt.Errorf("AllowHost %q: %w", hostNQN, err)
+	}
+	return nil
+}
+
+// DenyHost revokes the given host NQN's access to this subsystem by removing
+// the allowed_hosts symlink.  The host directory under <nvmetRoot>/hosts/ is
+// NOT removed because other subsystems may still reference it.
+//
+// The operation is idempotent.
+func (t *NvmetTarget) DenyHost(hostNQN string) error {
+	err := removeSymlink(t.allowedHostLink(hostNQN))
+	if err != nil {
+		return fmt.Errorf("DenyHost %q: %w", hostNQN, err)
 	}
 	return nil
 }

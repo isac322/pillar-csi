@@ -23,9 +23,26 @@ package backend
 
 import (
 	"context"
+	"fmt"
 
 	agentv1 "github.com/bhyoo/pillar-csi/gen/go/pillar_csi/agent/v1"
 )
+
+// ConflictError is returned by VolumeBackend.Create when a volume with the
+// given ID already exists but was created with incompatible parameters (e.g.
+// a different capacity).  Callers should map this to gRPC codes.AlreadyExists.
+type ConflictError struct {
+	VolumeID       string
+	ExistingBytes  int64
+	RequestedBytes int64
+}
+
+func (e *ConflictError) Error() string {
+	return fmt.Sprintf(
+		"volume %q already exists with capacity %d bytes, requested %d bytes",
+		e.VolumeID, e.ExistingBytes, e.RequestedBytes,
+	)
+}
 
 // VolumeBackend abstracts the storage-backend lifecycle for a single pool.
 // All methods MUST be idempotent so that the controller can safely retry.
@@ -41,7 +58,12 @@ type VolumeBackend interface {
 	// Idempotent: if a volume with volumeID already exists and has compatible
 	// parameters, Create MUST return the existing device path and size without
 	// returning an error.
-	Create(ctx context.Context, volumeID string, capacityBytes int64, params *agentv1.ZfsVolumeParams) (devicePath string, allocatedBytes int64, err error)
+	Create(
+		ctx context.Context,
+		volumeID string,
+		capacityBytes int64,
+		params *agentv1.ZfsVolumeParams,
+	) (devicePath string, allocatedBytes int64, err error)
 
 	// Delete destroys the backend storage resource identified by volumeID.
 	//

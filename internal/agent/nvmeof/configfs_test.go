@@ -143,7 +143,7 @@ func TestRemoveSymlinkNonSymlink(t *testing.T) {
 func TestRemoveDir(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "namespace")
-	if err := os.Mkdir(dir, 0o755); err != nil {
+	if err := os.Mkdir(dir, 0o750); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
 
@@ -160,7 +160,7 @@ func TestRemoveDir(t *testing.T) {
 	}
 }
 
-// TestNvmetTargetPaths verifies that path-generation methods honour
+// TestNvmetTargetPaths verifies that path-generation methods honor
 // ConfigfsRoot and produce the expected configfs layout.
 func TestNvmetTargetPaths(t *testing.T) {
 	root := t.TempDir()
@@ -236,9 +236,7 @@ func TestNvmetTargetDefaultConfigfsRoot(t *testing.T) {
 	}
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Subsystem and namespace tests
-// ─────────────────────────────────────────────────────────────────────────────
+// Subsystem and namespace tests.
 
 // TestCreateSubsystem verifies that createSubsystem creates the subsystem
 // directory and sets attr_allow_any_host to "1".
@@ -351,13 +349,228 @@ func TestCreateSubsystemAndNamespaceNonDefaultNsid(t *testing.T) {
 	assertFileContent(t, filepath.Join(nsDir, "enable"), "1")
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// test helpers
-// ─────────────────────────────────────────────────────────────────────────────
+// StablePortID tests.
+
+func TestStablePortID(t *testing.T) {
+	// Same input → same output (deterministic).
+	id1 := stablePortID("192.168.1.10", 4420)
+	id2 := stablePortID("192.168.1.10", 4420)
+	if id1 != id2 {
+		t.Errorf("same input produced different IDs: %d vs %d", id1, id2)
+	}
+	// Result must be in [1, 65535].
+	if id1 < 1 || id1 > 65535 {
+		t.Errorf("port ID %d out of range [1, 65535]", id1)
+	}
+	// Different address → (very likely) different ID.
+	id3 := stablePortID("10.0.0.1", 4420)
+	if id3 == id1 {
+		t.Log("warning: hash collision (unlikely but possible)")
+	}
+}
+
+// CreatePort tests.
+
+func TestCreatePort(t *testing.T) {
+	root := t.TempDir()
+	tgt := &NvmetTarget{
+		ConfigfsRoot: root,
+		SubsystemNQN: "nqn.test:vol-001",
+		NamespaceID:  1,
+		DevicePath:   "/dev/zvol/tank/pvc-test",
+		BindAddress:  "192.168.1.10",
+		Port:         4420,
+	}
+
+	portID, err := tgt.createPort()
+	if err != nil {
+		t.Fatalf("createPort: %v", err)
+	}
+	if portID < 1 || portID > 65535 {
+		t.Fatalf("portID %d out of range", portID)
+	}
+
+	pDir := tgt.portDir(portID)
+	assertFileContent(t, filepath.Join(pDir, "addr_trtype"), "tcp")
+	assertFileContent(t, filepath.Join(pDir, "addr_adrfam"), "ipv4")
+	assertFileContent(t, filepath.Join(pDir, "addr_traddr"), "192.168.1.10")
+	assertFileContent(t, filepath.Join(pDir, "addr_trsvcid"), "4420")
+
+	// Idempotent.
+	portID2, err := tgt.createPort()
+	if err != nil {
+		t.Fatalf("idempotent createPort: %v", err)
+	}
+	if portID2 != portID {
+		t.Errorf("idempotent portID changed: %d vs %d", portID, portID2)
+	}
+}
+
+// Apply / Remove tests.
+
+func TestApplyAndRemove(t *testing.T) {
+	root := t.TempDir()
+	tgt := &NvmetTarget{
+		ConfigfsRoot: root,
+		SubsystemNQN: "nqn.2026-01.io.pillar-csi:pvc-lifecycle",
+		NamespaceID:  1,
+		DevicePath:   "/dev/zvol/tank/pvc-lifecycle",
+		BindAddress:  "10.0.0.5",
+		Port:         4420,
+	}
+
+	// Apply should create the full configfs tree.
+	if err := tgt.Apply(); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	// Verify subsystem.
+	assertFileContent(t, filepath.Join(tgt.subsystemDir(), "attr_allow_any_host"), "1")
+
+	// Verify namespace.
+	assertFileContent(t, filepath.Join(tgt.namespaceDir(), "device_path"), tgt.DevicePath)
+	assertFileContent(t, filepath.Join(tgt.namespaceDir(), "enable"), "1")
+
+	// Verify port.
+	portID := stablePortID(tgt.BindAddress, tgt.Port)
+	pDir := tgt.portDir(portID)
+	assertFileContent(t, filepath.Join(pDir, "addr_traddr"), "10.0.0.5")
+
+	// Verify subsystem linked to port.
+	linkPath := tgt.portSubsystemLink(portID)
+	dest, err := os.Readlink(linkPath)
+	if err != nil {
+		t.Fatalf("readlink port-subsystem: %v", err)
+	}
+	if dest != tgt.subsystemDir() {
+		t.Errorf("port-subsystem link: got %q, want %q", dest, tgt.subsystemDir())
+	}
+
+	// Apply again — idempotent.
+	if err := tgt.Apply(); err != nil {
+		t.Fatalf("idempotent Apply: %v", err)
+	}
+
+	// Remove should clean up.
+	if err := tgt.Remove(); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+
+	// Subsystem directory should be gone.
+	if _, err := os.Stat(tgt.subsystemDir()); !os.IsNotExist(err) {
+		t.Errorf("subsystem dir still exists after Remove")
+	}
+
+	// Remove again — idempotent.
+	if err := tgt.Remove(); err != nil {
+		t.Fatalf("idempotent Remove: %v", err)
+	}
+}
+
+func TestApplyWithACL(t *testing.T) {
+	root := t.TempDir()
+	tgt := &NvmetTarget{
+		ConfigfsRoot: root,
+		SubsystemNQN: "nqn.2026-01.io.pillar-csi:pvc-acl",
+		NamespaceID:  1,
+		DevicePath:   "/dev/zvol/tank/pvc-acl",
+		BindAddress:  "10.0.0.6",
+		Port:         4420,
+		AllowedHosts: []string{"nqn.host:node-a", "nqn.host:node-b"},
+	}
+
+	if err := tgt.Apply(); err != nil {
+		t.Fatalf("Apply with ACL: %v", err)
+	}
+
+	// attr_allow_any_host should be "0" (ACL enabled).
+	assertFileContent(t, filepath.Join(tgt.subsystemDir(), "attr_allow_any_host"), "0")
+
+	// Allowed hosts symlinks should exist.
+	for _, host := range tgt.AllowedHosts {
+		linkPath := tgt.allowedHostLink(host)
+		dest, err := os.Readlink(linkPath)
+		if err != nil {
+			t.Fatalf("readlink allowed_host %q: %v", host, err)
+		}
+		if dest != tgt.hostDir(host) {
+			t.Errorf("allowed_host link for %q: got %q, want %q", host, dest, tgt.hostDir(host))
+		}
+	}
+
+	// Remove should clean up ACL symlinks too.
+	if err := tgt.Remove(); err != nil {
+		t.Fatalf("Remove with ACL: %v", err)
+	}
+}
+
+// AllowHost / DenyHost tests.
+
+func TestAllowAndDenyHost(t *testing.T) {
+	root := t.TempDir()
+	tgt := &NvmetTarget{
+		ConfigfsRoot: root,
+		SubsystemNQN: "nqn.2026-01.io.pillar-csi:pvc-host",
+		NamespaceID:  1,
+		DevicePath:   "/dev/zvol/tank/pvc-host",
+		BindAddress:  "10.0.0.7",
+		Port:         4420,
+	}
+
+	// Create subsystem first (AllowHost needs the subsystem dir).
+	if err := tgt.createSubsystem(); err != nil {
+		t.Fatalf("createSubsystem: %v", err)
+	}
+
+	hostNQN := "nqn.host:worker-1"
+
+	// AllowHost
+	if err := tgt.AllowHost(hostNQN); err != nil {
+		t.Fatalf("AllowHost: %v", err)
+	}
+
+	// Host dir should exist.
+	if _, err := os.Stat(tgt.hostDir(hostNQN)); err != nil {
+		t.Fatalf("host dir missing after AllowHost: %v", err)
+	}
+
+	// Symlink should exist.
+	linkPath := tgt.allowedHostLink(hostNQN)
+	if _, err := os.Readlink(linkPath); err != nil {
+		t.Fatalf("allowed_host symlink missing: %v", err)
+	}
+
+	// Idempotent AllowHost.
+	if err := tgt.AllowHost(hostNQN); err != nil {
+		t.Fatalf("idempotent AllowHost: %v", err)
+	}
+
+	// DenyHost
+	if err := tgt.DenyHost(hostNQN); err != nil {
+		t.Fatalf("DenyHost: %v", err)
+	}
+
+	// Symlink should be gone.
+	if _, err := os.Lstat(linkPath); !os.IsNotExist(err) {
+		t.Errorf("allowed_host symlink still exists after DenyHost")
+	}
+
+	// Host dir should still exist (shared across subsystems).
+	if _, err := os.Stat(tgt.hostDir(hostNQN)); err != nil {
+		t.Errorf("host dir removed by DenyHost — should be preserved")
+	}
+
+	// Idempotent DenyHost.
+	if err := tgt.DenyHost(hostNQN); err != nil {
+		t.Fatalf("idempotent DenyHost: %v", err)
+	}
+}
+
+// Test helpers.
 
 func assertFileContent(t *testing.T, path, want string) {
 	t.Helper()
-	got, err := os.ReadFile(path)
+	got, err := os.ReadFile(path) //nolint:gosec // G304: test helper reads from t.TempDir() paths only.
 	if err != nil {
 		t.Fatalf("read %q: %v", path, err)
 	}

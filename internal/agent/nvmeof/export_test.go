@@ -16,6 +16,6 @@ limitations under the License.
 
 // This file re-exports internal symbols for any external (_test) packages that
 // may need them in future integration tests.  It is compiled only when running
-// tests (the _test.go suffix is recognised by the Go toolchain).
+// tests (the _test.go suffix is recognized by the Go toolchain).
 
 package nvmeof
