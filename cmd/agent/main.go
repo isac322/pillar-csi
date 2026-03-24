@@ -34,6 +34,7 @@ import (
 	"github.com/bhyoo/pillar-csi/internal/agent/backend"
 	"github.com/bhyoo/pillar-csi/internal/agent/backend/zfs"
 	"github.com/bhyoo/pillar-csi/internal/agent/nvmeof"
+	"github.com/bhyoo/pillar-csi/internal/tlscreds"
 )
 
 // poolsFlag is a repeatable string flag that accumulates one ZFS pool name
@@ -73,10 +74,30 @@ func main() {
 	zfsParent := flag.String("zfs-parent-dataset", "", "ZFS parent dataset within each pool (optional)")
 	cfgRoot := flag.String("configfs-root", nvmeof.DefaultConfigfsRoot,
 		"nvmet configfs root directory (override in tests)")
+
+	// mTLS flags.  When all three are provided the agent gRPC server requires
+	// mutual TLS; clients must present a certificate signed by the given CA.
+	// When any flag is omitted the server starts in plaintext mode (Phase 1
+	// behaviour, for backward-compatibility with environments that have not
+	// yet deployed certificates).
+	tlsCert := flag.String("tls-cert", "",
+		"path to PEM server certificate for mTLS (requires --tls-key and --tls-ca)")
+	tlsKey := flag.String("tls-key", "",
+		"path to PEM server private key for mTLS (requires --tls-cert and --tls-ca)")
+	tlsCA := flag.String("tls-ca", "",
+		"path to PEM CA certificate used to verify client certificates (requires --tls-cert and --tls-key)")
+
 	flag.Parse()
 
 	if len(zfsPools) == 0 {
 		fmt.Fprintln(os.Stderr, "error: --zfs-pool is required (flag may be repeated for multiple pools)")
+		os.Exit(1)
+	}
+
+	// Validate that TLS flags are either all supplied or all absent.
+	tlsEnabled := *tlsCert != "" || *tlsKey != "" || *tlsCA != ""
+	if tlsEnabled && (*tlsCert == "" || *tlsKey == "" || *tlsCA == "") {
+		fmt.Fprintln(os.Stderr, "error: --tls-cert, --tls-key, and --tls-ca must all be provided together")
 		os.Exit(1)
 	}
 
@@ -93,7 +114,22 @@ func main() {
 		os.Exit(1)
 	}
 
-	grpcSrv := grpc.NewServer()
+	// Build gRPC server options.  Use mTLS when certificate flags are provided,
+	// otherwise fall back to plaintext (Phase 1 / backward-compatible mode).
+	var grpcOpts []grpc.ServerOption
+	if tlsEnabled {
+		serverCreds, credErr := tlscreds.LoadServerCredentials(*tlsCert, *tlsKey, *tlsCA)
+		if credErr != nil {
+			fmt.Fprintf(os.Stderr, "error: load TLS credentials: %v\n", credErr)
+			os.Exit(1)
+		}
+		grpcOpts = append(grpcOpts, grpc.Creds(serverCreds))
+		fmt.Fprintf(os.Stderr, "pillar-agent: mTLS enabled (cert=%s, ca=%s)\n", *tlsCert, *tlsCA)
+	} else {
+		fmt.Fprintln(os.Stderr, "pillar-agent: WARNING: starting in plaintext mode (no --tls-cert/--tls-key/--tls-ca flags)")
+	}
+
+	grpcSrv := grpc.NewServer(grpcOpts...)
 	srv.Register(grpcSrv)
 
 	// Graceful shutdown: stop accepting new RPCs on SIGTERM / SIGINT, then

@@ -36,6 +36,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	pillarcsiv1alpha1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
+	"github.com/bhyoo/pillar-csi/internal/agentclient"
 )
 
 const (
@@ -52,12 +53,35 @@ const (
 
 	// Requeue interval before re-checking whether blocking PillarPools have been removed.
 	requeueAfterTargetDeletionBlock = 10 * time.Second
+
+	// Requeue interval for periodic agent connectivity re-checks.
+	// Both the connected and disconnected cases requeue at this interval so
+	// that transient failures are retried and live agents are re-verified.
+	requeueAfterAgentHealthCheck = 30 * time.Second
+
+	// Timeout for a single agent health-check RPC call.
+	agentHealthCheckTimeout = 5 * time.Second
 )
 
 // PillarTargetReconciler reconciles a PillarTarget object.
 type PillarTargetReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+
+	// Dialer is the gRPC connection manager used to verify agent connectivity.
+	// When set, reconcileNormal and reconcileNodeRef will issue a live
+	// HealthCheck RPC against the resolved agent address and reflect the result
+	// in the AgentConnected and Ready status conditions.
+	//
+	// If Dialer is nil (e.g. in unit tests that do not exercise gRPC), the
+	// reconciler sets AgentConnected=False with reason "DialerNotConfigured".
+	//
+	// The AgentConnected condition reason reflects the authentication level:
+	//   Dialer.IsMTLS()==true  → reason "Authenticated" (mTLS handshake verified)
+	//   Dialer.IsMTLS()==false → reason "Dialed"        (plain TCP, no TLS)
+	// Use agentclient.NewManagerFromFiles or NewManagerWithTLSCredentials to
+	// create a Dialer that enforces mTLS and reports IsMTLS()==true.
+	Dialer agentclient.Dialer
 }
 
 // +kubebuilder:rbac:groups=pillar-csi.pillar-csi.bhyoo.com,resources=pillartargets,verbs=get;list;watch;create;update;patch;delete
@@ -112,7 +136,8 @@ func (r *PillarTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 // reconcileNormal handles the steady-state reconciliation of a PillarTarget
 // that is not being deleted.  It resolves the agent address, updates the
-// NodeExists status condition, sets AgentConnected (stubbed), and derives Ready.
+// NodeExists status condition, performs a live gRPC HealthCheck via r.Dialer
+// to set AgentConnected, and derives Ready accordingly.
 func (r *PillarTargetReconciler) reconcileNormal(
 	ctx context.Context,
 	target *pillarcsiv1alpha1.PillarTarget,
@@ -137,29 +162,34 @@ func (r *PillarTargetReconciler) reconcileNormal(
 		})
 		target.Status.ResolvedAddress = resolved
 
-		// AgentConnected: stubbed False until Task 3 implements actual gRPC dial.
-		meta.SetStatusCondition(&target.Status.Conditions, metav1.Condition{
-			Type:               "AgentConnected",
-			Status:             metav1.ConditionFalse,
-			ObservedGeneration: target.Generation,
-			Reason:             "AgentConnectionNotImplemented",
-			Message:            "Agent gRPC connection is not yet implemented; will be enabled in a future task",
-		})
+		// AgentConnected: perform a live gRPC HealthCheck against the agent.
+		connected := r.setAgentConnectedCondition(ctx, target, resolved)
 
-		// Ready: False because AgentConnected is False.
-		meta.SetStatusCondition(&target.Status.Conditions, metav1.Condition{
-			Type:               "Ready",
-			Status:             metav1.ConditionFalse,
-			ObservedGeneration: target.Generation,
-			Reason:             "AgentNotConnected",
-			Message:            "PillarTarget is not ready: agent gRPC connection has not been established",
-		})
+		// Ready: True only when the agent is reachable and healthy.
+		if connected {
+			meta.SetStatusCondition(&target.Status.Conditions, metav1.Condition{
+				Type:               "Ready",
+				Status:             metav1.ConditionTrue,
+				ObservedGeneration: target.Generation,
+				Reason:             "AgentConnected",
+				Message:            fmt.Sprintf("PillarTarget is ready: agent at %q is connected and healthy", resolved),
+			})
+		} else {
+			meta.SetStatusCondition(&target.Status.Conditions, metav1.Condition{
+				Type:               "Ready",
+				Status:             metav1.ConditionFalse,
+				ObservedGeneration: target.Generation,
+				Reason:             "AgentNotConnected",
+				Message:            "PillarTarget is not ready: agent gRPC connection has not been established",
+			})
+		}
 
 		err := r.Status().Update(ctx, target)
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to update PillarTarget status: %w", err)
 		}
-		return ctrl.Result{}, nil
+		// Requeue periodically to re-verify agent connectivity.
+		return ctrl.Result{RequeueAfter: requeueAfterAgentHealthCheck}, nil
 
 	default:
 		// Neither nodeRef nor external is set — webhook should prevent this,
@@ -200,7 +230,8 @@ func (r *PillarTargetReconciler) reconcileNormal(
 // reconcileNodeRef fetches the referenced Kubernetes Node, resolves the agent
 // IP according to the addressType and optional CIDR filter, then updates the
 // NodeExists condition, resolvedAddress status fields, labels the node as a
-// storage node, and sets AgentConnected / Ready conditions (stubbed for now).
+// storage node, and performs a live gRPC HealthCheck to set AgentConnected /
+// Ready conditions via r.Dialer.
 //
 //nolint:funlen // Multiple distinct sub-paths (not found / addr error / success) require unavoidable length.
 func (r *PillarTargetReconciler) reconcileNodeRef(
@@ -351,23 +382,30 @@ func (r *PillarTargetReconciler) reconcileNodeRef(
 		),
 	})
 
-	// AgentConnected: stubbed False until Task 3 implements actual gRPC dial.
-	meta.SetStatusCondition(&target.Status.Conditions, metav1.Condition{
-		Type:               "AgentConnected",
-		Status:             metav1.ConditionFalse,
-		ObservedGeneration: target.Generation,
-		Reason:             "AgentConnectionNotImplemented",
-		Message:            "Agent gRPC connection is not yet implemented; will be enabled in a future task",
-	})
+	// AgentConnected: perform a live gRPC HealthCheck against the agent.
+	connected := r.setAgentConnectedCondition(ctx, target, resolved)
 
-	// Ready: False because AgentConnected is still False (stubbed).
-	meta.SetStatusCondition(&target.Status.Conditions, metav1.Condition{
-		Type:               "Ready",
-		Status:             metav1.ConditionFalse,
-		ObservedGeneration: target.Generation,
-		Reason:             "AgentNotConnected",
-		Message:            "PillarTarget is not ready: agent gRPC connection has not been established",
-	})
+	// Ready: True only when the agent is reachable and healthy.
+	if connected {
+		meta.SetStatusCondition(&target.Status.Conditions, metav1.Condition{
+			Type:               "Ready",
+			Status:             metav1.ConditionTrue,
+			ObservedGeneration: target.Generation,
+			Reason:             "AgentConnected",
+			Message: fmt.Sprintf(
+				"PillarTarget is ready: agent at %q (node %q) is connected and healthy",
+				resolved, nodeRef.Name,
+			),
+		})
+	} else {
+		meta.SetStatusCondition(&target.Status.Conditions, metav1.Condition{
+			Type:               "Ready",
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: target.Generation,
+			Reason:             "AgentNotConnected",
+			Message:            "PillarTarget is not ready: agent gRPC connection has not been established",
+		})
+	}
 
 	target.Status.ResolvedAddress = resolved
 
@@ -376,7 +414,132 @@ func (r *PillarTargetReconciler) reconcileNodeRef(
 		return ctrl.Result{}, fmt.Errorf("failed to update PillarTarget status: %w", err)
 	}
 
-	return ctrl.Result{}, nil
+	// Requeue periodically to re-verify agent connectivity.
+	return ctrl.Result{RequeueAfter: requeueAfterAgentHealthCheck}, nil
+}
+
+// setAgentConnectedCondition performs a live gRPC HealthCheck against the
+// agent at address and updates the AgentConnected status condition on target.
+//
+// The reason reflects both connectivity and authentication level:
+//   - "Authenticated"     – mTLS handshake succeeded and agent reports healthy.
+//   - "Dialed"            – TCP reachable (no mTLS) and agent reports healthy.
+//   - "TLSHandshakeFailed"– mTLS is configured but the TLS handshake failed.
+//   - "HealthCheckFailed" – transport error (TCP or other) prevented the RPC.
+//   - "AgentUnhealthy"    – agent is reachable but reports degraded status.
+//   - "DialerNotConfigured"– no Dialer is wired up (dev/test only).
+//
+// It returns true when the agent is reachable and reports healthy status, and
+// false otherwise (including when r.Dialer is nil).
+//
+// The caller is responsible for subsequently setting the Ready condition and
+// persisting the status update.
+func (r *PillarTargetReconciler) setAgentConnectedCondition(
+	ctx context.Context,
+	target *pillarcsiv1alpha1.PillarTarget,
+	address string,
+) bool {
+	log := logf.FromContext(ctx)
+
+	if r.Dialer == nil {
+		// No dialer configured — set condition False with an informative reason
+		// instead of the old opaque stub message.
+		meta.SetStatusCondition(&target.Status.Conditions, metav1.Condition{
+			Type:               "AgentConnected",
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: target.Generation,
+			Reason:             "DialerNotConfigured",
+			Message:            "No gRPC dialer is configured for this reconciler; agent connectivity cannot be verified",
+		})
+		return false
+	}
+
+	// Use a short-lived context for the health-check RPC so a slow or
+	// unreachable agent does not block the reconcile loop indefinitely.
+	hcCtx, hcCancel := context.WithTimeout(ctx, agentHealthCheckTimeout)
+	defer hcCancel()
+
+	resp, err := r.Dialer.HealthCheck(hcCtx, address)
+	if err != nil {
+		log.Info("Agent health check failed", "address", address, "error", err)
+		// Distinguish TLS handshake failures from plain transport errors so
+		// operators know whether to investigate certificate configuration.
+		if r.Dialer.IsMTLS() && isTLSHandshakeError(err) {
+			meta.SetStatusCondition(&target.Status.Conditions, metav1.Condition{
+				Type:               "AgentConnected",
+				Status:             metav1.ConditionFalse,
+				ObservedGeneration: target.Generation,
+				Reason:             "TLSHandshakeFailed",
+				Message: fmt.Sprintf(
+					"mTLS handshake to agent at %q failed; verify certificate chain and CA: %v",
+					address, err,
+				),
+			})
+		} else {
+			meta.SetStatusCondition(&target.Status.Conditions, metav1.Condition{
+				Type:               "AgentConnected",
+				Status:             metav1.ConditionFalse,
+				ObservedGeneration: target.Generation,
+				Reason:             "HealthCheckFailed",
+				Message:            fmt.Sprintf("Agent health check at %q failed: %v", address, err),
+			})
+		}
+		return false
+	}
+
+	if !resp.Healthy {
+		log.Info("Agent is reachable but reports unhealthy status", "address", address)
+		meta.SetStatusCondition(&target.Status.Conditions, metav1.Condition{
+			Type:               "AgentConnected",
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: target.Generation,
+			Reason:             "AgentUnhealthy",
+			Message:            fmt.Sprintf("Agent at %q is reachable but reports unhealthy status", address),
+		})
+		return false
+	}
+
+	// Health check succeeded.  Reflect the authentication level in the reason
+	// so operators can distinguish a plain TCP dial from a verified mTLS session.
+	if r.Dialer.IsMTLS() {
+		log.Info("Agent authenticated via mTLS and reports healthy", "address", address)
+		meta.SetStatusCondition(&target.Status.Conditions, metav1.Condition{
+			Type:               "AgentConnected",
+			Status:             metav1.ConditionTrue,
+			ObservedGeneration: target.Generation,
+			Reason:             "Authenticated",
+			Message: fmt.Sprintf(
+				"Agent at %q is authenticated via mTLS and reports healthy status", address,
+			),
+		})
+	} else {
+		log.Info("Agent reachable via plaintext TCP and reports healthy", "address", address)
+		meta.SetStatusCondition(&target.Status.Conditions, metav1.Condition{
+			Type:               "AgentConnected",
+			Status:             metav1.ConditionTrue,
+			ObservedGeneration: target.Generation,
+			Reason:             "Dialed",
+			Message: fmt.Sprintf(
+				"Agent at %q is reachable via plaintext TCP and reports healthy status", address,
+			),
+		})
+	}
+	return true
+}
+
+// isTLSHandshakeError returns true when err appears to originate from a TLS
+// handshake failure (wrong CA, expired certificate, missing client cert, etc.).
+// The detection is best-effort and relies on the gRPC transport wrapping the
+// underlying crypto/tls error message.
+func isTLSHandshakeError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := strings.ToLower(err.Error())
+	return strings.Contains(errStr, "tls:") ||
+		strings.Contains(errStr, "authentication handshake failed") ||
+		strings.Contains(errStr, "certificate verify") ||
+		strings.Contains(errStr, "x509:")
 }
 
 // reconcileDelete handles the deletion flow.

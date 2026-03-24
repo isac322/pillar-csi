@@ -38,6 +38,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	pillarcsiv1alpha1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
+	"github.com/bhyoo/pillar-csi/internal/agentclient"
 	"github.com/bhyoo/pillar-csi/internal/controller"
 	webhookv1alpha1 "github.com/bhyoo/pillar-csi/internal/webhook/v1alpha1"
 	// +kubebuilder:scaffold:imports
@@ -57,10 +58,15 @@ func init() {
 
 // setupControllers registers all pillar-csi controllers with the manager.
 // Extracted from main to keep the entry point under the funlen statement limit.
-func setupControllers(mgr ctrl.Manager) error {
+//
+// agentDialer is the gRPC connection manager injected into the
+// PillarTargetReconciler so that it can perform live HealthCheck calls against
+// pillar-agent instances and reflect the results in AgentConnected conditions.
+func setupControllers(mgr ctrl.Manager, agentDialer agentclient.Dialer) error {
 	err := (&controller.PillarTargetReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
+		Dialer: agentDialer,
 	}).SetupWithManager(mgr)
 	if err != nil {
 		return fmt.Errorf("PillarTarget controller: %w", err)
@@ -121,6 +127,13 @@ func main() {
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var tlsOpts []func(*tls.Config)
+
+	// mTLS flags for the controller→agent gRPC connection.
+	// When all three cert flags are provided the controller uses mutual TLS;
+	// when they are omitted it falls back to a plaintext connection and logs
+	// a warning suitable for development / pre-PKI deployments.
+	var agentTLSCert, agentTLSKey, agentTLSCA, agentTLSServerName string
+
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -138,6 +151,16 @@ func main() {
 	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
+	flag.StringVar(&agentTLSCert, "agent-tls-cert", "",
+		"Path to the PEM-encoded client certificate used for mTLS with pillar-agent. "+
+			"Must be set together with --agent-tls-key and --agent-tls-ca to enable mTLS.")
+	flag.StringVar(&agentTLSKey, "agent-tls-key", "",
+		"Path to the PEM-encoded private key for the agent mTLS client certificate.")
+	flag.StringVar(&agentTLSCA, "agent-tls-ca", "",
+		"Path to the PEM-encoded CA certificate that signed the pillar-agent server certificates.")
+	flag.StringVar(&agentTLSServerName, "agent-tls-server-name", "",
+		"Override the TLS server name used for SAN verification when connecting to pillar-agent. "+
+			"Leave empty to derive the server name from the resolved agent address.")
 	opts := zap.Options{
 		Development: true,
 	}
@@ -237,7 +260,52 @@ func main() {
 		os.Exit(1)
 	}
 
-	err = setupControllers(mgr)
+	// Create the gRPC connection manager for agent health-checks.
+	// The manager caches one *grpc.ClientConn per resolved address and is
+	// closed gracefully when the process exits.
+	//
+	// When --agent-tls-cert, --agent-tls-key, and --agent-tls-ca are all
+	// provided, the controller establishes mutually-authenticated TLS
+	// connections to every pillar-agent.  Otherwise it falls back to plaintext,
+	// which is acceptable only in development or environments where TLS is
+	// terminated by an external proxy.
+	var agentDialer *agentclient.Manager
+	allTLSFlagsSet := agentTLSCert != "" && agentTLSKey != "" && agentTLSCA != ""
+	anyTLSFlagSet := agentTLSCert != "" || agentTLSKey != "" || agentTLSCA != ""
+	switch {
+	case allTLSFlagsSet:
+		setupLog.Info("Initializing agent gRPC connection manager with mTLS credentials",
+			"cert", agentTLSCert, "key", agentTLSKey, "ca", agentTLSCA,
+			"serverName", agentTLSServerName)
+		var dialErr error
+		agentDialer, dialErr = agentclient.NewManagerFromFiles(
+			agentTLSCert, agentTLSKey, agentTLSCA, agentTLSServerName,
+		)
+		if dialErr != nil {
+			setupLog.Error(dialErr, "failed to initialise mTLS agent dialer")
+			os.Exit(1)
+		}
+	case anyTLSFlagSet:
+		// Partial flag set — operator misconfiguration; surface a clear error
+		// rather than silently ignoring partial input.
+		setupLog.Error(fmt.Errorf("incomplete mTLS flags"),
+			"--agent-tls-cert, --agent-tls-key, and --agent-tls-ca must all be set "+
+				"together to enable mTLS; got a partial set",
+			"agent-tls-cert", agentTLSCert, "agent-tls-key", agentTLSKey,
+			"agent-tls-ca", agentTLSCA)
+		os.Exit(1)
+	default:
+		setupLog.Info("WARNING: agent gRPC connections will use plaintext transport; " +
+			"set --agent-tls-cert, --agent-tls-key, and --agent-tls-ca to enable mTLS")
+		agentDialer = agentclient.NewManager()
+	}
+	defer func() {
+		if closeErr := agentDialer.Close(); closeErr != nil {
+			setupLog.Error(closeErr, "failed to close agent gRPC connection manager")
+		}
+	}()
+
+	err = setupControllers(mgr, agentDialer)
 	if err != nil {
 		setupLog.Error(err, "unable to create controllers")
 		os.Exit(1)

@@ -129,7 +129,14 @@ type PillarTargetStatus struct {
 	//
 	// Known condition types:
 	// - "NodeExists"     – the referenced K8s Node is present in the cluster.
-	// - "AgentConnected" – the gRPC connection to the agent is healthy.
+	// - "AgentConnected" – the gRPC connection to the storage agent.
+	//   The reason field distinguishes the authentication level:
+	//     True  / "Authenticated"      – mTLS handshake succeeded; both sides verified.
+	//     True  / "Dialed"             – TCP connection established; no mTLS in use.
+	//     False / "TLSHandshakeFailed" – mTLS configured but handshake failed (cert error).
+	//     False / "HealthCheckFailed"  – TCP-level or transport error.
+	//     False / "AgentUnhealthy"     – agent reachable but reports degraded health.
+	//     False / "DialerNotConfigured"– no gRPC dialer is wired (dev/test only).
 	// - "Ready"          – all checks pass; the target is ready to serve pools.
 	//
 	// +listType=map

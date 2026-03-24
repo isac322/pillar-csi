@@ -14,10 +14,13 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+//go:build integration
+
 package controller
 
 import (
 	"context"
+	"fmt"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -31,7 +34,42 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	pillarcsiv1alpha1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
+	agentv1 "github.com/bhyoo/pillar-csi/gen/go/pillar_csi/agent/v1"
+	"github.com/bhyoo/pillar-csi/internal/agentclient"
 )
+
+// mockDialer is a test double for agentclient.Dialer that returns a
+// pre-configured HealthCheckResponse or error without establishing a real
+// gRPC connection.
+type mockDialer struct {
+	// healthy controls whether HealthCheck returns resp.Healthy = true.
+	healthy bool
+	// err, when non-nil, is returned by HealthCheck instead of a response.
+	err error
+	// mtls controls whether IsMTLS() returns true, simulating an mTLS-enabled
+	// connection.  Set to true to test the "Authenticated" condition reason.
+	mtls bool
+}
+
+// Ensure mockDialer satisfies the Dialer interface at compile time.
+var _ agentclient.Dialer = (*mockDialer)(nil)
+
+func (m *mockDialer) Dial(_ context.Context, _ string) (agentv1.AgentServiceClient, error) {
+	// Dial is not exercised by the reconciler health-check path; return nil.
+	return nil, nil
+}
+
+func (m *mockDialer) HealthCheck(_ context.Context, _ string) (*agentv1.HealthCheckResponse, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	return &agentv1.HealthCheckResponse{Healthy: m.healthy}, nil
+}
+
+func (m *mockDialer) Close() error { return nil }
+
+// IsMTLS reports the simulated authentication level for this mock.
+func (m *mockDialer) IsMTLS() bool { return m.mtls }
 
 var _ = Describe("PillarTarget Controller", func() {
 	const targetName = "test-target"
@@ -273,7 +311,9 @@ var _ = Describe("PillarTarget Controller", func() {
 			Expect(cond.Reason).To(Equal("ExternalMode"))
 		})
 
-		It("should set AgentConnected=False for an external-mode target (stubbed)", func() {
+		It("should set AgentConnected=False with reason DialerNotConfigured when no Dialer is set", func() {
+			// The reconciler in this test suite is constructed without a Dialer,
+			// so agent connectivity cannot be verified.
 			_, err := doExternalReconcile()
 			Expect(err).NotTo(HaveOccurred())
 
@@ -282,7 +322,9 @@ var _ = Describe("PillarTarget Controller", func() {
 			cond := apimeta.FindStatusCondition(fetched.Status.Conditions, "AgentConnected")
 			Expect(cond).NotTo(BeNil(), "AgentConnected condition should be set")
 			Expect(cond.Status).To(Equal(metav1.ConditionFalse),
-				"AgentConnected should be False until gRPC connection is implemented")
+				"AgentConnected should be False when no Dialer is configured")
+			Expect(cond.Reason).To(Equal("DialerNotConfigured"),
+				"reason should be DialerNotConfigured when no Dialer is injected")
 		})
 
 		It("should set Ready=False for an external-mode target while AgentConnected is False", func() {
@@ -484,7 +526,9 @@ var _ = Describe("PillarTarget Controller", func() {
 				"storage-node label should be applied to the referenced node")
 		})
 
-		It("should set AgentConnected=False (stubbed) even when node is found", func() {
+		It("should set AgentConnected=False with reason DialerNotConfigured when no Dialer is set", func() {
+			// The reconciler in this test suite is constructed without a Dialer,
+			// so agent connectivity cannot be verified even when the node exists.
 			_, err := doFoundReconcile()
 			Expect(err).NotTo(HaveOccurred())
 
@@ -493,10 +537,12 @@ var _ = Describe("PillarTarget Controller", func() {
 			cond := apimeta.FindStatusCondition(fetched.Status.Conditions, "AgentConnected")
 			Expect(cond).NotTo(BeNil())
 			Expect(cond.Status).To(Equal(metav1.ConditionFalse),
-				"AgentConnected should remain False until gRPC connection is implemented")
+				"AgentConnected should be False when no Dialer is configured")
+			Expect(cond.Reason).To(Equal("DialerNotConfigured"),
+				"reason should be DialerNotConfigured when no Dialer is injected")
 		})
 
-		It("should set Ready=False (stubbed) even when node is found", func() {
+		It("should set Ready=False when AgentConnected is False (no Dialer configured)", func() {
 			_, err := doFoundReconcile()
 			Expect(err).NotTo(HaveOccurred())
 
@@ -505,7 +551,7 @@ var _ = Describe("PillarTarget Controller", func() {
 			cond := apimeta.FindStatusCondition(fetched.Status.Conditions, "Ready")
 			Expect(cond).NotTo(BeNil())
 			Expect(cond.Status).To(Equal(metav1.ConditionFalse),
-				"Ready should be False while AgentConnected is False (stub phase)")
+				"Ready should be False while AgentConnected is False")
 		})
 
 		It("should not duplicate the storage-node label on repeated reconciles", func() {
@@ -544,6 +590,435 @@ var _ = Describe("PillarTarget Controller", func() {
 			Expect(k8sClient.Get(bctx, nodeNN, node)).To(Succeed())
 			Expect(node.Labels).NotTo(HaveKey(storageNodeLabel),
 				"storage-node label should be removed when PillarTarget is deleted")
+		})
+	})
+
+	// -----------------------------------------------------------------------
+	// AgentConnected — live gRPC dialer integration
+	// -----------------------------------------------------------------------
+	//
+	// These tests exercise setAgentConnectedCondition via a mockDialer that
+	// returns pre-configured responses without establishing a real TCP connection.
+	Context("AgentConnected with injected mock Dialer — healthy agent", func() {
+		const dialerTargetName = "test-target-dialer-healthy"
+		dialerNN := types.NamespacedName{Name: dialerTargetName}
+
+		var dialerReconciler *PillarTargetReconciler
+
+		BeforeEach(func() {
+			dialerReconciler = &PillarTargetReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				Dialer: &mockDialer{healthy: true},
+			}
+
+			obj := &pillarcsiv1alpha1.PillarTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: dialerTargetName},
+				Spec: pillarcsiv1alpha1.PillarTargetSpec{
+					External: &pillarcsiv1alpha1.ExternalSpec{
+						Address: "10.0.0.99",
+						Port:    9500,
+					},
+				},
+			}
+			Expect(k8sClient.Create(bctx, obj)).To(Succeed())
+			// First reconcile: adds finalizer.
+			_, err := dialerReconciler.Reconcile(bctx, reconcile.Request{NamespacedName: dialerNN})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		AfterEach(func() {
+			t := &pillarcsiv1alpha1.PillarTarget{}
+			if err := k8sClient.Get(bctx, dialerNN, t); err == nil {
+				controllerutil.RemoveFinalizer(t, pillarTargetFinalizer)
+				Expect(k8sClient.Update(bctx, t)).To(Succeed())
+				Expect(k8sClient.Delete(bctx, t)).To(Succeed())
+			}
+		})
+
+		It("should set AgentConnected=True/Dialed when the mock agent reports healthy (plaintext)", func() {
+			_, err := dialerReconciler.Reconcile(bctx, reconcile.Request{NamespacedName: dialerNN})
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := &pillarcsiv1alpha1.PillarTarget{}
+			Expect(k8sClient.Get(bctx, dialerNN, fetched)).To(Succeed())
+
+			cond := apimeta.FindStatusCondition(fetched.Status.Conditions, "AgentConnected")
+			Expect(cond).NotTo(BeNil(), "AgentConnected condition should be set")
+			Expect(cond.Status).To(Equal(metav1.ConditionTrue),
+				"AgentConnected should be True when the health check succeeds")
+			// mockDialer.mtls == false → plaintext TCP → reason "Dialed"
+			Expect(cond.Reason).To(Equal("Dialed"),
+				"reason should be Dialed for a plaintext (non-mTLS) connection")
+		})
+
+		It("should set Ready=True when AgentConnected is True", func() {
+			_, err := dialerReconciler.Reconcile(bctx, reconcile.Request{NamespacedName: dialerNN})
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := &pillarcsiv1alpha1.PillarTarget{}
+			Expect(k8sClient.Get(bctx, dialerNN, fetched)).To(Succeed())
+
+			cond := apimeta.FindStatusCondition(fetched.Status.Conditions, "Ready")
+			Expect(cond).NotTo(BeNil(), "Ready condition should be set")
+			Expect(cond.Status).To(Equal(metav1.ConditionTrue),
+				"Ready should be True when AgentConnected is True")
+			Expect(cond.Reason).To(Equal("AgentConnected"))
+		})
+
+		It("should requeue after the health-check interval", func() {
+			result, err := dialerReconciler.Reconcile(bctx, reconcile.Request{NamespacedName: dialerNN})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(requeueAfterAgentHealthCheck),
+				"reconciler should requeue periodically to re-verify agent connectivity")
+		})
+	})
+
+	Context("AgentConnected with injected mock Dialer — health check fails", func() {
+		const failTargetName = "test-target-dialer-fail"
+		failNN := types.NamespacedName{Name: failTargetName}
+
+		var failReconciler *PillarTargetReconciler
+
+		BeforeEach(func() {
+			failReconciler = &PillarTargetReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				Dialer: &mockDialer{err: fmt.Errorf("connection refused")},
+			}
+
+			obj := &pillarcsiv1alpha1.PillarTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: failTargetName},
+				Spec: pillarcsiv1alpha1.PillarTargetSpec{
+					External: &pillarcsiv1alpha1.ExternalSpec{
+						Address: "10.0.0.100",
+						Port:    9500,
+					},
+				},
+			}
+			Expect(k8sClient.Create(bctx, obj)).To(Succeed())
+			// First reconcile: adds finalizer.
+			_, err := failReconciler.Reconcile(bctx, reconcile.Request{NamespacedName: failNN})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		AfterEach(func() {
+			t := &pillarcsiv1alpha1.PillarTarget{}
+			if err := k8sClient.Get(bctx, failNN, t); err == nil {
+				controllerutil.RemoveFinalizer(t, pillarTargetFinalizer)
+				Expect(k8sClient.Update(bctx, t)).To(Succeed())
+				Expect(k8sClient.Delete(bctx, t)).To(Succeed())
+			}
+		})
+
+		It("should set AgentConnected=False with reason HealthCheckFailed when health check errors", func() {
+			_, err := failReconciler.Reconcile(bctx, reconcile.Request{NamespacedName: failNN})
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := &pillarcsiv1alpha1.PillarTarget{}
+			Expect(k8sClient.Get(bctx, failNN, fetched)).To(Succeed())
+
+			cond := apimeta.FindStatusCondition(fetched.Status.Conditions, "AgentConnected")
+			Expect(cond).NotTo(BeNil(), "AgentConnected condition should be set")
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse),
+				"AgentConnected should be False when the health check RPC fails")
+			Expect(cond.Reason).To(Equal("HealthCheckFailed"))
+		})
+
+		It("should set Ready=False when health check fails", func() {
+			_, err := failReconciler.Reconcile(bctx, reconcile.Request{NamespacedName: failNN})
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := &pillarcsiv1alpha1.PillarTarget{}
+			Expect(k8sClient.Get(bctx, failNN, fetched)).To(Succeed())
+
+			cond := apimeta.FindStatusCondition(fetched.Status.Conditions, "Ready")
+			Expect(cond).NotTo(BeNil(), "Ready condition should be set")
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse),
+				"Ready should be False when agent health check fails")
+		})
+
+		It("should still requeue after health-check interval even when health check fails", func() {
+			result, err := failReconciler.Reconcile(bctx, reconcile.Request{NamespacedName: failNN})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(requeueAfterAgentHealthCheck),
+				"reconciler should requeue to retry even on health-check failure")
+		})
+	})
+
+	Context("AgentConnected with injected mock Dialer — agent reports unhealthy", func() {
+		const unhealthyTargetName = "test-target-dialer-unhealthy"
+		unhealthyNN := types.NamespacedName{Name: unhealthyTargetName}
+
+		var unhealthyReconciler *PillarTargetReconciler
+
+		BeforeEach(func() {
+			unhealthyReconciler = &PillarTargetReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				Dialer: &mockDialer{healthy: false},
+			}
+
+			obj := &pillarcsiv1alpha1.PillarTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: unhealthyTargetName},
+				Spec: pillarcsiv1alpha1.PillarTargetSpec{
+					External: &pillarcsiv1alpha1.ExternalSpec{
+						Address: "10.0.0.101",
+						Port:    9500,
+					},
+				},
+			}
+			Expect(k8sClient.Create(bctx, obj)).To(Succeed())
+			// First reconcile: adds finalizer.
+			_, err := unhealthyReconciler.Reconcile(bctx, reconcile.Request{NamespacedName: unhealthyNN})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		AfterEach(func() {
+			t := &pillarcsiv1alpha1.PillarTarget{}
+			if err := k8sClient.Get(bctx, unhealthyNN, t); err == nil {
+				controllerutil.RemoveFinalizer(t, pillarTargetFinalizer)
+				Expect(k8sClient.Update(bctx, t)).To(Succeed())
+				Expect(k8sClient.Delete(bctx, t)).To(Succeed())
+			}
+		})
+
+		It("should set AgentConnected=False with reason AgentUnhealthy when agent reports unhealthy", func() {
+			_, err := unhealthyReconciler.Reconcile(bctx, reconcile.Request{NamespacedName: unhealthyNN})
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := &pillarcsiv1alpha1.PillarTarget{}
+			Expect(k8sClient.Get(bctx, unhealthyNN, fetched)).To(Succeed())
+
+			cond := apimeta.FindStatusCondition(fetched.Status.Conditions, "AgentConnected")
+			Expect(cond).NotTo(BeNil(), "AgentConnected condition should be set")
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse),
+				"AgentConnected should be False when agent reports unhealthy status")
+			Expect(cond.Reason).To(Equal("AgentUnhealthy"))
+		})
+	})
+
+	// -----------------------------------------------------------------------
+	// AgentConnected — mTLS Authenticated path
+	// -----------------------------------------------------------------------
+	//
+	// These tests verify that when the Dialer reports IsMTLS()==true the
+	// controller surfaces reason "Authenticated" (instead of "Dialed") in the
+	// AgentConnected condition, distinguishing a mutually-authenticated session
+	// from a plain TCP connection.
+	Context("AgentConnected with mTLS mock Dialer — healthy agent", func() {
+		const mtlsTargetName = "test-target-mtls-healthy"
+		mtlsNN := types.NamespacedName{Name: mtlsTargetName}
+
+		var mtlsReconciler *PillarTargetReconciler
+
+		BeforeEach(func() {
+			// mtls: true simulates a Dialer built with NewManagerFromFiles or
+			// NewManagerWithTLSCredentials.
+			mtlsReconciler = &PillarTargetReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				Dialer: &mockDialer{healthy: true, mtls: true},
+			}
+
+			obj := &pillarcsiv1alpha1.PillarTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: mtlsTargetName},
+				Spec: pillarcsiv1alpha1.PillarTargetSpec{
+					External: &pillarcsiv1alpha1.ExternalSpec{
+						Address: "10.0.1.1",
+						Port:    9500,
+					},
+				},
+			}
+			Expect(k8sClient.Create(bctx, obj)).To(Succeed())
+			// First reconcile: adds finalizer.
+			_, err := mtlsReconciler.Reconcile(bctx, reconcile.Request{NamespacedName: mtlsNN})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		AfterEach(func() {
+			t := &pillarcsiv1alpha1.PillarTarget{}
+			if err := k8sClient.Get(bctx, mtlsNN, t); err == nil {
+				controllerutil.RemoveFinalizer(t, pillarTargetFinalizer)
+				Expect(k8sClient.Update(bctx, t)).To(Succeed())
+				Expect(k8sClient.Delete(bctx, t)).To(Succeed())
+			}
+		})
+
+		It("should set AgentConnected=True/Authenticated when mTLS dialer reports healthy", func() {
+			_, err := mtlsReconciler.Reconcile(bctx, reconcile.Request{NamespacedName: mtlsNN})
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := &pillarcsiv1alpha1.PillarTarget{}
+			Expect(k8sClient.Get(bctx, mtlsNN, fetched)).To(Succeed())
+
+			cond := apimeta.FindStatusCondition(fetched.Status.Conditions, "AgentConnected")
+			Expect(cond).NotTo(BeNil(), "AgentConnected condition should be set")
+			Expect(cond.Status).To(Equal(metav1.ConditionTrue),
+				"AgentConnected should be True when the mTLS health check succeeds")
+			Expect(cond.Reason).To(Equal("Authenticated"),
+				"reason should be Authenticated when IsMTLS()==true and health check passes")
+		})
+
+		It("should set Ready=True when AgentConnected reason is Authenticated", func() {
+			_, err := mtlsReconciler.Reconcile(bctx, reconcile.Request{NamespacedName: mtlsNN})
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := &pillarcsiv1alpha1.PillarTarget{}
+			Expect(k8sClient.Get(bctx, mtlsNN, fetched)).To(Succeed())
+
+			cond := apimeta.FindStatusCondition(fetched.Status.Conditions, "Ready")
+			Expect(cond).NotTo(BeNil(), "Ready condition should be set")
+			Expect(cond.Status).To(Equal(metav1.ConditionTrue),
+				"Ready should be True when mTLS-authenticated agent is healthy")
+		})
+
+		It("should include 'mTLS' in the AgentConnected condition message", func() {
+			_, err := mtlsReconciler.Reconcile(bctx, reconcile.Request{NamespacedName: mtlsNN})
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := &pillarcsiv1alpha1.PillarTarget{}
+			Expect(k8sClient.Get(bctx, mtlsNN, fetched)).To(Succeed())
+
+			cond := apimeta.FindStatusCondition(fetched.Status.Conditions, "AgentConnected")
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Message).To(ContainSubstring("mTLS"),
+				"condition message should mention mTLS for authenticated connections")
+		})
+	})
+
+	// -----------------------------------------------------------------------
+	// AgentConnected — mTLS TLS handshake failure path
+	// -----------------------------------------------------------------------
+	//
+	// When the Dialer has IsMTLS()==true but the HealthCheck RPC returns an
+	// error that looks like a TLS handshake failure, the controller should
+	// surface reason "TLSHandshakeFailed" rather than "HealthCheckFailed".
+	Context("AgentConnected with mTLS mock Dialer — TLS handshake failure", func() {
+		const tlsFailTargetName = "test-target-mtls-tls-fail"
+		tlsFailNN := types.NamespacedName{Name: tlsFailTargetName}
+
+		var tlsFailReconciler *PillarTargetReconciler
+
+		BeforeEach(func() {
+			// Simulate what gRPC returns when the TLS handshake fails: the error
+			// message contains "tls:" as produced by crypto/tls.
+			tlsFailReconciler = &PillarTargetReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				Dialer: &mockDialer{
+					mtls: true,
+					err:  fmt.Errorf("connection error: desc = \"transport: authentication handshake failed: tls: certificate signed by unknown authority\""),
+				},
+			}
+
+			obj := &pillarcsiv1alpha1.PillarTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: tlsFailTargetName},
+				Spec: pillarcsiv1alpha1.PillarTargetSpec{
+					External: &pillarcsiv1alpha1.ExternalSpec{
+						Address: "10.0.1.2",
+						Port:    9500,
+					},
+				},
+			}
+			Expect(k8sClient.Create(bctx, obj)).To(Succeed())
+			// First reconcile: adds finalizer.
+			_, err := tlsFailReconciler.Reconcile(bctx, reconcile.Request{NamespacedName: tlsFailNN})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		AfterEach(func() {
+			t := &pillarcsiv1alpha1.PillarTarget{}
+			if err := k8sClient.Get(bctx, tlsFailNN, t); err == nil {
+				controllerutil.RemoveFinalizer(t, pillarTargetFinalizer)
+				Expect(k8sClient.Update(bctx, t)).To(Succeed())
+				Expect(k8sClient.Delete(bctx, t)).To(Succeed())
+			}
+		})
+
+		It("should set AgentConnected=False/TLSHandshakeFailed for mTLS dialer with TLS error", func() {
+			_, err := tlsFailReconciler.Reconcile(bctx, reconcile.Request{NamespacedName: tlsFailNN})
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := &pillarcsiv1alpha1.PillarTarget{}
+			Expect(k8sClient.Get(bctx, tlsFailNN, fetched)).To(Succeed())
+
+			cond := apimeta.FindStatusCondition(fetched.Status.Conditions, "AgentConnected")
+			Expect(cond).NotTo(BeNil(), "AgentConnected condition should be set")
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse),
+				"AgentConnected should be False when TLS handshake fails")
+			Expect(cond.Reason).To(Equal("TLSHandshakeFailed"),
+				"reason should be TLSHandshakeFailed when mTLS is configured and TLS error is detected")
+		})
+
+		It("should distinguish TLSHandshakeFailed from HealthCheckFailed for mTLS dialers", func() {
+			_, err := tlsFailReconciler.Reconcile(bctx, reconcile.Request{NamespacedName: tlsFailNN})
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := &pillarcsiv1alpha1.PillarTarget{}
+			Expect(k8sClient.Get(bctx, tlsFailNN, fetched)).To(Succeed())
+
+			cond := apimeta.FindStatusCondition(fetched.Status.Conditions, "AgentConnected")
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Reason).NotTo(Equal("HealthCheckFailed"),
+				"a TLS error on an mTLS dialer should not be reported as generic HealthCheckFailed")
+		})
+	})
+
+	// -----------------------------------------------------------------------
+	// AgentConnected — mTLS dialer with non-TLS error still reports HealthCheckFailed
+	// -----------------------------------------------------------------------
+	Context("AgentConnected with mTLS mock Dialer — non-TLS transport error", func() {
+		const mtlsNetFailTargetName = "test-target-mtls-net-fail"
+		mtlsNetFailNN := types.NamespacedName{Name: mtlsNetFailTargetName}
+
+		var mtlsNetFailReconciler *PillarTargetReconciler
+
+		BeforeEach(func() {
+			mtlsNetFailReconciler = &PillarTargetReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				Dialer: &mockDialer{
+					mtls: true,
+					err:  fmt.Errorf("connection refused"),
+				},
+			}
+
+			obj := &pillarcsiv1alpha1.PillarTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: mtlsNetFailTargetName},
+				Spec: pillarcsiv1alpha1.PillarTargetSpec{
+					External: &pillarcsiv1alpha1.ExternalSpec{
+						Address: "10.0.1.3",
+						Port:    9500,
+					},
+				},
+			}
+			Expect(k8sClient.Create(bctx, obj)).To(Succeed())
+			_, err := mtlsNetFailReconciler.Reconcile(bctx, reconcile.Request{NamespacedName: mtlsNetFailNN})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		AfterEach(func() {
+			t := &pillarcsiv1alpha1.PillarTarget{}
+			if err := k8sClient.Get(bctx, mtlsNetFailNN, t); err == nil {
+				controllerutil.RemoveFinalizer(t, pillarTargetFinalizer)
+				Expect(k8sClient.Update(bctx, t)).To(Succeed())
+				Expect(k8sClient.Delete(bctx, t)).To(Succeed())
+			}
+		})
+
+		It("should set AgentConnected=False/HealthCheckFailed for mTLS dialer with non-TLS error", func() {
+			_, err := mtlsNetFailReconciler.Reconcile(bctx, reconcile.Request{NamespacedName: mtlsNetFailNN})
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := &pillarcsiv1alpha1.PillarTarget{}
+			Expect(k8sClient.Get(bctx, mtlsNetFailNN, fetched)).To(Succeed())
+
+			cond := apimeta.FindStatusCondition(fetched.Status.Conditions, "AgentConnected")
+			Expect(cond).NotTo(BeNil(), "AgentConnected condition should be set")
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cond.Reason).To(Equal("HealthCheckFailed"),
+				"a non-TLS error on an mTLS dialer should still be reported as HealthCheckFailed")
 		})
 	})
 })
