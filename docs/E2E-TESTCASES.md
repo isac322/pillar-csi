@@ -11,7 +11,7 @@
 - 실제 커널 모듈, 실제 ZFS, 실제 NVMe-oF 장치를 요구하는 테스트는
   별도로 표시하고 현실적인 인프라 요구사항을 함께 기술한다.
 
-**총 테스트 케이스: 143** (인프로세스 140개 + 클러스터 레벨 3개; E18 Agent 다운 시나리오 7개 포함 / 수동 AD 시나리오 3개 별도)
+**총 테스트 케이스: 169** (인프로세스 146개 + envtest 통합 20개 + 클러스터 레벨 3개; E18 Agent 다운 시나리오 7개 · E21 잘못된 CR 시나리오 26개 포함 / 수동 AD 시나리오 3개 별도)
 
 ---
 
@@ -34,6 +34,10 @@
   - [E1.10: PVC 어노테이션 오버라이드](#e110-pvc-어노테이션-오버라이드-pvc-annotation-override)
   - [E1.11: VolumeId 형식 및 파라미터 검증 심화](#e111-volumeid-형식-및-파라미터-검증-심화)
 - [E2: CSI Controller — ControllerPublish / ControllerUnpublish / ControllerExpandVolume](#e2-csi-controller--controllerpublish--controllerunpublish--controllerexpandvolume)
+  - [E2.1: ControllerPublishVolume — 정상 경로](#e21-controllerpublishvolume--정상-경로)
+  - [E2.2: ControllerUnpublishVolume — 정상 경로 및 오류](#e22-controllerunpublishvolume--정상-경로-및-오류)
+  - [E2.5: 노드 친화성 (Node Affinity)](#e25-노드-친화성-node-affinity)
+  - [E2.6: 오류 처리 — 게시 단계 (Error Handling)](#e26-오류-처리--게시-단계-error-handling)
 - [E3: CSI Node — NodeStage / NodePublish / NodeUnpublish / NodeUnstage](#e3-csi-node--nodestage--nodepublish--nodeunpublish--nodeunstage)
 - [E4: 교차-컴포넌트 CSI 라이프사이클](#e4-교차-컴포넌트-csi-라이프사이클)
 - [E5: 순서 제약 (Ordering Constraints)](#e5-순서-제약-ordering-constraints)
@@ -49,12 +53,18 @@
 - [E16: 동시 작업 (Concurrent Operations)](#e16-동시-작업-concurrent-operations)
 - [E17: 정리 검증 (Cleanup Validation)](#e17-정리-검증-cleanup-validation)
 - [E18: Agent 다운 오류 시나리오 (Agent Down Error Scenarios)](#e18-agent-다운-오류-시나리오-agent-down-error-scenarios)
+- [E21: 잘못된 CR 오류 시나리오 (Invalid CR Error Scenarios)](#e21-잘못된-cr-오류-시나리오-invalid-cr-error-scenarios) _(유형 A+C 혼합)_
+  - [E21.1: 컨트롤러 런타임 잘못된 CR 처리 (Type A — in-process)](#e211-컨트롤러-런타임-잘못된-cr-처리-type-a--in-process-)
+  - [E21.2: PillarTarget 웹훅 — 불변 필드 수정 거부 (Type C — envtest)](#e212-pillartarget-웹훅--불변-필드-수정-거부-type-c--envtest-)
+  - [E21.3: PillarPool 웹훅 — 불변 필드 수정 거부 (Type C — envtest)](#e213-pillarpool-웹훅--불변-필드-수정-거부-type-c--envtest-)
+  - [E21.4: CRD OpenAPI 스키마 검증 — 필드 범위/형식 위반 (Type C — envtest)](#e214-crd-openapi-스키마-검증--필드-범위형식-위반-type-c--envtest-)
 
 ### 카테고리 1.5 — Envtest 통합 테스트 (유형 C: envtest 필요) ⚠️
 > 빌드 태그: `//go:build integration` | `make setup-envtest && go test -tags=integration ./internal/...` | envtest API 서버 · Docker/Kind 불필요 · CI 실행 가능
 
 - [E19: PillarTarget CRD 라이프사이클](#e19-pillartarget-crd-라이프사이클)
 - [E20: PillarPool CRD 라이프사이클](#e20-pillarpool-crd-라이프사이클)
+- [E21.2–E21.4: 잘못된 CR 웹훅·스키마 검증](#e212-pillartarget-웹훅--불변-필드-수정-거부-type-c--envtest-) _(E21 중 envtest 소섹션)_
 
 ### 카테고리 2 — 클러스터 레벨 E2E 테스트 (유형 B: Kind 클러스터 필요) ⚠️
 > 빌드 태그: `//go:build e2e` | `go test ./test/e2e/ -tags=e2e -v` | 총 3개 테스트
@@ -196,7 +206,7 @@ Docker-in-Docker(DinD) 또는 Kind 지원 러너가 없으면 실행 불가.
 | 섹션 | 테스트 그룹 | 테스트 수 | 실행 패턴 |
 |------|------------|----------|-----------|
 | E1 | 볼륨 라이프사이클 — CreateVolume / DeleteVolume | 13 | `TestCSIController_CreateVolume`, `TestCSIController_DeleteVolume`, `TestCSIController_FullRoundTrip` |
-| E2 | CSI Controller — Publish / Unpublish / Expand / Validate | 8 | `TestCSIController_ControllerPublish*`, `TestCSIController_ControllerExpand*`, `TestCSIController_Validate*` |
+| E2 | CSI Controller — ControllerPublish / ControllerUnpublish / ControllerExpand / Validate (+ E2.5 노드친화성 + E2.6 오류처리) | 8 (e2e) + 컴포넌트 | `TestCSIController_ControllerPublish*`, `TestCSIController_ControllerUnpublish*`, `TestCSIController_ControllerExpand*`, `TestCSIController_Validate*`, `TestCSIPublishIdempotency_ControllerPublish*`, `TestCSIErrors_ControllerPublish*`, `TestCSIErrors_ControllerUnpublish*` |
 | E3 | CSI Node — Stage / Publish / Unstage / Unpublish (E3.1–E3.15) | 34 | `TestCSINode_*` |
 | E4 | 교차-컴포넌트 라이프사이클 | 4 | `TestCSILifecycle_*` |
 | E5 | 순서 제약 (Ordering Constraints) | 6 | `TestCSIOrdering_*` |
@@ -699,24 +709,65 @@ ZFS zvol의 `agent-vol-id`는 `<zfs-pool>/<volume-name>` 형식이므로 전체 
 
 **테스트 유형:** A (인프로세스 E2E) ✅ CI 실행 가능
 
+### 컨트롤러 측 어태치(Attachment) 단계 개요
+
+`ControllerPublishVolume` / `ControllerUnpublishVolume`은 **CSI CO(external-attacher)가
+스토리지 볼륨을 특정 노드에 어태치(attach)/언어태치(detach)하는 단계**이다.
+pillar-csi의 어태치 메커니즘은 NVMe-oF 이니시에이터 ACL(Access Control List) 기반이다:
+
+```
+CO (external-attacher)
+    │
+    ▼  ControllerPublishVolume(VolumeId, NodeId, VolumeCapability)
+    │
+CSI ControllerServer
+    │  1. VolumeId 파싱: "target/protocol/backend/agent-vol-id"
+    │  2. PillarTarget CRD에서 agent 주소(ResolvedAddress) 조회
+    │  3. NodeId를 InitiatorID(Host NQN)로 사용
+    ▼
+agent.AllowInitiator(VolumeID=agent-vol-id, InitiatorID=NodeId, ProtocolType)
+    │
+    ▼
+pillar-agent (스토리지 노드)
+    └── NVMe-oF configfs에 이니시에이터 ACL 항목 추가
+        → 해당 NodeId(NQN) 노드만 볼륨에 물리적으로 접근 가능
+```
+
+**언어태치 흐름:** `ControllerUnpublishVolume` → `agent.DenyInitiator(VolumeID, InitiatorID)` →
+configfs에서 이니시에이터 항목 제거
+
+**CI 실행 가능성:** 실제 NVMe-oF configfs 없이, mockAgentServer(실제 gRPC 리스너 +
+인메모리 ACL 추적)로 모든 경로 검증 가능.
+
 ---
 
-### E2.1 ControllerPublishVolume
+### E2.1 ControllerPublishVolume — 정상 경로
+
+> **테스트 파일:** `test/e2e/csi_controller_e2e_test.go` (E2E) + `test/component/csi_controller_test.go` (컴포넌트)
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| 14 | `TestCSIController_ControllerPublishVolume` | ControllerPublishVolume이 agent.AllowInitiator를 올바른 파라미터로 호출 | 유효한 VolumeId와 NodeId; VolumeContext에 target_id/address/port 포함; mockAgentServer 정상 동작 | 1) ControllerPublishVolumeRequest 전송 | 성공; PublishContext 반환; AllowInitiator 1회 호출 | `CSI-C`, `Agent`, `gRPC` |
-| 15 | `TestCSIController_ControllerPublishVolume_Idempotency` | 동일 파라미터로 두 번 호출해도 각각 성공 | 위와 동일 | 1) ControllerPublishVolumeRequest 전송; 2) 동일 인수로 재전송 | 두 호출 모두 성공; PublishContext 동일; AllowInitiator 각 호출마다 1회씩 총 2회 | `CSI-C`, `Agent`, `gRPC` |
-| 16 | `TestCSIController_ControllerPublishVolume_MissingFields` | 필수 필드(VolumeId, NodeId, VolumeContext) 누락 시 InvalidArgument | 각 필드를 빈 값으로 설정 | 1) VolumeId="" 또는 NodeId="" 또는 VolumeContext=nil 로 ControllerPublishVolumeRequest 전송 | gRPC InvalidArgument; agent 호출 없음 | `CSI-C` |
+| 14 | `TestCSIController_ControllerPublishVolume` | ControllerPublishVolume이 agent.AllowInitiator를 올바른 파라미터로 호출; NodeId가 InitiatorID로 정확히 전달됨 | PillarTarget="storage-1" fake 클라이언트에 등록; mockAgentServer(실제 gRPC 리스너) 정상; VolumeId=`storage-1/nvmeof-tcp/zfs-zvol/tank/pvc-publish-test`; NodeId=`nqn.2014-08.org.nvmexpress:uuid:worker-1` | 1) ControllerPublishVolumeRequest 전송 | 성공; non-nil PublishContext 반환; AllowInitiator 1회; AllowInitiator.VolumeID=`tank/pvc-publish-test`; AllowInitiator.InitiatorID=NodeId; AllowInitiator.ProtocolType=NVMEOF_TCP | `CSI-C`, `Agent`, `gRPC` |
+| E2.1-2 | `TestCSIController_ControllerPublishVolume_Success` | ControllerPublishVolume 정상 경로 (컴포넌트 테스트; in-process 모의 agent) | `test/component/csi_controller_test.go`; `csiMockAgent`(in-process); PillarTarget fake 등록; VolumeId=`pool/nvmeof-tcp/zfs-zvol/tank/vol` | 1) ControllerPublishVolumeRequest 전송 | 성공; allowInitiatorCalls==1; PublishContext 반환 | `CSI-C`, `Agent` |
+| 15 | `TestCSIController_ControllerPublishVolume_Idempotency` | 동일 파라미터로 두 번 호출 — CSI 계층은 agent 중복 억제 없이 각 호출을 agent에 전달 | 유효한 VolumeId/NodeId; mockAgentServer 정상 | 1) ControllerPublishVolumeRequest 전송; 2) 동일 인수로 재전송 | 두 호출 모두 성공; PublishContext 동일; AllowInitiator 각 1회씩 총 2회 | `CSI-C`, `Agent`, `gRPC` |
+| E2.1-4 | `TestCSIController_ControllerPublishVolume_AlreadyPublished` | 이미 Publish된 볼륨·노드 조합으로 재호출 성공 (컴포넌트 테스트) | `test/component/csi_controller_test.go`; allowInitiatorFn=nil(항상 성공) | 1) ControllerPublishVolume 1회; 2) 동일 인수로 재호출 | 두 호출 모두 성공; agent.AllowInitiator 총 2회 (CSI 계층은 억제 없음; 멱등성은 agent 책임) | `CSI-C`, `Agent` |
 
 ---
 
-### E2.2 ControllerUnpublishVolume
+### E2.2 ControllerUnpublishVolume — 정상 경로 및 오류
+
+> **테스트 파일:** `test/e2e/csi_controller_e2e_test.go` (E2E) + `test/component/csi_controller_test.go` + `test/component/csi_controller_extended_test.go` (컴포넌트)
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| 17 | `TestCSIController_ControllerUnpublishVolume` | ControllerUnpublishVolume이 agent.DenyInitiator를 올바르게 호출 | ControllerPublishVolume 성공; mockAgentServer 정상 동작 | 1) ControllerPublishVolume 호출; 2) ControllerUnpublishVolume 호출 | 성공; DenyInitiator 1회 호출 | `CSI-C`, `Agent`, `gRPC` |
-| 18 | `TestCSIController_ControllerUnpublishVolume_NotFoundIsIdempotent` | agent가 NotFound를 반환해도 Unpublish는 성공 | mockAgentServer.DenyInitiatorErr = NotFound | 1) ControllerUnpublishVolumeRequest 전송 | 성공; CSI 명세상 Not-Found는 이미 접근이 제거된 것으로 처리 | `CSI-C`, `Agent`, `gRPC` |
+| 17 | `TestCSIController_ControllerUnpublishVolume` | ControllerUnpublishVolume이 agent.DenyInitiator를 NodeId로 정확히 호출; DenyInitiator.VolumeID=agent볼륨ID; DenyInitiator.InitiatorID=NodeId | mockAgentServer 정상; VolumeId=`storage-1/nvmeof-tcp/zfs-zvol/tank/pvc-unpublish-test`; NodeId=`nqn.2014-08.org.nvmexpress:uuid:worker-1` | 1) ControllerUnpublishVolumeRequest 전송 | 성공; DenyInitiator 1회; DenyInitiator.VolumeID=`tank/pvc-unpublish-test`; DenyInitiator.InitiatorID=NodeId; DenyInitiator.ProtocolType=NVMEOF_TCP | `CSI-C`, `Agent`, `gRPC` |
+| E2.2-2 | `TestCSIController_ControllerUnpublishVolume_Success` | ControllerUnpublishVolume 정상 경로 (컴포넌트 테스트) | `test/component/csi_controller_test.go`; `csiMockAgent`; denyInitiatorFn=nil | 1) ControllerUnpublishVolumeRequest 전송 | 성공; denyInitiatorCalls==1 | `CSI-C`, `Agent` |
+| 18 | `TestCSIController_ControllerUnpublishVolume_NotFoundIsIdempotent` | agent.DenyInitiator가 NotFound 반환 시 Unpublish는 성공으로 처리 (CSI 명세 §4.3.4: NotFound = 이미 접근 제거됨) | mockAgentServer.DenyInitiatorErr = gRPC NotFound | 1) ControllerUnpublishVolumeRequest 전송 | 성공; gRPC OK 반환; CSI 호출자에게 오류 없음 | `CSI-C`, `Agent`, `gRPC` |
+| E2.2-4 | `TestCSIController_ControllerUnpublishVolume_AlreadyUnpublished` | 이미 Unpublish된 볼륨에 재호출 성공 (컴포넌트 테스트) | `test/component/csi_controller_test.go`; denyInitiatorFn=nil | 1) ControllerUnpublishVolume 1회; 2) 동일 인수로 재호출 | 두 호출 모두 성공; DenyInitiator 총 2회 | `CSI-C`, `Agent` |
+| E2.2-5 | `TestCSIController_ControllerUnpublishVolume_EmptyVolumeID` | VolumeId=""이면 InvalidArgument 반환; DenyInitiator 0회 (컴포넌트 테스트) | `test/component/csi_controller_extended_test.go`; VolumeId="" | 1) VolumeId=""로 ControllerUnpublishVolumeRequest 전송 | gRPC InvalidArgument; DenyInitiator 0회 | `CSI-C` |
+| E2.2-6 | `TestCSIController_ControllerUnpublishVolume_EmptyNodeID` | NodeId=""이면 성공 + no-op (CSI 명세 §4.3.4: 빈 NodeId = "모든 노드에서 Unpublish"; pillar-csi는 no-op) | `test/component/csi_controller_extended_test.go`; 유효한 VolumeId; NodeId="" | 1) NodeId=""로 ControllerUnpublishVolumeRequest 전송 | 성공; DenyInitiator 0회 (no-op 처리) | `CSI-C` |
+| E2.2-7 | `TestCSIController_ControllerUnpublishVolume_MalformedVolumeID` | VolumeId="badformat"(슬래시 없음)이면 성공 반환 (컴포넌트 테스트; CSI 명세상 Unpublish malformed ID는 성공 no-op 허용) | `test/component/csi_controller_extended_test.go`; VolumeId="badformat" | 1) VolumeId="badformat"로 전송 | 성공; DenyInitiator 0회 | `CSI-C` |
+| E2.2-8 | `TestCSIErrors_ControllerUnpublish_DenyInitiatorNonNotFound` | agent.DenyInitiator가 Internal 오류 반환 시 ControllerUnpublishVolume이 비-OK gRPC 상태 전파 (NotFound만 성공 처리) | `test/component/csi_controller_extended_test.go`; denyInitiatorFn = gRPC Internal("deny initiator failed") | 1) ControllerUnpublishVolumeRequest 전송 | 비-OK gRPC 상태; 오류 은폐 없음 | `CSI-C`, `Agent` |
 
 ---
 
@@ -734,6 +785,71 @@ ZFS zvol의 `agent-vol-id`는 `<zfs-pool>/<volume-name>` 형식이므로 전체 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
 | 21 | `TestCSIController_ValidateVolumeCapabilities` | 지원 가능한 접근 모드(SINGLE_NODE_WRITER 등)는 확인됨, 지원 불가 모드(MULTI_NODE_MULTI_WRITER 등)는 거부됨 | ControllerServer 초기화 | 1) AccessMode=SINGLE_NODE_WRITER 로 요청; 2) AccessMode=MULTI_NODE_MULTI_WRITER 로 요청 | 지원 모드: 빈 메시지 반환; 비지원 모드: 메시지 필드에 이유 포함 | `CSI-C` |
+
+---
+
+### E2.5 노드 친화성 (Node Affinity)
+
+pillar-csi의 "노드 친화성"은 NVMe-oF 이니시에이터 ACL(Access Control List)을 통해 구현된다.
+Kubernetes CO가 `ControllerPublishVolume(NodeId=<Host NQN>)`을 호출하면, pillar-csi는
+이를 `agent.AllowInitiator(InitiatorID=<Host NQN>)`으로 변환하여 스토리지 노드의 configfs에
+이니시에이터 허용 항목을 추가한다. 그 결과 해당 NQN을 가진 노드만 그 볼륨에 접근할 수 있다.
+
+**노드 친화성 아키텍처:**
+```
+K8s 워커 노드 (Host NQN: nqn.2014-08.org.nvmexpress:uuid:<uuid>)
+    │
+    ▼ ControllerPublishVolume(NodeId = Host NQN)
+CSI ControllerServer
+    │  NodeId → InitiatorID 변환 (1:1 매핑)
+    ▼
+agent.AllowInitiator(VolumeID, InitiatorID=Host NQN, ProtocolType)
+    │
+    ▼
+pillar-agent → configfs → NVMe-oF 이니시에이터 ACL 추가
+    └── 해당 NQN 노드만 볼륨 접근 가능 (물리적 어태치)
+```
+
+**CSI 명세와의 정합성:**
+- `SINGLE_NODE_WRITER`: 한 노드에만 Publish → 1개 AllowInitiator 항목
+- `MULTI_NODE_READER_ONLY`: 여러 노드에 각각 Publish 호출 → N개 AllowInitiator 항목 (독립 호출)
+- Kubernetes Node NQN 형식: `nqn.2014-08.org.nvmexpress:uuid:<UUID>`
+
+> **CI 실행 가능 여부:** ✅ 인프로세스 E2E — 별도 인프라 불필요 (mockAgentServer 기반)
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| E2.5-1 | `TestCSIController_ControllerPublishVolume` | NodeId(NQN 형식)가 agent.AllowInitiator의 InitiatorID로 1:1 매핑; VolumeId에서 agent 볼륨 ID(`tank/pvc-publish-test`) 파싱; ProtocolType=NVMEOF_TCP | VolumeId=`storage-1/nvmeof-tcp/zfs-zvol/tank/pvc-publish-test`; NodeId=`nqn.2014-08.org.nvmexpress:uuid:worker-1`; PillarTarget 등록; mockAgentServer | 1) ControllerPublishVolumeRequest 전송; 2) AllowInitiator 호출 내용 검사 | AllowInitiator.InitiatorID == NodeId; AllowInitiator.VolumeID==`tank/pvc-publish-test`; AllowInitiator.ProtocolType==NVMEOF_TCP | `CSI-C`, `Agent`, `gRPC` |
+| E2.5-2 | `TestCSIPublishIdempotency_ControllerPublishVolume_DifferentNodes` | 동일 볼륨에 대해 2개의 서로 다른 노드(NQN-A, NQN-B)가 각각 Publish → 2개의 독립 AllowInitiator 항목 생성 (다중 이니시에이터 지원) | VolumeId 동일; NodeId1=`nqn.2014-08.org.nvmexpress:uuid:worker-node-a`; NodeId2=`nqn.2014-08.org.nvmexpress:uuid:worker-node-b`; mockAgentServer | 1) ControllerPublishVolume(NodeId1); 2) ControllerPublishVolume(NodeId2) | AllowInitiator 총 2회; AllowInitiator[0].InitiatorID ≠ AllowInitiator[1].InitiatorID; 두 호출 모두 성공 | `CSI-C`, `Agent`, `gRPC` |
+| E2.5-3 | `TestCSIPublishIdempotency_ControllerPublishVolume_DoubleSameArgs` | 동일 노드에 대해 ControllerPublishVolume 2회 호출 — CSI 계층은 중복 억제 없이 각각 agent에 전달; 멱등성은 agent 책임 | VolumeId/NodeId/VolumeCapability 동일; mockAgentServer | 1) ControllerPublishVolume(args); 2) 동일 인수로 재호출 | AllowInitiator 총 2회; PublishContext 동일(응답 일관성); CreateVolume/ExportVolume 0회(Publish는 볼륨 생성 트리거 없음) | `CSI-C`, `Agent`, `gRPC` |
+
+> ℹ️ E2.5-2, E2.5-3은 [E7: 게시 멱등성](#e7-게시-멱등성-publish-idempotency) 섹션과 동일한 테스트 함수를 다른 관점에서 서술한다.
+> E7에서는 **멱등성 계약(no-op 보장, 응답 일관성)** 을 검증하고, E2.5에서는 **노드 친화성 매핑(NodeId→InitiatorID)**을 검증한다.
+
+---
+
+### E2.6 오류 처리 — 게시 단계 (Error Handling — Attachment Phase)
+
+컨트롤러 측 어태치/언어태치 오류의 전파 경로를 검증한다.
+CSI 명세에 따라:
+- `ControllerPublishVolume`: 비-OK 오류는 그대로 반환 (오류 은폐 금지)
+- `ControllerUnpublishVolume`: `NotFound` 이외의 오류만 전파; `NotFound`는 성공으로 처리 (§4.3.4)
+
+**검증 불가 범위(CI):** 실제 configfs 쓰기 실패(permission denied, read-only fs)는 CI에서
+재현 불가 — mock agent에서 오류 코드 주입으로 오류 전파 경로만 검증
+
+> **CI 실행 가능 여부:** ✅ 컴포넌트 테스트 (`test/component/`) — 실제 커널 모듈 불필요
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| E2.6-1 | `TestCSIErrors_ControllerPublish_AllowInitiatorFails` | agent.AllowInitiator가 Internal 오류 반환 시 ControllerPublishVolume이 비-OK gRPC 상태 반환; 오류 은폐 없음 (실제로는 configfs ACL 쓰기 실패 시 발생) | `test/component/csi_errors_test.go`; allowInitiatorFn=gRPC Internal("configfs write failed: permission denied") | 1) ControllerPublishVolumeRequest 전송 | 비-OK gRPC 상태(Internal); 오류 메시지 포함; 성공 은폐 없음 | `CSI-C`, `Agent` |
+| E2.6-2 | `TestCSIErrors_ControllerUnpublish_DenyInitiatorNonNotFound` | agent.DenyInitiator가 Internal 오류 반환 시 ControllerUnpublishVolume이 비-OK gRPC 상태 반환 (NotFound만 성공; 그 외 오류는 전파) | `test/component/csi_controller_extended_test.go`; denyInitiatorFn=gRPC Internal("deny initiator failed: internal error") | 1) ControllerUnpublishVolumeRequest 전송 | 비-OK gRPC 상태; 오류 은폐 없음 (CSI 명세 §4.3.4 준수) | `CSI-C`, `Agent` |
+| E2.6-3 | `TestCSIController_ControllerPublishVolume_EmptyVolumeID` | VolumeId="" — agent 호출 전 입력 검증 실패 → InvalidArgument | `test/component/csi_controller_extended_test.go`; VolumeId=""; 유효한 NodeId/VolumeCapability | 1) VolumeId=""로 ControllerPublishVolumeRequest 전송 | gRPC InvalidArgument; AllowInitiator 0회 | `CSI-C` |
+| E2.6-4 | `TestCSIController_ControllerPublishVolume_EmptyNodeID` | NodeId="" — agent 호출 전 입력 검증 실패 → InvalidArgument | `test/component/csi_controller_extended_test.go`; 유효한 VolumeId; NodeId="" | 1) NodeId=""로 ControllerPublishVolumeRequest 전송 | gRPC InvalidArgument; AllowInitiator 0회 | `CSI-C` |
+| E2.6-5 | `TestCSIController_ControllerPublishVolume_NilVolumeCapability` | VolumeCapability=nil — 입력 검증 실패 → InvalidArgument | `test/component/csi_controller_extended_test.go`; VolumeCapability=nil | 1) VolumeCapability=nil로 ControllerPublishVolumeRequest 전송 | gRPC InvalidArgument | `CSI-C` |
+| E2.6-6 | `TestCSIController_ControllerPublishVolume_MalformedVolumeID` | VolumeId="badformat"(슬래시 없음) — VolumeId 파싱 실패 → InvalidArgument | `test/component/csi_controller_extended_test.go`; VolumeId="badformat" | 1) VolumeId="badformat"로 ControllerPublishVolumeRequest 전송 | gRPC InvalidArgument | `CSI-C` |
+| E2.6-7 | `TestCSIController_ControllerPublishVolume_TargetNotFound` | VolumeId의 target 이름이 PillarTarget CRD에 없음 → NotFound; agent 호출 전 실패 | `test/component/csi_controller_extended_test.go`; fake 클라이언트에 PillarTarget 미등록; VolumeId=`nonexistent-node/nvmeof-tcp/zfs-zvol/tank/pvc-test` | 1) ControllerPublishVolumeRequest 전송 | gRPC NotFound; AllowInitiator 0회 | `CSI-C`, `TgtCRD` |
+| E2.6-8 | `TestCSIController_ControllerPublishVolume_TargetNoResolvedAddress` | PillarTarget.Status.ResolvedAddress=""이면 Unavailable 반환; agent 다이얼 미시도 | `test/component/csi_controller_extended_test.go`; PillarTarget 등록; Status.ResolvedAddress="" | 1) ControllerPublishVolumeRequest 전송 | gRPC Unavailable; AllowInitiator 0회; "no resolved address" 메시지 | `CSI-C`, `TgtCRD` |
 
 ---
 
