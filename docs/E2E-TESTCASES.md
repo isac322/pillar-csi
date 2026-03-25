@@ -27,6 +27,12 @@
 > 빌드 태그 없음 | `go test ./test/e2e/ -v` | 총 134개 테스트
 
 - [E1: 볼륨 라이프사이클 — CreateVolume / DeleteVolume](#e1-볼륨-라이프사이클--createvolume--deletevolume)
+  - [E1.6: 접근 모드 유효성 검증](#e16-접근-모드-유효성-검증-access-mode-validation)
+  - [E1.7: 용량 범위 검증](#e17-용량-범위-검증-capacity-range-validation)
+  - [E1.8: PillarTarget 상태 및 agent 연결 검증](#e18-pillartarget-상태-및-agent-연결-검증)
+  - [E1.9: 부분 실패 복구](#e19-부분-실패-복구-partial-failure-recovery)
+  - [E1.10: PVC 어노테이션 오버라이드](#e110-pvc-어노테이션-오버라이드-pvc-annotation-override)
+  - [E1.11: VolumeId 형식 및 파라미터 검증 심화](#e111-volumeid-형식-및-파라미터-검증-심화)
 - [E2: CSI Controller — ControllerPublish / ControllerUnpublish / ControllerExpandVolume](#e2-csi-controller--controllerpublish--controllerunpublish--controllerexpandvolume)
 - [E3: CSI Node — NodeStage / NodePublish / NodeUnpublish / NodeUnstage](#e3-csi-node--nodestage--nodepublish--nodeunpublish--nodeunstage)
 - [E4: 교차-컴포넌트 CSI 라이프사이클](#e4-교차-컴포넌트-csi-라이프사이클)
@@ -554,6 +560,138 @@ CSI ControllerServer → (실제 gRPC, localhost:0) → mockAgentServer
 |----|------------|------|----------|------|----------|---------|
 | 12 | `TestCSIController_FullRoundTrip` | CreateVolume → ControllerPublishVolume → ControllerUnpublishVolume → DeleteVolume 전체 CSI Controller 왕복 테스트 | 단일 mockAgentServer; fake k8s 클라이언트; PillarTarget 등록; 정상 경로 설정 | 1) CreateVolume; 2) ControllerPublishVolume; 3) ControllerUnpublishVolume; 4) DeleteVolume | 모든 단계 성공; agent 호출 순서 검증; VolumeContext 키 검증 | `CSI-C`, `Agent`, `TgtCRD`, `VolCRD`, `gRPC` |
 | 13 | `TestCSIController_VolumeIDFormatPreservation` | VolumeId 포맷("target/protocol/backend/pool/name")이 생성-게시-삭제 전 주기에서 보존됨 | CreateVolume 성공; PillarTarget 등록 | 1) CreateVolume; 2) ControllerPublishVolume; 3) ControllerUnpublishVolume; 4) DeleteVolume | 각 단계에서 동일한 VolumeId 포맷 사용; 파싱 오류 없음 | `CSI-C`, `Agent`, `TgtCRD`, `VolCRD`, `gRPC` |
+
+---
+
+### E1.6 접근 모드 유효성 검증 (Access Mode Validation)
+
+접근 모드 검증은 `CreateVolume` 진입 시점에서 수행되며, 요청된 모든 `VolumeCapability`의
+`AccessMode`가 드라이버가 지원하는 모드인지 확인한다 (`controller.go: isSupportedAccessMode`).
+
+**pillar-csi 지원 접근 모드:**
+
+| CSI 상수 | Kubernetes PVC accessMode | 설명 |
+|----------|--------------------------|------|
+| `SINGLE_NODE_WRITER` | ReadWriteOnce (RWO) | 단일 노드 읽기-쓰기 |
+| `SINGLE_NODE_SINGLE_WRITER` | ReadWriteOncePod (RWOP) | 단일 파드 읽기-쓰기 (CSI spec v1.5+) |
+| `MULTI_NODE_READER_ONLY` | ReadOnlyMany (ROX) | 다중 노드 읽기 전용 |
+
+**pillar-csi 미지원 접근 모드:**
+- `MULTI_NODE_MULTI_WRITER` (ReadWriteMany / RWX) — NVMe-oF 블록 장치는 다중 쓰기 조정 미지원
+
+> **CI 실행 가능 여부:** ✅ 인프로세스 E2E — 별도 인프라 불필요
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| E1.6-1 | `TestCSIController_CreateVolume_AccessMode_RWO` | SINGLE_NODE_WRITER(RWO) 접근 모드로 CreateVolume 성공 | PillarTarget="storage-1" fake 클라이언트에 등록; mockAgentServer 정상; zfs-pool="tank" | 1) AccessMode=SINGLE_NODE_WRITER, VolumeCapabilities 포함 CreateVolumeRequest 전송 | 성공 (gRPC OK); VolumeId/VolumeContext 반환; agent.CreateVolume 1회, agent.ExportVolume 1회 호출 | `CSI-C`, `Agent`, `TgtCRD`, `VolCRD`, `gRPC` |
+| E1.6-2 | `TestCSIController_CreateVolume_AccessMode_RWOP` | SINGLE_NODE_SINGLE_WRITER(RWOP) 접근 모드로 CreateVolume 성공 | 위와 동일 | 1) AccessMode=SINGLE_NODE_SINGLE_WRITER로 CreateVolumeRequest 전송 | 성공; VolumeId/VolumeContext 반환; agent 호출 정상 | `CSI-C`, `Agent`, `TgtCRD`, `VolCRD`, `gRPC` |
+| E1.6-3 | `TestCSIController_CreateVolume_AccessMode_ROX` | MULTI_NODE_READER_ONLY(ROX) 접근 모드로 CreateVolume 성공 | 위와 동일 | 1) AccessMode=MULTI_NODE_READER_ONLY로 CreateVolumeRequest 전송 | 성공; VolumeId/VolumeContext 반환; agent 호출 정상 | `CSI-C`, `Agent`, `TgtCRD`, `VolCRD`, `gRPC` |
+| E1.6-4 | `TestCSIController_CreateVolume_AccessMode_RWX_Rejected` | MULTI_NODE_MULTI_WRITER(RWX) 접근 모드는 드라이버 수준에서 거부 | ControllerServer 초기화만 필요; PillarTarget/agent 연결 불필요 | 1) AccessMode=MULTI_NODE_MULTI_WRITER로 CreateVolumeRequest 전송 | gRPC InvalidArgument; "unsupported access mode" 메시지 포함; agent.CreateVolume 호출 없음 | `CSI-C` |
+| E1.6-5 | `TestCSIController_CreateVolume_AccessMode_Unknown_Rejected` | 정의되지 않은(UNKNOWN=0) 접근 모드는 거부 | ControllerServer 초기화만 필요 | 1) AccessMode=UNKNOWN(0)으로 CreateVolumeRequest 전송 | gRPC InvalidArgument; agent 호출 없음 | `CSI-C` |
+| E1.6-6 | `TestCSIController_CreateVolume_AccessMode_Missing_InCapability` | VolumeCapability에 AccessMode 필드 자체가 없으면 InvalidArgument | ControllerServer 초기화만 필요 | 1) VolumeCapability{AccessMode: nil}로 CreateVolumeRequest 전송 | gRPC InvalidArgument; "must specify an access_mode" 메시지; agent 호출 없음 | `CSI-C` |
+| E1.6-7 | `TestCSIController_CreateVolume_VolumeCapabilities_Empty` | VolumeCapabilities가 빈 슬라이스이면 InvalidArgument | ControllerServer 초기화만 필요 | 1) VolumeCapabilities=[]로 CreateVolumeRequest 전송 | gRPC InvalidArgument; "volume_capabilities must not be empty" 메시지; agent 호출 없음 | `CSI-C` |
+| E1.6-8 | `TestCSIController_CreateVolume_MultipleCapabilities_AnyUnsupported` | 여러 VolumeCapability 중 하나라도 미지원 모드이면 전체 거부 | ControllerServer 초기화만 필요 | 1) [SINGLE_NODE_WRITER, MULTI_NODE_MULTI_WRITER] 두 개의 VolumeCapability를 포함한 CreateVolumeRequest 전송 | gRPC InvalidArgument; agent 호출 없음 | `CSI-C` |
+
+---
+
+### E1.7 용량 범위 검증 (Capacity Range Validation)
+
+`CapacityRange.RequiredBytes`와 `LimitBytes`는 CSI 명세상 선택 사항이다.
+두 값이 모두 제공되면 `RequiredBytes ≤ LimitBytes`를 만족해야 한다.
+기존 볼륨(PillarVolume CRD Ready 상태)과 용량 충돌 시 `AlreadyExists`를 반환한다.
+
+> **CI 실행 가능 여부:** ✅ 인프로세스 E2E — 별도 인프라 불필요
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| E1.7-1 | `TestCSIController_CreateVolume_Capacity_NoRange` | CapacityRange 미지정 시 드라이버가 기본 크기 선택 | PillarTarget 등록; mockAgentServer 정상 (CapacityBytes=1GiB 에코) | 1) CapacityRange=nil로 CreateVolumeRequest 전송 | 성공; CapacityBytes ≥ 0 반환; agent.CreateVolume의 CapacityBytes=0 전달 | `CSI-C`, `Agent`, `gRPC` |
+| E1.7-2 | `TestCSIController_CreateVolume_Capacity_RequiredOnly` | RequiredBytes만 지정, LimitBytes 미지정 | PillarTarget 등록; mockAgentServer가 요청된 용량을 그대로 반환 | 1) CapacityRange{RequiredBytes: 1GiB}로 CreateVolumeRequest 전송 | 성공; CapacityBytes = 1GiB | `CSI-C`, `Agent`, `gRPC` |
+| E1.7-3 | `TestCSIController_CreateVolume_Capacity_LimitOnly` | LimitBytes만 지정, RequiredBytes 미지정 | PillarTarget 등록; mockAgentServer가 LimitBytes 이하 용량 반환 | 1) CapacityRange{LimitBytes: 2GiB}로 CreateVolumeRequest 전송 | 성공; CapacityBytes ≤ 2GiB | `CSI-C`, `Agent`, `gRPC` |
+| E1.7-4 | `TestCSIController_CreateVolume_Capacity_ValidRange` | RequiredBytes=1GiB, LimitBytes=2GiB 동시 지정 (유효 범위) | PillarTarget 등록; mockAgentServer 정상 | 1) CapacityRange{RequiredBytes: 1GiB, LimitBytes: 2GiB}로 CreateVolumeRequest 전송 | 성공; 1GiB ≤ CapacityBytes ≤ 2GiB | `CSI-C`, `Agent`, `gRPC` |
+| E1.7-5 | `TestCSIController_CreateVolume_Capacity_ExistingTooSmall` | 기존 볼륨(1GiB)이 새 RequiredBytes(2GiB)보다 작으면 AlreadyExists | PillarVolume CRD Ready 상태; CapacityBytes=1GiB; ExportInfo 존재 | 1) 동일 볼륨 이름으로 RequiredBytes=2GiB CreateVolumeRequest 전송 | gRPC AlreadyExists; "already exists with capacity … less than …" 메시지; agent 재호출 없음 | `CSI-C`, `VolCRD` |
+| E1.7-6 | `TestCSIController_CreateVolume_Capacity_ExistingTooLarge` | 기존 볼륨(4GiB)이 새 LimitBytes(2GiB)보다 크면 AlreadyExists | PillarVolume CRD Ready 상태; CapacityBytes=4GiB; ExportInfo 존재 | 1) 동일 볼륨 이름으로 LimitBytes=2GiB CreateVolumeRequest 전송 | gRPC AlreadyExists; "already exists with capacity … exceeds …" 메시지; agent 재호출 없음 | `CSI-C`, `VolCRD` |
+| E1.7-7 | `TestCSIController_CreateVolume_Capacity_ExistingWithinRange` | 기존 볼륨(2GiB)이 RequiredBytes=1GiB, LimitBytes=3GiB 범위 내이면 캐시 반환 | PillarVolume CRD Ready 상태; CapacityBytes=2GiB; ExportInfo 존재 | 1) 동일 볼륨 이름으로 CapacityRange{1GiB, 3GiB} CreateVolumeRequest 전송 | 성공; CapacityBytes=2GiB 반환 (캐시); agent 재호출 없음 | `CSI-C`, `VolCRD` |
+
+---
+
+### E1.8 PillarTarget 상태 및 agent 연결 검증
+
+`CreateVolume`은 `PillarTarget`을 조회하여 agent 주소를 얻는다.
+대상이 없거나 주소가 비어 있으면 요청이 즉시 실패한다.
+
+> **CI 실행 가능 여부:** ✅ 인프로세스 E2E — 별도 인프라 불필요
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| E1.8-1 | `TestCSIController_CreateVolume_PillarTargetEmptyAddress` | PillarTarget이 존재하지만 ResolvedAddress=""이면 Unavailable 반환 | fake 클라이언트에 PillarTarget 등록; Status.ResolvedAddress="" | 1) 해당 target을 참조하는 CreateVolumeRequest 전송 | gRPC Unavailable; "has no resolved address; agent may not be ready" 메시지; agent 다이얼 시도 없음 | `CSI-C`, `TgtCRD` |
+| E1.8-2 | `TestCSIController_CreateVolume_PillarTargetNotFound` | Parameters["target"]이 존재하지 않는 PillarTarget을 참조하면 NotFound 반환 | fake 클라이언트에 PillarTarget 미등록; Parameters["pillar-csi.bhyoo.com/target"]="ghost-node" | 1) CreateVolumeRequest 전송 | gRPC NotFound; "PillarTarget … not found" 메시지; agent 호출 없음 | `CSI-C`, `TgtCRD` |
+| E1.8-3 | `TestCSIController_CreateVolume_AgentDialFails` | agent 다이얼 자체가 실패하면 Unavailable 반환 | PillarTarget 등록 (ResolvedAddress=유효); dialAgent 함수에 연결 실패 에러 주입 | 1) CreateVolumeRequest 전송 | gRPC Unavailable; "failed to dial agent" 메시지; agent.CreateVolume 호출 없음 | `CSI-C`, `TgtCRD`, `gRPC` |
+
+---
+
+### E1.9 부분 실패 복구 (Partial Failure Recovery)
+
+`CreateVolume`은 `agent.CreateVolume` 성공 후 `agent.ExportVolume` 호출 직전에
+`PillarVolume CRD`를 `CreatePartial` 단계로 기록한다.
+컨트롤러 재시작 또는 일시적 오류 후 CO가 동일 요청을 재시도하면:
+
+1. 상태 머신에 `StateCreatePartial`가 로드된다.
+2. `agent.CreateVolume`은 **건너뛰고** `agent.ExportVolume`만 재호출한다.
+
+> **CI 실행 가능 여부:** ✅ 인프로세스 E2E — 별도 인프라 불필요
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| E1.9-1 | `TestCSIController_PartialFailure_CreateThenExportFail` | agent.CreateVolume 성공 후 agent.ExportVolume 실패 시 PillarVolume CRD에 CreatePartial 기록 | mockAgentServer: ExportVolumeErr=gRPC Internal; PillarTarget 정상 | 1) CreateVolumeRequest 전송 | gRPC Internal 반환; PillarVolume CRD에 phase=CreatePartial, BackendDevicePath 기록됨 | `CSI-C`, `Agent`, `VolCRD`, `gRPC` |
+| E1.9-2 | `TestCSIController_PartialFailure_ExportRetrySkipsBackend` | CreatePartial 상태에서 재시도 시 agent.CreateVolume 생략, agent.ExportVolume만 재호출 | PillarVolume CRD phase=CreatePartial; BackendDevicePath="/dev/zvol0" 사전 기록; 두 번째 호출에서 ExportVolumeErr 제거 | 1) CreateVolumeRequest 전송 (재시도) | 성공; agent.CreateVolume 호출 0회; agent.ExportVolume 호출 1회; 완성된 VolumeId/VolumeContext 반환 | `CSI-C`, `Agent`, `VolCRD`, `SM`, `gRPC` |
+| E1.9-3 | `TestCSIController_PartialFailure_SelfHealing_TwoAttempts` | 첫 번째 호출(export 실패) → 두 번째 호출(정상) 연속 시나리오 | ExportVolumeErr를 첫 번째 호출에만 설정; 두 번째 호출 전 제거 | 1) 첫 CreateVolumeRequest 전송 (export 실패 예상); 2) 두 번째 CreateVolumeRequest 전송 | 1단계: gRPC Internal; 2단계: 성공; agent.CreateVolume 누적 1회; agent.ExportVolume 누적 2회 | `CSI-C`, `Agent`, `VolCRD`, `SM`, `gRPC` |
+| E1.9-4 | `TestCSIController_PartialFailure_PersistPartialFails` | persistCreatePartial CRD 저장 실패 시 Internal 반환 (zvol은 생성됐으나 상태 기록 불가) | fake 클라이언트에 Create 오류 주입 (status.WriteFailure); agent.CreateVolume 성공 | 1) CreateVolumeRequest 전송 | gRPC Internal; "failed to persist partial-failure state" 메시지 | `CSI-C`, `Agent`, `VolCRD` |
+| E1.9-5 | `TestCSIController_PartialFailure_LoadStateFromCRD` | 컨트롤러 재기동 시 기존 PillarVolume CRD에서 상태 복원 | PillarVolume CRD phase=CreatePartial를 직접 fake 클라이언트에 삽입; `LoadStateFromPillarVolumes` 호출 | 1) `LoadStateFromPillarVolumes` 호출; 2) CreateVolumeRequest 전송 | LoadStateFromPillarVolumes 성공; 이후 CreateVolumeRequest는 StateCreatePartial 인식하여 backend 건너뜀 | `CSI-C`, `VolCRD`, `SM` |
+
+---
+
+### E1.10 PVC 어노테이션 오버라이드 (PVC Annotation Override)
+
+StorageClass 파라미터와 별도로, `external-provisioner`의 `--extra-create-metadata` 플래그가
+활성화된 경우 `csi.storage.k8s.io/pvc-name` / `pvc-namespace` 파라미터가 CreateVolume 요청에
+포함되어 PVC 어노테이션 오버라이드(Layer 4)가 적용된다.
+
+**지원하는 오버라이드 어노테이션:**
+- `pillar-csi.bhyoo.com/backend-override` — ZFS 프로퍼티 오버라이드 (YAML)
+- `pillar-csi.bhyoo.com/protocol-override` — NVMe-oF / iSCSI 파라미터 오버라이드 (YAML)
+- `pillar-csi.bhyoo.com/fs-override` — 파일시스템 포맷 파라미터 오버라이드 (YAML)
+- `pillar-csi.bhyoo.com/param.<key>` — 저수준 플랫 키-값 오버라이드
+
+**차단되는 구조적 필드:** `zfs.pool`, `zfs.parentDataset`, port 번호, protocol 종류 등
+
+> **CI 실행 가능 여부:** ✅ 인프로세스 E2E — PVC는 fake 클라이언트에 등록
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| E1.10-1 | `TestCSIController_CreateVolume_PVCAnnotation_BackendOverride_Compression` | PVC 어노테이션의 ZFS compression 프로퍼티가 agent BackendParams에 반영 | fake 클라이언트에 PVC 등록 (annotation: `pillar-csi.bhyoo.com/backend-override`); StorageClass Parameters에 pvc-name/pvc-namespace 포함 | 1) CreateVolumeRequest 전송 | 성공; agent.CreateVolume의 BackendParams에 `pillar-csi.bhyoo.com/zfs-prop.compression=zstd` 포함 | `CSI-C`, `Agent`, `VolCRD`, `gRPC` |
+| E1.10-2 | `TestCSIController_CreateVolume_PVCAnnotation_StructuralFieldBlocked` | 구조적 필드(`zfs.pool`)를 어노테이션으로 오버라이드하면 InvalidArgument 반환 | fake 클라이언트에 PVC 등록 (annotation에 zfs.pool 오버라이드 시도) | 1) CreateVolumeRequest 전송 | gRPC InvalidArgument; `pvcAnnotationValidationError` 발생; agent 호출 없음 | `CSI-C`, `VolCRD` |
+| E1.10-3 | `TestCSIController_CreateVolume_PVCAnnotation_PVCNotFound_GracefulFallback` | pvc-name에 해당하는 PVC가 없으면 어노테이션 오버라이드 없이 기본 파라미터로 진행 | fake 클라이언트에 PVC 미등록; StorageClass Parameters에 pvc-name/pvc-namespace 포함 | 1) CreateVolumeRequest 전송 | 성공 (PVC 어노테이션 미적용 상태로 기본 파라미터 사용); agent.CreateVolume 정상 호출 | `CSI-C`, `Agent`, `VolCRD`, `gRPC` |
+| E1.10-4 | `TestCSIController_CreateVolume_PVCAnnotation_FlatKeyOverride` | 저수준 어노테이션(`pillar-csi.bhyoo.com/param.zfs-prop.volblocksize`)이 반영 | fake 클라이언트에 PVC 등록 (annotation: volblocksize=16K) | 1) CreateVolumeRequest 전송 | 성공; agent.CreateVolume의 BackendParams에 `pillar-csi.bhyoo.com/zfs-prop.volblocksize=16K` 포함 | `CSI-C`, `Agent`, `VolCRD`, `gRPC` |
+
+---
+
+### E1.11 VolumeId 형식 및 파라미터 검증 심화
+
+**VolumeId 형식:** `<target-name>/<protocol-type>/<backend-type>/<agent-vol-id>`
+
+ZFS zvol의 `agent-vol-id`는 `<zfs-pool>/<volume-name>` 형식이므로 전체 VolumeId에
+슬래시가 5개 포함될 수 있다. `strings.SplitN(id, "/", 4)` 로 정확히 4 파트로 분리한다.
+
+> **CI 실행 가능 여부:** ✅ 인프로세스 E2E — 별도 인프라 불필요
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| E1.11-1 | `TestCSIController_CreateVolume_VolumeID_ZFSPoolWithSlash` | ZFS pool 이름에 슬래시 포함 시 agent-vol-id 파싱 정확성 | zfs-pool="tank"; volume-name="pvc-abc" | 1) CreateVolumeRequest 전송; 2) 반환된 VolumeId로 DeleteVolumeRequest 전송 | CreateVolume: VolumeId="storage-1/nvmeof-tcp/zfs-zvol/tank/pvc-abc"; DeleteVolume: agent-vol-id="tank/pvc-abc" 정확 파싱 | `CSI-C`, `Agent`, `gRPC` |
+| E1.11-2 | `TestCSIController_CreateVolume_VolumeID_ZFSParentDataset` | ZFS parent dataset 파라미터 설정 시 agent-vol-id에 반영 | zfs-pool="tank"; zfs-parent-dataset="volumes"; volume-name="pvc-abc" | 1) CreateVolumeRequest 전송 | agent-vol-id="tank/volumes/pvc-abc"; VolumeId="storage-1/nvmeof-tcp/zfs-zvol/tank/volumes/pvc-abc" | `CSI-C`, `Agent`, `gRPC` |
+| E1.11-3 | `TestCSIController_CreateVolume_MissingVolumeName` | 볼륨 이름이 빈 문자열이면 InvalidArgument | ControllerServer 초기화만 필요 | 1) Name=""로 CreateVolumeRequest 전송 | gRPC InvalidArgument; "volume name is required" 메시지; agent 호출 없음 | `CSI-C` |
+| E1.11-4 | `TestCSIController_CreateVolume_MissingTargetParam` | StorageClass parameter에 target 키 없으면 InvalidArgument | ControllerServer 초기화; Parameters에서 `pillar-csi.bhyoo.com/target` 제거 | 1) target 파라미터 없는 CreateVolumeRequest 전송 | gRPC InvalidArgument; "parameter … is required" 메시지 | `CSI-C` |
+| E1.11-5 | `TestCSIController_CreateVolume_MissingBackendTypeParam` | StorageClass parameter에 backend-type 키 없으면 InvalidArgument | ControllerServer 초기화; Parameters에서 `pillar-csi.bhyoo.com/backend-type` 제거 | 1) backend-type 파라미터 없는 CreateVolumeRequest 전송 | gRPC InvalidArgument | `CSI-C` |
+| E1.11-6 | `TestCSIController_CreateVolume_MissingProtocolTypeParam` | StorageClass parameter에 protocol-type 키 없으면 InvalidArgument | ControllerServer 초기화; Parameters에서 `pillar-csi.bhyoo.com/protocol-type` 제거 | 1) protocol-type 파라미터 없는 CreateVolumeRequest 전송 | gRPC InvalidArgument | `CSI-C` |
 
 ---
 
