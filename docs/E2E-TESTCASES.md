@@ -11,7 +11,7 @@
 - 실제 커널 모듈, 실제 ZFS, 실제 NVMe-oF 장치를 요구하는 테스트는
   별도로 표시하고 현실적인 인프라 요구사항을 함께 기술한다.
 
-**총 테스트 케이스: 101** (인프로세스 98개 + 클러스터 레벨 3개)
+**총 테스트 케이스: 137** (인프로세스 134개 + 클러스터 레벨 3개)
 
 ---
 
@@ -822,6 +822,184 @@ CreateVolume(VolumeContentSource: {Snapshot: "snap-A"})
 
 ---
 
+## E14: 잘못된 입력값 및 엣지 케이스 (Invalid Inputs & Edge Cases)
+
+**테스트 유형:** A (인프로세스 E2E) ✅ CI 실행 가능
+
+잘못된 입력, 경계값, 지원하지 않는 파라미터 조합이 CSI 명세에 맞는
+오류 코드로 올바르게 거부되는지 검증한다. 각 케이스에서 agent 호출이
+발생하지 않아야 하며, 서버 패닉이 없어야 한다.
+
+---
+
+### E14.1 VolumeId 형식 위반
+
+| # | 테스트 함수 | 설명 | 설정 | 기대 결과 |
+|---|------------|------|------|----------|
+| 102 | `TestCSIEdge_CreateVolume_ExtremelyLongVolumeName` | 극도로 긴 볼륨 이름(2048자)으로 CreateVolume 호출 | name="pvc-" + 2000자 문자열; 유효한 StorageClass 파라미터 | gRPC InvalidArgument 또는 성공; 패닉 없음; agent 호출 시 VolumeId 길이 제한 초과 오류 |
+| 103 | `TestCSIEdge_CreateVolume_SpecialCharactersInName` | 볼륨 이름에 슬래시("/") 포함 — VolumeId 파싱 혼동 유발 시도 | name="pvc/with/slashes"; 유효한 StorageClass 파라미터 | gRPC InvalidArgument; agent 호출 없음; VolumeId 파싱이 혼동되지 않음 |
+| 104 | `TestCSIEdge_DeleteVolume_EmptyVolumeId` | 빈 VolumeId로 DeleteVolume 호출 | VolumeId="" | gRPC InvalidArgument; agent 호출 없음 |
+| 105 | `TestCSIEdge_ControllerPublish_EmptyNodeId` | NodeId가 빈 문자열인 ControllerPublishVolume | NodeId=""; 유효한 VolumeId 및 VolumeContext | gRPC InvalidArgument; agent.AllowInitiator 호출 없음 |
+
+---
+
+### E14.2 CapacityRange 경계값
+
+| # | 테스트 함수 | 설명 | 설정 | 기대 결과 |
+|---|------------|------|------|----------|
+| 106 | `TestCSIEdge_CreateVolume_LimitLessThanRequired` | LimitBytes < RequiredBytes로 CreateVolume | CapacityRange: RequiredBytes=2GiB, LimitBytes=1GiB | gRPC InvalidArgument; CSI 명세상 불가능한 범위; agent 호출 없음 |
+| 107 | `TestCSIEdge_ControllerExpand_ZeroRequiredBytes` | ControllerExpandVolume에서 RequiredBytes=0 | CapacityRange.RequiredBytes=0; LimitBytes=0 | gRPC InvalidArgument; agent.ExpandVolume 호출 없음 |
+| 108 | `TestCSIEdge_ControllerExpand_ShrinkRequest` | 현재 크기보다 작은 RequiredBytes로 ControllerExpandVolume | mockAgentServer.ExpandVolumeErr에 "volsize cannot be decreased" 설정 | 비-OK gRPC 상태 (Internal); CSI 명세상 축소는 미지원 |
+| 109 | `TestCSIEdge_CreateVolume_ExactLimitEqualsRequired` | RequiredBytes == LimitBytes (경계값) 로 CreateVolume | CapacityRange: RequiredBytes=LimitBytes=1GiB | 성공; agent.CreateVolume이 1GiB로 호출됨; 오류 없음 |
+
+---
+
+### E14.3 VolumeContext 값 검증
+
+| # | 테스트 함수 | 설명 | 설정 | 기대 결과 |
+|---|------------|------|------|----------|
+| 110 | `TestCSIEdge_NodeStage_InvalidPort` | VolumeContext.port가 숫자가 아닌 문자열 | VolumeContext: port="not-a-port" | gRPC InvalidArgument; Connector.Connect 미호출 |
+| 111 | `TestCSIEdge_NodeStage_EmptyNQN` | VolumeContext.target_id(NQN)가 빈 문자열 | VolumeContext: target_id="" | gRPC InvalidArgument; Connector.Connect 미호출 |
+| 112 | `TestCSIEdge_NodeStage_MissingVolumeContext` | VolumeContext 자체가 nil인 NodeStageVolume | VolumeContext=nil | gRPC InvalidArgument; Connector.Connect 미호출 |
+
+---
+
+### E14.4 StorageClass 파라미터 조합 오류
+
+| # | 테스트 함수 | 설명 | 설정 | 기대 결과 |
+|---|------------|------|------|----------|
+| 113 | `TestCSIEdge_CreateVolume_UnsupportedBackendType` | 알 수 없는 backend-type 파라미터로 CreateVolume | parameters["backend-type"]="lvm" (미지원) | gRPC InvalidArgument; agent 호출 없음 |
+| 114 | `TestCSIEdge_CreateVolume_EmptyProtocolType` | protocol-type 파라미터 값이 빈 문자열 | parameters["protocol-type"]="" | gRPC InvalidArgument; agent 호출 없음 |
+
+---
+
+### E14.5 접근 모드(Access Mode) 조합 오류
+
+| # | 테스트 함수 | 설명 | 설정 | 기대 결과 |
+|---|------------|------|------|----------|
+| 115 | `TestCSIEdge_NodeStage_BlockAccessWithFsType` | 블록 접근 모드 VolumeCapability에 FsType 지정 (잘못된 조합) | VolumeCapability: AccessType=Block, FsType="ext4" | gRPC InvalidArgument 또는 FsType이 무시되고 블록 접근 성공 (구현 정의 동작); FormatAndMount 미호출 |
+| 116 | `TestCSIEdge_CreateVolume_MultiNodeMultiWriter` | MULTI_NODE_MULTI_WRITER 접근 모드로 ValidateVolumeCapabilities | VolumeCapabilities: AccessMode=MULTI_NODE_MULTI_WRITER | ValidateVolumeCapabilities의 Message 필드에 미지원 이유 기록; CreateVolume은 이 모드로 성공할 수 없음 |
+
+---
+
+## E15: 리소스 고갈 (Resource Exhaustion)
+
+**테스트 유형:** A (인프로세스 E2E) ✅ CI 실행 가능
+
+스토리지 풀 용량 부족, 연결 타임아웃 등 리소스 고갈 시나리오에서
+올바른 gRPC 오류 코드가 반환되고 상태가 오염되지 않음을 검증한다.
+
+**주의:** 실제 ZFS 풀 용량 고갈 테스트(F22–F23)는 실제 하드웨어가 필요하다.
+이 섹션은 mock을 통한 오류 코드 매핑 및 상태 일관성에 집중한다.
+
+---
+
+### E15.1 풀 용량 고갈 오류 전파
+
+| # | 테스트 함수 | 설명 | 설정 | 기대 결과 |
+|---|------------|------|------|----------|
+| 117 | `TestCSIExhaustion_CreateVolume_PoolFull` | 스토리지 풀 가득 참 시 CreateVolume 실패 — gRPC 오류 코드 전파 검증 | mockAgentServer.CreateVolumeErr=gRPC ResourceExhausted("out of space") | gRPC ResourceExhausted 또는 Internal 반환; PillarVolume CRD 미생성; agent.ExportVolume 미호출 |
+| 118 | `TestCSIExhaustion_ExpandVolume_ExceedsPoolCapacity` | ControllerExpandVolume이 풀 용량 초과 시도 — 오류 전파 검증 | mockAgentServer.ExpandVolumeErr=gRPC ResourceExhausted("pool at capacity") | gRPC ResourceExhausted 반환; NodeExpansionRequired 없음 |
+| 119 | `TestCSIExhaustion_CreateVolume_InsufficientStorage` | 요청 용량이 사용 가능 용량보다 큰 경우 | mockAgentServer.CreateVolumeErr=gRPC OutOfRange("insufficient free space") | 비-OK gRPC 상태; 볼륨 미생성; 패닉 없음 |
+
+---
+
+### E15.2 연속 실패 시나리오 — 상태 일관성
+
+| # | 테스트 함수 | 설명 | 설정 | 기대 결과 |
+|---|------------|------|------|----------|
+| 120 | `TestCSIExhaustion_CreateVolume_ConsecutiveFailures` | agent.CreateVolume이 연속 5회 실패해도 상태 오염 없음 | 루프 5회; mockAgentServer.CreateVolumeErr 매 호출 설정 | 5회 모두 비-OK gRPC 상태; PillarVolume CRD 0개; fake k8s 클라이언트 상태 오염 없음; 패닉 없음 |
+| 121 | `TestCSIExhaustion_NodeStage_ConnectTimeout` | NVMe-oF 연결 타임아웃 시 NodeStage 실패 — 상태 파일 미생성 검증 | mockConnector.ConnectErr=errors.New("connection timed out") | 비-OK gRPC 상태; StateDir에 상태 파일 0개; Mounter.FormatAndMount 미호출 |
+| 122 | `TestCSIExhaustion_NodeStage_DeviceNeverAppears` | NVMe-oF 연결 성공 후 디바이스가 폴링 타임아웃 내에 나타나지 않음 | mockConnector.Connect 성공; DevicePath="" (빈 경로, 디바이스 미출현); 폴링 타임아웃=50ms | 비-OK gRPC 상태 (FailedPrecondition 또는 Internal); 상태 파일 미생성 |
+
+---
+
+## E16: 동시 작업 (Concurrent Operations)
+
+**테스트 유형:** A (인프로세스 E2E) ✅ CI 실행 가능
+
+여러 고루틴이 동시에 CSI RPC를 호출할 때 데드락, 패닉, 데이터 손상이
+발생하지 않음을 검증한다. 최종 상태의 정확성보다 **안전성(safety)**에
+초점을 맞춘다.
+
+**아키텍처:**
+```
+여러 고루틴 ──────► CSI ControllerServer / NodeServer
+                           │
+                    mockAgentServer (mutex 보호)
+                    fake k8s client (thread-safe)
+                    mockCSIConnector / mockCSIMounter
+```
+
+---
+
+### E16.1 동시 볼륨 생성/삭제
+
+| # | 테스트 함수 | 설명 | 설정 | 기대 결과 |
+|---|------------|------|------|----------|
+| 123 | `TestCSIConcurrent_CreateVolume_SameNameNoPanic` | 동일 이름으로 5개 고루틴이 동시에 CreateVolume 호출해도 패닉/데드락 없음 | 5개 고루틴; 동일 볼륨 이름; mockAgentServer 정상 동작; 5초 타임아웃 | 5개 고루틴 모두 5초 내 완료; 패닉 없음; 일부는 성공, 나머지는 AlreadyExists 반환 가능 |
+| 124 | `TestCSIConcurrent_CreateVolume_DifferentNames` | 5개 고루틴이 각각 다른 이름의 볼륨을 동시에 생성 | 5개 고루틴; 각각 고유한 볼륨 이름; mockAgentServer 정상 동작 | 5개 볼륨 모두 성공적으로 생성; PillarVolume CRD 5개; 데이터 손상 없음 |
+| 125 | `TestCSIConcurrent_CreateDelete_Interleaved` | 볼륨 생성과 삭제를 동시에 수행 — 최종 상태 일관성 검증 | 고루틴 A: CreateVolume; 고루틴 B: 동시에 동일 볼륨 DeleteVolume; 양측 기다림 | 두 연산 모두 완료; 최종 상태는 생성됨 또는 삭제됨 중 하나; CRD 상태 일관성; 패닉 없음 |
+
+---
+
+### E16.2 동시 노드 마운트/언마운트
+
+| # | 테스트 함수 | 설명 | 설정 | 기대 결과 |
+|---|------------|------|------|----------|
+| 126 | `TestCSIConcurrent_NodeStage_SameVolumeDifferentPaths` | 동일 VolumeId를 서로 다른 스테이징 경로로 동시에 NodeStage 호출 | 2개 고루틴; 동일 VolumeId; 서로 다른 StagingTargetPath; mockConnector 정상 | 두 호출 모두 완료; 데드락 없음; 각각 독립적인 Connector.Connect 호출; 각각 별도 상태 파일 |
+| 127 | `TestCSIConcurrent_NodePublish_MultipleTargets` | 스테이지 완료 후 3개 고루틴이 서로 다른 targetPath로 동시 NodePublish | NodeStage 1회 완료 후 3개 고루틴이 서로 다른 targetPath로 NodePublish 동시 호출 | 3개 NodePublish 모두 성공; 3개 독립 마운트 생성; 데드락 없음; 마운트 테이블 오염 없음 |
+
+---
+
+### E16.3 동시 ACL 관리
+
+| # | 테스트 함수 | 설명 | 설정 | 기대 결과 |
+|---|------------|------|------|----------|
+| 128 | `TestCSIConcurrent_AllowInitiator_MultipleNodes` | 다른 NodeId에 대해 동시에 ControllerPublishVolume 3회 호출 | 3개 고루틴; 동일 VolumeId; 서로 다른 NodeId; mockAgentServer.AllowInitiator 정상 | 3개 AllowInitiator 호출 모두 완료; 데드락 없음; 각각 다른 호스트 NQN으로 호출 |
+| 129 | `TestCSIConcurrent_UnpublishVolume_Race` | 3개 노드에서 동시에 ControllerUnpublishVolume 호출 | 3개 고루틴; 각기 다른 NodeId; mockAgentServer.DenyInitiator 정상 | 3개 모두 완료; 패닉 없음; DenyInitiator 3회 호출 (각 고루틴별 1회) |
+
+---
+
+## E17: 정리 검증 (Cleanup Validation)
+
+**테스트 유형:** A (인프로세스 E2E) ✅ CI 실행 가능
+
+CSI 연산 실패 또는 성공 후 부가 상태(상태 파일, PillarVolume CRD,
+마운트 테이블, NVMe-oF 연결)가 올바르게 정리되는지 검증한다.
+리소스 누수가 없음을 확인하는 것이 이 섹션의 핵심 목표이다.
+
+---
+
+### E17.1 실패 후 상태 파일 정리
+
+| # | 테스트 함수 | 설명 | 설정 | 기대 결과 |
+|---|------------|------|------|----------|
+| 130 | `TestCSICleanup_NodeStage_ConnectFailureNoStateFile` | NodeStageVolume에서 Connect 실패 시 상태 파일이 생성되지 않음 | mockConnector.ConnectErr 설정; NodeStageVolume 호출 | 비-OK gRPC 상태; StateDir에 상태 파일 0개; Mounter.FormatAndMount 미호출 |
+| 131 | `TestCSICleanup_NodeStage_MountFailureDisconnects` | FormatAndMount 실패 시 이미 완료된 NVMe-oF 연결이 정리(롤백)됨 | mockConnector 정상(Connect 성공); mockMounter.FormatAndMountErr 설정 | 비-OK gRPC 상태; Connector.Disconnect 1회 호출 (롤백); StateDir에 상태 파일 0개 |
+| 132 | `TestCSICleanup_NodeUnstage_FailurePreservesStateFile` | Connector.Disconnect 실패 시 상태 파일이 보존됨 — 재시도 가능 상태 유지 | NodeStage 성공; mockConnector.DisconnectErr 설정; NodeUnstage 호출 | 비-OK gRPC 상태; StateDir에 상태 파일 유지 (재시도를 위해 보존); 언마운트 동작은 구현 정의 |
+
+---
+
+### E17.2 PillarVolume CRD 정리 검증
+
+| # | 테스트 함수 | 설명 | 설정 | 기대 결과 |
+|---|------------|------|------|----------|
+| 133 | `TestCSICleanup_DeleteVolume_RemovesAllCRD` | 성공적 DeleteVolume 후 PillarVolume CRD가 fake k8s 클라이언트에서 완전히 삭제됨 | CreateVolume 성공 후 CRD 존재 확인; DeleteVolume 호출; CRD 재조회 | DeleteVolume 성공; fake 클라이언트에서 PillarVolume CRD 조회 시 NotFound |
+| 134 | `TestCSICleanup_CreatePartial_DeleteVolumeCleansCRD` | 부분 생성 상태(Phase=CreatePartial) CRD도 DeleteVolume으로 정리됨 | ExportVolume 실패로 Phase=CreatePartial CRD 생성 후 DeleteVolume 호출 | DeleteVolume 성공; CRD 제거; agent.DeleteVolume 호출 (BackendCreated=true이면 호출) |
+| 135 | `TestCSICleanup_FullLifecycle_NoResourceLeak` | 전체 라이프사이클 완료 후 모든 상태가 완전히 정리됨 | 전체 Create→ControllerPublish→NodeStage→NodePublish→NodeUnpublish→NodeUnstage→ControllerUnpublish→Delete 사이클 완료 | StateDir 상태 파일 0개; PillarVolume CRD 0개; mockMounter 마운트 테이블 빈 상태; Connector.DisconnectCalls=1 |
+
+---
+
+### E17.3 반복 생성/삭제 — 누적 상태 오염 없음
+
+| # | 테스트 함수 | 설명 | 설정 | 기대 결과 |
+|---|------------|------|------|----------|
+| 136 | `TestCSICleanup_RepeatedCreateDelete` | 동일 이름의 볼륨을 10회 반복 생성/삭제해도 상태 오염 없음 | 루프 10회: CreateVolume(성공) → DeleteVolume(성공); 동일 볼륨 이름 재사용 | 모든 반복 성공; 매 반복 후 PillarVolume CRD 0개; 누적 오류 없음; 패닉 없음 |
+| 137 | `TestCSICleanup_RepeatedStageUnstage` | 동일 볼륨을 5회 반복 NodeStage/NodeUnstage해도 상태 파일 누적 없음 | 루프 5회: NodeStage(성공) → NodeUnstage(성공); 동일 VolumeId 및 StagingTargetPath | 모든 반복 성공; 매 반복 후 StateDir 빈 상태; Connect/Disconnect 각 5회씩 호출 |
+
+---
+
 ## 향후 추가 예정 테스트 (실제 하드웨어 필요)
 
 아래 테스트는 현재 구현되지 않았으며, 실제 ZFS, 실제 NVMe-oF 하드웨어,
@@ -850,6 +1028,11 @@ CreateVolume(VolumeContentSource: {Snapshot: "snap-A"})
 | F19 | `TestRealAgent_SendReceiveVolume_CrossNode` | 두 스토리지 노드, ZFS 커널 모듈 | 노드 A → SendVolume → 노드 B ReceiveVolume 크로스 노드 마이그레이션; 마이그레이션 후 데이터 동일성 검증 |
 | F20 | `TestRealZFS_CloneVolume_FromSnapshot` | ZFS 커널 모듈, CSI VolumeContentSource 구현 (미구현) | `zfs clone pool/vol@snap pool/new-vol` 후 CSI CreateVolume(VolumeContentSource.Snapshot) 응답 검증 |
 | F21 | `TestKubernetes_VolumeExpansion_OnlinePod` | 실제 Kubernetes 클러스터, Pod 실행 중, ZFS 노드 | ControllerExpandVolume → NodeExpandVolume → Pod 내 파일시스템이 새 크기 반영 확인 |
+| F22 | `TestRealZFS_PoolFull_CreateVolume` | ZFS 커널 모듈, 실제 ZFS pool (용량 제한 설정) | ZFS pool을 거의 가득 채운 후 새 zvol 생성 시도; ENOSPC 오류 전파 검증 |
+| F23 | `TestRealZFS_PoolFull_ExpandVolume` | ZFS 커널 모듈, 용량 제한 ZFS pool | 현재 pool 여유 공간 이상의 용량으로 ExpandVolume 시도; 실제 "out of space" 오류 검증 |
+| F24 | `TestRealNode_ConcurrentStageUnstage_SameVolume` | 실제 NVMe-oF 디바이스, 루트 권한, nvme-tcp 커널 모듈 | 동일 볼륨에 NodeStage/NodeUnstage를 동시 호출; 커널 레벨 레이스 컨디션 검증 |
+| F25 | `TestKubernetes_ManyPVCsConcurrent` | 실제 Kubernetes 클러스터, pillar-agent, ZFS 노드 | 100개 PVC 동시 생성 — controller/agent 확장성 및 레이스 컨디션 검증 |
+| F26 | `TestRealNode_UnmountWithBusyMount` | 실제 마운트 환경, 루트 권한 | 마운트 포인트가 사용 중(fuser)일 때 NodeUnstage 호출 — EBUSY 오류 처리 검증 |
 
 ---
 
@@ -911,6 +1094,21 @@ go test ./test/e2e/ -v -run TestCSISnapshot
 
 # E13: 볼륨 클론 미처리 동작 검증
 go test ./test/e2e/ -v -run TestCSIClone
+
+# E14: 잘못된 입력값 및 엣지 케이스
+go test ./test/e2e/ -v -run TestCSIEdge
+
+# E15: 리소스 고갈 오류 전파
+go test ./test/e2e/ -v -run TestCSIExhaustion
+
+# E16: 동시 작업 안전성
+go test ./test/e2e/ -v -run TestCSIConcurrent
+
+# E17: 정리 검증
+go test ./test/e2e/ -v -run TestCSICleanup
+
+# E14–E17 전체 (오류/엣지/동시/정리)
+go test ./test/e2e/ -v -run "TestCSIEdge|TestCSIExhaustion|TestCSIConcurrent|TestCSICleanup"
 ```
 
 ### 클러스터 E2E 테스트 실행 (Kind 필요)
