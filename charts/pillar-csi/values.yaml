@@ -1,0 +1,398 @@
+# Default values for pillar-csi.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+# -- Global image pull policy applied to all containers unless overridden per component.
+imagePullPolicy: IfNotPresent
+
+# -- Optional list of imagePullSecrets applied to all Pods.
+imagePullSecrets: []
+# - name: my-registry-secret
+
+# -- Namespace override. Defaults to the Helm release namespace.
+namespaceOverride: ""
+
+# -- Full name override for resource naming.
+fullnameOverride: ""
+
+# -- Name override (replaces the chart name portion of generated names).
+nameOverride: ""
+
+# ─── pillar-controller ───────────────────────────────────────────────────────
+# Kubernetes Deployment: CRD reconciler + CSI Controller service.
+# Runs CSI sidecars: provisioner, attacher, resizer, liveness-probe.
+controller:
+  # -- Number of controller replicas. Leader-election is enabled so >1 is safe.
+  replicaCount: 1
+
+  image:
+    # -- Container image repository for the controller (manager) binary.
+    repository: ghcr.io/bhyoo/pillar-csi/controller
+    # -- Image tag. Defaults to the chart's appVersion when empty.
+    tag: ""
+    # -- Per-container image pull policy override.
+    pullPolicy: ""
+
+  # -- Extra command-line arguments appended to the manager entrypoint.
+  extraArgs: []
+  # - --zap-log-level=debug
+
+  # -- Additional environment variables injected into the manager container.
+  extraEnv: []
+  # - name: MY_VAR
+  #   value: "value"
+
+  # -- Resource requests/limits for the manager container.
+  resources:
+    limits:
+      cpu: 500m
+      memory: 128Mi
+    requests:
+      cpu: 10m
+      memory: 64Mi
+
+  # -- Node selector applied to the controller Pod.
+  nodeSelector: {}
+
+  # -- Tolerations applied to the controller Pod.
+  tolerations: []
+
+  # -- Affinity rules for the controller Pod.
+  affinity: {}
+
+  # -- Annotations added to the controller Deployment.
+  annotations: {}
+
+  # -- Annotations added to the controller Pod template.
+  podAnnotations: {}
+
+  # -- Labels added to the controller Pod template.
+  podLabels: {}
+
+  # CSI sidecar containers bundled with the controller.
+  sidecars:
+    provisioner:
+      image:
+        # -- csi-provisioner image repository.
+        repository: registry.k8s.io/sig-storage/csi-provisioner
+        # -- csi-provisioner image tag.
+        tag: "v5.2.0"
+        pullPolicy: ""
+      # -- Resource requests/limits for the provisioner sidecar.
+      resources:
+        limits:
+          cpu: 100m
+          memory: 64Mi
+        requests:
+          cpu: 10m
+          memory: 32Mi
+      # -- Extra arguments for csi-provisioner.
+      extraArgs: []
+
+    attacher:
+      image:
+        # -- csi-attacher image repository.
+        repository: registry.k8s.io/sig-storage/csi-attacher
+        # -- csi-attacher image tag.
+        tag: "v4.8.1"
+        pullPolicy: ""
+      # -- Resource requests/limits for the attacher sidecar.
+      resources:
+        limits:
+          cpu: 100m
+          memory: 64Mi
+        requests:
+          cpu: 10m
+          memory: 32Mi
+      # -- Extra arguments for csi-attacher.
+      extraArgs: []
+
+    resizer:
+      image:
+        # -- csi-resizer image repository.
+        repository: registry.k8s.io/sig-storage/csi-resizer
+        # -- csi-resizer image tag.
+        tag: "v1.13.2"
+        pullPolicy: ""
+      # -- Resource requests/limits for the resizer sidecar.
+      resources:
+        limits:
+          cpu: 100m
+          memory: 64Mi
+        requests:
+          cpu: 10m
+          memory: 32Mi
+      # -- Extra arguments for csi-resizer.
+      extraArgs: []
+
+    livenessProbe:
+      image:
+        # -- livenessprobe image repository.
+        repository: registry.k8s.io/sig-storage/livenessprobe
+        # -- livenessprobe image tag (shared with node liveness sidecar).
+        tag: "v2.15.0"
+        pullPolicy: ""
+      # -- Resource requests/limits for the liveness-probe sidecar.
+      resources:
+        limits:
+          cpu: 50m
+          memory: 32Mi
+        requests:
+          cpu: 5m
+          memory: 16Mi
+
+  # -- HTTP port exposed by the manager health-probe endpoint.
+  healthProbePort: 8081
+
+  # -- Metrics port exposed by the manager.
+  metricsPort: 8080
+
+  # -- CSI Unix socket path on the shared emptyDir volume.
+  csiSocketPath: /csi/csi.sock
+
+# ─── pillar-node ─────────────────────────────────────────────────────────────
+# Kubernetes DaemonSet: CSI Node service + protocol initiators (NVMe-oF, iSCSI, NFS).
+# Runs CSI sidecars: node-driver-registrar, liveness-probe.
+# Init container: best-effort modprobe for initiator kernel modules.
+node:
+  image:
+    # -- Container image repository for the pillar-node binary.
+    repository: ghcr.io/bhyoo/pillar-csi/node
+    # -- Image tag. Defaults to the chart's appVersion when empty.
+    tag: ""
+    # -- Per-container image pull policy override.
+    pullPolicy: ""
+
+  # -- Extra command-line arguments appended to the pillar-node entrypoint.
+  extraArgs: []
+
+  # -- Additional environment variables injected into the node container.
+  extraEnv: []
+
+  # -- Resource requests/limits for the pillar-node container.
+  resources:
+    limits:
+      cpu: 500m
+      memory: 256Mi
+    requests:
+      cpu: 10m
+      memory: 64Mi
+
+  # -- Node selector applied to node DaemonSet Pods.
+  # By default runs on all worker nodes.
+  nodeSelector: {}
+
+  # -- Tolerations applied to node DaemonSet Pods.
+  tolerations: []
+
+  # -- Annotations added to the node DaemonSet.
+  annotations: {}
+
+  # -- Annotations added to the node Pod template.
+  podAnnotations: {}
+
+  # -- Labels added to the node Pod template.
+  podLabels: {}
+
+  # -- Host path for the kubelet plugin registration directory.
+  kubeletPluginsDir: /var/lib/kubelet/plugins
+
+  # -- Host path for the kubelet plugin registration socket directory.
+  kubeletPluginRegistrationDir: /var/lib/kubelet/plugins_registry
+
+  # -- CSI Unix socket path on the node host.
+  csiSocketPath: /var/lib/kubelet/plugins/pillar-csi.bhyoo.com/csi.sock
+
+  # -- Liveness probe HTTP port exposed by the node liveness sidecar (hostPort NOT used).
+  livenessPort: 9808
+
+  # Init container that runs modprobe for initiator kernel modules (best-effort).
+  # Pod startup is NOT blocked if modprobe fails.
+  initModprobe:
+    image:
+      # -- Image used for the modprobe init container (needs kmod/modprobe binary).
+      repository: busybox
+      # -- Init container image tag.
+      tag: "1.36"
+      pullPolicy: ""
+    # -- Kernel modules to load. Failures are silently ignored (best-effort).
+    modules:
+      - nvme_tcp
+      - iscsi_tcp
+      - nfs
+      - cifs
+    # -- Resource requests/limits for the modprobe init container.
+    resources:
+      limits:
+        cpu: 50m
+        memory: 32Mi
+      requests:
+        cpu: 5m
+        memory: 16Mi
+
+  sidecars:
+    nodeDriverRegistrar:
+      image:
+        # -- csi-node-driver-registrar image repository.
+        repository: registry.k8s.io/sig-storage/csi-node-driver-registrar
+        # -- csi-node-driver-registrar image tag.
+        tag: "v2.13.0"
+        pullPolicy: ""
+      # -- Resource requests/limits for the node-driver-registrar sidecar.
+      resources:
+        limits:
+          cpu: 100m
+          memory: 64Mi
+        requests:
+          cpu: 10m
+          memory: 32Mi
+      # -- Extra arguments for csi-node-driver-registrar.
+      extraArgs: []
+
+    livenessProbe:
+      image:
+        # -- livenessprobe image repository (can differ from controller's).
+        repository: registry.k8s.io/sig-storage/livenessprobe
+        # -- livenessprobe image tag.
+        tag: "v2.15.0"
+        pullPolicy: ""
+      # -- Resource requests/limits for the liveness-probe sidecar.
+      resources:
+        limits:
+          cpu: 50m
+          memory: 32Mi
+        requests:
+          cpu: 5m
+          memory: 16Mi
+
+# ─── pillar-agent ────────────────────────────────────────────────────────────
+# Kubernetes DaemonSet: gRPC agent on storage nodes.
+# Scheduled only on nodes labelled pillar-csi.bhyoo.com/storage-node=true
+# (the controller manages this label automatically via PillarTarget CRs).
+# hostNetwork MUST remain false — agent gRPC is exposed via hostPort only (PRD §2.4).
+# Init container: best-effort modprobe for target kernel modules.
+agent:
+  image:
+    # -- Container image repository for the pillar-agent binary.
+    repository: ghcr.io/bhyoo/pillar-csi/agent
+    # -- Image tag. Defaults to the chart's appVersion when empty.
+    tag: ""
+    # -- Per-container image pull policy override.
+    pullPolicy: ""
+
+  # -- Extra command-line arguments appended to the pillar-agent entrypoint.
+  extraArgs: []
+
+  # -- Additional environment variables injected into the agent container.
+  extraEnv: []
+
+  # -- Resource requests/limits for the pillar-agent container.
+  resources:
+    limits:
+      cpu: 500m
+      memory: 256Mi
+    requests:
+      cpu: 10m
+      memory: 64Mi
+
+  # -- Node selector applied to agent DaemonSet Pods.
+  # The controller automatically adds pillar-csi.bhyoo.com/storage-node=true
+  # to nodes referenced by PillarTarget CRs; this selector ensures the agent
+  # runs only on those nodes.
+  nodeSelector:
+    pillar-csi.bhyoo.com/storage-node: "true"
+
+  # -- Tolerations applied to agent DaemonSet Pods.
+  tolerations: []
+
+  # -- Annotations added to the agent DaemonSet.
+  annotations: {}
+
+  # -- Annotations added to the agent Pod template.
+  podAnnotations: {}
+
+  # -- Labels added to the agent Pod template.
+  podLabels: {}
+
+  # -- gRPC listen port inside the container (also exposed as hostPort).
+  grpcPort: 9500
+
+  # -- hostPort number bound on the node IP for agent gRPC access.
+  # Must match grpcPort. Set to 0 to disable hostPort (not recommended).
+  hostPort: 9500
+
+  # Init container that runs modprobe for target kernel modules (best-effort).
+  # Pod startup is NOT blocked if modprobe fails — failed modules are excluded
+  # from agent capabilities and reflected in PillarTarget status conditions.
+  initModprobe:
+    image:
+      # -- Image used for the modprobe init container (needs kmod/modprobe binary).
+      repository: busybox
+      # -- Init container image tag.
+      tag: "1.36"
+      pullPolicy: ""
+    # -- Kernel modules to load. Failures are silently ignored (best-effort).
+    modules:
+      - nvmet
+      - nvmet_tcp
+      - target_core_mod
+      - iscsi_target_mod
+    # -- Resource requests/limits for the modprobe init container.
+    resources:
+      limits:
+        cpu: 50m
+        memory: 32Mi
+      requests:
+        cpu: 5m
+        memory: 16Mi
+
+# ─── RBAC ────────────────────────────────────────────────────────────────────
+rbac:
+  # -- Set to false to skip ClusterRole/ClusterRoleBinding creation.
+  create: true
+
+# ─── Service Accounts ────────────────────────────────────────────────────────
+serviceAccount:
+  controller:
+    # -- Set to false to skip ServiceAccount creation for the controller.
+    create: true
+    # -- Override the ServiceAccount name. Defaults to <fullname>-controller.
+    name: ""
+    # -- Annotations added to the controller ServiceAccount (e.g. for IRSA/Workload Identity).
+    annotations: {}
+
+  node:
+    # -- Set to false to skip ServiceAccount creation for pillar-node.
+    create: true
+    # -- Override the ServiceAccount name. Defaults to <fullname>-node.
+    name: ""
+    # -- Annotations added to the node ServiceAccount.
+    annotations: {}
+
+  agent:
+    # -- Set to false to skip ServiceAccount creation for pillar-agent.
+    create: true
+    # -- Override the ServiceAccount name. Defaults to <fullname>-agent.
+    name: ""
+    # -- Annotations added to the agent ServiceAccount.
+    annotations: {}
+
+# ─── CSI Driver ──────────────────────────────────────────────────────────────
+csiDriver:
+  # -- Set to false to skip CSIDriver object creation.
+  create: true
+  # -- fsGroupPolicy for the CSIDriver. Valid values: None, File, ReadWriteOnceWithFSType.
+  fsGroupPolicy: ReadWriteOnceWithFSType
+  # -- volumeLifecycleModes supported by the driver.
+  volumeLifecycleModes:
+    - Persistent
+
+# ─── Metrics / Monitoring ─────────────────────────────────────────────────────
+metrics:
+  # -- Set to true to create a Prometheus ServiceMonitor (requires prometheus-operator CRDs).
+  serviceMonitor:
+    enabled: false
+    # -- Scrape interval override. Defaults to the Prometheus global scrapeInterval.
+    interval: ""
+    # -- Additional labels added to the ServiceMonitor.
+    additionalLabels: {}
