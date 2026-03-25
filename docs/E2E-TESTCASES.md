@@ -3241,3 +3241,575 @@ go test ./test/e2e/ -v -run "TestAgent_ErrorHandling"
 | 대규모 볼륨 (100개 이상) 프로비저닝 지연 | mock 응답에 실제 처리 시간 없음 | F25 |
 | pillar-agent 바이너리의 신호 처리 (SIGTERM) | in-process 환경 | F5 |
 
+---
+
+## 수동/스테이징 테스트 카탈로그 (Manual/Staging Tests)
+
+이 섹션은 **자동화된 CI 파이프라인에서 실행할 수 없는** 테스트 전체 목록을 정의한다.
+각 테스트에 대해:
+
+1. **자동화 불가 사유** — 왜 표준 CI/CD에서 실행이 불가능한지 구체적으로 설명
+2. **필요 인프라** — 테스트 실행을 위해 갖춰야 할 실제 하드웨어 또는 스테이징 환경
+3. **대안** — 자동화 테스트로 부분 대체 가능한 범위와 한계
+
+> **경고:** 아래 테스트들은 **현재 구현(코드)이 존재하지 않는** 미래 테스트 계획이다.
+> 각 테스트 함수명은 해당 기능을 구현할 때 사용할 예정인 이름이며,
+> `//go:build hardware` 빌드 태그로 표준 `go test` 실행에서 제외될 것이다.
+
+---
+
+### 수동/스테이징 테스트 요약
+
+| 카테고리 | 테스트 그룹 | 테스트 수 | 필요 환경 |
+|---------|------------|----------|-----------|
+| F1–F3 | 실제 ZFS 백엔드 동작 | 5 | Linux + ZFS 풀 + root |
+| F4–F6 | 실제 NVMe-oF 타겟 / 이니시에이터 | 6 | Linux + nvmet-tcp + nvme-tcp 커널 모듈 + root |
+| F7–F10 | 실제 마운트 / 파일시스템 | 5 | Linux + root + 블록 디바이스 |
+| F11–F12 | Kubernetes PVC 프로비저닝 | 3 | Kind/실제 k8s + pillar-csi DaemonSet |
+| F13–F15 | 에이전트 재시작 / 복구 | 4 | Linux + 실제 nvmet + pillar-agent 바이너리 |
+| F16–F18 | 볼륨 데이터 마이그레이션 | 4 | 두 개 이상의 스토리지 노드 |
+| F19–F21 | 파일시스템 리사이즈 | 3 | Linux + root + 실제 블록 디바이스 |
+| F22–F23 | NVMe-oF Multipath | 3 | 다중 NIC + 다중 경로 구성 |
+| F24 | 커널 레벨 동시성 / 레이스 컨디션 | 2 | Linux + stress 도구 + root |
+| F25 | 대규모 확장성 | 2 | 대용량 스토리지 서버 (수 TB ZFS 풀) |
+| F26 | 실제 PKI / cert-manager | 2 | 실제 Kubernetes 클러스터 + cert-manager |
+| **합계** | | **39** | |
+
+---
+
+### 수동/스테이징 테스트 공통 인프라 요구사항
+
+#### 스테이징 환경 최소 구성
+
+아래 모든 F 계열 테스트를 실행하기 위한 **최소 스테이징 환경**이다.
+이 환경은 표준 CI 서버로는 제공할 수 없다.
+
+| 구성 요소 | 사양 | 비고 |
+|-----------|------|------|
+| **스토리지 노드** (최소 1대) | 베어메탈 또는 KVM 게스트 (중첩 가상화 금지) | ZFS + NVMe-oF 타겟 실행 |
+| CPU | 4코어 이상 | ZFS ARC + NVMe-oF 처리 |
+| RAM | 16 GiB 이상 | ZFS ARC 캐시 최소 4 GiB |
+| 디스크 | 100 GiB 이상 빈 블록 디바이스 (SSD 권장) | ZFS 풀 생성용 (`/dev/sdb` 등) |
+| OS | Ubuntu 22.04 LTS 또는 Debian 12 | ZFS DKMS 패키지 지원 |
+| 커널 | 5.15+ | `nvmet`, `nvmet-tcp`, `nvme-tcp` 모듈 |
+| ZFS | OpenZFS 2.2+ | `zfsutils-linux` 패키지 |
+| 네트워크 | 1 GbE 이상 (NVMe-oF 멀티패스 테스트는 2 NIC) | 이니시에이터 노드와 통신 |
+| **이니시에이터 노드** (F4-F12, 선택) | 별도 VM 또는 동일 호스트 다른 네임스페이스 | NVMe-oF 연결 테스트 |
+| root 권한 | 필수 | `zfs`, `nvme`, `mount`, `modprobe` 실행 |
+| **Kubernetes 클러스터** (F11–F12) | Kind v0.23+ 또는 실제 클러스터 (1 마스터 + 1 워커) | PVC 프로비저닝 테스트 |
+
+#### 커널 모듈 로드 확인
+
+```bash
+# F4–F12 테스트 전 반드시 확인
+modprobe nvmet
+modprobe nvmet-tcp
+modprobe nvme-tcp
+
+lsmod | grep nvme
+# nvme_tcp     ... nvmet_tcp
+# nvme_core    ...
+# nvmet        ...
+# nvmet_tcp    ...
+```
+
+#### ZFS 풀 준비
+
+```bash
+# F1–F3 테스트 전 ZFS 풀 생성
+# 주의: /dev/sdb는 테스트 전용 디스크여야 함
+zpool create tank /dev/sdb
+zpool status tank
+
+# 테스트 완료 후 정리
+zpool destroy tank
+```
+
+---
+
+### F1: 실제 ZFS 백엔드 동작 검증
+
+**카테고리:** 수동/스테이징 ❌ CI 불가
+
+**빌드 태그:** `//go:build hardware`
+
+**자동화 불가 사유:**
+- `zfs(8)` 바이너리와 실제 ZFS 커널 모듈(`zfs.ko`)이 필요
+- ZFS 풀 생성을 위한 빈 블록 디바이스(`/dev/sdb`)가 필요
+- `root` 권한 필수 — 표준 CI 컨테이너는 unprivileged
+- GitHub Actions의 `ubuntu-22.04` 러너에는 `zfsutils-linux`가 기본 설치되지 않음
+  (설치 가능하지만 루프백 디바이스 기반 ZFS는 프로덕션 동작과 다름)
+
+**필요 인프라:**
+- ZFS 풀(`tank`)이 준비된 Linux 호스트
+- `root` 권한
+- `zfsutils-linux` (OpenZFS 2.2+)
+
+---
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| F1.1 | `TestRealZFS_CreateVolume` | 실제 `zfs create -V` 명령으로 zvol이 생성되고 `/dev/zvol/tank/<name>` 블록 디바이스가 나타남 | ZFS 풀 `tank` 마운트됨; root 권한; ZFS 모듈 로드 | 1) `backend.ZFSBackend.Create(ctx, "test-vol", 1GiB, params)` 호출; 2) `stat /dev/zvol/tank/test-vol` 확인 | 블록 디바이스 존재; 크기 1 GiB; `zfs list` 에 `tank/test-vol` 표시 | `ZFS` |
+| F1.2 | `TestRealZFS_DeleteVolume` | 실제 `zfs destroy` 명령으로 zvol 삭제 후 블록 디바이스가 사라짐 | F1.1 성공 후 `tank/test-vol` 존재 | 1) `backend.ZFSBackend.Delete(ctx, "test-vol")` 호출; 2) `stat /dev/zvol/tank/test-vol` 확인 | 블록 디바이스 없음; `zfs list` 에 표시되지 않음 | `ZFS` |
+| F1.3 | `TestRealZFS_ExpandVolume` | 실제 `zfs set volsize=2G` 명령으로 zvol 크기 확장 후 블록 디바이스 크기 변경 확인 | `tank/test-vol` (1 GiB) 존재 | 1) `backend.ZFSBackend.Expand(ctx, "test-vol", 2GiB)` 호출; 2) `blockdev --getsize64 /dev/zvol/tank/test-vol` 확인 | 블록 디바이스 크기 2 GiB | `ZFS` |
+| F1.4 | `TestRealZFS_Capacity` | `zpool get free` / `zfs get available`로 실제 풀 가용 용량 조회 | ZFS 풀 `tank` 마운트됨; 여유 공간 있음 | 1) `backend.ZFSBackend.Capacity(ctx)` 호출 | `TotalBytes > 0`, `AvailableBytes > 0`, `TotalBytes >= AvailableBytes` | `ZFS` |
+| F1.5 | `TestRealZFS_CreateVolume_WithParams` | `compression`, `dedup`, `sync` ZFS 파라미터가 실제로 zvol에 적용됨 | ZFS 풀 `tank` 마운트됨; root 권한 | 1) params에 `compression=lz4`, `sync=disabled` 설정 후 `Create` 호출; 2) `zfs get compression,sync tank/test-vol` 확인 | compression=lz4, sync=disabled로 설정됨 | `ZFS` |
+
+**자동화 대체 범위:** F1.1–F1.5의 로직 흐름(파라미터 직렬화, 명령 구성, 오류 매핑)은
+`test/component/zfs_test.go`의 `exec.Command` mock으로 검증된다.
+그러나 **실제 블록 디바이스 생성/삭제**, **실제 용량 계산**, **ZFS 파라미터 적용**은
+mock으로 검증할 수 없다.
+
+---
+
+### F2: 실제 NVMe-oF 타겟 configfs 동작 검증
+
+**카테고리:** 수동/스테이징 ❌ CI 불가
+
+**빌드 태그:** `//go:build hardware`
+
+**자동화 불가 사유:**
+- `/sys/kernel/config/nvmet/` 커널 configfs가 실제로 마운트되어야 함
+- `nvmet` 커널 모듈이 로드되어야 configfs 항목이 생성됨
+- `root` 권한 필수 (configfs 쓰기는 root만 가능)
+- `t.TempDir()` 기반 fake configfs는 실제 커널의 파일에 쓰기 시 타겟 포트
+  리스닝이 시작되는 **사이드이펙트**를 재현할 수 없음
+
+**필요 인프라:**
+- `nvmet` 커널 모듈이 로드된 Linux 호스트
+- `root` 권한
+- 사용 가능한 네트워크 인터페이스 (NVMe-oF TCP 리스닝용)
+
+---
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| F2.1 | `TestRealNVMeoF_Export` | `ExportVolume` 호출 후 `/sys/kernel/config/nvmet/` 에 subsystem/namespace/port 항목이 실제로 생성되고 NQN으로 접근 가능한 타겟 포트가 리스닝 시작 | `nvmet`, `nvmet-tcp` 모듈 로드; `tank/test-vol` zvol 존재; root 권한; configfs 마운트됨 | 1) `agent.ExportVolume(ctx, "tank/test-vol", nqn, port)` 호출; 2) `ls /sys/kernel/config/nvmet/subsystems/` 확인; 3) `nvme discover -t tcp -a 127.0.0.1 -s <port>` 실행 | configfs 항목 존재; `nvme discover` 출력에 NQN 표시 | `NVMeF`, `Agent` |
+| F2.2 | `TestRealNVMeoF_Unexport` | `UnexportVolume` 호출 후 configfs 항목이 완전히 제거되고 포트 리스닝이 중단됨 | F2.1 성공 후 타겟 포트 리스닝 중 | 1) `agent.UnexportVolume(ctx, nqn)` 호출; 2) `ls /sys/kernel/config/nvmet/subsystems/` 확인; 3) `nvme discover -t tcp -a 127.0.0.1 -s <port>` 실행 | configfs 항목 없음; `nvme discover` 오류 또는 NQN 미표시 | `NVMeF`, `Agent` |
+| F2.3 | `TestRealNVMeoF_AllowInitiator` | `AllowInitiator` 호출로 `allowed_hosts` 심볼릭 링크가 실제 configfs에 생성됨 | F2.1 성공 후 타겟 존재 | 1) `agent.AllowInitiator(ctx, nqn, hostnqn)` 호출; 2) `ls /sys/kernel/config/nvmet/subsystems/<nqn>/allowed_hosts/` 확인 | 심볼릭 링크 존재; `hostnqn` 이름의 항목 표시 | `NVMeF`, `Agent` |
+| F2.4 | `TestRealNVMeoF_DenyInitiator` | `DenyInitiator` 호출로 `allowed_hosts` 심볼릭 링크가 제거됨 | F2.3 성공 후 허용된 이니시에이터 존재 | 1) `agent.DenyInitiator(ctx, nqn, hostnqn)` 호출; 2) `ls /sys/kernel/config/nvmet/subsystems/<nqn>/allowed_hosts/` 확인 | 심볼릭 링크 없음 | `NVMeF`, `Agent` |
+
+**자동화 대체 범위:** F2.1–F2.4의 configfs 파일 경로 구성, 심볼릭 링크 생성 로직,
+오류 처리는 `test/e2e/agent_e2e_test.go`의 `t.TempDir()` 기반 환경에서
+**파일 시스템 구조**만 검증된다. 그러나 **커널이 configfs 항목을 읽어
+실제 타겟을 활성화하는 동작**, **NQN으로의 실제 접근 가능 여부**는 검증하지 못한다.
+
+---
+
+### F3: 실제 NVMe-oF 이니시에이터 연결 검증
+
+**카테고리:** 수동/스테이징 ❌ CI 불가
+
+**빌드 태그:** `//go:build hardware`
+
+**자동화 불가 사유:**
+- `nvme-tcp` 이니시에이터 커널 모듈 필요
+- 실제 NVMe-oF 타겟(F2 환경)이 리스닝 중이어야 함
+- 실제 `/dev/nvme*` 블록 디바이스가 생성되어야 검증 가능
+- `nvme connect` 실행에 `root` 권한 필요
+
+**필요 인프라:**
+- F2 환경 (타겟 측)
+- `nvme-tcp` 모듈이 로드된 이니시에이터 Linux 호스트
+- 두 호스트 간 TCP 네트워크 통신 가능 (또는 동일 호스트 루프백)
+- `nvme-cli` 패키지
+
+---
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| F3.1 | `TestRealNVMeoF_Connect` | `connector.Connect` 호출 후 실제 `/dev/nvme*` 블록 디바이스가 이니시에이터 호스트에 나타남 | F2.1 타겟 리스닝 중; `nvme-tcp` 모듈 로드; root 권한 | 1) `connector.Connect(ctx, nqn, addr, port)` 호출; 2) `nvme list` 출력에서 디바이스 확인; 3) `stat /dev/nvme0n1` 또는 유사 경로 확인 | `/dev/nvme*` 디바이스 존재; `nvme list`에 NQN 표시 | `Conn` |
+| F3.2 | `TestRealNVMeoF_Disconnect` | `connector.Disconnect` 호출 후 `/dev/nvme*` 블록 디바이스가 사라짐 | F3.1 성공 후 디바이스 존재 | 1) `connector.Disconnect(ctx, nqn)` 호출; 2) `nvme list` 확인 | 디바이스 없음 | `Conn` |
+| F3.3 | `TestRealNVMeoF_FullStoragePath` | 실제 타겟(F2.1) + 실제 이니시에이터(F3.1) + 실제 마운트(F7)의 전체 스토리지 경로 동작 확인 | F2 타겟 환경 + F3 이니시에이터 환경 + F7 마운트 환경 | 1) ZFS zvol 생성; 2) NVMe-oF export; 3) NVMe-oF connect; 4) mkfs.ext4; 5) mount; 6) 파일 I/O (쓰기/읽기/fsync); 7) umount; 8) nvme disconnect; 9) unexport; 10) zvol 삭제 | 각 단계 성공; 파일 I/O 데이터 일관성 | `ZFS`, `NVMeF`, `Conn`, `Mnt`, `Agent` |
+
+**자동화 대체 범위:** `mockCSIConnector`가 `Connect/Disconnect` 호출 기록을
+검증하지만 실제 **커널 드라이버 수준 동작**, **블록 디바이스 생성**, **데이터 I/O**는
+검증하지 못한다.
+
+---
+
+### F4: 실제 마운트 / 파일시스템 포맷 검증
+
+**카테고리:** 수동/스테이징 ❌ CI 불가
+
+**빌드 태그:** `//go:build hardware`
+
+**자동화 불가 사유:**
+- `mount(8)`, `umount(8)` 시스템 콜에 `root` 권한 필요
+- `mkfs.ext4`, `mkfs.xfs` 실행에 실제 블록 디바이스 필요
+- GitHub Actions 컨테이너에서 mount 시스템 콜은 unprivileged namespace에서 차단됨
+- 마운트 완료 후 파일 I/O 검증을 위한 실제 블록 디바이스 필요
+
+**필요 인프라:**
+- 실제 `/dev/nvme*` 블록 디바이스 (또는 루프백 디바이스)
+- `root` 권한
+- `e2fsprogs`, `xfsprogs` 패키지
+
+---
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| F4.1 | `TestRealMount_FormatAndMount_ext4` | `mounter.FormatAndMount`가 실제 `mkfs.ext4` + `mount -t ext4`를 실행하고 마운트 포인트에서 파일 쓰기/읽기 가능 | `/dev/loop0` 등 루프백 또는 `/dev/nvme0n1` 블록 디바이스; root 권한; 스테이징 디렉터리 | 1) `mounter.FormatAndMount(device, stagingPath, "ext4", nil)` 호출; 2) 마운트 포인트에 파일 쓰기; 3) `umount`; 4) 재마운트 후 파일 존재 확인 | 마운트 성공; 데이터 지속성 확인; `mount` 명령 출력에 ext4 타입 표시 | `Mnt` |
+| F4.2 | `TestRealMount_FormatAndMount_xfs` | F4.1과 동일하지만 xfs 파일시스템 | F4.1과 동일 | 1) `mounter.FormatAndMount(device, stagingPath, "xfs", nil)` 호출; 2–4) F4.1과 동일 | 마운트 성공; xfs 타입; 데이터 지속성 | `Mnt` |
+| F4.3 | `TestRealMount_BindMount` | `mounter.Mount`가 `--bind` 옵션으로 스테이징 경로를 Pod 볼륨 경로에 바인드 마운트 | F4.1 성공 후 스테이징 경로 마운트됨 | 1) `mounter.Mount(stagingPath, targetPath, "", ["bind"])` 호출; 2) targetPath에서 파일 확인 | 바인드 마운트 성공; 파일 접근 가능 | `Mnt` |
+| F4.4 | `TestRealMount_Unmount` | `mounter.Unmount`가 마운트 해제 후 마운트 포인트 정리 | F4.3 성공 후 바인드 마운트됨 | 1) `mounter.Unmount(targetPath)` 호출; 2) targetPath 디렉터리 확인 | 마운트 해제됨; `/proc/mounts`에 항목 없음 | `Mnt` |
+| F4.5 | `TestRealMount_NodeStage_NodePublish_Integration` | 실제 블록 디바이스에서 NodeStageVolume(포맷+마운트) → NodePublishVolume(바인드 마운트) → NodeUnpublishVolume → NodeUnstageVolume 전체 흐름 | F3.1 성공 후 `/dev/nvme0n1` 존재; root 권한 | 1) NodeStageVolume(ext4, 스테이징); 2) NodePublishVolume(바인드, Pod 경로); 3) Pod 경로에서 파일 I/O; 4) NodeUnpublishVolume; 5) NodeUnstageVolume | 각 단계 성공; 파일 I/O 가능; 정리 후 디바이스 해제 | `CSI-N`, `Conn`, `Mnt`, `State` |
+
+**자동화 대체 범위:** `mockCSIMounter`가 호출 기록을 추적하지만 실제
+**마운트 시스템 콜**, **파일시스템 포맷**, **데이터 I/O 일관성**은 검증하지 못한다.
+
+---
+
+### F5: Kubernetes PVC 프로비저닝 — 실제 external-provisioner 흐름
+
+**카테고리:** 수동/스테이징 ❌ CI 불가
+
+**빌드 태그:** `//go:build hardware`
+
+**자동화 불가 사유:**
+- `external-provisioner` 사이드카가 CSI Controller에 `CreateVolume`을 실제로 호출하는
+  Kubernetes 오케스트레이션 흐름을 재현하려면 실제(또는 Kind) 클러스터 필요
+- PVC → PV 바인딩은 `kube-controller-manager`가 담당하며 fake client로 재현 불가
+- `external-attacher`, `external-resizer` 사이드카와의 상호작용 검증 불가
+- CSI Driver 등록(`CSIDriver` 오브젝트)과 플러그인 소켓 통신은 실제 노드 필요
+
+**필요 인프라:**
+- Kind v0.23+ 또는 실제 Kubernetes 1.29+ 클러스터
+- pillar-csi DaemonSet 배포 (CSI Node Plugin + CSI Controller Plugin)
+- 실제 스토리지 백엔드 (F1 ZFS + F2 NVMe-oF 타겟)
+- `external-provisioner`, `external-attacher`, `external-resizer` 사이드카
+
+---
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| F5.1 | `TestK8sPVC_ProvisionAndAttach` | PVC 생성 → PV 동적 프로비저닝 → Pod에 마운트 → 데이터 쓰기/읽기 전체 흐름 | Kind 클러스터; pillar-csi 설치; PillarTarget CRD 등록; ZFS+NVMe-oF 백엔드; StorageClass `pillar-csi.bhyoo.com` | 1) `kubectl apply -f pvc.yaml` (1 GiB); 2) PVC Bound 대기 (Eventually 2분); 3) `kubectl apply -f pod-with-pvc.yaml`; 4) Pod Running 대기; 5) Pod 내에서 `echo test > /data/test.txt`; 6) Pod 재시작 후 파일 존재 확인 | PVC Bound; Pod Running; 파일 지속성; PillarVolume CRD 생성 확인 | `CSI-C`, `CSI-N`, `Agent`, `ZFS`, `NVMeF`, `Conn`, `Mnt`, `VolCRD`, `TgtCRD` |
+| F5.2 | `TestK8sPVC_DeleteAndUnprovision` | PVC 삭제 → PV 삭제 → ZFS zvol 삭제 → NVMe-oF 타겟 해제 전체 정리 흐름 | F5.1 성공 후 PVC/Pod 존재 | 1) `kubectl delete pod`; 2) `kubectl delete pvc`; 3) PV 삭제 대기; 4) `zfs list` 에서 zvol 없음 확인; 5) configfs에서 타겟 없음 확인 | 모든 리소스 삭제; PillarVolume CRD 삭제; 스토리지 누수 없음 | `CSI-C`, `CSI-N`, `Agent`, `ZFS`, `NVMeF`, `VolCRD` |
+| F5.3 | `TestK8sPVC_Resize` | PVC 크기 확장 요청 → `external-resizer`가 `ControllerExpandVolume` + `NodeExpandVolume` 호출 → 마운트된 파일시스템 온라인 확장 | F5.1 성공 후 PVC Bound; StorageClass `allowVolumeExpansion: true` | 1) `kubectl patch pvc` (1 GiB → 2 GiB); 2) PVC `status.capacity.storage=2Gi` 대기; 3) Pod 내에서 `df -h /data` 확인 | 파일시스템 크기 2 GiB; 데이터 손실 없음 | `CSI-C`, `CSI-N`, `Agent`, `ZFS`, `Mnt` |
+
+**자동화 대체 범위:**
+- `TestCSIController_ControllerExpandVolume` (E2.3): ControllerExpandVolume RPC 로직
+- `TestCSILifecycle_*` (E4): CreateVolume→Delete 전체 CSI 내부 흐름
+- 그러나 **실제 PVC/Pod 오케스트레이션**, **external-provisioner 상호작용**,
+  **마운트된 파일시스템의 온라인 확장**은 자동화 테스트로 검증 불가
+
+---
+
+### F6: pillar-agent 바이너리 재시작 / 복구
+
+**카테고리:** 수동/스테이징 ❌ CI 불가
+
+**빌드 태그:** `//go:build hardware`
+
+**자동화 불가 사유:**
+- `ReconcileState`가 실제로 복구할 `nvmet` 커널 상태 손실 시나리오를 재현하려면
+  실제 `nvmet` 커널 모듈과 configfs가 필요
+- in-process 테스트에서는 프로세스 재시작 시뮬레이션이 불가 (`t.TempDir()`는
+  커널 상태와 무관하게 항상 빈 상태)
+- SIGTERM/SIGKILL 수신 후 graceful shutdown 동작 검증은 실제 OS 프로세스 필요
+
+**필요 인프라:**
+- F2 환경 (실제 nvmet configfs)
+- pillar-agent 바이너리 (`make build-agent`)
+- root 권한
+
+---
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| F6.1 | `TestRealAgent_ReconcileState_AfterRestart` | pillar-agent 프로세스 재시작 후 `ReconcileState`가 configfs의 기존 nvmet 항목을 감지하고 내부 상태를 복원 | F2.1 타겟 configfs 존재; pillar-agent 프로세스 1회 종료; configfs 항목 유지 | 1) agent 실행 중 ExportVolume 호출; 2) agent 프로세스 SIGTERM으로 종료; 3) configfs 항목 수동 확인 (여전히 존재); 4) agent 프로세스 재시작; 5) ReconcileState 완료 대기; 6) GetVolume으로 상태 조회 | GetVolume이 올바른 상태 반환; 재시작 후 UnexportVolume 정상 동작 | `NVMeF`, `Agent` |
+| F6.2 | `TestRealAgent_GracefulShutdown_SIGTERM` | SIGTERM 수신 시 진행 중인 RPC를 완료한 후 종료 (configfs 항목 유지) | pillar-agent 실행 중; 진행 중인 CreateVolume RPC | 1) CreateVolume RPC 시작 (장기 실행); 2) 즉시 SIGTERM 전송; 3) agent 로그 확인 | 진행 중인 RPC 완료 후 종료; configfs 항목 손상 없음; 오류 로그 없음 | `Agent` |
+| F6.3 | `TestRealAgent_SIGKILL_DataIntegrity` | SIGKILL 후 재시작 시 데이터 일관성 — 불완전한 configfs 항목 감지 및 정리 | pillar-agent 실행 중; CreateVolume RPC 처리 중간에 SIGKILL | 1) CreateVolume RPC 시작; 2) 처리 중간에 SIGKILL; 3) agent 재시작; 4) ReconcileState 관찰 | 불완전한 항목이 감지되어 정리되거나 오류와 함께 복구 불가 상태 보고; 데이터 손상 없음 | `NVMeF`, `Agent` |
+| F6.4 | `TestRealAgent_NodeReboot_StateRecovery` | 노드 재부팅 후 커널 모듈 재로드 + configfs 재생성을 통한 완전 복구 | F2.1 타겟 configfs 존재; 노드 재부팅 가능한 스테이징 환경 | 1) ExportVolume으로 타겟 생성; 2) 노드 재부팅; 3) 커널 모듈 재로드; 4) agent 재시작; 5) configfs 재생성 (ReconcileState + 재export); 6) nvme discover로 타겟 접근 확인 | 노드 재부팅 후 스토리지 경로 복원; PVC 접근 가능 | `NVMeF`, `Agent`, `ZFS` |
+
+**자동화 대체 범위:**
+- `TestAgent_E9.4_ReconcileState_RestoredFromConfigfs` (E9): in-process 환경에서
+  `t.TempDir()` configfs를 사전 설정하여 ReconcileState 로직 검증 가능
+- 그러나 **실제 커널 nvmet 상태 손실/복구**, **프로세스 재시작 동작**, **노드 재부팅**은
+  자동화 테스트로 검증 불가
+
+---
+
+### F7: 실제 cert-manager PKI 통합
+
+**카테고리:** 수동/스테이징 ❌ CI 불가
+
+**빌드 태그:** `//go:build hardware`
+
+**자동화 불가 사유:**
+- cert-manager의 실제 인증서 발급(CA 서명, ACME 등)은 실제 Kubernetes 클러스터와
+  cert-manager 컨트롤러 배포가 필요
+- mTLS 연결 테스트(`TestMTLSController_*`)는 `testcerts` 인메모리 인증서를 사용하므로
+  cert-manager 발급 인증서의 회전(rotation), 만료(expiry), 갱신(renewal) 검증 불가
+- `caBundle` 인젝션이 `ValidatingWebhookConfiguration`에 실제로 반영되는지는
+  `cert-manager` + `ca-injector`가 실행 중인 클러스터에서만 검증 가능
+
+**필요 인프라:**
+- Kind v0.23+ 또는 실제 Kubernetes 1.29+ 클러스터
+- cert-manager v1.14+ 설치
+- pillar-csi 컨테이너 이미지 (`make docker-build`)
+
+---
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| F7.1 | `TestRealCertManager_CertificateIssuance` | cert-manager가 `webhook-server-cert` Secret을 발급하고 pillar-csi 웹훅 서버가 해당 인증서로 TLS를 제공 | Kind 클러스터; cert-manager 설치; pillar-csi 배포 | 1) cert-manager 설치 확인; 2) `webhook-server-cert` Secret 생성 대기 (Eventually 5분); 3) `openssl s_client -connect pillar-csi-webhook-service:443` 으로 인증서 체인 확인 | 인증서 발급됨; Common Name 올바름; 인증서 체인 유효 | `mTLS` |
+| F7.2 | `TestRealCertManager_CertificateRotation` | cert-manager가 만료 임박 인증서를 자동으로 갱신하고 pillar-csi가 새 인증서로 재로드 | F7.1 성공 후; 인증서 만료 기간 단축 설정 (e.g., 5분) | 1) 만료 기간 5분의 Certificate 생성; 2) 만료 직전 대기 (4분); 3) cert-manager 갱신 트리거; 4) 새 인증서 시리얼 넘버 확인; 5) 웹훅 호출 가능 확인 | 새 인증서로 갱신됨; 웹훅 서비스 중단 없음 | `mTLS` |
+
+**자동화 대체 범위:**
+- `TestMTLSController_*` (E8): `testcerts` 인메모리 인증서로 mTLS 연결 로직 검증
+- 그러나 **cert-manager 발급 인증서 체인 검증**, **자동 갱신 동작**은
+  자동화 테스트로 검증 불가
+
+---
+
+### F8: 파일시스템 온라인 리사이즈
+
+**카테고리:** 수동/스테이징 ❌ CI 불가
+
+**빌드 태그:** `//go:build hardware`
+
+**자동화 불가 사유:**
+- `resize2fs`, `xfs_growfs` 명령 실행에 실제 마운트된 블록 디바이스 필요
+- NodeExpandVolume은 `NodeExpandSecret` 처리와 함께 실제 마운트된 경로를 요구
+- 파일시스템 확장 결과 검증(`df -h`)을 위해 실제 마운트 상태 필요
+
+**필요 인프라:**
+- F4 환경 (마운트된 블록 디바이스)
+- `e2fsprogs`, `xfsprogs` 패키지
+- root 권한
+
+---
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| F8.1 | `TestRealResize_NodeExpandVolume_ext4` | NodeExpandVolume 호출 후 `resize2fs`가 실행되어 마운트된 ext4 파일시스템 크기가 확장됨 | ext4 파일시스템이 스테이징 경로에 마운트됨; ZFS zvol이 2 GiB로 확장됨 | 1) `nodeServer.NodeExpandVolume(ctx, req)` 호출 (VolumePath=스테이징경로); 2) `df -h <스테이징경로>` 확인 | 파일시스템 크기 2 GiB; 데이터 손실 없음 | `CSI-N`, `Mnt` |
+| F8.2 | `TestRealResize_NodeExpandVolume_xfs` | F8.1과 동일하지만 xfs (`xfs_growfs`) | F8.1과 동일하지만 xfs | 동일 | 파일시스템 크기 확장됨 | `CSI-N`, `Mnt` |
+| F8.3 | `TestRealResize_FullPipeline` | ZFS zvol 확장(F1.3) → ControllerExpandVolume → NodeExpandVolume → 파일시스템 온라인 확장 전체 파이프라인 | F1.3 + F4.1 환경; PVC 마운트됨 | 1) `zfs set volsize=2G`; 2) ControllerExpandVolume(2 GiB); 3) NodeExpandVolume; 4) `df -h` 확인 | 전체 파이프라인 성공; 파일시스템 2 GiB | `CSI-C`, `CSI-N`, `Agent`, `ZFS`, `Mnt` |
+
+**자동화 대체 범위:**
+- `TestCSIExpand_*` (E11): ControllerExpandVolume + NodeExpandVolume RPC 로직,
+  인수 검증, agent 호출은 mock 환경에서 검증
+- 그러나 **실제 `resize2fs`/`xfs_growfs` 실행**, **파일시스템 크기 변경**은
+  자동화 테스트로 검증 불가
+
+---
+
+### F9: NVMe-oF Multipath / 고가용성
+
+**카테고리:** 수동/스테이징 ❌ CI 불가
+
+**빌드 태그:** `//go:build hardware`
+
+**자동화 불가 사유:**
+- NVMe-oF multipath는 **실제 다중 NIC 또는 다중 경로**를 요구하며,
+  커널 NVMe multipath 드라이버 지원이 필요
+- 경로 장애(path failure) 시뮬레이션은 실제 네트워크 인터페이스를 down시켜야 하므로
+  root 권한 + 실제 NIC 필요
+- `mockCSIConnector`는 단일 경로만 시뮬레이션하므로 multipath 시나리오 불가
+
+**필요 인프라:**
+- 다중 NIC가 장착된 스토리지 노드 (또는 VLAN 설정)
+- F2 + F3 환경
+- Linux multipath 도구 (`nvme-cli` multipath 지원 빌드)
+
+---
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| F9.1 | `TestRealNVMeoF_Multipath_Connect` | 두 경로(주 경로 + 보조 경로)로 NVMe-oF 연결 후 multipath 디바이스(`/dev/nvme0c0n1` 등) 확인 | 다중 NIC; nvmet 다중 포트 설정; nvme-tcp 모듈 | 1) 주 경로로 `nvme connect`; 2) 보조 경로로 `nvme connect`; 3) `nvme list` 에서 multipath 확인 | 두 경로 모두 연결됨; multipath 디바이스 노출 | `Conn` |
+| F9.2 | `TestRealNVMeoF_Multipath_Failover` | 주 경로 장애 시 I/O가 보조 경로로 자동 전환되고 데이터 손실 없음 | F9.1 성공 후 I/O 진행 중 | 1) 주 NIC `ip link set down`; 2) I/O 지속 확인 (fio); 3) NIC 복원; 4) 두 경로 재확인 | I/O 중단 없음 (또는 단기 지연); 데이터 일관성; 경로 복원 후 두 경로 재활성화 | `Conn` |
+| F9.3 | `TestRealNVMeoF_Multipath_AllPaths_Down` | 모든 경로 장애 시 I/O 오류가 적절히 상위로 전파 | F9.1 성공 후 | 1) 모든 NIC `ip link set down`; 2) I/O 시도 | I/O 오류; 타임아웃 이내에 오류 반환 | `Conn` |
+
+**자동화 대체 범위:** mockCSIConnector는 단일 경로만 시뮬레이션한다.
+NVMe-oF multipath는 완전히 수동 테스트에 의존한다.
+
+---
+
+### F10: 볼륨 데이터 마이그레이션 (SendVolume / ReceiveVolume)
+
+**카테고리:** 수동/스테이징 ❌ CI 불가
+
+**빌드 태그:** `//go:build hardware`
+
+**자동화 불가 사유:**
+- `SendVolume`/`ReceiveVolume`은 스트리밍 gRPC RPC로 실제 ZFS 스냅샷 데이터를
+  네트워크로 전송 → 두 개 이상의 스토리지 노드 필요
+- 실제 ZFS `zfs send | zfs receive` 파이프라인은 실제 ZFS 데이터가 있어야 검증 가능
+- 대용량 데이터 전송 성능(예: 100 GiB) 검증은 실제 스토리지 하드웨어 필요
+
+**필요 인프라:**
+- 스토리지 노드 2대 (송신 측 + 수신 측)
+- 양쪽 노드에 F1 ZFS 환경 구성
+- 두 노드 간 TCP 네트워크 연결
+- root 권한
+
+---
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| F10.1 | `TestRealMigration_SendReceiveVolume_Small` | 소용량(1 GiB) ZFS 스냅샷을 두 노드 간 `SendVolume`/`ReceiveVolume`으로 전송하고 수신 측에서 데이터 일관성 확인 | 송신 노드에 `tank/source` zvol (1 GiB, 데이터 채움); 수신 노드에 빈 ZFS 풀; 양쪽에 pillar-agent 실행 | 1) 송신 측 `zfs snapshot tank/source@snap1`; 2) 송신 측 `agent.SendVolume(ctx, snap)` → 스트리밍 RPC; 3) 수신 측 `agent.ReceiveVolume(ctx, stream)` → 수신; 4) 수신 측 `zfs list tank/dest` 확인; 5) SHA256 체크섬 비교 | 전송 성공; 수신 측 zvol 존재; 체크섬 일치 | `ZFS`, `Agent`, `gRPC` |
+| F10.2 | `TestRealMigration_SendReceiveVolume_Incremental` | 증분 ZFS 스냅샷 전송 (`zfs send -i`) — 델타만 전송 확인 | F10.1 성공 후 수신 측에 베이스 스냅샷 존재; 송신 측에 변경 사항 추가 후 두 번째 스냅샷 | 1) 송신 측 추가 데이터 쓰기; 2) `zfs snapshot tank/source@snap2`; 3) 증분 SendVolume (snap1 → snap2); 4) 수신 측에서 확인 | 증분 전송 성공; 전체 전송 대비 빠름; 수신 측 최신 데이터 포함 | `ZFS`, `Agent`, `gRPC` |
+| F10.3 | `TestRealMigration_SendReceiveVolume_NetworkInterruption` | 전송 중 네트워크 단절 시 올바른 오류 반환 및 부분 수신 데이터 정리 | F10.1 설정; 전송 중간에 네트워크 차단 가능한 환경 | 1) SendVolume/ReceiveVolume 시작; 2) 전송 50% 지점에서 네트워크 차단 (`tc qdisc add ... loss 100%`); 3) 양쪽 agent 오류 확인 | 오류 반환; 수신 측 부분 데이터 정리; 재시도 가능한 상태 | `ZFS`, `Agent`, `gRPC` |
+| F10.4 | `TestRealMigration_LargeVolume_Performance` | 100 GiB ZFS 볼륨 전송 성능 기준점 측정 (최소 200 MB/s 이상) | 대용량 스토리지 서버 2대; 1 GbE 이상 네트워크 | 1) 100 GiB zvol 생성 및 데이터 채움; 2) 전송 시작; 3) 소요 시간 측정 | 200 MB/s 이상; 전송 완료; 데이터 일관성 | `ZFS`, `Agent`, `gRPC` |
+
+**자동화 대체 범위:** `SendVolume`/`ReceiveVolume` RPC 인터페이스 정의 및
+gRPC 스트리밍 직렬화는 unit test로 검증 가능하나, 실제 데이터 전송은 수동 테스트에 의존한다.
+
+---
+
+### F11: 커널 레벨 동시성 / 레이스 컨디션
+
+**카테고리:** 수동/스테이징 ❌ CI 불가
+
+**빌드 태그:** `//go:build hardware`
+
+**자동화 불가 사유:**
+- `flock(2)` 기반 파일 잠금의 실제 커널 레벨 동작은 실제 파일시스템 필요
+- 커널 드라이버 레벨 레이스 컨디션(configfs 동시 쓰기, nvmet 연결 경합)은
+  실제 커널 스택이 없으면 재현 불가
+- `go test -race` 는 Go 메모리 모델 레이스만 감지하며, 커널-사용자 공간 경계 레이스는 불가
+
+**필요 인프라:**
+- F2 + F3 환경
+- `stress-ng`, `fio` 부하 생성 도구
+- root 권한
+
+---
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| F11.1 | `TestRealConcurrent_MultipleExportSameNQN` | 두 goroutine이 동일 NQN으로 동시에 ExportVolume 호출 시 configfs 충돌 없음 (정확히 한 번 성공 또는 멱등성) | F2 환경; nvmet 로드; root 권한 | 1) 10개 goroutine이 동일 NQN으로 동시 ExportVolume 호출 | 정확히 1개 성공 또는 모두 성공(멱등); configfs 손상 없음; panic 없음 | `NVMeF`, `Agent` |
+| F11.2 | `TestRealConcurrent_ConfigfsWrite_Stress` | configfs에 대한 집중적인 동시 쓰기 시 커널 오류 없음 | nvmet 로드; root 권한 | 1) 100개 goroutine이 서로 다른 NQN으로 동시 ExportVolume/UnexportVolume 교차 실행; 2) `dmesg` 오류 확인 | 모든 RPC 완료; 커널 오류 없음 (`dmesg -T | grep -i error`) | `NVMeF`, `Agent` |
+
+**자동화 대체 범위:**
+- `TestCSIConcurrent_*` (E16): Go 애플리케이션 레벨 동시성 (패닉, 데드락)은 검증
+- 그러나 **커널 configfs 동시 쓰기 안전성**, **nvmet 드라이버 내 경합**은
+  수동 테스트에 의존
+
+---
+
+### F12: 대규모 확장성 (볼륨 100개 이상)
+
+**카테고리:** 수동/스테이징 ❌ CI 불가
+
+**빌드 태그:** `//go:build hardware`
+
+**자동화 불가 사유:**
+- 100개 이상의 PVC 동시 생성 시 실제 처리 시간 (ZFS zvol 생성, nvmet 설정 시간)은
+  mock으로 재현 불가
+- 실제 Kubernetes 클러스터의 `etcd` 처리량, `external-provisioner` 큐 깊이 등
+  실제 오케스트레이션 부하가 필요
+- CI 환경의 제한된 디스크/메모리 용량으로는 100개 볼륨 프로비저닝 불가
+
+**필요 인프라:**
+- 대용량 스토리지 서버 (100 GiB+ 여유 ZFS 풀)
+- F5 Kubernetes 클러스터 환경
+- 충분한 CPU/RAM (32 GiB+ RAM 권장)
+
+---
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| F12.1 | `TestRealScale_100PVC_ProvisionAll` | 100개 PVC 동시 생성 요청 시 모두 Bound 상태로 완료되고 처리 시간 측정 | K8s 클러스터; 100 GiB+ ZFS 풀; pillar-csi DaemonSet | 1) `kubectl apply -f 100-pvcs.yaml`; 2) 모든 PVC Bound 대기 (Eventually 10분); 3) 총 소요 시간 기록 | 100개 모두 Bound; 10분 이내 완료; 스토리지 누수 없음 | `CSI-C`, `Agent`, `ZFS`, `NVMeF`, `VolCRD` |
+| F12.2 | `TestRealScale_100PVC_DeleteAll` | F12.1 이후 100개 PVC 동시 삭제 시 모두 정리되고 ZFS zvol 없음 확인 | F12.1 성공 후 100개 PVC Bound | 1) `kubectl delete -f 100-pvcs.yaml`; 2) PVC 없음 대기; 3) `zfs list \| wc -l` 확인 | 모든 PVC/PV 삭제; ZFS zvol 없음 | `CSI-C`, `Agent`, `ZFS`, `NVMeF`, `VolCRD` |
+
+**자동화 대체 범위:**
+- `TestCSIConcurrent_*` (E16): 동시 RPC 호출에서 Go 레벨 경합 없음은 검증
+- 그러나 **실제 처리 시간**, **Kubernetes etcd 부하**, **스토리지 서버 부하**는 수동 테스트에 의존
+
+---
+
+### 수동/스테이징 테스트 실행 가이드
+
+#### 환경 준비 체크리스트
+
+```bash
+# 1. 커널 모듈 확인
+lsmod | grep -E "nvmet|zfs"
+
+# 2. ZFS 풀 준비
+zpool status tank
+
+# 3. 빌드 태그 확인
+go test -list '.' -tags hardware ./...
+
+# 4. root 권한 확인
+id  # uid=0 확인
+
+# 5. 네트워크 확인 (NVMe-oF 멀티패스 테스트)
+ip link show | grep -E "eth|ens|enp"
+```
+
+#### 개별 카테고리 실행
+
+```bash
+# F1: ZFS 백엔드 테스트만
+go test ./... -tags hardware -run 'TestRealZFS_' -v
+
+# F2: NVMe-oF 타겟 테스트만
+go test ./... -tags hardware -run 'TestRealNVMeoF_Export|TestRealNVMeoF_Unexport|TestRealNVMeoF_Allow' -v
+
+# F3: NVMe-oF 이니시에이터 연결 테스트만
+go test ./... -tags hardware -run 'TestRealNVMeoF_Connect|TestRealNVMeoF_Disconnect' -v
+
+# F4: 마운트 테스트만 (root 필수)
+sudo go test ./... -tags hardware -run 'TestRealMount_' -v
+
+# F5: Kubernetes PVC 테스트 (kubeconfig 설정 필요)
+KUBECONFIG=/path/to/kubeconfig go test ./... -tags hardware -run 'TestK8sPVC_' -v
+
+# F6: agent 재시작 복구 테스트
+go test ./... -tags hardware -run 'TestRealAgent_' -v
+
+# F3.3: 전체 스토리지 경로 통합 테스트 (F1+F2+F3+F4 환경 필요)
+sudo go test ./... -tags hardware -run 'TestRealNVMeoF_FullStoragePath' -v -timeout 600s
+```
+
+#### 테스트 후 정리
+
+```bash
+# ZFS zvol 정리
+zfs list | grep test | awk '{print $1}' | xargs -I{} zfs destroy {}
+
+# configfs 정리
+ls /sys/kernel/config/nvmet/subsystems/ | \
+  grep pillar | while read nqn; do
+    # allowed_hosts 링크 삭제
+    ls /sys/kernel/config/nvmet/subsystems/$nqn/allowed_hosts/ | \
+      xargs -I{} rm /sys/kernel/config/nvmet/subsystems/$nqn/allowed_hosts/{}
+    # namespace 삭제
+    ls /sys/kernel/config/nvmet/subsystems/$nqn/namespaces/ | \
+      xargs -I{} rmdir /sys/kernel/config/nvmet/subsystems/$nqn/namespaces/{}
+    # subsystem 삭제
+    rmdir /sys/kernel/config/nvmet/subsystems/$nqn
+  done
+
+# NVMe 연결 해제
+nvme disconnect-all
+```
+
+---
+
+### 수동/스테이징 테스트 자동화 여부 결정 기준
+
+아래 기준으로 테스트를 수동/스테이징 카테고리에 분류했다:
+
+| 결정 기준 | 설명 | 해당 테스트 |
+|---------|------|-----------|
+| **커널 모듈 필수** | `nvmet`, `nvme-tcp`, `zfs` 등 커널 모듈 로드가 필요한 경우 | F2, F3, F9, F11 |
+| **root 권한 필수** | `mount(8)`, `zfs(8)`, `modprobe` 등 root 권한이 필요한 경우 | F1, F2, F3, F4, F8 |
+| **실제 블록 디바이스** | `/dev/zvol/*`, `/dev/nvme*` 등 실제 블록 디바이스가 필요한 경우 | F1, F3, F4, F8 |
+| **다중 물리 노드** | 송신/수신 스토리지 노드가 분리되어야 하는 경우 | F10 |
+| **실제 오케스트레이션** | `external-provisioner`, `kube-controller-manager` 등 실제 K8s 컴포넌트가 필요한 경우 | F5 |
+| **프로세스 재시작** | 실제 OS 프로세스를 종료하고 재시작해야 하는 경우 | F6 |
+| **노드 재부팅** | 물리/가상 노드 전체 재부팅이 필요한 경우 | F6.4 |
+| **대용량 리소스** | 수십 GiB 이상의 실제 스토리지 용량이 필요한 경우 | F10.4, F12 |
+| **실제 PKI** | cert-manager 등 실제 인증서 발급 인프라가 필요한 경우 | F7 |
+
+**원칙:** 위 기준 중 하나라도 해당하면 수동/스테이징 카테고리로 분류한다.
+자동화 가능한 부분(RPC 로직, 파라미터 직렬화, 오류 매핑)은 E 계열(인프로세스 E2E)
+또는 component 테스트로 최대한 커버한다.
+
+---
+
