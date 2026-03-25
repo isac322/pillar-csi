@@ -107,8 +107,7 @@ test-e2e: manifests generate fmt vet ## Run e2e tests; TestMain creates and tear
 	E2E_IMAGE_TAG=$(E2E_IMAGE_TAG) \
 	E2E_HELM_RELEASE=$(E2E_HELM_RELEASE) \
 	E2E_HELM_NAMESPACE=$(E2E_HELM_NAMESPACE) \
-	  go test -tags=e2e ./test/e2e/... -v -ginkgo.v \
-	  -count=1 -timeout=60m $(E2E_TEST_ARGS)
+	  go test -tags=e2e ./test/e2e/ -v -timeout=30m $(E2E_TEST_ARGS)
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
