@@ -11,7 +11,7 @@
 - 실제 커널 모듈, 실제 ZFS, 실제 NVMe-oF 장치를 요구하는 테스트는
   별도로 표시하고 현실적인 인프라 요구사항을 함께 기술한다.
 
-**총 테스트 케이스: 282** (인프로세스 194개 + envtest 통합 85개 + 클러스터 레벨 3개; E18 Agent 다운 시나리오 7개 · E21 잘못된 CR 시나리오 26개 · E22 비호환 프로토콜 시나리오 12개 · E3.16–E3.20 스테이징 단계 심화 18개 · E3.21–E3.23 게시 단계 단위 테스트 18개 포함 / 수동 AD 시나리오 3개 · BP 시나리오 4개 별도)
+**총 테스트 케이스: 305** (인프로세스 194개 + envtest 통합 108개 + 클러스터 레벨 3개; E18 Agent 다운 시나리오 7개 · E21 잘못된 CR 시나리오 26개 · E22 비호환 프로토콜 시나리오 12개 · E3.16–E3.20 스테이징 단계 심화 18개 · E3.21–E3.23 게시 단계 단위 테스트 18개 · E26 교차-CRD 라이프사이클 상호작용 23개 포함 / 수동 AD 시나리오 3개 · BP 시나리오 4개 별도)
 
 ---
 
@@ -89,23 +89,24 @@
 - [E20: PillarPool CRD 라이프사이클](#e20-pillarpool-crd-라이프사이클)
 - [E23: PillarProtocol CRD 라이프사이클](#e23-pillarprotocol-crd-라이프사이클)
 - [E25: PillarBinding CRD 라이프사이클](#e25-pillarbinding-crd-라이프사이클)
+- [E26: 교차-CRD 라이프사이클 상호작용](#e26-교차-crd-라이프사이클-상호작용)
 - [E21.2–E21.4: 잘못된 CR 웹훅·스키마 검증](#e212-pillartarget-웹훅--불변-필드-수정-거부-type-c--envtest-) _(E21 중 envtest 소섹션)_
 
 ### 카테고리 2 — 클러스터 레벨 E2E 테스트 (유형 B: Kind 클러스터 필요) ⚠️
 > 빌드 태그: `//go:build e2e` | `go test ./test/e2e/ -tags=e2e -v` | 총 3개 테스트 (E10); Helm 설치 검증 10개 테스트 (E25) 추가 예정
 
 - [E10: 클러스터 레벨 E2E 테스트](#e10-클러스터-레벨-e2e-테스트)
-- [E25: Helm 차트 설치 및 릴리스 검증](#e25-helm-차트-설치-및-릴리스-검증)
-  - [E25.1: Helm 차트 기본값 설치 성공](#e251-helm-차트-기본값-설치-성공)
-  - [E25.2: Helm 릴리스 상태 검증 (helm status)](#e252-helm-릴리스-상태-검증-helm-status)
-  - [E25.3: Helm 릴리스 목록 검증 (helm list)](#e253-helm-릴리스-목록-검증-helm-list)
-  - [E25.4: 배포된 Kubernetes 리소스 정상 동작 검증](#e254-배포된-kubernetes-리소스-정상-동작-검증)
-  - [E25.5: CRD 등록 검증](#e255-crd-등록-검증)
-  - [E25.6: 커스텀 values 오버라이드 설치](#e256-커스텀-values-오버라이드-설치)
-  - [E25.7: installCRDs=false 설치 모드 검증](#e257-installcrdsfalse-설치-모드-검증)
-  - [E25.8: 중복 설치 시도 오류 검증](#e258-중복-설치-시도-오류-검증)
-  - [E25.9: Helm 차트 업그레이드 (helm upgrade)](#e259-helm-차트-업그레이드-helm-upgrade)
-  - [E25.10: Helm 차트 설치 해제 및 리소스 정리](#e2510-helm-차트-설치-해제-및-리소스-정리)
+- [E26: Helm 차트 설치 및 릴리스 검증](#e26-helm-차트-설치-및-릴리스-검증)
+  - [E26.1: Helm 차트 기본값 설치 성공](#e261-helm-차트-기본값-설치-성공)
+  - [E26.2: Helm 릴리스 상태 검증 (helm status)](#e262-helm-릴리스-상태-검증-helm-status)
+  - [E26.3: Helm 릴리스 목록 검증 (helm list)](#e263-helm-릴리스-목록-검증-helm-list)
+  - [E26.4: 배포된 Kubernetes 리소스 정상 동작 검증](#e264-배포된-kubernetes-리소스-정상-동작-검증)
+  - [E26.5: CRD 등록 검증](#e265-crd-등록-검증)
+  - [E26.6: 커스텀 values 오버라이드 설치](#e266-커스텀-values-오버라이드-설치)
+  - [E26.7: installCRDs=false 설치 모드 검증](#e267-installcrdsfalse-설치-모드-검증)
+  - [E26.8: 중복 설치 시도 오류 검증](#e268-중복-설치-시도-오류-검증)
+  - [E26.9: Helm 차트 업그레이드 (helm upgrade)](#e269-helm-차트-업그레이드-helm-upgrade)
+  - [E26.10: Helm 차트 설치 해제 및 리소스 정리](#e2610-helm-차트-설치-해제-및-리소스-정리)
 
 ### 카테고리 3 — 완전 E2E / 수동 스테이징 테스트 (유형 F) ❌
 > 빌드 태그: `//go:build e2e_full` | 실제 ZFS/NVMe-oF 커널 모듈 필요 | 베어메탈/KVM 서버 필요
@@ -270,8 +271,9 @@ Docker-in-Docker(DinD) 또는 Kind 지원 러너가 없으면 실행 불가.
 | E21.2 | PillarTarget 웹훅 검증 | 7 | `TestPillarTargetWebhook_*` |
 | E21.3 | PillarPool 웹훅 검증 | 5 | `TestPillarPoolWebhook_*` |
 | E21.4 | CRD OpenAPI 스키마 검증 | 8 | `TestCRDSchema_*` |
+| E26 | 교차-CRD 라이프사이클 상호작용 | 23 | `TestCrossLifecycle_*` |
 
-| **합계** | | **178** (in-process 158 + envtest 20) | |
+| **합계** | | **201** (in-process 158 + envtest 43) | |
 
 ---
 
@@ -2526,7 +2528,7 @@ go test -tags=integration ./internal/controller/... -v
 go test -tags=integration ./internal/webhook/... -v
 ```
 
-**총 카테고리 1.5 테스트 케이스: 104개** (E19: 19개, E20: 20개, E23: 24개, E25: 41개)
+**총 카테고리 1.5 테스트 케이스: 127개** (E19: 19개, E20: 20개, E23: 24개, E25: 41개, E26: 23개)
 
 ---
 
@@ -3224,6 +3226,259 @@ go test ./test/e2e/ -tags=e2e -v -run TestE2E
 | 68 | `TestE2E/Manager_컨트롤러_파드_실행_확인` | pillar-csi-controller-manager 파드가 `pillar-csi-system` 네임스페이스에서 정상 실행됨 | Kind 클러스터; `make docker-build` 후 이미지 로드; CRD 설치; 매니저 배포 완료 | 1) pillar-csi-system 네임스페이스에서 파드 목록 조회; 2) 파드 상태 확인 | 컨트롤러 파드가 Running 상태; 재시작 없음 | `전체시스템`, `Kubernetes클러스터` |
 | 69 | `TestE2E/매니저_메트릭스_서비스_접근_가능` | RBAC RoleBinding 생성 후 `/metrics` 엔드포인트에서 메트릭 수집 가능 | Kind 클러스터; 컨트롤러 파드 Running; 메트릭 RoleBinding 생성 | 1) kubectl port-forward 또는 직접 curl로 /metrics 접근 | HTTP 200 응답; Go 런타임 메트릭 포함 | `전체시스템`, `Kubernetes클러스터` |
 | 70 | `TestE2E/cert-manager_통합` | cert-manager가 설치된 환경에서 TLS 인증서 발급 동작 | Kind 클러스터; cert-manager v1.14+ 설치 완료; 클러스터 배포 | 1) cert-manager Certificate 리소스 상태 확인 | 인증서 발급 성공; Secret에 tls.crt/tls.key 존재 | `전체시스템`, `cert-manager`, `TgtCRD` |
+
+---
+
+## E26: Helm 차트 설치 및 릴리스 검증
+
+**테스트 유형:** B (클러스터 레벨) ❌ 표준 CI 불가
+
+**빌드 태그:** `//go:build e2e`
+
+**현재 구현 상태:** 미구현(planned). 이 문서는 구현 전 설계 사양이다.
+
+**실행 방법:**
+```bash
+# Kind 클러스터 준비 및 Helm v3.12+ 설치 후
+go test ./test/e2e/ -tags=e2e -v -run TestHelm
+```
+
+**필수 인프라:**
+- [유형 B 섹션 참조](#유형-b-클러스터-레벨cluster-level-e2e-테스트--표준-ci-불가)
+- `helm` CLI v3.12 이상
+- Kind 클러스터 또는 kubeconfig 설정된 K8s 클러스터
+- pillar-csi 컨테이너 이미지 (Kind 로컬 로드 또는 레지스트리 접근 가능)
+
+**검증 대상 리소스:** Helm 차트(`charts/pillar-csi`)가 기본값으로 설치될 때 아래 리소스가 생성된다.
+
+| 리소스 종류 | 이름 패턴 | 설명 |
+|-----------|---------|------|
+| `Deployment` | `<release>-controller` | CSI 컨트롤러 + 사이드카(provisioner, attacher, resizer, livenessprobe) |
+| `DaemonSet` | `<release>-node` | CSI 노드 서비스 (모든 워커 노드에 배포) |
+| `DaemonSet` | `<release>-agent` | pillar-agent (스토리지 레이블 노드에만 배포) |
+| `ServiceAccount` | `<release>-controller`, `<release>-node`, `<release>-agent` | 각 컴포넌트별 서비스 계정 3개 |
+| `ClusterRole` | `<release>` | provisioner/attacher/resizer/controller 권한 통합 ClusterRole |
+| `ClusterRoleBinding` | `<release>` | ClusterRole 바인딩 |
+| `CSIDriver` | `pillar-csi.bhyoo.com` | CSI 드라이버 등록 객체 |
+| `CustomResourceDefinition` | `pillarbindings.pillar-csi.bhyoo.com` 외 4종 | pillar-csi CRD 5종 |
+
+---
+
+### E26.1 Helm 차트 기본값 설치 성공
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| 207 | `TestHelm/Helm_차트_기본값_설치_성공` | `helm install`을 기본값으로 실행하면 릴리스가 `deployed` 상태로 완료된다 | Kind 클러스터 실행 중; `helm` v3.12+ 설치됨; `charts/pillar-csi/` 디렉터리 존재; pillar-csi 이미지 접근 가능(Kind 로드 또는 레지스트리) | 1) `helm install pillar-csi ./charts/pillar-csi --namespace pillar-csi-system --create-namespace --wait --timeout 5m` 실행; 2) 명령 종료 코드 확인 | 종료 코드 0; stdout에 `STATUS: deployed` 포함; stdout에 `REVISION: 1` 포함; `pillar-csi-system` 네임스페이스 생성됨 | `전체시스템`, `Kubernetes클러스터` |
+
+**설치 명령 전체 예시:**
+```bash
+helm install pillar-csi ./charts/pillar-csi \
+  --namespace pillar-csi-system \
+  --create-namespace \
+  --wait \
+  --timeout 5m
+```
+
+**기대 stdout 출력 (예시):**
+```
+NAME: pillar-csi
+LAST DEPLOYED: Wed Mar 25 12:00:00 2026
+NAMESPACE: pillar-csi-system
+STATUS: deployed
+REVISION: 1
+TEST SUITE: None
+```
+
+---
+
+### E26.2 Helm 릴리스 상태 검증 (helm status)
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| 208 | `TestHelm/Helm_릴리스_상태_검증` | `helm status` 명령이 릴리스 메타데이터를 올바르게 반환한다 | E26.1 완료 후 상태 (pillar-csi 릴리스 `deployed` 상태) | 1) `helm status pillar-csi --namespace pillar-csi-system` 실행; 2) 출력 파싱 | `NAME: pillar-csi`; `NAMESPACE: pillar-csi-system`; `STATUS: deployed`; `REVISION: 1`; 종료 코드 0 | `전체시스템`, `Kubernetes클러스터` |
+| 209 | `TestHelm/Helm_릴리스_상태_JSON_검증` | `helm status --output json` 출력이 파싱 가능한 JSON이고 필수 필드를 포함한다 | E26.1 완료 후 상태 | 1) `helm status pillar-csi --namespace pillar-csi-system --output json` 실행; 2) JSON 파싱; 3) 필드 검증 | JSON 파싱 성공; `.info.status == "deployed"`; `.name == "pillar-csi"`; `.namespace == "pillar-csi-system"`; `.version == 1` | `전체시스템`, `Kubernetes클러스터` |
+
+**검증 명령 예시:**
+```bash
+# 텍스트 출력 확인
+helm status pillar-csi --namespace pillar-csi-system
+
+# JSON 출력으로 파싱 가능성 확인
+helm status pillar-csi --namespace pillar-csi-system --output json \
+  | jq '.info.status'
+# 기대 출력: "deployed"
+
+helm status pillar-csi --namespace pillar-csi-system --output json \
+  | jq '.version'
+# 기대 출력: 1
+```
+
+---
+
+### E26.3 Helm 릴리스 목록 검증 (helm list)
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| 210 | `TestHelm/Helm_릴리스_목록_검증` | `helm list`가 설치된 릴리스 항목을 반환한다 | E26.1 완료 후 상태 | 1) `helm list --namespace pillar-csi-system` 실행; 2) 출력에서 `pillar-csi` 항목 존재 여부 확인 | 출력에 `pillar-csi` 행 존재; `CHART` 열에 `pillar-csi-0.1.0`; `STATUS` 열에 `deployed` | `전체시스템`, `Kubernetes클러스터` |
+| 211 | `TestHelm/Helm_릴리스_목록_JSON_검증` | `helm list --output json`이 파싱 가능한 배열을 반환하고 릴리스가 포함된다 | E26.1 완료 후 상태 | 1) `helm list --namespace pillar-csi-system --output json` 실행; 2) JSON 배열 파싱; 3) `pillar-csi` 항목 검색 | 배열 길이 ≥ 1; 첫 번째 항목 `.name == "pillar-csi"`; `.status == "deployed"`; `.chart` 에 `pillar-csi` 포함 | `전체시스템`, `Kubernetes클러스터` |
+
+**검증 명령 예시:**
+```bash
+helm list --namespace pillar-csi-system
+
+# 기대 출력 (헤더 + 데이터 행):
+# NAME        NAMESPACE           REVISION  UPDATED                   STATUS    CHART              APP VERSION
+# pillar-csi  pillar-csi-system  1         2026-03-25 12:00:00 ...   deployed  pillar-csi-0.1.0   0.1.0
+
+helm list --namespace pillar-csi-system --output json \
+  | jq '.[0].status'
+# 기대 출력: "deployed"
+```
+
+---
+
+### E26.4 배포된 Kubernetes 리소스 정상 동작 검증
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| 212 | `TestHelm/컨트롤러_Deployment_Running_검증` | Helm 설치 후 controller Deployment가 Available 상태이고 파드가 Running이다 | E26.1 완료; `--wait` 플래그로 설치하여 파드 Ready 대기 완료 | 1) `kubectl get deployment -n pillar-csi-system -l app.kubernetes.io/component=controller -o json`; 2) `.status.availableReplicas` 확인; 3) 파드 상태 확인 | Deployment `availableReplicas == 1`; 컨트롤러 파드 `status.phase == Running`; 컨테이너 재시작 횟수 == 0 | `CSI-C`, `Kubernetes클러스터` |
+| 213 | `TestHelm/노드_DaemonSet_배포_검증` | Helm 설치 후 node DaemonSet이 존재하고 스케줄 가능한 노드 수만큼 파드가 Running이다 | E26.1 완료; Kind 클러스터 워커 노드 수 확인 | 1) `kubectl get daemonset -n pillar-csi-system -l app.kubernetes.io/component=node -o json`; 2) `.status.numberReady` 확인 | `numberReady == numberDesired`; 각 파드 `status.phase == Running`; node-driver-registrar 및 livenessprobe 사이드카 포함 | `CSI-N`, `Kubernetes클러스터` |
+| 214 | `TestHelm/에이전트_DaemonSet_배포_검증` | Helm 설치 후 agent DaemonSet이 존재하고 스토리지 레이블 노드에만 파드가 스케줄된다 | E26.1 완료; 스토리지 레이블 노드 없는 상태(기본값) | 1) `kubectl get daemonset -n pillar-csi-system -l app.kubernetes.io/component=agent -o json`; 2) `.status.desiredNumberScheduled` 확인 | DaemonSet 존재; 스토리지 레이블(`pillar-csi.bhyoo.com/storage-node=true`) 없는 환경에서 `desiredNumberScheduled == 0`(파드 없음이 정상); DaemonSet 자체는 `Running` 상태 아님 — `desiredNumberScheduled == 0`이어야 함 | `Agent`, `Kubernetes클러스터` |
+| 215 | `TestHelm/ServiceAccount_3종_존재_검증` | 컨트롤러·노드·에이전트 ServiceAccount 3개가 생성된다 | E26.1 완료 | 1) `kubectl get serviceaccount -n pillar-csi-system -o name`; 2) 이름 목록에서 3개 ServiceAccount 존재 여부 확인 | `pillar-csi-controller`(또는 fullname 패턴) SA 존재; `pillar-csi-node` SA 존재; `pillar-csi-agent` SA 존재 | `전체시스템`, `Kubernetes클러스터` |
+| 216 | `TestHelm/CSIDriver_등록_검증` | CSIDriver 객체 `pillar-csi.bhyoo.com`이 올바른 스펙으로 등록된다 | E26.1 완료 | 1) `kubectl get csidriver pillar-csi.bhyoo.com -o json`; 2) `.spec` 필드 검증 | CSIDriver 존재; `.spec.attachRequired == true`; `.spec.podInfoOnMount == true`; `.spec.fsGroupPolicy == "File"`; `.spec.volumeLifecycleModes` 에 `"Persistent"` 포함 | `전체시스템`, `Kubernetes클러스터` |
+
+---
+
+### E26.5 CRD 등록 검증
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| 217 | `TestHelm/CRD_5종_설치_검증` | Helm 설치 후 pillar-csi CRD 5종이 모두 등록된다 | E26.1 완료 (`installCRDs: true` 기본값) | 1) `kubectl get crd -o name`; 2) 출력에서 pillar-csi CRD 이름 5개 검색 | 아래 5개 CRD 모두 존재: `pillarbindings.pillar-csi.bhyoo.com`, `pillarpools.pillar-csi.bhyoo.com`, `pillarprotocols.pillar-csi.bhyoo.com`, `pillartargets.pillar-csi.bhyoo.com`, `pillarvolumes.pillar-csi.bhyoo.com`; 각 CRD `.status.conditions` 에 `Established=True` 포함 | `VolCRD`, `TgtCRD`, `Kubernetes클러스터` |
+
+**검증 명령 예시:**
+```bash
+# CRD 5종 존재 확인
+kubectl get crd | grep pillar-csi.bhyoo.com
+# 기대 출력:
+# pillarbindings.pillar-csi.bhyoo.com    2026-03-25T12:00:00Z
+# pillarpools.pillar-csi.bhyoo.com       2026-03-25T12:00:00Z
+# pillarprotocols.pillar-csi.bhyoo.com   2026-03-25T12:00:00Z
+# pillartargets.pillar-csi.bhyoo.com     2026-03-25T12:00:00Z
+# pillarvolumes.pillar-csi.bhyoo.com     2026-03-25T12:00:00Z
+
+# 각 CRD Established 상태 확인 예시
+kubectl get crd pillartargets.pillar-csi.bhyoo.com \
+  -o jsonpath='{.status.conditions[?(@.type=="Established")].status}'
+# 기대 출력: True
+```
+
+---
+
+### E26.6 커스텀 values 오버라이드 설치
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| 218 | `TestHelm/커스텀_values_오버라이드_설치` | `--set` 플래그로 값을 오버라이드하면 Deployment 스펙에 반영된다 | Kind 클러스터; E25.1 설치 해제 후 (또는 별도 릴리스 이름 사용); Helm v3.12+ | 1) `helm install pillar-csi-custom ./charts/pillar-csi --namespace pillar-csi-custom --create-namespace --set controller.replicaCount=2 --wait --timeout 5m`; 2) Deployment spec.replicas 확인 | 종료 코드 0; `STATUS: deployed`; controller Deployment `.spec.replicas == 2`; `availableReplicas == 2` | `CSI-C`, `Kubernetes클러스터` |
+
+**검증 명령 예시:**
+```bash
+helm install pillar-csi-custom ./charts/pillar-csi \
+  --namespace pillar-csi-custom \
+  --create-namespace \
+  --set controller.replicaCount=2 \
+  --wait \
+  --timeout 5m
+
+kubectl get deployment -n pillar-csi-custom \
+  -l app.kubernetes.io/component=controller \
+  -o jsonpath='{.items[0].spec.replicas}'
+# 기대 출력: 2
+```
+
+---
+
+### E26.7 installCRDs=false 설치 모드 검증
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| 219 | `TestHelm/installCRDs_false_설치_검증` | `installCRDs=false`로 설치하면 CRD가 생성되지 않고 다른 리소스는 정상 생성된다 | Kind 클러스터; CRD가 사전 설치되어 있지 않은 클린 상태; Helm v3.12+ | 1) `helm install pillar-csi-nocrd ./charts/pillar-csi --namespace pillar-csi-nocrd --create-namespace --set installCRDs=false --wait --timeout 5m`; 2) CRD 존재 여부 확인; 3) Deployment/DaemonSet 존재 여부 확인 | 종료 코드 0; `STATUS: deployed`; `kubectl get crd | grep pillar-csi.bhyoo.com` 출력이 비어 있음(CRD 없음); controller Deployment 존재 | `VolCRD`, `TgtCRD`, `Kubernetes클러스터` |
+
+> **참고:** `installCRDs=false` 모드는 CRD를 별도의 GitOps 파이프라인 또는 전용 CRD 차트로 관리하는 경우에 사용한다. 이 모드에서 컨트롤러는 시작은 되지만, CRD가 등록되지 않아 CRD 기반 기능(PillarTarget 조회 등)은 동작하지 않는다.
+
+---
+
+### E26.8 중복 설치 시도 오류 검증
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| 220 | `TestHelm/중복_설치_시도_오류_검증` | 동일 릴리스 이름으로 `helm install`을 재시도하면 명확한 오류가 반환된다 | E26.1 완료 후 상태 (`pillar-csi` 릴리스가 이미 `deployed` 상태) | 1) 동일한 `helm install pillar-csi ./charts/pillar-csi --namespace pillar-csi-system` 재실행 | 종료 코드 비-0 (오류 반환); stderr에 `"pillar-csi" already exists` 포함; 기존 릴리스 상태 `deployed` 유지 (오염 없음) | `전체시스템`, `Kubernetes클러스터` |
+
+**검증 명령 예시:**
+```bash
+# 첫 번째 설치 (E26.1에서 완료됨)
+helm install pillar-csi ./charts/pillar-csi --namespace pillar-csi-system
+
+# 두 번째 설치 시도 (오류 기대)
+helm install pillar-csi ./charts/pillar-csi --namespace pillar-csi-system
+# 기대 stderr: Error: INSTALLATION FAILED: "pillar-csi" already exists
+# 기대 종료 코드: 1
+
+# 기존 릴리스 상태 유지 확인
+helm status pillar-csi --namespace pillar-csi-system
+# STATUS: deployed (변경 없음)
+```
+
+---
+
+### E26.9 Helm 차트 업그레이드 (helm upgrade)
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| 221 | `TestHelm/Helm_차트_업그레이드_성공` | `helm upgrade`로 릴리스를 업그레이드하면 REVISION이 증가하고 STATUS가 `deployed`를 유지한다 | E26.1 완료 후 상태 (REVISION: 1) | 1) `helm upgrade pillar-csi ./charts/pillar-csi --namespace pillar-csi-system --wait --timeout 5m`; 2) `helm status` 실행 | 종료 코드 0; `STATUS: deployed`; `REVISION: 2`; 이전 릴리스 히스토리에 REVISION: 1 보존됨 | `전체시스템`, `Kubernetes클러스터` |
+| 222 | `TestHelm/Helm_업그레이드_히스토리_검증` | `helm history`가 이전 릴리스 이력을 반환한다 | E26.9.E221 완료 (REVISION: 2 상태) | 1) `helm history pillar-csi --namespace pillar-csi-system`; 2) 이력 항목 수 확인 | 이력 항목 2개; REVISION 1: `superseded`; REVISION 2: `deployed` | `전체시스템`, `Kubernetes클러스터` |
+
+**검증 명령 예시:**
+```bash
+helm upgrade pillar-csi ./charts/pillar-csi \
+  --namespace pillar-csi-system \
+  --wait \
+  --timeout 5m
+# 기대 출력:
+# Release "pillar-csi" has been upgraded. Happy Helming!
+# NAME: pillar-csi
+# STATUS: deployed
+# REVISION: 2
+
+helm history pillar-csi --namespace pillar-csi-system
+# REVISION  UPDATED                   STATUS      CHART              ...
+# 1         2026-03-25 12:00:00 ...   superseded  pillar-csi-0.1.0
+# 2         2026-03-25 12:05:00 ...   deployed    pillar-csi-0.1.0
+```
+
+---
+
+### E26.10 Helm 차트 설치 해제 및 리소스 정리
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| 223 | `TestHelm/Helm_설치_해제_성공` | `helm uninstall`이 성공하고 Deployment·DaemonSet이 삭제된다 | E26.1 완료 후 상태 | 1) `helm uninstall pillar-csi --namespace pillar-csi-system --wait`; 2) 리소스 잔존 여부 확인 | 종료 코드 0; stdout에 `release "pillar-csi" uninstalled`; Deployment, DaemonSet, ServiceAccount, ClusterRole, ClusterRoleBinding 모두 삭제됨; CSIDriver 삭제됨 | `전체시스템`, `Kubernetes클러스터` |
+| 224 | `TestHelm/설치_해제_후_CRD_보존_검증` | `helm uninstall` 후에도 CRD는 보존된다(`helm.sh/resource-policy: keep` 어노테이션) | E26.10.E223 완료 | 1) `kubectl get crd | grep pillar-csi.bhyoo.com`; 2) CRD 5종 존재 여부 확인 | CRD 5종 모두 존재 (삭제되지 않음); 이 동작은 `helm.sh/resource-policy: keep` 어노테이션으로 보장됨 | `VolCRD`, `TgtCRD`, `Kubernetes클러스터` |
+
+> **참고:** CRD 보존 정책(`helm.sh/resource-policy: keep`)은 `charts/pillar-csi/templates/crds.yaml`에 어노테이션으로 지정되어 있다. 이 정책은 Helm 언인스톨 시 운영 데이터(CRD에 저장된 CR 인스턴스)를 실수로 삭제하는 것을 방지하기 위한 것이다.
+
+**검증 명령 예시:**
+```bash
+helm uninstall pillar-csi --namespace pillar-csi-system --wait
+# 기대 출력: release "pillar-csi" uninstalled
+
+# Deployment 삭제 확인
+kubectl get deployment -n pillar-csi-system
+# 기대 출력: No resources found in pillar-csi-system namespace.
+
+# CRD 보존 확인
+kubectl get crd | grep pillar-csi.bhyoo.com
+# 기대 출력: (CRD 5종 여전히 존재)
+```
 
 ---
 
