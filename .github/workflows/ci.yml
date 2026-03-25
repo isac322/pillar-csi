@@ -37,28 +37,6 @@ jobs:
           go mod tidy
           make test
 
-  test-e2e:
-    name: E2E Test
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Setup Go
-        uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-
-      - name: Create Kind cluster
-        uses: helm/kind-action@v1
-        with:
-          cluster_name: pillar-csi-test-e2e
-
-      - name: Run e2e tests
-        run: |
-          go mod tidy
-          make test-e2e
-
   e2e:
     name: E2E Tests (multi-node Kind)
     runs-on: ubuntu-latest
@@ -79,22 +57,11 @@ jobs:
       # upgrading the Kubernetes version used in the e2e cluster.
       KIND_VERSION: "v0.27.0"
 
-      # Kind node image that pins the Kubernetes control-plane / worker version.
-      # Must be compatible with the KIND_VERSION above.
-      # See https://github.com/kubernetes-sigs/kind/releases for the matching
-      # image digest for each kind release.
-      KIND_NODE_IMAGE: "kindest/node:v1.32.2"
-
       # ── Cluster & image names ─────────────────────────────────────────────
       KIND_CLUSTER: "pillar-csi-e2e"
       E2E_IMAGE_TAG: "e2e"
-      # Helm namespace where pillar-csi is deployed; referenced by log-collection.
+      # Helm namespace where pillar-csi is deployed.
       E2E_HELM_NAMESPACE: "pillar-csi-system"
-
-      # ── Kubeconfig ────────────────────────────────────────────────────────
-      # Write the kubeconfig to a path inside the workspace so it is isolated
-      # from any pre-existing runner config and easy to inspect in artefacts.
-      KUBECONFIG: "${{ github.workspace }}/.kube/config"
 
     steps:
       - name: Checkout
@@ -107,10 +74,10 @@ jobs:
           cache: true
 
       # ── install tooling ────────────────────────────────────────────────────
-      # install_only=true: lay down the kind binary but do NOT create a cluster
-      # here — cluster creation is handled by hack/e2e-setup.sh so that all
-      # configuration (multi-node layout, configfs mounts, image loading, Helm
-      # deploy) is performed in a single reproducible script.
+      # install_only=true: lay down the kind binary without creating a cluster.
+      # TestMain in test/e2e/setup_test.go owns the full cluster lifecycle
+      # (create → build images → helm install → run tests → helm uninstall →
+      # delete cluster) so no cluster is created here.
       - name: Install Kind ${{ env.KIND_VERSION }}
         uses: helm/kind-action@v1
         with:
@@ -120,119 +87,19 @@ jobs:
       - name: Install Helm
         uses: azure/setup-helm@v5
 
-      # ── cluster setup ──────────────────────────────────────────────────────
-      # Invoke hack/e2e-setup.sh (via the make wrapper) to:
-      #   1. Create the multi-node Kind cluster using hack/kind-config.yaml
-      #   2. Build the three pillar-csi container images (controller/agent/node)
-      #   3. Load the images into every Kind node (no registry required)
-      #   4. Deploy the Helm chart with e2e-specific values
-      #
-      # Environment variables forwarded to the script:
-      #   KIND_CLUSTER     — cluster name (must match Makefile KIND_CLUSTER)
-      #   KIND_NODE_IMAGE  — pins the Kubernetes version of all Kind nodes
-      #   KUBECONFIG       — path where the kubeconfig is written / merged
-      #   IMAGE_TAG        — tag applied to all three e2e container images
-      - name: Create e2e cluster and deploy pillar-csi
-        run: |
-          mkdir -p "$(dirname "${KUBECONFIG}")"
-          hack/e2e-setup.sh
-        env:
-          KIND_CLUSTER: ${{ env.KIND_CLUSTER }}
-          KIND_NODE_IMAGE: ${{ env.KIND_NODE_IMAGE }}
-          KUBECONFIG: ${{ env.KUBECONFIG }}
-          IMAGE_TAG: ${{ env.E2E_IMAGE_TAG }}
-
-      # Export KUBECONFIG to $GITHUB_ENV so all subsequent steps inherit it
-      # without needing to repeat the path in every step's env block.
-      - name: Export KUBECONFIG for subsequent steps
-        run: echo "KUBECONFIG=${KUBECONFIG}" >> "$GITHUB_ENV"
-
       # ── run tests ─────────────────────────────────────────────────────────
-      # continue-on-error lets subsequent steps (log collection, teardown)
-      # run even when tests fail.  The real exit code is preserved in
-      # steps.e2e-tests.outcome and re-propagated at the end of the job.
-      - name: Run e2e tests (internal-agent mode)
-        id: e2e-tests
-        continue-on-error: true
-        run: make test-e2e-run
-        env:
-          KIND_CLUSTER: ${{ env.KIND_CLUSTER }}
-
-      # ── collect failure artefacts ──────────────────────────────────────────
-      # Only runs when the test step itself failed.  Collects:
-      #   • kind export logs  — containerd, kubelet, kube-apiserver, …
-      #   • kubectl pod listing, descriptions, and per-container logs
-      #   • Kubernetes events sorted by timestamp
-      # Everything is written under $GITHUB_WORKSPACE/e2e-logs so that the
-      # upload step can reference a single root directory.
-      - name: Collect e2e failure logs
-        if: steps.e2e-tests.outcome == 'failure'
+      # make test-e2e is the single entry point for the full e2e lifecycle.
+      # TestMain (test/e2e/setup_test.go) creates the Kind cluster, builds and
+      # loads the container images, installs the Helm chart, runs all tests,
+      # and tears everything down — no external scripts required.
+      - name: Run e2e tests
         run: |
-          set -euo pipefail
-          LOG_DIR="${GITHUB_WORKSPACE}/e2e-logs"
-          NS="${E2E_HELM_NAMESPACE}"
-
-          mkdir -p "${LOG_DIR}/kind" "${LOG_DIR}/pod-logs"
-
-          echo "==> Exporting Kind node logs to ${LOG_DIR}/kind/ ..."
-          kind export logs "${LOG_DIR}/kind" --name "${KIND_CLUSTER}" || true
-
-          echo "==> Collecting kubectl resources from namespace '${NS}' ..."
-          kubectl get pods       -n "${NS}" -o wide                    > "${LOG_DIR}/pods.txt"       2>&1 || true
-          kubectl describe pods  -n "${NS}"                            > "${LOG_DIR}/pods-describe.txt" 2>&1 || true
-          kubectl get events     -n "${NS}" --sort-by=.lastTimestamp   > "${LOG_DIR}/events.txt"     2>&1 || true
-          kubectl get all        -n "${NS}"                            > "${LOG_DIR}/all-resources.txt" 2>&1 || true
-
-          echo "==> Collecting per-pod logs ..."
-          kubectl get pods -n "${NS}" \
-            -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' \
-            2>/dev/null \
-          | while IFS= read -r pod; do
-              [ -z "${pod}" ] && continue
-              # current logs
-              kubectl logs -n "${NS}" "${pod}" --all-containers=true \
-                > "${LOG_DIR}/pod-logs/${pod}.log" 2>&1 || true
-              # previous (crashed) container logs — ignore errors if none exist
-              kubectl logs -n "${NS}" "${pod}" --all-containers=true --previous \
-                > "${LOG_DIR}/pod-logs/${pod}.previous.log" 2>&1 || true
-            done
-
-          echo "==> Log collection complete."
-          echo "    Files collected:"
-          find "${LOG_DIR}" -type f | sort | sed 's/^/      /'
+          go mod tidy
+          make test-e2e
         env:
           KIND_CLUSTER: ${{ env.KIND_CLUSTER }}
+          E2E_IMAGE_TAG: ${{ env.E2E_IMAGE_TAG }}
           E2E_HELM_NAMESPACE: ${{ env.E2E_HELM_NAMESPACE }}
-
-      # ── upload artefacts ───────────────────────────────────────────────────
-      # Retains logs for 7 days so the team can diagnose flaky tests without
-      # needing to reproduce the failure locally.  Skipped on success to keep
-      # storage usage low.
-      - name: Upload e2e failure artifacts
-        if: steps.e2e-tests.outcome == 'failure'
-        uses: actions/upload-artifact@v4
-        with:
-          # Include run-attempt so retries don't overwrite previous uploads.
-          name: e2e-failure-logs-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ github.workspace }}/e2e-logs/
-          retention-days: 7
-
-      # ── teardown (always runs so the cluster is cleaned up even on failure)
-      - name: Tear down Kind cluster
-        if: always()
-        run: make test-e2e-teardown
-        env:
-          KIND_CLUSTER: ${{ env.KIND_CLUSTER }}
-
-      # ── re-propagate test failure ──────────────────────────────────────────
-      # continue-on-error on the test step suppresses the failure so that log
-      # collection and teardown can run.  This final step restores the correct
-      # job exit status once cleanup is complete.
-      - name: Report e2e test result
-        if: always() && steps.e2e-tests.outcome == 'failure'
-        run: |
-          echo "::error::e2e tests failed — see the 'e2e-failure-logs' artifact for details"
-          exit 1
 
   build:
     name: Build (all platforms)
