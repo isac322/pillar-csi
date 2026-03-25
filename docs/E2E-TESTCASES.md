@@ -93,7 +93,7 @@
 - [E21.2–E21.4: 잘못된 CR 웹훅·스키마 검증](#e212-pillartarget-웹훅--불변-필드-수정-거부-type-c--envtest-) _(E21 중 envtest 소섹션)_
 
 ### 카테고리 2 — 클러스터 레벨 E2E 테스트 (유형 B: Kind 클러스터 필요) ⚠️
-> 빌드 태그: `//go:build e2e` | `go test ./test/e2e/ -tags=e2e -v` | 총 3개 테스트 (E10); Helm 설치 검증 17개 테스트 (E26.1–E26.11, ID 207–231) 포함
+> 빌드 태그: `//go:build e2e` | `go test ./test/e2e/ -tags=e2e -v` | 총 3개 테스트 (E10); Helm 설치 검증 29개 테스트 (E26.1–E26.12, ID 207–243) 포함
 
 - [E10: 클러스터 레벨 E2E 테스트](#e10-클러스터-레벨-e2e-테스트)
 - [E26: Helm 차트 설치 및 릴리스 검증](#e26-helm-차트-설치-및-릴리스-검증)
@@ -115,6 +115,15 @@
   - [E26.9: Helm 차트 업그레이드 (helm upgrade)](#e269-helm-차트-업그레이드-helm-upgrade)
   - [E26.10: Helm 차트 설치 해제 및 리소스 정리](#e2610-helm-차트-설치-해제-및-리소스-정리)
   - [E26.11: Helm 배포 후 전체 파드 Running 상태 종합 검증](#e2611-helm-배포-후-전체-파드-running-상태-종합-검증)
+  - [E26.12: CSIDriver 객체 생성 및 설정 검증](#e2612-csidriver-객체-생성-및-설정-검증)
+    - [E26.12.1: CSIDriver 존재 및 이름 검증](#e26121-csidriver-존재-및-이름-검증)
+    - [E26.12.2: attachRequired 필드 검증](#e26122-attachedrequired-필드-검증)
+    - [E26.12.3: podInfoOnMount 필드 검증](#e26123-podinfoonmount-필드-검증)
+    - [E26.12.4: fsGroupPolicy 필드 검증](#e26124-fsgrouppolicy-필드-검증)
+    - [E26.12.5: volumeLifecycleModes 필드 검증](#e26125-volumelifecyclemodes-필드-검증)
+    - [E26.12.6: Helm 레이블 및 어노테이션 검증](#e26126-helm-레이블-및-어노테이션-검증)
+    - [E26.12.7: csiDriver.create=false 시 CSIDriver 미생성 검증](#e26127-csidrivercreatefalse-시-csidriver-미생성-검증)
+    - [E26.12.8: 커스텀 values로 CSIDriver 설정 오버라이드 검증](#e26128-커스텀-values로-csidriver-설정-오버라이드-검증)
 
 ### 카테고리 3 — 완전 E2E / 수동 스테이징 테스트 (유형 F) ❌
 > 빌드 태그: `//go:build e2e_full` | 실제 ZFS/NVMe-oF 커널 모듈 필요 | 베어메탈/KVM 서버 필요
@@ -4106,6 +4115,409 @@ var _ = Describe("E26.11 전체 파드 Running 상태 종합 검증", Ordered, f
 > **구현 파일 위치:** `test/e2e/helm_pod_running_e2e_test.go` (신규 생성 예정)
 > **빌드 태그:** `//go:build e2e`
 > **실행:** `go test ./test/e2e/ -tags=e2e -run TestHelm -v`
+
+---
+
+### E26.12 CSIDriver 객체 생성 및 설정 검증
+
+> **목적:** Helm 설치 후 Kubernetes API 서버에 `CSIDriver` 오브젝트(`pillar-csi.bhyoo.com`)가 올바르게 생성되고,
+> `spec` 필드 전체(attachRequired, podInfoOnMount, fsGroupPolicy, volumeLifecycleModes)가 `values.yaml` 기본값과 일치함을 검증한다.
+>
+> **CI 실행 가능 여부:** ✅ Kind 클러스터에서 실행 가능 (빌드 태그: `e2e`)
+>
+> **관련 소스:**
+> - Helm 템플릿: `charts/pillar-csi/templates/csidriver.yaml`
+> - 기본값 정의: `charts/pillar-csi/values.yaml` (`.csiDriver` 섹션)
+>
+> **기본값 스펙 요약:**
+>
+> | 필드 | 기본값 | 설명 |
+> |------|-------|------|
+> | `spec.attachRequired` | `true` | ControllerPublishVolume/ControllerUnpublishVolume 호출 필요 여부 |
+> | `spec.podInfoOnMount` | `true` | NodePublishVolume 호출 시 Pod 이름·네임스페이스·UID를 volumeAttributes로 주입 |
+> | `spec.fsGroupPolicy` | `File` | kubelet이 볼륨 fsGroup 소유권 변경을 처리하는 방식 (`None`, `File`, `ReadWriteOnceWithFSType` 중 선택) |
+> | `spec.volumeLifecycleModes` | `["Persistent"]` | 드라이버가 지원하는 볼륨 수명 주기 모드 |
+> | `metadata.name` | `pillar-csi.bhyoo.com` | CSIDriver 오브젝트 이름 (클러스터 전역 고유) |
+
+#### E26.12.1 CSIDriver 존재 및 이름 검증
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| 232 | `TestHelm/CSIDriver_존재_검증` | Helm 설치 후 `pillar-csi.bhyoo.com` 이름의 CSIDriver 오브젝트가 클러스터에 존재한다 | E26.1 완료 (`helm install --wait` 성공); `kubectl` 클러스터 컨텍스트 설정됨 | 1) `kubectl get csidriver pillar-csi.bhyoo.com -o json` 실행; 2) 종료 코드 확인; 3) `.metadata.name` 필드 확인 | 종료 코드 0; `.metadata.name == "pillar-csi.bhyoo.com"`; `.kind == "CSIDriver"`; `.apiVersion == "storage.k8s.io/v1"` | `전체시스템`, `Kubernetes클러스터` |
+| 233 | `TestHelm/CSIDriver_전체_스펙_JSON_파싱_가능` | `kubectl get csidriver -o json` 출력이 유효한 JSON이고 CSIDriver 오브젝트 구조가 올바르다 | E26.1 완료 | 1) `kubectl get csidriver pillar-csi.bhyoo.com -o json`; 2) JSON 파싱; 3) 필수 최상위 필드 존재 확인 | JSON 파싱 성공; `.kind == "CSIDriver"`; `.apiVersion == "storage.k8s.io/v1"`; `.metadata` 오브젝트 존재; `.spec` 오브젝트 존재 | `전체시스템`, `Kubernetes클러스터` |
+
+**검증 명령 예시:**
+```bash
+# CSIDriver 존재 및 이름 확인
+kubectl get csidriver pillar-csi.bhyoo.com
+# 기대 출력 (일부):
+# NAME                     ATTACHREQUIRED   PODINFOONMOUNT   STORAGECAPACITY   TOKENREQUESTS   REQUIRESREPUBLISH   MODES        AGE
+# pillar-csi.bhyoo.com     true             true             false             <unset>         false               Persistent   ...
+
+# JSON 전체 구조 확인
+kubectl get csidriver pillar-csi.bhyoo.com -o json | jq '{
+  kind: .kind,
+  apiVersion: .apiVersion,
+  name: .metadata.name,
+  spec: .spec
+}'
+```
+
+---
+
+#### E26.12.2 attachRequired 필드 검증
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| 234 | `TestHelm/CSIDriver_attachRequired_true_검증` | CSIDriver `.spec.attachRequired`가 `true`이다 — ControllerPublishVolume/ControllerUnpublishVolume 호출이 필수임을 선언 | E26.1 완료 (기본 values 사용) | 1) `kubectl get csidriver pillar-csi.bhyoo.com -o jsonpath='{.spec.attachRequired}'` 실행; 2) 출력값 확인 | 출력 `true`; 이 값이 `true`이면 kubelet이 볼륨 연결 전 attach 단계를 수행하고, CSI Controller에 ControllerPublishVolume을 호출함을 보장 | `CSI-C`, `Kubernetes클러스터` |
+
+> **pillar-csi에서 `attachRequired: true`의 의미:**
+> - kubelet은 NodeStageVolume/NodePublishVolume 호출 전 `VolumeAttachment` 오브젝트를 생성한다.
+> - CSI 컨트롤러 사이드카(csi-attacher)가 `VolumeAttachment`를 감시하고 `ControllerPublishVolume` RPC를 호출한다.
+> - pillar-csi의 ControllerPublishVolume은 NVMe-oF 연결 준비 등 attach 로직을 수행하므로, `false`로 변경하면 볼륨이 노드에 접근 불가능해진다.
+
+**검증 명령 예시:**
+```bash
+kubectl get csidriver pillar-csi.bhyoo.com \
+  -o jsonpath='{.spec.attachRequired}'
+# 기대 출력: true
+```
+
+---
+
+#### E26.12.3 podInfoOnMount 필드 검증
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| 235 | `TestHelm/CSIDriver_podInfoOnMount_true_검증` | CSIDriver `.spec.podInfoOnMount`가 `true`이다 — NodePublishVolume 호출 시 Pod 메타데이터가 volumeAttributes로 주입됨 | E26.1 완료 (기본 values 사용) | 1) `kubectl get csidriver pillar-csi.bhyoo.com -o jsonpath='{.spec.podInfoOnMount}'` 실행; 2) 출력값 확인 | 출력 `true`; kubelet이 NodePublishVolume 호출 시 `csi.storage.k8s.io/pod.name`, `csi.storage.k8s.io/pod.namespace`, `csi.storage.k8s.io/pod.uid` 키를 `volume_context`에 포함시킴 | `CSI-N`, `Kubernetes클러스터` |
+
+> **pillar-csi에서 `podInfoOnMount: true`의 의미:**
+> - NodePublishVolume의 `volume_context` 맵에 다음 키가 자동 추가된다:
+>   - `csi.storage.k8s.io/pod.name`: Pod 이름
+>   - `csi.storage.k8s.io/pod.namespace`: Pod 네임스페이스
+>   - `csi.storage.k8s.io/pod.uid`: Pod UID
+>   - `csi.storage.k8s.io/serviceAccount.name`: ServiceAccount 이름
+> - pillar-csi NodeServer는 이 정보를 로깅 및 접근 제어 목적으로 활용할 수 있다.
+> - `false`로 설정하면 이 키들이 volume_context에 포함되지 않아 Pod 추적이 불가능해진다.
+
+**검증 명령 예시:**
+```bash
+kubectl get csidriver pillar-csi.bhyoo.com \
+  -o jsonpath='{.spec.podInfoOnMount}'
+# 기대 출력: true
+```
+
+---
+
+#### E26.12.4 fsGroupPolicy 필드 검증
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| 236 | `TestHelm/CSIDriver_fsGroupPolicy_File_검증` | CSIDriver `.spec.fsGroupPolicy`가 `"File"`이다 — kubelet이 항상 재귀적으로 볼륨 소유권을 fsGroup으로 변경 | E26.1 완료 (기본 values 사용) | 1) `kubectl get csidriver pillar-csi.bhyoo.com -o jsonpath='{.spec.fsGroupPolicy}'` 실행; 2) 출력값 확인 | 출력 `File`; 허용값: `None`, `File`, `ReadWriteOnceWithFSType` 중 하나; 기본값은 `File` | `CSI-N`, `Kubernetes클러스터` |
+| 236a | `TestHelm/CSIDriver_fsGroupPolicy_유효값_범위_검증` | CSIDriver `.spec.fsGroupPolicy` 값이 Kubernetes 허용 범위(`None`, `File`, `ReadWriteOnceWithFSType`) 내에 있다 | E26.1 완료 | 1) `kubectl get csidriver pillar-csi.bhyoo.com -o jsonpath='{.spec.fsGroupPolicy}'` 실행; 2) 허용값 집합에 포함되는지 확인 | 출력이 `None`, `File`, `ReadWriteOnceWithFSType` 중 하나; 빈 문자열이 아님; API 서버가 유효성 검증 통과 후 저장한 값이므로 항상 유효한 열거형 | `전체시스템`, `Kubernetes클러스터` |
+
+> **fsGroupPolicy 값별 동작 차이:**
+> | 값 | kubelet 동작 |
+> |---|---|
+> | `None` | fsGroup 변경 없음 (드라이버가 직접 처리) |
+> | `File` | 마운트 시 항상 재귀적 chown (기본값, pillar-csi 사용) |
+> | `ReadWriteOnceWithFSType` | ReadWriteOnce 볼륨이고 fsType이 지정된 경우에만 chown |
+
+**검증 명령 예시:**
+```bash
+kubectl get csidriver pillar-csi.bhyoo.com \
+  -o jsonpath='{.spec.fsGroupPolicy}'
+# 기대 출력: File
+```
+
+---
+
+#### E26.12.5 volumeLifecycleModes 필드 검증
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| 237 | `TestHelm/CSIDriver_volumeLifecycleModes_Persistent_검증` | CSIDriver `.spec.volumeLifecycleModes`에 `"Persistent"` 항목이 존재한다 | E26.1 완료 (기본 values 사용) | 1) `kubectl get csidriver pillar-csi.bhyoo.com -o jsonpath='{.spec.volumeLifecycleModes}'` 실행; 2) 출력 배열에 `Persistent` 포함 확인 | 출력에 `Persistent` 포함; 배열 길이 ≥ 1; `Ephemeral` 항목 없음(기본 설정에서는 비활성화) | `전체시스템`, `Kubernetes클러스터` |
+| 237a | `TestHelm/CSIDriver_volumeLifecycleModes_Ephemeral_미포함_검증` | 기본 values에서 CSIDriver `.spec.volumeLifecycleModes`에 `"Ephemeral"` 항목이 없다 | E26.1 완료 (기본 values 사용; `volumeLifecycleModes: [Persistent]`) | 1) `kubectl get csidriver pillar-csi.bhyoo.com -o json`; 2) `.spec.volumeLifecycleModes` 배열에서 `"Ephemeral"` 검색 | 배열에 `"Ephemeral"` 없음; pillar-csi는 임시 볼륨(ephemeral inline volume)을 현재 지원하지 않으므로 이 모드가 없어야 함 | `전체시스템`, `Kubernetes클러스터` |
+
+> **volumeLifecycleModes 허용값:**
+> - `Persistent`: PVC/PV 기반의 영속적 볼륨 (pillar-csi 기본 지원 모드)
+> - `Ephemeral`: Pod 수명과 동일한 임시 인라인 볼륨 (pillar-csi 미지원)
+>
+> 이 필드를 생략하면 API 서버가 기본값으로 `["Persistent"]`를 채운다.
+
+**검증 명령 예시:**
+```bash
+# volumeLifecycleModes 배열 전체 출력
+kubectl get csidriver pillar-csi.bhyoo.com \
+  -o jsonpath='{.spec.volumeLifecycleModes}'
+# 기대 출력: [Persistent]
+
+# JSON 형식으로 더 명확하게 확인
+kubectl get csidriver pillar-csi.bhyoo.com \
+  -o json | jq '.spec.volumeLifecycleModes'
+# 기대 출력:
+# [
+#   "Persistent"
+# ]
+```
+
+---
+
+#### E26.12.6 Helm 레이블 및 어노테이션 검증
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| 238 | `TestHelm/CSIDriver_Helm_레이블_검증` | CSIDriver에 Helm 표준 레이블(`app.kubernetes.io/*`)이 올바르게 설정되어 있다 | E26.1 완료 | 1) `kubectl get csidriver pillar-csi.bhyoo.com -o json`; 2) `.metadata.labels` 필드 검증 | `app.kubernetes.io/name` 존재; `app.kubernetes.io/instance` 존재 (릴리스 이름 `pillar-csi`); `app.kubernetes.io/managed-by == "Helm"`; `helm.sh/chart` 레이블 존재 (e.g. `pillar-csi-0.1.0`) | `전체시스템`, `Kubernetes클러스터` |
+| 238a | `TestHelm/CSIDriver_Helm_managed_by_레이블_검증` | CSIDriver에 `app.kubernetes.io/managed-by: Helm` 레이블이 있다 | E26.1 완료 | 1) `kubectl get csidriver pillar-csi.bhyoo.com -o jsonpath='{.metadata.labels.app\.kubernetes\.io/managed-by}'` | 출력 `Helm`; 이 레이블이 없으면 `helm uninstall`이 이 리소스를 관리하지 않음 | `전체시스템`, `Kubernetes클러스터` |
+| 239 | `TestHelm/CSIDriver_Helm_어노테이션_검증` | CSIDriver에 Helm 관리 어노테이션(`meta.helm.sh/*`)이 설정되어 있다 | E26.1 완료 | 1) `kubectl get csidriver pillar-csi.bhyoo.com -o json`; 2) `.metadata.annotations` 필드 검증 | `meta.helm.sh/release-name == "pillar-csi"` 어노테이션 존재; `meta.helm.sh/release-namespace == "pillar-csi-system"` 어노테이션 존재 | `전체시스템`, `Kubernetes클러스터` |
+
+> **⚠️ CSIDriver는 클러스터-범위(non-namespaced) 리소스이다:** `CSIDriver`는 네임스페이스가 없는 클러스터 전역 리소스이다. Helm이 `pillar-csi-system` 네임스페이스에 릴리스를 배포하더라도, CSIDriver는 클러스터 수준에서 생성된다. 따라서 `helm uninstall` 시 CSIDriver도 삭제되며(CRD와 달리 `resource-policy: keep`이 없음), 이는 ID 223 테스트에서 확인된다.
+
+**검증 명령 예시:**
+```bash
+# Helm 레이블 확인
+kubectl get csidriver pillar-csi.bhyoo.com \
+  -o jsonpath='{.metadata.labels}' | jq .
+# 기대 출력 (예시):
+# {
+#   "app.kubernetes.io/instance": "pillar-csi",
+#   "app.kubernetes.io/managed-by": "Helm",
+#   "app.kubernetes.io/name": "pillar-csi",
+#   "app.kubernetes.io/version": "0.1.0",
+#   "helm.sh/chart": "pillar-csi-0.1.0"
+# }
+
+# Helm 어노테이션 확인
+kubectl get csidriver pillar-csi.bhyoo.com \
+  -o jsonpath='{.metadata.annotations}' | jq .
+# 기대 출력 (예시):
+# {
+#   "meta.helm.sh/release-name": "pillar-csi",
+#   "meta.helm.sh/release-namespace": "pillar-csi-system"
+# }
+```
+
+---
+
+#### E26.12.7 csiDriver.create=false 시 CSIDriver 미생성 검증
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| 240 | `TestHelm/CSIDriver_create_false_미생성_검증` | `--set csiDriver.create=false`로 설치하면 CSIDriver 오브젝트가 생성되지 않는다 | Kind 클러스터; 이전 pillar-csi 릴리스 해제 완료 (또는 별도 릴리스 이름 사용); Helm v3.12+ | 1) `helm install pillar-csi-nocsidrv ./charts/pillar-csi --namespace pillar-csi-nocsidrv --create-namespace --set csiDriver.create=false --wait --timeout 5m`; 2) `kubectl get csidriver pillar-csi.bhyoo.com` 실행 | helm install 종료 코드 0; `kubectl get csidriver pillar-csi.bhyoo.com` 출력에 `NotFound` 오류 반환 또는 해당 항목 없음; 다른 리소스(Deployment, DaemonSet)는 정상 생성됨 | `전체시스템`, `Kubernetes클러스터` |
+
+> **`csiDriver.create=false` 사용 시나리오:**
+> - GitOps 환경에서 CSIDriver를 별도의 클러스터-관리 매니페스트로 관리할 때
+> - 멀티-테넌트 클러스터에서 클러스터 관리자가 CSIDriver를 사전 등록하고 사용자는 나머지 리소스만 설치할 때
+> - CSIDriver가 이미 다른 릴리스에서 설치된 상태에서 pillar-csi 워크로드만 업그레이드할 때
+>
+> **주의:** `csiDriver.create=false` 상태에서 pillar-csi 워크로드를 배포하면, 클러스터에 CSIDriver 오브젝트가 없어 kubelet이 해당 드라이버를 인식하지 못할 수 있다. 이 설정은 반드시 외부에서 CSIDriver를 사전 등록한 경우에만 사용해야 한다.
+
+**검증 명령 예시:**
+```bash
+helm install pillar-csi-nocsidrv ./charts/pillar-csi \
+  --namespace pillar-csi-nocsidrv \
+  --create-namespace \
+  --set csiDriver.create=false \
+  --wait \
+  --timeout 5m
+
+# CSIDriver가 없음을 확인
+kubectl get csidriver pillar-csi.bhyoo.com 2>&1
+# 기대 출력: Error from server (NotFound): csidrivers.storage.k8s.io "pillar-csi.bhyoo.com" not found
+
+# 다른 리소스(Deployment)는 정상 생성됨 확인
+kubectl get deployment -n pillar-csi-nocsidrv
+# 기대 출력: controller Deployment 존재
+
+# 정리
+helm uninstall pillar-csi-nocsidrv --namespace pillar-csi-nocsidrv
+kubectl delete namespace pillar-csi-nocsidrv
+```
+
+---
+
+#### E26.12.8 커스텀 values로 CSIDriver 설정 오버라이드 검증
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| 241 | `TestHelm/CSIDriver_podInfoOnMount_false_오버라이드_검증` | `--set csiDriver.podInfoOnMount=false`로 설치 시 CSIDriver `.spec.podInfoOnMount`가 `false`이다 | Kind 클러스터; 별도 릴리스 이름 또는 이전 릴리스 해제 완료 | 1) `helm install pillar-csi-custom ./charts/pillar-csi --namespace pillar-csi-custom --create-namespace --set csiDriver.podInfoOnMount=false --wait --timeout 5m`; 2) `kubectl get csidriver pillar-csi.bhyoo.com -o jsonpath='{.spec.podInfoOnMount}'` | 출력 `false`; CSIDriver 오브젝트 존재; 다른 spec 필드(attachRequired, fsGroupPolicy, volumeLifecycleModes)는 기본값 유지 | `전체시스템`, `Kubernetes클러스터` |
+| 242 | `TestHelm/CSIDriver_fsGroupPolicy_None_오버라이드_검증` | `--set csiDriver.fsGroupPolicy=None`으로 설치 시 CSIDriver `.spec.fsGroupPolicy`가 `"None"`이다 | Kind 클러스터; 별도 릴리스 이름 또는 이전 릴리스 해제 완료 | 1) `helm install pillar-csi-nofsg ./charts/pillar-csi --namespace pillar-csi-nofsg --create-namespace --set csiDriver.fsGroupPolicy=None --wait --timeout 5m`; 2) `kubectl get csidriver pillar-csi.bhyoo.com -o jsonpath='{.spec.fsGroupPolicy}'` | 출력 `None`; CSIDriver 오브젝트 존재 | `전체시스템`, `Kubernetes클러스터` |
+| 243 | `TestHelm/CSIDriver_helm_upgrade_spec_변경_반영_검증` | `helm upgrade --set csiDriver.podInfoOnMount=false`로 업그레이드 시 CSIDriver spec이 갱신된다 | E26.1 완료 (`podInfoOnMount: true` 기본값 설치됨) | 1) `helm upgrade pillar-csi ./charts/pillar-csi --namespace pillar-csi-system --set csiDriver.podInfoOnMount=false --wait --timeout 5m`; 2) `kubectl get csidriver pillar-csi.bhyoo.com -o jsonpath='{.spec.podInfoOnMount}'` | 출력 `false`; `helm status`에서 `REVISION: 2` 확인; CSIDriver는 immutable 필드가 없으므로 패치(PATCH)로 업데이트됨 | `전체시스템`, `Kubernetes클러스터` |
+
+> **⚠️ CI 제약 (네임스페이스 격리):** E241, E242는 각각 별도의 릴리스 이름(`pillar-csi-custom`, `pillar-csi-nofsg`)과 네임스페이스를 사용하므로, 동일 클러스터에서 순차 또는 병렬 실행이 가능하다. 그러나 CSIDriver는 클러스터-범위 리소스이므로, 모든 릴리스가 동일한 CSIDriver 이름(`pillar-csi.bhyoo.com`)을 사용하면 충돌이 발생한다. 따라서 E241, E242 테스트는 **E26.1이 사용 중인 클러스터에서는 동시에 실행할 수 없다** — 별도의 Kind 클러스터 또는 순차 실행(E26.10 완료 후)이 필요하다.
+
+**검증 명령 예시:**
+```bash
+# E241: podInfoOnMount=false 오버라이드
+helm install pillar-csi-custom ./charts/pillar-csi \
+  --namespace pillar-csi-custom \
+  --create-namespace \
+  --set csiDriver.podInfoOnMount=false \
+  --wait --timeout 5m
+
+kubectl get csidriver pillar-csi.bhyoo.com \
+  -o jsonpath='{.spec.podInfoOnMount}'
+# 기대 출력: false
+
+# E243: helm upgrade로 spec 변경
+helm upgrade pillar-csi ./charts/pillar-csi \
+  --namespace pillar-csi-system \
+  --set csiDriver.podInfoOnMount=false \
+  --wait --timeout 5m
+
+kubectl get csidriver pillar-csi.bhyoo.com \
+  -o jsonpath='{.spec.podInfoOnMount}'
+# 기대 출력: false (업그레이드 후)
+
+helm status pillar-csi --namespace pillar-csi-system \
+  --output json | jq '.version'
+# 기대 출력: 2 (REVISION 증가)
+```
+
+---
+
+#### E26.12 종합 커버리지 요약
+
+| 검증 항목 | 테스트 ID | CI 가능 | 비고 |
+|---------|---------|:------:|------|
+| CSIDriver 존재 및 JSON 구조 | 232, 233 | ✅ | Kind 클러스터; E26.1 선행 필요 |
+| `spec.attachRequired == true` | 234 | ✅ | Kind 클러스터 |
+| `spec.podInfoOnMount == true` | 235 | ✅ | Kind 클러스터 |
+| `spec.fsGroupPolicy == "File"` | 236, 236a | ✅ | Kind 클러스터 |
+| `spec.volumeLifecycleModes` 배열에 `"Persistent"` 포함 | 237 | ✅ | Kind 클러스터 |
+| `spec.volumeLifecycleModes`에 `"Ephemeral"` 없음 | 237a | ✅ | Kind 클러스터 |
+| Helm 표준 레이블(`app.kubernetes.io/*`) | 238, 238a | ✅ | Kind 클러스터 |
+| Helm 어노테이션(`meta.helm.sh/*`) | 239 | ✅ | Kind 클러스터 |
+| `csiDriver.create=false` 시 미생성 | 240 | ✅ | 별도 릴리스 이름·네임스페이스 필요 |
+| `podInfoOnMount=false` 오버라이드 | 241 | ✅ | 별도 클러스터 또는 E26.10 후 실행 |
+| `fsGroupPolicy=None` 오버라이드 | 242 | ✅ | 별도 클러스터 또는 E26.10 후 실행 |
+| `helm upgrade`로 spec 갱신 | 243 | ✅ | E26.1 + E26.9 선행 필요 |
+
+**Go 테스트 구현 참고 (Ginkgo/Gomega):**
+
+```go
+//go:build e2e
+// +build e2e
+
+package e2e
+
+import (
+    "encoding/json"
+    "os/exec"
+
+    . "github.com/onsi/ginkgo/v2"
+    . "github.com/onsi/gomega"
+
+    "github.com/bhyoo/pillar-csi/test/utils"
+)
+
+var _ = Describe("E26.12 CSIDriver 객체 생성 및 설정 검증", Ordered, func() {
+    const csiDriverName = "pillar-csi.bhyoo.com"
+
+    type CSIDriverSpec struct {
+        AttachRequired        bool     `json:"attachRequired"`
+        PodInfoOnMount        bool     `json:"podInfoOnMount"`
+        FsGroupPolicy         string   `json:"fsGroupPolicy"`
+        VolumeLifecycleModes  []string `json:"volumeLifecycleModes"`
+    }
+    type CSIDriverObj struct {
+        Kind       string            `json:"kind"`
+        APIVersion string            `json:"apiVersion"`
+        Metadata   struct {
+            Name        string            `json:"name"`
+            Labels      map[string]string `json:"labels"`
+            Annotations map[string]string `json:"annotations"`
+        } `json:"metadata"`
+        Spec CSIDriverSpec `json:"spec"`
+    }
+
+    getCSIDriver := func(g Gomega) CSIDriverObj {
+        cmd := exec.Command("kubectl", "get", "csidriver", csiDriverName, "-o", "json")
+        out, err := utils.Run(cmd)
+        g.Expect(err).NotTo(HaveOccurred(), "CSIDriver 조회 실패: %s", csiDriverName)
+        var obj CSIDriverObj
+        g.Expect(json.Unmarshal([]byte(out), &obj)).To(Succeed())
+        return obj
+    }
+
+    // E232: CSIDriver 존재 및 이름 검증
+    It("E232: CSIDriver_존재_검증", func() {
+        Eventually(func(g Gomega) {
+            obj := getCSIDriver(g)
+            g.Expect(obj.Kind).To(Equal("CSIDriver"))
+            g.Expect(obj.APIVersion).To(Equal("storage.k8s.io/v1"))
+            g.Expect(obj.Metadata.Name).To(Equal(csiDriverName))
+        }, "2m", "5s").Should(Succeed())
+    })
+
+    // E234: attachRequired=true 검증
+    It("E234: CSIDriver_attachRequired_true_검증", func() {
+        Eventually(func(g Gomega) {
+            obj := getCSIDriver(g)
+            g.Expect(obj.Spec.AttachRequired).To(BeTrue(),
+                "attachRequired는 true여야 함 (ControllerPublish/Unpublish 필수)")
+        }, "2m", "5s").Should(Succeed())
+    })
+
+    // E235: podInfoOnMount=true 검증
+    It("E235: CSIDriver_podInfoOnMount_true_검증", func() {
+        Eventually(func(g Gomega) {
+            obj := getCSIDriver(g)
+            g.Expect(obj.Spec.PodInfoOnMount).To(BeTrue(),
+                "podInfoOnMount는 true여야 함 (Pod 메타데이터 주입 활성화)")
+        }, "2m", "5s").Should(Succeed())
+    })
+
+    // E236: fsGroupPolicy=File 검증
+    It("E236: CSIDriver_fsGroupPolicy_File_검증", func() {
+        Eventually(func(g Gomega) {
+            obj := getCSIDriver(g)
+            g.Expect(obj.Spec.FsGroupPolicy).To(Equal("File"),
+                "fsGroupPolicy는 'File'이어야 함")
+            g.Expect([]string{"None", "File", "ReadWriteOnceWithFSType"}).
+                To(ContainElement(obj.Spec.FsGroupPolicy),
+                "fsGroupPolicy는 허용된 열거형 값이어야 함")
+        }, "2m", "5s").Should(Succeed())
+    })
+
+    // E237: volumeLifecycleModes=[Persistent] 검증
+    It("E237: CSIDriver_volumeLifecycleModes_Persistent_검증", func() {
+        Eventually(func(g Gomega) {
+            obj := getCSIDriver(g)
+            g.Expect(obj.Spec.VolumeLifecycleModes).To(ContainElement("Persistent"),
+                "volumeLifecycleModes에 'Persistent'가 포함되어야 함")
+            g.Expect(obj.Spec.VolumeLifecycleModes).NotTo(ContainElement("Ephemeral"),
+                "기본 설정에서 'Ephemeral' 모드는 포함되면 안 됨")
+        }, "2m", "5s").Should(Succeed())
+    })
+
+    // E238: Helm 레이블 검증
+    It("E238: CSIDriver_Helm_레이블_검증", func() {
+        Eventually(func(g Gomega) {
+            obj := getCSIDriver(g)
+            g.Expect(obj.Metadata.Labels).To(HaveKey("app.kubernetes.io/name"))
+            g.Expect(obj.Metadata.Labels).To(HaveKey("app.kubernetes.io/instance"))
+            g.Expect(obj.Metadata.Labels["app.kubernetes.io/managed-by"]).To(Equal("Helm"))
+            g.Expect(obj.Metadata.Labels).To(HaveKey("helm.sh/chart"))
+        }, "2m", "5s").Should(Succeed())
+    })
+
+    // E239: Helm 어노테이션 검증
+    It("E239: CSIDriver_Helm_어노테이션_검증", func() {
+        Eventually(func(g Gomega) {
+            obj := getCSIDriver(g)
+            g.Expect(obj.Metadata.Annotations["meta.helm.sh/release-name"]).
+                To(Equal("pillar-csi"))
+            g.Expect(obj.Metadata.Annotations["meta.helm.sh/release-namespace"]).
+                To(Equal("pillar-csi-system"))
+        }, "2m", "5s").Should(Succeed())
+    })
+})
+```
+
+> **구현 파일 위치:** `test/e2e/helm_csidriver_e2e_test.go` (신규 생성 예정)
+> **빌드 태그:** `//go:build e2e`
+> **실행:** `go test ./test/e2e/ -tags=e2e -run "TestHelm.*CSIDriver" -v`
 
 ---
 
