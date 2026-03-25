@@ -33,6 +33,7 @@ package csi
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -53,6 +54,28 @@ import (
 	v1alpha1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
 	agentv1 "github.com/bhyoo/pillar-csi/gen/go/pillar_csi/agent/v1"
 )
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PVC annotation validation error sentinel
+// ─────────────────────────────────────────────────────────────────────────────
+
+// pvcAnnotationValidationError wraps a ParsePVCAnnotations error so that
+// CreateVolume can distinguish annotation validation failures (InvalidArgument)
+// from infrastructure errors (Internal).
+type pvcAnnotationValidationError struct {
+	pvcNamespace string
+	pvcName      string
+	cause        error
+}
+
+func (e *pvcAnnotationValidationError) Error() string {
+	return fmt.Sprintf("PVC %s/%s annotation validation failed: %v",
+		e.pvcNamespace, e.pvcName, e.cause)
+}
+
+func (e *pvcAnnotationValidationError) Unwrap() error { return e.cause }
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 // AgentDialer creates a gRPC client connection to the pillar-agent at addr and
 // returns the typed client along with an io.Closer to release the connection.
@@ -454,6 +477,15 @@ func (s *ControllerServer) CreateVolume(
 	// when the binding name is absent (e.g. manually-created StorageClasses).
 	params, err := s.mergeParamsFromCRDs(ctx, scParams)
 	if err != nil {
+		// PVC annotation validation errors are user-facing (bad annotation
+		// content); surface them as InvalidArgument so the CO can surface
+		// a useful message to the user.  Infrastructure errors (CRD fetch
+		// failures, etc.) are surfaced as Internal.
+		var annotErr *pvcAnnotationValidationError
+		if errors.As(err, &annotErr) {
+			return nil, status.Errorf(codes.InvalidArgument,
+				"PVC annotation validation failed: %v", err)
+		}
 		return nil, status.Errorf(codes.Internal, "parameter merge failed: %v", err)
 	}
 
@@ -1084,9 +1116,13 @@ func (s *ControllerServer) applyPVCAnnotationOverrides(
 	overrides, err := ParsePVCAnnotations(pvc.Annotations)
 	if err != nil {
 		// Annotation validation failure (e.g. structural field override
-		// attempt) is surfaced to the caller so CreateVolume can reject it.
-		return fmt.Errorf("PVC %s/%s annotation validation failed: %w",
-			pvcNamespace, pvcName, err)
+		// attempt) is surfaced to the caller so CreateVolume can reject it
+		// with InvalidArgument (not Internal).
+		return &pvcAnnotationValidationError{
+			pvcNamespace: pvcNamespace,
+			pvcName:      pvcName,
+			cause:        err,
+		}
 	}
 
 	for k, v := range overrides {
@@ -1167,14 +1203,32 @@ func accessTypeForProtocol(p agentv1.ProtocolType) agentv1.VolumeAccessType {
 
 // buildBackendParams constructs the backend-specific creation parameters for
 // the agent.CreateVolume RPC from the StorageClass parameter map.
+//
+// For ZFS backends the Properties map is populated from all params that carry
+// the paramZFSPropPrefix prefix (e.g. "pillar-csi.bhyoo.com/zfs-prop.compression").
+// These originate from PillarPool.spec.backend.zfs.properties (Layer 1),
+// PillarBinding.spec.overrides.backend.zfs.properties (Layer 3), or per-PVC
+// annotation overrides (Layer 4) and have already been merged into params by
+// mergeParamsFromCRDs before CreateVolume calls buildBackendParams.
 func buildBackendParams(params map[string]string, backendType agentv1.BackendType) *agentv1.BackendParams {
 	switch backendType {
 	case agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL, agentv1.BackendType_BACKEND_TYPE_ZFS_DATASET:
+		// Collect ZFS properties from the merged parameter map.
+		var zfsProps map[string]string
+		for k, v := range params {
+			if after, ok := strings.CutPrefix(k, paramZFSPropPrefix); ok && after != "" {
+				if zfsProps == nil {
+					zfsProps = make(map[string]string)
+				}
+				zfsProps[after] = v
+			}
+		}
 		return &agentv1.BackendParams{
 			Params: &agentv1.BackendParams_Zfs{
 				Zfs: &agentv1.ZfsVolumeParams{
 					Pool:          params[paramZFSPool],
 					ParentDataset: params[paramZFSParent],
+					Properties:    zfsProps,
 				},
 			},
 		}

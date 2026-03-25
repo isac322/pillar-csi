@@ -44,6 +44,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -85,6 +86,10 @@ type mockAgentClient struct {
 	unexportVolumeCalls int
 	deleteVolumeCalls   int
 	getCapacityCalls    int
+
+	// lastCreateVolumeReq captures the most recent CreateVolume request for
+	// assertion on backend/export params in annotation integration tests.
+	lastCreateVolumeReq *agentv1.CreateVolumeRequest
 }
 
 // Compile-time check that mockAgentClient implements the full interface.
@@ -92,10 +97,11 @@ var _ agentv1.AgentServiceClient = (*mockAgentClient)(nil)
 
 func (m *mockAgentClient) CreateVolume(
 	_ context.Context,
-	_ *agentv1.CreateVolumeRequest,
+	req *agentv1.CreateVolumeRequest,
 	_ ...grpc.CallOption,
 ) (*agentv1.CreateVolumeResponse, error) {
 	m.createVolumeCalls++
+	m.lastCreateVolumeReq = req
 	if m.createVolumeErr != nil {
 		return nil, m.createVolumeErr
 	}
@@ -223,10 +229,13 @@ type controllerTestEnv struct {
 func newControllerTestEnv(t *testing.T) *controllerTestEnv {
 	t.Helper()
 
-	// Build the scheme with the v1alpha1 types registered.
+	// Build the scheme with the v1alpha1 types and core/v1 PVC types registered.
 	scheme := runtime.NewScheme()
 	if err := v1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatalf("AddToScheme: %v", err)
+	}
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("corev1.AddToScheme: %v", err)
 	}
 
 	// Seed the fake client with a ready PillarTarget.
@@ -862,5 +871,217 @@ func TestGetCapacity_TargetNoAddress(t *testing.T) {
 	st, _ := status.FromError(err)
 	if st.Code() != codes.Unavailable {
 		t.Errorf("error code = %v, want Unavailable", st.Code())
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PVC annotation override integration tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+// newControllerTestEnvWithPVC builds a ControllerServer test environment where
+// a PVC in the given namespace carries the supplied annotations.  The
+// StorageClass parameters in the returned request include the
+// csi.storage.k8s.io/pvc-name and csi.storage.k8s.io/pvc-namespace keys so
+// that CreateVolume can look up the PVC and apply annotation overrides.
+func newControllerTestEnvWithPVC(
+	t *testing.T,
+	pvcNamespace, pvcName string,
+	annotations map[string]string,
+) (*controllerTestEnv, *csi.CreateVolumeRequest) {
+	t.Helper()
+
+	scheme := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme: %v", err)
+	}
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("corev1.AddToScheme: %v", err)
+	}
+
+	target := &v1alpha1.PillarTarget{
+		ObjectMeta: metav1.ObjectMeta{Name: "storage-node-1"},
+		Spec: v1alpha1.PillarTargetSpec{
+			External: &v1alpha1.ExternalSpec{Address: "192.168.1.10", Port: 9500},
+		},
+		Status: v1alpha1.PillarTargetStatus{
+			ResolvedAddress: "192.168.1.10:9500",
+		},
+	}
+
+	pvc := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        pvcName,
+			Namespace:   pvcNamespace,
+			Annotations: annotations,
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(target, pvc).
+		WithStatusSubresource(&v1alpha1.PillarVolume{}, &v1alpha1.PillarTarget{}).
+		Build()
+
+	agent := &mockAgentClient{}
+	dialer := func(_ context.Context, _ string) (agentv1.AgentServiceClient, io.Closer, error) {
+		return agent, nopCloser{}, nil
+	}
+	srv := NewControllerServerWithDialer(fakeClient, "pillar-csi.bhyoo.com", dialer)
+
+	// Build a CreateVolumeRequest that includes the pvc-name / pvc-namespace
+	// metadata injected by external-provisioner --extra-create-metadata.
+	req := baseCreateVolumeRequest()
+	req.Parameters["csi.storage.k8s.io/pvc-name"] = pvcName
+	req.Parameters["csi.storage.k8s.io/pvc-namespace"] = pvcNamespace
+
+	return &controllerTestEnv{srv: srv, agent: agent, scheme: scheme}, req
+}
+
+// TestCreateVolume_PVCAnnotationOverride_ZFSProperty verifies the end-to-end
+// PVC annotation override flow for a ZFS property (compression).
+//
+// Expected behaviour:
+//  1. The PVC carries "pillar-csi.bhyoo.com/backend-override" with zfs.properties.compression=zstd.
+//  2. CreateVolume merges this annotation into the parameter map.
+//  3. buildBackendParams populates ZfsVolumeParams.Properties["compression"] = "zstd".
+//  4. The agent.CreateVolume request contains that ZFS property.
+func TestCreateVolume_PVCAnnotationOverride_ZFSProperty(t *testing.T) {
+	t.Parallel()
+
+	annotations := map[string]string{
+		AnnotationBackendOverride: `
+zfs:
+  properties:
+    compression: zstd
+    volblocksize: "16K"
+`,
+	}
+
+	env, req := newControllerTestEnvWithPVC(t, "default", "pvc-ann-test", annotations)
+	ctx := context.Background()
+
+	resp, err := env.srv.CreateVolume(ctx, req)
+	if err != nil {
+		t.Fatalf("CreateVolume unexpected error: %v", err)
+	}
+	if resp.GetVolume() == nil {
+		t.Fatal("response Volume is nil")
+	}
+
+	// The agent must have been called.
+	if env.agent.createVolumeCalls != 1 {
+		t.Fatalf("agent.CreateVolume call count = %d, want 1", env.agent.createVolumeCalls)
+	}
+
+	// The CreateVolume request must carry ZFS properties derived from the PVC
+	// annotation.
+	req2 := env.agent.lastCreateVolumeReq
+	if req2 == nil {
+		t.Fatal("lastCreateVolumeReq is nil — mock did not capture the request")
+	}
+	zfsParams := req2.GetBackendParams().GetZfs()
+	if zfsParams == nil {
+		t.Fatal("BackendParams.Zfs is nil")
+	}
+	wantProps := map[string]string{
+		"compression":  "zstd",
+		"volblocksize": "16K",
+	}
+	for k, wantV := range wantProps {
+		gotV, ok := zfsParams.GetProperties()[k]
+		if !ok {
+			t.Errorf("ZfsVolumeParams.Properties[%q] not present (got map %v)", k, zfsParams.GetProperties())
+			continue
+		}
+		if gotV != wantV {
+			t.Errorf("ZfsVolumeParams.Properties[%q] = %q, want %q", k, gotV, wantV)
+		}
+	}
+}
+
+// TestCreateVolume_PVCAnnotationOverride_FlatParam verifies that a flat
+// "pillar-csi.bhyoo.com/param.<key>" annotation is also merged into the
+// parameter map and reaches the agent as a ZFS property.
+func TestCreateVolume_PVCAnnotationOverride_FlatParam(t *testing.T) {
+	t.Parallel()
+
+	annotations := map[string]string{
+		// Flat override: sets zfs-prop.compression directly.
+		"pillar-csi.bhyoo.com/param." + paramZFSPropPrefix + "compression": "lz4",
+	}
+
+	env, req := newControllerTestEnvWithPVC(t, "default", "pvc-flat-test", annotations)
+	ctx := context.Background()
+
+	_, err := env.srv.CreateVolume(ctx, req)
+	if err != nil {
+		t.Fatalf("CreateVolume unexpected error: %v", err)
+	}
+	if env.agent.createVolumeCalls != 1 {
+		t.Fatalf("agent.CreateVolume call count = %d, want 1", env.agent.createVolumeCalls)
+	}
+
+	zfsParams := env.agent.lastCreateVolumeReq.GetBackendParams().GetZfs()
+	if zfsParams == nil {
+		t.Fatal("BackendParams.Zfs is nil")
+	}
+	if got := zfsParams.GetProperties()["compression"]; got != "lz4" {
+		t.Errorf("ZfsVolumeParams.Properties[\"compression\"] = %q, want \"lz4\"", got)
+	}
+}
+
+// TestCreateVolume_PVCAnnotationOverride_BlockedField verifies that a PVC
+// annotation that attempts to override a structural ZFS field (pool) causes
+// CreateVolume to return codes.InvalidArgument (not codes.Internal).
+func TestCreateVolume_PVCAnnotationOverride_BlockedField(t *testing.T) {
+	t.Parallel()
+
+	annotations := map[string]string{
+		AnnotationBackendOverride: `
+zfs:
+  pool: evil-pool
+`,
+	}
+
+	env, req := newControllerTestEnvWithPVC(t, "default", "pvc-blocked-test", annotations)
+	ctx := context.Background()
+
+	_, err := env.srv.CreateVolume(ctx, req)
+	if err == nil {
+		t.Fatal("expected error for blocked structural field, got nil")
+	}
+
+	st, _ := status.FromError(err)
+	if st.Code() != codes.InvalidArgument {
+		t.Errorf("error code = %v, want InvalidArgument (got message: %s)", st.Code(), st.Message())
+	}
+	// Agent must NOT have been called.
+	if env.agent.createVolumeCalls != 0 {
+		t.Errorf("agent.CreateVolume called despite annotation validation failure")
+	}
+}
+
+// TestCreateVolume_PVCAnnotationOverride_NoPVCMetadata verifies that when the
+// pvc-name / pvc-namespace parameters are absent (StorageClass provisioned
+// without external-provisioner --extra-create-metadata) the call succeeds
+// without annotation overrides.
+func TestCreateVolume_PVCAnnotationOverride_NoPVCMetadata(t *testing.T) {
+	t.Parallel()
+	env := newControllerTestEnv(t)
+	ctx := context.Background()
+
+	req := baseCreateVolumeRequest()
+	// Deliberately omit pvc-name and pvc-namespace.
+
+	resp, err := env.srv.CreateVolume(ctx, req)
+	if err != nil {
+		t.Fatalf("CreateVolume unexpected error: %v", err)
+	}
+	if resp.GetVolume() == nil {
+		t.Fatal("response Volume is nil")
+	}
+	// Agent must still have been called normally.
+	if env.agent.createVolumeCalls != 1 {
+		t.Errorf("agent.CreateVolume call count = %d, want 1", env.agent.createVolumeCalls)
 	}
 }
