@@ -9,3 +9,6 @@
 # Re-include Go module files
 !go.mod
 !go.sum
+
+# Re-include .git for VCS version stamping (Go 1.24+)
+!.git

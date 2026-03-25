@@ -22,6 +22,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"runtime/debug"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -322,7 +323,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	setupLog.Info("starting manager")
+	if bi, ok := debug.ReadBuildInfo(); ok {
+		setupLog.Info("starting manager", "version", bi.Main.Version, "go", bi.GoVersion)
+	} else {
+		setupLog.Info("starting manager")
+	}
 	err = mgr.Start(ctrl.SetupSignalHandler())
 	if err != nil {
 		setupLog.Error(err, "problem running manager")
