@@ -1718,3 +1718,458 @@ fi
 | F20 | `TestRealZFS_CloneVolume_FromSnapshot` | `zfs clone tank/vol@snap tank/new-vol` |
 | F22 | `TestRealZFS_PoolFull_CreateVolume` | 루프백 풀 크기를 작게 설정하여 ENOSPC 유발 |
 | F23 | `TestRealZFS_PoolFull_ExpandVolume` | 풀 여유 공간 이상의 ExpandVolume 시도 |
+
+---
+
+## 부록: Fake Configfs — NVMe-oF 설정 파일시스템 CI 시뮬레이션
+
+### 개요
+
+Linux 커널의 `nvmet` 서브시스템은 configfs(`/sys/kernel/config/nvmet/`)를
+통해 NVMe-oF 타깃을 관리한다. configfs는 특수 파일시스템이므로
+**커널 모듈(`nvmet`, `nvmet-tcp`)이 로드된 실제 리눅스 커널**에서만
+정상 동작한다. 표준 CI 환경(GitHub Actions, GitLab CI, Docker 컨테이너)에서는
+이 모듈을 로드할 수 없다.
+
+pillar-csi는 이 문제를 `NvmetTarget.ConfigfsRoot` 필드를 통해 해결한다.
+테스트에서 이 필드를 `t.TempDir()`(일반 임시 디렉터리)로 설정하면,
+`NvmetTarget.Apply()`/`Remove()` 등의 모든 configfs 조작이
+**일반 파일시스템 쓰기**로 실행된다.
+
+```
+실제 운영 환경:
+  NvmetTarget.ConfigfsRoot = "/sys/kernel/config"
+  → mkdir /sys/kernel/config/nvmet/subsystems/nqn.xxx/ 시 커널이 NVMe 서브시스템 객체를 즉시 생성
+  → device_path 파일 쓰기 시 커널이 블록 장치 연결
+  → enable 파일에 "1" 쓰기 시 NVMe-oF I/O 수락 시작
+
+테스트 환경 (CI 포함):
+  NvmetTarget.ConfigfsRoot = t.TempDir()
+  → 동일한 코드 경로, 동일한 디렉터리/파일 구조
+  → 커널 동작 없음 — 순수 파일시스템 쓰기
+  → 커널 모듈 불필요, root 권한 불필요
+```
+
+**CI 실행 가능성:** ✅ `t.TempDir()` 기반 fake configfs는 표준 CI에서 실행 가능.
+실제 `nvmet`/`nvmet-tcp` 커널 모듈이 없어도 구조적 정확성을 검증할 수 있다.
+
+---
+
+### NVMe-oF configfs 디렉터리 구조
+
+`NvmetTarget.Apply()`는 아래 configfs 트리를 생성한다. fake configfs에서는
+동일한 경로가 일반 파일시스템 디렉터리/파일/심볼릭 링크로 생성된다.
+
+```
+<ConfigfsRoot>/
+└── nvmet/
+    ├── subsystems/
+    │   └── <SubsystemNQN>/                   ← mkdir: 커널이 NVMe 서브시스템 생성
+    │       ├── attr_allow_any_host            ← write: "0" (ACL 활성화) 또는 "1"
+    │       ├── namespaces/
+    │       │   └── <NamespaceID>/             ← mkdir: 커널이 네임스페이스 생성
+    │       │       ├── device_path            ← write: 블록 디바이스 경로
+    │       │       └── enable                 ← write: "1" 활성화, "0" 비활성화
+    │       └── allowed_hosts/
+    │           └── <HostNQN>                  ← symlink → ../../hosts/<HostNQN>
+    ├── hosts/
+    │   └── <HostNQN>/                         ← mkdir: 커널이 호스트 객체 생성
+    └── ports/
+        └── <PortID>/                          ← mkdir: 커널이 포트 객체 생성
+            ├── addr_trtype                    ← write: "tcp"
+            ├── addr_adrfam                    ← write: "ipv4"
+            ├── addr_traddr                    ← write: BindAddress
+            ├── addr_trsvcid                   ← write: 포트 번호
+            └── subsystems/
+                └── <SubsystemNQN>             ← symlink → ../../subsystems/<SubsystemNQN>
+```
+
+**포트 ID 결정 방식:** `stablePortID(BindAddress, Port)` — FNV-1a 해시 기반
+결정적(deterministic) ID. 동일한 (주소, 포트) 쌍은 항상 동일한 포트 ID를 가진다.
+
+```go
+// internal/agent/nvmeof/configfs.go 발췌
+func stablePortID(addr string, port int32) uint32 {
+    var h uint32 = 2166136261 // FNV-1a 오프셋
+    for i := range len(addr) {
+        h ^= uint32(addr[i])
+        h *= 16777619
+    }
+    h ^= uint32(port)
+    h *= 16777619
+    return h%65535 + 1 // [1, 65535] — 커널은 0을 거부
+}
+```
+
+---
+
+### 실제 configfs vs. Fake configfs 비교
+
+| 동작 | 실제 `/sys/kernel/config` | Fake `t.TempDir()` |
+|------|--------------------------|-------------------|
+| `mkdir nvmet/subsystems/<nqn>/` | 커널이 NVMe 서브시스템 객체를 즉시 생성 | 일반 디렉터리 생성 |
+| `mkdir nvmet/namespaces/<id>/` | 커널이 네임스페이스 객체를 즉시 생성 | 일반 디렉터리 생성 |
+| `write device_path` | 커널이 블록 디바이스를 네임스페이스에 연결 | 일반 파일 쓰기 |
+| `write enable = "1"` | 커널이 NVMe-oF I/O 수락 시작 | 일반 파일 쓰기 |
+| `write attr_allow_any_host = "0"` | 커널이 ACL 검사 활성화 | 일반 파일 쓰기 |
+| `write addr_trtype = "tcp"` | 커널이 TCP 트랜스포트 설정 | 일반 파일 쓰기 |
+| `symlink ports/<id>/subsystems/<nqn>` | 커널이 포트-서브시스템 바인딩 생성 (NVMe-oF TCP 리스닝 시작) | 일반 심볼릭 링크 생성 |
+| `symlink allowed_hosts/<host-nqn>` | 커널이 ACL 항목 추가 | 일반 심볼릭 링크 생성 |
+| `rmdir nvmet/subsystems/<nqn>/` | 커널이 서브시스템 객체 삭제 | 일반 디렉터리 제거 |
+| `write enable = "0"` | 커널이 NVMe-oF I/O 수락 중지 | 일반 파일 쓰기 |
+| `rm ports/<id>/subsystems/<nqn>` | 커널이 포트-서브시스템 바인딩 해제 | 일반 파일 제거 |
+
+**핵심 차이점:**
+
+- **실제 configfs**: 각 파일시스템 조작이 즉시 커널 동작을 트리거한다.
+  네임스페이스 디렉터리 생성 = NVMe 네임스페이스 객체 생성.
+- **Fake configfs**: 동일한 디렉터리/파일/심볼릭 링크 구조가 생성되지만
+  커널 트리거가 없다. 코드 경로(디렉터리 생성, 파일 쓰기, 심볼릭 링크)는
+  실제와 100% 동일하게 실행된다.
+- **읽기 전용 파일 시뮬레이션**: 실제 configfs에서 특정 파일은 읽기 전용이다
+  (예: 이미 활성화된 네임스페이스의 일부 속성). 테스트에서는 `chmod`로
+  이를 시뮬레이션할 수 있다 (`test/component/nvmeof_errors_test.go` 참조).
+- **정리 차이**: 실제 configfs에서 커널은 디렉터리 제거 시 의존 하위 객체를
+  자동으로 정리한다. 일반 파일시스템에서는 수동으로 파일을 먼저 제거해야
+  디렉터리를 비울 수 있다. `NvmetTarget.Remove()`는 이 차이를 `bestEffort()`
+  래퍼로 처리한다.
+
+---
+
+### 테스트에서의 사용 방법
+
+#### 기본 패턴 (컴포넌트 테스트 및 E2E 에이전트 테스트)
+
+```go
+// 1. 임시 디렉터리를 configfs 루트로 사용
+tmpdir := t.TempDir()  // 테스트 종료 시 자동 정리
+
+// 2. NvmetTarget에 fake configfs 루트 주입
+tgt := &nvmeof.NvmetTarget{
+    ConfigfsRoot: tmpdir,              // 실제: "/sys/kernel/config"
+    SubsystemNQN: "nqn.2026-01.com.bhyoo:pvc-abc123",
+    NamespaceID:  1,
+    DevicePath:   "/dev/zvol/tank/pvc-abc123",
+    BindAddress:  "10.0.0.1",
+    Port:         4420,
+}
+
+// 3. Apply() 호출 — 일반 파일시스템에 configfs 구조 생성
+if err := tgt.Apply(); err != nil {
+    t.Fatalf("Apply: %v", err)
+}
+
+// 4. 파일 내용으로 구조 검증
+nsDir := filepath.Join(tmpdir, "nvmet", "subsystems",
+    "nqn.2026-01.com.bhyoo:pvc-abc123", "namespaces", "1")
+
+data, _ := os.ReadFile(filepath.Join(nsDir, "device_path"))
+// data == "/dev/zvol/tank/pvc-abc123"
+
+data, _ = os.ReadFile(filepath.Join(nsDir, "enable"))
+// data == "1"
+```
+
+#### E2E 에이전트 테스트 패턴 (agent_e2e_test.go)
+
+```go
+func TestAgent_RoundTrip(t *testing.T) {
+    // fake configfs 루트 생성
+    configfsRoot := t.TempDir()
+
+    // mock ZFS backend 생성 (실제 zfs(8) 명령 없음)
+    mockBackend := &agentE2EMockBackend{
+        devicePath: "/dev/zvol/tank/pvc-test",
+    }
+
+    // agent.Server 구성 — 실제 코드, fake configfs 루트
+    srv := agent.NewServer(
+        map[string]backend.VolumeBackend{"tank": mockBackend},
+        configfsRoot,  // ← t.TempDir() 주입
+    )
+
+    // 실제 gRPC 리스너 (localhost:0)에 등록
+    grpcSrv := grpc.NewServer()
+    agentv1.RegisterAgentServiceServer(grpcSrv, srv)
+    lis, _ := net.Listen("tcp", "127.0.0.1:0")
+    go grpcSrv.Serve(lis)
+    defer grpcSrv.GracefulStop()
+
+    // 실제 gRPC 클라이언트로 호출
+    conn, _ := grpc.NewClient(lis.Addr().String(),
+        grpc.WithTransportCredentials(insecure.NewCredentials()))
+    client := agentv1.NewAgentServiceClient(conn)
+
+    // ExportVolume 호출 → 내부적으로 NvmetTarget.Apply() 실행
+    ctx := context.Background()
+    _, err := client.ExportVolume(ctx, &agentv1.ExportVolumeRequest{
+        VolumeId:     "tank/pvc-test",
+        DevicePath:   "/dev/zvol/tank/pvc-test",
+        ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
+    })
+    if err != nil {
+        t.Fatalf("ExportVolume: %v", err)
+    }
+
+    // configfs 구조가 tmpdir에 생성됐는지 검증
+    subsysBase := filepath.Join(configfsRoot, "nvmet", "subsystems")
+    entries, _ := os.ReadDir(subsysBase)
+    if len(entries) == 0 {
+        t.Error("configfs 서브시스템 디렉터리가 생성되지 않음")
+    }
+}
+```
+
+#### 오류 시뮬레이션 패턴 (읽기 전용 파일)
+
+실제 configfs에서 발생하는 권한 오류(예: 이미 활성화된 네임스페이스의 `enable`
+파일 재쓰기 실패)를 fake configfs에서 `chmod`로 재현할 수 있다:
+
+```go
+// 파일을 읽기 전용으로 만들어 쓰기 실패 유발
+enablePath := filepath.Join(tmpdir, "nvmet", "subsystems", nqn, "namespaces", "1", "enable")
+os.WriteFile(enablePath, []byte("1"), 0o600)  // 먼저 파일 생성
+os.Chmod(enablePath, 0o444)                    // 읽기 전용으로 변경
+
+// Apply() 재호출 시 enable 파일 쓰기가 실패해야 함
+err := tgt.Apply()
+// err != nil; "configfs write ... permission denied" 포함
+```
+
+---
+
+### E2E 에이전트 테스트에서의 configfs 역할
+
+E9 섹션(Agent gRPC E2E 테스트)의 테스트들은 모두 fake configfs를 사용한다.
+각 테스트에서 configfs가 어떤 역할을 하는지 구체적으로 설명한다.
+
+#### E9.2 전체 왕복 (`TestAgent_RoundTrip`)
+
+```
+CreateVolume   → mock ZFS backend.Create()                      ← configfs 미사용
+ExportVolume   → NvmetTarget.Apply(configfsRoot=tmpdir)         ← configfs 사용
+  1. subsystems/<nqn>/ 생성
+  2. namespaces/1/ 생성 + device_path/enable 쓰기
+  3. ports/<id>/ 생성 + addr_* 쓰기
+  4. ports/<id>/subsystems/<nqn> 심볼릭 링크 생성
+AllowInitiator → NvmetTarget.AllowHost(hostNQN)                 ← configfs 사용
+  5. hosts/<hostNQN>/ 생성
+  6. subsystems/<nqn>/allowed_hosts/<hostNQN> 심볼릭 링크 생성
+  7. attr_allow_any_host = "0" 쓰기
+DenyInitiator  → NvmetTarget.DenyHost(hostNQN)                  ← configfs 사용
+  8. allowed_hosts/<hostNQN> 심볼릭 링크 제거
+UnexportVolume → NvmetTarget.Remove(configfsRoot=tmpdir)        ← configfs 사용
+  9. 포트 서브시스템 링크 제거
+  10. enable = "0" 쓰기 + 네임스페이스 디렉터리 제거
+  11. 서브시스템 디렉터리 제거
+DeleteVolume   → mock ZFS backend.Delete()                      ← configfs 미사용
+```
+
+**테스트가 검증하는 것:**
+- `ExportVolume` 호출 후 configfs 디렉터리 구조가 기대한 경로에 생성됨
+- `device_path`, `enable`, `addr_*` 파일 내용이 요청 파라미터와 일치함
+- `AllowInitiator` 후 `allowed_hosts/<nqn>` 심볼릭 링크가 존재함
+- `UnexportVolume` 후 서브시스템/네임스페이스 디렉터리가 제거됨
+
+#### E9.3 재조정 복구 (`TestAgent_ReconcileStateRestoresExports`)
+
+```
+ReconcileState(volumeList) → 각 볼륨에 대해 NvmetTarget.Apply() 호출
+  → tmpdir에 모든 볼륨의 configfs 디렉터리가 생성됨
+  → 서버 재시작 후 NVMe-oF 타깃 복원 시뮬레이션
+```
+
+재조정(reconciliation) 테스트에서 fake configfs는 특히 중요하다. 실제 시스템에서
+서버가 재시작되면 `nvmet` 커널 모듈이 configfs 상태를 초기화할 수 있다. 에이전트는
+`ReconcileState` RPC를 통해 configfs를 재구성해야 한다. 이 동작을 `t.TempDir()`로
+안전하게 시뮬레이션할 수 있다.
+
+#### E9.1 헬스체크 (`TestAgent_HealthCheck`)
+
+에이전트 헬스체크는 configfs 루트의 존재 여부를 확인한다:
+
+```go
+// 헬스체크가 검사하는 경로 (internal/agent/server.go 발췌)
+sysModuleZFSPath  = "/sys/module/zfs"          // ZFS 커널 모듈 존재 여부
+configfsNvmetPath = configfsRoot + "/nvmet"    // nvmet configfs 마운트 여부
+```
+
+테스트에서는 `sysModuleZFSPath`를 tmpdir 내부의 존재하는 파일로,
+`configfsNvmetPath`를 tmpdir 내부의 존재하는 디렉터리로 설정하여
+헬스체크 로직을 CI에서 검증할 수 있다:
+
+```go
+// HealthCheck 테스트 설정 예시
+tmpdir := t.TempDir()
+
+// ZFS 모듈 파일 시뮬레이션
+zfsModPath := filepath.Join(tmpdir, "zfs-module")
+os.WriteFile(zfsModPath, []byte(""), 0o644)
+
+// nvmet configfs 디렉터리 시뮬레이션
+nvmetDir := filepath.Join(tmpdir, "nvmet")
+os.MkdirAll(nvmetDir, 0o750)
+
+// 서버에 두 경로를 모두 주입 (실제 /sys 경로 대신)
+srv := agent.NewServerWithPaths(backends, tmpdir, zfsModPath)
+```
+
+---
+
+### configfs 검증 헬퍼 함수
+
+컴포넌트 테스트(`test/component/nvmeof_test.go`)와 에이전트 E2E 테스트에서
+공통으로 사용하는 검증 헬퍼 패턴:
+
+```go
+// nvmetSubsystemDir은 서브시스템 configfs 경로를 반환한다.
+// 실제 경로: /sys/kernel/config/nvmet/subsystems/<nqn>
+// 테스트 경로: <tmpdir>/nvmet/subsystems/<nqn>
+func nvmetSubsystemDir(configfsRoot, nqn string) string {
+    return filepath.Join(configfsRoot, "nvmet", "subsystems", nqn)
+}
+
+// nvmetNamespaceDir은 네임스페이스 configfs 경로를 반환한다.
+func nvmetNamespaceDir(configfsRoot, nqn string) string {
+    return filepath.Join(nvmetSubsystemDir(configfsRoot, nqn), "namespaces", "1")
+}
+
+// nvmetPortsDir은 포트 configfs 디렉터리를 반환한다.
+func nvmetPortsDir(configfsRoot string) string {
+    return filepath.Join(configfsRoot, "nvmet", "ports")
+}
+
+// requireFileContent는 configfs 파일의 내용이 기대값과 일치하는지 검증한다.
+func requireFileContent(t *testing.T, path, want string) {
+    t.Helper()
+    data, err := os.ReadFile(path)
+    if err != nil {
+        t.Fatalf("configfs 파일 %q 읽기 실패: %v", path, err)
+    }
+    if string(data) != want {
+        t.Errorf("configfs 파일 %q: 기대값=%q, 실제값=%q", path, want, string(data))
+    }
+}
+
+// requireDirExists는 configfs 디렉터리가 존재하는지 검증한다.
+func requireDirExists(t *testing.T, path string) {
+    t.Helper()
+    fi, err := os.Stat(path)
+    if err != nil {
+        t.Fatalf("configfs 디렉터리 %q 없음: %v", path, err)
+    }
+    if !fi.IsDir() {
+        t.Fatalf("경로 %q 는 디렉터리가 아님 (mode=%s)", path, fi.Mode())
+    }
+}
+
+// requireSymlinkTarget은 심볼릭 링크가 기대 대상을 가리키는지 검증한다.
+func requireSymlinkTarget(t *testing.T, linkPath, wantTarget string) {
+    t.Helper()
+    target, err := os.Readlink(linkPath)
+    if err != nil {
+        t.Fatalf("심볼릭 링크 %q 읽기 실패: %v", linkPath, err)
+    }
+    if target != wantTarget {
+        t.Errorf("심볼릭 링크 %q: 기대 대상=%q, 실제 대상=%q", linkPath, wantTarget, target)
+    }
+}
+```
+
+---
+
+### Fake Configfs CI 실행 가능성 요약
+
+| 시나리오 | CI 실행 가능 | 이유 |
+|---------|:-----------:|------|
+| `NvmetTarget.Apply()` 구조 검증 (디렉터리/파일/심볼릭 링크) | ✅ | 일반 파일시스템 쓰기만 필요 |
+| `NvmetTarget.Remove()` 정리 검증 | ✅ | 일반 파일시스템 조작 |
+| `NvmetTarget.AllowHost()` / `DenyHost()` ACL 구조 검증 | ✅ | 심볼릭 링크 생성/제거 |
+| 에이전트 gRPC ExportVolume → configfs 생성 통합 검증 | ✅ | gRPC 직렬화 레이어 포함 |
+| 에이전트 ReconcileState → configfs 복원 검증 | ✅ | 상태 재구성 로직 검증 |
+| 에이전트 HealthCheck → configfs 디렉터리 존재 검증 | ✅ | 파일 존재 여부만 확인 |
+| 권한 오류 시나리오 (`chmod 0o444` 읽기 전용 파일) | ✅ | 일반 Unix 권한 변경 |
+| 멱등성(idempotency) 검증 (Apply() 2회 호출) | ✅ | 파일시스템 재쓰기 허용 |
+| 실제 NVMe-oF TCP 리스닝 검증 | ❌ | `nvmet-tcp` 커널 모듈 필요 |
+| 실제 NVMe-oF initiator 연결 검증 | ❌ | `nvme-tcp` 커널 모듈 + 블록 장치 필요 |
+| 커널 enable 파일 트리거 동작 검증 | ❌ | `/sys/kernel/config` + `nvmet` 모듈 필요 |
+| 실제 `/dev/nvme*` 블록 디바이스 생성 검증 | ❌ | 커널 NVMe 드라이버 필요 |
+| 실제 NQN 기반 접근 제어 동작 검증 | ❌ | 실제 NVMe-oF initiator/target 환경 필요 |
+
+**결론:** Fake configfs(`t.TempDir()`)는 NVMe-oF 타깃 관리 코드의
+**구조적 정확성**(올바른 디렉터리/파일 생성, 올바른 내용 쓰기, 올바른 순서)을
+CI에서 완전히 검증할 수 있다. **커널 레벨 동작**(실제 NVMe-oF 리스닝 시작,
+실제 initiator 연결)은 별도의 실제 하드웨어 환경(F2, F3 참조)에서만 검증
+가능하다.
+
+---
+
+### 실제 configfs가 필요한 테스트 인프라 요구사항
+
+아래는 fake configfs로 검증할 수 없는 테스트(F2–F3 등)를 위한 실제
+인프라 요구사항이다:
+
+```
+운영체제:         Linux (Ubuntu 22.04+ 권장)
+커널:            5.15 이상 (nvmet TCP 지원 안정화)
+커널 모듈 (타깃):
+  - nvmet          (NVMe-oF target core)
+  - nvmet-tcp      (NVMe-oF TCP transport target)
+커널 모듈 (이니시에이터):
+  - nvme-tcp       (NVMe-oF TCP initiator)
+권한:            root 또는 CAP_SYS_ADMIN
+configfs 마운트:  /sys/kernel/config (modprobe configfs 또는 자동 마운트)
+블록 장치:        실제 zvol 또는 루프백 장치 (F1 참조)
+```
+
+**커널 모듈 로드 및 확인:**
+
+```bash
+# 타깃 모듈 로드
+sudo modprobe nvmet
+sudo modprobe nvmet-tcp
+
+# initiator 모듈 로드
+sudo modprobe nvme-tcp
+
+# configfs 마운트 확인
+mount | grep configfs
+# 출력 예시: configfs on /sys/kernel/config type configfs (rw,relatime)
+
+# nvmet configfs 구조 확인 (모듈 로드 후)
+ls /sys/kernel/config/nvmet/
+# 출력 예시: hosts  ports  subsystems
+
+# nvmet 서브시스템 수동 생성 (테스트용)
+NQN="nqn.2026-01.com.test:pvc-manual"
+sudo mkdir /sys/kernel/config/nvmet/subsystems/${NQN}
+echo 1 | sudo tee /sys/kernel/config/nvmet/subsystems/${NQN}/attr_allow_any_host
+# → 커널이 NVMe 서브시스템 객체를 즉시 생성
+```
+
+**표준 CI 환경에서의 제약:**
+
+| CI 환경 | nvmet 모듈 사용 가능 여부 | 권장 대안 |
+|---------|:------------------------:|---------|
+| GitHub Actions (`ubuntu-latest`) | ❌ (커널 모듈 제한) | Fake configfs 사용 (CI 가능) |
+| GitLab CI (Docker executor) | ❌ (`--privileged` 없으면 불가) | Fake configfs 사용 (CI 가능) |
+| GitLab CI (`privileged: true`) | ⚠️ 조건부 가능 (호스트 커널에 모듈 존재 필요) | Self-hosted 러너 권장 |
+| Self-hosted 베어메탈 러너 (Linux) | ✅ | 실제 E2E (F2, F3) 실행 가능 |
+| Self-hosted KVM/QEMU VM 러너 | ✅ (네스티드 가상화 지원 시) | 실제 E2E (F2, F3) 실행 가능 |
+| Docker 컨테이너 내부 | ❌ (configfs는 호스트 커널 공유 필요) | Fake configfs 사용 (CI 가능) |
+
+---
+
+### 관련 향후 테스트 항목 (실제 configfs 필요)
+
+아래 테스트들은 실제 `nvmet` 커널 모듈 환경에서만 실행 가능하며 현재 미구현이다:
+
+| 테스트 ID | 이름 | 실제 configfs 필요 항목 |
+|-----------|------|------------------------|
+| F2 | `TestRealNVMeoF_Export` | `/sys/kernel/config/nvmet/` + `nvmet` 모듈 로드 |
+| F3 | `TestRealNVMeoF_Connect` | NVMe-oF TCP 대상 서버 + `nvme-tcp` 모듈 + 블록 장치 |
+| F8 | `TestRealNode_NodeStageVolume_ActualMount` | 실제 `/dev/nvme*` 블록 장치 + 루트 권한 |
+| F9 | `TestRealNode_NodePublishVolume_BindMount` | 실제 NVMe-oF 블록 장치 + 컨테이너 네임스페이스 |
+| F10 | `TestRealNode_NodeUnstageVolume_ActualDetach` | 실제 nvme disconnect + udev |
+| F11 | `TestRealNode_NodeStageVolume_DeviceAppearDelay` | 실제 udev 지연 환경 |
+| F24 | `TestRealNode_ConcurrentStageUnstage_SameVolume` | 실제 NVMe-oF 디바이스 + 커널 레벨 레이스 컨디션 검증 |
