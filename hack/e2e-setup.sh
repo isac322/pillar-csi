@@ -9,9 +9,11 @@
 #   3. Create the Kind cluster — idempotent: skips creation if already running
 #   4. Export / merge the kubeconfig so kubectl points at the e2e cluster
 #   5. Build container images (controller, agent, node) and load into Kind
+#   6. Install or upgrade the Helm chart with e2e-specific values
 #
 # Usage:
-#   hack/e2e-setup.sh [--cluster-name NAME] [--skip-prereq-check] [--skip-image-build]
+#   hack/e2e-setup.sh [--cluster-name NAME] [--skip-prereq-check] [--skip-image-build] \
+#                     [--skip-helm-deploy] [--helm-release NAME] [--helm-namespace NS]
 #
 # Environment variables (all optional):
 #   KIND_CLUSTER        Cluster name override  (default: pillar-csi-e2e)
@@ -20,6 +22,11 @@
 #   CONTAINER_TOOL      docker or podman        (default: docker)
 #   SKIP_IMAGE_BUILD    Set to "true" to skip image build step  (default: false)
 #   IMAGE_TAG           Tag applied to all e2e images           (default: e2e)
+#   SKIP_HELM_DEPLOY    Set to "true" to skip Helm chart deploy (default: false)
+#   HELM_RELEASE        Helm release name                       (default: pillar-csi)
+#   HELM_NAMESPACE      Kubernetes namespace for the release    (default: pillar-csi-system)
+#   HELM_VALUES         Path to Helm values override file       (default: hack/e2e-values.yaml)
+#   HELM_EXTRA_ARGS     Extra arguments appended to helm upgrade (default: "")
 #
 # Image names built and loaded into Kind:
 #   pillar-csi-controller:${IMAGE_TAG}   (built from Dockerfile)
@@ -43,6 +50,11 @@ CONTAINER_TOOL="${CONTAINER_TOOL:-docker}"
 KUBECONFIG="${KUBECONFIG:-${HOME}/.kube/config}"
 IMAGE_TAG="${IMAGE_TAG:-e2e}"
 SKIP_IMAGE_BUILD="${SKIP_IMAGE_BUILD:-false}"
+SKIP_HELM_DEPLOY="${SKIP_HELM_DEPLOY:-false}"
+HELM_RELEASE="${HELM_RELEASE:-pillar-csi}"
+HELM_NAMESPACE="${HELM_NAMESPACE:-pillar-csi-system}"
+HELM_VALUES="${HELM_VALUES:-${REPO_ROOT}/hack/e2e-values.yaml}"
+HELM_EXTRA_ARGS="${HELM_EXTRA_ARGS:-}"
 
 # ── Image names (constraint: these are the canonical e2e image names) ─────────
 IMG_CONTROLLER="pillar-csi-controller:${IMAGE_TAG}"
@@ -92,6 +104,16 @@ while [[ $# -gt 0 ]]; do
       SKIP_PREREQ_CHECK=true; shift ;;
     --skip-image-build)
       SKIP_IMAGE_BUILD=true; shift ;;
+    --skip-helm-deploy)
+      SKIP_HELM_DEPLOY=true; shift ;;
+    --helm-release)
+      HELM_RELEASE="$2"; shift 2 ;;
+    --helm-release=*)
+      HELM_RELEASE="${1#*=}"; shift ;;
+    --helm-namespace)
+      HELM_NAMESPACE="$2"; shift 2 ;;
+    --helm-namespace=*)
+      HELM_NAMESPACE="${1#*=}"; shift ;;
     --image-tag)
       IMAGE_TAG="$2"
       IMG_CONTROLLER="pillar-csi-controller:${IMAGE_TAG}"
@@ -312,16 +334,100 @@ load_image "${IMG_NODE}"
 
 log_ok "All images loaded into Kind cluster '${KIND_CLUSTER}'."
 
+# ── Section 6: Helm chart deploy ──────────────────────────────────────────────
+#
+# Install or upgrade the pillar-csi Helm chart into the Kind cluster.
+# We use `helm upgrade --install` for idempotency: the command creates the
+# release on first run and upgrades it on subsequent runs.
+#
+# Values layering (last wins):
+#   1. charts/pillar-csi/values.yaml       — chart defaults
+#   2. hack/e2e-values.yaml                — e2e overrides (imagePullPolicy: Never,
+#                                            local image repos, reduced resources)
+#   3. --set overrides below               — dynamic values (image tag)
+
+log_section "Helm chart deployment"
+
+if [ "${SKIP_HELM_DEPLOY}" = "true" ]; then
+  log_warn "Helm deploy skipped (--skip-helm-deploy / SKIP_HELM_DEPLOY=true)."
+  log_warn "Release '${HELM_RELEASE}' in namespace '${HELM_NAMESPACE}' may not exist."
+else
+  log_info "Helm release  : ${HELM_RELEASE}"
+  log_info "Namespace     : ${HELM_NAMESPACE}"
+  log_info "Chart         : ${REPO_ROOT}/charts/pillar-csi"
+  log_info "Values file   : ${HELM_VALUES}"
+  log_info "Image tag     : ${IMAGE_TAG}"
+  log_info ""
+
+  # Verify the values override file exists.
+  if [ ! -f "${HELM_VALUES}" ]; then
+    log_error "Helm values override file not found: ${HELM_VALUES}"
+    log_error "Expected: hack/e2e-values.yaml — run this script from the repo root."
+    exit 1
+  fi
+
+  # Verify the chart directory exists.
+  HELM_CHART_DIR="${REPO_ROOT}/charts/pillar-csi"
+  if [ ! -d "${HELM_CHART_DIR}" ]; then
+    log_error "Helm chart directory not found: ${HELM_CHART_DIR}"
+    exit 1
+  fi
+
+  # Build the helm upgrade command.
+  # --set overrides for the three locally-built images (dynamic IMAGE_TAG).
+  # These are applied AFTER the static values file so they always win.
+  HELM_SET_ARGS=(
+    "--set" "controller.image.repository=pillar-csi-controller"
+    "--set" "controller.image.tag=${IMAGE_TAG}"
+    "--set" "controller.image.pullPolicy=Never"
+    "--set" "agent.image.repository=pillar-csi-agent"
+    "--set" "agent.image.tag=${IMAGE_TAG}"
+    "--set" "agent.image.pullPolicy=Never"
+    "--set" "node.image.repository=pillar-csi-node"
+    "--set" "node.image.tag=${IMAGE_TAG}"
+    "--set" "node.image.pullPolicy=Never"
+  )
+
+  # Construct optional extra-args array (may be empty).
+  HELM_EXTRA_ARGS_ARRAY=()
+  if [ -n "${HELM_EXTRA_ARGS}" ]; then
+    # Word-split intentional; caller is responsible for quoting.
+    # shellcheck disable=SC2206
+    HELM_EXTRA_ARGS_ARRAY=( ${HELM_EXTRA_ARGS} )
+  fi
+
+  log_info "Running: helm upgrade --install ${HELM_RELEASE} ..."
+  helm upgrade --install \
+    "${HELM_RELEASE}" \
+    "${HELM_CHART_DIR}" \
+    --namespace        "${HELM_NAMESPACE}" \
+    --create-namespace \
+    --kubeconfig       "${KUBECONFIG}" \
+    --kube-context     "kind-${KIND_CLUSTER}" \
+    --values           "${HELM_VALUES}" \
+    "${HELM_SET_ARGS[@]}" \
+    "${HELM_EXTRA_ARGS_ARRAY[@]+"${HELM_EXTRA_ARGS_ARRAY[@]}"}" \
+    --wait \
+    --timeout 5m0s
+
+  log_ok "Helm release '${HELM_RELEASE}' deployed to namespace '${HELM_NAMESPACE}'."
+fi
+
 # ── Done ──────────────────────────────────────────────────────────────────────
 
 log_section "e2e environment ready"
-log_info "Cluster  : ${KIND_CLUSTER}"
-log_info "Context  : kind-${KIND_CLUSTER}"
-log_info "Config   : ${KIND_CONFIG}"
-log_info "Images   :"
+log_info "Cluster   : ${KIND_CLUSTER}"
+log_info "Context   : kind-${KIND_CLUSTER}"
+log_info "Config    : ${KIND_CONFIG}"
+log_info "Images    :"
 log_info "  ${IMG_CONTROLLER}"
 log_info "  ${IMG_AGENT}"
 log_info "  ${IMG_NODE}"
+if [ "${SKIP_HELM_DEPLOY}" != "true" ]; then
+  log_info "Helm      :"
+  log_info "  release   : ${HELM_RELEASE}"
+  log_info "  namespace : ${HELM_NAMESPACE}"
+fi
 log_info ""
 log_info "Next steps:"
 log_info "  # Run e2e tests:"
