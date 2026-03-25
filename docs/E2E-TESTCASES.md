@@ -3188,7 +3188,206 @@ StorageClass는 특정 풀과 프로토콜에 묶여 있어, 변경 시 기존 P
 
 ---
 
-**총 카테고리 1.5 테스트 케이스 (업데이트): 104개** (E19: 19개, E20: 20개, E23: 24개, E25: 41개 → E21은 다른 카탈로그에 포함)
+**총 카테고리 1.5 테스트 케이스 (업데이트): 127개** (E19: 19개, E20: 20개, E23: 24개, E25: 41개, E26: 23개 → E21은 다른 카탈로그에 포함)
+
+---
+
+## E26: 교차-CRD 라이프사이클 상호작용
+
+**테스트 유형:** C (Envtest 통합) ⚠️ envtest 필요
+
+**빌드 태그:** `//go:build integration`
+
+**실행 방법:**
+```bash
+make setup-envtest
+go test -tags=integration ./internal/controller/... -v -run 'TestControllers/CrossCRD'
+go test -tags=integration ./internal/webhook/... -v -run 'TestWebhooks/CrossCRD'
+```
+
+**목적:**
+여러 CRD(PillarTarget → PillarPool → PillarBinding ← PillarProtocol)의
+**교차-CRD 라이프사이클 상호작용**을 검증한다.
+단일 CRD의 생성·삭제를 검증하는 E19/E20/E23/E25와 달리, 이 섹션은 아래
+세 가지 측면을 집중 검증한다:
+
+1. **의존 순서 (Dependency Ordering)** — 참조 CRD가 없거나 Not-Ready일 때
+   하위 CRD의 상태 조건이 올바르게 `False`로 설정됨
+2. **연쇄 상태 업데이트 (Cascading Status Updates)** — 상위 CRD 상태 변화가
+   하위 CRD에 전파됨
+3. **삭제 보호 (Deletion Protection)** — 의존 리소스가 존재할 때 삭제가
+   파이널라이저 메커니즘으로 차단됨
+
+> **CI 실행 가능 여부:** ✅ CI에서 실행 가능 — envtest 사용.
+>
+> **한계:** envtest에서는 컨트롤러 간 자동 watch/event 전파가 실제 환경보다
+> 느리다. 각 Reconcile을 명시적으로 순차 호출하여 전파를 재현한다.
+> 실제 운영 환경의 즉각적 전파는 Kind 클러스터(유형 B) 또는 수동 스테이징에서
+> 검증한다.
+>
+> **미구현 기능 문서화:** 컨트롤러가 삭제 보호 파이널라이저를 아직 구현하지
+> 않은 경우, E26.3.x 테스트는 실패한다. 이는 의도된 동작으로, 미구현 기능의
+> 명세를 문서화한다.
+
+**컴포넌트 의존성 그래프:**
+
+```
+PillarTarget (pt)
+  └─(targetRef)──► PillarPool (pp)
+                     └─(poolRef)────► PillarBinding (pb) ──► StorageClass ──► PVC
+PillarProtocol (ppr)
+  └─(protocolRef)──► PillarBinding (pb)
+```
+
+**컴포넌트 약어 참조:**
+
+| 약어 | 의미 |
+|------|------|
+| `TgtCRD` | `api/v1alpha1.PillarTarget` CRD 및 상태 |
+| `TgtCtrl` | `internal/controller.PillarTargetReconciler` |
+| `PoolCRD` | `api/v1alpha1.PillarPool` CRD 및 상태 |
+| `PoolCtrl` | `internal/controller.PillarPoolReconciler` |
+| `PProtCRD` | `api/v1alpha1.PillarProtocol` CRD 및 상태 |
+| `PProtCtrl` | `internal/controller.PillarProtocolReconciler` |
+| `BindCRD` | `api/v1alpha1.PillarBinding` CRD 및 상태 |
+| `BindCtrl` | `internal/controller.PillarBindingReconciler` |
+| `SC` | `storage.k8s.io/v1.StorageClass` |
+
+---
+
+### E26.1 의존 순서 — 참조 CRD 없음/Not-Ready 시 하위 조건 차단
+
+**목적:** 상위 CRD가 존재하지 않거나 Not-Ready 상태일 때 하위 CRD의 상태 조건이
+올바르게 `False`로 설정되고 `Ready` 조건도 `False`로 유지됨을 확인한다.
+
+**PillarPool 상태 조건 검증 (targetRef 의존성):**
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| E26.1.1 | `TestCrossLifecycle_Pool_TargetMissing_TargetReadyFalse` | PillarPool 생성 시 참조 PillarTarget이 없으면 `TargetReady=False` 조건 설정 | envtest; PillarPool(`targetRef="nonexistent-target"`) 생성; PillarTarget 미등록 | 1) PillarPool 생성; 2) `poolReconciler.Reconcile(ctx, req)` 호출; 3) PillarPool 상태 조회 | `TargetReady.Status=False`; `TargetReady.Reason="TargetNotFound"`; `Ready.Status=False` | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
+| E26.1.2 | `TestCrossLifecycle_Pool_TargetNotReady_TargetReadyFalse` | 참조 PillarTarget이 존재하지만 `Ready=False`이면 `TargetReady=False` 조건 설정 | envtest; PillarTarget(`Ready=False, reason="AgentUnhealthy"`) 등록; PillarPool(`targetRef=target`) 생성 | 1) PillarPool 생성; 2) `poolReconciler.Reconcile(ctx, req)` 호출; 3) PillarPool 상태 조회 | `TargetReady.Status=False`; `TargetReady.Reason="TargetNotReady"`; `Ready.Status=False` | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
+| E26.1.3 | `TestCrossLifecycle_Pool_TargetReady_TargetReadyTrue` | 참조 PillarTarget이 `Ready=True`이면 `TargetReady=True` 조건 설정 | envtest; PillarTarget(`Ready=True, reason="Authenticated"`) 등록; PillarPool(`targetRef=target`) 생성 | 1) PillarPool 생성; 2) `poolReconciler.Reconcile(ctx, req)` 호출; 3) PillarPool 상태 조회 | `TargetReady.Status=True`; `TargetReady.Reason="TargetReady"` | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
+
+**PillarBinding 상태 조건 검증 (poolRef / protocolRef 의존성):**
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| E26.1.4 | `TestCrossLifecycle_Binding_PoolMissing_PoolReadyFalse` | PillarBinding 생성 시 참조 PillarPool이 없으면 `PoolReady=False` 조건 설정 | envtest; PillarBinding(`poolRef="nonexistent-pool"`, `protocolRef="valid-proto"`) 생성; PillarPool 미등록; PillarProtocol 등록 | 1) PillarBinding 생성; 2) `bindingReconciler.Reconcile(ctx, req)` 호출; 3) PillarBinding 상태 조회 | `PoolReady.Status=False`; `PoolReady.Reason="PoolNotFound"`; `Ready.Status=False`; StorageClass 미생성 | `BindCRD`, `BindCtrl`, `PoolCRD` |
+| E26.1.5 | `TestCrossLifecycle_Binding_PoolNotReady_PoolReadyFalse` | 참조 PillarPool이 존재하지만 `Ready=False`이면 `PoolReady=False` 조건 설정 | envtest; PillarPool(`Ready=False`) 등록; PillarBinding(`poolRef=pool`) 생성 | 1) PillarBinding 생성; 2) `bindingReconciler.Reconcile(ctx, req)` 호출; 3) PillarBinding 상태 조회 | `PoolReady.Status=False`; `PoolReady.Reason="PoolNotReady"`; `Ready.Status=False` | `BindCRD`, `BindCtrl`, `PoolCRD` |
+| E26.1.6 | `TestCrossLifecycle_Binding_ProtocolMissing_ProtocolValidFalse` | PillarBinding 생성 시 참조 PillarProtocol이 없으면 `ProtocolValid=False` 조건 설정 | envtest; PillarBinding(`poolRef="valid-pool"`, `protocolRef="nonexistent-protocol"`) 생성; PillarProtocol 미등록; PillarPool 등록 | 1) PillarBinding 생성; 2) `bindingReconciler.Reconcile(ctx, req)` 호출; 3) PillarBinding 상태 조회 | `ProtocolValid.Status=False`; `ProtocolValid.Reason="ProtocolNotFound"`; `Ready.Status=False` | `BindCRD`, `BindCtrl`, `PProtCRD` |
+| E26.1.7 | `TestCrossLifecycle_Binding_BothMissing_BothConditionsFalse` | PillarPool과 PillarProtocol 둘 다 없을 때 두 조건 모두 `False` | envtest; PillarBinding(`poolRef="missing-pool"`, `protocolRef="missing-proto"`) 생성; 둘 다 미등록 | 1) PillarBinding 생성; 2) `bindingReconciler.Reconcile(ctx, req)` 호출; 3) PillarBinding 상태 조회 | `PoolReady.Status=False`; `ProtocolValid.Status=False`; `Ready.Status=False`; StorageClass 미생성 | `BindCRD`, `BindCtrl`, `PoolCRD`, `PProtCRD` |
+| E26.1.8 | `TestCrossLifecycle_Binding_PoolReadyProtocolReady_BecomeReady` | Pool `Ready=True` + Protocol `Ready=True` → Binding `Ready=True`, StorageClass 생성 | envtest; PillarPool(`Ready=True`, `backend.type="zfs-zvol"`) 등록; PillarProtocol(`Ready=True`, `type="nvmeof-tcp"`) 등록; PillarBinding 생성 | 1) PillarBinding 생성; 2) `bindingReconciler.Reconcile(ctx, req)` 호출; 3) PillarBinding 상태 및 StorageClass 조회 | `PoolReady.Status=True`; `ProtocolValid.Status=True`; `Compatible.Status=True`; `StorageClassCreated.Status=True`; `Ready.Status=True`; StorageClass 존재 | `BindCRD`, `BindCtrl`, `PoolCRD`, `PProtCRD`, `SC` |
+
+---
+
+### E26.2 연쇄 상태 업데이트 — 상위 CRD 상태 변화 하위 전파
+
+**목적:** 상위 CRD의 Ready 상태 변화가 하위 CRD 상태 조건에 올바르게 전파됨을 확인한다.
+이 테스트는 envtest에서 각 컨트롤러를 순차적으로 호출하여 상태 전파 시나리오를 재현한다.
+
+> **CI 실행 가능 여부:** ✅ envtest 사용.
+>
+> **한계:** 실제 운영 환경에서는 Watch 이벤트로 자동 전파되나, envtest에서는
+> 각 Reconcile을 명시적으로 호출하여 단계별로 검증한다.
+
+**PillarTarget → PillarPool 연쇄 상태 업데이트:**
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| E26.2.1 | `TestCrossLifecycle_Cascade_TargetLosesReady_PoolConditionUpdates` | PillarTarget이 `Ready=True→False`로 전환 시 PillarPool의 `TargetReady` 조건이 `False`로 전이 | envtest; PillarTarget(`Ready=True`) + PillarPool(`TargetReady=True`, `Ready=True`) 초기 상태 | 1) PillarTarget 상태를 `Ready=False`로 갱신; 2) `poolReconciler.Reconcile(ctx, req)` 호출; 3) PillarPool 상태 조회 | `PoolCRD.TargetReady.Status=False`; `PoolCRD.Ready.Status=False` | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
+| E26.2.2 | `TestCrossLifecycle_Cascade_TargetRecovery_PoolConditionRestores` | PillarTarget이 `Ready=False→True`로 회복 시 PillarPool `TargetReady=True` 복원 | envtest; PillarTarget(`Ready=False`) + PillarPool(`TargetReady=False`) 초기 상태 | 1) PillarTarget 상태를 `Ready=True`로 갱신; 2) `poolReconciler.Reconcile(ctx, req)` 호출; 3) PillarPool 상태 조회 | `PoolCRD.TargetReady.Status=True`; `PoolCRD.Ready.Status=True` | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
+
+**PillarPool → PillarBinding 연쇄 상태 업데이트:**
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| E26.2.3 | `TestCrossLifecycle_Cascade_PoolLosesReady_BindingConditionUpdates` | PillarPool이 `Ready=True→False`로 전환 시 PillarBinding의 `PoolReady` 조건이 `False`로 전이 | envtest; PillarPool(`Ready=True`) + PillarBinding(`PoolReady=True`, `Ready=True`) 초기 상태; StorageClass 이미 생성됨 | 1) PillarPool 상태를 `Ready=False`로 갱신; 2) `bindingReconciler.Reconcile(ctx, req)` 호출; 3) PillarBinding 상태 조회; 4) StorageClass 조회 | `BindCRD.PoolReady.Status=False`; `BindCRD.Ready.Status=False`; StorageClass는 기존 PVC 보호를 위해 유지(삭제 안 됨) | `BindCRD`, `BindCtrl`, `PoolCRD`, `SC` |
+| E26.2.4 | `TestCrossLifecycle_Cascade_ProtocolBecomesInvalid_BindingNotReady` | PillarProtocol이 `Ready=True→False`로 전환 시 PillarBinding `ProtocolValid=False` 전이 | envtest; PillarProtocol(`Ready=True`) + PillarBinding(`ProtocolValid=True`, `Ready=True`) 초기 상태 | 1) PillarProtocol 상태를 `Ready=False`로 갱신; 2) `bindingReconciler.Reconcile(ctx, req)` 호출; 3) PillarBinding 상태 조회 | `BindCRD.ProtocolValid.Status=False`; `BindCRD.Ready.Status=False` | `BindCRD`, `BindCtrl`, `PProtCRD` |
+
+**전체 체인 연쇄 복원:**
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| E26.2.5 | `TestCrossLifecycle_Cascade_FullChainRecovery` | PillarTarget 회복 시 Pool→Binding 전체 체인 Ready 복원 | envtest; Target(`Ready=False`) → Pool(`TargetReady=False`, `Ready=False`) → Binding(`PoolReady=False`, `Ready=False`) 초기 상태 | 1) PillarTarget `Ready=True`로 갱신; 2) `poolReconciler.Reconcile(ctx, req)` 호출; 3) `bindingReconciler.Reconcile(ctx, req)` 호출; 4) 두 CRD 상태 조회 | `PoolCRD.TargetReady.Status=True`; `PoolCRD.Ready.Status=True`; `BindCRD.PoolReady.Status=True`; `BindCRD.Ready.Status=True` | `PoolCRD`, `PoolCtrl`, `BindCRD`, `BindCtrl`, `TgtCRD` |
+| E26.2.6 | `TestCrossLifecycle_Cascade_BindingBecomesReady_StorageClassCreated` | 모든 상위 의존성 Ready 후 Binding Ready 전이 시 StorageClass 생성 | envtest; PillarPool(`Ready=False`) + PillarProtocol(`Ready=True`) + PillarBinding(`Ready=False`, StorageClass 미존재) 초기 상태 | 1) PillarPool `Ready=True`로 갱신; 2) `bindingReconciler.Reconcile(ctx, req)` 호출; 3) StorageClass 조회 | StorageClass 생성 확인; `BindCRD.StorageClassCreated.Status=True`; `BindCRD.Ready.Status=True` | `BindCRD`, `BindCtrl`, `PoolCRD`, `PProtCRD`, `SC` |
+
+**PillarProtocol bindingCount 연쇄 업데이트:**
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| E26.2.7 | `TestCrossLifecycle_Cascade_ProtocolBindingCount_IncrementOnCreate` | PillarBinding 조정 완료 시 PillarProtocol `status.bindingCount` 증가 | envtest; PillarProtocol(`bindingCount=0`) 등록; PillarBinding Ready 전이 완료 | 1) `protocolReconciler.Reconcile(ctx, req)` 호출; 2) PillarProtocol 상태 조회 | `PProtCRD.Status.BindingCount=1` | `PProtCRD`, `PProtCtrl`, `BindCRD` |
+
+---
+
+### E26.3 삭제 보호 — 의존 리소스 존재 시 삭제 차단
+
+**목적:** 하위 CRD가 상위 CRD를 참조하고 있을 때 상위 CRD의 삭제가 파이널라이저 메커니즘으로
+차단되고, 하위 CRD가 모두 삭제된 후에야 상위 CRD가 실제로 삭제됨을 확인한다.
+
+> **CI 실행 가능 여부:** ✅ envtest 사용.
+>
+> **미구현 기능 문서화:** 파이널라이저 기반 삭제 보호(PillarTarget/PillarPool/PillarProtocol)는
+> 현재 컨트롤러가 구현하지 않은 경우 E26.3.1~E26.3.7 테스트가 실패한다.
+> 이 실패는 **의도된 동작**으로, 구현 누락을 명시적으로 드러낸다.
+> E26.3.8(의존 없는 즉시 삭제)은 파이널라이저 미구현 환경에서도 통과해야 한다.
+
+**삭제 보호 의존 그래프:**
+
+```
+PillarTarget ◄─────(참조) PillarPool ◄────(참조) PillarBinding ◄── PVC
+     ↑ 차단                  ↑ 차단                   ↑ 차단
+```
+
+**PillarTarget 삭제 보호 (PillarPool이 참조 중):**
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| E26.3.1 | `TestCrossLifecycle_DeleteProtection_Target_BlockedByPool` | PillarPool이 `targetRef`로 참조하는 PillarTarget 삭제 시 파이널라이저로 차단 | envtest; PillarTarget(`target-1`) + PillarPool(`targetRef="target-1"`) 생성 완료; PillarTarget에 `pillar-csi.bhyoo.com/target-protection` 파이널라이저 존재 | 1) `k8sClient.Delete(ctx, target)` 호출; 2) `targetReconciler.Reconcile(ctx, req)` 호출; 3) PillarTarget 조회 | PillarTarget에 `DeletionTimestamp` 설정됨; 파이널라이저 유지; PillarTarget 여전히 존재(NotFound 아님) | `TgtCRD`, `TgtCtrl`, `PoolCRD` |
+| E26.3.2 | `TestCrossLifecycle_DeleteProtection_Target_AllowedAfterPoolRemoved` | 참조 PillarPool 삭제 후 PillarTarget 삭제 완료 | envtest; E26.3.1 상태에서 시작; PillarPool 삭제 완료(finalizer 제거 포함) | 1) PillarPool 삭제 완료; 2) `targetReconciler.Reconcile(ctx, req)` 재호출; 3) PillarTarget 조회 | PillarTarget 삭제 완료(NotFound); 파이널라이저 제거 확인 | `TgtCRD`, `TgtCtrl`, `PoolCRD` |
+
+**PillarPool 삭제 보호 (PillarBinding이 참조 중):**
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| E26.3.3 | `TestCrossLifecycle_DeleteProtection_Pool_BlockedByBinding` | PillarBinding이 `poolRef`로 참조하는 PillarPool 삭제 시 파이널라이저로 차단 | envtest; PillarPool(`pool-1`) + PillarBinding(`poolRef="pool-1"`) 생성 완료; PillarPool에 `pillar-csi.bhyoo.com/pool-protection` 파이널라이저 존재 | 1) `k8sClient.Delete(ctx, pool)` 호출; 2) `poolReconciler.Reconcile(ctx, req)` 호출; 3) PillarPool 조회 | PillarPool에 `DeletionTimestamp` 설정됨; 파이널라이저 유지; PillarPool 여전히 존재 | `PoolCRD`, `PoolCtrl`, `BindCRD` |
+| E26.3.4 | `TestCrossLifecycle_DeleteProtection_Pool_AllowedAfterBindingRemoved` | 참조 PillarBinding 삭제 후 PillarPool 삭제 완료 | envtest; E26.3.3 상태에서 시작; PillarBinding 삭제 완료 | 1) PillarBinding 삭제 완료; 2) `poolReconciler.Reconcile(ctx, req)` 재호출; 3) PillarPool 조회 | PillarPool 삭제 완료(NotFound); 파이널라이저 제거 확인 | `PoolCRD`, `PoolCtrl`, `BindCRD` |
+
+**PillarProtocol 삭제 보호 (PillarBinding이 참조 중):**
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| E26.3.5 | `TestCrossLifecycle_DeleteProtection_Protocol_BlockedByBinding` | PillarBinding이 `protocolRef`로 참조하는 PillarProtocol 삭제 시 파이널라이저로 차단 | envtest; PillarProtocol(`proto-1`) + PillarBinding(`protocolRef="proto-1"`) 생성 완료; PillarProtocol에 `pillar-csi.bhyoo.com/protocol-protection` 파이널라이저 존재 | 1) `k8sClient.Delete(ctx, protocol)` 호출; 2) `protocolReconciler.Reconcile(ctx, req)` 호출; 3) PillarProtocol 조회 | PillarProtocol에 `DeletionTimestamp` 설정됨; 파이널라이저 유지; PillarProtocol 여전히 존재 | `PProtCRD`, `PProtCtrl`, `BindCRD` |
+| E26.3.6 | `TestCrossLifecycle_DeleteProtection_Protocol_AllowedAfterBindingRemoved` | 참조 PillarBinding 삭제 후 PillarProtocol 삭제 완료 | envtest; E26.3.5 상태에서 시작; PillarBinding 삭제 완료 | 1) PillarBinding 삭제 완료; 2) `protocolReconciler.Reconcile(ctx, req)` 재호출; 3) PillarProtocol 조회 | PillarProtocol 삭제 완료(NotFound); 파이널라이저 제거 확인 | `PProtCRD`, `PProtCtrl`, `BindCRD` |
+
+**전체 체인 역순 삭제 (Binding → Pool → Target):**
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| E26.3.7 | `TestCrossLifecycle_DeleteProtection_FullChain_ReverseOrderDeletion` | 의존 역순(Binding→Pool→Target) 삭제 시 전체 체인 정상 삭제 완료 | envtest; PillarTarget + PillarPool + PillarBinding 모두 생성 완료; 각 CRD에 파이널라이저 존재 | 1) PillarBinding 삭제 및 조정 완료; 2) PillarPool 조정 → 파이널라이저 해제; 3) PillarPool 삭제 완료; 4) PillarTarget 조정 → 파이널라이저 해제; 5) PillarTarget 삭제 완료 | 역순 삭제로 모든 파이널라이저 순차 해제; 최종적으로 세 CRD 모두 삭제(NotFound) | `TgtCRD`, `TgtCtrl`, `PoolCRD`, `PoolCtrl`, `BindCRD`, `BindCtrl` |
+| E26.3.8 | `TestCrossLifecycle_DeleteProtection_NoDependent_ImmediateDeletion` | 참조 하위 CRD가 없는 CRD는 파이널라이저 즉시 제거 후 삭제 완료 | envtest; PillarTarget 단독 생성(참조 PillarPool 없음) | 1) `k8sClient.Delete(ctx, target)` 호출; 2) `targetReconciler.Reconcile(ctx, req)` 호출; 3) PillarTarget 조회 | PillarTarget 즉시 삭제(NotFound); 파이널라이저 제거 확인 | `TgtCRD`, `TgtCtrl` |
+
+---
+
+**총 E26 테스트 케이스: 23개** (E26.1: 8개, E26.2: 7개, E26.3: 8개)
+
+**CI 실행 가능 여부 요약:**
+
+| 섹션 | 테스트 수 | CI 가능 여부 | 비고 |
+|------|----------|:----------:|------|
+| E26.1 의존 순서 | 8 | ✅ | envtest 필요; ZFS/NVMe-oF 하드웨어 불필요 |
+| E26.2 연쇄 상태 업데이트 | 7 | ✅ | envtest 필요; 수동 Reconcile 순차 호출 |
+| E26.3 삭제 보호 | 8 | ✅ (구현 필요) | envtest 필요; 파이널라이저 로직 미구현 시 실패 |
+| **합계** | **23** | **✅** | `go test -tags=integration ./internal/controller/...` |
+
+**검증 불가 항목 (이 섹션에서):**
+
+| 검증 불가 항목 | 이유 | 대안 (향후) |
+|--------------|------|------------|
+| Watch 이벤트 자동 전파 지연 측정 | envtest에서는 명시적 Reconcile 호출 필요 | Kind 클러스터 E2E (유형 B) |
+| 실제 StorageClass → PVC → PV 프로비저닝 흐름 | external-provisioner 미사용; envtest 범위 밖 | Kind 클러스터 E2E (유형 B) |
+| 동시 다수 바인딩 bindingCount 경쟁 조건 | envtest 단일 스레드 순차 실행 | F25 확장 (`TestScalability_MultipleBindings`) |
+| 노드 장애 시 PillarTarget 자동 Not-Ready 전환 | 실제 노드 제거 필요; Kubernetes 노드 컨트롤러 동작 | 수동 스테이징 (M2 확장) |
+| cert-manager 인증서 만료 → PillarTarget AgentConnected 조건 갱신 | 실제 TLS 핸드셰이크 + 인증서 TTL 필요 | M10 확장 |
 
 ---
 
