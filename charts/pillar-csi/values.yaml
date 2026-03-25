@@ -9,6 +9,11 @@ imagePullPolicy: IfNotPresent
 imagePullSecrets: []
 # - name: my-registry-secret
 
+# -- Install CRDs as part of the Helm release. Set to false when managing CRDs separately
+# (e.g. via GitOps or a dedicated CRD chart). CRDs are annotated with
+# helm.sh/resource-policy: keep so they are never deleted on chart uninstall.
+installCRDs: true
+
 # -- Namespace override. Defaults to the Helm release namespace.
 namespaceOverride: ""
 

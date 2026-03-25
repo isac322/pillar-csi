@@ -1,0 +1,1014 @@
+{{- if .Values.installCRDs }}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.19.0
+    helm.sh/resource-policy: keep
+  name: pillarbindings.pillar-csi.pillar-csi.bhyoo.com
+  labels:
+    {{- include "pillar-csi.labels" . | nindent 4 }}
+spec:
+  group: pillar-csi.pillar-csi.bhyoo.com
+  names:
+    kind: PillarBinding
+    listKind: PillarBindingList
+    plural: pillarbindings
+    shortNames:
+    - pb
+    singular: pillarbinding
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.poolRef
+      name: Pool
+      type: string
+    - jsonPath: .spec.protocolRef
+      name: Protocol
+      type: string
+    - jsonPath: .status.storageClassName
+      name: StorageClass
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          PillarBinding combines a PillarPool and a PillarProtocol to create a
+          Kubernetes StorageClass.  A validation webhook rejects incompatible
+          backend/protocol combinations (e.g. block backend with NFS).
+          Parameter overrides allow fine-tuning per binding without changing the
+          shared pool or protocol resources.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines the desired state of PillarBinding.
+            properties:
+              overrides:
+                description: |-
+                  overrides provides a fine-grained parameter layer on top of the
+                  referenced pool and protocol defaults.
+                properties:
+                  backend:
+                    description: backend contains backend-specific parameter overrides.
+                    properties:
+                      zfs:
+                        description: |-
+                          zfs overrides ZFS-specific properties; used when the pool backend is
+                          zfs-zvol or zfs-dataset.
+                        properties:
+                          properties:
+                            additionalProperties:
+                              type: string
+                            description: |-
+                              properties are arbitrary ZFS properties that override pool defaults
+                              (e.g. volblocksize, compression).
+                            type: object
+                        type: object
+                    type: object
+                  fsType:
+                    description: |-
+                      fsType overrides the protocol-level fsType for this binding.
+                      Only relevant for block protocols with volumeMode: Filesystem.
+                    enum:
+                    - ext4
+                    - xfs
+                    type: string
+                  mkfsOptions:
+                    description: mkfsOptions overrides the protocol-level mkfsOptions
+                      for this binding.
+                    items:
+                      type: string
+                    type: array
+                  protocol:
+                    description: protocol contains protocol-specific parameter overrides.
+                    properties:
+                      iscsi:
+                        description: iscsi overrides iSCSI parameters.
+                        properties:
+                          loginTimeout:
+                            description: loginTimeout overrides the protocol-level
+                              loginTimeout.
+                            format: int32
+                            minimum: 0
+                            type: integer
+                          replacementTimeout:
+                            description: replacementTimeout overrides the protocol-level
+                              replacementTimeout.
+                            format: int32
+                            minimum: 0
+                            type: integer
+                        type: object
+                      nvmeofTcp:
+                        description: nvmeofTcp overrides NVMe-oF/TCP parameters.
+                        properties:
+                          inCapsuleDataSize:
+                            description: inCapsuleDataSize overrides the protocol-level
+                              inCapsuleDataSize.
+                            format: int32
+                            minimum: 0
+                            type: integer
+                          maxQueueSize:
+                            description: maxQueueSize overrides the protocol-level
+                              maxQueueSize.
+                            format: int32
+                            minimum: 1
+                            type: integer
+                        type: object
+                    type: object
+                type: object
+              poolRef:
+                description: poolRef is the name of the PillarPool to use for provisioning.
+                minLength: 1
+                type: string
+              protocolRef:
+                description: protocolRef is the name of the PillarProtocol used to
+                  expose volumes.
+                minLength: 1
+                type: string
+              storageClass:
+                description: |-
+                  storageClass configures the Kubernetes StorageClass that this binding
+                  generates.  The controller creates and owns the StorageClass; deleting
+                  the PillarBinding also deletes the StorageClass.
+                properties:
+                  allowVolumeExpansion:
+                    description: |-
+                      allowVolumeExpansion enables online volume expansion.
+                      When unset the controller derives the value from backend capabilities.
+                    type: boolean
+                  name:
+                    description: |-
+                      name is the name of the generated StorageClass.
+                      Defaults to the PillarBinding's own name when omitted.
+                    minLength: 1
+                    type: string
+                  reclaimPolicy:
+                    default: Delete
+                    description: |-
+                      reclaimPolicy determines what happens to a PersistentVolume when its
+                      PersistentVolumeClaim is deleted.
+                    enum:
+                    - Delete
+                    - Retain
+                    type: string
+                  volumeBindingMode:
+                    default: Immediate
+                    description: volumeBindingMode controls when volume binding and
+                      dynamic provisioning occur.
+                    enum:
+                    - Immediate
+                    - WaitForFirstConsumer
+                    type: string
+                type: object
+            required:
+            - poolRef
+            - protocolRef
+            type: object
+          status:
+            description: status reflects the reconciler-observed state of this binding.
+            properties:
+              conditions:
+                description: |-
+                  conditions represent the current state of the PillarBinding resource.
+
+                  Known condition types:
+                  - "PoolReady"           – the referenced PillarPool is in Ready state.
+                  - "ProtocolValid"       – the referenced PillarProtocol exists and is valid.
+                  - "Compatible"          – the pool backend and protocol are compatible
+                                            (e.g. block backend cannot be combined with NFS).
+                  - "StorageClassCreated" – the Kubernetes StorageClass has been created.
+                  - "Ready"               – all checks pass; the binding is operational.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              storageClassName:
+                description: storageClassName is the name of the generated StorageClass.
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.19.0
+    helm.sh/resource-policy: keep
+  name: pillarpools.pillar-csi.pillar-csi.bhyoo.com
+  labels:
+    {{- include "pillar-csi.labels" . | nindent 4 }}
+spec:
+  group: pillar-csi.pillar-csi.bhyoo.com
+  names:
+    kind: PillarPool
+    listKind: PillarPoolList
+    plural: pillarpools
+    shortNames:
+    - pp
+    singular: pillarpool
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.targetRef
+      name: Target
+      type: string
+    - jsonPath: .spec.backend.type
+      name: Backend
+      type: string
+    - jsonPath: .status.capacity.available
+      name: Available
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          PillarPool represents a specific storage pool on a PillarTarget.  Users
+          create PillarPool resources to declare that a pool is available for CSI
+          volume provisioning; the controller validates availability and updates status.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines the desired state of PillarPool.
+            properties:
+              backend:
+                description: backend describes the storage technology and pool to
+                  use.
+                properties:
+                  type:
+                    description: type identifies the backend driver.
+                    enum:
+                    - zfs-zvol
+                    - zfs-dataset
+                    - lvm-lv
+                    - dir
+                    type: string
+                  zfs:
+                    description: zfs holds ZFS-specific configuration; required when
+                      type is zfs-zvol or zfs-dataset.
+                    properties:
+                      parentDataset:
+                        description: |-
+                          parentDataset is the ZFS dataset path under which pillar-csi will
+                          create per-volume datasets or zvols (e.g. "k8s").
+                        type: string
+                      pool:
+                        description: pool is the ZFS pool name (e.g. "hot-data").
+                        minLength: 1
+                        type: string
+                      properties:
+                        additionalProperties:
+                          type: string
+                        description: |-
+                          properties are arbitrary ZFS properties applied to every volume created
+                          in this pool (e.g. compression, volblocksize).
+                        type: object
+                    required:
+                    - pool
+                    type: object
+                required:
+                - type
+                type: object
+              targetRef:
+                description: targetRef is the name of the PillarTarget this pool lives
+                  on.
+                minLength: 1
+                type: string
+            required:
+            - backend
+            - targetRef
+            type: object
+          status:
+            description: status defines the observed state of PillarPool.
+            properties:
+              capacity:
+                description: capacity reflects the latest capacity reading for this
+                  pool.
+                properties:
+                  available:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    description: available is the free capacity available for new
+                      volumes.
+                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                    x-kubernetes-int-or-string: true
+                  total:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    description: total is the gross capacity of the pool.
+                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                    x-kubernetes-int-or-string: true
+                  used:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    description: used is the amount of capacity already consumed.
+                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                    x-kubernetes-int-or-string: true
+                type: object
+              conditions:
+                description: |-
+                  conditions represent the current state of the PillarPool resource.
+
+                  Known condition types:
+                  - "TargetReady"       – the referenced PillarTarget is in Ready state.
+                  - "PoolDiscovered"    – the pool named in spec.backend has been found on the agent.
+                  - "BackendSupported"  – the backend type is listed in the agent's capabilities.
+                  - "Ready"             – all checks pass; the pool can provision volumes.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.19.0
+    helm.sh/resource-policy: keep
+  name: pillarprotocols.pillar-csi.pillar-csi.bhyoo.com
+  labels:
+    {{- include "pillar-csi.labels" . | nindent 4 }}
+spec:
+  group: pillar-csi.pillar-csi.bhyoo.com
+  names:
+    kind: PillarProtocol
+    listKind: PillarProtocolList
+    plural: pillarprotocols
+    shortNames:
+    - ppr
+    singular: pillarprotocol
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.type
+      name: Type
+      type: string
+    - jsonPath: .status.bindingCount
+      name: Bindings
+      type: integer
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          PillarProtocol describes a reusable network-storage protocol configuration.
+          It is node-independent: the same PillarProtocol can be referenced by multiple
+          PillarBinding resources across different pools and targets.  The controller
+          resolves the target bind address at runtime from the relevant PillarTarget.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines the desired protocol configuration.
+            properties:
+              fsType:
+                default: ext4
+                description: |-
+                  fsType is the default filesystem type for block protocols when
+                  volumeMode is Filesystem.  Only relevant for block-based protocols
+                  (nvmeof-tcp, iscsi).
+                enum:
+                - ext4
+                - xfs
+                type: string
+              iscsi:
+                description: iscsi holds iSCSI configuration; required when type is
+                  iscsi.
+                properties:
+                  acl:
+                    default: true
+                    description: |-
+                      acl enables initiator IQN-based access control when true.
+                      When false the target allows any initiator.
+                    type: boolean
+                  loginTimeout:
+                    description: |-
+                      loginTimeout is the number of seconds to wait for a login response.
+                      Defaults to 15.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  nodeSessionTimeout:
+                    description: |-
+                      nodeSessionTimeout is the number of seconds for the node session
+                      retry timeout. Defaults to 120.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  port:
+                    default: 3260
+                    description: |-
+                      port is the TCP port on which the iSCSI target listens.
+                      Defaults to 3260.
+                    format: int32
+                    maximum: 65535
+                    minimum: 1
+                    type: integer
+                  replacementTimeout:
+                    description: |-
+                      replacementTimeout is the number of seconds to wait for a session
+                      replacement after a connection failure. Defaults to 120.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                type: object
+              mkfsOptions:
+                description: |-
+                  mkfsOptions are additional arguments passed to mkfs when formatting a
+                  new volume.  Only relevant for block-based protocols.
+                items:
+                  type: string
+                type: array
+              nfs:
+                description: nfs holds NFS configuration; required when type is nfs.
+                properties:
+                  version:
+                    default: "4.2"
+                    description: version is the NFS protocol version to use (e.g.
+                      "4.2").
+                    type: string
+                type: object
+              nvmeofTcp:
+                description: nvmeofTcp holds NVMe-oF/TCP configuration; required when
+                  type is nvmeof-tcp.
+                properties:
+                  acl:
+                    default: true
+                    description: |-
+                      acl enables host NQN-based access control when true.
+                      When false the subsystem uses allow_any_host.
+                    type: boolean
+                  ctrlLossTmo:
+                    description: |-
+                      ctrlLossTmo is the maximum seconds to wait before declaring a target
+                      permanently lost after connectivity failure.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  inCapsuleDataSize:
+                    description: inCapsuleDataSize is the maximum in-capsule data
+                      size in bytes.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  maxQueueSize:
+                    description: maxQueueSize is the maximum number of I/O queue entries
+                      per connection.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  port:
+                    default: 4420
+                    description: |-
+                      port is the TCP port on which the NVMe-oF target listens.
+                      Defaults to 4420.
+                    format: int32
+                    maximum: 65535
+                    minimum: 1
+                    type: integer
+                  reconnectDelay:
+                    description: reconnectDelay is the interval in seconds between
+                      reconnect attempts.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                type: object
+              type:
+                description: type identifies the network storage protocol.
+                enum:
+                - nvmeof-tcp
+                - iscsi
+                - nfs
+                type: string
+            required:
+            - type
+            type: object
+          status:
+            description: status reflects the reconciler-observed state of this protocol.
+            properties:
+              activeTargets:
+                description: |-
+                  activeTargets lists the names of PillarTargets currently serving
+                  volumes via this protocol.  Maintained automatically by the reconciler.
+                items:
+                  type: string
+                type: array
+              bindingCount:
+                description: |-
+                  bindingCount is the number of PillarBinding resources that reference
+                  this protocol.  Maintained automatically by the reconciler.
+                format: int32
+                type: integer
+              conditions:
+                description: |-
+                  conditions represent the current state of the PillarProtocol resource.
+
+                  Known condition types:
+                  - "Ready" – the protocol configuration is valid and ready for use.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.19.0
+    helm.sh/resource-policy: keep
+  name: pillartargets.pillar-csi.pillar-csi.bhyoo.com
+  labels:
+    {{- include "pillar-csi.labels" . | nindent 4 }}
+spec:
+  group: pillar-csi.pillar-csi.bhyoo.com
+  names:
+    kind: PillarTarget
+    listKind: PillarTargetList
+    plural: pillartargets
+    shortNames:
+    - pt
+    singular: pillartarget
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.resolvedAddress
+      name: Address
+      type: string
+    - jsonPath: .status.agentVersion
+      name: Agent
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          PillarTarget represents a storage agent instance that pillar-csi controller
+          manages.  Users create PillarTarget resources; the controller reconciles gRPC
+          connectivity and populates status fields.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines the desired state of PillarTarget.
+            properties:
+              external:
+                description: |-
+                  external addresses a storage agent that lives outside the Kubernetes cluster.
+                  Mutually exclusive with nodeRef.
+                properties:
+                  address:
+                    description: address is the IP or hostname of the external agent.
+                    minLength: 1
+                    type: string
+                  port:
+                    description: port is the agent gRPC port.
+                    format: int32
+                    maximum: 65535
+                    minimum: 1
+                    type: integer
+                required:
+                - address
+                - port
+                type: object
+              nodeRef:
+                description: |-
+                  nodeRef references a Kubernetes Node whose agent is accessible via the node's IP.
+                  Mutually exclusive with external.
+                properties:
+                  addressSelector:
+                    description: |-
+                      addressSelector is an optional CIDR filter applied when multiple addresses of
+                      the same type exist on the node.
+                    type: string
+                  addressType:
+                    default: InternalIP
+                    description: |-
+                      addressType selects which address type to use from the node's status.addresses.
+                      Defaults to InternalIP.
+                    enum:
+                    - InternalIP
+                    - ExternalIP
+                    type: string
+                  name:
+                    description: name is the Kubernetes Node name.
+                    minLength: 1
+                    type: string
+                  port:
+                    description: port overrides the default agent gRPC port (9500).
+                    format: int32
+                    maximum: 65535
+                    minimum: 1
+                    type: integer
+                required:
+                - name
+                type: object
+            type: object
+          status:
+            description: status defines the observed state of PillarTarget.
+            properties:
+              agentVersion:
+                description: agentVersion is the version string reported by the connected
+                  agent.
+                type: string
+              capabilities:
+                description: capabilities summarizes what the connected agent is capable
+                  of.
+                properties:
+                  backends:
+                    description: |-
+                      backends lists the backend driver types the agent can manage
+                      (e.g. zfs-zvol, zfs-dataset, lvm-lv).
+                    items:
+                      type: string
+                    type: array
+                  protocols:
+                    description: |-
+                      protocols lists the network protocols the agent can export storage over
+                      (e.g. nvmeof-tcp, iscsi, nfs).
+                    items:
+                      type: string
+                    type: array
+                type: object
+              conditions:
+                description: |-
+                  conditions represent the current state of the PillarTarget resource.
+
+                  Known condition types:
+                  - "NodeExists"     – the referenced K8s Node is present in the cluster.
+                  - "AgentConnected" – the gRPC connection to the agent is healthy.
+                  - "Ready"          – all checks pass; the target is ready to serve pools.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              discoveredPools:
+                description: discoveredPools lists storage pools found on the agent
+                  at last reconcile.
+                items:
+                  description: DiscoveredPool is a storage pool reported by the remote
+                    agent.
+                  properties:
+                    available:
+                      anyOf:
+                      - type: integer
+                      - type: string
+                      description: available is the free capacity of the pool.
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
+                    name:
+                      description: name is the pool name as known to the storage subsystem
+                        (e.g. ZFS pool name).
+                      type: string
+                    total:
+                      anyOf:
+                      - type: integer
+                      - type: string
+                      description: total is the total raw capacity of the pool.
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
+                    type:
+                      description: type is the storage technology (e.g. zfs, lvm).
+                      type: string
+                  required:
+                  - name
+                  - type
+                  type: object
+                type: array
+              resolvedAddress:
+                description: resolvedAddress is the IP address selected for gRPC communication
+                  with the agent.
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+{{- end }}
