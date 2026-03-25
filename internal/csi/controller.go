@@ -994,7 +994,9 @@ func (s *ControllerServer) mergeParamsFromCRDs(
 	if bindingName == "" {
 		// No binding reference — skip CRD lookups and go straight to PVC
 		// annotations (still useful even without a binding name).
-		s.applyPVCAnnotationOverrides(ctx, merged, scParams)
+		if err := s.applyPVCAnnotationOverrides(ctx, merged, scParams); err != nil {
+			return nil, err
+		}
 		return merged, nil
 	}
 
@@ -1004,7 +1006,9 @@ func (s *ControllerServer) mergeParamsFromCRDs(
 		if k8serrors.IsNotFound(err) {
 			// Binding was deleted after the StorageClass was created — fall back
 			// to StorageClass params only.
-			s.applyPVCAnnotationOverrides(ctx, merged, scParams)
+			if err2 := s.applyPVCAnnotationOverrides(ctx, merged, scParams); err2 != nil {
+				return nil, err2
+			}
 			return merged, nil
 		}
 		return nil, fmt.Errorf("fetch PillarBinding %q: %w", bindingName, err)
@@ -1014,7 +1018,9 @@ func (s *ControllerServer) mergeParamsFromCRDs(
 	pool := &v1alpha1.PillarPool{}
 	if err := s.k8sClient.Get(ctx, types.NamespacedName{Name: binding.Spec.PoolRef}, pool); err != nil {
 		if k8serrors.IsNotFound(err) {
-			s.applyPVCAnnotationOverrides(ctx, merged, scParams)
+			if err2 := s.applyPVCAnnotationOverrides(ctx, merged, scParams); err2 != nil {
+				return nil, err2
+			}
 			return merged, nil
 		}
 		return nil, fmt.Errorf("fetch PillarPool %q: %w", binding.Spec.PoolRef, err)
@@ -1038,7 +1044,9 @@ func (s *ControllerServer) mergeParamsFromCRDs(
 	}
 
 	// ── Layer 4: PVC annotation overrides (highest priority) ─────────────────
-	s.applyPVCAnnotationOverrides(ctx, merged, scParams)
+	if err := s.applyPVCAnnotationOverrides(ctx, merged, scParams); err != nil {
+		return nil, err
+	}
 
 	return merged, nil
 }
@@ -1046,20 +1054,22 @@ func (s *ControllerServer) mergeParamsFromCRDs(
 // applyPVCAnnotationOverrides looks up the PVC identified by the
 // csi.storage.k8s.io/pvc-name and csi.storage.k8s.io/pvc-namespace
 // parameters (injected by external-provisioner --extra-create-metadata) and
-// copies annotations prefixed with pvcAnnotationParamPrefix into merged,
-// stripping the prefix.  This is the highest-priority override layer.
+// merges PVC-level annotation overrides into merged using ParsePVCAnnotations.
+// This is the highest-priority override layer.
 //
-// Errors during the PVC lookup are silently ignored: the annotation override
-// is optional, and a missing PVC or API error should not fail provisioning.
+// PVC lookup failures are silently ignored (the annotation override is
+// optional and a missing PVC or API error should not fail provisioning).
+// Annotation validation errors (e.g. structural field overrides) are returned
+// as errors so that CreateVolume can reject them with InvalidArgument.
 func (s *ControllerServer) applyPVCAnnotationOverrides(
 	ctx context.Context,
 	merged map[string]string,
 	scParams map[string]string,
-) {
+) error {
 	pvcName := scParams[paramPVCName]
 	pvcNamespace := scParams[paramPVCNamespace]
 	if pvcName == "" || pvcNamespace == "" {
-		return
+		return nil
 	}
 
 	pvc := &corev1.PersistentVolumeClaim{}
@@ -1068,14 +1078,21 @@ func (s *ControllerServer) applyPVCAnnotationOverrides(
 		Namespace: pvcNamespace,
 	}, pvc); err != nil {
 		// PVC lookup failure is non-fatal; skip annotation overrides.
-		return
+		return nil
 	}
 
-	for annotation, value := range pvc.Annotations {
-		if after, ok := strings.CutPrefix(annotation, pvcAnnotationParamPrefix); ok && after != "" {
-			merged[after] = value
-		}
+	overrides, err := ParsePVCAnnotations(pvc.Annotations)
+	if err != nil {
+		// Annotation validation failure (e.g. structural field override
+		// attempt) is surfaced to the caller so CreateVolume can reject it.
+		return fmt.Errorf("PVC %s/%s annotation validation failed: %w",
+			pvcNamespace, pvcName, err)
 	}
+
+	for k, v := range overrides {
+		merged[k] = v
+	}
+	return nil
 }
 
 // buildAgentVolumeID constructs the volume identifier used in all agent RPCs.
