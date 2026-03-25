@@ -18,6 +18,9 @@
 # Environment variables (all optional):
 #   KIND_CLUSTER        Cluster name override  (default: pillar-csi-e2e)
 #   KIND_CONFIG         Path to kind config    (default: hack/kind-config.yaml)
+#   KIND_NODE_IMAGE     Kind node image to pin Kubernetes version
+#                       (default: "" — uses Kind's built-in default for the
+#                        installed Kind version, e.g. kindest/node:v1.31.0)
 #   KUBECONFIG          Written / merged here  (default: ${HOME}/.kube/config)
 #   CONTAINER_TOOL      docker or podman        (default: docker)
 #   SKIP_IMAGE_BUILD    Set to "true" to skip image build step  (default: false)
@@ -46,6 +49,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 KIND_CLUSTER="${KIND_CLUSTER:-pillar-csi-e2e}"
 KIND_CONFIG="${KIND_CONFIG:-${REPO_ROOT}/hack/kind-config.yaml}"
+KIND_NODE_IMAGE="${KIND_NODE_IMAGE:-}"
 CONTAINER_TOOL="${CONTAINER_TOOL:-docker}"
 KUBECONFIG="${KUBECONFIG:-${HOME}/.kube/config}"
 IMAGE_TAG="${IMAGE_TAG:-e2e}"
@@ -190,6 +194,9 @@ fi
 log_section "Kind cluster bootstrap"
 log_info "Cluster name : ${KIND_CLUSTER}"
 log_info "Kind config  : ${KIND_CONFIG}"
+if [ -n "${KIND_NODE_IMAGE}" ]; then
+  log_info "Node image   : ${KIND_NODE_IMAGE}"
+fi
 
 # ── Idempotency check ─────────────────────────────────────────────────────────
 # `kind get clusters` prints one cluster name per line.  We grep for an exact
@@ -207,10 +214,19 @@ else
     exit 1
   fi
 
-  kind create cluster \
-    --name    "${KIND_CLUSTER}" \
-    --config  "${KIND_CONFIG}" \
-    --wait    120s
+  # Build the kind create command.  --image is optional: when KIND_NODE_IMAGE is
+  # set it pins the Kubernetes version used in every cluster node; when unset
+  # Kind's built-in default for the installed Kind release is used.
+  KIND_CREATE_ARGS=(
+    "--name"   "${KIND_CLUSTER}"
+    "--config" "${KIND_CONFIG}"
+    "--wait"   "120s"
+  )
+  if [ -n "${KIND_NODE_IMAGE}" ]; then
+    KIND_CREATE_ARGS+=( "--image" "${KIND_NODE_IMAGE}" )
+  fi
+
+  kind create cluster "${KIND_CREATE_ARGS[@]}"
 
   log_ok "Kind cluster '${KIND_CLUSTER}' created successfully."
 fi

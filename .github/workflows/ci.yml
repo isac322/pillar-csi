@@ -69,6 +69,31 @@ jobs:
       !contains(github.event.head_commit.message, '[e2e skip]')
     permissions:
       contents: read  # checkout only; no packages write needed (images stay local)
+
+    # ── Job-level defaults ─────────────────────────────────────────────────────
+    # Centralise all tuneable values here so they are easy to bump without
+    # hunting through individual step definitions.
+    env:
+      # ── Kind tooling ──────────────────────────────────────────────────────
+      # kind tool release to install.  Bump together with KIND_NODE_IMAGE when
+      # upgrading the Kubernetes version used in the e2e cluster.
+      KIND_VERSION: "v0.27.0"
+
+      # Kind node image that pins the Kubernetes control-plane / worker version.
+      # Must be compatible with the KIND_VERSION above.
+      # See https://github.com/kubernetes-sigs/kind/releases for the matching
+      # image digest for each kind release.
+      KIND_NODE_IMAGE: "kindest/node:v1.32.2"
+
+      # ── Cluster & image names ─────────────────────────────────────────────
+      KIND_CLUSTER: "pillar-csi-e2e"
+      E2E_IMAGE_TAG: "e2e"
+
+      # ── Kubeconfig ────────────────────────────────────────────────────────
+      # Write the kubeconfig to a path inside the workspace so it is isolated
+      # from any pre-existing runner config and easy to inspect in artefacts.
+      KUBECONFIG: "${{ github.workspace }}/.kube/config"
+
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -80,33 +105,58 @@ jobs:
           cache: true
 
       # ── install tooling ────────────────────────────────────────────────────
-      - name: Install Kind
+      # install_only=true: lay down the kind binary but do NOT create a cluster
+      # here — cluster creation is handled by hack/e2e-setup.sh so that all
+      # configuration (multi-node layout, configfs mounts, image loading, Helm
+      # deploy) is performed in a single reproducible script.
+      - name: Install Kind ${{ env.KIND_VERSION }}
         uses: helm/kind-action@v1
         with:
-          install_only: true   # only install the binary, do not create a cluster
+          install_only: true
+          version: ${{ env.KIND_VERSION }}
 
       - name: Install Helm
         uses: azure/setup-helm@v5
 
-      # ── build images & bootstrap cluster ──────────────────────────────────
-      - name: Build images and create Kind cluster
-        run: make test-e2e-setup
+      # ── cluster setup ──────────────────────────────────────────────────────
+      # Invoke hack/e2e-setup.sh (via the make wrapper) to:
+      #   1. Create the multi-node Kind cluster using hack/kind-config.yaml
+      #   2. Build the three pillar-csi container images (controller/agent/node)
+      #   3. Load the images into every Kind node (no registry required)
+      #   4. Deploy the Helm chart with e2e-specific values
+      #
+      # Environment variables forwarded to the script:
+      #   KIND_CLUSTER     — cluster name (must match Makefile KIND_CLUSTER)
+      #   KIND_NODE_IMAGE  — pins the Kubernetes version of all Kind nodes
+      #   KUBECONFIG       — path where the kubeconfig is written / merged
+      #   IMAGE_TAG        — tag applied to all three e2e container images
+      - name: Create e2e cluster and deploy pillar-csi
+        run: |
+          mkdir -p "$(dirname "${KUBECONFIG}")"
+          hack/e2e-setup.sh
         env:
-          KIND_CLUSTER: pillar-csi-e2e
-          E2E_IMAGE_TAG: e2e
+          KIND_CLUSTER: ${{ env.KIND_CLUSTER }}
+          KIND_NODE_IMAGE: ${{ env.KIND_NODE_IMAGE }}
+          KUBECONFIG: ${{ env.KUBECONFIG }}
+          IMAGE_TAG: ${{ env.E2E_IMAGE_TAG }}
+
+      # Export KUBECONFIG to $GITHUB_ENV so all subsequent steps inherit it
+      # without needing to repeat the path in every step's env block.
+      - name: Export KUBECONFIG for subsequent steps
+        run: echo "KUBECONFIG=${KUBECONFIG}" >> "$GITHUB_ENV"
 
       # ── run tests ─────────────────────────────────────────────────────────
       - name: Run e2e tests (internal-agent mode)
         run: make test-e2e-run
         env:
-          KIND_CLUSTER: pillar-csi-e2e
+          KIND_CLUSTER: ${{ env.KIND_CLUSTER }}
 
       # ── teardown (always runs so the cluster is cleaned up even on failure)
       - name: Tear down Kind cluster
         if: always()
         run: make test-e2e-teardown
         env:
-          KIND_CLUSTER: pillar-csi-e2e
+          KIND_CLUSTER: ${{ env.KIND_CLUSTER }}
 
   build:
     name: Build (all platforms)
