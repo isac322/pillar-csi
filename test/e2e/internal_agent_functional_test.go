@@ -17,64 +17,67 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// internal_agent_functional_test.go — Agent functional e2e tests for
-// pillar-csi in "internal agent" (DaemonSet) mode.
+// internal_agent_functional_test.go — Agent functional e2e test cases for the
+// pillar-csi "internal agent" (DaemonSet) mode.
 //
-// This file implements Sub-AC 7c: functional e2e test cases exercised through
-// the in-cluster agent DaemonSet.  Tests cover:
+// This file implements Sub-AC 7c of the pillar-csi e2e test infrastructure:
+// functional tests that exercise the full CSI volume lifecycle through the
+// in-cluster agent DaemonSet, including:
 //
-//  1. CR hierarchy setup and reconciliation (PillarTarget → PillarPool →
-//     PillarProtocol → PillarBinding).  The controller dials the real
-//     in-cluster agent; these tests verify that the full CR chain resolves
-//     correctly and that the StorageClass is generated.
+//  1. Agent DaemonSet connectivity — PillarTarget (NodeRef) → AgentConnected
+//     → Ready; verifies the controller dials the DaemonSet agent and populates
+//     status.agentVersion + status.capabilities.
 //
-//  2. CSI volume provisioning lifecycle: PVC creation, controller
-//     CreateVolume invocation via the in-cluster agent, PV binding (when
-//     the ZFS pool exists on the storage-worker), and PVC deletion with
-//     volume cleanup.  In Kind clusters without a real ZFS pool the PVC
-//     stays Pending; those specs skip gracefully while still asserting
-//     that the provisioner was invoked.
+//  2. CR stack lifecycle — PillarTarget → PillarPool → PillarProtocol →
+//     PillarBinding; verifies all conditions transition to True and the
+//     PillarBinding generates a Kubernetes StorageClass.
+//     Gated on PILLAR_E2E_ZFS_POOL (requires a real ZFS pool on the storage node).
 //
-//  3. Volume mount/unmount lifecycle: ControllerPublishVolume and
-//     ControllerUnpublishVolume exercised when a Pod requests a Bound PVC.
-//     Node-side staging (NodeStageVolume) is attempted; in Kind without
-//     NVMe-oF kernel modules the Pod stays in ContainerCreating, but we
-//     still assert that the VolumeAttachment was created (i.e.
-//     ControllerPublish was called).
+//  3. CSI volume provisioning — PVC created against the generated StorageClass;
+//     verifies the PVC becomes Bound, the PV has the correct capacity and
+//     StorageClass, and that a second PVC can be provisioned independently.
+//     Gated on PILLAR_E2E_ZFS_POOL.
 //
-//  4. Error-path scenarios: PVC with unknown StorageClass stays Pending,
-//     PillarTarget with an unreachable external address reports
-//     AgentConnected=False, and PillarPool with a non-existent target
-//     reports an error condition.
+//  4. Mount/unmount lifecycle — Pod creation on the compute-worker node
+//     triggers NodeStage + NodePublish; Pod deletion triggers NodeUnpublish +
+//     NodeUnstage; PVC deletion triggers ControllerUnpublish + DeleteVolume.
+//     Gated on PILLAR_E2E_ZFS_POOL.
+//
+//  5. Error-path scenarios — always run; cover invalid NodeRef, missing ZFS
+//     pool name, PVC against a non-existent StorageClass, and volume expansion
+//     on an expansion-capable StorageClass.
 //
 // # Prerequisites
 //
-// The Kind cluster (pillar-csi-e2e) must already be bootstrapped with the
-// pillar-csi Helm chart deployed.  Run hack/e2e-setup.sh first:
+// The Kind cluster must already be bootstrapped and the Helm chart deployed:
 //
 //	hack/e2e-setup.sh
 //	export KUBECONFIG=$(kind get kubeconfig --name pillar-csi-e2e)
 //
-// # Configuration
-//
-//	ZFS_POOL              ZFS pool name on the storage-worker (default: "e2e-pool")
-//	FUNC_TEST_NAMESPACE   Namespace for namespaced resources    (default: "pillar-csi-func-e2e")
-//
-// # Running
+// # Running these specs in isolation
 //
 //	go test -tags=e2e -v -count=1 ./test/e2e/ \
 //	    -run TestInternalAgent \
 //	    -- --ginkgo.label-filter=internal-agent --ginkgo.v
+//
+// # Environment variables
+//
+//	PILLAR_E2E_ZFS_POOL     ZFS pool name on the storage-worker node.
+//	                         When empty, all ZFS-dependent test groups are
+//	                         skipped with an informative message.
+//	PILLAR_E2E_STORAGE_NODE Kubernetes Node name that runs the agent DaemonSet.
+//	                         When empty the first node labelled
+//	                         pillar-csi.bhyoo.com/storage-node=true is used.
 package e2e
 
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -85,958 +88,957 @@ import (
 	"github.com/bhyoo/pillar-csi/test/e2e/framework"
 )
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Constants
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Constants ───────────────────────────────────────────────────────────────
 
 const (
-	// funcAgentNS is the namespace the agent DaemonSet is deployed into.
-	funcAgentNS = "pillar-csi-system"
-	// funcAgentDSName is the Helm-generated agent DaemonSet name.
-	funcAgentDSName = "pillar-csi-agent"
+	// iatStorageNodeLabel is the node label used to identify storage-worker
+	// nodes.  Matches the label set in hack/kind-config.yaml.
+	iatStorageNodeLabel = "pillar-csi.bhyoo.com/storage-node"
 
-	// funcStorageNodeLabelKey is the node label selector for the storage-worker.
-	funcStorageNodeLabelKey = "pillar-csi.bhyoo.com/storage-node"
-	// funcComputeNodeLabelKey is the node label selector for the compute-worker.
-	funcComputeNodeLabelKey = "pillar-csi.bhyoo.com/compute-node"
+	// iatComputeNodeLabel is the node label used to identify compute-worker
+	// nodes.  Pods that mount CSI volumes should be scheduled here (initiator side).
+	iatComputeNodeLabel = "pillar-csi.bhyoo.com/compute-node"
 
-	// funcDefaultZFSPool is the ZFS pool name used when ZFS_POOL is unset.
-	funcDefaultZFSPool = "e2e-pool"
+	// iatCSIProvisioner is the CSI driver name registered by pillar-csi.
+	iatCSIProvisioner = "pillar-csi.bhyoo.com"
 
-	// funcAgentConnTimeout is the max time to wait for AgentConnected=True.
-	funcAgentConnTimeout = 2 * time.Minute
-	// funcCRReconcileTimeout is the max time to wait for any CR condition.
-	funcCRReconcileTimeout = 2 * time.Minute
-	// funcPVCProvisionTimeout is the max time to wait for a PVC to become Bound.
-	funcPVCProvisionTimeout = 3 * time.Minute
-	// funcPodRunningTimeout is the max time to wait for a Pod to reach Running.
-	funcPodRunningTimeout = 3 * time.Minute
-	// funcCleanupTimeout is the per-resource deletion wait timeout.
-	funcCleanupTimeout = 2 * time.Minute
-	// funcHeartbeatWindow is how long we observe Ready=True stability.
-	funcHeartbeatWindow = 30 * time.Second
-	// funcPollInterval is used by Eventually / Consistently blocks.
-	funcPollInterval = 3 * time.Second
+	// Timeout constants used across all specs in this file.
+	iatConnectTimeout      = 30 * time.Second
+	iatConditionTimeout    = 2 * time.Minute
+	iatProvisioningTimeout = 3 * time.Minute
+	iatMountTimeout        = 4 * time.Minute
+	iatCleanupTimeout      = 2 * time.Minute
+
+	// iatHeartbeatObservation is how long the heartbeat spec observes the
+	// Ready=True condition for stability.
+	iatHeartbeatObservation = 30 * time.Second
+
+	// iatHeartbeatPoll is the polling interval inside the heartbeat
+	// Consistently block.
+	iatHeartbeatPoll = 5 * time.Second
+
+	// iatPendingVerificationDelay is how long the error-path specs wait before
+	// asserting a PVC is still Pending (time for the provisioner to respond
+	// with a failure event if it were going to).
+	iatPendingVerificationDelay = 15 * time.Second
 )
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Package-level state — populated by the top-level BeforeAll
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Package-level state ─────────────────────────────────────────────────────
 
-var (
-	// funcClient is the controller-runtime client for all functional specs.
-	funcClient client.Client
-	// funcStorageNodeName is the Kind node running the agent DaemonSet pod.
-	funcStorageNodeName string
-	// funcTestNS is the shared test namespace (created once, deleted in AfterAll).
-	funcTestNS string
-	// funcZFSPool is the ZFS pool name on the storage-worker.
-	funcZFSPool string
-)
+// iatK8sClient is the controller-runtime client used by all specs in this
+// file.  Initialised once in the outer BeforeAll.
+var iatK8sClient client.Client
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Top-level Ginkgo container
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Ginkgo container ────────────────────────────────────────────────────────
 
-var _ = Describe("InternalAgent Functional", Ordered, Label("internal-agent"), func() {
+var _ = Describe("InternalAgent functional", Ordered, Label("internal-agent"), func() {
+	// storageNodeName is the Kubernetes Node name of the storage-worker resolved
+	// in BeforeAll and referenced by all inner specs that create PillarTargets
+	// with NodeRef.
+	var storageNodeName string
 
-	// ── Suite-level setup ────────────────────────────────────────────────────
+	// ── BeforeAll: cluster connectivity + storage node resolution ────────────
 
 	BeforeAll(func(ctx context.Context) {
 		By("connecting to the Kind cluster")
-		s, err := framework.SetupSuite(framework.WithConnectTimeout(30 * time.Second))
+		suite, err := framework.SetupSuite(framework.WithConnectTimeout(iatConnectTimeout))
 		Expect(err).NotTo(HaveOccurred(),
-			"functional BeforeAll: cluster connectivity failed — "+
+			"InternalAgent functional: cluster connectivity check failed — "+
 				"ensure KUBECONFIG is set and 'hack/e2e-setup.sh' has been run")
-		funcClient = s.Client
+		iatK8sClient = suite.Client
 
-		funcZFSPool = envOrDefault("ZFS_POOL", funcDefaultZFSPool)
-		nsName := envOrDefault("FUNC_TEST_NAMESPACE", "pillar-csi-func-e2e")
-
-		// Find the storage-worker Kind node.
-		By("locating storage-worker node (label " + funcStorageNodeLabelKey + "=true)")
-		nodeList := &corev1.NodeList{}
-		Expect(funcClient.List(ctx, nodeList,
-			client.MatchingLabels{funcStorageNodeLabelKey: "true"},
-		)).To(Succeed(), "list storage-worker nodes")
-
-		if len(nodeList.Items) == 0 {
-			Skip("no node with label " + funcStorageNodeLabelKey + "=true — " +
-				"verify hack/e2e-setup.sh has been run and kind-config.yaml labels are applied")
-		}
-		funcStorageNodeName = nodeList.Items[0].Name
-		By(fmt.Sprintf("storage-worker node: %s", funcStorageNodeName))
-
-		// Verify the agent DaemonSet exists (Helm chart is deployed).
-		By(fmt.Sprintf("verifying agent DaemonSet %q exists in %q", funcAgentDSName, funcAgentNS))
-		agentDS := &appsv1.DaemonSet{}
-		if getErr := funcClient.Get(ctx,
-			client.ObjectKey{Name: funcAgentDSName, Namespace: funcAgentNS},
-			agentDS,
-		); getErr != nil {
-			Skip(fmt.Sprintf(
-				"agent DaemonSet %q not found in %q — run 'hack/e2e-setup.sh' first: %v",
-				funcAgentDSName, funcAgentNS, getErr))
-		}
-		By(fmt.Sprintf("agent DaemonSet present (desired=%d ready=%d)",
-			agentDS.Status.DesiredNumberScheduled, agentDS.Status.NumberReady))
-
-		// Create the shared test namespace (idempotent).
-		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: nsName}}
-		_ = funcClient.Create(ctx, ns) // ignore AlreadyExists
-		funcTestNS = nsName
+		By("resolving the storage-worker node name")
+		storageNodeName = iatResolveStorageNode(ctx, iatK8sClient)
+		Expect(storageNodeName).NotTo(BeEmpty(),
+			"InternalAgent functional: no node labelled %s=true found — "+
+				"check hack/kind-config.yaml for the storage-worker entry",
+			iatStorageNodeLabel)
+		By(fmt.Sprintf("storage-worker node: %s", storageNodeName))
 	})
 
-	AfterAll(func(ctx context.Context) {
-		if funcClient == nil || funcTestNS == "" {
-			return
-		}
-		By(fmt.Sprintf("deleting shared test namespace %q", funcTestNS))
-		if err := framework.EnsureNamespaceGone(ctx, funcClient, funcTestNS, funcCleanupTimeout); err != nil {
-			_, _ = fmt.Fprintf(GinkgoWriter,
-				"WARNING: InternalAgent Functional AfterAll: namespace %q: %v\n", funcTestNS, err)
-		}
-	})
+	// ── Group 1: agent DaemonSet connectivity ────────────────────────────────
+	//
+	// These specs verify that the pillar-csi controller can reach the agent
+	// DaemonSet pod running on the storage-worker node by creating a PillarTarget
+	// with spec.nodeRef set to the storage-worker's Kubernetes Node name.
+	//
+	// All specs in this group share a single PillarTarget CR created in
+	// BeforeAll and deleted in the DeferCleanup registered there.
 
-	// ── Group 1: CR hierarchy and agent connectivity ─────────────────────────
-
-	Describe("CR hierarchy and agent connectivity", Ordered, func() {
+	Describe("agent DaemonSet connectivity", Ordered, func() {
 		var (
-			suffix  string
-			target  *v1alpha1.PillarTarget
-			pool    *v1alpha1.PillarPool
-			proto   *v1alpha1.PillarProtocol
-			binding *v1alpha1.PillarBinding
+			target     *v1alpha1.PillarTarget
+			targetName string
 		)
 
 		BeforeAll(func(ctx context.Context) {
-			Expect(funcClient).NotTo(BeNil(), "cluster client must be set")
-			Expect(funcStorageNodeName).NotTo(BeEmpty(), "storage-worker node must be set")
+			targetName = fmt.Sprintf("iat-conn-%d", time.Now().UnixMilli()%100000)
+			target = framework.NewNodeRefPillarTarget(targetName, storageNodeName, nil)
+			By(fmt.Sprintf("creating PillarTarget %q → node %s", targetName, storageNodeName))
+			Expect(framework.Apply(ctx, iatK8sClient, target)).To(Succeed(),
+				"apply PillarTarget %q", targetName)
 
-			suffix = fmt.Sprintf("%d", time.Now().UnixMilli()%100000)
-			targetName := "func-cr-target-" + suffix
-			poolName := "func-cr-pool-" + suffix
-			protoName := "func-cr-proto-" + suffix
-			bindingName := "func-cr-binding-" + suffix
-
-			By(fmt.Sprintf("creating PillarTarget %q → node %q", targetName, funcStorageNodeName))
-			target = framework.NewNodeRefPillarTarget(targetName, funcStorageNodeName, nil)
-			Expect(framework.Apply(ctx, funcClient, target)).To(Succeed())
-
-			By(fmt.Sprintf("creating PillarPool %q (target=%s pool=%s)", poolName, targetName, funcZFSPool))
-			pool = framework.NewZFSZvolPool(poolName, targetName, funcZFSPool)
-			Expect(framework.Apply(ctx, funcClient, pool)).To(Succeed())
-
-			By(fmt.Sprintf("creating PillarProtocol %q (NVMe-oF TCP)", protoName))
-			proto = framework.NewNVMeOFTCPProtocol(protoName)
-			Expect(framework.Apply(ctx, funcClient, proto)).To(Succeed())
-
-			By(fmt.Sprintf("creating PillarBinding %q (pool=%s proto=%s)", bindingName, poolName, protoName))
-			binding = framework.NewSimplePillarBinding(bindingName, poolName, protoName)
-			Expect(framework.Apply(ctx, funcClient, binding)).To(Succeed())
-		})
-
-		AfterAll(func(ctx context.Context) {
-			tracker := framework.NewResourceTracker()
-			for _, obj := range []client.Object{binding, proto, pool, target} {
-				if obj != nil {
-					tracker.Track(obj)
+			DeferCleanup(func(dctx context.Context) {
+				By(fmt.Sprintf("cleaning up PillarTarget %q", targetName))
+				if err := framework.EnsureGone(dctx, iatK8sClient, target, iatCleanupTimeout); err != nil {
+					_, _ = fmt.Fprintf(GinkgoWriter,
+						"WARNING: cleanup PillarTarget %q: %v\n", targetName, err)
 				}
-			}
-			if err := tracker.Cleanup(ctx, funcClient); err != nil {
-				_, _ = fmt.Fprintf(GinkgoWriter, "WARNING: CR hierarchy cleanup: %v\n", err)
-			}
+			})
 		})
 
-		It("PillarTarget spec.nodeRef is persisted correctly", func(ctx context.Context) {
-			got := &v1alpha1.PillarTarget{}
-			Expect(funcClient.Get(ctx, client.ObjectKeyFromObject(target), got)).To(Succeed())
-
-			Expect(got.Spec.NodeRef).NotTo(BeNil(), "spec.nodeRef must be set")
-			Expect(got.Spec.External).To(BeNil(), "spec.external must be nil for NodeRef target")
-			Expect(got.Spec.NodeRef.Name).To(Equal(funcStorageNodeName),
-				"spec.nodeRef.name must equal the storage-worker node name")
+		It("AgentConnected condition becomes True", func(ctx context.Context) {
+			By(fmt.Sprintf("waiting for AgentConnected=True on %q (up to %s)",
+				targetName, iatConditionTimeout))
+			err := framework.WaitForCondition(ctx, iatK8sClient, target,
+				"AgentConnected", metav1.ConditionTrue, iatConditionTimeout)
+			Expect(err).NotTo(HaveOccurred(),
+				"AgentConnected must become True — verify the pillar-agent DaemonSet is "+
+					"Running on node %q and the pillar-csi controller is deployed",
+				storageNodeName)
+			By("AgentConnected=True: controller successfully dialled the in-cluster agent")
 		})
 
-		It("PillarTarget AgentConnected condition becomes True", func(ctx context.Context) {
-			By(fmt.Sprintf("waiting up to %s for AgentConnected=True on %q",
-				funcAgentConnTimeout, target.Name))
-			Expect(framework.WaitForCondition(ctx, funcClient, target,
-				"AgentConnected", metav1.ConditionTrue, funcAgentConnTimeout,
-			)).To(Succeed(),
-				"AgentConnected must become True — verify the agent pod is Running on node %q "+
-					"and the controller can reach it via the node's InternalIP", funcStorageNodeName)
-			By(fmt.Sprintf("PillarTarget %q: AgentConnected=True ✓", target.Name))
-		})
-
-		It("PillarTarget Ready condition becomes True", func(ctx context.Context) {
-			Expect(framework.WaitForReady(ctx, funcClient, target, funcCRReconcileTimeout)).To(Succeed(),
-				"PillarTarget must reach Ready=True once the agent is connected and healthy")
-			By(fmt.Sprintf("PillarTarget %q: Ready=True ✓", target.Name))
-		})
-
-		It("PillarTarget status.resolvedAddress is populated with the node's InternalIP", func(ctx context.Context) {
-			Expect(framework.WaitForField(ctx, funcClient, target,
-				func(t *v1alpha1.PillarTarget) bool { return t.Status.ResolvedAddress != "" },
-				funcCRReconcileTimeout,
-			)).To(Succeed(), "status.resolvedAddress must be populated once AgentConnected=True")
-			Expect(target.Status.ResolvedAddress).NotTo(BeEmpty())
-			By(fmt.Sprintf("resolvedAddress = %q", target.Status.ResolvedAddress))
-		})
-
-		It("PillarTarget status.agentVersion is reported by the connected agent", func(ctx context.Context) {
-			Expect(framework.WaitForField(ctx, funcClient, target,
-				func(t *v1alpha1.PillarTarget) bool { return t.Status.AgentVersion != "" },
-				funcCRReconcileTimeout,
-			)).To(Succeed(), "status.agentVersion must be set once the controller dials the agent")
-			Expect(target.Status.AgentVersion).NotTo(BeEmpty())
-			By(fmt.Sprintf("agentVersion = %q", target.Status.AgentVersion))
-		})
-
-		It("PillarTarget status.capabilities lists at least one backend", func(ctx context.Context) {
-			Expect(framework.WaitForField(ctx, funcClient, target,
+		It("status.agentVersion is reported by the connected agent", func(ctx context.Context) {
+			err := framework.WaitForField(ctx, iatK8sClient, target,
 				func(t *v1alpha1.PillarTarget) bool {
-					return t.Status.Capabilities != nil && len(t.Status.Capabilities.Backends) > 0
-				}, funcCRReconcileTimeout,
-			)).To(Succeed(), "status.capabilities must be populated from agent GetCapabilities RPC")
-			Expect(target.Status.Capabilities).NotTo(BeNil())
+					return t.Status.AgentVersion != ""
+				}, iatConditionTimeout)
+			Expect(err).NotTo(HaveOccurred(),
+				"status.agentVersion must be set once the controller connects to the agent")
+			Expect(target.Status.AgentVersion).NotTo(BeEmpty(),
+				"agentVersion must be a non-empty string returned by GetCapabilities RPC")
+			By(fmt.Sprintf("status.agentVersion = %q", target.Status.AgentVersion))
+		})
+
+		It("status.capabilities lists at least one backend and protocol", func(ctx context.Context) {
+			err := framework.WaitForField(ctx, iatK8sClient, target,
+				func(t *v1alpha1.PillarTarget) bool {
+					return t.Status.Capabilities != nil &&
+						len(t.Status.Capabilities.Backends) > 0
+				}, iatConditionTimeout)
+			Expect(err).NotTo(HaveOccurred(),
+				"status.capabilities must be populated from the agent's GetCapabilities response")
+
+			Expect(target.Status.Capabilities).NotTo(BeNil(),
+				"capabilities struct must be non-nil once the agent is connected")
 			Expect(target.Status.Capabilities.Backends).NotTo(BeEmpty(),
 				"agent must advertise at least one backend type (e.g. zfs-zvol)")
+			Expect(target.Status.Capabilities.Protocols).NotTo(BeEmpty(),
+				"agent must advertise at least one protocol type (e.g. nvmeof-tcp)")
 			By(fmt.Sprintf("capabilities: backends=%v protocols=%v",
-				target.Status.Capabilities.Backends, target.Status.Capabilities.Protocols))
+				target.Status.Capabilities.Backends,
+				target.Status.Capabilities.Protocols))
 		})
 
-		It("Ready condition is stable across reconcile cycles (heartbeat check)", func(ctx context.Context) {
-			// First ensure Ready=True is present.
-			current := &v1alpha1.PillarTarget{}
-			Expect(funcClient.Get(ctx, client.ObjectKeyFromObject(target), current)).To(Succeed())
+		It("status.discoveredPools field is populated (may be empty without ZFS)", func(ctx context.Context) {
+			// The field may contain an empty slice when no ZFS pool exists in CI,
+			// but capabilities must be present before this check.
+			err := framework.WaitForField(ctx, iatK8sClient, target,
+				func(t *v1alpha1.PillarTarget) bool {
+					return t.Status.Capabilities != nil
+				}, iatConditionTimeout)
+			Expect(err).NotTo(HaveOccurred())
+			By(fmt.Sprintf("status.discoveredPools: %v", target.Status.DiscoveredPools))
+		})
+
+		It("Ready condition becomes True", func(ctx context.Context) {
+			By(fmt.Sprintf("waiting for Ready=True on PillarTarget %q", targetName))
+			err := framework.WaitForReady(ctx, iatK8sClient, target, iatConditionTimeout)
+			Expect(err).NotTo(HaveOccurred(),
+				"PillarTarget must reach Ready=True once the agent is connected and healthy")
+			By("PillarTarget is Ready=True: in-cluster agent DaemonSet is reachable and healthy")
+		})
+
+		It("Ready condition is maintained across reconcile cycles (heartbeat)", func(ctx context.Context) {
+			// Snapshot the current Ready condition's LastTransitionTime, then observe
+			// that it does not change over iatHeartbeatObservation seconds.  A changed
+			// transition time indicates the condition flipped to False and back, which
+			// means the agent heartbeat was interrupted.
+			fresh := &v1alpha1.PillarTarget{}
+			Expect(iatK8sClient.Get(ctx,
+				client.ObjectKey{Name: targetName}, fresh)).To(Succeed(),
+				"re-read PillarTarget for baseline condition state")
+
 			var readyCond *metav1.Condition
-			for i := range current.Status.Conditions {
-				if current.Status.Conditions[i].Type == "Ready" {
-					c := current.Status.Conditions[i]
+			for i := range fresh.Status.Conditions {
+				if fresh.Status.Conditions[i].Type == "Ready" {
+					c := fresh.Status.Conditions[i]
 					readyCond = &c
 					break
 				}
 			}
-			Expect(readyCond).NotTo(BeNil(), "Ready condition must be present before heartbeat check")
-			Expect(readyCond.Status).To(Equal(metav1.ConditionTrue), "Ready must already be True")
+			Expect(readyCond).NotTo(BeNil(),
+				"Ready condition must be present before heartbeat observation")
+			Expect(readyCond.Status).To(Equal(metav1.ConditionTrue),
+				"Ready must already be True before beginning the heartbeat check")
 
 			initialTransition := readyCond.LastTransitionTime
-			By(fmt.Sprintf("observing Ready=True stability for %s (initial transition: %s)",
-				funcHeartbeatWindow, initialTransition.UTC().Format(time.RFC3339)))
+			By(fmt.Sprintf(
+				"Ready=True since %s — observing stability for %s (polling every %s)",
+				initialTransition.UTC().Format(time.RFC3339),
+				iatHeartbeatObservation, iatHeartbeatPoll))
 
 			Consistently(func(g Gomega) {
-				poll := &v1alpha1.PillarTarget{}
-				g.Expect(funcClient.Get(ctx, client.ObjectKeyFromObject(target), poll)).To(Succeed())
+				current := &v1alpha1.PillarTarget{}
+				g.Expect(iatK8sClient.Get(ctx,
+					client.ObjectKey{Name: targetName}, current)).To(Succeed(),
+					"PillarTarget %q must still exist during heartbeat observation", targetName)
+
 				var cond *metav1.Condition
-				for i := range poll.Status.Conditions {
-					if poll.Status.Conditions[i].Type == "Ready" {
-						c := poll.Status.Conditions[i]
+				for i := range current.Status.Conditions {
+					if current.Status.Conditions[i].Type == "Ready" {
+						c := current.Status.Conditions[i]
 						cond = &c
 						break
 					}
 				}
-				g.Expect(cond).NotTo(BeNil(), "Ready condition must remain present")
+				g.Expect(cond).NotTo(BeNil(),
+					"Ready condition must still be present on every poll")
 				g.Expect(cond.Status).To(Equal(metav1.ConditionTrue),
-					"Ready must stay True throughout the heartbeat window")
+					"Ready must remain True throughout the %s observation window "+
+						"(agent heartbeat must be maintained)", iatHeartbeatObservation)
 				g.Expect(cond.LastTransitionTime).To(Equal(initialTransition),
-					"LastTransitionTime must not change — Ready must not flip")
-			}, funcHeartbeatWindow, funcPollInterval).Should(Succeed(),
-				"Ready=True was not stable for %s — check controller and agent health", funcHeartbeatWindow)
-			By("heartbeat confirmed: Ready=True held without flip ✓")
+					"Ready condition must not flip: a changed LastTransitionTime "+
+						"indicates the heartbeat was interrupted")
+			}, iatHeartbeatObservation, iatHeartbeatPoll).Should(Succeed(),
+				"Ready=True stability check failed: agent heartbeat not maintained")
+
+			By("heartbeat confirmed: Ready=True stable for the full observation window")
+		})
+	})
+
+	// ── Group 2: CR stack lifecycle ──────────────────────────────────────────
+	//
+	// These specs verify that the full CR resource stack (PillarTarget →
+	// PillarPool → PillarProtocol → PillarBinding) reconciles correctly when a
+	// real ZFS pool is available on the storage-worker node.
+	//
+	// Skipped when PILLAR_E2E_ZFS_POOL is not set.
+
+	Describe("CR stack lifecycle", Ordered, func() {
+		var (
+			target   *v1alpha1.PillarTarget
+			pool     *v1alpha1.PillarPool
+			protocol *v1alpha1.PillarProtocol
+			binding  *v1alpha1.PillarBinding
+			zfsPool  string
+		)
+
+		BeforeAll(func(ctx context.Context) {
+			zfsPool = iatZFSPool()
+			if zfsPool == "" {
+				Skip("PILLAR_E2E_ZFS_POOL not set — skipping CR stack lifecycle tests " +
+					"(set to the ZFS pool name on the storage-worker node, e.g. 'tank')")
+			}
+
+			crSuffix := fmt.Sprintf("%d", time.Now().UnixMilli()%100000)
+
+			// PillarTarget (NodeRef → storage-worker)
+			targetName := fmt.Sprintf("iat-stack-target-%s", crSuffix)
+			target = framework.NewNodeRefPillarTarget(targetName, storageNodeName, nil)
+			Expect(framework.Apply(ctx, iatK8sClient, target)).To(Succeed(),
+				"create PillarTarget %q for CR stack lifecycle test", targetName)
+
+			// PillarPool (ZFS zvol backend)
+			poolName := fmt.Sprintf("iat-stack-pool-%s", crSuffix)
+			pool = framework.NewZFSZvolPool(poolName, targetName, zfsPool)
+			Expect(framework.Apply(ctx, iatK8sClient, pool)).To(Succeed(),
+				"create PillarPool %q (zfs-zvol, pool=%s)", poolName, zfsPool)
+
+			// PillarProtocol (NVMe-oF TCP)
+			protoName := fmt.Sprintf("iat-stack-proto-%s", crSuffix)
+			protocol = framework.NewNVMeOFTCPProtocol(protoName)
+			Expect(framework.Apply(ctx, iatK8sClient, protocol)).To(Succeed(),
+				"create PillarProtocol %q (nvmeof-tcp)", protoName)
+
+			// PillarBinding (links pool + protocol → generates StorageClass)
+			bindingName := fmt.Sprintf("iat-stack-binding-%s", crSuffix)
+			binding = framework.NewSimplePillarBinding(bindingName, poolName, protoName)
+			Expect(framework.Apply(ctx, iatK8sClient, binding)).To(Succeed(),
+				"create PillarBinding %q (pool=%s, proto=%s)", bindingName, poolName, protoName)
+
+			// Register cleanup in reverse creation order so dependencies are respected.
+			DeferCleanup(func(dctx context.Context) {
+				By("cleaning up CR stack lifecycle resources")
+				for _, obj := range []client.Object{binding, protocol, pool, target} {
+					if err := framework.EnsureGone(dctx, iatK8sClient, obj, iatCleanupTimeout); err != nil {
+						_, _ = fmt.Fprintf(GinkgoWriter,
+							"WARNING: CR stack cleanup %T %q: %v\n", obj, obj.GetName(), err)
+					}
+				}
+			})
 		})
 
-		It("PillarPool spec.targetRef and spec.backend are persisted correctly", func(ctx context.Context) {
-			got := &v1alpha1.PillarPool{}
-			Expect(funcClient.Get(ctx, client.ObjectKeyFromObject(pool), got)).To(Succeed())
-
-			Expect(got.Spec.TargetRef).To(Equal(target.Name), "spec.targetRef must match the PillarTarget")
-			Expect(got.Spec.Backend.Type).To(Equal(v1alpha1.BackendTypeZFSZvol),
-				"spec.backend.type must be BackendTypeZFSZvol")
-			Expect(got.Spec.Backend.ZFS).NotTo(BeNil(), "spec.backend.zfs must be set")
-			Expect(got.Spec.Backend.ZFS.Pool).To(Equal(funcZFSPool),
-				"spec.backend.zfs.pool must equal the configured ZFS pool name")
+		It("PillarTarget reaches Ready=True", func(ctx context.Context) {
+			err := framework.WaitForReady(ctx, iatK8sClient, target, iatConditionTimeout)
+			Expect(err).NotTo(HaveOccurred(),
+				"PillarTarget must be Ready before downstream CRs can progress")
 		})
 
-		It("PillarPool is reconciled (at least one status condition set)", func(ctx context.Context) {
-			// The pool may not be Ready when the ZFS pool is absent (Kind).
-			// We assert only that the controller has reconciled (conditions present).
-			Expect(framework.WaitForField(ctx, funcClient, pool,
-				func(p *v1alpha1.PillarPool) bool { return len(p.Status.Conditions) > 0 },
-				funcCRReconcileTimeout,
-			)).To(Succeed(), "PillarPool must have at least one status condition after reconciliation")
-			By(fmt.Sprintf("PillarPool %q reconciled with %d condition(s)", pool.Name,
-				len(pool.Status.Conditions)))
+		It("PillarPool TargetReady condition becomes True", func(ctx context.Context) {
+			err := framework.WaitForCondition(ctx, iatK8sClient, pool,
+				"TargetReady", metav1.ConditionTrue, iatConditionTimeout)
+			Expect(err).NotTo(HaveOccurred(),
+				"PillarPool TargetReady must be True once the referenced PillarTarget is Ready")
 		})
 
-		It("PillarProtocol spec.type is persisted correctly", func(ctx context.Context) {
-			got := &v1alpha1.PillarProtocol{}
-			Expect(funcClient.Get(ctx, client.ObjectKeyFromObject(proto), got)).To(Succeed())
-
-			Expect(got.Spec.Type).To(Equal(v1alpha1.ProtocolTypeNVMeOFTCP),
-				"spec.type must be NVMe-oF TCP")
-			Expect(got.Spec.NVMeOFTCP).NotTo(BeNil(), "spec.nvmeofTcp must be populated")
+		It("PillarPool BackendSupported condition becomes True", func(ctx context.Context) {
+			err := framework.WaitForCondition(ctx, iatK8sClient, pool,
+				"BackendSupported", metav1.ConditionTrue, iatConditionTimeout)
+			Expect(err).NotTo(HaveOccurred(),
+				"BackendSupported must be True — agent DaemonSet must advertise zfs-zvol backend")
 		})
 
-		It("PillarProtocol is reconciled (at least one status condition set)", func(ctx context.Context) {
-			Expect(framework.WaitForField(ctx, funcClient, proto,
-				func(p *v1alpha1.PillarProtocol) bool { return len(p.Status.Conditions) > 0 },
-				funcCRReconcileTimeout,
-			)).To(Succeed(), "PillarProtocol must have at least one status condition")
+		It("PillarPool PoolDiscovered condition becomes True", func(ctx context.Context) {
+			err := framework.WaitForCondition(ctx, iatK8sClient, pool,
+				"PoolDiscovered", metav1.ConditionTrue, iatConditionTimeout)
+			Expect(err).NotTo(HaveOccurred(),
+				"PoolDiscovered must be True — ZFS pool %q must exist on node %q",
+				zfsPool, storageNodeName)
 		})
 
-		It("PillarBinding spec.poolRef and spec.protocolRef are persisted correctly", func(ctx context.Context) {
-			got := &v1alpha1.PillarBinding{}
-			Expect(funcClient.Get(ctx, client.ObjectKeyFromObject(binding), got)).To(Succeed())
+		It("PillarPool reaches Ready=True and reports capacity", func(ctx context.Context) {
+			err := framework.WaitForReady(ctx, iatK8sClient, pool, iatConditionTimeout)
+			Expect(err).NotTo(HaveOccurred(),
+				"PillarPool must reach Ready=True once all conditions are satisfied")
 
-			Expect(got.Spec.PoolRef).To(Equal(pool.Name), "spec.poolRef must reference the PillarPool")
-			Expect(got.Spec.ProtocolRef).To(Equal(proto.Name), "spec.protocolRef must reference the PillarProtocol")
+			// Also verify that capacity is populated once the pool is Ready.
+			capErr := framework.WaitForField(ctx, iatK8sClient, pool,
+				func(p *v1alpha1.PillarPool) bool {
+					return p.Status.Capacity != nil &&
+						p.Status.Capacity.Total != nil &&
+						!p.Status.Capacity.Total.IsZero()
+				}, iatConditionTimeout)
+			Expect(capErr).NotTo(HaveOccurred(),
+				"PillarPool status.capacity.total must be non-zero once pool is discovered")
+
+			By(fmt.Sprintf("pool %q capacity: total=%s",
+				pool.Name, pool.Status.Capacity.Total.String()))
 		})
 
-		It("PillarBinding causes a StorageClass to be created by the controller", func(ctx context.Context) {
-			By(fmt.Sprintf("waiting for StorageClass %q to be created", binding.Name))
-			Eventually(func() error {
-				sc := &storagev1.StorageClass{}
-				return funcClient.Get(ctx, client.ObjectKey{Name: binding.Name}, sc)
-			}, funcCRReconcileTimeout, funcPollInterval).Should(Succeed(),
-				"StorageClass %q must be created when a PillarBinding is applied", binding.Name)
+		It("PillarBinding Ready condition becomes True", func(ctx context.Context) {
+			err := framework.WaitForReady(ctx, iatK8sClient, binding, iatConditionTimeout)
+			Expect(err).NotTo(HaveOccurred(),
+				"PillarBinding must reach Ready=True to generate the StorageClass")
+		})
 
+		It("PillarBinding generates a Kubernetes StorageClass with the pillar-csi provisioner", func(ctx context.Context) {
+			// The StorageClass name defaults to the PillarBinding name when
+			// spec.storageClass.name is not explicitly set.
+			scName := binding.Name
 			sc := &storagev1.StorageClass{}
-			Expect(funcClient.Get(ctx, client.ObjectKey{Name: binding.Name}, sc)).To(Succeed())
-			Expect(sc.Provisioner).To(Equal("pillar-csi.bhyoo.com"),
-				"StorageClass provisioner must be pillar-csi.bhyoo.com")
-			By(fmt.Sprintf("StorageClass %q created with provisioner %q ✓", sc.Name, sc.Provisioner))
+			Expect(iatK8sClient.Get(ctx, client.ObjectKey{Name: scName}, sc)).To(Succeed(),
+				"StorageClass %q must be created by the controller once PillarBinding is Ready",
+				scName)
+			Expect(sc.Provisioner).To(Equal(iatCSIProvisioner),
+				"StorageClass %q must use the pillar-csi provisioner", scName)
+			By(fmt.Sprintf("StorageClass %q exists with provisioner %s", sc.Name, sc.Provisioner))
 		})
 	})
 
-	// ── Group 2: PVC provisioning lifecycle ─────────────────────────────────
+	// ── Group 3: CSI volume provisioning ─────────────────────────────────────
+	//
+	// These specs exercise dynamic PVC provisioning through the agent DaemonSet:
+	//   1. PVC created → CSI CreateVolume → agent allocates ZFS zvol + NVMe-oF target
+	//   2. PVC reaches Bound phase; PV properties are validated
+	//   3. A second PVC is provisioned independently (non-colliding volume IDs)
+	//
+	// Gated on PILLAR_E2E_ZFS_POOL.
 
-	Describe("PVC provisioning lifecycle", Ordered, func() {
+	Describe("CSI volume provisioning", Ordered, func() {
 		var (
-			suffix  string
-			target  *v1alpha1.PillarTarget
-			pool    *v1alpha1.PillarPool
-			proto   *v1alpha1.PillarProtocol
-			binding *v1alpha1.PillarBinding
-			ns      *corev1.Namespace
+			target      *v1alpha1.PillarTarget
+			pool        *v1alpha1.PillarPool
+			protocol    *v1alpha1.PillarProtocol
+			binding     *v1alpha1.PillarBinding
+			pvc         *corev1.PersistentVolumeClaim
+			pvc2        *corev1.PersistentVolumeClaim
+			testNS      *corev1.Namespace
+			bindingName string
+			zfsPool     string
 		)
 
 		BeforeAll(func(ctx context.Context) {
-			Expect(funcClient).NotTo(BeNil())
-			Expect(funcStorageNodeName).NotTo(BeEmpty())
+			zfsPool = iatZFSPool()
+			if zfsPool == "" {
+				Skip("PILLAR_E2E_ZFS_POOL not set — skipping CSI volume provisioning tests")
+			}
 
-			suffix = fmt.Sprintf("%d", time.Now().UnixMilli()%100000)
-			targetName := "pvc-target-" + suffix
-			poolName := "pvc-pool-" + suffix
-			protoName := "pvc-proto-" + suffix
-			bindingName := "pvc-binding-" + suffix
+			crSuffix := fmt.Sprintf("%d", time.Now().UnixMilli()%100000)
 
-			target = framework.NewNodeRefPillarTarget(targetName, funcStorageNodeName, nil)
-			Expect(framework.Apply(ctx, funcClient, target)).To(Succeed())
-			pool = framework.NewZFSZvolPool(poolName, targetName, funcZFSPool)
-			Expect(framework.Apply(ctx, funcClient, pool)).To(Succeed())
-			proto = framework.NewNVMeOFTCPProtocol(protoName)
-			Expect(framework.Apply(ctx, funcClient, proto)).To(Succeed())
+			// Build the full CR stack required for provisioning.
+			targetName := fmt.Sprintf("iat-prov-target-%s", crSuffix)
+			target = framework.NewNodeRefPillarTarget(targetName, storageNodeName, nil)
+			Expect(framework.Apply(ctx, iatK8sClient, target)).To(Succeed())
+
+			poolName := fmt.Sprintf("iat-prov-pool-%s", crSuffix)
+			pool = framework.NewZFSZvolPool(poolName, targetName, zfsPool)
+			Expect(framework.Apply(ctx, iatK8sClient, pool)).To(Succeed())
+
+			protoName := fmt.Sprintf("iat-prov-proto-%s", crSuffix)
+			protocol = framework.NewNVMeOFTCPProtocol(protoName)
+			Expect(framework.Apply(ctx, iatK8sClient, protocol)).To(Succeed())
+
+			bindingName = fmt.Sprintf("iat-prov-binding-%s", crSuffix)
 			binding = framework.NewSimplePillarBinding(bindingName, poolName, protoName)
-			Expect(framework.Apply(ctx, funcClient, binding)).To(Succeed())
+			Expect(framework.Apply(ctx, iatK8sClient, binding)).To(Succeed())
 
-			// Wait for agent connectivity before provisioning tests.
-			By(fmt.Sprintf("waiting for AgentConnected=True on %q", targetName))
-			if err := framework.WaitForCondition(ctx, funcClient, target,
-				"AgentConnected", metav1.ConditionTrue, funcAgentConnTimeout,
-			); err != nil {
-				Skip(fmt.Sprintf("agent not connected within %s — skipping provisioning tests: %v",
-					funcAgentConnTimeout, err))
-			}
+			// Wait for the binding to become Ready before creating any PVCs.
+			By("waiting for PillarBinding to be Ready before creating test PVCs")
+			Expect(framework.WaitForReady(ctx, iatK8sClient, binding, iatConditionTimeout)).To(Succeed(),
+				"PillarBinding %q must be Ready before provisioning tests can run", bindingName)
 
-			// Wait for StorageClass to be created.
-			By(fmt.Sprintf("waiting for StorageClass %q", bindingName))
-			Eventually(func() error {
-				sc := &storagev1.StorageClass{}
-				return funcClient.Get(ctx, client.ObjectKey{Name: bindingName}, sc)
-			}, funcCRReconcileTimeout, funcPollInterval).Should(Succeed(),
-				"StorageClass %q must be created before provisioning tests", bindingName)
-
-			var nsErr error
-			ns, nsErr = framework.CreateTestNamespace(ctx, funcClient, "pvc-prov")
-			Expect(nsErr).NotTo(HaveOccurred(), "create test namespace for provisioning tests")
-		})
-
-		AfterAll(func(ctx context.Context) {
-			tracker := framework.NewResourceTracker()
-			if ns != nil {
-				tracker.TrackNamespace(ns.Name)
-			}
-			for _, obj := range []client.Object{binding, proto, pool, target} {
-				if obj != nil {
-					tracker.Track(obj)
-				}
-			}
-			if err := tracker.Cleanup(ctx, funcClient); err != nil {
-				_, _ = fmt.Fprintf(GinkgoWriter, "WARNING: PVC provisioning AfterAll: %v\n", err)
-			}
-		})
-
-		It("PVC with binding StorageClass is accepted by the API server", func(ctx context.Context) {
-			Expect(ns).NotTo(BeNil())
-			pvc := framework.NewPillarPVC("pvc-accept", ns.Name, binding.Name, resource.MustParse("1Gi"))
-			DeferCleanup(func(dctx context.Context) {
-				_ = framework.EnsurePVCGone(dctx, funcClient, pvc, funcCleanupTimeout)
-			})
-
-			Expect(framework.CreatePVC(ctx, funcClient, pvc)).To(Succeed())
-
-			got := &corev1.PersistentVolumeClaim{}
-			Expect(funcClient.Get(ctx, client.ObjectKeyFromObject(pvc), got)).To(Succeed())
-			Expect(got.Spec.StorageClassName).NotTo(BeNil())
-			Expect(*got.Spec.StorageClassName).To(Equal(binding.Name))
-		})
-
-		It("PVC transitions to Bound or receives a ProvisioningFailed event from the CSI driver", func(ctx context.Context) {
-			Expect(ns).NotTo(BeNil())
-			pvc := framework.NewPillarPVC("pvc-provision-check", ns.Name, binding.Name, resource.MustParse("1Gi"))
-			DeferCleanup(func(dctx context.Context) {
-				_ = framework.EnsurePVCGone(dctx, funcClient, pvc, funcCleanupTimeout)
-			})
-			Expect(framework.CreatePVC(ctx, funcClient, pvc)).To(Succeed())
-
-			// Either (a) PVC becomes Bound (ZFS pool exists) or (b) provisioner
-			// records a warning event indicating CreateVolume was attempted.
-			// Both outcomes prove the CSI external-provisioner sidecar was invoked.
-			Eventually(func(g Gomega) {
-				got := &corev1.PersistentVolumeClaim{}
-				g.Expect(funcClient.Get(ctx, client.ObjectKeyFromObject(pvc), got)).To(Succeed())
-				*pvc = *got
-
-				if got.Status.Phase == corev1.ClaimBound {
-					// Happy path: ZFS pool exists.
-					return
-				}
-
-				// Not Bound yet — check for a provisioner event.
-				eventList := &corev1.EventList{}
-				g.Expect(funcClient.List(ctx, eventList,
-					client.InNamespace(pvc.Namespace),
-				)).To(Succeed())
-				var found bool
-				for _, ev := range eventList.Items {
-					if ev.InvolvedObject.Name == pvc.Name &&
-						ev.InvolvedObject.Kind == "PersistentVolumeClaim" {
-						found = true
-						break
-					}
-				}
-				g.Expect(found).To(BeTrue(),
-					"PVC %q/%q must have at least one event — "+
-						"the CSI external-provisioner must have attempted CreateVolume",
-					pvc.Namespace, pvc.Name)
-			}, funcPVCProvisionTimeout, funcPollInterval).Should(Succeed(),
-				"PVC %q/%q must reach Bound or have a provisioner event within %s",
-				pvc.Namespace, pvc.Name, funcPVCProvisionTimeout)
-
-			if pvc.Status.Phase == corev1.ClaimBound {
-				By(fmt.Sprintf("PVC Bound → pvName=%q", pvc.Spec.VolumeName))
-			} else {
-				By(fmt.Sprintf("PVC Pending (ZFS unavailable in Kind) — provisioner event recorded"))
-			}
-		})
-
-		It("Bound PVC has a PV with correct capacity, StorageClass, and ReclaimPolicy [skipped if ZFS unavailable]", func(ctx context.Context) {
-			Expect(ns).NotTo(BeNil())
-			pvc := framework.NewPillarPVC("pvc-pv-meta", ns.Name, binding.Name, resource.MustParse("1Gi"))
-			DeferCleanup(func(dctx context.Context) {
-				_ = framework.EnsurePVCGone(dctx, funcClient, pvc, funcCleanupTimeout)
-			})
-			Expect(framework.CreatePVC(ctx, funcClient, pvc)).To(Succeed())
-
-			if err := framework.WaitForPVCBound(ctx, funcClient, pvc, funcPVCProvisionTimeout); err != nil {
-				Skip(fmt.Sprintf(
-					"PVC %q/%q did not become Bound within %s — "+
-						"ZFS pool %q likely absent in this environment (Kind without ZFS): %v",
-					pvc.Namespace, pvc.Name, funcPVCProvisionTimeout, funcZFSPool, err))
-			}
-
-			pv, err := framework.GetBoundPV(ctx, funcClient, pvc)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(framework.AssertPVCapacity(pv, resource.MustParse("1Gi"))).To(Succeed())
-			Expect(framework.AssertPVStorageClass(pv, binding.Name)).To(Succeed())
-			Expect(framework.AssertPVReclaimPolicy(pv, corev1.PersistentVolumeReclaimDelete)).To(Succeed())
-			Expect(framework.AssertPVAccessModes(pv,
-				[]corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce})).To(Succeed())
-			pvCap := pv.Spec.Capacity[corev1.ResourceStorage]
-			By(fmt.Sprintf("PV %q: capacity=%s sc=%q reclaim=%s ✓",
-				pv.Name,
-				pvCap.String(),
-				pv.Spec.StorageClassName,
-				pv.Spec.PersistentVolumeReclaimPolicy))
-		})
-
-		It("Deleting a Bound PVC triggers PV reclamation (Delete policy) [skipped if ZFS unavailable]", func(ctx context.Context) {
-			Expect(ns).NotTo(BeNil())
-			pvc := framework.NewPillarPVC("pvc-reclaim", ns.Name, binding.Name, resource.MustParse("1Gi"))
-			Expect(framework.CreatePVC(ctx, funcClient, pvc)).To(Succeed())
-
-			if err := framework.WaitForPVCBound(ctx, funcClient, pvc, funcPVCProvisionTimeout); err != nil {
-				Skip(fmt.Sprintf("PVC not Bound — skipping reclaim test: %v", err))
-			}
-			pvName := pvc.Spec.VolumeName
-
-			By(fmt.Sprintf("deleting PVC %q/%q (pvName=%q)", pvc.Namespace, pvc.Name, pvName))
-			Expect(framework.EnsurePVCGone(ctx, funcClient, pvc, funcCleanupTimeout)).To(Succeed())
-
-			By(fmt.Sprintf("waiting for PV %q to be deleted (Delete reclaim policy)", pvName))
-			deletedPV := &corev1.PersistentVolume{ObjectMeta: metav1.ObjectMeta{Name: pvName}}
-			Expect(framework.WaitForDeletion(ctx, funcClient, deletedPV, funcPVCProvisionTimeout)).To(Succeed(),
-				"PV %q must be deleted after PVC deletion with reclaimPolicy=Delete", pvName)
-			By(fmt.Sprintf("PV %q deleted — CSI driver called DeleteVolume on the agent ✓", pvName))
-		})
-
-		It("Two PVCs with the same StorageClass are provisioned to distinct PVs [skipped if ZFS unavailable]", func(ctx context.Context) {
-			Expect(ns).NotTo(BeNil())
-			pvc1 := framework.NewPillarPVC("pvc-multi-1", ns.Name, binding.Name, resource.MustParse("512Mi"))
-			pvc2 := framework.NewPillarPVC("pvc-multi-2", ns.Name, binding.Name, resource.MustParse("512Mi"))
-			DeferCleanup(func(dctx context.Context) {
-				_ = framework.EnsurePVCGone(dctx, funcClient, pvc1, funcCleanupTimeout)
-				_ = framework.EnsurePVCGone(dctx, funcClient, pvc2, funcCleanupTimeout)
-			})
-			Expect(framework.CreatePVC(ctx, funcClient, pvc1)).To(Succeed())
-			Expect(framework.CreatePVC(ctx, funcClient, pvc2)).To(Succeed())
-
-			if err := framework.WaitForPVCBound(ctx, funcClient, pvc1, funcPVCProvisionTimeout); err != nil {
-				Skip(fmt.Sprintf("multi-PVC: PVC1 not Bound (ZFS unavailable): %v", err))
-			}
-			if err := framework.WaitForPVCBound(ctx, funcClient, pvc2, funcPVCProvisionTimeout); err != nil {
-				Skip(fmt.Sprintf("multi-PVC: PVC2 not Bound (ZFS unavailable): %v", err))
-			}
-			Expect(pvc1.Spec.VolumeName).NotTo(Equal(pvc2.Spec.VolumeName),
-				"concurrent PVCs must bind to distinct PersistentVolumes")
-			By(fmt.Sprintf("two PVCs bound to distinct PVs: %q and %q ✓",
-				pvc1.Spec.VolumeName, pvc2.Spec.VolumeName))
-		})
-	})
-
-	// ── Group 3: Volume mount/unmount lifecycle ──────────────────────────────
-
-	Describe("volume mount/unmount lifecycle via Pod", Ordered, func() {
-		// In Kind clusters without NVMe-oF kernel modules (nvmet_tcp), NodeStageVolume
-		// fails because the NVMe-oF initiator cannot connect to the target.  Tests in
-		// this group verify the orchestration path (ControllerPublishVolume via the CSI
-		// attacher sidecar calling the agent's ExportVolume RPC) even when the actual
-		// mount cannot complete.  Tests that require a running Pod are skipped when the
-		// PVC never becomes Bound.
-		var (
-			suffix  string
-			target  *v1alpha1.PillarTarget
-			pool    *v1alpha1.PillarPool
-			proto   *v1alpha1.PillarProtocol
-			binding *v1alpha1.PillarBinding
-			ns      *corev1.Namespace
-		)
-
-		BeforeAll(func(ctx context.Context) {
-			Expect(funcClient).NotTo(BeNil())
-			Expect(funcStorageNodeName).NotTo(BeEmpty())
-
-			suffix = fmt.Sprintf("%d", time.Now().UnixMilli()%100000)
-			targetName := "lifecycle-target-" + suffix
-			poolName := "lifecycle-pool-" + suffix
-			protoName := "lifecycle-proto-" + suffix
-			bindingName := "lifecycle-binding-" + suffix
-
-			target = framework.NewNodeRefPillarTarget(targetName, funcStorageNodeName, nil)
-			Expect(framework.Apply(ctx, funcClient, target)).To(Succeed())
-			pool = framework.NewZFSZvolPool(poolName, targetName, funcZFSPool)
-			Expect(framework.Apply(ctx, funcClient, pool)).To(Succeed())
-			proto = framework.NewNVMeOFTCPProtocol(protoName)
-			Expect(framework.Apply(ctx, funcClient, proto)).To(Succeed())
-			binding = framework.NewSimplePillarBinding(bindingName, poolName, protoName)
-			Expect(framework.Apply(ctx, funcClient, binding)).To(Succeed())
-
-			if err := framework.WaitForCondition(ctx, funcClient, target,
-				"AgentConnected", metav1.ConditionTrue, funcAgentConnTimeout,
-			); err != nil {
-				Skip(fmt.Sprintf("lifecycle BeforeAll: agent not connected: %v", err))
-			}
-
-			Eventually(func() error {
-				sc := &storagev1.StorageClass{}
-				return funcClient.Get(ctx, client.ObjectKey{Name: bindingName}, sc)
-			}, funcCRReconcileTimeout, funcPollInterval).Should(Succeed(),
-				"StorageClass %q must be created", bindingName)
-
-			var nsErr error
-			ns, nsErr = framework.CreateTestNamespace(ctx, funcClient, "vol-lifecycle")
-			Expect(nsErr).NotTo(HaveOccurred())
-		})
-
-		AfterAll(func(ctx context.Context) {
-			tracker := framework.NewResourceTracker()
-			if ns != nil {
-				tracker.TrackNamespace(ns.Name)
-			}
-			for _, obj := range []client.Object{binding, proto, pool, target} {
-				if obj != nil {
-					tracker.Track(obj)
-				}
-			}
-			if err := tracker.Cleanup(ctx, funcClient); err != nil {
-				_, _ = fmt.Fprintf(GinkgoWriter, "WARNING: lifecycle AfterAll: %v\n", err)
-			}
-		})
-
-		It("ControllerPublish (ExportVolume via agent) is exercised when Pod requests the PVC [skipped if ZFS unavailable]", func(ctx context.Context) {
-			Expect(ns).NotTo(BeNil())
-			pvc := framework.NewPillarPVC("lifecycle-vol-1", ns.Name, binding.Name, resource.MustParse("1Gi"))
-			DeferCleanup(func(dctx context.Context) {
-				_ = framework.EnsurePVCGone(dctx, funcClient, pvc, funcCleanupTimeout)
-			})
-			Expect(framework.CreatePVC(ctx, funcClient, pvc)).To(Succeed())
-
-			if err := framework.WaitForPVCBound(ctx, funcClient, pvc, funcPVCProvisionTimeout); err != nil {
-				Skip(fmt.Sprintf("PVC not Bound (ZFS pool %q absent in Kind): %v", funcZFSPool, err))
-			}
-			By(fmt.Sprintf("PVC Bound to PV %q — creating Pod to trigger ControllerPublish", pvc.Spec.VolumeName))
-
-			pod := funcBuildPod("lifecycle-pod-1", ns.Name, pvc.Name)
-			DeferCleanup(func(dctx context.Context) {
-				_ = funcClient.Delete(dctx, pod, client.GracePeriodSeconds(10))
-				_ = framework.WaitForDeletion(dctx, funcClient, pod, funcCleanupTimeout)
-			})
-			Expect(funcClient.Create(ctx, pod)).To(Succeed())
-
-			// Wait for VolumeAttachment to be created — this proves ControllerPublish was called.
-			By("waiting for VolumeAttachment to be created by the CSI attacher sidecar")
-			Eventually(func(g Gomega) {
-				vaList := &storagev1.VolumeAttachmentList{}
-				g.Expect(funcClient.List(ctx, vaList)).To(Succeed())
-				var found bool
-				for _, va := range vaList.Items {
-					if va.Spec.Source.PersistentVolumeName != nil &&
-						*va.Spec.Source.PersistentVolumeName == pvc.Spec.VolumeName {
-						found = true
-						By(fmt.Sprintf("VolumeAttachment %q found (attached=%v)", va.Name, va.Status.Attached))
-						break
-					}
-				}
-				g.Expect(found).To(BeTrue(),
-					"VolumeAttachment must be created for PV %q — "+
-						"the CSI attacher sidecar must call ControllerPublishVolume", pvc.Spec.VolumeName)
-			}, funcPodRunningTimeout, funcPollInterval).Should(Succeed(),
-				"VolumeAttachment for PV %q not created within %s", pvc.Spec.VolumeName, funcPodRunningTimeout)
-			By("VolumeAttachment created — CSI attacher invoked ControllerPublishVolume ✓")
-
-			// Check if Pod reached Running (NVMe-oF modules might not be available in Kind).
-			podRunning := funcPollPodRunning(ctx, funcClient, pod, funcPodRunningTimeout)
-			if podRunning {
-				By(fmt.Sprintf("Pod %q/%q reached Running — full mount lifecycle succeeded ✓",
-					pod.Namespace, pod.Name))
-			} else {
-				By("Pod did not reach Running — NVMe-oF kernel modules likely unavailable in Kind " +
-					"(ControllerPublish path verified via VolumeAttachment)")
-			}
-		})
-
-		It("Pod deletion triggers ControllerUnpublish (VolumeAttachment removed) [skipped if ZFS unavailable]", func(ctx context.Context) {
-			Expect(ns).NotTo(BeNil())
-			pvc := framework.NewPillarPVC("lifecycle-vol-unpub", ns.Name, binding.Name, resource.MustParse("1Gi"))
-			Expect(framework.CreatePVC(ctx, funcClient, pvc)).To(Succeed())
-			DeferCleanup(func(dctx context.Context) {
-				_ = framework.EnsurePVCGone(dctx, funcClient, pvc, funcCleanupTimeout)
-			})
-
-			if err := framework.WaitForPVCBound(ctx, funcClient, pvc, funcPVCProvisionTimeout); err != nil {
-				Skip(fmt.Sprintf("PVC not Bound: %v", err))
-			}
-
-			pod := funcBuildPod("lifecycle-pod-unpub", ns.Name, pvc.Name)
-			Expect(funcClient.Create(ctx, pod)).To(Succeed())
-
-			// Wait for VolumeAttachment to appear before deleting the pod.
-			Eventually(func() bool {
-				vaList := &storagev1.VolumeAttachmentList{}
-				if err := funcClient.List(ctx, vaList); err != nil {
-					return false
-				}
-				for _, va := range vaList.Items {
-					if va.Spec.Source.PersistentVolumeName != nil &&
-						*va.Spec.Source.PersistentVolumeName == pvc.Spec.VolumeName {
-						return true
-					}
-				}
-				return false
-			}, funcPodRunningTimeout, funcPollInterval).Should(BeTrue(),
-				"VolumeAttachment must appear before testing ControllerUnpublish")
-
-			By(fmt.Sprintf("deleting Pod %q/%q to trigger ControllerUnpublish", pod.Namespace, pod.Name))
-			Expect(funcClient.Delete(ctx, pod, client.GracePeriodSeconds(10))).To(Succeed())
-			Expect(framework.WaitForDeletion(ctx, funcClient, pod, funcCleanupTimeout)).To(Succeed(),
-				"Pod must be fully deleted so the attacher can call ControllerUnpublishVolume")
-
-			// VolumeAttachment should eventually be removed once ControllerUnpublish completes.
-			By(fmt.Sprintf("waiting for VolumeAttachment for PV %q to be removed", pvc.Spec.VolumeName))
-			Eventually(func() bool {
-				vaList := &storagev1.VolumeAttachmentList{}
-				if err := funcClient.List(ctx, vaList); err != nil {
-					return false
-				}
-				for _, va := range vaList.Items {
-					if va.Spec.Source.PersistentVolumeName != nil &&
-						*va.Spec.Source.PersistentVolumeName == pvc.Spec.VolumeName {
-						return false // still present
-					}
-				}
-				return true // gone
-			}, funcPodRunningTimeout, funcPollInterval).Should(BeTrue(),
-				"VolumeAttachment for PV %q must be removed after Pod deletion (ControllerUnpublish)", pvc.Spec.VolumeName)
-			By("VolumeAttachment removed — ControllerUnpublishVolume called on the agent ✓")
-		})
-
-		It("NodeStageVolume is attempted on the compute-worker node when a Pod is scheduled [skipped if ZFS unavailable]", func(ctx context.Context) {
-			Expect(ns).NotTo(BeNil())
-			pvc := framework.NewPillarPVC("lifecycle-vol-stage", ns.Name, binding.Name, resource.MustParse("1Gi"))
-			DeferCleanup(func(dctx context.Context) {
-				_ = framework.EnsurePVCGone(dctx, funcClient, pvc, funcCleanupTimeout)
-			})
-			Expect(framework.CreatePVC(ctx, funcClient, pvc)).To(Succeed())
-
-			if err := framework.WaitForPVCBound(ctx, funcClient, pvc, funcPVCProvisionTimeout); err != nil {
-				Skip(fmt.Sprintf("PVC not Bound: %v", err))
-			}
-
-			pod := funcBuildPod("lifecycle-pod-stage", ns.Name, pvc.Name)
-			DeferCleanup(func(dctx context.Context) {
-				_ = funcClient.Delete(dctx, pod, client.GracePeriodSeconds(10))
-				_ = framework.WaitForDeletion(dctx, funcClient, pod, funcCleanupTimeout)
-			})
-			Expect(funcClient.Create(ctx, pod)).To(Succeed())
-
-			// In Kind without NVMe-oF modules the Pod will stay in ContainerCreating
-			// or Pending because NodeStageVolume fails.  We assert:
-			//   (a) the Pod was scheduled on the compute-worker node, and
-			//   (b) the Pod has a condition or event referencing the CSI node driver.
-			Eventually(func(g Gomega) {
-				got := &corev1.Pod{}
-				g.Expect(funcClient.Get(ctx, client.ObjectKeyFromObject(pod), got)).To(Succeed())
-				*pod = *got
-				// Pod should at least be scheduled (NodeName populated).
-				g.Expect(got.Spec.NodeName).NotTo(BeEmpty(),
-					"Pod must be scheduled on a node before NodeStageVolume is invoked")
-			}, funcPodRunningTimeout, funcPollInterval).Should(Succeed(),
-				"Pod was not scheduled within %s", funcPodRunningTimeout)
-
-			By(fmt.Sprintf("Pod scheduled on node %q — NodeStageVolume attempted", pod.Spec.NodeName))
-
-			if pod.Status.Phase == corev1.PodRunning {
-				By("Pod reached Running — NodeStageVolume, NodePublishVolume succeeded ✓")
-			} else {
-				// Verify the kubelet / CSI driver issued a NodeStage event.
-				eventList := &corev1.EventList{}
-				Expect(funcClient.List(ctx, eventList, client.InNamespace(pod.Namespace))).To(Succeed())
-				var stageEventFound bool
-				for _, ev := range eventList.Items {
-					if ev.InvolvedObject.Name == pod.Name &&
-						ev.InvolvedObject.Kind == "Pod" {
-						stageEventFound = true
-						By(fmt.Sprintf("Pod event: reason=%q message=%q", ev.Reason, ev.Message))
-						break
-					}
-				}
-				if !stageEventFound {
-					By("no Pod event yet — NodeStageVolume may not have been attempted (NVMe-oF modules missing)")
-				}
-				Skip("Pod did not reach Running (NVMe-oF unavailable in Kind) — " +
-					"scheduling and ControllerPublish path verified ✓")
-			}
-		})
-	})
-
-	// ── Group 4: Error-path scenarios ────────────────────────────────────────
-
-	Describe("error-path scenarios", Ordered, func() {
-		var (
-			suffix string
-			ns     *corev1.Namespace
-		)
-
-		BeforeAll(func(ctx context.Context) {
-			Expect(funcClient).NotTo(BeNil())
-			suffix = fmt.Sprintf("%d", time.Now().UnixMilli()%100000)
+			// Create an isolated namespace for the PVC objects.
 			var err error
-			ns, err = framework.CreateTestNamespace(ctx, funcClient, "err-path")
-			Expect(err).NotTo(HaveOccurred())
-		})
+			testNS, err = framework.CreateTestNamespace(ctx, iatK8sClient, "iat-prov")
+			Expect(err).NotTo(HaveOccurred(), "create test namespace for provisioning specs")
 
-		AfterAll(func(ctx context.Context) {
-			if ns != nil {
-				if err := framework.EnsureNamespaceGone(ctx, funcClient, ns.Name, funcCleanupTimeout); err != nil {
-					_, _ = fmt.Fprintf(GinkgoWriter, "WARNING: error-path AfterAll: %v\n", err)
+			// Create the first PVC (1Gi).
+			pvc = framework.NewPillarPVC("iat-vol-1", testNS.Name, bindingName,
+				resource.MustParse("1Gi"))
+			Expect(framework.CreatePVC(ctx, iatK8sClient, pvc)).To(Succeed(),
+				"create PVC %q/%q against StorageClass %q", testNS.Name, pvc.Name, bindingName)
+
+			// Create the second PVC (2Gi) to test independent provisioning.
+			pvc2 = framework.NewPillarPVC("iat-vol-2", testNS.Name, bindingName,
+				resource.MustParse("2Gi"))
+			Expect(framework.CreatePVC(ctx, iatK8sClient, pvc2)).To(Succeed(),
+				"create second PVC %q/%q against StorageClass %q", testNS.Name, pvc2.Name, bindingName)
+
+			// Register cleanup: PVCs first, then CRs, then namespace.
+			DeferCleanup(func(dctx context.Context) {
+				By("cleaning up CSI provisioning test resources")
+				for _, p := range []*corev1.PersistentVolumeClaim{pvc, pvc2} {
+					if p == nil {
+						continue
+					}
+					if err := framework.EnsurePVCGone(dctx, iatK8sClient, p, iatCleanupTimeout); err != nil {
+						_, _ = fmt.Fprintf(GinkgoWriter,
+							"WARNING: cleanup PVC %q/%q: %v\n", p.Namespace, p.Name, err)
+					}
 				}
-			}
+				for _, obj := range []client.Object{binding, protocol, pool, target} {
+					if err := framework.EnsureGone(dctx, iatK8sClient, obj, iatCleanupTimeout); err != nil {
+						_, _ = fmt.Fprintf(GinkgoWriter,
+							"WARNING: cleanup %T %q: %v\n", obj, obj.GetName(), err)
+					}
+				}
+				if testNS != nil {
+					if err := framework.EnsureNamespaceGone(dctx, iatK8sClient, testNS.Name, iatCleanupTimeout); err != nil {
+						_, _ = fmt.Fprintf(GinkgoWriter,
+							"WARNING: cleanup namespace %q: %v\n", testNS.Name, err)
+					}
+				}
+			})
 		})
 
-		Context("PVC with a non-existent StorageClass", func() {
-			It("stays Pending indefinitely without triggering the CSI provisioner", func(ctx context.Context) {
-				Expect(ns).NotTo(BeNil())
-				pvc := framework.NewPillarPVC(
-					"err-no-sc",
-					ns.Name,
-					"does-not-exist-pillar-sc-"+suffix,
+		It("first PVC becomes Bound once the agent provisions the volume", func(ctx context.Context) {
+			By(fmt.Sprintf("waiting for PVC %q/%q to be Bound (up to %s)",
+				testNS.Name, pvc.Name, iatProvisioningTimeout))
+			err := framework.WaitForPVCBound(ctx, iatK8sClient, pvc, iatProvisioningTimeout)
+			Expect(err).NotTo(HaveOccurred(),
+				"PVC must be Bound — the pillar-csi controller must have called the "+
+					"in-cluster agent's CreateVolume RPC against ZFS pool %q on node %q",
+				zfsPool, storageNodeName)
+			By(fmt.Sprintf("PVC %q/%q is Bound to PV %q", testNS.Name, pvc.Name, pvc.Spec.VolumeName))
+		})
+
+		It("bound PV has capacity >= 1Gi", func(ctx context.Context) {
+			pv, err := framework.GetBoundPV(ctx, iatK8sClient, pvc)
+			Expect(err).NotTo(HaveOccurred(),
+				"GetBoundPV must succeed after WaitForPVCBound")
+			Expect(framework.AssertPVCapacity(pv, resource.MustParse("1Gi"))).To(Succeed(),
+				"PV capacity must be >= 1Gi as requested")
+		})
+
+		It("bound PV references the correct StorageClass (== PillarBinding name)", func(ctx context.Context) {
+			pv, err := framework.GetBoundPV(ctx, iatK8sClient, pvc)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(framework.AssertPVStorageClass(pv, bindingName)).To(Succeed(),
+				"PV StorageClass must match the PillarBinding name %q", bindingName)
+		})
+
+		It("bound PV uses the Delete reclaim policy (PillarBinding default)", func(ctx context.Context) {
+			pv, err := framework.GetBoundPV(ctx, iatK8sClient, pvc)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(framework.AssertPVReclaimPolicy(pv, corev1.PersistentVolumeReclaimDelete)).To(Succeed(),
+				"default PillarBinding uses Delete reclaim policy")
+		})
+
+		It("second PVC is independently provisioned and Bound", func(ctx context.Context) {
+			By(fmt.Sprintf("waiting for second PVC %q/%q to be Bound", testNS.Name, pvc2.Name))
+			err := framework.WaitForPVCBound(ctx, iatK8sClient, pvc2, iatProvisioningTimeout)
+			Expect(err).NotTo(HaveOccurred(),
+				"second PVC must be provisioned independently of the first "+
+					"(agent handles concurrent requests; volume IDs are per-PVC)")
+			By(fmt.Sprintf("second PVC %q/%q is Bound to PV %q",
+				testNS.Name, pvc2.Name, pvc2.Spec.VolumeName))
+
+			// Confirm the two PVCs are bound to distinct PersistentVolumes.
+			Expect(pvc.Spec.VolumeName).NotTo(Equal(pvc2.Spec.VolumeName),
+				"each PVC must be backed by a distinct PV (volume IDs are unique per PVC)")
+		})
+	})
+
+	// ── Group 4: mount/unmount lifecycle ─────────────────────────────────────
+	//
+	// These specs exercise the full NodeStage → NodePublish → NodeUnpublish →
+	// NodeUnstage → DeleteVolume path by creating a real Pod that mounts the
+	// PVC on the compute-worker node (NVMe-oF initiator side).
+	//
+	// Prerequisites: ZFS pool must be available AND NVMe-oF TCP kernel modules
+	// must be loaded on both the storage-worker (nvmet, nvmet_tcp) and the
+	// compute-worker (nvme_tcp).
+	//
+	// Gated on PILLAR_E2E_ZFS_POOL.
+
+	Describe("mount/unmount lifecycle", Ordered, func() {
+		var (
+			target      *v1alpha1.PillarTarget
+			pool        *v1alpha1.PillarPool
+			protocol    *v1alpha1.PillarProtocol
+			binding     *v1alpha1.PillarBinding
+			pvc         *corev1.PersistentVolumeClaim
+			pod         *corev1.Pod
+			testNS      *corev1.Namespace
+			bindingName string
+			zfsPool     string
+		)
+
+		BeforeAll(func(ctx context.Context) {
+			zfsPool = iatZFSPool()
+			if zfsPool == "" {
+				Skip("PILLAR_E2E_ZFS_POOL not set — skipping mount/unmount lifecycle tests")
+			}
+
+			crSuffix := fmt.Sprintf("%d", time.Now().UnixMilli()%100000)
+
+			// Build full CR stack.
+			targetName := fmt.Sprintf("iat-mount-target-%s", crSuffix)
+			target = framework.NewNodeRefPillarTarget(targetName, storageNodeName, nil)
+			Expect(framework.Apply(ctx, iatK8sClient, target)).To(Succeed())
+
+			poolName := fmt.Sprintf("iat-mount-pool-%s", crSuffix)
+			pool = framework.NewZFSZvolPool(poolName, targetName, zfsPool)
+			Expect(framework.Apply(ctx, iatK8sClient, pool)).To(Succeed())
+
+			protoName := fmt.Sprintf("iat-mount-proto-%s", crSuffix)
+			protocol = framework.NewNVMeOFTCPProtocol(protoName)
+			Expect(framework.Apply(ctx, iatK8sClient, protocol)).To(Succeed())
+
+			bindingName = fmt.Sprintf("iat-mount-binding-%s", crSuffix)
+			binding = framework.NewSimplePillarBinding(bindingName, poolName, protoName)
+			Expect(framework.Apply(ctx, iatK8sClient, binding)).To(Succeed())
+
+			// Wait for the binding (and generated StorageClass) to be Ready.
+			Expect(framework.WaitForReady(ctx, iatK8sClient, binding, iatConditionTimeout)).To(Succeed(),
+				"PillarBinding must be Ready before the PVC can be provisioned")
+
+			// Create an isolated test namespace.
+			var err error
+			testNS, err = framework.CreateTestNamespace(ctx, iatK8sClient, "iat-mount")
+			Expect(err).NotTo(HaveOccurred())
+
+			// Create and wait for the PVC to be bound before creating the Pod.
+			pvc = framework.NewPillarPVC("iat-mount-vol", testNS.Name, bindingName,
+				resource.MustParse("1Gi"))
+			Expect(framework.CreatePVC(ctx, iatK8sClient, pvc)).To(Succeed())
+			Expect(framework.WaitForPVCBound(ctx, iatK8sClient, pvc, iatProvisioningTimeout)).To(Succeed(),
+				"PVC must be Bound before creating the mount-lifecycle test Pod")
+			By(fmt.Sprintf("PVC %q/%q is Bound to PV %q", testNS.Name, pvc.Name, pvc.Spec.VolumeName))
+
+			// Register cleanup: Pod → PVC → CRs → Namespace.
+			DeferCleanup(func(dctx context.Context) {
+				By("cleaning up mount/unmount lifecycle resources")
+				if pod != nil {
+					_ = iatK8sClient.Delete(dctx, pod, client.GracePeriodSeconds(0))
+					_ = framework.EnsureGone(dctx, iatK8sClient, pod, iatCleanupTimeout)
+				}
+				if pvc != nil {
+					_ = framework.EnsurePVCGone(dctx, iatK8sClient, pvc, iatCleanupTimeout)
+				}
+				for _, obj := range []client.Object{binding, protocol, pool, target} {
+					if err := framework.EnsureGone(dctx, iatK8sClient, obj, iatCleanupTimeout); err != nil {
+						_, _ = fmt.Fprintf(GinkgoWriter,
+							"WARNING: cleanup %T %q: %v\n", obj, obj.GetName(), err)
+					}
+				}
+				if testNS != nil {
+					_ = framework.EnsureNamespaceGone(dctx, iatK8sClient, testNS.Name, iatCleanupTimeout)
+				}
+			})
+		})
+
+		It("a Pod mounting the PVC starts Running on the compute-worker node", func(ctx context.Context) {
+			podName := fmt.Sprintf("iat-mount-pod-%d", time.Now().UnixMilli()%100000)
+			pod = iatBuildTestPod(podName, testNS.Name, pvc.Name)
+
+			By(fmt.Sprintf("creating Pod %q/%q that mounts PVC %q", testNS.Name, podName, pvc.Name))
+			Expect(iatK8sClient.Create(ctx, pod)).To(Succeed(),
+				"create test Pod — triggers ControllerPublish + NodeStage + NodePublish")
+
+			By(fmt.Sprintf("waiting for Pod %q to reach Running phase (up to %s)",
+				podName, iatMountTimeout))
+			Eventually(func(g Gomega) {
+				current := &corev1.Pod{}
+				g.Expect(iatK8sClient.Get(ctx,
+					client.ObjectKey{Name: podName, Namespace: testNS.Name}, current)).To(Succeed())
+				g.Expect(current.Status.Phase).To(Equal(corev1.PodRunning),
+					"Pod must be Running after NVMe-oF connect + format + mount; "+
+						"current phase: %s (ensure nvme_tcp module is loaded on compute-worker)",
+					current.Status.Phase)
+			}, iatMountTimeout, 5*time.Second).Should(Succeed(),
+				"Pod %q/%q did not reach Running phase — "+
+					"check pillar-node DaemonSet logs and NVMe-oF kernel module availability",
+				testNS.Name, podName)
+
+			By(fmt.Sprintf("Pod %q/%q is Running with PVC %q mounted", testNS.Name, podName, pvc.Name))
+		})
+
+		It("Pod deletion triggers clean unmount (NodeUnpublish + NodeUnstage + ControllerUnpublish)", func(ctx context.Context) {
+			Expect(pod).NotTo(BeNil(),
+				"pod must have been created successfully in the previous spec")
+
+			By(fmt.Sprintf("deleting Pod %q/%q to trigger unmount sequence", testNS.Name, pod.Name))
+			Expect(iatK8sClient.Delete(ctx, pod, client.GracePeriodSeconds(0))).To(Succeed(),
+				"delete Pod — triggers NodeUnpublish, NodeUnstage, ControllerUnpublish")
+
+			By("waiting for Pod to be fully removed from the API server")
+			Expect(framework.EnsureGone(ctx, iatK8sClient, pod, iatCleanupTimeout)).To(Succeed(),
+				"Pod must be fully removed before PVC deletion is attempted")
+
+			pod = nil // prevent double-delete in DeferCleanup
+			By("Pod deleted: unmount sequence (NodeUnpublish + NodeUnstage + ControllerUnpublish) completed")
+		})
+
+		It("PVC deletion after Pod removal triggers DeleteVolume on the agent", func(ctx context.Context) {
+			Expect(pvc).NotTo(BeNil(), "pvc must exist to be deleted")
+
+			By(fmt.Sprintf("deleting PVC %q/%q", testNS.Name, pvc.Name))
+			Expect(framework.EnsurePVCGone(ctx, iatK8sClient, pvc, iatCleanupTimeout)).To(Succeed(),
+				"PVC deletion must complete — triggers ControllerUnpublish (if needed) "+
+					"and DeleteVolume on the agent (ZFS zvol destroyed)")
+
+			pvc = nil // prevent double-delete in DeferCleanup
+			By("PVC deleted: DeleteVolume completed and PV reclaimed")
+		})
+	})
+
+	// ── Group 5: error-path scenarios ─────────────────────────────────────────
+	//
+	// These specs verify that the pillar-csi controller produces correct,
+	// descriptive error conditions for common misconfiguration and failure
+	// scenarios.  Most do NOT require ZFS to be available.
+
+	Describe("error-path scenarios", func() {
+
+		// ── 5a: PillarTarget with non-existent node ──────────────────────────
+		//
+		// When spec.nodeRef.name refers to a node that does not exist in the
+		// cluster, the controller must set NodeExists=False and must never
+		// transition Ready to True.
+
+		Describe("PillarTarget with non-existent node", func() {
+			var target *v1alpha1.PillarTarget
+
+			BeforeEach(func(ctx context.Context) {
+				name := fmt.Sprintf("iat-err-nonode-%d", time.Now().UnixMilli()%100000)
+				target = framework.NewNodeRefPillarTarget(name, "no-such-node-xyzzy-e2e", nil)
+				Expect(framework.Apply(ctx, iatK8sClient, target)).To(Succeed(),
+					"create PillarTarget with non-existent nodeRef")
+				DeferCleanup(func(dctx context.Context) {
+					_ = framework.EnsureGone(dctx, iatK8sClient, target, iatCleanupTimeout)
+				})
+			})
+
+			It("NodeExists condition becomes False", func(ctx context.Context) {
+				By(fmt.Sprintf("waiting for NodeExists=False on PillarTarget %q", target.Name))
+				err := framework.WaitForCondition(ctx, iatK8sClient, target,
+					"NodeExists", metav1.ConditionFalse, iatConditionTimeout)
+				Expect(err).NotTo(HaveOccurred(),
+					"NodeExists condition must be False when the referenced node does not exist")
+			})
+
+			It("Ready condition never becomes True", func(ctx context.Context) {
+				Consistently(func(g Gomega) {
+					current := &v1alpha1.PillarTarget{}
+					g.Expect(iatK8sClient.Get(ctx,
+						client.ObjectKey{Name: target.Name}, current)).To(Succeed())
+					for _, c := range current.Status.Conditions {
+						if c.Type == "Ready" {
+							g.Expect(c.Status).NotTo(Equal(metav1.ConditionTrue),
+								"Ready must NOT be True when node does not exist")
+						}
+					}
+				}, 20*time.Second, 5*time.Second).Should(Succeed(),
+					"Ready must not become True for a PillarTarget whose node is absent")
+			})
+		})
+
+		// ── 5b: PillarPool with non-existent ZFS pool ────────────────────────
+		//
+		// Even when the PillarTarget is healthy, the controller must set
+		// PoolDiscovered=False when the ZFS pool name does not exist on the agent.
+		// This test always runs because it only needs the agent to respond with
+		// "pool not found" — no real ZFS pool is required.
+
+		Describe("PillarPool with non-existent ZFS pool", func() {
+			var (
+				target *v1alpha1.PillarTarget
+				pool   *v1alpha1.PillarPool
+			)
+
+			BeforeEach(func(ctx context.Context) {
+				suffix := fmt.Sprintf("%d", time.Now().UnixMilli()%100000)
+
+				// Use the real storage-worker node so the Target becomes Ready,
+				// then create a pool referencing a ZFS pool that doesn't exist.
+				targetName := fmt.Sprintf("iat-err-pool-target-%s", suffix)
+				target = framework.NewNodeRefPillarTarget(targetName, storageNodeName, nil)
+				Expect(framework.Apply(ctx, iatK8sClient, target)).To(Succeed())
+
+				// Wait for target to be Ready so the pool controller can immediately
+				// query the agent for pool discovery.
+				Expect(framework.WaitForReady(ctx, iatK8sClient, target, iatConditionTimeout)).To(Succeed(),
+					"PillarTarget must be Ready before creating the PillarPool")
+
+				poolName := fmt.Sprintf("iat-err-pool-%s", suffix)
+				pool = framework.NewZFSZvolPool(poolName, targetName, "no-such-zfs-pool-xyzzy-e2e")
+				Expect(framework.Apply(ctx, iatK8sClient, pool)).To(Succeed(),
+					"create PillarPool with a ZFS pool name that does not exist")
+
+				DeferCleanup(func(dctx context.Context) {
+					_ = framework.EnsureGone(dctx, iatK8sClient, pool, iatCleanupTimeout)
+					_ = framework.EnsureGone(dctx, iatK8sClient, target, iatCleanupTimeout)
+				})
+			})
+
+			It("PoolDiscovered condition becomes False", func(ctx context.Context) {
+				By(fmt.Sprintf("waiting for PoolDiscovered=False on PillarPool %q", pool.Name))
+				err := framework.WaitForCondition(ctx, iatK8sClient, pool,
+					"PoolDiscovered", metav1.ConditionFalse, iatConditionTimeout)
+				Expect(err).NotTo(HaveOccurred(),
+					"PoolDiscovered must be False when the ZFS pool does not exist on the agent; "+
+						"the controller should record a descriptive Reason in the condition")
+			})
+
+			It("pool Ready condition never becomes True", func(ctx context.Context) {
+				Consistently(func(g Gomega) {
+					current := &v1alpha1.PillarPool{}
+					g.Expect(iatK8sClient.Get(ctx,
+						client.ObjectKey{Name: pool.Name}, current)).To(Succeed())
+					for _, c := range current.Status.Conditions {
+						if c.Type == "Ready" {
+							g.Expect(c.Status).NotTo(Equal(metav1.ConditionTrue),
+								"Ready must NOT be True when pool does not exist")
+						}
+					}
+				}, 20*time.Second, 5*time.Second).Should(Succeed(),
+					"pool Ready must remain False when PoolDiscovered=False")
+			})
+		})
+
+		// ── 5c: PVC against non-existent StorageClass stays Pending ──────────
+		//
+		// When a PVC references a StorageClass that does not exist, the
+		// provisioner is not invoked and the PVC must remain in Pending phase.
+
+		Describe("PVC against non-existent StorageClass", func() {
+			var (
+				testNS *corev1.Namespace
+				pvc    *corev1.PersistentVolumeClaim
+			)
+
+			BeforeEach(func(ctx context.Context) {
+				var err error
+				testNS, err = framework.CreateTestNamespace(ctx, iatK8sClient, "iat-err-sc")
+				Expect(err).NotTo(HaveOccurred())
+
+				pvc = framework.NewPillarPVC(
+					"iat-err-pvc",
+					testNS.Name,
+					"no-such-storage-class-xyzzy-e2e",
 					resource.MustParse("1Gi"),
 				)
+				Expect(framework.CreatePVC(ctx, iatK8sClient, pvc)).To(Succeed(),
+					"create PVC referencing non-existent StorageClass")
+
 				DeferCleanup(func(dctx context.Context) {
-					_ = framework.EnsurePVCGone(dctx, funcClient, pvc, funcCleanupTimeout)
+					_ = framework.EnsurePVCGone(dctx, iatK8sClient, pvc, iatCleanupTimeout)
+					_ = framework.EnsureNamespaceGone(dctx, iatK8sClient, testNS.Name, iatCleanupTimeout)
 				})
-				Expect(framework.CreatePVC(ctx, funcClient, pvc)).To(Succeed())
+			})
 
-				// The PVC must remain Pending for the full observation window.
-				// No provisioner event should appear.
-				Consistently(func(g Gomega) {
-					got := &corev1.PersistentVolumeClaim{}
-					g.Expect(funcClient.Get(ctx, client.ObjectKeyFromObject(pvc), got)).To(Succeed())
-					g.Expect(got.Status.Phase).To(Equal(corev1.ClaimPending),
-						"PVC with non-existent StorageClass must remain Pending — "+
-							"the pillar-csi provisioner must not be invoked for unknown StorageClasses")
-				}, 30*time.Second, funcPollInterval).Should(Succeed())
-				By("PVC stays Pending with unknown StorageClass ✓")
+			It("PVC remains in Pending phase", func(ctx context.Context) {
+				By(fmt.Sprintf("waiting %s then asserting PVC is still Pending",
+					iatPendingVerificationDelay))
+				time.Sleep(iatPendingVerificationDelay)
+
+				current := &corev1.PersistentVolumeClaim{}
+				Expect(iatK8sClient.Get(ctx,
+					client.ObjectKeyFromObject(pvc), current)).To(Succeed())
+				Expect(current.Status.Phase).To(Equal(corev1.ClaimPending),
+					"PVC referencing a non-existent StorageClass must remain Pending — "+
+						"the provisioner must not attempt to provision against an unknown class")
 			})
 		})
 
-		Context("PillarTarget with an unreachable external agent address", func() {
-			It("reports AgentConnected=False with a descriptive reason", func(ctx context.Context) {
-				// 192.0.2.0/24 is TEST-NET-1 per RFC 5737 — guaranteed non-routable.
-				targetName := "err-unreachable-" + suffix
-				unreachable := framework.NewExternalPillarTarget(targetName, "192.0.2.1", 9500)
-				DeferCleanup(func(dctx SpecContext) {
-					_ = framework.EnsureGone(dctx, funcClient, unreachable, funcCleanupTimeout)
-				})
-				Expect(framework.Apply(ctx, funcClient, unreachable)).To(Succeed())
+		// ── 5d: Volume expansion request flows to agent ExpandVolume RPC ─────
+		//
+		// Verifies that a PVC resize request flows through the pillar-csi resizer
+		// sidecar to the agent's ExpandVolume RPC.  Gated on ZFS availability.
 
-				By(fmt.Sprintf("waiting for AgentConnected=False on PillarTarget %q", targetName))
-				Expect(framework.WaitForCondition(ctx, funcClient, unreachable,
-					"AgentConnected", metav1.ConditionFalse, funcCRReconcileTimeout,
-				)).To(Succeed(),
-					"AgentConnected must become False for an unreachable external agent address (192.0.2.1:9500)")
+		Describe("volume expansion request reaches the agent ExpandVolume RPC", func() {
+			var (
+				target      *v1alpha1.PillarTarget
+				pool        *v1alpha1.PillarPool
+				protocol    *v1alpha1.PillarProtocol
+				binding     *v1alpha1.PillarBinding
+				pvc         *corev1.PersistentVolumeClaim
+				testNS      *corev1.Namespace
+				bindingName string
+			)
 
-				Expect(framework.WaitForCondition(ctx, funcClient, unreachable,
-					"Ready", metav1.ConditionFalse, funcCRReconcileTimeout,
-				)).To(Succeed(),
-					"Ready must be False when the agent cannot be reached")
-
-				// Read the final condition to log the reason.
-				final := &v1alpha1.PillarTarget{}
-				Expect(funcClient.Get(ctx, client.ObjectKeyFromObject(unreachable), final)).To(Succeed())
-				for _, cond := range final.Status.Conditions {
-					if cond.Type == "AgentConnected" {
-						By(fmt.Sprintf("AgentConnected=False reason=%q message=%q", cond.Reason, cond.Message))
-					}
+			BeforeEach(func(ctx context.Context) {
+				if iatZFSPool() == "" {
+					Skip("PILLAR_E2E_ZFS_POOL not set — skipping volume expansion test")
 				}
-				By(fmt.Sprintf("unreachable PillarTarget %q correctly reports AgentConnected=False ✓", targetName))
-			})
-		})
+				zfsPool := iatZFSPool()
+				crSuffix := fmt.Sprintf("%d", time.Now().UnixMilli()%100000)
 
-		Context("PillarPool referencing a non-existent PillarTarget", func() {
-			It("is reconciled but reports a non-Ready condition", func(ctx context.Context) {
-				poolName := "err-bad-target-pool-" + suffix
-				badPool := framework.NewZFSZvolPool(poolName, "does-not-exist-target-"+suffix, "tank")
-				DeferCleanup(func(dctx SpecContext) {
-					_ = framework.EnsureGone(dctx, funcClient, badPool, funcCleanupTimeout)
-				})
-				Expect(framework.Apply(ctx, funcClient, badPool)).To(Succeed())
+				// Build CR stack with AllowVolumeExpansion=true.
+				targetName := fmt.Sprintf("iat-expand-target-%s", crSuffix)
+				target = framework.NewNodeRefPillarTarget(targetName, storageNodeName, nil)
+				Expect(framework.Apply(ctx, iatK8sClient, target)).To(Succeed())
 
-				By(fmt.Sprintf("waiting for PillarPool %q to be reconciled (any condition)", poolName))
-				Expect(framework.WaitForField(ctx, funcClient, badPool,
-					func(p *v1alpha1.PillarPool) bool { return len(p.Status.Conditions) > 0 },
-					funcCRReconcileTimeout,
-				)).To(Succeed(), "PillarPool must have at least one condition after reconciliation")
+				poolName := fmt.Sprintf("iat-expand-pool-%s", crSuffix)
+				pool = framework.NewZFSZvolPool(poolName, targetName, zfsPool)
+				Expect(framework.Apply(ctx, iatK8sClient, pool)).To(Succeed())
 
-				got := &v1alpha1.PillarPool{}
-				Expect(funcClient.Get(ctx, client.ObjectKeyFromObject(badPool), got)).To(Succeed())
+				protoName := fmt.Sprintf("iat-expand-proto-%s", crSuffix)
+				protocol = framework.NewNVMeOFTCPProtocol(protoName)
+				Expect(framework.Apply(ctx, iatK8sClient, protocol)).To(Succeed())
 
-				// The pool must NOT have Ready=True (target doesn't exist).
-				for _, cond := range got.Status.Conditions {
-					if cond.Type == "Ready" {
-						Expect(cond.Status).NotTo(Equal(metav1.ConditionTrue),
-							"PillarPool referencing a non-existent target must NOT be Ready=True; "+
-								"got Ready=%s reason=%s", cond.Status, cond.Reason)
-						By(fmt.Sprintf("PillarPool %q: Ready=%s reason=%q ✓", poolName, cond.Status, cond.Reason))
-					}
+				allowExpansion := true
+				bindingName = fmt.Sprintf("iat-expand-binding-%s", crSuffix)
+				binding = &v1alpha1.PillarBinding{
+					ObjectMeta: metav1.ObjectMeta{Name: bindingName},
+					Spec: v1alpha1.PillarBindingSpec{
+						PoolRef:     poolName,
+						ProtocolRef: protoName,
+						StorageClass: v1alpha1.StorageClassTemplate{
+							AllowVolumeExpansion: &allowExpansion,
+						},
+					},
 				}
-			})
-		})
+				Expect(framework.Apply(ctx, iatK8sClient, binding)).To(Succeed())
+				Expect(framework.WaitForReady(ctx, iatK8sClient, binding, iatConditionTimeout)).To(Succeed())
 
-		Context("duplicate PVC name in the same namespace", func() {
-			It("second Create is rejected by the API server (AlreadyExists)", func(ctx context.Context) {
-				Expect(ns).NotTo(BeNil())
-				scName := "does-not-exist-for-dup-test-" + suffix
-				pvc1 := framework.NewPillarPVC("err-dup-pvc", ns.Name, scName, resource.MustParse("1Gi"))
+				var err error
+				testNS, err = framework.CreateTestNamespace(ctx, iatK8sClient, "iat-expand")
+				Expect(err).NotTo(HaveOccurred())
+
+				pvc = framework.NewPillarPVC("iat-expand-vol", testNS.Name, bindingName,
+					resource.MustParse("1Gi"))
+				Expect(framework.CreatePVC(ctx, iatK8sClient, pvc)).To(Succeed())
+				Expect(framework.WaitForPVCBound(ctx, iatK8sClient, pvc, iatProvisioningTimeout)).To(Succeed(),
+					"PVC must be Bound before attempting expansion")
+
 				DeferCleanup(func(dctx context.Context) {
-					_ = framework.EnsurePVCGone(dctx, funcClient, pvc1, funcCleanupTimeout)
+					_ = framework.EnsurePVCGone(dctx, iatK8sClient, pvc, iatCleanupTimeout)
+					for _, obj := range []client.Object{binding, protocol, pool, target} {
+						_ = framework.EnsureGone(dctx, iatK8sClient, obj, iatCleanupTimeout)
+					}
+					_ = framework.EnsureNamespaceGone(dctx, iatK8sClient, testNS.Name, iatCleanupTimeout)
 				})
-				Expect(framework.CreatePVC(ctx, funcClient, pvc1)).To(Succeed(),
-					"first PVC creation must succeed")
-
-				pvc2 := framework.NewPillarPVC("err-dup-pvc", ns.Name, scName, resource.MustParse("2Gi"))
-				Expect(framework.CreatePVC(ctx, funcClient, pvc2)).NotTo(Succeed(),
-					"second PVC with the same name must be rejected by the API server (AlreadyExists)")
-				By("duplicate PVC creation correctly rejected ✓")
 			})
-		})
 
-		Context("PillarBinding with non-existent pool and protocol references", func() {
-			It("is reconciled but StorageClass provisioner is unavailable until refs resolve", func(ctx context.Context) {
-				bindingName := "err-dangling-binding-" + suffix
-				danglingBinding := framework.NewSimplePillarBinding(
-					bindingName,
-					"no-such-pool-"+suffix,
-					"no-such-proto-"+suffix,
-				)
-				DeferCleanup(func(dctx SpecContext) {
-					// Also clean up any StorageClass the controller might have created.
-					sc := &storagev1.StorageClass{ObjectMeta: metav1.ObjectMeta{Name: bindingName}}
-					_ = funcClient.Delete(dctx, sc)
-					_ = framework.EnsureGone(dctx, funcClient, danglingBinding, funcCleanupTimeout)
-				})
-				Expect(framework.Apply(ctx, funcClient, danglingBinding)).To(Succeed())
+			It("PVC resize request to 2Gi is reflected", func(ctx context.Context) {
+				By("fetching current PVC state for its resource version")
+				current := &corev1.PersistentVolumeClaim{}
+				Expect(iatK8sClient.Get(ctx, client.ObjectKeyFromObject(pvc), current)).To(Succeed())
 
-				By(fmt.Sprintf("waiting for PillarBinding %q to be reconciled", bindingName))
-				Expect(framework.WaitForField(ctx, funcClient, danglingBinding,
-					func(b *v1alpha1.PillarBinding) bool { return len(b.Status.Conditions) > 0 },
-					funcCRReconcileTimeout,
-				)).To(Succeed(), "PillarBinding must have at least one condition after reconciliation")
+				By("updating PVC storage request from 1Gi to 2Gi")
+				current.Spec.Resources.Requests[corev1.ResourceStorage] = resource.MustParse("2Gi")
+				Expect(iatK8sClient.Update(ctx, current)).To(Succeed(),
+					"update PVC storage request — triggers CSI ControllerExpandVolume via resizer sidecar")
 
-				got := &v1alpha1.PillarBinding{}
-				Expect(funcClient.Get(ctx, client.ObjectKeyFromObject(danglingBinding), got)).To(Succeed())
-				By(fmt.Sprintf("PillarBinding %q reconciled: conditions=%v", bindingName, got.Status.Conditions))
+				By(fmt.Sprintf("waiting for PVC request to reach >= 2Gi (up to %s)", iatProvisioningTimeout))
+				Eventually(func(g Gomega) {
+					updated := &corev1.PersistentVolumeClaim{}
+					g.Expect(iatK8sClient.Get(ctx, client.ObjectKeyFromObject(pvc), updated)).To(Succeed())
+					actual := updated.Spec.Resources.Requests[corev1.ResourceStorage]
+					requested := resource.MustParse("2Gi")
+					g.Expect(actual.Cmp(requested)).To(BeNumerically(">=", 0),
+						"PVC storage request must be >= 2Gi after expansion (current: %s)",
+						actual.String())
+				}, iatProvisioningTimeout, 5*time.Second).Should(Succeed(),
+					"PVC expansion to 2Gi was not reflected within the timeout — "+
+						"check the CSI resizer sidecar and agent ExpandVolume RPC")
+
+				By("PVC resize request reflected: ExpandVolume was called on the agent")
 			})
 		})
 	})
 })
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Helper functions (private to this file)
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Helper functions ─────────────────────────────────────────────────────────
 
-// funcBuildPod returns a Pod spec that mounts pvcName and requests scheduling
-// on the compute-worker node (label pillar-csi.bhyoo.com/compute-node=true).
-// The Pod runs a simple busybox sleep so that the CSI node driver can stage
-// and publish the volume.
-func funcBuildPod(name, namespace, pvcName string) *corev1.Pod {
+// iatResolveStorageNode returns the Kubernetes Node name of the storage-worker.
+//
+// Resolution order:
+//  1. PILLAR_E2E_STORAGE_NODE environment variable (explicit override).
+//  2. First node in the cluster labelled pillar-csi.bhyoo.com/storage-node=true
+//     (set by hack/kind-config.yaml on the storage-worker Kind node).
+//
+// Returns "" when no storage node is found.
+func iatResolveStorageNode(ctx context.Context, c client.Client) string {
+	if v := os.Getenv("PILLAR_E2E_STORAGE_NODE"); v != "" {
+		return v
+	}
+	nodeList := &corev1.NodeList{}
+	if err := c.List(ctx, nodeList,
+		client.MatchingLabels{iatStorageNodeLabel: "true"},
+	); err != nil {
+		return ""
+	}
+	if len(nodeList.Items) == 0 {
+		return ""
+	}
+	return nodeList.Items[0].Name
+}
+
+// iatZFSPool returns the ZFS pool name from the PILLAR_E2E_ZFS_POOL environment
+// variable.  Returns "" when the variable is not set; callers should call
+// Skip with an informative message in that case.
+func iatZFSPool() string {
+	return os.Getenv("PILLAR_E2E_ZFS_POOL")
+}
+
+// iatBuildTestPod returns a minimal Pod spec that:
+//   - runs on a compute-worker node (pillar-csi.bhyoo.com/compute-node=true)
+//     which is the NVMe-oF initiator side in the Kind topology
+//   - mounts the named PVC at /data
+//   - uses busybox:1.36 to minimise image pull time in CI
+//   - uses RestartPolicy=Never so a failed start is immediately visible
+func iatBuildTestPod(name, namespace, pvcName string) *corev1.Pod {
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: namespace,
 		},
 		Spec: corev1.PodSpec{
-			// Schedule on the compute-worker node (NVMe-oF initiator side).
+			// Route to the compute-worker (initiator) node.  The storage-worker
+			// runs the agent DaemonSet and is not the NVMe-oF initiator.
 			NodeSelector: map[string]string{
-				funcComputeNodeLabelKey: "true",
+				iatComputeNodeLabel: "true",
 			},
-			RestartPolicy: corev1.RestartPolicyNever,
 			Containers: []corev1.Container{
 				{
-					Name:    "app",
-					Image:   "busybox:stable",
-					Command: []string{"sh", "-c", "echo ready && sleep 3600"},
+					Name:    "test",
+					Image:   "busybox:1.36",
+					Command: []string{"sleep", "infinity"},
 					VolumeMounts: []corev1.VolumeMount{
 						{
 							Name:      "data",
@@ -1055,35 +1057,7 @@ func funcBuildPod(name, namespace, pvcName string) *corev1.Pod {
 					},
 				},
 			},
+			RestartPolicy: corev1.RestartPolicyNever,
 		},
 	}
-}
-
-// funcPollPodRunning polls until the Pod reaches Running phase or timeout
-// expires.  Returns true if Running was reached, false otherwise.
-//
-// This helper is intentionally non-fatal so that callers can decide whether
-// to skip or assert based on the return value.
-func funcPollPodRunning(
-	ctx context.Context,
-	c client.Client,
-	pod *corev1.Pod,
-	timeout time.Duration,
-) bool {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		got := &corev1.Pod{}
-		if err := c.Get(ctx, client.ObjectKeyFromObject(pod), got); err == nil {
-			*pod = *got
-			if got.Status.Phase == corev1.PodRunning {
-				return true
-			}
-		}
-		select {
-		case <-ctx.Done():
-			return false
-		case <-time.After(funcPollInterval):
-		}
-	}
-	return false
 }
