@@ -224,7 +224,9 @@ node:
       tag: "1.36"
       pullPolicy: ""
     # -- Kernel modules to load. Failures are silently ignored (best-effort).
+    # nvme_fabrics must be listed before nvme_tcp (it is a dependency).
     modules:
+      - nvme_fabrics
       - nvme_tcp
       - iscsi_tcp
       - nfs
