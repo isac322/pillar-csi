@@ -11,7 +11,7 @@
 - 실제 커널 모듈, 실제 ZFS, 실제 NVMe-oF 장치를 요구하는 테스트는
   별도로 표시하고 현실적인 인프라 요구사항을 함께 기술한다.
 
-**총 테스트 케이스: 71** (인프로세스 68개 + 클러스터 레벨 3개)
+**총 테스트 케이스: 87** (인프로세스 84개 + 클러스터 레벨 3개)
 
 ---
 
@@ -338,6 +338,74 @@ CSI NodeServer → mockCSIConnector (NVMe-oF 스텁)
 
 ---
 
+### E3.11 NodeStageVolume — 파일시스템 타입별 동작
+
+**설명:** `NodeStageVolume`은 `VolumeCapability.MountVolume.FsType` 필드를
+`FormatAndMount`에 그대로 전달해야 한다. 다양한 파일시스템 타입에서 동일한
+흐름이 동작하는지 확인한다.
+
+| # | 테스트 함수 | 설명 | 설정 | 기대 결과 |
+|---|------------|------|------|----------|
+| 72 | `TestCSINode_StageVolume_XFS` | `fsType=xfs`로 NodeStageVolume 호출 시 FormatAndMount에 "xfs" 전달됨 | mountVolumeCapability("xfs", SINGLE_NODE_WRITER); mockConnector.DevicePath="/dev/nvme3n1" | FormatAndMount 1회; FsType="xfs"; 성공 |
+| 73 | `TestCSINode_StageVolume_DefaultFilesystem` | `fsType=""` (빈 문자열) 시 기본 파일시스템(ext4)으로 포맷 | mountVolumeCapability("", SINGLE_NODE_WRITER) | FormatAndMount 1회; FsType="" 또는 "ext4"; 성공 |
+| 74 | `TestCSINode_StageVolume_BlockAccessNoFormatAndMount` | 블록 접근 모드에서 FormatAndMount가 호출되지 않음 (블록 디바이스는 파일시스템 포맷 불필요) | blockVolumeCapability(SINGLE_NODE_WRITER) | FormatAndMount 0회; Mount 1회 (bind); 성공 |
+
+---
+
+### E3.12 NodeStageVolume — NVMe-oF 어태치(Attach) 파라미터 상세 검증
+
+**설명:** CSI Controller가 생성한 VolumeContext(NQN, address, port)가
+NodeStageVolume에서 NVMe-oF Connect 호출에 정확하게 전달되는지 검증한다.
+이 섹션은 **어태치(NVMe-oF connect) 경계**를 집중적으로 테스트한다.
+
+| # | 테스트 함수 | 설명 | 설정 | 기대 결과 |
+|---|------------|------|------|----------|
+| 75 | `TestCSINode_StageVolume_ConnectParamsForwarded` | VolumeContext의 NQN/address/port가 Connector.Connect 호출 시 정확히 전달됨 | VolumeContext: target_id="nqn.test", address="192.168.0.10", port="4420" | Connector.Connect: SubsysNQN="nqn.test", TrAddr="192.168.0.10", TrSvcID="4420" |
+| 76 | `TestCSINode_StageVolume_CustomPort` | 비표준 포트(4421)도 정확히 전달됨 | VolumeContext.port="4421" | Connector.Connect: TrSvcID="4421" |
+| 77 | `TestCSINode_StageVolume_MissingAddress` | VolumeContext에서 address 키 누락 시 InvalidArgument | VolumeContext에 target_id와 port만 있고 address 없음 | gRPC InvalidArgument; Connect 미호출 |
+| 78 | `TestCSINode_StageVolume_MissingPort` | VolumeContext에서 port 키 누락 시 InvalidArgument | VolumeContext에 target_id와 address만 있고 port 없음 | gRPC InvalidArgument; Connect 미호출 |
+| 79 | `TestCSINode_StageVolume_AttachThenStateSaved` | NVMe-oF 연결 성공 후 상태 파일에 NQN이 저장됨 (재시작 복구 지원) | 정상 NodeStageVolume 호출 | 상태 파일 생성; 상태 파일 내용에 NQN 포함; Connector.Connect 1회 |
+
+---
+
+### E3.13 NodeUnstageVolume — 디태치(Detach) 시나리오 상세
+
+**설명:** NodeUnstageVolume은 NVMe-oF 연결을 해제(디태치)하고 상태 파일을
+제거해야 한다. 다양한 비정상 상황에서도 올바르게 동작해야 한다.
+
+| # | 테스트 함수 | 설명 | 설정 | 기대 결과 |
+|---|------------|------|------|----------|
+| 80 | `TestCSINode_UnstageVolume_DetachCallsDisconnect` | NodeUnstageVolume이 Connector.Disconnect를 정확한 NQN으로 호출 | NodeStageVolume 성공 후 NodeUnstageVolume 호출 | Disconnect 1회; 인수 NQN이 Stage 시 사용한 NQN과 동일 |
+| 81 | `TestCSINode_UnstageVolume_NeverStagedIsIdempotent` | 스테이지된 적 없는 볼륨에 NodeUnstageVolume 호출 시 성공 (멱등성) | 사전 NodeStageVolume 없이 NodeUnstageVolume 직접 호출 | 성공; Disconnect 0회; Unmount 0회 |
+| 82 | `TestCSINode_UnstageVolume_DetachFailsOnDisconnectError` | Connector.Disconnect 실패 시 gRPC Internal 반환 | NodeStage 성공 후 DisconnectErr 주입 | gRPC Internal; 상태 파일 미제거 (정리 실패 명시) |
+| 83 | `TestCSINode_UnstageVolume_StateFileRemovedAfterSuccessfulDetach` | 정상 디태치 후 상태 파일 제거 확인 | NodeStage → NodeUnstage 순서 | NodeUnstage 성공 후 StateDir에 *.json 파일 0개 |
+
+---
+
+### E3.14 NodePublishVolume — 다중 타깃 마운트
+
+**설명:** 하나의 스테이지된 볼륨(하나의 NVMe-oF 연결)에서 여러 컨테이너 타깃
+경로로 바인드 마운트를 생성하는 시나리오를 검증한다.
+
+| # | 테스트 함수 | 설명 | 설정 | 기대 결과 |
+|---|------------|------|------|----------|
+| 84 | `TestCSINode_PublishVolume_MultipleTargets` | 동일 스테이징 경로에서 두 타깃 경로로 NodePublishVolume 각각 성공 | NodeStage 1회; NodePublish×2 (서로 다른 targetPath) | 두 Mount 호출 모두 성공; source는 동일 stagingPath; target은 각각 다름 |
+| 85 | `TestCSINode_PublishVolume_UnpublishOneKeepsOther` | 두 타깃 중 하나 NodeUnpublish 시 나머지 마운트는 유지됨 | NodePublish×2 후 NodeUnpublish×1 | Unmount 1회; 남은 타깃 경로는 여전히 마운트 상태; 스테이징 경로도 마운트 유지 |
+
+---
+
+### E3.15 NodePublishVolume — 접근 모드(Access Mode)별 동작
+
+**설명:** CSI 명세상 접근 모드(AccessMode)에 따라 마운트 옵션이 달라져야 한다.
+SINGLE_NODE_READER_ONLY와 MULTI_NODE_READER_ONLY는 읽기 전용 마운트여야 한다.
+
+| # | 테스트 함수 | 설명 | 설정 | 기대 결과 |
+|---|------------|------|------|----------|
+| 86 | `TestCSINode_PublishVolume_SingleNodeWriter` | SINGLE_NODE_WRITER 접근 모드에서 쓰기 가능 마운트 | AccessMode=SINGLE_NODE_WRITER; Readonly=false | 성공; 마운트 옵션에 "ro" 없음 |
+| 87 | `TestCSINode_PublishVolume_SingleNodeReaderOnly` | SINGLE_NODE_READER_ONLY 접근 모드에서 읽기 전용 마운트 | AccessMode=SINGLE_NODE_READER_ONLY; Readonly=true | 성공; 마운트 옵션에 "ro" 포함 |
+
+---
+
 ## E4: 교차-컴포넌트 CSI 라이프사이클
 
 **테스트 유형:** A (인프로세스 E2E) ✅ CI 실행 가능
@@ -578,6 +646,11 @@ go test ./test/e2e/ -tags=e2e -v -run TestE2E
 | F5 | `TestKubernetes_VolumeExpansion` | 위와 동일 | 실행 중인 Pod의 볼륨 온라인 확장 |
 | F6 | `TestKubernetes_NodeFailover` | 다중 노드 클러스터 | 스토리지 노드 재시작 후 agent ReconcileState 자동 복구 |
 | F7 | `TestRealMTLS_CertRotation` | cert-manager, 실제 TLS 인증서 갱신 주기 | mTLS 인증서 자동 갱신 후 연결 유지 |
+| F8 | `TestRealNode_NodeStageVolume_ActualMount` | 실제 NVMe-oF 디바이스, 루트 권한, `nvme-tcp` 커널 모듈, `mkfs.ext4` | 실제 NodeStageVolume: NVMe-oF connect → /dev/nvme* 블록 디바이스 → ext4 포맷 → 스테이징 경로 마운트 |
+| F9 | `TestRealNode_NodePublishVolume_BindMount` | 위와 동일, 추가로 컨테이너 네임스페이스 | 실제 NodePublishVolume: 스테이징 → 컨테이너 타깃 경로 바인드 마운트 |
+| F10 | `TestRealNode_NodeUnstageVolume_ActualDetach` | 위와 동일 | 실제 NodeUnstageVolume: 마운트 해제 → nvme disconnect → /dev/nvme* 디바이스 노드 제거 확인 |
+| F11 | `TestRealNode_NodeStageVolume_DeviceAppearDelay` | 실제 NVMe-oF 대상, udev 지연 환경 | NVMe connect 후 /dev/nvme* 노드가 수 초 후에 나타나는 환경에서 폴링 로직 검증 |
+| F12 | `TestRealNode_MultiPathAttach` | 다중 네트워크 인터페이스, multipath 설정 | 동일 NVMe-oF 대상에 두 경로 연결 후 NodeStageVolume에서 올바른 디바이스 선택 |
 
 ---
 
@@ -599,8 +672,20 @@ go test ./test/e2e/ -v -run TestCSIController_DeleteVolume
 # E2: Controller 전체
 go test ./test/e2e/ -v -run TestCSIController
 
-# E3: Node 전체
+# E3: Node 전체 (E3.1–E3.15 포함)
 go test ./test/e2e/ -v -run TestCSINode
+
+# E3.11: 파일시스템 타입별 동작
+go test ./test/e2e/ -v -run TestCSINode_StageVolume
+
+# E3.12: NVMe-oF Attach 파라미터 검증
+go test ./test/e2e/ -v -run TestCSINode_StageVolume_Connect
+
+# E3.13: NodeUnstage/Detach 시나리오
+go test ./test/e2e/ -v -run TestCSINode_UnstageVolume
+
+# E3.14–E3.15: NodePublish 다중 타깃 및 접근 모드
+go test ./test/e2e/ -v -run TestCSINode_PublishVolume
 
 # E4+E5: Lifecycle + Ordering
 go test ./test/e2e/ -v -run TestCSILifecycle
