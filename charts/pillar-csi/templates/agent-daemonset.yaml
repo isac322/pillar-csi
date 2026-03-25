@@ -1,0 +1,129 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "pillar-csi.fullname" . }}-agent
+  namespace: {{ include "pillar-csi.namespace" . }}
+  labels:
+    {{- include "pillar-csi.componentLabels" (dict "root" . "component" "agent") | nindent 4 }}
+  {{- with .Values.agent.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "pillar-csi.componentSelectorLabels" (dict "root" . "component" "agent") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "pillar-csi.componentSelectorLabels" (dict "root" . "component" "agent") | nindent 8 }}
+        {{- with .Values.agent.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.agent.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      # hostNetwork MUST remain false — gRPC is exposed via hostPort only (PRD §2.4).
+      hostNetwork: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "pillar-csi.agentServiceAccountName" . }}
+      # ── Init containers ────────────────────────────────────────────────────
+      # Loads target kernel modules. Failures are silently ignored (best-effort):
+      # the pod does NOT fail to start if a module cannot be loaded.
+      initContainers:
+        - name: modprobe
+          image: {{ include "pillar-csi.image" (dict "image" .Values.agent.initModprobe.image "defaultTag" .Values.agent.initModprobe.image.tag) }}
+          imagePullPolicy: {{ include "pillar-csi.imagePullPolicy" (dict "image" .Values.agent.initModprobe.image "global" .Values.imagePullPolicy) }}
+          # Run modprobe for each module; || true ensures the init container
+          # always exits 0 so the pod is not blocked on module-load failure.
+          command:
+            - /bin/sh
+            - -c
+            - |
+              {{- range .Values.agent.initModprobe.modules }}
+              modprobe {{ . }} || true
+              {{- end }}
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: lib-modules
+              mountPath: /lib/modules
+              readOnly: true
+          resources:
+            {{- toYaml .Values.agent.initModprobe.resources | nindent 12 }}
+      # ── Main containers ────────────────────────────────────────────────────
+      containers:
+        - name: agent
+          image: {{ include "pillar-csi.image" (dict "image" .Values.agent.image "defaultTag" .Chart.AppVersion) }}
+          imagePullPolicy: {{ include "pillar-csi.imagePullPolicy" (dict "image" .Values.agent.image "global" .Values.imagePullPolicy) }}
+          ports:
+            - name: grpc
+              containerPort: {{ .Values.agent.grpcPort }}
+              # Expose gRPC on the node's IP without hostNetwork (PRD §2.4).
+              {{- if .Values.agent.hostPort }}
+              hostPort: {{ .Values.agent.hostPort }}
+              {{- end }}
+              protocol: TCP
+          securityContext:
+            # CAP_SYS_ADMIN is required for NVMe-oF / iSCSI target management
+            # (configfs writes, block device operations).
+            capabilities:
+              add:
+                - SYS_ADMIN
+            privileged: false
+            allowPrivilegeEscalation: true
+          {{- with .Values.agent.extraArgs }}
+          args:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            {{- with .Values.agent.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          volumeMounts:
+            # configfs — required for NVMe-oF target configuration via nvmet.
+            - name: sys-kernel-config
+              mountPath: /sys/kernel/config
+            # /dev — required for block device operations (target backstores).
+            - name: dev
+              mountPath: /dev
+          resources:
+            {{- toYaml .Values.agent.resources | nindent 12 }}
+      # ── Volumes ────────────────────────────────────────────────────────────
+      volumes:
+        # /sys/kernel/config — configfs filesystem for NVMe-oF target management.
+        - name: sys-kernel-config
+          hostPath:
+            path: /sys/kernel/config
+            type: DirectoryOrCreate
+        # /dev — block device nodes needed for target backstores.
+        - name: dev
+          hostPath:
+            path: /dev
+            type: Directory
+        # /lib/modules — read-only access for the modprobe init container.
+        - name: lib-modules
+          hostPath:
+            path: /lib/modules
+            type: Directory
+      # ── Scheduling ─────────────────────────────────────────────────────────
+      # Run only on nodes labelled as storage nodes.
+      nodeSelector:
+        {{- toYaml .Values.agent.nodeSelector | nindent 8 }}
+      {{- with .Values.agent.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
