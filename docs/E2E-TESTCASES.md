@@ -2173,3 +2173,571 @@ echo 1 | sudo tee /sys/kernel/config/nvmet/subsystems/${NQN}/attr_allow_any_host
 | F10 | `TestRealNode_NodeUnstageVolume_ActualDetach` | 실제 nvme disconnect + udev |
 | F11 | `TestRealNode_NodeStageVolume_DeviceAppearDelay` | 실제 udev 지연 환경 |
 | F24 | `TestRealNode_ConcurrentStageUnstage_SameVolume` | 실제 NVMe-oF 디바이스 + 커널 레벨 레이스 컨디션 검증 |
+
+---
+
+## 부록: Mock Agent 모드 — CI에서 CSI 에이전트 시뮬레이션
+
+### 개요
+
+pillar-csi의 인프로세스 E2E 테스트(유형 A)는 실제 `pillar-agent` 바이너리 없이
+CSI 컨트롤러와 노드 서버의 **에이전트 연동 경로**를 검증한다. 이를 위해
+두 종류의 Mock Agent를 사용한다:
+
+| Mock 컴포넌트 | 역할 | 사용 위치 | CI 실행 가능 |
+|-------------|------|----------|:-----------:|
+| `mockAgentServer` | CSI ControllerServer가 다이얼하는 programmable gRPC 서버 더블 | E1–E8, E11–E17 | ✅ |
+| `agentE2EMockBackend` | agent.Server 내부의 실제 gRPC 리스너에 주입된 mock 백엔드 | E9 | ✅ |
+
+이 두 컴포넌트는 서로 다른 레이어를 대체한다:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  유형 A 인프로세스 E2E — 컴포넌트 관계도                                      │
+│                                                                             │
+│  ┌──────────────────────────┐       실제 gRPC (localhost:0)                  │
+│  │  CSI ControllerServer    │ ─────────────────────────────► mockAgentServer │
+│  │  (실제 코드)              │       ← E1–E8, E11–E17에서 사용               │
+│  └──────────────────────────┘                                               │
+│                                                                             │
+│  ┌──────────────────────────┐       실제 gRPC (localhost:0)                  │
+│  │  agentv1 gRPC 클라이언트  │ ─────────────────────────────► agent.Server   │
+│  │  (테스트 코드 직접 호출)   │                                │ (실제 코드)  │
+│  └──────────────────────────┘                                │              │
+│                                                              ▼              │
+│                                                    agentE2EMockBackend      │
+│                                                    (mock ZFS backend)       │
+│                                                    ← E9에서 사용            │
+│                                                    t.TempDir() = configfs   │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**핵심 원칙:**
+- `mockAgentServer`는 실제 agent.Server **전체를 대체**한다. CSI 컨트롤러가
+  에이전트 gRPC 서버에 연결하는 것처럼 보이지만, 실제로는 테스트 내부의
+  programmable 스텁이다.
+- `agentE2EMockBackend`는 agent.Server 내부의 **ZFS 백엔드만 대체**한다.
+  실제 agent.Server 코드(gRPC 직렬화, configfs 조작 로직)가 실행된다.
+
+---
+
+### Mock Agent 유형 1: `mockAgentServer`
+
+#### 목적
+
+CSI ControllerServer가 AgentService gRPC를 호출하는 경로를 검증한다.
+실제 pillar-agent 프로세스, ZFS zvol, NVMe-oF 커널 모듈이 **전혀 불필요**하다.
+
+#### 위치
+
+```
+test/e2e/csi_helpers_test.go
+```
+
+#### 활성화 방법
+
+`mockAgentServer`는 `csiControllerE2EEnv`(및 `csiLifecycleEnv`)를 생성하면
+자동으로 시작된다. 별도의 빌드 태그나 환경 변수가 필요 없다:
+
+```go
+// csiControllerE2EEnv 생성 시 내부적으로 mockAgentServer가 시작됨
+env := newCSIControllerE2EEnv(t, "storage-1")
+
+// env.AgentMock 을 통해 동작을 설정할 수 있음
+env.AgentMock.CreateVolumeDevicePath = "/dev/zvol/tank/my-pvc"
+env.AgentMock.CreateVolumeCapacityBytes = 10 << 30
+```
+
+`t.Cleanup`이 등록되어 테스트 종료 시 gRPC 서버가 자동으로 중지된다.
+
+#### 구조
+
+```go
+type mockAgentServer struct {
+    agentv1.UnimplementedAgentServiceServer  // 미구현 RPC는 Unimplemented 반환
+
+    mu sync.Mutex  // 동시 호출 보호
+
+    // ── 주입 가능한 오류 ──────────────────────────────────────────────────
+    CreateVolumeErr   error  // CreateVolume RPC가 반환할 오류
+    DeleteVolumeErr   error  // DeleteVolume RPC가 반환할 오류
+    ExpandVolumeErr   error  // ExpandVolume RPC가 반환할 오류
+    ExportVolumeErr   error  // ExportVolume RPC가 반환할 오류
+    UnexportVolumeErr error  // UnexportVolume RPC가 반환할 오류
+    AllowInitiatorErr error  // AllowInitiator RPC가 반환할 오류
+    DenyInitiatorErr  error  // DenyInitiator RPC가 반환할 오류
+
+    // ── 주입 가능한 응답 ──────────────────────────────────────────────────
+    CreateVolumeDevicePath    string           // CreateVolume 응답의 DevicePath
+    CreateVolumeCapacityBytes int64            // 0이면 요청 용량을 그대로 반환
+    ExportVolumeInfo          *agentv1.ExportInfo  // nil이면 기본값 사용
+    ExpandVolumeCapacityBytes int64            // 0이면 요청 용량을 그대로 반환
+
+    // ── 호출 기록 슬라이스 ────────────────────────────────────────────────
+    CreateVolumeCalls   []agentCreateVolumeCall
+    DeleteVolumeCalls   []agentDeleteVolumeCall
+    ExpandVolumeCalls   []agentExpandVolumeCall
+    ExportVolumeCalls   []agentExportVolumeCall
+    UnexportVolumeCalls []agentUnexportVolumeCall
+    AllowInitiatorCalls []agentAllowInitiatorCall
+    DenyInitiatorCalls  []agentDenyInitiatorCall
+}
+```
+
+#### 기본값
+
+`newMockAgentServer()`가 반환하는 기본 설정:
+
+| 필드 | 기본값 | 의미 |
+|------|--------|------|
+| `CreateVolumeDevicePath` | `"/dev/test-device"` | 생성된 볼륨의 블록 디바이스 경로 |
+| `ExportVolumeInfo.TargetId` | `"nqn.2026-01.com.bhyoo.pillar-csi:test-volume"` | NVMe-oF 서브시스템 NQN |
+| `ExportVolumeInfo.Address` | `"127.0.0.1"` | NVMe-oF 타깃 IP 주소 |
+| `ExportVolumeInfo.Port` | `4420` | NVMe-oF TCP 포트 |
+| `ExportVolumeInfo.VolumeRef` | `"test-volume"` | 볼륨 참조 이름 |
+| 모든 `*Err` 필드 | `nil` | 오류 없음 (정상 경로) |
+| `CreateVolumeCapacityBytes` | `0` (요청 값 에코) | 요청한 용량을 그대로 반환 |
+| `ExpandVolumeCapacityBytes` | `0` (요청 값 에코) | 요청한 용량을 그대로 반환 |
+
+#### 설정 예시
+
+**오류 시나리오 주입:**
+
+```go
+env := newCSIControllerE2EEnv(t, "storage-1")
+
+// CreateVolume이 ResourceExhausted 오류를 반환하도록 설정
+env.AgentMock.CreateVolumeErr = status.Errorf(
+    codes.ResourceExhausted, "out of space on pool tank")
+
+// CSI CreateVolume 호출 → agent.CreateVolume 실패 → CSI 오류 전파
+resp, err := env.Controller.CreateVolume(ctx, &csi.CreateVolumeRequest{
+    Name:               "pvc-test",
+    Parameters:         env.defaultCreateVolumeParams(),
+    VolumeCapabilities: defaultVolumeCapabilities(),
+})
+// err != nil; agent 오류가 CSI 상태 코드로 매핑됨
+```
+
+**사용자 정의 응답 설정:**
+
+```go
+env := newCSIControllerE2EEnv(t, "storage-1")
+
+// 특정 NQN, 주소, 포트로 ExportVolume 응답 설정
+env.AgentMock.ExportVolumeInfo = &agentv1.ExportInfo{
+    TargetId:  "nqn.2026-01.com.bhyoo.pillar-csi:tank.pvc-custom",
+    Address:   "10.0.1.5",
+    Port:      4421,
+    VolumeRef: "tank/pvc-custom",
+}
+
+// CreateVolume 후 VolumeContext에 위 NQN/Address/Port가 포함됨
+resp, err := env.Controller.CreateVolume(ctx, ...)
+// resp.Volume.VolumeContext["target_id"] == "nqn.2026-01...pvc-custom"
+// resp.Volume.VolumeContext["address"] == "10.0.1.5"
+// resp.Volume.VolumeContext["port"] == "4421"
+```
+
+**호출 기록 검증:**
+
+```go
+env := newCSIControllerE2EEnv(t, "storage-1")
+
+// CreateVolume 호출
+_, _ = env.Controller.CreateVolume(ctx, ...)
+
+// agent.CreateVolume 이 정확히 1회 호출됐는지 검증
+if len(env.AgentMock.CreateVolumeCalls) != 1 {
+    t.Errorf("agent.CreateVolume 호출 횟수 = %d, 기대 = 1",
+        len(env.AgentMock.CreateVolumeCalls))
+}
+
+// 호출 인수 검증
+call := env.AgentMock.CreateVolumeCalls[0]
+if call.VolumeID != "tank/pvc-test" {
+    t.Errorf("VolumeID = %q, 기대 = %q", call.VolumeID, "tank/pvc-test")
+}
+```
+
+**라이프사이클 테스트에서 공유 상태 머신과 함께 사용:**
+
+```go
+// csiLifecycleEnv는 컨트롤러와 노드가 동일한 VolumeStateMachine을 공유하며,
+// 컨트롤러 쪽의 mockAgentServer가 ExportVolumeInfo를 반환하면
+// 그 NQN/Address/Port가 NodeStageVolume에 VolumeContext로 전달됨
+env := newCSILifecycleEnvWithSM(t, "storage-1", "worker-1")
+
+// env.AgentMock.ExportVolumeInfo는 newCSILifecycleEnvWithSM 내부에서
+// 라이프사이클 테스트 상수로 미리 설정됨:
+//   TargetId  = lifecycleTestNQN
+//   Address   = lifecycleTestAddress
+//   Port      = lifecycleTestPort
+```
+
+#### `mockAgentServer`가 구현하는 RPC
+
+| RPC | 구현 | 동작 |
+|-----|------|------|
+| `CreateVolume` | ✅ | `CreateVolumeErr` 반환 또는 `CreateVolumeDevicePath`/`CapacityBytes` 포함 응답 |
+| `DeleteVolume` | ✅ | `DeleteVolumeErr` 반환 또는 빈 성공 응답 |
+| `ExpandVolume` | ✅ | `ExpandVolumeErr` 반환 또는 `ExpandVolumeCapacityBytes` 포함 응답 |
+| `ExportVolume` | ✅ | `ExportVolumeErr` 반환 또는 `ExportVolumeInfo` 포함 응답 |
+| `UnexportVolume` | ✅ | `UnexportVolumeErr` 반환 또는 빈 성공 응답 |
+| `AllowInitiator` | ✅ | `AllowInitiatorErr` 반환 또는 빈 성공 응답 |
+| `DenyInitiator` | ✅ | `DenyInitiatorErr` 반환 또는 빈 성공 응답 |
+| `GetCapabilities` | ❌ | `codes.Unimplemented` (UnimplementedAgentServiceServer 기본) |
+| `HealthCheck` | ❌ | `codes.Unimplemented` (CSI 컨트롤러 테스트에 불필요) |
+| `ReconcileState` | ❌ | `codes.Unimplemented` (CSI 컨트롤러 테스트에 불필요) |
+| `ListVolumes` | ❌ | `codes.Unimplemented` |
+| `ListExports` | ❌ | `codes.Unimplemented` |
+| `GetCapacity` | ❌ | `codes.Unimplemented` |
+
+#### 피델리티 제한
+
+`mockAgentServer`는 실제 pillar-agent 대비 아래 항목을 **시뮬레이션하지 않는다**:
+
+| 항목 | 이유 |
+|------|------|
+| 실제 ZFS zvol 생성/삭제 | mock은 사전 설정된 응답 필드만 반환 |
+| 실제 configfs NVMe-oF 서브시스템 생성 | ExportVolumeInfo는 하드코딩된 테스트 값 |
+| 실제 NVMe 접근 제어 (ACL) | AllowInitiator/DenyInitiator는 콜 기록만 |
+| 볼륨 상태 유지 | 동일 볼륨 ID에 대한 중복 생성 감지 없음 |
+| 풀 용량 계산 | GetCapacity 미구현 |
+| 에이전트 재시작 복구 (ReconcileState) | 미구현 |
+| 실제 gRPC 재시도/백오프 | 즉시 응답; 연결 오류 시뮬레이션 없음 |
+
+**단, 실제와 동일한 항목:**
+- 실제 TCP gRPC 리스너(localhost:0)를 통해 연결하므로 **gRPC 직렬화/역직렬화**가 실제와 동일
+- `sync.Mutex`로 보호되므로 **동시 호출**이 안전하게 기록됨
+- gRPC 상태 코드가 직접 반환되므로 **오류 코드 매핑**이 검증됨
+
+---
+
+### Mock Agent 유형 2: `agentE2EMockBackend`
+
+#### 목적
+
+실제 `agent.Server` 코드(gRPC 직렬화, configfs 조작 로직, NQN 생성 로직)를
+유지하면서 **ZFS 백엔드만 대체**한다. E9 섹션의 Agent gRPC E2E 테스트에서
+사용된다.
+
+#### 위치
+
+```
+test/e2e/agent_e2e_test.go
+```
+
+#### 활성화 방법
+
+```go
+// 1. mock 백엔드 생성
+mock := &agentE2EMockBackend{
+    devicePath:  "/path/to/fake/device",   // os.Stat이 성공할 실제 파일 경로
+    totalBytes:  10 << 30,                 // HealthCheck/GetCapacity 응답용
+    availBytes:  8 << 30,
+}
+
+// 2. agentE2EEnv 생성 (내부적으로 실제 gRPC 서버 시작)
+env := newAgentE2EEnv(t, mock)
+
+// 3. 실제 gRPC 클라이언트로 호출
+resp, err := env.client.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
+    VolumeId:      "tank/pvc-test",
+    CapacityBytes: 1 << 30,
+})
+```
+
+`t.Cleanup`이 등록되어 테스트 종료 시 gRPC 서버와 클라이언트 연결이
+자동으로 종료된다.
+
+#### 구조
+
+```go
+type agentE2EMockBackend struct {
+    // 응답 값
+    devicePath  string  // Create() 및 DevicePath()가 반환할 경로
+    totalBytes  int64   // Capacity() 응답의 총 용량
+    availBytes  int64   // Capacity() 응답의 가용 용량
+
+    // 주입 가능한 오류 (nil = 성공)
+    createErr   error   // Create() 오류
+    deleteErr   error   // Delete() 오류
+    expandErr   error   // Expand() 오류
+    capacityErr error   // Capacity() 오류
+}
+```
+
+#### 환경 구조 (`agentE2EEnv`)
+
+```go
+type agentE2EEnv struct {
+    client     agentv1.AgentServiceClient  // 실제 gRPC 클라이언트
+    cfgRoot    string                      // t.TempDir() = fake configfs 루트
+    grpcServer *grpc.Server               // 실제 gRPC 서버 (localhost:0)
+    conn       *grpc.ClientConn           // 클라이언트 연결
+}
+```
+
+#### 설정 예시
+
+**정상 경로 (볼륨 라이프사이클 검증):**
+
+```go
+// 가짜 디바이스 파일 생성 (os.Stat이 통과하도록)
+fakeDevPath := createFakeDevice(t, "zvol-test")
+
+mock := &agentE2EMockBackend{
+    devicePath: fakeDevPath,   // ExportVolume의 WaitForDevice가 이 경로를 stat함
+    totalBytes: 10 << 30,
+    availBytes: 8 << 30,
+}
+env := newAgentE2EEnv(t, mock)
+
+// 전체 라이프사이클: CreateVolume → ExportVolume → ... → DeleteVolume
+```
+
+**오류 시뮬레이션:**
+
+```go
+mock := &agentE2EMockBackend{
+    createErr: errors.New("out of space"),  // ZFS 풀 가득 참
+}
+env := newAgentE2EEnv(t, mock)
+
+_, err := env.client.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
+    VolumeId:      "tank/pvc-full",
+    CapacityBytes: 100 << 30,
+})
+// err != nil; agent.Server가 백엔드 오류를 gRPC 상태 코드로 변환함
+```
+
+**configfs 상태 검증:**
+
+```go
+mock := &agentE2EMockBackend{devicePath: createFakeDevice(t, "zvol-cfg")}
+env := newAgentE2EEnv(t, mock)
+
+_, _ = env.client.ExportVolume(ctx, &agentv1.ExportVolumeRequest{
+    VolumeId:     "tank/pvc-cfg",
+    DevicePath:   mock.devicePath,
+    ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
+    ExportParams: nvmeofTCPExportParams("127.0.0.1", 4420),
+})
+
+// env.cfgRoot 아래 실제 디렉터리/파일/심볼릭 링크가 생성됨
+nqn := "nqn.2026-01.com.bhyoo.pillar-csi:tank.pvc-cfg"
+subDir := filepath.Join(env.cfgRoot, "nvmet", "subsystems", nqn)
+if _, err := os.Stat(subDir); err != nil {
+    t.Fatalf("configfs 서브시스템 디렉터리 없음: %v", err)
+}
+```
+
+**재조정 복구 시뮬레이션:**
+
+```go
+// 에이전트 재시작 후 상태 복원을 시뮬레이션:
+// 빈 configfs로 새 서버를 시작하고 ReconcileState 호출
+mock := &agentE2EMockBackend{}
+env := newAgentE2EEnv(t, mock)
+
+_, err := env.client.ReconcileState(ctx, &agentv1.ReconcileStateRequest{
+    Volumes: []*agentv1.VolumeDesiredState{
+        {
+            VolumeId:   "tank/pvc-restarted",
+            DevicePath: "/dev/zvol/tank/pvc-restarted",
+            Exports: []*agentv1.ExportDesiredState{{
+                ProtocolType:      agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
+                ExportParams:      nvmeofTCPExportParams("10.0.0.1", 4420),
+                AllowedInitiators: []string{"nqn.2026-01.io.example:host-1"},
+            }},
+        },
+    },
+})
+// configfs에 서브시스템/호스트/ACL이 재생성됨
+```
+
+#### `agentE2EMockBackend`가 구현하는 인터페이스
+
+```go
+type VolumeBackend interface {
+    Create(ctx, volumeID string, capacityBytes int64,
+        params *agentv1.ZfsVolumeParams) (devicePath string, allocatedBytes int64, error)
+    Delete(ctx, volumeID string) error
+    Expand(ctx, volumeID string, requestedBytes int64) (allocatedBytes int64, error)
+    Capacity(ctx) (totalBytes, availBytes int64, error)
+    ListVolumes(ctx) ([]*agentv1.VolumeInfo, error)
+    DevicePath(volumeID string) string
+}
+```
+
+#### 피델리티 제한
+
+`agentE2EMockBackend`는 실제 ZFS 백엔드 대비 아래 항목을 시뮬레이션하지 않는다:
+
+| 항목 | 이유 |
+|------|------|
+| 실제 `zfs create -V` 명령 실행 | `zfs(8)` 명령 없음; `devicePath` 필드 반환 |
+| zvol 크기 반올림 (512B 배수) | 요청 용량을 그대로 반환 |
+| ZFS 풀 존재 여부 검증 | 필드 설정으로만 제어 |
+| `ConflictError` 자동 감지 | `createErr` 수동 설정 필요 |
+| `zpool status` 파싱 | `totalBytes`/`availBytes` 고정 값 |
+| ZFS 스냅샷/클론 지원 | 미구현 |
+| `ListVolumes` 실제 목록 | 항상 빈 슬라이스 반환 |
+
+**단, 실제와 동일한 항목:**
+- `agent.Server` 코드 전체가 실행되므로 **NQN 생성 로직**, **configfs 조작**,
+  **gRPC 오류 매핑**, **ReconcileState 재조정 알고리즘**이 실제와 동일하게 검증됨
+- 실제 gRPC 리스너(localhost:0)를 통해 호출하므로 **직렬화 레이어** 검증됨
+- `t.TempDir()`가 configfs 루트이므로 **configfs 구조 정확성** 검증됨
+
+---
+
+### Mock Agent 선택 가이드
+
+```
+테스트 목적에 따른 Mock Agent 선택:
+
+CSI ControllerServer의 에이전트 호출 경로를 검증하고 싶다
+    → mockAgentServer 사용 (csiControllerE2EEnv)
+    → 이유: 에이전트 동작을 완전 제어하면서 CSI 컨트롤러 로직에 집중
+
+agent.Server의 gRPC 처리 + configfs 조작 로직을 검증하고 싶다
+    → agentE2EMockBackend 사용 (agentE2EEnv)
+    → 이유: agent.Server 실제 코드 실행하면서 ZFS 의존성만 제거
+
+agent.Server의 ZFS 오류 → gRPC 오류 코드 매핑을 검증하고 싶다
+    → agentE2EMockBackend.createErr/deleteErr/... 설정
+    → 이유: 실제 gRPC 레이어를 통해 오류 변환 로직 검증
+
+CSI Controller + Node 전체 라이프사이클을 검증하고 싶다
+    → newCSILifecycleEnvWithSM 사용 (mockAgentServer + 공유 SM)
+    → 이유: 순서 제약(VolumeStateMachine)까지 포함한 통합 검증
+
+agent 재시작 복구(ReconcileState)를 검증하고 싶다
+    → agentE2EMockBackend 사용 (새 agentE2EEnv로 "재시작" 시뮬레이션)
+    → 이유: ReconcileState가 agent.Server 내부에 구현됨
+```
+
+---
+
+### CI에서 Mock Agent 실행 환경 요구사항
+
+두 Mock Agent 모두 **추가 인프라 없이** 표준 CI에서 실행 가능하다.
+
+#### 최소 요구사항
+
+| 항목 | 요구사항 | 설명 |
+|------|---------|------|
+| Go 버전 | 1.22+ | `go test ./test/e2e/ -v` 실행 |
+| 운영체제 | Linux (amd64/arm64) 또는 macOS | tmpfs 디렉터리 지원 필요 |
+| root 권한 | 불필요 | mount(8), modprobe 없음 |
+| 커널 모듈 | 불필요 | nvmet, nvme-tcp 모듈 없음 |
+| 외부 프로세스 | 불필요 | zfs(8), nvme(8) 없음 |
+| 네트워크 | loopback(127.0.0.1)만 사용 | 외부 네트워크 불필요 |
+| 디스크 | 200 MiB 여유 공간 | `t.TempDir()` 임시 파일용 |
+
+#### GitHub Actions 예시 (Mock Agent 모드)
+
+```yaml
+jobs:
+  e2e-mock-agent:
+    name: "In-Process E2E (Mock Agent)"
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache: true
+
+      # mockAgentServer 사용 (E1-E8, E11-E17)
+      - name: Run CSI Controller/Node E2E Tests
+        run: |
+          go test ./test/e2e/ -v -timeout 120s \
+            -run "TestCSI|TestMTLS" \
+            -count=1
+
+      # agentE2EMockBackend 사용 (E9)
+      - name: Run Agent gRPC E2E Tests
+        run: |
+          go test ./test/e2e/ -v -timeout 60s \
+            -run "TestAgent" \
+            -count=1
+```
+
+#### GitLab CI 예시 (Mock Agent 모드)
+
+```yaml
+e2e-mock-agent:
+  stage: test
+  image: golang:1.22-bookworm
+  script:
+    # 빌드 태그 없음 — mock agent 모드가 기본
+    - go test ./test/e2e/ -v -timeout 180s -count=1
+  artifacts:
+    when: always
+    reports:
+      junit: e2e-mock-report.xml
+```
+
+#### 실행 확인
+
+```bash
+# 전체 인프로세스 E2E (mockAgentServer + agentE2EMockBackend 모두 포함)
+go test ./test/e2e/ -v -timeout 180s
+
+# mockAgentServer 사용 테스트만 실행
+go test ./test/e2e/ -v -run "TestCSI|TestMTLS"
+
+# agentE2EMockBackend 사용 테스트만 실행
+go test ./test/e2e/ -v -run "TestAgent"
+
+# 병렬 실행 (-parallel 플래그로 동시성 제어)
+go test ./test/e2e/ -v -parallel 8 -timeout 180s
+
+# 특정 테스트만 실행 (예: 오류 시나리오만)
+go test ./test/e2e/ -v -run "TestCSIController_CreateVolume_Agent"
+go test ./test/e2e/ -v -run "TestAgent_ErrorHandling"
+```
+
+---
+
+### Mock Agent 모드에서 검증 가능한 항목과 불가능한 항목
+
+#### ✅ CI Mock Agent 모드에서 검증 가능한 항목
+
+| 항목 | 사용하는 Mock | 근거 |
+|------|-------------|------|
+| CSI CreateVolume이 agent.CreateVolume + ExportVolume을 올바른 인수로 호출 | mockAgentServer | 콜 기록 슬라이스 검증 |
+| CSI DeleteVolume이 agent.UnexportVolume + DeleteVolume을 올바른 순서로 호출 | mockAgentServer | 콜 기록 + 호출 순서 검증 |
+| agent 오류 코드가 CSI 상태 코드로 정확히 매핑됨 | mockAgentServer | `*Err` 필드 주입 |
+| ExportVolumeInfo의 NQN/Address/Port가 VolumeContext로 전달됨 | mockAgentServer | `ExportVolumeInfo` 설정 |
+| VolumeContext가 NodeStageVolume에 올바르게 전달됨 | mockAgentServer + mockConnector | 공유 VolumeStateMachine |
+| PillarVolume CRD가 정확한 Phase/PartialFailure로 생성됨 | mockAgentServer | fake k8s client |
+| agent.Server의 NQN 생성 로직 (`nqn.2026-01.com.bhyoo.pillar-csi:<pool>.<id>`) | agentE2EMockBackend | 실제 agent.Server 코드 실행 |
+| ExportVolume 후 configfs 디렉터리/파일/심볼릭 링크 구조 | agentE2EMockBackend | `t.TempDir()` fake configfs |
+| ReconcileState가 빈 configfs에서 볼륨 상태를 재구성 | agentE2EMockBackend | 재시작 시뮬레이션 |
+| ZFS 백엔드 오류가 올바른 gRPC 상태 코드로 변환됨 | agentE2EMockBackend | `createErr`/`deleteErr` 주입 |
+| AllowInitiator/DenyInitiator의 allowed_hosts 심볼릭 링크 | agentE2EMockBackend | 실제 agent.Server 코드 |
+| mTLS 연결 (인증서 검증) | mockAgentServer + testcerts | 인메모리 TLS 인증서 |
+| ControllerPublishVolume 멱등성 | mockAgentServer | 동일 요청 재호출 |
+| 동시 CreateVolume 패닉/데드락 없음 | mockAgentServer | 병렬 고루틴 테스트 |
+
+#### ❌ CI Mock Agent 모드에서 검증 불가능한 항목
+
+| 항목 | 이유 | 대안 |
+|------|------|------|
+| 실제 ZFS zvol 생성/조회/삭제 | `zfs(8)` 명령 미실행 | F1 (`TestRealZFS_*`) |
+| ZFS 풀 용량 실제 계산 | mock은 고정 값 반환 | F1 |
+| 실제 NVMe-oF TCP 리스닝 시작 | `nvmet-tcp` 커널 모듈 없음 | F2 (`TestRealNVMeoF_Export`) |
+| 실제 NVMe initiator 연결 | `nvme-tcp` 커널 모듈 없음 | F3 (`TestRealNVMeoF_Connect`) |
+| 실제 `/dev/nvme*` 블록 장치 생성 | NVMe 드라이버 없음 | F3 |
+| 실제 `mount(8)` / `umount(8)` | root 권한 불필요 → 시스템 콜 없음 | F8–F10 |
+| 실제 `mkfs.ext4` / `mkfs.xfs` | 포맷 명령 없음 | F8 |
+| 에이전트 → 컨트롤러 콜백 (gRPC 서버-to-클라이언트) | 현재 Phase 1은 단방향 | 해당 없음 |
+| 실제 Kubernetes PVC 프로비저닝 흐름 | kubectl, external-provisioner 없음 | F4 |
+| 에이전트 재시작 후 nvmet 커널 상태 손실 복구 | in-process 환경에서 커널 재시작 불가 | F6 |
+| 대규모 볼륨 (100개 이상) 프로비저닝 지연 | mock 응답에 실제 처리 시간 없음 | F25 |
+| pillar-agent 바이너리의 신호 처리 (SIGTERM) | in-process 환경 | F5 |
+
