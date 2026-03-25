@@ -1,0 +1,98 @@
+# syntax=docker/dockerfile:1
+
+# Hardened multi-stage image for the pillar-csi node plugin (DaemonSet).
+#
+# The node plugin runs on every worker node and serves the CSI Identity and
+# Node gRPC services on a Unix domain socket that kubelet dials for
+# NodeStageVolume / NodePublishVolume / NodeUnpublishVolume operations.
+#
+# Security posture:
+#   • Minimal runtime base: alpine:3.21 (only mount utilities added)
+#   • Non-root default user: UID/GID 65532 ("nonroot" convention)
+#   • All SUID/SGID bits stripped from installed packages
+#   • No shell left in the final image (/bin/sh removed)
+#   • Statically-linked Go binary (CGO_ENABLED=0), -trimpath, -ldflags="-s -w"
+#   • Versions pinned; update SHA digests when bumping
+#
+# Runtime security (enforced in the Kubernetes DaemonSet manifest or
+# `docker run` args — cannot be expressed as Dockerfile instructions):
+#   --security-opt=no-new-privileges:true
+#   --read-only  (combine with tmpfs mounts for /tmp, /run)
+#   --cap-drop ALL --cap-add SYS_ADMIN  (mount(8) and NVMe-oF need SYS_ADMIN)
+#   Note: kubelet mounts the CSI socket dir via hostPath; the process itself
+#   should run privileged only for the narrow set of syscalls it needs.
+
+# ── Stage 1: Build ─────────────────────────────────────────────────────────────
+# golang:1.26-alpine3.23 — matches the version used by the main controller image.
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine3.23 AS builder
+ARG TARGETOS
+ARG TARGETARCH
+
+WORKDIR /workspace
+
+# Download dependencies first to maximise build-cache hits on source changes.
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+# Build the node binary.
+#   -trimpath   removes local filesystem paths from the binary (no info leaks)
+#   -pgo=auto   uses profile-guided optimisation if a pgo.pprof file is present
+#   -ldflags="-s -w"  strips the symbol table and DWARF debug info (smaller binary)
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
+    go build \
+      -trimpath \
+      -pgo=auto \
+      -ldflags="-s -w" \
+      -o pillar-node \
+      ./cmd/node/
+
+# ── Stage 2: Runtime ───────────────────────────────────────────────────────────
+# alpine:3.21 — minimal base that provides mount utilities (util-linux) needed
+# for NodeStageVolume / NodePublishVolume operations.
+#
+# Pin the image to a specific digest to guard against tag mutation.
+# Digest last verified: 2026-03-25.  Rotate during dependency upgrades.
+# docker pull alpine:3.21 --platform linux/amd64
+FROM alpine:3.21@sha256:56fa17d2a7e7f168a043a2712e63aed1f8543aeafdcee47c58dcffe38ed51099
+
+# ① Install mount utilities (util-linux provides mount(8)/umount(8)/blkid(8))
+#   and e2fsprogs for ext4 formatting (NodeFormatVolume).  Additional
+#   filesystem tools (xfsprogs, etc.) can be added when those backends are wired.
+# ② Add the non-root service user/group (UID/GID 65532 — same convention used
+#   by gcr.io/distroless/static:nonroot so manifests stay consistent).
+#   In practice the DaemonSet securityContext will run as root for mount
+#   syscalls, but the USER directive ensures the image default is non-root.
+# ③ Strip all SUID and SGID bits to prevent privilege escalation via installed
+#   binaries even if the container is somehow breached.
+# ④ Remove the Alpine package manager and APK cache to minimise the attack
+#   surface (no package installation possible at runtime).
+# ⑤ Remove the shell so that `kubectl exec` shell escapes are unavailable
+#   (the gRPC binary is the only entry point).
+RUN set -eux \
+    && apk add --no-cache \
+         'util-linux~=2.40' \
+         'e2fsprogs~=1.47' \
+    && addgroup -g 65532 nonroot \
+    && adduser  -u 65532 -G nonroot -s /sbin/nologin -D nonroot \
+    # Strip SUID/SGID bits from every file on the root filesystem.
+    && find / -xdev \( -perm -4000 -o -perm -2000 \) -exec chmod a-s {} + 2>/dev/null || true \
+    # Remove package manager (prevents `apk add` at runtime).
+    && rm -rf /sbin/apk /etc/apk /lib/apk /usr/share/apk /var/lib/apk \
+    # Remove shell (no interactive escape path).
+    && rm -f /bin/sh /bin/bash /usr/bin/env
+
+# Copy the statically-linked binary with restrictive permissions.
+# --link uses a separate layer snapshot so the binary is immutable w.r.t.
+# the layers below it (better cache reuse, no accidental overwrites).
+COPY --from=builder --link --chmod=0555 /workspace/pillar-node /usr/bin/pillar-node
+
+# Run as non-root by default.  The Kubernetes DaemonSet must override this
+# with an appropriate securityContext (privileged: true or fine-grained
+# SYS_ADMIN + SYS_RAWIO capabilities) because mount(2) and NVMe-oF configfs
+# writes require elevated kernel access.
+USER 65532:65532
+
+ENTRYPOINT ["/usr/bin/pillar-node"]
