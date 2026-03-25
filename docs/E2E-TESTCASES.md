@@ -93,7 +93,7 @@
 - [E21.2–E21.4: 잘못된 CR 웹훅·스키마 검증](#e212-pillartarget-웹훅--불변-필드-수정-거부-type-c--envtest-) _(E21 중 envtest 소섹션)_
 
 ### 카테고리 2 — 클러스터 레벨 E2E 테스트 (유형 B: Kind 클러스터 필요) ⚠️
-> 빌드 태그: `//go:build e2e` | `go test ./test/e2e/ -tags=e2e -v` | 총 3개 테스트 (E10); Helm 설치 검증 10개 테스트 (E25) 추가 예정
+> 빌드 태그: `//go:build e2e` | `go test ./test/e2e/ -tags=e2e -v` | 총 3개 테스트 (E10); Helm 설치 검증 17개 테스트 (E26.1–E26.11, ID 207–231) 포함
 
 - [E10: 클러스터 레벨 E2E 테스트](#e10-클러스터-레벨-e2e-테스트)
 - [E26: Helm 차트 설치 및 릴리스 검증](#e26-helm-차트-설치-및-릴리스-검증)
@@ -107,6 +107,7 @@
   - [E26.8: 중복 설치 시도 오류 검증](#e268-중복-설치-시도-오류-검증)
   - [E26.9: Helm 차트 업그레이드 (helm upgrade)](#e269-helm-차트-업그레이드-helm-upgrade)
   - [E26.10: Helm 차트 설치 해제 및 리소스 정리](#e2610-helm-차트-설치-해제-및-리소스-정리)
+  - [E26.11: Helm 배포 후 전체 파드 Running 상태 종합 검증](#e2611-helm-배포-후-전체-파드-running-상태-종합-검증)
 
 ### 카테고리 3 — 완전 E2E / 수동 스테이징 테스트 (유형 F) ❌
 > 빌드 태그: `//go:build e2e_full` | 실제 ZFS/NVMe-oF 커널 모듈 필요 | 베어메탈/KVM 서버 필요
@@ -3479,6 +3480,246 @@ kubectl get deployment -n pillar-csi-system
 kubectl get crd | grep pillar-csi.bhyoo.com
 # 기대 출력: (CRD 5종 여전히 존재)
 ```
+
+---
+
+### E26.11 Helm 배포 후 전체 파드 Running 상태 종합 검증
+
+> **목적:** Helm `--wait` 완료 후 pillar-csi의 **모든 기대 파드**가 `Running` 상태이고 컨테이너가 `Ready`임을 종합적으로 검증한다.
+> E26.4의 개별 리소스 검증(Deployment availableReplicas, DaemonSet numberReady)과 달리, 이 섹션은 **파드 단위**로 내려가 각 파드의 `status.phase`, 컨테이너별 `ready` 및 재시작 횟수를 개별 검증한다.
+>
+> **CI 실행 가능 여부:** ✅ Kind 클러스터 환경에서 실행 가능 (빌드 태그: `e2e`)
+>
+> **기대 파드 인벤토리 (기본 values, 워커 노드 1개 가정):**
+>
+> | 컴포넌트 | 워크로드 유형 | 기대 파드 수 | 기대 컨테이너 (init 제외) | 비고 |
+> |---------|------------|------------|------------------------|------|
+> | `controller` | Deployment | 1 | 5개: `controller`, `csi-provisioner`, `csi-attacher`, `csi-resizer`, `liveness-probe` | `replicaCount: 1` 기본값 |
+> | `node` | DaemonSet | 노드 수 × 1 | 3개: `node`, `node-driver-registrar`, `liveness-probe` | init: `modprobe` (항상 Succeeded) |
+> | `agent` | DaemonSet | 스토리지 레이블 노드 수 | 1개: `agent` | `pillar-csi.bhyoo.com/storage-node=true` 레이블 노드에만 스케줄; 기본 Kind 환경에서 0개가 정상 |
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| 225 | `TestHelm/전체_파드_Running_상태_종합_검증` | Helm 배포 후 `pillar-csi-system` 네임스페이스의 모든 파드가 `Running` 상태이고 재시작 없음을 종합 검증한다 | Kind 클러스터 실행 중; E26.1(`helm install --wait`) 완료; `kubectl` CLI 접근 가능 | 1) `kubectl get pods -n pillar-csi-system -o json` 실행; 2) 각 파드 `status.phase` 확인; 3) 각 파드의 모든 컨테이너 `ready` 상태 확인; 4) 각 컨테이너 `restartCount` 확인; 5) `status.conditions[type=Ready].status` 확인 | 모든 파드 `status.phase == "Running"`; 모든 컨테이너 `ready == true`; 모든 컨테이너 `restartCount == 0`; 모든 파드 `conditions[Ready].status == "True"` | `CSI-C`, `CSI-N`, `Kubernetes클러스터` |
+| 226 | `TestHelm/컨트롤러_파드_컨테이너_5종_Ready_검증` | controller 파드에 5개 컨테이너(`controller`, `csi-provisioner`, `csi-attacher`, `csi-resizer`, `liveness-probe`)가 모두 `ready`임을 검증한다 | E26.1 완료; controller Deployment `availableReplicas ≥ 1` | 1) `kubectl get pods -n pillar-csi-system -l app.kubernetes.io/component=controller -o json`; 2) 파드 목록에서 첫 번째 파드 선택; 3) `.status.containerStatuses[]` 순회하여 각 `name`, `ready`, `restartCount` 확인 | 컨테이너 수 == 5; 각 컨테이너 이름: `controller`, `csi-provisioner`, `csi-attacher`, `csi-resizer`, `liveness-probe`; 모든 `ready == true`; 모든 `restartCount == 0`; `state.running` 존재 (startedAt 비어 있지 않음) | `CSI-C`, `Kubernetes클러스터` |
+| 227 | `TestHelm/노드_파드_컨테이너_3종_Ready_및_initContainer_Succeeded_검증` | node DaemonSet 파드에 메인 컨테이너 3개와 init 컨테이너 1개(`modprobe`)가 올바른 상태임을 검증한다 | E26.1 완료; node DaemonSet `numberReady ≥ 1`; Kind 클러스터 워커 노드 ≥ 1 | 1) `kubectl get pods -n pillar-csi-system -l app.kubernetes.io/component=node -o json`; 2) 각 파드에 대해: `.status.initContainerStatuses[0]` (modprobe) 상태 확인; 3) `.status.containerStatuses[]` 순회하여 메인 컨테이너 3종 확인 | 파드 수 ≥ 1; 각 파드의 init 컨테이너 `modprobe`: `state.terminated.exitCode == 0` (Succeeded); 메인 컨테이너 수 == 3; 컨테이너 이름: `node`, `node-driver-registrar`, `liveness-probe`; 모든 `ready == true`; 모든 `restartCount == 0` | `CSI-N`, `Kubernetes클러스터` |
+| 228 | `TestHelm/에이전트_DaemonSet_스토리지_레이블_없는_환경에서_파드_미스케줄_검증` | 스토리지 레이블(`pillar-csi.bhyoo.com/storage-node=true`)이 없는 Kind 기본 환경에서 agent 파드가 0개임을 검증한다 | E26.1 완료; Kind 클러스터 노드에 스토리지 레이블 없음 | 1) `kubectl get pods -n pillar-csi-system -l app.kubernetes.io/component=agent -o json`; 2) `.items` 배열 크기 확인; 3) `kubectl get daemonset -n pillar-csi-system -l app.kubernetes.io/component=agent -o jsonpath='{.items[0].status.desiredNumberScheduled}'` 확인 | `items` 배열 길이 == 0 (파드 없음); DaemonSet `.status.desiredNumberScheduled == 0`; DaemonSet 자체는 존재하고 `.status` 필드 유효함 | `Agent`, `Kubernetes클러스터` |
+| 229 | `TestHelm/에이전트_파드_스토리지_레이블_노드에서_Running_검증` | 스토리지 레이블을 부여한 노드에 agent 파드가 스케줄되어 `Running` 상태임을 검증한다 | E26.1 완료; Kind 클러스터 워커 노드 ≥ 1; 해당 노드에 `kubectl label node <node> pillar-csi.bhyoo.com/storage-node=true` 적용됨 | 1) 워커 노드에 스토리지 레이블 적용; 2) `kubectl rollout status daemonset -n pillar-csi-system -l app.kubernetes.io/component=agent --timeout=3m` 대기; 3) `kubectl get pods -n pillar-csi-system -l app.kubernetes.io/component=agent -o json`; 4) 파드 상태 확인 | DaemonSet `desiredNumberScheduled ≥ 1`; agent 파드 수 ≥ 1; 각 파드 `status.phase == "Running"`; init 컨테이너 `modprobe`: `exitCode == 0`; 메인 컨테이너 `agent`: `ready == true`, `restartCount == 0` | `Agent`, `Kubernetes클러스터` |
+| 230 | `TestHelm/파드_Ready_Condition_Timeout_검증` | Helm `--wait --timeout 5m` 완료 후 모든 파드의 `Ready` 조건이 `True`이고, `LastTransitionTime`이 5분 이내임을 검증한다 | E26.1 완료 (`--wait --timeout 5m` 사용) | 1) `kubectl get pods -n pillar-csi-system -o json`; 2) 각 파드의 `.status.conditions[]` 순회하여 `type == "Ready"` 조건 검색; 3) `status`, `lastTransitionTime` 확인 | 모든 파드의 `conditions[Ready].status == "True"`; `lastTransitionTime`이 현재 시각 기준 5분 이내; `ContainersReady` 조건도 `True` | `CSI-C`, `CSI-N`, `Kubernetes클러스터` |
+| 231 | `TestHelm/파드_재시작_없음_5분_관찰_검증` | 모든 파드가 Running 전환 후 5분 동안 재시작 없이 안정적임을 검증한다 | E26.1 완료; 파드 Running 전환 후 5분 경과 | 1) 초기 재시작 횟수 기록: `kubectl get pods -n pillar-csi-system -o jsonpath='{range .items[*]}{.metadata.name}{" "}{range .status.containerStatuses[*]}{.restartCount}{" "}{end}{"\n"}{end}'`; 2) 5분 대기; 3) 재시작 횟수 재확인; 4) 초기 값과 비교 | 5분 후 재시작 횟수 변화 없음 (모든 컨테이너 `ΔrestartCount == 0`); 파드 수 변화 없음 (파드가 새로 생성되거나 종료되지 않음) | `CSI-C`, `CSI-N`, `Kubernetes클러스터` |
+
+> **⚠️ CI 제약 (agent DaemonSet):** Kind 기본 환경에서는 노드에 스토리지 레이블(`pillar-csi.bhyoo.com/storage-node=true`)이 없으므로 agent 파드가 0개 스케줄된다. E228(레이블 없음 검증)은 CI에서 자동 실행 가능하지만, E229(레이블 부여 후 Running 검증)는 Kind 노드에 레이블을 직접 부여하는 추가 셋업이 필요하다.
+
+**종합 검증 스크립트 예시 (kubectl JSON 기반):**
+
+```bash
+#!/bin/bash
+# 모든 파드 상태 종합 검증
+NAMESPACE="pillar-csi-system"
+FAILED=0
+
+echo "=== pillar-csi 파드 Running 상태 종합 검증 ==="
+
+# 1. 모든 파드 목록 및 phase 확인
+kubectl get pods -n "$NAMESPACE" -o json | jq -r '
+  .items[] |
+  {
+    name: .metadata.name,
+    phase: .status.phase,
+    ready: (.status.conditions[] | select(.type=="Ready") | .status),
+    containers: [.status.containerStatuses[]? | {name: .name, ready: .ready, restartCount: .restartCount}]
+  }
+'
+
+# 2. Running이 아닌 파드 검출
+NOT_RUNNING=$(kubectl get pods -n "$NAMESPACE" \
+  -o jsonpath='{range .items[?(@.status.phase!="Running")]}{.metadata.name}{"\n"}{end}')
+
+if [ -n "$NOT_RUNNING" ]; then
+  echo "FAIL: Running이 아닌 파드 발견:"
+  echo "$NOT_RUNNING"
+  FAILED=1
+fi
+
+# 3. ready==false인 컨테이너 검출
+NOT_READY=$(kubectl get pods -n "$NAMESPACE" -o json | jq -r '
+  .items[] | .metadata.name as $pod |
+  .status.containerStatuses[]? |
+  select(.ready == false) |
+  [$pod, .name, "ready=false"] | join("  ")
+')
+
+if [ -n "$NOT_READY" ]; then
+  echo "FAIL: ready==false 컨테이너 발견:"
+  echo "$NOT_READY"
+  FAILED=1
+fi
+
+# 4. 재시작 횟수 > 0인 컨테이너 검출
+RESTARTED=$(kubectl get pods -n "$NAMESPACE" -o json | jq -r '
+  .items[] | .metadata.name as $pod |
+  .status.containerStatuses[]? |
+  select(.restartCount > 0) |
+  [$pod, .name, ("restartCount=" + (.restartCount | tostring))] | join("  ")
+')
+
+if [ -n "$RESTARTED" ]; then
+  echo "WARN: restartCount > 0인 컨테이너 발견 (0 기대):"
+  echo "$RESTARTED"
+  FAILED=1
+fi
+
+# 5. 컨트롤러 파드 컨테이너 5종 확인
+CTRL_CONTAINERS=$(kubectl get pods -n "$NAMESPACE" \
+  -l app.kubernetes.io/component=controller \
+  -o jsonpath='{range .items[0].status.containerStatuses[*]}{.name}{"\n"}{end}' | sort)
+EXPECTED_CTRL="controller\ncsi-attacher\ncsi-provisioner\ncsi-resizer\nliveness-probe"
+if [ "$(echo -e "$EXPECTED_CTRL" | sort)" != "$CTRL_CONTAINERS" ]; then
+  echo "FAIL: 컨트롤러 컨테이너 목록 불일치"
+  echo "기대: $(echo -e "$EXPECTED_CTRL" | sort)"
+  echo "실제: $CTRL_CONTAINERS"
+  FAILED=1
+fi
+
+# 6. 노드 파드 컨테이너 3종 + init 1종 확인
+NODE_CONTAINERS=$(kubectl get pods -n "$NAMESPACE" \
+  -l app.kubernetes.io/component=node \
+  -o jsonpath='{range .items[0].status.containerStatuses[*]}{.name}{"\n"}{end}' | sort)
+EXPECTED_NODE="liveness-probe\nnode\nnode-driver-registrar"
+if [ "$(echo -e "$EXPECTED_NODE" | sort)" != "$NODE_CONTAINERS" ]; then
+  echo "FAIL: 노드 컨테이너 목록 불일치"
+  echo "기대: $(echo -e "$EXPECTED_NODE" | sort)"
+  echo "실제: $NODE_CONTAINERS"
+  FAILED=1
+fi
+
+NODE_INIT=$(kubectl get pods -n "$NAMESPACE" \
+  -l app.kubernetes.io/component=node \
+  -o jsonpath='{.items[0].status.initContainerStatuses[0].name}')
+NODE_INIT_EXIT=$(kubectl get pods -n "$NAMESPACE" \
+  -l app.kubernetes.io/component=node \
+  -o jsonpath='{.items[0].status.initContainerStatuses[0].state.terminated.exitCode}')
+if [ "$NODE_INIT" != "modprobe" ] || [ "$NODE_INIT_EXIT" != "0" ]; then
+  echo "FAIL: node init container modprobe 상태 이상 (name=$NODE_INIT, exitCode=$NODE_INIT_EXIT)"
+  FAILED=1
+fi
+
+if [ "$FAILED" -eq 0 ]; then
+  echo "PASS: 모든 파드 Running 상태 검증 통과"
+  exit 0
+else
+  echo "FAIL: 일부 검증 항목 실패"
+  exit 1
+fi
+```
+
+**Go 테스트 구현 참고 (Ginkgo/Gomega):**
+
+```go
+//go:build e2e
+// +build e2e
+
+package e2e
+
+import (
+    "encoding/json"
+    "os/exec"
+    "time"
+
+    . "github.com/onsi/ginkgo/v2"
+    . "github.com/onsi/gomega"
+
+    "github.com/bhyoo/pillar-csi/test/utils"
+)
+
+var _ = Describe("E26.11 전체 파드 Running 상태 종합 검증", Ordered, func() {
+    const ns = "pillar-csi-system"
+
+    // E225: 모든 파드 Running 종합 검증
+    It("E225: 전체_파드_Running_상태_종합_검증", func() {
+        verifyAllPodsRunning := func(g Gomega) {
+            cmd := exec.Command("kubectl", "get", "pods", "-n", ns, "-o", "json")
+            out, err := utils.Run(cmd)
+            g.Expect(err).NotTo(HaveOccurred())
+
+            var podList struct {
+                Items []struct {
+                    Metadata struct{ Name string `json:"name"` } `json:"metadata"`
+                    Status struct {
+                        Phase      string `json:"phase"`
+                        Conditions []struct {
+                            Type   string `json:"type"`
+                            Status string `json:"status"`
+                        } `json:"conditions"`
+                        ContainerStatuses []struct {
+                            Name         string `json:"name"`
+                            Ready        bool   `json:"ready"`
+                            RestartCount int    `json:"restartCount"`
+                        } `json:"containerStatuses"`
+                    } `json:"status"`
+                } `json:"items"`
+            }
+            g.Expect(json.Unmarshal([]byte(out), &podList)).To(Succeed())
+            g.Expect(podList.Items).NotTo(BeEmpty(), "pillar-csi-system에 파드가 없음")
+
+            for _, pod := range podList.Items {
+                g.Expect(pod.Status.Phase).To(Equal("Running"),
+                    "파드 %s: phase != Running (실제: %s)", pod.Metadata.Name, pod.Status.Phase)
+
+                for _, cs := range pod.Status.ContainerStatuses {
+                    g.Expect(cs.Ready).To(BeTrue(),
+                        "파드 %s 컨테이너 %s: ready == false", pod.Metadata.Name, cs.Name)
+                    g.Expect(cs.RestartCount).To(BeZero(),
+                        "파드 %s 컨테이너 %s: restartCount %d (0 기대)",
+                        pod.Metadata.Name, cs.Name, cs.RestartCount)
+                }
+            }
+        }
+        Eventually(verifyAllPodsRunning, 5*time.Minute, 5*time.Second).Should(Succeed())
+    })
+
+    // E226: 컨트롤러 파드 컨테이너 5종 Ready 검증
+    It("E226: 컨트롤러_파드_컨테이너_5종_Ready_검증", func() {
+        expectedCtrlContainers := []string{
+            "controller", "csi-provisioner", "csi-attacher", "csi-resizer", "liveness-probe",
+        }
+        verifyCtrlContainers := func(g Gomega) {
+            cmd := exec.Command("kubectl", "get", "pods", "-n", ns,
+                "-l", "app.kubernetes.io/component=controller", "-o", "json")
+            out, err := utils.Run(cmd)
+            g.Expect(err).NotTo(HaveOccurred())
+            // ... (파싱 및 검증 로직)
+            _ = out
+            _ = expectedCtrlContainers
+        }
+        Eventually(verifyCtrlContainers, 3*time.Minute, 5*time.Second).Should(Succeed())
+    })
+
+    // E227: 노드 파드 컨테이너 3종 + init modprobe 검증
+    It("E227: 노드_파드_컨테이너_3종_Ready_및_initContainer_Succeeded_검증", func() {
+        // 구현 참고: initContainerStatuses[0].state.terminated.exitCode == 0 확인
+    })
+
+    // E228: agent DaemonSet — 레이블 없는 환경에서 파드 미스케줄 검증
+    It("E228: 에이전트_DaemonSet_스토리지_레이블_없는_환경에서_파드_미스케줄_검증", func() {
+        cmd := exec.Command("kubectl", "get", "pods", "-n", ns,
+            "-l", "app.kubernetes.io/component=agent", "-o", "json")
+        out, err := utils.Run(cmd)
+        Expect(err).NotTo(HaveOccurred())
+
+        var podList struct {
+            Items []interface{} `json:"items"`
+        }
+        Expect(json.Unmarshal([]byte(out), &podList)).To(Succeed())
+        Expect(podList.Items).To(BeEmpty(),
+            "스토리지 레이블 없는 환경에서 agent 파드가 스케줄되면 안 됨")
+    })
+})
+```
+
+> **구현 파일 위치:** `test/e2e/helm_pod_running_e2e_test.go` (신규 생성 예정)
+> **빌드 태그:** `//go:build e2e`
+> **실행:** `go test ./test/e2e/ -tags=e2e -run TestHelm -v`
 
 ---
 
