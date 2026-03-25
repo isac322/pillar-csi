@@ -71,6 +71,249 @@ Docker-in-Docker(DinD) 또는 Kind 지원 러너가 없으면 실행 불가.
 
 ---
 
+## CI 실행 가능 테스트 카탈로그
+
+이 섹션은 **표준 CI 환경에서 실행 가능한 테스트 전체 목록**을 정의하고,
+각 테스트 유형에 필요한 인프라 설정 요구사항과 범위 제약을 명시한다.
+
+---
+
+### CI 실행 가능 테스트 요약 (유형 A: 인프로세스 E2E)
+
+빌드 태그 없이 `go test ./test/e2e/ -v` 명령으로 실행 가능한 모든 테스트.
+실제 Kubernetes 클러스터, 커널 모듈, root 권한이 **전혀 불필요**하다.
+
+| 섹션 | 테스트 그룹 | 테스트 수 | 실행 패턴 |
+|------|------------|----------|-----------|
+| E1 | 볼륨 라이프사이클 — CreateVolume / DeleteVolume | 13 | `TestCSIController_CreateVolume`, `TestCSIController_DeleteVolume`, `TestCSIController_FullRoundTrip` |
+| E2 | CSI Controller — Publish / Unpublish / Expand / Validate | 8 | `TestCSIController_ControllerPublish*`, `TestCSIController_ControllerExpand*`, `TestCSIController_Validate*` |
+| E3 | CSI Node — Stage / Publish / Unstage / Unpublish (E3.1–E3.15) | 34 | `TestCSINode_*` |
+| E4 | 교차-컴포넌트 라이프사이클 | 4 | `TestCSILifecycle_*` |
+| E5 | 순서 제약 (Ordering Constraints) | 6 | `TestCSIOrdering_*` |
+| E6 | 부분 실패 영속성 | 5 | `TestCSIController_PartialFailure_*`, `TestCSIController_DeleteVolume_CleansUpCRD` |
+| E7 | 게시 멱등성 (Publish Idempotency) | 5 | `TestCSIPublishIdempotency_*` |
+| E8 | mTLS 컨트롤러 통합 | 3 | `TestMTLSController_*` |
+| E9 | Agent gRPC E2E | 6 | `TestAgent_*` |
+| E11 | 볼륨 확장 통합 E2E | 8 | `TestCSIExpand_*` |
+| E12 | CSI 스냅샷 미구현 검증 | 4 | `TestCSISnapshot_*` |
+| E13 | 볼륨 클론 미처리 동작 검증 | 2 | `TestCSIClone_*` |
+| E14 | 잘못된 입력값 및 엣지 케이스 | 15 | `TestCSIEdge_*` |
+| E15 | 리소스 고갈 오류 전파 | 6 | `TestCSIExhaustion_*` |
+| E16 | 동시 작업 안전성 | 7 | `TestCSIConcurrent_*` |
+| E17 | 정리 검증 | 8 | `TestCSICleanup_*` |
+| **합계** | | **134** | |
+
+---
+
+### CI 설정 요구사항 (유형 A)
+
+#### 최소 요구사항
+
+| 항목 | 버전 / 사양 | 비고 |
+|------|------------|------|
+| Go 빌드 도구체인 | 1.22+ | `go test ./test/e2e/ -v` 실행 |
+| OS | Linux (amd64/arm64) 또는 macOS | tmpfs/tmpdir 지원 필요 |
+| RAM | 512 MiB 이상 | 동시 테스트 고루틴 수용 |
+| 디스크 | 200 MiB 여유 공간 | `t.TempDir()` 임시 파일 |
+| 네트워크 | localhost loopback만 필요 | 외부 네트워크 불필요 |
+
+#### GitHub Actions 설정 예시
+
+```yaml
+jobs:
+  e2e-inprocess:
+    name: "In-Process E2E Tests"
+    runs-on: ubuntu-22.04          # 또는 ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache: true
+      - name: Run In-Process E2E Tests
+        run: |
+          go test ./test/e2e/ -v -timeout 120s \
+            -count=1 \
+            2>&1 | tee e2e-inprocess.log
+      - name: Upload test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-inprocess-logs
+          path: e2e-inprocess.log
+```
+
+#### GitLab CI 설정 예시
+
+```yaml
+e2e-inprocess:
+  stage: test
+  image: golang:1.22-bookworm
+  script:
+    - go test ./test/e2e/ -v -timeout 120s -count=1
+  artifacts:
+    when: always
+    reports:
+      junit: e2e-inprocess-report.xml
+```
+
+---
+
+### 범위 제약 (유형 A — 인프로세스 E2E)
+
+유형 A 테스트는 아래 항목을 **검증하지 못한다**. 각 항목은 실제 하드웨어
+또는 클러스터 환경이 필요하다.
+
+| 검증 불가 항목 | 이유 | 대안 (향후) |
+|--------------|------|------------|
+| 실제 ZFS zvol 생성/삭제 | `zfs(8)` 명령 미실행; mock backend 사용 | F1 (`TestRealZFS_CreateVolume`) |
+| 실제 NVMe-oF configfs 바인딩 | `/sys/kernel/config/nvmet` 없음; `t.TempDir()` 사용 | F2 (`TestRealNVMeoF_Export`) |
+| 실제 `nvme connect` / `nvme disconnect` | `nvme-tcp` 커널 모듈 불필요; mockConnector 사용 | F3 (`TestRealNVMeoF_Connect`) |
+| 실제 `mount(8)` / `umount(8)` 시스템 콜 | root 권한 불필요; mockMounter 사용 | F8–F10 |
+| 실제 `mkfs.ext4` / `mkfs.xfs` | 포맷 명령 미실행; mockMounter 사용 | F8 |
+| 실제 `resize2fs` / `xfs_growfs` | 리사이즈 명령 미실행; mockResizer 사용 | F21 |
+| Kubernetes etcd 일관성 (옵티미스틱 잠금) | fake client는 충돌 시나리오 부분 지원 | F4 |
+| CRD 검증 웹훅 실제 실행 | fake client는 웹훅 미실행 | E10 (유형 B) |
+| RBAC 실제 검증 | fake client는 RBAC 미적용 | E10 (유형 B) |
+| cert-manager 인증서 발급 (실제 PKI) | 인메모리 `testcerts` 패키지 사용 | F7 |
+| NVMe-oF multipath | mockConnector 단일 경로만 | F12 |
+| 노드 재시작 후 agent ReconcileState 자동 복구 | in-process 환경에서 재시작 불가 | F6 |
+| 대용량 데이터 마이그레이션 (SendVolume/ReceiveVolume) | 스트리밍 RPC + 실제 데이터 필요 | F17–F19 |
+| 실제 `flock` / 커널 레벨 레이스 컨디션 | in-process 고루틴으로 애플리케이션 레벨만 검증 | F24 |
+| PVC/Pod Kubernetes 프로비저닝 흐름 | kubectl, external-provisioner 미사용 | F4 |
+| 용량 100개 PVC 동시 생성 확장성 | mockAgentServer는 실제 처리 시간 없음 | F25 |
+
+---
+
+### 유형 A-Kind: Kind 클러스터 + Mock 백엔드 테스트 ⚠️ CI 실행 가능 (Kind 지원 러너 필요)
+
+**정의:** Kind 클러스터를 사용하지만 **실제 스토리지 하드웨어(ZFS/NVMe-oF)를 쓰지 않는** 테스트.
+Kubernetes API 서버와 etcd의 실제 동작(CRD 검증 웹훅, RBAC, 어드미션 컨트롤러)을
+검증하되, 스토리지 백엔드는 여전히 스텁/모의 구현을 사용한다.
+
+유형 A-Kind 테스트는 현재 **E10 (클러스터 레벨 E2E)** 의 일부를 표준 CI에서도
+실행 가능하게 하는 목표를 가진다.
+
+#### 유형 A-Kind vs 유형 A vs 유형 B 비교
+
+| 속성 | 유형 A (인프로세스) | 유형 A-Kind | 유형 B (클러스터 레벨) |
+|------|-------------------|------------|----------------------|
+| Kubernetes 클러스터 | 불필요 (fake client) | Kind 클러스터 필요 | Kind 클러스터 필요 |
+| CRD 설치 | fake client에 스키마만 등록 | 실제 CRD YAML 설치 | 실제 CRD YAML 설치 |
+| 어드미션 웹훅 | 미실행 | 실행 (pillar-csi 웹훅 서버 필요) | 실행 |
+| RBAC 검증 | 미실행 | 실행 | 실행 |
+| 스토리지 백엔드 | mockAgentServer | mockAgentServer (out-of-cluster) | 해당 없음 (볼륨 I/O 테스트 없음) |
+| pillar-csi 컨테이너 이미지 | 불필요 | 필요 (웹훅 서버용) | 필요 |
+| cert-manager | 불필요 | 선택적 (`CERT_MANAGER_INSTALL_SKIP=true`) | 필요 |
+| 실제 ZFS / NVMe-oF | 불필요 | 불필요 | 불필요 |
+| 표준 GitHub Actions | ✅ (ubuntu runner) | ✅ (ubuntu + `kind-action`) | ❌ (self-hosted 러너 권장) |
+
+#### 유형 A-Kind 테스트 목록
+
+아래 테스트는 Kind 클러스터에서 mock 백엔드를 사용하여 Kubernetes 통합을
+검증한다. 현재 이 테스트들은 유형 B (`//go:build e2e`) 안에 포함되어 있으나,
+별도 빌드 태그(`//go:build e2e_kind_mock`)로 분리하면 표준 CI에서 실행 가능하다.
+
+| # | 테스트 이름 (계획) | 검증 항목 | 필요 구성 요소 |
+|---|----------------|----------|---------------|
+| K1 | `TestKindMock_CRD_PillarTarget_Validation` | PillarTarget CRD 스키마 검증 웹훅이 잘못된 필드를 거부 | Kind + CRD + 웹훅 서버 |
+| K2 | `TestKindMock_CRD_PillarVolume_Lifecycle` | PillarVolume CRD Create/Update/Delete 전체 생명주기 | Kind + CRD |
+| K3 | `TestKindMock_RBAC_ControllerManager` | controller-manager ServiceAccount가 PillarTarget/PillarVolume에 대한 RBAC 권한만 가짐 | Kind + RBAC 설정 |
+| K4 | `TestKindMock_ControllerManager_Startup` | pillar-csi controller-manager 파드가 정상 기동 및 헬스체크 응답 | Kind + 컨테이너 이미지 |
+| K5 | `TestKindMock_Metrics_Endpoint` | `/metrics` 엔드포인트가 RBAC 토큰으로 접근 가능; Go 런타임 메트릭 포함 | Kind + 컨테이너 이미지 |
+| K6 | `TestKindMock_Webhook_CertManager` | cert-manager가 webhook-server-cert Secret을 발급하고 웹훅 caBundle에 주입 | Kind + cert-manager + 컨테이너 이미지 |
+| K7 | `TestKindMock_PillarTarget_AgentConnected_False` | PillarTarget 생성 시 pillar-agent 미도달 상태에서 AgentConnected=False 조건 설정 | Kind + 컨테이너 이미지 (mock agent endpoint) |
+| K8 | `TestKindMock_PillarTarget_AgentConnected_True` | mock pillar-agent gRPC 서버(out-of-cluster)를 지정한 PillarTarget에서 AgentConnected=True 조건 설정 | Kind + 컨테이너 이미지 + mock agent |
+
+#### 유형 A-Kind CI 설정 요구사항
+
+| 구성 요소 | 버전 | 비고 |
+|-----------|------|------|
+| Kind | v0.23+ | `helm/kind-action@v1` 또는 직접 설치 |
+| Docker | 24+ | Kind 클러스터 노드 컨테이너용 |
+| kubectl | v1.29+ | CRD/RBAC 설치 및 검증 |
+| pillar-csi 이미지 | `example.com/pillar-csi:v0.0.1` | `make docker-build` 후 `kind load` |
+| cert-manager | v1.14+ (선택) | `CERT_MANAGER_INSTALL_SKIP=true`로 스킵 가능 |
+| Go 빌드 도구체인 | 1.22+ | mock agent 컴파일 및 테스트 실행 |
+
+#### GitHub Actions — 유형 A-Kind 설정 예시
+
+```yaml
+jobs:
+  e2e-kind-mock:
+    name: "Kind + Mock Backend E2E Tests"
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache: true
+      - name: Create Kind cluster
+        uses: helm/kind-action@v1
+        with:
+          version: v0.23.0
+          cluster_name: pillar-csi-test
+      - name: Build and load controller image
+        run: |
+          make docker-build IMG=example.com/pillar-csi:v0.0.1
+          kind load docker-image example.com/pillar-csi:v0.0.1 \
+            --name pillar-csi-test
+      - name: Install CRDs
+        run: make install
+      - name: Install cert-manager (선택)
+        run: |
+          kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.14.5/cert-manager.yaml
+          kubectl rollout status deployment/cert-manager -n cert-manager --timeout=120s
+      - name: Run Kind+Mock E2E Tests
+        run: |
+          go test ./test/e2e/ -tags=e2e -v -timeout 300s \
+            -count=1 \
+            2>&1 | tee e2e-kind-mock.log
+        env:
+          CERT_MANAGER_INSTALL_SKIP: "true"
+      - name: Cleanup
+        if: always()
+        run: kind delete cluster --name pillar-csi-test
+```
+
+#### 유형 A-Kind 범위 제약
+
+유형 A-Kind 테스트는 아래 항목을 **검증하지 못한다**:
+
+| 검증 불가 항목 | 이유 |
+|--------------|------|
+| 실제 스토리지 I/O (ZFS zvol, NVMe-oF 블록 디바이스) | mock backend 사용; 커널 모듈 불필요 |
+| NodeStage/NodePublish 실제 마운트 동작 | CSI Node plugin이 DaemonSet으로 실행되지 않음 |
+| 다중 노드 스토리지 노드 페일오버 | Kind 단일 노드 또는 Kind 멀티 노드 (스토리지 없음) |
+| 실제 `nvme connect` 결과 검증 | mock connector |
+| 대규모 PVC 프로비저닝 (100개 이상) 성능 | CI 환경 리소스 제한 |
+| NVMe-oF multipath / 이중화 구성 | mock connector 단일 경로 |
+
+---
+
+### 테스트 유형별 실행 결정 트리
+
+```
+테스트를 추가해야 하는가?
+    │
+    ├── 실제 ZFS/NVMe-oF/mount(8) 동작 필요?
+    │       ├── 예 ──► 유형 F (향후 하드웨어 테스트)
+    │       └── 아니오
+    │               │
+    │               ├── 실제 Kubernetes API (CRD 웹훅/RBAC/어드미션) 검증 필요?
+    │               │       ├── 예 ──► 유형 A-Kind 또는 유형 B
+    │               │       └── 아니오
+    │               │               │
+    │               │               └── 유형 A (인프로세스) ← 대부분의 E2E는 여기에 해당
+    │               │
+    │               └── 실제 pillar-csi 이미지 빌드/배포 필요?
+    │                       ├── 예 ──► 유형 B (표준 CI 불가 → self-hosted 러너)
+    │                       └── 아니오 ──► 유형 A-Kind (Kind + mock)
+```
+
+---
+
 ## 테스트 더블 피델리티 노트
 
 ### mockAgentServer (CSI Controller/Lifecycle 테스트에서 사용)
