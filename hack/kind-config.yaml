@@ -1,0 +1,76 @@
+# hack/kind-config.yaml
+#
+# Kind cluster configuration for pillar-csi e2e tests.
+#
+# Topology: 1 control-plane + 2 worker nodes
+#
+#   storage-worker  — labelled pillar-csi.bhyoo.com/storage-node=true
+#                     Runs the pillar-agent DaemonSet (NVMe-oF / iSCSI target side).
+#                     Extra mounts provide configfs and /dev access required by the
+#                     NVMe-oF target subsystem (nvmet, configfs writes).
+#
+#   compute-worker  — plain worker for initiator / application pods.
+#                     No storage-specific mounts; mirrors a real compute node.
+#
+# Usage (cluster name is passed via --name; the name field below is the default):
+#   kind create cluster --name pillar-csi-e2e --config hack/kind-config.yaml
+#
+# Prerequisites (created automatically by hack/setup-e2e.sh):
+#   mkdir -p /tmp/pillar-csi-e2e/configfs   # simulated configfs root
+#
+# The configfs host path is an ordinary directory, not a real configfs mount.
+# It lets the agent write NVMe-oF target configs during e2e tests without
+# requiring the nvmet/nvmet_tcp kernel modules on the CI host.
+# Bidirectional propagation is set so changes made inside the Kind node
+# container (by privileged agent pods) are also visible on the host for
+# post-test inspection and debugging.
+#
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+
+# Default cluster name.  Override with: kind create cluster --name <name>
+name: pillar-csi-e2e
+
+nodes:
+  # ── Control-plane ────────────────────────────────────────────────────────────
+  - role: control-plane
+
+  # ── Storage worker ───────────────────────────────────────────────────────────
+  # Simulates a physical storage node that exposes NVMe-oF / iSCSI targets.
+  # The pillar-agent DaemonSet is scheduled here via nodeSelector
+  # pillar-csi.bhyoo.com/storage-node=true.
+  - role: worker
+    labels:
+      # Matches agent.nodeSelector in charts/pillar-csi/values.yaml so the
+      # pillar-agent DaemonSet is scheduled here automatically.
+      pillar-csi.bhyoo.com/storage-node: "true"
+    extraMounts:
+      # configfs simulation ────────────────────────────────────────────────────
+      # The agent writes NVMe-oF subsystem/namespace entries under
+      # /sys/kernel/config/nvmet/.  In e2e we back this with a plain host
+      # directory so no configfs kernel module is required on the CI runner.
+      # Bidirectional: agent pods (CAP_SYS_ADMIN) can create sub-dirs that
+      # remain visible on the host for post-test inspection.
+      - hostPath: /tmp/pillar-csi-e2e/configfs
+        containerPath: /sys/kernel/config
+        readOnly: false
+        propagation: Bidirectional
+
+      # /dev pass-through ───────────────────────────────────────────────────────
+      # The agent needs access to block device nodes for target backstores.
+      # HostToContainer is sufficient; the agent does not create new /dev nodes
+      # that need to be reflected back to the host.
+      - hostPath: /dev
+        containerPath: /dev
+        readOnly: false
+        propagation: HostToContainer
+
+  # ── Compute worker ───────────────────────────────────────────────────────────
+  # Simulates an application / initiator node.  Runs pillar-node DaemonSet
+  # (CSI node service, NVMe-oF / iSCSI initiators) and workload pods.
+  # No extra mounts needed — initiator side only requires standard /dev.
+  - role: worker
+    labels:
+      # Explicit label for test selectors; NOT a storage node so pillar-agent
+      # is not scheduled here.
+      pillar-csi.bhyoo.com/compute-node: "true"
