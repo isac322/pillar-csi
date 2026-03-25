@@ -1,0 +1,210 @@
+{{- /*
+Node DaemonSet — CSI Node service + protocol initiators (NVMe-oF, iSCSI, NFS).
+Runs on every worker node. Uses privileged security context for mount operations.
+hostNetwork is intentionally absent — the node service does not expose any host ports.
+Init container loads initiator kernel modules best-effort (pod start is NOT blocked on failure).
+*/ -}}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "pillar-csi.fullname" . }}-node
+  namespace: {{ include "pillar-csi.namespace" . }}
+  labels:
+    {{- include "pillar-csi.componentLabels" (dict "root" . "component" "node") | nindent 4 }}
+  {{- with .Values.node.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "pillar-csi.componentSelectorLabels" (dict "root" . "component" "node") | nindent 6 }}
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        {{- include "pillar-csi.componentSelectorLabels" (dict "root" . "component" "node") | nindent 8 }}
+        {{- with .Values.node.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.node.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "pillar-csi.nodeServiceAccountName" . }}
+      priorityClassName: system-node-critical
+      # ── Init containers ──────────────────────────────────────────────────────
+      # Loads initiator kernel modules (NVMe-oF, iSCSI, NFS).
+      # Each modprobe is run with "|| true" so the init container always exits 0.
+      # The pod does NOT fail to start if a module cannot be loaded.
+      initContainers:
+        - name: modprobe
+          image: {{ include "pillar-csi.image" (dict "image" .Values.node.initModprobe.image "defaultTag" .Values.node.initModprobe.image.tag) }}
+          imagePullPolicy: {{ include "pillar-csi.imagePullPolicy" (dict "image" .Values.node.initModprobe.image "global" .Values.imagePullPolicy) }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              {{- range .Values.node.initModprobe.modules }}
+              modprobe {{ . }} || true
+              {{- end }}
+          securityContext:
+            privileged: true
+          volumeMounts:
+            # Read-only access to host kernel modules for modprobe.
+            - name: lib-modules
+              mountPath: /lib/modules
+              readOnly: true
+          resources:
+            {{- toYaml .Values.node.initModprobe.resources | nindent 12 }}
+      # ── Main containers ──────────────────────────────────────────────────────
+      containers:
+        # pillar-node: CSI Node service + protocol initiators.
+        # Requires privileged context to perform bind mounts on behalf of Pods.
+        - name: node
+          image: {{ include "pillar-csi.image" (dict "image" .Values.node.image "defaultTag" .Chart.AppVersion) }}
+          imagePullPolicy: {{ include "pillar-csi.imagePullPolicy" (dict "image" .Values.node.image "global" .Values.imagePullPolicy) }}
+          securityContext:
+            # Privileged is required for mount(2) syscalls issued by the CSI Node service.
+            privileged: true
+            capabilities:
+              add:
+                - SYS_ADMIN
+          {{- with .Values.node.extraArgs }}
+          args:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            {{- with .Values.node.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: healthz
+              containerPort: {{ .Values.node.livenessPort }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: healthz
+            initialDelaySeconds: 10
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          volumeMounts:
+            # CSI Unix socket directory shared with sidecar containers.
+            - name: plugin-dir
+              mountPath: {{ .Values.node.csiSocketPath | dir }}
+            # kubelet pods directory — must use Bidirectional propagation so that
+            # mounts created inside the container are visible on the host (and vice-versa).
+            - name: pods-mount-dir
+              mountPath: /var/lib/kubelet/pods
+              mountPropagation: Bidirectional
+            # /dev — required for block device operations (NVMe-oF, iSCSI target discovery).
+            - name: dev
+              mountPath: /dev
+          resources:
+            {{- toYaml .Values.node.resources | nindent 12 }}
+
+        # csi-node-driver-registrar: registers the CSI plugin socket with kubelet.
+        - name: node-driver-registrar
+          image: {{ include "pillar-csi.image" (dict "image" .Values.node.sidecars.nodeDriverRegistrar.image "defaultTag" .Values.node.sidecars.nodeDriverRegistrar.image.tag) }}
+          imagePullPolicy: {{ include "pillar-csi.imagePullPolicy" (dict "image" .Values.node.sidecars.nodeDriverRegistrar.image "global" .Values.imagePullPolicy) }}
+          args:
+            - --csi-address={{ .Values.node.csiSocketPath }}
+            - --kubelet-registration-path={{ .Values.node.csiSocketPath }}
+            {{- range .Values.node.sidecars.nodeDriverRegistrar.extraArgs }}
+            - {{ . | quote }}
+            {{- end }}
+          securityContext:
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+          lifecycle:
+            preStop:
+              exec:
+                # Clean up the registration socket when the container stops.
+                command:
+                  - /bin/sh
+                  - -c
+                  - rm -rf /registration/pillar-csi.bhyoo.com-reg.sock
+          volumeMounts:
+            # Access the CSI socket created by the node container.
+            - name: plugin-dir
+              mountPath: {{ .Values.node.csiSocketPath | dir }}
+            # Kubelet plugin registration directory — registrar writes its socket here.
+            - name: registration-dir
+              mountPath: /registration
+          resources:
+            {{- toYaml .Values.node.sidecars.nodeDriverRegistrar.resources | nindent 12 }}
+
+        # liveness-probe: exposes /healthz HTTP endpoint backed by the CSI GetPluginInfo RPC.
+        - name: liveness-probe
+          image: {{ include "pillar-csi.image" (dict "image" .Values.node.sidecars.livenessProbe.image "defaultTag" .Values.node.sidecars.livenessProbe.image.tag) }}
+          imagePullPolicy: {{ include "pillar-csi.imagePullPolicy" (dict "image" .Values.node.sidecars.livenessProbe.image "global" .Values.imagePullPolicy) }}
+          args:
+            - --csi-address={{ .Values.node.csiSocketPath }}
+            - --health-port={{ .Values.node.livenessPort }}
+          securityContext:
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            # Access the CSI socket to issue health-check RPCs.
+            - name: plugin-dir
+              mountPath: {{ .Values.node.csiSocketPath | dir }}
+          resources:
+            {{- toYaml .Values.node.sidecars.livenessProbe.resources | nindent 12 }}
+
+      # ── Volumes ──────────────────────────────────────────────────────────────
+      volumes:
+        # plugin-dir: host directory containing the CSI Unix socket.
+        # Uses DirectoryOrCreate so kubelet creates it on first run.
+        - name: plugin-dir
+          hostPath:
+            path: {{ .Values.node.csiSocketPath | dir }}
+            type: DirectoryOrCreate
+        # registration-dir: kubelet plugin registration socket directory.
+        - name: registration-dir
+          hostPath:
+            path: {{ .Values.node.kubeletPluginRegistrationDir }}
+            type: Directory
+        # pods-mount-dir: kubelet pod volumes directory for bind-mounts.
+        - name: pods-mount-dir
+          hostPath:
+            path: /var/lib/kubelet/pods
+            type: Directory
+        # dev: host /dev for block device access during volume attach/detach.
+        - name: dev
+          hostPath:
+            path: /dev
+            type: Directory
+        # lib-modules: host kernel modules needed by the modprobe init container.
+        - name: lib-modules
+          hostPath:
+            path: /lib/modules
+            type: Directory
+      # ── Scheduling ───────────────────────────────────────────────────────────
+      {{- with .Values.node.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.node.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
