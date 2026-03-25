@@ -75,11 +75,16 @@ type mockAgentClient struct {
 	// Responses for DeleteVolume (DeleteVolume Step 2).
 	deleteVolumeErr error
 
+	// Responses for GetCapacity.
+	getCapacityResp *agentv1.GetCapacityResponse
+	getCapacityErr  error
+
 	// Call counters — verified by tests.
-	createVolumeCalls  int
-	exportVolumeCalls  int
+	createVolumeCalls   int
+	exportVolumeCalls   int
 	unexportVolumeCalls int
-	deleteVolumeCalls  int
+	deleteVolumeCalls   int
+	getCapacityCalls    int
 }
 
 // Compile-time check that mockAgentClient implements the full interface.
@@ -154,7 +159,18 @@ func (m *mockAgentClient) GetCapabilities(_ context.Context, _ *agentv1.GetCapab
 	return nil, status.Error(codes.Unimplemented, "not implemented in mock")
 }
 func (m *mockAgentClient) GetCapacity(_ context.Context, _ *agentv1.GetCapacityRequest, _ ...grpc.CallOption) (*agentv1.GetCapacityResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "not implemented in mock")
+	m.getCapacityCalls++
+	if m.getCapacityErr != nil {
+		return nil, m.getCapacityErr
+	}
+	if m.getCapacityResp != nil {
+		return m.getCapacityResp, nil
+	}
+	return &agentv1.GetCapacityResponse{
+		TotalBytes:     100 << 30, // 100 GiB
+		AvailableBytes: 60 << 30,  // 60 GiB
+		UsedBytes:      40 << 30,  // 40 GiB
+	}, nil
 }
 func (m *mockAgentClient) ListVolumes(_ context.Context, _ *agentv1.ListVolumesRequest, _ ...grpc.CallOption) (*agentv1.ListVolumesResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "not implemented in mock")
@@ -643,4 +659,208 @@ func (c *devicePathCapturingClient) ExportVolume(
 // resources like PillarVolume and PillarTarget use no namespace).
 func ctrlKey(name string) types.NamespacedName {
 	return types.NamespacedName{Name: name}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GetCapacity tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+// baseGetCapacityRequest returns a minimal valid GetCapacityRequest.
+func baseGetCapacityRequest() *csi.GetCapacityRequest {
+	return &csi.GetCapacityRequest{
+		Parameters: map[string]string{
+			"pillar-csi.bhyoo.com/target":       "storage-node-1",
+			"pillar-csi.bhyoo.com/pool":         "tank",
+			"pillar-csi.bhyoo.com/backend-type": "zfs-zvol",
+		},
+	}
+}
+
+// TestGetCapacity_Success verifies the happy path: the controller dials the
+// agent, calls GetCapacity, and returns AvailableCapacity from the response.
+func TestGetCapacity_Success(t *testing.T) {
+	t.Parallel()
+	env := newControllerTestEnv(t)
+	ctx := context.Background()
+
+	env.agent.getCapacityResp = &agentv1.GetCapacityResponse{
+		TotalBytes:     100 << 30,
+		AvailableBytes: 60 << 30,
+		UsedBytes:      40 << 30,
+	}
+
+	resp, err := env.srv.GetCapacity(ctx, baseGetCapacityRequest())
+	if err != nil {
+		t.Fatalf("GetCapacity unexpected error: %v", err)
+	}
+
+	const wantAvailable = int64(60 << 30)
+	if resp.AvailableCapacity != wantAvailable {
+		t.Errorf("AvailableCapacity = %d, want %d", resp.AvailableCapacity, wantAvailable)
+	}
+	if env.agent.getCapacityCalls != 1 {
+		t.Errorf("getCapacityCalls = %d, want 1", env.agent.getCapacityCalls)
+	}
+}
+
+// TestGetCapacity_MissingTargetParam verifies that omitting the required
+// target parameter returns codes.InvalidArgument.
+func TestGetCapacity_MissingTargetParam(t *testing.T) {
+	t.Parallel()
+	env := newControllerTestEnv(t)
+	ctx := context.Background()
+
+	req := &csi.GetCapacityRequest{
+		Parameters: map[string]string{
+			// target intentionally omitted
+			"pillar-csi.bhyoo.com/pool":         "tank",
+			"pillar-csi.bhyoo.com/backend-type": "zfs-zvol",
+		},
+	}
+
+	_, err := env.srv.GetCapacity(ctx, req)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	st, _ := status.FromError(err)
+	if st.Code() != codes.InvalidArgument {
+		t.Errorf("error code = %v, want InvalidArgument", st.Code())
+	}
+}
+
+// TestGetCapacity_MissingPoolParam verifies that omitting the required
+// pool parameter returns codes.InvalidArgument.
+func TestGetCapacity_MissingPoolParam(t *testing.T) {
+	t.Parallel()
+	env := newControllerTestEnv(t)
+	ctx := context.Background()
+
+	req := &csi.GetCapacityRequest{
+		Parameters: map[string]string{
+			"pillar-csi.bhyoo.com/target": "storage-node-1",
+			// pool intentionally omitted
+			"pillar-csi.bhyoo.com/backend-type": "zfs-zvol",
+		},
+	}
+
+	_, err := env.srv.GetCapacity(ctx, req)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	st, _ := status.FromError(err)
+	if st.Code() != codes.InvalidArgument {
+		t.Errorf("error code = %v, want InvalidArgument", st.Code())
+	}
+}
+
+// TestGetCapacity_MissingBackendTypeParam verifies that omitting the required
+// backend-type parameter returns codes.InvalidArgument.
+func TestGetCapacity_MissingBackendTypeParam(t *testing.T) {
+	t.Parallel()
+	env := newControllerTestEnv(t)
+	ctx := context.Background()
+
+	req := &csi.GetCapacityRequest{
+		Parameters: map[string]string{
+			"pillar-csi.bhyoo.com/target": "storage-node-1",
+			"pillar-csi.bhyoo.com/pool":  "tank",
+			// backend-type intentionally omitted
+		},
+	}
+
+	_, err := env.srv.GetCapacity(ctx, req)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	st, _ := status.FromError(err)
+	if st.Code() != codes.InvalidArgument {
+		t.Errorf("error code = %v, want InvalidArgument", st.Code())
+	}
+}
+
+// TestGetCapacity_TargetNotFound verifies that referencing a non-existent
+// PillarTarget returns codes.NotFound.
+func TestGetCapacity_TargetNotFound(t *testing.T) {
+	t.Parallel()
+	env := newControllerTestEnv(t)
+	ctx := context.Background()
+
+	req := &csi.GetCapacityRequest{
+		Parameters: map[string]string{
+			"pillar-csi.bhyoo.com/target":       "nonexistent-target",
+			"pillar-csi.bhyoo.com/pool":         "tank",
+			"pillar-csi.bhyoo.com/backend-type": "zfs-zvol",
+		},
+	}
+
+	_, err := env.srv.GetCapacity(ctx, req)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	st, _ := status.FromError(err)
+	if st.Code() != codes.NotFound {
+		t.Errorf("error code = %v, want NotFound", st.Code())
+	}
+}
+
+// TestGetCapacity_AgentError verifies that an error from the agent propagates
+// to the caller with the original gRPC status code preserved.
+func TestGetCapacity_AgentError(t *testing.T) {
+	t.Parallel()
+	env := newControllerTestEnv(t)
+	ctx := context.Background()
+
+	env.agent.getCapacityErr = status.Error(codes.NotFound, "pool not found")
+
+	_, err := env.srv.GetCapacity(ctx, baseGetCapacityRequest())
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	st, _ := status.FromError(err)
+	if st.Code() != codes.NotFound {
+		t.Errorf("error code = %v, want NotFound", st.Code())
+	}
+}
+
+// TestGetCapacity_TargetNoAddress verifies that a PillarTarget with an empty
+// ResolvedAddress returns codes.Unavailable.
+func TestGetCapacity_TargetNoAddress(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme: %v", err)
+	}
+
+	// Create a PillarTarget with no ResolvedAddress.
+	target := &v1alpha1.PillarTarget{
+		ObjectMeta: metav1.ObjectMeta{Name: "storage-node-1"},
+		Spec: v1alpha1.PillarTargetSpec{
+			External: &v1alpha1.ExternalSpec{Address: "192.168.1.10", Port: 9500},
+		},
+		Status: v1alpha1.PillarTargetStatus{
+			ResolvedAddress: "", // empty — agent not ready
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(target).
+		WithStatusSubresource(&v1alpha1.PillarTarget{}).
+		Build()
+
+	srv := NewControllerServerWithDialer(fakeClient, "pillar-csi.bhyoo.com",
+		func(_ context.Context, _ string) (agentv1.AgentServiceClient, io.Closer, error) {
+			t.Error("dialAgent should not be called when address is empty")
+			return nil, nil, errors.New("should not dial")
+		})
+
+	_, err := srv.GetCapacity(context.Background(), baseGetCapacityRequest())
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	st, _ := status.FromError(err)
+	if st.Code() != codes.Unavailable {
+		t.Errorf("error code = %v, want Unavailable", st.Code())
+	}
 }
