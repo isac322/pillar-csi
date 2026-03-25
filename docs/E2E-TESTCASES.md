@@ -11,7 +11,7 @@
 - 실제 커널 모듈, 실제 ZFS, 실제 NVMe-oF 장치를 요구하는 테스트는
   별도로 표시하고 현실적인 인프라 요구사항을 함께 기술한다.
 
-**총 테스트 케이스: 137** (인프로세스 134개 + 클러스터 레벨 3개)
+**총 테스트 케이스: 143** (인프로세스 140개 + 클러스터 레벨 3개; E18 Agent 다운 시나리오 7개 포함 / 수동 AD 시나리오 3개 별도)
 
 ---
 
@@ -42,6 +42,13 @@
 - [E15: 리소스 고갈 (Resource Exhaustion)](#e15-리소스-고갈-resource-exhaustion)
 - [E16: 동시 작업 (Concurrent Operations)](#e16-동시-작업-concurrent-operations)
 - [E17: 정리 검증 (Cleanup Validation)](#e17-정리-검증-cleanup-validation)
+- [E18: Agent 다운 오류 시나리오 (Agent Down Error Scenarios)](#e18-agent-다운-오류-시나리오-agent-down-error-scenarios)
+
+### 카테고리 1.5 — Envtest 통합 테스트 (유형 C: envtest 필요) ⚠️
+> 빌드 태그: `//go:build integration` | `make setup-envtest && go test -tags=integration ./internal/...` | envtest API 서버 · Docker/Kind 불필요 · CI 실행 가능
+
+- [E19: PillarTarget CRD 라이프사이클](#e19-pillartarget-crd-라이프사이클)
+- [E20: PillarPool CRD 라이프사이클](#e20-pillarpool-crd-라이프사이클)
 
 ### 카테고리 2 — 클러스터 레벨 E2E 테스트 (유형 B: Kind 클러스터 필요) ⚠️
 > 빌드 태그: `//go:build e2e` | `go test ./test/e2e/ -tags=e2e -v` | 총 3개 테스트
@@ -198,7 +205,8 @@ Docker-in-Docker(DinD) 또는 Kind 지원 러너가 없으면 실행 불가.
 | E15 | 리소스 고갈 오류 전파 | 6 | `TestCSIExhaustion_*` |
 | E16 | 동시 작업 안전성 | 7 | `TestCSIConcurrent_*` |
 | E17 | 정리 검증 | 8 | `TestCSICleanup_*` |
-| **합계** | | **134** | |
+| E18 | Agent 다운 오류 시나리오 | 6 | `TestCSIController_CreateVolume_AgentUnreachable`, `TestCSIErrors_*Agent*`, `TestAgent_ReconcileState*` |
+| **합계** | | **140** | |
 
 ---
 
@@ -1332,6 +1340,99 @@ CSI 연산 실패 또는 성공 후 부가 상태(상태 파일, PillarVolume CR
 
 ---
 
+## E18: Agent 다운 오류 시나리오 (Agent Down Error Scenarios)
+
+**테스트 유형:** A (인프로세스 E2E) ✅ CI 실행 가능
+
+CSI 에이전트(`pillar-csi-agent`)가 응답 불가, 연결 거부, 타임아웃 등 "다운" 상태일 때
+CSI ControllerServer와 NodeServer가 올바르게:
+1. **감지(Detection)**: 에이전트 불가 상태를 탐지한다.
+2. **보고(Reporting)**: 적절한 gRPC 상태 코드와 진단 메시지로 CO(Container Orchestrator)에 보고한다.
+3. **복구(Recovery)**: 에이전트가 재시작되면 `ReconcileState`를 통해 configfs 상태를 복원한다.
+
+> **설계 원칙:** CSI 명세에서 일시적 에이전트 실패는 Kubernetes 재시도 메커니즘(kubelet, CSI sidecar)이
+> 담당한다. CSI 컨트롤러/노드 서버는 에이전트 실패를 **삼키지 않고** CO에 명확히 보고해야 한다.
+
+**아키텍처 (E18 전용):**
+```
+CSI ControllerServer
+        │
+        ├─── AgentDialer ──► 연결 거부 / 타임아웃  ←─ 에이전트 다운 감지
+        │                        │
+        │              gRPC Unavailable / DeadlineExceeded 반환
+        │                        │
+        └───────────────────────────────────► CO에 비-OK 상태 보고
+
+에이전트 재시작 복구:
+  agent.NewServer() (인메모리 상태 없음)
+        │
+        └─► ReconcileState() ──► NvmetTarget.Apply() ──► configfs 재구성
+```
+
+---
+
+### E18.1 에이전트 연결 불가 감지
+
+CSI 컨트롤러가 에이전트 gRPC 다이얼 실패를 감지하고 적절한 오류를 반환하는지 검증한다.
+다이얼 실패 유형은 두 가지: (1) gRPC 상태 오류(`Unavailable`), (2) 평문 Go error.
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| 138 | `TestCSIController_CreateVolume_AgentUnreachable` | `AgentDialer`가 `codes.Unavailable("connection refused")` 반환 시 `CreateVolume`이 `Unavailable`을 그대로 전파 — 에이전트 프로세스가 완전히 다운된 경우 시뮬레이션 | `newCSIControllerTestEnvWithDialErr(t, status.Error(codes.Unavailable, "connection refused"))` 주입; 실제 에이전트 없이 다이얼 오류만 주입; PillarTarget CRD 등록 | 1) `CreateVolumeRequest` 전송; 2) 반환 오류의 gRPC 코드 확인 | `codes.Unavailable` 반환; PillarVolume CRD 미생성; `agent.CreateVolume` 미호출 | `CSI-C`, `gRPC` |
+| 139 | `TestCSIErrors_CreateVolume_AgentUnreachable_PlainError` | `AgentDialer`가 평문 Go error 반환 시(DNS 실패, 즉각적 연결 거부) 오류가 CO에 전파됨 — gRPC 상태 코드가 아닌 네트워크 레이어 오류 시뮬레이션 | `newCSIControllerTestEnvWithDialErr(t, errors.New("dial tcp 192.168.1.10:9500: connect: connection refused"))` 주입; PillarTarget CRD 등록 | 1) `CreateVolumeRequest` 전송; 2) 오류 유무 확인; 3) gRPC 상태 코드 확인 | 비-OK gRPC 상태(`codes.OK` 불가); 에이전트 호출 없음; 패닉 없음 | `CSI-C`, `gRPC` |
+
+---
+
+### E18.2 에이전트 타임아웃 및 오류 보고
+
+에이전트가 요청은 수신했으나 내부 처리 중 타임아웃이 발생하는 경우(에이전트는 살아있으나 ZFS I/O가 멈춘 상황),
+또는 에이전트 내부 서브시스템(configfs)이 부분 장애인 경우의 오류 보고를 검증한다.
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| 140 | `TestCSIErrors_CreateVolume_AgentDeadlineExceeded` | `agent.CreateVolume`이 `codes.DeadlineExceeded`("agent: ZFS command timed out") 반환 시 `ControllerServer`가 CO에 비-OK 상태 전파 — 에이전트 내부 ZFS 작업 타임아웃(스토리지 노드 과부하) 시뮬레이션 | `csiMockAgent.createVolumeFn`이 `status.Error(codes.DeadlineExceeded, "agent: ZFS command timed out")` 반환; PillarTarget CRD 등록 | 1) `CreateVolumeRequest` 전송 | 비-OK gRPC 상태(`codes.OK` 불가); PillarVolume CRD 미생성; 오류 메시지에 타임아웃 문맥 포함 가능 | `CSI-C`, `Agent`, `gRPC` |
+| 141 | `TestCSIErrors_ControllerExpand_AgentDeadlineExceeded` | `agent.ExpandVolume`이 `codes.DeadlineExceeded`("agent: ZFS expand timed out") 반환 시 `ControllerExpandVolume`이 비-OK 전파 — 확장 작업 중 에이전트 타임아웃 | `csiMockAgent.expandVolumeFn`이 `status.Error(codes.DeadlineExceeded, "agent: ZFS expand timed out")` 반환 | 1) `ControllerExpandVolumeRequest`(RequiredBytes=20GiB) 전송 | 비-OK gRPC 상태; `NodeExpansionRequired` 없음 | `CSI-C`, `Agent`, `gRPC` |
+| 142 | `TestCSIErrors_DeleteVolume_AgentDeadlineExceeded` | `agent.UnexportVolume`이 `codes.DeadlineExceeded`("agent: unexport timed out") 반환 시 `DeleteVolume`이 비-OK 전파 — 정리 작업 중 에이전트 타임아웃 | `csiMockAgent.unexportVolumeFn`이 `status.Error(codes.DeadlineExceeded, "agent: unexport timed out")` 반환 | 1) `DeleteVolumeRequest` 전송 | 비-OK gRPC 상태; 삭제 작업 중단; CRD 정리 롤백 여부는 구현 의존 | `CSI-C`, `Agent`, `gRPC` |
+| 143 | `TestCSIErrors_ControllerPublish_AllowInitiatorFails` | `agent.AllowInitiator`가 configfs 쓰기 실패(`codes.Internal`) 반환 시 `ControllerPublishVolume`이 오류 전파 — 에이전트 프로세스는 살아있으나 configfs가 손상된 부분 장애 시뮬레이션 | `csiMockAgent.allowInitiatorFn`이 `status.Error(codes.Internal, "AllowInitiator: configfs write failed: permission denied")` 반환 | 1) `ControllerPublishVolumeRequest`(NodeId=호스트 NQN) 전송 | 비-OK gRPC 상태; `ControllerPublishVolume` 오류 전파; 오류 삼킴 없음 | `CSI-C`, `Agent`, `gRPC` |
+
+---
+
+### E18.3 에이전트 재시작 복구
+
+에이전트 재시작 시뮬레이션: 새 `agent.Server` 인스턴스(인메모리 상태 없음)에
+`ReconcileState` RPC를 호출하여 configfs 상태가 복원되는지 검증한다.
+
+> **참고:** `TestAgent_ReconcileStateRestoresExports`는 [E9.3](#e93-재조정-복구)에 이미 기록되어 있다.
+> 여기서는 E18 문맥(**에이전트 다운 복구 시나리오**)에서의 의미를 추가 설명한다: 에이전트가 재시작되면
+> CSI 컨트롤러가 `ReconcileState`를 호출하여 인메모리 상태가 사라진 에이전트에 원하는 상태를 강제 적용한다.
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| 144 | `TestAgent_ReconcileStateRestoresExports` | 에이전트 재시작 후 `ReconcileState` 호출이 configfs NVMe-oF 서브시스템 엔트리를 재구성 — 프로세스 재시작으로 인메모리 상태가 사라진 후에도 configfs에 원하는 상태를 강제 적용 | `agent.NewServer(backends, tmpdir)`로 신선한 서버 생성(재시작 시뮬레이션, 기존 인메모리 상태 없음); tmpdir configfs 루트(초기 빈 상태); 볼륨 ID·디바이스 경로·ExportDesiredState·AllowedInitiators 목록 준비 | 1) `ReconcileState({volumes: [{VolumeId, DevicePath, Exports: [{NvmeofTcp params, AllowedInitiators: [hostNQN]}]}]})` 호출; 2) `tmpdir/nvmet/subsystems/<NQN>` 디렉터리 존재 확인; 3) `tmpdir/nvmet/hosts/<NQN>` 디렉터리 존재 확인; 4) `allowed_hosts/<NQN>` 심볼릭 링크 존재 확인; 5) 동일 요청으로 `ReconcileState` 재호출(멱등성 검증) | (1) `results[0].Success=true`; `results[0].VolumeId=volumeID`; (2) configfs 서브시스템 디렉터리 복원 완료; (3) 허용 이니시에이터 ACL 심볼릭 링크 존재; (4) `ReconcileState` 재호출 시 성공(멱등성) — 컨트롤러가 반복 호출해도 안전 | `Agent`, `NVMeF`, `gRPC` |
+
+---
+
+### E18.4 에이전트 다운 — CI에서 검증 불가 시나리오
+
+> **⚠️ CI 실행 불가** — 실제 에이전트 프로세스 재시작, 노드 재부팅, 실제 커널 NVMe-oF 상태가 필요하다.
+> 수동 스테이징 환경에서만 검증 가능.
+
+아래 시나리오는 **자동화 불가 이유**와 **수동 검증 방법**을 문서화하여,
+릴리스 전 스테이징 환경 체크리스트로 활용한다.
+
+**자동화 불가 이유:**
+- 실제 프로세스 종료/재시작은 `os.Exit()` 또는 시그널 전송이 필요하며, 인프로세스 테스트에서는 테스트 프로세스 자체가 종료된다.
+- 실제 커널 NVMe-oF 상태(`/sys/kernel/config/nvmet`)는 루트 권한 + `nvmet` 커널 모듈이 필요하다.
+- Kubernetes DaemonSet 재시작 동작은 실제 API 서버와 kubelet이 필요하다.
+
+| ID | 시나리오 | 사전 조건 | 수동 실행 절차 | 허용 기준 | 커버리지 |
+|----|---------|----------|--------------|---------|---------|
+| AD-1 | **에이전트 프로세스 강제 종료 후 재시작 — NVMe-oF 수출 지속성 검증** | 실제 NVMe-oF 수출 설정이 완료된 스토리지 노드; 실제 `/sys/kernel/config` 마운트; 진행 중인 클라이언트 NVMe 연결 | 1) `kill -9 <agent-pid>` 실행; 2) `/sys/kernel/config/nvmet/subsystems/` 아래 엔트리 유지 확인(`ls`); 3) 클라이언트 노드에서 NVMe 연결 지속성 확인(`nvme list`); 4) 에이전트 재시작(`systemctl start pillar-agent`); 5) CSI 컨트롤러의 `ReconcileState` 호출 확인(에이전트 로그); 6) 볼륨 I/O 정상 확인 | 에이전트 종료 중에도 커널 NVMe-oF 상태 유지; 재시작 후 `ReconcileState`로 상태 동기화 완료; 클라이언트 I/O 무중단(또는 짧은 중단 후 자동 재연결) | `Agent`, `NVMeF`, `실제 커널` |
+| AD-2 | **CSI 컨트롤러가 에이전트 다운 감지 후 PillarTarget 상태 갱신** | 실제 Kubernetes 클러스터; cert-manager; mTLS 설정 완료; `PillarTarget` CRD 존재; 에이전트 정상 실행 중 | 1) `kubectl get pillartarget -o yaml`로 초기 `AgentConnected=True` 확인; 2) 에이전트 중지(`systemctl stop` 또는 `kill -STOP`); 3) CSI 컨트롤러 `HealthCheck` 폴링 주기(~30초) 대기; 4) `kubectl get pillartarget -o yaml` 재확인; 5) 에이전트 재시작 후 상태 복원 확인 | 에이전트 중지 후: `PillarTarget.Status.Conditions[AgentConnected].Status=False`, `Reason=HealthCheckFailed` 또는 `ConnectionLost`; 에이전트 재시작 후: `AgentConnected=True` 복원 | `mTLS`, `TgtCRD`, `Agent` |
+| AD-3 | **에이전트 OOM Kill 후 Kubernetes 자동 복구** | Kubernetes 스토리지 노드에 배포된 에이전트 DaemonSet; `restartPolicy: Always`; 진행 중인 PVC 사용 파드 | 1) `kubectl exec -n pillar-csi <agent-pod> -- kill -9 1`(PID 1 강제 종료); 2) `kubectl get pod -n pillar-csi -w`로 재시작 관찰; 3) 재시작 후 `kubectl describe pod`에서 Restart Count 확인; 4) 기존 PVC를 사용하는 파드의 I/O 정상 확인 | Kubernetes가 에이전트 파드를 자동 재시작; 재시작 후 `ReconcileState`로 상태 복원; 기존 PVC 마운트는 커널 NVMe 레이어에서 지속됨(I/O 무중단 또는 짧은 중단 후 자동 복구) | `Agent`, `NVMeF`, `실제 커널`, `Kubernetes클러스터` |
+
+---
+
 # 카테고리 2 — 클러스터 레벨 E2E 테스트 (유형 B: Kind 클러스터 필요) ⚠️
 
 > **빌드 태그:** `//go:build e2e` | **실행:** `go test ./test/e2e/ -tags=e2e -v`
@@ -1383,6 +1484,11 @@ self-hosted 러너 또는 전용 스테이징 서버가 필요하다.
 ---
 
 ## 유형 F: 완전 E2E 테스트 (Full E2E) ❌ 표준 CI 불가
+
+> ⚠️ **참조:** 이 섹션은 `//go:build e2e_full` 태그를 사용하는 F1–F26 체계이다.
+> 문서 하단의 [수동/스테이징 테스트 카탈로그](#수동스테이징-테스트-카탈로그-manualstaging-tests)는
+> `//go:build hardware` 태그를 사용하는 별도의 F1–F12 체계이며, **F4 이후 번호가 충돌한다.**
+> 구현 시 두 섹션 중 하나의 체계로 통일해야 한다.
 
 이 섹션은 **실제 스토리지 백엔드(ZFS, NVMe-oF), 실제 커널 모듈, 실제 Kubernetes
 클러스터 + pillar-agent**를 필요로 하는 완전 E2E 테스트의 권위 있는 명세이다.
@@ -3718,6 +3824,18 @@ go test ./test/e2e/ -v -run "TestAgent_ErrorHandling"
 ---
 
 ## 수동/스테이징 테스트 카탈로그 (Manual/Staging Tests)
+
+> ⚠️ **F-번호 충돌 주의 (Level Coordinator 해결 필요):**
+> 이 섹션과 위의 [유형 F: 완전 E2E 테스트](#유형-f-완전-e2e-테스트-full-e2e--표준-ci-불가) 섹션은
+> **서로 다른 AC가 독립적으로 작성**되어 F-번호 체계가 충돌한다.
+>
+> | 섹션 | 빌드 태그 | F-번호 체계 | 특징 |
+> |------|----------|------------|------|
+> | 유형 F (위, line ~1385) | `//go:build e2e_full` | F1–F26 (F4=K8s PVC, F8=실제 마운트, ...) | agent.Server gRPC 통합 레벨 |
+> | 이 섹션 (아래) | `//go:build hardware` | F1–F12 (F4=실제 마운트, F5=K8s PVC, ...) | backend/component 레벨, 6-필드 명세 완비 |
+>
+> **F1–F3 (ZFS, NVMe-oF configfs, NVMe-oF initiator)은 양쪽에 동일 함수명으로 존재하나 세부 내용이 다르다.**
+> F4 이후부터 F-번호가 완전히 달라진다. 구현 시 두 스킴 중 하나로 통일해야 한다.
 
 이 섹션은 **자동화된 CI 파이프라인에서 실행할 수 없는** 테스트 전체 목록을 정의한다.
 각 테스트에 대해:
