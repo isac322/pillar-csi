@@ -78,15 +78,21 @@ spec:
             capabilities:
               add:
                 - SYS_ADMIN
-          {{- with .Values.node.extraArgs }}
+          # Explicit args ensure the node uses Values-driven paths rather than compiled-in defaults.
+          # --node-id is sourced from NODE_NAME env var (fieldRef injection below);
+          # the binary reads that env var automatically when --node-id is not passed.
           args:
-            {{- toYaml . | nindent 12 }}
-          {{- end }}
+            - --csi-socket={{ .Values.node.csiSocketPath }}
+            {{- range .Values.node.extraArgs }}
+            - {{ . | quote }}
+            {{- end }}
           env:
+            # NODE_NAME is used by the binary as the unique node identifier.
             - name: NODE_NAME
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
+            # POD_NAMESPACE is available for any future namespace-aware logic.
             - name: POD_NAMESPACE
               valueFrom:
                 fieldRef:
