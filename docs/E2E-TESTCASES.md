@@ -15,6 +15,53 @@
 
 ---
 
+## 목차
+
+### 문서 구조
+- [테스트 케이스 필드 정의](#테스트-케이스-필드-정의)
+- [테스트 환경 분류](#테스트-환경-분류)
+- [CI 실행 가능 테스트 카탈로그](#ci-실행-가능-테스트-카탈로그)
+- [테스트 더블 피델리티 노트](#테스트-더블-피델리티-노트)
+
+### 카테고리 1 — 표준 CI 실행 가능 테스트 (유형 A: 인프로세스 E2E) ✅
+> 빌드 태그 없음 | `go test ./test/e2e/ -v` | 총 134개 테스트
+
+- [E1: 볼륨 라이프사이클 — CreateVolume / DeleteVolume](#e1-볼륨-라이프사이클--createvolume--deletevolume)
+- [E2: CSI Controller — ControllerPublish / ControllerUnpublish / ControllerExpandVolume](#e2-csi-controller--controllerpublish--controllerunpublish--controllerexpandvolume)
+- [E3: CSI Node — NodeStage / NodePublish / NodeUnpublish / NodeUnstage](#e3-csi-node--nodestage--nodepublish--nodeunpublish--nodeunstage)
+- [E4: 교차-컴포넌트 CSI 라이프사이클](#e4-교차-컴포넌트-csi-라이프사이클)
+- [E5: 순서 제약 (Ordering Constraints)](#e5-순서-제약-ordering-constraints)
+- [E6: 부분 실패 영속성 (Partial Failure Persistence)](#e6-부분-실패-영속성-partial-failure-persistence)
+- [E7: 게시 멱등성 (Publish Idempotency)](#e7-게시-멱등성-publish-idempotency)
+- [E8: mTLS 컨트롤러 통합 테스트](#e8-mtls-컨트롤러-통합-테스트)
+- [E9: Agent gRPC E2E 테스트](#e9-agent-grpc-e2e-테스트)
+- [E11: 볼륨 확장(Volume Expansion) 통합 E2E](#e11-볼륨-확장volume-expansion-통합-e2e)
+- [E12: CSI 스냅샷 (현재 미구현)](#e12-csi-스냅샷-현재-미구현)
+- [E13: 볼륨 클론 및 데이터 마이그레이션 (현재 부분 구현)](#e13-볼륨-클론-및-데이터-마이그레이션-현재-부분-구현)
+- [E14: 잘못된 입력값 및 엣지 케이스 (Invalid Inputs & Edge Cases)](#e14-잘못된-입력값-및-엣지-케이스-invalid-inputs--edge-cases)
+- [E15: 리소스 고갈 (Resource Exhaustion)](#e15-리소스-고갈-resource-exhaustion)
+- [E16: 동시 작업 (Concurrent Operations)](#e16-동시-작업-concurrent-operations)
+- [E17: 정리 검증 (Cleanup Validation)](#e17-정리-검증-cleanup-validation)
+
+### 카테고리 2 — 클러스터 레벨 E2E 테스트 (유형 B: Kind 클러스터 필요) ⚠️
+> 빌드 태그: `//go:build e2e` | `go test ./test/e2e/ -tags=e2e -v` | 총 3개 테스트
+
+- [E10: 클러스터 레벨 E2E 테스트](#e10-클러스터-레벨-e2e-테스트)
+
+### 카테고리 3 — 완전 E2E / 수동 스테이징 테스트 (유형 F) ❌
+> 빌드 태그: `//go:build e2e_full` | 실제 ZFS/NVMe-oF 커널 모듈 필요 | 베어메탈/KVM 서버 필요
+
+- [유형 F: 완전 E2E 테스트 (Full E2E)](#유형-f-완전-e2e-테스트-full-e2e--표준-ci-불가)
+- [수동/스테이징 테스트 카탈로그 (Manual/Staging Tests)](#수동스테이징-테스트-카탈로그-manualstaging-tests)
+
+### 부록
+- [부록: 테스트 실행 참조](#부록-테스트-실행-참조)
+- [부록: CI 환경에서 루프백 장치를 이용한 ZFS 스토리지 모킹](#부록-ci-환경에서-루프백-장치를-이용한-zfs-스토리지-모킹)
+- [부록: Fake Configfs — NVMe-oF 설정 파일시스템 CI 시뮬레이션](#부록-fake-configfs--nvme-of-설정-파일시스템-ci-시뮬레이션)
+- [부록: Mock Agent 모드 — CI에서 CSI 에이전트 시뮬레이션](#부록-mock-agent-모드--ci에서-csi-에이전트-시뮬레이션)
+
+---
+
 ## 테스트 케이스 필드 정의
 
 각 테스트 케이스는 아래 **6가지 필드**를 포함한다.
@@ -405,6 +452,19 @@ jobs:
 //   - Watch/List 인포머 없음; 필요 시 직접 Get 사용.
 //   - 실제 CRD 검증 웹훅 미실행.
 ```
+
+---
+
+# 카테고리 1 — 표준 CI 실행 가능 테스트 (유형 A: 인프로세스 E2E) ✅
+
+> **빌드 태그:** 없음 | **실행:** `go test ./test/e2e/ -v`
+>
+> Kubernetes 클러스터 불필요 · 커널 모듈 불필요 · root 권한 불필요 · 총 **134개** 테스트
+
+이 카테고리의 테스트는 **표준 CI 환경(GitHub Actions `ubuntu-22.04` 러너 등)** 에서
+아무런 추가 인프라 없이 실행된다. 실제 ZFS, NVMe-oF, Kubernetes API 서버 대신
+in-process 테스트 더블(mockAgentServer, mockCSIConnector, mockCSIMounter, fake k8s client)을
+사용하여 교차-컴포넌트 동작을 검증한다.
 
 ---
 
@@ -883,29 +943,8 @@ PillarTarget 컨트롤러 ↔ pillar-agent mTLS 신뢰 경계를 실제 gRPC 리
 
 ---
 
-## E10: 클러스터 레벨 E2E 테스트
-
-**테스트 유형:** B (클러스터 레벨) ❌ 표준 CI 불가
-
-**빌드 태그:** `//go:build e2e`
-
-**실행 방법:**
-```bash
-# Kind 클러스터 준비 후
-go test ./test/e2e/ -tags=e2e -v -run TestE2E
-```
-
-**필수 인프라:** [유형 B 섹션 참조](#유형-b-클러스터-레벨cluster-level-e2e-테스트--표준-ci-불가)
-
----
-
-### E10.1 매니저 배포 검증
-
-| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
-|----|------------|------|----------|------|----------|---------|
-| 68 | `TestE2E/Manager_컨트롤러_파드_실행_확인` | pillar-csi-controller-manager 파드가 `pillar-csi-system` 네임스페이스에서 정상 실행됨 | Kind 클러스터; `make docker-build` 후 이미지 로드; CRD 설치; 매니저 배포 완료 | 1) pillar-csi-system 네임스페이스에서 파드 목록 조회; 2) 파드 상태 확인 | 컨트롤러 파드가 Running 상태; 재시작 없음 | `전체시스템`, `Kubernetes클러스터` |
-| 69 | `TestE2E/매니저_메트릭스_서비스_접근_가능` | RBAC RoleBinding 생성 후 `/metrics` 엔드포인트에서 메트릭 수집 가능 | Kind 클러스터; 컨트롤러 파드 Running; 메트릭 RoleBinding 생성 | 1) kubectl port-forward 또는 직접 curl로 /metrics 접근 | HTTP 200 응답; Go 런타임 메트릭 포함 | `전체시스템`, `Kubernetes클러스터` |
-| 70 | `TestE2E/cert-manager_통합` | cert-manager가 설치된 환경에서 TLS 인증서 발급 동작 | Kind 클러스터; cert-manager v1.14+ 설치 완료; 클러스터 배포 | 1) cert-manager Certificate 리소스 상태 확인 | 인증서 발급 성공; Secret에 tls.crt/tls.key 존재 | `전체시스템`, `cert-manager`, `TgtCRD` |
+> **📋 참고:** E10 (클러스터 레벨 E2E 테스트) 은 **유형 B 테스트** 이므로
+> 카테고리 1과 분리하여 [카테고리 2 섹션](#카테고리-2--클러스터-레벨-e2e-테스트-유형-b-kind-클러스터-필요-)에 기술되어 있다.
 
 ---
 
