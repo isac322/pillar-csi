@@ -17,12 +17,15 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// external_agent_reconciliation_test.go — E2E reconciliation tests for the
+// external_agent_reconciliation_test.go — E2E reconciliation specs for the
 // external (out-of-cluster) agent mode.
 //
-// This file contains end-to-end reconciliation test cases that verify the
-// pillar-csi controller correctly processes CRs when pointed at an external
-// agent.  Tests exercise the full reconciliation pipeline:
+// These specs are part of the unified e2e Ginkgo suite (TestE2E in
+// e2e_suite_test.go) and run automatically when go test is invoked with the
+// e2e build tag.  There is no separate entry point — TestMain in setup_test.go
+// owns the full cluster and agent lifecycle.
+//
+// These specs exercise the full reconciliation pipeline:
 //
 //   PillarTarget → PillarPool → PillarProtocol → PillarBinding → StorageClass
 //
@@ -31,51 +34,26 @@ limitations under the License.
 // (ReconcileState, ListVolumes, GetCapacity) to confirm the agent picks up
 // work and returns well-formed responses.
 //
-// # Cluster prerequisites
+// # Enabling external-agent reconciliation tests
 //
-// The Kind cluster (pillar-csi-e2e) must already exist and have the pillar-csi
-// Helm chart deployed.  Run hack/e2e-setup.sh first, then set KUBECONFIG:
+//	make test-e2e E2E_LAUNCH_EXTERNAL_AGENT=true
 //
-//	export KUBECONFIG=$(kind get kubeconfig --name pillar-csi-e2e)
-//
-// The agent binary must be compiled before running:
-//
-//	make build     # produces bin/pillar-agent
-//
-// # Running the suite
-//
-//	go test -tags=e2e ./test/e2e/ -v -run TestExternalAgentReconciliation
-//
-// # Configuration
-//
-//	EXTERNAL_AGENT_BINARY              path to compiled agent binary
-//	                                   (default: bin/pillar-agent)
-//	RECON_AGENT_PORT                   TCP port for this suite's agent instance
-//	                                   (default: 9502; distinct from port 9501
-//	                                   used by TestExternalAgent)
-//	EXTERNAL_AGENT_ZFS_POOL            ZFS pool name passed via --zfs-pool
-//	                                   (default: e2e-pool)
-//	AGENT_READY_TIMEOUT                seconds to wait for port to open
-//	                                   (default: 30)
-//	KUBECONFIG                         path to kubeconfig (standard lookup)
-//	EXTERNAL_AGENT_CLUSTER_ADDRESS     host:port reachable from Kind pods;
-//	                                   required for all K8s CR tests
-//	                                   (skip entire cluster section when absent)
+// When neither E2E_LAUNCH_EXTERNAL_AGENT nor EXTERNAL_AGENT_ADDR is set,
+// all specs in this file skip automatically.
 //
 // # Design notes
 //
-//   - This suite is fully self-contained.  It does NOT share state with
-//     TestExternalAgent (external_agent_test.go).  It starts its own agent
-//     process and creates its own cluster client.
+//   - The Docker-started agent address is consumed from testEnv.ExternalAgentAddr
+//     (populated by TestMain before m.Run()).
+//
+//   - K8s CR tests additionally require EXTERNAL_AGENT_CLUSTER_ADDRESS (set
+//     automatically by TestMain when E2E_LAUNCH_EXTERNAL_AGENT=true).  When
+//     absent only the gRPC work-item specs run; the K8s sections skip.
 //
 //   - All CRs created by this suite use unique names to avoid collisions with
-//     the TestExternalAgent suite or with parallel test runs.
+//     the ExternalAgent suite or parallel test runs.
 //
 //   - All cleanup is registered via DeferCleanup so it fires on panic/failure.
-//
-//   - K8s CR tests are wrapped in a nested Ordered Context guarded by a Skip
-//     call when EXTERNAL_AGENT_CLUSTER_ADDRESS is not set, allowing the gRPC
-//     tests to run standalone without a full cluster.
 package e2e
 
 import (
@@ -83,9 +61,7 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"path/filepath"
 	"strconv"
-	"testing"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -102,37 +78,14 @@ import (
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Suite entry point
-// ─────────────────────────────────────────────────────────────────────────────
-
-// TestExternalAgentReconciliation is the Ginkgo entry point for the
-// external-agent reconciliation e2e suite.
-//
-// Run with:
-//
-//	KUBECONFIG=$(kind get kubeconfig --name pillar-csi-e2e) \
-//	EXTERNAL_AGENT_CLUSTER_ADDRESS=<host>:<port> \
-//	  go test -tags=e2e ./test/e2e/ -v -run TestExternalAgentReconciliation
-func TestExternalAgentReconciliation(t *testing.T) {
-	RegisterFailHandler(Fail)
-	_, _ = fmt.Fprintf(GinkgoWriter, "Starting ExternalAgentReconciliation e2e suite\n")
-	RunSpecs(t, "ExternalAgent Reconciliation Suite")
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Suite-level state
 // ─────────────────────────────────────────────────────────────────────────────
 
 // reconAgentState bundles all resources allocated during BeforeAll.
 type reconAgentState struct {
-	// addr is "host:port" of the locally-running agent gRPC server.
+	// addr is "host:port" of the Docker-started agent gRPC server.
+	// Populated from testEnv.ExternalAgentAddr (set by TestMain).
 	addr string
-
-	// proc is the running agent OS process.  Terminated in AfterAll.
-	proc *os.Process
-
-	// tmpDir is the base temporary directory.  Removed in AfterAll.
-	tmpDir string
 
 	// suite wraps the controller-runtime client.  Nil when no cluster
 	// address is configured.
@@ -149,54 +102,23 @@ var reconState *reconAgentState
 
 var _ = Describe("ExternalAgentReconciliation", Ordered, func() {
 
-	// ── BeforeAll: agent process + optional cluster connection ──────────────
+	// ── BeforeAll: consume Docker-started agent + optional cluster connection ─
 	BeforeAll(func(ctx SpecContext) {
 		reconState = &reconAgentState{}
 
-		// 1. Resolve and verify agent binary.
-		agentBin := reconResolveBinary()
-		By(fmt.Sprintf("agent binary: %s", agentBin))
-		Expect(agentBin).NotTo(BeEmpty(), "EXTERNAL_AGENT_BINARY or default bin/pillar-agent must exist")
+		// Skip when TestMain did not start an external agent Docker container.
+		if testEnv.ExternalAgentAddr == "" {
+			Skip("external-agent mode not enabled — set E2E_LAUNCH_EXTERNAL_AGENT=true " +
+				"or EXTERNAL_AGENT_ADDR to run external-agent reconciliation tests")
+		}
 
-		info, err := os.Stat(agentBin)
-		Expect(err).NotTo(HaveOccurred(),
-			"agent binary not found — build first with 'make build' or set EXTERNAL_AGENT_BINARY")
-		Expect(info.Mode()&0o111).NotTo(BeZero(),
-			"agent binary is not executable: %s", agentBin)
+		// Consume the Docker-started agent address from TestMain.
+		reconState.addr = testEnv.ExternalAgentAddr
+		By(fmt.Sprintf("reconciliation agent addr (from TestMain): %s", reconState.addr))
 
-		// 2. Create temporary directory for this run.
-		reconState.tmpDir, err = os.MkdirTemp("", "pillar-csi-e2e-recon-agent-*")
-		Expect(err).NotTo(HaveOccurred(), "create temporary suite directory")
-		configfsRoot := filepath.Join(reconState.tmpDir, "configfs")
-		Expect(os.MkdirAll(configfsRoot, 0o750)).To(Succeed(), "create configfs simulation dir")
-		By(fmt.Sprintf("configfs root: %s", configfsRoot))
-
-		// 3. Determine listen address and ZFS pool name.
-		port := reconAgentPort()
-		reconState.addr = net.JoinHostPort("127.0.0.1", port)
-		pool := reconAgentZFSPool()
-		By(fmt.Sprintf("reconciliation agent addr: %s  pool: %s", reconState.addr, pool))
-
-		// 4. Spawn agent process.
-		reconState.proc, err = extAgentStart(agentBin, reconState.addr, pool, configfsRoot)
-		Expect(err).NotTo(HaveOccurred(), "spawn reconciliation agent process")
-		By(fmt.Sprintf("agent process started (pid %d)", reconState.proc.Pid))
-
-		// Register cleanup via DeferCleanup so it fires even on BeforeAll failure.
-		DeferCleanup(reconAgentStop, reconState)
-
-		// 5. Wait for agent gRPC port.
-		readyTimeout := extAgentReadyTimeout()
-		By(fmt.Sprintf("waiting up to %s for agent on %s", readyTimeout, reconState.addr))
-		Eventually(func() error {
-			return extAgentProbe(reconState.addr)
-		}, readyTimeout, 500*time.Millisecond).Should(Succeed(),
-			"reconciliation agent gRPC port did not become ready within %s", readyTimeout)
-		By(fmt.Sprintf("reconciliation agent ready at %s", reconState.addr))
-
-		// 6. Connect to Kind cluster (optional: skip if no cluster address).
-		//    We always attempt connection; the K8s contexts below Skip themselves
-		//    if EXTERNAL_AGENT_CLUSTER_ADDRESS is absent.
+		// Connect to the Kind cluster (optional: skip K8s CR tests when
+		// cluster is not reachable).  KUBECONFIG is set by TestMain.
+		var err error
 		reconState.suite, err = framework.SetupSuite(
 			framework.WithConnectTimeout(30 * time.Second),
 		)
@@ -209,12 +131,11 @@ var _ = Describe("ExternalAgentReconciliation", Ordered, func() {
 		}
 	})
 
-	// ── AfterAll: teardown ───────────────────────────────────────────────────
+	// ── AfterAll: disconnect from cluster ────────────────────────────────────
 	AfterAll(func() {
 		if reconState != nil && reconState.suite != nil {
 			reconState.suite.TeardownSuite()
 		}
-		// reconAgentStop is registered via DeferCleanup in BeforeAll.
 	})
 
 	// ════════════════════════════════════════════════════════════════════════
@@ -385,8 +306,8 @@ var _ = Describe("ExternalAgentReconciliation", Ordered, func() {
 
 	Context("PillarTarget status reconciliation", Ordered, func() {
 		var (
-			target     *v1alpha1.PillarTarget
-			targetName string
+			target      *v1alpha1.PillarTarget
+			targetName  string
 			clusterAddr reconClusterAddr
 		)
 
@@ -414,9 +335,10 @@ var _ = Describe("ExternalAgentReconciliation", Ordered, func() {
 			})
 		})
 
-		// spec: controller connects and populatees the three primary status fields.
+		// spec: controller connects and populates the three primary status fields.
 
 		It("controller populates resolvedAddress, agentVersion and capabilities", func(ctx SpecContext) {
+
 			By(fmt.Sprintf("waiting for AgentConnected=True on PillarTarget %q", targetName))
 			err := framework.WaitForCondition(ctx, reconState.suite.Client, target,
 				"AgentConnected", metav1.ConditionTrue, 2*time.Minute)
@@ -529,10 +451,10 @@ var _ = Describe("ExternalAgentReconciliation", Ordered, func() {
 
 	Context("PillarPool reconciliation lifecycle", Ordered, func() {
 		var (
-			target     *v1alpha1.PillarTarget
-			pool       *v1alpha1.PillarPool
-			targetName string
-			poolName   string
+			target      *v1alpha1.PillarTarget
+			pool        *v1alpha1.PillarPool
+			targetName  string
+			poolName    string
 			clusterAddr reconClusterAddr
 		)
 
@@ -1085,10 +1007,10 @@ var _ = Describe("ExternalAgentReconciliation", Ordered, func() {
 
 	Context("deletion cascade: PillarPool TargetReady after target deletion", Ordered, func() {
 		var (
-			target     *v1alpha1.PillarTarget
-			pool       *v1alpha1.PillarPool
-			targetName string
-			poolName   string
+			target      *v1alpha1.PillarTarget
+			pool        *v1alpha1.PillarPool
+			targetName  string
+			poolName    string
 			clusterAddr reconClusterAddr
 		)
 
@@ -1164,74 +1086,10 @@ var _ = Describe("ExternalAgentReconciliation", Ordered, func() {
 // Configuration helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-// reconResolveBinary reuses the same binary resolution as extAgentResolveBinary
-// in external_agent_test.go — both functions exist in the same package and
-// follow identical logic; this copy makes the reconciliation file self-contained.
-func reconResolveBinary() string {
-	if v := os.Getenv("EXTERNAL_AGENT_BINARY"); v != "" {
-		return v
-	}
-	rel := filepath.Join("..", "..", "bin", "pillar-agent")
-	if abs, err := filepath.Abs(rel); err == nil {
-		return abs
-	}
-	return rel
-}
-
-// reconAgentPort returns the TCP port for this suite's agent instance.
-// Reads RECON_AGENT_PORT (default: "9502").
-// Using a distinct port avoids conflicts with TestExternalAgent (9501).
-func reconAgentPort() string {
-	if v := os.Getenv("RECON_AGENT_PORT"); v != "" {
-		return v
-	}
-	return "9502"
-}
-
 // reconAgentZFSPool returns the ZFS pool name for this suite's agent.
 // Reads EXTERNAL_AGENT_ZFS_POOL (default: "e2e-pool").
 func reconAgentZFSPool() string {
-	return extAgentZFSPool() // reuse the same env-var logic
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Process management helpers
-// ─────────────────────────────────────────────────────────────────────────────
-
-// reconAgentStop terminates the reconciliation agent and removes temp dir.
-// Mirrors extAgentStop; uses reconAgentState instead of externalAgentState.
-func reconAgentStop(state *reconAgentState) {
-	if state == nil {
-		return
-	}
-
-	if state.proc != nil {
-		pid := state.proc.Pid
-		By(fmt.Sprintf("sending SIGINT to reconciliation agent (pid %d)", pid))
-		_ = state.proc.Signal(os.Interrupt)
-
-		done := make(chan struct{})
-		go func() {
-			_, _ = state.proc.Wait()
-			close(done)
-		}()
-
-		select {
-		case <-done:
-			By(fmt.Sprintf("reconciliation agent (pid %d) exited cleanly", pid))
-		case <-time.After(10 * time.Second):
-			By(fmt.Sprintf("reconciliation agent (pid %d) did not exit in 10 s — force-killing", pid))
-			_ = state.proc.Kill()
-			<-done
-		}
-		state.proc = nil
-	}
-
-	if state.tmpDir != "" {
-		By(fmt.Sprintf("removing reconciliation agent temp dir: %s", state.tmpDir))
-		_ = os.RemoveAll(state.tmpDir)
-		state.tmpDir = ""
-	}
+	return extAgentZFSPool() // reuse the same env-var logic from external_agent_test.go
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

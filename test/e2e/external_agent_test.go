@@ -17,61 +17,39 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// external_agent_test.go — E2E tests for the external (out-of-cluster) agent mode.
+// external_agent_test.go — E2E specs for the external (out-of-cluster) agent mode.
 //
-// This file scaffolds a Ginkgo test suite that starts the pillar-agent binary
-// directly on the test host (out-of-cluster), dials it over gRPC, and verifies
-// that the pillar-csi controller can reach it through a PillarTarget CR whose
-// Spec.External.Address points at the locally-bound port.
+// These specs are registered as part of the unified e2e Ginkgo suite (TestE2E
+// in e2e_suite_test.go) and run automatically when go test is invoked with
+// the e2e build tag.  There is no separate entry point — all lifecycle
+// management (Kind cluster, Docker images, Helm install, external-agent
+// Docker container) is performed by TestMain in setup_test.go.
 //
-// # Cluster prerequisites
+// # Enabling external-agent tests
 //
-// The Kind cluster (pillar-csi-e2e) must already exist and have the pillar-csi
-// Helm chart deployed.  Run hack/e2e-setup.sh first, then set KUBECONFIG:
+// Set E2E_LAUNCH_EXTERNAL_AGENT=true before running the suite to have TestMain
+// start a Docker container running the agent image on the Kind network and
+// expose it to both the test process (127.0.0.1:<port>) and to in-cluster
+// pods via the "kind" Docker bridge:
 //
-//	export KUBECONFIG=$(kind get kubeconfig --name pillar-csi-e2e)
+//	make test-e2e E2E_LAUNCH_EXTERNAL_AGENT=true
 //
-// The agent binary must be compiled before running:
+// Alternatively, point the suite at an already-running agent by setting
+// EXTERNAL_AGENT_ADDR=<host>:<port> and EXTERNAL_AGENT_CLUSTER_ADDRESS.
 //
-//	make build     # produces bin/pillar-agent
-//
-// # Running the suite
-//
-//	go test -tags=e2e ./test/e2e/ -v -run TestExternalAgent
-//
-// Alternatively, use the e2e Makefile target which sets KUBECONFIG and builds
-// the binary automatically before invoking go test.
-//
-// # Configuration
-//
-// All tunable parameters are read from environment variables so that the suite
-// works both in CI (ubuntu-latest) and on a developer's macOS workstation:
-//
-//	EXTERNAL_AGENT_BINARY    path to compiled agent binary
-//	                         (default: bin/pillar-agent relative to repo root)
-//	EXTERNAL_AGENT_PORT      TCP port for the out-of-cluster agent to listen on
-//	                         (default: 9501; use ≠ 9500 to avoid collision with
-//	                         the Docker-based agent started by e2e-external-agent.sh)
-//	EXTERNAL_AGENT_ZFS_POOL  ZFS pool name passed via --zfs-pool
-//	                         (default: e2e-pool)
-//	AGENT_READY_TIMEOUT      seconds to wait for the gRPC port to open
-//	                         (default: 30)
-//	KUBECONFIG               path to kubeconfig for the Kind cluster
-//	                         (default: standard kubeconfig lookup order)
+// When neither variable is set these specs skip automatically.
 //
 // # Design notes
 //
-//   - Agent lifecycle (start/stop) is managed with BeforeAll/AfterAll inside an
-//     Ordered Describe block rather than at suite (BeforeSuite/AfterSuite) level.
-//     This avoids conflicting with the global BeforeSuite in e2e_suite_test.go.
+//   - Agent lifecycle is owned by TestMain.  The Ginkgo specs here consume
+//     testEnv.ExternalAgentAddr which is populated by startExternalAgentContainer
+//     before m.Run() is called.
 //
-//   - The agent is started with --configfs-root pointing at a t.TempDir so that
-//     NVMe-oF configfs path code is exercised without needing kernel nvmet modules.
+//   - Cluster connectivity uses framework.SetupSuite which honours the KUBECONFIG
+//     env var.  KUBECONFIG is exported by TestMain's ensureKindCluster so no
+//     additional setup is required in these specs.
 //
-//   - Kubeconfig for the Kind cluster is loaded via framework.SetupSuite which
-//     honours the KUBECONFIG env var (set by kind get kubeconfig or e2e-setup.sh).
-//
-//   - All cleanup (process termination, temp dir removal) is registered with
+//   - All cleanup (PillarTarget deletion, suite teardown) is registered with
 //     DeferCleanup / AfterAll so that it runs even when a spec panics or fails.
 package e2e
 
@@ -80,10 +58,7 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"strconv"
-	"testing"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -99,37 +74,16 @@ import (
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Suite entry point
-// ─────────────────────────────────────────────────────────────────────────────
-
-// TestExternalAgent is the Ginkgo entry point for the external-agent e2e suite.
-//
-// Run with:
-//
-//	KUBECONFIG=$(kind get kubeconfig --name pillar-csi-e2e) \
-//	  go test -tags=e2e ./test/e2e/ -v -run TestExternalAgent
-func TestExternalAgent(t *testing.T) {
-	RegisterFailHandler(Fail)
-	_, _ = fmt.Fprintf(GinkgoWriter, "Starting ExternalAgent e2e suite\n")
-	RunSpecs(t, "ExternalAgent E2E Suite")
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Suite-level state (populated in BeforeAll, read by all specs)
 // ─────────────────────────────────────────────────────────────────────────────
 
 // externalAgentState bundles every resource allocated during BeforeAll so
 // that AfterAll can release it all in one place.
 type externalAgentState struct {
-	// addr is the "host:port" of the locally-running agent gRPC server.
+	// addr is the "host:port" of the Docker-started agent gRPC server.
+	// Populated from testEnv.ExternalAgentAddr which is set by TestMain's
+	// startExternalAgentContainer before m.Run() is called.
 	addr string
-
-	// proc is the running agent OS process.  Terminated in AfterAll.
-	proc *os.Process
-
-	// tmpDir is the base temporary directory for this suite run.
-	// Contains the simulated configfs subtree.  Removed in AfterAll.
-	tmpDir string
 
 	// suite wraps the controller-runtime client connected to the Kind cluster.
 	// Specs use suite.Client to create/delete Kubernetes CRs.
@@ -144,79 +98,43 @@ var extState *externalAgentState
 // ─────────────────────────────────────────────────────────────────────────────
 
 var _ = Describe("ExternalAgent", Ordered, func() {
-	// ── BeforeAll: cluster connect + agent process lifecycle ────────────────
+	// ── BeforeAll: connect to Docker-started agent + cluster ────────────────
 	//
 	// BeforeAll runs once before the first spec in this Ordered Describe block.
-	// It is roughly equivalent to a BeforeSuite scoped to these specs only,
-	// which avoids conflicts with the global BeforeSuite in e2e_suite_test.go.
+	// It guards against the suite running in internal-agent mode (where
+	// testEnv.ExternalAgentAddr is empty) and wires specs to the Docker
+	// container started by TestMain.
 	BeforeAll(func(ctx SpecContext) {
 		extState = &externalAgentState{}
 
-		// 1. Resolve the agent binary path from env or derive from repo root.
-		agentBin := extAgentResolveBinary()
-		By(fmt.Sprintf("agent binary: %s", agentBin))
-		Expect(agentBin).NotTo(BeEmpty(), "EXTERNAL_AGENT_BINARY or default bin/pillar-agent must exist")
+		// Skip when TestMain did not start an external agent Docker container.
+		// Enable external-agent mode by setting E2E_LAUNCH_EXTERNAL_AGENT=true
+		// or by pre-setting EXTERNAL_AGENT_ADDR before running the suite.
+		if testEnv.ExternalAgentAddr == "" {
+			Skip("external-agent mode not enabled — set E2E_LAUNCH_EXTERNAL_AGENT=true " +
+				"or EXTERNAL_AGENT_ADDR to run external-agent tests")
+		}
 
-		// Verify binary exists and is executable before attempting to start.
-		info, err := os.Stat(agentBin)
-		Expect(err).NotTo(HaveOccurred(),
-			"agent binary not found — build first with 'make build' or set EXTERNAL_AGENT_BINARY")
-		Expect(info.Mode()&0o111).NotTo(BeZero(),
-			"agent binary is not executable: %s", agentBin)
+		// Consume the Docker-started agent address from TestMain.
+		extState.addr = testEnv.ExternalAgentAddr
+		By(fmt.Sprintf("external agent addr (from TestMain): %s", extState.addr))
 
-		// 2. Create a temporary directory tree for the run.
-		//    <tmpDir>/configfs  →  agent --configfs-root (simulated nvmet fs)
-		extState.tmpDir, err = os.MkdirTemp("", "pillar-csi-e2e-ext-agent-*")
-		Expect(err).NotTo(HaveOccurred(), "create temporary suite directory")
-		configfsRoot := filepath.Join(extState.tmpDir, "configfs")
-		Expect(os.MkdirAll(configfsRoot, 0o750)).To(Succeed(), "create configfs simulation dir")
-		By(fmt.Sprintf("configfs root: %s", configfsRoot))
-
-		// 3. Determine listen address and ZFS pool name from env / defaults.
-		port := extAgentPort()
-		extState.addr = net.JoinHostPort("127.0.0.1", port)
-		pool := extAgentZFSPool()
-		By(fmt.Sprintf("external agent addr: %s  pool: %s", extState.addr, pool))
-
-		// 4. Spawn the agent binary as a background process.
-		extState.proc, err = extAgentStart(agentBin, extState.addr, pool, configfsRoot)
-		Expect(err).NotTo(HaveOccurred(), "spawn external agent process")
-		By(fmt.Sprintf("agent process started (pid %d)", extState.proc.Pid))
-
-		// Register process cleanup with DeferCleanup so it fires even if a
-		// later BeforeAll step fails (e.g. cluster connectivity).
-		DeferCleanup(extAgentStop, extState)
-
-		// 5. Wait for the agent's gRPC port to accept connections.
-		readyTimeout := extAgentReadyTimeout()
-		By(fmt.Sprintf("waiting up to %s for agent on %s", readyTimeout, extState.addr))
-		Eventually(func() error {
-			return extAgentProbe(extState.addr)
-		}, readyTimeout, 500*time.Millisecond).Should(Succeed(),
-			"agent gRPC port did not become ready within %s", readyTimeout)
-		By(fmt.Sprintf("agent is ready at %s", extState.addr))
-
-		// 6. Connect to the Kind cluster via KUBECONFIG (honours env var set by
-		//    'kind get kubeconfig' or hack/e2e-setup.sh).
+		// Connect to the Kind cluster.  KUBECONFIG is already exported by
+		// TestMain's ensureKindCluster so framework.SetupSuite picks it up.
+		var err error
 		extState.suite, err = framework.SetupSuite(
 			framework.WithConnectTimeout(30 * time.Second),
 		)
 		Expect(err).NotTo(HaveOccurred(),
-			"connect to Kind cluster — ensure KUBECONFIG is set and cluster is running")
+			"connect to Kind cluster — KUBECONFIG must be set by TestMain")
 		By("connected to Kind cluster")
 	})
 
-	// ── AfterAll: stop agent + remove temp dir ──────────────────────────────
-	//
-	// AfterAll runs once after the last spec in this Ordered Describe block.
-	// DeferCleanup registered in BeforeAll also fires here, but AfterAll
-	// provides an explicit label for clarity in verbose test output.
+	// ── AfterAll: disconnect from cluster ───────────────────────────────────
 	AfterAll(func() {
 		if extState != nil && extState.suite != nil {
 			extState.suite.TeardownSuite()
 		}
-		// extAgentStop is already registered via DeferCleanup; it handles
-		// process termination and tmpDir removal.
 	})
 
 	// ────────────────────────────────────────────────────────────────────────
@@ -282,19 +200,12 @@ var _ = Describe("ExternalAgent", Ordered, func() {
 	//     (heartbeat / lease stability)
 	//
 	// Prerequisite: the pillar-csi controller must be running inside the Kind
-	// cluster (deployed by hack/e2e-setup.sh), and the agent must be reachable
-	// from within the Kind nodes.
+	// cluster and the agent must be reachable from within the Kind nodes.
 	//
-	// Set EXTERNAL_AGENT_CLUSTER_ADDRESS=<host>:<port> to the address that is
-	// reachable from within Kind pods (e.g. the Docker bridge gateway IP).
-	// If the variable is empty these specs are skipped so that the suite remains
-	// usable without a full cluster or when running direct gRPC tests only.
-	//
-	// Typical setup with the Docker-based agent helper:
-	//
-	//	AGENT_IP=$(hack/e2e-external-agent.sh | tail -1)
-	//	export EXTERNAL_AGENT_CLUSTER_ADDRESS="${AGENT_IP}:9500"
-	//	go test -tags=e2e ./test/e2e/ -v -run TestExternalAgent
+	// Set EXTERNAL_AGENT_CLUSTER_ADDRESS=<host>:<port> to the address reachable
+	// from within Kind pods (e.g. the Docker bridge gateway IP).
+	// TestMain sets this automatically when E2E_LAUNCH_EXTERNAL_AGENT=true.
+	// If the variable is empty these specs are skipped.
 	Context("PillarTarget registration", Ordered, func() {
 		var (
 			target      *v1alpha1.PillarTarget
@@ -513,37 +424,6 @@ var _ = Describe("ExternalAgent", Ordered, func() {
 // Configuration helpers (environment variable resolution)
 // ─────────────────────────────────────────────────────────────────────────────
 
-// extAgentResolveBinary returns the path to the agent binary.
-//
-// Resolution order:
-//  1. EXTERNAL_AGENT_BINARY env var (absolute or relative to CWD)
-//  2. bin/pillar-agent two directories above the package (repo root)
-//
-// go test sets the working directory to the package directory (test/e2e/),
-// so "../../bin/pillar-agent" resolves to <repo-root>/bin/pillar-agent.
-func extAgentResolveBinary() string {
-	if v := os.Getenv("EXTERNAL_AGENT_BINARY"); v != "" {
-		return v
-	}
-	// Derive from the package working directory: test/e2e/ → ../../bin/
-	rel := filepath.Join("..", "..", "bin", "pillar-agent")
-	if abs, err := filepath.Abs(rel); err == nil {
-		return abs
-	}
-	return rel
-}
-
-// extAgentPort returns the TCP port for the out-of-cluster agent.
-// Reads EXTERNAL_AGENT_PORT (default: "9501").
-// Default differs from the Docker-based agent port (9500) to allow both to run
-// simultaneously during development.
-func extAgentPort() string {
-	if v := os.Getenv("EXTERNAL_AGENT_PORT"); v != "" {
-		return v
-	}
-	return "9501"
-}
-
 // extAgentZFSPool returns the ZFS pool name passed to the agent via --zfs-pool.
 // Reads EXTERNAL_AGENT_ZFS_POOL (default: "e2e-pool").
 func extAgentZFSPool() string {
@@ -553,109 +433,9 @@ func extAgentZFSPool() string {
 	return "e2e-pool"
 }
 
-// extAgentReadyTimeout returns the maximum duration to wait for the agent's
-// gRPC port to become live.
-// Reads AGENT_READY_TIMEOUT in seconds (default: 30 s).
-func extAgentReadyTimeout() time.Duration {
-	if v := os.Getenv("AGENT_READY_TIMEOUT"); v != "" {
-		if secs, err := strconv.Atoi(v); err == nil && secs > 0 {
-			return time.Duration(secs) * time.Second
-		}
-	}
-	return 30 * time.Second
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Process management helpers
-// ─────────────────────────────────────────────────────────────────────────────
-
-// extAgentStart launches the agent binary as a background OS process and
-// returns the *os.Process so the caller can terminate it later.
-//
-// The agent is started with:
-//
-//	<binary> --listen-address=<addr> --zfs-pool=<pool> --configfs-root=<dir>
-//
-// Agent stdout and stderr are forwarded to GinkgoWriter so that log output
-// appears alongside test output and is captured in CI failure reports.
-func extAgentStart(binary, addr, pool, configfsRoot string) (*os.Process, error) {
-	cmd := exec.Command(binary,
-		fmt.Sprintf("--listen-address=%s", addr),
-		fmt.Sprintf("--zfs-pool=%s", pool),
-		fmt.Sprintf("--configfs-root=%s", configfsRoot),
-	)
-	// Inherit test's GinkgoWriter for visibility during test runs.
-	cmd.Stdout = GinkgoWriter
-	cmd.Stderr = GinkgoWriter
-
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("exec agent %q: %w", binary, err)
-	}
-	return cmd.Process, nil
-}
-
-// extAgentStop terminates the agent process and removes the temporary
-// directory.  It is registered via DeferCleanup in BeforeAll so it runs
-// regardless of whether the suite passes or fails.
-//
-// Shutdown sequence:
-//  1. Send os.Interrupt (SIGINT) for a graceful shutdown.
-//  2. Wait up to 10 s for the process to exit.
-//  3. Force-kill (SIGKILL) if the process is still alive after 10 s.
-func extAgentStop(state *externalAgentState) {
-	if state == nil {
-		return
-	}
-
-	if state.proc != nil {
-		pid := state.proc.Pid
-		By(fmt.Sprintf("sending SIGINT to external agent (pid %d)", pid))
-
-		// Graceful shutdown — ignore errors; process may have already exited.
-		_ = state.proc.Signal(os.Interrupt)
-
-		done := make(chan struct{})
-		go func() {
-			_, _ = state.proc.Wait()
-			close(done)
-		}()
-
-		select {
-		case <-done:
-			By(fmt.Sprintf("external agent (pid %d) exited cleanly", pid))
-		case <-time.After(10 * time.Second):
-			By(fmt.Sprintf("external agent (pid %d) did not exit in 10 s — force-killing", pid))
-			_ = state.proc.Kill()
-			<-done
-		}
-		state.proc = nil
-	}
-
-	if state.tmpDir != "" {
-		By(fmt.Sprintf("removing external agent temp dir: %s", state.tmpDir))
-		_ = os.RemoveAll(state.tmpDir)
-		state.tmpDir = ""
-	}
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // gRPC helpers
 // ─────────────────────────────────────────────────────────────────────────────
-
-// extAgentProbe attempts a plain TCP connection to addr and immediately closes
-// it.  Returns nil when the port is open, an error otherwise.
-//
-// Used by the Eventually readiness loop to detect when the agent's gRPC
-// listener is accepting connections.  A raw TCP probe is lighter than a full
-// gRPC dial and works without requiring a gRPC handshake.
-func extAgentProbe(addr string) error {
-	conn, err := net.DialTimeout("tcp", addr, 500*time.Millisecond)
-	if err != nil {
-		return fmt.Errorf("tcp probe %s: %w", addr, err)
-	}
-	_ = conn.Close()
-	return nil
-}
 
 // extAgentDial opens a plaintext gRPC connection to the external agent at addr
 // and returns it.  The connection is not closed by this function — callers
@@ -688,8 +468,10 @@ func extAgentDial(addr string) *grpc.ClientConn {
 // This is distinct from extState.addr, which is always 127.0.0.1:<port>
 // (host-local).  The controller runs inside the Kind cluster and therefore
 // needs a routable address — typically the host machine's IP on the Docker
-// bridge network (e.g. 172.18.0.1:9501) or the container IP when the agent
-// was started with hack/e2e-external-agent.sh.
+// bridge network (e.g. 172.18.0.1:9500) or the container IP.
+//
+// TestMain sets EXTERNAL_AGENT_CLUSTER_ADDRESS automatically when
+// E2E_LAUNCH_EXTERNAL_AGENT=true via startExternalAgentContainer.
 //
 // Reads EXTERNAL_AGENT_CLUSTER_ADDRESS (default: "").
 // When empty, PillarTarget registration tests are skipped.
