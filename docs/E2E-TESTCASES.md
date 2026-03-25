@@ -1120,3 +1120,358 @@ kind load docker-image example.com/pillar-csi:v0.0.1
 
 go test ./test/e2e/ -tags=e2e -v -timeout 600s
 ```
+
+---
+
+## 부록: CI 환경에서 루프백 장치를 이용한 ZFS 스토리지 모킹
+
+### 개요
+
+pillar-csi의 `유형 A` 인프로세스 E2E 테스트는 실제 ZFS 커널 모듈 없이
+mock 백엔드를 사용한다. 그러나 F1–F3, F8–F12, F17–F25와 같이 **실제 ZFS
+zvol**이 필요한 테스트를 CI에서 실행하려면 루프백(loopback) 장치로
+ZFS 풀을 흉내 낼 수 있다.
+
+**루프백 ZFS 접근 방식의 핵심 원리:**
+
+```
+일반 파일 (예: /tmp/zfs-pool.img, 1GiB)
+        │
+  losetup /dev/loop0    ← 루프백 블록 장치로 노출
+        │
+  zpool create tank /dev/loop0   ← ZFS 풀 생성
+        │
+  zfs create -V 100M tank/pvc-test   ← zvol 생성
+        │
+  /dev/zvol/tank/pvc-test   ← 블록 디바이스 사용 가능
+```
+
+---
+
+### CI 실행 가능 여부 판단 기준
+
+| 조건 | 설명 | 표준 CI 가능 여부 |
+|------|------|:----------------:|
+| 루프백 장치만 필요 (`losetup`) | 루트 권한 또는 `CAP_SYS_ADMIN` 필요 | ⚠️ 조건부 가능 |
+| ZFS 커널 모듈 (`zfs.ko`) | Ubuntu 22.04+ 기본 제공 (`linux-modules-extra-*`) | ⚠️ 조건부 가능 |
+| NVMe-oF target 커널 모듈 (`nvmet`, `nvmet-tcp`) | `modprobe nvmet nvmet-tcp` | ❌ 대부분 CI 불가 |
+| NVMe-oF initiator 커널 모듈 (`nvme-tcp`) | `modprobe nvme-tcp` | ❌ 대부분 CI 불가 |
+| `/sys/kernel/config/nvmet/` 쓰기 권한 | configfs 마운트 + root | ❌ 대부분 CI 불가 |
+| Kind 클러스터 내부 | Docker-in-Docker + 루프백 충돌 위험 | ❌ 표준 CI 불가 |
+
+**권장:** 루프백 ZFS 테스트는 **전용 self-hosted 러너** (베어메탈 Linux 또는
+KVM/QEMU 네스티드 가상화 지원 VM)에서만 실행한다.
+GitHub Actions 기본 러너(`ubuntu-latest`)는 `CAP_SYS_ADMIN` 없이
+루프백 장치를 생성할 수 없다.
+
+---
+
+### 사전 요구사항
+
+```
+운영체제: Ubuntu 22.04 LTS 이상 (또는 동등한 Linux 배포판)
+커널:     5.15 이상 (ZFS 2.x 지원)
+패키지:   zfsutils-linux, zfs-dkms 또는 linux-modules-extra-$(uname -r)
+권한:     root 또는 sudo, CAP_SYS_ADMIN
+```
+
+**패키지 설치:**
+
+```bash
+# Ubuntu 22.04 / 24.04
+sudo apt-get update
+sudo apt-get install -y zfsutils-linux
+
+# ZFS 커널 모듈 로드 확인
+sudo modprobe zfs
+lsmod | grep zfs
+# 출력 예시:
+# zfs                  4100096  0
+# spl                   131072  1 zfs
+```
+
+---
+
+### 루프백 ZFS 풀 생성 절차
+
+아래 순서대로 실행하면 실제 하드웨어 없이 ZFS 풀을 생성할 수 있다.
+
+#### 1단계: 이미지 파일 생성
+
+```bash
+# 1GiB 이미지 파일 생성 (테스트용; 크기는 필요에 따라 조정)
+sudo mkdir -p /tmp/pillar-csi-test
+sudo dd if=/dev/zero of=/tmp/pillar-csi-test/zfs-pool.img \
+    bs=1M count=1024 status=progress
+# 또는 sparse 파일로 빠르게 생성
+sudo truncate -s 1G /tmp/pillar-csi-test/zfs-pool.img
+```
+
+#### 2단계: 루프백 장치 연결
+
+```bash
+# 루프백 장치 생성 및 이미지 연결
+LOOP_DEV=$(sudo losetup --find --show /tmp/pillar-csi-test/zfs-pool.img)
+echo "루프백 장치: ${LOOP_DEV}"
+# 출력 예시: /dev/loop0
+
+# 연결된 루프백 장치 확인
+sudo losetup -l | grep zfs-pool
+```
+
+#### 3단계: ZFS 풀 생성
+
+```bash
+# 루프백 장치로 ZFS 풀 생성 (이름: tank)
+# ashift=9 는 512B 섹터 크기를 명시 (루프백은 가상 장치이므로 명시 필요)
+sudo zpool create -f \
+    -o ashift=9 \
+    -O compression=off \
+    -O atime=off \
+    tank "${LOOP_DEV}"
+
+# 풀 상태 확인
+sudo zpool status tank
+# 예상 출력:
+#   pool: tank
+#  state: ONLINE
+# config:
+#         NAME        STATE     READ WRITE CKSUM
+#         tank        ONLINE       0     0     0
+#           loop0     ONLINE       0     0     0
+```
+
+#### 4단계: ZFS zvol 생성 (실제 테스트용)
+
+```bash
+# 100MiB zvol 생성 (pillar-csi backend가 생성하는 것과 동일한 타입)
+sudo zfs create -V 100M tank/pvc-test
+
+# zvol 블록 장치 경로 확인
+ls -la /dev/zvol/tank/pvc-test
+# 출력 예시: lrwxrwxrwx ... /dev/zvol/tank/pvc-test -> ../../zd0
+
+# 실제 장치 경로 (pillar-csi agent가 사용하는 경로)
+readlink -f /dev/zvol/tank/pvc-test
+# 출력 예시: /dev/zd0
+```
+
+---
+
+### 루프백 ZFS 환경에서 pillar-agent 단위 테스트 실행
+
+루프백 ZFS 풀이 준비되면, `internal/agent/backend/zfs/` 의 ZFS 백엔드
+테스트를 실제 ZFS와 함께 실행할 수 있다.
+
+```bash
+# ZFS_TEST_POOL 환경변수로 실제 풀 이름 전달 (테스트 코드가 지원하는 경우)
+ZFS_TEST_POOL=tank \
+    sudo -E go test ./internal/agent/backend/zfs/ -v -tags=realzfs \
+    -timeout 60s
+```
+
+**⚠️ 중요:** 현재 `internal/agent/backend/zfs/` 테스트는
+`seqExec` 가짜 executor를 사용하여 실제 `zfs(8)` 명령을 실행하지 않는다.
+루프백 ZFS와 함께 실제 명령을 실행하려면 별도의 `//go:build realzfs`
+빌드 태그를 추가한 통합 테스트가 필요하다 (현재 미구현; F1 참조).
+
+---
+
+### CI 파이프라인 통합 예시 (GitHub Actions — self-hosted 러너)
+
+```yaml
+# .github/workflows/realzfs-e2e.yml
+name: Real ZFS E2E (self-hosted)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  realzfs-e2e:
+    runs-on: [self-hosted, linux, zfs]   # ZFS 지원 self-hosted 러너 필요
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: ZFS 커널 모듈 확인
+        run: |
+          sudo modprobe zfs
+          lsmod | grep zfs
+
+      - name: 루프백 ZFS 풀 준비
+        run: |
+          sudo truncate -s 1G /tmp/pillar-csi-test.img
+          LOOP_DEV=$(sudo losetup --find --show /tmp/pillar-csi-test.img)
+          echo "LOOP_DEV=${LOOP_DEV}" >> $GITHUB_ENV
+          sudo zpool create -f -o ashift=9 tank "${LOOP_DEV}"
+          echo "ZFS_TEST_POOL=tank" >> $GITHUB_ENV
+
+      - name: Go 설치
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: 실제 ZFS E2E 테스트 실행
+        run: |
+          sudo -E go test ./internal/agent/backend/zfs/ -v \
+            -tags=realzfs \
+            -timeout 120s
+        env:
+          ZFS_TEST_POOL: ${{ env.ZFS_TEST_POOL }}
+
+      - name: 루프백 ZFS 풀 정리
+        if: always()
+        run: |
+          sudo zpool destroy -f tank 2>/dev/null || true
+          sudo losetup -d "${LOOP_DEV}" 2>/dev/null || true
+          sudo rm -f /tmp/pillar-csi-test.img
+```
+
+---
+
+### GitLab CI 통합 예시 (privileged 러너)
+
+```yaml
+# .gitlab-ci.yml (realzfs 스테이지)
+realzfs-e2e:
+  stage: realzfs
+  tags:
+    - privileged   # CAP_SYS_ADMIN 필요
+    - linux
+  image: ubuntu:22.04
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq zfsutils-linux golang-go
+    - modprobe zfs || true
+    - truncate -s 1G /tmp/zfs-pool.img
+    - LOOP_DEV=$(losetup --find --show /tmp/zfs-pool.img)
+    - zpool create -f -o ashift=9 tank "${LOOP_DEV}"
+    - echo "LOOP_DEV=${LOOP_DEV}" > /tmp/zfs-env.sh
+  script:
+    - export ZFS_TEST_POOL=tank
+    - go test ./internal/agent/backend/zfs/ -v -tags=realzfs -timeout 120s
+  after_script:
+    - zpool destroy -f tank 2>/dev/null || true
+    - source /tmp/zfs-env.sh && losetup -d "${LOOP_DEV}" 2>/dev/null || true
+    - rm -f /tmp/zfs-pool.img
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+    - when: manual
+```
+
+---
+
+### 루프백 ZFS 풀 정리 (테스트 후)
+
+테스트 환경 오염을 방지하기 위해 반드시 아래 순서로 정리해야 한다.
+
+```bash
+# 1. ZFS zvol 언마운트 및 내보내기 해제 (존재하는 경우)
+sudo zfs destroy -r tank/pvc-test 2>/dev/null || true
+
+# 2. ZFS 풀 삭제
+sudo zpool destroy -f tank
+
+# 3. 루프백 장치 해제
+sudo losetup -d "${LOOP_DEV}"
+
+# 4. 이미지 파일 제거
+sudo rm -f /tmp/pillar-csi-test/zfs-pool.img
+sudo rmdir /tmp/pillar-csi-test 2>/dev/null || true
+```
+
+**자동 정리 스크립트:**
+
+```bash
+#!/usr/bin/env bash
+# hack/cleanup-loopback-zfs.sh
+set -euo pipefail
+
+POOL_NAME="${ZFS_TEST_POOL:-tank}"
+IMG_PATH="${ZFS_TEST_IMG:-/tmp/pillar-csi-test/zfs-pool.img}"
+
+# 풀이 존재하면 삭제
+if sudo zpool list "${POOL_NAME}" &>/dev/null; then
+    echo "ZFS 풀 '${POOL_NAME}' 삭제 중..."
+    sudo zpool destroy -f "${POOL_NAME}"
+fi
+
+# 이미지 파일에 연결된 루프백 장치 해제
+LOOP_DEV=$(sudo losetup --associated "${IMG_PATH}" | awk -F: '{print $1}')
+if [[ -n "${LOOP_DEV}" ]]; then
+    echo "루프백 장치 '${LOOP_DEV}' 해제 중..."
+    sudo losetup -d "${LOOP_DEV}"
+fi
+
+# 이미지 파일 제거
+if [[ -f "${IMG_PATH}" ]]; then
+    echo "이미지 파일 '${IMG_PATH}' 제거 중..."
+    sudo rm -f "${IMG_PATH}"
+fi
+
+echo "루프백 ZFS 환경 정리 완료."
+```
+
+---
+
+### 알려진 한계 및 주의 사항
+
+| 한계 | 설명 |
+|------|------|
+| **루프백 성능** | 루프백 장치는 파일 기반이므로 실제 NVMe SSD 대비 I/O 성능이 현저히 낮다. 성능 벤치마크에는 사용하지 않는다. |
+| **Docker/Kind 내부 실행 불가** | Docker 컨테이너 내부에서 `losetup`은 기본적으로 실패한다 (`--privileged` 플래그 + `/dev` 마운트 필요). |
+| **NVMe-oF 커널 모듈 분리** | 루프백 ZFS로 zvol을 생성해도 `nvmet`/`nvme-tcp` 커널 모듈 없이는 NVMe-oF 익스포트 불가. F2–F3 테스트는 여전히 별도 환경 필요. |
+| **`/dev/zvol` 경로 지연** | `zfs create -V` 후 `/dev/zvol/...` symlink가 생성되는 데 최대 수 초 소요. 폴링 대기 필요 (`udevadm settle` 또는 `udevadm trigger`). |
+| **루트 권한** | `zpool`/`zfs` 명령은 root 또는 `CAP_SYS_ADMIN`이 필요하다. CI 환경에서 `sudo` 없이는 실행 불가. |
+| **동시 풀 이름 충돌** | 병렬 CI 실행 시 동일한 풀 이름(`tank`)을 사용하면 충돌 발생. 테스트마다 고유한 풀 이름(예: `tank-${CI_JOB_ID}`)을 사용해야 한다. |
+
+---
+
+### `/dev/zvol` 장치 생성 대기 (udev 폴링)
+
+`zfs create -V` 명령 후 udev가 `/dev/zvol/...` symlink를 생성하기까지
+약간의 시간이 걸린다. 테스트 코드에서 이를 보장하려면:
+
+```bash
+# udev 정착 대기 (권장)
+sudo udevadm settle --timeout=10
+
+# 또는 직접 폴링 (udevadm 없는 환경)
+ZVOL_PATH="/dev/zvol/tank/pvc-test"
+for i in $(seq 1 30); do
+    if [[ -e "${ZVOL_PATH}" ]]; then
+        echo "zvol 장치 확인됨: ${ZVOL_PATH}"
+        break
+    fi
+    echo "대기 중... (${i}/30)"
+    sleep 1
+done
+if [[ ! -e "${ZVOL_PATH}" ]]; then
+    echo "오류: zvol 장치가 30초 내에 나타나지 않음" >&2
+    exit 1
+fi
+```
+
+이 폴링 패턴은 `internal/agent/nvmeof/device_poll.go`의 실제 NVMe-oF
+디바이스 대기 로직(F11 참조)과 동일한 방식으로 동작한다.
+
+---
+
+### 관련 향후 테스트 항목
+
+아래 테스트들은 루프백 ZFS 환경에서 실행 가능하지만 현재 미구현이다
+(이 부록의 인프라 설정이 선행 조건이다):
+
+| 테스트 ID | 이름 | 루프백 ZFS 필요 항목 |
+|-----------|------|---------------------|
+| F1 | `TestRealZFS_CreateVolume` | 루프백 풀에서 `zfs create -V` 실행 검증 |
+| F13 | `TestRealZFS_CreateSnapshot` | `zfs snapshot tank/vol@snap` |
+| F14 | `TestRealZFS_DeleteSnapshot` | `zfs destroy tank/vol@snap` |
+| F15 | `TestRealZFS_ListSnapshots` | `zfs list -t snapshot tank` |
+| F17 | `TestRealAgent_SendVolume_ZFSSend` | `zfs send tank/vol@snap` 스트리밍 |
+| F18 | `TestRealAgent_ReceiveVolume_ZFSReceive` | `zfs receive tank/new-vol` |
+| F20 | `TestRealZFS_CloneVolume_FromSnapshot` | `zfs clone tank/vol@snap tank/new-vol` |
+| F22 | `TestRealZFS_PoolFull_CreateVolume` | 루프백 풀 크기를 작게 설정하여 ENOSPC 유발 |
+| F23 | `TestRealZFS_PoolFull_ExpandVolume` | 풀 여유 공간 이상의 ExpandVolume 시도 |
