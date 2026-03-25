@@ -26,6 +26,7 @@ import (
 	"errors"
 
 	csi "github.com/container-storage-interface/spec/lib/go/csi"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	wrapperspb "google.golang.org/protobuf/types/known/wrapperspb"
@@ -193,4 +194,26 @@ func (s *IdentityServer) Probe(
 	return &csi.ProbeResponse{
 		Ready: wrapperspb.Bool(ready),
 	}, nil
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// gRPC server registration helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+// RegisterGRPC registers an IdentityServer and a ControllerServer with s.
+//
+// This convenience wrapper is used by the controller binary (cmd/main.go) so
+// that it does not need to import the CSI spec library directly.  The node
+// binary (cmd/node/main.go) calls RegisterNodeGRPC instead.
+func RegisterGRPC(s *grpc.Server, identity *IdentityServer, ctrl *ControllerServer) {
+	csi.RegisterIdentityServer(s, identity)
+	csi.RegisterControllerServer(s, ctrl)
+}
+
+// RegisterNodeGRPC registers an IdentityServer and a NodeServer with s.
+//
+// Used by the node binary (cmd/node/main.go).
+func RegisterNodeGRPC(s *grpc.Server, identity *IdentityServer, node *NodeServer) {
+	csi.RegisterIdentityServer(s, identity)
+	csi.RegisterNodeServer(s, node)
 }

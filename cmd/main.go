@@ -18,16 +18,20 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"runtime/debug"
+	"strings"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	"google.golang.org/grpc"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -41,6 +45,7 @@ import (
 	pillarcsiv1alpha1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
 	"github.com/bhyoo/pillar-csi/internal/agentclient"
 	"github.com/bhyoo/pillar-csi/internal/controller"
+	"github.com/bhyoo/pillar-csi/internal/csi"
 	webhookv1alpha1 "github.com/bhyoo/pillar-csi/internal/webhook/v1alpha1"
 	// +kubebuilder:scaffold:imports
 )
@@ -119,6 +124,115 @@ func setupControllers(mgr ctrl.Manager, agentDialer agentclient.Dialer) error {
 	return nil
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// CSI gRPC server runnable
+// ─────────────────────────────────────────────────────────────────────────────
+
+const (
+	// driverName is the CSI provisioner name registered in the cluster.
+	driverName = "pillar-csi.bhyoo.com"
+
+	// defaultCSIEndpoint is the well-known Unix socket path used by the
+	// Kubernetes CSI external-provisioner side-car to contact the driver.
+	defaultCSIEndpoint = "unix:///var/lib/kubelet/plugins/pillar-csi.bhyoo.com/csi.sock"
+)
+
+// csiGRPCServer is a controller-runtime Runnable that starts the CSI gRPC
+// server on a Unix-domain socket.  Adding it to the manager ensures that it
+// shares the manager's signal handling and leader-election lifecycle.
+type csiGRPCServer struct {
+	endpoint string
+	grpcSrv  *grpc.Server
+	ctrlSrv  *csi.ControllerServer
+}
+
+// Start implements manager.Runnable.  It is called by controller-runtime after
+// the cache has synced, so the Kubernetes client inside ControllerServer is
+// already populated when the first CSI RPC arrives.
+func (s *csiGRPCServer) Start(ctx context.Context) error {
+	log := ctrl.Log.WithName("csi-grpc")
+
+	// Restore any PillarVolume state that survived a controller restart.
+	if err := s.ctrlSrv.LoadStateFromPillarVolumes(ctx); err != nil {
+		return fmt.Errorf("CSI gRPC server: load PillarVolume state: %w", err)
+	}
+
+	scheme, addr, err := parseCSIEndpoint(s.endpoint)
+	if err != nil {
+		return fmt.Errorf("CSI gRPC server: parse endpoint %q: %w", s.endpoint, err)
+	}
+
+	// Remove a stale socket file left by a previous run; net.Listen will
+	// otherwise fail with "address already in use".
+	if scheme == "unix" {
+		if rmErr := os.Remove(addr); rmErr != nil && !os.IsNotExist(rmErr) {
+			return fmt.Errorf("CSI gRPC server: remove stale socket %q: %w", addr, rmErr)
+		}
+		// Ensure the parent directory exists (Kubernetes may not create it).
+		if mkErr := os.MkdirAll(strings.TrimSuffix(addr, "/"+lastPathComponent(addr)), 0o750); mkErr != nil {
+			return fmt.Errorf("CSI gRPC server: mkdir for socket %q: %w", addr, mkErr)
+		}
+	}
+
+	lis, err := net.Listen(scheme, addr)
+	if err != nil {
+		return fmt.Errorf("CSI gRPC server: listen %s://%s: %w", scheme, addr, err)
+	}
+
+	// Stop accepting new RPCs as soon as the manager's context is cancelled
+	// (SIGTERM / leader-election loss).
+	go func() {
+		<-ctx.Done()
+		log.Info("shutting down CSI gRPC server")
+		s.grpcSrv.GracefulStop()
+	}()
+
+	log.Info("CSI gRPC server listening", "endpoint", s.endpoint)
+	if serveErr := s.grpcSrv.Serve(lis); serveErr != nil {
+		// grpc.Server.Serve returns a non-nil error only when the server was
+		// not stopped via Stop/GracefulStop.
+		return fmt.Errorf("CSI gRPC server: serve: %w", serveErr)
+	}
+	return nil
+}
+
+// parseCSIEndpoint splits a CSI endpoint URI (e.g. "unix:///path/to/csi.sock"
+// or "tcp://host:port") into a network scheme and an address suitable for
+// net.Listen.
+func parseCSIEndpoint(ep string) (scheme, addr string, err error) {
+	if ep == "" {
+		return "", "", fmt.Errorf("endpoint must not be empty")
+	}
+	scheme, rest, found := strings.Cut(ep, "://")
+	if !found {
+		return "", "", fmt.Errorf("endpoint %q has no scheme (expected unix:// or tcp://)", ep)
+	}
+	switch scheme {
+	case "unix":
+		// unix:///abs/path  → path = /abs/path
+		// unix://rel/path   → path = rel/path  (rare but valid)
+		addr = strings.TrimPrefix(rest, "/")
+		// Restore the leading slash for absolute paths.
+		if strings.HasPrefix(rest, "/") {
+			addr = "/" + addr
+		}
+		return scheme, addr, nil
+	case "tcp":
+		return scheme, rest, nil
+	default:
+		return "", "", fmt.Errorf("unsupported endpoint scheme %q (use unix:// or tcp://)", scheme)
+	}
+}
+
+// lastPathComponent returns the final path segment of a slash-delimited string.
+func lastPathComponent(p string) string {
+	idx := strings.LastIndex(p, "/")
+	if idx < 0 {
+		return p
+	}
+	return p[idx+1:]
+}
+
 func main() {
 	var metricsAddr string
 	var metricsCertPath, metricsCertName, metricsCertKey string
@@ -134,6 +248,11 @@ func main() {
 	// when they are omitted it falls back to a plaintext connection and logs
 	// a warning suitable for development / pre-PKI deployments.
 	var agentTLSCert, agentTLSKey, agentTLSCA, agentTLSServerName string
+
+	// CSI gRPC endpoint.  The controller binary serves the CSI Identity and
+	// Controller services on this Unix socket so that the Kubernetes
+	// external-provisioner side-car can reach the driver.
+	var csiEndpoint string
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -162,6 +281,10 @@ func main() {
 	flag.StringVar(&agentTLSServerName, "agent-tls-server-name", "",
 		"Override the TLS server name used for SAN verification when connecting to pillar-agent. "+
 			"Leave empty to derive the server name from the resolved agent address.")
+	flag.StringVar(&csiEndpoint, "csi-endpoint", defaultCSIEndpoint,
+		"Unix socket endpoint for the CSI gRPC server served by the controller binary "+
+			"(IdentityServer + ControllerServer). The Kubernetes external-provisioner "+
+			"side-car must be configured with the same path.")
 	opts := zap.Options{
 		Development: true,
 	}
@@ -311,6 +434,31 @@ func main() {
 		setupLog.Error(err, "unable to create controllers")
 		os.Exit(1)
 	}
+
+	// ── CSI gRPC server ───────────────────────────────────────────────────────
+	// Build version string from embedded build info so GetPluginInfo returns a
+	// meaningful version even in release builds.
+	driverVersion := "dev"
+	if bi, ok := debug.ReadBuildInfo(); ok && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
+		driverVersion = bi.Main.Version
+	}
+
+	identitySrv := csi.NewIdentityServer(driverName, driverVersion)
+	ctrlSrv := csi.NewControllerServer(mgr.GetClient(), driverName)
+
+	csiGRPC := grpc.NewServer()
+	csi.RegisterGRPC(csiGRPC, identitySrv, ctrlSrv)
+
+	if err = mgr.Add(&csiGRPCServer{
+		endpoint: csiEndpoint,
+		grpcSrv:  csiGRPC,
+		ctrlSrv:  ctrlSrv,
+	}); err != nil {
+		setupLog.Error(err, "unable to add CSI gRPC server to manager")
+		os.Exit(1)
+	}
+	setupLog.Info("CSI gRPC server registered", "endpoint", csiEndpoint)
+	// ─────────────────────────────────────────────────────────────────────────
 
 	err = mgr.AddHealthzCheck("healthz", healthz.Ping)
 	if err != nil {
