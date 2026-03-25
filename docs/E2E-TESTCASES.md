@@ -101,7 +101,14 @@
   - [E26.2: Helm 릴리스 상태 검증 (helm status)](#e262-helm-릴리스-상태-검증-helm-status)
   - [E26.3: Helm 릴리스 목록 검증 (helm list)](#e263-helm-릴리스-목록-검증-helm-list)
   - [E26.4: 배포된 Kubernetes 리소스 정상 동작 검증](#e264-배포된-kubernetes-리소스-정상-동작-검증)
-  - [E26.5: CRD 등록 검증](#e265-crd-등록-검증)
+  - [E26.5: CRD 등록 및 가용성 검증](#e265-crd-등록-및-가용성-검증)
+    - [E26.5.1: CRD 4종 일괄 존재 및 Established 상태 검증](#e2651-crd-4종-일괄-존재-및-established-상태-검증)
+    - [E26.5.2: 각 CRD 메타데이터 상세 검증 (그룹·버전·범위·shortName)](#e2652-각-crd-메타데이터-상세-검증--그룹버전범위shortname)
+    - [E26.5.3: kubectl api-resources를 통한 API 가용성 검증](#e2653-kubectl-api-resources를-통한-api-가용성-검증)
+    - [E26.5.4: 각 CRD OpenAPI v3 스키마 존재 검증](#e2654-각-crd-openapi-v3-스키마-존재-검증)
+    - [E26.5.5: 각 CRD 프린터 컬럼 검증](#e2655-각-crd-프린터-컬럼additionalprintercolumns-검증)
+    - [E26.5.6: Helm resource-policy: keep 어노테이션 검증](#e2656-helm-resource-policy-keep-어노테이션-검증)
+    - [E26.5.7: CRD CRUD 기본 동작 (샘플 오브젝트 생성/조회/삭제)](#e2657-crd-crud-기본-동작--샘플-오브젝트-생성조회삭제)
   - [E26.6: 커스텀 values 오버라이드 설치](#e266-커스텀-values-오버라이드-설치)
   - [E26.7: installCRDs=false 설치 모드 검증](#e267-installcrdsfalse-설치-모드-검증)
   - [E26.8: 중복 설치 시도 오류 검증](#e268-중복-설치-시도-오류-검증)
@@ -3549,28 +3556,208 @@ helm list --namespace pillar-csi-system --output json \
 
 ---
 
-### E26.5 CRD 등록 검증
+### E26.5 CRD 등록 및 가용성 검증
+
+> **범위:** Helm 설치 후(`installCRDs: true` 기본값) API 서버에 등록된 pillar-csi CRD의 **존재·상태·메타데이터·API 가용성**을 포괄 검증한다.
+>
+> **실제 배포 CRD 목록 (4종):** Helm 차트(`charts/pillar-csi/templates/crds.yaml`)는 아래 4개 CRD를 배포한다. CRD 이름의 그룹 부분은 `pillar-csi.pillar-csi.bhyoo.com`이다.
+>
+> | 순번 | CRD 이름 | kind | 짧은 이름 | 범위 |
+> |------|---------|------|---------|------|
+> | 1 | `pillartargets.pillar-csi.pillar-csi.bhyoo.com` | `PillarTarget` | `pt` | Cluster |
+> | 2 | `pillarpools.pillar-csi.pillar-csi.bhyoo.com` | `PillarPool` | `pp` | Cluster |
+> | 3 | `pillarprotocols.pillar-csi.pillar-csi.bhyoo.com` | `PillarProtocol` | `ppr` | Cluster |
+> | 4 | `pillarbindings.pillar-csi.pillar-csi.bhyoo.com` | `PillarBinding` | `pb` | Cluster |
+>
+> **주의:** `PillarVolume`은 Go 타입 및 내부 스키마 등록(`SchemeBuilder.Register`)에는 포함되지만, 현재 Helm 차트에는 CRD YAML로 배포되지 않는다(`config/crd/bases/` 및 `charts/pillar-csi/templates/crds.yaml` 에 미포함). 따라서 클러스터에서 `kubectl get crd pillarvolumes.*`를 실행하면 NotFound 응답을 받는 것이 정상이다.
+
+#### E26.5.1 CRD 4종 일괄 존재 및 Established 상태 검증
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| 217 | `TestHelm/CRD_5종_설치_검증` | Helm 설치 후 pillar-csi CRD 5종이 모두 등록된다 | E26.1 완료 (`installCRDs: true` 기본값) | 1) `kubectl get crd -o name`; 2) 출력에서 pillar-csi CRD 이름 5개 검색 | 아래 5개 CRD 모두 존재: `pillarbindings.pillar-csi.bhyoo.com`, `pillarpools.pillar-csi.bhyoo.com`, `pillarprotocols.pillar-csi.bhyoo.com`, `pillartargets.pillar-csi.bhyoo.com`, `pillarvolumes.pillar-csi.bhyoo.com`; 각 CRD `.status.conditions` 에 `Established=True` 포함 | `VolCRD`, `TgtCRD`, `Kubernetes클러스터` |
+| 217 | `TestHelm/CRD_4종_설치_검증` | Helm 설치 후 pillar-csi CRD 4종이 모두 등록되고 Established=True 이다 | E26.1 완료 (`installCRDs: true` 기본값); `kubectl` 설정된 Kind 클러스터 컨텍스트 | 1) `kubectl get crd -o json \| jq '[.items[].metadata.name] \| map(select(contains("pillar-csi.pillar-csi.bhyoo.com")))'`; 2) 반환 배열 길이 == 4 확인; 3) 각 CRD에 대해 `.status.conditions[?(@.type=="Established")].status == "True"` 검증 | 배열에 `pillartargets.pillar-csi.pillar-csi.bhyoo.com`, `pillarpools.pillar-csi.pillar-csi.bhyoo.com`, `pillarprotocols.pillar-csi.pillar-csi.bhyoo.com`, `pillarbindings.pillar-csi.pillar-csi.bhyoo.com` 4개 항목 모두 포함; 각 CRD `Established=True`; `NamesAccepted=True` | `VolCRD`, `TgtCRD`, `Kubernetes클러스터` |
+| 217a | `TestHelm/CRD_Established_PillarTarget` | PillarTarget CRD가 `Established=True`이고 `NamesAccepted=True`이다 | E26.1 완료 | 1) `kubectl get crd pillartargets.pillar-csi.pillar-csi.bhyoo.com -o json`; 2) `.status.conditions` 배열 검증 | `conditions` 중 `type=="Established"` 항목의 `status=="True"`; `type=="NamesAccepted"` 항목의 `status=="True"`; `.status.acceptedNames.kind == "PillarTarget"` | `TgtCRD`, `Kubernetes클러스터` |
+| 217b | `TestHelm/CRD_Established_PillarPool` | PillarPool CRD가 `Established=True`이고 `NamesAccepted=True`이다 | E26.1 완료 | 1) `kubectl get crd pillarpools.pillar-csi.pillar-csi.bhyoo.com -o json`; 2) `.status.conditions` 배열 검증 | `Established=True`; `NamesAccepted=True`; `.status.acceptedNames.kind == "PillarPool"` | `VolCRD`, `Kubernetes클러스터` |
+| 217c | `TestHelm/CRD_Established_PillarProtocol` | PillarProtocol CRD가 `Established=True`이고 `NamesAccepted=True`이다 | E26.1 완료 | 1) `kubectl get crd pillarprotocols.pillar-csi.pillar-csi.bhyoo.com -o json`; 2) `.status.conditions` 배열 검증 | `Established=True`; `NamesAccepted=True`; `.status.acceptedNames.kind == "PillarProtocol"` | `VolCRD`, `Kubernetes클러스터` |
+| 217d | `TestHelm/CRD_Established_PillarBinding` | PillarBinding CRD가 `Established=True`이고 `NamesAccepted=True`이다 | E26.1 완료 | 1) `kubectl get crd pillarbindings.pillar-csi.pillar-csi.bhyoo.com -o json`; 2) `.status.conditions` 배열 검증 | `Established=True`; `NamesAccepted=True`; `.status.acceptedNames.kind == "PillarBinding"` | `VolCRD`, `Kubernetes클러스터` |
 
 **검증 명령 예시:**
 ```bash
-# CRD 5종 존재 확인
-kubectl get crd | grep pillar-csi.bhyoo.com
+# CRD 4종 존재 확인 (올바른 그룹 이름: pillar-csi.pillar-csi.bhyoo.com)
+kubectl get crd | grep 'pillar-csi\.pillar-csi\.bhyoo\.com'
 # 기대 출력:
-# pillarbindings.pillar-csi.bhyoo.com    2026-03-25T12:00:00Z
-# pillarpools.pillar-csi.bhyoo.com       2026-03-25T12:00:00Z
-# pillarprotocols.pillar-csi.bhyoo.com   2026-03-25T12:00:00Z
-# pillartargets.pillar-csi.bhyoo.com     2026-03-25T12:00:00Z
-# pillarvolumes.pillar-csi.bhyoo.com     2026-03-25T12:00:00Z
+# pillarbindings.pillar-csi.pillar-csi.bhyoo.com    2026-03-25T12:00:00Z
+# pillarpools.pillar-csi.pillar-csi.bhyoo.com       2026-03-25T12:00:00Z
+# pillarprotocols.pillar-csi.pillar-csi.bhyoo.com   2026-03-25T12:00:00Z
+# pillartargets.pillar-csi.pillar-csi.bhyoo.com     2026-03-25T12:00:00Z
 
-# 각 CRD Established 상태 확인 예시
-kubectl get crd pillartargets.pillar-csi.bhyoo.com \
-  -o jsonpath='{.status.conditions[?(@.type=="Established")].status}'
-# 기대 출력: True
+# PillarVolume CRD는 존재하지 않음을 확인 (정상)
+kubectl get crd pillarvolumes.pillar-csi.pillar-csi.bhyoo.com 2>&1 | grep -i "not found"
+# 기대 출력: Error from server (NotFound): ...
+
+# 각 CRD Established 상태 확인 (4종 일괄)
+for crd in pillartargets pillarpools pillarprotocols pillarbindings; do
+  STATUS=$(kubectl get crd ${crd}.pillar-csi.pillar-csi.bhyoo.com \
+    -o jsonpath='{.status.conditions[?(@.type=="Established")].status}')
+  echo "${crd}: Established=${STATUS}"
+done
+# 기대 출력:
+# pillartargets: Established=True
+# pillarpools: Established=True
+# pillarprotocols: Established=True
+# pillarbindings: Established=True
 ```
+
+---
+
+#### E26.5.2 각 CRD 메타데이터 상세 검증 — 그룹·버전·범위·shortName
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| 217e | `TestHelm/CRD_Metadata_PillarTarget` | PillarTarget CRD 스펙의 그룹·버전·범위·shortName이 올바르다 | E26.1 완료 | 1) `kubectl get crd pillartargets.pillar-csi.pillar-csi.bhyoo.com -o json`; 2) `.spec` 필드 전체 검증 | `.spec.group == "pillar-csi.pillar-csi.bhyoo.com"`; `.spec.names.kind == "PillarTarget"`; `.spec.names.plural == "pillartargets"`; `.spec.names.singular == "pillartarget"`; `.spec.names.shortNames` 에 `"pt"` 포함; `.spec.scope == "Cluster"`; `.spec.versions[0].name == "v1alpha1"` | `TgtCRD`, `Kubernetes클러스터` |
+| 217f | `TestHelm/CRD_Metadata_PillarPool` | PillarPool CRD 스펙의 그룹·버전·범위·shortName이 올바르다 | E26.1 완료 | 1) `kubectl get crd pillarpools.pillar-csi.pillar-csi.bhyoo.com -o json`; 2) `.spec` 필드 전체 검증 | `.spec.group == "pillar-csi.pillar-csi.bhyoo.com"`; `.spec.names.kind == "PillarPool"`; `.spec.names.plural == "pillarpools"`; `.spec.names.singular == "pillarpool"`; `.spec.names.shortNames` 에 `"pp"` 포함; `.spec.scope == "Cluster"`; `.spec.versions[0].name == "v1alpha1"` | `VolCRD`, `Kubernetes클러스터` |
+| 217g | `TestHelm/CRD_Metadata_PillarProtocol` | PillarProtocol CRD 스펙의 그룹·버전·범위·shortName이 올바르다 | E26.1 완료 | 1) `kubectl get crd pillarprotocols.pillar-csi.pillar-csi.bhyoo.com -o json`; 2) `.spec` 필드 전체 검증 | `.spec.group == "pillar-csi.pillar-csi.bhyoo.com"`; `.spec.names.kind == "PillarProtocol"`; `.spec.names.plural == "pillarprotocols"`; `.spec.names.singular == "pillarprotocol"`; `.spec.names.shortNames` 에 `"ppr"` 포함; `.spec.scope == "Cluster"`; `.spec.versions[0].name == "v1alpha1"` | `VolCRD`, `Kubernetes클러스터` |
+| 217h | `TestHelm/CRD_Metadata_PillarBinding` | PillarBinding CRD 스펙의 그룹·버전·범위·shortName이 올바르다 | E26.1 완료 | 1) `kubectl get crd pillarbindings.pillar-csi.pillar-csi.bhyoo.com -o json`; 2) `.spec` 필드 전체 검증 | `.spec.group == "pillar-csi.pillar-csi.bhyoo.com"`; `.spec.names.kind == "PillarBinding"`; `.spec.names.plural == "pillarbindings"`; `.spec.names.singular == "pillarbinding"`; `.spec.names.shortNames` 에 `"pb"` 포함; `.spec.scope == "Cluster"`; `.spec.versions[0].name == "v1alpha1"` | `VolCRD`, `Kubernetes클러스터` |
+
+**검증 명령 예시:**
+```bash
+# PillarTarget 메타데이터 일괄 검증
+kubectl get crd pillartargets.pillar-csi.pillar-csi.bhyoo.com -o jsonpath='{
+  "group": "{.spec.group}",
+  "kind": "{.spec.names.kind}",
+  "plural": "{.spec.names.plural}",
+  "shortNames": "{.spec.names.shortNames}",
+  "scope": "{.spec.scope}",
+  "version": "{.spec.versions[0].name}"
+}'
+# 기대 출력 요약:
+# group: pillar-csi.pillar-csi.bhyoo.com
+# kind: PillarTarget
+# plural: pillartargets
+# shortNames: [pt]
+# scope: Cluster
+# version: v1alpha1
+```
+
+---
+
+#### E26.5.3 kubectl api-resources를 통한 API 가용성 검증
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| 217i | `TestHelm/API_Resources_그룹_등록_검증` | `kubectl api-resources` 출력에서 pillar-csi 그룹의 4종 리소스가 모두 노출된다 | E26.1 완료 | 1) `kubectl api-resources --api-group=pillar-csi.pillar-csi.bhyoo.com -o wide`; 2) 출력 파싱하여 리소스 이름·kind·shortNames 검증 | 4개 리소스 행 반환: `pillartargets`(pt), `pillarpools`(pp), `pillarprotocols`(ppr), `pillarbindings`(pb); 모든 행의 `APIVERSION` 열이 `pillar-csi.pillar-csi.bhyoo.com/v1alpha1`; `NAMESPACED` 열이 `false` (Cluster 범위) | `TgtCRD`, `VolCRD`, `Kubernetes클러스터` |
+| 217j | `TestHelm/API_Resources_shortName_pt_검증` | `kubectl get pt`가 API 서버에서 PillarTarget 리소스를 조회한다 | E26.1 완료; 클러스터에 PillarTarget 오브젝트 없어도 무방 | 1) `kubectl get pt`; 2) 종료 코드 및 출력 확인 | 종료 코드 0; 오류 없이 빈 목록(`No resources found.`) 또는 헤더만 반환; `NotFound` 또는 `Unknown resource type` 오류 없음 | `TgtCRD`, `Kubernetes클러스터` |
+| 217k | `TestHelm/API_Resources_shortName_pp_검증` | `kubectl get pp`가 API 서버에서 PillarPool 리소스를 조회한다 | E26.1 완료 | 1) `kubectl get pp`; 2) 종료 코드 확인 | 종료 코드 0; 오류 없이 빈 목록 반환 | `VolCRD`, `Kubernetes클러스터` |
+| 217l | `TestHelm/API_Resources_shortName_ppr_검증` | `kubectl get ppr`가 API 서버에서 PillarProtocol 리소스를 조회한다 | E26.1 완료 | 1) `kubectl get ppr`; 2) 종료 코드 확인 | 종료 코드 0; 오류 없이 빈 목록 반환 | `VolCRD`, `Kubernetes클러스터` |
+| 217m | `TestHelm/API_Resources_shortName_pb_검증` | `kubectl get pb`가 API 서버에서 PillarBinding 리소스를 조회한다 | E26.1 완료 | 1) `kubectl get pb`; 2) 종료 코드 확인 | 종료 코드 0; 오류 없이 빈 목록 반환 | `VolCRD`, `Kubernetes클러스터` |
+
+**검증 명령 예시:**
+```bash
+# pillar-csi 그룹 API 리소스 전체 목록
+kubectl api-resources --api-group=pillar-csi.pillar-csi.bhyoo.com -o wide
+# 기대 출력 (열 순서는 k8s 버전에 따라 다를 수 있음):
+# NAME              SHORTNAMES   APIVERSION                                    NAMESPACED   KIND
+# pillarbindings    pb           pillar-csi.pillar-csi.bhyoo.com/v1alpha1      false        PillarBinding
+# pillarpools       pp           pillar-csi.pillar-csi.bhyoo.com/v1alpha1      false        PillarPool
+# pillarprotocols   ppr          pillar-csi.pillar-csi.bhyoo.com/v1alpha1      false        PillarProtocol
+# pillartargets     pt           pillar-csi.pillar-csi.bhyoo.com/v1alpha1      false        PillarTarget
+
+# shortName으로 조회 (각각 오류 없이 빈 목록 반환)
+kubectl get pt && kubectl get pp && kubectl get ppr && kubectl get pb
+# 기대 출력 (각각): "No resources found."
+```
+
+---
+
+#### E26.5.4 각 CRD OpenAPI v3 스키마 존재 검증
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| 217n | `TestHelm/CRD_Schema_PillarTarget` | PillarTarget CRD `v1alpha1` 버전에 OpenAPI v3 스키마가 정의되어 있다 | E26.1 완료 | 1) `kubectl get crd pillartargets.pillar-csi.pillar-csi.bhyoo.com -o json`; 2) `.spec.versions[0].schema.openAPIV3Schema` 필드 존재 여부 확인; 3) 핵심 spec 필드(`spec.external`, `spec.nodeRef`) 존재 확인 | `.spec.versions[0].schema.openAPIV3Schema` 필드가 null이 아님; `.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties` 에 `external` 및 `nodeRef` 키 존재; `.spec.versions[0].served == true`; `.spec.versions[0].storage == true` | `TgtCRD`, `Kubernetes클러스터` |
+| 217o | `TestHelm/CRD_Schema_PillarPool` | PillarPool CRD `v1alpha1` 버전에 OpenAPI v3 스키마가 정의되어 있다 | E26.1 완료 | 1) `kubectl get crd pillarpools.pillar-csi.pillar-csi.bhyoo.com -o json`; 2) `.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties` 에서 `backend` 및 `targetRef` 키 확인 | `openAPIV3Schema` 존재; `spec.properties.backend` 및 `spec.properties.targetRef` 키 존재; `.spec.versions[0].served == true`; `.spec.versions[0].storage == true` | `VolCRD`, `Kubernetes클러스터` |
+| 217p | `TestHelm/CRD_Schema_PillarProtocol` | PillarProtocol CRD `v1alpha1` 버전에 OpenAPI v3 스키마가 정의되어 있다 | E26.1 완료 | 1) `kubectl get crd pillarprotocols.pillar-csi.pillar-csi.bhyoo.com -o json`; 2) `.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties` 에서 `type` 키 확인 | `openAPIV3Schema` 존재; `spec.properties.type` 존재 (enum: NVMeoF-TCP 등); `.spec.versions[0].served == true`; `.spec.versions[0].storage == true` | `VolCRD`, `Kubernetes클러스터` |
+| 217q | `TestHelm/CRD_Schema_PillarBinding` | PillarBinding CRD `v1alpha1` 버전에 OpenAPI v3 스키마가 정의되어 있다 | E26.1 완료 | 1) `kubectl get crd pillarbindings.pillar-csi.pillar-csi.bhyoo.com -o json`; 2) `.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties` 에서 `poolRef` 및 `protocolRef` 키 확인 | `openAPIV3Schema` 존재; `spec.properties.poolRef` 및 `spec.properties.protocolRef` 존재; `.spec.versions[0].served == true`; `.spec.versions[0].storage == true` | `VolCRD`, `Kubernetes클러스터` |
+
+**검증 명령 예시:**
+```bash
+# PillarTarget 스키마 존재 확인
+kubectl get crd pillartargets.pillar-csi.pillar-csi.bhyoo.com \
+  -o jsonpath='{.spec.versions[0].schema.openAPIV3Schema.type}'
+# 기대 출력: object
+
+# PillarTarget spec 내 핵심 필드 확인
+kubectl get crd pillartargets.pillar-csi.pillar-csi.bhyoo.com \
+  -o jsonpath='{.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties}' \
+  | jq 'keys'
+# 기대 출력: ["external", "nodeRef"] (또는 추가 필드 포함)
+
+# served/storage 플래그 확인
+kubectl get crd pillartargets.pillar-csi.pillar-csi.bhyoo.com \
+  -o jsonpath='{range .spec.versions[*]}{.name}:{.served}/{.storage} {end}'
+# 기대 출력: v1alpha1:true/true
+```
+
+---
+
+#### E26.5.5 각 CRD 프린터 컬럼(additionalPrinterColumns) 검증
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| 217r | `TestHelm/CRD_PrinterColumns_PillarTarget` | PillarTarget CRD에 `Address`, `Agent`, `Ready`, `Age` 프린터 컬럼이 정의되어 있다 | E26.1 완료 | 1) `kubectl get crd pillartargets.pillar-csi.pillar-csi.bhyoo.com -o json`; 2) `.spec.versions[0].additionalPrinterColumns` 배열 검증 | 배열에 `name: "Address"`, `name: "Agent"`, `name: "Ready"`, `name: "Age"` 항목 포함; `Address` jsonPath: `.status.resolvedAddress`; `Ready` jsonPath: `.status.conditions[?(@.type=="Ready")].status` | `TgtCRD`, `Kubernetes클러스터` |
+| 217s | `TestHelm/CRD_PrinterColumns_PillarPool` | PillarPool CRD에 `Target`, `Backend`, `Available`, `Ready`, `Age` 프린터 컬럼이 정의되어 있다 | E26.1 완료 | 1) `kubectl get crd pillarpools.pillar-csi.pillar-csi.bhyoo.com -o json`; 2) `.spec.versions[0].additionalPrinterColumns` 배열 검증 | `name: "Target"` (jsonPath: `.spec.targetRef`); `name: "Backend"` (jsonPath: `.spec.backend.type`); `name: "Available"` (jsonPath: `.status.capacity.available`); `name: "Ready"` 항목 포함 | `VolCRD`, `Kubernetes클러스터` |
+| 217t | `TestHelm/CRD_PrinterColumns_PillarProtocol` | PillarProtocol CRD에 `Type`, `Bindings`, `Ready`, `Age` 프린터 컬럼이 정의되어 있다 | E26.1 완료 | 1) `kubectl get crd pillarprotocols.pillar-csi.pillar-csi.bhyoo.com -o json`; 2) `.spec.versions[0].additionalPrinterColumns` 배열 검증 | `name: "Type"` (jsonPath: `.spec.type`); `name: "Bindings"` (jsonPath: `.status.bindingCount`); `name: "Ready"` 항목 포함 | `VolCRD`, `Kubernetes클러스터` |
+| 217u | `TestHelm/CRD_PrinterColumns_PillarBinding` | PillarBinding CRD에 `Pool`, `Protocol`, `StorageClass`, `Ready`, `Age` 프린터 컬럼이 정의되어 있다 | E26.1 완료 | 1) `kubectl get crd pillarbindings.pillar-csi.pillar-csi.bhyoo.com -o json`; 2) `.spec.versions[0].additionalPrinterColumns` 배열 검증 | `name: "Pool"` (jsonPath: `.spec.poolRef`); `name: "Protocol"` (jsonPath: `.spec.protocolRef`); `name: "StorageClass"` (jsonPath: `.status.storageClassName`); `name: "Ready"` 항목 포함 | `VolCRD`, `Kubernetes클러스터` |
+
+---
+
+#### E26.5.6 Helm resource-policy: keep 어노테이션 검증
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| 217v | `TestHelm/CRD_ResourcePolicy_Keep_검증` | 모든 CRD에 `helm.sh/resource-policy: keep` 어노테이션이 설정되어 있다 | E26.1 완료 | 1) 4개 CRD에 대해 각각 `kubectl get crd <name> -o jsonpath='{.metadata.annotations.helm\.sh/resource-policy}'`; 2) 각 출력값 확인 | 4개 CRD 모두 `keep` 반환; 이 어노테이션은 `helm uninstall` 시에도 CRD가 삭제되지 않도록 보호하는 역할 | `VolCRD`, `TgtCRD`, `Kubernetes클러스터` |
+
+**검증 명령 예시:**
+```bash
+# 4종 CRD resource-policy 일괄 확인
+for crd in pillartargets pillarpools pillarprotocols pillarbindings; do
+  POLICY=$(kubectl get crd ${crd}.pillar-csi.pillar-csi.bhyoo.com \
+    -o jsonpath='{.metadata.annotations.helm\.sh/resource-policy}')
+  echo "${crd}: resource-policy=${POLICY}"
+done
+# 기대 출력:
+# pillartargets: resource-policy=keep
+# pillarpools: resource-policy=keep
+# pillarprotocols: resource-policy=keep
+# pillarbindings: resource-policy=keep
+```
+
+---
+
+#### E26.5.7 CRD CRUD 기본 동작 — 샘플 오브젝트 생성/조회/삭제
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| 217w | `TestHelm/CRD_CRUD_PillarTarget_생성조회삭제` | Helm 설치 후 PillarTarget 오브젝트를 생성·조회·삭제할 수 있다 | E26.1 완료; `config/samples/pillar-csi_v1alpha1_pillartarget.yaml` 샘플 파일 존재 | 1) `kubectl apply -f config/samples/pillar-csi_v1alpha1_pillartarget.yaml`; 2) `kubectl get pt` 로 조회; 3) `kubectl delete -f config/samples/pillar-csi_v1alpha1_pillartarget.yaml` | apply 종료 코드 0; `kubectl get pt`에 생성된 오브젝트 1개 이상 표시; delete 종료 코드 0; 삭제 후 `kubectl get pt`에서 해당 이름 미존재 | `TgtCRD`, `Kubernetes클러스터` |
+| 217x | `TestHelm/CRD_CRUD_PillarPool_생성조회삭제` | Helm 설치 후 PillarPool 오브젝트를 생성·조회·삭제할 수 있다 | E26.1 완료; PillarTarget 오브젝트 사전 존재 (poolRef 의존); `config/samples/pillar-csi_v1alpha1_pillarpool.yaml` 존재 | 1) `kubectl apply -f config/samples/pillar-csi_v1alpha1_pillarpool.yaml`; 2) `kubectl get pp`; 3) `kubectl delete -f config/samples/pillar-csi_v1alpha1_pillarpool.yaml` | apply 종료 코드 0; 조회 성공; 삭제 성공 | `VolCRD`, `Kubernetes클러스터` |
+| 217y | `TestHelm/CRD_CRUD_PillarProtocol_생성조회삭제` | Helm 설치 후 PillarProtocol 오브젝트를 생성·조회·삭제할 수 있다 | E26.1 완료; `config/samples/pillar-csi_v1alpha1_pillarprotocol.yaml` 존재 | 1) `kubectl apply -f config/samples/pillar-csi_v1alpha1_pillarprotocol.yaml`; 2) `kubectl get ppr`; 3) `kubectl delete -f config/samples/pillar-csi_v1alpha1_pillarprotocol.yaml` | apply 종료 코드 0; 조회 성공; 삭제 성공 | `VolCRD`, `Kubernetes클러스터` |
+| 217z | `TestHelm/CRD_CRUD_PillarBinding_생성조회삭제` | Helm 설치 후 PillarBinding 오브젝트를 생성·조회·삭제할 수 있다 | E26.1 완료; PillarPool 및 PillarProtocol 오브젝트 사전 존재; `config/samples/pillar-csi_v1alpha1_pillarbinding.yaml` 존재 | 1) `kubectl apply -f config/samples/pillar-csi_v1alpha1_pillarbinding.yaml`; 2) `kubectl get pb`; 3) `kubectl delete -f config/samples/pillar-csi_v1alpha1_pillarbinding.yaml` | apply 종료 코드 0; 조회 성공; 삭제 성공 | `VolCRD`, `Kubernetes클러스터` |
+
+> **참고 (CI 실행 가능성):** E26.5.7 테스트는 Kind 클러스터에서 실행 가능하다. 그러나 컨트롤러가 Running 상태여야 웹훅 검증이 통과하므로, E26.1에서 `--wait` 플래그로 설치 완료가 확인된 이후에 실행해야 한다.
+
+---
+
+#### E26.5 종합 커버리지 요약
+
+| 검증 항목 | 테스트 ID | CI 가능 | 비고 |
+|---------|---------|:------:|------|
+| 4종 CRD 일괄 존재 + Established/NamesAccepted 상태 | 217, 217a–d | ✅ | Kind 클러스터 |
+| 각 CRD 그룹·버전·범위·shortName 메타데이터 | 217e–h | ✅ | Kind 클러스터 |
+| kubectl api-resources 노출 + shortName 조회 | 217i–m | ✅ | Kind 클러스터 |
+| OpenAPI v3 스키마 존재 및 핵심 필드 확인 | 217n–q | ✅ | Kind 클러스터 |
+| additionalPrinterColumns 정의 확인 | 217r–u | ✅ | Kind 클러스터 |
+| helm.sh/resource-policy: keep 어노테이션 | 217v | ✅ | Kind 클러스터 |
+| 샘플 오브젝트 CRUD (생성·조회·삭제) | 217w–z | ✅ | Kind 클러스터; 컨트롤러 Running 필요 |
+| PillarVolume CRD 미배포 확인 | 217 내 명시 | ✅ | NotFound 응답 기대 |
 
 ---
 
