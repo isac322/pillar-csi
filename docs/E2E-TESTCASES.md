@@ -92,9 +92,20 @@
 - [E21.2–E21.4: 잘못된 CR 웹훅·스키마 검증](#e212-pillartarget-웹훅--불변-필드-수정-거부-type-c--envtest-) _(E21 중 envtest 소섹션)_
 
 ### 카테고리 2 — 클러스터 레벨 E2E 테스트 (유형 B: Kind 클러스터 필요) ⚠️
-> 빌드 태그: `//go:build e2e` | `go test ./test/e2e/ -tags=e2e -v` | 총 3개 테스트
+> 빌드 태그: `//go:build e2e` | `go test ./test/e2e/ -tags=e2e -v` | 총 3개 테스트 (E10); Helm 설치 검증 10개 테스트 (E25) 추가 예정
 
 - [E10: 클러스터 레벨 E2E 테스트](#e10-클러스터-레벨-e2e-테스트)
+- [E25: Helm 차트 설치 및 릴리스 검증](#e25-helm-차트-설치-및-릴리스-검증)
+  - [E25.1: Helm 차트 기본값 설치 성공](#e251-helm-차트-기본값-설치-성공)
+  - [E25.2: Helm 릴리스 상태 검증 (helm status)](#e252-helm-릴리스-상태-검증-helm-status)
+  - [E25.3: Helm 릴리스 목록 검증 (helm list)](#e253-helm-릴리스-목록-검증-helm-list)
+  - [E25.4: 배포된 Kubernetes 리소스 정상 동작 검증](#e254-배포된-kubernetes-리소스-정상-동작-검증)
+  - [E25.5: CRD 등록 검증](#e255-crd-등록-검증)
+  - [E25.6: 커스텀 values 오버라이드 설치](#e256-커스텀-values-오버라이드-설치)
+  - [E25.7: installCRDs=false 설치 모드 검증](#e257-installcrdsfalse-설치-모드-검증)
+  - [E25.8: 중복 설치 시도 오류 검증](#e258-중복-설치-시도-오류-검증)
+  - [E25.9: Helm 차트 업그레이드 (helm upgrade)](#e259-helm-차트-업그레이드-helm-upgrade)
+  - [E25.10: Helm 차트 설치 해제 및 리소스 정리](#e2510-helm-차트-설치-해제-및-리소스-정리)
 
 ### 카테고리 3 — 완전 E2E / 수동 스테이징 테스트 (유형 F) ❌
 > 빌드 태그: `//go:build e2e_full` | 실제 ZFS/NVMe-oF 커널 모듈 필요 | 베어메탈/KVM 서버 필요
@@ -2348,8 +2359,10 @@ NodeUnpublish → NodeUnstage → ControllerUnpublish → DeleteVolume
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| E24.1-1 | `TestCSILifecycle_HappyPath` | 8단계 전체 라이프사이클 정상 경로 완전 검증 | `csiLifecycleEnv` 초기화; mockAgentServer, mockCSIConnector, mockCSIMounter 준비 | 1) CreateVolume; 2) ControllerPublishVolume; 3) NodeStageVolume; 4) NodePublishVolume; 5) NodeUnpublishVolume; 6) NodeUnstageVolume; 7) ControllerUnpublishVolume; 8) DeleteVolume | 모든 단계 성공; VolumeContext(NQN, address, port)가 CreateVolume → NodeStageVolume으로 정확히 전달; mockAgent 모든 RPC 기대 순서대로 기록; 최종 정리 완료 | `CSI-C`, `CSI-N`, `Agent`, `Conn`, `Mnt`, `gRPC` |
-| E24.1-2 | `TestCSILifecycle_VolumeContextFlowsToNodeStage` | CreateVolume의 VolumeContext가 키 변환 없이 NodeStageVolume으로 전달 | `csiLifecycleEnv`; mockAgentServer가 ExportInfo(NQN, address, port) 반환 | 1) CreateVolume; 2) ControllerPublishVolume; 3) NodeStageVolume — VolumeContext 키/값 검증 | NodeStageVolume의 VolumeContext에 `target_nqn`, `nvmeof_address`, `nvmeof_port` 포함; 키 이름 변환 없음 | `CSI-C`, `CSI-N`, `Agent`, `gRPC` |
+| E24.1-1 | `TestCSILifecycle_FullCycle` _(기존 구현)_ | 8단계 전체 라이프사이클 정상 경로 완전 검증. `csiLifecycleEnv`를 통해 ControllerServer와 NodeServer가 단일 mockAgentServer를 공유하며 전체 체인을 인프로세스로 실행 | `csiLifecycleEnv` 초기화: `mockAgentServer`(ExportVolumeInfo 사전 설정), `mockCSIConnector`(DevicePath=`/dev/nvme0n1`), `mockCSIMounter`, `t.TempDir()` StateDir; PillarTarget CRD 등록 | 1) `CreateVolumeRequest{Name="pvc-lifecycle-full", CapacityRange=1GiB, Parameters{target, backend-type=zfs-zvol, protocol-type=nvmeof-tcp, zfs-pool}}` 전송; 2) `ControllerPublishVolumeRequest{VolumeId, NodeId="worker-1"}` 전송; 3) `NodeStageVolumeRequest{VolumeId, StagingTargetPath, VolumeContext}` 전송; 4) `NodePublishVolumeRequest{VolumeId, StagingTargetPath, TargetPath}` 전송; 5) `NodeUnpublishVolumeRequest{VolumeId, TargetPath}` 전송; 6) `NodeUnstageVolumeRequest{VolumeId, StagingTargetPath}` 전송; 7) `ControllerUnpublishVolumeRequest{VolumeId, NodeId}` 전송; 8) `DeleteVolumeRequest{VolumeId}` 전송 | 모든 단계 성공; `VolumeContext`(NQN, address, port)가 CreateVolume → NodeStageVolume으로 키 변환 없이 전달; `agent.CreateVolume` 1회 · `agent.ExportVolume` 1회 · `agent.AllowInitiator` 1회 · `agent.DenyInitiator` 1회 · `agent.UnexportVolume` 1회 · `agent.DeleteVolume` 1회; `mockConnector.Connect` 1회 · `mockConnector.Disconnect` 1회; PillarVolume CRD 삭제됨(NotFound) | `CSI-C`, `CSI-N`, `Agent`, `Conn`, `Mnt`, `TgtCRD`, `VolCRD`, `State`, `gRPC` |
+| E24.1-2 | `TestCSILifecycle_VolumeContextFlowThrough` _(기존 구현)_ | CreateVolume의 VolumeContext(NQN/address/port)가 키 변환 없이 NodeStageVolume의 `mockConnector.Connect` 인수로 전달됨을 검증. 컨트롤러와 노드 서버가 VolumeContext 키 이름에 합의(no translation)되어 있어야 함 | `csiLifecycleEnv`; `mockAgentServer.ExportVolumeInfo`: `TargetId=lifecycleTestNQN`, `Address=127.0.0.1`, `Port=4420` | 1) `CreateVolumeRequest` 전송; 2) `VolumeContext` 추출; 3) `NodeStageVolumeRequest{VolumeContext: 그대로 전달}` 전송; 4) `mockConnector.ConnectCalls[0]` 검증 | `mockConnector.Connect.SubsysNQN == VolumeContext["target_id"]`; `TrAddr == VolumeContext["address"]`; `TrSvcID == VolumeContext["port"]`; 키 변환 없음 확인 | `CSI-C`, `CSI-N`, `Agent`, `Conn`, `gRPC` |
+| E24.1-3 | `TestCSILifecycle_OrderingConstraints` _(기존 구현)_ | 8단계 체인에서 올바른 순서 준수: 각 단계 완료 후 다음 단계 진행 시 모든 agent RPC가 정확히 1회씩 호출됨 | 동일한 `csiLifecycleEnv`; 각 단계를 Phase 1~8로 명시 | Phase 1: CreateVolume; Phase 2: ControllerPublish; Phase 3: NodeStage; Phase 4: NodePublish; Phase 5: NodeUnpublish; Phase 6: NodeUnstage; Phase 7: ControllerUnpublish; Phase 8: DeleteVolume — 각 Phase 후 중간 상태 검증 | Phase 3 후: `mockConnector.ConnectCalls` 1개; Phase 4 후: `targetPath` 마운트됨; Phase 5 후: `targetPath` 언마운트됨 · `stagingPath` 유지; Phase 6 후: `stagingPath` 언마운트됨 · `mockConnector.DisconnectCalls` 1개; 최종: 6개 agent RPC 각 1회 | `CSI-C`, `CSI-N`, `Agent`, `Conn`, `Mnt`, `gRPC` |
+| E24.1-4 | `TestCSILifecycle_IdempotentSteps` _(기존 구현)_ | 8단계 각 단계를 두 번씩 동일 인수로 호출해도 오류 없이 최종 상태 동일 — CSI 명세의 멱등성 요구 통합 검증 | `csiLifecycleEnv` 초기화; `callTwice` 헬퍼 함수 사용 | 각 단계 `callTwice(step, fn)` — CreateVolume 2회 · ControllerPublish 2회 · NodeStage 2회 · NodePublish 2회 · NodeUnpublish 2회 · NodeUnstage 2회 · ControllerUnpublish 2회 · DeleteVolume 2회 | 모든 재호출 성공; 오류 없음; 두 번째 호출은 no-op 처리 | `CSI-C`, `CSI-N`, `Agent`, `Conn`, `Mnt`, `SM`, `gRPC` |
 
 ---
 
@@ -2461,19 +2474,21 @@ NodeUnpublish → NodeUnstage → ControllerUnpublish → DeleteVolume
 
 ### E24 커버리지 요약
 
-| 소섹션 | 검증 내용 | 신규/참조 | CI 실행 |
-|--------|---------|----------|--------|
-| E24.1 | 8단계 정상 경로 완전 체인, VolumeContext 전파 | 신규 | ✅ 표준 CI |
-| E24.2 | CreateVolume 부분 실패/복구 (E6 통합 뷰) | E6.1 참조 | ✅ 표준 CI |
-| E24.3 | ControllerPublish 실패/멱등성 (E7 통합 뷰) | E7.1 참조 | ✅ 표준 CI |
-| E24.4 | NodeStage 연결/포맷 실패/멱등성 | 신규 | ✅ 표준 CI |
-| E24.5 | NodePublish 마운트 실패/멱등성 (E7 통합 뷰) | E7.2 참조 | ✅ 표준 CI |
-| E24.6 | NodeUnpublish 언마운트 실패/멱등성 | 신규 | ✅ 표준 CI |
-| E24.7 | NodeUnstage 연결 해제 실패/멱등성 | 신규 | ✅ 표준 CI |
-| E24.8 | ControllerUnpublish 실패/멱등성 | 신규 | ✅ 표준 CI |
-| E24.9 | DeleteVolume 실패/부분 생성 정리 (E6 통합 뷰) | E6.2 참조 | ✅ 표준 CI |
-| E24.10 | 중단된 라이프사이클 정리 경로 | 신규 | ✅ 표준 CI |
-| **합계** | | **18개 테스트** | ✅ |
+| 소섹션 | 테스트 수 | 검증 내용 | 신규/참조 | CI 실행 |
+|--------|---------|---------|----------|--------|
+| E24.1 | 4개 | 8단계 정상 경로 완전 체인 (FullCycle), VolumeContext 전파, 순서 준수, 멱등성 | 기존 구현 참조 (E4.1·E4.3·E4.4) | ✅ 표준 CI |
+| E24.2 | 4개 | CreateVolume 부분 실패/복구 (E6 통합 뷰) | E6.1 참조 | ✅ 표준 CI |
+| E24.3 | 2개 | ControllerPublish 실패/멱등성 (E7 통합 뷰) | E7.1 참조 + 신규 | ✅ 표준 CI |
+| E24.4 | 3개 | NodeStage 연결/포맷 실패/멱등성 | 신규 | ✅ 표준 CI |
+| E24.5 | 3개 | NodePublish 마운트 실패/멱등성 (E7 통합 뷰) | E7.2 참조 + 신규 | ✅ 표준 CI |
+| E24.6 | 2개 | NodeUnpublish 언마운트 실패/멱등성 | 신규 | ✅ 표준 CI |
+| E24.7 | 2개 | NodeUnstage 연결 해제 실패/멱등성 | 신규 | ✅ 표준 CI |
+| E24.8 | 2개 | ControllerUnpublish 실패/멱등성 | 신규 | ✅ 표준 CI |
+| E24.9 | 4개 | DeleteVolume 실패/부분 생성 정리 (E6 통합 뷰) | E6.2 참조 + 신규 | ✅ 표준 CI |
+| E24.10 | 2개 | 중단된 라이프사이클 정리 경로 | 신규 | ✅ 표준 CI |
+| **합계** | **28개** | | | ✅ |
+
+> **참고:** E24.1 항목 4개는 기존 구현된 테스트(`TestCSILifecycle_FullCycle`, `TestCSILifecycle_VolumeContextFlowThrough`, `TestCSILifecycle_OrderingConstraints`, `TestCSILifecycle_IdempotentSteps`)를 8단계 체인 통합 관점에서 재명세한 것이다. E24.2~E24.9의 일부 항목도 기존 E6·E7 테스트를 통합 뷰로 참조한다. **순수 신규 명세 테스트: 약 12개.**
 
 **CI에서 검증 불가 항목 (정직한 평가):**
 
