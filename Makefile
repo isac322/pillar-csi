@@ -69,40 +69,14 @@ test-fast: fmt vet ## Run fast unit tests only (no envtest; completes in <10s).
 test-short: fmt vet ## Run fast unit tests in short mode (skips slow tests like ConcurrentSafety).
 	go test -short -parallel=8 $$(go list ./... | grep -v /e2e) -count=1
 
-# TODO(user): To use a different vendor for e2e tests, modify the setup under 'tests/e2e'.
-# The default setup assumes Kind is pre-installed and builds/loads the Manager Docker image locally.
-# CertManager is installed by default; skip with:
-# - CERT_MANAGER_INSTALL_SKIP=true
-KIND_CLUSTER ?= pillar-csi-e2e
-
-.PHONY: setup-test-e2e
-setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
-	@command -v $(KIND) >/dev/null 2>&1 || { \
-		echo "Kind is not installed. Please install Kind manually."; \
-		exit 1; \
-	}
-	@case "$$($(KIND) get clusters)" in \
-		*"$(KIND_CLUSTER)"*) \
-			echo "Kind cluster '$(KIND_CLUSTER)' already exists. Skipping creation." ;; \
-		*) \
-			echo "Creating Kind cluster '$(KIND_CLUSTER)'..."; \
-			$(KIND) create cluster --name $(KIND_CLUSTER) ;; \
-	esac
-
-.PHONY: test-e2e
-test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind.
-	KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) go test -tags=e2e ./test/e2e/ -v -ginkgo.v
-	$(MAKE) cleanup-test-e2e
-
-.PHONY: cleanup-test-e2e
-cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
-	@$(KIND) delete cluster --name $(KIND_CLUSTER)
-
-##@ E2E Tests (multi-node Kind, internal + external agent modes)
+##@ E2E Tests
 
 # ── E2E configuration variables ───────────────────────────────────────────────
 # Override any of these on the make command line, e.g.:
-#   make test-e2e-setup KIND_CLUSTER=my-cluster E2E_IMAGE_TAG=dev
+#   make test-e2e KIND_CLUSTER=my-cluster E2E_IMAGE_TAG=dev
+
+## Kind cluster name used by TestMain for the e2e cluster.
+KIND_CLUSTER ?= pillar-csi-e2e
 
 ## Image tag applied to pillar-csi-{controller,agent,node} images for e2e.
 E2E_IMAGE_TAG ?= e2e
@@ -111,82 +85,30 @@ E2E_IMAGE_TAG ?= e2e
 E2E_HELM_RELEASE ?= pillar-csi
 E2E_HELM_NAMESPACE ?= pillar-csi-system
 
-## Extra flags forwarded verbatim to hack/e2e-setup.sh.
-## Example: E2E_SETUP_EXTRA_ARGS=--skip-image-build
-E2E_SETUP_EXTRA_ARGS ?=
-
-## Extra flags forwarded verbatim to go test (both test-e2e-run and test-e2e-external).
+## Extra flags forwarded verbatim to go test.
 ## Example: E2E_TEST_ARGS="-run TestMyFeature -timeout 45m"
 E2E_TEST_ARGS ?=
 
-## Extra flags forwarded verbatim to hack/e2e-teardown.sh.
-## Example: E2E_TEARDOWN_ARGS=--images
-E2E_TEARDOWN_ARGS ?=
-
-## External agent Docker container name and gRPC port (used by test-e2e-external).
-EXTERNAL_AGENT_NAME ?= pillar-csi-external-agent
-EXTERNAL_AGENT_PORT ?= 9500
-
-.PHONY: test-e2e-setup
-test-e2e-setup: ## Bootstrap Kind cluster, build+load images, deploy Helm chart (internal-agent mode)
-	@chmod +x hack/e2e-setup.sh
+# test-e2e is the single entry point for the full e2e lifecycle.
+#
+# TestMain (in test/e2e/setup_test.go) owns the entire lifecycle:
+#   1. Creates the Kind cluster from testdata/kind-config.yaml (or adopts an
+#      existing cluster named KIND_CLUSTER).
+#   2. Builds the three pillar-csi Docker images and loads them into Kind.
+#   3. Installs the Helm chart and waits for the deployment to be healthy.
+#   4. Runs all Test* functions (including the Ginkgo suites).
+#   5. Uninstalls the Helm release and deletes the Kind cluster (when TestMain
+#      created it).
+#
+# No external shell scripts are involved.  Kind requires no pre-existing cluster.
+.PHONY: test-e2e
+test-e2e: manifests generate fmt vet ## Run e2e tests; TestMain creates and tears down the Kind cluster automatically.
 	KIND_CLUSTER=$(KIND_CLUSTER) \
-	IMAGE_TAG=$(E2E_IMAGE_TAG) \
-	HELM_RELEASE=$(E2E_HELM_RELEASE) \
-	HELM_NAMESPACE=$(E2E_HELM_NAMESPACE) \
-	  hack/e2e-setup.sh $(E2E_SETUP_EXTRA_ARGS)
-
-.PHONY: test-e2e-run
-test-e2e-run: ## Run e2e tests against an already-bootstrapped Kind cluster (run test-e2e-setup first)
-	KIND_CLUSTER=$(KIND_CLUSTER) \
+	E2E_IMAGE_TAG=$(E2E_IMAGE_TAG) \
+	E2E_HELM_RELEASE=$(E2E_HELM_RELEASE) \
 	E2E_HELM_NAMESPACE=$(E2E_HELM_NAMESPACE) \
 	  go test -tags=e2e ./test/e2e/... -v -ginkgo.v \
-	  -count=1 -timeout=30m $(E2E_TEST_ARGS)
-
-.PHONY: test-e2e-teardown
-test-e2e-teardown: ## Tear down the e2e Kind cluster and remove temporary resources
-	@chmod +x hack/e2e-teardown.sh
-	KIND_CLUSTER=$(KIND_CLUSTER) \
-	EXTERNAL_AGENT_NAME=$(EXTERNAL_AGENT_NAME) \
-	  hack/e2e-teardown.sh $(E2E_TEARDOWN_ARGS)
-
-.PHONY: test-e2e-external
-test-e2e-external: ## Full lifecycle: setup cluster → start external agent → run external-agent tests → teardown
-	@chmod +x hack/e2e-setup.sh hack/e2e-external-agent.sh hack/e2e-teardown.sh
-	@# ── Step 1: bootstrap the cluster and load images ─────────────────────────
-	KIND_CLUSTER=$(KIND_CLUSTER) \
-	IMAGE_TAG=$(E2E_IMAGE_TAG) \
-	HELM_RELEASE=$(E2E_HELM_RELEASE) \
-	HELM_NAMESPACE=$(E2E_HELM_NAMESPACE) \
-	  hack/e2e-setup.sh $(E2E_SETUP_EXTRA_ARGS)
-	@# ── Step 2: start external agent + run tests + teardown (single shell so ──
-	@#           we can capture the agent address and always run teardown) ───────
-	@set -e; \
-	echo "==> Starting external agent container '$(EXTERNAL_AGENT_NAME)'..."; \
-	KIND_CLUSTER=$(KIND_CLUSTER) \
-	EXTERNAL_AGENT_NAME=$(EXTERNAL_AGENT_NAME) \
-	EXTERNAL_AGENT_PORT=$(EXTERNAL_AGENT_PORT) \
-	  hack/e2e-external-agent.sh; \
-	CONTAINER_IP=$$(docker inspect \
-	  --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' \
-	  $(EXTERNAL_AGENT_NAME) 2>/dev/null | head -1); \
-	EXTERNAL_AGENT_ADDR="$${CONTAINER_IP}:$(EXTERNAL_AGENT_PORT)"; \
-	echo "==> External agent address: $${EXTERNAL_AGENT_ADDR}"; \
-	echo "==> Running external-agent e2e tests..."; \
-	_test_rc=0; \
-	KIND_CLUSTER=$(KIND_CLUSTER) \
-	EXTERNAL_AGENT_ADDR=$${EXTERNAL_AGENT_ADDR} \
-	E2E_HELM_NAMESPACE=$(E2E_HELM_NAMESPACE) \
-	  go test -tags=e2e ./test/e2e/... -v -ginkgo.v \
-	  -count=1 -timeout=30m \
-	  --ginkgo.label-filter=external-agent \
-	  $(E2E_TEST_ARGS) \
-	|| _test_rc=$$?; \
-	echo "==> Tearing down e2e cluster (test exit code: $${_test_rc})..."; \
-	KIND_CLUSTER=$(KIND_CLUSTER) \
-	EXTERNAL_AGENT_NAME=$(EXTERNAL_AGENT_NAME) \
-	  hack/e2e-teardown.sh $(E2E_TEARDOWN_ARGS); \
-	exit $${_test_rc}
+	  -count=1 -timeout=60m $(E2E_TEST_ARGS)
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter

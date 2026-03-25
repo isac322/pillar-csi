@@ -1,0 +1,35 @@
+# Helm values for pillar-csi e2e tests (external-agent mode).
+#
+# Applied on top of helm-values.yaml (via multiple --values flags) when the
+# Go test infrastructure runs the external-agent test suite.  The key
+# difference from the base values is that the in-cluster agent DaemonSet is
+# disabled: an out-of-cluster agent container is started by the test
+# framework instead, and its gRPC address is injected into PillarTarget CRs
+# via the EXTERNAL_AGENT_ADDR environment variable.
+#
+# Usage in BeforeSuite (external-agent variant):
+#
+#   helm install pillar-csi ./charts/pillar-csi \
+#     --namespace pillar-csi-system \
+#     --values test/e2e/testdata/helm-values.yaml \
+#     --values test/e2e/testdata/helm-values-external.yaml
+#
+# The external agent Docker container is started by the Go test framework
+# using os/exec before Helm install and torn down in AfterSuite.
+
+# ── agent (disabled for external-agent mode) ──────────────────────────────────
+# Setting replicaCount via a DaemonSet is not directly possible; instead we
+# use a nodeSelector that matches no nodes in the Kind cluster so the pod is
+# never scheduled.  This avoids creating an intentionally broken DaemonSet
+# while still allowing the chart to render without template errors.
+agent:
+  image:
+    repository: ghcr.io/bhyoo/pillar-csi/agent
+    tag: "e2e"
+    pullPolicy: Never
+
+  # Empty nodeSelector: no nodes match, so the DaemonSet schedules zero pods.
+  # The controller will reconcile PillarTarget CRs using the external agent
+  # address provided via CR spec rather than the in-cluster DaemonSet.
+  nodeSelector:
+    pillar-csi.bhyoo.com/agent-mode: "external"

@@ -1,0 +1,41 @@
+# Kind cluster configuration for pillar-csi e2e tests.
+#
+# Layout: 1 control-plane node + 2 worker nodes.
+#
+# Worker nodes mount /sys/kernel/config (configfs) from the host so that
+# NVMe-oF target kernel modules (nvmet, nvmet_tcp) can expose their
+# configfs API inside the Kind node containers.  Without this mount the
+# pillar-agent init container would silently fail to configure NVMe-oF
+# targets, causing the storage-protocol tests to hang.
+#
+# Privileged init containers (modprobe) require the worker nodes to run
+# with the SYS_ADMIN capability, which Kind enables automatically when
+# extraMounts from /sys are present.
+#
+# Node labels applied here are used by the Helm chart's agent nodeSelector
+# (pillar-csi.bhyoo.com/storage-node=true) so that the agent DaemonSet is
+# scheduled on the designated storage worker nodes immediately after Helm
+# install, without waiting for the controller to label them.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+
+nodes:
+  # ── control-plane ──────────────────────────────────────────────────────────
+  - role: control-plane
+
+  # ── storage worker node 1 ──────────────────────────────────────────────────
+  # Labelled as a storage node so the pillar-agent DaemonSet is scheduled here.
+  - role: worker
+    labels:
+      pillar-csi.bhyoo.com/storage-node: "true"
+    extraMounts:
+      # Mount the host configfs so NVMe-oF target modules can write to it.
+      - hostPath: /sys/kernel/config
+        containerPath: /sys/kernel/config
+        # Propagation: HostToContainer so that modules loaded inside the
+        # Kind node are reflected back to the host configfs subtree.
+        propagation: HostToContainer
+
+  # ── worker node 2 ──────────────────────────────────────────────────────────
+  # General-purpose worker for application pods and initiator-side CSI tests.
+  - role: worker

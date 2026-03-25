@@ -1,0 +1,161 @@
+# Helm values for pillar-csi e2e tests (internal-agent mode).
+#
+# These values are applied on top of charts/pillar-csi/values.yaml when the
+# Go test infrastructure calls "helm install" during BeforeSuite.  They are
+# optimised for a local Kind cluster: images are loaded directly into Kind
+# nodes (no registry), resource limits are relaxed so tests pass on CI
+# runners with limited CPU/memory, and CRDs are installed by the chart.
+#
+# Image tags are intentionally set to "e2e" — the Go test framework builds
+# each binary with that tag and calls "kind load docker-image" before Helm
+# install.  Changing this value requires updating the corresponding constant
+# in test/e2e/setup.go (E2EImageTag).
+
+# Pull policy must be Never: images are loaded into Kind, not pulled from a
+# registry.  IfNotPresent would also work but Never makes the intent clear
+# and catches accidental registry references immediately.
+imagePullPolicy: Never
+
+# Install CRDs as part of the Helm release so the test cluster is
+# self-contained and does not rely on a separately managed CRD chart.
+installCRDs: true
+
+# ── controller ────────────────────────────────────────────────────────────────
+controller:
+  replicaCount: 1
+
+  image:
+    # Matches the image built and loaded by the Go test framework.
+    repository: ghcr.io/bhyoo/pillar-csi/controller
+    tag: "e2e"
+    pullPolicy: Never
+
+  # Reduced limits for CI runners.
+  resources:
+    limits:
+      cpu: 500m
+      memory: 128Mi
+    requests:
+      cpu: 10m
+      memory: 64Mi
+
+  sidecars:
+    provisioner:
+      resources:
+        limits:
+          cpu: 100m
+          memory: 64Mi
+        requests:
+          cpu: 10m
+          memory: 32Mi
+    attacher:
+      resources:
+        limits:
+          cpu: 100m
+          memory: 64Mi
+        requests:
+          cpu: 10m
+          memory: 32Mi
+    resizer:
+      resources:
+        limits:
+          cpu: 100m
+          memory: 64Mi
+        requests:
+          cpu: 10m
+          memory: 32Mi
+    livenessProbe:
+      resources:
+        limits:
+          cpu: 50m
+          memory: 32Mi
+        requests:
+          cpu: 5m
+          memory: 16Mi
+
+# ── node ──────────────────────────────────────────────────────────────────────
+node:
+  image:
+    repository: ghcr.io/bhyoo/pillar-csi/node
+    tag: "e2e"
+    pullPolicy: Never
+
+  resources:
+    limits:
+      cpu: 500m
+      memory: 256Mi
+    requests:
+      cpu: 10m
+      memory: 64Mi
+
+  sidecars:
+    nodeDriverRegistrar:
+      resources:
+        limits:
+          cpu: 100m
+          memory: 64Mi
+        requests:
+          cpu: 10m
+          memory: 32Mi
+    livenessProbe:
+      resources:
+        limits:
+          cpu: 50m
+          memory: 32Mi
+        requests:
+          cpu: 5m
+          memory: 16Mi
+
+# ── agent (internal-agent mode) ───────────────────────────────────────────────
+# The agent DaemonSet is scheduled only on nodes labelled
+# pillar-csi.bhyoo.com/storage-node=true.  The kind-config.yaml in this
+# same directory pre-labels worker-0 with that label so the DaemonSet pod
+# is running before the first test case executes.
+agent:
+  image:
+    repository: ghcr.io/bhyoo/pillar-csi/agent
+    tag: "e2e"
+    pullPolicy: Never
+
+  resources:
+    limits:
+      cpu: 500m
+      memory: 256Mi
+    requests:
+      cpu: 10m
+      memory: 64Mi
+
+  # Keep the default nodeSelector so the agent only runs on storage nodes.
+  nodeSelector:
+    pillar-csi.bhyoo.com/storage-node: "true"
+
+  # gRPC port must match the value used by tests and PillarTarget CRs.
+  grpcPort: 9500
+  hostPort: 9500
+
+# ── RBAC & ServiceAccounts ────────────────────────────────────────────────────
+rbac:
+  create: true
+
+serviceAccount:
+  controller:
+    create: true
+  node:
+    create: true
+  agent:
+    create: true
+
+# ── CSIDriver ─────────────────────────────────────────────────────────────────
+csiDriver:
+  create: true
+  attachRequired: true
+  podInfoOnMount: true
+  fsGroupPolicy: File
+  volumeLifecycleModes:
+    - Persistent
+
+# ── Metrics ───────────────────────────────────────────────────────────────────
+metrics:
+  serviceMonitor:
+    # No Prometheus operator in the e2e cluster; skip ServiceMonitor creation.
+    enabled: false
