@@ -1,0 +1,20 @@
+{{/*
+ClusterRoleBinding: binds the pillar-csi ClusterRole to the controller ServiceAccount.
+Controlled by .Values.rbac.create (same toggle as clusterrole.yaml).
+*/}}
+{{- if .Values.rbac.create -}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "pillar-csi.fullname" . }}
+  labels:
+    {{- include "pillar-csi.componentLabels" (dict "root" . "component" "controller") | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "pillar-csi.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "pillar-csi.controllerServiceAccountName" . }}
+    namespace: {{ include "pillar-csi.namespace" . }}
+{{- end }}
