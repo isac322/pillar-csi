@@ -177,6 +177,12 @@ type NodeServer struct {
 	// RPCs with FailedPrecondition.
 	// When nil no state-machine validation is performed (backward compatible).
 	sm *VolumeStateMachine
+
+	// resizer performs online filesystem expand operations in NodeExpandVolume.
+	// When nil, NodeExpandVolume falls back to the default exec-based Resizer
+	// (resize2fs for ext4, xfs_growfs for xfs).  Override in tests via
+	// WithResizer to inject a mock without requiring real resize tools.
+	resizer Resizer
 }
 
 // Ensure NodeServer satisfies the interface at compile time.
