@@ -1,0 +1,16 @@
+apiVersion: v2
+name: pillar-csi
+description: A Helm chart for deploying pillar-csi — a Kubernetes CSI plugin with pluggable backends and protocols
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - csi
+  - storage
+  - kubernetes
+home: https://github.com/bhyoo/pillar-csi
+sources:
+  - https://github.com/bhyoo/pillar-csi
+maintainers:
+  - name: bhyoo
+    url: https://github.com/bhyoo
