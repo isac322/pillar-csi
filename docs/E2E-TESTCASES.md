@@ -222,7 +222,17 @@ Docker-in-Docker(DinD) 또는 Kind 지원 러너가 없으면 실행 불가.
 | E16 | 동시 작업 안전성 | 7 | `TestCSIConcurrent_*` |
 | E17 | 정리 검증 | 8 | `TestCSICleanup_*` |
 | E18 | Agent 다운 오류 시나리오 | 6 | `TestCSIController_CreateVolume_AgentUnreachable`, `TestCSIErrors_*Agent*`, `TestAgent_ReconcileState*` |
-| **합계** | | **140** | |
+| E21.1 | 잘못된 CR 런타임 처리 (in-process) | 6 | `TestCSIInvalidCR_*` |
+
+**Type C (envtest 통합, integration 빌드 태그):**
+
+| # | 이름 | 테스트 수 | 테스트 함수 패턴 |
+|---|------|----------|----------------|
+| E21.2 | PillarTarget 웹훅 검증 | 7 | `TestPillarTargetWebhook_*` |
+| E21.3 | PillarPool 웹훅 검증 | 5 | `TestPillarPoolWebhook_*` |
+| E21.4 | CRD OpenAPI 스키마 검증 | 8 | `TestCRDSchema_*` |
+
+| **합계** | | **166** (in-process 146 + envtest 20) | |
 
 ---
 
@@ -1687,6 +1697,527 @@ CSI 컨트롤러가 에이전트 gRPC 다이얼 실패를 감지하고 적절한
 
 ---
 
+## E21: 잘못된 CR 오류 시나리오 (Invalid CR Error Scenarios)
+
+**테스트 유형:** A (인프로세스) + C (envtest 통합) — **혼합**
+
+이 섹션은 Custom Resource(CR)의 잘못된 필드, 누락된 필수 값, 불변 필드 수정 시도,
+API 서버 스키마 위반 등 다양한 CR 수준 오류 시나리오를 정의한다.
+E14(CSI 요청 파라미터 오류)와 달리 이 섹션은 **Kubernetes 객체(CRD 인스턴스)
+자체의 유효성 문제**에 집중한다.
+
+**영향 범위:**
+- `PillarTarget` — 에이전트 주소 및 연결 정보를 담는 CR
+- `PillarPool` — 스토리지 풀을 나타내는 CR
+- `PillarVolume` — CSI 볼륨 생명주기 상태를 추적하는 CR
+
+---
+
+### E21 소섹션 분류 요약
+
+| 소섹션 | 테스트 유형 | 빌드 태그 | CI 실행 | 테스트 위치 |
+|--------|-----------|----------|--------|------------|
+| E21.1 | A (in-process) | 없음 | ✅ 표준 CI | `test/e2e/` |
+| E21.2 | C (envtest) | `integration` | ✅ envtest 필요 | `internal/webhook/v1alpha1/` |
+| E21.3 | C (envtest) | `integration` | ✅ envtest 필요 | `internal/webhook/v1alpha1/` |
+| E21.4 | C (envtest) | `integration` | ✅ envtest 필요 | `internal/controller/` |
+
+> **⚠️ Fake client 한계:** E21.1은 fake k8s 클라이언트를 사용하므로
+> CRD OpenAPI 스키마 검증 및 웹훅 어드미션이 실제로 실행되지 않는다.
+> 스키마 검증은 E21.4(envtest), 웹훅은 E21.2–E21.3(envtest)에서 별도 검증한다.
+
+---
+
+### E21.1 컨트롤러 런타임 잘못된 CR 처리 (Type A — in-process) ✅
+
+**테스트 유형:** A (인프로세스 E2E) ✅ CI 실행 가능
+
+**빌드 태그:** 없음
+
+**실행 명령:**
+```bash
+go test ./test/e2e/ -v -run TestCSIInvalidCR
+```
+
+CSI 컨트롤러가 **이미 존재하나 잘못된 상태**를 가진 CR을 런타임에 조회했을 때
+적절한 gRPC 오류 코드를 반환하고 패닉 없이 처리함을 검증한다.
+fake k8s 클라이언트는 웹훅/스키마 검증을 실행하지 않으므로,
+잘못된 필드 값을 직접 조작하여 주입한다.
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| 145 | `TestCSIInvalidCR_CreateVolume_TargetResolvedAddressEmpty` | PillarTarget이 존재하나 `Status.ResolvedAddress`가 빈 문자열 — 에이전트 주소 미확정 상태 | fake k8s 클라이언트에 `PillarTarget{spec:{nodeRef:{name:"storage-node"}}, status:{resolvedAddress:""}}` 등록; ControllerServer 초기화; 유효한 StorageClass 파라미터(target="storage-node") | 1) `CreateVolumeRequest` 전송 | `codes.Unavailable`; 오류 메시지에 "no resolved address" 포함; `dialAgent` 미호출; agent 호출 없음 | `CSI-C`, `TgtCRD` |
+| 146 | `TestCSIInvalidCR_CreateVolume_TargetSpecBothNil` | PillarTarget의 `spec.nodeRef`와 `spec.external`이 모두 nil — 연결 정보 없음 (fake client에서만 가능; 웹훅 미실행) | fake k8s 클라이언트에 `PillarTarget{spec:{}, status:{resolvedAddress:""}}` 등록; 유효한 StorageClass 파라미터 | 1) `CreateVolumeRequest` 전송 | `codes.Unavailable`; "no resolved address" 오류; agent 호출 없음 | `CSI-C`, `TgtCRD` |
+| 147 | `TestCSIInvalidCR_ControllerPublish_TargetNoAddress` | ControllerPublishVolume 시 PillarTarget의 `Status.ResolvedAddress`가 빈 문자열 | PillarVolume CRD 존재(Phase=Ready, ExportInfo 채워짐); PillarTarget 등록 but `status.resolvedAddress=""`; 유효한 VolumeId | 1) `ControllerPublishVolumeRequest`(NodeId=호스트 NQN) 전송 | `codes.Unavailable`; `agent.AllowInitiator` 미호출 | `CSI-C`, `TgtCRD`, `VolCRD` |
+| 148 | `TestCSIInvalidCR_LoadState_UnknownPhase` | PillarVolume CRD가 정의되지 않은 Phase 값을 가질 때 `LoadStateFromPillarVolumes`가 `StateNonExistent`로 처리하고 패닉 없음 | fake k8s 클라이언트에 `PillarVolume{spec:{volumeID:"t1/nvmeof-tcp/zfs-zvol/pool/pvc-abc"}, status:{phase:"GarbagePhase"}}` 등록; ControllerServer 초기화 | 1) `LoadStateFromPillarVolumes` 호출; 2) 해당 VolumeId의 SM 상태 조회 | 오류 반환 없음(nil); 해당 볼륨 SM 상태 = `StateNonExistent`; 패닉 없음; 다른 볼륨 상태 영향 없음 | `CSI-C`, `VolCRD` |
+| 149 | `TestCSIInvalidCR_LoadState_ListFailure` | `k8sClient.List(PillarVolumeList)` 실패 시 `LoadStateFromPillarVolumes`가 오류를 반환하고 SM 상태를 오염시키지 않음 | fake k8s 클라이언트를 List 실패를 반환하는 mock으로 교체 | 1) `LoadStateFromPillarVolumes` 호출 | 오류 반환(non-nil); SM 상태 변경 없음; 패닉 없음 | `CSI-C`, `VolCRD` |
+| 150 | `TestCSIInvalidCR_ControllerExpand_TargetNoAddress` | ControllerExpandVolume 시 PillarTarget `Status.ResolvedAddress`가 빈 문자열 | 유효한 PillarVolume CRD(Phase=Ready); PillarTarget `status.resolvedAddress=""`; StorageClass 파라미터 유효 | 1) `ControllerExpandVolumeRequest`(RequiredBytes=20GiB) 전송 | `codes.Unavailable`; `agent.ExpandVolume` 미호출 | `CSI-C`, `TgtCRD` |
+
+---
+
+### E21.2 PillarTarget 웹훅 — 불변 필드 수정 거부 (Type C — envtest) ⚠️
+
+**테스트 유형:** C (envtest 통합 테스트)
+
+**빌드 태그:** `//go:build integration`
+
+**실행 명령:**
+```bash
+make setup-envtest
+go test -tags=integration ./internal/webhook/v1alpha1/ -v -run PillarTarget
+```
+
+**위치:** `internal/webhook/v1alpha1/pillartarget_webhook_test.go`
+
+**자동화 가능 여부:** ✅ CI 실행 가능 — envtest 바이너리(`kube-apiserver`, `etcd`)만 필요. Docker/Kind 불필요.
+
+`PillarTargetSpec`은 **판별 유니온(discriminated union)** 구조이다:
+`spec.nodeRef` 또는 `spec.external` 중 정확히 하나만 지정해야 한다.
+생성 후 이 필드를 변경하면 연결된 모든 PillarPool/PillarBinding이 다른 물리 서버를
+가리키게 되어 데이터 손실 위험이 있다.
+`PillarTargetCustomValidator.ValidateUpdate()`가 이를 방지한다.
+
+> **⚠️ CI에서 테스트 가능 여부:** `ValidateUpdate`는 직접 메서드 호출로 검증 가능하나,
+> 전체 admission webhook 플로우(API 서버 → webhook 서버 → 실제 k8s.Update)는
+> `envtest` 환경에서만 확인된다. 이 섹션의 테스트들은 `PillarTargetCustomValidator`를
+> 직접 호출하므로 envtest 바이너리 없이도 단독으로 실행 가능하다.
+> 단, 빌드 태그 `integration` 하에서만 컴파일된다.
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| 151 | `TestPillarTargetWebhook_Update_DiscriminantSwitch_NodeToExternal` | `spec.nodeRef` → `spec.external` 전환 시도 거부 | `validator = PillarTargetCustomValidator{}`; `oldObj.spec.nodeRef={name:"node1"}`; `newObj.spec.external={address:"1.2.3.4", port:9500}` (nodeRef=nil) | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | 오류 반환(non-nil); `field.Forbidden` 포함; 메시지에 "cannot switch between nodeRef and external" 포함 | `Webhook`, `TgtCRD` |
+| 152 | `TestPillarTargetWebhook_Update_DiscriminantSwitch_ExternalToNode` | `spec.external` → `spec.nodeRef` 전환 시도 거부 | `oldObj.spec.external={address:"1.2.3.4", port:9500}`; `newObj.spec.nodeRef={name:"node1"}` (external=nil) | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | 오류 반환; `spec` 경로에 `Forbidden` 포함 | `Webhook`, `TgtCRD` |
+| 153 | `TestPillarTargetWebhook_Update_NodeRefNameImmutable` | `spec.nodeRef.name` 변경 시도 거부 | `oldObj.spec.nodeRef={name:"node-a"}`; `newObj.spec.nodeRef={name:"node-b"}` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | 오류 반환; `field.Forbidden(spec.nodeRef.name, ...)` 포함; 이전값 "node-a", 신값 "node-b" 언급 | `Webhook`, `TgtCRD` |
+| 154 | `TestPillarTargetWebhook_Update_ExternalAddressImmutable` | `spec.external.address` 변경 시도 거부 | `oldObj.spec.external={address:"1.2.3.4", port:9500}`; `newObj.spec.external={address:"5.6.7.8", port:9500}` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | 오류 반환; `field.Forbidden(spec.external.address, ...)` 포함; 이전값 "1.2.3.4", 신값 "5.6.7.8" 언급 | `Webhook`, `TgtCRD` |
+| 155 | `TestPillarTargetWebhook_Update_ExternalPortImmutable` | `spec.external.port` 변경 시도 거부 | `oldObj.spec.external={address:"1.2.3.4", port:9500}`; `newObj.spec.external={address:"1.2.3.4", port:9600}` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | 오류 반환; `field.Forbidden(spec.external.port, ...)` 포함; 이전값 9500, 신값 9600 언급 | `Webhook`, `TgtCRD` |
+| 156 | `TestPillarTargetWebhook_Update_NodeRefNonIdentityFieldChange_OK` | `spec.nodeRef.name`이 변경되지 않고 비식별 필드(`addressType`)만 변경된 업데이트는 허용됨 | `oldObj.spec.nodeRef={name:"node-a", addressType:"InternalIP"}`; `newObj.spec.nodeRef={name:"node-a", addressType:"ExternalIP"}` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | 오류 없음(nil 반환); 업데이트 허용됨 | `Webhook`, `TgtCRD` |
+| 157 | `TestPillarTargetWebhook_Create_Valid` | 유효한 PillarTarget 생성 시 웹훅이 허용 (현재 ValidateCreate는 no-op 스캐폴딩) | `obj.spec.nodeRef={name:"storage-node-1"}`; 유효한 PillarTarget 객체 | 1) `validator.ValidateCreate(ctx, obj)` 호출 | 오류 없음(nil 반환) — 현재 구현은 스캐폴딩(TODO); 향후 검증 추가 시 갱신 필요 | `Webhook`, `TgtCRD` |
+
+---
+
+### E21.3 PillarPool 웹훅 — 불변 필드 수정 거부 (Type C — envtest) ⚠️
+
+**테스트 유형:** C (envtest 통합 테스트)
+
+**빌드 태그:** `//go:build integration`
+
+**실행 명령:**
+```bash
+make setup-envtest
+go test -tags=integration ./internal/webhook/v1alpha1/ -v -run PillarPool
+```
+
+**위치:** `internal/webhook/v1alpha1/pillarpool_webhook_test.go`
+
+**자동화 가능 여부:** ✅ CI 실행 가능
+
+`PillarPool`의 `spec.targetRef`와 `spec.backend.type`은 생성 시 고정된다.
+이 필드들을 변경하면 해당 풀에서 이미 프로비저닝된 모든 볼륨이 잘못된 백엔드/타깃을
+가리키게 된다. `PillarPoolCustomValidator.ValidateUpdate()`가 이를 방지한다.
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| 158 | `TestPillarPoolWebhook_Update_TargetRefImmutable` | `spec.targetRef` 변경 시도 거부 | `validator = PillarPoolCustomValidator{}`; `oldObj.spec={targetRef:"target-a", backend:{type:"zfs-zvol"}}`; `newObj.spec={targetRef:"target-b", backend:{type:"zfs-zvol"}}` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | 오류 반환; `field.Forbidden(spec.targetRef, ...)` 포함; 이전값 "target-a", 신값 "target-b" 언급 | `Webhook`, `TgtCRD`, `VolCRD` |
+| 159 | `TestPillarPoolWebhook_Update_BackendTypeImmutable` | `spec.backend.type` 변경 시도 거부 | `oldObj.spec={targetRef:"t1", backend:{type:"zfs-zvol"}}`; `newObj.spec={targetRef:"t1", backend:{type:"lvm-lv"}}` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | 오류 반환; `field.Forbidden(spec.backend.type, ...)` 포함; 이전값 "zfs-zvol", 신값 "lvm-lv" 언급 | `Webhook`, `TgtCRD`, `VolCRD` |
+| 160 | `TestPillarPoolWebhook_Update_ZFSPoolChange_OK` | `spec.backend.type` 변경 없이 ZFS 풀 이름만 변경된 업데이트는 허용됨 | `oldObj.spec={targetRef:"t1", backend:{type:"zfs-zvol", zfs:{pool:"tank"}}}`; `newObj.spec={targetRef:"t1", backend:{type:"zfs-zvol", zfs:{pool:"new-tank"}}}` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | 오류 없음(nil 반환); 업데이트 허용됨 | `Webhook`, `TgtCRD`, `VolCRD` |
+| 161 | `TestPillarPoolWebhook_Update_BothFieldsChanged_MultipleErrors` | `spec.targetRef`와 `spec.backend.type` 모두 변경 시도 → 두 필드 모두 Forbidden 오류 포함 | `oldObj.spec={targetRef:"t1", backend:{type:"zfs-zvol"}}`; `newObj.spec={targetRef:"t2", backend:{type:"lvm-lv"}}` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | 오류 반환; `field.ErrorList` 길이 = 2; `spec.targetRef`와 `spec.backend.type` 모두 Forbidden | `Webhook`, `TgtCRD`, `VolCRD` |
+| 162 | `TestPillarPoolWebhook_Create_Valid` | 유효한 PillarPool 생성 시 웹훅이 허용 (현재 ValidateCreate는 no-op 스캐폴딩) | `obj.spec={targetRef:"target-1", backend:{type:"zfs-zvol", zfs:{pool:"tank"}}}` | 1) `validator.ValidateCreate(ctx, obj)` 호출 | 오류 없음(nil 반환) — 현재 구현은 스캐폴딩(TODO); 향후 검증 추가 시 갱신 필요 | `Webhook`, `TgtCRD`, `VolCRD` |
+
+---
+
+### E21.4 CRD OpenAPI 스키마 검증 — 필드 범위/형식 위반 (Type C — envtest) ⚠️
+
+**테스트 유형:** C (envtest 통합 테스트)
+
+**빌드 태그:** `//go:build integration`
+
+**실행 명령:**
+```bash
+make setup-envtest
+go test -tags=integration ./internal/controller/ -v -run TestCRDSchema
+```
+
+**위치:** `internal/controller/pillartarget_controller_test.go` 또는 `internal/controller/pillarpool_controller_test.go`
+
+**자동화 가능 여부:** ✅ CI 실행 가능 (`make setup-envtest` 후)
+
+이 테스트들은 **실제 envtest API 서버**를 통해 CRD 오브젝트를 생성/패치하고,
+`kubebuilder:validation` 마커가 생성한 OpenAPI v3 스키마 규칙이 실제로 동작함을 확인한다.
+fake client와 달리 envtest API 서버는 CRD 스키마 검증을 실제로 수행한다.
+
+> **⚠️ CI 실행 가능 여부 — 정직한 평가:**
+> - ✅ `make setup-envtest` 후 표준 GitHub Actions에서 실행 가능
+> - ✅ Docker/Kind/실제 하드웨어 불필요
+> - ⚠️ envtest 바이너리(`kube-apiserver`, `etcd`) 다운로드 필요 (~100MB)
+> - ⚠️ 일부 envtest 버전과 kubebuilder CRD OpenAPI v3 스키마 사이에 호환성 문제 발생 가능
+> - ❌ fake client 기반 표준 단위 테스트에서는 이 검증이 실행되지 않음
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| 163 | `TestCRDSchema_PillarTarget_NodeRefName_Empty` | `spec.nodeRef.name=""`인 PillarTarget 생성 시도 → `+kubebuilder:validation:MinLength=1` 위반 | envtest API 서버 실행 중; CRD 설치 완료 (`config/crd/bases/`); `PillarTarget{spec:{nodeRef:{name:""}}}` 준비 | 1) `k8sClient.Create(ctx, target)` 호출 | 422 Unprocessable Entity 반환; 오류에 `spec.nodeRef.name` 언급; 리소스 미생성 | `TgtCRD`, `API서버스키마` |
+| 164 | `TestCRDSchema_PillarTarget_ExternalPort_Zero` | `spec.external.port=0` → `+kubebuilder:validation:Minimum=1` 위반 | envtest API 서버; `PillarTarget{spec:{external:{address:"1.2.3.4", port:0}}}` | 1) `k8sClient.Create(ctx, target)` 호출 | 422 반환; `spec.external.port` 최솟값(1) 미만 오류; 리소스 미생성 | `TgtCRD`, `API서버스키마` |
+| 165 | `TestCRDSchema_PillarTarget_ExternalAddress_Empty` | `spec.external.address=""` → `+kubebuilder:validation:MinLength=1` 위반 | envtest API 서버; `PillarTarget{spec:{external:{address:"", port:9500}}}` | 1) `k8sClient.Create(ctx, target)` 호출 | 422 반환; `spec.external.address` 길이 오류; 리소스 미생성 | `TgtCRD`, `API서버스키마` |
+| 166 | `TestCRDSchema_PillarTarget_NodeRefAddressType_Invalid` | `spec.nodeRef.addressType="FooType"` → `+kubebuilder:validation:Enum=InternalIP;ExternalIP` 위반 | envtest API 서버; `PillarTarget{spec:{nodeRef:{name:"n1", addressType:"FooType"}}}` | 1) `k8sClient.Create(ctx, target)` 호출 | 422 반환; `spec.nodeRef.addressType` Enum 위반 오류; "FooType" 불허, 허용값("InternalIP", "ExternalIP") 표시 | `TgtCRD`, `API서버스키마` |
+| 167 | `TestCRDSchema_PillarPool_TargetRef_Empty` | `spec.targetRef=""`인 PillarPool 생성 → `+kubebuilder:validation:MinLength=1` 위반 | envtest API 서버; `PillarPool{spec:{targetRef:"", backend:{type:"zfs-zvol"}}}` | 1) `k8sClient.Create(ctx, pool)` 호출 | 422 반환; `spec.targetRef` 길이 오류; 리소스 미생성 | `TgtCRD`, `VolCRD`, `API서버스키마` |
+| 168 | `TestCRDSchema_PillarPool_BackendType_Invalid` | `spec.backend.type="not-supported"` → `+kubebuilder:validation:Enum=zfs-zvol;zfs-dataset;lvm-lv;dir` 위반 | envtest API 서버; `PillarPool{spec:{targetRef:"t1", backend:{type:"not-supported"}}}` | 1) `k8sClient.Create(ctx, pool)` 호출 | 422 반환; `spec.backend.type` Enum 위반; 허용값(zfs-zvol, zfs-dataset, lvm-lv, dir) 표시 | `TgtCRD`, `VolCRD`, `API서버스키마` |
+| 169 | `TestCRDSchema_PillarVolume_Phase_Invalid` | `status.phase="GarbagePhase"` — `+kubebuilder:validation:Enum=Provisioning;CreatePartial;Ready;...` 위반 | envtest API 서버; 유효한 PillarVolume 생성 완료; `status.phase="GarbagePhase"` 패치 시도 | 1) `k8sClient.Status().Patch(ctx, pv, client.MergeFrom(original))` 호출; phase를 "GarbagePhase"로 변경 | 422 반환; `status.phase` Enum 위반 오류; 기존 상태 유지됨 | `VolCRD`, `API서버스키마` |
+| 170 | `TestCRDSchema_PillarVolume_CapacityBytes_Negative` | `spec.capacityBytes=-1` → `+kubebuilder:validation:Minimum=0` 위반 | envtest API 서버; `PillarVolume{spec:{volumeID:"t/p/b/v", agentVolumeID:"p/v", targetRef:"t1", backendType:"zfs-zvol", protocolType:"nvmeof-tcp", capacityBytes:-1}}` | 1) `k8sClient.Create(ctx, pv)` 호출 | 422 반환; `spec.capacityBytes` Minimum(0) 위반 오류; 리소스 미생성 | `VolCRD`, `API서버스키마` |
+
+---
+
+### E21 커버리지 요약
+
+이 섹션이 커버하는 CR 유효성 검증 레이어를 정리한다.
+
+| 검증 레이어 | 담당 소섹션 | 테스트 수 | CI 실행 |
+|-----------|-----------|----------|--------|
+| 컨트롤러 런타임 CR 상태 검증 | E21.1 | 6개 | ✅ 표준 CI |
+| 웹훅 어드미션 — PillarTarget 불변 필드 | E21.2 | 7개 | ✅ envtest |
+| 웹훅 어드미션 — PillarPool 불변 필드 | E21.3 | 5개 | ✅ envtest |
+| OpenAPI CRD 스키마 — 필드 범위/형식 | E21.4 | 8개 | ✅ envtest |
+| **합계** | | **26개** | ✅ 모두 CI 가능 |
+
+**CI에서 테스트 불가 항목 (현재 구현 한계):**
+
+| 검증 항목 | 이유 | 대안 |
+|---------|------|------|
+| PillarTarget `spec.nodeRef`와 `spec.external` 동시 설정 거부 | `ValidateCreate` 미구현(TODO 스캐폴딩); 현재 Create는 항상 허용 | Create 웹훅 구현 후 E21.2에 추가 |
+| PillarTarget 삭제 시 참조 PillarPool/PillarBinding 보호 | `ValidateDelete` 미구현(TODO 스캐폴딩) | Delete 웹훅 구현 후 추가 |
+| PillarPool 삭제 시 참조 PillarVolume 존재 여부 확인 | `ValidateDelete` 미구현 | Delete 웹훅 구현 후 추가 |
+| 실제 Kubernetes admission controller 전체 플로우 | fake client/직접 호출 한계; webhook 서버와 kube-apiserver 간 HTTP 통신 미실행 | Kind 클러스터 테스트(K1) |
+
+---
+
+
+# 카테고리 1.5 — Envtest 통합 테스트 (유형 C: envtest 필요) ⚠️
+
+> **빌드 태그:** `//go:build integration` | **실행:** `make setup-envtest && go test -tags=integration ./internal/controller/... ./internal/webhook/...`
+>
+> controller-runtime envtest 바이너리 필요 · Kind/Docker 불필요 · 표준 GitHub Actions CI에서 실행 가능
+
+이 카테고리의 테스트는 **실제 Kubernetes API 서버 바이너리(envtest)**를 사용하여
+CRD 컨트롤러의 조정(reconcile) 루프와 웹훅 검증기를 검증한다.
+스토리지 백엔드(ZFS, NVMe-oF)는 mock을 사용하므로 실제 스토리지 하드웨어는 불필요하다.
+`make setup-envtest` 실행 후 `bin/k8s/` 디렉터리에 envtest 바이너리가 준비되어야 한다.
+
+**CI 실행 가능 여부:** ✅ 가능 — GitHub Actions `ubuntu-latest` 러너에서 `make setup-envtest` 후 실행 가능
+
+```bash
+# envtest 바이너리 준비
+make setup-envtest
+
+# 컨트롤러 통합 테스트 실행
+go test -tags=integration ./internal/controller/... -v
+
+# 웹훅 통합 테스트 실행
+go test -tags=integration ./internal/webhook/... -v
+```
+
+**총 카테고리 1.5 테스트 케이스: 39개** (E19: 19개, E20: 20개)
+
+---
+
+## E19: PillarTarget CRD 라이프사이클
+
+**테스트 유형:** C (Envtest 통합) ⚠️ envtest 필요
+
+**빌드 태그:** `//go:build integration`
+
+**실행 방법:**
+```bash
+make setup-envtest
+go test -tags=integration ./internal/controller/... -v -run 'TestControllers/PillarTarget'
+go test -tags=integration ./internal/webhook/... -v -run 'TestWebhooks/PillarTarget'
+```
+
+**목적:**
+PillarTarget CRD의 전체 라이프사이클을 검증한다. 이 CRD는 스토리지 에이전트(pillar-agent)가
+실행 중인 노드 또는 외부 주소를 식별하는 클러스터-스코프 리소스이다. 다음 동작을 검증한다:
+
+1. **유효/무효 스펙 생성** — `spec.nodeRef` / `spec.external` 판별 유니온(discriminated union) 검증
+2. **상태 조건 전이** — `NodeExists`, `AgentConnected`, `Ready` 조건의 정확한 설정
+3. **삭제 보호 동작** — PillarPool이 참조하는 동안 파이널라이저가 삭제를 차단
+
+**컴포넌트 약어 참조:**
+
+| 약어 | 의미 |
+|------|------|
+| `TgtCRD` | `api/v1alpha1.PillarTarget` CRD 및 상태 |
+| `TgtCtrl` | `internal/controller.PillarTargetReconciler` |
+| `TgtWH` | `internal/webhook/v1alpha1.PillarTargetCustomValidator` |
+| `PoolCRD` | `api/v1alpha1.PillarPool` CRD |
+| `MockDialer` | `internal/controller.mockDialer` (테스트 더블) |
+
+---
+
+### E19.1 유효한 스펙으로 생성
+
+**목적:** 다양한 유효한 스펙으로 PillarTarget을 생성하거나 검증기를 통과할 수 있음을 확인한다.
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| E19.1.1 | `TestPillarTargetWebhook_ValidCreate_External` | `spec.external.address` + `spec.external.port`가 모두 설정된 external 스펙으로 ValidateCreate 통과 | envtest API 서버; PillarTarget CRD 설치; `PillarTargetCustomValidator` 인스턴스 생성 | 1) `spec.external.address="10.0.0.1"`, `spec.external.port=9500`으로 `validator.ValidateCreate(ctx, obj)` 호출 | `warnings=nil`; `err=nil`; 허용 | `TgtWH` |
+| E19.1.2 | `TestPillarTargetWebhook_ValidCreate_NodeRef` | `spec.nodeRef.name`만 설정된 nodeRef 스펙으로 ValidateCreate 통과 | envtest API 서버; PillarTarget CRD 설치; `PillarTargetCustomValidator` 인스턴스 생성 | 1) `spec.nodeRef.name="worker-1"`으로 `validator.ValidateCreate(ctx, obj)` 호출 | `warnings=nil`; `err=nil`; 허용 | `TgtWH` |
+| E19.1.3 | `TestPillarTargetController_FinalizerAddedOnFirstReconcile` | PillarTarget 생성 후 첫 번째 `Reconcile` 호출에서 `pillar-target-protection` 파이널라이저 자동 추가 | envtest API 서버; `PillarTargetReconciler` 초기화 (`Dialer=nil`); `spec.external` PillarTarget 생성 | 1) `k8sClient.Create(ctx, target)` 실행; 2) `reconciler.Reconcile(ctx, req)` 1회 호출 | PillarTarget에 `pillar-csi.bhyoo.com/pillar-target-protection` 파이널라이저 존재; `result.RequeueAfter==0` | `TgtCRD`, `TgtCtrl` |
+
+---
+
+### E19.2 잘못된 스펙으로 생성 거부 — CRD 스키마 검증
+
+**목적:** kubebuilder 마커(`+kubebuilder:validation:*`)에 의해 잘못된 필드 값이
+Kubernetes API 서버 수준에서 거부됨을 확인한다. 웹훅이 아닌 CRD 스키마 검증으로 처리된다.
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| E19.2.1 | `TestPillarTargetCRD_InvalidCreate_EmptyNodeRefName` | `spec.nodeRef.name`이 빈 문자열인 경우 API 서버가 HTTP 422로 거부 | envtest API 서버; PillarTarget CRD 설치 (`MinLength=1` 마커 포함) | 1) `spec.nodeRef.name=""`으로 `k8sClient.Create(ctx, target)` 호출 | `k8sClient.Create` 오류 반환; HTTP 422 UnprocessableEntity; `spec.nodeRef.name` 필드 검증 실패 메시지 포함 | `TgtCRD` |
+| E19.2.2 | `TestPillarTargetCRD_InvalidCreate_ExternalPortTooLow` | `spec.external.port=0` (최솟값 미달) 시 API 서버가 거부 | envtest API 서버; PillarTarget CRD 설치 (`Minimum=1` 마커 포함) | 1) `spec.external.address="10.0.0.1"`, `spec.external.port=0`으로 Create 호출 | 오류 반환; `spec.external.port` 값 범위 검증 실패 | `TgtCRD` |
+| E19.2.3 | `TestPillarTargetCRD_InvalidCreate_ExternalPortTooHigh` | `spec.external.port=65536` (최댓값 초과) 시 API 서버가 거부 | envtest API 서버; PillarTarget CRD 설치 (`Maximum=65535` 마커 포함) | 1) `spec.external.port=65536`으로 Create 호출 | 오류 반환; `spec.external.port` 값 범위 검증 실패 | `TgtCRD` |
+| E19.2.4 | `TestPillarTargetCRD_InvalidCreate_EmptyExternalAddress` | `spec.external.address`가 빈 문자열인 경우 거부 | envtest API 서버; PillarTarget CRD 설치 (`MinLength=1` 마커 포함) | 1) `spec.external.address=""`으로 Create 호출 | 오류 반환; `spec.external.address` 필드 검증 실패 | `TgtCRD` |
+
+---
+
+### E19.3 불변 필드 업데이트 거부 — 웹훅 검증
+
+**목적:** PillarTarget의 핵심 식별 필드(에이전트 호스트를 바꾸는 변경)는
+`ValidateUpdate`에서 `field.Forbidden` 오류로 거부됨을 확인한다.
+이 검증은 `internal/webhook/v1alpha1.PillarTargetCustomValidator.ValidateUpdate`에서 수행된다.
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| E19.3.1 | `TestPillarTargetWebhook_ImmutableUpdate_NodeRefToExternal` | `spec.nodeRef` → `spec.external`로 판별자(discriminant) 전환 시 거부 | `oldObj.spec.nodeRef.name="node-1"`; `newObj.spec.external.address="10.0.0.1"` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | `err != nil`; 오류 메시지에 `"cannot switch between nodeRef and external"` 포함; `field.Forbidden` 타입; `spec` 경로 | `TgtWH` |
+| E19.3.2 | `TestPillarTargetWebhook_ImmutableUpdate_ExternalToNodeRef` | `spec.external` → `spec.nodeRef`로 역전환 시 거부 | `oldObj.spec.external.address="10.0.0.1"`; `newObj.spec.nodeRef.name="node-1"` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | `err != nil`; `field.Forbidden`; `spec` 경로 | `TgtWH` |
+| E19.3.3 | `TestPillarTargetWebhook_ImmutableUpdate_NodeRefNameChange` | `spec.nodeRef.name` 변경 시 거부 — 에이전트 호스트 변경 방지 | `oldObj.spec.nodeRef.name="node-1"`; `newObj.spec.nodeRef.name="node-2"` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | `err != nil`; `field.Forbidden`; `spec.nodeRef.name` 경로; 오류 메시지에 이전값 `"node-1"`과 신규값 `"node-2"` 모두 포함 | `TgtWH` |
+| E19.3.4 | `TestPillarTargetWebhook_ImmutableUpdate_ExternalAddressChange` | `spec.external.address` 변경 시 거부 | `oldObj.spec.external.address="10.0.0.1"`; `newObj.spec.external.address="10.0.0.2"` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | `err != nil`; `field.Forbidden`; `spec.external.address` 경로 | `TgtWH` |
+| E19.3.5 | `TestPillarTargetWebhook_ImmutableUpdate_ExternalPortChange` | `spec.external.port` 변경 시 거부 | `oldObj.spec.external.port=9500`; `newObj.spec.external.port=9501` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | `err != nil`; `field.Forbidden`; `spec.external.port` 경로 | `TgtWH` |
+| E19.3.6 | `TestPillarTargetWebhook_MutableUpdate_AddressTypeChange` | `spec.nodeRef.addressType` 변경은 허용 (식별 필드 아님; 접속 방법만 변경) | `oldObj.spec.nodeRef.name="node-1"`, `addressType="InternalIP"`; `newObj.spec.nodeRef.name="node-1"`, `addressType="ExternalIP"` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | `err=nil`; `warnings=nil`; 허용 | `TgtWH` |
+
+---
+
+### E19.4 상태 조건 전이 — NodeExists
+
+**목적:** `NodeExists` 조건이 PillarTarget 모드(external vs nodeRef)와 K8s Node 존재 여부에 따라
+올바르게 설정됨을 확인한다.
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| E19.4.1 | `TestPillarTargetController_NodeExists_Unknown_ExternalMode` | external 모드 PillarTarget에서 `NodeExists=Unknown/ExternalMode` 설정 — external 모드는 K8s Node를 참조하지 않음 | envtest; external PillarTarget 생성; 파이널라이저 추가 조정 1회 완료 | 1) 두 번째 `reconciler.Reconcile(ctx, req)` 호출 | `NodeExists.Status=Unknown`; `Reason="ExternalMode"` | `TgtCRD`, `TgtCtrl` |
+| E19.4.2 | `TestPillarTargetController_NodeExists_True_NodePresent` | nodeRef 모드에서 참조된 K8s Node가 존재하면 `NodeExists=True/NodeFound` | envtest; `spec.nodeRef.name="worker-1"` PillarTarget; `worker-1` Node 오브젝트 사전 생성 | 1) 파이널라이저 조정; 2) 일반 조정 실행 | `NodeExists.Status=True`; `Reason="NodeFound"` | `TgtCRD`, `TgtCtrl` |
+| E19.4.3 | `TestPillarTargetController_NodeExists_False_NodeMissing` | nodeRef 모드에서 참조된 K8s Node가 없으면 `NodeExists=False/NodeNotFound` | envtest; `spec.nodeRef.name="missing-node"` PillarTarget; `missing-node` Node 오브젝트 없음 | 1) 파이널라이저 조정; 2) 일반 조정 실행 | `NodeExists.Status=False`; `Reason="NodeNotFound"`; `Message`에 `"missing-node"` 포함 | `TgtCRD`, `TgtCtrl` |
+
+---
+
+### E19.5 상태 조건 전이 — AgentConnected
+
+**목적:** `AgentConnected` 조건이 `mockDialer`의 응답에 따라 올바르게 설정됨을 확인한다.
+`mockDialer`는 실제 gRPC 연결 없이 다양한 응답을 시뮬레이션하는 테스트 더블이다.
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| E19.5.1 | `TestPillarTargetController_AgentConnected_False_DialerNil` | `reconciler.Dialer=nil`이면 `AgentConnected=False/DialerNotConfigured` — 개발/테스트 환경 | envtest; external PillarTarget; `reconciler.Dialer=nil` (기본값) | 1) 파이널라이저 조정; 2) 일반 조정 실행 | `AgentConnected.Status=False`; `Reason="DialerNotConfigured"` | `TgtCRD`, `TgtCtrl` |
+| E19.5.2 | `TestPillarTargetController_AgentConnected_True_PlainTCP` | `mockDialer{healthy:true, mtls:false}` → `AgentConnected=True/Dialed` — 평문 TCP 연결 시뮬레이션 | envtest; external PillarTarget; `reconciler.Dialer = &mockDialer{healthy:true, mtls:false}` | 1) 파이널라이저 조정; 2) mockDialer 설정 후 일반 조정 실행 | `AgentConnected.Status=True`; `Reason="Dialed"` | `TgtCRD`, `TgtCtrl`, `MockDialer` |
+| E19.5.3 | `TestPillarTargetController_AgentConnected_True_MTLS` | `mockDialer{healthy:true, mtls:true}` → `AgentConnected=True/Authenticated` — mTLS 연결 시뮬레이션 | envtest; external PillarTarget; `reconciler.Dialer = &mockDialer{healthy:true, mtls:true}` | 1) 파이널라이저 조정; 2) mTLS mockDialer 설정 후 일반 조정 실행 | `AgentConnected.Status=True`; `Reason="Authenticated"` | `TgtCRD`, `TgtCtrl`, `MockDialer` |
+| E19.5.4 | `TestPillarTargetController_AgentConnected_False_HealthCheckError` | `mockDialer.err != nil` → `AgentConnected=False/HealthCheckFailed` — 네트워크 오류 시뮬레이션 | envtest; external PillarTarget; `reconciler.Dialer = &mockDialer{err:errors.New("connection refused")}` | 1) 파이널라이저 조정; 2) 오류 반환 mockDialer 설정 후 일반 조정 실행 | `AgentConnected.Status=False`; `Reason="HealthCheckFailed"` | `TgtCRD`, `TgtCtrl`, `MockDialer` |
+| E19.5.5 | `TestPillarTargetController_AgentConnected_False_AgentUnhealthy` | `mockDialer{healthy:false}` → `AgentConnected=False/AgentUnhealthy` — 에이전트 자가 보고 비정상 상태 | envtest; external PillarTarget; `reconciler.Dialer = &mockDialer{healthy:false}` | 1) 파이널라이저 조정; 2) 비정상 응답 mockDialer 설정 후 일반 조정 실행 | `AgentConnected.Status=False`; `Reason="AgentUnhealthy"` | `TgtCRD`, `TgtCtrl`, `MockDialer` |
+
+---
+
+### E19.6 상태 조건 전이 — Ready 종합
+
+**목적:** `Ready` 최상위 조건이 모든 하위 조건(`NodeExists`, `AgentConnected`)의 결과를
+올바르게 종합함을 확인한다.
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| E19.6.1 | `TestPillarTargetController_Ready_True_AllConditionsMet` | `NodeExists=True` + `AgentConnected=True` → `Ready=True/AllConditionsMet` | envtest; nodeRef PillarTarget; 해당 Node 오브젝트 존재; `mockDialer{healthy:true}` 설정 | 1) 파이널라이저 조정; 2) 일반 조정 실행 | `Ready.Status=True`; `Reason="AllConditionsMet"` | `TgtCRD`, `TgtCtrl`, `MockDialer` |
+| E19.6.2 | `TestPillarTargetController_Ready_False_NodeMissing` | `NodeExists=False` → `Ready=False` — 노드 없음 시 전체 준비 불가 | envtest; nodeRef PillarTarget; 해당 Node 없음 | 1) 파이널라이저 조정; 2) 일반 조정 실행 | `Ready.Status=False`; `NodeExists.Status=False` | `TgtCRD`, `TgtCtrl` |
+| E19.6.3 | `TestPillarTargetController_Ready_False_AgentUnreachable` | `AgentConnected=False` → `Ready=False` — 에이전트 미도달 시 전체 준비 불가 | envtest; external PillarTarget; `mockDialer{err:errors.New("timeout")}` | 1) 파이널라이저 조정; 2) 오류 반환 mockDialer 설정 후 일반 조정 실행 | `Ready.Status=False`; `AgentConnected.Status=False`도 설정됨 | `TgtCRD`, `TgtCtrl`, `MockDialer` |
+
+---
+
+### E19.7 삭제 보호 동작
+
+**목적:** `pillar-target-protection` 파이널라이저가 PillarPool이 참조하는 동안 PillarTarget
+삭제를 차단하고, 모든 참조가 제거된 후에야 파이널라이저가 제거되어 오브젝트가 GC됨을 확인한다.
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| E19.7.1 | `TestPillarTargetController_DeletionBlocked_ReferencingPoolExists` | 참조 PillarPool이 존재하는 동안 삭제 차단; `result.RequeueAfter=10s` | envtest; PillarTarget + 파이널라이저; `spec.targetRef=<target>` PillarPool 존재 | 1) `k8sClient.Delete(ctx, target)` 호출; 2) `reconciler.Reconcile(ctx, req)` 호출 | `result.RequeueAfter=10s`; 파이널라이저 여전히 존재; `k8sClient.Get` 성공 (오브젝트 미삭제) | `TgtCRD`, `TgtCtrl`, `PoolCRD` |
+| E19.7.2 | `TestPillarTargetController_DeletionAllowed_NoReferencingPools` | 참조 PillarPool 없을 때 즉시 파이널라이저 제거 및 삭제 진행 | envtest; PillarTarget + 파이널라이저; 참조 PillarPool 없음; 삭제 요청 완료 | 1) `reconciler.Reconcile(ctx, req)` 호출 | `result.RequeueAfter=0`; 파이널라이저 제거; `k8sClient.Get` → NotFound | `TgtCRD`, `TgtCtrl` |
+| E19.7.3 | `TestPillarTargetController_DeletionAllowed_AfterPoolRemoval` | 참조 PillarPool 제거 후 다음 조정에서 파이널라이저 제거 및 삭제 완료 | envtest; PillarTarget + 파이널라이저; 삭제 요청 후 첫 조정에서 차단 확인; 이후 참조 PillarPool 삭제 | 1) 첫 조정: `RequeueAfter=10s` 확인; 2) 참조 PillarPool 삭제; 3) 두 번째 조정 실행 | 두 번째 조정 후 파이널라이저 제거; `k8sClient.Get` → NotFound | `TgtCRD`, `TgtCtrl`, `PoolCRD` |
+| E19.7.4 | `TestPillarTargetController_DeletionBlocked_MultiplePoolsRequireAllRemoved` | 여러 PillarPool이 동일 PillarTarget을 참조할 때, 하나라도 남아 있으면 차단 지속 | envtest; PillarTarget; PillarPool A, B 모두 `targetRef=<target>`; 삭제 요청 | 1) 첫 조정: 차단 (pool A, B 존재); 2) PillarPool A 삭제; 3) 두 번째 조정: 여전히 차단 (pool B 존재); 4) PillarPool B 삭제; 5) 세 번째 조정 | 첫 두 조정에서 `RequeueAfter=10s`; 세 번째 조정 후 파이널라이저 제거; 오브젝트 삭제 | `TgtCRD`, `TgtCtrl`, `PoolCRD` |
+
+---
+
+## E20: PillarPool CRD 라이프사이클
+
+**테스트 유형:** C (Envtest 통합) ⚠️ envtest 필요
+
+**빌드 태그:** `//go:build integration`
+
+**실행 방법:**
+```bash
+make setup-envtest
+go test -tags=integration ./internal/controller/... -v -run 'TestControllers/PillarPool'
+go test -tags=integration ./internal/webhook/... -v -run 'TestWebhooks/PillarPool'
+```
+
+**목적:**
+PillarPool CRD의 전체 라이프사이클을 검증한다. 이 CRD는 특정 스토리지 에이전트의
+특정 스토리지 풀(ZFS pool, LVM volume group 등)을 나타내는 클러스터-스코프 리소스이다.
+다음 동작을 검증한다:
+
+1. **유효/무효 스펙 생성** — `spec.targetRef`, `spec.backend.type` 필드 검증
+2. **상태 조건 전이** — `TargetReady`, `PoolDiscovered`, `BackendSupported`, `Ready` 조건의 정확한 전이
+3. **용량 동기화** — PillarTarget의 `DiscoveredPools`에서 `status.capacity`로의 자동 동기화
+4. **삭제 보호 동작** — PillarBinding이 참조하는 동안 파이널라이저가 삭제를 차단
+
+**컴포넌트 약어 참조:**
+
+| 약어 | 의미 |
+|------|------|
+| `PoolCRD` | `api/v1alpha1.PillarPool` CRD 및 상태 |
+| `PoolCtrl` | `internal/controller.PillarPoolReconciler` |
+| `PoolWH` | `internal/webhook/v1alpha1.PillarPoolCustomValidator` |
+| `TgtCRD` | `api/v1alpha1.PillarTarget` CRD 및 상태 |
+| `BindCRD` | `api/v1alpha1.PillarBinding` CRD |
+
+---
+
+### E20.1 유효한 스펙으로 생성
+
+**목적:** 다양한 `backend.type`으로 유효한 PillarPool을 생성하거나 검증기를 통과할 수 있음을 확인한다.
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| E20.1.1 | `TestPillarPoolWebhook_ValidCreate_ZFSZvol` | `backend.type="zfs-zvol"` + ZFS 설정으로 ValidateCreate 통과 | envtest; PillarPool CRD 설치; `PillarPoolCustomValidator` 인스턴스 생성 | 1) `spec.targetRef="target-a"`, `spec.backend.type="zfs-zvol"`, `spec.backend.zfs.pool="hot-data"`로 `validator.ValidateCreate(ctx, obj)` 호출 | `err=nil`; 허용 | `PoolWH` |
+| E20.1.2 | `TestPillarPoolWebhook_ValidCreate_Dir` | `backend.type="dir"`로 ValidateCreate 통과 (ZFS 설정 불필요) | envtest; PillarPool CRD 설치; `PillarPoolCustomValidator` 인스턴스 생성 | 1) `spec.targetRef="target-a"`, `spec.backend.type="dir"`로 `validator.ValidateCreate(ctx, obj)` 호출 | `err=nil`; 허용 | `PoolWH` |
+| E20.1.3 | `TestPillarPoolController_FinalizerAddedOnFirstReconcile` | PillarPool 생성 후 첫 번째 `Reconcile` 호출에서 `pool-protection` 파이널라이저 자동 추가 | envtest; `PillarPoolReconciler` 초기화; zfs-zvol 스펙으로 PillarPool 생성 | 1) `k8sClient.Create(ctx, pool)` 실행; 2) `reconciler.Reconcile(ctx, req)` 1회 호출 | PillarPool에 `pillar-csi.bhyoo.com/pool-protection` 파이널라이저 존재; `result.RequeueAfter==0` | `PoolCRD`, `PoolCtrl` |
+| E20.1.4 | `TestPillarPoolController_FinalizerNotDuplicated` | 동일 PillarPool을 두 번 조정해도 파이널라이저 중복 없음 | envtest; PillarPool 생성; 첫 조정으로 파이널라이저 추가 완료 | 1) 두 번째 `reconciler.Reconcile(ctx, req)` 호출 | 파이널라이저 개수 정확히 1개; 중복 없음 | `PoolCRD`, `PoolCtrl` |
+
+---
+
+### E20.2 잘못된 스펙으로 생성 거부 — CRD 스키마 검증
+
+**목적:** kubebuilder 마커에 의해 잘못된 필드 값이 Kubernetes API 서버 수준에서 거부됨을 확인한다.
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| E20.2.1 | `TestPillarPoolCRD_InvalidCreate_EmptyTargetRef` | `spec.targetRef`가 빈 문자열인 경우 API 서버가 거부 | envtest; PillarPool CRD 설치 (`MinLength=1` 마커 포함) | 1) `spec.targetRef=""`로 `k8sClient.Create(ctx, pool)` 호출 | 오류 반환; HTTP 422; `spec.targetRef` 필드 검증 실패 | `PoolCRD` |
+| E20.2.2 | `TestPillarPoolCRD_InvalidCreate_InvalidBackendType` | `spec.backend.type`에 열거형 외 값 설정 시 거부 | envtest; PillarPool CRD 설치 (`Enum=zfs-zvol;zfs-dataset;lvm-lv;dir` 마커 포함) | 1) `spec.backend.type="unknown-backend"`로 Create 호출 | 오류 반환; HTTP 422; `spec.backend.type` 열거형 검증 실패 | `PoolCRD` |
+| E20.2.3 | `TestPillarPoolCRD_InvalidCreate_EmptyBackendType` | `spec.backend.type`이 빈 문자열인 경우 거부 | envtest; PillarPool CRD 설치 | 1) `spec.backend.type=""`로 Create 호출 | 오류 반환; `spec.backend.type` 필수 필드 오류 | `PoolCRD` |
+
+---
+
+### E20.3 불변 필드 업데이트 거부 — 웹훅 검증
+
+**목적:** `spec.targetRef`와 `spec.backend.type`은 생성 후 변경할 수 없음을 확인한다.
+기존 볼륨이 원래 backend 드라이버와 target에 묶여 있기 때문이다.
+이 검증은 `internal/webhook/v1alpha1.PillarPoolCustomValidator.ValidateUpdate`에서 수행된다.
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| E20.3.1 | `TestPillarPoolWebhook_ImmutableUpdate_TargetRefChange` | `spec.targetRef` 변경 시 거부 — 풀이 묶인 스토리지 노드 변경 방지 | `oldObj.spec.targetRef="target-a"`; `newObj.spec.targetRef="target-b"` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | `err != nil`; `field.Forbidden`; `spec.targetRef` 경로; 오류 메시지에 이전값 `"target-a"`과 신규값 `"target-b"` 모두 포함 | `PoolWH` |
+| E20.3.2 | `TestPillarPoolWebhook_ImmutableUpdate_BackendTypeChange` | `spec.backend.type` 변경 시 거부 — 기존 볼륨의 드라이버 변경 방지 | `oldObj.spec.backend.type="zfs-zvol"`; `newObj.spec.backend.type="lvm-lv"` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | `err != nil`; `field.Forbidden`; `spec.backend.type` 경로 | `PoolWH` |
+| E20.3.3 | `TestPillarPoolWebhook_ImmutableUpdate_BothFieldsChange` | `spec.targetRef`와 `spec.backend.type` 동시 변경 시 두 오류 모두 반환 | `oldObj.spec.targetRef="target-a"`, `backend.type="zfs-zvol"`; `newObj.spec.targetRef="target-b"`, `backend.type="lvm-lv"` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | `err != nil`; 오류 집계(Aggregate)에 2개 오류; `spec.targetRef`와 `spec.backend.type` 모두 Forbidden | `PoolWH` |
+| E20.3.4 | `TestPillarPoolWebhook_MutableUpdate_ZFSPropertiesChange` | `spec.backend.zfs.properties` 변경은 허용 (불변 필드 아님) | `oldObj.spec.backend.type="zfs-zvol"`, `zfs.pool="hot-data"`, `properties={"compression":"off"}`; `newObj.properties={"compression":"lz4"}` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | `err=nil`; 허용; `backend.type`과 `targetRef`는 동일 | `PoolWH` |
+
+---
+
+### E20.4 상태 조건 전이 — TargetReady
+
+**목적:** `TargetReady` 조건이 PillarTarget 존재 여부 및 Ready 상태에 따라 올바르게 설정됨을 확인한다.
+PillarTarget이 없거나 Not-Ready이면 하위 조건(`PoolDiscovered`, `BackendSupported`)도 영향을 받는다.
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| E20.4.1 | `TestPillarPoolController_TargetReady_False_TargetAbsent` | 참조 PillarTarget이 없으면 `TargetReady=False/TargetNotFound`; 하위 조건도 모두 False | envtest; PillarPool 생성 (`targetRef="nonexistent"`); 해당 PillarTarget 없음 | 1) 파이널라이저 조정; 2) 일반 조정 실행 | `TargetReady.Status=False`; `Reason="TargetNotFound"`; `PoolDiscovered.Status=False`; `BackendSupported.Status=False`; `Ready.Status=False` (모두 `Reason="TargetNotFound"`) | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
+| E20.4.2 | `TestPillarPoolController_TargetReady_False_TargetNotReady` | 참조 PillarTarget이 존재하지만 `Ready=False`이면 `TargetReady=False/TargetNotReady`; 하위 조건 Unknown | envtest; PillarPool 생성; PillarTarget 존재하되 `Ready.Status=False`로 상태 패치 | 1) 파이널라이저 조정; 2) 일반 조정 실행 | `TargetReady.Status=False`; `Reason="TargetNotReady"`; `PoolDiscovered.Status=Unknown`; `BackendSupported.Status=Unknown`; `Ready.Status=False` | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
+| E20.4.3 | `TestPillarPoolController_TargetReady_True_TargetReady` | 참조 PillarTarget이 `Ready=True`이면 `TargetReady=True` | envtest; PillarPool 생성; PillarTarget `Ready.Status=True`, `resolvedAddress="192.0.2.10:9500"`으로 상태 패치 | 1) 파이널라이저 조정; 2) 일반 조정 실행 | `TargetReady.Status=True`; `Reason="TargetReady"`; `Message`에 resolvedAddress 포함 | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
+
+---
+
+### E20.5 상태 조건 전이 — PoolDiscovered
+
+**목적:** `PoolDiscovered` 조건이 PillarTarget의 `status.discoveredPools` 목록에 따라
+올바르게 설정됨을 확인한다. ZFS 백엔드는 이름 매칭이 필요하고, 다른 백엔드(dir, lvm-lv)는 다른 규칙을 따른다.
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| E20.5.1 | `TestPillarPoolController_PoolDiscovered_Unknown_EmptyDiscoveredPools` | PillarTarget `Ready=True`이지만 `discoveredPools=[]`이면 `PoolDiscovered=Unknown/WaitingForAgentData` | envtest; PillarPool(zfs-zvol, `zfs.pool="hot-data"`); PillarTarget Ready=True이나 `discoveredPools=[]` | 1) 일반 조정 실행 | `PoolDiscovered.Status=Unknown`; `Reason="WaitingForAgentData"` | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
+| E20.5.2 | `TestPillarPoolController_PoolDiscovered_True_ZFSPoolNameMatch` | `discoveredPools`에 ZFS 풀 이름이 일치하는 항목이 있으면 `PoolDiscovered=True` | envtest; PillarPool(zfs-zvol, `zfs.pool="hot-data"`); PillarTarget `discoveredPools=[{name:"hot-data", type:"zfs"}]` | 1) 일반 조정 실행 | `PoolDiscovered.Status=True`; `Reason="PoolDiscovered"`; `Message`에 `"hot-data"` 포함 | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
+| E20.5.3 | `TestPillarPoolController_PoolDiscovered_False_ZFSPoolNameMismatch` | `discoveredPools`에 ZFS 풀 이름이 없으면 `PoolDiscovered=False/PoolNotFound` | envtest; PillarPool(zfs-zvol, `zfs.pool="hot-data"`); PillarTarget `discoveredPools=[{name:"cold-data", type:"zfs"}]` | 1) 일반 조정 실행 | `PoolDiscovered.Status=False`; `Reason="PoolNotFound"`; `Message`에 `"hot-data"`와 발견된 풀 이름 목록(`["cold-data"]`) 포함 | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
+| E20.5.4 | `TestPillarPoolController_PoolDiscovered_True_DirBackend_NoNameRequired` | `backend.type="dir"` 백엔드는 명시적 풀 이름 없이 `discoveredPools`에 항목만 있으면 `PoolDiscovered=True` | envtest; PillarPool(dir); PillarTarget `discoveredPools=[{name:"any-entry", type:"dir"}]` | 1) 일반 조정 실행 | `PoolDiscovered.Status=True`; `Reason="PoolDiscovered"` | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
+
+---
+
+### E20.6 상태 조건 전이 — BackendSupported
+
+**목적:** `BackendSupported` 조건이 PillarTarget의 `status.capabilities.backends` 목록에 따라
+올바르게 설정됨을 확인한다.
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| E20.6.1 | `TestPillarPoolController_BackendSupported_Unknown_NoCapabilities` | PillarTarget `Ready=True`이지만 `capabilities=nil`이면 `BackendSupported=Unknown/WaitingForAgentData` | envtest; PillarPool(zfs-zvol); PillarTarget Ready=True이나 `capabilities=nil` | 1) 일반 조정 실행 | `BackendSupported.Status=Unknown`; `Reason="WaitingForAgentData"` | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
+| E20.6.2 | `TestPillarPoolController_BackendSupported_True_BackendInCapabilities` | `capabilities.backends`에 해당 `backend.type`이 있으면 `BackendSupported=True` | envtest; PillarPool(zfs-zvol); PillarTarget `capabilities.backends=["zfs-zvol","zfs-dataset"]` | 1) 일반 조정 실행 | `BackendSupported.Status=True`; `Reason="BackendSupported"` | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
+| E20.6.3 | `TestPillarPoolController_BackendSupported_False_BackendNotInCapabilities` | `capabilities.backends`에 해당 `backend.type`이 없으면 `BackendSupported=False/BackendNotSupported` | envtest; PillarPool(lvm-lv); PillarTarget `capabilities.backends=["zfs-zvol","zfs-dataset"]` | 1) 일반 조정 실행 | `BackendSupported.Status=False`; `Reason="BackendNotSupported"`; `Message`에 `"lvm-lv"`와 지원 목록(`["zfs-zvol","zfs-dataset"]`) 포함 | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
+
+---
+
+### E20.7 Ready 종합 조건 전이
+
+**목적:** `Ready` 최상위 조건이 `TargetReady`, `PoolDiscovered`, `BackendSupported` 세 조건의
+논리적 AND 결과로 올바르게 설정됨을 확인한다.
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| E20.7.1 | `TestPillarPoolController_Ready_True_AllConditionsMet` | 모든 조건 True → `Ready=True/AllConditionsMet` | envtest; PillarPool(zfs-zvol, `pool="hot-data"`); PillarTarget Ready=True; `discoveredPools=[{name:"hot-data"}]`; `capabilities.backends=["zfs-zvol"]` | 1) 파이널라이저 조정; 2) 일반 조정 실행 | `Ready.Status=True`; `Reason="AllConditionsMet"` | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
+| E20.7.2 | `TestPillarPoolController_Ready_False_PoolNotDiscovered` | `PoolDiscovered=False` → `Ready=False/ConditionsNotMet` (`TargetReady=True`, `BackendSupported=True`이어도) | envtest; PillarPool(zfs-zvol, `pool="missing-pool"`); PillarTarget Ready=True; `discoveredPools=[{name:"other-pool"}]`; `capabilities.backends=["zfs-zvol"]` | 1) 일반 조정 실행 | `Ready.Status=False`; `Reason="ConditionsNotMet"`; `Message`에 `PoolDiscovered` 실패 이유 포함 | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
+| E20.7.3 | `TestPillarPoolController_Ready_False_BackendUnsupported` | `BackendSupported=False` → `Ready=False/ConditionsNotMet` | envtest; PillarPool(lvm-lv); PillarTarget Ready=True; discoveredPools 존재; `capabilities.backends=["zfs-zvol"]` | 1) 일반 조정 실행 | `Ready.Status=False`; `Reason="ConditionsNotMet"`; `Message`에 `BackendSupported` 실패 이유 포함 | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
+
+---
+
+### E20.8 용량 동기화 (DiscoveredPool → status.capacity)
+
+**목적:** PillarTarget의 `status.discoveredPools`에서 용량 정보가 PillarPool의
+`status.capacity`로 자동 동기화됨을 확인한다. `Used = Total - Available` 계산과
+음수 방지 클램핑 동작을 포함한다.
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| E20.8.1 | `TestPillarPoolController_CapacitySync_TotalAndAvailableSet` | `DiscoveredPool`에 Total, Available 있으면 `status.capacity`에 반영; `Used=Total-Available` 자동 계산 | envtest; PillarPool(zfs-zvol, `pool="hot-data"`); PillarTarget Ready=True; `discoveredPools=[{name:"hot-data", total:"100Gi", available:"60Gi"}]` | 1) 일반 조정 실행 | `status.capacity.total="100Gi"`; `status.capacity.available="60Gi"`; `status.capacity.used="40Gi"` | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
+| E20.8.2 | `TestPillarPoolController_CapacitySync_UsedClampedAtZero` | `Available > Total` 비정상 데이터에서 `Used=0`으로 클램핑 (음수 방지) | envtest; `discoveredPools=[{name:"hot-data", total:"50Gi", available:"80Gi"}]` (Available > Total) | 1) 일반 조정 실행 | `status.capacity.used="0"` (클램핑); `total="50Gi"`; `available="80Gi"` 그대로 | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
+| E20.8.3 | `TestPillarPoolController_CapacitySync_ClearedWhenPoolNotDiscovered` | `PoolDiscovered=False` 또는 Unknown이면 기존 capacity 제거 | envtest; PillarPool(zfs-zvol, `pool="hot-data"`); PillarTarget `discoveredPools=[{name:"other-pool"}]` (이름 불일치) | 1) 일반 조정 실행 | `status.capacity=nil`; 이전에 설정된 capacity 값 제거됨 | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
+
+---
+
+### E20.9 삭제 보호 동작
+
+**목적:** `pool-protection` 파이널라이저가 PillarBinding이 참조하는 동안 PillarPool
+삭제를 차단하고, 모든 참조가 제거된 후에야 파이널라이저가 제거되어 오브젝트가 GC됨을 확인한다.
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| E20.9.1 | `TestPillarPoolController_DeletionBlocked_ReferencingBindingExists` | 참조 PillarBinding이 존재하는 동안 삭제 차단; `Ready=False/DeletionBlocked` 설정 | envtest; PillarPool + 파이널라이저; `spec.poolRef=<pool>` PillarBinding 존재; 삭제 요청 | 1) `k8sClient.Delete(ctx, pool)` 호출; 2) `reconciler.Reconcile(ctx, req)` 호출 | `result.RequeueAfter=10s`; 파이널라이저 존재; `Ready.Reason="DeletionBlocked"`; `Message`에 PillarBinding 이름 포함 | `PoolCRD`, `PoolCtrl`, `BindCRD` |
+| E20.9.2 | `TestPillarPoolController_DeletionAllowed_NoReferencingBindings` | 참조 PillarBinding 없을 때 즉시 파이널라이저 제거 및 삭제 진행 | envtest; PillarPool + 파이널라이저; 참조 PillarBinding 없음; 삭제 요청 완료 | 1) `reconciler.Reconcile(ctx, req)` 호출 | `result.RequeueAfter=0`; 파이널라이저 제거; `k8sClient.Get` → NotFound | `PoolCRD`, `PoolCtrl` |
+| E20.9.3 | `TestPillarPoolController_DeletionAllowed_AfterBindingRemoval` | 참조 PillarBinding 제거 후 다음 조정에서 파이널라이저 제거 및 삭제 완료 | envtest; PillarPool + 파이널라이저; 첫 조정에서 차단 확인; 이후 참조 PillarBinding 삭제 | 1) 첫 조정: 차단; 2) 참조 PillarBinding 삭제; 3) 두 번째 조정 실행 | 두 번째 조정 후 파이널라이저 제거; `k8sClient.Get` → NotFound | `PoolCRD`, `PoolCtrl`, `BindCRD` |
+| E20.9.4 | `TestPillarPoolController_DeletionBlocked_StatusMessageContainsAllBindingNames` | 여러 PillarBinding이 참조할 때 상태 메시지에 모든 이름이 나열됨 | envtest; PillarPool + 파이널라이저; PillarBinding `binding-a`, `binding-b` 모두 `poolRef=<pool>`; 삭제 요청 | 1) `reconciler.Reconcile(ctx, req)` 호출 | `Ready.Message`에 `"binding-a"`, `"binding-b"` 모두 포함; `result.RequeueAfter=10s` | `PoolCRD`, `PoolCtrl`, `BindCRD` |
+
+---
+
+### E20.10 PillarTarget 상태 변경 시 PillarPool 재조정
+
+**목적:** PillarTarget의 상태가 변경될 때 해당 target을 참조하는 PillarPool이
+자동으로 재조정되어 `TargetReady` 조건이 최신 상태로 유지됨을 확인한다.
+이 동작은 `SetupWithManager`에서 PillarTarget 변경에 대한 Watch를 등록하여 구현된다.
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| E20.10.1 | `TestPillarPoolController_TargetReadyTransition_NotReadyToReady` | PillarTarget이 Not-Ready → Ready로 전이 후 PillarPool 재조정 시 `TargetReady=True`로 갱신 | envtest; PillarPool + PillarTarget(Ready=False); PillarPool 조정 후 `TargetReady=False` 확인 | 1) PillarTarget `Ready=True`로 상태 패치; 2) PillarPool 재조정 실행 | PillarPool `TargetReady.Status=True`로 업데이트됨 | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
+| E20.10.2 | `TestPillarPoolController_TargetReadyTransition_ReadyToNotReady` | PillarTarget이 Ready → Not-Ready로 전이 후 PillarPool 재조정 시 `TargetReady=False`; 하위 조건 Unknown으로 후퇴 | envtest; PillarPool + PillarTarget(Ready=True); PillarPool 조정 후 `TargetReady=True` 확인 | 1) PillarTarget `Ready=False`로 상태 패치; 2) PillarPool 재조정 실행 | PillarPool `TargetReady.Status=False`; `PoolDiscovered.Status=Unknown`; `BackendSupported.Status=Unknown` | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
+
+---
+
+
 # 카테고리 2 — 클러스터 레벨 E2E 테스트 (유형 B: Kind 클러스터 필요) ⚠️
 
 > **빌드 태그:** `//go:build e2e` | **실행:** `go test ./test/e2e/ -tags=e2e -v`
@@ -2686,6 +3217,31 @@ go test ./test/e2e/ -v -run TestCSICleanup
 
 # E14–E17 전체 (오류/엣지/동시/정리)
 go test ./test/e2e/ -v -run "TestCSIEdge|TestCSIExhaustion|TestCSIConcurrent|TestCSICleanup"
+
+# E21.1: 잘못된 CR 런타임 처리 (in-process)
+go test ./test/e2e/ -v -run TestCSIInvalidCR
+```
+
+### E21 envtest 통합 테스트 실행 (make setup-envtest 필요)
+
+```bash
+# 사전 준비: envtest 바이너리 설치
+make setup-envtest
+
+# E21.2: PillarTarget 웹훅 — 불변 필드 수정 거부
+go test -tags=integration ./internal/webhook/v1alpha1/ -v -run PillarTarget
+
+# E21.3: PillarPool 웹훅 — 불변 필드 수정 거부
+go test -tags=integration ./internal/webhook/v1alpha1/ -v -run PillarPool
+
+# E21.2 + E21.3 전체 웹훅 테스트
+go test -tags=integration ./internal/webhook/v1alpha1/ -v
+
+# E21.4: CRD OpenAPI 스키마 검증 (controller suite)
+go test -tags=integration ./internal/controller/ -v -run TestCRDSchema
+
+# E21 전체 (E21.2–E21.4) — integration 빌드
+go test -tags=integration ./internal/... -v -run "PillarTarget|PillarPool|TestCRDSchema"
 ```
 
 ### 클러스터 E2E 테스트 실행 (Kind 필요)
