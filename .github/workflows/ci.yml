@@ -59,6 +59,55 @@ jobs:
           go mod tidy
           make test-e2e
 
+  e2e:
+    name: E2E Tests (multi-node Kind)
+    runs-on: ubuntu-latest
+    # Run on every push and pull_request (workflow-level triggers already set).
+    # Skip if the commit message contains [skip e2e] or [e2e skip].
+    if: |
+      !contains(github.event.head_commit.message, '[skip e2e]') &&
+      !contains(github.event.head_commit.message, '[e2e skip]')
+    permissions:
+      contents: read  # checkout only; no packages write needed (images stay local)
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # ── install tooling ────────────────────────────────────────────────────
+      - name: Install Kind
+        uses: helm/kind-action@v1
+        with:
+          install_only: true   # only install the binary, do not create a cluster
+
+      - name: Install Helm
+        uses: azure/setup-helm@v5
+
+      # ── build images & bootstrap cluster ──────────────────────────────────
+      - name: Build images and create Kind cluster
+        run: make test-e2e-setup
+        env:
+          KIND_CLUSTER: pillar-csi-e2e
+          E2E_IMAGE_TAG: e2e
+
+      # ── run tests ─────────────────────────────────────────────────────────
+      - name: Run e2e tests (internal-agent mode)
+        run: make test-e2e-run
+        env:
+          KIND_CLUSTER: pillar-csi-e2e
+
+      # ── teardown (always runs so the cluster is cleaned up even on failure)
+      - name: Tear down Kind cluster
+        if: always()
+        run: make test-e2e-teardown
+        env:
+          KIND_CLUSTER: pillar-csi-e2e
+
   build:
     name: Build (all platforms)
     runs-on: ubuntu-latest
