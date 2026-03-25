@@ -1,0 +1,85 @@
+{{/*
+ClusterRole for the pillar-csi controller.
+Rules are ported from config/rbac/role.yaml.
+Controlled by .Values.rbac.create
+*/}}
+{{- if .Values.rbac.create -}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "pillar-csi.fullname" . }}
+  labels:
+    {{- include "pillar-csi.componentLabels" (dict "root" . "component" "controller") | nindent 4 }}
+rules:
+  # Core: node access (controller patches node labels/annotations for storage nodes)
+  - apiGroups:
+      - ""
+    resources:
+      - nodes
+    verbs:
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  # Core: PVC access (controller watches PVCs to reconcile PillarBinding lifecycle)
+  - apiGroups:
+      - ""
+    resources:
+      - persistentvolumeclaims
+    verbs:
+      - get
+      - list
+      - watch
+  # pillar-csi CRDs: full management of pillar resources
+  - apiGroups:
+      - pillar-csi.pillar-csi.bhyoo.com
+    resources:
+      - pillarbindings
+      - pillarpools
+      - pillarprotocols
+      - pillartargets
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  # pillar-csi CRDs: finalizer management
+  - apiGroups:
+      - pillar-csi.pillar-csi.bhyoo.com
+    resources:
+      - pillarbindings/finalizers
+      - pillarpools/finalizers
+      - pillarprotocols/finalizers
+      - pillartargets/finalizers
+    verbs:
+      - update
+  # pillar-csi CRDs: status subresource management
+  - apiGroups:
+      - pillar-csi.pillar-csi.bhyoo.com
+    resources:
+      - pillarbindings/status
+      - pillarpools/status
+      - pillarprotocols/status
+      - pillartargets/status
+    verbs:
+      - get
+      - patch
+      - update
+  # storage.k8s.io: StorageClass management (controller provisions/deprovisions storage classes)
+  - apiGroups:
+      - storage.k8s.io
+    resources:
+      - storageclasses
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+{{- end }}
