@@ -103,24 +103,6 @@ app.kubernetes.io/component: controller
 {{- end }}
 
 {{/*
-Node-specific selector labels.
-*/}}
-{{- define "pillar-csi.nodeSelectorLabels" -}}
-app.kubernetes.io/name: {{ include "pillar-csi.name" . }}
-app.kubernetes.io/instance: {{ .Release.Name }}
-app.kubernetes.io/component: node
-{{- end }}
-
-{{/*
-Agent-specific selector labels.
-*/}}
-{{- define "pillar-csi.agentSelectorLabels" -}}
-app.kubernetes.io/name: {{ include "pillar-csi.name" . }}
-app.kubernetes.io/instance: {{ .Release.Name }}
-app.kubernetes.io/component: agent
-{{- end }}
-
-{{/*
 ServiceAccount name for the controller.
 */}}
 {{- define "pillar-csi.controllerServiceAccountName" -}}
