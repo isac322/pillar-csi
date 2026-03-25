@@ -11,7 +11,7 @@
 - 실제 커널 모듈, 실제 ZFS, 실제 NVMe-oF 장치를 요구하는 테스트는
   별도로 표시하고 현실적인 인프라 요구사항을 함께 기술한다.
 
-**총 테스트 케이스: 87** (인프로세스 84개 + 클러스터 레벨 3개)
+**총 테스트 케이스: 101** (인프로세스 98개 + 클러스터 레벨 3개)
 
 ---
 
@@ -632,6 +632,196 @@ go test ./test/e2e/ -tags=e2e -v -run TestE2E
 
 ---
 
+## E11: 볼륨 확장(Volume Expansion) 통합 E2E
+
+**테스트 유형:** A (인프로세스 E2E) ✅ CI 실행 가능
+
+**아키텍처:**
+```
+CSI ControllerServer → (실제 gRPC, localhost:0) → mockAgentServer
+                        (ControllerExpandVolume → agent.ExpandVolume)
+
+CSI NodeServer → mockResizer (인메모리, resize2fs/xfs_growfs 없음)
+                 (NodeExpandVolume → Resizer.ResizeFS)
+```
+
+**배경:** CSI 명세에서 볼륨 확장은 두 단계로 이루어진다.
+1. `ControllerExpandVolume` — 스토리지 백엔드(블록 레이어)를 새 크기로 확장하고
+   `node_expansion_required=true`를 반환하여 노드 측 파일시스템 리사이즈 필요성을 알린다.
+2. `NodeExpandVolume` — 노드에서 파일시스템(`resize2fs`/`xfs_growfs`)을 확장하여
+   블록 디바이스가 커진 만큼 파일시스템도 채운다.
+
+이 섹션은 두 단계를 **한 E2E 흐름으로 연결**하는 테스트를 다룬다. 개별 단계 검증은
+E2.3(ControllerExpandVolume)과 `internal/csi/node_expand_test.go`에서 다루며,
+이 섹션은 **교차-컴포넌트 확장 경계**를 집중적으로 검증한다.
+
+---
+
+### E11.1 ControllerExpandVolume — 에이전트 위임 및 node_expansion_required
+
+| # | 테스트 함수 | 설명 | 설정 | 기대 결과 |
+|---|------------|------|------|----------|
+| 88 | `TestCSIExpand_ControllerExpandVolume_ForwardsToAgent` | ControllerExpandVolume이 agent.ExpandVolume을 올바른 VolumeId·BackendType·RequestedBytes로 호출하고 node_expansion_required=true를 반환 | VolumeId="storage-1/nvmeof-tcp/zfs-zvol/tank/pvc-expand"; CapacityRange.RequiredBytes=2GiB; mockAgentServer.ExpandVolumeResp.CapacityBytes=2GiB | 성공; CapacityBytes=2GiB; NodeExpansionRequired=true; agent.ExpandVolume 1회 호출 |
+| 89 | `TestCSIExpand_ControllerExpandVolume_AgentReturnsZeroCapacity` | agent.ExpandVolume이 CapacityBytes=0을 반환하면 ControllerExpandVolume은 RequiredBytes를 폴백으로 사용 | CapacityRange.RequiredBytes=3GiB; mockAgentServer.ExpandVolumeResp.CapacityBytes=0 | 성공; CapacityBytes=3GiB (RequiredBytes 폴백); NodeExpansionRequired=true |
+
+---
+
+### E11.2 NodeExpandVolume — 파일시스템 타입별 리사이즈
+
+| # | 테스트 함수 | 설명 | 설정 | 기대 결과 |
+|---|------------|------|------|----------|
+| 90 | `TestCSIExpand_NodeExpandVolume_Ext4` | NodeExpandVolume이 ext4 파일시스템에서 mockResizer.ResizeFS("ext4")를 호출 | VolumeCapability.MountVolume.FsType="ext4"; VolumePath="/mnt/staging/pvc-expand"; mockResizer 주입 | 성공; ResizeFS 1회 호출; FsType="ext4"; CapacityBytes=RequiredBytes |
+| 91 | `TestCSIExpand_NodeExpandVolume_XFS` | NodeExpandVolume이 xfs 파일시스템에서 mockResizer.ResizeFS("xfs")를 호출 | VolumeCapability.MountVolume.FsType="xfs" | 성공; ResizeFS 1회 호출; FsType="xfs" |
+
+---
+
+### E11.3 전체 확장 왕복(Full Expand Round Trip)
+
+| # | 테스트 함수 | 설명 | 설정 | 기대 결과 |
+|---|------------|------|------|----------|
+| 92 | `TestCSIExpand_FullExpandRoundTrip` | CreateVolume → ControllerExpandVolume → NodeExpandVolume 전체 확장 흐름: 볼륨 생성 후 컨트롤러가 백엔드를 확장하고 노드가 파일시스템을 리사이즈 | 단일 mockAgentServer; mockResizer; VolumeId 동일 사용 | ControllerExpandVolume: CapacityBytes=newSize, NodeExpansionRequired=true; NodeExpandVolume: ResizeFS 1회 호출; 오류 없음 |
+| 93 | `TestCSIExpand_ControllerExpandVolume_Idempotent` | 이미 확장된 볼륨에 동일한 크기로 ControllerExpandVolume 재호출 — 멱등성 | mockAgentServer: ExpandVolume 항상 현재 크기 반환; 동일 RequiredBytes로 2회 호출 | 두 호출 모두 성공; agent.ExpandVolume 2회 호출; 오류 없음 |
+
+---
+
+### E11.4 오류 경로
+
+| # | 테스트 함수 | 설명 | 설정 | 기대 결과 |
+|---|------------|------|------|----------|
+| 94 | `TestCSIExpand_ControllerExpandVolume_AgentFails` | agent.ExpandVolume 실패 시 ControllerExpandVolume이 오류 코드를 전파 | mockAgentServer.ExpandVolumeErr=gRPC ResourceExhausted | ControllerExpandVolume이 ResourceExhausted 반환; NodeExpansionRequired 없음 |
+| 95 | `TestCSIExpand_NodeExpandVolume_ResizerFails` | mockResizer.ResizeFS 실패 시 NodeExpandVolume이 Internal 반환 | mockResizer.ResizeFSErr="resize2fs: device busy" | gRPC Internal; 오류 메시지에 "resize" 포함 |
+
+---
+
+## E12: CSI 스냅샷 (현재 미구현)
+
+**테스트 유형:** A (인프로세스 E2E) ✅ CI 실행 가능 (미구현 검증 한정)
+
+**현재 구현 상태:**
+
+pillar-csi는 현재 **CSI VolumeSnapshot 역량을 구현하지 않는다.**
+`ControllerServer`는 `csi.UnimplementedControllerServer`를 임베드하므로
+`CreateSnapshot`, `DeleteSnapshot`, `ListSnapshots` RPC는 자동으로
+gRPC `Unimplemented` 상태를 반환한다.
+
+**플러그인 역량 선언:** `GetPluginCapabilities`에 `VolumeSnapshot` 역량이
+포함되지 않으므로, 규격을 준수하는 CO는 스냅샷 RPC를 호출하지 않아야 한다.
+
+**아키텍처 참고 (에이전트 프로토콜 수준):**
+
+에이전트 프로토콜(`proto/pillar_csi/agent/v1/agent.proto`)에는 볼륨 데이터를
+스트리밍하는 `SendVolume` / `ReceiveVolume` RPC가 있으며, `SendVolumeRequest`는
+선택적 `snapshot_name` 필드를 지원한다:
+
+```proto
+// Optional snapshot name to send from.
+//   ZFS   → snapshot component, e.g. "snap0" → zfs send pool/vol@snap0
+//   LVM   → LV snapshot name
+string snapshot_name = 3;
+```
+
+이 RPC는 **CSI VolumeSnapshot과 별개의 out-of-band 데이터 마이그레이션 채널**이며,
+현재 CSI 컨트롤러 레이어와 연결되어 있지 않다. 실제 ZFS 커널 모듈과 스트리밍
+gRPC가 필요하다.
+
+---
+
+### E12.1 미구현 스냅샷 RPC — Unimplemented 반환 검증
+
+| # | 테스트 함수 | 설명 | 설정 | 기대 결과 |
+|---|------------|------|------|----------|
+| 96 | `TestCSISnapshot_CreateSnapshot_ReturnsUnimplemented` | CSI CreateSnapshot이 현재 미구현으로 gRPC Unimplemented를 반환 | ControllerServer(실제 구현체) 직접 호출; CreateSnapshotRequest 유효 파라미터 제공 | gRPC Unimplemented; 에이전트 호출 없음 |
+| 97 | `TestCSISnapshot_DeleteSnapshot_ReturnsUnimplemented` | CSI DeleteSnapshot이 현재 미구현으로 gRPC Unimplemented를 반환 | DeleteSnapshotRequest; SnapshotId="storage-1/snap-test" | gRPC Unimplemented |
+| 98 | `TestCSISnapshot_ListSnapshots_ReturnsUnimplemented` | CSI ListSnapshots이 현재 미구현으로 gRPC Unimplemented를 반환 | ListSnapshotsRequest 빈 요청 | gRPC Unimplemented |
+
+---
+
+### E12.2 GetPluginCapabilities — 스냅샷 역량 미선언 검증
+
+| # | 테스트 함수 | 설명 | 설정 | 기대 결과 |
+|---|------------|------|------|----------|
+| 99 | `TestCSISnapshot_PluginCapabilities_NoSnapshotCapability` | GetPluginCapabilities 응답에 VolumeSnapshot 역량이 포함되지 않음 | IdentityServer.GetPluginCapabilities() 직접 호출 | 반환된 역량 목록에 `PluginCapability_VolumeExpansion_ONLINE`은 있으나 스냅샷 관련 역량은 없음 |
+
+---
+
+**⚠️ 현실적 한계:**
+
+표준 CSI VolumeSnapshot 기능(Kubernetes `VolumeSnapshotClass` / `VolumeSnapshot` CRD)을
+완전히 지원하려면 다음이 필요하다:
+
+| 필요 항목 | 설명 |
+|----------|------|
+| CSI CreateSnapshot RPC 구현 | controller.go에 CreateSnapshot 추가; agent에 ZFS `zfs snapshot` 호출 추가 |
+| CSI DeleteSnapshot RPC 구현 | agent에 ZFS `zfs destroy pool/vol@snap` 추가 |
+| Kubernetes external-snapshotter | sidecar 컨테이너 추가; VolumeSnapshotClass CRD 배포 |
+| 실제 ZFS 커널 모듈 | CI에서 실행 불가; 전용 스토리지 노드 필요 |
+
+현재 Phase에서 스냅샷 관련 실질적 E2E 테스트는 `향후 추가 예정 테스트` 섹션(F13–F16)을 참조한다.
+
+---
+
+## E13: 볼륨 클론 및 데이터 마이그레이션 (현재 부분 구현)
+
+**테스트 유형:** A (인프로세스 E2E) ✅ CI 실행 가능 (미구현 동작 검증 한정)
+
+**현재 구현 상태:**
+
+CSI 명세의 `CreateVolume` 요청은 `VolumeContentSource` 필드를 통해
+**볼륨 클론**(기존 볼륨 복사)이나 **스냅샷 복원**을 요청할 수 있다.
+현재 pillar-csi `ControllerServer.CreateVolume`은 이 필드를 **파싱하지 않으며
+무시**한다 — 항상 빈 볼륨을 생성한다.
+
+```
+CreateVolume(VolumeContentSource: {Snapshot: "snap-A"})
+    → agent.CreateVolume(empty new volume)   ← 클론/복원 없음
+    → agent.ExportVolume
+```
+
+에이전트 프로토콜에는 **out-of-band 데이터 마이그레이션** 채널이 존재한다:
+- `SendVolume(RPC)` — 서버-스트림: `zfs send` / `dd if=<lv>`
+- `ReceiveVolume(RPC)` — 클라이언트-스트림: `zfs receive` / `dd of=<lv>`
+
+이 채널은 CSI ControllerServer와 연결되어 있지 않으며, 실제 ZFS 커널 모듈과
+스트리밍 gRPC 연결이 필요하다. CI에서 테스트할 수 없다.
+
+---
+
+### E13.1 VolumeContentSource 미처리 동작 검증
+
+| # | 테스트 함수 | 설명 | 설정 | 기대 결과 |
+|---|------------|------|------|----------|
+| 100 | `TestCSIClone_CreateVolume_SnapshotSourceIgnored` | VolumeContentSource.Snapshot이 포함된 CreateVolume 호출 시 스냅샷 소스를 무시하고 빈 볼륨을 생성 (현재 동작 고정 테스트) | CreateVolumeRequest에 VolumeContentSource.Snapshot="snap-A" 추가; mockAgentServer 정상 동작 | CreateVolume 성공; agent.CreateVolume 1회 호출(VolumeContentSource 없이); 생성된 볼륨은 스냅샷과 무관한 빈 볼륨 |
+| 101 | `TestCSIClone_CreateVolume_VolumeSourceIgnored` | VolumeContentSource.Volume이 포함된 CreateVolume 호출 시 소스 볼륨을 무시하고 빈 볼륨을 생성 (현재 동작 고정 테스트) | CreateVolumeRequest에 VolumeContentSource.Volume="src-pvc-id" 추가 | CreateVolume 성공; 소스 볼륨 데이터 복사 없이 빈 볼륨 생성; agent.CreateVolume 1회 |
+
+---
+
+### E13.2 에이전트 SendVolume/ReceiveVolume — 스트리밍 RPC 역량 검증
+
+**테스트 유형:** ❌ 인프로세스 E2E 불가 (스트리밍 gRPC + 실제 데이터 필요)
+
+| 제약 사항 | 설명 |
+|----------|------|
+| 서버-스트림 RPC | `SendVolume`은 서버가 청크 단위로 데이터를 스트리밍; mockAgentServer에서 스텁 구현 가능하나 실제 ZFS 데이터 없이는 의미 없음 |
+| 클라이언트-스트림 RPC | `ReceiveVolume`은 클라이언트가 청크 단위로 데이터를 전송; 대용량 데이터 처리 검증에 실제 블록 장치 필요 |
+| 실제 ZFS 필요 | `zfs send pool/vol@snap0` 출력이 있어야 snapshot_name 필드 동작 검증 가능 |
+
+실제 SendVolume/ReceiveVolume E2E 테스트는 `향후 추가 예정 테스트` 섹션(F17–F19)을 참조한다.
+
+---
+
+**⚠️ 현실적 한계:**
+
+완전한 CSI 볼륨 클론 지원을 위해서는 다음이 필요하다:
+
+| 필요 항목 | 설명 |
+|----------|------|
+| CreateVolume VolumeContentSource 처리 | controller.go가 Snapshot/Volume 소스를 파싱하고 agent에 ZFS clone 요청 |
+| agent ZFS clone RPC 추가 | `zfs clone pool/vol@snap pool/new-vol` 를 실행하는 새 RPC 또는 CreateVolume 확장 |
+| 실제 ZFS 커널 모듈 + 스냅샷 | CI에서 실행 불가 |
+| Kubernetes `external-provisioner` 클론 플로우 | StorageClass `dataSource` 처리 |
+
+---
+
 ## 향후 추가 예정 테스트 (실제 하드웨어 필요)
 
 아래 테스트는 현재 구현되지 않았으며, 실제 ZFS, 실제 NVMe-oF 하드웨어,
@@ -651,6 +841,15 @@ go test ./test/e2e/ -tags=e2e -v -run TestE2E
 | F10 | `TestRealNode_NodeUnstageVolume_ActualDetach` | 위와 동일 | 실제 NodeUnstageVolume: 마운트 해제 → nvme disconnect → /dev/nvme* 디바이스 노드 제거 확인 |
 | F11 | `TestRealNode_NodeStageVolume_DeviceAppearDelay` | 실제 NVMe-oF 대상, udev 지연 환경 | NVMe connect 후 /dev/nvme* 노드가 수 초 후에 나타나는 환경에서 폴링 로직 검증 |
 | F12 | `TestRealNode_MultiPathAttach` | 다중 네트워크 인터페이스, multipath 설정 | 동일 NVMe-oF 대상에 두 경로 연결 후 NodeStageVolume에서 올바른 디바이스 선택 |
+| F13 | `TestRealZFS_CreateSnapshot` | ZFS 커널 모듈, `zfs-utils`, CSI CreateSnapshot 구현 (미구현) | `zfs snapshot pool/vol@snap` 실행 후 CSI CreateSnapshot 응답 검증; ReadyToUse=true |
+| F14 | `TestRealZFS_DeleteSnapshot` | ZFS 커널 모듈, CSI DeleteSnapshot 구현 (미구현) | `zfs destroy pool/vol@snap` 실행 후 스냅샷 목록에서 제거 확인 |
+| F15 | `TestRealZFS_ListSnapshots` | ZFS 커널 모듈, CSI ListSnapshots 구현 (미구현) | `zfs list -t snapshot` 결과를 CSI ListSnapshots 응답으로 변환 |
+| F16 | `TestKubernetes_VolumeSnapshot_CreateRestore` | 실제 Kubernetes 클러스터, external-snapshotter, ZFS 노드 | VolumeSnapshot CRD 생성 → PVC RestoreFrom → Pod 마운트; 데이터 일관성 검증 |
+| F17 | `TestRealAgent_SendVolume_ZFSSend` | ZFS 커널 모듈, 실제 zvol, `zfs send` | `agent.SendVolume` 스트리밍 RPC: zfs send 스트림 청크 수신 및 checksum 검증 |
+| F18 | `TestRealAgent_ReceiveVolume_ZFSReceive` | ZFS 커널 모듈, 실제 zvol, `zfs receive` | `agent.ReceiveVolume` 스트리밍 RPC: zfs receive 스트림 클라이언트 전송 및 볼륨 복원 |
+| F19 | `TestRealAgent_SendReceiveVolume_CrossNode` | 두 스토리지 노드, ZFS 커널 모듈 | 노드 A → SendVolume → 노드 B ReceiveVolume 크로스 노드 마이그레이션; 마이그레이션 후 데이터 동일성 검증 |
+| F20 | `TestRealZFS_CloneVolume_FromSnapshot` | ZFS 커널 모듈, CSI VolumeContentSource 구현 (미구현) | `zfs clone pool/vol@snap pool/new-vol` 후 CSI CreateVolume(VolumeContentSource.Snapshot) 응답 검증 |
+| F21 | `TestKubernetes_VolumeExpansion_OnlinePod` | 실제 Kubernetes 클러스터, Pod 실행 중, ZFS 노드 | ControllerExpandVolume → NodeExpandVolume → Pod 내 파일시스템이 새 크기 반영 확인 |
 
 ---
 
@@ -703,6 +902,15 @@ go test ./test/e2e/ -v -run TestMTLS
 
 # E9: Agent gRPC E2E
 go test ./test/e2e/ -v -run TestAgent
+
+# E11: 볼륨 확장 통합 (ControllerExpand + NodeExpand)
+go test ./test/e2e/ -v -run TestCSIExpand
+
+# E12: CSI 스냅샷 미구현 검증
+go test ./test/e2e/ -v -run TestCSISnapshot
+
+# E13: 볼륨 클론 미처리 동작 검증
+go test ./test/e2e/ -v -run TestCSIClone
 ```
 
 ### 클러스터 E2E 테스트 실행 (Kind 필요)
