@@ -516,7 +516,7 @@ func TestCreateVolume_CreatePartialRetry_DevicePathPreserved(t *testing.T) {
 			return nil, nil, err
 		}
 		return &devicePathCapturingClient{
-			AgentServiceClient:  client,
+			AgentServiceClient: client,
 			capturedDevicePath: &capturedDevicePath,
 		}, closer, nil
 	}
@@ -772,7 +772,7 @@ func TestGetCapacity_MissingBackendTypeParam(t *testing.T) {
 	req := &csi.GetCapacityRequest{
 		Parameters: map[string]string{
 			"pillar-csi.bhyoo.com/target": "storage-node-1",
-			"pillar-csi.bhyoo.com/pool":  "tank",
+			"pillar-csi.bhyoo.com/pool":   "tank",
 			// backend-type intentionally omitted
 		},
 	}

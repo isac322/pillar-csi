@@ -135,10 +135,10 @@ type mockAgentServer struct {
 
 	// ── Configurable errors ──────────────────────────────────────────────────
 
-	CreateVolumeErr  error
-	DeleteVolumeErr  error
-	ExpandVolumeErr  error
-	ExportVolumeErr  error
+	CreateVolumeErr   error
+	DeleteVolumeErr   error
+	ExpandVolumeErr   error
+	ExportVolumeErr   error
 	UnexportVolumeErr error
 	AllowInitiatorErr error
 	DenyInitiatorErr  error
@@ -764,8 +764,8 @@ func newCSINodeE2EEnv(t *testing.T, nodeID string) *csiNodeE2EEnv {
 func defaultStageVolumeContext(subsysNQN string) map[string]string {
 	return map[string]string{
 		csisrv.VolumeContextKeyTargetNQN: subsysNQN,
-		csisrv.VolumeContextKeyAddress:  "127.0.0.1",
-		csisrv.VolumeContextKeyPort:     "4420",
+		csisrv.VolumeContextKeyAddress:   "127.0.0.1",
+		csisrv.VolumeContextKeyPort:      "4420",
 	}
 }
 

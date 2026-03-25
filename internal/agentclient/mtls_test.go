@@ -135,7 +135,7 @@ func TestMTLS_ClientAndServerMatchingCreds(t *testing.T) {
 
 	clientCreds, err := tlscreds.NewClientCredentials(
 		bundle.ClientCert, bundle.ClientKey, bundle.CACert,
-		"" /* serverName derived from dial address */,
+		"", /* serverName derived from dial address */
 	)
 	if err != nil {
 		t.Fatalf("NewClientCredentials: %v", err)
@@ -189,7 +189,7 @@ func TestMTLS_MTLSClientRejectedByPlaintextServer(t *testing.T) {
 
 	clientCreds, err := tlscreds.NewClientCredentials(
 		bundle.ClientCert, bundle.ClientKey, bundle.CACert,
-		"" /* serverName derived from dial address */,
+		"", /* serverName derived from dial address */
 	)
 	if err != nil {
 		t.Fatalf("NewClientCredentials: %v", err)

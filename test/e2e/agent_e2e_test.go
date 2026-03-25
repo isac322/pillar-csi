@@ -56,9 +56,9 @@ type agentE2EMockBackend struct {
 	totalBytes int64
 	availBytes int64
 	// Errors to return per-method (nil = success).
-	createErr  error
-	deleteErr  error
-	expandErr  error
+	createErr   error
+	deleteErr   error
+	expandErr   error
 	capacityErr error
 }
 
@@ -158,7 +158,7 @@ func newAgentE2EEnv(t *testing.T, mock *agentE2EMockBackend) *agentE2EEnv {
 	}
 
 	t.Cleanup(func() {
-		conn.Close()        //nolint:errcheck
+		conn.Close() //nolint:errcheck
 		grpcSrv.GracefulStop()
 	})
 
@@ -353,9 +353,9 @@ func TestAgent_RoundTrip(t *testing.T) {
 	t.Parallel()
 
 	const (
-		volumeID    = "tank/pvc-roundtrip"
-		bindAddr    = "127.0.0.1"
-		hostNQN     = "nqn.2026-01.io.example:initiator-1"
+		volumeID = "tank/pvc-roundtrip"
+		bindAddr = "127.0.0.1"
+		hostNQN  = "nqn.2026-01.io.example:initiator-1"
 	)
 
 	// Create a fake device file so WaitForDevice (os.Stat) succeeds.
@@ -478,10 +478,10 @@ func TestAgent_ReconcileStateRestoresExports(t *testing.T) {
 	t.Parallel()
 
 	const (
-		volumeID  = "tank/pvc-restarted"
-		devPath   = "/dev/zvol/tank/pvc-restarted" // any path — ReconcileState does not stat it
-		bindAddr  = "10.0.0.1"
-		hostNQN   = "nqn.2026-01.io.example:initiator-restored"
+		volumeID = "tank/pvc-restarted"
+		devPath  = "/dev/zvol/tank/pvc-restarted" // any path — ReconcileState does not stat it
+		bindAddr = "10.0.0.1"
+		hostNQN  = "nqn.2026-01.io.example:initiator-restored"
 	)
 	wantNQN := "nqn.2026-01.com.bhyoo.pillar-csi:tank.pvc-restarted"
 

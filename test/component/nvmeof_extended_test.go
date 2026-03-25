@@ -17,11 +17,12 @@ limitations under the License.
 // Extended component tests for the NVMe-oF configfs target (internal/agent/nvmeof/).
 //
 // This file covers sections 3.11 – 3.15 of TESTCASES.md:
-//   3.11 Port ID Determinism and Multi-target Port Reuse
-//   3.12 Remove Lifecycle Edge Cases
-//   3.13 AllowHost / DenyHost Edge Cases
-//   3.14 ListExports Advanced Scanning
-//   3.15 Apply Field Verification
+//
+//	3.11 Port ID Determinism and Multi-target Port Reuse
+//	3.12 Remove Lifecycle Edge Cases
+//	3.13 AllowHost / DenyHost Edge Cases
+//	3.14 ListExports Advanced Scanning
+//	3.15 Apply Field Verification
 //
 // Mock fidelity: same as nvmeof_test.go — NvmetTarget.ConfigfsRoot is set to
 // t.TempDir() (a real tmpfs directory).  No kernel nvmet module; all

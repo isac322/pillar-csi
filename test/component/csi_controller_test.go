@@ -1048,9 +1048,9 @@ func TestCSIController_GetCapabilities(t *testing.T) {
 	}
 
 	wantRPCTypes := map[csipb.ControllerServiceCapability_RPC_Type]bool{
-		csipb.ControllerServiceCapability_RPC_CREATE_DELETE_VOLUME:    true,
+		csipb.ControllerServiceCapability_RPC_CREATE_DELETE_VOLUME:     true,
 		csipb.ControllerServiceCapability_RPC_PUBLISH_UNPUBLISH_VOLUME: true,
-		csipb.ControllerServiceCapability_RPC_EXPAND_VOLUME:           true,
+		csipb.ControllerServiceCapability_RPC_EXPAND_VOLUME:            true,
 	}
 
 	for _, cap := range resp.GetCapabilities() {

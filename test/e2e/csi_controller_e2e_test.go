@@ -644,9 +644,9 @@ func TestCSIController_ValidateVolumeCapabilities(t *testing.T) {
 	ctx := context.Background()
 
 	cases := []struct {
-		name     string
-		mode     csi.VolumeCapability_AccessMode_Mode
-		wantOK   bool // true = Confirmed, false = rejected
+		name   string
+		mode   csi.VolumeCapability_AccessMode_Mode
+		wantOK bool // true = Confirmed, false = rejected
 	}{
 		{
 			name:   "RWO",
@@ -849,9 +849,9 @@ func TestCSIController_CreateVolume_MissingParams(t *testing.T) {
 	ctx := context.Background()
 
 	cases := []struct {
-		name       string
-		params     map[string]string
-		wantCode   codes.Code
+		name     string
+		params   map[string]string
+		wantCode codes.Code
 	}{
 		{
 			name: "missing volume name",

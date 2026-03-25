@@ -205,7 +205,7 @@ var _ csi.NodeServer = (*NodeServer)(nil)
 // /var/lib/pillar-csi/node.
 //
 //   - nodeID     – unique node name used in NodeGetInfo (typically the
-//                  Kubernetes node name, e.g. "worker-1").
+//     Kubernetes node name, e.g. "worker-1").
 //   - connector  – NVMe-oF connect/disconnect implementation.
 //   - mounter    – filesystem format/mount/unmount implementation.
 func NewNodeServer(nodeID string, connector Connector, mounter Mounter) *NodeServer {
@@ -221,7 +221,7 @@ func NewNodeServer(nodeID string, connector Connector, mounter Mounter) *NodeSer
 //   - connector – NVMe-oF connect/disconnect implementation.
 //   - mounter   – filesystem format/mount/unmount implementation.
 //   - stateDir  – directory for per-volume JSON state files; created on first
-//                 use if absent.
+//     use if absent.
 func NewNodeServerWithStateDir(nodeID string, connector Connector, mounter Mounter, stateDir string) *NodeServer {
 	return &NodeServer{
 		nodeID:    nodeID,

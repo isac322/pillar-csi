@@ -286,7 +286,7 @@ func TestMTLSController_AgentConnectedAuthenticated(t *testing.T) {
 	//    so the IP SAN on the server cert is used for verification.
 	clientCreds, err := tlscreds.NewClientCredentials(
 		bundle.ClientCert, bundle.ClientKey, bundle.CACert,
-		"" /* serverName derived from dial address */,
+		"", /* serverName derived from dial address */
 	)
 	if err != nil {
 		t.Fatalf("NewClientCredentials: %v", err)

@@ -37,8 +37,8 @@ import (
 
 	"google.golang.org/grpc"
 
-	csi "github.com/container-storage-interface/spec/lib/go/csi"
 	csisvc "github.com/bhyoo/pillar-csi/internal/csi"
+	csi "github.com/container-storage-interface/spec/lib/go/csi"
 )
 
 // driverName is the CSI provisioner name declared in the StorageClass.

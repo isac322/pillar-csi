@@ -140,9 +140,9 @@ func requireSinglePort(t *testing.T, configfsRoot string) string {
 // TestNvmeof_Apply_FullLifecycle verifies that Apply creates all required
 // configfs directories and writes the correct attribute values.
 //
-//   Setup:   Fresh t.TempDir() as ConfigfsRoot; no AllowedHosts
-//   Expect:  subsystems/<nqn>/, namespaces/1/, ports/<id>/ created;
-//            device_path, enable, addr_* files written; port symlink created
+//	Setup:   Fresh t.TempDir() as ConfigfsRoot; no AllowedHosts
+//	Expect:  subsystems/<nqn>/, namespaces/1/, ports/<id>/ created;
+//	         device_path, enable, addr_* files written; port symlink created
 func TestNvmeof_Apply_FullLifecycle(t *testing.T) {
 	t.Parallel()
 	tmpdir := t.TempDir()
@@ -190,8 +190,8 @@ func TestNvmeof_Apply_FullLifecycle(t *testing.T) {
 // TestNvmeof_Apply_Idempotent verifies that calling Apply twice on the same
 // target produces the same configfs state without error.
 //
-//   Setup:   Apply called twice with identical parameters
-//   Expect:  No error; same files/dirs; no duplicates
+//	Setup:   Apply called twice with identical parameters
+//	Expect:  No error; same files/dirs; no duplicates
 func TestNvmeof_Apply_Idempotent(t *testing.T) {
 	t.Parallel()
 	tmpdir := t.TempDir()
@@ -222,11 +222,11 @@ func TestNvmeof_Apply_Idempotent(t *testing.T) {
 // TestNvmeof_Apply_PartialFailureMidApply verifies that Apply is recoverable
 // after a mid-flight failure and a subsequent Apply can complete successfully.
 //
-//   Setup:   Block port-dir creation by placing a regular file where the
-//            ports/ directory needs to be.  First Apply fails at createPort().
-//            Remove the blocker, second Apply succeeds.
-//   Expect:  First Apply returns error; second Apply returns nil; configfs
-//            fully consistent after the second call.
+//	Setup:   Block port-dir creation by placing a regular file where the
+//	         ports/ directory needs to be.  First Apply fails at createPort().
+//	         Remove the blocker, second Apply succeeds.
+//	Expect:  First Apply returns error; second Apply returns nil; configfs
+//	         fully consistent after the second call.
 func TestNvmeof_Apply_PartialFailureMidApply(t *testing.T) {
 	t.Parallel()
 	tmpdir := t.TempDir()
@@ -272,9 +272,9 @@ func TestNvmeof_Apply_PartialFailureMidApply(t *testing.T) {
 // Apply creates host dirs, allowed_hosts symlinks, and sets
 // attr_allow_any_host = "0".
 //
-//   Setup:   NvmetTarget with AllowedHosts = ["nqn.host-a", "nqn.host-b"]
-//   Expect:  attr_allow_any_host = "0"; two symlinks under allowed_hosts/;
-//            two dirs under hosts/
+//	Setup:   NvmetTarget with AllowedHosts = ["nqn.host-a", "nqn.host-b"]
+//	Expect:  attr_allow_any_host = "0"; two symlinks under allowed_hosts/;
+//	         two dirs under hosts/
 func TestNvmeof_Apply_ACLEnabled(t *testing.T) {
 	t.Parallel()
 	tmpdir := t.TempDir()
@@ -315,8 +315,8 @@ func TestNvmeof_Apply_ACLEnabled(t *testing.T) {
 // TestNvmeof_Apply_ACLDisabled verifies that when AllowedHosts is empty,
 // Apply sets attr_allow_any_host = "1" (open access).
 //
-//   Setup:   NvmetTarget with empty AllowedHosts
-//   Expect:  attr_allow_any_host = "1"
+//	Setup:   NvmetTarget with empty AllowedHosts
+//	Expect:  attr_allow_any_host = "1"
 func TestNvmeof_Apply_ACLDisabled(t *testing.T) {
 	t.Parallel()
 	tmpdir := t.TempDir()
@@ -346,8 +346,8 @@ func TestNvmeof_Apply_ACLDisabled(t *testing.T) {
 // TestNvmeof_Remove_FullCleanup verifies that Remove tears down all configfs
 // entries created by Apply.
 //
-//   Setup:   Apply then Remove (no AllowedHosts)
-//   Expect:  subsystems/<nqn>/ gone; port symlink gone; no orphan dirs
+//	Setup:   Apply then Remove (no AllowedHosts)
+//	Expect:  subsystems/<nqn>/ gone; port symlink gone; no orphan dirs
 func TestNvmeof_Remove_FullCleanup(t *testing.T) {
 	t.Parallel()
 	tmpdir := t.TempDir()
@@ -376,8 +376,8 @@ func TestNvmeof_Remove_FullCleanup(t *testing.T) {
 // TestNvmeof_Remove_Idempotent verifies that calling Remove on a target that
 // was never Apply-ed (or already fully removed) returns nil.
 //
-//   Setup:   Fresh tmpdir, no prior Apply
-//   Expect:  Remove returns nil; no error
+//	Setup:   Fresh tmpdir, no prior Apply
+//	Expect:  Remove returns nil; no error
 func TestNvmeof_Remove_Idempotent(t *testing.T) {
 	t.Parallel()
 	tmpdir := t.TempDir()
@@ -405,8 +405,8 @@ func TestNvmeof_Remove_Idempotent(t *testing.T) {
 // a partial-removal state where the subsystem directory was deleted externally
 // but the port symlink still exists.
 //
-//   Setup:   Apply succeeds; subsystem dir manually deleted; Remove called
-//   Expect:  Remove succeeds; port symlink also cleaned up
+//	Setup:   Apply succeeds; subsystem dir manually deleted; Remove called
+//	Expect:  Remove succeeds; port symlink also cleaned up
 func TestNvmeof_Remove_AlreadyRemovedSubsystem(t *testing.T) {
 	t.Parallel()
 	tmpdir := t.TempDir()
@@ -451,8 +451,8 @@ func TestNvmeof_Remove_AlreadyRemovedSubsystem(t *testing.T) {
 // TestNvmeof_AllowHost_CreatesSymlink verifies that AllowHost creates the
 // expected directory under hosts/ and the symlink under allowed_hosts/.
 //
-//   Setup:   Apply (to create subsystem), then AllowHost
-//   Expect:  hosts/<hostNQN>/ dir exists; allowed_hosts/<hostNQN> symlink exists
+//	Setup:   Apply (to create subsystem), then AllowHost
+//	Expect:  hosts/<hostNQN>/ dir exists; allowed_hosts/<hostNQN> symlink exists
 func TestNvmeof_AllowHost_CreatesSymlink(t *testing.T) {
 	t.Parallel()
 	tmpdir := t.TempDir()
@@ -486,8 +486,8 @@ func TestNvmeof_AllowHost_CreatesSymlink(t *testing.T) {
 // TestNvmeof_AllowHost_Idempotent verifies that calling AllowHost twice for
 // the same host NQN does not return an error and produces a single symlink.
 //
-//   Setup:   Apply; AllowHost called twice for same host
-//   Expect:  No error; exactly one symlink in allowed_hosts/
+//	Setup:   Apply; AllowHost called twice for same host
+//	Expect:  No error; exactly one symlink in allowed_hosts/
 func TestNvmeof_AllowHost_Idempotent(t *testing.T) {
 	t.Parallel()
 	tmpdir := t.TempDir()
@@ -520,8 +520,8 @@ func TestNvmeof_AllowHost_Idempotent(t *testing.T) {
 // TestNvmeof_AllowHost_MultipleHosts verifies that AllowHost can be called for
 // three distinct initiator NQNs, creating three separate symlinks.
 //
-//   Setup:   Apply; AllowHost for 3 different initiators
-//   Expect:  3 dirs under hosts/; 3 symlinks under allowed_hosts/
+//	Setup:   Apply; AllowHost for 3 different initiators
+//	Expect:  3 dirs under hosts/; 3 symlinks under allowed_hosts/
 func TestNvmeof_AllowHost_MultipleHosts(t *testing.T) {
 	t.Parallel()
 	tmpdir := t.TempDir()
@@ -566,8 +566,8 @@ func TestNvmeof_AllowHost_MultipleHosts(t *testing.T) {
 // TestNvmeof_DenyHost_RemovesSymlink verifies that DenyHost removes the
 // allowed_hosts symlink for the given initiator NQN.
 //
-//   Setup:   Apply; AllowHost; DenyHost for same host
-//   Expect:  Symlink removed; host dir in hosts/ still exists
+//	Setup:   Apply; AllowHost; DenyHost for same host
+//	Expect:  Symlink removed; host dir in hosts/ still exists
 func TestNvmeof_DenyHost_RemovesSymlink(t *testing.T) {
 	t.Parallel()
 	tmpdir := t.TempDir()
@@ -603,8 +603,8 @@ func TestNvmeof_DenyHost_RemovesSymlink(t *testing.T) {
 // TestNvmeof_DenyHost_Idempotent verifies that DenyHost on a host that has
 // not been allowed (no symlink) returns nil.
 //
-//   Setup:   Apply; no AllowHost; DenyHost called
-//   Expect:  No error
+//	Setup:   Apply; no AllowHost; DenyHost called
+//	Expect:  No error
 func TestNvmeof_DenyHost_Idempotent(t *testing.T) {
 	t.Parallel()
 	tmpdir := t.TempDir()
@@ -635,8 +635,8 @@ func TestNvmeof_DenyHost_Idempotent(t *testing.T) {
 // sharing the same BindAddress:Port produce a single port directory containing
 // symlinks for both subsystems.
 //
-//   Setup:   Two NvmetTargets: same BindAddress+Port, different NQNs
-//   Expect:  One port dir; two subsystem symlinks inside ports/<id>/subsystems/
+//	Setup:   Two NvmetTargets: same BindAddress+Port, different NQNs
+//	Expect:  One port dir; two subsystem symlinks inside ports/<id>/subsystems/
 func TestNvmeof_Port_MultipleSubsystemsSamePort(t *testing.T) {
 	t.Parallel()
 	tmpdir := t.TempDir()
@@ -688,8 +688,8 @@ func TestNvmeof_Port_MultipleSubsystemsSamePort(t *testing.T) {
 // TestNvmeof_Port_SeparatePortsForDifferentAddresses verifies that two
 // NvmetTargets with different BindAddresses produce separate port directories.
 //
-//   Setup:   Two NvmetTargets: different BindAddress, same NQN pattern
-//   Expect:  Two distinct port directories
+//	Setup:   Two NvmetTargets: different BindAddress, same NQN pattern
+//	Expect:  Two distinct port directories
 func TestNvmeof_Port_SeparatePortsForDifferentAddresses(t *testing.T) {
 	t.Parallel()
 	tmpdir := t.TempDir()
@@ -737,8 +737,8 @@ func TestNvmeof_Port_SeparatePortsForDifferentAddresses(t *testing.T) {
 // TestNvmeof_ListExports_Success verifies that ListExports returns one entry
 // per applied subsystem, with correct NQNs and namespace device paths.
 //
-//   Setup:   Two NvmetTargets applied in tmpdir configfs
-//   Expect:  2 ExportedSubsystem entries, sorted by NQN
+//	Setup:   Two NvmetTargets applied in tmpdir configfs
+//	Expect:  2 ExportedSubsystem entries, sorted by NQN
 func TestNvmeof_ListExports_Success(t *testing.T) {
 	t.Parallel()
 	tmpdir := t.TempDir()
@@ -786,8 +786,8 @@ func TestNvmeof_ListExports_Success(t *testing.T) {
 // TestNvmeof_ListExports_Empty verifies that ListExports returns an empty
 // slice (not an error) when the subsystems directory exists but is empty.
 //
-//   Setup:   Fresh tmpdir with empty nvmet/subsystems/ directory
-//   Expect:  nil or empty slice; no error
+//	Setup:   Fresh tmpdir with empty nvmet/subsystems/ directory
+//	Expect:  nil or empty slice; no error
 func TestNvmeof_ListExports_Empty(t *testing.T) {
 	t.Parallel()
 	tmpdir := t.TempDir()
@@ -811,8 +811,8 @@ func TestNvmeof_ListExports_Empty(t *testing.T) {
 // TestNvmeof_ListExports_NoSubsystemsDir verifies that ListExports returns
 // a nil slice (no error) when the nvmet/subsystems/ directory does not exist.
 //
-//   Setup:   Fresh tmpdir (no nvmet subtree)
-//   Expect:  nil slice; no error
+//	Setup:   Fresh tmpdir (no nvmet subtree)
+//	Expect:  nil slice; no error
 func TestNvmeof_ListExports_NoSubsystemsDir(t *testing.T) {
 	t.Parallel()
 	tmpdir := t.TempDir()
@@ -830,8 +830,8 @@ func TestNvmeof_ListExports_NoSubsystemsDir(t *testing.T) {
 // without a namespaces/ subdirectory is returned with an empty
 // NamespaceDevicePaths map (not an error).
 //
-//   Setup:   Subsystem dir created without namespaces/ subdirectory
-//   Expect:  One ExportedSubsystem with empty NamespaceDevicePaths
+//	Setup:   Subsystem dir created without namespaces/ subdirectory
+//	Expect:  One ExportedSubsystem with empty NamespaceDevicePaths
 func TestNvmeof_ListExports_PartialSubsystem(t *testing.T) {
 	t.Parallel()
 	tmpdir := t.TempDir()
@@ -863,8 +863,8 @@ func TestNvmeof_ListExports_PartialSubsystem(t *testing.T) {
 // TestNvmeof_ListExports_WithAllowedHosts verifies that ExportedSubsystem.AllowedHosts
 // is populated from the allowed_hosts/ directory entries.
 //
-//   Setup:   Apply with 2 AllowedHosts; ListExports
-//   Expect:  AllowedHosts slice contains both host NQNs (sorted)
+//	Setup:   Apply with 2 AllowedHosts; ListExports
+//	Expect:  AllowedHosts slice contains both host NQNs (sorted)
 func TestNvmeof_ListExports_WithAllowedHosts(t *testing.T) {
 	t.Parallel()
 	tmpdir := t.TempDir()
@@ -903,8 +903,8 @@ func TestNvmeof_ListExports_WithAllowedHosts(t *testing.T) {
 // TestNvmeof_ListExports_RoundTrip verifies the round-trip consistency:
 // Apply a target and then ListExports should return matching data.
 //
-//   Setup:   Apply; ListExports
-//   Expect:  Exported subsystem matches NvmetTarget parameters exactly
+//	Setup:   Apply; ListExports
+//	Expect:  Exported subsystem matches NvmetTarget parameters exactly
 func TestNvmeof_ListExports_RoundTrip(t *testing.T) {
 	t.Parallel()
 	tmpdir := t.TempDir()
@@ -944,8 +944,8 @@ func TestNvmeof_ListExports_RoundTrip(t *testing.T) {
 // TestNvmeof_DevicePoll_AppearsImmediately verifies that WaitForDevice returns
 // immediately when the DeviceChecker reports the path as present on the first call.
 //
-//   Setup:   AlwaysPresentChecker (first call returns true)
-//   Expect:  Returns nil without delay; no timeout
+//	Setup:   AlwaysPresentChecker (first call returns true)
+//	Expect:  Returns nil without delay; no timeout
 func TestNvmeof_DevicePoll_AppearsImmediately(t *testing.T) {
 	t.Parallel()
 	start := time.Now()
@@ -970,8 +970,8 @@ func TestNvmeof_DevicePoll_AppearsImmediately(t *testing.T) {
 // TestNvmeof_DevicePoll_AppearsAfterDelay verifies that WaitForDevice retries
 // until the DeviceChecker finally reports the device as present.
 //
-//   Setup:   Custom checker that returns false for first 2 calls, then true
-//   Expect:  Returns nil; call count >= 3
+//	Setup:   Custom checker that returns false for first 2 calls, then true
+//	Expect:  Returns nil; call count >= 3
 func TestNvmeof_DevicePoll_AppearsAfterDelay(t *testing.T) {
 	t.Parallel()
 	var mu sync.Mutex
@@ -1007,8 +1007,8 @@ func TestNvmeof_DevicePoll_AppearsAfterDelay(t *testing.T) {
 // TestNvmeof_DevicePoll_NeverAppears verifies that WaitForDevice returns a
 // timeout error when the device never becomes present within the deadline.
 //
-//   Setup:   Checker always returns false; very short timeout
-//   Expect:  Returns error containing "timed out"
+//	Setup:   Checker always returns false; very short timeout
+//	Expect:  Returns error containing "timed out"
 func TestNvmeof_DevicePoll_NeverAppears(t *testing.T) {
 	t.Parallel()
 	checker := nvmeof.DeviceChecker(func(_ string) (bool, error) {
@@ -1033,8 +1033,8 @@ func TestNvmeof_DevicePoll_NeverAppears(t *testing.T) {
 // TestNvmeof_DevicePoll_ContextCancelled verifies that WaitForDevice respects
 // context cancellation and returns immediately when the context is cancelled.
 //
-//   Setup:   Checker never returns true; context cancelled before timeout
-//   Expect:  Returns error immediately (well before 5s timeout)
+//	Setup:   Checker never returns true; context cancelled before timeout
+//	Expect:  Returns error immediately (well before 5s timeout)
 func TestNvmeof_DevicePoll_ContextCancelled(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1065,8 +1065,8 @@ func TestNvmeof_DevicePoll_ContextCancelled(t *testing.T) {
 // TestNvmeof_DevicePoll_PermissionDenied verifies that WaitForDevice returns
 // the permanent error from the DeviceChecker immediately (no retry loop).
 //
-//   Setup:   Checker returns permanent error on first call
-//   Expect:  Returns the permanent error without further retries (fast)
+//	Setup:   Checker returns permanent error on first call
+//	Expect:  Returns the permanent error without further retries (fast)
 func TestNvmeof_DevicePoll_PermissionDenied(t *testing.T) {
 	t.Parallel()
 	permErr := errors.New("permission denied: /dev/fake/perm")
@@ -1104,8 +1104,8 @@ func TestNvmeof_DevicePoll_PermissionDenied(t *testing.T) {
 // when AllowedHosts is set: both the subsystem and the allowed_hosts symlinks
 // are cleaned up correctly.
 //
-//   Setup:   Apply with 1 AllowedHost; Remove
-//   Expect:  subsystem dir, allowed_hosts symlink, and namespace dir all gone
+//	Setup:   Apply with 1 AllowedHost; Remove
+//	Expect:  subsystem dir, allowed_hosts symlink, and namespace dir all gone
 func TestNvmeof_Apply_Remove_WithACL(t *testing.T) {
 	t.Parallel()
 	tmpdir := t.TempDir()
@@ -1138,8 +1138,8 @@ func TestNvmeof_Apply_Remove_WithACL(t *testing.T) {
 // TestNvmeof_Apply_DefaultPort verifies that when Port is 0, Apply uses
 // the DefaultPort (4420) for the addr_trsvcid attribute.
 //
-//   Setup:   NvmetTarget with Port = 0
-//   Expect:  addr_trsvcid = "4420"
+//	Setup:   NvmetTarget with Port = 0
+//	Expect:  addr_trsvcid = "4420"
 func TestNvmeof_Apply_DefaultPort(t *testing.T) {
 	t.Parallel()
 	tmpdir := t.TempDir()
@@ -1163,9 +1163,9 @@ func TestNvmeof_Apply_DefaultPort(t *testing.T) {
 // TestNvmeof_AllowHost_SymlinkWrongTarget verifies that AllowHost returns an
 // error when an allowed_hosts symlink already exists but points to the wrong target.
 //
-//   Setup:   Manually create allowed_hosts/<hostNQN> symlink pointing to a
-//            wrong target; then call AllowHost
-//   Expect:  AllowHost returns a non-nil error describing the conflict
+//	Setup:   Manually create allowed_hosts/<hostNQN> symlink pointing to a
+//	         wrong target; then call AllowHost
+//	Expect:  AllowHost returns a non-nil error describing the conflict
 func TestNvmeof_AllowHost_SymlinkWrongTarget(t *testing.T) {
 	t.Parallel()
 	tmpdir := t.TempDir()

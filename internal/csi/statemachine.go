@@ -228,8 +228,8 @@ var legalTransitions = map[transitionKey]transitionResult{
 	// CreateVolumeBackend records that the backend storage resource was
 	// created but ExportVolume has not yet been attempted.  This drives the
 	// volume into the StateCreatePartial partial-failure state.
-	{StateNonExistent, OpCreateVolumeBackend}:    {to: StateCreatePartial},
-	{StateCreatePartial, OpCreateVolumeBackend}:  {to: StateCreatePartial, isNoop: true},
+	{StateNonExistent, OpCreateVolumeBackend}:   {to: StateCreatePartial},
+	{StateCreatePartial, OpCreateVolumeBackend}: {to: StateCreatePartial, isNoop: true},
 
 	// From StateCreatePartial the volume can be recovered in two ways:
 	//   1. Retry CreateVolume → ExportVolume succeeds → StateCreated.

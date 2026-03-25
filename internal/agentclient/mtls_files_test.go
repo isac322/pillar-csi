@@ -281,4 +281,3 @@ func TestNewManagerFromFiles_ImplementsDialerInterface(t *testing.T) {
 		t.Error("NewManagerFromFiles returned a nil Dialer")
 	}
 }
-

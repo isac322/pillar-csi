@@ -226,7 +226,7 @@ func TestCoexecutionModesMutuallyExclusive(t *testing.T) {
 	if testEnv.LaunchExternalAgent && testEnv.ExternalAgentAddr == "" {
 		// LaunchExternalAgent=true but no address set means
 		// startExternalAgentContainer failed or was bypassed.
-		t.Logf("warning: LaunchExternalAgent=true but ExternalAgentAddr is empty; "+
+		t.Logf("warning: LaunchExternalAgent=true but ExternalAgentAddr is empty; " +
 			"external-agent container may not have started (check setup logs)")
 	}
 

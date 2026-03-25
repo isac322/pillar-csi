@@ -21,27 +21,27 @@ limitations under the License.
 //
 // Coverage:
 //
-//   CC1: Concurrent AllowInitiator + DenyInitiator for the same host NQN —
-//        verifies no deadlock or panic when ACL ops race on the same subsystem.
+//	CC1: Concurrent AllowInitiator + DenyInitiator for the same host NQN —
+//	     verifies no deadlock or panic when ACL ops race on the same subsystem.
 //
-//   CC2: Concurrent NvmetTarget.Remove on different subsystems sharing one
-//        port — verifies port-link removal does not corrupt concurrent callers.
+//	CC2: Concurrent NvmetTarget.Remove on different subsystems sharing one
+//	     port — verifies port-link removal does not corrupt concurrent callers.
 //
-//   CC3: NvmetTarget.Apply fails when attr_allow_any_host is pre-created as
-//        read-only — tests the write-blocked path inside createSubsystem.
+//	CC3: NvmetTarget.Apply fails when attr_allow_any_host is pre-created as
+//	     read-only — tests the write-blocked path inside createSubsystem.
 //
-//   CC4: NvmetTarget.DenyHost where the allowed_hosts symlink path is occupied
-//        by a regular file — removeSymlink must return an error (not panic).
+//	CC4: NvmetTarget.DenyHost where the allowed_hosts symlink path is occupied
+//	     by a regular file — removeSymlink must return an error (not panic).
 //
-//   CC5: Concurrent CreateVolume requests for the same VolumeID — verifies
-//        that the agent server does not deadlock under concurrent idempotent
-//        creates.
+//	CC5: Concurrent CreateVolume requests for the same VolumeID — verifies
+//	     that the agent server does not deadlock under concurrent idempotent
+//	     creates.
 //
-//   CC6: Concurrent AllowHost for the same host NQN — idempotency under race;
-//        all goroutines must return nil.
+//	CC6: Concurrent AllowHost for the same host NQN — idempotency under race;
+//	     all goroutines must return nil.
 //
-//   CC7: NvmetTarget.Apply fails when the port subsystems/ parent directory
-//        is a regular file — linkSubsystemToPort mkdirAll must return an error.
+//	CC7: NvmetTarget.Apply fails when the port subsystems/ parent directory
+//	     is a regular file — linkSubsystemToPort mkdirAll must return an error.
 //
 // All tests use t.TempDir() for filesystem isolation; no root privileges,
 // real ZFS, or kernel configfs are required.  Tests that depend on Unix DAC
@@ -414,9 +414,9 @@ func TestConcurrentError_CreateVolume_SameID_NoDeadlock(t *testing.T) {
 // same subsystem are serialised by the kernel.
 //
 // The test therefore verifies:
-//   1. No deadlock (all goroutines complete within deadline).
-//   2. The final symlink exists and points to the correct target.
-//   3. At least one goroutine returns nil (exactly one creates the symlink).
+//  1. No deadlock (all goroutines complete within deadline).
+//  2. The final symlink exists and points to the correct target.
+//  3. At least one goroutine returns nil (exactly one creates the symlink).
 //
 // Setup:  Apply target; N goroutines call AllowHost simultaneously.
 // Expected: no deadlock; final symlink correct; at least one nil result.

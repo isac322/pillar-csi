@@ -192,10 +192,10 @@ func TestCSILifecycle_FullCycle(t *testing.T) {
 	ctx := context.Background()
 
 	const (
-		volName      = "pvc-lifecycle-full"
-		capBytes     = 1 << 30 // 1 GiB
-		stagingPath  = "/var/lib/kubelet/plugins/kubernetes.io/csi/pillar-csi/staging/pvc-lifecycle-full"
-		targetPath   = "/var/lib/kubelet/pods/pod-abc123/volumes/kubernetes.io~csi/pvc-lifecycle-full/mount"
+		volName     = "pvc-lifecycle-full"
+		capBytes    = 1 << 30 // 1 GiB
+		stagingPath = "/var/lib/kubelet/plugins/kubernetes.io/csi/pillar-csi/staging/pvc-lifecycle-full"
+		targetPath  = "/var/lib/kubelet/pods/pod-abc123/volumes/kubernetes.io~csi/pvc-lifecycle-full/mount"
 	)
 
 	// ── 1. CreateVolume ───────────────────────────────────────────────────────

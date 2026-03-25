@@ -17,9 +17,10 @@ limitations under the License.
 // Extended component tests for the CSI Controller Service (internal/csi.ControllerServer).
 //
 // This file covers sections 4.7 – 4.9 of TESTCASES.md:
-//   4.7 Input Validation Edge Cases
-//   4.8 PillarTarget State Errors
-//   4.9 Partial Failure Recovery and Agent Response Handling
+//
+//	4.7 Input Validation Edge Cases
+//	4.8 PillarTarget State Errors
+//	4.9 Partial Failure Recovery and Agent Response Handling
 //
 // Mock fidelity: same as csi_controller_test.go — csiMockAgent with function
 // fields; no network I/O; fake k8s client for PillarTarget/PillarVolume CRDs.

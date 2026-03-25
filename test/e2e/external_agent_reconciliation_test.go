@@ -27,7 +27,7 @@ limitations under the License.
 //
 // These specs exercise the full reconciliation pipeline:
 //
-//   PillarTarget → PillarPool → PillarProtocol → PillarBinding → StorageClass
+//	PillarTarget → PillarPool → PillarProtocol → PillarBinding → StorageClass
 //
 // Each layer is tested independently to isolate failures.  Tests at the gRPC
 // layer directly exercise the agent's work-item processing methods
