@@ -1,0 +1,20 @@
+{{- if .Values.csiDriver.create -}}
+apiVersion: storage.k8s.io/v1
+kind: CSIDriver
+metadata:
+  name: pillar-csi.bhyoo.com
+  labels:
+    {{- include "pillar-csi.labels" . | nindent 4 }}
+spec:
+  # Requires ControllerPublishVolume / ControllerUnpublishVolume calls (attach/detach).
+  attachRequired: {{ .Values.csiDriver.attachRequired }}
+  # Injects pod name, namespace, and UID as volume attributes during NodePublishVolume.
+  podInfoOnMount: {{ .Values.csiDriver.podInfoOnMount }}
+  # fsGroupPolicy controls how the kubelet handles fsGroup ownership changes.
+  # "File" means the kubelet always recursively chowns the volume to fsGroup.
+  fsGroupPolicy: {{ .Values.csiDriver.fsGroupPolicy }}
+  {{- if .Values.csiDriver.volumeLifecycleModes }}
+  volumeLifecycleModes:
+    {{- toYaml .Values.csiDriver.volumeLifecycleModes | nindent 4 }}
+  {{- end }}
+{{- end }}

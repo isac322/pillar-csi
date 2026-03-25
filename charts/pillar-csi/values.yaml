@@ -381,8 +381,12 @@ serviceAccount:
 csiDriver:
   # -- Set to false to skip CSIDriver object creation.
   create: true
+  # -- Indicates this CSI driver requires an attach operation (ControllerPublishVolume).
+  attachRequired: true
+  # -- Inject Pod info (name/namespace/UID) as volume attributes on mount.
+  podInfoOnMount: true
   # -- fsGroupPolicy for the CSIDriver. Valid values: None, File, ReadWriteOnceWithFSType.
-  fsGroupPolicy: ReadWriteOnceWithFSType
+  fsGroupPolicy: File
   # -- volumeLifecycleModes supported by the driver.
   volumeLifecycleModes:
     - Persistent
