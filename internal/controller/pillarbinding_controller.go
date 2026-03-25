@@ -509,10 +509,25 @@ func buildStorageClassParams(
 	case pillarcsiv1alpha1.ProtocolTypeNVMeOFTCP:
 		if protocol.Spec.NVMeOFTCP != nil {
 			params["pillar-csi.bhyoo.com/nvmeof-port"] = fmt.Sprintf("%d", protocol.Spec.NVMeOFTCP.Port)
+			// Propagate ACL toggle so the CSI controller passes the correct
+			// AclEnabled flag to agent.ExportVolume.  The default (true) is
+			// emitted explicitly so that a future protocol update that flips
+			// the field from false back to true is reflected in the StorageClass.
+			if protocol.Spec.NVMeOFTCP.ACL {
+				params["pillar-csi.bhyoo.com/acl-enabled"] = "true"
+			} else {
+				params["pillar-csi.bhyoo.com/acl-enabled"] = "false"
+			}
 		}
 	case pillarcsiv1alpha1.ProtocolTypeISCSI:
 		if protocol.Spec.ISCSI != nil {
 			params["pillar-csi.bhyoo.com/iscsi-port"] = fmt.Sprintf("%d", protocol.Spec.ISCSI.Port)
+			// Same ACL toggle for iSCSI (initiator IQN-based access control).
+			if protocol.Spec.ISCSI.ACL {
+				params["pillar-csi.bhyoo.com/acl-enabled"] = "true"
+			} else {
+				params["pillar-csi.bhyoo.com/acl-enabled"] = "false"
+			}
 		}
 	case pillarcsiv1alpha1.ProtocolTypeNFS:
 		if protocol.Spec.NFS != nil && protocol.Spec.NFS.Version != "" {

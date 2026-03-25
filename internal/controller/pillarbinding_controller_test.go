@@ -1575,4 +1575,113 @@ var _ = Describe("buildStorageClassParams", func() {
 		Expect(params).NotTo(HaveKey("pillar-csi.bhyoo.com/mkfs-options"),
 			"NFS protocol should not include mkfs-options param")
 	})
+
+	// ── ACL toggle tests ──────────────────────────────────────────────────────
+
+	It("should emit acl-enabled=true for NVMeOF-TCP when ACL is enabled", func() {
+		binding := makeBinding("pool", "proto", nil)
+		pool := &pillarcsiv1alpha1.PillarPool{
+			Spec: pillarcsiv1alpha1.PillarPoolSpec{
+				TargetRef: "t",
+				Backend:   pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeZFSZvol},
+			},
+		}
+		protocol := &pillarcsiv1alpha1.PillarProtocol{
+			Spec: pillarcsiv1alpha1.PillarProtocolSpec{
+				Type: pillarcsiv1alpha1.ProtocolTypeNVMeOFTCP,
+				NVMeOFTCP: &pillarcsiv1alpha1.NVMeOFTCPConfig{
+					Port: 4420,
+					ACL:  true,
+				},
+			},
+		}
+		params := buildStorageClassParams(binding, pool, protocol)
+
+		Expect(params).To(HaveKeyWithValue("pillar-csi.bhyoo.com/acl-enabled", "true"),
+			"ACL=true in PillarProtocol.spec.nvmeofTcp should produce acl-enabled=true in StorageClass params")
+	})
+
+	It("should emit acl-enabled=false for NVMeOF-TCP when ACL is disabled", func() {
+		binding := makeBinding("pool", "proto", nil)
+		pool := &pillarcsiv1alpha1.PillarPool{
+			Spec: pillarcsiv1alpha1.PillarPoolSpec{
+				TargetRef: "t",
+				Backend:   pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeZFSZvol},
+			},
+		}
+		protocol := &pillarcsiv1alpha1.PillarProtocol{
+			Spec: pillarcsiv1alpha1.PillarProtocolSpec{
+				Type: pillarcsiv1alpha1.ProtocolTypeNVMeOFTCP,
+				NVMeOFTCP: &pillarcsiv1alpha1.NVMeOFTCPConfig{
+					Port: 4420,
+					ACL:  false,
+				},
+			},
+		}
+		params := buildStorageClassParams(binding, pool, protocol)
+
+		Expect(params).To(HaveKeyWithValue("pillar-csi.bhyoo.com/acl-enabled", "false"),
+			"ACL=false in PillarProtocol.spec.nvmeofTcp should produce acl-enabled=false in StorageClass params")
+	})
+
+	It("should emit acl-enabled=true for iSCSI when ACL is enabled", func() {
+		binding := makeBinding("pool", "proto", nil)
+		pool := &pillarcsiv1alpha1.PillarPool{
+			Spec: pillarcsiv1alpha1.PillarPoolSpec{
+				TargetRef: "t",
+				Backend:   pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeZFSZvol},
+			},
+		}
+		protocol := &pillarcsiv1alpha1.PillarProtocol{
+			Spec: pillarcsiv1alpha1.PillarProtocolSpec{
+				Type: pillarcsiv1alpha1.ProtocolTypeISCSI,
+				ISCSI: &pillarcsiv1alpha1.ISCSIConfig{
+					Port: 3260,
+					ACL:  true,
+				},
+			},
+		}
+		params := buildStorageClassParams(binding, pool, protocol)
+
+		Expect(params).To(HaveKeyWithValue("pillar-csi.bhyoo.com/acl-enabled", "true"),
+			"ACL=true in PillarProtocol.spec.iscsi should produce acl-enabled=true in StorageClass params")
+	})
+
+	It("should emit acl-enabled=false for iSCSI when ACL is disabled", func() {
+		binding := makeBinding("pool", "proto", nil)
+		pool := &pillarcsiv1alpha1.PillarPool{
+			Spec: pillarcsiv1alpha1.PillarPoolSpec{
+				TargetRef: "t",
+				Backend:   pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeZFSZvol},
+			},
+		}
+		protocol := &pillarcsiv1alpha1.PillarProtocol{
+			Spec: pillarcsiv1alpha1.PillarProtocolSpec{
+				Type: pillarcsiv1alpha1.ProtocolTypeISCSI,
+				ISCSI: &pillarcsiv1alpha1.ISCSIConfig{
+					Port: 3260,
+					ACL:  false,
+				},
+			},
+		}
+		params := buildStorageClassParams(binding, pool, protocol)
+
+		Expect(params).To(HaveKeyWithValue("pillar-csi.bhyoo.com/acl-enabled", "false"),
+			"ACL=false in PillarProtocol.spec.iscsi should produce acl-enabled=false in StorageClass params")
+	})
+
+	It("should NOT include acl-enabled for NFS protocol", func() {
+		binding := makeBinding("pool", "proto", nil)
+		pool := &pillarcsiv1alpha1.PillarPool{
+			Spec: pillarcsiv1alpha1.PillarPoolSpec{
+				TargetRef: "t",
+				Backend:   pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeDir},
+			},
+		}
+		protocol := makeProtocolNFS("4.2")
+		params := buildStorageClassParams(binding, pool, protocol)
+
+		Expect(params).NotTo(HaveKey("pillar-csi.bhyoo.com/acl-enabled"),
+			"NFS protocol does not use ACL enforcement; param must be absent")
+	})
 })
