@@ -147,6 +147,9 @@ controller:
   # -- Metrics port exposed by the manager.
   metricsPort: 8080
 
+  # -- HTTP port exposed by the liveness-probe sidecar for CSI socket health checks.
+  livenessPort: 9809
+
   # -- CSI Unix socket path on the shared emptyDir volume.
   csiSocketPath: /csi/csi.sock
 
