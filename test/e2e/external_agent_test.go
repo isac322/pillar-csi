@@ -90,7 +90,10 @@ import (
 	. "github.com/onsi/gomega"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	v1alpha1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
 	agentv1 "github.com/bhyoo/pillar-csi/gen/go/pillar_csi/agent/v1"
 	"github.com/bhyoo/pillar-csi/test/e2e/framework"
 )
@@ -265,6 +268,245 @@ var _ = Describe("ExternalAgent", Ordered, func() {
 		Expect(extState.suite.Client).NotTo(BeNil(), "Kubernetes client must be initialised")
 		By("Kind cluster connectivity verified via framework.SetupSuite")
 	})
+
+	// ─── PillarTarget registration tests ──────────────────────────────────────
+	//
+	// These specs create a PillarTarget CR that points the pillar-csi controller
+	// at the running external agent, then verify that the controller:
+	//
+	//   • persists spec.external.address and spec.external.port correctly
+	//   • transitions the AgentConnected condition to True (agent registered)
+	//   • populates status.resolvedAddress, status.agentVersion, and
+	//     status.capabilities after connecting
+	//   • maintains the Ready condition across multiple reconcile cycles
+	//     (heartbeat / lease stability)
+	//
+	// Prerequisite: the pillar-csi controller must be running inside the Kind
+	// cluster (deployed by hack/e2e-setup.sh), and the agent must be reachable
+	// from within the Kind nodes.
+	//
+	// Set EXTERNAL_AGENT_CLUSTER_ADDRESS=<host>:<port> to the address that is
+	// reachable from within Kind pods (e.g. the Docker bridge gateway IP).
+	// If the variable is empty these specs are skipped so that the suite remains
+	// usable without a full cluster or when running direct gRPC tests only.
+	//
+	// Typical setup with the Docker-based agent helper:
+	//
+	//	AGENT_IP=$(hack/e2e-external-agent.sh | tail -1)
+	//	export EXTERNAL_AGENT_CLUSTER_ADDRESS="${AGENT_IP}:9500"
+	//	go test -tags=e2e ./test/e2e/ -v -run TestExternalAgent
+	Context("PillarTarget registration", Ordered, func() {
+		var (
+			target      *v1alpha1.PillarTarget
+			targetName  string
+			clusterHost string
+			clusterPort int32
+		)
+
+		// BeforeAll runs once, before the first spec in this Ordered Context.
+		// It guards against missing prerequisites and creates the PillarTarget CR.
+		BeforeAll(func(ctx SpecContext) {
+			// Guard: require the outer BeforeAll to have initialised the suite.
+			if extState == nil || extState.suite == nil {
+				Skip("outer BeforeAll did not complete successfully — " +
+					"skipping PillarTarget registration tests")
+			}
+
+			// Skip gracefully when the cluster-accessible address is not provided.
+			clusterAddr := extAgentClusterAddress()
+			if clusterAddr == "" {
+				Skip("EXTERNAL_AGENT_CLUSTER_ADDRESS not set — " +
+					"skipping PillarTarget registration tests " +
+					"(set to <host>:<port> reachable from inside the Kind cluster)")
+			}
+
+			var ok bool
+			clusterHost, clusterPort, ok = extAgentClusterAddrParts(clusterAddr)
+			Expect(ok).To(BeTrue(),
+				"EXTERNAL_AGENT_CLUSTER_ADDRESS must be in host:port format, got: %q", clusterAddr)
+
+			// Use a millisecond-based suffix so parallel runs don't collide.
+			targetName = fmt.Sprintf("ext-agent-reg-%d", time.Now().UnixMilli()%100000)
+			target = framework.NewExternalPillarTarget(targetName, clusterHost, clusterPort)
+
+			By(fmt.Sprintf("creating PillarTarget %q → %s:%d", targetName, clusterHost, clusterPort))
+			Expect(framework.Apply(ctx, extState.suite.Client, target)).To(Succeed(),
+				"apply PillarTarget CR to the Kind cluster")
+
+			// Register cleanup now that the CR exists.  DeferCleanup in a
+			// BeforeAll fires after this Ordered Context's last spec or AfterAll.
+			// Ginkgo injects a fresh SpecContext for the cleanup closure.
+			DeferCleanup(func(dctx SpecContext) {
+				By(fmt.Sprintf("cleaning up PillarTarget %q", targetName))
+				if err := framework.EnsureGone(dctx, extState.suite.Client, target, 2*time.Minute); err != nil {
+					_, _ = fmt.Fprintf(GinkgoWriter,
+						"warning: cleanup PillarTarget %q: %v\n", targetName, err)
+				}
+			})
+		})
+
+		// ── spec 1: spec fields are persisted correctly ──────────────────────
+
+		It("persists spec.external.address and spec.external.port", func(ctx SpecContext) {
+			got := &v1alpha1.PillarTarget{}
+			Expect(extState.suite.Client.Get(ctx,
+				client.ObjectKey{Name: targetName}, got)).To(Succeed(),
+				"PillarTarget %q must exist in the cluster", targetName)
+
+			Expect(got.Spec.External).NotTo(BeNil(),
+				"spec.external must be populated for an external agent target")
+			Expect(got.Spec.NodeRef).To(BeNil(),
+				"spec.nodeRef must be nil when spec.external is used (discriminated union)")
+			Expect(got.Spec.External.Address).To(Equal(clusterHost),
+				"spec.external.address must match the configured host exactly")
+			Expect(got.Spec.External.Port).To(Equal(clusterPort),
+				"spec.external.port must match the configured port exactly")
+
+			By(fmt.Sprintf("spec.external validated: address=%s port=%d",
+				got.Spec.External.Address, got.Spec.External.Port))
+		})
+
+		// ── spec 2: controller dials agent → AgentConnected=True ────────────
+
+		It("controller transitions AgentConnected condition to True", func(ctx SpecContext) {
+			By(fmt.Sprintf("waiting for AgentConnected=True on PillarTarget %q (up to 2 min)", targetName))
+			err := framework.WaitForCondition(ctx, extState.suite.Client, target,
+				"AgentConnected", metav1.ConditionTrue, 2*time.Minute)
+			Expect(err).NotTo(HaveOccurred(),
+				"AgentConnected must become True — verify the controller is running and "+
+					"can reach %s:%d from inside the cluster", clusterHost, clusterPort)
+
+			By("AgentConnected=True: controller successfully dialled the external agent")
+		})
+
+		// ── spec 3: status.resolvedAddress ──────────────────────────────────
+
+		It("status.resolvedAddress is populated after agent connection", func(ctx SpecContext) {
+			// WaitForField re-fetches the object on each poll; target is updated
+			// in-place so the final value is available after the wait.
+			err := framework.WaitForField(ctx, extState.suite.Client, target,
+				func(t *v1alpha1.PillarTarget) bool {
+					return t.Status.ResolvedAddress != ""
+				}, 2*time.Minute)
+			Expect(err).NotTo(HaveOccurred(),
+				"status.resolvedAddress must be populated once AgentConnected=True")
+			Expect(target.Status.ResolvedAddress).To(Equal(clusterHost),
+				"resolvedAddress must match the configured external agent address")
+
+			By(fmt.Sprintf("status.resolvedAddress = %q", target.Status.ResolvedAddress))
+		})
+
+		// ── spec 4: status.agentVersion ─────────────────────────────────────
+
+		It("status.agentVersion is reported by the connected agent", func(ctx SpecContext) {
+			err := framework.WaitForField(ctx, extState.suite.Client, target,
+				func(t *v1alpha1.PillarTarget) bool {
+					return t.Status.AgentVersion != ""
+				}, 2*time.Minute)
+			Expect(err).NotTo(HaveOccurred(),
+				"status.agentVersion must be set once the controller connects to the agent")
+			Expect(target.Status.AgentVersion).NotTo(BeEmpty(),
+				"agentVersion must be a non-empty string returned by GetCapabilities RPC")
+
+			By(fmt.Sprintf("status.agentVersion = %q", target.Status.AgentVersion))
+		})
+
+		// ── spec 5: status.capabilities ─────────────────────────────────────
+
+		It("status.capabilities lists at least one backend", func(ctx SpecContext) {
+			err := framework.WaitForField(ctx, extState.suite.Client, target,
+				func(t *v1alpha1.PillarTarget) bool {
+					return t.Status.Capabilities != nil &&
+						len(t.Status.Capabilities.Backends) > 0
+				}, 2*time.Minute)
+			Expect(err).NotTo(HaveOccurred(),
+				"status.capabilities must be populated from the agent's GetCapabilities response")
+
+			Expect(target.Status.Capabilities).NotTo(BeNil(),
+				"capabilities struct must be non-nil once the agent is connected")
+			Expect(target.Status.Capabilities.Backends).NotTo(BeEmpty(),
+				"agent must advertise at least one backend type (e.g. zfs-zvol, lvm-lv)")
+
+			By(fmt.Sprintf("status.capabilities: backends=%v protocols=%v",
+				target.Status.Capabilities.Backends,
+				target.Status.Capabilities.Protocols))
+		})
+
+		// ── spec 6: Ready=True ───────────────────────────────────────────────
+
+		It("Ready condition becomes True", func(ctx SpecContext) {
+			By(fmt.Sprintf("waiting for Ready=True on PillarTarget %q", targetName))
+			err := framework.WaitForReady(ctx, extState.suite.Client, target, 2*time.Minute)
+			Expect(err).NotTo(HaveOccurred(),
+				"PillarTarget must reach Ready=True once the agent is connected and healthy")
+			By("PillarTarget is Ready=True")
+		})
+
+		// ── spec 7: heartbeat / lease stability ─────────────────────────────
+		//
+		// This spec verifies that the controller continuously re-contacts the
+		// agent (heartbeat) and does not allow the Ready condition to lapse.
+		//
+		// Design: observe Ready=True for 30 s, polling every 5 s.  We also
+		// record the condition's LastTransitionTime up front and assert it never
+		// changes — a changed transition time would indicate the condition flipped
+		// to False (agent unreachable) and then back to True.
+
+		It("Ready condition is maintained across reconcile cycles (heartbeat)", func(ctx SpecContext) {
+			// Read the current state to obtain the initial LastTransitionTime.
+			fresh := &v1alpha1.PillarTarget{}
+			Expect(extState.suite.Client.Get(ctx,
+				client.ObjectKey{Name: targetName}, fresh)).To(Succeed(),
+				"re-read PillarTarget to obtain baseline condition state")
+
+			var readyCond *metav1.Condition
+			for i := range fresh.Status.Conditions {
+				if fresh.Status.Conditions[i].Type == "Ready" {
+					c := fresh.Status.Conditions[i]
+					readyCond = &c
+					break
+				}
+			}
+			Expect(readyCond).NotTo(BeNil(),
+				"Ready condition must be present before the heartbeat observation window")
+			Expect(readyCond.Status).To(Equal(metav1.ConditionTrue),
+				"Ready must already be True before beginning the heartbeat check")
+
+			initialTransition := readyCond.LastTransitionTime
+			By(fmt.Sprintf(
+				"Ready=True since %s — observing stability for 30 s (polling every 5 s)",
+				initialTransition.UTC().Format(time.RFC3339)))
+
+			// Consistently asserts the predicate holds for the full duration.
+			// Each iteration re-fetches the object so we see real API-server state.
+			Consistently(func(g Gomega) {
+				current := &v1alpha1.PillarTarget{}
+				g.Expect(extState.suite.Client.Get(ctx,
+					client.ObjectKey{Name: targetName}, current)).To(Succeed(),
+					"PillarTarget %q must still exist during heartbeat observation", targetName)
+
+				var cond *metav1.Condition
+				for i := range current.Status.Conditions {
+					if current.Status.Conditions[i].Type == "Ready" {
+						c := current.Status.Conditions[i]
+						cond = &c
+						break
+					}
+				}
+				g.Expect(cond).NotTo(BeNil(),
+					"Ready condition must still be present on every poll")
+				g.Expect(cond.Status).To(Equal(metav1.ConditionTrue),
+					"Ready condition must remain True throughout the 30 s observation window "+
+						"(agent heartbeat/lease must be maintained)")
+				g.Expect(cond.LastTransitionTime).To(Equal(initialTransition),
+					"Ready condition must not flip during observation — "+
+						"a changed LastTransitionTime indicates the heartbeat was interrupted")
+			}, 30*time.Second, 5*time.Second).Should(Succeed(),
+				"Ready=True stability check failed: agent heartbeat/lease not maintained")
+
+			By("heartbeat confirmed: Ready=True held for 30 s without condition flip")
+		})
+	})
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -434,4 +676,38 @@ func extAgentDial(addr string) *grpc.ClientConn {
 	Expect(err).NotTo(HaveOccurred(),
 		"gRPC dial to external agent at %s failed — is the agent running?", addr)
 	return conn
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PillarTarget registration helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+// extAgentClusterAddress returns the address (host:port) at which the external
+// agent is reachable from within the Kind cluster pods.
+//
+// This is distinct from extState.addr, which is always 127.0.0.1:<port>
+// (host-local).  The controller runs inside the Kind cluster and therefore
+// needs a routable address — typically the host machine's IP on the Docker
+// bridge network (e.g. 172.18.0.1:9501) or the container IP when the agent
+// was started with hack/e2e-external-agent.sh.
+//
+// Reads EXTERNAL_AGENT_CLUSTER_ADDRESS (default: "").
+// When empty, PillarTarget registration tests are skipped.
+func extAgentClusterAddress() string {
+	return os.Getenv("EXTERNAL_AGENT_CLUSTER_ADDRESS")
+}
+
+// extAgentClusterAddrParts splits a "host:port" address string into its
+// constituent host and int32 port.  Returns ("", 0, false) for any parse or
+// range error so callers can produce an actionable Expect failure message.
+func extAgentClusterAddrParts(addr string) (host string, port int32, ok bool) {
+	h, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "", 0, false
+	}
+	portInt, err := strconv.Atoi(portStr)
+	if err != nil || portInt < 1 || portInt > 65535 {
+		return "", 0, false
+	}
+	return h, int32(portInt), true
 }
