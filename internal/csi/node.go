@@ -183,6 +183,18 @@ type NodeServer struct {
 	// (resize2fs for ext4, xfs_growfs for xfs).  Override in tests via
 	// WithResizer to inject a mock without requiring real resize tools.
 	resizer Resizer
+
+	// statFn is the function used by NodeGetVolumeStats to stat the volume
+	// path and determine whether it is a block device or a filesystem mount.
+	// When nil, os.Stat is used.  Override in tests to simulate block devices
+	// without requiring root privileges or a real kernel block device.
+	statFn func(string) (os.FileInfo, error)
+
+	// blockDeviceSizeFn is the function used by NodeGetVolumeStats to read
+	// the total capacity of a raw block device via the BLKGETSIZE64 ioctl.
+	// When nil, linuxBlockDeviceSize is used.  Override in tests to return a
+	// synthetic size without opening a real block device.
+	blockDeviceSizeFn func(string) (int64, error)
 }
 
 // Ensure NodeServer satisfies the interface at compile time.
