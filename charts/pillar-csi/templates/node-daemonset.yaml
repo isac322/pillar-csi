@@ -74,6 +74,9 @@ spec:
           imagePullPolicy: {{ include "pillar-csi.imagePullPolicy" (dict "image" .Values.node.image "global" .Values.imagePullPolicy) }}
           securityContext:
             # Privileged is required for mount(2) syscalls issued by the CSI Node service.
+            # runAsUser 0 overrides the Dockerfile USER directive because CSI node operations
+            # (mount, mkfs, device discovery) require root.
+            runAsUser: 0
             privileged: true
             capabilities:
               add:

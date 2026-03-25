@@ -58,12 +58,12 @@ spec:
           image: {{ include "pillar-csi.image" (dict "image" .Values.controller.image "defaultTag" .Chart.AppVersion) }}
           imagePullPolicy: {{ include "pillar-csi.imagePullPolicy" (dict "image" .Values.controller.image "global" .Values.imagePullPolicy) }}
           command:
-            - /manager
+            - /usr/bin/manager
           args:
             - --leader-elect
             - --health-probe-bind-address=:{{ .Values.controller.healthProbePort }}
             - --metrics-bind-address=:{{ .Values.controller.metricsPort }}
-            - --csi-address={{ .Values.controller.csiSocketPath }}
+            - --csi-endpoint=unix://{{ .Values.controller.csiSocketPath }}
             {{- range .Values.controller.extraArgs }}
             - {{ . | quote }}
             {{- end }}
@@ -114,6 +114,7 @@ spec:
           resources:
             {{- toYaml .Values.controller.resources | nindent 12 }}
           securityContext:
+            runAsUser: 65532
             readOnlyRootFilesystem: true
             allowPrivilegeEscalation: false
             capabilities:
@@ -138,6 +139,7 @@ spec:
           resources:
             {{- toYaml .Values.controller.sidecars.provisioner.resources | nindent 12 }}
           securityContext:
+            runAsUser: 65532
             readOnlyRootFilesystem: true
             allowPrivilegeEscalation: false
             capabilities:
@@ -162,6 +164,7 @@ spec:
           resources:
             {{- toYaml .Values.controller.sidecars.attacher.resources | nindent 12 }}
           securityContext:
+            runAsUser: 65532
             readOnlyRootFilesystem: true
             allowPrivilegeEscalation: false
             capabilities:
@@ -186,6 +189,7 @@ spec:
           resources:
             {{- toYaml .Values.controller.sidecars.resizer.resources | nindent 12 }}
           securityContext:
+            runAsUser: 65532
             readOnlyRootFilesystem: true
             allowPrivilegeEscalation: false
             capabilities:
@@ -212,6 +216,7 @@ spec:
           resources:
             {{- toYaml .Values.controller.sidecars.livenessProbe.resources | nindent 12 }}
           securityContext:
+            runAsUser: 65532
             readOnlyRootFilesystem: true
             allowPrivilegeEscalation: false
             capabilities:

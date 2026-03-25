@@ -72,6 +72,9 @@ spec:
           securityContext:
             # CAP_SYS_ADMIN is required for NVMe-oF / iSCSI target management
             # (configfs writes, block device operations).
+            # runAsUser 0 overrides the Dockerfile USER directive because ZFS and
+            # configfs operations require root.
+            runAsUser: 0
             capabilities:
               add:
                 - SYS_ADMIN

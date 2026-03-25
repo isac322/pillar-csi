@@ -11,10 +11,10 @@
 # install.  Changing this value requires updating the corresponding constant
 # in test/e2e/setup.go (E2EImageTag).
 
-# Pull policy must be Never: images are loaded into Kind, not pulled from a
-# registry.  IfNotPresent would also work but Never makes the intent clear
-# and catches accidental registry references immediately.
-imagePullPolicy: Never
+# Global pull policy is IfNotPresent so CSI sidecar images (registry.k8s.io/*)
+# and init container images (busybox) can be pulled normally from registries.
+# Pillar-csi images are individually set to Never (loaded into Kind directly).
+imagePullPolicy: IfNotPresent
 
 # Install CRDs as part of the Helm release so the test cluster is
 # self-contained and does not rely on a separately managed CRD chart.
@@ -29,6 +29,13 @@ controller:
     repository: ghcr.io/bhyoo/pillar-csi/controller
     tag: "e2e"
     pullPolicy: Never
+
+  # Disable webhooks and secure metrics in e2e (no cert-manager available).
+  extraArgs:
+    - --metrics-secure=false
+  extraEnv:
+    - name: ENABLE_WEBHOOKS
+      value: "false"
 
   # Reduced limits for CI runners.
   resources:
@@ -116,6 +123,14 @@ agent:
     repository: ghcr.io/bhyoo/pillar-csi/agent
     tag: "e2e"
     pullPolicy: Never
+
+  # Agent requires --zfs-pool; use a fake pool name for e2e (ZFS won't be
+  # available in Kind but the agent will start and advertise capabilities).
+  # --configfs-root=/tmp avoids requiring real nvmet kernel modules.
+  extraArgs:
+    - --zfs-pool=e2e-pool
+    - --configfs-root=/tmp
+    - --listen-address=:9500
 
   resources:
     limits:

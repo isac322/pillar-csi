@@ -82,4 +82,59 @@ rules:
       - patch
       - update
       - watch
+  # Leader election requires leases in the controller namespace
+  - apiGroups:
+      - coordination.k8s.io
+    resources:
+      - leases
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  # Leader election and event recording
+  - apiGroups:
+      - ""
+    resources:
+      - events
+    verbs:
+      - create
+      - patch
+  - apiGroups:
+      - ""
+    resources:
+      - configmaps
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+  # PillarVolume CRD for durable CSI state tracking
+  - apiGroups:
+      - pillar-csi.pillar-csi.bhyoo.com
+    resources:
+      - pillarvolumes
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - pillar-csi.pillar-csi.bhyoo.com
+    resources:
+      - pillarvolumes/status
+      - pillarvolumes/finalizers
+    verbs:
+      - get
+      - patch
+      - update
 {{- end }}
