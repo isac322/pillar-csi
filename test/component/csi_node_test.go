@@ -1007,15 +1007,17 @@ func TestCSINode_NodeStageVolume_MissingVolumeID(t *testing.T) {
 // TESTCASES.md § 5.7 tests 29–30
 // ─────────────────────────────────────────────────────────────────────────────
 
-// TestCSINode_NodeExpandVolume_CurrentlyUnimplemented verifies that
-// NodeExpandVolume returns Unimplemented without panic (test case 29).
+// TestCSINode_NodeExpandVolume_UnknownMount verifies that NodeExpandVolume
+// returns Internal when the volume_path is not a known mount point (test
+// case 29).
 //
-// NodeExpandVolume is advertised in NodeGetCapabilities but the on-node
-// filesystem resize step is not yet implemented; the call must return a clean
-// Unimplemented error rather than panicking or hanging.
+// NodeExpandVolume is implemented: it calls the filesystem-specific resize
+// tool (resize2fs / xfs_growfs).  When the supplied volume_path is not
+// present in /proc/mounts the resizer cannot determine the backing block
+// device and returns an Internal error rather than panicking or hanging.
 //
 // See TESTCASES.md §5.7, row 29.
-func TestCSINode_NodeExpandVolume_CurrentlyUnimplemented(t *testing.T) {
+func TestCSINode_NodeExpandVolume_UnknownMount(t *testing.T) {
 	t.Parallel()
 	env := newCSINodeTestEnv(t)
 	ctx := context.Background()
@@ -1029,8 +1031,8 @@ func TestCSINode_NodeExpandVolume_CurrentlyUnimplemented(t *testing.T) {
 		t.Fatal("expected error, got nil")
 	}
 	st, _ := status.FromError(err)
-	if st.Code() != codes.Unimplemented {
-		t.Errorf("error code = %v, want %v", st.Code(), codes.Unimplemented)
+	if st.Code() != codes.Internal {
+		t.Errorf("error code = %v, want %v", st.Code(), codes.Internal)
 	}
 }
 
