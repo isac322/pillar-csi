@@ -1277,6 +1277,56 @@ CSI 연산 실패 또는 성공 후 부가 상태(상태 파일, PillarVolume CR
 
 ---
 
+# 카테고리 2 — 클러스터 레벨 E2E 테스트 (유형 B: Kind 클러스터 필요) ⚠️
+
+> **빌드 태그:** `//go:build e2e` | **실행:** `go test ./test/e2e/ -tags=e2e -v`
+>
+> Kind 클러스터 필요 · pillar-csi 컨테이너 이미지 필요 · Docker 필요 · 총 **3개** 테스트
+
+이 카테고리의 테스트는 **실제 Kubernetes API 서버, CRD 검증 웹훅, RBAC** 동작을 검증한다.
+실제 ZFS/NVMe-oF 스토리지 백엔드는 여전히 mock을 사용하므로 스토리지 하드웨어는 불필요하다.
+표준 GitHub Actions에서 `helm/kind-action@v1`을 사용하면 실행 가능하다.
+
+---
+
+## E10: 클러스터 레벨 E2E 테스트
+
+**테스트 유형:** B (클러스터 레벨) ❌ 표준 CI 불가
+
+**빌드 태그:** `//go:build e2e`
+
+**실행 방법:**
+```bash
+# Kind 클러스터 준비 후
+go test ./test/e2e/ -tags=e2e -v -run TestE2E
+```
+
+**필수 인프라:** [유형 B 섹션 참조](#유형-b-클러스터-레벨cluster-level-e2e-테스트--표준-ci-불가)
+
+---
+
+### E10.1 매니저 배포 검증
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| 68 | `TestE2E/Manager_컨트롤러_파드_실행_확인` | pillar-csi-controller-manager 파드가 `pillar-csi-system` 네임스페이스에서 정상 실행됨 | Kind 클러스터; `make docker-build` 후 이미지 로드; CRD 설치; 매니저 배포 완료 | 1) pillar-csi-system 네임스페이스에서 파드 목록 조회; 2) 파드 상태 확인 | 컨트롤러 파드가 Running 상태; 재시작 없음 | `전체시스템`, `Kubernetes클러스터` |
+| 69 | `TestE2E/매니저_메트릭스_서비스_접근_가능` | RBAC RoleBinding 생성 후 `/metrics` 엔드포인트에서 메트릭 수집 가능 | Kind 클러스터; 컨트롤러 파드 Running; 메트릭 RoleBinding 생성 | 1) kubectl port-forward 또는 직접 curl로 /metrics 접근 | HTTP 200 응답; Go 런타임 메트릭 포함 | `전체시스템`, `Kubernetes클러스터` |
+| 70 | `TestE2E/cert-manager_통합` | cert-manager가 설치된 환경에서 TLS 인증서 발급 동작 | Kind 클러스터; cert-manager v1.14+ 설치 완료; 클러스터 배포 | 1) cert-manager Certificate 리소스 상태 확인 | 인증서 발급 성공; Secret에 tls.crt/tls.key 존재 | `전체시스템`, `cert-manager`, `TgtCRD` |
+
+---
+
+# 카테고리 3 — 완전 E2E / 수동 스테이징 테스트 (유형 F) ❌
+
+> **빌드 태그:** `//go:build e2e_full` | **실행:** `go test ./test/e2e/ -tags=e2e_full -v`
+>
+> 실제 ZFS 커널 모듈 필요 · 실제 NVMe-oF 커널 모듈 필요 · 베어메탈 또는 KVM 서버 필요
+
+이 카테고리의 테스트는 **실제 스토리지 하드웨어와 커널 모듈**을 요구하며,
+표준 컨테이너 기반 CI에서는 **실행 불가능**하다.
+self-hosted 러너 또는 전용 스테이징 서버가 필요하다.
+
+---
+
 ## 유형 F: 완전 E2E 테스트 (Full E2E) ❌ 표준 CI 불가
 
 이 섹션은 **실제 스토리지 백엔드(ZFS, NVMe-oF), 실제 커널 모듈, 실제 Kubernetes
@@ -1776,6 +1826,375 @@ mockConnector/mockMounter 대신 실제 `nvme connect`, `mount(8)`, `mkfs.ext4/x
 | 100개 PVC 확장성 | ❌ (mock 즉시 처리) | ✅ | F25.1–F25.2 |
 | ZFS 스냅샷 실제 생성/삭제/복원 | ❌ | ✅ | F13–F16 |
 | 노드 재시작 후 agent 자동 복구 | ❌ | ✅ | F6.1 |
+
+---
+
+
+## 유형 M: 수동/스테이징 테스트 🔬 자동화 불가 — 수동 실행 전용
+
+이 섹션은 **자동화된 CI 파이프라인으로 실행할 수 없거나, 현실적으로 자동화가
+불가능한 테스트**의 권위 있는 명세이다. 각 테스트 항목에는 자동화 불가 이유,
+필요한 스테이징 환경, 수동 실행 절차 체크리스트를 함께 기술한다.
+
+**유형 M 테스트의 공통 특성:**
+
+| 특성 | 설명 |
+|------|------|
+| 비결정적(Non-deterministic) 타이밍 | 실제 하드웨어 장애, 네트워크 지연, 인증서 TTL 등 실제 시간에 의존 |
+| 인간 판단 필요 | 테스트 결과가 "통과/실패" 이분법으로 표현되지 않고 운영자 판단이 필요 |
+| 환경 파괴적(Destructive) | 테스트 실행 중 실제 데이터 손실, 서비스 중단, 하드웨어 조작이 발생 |
+| 재현 비용 과다 | 스테이징 클러스터 구축, 물리 서버 확보, 라이선스 비용 등 |
+| 프로덕션 의존성 | 실제 워크로드 패턴, 실제 사용자 데이터, 실제 운영 환경 필요 |
+
+**현재 구현 상태:** 모든 유형 M 테스트는 **수동 실행 체크리스트** 형태로
+정의되며, Go 테스트 함수로 구현되지 않는다. 일부 항목은 미래에
+유형 F(자동화) 테스트로 전환될 수 있으며 해당 항목에는 `→ F 전환 가능` 표시를 한다.
+
+**총 유형 M 테스트 케이스: 42개** (M1–M10 그룹, 각 그룹 3–7개 시나리오)
+
+---
+
+### 유형 M 테스트 요약
+
+| 그룹 | ID | 테스트 이름 | 자동화 불가 이유 | 스테이징 환경 |
+|------|-----|-----------|----------------|--------------|
+| M1 | M1.1–M1.4 | 롤링 업그레이드 검증 | 서비스 중단 관찰에 인간 판단 필요 | 멀티-노드 Kubernetes 클러스터 |
+| M2 | M2.1–M2.5 | 스토리지 네트워크 분리(Network Partition) | 비결정적 타이밍; iptables 규칙 복잡 | 멀티-노드 + 별도 스토리지 네트워크 |
+| M3 | M3.1–M3.4 | 물리적 디스크/하드웨어 장애 | 실제 물리 장비 조작 필요 | 베어메탈 서버 + 교체용 디스크 |
+| M4 | M4.1–M4.5 | 커널 버전 호환성 매트릭스 | 다수의 커널 버전 환경 준비 비용 | 다중 OS 이미지 + 커널 변형 |
+| M5 | M5.1–M5.5 | 프로덕션 유사 부하 및 용량 계획 | 실제 워크로드 해석에 전문가 판단 필요 | 대규모 스테이징 클러스터 |
+| M6 | M6.1–M6.4 | 보안 감사 및 침투 테스트 | 결과 해석 및 위험 판단에 인간 개입 필수 | 격리된 보안 테스트 환경 |
+| M7 | M7.1–M7.5 | 데이터 무결성 심층 검증 | 실제 데이터 검증 도구 + 긴 실행 시간 | 실제 데이터 워크로드 환경 |
+| M8 | M8.1–M8.4 | CSI 드라이버 업그레이드 절차 검증 | 업그레이드 중 실시간 모니터링 필요 | 프로덕션 유사 Kubernetes 클러스터 |
+| M9 | M9.1–M9.4 | 다중 테넌트 격리 검증 | 실제 테넌트 자격 증명 및 워크로드 필요 | 멀티-테넌트 클러스터 |
+| M10 | M10.1–M10.7 | 인증서 수명 주기 및 실제 PKI 갱신 | 실제 인증서 TTL 대기 (최소 수 시간) | cert-manager + 실제 CA |
+
+---
+
+### 유형 M 스테이징 환경 요구사항
+
+유형 M 테스트를 실행하기 위한 최소 스테이징 환경 사양이다. 이 환경은
+**프로덕션 환경을 축소 복제한 것**이어야 하며, 테스트 후 완전한 정리가
+가능해야 한다.
+
+#### 스테이징 클러스터 사양
+
+| 구성 요소 | 최소 사양 | 권장 사양 | 비고 |
+|-----------|----------|----------|------|
+| 컨트롤 플레인 노드 | 1개 (4코어, 8 GiB) | 3개 HA (4코어, 16 GiB) | Kubernetes v1.29+ |
+| 스토리지 노드 | 2개 (4코어, 16 GiB, 100 GiB 디스크) | 4개 | pillar-agent DaemonSet 실행 |
+| 워크로드 노드 | 2개 (4코어, 8 GiB) | 4개 | 실제 PVC 소비 워크로드 |
+| 스토리지 네트워크 | 별도 L2 VLAN 또는 인터페이스 | 10 GbE 전용 NIC | NVMe-oF TCP 트래픽 분리 |
+| OS | Ubuntu 22.04 LTS (베어메탈 또는 KVM) | Ubuntu 22.04/24.04 혼합 | ZFS/nvme 커널 모듈 지원 |
+| 커널 | 5.15+ | 6.1 LTS | `nvme-tcp`, `nvmet`, `nvmet-tcp` 포함 |
+| ZFS 풀 | 각 노드 100 GiB (루프백 가능) | 실제 NVMe/SSD | M3, M7용 실제 디스크 권장 |
+| Kubernetes 버전 | v1.29 | v1.29, v1.30, v1.31 혼합 (M4용) | |
+| cert-manager | v1.14+ | v1.15+ | |
+| 모니터링 | Prometheus + Grafana | Prometheus + Grafana + Loki | M5 실행 시 필수 |
+| 로드 생성기 | `fio` 또는 `dd` | `fio` + `pgbench` | M5, M7용 |
+
+#### 스테이징 환경 네트워크 토폴로지
+
+```
++---------------------------------------------------------------------------+
+|                           스테이징 환경                                    |
+|                                                                           |
+|  +---------------+  관리 네트워크 (10.10.0.0/24)   +-------------------+  |
+|  | 컨트롤 플레인   +--------------------------------+  워크로드 노드 (4개) |  |
+|  |  (3개 노드)    |                                +-------------------+  |
+|  +-------+-------+                                                       |
+|          |                                                                |
+|  +-------v-------+  스토리지 네트워크 (192.168.100.0/24)                  |
+|  |  스토리지 노드  +-------------------------------------------------+     |
+|  |   (4개 노드)   |    (NVMe-oF TCP 전용, 관리 네트워크와 분리)        |     |
+|  |               |                                                   |     |
+|  |  ZFS 풀:      |                                                   |     |
+|  |  /dev/nvme*   |                                                   |     |
+|  +---------------+                                                   |     |
+|                                                                           |
+|  +---------------------------------------------------------------------+  |
+|  |  외부 서비스: cert-manager CA, LDAP/OIDC (M6, M9), 모니터링          |  |
+|  +---------------------------------------------------------------------+  |
++---------------------------------------------------------------------------+
+```
+
+---
+
+### M1: 롤링 업그레이드 검증
+
+**목적:** pillar-csi 컨트롤러 및 pillar-agent DaemonSet의 롤링 업그레이드 중
+실행 중인 PVC/Pod 워크로드의 I/O가 중단 없이 유지되는지, 또는 허용 가능한
+수준의 중단만 발생하는지 검증한다.
+
+**자동화 불가 이유:**
+
+- 업그레이드 중 허용 가능한 I/O 중단 지속 시간(예: 30초 vs. 60초)은
+  운영 정책에 따라 달라지며, 코드로 표현하기 어렵다.
+- 롤링 업그레이드 중 NVMe-oF 세션이 유지되는지는 커널 드라이버 레벨
+  동작으로, in-process mock으로는 재현 불가능하다.
+- 장애 발생 시 인간이 업그레이드를 일시 정지하거나 롤백해야 하는 판단이 필요하다.
+- 서로 다른 버전의 컨트롤러와 에이전트가 공존하는 시간 창(window) 동안의
+  프로토콜 호환성은 실제 바이너리 실행 없이는 검증 불가.
+
+| ID | 시나리오 | 사전 조건 | 검증 항목 | 허용 기준 | 수동 실행 절차 |
+|----|--------|---------|---------|---------|-------------|
+| M1.1 | **에이전트 롤링 업그레이드 — I/O 유지** | `fio --rw=randwrite` 실행 중 PVC 최소 4개; pillar-agent v_old DaemonSet 배포 완료 | 에이전트 업그레이드(`v_new`) 진행 중 I/O 오류율, 레이턴시 급등, PVC Read-Only 전환 여부 | I/O 오류 0%; 레이턴시 급등 최대 2배 이내; Pod 재시작 없음 | 1) `kubectl rollout restart daemonset/pillar-agent`; 2) `fio` 로그에서 `error` 라인 확인; 3) `kubectl get events --field-selector=reason=Failed` 확인 |
+| M1.2 | **컨트롤러 롤링 업그레이드** | pillar-csi controller-manager deployment; 능동적 PVC 프로비저닝 요청 중(StorageClass로 연속 PVC 생성 스크립트) | 업그레이드 중 신규 PVC 프로비저닝 지연, 기존 PVC 액세스 중단, controller-manager 리더 선출 오류 | PVC 프로비저닝 지연 ≤ 60s; 기존 PVC I/O 무중단 | 1) `kubectl set image deployment/pillar-csi-controller-manager manager=example.com/pillar-csi:v_new`; 2) 신규 PVC 생성 스크립트 실행 유지; 3) `kubectl rollout status` 완료 후 미처리 PVC 수 확인 |
+| M1.3 | **구버전 에이전트 + 신버전 컨트롤러 공존(혼합 버전)** | 스토리지 노드 A: v_old 에이전트, 스토리지 노드 B: v_new 에이전트; 컨트롤러: v_new | 혼합 버전 환경에서 볼륨 생성·삭제 정상 동작; API 프로토콜 하위 호환성 | 모든 볼륨 오퍼레이션 성공; gRPC 직렬화 오류 없음 | 1) 노드 A에 `v_old`, 노드 B에 `v_new` 에이전트 배포; 2) 두 노드에서 번갈아 볼륨 생성/삭제; 3) `kubectl logs` 에서 `Unimplemented`/`Unknown field` 오류 확인 |
+| M1.4 | **롤백 시나리오 — 업그레이드 실패 후 이전 버전 복구** | v_new 에이전트에 의도적인 결함(예: 잘못된 imagePullPolicy); 에이전트 CrashLoopBackOff 상태 | 롤백(`kubectl rollout undo`) 후 기존 PVC 모두 접근 가능 상태 복구; 데이터 손실 없음 | 롤백 완료 후 모든 PVC Bound; I/O 재개 | 1) 결함 있는 버전 배포; 2) CrashLoopBackOff 확인; 3) `kubectl rollout undo daemonset/pillar-agent`; 4) `fio` I/O 재개 확인 |
+
+---
+
+### M2: 스토리지 네트워크 분리(Network Partition) 시나리오
+
+**목적:** 스토리지 네트워크 장애(네트워크 분리, 패킷 손실, 지연)가 발생했을 때
+pillar-csi가 올바른 오류를 반환하고, 네트워크 복구 후 I/O가 자동으로 재개되는지
+검증한다.
+
+**자동화 불가 이유:**
+
+- `iptables` 또는 `tc netem` 으로 네트워크 장애를 주입할 수 있으나, 장애 중
+  NVMe-oF 세션의 재연결 타이머, 커널 드라이버 동작, 상위 레이어 오류 전파의
+  타이밍이 환경(커널 버전, NIC 드라이버)마다 달라 일관된 자동 검증이 어렵다.
+- 네트워크 분리 중 Kubernetes Pod이 재시작될지 여부는 kubelet의
+  `node-status-update-frequency`, `pod-eviction-timeout` 설정에 따라 달라진다.
+- 복구 후 서비스 정상화까지의 허용 시간 정의는 운영 정책 결정 사항이다.
+
+| ID | 시나리오 | 사전 조건 | 검증 항목 | 허용 기준 | 수동 실행 절차 |
+|----|--------|---------|---------|---------|-------------|
+| M2.1 | **스토리지 네트워크 완전 차단 → 복구** | `fio` I/O 중 PVC 2개; 스토리지 노드 A의 스토리지 NIC에 `iptables -I OUTPUT -d <storage-net> -j DROP` 적용 | I/O 오류 반환 타이밍; Pod Eviction 여부; 네트워크 복구 후 I/O 재개 시간 | 30s 내 I/O 오류 반환; iptables 규칙 제거 후 120s 내 I/O 재개 | 1) `fio` 백그라운드 실행; 2) `iptables` 차단 규칙 적용; 3) `fio` 오류 발생 시간 기록; 4) iptables 규칙 제거; 5) I/O 재개까지 경과 시간 측정 |
+| M2.2 | **패킷 손실 20% 주입** | `tc qdisc add dev <storage-nic> root netem loss 20%` | NVMe-oF 재전송으로 인한 레이턴시 증가; I/O 오류 발생 여부; ZFS 오류 카운터 증가 여부 | 레이턴시 ≤ 10배 증가 허용; I/O 오류 없음 (재전송으로 보완) | 1) `tc netem loss 20%` 적용; 2) `fio` 레이턴시 분포 수집 (p99, p999); 3) `nvme list`, `dmesg` 에서 재전송 카운터 확인; 4) 규칙 제거 후 레이턴시 정상화 확인 |
+| M2.3 | **스토리지 노드 재부팅 중 I/O** | `fio` 연속 I/O 중 스토리지 노드 graceful reboot(`sudo reboot`) | 스토리지 노드 부팅 완료 후 PVC Bound 복구; I/O 재개; 데이터 무결성 | 부팅 완료 후 120s 내 PVC 복구; `fio` MD5 checksum 일치 | 1) `fio --verify=md5` 실행; 2) 스토리지 노드 재부팅; 3) 부팅 완료 후 `kubectl get pvc` 상태 확인; 4) `fio verify` 결과 검토 |
+| M2.4 | **스토리지 네트워크 링크 플랩(Link Flap) — 10초 간격 반복** | 스토리지 NIC `ip link set down` → 5초 후 `ip link set up` × 5회 반복 | PVC 강제 Terminating 전환 없음; I/O 일시 중단 후 자동 재개; dmesg 커널 오류 없음 | PVC 강제 Terminating 전환 0; 링크 복구 후 I/O 재개 ≤ 30s | 1) 링크 플랩 스크립트 실행 (ip link set down 5초 후 up, 5회 반복); 2) `fio` 로그에서 오류 구간 기록; 3) dmesg 에서 `nvme` 관련 경고 확인 |
+| M2.5 | **컨트롤 플레인 ↔ 스토리지 노드 통신 차단 (NVMe-oF는 유지)** | iptables로 컨트롤 플레인 → 스토리지 노드 API 차단; NVMe-oF 포트(4420)는 유지 | 기존 PVC I/O 유지; 신규 볼륨 프로비저닝 실패 오류 명확성; 컨트롤 플레인 복구 후 프로비저닝 재개 | 기존 I/O 100% 유지; 신규 프로비저닝에 명확한 오류 메시지 반환 | 1) 컨트롤 플레인 → 스토리지 노드 API 차단 (gRPC 포트 50051); 2) `fio` I/O 지속 확인; 3) 신규 PVC 생성 시도 및 오류 메시지 기록; 4) 차단 해제 후 보류 중 PVC 자동 프로비저닝 확인 |
+
+---
+
+### M3: 물리적 디스크/하드웨어 장애 시뮬레이션
+
+**목적:** ZFS 풀을 구성하는 물리 디스크의 장애(불량 블록, 전체 디스크 제거)가
+발생했을 때 pillar-csi가 올바른 오류를 반환하고, ZFS RAIDZ/미러 구성에서
+자동으로 복구되는지 검증한다.
+
+**자동화 불가 이유:**
+
+- 실제 물리 디스크 제거 또는 SCSI 오류 주입(`scsi_debug`, `dmsetup`)은
+  CI 컨테이너 환경에서 지원되지 않으며, 실제 하드웨어가 필요하다.
+- 디스크 교체 절차(ZFS `zpool replace`) 중 재실버링(resilvering) 시간은
+  디스크 크기와 데이터 양에 따라 수십 분에서 수 시간이 소요된다.
+- "허용 가능한 ZFS 오류 상태"(degraded vs. faulted) 판단은 운영 정책에 따라 다르다.
+
+| ID | 시나리오 | 사전 조건 | 검증 항목 | 허용 기준 | 수동 실행 절차 |
+|----|--------|---------|---------|---------|-------------|
+| M3.1 | **RAIDZ1 구성 중 디스크 1개 오프라인** | ZFS RAIDZ1 풀(디스크 3개); `fio` I/O 활성; pillar-csi PVC 2개 | 디스크 오프라인 후 ZFS `degraded` 상태; I/O 유지; SMART 경고; PVC 상태 `Bound` 유지 | ZFS `degraded` 반환; I/O 오류 없음; PVC `Bound` 유지; `zpool status` 에 경고 | 1) `zpool offline tank sdb`; 2) `fio` I/O 계속 확인; 3) `zpool status` 에서 `DEGRADED` 확인; 4) `kubectl get pvc` 상태 확인; 5) pillar-agent 로그에서 경고 확인 |
+| M3.2 | **디스크 교체 및 재실버링(Resilver) 중 I/O 유지** | M3.1 이후 상태; 교체용 디스크(`/dev/sdc`) 준비 | `zpool replace` 후 재실버링 진행 중 I/O 유지; 재실버링 완료 후 `ONLINE` 상태 | 재실버링 중 I/O 오류 없음; 재실버링 완료 후 `zpool status` = `ONLINE` | 1) `zpool replace tank sdb sdc`; 2) 재실버링 진행 중 `zpool status` 주기적 확인; 3) `fio` I/O 유지 확인; 4) 완료 후 `zpool status` = `ONLINE` 검증 |
+| M3.3 | **불량 블록(Bad Block) 시뮬레이션 — ZFS 스크럽** | ZFS 풀에 데이터 기록 후 `dd if=/dev/zero of=/dev/sdb bs=4k seek=1000 count=1` 로 데이터 손상 주입 | `zpool scrub` 실행 후 오류 감지; pillar-agent 상태 반영; `zfs status` 의 READ/WRITE/CKSUM 오류 카운터 증가 | `zpool scrub` 후 오류 카운터 > 0; pillar-agent가 해당 볼륨을 오류 상태로 표시 | 1) 정상 데이터 기록; 2) `dd`로 특정 섹터 손상; 3) `zpool scrub tank`; 4) `zpool status` 에서 CKSUM 오류 확인; 5) pillar-agent 로그에서 오류 전파 확인 |
+| M3.4 | **스토리지 노드 전원 강제 차단(Power Loss) 시뮬레이션** | `fio --rw=write` 활성 중; KVM 환경에서 `virsh destroy`로 갑작스러운 전원 차단 | 전원 복구 후 ZFS 자동 무결성 검사; 파일시스템 일관성 유지; PVC 재마운트 | ZFS import 후 `ONLINE`; `zfs list` 데이터 무결성; PVC `Bound` 복구 | 1) KVM: `virsh destroy <storage-vm>`; 2) 5초 후 `virsh start <storage-vm>`; 3) 부팅 후 `zpool import -f tank`; 4) `zpool status` 확인; 5) 데이터 검증 (`fio --verify=md5`) |
+
+---
+
+### M4: 커널 버전 호환성 매트릭스
+
+**목적:** pillar-csi 및 pillar-agent가 지원하는 Linux 커널 버전 범위에서 ZFS,
+NVMe-oF 커널 모듈이 올바르게 동작하는지 검증한다.
+
+**자동화 불가 이유:**
+
+- 다수의 커널 버전(예: 5.15 LTS, 6.1 LTS, 6.6, 6.8)에 대한 테스트 환경을
+  CI에서 매번 구성하는 비용이 매우 크다.
+- 특정 커널 버전에서의 회귀(regression)는 자동 감지가 어렵고 수동 확인이 필요하다.
+- ZFS와 nvme-tcp 커널 모듈의 상호작용은 커널 마이너 버전마다 다를 수 있다.
+- 커널 업데이트 후 새로운 `/sys/kernel/config/nvmet/` 인터페이스 변경은
+  수동 검증이 필요하다.
+
+| ID | 시나리오 | 사전 조건 | 검증 항목 | 허용 기준 | 수동 실행 절차 |
+|----|--------|---------|---------|---------|-------------|
+| M4.1 | **커널 5.15 LTS (Ubuntu 22.04 기본)** | Ubuntu 22.04 LTS 서버; `uname -r` = 5.15.x; ZFS 2.1.x; nvme-cli 2.x | 기본 볼륨 생성/삭제/마운트/언마운트 전체 흐름 | 모든 F1–F10 수준 테스트 통과 | 1) `modprobe zfs nvmet nvme-tcp`; 2) pillar-agent 실행; 3) 기본 볼륨 라이프사이클 수동 실행; 4) 커널 메시지(`dmesg`) 경고 없음 확인 |
+| M4.2 | **커널 6.1 LTS** | Ubuntu 22.04 + HWE 커널 또는 Debian 12 | 동일 (M4.1 시나리오 반복) | M4.1과 동일 | M4.1과 동일 절차; `dmesg` 경고 비교 |
+| M4.3 | **커널 6.8 (최신 안정 버전)** | Ubuntu 24.04 LTS | 동일 + nvmet configfs API 변경 여부 확인 | M4.1과 동일; configfs 경로 변경 없음 | M4.1과 동일 절차; `ls /sys/kernel/config/nvmet/` 구조 확인 |
+| M4.4 | **ZFS 커널 모듈 버전 조합 검증** | Ubuntu 22.04; `apt install zfs-dkms=2.1.x` vs. `2.2.x` | 서로 다른 ZFS 버전에서 zvol 생성/삭제 정상 동작; pillar-agent 경고 없음 | zvol 오퍼레이션 모두 성공; zfs 버전 비호환 경고 없음 | 1) `apt install zfs-dkms=2.1.x`; 2) F1 수준 테스트 수동 실행; 3) `apt upgrade zfs-dkms`; 4) 동일 테스트 재실행; 5) 결과 비교 |
+| M4.5 | **RHEL 9 / Rocky Linux 9 호환성** | RHEL 9 또는 Rocky Linux 9.x; ZFS on RHEL (DKMS 방식) | Ubuntu 이외 배포판에서 pillar-agent 기본 기능 동작 여부 | zvol 생성/삭제 성공; configfs 디렉터리 구조 동일 | 1) RHEL 9 환경 구성; 2) ZFS DKMS 설치; 3) `modprobe nvmet nvme-tcp`; 4) pillar-agent 컴파일 및 실행; 5) 기본 볼륨 라이프사이클 확인 |
+
+---
+
+### M5: 프로덕션 유사 부하(Production-like Load) 및 용량 계획 테스트
+
+**목적:** 실제 운영 환경과 유사한 워크로드 하에서 pillar-csi의 처리량, 레이턴시,
+리소스 소비를 측정하고, 용량 계획(capacity planning)을 위한 기준 지표를 수집한다.
+
+**자동화 불가 이유:**
+
+- 성능 테스트 결과의 "통과/실패" 기준은 배포 환경(하드웨어 사양, 네트워크 구성)에
+  따라 다르며, 일률적인 임계값 설정이 불가능하다.
+- 측정 결과 해석(레이턴시 분포의 p99 증가가 허용 가능한지)은 전문가 판단이 필요하다.
+- 장기 실행(수 시간 이상) 성능 테스트는 CI 파이프라인 제한 시간을 초과한다.
+- 메모리 누수, 파일 디스크립터 누수 등의 리소스 소비 패턴은 장기 실행 후에만 관찰 가능하다.
+
+| ID | 시나리오 | 사전 조건 | 검증 항목 | 허용 기준 | 수동 실행 절차 |
+|----|--------|---------|---------|---------|-------------|
+| M5.1 | **100개 PVC 동시 프로비저닝 성능** | 스테이징 클러스터; 스토리지 노드 4개; ZFS 풀 각 1 TiB | 100개 PVC 생성 완료 시간; 컨트롤러 CPU/메모리; 에이전트 gRPC 레이턴시 p99 | 100개 PVC Bound: ≤ 5분; 컨트롤러 CPU ≤ 1코어; 에이전트 레이턴시 p99 ≤ 500ms | 1) `for i in {1..100}; do kubectl apply -f pvc-$i.yaml; done`; 2) `time kubectl wait --for=condition=Bound pvc --all --timeout=600s`; 3) Prometheus에서 컨트롤러/에이전트 메트릭 수집 |
+| M5.2 | **지속 I/O 부하 — 4시간 안정성(Soak) 테스트** | 20개 PVC; 각 PVC에 `fio --rw=randrw --bs=4k --iodepth=16 --runtime=14400` | 4시간 동안 I/O 오류 없음; 에이전트 메모리 누수 없음; 파일 디스크립터 증가 없음 | I/O 오류 0; 메모리 증가 ≤ 50 MiB/4h; FD 증가 없음 | 1) 20개 PVC 생성 및 Pod 배포; 2) `fio` 백그라운드 실행 (4시간); 3) 1시간마다 `kubectl top pod`, `lsof -p <agent-pid>` 기록; 4) 완료 후 `fio` 결과 집계 |
+| M5.3 | **500 GiB 대용량 볼륨 생성/삭제 사이클** | ZFS 풀 1 TiB 이상; PVC 용량 500 GiB | 500 GiB zvol 생성 시간; `zfs create` 출력; 삭제 완료 시간 | 생성 ≤ 30s; 삭제 ≤ 60s; ZFS 용량 즉시 반환 확인 | 1) 500 GiB PVC 생성 및 시간 기록; 2) `zfs list` 로 실제 할당 확인; 3) PVC 삭제 및 시간 기록; 4) `zfs list` 로 용량 반환 확인 |
+| M5.4 | **볼륨 확장 중 I/O 유지 — 대용량 파일시스템** | `ext4` 포맷된 200 GiB PVC; DB 유사 I/O 패턴 실행 중 | 볼륨 확장(`resize2fs`) 중 I/O 오류 없음; 확장 후 파일시스템 크기 정확성 | I/O 오류 없음; `df -h` 크기 일치 ≤ 1 GiB 오차 | 1) 200 GiB PVC 생성 및 `ext4` 포맷; 2) `fio` I/O 실행; 3) PVC 확장 요청 (`kubectl patch pvc`); 4) `resize2fs` 완료 후 `df -h` 검증 |
+| M5.5 | **다수 스토리지 노드 동시 에이전트 gRPC 호출 스트레스** | 스토리지 노드 4개; 각 노드에서 동시에 10개 볼륨 생성 요청 | 에이전트 gRPC 큐 처리; 컨트롤러 동시성 처리; 중복 CRD 생성 없음 | 40개 볼륨 모두 성공; 중복 PillarVolume CRD 없음; 데드락 없음 | 1) 4개 노드 × 10개 PVC 동시 생성 스크립트; 2) `kubectl get pillarvolume --all-namespaces` 40개 확인; 3) 에이전트 로그에서 뮤텍스 타임아웃 경고 확인 |
+
+---
+
+### M6: 보안 감사 및 침투 테스트
+
+**목적:** pillar-csi의 mTLS 통신, RBAC 권한, 컨테이너 보안 설정을
+공격자 관점에서 검증한다.
+
+**자동화 불가 이유:**
+
+- 침투 테스트(penetration testing) 결과는 취약점 심각도 분류, 악용 가능성 판단,
+  완화 방안 설계 등에 전문 보안 엔지니어의 판단이 필수적이다.
+- 자동화 도구(예: `trivy`, `kube-bench`)는 알려진 취약점만 탐지하며, 로직 버그나
+  설계 결함은 수동 검토가 필요하다.
+- mTLS 우회 시도는 네트워크 캡처와 수동 분석이 필요하다.
+- 보안 감사 범위 및 허용 기준은 보안 정책 문서를 기반으로 결정된다.
+
+| ID | 시나리오 | 사전 조건 | 검증 항목 | 허용 기준 | 수동 실행 절차 |
+|----|--------|---------|---------|---------|-------------|
+| M6.1 | **mTLS 클라이언트 인증서 미제시 → 연결 거부** | 스테이징 클러스터; pillar-csi 배포; cert-manager CA | CA 서명되지 않은 자체 서명 인증서로 에이전트 gRPC 연결 시도; 클라이언트 인증서 없이 연결 시도 | TLS handshake 실패; 연결 거부; gRPC 오류 | 1) `grpcurl -insecure -d @ <agent-endpoint> agent.AgentService/ListVolumes`; 2) 자체 서명 cert으로 연결 시도; 3) 양쪽 모두 `TLS handshake failed` 확인 |
+| M6.2 | **RBAC 최소 권한 검증** | 스테이징 클러스터; pillar-csi RBAC 설정 배포 | `kube-bench`, `kubectl auth can-i` 로 controller-manager ServiceAccount의 불필요한 권한 없음 확인; ClusterRole 범위 최소화 | `kube-bench` 경고 없음; SA에 `get/list/watch/update` 이외 권한 없음 | 1) `kubectl auth can-i --list --as=system:serviceaccount:pillar-csi-system:pillar-csi-controller-manager`; 2) `create pod`, `delete node` 등 불필요한 권한 부재 확인; 3) 결과 문서화 |
+| M6.3 | **컨테이너 보안 컨텍스트 검증** | pillar-csi controller-manager/agent Pod 실행 중 | `runAsNonRoot`, `readOnlyRootFilesystem`, `allowPrivilegeEscalation=false` 설정 확인; `trivy` 취약점 스캔 결과 검토 | 모든 설정 올바름; `trivy` HIGH/CRITICAL 취약점 0개 | 1) `kubectl get pod -o jsonpath='{.spec.containers[*].securityContext}'`; 2) `trivy image example.com/pillar-csi:v_current`; 3) HIGH 이상 취약점 리포트 검토 |
+| M6.4 | **네트워크 정책(NetworkPolicy) 우회 시도** | 스테이징 클러스터; Calico 또는 Cilium NetworkPolicy 배포; pillar-csi 네임스페이스 격리 정책 | 다른 네임스페이스 Pod에서 pillar-csi 에이전트 gRPC 포트(50051)로 직접 접근 차단 확인 | 네임스페이스 외부에서 50051 포트 접근 거부; NetworkPolicy 로그에 차단 기록 | 1) 별도 네임스페이스에서 `nc -z <agent-svc> 50051`; 2) NetworkPolicy 적용 전후 비교; 3) Calico 감사 로그에서 차단 확인 |
+
+---
+
+### M7: 데이터 무결성 심층 검증
+
+**목적:** pillar-csi를 통해 기록된 데이터가 에이전트 재시작, 클러스터 재시작,
+네트워크 장애, 볼륨 확장 등 다양한 조건 하에서도 손상 없이 보존되는지 검증한다.
+
+**자동화 불가 이유:**
+
+- 데이터 무결성 검증은 실제 블록 I/O(NVMe-oF) + 실제 파일시스템(ext4/xfs)이 필요하다.
+- MD5/SHA256 체크섬 계산에 수 GB 데이터 기록 및 검증 시간(수십 분)이 소요된다.
+- 파일시스템 수준 무결성(fsck, xfs_repair) 실행은 파일시스템 언마운트가 필요하다.
+- 데이터 손상 패턴(비트 플립, 부분 쓰기) 분석은 전문 지식이 필요하다.
+
+| ID | 시나리오 | 사전 조건 | 검증 항목 | 허용 기준 | 수동 실행 절차 |
+|----|--------|---------|---------|---------|-------------|
+| M7.1 | **10 GiB 랜덤 데이터 기록 후 재마운트 검증** | ext4 PVC 20 GiB; `fio --verify=md5 --size=10g` | 언마운트 → 재마운트 후 MD5 체크섬 일치 | MD5 불일치 0건 | 1) `fio --filename=/mnt/pvc/test --rw=write --bs=4k --size=10g --verify=md5`; 2) Pod 재시작(재마운트); 3) `fio --verify-only` 실행; 4) 오류 수 확인 |
+| M7.2 | **볼륨 확장 전후 데이터 무결성** | ext4 PVC 10 GiB; 5 GiB 데이터 기록 후 20 GiB 로 확장 | 확장 후 `fsck.ext4`, MD5 체크섬 일치 | `fsck` 오류 0; MD5 일치 | 1) 5 GiB 데이터 기록 및 체크섬 저장; 2) PVC 확장(20 GiB); 3) `resize2fs` 완료 확인; 4) `fsck.ext4 -n /dev/nvme*`; 5) 체크섬 재검증 |
+| M7.3 | **ZFS 스냅샷 → 복원 후 데이터 일치** | ZFS 기반 PVC; 알려진 데이터셋 기록 | ZFS 스냅샷 생성 후 일부 데이터 수정; 스냅샷 복원 후 원본 데이터 복구 | 복원 후 원본 데이터 100% 일치 | 1) 알려진 데이터 기록 및 체크섬 저장; 2) `zfs snapshot tank/pvc-xxx@snap1`; 3) 데이터 수정; 4) `zfs rollback tank/pvc-xxx@snap1`; 5) 체크섬 재검증 |
+| M7.4 | **크로스-노드 볼륨 마이그레이션 데이터 무결성** | 2개 스토리지 노드; ZFS send/receive | 노드 A → 노드 B 마이그레이션 후 데이터 체크섬 일치; NQN 변경 없음 | 체크섬 일치; NQN 정상 갱신 | 1) 노드 A에서 PVC 생성 및 10 GiB 데이터 기록; 2) `zfs send/receive` 로 노드 B 전송; 3) pillar-csi PVC 마이그레이션 API 호출; 4) 노드 B에서 재마운트 후 체크섬 검증 |
+| M7.5 | **XFS 파일시스템 무결성 — I/O 중 에이전트 재시작** | xfs PVC; `fio --rw=randwrite` 진행 중 pillar-agent `kill -9` | 에이전트 재시작 후 XFS 파일시스템 `xfs_repair -n` 경고 없음; I/O 재개 | `xfs_repair -n` 수정 필요 항목 없음; I/O 재개 | 1) `fio --rw=randwrite` 실행; 2) `kill -9 <pillar-agent-pid>`; 3) 에이전트 자동 재시작 대기; 4) Pod 재시작 후 `xfs_repair -n /dev/nvme*` 실행; 5) 결과 기록 |
+
+---
+
+### M8: CSI 드라이버 업그레이드 절차 검증
+
+**목적:** pillar-csi의 마이너/패치 버전 업그레이드 절차(Helm 차트 업그레이드 또는
+`kubectl apply`) 가 올바르게 실행되고, 업그레이드 전후 PVC 접근성이 유지되며,
+다운그레이드 절차가 문서화된 대로 동작하는지 검증한다.
+
+**자동화 불가 이유:**
+
+- Helm 업그레이드 중 webhook 서버 재시작 타이밍에 따른 가용성 창(window)은
+  환경마다 달라 자동 검증이 어렵다.
+- 업그레이드 실패 시 롤백 절차의 정확성은 인간이 확인해야 한다.
+- CRD 스키마 변경이 포함된 업그레이드는 데이터 마이그레이션 여부를 수동으로 판단해야 한다.
+- 업그레이드 시 발생하는 API 서버 요청 급증(CRD Watch reconnect) 영향 분석은
+  수동 모니터링이 필요하다.
+
+| ID | 시나리오 | 사전 조건 | 검증 항목 | 허용 기준 | 수동 실행 절차 |
+|----|--------|---------|---------|---------|-------------|
+| M8.1 | **Helm 차트 마이너 업그레이드 (v0.x → v0.x+1)** | v_old Helm 릴리스 배포; 기존 PVC 4개 Bound; `fio` I/O 활성 | 업그레이드 중 PVC I/O 중단 시간; webhook 재시작 후 신규 PVC 프로비저닝 정상화 시간; 기존 CRD 데이터 보존 | I/O 중단 ≤ 30s; 신규 PVC 프로비저닝 ≤ 60s; PillarVolume CRD 데이터 손실 없음 | 1) `helm upgrade pillar-csi ./charts/pillar-csi --set image.tag=v_new`; 2) 업그레이드 중 `fio` I/O 로그 기록; 3) 업그레이드 완료 후 `kubectl get pv,pvc` 상태 검증 |
+| M8.2 | **CRD 스키마 변경이 포함된 업그레이드** | v_old CRD에 새 선택적 필드 추가된 v_new | 기존 PillarVolume CRD 인스턴스에 새 필드 기본값 적용 여부; 기존 Controller 코드와 신규 CRD 스키마 호환성 | 기존 CRD 인스턴스 유지; 새 필드 기본값(`nil`/0) 올바름; get/list 오류 없음 | 1) v_new CRD YAML 적용 (`kubectl apply -f crds/`); 2) 기존 PillarVolume 인스턴스 `kubectl get` 확인; 3) 신규 필드 기본값 확인; 4) controller-manager 로그에서 스키마 오류 없음 확인 |
+| M8.3 | **다운그레이드 절차 — 긴급 롤백** | v_new 배포 상태에서 문제 발견 후 v_old 로 롤백 | `helm rollback` 후 PVC I/O 복구; 다운그레이드된 컨트롤러가 v_new CRD 인스턴스 처리 가능 여부 | PVC I/O 복구 ≤ 60s; CRD 호환성 오류 없음 | 1) `helm rollback pillar-csi`; 2) `kubectl rollout status`; 3) 기존 PVC I/O 재개 확인; 4) 컨트롤러 로그에서 `unknown field` 오류 없음 확인 |
+| M8.4 | **업그레이드 후 전체 E2E 회귀 테스트 (Smoke Test)** | M8.1 업그레이드 완료 후 | CreateVolume, DeleteVolume, NodeStage, NodePublish, NodeUnstage, NodeUnpublish 기본 흐름 | 모든 기본 오퍼레이션 성공; 에러 없음 | 1) 임시 PVC 생성/삭제 수동 실행; 2) 노드 스테이징/마운트/언마운트/언스테이징 수동 확인; 3) `kubectl get events` 에서 Warning 없음 확인 |
+
+---
+
+### M9: 다중 테넌트 격리 검증
+
+**목적:** 서로 다른 Kubernetes 네임스페이스/ServiceAccount를 사용하는 테넌트가
+각자의 PVC만 접근 가능하고, 다른 테넌트의 볼륨에 접근할 수 없는지 검증한다.
+
+**자동화 불가 이유:**
+
+- 다중 테넌트 시나리오는 실제 사용자 자격 증명(ServiceAccount 토큰, OIDC)과
+  실제 Kubernetes RBAC 정책이 필요하며, fake client로는 RBAC 검증이 불가능하다.
+- 테넌트 격리 확인에는 보안 전문가의 수동 리뷰가 필요하다.
+- NVMe-oF NQN 수준의 호스트 격리(AllowInitiator 정책)가 올바르게 적용되는지는
+  실제 NVMe initiator로만 검증 가능하다.
+
+| ID | 시나리오 | 사전 조건 | 검증 항목 | 허용 기준 | 수동 실행 절차 |
+|----|--------|---------|---------|---------|-------------|
+| M9.1 | **테넌트 A의 PVC에 테넌트 B 접근 불가 (RBAC)** | 네임스페이스 `tenant-a`, `tenant-b` 각각 생성; RBAC PVC 네임스페이스 격리 정책 | `tenant-b` ServiceAccount 토큰으로 `tenant-a` PVC에 대한 `kubectl get/delete pvc` 시도 거부 | 403 Forbidden 반환; 접근 차단 | 1) `kubectl auth can-i get pvc -n tenant-a --as=system:serviceaccount:tenant-b:default`; 2) `No` 응답 확인 |
+| M9.2 | **NVMe-oF NQN 수준 호스트 격리 — 다른 NQN으로 볼륨 접근 불가** | 볼륨 A: AllowInitiator NQN = `nqn.node-a`; 볼륨 B: AllowInitiator NQN = `nqn.node-b` | node-b NQN으로 볼륨 A에 `nvme connect` 시도; 연결 거부 확인 | `nvme connect` 실패; `dmesg` 에서 거부 로그 확인 | 1) node-b에서 `nvme connect -t tcp -n nqn.node-a-volume-A ...`; 2) 연결 실패 확인; 3) dmesg에서 거부 로그 확인 |
+| M9.3 | **StorageClass 테넌트 격리 — 잘못된 StorageClass 사용 거부** | 각 테넌트별 StorageClass (네임스페이스 범위); RBAC로 타 네임스페이스 StorageClass 사용 차단 | 테넌트 A가 테넌트 B의 StorageClass를 사용한 PVC 생성 거부 확인 | PVC Pending 또는 403 오류 반환 | 1) `kubectl apply -f pvc-with-wrong-storageclass.yaml -n tenant-a`; 2) PVC 상태 확인 (`Pending` 및 오류 이벤트) |
+| M9.4 | **PillarTarget 접근 제어 — 테넌트별 스토리지 노드 격리** | PillarTarget A: 테넌트 A 전용 스토리지 노드; RBAC로 타 테넌트가 해당 Target 참조 불가 | 테넌트 B의 PVC 생성 요청이 테넌트 A의 PillarTarget을 참조할 수 없음 | PVC 생성 실패; `NotFound` 또는 `Forbidden` 오류 | 1) 테넌트 B로 테넌트 A의 `PillarTarget`을 target 파라미터로 PVC 생성 시도; 2) 오류 메시지 확인 |
+
+---
+
+### M10: 인증서 수명 주기 및 실제 PKI 갱신 테스트
+
+**목적:** pillar-csi가 사용하는 mTLS 인증서가 실제 만료 주기에 따라 갱신되고,
+인증서 갱신 중 gRPC 연결이 자동으로 재연결(reconnect)되는지 검증한다.
+
+**자동화 불가 이유:**
+
+- 인증서 TTL을 인위적으로 단축(예: 1분)하면 cert-manager 동작이 실제 환경과
+  달라질 수 있으며, 갱신 타이밍이 비결정적이다.
+- cert-manager 갱신 사이클(인증서 만료 30일 전 갱신 시도)을 완전히 시뮬레이션하려면
+  실제 시간 경과 또는 클럭 조작이 필요하다.
+- 인증서 갱신 중 기존 gRPC 연결의 재연결 동작은 gRPC keepalive 설정, TLS session
+  resumption 정책에 따라 달라지며, 실제 환경에서만 신뢰할 수 있게 검증된다.
+- 루트 CA 교체(CA Rotation) 시나리오는 잘못 실행하면 클러스터 전체 mTLS 통신이
+  차단될 수 있어 수동 제어가 필수적이다.
+
+| ID | 시나리오 | 사전 조건 | 검증 항목 | 허용 기준 | 수동 실행 절차 |
+|----|--------|---------|---------|---------|-------------|
+| M10.1 | **단기 TTL 인증서(24시간) 갱신 사이클** | cert-manager + Issuer; `spec.duration: 24h`, `spec.renewBefore: 8h` | 인증서 갱신 시 gRPC 세션 유지; 갱신 후 신규 cert로 핸드셰이크 성공 | gRPC 세션 중단 없음; 갱신 후 새 인증서 적용 | 1) 24h TTL Certificate 리소스 배포; 2) `kubectl get certificate -w` 로 갱신 이벤트 관찰; 3) 갱신 시점에 gRPC keepalive 연결 유지 확인 |
+| M10.2 | **인증서 수동 교체(Manual Rotation) — 다운타임 없음** | 기존 mTLS 인증서 활성 중; 새 인증서로 수동 교체 | `kubectl delete secret pillar-agent-mtls-cert` → cert-manager 재발급 → 에이전트/컨트롤러 재로드 | 인증서 재발급 중 gRPC 연결 유지; 재로드 후 新 인증서로 연결 성공 | 1) `kubectl delete secret -n pillar-csi-system pillar-agent-mtls-cert`; 2) cert-manager 재발급 이벤트 확인; 3) pillar-csi 컨트롤러 재시작 후 에이전트 연결 재설정 확인 |
+| M10.3 | **루트 CA 교체(CA Rotation) — 완전한 PKI 재발급** | 기존 CA + 인증서 체인; 새 CA 생성 준비 | 새 CA를 번들에 추가 → 모든 리프 인증서 갱신 → 구 CA 제거 단계별 진행 | 각 단계에서 gRPC 연결 유지; CA 제거 후 구 인증서로 연결 거부 | 1) 새 CA ClusterIssuer 추가; 2) 모든 Certificate 리소스 갱신; 3) 각 단계에서 gRPC 연결 테스트; 4) 구 CA 제거 후 구 인증서로 연결 시도 → 거부 확인 |
+| M10.4 | **인증서 만료(Expiry) — 갱신 실패 시 동작** | cert-manager `ClusterIssuer` 비활성화(Issuer 삭제); TTL이 임박한 인증서(1시간 미만 남음) | 인증서 만료 후 gRPC 연결 거부; 명확한 오류 메시지; cert-manager 복구 후 자동 재연결 | 만료 후 gRPC `UNAVAILABLE` 반환; Issuer 복구 후 120s 내 재연결 | 1) ClusterIssuer 비활성화; 2) 인증서 만료 대기 또는 `notAfter` 조작; 3) gRPC 연결 시도 → 오류 확인; 4) Issuer 복구; 5) 재연결 자동화 확인 |
+| M10.5 | **SAN(Subject Alternative Name) 불일치 — 연결 거부** | 잘못된 SAN을 가진 인증서(실제 에이전트 주소 불일치) | TLS SAN 검증 실패로 gRPC 연결 거부; 오류 로그에 SAN 불일치 원인 명시 | `x509: certificate is valid for X, not Y` 오류; 연결 거부 | 1) 잘못된 SAN 인증서 수동 생성; 2) pillar-csi 컨트롤러에 적용; 3) 에이전트 연결 시도 → 오류 확인; 4) 오류 메시지에 원인 명시 확인 |
+| M10.6 | **Webhook TLS 인증서 갱신 중 CRD 어드미션 가용성** | cert-manager가 webhook-server-cert 갱신 중; kube-apiserver의 caBundle 업데이트 지연 | 갱신 중 `kubectl apply` 의 webhook timeout/error 발생 여부; 갱신 완료 후 정상화 시간 | 갱신 중 임시 오류 허용 (≤ 30s); 완료 후 webhook 정상 동작 | 1) webhook-server-cert 수동 삭제(재발급 유도); 2) `kubectl apply -f pillar-target.yaml` 반복 실행; 3) 오류 발생 구간 시간 기록; 4) 정상화 확인 |
+| M10.7 | **cert-manager 완전 장애 — 기존 인증서 활용 유지** | cert-manager 네임스페이스 전체 삭제; 기존 발급된 인증서 Secret 보존 | cert-manager 없이 기존 인증서로 gRPC 연결 유지 가능 기간 확인; cert-manager 복구 후 갱신 자동 재개 | cert-manager 장애 중 기존 인증서 유효 기간 동안 gRPC 유지; 복구 후 자동 갱신 재개 | 1) `kubectl delete namespace cert-manager`; 2) gRPC 연결 유지 확인; 3) `kubectl apply -f cert-manager.yaml` 재설치; 4) 자동 갱신 재개 확인 |
+
+---
+
+### 유형 M 커버리지 매트릭스
+
+유형 A/F와 유형 M이 담당하는 검증 영역을 비교한다.
+
+| 검증 영역 | 유형 A (in-process) | 유형 F (자동화 하드웨어) | 유형 M (수동/스테이징) |
+|---------|:-------------------:|:---------------------:|:--------------------:|
+| API 계층 오류 처리 | ✅ (mock 주입) | ✅ (실제 명령 오류) | — |
+| 실제 커널 모듈 동작 | ❌ | ✅ | — |
+| 롤링 업그레이드 가용성 | ❌ | ❌ | ✅ M1 |
+| 네트워크 분리 복구 | ❌ | ❌ | ✅ M2 |
+| 물리 디스크 장애/교체 | ❌ | ❌ | ✅ M3 |
+| 다중 커널 버전 호환성 | ❌ | ❌ (단일 환경) | ✅ M4 |
+| 프로덕션 부하 성능 기준선 | ❌ | ❌ (단기 실행) | ✅ M5 |
+| 보안 감사/침투 테스트 | ❌ | ❌ | ✅ M6 |
+| 장기 데이터 무결성 | ❌ | ❌ (단기 I/O) | ✅ M7 |
+| 업그레이드/다운그레이드 절차 | ❌ | ❌ | ✅ M8 |
+| 다중 테넌트 격리 | ❌ | ❌ | ✅ M9 |
+| 실제 인증서 TTL 갱신 사이클 | ❌ (testcerts) | ❌ (testcerts) | ✅ M10 |
+| 자동 실행 가능 | ✅ | ✅ (self-hosted) | ❌ (수동만) |
+| CI 통합 | ✅ | 일부 가능 | ❌ |
+
+---
+
+### 유형 M 자동화 전환 가능 항목
+
+아래 항목은 적절한 인프라 확보 및 허용 기준 합의 시 유형 F(자동화)로
+전환 가능하다. 단, 현재 상태에서는 수동 실행을 유지한다.
+
+| 항목 | 자동화 전환 조건 | 전환 후 테스트 ID |
+|------|---------------|----------------|
+| M1.1 (에이전트 롤링 업그레이드 I/O 유지) | 허용 가능한 I/O 중단 기준 합의 + 자동화 KPI 정의 | `TestRollingUpgrade_AgentDaemonSet` |
+| M2.1 (네트워크 완전 차단 복구) | Chaos Mesh 또는 `tc netem` 기반 카오스 인젝터 도입 + 타임아웃 기준 합의 | `TestNetworkPartition_Recovery` |
+| M4.1–M4.3 (커널 버전 매트릭스) | GitHub Actions 매트릭스 전략 + 커널별 self-hosted 러너 등록 | `TestKernelCompat_5_15`, `TestKernelCompat_6_1` |
+| M5.1 (100개 PVC 동시 생성) | 성능 기준선(baseline) 정의 + 자동 임계값 비교 | F25 (`TestScalability_100PVC`) |
+| M7.1 (MD5 체크섬 검증) | `fio --verify=md5` 실행 자동화 + 결과 파싱 스크립트 | `TestDataIntegrity_MD5` |
+| M10.1 (단기 TTL 인증서 갱신) | cert-manager 단기 TTL 인증서 + 자동 재연결 검증 타임아웃 정의 | F7 확장 (`TestMTLS_CertRenewal`) |
 
 ---
 
