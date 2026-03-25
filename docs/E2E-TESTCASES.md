@@ -15,6 +15,40 @@
 
 ---
 
+## 테스트 케이스 필드 정의
+
+각 테스트 케이스는 아래 **6가지 필드**를 포함한다.
+
+| 필드 | 열 이름 | 설명 |
+|------|---------|------|
+| **ID** | `ID` | 섹션 내 고유 번호 (문서 전체에서 순차 부여) |
+| **이름** | `테스트 함수` | Go 테스트 함수 이름; 구현 파일에서 직접 추적 가능 |
+| **설명** | `설명` | 테스트가 검증하는 동작의 간결한 서술 |
+| **사전 조건** | `사전 조건` | 테스트 실행 전 충족되어야 할 환경 상태 (mock 설정, CRD 사전 등록, 오류 주입 등) |
+| **단계** | `단계` | 테스트 수행 중 실행되는 호출 순서 (RPC 호출 시퀀스) |
+| **기대 결과** | `기대 결과` | 테스트 통과를 위해 충족되어야 할 반환값, 상태, 호출 횟수 |
+| **컴포넌트 커버리지** | `커버리지` | 이 테스트가 실질적인 실행 경로를 통과시키는 컴포넌트 |
+
+**컴포넌트 약어표:**
+
+| 약어 | 컴포넌트 경로 |
+|------|-------------|
+| `CSI-C` | `internal/csi.ControllerServer` |
+| `CSI-N` | `internal/csi.NodeServer` |
+| `Agent` | `internal/agent.Server` (또는 mockAgentServer gRPC stub) |
+| `ZFS` | `internal/backend.ZFSBackend` |
+| `NVMeF` | `internal/nvmeof.NvmetTarget` |
+| `Conn` | `internal/connector.Connector` (또는 mockCSIConnector) |
+| `Mnt` | `internal/mounter.Mounter` (또는 mockCSIMounter) |
+| `VolCRD` | `api/v1alpha1.PillarVolume` CRD 상태 관리 |
+| `TgtCRD` | `api/v1alpha1.PillarTarget` CRD 조회 |
+| `mTLS` | `internal/controller.MTLSController` |
+| `SM` | VolumeStateMachine (볼륨 순서 상태 머신) |
+| `State` | 노드 스테이징 상태 파일 (`StateDir/*.json`) |
+| `gRPC` | gRPC 직렬화/역직렬화 레이어 (실제 TCP 리스너) |
+
+---
+
 ## 테스트 환경 분류
 
 pillar-csi E2E 테스트는 실행 환경에 따라 두 가지로 분류된다.
@@ -393,49 +427,49 @@ CSI ControllerServer → (실제 gRPC, localhost:0) → mockAgentServer
 
 ### E1.1 CreateVolume — 정상 경로
 
-| # | 테스트 함수 | 설명 | 설정 | 기대 결과 |
-|---|------------|------|------|----------|
-| 1 | `TestCSIController_CreateVolume` | CreateVolume이 agent.CreateVolume → agent.ExportVolume을 순서대로 호출하고 올바른 VolumeId/VolumeContext를 반환 | PillarTarget="storage-1"; zfs-pool="tank"; 프로토콜=nvmeof-tcp; 용량=1GiB | VolumeId="storage-1/nvmeof-tcp/zfs-zvol/tank/pvc-create-test"; VolumeContext에 target_id/address/port/volume-ref/protocol-type 포함 |
-| 2 | `TestCSIController_CreateVolume_Idempotency` | 동일한 볼륨 이름으로 CreateVolume을 두 번 호출하면 두 번째 호출은 agent.CreateVolume/ExportVolume을 재호출하지 않고 동일한 응답 반환 | 첫 번째 CreateVolume 성공 후 동일 파라미터로 재호출 | 두 번째 호출 성공; 동일한 VolumeId 반환; agent CreateVolume은 1회, ExportVolume은 1회만 호출 |
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| 1 | `TestCSIController_CreateVolume` | CreateVolume이 agent.CreateVolume → agent.ExportVolume을 순서대로 호출하고 올바른 VolumeId/VolumeContext를 반환 | PillarTarget="storage-1" fake 클라이언트에 등록; mockAgentServer 정상 동작; zfs-pool="tank"; 프로토콜=nvmeof-tcp; 용량=1GiB | 1) CreateVolumeRequest 전송 | VolumeId="storage-1/nvmeof-tcp/zfs-zvol/tank/pvc-create-test"; VolumeContext에 target_id/address/port/volume-ref/protocol-type 포함 | `CSI-C`, `Agent`, `TgtCRD`, `VolCRD`, `gRPC` |
+| 2 | `TestCSIController_CreateVolume_Idempotency` | 동일한 볼륨 이름으로 CreateVolume을 두 번 호출하면 두 번째 호출은 agent.CreateVolume/ExportVolume을 재호출하지 않고 동일한 응답 반환 | 위와 동일; mockAgentServer 정상 동작 | 1) CreateVolumeRequest 전송; 2) 동일 파라미터로 CreateVolumeRequest 재전송 | 두 번째 호출 성공; 동일한 VolumeId 반환; agent CreateVolume은 1회, ExportVolume은 1회만 호출 | `CSI-C`, `Agent`, `TgtCRD`, `VolCRD`, `gRPC` |
 
 ---
 
 ### E1.2 CreateVolume — 오류 경로
 
-| # | 테스트 함수 | 설명 | 설정 | 기대 결과 |
-|---|------------|------|------|----------|
-| 3 | `TestCSIController_CreateVolume_MissingParams` | StorageClass 파라미터 누락 시 InvalidArgument 반환 | 필수 파라미터(target, backend-type, protocol-type, zfs-pool) 일부 또는 전부 제거 | gRPC InvalidArgument; agent 호출 없음 |
-| 4 | `TestCSIController_CreateVolume_PillarTargetNotFound` | 참조된 PillarTarget이 존재하지 않으면 NotFound 반환 | Parameters["target"]="nonexistent"; fake 클라이언트에 해당 PillarTarget 미등록 | gRPC NotFound 또는 Internal; agent 호출 없음 |
-| 5 | `TestCSIController_CreateVolume_AgentCreateError` | agent.CreateVolume 실패 시 오류 전파 | mockAgentServer.CreateVolumeErr 설정 | 비-OK gRPC 상태 반환; ExportVolume 미호출 |
-| 6 | `TestCSIController_CreateVolume_AgentExportError` | agent.CreateVolume 성공 후 agent.ExportVolume 실패 시 오류 전파 | mockAgentServer.ExportVolumeErr 설정 | 비-OK gRPC 상태 반환; PillarVolume CRD에 PartialFailure 기록 |
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| 3 | `TestCSIController_CreateVolume_MissingParams` | StorageClass 파라미터 누락 시 InvalidArgument 반환 | ControllerServer 초기화; StorageClass Parameters에서 필수 키(target/backend-type/protocol-type/zfs-pool) 일부 또는 전부 제거 | 1) 파라미터 일부 누락한 CreateVolumeRequest 전송 | gRPC InvalidArgument; agent 호출 없음 | `CSI-C` |
+| 4 | `TestCSIController_CreateVolume_PillarTargetNotFound` | 참조된 PillarTarget이 존재하지 않으면 NotFound 반환 | fake 클라이언트에 PillarTarget 미등록; Parameters["target"]="nonexistent" | 1) CreateVolumeRequest 전송 | gRPC NotFound 또는 Internal; agent 호출 없음 | `CSI-C`, `TgtCRD` |
+| 5 | `TestCSIController_CreateVolume_AgentCreateError` | agent.CreateVolume 실패 시 오류 전파 | mockAgentServer.CreateVolumeErr 설정; PillarTarget 정상 등록 | 1) CreateVolumeRequest 전송 | 비-OK gRPC 상태 반환; ExportVolume 미호출 | `CSI-C`, `Agent`, `TgtCRD`, `gRPC` |
+| 6 | `TestCSIController_CreateVolume_AgentExportError` | agent.CreateVolume 성공 후 agent.ExportVolume 실패 시 오류 전파 | mockAgentServer.ExportVolumeErr 설정; CreateVolume은 성공 | 1) CreateVolumeRequest 전송 | 비-OK gRPC 상태 반환; PillarVolume CRD에 PartialFailure 기록 | `CSI-C`, `Agent`, `TgtCRD`, `VolCRD`, `gRPC` |
 
 ---
 
 ### E1.3 DeleteVolume — 정상 경로
 
-| # | 테스트 함수 | 설명 | 설정 | 기대 결과 |
-|---|------------|------|------|----------|
-| 7 | `TestCSIController_DeleteVolume` | DeleteVolume이 agent.UnexportVolume → agent.DeleteVolume을 순서대로 호출 | 사전 CreateVolume으로 볼륨 생성; VolumeId="storage-1/nvmeof-tcp/zfs-zvol/tank/pvc-delete-test" | 성공; UnexportVolume 1회, DeleteVolume 1회 호출 |
-| 8 | `TestCSIController_DeleteVolume_Idempotency` | 이미 삭제된 볼륨을 다시 DeleteVolume해도 성공 (멱등성) | 볼륨 삭제 후 동일 VolumeId로 재호출 | 두 번째 호출도 성공; 오류 없음 |
-| 9 | `TestCSIController_DeleteVolume_NotFoundIsIdempotent` | agent가 NotFound를 반환해도 DeleteVolume은 성공 처리 | mockAgentServer: UnexportVolumeErr = gRPC NotFound | DeleteVolume 성공; CSI 명세상 Not-Found는 이미 삭제된 것으로 처리 |
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| 7 | `TestCSIController_DeleteVolume` | DeleteVolume이 agent.UnexportVolume → agent.DeleteVolume을 순서대로 호출 | CreateVolume으로 볼륨 사전 생성 (PillarVolume CRD 존재); mockAgentServer 정상 동작 | 1) CreateVolumeRequest 전송; 2) DeleteVolumeRequest 전송 | 성공; UnexportVolume 1회, DeleteVolume 1회 호출 | `CSI-C`, `Agent`, `VolCRD`, `gRPC` |
+| 8 | `TestCSIController_DeleteVolume_Idempotency` | 이미 삭제된 볼륨을 다시 DeleteVolume해도 성공 (멱등성) | 볼륨 생성 후 첫 DeleteVolume 완료 | 1) DeleteVolumeRequest 전송; 2) 동일 VolumeId로 DeleteVolumeRequest 재전송 | 두 번째 호출도 성공; 오류 없음 | `CSI-C`, `Agent`, `VolCRD`, `gRPC` |
+| 9 | `TestCSIController_DeleteVolume_NotFoundIsIdempotent` | agent가 NotFound를 반환해도 DeleteVolume은 성공 처리 | mockAgentServer.UnexportVolumeErr = gRPC NotFound; PillarVolume CRD 없음 | 1) DeleteVolumeRequest 전송 | DeleteVolume 성공; CSI 명세상 Not-Found는 이미 삭제된 것으로 처리 | `CSI-C`, `Agent`, `gRPC` |
 
 ---
 
 ### E1.4 DeleteVolume — 오류 경로
 
-| # | 테스트 함수 | 설명 | 설정 | 기대 결과 |
-|---|------------|------|------|----------|
-| 10 | `TestCSIController_DeleteVolume_MalformedID` | 잘못된 형식의 VolumeId는 InvalidArgument 반환 | VolumeId="noslash" (슬래시 없음) | gRPC InvalidArgument; agent 호출 없음 |
-| 11 | `TestCSIController_DeleteVolume_AgentError` | agent.UnexportVolume 또는 agent.DeleteVolume 실패 시 오류 전파 | mockAgentServer.DeleteVolumeErr 설정 | 비-OK gRPC 상태 반환 |
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| 10 | `TestCSIController_DeleteVolume_MalformedID` | 잘못된 형식의 VolumeId는 InvalidArgument 반환 | ControllerServer 초기화 | 1) VolumeId="noslash"로 DeleteVolumeRequest 전송 | gRPC InvalidArgument; agent 호출 없음 | `CSI-C` |
+| 11 | `TestCSIController_DeleteVolume_AgentError` | agent.UnexportVolume 또는 agent.DeleteVolume 실패 시 오류 전파 | mockAgentServer.DeleteVolumeErr 설정; PillarVolume CRD 존재 | 1) DeleteVolumeRequest 전송 | 비-OK gRPC 상태 반환 | `CSI-C`, `Agent`, `VolCRD`, `gRPC` |
 
 ---
 
 ### E1.5 기본 프로비저닝 — 전체 왕복(Full Round Trip)
 
-| # | 테스트 함수 | 설명 | 설정 | 기대 결과 |
-|---|------------|------|------|----------|
-| 12 | `TestCSIController_FullRoundTrip` | CreateVolume → ControllerPublishVolume → ControllerUnpublishVolume → DeleteVolume 전체 CSI Controller 왕복 테스트 | 단일 mockAgentServer; fake k8s 클라이언트; 정상 경로 설정 | 모든 단계 성공; agent 호출 순서 검증; VolumeContext 키 검증 |
-| 13 | `TestCSIController_VolumeIDFormatPreservation` | VolumeId 포맷("target/protocol/backend/pool/name")이 생성-게시-삭제 전 주기에서 보존됨 | CreateVolume 후 ControllerPublish/Unpublish/Delete 호출 | 각 단계에서 동일한 VolumeId 포맷 사용; 파싱 오류 없음 |
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| 12 | `TestCSIController_FullRoundTrip` | CreateVolume → ControllerPublishVolume → ControllerUnpublishVolume → DeleteVolume 전체 CSI Controller 왕복 테스트 | 단일 mockAgentServer; fake k8s 클라이언트; PillarTarget 등록; 정상 경로 설정 | 1) CreateVolume; 2) ControllerPublishVolume; 3) ControllerUnpublishVolume; 4) DeleteVolume | 모든 단계 성공; agent 호출 순서 검증; VolumeContext 키 검증 | `CSI-C`, `Agent`, `TgtCRD`, `VolCRD`, `gRPC` |
+| 13 | `TestCSIController_VolumeIDFormatPreservation` | VolumeId 포맷("target/protocol/backend/pool/name")이 생성-게시-삭제 전 주기에서 보존됨 | CreateVolume 성공; PillarTarget 등록 | 1) CreateVolume; 2) ControllerPublishVolume; 3) ControllerUnpublishVolume; 4) DeleteVolume | 각 단계에서 동일한 VolumeId 포맷 사용; 파싱 오류 없음 | `CSI-C`, `Agent`, `TgtCRD`, `VolCRD`, `gRPC` |
 
 ---
 
@@ -447,37 +481,37 @@ CSI ControllerServer → (실제 gRPC, localhost:0) → mockAgentServer
 
 ### E2.1 ControllerPublishVolume
 
-| # | 테스트 함수 | 설명 | 설정 | 기대 결과 |
-|---|------------|------|------|----------|
-| 14 | `TestCSIController_ControllerPublishVolume` | ControllerPublishVolume이 agent.AllowInitiator를 올바른 파라미터로 호출 | 유효한 VolumeId와 NodeId 제공; VolumeContext에 target_id/address/port 포함 | 성공; PublishContext 반환; AllowInitiator 1회 호출 |
-| 15 | `TestCSIController_ControllerPublishVolume_Idempotency` | 동일 파라미터로 두 번 호출해도 각각 성공 | ControllerPublishVolume 동일 인수로 2회 호출 | 두 호출 모두 성공; PublishContext 동일; AllowInitiator 각 호출마다 1회씩 총 2회 |
-| 16 | `TestCSIController_ControllerPublishVolume_MissingFields` | 필수 필드(VolumeId, NodeId, VolumeContext) 누락 시 InvalidArgument | 각 필드를 빈 값으로 설정 | gRPC InvalidArgument; agent 호출 없음 |
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| 14 | `TestCSIController_ControllerPublishVolume` | ControllerPublishVolume이 agent.AllowInitiator를 올바른 파라미터로 호출 | 유효한 VolumeId와 NodeId; VolumeContext에 target_id/address/port 포함; mockAgentServer 정상 동작 | 1) ControllerPublishVolumeRequest 전송 | 성공; PublishContext 반환; AllowInitiator 1회 호출 | `CSI-C`, `Agent`, `gRPC` |
+| 15 | `TestCSIController_ControllerPublishVolume_Idempotency` | 동일 파라미터로 두 번 호출해도 각각 성공 | 위와 동일 | 1) ControllerPublishVolumeRequest 전송; 2) 동일 인수로 재전송 | 두 호출 모두 성공; PublishContext 동일; AllowInitiator 각 호출마다 1회씩 총 2회 | `CSI-C`, `Agent`, `gRPC` |
+| 16 | `TestCSIController_ControllerPublishVolume_MissingFields` | 필수 필드(VolumeId, NodeId, VolumeContext) 누락 시 InvalidArgument | 각 필드를 빈 값으로 설정 | 1) VolumeId="" 또는 NodeId="" 또는 VolumeContext=nil 로 ControllerPublishVolumeRequest 전송 | gRPC InvalidArgument; agent 호출 없음 | `CSI-C` |
 
 ---
 
 ### E2.2 ControllerUnpublishVolume
 
-| # | 테스트 함수 | 설명 | 설정 | 기대 결과 |
-|---|------------|------|------|----------|
-| 17 | `TestCSIController_ControllerUnpublishVolume` | ControllerUnpublishVolume이 agent.DenyInitiator를 올바르게 호출 | Publish 후 Unpublish 호출 | 성공; DenyInitiator 1회 호출 |
-| 18 | `TestCSIController_ControllerUnpublishVolume_NotFoundIsIdempotent` | agent가 NotFound를 반환해도 Unpublish는 성공 | mockAgentServer.DenyInitiatorErr = NotFound | 성공; CSI 명세상 Not-Found는 이미 접근이 제거된 것으로 처리 |
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| 17 | `TestCSIController_ControllerUnpublishVolume` | ControllerUnpublishVolume이 agent.DenyInitiator를 올바르게 호출 | ControllerPublishVolume 성공; mockAgentServer 정상 동작 | 1) ControllerPublishVolume 호출; 2) ControllerUnpublishVolume 호출 | 성공; DenyInitiator 1회 호출 | `CSI-C`, `Agent`, `gRPC` |
+| 18 | `TestCSIController_ControllerUnpublishVolume_NotFoundIsIdempotent` | agent가 NotFound를 반환해도 Unpublish는 성공 | mockAgentServer.DenyInitiatorErr = NotFound | 1) ControllerUnpublishVolumeRequest 전송 | 성공; CSI 명세상 Not-Found는 이미 접근이 제거된 것으로 처리 | `CSI-C`, `Agent`, `gRPC` |
 
 ---
 
 ### E2.3 ControllerExpandVolume
 
-| # | 테스트 함수 | 설명 | 설정 | 기대 결과 |
-|---|------------|------|------|----------|
-| 19 | `TestCSIController_ControllerExpandVolume` | ControllerExpandVolume이 agent.ExpandVolume을 올바른 새 용량으로 호출 | VolumeId 유효; CapacityRange.RequiredBytes=2GiB | 성공; CapacityBytes=2GiB 반환; agent.ExpandVolume 1회 호출 |
-| 20 | `TestCSIController_ControllerExpandVolume_MissingCapacityRange` | CapacityRange 없으면 InvalidArgument | CapacityRange=nil | gRPC InvalidArgument |
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| 19 | `TestCSIController_ControllerExpandVolume` | ControllerExpandVolume이 agent.ExpandVolume을 올바른 새 용량으로 호출 | 유효한 VolumeId; mockAgentServer 정상 동작 | 1) CapacityRange.RequiredBytes=2GiB 로 ControllerExpandVolumeRequest 전송 | 성공; CapacityBytes=2GiB 반환; agent.ExpandVolume 1회 호출 | `CSI-C`, `Agent`, `gRPC` |
+| 20 | `TestCSIController_ControllerExpandVolume_MissingCapacityRange` | CapacityRange 없으면 InvalidArgument | 유효한 VolumeId; CapacityRange=nil | 1) CapacityRange 없는 ControllerExpandVolumeRequest 전송 | gRPC InvalidArgument | `CSI-C` |
 
 ---
 
 ### E2.4 ValidateVolumeCapabilities
 
-| # | 테스트 함수 | 설명 | 설정 | 기대 결과 |
-|---|------------|------|------|----------|
-| 21 | `TestCSIController_ValidateVolumeCapabilities` | 지원 가능한 접근 모드(SINGLE_NODE_WRITER 등)는 확인됨, 지원 불가 모드(MULTI_NODE_MULTI_WRITER 등)는 거부됨 | 다양한 AccessMode 조합 테스트 | 지원 모드: 빈 메시지 반환; 비지원 모드: 메시지 필드에 이유 포함 |
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| 21 | `TestCSIController_ValidateVolumeCapabilities` | 지원 가능한 접근 모드(SINGLE_NODE_WRITER 등)는 확인됨, 지원 불가 모드(MULTI_NODE_MULTI_WRITER 등)는 거부됨 | ControllerServer 초기화 | 1) AccessMode=SINGLE_NODE_WRITER 로 요청; 2) AccessMode=MULTI_NODE_MULTI_WRITER 로 요청 | 지원 모드: 빈 메시지 반환; 비지원 모드: 메시지 필드에 이유 포함 | `CSI-C` |
 
 ---
 
@@ -1243,39 +1277,505 @@ CSI 연산 실패 또는 성공 후 부가 상태(상태 파일, PillarVolume CR
 
 ---
 
-## 향후 추가 예정 테스트 (실제 하드웨어 필요)
+## 유형 F: 완전 E2E 테스트 (Full E2E) ❌ 표준 CI 불가
 
-아래 테스트는 현재 구현되지 않았으며, 실제 ZFS, 실제 NVMe-oF 하드웨어,
-또는 실제 Kubernetes 스토리지 노드가 필요하다. 표준 CI 환경에서 실행 불가능하다.
+이 섹션은 **실제 스토리지 백엔드(ZFS, NVMe-oF), 실제 커널 모듈, 실제 Kubernetes
+클러스터 + pillar-agent**를 필요로 하는 완전 E2E 테스트의 권위 있는 명세이다.
+표준 GitHub Actions / GitLab CI 컨테이너 환경에서는 **실행 불가능**하며,
+물리 서버 또는 KVM/베어메탈 self-hosted 러너가 필요하다.
 
-| # | 테스트 이름 (미구현) | 필요 인프라 | 설명 |
-|---|---------------------|------------|------|
-| F1 | `TestRealZFS_CreateVolume` | ZFS 커널 모듈, `zfs-utils` | 실제 ZFS pool에서 zvol 생성/삭제 |
-| F2 | `TestRealNVMeoF_Export` | `/sys/kernel/config/nvmet/` (nvmet 커널 모듈) | 실제 NVMe-oF configfs 조작 |
-| F3 | `TestRealNVMeoF_Connect` | NVMe-oF TCP 대상 서버 + 클라이언트, `nvme-tcp` 커널 모듈 | 실제 NVMe-oF TCP 연결 및 블록 디바이스 탑재 |
-| F4 | `TestKubernetes_StorageClass_PVC` | 실제 Kubernetes 클러스터, pillar-agent DaemonSet, 스토리지 노드 | StorageClass → PVC → Pod 전체 Kubernetes 프로비저닝 흐름 |
-| F5 | `TestKubernetes_VolumeExpansion` | 위와 동일 | 실행 중인 Pod의 볼륨 온라인 확장 |
-| F6 | `TestKubernetes_NodeFailover` | 다중 노드 클러스터 | 스토리지 노드 재시작 후 agent ReconcileState 자동 복구 |
-| F7 | `TestRealMTLS_CertRotation` | cert-manager, 실제 TLS 인증서 갱신 주기 | mTLS 인증서 자동 갱신 후 연결 유지 |
-| F8 | `TestRealNode_NodeStageVolume_ActualMount` | 실제 NVMe-oF 디바이스, 루트 권한, `nvme-tcp` 커널 모듈, `mkfs.ext4` | 실제 NodeStageVolume: NVMe-oF connect → /dev/nvme* 블록 디바이스 → ext4 포맷 → 스테이징 경로 마운트 |
-| F9 | `TestRealNode_NodePublishVolume_BindMount` | 위와 동일, 추가로 컨테이너 네임스페이스 | 실제 NodePublishVolume: 스테이징 → 컨테이너 타깃 경로 바인드 마운트 |
-| F10 | `TestRealNode_NodeUnstageVolume_ActualDetach` | 위와 동일 | 실제 NodeUnstageVolume: 마운트 해제 → nvme disconnect → /dev/nvme* 디바이스 노드 제거 확인 |
-| F11 | `TestRealNode_NodeStageVolume_DeviceAppearDelay` | 실제 NVMe-oF 대상, udev 지연 환경 | NVMe connect 후 /dev/nvme* 노드가 수 초 후에 나타나는 환경에서 폴링 로직 검증 |
-| F12 | `TestRealNode_MultiPathAttach` | 다중 네트워크 인터페이스, multipath 설정 | 동일 NVMe-oF 대상에 두 경로 연결 후 NodeStageVolume에서 올바른 디바이스 선택 |
-| F13 | `TestRealZFS_CreateSnapshot` | ZFS 커널 모듈, `zfs-utils`, CSI CreateSnapshot 구현 (미구현) | `zfs snapshot pool/vol@snap` 실행 후 CSI CreateSnapshot 응답 검증; ReadyToUse=true |
-| F14 | `TestRealZFS_DeleteSnapshot` | ZFS 커널 모듈, CSI DeleteSnapshot 구현 (미구현) | `zfs destroy pool/vol@snap` 실행 후 스냅샷 목록에서 제거 확인 |
-| F15 | `TestRealZFS_ListSnapshots` | ZFS 커널 모듈, CSI ListSnapshots 구현 (미구현) | `zfs list -t snapshot` 결과를 CSI ListSnapshots 응답으로 변환 |
-| F16 | `TestKubernetes_VolumeSnapshot_CreateRestore` | 실제 Kubernetes 클러스터, external-snapshotter, ZFS 노드 | VolumeSnapshot CRD 생성 → PVC RestoreFrom → Pod 마운트; 데이터 일관성 검증 |
-| F17 | `TestRealAgent_SendVolume_ZFSSend` | ZFS 커널 모듈, 실제 zvol, `zfs send` | `agent.SendVolume` 스트리밍 RPC: zfs send 스트림 청크 수신 및 checksum 검증 |
-| F18 | `TestRealAgent_ReceiveVolume_ZFSReceive` | ZFS 커널 모듈, 실제 zvol, `zfs receive` | `agent.ReceiveVolume` 스트리밍 RPC: zfs receive 스트림 클라이언트 전송 및 볼륨 복원 |
-| F19 | `TestRealAgent_SendReceiveVolume_CrossNode` | 두 스토리지 노드, ZFS 커널 모듈 | 노드 A → SendVolume → 노드 B ReceiveVolume 크로스 노드 마이그레이션; 마이그레이션 후 데이터 동일성 검증 |
-| F20 | `TestRealZFS_CloneVolume_FromSnapshot` | ZFS 커널 모듈, CSI VolumeContentSource 구현 (미구현) | `zfs clone pool/vol@snap pool/new-vol` 후 CSI CreateVolume(VolumeContentSource.Snapshot) 응답 검증 |
-| F21 | `TestKubernetes_VolumeExpansion_OnlinePod` | 실제 Kubernetes 클러스터, Pod 실행 중, ZFS 노드 | ControllerExpandVolume → NodeExpandVolume → Pod 내 파일시스템이 새 크기 반영 확인 |
-| F22 | `TestRealZFS_PoolFull_CreateVolume` | ZFS 커널 모듈, 실제 ZFS pool (용량 제한 설정) | ZFS pool을 거의 가득 채운 후 새 zvol 생성 시도; ENOSPC 오류 전파 검증 |
-| F23 | `TestRealZFS_PoolFull_ExpandVolume` | ZFS 커널 모듈, 용량 제한 ZFS pool | 현재 pool 여유 공간 이상의 용량으로 ExpandVolume 시도; 실제 "out of space" 오류 검증 |
-| F24 | `TestRealNode_ConcurrentStageUnstage_SameVolume` | 실제 NVMe-oF 디바이스, 루트 권한, nvme-tcp 커널 모듈 | 동일 볼륨에 NodeStage/NodeUnstage를 동시 호출; 커널 레벨 레이스 컨디션 검증 |
-| F25 | `TestKubernetes_ManyPVCsConcurrent` | 실제 Kubernetes 클러스터, pillar-agent, ZFS 노드 | 100개 PVC 동시 생성 — controller/agent 확장성 및 레이스 컨디션 검증 |
-| F26 | `TestRealNode_UnmountWithBusyMount` | 실제 마운트 환경, 루트 권한 | 마운트 포인트가 사용 중(fuser)일 때 NodeUnstage 호출 — EBUSY 오류 처리 검증 |
+**현재 구현 상태:** 모든 유형 F 테스트는 **미구현(planned)** 상태이다.
+이 문서는 구현 전 설계 사양을 정의한다. 구현 시 빌드 태그
+`//go:build e2e_full`을 사용해야 한다.
+
+```
+실행 명령:
+  go test ./test/e2e/ -tags=e2e_full -v -timeout 600s
+
+특정 그룹만:
+  go test ./test/e2e/ -tags=e2e_full -v -run TestRealZFS
+  go test ./test/e2e/ -tags=e2e_full -v -run TestRealNode
+  go test ./test/e2e/ -tags=e2e_full -v -run TestKubernetes
+```
+
+**총 유형 F 테스트 케이스: 38개** (F1.1–F26.2)
+
+---
+
+### 유형 F 인프라 요구사항 매트릭스
+
+각 테스트 그룹에서 필요한 인프라 구성 요소를 정리한다.
+
+| 그룹 | 테스트 번호 | ZFS 커널 모듈 | nvmet 커널 모듈 | nvme-tcp 커널 모듈 | 루트 권한 | 실제 K8s 클러스터 | pillar-agent DaemonSet | 최소 노드 수 |
+|------|------------|:-------------:|:---------------:|:------------------:|:---------:|:-----------------:|:---------------------:|:----------:|
+| ZFS 백엔드 | F1.1–F3.3 | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | 1 |
+| K8s 클러스터 통합 | F4.1–F6.2 | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | 2+ |
+| mTLS 인증서 갱신 | F7.1–F7.2 | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | 1 |
+| 실제 노드 마운트 | F8.1–F12.2 | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | 1 |
+| ZFS 스냅샷/복원 | F13.1–F16.1 | ✅ | ✅ | ✅ | ❌ | ✅ (F16만) | ✅ (F16만) | 1 (F16: 2+) |
+| 볼륨 마이그레이션 | F17.1–F19.2 | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | 2 (F19만) |
+| 볼륨 클론 | F20.1–F20.2 | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | 1 |
+| 확장/용량 한계 | F21.1–F23.1 | ✅ | ✅ | ✅ | ❌ | ✅ (F21만) | ✅ (F21만) | 1 |
+| 커널 레이스 및 확장성 | F24.1–F26.2 | ✅ (F25만) | ✅ (F24만) | ✅ (F24만) | ✅ (F24, F26) | ✅ (F25만) | ✅ (F25만) | 2+ (F25만) |
+
+#### 전체 환경 구성 요구사항
+
+| 항목 | 사양 / 버전 | 비고 |
+|------|------------|------|
+| OS | Ubuntu 22.04+ (베어메탈 또는 KVM) | ZFS/nvme 커널 모듈 지원 필수 |
+| Linux 커널 | 5.15+ | `nvme-tcp`, `nvmet`, `nvmet-tcp` 모듈 포함 |
+| ZFS 커널 모듈 | `zfsutils-linux` 2.1+ | `zfs`, `zpool`, `zvol` 명령 포함 |
+| nvmet 커널 모듈 | `nvmet`, `nvmet-tcp` | `modprobe nvmet nvmet-tcp` |
+| nvme-tcp 커널 모듈 | `nvme-tcp` | `modprobe nvme-tcp` |
+| `nvme-cli` | 2.x | `nvme connect`, `nvme disconnect`, `nvme list` |
+| 전용 디스크 / 블록 디바이스 | 최소 10 GiB 여유 | ZFS pool 생성용 (`/dev/sdb` 등) |
+| RAM | 4 GiB+ | ZFS ARC 캐시 + Kubernetes 컴포넌트 |
+| CPU | 2코어+ | NVMe-oF TCP 처리량 |
+| Kubernetes 클러스터 | v1.29+ (F4–F6, F16, F21, F25) | kubeadm 또는 k3s |
+| cert-manager | v1.14+ (F7, F16) | 클러스터 내 설치 |
+| external-snapshotter | v7+ (F16) | VolumeSnapshot CRD 및 controller |
+| pillar-csi 이미지 | 로컬 빌드 | `make docker-build IMG=...` |
+| 루트 권한 | `sudo` 또는 직접 root | F8.1–F12.2, F24.1–F24.2, F26.1–F26.2 |
+| Go 빌드 도구체인 | 1.22+ | 테스트 컴파일 |
+
+#### Self-Hosted 러너 구성 예시 (GitHub Actions)
+
+```yaml
+# .github/workflows/e2e-full.yml
+name: "Full E2E Tests (Self-Hosted)"
+on:
+  workflow_dispatch:       # 수동 실행만
+  schedule:
+    - cron: '0 2 * * 1'   # 매주 월요일 02:00 UTC
+
+jobs:
+  e2e-full:
+    name: "Full E2E (Real ZFS + NVMe-oF)"
+    runs-on: [self-hosted, linux, zfs, nvmeof]   # 라벨이 붙은 러너 필요
+    timeout-minutes: 60
+    env:
+      ZFS_POOL: "tank"
+      ZFS_POOL_DEVICE: "/dev/sdb"
+      NVMEOF_TARGET_ADDR: "127.0.0.1"
+      NVMEOF_TARGET_PORT: "4420"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - name: Setup ZFS pool
+        run: |
+          sudo modprobe zfs nvmet nvmet-tcp nvme-tcp
+          sudo zpool create -f "$ZFS_POOL" "$ZFS_POOL_DEVICE"
+      - name: Run Full E2E Tests
+        run: |
+          sudo -E go test ./test/e2e/ -tags=e2e_full -v \
+            -timeout 600s -count=1 \
+            2>&1 | tee e2e-full.log
+      - name: Teardown ZFS pool
+        if: always()
+        run: sudo zpool destroy "$ZFS_POOL" || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-full-logs
+          path: e2e-full.log
+```
+
+---
+
+### F1–F3: 실제 ZFS 백엔드 및 NVMe-oF 내보내기 테스트
+
+**테스트 유형:** F (완전 E2E) ❌ 표준 CI 불가
+
+**목적:** mock을 사용하는 유형 A/컴포넌트 테스트가 검증할 수 없는
+**실제 `zfs(8)` 명령 실행, 실제 zvol 생성/삭제, 실제 configfs 조작, 실제 NVMe-oF
+TCP 연결**을 검증한다.
+
+**아키텍처:**
+```
+테스트 프로세스
+    │
+    ├──► ZFS 백엔드 (실제 zfs(8) 명령)
+    │        └──► /dev/zvol/<pool>/<name>  [F1–F3]
+    │
+    ├──► NvmetTarget (실제 /sys/kernel/config/nvmet/)  [F2]
+    │        └──► nvmet 커널 모듈 조작
+    │
+    └──► NVMe-oF Connector (실제 nvme connect)  [F3]
+             └──► /dev/nvme<n>  블록 디바이스
+```
+
+**필수 인프라:**
+- ZFS 커널 모듈 및 `zfs-utils` (`zfs`, `zpool` 명령)
+- `nvmet`, `nvmet-tcp` 커널 모듈 (F2–F3)
+- `nvme-tcp` 커널 모듈, `nvme-cli` (F3)
+- 전용 블록 디바이스 (ZFS pool 생성용)
+- ZFS pool 이름: 환경변수 `ZFS_POOL` (기본값: `tank`)
+
+---
+
+#### F1: 실제 ZFS zvol 생성/삭제
+
+| # | 테스트 함수 | 설명 | 설정 | 기대 결과 |
+|---|------------|------|------|----------|
+| F1.1 | `TestRealZFS_CreateVolume` | 실제 ZFS pool에서 zvol을 생성하고 `/dev/zvol/<pool>/<name>` 블록 디바이스가 나타남을 검증 | ZFS pool="tank" 준비됨; `agent.CreateVolume` 호출; volSize=1GiB | `/dev/zvol/tank/<pvc-id>` 블록 디바이스 존재; `zfs list` 결과에 zvol 항목; capacity_bytes=1GiB |
+| F1.2 | `TestRealZFS_CreateVolume_Idempotent` | 동일 zvol을 두 번 생성해도 동일한 devicePath 반환; 두 번째 호출 시 `zfs create` 미실행 | CreateVolume 1회 성공 후 동일 파라미터로 재호출 | 두 번째 호출 성공; devicePath 동일; `zfs list` 결과에 zvol 1개만 존재 |
+| F1.3 | `TestRealZFS_DeleteVolume` | `agent.DeleteVolume` 호출 후 zvol 및 `/dev/zvol/` 디바이스 노드가 완전히 제거됨 | CreateVolume 성공 후 DeleteVolume 호출 | `/dev/zvol/tank/<pvc-id>` 없음; `zfs list` 결과에 해당 zvol 없음 |
+| F1.4 | `TestRealZFS_CreateVolume_PoolFull` | ZFS pool 용량이 부족할 때 CreateVolume이 적절한 오류를 반환 | ZFS pool을 거의 가득 채운 후(예: `zfs set quota=100M`), 200MiB zvol 생성 시도 | gRPC ResourceExhausted 또는 Internal; `/dev/zvol/` 디바이스 미생성; pool 상태 오염 없음 |
+| F1.5 | `TestRealZFS_ExpandVolume` | 실제 zvol의 크기를 `zfs set volsize=` 를 통해 확장 후 블록 디바이스 크기 반영 검증 | CreateVolume(1GiB) 성공 후 ExpandVolume(2GiB) 호출 | `zfs get volsize tank/<pvc-id>` 결과 = 2GiB; 블록 디바이스 크기 2GiB; 데이터 손상 없음 |
+
+---
+
+#### F2: 실제 NVMe-oF configfs 내보내기
+
+| # | 테스트 함수 | 설명 | 설정 | 기대 결과 |
+|---|------------|------|------|----------|
+| F2.1 | `TestRealNVMeoF_Export` | 실제 `/sys/kernel/config/nvmet/` 에 NQN 서브시스템과 포트 설정이 생성됨 | nvmet 커널 모듈 로드됨; ZFS zvol 준비됨; `agent.ExportVolume` 호출 | `/sys/kernel/config/nvmet/subsystems/<nqn>/` 디렉토리 존재; namespaces/1/device_path = zvol 경로; namespaces/1/enable = "1" |
+| F2.2 | `TestRealNVMeoF_Export_Idempotent` | 동일한 볼륨을 두 번 ExportVolume 해도 configfs 구조 중복 없음 | ExportVolume 1회 성공 후 동일 파라미터로 재호출 | 두 번째 호출 성공; configfs 서브시스템 1개만 존재 |
+| F2.3 | `TestRealNVMeoF_UnexportVolume` | `agent.UnexportVolume` 호출 후 configfs 항목 완전 제거 | ExportVolume 성공 후 UnexportVolume 호출 | `/sys/kernel/config/nvmet/subsystems/<nqn>/` 없음; 포트 연결 없음 |
+
+---
+
+#### F3: 실제 NVMe-oF TCP 연결
+
+| # | 테스트 함수 | 설명 | 설정 | 기대 결과 |
+|---|------------|------|------|----------|
+| F3.1 | `TestRealNVMeoF_Connect` | `nvme connect --transport tcp` 성공 후 `/dev/nvme<n>` 블록 디바이스 탑재 검증 | nvmet 서버(F2)가 로컬호스트에서 실행 중; nvme-tcp 커널 모듈 로드됨 | `nvme list` 결과에 새 디바이스 항목; `/dev/nvme<n>n<m>` 블록 디바이스 존재; `blockdev --getsize64` = zvol 크기 |
+| F3.2 | `TestRealNVMeoF_Connect_Disconnect` | NVMe-oF 연결 후 `nvme disconnect` 실행 시 디바이스 노드 제거 검증 | F3.1과 동일; 연결 성공 후 Disconnect 호출 | `nvme list` 결과에서 해당 디바이스 없음; `/dev/nvme<n>n<m>` 없음 |
+| F3.3 | `TestRealNVMeoF_Connect_DeviceAppearDelay` | NVMe-oF connect 후 udev 처리 지연 환경에서 폴링 로직이 올바르게 대기하고 성공 | `tc qdisc add dev lo root netem delay 500ms` 로 지연 유발; connect 성공 | 폴링 타임아웃 내(기본 30초) 디바이스 발견; NodeStage 성공 |
+
+---
+
+### F4–F6: Kubernetes 클러스터 + 실제 스토리지 통합 테스트
+
+**테스트 유형:** F (완전 E2E) ❌ 표준 CI 불가
+
+**목적:** 실제 Kubernetes 클러스터에서 StorageClass, PVC, Pod를 통한 전체
+프로비저닝 흐름을 검증한다. pillar-csi CSI 플러그인이 Kubernetes external-provisioner,
+kubelet CSI 호출 체인, etcd, kube-controller-manager와 실제 통합되는지 확인한다.
+
+**아키텍처:**
+```
+kubectl apply PVC
+    │
+    ▼
+kube-controller-manager
+    │  (external-provisioner 호출)
+    ▼
+pillar-csi ControllerServer (실제 Pod)
+    │  (gRPC, mTLS)
+    ▼
+pillar-agent (실제 DaemonSet, 스토리지 노드)
+    │
+    ├──► ZFS 백엔드 (실제 zfs(8))
+    └──► NVMe-oF configfs (실제 /sys/kernel/config/nvmet/)
+
+kubelet
+    │  (CSI NodeStage, NodePublish)
+    ▼
+pillar-csi NodeServer (실제 DaemonSet, 워커 노드)
+    │
+    ├──► nvme connect (실제 /dev/nvme*)
+    └──► mount(8) (실제 마운트 포인트)
+```
+
+**필수 인프라:**
+- Kubernetes 클러스터 v1.29+ (kubeadm 또는 k3s)
+  - 컨트롤 플레인 노드 1개
+  - 스토리지 노드 1개 이상 (ZFS, nvmet 커널 모듈 로드됨)
+  - 워커 노드 1개 이상 (nvme-tcp 커널 모듈 로드됨)
+- pillar-csi 컨테이너 이미지 (`make docker-build` 후 노드에 배포)
+- CRD 설치 (`make install`)
+- pillar-agent DaemonSet 배포 (스토리지 노드에 taint/toleration 설정)
+- cert-manager v1.14+
+
+---
+
+#### F4: StorageClass → PVC → Pod 전체 프로비저닝 흐름
+
+| # | 테스트 함수 | 설명 | 설정 | 기대 결과 |
+|---|------------|------|------|----------|
+| F4.1 | `TestKubernetes_StorageClass_PVC` | StorageClass 생성 → PVC 생성 → PV 자동 프로비저닝 → Pod 마운트까지 전체 흐름 | StorageClass: `provisioner=pillar-csi.bhyoo.com`, `backend-type=zfs-zvol`, `protocol-type=nvmeof-tcp`; PVC: 1GiB ReadWriteOnce | PVC Phase=Bound; PV 자동 생성; Pod 내 `/data` 마운트 성공; `df -h /data` 결과 1GiB 용량 표시 |
+| F4.2 | `TestKubernetes_PVC_Delete_CleansUp` | Pod 삭제 → PVC 삭제 시 PV, ZFS zvol, NVMe-oF configfs 항목이 모두 정리됨 | F4.1 완료 후 Pod → PVC 순서로 삭제 | PV 자동 삭제 (ReclaimPolicy=Delete); ZFS zvol 없음; configfs 서브시스템 없음 |
+| F4.3 | `TestKubernetes_PVC_ReadWriteOnce_Exclusivity` | ReadWriteOnce PVC는 두 번째 Pod에서 동시 마운트가 불가능함을 검증 | PVC(RWO) + Pod1 마운트 성공; 동시에 다른 노드에서 Pod2가 동일 PVC 마운트 시도 | Pod2가 ContainerCreating 상태로 대기; 오류 이벤트에 "volume already attached" 또는 CSI ControllerPublish 거부 |
+
+---
+
+#### F5: 볼륨 온라인 확장 (Kubernetes 통합)
+
+| # | 테스트 함수 | 설명 | 설정 | 기대 결과 |
+|---|------------|------|------|----------|
+| F5.1 | `TestKubernetes_VolumeExpansion` | PVC 용량 증가 요청 → ControllerExpandVolume → NodeExpandVolume → Pod 내 파일시스템 크기 자동 갱신 | PVC(1GiB) + Pod 실행 중; `kubectl patch pvc` 로 2GiB 요청 | PVC capacity=2GiB; Pod 내 `df -h /data` 결과 2GiB; Pod 재시작 불필요 |
+| F5.2 | `TestKubernetes_VolumeExpansion_MultipleRounds` | 볼륨을 여러 번 단계적으로 확장해도 각 단계에서 Pod 내 파일시스템 크기 반영 | 1GiB → 2GiB → 4GiB 순차 확장; 각 단계 후 검증 | 각 단계 후 `df` 결과가 새 크기 표시; 데이터 손상 없음 |
+
+---
+
+#### F6: 노드 장애 복구 (pillar-agent ReconcileState)
+
+| # | 테스트 함수 | 설명 | 설정 | 기대 결과 |
+|---|------------|------|------|----------|
+| F6.1 | `TestKubernetes_NodeFailover` | 스토리지 노드 재시작 후 pillar-agent가 configfs 상태를 자동으로 복원하고 기존 PVC 연결이 재개됨 | PVC + Pod 정상 실행 중; 스토리지 노드 재시작 | 재시작 후 pillar-agent가 `ReconcileState` 호출; configfs 항목 재생성; Pod가 일시적 I/O 오류 후 자동 재연결; 데이터 손상 없음 |
+| F6.2 | `TestKubernetes_AgentReconnect_MTLSCert` | pillar-agent 재시작 후 mTLS 인증서로 CSI 컨트롤러에 재연결 성공 | 인증서 유효 기간 내; agent 프로세스 재시작 | 재시작 후 AgentConnected=True 조건 복원; gRPC 연결 재수립; 기존 볼륨 연산 재개 |
+
+---
+
+### F7: mTLS 인증서 실제 갱신 테스트
+
+**테스트 유형:** F (완전 E2E) ❌ 표준 CI 불가
+
+**목적:** cert-manager가 발급한 TLS 인증서가 만료 임박 시 자동 갱신되고,
+인증서 갱신 중에도 pillar-csi CSI 컨트롤러와 pillar-agent 간의 gRPC 연결이
+중단 없이 유지되는지 검증한다.
+
+**필수 인프라:**
+- cert-manager v1.14+ (클러스터 내 설치)
+- 짧은 유효 기간 인증서 발급 가능 설정 (`duration=1m`, `renewBefore=30s`)
+- Kubernetes 클러스터
+
+---
+
+| # | 테스트 함수 | 설명 | 설정 | 기대 결과 |
+|---|------------|------|------|----------|
+| F7.1 | `TestRealMTLS_CertRotation` | cert-manager가 짧은 유효 기간 인증서를 자동 갱신하고 갱신 중 gRPC 연결 유지 | 인증서 유효 기간 1분; renewBefore 30초; 갱신 대기 후 agent 호출 | 갱신 전후 agent gRPC 호출 모두 성공; TLS 핸드셰이크 오류 없음; 인증서 시리얼 번호 변경 확인 |
+| F7.2 | `TestRealMTLS_ExpiredCert_Rejected` | 만료된 인증서로 연결 시도 시 gRPC 연결 거부 | 수동으로 만료된 인증서 주입; pillar-agent 재연결 시도 | TLS 핸드셰이크 실패; gRPC 연결 거부; cert-manager 갱신 후 정상 재연결 |
+
+---
+
+### F8–F12: 실제 NVMe-oF 노드 마운트/언마운트 테스트
+
+**테스트 유형:** F (완전 E2E) ❌ 표준 CI 불가
+
+**목적:** CSI NodeServer의 실제 동작을 검증한다. 유형 A 테스트의
+mockConnector/mockMounter 대신 실제 `nvme connect`, `mount(8)`, `mkfs.ext4/xfs`,
+`resize2fs/xfs_growfs` 명령이 실행되는 환경에서 테스트한다.
+
+**아키텍처:**
+```
+테스트 프로세스 (root 권한 필요)
+    │
+    ├──► CSI NodeServer (실제 코드)
+    │         │
+    │         ├──► NVMe-oF Connector (실제 nvme-cli)
+    │         │        └──► /dev/nvme<n>n<m>  블록 디바이스
+    │         │
+    │         └──► Mounter (실제 mount(8), mkfs.ext4)
+    │                  └──► 실제 파일시스템 마운트
+    │
+    └──► NVMe-oF 대상 서버 (로컬호스트 nvmet)
+             └──► ZFS zvol /dev/zvol/tank/<pvc-id>
+```
+
+**필수 인프라:**
+- root 권한 (또는 `CAP_SYS_ADMIN`)
+- `nvmet`, `nvmet-tcp`, `nvme-tcp` 커널 모듈
+- `nvme-cli` (v2.x)
+- `e2fsprogs` (`mkfs.ext4`, `resize2fs`)
+- `xfsprogs` (`mkfs.xfs`, `xfs_growfs`)
+- `mount(8)`, `umount(8)` (기본 설치)
+- ZFS pool 및 zvol (F1 참조)
+
+---
+
+#### F8–F10: NodeStage / NodePublish / NodeUnstage 실제 마운트
+
+| # | 테스트 함수 | 설명 | 설정 | 기대 결과 |
+|---|------------|------|------|----------|
+| F8.1 | `TestRealNode_NodeStageVolume_ActualMount_ext4` | NodeStageVolume이 실제 NVMe-oF connect → `/dev/nvme*` 디바이스 → `mkfs.ext4` → 스테이징 경로 마운트를 순서대로 수행 | nvmet 서버(로컬); ZFS zvol 준비; fsType=ext4; stagingTargetPath=`/tmp/stage-<vol>` | `mount` 결과에 스테이징 경로 존재; `df -T /tmp/stage-<vol>` 결과 fstype=ext4; Connect 1회 호출 |
+| F8.2 | `TestRealNode_NodeStageVolume_ActualMount_xfs` | fsType=xfs로 NodeStageVolume 수행 | F8.1과 동일하되 fsType=xfs | `df -T` 결과 fstype=xfs; `xfs_info` 정상 출력 |
+| F8.3 | `TestRealNode_NodeStageVolume_Idempotent` | NodeStageVolume 두 번째 호출이 멱등성 보장 (이미 마운트됨 감지 후 성공 반환) | F8.1 성공 후 동일 파라미터로 재호출 | 두 번째 호출 성공; `mount` 결과에 중복 마운트 없음; `nvme list` 결과에 디바이스 1개 |
+| F9.1 | `TestRealNode_NodePublishVolume_BindMount` | NodePublish가 스테이징 경로를 타깃 경로로 바인드 마운트 수행 | F8.1 NodeStage 완료; targetPath=`/tmp/target-<vol>` | `mount` 결과에 `bind` 옵션과 타깃 경로 존재; 타깃 경로에서 파일 I/O 가능 |
+| F9.2 | `TestRealNode_NodePublishVolume_MultiTargets` | 동일 스테이징에서 여러 타깃으로 바인드 마운트 | F8.1 완료; 3개의 서로 다른 targetPath로 NodePublish 각각 호출 | 3개 타깃 경로 모두 마운트됨; 각각 독립적으로 파일 I/O 가능 |
+| F10.1 | `TestRealNode_NodeUnstageVolume_ActualDetach` | NodeUnstage가 마운트 해제 → `nvme disconnect` → `/dev/nvme*` 제거까지 수행 | F8.1 + F9.1 완료 후 NodeUnpublish, NodeUnstage 순서로 호출 | `mount` 결과에 스테이징 경로 없음; `nvme list` 결과에 해당 디바이스 없음; `/dev/nvme*` 없음 |
+
+---
+
+#### F11: udev 지연 환경에서 디바이스 폴링
+
+| # | 테스트 함수 | 설명 | 설정 | 기대 결과 |
+|---|------------|------|------|----------|
+| F11.1 | `TestRealNode_NodeStageVolume_DeviceAppearDelay` | NVMe-oF connect 성공 후 `/dev/nvme*` 디바이스가 즉시 나타나지 않고 지연되는 환경에서 폴링 로직이 정상 대기하고 최종 성공 | `tc qdisc add dev lo root netem delay 1s` 로 네트워크 지연 유발; nvme-tcp connect 성공하지만 udev 처리 느림 | 폴링 타임아웃 내(30초) 디바이스 발견; NodeStage 성공; 로그에 폴링 재시도 기록 |
+| F11.2 | `TestRealNode_NodeStageVolume_DeviceNeverAppears` | 디바이스가 폴링 타임아웃 내에 끝내 나타나지 않을 때 적절한 오류 반환 | nvme connect 성공하지만 디바이스 경로가 존재하지 않는 가짜 NQN 사용; 타임아웃=5초 | gRPC FailedPrecondition 또는 Internal; 자동 nvme disconnect 호출; 스테이징 경로 마운트 미수행 |
+
+---
+
+#### F12: NVMe-oF Multipath
+
+| # | 테스트 함수 | 설명 | 설정 | 기대 결과 |
+|---|------------|------|------|----------|
+| F12.1 | `TestRealNode_MultiPathAttach` | 동일 NQN에 두 개의 네트워크 인터페이스로 연결 시 NodeStage가 올바른 블록 디바이스를 선택 | nvmet 서버가 두 IP에서 리스닝; 두 경로 모두 nvme connect; VolumeContext에 두 address 포함 | 두 경로 모두 `/dev/nvme*`로 나타남; 올바른 디바이스 선택 및 마운트; multipath 또는 단일 경로 중 구현 정의 동작 |
+| F12.2 | `TestRealNode_MultiPath_OnePathDown` | 멀티패스 연결 중 하나의 경로가 끊어져도 파일시스템 I/O 지속 | F12.1 완료; 한 경로의 네트워크 인터페이스 비활성화 (`ip link set <iface> down`) | I/O 지속 (다른 경로 사용); dmesg에 경로 실패 기록; `nvme list` 결과에 나머지 경로만 존재 |
+
+---
+
+### F13–F16: ZFS 스냅샷, 복원 및 클론 테스트
+
+**테스트 유형:** F (완전 E2E) ❌ 표준 CI 불가
+
+**목적:** CSI `CreateSnapshot`, `DeleteSnapshot`, `ListSnapshots` 기능 (현재 미구현)과
+`VolumeContentSource.Snapshot`을 통한 PVC 복원 흐름을 검증한다.
+이 테스트는 CSI 스냅샷 기능이 구현된 이후에 실행 가능하다.
+
+**현재 구현 상태:** CSI CreateSnapshot/DeleteSnapshot/ListSnapshots 미구현.
+유형 A E12 테스트가 이를 `Unimplemented` gRPC 코드로 반환함을 이미 검증한다.
+
+**필수 인프라 (F13–F15):**
+- ZFS 커널 모듈 및 `zfs-utils`
+- CSI CreateSnapshot/DeleteSnapshot/ListSnapshots 구현 완료 후 활성화
+
+**필수 인프라 (F16):**
+- 위 + 실제 Kubernetes 클러스터, external-snapshotter v7+
+
+---
+
+| # | 테스트 함수 | 설명 | 설정 | 기대 결과 |
+|---|------------|------|------|----------|
+| F13.1 | `TestRealZFS_CreateSnapshot` | CSI CreateSnapshot 호출 시 실제 `zfs snapshot pool/vol@<snap-id>` 실행 및 ReadyToUse=true 반환 | ZFS zvol 존재; CreateSnapshot 호출; snapshot_name="snap-01" | `zfs list -t snapshot` 결과에 `tank/<pvc-id>@snap-01` 존재; ReadyToUse=true; creation_time 정확 |
+| F13.2 | `TestRealZFS_CreateSnapshot_Idempotent` | 동일 스냅샷 이름으로 두 번 CreateSnapshot 호출 시 동일 응답 반환 | 동일 source_volume_id + snapshot_name으로 2회 호출 | 두 번째 호출 성공; `zfs list` 결과에 스냅샷 1개; ReadyToUse=true |
+| F14.1 | `TestRealZFS_DeleteSnapshot` | CSI DeleteSnapshot 호출 시 `zfs destroy pool/vol@snap` 실행 및 스냅샷 제거 | F13.1 완료 후 DeleteSnapshot 호출 | `zfs list -t snapshot` 결과에 해당 스냅샷 없음 |
+| F14.2 | `TestRealZFS_DeleteSnapshot_Idempotent` | 이미 삭제된 스냅샷 DeleteSnapshot 호출 시 성공 반환 (멱등성) | F14.1 완료 후 동일 snapshot_id로 DeleteSnapshot 재호출 | 성공 반환 (gRPC OK); 오류 없음 |
+| F15.1 | `TestRealZFS_ListSnapshots` | CSI ListSnapshots 호출 시 `zfs list -t snapshot` 결과를 올바르게 변환 | ZFS zvol에 3개 스냅샷 존재 | entries 3개; 각 entry에 snapshot_id, source_volume_id, creation_time, ready_to_use 포함 |
+| F16.1 | `TestKubernetes_VolumeSnapshot_CreateRestore` | VolumeSnapshot CRD 생성 → PVC(RestoreFrom) → Pod 마운트 후 데이터 일관성 검증 | PVC + Pod 실행 중; 파일 쓰기 후 VolumeSnapshot 생성; 새 PVC(dataSourceRef=스냅샷) 생성; Pod 마운트 | 복원 PVC의 Pod에서 원본 파일 내용 동일; 신규 파일 쓰기도 가능 |
+
+---
+
+### F17–F19: 볼륨 마이그레이션 (ZFS Send/Receive)
+
+**테스트 유형:** F (완전 E2E) ❌ 표준 CI 불가
+
+**목적:** `agent.SendVolume` / `agent.ReceiveVolume` 스트리밍 gRPC RPC가
+실제 `zfs send` / `zfs receive` 파이프라인과 올바르게 통합되는지 검증한다.
+데이터 무결성 (checksum), 스트림 오류 처리, 크로스 노드 마이그레이션 시나리오를 다룬다.
+
+**아키텍처:**
+```
+테스트 프로세스
+    │
+    ├──► agent.SendVolume (gRPC streaming, 노드 A)
+    │         └──► zfs send pool/vol@snap | stream_to_grpc
+    │
+    └──► agent.ReceiveVolume (gRPC streaming, 노드 B)
+              └──► stream_from_grpc | zfs receive pool/new-vol
+```
+
+**필수 인프라:**
+- ZFS 커널 모듈, `zfs-utils`
+- 단일 노드 (F17–F18) 또는 두 개 스토리지 노드 네트워크 연결 (F19)
+- 네트워크 대역폭: 최소 1Gbps (크로스 노드)
+
+---
+
+| # | 테스트 함수 | 설명 | 설정 | 기대 결과 |
+|---|------------|------|------|----------|
+| F17.1 | `TestRealAgent_SendVolume_ZFSSend` | `agent.SendVolume` 스트리밍 RPC가 `zfs send` 스트림을 gRPC 청크로 수신하고 checksum 일치 | ZFS zvol(1GiB) + 스냅샷 준비; SendVolume 호출; 수신 스트림을 파일로 저장 | 스트림 완료; 수신 파일의 SHA256 = `zfs send <snap> | sha256sum` 결과와 일치; 오류 없음 |
+| F17.2 | `TestRealAgent_SendVolume_NetworkInterrupt` | 전송 중 네트워크 중단 시 적절한 스트리밍 오류 반환 | SendVolume 시작 후 `tc` 로 네트워크 차단; 스트림 절반 진행 후 중단 | gRPC 스트림 오류 반환; ZFS 소스 데이터 무손상; 재시도 가능 상태 |
+| F18.1 | `TestRealAgent_ReceiveVolume_ZFSReceive` | `agent.ReceiveVolume` 스트리밍 RPC가 gRPC 스트림을 수신하여 `zfs receive` 로 볼륨 복원 | F17.1에서 저장한 스트림 파일 사용; ReceiveVolume 호출 | `zfs list` 결과에 새 볼륨 존재; 복원된 zvol의 데이터가 원본과 동일 (checksum); 블록 디바이스 크기 일치 |
+| F18.2 | `TestRealAgent_ReceiveVolume_CorruptedStream` | 손상된 스트림 수신 시 `zfs receive` 오류 처리 및 불완전 볼륨 정리 | 무작위 바이트 삽입으로 스트림 손상; ReceiveVolume 호출 | gRPC Internal 또는 DataLoss 반환; 불완전한 zvol 자동 정리; pool 상태 오염 없음 |
+| F19.1 | `TestRealAgent_SendReceiveVolume_CrossNode` | 노드 A에서 SendVolume → 노드 B에서 ReceiveVolume 크로스 노드 마이그레이션; 마이그레이션 후 데이터 동일성 검증 | 두 스토리지 노드 준비; 노드 A에 ZFS zvol(1GiB) + 데이터 기록; 노드 B에 빈 ZFS pool | 노드 B에 볼륨 복원 완료; 노드 B zvol 데이터 = 노드 A 원본 데이터 (파일 checksum 비교); 마이그레이션 소요 시간 기록 |
+| F19.2 | `TestRealAgent_SendReceiveVolume_LargeVolume` | 10GiB 볼륨 크로스 노드 마이그레이션; 스트림 청크 수, 총 소요 시간, 처리량 측정 | F19.1과 동일하되 볼륨 크기 10GiB; 5분 타임아웃 | 마이그레이션 완료; 처리량 >= 100 MiB/s; 데이터 동일성; 오류 없음 |
+
+---
+
+### F20: 볼륨 클론 (ZFS Clone)
+
+**테스트 유형:** F (완전 E2E) ❌ 표준 CI 불가
+
+**목적:** CSI `VolumeContentSource.Snapshot`을 통한 볼륨 클론이 `zfs clone`을
+사용하여 기존 스냅샷으로부터 새 zvol을 생성하는지 검증한다.
+현재 이 기능은 미구현 상태이다.
+
+**필수 인프라:**
+- ZFS 커널 모듈, `zfs-utils`
+- CSI VolumeContentSource.Snapshot 처리 구현 완료 후 활성화
+
+---
+
+| # | 테스트 함수 | 설명 | 설정 | 기대 결과 |
+|---|------------|------|------|----------|
+| F20.1 | `TestRealZFS_CloneVolume_FromSnapshot` | `CreateVolume(VolumeContentSource.Snapshot=snap-01)` 호출 시 `zfs clone pool/src@snap-01 pool/new-vol` 실행 후 새 zvol이 독립적으로 동작 | 소스 zvol + 스냅샷 준비; CreateVolume(contentSource=snap) 호출 | `zfs list` 결과에 새 zvol 존재; 새 zvol의 데이터 = 스냅샷 시점 데이터; 원본 수정이 클론에 영향 없음 |
+| F20.2 | `TestRealZFS_CloneVolume_DeleteIndependent` | 클론 볼륨 삭제 시 원본 스냅샷이 유지됨 | F20.1 완료 후 클론 DeleteVolume | `zfs list` 결과에 클론 없음; 원본 스냅샷 유지; 원본 볼륨 데이터 무손상 |
+
+---
+
+### F21–F23: 볼륨 확장 및 스토리지 용량 한계 테스트
+
+**테스트 유형:** F (완전 E2E) ❌ 표준 CI 불가
+
+**목적:** 실제 ZFS 환경에서 볼륨 확장, pool 용량 고갈 시나리오를 검증한다.
+유형 A E15 테스트가 mock 오류 주입으로 오류 코드 전파를 검증하는 반면,
+이 테스트는 **실제 ENOSPC 오류, 실제 파일시스템 리사이즈**를 검증한다.
+
+**필수 인프라:**
+- ZFS 커널 모듈, `zfs-utils`
+- 용량 제한 가능한 ZFS pool (`zfs set quota=` 또는 소형 블록 디바이스)
+- F21: 실제 Kubernetes 클러스터, Pod 실행 중, ZFS 노드
+
+---
+
+| # | 테스트 함수 | 설명 | 설정 | 기대 결과 |
+|---|------------|------|------|----------|
+| F21.1 | `TestKubernetes_VolumeExpansion_OnlinePod` | 실행 중인 Pod의 PVC를 확장하면 Pod 내 파일시스템이 재시작 없이 새 크기로 자동 갱신 | Kubernetes 클러스터; PVC(1GiB) + Pod 실행 중; `kubectl patch pvc` 로 2GiB 요청 | Pod 내 `df -h /data` 결과 2GiB; Pod 재시작 없음; 기존 파일 무손상 |
+| F21.2 | `TestKubernetes_VolumeExpansion_FilesystemResize_ext4` | ext4 파일시스템 리사이즈가 `resize2fs`를 통해 성공적으로 수행됨 | F21.1과 동일하되 fsType=ext4; 노드 로그 확인 | `resize2fs` 명령 실행 로그 기록; Pod 내 파일시스템 크기 증가; 기존 데이터 무손상 |
+| F21.3 | `TestKubernetes_VolumeExpansion_FilesystemResize_xfs` | xfs 파일시스템 리사이즈가 `xfs_growfs`를 통해 수행됨 | F21.1과 동일하되 fsType=xfs | `xfs_growfs` 실행 로그; Pod 내 `xfs_info` 결과 새 크기 반영 |
+| F22.1 | `TestRealZFS_PoolFull_CreateVolume` | ZFS pool을 거의 가득 채운 후 새 zvol 생성 시도 시 실제 ENOSPC 오류 전파 검증 | `zfs set quota=500M tank`; 현재 400MiB 사용 중; 200MiB zvol 생성 시도 | gRPC ResourceExhausted 또는 Internal; zvol 미생성; `zfs list` 결과 변화 없음 |
+| F22.2 | `TestRealZFS_PoolFull_CreateVolume_Cleanup` | 용량 부족으로 실패한 CreateVolume이 불완전한 ZFS 자원을 정리함 | F22.1과 동일 | 실패 후 불완전 zvol 없음; configfs 항목 없음; pool 상태 오염 없음 |
+| F23.1 | `TestRealZFS_PoolFull_ExpandVolume` | 현재 pool 여유 공간 이상의 용량으로 ExpandVolume 시도 시 실제 "out of space" 오류 | ZFS zvol(1GiB) 존재; pool 여유 500MiB; 2GiB로 확장 시도 | gRPC ResourceExhausted 또는 Internal; zvol 크기 변화 없음 (1GiB 유지) |
+
+---
+
+### F24–F26: 커널 레이스 컨디션 및 확장성 테스트
+
+**테스트 유형:** F (완전 E2E) ❌ 표준 CI 불가
+
+**목적:** 실제 커널 레벨 동시성, 마운트 포인트 사용 중 오류, 대규모 PVC 확장성을
+검증한다. 유형 A E16 테스트가 in-process 고루틴 레벨 동시성을 검증하는 반면,
+이 테스트는 **실제 시스템 콜, 실제 커널 잠금, 실제 네임스페이스**를 다룬다.
+
+**필수 인프라:**
+- F24: nvmet/nvme-tcp 커널 모듈, root 권한, 실제 NVMe-oF 디바이스
+- F25: 실제 Kubernetes 클러스터 (2+ 노드), pillar-agent DaemonSet, ZFS 노드
+- F26: root 권한, mount(8), fuser/lsof
+
+---
+
+| # | 테스트 함수 | 설명 | 설정 | 기대 결과 |
+|---|------------|------|------|----------|
+| F24.1 | `TestRealNode_ConcurrentStageUnstage_SameVolume` | 동일 볼륨에 NodeStage/NodeUnstage를 동시 호출 시 커널 레벨 레이스 컨디션 없음 검증 | 5개 고루틴이 동시에 NodeStage/NodeUnstage 반복; 실제 NVMe-oF 디바이스 | 모든 연산 완료; 커널 패닉 없음; dmesg에 오류 없음; 최종 상태 일관성 |
+| F24.2 | `TestRealNode_ConcurrentNodePublish_SameStaging` | 동일 스테이징 경로에서 3개 타깃으로 동시 NodePublish | NodeStage 1회 완료 후 3개 고루틴이 각각 다른 targetPath로 동시 NodePublish | 3개 바인드 마운트 모두 성공; 데이터 무결성; `mount` 결과 정확 |
+| F25.1 | `TestKubernetes_ManyPVCsConcurrent` | 100개 PVC 동시 생성 — controller, agent, ZFS 백엔드 확장성 및 레이스 컨디션 검증 | Kubernetes 클러스터 + pillar-agent + ZFS 노드; `kubectl apply` 로 100개 PVC 동시 생성 | 5분 내 100개 PVC 모두 Bound; ZFS zvol 100개; NVMe-oF 서브시스템 100개; controller 오류 없음 |
+| F25.2 | `TestKubernetes_ManyPVCsConcurrent_Delete` | F25.1에서 생성한 100개 PVC를 동시 삭제 — 정리 완전성 검증 | F25.1 완료 후 `kubectl delete pvc --all` | 5분 내 100개 PVC 모두 삭제; ZFS zvol 0개; configfs 서브시스템 0개; 리소스 누수 없음 |
+| F26.1 | `TestRealNode_UnmountWithBusyMount` | 마운트 포인트가 사용 중 (`fuser`로 프로세스 점유)일 때 NodeUnstage 호출 시 EBUSY 오류 처리 검증 | NodeStage + NodePublish 완료; 백그라운드 프로세스가 타깃 경로 내 파일 오픈; NodeUnpublish 호출 | gRPC Internal 또는 FailedPrecondition 반환; 마운트 포인트 유지 (강제 해제 없음); 프로세스 종료 후 재시도 성공 가능 |
+| F26.2 | `TestRealNode_UnmountWithBusyMount_ForceUmount` | lazy unmount (`umount -l`) 옵션이 활성화된 경우 EBUSY 상태에서도 NodeUnstage가 성공적으로 완료 | F26.1과 동일; pillar-csi 설정에서 `force_umount=true` | NodeUnstage 성공; 마운트 포인트 제거; 프로세스는 파일 핸들 유지 (lazy detach); nvme disconnect 성공 |
+
+---
+
+### 유형 F 커버리지 요약
+
+유형 F 테스트가 검증하는 항목과, 유형 A/컴포넌트 테스트와의 차별점을 정리한다.
+
+| 검증 항목 | 유형 A (in-process) | 유형 F (Full E2E) | 관련 테스트 |
+|----------|:-------------------:|:-----------------:|------------|
+| 실제 `zfs create` 실행 및 zvol 생성 | ❌ (mock) | ✅ | F1.1–F1.5 |
+| 실제 `zfs destroy` 및 디바이스 노드 제거 | ❌ (mock) | ✅ | F1.3 |
+| 실제 configfs 조작 (`/sys/kernel/config/nvmet/`) | ❌ (tmpdir) | ✅ | F2.1–F2.3 |
+| 실제 `nvme connect` 및 `/dev/nvme*` 블록 디바이스 | ❌ (mock) | ✅ | F3.1–F3.3 |
+| 실제 `mkfs.ext4` / `mkfs.xfs` | ❌ (mock) | ✅ | F8.1–F8.2 |
+| 실제 `mount(8)` / 바인드 마운트 | ❌ (mock) | ✅ | F8.1–F10.1 |
+| 실제 `resize2fs` / `xfs_growfs` | ❌ (mock) | ✅ | F21.2–F21.3 |
+| 실제 ENOSPC (`zfs out of space`) | ❌ (mock 오류) | ✅ | F22.1–F23.1 |
+| Kubernetes external-provisioner 통합 | ❌ | ✅ | F4.1–F4.3 |
+| kubelet CSI 호출 체인 (NodeStage/NodePublish) | ❌ | ✅ | F4.1 |
+| etcd 일관성 (실제 낙관적 잠금) | ❌ (fake client) | ✅ | F4, F25 |
+| CRD 검증 웹훅 실제 실행 | ❌ (fake client) | ✅ | F4 |
+| cert-manager 실제 인증서 갱신 | ❌ (in-memory) | ✅ | F7.1–F7.2 |
+| ZFS send/receive 스트리밍 (실제 파이프) | ❌ | ✅ | F17–F19 |
+| 크로스 노드 볼륨 마이그레이션 데이터 무결성 | ❌ | ✅ | F19.1–F19.2 |
+| NVMe-oF multipath 연결 | ❌ (mock) | ✅ | F12.1–F12.2 |
+| udev 지연 환경 폴링 | ❌ (mock 즉시 반환) | ✅ | F11.1–F11.2 |
+| 실제 EBUSY 마운트 오류 처리 | ❌ | ✅ | F26.1–F26.2 |
+| 100개 PVC 확장성 | ❌ (mock 즉시 처리) | ✅ | F25.1–F25.2 |
+| ZFS 스냅샷 실제 생성/삭제/복원 | ❌ | ✅ | F13–F16 |
+| 노드 재시작 후 agent 자동 복구 | ❌ | ✅ | F6.1 |
 
 ---
 
