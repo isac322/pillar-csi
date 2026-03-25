@@ -17,43 +17,36 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// internal_agent_test.go — Ginkgo suite scaffolding for pillar-csi
-// "internal agent" mode.
+// internal_agent_test.go — Ginkgo specs for pillar-csi "internal agent" mode.
 //
 // In internal-agent mode the pillar-agent binary runs as a DaemonSet
 // *inside* the Kind cluster, managed by the same Helm chart that deploys
 // the controller and node components.
 //
-// # Running only internal-agent tests
+// # Running only internal-agent specs via label filter
 //
-//	go test -tags=e2e -v -count=1 ./test/e2e/ \
-//	    -run TestInternalAgent \
-//	    -- --ginkgo.label-filter=internal-agent --ginkgo.v
-//
-// # Running the full e2e suite (excluding internal-agent)
-//
-//	go test -tags=e2e -v -count=1 ./test/e2e/ \
-//	    -run TestE2E \
-//	    -- --ginkgo.label-filter='!internal-agent' --ginkgo.v
+//	make test-e2e E2E_TEST_ARGS="-run TestE2E -- --ginkgo.label-filter=internal-agent"
 //
 // # Architecture
 //
 // InternalAgentSuite holds all state shared by specs in this container.
-// Suite-level setup (Helm chart install + agent DaemonSet readiness) runs
-// in BeforeAll and teardown (Helm uninstall) runs in AfterAll.  The struct
-// methods are named BeforeSuite / AfterSuite to make their role explicit even
-// though they are invoked via Ginkgo's ordered-container lifecycle, not via
-// the global BeforeSuite hook (which is reserved for the package-wide image
-// build/load step in e2e_suite_test.go).
+// The cluster lifecycle (Kind, images, Helm install) is fully managed by
+// TestMain in setup_test.go.  BeforeSuite here only connects to the
+// already-running cluster and waits for the agent DaemonSet to be ready.
+// AfterSuite is intentionally a no-op — Helm uninstall is handled by
+// TestMain's teardown.
+//
+// There is NO separate TestInternalAgent entry point.  All Ginkgo specs
+// (InternalAgent, ExternalAgent, and others) are run by the single TestE2E
+// function in e2e_suite_test.go, which calls RunSpecs once.  Having multiple
+// RunSpecs calls in one binary causes every spec to execute twice.
 
 package e2e
 
 import (
 	"context"
 	"fmt"
-	"os"
 	"os/exec"
-	"testing"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -66,21 +59,9 @@ import (
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const (
-	// internalAgentHelmRelease is the default Helm release name for the
-	// internal-agent e2e tests.
-	internalAgentHelmRelease = "pillar-csi"
-
-	// internalAgentNamespace is the default Kubernetes namespace into which
-	// the Helm chart is installed for internal-agent tests.
-	internalAgentNamespace = "pillar-csi-system"
-
 	// internalAgentDaemonSetName is the name of the agent DaemonSet created
 	// by the Helm chart.  Used to verify readiness after deployment.
 	internalAgentDaemonSetName = "pillar-csi-agent"
-
-	// internalAgentHelmChart is the path to the Helm chart, relative to the
-	// project root.  utils.Run sets cmd.Dir to the project root.
-	internalAgentHelmChart = "charts/pillar-csi"
 
 	// defaultInternalAgentReadyTimeout is the maximum time to wait for all
 	// agent DaemonSet pods to become Ready before aborting BeforeSuite.
@@ -90,52 +71,50 @@ const (
 // ─── InternalAgentSuite ──────────────────────────────────────────────────────
 
 // InternalAgentSuite holds the shared state for the pillar-csi internal-agent
-// e2e test suite.
+// Ginkgo specs.
 //
-// Typical lifecycle inside an Ordered Describe container:
+// The cluster lifecycle (Kind cluster, Docker images, Helm install) is fully
+// managed by TestMain in setup_test.go.  This suite only:
+//   - connects to the already-running cluster (via framework.SetupSuite)
+//   - waits for the agent DaemonSet rollout to complete
 //
-//	BeforeAll → s.BeforeSuite(ctx)   // helm install + DaemonSet readiness
+// AfterSuite is intentionally a no-op.  Helm uninstall and cluster teardown
+// are handled by TestMain's deferred teardownE2E().
+//
+// Typical lifecycle inside the Ordered Describe container below:
+//
+//	BeforeAll → s.BeforeSuite(ctx)   // cluster connect + DaemonSet readiness
 //	It specs  → use s.Client, s.Namespace, etc.
-//	AfterAll  → s.AfterSuite(ctx)   // helm uninstall
+//	AfterAll  → s.AfterSuite(ctx)   // no-op
 type InternalAgentSuite struct {
 	// Client is the controller-runtime client connected to the test cluster.
 	// Populated by BeforeSuite; nil before that.
 	Client client.Client
 
 	// Namespace is the Kubernetes namespace where the Helm release is
-	// installed.  Defaults to internalAgentNamespace.
+	// installed.  Sourced from testEnv.HelmNamespace (set by TestMain).
 	Namespace string
 
-	// HelmRelease is the name passed to `helm upgrade --install`.
-	// Defaults to internalAgentHelmRelease.
+	// HelmRelease is the release name used to identify the deployment.
+	// Sourced from testEnv.HelmRelease (set by TestMain).
 	HelmRelease string
-
-	// HelmValuesFile is the path to the e2e Helm values override file,
-	// relative to the project root.  Defaults to hack/e2e-values.yaml.
-	HelmValuesFile string
 
 	// agentReadyTimeout caps BeforeSuite's wait for the agent DaemonSet.
 	agentReadyTimeout time.Duration
 }
 
-// newInternalAgentSuite constructs an InternalAgentSuite, reading overrides
-// from environment variables.
-//
-// Supported env vars:
-//
-//	HELM_RELEASE          Helm release name             (default: pillar-csi)
-//	HELM_NAMESPACE        Namespace for the release     (default: pillar-csi-system)
-//	HELM_VALUES           Path to values override file  (default: hack/e2e-values.yaml)
-//	AGENT_READY_TIMEOUT   time.Duration string for the  (default: 3m)
-//	                      agent DaemonSet readiness wait
+// newInternalAgentSuite constructs an InternalAgentSuite using values already
+// established by TestMain (testEnv).  The AGENT_READY_TIMEOUT env var may
+// override the DaemonSet readiness wait duration.
 func newInternalAgentSuite() *InternalAgentSuite {
 	s := &InternalAgentSuite{
-		HelmRelease:       envOrDefault("HELM_RELEASE", internalAgentHelmRelease),
-		Namespace:         envOrDefault("HELM_NAMESPACE", internalAgentNamespace),
-		HelmValuesFile:    envOrDefault("HELM_VALUES", "hack/e2e-values.yaml"),
+		// Consume the coordinates set by TestMain so both the suite and TestMain
+		// agree on which namespace / release to look at.
+		HelmRelease:       testEnv.HelmRelease,
+		Namespace:         testEnv.HelmNamespace,
 		agentReadyTimeout: defaultInternalAgentReadyTimeout,
 	}
-	if v := os.Getenv("AGENT_READY_TIMEOUT"); v != "" {
+	if v := envOrDefault("AGENT_READY_TIMEOUT", ""); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			s.agentReadyTimeout = d
 		}
@@ -143,37 +122,32 @@ func newInternalAgentSuite() *InternalAgentSuite {
 	return s
 }
 
-// BeforeSuite connects to the test cluster, installs (or upgrades) the
-// pillar-csi Helm chart with the e2e values override, and waits for the
-// agent DaemonSet rollout to complete.
+// BeforeSuite connects to the already-running test cluster (bootstrapped by
+// TestMain) and waits for the agent DaemonSet rollout to complete.
+//
+// Note: Helm install is NOT performed here.  TestMain already ran
+// installHelm() before calling m.Run(), so the DaemonSet exists by the time
+// this function is called.  Re-installing here would conflict with TestMain
+// and reference values files that no longer exist.
 //
 // Any error causes Ginkgo to fail the suite immediately.
 //
 // Called from BeforeAll in the InternalAgent Ordered Describe container.
 func (s *InternalAgentSuite) BeforeSuite(ctx context.Context) {
-	By("connecting to the test cluster")
-	fw, err := framework.SetupSuite()
-	Expect(err).NotTo(HaveOccurred(), "internal-agent BeforeSuite: cluster connectivity check failed")
-	s.Client = fw.Client
-
-	By("deploying the pillar-csi Helm chart (controller + node + agent DaemonSet)")
-	helmArgs := []string{
-		"upgrade", "--install",
-		s.HelmRelease,
-		internalAgentHelmChart,
-		"--namespace", s.Namespace,
-		"--create-namespace",
-		"--wait",
-		"--timeout", "5m",
-		"-f", s.HelmValuesFile,
+	// Skip this suite when external-agent mode is active.  The external-agent
+	// Helm overlay disables the agent DaemonSet (unmatchable nodeSelector),
+	// so waiting for the DaemonSet rollout would time out.
+	if testEnv.ExternalAgentAddr != "" {
+		Skip("external-agent mode active — internal-agent specs do not apply " +
+			"(set E2E_LAUNCH_EXTERNAL_AGENT=false to run internal-agent tests)")
 	}
-	helmCmd := exec.CommandContext(ctx, "helm", helmArgs...)
-	helmCmd.Stdout = GinkgoWriter
-	helmCmd.Stderr = GinkgoWriter
-	Expect(helmCmd.Run()).To(Succeed(),
-		"internal-agent BeforeSuite: helm upgrade --install failed "+
-			"(release=%s, namespace=%s, values=%s)",
-		s.HelmRelease, s.Namespace, s.HelmValuesFile)
+
+	By("connecting to the test cluster (bootstrapped by TestMain)")
+	fw, err := framework.SetupSuite()
+	Expect(err).NotTo(HaveOccurred(),
+		"internal-agent BeforeSuite: cluster connectivity check failed; "+
+			"KUBECONFIG=%s", testEnv.KubeconfigPath)
+	s.Client = fw.Client
 
 	By("waiting for the agent DaemonSet rollout to complete")
 	rolloutCmd := exec.CommandContext(ctx, "kubectl", "rollout", "status",
@@ -184,53 +158,26 @@ func (s *InternalAgentSuite) BeforeSuite(ctx context.Context) {
 	rolloutCmd.Stdout = GinkgoWriter
 	rolloutCmd.Stderr = GinkgoWriter
 	Expect(rolloutCmd.Run()).To(Succeed(),
-		"internal-agent BeforeSuite: agent DaemonSet %q not ready within %s",
-		internalAgentDaemonSetName, s.agentReadyTimeout)
+		"internal-agent BeforeSuite: agent DaemonSet %q not ready within %s "+
+			"(Helm release=%s, namespace=%s)",
+		internalAgentDaemonSetName, s.agentReadyTimeout,
+		s.HelmRelease, s.Namespace)
 }
 
-// AfterSuite uninstalls the pillar-csi Helm release, removing the agent
-// DaemonSet and all other chart-managed resources from the cluster.
+// AfterSuite is intentionally a no-op.
 //
-// Teardown errors are printed as warnings rather than failing the suite so
-// that subsequent runs start with a clean state even when a prior run left
-// the environment partially deployed.
+// Helm uninstall and Kind cluster deletion are handled by TestMain's deferred
+// teardownE2E() which runs after m.Run() returns.  Performing Helm uninstall
+// here would:
+//   - Conflict with TestMain's teardown (double-uninstall → spurious errors).
+//   - Run BEFORE other spec containers in the same suite have finished,
+//     disrupting any shared cluster state they rely on.
 //
 // Called from AfterAll in the InternalAgent Ordered Describe container.
-func (s *InternalAgentSuite) AfterSuite(ctx context.Context) {
-	if s.HelmRelease == "" {
-		return
-	}
-	By("uninstalling the pillar-csi Helm chart (internal agent DaemonSet mode)")
-	cmd := exec.CommandContext(ctx, "helm", "uninstall", s.HelmRelease,
-		"--namespace", s.Namespace,
-		"--wait",
-		"--timeout", "3m",
-	)
-	cmd.Stdout = GinkgoWriter
-	cmd.Stderr = GinkgoWriter
-	if err := cmd.Run(); err != nil {
-		_, _ = fmt.Fprintf(GinkgoWriter,
-			"WARNING: internal-agent AfterSuite: helm uninstall failed "+
-				"(release may already be absent): %v\n", err)
-	}
-}
-
-// ─── Ginkgo entry point ──────────────────────────────────────────────────────
-
-// TestInternalAgent is the Ginkgo entry point for the internal-agent test
-// suite.  It can be invoked in isolation to run only internal-agent tests:
-//
-//	go test -tags=e2e -v -count=1 ./test/e2e/ \
-//	    -run TestInternalAgent \
-//	    -- --ginkgo.label-filter=internal-agent --ginkgo.v
-//
-// Note: the package-level BeforeSuite (in e2e_suite_test.go) is shared
-// across all Ginkgo runners in this package; it handles image build/load
-// tasks that must complete before any cluster-dependent spec can run.
-func TestInternalAgent(t *testing.T) {
-	RegisterFailHandler(Fail)
-	_, _ = fmt.Fprintf(GinkgoWriter, "Starting pillar-csi internal-agent integration test suite\n")
-	RunSpecs(t, "Internal Agent Suite")
+func (s *InternalAgentSuite) AfterSuite(_ context.Context) {
+	// Intentional no-op.  See doc comment above.
+	_, _ = fmt.Fprintf(GinkgoWriter,
+		"internal-agent AfterSuite: no-op (Helm teardown handled by TestMain)\n")
 }
 
 // ─── Suite instance ──────────────────────────────────────────────────────────
@@ -268,13 +215,5 @@ var _ = Describe("InternalAgent", Ordered, Label("internal-agent"), func() {
 	})
 })
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-
-// envOrDefault returns the value of env var key, or defaultValue when the
-// variable is unset or empty.
-func envOrDefault(key, defaultValue string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return defaultValue
-}
+// Note: envOrDefault is defined in setup_test.go and is accessible to all
+// files in this package.

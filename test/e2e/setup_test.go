@@ -672,3 +672,15 @@ func e2eProjectRoot() string {
 	}
 	return wd
 }
+
+// envOrDefault returns the value of env var key, or defaultValue when the
+// variable is unset or empty.  This is the single authoritative definition
+// used by all e2e test files in this package (internal_agent_test.go,
+// external_agent_test.go, coexecution_test.go, etc.) so that there is no
+// duplication.
+func envOrDefault(key, defaultValue string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return defaultValue
+}

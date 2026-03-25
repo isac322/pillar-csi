@@ -52,6 +52,18 @@ var _ = Describe("Manager", Ordered, func() {
 	// enforce the restricted security policy to the namespace, installing CRDs,
 	// and deploying the controller.
 	BeforeAll(func() {
+		// Skip when TestMain (setup_test.go) has already deployed the
+		// pillar-csi stack via Helm.  The legacy scaffolded deployment path
+		// (make deploy / make undeploy) conflicts with the Helm-managed
+		// deployment: it would create a second controller deployment and then
+		// tear down resources that other suites (InternalAgent, ExternalAgent)
+		// still need.
+		if testEnv.HelmRelease != "" {
+			Skip("TestMain-managed Helm release " + testEnv.HelmRelease +
+				" already deployed — skipping legacy Manager scaffold tests " +
+				"(they conflict with the unified e2e setup)")
+		}
+
 		By("creating manager namespace")
 		cmd := exec.Command("kubectl", "create", "ns", namespace)
 		_, err := utils.Run(cmd)

@@ -56,16 +56,34 @@ func TestE2E(t *testing.T) {
 }
 
 var _ = BeforeSuite(func() {
-	By("building the manager(Operator) image")
-	cmd := exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", projectImage))
-	_, err := utils.Run(cmd)
-	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the manager(Operator) image")
+	// When TestMain (setup_test.go) is present in this package it owns the
+	// full cluster lifecycle: it builds/loads the three pillar-csi Docker
+	// images AND installs the Helm chart before m.Run() is called.
+	// Re-building or re-loading images here would:
+	//   • be redundant (wasted CI time),
+	//   • use the wrong image name (example.com/pillar-csi vs the actual
+	//     ghcr.io/bhyoo/pillar-csi/* names that the Helm chart references),
+	//   • and potentially overwrite images that are already cached in Kind.
+	//
+	// Therefore, image build/load is skipped when TestMain has already run
+	// setup (testEnv.ClusterName is non-empty after initE2EEnv succeeds).
+	if testEnv.ClusterName != "" {
+		_, _ = fmt.Fprintf(GinkgoWriter,
+			"BeforeSuite: skipping image build/load — TestMain already "+
+				"bootstrapped cluster %q with images tagged %q\n",
+			testEnv.ClusterName, testEnv.ImageTag)
+	} else {
+		// Legacy path: no TestMain-based setup (e.g. running without the e2e
+		// build tag or in a context where TestMain was not invoked).
+		By("building the manager(Operator) image")
+		cmd := exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", projectImage))
+		_, err := utils.Run(cmd)
+		ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the manager(Operator) image")
 
-	// TODO(user): If you want to change the e2e test vendor from Kind, ensure the image is
-	// built and available before running the tests. Also, remove the following block.
-	By("loading the manager(Operator) image on Kind")
-	err = utils.LoadImageToKindClusterWithName(projectImage)
-	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the manager(Operator) image into Kind")
+		By("loading the manager(Operator) image on Kind")
+		err = utils.LoadImageToKindClusterWithName(projectImage)
+		ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the manager(Operator) image into Kind")
+	}
 
 	// The tests-e2e are intended to run on a temporary cluster that is created and destroyed for testing.
 	// To prevent errors when tests run in environments with CertManager already installed,
