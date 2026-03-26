@@ -237,30 +237,40 @@ func setupE2E() error {
 	return nil
 }
 
-// ensureKindCluster creates the Kind cluster.  On success testEnv.KubeconfigPath
-// is populated and KUBECONFIG is exported.  The embedded KindConfigYAML (from
+// ensureKindCluster always creates a fresh Kind cluster.  Any pre-existing
+// cluster with the same name is deleted first to guarantee a clean slate and
+// prevent state leakage between runs.  On success testEnv.KubeconfigPath is
+// populated and KUBECONFIG is exported.  The embedded KindConfigYAML (from
 // testdata_embed.go) is written to a temporary file so Kind can read it via
 // --config.
 func ensureKindCluster() error {
+	// Delete any pre-existing cluster with the same name to guarantee a clean
+	// slate and prevent state leakage between runs.
 	existingClusters, _ := captureOutput("kind", "get", "clusters")
 	if clusterExists(existingClusters, testEnv.ClusterName) {
-		fmt.Fprintf(os.Stdout, "e2e setup: kind cluster %q already exists — adopting\n",
+		fmt.Fprintf(os.Stdout,
+			"e2e setup: kind cluster %q already exists — deleting for a fresh start\n",
 			testEnv.ClusterName)
-	} else {
-		// Write the embedded kind-config.yaml to a temporary file.
-		configFile, err := writeTempFile("kind-config-*.yaml", KindConfigYAML)
-		if err != nil {
-			return fmt.Errorf("write kind config: %w", err)
-		}
-		defer os.Remove(configFile) //nolint:errcheck
-
-		fmt.Fprintf(os.Stdout, "e2e setup: creating kind cluster %q\n", testEnv.ClusterName)
-		if err := runCmd("kind", "create", "cluster",
+		if err := runCmd("kind", "delete", "cluster",
 			"--name", testEnv.ClusterName,
-			"--config", configFile,
 		); err != nil {
-			return fmt.Errorf("kind create cluster: %w", err)
+			return fmt.Errorf("kind delete existing cluster: %w", err)
 		}
+	}
+
+	// Write the embedded kind-config.yaml to a temporary file.
+	configFile, err := writeTempFile("kind-config-*.yaml", KindConfigYAML)
+	if err != nil {
+		return fmt.Errorf("write kind config: %w", err)
+	}
+	defer os.Remove(configFile) //nolint:errcheck
+
+	fmt.Fprintf(os.Stdout, "e2e setup: creating kind cluster %q\n", testEnv.ClusterName)
+	if err := runCmd("kind", "create", "cluster",
+		"--name", testEnv.ClusterName,
+		"--config", configFile,
+	); err != nil {
+		return fmt.Errorf("kind create cluster: %w", err)
 	}
 
 	// Capture kubeconfig and point KUBECONFIG at it.
