@@ -557,4 +557,158 @@ var _ = Describe("PillarProtocol Controller", func() {
 			}
 		})
 	})
+
+	// =========================================================================
+	// E23.6.6 — TestPillarProtocolController_DeletionBlocked_MultipleBindingsAllNamed
+	Context("Deletion — blocked by multiple referencing PillarBindings", func() {
+		const (
+			pprBindingNameA = "ppr-binding-a"
+			pprBindingNameB = "ppr-binding-b"
+		)
+
+		// createBindingNamed creates a PillarBinding with an explicit name.
+		createBindingNamed := func(name string) {
+			binding := &pillarcsiv1alpha1.PillarBinding{}
+			err := k8sClient.Get(pctx, types.NamespacedName{Name: name}, binding)
+			if err != nil && errors.IsNotFound(err) {
+				obj := &pillarcsiv1alpha1.PillarBinding{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: name,
+					},
+					Spec: pillarcsiv1alpha1.PillarBindingSpec{
+						PoolRef:     pprPoolName,
+						ProtocolRef: pprProtocolName,
+					},
+				}
+				Expect(k8sClient.Create(pctx, obj)).To(Succeed())
+			}
+		}
+
+		// deleteBindingNamed removes any finalizer and deletes a named PillarBinding.
+		deleteBindingNamed := func(name string) {
+			resource := &pillarcsiv1alpha1.PillarBinding{}
+			if err := k8sClient.Get(pctx, types.NamespacedName{Name: name}, resource); err == nil {
+				controllerutil.RemoveFinalizer(resource, pillarBindingFinalizer)
+				Expect(k8sClient.Update(pctx, resource)).To(Succeed())
+				Expect(k8sClient.Delete(pctx, resource)).To(Succeed())
+			}
+		}
+
+		BeforeEach(func() {
+			createProtocol()
+			// First reconcile adds finalizer.
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+			// Normal reconcile.
+			_, err = doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+			// Create two bindings BEFORE marking for deletion.
+			createBindingNamed(pprBindingNameA)
+			createBindingNamed(pprBindingNameB)
+			// Mark protocol for deletion.
+			deleteProtocol()
+		})
+
+		AfterEach(func() {
+			deleteBindingNamed(pprBindingNameA)
+			deleteBindingNamed(pprBindingNameB)
+			forceRemoveProtocolFinalizer()
+			deleteProtocol()
+		})
+
+		It("should mention all blocking binding names in Ready.Message when multiple bindings reference the protocol", func() {
+			result, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(requeueAfterProtocolDeletionBlock),
+				"should requeue after 10s when deletion is blocked")
+
+			fetched := fetchProtocol()
+			cond := findProtocolCondition(fetched, "Ready")
+			Expect(cond).NotTo(BeNil(), "Ready condition should be set during deletion block")
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cond.Reason).To(Equal("DeletionBlocked"))
+			Expect(cond.Message).To(ContainSubstring(pprBindingNameA),
+				"DeletionBlocked message should name binding-a")
+			Expect(cond.Message).To(ContainSubstring(pprBindingNameB),
+				"DeletionBlocked message should name binding-b")
+		})
+
+		It("should set BindingCount to the total number of blocking bindings", func() {
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := fetchProtocol()
+			Expect(fetched.Status.BindingCount).To(Equal(int32(2)),
+				"BindingCount should reflect all blocking bindings")
+		})
+	})
+
+	// =========================================================================
+	// E23.5.4 — TestPillarProtocolController_ActiveTargets_DeduplicatedSorted
+	Context("ActiveTargets — deduplicated when multiple bindings share the same pool", func() {
+		const (
+			pprBindingNameC = "ppr-binding-c"
+			pprBindingNameD = "ppr-binding-d"
+		)
+
+		// createBindingWithPool creates a PillarBinding referencing pprPoolName and pprProtocolName.
+		createBindingWithPool := func(name string) {
+			binding := &pillarcsiv1alpha1.PillarBinding{}
+			err := k8sClient.Get(pctx, types.NamespacedName{Name: name}, binding)
+			if err != nil && errors.IsNotFound(err) {
+				obj := &pillarcsiv1alpha1.PillarBinding{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: name,
+					},
+					Spec: pillarcsiv1alpha1.PillarBindingSpec{
+						PoolRef:     pprPoolName,
+						ProtocolRef: pprProtocolName,
+					},
+				}
+				Expect(k8sClient.Create(pctx, obj)).To(Succeed())
+			}
+		}
+
+		deleteBindingByName := func(name string) {
+			resource := &pillarcsiv1alpha1.PillarBinding{}
+			if err := k8sClient.Get(pctx, types.NamespacedName{Name: name}, resource); err == nil {
+				controllerutil.RemoveFinalizer(resource, pillarBindingFinalizer)
+				Expect(k8sClient.Update(pctx, resource)).To(Succeed())
+				Expect(k8sClient.Delete(pctx, resource)).To(Succeed())
+			}
+		}
+
+		BeforeEach(func() {
+			createProtocol()
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+			// Create pool and two bindings both referencing the same pool.
+			createPool()
+			createBindingWithPool(pprBindingNameC)
+			createBindingWithPool(pprBindingNameD)
+		})
+
+		AfterEach(func() {
+			deleteBindingByName(pprBindingNameC)
+			deleteBindingByName(pprBindingNameD)
+			deletePool()
+			forceRemoveProtocolFinalizer()
+			deleteProtocol()
+		})
+
+		It("should deduplicate ActiveTargets when two bindings point to the same pool", func() {
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := fetchProtocol()
+			Expect(fetched.Status.BindingCount).To(Equal(int32(2)),
+				"BindingCount should count both bindings")
+			// Even though two bindings reference the same pool (same targetRef="ppr-target"),
+			// ActiveTargets should contain only one entry (deduplicated).
+			Expect(fetched.Status.ActiveTargets).To(HaveLen(1),
+				"ActiveTargets should be deduplicated — one target even with two bindings")
+			Expect(fetched.Status.ActiveTargets[0]).To(Equal(pprTargetName),
+				"ActiveTargets should contain the pool's targetRef value")
+		})
+	})
 })
