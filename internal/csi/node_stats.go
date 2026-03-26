@@ -164,9 +164,9 @@ func (n *NodeServer) NodeGetVolumeStats(
 	// Bsize is int64 on Linux; uint64 fields are cast with G115 acknowledged
 	// (values are expected to be well within int64 range on real filesystems).
 	blockSize := statfs.Bsize
-	blocks := int64(statfs.Blocks) //nolint:gosec // G115: fits in int64
-	bavail := int64(statfs.Bavail) //nolint:gosec // G115: fits in int64
-	bfree := int64(statfs.Bfree)   //nolint:gosec // G115: fits in int64
+	blocks := int64(statfs.Blocks)   //nolint:gosec // G115: fits in int64
+	bavail := int64(statfs.Bavail)   //nolint:gosec // G115: fits in int64
+	bfree := int64(statfs.Bfree)     //nolint:gosec // G115: fits in int64
 	totalBytes := blocks * blockSize
 	availableBytes := bavail * blockSize
 	usedBytes := (blocks - bfree) * blockSize
