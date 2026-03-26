@@ -287,8 +287,8 @@ var _ = Describe("PillarTarget Controller", func() {
 		// object be GC'd by the API server.
 		Context("E19.7.4 — multiple pools: deletion stays blocked until the last pool is removed", func() {
 			const (
-				poolAName = "test-pool-multi-a"
-				poolBName = "test-pool-multi-b"
+				poolAName       = "test-pool-multi-a"
+				poolBName       = "test-pool-multi-b"
 				multiTargetName = "test-target-multi-pool"
 			)
 			multiTargetNN := types.NamespacedName{Name: multiTargetName}
