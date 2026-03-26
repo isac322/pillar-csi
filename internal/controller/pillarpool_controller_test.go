@@ -1092,5 +1092,323 @@ var _ = Describe("PillarPool Controller", func() {
 			Expect(cond.Reason).To(Equal("DeletionBlocked"))
 			Expect(cond.Message).To(ContainSubstring(bindingName))
 		})
+
+		// ── E20.9.4 ──────────────────────────────────────────────────────────
+		// TestPillarPoolController_DeletionBlocked_StatusMessageContainsAllBindingNames
+		It("should list all referencing PillarBinding names in the DeletionBlocked status message", func() {
+			const (
+				bindingNameA = "blocking-binding-a"
+				bindingNameB = "blocking-binding-b"
+			)
+
+			// Create two bindings both referencing the same pool.
+			bindingA := &pillarcsiv1alpha1.PillarBinding{
+				ObjectMeta: metav1.ObjectMeta{Name: bindingNameA},
+				Spec: pillarcsiv1alpha1.PillarBindingSpec{
+					PoolRef:     poolName,
+					ProtocolRef: "test-proto",
+				},
+			}
+			bindingB := &pillarcsiv1alpha1.PillarBinding{
+				ObjectMeta: metav1.ObjectMeta{Name: bindingNameB},
+				Spec: pillarcsiv1alpha1.PillarBindingSpec{
+					PoolRef:     poolName,
+					ProtocolRef: "test-proto",
+				},
+			}
+			Expect(k8sClient.Create(bctx, bindingA)).To(Succeed())
+			Expect(k8sClient.Create(bctx, bindingB)).To(Succeed())
+
+			defer func() {
+				_ = k8sClient.Delete(bctx, bindingA)
+				_ = k8sClient.Delete(bctx, bindingB)
+			}()
+
+			// Trigger deletion of the PillarPool.
+			Expect(k8sClient.Delete(bctx, &pillarcsiv1alpha1.PillarPool{
+				ObjectMeta: metav1.ObjectMeta{Name: poolName},
+			})).To(Succeed())
+
+			// Reconcile — deletion should be blocked by both bindings.
+			result, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(requeueAfterPoolDeletionBlock),
+				"reconciler should requeue with the deletion-block interval")
+
+			// Status message must mention both binding names.
+			fetched := fetchPool()
+			cond := findCondition(fetched, "Ready")
+			Expect(cond).NotTo(BeNil(), "Ready condition should be set during deletion block")
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cond.Reason).To(Equal("DeletionBlocked"))
+			Expect(cond.Message).To(ContainSubstring(bindingNameA),
+				"DeletionBlocked message should list binding-a")
+			Expect(cond.Message).To(ContainSubstring(bindingNameB),
+				"DeletionBlocked message should list binding-b")
+		})
+	})
+
+	// ──────────────────────────────────────────────────────────────────────────
+	// CRD schema validation tests
+	// These tests rely on the envtest API server applying the CRD OpenAPI schema,
+	// which rejects invalid objects with HTTP 422 (StatusReasonInvalid).
+	// ──────────────────────────────────────────────────────────────────────────
+
+	Context("CRD schema validation", func() {
+		// E20.2.1
+		// TestPillarPoolCRD_InvalidCreate_EmptyTargetRef
+		It("should reject PillarPool with empty spec.targetRef (MinLength=1 violation)", func() {
+			pool := &pillarcsiv1alpha1.PillarPool{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "schema-test-empty-targetref",
+				},
+				Spec: pillarcsiv1alpha1.PillarPoolSpec{
+					TargetRef: "",
+					Backend: pillarcsiv1alpha1.BackendSpec{
+						Type: pillarcsiv1alpha1.BackendTypeZFSZvol,
+					},
+				},
+			}
+			err := k8sClient.Create(bctx, pool)
+			Expect(err).To(HaveOccurred(),
+				"API server should reject PillarPool with empty spec.targetRef")
+			Expect(errors.IsInvalid(err)).To(BeTrue(),
+				"error should indicate an invalid object (HTTP 422)")
+		})
+
+		// E20.2.2
+		// TestPillarPoolCRD_InvalidCreate_InvalidBackendType
+		It("should reject PillarPool with unsupported spec.backend.type (Enum violation)", func() {
+			pool := &pillarcsiv1alpha1.PillarPool{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "schema-test-bad-backend-type",
+				},
+				Spec: pillarcsiv1alpha1.PillarPoolSpec{
+					TargetRef: "some-target",
+					Backend: pillarcsiv1alpha1.BackendSpec{
+						Type: "not-supported",
+					},
+				},
+			}
+			err := k8sClient.Create(bctx, pool)
+			Expect(err).To(HaveOccurred(),
+				"API server should reject PillarPool with unknown backend.type")
+			Expect(errors.IsInvalid(err)).To(BeTrue(),
+				"error should indicate an invalid object (HTTP 422)")
+		})
+
+		// E20.2.3
+		// TestPillarPoolCRD_InvalidCreate_EmptyBackendType
+		It("should reject PillarPool with empty spec.backend.type", func() {
+			pool := &pillarcsiv1alpha1.PillarPool{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "schema-test-empty-backend-type",
+				},
+				Spec: pillarcsiv1alpha1.PillarPoolSpec{
+					TargetRef: "some-target",
+					Backend: pillarcsiv1alpha1.BackendSpec{
+						Type: "",
+					},
+				},
+			}
+			err := k8sClient.Create(bctx, pool)
+			Expect(err).To(HaveOccurred(),
+				"API server should reject PillarPool with empty spec.backend.type")
+			Expect(errors.IsInvalid(err)).To(BeTrue(),
+				"error should indicate an invalid object (HTTP 422)")
+		})
+	})
+
+	// ──────────────────────────────────────────────────────────────────────────
+	// E20.5.4 — PoolDiscovered for dir backend (no named pool required)
+	// ──────────────────────────────────────────────────────────────────────────
+
+	Context("PoolDiscovered condition — dir backend uses first discoveredPool entry", func() {
+		const (
+			dirPoolResourceName = "dir-pool-discovery-test"
+			dirTargetName       = "dir-target-discovery-test"
+		)
+
+		var dirPoolNN types.NamespacedName
+
+		BeforeEach(func() {
+			dirPoolNN = types.NamespacedName{Name: dirPoolResourceName}
+
+			// Create a dir-backend pool referencing dirTargetName.
+			Expect(k8sClient.Create(bctx, &pillarcsiv1alpha1.PillarPool{
+				ObjectMeta: metav1.ObjectMeta{Name: dirPoolResourceName},
+				Spec: pillarcsiv1alpha1.PillarPoolSpec{
+					TargetRef: dirTargetName,
+					Backend:   pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeDir},
+				},
+			})).To(Succeed())
+
+			// First reconcile adds finalizer.
+			r := &PillarPoolReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := r.Reconcile(bctx, reconcile.Request{NamespacedName: dirPoolNN})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		AfterEach(func() {
+			p := &pillarcsiv1alpha1.PillarPool{}
+			if err := k8sClient.Get(bctx, dirPoolNN, p); err == nil {
+				controllerutil.RemoveFinalizer(p, pillarPoolFinalizer)
+				Expect(k8sClient.Update(bctx, p)).To(Succeed())
+				Expect(k8sClient.Delete(bctx, p)).To(Succeed())
+			}
+			t := &pillarcsiv1alpha1.PillarTarget{}
+			if err := k8sClient.Get(bctx, types.NamespacedName{Name: dirTargetName}, t); err == nil {
+				controllerutil.RemoveFinalizer(t, pillarTargetFinalizer)
+				Expect(k8sClient.Update(bctx, t)).To(Succeed())
+				Expect(k8sClient.Delete(bctx, t)).To(Succeed())
+			}
+		})
+
+		// E20.5.4
+		// TestPillarPoolController_PoolDiscovered_True_DirBackend_NoNameRequired
+		It("should set PoolDiscovered=True for dir backend when target reports any discoveredPool entry", func() {
+			// Create the target with Ready=True and at least one entry in discoveredPools.
+			Expect(k8sClient.Create(bctx, &pillarcsiv1alpha1.PillarTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: dirTargetName},
+				Spec: pillarcsiv1alpha1.PillarTargetSpec{
+					External: &pillarcsiv1alpha1.ExternalSpec{Address: "192.0.2.30", Port: 9500},
+				},
+			})).To(Succeed())
+			tgt := &pillarcsiv1alpha1.PillarTarget{}
+			Expect(k8sClient.Get(bctx, types.NamespacedName{Name: dirTargetName}, tgt)).To(Succeed())
+			tgt.Status.ResolvedAddress = "192.0.2.30:9500"
+			tgt.Status.DiscoveredPools = []pillarcsiv1alpha1.DiscoveredPool{
+				{Name: "any-entry", Type: "dir"},
+			}
+			tgt.Status.Capabilities = &pillarcsiv1alpha1.AgentCapabilities{Backends: []string{"dir"}}
+			tgt.Status.Conditions = []metav1.Condition{{
+				Type:               "Ready",
+				Status:             metav1.ConditionTrue,
+				Reason:             "AgentConnected",
+				Message:            "agent connected",
+				LastTransitionTime: metav1.Now(),
+			}}
+			Expect(k8sClient.Status().Update(bctx, tgt)).To(Succeed())
+
+			r := &PillarPoolReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := r.Reconcile(bctx, reconcile.Request{NamespacedName: dirPoolNN})
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := &pillarcsiv1alpha1.PillarPool{}
+			Expect(k8sClient.Get(bctx, dirPoolNN, fetched)).To(Succeed())
+
+			cond := meta.FindStatusCondition(fetched.Status.Conditions, "PoolDiscovered")
+			Expect(cond).NotTo(BeNil(), "PoolDiscovered condition should be set")
+			Expect(cond.Status).To(Equal(metav1.ConditionTrue),
+				"dir backend pool should be considered Discovered when target reports any pool entry")
+			Expect(cond.Reason).To(Equal("PoolDiscovered"))
+		})
+	})
+
+	// ──────────────────────────────────────────────────────────────────────────
+	// E20.7.3 — Ready=False when BackendSupported=False
+	// ──────────────────────────────────────────────────────────────────────────
+
+	Context("Ready condition — BackendSupported=False causes Ready=False", func() {
+		const (
+			bsPoolName   = "bs-ready-test-pool"
+			bsTargetName = "bs-ready-test-target"
+			bsZFSPool    = "hot-data"
+		)
+
+		var bsPoolNN types.NamespacedName
+
+		BeforeEach(func() {
+			bsPoolNN = types.NamespacedName{Name: bsPoolName}
+
+			// Create a ZFS-zvol pool.
+			Expect(k8sClient.Create(bctx, &pillarcsiv1alpha1.PillarPool{
+				ObjectMeta: metav1.ObjectMeta{Name: bsPoolName},
+				Spec: pillarcsiv1alpha1.PillarPoolSpec{
+					TargetRef: bsTargetName,
+					Backend: pillarcsiv1alpha1.BackendSpec{
+						Type: pillarcsiv1alpha1.BackendTypeLVMLV, // lvm-lv
+					},
+				},
+			})).To(Succeed())
+
+			r := &PillarPoolReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := r.Reconcile(bctx, reconcile.Request{NamespacedName: bsPoolNN})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		AfterEach(func() {
+			p := &pillarcsiv1alpha1.PillarPool{}
+			if err := k8sClient.Get(bctx, bsPoolNN, p); err == nil {
+				controllerutil.RemoveFinalizer(p, pillarPoolFinalizer)
+				Expect(k8sClient.Update(bctx, p)).To(Succeed())
+				Expect(k8sClient.Delete(bctx, p)).To(Succeed())
+			}
+			t := &pillarcsiv1alpha1.PillarTarget{}
+			if err := k8sClient.Get(bctx, types.NamespacedName{Name: bsTargetName}, t); err == nil {
+				controllerutil.RemoveFinalizer(t, pillarTargetFinalizer)
+				Expect(k8sClient.Update(bctx, t)).To(Succeed())
+				Expect(k8sClient.Delete(bctx, t)).To(Succeed())
+			}
+		})
+
+		// E20.7.3
+		// TestPillarPoolController_Ready_False_BackendUnsupported
+		It("should set Ready=False/ConditionsNotMet when BackendSupported=False even if TargetReady=True and PoolDiscovered=True", func() {
+			// Target is Ready, reports discovered pools, but backend capabilities exclude lvm-lv.
+			Expect(k8sClient.Create(bctx, &pillarcsiv1alpha1.PillarTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: bsTargetName},
+				Spec: pillarcsiv1alpha1.PillarTargetSpec{
+					External: &pillarcsiv1alpha1.ExternalSpec{Address: "192.0.2.40", Port: 9500},
+				},
+			})).To(Succeed())
+			tgt := &pillarcsiv1alpha1.PillarTarget{}
+			Expect(k8sClient.Get(bctx, types.NamespacedName{Name: bsTargetName}, tgt)).To(Succeed())
+			tgt.Status.ResolvedAddress = "192.0.2.40:9500"
+			// lvm-lv backend pool has no pool name requirement; discoveredPools has entries.
+			tgt.Status.DiscoveredPools = []pillarcsiv1alpha1.DiscoveredPool{
+				{Name: "vg0", Type: "lvm"},
+			}
+			// Target only supports ZFS backends — not lvm-lv.
+			tgt.Status.Capabilities = &pillarcsiv1alpha1.AgentCapabilities{
+				Backends: []string{"zfs-zvol", "zfs-dataset"},
+			}
+			tgt.Status.Conditions = []metav1.Condition{{
+				Type:               "Ready",
+				Status:             metav1.ConditionTrue,
+				Reason:             "AgentConnected",
+				Message:            "agent connected",
+				LastTransitionTime: metav1.Now(),
+			}}
+			Expect(k8sClient.Status().Update(bctx, tgt)).To(Succeed())
+
+			r := &PillarPoolReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := r.Reconcile(bctx, reconcile.Request{NamespacedName: bsPoolNN})
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := &pillarcsiv1alpha1.PillarPool{}
+			Expect(k8sClient.Get(bctx, bsPoolNN, fetched)).To(Succeed())
+
+			// TargetReady should be True.
+			targetReadyCond := meta.FindStatusCondition(fetched.Status.Conditions, "TargetReady")
+			Expect(targetReadyCond).NotTo(BeNil())
+			Expect(targetReadyCond.Status).To(Equal(metav1.ConditionTrue))
+
+			// BackendSupported should be False.
+			bsCond := meta.FindStatusCondition(fetched.Status.Conditions, "BackendSupported")
+			Expect(bsCond).NotTo(BeNil())
+			Expect(bsCond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(bsCond.Reason).To(Equal("BackendNotSupported"))
+
+			// Ready should be False/ConditionsNotMet because BackendSupported=False.
+			readyCond := meta.FindStatusCondition(fetched.Status.Conditions, "Ready")
+			Expect(readyCond).NotTo(BeNil(), "Ready condition should be set")
+			Expect(readyCond.Status).To(Equal(metav1.ConditionFalse),
+				"Ready should be False when BackendSupported=False")
+			Expect(readyCond.Reason).To(Equal("ConditionsNotMet"),
+				"Ready reason should be ConditionsNotMet")
+			Expect(readyCond.Message).To(ContainSubstring("BackendSupported"),
+				"Ready message should mention the failing condition")
+		})
 	})
 })

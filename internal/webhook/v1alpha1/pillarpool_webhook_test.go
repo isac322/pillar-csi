@@ -154,5 +154,45 @@ var _ = Describe("PillarPool Webhook", func() {
 			Expect(err).NotTo(HaveOccurred(),
 				"Valid PillarPool creation should be allowed")
 		})
+
+		// ── E20.1.2 ──────────────────────────────────────────────────────────
+		// TestPillarPoolWebhook_ValidCreate_Dir
+		It("Should allow valid PillarPool creation with dir backend type (no ZFS config needed)", func() {
+			By("creating a PillarPool with backend.type=dir and no ZFS configuration")
+			obj.Spec.TargetRef = "target-a"
+			obj.Spec.Backend = pillarcsiv1alpha1.BackendSpec{
+				Type: pillarcsiv1alpha1.BackendTypeDir,
+			}
+
+			_, err := validator.ValidateCreate(ctx, obj)
+			Expect(err).NotTo(HaveOccurred(),
+				"dir backend PillarPool creation should be allowed; no ZFS config is required")
+		})
+
+		// ── E20.3.4 ──────────────────────────────────────────────────────────
+		// TestPillarPoolWebhook_MutableUpdate_ZFSPropertiesChange
+		It("Should allow update when only spec.backend.zfs.properties change (immutable fields unchanged)", func() {
+			By("keeping targetRef and backend.type identical; changing only zfs.properties")
+			oldObj.Spec.TargetRef = "t1"
+			oldObj.Spec.Backend = pillarcsiv1alpha1.BackendSpec{
+				Type: pillarcsiv1alpha1.BackendTypeZFSZvol,
+				ZFS: &pillarcsiv1alpha1.ZFSBackendConfig{
+					Pool:       "hot-data",
+					Properties: map[string]string{"compression": "off"},
+				},
+			}
+			obj.Spec.TargetRef = "t1"
+			obj.Spec.Backend = pillarcsiv1alpha1.BackendSpec{
+				Type: pillarcsiv1alpha1.BackendTypeZFSZvol,
+				ZFS: &pillarcsiv1alpha1.ZFSBackendConfig{
+					Pool:       "hot-data",
+					Properties: map[string]string{"compression": "lz4"},
+				},
+			}
+
+			_, err := validator.ValidateUpdate(ctx, oldObj, obj)
+			Expect(err).NotTo(HaveOccurred(),
+				"Changing only zfs.properties should be allowed; it is not an immutable field")
+		})
 	})
 })
