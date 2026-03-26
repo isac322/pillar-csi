@@ -85,29 +85,19 @@ E2E_IMAGE_TAG ?= e2e
 E2E_HELM_RELEASE ?= pillar-csi
 E2E_HELM_NAMESPACE ?= pillar-csi-system
 
-## Extra flags forwarded verbatim to go test.
-## Example: E2E_TEST_ARGS="-run TestMyFeature -timeout 45m"
-E2E_TEST_ARGS ?=
+## Filter tests by name pattern (go test -run value).
+## Example: make test-e2e E2E_RUN=TestMyFeature
+E2E_RUN ?=
+
+## Override go test timeout (default 30m).
+E2E_TIMEOUT ?= 30m
 
 # test-e2e is the single entry point for the full e2e lifecycle.
-#
-# TestMain (in test/e2e/setup_test.go) owns the entire lifecycle:
-#   1. Creates the Kind cluster from testdata/kind-config.yaml (or adopts an
-#      existing cluster named KIND_CLUSTER).
-#   2. Builds the three pillar-csi Docker images and loads them into Kind.
-#   3. Installs the Helm chart and waits for the deployment to be healthy.
-#   4. Runs all Test* functions (including the Ginkgo suites).
-#   5. Uninstalls the Helm release and deletes the Kind cluster (when TestMain
-#      created it).
-#
-# No external shell scripts are involved.  Kind requires no pre-existing cluster.
+# TestMain (test/e2e/setup_test.go) creates the Kind cluster, builds images,
+# installs Helm, runs all tests, and tears down.
 .PHONY: test-e2e
 test-e2e: manifests generate fmt vet ## Run e2e tests; TestMain creates and tears down the Kind cluster automatically.
-	KIND_CLUSTER=$(KIND_CLUSTER) \
-	E2E_IMAGE_TAG=$(E2E_IMAGE_TAG) \
-	E2E_HELM_RELEASE=$(E2E_HELM_RELEASE) \
-	E2E_HELM_NAMESPACE=$(E2E_HELM_NAMESPACE) \
-	  go test -tags=e2e ./test/e2e/ -v -timeout=30m $(E2E_TEST_ARGS)
+	KIND_CLUSTER=$(KIND_CLUSTER) E2E_IMAGE_TAG=$(E2E_IMAGE_TAG) E2E_HELM_RELEASE=$(E2E_HELM_RELEASE) E2E_HELM_NAMESPACE=$(E2E_HELM_NAMESPACE) go test -tags=e2e ./test/e2e/ -v -timeout=$(E2E_TIMEOUT) $(if $(E2E_RUN),-run $(E2E_RUN))
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter

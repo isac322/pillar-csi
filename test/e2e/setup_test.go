@@ -656,21 +656,27 @@ func pollAgentReady(addr string, timeout time.Duration) error {
 // Misc helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-// e2eProjectRoot returns the repository root directory.  When go test is run
-// from within test/e2e the working directory is under the repo root; this
-// function strips the known suffix so that relative paths such as
-// "./charts/pillar-csi" resolve correctly regardless of invocation directory.
+// e2eProjectRoot returns the repository root directory by walking up from the
+// current working directory until a go.mod file is found.  This works
+// regardless of where `go test` is invoked from (project root, test/e2e/,
+// or via `make -C`).
 func e2eProjectRoot() string {
 	wd, err := os.Getwd()
 	if err != nil {
 		return "."
 	}
-	for _, suffix := range []string{"/test/e2e", "/test"} {
-		if strings.HasSuffix(wd, suffix) {
-			return strings.TrimSuffix(wd, suffix)
+	dir := wd
+	for {
+		if _, err := os.Stat(dir + "/go.mod"); err == nil {
+			return dir
 		}
+		parent := dir[:strings.LastIndex(dir, "/")]
+		if parent == dir || parent == "" {
+			// Reached filesystem root without finding go.mod; fall back to cwd.
+			return wd
+		}
+		dir = parent
 	}
-	return wd
 }
 
 // envOrDefault returns the value of env var key, or defaultValue when the
