@@ -2,17 +2,27 @@
 #
 # Layout: 1 control-plane node + 2 worker nodes.
 #
-# Worker nodes mount /sys/kernel/config (configfs) and /dev from the host so
-# that:
+# The storage worker node mounts /sys/kernel/config (configfs) from the host
+# so that:
 #   - NVMe-oF target kernel modules (nvmet, nvmet_tcp) can expose their
 #     configfs API inside the Kind node containers via /sys/kernel/config.
 #     Without this mount the pillar-agent init container would silently fail
 #     to configure NVMe-oF targets, causing the storage-protocol tests to hang.
-#   - NVMe block devices that appear on the host after nvme-connect (e.g.
-#     /dev/nvme0n1) are visible inside the Kind node containers via the /dev
-#     mount.  The pillar-agent needs to open these devices to create ZFS zvols
-#     and expose them over NVMe-oF; without the /dev bind-mount it would only
-#     see the devices that existed at container start time.
+#
+# Note on /dev: mounting the host /dev directory into Kind node containers
+# causes the container init to fail with "open /dev/console: input/output error"
+# because the host console device is not accessible from within the container
+# context.  Real ZFS zvol and NVMe block device access is provided instead
+# through the DockerHostExec framework helper, which runs privileged commands
+# on the remote Docker host directly — bypassing the need for device bind-mounts
+# inside Kind.
+#
+# API server binding: apiServerAddress is set to "0.0.0.0" so that the
+# Kubernetes API server is reachable from outside the Docker daemon host.
+# When running against a remote Docker daemon (e.g. tcp://10.111.0.1:2375),
+# the default "127.0.0.1" binding would only be accessible on the remote host
+# itself; "0.0.0.0" allows the test binary running locally to connect via the
+# remote host's WireGuard/routable IP address.
 #
 # Privileged init containers (modprobe) require the worker nodes to run
 # with the SYS_ADMIN capability, which Kind enables automatically when
@@ -24,6 +34,12 @@
 # install, without waiting for the controller to label them.
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
+
+networking:
+  # Bind the API server to all interfaces so that the test process running on
+  # a different machine (connected via WireGuard) can reach it.  The default
+  # "127.0.0.1" only allows connections from the Docker daemon host itself.
+  apiServerAddress: "0.0.0.0"
 
 nodes:
   # ── control-plane ──────────────────────────────────────────────────────────
@@ -43,22 +59,6 @@ nodes:
         containerPath: /sys/kernel/config
         propagation: HostToContainer
 
-      # Mount the host /dev directory so NVMe block devices that appear on the
-      # host (e.g. /dev/nvme0n1 after nvme-connect) are visible inside the Kind
-      # node container.  Bidirectional propagation is required: the host creates
-      # new device nodes and the container must see them; without Bidirectional
-      # a device created after the container starts would not be visible inside.
-      - hostPath: /dev
-        containerPath: /dev
-        propagation: Bidirectional
-
   # ── worker node 2 ──────────────────────────────────────────────────────────
   # General-purpose worker for application pods and initiator-side CSI tests.
-  # Also mounts /dev so that NVMe block devices (initiator side) are visible
-  # when the CSI node plugin runs volume publish/unpublish operations.
   - role: worker
-    extraMounts:
-      # Mirror /dev from host so nvme initiator devices are accessible.
-      - hostPath: /dev
-        containerPath: /dev
-        propagation: Bidirectional

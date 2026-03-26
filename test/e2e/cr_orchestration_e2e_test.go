@@ -35,25 +35,25 @@ limitations under the License.
 //
 // # What is verified
 //
-//   1. Each of the four CRs is accepted by the Kubernetes API server without
-//      validation errors.
-//   2. After the PillarBinding's StorageClassCreated condition becomes True
-//      (the authoritative controller signal), a Kubernetes StorageClass exists
-//      with the name equal to the binding's own name (no override set).
-//   3. The StorageClass has the correct provisioner ("pillar-csi.bhyoo.com"),
-//      reclaim policy (Delete), volume binding mode (Immediate), and
-//      AllowVolumeExpansion=true (non-NFS default).
-//   4. The StorageClass parameter map carries all expected keys that the CSI
-//      controller/node plugin uses during provisioning:
-//      - pillar-csi.bhyoo.com/pool        → binding.Spec.PoolRef
-//      - pillar-csi.bhyoo.com/protocol    → binding.Spec.ProtocolRef
-//      - pillar-csi.bhyoo.com/backend-type → "zfs-zvol"
-//      - pillar-csi.bhyoo.com/protocol-type → "nvmeof-tcp"
-//      - pillar-csi.bhyoo.com/target      → pool's targetRef (PillarTarget name)
-//      - pillar-csi.bhyoo.com/zfs-pool    → ZFS pool name
-//      - pillar-csi.bhyoo.com/nvmeof-port → "4421"
-//      - pillar-csi.bhyoo.com/acl-enabled → "false"
-//      - csi.storage.k8s.io/fstype        → "ext4"
+//  1. Each of the four CRs is accepted by the Kubernetes API server without
+//     validation errors.
+//  2. After the PillarBinding's StorageClassCreated condition becomes True
+//     (the authoritative controller signal), a Kubernetes StorageClass exists
+//     with the name equal to the binding's own name (no override set).
+//  3. The StorageClass has the correct provisioner ("pillar-csi.bhyoo.com"),
+//     reclaim policy (Delete), volume binding mode (Immediate), and
+//     AllowVolumeExpansion=true (non-NFS default).
+//  4. The StorageClass parameter map carries all expected keys that the CSI
+//     controller/node plugin uses during provisioning:
+//     - pillar-csi.bhyoo.com/pool        → binding.Spec.PoolRef
+//     - pillar-csi.bhyoo.com/protocol    → binding.Spec.ProtocolRef
+//     - pillar-csi.bhyoo.com/backend-type → "zfs-zvol"
+//     - pillar-csi.bhyoo.com/protocol-type → "nvmeof-tcp"
+//     - pillar-csi.bhyoo.com/target      → pool's targetRef (PillarTarget name)
+//     - pillar-csi.bhyoo.com/zfs-pool    → ZFS pool name
+//     - pillar-csi.bhyoo.com/nvmeof-port → "4421"
+//     - pillar-csi.bhyoo.com/acl-enabled → "false"
+//     - csi.storage.k8s.io/fstype        → "ext4"
 //
 // # Prerequisites
 //

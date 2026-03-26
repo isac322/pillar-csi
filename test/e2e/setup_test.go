@@ -333,8 +333,18 @@ func ensureKindCluster() error {
 		}
 	}
 
-	// Write the embedded kind-config.yaml to a temporary file.
-	configFile, err := writeTempFile("kind-config-*.yaml", KindConfigYAML)
+	// Build the Kind config, optionally appending kubeadmConfigPatches that
+	// add the remote Docker daemon's IP to the API server certificate SANs.
+	//
+	// When Kind runs on a remote Docker daemon (e.g. tcp://10.111.0.1:2375),
+	// the embedded kind-config.yaml sets apiServerAddress=0.0.0.0 so that the
+	// API server port is reachable from outside the daemon host.  However, the
+	// API server TLS certificate only includes 0.0.0.0 and internal IPs in its
+	// SANs by default.  Adding the remote host's routable IP as a SAN allows
+	// TLS verification to succeed when kubectl and client-go connect via that
+	// IP.
+	kindConfig := buildKindConfig()
+	configFile, err := writeTempFile("kind-config-*.yaml", []byte(kindConfig))
 	if err != nil {
 		return fmt.Errorf("write kind config: %w", err)
 	}
@@ -358,6 +368,45 @@ func ensureKindCluster() error {
 		return fmt.Errorf("setenv KUBECONFIG: %w", err)
 	}
 	return nil
+}
+
+// buildKindConfig returns the Kind cluster configuration YAML to be passed to
+// "kind create cluster --config".  It starts from the embedded KindConfigYAML
+// and appends a kubeadmConfigPatches block that adds the remote Docker daemon
+// host's routable IP to the API server certificate SANs when the daemon is
+// remote (i.e. not 127.0.0.1).
+//
+// Without this patch, the API server certificate only includes internal cluster
+// addresses and 0.0.0.0 in its SANs.  kubectl, helm, and client-go all verify
+// the server certificate by default; they would reject the connection with
+// "x509: certificate is not valid for 10.111.0.1" when connecting via the
+// remote host IP.  Adding the IP as a SAN makes TLS verification succeed.
+func buildKindConfig() string {
+	base := string(KindConfigYAML)
+
+	remoteHost := dockerHostIP(testEnv.DockerHost)
+	if remoteHost == "" || remoteHost == "127.0.0.1" {
+		// Local daemon or unknown endpoint — no extra SAN needed.
+		return base
+	}
+
+	// Append kubeadmConfigPatches to add the remote host IP as a SAN.
+	// The patch targets ClusterConfiguration (applied to the control-plane
+	// node).  We include both the remote IP and the standard aliases so that
+	// connections from any interface continue to work.
+	patch := fmt.Sprintf(`
+kubeadmConfigPatches:
+  - |
+    kind: ClusterConfiguration
+    apiServer:
+      certSANs:
+        - %q
+        - "localhost"
+        - "127.0.0.1"
+        - "0.0.0.0"
+`, remoteHost)
+
+	return base + patch
 }
 
 // ensureStorageNodeLabel labels the first worker node as a storage node so that
@@ -384,15 +433,9 @@ func ensureStorageNodeLabel() error {
 
 // validateWorkerNodeMounts checks that the Kind worker node containers have
 // the filesystem paths that were specified via extraMounts in kind-config.yaml
-// accessible and non-empty.
+// accessible.
 //
 // Checks performed:
-//
-//   - Every worker node: /dev/null exists — proves that the host /dev
-//     bind-mount brought real device nodes into the container (not just an
-//     empty directory).  Without the /dev bind-mount the node would only
-//     see devices that existed at container-creation time and NVMe block
-//     devices created later on the host would be invisible.
 //
 //   - Storage worker (labelled pillar-csi.bhyoo.com/storage-node=true):
 //     /sys/kernel/config is a readable directory — proves that the configfs
@@ -400,50 +443,18 @@ func ensureStorageNodeLabel() error {
 //     container cannot write NVMe-oF target configuration and the protocol
 //     tests would hang indefinitely waiting for a subsystem that never appears.
 //
+// Note: /dev is intentionally NOT bind-mounted from the host into Kind nodes.
+// Mounting the host /dev with Bidirectional propagation causes the Kind worker
+// container init to fail with "open /dev/console: input/output error" because
+// the host console device is not accessible from within the container context.
+// Real ZFS zvol and NVMe device access is provided through the DockerHostExec
+// framework helper, which runs privileged commands directly on the remote host.
+//
 // These checks run before the slow Helm install so that a mount mis-
 // configuration surfaces as a clear error message rather than a cryptic
 // timeout later in the suite.
 func validateWorkerNodeMounts() error {
 	fmt.Fprintf(os.Stdout, "e2e setup: validating worker node mount accessibility\n")
-
-	// ── list worker Kind node containers ─────────────────────────────────
-	//
-	// "kind get nodes" returns one line per node (both control-plane and
-	// workers).  We filter out the control-plane node by name pattern;
-	// the resulting slice is the set of Docker container names we can
-	// docker-exec into directly.
-	out, err := captureOutput("kind", "get", "nodes", "--name", testEnv.ClusterName)
-	if err != nil {
-		return fmt.Errorf("list kind nodes: %s: %w", strings.TrimSpace(out), err)
-	}
-
-	var workers []string
-	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-		node := strings.TrimSpace(line)
-		if node == "" || strings.Contains(node, "control-plane") {
-			continue
-		}
-		workers = append(workers, node)
-	}
-	if len(workers) == 0 {
-		return fmt.Errorf("validateWorkerNodeMounts: no worker nodes found in kind cluster %q",
-			testEnv.ClusterName)
-	}
-
-	// ── /dev on every worker ──────────────────────────────────────────────
-	//
-	// We check for /dev/null rather than the /dev directory itself to confirm
-	// that the bind-mount carried real device nodes over (not an empty dir).
-	for _, w := range workers {
-		if err := kindNodePathExists(w, "/dev/null"); err != nil {
-			return fmt.Errorf(
-				"worker node %q: /dev not properly bind-mounted "+
-					"(/dev/null missing — check kind-config.yaml extraMounts): %w",
-				w, err)
-		}
-		fmt.Fprintf(os.Stdout,
-			"e2e setup: worker %q /dev is accessible (/dev/null present)\n", w)
-	}
 
 	// ── /sys/kernel/config on the storage worker ──────────────────────────
 	//
@@ -793,12 +804,30 @@ func injectDockerHost(env []string) []string {
 	return append(out, key+host)
 }
 
-// writeKindKubeconfig runs "kind get kubeconfig --name <cluster>", writes the
-// output to a new temporary file, and returns its path.
+// writeKindKubeconfig runs "kind get kubeconfig --name <cluster>", rewrites
+// the API server address to point at the remote Docker host (instead of
+// 127.0.0.1 which only works on the Docker daemon host), and writes the result
+// to a new temporary file.
+//
+// When Kind runs on a remote Docker daemon (e.g. tcp://10.111.0.1:2375), the
+// kubeconfig it emits contains "server: https://127.0.0.1:<port>".  That
+// loopback address is on the remote machine, not on the local machine where
+// the test binary runs.  Replacing 127.0.0.1 with the remote host's IP makes
+// kubectl and client-go connect to the correct API server endpoint.
 func writeKindKubeconfig(clusterName string) (string, error) {
 	raw, err := captureOutput("kind", "get", "kubeconfig", "--name", clusterName)
 	if err != nil {
 		return "", fmt.Errorf("kind get kubeconfig: %s: %w", raw, err)
+	}
+
+	// When running against a remote Docker daemon, the Kind API server may
+	// be bound to 0.0.0.0 (all interfaces) or 127.0.0.1 (loopback only).
+	// Either way, the kubeconfig "server:" field needs to reference the
+	// actual routable IP of the remote Docker daemon host so that kubectl,
+	// helm, and client-go running locally can reach the API server.
+	if remoteHost := dockerHostIP(testEnv.DockerHost); remoteHost != "" && remoteHost != "127.0.0.1" {
+		raw = strings.ReplaceAll(raw, "https://127.0.0.1:", "https://"+remoteHost+":")
+		raw = strings.ReplaceAll(raw, "https://0.0.0.0:", "https://"+remoteHost+":")
 	}
 
 	f, err := os.CreateTemp("", "kubeconfig-"+clusterName+"-*.yaml")
@@ -812,6 +841,27 @@ func writeKindKubeconfig(clusterName string) (string, error) {
 		return "", fmt.Errorf("write kubeconfig: %w", err)
 	}
 	return f.Name(), nil
+}
+
+// dockerHostIP extracts the IP address portion from a Docker daemon endpoint
+// URL such as "tcp://10.111.0.1:2375".  Returns an empty string when the
+// endpoint is not a TCP URL or when parsing fails.
+func dockerHostIP(dockerHost string) string {
+	if dockerHost == "" {
+		return ""
+	}
+	// Strip the scheme prefix (e.g. "tcp://").
+	const tcpPrefix = "tcp://"
+	if !strings.HasPrefix(dockerHost, tcpPrefix) {
+		return ""
+	}
+	hostPort := strings.TrimPrefix(dockerHost, tcpPrefix)
+	// Split off the port; net.SplitHostPort handles IPv6 addresses too.
+	h, _, err := net.SplitHostPort(hostPort)
+	if err != nil {
+		return ""
+	}
+	return h
 }
 
 // writeTempFile writes data to a new temporary file whose name matches pattern

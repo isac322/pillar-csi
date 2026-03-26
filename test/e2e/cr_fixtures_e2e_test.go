@@ -36,7 +36,7 @@ limitations under the License.
 //   - "CRFixtures/KindNVMeOFBinding" — PillarBinding field validation
 //   - "CRFixtures/KindE2EStack"     — composite stack object validation
 //   - "CRFixtures/ApplyStack"       — applies the full stack to the Kind cluster
-//                                     (requires E2E_LAUNCH_EXTERNAL_AGENT=true)
+//     (requires E2E_LAUNCH_EXTERNAL_AGENT=true)
 package e2e
 
 import (

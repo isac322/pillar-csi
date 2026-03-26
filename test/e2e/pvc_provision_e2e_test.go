@@ -93,10 +93,10 @@ var _ = Describe("PVCProvision", Ordered, func() {
 	})
 
 	var (
-		suite  *framework.Suite
-		stack  *framework.KindE2EStack
-		ns     *corev1.Namespace
-		pvc    *corev1.PersistentVolumeClaim
+		suite *framework.Suite
+		stack *framework.KindE2EStack
+		ns    *corev1.Namespace
+		pvc   *corev1.PersistentVolumeClaim
 	)
 
 	// ── BeforeAll: cluster client + CR stack setup ───────────────────────────
