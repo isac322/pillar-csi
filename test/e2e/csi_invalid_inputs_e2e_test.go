@@ -148,7 +148,7 @@ func TestCSIEdge_ControllerPublish_EmptyNodeId(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // TestCSIEdge_ControllerExpand_ShrinkRequest verifies that an agent error
-// signalling that volume shrink is not allowed is propagated to the CSI caller
+// signaling that volume shrink is not allowed is propagated to the CSI caller
 // as a non-OK gRPC status (Internal).
 //
 // The controller relays the agent's error code verbatim, so the caller sees a

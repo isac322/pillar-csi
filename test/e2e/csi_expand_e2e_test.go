@@ -325,7 +325,7 @@ func TestCSIExpand_NodeExpandVolume_XFS(t *testing.T) {
 // CreateVolume → ControllerExpandVolume → NodeExpandVolume.
 //
 // Test case 92 from E11.3.
-func TestCSIExpand_FullExpandRoundTrip(t *testing.T) { //nolint:gocyclo // full round-trip test
+func TestCSIExpand_FullExpandRoundTrip(t *testing.T) {
 	t.Parallel()
 	env := newCSIExpandE2EEnv(t, "storage-expand-5")
 	ctx := context.Background()

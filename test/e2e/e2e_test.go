@@ -88,7 +88,21 @@ var _ = Describe("Manager", Ordered, func() {
 
 	// After all tests have been executed, clean up by undeploying the controller, uninstalling CRDs,
 	// and deleting the namespace.
+	//
+	// IMPORTANT: Skip cleanup when TestMain already deployed the pillar-csi stack via Helm.
+	// Ginkgo v2 runs AfterAll even when BeforeAll called Skip(), so we must guard here too.
+	// Running "make undeploy" or "make uninstall" against a Helm-managed release would
+	// delete the pillar-csi-system namespace and all CRDs, breaking every other test
+	// suite that runs after this container.
 	AfterAll(func() {
+		if testEnv.HelmRelease != "" {
+			_, _ = fmt.Fprintf(GinkgoWriter,
+				"AfterAll: skipping legacy undeploy/uninstall — "+
+					"TestMain-managed Helm release %q owns cluster state\n",
+				testEnv.HelmRelease)
+			return
+		}
+
 		By("cleaning up the curl pod for metrics")
 		cmd := exec.Command("kubectl", "delete", "pod", "curl-metrics", "-n", namespace)
 		_, _ = utils.Run(cmd)

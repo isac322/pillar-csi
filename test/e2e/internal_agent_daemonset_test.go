@@ -105,6 +105,13 @@ const (
 	// dsConnectTimeout is the maximum time to wait for the Kubernetes API server
 	// to respond during suite setup.
 	dsConnectTimeout = 30 * time.Second
+
+	// dsLabelWaitTimeout is the maximum time to wait for the agent DaemonSet
+	// to reflect the storage-node label after it is re-applied.  60 s is
+	// generous enough to cover the case where the DaemonSet controller is slow
+	// to react after the node label changes (e.g. after functional tests deleted
+	// PillarTargets, causing the controller to strip the label).
+	dsLabelWaitTimeout = 60 * time.Second
 )
 
 // ─── Suite-level state ───────────────────────────────────────────────────────
@@ -169,23 +176,57 @@ var _ = Describe("InternalAgent DaemonSet Readiness", Ordered, Label("internal-a
 			break // Only label the first worker node.
 		}
 
+		// Log existing DaemonSets for diagnostic purposes before waiting.
+		// This is particularly useful when the DaemonSet Readiness suite runs
+		// after the functional tests (which delete PillarTargets causing the
+		// controller to strip the storage-node label).
+		allDS := &appsv1.DaemonSetList{}
+		if listErr := dsClient.List(ctx, allDS); listErr == nil {
+			_, _ = fmt.Fprintf(GinkgoWriter,
+				"DaemonSet Readiness BeforeAll: found %d DaemonSets in cluster:\n",
+				len(allDS.Items))
+			for _, ds := range allDS.Items {
+				_, _ = fmt.Fprintf(GinkgoWriter,
+					"  - %s/%s (desired=%d, ready=%d)\n",
+					ds.Namespace, ds.Name,
+					ds.Status.DesiredNumberScheduled,
+					ds.Status.NumberReady)
+			}
+		}
+
 		// Wait for the agent DaemonSet to reflect the (possibly updated)
 		// storage-node label by polling until DesiredNumberScheduled > 0.
 		// The DaemonSet controller updates this field asynchronously after a
 		// node label change.
-		By("waiting for agent DaemonSet to reflect the storage-node label")
+		By(fmt.Sprintf("waiting for agent DaemonSet %s/%s to reflect the storage-node label",
+			dsNamespace, dsAgentName))
 		Eventually(func(g Gomega) {
 			ds := &appsv1.DaemonSet{}
-			g.Expect(dsClient.Get(ctx, client.ObjectKey{
+			err := dsClient.Get(ctx, client.ObjectKey{
 				Name:      dsAgentName,
 				Namespace: dsNamespace,
-			}, ds)).To(Succeed())
+			}, ds)
+			if err != nil {
+				// Log all DaemonSets on failure for diagnostics.
+				diagDS := &appsv1.DaemonSetList{}
+				if diagErr := dsClient.List(ctx, diagDS); diagErr == nil {
+					_, _ = fmt.Fprintf(GinkgoWriter,
+						"DaemonSet GET failed (%v); cluster DaemonSets:\n", err)
+					for _, d := range diagDS.Items {
+						_, _ = fmt.Fprintf(GinkgoWriter,
+							"  %s/%s desired=%d\n", d.Namespace, d.Name,
+							d.Status.DesiredNumberScheduled)
+					}
+				}
+			}
+			g.Expect(err).To(Succeed())
 			g.Expect(ds.Status.DesiredNumberScheduled).To(BeNumerically(">", 0),
 				"agent DaemonSet must have at least 1 desired pod after "+
 					"storage-node label is applied")
-		}, 30*time.Second, 2*time.Second).Should(Succeed(),
-			"agent DaemonSet DesiredNumberScheduled did not become > 0 within 30s "+
-				"after storage-node label was applied")
+		}, dsReadinessTimeout, 2*time.Second).Should(Succeed(),
+			"agent DaemonSet DesiredNumberScheduled did not become > 0 within "+
+				dsReadinessTimeout.String()+
+				" after storage-node label was applied")
 	})
 
 	// ─── Helm release objects ───────────────────────────────────────────────

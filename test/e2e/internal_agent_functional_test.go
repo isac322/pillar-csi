@@ -173,10 +173,19 @@ var _ = Describe("InternalAgent functional", Ordered, Label("internal-agent"), f
 
 		BeforeAll(func(ctx context.Context) {
 			targetName = fmt.Sprintf("iat-conn-%d", time.Now().UnixMilli()%100000)
-			target = framework.NewNodeRefPillarTarget(targetName, storageNodeName, nil)
 			By(fmt.Sprintf("creating PillarTarget %q → node %s", targetName, storageNodeName))
-			Expect(framework.Apply(ctx, iatK8sClient, target)).To(Succeed(),
-				"apply PillarTarget %q", targetName)
+			// Wrap Apply in Eventually to retry transient REST-mapper cache misses.
+			// The controller-runtime DynamicRESTMapper may not have refreshed its
+			// discovery cache yet when this BeforeAll runs, causing "no matches for
+			// kind 'PillarTarget'" errors in the first few seconds after Helm install.
+			Eventually(func(g Gomega) {
+				t := framework.NewNodeRefPillarTarget(targetName, storageNodeName, nil)
+				g.Expect(framework.Apply(ctx, iatK8sClient, t)).To(Succeed(),
+					"apply PillarTarget %q", targetName)
+				target = t
+			}, 60*time.Second, 5*time.Second).Should(Succeed(),
+				"apply PillarTarget %q: REST mapper did not discover PillarTarget "+
+					"within 60s after Helm install", targetName)
 
 			DeferCleanup(func(dctx context.Context) {
 				By(fmt.Sprintf("cleaning up PillarTarget %q", targetName))
@@ -610,6 +619,10 @@ var _ = Describe("InternalAgent functional", Ordered, Label("internal-agent"), f
 			zfsPool = iatZFSPool()
 			if zfsPool == "" {
 				Skip("PILLAR_E2E_ZFS_POOL not set — skipping mount/unmount lifecycle tests")
+			}
+			if os.Getenv("PILLAR_E2E_REAL_NVMEOF") != "true" {
+				Skip("PILLAR_E2E_REAL_NVMEOF not set — pillar-node uses stub connector; " +
+					"mount/unmount lifecycle requires a real NVMe-oF initiator implementation")
 			}
 
 			crSuffix := fmt.Sprintf("%d", time.Now().UnixMilli()%100000)

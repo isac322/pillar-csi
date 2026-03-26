@@ -109,7 +109,7 @@ DOCKER_HOST ?= tcp://localhost:2375
 #   make test-e2e E2E_RUN=TestAgentConnected
 .PHONY: test-e2e
 test-e2e: manifests generate fmt vet ## Run e2e tests; TestMain always creates a fresh Kind cluster and fully tears it down.
-	DOCKER_HOST=$(DOCKER_HOST) KIND_CLUSTER=$(KIND_CLUSTER) E2E_IMAGE_TAG=$(E2E_IMAGE_TAG) E2E_HELM_RELEASE=$(E2E_HELM_RELEASE) E2E_HELM_NAMESPACE=$(E2E_HELM_NAMESPACE) go test -tags=e2e ./test/e2e/ -v -timeout=$(E2E_TIMEOUT) $(if $(E2E_RUN),-run $(E2E_RUN))
+	DOCKER_HOST=$(DOCKER_HOST) KIND_CLUSTER=$(KIND_CLUSTER) E2E_IMAGE_TAG=$(E2E_IMAGE_TAG) E2E_HELM_RELEASE=$(E2E_HELM_RELEASE) E2E_HELM_NAMESPACE=$(E2E_HELM_NAMESPACE) CERT_MANAGER_INSTALL_SKIP=true go test -tags=e2e ./test/e2e/ -v -timeout=$(E2E_TIMEOUT) $(if $(E2E_RUN),-run $(E2E_RUN))
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter

@@ -202,9 +202,9 @@ var _ = Describe("E26: Cross-CRD Deletion Protection", func() {
 			bindingName = "e26-binding-blocking-pool"
 			protoName   = "e26-proto-for-pool-test"
 		)
-		poolNN    := types.NamespacedName{Name: poolName}
+		poolNN := types.NamespacedName{Name: poolName}
 		bindingNN := types.NamespacedName{Name: bindingName}
-		protoNN   := types.NamespacedName{Name: protoName}
+		protoNN := types.NamespacedName{Name: protoName}
 
 		var poolReconciler *PillarPoolReconciler
 		var bindingReconciler *PillarBindingReconciler
@@ -357,8 +357,8 @@ var _ = Describe("E26: Cross-CRD Deletion Protection", func() {
 			poolName    = "e26-pool-for-proto-test"
 			bindingName = "e26-binding-blocking-proto"
 		)
-		protoNN   := types.NamespacedName{Name: protoName}
-		poolNN    := types.NamespacedName{Name: poolName}
+		protoNN := types.NamespacedName{Name: protoName}
+		poolNN := types.NamespacedName{Name: poolName}
 		bindingNN := types.NamespacedName{Name: bindingName}
 
 		var protocolReconciler *PillarProtocolReconciler
@@ -513,9 +513,9 @@ var _ = Describe("E26: Cross-CRD Deletion Protection", func() {
 			protoName   = "e26-chain-proto"
 			bindingName = "e26-chain-binding"
 		)
-		tgtNN     := types.NamespacedName{Name: tgtName}
-		poolNN    := types.NamespacedName{Name: poolName}
-		protoNN   := types.NamespacedName{Name: protoName}
+		tgtNN := types.NamespacedName{Name: tgtName}
+		poolNN := types.NamespacedName{Name: poolName}
+		protoNN := types.NamespacedName{Name: protoName}
 		bindingNN := types.NamespacedName{Name: bindingName}
 
 		var targetReconciler *PillarTargetReconciler

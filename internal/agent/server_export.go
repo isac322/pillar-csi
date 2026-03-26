@@ -64,19 +64,30 @@ func (s *Server) ExportVolume(
 	// After "zfs create -V …" the kernel schedules a uevent that causes udevd
 	// to create the /dev/zvol/… symlink asynchronously.  We poll here so that
 	// configfs never receives an invalid (non-existent) device path.
-	pollInterval := s.devicePollInterval
-	if pollInterval == 0 {
-		pollInterval = nvmeof.DefaultDevicePollInterval
-	}
-	pollTimeout := s.devicePollTimeout
-	if pollTimeout == 0 {
-		pollTimeout = nvmeof.DefaultDevicePollTimeout
-	}
-	waitErr := nvmeof.WaitForDevice(ctx, devicePath, pollInterval, pollTimeout, s.deviceChecker)
-	if waitErr != nil {
-		return nil, status.Errorf(codes.FailedPrecondition,
-			"ExportVolume: zvol device %q not ready after %s: %v",
-			devicePath, pollTimeout, waitErr)
+	//
+	// Device-presence polling is skipped when configfsRoot is not the real
+	// kernel configfs mount point.  In that mode (e.g. --configfs-root=/tmp
+	// used by e2e tests) the NVMe kernel module is not involved, so the kernel
+	// never validates the device_path pseudo-file.  The zvol block device also
+	// only appears on the host's /dev, not inside the container's /dev, so the
+	// os.Stat() probe would always time out — causing ExportVolume to fail with
+	// FailedPrecondition even though the configfs write succeeds.
+	realConfigfs := s.configfsRoot == "" || s.configfsRoot == nvmeof.DefaultConfigfsRoot
+	if realConfigfs {
+		pollInterval := s.devicePollInterval
+		if pollInterval == 0 {
+			pollInterval = nvmeof.DefaultDevicePollInterval
+		}
+		pollTimeout := s.devicePollTimeout
+		if pollTimeout == 0 {
+			pollTimeout = nvmeof.DefaultDevicePollTimeout
+		}
+		waitErr := nvmeof.WaitForDevice(ctx, devicePath, pollInterval, pollTimeout, s.deviceChecker)
+		if waitErr != nil {
+			return nil, status.Errorf(codes.FailedPrecondition,
+				"ExportVolume: zvol device %q not ready after %s: %v",
+				devicePath, pollTimeout, waitErr)
+		}
 	}
 
 	nqn := volumeNQN(req.GetVolumeId())

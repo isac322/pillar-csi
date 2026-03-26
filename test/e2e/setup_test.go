@@ -243,7 +243,7 @@ func initE2EEnv() error {
 	// ZFS loopback pool.
 	testEnv.ZFSPoolName = envOrDefault("E2E_ZFS_POOL", "e2e-pool")
 	testEnv.ZFSImagePath = envOrDefault("E2E_ZFS_IMAGE_PATH", "/tmp/e2e-zfs.img")
-	testEnv.ZFSImageSize = envOrDefault("E2E_ZFS_IMAGE_SIZE", "2G")
+	testEnv.ZFSImageSize = envOrDefault("E2E_ZFS_IMAGE_SIZE", "4G")
 
 	return nil
 }

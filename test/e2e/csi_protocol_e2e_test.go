@@ -124,7 +124,7 @@ func TestCSIProtocol_CreateVolume_NFSUnimplemented(t *testing.T) {
 }
 
 // TestCSIProtocol_CreateVolume_UnknownProtocol_MapsToUnspecified verifies that
-// an unrecognised protocol-type string (e.g. "smb-v3-unknown") is mapped to
+// an unrecognized protocol-type string (e.g. "smb-v3-unknown") is mapped to
 // PROTOCOL_TYPE_UNSPECIFIED(0) by mapProtocolType and that value is forwarded
 // to agent.ExportVolume.  The test also confirms that the resulting agent error
 // (Unimplemented) is propagated to the caller.
@@ -221,7 +221,7 @@ func TestCSIProtocol_ControllerPublish_ISCSIUnimplemented(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // TestCSIProtocol_CreateVolume_UnknownBackendType_MapsToUnspecified verifies
-// that an unrecognised backend-type string (e.g. "fuse-experimental") is mapped
+// that an unrecognized backend-type string (e.g. "fuse-experimental") is mapped
 // to BACKEND_TYPE_UNSPECIFIED(0) by mapBackendType and that value is forwarded
 // to agent.CreateVolume.  The mock agent returns success so the CreateVolume
 // call itself succeeds; the key assertion is that the correct enum value reached
