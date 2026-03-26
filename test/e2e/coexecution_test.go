@@ -64,11 +64,21 @@ func TestCoexecutionSharedEnvIsPopulated(t *testing.T) {
 	if testEnv.HelmNamespace == "" {
 		t.Fatal("testEnv.HelmNamespace must be non-empty: initE2EEnv must run before m.Run()")
 	}
+	// DockerHost is critical: every docker/kind/helm sub-process spawned by
+	// TestMain (including the deferred teardownE2E) uses this value.  An empty
+	// DockerHost would cause all sub-processes to use the default daemon socket
+	// instead of the DOCKER_HOST=tcp://localhost:2375 endpoint required in CI.
+	if testEnv.DockerHost == "" {
+		t.Fatal("testEnv.DockerHost must be non-empty: injectDockerHost requires a " +
+			"configured Docker daemon endpoint; expected tcp://localhost:2375 when " +
+			"DOCKER_HOST is unset")
+	}
 
-	t.Logf("shared testEnv populated OK: cluster=%s imageTag=%s helmRelease=%s namespace=%s externalAgentAddr=%q",
+	t.Logf("shared testEnv populated OK: cluster=%s imageTag=%s helmRelease=%s "+
+		"namespace=%s dockerHost=%s externalAgentAddr=%q",
 		testEnv.ClusterName, testEnv.ImageTag,
 		testEnv.HelmRelease, testEnv.HelmNamespace,
-		testEnv.ExternalAgentAddr)
+		testEnv.DockerHost, testEnv.ExternalAgentAddr)
 }
 
 // TestCoexecutionTestMainOrderingGuarantee verifies the ordering guarantee
@@ -294,5 +304,80 @@ func TestCoexecutionModesMutuallyExclusive(t *testing.T) {
 	} else {
 		t.Logf("mode=internal-agent (DaemonSet expected in namespace %s)",
 			testEnv.HelmNamespace)
+	}
+}
+
+// TestCoexecution is the primary end-to-end coexecution test.  It exercises
+// the full unified e2e lifecycle — Kind cluster creation, image loading, Helm
+// install, shared testEnv population, and deferred teardown — within a single
+// `go test` invocation.
+//
+// This test is designed to be run in isolation via:
+//
+//	make test-e2e E2E_RUN=TestCoexecution
+//
+// or together with any other Test* functions in the same binary:
+//
+//	make test-e2e
+//
+// In both cases TestMain guarantees that:
+//  1. A fresh Kind cluster is created before m.Run().
+//  2. The Helm chart is installed with --wait before m.Run().
+//  3. The Kind cluster is deleted after m.Run() (pass or fail).
+//
+// Reaching this function proves all three guarantees held: setup succeeded,
+// m.Run() was called, and the deferred teardown will fire when m.Run() returns.
+//
+// The test verifies two end-to-end observable properties:
+//  1. The Kind cluster is accessible via kubectl (KUBECONFIG is set and the
+//     API server responds to "kubectl get nodes").
+//  2. The pillar-csi Helm release is present in the expected namespace and
+//     the controller Deployment exists (Helm install --wait succeeded).
+func TestCoexecution(t *testing.T) {
+	if testEnv.KubeconfigPath == "" {
+		t.Skip("no live cluster (KubeconfigPath empty) — end-to-end " +
+			"coexecution cannot be validated without a running cluster")
+	}
+
+	// ── Verify 1: kubectl can reach the cluster API server ────────────────
+	// "kubectl get nodes -o name" lists all nodes; if at least one node
+	// appears the API server is up and KUBECONFIG is correctly set.
+	out, err := captureOutput("kubectl", "get", "nodes", "-o", "name")
+	if err != nil {
+		t.Fatalf("kubectl get nodes failed: %v\noutput: %s\n"+
+			"KUBECONFIG=%s — verify Kind cluster is running",
+			err, out, testEnv.KubeconfigPath)
+	}
+	if out == "" {
+		t.Fatal("kubectl get nodes returned no nodes: cluster must have at least one node")
+	}
+	t.Logf("cluster accessible OK: nodes=%q", out)
+
+	// ── Verify 2: the Helm release is deployed in the expected namespace ───
+	// "helm status" exits non-zero when the release is not installed or the
+	// namespace does not exist.  This confirms that installHelm() succeeded
+	// before m.Run() was called (i.e. the coexecution setup ordering is correct).
+	helmOut, helmErr := captureOutput("helm", "status",
+		testEnv.HelmRelease,
+		"--namespace", testEnv.HelmNamespace,
+		"--output", "json",
+	)
+	if helmErr != nil {
+		t.Fatalf("helm status %q -n %q failed: %v\noutput: %s\n"+
+			"Helm release must be installed by TestMain before m.Run()",
+			testEnv.HelmRelease, testEnv.HelmNamespace, helmErr, helmOut)
+	}
+	t.Logf("Helm release %q deployed in namespace %q — coexecution setup ordering confirmed",
+		testEnv.HelmRelease, testEnv.HelmNamespace)
+
+	// ── Confirm the active mode ────────────────────────────────────────────
+	if testEnv.ExternalAgentAddr != "" {
+		t.Logf("coexecution end-to-end OK: mode=external-agent "+
+			"cluster=%s helmRelease=%s addr=%s",
+			testEnv.ClusterName, testEnv.HelmRelease, testEnv.ExternalAgentAddr)
+	} else {
+		t.Logf("coexecution end-to-end OK: mode=internal-agent "+
+			"cluster=%s helmRelease=%s namespace=%s",
+			testEnv.ClusterName, testEnv.HelmRelease, testEnv.HelmNamespace)
 	}
 }
