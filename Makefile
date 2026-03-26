@@ -100,10 +100,15 @@ E2E_TIMEOUT ?= 30m
 DOCKER_HOST ?= tcp://localhost:2375
 
 # test-e2e is the single entry point for the full e2e lifecycle.
-# TestMain (test/e2e/setup_test.go) creates the Kind cluster, builds images,
-# installs Helm, runs all tests, and tears down.
+# TestMain (test/e2e/setup_test.go) always deletes any pre-existing Kind
+# cluster with the same name, creates a fresh one, builds images, installs
+# Helm, runs all tests, and tears down — guaranteeing no state leakage between
+# runs.
+#
+# E2E_RUN filters which tests to run (passed to go test -run), e.g.:
+#   make test-e2e E2E_RUN=TestAgentConnected
 .PHONY: test-e2e
-test-e2e: manifests generate fmt vet ## Run e2e tests; TestMain creates and tears down the Kind cluster automatically.
+test-e2e: manifests generate fmt vet ## Run e2e tests; TestMain always creates a fresh Kind cluster and fully tears it down.
 	DOCKER_HOST=$(DOCKER_HOST) KIND_CLUSTER=$(KIND_CLUSTER) E2E_IMAGE_TAG=$(E2E_IMAGE_TAG) E2E_HELM_RELEASE=$(E2E_HELM_RELEASE) E2E_HELM_NAMESPACE=$(E2E_HELM_NAMESPACE) go test -tags=e2e ./test/e2e/ -v -timeout=$(E2E_TIMEOUT) $(if $(E2E_RUN),-run $(E2E_RUN))
 
 .PHONY: lint
