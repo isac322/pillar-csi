@@ -53,6 +53,7 @@ package e2e
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -61,6 +62,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 
 	agentv1 "github.com/bhyoo/pillar-csi/gen/go/pillar_csi/agent/v1"
+	"github.com/bhyoo/pillar-csi/test/e2e/framework"
 )
 
 // ZFSZvolRealExport tests the ExportVolume RPC end-to-end by provisioning a
@@ -235,6 +237,82 @@ var _ = Describe("ZFSZvolRealExport", Ordered, func() {
 			exportResp.GetExportInfo().GetAddress(),
 			exportResp.GetExportInfo().GetPort(),
 		))
+
+		// ── Step 5: Verify configfs entries ───────────────────────────────
+		//
+		// The agent is started with --configfs-root=/tmp so all NVMe-oF
+		// configfs entries live under /tmp/nvmet/ inside the agent container
+		// (not in the kernel's real /sys/kernel/config/nvmet/).
+		//
+		// We check three configfs entries to confirm the agent fully completed
+		// the target setup:
+		//
+		//  a) Subsystem directory — the NQN returned in ExportInfo.TargetId.
+		//  b) Namespace directory — namespace ID from ExportInfo.VolumeRef.
+		//  c) Port directory     — the configfs port entry whose addr_trsvcid
+		//                          matches the TCP port we requested (4421).
+		//
+		// configfs entries are written synchronously during ExportVolume, so
+		// there is no need to poll: the entries must exist immediately after
+		// the RPC returns successfully.
+
+		nqn := exportResp.GetExportInfo().GetTargetId()
+		tcpPort := exportResp.GetExportInfo().GetPort()
+		volumeRef := exportResp.GetExportInfo().GetVolumeRef()
+
+		// Parse the namespace ID from VolumeRef (a uint32 serialised as string).
+		nsidU64, parseErr := strconv.ParseUint(volumeRef, 10, 32)
+		Expect(parseErr).NotTo(HaveOccurred(),
+			"ExportInfo.VolumeRef must be a numeric namespace ID string, got %q", volumeRef)
+		nsid := uint32(nsidU64)
+
+		// Compute the deterministic configfs port ID from the bind address
+		// and TCP port that were passed in ExportVolumeRequest.
+		portID := framework.StablePortID("0.0.0.0", tcpPort)
+
+		agentContainer := externalAgentContainerName()
+		agentCfg := framework.NewNVMeConfigfs(testEnv.DockerHost, agentContainer, "/tmp")
+
+		// ── 5a: Subsystem exists ───────────────────────────────────────────
+		By(fmt.Sprintf(
+			"verifying configfs subsystem %q exists in agent container %q",
+			nqn, agentContainer))
+		subsysExists, subsysErr := agentCfg.SubsystemExists(ctx, nqn)
+		Expect(subsysErr).NotTo(HaveOccurred(),
+			"docker exec into agent container %q must succeed when checking subsystem dir",
+			agentContainer)
+		Expect(subsysExists).To(BeTrue(),
+			"configfs subsystem directory %q must exist after ExportVolume — "+
+				"check that the agent wrote to <configfsRoot>/nvmet/subsystems/<nqn>/",
+			agentCfg.SubsystemPath(nqn))
+
+		// ── 5b: Namespace exists ──────────────────────────────────────────
+		By(fmt.Sprintf(
+			"verifying configfs namespace nsid=%d for subsystem %q", nsid, nqn))
+		nsExists, nsErr := agentCfg.NamespaceExists(ctx, nqn, nsid)
+		Expect(nsErr).NotTo(HaveOccurred(),
+			"docker exec into agent container %q must succeed when checking namespace dir",
+			agentContainer)
+		Expect(nsExists).To(BeTrue(),
+			"configfs namespace directory %q must exist after ExportVolume",
+			agentCfg.NamespacePath(nqn, nsid))
+
+		// ── 5c: Port exists ───────────────────────────────────────────────
+		By(fmt.Sprintf(
+			"verifying configfs port entry portID=%d (tcp port %d) in agent container %q",
+			portID, tcpPort, agentContainer))
+		portExists, portErr := agentCfg.PortExists(ctx, portID)
+		Expect(portErr).NotTo(HaveOccurred(),
+			"docker exec into agent container %q must succeed when checking port dir",
+			agentContainer)
+		Expect(portExists).To(BeTrue(),
+			"configfs port directory %q must exist after ExportVolume on TCP port %d — "+
+				"expected portID derived via StablePortID(\"0.0.0.0\", %d) = %d",
+			agentCfg.PortPath(portID), tcpPort, tcpPort, portID)
+
+		By(fmt.Sprintf(
+			"configfs verified: subsystem=%q namespace=%d portID=%d",
+			nqn, nsid, portID))
 	})
 })
 
