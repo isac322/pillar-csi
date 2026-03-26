@@ -45,6 +45,7 @@ package e2e
 // tag, Helm namespace, etc.) without re-parsing the environment.
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os"
@@ -52,6 +53,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/bhyoo/pillar-csi/test/e2e/framework"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -122,6 +125,32 @@ type E2EEnv struct {
 	// startExternalAgentContainer.  Empty when LaunchExternalAgent is false or
 	// when the container could not be started.  Used by teardown to stop/remove.
 	externalAgentContainerID string
+
+	// ── ZFS loopback pool ─────────────────────────────────────────────────
+
+	// ZFSPoolName is the ZFS pool name created on the remote host.
+	// Sourced from E2E_ZFS_POOL; defaults to "e2e-pool".
+	ZFSPoolName string
+
+	// ZFSImagePath is the absolute path of the sparse backing image file
+	// created on the remote host.
+	// Sourced from E2E_ZFS_IMAGE_PATH; defaults to "/tmp/e2e-zfs.img".
+	ZFSImagePath string
+
+	// ZFSImageSize is the size string passed to truncate(1) when creating
+	// the backing image (e.g. "2G", "512M").
+	// Sourced from E2E_ZFS_IMAGE_SIZE; defaults to "2G".
+	ZFSImageSize string
+
+	// zfsLoopDev is the loop device path returned by CreateLoopbackZFSPool
+	// (e.g. "/dev/loop5").  Stored so teardownZFSPool can pass it to
+	// DestroyLoopbackZFSPool.  Empty until setupZFSPool succeeds.
+	zfsLoopDev string
+
+	// zfsHostExec is the privileged exec helper created by setupZFSPool.
+	// teardownZFSPool uses it to destroy the pool and then calls Close on it.
+	// Nil until setupZFSPool has successfully started the helper container.
+	zfsHostExec *framework.DockerHostExec
 }
 
 // testEnv is the single, shared E2EEnv populated by TestMain.  All e2e test
@@ -211,6 +240,11 @@ func initE2EEnv() error {
 		testEnv.ExternalAgentReadyTimeout = 60 * time.Second
 	}
 
+	// ZFS loopback pool.
+	testEnv.ZFSPoolName = envOrDefault("E2E_ZFS_POOL", "e2e-pool")
+	testEnv.ZFSImagePath = envOrDefault("E2E_ZFS_IMAGE_PATH", "/tmp/e2e-zfs.img")
+	testEnv.ZFSImageSize = envOrDefault("E2E_ZFS_IMAGE_SIZE", "2G")
+
 	return nil
 }
 
@@ -235,6 +269,9 @@ func setupE2E() error {
 	}
 	if err := buildAndLoadImages(); err != nil {
 		return fmt.Errorf("docker images: %w", err)
+	}
+	if err := setupZFSPool(); err != nil {
+		return fmt.Errorf("zfs pool: %w", err)
 	}
 
 	// Start the external agent container when requested and no pre-existing
@@ -464,6 +501,9 @@ func teardownE2E() {
 	// Stop and remove the external-agent container started by TestMain.
 	stopExternalAgentContainer()
 
+	// Destroy the loopback ZFS pool and release the DockerHostExec helper.
+	teardownZFSPool()
+
 	// Always delete the Kind cluster — unconditionally, with no guard.
 	//
 	// If testEnv.ClusterName is empty (initE2EEnv was interrupted before the
@@ -493,6 +533,97 @@ func teardownE2E() {
 	if testEnv.KubeconfigPath != "" {
 		_ = os.Remove(testEnv.KubeconfigPath)
 	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ZFS loopback pool lifecycle
+// ─────────────────────────────────────────────────────────────────────────────
+
+// setupZFSPool creates a loopback-backed ZFS pool on the remote Docker host.
+//
+// It starts a privileged DockerHostExec helper container (stored in
+// testEnv.zfsHostExec) and calls framework.CreateLoopbackZFSPool to:
+//
+//  1. Create a sparse image file of testEnv.ZFSImageSize at testEnv.ZFSImagePath.
+//  2. Attach the image to a free loop device via losetup.
+//  3. Create the ZFS pool named testEnv.ZFSPoolName on that loop device.
+//
+// The resulting loop device path is stored in testEnv.zfsLoopDev so that
+// teardownZFSPool can pass it to DestroyLoopbackZFSPool.
+//
+// On error the function returns a descriptive message that TestMain prints to
+// stderr before calling os.Exit(1).  Partial resources (loop device, image
+// file) are cleaned up inside CreateLoopbackZFSPool via its internal deferred
+// guards, so no additional cleanup is required here on failure.
+func setupZFSPool() error {
+	ctx := context.Background()
+
+	fmt.Fprintf(os.Stdout,
+		"e2e setup: starting privileged host-exec container on %s\n",
+		testEnv.DockerHost)
+	h, err := framework.NewDockerHostExec(ctx, testEnv.DockerHost)
+	if err != nil {
+		return fmt.Errorf(
+			"start host-exec container on %s: %w\n"+
+				"  (ZFS pool %q cannot be created without a privileged exec helper)",
+			testEnv.DockerHost, err, testEnv.ZFSPoolName)
+	}
+	// Store immediately so teardownZFSPool can close h even when subsequent
+	// steps fail.
+	testEnv.zfsHostExec = h
+
+	fmt.Fprintf(os.Stdout,
+		"e2e setup: creating ZFS pool %q on %s (image %s, size %s)\n",
+		testEnv.ZFSPoolName, testEnv.DockerHost,
+		testEnv.ZFSImagePath, testEnv.ZFSImageSize)
+	loopDev, err := framework.CreateLoopbackZFSPool(ctx, h,
+		testEnv.ZFSPoolName, testEnv.ZFSImagePath, testEnv.ZFSImageSize)
+	if err != nil {
+		return fmt.Errorf(
+			"create loopback ZFS pool %q (image %s, size %s): %w\n"+
+				"  Check that the ZFS kernel module is loaded on the remote host and that\n"+
+				"  the remote Docker daemon at %s is reachable.",
+			testEnv.ZFSPoolName, testEnv.ZFSImagePath, testEnv.ZFSImageSize, err,
+			testEnv.DockerHost)
+	}
+	testEnv.zfsLoopDev = loopDev
+
+	fmt.Fprintf(os.Stdout,
+		"e2e setup: ZFS pool %q ready (loop device %s, image %s)\n",
+		testEnv.ZFSPoolName, loopDev, testEnv.ZFSImagePath)
+	return nil
+}
+
+// teardownZFSPool destroys the loopback ZFS pool created by setupZFSPool and
+// closes the DockerHostExec helper container.
+//
+// All errors are logged to stderr but do not abort teardown — subsequent steps
+// (Kind cluster deletion, kubeconfig removal) must still run even when pool
+// destruction fails.  This matches the best-effort contract of teardownE2E.
+//
+// teardownZFSPool is a no-op when testEnv.zfsHostExec is nil (i.e. when
+// setupZFSPool was never called or failed before allocating the helper).
+func teardownZFSPool() {
+	h := testEnv.zfsHostExec
+	if h == nil {
+		return
+	}
+
+	ctx := context.Background()
+
+	fmt.Fprintf(os.Stdout,
+		"e2e teardown: destroying ZFS pool %q (loop %s, image %s)\n",
+		testEnv.ZFSPoolName, testEnv.zfsLoopDev, testEnv.ZFSImagePath)
+	if err := framework.DestroyLoopbackZFSPool(ctx, h,
+		testEnv.ZFSPoolName, testEnv.zfsLoopDev, testEnv.ZFSImagePath); err != nil {
+		fmt.Fprintf(os.Stderr, "e2e teardown: destroy ZFS pool %q: %v\n",
+			testEnv.ZFSPoolName, err)
+	}
+
+	if err := h.Close(); err != nil {
+		fmt.Fprintf(os.Stderr, "e2e teardown: close host-exec container: %v\n", err)
+	}
+	testEnv.zfsHostExec = nil
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
