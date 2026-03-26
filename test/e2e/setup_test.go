@@ -257,9 +257,28 @@ func setupE2E() error {
 // populated and KUBECONFIG is exported.  The embedded KindConfigYAML (from
 // testdata_embed.go) is written to a temporary file so Kind can read it via
 // --config.
+//
+// # Why kind delete failure is fatal here (vs non-fatal in teardownE2E)
+//
+// In teardownE2E, a delete failure is logged but ignored because the cluster
+// may genuinely not exist (setup never created it) and the CI system will
+// start fresh on the next run.
+//
+// Here in setup, we are ABOUT to create a new cluster.  If the old cluster
+// cannot be deleted we cannot guarantee a clean starting state: the new
+// "create" would either fail (name collision) or succeed on top of stale
+// state.  Either outcome violates the "always fresh" guarantee, so we
+// return a hard error and abort setup entirely.
 func ensureKindCluster() error {
 	// Delete any pre-existing cluster with the same name to guarantee a clean
 	// slate and prevent state leakage between runs.
+	//
+	// clusterExists() is used here to produce a clear log message and to avoid
+	// an unconditional "kind delete" invocation that would always print a
+	// "Deleting cluster ... (not found)" line even on first-ever runs.  If
+	// ensureKindCluster were ever simplified to an unconditional delete
+	// (treating not-found as success), clusterExists would become dead code and
+	// should be removed at that time.
 	existingClusters, _ := captureOutput("kind", "get", "clusters")
 	if clusterExists(existingClusters, testEnv.ClusterName) {
 		fmt.Fprintf(os.Stdout,
@@ -268,6 +287,8 @@ func ensureKindCluster() error {
 		if err := runCmd("kind", "delete", "cluster",
 			"--name", testEnv.ClusterName,
 		); err != nil {
+			// Fatal: we cannot proceed with a stale cluster.  See function
+			// doc comment for the rationale.
 			return fmt.Errorf("kind delete existing cluster: %w", err)
 		}
 	}
@@ -418,6 +439,16 @@ func installHelm() error {
 // (if TestMain started one), and always deletes the Kind cluster.  All errors
 // are logged to stderr but do not affect the exit code — that was already
 // captured by the m.Run() call in TestMain.
+//
+// Cluster deletion is unconditional: even if testEnv.ClusterName is somehow
+// empty (e.g. initE2EEnv was interrupted before setting it), teardownE2E falls
+// back to defaultClusterName so that no cluster is ever left behind.  This
+// hard guarantee prevents state leakage between runs regardless of how or when
+// the process exits.
+//
+// All steps are best-effort: errors are logged but do not abort subsequent
+// steps.  The only exception to the "best-effort" rule is the final cluster
+// deletion, which runs unconditionally even after Helm or container failures.
 func teardownE2E() {
 	if testEnv.HelmRelease != "" {
 		fmt.Fprintf(os.Stdout, "e2e teardown: uninstalling helm release %q\n",
@@ -433,14 +464,29 @@ func teardownE2E() {
 	// Stop and remove the external-agent container started by TestMain.
 	stopExternalAgentContainer()
 
-	if testEnv.ClusterName != "" {
-		fmt.Fprintf(os.Stdout, "e2e teardown: deleting kind cluster %q\n",
-			testEnv.ClusterName)
-		if err := runCmd("kind", "delete", "cluster",
-			"--name", testEnv.ClusterName,
-		); err != nil {
-			fmt.Fprintf(os.Stderr, "e2e teardown: kind delete cluster: %v\n", err)
-		}
+	// Always delete the Kind cluster — unconditionally, with no guard.
+	//
+	// If testEnv.ClusterName is empty (initE2EEnv was interrupted before the
+	// first envOrDefault call), fall back to defaultClusterName so we still
+	// attempt to clean up.  This fallback is a safety net: in normal operation
+	// ClusterName is always non-empty because initE2EEnv sets it on its very
+	// first line.
+	//
+	// Errors here are non-fatal (logged and ignored) for two reasons:
+	//  1. The cluster may never have been created (e.g. setup failed early).
+	//  2. Subsequent CI runs will call ensureKindCluster() which checks for
+	//     and deletes any pre-existing cluster — a missed teardown is thus
+	//     corrected at the next setup.
+	clusterName := testEnv.ClusterName
+	if clusterName == "" {
+		clusterName = defaultClusterName
+	}
+	fmt.Fprintf(os.Stdout, "e2e teardown: deleting kind cluster %q (unconditional)\n",
+		clusterName)
+	if err := runCmd("kind", "delete", "cluster",
+		"--name", clusterName,
+	); err != nil {
+		fmt.Fprintf(os.Stderr, "e2e teardown: kind delete cluster: %v\n", err)
 	}
 
 	// Remove the temporary kubeconfig written by writeKindKubeconfig.
@@ -542,6 +588,13 @@ func writeTempFile(pattern string, data []byte) (string, error) {
 
 // clusterExists reports whether clusterName appears as a full line in the
 // whitespace-trimmed output of "kind get clusters".
+//
+// It is currently used by ensureKindCluster() to decide whether to log
+// "already exists — deleting for a fresh start" before the unconditional
+// setup-time delete.  If ensureKindCluster() is ever simplified to always
+// call "kind delete cluster" without checking first (treating not-found as
+// success), clusterExists becomes dead code and should be removed at that
+// time.
 func clusterExists(output, clusterName string) bool {
 	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
 		if strings.TrimSpace(line) == clusterName {

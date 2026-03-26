@@ -220,26 +220,35 @@ func TestCoexecutionSingleGinkgoRunner(t *testing.T) {
 //	}()
 //	exitCode = m.Run()
 //
-// For this to work correctly:
+// teardownE2E() deletes the Kind cluster unconditionally.  Even if
+// testEnv.ClusterName is somehow empty, teardownE2E falls back to
+// defaultClusterName ("pillar-csi-e2e") so a cluster is always attempted to
+// be cleaned up.  This test verifies:
 //
-//  1. testEnv.ClusterName must be non-empty so teardownE2E knows which
-//     cluster to delete (ensureKindCluster sets this).
-//  2. testEnv.DockerHost must be configured so all docker/kind/helm
-//     sub-processes (including the teardown "kind delete cluster" call)
-//     reach the correct Docker daemon via the DOCKER_HOST injection done
-//     by injectDockerHost in runCmd/captureOutput.
+//  1. testEnv.ClusterName is populated (confirming initE2EEnv ran).  In
+//     normal operation this is always true: initE2EEnv sets ClusterName as
+//     its very first line before any error can occur.
+//  2. testEnv.DockerHost is configured so all docker/kind/helm sub-processes
+//     (including the teardown "kind delete cluster" call) reach the correct
+//     Docker daemon via the DOCKER_HOST injection done by injectDockerHost
+//     in runCmd/captureOutput.
 //
 // Reaching this function confirms both preconditions: TestMain ran
 // initE2EEnv() and ensureKindCluster() successfully before m.Run().
 func TestCoexecutionTeardownGuarantee(t *testing.T) {
-	// Precondition 1: ClusterName must be non-empty so teardownE2E can
-	// unconditionally delete the correct Kind cluster on any exit path.
+	// Precondition 1: ClusterName should be non-empty.  If it is empty
+	// teardownE2E falls back to defaultClusterName — but an empty value here
+	// means initE2EEnv was not called or returned before its first line, which
+	// would be a serious bug.
 	if testEnv.ClusterName == "" {
-		t.Fatal("testEnv.ClusterName must be non-empty: " +
-			"teardownE2E() cannot delete an unnamed cluster")
+		t.Errorf("testEnv.ClusterName is empty: initE2EEnv did not run or "+
+			"failed before its first line; teardownE2E will fall back to "+
+			"defaultClusterName %q — check TestMain setup logs", defaultClusterName)
+	} else {
+		t.Logf("teardown precondition OK: ClusterName=%q will be deleted "+
+			"unconditionally by the deferred teardownE2E() in TestMain "+
+			"(pass or fail)", testEnv.ClusterName)
 	}
-	t.Logf("teardown precondition OK: ClusterName=%q will be deleted unconditionally "+
-		"by the deferred teardownE2E() in TestMain (pass or fail)", testEnv.ClusterName)
 
 	// Precondition 2: DockerHost must be non-empty so Kind/docker/helm
 	// sub-processes (including "kind delete cluster" in teardown) use the
