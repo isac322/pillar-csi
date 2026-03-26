@@ -22,6 +22,8 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	pillarcsiv1alpha1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
 )
 
@@ -158,6 +160,119 @@ var _ = Describe("PillarTarget Webhook", func() {
 			_, err := validator.ValidateCreate(ctx, obj)
 			Expect(err).NotTo(HaveOccurred(),
 				"Valid PillarTarget creation should be allowed")
+		})
+
+		// ── E19.1.1 ───────────────────────────────────────────────────────────
+		// TestPillarTargetWebhook_ValidCreate_External
+		// ValidateCreate should pass without error for a well-formed external spec.
+		It("E19.1.1 TestPillarTargetWebhook_ValidCreate_External: should accept external spec with address+port", func() {
+			By("setting spec.external.address='10.0.0.1' and spec.external.port=9500")
+			obj.Spec.External = &pillarcsiv1alpha1.ExternalSpec{Address: "10.0.0.1", Port: 9500}
+
+			warnings, err := validator.ValidateCreate(ctx, obj)
+
+			Expect(err).NotTo(HaveOccurred(),
+				"ValidateCreate should succeed for a valid external spec")
+			Expect(warnings).To(BeEmpty())
+		})
+
+		// ── E19.1.2 ───────────────────────────────────────────────────────────
+		// TestPillarTargetWebhook_ValidCreate_NodeRef
+		// ValidateCreate should pass without error for a well-formed nodeRef spec.
+		// (This overlaps with ID 157 above; kept explicitly for E19 traceability.)
+		It("E19.1.2 TestPillarTargetWebhook_ValidCreate_NodeRef: should accept nodeRef spec with node name set", func() {
+			By("setting spec.nodeRef.name='worker-1'")
+			obj.Spec.NodeRef = &pillarcsiv1alpha1.NodeRefSpec{Name: "worker-1"}
+
+			warnings, err := validator.ValidateCreate(ctx, obj)
+
+			Expect(err).NotTo(HaveOccurred(),
+				"ValidateCreate should succeed for a valid nodeRef spec")
+			Expect(warnings).To(BeEmpty())
+		})
+	})
+})
+
+// =============================================================================
+// E19.2: CRD OpenAPI schema validation — API server rejects invalid objects
+//
+// E19.2.1 TestPillarTargetCRD_InvalidCreate_EmptyNodeRefName
+// E19.2.2 TestPillarTargetCRD_InvalidCreate_ExternalPortTooLow
+// E19.2.3 TestPillarTargetCRD_InvalidCreate_ExternalPortTooHigh
+// E19.2.4 TestPillarTargetCRD_InvalidCreate_EmptyExternalAddress
+//
+// These tests create objects via the real Kubernetes API server provided by
+// envtest.  The CRD OpenAPI schema (generated from kubebuilder markers) must
+// reject invalid field values with HTTP 422 UnprocessableEntity.
+// =============================================================================
+var _ = Describe("PillarTarget CRD Schema Validation", func() {
+	Context("E19.2 — k8sClient.Create should be rejected for invalid specs", func() {
+		It("E19.2.1 TestPillarTargetCRD_InvalidCreate_EmptyNodeRefName: should reject spec.nodeRef.name=''", func() {
+			By("creating a PillarTarget with spec.nodeRef.name='' (violates MinLength=1)")
+			target := &pillarcsiv1alpha1.PillarTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: "e19-invalid-noderef-name"},
+				Spec: pillarcsiv1alpha1.PillarTargetSpec{
+					NodeRef: &pillarcsiv1alpha1.NodeRefSpec{
+						Name:        "", // violates +kubebuilder:validation:MinLength=1
+						AddressType: "InternalIP",
+					},
+				},
+			}
+
+			err := k8sClient.Create(ctx, target)
+			Expect(err).To(HaveOccurred(),
+				"API server should reject PillarTarget with empty spec.nodeRef.name")
+		})
+
+		It("E19.2.2 TestPillarTargetCRD_InvalidCreate_ExternalPortTooLow: should reject spec.external.port=0", func() {
+			By("creating a PillarTarget with spec.external.port=0 (violates Minimum=1)")
+			target := &pillarcsiv1alpha1.PillarTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: "e19-invalid-port-low"},
+				Spec: pillarcsiv1alpha1.PillarTargetSpec{
+					External: &pillarcsiv1alpha1.ExternalSpec{
+						Address: "10.0.0.1",
+						Port:    0, // violates +kubebuilder:validation:Minimum=1
+					},
+				},
+			}
+
+			err := k8sClient.Create(ctx, target)
+			Expect(err).To(HaveOccurred(),
+				"API server should reject PillarTarget with spec.external.port=0 (below minimum 1)")
+		})
+
+		It("E19.2.3 TestPillarTargetCRD_InvalidCreate_ExternalPortTooHigh: should reject spec.external.port=65536", func() {
+			By("creating a PillarTarget with spec.external.port=65536 (violates Maximum=65535)")
+			target := &pillarcsiv1alpha1.PillarTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: "e19-invalid-port-high"},
+				Spec: pillarcsiv1alpha1.PillarTargetSpec{
+					External: &pillarcsiv1alpha1.ExternalSpec{
+						Address: "10.0.0.1",
+						Port:    65536, // violates +kubebuilder:validation:Maximum=65535
+					},
+				},
+			}
+
+			err := k8sClient.Create(ctx, target)
+			Expect(err).To(HaveOccurred(),
+				"API server should reject PillarTarget with spec.external.port=65536 (above maximum 65535)")
+		})
+
+		It("E19.2.4 TestPillarTargetCRD_InvalidCreate_EmptyExternalAddress: should reject spec.external.address=''", func() {
+			By("creating a PillarTarget with spec.external.address='' (violates MinLength=1)")
+			target := &pillarcsiv1alpha1.PillarTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: "e19-invalid-empty-address"},
+				Spec: pillarcsiv1alpha1.PillarTargetSpec{
+					External: &pillarcsiv1alpha1.ExternalSpec{
+						Address: "", // violates +kubebuilder:validation:MinLength=1
+						Port:    9500,
+					},
+				},
+			}
+
+			err := k8sClient.Create(ctx, target)
+			Expect(err).To(HaveOccurred(),
+				"API server should reject PillarTarget with empty spec.external.address")
 		})
 	})
 })

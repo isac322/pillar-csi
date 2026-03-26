@@ -277,6 +277,122 @@ var _ = Describe("PillarTarget Controller", func() {
 			Expect(errors.IsNotFound(err)).To(BeTrue(),
 				"PillarTarget should be deleted when no pools reference it")
 		})
+
+		// ── E19.7.4 ────────────────────────────────────────────────────────────
+		// TestPillarTargetController_DeletionBlocked_MultiplePoolsRequireAllRemoved
+		//
+		// When two PillarPools both reference the same PillarTarget, deletion must
+		// remain blocked as long as at least one referencing pool exists.  Only after
+		// all referencing pools are removed should the finalizer be lifted and the
+		// object be GC'd by the API server.
+		Context("E19.7.4 — multiple pools: deletion stays blocked until the last pool is removed", func() {
+			const (
+				poolAName = "test-pool-multi-a"
+				poolBName = "test-pool-multi-b"
+				multiTargetName = "test-target-multi-pool"
+			)
+			multiTargetNN := types.NamespacedName{Name: multiTargetName}
+
+			doMultiReconcile := func() (reconcile.Result, error) {
+				return reconciler.Reconcile(bctx, reconcile.Request{NamespacedName: multiTargetNN})
+			}
+
+			deletePool := func(name string) {
+				pool := &pillarcsiv1alpha1.PillarPool{}
+				if err := k8sClient.Get(bctx, types.NamespacedName{Name: name}, pool); err == nil {
+					Expect(k8sClient.Delete(bctx, pool)).To(Succeed())
+				}
+			}
+
+			BeforeEach(func() {
+				// Create the PillarTarget.
+				multiTarget := &pillarcsiv1alpha1.PillarTarget{
+					ObjectMeta: metav1.ObjectMeta{Name: multiTargetName},
+					Spec: pillarcsiv1alpha1.PillarTargetSpec{
+						External: &pillarcsiv1alpha1.ExternalSpec{
+							Address: "192.0.2.10",
+							Port:    9500,
+						},
+					},
+				}
+				Expect(k8sClient.Create(bctx, multiTarget)).To(Succeed())
+				// First reconcile adds the finalizer.
+				_, err := doMultiReconcile()
+				Expect(err).NotTo(HaveOccurred())
+				// Second reconcile updates status (normal path).
+				_, err = doMultiReconcile()
+				Expect(err).NotTo(HaveOccurred())
+
+				// Create two PillarPools that both reference this target.
+				for _, poolName := range []string{poolAName, poolBName} {
+					pool := &pillarcsiv1alpha1.PillarPool{
+						ObjectMeta: metav1.ObjectMeta{Name: poolName},
+						Spec: pillarcsiv1alpha1.PillarPoolSpec{
+							TargetRef: multiTargetName,
+							Backend: pillarcsiv1alpha1.BackendSpec{
+								Type: pillarcsiv1alpha1.BackendTypeDir,
+							},
+						},
+					}
+					Expect(k8sClient.Create(bctx, pool)).To(Succeed())
+				}
+			})
+
+			AfterEach(func() {
+				// Best-effort cleanup.
+				deletePool(poolAName)
+				deletePool(poolBName)
+				t := &pillarcsiv1alpha1.PillarTarget{}
+				if err := k8sClient.Get(bctx, multiTargetNN, t); err == nil {
+					controllerutil.RemoveFinalizer(t, pillarTargetFinalizer)
+					Expect(k8sClient.Update(bctx, t)).To(Succeed())
+					Expect(k8sClient.Delete(bctx, t)).To(Succeed())
+				}
+			})
+
+			It("E19.7.4 TestPillarTargetController_DeletionBlocked_MultiplePoolsRequireAllRemoved", func() {
+				// Step 1: Trigger deletion of the PillarTarget.
+				Expect(k8sClient.Delete(bctx, &pillarcsiv1alpha1.PillarTarget{
+					ObjectMeta: metav1.ObjectMeta{Name: multiTargetName},
+				})).To(Succeed())
+
+				// Step 2: First reconcile — both pools present → blocked.
+				result, err := doMultiReconcile()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.RequeueAfter).To(Equal(requeueAfterTargetDeletionBlock),
+					"reconciler should requeue because pool A and pool B still exist")
+				t := &pillarcsiv1alpha1.PillarTarget{}
+				Expect(k8sClient.Get(bctx, multiTargetNN, t)).To(Succeed(),
+					"PillarTarget should still exist while pools reference it")
+				Expect(controllerutil.ContainsFinalizer(t, pillarTargetFinalizer)).To(BeTrue(),
+					"finalizer should be retained when any referencing pool exists")
+
+				// Step 3: Remove pool A — pool B still exists.
+				deletePool(poolAName)
+
+				// Step 4: Second reconcile — pool B still present → still blocked.
+				result, err = doMultiReconcile()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.RequeueAfter).To(Equal(requeueAfterTargetDeletionBlock),
+					"reconciler should still requeue because pool B exists")
+				t = &pillarcsiv1alpha1.PillarTarget{}
+				Expect(k8sClient.Get(bctx, multiTargetNN, t)).To(Succeed(),
+					"PillarTarget should still exist while pool B references it")
+				Expect(controllerutil.ContainsFinalizer(t, pillarTargetFinalizer)).To(BeTrue(),
+					"finalizer should be retained as long as pool B exists")
+
+				// Step 5: Remove pool B — no referencing pools remain.
+				deletePool(poolBName)
+
+				// Step 6: Third reconcile — no pools left → finalizer removed, object deleted.
+				_, err = doMultiReconcile()
+				Expect(err).NotTo(HaveOccurred())
+				t = &pillarcsiv1alpha1.PillarTarget{}
+				err = k8sClient.Get(bctx, multiTargetNN, t)
+				Expect(errors.IsNotFound(err)).To(BeTrue(),
+					"PillarTarget should be deleted once all referencing pools are removed")
+			})
+		})
 	})
 
 	// -----------------------------------------------------------------------
