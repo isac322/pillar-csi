@@ -482,6 +482,157 @@ func TestAgentErrors_CreateVolume_DiskFullPropagation(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// TestAgentProtocol_ExportVolume_UNSPECIFIED_Unimplemented
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TestAgentProtocol_ExportVolume_UNSPECIFIED_Unimplemented verifies that
+// ExportVolume with PROTOCOL_TYPE_UNSPECIFIED(0) returns codes.Unimplemented
+// without creating any configfs side effects.
+//
+// This covers the end-to-end mapping path: when mapProtocolType() receives an
+// unknown protocol string it returns PROTOCOL_TYPE_UNSPECIFIED, which the
+// agent server then rejects at the same boundary guard that rejects iSCSI
+// (server_export.go line 51).
+//
+// E22.2 — test ID 176.
+func TestAgentProtocol_ExportVolume_UNSPECIFIED_Unimplemented(t *testing.T) {
+	t.Parallel()
+
+	srv, cfgRoot := newAgentServer(t, &mockVolumeBackend{})
+
+	_, err := srv.ExportVolume(context.Background(), &agentv1.ExportVolumeRequest{
+		VolumeId:     compTestVolumeID,
+		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_UNSPECIFIED, // 0
+	})
+
+	if err == nil {
+		t.Fatal("expected Unimplemented for PROTOCOL_TYPE_UNSPECIFIED, got nil")
+	}
+	st, _ := status.FromError(err)
+	if st.Code() != codes.Unimplemented {
+		t.Errorf("error code = %v, want Unimplemented", st.Code())
+	}
+	if st.Message() != "only NVMe-oF TCP is supported" {
+		t.Errorf("error message = %q, want %q", st.Message(), "only NVMe-oF TCP is supported")
+	}
+
+	// No configfs side effects: nvmet directory must not exist.
+	nvmetDir := filepath.Join(cfgRoot, "nvmet")
+	if _, statErr := os.Stat(nvmetDir); !os.IsNotExist(statErr) {
+		t.Errorf("nvmet dir was created despite UNSPECIFIED protocol rejection (statErr=%v)", statErr)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TestAgentProtocol_ReconcileState_UnsupportedProtocol_SkipAndReport
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TestAgentProtocol_ReconcileState_UnsupportedProtocol_SkipAndReport verifies
+// that ReconcileState silently skips non-NVMe-oF TCP protocol exports while
+// still reconciling NVMe-oF TCP exports successfully.
+//
+// The current implementation (server_reconcile.go:72) treats non-NVMe-oF
+// protocol entries as a no-op (returns nil, i.e. "success") rather than
+// reporting them as failures.  The test documents this behavior:
+//
+//   - v1 (NVMe-oF TCP): fully reconciled → Success=true, subsystem dir created.
+//   - v2 (iSCSI): silently skipped → Success=true, NO iSCSI configfs entry.
+//
+// E22.2 — test ID 180.
+func TestAgentProtocol_ReconcileState_UnsupportedProtocol_SkipAndReport(t *testing.T) {
+	t.Parallel()
+
+	const (
+		v1VolumeID = "tank/pvc-nvme-v1"
+		v2VolumeID = "tank/pvc-iscsi-v2"
+		v1NQN      = "nqn.2026-01.com.bhyoo.pillar-csi:tank.pvc-nvme-v1"
+	)
+
+	mb := &mockVolumeBackend{devicePathResult: "/dev/zvol/tank/pvc-nvme-v1"}
+	srv, cfgRoot := newAgentServer(t, mb)
+
+	resp, err := srv.ReconcileState(context.Background(), &agentv1.ReconcileStateRequest{
+		Volumes: []*agentv1.VolumeDesiredState{
+			{
+				// v1: NVMe-oF TCP — should be fully reconciled.
+				VolumeId:   v1VolumeID,
+				DevicePath: "/dev/zvol/tank/pvc-nvme-v1",
+				Exports: []*agentv1.ExportDesiredState{
+					{
+						ProtocolType:      agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
+						ExportParams:      nvmeofParams("10.0.0.1", 4420),
+						AllowedInitiators: []string{compTestHostNQN},
+					},
+				},
+			},
+			{
+				// v2: iSCSI — silently skipped by applyExport (Phase-1: NVMe-oF only).
+				VolumeId:   v2VolumeID,
+				DevicePath: "/dev/zvol/tank/pvc-iscsi-v2",
+				Exports: []*agentv1.ExportDesiredState{
+					{
+						ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI,
+						// No ExportParams needed — the protocol check fires first.
+					},
+				},
+			},
+		},
+	})
+
+	// ReconcileState itself must not return an RPC error; per-volume errors are
+	// surfaced in the results slice.
+	if err != nil {
+		t.Fatalf("ReconcileState unexpected RPC error: %v", err)
+	}
+	if len(resp.GetResults()) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(resp.GetResults()))
+	}
+
+	// Find results by volume ID.
+	var r1, r2 *agentv1.ReconcileItemResult
+	for _, r := range resp.GetResults() {
+		switch r.GetVolumeId() {
+		case v1VolumeID:
+			r1 = r
+		case v2VolumeID:
+			r2 = r
+		}
+	}
+	if r1 == nil {
+		t.Fatal("result for v1 (NVMe-oF) not found in response")
+	}
+	if r2 == nil {
+		t.Fatal("result for v2 (iSCSI) not found in response")
+	}
+
+	// v1 must have been reconciled successfully.
+	if !r1.GetSuccess() {
+		t.Errorf("v1 (NVMe-oF TCP) Success=false: %q", r1.GetErrorMessage())
+	}
+
+	// v2: iSCSI exports are silently skipped in Phase 1 — the result is
+	// reported as Success=true (no error) because applyExport returns nil for
+	// unknown protocols.  This documents the current "silent skip" behavior at
+	// server_reconcile.go:72.
+	if !r2.GetSuccess() {
+		t.Errorf("v2 (iSCSI) Success=false, want silent-skip/true: %q", r2.GetErrorMessage())
+	}
+
+	// v1 subsystem directory must have been created.
+	v1SubDir := filepath.Join(cfgRoot, "nvmet", "subsystems", v1NQN)
+	if _, statErr := os.Stat(v1SubDir); statErr != nil {
+		t.Errorf("v1 subsystem dir not created: %v", statErr)
+	}
+
+	// v2 (iSCSI) must NOT have created any configfs entry — the silent skip
+	// means no side effects for unsupported protocols.
+	v2ISCSIPattern := filepath.Join(cfgRoot, "iscsi")
+	if _, statErr := os.Stat(v2ISCSIPattern); !os.IsNotExist(statErr) {
+		t.Errorf("iSCSI configfs dir unexpectedly created (statErr=%v)", statErr)
+	}
+}
+
 // TestAgentErrors_ExportVolume_MissingNvmeofTcpParams
 // ─────────────────────────────────────────────────────────────────────────────.
 
