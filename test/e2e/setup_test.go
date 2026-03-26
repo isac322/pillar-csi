@@ -26,8 +26,9 @@ package e2e
 // out-of-cluster pillar-agent:
 //
 //  1. TestMain reads configuration from environment variables.
-//  2. A multi-node Kind cluster is created (or adopted) from the embedded
-//     kind-config.yaml located in testdata/.
+//  2. A multi-node Kind cluster is always freshly created from the embedded
+//     kind-config.yaml located in testdata/ (any pre-existing cluster with the
+//     same name is deleted first).
 //  3. Pillar-CSI Docker images are built and loaded into the cluster.
 //  4. When E2E_LAUNCH_EXTERNAL_AGENT=true, a Docker container running the
 //     agent image is started on the Kind Docker network, port-mapped to the
@@ -86,8 +87,8 @@ type E2EEnv struct {
 	// ExternalAgentAddr is the host:port address of the out-of-cluster agent
 	// when running the external-agent test suite.  When LaunchExternalAgent is
 	// true this is populated automatically by startExternalAgentContainer.
-	// May also be pre-set via EXTERNAL_AGENT_ADDR to adopt an existing agent
-	// without starting a container.  Empty means "internal-agent mode".
+	// May also be pre-set via EXTERNAL_AGENT_ADDR to point at an already-running
+	// external agent without starting a new container.  Empty means "internal-agent mode".
 	ExternalAgentAddr string
 
 	// LaunchExternalAgent tells TestMain to start a Docker container running
@@ -206,7 +207,7 @@ func initE2EEnv() error {
 
 // setupE2E orchestrates full cluster bootstrap:
 //
-//  1. Create (or adopt) the Kind cluster.
+//  1. Always freshly create the Kind cluster (deleting any pre-existing one).
 //  2. Build and load Docker images.
 //  3. When E2E_LAUNCH_EXTERNAL_AGENT=true and EXTERNAL_AGENT_ADDR is not
 //     already set, start the external agent Docker container on the Kind
@@ -287,9 +288,9 @@ func ensureKindCluster() error {
 
 // ensureStorageNodeLabel labels the first worker node as a storage node so that
 // the agent DaemonSet (nodeSelector: pillar-csi.bhyoo.com/storage-node=true) is
-// scheduled.  When the Kind cluster was freshly created from kind-config.yaml the
-// label is already applied; when adopting a pre-existing cluster this step is
-// required because Kind only applies labels during "kind create cluster".
+// scheduled.  The Kind cluster is always freshly created, so this step ensures
+// the label is present on every run (Kind applies node labels only during
+// "kind create cluster", which we always invoke).
 func ensureStorageNodeLabel() error {
 	fmt.Fprintf(os.Stdout, "e2e setup: ensuring storage-node label on first worker\n")
 	// Find the first worker node (not control-plane).
