@@ -14,6 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+// Package controller implements controller-runtime reconcilers for the
+// pillar-csi custom resources (PillarTarget, PillarBinding, PillarVolume, etc.).
 package controller
 
 import (
@@ -66,6 +68,9 @@ const (
 
 	// Timeout for a single agent GetCapabilities RPC call.
 	agentCapabilitiesTimeout = 5 * time.Second
+
+	// LabelValueTrue is the string "true" used in Kubernetes label values.
+	labelValueTrue = "true"
 )
 
 // PillarTargetReconciler reconciles a PillarTarget object.
@@ -143,6 +148,8 @@ func (r *PillarTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 // that is not being deleted.  It resolves the agent address, updates the
 // NodeExists status condition, performs a live gRPC HealthCheck via r.Dialer
 // to set AgentConnected, and derives Ready accordingly.
+//
+//nolint:funlen // Three distinct spec branches (nodeRef / external / missing) each require separate condition updates.
 func (r *PillarTargetReconciler) reconcileNormal(
 	ctx context.Context,
 	target *pillarcsiv1alpha1.PillarTarget,
@@ -241,7 +248,7 @@ func (r *PillarTargetReconciler) reconcileNormal(
 // storage node, and performs a live gRPC HealthCheck to set AgentConnected /
 // Ready conditions via r.Dialer.
 //
-//nolint:funlen // Multiple distinct sub-paths (not found / addr error / success) require unavoidable length.
+//nolint:funlen,gocognit // Three sub-paths (not found / addr error / success) require unavoidable length.
 func (r *PillarTargetReconciler) reconcileNodeRef(
 	ctx context.Context,
 	target *pillarcsiv1alpha1.PillarTarget,
@@ -364,12 +371,12 @@ func (r *PillarTargetReconciler) reconcileNodeRef(
 		"name", target.Name, "node", nodeRef.Name, "address", resolved)
 
 	// Label the node as a storage node (idempotent — only patch if label is absent).
-	if node.Labels == nil || node.Labels[storageNodeLabel] != "true" {
+	if node.Labels == nil || node.Labels[storageNodeLabel] != labelValueTrue {
 		patch := client.MergeFrom(node.DeepCopy())
 		if node.Labels == nil {
 			node.Labels = make(map[string]string)
 		}
-		node.Labels[storageNodeLabel] = "true"
+		node.Labels[storageNodeLabel] = labelValueTrue
 		patchErr := r.Patch(ctx, node, patch)
 		if patchErr != nil {
 			return ctrl.Result{}, fmt.Errorf(
@@ -445,6 +452,8 @@ func (r *PillarTargetReconciler) reconcileNodeRef(
 //
 // The caller is responsible for subsequently setting the Ready condition and
 // persisting the status update.
+//
+//nolint:funlen // Six outcome branches (mTLS/plain × healthy/unhealthy/error) need separate condition updates.
 func (r *PillarTargetReconciler) setAgentConnectedCondition(
 	ctx context.Context,
 	target *pillarcsiv1alpha1.PillarTarget,

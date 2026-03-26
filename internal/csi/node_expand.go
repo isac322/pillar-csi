@@ -31,7 +31,7 @@ import (
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Resizer interface
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // Resizer is the interface for online filesystem expand operations.
 // A real implementation shells out to resize2fs(8) or xfs_growfs(8).
@@ -47,7 +47,7 @@ type Resizer interface {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // WithResizer
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // WithResizer replaces the Resizer used by NodeExpandVolume and returns the
 // receiver.  Call this during construction in tests to inject a mock resizer
@@ -61,7 +61,7 @@ func (n *NodeServer) WithResizer(r Resizer) *NodeServer {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // NodeExpandVolume
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // NodeExpandVolume runs the filesystem-specific resize tool so the filesystem
 // fills the newly expanded block device after a ControllerExpandVolume call.
@@ -70,7 +70,7 @@ func (n *NodeServer) WithResizer(r Resizer) *NodeServer {
 // volume_path (staging or target mount point) and optionally the
 // volume_capability so the node plugin knows the filesystem type.
 //
-// Filesystem-specific behaviour:
+// Filesystem-specific behavior:
 //   - ext2 / ext3 / ext4: finds the block device backing volume_path by
 //     parsing /proc/mounts, then runs `resize2fs <device>` for an online
 //     resize.
@@ -85,19 +85,20 @@ func (n *NodeServer) NodeExpandVolume(
 ) (*csi.NodeExpandVolumeResponse, error) {
 	// ── Input validation ────────────────────────────────────────────────────
 	if req.GetVolumeId() == "" {
-		return nil, status.Error(codes.InvalidArgument, "NodeExpandVolume: volume_id is required")
+		return nil, status.Error(codes.InvalidArgument, "NodeExpandVolume: volume_id is required") //nolint:wrapcheck
 	}
 	volumePath := req.GetVolumePath()
 	if volumePath == "" {
-		return nil, status.Error(codes.InvalidArgument, "NodeExpandVolume: volume_path is required")
+		return nil, status.Error(codes.InvalidArgument, "NodeExpandVolume: volume_path is required") //nolint:wrapcheck
 	}
 
 	// ── Determine filesystem type ────────────────────────────────────────────
 	// Prefer the fsType from the VolumeCapability when present; fall back to
 	// the project default (ext4) when the CO does not supply a capability.
 	fsType := defaultFsType
-	if cap := req.GetVolumeCapability(); cap != nil {
-		if mnt := cap.GetMount(); mnt != nil && mnt.GetFsType() != "" {
+	volCap := req.GetVolumeCapability()
+	if volCap != nil {
+		if mnt := volCap.GetMount(); mnt != nil && mnt.GetFsType() != "" {
 			fsType = mnt.GetFsType()
 		}
 	}
@@ -108,7 +109,8 @@ func (n *NodeServer) NodeExpandVolume(
 		r = &execResizer{}
 	}
 
-	if resizeErr := r.ResizeFS(volumePath, fsType); resizeErr != nil {
+	resizeErr := r.ResizeFS(volumePath, fsType)
+	if resizeErr != nil {
 		return nil, status.Errorf(codes.Internal,
 			"NodeExpandVolume: resize %s filesystem at %q: %v", fsType, volumePath, resizeErr)
 	}
@@ -127,7 +129,7 @@ func (n *NodeServer) NodeExpandVolume(
 
 // ─────────────────────────────────────────────────────────────────────────────
 // execResizer — production Resizer backed by os/exec
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // execResizer is the default Resizer used in production.  It shells out to the
 // filesystem-specific resize tool (resize2fs or xfs_growfs).
@@ -135,7 +137,7 @@ type execResizer struct{}
 
 // ResizeFS implements Resizer for execResizer.
 //
-// ext4 (and ext3/ext2):
+// Ext4 (and ext3/ext2):
 //
 //	Parses /proc/mounts to find the block device that backs mountPath, then
 //	runs: resize2fs <device>
@@ -150,9 +152,9 @@ type execResizer struct{}
 //
 //	xfs_growfs operates on the mount point.  It communicates with the kernel
 //	XFS driver directly via ioctl and does not need the raw device path.
-func (e *execResizer) ResizeFS(mountPath, fsType string) error {
+func (*execResizer) ResizeFS(mountPath, fsType string) error {
 	switch fsType {
-	case "ext4", "ext3", "ext2":
+	case defaultFsType, "ext3", "ext2":
 		device, err := deviceFromMount(mountPath)
 		if err != nil {
 			return fmt.Errorf("find block device for mount %q: %w", mountPath, err)
@@ -163,7 +165,7 @@ func (e *execResizer) ResizeFS(mountPath, fsType string) error {
 		}
 		return nil
 
-	case "xfs":
+	case xfsFsType:
 		out, cmdErr := exec.Command("xfs_growfs", mountPath).CombinedOutput() //nolint:gosec // mountPath validated by caller
 		if cmdErr != nil {
 			return fmt.Errorf("xfs_growfs %q: %w: %s", mountPath, cmdErr, strings.TrimSpace(string(out)))
@@ -177,7 +179,7 @@ func (e *execResizer) ResizeFS(mountPath, fsType string) error {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // deviceFromMount helper
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // deviceFromMount parses /proc/mounts and returns the block device (source)
 // that backs the given mountPath.  Returns an error if mountPath is not found.
@@ -190,7 +192,7 @@ func deviceFromMount(mountPath string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("read /proc/mounts: %w", err)
 	}
-	for _, line := range strings.Split(string(data), "\n") {
+	for line := range strings.SplitSeq(string(data), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) < 2 {
 			continue

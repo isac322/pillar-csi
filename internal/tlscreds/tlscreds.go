@@ -75,10 +75,13 @@ func NewServerCredentials(serverCertPEM, serverKeyPEM, caCertPEM []byte) (creden
 // The client presents clientCertPEM/clientKeyPEM to the server and verifies
 // the server certificate against caCertPEM.
 //
-// serverName overrides the TLS server-name used for SAN verification.  Pass an
+// ServerName overrides the TLS server-name used for SAN verification.  Pass an
 // empty string to let gRPC derive the server name from the dial target address
 // (typically the agent's IP or hostname).
-func NewClientCredentials(clientCertPEM, clientKeyPEM, caCertPEM []byte, serverName string) (credentials.TransportCredentials, error) {
+func NewClientCredentials(
+	clientCertPEM, clientKeyPEM, caCertPEM []byte,
+	serverName string,
+) (credentials.TransportCredentials, error) {
 	cert, err := tls.X509KeyPair(clientCertPEM, clientKeyPEM)
 	if err != nil {
 		return nil, fmt.Errorf("tlscreds: parse client cert/key: %w", err)
@@ -103,19 +106,19 @@ func NewClientCredentials(clientCertPEM, clientKeyPEM, caCertPEM []byte, serverN
 // LoadServerCredentials reads the TLS certificate, private key, and CA
 // certificate from disk and delegates to [NewServerCredentials].
 //
-// certFile is the PEM file containing the server certificate (and optionally
-// intermediate chain).  keyFile is the corresponding PEM private key.
-// caFile is the PEM CA certificate that signed the expected client certificates.
+// CertFile is the PEM file containing the server certificate (and optionally
+// intermediate chain). KeyFile is the corresponding PEM private key.
+// CaFile is the PEM CA certificate that signed the expected client certificates.
 func LoadServerCredentials(certFile, keyFile, caFile string) (credentials.TransportCredentials, error) {
-	certPEM, err := os.ReadFile(certFile)
+	certPEM, err := os.ReadFile(certFile) //nolint:gosec // G304: paths are operator-supplied TLS credential files
 	if err != nil {
 		return nil, fmt.Errorf("tlscreds: read server cert %q: %w", certFile, err)
 	}
-	keyPEM, err := os.ReadFile(keyFile)
+	keyPEM, err := os.ReadFile(keyFile) //nolint:gosec // G304: paths are operator-supplied TLS credential files
 	if err != nil {
 		return nil, fmt.Errorf("tlscreds: read server key %q: %w", keyFile, err)
 	}
-	caPEM, err := os.ReadFile(caFile)
+	caPEM, err := os.ReadFile(caFile) //nolint:gosec // G304: paths are operator-supplied TLS credential files
 	if err != nil {
 		return nil, fmt.Errorf("tlscreds: read CA cert %q: %w", caFile, err)
 	}
@@ -125,20 +128,20 @@ func LoadServerCredentials(certFile, keyFile, caFile string) (credentials.Transp
 // LoadClientCredentials reads the TLS certificate, private key, and CA
 // certificate from disk and delegates to [NewClientCredentials].
 //
-// certFile is the PEM file containing the client certificate.  keyFile is the
-// corresponding PEM private key.  caFile is the PEM CA certificate that signed
-// the expected server certificate.  serverName overrides TLS SAN verification
+// CertFile is the PEM file containing the client certificate. KeyFile is the
+// corresponding PEM private key. CaFile is the PEM CA certificate that signed
+// the expected server certificate. ServerName overrides TLS SAN verification
 // target; pass an empty string to derive it from the dial address.
 func LoadClientCredentials(certFile, keyFile, caFile, serverName string) (credentials.TransportCredentials, error) {
-	certPEM, err := os.ReadFile(certFile)
+	certPEM, err := os.ReadFile(certFile) //nolint:gosec // G304: paths are operator-supplied TLS credential files
 	if err != nil {
 		return nil, fmt.Errorf("tlscreds: read client cert %q: %w", certFile, err)
 	}
-	keyPEM, err := os.ReadFile(keyFile)
+	keyPEM, err := os.ReadFile(keyFile) //nolint:gosec // G304: paths are operator-supplied TLS credential files
 	if err != nil {
 		return nil, fmt.Errorf("tlscreds: read client key %q: %w", keyFile, err)
 	}
-	caPEM, err := os.ReadFile(caFile)
+	caPEM, err := os.ReadFile(caFile) //nolint:gosec // G304: paths are operator-supplied TLS credential files
 	if err != nil {
 		return nil, fmt.Errorf("tlscreds: read CA cert %q: %w", caFile, err)
 	}

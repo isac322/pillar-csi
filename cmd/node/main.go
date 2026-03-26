@@ -37,8 +37,9 @@ import (
 
 	"google.golang.org/grpc"
 
-	csisvc "github.com/bhyoo/pillar-csi/internal/csi"
 	csi "github.com/container-storage-interface/spec/lib/go/csi"
+
+	csisvc "github.com/bhyoo/pillar-csi/internal/csi"
 )
 
 // driverName is the CSI provisioner name declared in the StorageClass.
@@ -51,7 +52,7 @@ const driverName = "pillar-csi.bhyoo.com"
 // Real implementations that issue nvme-cli / mount(8) syscalls are deferred
 // to a later phase.  The stubs satisfy the interfaces so the binary compiles
 // and the gRPC server can start; actual volume-attach logic returns Unimplemented.
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // stubConnector is a placeholder Connector that logs calls and returns errors,
 // making it clear that the real NVMe-oF implementation is not yet wired in.
@@ -77,8 +78,8 @@ func (stubConnector) GetDevicePath(_ context.Context, subsysNQN string) (string,
 type stubMounter struct{}
 
 func (stubMounter) FormatAndMount(source, target, fsType string, options []string) error {
-	fmt.Fprintf(os.Stderr, "pillar-node: stubMounter.FormatAndMount src=%s target=%s fs=%s opts=%s — not yet implemented\n",
-		source, target, fsType, strings.Join(options, ","))
+	msg := "pillar-node: stubMounter.FormatAndMount src=%s target=%s fs=%s opts=%s — not yet implemented\n"
+	fmt.Fprintf(os.Stderr, msg, source, target, fsType, strings.Join(options, ","))
 	return fmt.Errorf("FormatAndMount not yet implemented in this build")
 }
 
@@ -100,7 +101,7 @@ func (stubMounter) IsMounted(target string) (bool, error) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // main
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 func main() {
 	nodeID := flag.String("node-id", "",
@@ -132,7 +133,8 @@ func main() {
 	// ── Open the Unix socket ───────────────────────────────────────────────
 	// Remove a stale socket file from a previous run so that net.Listen
 	// does not fail with "address already in use".
-	if err := os.Remove(*csiSocket); err != nil && !os.IsNotExist(err) {
+	err := os.Remove(*csiSocket)
+	if err != nil && !os.IsNotExist(err) {
 		fmt.Fprintf(os.Stderr, "pillar-node: remove stale socket %s: %v\n", *csiSocket, err)
 		os.Exit(1)
 	}
@@ -141,7 +143,8 @@ func main() {
 	// distributions, but guard here for dev/CI environments).
 	socketDir := socketParentDir(*csiSocket)
 	if socketDir != "" {
-		if err := os.MkdirAll(socketDir, 0o750); err != nil {
+		err = os.MkdirAll(socketDir, 0o750)
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "pillar-node: mkdir %s: %v\n", socketDir, err)
 			os.Exit(1)
 		}
@@ -169,7 +172,8 @@ func main() {
 
 	fmt.Fprintf(os.Stderr, "pillar-node: node-id=%s version=%s socket=%s\n",
 		*nodeID, version, *csiSocket)
-	if serveErr := grpcSrv.Serve(lis); serveErr != nil {
+	serveErr := grpcSrv.Serve(lis)
+	if serveErr != nil {
 		fmt.Fprintf(os.Stderr, "pillar-node: serve: %v\n", serveErr)
 		os.Exit(1)
 	}

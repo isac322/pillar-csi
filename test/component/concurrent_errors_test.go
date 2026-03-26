@@ -63,7 +63,7 @@ import (
 
 // ---------------------------------------------------------------------------
 // CC1: Concurrent AllowInitiator + DenyInitiator for the same host
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------.
 
 // TestConcurrentError_AllowDenyInitiator_SameHost_Race verifies that
 // simultaneously calling AllowInitiator and DenyInitiator for the same
@@ -111,28 +111,24 @@ func TestConcurrentError_AllowDenyInitiator_SameHost_Race(t *testing.T) {
 	ready := make(chan struct{})
 
 	// Goroutine A: re-allow (idempotent).
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		<-ready
 		_, allowErr = srv.AllowInitiator(context.Background(), &agentv1.AllowInitiatorRequest{
 			VolumeId:     volumeID,
 			InitiatorId:  hostNQN,
 			ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 		})
-	}()
+	})
 
 	// Goroutine B: deny concurrently.
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		<-ready
 		_, denyErr = srv.DenyInitiator(context.Background(), &agentv1.DenyInitiatorRequest{
 			VolumeId:     volumeID,
 			InitiatorId:  hostNQN,
 			ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 		})
-	}()
+	})
 
 	close(ready)
 
@@ -152,7 +148,7 @@ func TestConcurrentError_AllowDenyInitiator_SameHost_Race(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // CC2: Concurrent Remove across subsystems sharing one port
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------.
 
 // TestConcurrentError_Remove_SharedPort_NoDeadlock verifies that multiple
 // goroutines can call NvmetTarget.Remove concurrently on different subsystems
@@ -201,8 +197,8 @@ func TestConcurrentError_Remove_SharedPort_NoDeadlock(t *testing.T) {
 
 	for i := range goroutines {
 		wg.Add(1)
-		i := i
-		go func() {
+
+		go func() { //nolint:modernize // start channel needed for synchronized concurrent launch
 			defer wg.Done()
 			<-start
 			errs[i] = targets[i].Remove()
@@ -236,7 +232,7 @@ func TestConcurrentError_Remove_SharedPort_NoDeadlock(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // CC3: Apply fails when attr_allow_any_host is read-only
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------.
 
 // TestConcurrentError_Apply_AttrAllowAnyHostReadOnly verifies that
 // NvmetTarget.Apply returns an error when the subsystem directory exists but
@@ -263,7 +259,7 @@ func TestConcurrentError_Apply_AttrAllowAnyHostReadOnly(t *testing.T) {
 	}
 
 	attrFile := filepath.Join(subDir, "attr_allow_any_host")
-	if err := os.WriteFile(attrFile, []byte("0"), 0o644); err != nil {
+	if err := os.WriteFile(attrFile, []byte("0"), 0o600); err != nil {
 		t.Fatalf("WriteFile attr_allow_any_host: %v", err)
 	}
 	makeFileReadOnly(t, attrFile) // auto-skips as root; restores on cleanup
@@ -286,13 +282,13 @@ func TestConcurrentError_Apply_AttrAllowAnyHostReadOnly(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // CC4: DenyHost when symlink path is a regular file (not a symlink)
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------.
 
 // TestConcurrentError_DenyHost_PathIsRegularFile verifies that DenyHost
 // returns an error when the path at allowed_hosts/<hostNQN> is a regular file
 // instead of a symlink.
 //
-// removeSymlink checks fi.Mode()&os.ModeSymlink == 0 and rejects non-symlinks.
+// RemoveSymlink checks fi.Mode()&os.ModeSymlink == 0 and rejects non-symlinks.
 // This prevents silent deletion of a regular configfs pseudo-file that might
 // have landed there due to a corrupt prior operation.
 //
@@ -329,7 +325,7 @@ func TestConcurrentError_DenyHost_PathIsRegularFile(t *testing.T) {
 		t.Fatalf("MkdirAll allowed_hosts: %v", err)
 	}
 	filePath := filepath.Join(ahDir, hostNQN)
-	if err := os.WriteFile(filePath, []byte("corrupted"), 0o644); err != nil {
+	if err := os.WriteFile(filePath, []byte("corrupted"), 0o600); err != nil {
 		t.Fatalf("WriteFile fake symlink: %v", err)
 	}
 
@@ -342,7 +338,7 @@ func TestConcurrentError_DenyHost_PathIsRegularFile(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // CC5: Concurrent CreateVolume for the same VolumeID
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------.
 
 // TestConcurrentError_CreateVolume_SameID_NoDeadlock verifies that multiple
 // goroutines simultaneously calling CreateVolume for the same VolumeID do not
@@ -370,8 +366,8 @@ func TestConcurrentError_CreateVolume_SameID_NoDeadlock(t *testing.T) {
 
 	for i := range goroutines {
 		wg.Add(1)
-		i := i
-		go func() {
+
+		go func() { //nolint:modernize // start channel needed for synchronized concurrent launch
 			defer wg.Done()
 			<-start
 			_, errs[i] = srv.CreateVolume(context.Background(), &agentv1.CreateVolumeRequest{
@@ -400,7 +396,7 @@ func TestConcurrentError_CreateVolume_SameID_NoDeadlock(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // CC6: Concurrent AllowHost for the same host NQN — idempotency under race
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------.
 
 // TestConcurrentError_AllowHost_SameHost_Idempotent verifies that multiple
 // goroutines concurrently calling AllowHost for the same host NQN complete
@@ -411,7 +407,7 @@ func TestConcurrentError_CreateVolume_SameID_NoDeadlock(t *testing.T) {
 // EEXIST error from os.Symlink when the symlink was created between their
 // Readlink (ENOENT) and Symlink calls.  This is an expected concurrent behavior
 // in a regular filesystem — on real kernel configfs, concurrent writes to the
-// same subsystem are serialised by the kernel.
+// same subsystem are serialized by the kernel.
 //
 // The test therefore verifies:
 //  1. No deadlock (all goroutines complete within deadline).
@@ -448,8 +444,8 @@ func TestConcurrentError_AllowHost_SameHost_Idempotent(t *testing.T) {
 
 	for i := range nWorkers {
 		wg.Add(1)
-		i := i
-		go func() {
+
+		go func() { //nolint:modernize // start channel needed for synchronized concurrent launch
 			defer wg.Done()
 			<-start
 			errs[i] = tgt.AllowHost(hostNQN)
@@ -495,13 +491,13 @@ func TestConcurrentError_AllowHost_SameHost_Idempotent(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // CC7: Apply fails when port subsystems/ parent dir is a regular file
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------.
 
 // TestConcurrentError_Apply_PortSubsystemsBlockedByFile verifies that
 // NvmetTarget.Apply returns an error when the path that must become the
 // port's subsystems/ directory is occupied by a regular file.
 //
-// linkSubsystemToPort calls mkdirAll(filepath.Dir(linkPath)) before creating
+// LinkSubsystemToPort calls mkdirAll(filepath.Dir(linkPath)) before creating
 // the symlink.  If that parent path is a regular file, mkdirAll fails because
 // it cannot replace a file with a directory.
 //
@@ -552,13 +548,13 @@ func TestConcurrentError_Apply_PortSubsystemsBlockedByFile(t *testing.T) {
 	}
 	// Pre-write transport attributes so createPort's writeFile calls succeed.
 	for _, attr := range []string{"addr_trtype", "addr_adrfam", "addr_traddr", "addr_trsvcid"} {
-		if err := os.WriteFile(filepath.Join(portDirPath, attr), []byte("placeholder"), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(portDirPath, attr), []byte("placeholder"), 0o600); err != nil {
 			t.Fatalf("WriteFile %s: %v", attr, err)
 		}
 	}
 	// Block the subsystems/ subdir path with a regular file.
 	blocker := filepath.Join(portDirPath, "subsystems")
-	if err := os.WriteFile(blocker, []byte("file-not-dir"), 0o644); err != nil {
+	if err := os.WriteFile(blocker, []byte("file-not-dir"), 0o600); err != nil {
 		t.Fatalf("WriteFile subsystems blocker: %v", err)
 	}
 

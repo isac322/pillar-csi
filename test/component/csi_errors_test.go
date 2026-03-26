@@ -52,9 +52,12 @@ import (
 	pillarcsi "github.com/bhyoo/pillar-csi/internal/csi"
 )
 
+// csiTestDevicePath is the fake NVMe device path used across CSI error tests.
+const csiTestDevicePath = "/dev/nvme0n1"
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers – controller environment for error tests
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // newCSIControllerErrEnv builds a ControllerServer backed by the given mock
 // agent, re-using the same target/scheme setup as newCSIControllerTestEnv.
@@ -90,7 +93,7 @@ func newCSIControllerErrEnv(t *testing.T, agnt *csiMockAgent) *csiControllerTest
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIErrors_CreateVolume_AgentDeadlineExceeded
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIErrors_CreateVolume_AgentDeadlineExceeded verifies that when the
 // agent's CreateVolume RPC returns codes.DeadlineExceeded (e.g., the storage
@@ -122,7 +125,7 @@ func TestCSIErrors_CreateVolume_AgentDeadlineExceeded(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIErrors_CreateVolume_AgentUnreachable_PlainError
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIErrors_CreateVolume_AgentUnreachable_PlainError verifies that a
 // plain Go error from the AgentDialer (not a gRPC status) is handled
@@ -151,7 +154,7 @@ func TestCSIErrors_CreateVolume_AgentUnreachable_PlainError(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIErrors_ControllerExpand_ShrinkRejected
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIErrors_ControllerExpand_ShrinkRejected verifies that
 // ControllerExpandVolume propagates the agent's shrink-rejected error to the
@@ -164,7 +167,7 @@ func TestCSIErrors_ControllerExpand_ShrinkRejected(t *testing.T) {
 	t.Parallel()
 
 	mock := &csiMockAgent{
-		expandVolumeFn: func(_ context.Context, req *agentv1.ExpandVolumeRequest) (*agentv1.ExpandVolumeResponse, error) {
+		expandVolumeFn: func(_ context.Context, _ *agentv1.ExpandVolumeRequest) (*agentv1.ExpandVolumeResponse, error) {
 			return nil, status.Error(codes.InvalidArgument, "cannot shrink volume: volsize cannot be decreased")
 		},
 	}
@@ -187,7 +190,7 @@ func TestCSIErrors_ControllerExpand_ShrinkRejected(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIErrors_ControllerExpand_AgentDeadlineExceeded
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIErrors_ControllerExpand_AgentDeadlineExceeded verifies that
 // ControllerExpandVolume propagates a DeadlineExceeded from the agent.
@@ -218,7 +221,7 @@ func TestCSIErrors_ControllerExpand_AgentDeadlineExceeded(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIErrors_ControllerPublish_AllowInitiatorFails
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIErrors_ControllerPublish_AllowInitiatorFails verifies that
 // ControllerPublishVolume propagates an agent.AllowInitiator failure.
@@ -257,7 +260,7 @@ func TestCSIErrors_ControllerPublish_AllowInitiatorFails(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIErrors_DeleteVolume_AgentDeadlineExceeded
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIErrors_DeleteVolume_AgentDeadlineExceeded verifies that DeleteVolume
 // propagates a DeadlineExceeded from the agent.
@@ -287,7 +290,7 @@ func TestCSIErrors_DeleteVolume_AgentDeadlineExceeded(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIErrors_NodeStage_MkfsFailure
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIErrors_NodeStage_MkfsFailure verifies that when FormatAndMount fails
 // with an mkfs-style error (exit code + stderr), NodeStageVolume returns
@@ -305,7 +308,7 @@ func TestCSIErrors_NodeStage_MkfsFailure(t *testing.T) {
 
 	// GetDevicePath returns a device path (device appears to be present).
 	env.connector.getDeviceFn = func(_ context.Context, _ string) (string, error) {
-		return "/dev/nvme0n1", nil
+		return csiTestDevicePath, nil
 	}
 
 	// FormatAndMount fails with a realistic mkfs.ext4 error message.
@@ -331,7 +334,7 @@ func TestCSIErrors_NodeStage_MkfsFailure(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIErrors_NodeStage_TOCTOU_DeviceDisappears
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIErrors_NodeStage_TOCTOU_DeviceDisappears verifies that when the block
 // device path is returned by GetDevicePath but the device disappears before
@@ -363,13 +366,13 @@ func TestCSIErrors_NodeStage_TOCTOU_DeviceDisappears(t *testing.T) {
 
 	// Step 2: GetDevicePath reports the device is present.
 	env.connector.getDeviceFn = func(_ context.Context, _ string) (string, error) {
-		return "/dev/nvme0n1", nil
+		return csiTestDevicePath, nil
 	}
 
 	// Step 3: FormatAndMount fails because the device disappeared between
 	// GetDevicePath and FormatAndMount — the classic TOCTOU window.
 	env.mounter.formatAndMountFn = func(src, _, _ string, _ []string) error {
-		if src == "/dev/nvme0n1" {
+		if src == csiTestDevicePath {
 			return errors.New("mkfs.ext4: No such device or address while trying to open /dev/nvme0n1")
 		}
 		return nil
@@ -397,7 +400,7 @@ func TestCSIErrors_NodeStage_TOCTOU_DeviceDisappears(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIErrors_NodePublish_BindMountFails
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIErrors_NodePublish_BindMountFails verifies that when Mounter.Mount
 // fails with a bind-mount error, NodePublishVolume returns codes.Internal.
@@ -431,7 +434,7 @@ func TestCSIErrors_NodePublish_BindMountFails(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIErrors_NodeUnstage_UnmountError
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIErrors_NodeUnstage_UnmountError verifies that when Mounter.Unmount
 // fails during NodeUnstageVolume, the operation returns a non-OK error.
@@ -478,7 +481,7 @@ func TestCSIErrors_NodeUnstage_UnmountError(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIErrors_NodeUnpublish_UnmountError
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIErrors_NodeUnpublish_UnmountError verifies that when Mounter.Unmount
 // fails during NodeUnpublishVolume, the operation returns a non-OK error or
@@ -521,7 +524,7 @@ func TestCSIErrors_NodeUnpublish_UnmountError(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIErrors_NodeStage_GRPCDeadlineExceeded
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIErrors_NodeStage_GRPCDeadlineExceeded verifies that a request context
 // deadline that expires before the block device appears causes NodeStageVolume
@@ -572,7 +575,7 @@ func TestCSIErrors_NodeStage_GRPCDeadlineExceeded(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIErrors_CreateVolume_InvalidCapabilities_Nil
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIErrors_CreateVolume_InvalidCapabilities_Nil verifies that a
 // CreateVolume request with nil VolumeCapabilities is rejected with
@@ -609,7 +612,7 @@ func TestCSIErrors_CreateVolume_InvalidCapabilities_Nil(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIErrors_ControllerExpand_InvalidArgument_EmptyVolumeID
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIErrors_ControllerExpand_InvalidArgument_EmptyVolumeID verifies that
 // ControllerExpandVolume with an empty VolumeId is rejected with
@@ -639,7 +642,7 @@ func TestCSIErrors_ControllerExpand_InvalidArgument_EmptyVolumeID(t *testing.T) 
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIErrors_NodeStage_InvalidParams_MissingVolumeID
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIErrors_NodeStage_InvalidParams_MissingVolumeID verifies that
 // NodeStageVolume with an empty VolumeId is rejected with InvalidArgument
@@ -682,7 +685,7 @@ func TestCSIErrors_NodeStage_InvalidParams_MissingVolumeID(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIErrors_NodeStage_ConnectFailure_PropagatesInternal
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIErrors_NodeStage_ConnectFailure_PropagatesInternal verifies that when
 // NVMe-oF Connect fails with a detailed error message, NodeStageVolume returns
@@ -694,7 +697,8 @@ func TestCSIErrors_NodeStage_ConnectFailure_PropagatesInternal(t *testing.T) {
 	ctx := context.Background()
 	stagingPath := t.TempDir()
 
-	const connectErr = "nvme connect: failed to connect to subsystem nqn.2026-01.com.pillar-csi:pvc-connect-err: no route to host"
+	const connectErr = "nvme connect: failed to connect to subsystem " +
+		"nqn.2026-01.com.pillar-csi:pvc-connect-err: no route to host"
 	env.connector.connectFn = func(_ context.Context, _, _, _ string) error {
 		return errors.New(connectErr)
 	}
@@ -717,7 +721,7 @@ func TestCSIErrors_NodeStage_ConnectFailure_PropagatesInternal(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIErrors_CreateVolume_MissingVolumeCapabilities_Empty
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIErrors_CreateVolume_MissingVolumeCapabilities_Empty verifies that a
 // CreateVolume request with an empty VolumeCapabilities slice is rejected.
@@ -743,7 +747,7 @@ func TestCSIErrors_CreateVolume_MissingVolumeCapabilities_Empty(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 // § 5.11 Disconnect Error Paths
 // TESTCASES.md § 5.11 tests 46–47
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIErrors_NodeUnstage_DisconnectError verifies that an NVMe-oF
 // Disconnect failure during NodeUnstageVolume propagates as a non-OK gRPC
@@ -828,7 +832,7 @@ func TestCSIErrors_NodeUnstage_IsMountedError(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 // § 5.13 IsMounted Error Paths (cross-cutting within CSI Node)
 // TESTCASES.md § 5.13 tests 50–52
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIErrors_NodeStage_IsMountedError_MountAccess verifies that an
 // IsMounted failure during NodeStageVolume — specifically the check performed
@@ -859,7 +863,7 @@ func TestCSIErrors_NodeStage_IsMountedError_MountAccess(t *testing.T) {
 	env.connector.connectFn = func(_ context.Context, _, _, _ string) error { return nil }
 	// GetDevicePath: device is immediately visible.
 	env.connector.getDeviceFn = func(_ context.Context, _ string) (string, error) {
-		return "/dev/nvme0n1", nil
+		return csiTestDevicePath, nil
 	}
 
 	// IsMounted fails — simulates /proc/mounts temporarily inaccessible.

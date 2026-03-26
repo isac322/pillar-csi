@@ -50,7 +50,7 @@ func writeTempFile(t *testing.T, dir, pattern string, data []byte) string {
 	if err := f.Close(); err != nil {
 		t.Fatalf("close temp file: %v", err)
 	}
-	t.Cleanup(func() { _ = os.Remove(f.Name()) })
+	t.Cleanup(func() { _ = os.Remove(f.Name()) }) //nolint:errcheck // cleanup errors are non-actionable in test teardown
 	return f.Name()
 }
 
@@ -67,7 +67,7 @@ func writeBundleToTempDir(t *testing.T, bundle *testcerts.Bundle) (certFile, key
 
 // ----------------------------------------------------------------------------
 // Tests
-// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------.
 
 // TestNewManagerFromFiles_Success verifies that NewManagerFromFiles loads the
 // certificate files from disk and produces a Manager that can establish a
@@ -89,7 +89,7 @@ func TestNewManagerFromFiles_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewManagerFromFiles: unexpected error: %v", err)
 	}
-	t.Cleanup(func() { _ = m.Close() })
+	t.Cleanup(func() { _ = m.Close() }) //nolint:errcheck // cleanup errors are non-actionable in test teardown
 
 	// The Manager should be able to invoke a HealthCheck.
 	resp, err := m.HealthCheck(shortCtx(t), addr)
@@ -191,7 +191,7 @@ func TestNewManagerFromFiles_WrongCA(t *testing.T) {
 		// Construction should succeed — wrong CA is only detected at handshake.
 		t.Fatalf("NewManagerFromFiles: unexpected construction error: %v", err)
 	}
-	t.Cleanup(func() { _ = m.Close() })
+	t.Cleanup(func() { _ = m.Close() }) //nolint:errcheck // cleanup errors are non-actionable in test teardown
 
 	_, err = m.HealthCheck(shortCtx(t), addr)
 	if err == nil {
@@ -218,7 +218,7 @@ func TestNewManagerWithTLSCredentials_Success(t *testing.T) {
 	}
 
 	m := agentclient.NewManagerWithTLSCredentials(creds)
-	t.Cleanup(func() { _ = m.Close() })
+	t.Cleanup(func() { _ = m.Close() }) //nolint:errcheck // cleanup errors are non-actionable in test teardown
 
 	resp, err := m.HealthCheck(shortCtx(t), addr)
 	if err != nil {
@@ -248,7 +248,7 @@ func TestNewManagerWithTLSCredentials_PlaintextServerRejected(t *testing.T) {
 	}
 
 	m := agentclient.NewManagerWithTLSCredentials(creds)
-	t.Cleanup(func() { _ = m.Close() })
+	t.Cleanup(func() { _ = m.Close() }) //nolint:errcheck // cleanup errors are non-actionable in test teardown
 
 	_, err = m.HealthCheck(shortCtx(t), addr)
 	if err == nil {
@@ -270,14 +270,12 @@ func TestNewManagerFromFiles_ImplementsDialerInterface(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewManagerFromFiles: %v", err)
 	}
-	t.Cleanup(func() { _ = m.Close() })
+	t.Cleanup(func() { _ = m.Close() }) //nolint:errcheck // cleanup errors are non-actionable in test teardown
 
 	// Compile-time check via interface assignment.
 	var _ agentclient.Dialer = m
 
-	// Runtime check via type assertion on the Dialer interface.
+	// Runtime check: assign to interface — always non-nil because m is *Manager.
 	var d agentclient.Dialer = m
-	if d == nil {
-		t.Error("NewManagerFromFiles returned a nil Dialer")
-	}
+	_ = d // interface assignment is the check; non-nil is guaranteed by the concrete type
 }

@@ -34,7 +34,7 @@ import (
 
 // ─────────────────────────────────────────────────────────────────────────────
 // IdentityServer
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // IdentityServer implements the CSI Identity service (csi.IdentityServer).
 // It is a thin, stateless layer that announces the driver name, version, and
@@ -57,7 +57,7 @@ type IdentityServer struct {
 
 	// readyFn is called by Probe to determine driver readiness.  The function
 	// receives the request context so a long-running readiness check can be
-	// cancelled.  A nil readyFn is replaced by an always-ready function during
+	// canceled.  A nil readyFn is replaced by an always-ready function during
 	// construction.
 	//
 	// Returning (false, nil) indicates the driver is temporarily not ready
@@ -68,8 +68,8 @@ type IdentityServer struct {
 
 // NewIdentityServer constructs an IdentityServer that always reports ready.
 //
-// driverName must be non-empty (e.g. "pillar-csi.bhyoo.com").
-// driverVersion must be non-empty (e.g. "0.1.0").
+// DriverName must be non-empty (e.g. "pillar-csi.bhyoo.com").
+// DriverVersion must be non-empty (e.g. "0.1.0").
 func NewIdentityServer(driverName, driverVersion string) *IdentityServer {
 	return newIdentityServerWithReadyFn(driverName, driverVersion, nil)
 }
@@ -111,10 +111,11 @@ func (s *IdentityServer) GetPluginInfo(
 	ctx context.Context,
 	_ *csi.GetPluginInfoRequest,
 ) (*csi.GetPluginInfoResponse, error) {
-	// Respect an already-expired or cancelled context so that the CO's
-	// deadline is honoured even for this trivial handler.
-	if err := ctx.Err(); err != nil {
-		return nil, status.FromContextError(err).Err()
+	// Respect an already-expired or canceled context so that the CO's
+	// deadline is honored even for this trivial handler.
+	err := ctx.Err()
+	if err != nil {
+		return nil, status.FromContextError(err).Err() //nolint:wrapcheck // CSI gRPC status errors must not be re-wrapped
 	}
 	return &csi.GetPluginInfoResponse{
 		Name:          s.driverName,
@@ -124,19 +125,20 @@ func (s *IdentityServer) GetPluginInfo(
 
 // GetPluginCapabilities returns the set of capabilities this driver exposes.
 //
-// pillar-csi supports:
+// Pillar-csi supports:
 //   - CONTROLLER_SERVICE: CreateVolume, DeleteVolume, Publish/Unpublish, Expand.
 //   - VOLUME_ACCESSIBILITY_CONSTRAINTS: volumes are pinned to a specific storage
 //     node (topology label).
 //
 // NODE_SERVICE is implicit (every node binary serves the CSI Node service) and
 // does not appear as a plugin-level capability per the CSI spec §3.5.1.
-func (s *IdentityServer) GetPluginCapabilities(
+func (*IdentityServer) GetPluginCapabilities(
 	ctx context.Context,
 	_ *csi.GetPluginCapabilitiesRequest,
 ) (*csi.GetPluginCapabilitiesResponse, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, status.FromContextError(err).Err()
+	err := ctx.Err()
+	if err != nil {
+		return nil, status.FromContextError(err).Err() //nolint:wrapcheck // CSI gRPC status errors must not be re-wrapped
 	}
 	return &csi.GetPluginCapabilitiesResponse{
 		Capabilities: []*csi.PluginCapability{
@@ -165,8 +167,8 @@ func (s *IdentityServer) GetPluginCapabilities(
 // the CO to treat the probe as failed.
 //
 // Error paths:
-//   - The request context is already cancelled/expired: returns the
-//     corresponding gRPC DeadlineExceeded or Cancelled status.
+//   - The request context is already canceled/expired: returns the
+//     corresponding gRPC DeadlineExceeded or Canceled status.
 //   - readyFn returns a non-nil error: returns codes.Internal with the
 //     error message included.
 //   - readyFn returns (false, nil): returns Ready=false (CO will retry).
@@ -174,19 +176,21 @@ func (s *IdentityServer) Probe(
 	ctx context.Context,
 	_ *csi.ProbeRequest,
 ) (*csi.ProbeResponse, error) {
-	// Respect an already-expired or cancelled context.
-	if err := ctx.Err(); err != nil {
-		return nil, status.FromContextError(err).Err()
+	// Respect an already-expired or canceled context.
+	err := ctx.Err()
+	if err != nil {
+		return nil, status.FromContextError(err).Err() //nolint:wrapcheck // CSI gRPC status errors must not be re-wrapped
 	}
 
-	ready, err := s.readyFn(ctx)
+	var ready bool
+	ready, err = s.readyFn(ctx)
 	if err != nil {
 		// An error from the readiness check is an internal problem, not
 		// a "not ready" state.  The CO must see a non-OK status so that
 		// it distinguishes "temporarily not ready" (Ready=false) from
 		// "health-check failed" (Internal error).
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-			return nil, status.FromContextError(err).Err()
+			return nil, status.FromContextError(err).Err() //nolint:wrapcheck // CSI gRPC status errors must not be re-wrapped
 		}
 		return nil, status.Errorf(codes.Internal, "Probe: readiness check failed: %v", err)
 	}
@@ -198,7 +202,7 @@ func (s *IdentityServer) Probe(
 
 // ─────────────────────────────────────────────────────────────────────────────
 // gRPC server registration helpers
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // RegisterGRPC registers an IdentityServer and a ControllerServer with s.
 //

@@ -44,9 +44,15 @@ import (
 // testNQN is the NVMe Qualified Name used across all node e2e tests.
 const testNQN = "nqn.2026-01.com.bhyoo.pillar-csi:e2e-test"
 
+// Device path constants for node e2e tests.
+const (
+	nodeTestDevicePath1 = "/dev/nvme1n1" // used in block-access tests
+	nodeTestDevicePath2 = "/dev/nvme2n1" // used in device-discovery tests
+)
+
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSINode_FullRoundTrip — mount access
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSINode_FullRoundTrip_MountAccess verifies the complete MOUNT-access
 // volume lifecycle:
@@ -55,13 +61,13 @@ const testNQN = "nqn.2026-01.com.bhyoo.pillar-csi:e2e-test"
 //  2. NodePublishVolume → bind-mount staging → target
 //  3. NodeUnpublishVolume → unmount target
 //  4. NodeUnstageVolume → unmount staging + Connector.Disconnect + state cleanup
-func TestCSINode_FullRoundTrip_MountAccess(t *testing.T) {
+func TestCSINode_FullRoundTrip_MountAccess(t *testing.T) { //nolint:gocognit,gocyclo // full lifecycle test
 	t.Parallel()
 	env := newCSINodeE2EEnv(t, "worker-1")
 	ctx := context.Background()
 
 	// Provide a device path so GetDevicePath returns immediately.
-	env.Connector.DevicePath = "/dev/nvme0n1"
+	env.Connector.DevicePath = lifecycleTestDevicePath
 
 	stagingPath := filepath.Join(t.TempDir(), "staging")
 	targetPath := filepath.Join(t.TempDir(), "target")
@@ -99,8 +105,8 @@ func TestCSINode_FullRoundTrip_MountAccess(t *testing.T) {
 		t.Fatalf("expected 1 FormatAndMount call, got %d", len(env.Mounter.FormatAndMountCalls))
 	}
 	fmCall := env.Mounter.FormatAndMountCalls[0]
-	if fmCall.Source != "/dev/nvme0n1" {
-		t.Errorf("FormatAndMount source: want /dev/nvme0n1, got %q", fmCall.Source)
+	if fmCall.Source != lifecycleTestDevicePath {
+		t.Errorf("FormatAndMount source: want %q, got %q", lifecycleTestDevicePath, fmCall.Source)
 	}
 	if fmCall.Target != stagingPath {
 		t.Errorf("FormatAndMount target: want %q, got %q", stagingPath, fmCall.Target)
@@ -119,7 +125,7 @@ func TestCSINode_FullRoundTrip_MountAccess(t *testing.T) {
 	}
 
 	// Staging path must be considered mounted.
-	mounted, _ := env.Mounter.IsMounted(stagingPath)
+	mounted, _ := env.Mounter.IsMounted(stagingPath) //nolint:errcheck // non-actionable in test assertion
 	if !mounted {
 		t.Fatal("expected staging path to be mounted after NodeStageVolume")
 	}
@@ -156,7 +162,7 @@ func TestCSINode_FullRoundTrip_MountAccess(t *testing.T) {
 	}
 
 	// Target path must be considered mounted.
-	targetMounted, _ := env.Mounter.IsMounted(targetPath)
+	targetMounted, _ := env.Mounter.IsMounted(targetPath) //nolint:errcheck // non-actionable in test assertion
 	if !targetMounted {
 		t.Fatal("expected target path to be mounted after NodePublishVolume")
 	}
@@ -177,13 +183,13 @@ func TestCSINode_FullRoundTrip_MountAccess(t *testing.T) {
 	}
 
 	// Target path must no longer be mounted.
-	targetMountedAfter, _ := env.Mounter.IsMounted(targetPath)
+	targetMountedAfter, _ := env.Mounter.IsMounted(targetPath) //nolint:errcheck // non-actionable in test assertion
 	if targetMountedAfter {
 		t.Fatal("expected target path to be unmounted after NodeUnpublishVolume")
 	}
 
 	// Staging path must still be mounted.
-	stagingMountedAfter, _ := env.Mounter.IsMounted(stagingPath)
+	stagingMountedAfter, _ := env.Mounter.IsMounted(stagingPath) //nolint:errcheck // non-actionable in test assertion
 	if !stagingMountedAfter {
 		t.Fatal("expected staging path to still be mounted after NodeUnpublishVolume")
 	}
@@ -212,13 +218,14 @@ func TestCSINode_FullRoundTrip_MountAccess(t *testing.T) {
 	}
 
 	// State file must have been removed.
+	//nolint:errcheck // non-actionable in test assertion
 	stateFilesAfter, _ := filepath.Glob(filepath.Join(env.StateDir, "*.json"))
 	if len(stateFilesAfter) != 0 {
 		t.Fatalf("expected no state files after unstaging, got %d", len(stateFilesAfter))
 	}
 
 	// Staging path must no longer be mounted.
-	stagingMountedFinal, _ := env.Mounter.IsMounted(stagingPath)
+	stagingMountedFinal, _ := env.Mounter.IsMounted(stagingPath) //nolint:errcheck // non-actionable in test assertion
 	if stagingMountedFinal {
 		t.Fatal("expected staging path to be unmounted after NodeUnstageVolume")
 	}
@@ -226,16 +233,16 @@ func TestCSINode_FullRoundTrip_MountAccess(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSINode_FullRoundTrip_BlockAccess
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSINode_FullRoundTrip_BlockAccess verifies the complete BLOCK-access
 // volume lifecycle using bind mounts for both staging and publishing.
-func TestCSINode_FullRoundTrip_BlockAccess(t *testing.T) {
+func TestCSINode_FullRoundTrip_BlockAccess(t *testing.T) { //nolint:gocyclo // block-access test
 	t.Parallel()
 	env := newCSINodeE2EEnv(t, "worker-1")
 	ctx := context.Background()
 
-	env.Connector.DevicePath = "/dev/nvme1n1"
+	env.Connector.DevicePath = nodeTestDevicePath1
 
 	stagingPath := filepath.Join(t.TempDir(), "staging")
 	targetPath := filepath.Join(t.TempDir(), "target")
@@ -257,8 +264,8 @@ func TestCSINode_FullRoundTrip_BlockAccess(t *testing.T) {
 		t.Fatalf("BLOCK stage: expected 1 Mount call, got %d", len(env.Mounter.MountCalls))
 	}
 	blockStageMount := env.Mounter.MountCalls[0]
-	if blockStageMount.Source != "/dev/nvme1n1" {
-		t.Errorf("BLOCK stage Mount source: want /dev/nvme1n1, got %q", blockStageMount.Source)
+	if blockStageMount.Source != nodeTestDevicePath1 {
+		t.Errorf("BLOCK stage Mount source: want %q, got %q", nodeTestDevicePath1, blockStageMount.Source)
 	}
 	if blockStageMount.Target != stagingPath {
 		t.Errorf("BLOCK stage Mount target: want %q, got %q", stagingPath, blockStageMount.Target)
@@ -322,6 +329,7 @@ func TestCSINode_FullRoundTrip_BlockAccess(t *testing.T) {
 	}
 
 	// State file must be gone.
+	//nolint:errcheck // non-actionable in test assertion
 	stateFiles, _ := filepath.Glob(filepath.Join(env.StateDir, "*.json"))
 	if len(stateFiles) != 0 {
 		t.Fatalf("expected no state files after unstaging, got %d", len(stateFiles))
@@ -330,7 +338,7 @@ func TestCSINode_FullRoundTrip_BlockAccess(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSINode_DeviceDiscovery
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSINode_DeviceDiscovery verifies that NodeStageVolume polls GetDevicePath
 // until the device appears and uses the returned path for mounting.
@@ -344,7 +352,7 @@ func TestCSINode_DeviceDiscovery(t *testing.T) {
 	// via the connector's DevicePath field — but mockCSIConnector always returns
 	// DevicePath immediately.  Instead, set it non-empty from the start and
 	// assert that GetDevicePath was called at least once (basic smoke).
-	env.Connector.DevicePath = "/dev/nvme2n1"
+	env.Connector.DevicePath = nodeTestDevicePath2
 
 	stagingPath := filepath.Join(t.TempDir(), "staging")
 
@@ -371,15 +379,15 @@ func TestCSINode_DeviceDiscovery(t *testing.T) {
 	if len(env.Mounter.FormatAndMountCalls) != 1 {
 		t.Fatalf("expected 1 FormatAndMount call, got %d", len(env.Mounter.FormatAndMountCalls))
 	}
-	if env.Mounter.FormatAndMountCalls[0].Source != "/dev/nvme2n1" {
-		t.Errorf("FormatAndMount source: want /dev/nvme2n1, got %q",
-			env.Mounter.FormatAndMountCalls[0].Source)
+	if env.Mounter.FormatAndMountCalls[0].Source != nodeTestDevicePath2 {
+		t.Errorf("FormatAndMount source: want %q, got %q",
+			nodeTestDevicePath2, env.Mounter.FormatAndMountCalls[0].Source)
 	}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSINode_IdempotentStage
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSINode_IdempotentStage verifies that calling NodeStageVolume twice for
 // the same volume succeeds on the second call without re-mounting.
@@ -388,7 +396,7 @@ func TestCSINode_IdempotentStage(t *testing.T) {
 	env := newCSINodeE2EEnv(t, "worker-1")
 	ctx := context.Background()
 
-	env.Connector.DevicePath = "/dev/nvme0n1"
+	env.Connector.DevicePath = lifecycleTestDevicePath
 	stagingPath := filepath.Join(t.TempDir(), "staging")
 
 	req := &csi.NodeStageVolumeRequest{
@@ -421,7 +429,7 @@ func TestCSINode_IdempotentStage(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSINode_IdempotentPublish
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSINode_IdempotentPublish verifies that calling NodePublishVolume twice
 // for the same target path succeeds on the second call without re-mounting.
@@ -430,7 +438,7 @@ func TestCSINode_IdempotentPublish(t *testing.T) {
 	env := newCSINodeE2EEnv(t, "worker-1")
 	ctx := context.Background()
 
-	env.Connector.DevicePath = "/dev/nvme0n1"
+	env.Connector.DevicePath = lifecycleTestDevicePath
 	stagingPath := filepath.Join(t.TempDir(), "staging")
 	targetPath := filepath.Join(t.TempDir(), "target")
 
@@ -467,7 +475,7 @@ func TestCSINode_IdempotentPublish(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSINode_IdempotentUnstage
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSINode_IdempotentUnstage verifies that NodeUnstageVolume succeeds when
 // called on a volume that was never staged (no state file).
@@ -493,7 +501,7 @@ func TestCSINode_IdempotentUnstage(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSINode_IdempotentUnpublish
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSINode_IdempotentUnpublish verifies that NodeUnpublishVolume succeeds
 // when the target path is not currently mounted.
@@ -518,7 +526,7 @@ func TestCSINode_IdempotentUnpublish(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSINode_ReadonlyPublish
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSINode_ReadonlyPublish verifies that NodePublishVolume adds the "ro"
 // mount option when the request sets Readonly = true.
@@ -527,7 +535,7 @@ func TestCSINode_ReadonlyPublish(t *testing.T) {
 	env := newCSINodeE2EEnv(t, "worker-1")
 	ctx := context.Background()
 
-	env.Connector.DevicePath = "/dev/nvme0n1"
+	env.Connector.DevicePath = lifecycleTestDevicePath
 	stagingPath := filepath.Join(t.TempDir(), "staging")
 	targetPath := filepath.Join(t.TempDir(), "target")
 
@@ -566,7 +574,7 @@ func TestCSINode_ReadonlyPublish(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSINode_StateFilePersistence
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSINode_StateFilePersistence verifies that the staging state file is
 // written with the correct subsystem NQN content and cleaned up after
@@ -576,7 +584,7 @@ func TestCSINode_StateFilePersistence(t *testing.T) {
 	env := newCSINodeE2EEnv(t, "worker-1")
 	ctx := context.Background()
 
-	env.Connector.DevicePath = "/dev/nvme0n1"
+	env.Connector.DevicePath = lifecycleTestDevicePath
 	stagingPath := filepath.Join(t.TempDir(), "staging")
 
 	const volumeID = "pool/state-vol"
@@ -607,7 +615,7 @@ func TestCSINode_StateFilePersistence(t *testing.T) {
 		t.Fatal("state file is empty")
 	}
 	// Simple substring check — full JSON parsing is done by node.go itself.
-	if string(raw) == "" {
+	if len(raw) == 0 {
 		t.Fatal("state file content is blank")
 	}
 
@@ -619,6 +627,7 @@ func TestCSINode_StateFilePersistence(t *testing.T) {
 	assertNoError(t, unstageErr, "NodeUnstageVolume (state file cleanup)")
 
 	// State file must be gone.
+	//nolint:errcheck // non-actionable in test assertion
 	stateFilesAfter, _ := filepath.Glob(filepath.Join(env.StateDir, "*.json"))
 	if len(stateFilesAfter) != 0 {
 		t.Fatalf("expected no state files after unstage, got %d: %v", len(stateFilesAfter), stateFilesAfter)
@@ -627,7 +636,7 @@ func TestCSINode_StateFilePersistence(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSINode_NodeGetInfo
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSINode_NodeGetInfo verifies that NodeGetInfo returns the node ID
 // supplied at construction time.
@@ -646,7 +655,7 @@ func TestCSINode_NodeGetInfo(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSINode_NodeGetCapabilities
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSINode_NodeGetCapabilities verifies that the node reports
 // STAGE_UNSTAGE_VOLUME and EXPAND_VOLUME capabilities.
@@ -673,7 +682,7 @@ func TestCSINode_NodeGetCapabilities(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSINode_ValidationErrors
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSINode_ValidationErrors checks that missing required request fields
 // result in codes.InvalidArgument gRPC errors.
@@ -805,7 +814,7 @@ func TestCSINode_ValidationErrors(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSINode_ConnectError
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSINode_ConnectError verifies that a Connector.Connect failure results
 // in an Internal gRPC error from NodeStageVolume.
@@ -814,7 +823,7 @@ func TestCSINode_ConnectError(t *testing.T) {
 	env := newCSINodeE2EEnv(t, "worker-1")
 	ctx := context.Background()
 
-	env.Connector.ConnectErr = errTest("simulated NVMe-oF connect failure")
+	env.Connector.ConnectErr = testError("simulated NVMe-oF connect failure")
 
 	_, err := env.Node.NodeStageVolume(ctx, &csi.NodeStageVolumeRequest{
 		VolumeId:          "pool/connect-fail",
@@ -827,7 +836,7 @@ func TestCSINode_ConnectError(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSINode_DisconnectError
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSINode_DisconnectError verifies that a Connector.Disconnect failure
 // propagates as an Internal gRPC error from NodeUnstageVolume.
@@ -836,7 +845,7 @@ func TestCSINode_DisconnectError(t *testing.T) {
 	env := newCSINodeE2EEnv(t, "worker-1")
 	ctx := context.Background()
 
-	env.Connector.DevicePath = "/dev/nvme0n1"
+	env.Connector.DevicePath = lifecycleTestDevicePath
 	stagingPath := filepath.Join(t.TempDir(), "staging")
 
 	// Stage the volume first.
@@ -849,7 +858,7 @@ func TestCSINode_DisconnectError(t *testing.T) {
 	assertNoError(t, err, "NodeStageVolume before disconnect error test")
 
 	// Inject disconnect failure.
-	env.Connector.DisconnectErr = errTest("simulated NVMe-oF disconnect failure")
+	env.Connector.DisconnectErr = testError("simulated NVMe-oF disconnect failure")
 
 	_, err = env.Node.NodeUnstageVolume(ctx, &csi.NodeUnstageVolumeRequest{
 		VolumeId:          "pool/disconnect-fail",
@@ -860,7 +869,7 @@ func TestCSINode_DisconnectError(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSINode_MountError
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSINode_MountError verifies that a Mounter.FormatAndMount failure
 // propagates as an Internal gRPC error from NodeStageVolume.
@@ -869,8 +878,8 @@ func TestCSINode_MountError(t *testing.T) {
 	env := newCSINodeE2EEnv(t, "worker-1")
 	ctx := context.Background()
 
-	env.Connector.DevicePath = "/dev/nvme0n1"
-	env.Mounter.FormatAndMountErr = errTest("simulated format/mount failure")
+	env.Connector.DevicePath = lifecycleTestDevicePath
+	env.Mounter.FormatAndMountErr = testError("simulated format/mount failure")
 
 	_, err := env.Node.NodeStageVolume(ctx, &csi.NodeStageVolumeRequest{
 		VolumeId:          "pool/mount-fail",
@@ -883,7 +892,7 @@ func TestCSINode_MountError(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSINode_PublishMountError
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSINode_PublishMountError verifies that a Mounter.Mount failure during
 // NodePublishVolume propagates as an Internal gRPC error.
@@ -892,7 +901,7 @@ func TestCSINode_PublishMountError(t *testing.T) {
 	env := newCSINodeE2EEnv(t, "worker-1")
 	ctx := context.Background()
 
-	env.Connector.DevicePath = "/dev/nvme0n1"
+	env.Connector.DevicePath = lifecycleTestDevicePath
 	stagingPath := filepath.Join(t.TempDir(), "staging")
 	targetPath := filepath.Join(t.TempDir(), "target")
 
@@ -905,7 +914,7 @@ func TestCSINode_PublishMountError(t *testing.T) {
 	assertNoError(t, err, "NodeStageVolume before publish mount error test")
 
 	// Inject mount failure for publish.
-	env.Mounter.MountErr = errTest("simulated bind-mount failure")
+	env.Mounter.MountErr = testError("simulated bind-mount failure")
 
 	_, err = env.Node.NodePublishVolume(ctx, &csi.NodePublishVolumeRequest{
 		VolumeId:          "pool/pub-fail",
@@ -918,7 +927,7 @@ func TestCSINode_PublishMountError(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSINode_MultipleVolumes
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSINode_MultipleVolumes verifies that the node server correctly handles
 // multiple independent volumes concurrently, with separate state files and
@@ -928,7 +937,7 @@ func TestCSINode_MultipleVolumes(t *testing.T) {
 	env := newCSINodeE2EEnv(t, "worker-1")
 	ctx := context.Background()
 
-	env.Connector.DevicePath = "/dev/nvme0n1"
+	env.Connector.DevicePath = lifecycleTestDevicePath
 
 	// Use different NQNs for different volumes.
 	nqn1 := "nqn.2026-01.com.bhyoo:vol1"
@@ -957,6 +966,7 @@ func TestCSINode_MultipleVolumes(t *testing.T) {
 	assertNoError(t, err, "NodeStageVolume vol2")
 
 	// Two state files must exist.
+	//nolint:errcheck // non-actionable in test assertion
 	stateFiles, _ := filepath.Glob(filepath.Join(env.StateDir, "*.json"))
 	if len(stateFiles) != 2 {
 		t.Fatalf("expected 2 state files, got %d", len(stateFiles))
@@ -980,8 +990,8 @@ func TestCSINode_MultipleVolumes(t *testing.T) {
 	assertNoError(t, err, "NodePublishVolume vol2")
 
 	// Both target paths should be mounted.
-	m1, _ := env.Mounter.IsMounted(targetPath1)
-	m2, _ := env.Mounter.IsMounted(targetPath2)
+	m1, _ := env.Mounter.IsMounted(targetPath1) //nolint:errcheck // non-actionable in test assertion
+	m2, _ := env.Mounter.IsMounted(targetPath2) //nolint:errcheck // non-actionable in test assertion
 	if !m1 {
 		t.Error("expected targetPath1 to be mounted")
 	}
@@ -1001,12 +1011,13 @@ func TestCSINode_MultipleVolumes(t *testing.T) {
 	assertNoError(t, err, "NodeUnstageVolume vol1")
 
 	// vol2 target must still be mounted.
-	m2After, _ := env.Mounter.IsMounted(targetPath2)
+	m2After, _ := env.Mounter.IsMounted(targetPath2) //nolint:errcheck // non-actionable in test assertion
 	if !m2After {
 		t.Error("expected targetPath2 to remain mounted after vol1 unstage")
 	}
 
 	// Only one state file (vol2) should remain.
+	//nolint:errcheck // non-actionable in test assertion
 	stateFilesAfter, _ := filepath.Glob(filepath.Join(env.StateDir, "*.json"))
 	if len(stateFilesAfter) != 1 {
 		t.Fatalf("expected 1 state file after vol1 unstage, got %d", len(stateFilesAfter))
@@ -1023,6 +1034,7 @@ func TestCSINode_MultipleVolumes(t *testing.T) {
 	})
 	assertNoError(t, err, "NodeUnstageVolume vol2")
 
+	//nolint:errcheck // non-actionable in test assertion
 	stateFilesFinal, _ := filepath.Glob(filepath.Join(env.StateDir, "*.json"))
 	if len(stateFilesFinal) != 0 {
 		t.Fatalf("expected no state files after all volumes unstaged, got %d", len(stateFilesFinal))
@@ -1030,10 +1042,10 @@ func TestCSINode_MultipleVolumes(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// errTest helper
-// ─────────────────────────────────────────────────────────────────────────────
+// testError helper
+// ─────────────────────────────────────────────────────────────────────────────.
 
-// errTest returns a simple error value for injecting test failures.
-type errTest string
+// testError returns a simple error value for injecting test failures.
+type testError string
 
-func (e errTest) Error() string { return string(e) }
+func (e testError) Error() string { return string(e) }

@@ -35,6 +35,7 @@ import (
 	"context"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"testing"
 
 	csi "github.com/container-storage-interface/spec/lib/go/csi"
@@ -42,7 +43,7 @@ import (
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIPublishIdempotency_ControllerPublishVolume_DoubleSameArgs
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIPublishIdempotency_ControllerPublishVolume_DoubleSameArgs verifies that
 // calling ControllerPublishVolume twice with identical arguments is safe:
@@ -140,7 +141,7 @@ func TestCSIPublishIdempotency_ControllerPublishVolume_DoubleSameArgs(t *testing
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIPublishIdempotency_ControllerPublishVolume_DifferentNodes
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIPublishIdempotency_ControllerPublishVolume_DifferentNodes verifies that
 // calling ControllerPublishVolume for the same volume but two different nodes
@@ -156,12 +157,12 @@ func TestCSIPublishIdempotency_ControllerPublishVolume_DifferentNodes(t *testing
 		nodeID2  = "nqn.2014-08.org.nvmexpress:uuid:worker-node-b"
 		volumeID = "storage-1/nvmeof-tcp/zfs-zvol/tank/pvc-multi-node"
 	)
-	cap := defaultVolumeCapabilities()[0]
+	volCap := defaultVolumeCapabilities()[0]
 
 	_, err := env.Controller.ControllerPublishVolume(ctx, &csi.ControllerPublishVolumeRequest{
 		VolumeId:         volumeID,
 		NodeId:           nodeID1,
-		VolumeCapability: cap,
+		VolumeCapability: volCap,
 	})
 	if err != nil {
 		t.Fatalf("ControllerPublishVolume node 1: %v", err)
@@ -170,7 +171,7 @@ func TestCSIPublishIdempotency_ControllerPublishVolume_DifferentNodes(t *testing
 	_, err = env.Controller.ControllerPublishVolume(ctx, &csi.ControllerPublishVolumeRequest{
 		VolumeId:         volumeID,
 		NodeId:           nodeID2,
-		VolumeCapability: cap,
+		VolumeCapability: volCap,
 	})
 	if err != nil {
 		t.Fatalf("ControllerPublishVolume node 2: %v", err)
@@ -196,7 +197,7 @@ func TestCSIPublishIdempotency_ControllerPublishVolume_DifferentNodes(t *testing
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIPublishIdempotency_NodePublishVolume_DoubleSameTarget
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIPublishIdempotency_NodePublishVolume_DoubleSameTarget verifies the full
 // idempotency contract for NodePublishVolume when called twice with identical
@@ -207,7 +208,7 @@ func TestCSIPublishIdempotency_ControllerPublishVolume_DifferentNodes(t *testing
 //  3. Exactly one bind-mount operation is performed (the second call is a
 //     no-op — the target path is already mounted).
 //  4. The in-memory mount table shows the target path mounted exactly once
-//     (no double-mount artefacts).
+//     (no double-mount artifacts).
 //  5. The staging path and target path are each mounted at most once.
 //  6. No additional Connect calls are issued during NodePublishVolume (Connect
 //     belongs to NodeStageVolume and must not be repeated at publish time).
@@ -321,7 +322,7 @@ func TestCSIPublishIdempotency_NodePublishVolume_DoubleSameTarget(t *testing.T) 
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIPublishIdempotency_NodePublishVolume_DoubleBlockAccess
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIPublishIdempotency_NodePublishVolume_DoubleBlockAccess verifies that
 // the idempotency contract holds for BLOCK-access volumes.  Calling
@@ -393,7 +394,7 @@ func TestCSIPublishIdempotency_NodePublishVolume_DoubleBlockAccess(t *testing.T)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIPublishIdempotency_NodePublishVolume_ReadonlyDouble
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIPublishIdempotency_NodePublishVolume_ReadonlyDouble verifies that
 // calling NodePublishVolume(Readonly=true) twice succeeds without re-mounting.
@@ -439,13 +440,7 @@ func TestCSIPublishIdempotency_NodePublishVolume_ReadonlyDouble(t *testing.T) {
 	if len(env.Mounter.MountCalls) == 0 {
 		t.Fatal("expected at least one Mount call after first readonly publish")
 	}
-	hasRO := false
-	for _, opt := range env.Mounter.MountCalls[0].Options {
-		if opt == "ro" {
-			hasRO = true
-			break
-		}
-	}
+	hasRO := slices.Contains(env.Mounter.MountCalls[0].Options, "ro")
 	if !hasRO {
 		t.Errorf("first readonly publish: mount options %v do not contain 'ro'",
 			env.Mounter.MountCalls[0].Options)

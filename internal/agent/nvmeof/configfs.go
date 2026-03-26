@@ -87,12 +87,12 @@ type NvmetTarget struct {
 	// An empty slice means no initiator has been granted access yet.
 	AllowedHosts []string
 
-	// AclEnabled controls whether host NQN-based access control is enforced.
+	// ACLEnabled controls whether host NQN-based access control is enforced.
 	// When true the subsystem is created with attr_allow_any_host = 0, so only
 	// explicitly allowed initiators can connect.
 	// When false (the default) attr_allow_any_host = 1 is written, permitting
 	// any initiator to connect without an ACL entry.
-	AclEnabled bool
+	ACLEnabled bool
 }
 
 // nvmetRoot returns the path to the nvmet subtree within configfs, e.g.
@@ -271,9 +271,9 @@ func stablePortID(addr string, port int32) uint32 {
 //
 //  1. Creates <nvmetRoot>/subsystems/<nqn>/ (the kernel instantiates the
 //     NVMe subsystem object when the directory appears).
-//  2. Writes "0" or "1" to attr_allow_any_host depending on AclEnabled:
-//     - AclEnabled == false → "1" (any initiator may connect; no ACL check)
-//     - AclEnabled == true  → "0" (only explicitly allowed initiators)
+//  2. Writes "0" or "1" to attr_allow_any_host depending on ACLEnabled:
+//     - ACLEnabled == false → "1" (any initiator may connect; no ACL check)
+//     - ACLEnabled == true  → "0" (only explicitly allowed initiators)
 //
 // The operation is idempotent: if the directory already exists the mkdir is a
 // no-op; configfs pseudo-files accept repeated identical writes.
@@ -284,7 +284,7 @@ func (t *NvmetTarget) createSubsystem() error {
 		return fmt.Errorf("createSubsystem %q: %w", t.SubsystemNQN, err)
 	}
 	allowAnyHost := "1"
-	if t.AclEnabled {
+	if t.ACLEnabled {
 		allowAnyHost = "0"
 	}
 	attrPath := filepath.Join(subDir, "attr_allow_any_host")

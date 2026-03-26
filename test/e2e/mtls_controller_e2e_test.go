@@ -70,16 +70,16 @@ import (
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Test-only gRPC server double
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // mtlsHealthyAgentServer is a minimal AgentService gRPC server used in mTLS
 // E2E tests.  It always reports healthy so tests can focus on the transport
-// (TLS handshake) rather than application-level behaviour.
+// (TLS handshake) rather than application-level behavior.
 type mtlsHealthyAgentServer struct {
 	agentv1.UnimplementedAgentServiceServer
 }
 
-func (m *mtlsHealthyAgentServer) HealthCheck(
+func (*mtlsHealthyAgentServer) HealthCheck(
 	_ context.Context,
 	_ *agentv1.HealthCheckRequest,
 ) (*agentv1.HealthCheckResponse, error) {
@@ -95,7 +95,7 @@ var _ agentv1.AgentServiceServer = (*mtlsHealthyAgentServer)(nil)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Server / environment setup helpers
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // startMTLSAgentForTest starts a real gRPC server with mTLS credentials
 // derived from bundle on a random port on 127.0.0.1.  The server is stopped
@@ -118,7 +118,7 @@ func startMTLSAgentForTest(t *testing.T, bundle *testcerts.Bundle) string {
 	grpcSrv := grpc.NewServer(grpc.Creds(serverCreds))
 	agentv1.RegisterAgentServiceServer(grpcSrv, &mtlsHealthyAgentServer{})
 
-	go func() { _ = grpcSrv.Serve(lis) }()
+	go func() { _ = grpcSrv.Serve(lis) }() //nolint:errcheck // server errors are non-actionable in test setup
 	t.Cleanup(func() { grpcSrv.GracefulStop() })
 
 	return lis.Addr().String()
@@ -184,7 +184,7 @@ func newMTLSControllerEnv(
 
 	// WithStatusSubresource ensures that r.Status().Update() in the reconciler
 	// persists the status conditions to the fake store, mirroring real
-	// Kubernetes subresource behaviour.
+	// Kubernetes subresource behavior.
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(sch).
 		WithStatusSubresource(&v1alpha1.PillarTarget{}).
@@ -252,7 +252,7 @@ func fetchCondition(
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestMTLSController_AgentConnectedAuthenticated
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestMTLSController_AgentConnectedAuthenticated verifies the happy path:
 // when the PillarTarget controller is configured with mTLS credentials that
@@ -292,7 +292,7 @@ func TestMTLSController_AgentConnectedAuthenticated(t *testing.T) {
 		t.Fatalf("NewClientCredentials: %v", err)
 	}
 	dialer := agentclient.NewManagerWithTLSCredentials(clientCreds)
-	t.Cleanup(func() { _ = dialer.Close() })
+	t.Cleanup(func() { _ = dialer.Close() }) //nolint:errcheck // cleanup errors are non-actionable in test teardown
 
 	// IsMTLS must be true so the controller emits Reason="Authenticated".
 	if !dialer.IsMTLS() {
@@ -330,7 +330,7 @@ func TestMTLSController_AgentConnectedAuthenticated(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestMTLSController_PlaintextDialRejected
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestMTLSController_PlaintextDialRejected verifies that a controller that
 // dials the agent with plaintext (insecure) credentials is rejected by an
@@ -357,7 +357,7 @@ func TestMTLSController_PlaintextDialRejected(t *testing.T) {
 	// 3. Create a PLAINTEXT (insecure) dialer — no client certificate.
 	//    The mTLS server will refuse the connection.
 	plainDialer := agentclient.NewManager()
-	t.Cleanup(func() { _ = plainDialer.Close() })
+	t.Cleanup(func() { _ = plainDialer.Close() }) //nolint:errcheck // cleanup errors are non-actionable in test teardown
 
 	if plainDialer.IsMTLS() {
 		t.Fatal("expected plainDialer.IsMTLS() == false")
@@ -405,7 +405,7 @@ func TestMTLSController_PlaintextDialRejected(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestMTLSController_WrongCAClientRejected
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestMTLSController_WrongCAClientRejected verifies that a client presenting a
 // certificate signed by a different CA than the one the server trusts is
@@ -452,7 +452,7 @@ func TestMTLSController_WrongCAClientRejected(t *testing.T) {
 		t.Fatalf("NewClientCredentials (wrong CA): %v", err)
 	}
 	dialer := agentclient.NewManagerWithTLSCredentials(clientCreds)
-	t.Cleanup(func() { _ = dialer.Close() })
+	t.Cleanup(func() { _ = dialer.Close() }) //nolint:errcheck // cleanup errors are non-actionable in test teardown
 
 	env := newMTLSControllerEnv(t, agentAddr, dialer)
 	reconcileUntilCondition(t, env)

@@ -37,7 +37,7 @@ import (
 
 // ---------------------------------------------------------------------------
 // Shared helpers for NVMe-oF tests
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------.
 
 // nvmeTarget returns a NvmetTarget wired to configfsRoot with sane defaults.
 func nvmeTarget(configfsRoot, nqn, devicePath, bindAddr string, port int32) *nvmeof.NvmetTarget {
@@ -135,7 +135,7 @@ func requireSinglePort(t *testing.T, configfsRoot string) string {
 
 // ---------------------------------------------------------------------------
 // 3.1 Apply: full lifecycle and idempotency
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------.
 
 // TestNvmeof_Apply_FullLifecycle verifies that Apply creates all required
 // configfs directories and writes the correct attribute values.
@@ -341,7 +341,7 @@ func TestNvmeof_Apply_ACLDisabled(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // 3.2 Remove: cleanup and idempotency
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------.
 
 // TestNvmeof_Remove_FullCleanup verifies that Remove tears down all configfs
 // entries created by Apply.
@@ -428,12 +428,13 @@ func TestNvmeof_Remove_AlreadyRemovedSubsystem(t *testing.T) {
 	// Manually remove only the namespace files (simulates kernel removing them)
 	// and then the namespace dir and subsystem dir.
 	nsDir := nvmetNamespaceDir(tmpdir, nqn)
-	_ = os.Remove(filepath.Join(nsDir, "device_path"))
-	_ = os.Remove(filepath.Join(nsDir, "enable"))
-	_ = os.Remove(nsDir)
-	_ = os.Remove(filepath.Join(nvmetSubsystemDir(tmpdir, nqn), "attr_allow_any_host"))
-	_ = os.Remove(filepath.Join(nvmetSubsystemDir(tmpdir, nqn), "namespaces"))
-	_ = os.Remove(nvmetSubsystemDir(tmpdir, nqn))
+	_ = os.Remove(filepath.Join(nsDir, "device_path")) //nolint:errcheck // best-effort cleanup
+	_ = os.Remove(filepath.Join(nsDir, "enable"))      //nolint:errcheck // best-effort cleanup
+	_ = os.Remove(nsDir)                               //nolint:errcheck // best-effort cleanup
+	subsDir := nvmetSubsystemDir(tmpdir, nqn)
+	_ = os.Remove(filepath.Join(subsDir, "attr_allow_any_host")) //nolint:errcheck // best-effort cleanup
+	_ = os.Remove(filepath.Join(subsDir, "namespaces"))          //nolint:errcheck // best-effort cleanup
+	_ = os.Remove(subsDir)                                       //nolint:errcheck // best-effort cleanup
 
 	// Remove must succeed even though the subsystem dir is gone.
 	if err := tgt.Remove(); err != nil {
@@ -446,7 +447,7 @@ func TestNvmeof_Remove_AlreadyRemovedSubsystem(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // 3.3 ACL: AllowHost / DenyHost
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------.
 
 // TestNvmeof_AllowHost_CreatesSymlink verifies that AllowHost creates the
 // expected directory under hosts/ and the symlink under allowed_hosts/.
@@ -629,7 +630,7 @@ func TestNvmeof_DenyHost_Idempotent(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // 3.4 Port Management
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------.
 
 // TestNvmeof_Port_MultipleSubsystemsSamePort verifies that two NvmetTargets
 // sharing the same BindAddress:Port produce a single port directory containing
@@ -718,7 +719,7 @@ func TestNvmeof_Port_SeparatePortsForDifferentAddresses(t *testing.T) {
 	subsFound := make(map[string]bool)
 	for _, pd := range portDirEntries {
 		subsDir := filepath.Join(nvmetPortsDir(tmpdir), pd.Name(), "subsystems")
-		entries, _ := os.ReadDir(subsDir)
+		entries, _ := os.ReadDir(subsDir) //nolint:errcheck // cleanup errors are non-actionable in test teardown
 		for _, e := range entries {
 			subsFound[e.Name()] = true
 		}
@@ -732,7 +733,7 @@ func TestNvmeof_Port_SeparatePortsForDifferentAddresses(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // 3.5 Exports Scanning: ListExports
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------.
 
 // TestNvmeof_ListExports_Success verifies that ListExports returns one entry
 // per applied subsystem, with correct NQNs and namespace device paths.
@@ -939,7 +940,7 @@ func TestNvmeof_ListExports_RoundTrip(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // 3.6 Device Polling: WaitForDevice
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------.
 
 // TestNvmeof_DevicePoll_AppearsImmediately verifies that WaitForDevice returns
 // immediately when the DeviceChecker reports the path as present on the first call.
@@ -1031,9 +1032,9 @@ func TestNvmeof_DevicePoll_NeverAppears(t *testing.T) {
 }
 
 // TestNvmeof_DevicePoll_ContextCancelled verifies that WaitForDevice respects
-// context cancellation and returns immediately when the context is cancelled.
+// context cancellation and returns immediately when the context is canceled.
 //
-//	Setup:   Checker never returns true; context cancelled before timeout
+//	Setup:   Checker never returns true; context canceled before timeout
 //	Expect:  Returns error immediately (well before 5s timeout)
 func TestNvmeof_DevicePoll_ContextCancelled(t *testing.T) {
 	t.Parallel()
@@ -1054,7 +1055,7 @@ func TestNvmeof_DevicePoll_ContextCancelled(t *testing.T) {
 	elapsed := time.Since(start)
 
 	if err == nil {
-		t.Fatal("expected error from cancelled context, got nil")
+		t.Fatal("expected error from canceled context, got nil")
 	}
 	// Should not have waited the full 5s timeout.
 	if elapsed > 2*time.Second {
@@ -1098,7 +1099,7 @@ func TestNvmeof_DevicePoll_PermissionDenied(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // Additional edge cases
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------.
 
 // TestNvmeof_Apply_Remove_WithACL verifies the full lifecycle (Apply + Remove)
 // when AllowedHosts is set: both the subsystem and the allowed_hosts symlinks

@@ -37,7 +37,7 @@ import (
 
 // ---------------------------------------------------------------------------
 // seqExec: sequential mock executor for ZFS backend tests.
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------.
 
 // execResponse captures one preset output from the mock ZFS executor.
 type execResponse struct {
@@ -71,7 +71,7 @@ func fail(output string) execResponse {
 //     general error, 2 for an invalid argument).  seqExec always fabricates
 //     errors.New("exit status 1"), losing that distinction.
 //   - Ordering contract: the real executor can service concurrent calls;
-//     seqExec serialises every call with a mutex and replays responses strictly
+//     seqExec serializes every call with a mutex and replays responses strictly
 //     in insertion order.  Tests that rely on this ordering are brittle if
 //     production code ever parallelises ZFS calls.
 //   - Context cancellation: the real osExecutor propagates context cancellation
@@ -115,7 +115,7 @@ func (e *seqExec) do() func(_ context.Context, name string, args ...string) ([]b
 
 // ---------------------------------------------------------------------------
 // Helper: newZFSBackend creates a zfs.Backend with a sequential mock executor.
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------.
 
 // zfsBackendWith creates a ZFS backend wired to the given sequential executor.
 // By default it uses pool="tank" with no parentDataset.
@@ -135,7 +135,7 @@ func zfsBackendWithParent(t *testing.T, responses ...execResponse) *zfs.Backend 
 
 // ---------------------------------------------------------------------------
 // Component 2.1 — Create
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------.
 
 // TestZFSBackend_Create_Success validates that creating a new zvol issues the
 // correct zfs commands and returns the device path and allocated size.
@@ -269,9 +269,9 @@ func TestZFSBackend_Create_WithParentDataset(t *testing.T) {
 		// Readback.
 		ok("10737418240\n"),
 	)
-	captureAndForward := func(_ context.Context, name string, args ...string) ([]byte, error) {
+	captureAndForward := func(ctx context.Context, name string, args ...string) ([]byte, error) {
 		capturedArgs = append(capturedArgs, append([]string{name}, args...)...)
-		return exec.do()(context.Background(), name, args...)
+		return exec.do()(ctx, name, args...)
 	}
 	b := zfs.NewWithExecFn("tank", "k8s", captureAndForward)
 
@@ -339,7 +339,7 @@ func TestZFSBackend_Create_WithProperties(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // Component 2.2 — Delete
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------.
 
 // TestZFSBackend_Delete_Success validates normal deletion.
 func TestZFSBackend_Delete_Success(t *testing.T) {
@@ -406,7 +406,7 @@ func TestZFSBackend_Delete_ZFSError(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // Component 2.3 — Expand
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------.
 
 // TestZFSBackend_Expand_Success validates normal expansion.
 func TestZFSBackend_Expand_Success(t *testing.T) {
@@ -478,7 +478,7 @@ func TestZFSBackend_Expand_ZFSError(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // Component 2.4 — Capacity
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------.
 
 // TestZFSBackend_Capacity_Success validates normal capacity parsing.
 func TestZFSBackend_Capacity_Success(t *testing.T) {
@@ -550,7 +550,7 @@ func TestZFSBackend_Capacity_ParseErrorNumeric(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // Component 2.5 — ListVolumes
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------.
 
 // TestZFSBackend_ListVolumes_Success validates that three volumes are parsed
 // correctly from the zfs list output.
@@ -675,7 +675,7 @@ func TestZFSBackend_ListVolumes_ParseError(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // Component 2.6 — DevicePath (no executor needed)
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------.
 
 // TestZFSBackend_DevicePath_Simple validates device path computation for a
 // backend without a parent dataset.
@@ -717,7 +717,7 @@ func TestZFSBackend_DevicePath_WithParentDataset(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // Component 2.7 — Context cancellation
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------.
 
 // TestZFSBackend_ContextCancelled verifies that context cancellation is
 // propagated to the executor and the operation returns an appropriate error.
@@ -734,7 +734,7 @@ func TestZFSBackend_ContextCancelled(t *testing.T) {
 		return nil, ctx.Err()
 	})
 
-	// The executor will see a cancelled context and return ctx.Err().
+	// The executor will see a canceled context and return ctx.Err().
 	_, _, err := b.Create(ctx, "tank/pvc-abc", 10*1024*1024*1024, nil)
 	<-blocked // ensure the goroutine started
 	if err == nil {

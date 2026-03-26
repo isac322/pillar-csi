@@ -16,7 +16,7 @@ limitations under the License.
 
 package agentclient_test
 
-// mTLS integration tests.
+// MTLS integration tests.
 //
 // These tests verify that:
 //  1. A Manager configured with valid mTLS credentials can connect to an agent
@@ -47,16 +47,16 @@ import (
 
 // ----------------------------------------------------------------------------
 // helpers
-// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------.
 
 // healthyMockServer is a minimal AgentServiceServer that always returns a
 // healthy HealthCheck response.  Reused across mTLS tests so we can focus on
-// transport-level behaviour.
+// transport-level behavior.
 type healthyMockServer struct {
 	agentv1.UnimplementedAgentServiceServer
 }
 
-func (h *healthyMockServer) HealthCheck(
+func (*healthyMockServer) HealthCheck(
 	_ context.Context,
 	_ *agentv1.HealthCheckRequest,
 ) (*agentv1.HealthCheckResponse, error) {
@@ -86,7 +86,7 @@ func startMTLSServer(t *testing.T, bundle *testcerts.Bundle) string {
 	grpcSrv := grpc.NewServer(grpc.Creds(serverCreds))
 	agentv1.RegisterAgentServiceServer(grpcSrv, &healthyMockServer{})
 
-	go func() { _ = grpcSrv.Serve(lis) }()
+	go func() { _ = grpcSrv.Serve(lis) }() //nolint:errcheck // gRPC server error is logged by the server itself
 	t.Cleanup(func() { grpcSrv.GracefulStop() })
 
 	return lis.Addr().String()
@@ -104,7 +104,7 @@ func startPlaintextServer(t *testing.T) string {
 	grpcSrv := grpc.NewServer()
 	agentv1.RegisterAgentServiceServer(grpcSrv, &healthyMockServer{})
 
-	go func() { _ = grpcSrv.Serve(lis) }()
+	go func() { _ = grpcSrv.Serve(lis) }() //nolint:errcheck // gRPC server error is logged by the server itself
 	t.Cleanup(func() { grpcSrv.GracefulStop() })
 
 	return lis.Addr().String()
@@ -120,7 +120,7 @@ func shortCtx(t *testing.T) context.Context {
 
 // ----------------------------------------------------------------------------
 // Tests
-// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------.
 
 // TestMTLS_ClientAndServerMatchingCreds verifies that a Manager holding valid
 // mTLS client credentials can successfully call HealthCheck on a server that
@@ -142,7 +142,7 @@ func TestMTLS_ClientAndServerMatchingCreds(t *testing.T) {
 	}
 
 	m := agentclient.NewManagerWithOptions(grpc.WithTransportCredentials(clientCreds))
-	t.Cleanup(func() { _ = m.Close() })
+	t.Cleanup(func() { _ = m.Close() }) //nolint:errcheck // cleanup errors are non-actionable in test teardown
 
 	resp, err := m.HealthCheck(shortCtx(t), addr)
 	if err != nil {
@@ -166,7 +166,7 @@ func TestMTLS_PlaintextClientRejectedByMTLSServer(t *testing.T) {
 
 	// Plaintext manager — should be rejected by the mTLS server.
 	m := agentclient.NewManagerWithOptions(grpc.WithTransportCredentials(insecure.NewCredentials()))
-	t.Cleanup(func() { _ = m.Close() })
+	t.Cleanup(func() { _ = m.Close() }) //nolint:errcheck // cleanup errors are non-actionable in test teardown
 
 	_, err = m.HealthCheck(shortCtx(t), addr)
 	if err == nil {
@@ -196,7 +196,7 @@ func TestMTLS_MTLSClientRejectedByPlaintextServer(t *testing.T) {
 	}
 
 	m := agentclient.NewManagerWithOptions(grpc.WithTransportCredentials(clientCreds))
-	t.Cleanup(func() { _ = m.Close() })
+	t.Cleanup(func() { _ = m.Close() }) //nolint:errcheck // cleanup errors are non-actionable in test teardown
 
 	_, err = m.HealthCheck(shortCtx(t), addr)
 	if err == nil {
@@ -235,7 +235,7 @@ func TestMTLS_WrongCAClientRejected(t *testing.T) {
 	}
 
 	m := agentclient.NewManagerWithOptions(grpc.WithTransportCredentials(clientCreds))
-	t.Cleanup(func() { _ = m.Close() })
+	t.Cleanup(func() { _ = m.Close() }) //nolint:errcheck // cleanup errors are non-actionable in test teardown
 
 	_, err = m.HealthCheck(shortCtx(t), addr)
 	if err == nil {

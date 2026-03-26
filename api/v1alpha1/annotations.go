@@ -73,7 +73,7 @@ const (
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PVC annotation value types
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // PVCBackendOverride is the Go representation of the
 // [AnnotationBackendOverride] annotation value.
@@ -163,7 +163,7 @@ var ForbiddenISCSIAnnotationKeys = map[string]struct{}{
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Supported override key documentation
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // SupportedZFSAnnotationKeys enumerates the JSON/YAML field names that are
 // supported within the zfs section of [AnnotationBackendOverride].

@@ -16,7 +16,7 @@ limitations under the License.
 
 // Package component_test contains component-level tests for pillar-csi.
 // These tests treat each major component as a black box, wiring mock
-// dependencies and testing feature-level behaviour including all exception paths.
+// dependencies and testing feature-level behavior including all exception paths.
 //
 // This file covers the CSI Controller Service (internal/csi.ControllerServer).
 package component_test
@@ -41,7 +41,7 @@ import (
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Mock AgentServiceClient for CSI controller tests
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // csiMockAgent is a test double for agentv1.AgentServiceClient.
 //
@@ -61,7 +61,7 @@ import (
 //   - No mTLS: the real client presents a client certificate signed by a
 //     cluster-internal CA and verifies the agent's server certificate.  The
 //     mock skips all credential and certificate-chain logic.
-//   - No serialisation: protobuf encoding / decoding and per-field validation
+//   - No serialization: protobuf encoding / decoding and per-field validation
 //     performed by the generated gRPC stubs are not exercised.
 //   - grpc.CallOption: deadline, per-RPC credentials, and other options
 //     passed as variadic grpc.CallOption arguments are silently ignored.
@@ -71,7 +71,7 @@ import (
 //     Unimplemented status error; no streaming-frame protocol is simulated.
 //   - Call counters track invocation frequency but not concurrency safety;
 //     tests that call the mock from multiple goroutines must add their own
-//     synchronisation.
+//     synchronization.
 //
 // Each RPC method has a corresponding function field (e.g. createVolumeFn);
 // when nil the method succeeds with a sensible default response.
@@ -97,7 +97,9 @@ type csiMockAgent struct {
 // Verify csiMockAgent implements the full AgentServiceClient interface.
 var _ agentv1.AgentServiceClient = (*csiMockAgent)(nil)
 
-func (m *csiMockAgent) CreateVolume(ctx context.Context, req *agentv1.CreateVolumeRequest, _ ...grpc.CallOption) (*agentv1.CreateVolumeResponse, error) {
+func (m *csiMockAgent) CreateVolume(
+	ctx context.Context, req *agentv1.CreateVolumeRequest, _ ...grpc.CallOption,
+) (*agentv1.CreateVolumeResponse, error) {
 	m.createVolumeCalls++
 	if m.createVolumeFn != nil {
 		return m.createVolumeFn(ctx, req)
@@ -108,7 +110,9 @@ func (m *csiMockAgent) CreateVolume(ctx context.Context, req *agentv1.CreateVolu
 	}, nil
 }
 
-func (m *csiMockAgent) DeleteVolume(ctx context.Context, req *agentv1.DeleteVolumeRequest, _ ...grpc.CallOption) (*agentv1.DeleteVolumeResponse, error) {
+func (m *csiMockAgent) DeleteVolume(
+	ctx context.Context, req *agentv1.DeleteVolumeRequest, _ ...grpc.CallOption,
+) (*agentv1.DeleteVolumeResponse, error) {
 	m.deleteVolumeCalls++
 	if m.deleteVolumeFn != nil {
 		return m.deleteVolumeFn(ctx, req)
@@ -116,7 +120,9 @@ func (m *csiMockAgent) DeleteVolume(ctx context.Context, req *agentv1.DeleteVolu
 	return &agentv1.DeleteVolumeResponse{}, nil
 }
 
-func (m *csiMockAgent) ExportVolume(ctx context.Context, req *agentv1.ExportVolumeRequest, _ ...grpc.CallOption) (*agentv1.ExportVolumeResponse, error) {
+func (m *csiMockAgent) ExportVolume(
+	ctx context.Context, req *agentv1.ExportVolumeRequest, _ ...grpc.CallOption,
+) (*agentv1.ExportVolumeResponse, error) {
 	m.exportVolumeCalls++
 	if m.exportVolumeFn != nil {
 		return m.exportVolumeFn(ctx, req)
@@ -131,7 +137,9 @@ func (m *csiMockAgent) ExportVolume(ctx context.Context, req *agentv1.ExportVolu
 	}, nil
 }
 
-func (m *csiMockAgent) UnexportVolume(ctx context.Context, req *agentv1.UnexportVolumeRequest, _ ...grpc.CallOption) (*agentv1.UnexportVolumeResponse, error) {
+func (m *csiMockAgent) UnexportVolume(
+	ctx context.Context, req *agentv1.UnexportVolumeRequest, _ ...grpc.CallOption,
+) (*agentv1.UnexportVolumeResponse, error) {
 	m.unexportVolumeCalls++
 	if m.unexportVolumeFn != nil {
 		return m.unexportVolumeFn(ctx, req)
@@ -139,7 +147,9 @@ func (m *csiMockAgent) UnexportVolume(ctx context.Context, req *agentv1.Unexport
 	return &agentv1.UnexportVolumeResponse{}, nil
 }
 
-func (m *csiMockAgent) ExpandVolume(ctx context.Context, req *agentv1.ExpandVolumeRequest, _ ...grpc.CallOption) (*agentv1.ExpandVolumeResponse, error) {
+func (m *csiMockAgent) ExpandVolume(
+	ctx context.Context, req *agentv1.ExpandVolumeRequest, _ ...grpc.CallOption,
+) (*agentv1.ExpandVolumeResponse, error) {
 	m.expandVolumeCalls++
 	if m.expandVolumeFn != nil {
 		return m.expandVolumeFn(ctx, req)
@@ -149,7 +159,9 @@ func (m *csiMockAgent) ExpandVolume(ctx context.Context, req *agentv1.ExpandVolu
 	}, nil
 }
 
-func (m *csiMockAgent) AllowInitiator(ctx context.Context, req *agentv1.AllowInitiatorRequest, _ ...grpc.CallOption) (*agentv1.AllowInitiatorResponse, error) {
+func (m *csiMockAgent) AllowInitiator(
+	ctx context.Context, req *agentv1.AllowInitiatorRequest, _ ...grpc.CallOption,
+) (*agentv1.AllowInitiatorResponse, error) {
 	m.allowInitiatorCalls++
 	if m.allowInitiatorFn != nil {
 		return m.allowInitiatorFn(ctx, req)
@@ -157,7 +169,9 @@ func (m *csiMockAgent) AllowInitiator(ctx context.Context, req *agentv1.AllowIni
 	return &agentv1.AllowInitiatorResponse{}, nil
 }
 
-func (m *csiMockAgent) DenyInitiator(ctx context.Context, req *agentv1.DenyInitiatorRequest, _ ...grpc.CallOption) (*agentv1.DenyInitiatorResponse, error) {
+func (m *csiMockAgent) DenyInitiator(
+	ctx context.Context, req *agentv1.DenyInitiatorRequest, _ ...grpc.CallOption,
+) (*agentv1.DenyInitiatorResponse, error) {
 	m.denyInitiatorCalls++
 	if m.denyInitiatorFn != nil {
 		return m.denyInitiatorFn(ctx, req)
@@ -166,34 +180,50 @@ func (m *csiMockAgent) DenyInitiator(ctx context.Context, req *agentv1.DenyIniti
 }
 
 // Stubs for methods not exercised by controller tests.
-func (m *csiMockAgent) GetCapabilities(_ context.Context, _ *agentv1.GetCapabilitiesRequest, _ ...grpc.CallOption) (*agentv1.GetCapabilitiesResponse, error) {
+func (*csiMockAgent) GetCapabilities(
+	_ context.Context, _ *agentv1.GetCapabilitiesRequest, _ ...grpc.CallOption,
+) (*agentv1.GetCapabilitiesResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "not used in controller tests")
 }
-func (m *csiMockAgent) GetCapacity(_ context.Context, _ *agentv1.GetCapacityRequest, _ ...grpc.CallOption) (*agentv1.GetCapacityResponse, error) {
+func (*csiMockAgent) GetCapacity(
+	_ context.Context, _ *agentv1.GetCapacityRequest, _ ...grpc.CallOption,
+) (*agentv1.GetCapacityResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "not used in controller tests")
 }
-func (m *csiMockAgent) ListVolumes(_ context.Context, _ *agentv1.ListVolumesRequest, _ ...grpc.CallOption) (*agentv1.ListVolumesResponse, error) {
+func (*csiMockAgent) ListVolumes(
+	_ context.Context, _ *agentv1.ListVolumesRequest, _ ...grpc.CallOption,
+) (*agentv1.ListVolumesResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "not used in controller tests")
 }
-func (m *csiMockAgent) ListExports(_ context.Context, _ *agentv1.ListExportsRequest, _ ...grpc.CallOption) (*agentv1.ListExportsResponse, error) {
+func (*csiMockAgent) ListExports(
+	_ context.Context, _ *agentv1.ListExportsRequest, _ ...grpc.CallOption,
+) (*agentv1.ListExportsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "not used in controller tests")
 }
-func (m *csiMockAgent) HealthCheck(_ context.Context, _ *agentv1.HealthCheckRequest, _ ...grpc.CallOption) (*agentv1.HealthCheckResponse, error) {
+func (*csiMockAgent) HealthCheck(
+	_ context.Context, _ *agentv1.HealthCheckRequest, _ ...grpc.CallOption,
+) (*agentv1.HealthCheckResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "not used in controller tests")
 }
-func (m *csiMockAgent) SendVolume(_ context.Context, _ *agentv1.SendVolumeRequest, _ ...grpc.CallOption) (grpc.ServerStreamingClient[agentv1.SendVolumeChunk], error) {
+func (*csiMockAgent) SendVolume(
+	_ context.Context, _ *agentv1.SendVolumeRequest, _ ...grpc.CallOption,
+) (grpc.ServerStreamingClient[agentv1.SendVolumeChunk], error) {
 	return nil, status.Error(codes.Unimplemented, "not used in controller tests")
 }
-func (m *csiMockAgent) ReceiveVolume(_ context.Context, _ ...grpc.CallOption) (grpc.ClientStreamingClient[agentv1.ReceiveVolumeChunk, agentv1.ReceiveVolumeResponse], error) {
+func (*csiMockAgent) ReceiveVolume(
+	_ context.Context, _ ...grpc.CallOption,
+) (grpc.ClientStreamingClient[agentv1.ReceiveVolumeChunk, agentv1.ReceiveVolumeResponse], error) {
 	return nil, status.Error(codes.Unimplemented, "not used in controller tests")
 }
-func (m *csiMockAgent) ReconcileState(_ context.Context, _ *agentv1.ReconcileStateRequest, _ ...grpc.CallOption) (*agentv1.ReconcileStateResponse, error) {
+func (*csiMockAgent) ReconcileState(
+	_ context.Context, _ *agentv1.ReconcileStateRequest, _ ...grpc.CallOption,
+) (*agentv1.ReconcileStateResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "not used in controller tests")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Test environment setup
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // csiNopCloser is a test double for the io.Closer returned by an AgentDialer.
 //
@@ -351,7 +381,7 @@ const expectedCSIVolumeID = "storage-node-1/nvmeof-tcp/zfs-zvol/tank/pvc-compone
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIController_CreateVolume_Success
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIController_CreateVolume_Success verifies the happy-path CreateVolume
 // flow: both agent.CreateVolume and agent.ExportVolume are called exactly once,
@@ -400,7 +430,7 @@ func TestCSIController_CreateVolume_Success(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIController_CreateVolume_CapacityRange
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIController_CreateVolume_CapacityRange verifies that the controller
 // correctly propagates the CapacityRange.RequiredBytes to the agent and
@@ -411,7 +441,9 @@ func TestCSIController_CreateVolume_CapacityRange(t *testing.T) {
 	ctx := context.Background()
 
 	const wantBytes = int64(10 << 30) // 10 GiB
-	env.agent.createVolumeFn = func(_ context.Context, req *agentv1.CreateVolumeRequest) (*agentv1.CreateVolumeResponse, error) {
+	env.agent.createVolumeFn = func(
+		_ context.Context, req *agentv1.CreateVolumeRequest,
+	) (*agentv1.CreateVolumeResponse, error) {
 		if req.GetCapacityBytes() != wantBytes {
 			t.Errorf("agent CreateVolume: CapacityBytes = %d, want %d",
 				req.GetCapacityBytes(), wantBytes)
@@ -436,7 +468,7 @@ func TestCSIController_CreateVolume_CapacityRange(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIController_CreateVolume_IdempotentRetry
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIController_CreateVolume_IdempotentRetry verifies that a second
 // CreateVolume call for the same volume returns the cached response without
@@ -477,7 +509,7 @@ func TestCSIController_CreateVolume_IdempotentRetry(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIController_CreateVolume_AgentError
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIController_CreateVolume_AgentError verifies that an agent-side
 // CreateVolume error is propagated to the CO with the same gRPC status code.
@@ -486,7 +518,9 @@ func TestCSIController_CreateVolume_AgentError(t *testing.T) {
 	env := newCSIControllerTestEnv(t)
 	ctx := context.Background()
 
-	env.agent.createVolumeFn = func(_ context.Context, _ *agentv1.CreateVolumeRequest) (*agentv1.CreateVolumeResponse, error) {
+	env.agent.createVolumeFn = func(
+		_ context.Context, _ *agentv1.CreateVolumeRequest,
+	) (*agentv1.CreateVolumeResponse, error) {
 		return nil, status.Error(codes.ResourceExhausted, "pool out of space")
 	}
 
@@ -502,7 +536,7 @@ func TestCSIController_CreateVolume_AgentError(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIController_CreateVolume_AgentUnreachable
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIController_CreateVolume_AgentUnreachable verifies that a dial
 // failure (agent unreachable) returns gRPC Unavailable.
@@ -524,7 +558,7 @@ func TestCSIController_CreateVolume_AgentUnreachable(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIController_CreateVolume_MissingName
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIController_CreateVolume_MissingName verifies that an empty volume
 // name is rejected with InvalidArgument before any agent call.
@@ -551,7 +585,7 @@ func TestCSIController_CreateVolume_MissingName(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIController_CreateVolume_TargetNotFound
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIController_CreateVolume_TargetNotFound verifies that referencing a
 // non-existent PillarTarget returns NotFound.
@@ -575,7 +609,7 @@ func TestCSIController_CreateVolume_TargetNotFound(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIController_CreateVolume_MissingParams
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIController_CreateVolume_MissingParams verifies that missing required
 // StorageClass parameters are rejected with InvalidArgument.
@@ -593,7 +627,6 @@ func TestCSIController_CreateVolume_MissingParams(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			env := newCSIControllerTestEnv(t)
@@ -614,7 +647,7 @@ func TestCSIController_CreateVolume_MissingParams(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIController_CreateVolume_DuplicateName
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIController_CreateVolume_DuplicateName verifies that a CreateVolume
 // call using the same volume name but requesting a LARGER capacity than the
@@ -663,7 +696,7 @@ func TestCSIController_CreateVolume_DuplicateName(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIController_DeleteVolume_Success
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIController_DeleteVolume_Success verifies that DeleteVolume calls both
 // agent.UnexportVolume and agent.DeleteVolume.
@@ -693,20 +726,24 @@ func TestCSIController_DeleteVolume_Success(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIController_DeleteVolume_Idempotent
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIController_DeleteVolume_Idempotent verifies that if the agent returns
 // NotFound for both Unexport and Delete, the controller still returns success
-// (idempotent behaviour per CSI spec §4.3.2).
+// (idempotent behavior per CSI spec §4.3.2).
 func TestCSIController_DeleteVolume_Idempotent(t *testing.T) {
 	t.Parallel()
 	env := newCSIControllerTestEnv(t)
 	ctx := context.Background()
 
-	env.agent.unexportVolumeFn = func(_ context.Context, _ *agentv1.UnexportVolumeRequest) (*agentv1.UnexportVolumeResponse, error) {
+	env.agent.unexportVolumeFn = func(
+		_ context.Context, _ *agentv1.UnexportVolumeRequest,
+	) (*agentv1.UnexportVolumeResponse, error) {
 		return nil, status.Error(codes.NotFound, "not found")
 	}
-	env.agent.deleteVolumeFn = func(_ context.Context, _ *agentv1.DeleteVolumeRequest) (*agentv1.DeleteVolumeResponse, error) {
+	env.agent.deleteVolumeFn = func(
+		_ context.Context, _ *agentv1.DeleteVolumeRequest,
+	) (*agentv1.DeleteVolumeResponse, error) {
 		return nil, status.Error(codes.NotFound, "not found")
 	}
 
@@ -720,7 +757,7 @@ func TestCSIController_DeleteVolume_Idempotent(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIController_DeleteVolume_AgentError
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIController_DeleteVolume_AgentError verifies that a non-NotFound error
 // from agent.DeleteVolume is propagated to the CO.
@@ -729,7 +766,9 @@ func TestCSIController_DeleteVolume_AgentError(t *testing.T) {
 	env := newCSIControllerTestEnv(t)
 	ctx := context.Background()
 
-	env.agent.deleteVolumeFn = func(_ context.Context, _ *agentv1.DeleteVolumeRequest) (*agentv1.DeleteVolumeResponse, error) {
+	env.agent.deleteVolumeFn = func(
+		_ context.Context, _ *agentv1.DeleteVolumeRequest,
+	) (*agentv1.DeleteVolumeResponse, error) {
 		return nil, status.Error(codes.FailedPrecondition, "device busy")
 	}
 
@@ -747,7 +786,7 @@ func TestCSIController_DeleteVolume_AgentError(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIController_ControllerPublishVolume_Success
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIController_ControllerPublishVolume_Success verifies that
 // ControllerPublishVolume calls agent.AllowInitiator with the node's NQN and
@@ -759,7 +798,9 @@ func TestCSIController_ControllerPublishVolume_Success(t *testing.T) {
 
 	const nodeNQN = "nqn.2014-08.org.nvmexpress:uuid:test-node-001"
 	var capturedInitiatorID string
-	env.agent.allowInitiatorFn = func(_ context.Context, req *agentv1.AllowInitiatorRequest) (*agentv1.AllowInitiatorResponse, error) {
+	env.agent.allowInitiatorFn = func(
+		_ context.Context, req *agentv1.AllowInitiatorRequest,
+	) (*agentv1.AllowInitiatorResponse, error) {
 		capturedInitiatorID = req.GetInitiatorId()
 		return &agentv1.AllowInitiatorResponse{}, nil
 	}
@@ -789,7 +830,7 @@ func TestCSIController_ControllerPublishVolume_Success(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIController_ControllerPublishVolume_AlreadyPublished
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIController_ControllerPublishVolume_AlreadyPublished verifies that a
 // second ControllerPublishVolume for the same volume/node is idempotent:
@@ -822,7 +863,7 @@ func TestCSIController_ControllerPublishVolume_AlreadyPublished(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIController_ControllerUnpublishVolume_Success
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIController_ControllerUnpublishVolume_Success verifies that
 // ControllerUnpublishVolume calls agent.DenyInitiator.
@@ -833,7 +874,9 @@ func TestCSIController_ControllerUnpublishVolume_Success(t *testing.T) {
 
 	const nodeNQN = "nqn.2014-08.org.nvmexpress:uuid:test-node-001"
 	var capturedInitiatorID string
-	env.agent.denyInitiatorFn = func(_ context.Context, req *agentv1.DenyInitiatorRequest) (*agentv1.DenyInitiatorResponse, error) {
+	env.agent.denyInitiatorFn = func(
+		_ context.Context, req *agentv1.DenyInitiatorRequest,
+	) (*agentv1.DenyInitiatorResponse, error) {
 		capturedInitiatorID = req.GetInitiatorId()
 		return &agentv1.DenyInitiatorResponse{}, nil
 	}
@@ -855,7 +898,7 @@ func TestCSIController_ControllerUnpublishVolume_Success(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIController_ControllerUnpublishVolume_AlreadyUnpublished
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIController_ControllerUnpublishVolume_AlreadyUnpublished verifies that
 // if the agent returns NotFound for DenyInitiator, ControllerUnpublishVolume
@@ -865,7 +908,9 @@ func TestCSIController_ControllerUnpublishVolume_AlreadyUnpublished(t *testing.T
 	env := newCSIControllerTestEnv(t)
 	ctx := context.Background()
 
-	env.agent.denyInitiatorFn = func(_ context.Context, _ *agentv1.DenyInitiatorRequest) (*agentv1.DenyInitiatorResponse, error) {
+	env.agent.denyInitiatorFn = func(
+		_ context.Context, _ *agentv1.DenyInitiatorRequest,
+	) (*agentv1.DenyInitiatorResponse, error) {
 		return nil, status.Error(codes.NotFound, "initiator not found")
 	}
 
@@ -880,7 +925,7 @@ func TestCSIController_ControllerUnpublishVolume_AlreadyUnpublished(t *testing.T
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIController_ExpandVolume_Success
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIController_ExpandVolume_Success verifies the happy-path expand:
 // agent.ExpandVolume is called with the requested bytes, and the response
@@ -891,7 +936,9 @@ func TestCSIController_ExpandVolume_Success(t *testing.T) {
 	ctx := context.Background()
 
 	const newBytes = int64(20 << 30) // 20 GiB
-	env.agent.expandVolumeFn = func(_ context.Context, req *agentv1.ExpandVolumeRequest) (*agentv1.ExpandVolumeResponse, error) {
+	env.agent.expandVolumeFn = func(
+		_ context.Context, req *agentv1.ExpandVolumeRequest,
+	) (*agentv1.ExpandVolumeResponse, error) {
 		return &agentv1.ExpandVolumeResponse{CapacityBytes: req.GetRequestedBytes()}, nil
 	}
 
@@ -915,7 +962,7 @@ func TestCSIController_ExpandVolume_Success(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIController_ExpandVolume_AgentError
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIController_ExpandVolume_AgentError verifies that an agent error
 // (e.g., shrink rejected) is propagated with the correct gRPC code.
@@ -924,7 +971,9 @@ func TestCSIController_ExpandVolume_AgentError(t *testing.T) {
 	env := newCSIControllerTestEnv(t)
 	ctx := context.Background()
 
-	env.agent.expandVolumeFn = func(_ context.Context, _ *agentv1.ExpandVolumeRequest) (*agentv1.ExpandVolumeResponse, error) {
+	env.agent.expandVolumeFn = func(
+		_ context.Context, _ *agentv1.ExpandVolumeRequest,
+	) (*agentv1.ExpandVolumeResponse, error) {
 		return nil, status.Error(codes.InvalidArgument, "cannot shrink volume")
 	}
 
@@ -943,7 +992,7 @@ func TestCSIController_ExpandVolume_AgentError(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIController_ValidateVolumeCapabilities_Supported
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIController_ValidateVolumeCapabilities_Supported verifies that
 // supported access modes are echoed back in the Confirmed field.
@@ -959,7 +1008,6 @@ func TestCSIController_ValidateVolumeCapabilities_Supported(t *testing.T) {
 	}
 
 	for _, mode := range supported {
-		mode := mode
 		t.Run(mode.String(), func(t *testing.T) {
 			t.Parallel()
 			resp, err := env.srv.ValidateVolumeCapabilities(ctx, &csipb.ValidateVolumeCapabilitiesRequest{
@@ -988,7 +1036,7 @@ func TestCSIController_ValidateVolumeCapabilities_Supported(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIController_ValidateVolumeCapabilities_Unsupported
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIController_ValidateVolumeCapabilities_Unsupported verifies that
 // unsupported access modes (e.g. MULTI_NODE_MULTI_WRITER) return a response
@@ -1004,7 +1052,6 @@ func TestCSIController_ValidateVolumeCapabilities_Unsupported(t *testing.T) {
 	}
 
 	for _, mode := range unsupported {
-		mode := mode
 		t.Run(mode.String(), func(t *testing.T) {
 			t.Parallel()
 			resp, err := env.srv.ValidateVolumeCapabilities(ctx, &csipb.ValidateVolumeCapabilitiesRequest{
@@ -1033,7 +1080,7 @@ func TestCSIController_ValidateVolumeCapabilities_Unsupported(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIController_GetCapabilities
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIController_GetCapabilities verifies that ControllerGetCapabilities
 // includes the expected RPC types.
@@ -1064,7 +1111,7 @@ func TestCSIController_GetCapabilities(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIController_CreateVolume_ACLToggle
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIController_CreateVolume_ACLDisabled verifies that the controller
 // passes AclEnabled=false to agent.ExportVolume when the StorageClass
@@ -1079,7 +1126,9 @@ func TestCSIController_CreateVolume_ACLDisabled(t *testing.T) {
 	ctx := context.Background()
 
 	var capturedExportReq *agentv1.ExportVolumeRequest
-	env.agent.exportVolumeFn = func(_ context.Context, req *agentv1.ExportVolumeRequest) (*agentv1.ExportVolumeResponse, error) {
+	env.agent.exportVolumeFn = func(
+		_ context.Context, req *agentv1.ExportVolumeRequest,
+	) (*agentv1.ExportVolumeResponse, error) {
 		capturedExportReq = req
 		return &agentv1.ExportVolumeResponse{
 			ExportInfo: &agentv1.ExportInfo{
@@ -1117,7 +1166,9 @@ func TestCSIController_CreateVolume_ACLEnabled_Default(t *testing.T) {
 	ctx := context.Background()
 
 	var capturedExportReq *agentv1.ExportVolumeRequest
-	env.agent.exportVolumeFn = func(_ context.Context, req *agentv1.ExportVolumeRequest) (*agentv1.ExportVolumeResponse, error) {
+	env.agent.exportVolumeFn = func(
+		_ context.Context, req *agentv1.ExportVolumeRequest,
+	) (*agentv1.ExportVolumeResponse, error) {
 		capturedExportReq = req
 		return &agentv1.ExportVolumeResponse{
 			ExportInfo: &agentv1.ExportInfo{

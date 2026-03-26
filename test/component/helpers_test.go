@@ -54,11 +54,12 @@ func makeReadOnly(t *testing.T, path string) {
 	if os.Getuid() == 0 {
 		t.Skip("requires non-root: root bypasses Unix DAC permission checks")
 	}
-	if err := os.Chmod(path, 0o555); err != nil {
+	if err := os.Chmod(path, 0o555); err != nil { //nolint:gosec // test file with intentional permissions
 		t.Fatalf("makeReadOnly %q: %v", path, err)
 	}
 	t.Cleanup(func() {
 		// Restore write permission so that t.TempDir() can clean up the tree.
+		//nolint:errcheck,gosec // cleanup errors are non-actionable in test teardown
 		_ = os.Chmod(path, 0o755)
 	})
 }
@@ -73,10 +74,11 @@ func makeFileReadOnly(t *testing.T, path string) {
 	if os.Getuid() == 0 {
 		t.Skip("requires non-root: root bypasses Unix DAC permission checks")
 	}
-	if err := os.Chmod(path, 0o444); err != nil {
+	if err := os.Chmod(path, 0o444); err != nil { //nolint:gosec // test file with intentional permissions
 		t.Fatalf("makeFileReadOnly %q: %v", path, err)
 	}
 	t.Cleanup(func() {
+		//nolint:errcheck,gosec // cleanup errors are non-actionable in test teardown
 		_ = os.Chmod(path, 0o644)
 	})
 }

@@ -45,7 +45,7 @@ import (
 
 // ---------------------------------------------------------------------------
 // XC1: configfs write permission denied
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------.
 
 // TestException_ConfigfsWritePermissionDenied verifies that NvmetTarget.Apply
 // returns a descriptive error (rather than panicking) when the configfs
@@ -87,7 +87,7 @@ func TestException_ConfigfsWritePermissionDenied(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // XC2: concurrent Apply — directory creation idempotency under race
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------.
 
 // TestException_ConfigfsDirCreateRace verifies that multiple goroutines can
 // call NvmetTarget.Apply simultaneously on different volumes that share the
@@ -113,10 +113,10 @@ func TestException_ConfigfsDirCreateRace(t *testing.T) {
 	errs := make([]error, goroutines)
 	start := make(chan struct{}) // closed to release all goroutines simultaneously
 
-	for i := 0; i < goroutines; i++ {
+	for i := range goroutines {
 		wg.Add(1)
-		i := i
-		go func() {
+
+		go func() { //nolint:modernize // start channel needed for synchronized concurrent launch
 			defer wg.Done()
 			<-start // wait until all goroutines are ready, then run concurrently
 			tgt := &nvmeof.NvmetTarget{
@@ -143,7 +143,7 @@ func TestException_ConfigfsDirCreateRace(t *testing.T) {
 	}
 
 	// Every subsystem directory must have been created successfully.
-	for i := 0; i < goroutines; i++ {
+	for i := range goroutines {
 		nqn := fmt.Sprintf("nqn.2026-01.com.bhyoo:pvc-race-%d", i)
 		dir := filepath.Join(tmpdir, "nvmet", "subsystems", nqn)
 		if _, err := os.Stat(dir); err != nil {
@@ -154,7 +154,7 @@ func TestException_ConfigfsDirCreateRace(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // XC3: symlink already exists with wrong destination
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------.
 
 // TestException_SymlinkWrongDestination verifies that AllowInitiator returns
 // a gRPC Internal error when the configfs allowed_hosts symlink already exists
@@ -173,7 +173,7 @@ func TestException_SymlinkWrongDestination(t *testing.T) {
 
 	const (
 		volumeID = "tank/pvc-symlink-wrong"
-		// volumeNQN("tank/pvc-symlink-wrong") = nqnPrefix + "tank.pvc-symlink-wrong"
+		// nqn is derived from volumeNQN("tank/pvc-symlink-wrong")
 		nqn     = "nqn.2026-01.com.bhyoo.pillar-csi:tank.pvc-symlink-wrong"
 		hostNQN = "nqn.2023-01.io.example:host-wrong-sym"
 	)
@@ -219,7 +219,7 @@ func TestException_SymlinkWrongDestination(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // XC4: ZFS command timeout via context cancellation
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------.
 
 // TestException_ZFSCommandTimeout verifies that the ZFS backend respects
 // context cancellation.  When a ZFS command blocks (e.g., a hung pool) and
@@ -232,7 +232,7 @@ func TestException_SymlinkWrongDestination(t *testing.T) {
 func TestException_ZFSCommandTimeout(t *testing.T) {
 	t.Parallel()
 
-	// Executor blocks indefinitely until the context is cancelled/expired.
+	// Executor blocks indefinitely until the context is canceled/expired.
 	b := zfs.NewWithExecFn("tank", "", func(ctx context.Context, _ string, _ ...string) ([]byte, error) {
 		<-ctx.Done()
 		return nil, ctx.Err()
@@ -259,7 +259,7 @@ func TestException_ZFSCommandTimeout(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // XC5: gRPC request deadline propagated through device polling
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------.
 
 // TestException_GRPCDeadlineExceeded verifies that when a request context's
 // deadline expires during ExportVolume's zvol-ready polling loop, the
@@ -320,7 +320,7 @@ func TestException_GRPCDeadlineExceeded(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // XC6: configfs pseudo-file write fails mid-Apply
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------.
 
 // TestException_PartialConfigfsWrite verifies that NvmetTarget.Apply returns
 // a descriptive error when a write to a configfs pseudo-file fails after the
@@ -349,7 +349,7 @@ func TestException_PartialConfigfsWrite(t *testing.T) {
 	// Pre-create the device_path pseudo-file and make it unwritable.
 	// NvmetTarget.Apply (createNamespace) will try to overwrite it and fail.
 	devicePathFile := filepath.Join(nsDir, "device_path")
-	if err := os.WriteFile(devicePathFile, []byte("old-path"), 0o644); err != nil {
+	if err := os.WriteFile(devicePathFile, []byte("old-path"), 0o600); err != nil {
 		t.Fatalf("WriteFile device_path: %v", err)
 	}
 	makeFileReadOnly(t, devicePathFile) // auto-skips as root; restores 0644 on cleanup
@@ -372,7 +372,7 @@ func TestException_PartialConfigfsWrite(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // XC7: device TOCTOU — WaitForDevice exits on first success, no re-check
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------.
 
 // TestException_DeviceTOCTOU verifies that WaitForDevice exits immediately
 // after the device is first detected as present, without performing a
@@ -423,7 +423,7 @@ func TestException_DeviceTOCTOU(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // XC8: concurrent export + unexport of the same volume
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------.
 
 // TestException_ConcurrentExportUnexport verifies that simultaneously calling
 // ExportVolume and UnexportVolume on the same volume does not cause a deadlock,
@@ -443,7 +443,7 @@ func TestException_ConcurrentExportUnexport(t *testing.T) {
 
 	const (
 		volumeID = "tank/pvc-concurrent-xc8"
-		// volumeNQN("tank/pvc-concurrent-xc8") = nqnPrefix + "tank.pvc-concurrent-xc8"
+		// nqn is derived from volumeNQN("tank/pvc-concurrent-xc8")
 		nqn = "nqn.2026-01.com.bhyoo.pillar-csi:tank.pvc-concurrent-xc8"
 	)
 
@@ -464,27 +464,23 @@ func TestException_ConcurrentExportUnexport(t *testing.T) {
 	ready := make(chan struct{}) // closed to release both goroutines simultaneously
 
 	// Goroutine A: re-export (idempotent).
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		<-ready
 		_, exportErr = srv.ExportVolume(context.Background(), &agentv1.ExportVolumeRequest{
 			VolumeId:     volumeID,
 			ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 			ExportParams: nvmeofParams("192.168.1.1", 4420),
 		})
-	}()
+	})
 
 	// Goroutine B: unexport.
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		<-ready
 		_, unexportErr = srv.UnexportVolume(context.Background(), &agentv1.UnexportVolumeRequest{
 			VolumeId:     volumeID,
 			ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 		})
-	}()
+	})
 
 	close(ready) // trigger both goroutines simultaneously
 

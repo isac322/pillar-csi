@@ -43,7 +43,7 @@ import (
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers for state-machine tests
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // csiNodeSMTestEnv holds a NodeServer wired to a shared VolumeStateMachine.
 type csiNodeSMTestEnv struct {
@@ -73,7 +73,7 @@ func newCSINodeSMTestEnv(t *testing.T) *csiNodeSMTestEnv {
 // ─────────────────────────────────────────────────────────────────────────────
 // § 5.8 State Machine Integration
 // TESTCASES.md § 5.8 tests 31–34
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSINode_StateMachine_NodeStage_WrongOrder verifies that NodeStageVolume
 // is rejected with FailedPrecondition when the volume is not in
@@ -285,7 +285,7 @@ func TestCSINode_StateMachine_FullLifecycleWithSM(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 // § 5.12 Concurrent Node Operations
 // TESTCASES.md § 5.12 tests 48–49
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSINode_Concurrent_StageSameVolume_NoDeadlock verifies that concurrent
 // NodeStageVolume calls for the same VolumeID complete without deadlock (test
@@ -306,7 +306,7 @@ func TestCSINode_Concurrent_StageSameVolume_NoDeadlock(t *testing.T) {
 
 	var wg sync.WaitGroup
 	errs := make([]error, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
@@ -358,7 +358,7 @@ func TestCSINode_Concurrent_StageDifferentVolumes_AllSucceed(t *testing.T) {
 
 	var wg sync.WaitGroup
 	errs := make([]error, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()

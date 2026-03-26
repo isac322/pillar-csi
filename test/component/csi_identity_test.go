@@ -25,7 +25,7 @@ limitations under the License.
 //
 // Error paths covered:
 //
-//   - Context already expired/cancelled before handler starts (§6.4)
+//   - Context already expired/canceled before handler starts (§6.4)
 //   - readyFn returns a health-check error → codes.Internal (§6.4)
 //   - readyFn propagates context.DeadlineExceeded → codes.DeadlineExceeded (§6.4)
 //
@@ -39,11 +39,11 @@ limitations under the License.
 //
 // Omits / simplifies:
 //   - No I/O; the outcome is determined by preset fields (ready bool, err error).
-//   - Blocking variant uses ctx.Done() to simulate a slow check that honours
+//   - Blocking variant uses ctx.Done() to simulate a slow check that honors
 //     context cancellation; real checks may access sysfs, netlink, or gRPC.
 //   - Does not validate kernel module state, configfs paths, or network routes.
 //   - Call counter is not goroutine-safe; tests that need concurrent safety
-//     must add external synchronisation.
+//     must add external synchronization.
 //
 // See test/component/TESTCASES.md §6 for the authoritative test-case spec.
 package component_test
@@ -63,7 +63,7 @@ import (
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Mock: identityReadyFn
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // identityMockReady is a configurable test double for the IdentityServer
 // readyFn.  Field `ready` controls the boolean result; field `err` overrides
@@ -77,8 +77,8 @@ type identityMockReady struct {
 	calls int
 
 	// blockUntilCtxDone, when true, causes the function to block until the
-	// provided context is cancelled/expired, then return context.Err().
-	// This models a slow health check that is cancelled mid-flight.
+	// provided context is canceled/expired, then return context.Err().
+	// This models a slow health check that is canceled mid-flight.
 	blockUntilCtxDone bool
 }
 
@@ -96,7 +96,7 @@ func (m *identityMockReady) fn(ctx context.Context) (bool, error) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 const (
 	testDriverName    = "pillar-csi.bhyoo.com"
@@ -118,7 +118,7 @@ func newIdentityServerWithMock(t *testing.T, mock *identityMockReady) *pillarcsi
 // ─────────────────────────────────────────────────────────────────────────────
 // § 6.1 GetPluginInfo
 // TESTCASES.md §6.1 tests 1–2
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIIdentity_GetPluginInfo_Success verifies that GetPluginInfo returns the
 // correct driver name and vendor version (test case 1).
@@ -160,7 +160,7 @@ func TestCSIIdentity_GetPluginInfo_NameNotEmpty(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 // § 6.2 GetPluginCapabilities
 // TESTCASES.md §6.2 tests 3–4
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIIdentity_GetPluginCapabilities_IncludesControllerService verifies
 // that GetPluginCapabilities includes CONTROLLER_SERVICE (test case 3).
@@ -216,7 +216,7 @@ func TestCSIIdentity_GetPluginCapabilities_IncludesVolumeExpansion(t *testing.T)
 // ─────────────────────────────────────────────────────────────────────────────
 // § 6.3 Probe
 // TESTCASES.md §6.3 tests 5–7
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIIdentity_Probe_Ready verifies that Probe returns Ready=true when the
 // readyFn returns (true, nil) (test case 5).
@@ -288,7 +288,7 @@ func TestCSIIdentity_Probe_DefaultAlwaysReady(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 // § 6.4 Error Paths
 // TESTCASES.md §6.4 tests 8–12
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIIdentity_GetPluginInfo_ContextDeadlineExceeded verifies that
 // GetPluginInfo returns codes.DeadlineExceeded when the context has already
@@ -321,7 +321,7 @@ func TestCSIIdentity_GetPluginInfo_ContextDeadlineExceeded(t *testing.T) {
 
 // TestCSIIdentity_GetPluginCapabilities_ContextCancelled verifies that
 // GetPluginCapabilities returns codes.Canceled when the context is already
-// cancelled before the handler runs (test case 9).
+// canceled before the handler runs (test case 9).
 //
 // See TESTCASES.md §6.4, row 9.
 func TestCSIIdentity_GetPluginCapabilities_ContextCancelled(t *testing.T) {
@@ -333,13 +333,13 @@ func TestCSIIdentity_GetPluginCapabilities_ContextCancelled(t *testing.T) {
 
 	_, err := srv.GetPluginCapabilities(ctx, &csipb.GetPluginCapabilitiesRequest{})
 	if err == nil {
-		t.Fatal("expected Cancelled error, got nil")
+		t.Fatal("expected Canceled error, got nil")
 	}
 	st, _ := status.FromError(err)
 	if st.Code() != codes.Canceled {
 		t.Errorf("error code = %v, want Canceled", st.Code())
 	}
-	t.Logf("GetPluginCapabilities with cancelled context: %v", err)
+	t.Logf("GetPluginCapabilities with canceled context: %v", err)
 }
 
 // TestCSIIdentity_Probe_ContextDeadlineExceeded verifies that Probe returns
@@ -412,7 +412,7 @@ func TestCSIIdentity_Probe_ReadyFnError_ReturnsInternal(t *testing.T) {
 // propagates context.DeadlineExceeded from readyFn as codes.DeadlineExceeded
 // (not as codes.Internal) (test case 12).
 //
-// This models a slow health check that is cancelled mid-flight.  The Probe
+// This models a slow health check that is canceled mid-flight.  The Probe
 // handler must distinguish context errors (which have well-known gRPC codes)
 // from generic health-check errors.
 //
@@ -461,7 +461,7 @@ func TestCSIIdentity_Probe_ReadyFnContextError_PropagatesCode(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Compile-time interface check
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // Verify that IdentityServer implements csi.IdentityServer at compile time.
 var _ csipb.IdentityServer = (*pillarcsi.IdentityServer)(nil)

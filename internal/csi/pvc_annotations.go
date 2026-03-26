@@ -16,7 +16,7 @@ limitations under the License.
 
 package csi
 
-// pvc_annotations.go — utility for parsing and validating PVC-level parameter
+// Pvc_annotations.go — utility for parsing and validating PVC-level parameter
 // overrides (Layer 4 of the 4-level merge hierarchy).
 //
 // The annotation format supports two styles:
@@ -48,7 +48,7 @@ import (
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PVC annotation key constants
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 const (
 	// AnnotationBackendOverride is the PVC annotation key for backend-level
@@ -103,53 +103,53 @@ const (
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Protocol tuning parameter key constants (output of ParsePVCAnnotations)
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 const (
 	// NVMe-oF TCP tuning parameters.
 
-	// paramNVMeOFMaxQueueSize is the I/O queue depth for NVMe-oF TCP.
+	// ParamNVMeOFMaxQueueSize is the I/O queue depth for NVMe-oF TCP.
 	// Corresponds to PillarProtocol.spec.nvmeofTcp.maxQueueSize.
 	paramNVMeOFMaxQueueSize = "pillar-csi.bhyoo.com/nvmeof-max-queue-size"
 
-	// paramNVMeOFCtrlLossTmo is the controller loss timeout in seconds.
+	// ParamNVMeOFCtrlLossTmo is the controller loss timeout in seconds.
 	// Corresponds to PillarProtocol.spec.nvmeofTcp.ctrlLossTmo.
 	// Passed to "nvme connect --ctrl-loss-tmo".
 	paramNVMeOFCtrlLossTmo = "pillar-csi.bhyoo.com/nvmeof-ctrl-loss-tmo"
 
-	// paramNVMeOFReconnectDelay is the reconnect attempt interval in seconds.
+	// ParamNVMeOFReconnectDelay is the reconnect attempt interval in seconds.
 	// Corresponds to PillarProtocol.spec.nvmeofTcp.reconnectDelay.
 	// Passed to "nvme connect --reconnect-delay".
 	paramNVMeOFReconnectDelay = "pillar-csi.bhyoo.com/nvmeof-reconnect-delay"
 
-	// iSCSI tuning parameters.
+	// ISCSI tuning parameters.
 
-	// paramISCSILoginTimeout is the session login timeout in seconds.
+	// ParamISCSILoginTimeout is the session login timeout in seconds.
 	// Corresponds to PillarProtocol.spec.iscsi.loginTimeout.
 	paramISCSILoginTimeout = "pillar-csi.bhyoo.com/iscsi-login-timeout"
 
-	// paramISCSIReplacementTimeout is the session replacement timeout in
+	// ParamISCSIReplacementTimeout is the session replacement timeout in
 	// seconds. Corresponds to PillarProtocol.spec.iscsi.replacementTimeout.
 	paramISCSIReplacementTimeout = "pillar-csi.bhyoo.com/iscsi-replacement-timeout"
 
-	// paramISCSINodeSessionTimeout is the node session timeout in seconds.
+	// ParamISCSINodeSessionTimeout is the node session timeout in seconds.
 	// Corresponds to PillarProtocol.spec.iscsi.nodeSessionTimeout.
 	paramISCSINodeSessionTimeout = "pillar-csi.bhyoo.com/iscsi-node-session-timeout"
 
 	// Filesystem parameters.
 
-	// paramFSType is the filesystem type to format when volumeMode is Filesystem.
+	// ParamFSType is the filesystem type to format when volumeMode is Filesystem.
 	// Valid values: "ext4" (default), "xfs".
 	paramFSType = "pillar-csi.bhyoo.com/fs-type"
 
-	// paramMkfsOptions is a JSON-encoded string array of extra mkfs arguments.
+	// ParamMkfsOptions is a JSON-encoded string array of extra mkfs arguments.
 	// Example value: `["-E","lazy_itable_init=0"]`.
 	paramMkfsOptions = "pillar-csi.bhyoo.com/mkfs-options"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Blocked structural fields
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // blockedZFSFields is the set of ZFS sub-fields that are structural (define
 // which pool/dataset to use) and therefore cannot be overridden via PVC
@@ -173,7 +173,7 @@ var blockedISCSIFields = map[string]bool{
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ParsePVCAnnotations
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // ParsePVCAnnotations parses and validates pillar-csi PVC annotations into a
 // flat parameter override map that can be merged (highest-priority) into the
@@ -209,21 +209,24 @@ func ParsePVCAnnotations(annotations map[string]string) (map[string]string, erro
 
 	// ── Structured YAML: backend-override ─────────────────────────────────
 	if yamlStr, ok := annotations[AnnotationBackendOverride]; ok && yamlStr != "" {
-		if err := parseBackendOverride(yamlStr, result); err != nil {
+		err := parseBackendOverride(yamlStr, result)
+		if err != nil {
 			return nil, fmt.Errorf("%s annotation: %w", AnnotationBackendOverride, err)
 		}
 	}
 
 	// ── Structured YAML: protocol-override ────────────────────────────────
 	if yamlStr, ok := annotations[AnnotationProtocolOverride]; ok && yamlStr != "" {
-		if err := parseProtocolOverride(yamlStr, result); err != nil {
+		err := parseProtocolOverride(yamlStr, result)
+		if err != nil {
 			return nil, fmt.Errorf("%s annotation: %w", AnnotationProtocolOverride, err)
 		}
 	}
 
 	// ── Structured YAML: fs-override ──────────────────────────────────────
 	if yamlStr, ok := annotations[AnnotationFSOverride]; ok && yamlStr != "" {
-		if err := parseFSOverride(yamlStr, result); err != nil {
+		err := parseFSOverride(yamlStr, result)
+		if err != nil {
 			return nil, fmt.Errorf("%s annotation: %w", AnnotationFSOverride, err)
 		}
 	}
@@ -233,7 +236,7 @@ func ParsePVCAnnotations(annotations map[string]string) (map[string]string, erro
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Internal parsers
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // parseBackendOverride parses the backend-override YAML annotation into out.
 //
@@ -246,8 +249,9 @@ func ParsePVCAnnotations(annotations map[string]string) (map[string]string, erro
 // Returns an error if a blocked structural field is present or the YAML is
 // malformed.
 func parseBackendOverride(yamlStr string, out map[string]string) error {
-	var raw map[string]interface{}
-	if err := yaml.Unmarshal([]byte(yamlStr), &raw); err != nil {
+	var raw map[string]any
+	err := yaml.Unmarshal([]byte(yamlStr), &raw)
+	if err != nil {
 		return fmt.Errorf("YAML parse error: %w", err)
 	}
 	if raw == nil {
@@ -256,7 +260,7 @@ func parseBackendOverride(yamlStr string, out map[string]string) error {
 
 	// ── ZFS backend ────────────────────────────────────────────────────────
 	if zfsRaw, ok := raw["zfs"]; ok {
-		zfsMap, ok := zfsRaw.(map[string]interface{})
+		zfsMap, ok := zfsRaw.(map[string]any)
 		if !ok {
 			return fmt.Errorf("zfs: expected a map, got %T", zfsRaw)
 		}
@@ -268,12 +272,11 @@ func parseBackendOverride(yamlStr string, out map[string]string) error {
 		}
 
 		if propsRaw, ok := zfsMap["properties"]; ok {
-			propsMap, ok := propsRaw.(map[string]interface{})
+			propsMap, ok := propsRaw.(map[string]any)
 			if !ok {
 				return fmt.Errorf("zfs.properties: expected a map, got %T", propsRaw)
 			}
 			for k, v := range propsMap {
-				// paramZFSPropPrefix = "pillar-csi.bhyoo.com/zfs-prop."
 				out[paramZFSPropPrefix+k] = fmt.Sprintf("%v", v)
 			}
 		}
@@ -298,9 +301,10 @@ func parseBackendOverride(yamlStr string, out map[string]string) error {
 //
 // Returns an error if a blocked structural field is present or the YAML is
 // malformed.
-func parseProtocolOverride(yamlStr string, out map[string]string) error {
-	var raw map[string]interface{}
-	if err := yaml.Unmarshal([]byte(yamlStr), &raw); err != nil {
+func parseProtocolOverride(yamlStr string, out map[string]string) error { //nolint:gocognit,gocyclo // branching
+	var raw map[string]any
+	err := yaml.Unmarshal([]byte(yamlStr), &raw)
+	if err != nil {
 		return fmt.Errorf("YAML parse error: %w", err)
 	}
 	if raw == nil {
@@ -309,7 +313,7 @@ func parseProtocolOverride(yamlStr string, out map[string]string) error {
 
 	// ── NVMe-oF TCP ────────────────────────────────────────────────────────
 	if nvmeofRaw, ok := raw["nvmeofTcp"]; ok {
-		nvmeofMap, ok := nvmeofRaw.(map[string]interface{})
+		nvmeofMap, ok := nvmeofRaw.(map[string]any)
 		if !ok {
 			return fmt.Errorf("nvmeofTcp: expected a map, got %T", nvmeofRaw)
 		}
@@ -333,7 +337,7 @@ func parseProtocolOverride(yamlStr string, out map[string]string) error {
 
 	// ── iSCSI ──────────────────────────────────────────────────────────────
 	if iscsiRaw, ok := raw["iscsi"]; ok {
-		iscsiMap, ok := iscsiRaw.(map[string]interface{})
+		iscsiMap, ok := iscsiRaw.(map[string]any)
 		if !ok {
 			return fmt.Errorf("iscsi: expected a map, got %T", iscsiRaw)
 		}
@@ -370,8 +374,9 @@ func parseProtocolOverride(yamlStr string, out map[string]string) error {
 // Returns an error if fsType is not one of the supported values or the YAML
 // is malformed.
 func parseFSOverride(yamlStr string, out map[string]string) error {
-	var raw map[string]interface{}
-	if err := yaml.Unmarshal([]byte(yamlStr), &raw); err != nil {
+	var raw map[string]any
+	err := yaml.Unmarshal([]byte(yamlStr), &raw)
+	if err != nil {
 		return fmt.Errorf("YAML parse error: %w", err)
 	}
 	if raw == nil {
@@ -383,14 +388,14 @@ func parseFSOverride(yamlStr string, out map[string]string) error {
 		if !ok {
 			return fmt.Errorf("fsType: expected a string, got %T", fsTypeRaw)
 		}
-		if fsType != "ext4" && fsType != "xfs" {
+		if fsType != defaultFsType && fsType != xfsFsType {
 			return fmt.Errorf("unsupported fsType %q: must be \"ext4\" or \"xfs\"", fsType)
 		}
 		out[paramFSType] = fsType
 	}
 
 	if mkfsRaw, ok := raw["mkfsOptions"]; ok {
-		mkfsList, ok := mkfsRaw.([]interface{})
+		mkfsList, ok := mkfsRaw.([]any)
 		if !ok {
 			return fmt.Errorf("mkfsOptions: expected a list, got %T", mkfsRaw)
 		}

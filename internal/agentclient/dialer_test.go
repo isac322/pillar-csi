@@ -35,7 +35,7 @@ import (
 
 // ----------------------------------------------------------------------------
 // Minimal mock AgentServiceServer
-// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------.
 
 // mockAgentServer is a minimal AgentServiceServer used for testing the dialer.
 // Only HealthCheck is overridden; all other RPCs return Unimplemented via the
@@ -75,7 +75,7 @@ var _ agentv1.AgentServiceServer = (*mockAgentServer)(nil)
 
 // ----------------------------------------------------------------------------
 // Test environment helpers
-// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------.
 
 // dialerTestEnv holds all resources for a single test.
 type dialerTestEnv struct {
@@ -97,7 +97,7 @@ func newDialerTestEnv(t *testing.T, mock *mockAgentServer) *dialerTestEnv {
 	grpcSrv := grpc.NewServer()
 	agentv1.RegisterAgentServiceServer(grpcSrv, mock)
 
-	go func() { _ = grpcSrv.Serve(lis) }()
+	go func() { _ = grpcSrv.Serve(lis) }() //nolint:errcheck // gRPC server error is logged by the server itself
 
 	t.Cleanup(func() {
 		grpcSrv.GracefulStop()
@@ -118,7 +118,7 @@ func newManager(t *testing.T) *agentclient.Manager {
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 	)
 	t.Cleanup(func() {
-		_ = m.Close()
+		_ = m.Close() //nolint:errcheck // cleanup errors are non-actionable in test teardown
 	})
 	return m
 }
@@ -133,7 +133,7 @@ func ctx(t *testing.T) context.Context {
 
 // ----------------------------------------------------------------------------
 // Tests
-// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------.
 
 // TestDial_Success verifies that Dial returns a usable AgentServiceClient when
 // the agent is reachable.
@@ -174,7 +174,7 @@ func TestDial_ConnectionReuse(t *testing.T) {
 }
 
 // TestDial_MultipleAddresses verifies that the Manager correctly manages
-// separate connections when different addresses are dialled.
+// separate connections when different addresses are dialed.
 func TestDial_MultipleAddresses(t *testing.T) {
 	env1 := newDialerTestEnv(t, &mockAgentServer{healthy: true})
 	env2 := newDialerTestEnv(t, &mockAgentServer{healthy: false})
@@ -279,8 +279,9 @@ func TestClose_ReleasesConnections(t *testing.T) {
 	}
 
 	// Close the manager.
-	if err := m.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
+	closeErr := m.Close()
+	if closeErr != nil {
+		t.Fatalf("Close: %v", closeErr)
 	}
 
 	// Subsequent Dial must fail.
@@ -315,7 +316,7 @@ func TestDial_ConcurrentSafe(t *testing.T) {
 	errs := make([]error, goroutines)
 
 	var wg sync.WaitGroup
-	for i := 0; i < goroutines; i++ {
+	for i := range goroutines {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
@@ -342,6 +343,6 @@ func TestDial_ConcurrentSafe(t *testing.T) {
 // TestImplementsDialerInterface verifies at runtime that *Manager implements
 // the Dialer interface.  (The compile-time check is in dialer.go; this test
 // makes failures visible in test output too.)
-func TestImplementsDialerInterface(t *testing.T) {
+func TestImplementsDialerInterface(_ *testing.T) {
 	var _ agentclient.Dialer = agentclient.NewManager()
 }

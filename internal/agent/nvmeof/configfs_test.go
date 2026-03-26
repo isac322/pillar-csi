@@ -519,7 +519,7 @@ func TestCreateSubsystem_AclEnabled_True(t *testing.T) {
 		DevicePath:   "/dev/zvol/tank/pvc-acl-on",
 		BindAddress:  "10.0.0.8",
 		Port:         DefaultPort,
-		AclEnabled:   true, // ACL enforced
+		ACLEnabled:   true, // ACL enforced
 	}
 
 	if err := tgt.createSubsystem(); err != nil {
@@ -544,7 +544,7 @@ func TestCreateSubsystem_AclEnabled_False(t *testing.T) {
 		DevicePath:   "/dev/zvol/tank/pvc-acl-off",
 		BindAddress:  "10.0.0.9",
 		Port:         DefaultPort,
-		AclEnabled:   false, // allow any host
+		ACLEnabled:   false, // allow any host
 	}
 
 	if err := tgt.createSubsystem(); err != nil {
@@ -569,7 +569,7 @@ func TestApply_AclEnabled_NoAllowedHosts(t *testing.T) {
 		DevicePath:   "/dev/zvol/tank/pvc-acl-nodelay",
 		BindAddress:  "10.0.0.10",
 		Port:         DefaultPort,
-		AclEnabled:   true,
+		ACLEnabled:   true,
 		AllowedHosts: nil, // no hosts yet
 	}
 

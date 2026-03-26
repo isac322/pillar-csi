@@ -44,7 +44,7 @@ import (
 
 // ─────────────────────────────────────────────────────────────────────────────
 // VolumeContext key constants (mirror unexported controller constants)
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // VolumeContext key constants mirroring the values in internal/csi/controller.go.
 //
@@ -62,7 +62,7 @@ const (
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // assertNoError fails the test immediately if err is non-nil.
 func assertNoError(t *testing.T, err error, msg string) {
@@ -89,7 +89,7 @@ func assertGRPCCode(t *testing.T, err error, want codes.Code, msg string) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIController_CreateVolume — happy path
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIController_CreateVolume verifies that CreateVolume:
 //  1. Calls agent.CreateVolume with the correct volume-ID and capacity.
@@ -98,7 +98,7 @@ func assertGRPCCode(t *testing.T, err error, want codes.Code, msg string) {
 //  3. Returns a VolumeId in the expected "target/protocol/backend/agent-id"
 //     format.
 //  4. Populates VolumeContext with all required connection-parameter keys.
-func TestCSIController_CreateVolume(t *testing.T) {
+func TestCSIController_CreateVolume(t *testing.T) { //nolint:gocyclo // CreateVolume test
 	t.Parallel()
 	env := newCSIControllerE2EEnv(t, "storage-1")
 	ctx := context.Background()
@@ -210,12 +210,12 @@ func TestCSIController_CreateVolume(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIController_CreateVolume_Idempotency
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIController_CreateVolume_Idempotency verifies that calling CreateVolume
 // twice with the same volume name produces identical VolumeIds and
 // VolumeContexts.  The mock agent echoes back the same ExportInfo on both
-// calls, which simulates idempotent agent behaviour.
+// calls, which simulates idempotent agent behavior.
 func TestCSIController_CreateVolume_Idempotency(t *testing.T) {
 	t.Parallel()
 	env := newCSIControllerE2EEnv(t, "storage-1")
@@ -253,7 +253,7 @@ func TestCSIController_CreateVolume_Idempotency(t *testing.T) {
 	// PillarVolume CRD (Ready phase + ExportInfo).  The second call detects the
 	// CRD via loadPillarVolume and returns the cached response without calling
 	// the agent again — this is the correct controller-side idempotency
-	// behaviour introduced by PillarVolume caching.
+	// behavior introduced by PillarVolume caching.
 	env.AgentMock.mu.Lock()
 	createCallCount := len(env.AgentMock.CreateVolumeCalls)
 	exportCallCount := len(env.AgentMock.ExportVolumeCalls)
@@ -269,7 +269,7 @@ func TestCSIController_CreateVolume_Idempotency(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIController_DeleteVolume — happy path
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIController_DeleteVolume verifies that DeleteVolume:
 //  1. Calls agent.UnexportVolume with the correct agent volume ID and protocol.
@@ -369,7 +369,7 @@ func TestCSIController_DeleteVolume_NotFoundIsIdempotent(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIController_DeleteVolume_Idempotency
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIController_DeleteVolume_Idempotency verifies that calling DeleteVolume
 // twice with the same volume ID both succeed.  Per the CSI spec, DeleteVolume
@@ -435,7 +435,7 @@ func TestCSIController_DeleteVolume_Idempotency(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIController_ControllerPublishVolume
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIController_ControllerPublishVolume verifies that ControllerPublishVolume
 // calls agent.AllowInitiator with:
@@ -497,13 +497,13 @@ func TestCSIController_ControllerPublishVolume_Idempotency(t *testing.T) {
 
 	const nodeID = "nqn.2014-08.org.nvmexpress:uuid:worker-1"
 	volumeID := "storage-1/nvmeof-tcp/zfs-zvol/tank/pvc-publish-idempotent"
-	cap := defaultVolumeCapabilities()[0]
+	volCap := defaultVolumeCapabilities()[0]
 
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		_, err := env.Controller.ControllerPublishVolume(ctx, &csi.ControllerPublishVolumeRequest{
 			VolumeId:         volumeID,
 			NodeId:           nodeID,
-			VolumeCapability: cap,
+			VolumeCapability: volCap,
 		})
 		if err != nil {
 			t.Fatalf("ControllerPublishVolume call %d: %v", i+1, err)
@@ -521,7 +521,7 @@ func TestCSIController_ControllerPublishVolume_Idempotency(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIController_ControllerUnpublishVolume
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIController_ControllerUnpublishVolume verifies that ControllerUnpublishVolume
 // calls agent.DenyInitiator with the correct arguments.
@@ -582,7 +582,7 @@ func TestCSIController_ControllerUnpublishVolume_NotFoundIsIdempotent(t *testing
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIController_ControllerExpandVolume
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIController_ControllerExpandVolume verifies that ControllerExpandVolume:
 //  1. Calls agent.ExpandVolume with the parsed agent volume ID and requested bytes.
@@ -631,7 +631,7 @@ func TestCSIController_ControllerExpandVolume(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIController_ValidateVolumeCapabilities
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIController_ValidateVolumeCapabilities verifies that:
 //   - RWO (SINGLE_NODE_WRITER) is confirmed.
@@ -706,7 +706,7 @@ func TestCSIController_ValidateVolumeCapabilities(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIController_FullRoundTrip — CreateVolume → Publish → Unpublish → Delete
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIController_FullRoundTrip exercises the complete volume lifecycle:
 //
@@ -839,7 +839,7 @@ func TestCSIController_FullRoundTrip(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Error path tests
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIController_CreateVolume_MissingParams verifies that CreateVolume
 // returns InvalidArgument when required StorageClass parameters are absent.
@@ -980,7 +980,7 @@ func TestCSIController_ControllerPublishVolume_MissingFields(t *testing.T) {
 	ctx := context.Background()
 
 	volumeID := "storage-1/nvmeof-tcp/zfs-zvol/tank/pvc-pub"
-	cap := defaultVolumeCapabilities()[0]
+	volCap := defaultVolumeCapabilities()[0]
 
 	cases := []struct {
 		name     string
@@ -989,12 +989,12 @@ func TestCSIController_ControllerPublishVolume_MissingFields(t *testing.T) {
 	}{
 		{
 			name:     "missing volume_id",
-			req:      &csi.ControllerPublishVolumeRequest{NodeId: "worker-1", VolumeCapability: cap},
+			req:      &csi.ControllerPublishVolumeRequest{NodeId: "worker-1", VolumeCapability: volCap},
 			wantCode: codes.InvalidArgument,
 		},
 		{
 			name:     "missing node_id",
-			req:      &csi.ControllerPublishVolumeRequest{VolumeId: volumeID, VolumeCapability: cap},
+			req:      &csi.ControllerPublishVolumeRequest{VolumeId: volumeID, VolumeCapability: volCap},
 			wantCode: codes.InvalidArgument,
 		},
 		{

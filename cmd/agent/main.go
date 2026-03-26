@@ -78,7 +78,7 @@ func main() {
 	// mTLS flags.  When all three are provided the agent gRPC server requires
 	// mutual TLS; clients must present a certificate signed by the given CA.
 	// When any flag is omitted the server starts in plaintext mode (Phase 1
-	// behaviour, for backward-compatibility with environments that have not
+	// behavior, for backward-compatibility with environments that have not
 	// yet deployed certificates).
 	tlsCert := flag.String("tls-cert", "",
 		"path to PEM server certificate for mTLS (requires --tls-key and --tls-ca)")

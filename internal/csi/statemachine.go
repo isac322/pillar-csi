@@ -18,7 +18,7 @@ package csi
 
 // Package csi – VolumeStateMachine
 //
-// This file formalises the CSI volume lifecycle as an explicit finite state
+// This file formalizes the CSI volume lifecycle as an explicit finite state
 // machine.  Every CSI controller and node operation must call Transition
 // before executing any privileged work.  Out-of-order or otherwise illegal
 // operations are rejected with a gRPC FailedPrecondition status so that the
@@ -45,6 +45,7 @@ package csi
 
 import (
 	"fmt"
+	"maps"
 	"sync"
 
 	"google.golang.org/grpc/codes"
@@ -53,7 +54,7 @@ import (
 
 // ─────────────────────────────────────────────────────────────────────────────
 // VolumeState
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // VolumeState represents the lifecycle state of a CSI volume.
 type VolumeState int
@@ -70,7 +71,7 @@ const (
 	StateCreated
 
 	// StateControllerPublished means ControllerPublishVolume has succeeded.
-	// The volume's NVMe-oF target (or equivalent) has been authorised to accept
+	// The volume's NVMe-oF target (or equivalent) has been authorized to accept
 	// connections from the target node's initiator NQN.
 	StateControllerPublished
 
@@ -135,7 +136,7 @@ func (s VolumeState) String() string {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // VolumeOperation
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // VolumeOperation identifies a CSI lifecycle operation that drives a state
 // transition.
@@ -193,7 +194,7 @@ const (
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Transition table
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // transitionKey is the lookup key for the transition table.
 type transitionKey struct {
@@ -281,7 +282,7 @@ var legalTransitions = map[transitionKey]transitionResult{
 
 // ─────────────────────────────────────────────────────────────────────────────
 // VolumeStateMachine
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // VolumeStateMachine tracks the lifecycle state of volumes and validates that
 // CSI operations are applied in the correct order.
@@ -406,8 +407,6 @@ func (m *VolumeStateMachine) AllStates() map[string]VolumeState {
 	defer m.mu.RUnlock()
 
 	snapshot := make(map[string]VolumeState, len(m.states))
-	for id, s := range m.states {
-		snapshot[id] = s
-	}
+	maps.Copy(snapshot, m.states)
 	return snapshot
 }

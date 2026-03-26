@@ -87,7 +87,7 @@ func (s *Server) ExportVolume(
 		DevicePath:   devicePath,
 		BindAddress:  params.GetBindAddress(),
 		Port:         params.GetPort(),
-		AclEnabled:   req.GetAclEnabled(),
+		ACLEnabled:   req.GetAclEnabled(),
 	}
 	applyErr := t.Apply()
 	if applyErr != nil {

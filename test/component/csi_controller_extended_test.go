@@ -46,7 +46,7 @@ import (
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Additional test environment helpers
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // newCSIControllerTestEnvNoResolvedAddr creates a ControllerServer backed by a
 // PillarTarget with an empty ResolvedAddress — simulating a target whose agent
@@ -143,7 +143,7 @@ func requireNonOKGRPC(t *testing.T, err error) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Section 4.7 — Input Validation Edge Cases
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIController_ControllerPublishVolume_EmptyVolumeID verifies that an
 // empty VolumeID on ControllerPublishVolume returns InvalidArgument before
@@ -337,7 +337,7 @@ func TestCSIController_ExpandVolume_MalformedVolumeID(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Section 4.8 — PillarTarget State Errors
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIController_CreateVolume_TargetNoResolvedAddress verifies that a
 // PillarTarget with an empty ResolvedAddress causes CreateVolume to return
@@ -462,7 +462,7 @@ func TestCSIController_ExpandVolume_TargetNoResolvedAddress(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Section 4.9 — Partial Failure Recovery and Agent Response Handling
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIController_CreateVolume_ExportFails_RecordsCreatePartial verifies
 // that when the backend CreateVolume succeeds but ExportVolume fails, the
@@ -532,7 +532,9 @@ func TestCSIController_ExpandVolume_AgentReturnsZeroBytes(t *testing.T) {
 
 	const wantBytes = int64(20 << 30) // 20 GiB
 
-	env.agent.expandVolumeFn = func(_ context.Context, _ *agentv1.ExpandVolumeRequest) (*agentv1.ExpandVolumeResponse, error) {
+	env.agent.expandVolumeFn = func(
+		_ context.Context, _ *agentv1.ExpandVolumeRequest,
+	) (*agentv1.ExpandVolumeResponse, error) {
 		// Return zero CapacityBytes to trigger the fallback.
 		return &agentv1.ExpandVolumeResponse{CapacityBytes: 0}, nil
 	}
@@ -560,7 +562,9 @@ func TestCSIErrors_ControllerUnpublish_DenyInitiatorNonNotFound(t *testing.T) {
 	env := newCSIControllerTestEnv(t)
 	ctx := context.Background()
 
-	env.agent.denyInitiatorFn = func(_ context.Context, _ *agentv1.DenyInitiatorRequest) (*agentv1.DenyInitiatorResponse, error) {
+	env.agent.denyInitiatorFn = func(
+		_ context.Context, _ *agentv1.DenyInitiatorRequest,
+	) (*agentv1.DenyInitiatorResponse, error) {
 		return nil, status.Error(codes.Internal, "deny initiator failed: internal error")
 	}
 

@@ -139,11 +139,11 @@ func NewManager() *Manager {
 // NewManagerFromFiles constructs a Manager with mTLS transport credentials
 // loaded from the given PEM-encoded certificate files.
 //
-// certFile is the path to the controller's client certificate (PEM).
-// keyFile is the path to the corresponding private key (PEM).
-// caFile is the path to the CA certificate that signed the agent's server
+// CertFile is the path to the controller's client certificate (PEM).
+// KeyFile is the path to the corresponding private key (PEM).
+// CaFile is the path to the CA certificate that signed the agent's server
 // certificate (PEM).
-// serverName overrides the TLS server-name used for SAN verification; pass
+// ServerName overrides the TLS server-name used for SAN verification; pass
 // an empty string to derive the server name from the dial target address
 // (typically the agent IP or hostname from PillarTarget.status.resolvedAddress).
 //
@@ -211,8 +211,8 @@ func defaultDialOptions() []grpc.DialOption {
 // gRPC library manages the underlying TCP connection, performing reconnects
 // automatically if the server becomes temporarily unavailable.
 //
-// address must be a host:port string, e.g. "192.168.1.10:9500".
-func (m *Manager) Dial(ctx context.Context, address string) (agentv1.AgentServiceClient, error) {
+// Address must be a host:port string, e.g. "192.168.1.10:9500".
+func (m *Manager) Dial(_ context.Context, address string) (agentv1.AgentServiceClient, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -226,8 +226,9 @@ func (m *Manager) Dial(ctx context.Context, address string) (agentv1.AgentServic
 
 	// grpc.NewClient (formerly grpc.DialContext) does not block on connection
 	// establishment when grpc.WithBlock is absent — the underlying TCP handshake
-	// happens in the background.  The context is used only during this call, not
-	// for the lifetime of the connection.
+	// happens in the background.  The context parameter is not consumed here
+	// because grpc.NewClient does not accept a context; it is retained in the
+	// interface signature for consistency with callers that use it for timeouts.
 	conn, err := grpc.NewClient(address, m.dialOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("agentclient: dial %q: %w", address, err)
@@ -301,7 +302,8 @@ func (m *Manager) Close() error {
 
 	var firstErr error
 	for addr, entry := range m.conns {
-		if err := entry.conn.Close(); err != nil && firstErr == nil {
+		err := entry.conn.Close()
+		if err != nil && firstErr == nil {
 			firstErr = fmt.Errorf("agentclient: close connection to %q: %w", addr, err)
 		}
 	}

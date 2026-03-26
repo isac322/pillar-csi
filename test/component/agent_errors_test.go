@@ -67,7 +67,7 @@ func newAgentServerWithCfgRoot(
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestAgentErrors_ExportVolume_ContextCancelledDuringPoll
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestAgentErrors_ExportVolume_ContextCancelledDuringPoll verifies that
 // ExportVolume respects context cancellation during the device-poll loop.
@@ -104,7 +104,7 @@ func TestAgentErrors_ExportVolume_ContextCancelledDuringPoll(t *testing.T) {
 	elapsed := time.Since(start)
 
 	if err == nil {
-		t.Fatal("expected error from context-cancelled device poll, got nil")
+		t.Fatal("expected error from context-canceled device poll, got nil")
 	}
 
 	// Must terminate well before the 10 s internal timeout.
@@ -123,7 +123,7 @@ func TestAgentErrors_ExportVolume_ContextCancelledDuringPoll(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestAgentErrors_ExportVolume_ConfigfsBrokenAfterDeviceCheck_TOCTOU
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestAgentErrors_ExportVolume_ConfigfsBrokenAfterDeviceCheck_TOCTOU
 // simulates a TOCTOU (time-of-check to time-of-use) race where:
@@ -151,7 +151,7 @@ func TestAgentErrors_ExportVolume_ConfigfsBrokenAfterDeviceCheck_TOCTOU(t *testi
 	// WaitForDevice passes (AlwaysPresentChecker), then Apply fails because it
 	// cannot create the subsystem subdirectory.
 	subsystemsDir := filepath.Join(cfgRoot, "nvmet", "subsystems")
-	if err := os.MkdirAll(subsystemsDir, 0o755); err != nil {
+	if err := os.MkdirAll(subsystemsDir, 0o750); err != nil {
 		t.Fatalf("MkdirAll subsystemsDir: %v", err)
 	}
 	makeReadOnly(t, subsystemsDir) // auto-skips as root; restores on cleanup
@@ -182,7 +182,7 @@ func TestAgentErrors_ExportVolume_ConfigfsBrokenAfterDeviceCheck_TOCTOU(t *testi
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestAgentErrors_CreateVolume_EmptyVolumeID
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestAgentErrors_CreateVolume_EmptyVolumeID verifies that CreateVolume
 // rejects an empty VolumeId with InvalidArgument before calling the backend.
@@ -209,7 +209,7 @@ func TestAgentErrors_CreateVolume_EmptyVolumeID(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestAgentErrors_DeleteVolume_EmptyVolumeID
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestAgentErrors_DeleteVolume_EmptyVolumeID verifies that DeleteVolume
 // rejects an empty VolumeId with InvalidArgument.
@@ -232,7 +232,7 @@ func TestAgentErrors_DeleteVolume_EmptyVolumeID(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestAgentErrors_ExpandVolume_EmptyVolumeID
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestAgentErrors_ExpandVolume_EmptyVolumeID verifies that ExpandVolume
 // rejects an empty VolumeId with InvalidArgument.
@@ -256,7 +256,7 @@ func TestAgentErrors_ExpandVolume_EmptyVolumeID(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestAgentErrors_ExpandVolume_ShrinkRejected_PropagatesAsInternal
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestAgentErrors_ExpandVolume_ShrinkRejected_PropagatesAsInternal verifies
 // that when the ZFS backend rejects a shrink attempt with a descriptive error,
@@ -293,7 +293,7 @@ func TestAgentErrors_ExpandVolume_ShrinkRejected_PropagatesAsInternal(t *testing
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestAgentErrors_CreateVolume_BackendContextError
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestAgentErrors_CreateVolume_BackendContextError verifies the behavior when
 // the backend returns a context error (simulating a ZFS operation that times
@@ -328,7 +328,7 @@ func TestAgentErrors_CreateVolume_BackendContextError(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestAgentErrors_ExportVolume_InvalidProtocol_NoConfigfsSideEffects
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestAgentErrors_ExportVolume_InvalidProtocol_NoConfigfsSideEffects verifies
 // that an unsupported protocol type is rejected before touching configfs.
@@ -363,7 +363,7 @@ func TestAgentErrors_ExportVolume_InvalidProtocol_NoConfigfsSideEffects(t *testi
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestAgentErrors_AllowInitiator_InvalidProtocol
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestAgentErrors_AllowInitiator_InvalidProtocol verifies that AllowInitiator
 // with an unsupported protocol type returns Unimplemented without touching
@@ -396,7 +396,7 @@ func TestAgentErrors_AllowInitiator_InvalidProtocol(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestAgentErrors_DenyInitiator_InvalidProtocol
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestAgentErrors_DenyInitiator_InvalidProtocol verifies that DenyInitiator
 // with an unsupported protocol type returns Unimplemented.
@@ -422,7 +422,7 @@ func TestAgentErrors_DenyInitiator_InvalidProtocol(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestAgentErrors_UnexportVolume_InvalidProtocol
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestAgentErrors_UnexportVolume_InvalidProtocol verifies that UnexportVolume
 // with an unsupported protocol type returns Unimplemented immediately.
@@ -447,7 +447,7 @@ func TestAgentErrors_UnexportVolume_InvalidProtocol(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestAgentErrors_CreateVolume_DiskFullPropagation
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestAgentErrors_CreateVolume_DiskFullPropagation verifies that the
 // "out of space" backend error is propagated as a non-OK gRPC status with
@@ -483,7 +483,7 @@ func TestAgentErrors_CreateVolume_DiskFullPropagation(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestAgentErrors_ExportVolume_MissingNvmeofTcpParams
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestAgentErrors_ExportVolume_MissingNvmeofTcpParams verifies that
 // ExportVolume with a nil NvmeofTcp params struct inside a non-nil ExportParams

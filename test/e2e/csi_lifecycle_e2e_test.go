@@ -66,7 +66,7 @@ import (
 
 // ─────────────────────────────────────────────────────────────────────────────
 // csiLifecycleEnv
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // csiLifecycleEnv combines a CSI ControllerServer and a CSI NodeServer that
 // share a single mockAgentServer so the full cross-component volume lifecycle
@@ -111,7 +111,9 @@ type csiLifecycleEnv struct {
 //
 //   - targetName is the PillarTarget name (e.g. "storage-1")
 //   - nodeID is the Kubernetes node name (e.g. "worker-1")
-func newCSILifecycleEnv(t *testing.T, targetName, nodeID string) *csiLifecycleEnv {
+func newCSILifecycleEnv(
+	t *testing.T, targetName, nodeID string, //nolint:unparam // targetName kept for API clarity
+) *csiLifecycleEnv {
 	t.Helper()
 
 	// Build the controller environment (includes the mock agent gRPC listener).
@@ -169,7 +171,7 @@ func (e *csiLifecycleEnv) defaultLifecycleCreateParams() map[string]string {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSILifecycle_FullCycle
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSILifecycle_FullCycle exercises the complete CSI volume lifecycle through
 // the Controller→Agent→Node component chain:
@@ -186,7 +188,7 @@ func (e *csiLifecycleEnv) defaultLifecycleCreateParams() map[string]string {
 //     exact NQN from the ExportInfo.
 //  3. All expected agent RPCs are called exactly once in the correct order.
 //  4. The NodeServer's mount table reflects correct staged/published/cleaned state.
-func TestCSILifecycle_FullCycle(t *testing.T) {
+func TestCSILifecycle_FullCycle(t *testing.T) { //nolint:gocognit,gocyclo // full lifecycle test
 	t.Parallel()
 	env := newCSILifecycleEnv(t, "storage-1", "worker-1")
 	ctx := context.Background()
@@ -430,7 +432,7 @@ func TestCSILifecycle_FullCycle(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSILifecycle_OrderingConstraints
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSILifecycle_OrderingConstraints verifies that the cross-component
 // ordering dependencies between controller and node operations are maintained.
@@ -446,7 +448,7 @@ func TestCSILifecycle_FullCycle(t *testing.T) {
 // This test exercises the correct order and verifies that each step leaves
 // the system in the expected observable state (connector calls, mount table,
 // agent call sequence).
-func TestCSILifecycle_OrderingConstraints(t *testing.T) {
+func TestCSILifecycle_OrderingConstraints(t *testing.T) { //nolint:gocyclo // ordering test
 	t.Parallel()
 	env := newCSILifecycleEnv(t, "storage-1", "worker-1")
 	ctx := context.Background()
@@ -529,10 +531,10 @@ func TestCSILifecycle_OrderingConstraints(t *testing.T) {
 	}
 
 	// After unpublish: target path unmounted, staging path still mounted.
-	if mounted, _ := env.Mounter.IsMounted(targetPath); mounted {
+	if mounted, _ := env.Mounter.IsMounted(targetPath); mounted { //nolint:errcheck // non-actionable in test assertion
 		t.Error("[Phase 5] target path still mounted after NodeUnpublishVolume")
 	}
-	if mounted, _ := env.Mounter.IsMounted(stagingPath); !mounted {
+	if mounted, _ := env.Mounter.IsMounted(stagingPath); !mounted { //nolint:errcheck // non-actionable in test assertion
 		t.Error("[Phase 5] staging path should still be mounted after NodeUnpublishVolume")
 	}
 
@@ -545,7 +547,7 @@ func TestCSILifecycle_OrderingConstraints(t *testing.T) {
 	}
 
 	// After unstage: staging path unmounted, NVMe-oF disconnected.
-	if mounted, _ := env.Mounter.IsMounted(stagingPath); mounted {
+	if mounted, _ := env.Mounter.IsMounted(stagingPath); mounted { //nolint:errcheck // non-actionable in test assertion
 		t.Error("[Phase 6] staging path still mounted after NodeUnstageVolume")
 	}
 
@@ -594,7 +596,7 @@ func TestCSILifecycle_OrderingConstraints(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSILifecycle_IdempotentSteps
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSILifecycle_IdempotentSteps verifies that every step in the CSI lifecycle
 // can be called twice with identical arguments without returning an error.
@@ -713,7 +715,7 @@ func TestCSILifecycle_IdempotentSteps(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSILifecycle_VolumeContextFlowThrough
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSILifecycle_VolumeContextFlowThrough verifies that the VolumeContext
 // produced by CreateVolume is sufficient — without any key renaming — for

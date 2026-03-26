@@ -514,7 +514,7 @@ func buildStorageClassParams(
 			// emitted explicitly so that a future protocol update that flips
 			// the field from false back to true is reflected in the StorageClass.
 			if protocol.Spec.NVMeOFTCP.ACL {
-				params["pillar-csi.bhyoo.com/acl-enabled"] = "true"
+				params["pillar-csi.bhyoo.com/acl-enabled"] = labelValueTrue
 			} else {
 				params["pillar-csi.bhyoo.com/acl-enabled"] = "false"
 			}
@@ -524,7 +524,7 @@ func buildStorageClassParams(
 			params["pillar-csi.bhyoo.com/iscsi-port"] = fmt.Sprintf("%d", protocol.Spec.ISCSI.Port)
 			// Same ACL toggle for iSCSI (initiator IQN-based access control).
 			if protocol.Spec.ISCSI.ACL {
-				params["pillar-csi.bhyoo.com/acl-enabled"] = "true"
+				params["pillar-csi.bhyoo.com/acl-enabled"] = labelValueTrue
 			} else {
 				params["pillar-csi.bhyoo.com/acl-enabled"] = "false"
 			}

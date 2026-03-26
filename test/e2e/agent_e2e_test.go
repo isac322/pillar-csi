@@ -30,6 +30,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"google.golang.org/grpc"
@@ -44,7 +45,7 @@ import (
 
 // ----------------------------------------------------------------------------
 // Mock backend
-// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------.
 
 // agentE2EMockBackend is a test double for backend.VolumeBackend.  It returns
 // configurable values for each method and records calls for verification.
@@ -67,7 +68,7 @@ func (m *agentE2EMockBackend) Create(
 	_ string,
 	capacityBytes int64,
 	_ *agentv1.ZfsVolumeParams,
-) (string, int64, error) {
+) (devicePath string, allocatedBytes int64, err error) {
 	if m.createErr != nil {
 		return "", 0, m.createErr
 	}
@@ -85,14 +86,16 @@ func (m *agentE2EMockBackend) Expand(_ context.Context, _ string, requested int6
 	return requested, nil
 }
 
-func (m *agentE2EMockBackend) Capacity(_ context.Context) (int64, int64, error) {
+func (m *agentE2EMockBackend) Capacity(_ context.Context) (total, avail int64, err error) {
 	if m.capacityErr != nil {
 		return 0, 0, m.capacityErr
 	}
 	return m.totalBytes, m.availBytes, nil
 }
 
-func (m *agentE2EMockBackend) ListVolumes(_ context.Context) ([]*agentv1.VolumeInfo, error) {
+func (*agentE2EMockBackend) ListVolumes(
+	_ context.Context,
+) ([]*agentv1.VolumeInfo, error) {
 	return nil, nil
 }
 
@@ -105,7 +108,7 @@ var _ backend.VolumeBackend = (*agentE2EMockBackend)(nil)
 
 // ----------------------------------------------------------------------------
 // Test helpers
-// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------.
 
 // agentE2EEnv holds all the resources needed for a single e2e test case.
 type agentE2EEnv struct {
@@ -139,7 +142,7 @@ func newAgentE2EEnv(t *testing.T, mock *agentE2EMockBackend) *agentE2EEnv {
 	grpcSrv := grpc.NewServer()
 	agentSrv.Register(grpcSrv)
 
-	go func() { _ = grpcSrv.Serve(lis) }()
+	go func() { _ = grpcSrv.Serve(lis) }() //nolint:errcheck // server errors are non-actionable in test setup
 
 	conn, err := grpc.NewClient(
 		lis.Addr().String(),
@@ -158,7 +161,7 @@ func newAgentE2EEnv(t *testing.T, mock *agentE2EMockBackend) *agentE2EEnv {
 	}
 
 	t.Cleanup(func() {
-		conn.Close() //nolint:errcheck
+		conn.Close() //nolint:errcheck,gosec // G104: conn.Close error is non-actionable in test cleanup
 		grpcSrv.GracefulStop()
 	})
 
@@ -179,7 +182,9 @@ func createFakeDevice(t *testing.T, name string) string {
 }
 
 // nvmeofTCPExportParams builds an NvmeofTcpExportParams-wrapped ExportParams.
-func nvmeofTCPExportParams(addr string, port int32) *agentv1.ExportParams {
+func nvmeofTCPExportParams(
+	addr string, port int32, //nolint:unparam // port is kept for API clarity
+) *agentv1.ExportParams {
 	return &agentv1.ExportParams{
 		Params: &agentv1.ExportParams_NvmeofTcp{
 			NvmeofTcp: &agentv1.NvmeofTcpExportParams{
@@ -201,7 +206,7 @@ func subsystemNames(ss []*agentv1.SubsystemStatus) []string {
 
 // ----------------------------------------------------------------------------
 // TestAgent_GetCapabilities
-// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------.
 
 // TestAgent_GetCapabilities verifies that the agent reports ZFS_ZVOL as the
 // supported backend and NVMe-oF TCP as the supported protocol, and that it
@@ -266,7 +271,7 @@ func TestAgent_GetCapabilities(t *testing.T) {
 
 // ----------------------------------------------------------------------------
 // TestAgent_HealthCheck
-// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------.
 
 // TestAgent_HealthCheck verifies that HealthCheck returns a structurally valid
 // response with named subsystem entries.  The test pre-creates the nvmet
@@ -305,13 +310,7 @@ func TestAgent_HealthCheck(t *testing.T) {
 	names := subsystemNames(subsystems)
 	wantNames := []string{"zfs_module", "nvmet_configfs", "pool/tank"}
 	for _, want := range wantNames {
-		found := false
-		for _, got := range names {
-			if got == want {
-				found = true
-				break
-			}
-		}
+		found := slices.Contains(names, want)
 		if !found {
 			t.Errorf("subsystem %q not found in %v", want, names)
 		}
@@ -335,7 +334,7 @@ func TestAgent_HealthCheck(t *testing.T) {
 
 // ----------------------------------------------------------------------------
 // TestAgent_RoundTrip
-// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------.
 
 // TestAgent_RoundTrip exercises the full Phase 1 volume lifecycle over a real
 // gRPC connection:
@@ -464,7 +463,7 @@ func TestAgent_RoundTrip(t *testing.T) {
 
 // ----------------------------------------------------------------------------
 // TestAgent_ReconcileStateRestoresExports
-// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------.
 
 // TestAgent_ReconcileStateRestoresExports simulates an agent restart.
 //
@@ -573,7 +572,7 @@ func TestAgent_ReconcileStateRestoresExports(t *testing.T) {
 
 // ----------------------------------------------------------------------------
 // TestAgent_ErrorHandling
-// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------.
 
 // TestAgent_ErrorHandling verifies that the agent returns correct gRPC status
 // codes for common error conditions.
@@ -694,7 +693,7 @@ func requireCode(t *testing.T, err error, want codes.Code) {
 
 // ----------------------------------------------------------------------------
 // TestAgent_AllPhase1RPCs
-// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------.
 
 // TestAgent_AllPhase1RPCs verifies that every Phase 1 RPC is reachable and
 // returns a non-nil response (no "unimplemented" default handler).  It does

@@ -42,7 +42,7 @@ import (
 
 // ─────────────────────────────────────────────────────────────────────────────
 // helpers
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // mustTransition calls sm.Transition and fails the test on error.
 func mustTransition(t *testing.T, sm *VolumeStateMachine, volID string, op VolumeOperation) bool {
@@ -82,7 +82,7 @@ func assertFailedPrecondition(t *testing.T, sm *VolumeStateMachine, volID string
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestVolumeStateMachine_HappyPath: every legal non-noop transition
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 func TestVolumeStateMachine_HappyPath(t *testing.T) {
 	t.Parallel()
@@ -157,7 +157,7 @@ func TestVolumeStateMachine_HappyPath(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestVolumeStateMachine_IdempotentTransitions: noop for already-done states
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 func TestVolumeStateMachine_IdempotentTransitions(t *testing.T) {
 	t.Parallel()
@@ -177,7 +177,7 @@ func TestVolumeStateMachine_IdempotentTransitions(t *testing.T) {
 		},
 		{
 			name: "DeleteVolume/already_nonexistent",
-			setup: func(sm *VolumeStateMachine, vol string) {
+			setup: func(_ *VolumeStateMachine, _ string) {
 				// No setup; volume starts at NonExistent.
 			},
 			op:        OpDeleteVolume,
@@ -265,7 +265,7 @@ func TestVolumeStateMachine_IdempotentTransitions(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestVolumeStateMachine_PartialFailure: NodeStagePartial state
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 func TestVolumeStateMachine_PartialFailure_RetrySucceeds(t *testing.T) {
 	t.Parallel()
@@ -334,7 +334,7 @@ func TestVolumeStateMachine_PartialFailure_ForceStateAfterMountSuccess(t *testin
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestVolumeStateMachine_IllegalTransitions: must return FailedPrecondition
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 func TestVolumeStateMachine_IllegalTransitions(t *testing.T) {
 	t.Parallel()
@@ -346,27 +346,27 @@ func TestVolumeStateMachine_IllegalTransitions(t *testing.T) {
 		// ── Operations on NonExistent volume ─────────────────────────────────
 		{
 			name:  "ControllerPublish/NonExistent",
-			setup: func(sm *VolumeStateMachine, vol string) {},
+			setup: func(_ *VolumeStateMachine, _ string) {},
 			op:    OpControllerPublish,
 		},
 		{
 			name:  "NodeStage/NonExistent",
-			setup: func(sm *VolumeStateMachine, vol string) {},
+			setup: func(_ *VolumeStateMachine, _ string) {},
 			op:    OpNodeStage,
 		},
 		{
 			name:  "NodePublish/NonExistent",
-			setup: func(sm *VolumeStateMachine, vol string) {},
+			setup: func(_ *VolumeStateMachine, _ string) {},
 			op:    OpNodePublish,
 		},
 		{
 			name:  "NodeUnstage/NonExistent",
-			setup: func(sm *VolumeStateMachine, vol string) {},
+			setup: func(_ *VolumeStateMachine, _ string) {},
 			op:    OpNodeUnstage,
 		},
 		{
 			name:  "NodeUnpublish/NonExistent",
-			setup: func(sm *VolumeStateMachine, vol string) {},
+			setup: func(_ *VolumeStateMachine, _ string) {},
 			op:    OpNodeUnpublish,
 		},
 
@@ -485,7 +485,7 @@ func TestVolumeStateMachine_IllegalTransitions(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestVolumeStateMachine_MultipleVolumes: independent tracking per volume ID
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 func TestVolumeStateMachine_MultipleVolumes(t *testing.T) {
 	t.Parallel()
@@ -514,7 +514,7 @@ func TestVolumeStateMachine_MultipleVolumes(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestVolumeStateMachine_AllStates: snapshot reflects current state
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 func TestVolumeStateMachine_AllStates(t *testing.T) {
 	t.Parallel()
@@ -547,7 +547,7 @@ func TestVolumeStateMachine_AllStates(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestVolumeStateMachine_ForceState: bypass validation for recovery
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 func TestVolumeStateMachine_ForceState(t *testing.T) {
 	t.Parallel()
@@ -569,7 +569,7 @@ func TestVolumeStateMachine_ForceState(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestVolumeStateMachine_ConcurrentSafety: no data races
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 func TestVolumeStateMachine_ConcurrentSafety(t *testing.T) {
 	t.Parallel()
@@ -584,10 +584,10 @@ func TestVolumeStateMachine_ConcurrentSafety(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(goroutines)
 
-	for i := 0; i < goroutines; i++ {
+	for i := range goroutines {
 		go func(id int) {
 			defer wg.Done()
-			for j := 0; j < volsPerGoroutine; j++ {
+			for j := range volsPerGoroutine {
 				vol := fmt.Sprintf("pvc-concurrent-%d-%d", id, j)
 				mustTransition(t, sm, vol, OpCreateVolume)
 				mustTransition(t, sm, vol, OpControllerPublish)
@@ -612,7 +612,7 @@ func TestVolumeStateMachine_ConcurrentSafety(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestVolumeState_String: human-readable labels
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 func TestVolumeState_String(t *testing.T) {
 	t.Parallel()
@@ -638,7 +638,7 @@ func TestVolumeState_String(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestVolumeStateMachine_ErrorMessageContent: error messages are informative
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 func TestVolumeStateMachine_ErrorMessageContent(t *testing.T) {
 	t.Parallel()
@@ -660,7 +660,7 @@ func TestVolumeStateMachine_ErrorMessageContent(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestVolumeStateMachine_CreatePartial: partial-failure within CreateVolume
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestVolumeStateMachine_CreatePartial_BackendSucceeds verifies that the
 // OpCreateVolumeBackend pseudo-operation drives a new volume into
@@ -815,7 +815,7 @@ func TestVolumeState_String_CreatePartial(t *testing.T) {
 // containsSubstring is a simple string containment helper to avoid importing
 // the strings package just for tests.
 func containsSubstring(s, sub string) bool {
-	if len(sub) == 0 {
+	if sub == "" {
 		return true
 	}
 	for i := 0; i <= len(s)-len(sub); i++ {

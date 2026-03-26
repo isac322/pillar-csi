@@ -44,7 +44,7 @@ import (
 
 // ---------------------------------------------------------------------------
 // Disk-full error paths
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------.
 
 // TestZFSBackend_Error_DiskFull_Expand validates that an ENOSPC error returned
 // by 'zfs set volsize' during zvol expansion is propagated as a non-nil error.
@@ -73,7 +73,7 @@ func TestZFSBackend_Error_DiskFull_Expand(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // Device-busy error path
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------.
 
 // TestZFSBackend_Error_DeviceBusy_ExpandFails validates that a "device busy"
 // error when expanding a zvol that is still open by a kernel consumer (e.g.
@@ -101,10 +101,10 @@ func TestZFSBackend_Error_DeviceBusy_ExpandFails(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // Invalid ZFS properties
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------.
 
 // TestZFSBackend_Error_InvalidProperties validates that a creation request
-// with an unrecognised ZFS property name propagates the rejection from zfs(8).
+// with an unrecognized ZFS property name propagates the rejection from zfs(8).
 //
 // The backend forwards properties verbatim to 'zfs create -o <key>=<value>'.
 // When zfs(8) rejects the property, the error must reach the caller so that
@@ -150,7 +150,7 @@ func TestZFSBackend_Error_InvalidProperties(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // Pool-offline error paths
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------.
 
 // TestZFSBackend_Error_PoolOffline_ListVolumes validates that a pool-unavailable
 // error from 'zfs list' is returned as an error (not silently treated as an empty list).
@@ -196,7 +196,7 @@ func TestZFSBackend_Error_PoolFaulted_Capacity(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // Post-operation readback failures
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------.
 
 // TestZFSBackend_Error_CreateReadback_DatasetGone validates that a failure of
 // the post-create volsize readback propagates as an error.
@@ -252,15 +252,15 @@ func TestZFSBackend_Error_ExpandReadback_PoolFailed(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // Context cancellation / deadline propagation
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------.
 
 // TestZFSBackend_Error_ContextCancelled_Delete validates that Delete returns
-// promptly when the caller's context is cancelled before the ZFS command completes.
+// promptly when the caller's context is canceled before the ZFS command completes.
 //
 // A blocked 'zfs destroy' (e.g. due to a hung pool I/O path) must not cause
-// the agent to hang indefinitely — it must honour context cancellation.
+// the agent to hang indefinitely — it must honor context cancellation.
 //
-//	Setup:   executor blocks on ctx.Done(); context pre-cancelled
+//	Setup:   executor blocks on ctx.Done(); context pre-canceled
 //	Expect:  Delete returns non-nil error wrapping context.Canceled
 func TestZFSBackend_Error_ContextCancelled_Delete(t *testing.T) {
 	t.Parallel()
@@ -283,9 +283,9 @@ func TestZFSBackend_Error_ContextCancelled_Delete(t *testing.T) {
 }
 
 // TestZFSBackend_Error_ContextCancelled_Expand validates that Expand returns
-// promptly when the caller's context is cancelled before 'zfs set volsize' completes.
+// promptly when the caller's context is canceled before 'zfs set volsize' completes.
 //
-//	Setup:   executor blocks on ctx.Done(); context pre-cancelled
+//	Setup:   executor blocks on ctx.Done(); context pre-canceled
 //	Expect:  Expand returns non-nil error wrapping context.Canceled
 func TestZFSBackend_Error_ContextCancelled_Expand(t *testing.T) {
 	t.Parallel()
@@ -308,13 +308,13 @@ func TestZFSBackend_Error_ContextCancelled_Expand(t *testing.T) {
 }
 
 // TestZFSBackend_Error_ContextCancelled_ListVolumes validates that ListVolumes
-// returns promptly when the caller's context is cancelled before
+// returns promptly when the caller's context is canceled before
 // 'zfs list' completes.
 //
 // A hung pool I/O path can cause 'zfs list' to block indefinitely; the
-// backend must honour context cancellation so that the agent is not stuck.
+// backend must honor context cancellation so that the agent is not stuck.
 //
-//	Setup:   executor blocks on ctx.Done(); context pre-cancelled
+//	Setup:   executor blocks on ctx.Done(); context pre-canceled
 //	Expect:  ListVolumes returns non-nil error wrapping context.Canceled
 //
 // See TESTCASES.md §2.7, row 38.
@@ -339,13 +339,13 @@ func TestZFSBackend_Error_ContextCancelled_ListVolumes(t *testing.T) {
 }
 
 // TestZFSBackend_Error_ContextCancelled_Capacity validates that Capacity
-// returns promptly when the caller's context is cancelled before
+// returns promptly when the caller's context is canceled before
 // 'zpool list' completes.
 //
 // A pool I/O stall can cause 'zpool list' to block indefinitely; the
-// backend must honour context cancellation to avoid agent hangs.
+// backend must honor context cancellation to avoid agent hangs.
 //
-//	Setup:   executor blocks on ctx.Done(); context pre-cancelled
+//	Setup:   executor blocks on ctx.Done(); context pre-canceled
 //	Expect:  Capacity returns non-nil error wrapping context.Canceled
 //
 // See TESTCASES.md §2.7, row 39.

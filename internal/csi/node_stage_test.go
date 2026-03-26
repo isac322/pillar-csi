@@ -37,7 +37,7 @@ import (
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Mock Connector
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // mockConnector is a test double for the Connector interface.
 // It records every call and returns pre-programmed responses.
@@ -86,7 +86,7 @@ var _ Connector = (*mockConnector)(nil)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Mock Mounter
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // mockMounter is a test double for the Mounter interface.
 // It records every call and maintains a simple in-memory mount table.
@@ -159,7 +159,7 @@ var _ Mounter = (*mockMounter)(nil)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Test helpers
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // nodeTestEnv holds the pieces needed for a single node service test.
 type nodeTestEnv struct {
@@ -179,11 +179,12 @@ func newNodeTestEnv(t *testing.T) *nodeTestEnv {
 }
 
 // mountVolumeContext returns a VolumeContext map with the three required keys.
-func mountVolumeContext(nqn, addr, port string) map[string]string {
+// Port is always "4420" (the IANA-assigned NVMe-oF port used in all tests).
+func mountVolumeContext(nqn, addr string) map[string]string {
 	return map[string]string{
 		VolumeContextKeyTargetNQN: nqn,
 		VolumeContextKeyAddress:   addr,
-		VolumeContextKeyPort:      port,
+		VolumeContextKeyPort:      "4420",
 	}
 }
 
@@ -228,7 +229,7 @@ func requireGRPCCode(t *testing.T, err error, want codes.Code) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestNodeStageVolume_* – happy-path and validation tests
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestNodeStageVolume_MountAccess exercises the MOUNT access type: after
 // NodeStageVolume the staging path should be mounted and a state file written.
@@ -248,7 +249,7 @@ func TestNodeStageVolume_MountAccess(t *testing.T) {
 		VolumeId:          volumeID,
 		StagingTargetPath: stagingPath,
 		VolumeCapability:  mountCap("ext4"),
-		VolumeContext:     mountVolumeContext(nqn, addr, port),
+		VolumeContext:     mountVolumeContext(nqn, addr),
 	})
 	if err != nil {
 		t.Fatalf("NodeStageVolume: %v", err)
@@ -270,7 +271,7 @@ func TestNodeStageVolume_MountAccess(t *testing.T) {
 	}
 
 	// Staging path must be mounted.
-	mounted, _ := env.mounter.IsMounted(stagingPath)
+	mounted, _ := env.mounter.IsMounted(stagingPath) //nolint:errcheck // mock never returns an error
 	if !mounted {
 		t.Error("staging path not mounted after NodeStageVolume")
 	}
@@ -315,7 +316,7 @@ func TestNodeStageVolume_DefaultFsType(t *testing.T) {
 		VolumeId:          "tank/pvc-fs-default",
 		StagingTargetPath: stagingPath,
 		VolumeCapability:  mountCap(""), // empty fsType
-		VolumeContext:     mountVolumeContext("nqn.test:vol", "10.0.0.1", "4420"),
+		VolumeContext:     mountVolumeContext("nqn.test:vol", "10.0.0.1"),
 	})
 	if err != nil {
 		t.Fatalf("NodeStageVolume: %v", err)
@@ -342,7 +343,7 @@ func TestNodeStageVolume_BlockAccess(t *testing.T) {
 		VolumeId:          "tank/pvc-block",
 		StagingTargetPath: stagingPath,
 		VolumeCapability:  blockCap(),
-		VolumeContext:     mountVolumeContext(nqn, "10.0.0.1", "4420"),
+		VolumeContext:     mountVolumeContext(nqn, "10.0.0.1"),
 	})
 	if err != nil {
 		t.Fatalf("NodeStageVolume (block): %v", err)
@@ -383,7 +384,7 @@ func TestNodeStageVolume_Idempotent(t *testing.T) {
 		VolumeId:          "tank/pvc-idem",
 		StagingTargetPath: stagingPath,
 		VolumeCapability:  mountCap("ext4"),
-		VolumeContext:     mountVolumeContext("nqn.test:idem", "10.0.0.1", "4420"),
+		VolumeContext:     mountVolumeContext("nqn.test:idem", "10.0.0.1"),
 	}
 
 	// First call: performs full staging.
@@ -418,7 +419,7 @@ func TestNodeStageVolume_IdempotentAfterUnmount(t *testing.T) {
 		VolumeId:          volumeID,
 		StagingTargetPath: stagingPath,
 		VolumeCapability:  mountCap("xfs"),
-		VolumeContext:     mountVolumeContext("nqn.test:remount", "10.0.0.2", "4420"),
+		VolumeContext:     mountVolumeContext("nqn.test:remount", "10.0.0.2"),
 	}
 
 	// Initial stage.
@@ -435,7 +436,7 @@ func TestNodeStageVolume_IdempotentAfterUnmount(t *testing.T) {
 	if _, err := env.srv.NodeStageVolume(context.Background(), req); err != nil {
 		t.Fatalf("re-stage: %v", err)
 	}
-	mounted, _ := env.mounter.IsMounted(stagingPath)
+	mounted, _ := env.mounter.IsMounted(stagingPath) //nolint:errcheck // mock never returns an error
 	if !mounted {
 		t.Error("staging path not mounted after re-stage")
 	}
@@ -446,7 +447,7 @@ func TestNodeStageVolume_IdempotentAfterUnmount(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestNodeStageVolume_* – validation / error tests
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 func TestNodeStageVolume_MissingVolumeID(t *testing.T) {
 	t.Parallel()
@@ -454,7 +455,7 @@ func TestNodeStageVolume_MissingVolumeID(t *testing.T) {
 	_, err := env.srv.NodeStageVolume(context.Background(), &csi.NodeStageVolumeRequest{
 		StagingTargetPath: "/mnt/stage",
 		VolumeCapability:  mountCap("ext4"),
-		VolumeContext:     mountVolumeContext("nqn.test:x", "10.0.0.1", "4420"),
+		VolumeContext:     mountVolumeContext("nqn.test:x", "10.0.0.1"),
 	})
 	requireGRPCCode(t, err, codes.InvalidArgument)
 }
@@ -465,7 +466,7 @@ func TestNodeStageVolume_MissingStagingPath(t *testing.T) {
 	_, err := env.srv.NodeStageVolume(context.Background(), &csi.NodeStageVolumeRequest{
 		VolumeId:         "tank/pvc",
 		VolumeCapability: mountCap("ext4"),
-		VolumeContext:    mountVolumeContext("nqn.test:x", "10.0.0.1", "4420"),
+		VolumeContext:    mountVolumeContext("nqn.test:x", "10.0.0.1"),
 	})
 	requireGRPCCode(t, err, codes.InvalidArgument)
 }
@@ -476,7 +477,7 @@ func TestNodeStageVolume_MissingCapability(t *testing.T) {
 	_, err := env.srv.NodeStageVolume(context.Background(), &csi.NodeStageVolumeRequest{
 		VolumeId:          "tank/pvc",
 		StagingTargetPath: "/mnt/stage",
-		VolumeContext:     mountVolumeContext("nqn.test:x", "10.0.0.1", "4420"),
+		VolumeContext:     mountVolumeContext("nqn.test:x", "10.0.0.1"),
 	})
 	requireGRPCCode(t, err, codes.InvalidArgument)
 }
@@ -529,7 +530,7 @@ func TestNodeStageVolume_NoAccessType(t *testing.T) {
 				Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER,
 			},
 		},
-		VolumeContext: mountVolumeContext("nqn.test:x", "10.0.0.1", "4420"),
+		VolumeContext: mountVolumeContext("nqn.test:x", "10.0.0.1"),
 	})
 	requireGRPCCode(t, err, codes.InvalidArgument)
 }
@@ -543,7 +544,7 @@ func TestNodeStageVolume_ConnectError(t *testing.T) {
 		VolumeId:          "tank/pvc-err",
 		StagingTargetPath: t.TempDir(),
 		VolumeCapability:  mountCap("ext4"),
-		VolumeContext:     mountVolumeContext("nqn.test:err", "10.0.0.1", "4420"),
+		VolumeContext:     mountVolumeContext("nqn.test:err", "10.0.0.1"),
 	})
 	requireGRPCCode(t, err, codes.Internal)
 }
@@ -557,7 +558,7 @@ func TestNodeStageVolume_DevicePathError(t *testing.T) {
 		VolumeId:          "tank/pvc-deverr",
 		StagingTargetPath: t.TempDir(),
 		VolumeCapability:  mountCap("ext4"),
-		VolumeContext:     mountVolumeContext("nqn.test:deverr", "10.0.0.1", "4420"),
+		VolumeContext:     mountVolumeContext("nqn.test:deverr", "10.0.0.1"),
 	})
 	requireGRPCCode(t, err, codes.Internal)
 }
@@ -576,14 +577,14 @@ func TestNodeStageVolume_DeviceNeverAppears(t *testing.T) {
 		VolumeId:          "tank/pvc-nodv",
 		StagingTargetPath: t.TempDir(),
 		VolumeCapability:  mountCap("ext4"),
-		VolumeContext:     mountVolumeContext("nqn.test:nodv", "10.0.0.1", "4420"),
+		VolumeContext:     mountVolumeContext("nqn.test:nodv", "10.0.0.1"),
 	})
 	// Expect DeadlineExceeded because the polling loop times out.
 	if err == nil {
 		t.Fatal("expected error when device never appears, got nil")
 	}
 	// Accept either DeadlineExceeded (our poll timeout) or Internal
-	// (context cancelled), since the test uses a tight deadline.
+	// (context canceled), since the test uses a tight deadline.
 	st, ok := status.FromError(err)
 	if !ok {
 		t.Fatalf("expected gRPC status error, got %T: %v", err, err)
@@ -602,14 +603,14 @@ func TestNodeStageVolume_FormatAndMountError(t *testing.T) {
 		VolumeId:          "tank/pvc-fmerr",
 		StagingTargetPath: t.TempDir(),
 		VolumeCapability:  mountCap("ext4"),
-		VolumeContext:     mountVolumeContext("nqn.test:fmerr", "10.0.0.1", "4420"),
+		VolumeContext:     mountVolumeContext("nqn.test:fmerr", "10.0.0.1"),
 	})
 	requireGRPCCode(t, err, codes.Internal)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestNodeUnstageVolume_* – happy-path and validation tests
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestNodeUnstageVolume_RoundTrip exercises the full stage→unstage lifecycle.
 func TestNodeUnstageVolume_RoundTrip(t *testing.T) {
@@ -627,7 +628,7 @@ func TestNodeUnstageVolume_RoundTrip(t *testing.T) {
 		VolumeId:          volumeID,
 		StagingTargetPath: stagingPath,
 		VolumeCapability:  mountCap("ext4"),
-		VolumeContext:     mountVolumeContext(nqn, "10.0.0.1", "4420"),
+		VolumeContext:     mountVolumeContext(nqn, "10.0.0.1"),
 	})
 	if err != nil {
 		t.Fatalf("NodeStageVolume: %v", err)
@@ -643,7 +644,7 @@ func TestNodeUnstageVolume_RoundTrip(t *testing.T) {
 	}
 
 	// Staging path must be unmounted.
-	mounted, _ := env.mounter.IsMounted(stagingPath)
+	mounted, _ := env.mounter.IsMounted(stagingPath) //nolint:errcheck // mock never returns an error
 	if mounted {
 		t.Error("staging path still mounted after NodeUnstageVolume")
 	}
@@ -703,7 +704,7 @@ func TestNodeUnstageVolume_IdempotentSecondCall(t *testing.T) {
 		VolumeId:          volumeID,
 		StagingTargetPath: stagingPath,
 		VolumeCapability:  mountCap("ext4"),
-		VolumeContext:     mountVolumeContext("nqn.test:double", "10.0.0.1", "4420"),
+		VolumeContext:     mountVolumeContext("nqn.test:double", "10.0.0.1"),
 	})
 	if err != nil {
 		t.Fatalf("NodeStageVolume: %v", err)
@@ -747,7 +748,7 @@ func TestNodeUnstageVolume_UnmountedPath(t *testing.T) {
 		VolumeId:          volumeID,
 		StagingTargetPath: stagingPath,
 		VolumeCapability:  mountCap("ext4"),
-		VolumeContext:     mountVolumeContext(nqn, "10.0.0.1", "4420"),
+		VolumeContext:     mountVolumeContext(nqn, "10.0.0.1"),
 	})
 	if err != nil {
 		t.Fatalf("NodeStageVolume: %v", err)
@@ -773,7 +774,7 @@ func TestNodeUnstageVolume_UnmountedPath(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestNodeUnstageVolume_* – error tests
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 func TestNodeUnstageVolume_MissingVolumeID(t *testing.T) {
 	t.Parallel()
@@ -804,7 +805,7 @@ func TestNodeUnstageVolume_UnmountError(t *testing.T) {
 		VolumeId:          "tank/pvc-umerr",
 		StagingTargetPath: stagingPath,
 		VolumeCapability:  mountCap("ext4"),
-		VolumeContext:     mountVolumeContext("nqn.test:umerr", "10.0.0.1", "4420"),
+		VolumeContext:     mountVolumeContext("nqn.test:umerr", "10.0.0.1"),
 	})
 	if err != nil {
 		t.Fatalf("NodeStageVolume: %v", err)
@@ -827,7 +828,7 @@ func TestNodeUnstageVolume_DisconnectError(t *testing.T) {
 		VolumeId:          "tank/pvc-diserr",
 		StagingTargetPath: stagingPath,
 		VolumeCapability:  mountCap("ext4"),
-		VolumeContext:     mountVolumeContext("nqn.test:diserr", "10.0.0.1", "4420"),
+		VolumeContext:     mountVolumeContext("nqn.test:diserr", "10.0.0.1"),
 	})
 	if err != nil {
 		t.Fatalf("NodeStageVolume: %v", err)
@@ -842,7 +843,7 @@ func TestNodeUnstageVolume_DisconnectError(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestStageState_Helpers – unit tests for state file helpers
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestStageState_WriteReadDelete verifies the state file roundtrip.
 func TestStageState_WriteReadDelete(t *testing.T) {
@@ -866,7 +867,8 @@ func TestStageState_WriteReadDelete(t *testing.T) {
 		t.Errorf("readStageState = %+v, want %+v", got, want)
 	}
 
-	if err := srv.deleteStageState(volumeID); err != nil {
+	err = srv.deleteStageState(volumeID)
+	if err != nil {
 		t.Fatalf("deleteStageState: %v", err)
 	}
 

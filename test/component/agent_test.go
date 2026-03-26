@@ -36,7 +36,7 @@ import (
 
 // ---------------------------------------------------------------------------
 // Mock VolumeBackend
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------.
 
 // mockVolumeBackend is a test double for backend.VolumeBackend.
 //
@@ -62,8 +62,8 @@ import (
 //   - Dataset naming: the real backend enforces pool/parentDataset/volumeID
 //     path conventions and validates that the pool prefix matches its
 //     configured pool.  The mock accepts any volumeID string and ignores it.
-//   - Thread safety: all field accesses are serialised with a mutex, which is
-//     stricter synchronisation than the real backend (which inherits atomicity
+//   - Thread safety: all field accesses are serialized with a mutex, which is
+//     stricter synchronization than the real backend (which inherits atomicity
 //     from ZFS kernel-level locking).
 //   - ConflictError: the mock never returns *backend.ConflictError
 //     automatically; tests must assign createErr = &backend.ConflictError{…}
@@ -119,7 +119,7 @@ func (m *mockVolumeBackend) Expand(_ context.Context, _ string, _ int64) (int64,
 	return m.expandAllocated, m.expandErr
 }
 
-func (m *mockVolumeBackend) Capacity(_ context.Context) (int64, int64, error) {
+func (m *mockVolumeBackend) Capacity(_ context.Context) (total, avail int64, err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.capacityTotal, m.capacityAvailable, m.capacityErr
@@ -141,7 +141,7 @@ var _ backend.VolumeBackend = (*mockVolumeBackend)(nil)
 
 // ---------------------------------------------------------------------------
 // Server construction helpers
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------.
 
 const (
 	compTestPool     = "tank"
@@ -153,7 +153,9 @@ const (
 // newAgentServer creates a Server with a single mockVolumeBackend for "tank"
 // pool and a temp directory as configfs root.  AlwaysPresentChecker is
 // injected so ExportVolume does not require real block devices.
-func newAgentServer(t *testing.T, mb *mockVolumeBackend, extra ...agent.ServerOption) (*agent.Server, string) {
+func newAgentServer(
+	t *testing.T, mb *mockVolumeBackend, extra ...agent.ServerOption,
+) (srv *agent.Server, cfgRootDir string) {
 	t.Helper()
 	cfgRoot := t.TempDir()
 	backends := map[string]backend.VolumeBackend{compTestPool: mb}
@@ -177,7 +179,9 @@ func nvmeofParams(addr string, port int32) *agentv1.ExportParams {
 }
 
 // exportVolume is a convenience helper for ExportVolume with NVMe-oF TCP.
-func exportVolume(t *testing.T, srv *agent.Server, volumeID, addr string, port int32) {
+func exportVolume(
+	t *testing.T, srv *agent.Server, volumeID, addr string, port int32, //nolint:unparam // port is kept for API clarity
+) {
 	t.Helper()
 	_, err := srv.ExportVolume(context.Background(), &agentv1.ExportVolumeRequest{
 		VolumeId:     volumeID,
@@ -191,7 +195,7 @@ func exportVolume(t *testing.T, srv *agent.Server, volumeID, addr string, port i
 
 // ---------------------------------------------------------------------------
 // Component 1.1 — CreateVolume
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------.
 
 // TestAgentServer_CreateVolume_Success validates normal volume creation.
 func TestAgentServer_CreateVolume_Success(t *testing.T) {
@@ -349,7 +353,7 @@ func TestAgentServer_CreateVolume_ConflictSize(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // Component 1.2 — DeleteVolume
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------.
 
 // TestAgentServer_DeleteVolume_Success validates normal volume deletion.
 func TestAgentServer_DeleteVolume_Success(t *testing.T) {
@@ -444,7 +448,7 @@ func TestAgentServer_DeleteVolume_BackendError(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // Component 1.3 — ExpandVolume
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------.
 
 // TestAgentServer_ExpandVolume_Success validates normal volume expansion.
 func TestAgentServer_ExpandVolume_Success(t *testing.T) {
@@ -524,7 +528,7 @@ func TestAgentServer_ExpandVolume_InvalidPool(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // Component 1.4 — ExportVolume
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------.
 
 // TestAgentServer_ExportVolume_Success validates that ExportVolume creates
 // the configfs subsystem directory and returns correct ExportInfo.
@@ -683,7 +687,7 @@ func TestAgentServer_ExportVolume_DeviceAppearsAfterDelay(t *testing.T) {
 func TestAgentServer_ExportVolume_PermissionError(t *testing.T) {
 	t.Parallel()
 	mb := &mockVolumeBackend{devicePathResult: "/dev/zvol/tank/pvc-abc"}
-	permDeniedChecker := nvmeof.DeviceChecker(func(path string) (bool, error) {
+	permDeniedChecker := nvmeof.DeviceChecker(func(_ string) (bool, error) {
 		return false, os.ErrPermission
 	})
 	srv, _ := newAgentServer(t, mb,
@@ -703,7 +707,7 @@ func TestAgentServer_ExportVolume_PermissionError(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // Component 1.5 — UnexportVolume
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------.
 
 // TestAgentServer_UnexportVolume_Success validates that UnexportVolume cleans
 // up configfs entries created by ExportVolume.
@@ -765,7 +769,7 @@ func TestAgentServer_UnexportVolume_InvalidProtocol(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // Component 1.6 — AllowInitiator / DenyInitiator
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------.
 
 // TestAgentServer_AllowInitiator_Success validates that AllowInitiator creates
 // the allowed_hosts symlink in configfs.
@@ -910,7 +914,7 @@ func TestAgentServer_DenyInitiator_InvalidProtocol(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // Component 1.7 — GetCapabilities / GetCapacity / ListVolumes / ListExports
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------.
 
 // TestAgentServer_GetCapabilities_ReturnsAll validates that the response
 // includes ZFS backend type and NVMe-oF TCP protocol.
@@ -1093,7 +1097,7 @@ func TestAgentServer_ListExports_ReturnsEmpty(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // Component 1.8 — HealthCheck
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------.
 
 // TestAgentServer_HealthCheck_AllHealthy validates that HealthCheck reports
 // healthy when ZFS module path and configfs nvmet dir exist.
@@ -1104,13 +1108,13 @@ func TestAgentServer_HealthCheck_AllHealthy(t *testing.T) {
 
 	// Create a fake ZFS module path directory.
 	zfsModulePath := filepath.Join(tmpDir, "zfs-module")
-	if err := os.MkdirAll(zfsModulePath, 0o755); err != nil {
+	if err := os.MkdirAll(zfsModulePath, 0o750); err != nil {
 		t.Fatalf("create zfs module dir: %v", err)
 	}
 
 	// Create the nvmet directory inside the configfs root.
 	nvmetDir := filepath.Join(tmpDir, "configfs", "nvmet")
-	if err := os.MkdirAll(nvmetDir, 0o755); err != nil {
+	if err := os.MkdirAll(nvmetDir, 0o750); err != nil {
 		t.Fatalf("create nvmet dir: %v", err)
 	}
 
@@ -1143,7 +1147,7 @@ func TestAgentServer_HealthCheck_ZFSModuleMissing(t *testing.T) {
 
 	// Create nvmet dir so that configfs check passes.
 	nvmetDir := filepath.Join(tmpDir, "configfs", "nvmet")
-	if err := os.MkdirAll(nvmetDir, 0o755); err != nil {
+	if err := os.MkdirAll(nvmetDir, 0o750); err != nil {
 		t.Fatalf("create nvmet dir: %v", err)
 	}
 
@@ -1192,7 +1196,7 @@ func TestAgentServer_HealthCheck_ConfigfsMissing(t *testing.T) {
 
 	// Create ZFS module path so that module check passes.
 	zfsModulePath := filepath.Join(tmpDir, "zfs-module")
-	if err := os.MkdirAll(zfsModulePath, 0o755); err != nil {
+	if err := os.MkdirAll(zfsModulePath, 0o750); err != nil {
 		t.Fatalf("create zfs module dir: %v", err)
 	}
 
@@ -1225,11 +1229,11 @@ func TestAgentServer_HealthCheck_PoolDegraded(t *testing.T) {
 
 	tmpDir := t.TempDir()
 	zfsModulePath := filepath.Join(tmpDir, "zfs-module")
-	if err := os.MkdirAll(zfsModulePath, 0o755); err != nil {
+	if err := os.MkdirAll(zfsModulePath, 0o750); err != nil {
 		t.Fatalf("create zfs module dir: %v", err)
 	}
 	nvmetDir := filepath.Join(tmpDir, "configfs", "nvmet")
-	if err := os.MkdirAll(nvmetDir, 0o755); err != nil {
+	if err := os.MkdirAll(nvmetDir, 0o750); err != nil {
 		t.Fatalf("create nvmet dir: %v", err)
 	}
 
@@ -1255,7 +1259,7 @@ func TestAgentServer_HealthCheck_PoolDegraded(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // Component 1.9 — ReconcileState
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------.
 
 // TestAgentServer_ReconcileState_ReExportsAfterRestart validates that
 // ReconcileState creates configfs entries for all desired exports.
@@ -1403,7 +1407,7 @@ func TestAgentServer_ReconcileState_EmptyList(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // Component 1.10 — Concurrent operations
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------.
 
 // TestAgentServer_ConcurrentExportUnexport validates that concurrent Export
 // and Unexport of the same volume do not cause deadlock or data corruption.
@@ -1420,8 +1424,9 @@ func TestAgentServer_ConcurrentExportUnexport(t *testing.T) {
 	for range goroutines {
 		go func() {
 			defer wg.Done()
-			//nolint:errcheck // Component test: we tolerate transient errors in concurrent scenario.
-			srv.ExportVolume(context.Background(), &agentv1.ExportVolumeRequest{ //nolint:errcheck
+
+			//nolint:errcheck // concurrent errors are non-actionable
+			_, _ = srv.ExportVolume(context.Background(), &agentv1.ExportVolumeRequest{
 				VolumeId:     compTestVolumeID,
 				ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 				ExportParams: nvmeofParams("10.0.0.1", 4420),
@@ -1429,8 +1434,9 @@ func TestAgentServer_ConcurrentExportUnexport(t *testing.T) {
 		}()
 		go func() {
 			defer wg.Done()
-			//nolint:errcheck // Component test: we tolerate transient errors in concurrent scenario.
-			srv.UnexportVolume(context.Background(), &agentv1.UnexportVolumeRequest{ //nolint:errcheck
+
+			//nolint:errcheck // concurrent errors are non-actionable
+			_, _ = srv.UnexportVolume(context.Background(), &agentv1.UnexportVolumeRequest{
 				VolumeId:     compTestVolumeID,
 				ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 			})

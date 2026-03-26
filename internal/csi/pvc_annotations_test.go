@@ -29,7 +29,7 @@ import (
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // mustParseAnnotations calls ParsePVCAnnotations and fails the test on error.
 func mustParseAnnotations(t *testing.T, ann map[string]string) map[string]string {
@@ -64,7 +64,7 @@ func assertNoKey(t *testing.T, result map[string]string, key string) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ParsePVCAnnotations — nil / empty input
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 func TestParsePVCAnnotations_Nil(t *testing.T) {
 	result, err := ParsePVCAnnotations(nil)
@@ -98,7 +98,7 @@ func TestParsePVCAnnotations_UnrelatedAnnotationsIgnored(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Flat param.* overrides (legacy path)
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 func TestParsePVCAnnotations_FlatParamPrefix(t *testing.T) {
 	ann := map[string]string{
@@ -119,7 +119,7 @@ func TestParsePVCAnnotations_FlatParamPrefix(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // backend-override annotation
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 func TestParsePVCAnnotations_BackendOverride_ZFS(t *testing.T) {
 	ann := map[string]string{
@@ -172,7 +172,7 @@ func TestParsePVCAnnotations_BackendOverride_EmptyString(t *testing.T) {
 	}
 }
 
-// ── Blocked structural fields in backend-override ─────────────────────────
+// ── Blocked structural fields in backend-override ─────────────────────────.
 
 func TestParsePVCAnnotations_BackendOverride_ZFS_BlockedPool(t *testing.T) {
 	ann := map[string]string{
@@ -202,7 +202,7 @@ zfs:
 	}
 }
 
-// ── YAML malformed ────────────────────────────────────────────────────────
+// ── YAML malformed ────────────────────────────────────────────────────────.
 
 func TestParsePVCAnnotations_BackendOverride_MalformedYAML(t *testing.T) {
 	ann := map[string]string{
@@ -239,7 +239,7 @@ zfs:
 
 // ─────────────────────────────────────────────────────────────────────────────
 // protocol-override annotation
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 func TestParsePVCAnnotations_ProtocolOverride_NVMeOF(t *testing.T) {
 	ann := map[string]string{
@@ -288,7 +288,7 @@ iscsi:
 	assertParam(t, result, paramISCSINodeSessionTimeout, "180")
 }
 
-// ── Blocked structural fields in protocol-override ───────────────────────
+// ── Blocked structural fields in protocol-override ───────────────────────.
 
 func TestParsePVCAnnotations_ProtocolOverride_NVMeOF_BlockedPort(t *testing.T) {
 	ann := map[string]string{
@@ -339,7 +339,7 @@ func TestParsePVCAnnotations_ProtocolOverride_ISCSI_NotAMap(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // fs-override annotation
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 func TestParsePVCAnnotations_FSOverride_XFS(t *testing.T) {
 	ann := map[string]string{
@@ -412,7 +412,7 @@ func TestParsePVCAnnotations_FSOverride_FsTypeOnly(t *testing.T) {
 	assertNoKey(t, result, paramMkfsOptions)
 }
 
-// ── Validation errors for fs-override ────────────────────────────────────
+// ── Validation errors for fs-override ────────────────────────────────────.
 
 func TestParsePVCAnnotations_FSOverride_InvalidFsType(t *testing.T) {
 	ann := map[string]string{
@@ -462,7 +462,7 @@ mkfsOptions: [42, 99]
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Combined annotations — all three + flat prefix
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 func TestParsePVCAnnotations_AllAnnotations(t *testing.T) {
 	ann := map[string]string{
@@ -516,7 +516,7 @@ mkfsOptions: ["-K"]
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Higher-priority structured annotation overwrites flat prefix
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 func TestParsePVCAnnotations_StructuredOverwritesFlat(t *testing.T) {
 	// The structured backend-override is processed after the flat param.* loop,
@@ -537,7 +537,7 @@ zfs:
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Annotation constant values (regression: do not rename unexpectedly)
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 func TestAnnotationConstants(t *testing.T) {
 	if AnnotationBackendOverride != "pillar-csi.bhyoo.com/backend-override" {
@@ -553,7 +553,7 @@ func TestAnnotationConstants(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Param key constant values (regression: do not rename unexpectedly)
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 func TestParamKeyConstants(t *testing.T) {
 	cases := []struct{ name, got, want string }{

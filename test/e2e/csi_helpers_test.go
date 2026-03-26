@@ -68,7 +68,7 @@ import (
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Call record types
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // agentCreateVolumeCall records the arguments of a CreateVolume invocation.
 type agentCreateVolumeCall struct {
@@ -118,7 +118,7 @@ type agentDenyInitiatorCall struct {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // mockAgentServer
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // mockAgentServer is a programmable gRPC server double for the AgentService.
 //
@@ -368,7 +368,7 @@ func (m *mockAgentServer) DenyInitiator(
 
 // ─────────────────────────────────────────────────────────────────────────────
 // csiControllerE2EEnv
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // csiControllerE2EEnv is a self-contained test environment for the CSI
 // ControllerServer.
@@ -408,7 +408,7 @@ type csiControllerE2EEnv struct {
 // newCSIControllerE2EEnv creates a csiControllerE2EEnv for the duration of a
 // single test.  Cleanup (gRPC server stop) is registered via t.Cleanup.
 //
-// targetName is the Kubernetes name assigned to the PillarTarget that the
+// TargetName is the Kubernetes name assigned to the PillarTarget that the
 // ControllerServer will look up; pass any non-empty string, e.g. "storage-1".
 func newCSIControllerE2EEnv(t *testing.T, targetName string) *csiControllerE2EEnv {
 	t.Helper()
@@ -424,7 +424,7 @@ func newCSIControllerE2EEnv(t *testing.T, targetName string) *csiControllerE2EEn
 	}
 	agentAddr := lis.Addr().String()
 
-	go func() { _ = grpcSrv.Serve(lis) }()
+	go func() { _ = grpcSrv.Serve(lis) }() //nolint:errcheck // server errors are non-actionable in test setup
 
 	t.Cleanup(func() {
 		grpcSrv.GracefulStop()
@@ -521,7 +521,7 @@ func defaultVolumeCapabilities() []*csi.VolumeCapability {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // mockCSIConnector
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // connectCall records the arguments of a single Connector.Connect invocation.
 type connectCall struct {
@@ -535,7 +535,7 @@ type connectCall struct {
 // It records every Connect / Disconnect / GetDevicePath call without touching
 // the NVMe-oF kernel stack.  Configure DevicePath to control what
 // GetDevicePath returns; leave it empty to simulate a device that has not yet
-// appeared (useful for testing timeout behaviour).
+// appeared (useful for testing timeout behavior).
 type mockCSIConnector struct {
 	mu sync.Mutex
 
@@ -591,7 +591,7 @@ func (m *mockCSIConnector) GetDevicePath(_ context.Context, subsysNQN string) (s
 
 // ─────────────────────────────────────────────────────────────────────────────
 // mockCSIMounter
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // formatAndMountCall records arguments of a single FormatAndMount invocation.
 type formatAndMountCall struct {
@@ -637,7 +637,7 @@ type mockCSIMounter struct {
 // Compile-time interface check.
 var _ csisrv.Mounter = (*mockCSIMounter)(nil)
 
-// newMockCSIMounter returns a mockCSIMounter with an initialised mount table.
+// newMockCSIMounter returns a mockCSIMounter with an initialized mount table.
 func newMockCSIMounter() *mockCSIMounter {
 	return &mockCSIMounter{
 		mountedPaths: make(map[string]bool),
@@ -703,7 +703,7 @@ func (m *mockCSIMounter) IsMounted(target string) (bool, error) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // csiNodeE2EEnv
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // csiNodeE2EEnv is a self-contained test environment for the CSI NodeServer.
 //
@@ -734,7 +734,7 @@ type csiNodeE2EEnv struct {
 
 // newCSINodeE2EEnv creates a csiNodeE2EEnv for the duration of a single test.
 //
-// nodeID is the Kubernetes node name embedded in NodeGetInfo responses and
+// NodeID is the Kubernetes node name embedded in NodeGetInfo responses and
 // used by the CO to route ControllerPublishVolume calls.  Pass any non-empty
 // string, e.g. "worker-1".
 func newCSINodeE2EEnv(t *testing.T, nodeID string) *csiNodeE2EEnv {
@@ -798,7 +798,7 @@ func blockVolumeCapability(
 
 // ─────────────────────────────────────────────────────────────────────────────
 // csiOrderedLifecycleEnv
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // newCSILifecycleEnvWithSM creates a csiLifecycleEnv in which the CSI
 // ControllerServer and CSI NodeServer share a single VolumeStateMachine.
@@ -814,7 +814,9 @@ func blockVolumeCapability(
 // Use this variant for negative ordering tests.  For positive lifecycle tests
 // and unit tests that do not require cross-component ordering validation, use
 // newCSILifecycleEnv instead (NodeServer has no SM → no ordering guards).
-func newCSILifecycleEnvWithSM(t *testing.T, targetName, nodeID string) *csiLifecycleEnv {
+func newCSILifecycleEnvWithSM(
+	t *testing.T, targetName, nodeID string, //nolint:unparam // targetName kept for API clarity
+) *csiLifecycleEnv {
 	t.Helper()
 
 	// Build the controller environment (includes mock agent gRPC listener).

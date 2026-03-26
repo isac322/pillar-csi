@@ -53,7 +53,7 @@ import (
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIOrdering_NodeStageBeforeControllerPublish
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIOrdering_NodeStageBeforeControllerPublish verifies that calling
 // NodeStageVolume without first calling ControllerPublishVolume returns
@@ -109,7 +109,7 @@ func TestCSIOrdering_NodeStageBeforeControllerPublish(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIOrdering_NodePublishBeforeNodeStage
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIOrdering_NodePublishBeforeNodeStage verifies that calling
 // NodePublishVolume before NodeStageVolume returns gRPC FailedPrecondition.
@@ -138,12 +138,12 @@ func TestCSIOrdering_NodePublishBeforeNodeStage(t *testing.T) {
 	volumeContext := createResp.GetVolume().GetVolumeContext()
 
 	// ── Step 2: ControllerPublishVolume (SM: Created → ControllerPublished) ──
-	if _, err := env.Controller.ControllerPublishVolume(ctx, &csi.ControllerPublishVolumeRequest{
+	if _, cpErr := env.Controller.ControllerPublishVolume(ctx, &csi.ControllerPublishVolumeRequest{
 		VolumeId:         volumeID,
 		NodeId:           env.NodeID,
 		VolumeCapability: defaultVolumeCapabilities()[0],
-	}); err != nil {
-		t.Fatalf("ControllerPublishVolume: %v", err)
+	}); cpErr != nil {
+		t.Fatalf("ControllerPublishVolume: %v", cpErr)
 	}
 
 	// ── Step 3: NodePublishVolume WITHOUT NodeStageVolume ─────────────────────
@@ -174,7 +174,7 @@ func TestCSIOrdering_NodePublishBeforeNodeStage(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIOrdering_NodeUnstageBeforeNodeUnpublish
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIOrdering_NodeUnstageBeforeNodeUnpublish verifies that calling
 // NodeUnstageVolume while the volume is still in NodePublished state (i.e.
@@ -206,32 +206,32 @@ func TestCSIOrdering_NodeUnstageBeforeNodeUnpublish(t *testing.T) {
 	volumeContext := createResp.GetVolume().GetVolumeContext()
 
 	// ── Phase 2: ControllerPublishVolume (SM → ControllerPublished) ───────────
-	if _, err := env.Controller.ControllerPublishVolume(ctx, &csi.ControllerPublishVolumeRequest{
+	if _, cpErr := env.Controller.ControllerPublishVolume(ctx, &csi.ControllerPublishVolumeRequest{
 		VolumeId:         volumeID,
 		NodeId:           env.NodeID,
 		VolumeCapability: defaultVolumeCapabilities()[0],
-	}); err != nil {
-		t.Fatalf("ControllerPublishVolume: %v", err)
+	}); cpErr != nil {
+		t.Fatalf("ControllerPublishVolume: %v", cpErr)
 	}
 
 	// ── Phase 3: NodeStageVolume (SM → NodeStaged) ────────────────────────────
-	if _, err := env.Node.NodeStageVolume(ctx, &csi.NodeStageVolumeRequest{
+	if _, stageErr := env.Node.NodeStageVolume(ctx, &csi.NodeStageVolumeRequest{
 		VolumeId:          volumeID,
 		StagingTargetPath: stagingPath,
 		VolumeContext:     volumeContext,
 		VolumeCapability:  defaultVolumeCapabilities()[0],
-	}); err != nil {
-		t.Fatalf("NodeStageVolume: %v", err)
+	}); stageErr != nil {
+		t.Fatalf("NodeStageVolume: %v", stageErr)
 	}
 
 	// ── Phase 4: NodePublishVolume (SM → NodePublished) ───────────────────────
-	if _, err := env.Node.NodePublishVolume(ctx, &csi.NodePublishVolumeRequest{
+	if _, pubErr := env.Node.NodePublishVolume(ctx, &csi.NodePublishVolumeRequest{
 		VolumeId:          volumeID,
 		StagingTargetPath: stagingPath,
 		TargetPath:        targetPath,
 		VolumeCapability:  defaultVolumeCapabilities()[0],
-	}); err != nil {
-		t.Fatalf("NodePublishVolume: %v", err)
+	}); pubErr != nil {
+		t.Fatalf("NodePublishVolume: %v", pubErr)
 	}
 
 	// ── Phase 5: NodeUnstageVolume WITHOUT NodeUnpublishVolume ────────────────
@@ -250,7 +250,7 @@ func TestCSIOrdering_NodeUnstageBeforeNodeUnpublish(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIOrdering_NodePublishAfterUnstage
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIOrdering_NodePublishAfterUnstage verifies that calling
 // NodePublishVolume after the volume has been cleanly unstaged (SM in
@@ -278,29 +278,29 @@ func TestCSIOrdering_NodePublishAfterUnstage(t *testing.T) {
 	volumeID := createResp.GetVolume().GetVolumeId()
 	volumeContext := createResp.GetVolume().GetVolumeContext()
 
-	if _, err := env.Controller.ControllerPublishVolume(ctx, &csi.ControllerPublishVolumeRequest{
+	if _, cpErr := env.Controller.ControllerPublishVolume(ctx, &csi.ControllerPublishVolumeRequest{
 		VolumeId:         volumeID,
 		NodeId:           env.NodeID,
 		VolumeCapability: defaultVolumeCapabilities()[0],
-	}); err != nil {
-		t.Fatalf("ControllerPublishVolume: %v", err)
+	}); cpErr != nil {
+		t.Fatalf("ControllerPublishVolume: %v", cpErr)
 	}
 
-	if _, err := env.Node.NodeStageVolume(ctx, &csi.NodeStageVolumeRequest{
+	if _, stageErr := env.Node.NodeStageVolume(ctx, &csi.NodeStageVolumeRequest{
 		VolumeId:          volumeID,
 		StagingTargetPath: stagingPath,
 		VolumeContext:     volumeContext,
 		VolumeCapability:  defaultVolumeCapabilities()[0],
-	}); err != nil {
-		t.Fatalf("NodeStageVolume: %v", err)
+	}); stageErr != nil {
+		t.Fatalf("NodeStageVolume: %v", stageErr)
 	}
 
 	// Unstage (no publish): SM → ControllerPublished
-	if _, err := env.Node.NodeUnstageVolume(ctx, &csi.NodeUnstageVolumeRequest{
+	if _, unstageErr := env.Node.NodeUnstageVolume(ctx, &csi.NodeUnstageVolumeRequest{
 		VolumeId:          volumeID,
 		StagingTargetPath: stagingPath,
-	}); err != nil {
-		t.Fatalf("NodeUnstageVolume: %v", err)
+	}); unstageErr != nil {
+		t.Fatalf("NodeUnstageVolume: %v", unstageErr)
 	}
 
 	// ── Phase 2: NodePublishVolume after NodeUnstageVolume ───────────────────
@@ -321,7 +321,7 @@ func TestCSIOrdering_NodePublishAfterUnstage(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIOrdering_FullLifecycleWithSM
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIOrdering_FullLifecycleWithSM verifies that the complete CSI volume
 // lifecycle succeeds when all operations are called in the correct order,
@@ -371,7 +371,7 @@ func TestCSIOrdering_FullLifecycleWithSM(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("[3] NodeStageVolume: %v", err)
 	}
-	if staged, _ := env.Mounter.IsMounted(stagingPath); !staged {
+	if staged, _ := env.Mounter.IsMounted(stagingPath); !staged { //nolint:errcheck // non-actionable in test assertion
 		t.Error("[3] staging path should be mounted after NodeStageVolume")
 	}
 
@@ -384,6 +384,7 @@ func TestCSIOrdering_FullLifecycleWithSM(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("[4] NodePublishVolume: %v", err)
 	}
+	//nolint:errcheck // non-actionable in test assertion
 	if published, _ := env.Mounter.IsMounted(targetPath); !published {
 		t.Error("[4] target path should be mounted after NodePublishVolume")
 	}
@@ -395,6 +396,7 @@ func TestCSIOrdering_FullLifecycleWithSM(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("[5] NodeUnpublishVolume: %v", err)
 	}
+	//nolint:errcheck // non-actionable in test assertion
 	if stillPublished, _ := env.Mounter.IsMounted(targetPath); stillPublished {
 		t.Error("[5] target path should be unmounted after NodeUnpublishVolume")
 	}
@@ -406,6 +408,7 @@ func TestCSIOrdering_FullLifecycleWithSM(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("[6] NodeUnstageVolume: %v", err)
 	}
+	//nolint:errcheck // non-actionable in test assertion
 	if stillStaged, _ := env.Mounter.IsMounted(stagingPath); stillStaged {
 		t.Error("[6] staging path should be unmounted after NodeUnstageVolume")
 	}
@@ -448,7 +451,7 @@ func TestCSIOrdering_FullLifecycleWithSM(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIOrdering_IdempotencyWithSM
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIOrdering_IdempotencyWithSM verifies that the SM guards do not break
 // idempotency: each node operation can be called a second time with the same
@@ -481,7 +484,7 @@ func TestCSIOrdering_IdempotencyWithSM(t *testing.T) {
 		NodeId:           env.NodeID,
 		VolumeCapability: defaultVolumeCapabilities()[0],
 	}
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		if _, err := env.Controller.ControllerPublishVolume(ctx, pubReq); err != nil {
 			t.Fatalf("ControllerPublishVolume (call %d): %v", i+1, err)
 		}
@@ -494,7 +497,7 @@ func TestCSIOrdering_IdempotencyWithSM(t *testing.T) {
 		VolumeContext:     volumeContext,
 		VolumeCapability:  defaultVolumeCapabilities()[0],
 	}
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		if _, err := env.Node.NodeStageVolume(ctx, stageReq); err != nil {
 			t.Fatalf("NodeStageVolume (call %d): %v", i+1, err)
 		}
@@ -507,7 +510,7 @@ func TestCSIOrdering_IdempotencyWithSM(t *testing.T) {
 		TargetPath:        targetPath,
 		VolumeCapability:  defaultVolumeCapabilities()[0],
 	}
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		if _, err := env.Node.NodePublishVolume(ctx, publishReq); err != nil {
 			t.Fatalf("NodePublishVolume (call %d): %v", i+1, err)
 		}
@@ -518,7 +521,7 @@ func TestCSIOrdering_IdempotencyWithSM(t *testing.T) {
 		VolumeId:   volumeID,
 		TargetPath: targetPath,
 	}
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		if _, err := env.Node.NodeUnpublishVolume(ctx, unpubReq); err != nil {
 			t.Fatalf("NodeUnpublishVolume (call %d): %v", i+1, err)
 		}
@@ -529,7 +532,7 @@ func TestCSIOrdering_IdempotencyWithSM(t *testing.T) {
 		VolumeId:          volumeID,
 		StagingTargetPath: stagingPath,
 	}
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		if _, err := env.Node.NodeUnstageVolume(ctx, unstageReq); err != nil {
 			t.Fatalf("NodeUnstageVolume (call %d): %v", i+1, err)
 		}

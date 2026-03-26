@@ -41,7 +41,7 @@ import (
 
 // ─────────────────────────────────────────────────────────────────────────────
 // VolumeContext keys
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // VolumeContext keys set by the controller in CreateVolume and stored in the
 // PersistentVolume spec.csi.volumeAttributes map.  The CO propagates these
@@ -62,7 +62,7 @@ const (
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Staging constants and state types
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // deviceWaitTimeout is the maximum time NodeStageVolume waits for the NVMe
 // block device to appear after a successful Connect call.
@@ -74,6 +74,9 @@ const devicePollInterval = 500 * time.Millisecond
 // defaultFsType is the filesystem type used by NodeStageVolume when the
 // VolumeCapability does not specify an explicit fsType.
 const defaultFsType = "ext4"
+
+// xfsFsType is the filesystem type string for XFS.
+const xfsFsType = "xfs"
 
 // defaultStateDir is the directory used to persist per-volume staging state
 // when NodeServer is created via NewNodeServer.
@@ -162,7 +165,7 @@ type NodeServer struct {
 	mounter Mounter
 
 	// stateDir is the directory in which per-volume staging state files are
-	// persisted.  Each staged volume has a JSON file named after its (sanitised)
+	// persisted.  Each staged volume has a JSON file named after its (sanitized)
 	// volumeID in this directory.  NodeUnstageVolume reads the file to recover
 	// the subsystem NQN without requiring the VolumeContext that was available
 	// during NodeStageVolume.
@@ -275,7 +278,7 @@ func (n *NodeServer) Register(g *grpc.Server) {
 //     (NVMe-oF connect + format at a staging path).
 //   - EXPAND_VOLUME: NodeExpandVolume is implemented (resize filesystem after
 //     a ControllerExpandVolume call).
-func (n *NodeServer) NodeGetCapabilities(
+func (*NodeServer) NodeGetCapabilities(
 	_ context.Context,
 	_ *csi.NodeGetCapabilitiesRequest,
 ) (*csi.NodeGetCapabilitiesResponse, error) {
@@ -317,7 +320,7 @@ func (n *NodeServer) NodeGetInfo(
 	_ *csi.NodeGetInfoRequest,
 ) (*csi.NodeGetInfoResponse, error) {
 	if n.nodeID == "" {
-		return nil, status.Error(codes.Internal, "node server has no node ID configured")
+		return nil, status.Error(codes.Internal, "node server has no node ID configured") //nolint:wrapcheck
 	}
 
 	return &csi.NodeGetInfoResponse{
@@ -329,7 +332,7 @@ func (n *NodeServer) NodeGetInfo(
 
 // ─────────────────────────────────────────────────────────────────────────────
 // NodeStageVolume
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // NodeStageVolume connects this node to a volume via NVMe-oF TCP and prepares
 // it for use by pods.
@@ -350,25 +353,25 @@ func (n *NodeServer) NodeGetInfo(
 //
 // Per CSI spec §4.7 the staging_target_path is guaranteed to be a pre-created
 // directory (for MOUNT) or a pre-created file (for BLOCK) by the CO.
-func (n *NodeServer) NodeStageVolume(
+func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-step NVMe-oF connect/mount/persist
 	ctx context.Context,
 	req *csi.NodeStageVolumeRequest,
 ) (*csi.NodeStageVolumeResponse, error) {
 	// ── Input validation ────────────────────────────────────────────────────
 	if req.GetVolumeId() == "" {
-		return nil, status.Error(codes.InvalidArgument, "NodeStageVolume: volume_id is required")
+		return nil, status.Error(codes.InvalidArgument, "NodeStageVolume: volume_id is required") //nolint:wrapcheck
 	}
 	if req.GetStagingTargetPath() == "" {
-		return nil, status.Error(codes.InvalidArgument, "NodeStageVolume: staging_target_path is required")
+		return nil, status.Error(codes.InvalidArgument, "NodeStageVolume: staging_target_path is required") //nolint:wrapcheck
 	}
 	if req.GetVolumeCapability() == nil {
-		return nil, status.Error(codes.InvalidArgument, "NodeStageVolume: volume_capability is required")
+		return nil, status.Error(codes.InvalidArgument, "NodeStageVolume: volume_capability is required") //nolint:wrapcheck
 	}
 
 	volumeID := req.GetVolumeId()
 	stagingPath := req.GetStagingTargetPath()
 	volCtx := req.GetVolumeContext()
-	cap := req.GetVolumeCapability()
+	volCap := req.GetVolumeCapability()
 
 	// Extract NVMe-oF connection parameters set by the controller during
 	// CreateVolume (sourced from the agent's ExportInfo).
@@ -439,7 +442,8 @@ func (n *NodeServer) NodeStageVolume(
 
 	// ── Step 1: Connect to the NVMe-oF subsystem ───────────────────────────
 	// Connector.Connect is idempotent: calling it when already connected is safe.
-	if connectErr := n.connector.Connect(ctx, subsysNQN, trAddr, trSvcID); connectErr != nil {
+	connectErr := n.connector.Connect(ctx, subsysNQN, trAddr, trSvcID)
+	if connectErr != nil {
 		return nil, status.Errorf(codes.Internal,
 			"NodeStageVolume: NVMe-oF connect to %q at %s:%s: %v",
 			subsysNQN, trAddr, trSvcID, connectErr)
@@ -451,7 +455,7 @@ func (n *NodeServer) NodeStageVolume(
 	// SM is currently at ControllerPublished (not already at NodeStagePartial
 	// from a prior retry attempt).
 	if n.sm != nil && n.sm.GetState(volumeID) == StateControllerPublished {
-		_, _ = n.sm.Transition(volumeID, OpNodeStageConnected)
+		_, _ = n.sm.Transition(volumeID, OpNodeStageConnected) //nolint:errcheck // best-effort; does not affect mount
 	}
 
 	// ── Step 2: Wait for the block device to appear ─────────────────────────
@@ -483,13 +487,13 @@ func (n *NodeServer) NodeStageVolume(
 
 	// ── Step 3: Mount or bind-mount depending on access type ───────────────
 	switch {
-	case cap.GetMount() != nil:
+	case volCap.GetMount() != nil:
 		// MOUNT access: format (if not already formatted) and mount to staging path.
-		fsType := cap.GetMount().GetFsType()
+		fsType := volCap.GetMount().GetFsType()
 		if fsType == "" {
 			fsType = defaultFsType
 		}
-		mountFlags := cap.GetMount().GetMountFlags()
+		mountFlags := volCap.GetMount().GetMountFlags()
 
 		// Check IsMounted before FormatAndMount to provide an additional
 		// idempotency guard (e.g., after a partial failure where the state
@@ -500,14 +504,15 @@ func (n *NodeServer) NodeStageVolume(
 				"NodeStageVolume: check if %q is mounted: %v", stagingPath, mountCheckErr)
 		}
 		if !alreadyMounted {
-			if formatErr := n.mounter.FormatAndMount(devicePath, stagingPath, fsType, mountFlags); formatErr != nil {
+			formatErr := n.mounter.FormatAndMount(devicePath, stagingPath, fsType, mountFlags)
+			if formatErr != nil {
 				return nil, status.Errorf(codes.Internal,
 					"NodeStageVolume: format-and-mount %q → %q (fs=%s): %v",
 					devicePath, stagingPath, fsType, formatErr)
 			}
 		}
 
-	case cap.GetBlock() != nil:
+	case volCap.GetBlock() != nil:
 		// BLOCK access: bind-mount the raw device to the staging path.
 		alreadyMounted, mountCheckErr := n.mounter.IsMounted(stagingPath)
 		if mountCheckErr != nil {
@@ -515,7 +520,8 @@ func (n *NodeServer) NodeStageVolume(
 				"NodeStageVolume: check if %q is mounted: %v", stagingPath, mountCheckErr)
 		}
 		if !alreadyMounted {
-			if bindErr := n.mounter.Mount(devicePath, stagingPath, "" /*fsType unused for bind*/, []string{"bind"}); bindErr != nil {
+			bindErr := n.mounter.Mount(devicePath, stagingPath, "", []string{"bind"})
+			if bindErr != nil {
 				return nil, status.Errorf(codes.Internal,
 					"NodeStageVolume: bind-mount block device %q → %q: %v",
 					devicePath, stagingPath, bindErr)
@@ -523,14 +529,15 @@ func (n *NodeServer) NodeStageVolume(
 		}
 
 	default:
-		return nil, status.Error(codes.InvalidArgument,
+		return nil, status.Error(codes.InvalidArgument, //nolint:wrapcheck
 			"NodeStageVolume: volume_capability must specify mount or block access type")
 	}
 
 	// ── Step 4: Persist stage state ─────────────────────────────────────────
 	// Write the subsystem NQN to a state file so NodeUnstageVolume can
 	// disconnect the correct NQN even though it does not receive VolumeContext.
-	if writeErr := n.writeStageState(volumeID, &nodeStageState{SubsysNQN: subsysNQN}); writeErr != nil {
+	writeErr := n.writeStageState(volumeID, &nodeStageState{SubsysNQN: subsysNQN})
+	if writeErr != nil {
 		return nil, status.Errorf(codes.Internal,
 			"NodeStageVolume: persist stage state for %q: %v", volumeID, writeErr)
 	}
@@ -549,7 +556,7 @@ func (n *NodeServer) NodeStageVolume(
 
 // ─────────────────────────────────────────────────────────────────────────────
 // NodeUnstageVolume
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // NodeUnstageVolume unmounts the staging path and disconnects the NVMe-oF
 // subsystem for the given volume.
@@ -565,16 +572,18 @@ func (n *NodeServer) NodeStageVolume(
 //  5. Remove the stage state file to mark the volume as fully unstaged.
 //
 // The operation is idempotent per CSI spec §4.7.
-func (n *NodeServer) NodeUnstageVolume(
+func (n *NodeServer) NodeUnstageVolume( //nolint:gocyclo // SM guard + unmount + disconnect + state cleanup
 	ctx context.Context,
 	req *csi.NodeUnstageVolumeRequest,
 ) (*csi.NodeUnstageVolumeResponse, error) {
 	// ── Input validation ────────────────────────────────────────────────────
 	if req.GetVolumeId() == "" {
-		return nil, status.Error(codes.InvalidArgument, "NodeUnstageVolume: volume_id is required")
+		return nil, status.Error(codes.InvalidArgument, "NodeUnstageVolume: volume_id is required") //nolint:wrapcheck
 	}
 	if req.GetStagingTargetPath() == "" {
-		return nil, status.Error(codes.InvalidArgument, "NodeUnstageVolume: staging_target_path is required")
+		stagingPathErr := status.Error(codes.InvalidArgument,
+			"NodeUnstageVolume: staging_target_path is required")
+		return nil, stagingPathErr //nolint:wrapcheck // gRPC status; must not be wrapped
 	}
 
 	volumeID := req.GetVolumeId()
@@ -616,7 +625,8 @@ func (n *NodeServer) NodeUnstageVolume(
 			"NodeUnstageVolume: check if %q is mounted: %v", stagingPath, mountCheckErr)
 	}
 	if mounted {
-		if unmountErr := n.mounter.Unmount(stagingPath); unmountErr != nil {
+		unmountErr := n.mounter.Unmount(stagingPath)
+		if unmountErr != nil {
 			return nil, status.Errorf(codes.Internal,
 				"NodeUnstageVolume: unmount %q: %v", stagingPath, unmountErr)
 		}
@@ -637,14 +647,16 @@ func (n *NodeServer) NodeUnstageVolume(
 	// ── Step 3: Disconnect the NVMe-oF subsystem ────────────────────────────
 	// Connector.Disconnect is idempotent: disconnecting a non-connected NQN
 	// must succeed without error per the Connector interface contract.
-	if disconnectErr := n.connector.Disconnect(ctx, state.SubsysNQN); disconnectErr != nil {
+	disconnectErr := n.connector.Disconnect(ctx, state.SubsysNQN)
+	if disconnectErr != nil {
 		return nil, status.Errorf(codes.Internal,
 			"NodeUnstageVolume: NVMe-oF disconnect from %q: %v",
 			state.SubsysNQN, disconnectErr)
 	}
 
 	// ── Step 4: Remove stage state file ─────────────────────────────────────
-	if deleteErr := n.deleteStageState(volumeID); deleteErr != nil {
+	deleteErr := n.deleteStageState(volumeID)
+	if deleteErr != nil {
 		return nil, status.Errorf(codes.Internal,
 			"NodeUnstageVolume: delete stage state for %q: %v", volumeID, deleteErr)
 	}
@@ -662,7 +674,7 @@ func (n *NodeServer) NodeUnstageVolume(
 
 // ─────────────────────────────────────────────────────────────────────────────
 // NodePublishVolume
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // NodePublishVolume bind-mounts the staged volume from the staging path to the
 // pod-specific target path.
@@ -681,28 +693,30 @@ func (n *NodeServer) NodeUnstageVolume(
 //     raw block device bind) to target_path.
 //
 // Per CSI spec §4.7 the target_path is pre-created by the CO before this call.
-func (n *NodeServer) NodePublishVolume(
-	ctx context.Context,
+func (n *NodeServer) NodePublishVolume( //nolint:gocyclo // SM guard + capability switch + readonly handling
+	_ context.Context,
 	req *csi.NodePublishVolumeRequest,
 ) (*csi.NodePublishVolumeResponse, error) {
 	// ── Input validation ────────────────────────────────────────────────────
 	if req.GetVolumeId() == "" {
-		return nil, status.Error(codes.InvalidArgument, "NodePublishVolume: volume_id is required")
+		return nil, status.Error(codes.InvalidArgument, "NodePublishVolume: volume_id is required") //nolint:wrapcheck
 	}
 	if req.GetStagingTargetPath() == "" {
-		return nil, status.Error(codes.InvalidArgument, "NodePublishVolume: staging_target_path is required")
+		stagingPathErr := status.Error(codes.InvalidArgument,
+			"NodePublishVolume: staging_target_path is required")
+		return nil, stagingPathErr //nolint:wrapcheck // gRPC status; must not be wrapped
 	}
 	if req.GetTargetPath() == "" {
-		return nil, status.Error(codes.InvalidArgument, "NodePublishVolume: target_path is required")
+		return nil, status.Error(codes.InvalidArgument, "NodePublishVolume: target_path is required") //nolint:wrapcheck
 	}
 	if req.GetVolumeCapability() == nil {
-		return nil, status.Error(codes.InvalidArgument, "NodePublishVolume: volume_capability is required")
+		return nil, status.Error(codes.InvalidArgument, "NodePublishVolume: volume_capability is required") //nolint:wrapcheck
 	}
 
 	stagingPath := req.GetStagingTargetPath()
 	targetPath := req.GetTargetPath()
 	volumeID := req.GetVolumeId()
-	cap := req.GetVolumeCapability()
+	volCap := req.GetVolumeCapability()
 	readonly := req.GetReadonly()
 
 	// ── State machine ordering guard ────────────────────────────────────────
@@ -739,8 +753,8 @@ func (n *NodeServer) NodePublishVolume(
 	// Start with "bind" to perform a bind mount from the staging path.
 	// Append any caller-supplied mount flags, then add "ro" if readonly.
 	mountOptions := []string{"bind"}
-	if cap.GetMount() != nil {
-		mountOptions = append(mountOptions, cap.GetMount().GetMountFlags()...)
+	if volCap.GetMount() != nil {
+		mountOptions = append(mountOptions, volCap.GetMount().GetMountFlags()...)
 	}
 	if readonly {
 		mountOptions = append(mountOptions, "ro")
@@ -751,24 +765,25 @@ func (n *NodeServer) NodePublishVolume(
 	// source's filesystem type).  We pass the explicit fsType only for MOUNT
 	// access so that the mounter implementation can make use of it if needed.
 	fsType := ""
-	if cap.GetMount() != nil {
-		fsType = cap.GetMount().GetFsType()
+	if volCap.GetMount() != nil {
+		fsType = volCap.GetMount().GetFsType()
 	}
 
 	// ── Perform bind mount ──────────────────────────────────────────────────
 	switch {
-	case cap.GetMount() != nil, cap.GetBlock() != nil:
+	case volCap.GetMount() != nil, volCap.GetBlock() != nil:
 		// Both MOUNT and BLOCK access types use a bind mount from the staging
 		// path to the target path.  For BLOCK the staging path holds a raw
 		// device bind already established during NodeStageVolume; we simply
 		// propagate it to the pod's target path.
-		if bindErr := n.mounter.Mount(stagingPath, targetPath, fsType, mountOptions); bindErr != nil {
+		bindErr := n.mounter.Mount(stagingPath, targetPath, fsType, mountOptions)
+		if bindErr != nil {
 			return nil, status.Errorf(codes.Internal,
 				"NodePublishVolume: bind-mount %q → %q: %v",
 				stagingPath, targetPath, bindErr)
 		}
 	default:
-		return nil, status.Error(codes.InvalidArgument,
+		return nil, status.Error(codes.InvalidArgument, //nolint:wrapcheck
 			"NodePublishVolume: volume_capability must specify mount or block access type")
 	}
 
@@ -782,7 +797,7 @@ func (n *NodeServer) NodePublishVolume(
 
 // ─────────────────────────────────────────────────────────────────────────────
 // NodeUnpublishVolume
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // NodeUnpublishVolume unmounts the bind mount at the pod-specific target path.
 //
@@ -803,10 +818,10 @@ func (n *NodeServer) NodeUnpublishVolume(
 ) (*csi.NodeUnpublishVolumeResponse, error) {
 	// ── Input validation ────────────────────────────────────────────────────
 	if req.GetVolumeId() == "" {
-		return nil, status.Error(codes.InvalidArgument, "NodeUnpublishVolume: volume_id is required")
+		return nil, status.Error(codes.InvalidArgument, "NodeUnpublishVolume: volume_id is required") //nolint:wrapcheck
 	}
 	if req.GetTargetPath() == "" {
-		return nil, status.Error(codes.InvalidArgument, "NodeUnpublishVolume: target_path is required")
+		return nil, status.Error(codes.InvalidArgument, "NodeUnpublishVolume: target_path is required") //nolint:wrapcheck
 	}
 
 	targetPath := req.GetTargetPath()
@@ -845,7 +860,8 @@ func (n *NodeServer) NodeUnpublishVolume(
 	}
 
 	// ── Unmount the bind mount ──────────────────────────────────────────────
-	if unmountErr := n.mounter.Unmount(targetPath); unmountErr != nil {
+	unmountErr := n.mounter.Unmount(targetPath)
+	if unmountErr != nil {
 		return nil, status.Errorf(codes.Internal,
 			"NodeUnpublishVolume: unmount %q: %v", targetPath, unmountErr)
 	}
@@ -860,7 +876,7 @@ func (n *NodeServer) NodeUnpublishVolume(
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Stage state helpers
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // stateFilePath returns the filesystem path for the JSON state file of the
 // given volumeID.  Path separators in the volumeID are replaced with
@@ -870,10 +886,11 @@ func (n *NodeServer) stateFilePath(volumeID string) string {
 	return filepath.Join(n.stateDir, safeID+".json")
 }
 
-// writeStageState serialises state to the JSON file for volumeID under
+// writeStageState serializes state to the JSON file for volumeID under
 // stateDir.  The directory is created if it does not yet exist.
 func (n *NodeServer) writeStageState(volumeID string, state *nodeStageState) error {
-	if mkdirErr := os.MkdirAll(n.stateDir, 0o700); mkdirErr != nil {
+	mkdirErr := os.MkdirAll(n.stateDir, 0o700)
+	if mkdirErr != nil {
 		return fmt.Errorf("create state directory %q: %w", n.stateDir, mkdirErr)
 	}
 	data, marshalErr := json.Marshal(state)
@@ -881,7 +898,8 @@ func (n *NodeServer) writeStageState(volumeID string, state *nodeStageState) err
 		return fmt.Errorf("marshal stage state: %w", marshalErr)
 	}
 	stateFile := n.stateFilePath(volumeID)
-	if writeErr := os.WriteFile(stateFile, data, 0o600); writeErr != nil {
+	writeErr := os.WriteFile(stateFile, data, 0o600)
+	if writeErr != nil {
 		return fmt.Errorf("write state file %q: %w", stateFile, writeErr)
 	}
 	return nil
@@ -892,15 +910,16 @@ func (n *NodeServer) writeStageState(volumeID string, state *nodeStageState) err
 // already cleanly unstaged).
 func (n *NodeServer) readStageState(volumeID string) (*nodeStageState, error) {
 	stateFile := n.stateFilePath(volumeID)
-	data, readErr := os.ReadFile(stateFile)
+	data, readErr := os.ReadFile(stateFile) //nolint:gosec // G304: sanitized path under controlled stateDir
 	if readErr != nil {
 		if os.IsNotExist(readErr) {
-			return nil, nil // not staged
+			return nil, nil //nolint:nilnil // (nil, nil) intentionally signals "not staged"; callers check for nil state
 		}
 		return nil, fmt.Errorf("read state file %q: %w", stateFile, readErr)
 	}
 	var state nodeStageState
-	if unmarshalErr := json.Unmarshal(data, &state); unmarshalErr != nil {
+	unmarshalErr := json.Unmarshal(data, &state)
+	if unmarshalErr != nil {
 		return nil, fmt.Errorf("unmarshal state file %q: %w", stateFile, unmarshalErr)
 	}
 	return &state, nil
@@ -910,7 +929,8 @@ func (n *NodeServer) readStageState(volumeID string) (*nodeStageState, error) {
 // idempotent: if the file does not exist, the call succeeds silently.
 func (n *NodeServer) deleteStageState(volumeID string) error {
 	stateFile := n.stateFilePath(volumeID)
-	if removeErr := os.Remove(stateFile); removeErr != nil && !os.IsNotExist(removeErr) {
+	removeErr := os.Remove(stateFile)
+	if removeErr != nil && !os.IsNotExist(removeErr) {
 		return fmt.Errorf("remove state file %q: %w", stateFile, removeErr)
 	}
 	return nil

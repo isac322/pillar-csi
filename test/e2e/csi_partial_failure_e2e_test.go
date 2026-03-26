@@ -49,7 +49,7 @@ import (
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIController_PartialFailure_CRDCreatedOnExportFailure
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIController_PartialFailure_CRDCreatedOnExportFailure verifies that
 // when agent.CreateVolume succeeds but agent.ExportVolume fails, the controller:
@@ -128,7 +128,7 @@ func TestCSIController_PartialFailure_CRDCreatedOnExportFailure(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIController_PartialFailure_RetryAdvancesToReady
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIController_PartialFailure_RetryAdvancesToReady verifies that after a
 // partial failure (Phase=CreatePartial), retrying CreateVolume with a working
@@ -214,7 +214,7 @@ func TestCSIController_PartialFailure_RetryAdvancesToReady(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIController_PartialFailure_AgentCreateVolumeCalledOnceOnRetry
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIController_PartialFailure_AgentCreateVolumeCalledOnceOnRetry verifies
 // the skipBackend optimisation: when retrying a CreateVolume that previously
@@ -237,7 +237,7 @@ func TestCSIController_PartialFailure_AgentCreateVolumeCalledOnceOnRetry(t *test
 
 	// ── First call: ExportVolume fails ────────────────────────────────────────
 	env.AgentMock.ExportVolumeErr = errors.New("export fail")
-	_, _ = env.Controller.CreateVolume(ctx, req)
+	_, _ = env.Controller.CreateVolume(ctx, req) //nolint:errcheck // intentional failure to test partial state
 
 	callsAfterFirst := len(env.AgentMock.CreateVolumeCalls)
 	exportCallsAfterFirst := len(env.AgentMock.ExportVolumeCalls)
@@ -274,7 +274,7 @@ func TestCSIController_PartialFailure_AgentCreateVolumeCalledOnceOnRetry(t *test
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIController_DeleteVolume_CleansUpCRD
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIController_DeleteVolume_CleansUpCRD verifies that a successful
 // DeleteVolume removes the PillarVolume CRD from the Kubernetes API.
@@ -336,7 +336,7 @@ func TestCSIController_DeleteVolume_CleansUpCRD(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIController_PartialFailure_DeleteVolumeOnPartialCreates
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIController_PartialFailure_DeleteVolumeOnPartialCreates verifies that
 // DeleteVolume can clean up a volume that is in the CreatePartial state
@@ -357,7 +357,7 @@ func TestCSIController_PartialFailure_DeleteVolumeOnPartialCreates(t *testing.T)
 
 	// ── Cause a partial failure ───────────────────────────────────────────────
 	env.AgentMock.ExportVolumeErr = errors.New("export failed")
-	_, _ = env.Controller.CreateVolume(ctx, createReq)
+	_, _ = env.Controller.CreateVolume(ctx, createReq) //nolint:errcheck // intentional failure to test partial state
 
 	// Confirm CreatePartial persisted.
 	pv := &v1alpha1.PillarVolume{}

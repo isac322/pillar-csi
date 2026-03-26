@@ -38,9 +38,12 @@ import (
 	"github.com/bhyoo/pillar-csi/internal/agent/nvmeof"
 )
 
+// extTestBindAddr is the NVMe-oF bind address used across extended tests.
+const extTestBindAddr = "10.0.0.1"
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Section 3.11 — Port ID Determinism and Multi-target Port Reuse
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestNvmeof_Apply_PortID_Deterministic verifies that two independent Apply
 // calls with the same BindAddress+Port produce port dirs with identical names,
@@ -52,7 +55,7 @@ import (
 func TestNvmeof_Apply_PortID_Deterministic(t *testing.T) {
 	t.Parallel()
 
-	const addr = "10.0.0.1"
+	const addr = extTestBindAddr
 	const port = int32(4420)
 
 	tmpdir1 := t.TempDir()
@@ -94,7 +97,7 @@ func TestNvmeof_Apply_PortID_DifferentForDifferentAddresses(t *testing.T) {
 	tmpdir := t.TempDir()
 
 	const port = int32(4420)
-	addr1 := "10.0.0.1"
+	addr1 := extTestBindAddr
 	addr2 := "10.0.0.2"
 
 	tgt1 := nvmeTarget(tmpdir, "nqn.test:pvc-addr1", "/dev/zvol/tank/addr1", addr1, port)
@@ -141,7 +144,7 @@ func TestNvmeof_Apply_ReusesSamePortDir(t *testing.T) {
 
 	nqn1 := "nqn.test:pvc-shared-port-1"
 	nqn2 := "nqn.test:pvc-shared-port-2"
-	addr := "10.0.0.1"
+	addr := extTestBindAddr
 	port := int32(4420)
 
 	tgt1 := nvmeTarget(tmpdir, nqn1, "/dev/zvol/tank/sp1", addr, port)
@@ -184,7 +187,7 @@ func TestNvmeof_Apply_NamespaceIDNonDefault(t *testing.T) {
 		SubsystemNQN: nqn,
 		NamespaceID:  5,
 		DevicePath:   "/dev/zvol/tank/nsid5",
-		BindAddress:  "10.0.0.1",
+		BindAddress:  extTestBindAddr,
 		Port:         4420,
 	}
 
@@ -205,7 +208,7 @@ func TestNvmeof_Apply_NamespaceIDNonDefault(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Section 3.12 — Remove Lifecycle Edge Cases
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestNvmeof_Remove_LeavesPortDirIntact verifies that Remove deletes the
 // subsystem's port symlink but does NOT remove the port directory itself
@@ -252,7 +255,7 @@ func TestNvmeof_Remove_LeavesHostsDirIntact(t *testing.T) {
 		SubsystemNQN: nqn,
 		NamespaceID:  1,
 		DevicePath:   "/dev/zvol/tank/hosts-intact",
-		BindAddress:  "10.0.0.1",
+		BindAddress:  extTestBindAddr,
 		Port:         4420,
 		AllowedHosts: []string{hostNQN},
 	}
@@ -331,7 +334,7 @@ func TestNvmeof_Remove_SuccessAfterApplyWithNoHosts(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Section 3.13 — AllowHost / DenyHost Edge Cases
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestNvmeof_AllowHost_CreatesHostDir verifies that AllowHost creates the
 // global hosts/<hostNQN>/ directory if it does not already exist.
@@ -453,7 +456,7 @@ func TestNvmeof_AllowHost_AllowedHostsDirCreated(t *testing.T) {
 	ahDir := filepath.Join(nvmetSubsystemDir(tmpdir, nqn), "allowed_hosts")
 	// allowed_hosts/ may or may not pre-exist; AllowHost must create it if absent.
 	// Remove it if it was created by Apply to simulate the no-pre-existing state.
-	_ = os.Remove(ahDir) // best-effort; ignore error if it doesn't exist
+	_ = os.Remove(ahDir) //nolint:errcheck // best-effort; ignore error if it doesn't exist
 
 	if err := tgt.AllowHost(hostNQN); err != nil {
 		t.Fatalf("AllowHost: %v", err)
@@ -468,7 +471,7 @@ func TestNvmeof_AllowHost_AllowedHostsDirCreated(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Section 3.14 — ListExports Advanced Scanning
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestNvmeof_ListExports_MultipleNamespaces verifies that a subsystem with
 // two namespace directories reports both device paths in the scan result.
@@ -530,7 +533,7 @@ func TestNvmeof_ListExports_DevicePathFileEmpty(t *testing.T) {
 		SubsystemNQN: nqn,
 		NamespaceID:  1,
 		DevicePath:   "", // empty on purpose
-		BindAddress:  "10.0.0.1",
+		BindAddress:  extTestBindAddr,
 		Port:         4420,
 	}
 	if err := tgt.Apply(); err != nil {
@@ -581,7 +584,7 @@ func TestNvmeof_ListExports_NQNFromDirName(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Section 3.15 — Apply Field Verification
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestNvmeof_Apply_DevicePathVerified verifies that the device_path file
 // content exactly matches NvmetTarget.DevicePath.
@@ -594,7 +597,7 @@ func TestNvmeof_Apply_DevicePathVerified(t *testing.T) {
 	nqn := "nqn.test:pvc-devpath-verified"
 	wantDevPath := "/dev/zvol/pool/pvc-abc"
 
-	tgt := nvmeTarget(tmpdir, nqn, wantDevPath, "10.0.0.1", 4420)
+	tgt := nvmeTarget(tmpdir, nqn, wantDevPath, extTestBindAddr, 4420)
 	if err := tgt.Apply(); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
@@ -633,7 +636,7 @@ func TestNvmeof_Apply_AddrTrsvcidMatchesPort(t *testing.T) {
 	nqn := "nqn.test:pvc-port-9500"
 	wantPort := int32(9500)
 
-	tgt := nvmeTarget(tmpdir, nqn, "/dev/zvol/tank/pvc-port-9500", "10.0.0.1", wantPort)
+	tgt := nvmeTarget(tmpdir, nqn, "/dev/zvol/tank/pvc-port-9500", extTestBindAddr, wantPort)
 	if err := tgt.Apply(); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}

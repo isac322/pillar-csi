@@ -62,9 +62,16 @@ type Bundle struct {
 	ClientKey []byte
 }
 
+// caBundle holds the intermediate outputs of CA key/cert generation.
+type caBundle struct {
+	key     *ecdsa.PrivateKey
+	certDER []byte
+	cert    *x509.Certificate
+}
+
 // New generates a fresh ephemeral Bundle.
 //
-// serverAddrs is used to populate the SAN extension of the server certificate.
+// ServerAddrs is used to populate the SAN extension of the server certificate.
 // Each element is interpreted as an IP address if net.ParseIP succeeds; otherwise
 // it is treated as a DNS name.  If no addresses are provided the server certificate
 // is issued with a single IP SAN for 127.0.0.1.
@@ -72,9 +79,26 @@ type Bundle struct {
 // The generated certificates are valid for one hour from the time of generation,
 // which is more than sufficient for any in-process test.
 func New(serverAddrs ...string) (*Bundle, error) {
-	// -----------------------------------------------------------------------
-	// CA key + self-signed certificate
-	// -----------------------------------------------------------------------
+	ca, err := generateCA()
+	if err != nil {
+		return nil, err
+	}
+
+	serverCertDER, serverKey, err := generateServerCert(ca.cert, ca.key, serverAddrs)
+	if err != nil {
+		return nil, err
+	}
+
+	clientCertDER, clientKey, err := generateClientCert(ca.cert, ca.key)
+	if err != nil {
+		return nil, err
+	}
+
+	return encodePEM(ca.key, ca.certDER, serverKey, serverCertDER, clientKey, clientCertDER)
+}
+
+// generateCA creates a self-signed CA key and certificate.
+func generateCA() (*caBundle, error) {
 	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, fmt.Errorf("testcerts: generate CA key: %w", err)
@@ -101,13 +125,19 @@ func New(serverAddrs ...string) (*Bundle, error) {
 	if err != nil {
 		return nil, fmt.Errorf("testcerts: parse CA certificate: %w", err)
 	}
+	return &caBundle{key: caKey, certDER: caCertDER, cert: caCertParsed}, nil
+}
 
-	// -----------------------------------------------------------------------
-	// Server leaf certificate
-	// -----------------------------------------------------------------------
+// generateServerCert creates a server leaf certificate signed by the given CA,
+// with SANs populated from serverAddrs (IP or DNS).
+func generateServerCert(
+	caCert *x509.Certificate,
+	caKey *ecdsa.PrivateKey,
+	serverAddrs []string,
+) ([]byte, *ecdsa.PrivateKey, error) {
 	serverKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		return nil, fmt.Errorf("testcerts: generate server key: %w", err)
+		return nil, nil, fmt.Errorf("testcerts: generate server key: %w", err)
 	}
 
 	serverTemplate := &x509.Certificate{
@@ -122,7 +152,6 @@ func New(serverAddrs ...string) (*Bundle, error) {
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}
 
-	// Populate SANs.
 	addrs := serverAddrs
 	if len(addrs) == 0 {
 		addrs = []string{"127.0.0.1"}
@@ -135,17 +164,21 @@ func New(serverAddrs ...string) (*Bundle, error) {
 		}
 	}
 
-	serverCertDER, err := x509.CreateCertificate(rand.Reader, serverTemplate, caCertParsed, &serverKey.PublicKey, caKey)
+	serverCertDER, err := x509.CreateCertificate(rand.Reader, serverTemplate, caCert, &serverKey.PublicKey, caKey)
 	if err != nil {
-		return nil, fmt.Errorf("testcerts: create server certificate: %w", err)
+		return nil, nil, fmt.Errorf("testcerts: create server certificate: %w", err)
 	}
+	return serverCertDER, serverKey, nil
+}
 
-	// -----------------------------------------------------------------------
-	// Client leaf certificate
-	// -----------------------------------------------------------------------
+// generateClientCert creates a client leaf certificate signed by the given CA.
+func generateClientCert(
+	caCert *x509.Certificate,
+	caKey *ecdsa.PrivateKey,
+) ([]byte, *ecdsa.PrivateKey, error) {
 	clientKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		return nil, fmt.Errorf("testcerts: generate client key: %w", err)
+		return nil, nil, fmt.Errorf("testcerts: generate client key: %w", err)
 	}
 
 	clientTemplate := &x509.Certificate{
@@ -160,14 +193,22 @@ func New(serverAddrs ...string) (*Bundle, error) {
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	}
 
-	clientCertDER, err := x509.CreateCertificate(rand.Reader, clientTemplate, caCertParsed, &clientKey.PublicKey, caKey)
+	clientCertDER, err := x509.CreateCertificate(rand.Reader, clientTemplate, caCert, &clientKey.PublicKey, caKey)
 	if err != nil {
-		return nil, fmt.Errorf("testcerts: create client certificate: %w", err)
+		return nil, nil, fmt.Errorf("testcerts: create client certificate: %w", err)
 	}
+	return clientCertDER, clientKey, nil
+}
 
-	// -----------------------------------------------------------------------
-	// PEM encode everything
-	// -----------------------------------------------------------------------
+// encodePEM marshals all keys and certificates to PEM and assembles a Bundle.
+func encodePEM(
+	caKey *ecdsa.PrivateKey,
+	caCertDER []byte,
+	serverKey *ecdsa.PrivateKey,
+	serverCertDER []byte,
+	clientKey *ecdsa.PrivateKey,
+	clientCertDER []byte,
+) (*Bundle, error) {
 	b := &Bundle{}
 
 	b.CACert = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caCertDER})

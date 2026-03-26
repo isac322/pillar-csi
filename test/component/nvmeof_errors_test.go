@@ -24,7 +24,7 @@ limitations under the License.
 //     of the Apply pipeline (namespace directory, port directory).
 //   - Permission denied on configfs writes: read-only directories prevent
 //     directory creation and symlink creation (AllowHost).
-//   - Device never appears (timeout): WaitForDevice with pre-cancelled context
+//   - Device never appears (timeout): WaitForDevice with pre-canceled context
 //     or a very short timeout.
 //
 // Black-box setup: each test uses t.TempDir() as ConfigfsRoot.  No root
@@ -46,7 +46,7 @@ import (
 
 // ---------------------------------------------------------------------------
 // Partial failure mid-apply
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------.
 
 // TestNvmeof_Error_PartialApply_NamespaceBlockedByFile verifies that Apply
 // returns an error and leaves the subsystem in a recoverable state when the
@@ -99,7 +99,7 @@ func TestNvmeof_Error_PartialApply_NamespaceBlockedByFile(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // Permission denied on configfs writes
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------.
 
 // TestNvmeof_Error_Apply_PortsDirPermissionDenied verifies that Apply returns
 // a descriptive error when the nvmet/ports/ directory is read-only and a new
@@ -221,7 +221,7 @@ func TestNvmeof_Error_AllowHost_AllowedHostsDirPermissionDenied(t *testing.T) {
 // TestNvmeof_Error_Apply_EnableFileReadOnly verifies that Apply returns an
 // error when the namespace's enable pseudo-file is pre-created as read-only.
 //
-// createNamespace writes "1" to the enable file to activate the namespace.
+// CreateNamespace writes "1" to the enable file to activate the namespace.
 // If the file already exists but is unwritable (simulating a kernel-level
 // restriction on repeated enable writes), Apply must surface the error.
 //
@@ -239,7 +239,7 @@ func TestNvmeof_Error_Apply_EnableFileReadOnly(t *testing.T) {
 		t.Fatalf("MkdirAll namespace dir: %v", err)
 	}
 	enableFile := filepath.Join(nsDir, "enable")
-	if err := os.WriteFile(enableFile, []byte("0"), 0o644); err != nil {
+	if err := os.WriteFile(enableFile, []byte("0"), 0o600); err != nil {
 		t.Fatalf("WriteFile enable: %v", err)
 	}
 	makeFileReadOnly(t, enableFile) // auto-skips as root; restores 0644 on cleanup
@@ -262,18 +262,18 @@ func TestNvmeof_Error_Apply_EnableFileReadOnly(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // Device never appears (timeout)
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------.
 
 // TestNvmeof_Error_WaitForDevice_PreCancelledContext verifies that
 // WaitForDevice returns an error immediately when the caller's context is
-// already cancelled before the function is invoked.
+// already canceled before the function is invoked.
 //
 // This is distinct from TestNvmeof_DevicePoll_ContextCancelled (which cancels
-// the context after the function starts): here the context is cancelled before
+// the context after the function starts): here the context is canceled before
 // WaitForDevice is even called, so the first select should observe ctx.Done()
 // immediately after the first checker invocation.
 //
-//	Setup:   Checker returns (false, nil); context pre-cancelled.
+//	Setup:   Checker returns (false, nil); context pre-canceled.
 //	Expect:  Returns non-nil error without entering a long wait.
 func TestNvmeof_Error_WaitForDevice_PreCancelledContext(t *testing.T) {
 	t.Parallel()
@@ -290,15 +290,15 @@ func TestNvmeof_Error_WaitForDevice_PreCancelledContext(t *testing.T) {
 	elapsed := time.Since(start)
 
 	if err == nil {
-		t.Fatal("expected error from pre-cancelled context, got nil")
+		t.Fatal("expected error from pre-canceled context, got nil")
 	}
 
 	// Should return almost immediately — not wait the 5 s internal timeout.
 	const maxElapsed = 500 * time.Millisecond
 	if elapsed > maxElapsed {
-		t.Errorf("elapsed %v, want < %v (should exit on pre-cancelled context)", elapsed, maxElapsed)
+		t.Errorf("elapsed %v, want < %v (should exit on pre-canceled context)", elapsed, maxElapsed)
 	}
-	t.Logf("WaitForDevice with pre-cancelled context returned in %v: %v", elapsed, err)
+	t.Logf("WaitForDevice with pre-canceled context returned in %v: %v", elapsed, err)
 }
 
 // TestNvmeof_Error_WaitForDevice_ShortTimeoutNeverAppears verifies that

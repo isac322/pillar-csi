@@ -16,7 +16,7 @@ limitations under the License.
 
 package csi
 
-// Tests for the ControllerServer.CreateVolume idempotency behaviour.
+// Tests for the ControllerServer.CreateVolume idempotency behavior.
 //
 // These tests verify that:
 //  1. A fresh CreateVolume call provisions the backend AND exports it.
@@ -27,8 +27,8 @@ package csi
 //     agent.ExportVolume, preserving the existing zvol.
 //
 // All tests run without a real Kubernetes cluster or NVMe-oF kernel module.
-// A controller-runtime fake client supplies Kubernetes API behaviour, and a
-// mock AgentServiceClient supplies agent RPC behaviour.
+// A controller-runtime fake client supplies Kubernetes API behavior, and a
+// mock AgentServiceClient supplies agent RPC behavior.
 //
 // Run with:
 //
@@ -56,7 +56,7 @@ import (
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Mock AgentServiceClient
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // mockAgentClient is a test double for agentv1.AgentServiceClient.
 // It records calls to CreateVolume and ExportVolume, and returns pre-configured
@@ -161,10 +161,18 @@ func (m *mockAgentClient) DeleteVolume(
 }
 
 // Stubbed methods — not used by CreateVolume or DeleteVolume.
-func (m *mockAgentClient) GetCapabilities(_ context.Context, _ *agentv1.GetCapabilitiesRequest, _ ...grpc.CallOption) (*agentv1.GetCapabilitiesResponse, error) {
+func (*mockAgentClient) GetCapabilities(
+	_ context.Context,
+	_ *agentv1.GetCapabilitiesRequest,
+	_ ...grpc.CallOption,
+) (*agentv1.GetCapabilitiesResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "not implemented in mock")
 }
-func (m *mockAgentClient) GetCapacity(_ context.Context, _ *agentv1.GetCapacityRequest, _ ...grpc.CallOption) (*agentv1.GetCapacityResponse, error) {
+func (m *mockAgentClient) GetCapacity(
+	_ context.Context,
+	_ *agentv1.GetCapacityRequest,
+	_ ...grpc.CallOption,
+) (*agentv1.GetCapacityResponse, error) {
 	m.getCapacityCalls++
 	if m.getCapacityErr != nil {
 		return nil, m.getCapacityErr
@@ -178,37 +186,72 @@ func (m *mockAgentClient) GetCapacity(_ context.Context, _ *agentv1.GetCapacityR
 		UsedBytes:      40 << 30,  // 40 GiB
 	}, nil
 }
-func (m *mockAgentClient) ListVolumes(_ context.Context, _ *agentv1.ListVolumesRequest, _ ...grpc.CallOption) (*agentv1.ListVolumesResponse, error) {
+func (*mockAgentClient) ListVolumes(
+	_ context.Context,
+	_ *agentv1.ListVolumesRequest,
+	_ ...grpc.CallOption,
+) (*agentv1.ListVolumesResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "not implemented in mock")
 }
-func (m *mockAgentClient) ListExports(_ context.Context, _ *agentv1.ListExportsRequest, _ ...grpc.CallOption) (*agentv1.ListExportsResponse, error) {
+func (*mockAgentClient) ListExports(
+	_ context.Context,
+	_ *agentv1.ListExportsRequest,
+	_ ...grpc.CallOption,
+) (*agentv1.ListExportsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "not implemented in mock")
 }
-func (m *mockAgentClient) HealthCheck(_ context.Context, _ *agentv1.HealthCheckRequest, _ ...grpc.CallOption) (*agentv1.HealthCheckResponse, error) {
+func (*mockAgentClient) HealthCheck(
+	_ context.Context,
+	_ *agentv1.HealthCheckRequest,
+	_ ...grpc.CallOption,
+) (*agentv1.HealthCheckResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "not implemented in mock")
 }
-func (m *mockAgentClient) ExpandVolume(_ context.Context, _ *agentv1.ExpandVolumeRequest, _ ...grpc.CallOption) (*agentv1.ExpandVolumeResponse, error) {
+func (*mockAgentClient) ExpandVolume(
+	_ context.Context,
+	_ *agentv1.ExpandVolumeRequest,
+	_ ...grpc.CallOption,
+) (*agentv1.ExpandVolumeResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "not implemented in mock")
 }
-func (m *mockAgentClient) AllowInitiator(_ context.Context, _ *agentv1.AllowInitiatorRequest, _ ...grpc.CallOption) (*agentv1.AllowInitiatorResponse, error) {
+func (*mockAgentClient) AllowInitiator(
+	_ context.Context,
+	_ *agentv1.AllowInitiatorRequest,
+	_ ...grpc.CallOption,
+) (*agentv1.AllowInitiatorResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "not implemented in mock")
 }
-func (m *mockAgentClient) DenyInitiator(_ context.Context, _ *agentv1.DenyInitiatorRequest, _ ...grpc.CallOption) (*agentv1.DenyInitiatorResponse, error) {
+func (*mockAgentClient) DenyInitiator(
+	_ context.Context,
+	_ *agentv1.DenyInitiatorRequest,
+	_ ...grpc.CallOption,
+) (*agentv1.DenyInitiatorResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "not implemented in mock")
 }
-func (m *mockAgentClient) SendVolume(_ context.Context, _ *agentv1.SendVolumeRequest, _ ...grpc.CallOption) (grpc.ServerStreamingClient[agentv1.SendVolumeChunk], error) {
+func (*mockAgentClient) SendVolume(
+	_ context.Context,
+	_ *agentv1.SendVolumeRequest,
+	_ ...grpc.CallOption,
+) (grpc.ServerStreamingClient[agentv1.SendVolumeChunk], error) {
 	return nil, status.Error(codes.Unimplemented, "not implemented in mock")
 }
-func (m *mockAgentClient) ReceiveVolume(_ context.Context, _ ...grpc.CallOption) (grpc.ClientStreamingClient[agentv1.ReceiveVolumeChunk, agentv1.ReceiveVolumeResponse], error) {
+func (*mockAgentClient) ReceiveVolume(
+	_ context.Context,
+	_ ...grpc.CallOption,
+) (grpc.ClientStreamingClient[agentv1.ReceiveVolumeChunk, agentv1.ReceiveVolumeResponse], error) {
 	return nil, status.Error(codes.Unimplemented, "not implemented in mock")
 }
-func (m *mockAgentClient) ReconcileState(_ context.Context, _ *agentv1.ReconcileStateRequest, _ ...grpc.CallOption) (*agentv1.ReconcileStateResponse, error) {
+func (*mockAgentClient) ReconcileState(
+	_ context.Context,
+	_ *agentv1.ReconcileStateRequest,
+	_ ...grpc.CallOption,
+) (*agentv1.ReconcileStateResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "not implemented in mock")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Test helpers
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // nopCloser satisfies io.Closer with a no-op.
 type nopCloser struct{}
@@ -303,7 +346,7 @@ func baseCreateVolumeRequest() *csi.CreateVolumeRequest {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCreateVolume_FirstCall verifies the normal (no prior state) path:
 // agent.CreateVolume and agent.ExportVolume are each called exactly once,
@@ -488,6 +531,7 @@ func TestCreateVolume_CreatePartialRetry_DevicePathPreserved(t *testing.T) {
 	origExport := env.agent.exportVolumeResp
 	env.agent.exportVolumeErr = errors.New("export failed")
 
+	//nolint:errcheck // first attempt is expected to fail; error is intentionally discarded
 	_, _ = env.srv.CreateVolume(ctx, baseCreateVolumeRequest())
 
 	// Verify PillarVolume CRD was created with the device path.
@@ -646,7 +690,7 @@ func TestCreateVolume_AgentUnavailable(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers for device-path capture
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // devicePathCapturingClient wraps another AgentServiceClient and intercepts
 // ExportVolume calls to record the DevicePath field.
@@ -672,7 +716,7 @@ func ctrlKey(name string) types.NamespacedName {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GetCapacity tests
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // baseGetCapacityRequest returns a minimal valid GetCapacityRequest.
 func baseGetCapacityRequest() *csi.GetCapacityRequest {
@@ -876,7 +920,7 @@ func TestGetCapacity_TargetNoAddress(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PVC annotation override integration tests
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // newControllerTestEnvWithPVC builds a ControllerServer test environment where
 // a PVC in the given namespace carries the supplied annotations.  The
@@ -940,7 +984,7 @@ func newControllerTestEnvWithPVC(
 // TestCreateVolume_PVCAnnotationOverride_ZFSProperty verifies the end-to-end
 // PVC annotation override flow for a ZFS property (compression).
 //
-// Expected behaviour:
+// Expected behavior:
 //  1. The PVC carries "pillar-csi.bhyoo.com/backend-override" with zfs.properties.compression=zstd.
 //  2. CreateVolume merges this annotation into the parameter map.
 //  3. buildBackendParams populates ZfsVolumeParams.Properties["compression"] = "zstd".

@@ -71,7 +71,7 @@ import (
 
 // ─────────────────────────────────────────────────────────────────────────────
 // statefulZvolAgentServer
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // statefulZvolAgentServer wraps mockAgentServer and adds an explicit zvol
 // registry that mirrors what a real ZFS agent would maintain.
@@ -154,7 +154,7 @@ func (m *statefulZvolAgentServer) DeleteVolume(
 
 // ─────────────────────────────────────────────────────────────────────────────
 // zvolTestEnv
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // zvolTestEnv is the complete test scaffold for zvol no-duplication tests.
 // It mirrors csiControllerE2EEnv but uses a statefulZvolAgentServer instead
@@ -190,7 +190,7 @@ func newZvolTestEnv(t *testing.T, targetName string) *zvolTestEnv {
 	}
 	agentAddr := lis.Addr().String()
 
-	go func() { _ = grpcSrv.Serve(lis) }()
+	go func() { _ = grpcSrv.Serve(lis) }() //nolint:errcheck // server errors are non-actionable in test setup
 	t.Cleanup(func() { grpcSrv.GracefulStop() })
 
 	// ── Fake Kubernetes client with PillarTarget ──────────────────────────────
@@ -253,7 +253,7 @@ func (e *zvolTestEnv) defaultParams() map[string]string {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIZvolNoDup_ExactlyOneZvolAfterExportFailureRetry
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIZvolNoDup_ExactlyOneZvolAfterExportFailureRetry injects a mock
 // ExportVolume failure after CreateVolume (agent-level) succeeds, then retries
@@ -275,7 +275,7 @@ func (e *zvolTestEnv) defaultParams() map[string]string {
 //
 //	"retries CreateVolume and asserts exactly one zvol exists and the volume
 //	reaches a healthy state without duplication" (Sub-AC 4c)
-func TestCSIZvolNoDup_ExactlyOneZvolAfterExportFailureRetry(t *testing.T) {
+func TestCSIZvolNoDup_ExactlyOneZvolAfterExportFailureRetry(t *testing.T) { //nolint:gocyclo // retry test
 	t.Parallel()
 	ctx := context.Background()
 	env := newZvolTestEnv(t, "storage-1")
@@ -408,7 +408,7 @@ func TestCSIZvolNoDup_ExactlyOneZvolAfterExportFailureRetry(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIZvolNoDup_ZvolRegistryReflectsDeleteAfterPartialCreate
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIZvolNoDup_ZvolRegistryReflectsDeleteAfterPartialCreate verifies that
 // DeleteVolume on a volume in the CreatePartial state correctly removes the
@@ -433,7 +433,7 @@ func TestCSIZvolNoDup_ZvolRegistryReflectsDeleteAfterPartialCreate(t *testing.T)
 
 	// ── Cause a partial failure (backend created, export never succeeded) ─────
 	env.AgentMock.ExportVolumeErr = errors.New("export failed: target unavailable")
-	_, _ = env.Controller.CreateVolume(ctx, req)
+	_, _ = env.Controller.CreateVolume(ctx, req) //nolint:errcheck // intentional failure to test partial state
 
 	// Verify the zvol was created.
 	if got := env.AgentMock.ZvolCount(); got != 1 {
@@ -485,7 +485,7 @@ func TestCSIZvolNoDup_ZvolRegistryReflectsDeleteAfterPartialCreate(t *testing.T)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSIZvolNoDup_MultipleRetriesNeverDuplicate
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIZvolNoDup_MultipleRetriesNeverDuplicate verifies that even if
 // ExportVolume fails multiple times in a row, the zvol count never exceeds 1.
@@ -510,7 +510,7 @@ func TestCSIZvolNoDup_MultipleRetriesNeverDuplicate(t *testing.T) {
 	}
 
 	// ── Fail ExportVolume retryFails times ────────────────────────────────────
-	for i := 0; i < retryFails; i++ {
+	for i := range retryFails {
 		env.AgentMock.ExportVolumeErr = fmt.Errorf("export failed: transient (attempt %d)", i+1)
 		_, err := env.Controller.CreateVolume(ctx, req)
 		if err == nil {

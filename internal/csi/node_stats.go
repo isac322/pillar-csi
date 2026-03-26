@@ -33,7 +33,7 @@ import (
 // device in bytes.  The constant is the same on Linux/amd64 and arm64, the two
 // supported platforms for pillar-csi nodes.
 //
-// Reference: <linux/fs.h> BLKGETSIZE64 = _IOR(0x12, 114, size_t)
+// Reference: <linux/fs.h> BLKGETSIZE64 = _IOR(0x12, 114, size_t).
 const blkgetsize64 = uintptr(0x80081272)
 
 // linuxBlockDeviceSize queries the total capacity of the block device at path
@@ -42,7 +42,7 @@ const blkgetsize64 = uintptr(0x80081272)
 // The caller is responsible for ensuring that path refers to a block device
 // (i.e. os.Stat(path).Mode()&os.ModeDevice != 0).
 func linuxBlockDeviceSize(path string) (int64, error) {
-	f, err := os.Open(path)
+	f, err := os.Open(path) //nolint:gosec // G304: path is a validated block device path from caller
 	if err != nil {
 		return 0, fmt.Errorf("open block device %q: %w", path, err)
 	}
@@ -54,12 +54,12 @@ func linuxBlockDeviceSize(path string) (int64, error) {
 		syscall.SYS_IOCTL,
 		f.Fd(),
 		blkgetsize64,
-		uintptr(unsafe.Pointer(&size)),
+		uintptr(unsafe.Pointer(&size)), //nolint:gosec // G103: unsafe.Pointer required for ioctl ABI
 	)
 	if errno != 0 {
 		return 0, fmt.Errorf("ioctl BLKGETSIZE64 on %q: %w", path, errno)
 	}
-	return int64(size), nil //nolint:gosec // safe: block device sizes fit in int64 on any realistic hardware
+	return int64(size), nil
 }
 
 // NodeGetVolumeStats returns capacity statistics for the volume accessible at
@@ -87,11 +87,11 @@ func (n *NodeServer) NodeGetVolumeStats(
 ) (*csi.NodeGetVolumeStatsResponse, error) {
 	// ── Input validation ────────────────────────────────────────────────────
 	if req.GetVolumeId() == "" {
-		return nil, status.Error(codes.InvalidArgument, "NodeGetVolumeStats: volume_id is required")
+		return nil, status.Error(codes.InvalidArgument, "NodeGetVolumeStats: volume_id is required") //nolint:wrapcheck
 	}
 	volumePath := req.GetVolumePath()
 	if volumePath == "" {
-		return nil, status.Error(codes.InvalidArgument, "NodeGetVolumeStats: volume_path is required")
+		return nil, status.Error(codes.InvalidArgument, "NodeGetVolumeStats: volume_path is required") //nolint:wrapcheck
 	}
 
 	// Select the stat function: use the injected override when present
@@ -154,21 +154,26 @@ func (n *NodeServer) NodeGetVolumeStats(
 	// syscall.Statfs populates a Statfs_t with block counts and inode counts
 	// for the filesystem containing the given path.
 	var statfs syscall.Statfs_t
-	if err := syscall.Statfs(volumePath, &statfs); err != nil {
+	err := syscall.Statfs(volumePath, &statfs)
+	if err != nil {
 		return nil, status.Errorf(codes.Internal,
 			"NodeGetVolumeStats: statfs %q: %v", volumePath, err)
 	}
 
 	// Convert block counts to bytes using the fundamental block size (Bsize).
-	// Note: Bsize is an int64 on Linux; cast to int64 for safe arithmetic.
-	blockSize := int64(statfs.Bsize)
-	totalBytes := int64(statfs.Blocks) * blockSize
-	availableBytes := int64(statfs.Bavail) * blockSize
-	usedBytes := (int64(statfs.Blocks) - int64(statfs.Bfree)) * blockSize
+	// Bsize is int64 on Linux; uint64 fields are cast with G115 acknowledged
+	// (values are expected to be well within int64 range on real filesystems).
+	blockSize := statfs.Bsize
+	blocks := int64(statfs.Blocks) //nolint:gosec // G115: fits in int64
+	bavail := int64(statfs.Bavail) //nolint:gosec // G115: fits in int64
+	bfree := int64(statfs.Bfree)   //nolint:gosec // G115: fits in int64
+	totalBytes := blocks * blockSize
+	availableBytes := bavail * blockSize
+	usedBytes := (blocks - bfree) * blockSize
 
-	// Inode counts (cast to int64; Ffree is the number of free inodes).
-	totalInodes := int64(statfs.Files)
-	availableInodes := int64(statfs.Ffree)
+	// Inode counts.
+	totalInodes := int64(statfs.Files)     //nolint:gosec // G115: fits in int64
+	availableInodes := int64(statfs.Ffree) //nolint:gosec // G115: fits in int64
 	usedInodes := totalInodes - availableInodes
 
 	return &csi.NodeGetVolumeStatsResponse{

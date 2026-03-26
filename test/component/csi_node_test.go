@@ -39,7 +39,7 @@ import (
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Mock Connector (implements pillarcsi.Connector)
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // csiMockConnector is a test double for the pillarcsi.Connector interface.
 //
@@ -67,9 +67,9 @@ import (
 //     complete before sending the NVMe Disconnect command.  The mock calls
 //     disconnectFn or returns nil immediately.
 //   - Call counters are not goroutine-safe; tests that invoke the connector
-//     from multiple goroutines concurrently must add external synchronisation.
+//     from multiple goroutines concurrently must add external synchronization.
 //
-// Function fields let each test install per-call behaviour.
+// Function fields let each test install per-call behavior.
 type csiMockConnector struct {
 	connectFn    func(ctx context.Context, subsysNQN, trAddr, trSvcID string) error
 	disconnectFn func(ctx context.Context, subsysNQN string) error
@@ -110,7 +110,7 @@ func (m *csiMockConnector) GetDevicePath(ctx context.Context, subsysNQN string) 
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Mock Mounter (implements pillarcsi.Mounter)
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // csiMockMounter is a test double for the pillarcsi.Mounter interface.
 //
@@ -122,7 +122,7 @@ func (m *csiMockConnector) GetDevicePath(ctx context.Context, subsysNQN string) 
 //
 // Omits / simplifies:
 //   - No filesystem I/O: the real FormatAndMount runs mkfs (e.g. mke2fs for
-//     ext4, mkfs.xfs for XFS) which writes a superblock and initialises
+//     ext4, mkfs.xfs for XFS) which writes a superblock and initializes
 //     inodes.  The mock records the call and marks the target path as mounted
 //     in an in-memory map.
 //   - No kernel mount tables: the real Mount / Unmount updates /proc/mounts
@@ -155,7 +155,7 @@ type csiMockMounter struct {
 	unmountCalls        int
 	isMountedCalls      int
 
-	// mounted tracks which paths are currently "mounted" by default behaviour.
+	// mounted tracks which paths are currently "mounted" by default behavior.
 	mounted map[string]bool
 }
 
@@ -203,7 +203,7 @@ func (m *csiMockMounter) IsMounted(target string) (bool, error) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Test environment helper
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // csiNodeTestEnv holds everything for a NodeServer component test.
 type csiNodeTestEnv struct {
@@ -269,7 +269,7 @@ func basePublishRequest(stagingPath, targetPath string) *csipb.NodePublishVolume
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSINode_GetCapabilities
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSINode_GetCapabilities verifies that NodeGetCapabilities advertises
 // STAGE_UNSTAGE_VOLUME and EXPAND_VOLUME.
@@ -298,7 +298,7 @@ func TestCSINode_GetCapabilities(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSINode_GetInfo
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSINode_GetInfo verifies that NodeGetInfo returns the configured node ID.
 func TestCSINode_GetInfo(t *testing.T) {
@@ -317,7 +317,7 @@ func TestCSINode_GetInfo(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSINode_NodeStageVolume_MountAccess
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSINode_NodeStageVolume_MountAccess verifies the full happy-path stage
 // sequence for a MOUNT access type volume:
@@ -347,7 +347,7 @@ func TestCSINode_NodeStageVolume_MountAccess(t *testing.T) {
 	}
 
 	var capturedSource, capturedTarget string
-	env.mounter.formatAndMountFn = func(source, target, fsType string, options []string) error {
+	env.mounter.formatAndMountFn = func(source, target, _ string, _ []string) error {
 		capturedSource, capturedTarget = source, target
 		return nil
 	}
@@ -387,7 +387,7 @@ func TestCSINode_NodeStageVolume_MountAccess(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSINode_NodeStageVolume_BlockAccess
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSINode_NodeStageVolume_BlockAccess verifies the stage sequence for
 // a BLOCK access type: a bind-mount is used instead of FormatAndMount.
@@ -449,7 +449,7 @@ func TestCSINode_NodeStageVolume_BlockAccess(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSINode_NodeStageVolume_AlreadyStaged
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSINode_NodeStageVolume_AlreadyStaged verifies idempotency: calling
 // NodeStageVolume a second time when the staging path is already mounted
@@ -486,7 +486,7 @@ func TestCSINode_NodeStageVolume_AlreadyStaged(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSINode_NodeStageVolume_ConnectFails
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSINode_NodeStageVolume_ConnectFails verifies that a Connector.Connect
 // failure causes NodeStageVolume to return an Internal error and prevents
@@ -517,7 +517,7 @@ func TestCSINode_NodeStageVolume_ConnectFails(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSINode_NodeStageVolume_DeviceTimeout
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSINode_NodeStageVolume_DeviceTimeout verifies that when the block
 // device never appears, NodeStageVolume returns DeadlineExceeded.
@@ -550,7 +550,7 @@ func TestCSINode_NodeStageVolume_DeviceTimeout(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSINode_NodeStageVolume_GetDevicePathError
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSINode_NodeStageVolume_GetDevicePathError verifies that a
 // GetDevicePath error (e.g., permission denied) returns Internal immediately
@@ -577,7 +577,7 @@ func TestCSINode_NodeStageVolume_GetDevicePathError(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSINode_NodeStageVolume_MountFails
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSINode_NodeStageVolume_MountFails verifies that a FormatAndMount
 // failure causes NodeStageVolume to return an Internal error.
@@ -603,7 +603,7 @@ func TestCSINode_NodeStageVolume_MountFails(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSINode_NodeStageVolume_MissingVolumeContext
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSINode_NodeStageVolume_MissingVolumeContext verifies that missing
 // required VolumeContext keys are rejected with InvalidArgument.
@@ -621,7 +621,6 @@ func TestCSINode_NodeStageVolume_MissingVolumeContext(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			env := newCSINodeTestEnv(t)
@@ -643,7 +642,7 @@ func TestCSINode_NodeStageVolume_MissingVolumeContext(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSINode_NodeUnstageVolume_Success
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSINode_NodeUnstageVolume_Success verifies the full unstage sequence:
 //  1. Mounter.Unmount is called on the staging path.
@@ -688,7 +687,7 @@ func TestCSINode_NodeUnstageVolume_Success(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSINode_NodeUnstageVolume_AlreadyUnstaged
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSINode_NodeUnstageVolume_AlreadyUnstaged verifies that calling
 // NodeUnstageVolume on a volume that was never staged (no state file) returns
@@ -713,7 +712,7 @@ func TestCSINode_NodeUnstageVolume_AlreadyUnstaged(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSINode_NodePublishVolume_Success
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSINode_NodePublishVolume_Success verifies that NodePublishVolume
 // performs a bind-mount from the staging path to the target path.
@@ -747,7 +746,7 @@ func TestCSINode_NodePublishVolume_Success(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSINode_NodePublishVolume_ReadOnly
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSINode_NodePublishVolume_ReadOnly verifies that when Readonly=true
 // the bind-mount options include "ro".
@@ -785,7 +784,7 @@ func TestCSINode_NodePublishVolume_ReadOnly(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSINode_NodePublishVolume_Idempotent
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSINode_NodePublishVolume_Idempotent verifies that a second
 // NodePublishVolume call when the target path is already mounted returns
@@ -815,7 +814,7 @@ func TestCSINode_NodePublishVolume_Idempotent(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSINode_NodePublishVolume_MountFails
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSINode_NodePublishVolume_MountFails verifies that a Mounter.Mount
 // failure during publish returns Internal.
@@ -842,7 +841,7 @@ func TestCSINode_NodePublishVolume_MountFails(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSINode_NodeUnpublishVolume_Success
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSINode_NodeUnpublishVolume_Success verifies that NodeUnpublishVolume
 // calls Mounter.Unmount on the target path.
@@ -872,7 +871,7 @@ func TestCSINode_NodeUnpublishVolume_Success(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSINode_NodeUnpublishVolume_Idempotent
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSINode_NodeUnpublishVolume_Idempotent verifies that unpublishing a
 // path that is not currently mounted returns success without error.
@@ -897,7 +896,7 @@ func TestCSINode_NodeUnpublishVolume_Idempotent(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSINode_NodeStageUnstagePublishUnpublish_FullLifecycle
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSINode_NodeStageUnstagePublishUnpublish_FullLifecycle exercises the
 // complete node-side volume lifecycle:
@@ -979,7 +978,7 @@ func TestCSINode_NodeStageUnstagePublishUnpublish_FullLifecycle(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestCSINode_NodeStageVolume_MissingVolumeID
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSINode_NodeStageVolume_MissingVolumeID verifies that an empty volume_id
 // is rejected with InvalidArgument.
@@ -1005,7 +1004,7 @@ func TestCSINode_NodeStageVolume_MissingVolumeID(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 // § 5.7 NodeExpandVolume
 // TESTCASES.md § 5.7 tests 29–30
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSINode_NodeExpandVolume_UnknownMount verifies that NodeExpandVolume
 // returns Internal when the volume_path is not a known mount point (test
@@ -1066,7 +1065,7 @@ func TestCSINode_GetCapabilities_AdvertisesExpandVolume(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 // § 5.9 State File Edge Cases
 // TESTCASES.md § 5.9 tests 35–38
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSINode_NodeUnstage_CorruptStateFile verifies that a corrupt (non-JSON)
 // state file during NodeUnstageVolume returns a non-OK status without panic
@@ -1115,10 +1114,12 @@ func TestCSINode_NodeStage_StateDirUnwritable(t *testing.T) {
 
 	stateDir := t.TempDir()
 	// Make stateDir read-only so that writing the state file fails.
-	if err := os.Chmod(stateDir, 0o555); err != nil {
+	if err := os.Chmod(stateDir, 0o555); err != nil { //nolint:gosec // test file with intentional permissions
 		t.Fatalf("chmod stateDir: %v", err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(stateDir, 0o755) })
+	t.Cleanup(func() {
+		_ = os.Chmod(stateDir, 0o755) //nolint:errcheck,gosec // cleanup: non-actionable
+	})
 
 	connector := &csiMockConnector{}
 	mounter := newCsiMockMounter()
@@ -1164,7 +1165,7 @@ func TestCSINode_NodeUnstage_StateFileMissingIsOK(t *testing.T) {
 	stagingPath := t.TempDir()
 
 	// Mounter reports the staging path is not mounted.
-	env.mounter.isMountedFn = func(target string) (bool, error) {
+	env.mounter.isMountedFn = func(_ string) (bool, error) {
 		return false, nil
 	}
 
@@ -1214,7 +1215,7 @@ func TestCSINode_NodeStage_Idempotent_StateFileExists(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 // § 5.10 Additional Input Validation
 // TESTCASES.md § 5.10 tests 39–45
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSINode_NodeStageVolume_MissingStagingTargetPath verifies that an empty
 // staging_target_path is rejected with InvalidArgument (test case 39).

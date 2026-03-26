@@ -42,23 +42,23 @@ import (
 
 // ─────────────────────────────────────────────────────────────────────────────
 // fakeDeviceFileInfo
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // fakeDeviceFileInfo implements os.FileInfo and reports os.ModeDevice in its
 // mode so that NodeGetVolumeStats takes the block-device branch without
 // needing a real block device on the host.
 type fakeDeviceFileInfo struct{}
 
-func (f *fakeDeviceFileInfo) Name() string       { return "fake-device" }
-func (f *fakeDeviceFileInfo) Size() int64        { return 0 }
-func (f *fakeDeviceFileInfo) Mode() os.FileMode  { return os.ModeDevice | 0o600 }
-func (f *fakeDeviceFileInfo) ModTime() time.Time { return time.Time{} }
-func (f *fakeDeviceFileInfo) IsDir() bool        { return false }
-func (f *fakeDeviceFileInfo) Sys() any           { return nil }
+func (*fakeDeviceFileInfo) Name() string       { return "fake-device" }
+func (*fakeDeviceFileInfo) Size() int64        { return 0 }
+func (*fakeDeviceFileInfo) Mode() os.FileMode  { return os.ModeDevice | 0o600 }
+func (*fakeDeviceFileInfo) ModTime() time.Time { return time.Time{} }
+func (*fakeDeviceFileInfo) IsDir() bool        { return false }
+func (*fakeDeviceFileInfo) Sys() any           { return nil }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Input-validation tests
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestNodeGetVolumeStats_MissingVolumeID verifies that an empty volume_id is
 // rejected with InvalidArgument.
@@ -119,7 +119,7 @@ func TestNodeGetVolumeStats_NonExistentPath(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Filesystem (MOUNT) volume tests
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestNodeGetVolumeStats_FilesystemVolume verifies that NodeGetVolumeStats
 // returns both BYTES and INODES usage entries for a real filesystem path.
@@ -168,7 +168,7 @@ func TestNodeGetVolumeStats_FilesystemVolume(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Block device (BLOCK) volume tests
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestNodeGetVolumeStats_BlockDevice_HappyPath verifies that when volume_path
 // refers to a block device file, NodeGetVolumeStats returns a single BYTES

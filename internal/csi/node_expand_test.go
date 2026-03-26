@@ -37,7 +37,7 @@ import (
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Mock Resizer
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // mockResizer is a test double for the Resizer interface.
 type mockResizer struct {
@@ -61,7 +61,7 @@ func (m *mockResizer) ResizeFS(mountPath, fsType string) error {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Test helpers
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // newExpandServer creates a NodeServer with a mock Resizer for testing.
 func newExpandServer(t *testing.T, r Resizer) *NodeServer {
@@ -73,7 +73,7 @@ func newExpandServer(t *testing.T, r Resizer) *NodeServer {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // NodeExpandVolume tests
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 func TestNodeExpandVolume_MissingVolumeID(t *testing.T) {
 	srv := newExpandServer(t, &mockResizer{})
@@ -124,8 +124,8 @@ func TestNodeExpandVolume_Ext4_DefaultFsType(t *testing.T) {
 	if mock.capturedMount != "/mnt/staging/vol-1" {
 		t.Errorf("expected mountPath %q, got %q", "/mnt/staging/vol-1", mock.capturedMount)
 	}
-	if mock.capturedFsType != "ext4" {
-		t.Errorf("expected fsType %q (default), got %q", "ext4", mock.capturedFsType)
+	if mock.capturedFsType != defaultFsType {
+		t.Errorf("expected fsType %q (default), got %q", defaultFsType, mock.capturedFsType)
 	}
 }
 
@@ -138,7 +138,7 @@ func TestNodeExpandVolume_Ext4_ExplicitFsType(t *testing.T) {
 		VolumePath: "/mnt/staging/vol-2",
 		VolumeCapability: &csi.VolumeCapability{
 			AccessType: &csi.VolumeCapability_Mount{
-				Mount: &csi.VolumeCapability_MountVolume{FsType: "ext4"},
+				Mount: &csi.VolumeCapability_MountVolume{FsType: defaultFsType},
 			},
 		},
 	})
@@ -148,8 +148,8 @@ func TestNodeExpandVolume_Ext4_ExplicitFsType(t *testing.T) {
 	if resp == nil {
 		t.Fatal("expected non-nil response")
 	}
-	if mock.capturedFsType != "ext4" {
-		t.Errorf("expected fsType %q, got %q", "ext4", mock.capturedFsType)
+	if mock.capturedFsType != defaultFsType {
+		t.Errorf("expected fsType %q, got %q", defaultFsType, mock.capturedFsType)
 	}
 }
 
@@ -257,14 +257,14 @@ func TestNodeExpandVolume_NilCapabilityMountBlock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if mock.capturedFsType != "ext4" {
-		t.Errorf("expected default fsType %q when FsType is empty, got %q", "ext4", mock.capturedFsType)
+	if mock.capturedFsType != defaultFsType {
+		t.Errorf("expected default fsType %q when FsType is empty, got %q", defaultFsType, mock.capturedFsType)
 	}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // execResizer unit tests (no actual block device — just verify routing)
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 func TestExecResizer_UnsupportedFsType(t *testing.T) {
 	r := &execResizer{}
@@ -277,4 +277,4 @@ func TestExecResizer_UnsupportedFsType(t *testing.T) {
 	}
 }
 
-// containsSubstring is defined in statemachine_test.go (same package).
+// ContainsSubstring is defined in statemachine_test.go (same package).

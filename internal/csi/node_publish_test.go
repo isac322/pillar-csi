@@ -28,6 +28,7 @@ package csi
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 
 	csi "github.com/container-storage-interface/spec/lib/go/csi"
@@ -36,7 +37,7 @@ import (
 
 // ─────────────────────────────────────────────────────────────────────────────
 // NodePublishVolume — happy-path tests
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestNodePublishVolume_MountAccess verifies that NodePublishVolume performs a
 // bind mount from the staging path to the target path for MOUNT access type.
@@ -59,7 +60,7 @@ func TestNodePublishVolume_MountAccess(t *testing.T) {
 	}
 
 	// Target path must be mounted.
-	mounted, _ := env.mounter.IsMounted(targetPath)
+	mounted, _ := env.mounter.IsMounted(targetPath) //nolint:errcheck // mock never returns an error
 	if !mounted {
 		t.Error("target path not mounted after NodePublishVolume")
 	}
@@ -76,13 +77,7 @@ func TestNodePublishVolume_MountAccess(t *testing.T) {
 		t.Errorf("Mount target = %q, want %q", mc.target, targetPath)
 	}
 	// Options must include "bind".
-	hasBind := false
-	for _, o := range mc.options {
-		if o == "bind" {
-			hasBind = true
-			break
-		}
-	}
+	hasBind := slices.Contains(mc.options, "bind")
 	if !hasBind {
 		t.Errorf("Mount options %v do not include \"bind\"", mc.options)
 	}
@@ -108,7 +103,7 @@ func TestNodePublishVolume_BlockAccess(t *testing.T) {
 		t.Fatalf("NodePublishVolume: %v", err)
 	}
 
-	mounted, _ := env.mounter.IsMounted(targetPath)
+	mounted, _ := env.mounter.IsMounted(targetPath) //nolint:errcheck // mock never returns an error
 	if !mounted {
 		t.Error("target path not mounted after NodePublishVolume (block)")
 	}
@@ -146,13 +141,7 @@ func TestNodePublishVolume_Readonly(t *testing.T) {
 		t.Fatalf("Mount called %d times, want 1", len(env.mounter.mountCalls))
 	}
 	mc := env.mounter.mountCalls[0]
-	hasRO := false
-	for _, o := range mc.options {
-		if o == "ro" {
-			hasRO = true
-			break
-		}
-	}
+	hasRO := slices.Contains(mc.options, "ro")
 	if !hasRO {
 		t.Errorf("Mount options %v do not include \"ro\" for readonly volume", mc.options)
 	}
@@ -190,7 +179,7 @@ func TestNodePublishVolume_Idempotent(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // NodePublishVolume — validation error tests
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 func TestNodePublishVolume_MissingVolumeID(t *testing.T) {
 	t.Parallel()
@@ -276,7 +265,7 @@ func TestNodePublishVolume_IsMountedError(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // NodeUnpublishVolume — happy-path tests
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestNodeUnpublishVolume_Unmounts verifies that NodeUnpublishVolume unmounts
 // a previously published volume.
@@ -298,7 +287,7 @@ func TestNodeUnpublishVolume_Unmounts(t *testing.T) {
 		t.Fatalf("NodePublishVolume: %v", err)
 	}
 
-	mounted, _ := env.mounter.IsMounted(targetPath)
+	mounted, _ := env.mounter.IsMounted(targetPath) //nolint:errcheck // mock never returns an error
 	if !mounted {
 		t.Fatal("expected target path to be mounted after NodePublishVolume")
 	}
@@ -311,7 +300,7 @@ func TestNodeUnpublishVolume_Unmounts(t *testing.T) {
 		t.Fatalf("NodeUnpublishVolume: %v", err)
 	}
 
-	mounted, _ = env.mounter.IsMounted(targetPath)
+	mounted, _ = env.mounter.IsMounted(targetPath) //nolint:errcheck // mock never returns an error
 	if mounted {
 		t.Error("target path still mounted after NodeUnpublishVolume")
 	}
@@ -366,7 +355,7 @@ func TestNodeUnpublishVolume_TwiceMountsOnce(t *testing.T) {
 	}
 
 	unpubReq := &csi.NodeUnpublishVolumeRequest{VolumeId: volumeID, TargetPath: targetPath}
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		if _, err := env.srv.NodeUnpublishVolume(context.Background(), unpubReq); err != nil {
 			t.Fatalf("NodeUnpublishVolume call %d: %v", i+1, err)
 		}
@@ -379,7 +368,7 @@ func TestNodeUnpublishVolume_TwiceMountsOnce(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // NodeUnpublishVolume — validation error tests
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 func TestNodeUnpublishVolume_MissingVolumeID(t *testing.T) {
 	t.Parallel()
@@ -437,7 +426,7 @@ func TestNodeUnpublishVolume_IsMountedError(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Full lifecycle: Stage → Publish → Unpublish → Unstage
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 // TestNodeFullLifecycle exercises the complete node-side volume lifecycle:
 // NodeStageVolume → NodePublishVolume → NodeUnpublishVolume → NodeUnstageVolume.
@@ -451,16 +440,15 @@ func TestNodeFullLifecycle(t *testing.T) {
 		volumeID = "tank/pvc-lifecycle"
 		nqn      = "nqn.2026-01.com.bhyoo.pillar-csi:tank.pvc-lifecycle"
 		addr     = "192.0.2.10"
-		port     = "4420"
 	)
-	volCtx := mountVolumeContext(nqn, addr, port)
-	cap := mountCap("ext4")
+	volCtx := mountVolumeContext(nqn, addr)
+	volumeCap := mountCap("ext4")
 
 	// 1. Stage.
 	if _, err := env.srv.NodeStageVolume(context.Background(), &csi.NodeStageVolumeRequest{
 		VolumeId:          volumeID,
 		StagingTargetPath: stagingPath,
-		VolumeCapability:  cap,
+		VolumeCapability:  volumeCap,
 		VolumeContext:     volCtx,
 	}); err != nil {
 		t.Fatalf("NodeStageVolume: %v", err)
@@ -471,12 +459,12 @@ func TestNodeFullLifecycle(t *testing.T) {
 		VolumeId:          volumeID,
 		StagingTargetPath: stagingPath,
 		TargetPath:        targetPath,
-		VolumeCapability:  cap,
+		VolumeCapability:  volumeCap,
 	}); err != nil {
 		t.Fatalf("NodePublishVolume: %v", err)
 	}
 
-	targetMounted, _ := env.mounter.IsMounted(targetPath)
+	targetMounted, _ := env.mounter.IsMounted(targetPath) //nolint:errcheck // mock never returns an error
 	if !targetMounted {
 		t.Error("target path not mounted after NodePublishVolume")
 	}
@@ -489,7 +477,7 @@ func TestNodeFullLifecycle(t *testing.T) {
 		t.Fatalf("NodeUnpublishVolume: %v", err)
 	}
 
-	targetMounted, _ = env.mounter.IsMounted(targetPath)
+	targetMounted, _ = env.mounter.IsMounted(targetPath) //nolint:errcheck // mock never returns an error
 	if targetMounted {
 		t.Error("target path still mounted after NodeUnpublishVolume")
 	}
@@ -502,7 +490,7 @@ func TestNodeFullLifecycle(t *testing.T) {
 		t.Fatalf("NodeUnstageVolume: %v", err)
 	}
 
-	stagingMounted, _ := env.mounter.IsMounted(stagingPath)
+	stagingMounted, _ := env.mounter.IsMounted(stagingPath) //nolint:errcheck // mock never returns an error
 	if stagingMounted {
 		t.Error("staging path still mounted after NodeUnstageVolume")
 	}

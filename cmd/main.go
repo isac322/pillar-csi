@@ -65,7 +65,7 @@ func init() {
 // setupControllers registers all pillar-csi controllers with the manager.
 // Extracted from main to keep the entry point under the funlen statement limit.
 //
-// agentDialer is the gRPC connection manager injected into the
+// AgentDialer is the gRPC connection manager injected into the
 // PillarTargetReconciler so that it can perform live HealthCheck calls against
 // pillar-agent instances and reflect the results in AgentConnected conditions.
 func setupControllers(mgr ctrl.Manager, agentDialer agentclient.Dialer) error {
@@ -126,13 +126,13 @@ func setupControllers(mgr ctrl.Manager, agentDialer agentclient.Dialer) error {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CSI gRPC server runnable
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────.
 
 const (
-	// driverName is the CSI provisioner name registered in the cluster.
+	// DriverName is the CSI provisioner name registered in the cluster.
 	driverName = "pillar-csi.bhyoo.com"
 
-	// defaultCSIEndpoint is the well-known Unix socket path used by the
+	// DefaultCSIEndpoint is the well-known Unix socket path used by the
 	// Kubernetes CSI external-provisioner side-car to contact the driver.
 	defaultCSIEndpoint = "unix:///var/lib/kubelet/plugins/pillar-csi.bhyoo.com/csi.sock"
 )
@@ -153,7 +153,8 @@ func (s *csiGRPCServer) Start(ctx context.Context) error {
 	log := ctrl.Log.WithName("csi-grpc")
 
 	// Restore any PillarVolume state that survived a controller restart.
-	if err := s.ctrlSrv.LoadStateFromPillarVolumes(ctx); err != nil {
+	err := s.ctrlSrv.LoadStateFromPillarVolumes(ctx)
+	if err != nil {
 		return fmt.Errorf("CSI gRPC server: load PillarVolume state: %w", err)
 	}
 
@@ -165,11 +166,13 @@ func (s *csiGRPCServer) Start(ctx context.Context) error {
 	// Remove a stale socket file left by a previous run; net.Listen will
 	// otherwise fail with "address already in use".
 	if scheme == "unix" {
-		if rmErr := os.Remove(addr); rmErr != nil && !os.IsNotExist(rmErr) {
+		rmErr := os.Remove(addr)
+		if rmErr != nil && !os.IsNotExist(rmErr) {
 			return fmt.Errorf("CSI gRPC server: remove stale socket %q: %w", addr, rmErr)
 		}
 		// Ensure the parent directory exists (Kubernetes may not create it).
-		if mkErr := os.MkdirAll(strings.TrimSuffix(addr, "/"+lastPathComponent(addr)), 0o750); mkErr != nil {
+		mkErr := os.MkdirAll(strings.TrimSuffix(addr, "/"+lastPathComponent(addr)), 0o750)
+		if mkErr != nil {
 			return fmt.Errorf("CSI gRPC server: mkdir for socket %q: %w", addr, mkErr)
 		}
 	}
@@ -179,7 +182,7 @@ func (s *csiGRPCServer) Start(ctx context.Context) error {
 		return fmt.Errorf("CSI gRPC server: listen %s://%s: %w", scheme, addr, err)
 	}
 
-	// Stop accepting new RPCs as soon as the manager's context is cancelled
+	// Stop accepting new RPCs as soon as the manager's context is canceled
 	// (SIGTERM / leader-election loss).
 	go func() {
 		<-ctx.Done()
@@ -188,7 +191,8 @@ func (s *csiGRPCServer) Start(ctx context.Context) error {
 	}()
 
 	log.Info("CSI gRPC server listening", "endpoint", s.endpoint)
-	if serveErr := s.grpcSrv.Serve(lis); serveErr != nil {
+	serveErr := s.grpcSrv.Serve(lis)
+	if serveErr != nil {
 		// grpc.Server.Serve returns a non-nil error only when the server was
 		// not stopped via Stop/GracefulStop.
 		return fmt.Errorf("CSI gRPC server: serve: %w", serveErr)
@@ -393,46 +397,62 @@ func main() {
 	// connections to every pillar-agent.  Otherwise it falls back to plaintext,
 	// which is acceptable only in development or environments where TLS is
 	// terminated by an external proxy.
-	var agentDialer *agentclient.Manager
-	allTLSFlagsSet := agentTLSCert != "" && agentTLSKey != "" && agentTLSCA != ""
-	anyTLSFlagSet := agentTLSCert != "" || agentTLSKey != "" || agentTLSCA != ""
-	switch {
-	case allTLSFlagsSet:
-		setupLog.Info("Initializing agent gRPC connection manager with mTLS credentials",
-			"cert", agentTLSCert, "key", agentTLSKey, "ca", agentTLSCA,
-			"serverName", agentTLSServerName)
-		var dialErr error
-		agentDialer, dialErr = agentclient.NewManagerFromFiles(
-			agentTLSCert, agentTLSKey, agentTLSCA, agentTLSServerName,
-		)
-		if dialErr != nil {
-			setupLog.Error(dialErr, "failed to initialise mTLS agent dialer")
-			os.Exit(1)
-		}
-	case anyTLSFlagSet:
-		// Partial flag set — operator misconfiguration; surface a clear error
-		// rather than silently ignoring partial input.
-		setupLog.Error(fmt.Errorf("incomplete mTLS flags"),
-			"--agent-tls-cert, --agent-tls-key, and --agent-tls-ca must all be set "+
-				"together to enable mTLS; got a partial set",
-			"agent-tls-cert", agentTLSCert, "agent-tls-key", agentTLSKey,
-			"agent-tls-ca", agentTLSCA)
+	agentDialer, err := initAgentDialer(agentTLSCert, agentTLSKey, agentTLSCA, agentTLSServerName)
+	if err != nil {
+		setupLog.Error(err, "failed to initialize agent dialer")
 		os.Exit(1)
-	default:
-		setupLog.Info("WARNING: agent gRPC connections will use plaintext transport; " +
-			"set --agent-tls-cert, --agent-tls-key, and --agent-tls-ca to enable mTLS")
-		agentDialer = agentclient.NewManager()
 	}
 	defer func() {
-		if closeErr := agentDialer.Close(); closeErr != nil {
+		closeErr := agentDialer.Close()
+		if closeErr != nil {
 			setupLog.Error(closeErr, "failed to close agent gRPC connection manager")
 		}
 	}()
 
-	err = setupControllers(mgr, agentDialer)
+	runErr := runManager(mgr, agentDialer, csiEndpoint)
+	if runErr != nil {
+		setupLog.Error(runErr, "manager exited with error")
+	}
+}
+
+// initAgentDialer creates the gRPC connection manager for agent health-checks.
+// When all three TLS flags are provided it uses mutual TLS; if only some are
+// set it returns an error so the operator can fix the configuration; otherwise
+// it falls back to plaintext.
+func initAgentDialer(cert, key, ca, serverName string) (*agentclient.Manager, error) {
+	allSet := cert != "" && key != "" && ca != ""
+	anySet := cert != "" || key != "" || ca != ""
+	switch {
+	case allSet:
+		setupLog.Info("Initializing agent gRPC connection manager with mTLS credentials",
+			"cert", cert, "key", key, "ca", ca, "serverName", serverName)
+		mgr, err := agentclient.NewManagerFromFiles(cert, key, ca, serverName)
+		if err != nil {
+			return nil, fmt.Errorf("mTLS agent dialer: %w", err)
+		}
+		return mgr, nil
+	case anySet:
+		// Partial flag set — operator misconfiguration; surface a clear error
+		// rather than silently ignoring partial input.
+		return nil, fmt.Errorf(
+			"--agent-tls-cert, --agent-tls-key, and --agent-tls-ca must all be set together; "+
+				"got a partial set (cert=%q key=%q ca=%q)",
+			cert, key, ca,
+		)
+	default:
+		setupLog.Info("WARNING: agent gRPC connections will use plaintext transport; " +
+			"set --agent-tls-cert, --agent-tls-key, and --agent-tls-ca to enable mTLS")
+		return agentclient.NewManager(), nil
+	}
+}
+
+// runManager wires controllers, the CSI gRPC server, health endpoints, and
+// then starts the controller-runtime manager.  It returns the first error
+// encountered so that main can log it and allow deferred cleanup to run.
+func runManager(mgr ctrl.Manager, agentDialer agentclient.Dialer, csiEndpoint string) error {
+	err := setupControllers(mgr, agentDialer)
 	if err != nil {
-		setupLog.Error(err, "unable to create controllers")
-		os.Exit(1)
+		return fmt.Errorf("unable to create controllers: %w", err)
 	}
 
 	// ── CSI gRPC server ───────────────────────────────────────────────────────
@@ -449,26 +469,24 @@ func main() {
 	csiGRPC := grpc.NewServer()
 	csi.RegisterGRPC(csiGRPC, identitySrv, ctrlSrv)
 
-	if err = mgr.Add(&csiGRPCServer{
+	err = mgr.Add(&csiGRPCServer{
 		endpoint: csiEndpoint,
 		grpcSrv:  csiGRPC,
 		ctrlSrv:  ctrlSrv,
-	}); err != nil {
-		setupLog.Error(err, "unable to add CSI gRPC server to manager")
-		os.Exit(1)
+	})
+	if err != nil {
+		return fmt.Errorf("unable to add CSI gRPC server to manager: %w", err)
 	}
 	setupLog.Info("CSI gRPC server registered", "endpoint", csiEndpoint)
 	// ─────────────────────────────────────────────────────────────────────────
 
 	err = mgr.AddHealthzCheck("healthz", healthz.Ping)
 	if err != nil {
-		setupLog.Error(err, "unable to set up health check")
-		os.Exit(1)
+		return fmt.Errorf("unable to set up health check: %w", err)
 	}
 	err = mgr.AddReadyzCheck("readyz", healthz.Ping)
 	if err != nil {
-		setupLog.Error(err, "unable to set up ready check")
-		os.Exit(1)
+		return fmt.Errorf("unable to set up ready check: %w", err)
 	}
 
 	if bi, ok := debug.ReadBuildInfo(); ok {
@@ -478,7 +496,7 @@ func main() {
 	}
 	err = mgr.Start(ctrl.SetupSignalHandler())
 	if err != nil {
-		setupLog.Error(err, "problem running manager")
-		os.Exit(1)
+		return fmt.Errorf("problem running manager: %w", err)
 	}
+	return nil
 }
