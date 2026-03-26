@@ -36,9 +36,8 @@ package e2e
 //  6. All e2e test functions (including the Ginkgo suite in e2e_suite_test.go)
 //     are executed via m.Run().
 //  7. The Helm release is removed, the external-agent container (if any) is
-//     stopped and removed, and the Kind cluster is deleted when TestMain
-//     created it.  Teardown is unconditional: it runs via defer even when
-//     m.Run() or setup panics.
+//     stopped and removed, and the Kind cluster is always deleted.  Teardown
+//     is unconditional: it runs via defer even when m.Run() or setup panics.
 //
 // Shared state is stored in the package-level testEnv variable so that
 // individual test files can read cluster coordinates (kubeconfig path, image
@@ -110,11 +109,6 @@ type E2EEnv struct {
 	// container's gRPC port to become reachable before giving up.
 	// Sourced from E2E_EXTERNAL_AGENT_READY_TIMEOUT in seconds; default: 60 s.
 	ExternalAgentReadyTimeout time.Duration
-
-	// clusterCreatedByUs records whether TestMain created the Kind cluster so
-	// that teardown knows whether to delete it.  When adopting a pre-existing
-	// cluster this is false and the cluster is left intact after the run.
-	clusterCreatedByUs bool
 
 	// externalAgentContainerID is the Docker container ID created by
 	// startExternalAgentContainer.  Empty when LaunchExternalAgent is false or
@@ -243,10 +237,10 @@ func setupE2E() error {
 	return nil
 }
 
-// ensureKindCluster creates the Kind cluster unless it already exists.  On
-// success testEnv.KubeconfigPath is populated and KUBECONFIG is exported.
-// The embedded KindConfigYAML (from testdata_embed.go) is written to a
-// temporary file so Kind can read it via --config.
+// ensureKindCluster creates the Kind cluster.  On success testEnv.KubeconfigPath
+// is populated and KUBECONFIG is exported.  The embedded KindConfigYAML (from
+// testdata_embed.go) is written to a temporary file so Kind can read it via
+// --config.
 func ensureKindCluster() error {
 	existingClusters, _ := captureOutput("kind", "get", "clusters")
 	if clusterExists(existingClusters, testEnv.ClusterName) {
@@ -267,7 +261,6 @@ func ensureKindCluster() error {
 		); err != nil {
 			return fmt.Errorf("kind create cluster: %w", err)
 		}
-		testEnv.clusterCreatedByUs = true
 	}
 
 	// Capture kubeconfig and point KUBECONFIG at it.
@@ -398,9 +391,9 @@ func installHelm() error {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // teardownE2E removes the Helm release, stops the external-agent container
-// (if TestMain started one), and deletes the Kind cluster when TestMain created
-// it.  All errors are logged to stderr but do not affect the exit code — that
-// was already captured by the m.Run() call in TestMain.
+// (if TestMain started one), and always deletes the Kind cluster.  All errors
+// are logged to stderr but do not affect the exit code — that was already
+// captured by the m.Run() call in TestMain.
 func teardownE2E() {
 	if testEnv.HelmRelease != "" {
 		fmt.Fprintf(os.Stdout, "e2e teardown: uninstalling helm release %q\n",
@@ -416,7 +409,7 @@ func teardownE2E() {
 	// Stop and remove the external-agent container started by TestMain.
 	stopExternalAgentContainer()
 
-	if testEnv.clusterCreatedByUs {
+	if testEnv.ClusterName != "" {
 		fmt.Fprintf(os.Stdout, "e2e teardown: deleting kind cluster %q\n",
 			testEnv.ClusterName)
 		if err := runCmd("kind", "delete", "cluster",
