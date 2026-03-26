@@ -267,6 +267,9 @@ func setupE2E() error {
 	if err := ensureStorageNodeLabel(); err != nil {
 		return fmt.Errorf("storage node label: %w", err)
 	}
+	if err := validateWorkerNodeMounts(); err != nil {
+		return fmt.Errorf("worker node mounts: %w", err)
+	}
 	if err := buildAndLoadImages(); err != nil {
 		return fmt.Errorf("docker images: %w", err)
 	}
@@ -377,6 +380,117 @@ func ensureStorageNodeLabel() error {
 	}
 	return runCmd("kubectl", "label", "node", workerNode,
 		"pillar-csi.bhyoo.com/storage-node=true", "--overwrite")
+}
+
+// validateWorkerNodeMounts checks that the Kind worker node containers have
+// the filesystem paths that were specified via extraMounts in kind-config.yaml
+// accessible and non-empty.
+//
+// Checks performed:
+//
+//   - Every worker node: /dev/null exists — proves that the host /dev
+//     bind-mount brought real device nodes into the container (not just an
+//     empty directory).  Without the /dev bind-mount the node would only
+//     see devices that existed at container-creation time and NVMe block
+//     devices created later on the host would be invisible.
+//
+//   - Storage worker (labelled pillar-csi.bhyoo.com/storage-node=true):
+//     /sys/kernel/config is a readable directory — proves that the configfs
+//     bind-mount from the host is in place.  Without it the pillar-agent init
+//     container cannot write NVMe-oF target configuration and the protocol
+//     tests would hang indefinitely waiting for a subsystem that never appears.
+//
+// These checks run before the slow Helm install so that a mount mis-
+// configuration surfaces as a clear error message rather than a cryptic
+// timeout later in the suite.
+func validateWorkerNodeMounts() error {
+	fmt.Fprintf(os.Stdout, "e2e setup: validating worker node mount accessibility\n")
+
+	// ── list worker Kind node containers ─────────────────────────────────
+	//
+	// "kind get nodes" returns one line per node (both control-plane and
+	// workers).  We filter out the control-plane node by name pattern;
+	// the resulting slice is the set of Docker container names we can
+	// docker-exec into directly.
+	out, err := captureOutput("kind", "get", "nodes", "--name", testEnv.ClusterName)
+	if err != nil {
+		return fmt.Errorf("list kind nodes: %s: %w", strings.TrimSpace(out), err)
+	}
+
+	var workers []string
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		node := strings.TrimSpace(line)
+		if node == "" || strings.Contains(node, "control-plane") {
+			continue
+		}
+		workers = append(workers, node)
+	}
+	if len(workers) == 0 {
+		return fmt.Errorf("validateWorkerNodeMounts: no worker nodes found in kind cluster %q",
+			testEnv.ClusterName)
+	}
+
+	// ── /dev on every worker ──────────────────────────────────────────────
+	//
+	// We check for /dev/null rather than the /dev directory itself to confirm
+	// that the bind-mount carried real device nodes over (not an empty dir).
+	for _, w := range workers {
+		if err := kindNodePathExists(w, "/dev/null"); err != nil {
+			return fmt.Errorf(
+				"worker node %q: /dev not properly bind-mounted "+
+					"(/dev/null missing — check kind-config.yaml extraMounts): %w",
+				w, err)
+		}
+		fmt.Fprintf(os.Stdout,
+			"e2e setup: worker %q /dev is accessible (/dev/null present)\n", w)
+	}
+
+	// ── /sys/kernel/config on the storage worker ──────────────────────────
+	//
+	// The storage worker is the one with label
+	// pillar-csi.bhyoo.com/storage-node=true.  ensureStorageNodeLabel()
+	// guarantees this label is set before validateWorkerNodeMounts is called.
+	storageNodeOut, err := captureOutput("kubectl", "get", "nodes",
+		"-l", "pillar-csi.bhyoo.com/storage-node=true",
+		"-o", "jsonpath={.items[0].metadata.name}")
+	if err != nil {
+		return fmt.Errorf("find storage worker node: %s: %w",
+			strings.TrimSpace(storageNodeOut), err)
+	}
+	storageNode := strings.TrimSpace(storageNodeOut)
+	if storageNode == "" {
+		return fmt.Errorf(
+			"validateWorkerNodeMounts: no storage worker node "+
+				"(label pillar-csi.bhyoo.com/storage-node=true) found in cluster %q",
+			testEnv.ClusterName)
+	}
+
+	if err := kindNodePathExists(storageNode, "/sys/kernel/config"); err != nil {
+		return fmt.Errorf(
+			"storage worker %q: /sys/kernel/config not accessible "+
+				"(configfs bind-mount missing — check kind-config.yaml extraMounts): %w",
+			storageNode, err)
+	}
+	fmt.Fprintf(os.Stdout,
+		"e2e setup: storage worker %q /sys/kernel/config is accessible\n", storageNode)
+
+	return nil
+}
+
+// kindNodePathExists runs `docker exec <container> test -e <path>` against a
+// Kind node container on the remote Docker host.  It returns nil when the path
+// exists (exit 0) or a descriptive error when the path is absent or the exec
+// mechanism fails.
+//
+// captureOutput is used so that DOCKER_HOST is injected automatically and the
+// error message contains any Docker output that helps diagnose the failure.
+func kindNodePathExists(container, path string) error {
+	out, err := captureOutput("docker", "exec", container, "test", "-e", path)
+	if err != nil {
+		return fmt.Errorf("docker exec %s test -e %s: %s: %w",
+			container, path, strings.TrimSpace(out), err)
+	}
+	return nil
 }
 
 // buildAndLoadImages builds the controller, agent, and node Docker images and
