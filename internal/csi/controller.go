@@ -248,6 +248,9 @@ func pillarVolumePhaseToVolumeState(phase v1alpha1.PillarVolumePhase) VolumeStat
 var supportedAccessModes = []csi.VolumeCapability_AccessMode_Mode{
 	// RWO: one node may mount read-write.
 	csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER,
+	// RWO (K8s 1.35+): Kubernetes maps ReadWriteOnce to SINGLE_NODE_MULTI_WRITER.
+	// Semantically equivalent to SINGLE_NODE_WRITER for block-protocol CSI drivers.
+	csi.VolumeCapability_AccessMode_SINGLE_NODE_MULTI_WRITER,
 	// RWOP: one pod (on one node) may mount read-write.  Finer-grained than RWO.
 	csi.VolumeCapability_AccessMode_SINGLE_NODE_SINGLE_WRITER,
 	// ROX: multiple nodes may mount read-only simultaneously.
