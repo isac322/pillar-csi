@@ -57,6 +57,7 @@ package framework
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 )
 
@@ -86,6 +87,24 @@ func CreateLoopbackZFSPool(
 	h *DockerHostExec,
 	poolName, imagePath, imageSize string,
 ) (loopDev string, err error) {
+	// ── Step 0: destroy any stale pool from a previous interrupted run ───
+	// A prior e2e run may have crashed before teardown. If the pool already
+	// exists, destroy it and detach its loop device so we start clean.
+	cleanCmd := fmt.Sprintf(
+		"if zpool list %s >/dev/null 2>&1; then "+
+			"zpool destroy -f %s 2>/dev/null; "+
+			"losetup -j %s 2>/dev/null | cut -d: -f1 | xargs -r losetup -d 2>/dev/null; "+
+			"rm -f %s; "+
+			"echo cleaned; "+
+			"else echo fresh; fi",
+		shellQuote(poolName), shellQuote(poolName),
+		shellQuote(imagePath), shellQuote(imagePath))
+	if cleanRes, cleanErr := h.ExecOnHost(ctx, cleanCmd); cleanErr == nil && cleanRes.Success() {
+		if strings.TrimSpace(cleanRes.Stdout) == "cleaned" {
+			fmt.Fprintf(os.Stdout, "  zfs pool %q: destroyed stale pool from previous run\n", poolName)
+		}
+	}
+
 	// ── Step 1: create sparse image file ──────────────────────────────────
 	//
 	// `truncate -s <size> <path>` creates a sparse file of exactly <size>

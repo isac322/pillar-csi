@@ -296,6 +296,16 @@ func setupE2E() error {
 		}
 	}
 
+	// Wait for the Kubernetes API server to be healthy before running Helm.
+	//
+	// Loading Docker images into kind node containers can spike memory
+	// usage and cause the kube-apiserver to restart briefly.  We poll
+	// "kubectl version" until it succeeds (or we time out) to ensure the
+	// API is ready before the Helm install sends API requests.
+	if err := waitForAPIServer(2 * time.Minute); err != nil {
+		return fmt.Errorf("API server not ready before helm install: %w", err)
+	}
+
 	if err := installHelm(); err != nil {
 		return fmt.Errorf("helm install: %w", err)
 	}
@@ -732,6 +742,81 @@ func installHelm() error {
 		return fmt.Errorf("wait for pillar-csi CRDs to be established: %w", crdWaitErr)
 	}
 	fmt.Fprintf(os.Stdout, "e2e setup: pillar-csi CRDs are established\n")
+
+	// Wait for the pillar-csi API group to appear in the API server's discovery
+	// endpoint.
+	//
+	// "kubectl wait --for=condition=established" only verifies the CRD status
+	// condition, not the discovery endpoint.  The Kubernetes API server
+	// refreshes its aggregated discovery document on a separate async cycle
+	// (typically every 10-15 s after a CRD is installed).  If e2e test clients
+	// query the discovery endpoint before this refresh, controller-runtime's
+	// DynamicRESTMapper returns "no matches for kind" even though the CRD is
+	// fully established.  This causes intermittent "apply PillarTarget: no
+	// matches for kind" failures in Ginkgo BeforeAll blocks that run early when
+	// the test randomisation seed orders them before the DaemonSet readiness
+	// wait (which acts as an implicit synchronisation barrier).
+	//
+	// We poll "kubectl get pillartargets --all-namespaces" until kubectl no
+	// longer returns "the server doesn't have a resource type 'pillartargets'"
+	// (stale discovery) and instead returns either 0 or more resources (live
+	// discovery).  A 60-second deadline is more than enough for the API server
+	// to refresh its discovery document after CRD establishment.
+	fmt.Fprintf(os.Stdout, "e2e setup: waiting for pillar-csi API group to appear in discovery\n")
+	discoveryDeadline := time.Now().Add(60 * time.Second)
+	for time.Now().Before(discoveryDeadline) {
+		out, _ := captureOutput("kubectl", "get",
+			"pillartargets.pillar-csi.pillar-csi.bhyoo.com",
+			"--all-namespaces",
+		)
+		if !strings.Contains(out, "doesn't have a resource type") {
+			break // Discovery endpoint has been refreshed; API group is visible.
+		}
+		time.Sleep(2 * time.Second)
+	}
+	fmt.Fprintf(os.Stdout, "e2e setup: pillar-csi API group is discoverable\n")
+
+	// Wait for the agent DaemonSet object to exist in the cluster.
+	//
+	// Helm --wait ensures deployment/daemonset pods are running before it exits,
+	// but on rare occasions the Kubernetes API server's watch cache may not have
+	// propagated the DaemonSet object to all watch consumers before the first
+	// Ginkgo BeforeAll block runs.  Polling here closes that gap without coupling
+	// test setup to an arbitrary sleep.
+	//
+	// Skip this wait when running in external-agent mode: the external-agent
+	// overlay uses an unmatchable nodeSelector so DesiredNumberScheduled=0, and
+	// a rollout-status wait would succeed immediately anyway.
+	if testEnv.ExternalAgentAddr == "" {
+		fmt.Fprintf(os.Stdout, "e2e setup: waiting for agent DaemonSet pillar-csi-agent to exist\n")
+		agentDSDeadline := time.Now().Add(2 * time.Minute)
+		for time.Now().Before(agentDSDeadline) {
+			out, err := captureOutput("kubectl", "get", "daemonset", "pillar-csi-agent",
+				"--namespace", testEnv.HelmNamespace,
+				"--ignore-not-found",
+			)
+			if err == nil && strings.Contains(out, "pillar-csi-agent") {
+				break
+			}
+			fmt.Fprintf(os.Stdout, "e2e setup: agent DaemonSet not yet present, retrying...\n")
+			time.Sleep(3 * time.Second)
+		}
+		fmt.Fprintf(os.Stdout, "e2e setup: agent DaemonSet pillar-csi-agent is present\n")
+
+		// Wait for the agent DaemonSet rollout to complete so that all test
+		// specs that assert DaemonSet readiness start from a known-good state.
+		fmt.Fprintf(os.Stdout, "e2e setup: waiting for agent DaemonSet rollout\n")
+		if err := runCmd("kubectl", "rollout", "status",
+			"daemonset/pillar-csi-agent",
+			"--namespace", testEnv.HelmNamespace,
+			"--timeout", "4m",
+		); err != nil {
+			fmt.Fprintf(os.Stderr,
+				"e2e setup: WARNING: agent DaemonSet rollout did not complete: %v\n", err)
+		}
+		fmt.Fprintf(os.Stdout, "e2e setup: agent DaemonSet rollout complete\n")
+	}
+
 	return nil
 }
 
@@ -754,6 +839,10 @@ func installHelm() error {
 // steps.  The only exception to the "best-effort" rule is the final cluster
 // deletion, which runs unconditionally even after Helm or container failures.
 func teardownE2E() {
+	if os.Getenv("E2E_SKIP_TEARDOWN") == "true" {
+		fmt.Fprintf(os.Stdout, "e2e teardown: SKIPPED (E2E_SKIP_TEARDOWN=true) — cluster %q left running for debugging\n", testEnv.ClusterName)
+		return
+	}
 	if testEnv.HelmRelease != "" {
 		fmt.Fprintf(os.Stdout, "e2e teardown: uninstalling helm release %q\n",
 			testEnv.HelmRelease)
@@ -896,6 +985,28 @@ func teardownZFSPool() {
 // ─────────────────────────────────────────────────────────────────────────────
 // Internal helpers
 // ─────────────────────────────────────────────────────────────────────────────
+
+// waitForAPIServer polls "kubectl version" until the Kubernetes API server
+// responds successfully, or until the given deadline is exceeded.
+//
+// Loading Docker images into kind nodes can temporarily spike memory and cause
+// the kube-apiserver to restart.  Calling waitForAPIServer before running
+// Helm guarantees that the API is reachable before Helm sends API requests.
+func waitForAPIServer(timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	fmt.Fprintf(os.Stdout, "e2e setup: waiting up to %s for Kubernetes API server to be ready\n",
+		timeout)
+	for time.Now().Before(deadline) {
+		out, err := captureOutput("kubectl", "version", "--output=json")
+		if err == nil && strings.Contains(out, "serverVersion") {
+			fmt.Fprintf(os.Stdout, "e2e setup: Kubernetes API server is ready\n")
+			return nil
+		}
+		fmt.Fprintf(os.Stdout, "e2e setup: API server not ready yet, retrying in 3s...\n")
+		time.Sleep(3 * time.Second)
+	}
+	return fmt.Errorf("API server did not become ready within %s", timeout)
+}
 
 // runCmd executes name with args in the project root, streaming stdout and
 // stderr to the process outputs.  It returns a non-nil error when the command
