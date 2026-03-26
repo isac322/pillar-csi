@@ -115,6 +115,54 @@ rules:
       - update
       - patch
       - delete
+  # CSI sidecar: PersistentVolume management (external-provisioner creates/deletes PVs)
+  - apiGroups:
+      - ""
+    resources:
+      - persistentvolumes
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  # CSI sidecar: PVC update (external-provisioner patches PVC status)
+  - apiGroups:
+      - ""
+    resources:
+      - persistentvolumeclaims/status
+    verbs:
+      - get
+      - patch
+      - update
+  # CSI sidecar: VolumeAttachment (external-attacher watches/patches attachments)
+  - apiGroups:
+      - storage.k8s.io
+    resources:
+      - volumeattachments
+    verbs:
+      - get
+      - list
+      - patch
+      - watch
+  - apiGroups:
+      - storage.k8s.io
+    resources:
+      - volumeattachments/status
+    verbs:
+      - get
+      - patch
+  # CSI sidecar: CSINode (external-provisioner reads node topology)
+  - apiGroups:
+      - storage.k8s.io
+    resources:
+      - csinodes
+    verbs:
+      - get
+      - list
+      - watch
   # PillarVolume CRD for durable CSI state tracking
   - apiGroups:
       - pillar-csi.pillar-csi.bhyoo.com
