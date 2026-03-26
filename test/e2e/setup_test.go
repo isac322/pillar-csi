@@ -901,14 +901,23 @@ func startExternalAgentContainer() error {
 	// Run the agent container:
 	//   --network kind   → reachable from Kind nodes (same Docker bridge)
 	//   -p ...           → host-mapped port for test-process gRPC probes
+	//   --privileged     → CAP_SYS_ADMIN + all host devices: required for
+	//                      real ZFS zvol creation (ioctl on /dev/zfs) and
+	//                      NVMe-oF configfs writes (/sys/kernel/config).
+	//                      Without this flag, 'zfs create' inside the container
+	//                      fails with EPERM because /dev/zfs is inaccessible.
+	//   --user=root      → override Dockerfile.agent's USER 65532; ZFS ioctl
+	//                      checks UID 0 in addition to CAP_SYS_ADMIN on some
+	//                      kernel/ZFS version combinations.
 	//   --mount tmpfs    → writable /tmp so --configfs-root=/tmp works without
-	//                      needing kernel nvmet modules or real ZFS
-	//   --user 65532     → matches the non-root USER in Dockerfile.agent
+	//                      needing kernel nvmet modules
 	out, err := captureOutput("docker", "run",
 		"--detach",
 		"--name", name,
 		"--network", "kind",
 		"-p", portMapping,
+		"--privileged",
+		"--user=root",
 		"--mount", "type=tmpfs,destination=/tmp",
 		image,
 		"--listen-address=0.0.0.0:9500",
