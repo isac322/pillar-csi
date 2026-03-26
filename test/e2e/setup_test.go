@@ -222,6 +222,9 @@ func setupE2E() error {
 	if err := ensureKindCluster(); err != nil {
 		return fmt.Errorf("kind cluster: %w", err)
 	}
+	if err := ensureStorageNodeLabel(); err != nil {
+		return fmt.Errorf("storage node label: %w", err)
+	}
 	if err := buildAndLoadImages(); err != nil {
 		return fmt.Errorf("docker images: %w", err)
 	}
@@ -277,6 +280,28 @@ func ensureKindCluster() error {
 		return fmt.Errorf("setenv KUBECONFIG: %w", err)
 	}
 	return nil
+}
+
+// ensureStorageNodeLabel labels the first worker node as a storage node so that
+// the agent DaemonSet (nodeSelector: pillar-csi.bhyoo.com/storage-node=true) is
+// scheduled.  When the Kind cluster was freshly created from kind-config.yaml the
+// label is already applied; when adopting a pre-existing cluster this step is
+// required because Kind only applies labels during "kind create cluster".
+func ensureStorageNodeLabel() error {
+	fmt.Fprintf(os.Stdout, "e2e setup: ensuring storage-node label on first worker\n")
+	// Find the first worker node (not control-plane).
+	out, err := captureOutput("kubectl", "get", "nodes",
+		"-l", "!node-role.kubernetes.io/control-plane",
+		"-o", "jsonpath={.items[0].metadata.name}")
+	if err != nil {
+		return fmt.Errorf("find worker node: %s: %w", strings.TrimSpace(out), err)
+	}
+	workerNode := strings.TrimSpace(out)
+	if workerNode == "" {
+		return fmt.Errorf("no worker node found in cluster %q", testEnv.ClusterName)
+	}
+	return runCmd("kubectl", "label", "node", workerNode,
+		"pillar-csi.bhyoo.com/storage-node=true", "--overwrite")
 }
 
 // buildAndLoadImages builds the controller, agent, and node Docker images and
