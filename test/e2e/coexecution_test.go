@@ -207,6 +207,53 @@ func TestCoexecutionSingleGinkgoRunner(t *testing.T) {
 		testEnv.ClusterName, kindCluster)
 }
 
+// TestCoexecutionTeardownGuarantee verifies the preconditions that make the
+// deferred Kind-cluster teardown reliable across every possible exit path
+// (test pass, test fail, panic in m.Run, or setup failure).
+//
+// The guarantee is implemented by the following pattern in TestMain:
+//
+//	exitCode := 1
+//	defer func() {
+//	    teardownE2E()   // always runs: deletes Kind cluster unconditionally
+//	    os.Exit(exitCode)
+//	}()
+//	exitCode = m.Run()
+//
+// For this to work correctly:
+//
+//  1. testEnv.ClusterName must be non-empty so teardownE2E knows which
+//     cluster to delete (ensureKindCluster sets this).
+//  2. testEnv.DockerHost must be configured so all docker/kind/helm
+//     sub-processes (including the teardown "kind delete cluster" call)
+//     reach the correct Docker daemon via the DOCKER_HOST injection done
+//     by injectDockerHost in runCmd/captureOutput.
+//
+// Reaching this function confirms both preconditions: TestMain ran
+// initE2EEnv() and ensureKindCluster() successfully before m.Run().
+func TestCoexecutionTeardownGuarantee(t *testing.T) {
+	// Precondition 1: ClusterName must be non-empty so teardownE2E can
+	// unconditionally delete the correct Kind cluster on any exit path.
+	if testEnv.ClusterName == "" {
+		t.Fatal("testEnv.ClusterName must be non-empty: " +
+			"teardownE2E() cannot delete an unnamed cluster")
+	}
+	t.Logf("teardown precondition OK: ClusterName=%q will be deleted unconditionally "+
+		"by the deferred teardownE2E() in TestMain (pass or fail)", testEnv.ClusterName)
+
+	// Precondition 2: DockerHost must be non-empty so Kind/docker/helm
+	// sub-processes (including "kind delete cluster" in teardown) use the
+	// correct daemon endpoint.  Without this, teardown would fail in CI
+	// environments where DOCKER_HOST is not set in the shell environment.
+	if testEnv.DockerHost == "" {
+		t.Fatal("testEnv.DockerHost must be non-empty: " +
+			"Kind/docker/helm teardown commands need a Docker daemon endpoint; " +
+			"expected default tcp://localhost:2375 when DOCKER_HOST is unset")
+	}
+	t.Logf("teardown precondition OK: DockerHost=%q will be injected into all "+
+		"Kind/docker/helm sub-processes via injectDockerHost()", testEnv.DockerHost)
+}
+
 // TestCoexecutionModesMutuallyExclusive verifies that internal-agent and
 // external-agent modes are mutually exclusive within a single test run.
 //

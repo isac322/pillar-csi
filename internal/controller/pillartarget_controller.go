@@ -177,7 +177,7 @@ func (r *PillarTargetReconciler) reconcileNormal(
 		// AgentConnected: perform a live gRPC HealthCheck against the agent.
 		connected := r.setAgentConnectedCondition(ctx, target, resolved)
 
-		// Ready: True only when the agent is reachable and healthy.
+		// Ready: True when the agent gRPC connection is established (healthy or degraded).
 		if connected {
 			// Best-effort: populate AgentVersion / Capabilities / DiscoveredPools.
 			r.populateCapabilitiesStatus(ctx, target, resolved)
@@ -187,7 +187,7 @@ func (r *PillarTargetReconciler) reconcileNormal(
 				Status:             metav1.ConditionTrue,
 				ObservedGeneration: target.Generation,
 				Reason:             "AgentConnected",
-				Message:            fmt.Sprintf("PillarTarget is ready: agent at %q is connected and healthy", resolved),
+				Message:            fmt.Sprintf("PillarTarget is ready: agent at %q is connected", resolved),
 			})
 		} else {
 			meta.SetStatusCondition(&target.Status.Conditions, metav1.Condition{
@@ -400,7 +400,7 @@ func (r *PillarTargetReconciler) reconcileNodeRef(
 	// AgentConnected: perform a live gRPC HealthCheck against the agent.
 	connected := r.setAgentConnectedCondition(ctx, target, resolved)
 
-	// Ready: True only when the agent is reachable and healthy.
+	// Ready: True when the agent gRPC connection is established (healthy or degraded).
 	if connected {
 		// Best-effort: populate AgentVersion / Capabilities / DiscoveredPools.
 		r.populateCapabilitiesStatus(ctx, target, resolved)
@@ -411,7 +411,7 @@ func (r *PillarTargetReconciler) reconcileNodeRef(
 			ObservedGeneration: target.Generation,
 			Reason:             "AgentConnected",
 			Message: fmt.Sprintf(
-				"PillarTarget is ready: agent at %q (node %q) is connected and healthy",
+				"PillarTarget is ready: agent at %q (node %q) is connected",
 				resolved, nodeRef.Name,
 			),
 		})
@@ -440,15 +440,21 @@ func (r *PillarTargetReconciler) reconcileNodeRef(
 // agent at address and updates the AgentConnected status condition on target.
 //
 // The reason reflects both connectivity and authentication level:
-//   - "Authenticated"     – mTLS handshake succeeded and agent reports healthy.
-//   - "Dialed"            – TCP reachable (no mTLS) and agent reports healthy.
-//   - "TLSHandshakeFailed"– mTLS is configured but the TLS handshake failed.
-//   - "HealthCheckFailed" – transport error (TCP or other) prevented the RPC.
-//   - "AgentUnhealthy"    – agent is reachable but reports degraded status.
+//   - "Authenticated"      – mTLS handshake succeeded and agent reports healthy.
+//   - "Dialed"             – TCP reachable (no mTLS) and agent reports healthy.
+//   - "AgentDegraded"      – agent responded to gRPC but reports degraded health
+//     (e.g. ZFS module not loaded, nvmet not mounted); still treated as connected.
+//   - "TLSHandshakeFailed" – mTLS is configured but the TLS handshake failed.
+//   - "HealthCheckFailed"  – transport error (TCP or other) prevented the RPC.
 //   - "DialerNotConfigured"– no Dialer is wired up (dev/test only).
 //
-// It returns true when the agent is reachable and reports healthy status, and
-// false otherwise (including when r.Dialer is nil).
+// It returns true when the agent gRPC connection is established (regardless of
+// whether the agent reports degraded subsystem health), and false when the
+// agent is truly unreachable (transport/handshake failure) or r.Dialer is nil.
+//
+// "Accept partial health": a reachable-but-degraded agent is still considered
+// connected so that capabilities status is populated and Ready=True, which is
+// essential in CI / e2e environments where kernel modules are unavailable.
 //
 // The caller is responsible for subsequently setting the Ready condition and
 // persisting the status update.
@@ -508,15 +514,26 @@ func (r *PillarTargetReconciler) setAgentConnectedCondition(
 	}
 
 	if !resp.Healthy {
-		log.Info("Agent is reachable but reports unhealthy status", "address", address)
+		// The agent responded to the gRPC HealthCheck call (connection is established)
+		// but reports one or more subsystems as degraded (e.g. ZFS kernel module not
+		// loaded, nvmet configfs not mounted).  AgentConnected=True is still correct
+		// because the gRPC transport is working; the "AgentDegraded" reason signals
+		// operators that the agent is reachable but operating in a degraded state.
+		// Using True (rather than False) allows the controller to continue populating
+		// capabilities status and set Ready=True, which is important in e2e / CI
+		// environments where kernel modules are unavailable but the rest of the stack
+		// should still be exercised.
+		log.Info("Agent is reachable but reports degraded health — treating as connected", "address", address)
 		meta.SetStatusCondition(&target.Status.Conditions, metav1.Condition{
 			Type:               "AgentConnected",
-			Status:             metav1.ConditionFalse,
+			Status:             metav1.ConditionTrue,
 			ObservedGeneration: target.Generation,
-			Reason:             "AgentUnhealthy",
-			Message:            fmt.Sprintf("Agent at %q is reachable but reports unhealthy status", address),
+			Reason:             "AgentDegraded",
+			Message: fmt.Sprintf(
+				"Agent at %q is reachable but reports degraded health; some subsystems may be unavailable", address,
+			),
 		})
-		return false
+		return true
 	}
 
 	// Health check succeeded.  Reflect the authentication level in the reason

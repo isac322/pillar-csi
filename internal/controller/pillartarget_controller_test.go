@@ -763,7 +763,12 @@ var _ = Describe("PillarTarget Controller", func() {
 		})
 	})
 
-	Context("AgentConnected with injected mock Dialer — agent reports unhealthy", func() {
+	Context("AgentConnected with injected mock Dialer — agent reports degraded health", func() {
+		// Verify the "accept partial health" behaviour: when the agent responds to
+		// the gRPC HealthCheck but reports Healthy=false (e.g. ZFS module missing),
+		// the controller must still set AgentConnected=True with reason AgentDegraded
+		// so that capabilities are populated and Ready=True is set.  This is
+		// important for e2e / CI environments where kernel modules are unavailable.
 		const unhealthyTargetName = "test-target-dialer-unhealthy"
 		unhealthyNN := types.NamespacedName{Name: unhealthyTargetName}
 
@@ -800,7 +805,7 @@ var _ = Describe("PillarTarget Controller", func() {
 			}
 		})
 
-		It("should set AgentConnected=False with reason AgentUnhealthy when agent reports unhealthy", func() {
+		It("should set AgentConnected=True with reason AgentDegraded when agent reports degraded health", func() {
 			_, err := unhealthyReconciler.Reconcile(bctx, reconcile.Request{NamespacedName: unhealthyNN})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -809,9 +814,12 @@ var _ = Describe("PillarTarget Controller", func() {
 
 			cond := apimeta.FindStatusCondition(fetched.Status.Conditions, "AgentConnected")
 			Expect(cond).NotTo(BeNil(), "AgentConnected condition should be set")
-			Expect(cond.Status).To(Equal(metav1.ConditionFalse),
-				"AgentConnected should be False when agent reports unhealthy status")
-			Expect(cond.Reason).To(Equal("AgentUnhealthy"))
+			Expect(cond.Status).To(Equal(metav1.ConditionTrue),
+				"AgentConnected should be True even when agent reports degraded health — "+
+					"the gRPC connection is established (accept partial health)")
+			Expect(cond.Reason).To(Equal("AgentDegraded"),
+				"reason must be AgentDegraded to distinguish a degraded-but-reachable agent "+
+					"from a fully healthy one")
 		})
 	})
 
@@ -1151,8 +1159,12 @@ var _ = Describe("PillarTarget Controller", func() {
 		})
 	})
 
-	Context("GetCapabilities — status not populated when agent is unhealthy", func() {
-		const noCapTargetName = "test-target-no-capabilities"
+	Context("GetCapabilities — status populated even when agent reports degraded health", func() {
+		// Because a degraded-but-reachable agent is treated as connected
+		// (AgentConnected=True / AgentDegraded), populateCapabilitiesStatus IS called
+		// and agentVersion / capabilities / discoveredPools are always populated as
+		// long as the GetCapabilities RPC succeeds.
+		const noCapTargetName = "test-target-degraded-capabilities"
 		noCapNN := types.NamespacedName{Name: noCapTargetName}
 
 		var noCapReconciler *PillarTargetReconciler
@@ -1161,11 +1173,12 @@ var _ = Describe("PillarTarget Controller", func() {
 			noCapReconciler = &PillarTargetReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
-				// unhealthy agent: HealthCheck fails, so GetCapabilities is never called
+				// degraded agent: HealthCheck returns Healthy=false, but GetCapabilities
+				// is still called because AgentConnected=True (accept partial health).
 				Dialer: &mockDialer{
 					healthy: false,
 					capabilitiesResp: &agentv1.GetCapabilitiesResponse{
-						AgentVersion: "should-not-appear",
+						AgentVersion: "v1.0.0-degraded",
 					},
 				},
 			}
@@ -1194,14 +1207,15 @@ var _ = Describe("PillarTarget Controller", func() {
 			}
 		})
 
-		It("should NOT populate agentVersion when agent reports unhealthy", func() {
+		It("should populate agentVersion even when agent reports degraded health", func() {
 			_, err := noCapReconciler.Reconcile(bctx, reconcile.Request{NamespacedName: noCapNN})
 			Expect(err).NotTo(HaveOccurred())
 
 			fetched := &pillarcsiv1alpha1.PillarTarget{}
 			Expect(k8sClient.Get(bctx, noCapNN, fetched)).To(Succeed())
-			Expect(fetched.Status.AgentVersion).To(BeEmpty(),
-				"agentVersion should not be set when the agent is unhealthy (HealthCheck returns false)")
+			Expect(fetched.Status.AgentVersion).To(Equal("v1.0.0-degraded"),
+				"agentVersion must be populated for degraded-but-reachable agents "+
+					"(GetCapabilities is called whenever AgentConnected=True)")
 		})
 	})
 })

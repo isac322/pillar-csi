@@ -67,6 +67,13 @@ type E2EEnv struct {
 	// defaults to "pillar-csi-e2e".
 	ClusterName string
 
+	// DockerHost is the Docker daemon endpoint used for all docker, kind, and
+	// helm sub-processes spawned by the e2e lifecycle helpers.  Sourced from
+	// DOCKER_HOST; defaults to "tcp://localhost:2375".  Injected explicitly
+	// into every exec.Command env so sub-processes use the correct daemon even
+	// when the caller did not export DOCKER_HOST.
+	DockerHost string
+
 	// KubeconfigPath is the absolute path to the kubeconfig file written by
 	// "kind get kubeconfig".  KUBECONFIG is also set to this value so that
 	// kubectl, Helm, and client-go all pick it up automatically.
@@ -125,6 +132,11 @@ var testEnv = &E2EEnv{}
 // defaultClusterName is used when KIND_CLUSTER is not set.
 const defaultClusterName = "pillar-csi-e2e"
 
+// defaultDockerHost is the Docker daemon endpoint injected into all
+// docker/kind/helm sub-processes when DOCKER_HOST is not set in the
+// calling environment.
+const defaultDockerHost = "tcp://localhost:2375"
+
 // ─────────────────────────────────────────────────────────────────────────────
 // TestMain — entry point
 // ─────────────────────────────────────────────────────────────────────────────
@@ -174,6 +186,7 @@ func TestMain(m *testing.M) {
 // defaults.  No external commands are run at this stage.
 func initE2EEnv() error {
 	testEnv.ClusterName = envOrDefault("KIND_CLUSTER", defaultClusterName)
+	testEnv.DockerHost = envOrDefault("DOCKER_HOST", defaultDockerHost)
 	testEnv.ImageTag = envOrDefault("E2E_IMAGE_TAG", "e2e")
 	testEnv.HelmRelease = envOrDefault("E2E_HELM_RELEASE", "pillar-csi")
 	testEnv.HelmNamespace = envOrDefault("E2E_HELM_NAMESPACE", "pillar-csi-system")
@@ -443,21 +456,50 @@ func teardownE2E() {
 // runCmd executes name with args in the project root, streaming stdout and
 // stderr to the process outputs.  It returns a non-nil error when the command
 // exits non-zero.
+//
+// DOCKER_HOST is explicitly injected into the child-process environment (using
+// injectDockerHost) so that docker, kind, and helm sub-commands always reach
+// the correct Docker daemon endpoint, regardless of whether the caller
+// exported DOCKER_HOST in their shell.
 func runCmd(name string, args ...string) error {
 	cmd := exec.Command(name, args...) //nolint:gosec
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Dir = e2eProjectRoot()
+	cmd.Env = injectDockerHost(os.Environ())
 	return cmd.Run()
 }
 
 // captureOutput is like runCmd but captures and returns combined output
 // instead of streaming it.  Errors are returned alongside partial output.
+//
+// DOCKER_HOST is explicitly injected into the child-process environment via
+// injectDockerHost for the same reason described on runCmd.
 func captureOutput(name string, args ...string) (string, error) {
 	cmd := exec.Command(name, args...) //nolint:gosec
 	cmd.Dir = e2eProjectRoot()
+	cmd.Env = injectDockerHost(os.Environ())
 	out, err := cmd.CombinedOutput()
 	return string(out), err
+}
+
+// injectDockerHost returns a copy of env with DOCKER_HOST set to the value
+// stored in testEnv.DockerHost (defaulting to defaultDockerHost when empty).
+// Any existing DOCKER_HOST entry in env is replaced so the sub-process always
+// uses the configured daemon endpoint.
+func injectDockerHost(env []string) []string {
+	host := testEnv.DockerHost
+	if host == "" {
+		host = defaultDockerHost
+	}
+	const key = "DOCKER_HOST="
+	out := make([]string, 0, len(env)+1)
+	for _, e := range env {
+		if !strings.HasPrefix(e, key) {
+			out = append(out, e)
+		}
+	}
+	return append(out, key+host)
 }
 
 // writeKindKubeconfig runs "kind get kubeconfig --name <cluster>", writes the
