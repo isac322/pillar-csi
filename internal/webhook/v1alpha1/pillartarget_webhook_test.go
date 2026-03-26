@@ -23,8 +23,17 @@ import (
 	. "github.com/onsi/gomega"
 
 	pillarcsiv1alpha1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
-	// TODO (user): Add any additional imports if needed
 )
+
+// E21.2: PillarTarget webhook — immutable field update rejection tests.
+//
+// These tests validate that PillarTargetCustomValidator.ValidateUpdate() correctly
+// rejects mutations to identity-forming fields (spec.nodeRef / spec.external) that
+// would silently redirect the target to a different physical storage host.
+//
+// All tests call the validator directly — no envtest API server is required for
+// compilation or execution of the validator logic; the integration build tag is kept
+// for consistency with the suite setup file.
 
 var _ = Describe("PillarTarget Webhook", func() {
 	var (
@@ -40,33 +49,115 @@ var _ = Describe("PillarTarget Webhook", func() {
 		Expect(validator).NotTo(BeNil(), "Expected validator to be initialized")
 		Expect(oldObj).NotTo(BeNil(), "Expected oldObj to be initialized")
 		Expect(obj).NotTo(BeNil(), "Expected obj to be initialized")
-		// TODO (user): Add any setup logic common to all tests
 	})
 
 	AfterEach(func() {
-		// TODO (user): Add any teardown logic common to all tests
+		// no teardown required for direct validator tests
 	})
 
 	Context("When creating or updating PillarTarget under Validating Webhook", func() {
-		// TODO (user): Add logic for validating webhooks
-		// Example:
-		// It("Should deny creation if a required field is missing", func() {
-		//     By("simulating an invalid creation scenario")
-		//     obj.SomeRequiredField = ""
-		//     Expect(validator.ValidateCreate(ctx, obj)).Error().To(HaveOccurred())
-		// })
-		//
-		// It("Should admit creation if all required fields are present", func() {
-		//     By("simulating an invalid creation scenario")
-		//     obj.SomeRequiredField = "valid_value"
-		//     Expect(validator.ValidateCreate(ctx, obj)).To(BeNil())
-		// })
-		//
-		// It("Should validate updates correctly", func() {
-		//     By("simulating a valid update scenario")
-		//     oldObj.SomeRequiredField = "updated_value"
-		//     obj.SomeRequiredField = "updated_value"
-		//     Expect(validator.ValidateUpdate(ctx, oldObj, obj)).To(BeNil())
-		// })
+
+		// ── E21.2 — ID 151 ──────────────────────────────────────────────────────
+		// TestPillarTargetWebhook_Update_DiscriminantSwitch_NodeToExternal
+		It("Should deny update when switching discriminant from nodeRef to external", func() {
+			By("setting up oldObj with spec.nodeRef and newObj with spec.external")
+			oldObj.Spec.NodeRef = &pillarcsiv1alpha1.NodeRefSpec{Name: "node1"}
+			obj.Spec.NodeRef = nil
+			obj.Spec.External = &pillarcsiv1alpha1.ExternalSpec{Address: "1.2.3.4", Port: 9500}
+
+			_, err := validator.ValidateUpdate(ctx, oldObj, obj)
+			Expect(err).To(HaveOccurred(), "Expected error when switching from nodeRef to external")
+			Expect(err.Error()).To(ContainSubstring("cannot switch between nodeRef and external"),
+				"Error message should mention discriminant switch")
+		})
+
+		// ── E21.2 — ID 152 ──────────────────────────────────────────────────────
+		// TestPillarTargetWebhook_Update_DiscriminantSwitch_ExternalToNode
+		It("Should deny update when switching discriminant from external to nodeRef", func() {
+			By("setting up oldObj with spec.external and newObj with spec.nodeRef")
+			oldObj.Spec.External = &pillarcsiv1alpha1.ExternalSpec{Address: "1.2.3.4", Port: 9500}
+			oldObj.Spec.NodeRef = nil
+			obj.Spec.NodeRef = &pillarcsiv1alpha1.NodeRefSpec{Name: "node1"}
+			obj.Spec.External = nil
+
+			_, err := validator.ValidateUpdate(ctx, oldObj, obj)
+			Expect(err).To(HaveOccurred(), "Expected error when switching from external to nodeRef")
+			Expect(err.Error()).To(ContainSubstring("cannot switch between nodeRef and external"),
+				"Error message should mention discriminant switch")
+		})
+
+		// ── E21.2 — ID 153 ──────────────────────────────────────────────────────
+		// TestPillarTargetWebhook_Update_NodeRefNameImmutable
+		It("Should deny update when spec.nodeRef.name is changed", func() {
+			By("setting oldObj.spec.nodeRef.name to node-a and newObj.spec.nodeRef.name to node-b")
+			oldObj.Spec.NodeRef = &pillarcsiv1alpha1.NodeRefSpec{Name: "node-a"}
+			obj.Spec.NodeRef = &pillarcsiv1alpha1.NodeRefSpec{Name: "node-b"}
+
+			_, err := validator.ValidateUpdate(ctx, oldObj, obj)
+			Expect(err).To(HaveOccurred(), "Expected error when nodeRef.name is changed")
+			Expect(err.Error()).To(ContainSubstring("node-a"),
+				"Error should mention old nodeRef.name value")
+			Expect(err.Error()).To(ContainSubstring("node-b"),
+				"Error should mention new nodeRef.name value")
+		})
+
+		// ── E21.2 — ID 154 ──────────────────────────────────────────────────────
+		// TestPillarTargetWebhook_Update_ExternalAddressImmutable
+		It("Should deny update when spec.external.address is changed", func() {
+			By("setting oldObj.spec.external.address to 1.2.3.4 and newObj to 5.6.7.8")
+			oldObj.Spec.External = &pillarcsiv1alpha1.ExternalSpec{Address: "1.2.3.4", Port: 9500}
+			obj.Spec.External = &pillarcsiv1alpha1.ExternalSpec{Address: "5.6.7.8", Port: 9500}
+
+			_, err := validator.ValidateUpdate(ctx, oldObj, obj)
+			Expect(err).To(HaveOccurred(), "Expected error when external.address is changed")
+			Expect(err.Error()).To(ContainSubstring("1.2.3.4"),
+				"Error should mention old external.address value")
+			Expect(err.Error()).To(ContainSubstring("5.6.7.8"),
+				"Error should mention new external.address value")
+		})
+
+		// ── E21.2 — ID 155 ──────────────────────────────────────────────────────
+		// TestPillarTargetWebhook_Update_ExternalPortImmutable
+		It("Should deny update when spec.external.port is changed", func() {
+			By("setting oldObj.spec.external.port to 9500 and newObj to 9600")
+			oldObj.Spec.External = &pillarcsiv1alpha1.ExternalSpec{Address: "1.2.3.4", Port: 9500}
+			obj.Spec.External = &pillarcsiv1alpha1.ExternalSpec{Address: "1.2.3.4", Port: 9600}
+
+			_, err := validator.ValidateUpdate(ctx, oldObj, obj)
+			Expect(err).To(HaveOccurred(), "Expected error when external.port is changed")
+			Expect(err.Error()).To(ContainSubstring("9500"),
+				"Error should mention old external.port value")
+			Expect(err.Error()).To(ContainSubstring("9600"),
+				"Error should mention new external.port value")
+		})
+
+		// ── E21.2 — ID 156 ──────────────────────────────────────────────────────
+		// TestPillarTargetWebhook_Update_NodeRefNonIdentityFieldChange_OK
+		It("Should allow update when only non-identity nodeRef fields change (addressType)", func() {
+			By("changing only addressType while keeping nodeRef.name the same")
+			oldObj.Spec.NodeRef = &pillarcsiv1alpha1.NodeRefSpec{
+				Name:        "node-a",
+				AddressType: "InternalIP",
+			}
+			obj.Spec.NodeRef = &pillarcsiv1alpha1.NodeRefSpec{
+				Name:        "node-a",
+				AddressType: "ExternalIP",
+			}
+
+			_, err := validator.ValidateUpdate(ctx, oldObj, obj)
+			Expect(err).NotTo(HaveOccurred(),
+				"Non-identity field changes (addressType) should be allowed")
+		})
+
+		// ── E21.2 — ID 157 ──────────────────────────────────────────────────────
+		// TestPillarTargetWebhook_Create_Valid
+		It("Should allow valid PillarTarget creation (current ValidateCreate is no-op scaffolding)", func() {
+			By("creating a PillarTarget with spec.nodeRef set to a valid node name")
+			obj.Spec.NodeRef = &pillarcsiv1alpha1.NodeRefSpec{Name: "storage-node-1"}
+
+			_, err := validator.ValidateCreate(ctx, obj)
+			Expect(err).NotTo(HaveOccurred(),
+				"Valid PillarTarget creation should be allowed")
+		})
 	})
 })
