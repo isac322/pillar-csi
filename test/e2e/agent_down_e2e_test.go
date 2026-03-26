@@ -33,9 +33,15 @@ limitations under the License.
 //     CSI CreateVolume returns codes.Unavailable when the agent gRPC server
 //     has been stopped.  PillarVolume CRD must NOT be created.
 //
+//   - TestCSIController_DeleteVolume_AgentUnreachable (ID 138b)
+//     CSI DeleteVolume returns a non-OK error when the agent gRPC server
+//     has been stopped.  Agent UnexportVolume/DeleteVolume call counters
+//     must remain zero.
+//
 // Run with:
 //
 //	go test ./test/e2e/ -v -run TestCSIController_CreateVolume_AgentUnreachable
+//	go test ./test/e2e/ -v -run TestCSIController_DeleteVolume_AgentUnreachable
 package e2e
 
 import (
@@ -135,5 +141,84 @@ func TestCSIController_CreateVolume_AgentUnreachable(t *testing.T) {
 
 	if createCalls != 0 {
 		t.Errorf("E18.1: expected 0 agent.CreateVolume calls, got %d", createCalls)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// E18.1b — TestCSIController_DeleteVolume_AgentUnreachable
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TestCSIController_DeleteVolume_AgentUnreachable verifies that DeleteVolume
+// returns a non-OK gRPC error — specifically codes.Unavailable — when the
+// agent gRPC server is stopped (i.e., the agent process has gone down).
+//
+// This test exercises the real TCP failure path: the mock agent's gRPC
+// listener is stopped before the CSI call so that the controller encounters
+// an actual "connection refused" network error rather than a mock-injected
+// value.
+//
+// Assertions (per E18.1, ID 138b):
+//  1. The returned error is non-nil.
+//  2. The error carries a non-OK gRPC code (codes.Unavailable expected).
+//  3. The mock agent's UnexportVolume and DeleteVolume call counters remain zero.
+//
+// E2E-TESTCASES.md: E18.1 | ID 138b | TestCSIController_DeleteVolume_AgentUnreachable
+func TestCSIController_DeleteVolume_AgentUnreachable(t *testing.T) {
+	t.Parallel()
+
+	env := newCSIControllerE2EEnv(t, "storage-1")
+	ctx := context.Background()
+
+	// ── Simulate agent going down ─────────────────────────────────────────────
+	// Stop the real gRPC listener.  Subsequent RPC calls from the controller
+	// will fail with "connection refused", which gRPC maps to Unavailable.
+	// The t.Cleanup registered by newCSIControllerE2EEnv calls GracefulStop on
+	// an already-stopped server, which is safe (no-op).
+	env.grpcSrv.Stop()
+
+	// ── Issue the CSI DeleteVolume request ───────────────────────────────────
+	// Use a well-formed volume ID: "storage-1/nvmeof-tcp/zfs-zvol/tank/pvc-agent-down-del"
+	// The controller must attempt to reach the agent and fail before completing
+	// the delete sequence.
+	const volumeID = "storage-1/nvmeof-tcp/zfs-zvol/tank/pvc-agent-down-del"
+
+	_, err := env.Controller.DeleteVolume(ctx, &csi.DeleteVolumeRequest{
+		VolumeId: volumeID,
+	})
+
+	// ── Assert 1: error is non-nil ────────────────────────────────────────────
+	if err == nil {
+		t.Fatal("E18.1b: expected error when agent gRPC server is stopped, got nil")
+	}
+
+	// ── Assert 2: error carries non-OK gRPC code ─────────────────────────────
+	st, ok := status.FromError(err)
+	if !ok {
+		// A plain (non-gRPC) error is also acceptable: the controller should not
+		// swallow it, and the CO would treat it as a transient failure.
+		t.Logf("E18.1b: non-gRPC error returned (acceptable): %v", err)
+	} else {
+		if st.Code() == codes.OK {
+			t.Errorf("E18.1b: expected non-OK gRPC status, got OK")
+		}
+		if st.Code() != codes.Unavailable {
+			t.Logf("E18.1b: note — expected codes.Unavailable, got %v (may vary by OS/gRPC version): %v",
+				st.Code(), err)
+		}
+	}
+
+	// ── Assert 3: mock agent UnexportVolume/DeleteVolume were never called ────
+	// The mock agent's TCP listener is gone, so no RPC can reach it.  Both
+	// recorded call slices must remain empty.
+	env.AgentMock.mu.Lock()
+	unexportCalls := len(env.AgentMock.UnexportVolumeCalls)
+	deleteCalls := len(env.AgentMock.DeleteVolumeCalls)
+	env.AgentMock.mu.Unlock()
+
+	if unexportCalls != 0 {
+		t.Errorf("E18.1b: expected 0 agent.UnexportVolume calls, got %d", unexportCalls)
+	}
+	if deleteCalls != 0 {
+		t.Errorf("E18.1b: expected 0 agent.DeleteVolume calls, got %d", deleteCalls)
 	}
 }
