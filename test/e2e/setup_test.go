@@ -277,6 +277,17 @@ func setupE2E() error {
 		return fmt.Errorf("zfs pool: %w", err)
 	}
 
+	// Export the ZFS pool name so that the functional e2e test suite
+	// (internal_agent_functional_test.go) can gate ZFS-dependent spec groups
+	// on its availability.  The pool was just created by setupZFSPool above;
+	// setting PILLAR_E2E_ZFS_POOL enables the CR stack lifecycle, CSI
+	// provisioning, and mount/unmount test groups.
+	if testEnv.ZFSPoolName != "" {
+		if err := os.Setenv("PILLAR_E2E_ZFS_POOL", testEnv.ZFSPoolName); err != nil {
+			return fmt.Errorf("setenv PILLAR_E2E_ZFS_POOL: %w", err)
+		}
+	}
+
 	// Start the external agent container when requested and no pre-existing
 	// address has been supplied via EXTERNAL_AGENT_ADDR.
 	if testEnv.LaunchExternalAgent && testEnv.ExternalAgentAddr == "" {
@@ -509,6 +520,30 @@ func kindNodePathExists(container, path string) error {
 // the full registry paths used in the Helm chart (ghcr.io/bhyoo/pillar-csi/*)
 // so that pods with imagePullPolicy: Never find the correct image name in the
 // Kind node's container-image cache.
+//
+// Why not "kind load docker-image":
+//
+// "kind load docker-image" internally pipes the image tar through a
+// "docker exec ... ctr images import -" call.  When the Docker daemon is
+// remote (tcp://…), this streaming-over-exec mechanism is unreliable: the
+// exec instance is created on the daemon and then the image data is piped
+// over the same TCP connection.  Under load, the exec can disappear
+// ("No such exec instance") or be SIGKILL-ed (exit 137) before the transfer
+// completes.
+//
+// Instead, this function uses a file-based approach:
+//  1. "docker save -o localTar image:tag" — downloads the image from the
+//     remote daemon and writes it to a temporary file on the local machine.
+//  2. "docker cp localTar node:/tmp/kind-image.tar" — uploads the local
+//     tar file into each Kind node container via the Docker API's
+//     file-copy endpoint, which is a complete HTTP transaction with no
+//     interactive exec channel.
+//  3. "docker exec node ctr images import /tmp/kind-image.tar" — imports
+//     from the local file inside the container; no streaming required.
+//  4. "docker exec node rm /tmp/kind-image.tar" — cleans up the tar.
+//
+// The extra round-trip (download then upload) costs bandwidth but eliminates
+// the exec-streaming reliability problem.
 func buildAndLoadImages() error {
 	type imageSpec struct {
 		dockerfile string
@@ -532,11 +567,88 @@ func buildAndLoadImages() error {
 
 		fmt.Fprintf(os.Stdout, "e2e setup: loading image %s into kind cluster %s\n",
 			img.name, testEnv.ClusterName)
-		if err := runCmd("kind", "load", "docker-image", img.name,
-			"--name", testEnv.ClusterName,
-		); err != nil {
-			return fmt.Errorf("kind load %s: %w", img.name, err)
+		if err := loadImageIntoKindNodes(img.name); err != nil {
+			return fmt.Errorf("load image %s into kind nodes: %w", img.name, err)
 		}
+	}
+	return nil
+}
+
+// loadImageIntoKindNodes loads a Docker image into all Kind cluster nodes
+// using a file-based copy approach that is reliable over a remote TCP Docker
+// daemon (unlike "kind load docker-image" which uses streaming exec).
+//
+// Steps:
+//  1. Save the image to a local temporary tar file via "docker save -o".
+//  2. For each Kind node: copy the tar into the container with "docker cp".
+//  3. Import the tar inside the container with "ctr images import <file>".
+//  4. Remove the tar from the container.
+//  5. Remove the local temporary tar file.
+func loadImageIntoKindNodes(imageName string) error {
+	// Step 1 — Save image to a local tar file.
+	localTar, err := os.CreateTemp("", "kind-image-*.tar")
+	if err != nil {
+		return fmt.Errorf("create temp tar: %w", err)
+	}
+	localTarPath := localTar.Name()
+	localTar.Close()
+	defer os.Remove(localTarPath) //nolint:errcheck
+
+	if err := runCmd("docker", "save", imageName, "-o", localTarPath); err != nil {
+		return fmt.Errorf("docker save %s: %w", imageName, err)
+	}
+
+	// Step 2 — List all Kind nodes using docker ps with the Kind cluster label.
+	// We use docker ps rather than "kind get nodes" because the latter can
+	// return non-empty output like "No kind nodes found for cluster..." when
+	// it misidentifies the cluster state, leading to that message being
+	// (incorrectly) treated as a container name.
+	nodesOut, err := captureOutput("docker", "ps",
+		"--filter", "label=io.x-k8s.kind.cluster="+testEnv.ClusterName,
+		"--format", "{{.Names}}")
+	if err != nil {
+		return fmt.Errorf("docker ps for kind nodes: %s: %w", strings.TrimSpace(nodesOut), err)
+	}
+
+	for _, node := range strings.Split(strings.TrimSpace(nodesOut), "\n") {
+		node = strings.TrimSpace(node)
+		if node == "" {
+			continue
+		}
+
+		// Use /root/ instead of /tmp/: Kind node containers mount /tmp as
+		// tmpfs, and docker cp silently fails to write into tmpfs paths when
+		// the Docker daemon is remote (returns exit 0 but no file appears).
+		// /root/ is backed by the container's overlay filesystem and accepts
+		// docker cp writes reliably.
+		const nodeTar = "/root/kind-image.tar"
+
+		// Step 3 — Copy tar into the node container.
+		fmt.Fprintf(os.Stdout, "e2e setup: copying image tar to node %s\n", node)
+		if err := runCmd("docker", "cp", localTarPath, node+":"+nodeTar); err != nil {
+			return fmt.Errorf("docker cp to %s: %w", node, err)
+		}
+
+		// Verify the file landed in the container.
+		if err := runCmd("docker", "exec", node, "test", "-f", nodeTar); err != nil {
+			return fmt.Errorf(
+				"file %s missing in %s immediately after docker cp "+
+					"(docker cp may not support remote daemon file upload): %w",
+				nodeTar, node, err)
+		}
+
+		// Step 4 — Import from the file (no exec-streaming needed).
+		fmt.Fprintf(os.Stdout, "e2e setup: importing image on node %s\n", node)
+		if err := runCmd("docker", "exec", node,
+			"ctr", "--namespace=k8s.io", "images", "import",
+			"--all-platforms", "--digests", "--snapshotter=overlayfs",
+			nodeTar,
+		); err != nil {
+			return fmt.Errorf("ctr import on %s: %w", node, err)
+		}
+
+		// Step 5 — Remove tar from the container.
+		_ = runCmd("docker", "exec", node, "rm", nodeTar) //nolint:errcheck
 	}
 	return nil
 }
@@ -590,7 +702,37 @@ func installHelm() error {
 		"--timeout", "5m",
 	)
 
-	return runCmd("helm", args...)
+	if err := runCmd("helm", args...); err != nil {
+		return err
+	}
+
+	// Wait for the pillar-csi CRDs to be fully established in the API server.
+	//
+	// Helm's --wait flag ensures Deployment and DaemonSet pods are running but
+	// does NOT guarantee that CustomResourceDefinition endpoints are registered
+	// and ready for client discovery.  The controller-runtime REST mapper used
+	// by e2e test clients builds its discovery cache right after Helm returns;
+	// if the CRD REST endpoint is not yet live, the mapper returns "no matches
+	// for kind" even though the CRD object exists in etcd.
+	//
+	// "kubectl wait --for=condition=established" blocks until the API server
+	// has registered the REST endpoint, making subsequent client operations
+	// reliable.  All five pillar-csi CRDs must be established before tests run.
+	fmt.Fprintf(os.Stdout, "e2e setup: waiting for pillar-csi CRDs to be established\n")
+	crdWaitErr := runCmd("kubectl", "wait",
+		"--for=condition=established",
+		"--timeout=60s",
+		"crd/pillartargets.pillar-csi.pillar-csi.bhyoo.com",
+		"crd/pillarpools.pillar-csi.pillar-csi.bhyoo.com",
+		"crd/pillarprotocols.pillar-csi.pillar-csi.bhyoo.com",
+		"crd/pillarbindings.pillar-csi.pillar-csi.bhyoo.com",
+		"crd/pillarvolumes.pillar-csi.pillar-csi.bhyoo.com",
+	)
+	if crdWaitErr != nil {
+		return fmt.Errorf("wait for pillar-csi CRDs to be established: %w", crdWaitErr)
+	}
+	fmt.Fprintf(os.Stdout, "e2e setup: pillar-csi CRDs are established\n")
+	return nil
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
