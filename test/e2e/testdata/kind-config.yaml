@@ -9,13 +9,13 @@
 #     Without this mount the pillar-agent init container would silently fail
 #     to configure NVMe-oF targets, causing the storage-protocol tests to hang.
 #
-# Note on /dev: mounting the host /dev directory into Kind node containers
+# Note on /dev: mounting the entire host /dev directory into Kind node containers
 # causes the container init to fail with "open /dev/console: input/output error"
 # because the host console device is not accessible from within the container
-# context.  Real ZFS zvol and NVMe block device access is provided instead
-# through the DockerHostExec framework helper, which runs privileged commands
-# on the remote Docker host directly — bypassing the need for device bind-mounts
-# inside Kind.
+# context.  Only /dev/zfs is mounted selectively so that the pillar-agent
+# DaemonSet can access the host ZFS kernel module from within the Kind node
+# container.  NVMe block device access (for the initiator side) is provided
+# through the DockerHostExec framework helper when needed.
 #
 # API server binding: apiServerAddress is set to "0.0.0.0" so that the
 # Kubernetes API server is reachable from outside the Docker daemon host.
@@ -58,6 +58,15 @@ nodes:
       - hostPath: /sys/kernel/config
         containerPath: /sys/kernel/config
         propagation: HostToContainer
+      # Mount /dev/zfs so the pillar-agent can access the host ZFS kernel module
+      # from within the Kind node container.  This allows the agent to enumerate
+      # ZFS pools (via "zpool list") and report them in GetCapabilities, which
+      # is required for the pool controller to set PoolDiscovered conditions.
+      # Only /dev/zfs is mounted (not all of /dev) to avoid the
+      # "open /dev/console: input/output error" that occurs when the entire
+      # /dev is bind-mounted into the Kind node container.
+      - hostPath: /dev/zfs
+        containerPath: /dev/zfs
 
   # ── worker node 2 ──────────────────────────────────────────────────────────
   # General-purpose worker for application pods and initiator-side CSI tests.

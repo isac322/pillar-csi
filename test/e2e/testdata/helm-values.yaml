@@ -124,13 +124,23 @@ agent:
     tag: "e2e"
     pullPolicy: Never
 
-  # Agent requires --zfs-pool; use a fake pool name for e2e (ZFS won't be
-  # available in Kind but the agent will start and advertise capabilities).
-  # --configfs-root=/tmp avoids requiring real nvmet kernel modules.
+  # Agent requires --zfs-pool; the e2e pool name matches the ZFS loopback pool
+  # created by TestMain via framework.CreateLoopbackZFSPool ("e2e-pool").
+  # The Kind storage worker has /dev/zfs bind-mounted from the host so the
+  # agent can access the ZFS kernel module and enumerate pools.
+  # --configfs-root=/tmp avoids requiring real nvmet kernel modules for the
+  # NVMe-oF configfs path (pure ZFS tests do not need it).
   extraArgs:
     - --zfs-pool=e2e-pool
     - --configfs-root=/tmp
     - --listen-address=:9500
+
+  # Run the agent container as privileged so it can open /dev/zfs (character
+  # device 10:249) inside the Kind node container.  Without privileged mode the
+  # cgroup device controller blocks device access for non-privileged pods even
+  # when runAsUser=0 + SYS_ADMIN are set, causing "zpool list e2e-pool" to
+  # fail and DiscoveredPools to remain empty (PoolDiscovered stays Unknown).
+  privileged: true
 
   resources:
     limits:
