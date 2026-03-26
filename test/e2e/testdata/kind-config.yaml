@@ -2,11 +2,17 @@
 #
 # Layout: 1 control-plane node + 2 worker nodes.
 #
-# Worker nodes mount /sys/kernel/config (configfs) from the host so that
-# NVMe-oF target kernel modules (nvmet, nvmet_tcp) can expose their
-# configfs API inside the Kind node containers.  Without this mount the
-# pillar-agent init container would silently fail to configure NVMe-oF
-# targets, causing the storage-protocol tests to hang.
+# Worker nodes mount /sys/kernel/config (configfs) and /dev from the host so
+# that:
+#   - NVMe-oF target kernel modules (nvmet, nvmet_tcp) can expose their
+#     configfs API inside the Kind node containers via /sys/kernel/config.
+#     Without this mount the pillar-agent init container would silently fail
+#     to configure NVMe-oF targets, causing the storage-protocol tests to hang.
+#   - NVMe block devices that appear on the host after nvme-connect (e.g.
+#     /dev/nvme0n1) are visible inside the Kind node containers via the /dev
+#     mount.  The pillar-agent needs to open these devices to create ZFS zvols
+#     and expose them over NVMe-oF; without the /dev bind-mount it would only
+#     see the devices that existed at container start time.
 #
 # Privileged init containers (modprobe) require the worker nodes to run
 # with the SYS_ADMIN capability, which Kind enables automatically when
@@ -30,12 +36,29 @@ nodes:
       pillar-csi.bhyoo.com/storage-node: "true"
     extraMounts:
       # Mount the host configfs so NVMe-oF target modules can write to it.
+      # HostToContainer propagation ensures that kernel module entries written
+      # by the host (e.g. nvmet subsystem directories) appear inside the
+      # Kind node container's configfs subtree.
       - hostPath: /sys/kernel/config
         containerPath: /sys/kernel/config
-        # Propagation: HostToContainer so that modules loaded inside the
-        # Kind node are reflected back to the host configfs subtree.
         propagation: HostToContainer
+
+      # Mount the host /dev directory so NVMe block devices that appear on the
+      # host (e.g. /dev/nvme0n1 after nvme-connect) are visible inside the Kind
+      # node container.  Bidirectional propagation is required: the host creates
+      # new device nodes and the container must see them; without Bidirectional
+      # a device created after the container starts would not be visible inside.
+      - hostPath: /dev
+        containerPath: /dev
+        propagation: Bidirectional
 
   # ── worker node 2 ──────────────────────────────────────────────────────────
   # General-purpose worker for application pods and initiator-side CSI tests.
+  # Also mounts /dev so that NVMe block devices (initiator side) are visible
+  # when the CSI node plugin runs volume publish/unpublish operations.
   - role: worker
+    extraMounts:
+      # Mirror /dev from host so nvme initiator devices are accessible.
+      - hostPath: /dev
+        containerPath: /dev
+        propagation: Bidirectional
