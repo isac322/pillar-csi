@@ -78,7 +78,11 @@ spec:
             capabilities:
               add:
                 - SYS_ADMIN
-            privileged: false
+            # privileged is false by default; set agent.privileged=true in values
+            # when the agent must open host character devices (e.g. /dev/zfs) in
+            # nested-container environments (Kind) where cgroup device controllers
+            # block non-privileged access even for root+SYS_ADMIN containers.
+            privileged: {{ .Values.agent.privileged | default false }}
             allowPrivilegeEscalation: true
           {{- with .Values.agent.extraArgs }}
           args:

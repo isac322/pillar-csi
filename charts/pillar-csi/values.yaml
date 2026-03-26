@@ -296,6 +296,14 @@ agent:
   # -- Additional environment variables injected into the agent container.
   extraEnv: []
 
+  # -- Run the agent container in privileged mode.
+  # Set to true when the agent needs direct access to host devices (e.g. /dev/zfs
+  # for ZFS pool discovery) in environments where cgroup device restrictions would
+  # otherwise block the access (e.g. Kind clusters, nested-container environments).
+  # In production bare-metal deployments SYS_ADMIN + runAsUser=0 is usually
+  # sufficient; only enable privileged mode if zpool commands fail with EACCES.
+  privileged: false
+
   # -- Resource requests/limits for the pillar-agent container.
   resources:
     limits:
