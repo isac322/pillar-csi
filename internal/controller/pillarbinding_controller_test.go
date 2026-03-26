@@ -1015,6 +1015,125 @@ var _ = Describe("PillarBinding Controller", func() {
 	})
 
 	// -------------------------------------------------------------------------
+	// E25.11.4 — DeletionAllowed_AfterPVCRemoval
+	// Verify that once blocking PVCs are removed, the next reconcile removes the
+	// finalizer and deletes the owned StorageClass.
+	Context("Deletion path — unblocked after PVC removal", func() {
+		const testNamespacePVCRemoval = "default"
+		const pvcNamePVCRemoval = "binding-deletion-unblock"
+
+		BeforeEach(func() {
+			// Guard: ensure any leftover PVC from a previous run is fully gone.
+			Eventually(func() bool {
+				p := &corev1.PersistentVolumeClaim{}
+				err := k8sClient.Get(bctx, types.NamespacedName{Name: pvcNamePVCRemoval, Namespace: testNamespacePVCRemoval}, p)
+				return errors.IsNotFound(err)
+			}, "10s", "100ms").Should(BeTrue(), "PVC should not exist at BeforeEach start")
+
+			createBinding()
+			// First reconcile adds finalizer.
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+			createPool(&trueStatus, "pool ready")
+			createProtocol(&trueStatus, "protocol ready")
+			// Second reconcile creates the StorageClass.
+			_, err = doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Create a PVC that references the generated StorageClass.
+			scName := bindingName
+			pvc := &corev1.PersistentVolumeClaim{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      pvcNamePVCRemoval,
+					Namespace: testNamespacePVCRemoval,
+				},
+				Spec: corev1.PersistentVolumeClaimSpec{
+					StorageClassName: &scName,
+					AccessModes:      []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+					Resources: corev1.VolumeResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceStorage: resource.MustParse("1Gi"),
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(bctx, pvc)).To(Succeed())
+
+			// Mark the binding for deletion.
+			deleteBinding()
+		})
+
+		AfterEach(func() {
+			// Remove any remaining PVC (with finalizer strip so it can be deleted).
+			pvc := &corev1.PersistentVolumeClaim{}
+			if err := k8sClient.Get(bctx, types.NamespacedName{Name: pvcNamePVCRemoval, Namespace: testNamespacePVCRemoval}, pvc); err == nil {
+				pvc.Finalizers = nil
+				Expect(k8sClient.Update(bctx, pvc)).To(Succeed())
+				Expect(k8sClient.Delete(bctx, pvc)).To(Succeed())
+			}
+			Eventually(func() bool {
+				p := &corev1.PersistentVolumeClaim{}
+				err := k8sClient.Get(bctx, types.NamespacedName{Name: pvcNamePVCRemoval, Namespace: testNamespacePVCRemoval}, p)
+				return errors.IsNotFound(err)
+			}, "10s", "100ms").Should(BeTrue(), "PVC should be fully deleted after test")
+
+			forceRemoveBindingFinalizer()
+			deleteBinding()
+			deletePool()
+			deleteProtocol()
+			sc := &storagev1.StorageClass{}
+			if err := k8sClient.Get(bctx, types.NamespacedName{Name: bindingName}, sc); err == nil {
+				Expect(k8sClient.Delete(bctx, sc)).To(Succeed())
+			}
+		})
+
+		It("should remove finalizer and delete StorageClass after all PVCs are removed", func() {
+			// First reconcile while PVC is present: deletion should be blocked.
+			result, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(requeueAfterBindingDeletionBlock),
+				"first reconcile should requeue while the blocking PVC exists")
+
+			// Confirm finalizer is still present after the blocked reconcile.
+			fetched := &pillarcsiv1alpha1.PillarBinding{}
+			Expect(k8sClient.Get(bctx, bindingNamespacedName, fetched)).To(Succeed())
+			Expect(controllerutil.ContainsFinalizer(fetched, pillarBindingFinalizer)).To(BeTrue(),
+				"finalizer should remain while PVC is blocking deletion")
+
+			// Now remove the blocking PVC (strip finalizers first to ensure immediate removal).
+			pvc := &corev1.PersistentVolumeClaim{}
+			Expect(k8sClient.Get(bctx, types.NamespacedName{Name: pvcNamePVCRemoval, Namespace: testNamespacePVCRemoval}, pvc)).To(Succeed())
+			pvc.Finalizers = nil
+			Expect(k8sClient.Update(bctx, pvc)).To(Succeed())
+			Expect(k8sClient.Delete(bctx, pvc)).To(Succeed())
+			Eventually(func() bool {
+				p := &corev1.PersistentVolumeClaim{}
+				err := k8sClient.Get(bctx, types.NamespacedName{Name: pvcNamePVCRemoval, Namespace: testNamespacePVCRemoval}, p)
+				return errors.IsNotFound(err)
+			}, "10s", "100ms").Should(BeTrue(), "PVC should be fully removed before second reconcile")
+
+			// Second reconcile: no PVCs → finalizer should be removed; StorageClass deleted.
+			result2, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result2.RequeueAfter).To(BeZero(),
+				"should not requeue after successful deletion")
+
+			// StorageClass should be deleted.
+			sc := &storagev1.StorageClass{}
+			err = k8sClient.Get(bctx, types.NamespacedName{Name: bindingName}, sc)
+			Expect(errors.IsNotFound(err)).To(BeTrue(),
+				"owned StorageClass should be deleted after blocking PVC is removed")
+
+			// The binding should either be fully gone or have no finalizer.
+			bound := &pillarcsiv1alpha1.PillarBinding{}
+			if err := k8sClient.Get(bctx, bindingNamespacedName, bound); err == nil {
+				Expect(controllerutil.ContainsFinalizer(bound, pillarBindingFinalizer)).To(BeFalse(),
+					"finalizer should be removed after PVC deletion unblocks deletion")
+			}
+		})
+	})
+
+	// -------------------------------------------------------------------------
 	Context("Incompatible backend/protocol — NFS with block backend", func() {
 		BeforeEach(func() {
 			createBinding()
