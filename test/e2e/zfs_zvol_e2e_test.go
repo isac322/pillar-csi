@@ -63,6 +63,181 @@ import (
 	agentv1 "github.com/bhyoo/pillar-csi/gen/go/pillar_csi/agent/v1"
 )
 
+// ZFSZvolRealExport tests the ExportVolume RPC end-to-end by provisioning a
+// real ZFS zvol via CreateVolume and then calling ExportVolume over NVMe-oF
+// TCP.  The test verifies that the RPC succeeds and that the returned
+// ExportInfo contains a non-empty TargetId — confirming that the agent
+// successfully configured the NVMe-oF target in configfs.
+//
+// # Why NVMe-oF TCP?
+//
+// NVMe-oF TCP is the primary protocol implemented by pillar-agent and the one
+// exercised by the full CSI integration path.  The test uses port 4421 (not the
+// standard 4420) to avoid conflicts with any production target that may already
+// be listening on the host.
+//
+// # Constraint: no nvme connect
+//
+// The test does NOT attempt to connect an initiator to the exported target.
+// Connecting via `nvme connect` requires root on the Kind worker node, and the
+// test process runs outside the cluster.  Verifying that ExportVolume returns
+// a populated ExportInfo is sufficient to confirm end-to-end NVMe-oF target
+// creation.
+var _ = Describe("ZFSZvolRealExport", Ordered, func() {
+	// ── BeforeAll: prerequisite guards ──────────────────────────────────────
+	BeforeAll(func() {
+		if testEnv.ExternalAgentAddr == "" {
+			Skip(
+				"ZFSZvolRealExport: external agent not running — " +
+					"set E2E_LAUNCH_EXTERNAL_AGENT=true or EXTERNAL_AGENT_ADDR " +
+					"to enable ZFS zvol real-export tests",
+			)
+		}
+		if testEnv.zfsHostExec == nil {
+			Skip(
+				"ZFSZvolRealExport: ZFS host-exec helper not available — " +
+					"setupZFSPool() must have succeeded (check DOCKER_HOST and ZFS " +
+					"module availability on the remote host)",
+			)
+		}
+	})
+
+	// ── It: ExportVolume exports a real ZFS zvol over NVMe-oF TCP ─────────
+	//
+	// Steps:
+	//  1. Open a gRPC connection to the external agent.
+	//  2. CreateVolume to provision the backing zvol.
+	//  3. Call ExportVolume with NVMe-oF TCP params.
+	//  4. Assert the call returns without error and ExportInfo.TargetId is set.
+	//  5. DeferCleanup handles UnexportVolume + DeleteVolume in LIFO order.
+	It("ExportVolume succeeds and returns populated ExportInfo", func(ctx SpecContext) {
+		poolName := testEnv.ZFSPoolName
+		volName := fmt.Sprintf("zvol-e2e-export-%d", time.Now().UnixNano()%1_000_000)
+		volumeID := poolName + "/" + volName
+		devPath := "/dev/zvol/" + poolName + "/" + volName
+
+		By(fmt.Sprintf("connecting to external agent at %s", testEnv.ExternalAgentAddr))
+		dialCtx, cancelDial := context.WithTimeout(ctx, 10*time.Second)
+		defer cancelDial()
+
+		conn, err := grpc.DialContext( //nolint:staticcheck
+			dialCtx,
+			testEnv.ExternalAgentAddr,
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithBlock(), //nolint:staticcheck
+		)
+		Expect(err).NotTo(HaveOccurred(),
+			"gRPC dial to external agent at %s must succeed", testEnv.ExternalAgentAddr)
+		DeferCleanup(conn.Close)
+
+		client := agentv1.NewAgentServiceClient(conn)
+
+		// Register UnexportVolume + DeleteVolume cleanup BEFORE the
+		// operations that create state, so that cleanup runs even when an
+		// assertion below fails.  DeferCleanup handlers execute in LIFO
+		// order: DeleteVolume fires last (after UnexportVolume) because it
+		// is registered first.
+		DeferCleanup(func(dctx SpecContext) {
+			By(fmt.Sprintf("cleanup: deleting volume %q", volumeID))
+			if _, delErr := client.DeleteVolume(dctx, &agentv1.DeleteVolumeRequest{
+				VolumeId: volumeID,
+			}); delErr != nil {
+				_, _ = fmt.Fprintf(GinkgoWriter,
+					"warning: cleanup DeleteVolume %q: %v\n", volumeID, delErr)
+			}
+		})
+		DeferCleanup(func(dctx SpecContext) {
+			By(fmt.Sprintf("cleanup: unexporting volume %q", volumeID))
+			if _, unexpErr := client.UnexportVolume(dctx, &agentv1.UnexportVolumeRequest{
+				VolumeId:     volumeID,
+				ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
+			}); unexpErr != nil {
+				_, _ = fmt.Fprintf(GinkgoWriter,
+					"warning: cleanup UnexportVolume %q: %v\n", volumeID, unexpErr)
+			}
+		})
+
+		// ── Step 1: Create the backing zvol ───────────────────────────────
+		By(fmt.Sprintf("calling CreateVolume for %q (256 MiB)", volumeID))
+		createResp, err := client.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
+			VolumeId:      volumeID,
+			CapacityBytes: 256 << 20, // 256 MiB
+		})
+		Expect(err).NotTo(HaveOccurred(),
+			"CreateVolume(%q) must succeed before ExportVolume can be called", volumeID)
+		Expect(createResp.GetCapacityBytes()).To(BeNumerically(">", 0),
+			"CreateVolume must return a positive allocated capacity")
+		By(fmt.Sprintf("CreateVolume returned %d bytes allocated", createResp.GetCapacityBytes()))
+
+		// ── Step 2: Wait for the zvol device node ────────────────────────
+		//
+		// ExportVolume needs the block device to exist before it can
+		// configure the NVMe-oF target.  We poll the remote host for up to
+		// 10 s to tolerate asynchronous udev processing.
+		By(fmt.Sprintf("waiting for %s on remote host (up to 10 s)", devPath))
+		Eventually(func() error {
+			res, execErr := testEnv.zfsHostExec.ExecOnHost(ctx,
+				"test -e "+devPath)
+			if execErr != nil {
+				return fmt.Errorf("host exec failed: %w", execErr)
+			}
+			if !res.Success() {
+				return fmt.Errorf("device %s not present yet (exit %d stderr=%q)",
+					devPath, res.ExitCode, res.Stderr)
+			}
+			return nil
+		}, 10*time.Second, 500*time.Millisecond).Should(Succeed(),
+			"zvol device %s must appear on the remote host before ExportVolume", devPath)
+		By(fmt.Sprintf("confirmed: %s exists — proceeding with ExportVolume", devPath))
+
+		// ── Step 3: ExportVolume over NVMe-oF TCP ─────────────────────────
+		//
+		// Port 4421 avoids conflicts with any production NVMe-oF target
+		// that may be listening on the standard port 4420.
+		//
+		// AclEnabled=false means any initiator may connect; this avoids
+		// needing to supply an initiator NQN for the basic export test.
+		By(fmt.Sprintf("calling ExportVolume for %q over NVMe-oF TCP (port 4421)", volumeID))
+		exportResp, err := client.ExportVolume(ctx, &agentv1.ExportVolumeRequest{
+			VolumeId:     volumeID,
+			ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
+			ExportParams: &agentv1.ExportParams{
+				Params: &agentv1.ExportParams_NvmeofTcp{
+					NvmeofTcp: &agentv1.NvmeofTcpExportParams{
+						BindAddress: "0.0.0.0",
+						Port:        4421,
+					},
+				},
+			},
+			DevicePath: devPath,
+			AclEnabled: false, // allow any initiator — no AllowInitiator call needed
+		})
+		Expect(err).NotTo(HaveOccurred(),
+			"ExportVolume(%q, NVMe-oF TCP) must succeed — verify the agent "+
+				"container has CAP_SYS_ADMIN and /sys/kernel/config is mounted "+
+				"(configfs is required for NVMe-oF target configuration)",
+			volumeID)
+
+		// ── Step 4: Assert ExportInfo is populated ────────────────────────
+		//
+		// A non-nil ExportInfo with a non-empty TargetId confirms that the
+		// agent successfully wrote the NVMe-oF subsystem entry into configfs
+		// and returned the subsystem NQN as the target identifier.
+		Expect(exportResp.GetExportInfo()).NotTo(BeNil(),
+			"ExportVolume must return a non-nil ExportInfo")
+		Expect(exportResp.GetExportInfo().GetTargetId()).NotTo(BeEmpty(),
+			"ExportInfo.TargetId must be non-empty — it carries the NVMe-oF "+
+				"subsystem NQN that the initiator uses to connect")
+
+		By(fmt.Sprintf(
+			"ExportVolume succeeded: targetId=%q address=%q port=%d",
+			exportResp.GetExportInfo().GetTargetId(),
+			exportResp.GetExportInfo().GetAddress(),
+			exportResp.GetExportInfo().GetPort(),
+		))
+	})
+})
+
 var _ = Describe("ZFSZvolRealCreate", Ordered, func() {
 	// ── BeforeAll: prerequisite guards ──────────────────────────────────────
 	//
