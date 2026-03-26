@@ -117,9 +117,19 @@ var dsClient client.Client
 
 var _ = Describe("InternalAgent DaemonSet Readiness", Ordered, Label("internal-agent"), func() {
 
-	// BeforeAll establishes cluster connectivity.  It intentionally does NOT
+	// BeforeAll establishes cluster connectivity and ensures the storage-node
+	// label is present on at least one worker node.  It intentionally does NOT
 	// deploy or uninstall the Helm chart — that lifecycle is owned by the
 	// InternalAgentSuite in internal_agent_test.go.
+	//
+	// The storage-node label (pillar-csi.bhyoo.com/storage-node=true) is
+	// managed by the pillar-csi controller: it is added when a PillarTarget
+	// CR referencing the node is created, and removed when the last such
+	// PillarTarget is deleted.  If the InternalAgent functional suite ran
+	// before this container and deleted its test PillarTargets, the label may
+	// have been stripped from the storage worker.  Re-applying it here
+	// ensures that all DaemonSet scheduling assertions see the label regardless
+	// of which suites executed first.
 	BeforeAll(func(ctx context.Context) {
 		By("connecting to the Kind cluster for DaemonSet readiness validation")
 		suite, err := framework.SetupSuite(framework.WithConnectTimeout(dsConnectTimeout))
@@ -127,6 +137,55 @@ var _ = Describe("InternalAgent DaemonSet Readiness", Ordered, Label("internal-a
 			"DaemonSet readiness: cluster connectivity check failed — "+
 				"ensure KUBECONFIG is set and 'hack/e2e-setup.sh' has been run")
 		dsClient = suite.Client
+
+		// Re-apply the storage-node label on the first worker node so that
+		// DaemonSet scheduling tests are not sensitive to Ginkgo suite ordering.
+		// The label is already set by TestMain via ensureStorageNodeLabel(), but
+		// the pillar-csi controller removes it when PillarTarget CRs that
+		// reference the node are deleted.
+		By("ensuring storage-node label is present on the first worker node")
+		allNodes := &corev1.NodeList{}
+		Expect(dsClient.List(ctx, allNodes)).To(Succeed(),
+			"list all cluster nodes to find the storage worker")
+		for i := range allNodes.Items {
+			n := &allNodes.Items[i]
+			// Skip control-plane nodes.
+			if _, isCP := n.Labels["node-role.kubernetes.io/control-plane"]; isCP {
+				continue
+			}
+			// Worker node found.  Patch the storage-node label if missing.
+			if n.Labels[dsStorageNodeLabel] != "true" {
+				patch := client.MergeFrom(n.DeepCopy())
+				if n.Labels == nil {
+					n.Labels = make(map[string]string)
+				}
+				n.Labels[dsStorageNodeLabel] = "true"
+				Expect(dsClient.Patch(ctx, n, patch)).To(Succeed(),
+					"re-apply storage-node label on worker node %s", n.Name)
+				By(fmt.Sprintf("re-applied storage-node label on worker node %s", n.Name))
+			} else {
+				By(fmt.Sprintf("storage-node label already present on worker node %s", n.Name))
+			}
+			break // Only label the first worker node.
+		}
+
+		// Wait for the agent DaemonSet to reflect the (possibly updated)
+		// storage-node label by polling until DesiredNumberScheduled > 0.
+		// The DaemonSet controller updates this field asynchronously after a
+		// node label change.
+		By("waiting for agent DaemonSet to reflect the storage-node label")
+		Eventually(func(g Gomega) {
+			ds := &appsv1.DaemonSet{}
+			g.Expect(dsClient.Get(ctx, client.ObjectKey{
+				Name:      dsAgentName,
+				Namespace: dsNamespace,
+			}, ds)).To(Succeed())
+			g.Expect(ds.Status.DesiredNumberScheduled).To(BeNumerically(">", 0),
+				"agent DaemonSet must have at least 1 desired pod after "+
+					"storage-node label is applied")
+		}, 30*time.Second, 2*time.Second).Should(Succeed(),
+			"agent DaemonSet DesiredNumberScheduled did not become > 0 within 30s "+
+				"after storage-node label was applied")
 	})
 
 	// ─── Helm release objects ───────────────────────────────────────────────
