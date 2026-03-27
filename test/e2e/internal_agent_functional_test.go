@@ -879,6 +879,69 @@ test -L "$NVMET/ports/$PORTID/subsystems/$NQN" || \
 				"NVMe-oF target setup failed: %s", setupOut)
 			By(fmt.Sprintf("NVMe-oF TCP target listening: nqn=%s port=%s", nvmNQN, nvmPort))
 
+			// ── NVMe device-node bridge goroutine ─────────────────────────────────
+			// When the pillar-node plugin calls NodeStageVolume on the compute-worker,
+			// it writes to /dev/nvme-fabrics and the kernel creates the block device
+			// (e.g. /dev/nvme2n1) on the DOCKER HOST devtmpfs.  That device is NOT
+			// automatically visible inside the Kind compute-worker container because
+			// only /dev/nvme-fabrics is bind-mounted there (not the full /dev).
+			// This goroutine polls the Docker host for new nvmeXnY block devices and
+			// creates their device nodes inside the compute-worker container via
+			// mknod so that the pillar-node format-and-mount step succeeds.
+			nvmBridgeCtx, nvmBridgeCancel := context.WithCancel(context.Background())
+			go func() {
+				knownNvmeDevs := make(map[string]bool)
+				for {
+					select {
+					case <-nvmBridgeCtx.Done():
+						return
+					case <-time.After(500 * time.Millisecond):
+					}
+					if testEnv.zfsHostExec == nil {
+						continue
+					}
+					res, resErr := testEnv.zfsHostExec.ExecOnHost(nvmBridgeCtx,
+						"ls /dev/nvme*n* 2>/dev/null || true")
+					if resErr != nil {
+						continue
+					}
+					for _, devPath := range strings.Fields(strings.TrimSpace(res.Stdout)) {
+						devName := strings.TrimPrefix(devPath, "/dev/")
+						if devName == "" || knownNvmeDevs[devName] {
+							continue
+						}
+						statRes, _ := testEnv.zfsHostExec.ExecOnHost(nvmBridgeCtx,
+							fmt.Sprintf("stat -c '%%t %%T' %s 2>/dev/null || true", devPath))
+						parts := strings.Fields(strings.TrimSpace(statRes.Stdout))
+						if len(parts) != 2 {
+							continue
+						}
+						major, errMaj := strconv.ParseInt(parts[0], 16, 64)
+						minor, errMin := strconv.ParseInt(parts[1], 16, 64)
+						if errMaj != nil || errMin != nil {
+							continue
+						}
+						knownNvmeDevs[devName] = true
+						mknodScript := fmt.Sprintf(
+							"mknod /dev/%s b %d %d 2>/dev/null || true",
+							devName, major, minor)
+						cmd := exec.CommandContext(nvmBridgeCtx,
+							"docker", "exec", computeNodeName, "sh", "-c", mknodScript)
+						cmd.Env = append(os.Environ(), "DOCKER_HOST="+testEnv.DockerHost)
+						cmdOut, cmdErr := cmd.CombinedOutput()
+						if cmdErr != nil {
+							_, _ = fmt.Fprintf(GinkgoWriter,
+								"[nvme-bridge] mknod failed for %s: %v: %s\n",
+								devName, cmdErr, cmdOut)
+						} else {
+							_, _ = fmt.Fprintf(GinkgoWriter,
+								"[nvme-bridge] created device node /dev/%s (major=%d minor=%d) in %s\n",
+								devName, major, minor, computeNodeName)
+						}
+					}
+				}
+			}()
+
 			// Register NVMe-oF teardown FIRST (LIFO: runs LAST, after Pod/PVC are gone).
 			capturedNQN := nvmNQN
 			capturedPortID := nvmPort
@@ -924,6 +987,12 @@ rmdir  "$NVMET/ports/$PORTID" 2>/dev/null || true
 						_ = iatK8sClient.Update(dctx, &cn)
 					}
 				}
+			})
+			// Cancel the NVMe device-node bridge goroutine.
+			// Registered LAST → runs FIRST in LIFO cleanup order, stopping the
+			// bridge before Pod deletion and nvmet teardown.
+			DeferCleanup(func(_ context.Context) {
+				nvmBridgeCancel()
 			})
 		})
 
