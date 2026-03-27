@@ -738,37 +738,67 @@ func (r *PillarTargetReconciler) reconcileDelete(
 
 	// No remaining PillarPool references — proceed with cleanup.
 
-	// Remove the storage-node label from the referenced Kubernetes Node.
+	// Remove the storage-node label from the referenced Kubernetes Node, but
+	// only when no other (non-deleted) PillarTarget references the same node.
+	// This prevents a race where a new PillarTarget is created for the same
+	// node while the old one is being deleted, which would otherwise briefly
+	// evict the agent DaemonSet pod and disrupt in-flight requests.
 	if target.Spec.NodeRef != nil {
-		node := &corev1.Node{}
-		nodeErr := r.Get(ctx, types.NamespacedName{Name: target.Spec.NodeRef.Name}, node)
-		switch {
-		case nodeErr == nil:
-			if node.Labels != nil {
-				if _, hasLabel := node.Labels[storageNodeLabel]; hasLabel {
-					patch := client.MergeFrom(node.DeepCopy())
-					delete(node.Labels, storageNodeLabel)
-					patchErr := r.Patch(ctx, node, patch)
-					if patchErr != nil {
-						return ctrl.Result{}, fmt.Errorf(
-							"failed to remove storage-node label from Node %q: %w",
-							target.Spec.NodeRef.Name, patchErr,
-						)
-					}
-					log.Info("Removed storage-node label from node during deletion",
-						"node", target.Spec.NodeRef.Name, "label", storageNodeLabel)
-				}
+		// Count other PillarTargets that reference the same node and are not
+		// themselves being deleted.
+		allTargets := &pillarcsiv1alpha1.PillarTargetList{}
+		if listErr := r.List(ctx, allTargets); listErr != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to list PillarTargets for node-label cleanup: %w", listErr)
+		}
+		otherNodeRef := false
+		for i := range allTargets.Items {
+			t := &allTargets.Items[i]
+			if t.Name == target.Name {
+				continue // skip self
 			}
-		case client.IgnoreNotFound(nodeErr) == nil:
-			// Node already gone — nothing to clean up.
-			log.Info("Referenced node not found during deletion cleanup; skipping label removal",
-				"name", target.Name, "node", target.Spec.NodeRef.Name)
-		default:
-			// Transient error — requeue so we retry label removal.
-			return ctrl.Result{}, fmt.Errorf(
-				"failed to get node %q for label cleanup: %w",
-				target.Spec.NodeRef.Name, nodeErr,
-			)
+			if t.DeletionTimestamp != nil {
+				continue // also being deleted; don't count
+			}
+			if t.Spec.NodeRef != nil && t.Spec.NodeRef.Name == target.Spec.NodeRef.Name {
+				otherNodeRef = true
+				break
+			}
+		}
+
+		if otherNodeRef {
+			log.Info("Another PillarTarget still references the same node; skipping storage-node label removal",
+				"node", target.Spec.NodeRef.Name, "deletingTarget", target.Name)
+		} else {
+			node := &corev1.Node{}
+			nodeErr := r.Get(ctx, types.NamespacedName{Name: target.Spec.NodeRef.Name}, node)
+			switch {
+			case nodeErr == nil:
+				if node.Labels != nil {
+					if _, hasLabel := node.Labels[storageNodeLabel]; hasLabel {
+						patch := client.MergeFrom(node.DeepCopy())
+						delete(node.Labels, storageNodeLabel)
+						patchErr := r.Patch(ctx, node, patch)
+						if patchErr != nil {
+							return ctrl.Result{}, fmt.Errorf(
+								"failed to remove storage-node label from Node %q: %w",
+								target.Spec.NodeRef.Name, patchErr,
+							)
+						}
+						log.Info("Removed storage-node label from node during deletion",
+							"node", target.Spec.NodeRef.Name, "label", storageNodeLabel)
+					}
+				}
+			case client.IgnoreNotFound(nodeErr) == nil:
+				// Node already gone — nothing to clean up.
+				log.Info("Referenced node not found during deletion cleanup; skipping label removal",
+					"name", target.Name, "node", target.Spec.NodeRef.Name)
+			default:
+				// Transient error — requeue so we retry label removal.
+				return ctrl.Result{}, fmt.Errorf(
+					"failed to get node %q for label cleanup: %w",
+					target.Spec.NodeRef.Name, nodeErr,
+				)
+			}
 		}
 	}
 

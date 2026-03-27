@@ -377,12 +377,32 @@ func ensureKindCluster() error {
 	}
 	defer os.Remove(configFile) //nolint:errcheck
 
-	fmt.Fprintf(os.Stdout, "e2e setup: creating kind cluster %q\n", testEnv.ClusterName)
-	if err := runCmd("kind", "create", "cluster",
-		"--name", testEnv.ClusterName,
-		"--config", configFile,
-	); err != nil {
-		return fmt.Errorf("kind create cluster: %w", err)
+	// Create the cluster with up to 3 retries.  On a memory-pressured host,
+	// kubeadm init can fail transiently (e.g. OOM / 403 on livez during
+	// startup race).  Retrying with a brief pause usually succeeds.
+	const kindCreateRetries = 3
+	var createErr error
+	for attempt := 1; attempt <= kindCreateRetries; attempt++ {
+		fmt.Fprintf(os.Stdout, "e2e setup: creating kind cluster %q (attempt %d/%d)\n",
+			testEnv.ClusterName, attempt, kindCreateRetries)
+		if createErr = runCmd("kind", "create", "cluster",
+			"--name", testEnv.ClusterName,
+			"--config", configFile,
+		); createErr == nil {
+			break
+		}
+		fmt.Fprintf(os.Stderr, "e2e setup: kind create cluster attempt %d failed: %v\n",
+			attempt, createErr)
+		if attempt < kindCreateRetries {
+			// Delete the partial cluster before retrying so we start clean.
+			_ = runCmd("kind", "delete", "cluster", "--name", testEnv.ClusterName)
+			// Brief pause to let Docker and the kernel settle after the
+			// failed kubeadm init before attempting again.
+			time.Sleep(10 * time.Second)
+		}
+	}
+	if createErr != nil {
+		return fmt.Errorf("kind create cluster: %w", createErr)
 	}
 
 	// Capture kubeconfig and point KUBECONFIG at it.
@@ -709,8 +729,12 @@ func preloadSidecarImages() error {
 
 			fmt.Fprintf(os.Stdout, "e2e setup: copying sidecar image tar to node %s\n", node)
 			if err := runCmd("docker", "cp", localTarPath, node+":"+nodeTar); err != nil {
-				_ = os.Remove(localTarPath)
-				return fmt.Errorf("docker cp sidecar image to %s: %w", node, err)
+				// Best-effort: log and skip this node rather than aborting.
+				// If the image is missing when pods start, containerd will
+				// pull it from the registry (imagePullPolicy: IfNotPresent).
+				fmt.Fprintf(os.Stderr, "e2e setup: WARNING: docker cp sidecar image %s to %s: %v (skipping node)\n",
+					img, node, err)
+				continue
 			}
 
 			fmt.Fprintf(os.Stdout, "e2e setup: importing sidecar image on node %s\n", node)
@@ -719,8 +743,11 @@ func preloadSidecarImages() error {
 				"--all-platforms", "--digests", "--snapshotter=overlayfs",
 				nodeTar,
 			); err != nil {
-				_ = os.Remove(localTarPath)
-				return fmt.Errorf("ctr import sidecar image on %s: %w", node, err)
+				// Best-effort: a failed ctr import (e.g. exit 137 / OOM under
+				// memory pressure) should not abort the entire test setup.
+				// The node will pull the image from the registry on first use.
+				fmt.Fprintf(os.Stderr, "e2e setup: WARNING: ctr import sidecar image %s on %s: %v (skipping node)\n",
+					img, node, err)
 			}
 
 			_ = runCmd("docker", "exec", node, "rm", nodeTar) //nolint:errcheck
@@ -878,7 +905,7 @@ func installHelm() error {
 		"--set", "agent.image.tag="+testEnv.ImageTag,
 		"--set", "node.image.tag="+testEnv.ImageTag,
 		"--wait",
-		"--timeout", "5m",
+		"--timeout", "10m",
 	)
 
 	if err := runCmd("helm", args...); err != nil {
