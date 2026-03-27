@@ -63,6 +63,12 @@ jobs:
       # Helm namespace where pillar-csi is deployed.
       E2E_HELM_NAMESPACE: "pillar-csi-system"
 
+      # ── Docker daemon endpoint ────────────────────────────────────────────
+      # On GitHub Actions ubuntu-latest the Docker daemon listens on the Unix
+      # socket only; override the Makefile default of tcp://localhost:2375 so
+      # that kind, docker, and helm sub-processes all reach the correct daemon.
+      DOCKER_HOST: "unix:///var/run/docker.sock"
+
     steps:
       - name: Checkout
         uses: actions/checkout@v6
