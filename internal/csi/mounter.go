@@ -17,6 +17,7 @@ limitations under the License.
 package csi
 
 import (
+	"fmt"
 	"os"
 
 	utilexec "k8s.io/utils/exec"
@@ -26,7 +27,7 @@ import (
 // KubeMounter is the production Mounter implementation backed by
 // k8s.io/utils/mount.SafeFormatAndMount.  It shells out to the host
 // mount(8)/umount(8) binaries and uses blkid to detect existing
-// filesystems before formatting, matching the behaviour expected by all
+// filesystems before formatting, matching the behavior expected by all
 // major Kubernetes CSI drivers.
 //
 // Use NewKubeMounter to construct a ready-to-use instance.
@@ -50,43 +51,55 @@ func NewKubeMounter() *KubeMounter {
 // target.  The call is idempotent: if source is already formatted with
 // fsType the format step is skipped.
 func (m *KubeMounter) FormatAndMount(source, target, fsType string, options []string) error {
-	return m.inner.FormatAndMount(source, target, fsType, options)
+	err := m.inner.FormatAndMount(source, target, fsType, options)
+	if err != nil {
+		return fmt.Errorf("FormatAndMount %s → %s: %w", source, target, err)
+	}
+	return nil
 }
 
 // Mount performs a plain mount of source at target with the given type and
 // options.  Callers typically use this for bind mounts where the source
 // block device is already formatted.
 func (m *KubeMounter) Mount(source, target, fsType string, options []string) error {
-	return m.inner.Interface.Mount(source, target, fsType, options)
+	err := m.inner.Mount(source, target, fsType, options)
+	if err != nil {
+		return fmt.Errorf("mount %s → %s: %w", source, target, err)
+	}
+	return nil
 }
 
 // Unmount unmounts the filesystem mounted at target.  The call is
 // idempotent: if target is not currently mounted the function returns nil.
 func (m *KubeMounter) Unmount(target string) error {
 	// IsLikelyNotMountPoint returns true when the path is NOT a mount point.
-	notMnt, err := m.inner.Interface.IsLikelyNotMountPoint(target)
+	notMnt, err := m.inner.IsLikelyNotMountPoint(target)
 	if err != nil {
 		if isNotExistError(err) {
 			// Path does not exist — nothing to unmount.
 			return nil
 		}
-		return err
+		return fmt.Errorf("IsLikelyNotMountPoint %s: %w", target, err)
 	}
 	if notMnt {
 		// Already unmounted (or never mounted).
 		return nil
 	}
-	return m.inner.Interface.Unmount(target)
+	unmountErr := m.inner.Unmount(target)
+	if unmountErr != nil {
+		return fmt.Errorf("unmount %s: %w", target, unmountErr)
+	}
+	return nil
 }
 
 // IsMounted returns true if target currently has an active mount.
 func (m *KubeMounter) IsMounted(target string) (bool, error) {
-	notMnt, err := m.inner.Interface.IsLikelyNotMountPoint(target)
+	notMnt, err := m.inner.IsLikelyNotMountPoint(target)
 	if err != nil {
 		if isNotExistError(err) {
 			return false, nil
 		}
-		return false, err
+		return false, fmt.Errorf("IsLikelyNotMountPoint %s: %w", target, err)
 	}
 	return !notMnt, nil
 }

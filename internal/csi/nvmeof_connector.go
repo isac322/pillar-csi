@@ -58,7 +58,11 @@ type execCommandFunc func(name string, args ...string) ([]byte, error)
 // defaultExecCommand runs an external command with os/exec and returns the
 // combined stdout+stderr output.
 func defaultExecCommand(name string, args ...string) ([]byte, error) {
-	return exec.Command(name, args...).CombinedOutput() //nolint:gosec
+	out, err := exec.Command(name, args...).CombinedOutput() //nolint:gosec
+	if err != nil {
+		return out, fmt.Errorf("exec %s: %w", name, err)
+	}
+	return out, nil
 }
 
 // NewNVMeoFConnector constructs a production-ready NVMeoFConnector.
@@ -199,7 +203,7 @@ func (c *NVMeoFConnector) GetDevicePath(_ context.Context, subsysNQN string) (st
 				// A namespace name has the form nvme<ctrl>n<ns> so it has 'n' after 'e'.
 				suffix := strings.TrimPrefix(name, "nvme")
 				if strings.ContainsRune(suffix, 'n') {
-					return filepath.Join("/dev", name), nil
+					return "/dev/" + name, nil
 				}
 			}
 		}

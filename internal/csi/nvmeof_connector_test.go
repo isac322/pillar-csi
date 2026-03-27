@@ -39,19 +39,19 @@ import (
 
 // fakeSysfs creates a minimal /sys/class/nvme-subsystem tree inside dir for
 // the given NQN. If addNamespace is true it also creates an nvme0n1 entry.
-func fakeSysfs(t *testing.T, nqn string, addNamespace bool) string {
+func fakeSysfs(t *testing.T, nqn string, addNamespace bool) string { //nolint:unparam
 	t.Helper()
 	root := t.TempDir()
 	subsysDir := filepath.Join(root, "class", "nvme-subsystem", "nvme-subsys0")
-	if err := os.MkdirAll(subsysDir, 0o755); err != nil {
+	if err := os.MkdirAll(subsysDir, 0o750); err != nil {
 		t.Fatalf("mkdirall: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(subsysDir, "subsysnqn"), []byte(nqn+"\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(subsysDir, "subsysnqn"), []byte(nqn+"\n"), 0o600); err != nil {
 		t.Fatalf("write subsysnqn: %v", err)
 	}
 	if addNamespace {
 		nsDir := filepath.Join(subsysDir, "nvme0n1")
-		if err := os.MkdirAll(nsDir, 0o755); err != nil {
+		if err := os.MkdirAll(nsDir, 0o750); err != nil {
 			t.Fatalf("mkdirall ns: %v", err)
 		}
 	}
@@ -89,7 +89,7 @@ func newConnector(sysfsRoot string, stub *stubExec) *NVMeoFConnector {
 func TestDisconnect_NotConnected_IsNoOp(t *testing.T) {
 	root := t.TempDir() // empty — no nvme-subsystem entries
 	// Create the nvme-subsystem directory so ReadDir doesn't fail with ENOENT.
-	if err := os.MkdirAll(filepath.Join(root, "class", "nvme-subsystem"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "class", "nvme-subsystem"), 0o750); err != nil {
 		t.Fatal(err)
 	}
 
@@ -186,7 +186,7 @@ func TestDisconnect_DifferentNQN_IsNoOp(t *testing.T) {
 // invokes "nvme connect -t tcp -a <addr> -s <port> -n <nqn>".
 func TestConnect_NotConnected_RunsNvmeConnect(t *testing.T) {
 	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, "class", "nvme-subsystem"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "class", "nvme-subsystem"), 0o750); err != nil {
 		t.Fatal(err)
 	}
 	stub := &stubExec{output: []byte("connected")}
@@ -265,7 +265,7 @@ func TestGetDevicePath_NoNamespace(t *testing.T) {
 // entry for the requested NQN.
 func TestGetDevicePath_NotConnected(t *testing.T) {
 	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, "class", "nvme-subsystem"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "class", "nvme-subsystem"), 0o750); err != nil {
 		t.Fatal(err)
 	}
 	stub := &stubExec{}
