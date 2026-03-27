@@ -382,118 +382,118 @@ var _ = Describe("CRFixtures", func() {
 
 	if isExternalAgentMode() {
 		Describe("ApplyStack", Ordered, func() {
-		var (
-			suite *framework.Suite
-			stack *framework.KindE2EStack
-		)
-
-		BeforeAll(func(ctx SpecContext) {
-			// ExternalAgentAddr is guaranteed non-empty in isExternalAgentMode()
-
-			var err error
-			suite, err = framework.SetupSuite(
-				framework.WithConnectTimeout(30 * time.Second),
+			var (
+				suite *framework.Suite
+				stack *framework.KindE2EStack
 			)
-			Expect(err).NotTo(HaveOccurred(),
-				"connect to Kind cluster — KUBECONFIG must be set by TestMain")
 
-			prefix := framework.UniqueName("cr-fixture")
-			stack = framework.NewKindE2EStack(prefix, testEnv.ExternalAgentAddr, testEnv.ZFSPoolName)
+			BeforeAll(func(ctx SpecContext) {
+				// ExternalAgentAddr is guaranteed non-empty in isExternalAgentMode()
 
-			// Register cleanup BEFORE applying so resources are removed even
-			// when an assertion below fails.
-			DeferCleanup(func(dctx SpecContext) {
-				if suite == nil {
-					return
-				}
-				for _, obj := range stack.ReverseObjects() {
-					if err := framework.EnsureGone(dctx, suite.Client, obj, 2*time.Minute); err != nil {
-						_, _ = fmt.Fprintf(GinkgoWriter,
-							"warning: cleanup %T %q: %v\n", obj, obj.GetName(), err)
+				var err error
+				suite, err = framework.SetupSuite(
+					framework.WithConnectTimeout(30 * time.Second),
+				)
+				Expect(err).NotTo(HaveOccurred(),
+					"connect to Kind cluster — KUBECONFIG must be set by TestMain")
+
+				prefix := framework.UniqueName("cr-fixture")
+				stack = framework.NewKindE2EStack(prefix, testEnv.ExternalAgentAddr, testEnv.ZFSPoolName)
+
+				// Register cleanup BEFORE applying so resources are removed even
+				// when an assertion below fails.
+				DeferCleanup(func(dctx SpecContext) {
+					if suite == nil {
+						return
 					}
-				}
-				suite.TeardownSuite()
+					for _, obj := range stack.ReverseObjects() {
+						if err := framework.EnsureGone(dctx, suite.Client, obj, 2*time.Minute); err != nil {
+							_, _ = fmt.Fprintf(GinkgoWriter,
+								"warning: cleanup %T %q: %v\n", obj, obj.GetName(), err)
+						}
+					}
+					suite.TeardownSuite()
+				})
 			})
-		})
 
-		It("applies PillarTarget to the cluster without error", func(ctx SpecContext) {
-			By(fmt.Sprintf("applying PillarTarget %q", stack.Target.Name))
-			Expect(framework.Apply(ctx, suite.Client, stack.Target)).To(Succeed(),
-				"PillarTarget with spec.external must be accepted by the API server — "+
-					"verify the CRD schema allows the address %q and port %d",
-				stack.Target.Spec.External.Address,
-				stack.Target.Spec.External.Port,
-			)
+			It("applies PillarTarget to the cluster without error", func(ctx SpecContext) {
+				By(fmt.Sprintf("applying PillarTarget %q", stack.Target.Name))
+				Expect(framework.Apply(ctx, suite.Client, stack.Target)).To(Succeed(),
+					"PillarTarget with spec.external must be accepted by the API server — "+
+						"verify the CRD schema allows the address %q and port %d",
+					stack.Target.Spec.External.Address,
+					stack.Target.Spec.External.Port,
+				)
 
-			By("verifying PillarTarget is retrievable from the cluster")
-			got := &v1alpha1.PillarTarget{}
-			Expect(suite.Client.Get(ctx,
-				framework.ObjectKey(stack.Target), got)).To(Succeed(),
-				"PillarTarget %q must be readable back from the API server",
-				stack.Target.Name)
-			Expect(got.Spec.External.Address).To(Equal(stack.Target.Spec.External.Address))
-			Expect(got.Spec.External.Port).To(Equal(stack.Target.Spec.External.Port))
-		})
+				By("verifying PillarTarget is retrievable from the cluster")
+				got := &v1alpha1.PillarTarget{}
+				Expect(suite.Client.Get(ctx,
+					framework.ObjectKey(stack.Target), got)).To(Succeed(),
+					"PillarTarget %q must be readable back from the API server",
+					stack.Target.Name)
+				Expect(got.Spec.External.Address).To(Equal(stack.Target.Spec.External.Address))
+				Expect(got.Spec.External.Port).To(Equal(stack.Target.Spec.External.Port))
+			})
 
-		It("applies PillarPool to the cluster without error", func(ctx SpecContext) {
-			By(fmt.Sprintf("applying PillarPool %q", stack.Pool.Name))
-			Expect(framework.Apply(ctx, suite.Client, stack.Pool)).To(Succeed(),
-				"PillarPool with ZFS zvol backend and Kind properties must be accepted — "+
-					"verify the CRD schema allows the volblocksize, compression, and sync properties",
-			)
+			It("applies PillarPool to the cluster without error", func(ctx SpecContext) {
+				By(fmt.Sprintf("applying PillarPool %q", stack.Pool.Name))
+				Expect(framework.Apply(ctx, suite.Client, stack.Pool)).To(Succeed(),
+					"PillarPool with ZFS zvol backend and Kind properties must be accepted — "+
+						"verify the CRD schema allows the volblocksize, compression, and sync properties",
+				)
 
-			By("verifying PillarPool is retrievable and field values are preserved")
-			got := &v1alpha1.PillarPool{}
-			Expect(suite.Client.Get(ctx,
-				framework.ObjectKey(stack.Pool), got)).To(Succeed(),
-				"PillarPool %q must be readable back from the API server",
-				stack.Pool.Name)
-			Expect(got.Spec.TargetRef).To(Equal(stack.Target.Name))
-			Expect(got.Spec.Backend.Type).To(Equal(v1alpha1.BackendTypeZFSZvol))
-			Expect(got.Spec.Backend.ZFS.Pool).To(Equal(testEnv.ZFSPoolName))
-			Expect(got.Spec.Backend.ZFS.Properties["volblocksize"]).To(Equal("4096"))
-			Expect(got.Spec.Backend.ZFS.Properties["compression"]).To(Equal("lz4"))
-		})
+				By("verifying PillarPool is retrievable and field values are preserved")
+				got := &v1alpha1.PillarPool{}
+				Expect(suite.Client.Get(ctx,
+					framework.ObjectKey(stack.Pool), got)).To(Succeed(),
+					"PillarPool %q must be readable back from the API server",
+					stack.Pool.Name)
+				Expect(got.Spec.TargetRef).To(Equal(stack.Target.Name))
+				Expect(got.Spec.Backend.Type).To(Equal(v1alpha1.BackendTypeZFSZvol))
+				Expect(got.Spec.Backend.ZFS.Pool).To(Equal(testEnv.ZFSPoolName))
+				Expect(got.Spec.Backend.ZFS.Properties["volblocksize"]).To(Equal("4096"))
+				Expect(got.Spec.Backend.ZFS.Properties["compression"]).To(Equal("lz4"))
+			})
 
-		It("applies PillarProtocol to the cluster without error", func(ctx SpecContext) {
-			By(fmt.Sprintf("applying PillarProtocol %q", stack.Proto.Name))
-			Expect(framework.Apply(ctx, suite.Client, stack.Proto)).To(Succeed(),
-				"PillarProtocol with NVMe-oF TCP and port 4421 must be accepted — "+
-					"verify the CRD schema allows port numbers and boolean ACL fields",
-			)
+			It("applies PillarProtocol to the cluster without error", func(ctx SpecContext) {
+				By(fmt.Sprintf("applying PillarProtocol %q", stack.Proto.Name))
+				Expect(framework.Apply(ctx, suite.Client, stack.Proto)).To(Succeed(),
+					"PillarProtocol with NVMe-oF TCP and port 4421 must be accepted — "+
+						"verify the CRD schema allows port numbers and boolean ACL fields",
+				)
 
-			got := &v1alpha1.PillarProtocol{}
-			Expect(suite.Client.Get(ctx,
-				framework.ObjectKey(stack.Proto), got)).To(Succeed())
-			Expect(got.Spec.Type).To(Equal(v1alpha1.ProtocolTypeNVMeOFTCP))
-			Expect(got.Spec.NVMeOFTCP.Port).To(Equal(framework.KindNVMeOFPort))
-		})
+				got := &v1alpha1.PillarProtocol{}
+				Expect(suite.Client.Get(ctx,
+					framework.ObjectKey(stack.Proto), got)).To(Succeed())
+				Expect(got.Spec.Type).To(Equal(v1alpha1.ProtocolTypeNVMeOFTCP))
+				Expect(got.Spec.NVMeOFTCP.Port).To(Equal(framework.KindNVMeOFPort))
+			})
 
-		It("applies PillarBinding to the cluster without error", func(ctx SpecContext) {
-			By(fmt.Sprintf("applying PillarBinding %q", stack.Binding.Name))
-			Expect(framework.Apply(ctx, suite.Client, stack.Binding)).To(Succeed(),
-				"PillarBinding wiring pool and protocol must be accepted — "+
-					"verify the CRD schema allows poolRef and protocolRef string fields",
-			)
+			It("applies PillarBinding to the cluster without error", func(ctx SpecContext) {
+				By(fmt.Sprintf("applying PillarBinding %q", stack.Binding.Name))
+				Expect(framework.Apply(ctx, suite.Client, stack.Binding)).To(Succeed(),
+					"PillarBinding wiring pool and protocol must be accepted — "+
+						"verify the CRD schema allows poolRef and protocolRef string fields",
+				)
 
-			got := &v1alpha1.PillarBinding{}
-			Expect(suite.Client.Get(ctx,
-				framework.ObjectKey(stack.Binding), got)).To(Succeed())
-			Expect(got.Spec.PoolRef).To(Equal(stack.Pool.Name))
-			Expect(got.Spec.ProtocolRef).To(Equal(stack.Proto.Name))
-		})
+				got := &v1alpha1.PillarBinding{}
+				Expect(suite.Client.Get(ctx,
+					framework.ObjectKey(stack.Binding), got)).To(Succeed())
+				Expect(got.Spec.PoolRef).To(Equal(stack.Pool.Name))
+				Expect(got.Spec.ProtocolRef).To(Equal(stack.Proto.Name))
+			})
 
-		It("all stack CRs have a non-zero creationTimestamp", func(ctx SpecContext) {
-			// After all Apply calls above, the objects should have server-set
-			// metadata.  This spec checks that the Kubernetes API server has
-			// fully processed the resources.
-			for _, obj := range stack.Objects() {
-				By(fmt.Sprintf("checking creationTimestamp on %T %q", obj, obj.GetName()))
-				Expect(obj.GetCreationTimestamp()).NotTo(Equal(metav1.Time{}),
-					"%T %q must have a non-zero creationTimestamp after Apply",
-					obj, obj.GetName())
-			}
-		})
+			It("all stack CRs have a non-zero creationTimestamp", func(ctx SpecContext) {
+				// After all Apply calls above, the objects should have server-set
+				// metadata.  This spec checks that the Kubernetes API server has
+				// fully processed the resources.
+				for _, obj := range stack.Objects() {
+					By(fmt.Sprintf("checking creationTimestamp on %T %q", obj, obj.GetName()))
+					Expect(obj.GetCreationTimestamp()).NotTo(Equal(metav1.Time{}),
+						"%T %q must have a non-zero creationTimestamp after Apply",
+						obj, obj.GetName())
+				}
+			})
 		}) // end Describe("ApplyStack")
 	} // end if isExternalAgentMode()
 })

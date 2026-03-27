@@ -128,390 +128,390 @@ var _ = func() bool {
 	}
 	Describe("InternalAgent DaemonSet Readiness", Ordered, Label("internal-agent"), func() {
 
-	// BeforeAll establishes cluster connectivity and ensures the storage-node
-	// label is present on at least one worker node.  It intentionally does NOT
-	// deploy or uninstall the Helm chart — that lifecycle is owned by the
-	// InternalAgentSuite in internal_agent_test.go.
-	//
-	// The storage-node label (pillar-csi.bhyoo.com/storage-node=true) is
-	// managed by the pillar-csi controller: it is added when a PillarTarget
-	// CR referencing the node is created, and removed when the last such
-	// PillarTarget is deleted.  If the InternalAgent functional suite ran
-	// before this container and deleted its test PillarTargets, the label may
-	// have been stripped from the storage worker.  Re-applying it here
-	// ensures that all DaemonSet scheduling assertions see the label regardless
-	// of which suites executed first.
-	BeforeAll(func(ctx context.Context) {
-		By("connecting to the Kind cluster for DaemonSet readiness validation")
-		suite, err := framework.SetupSuite(framework.WithConnectTimeout(dsConnectTimeout))
-		Expect(err).NotTo(HaveOccurred(),
-			"DaemonSet readiness: cluster connectivity check failed — "+
-				"ensure KUBECONFIG is set and 'hack/e2e-setup.sh' has been run")
-		dsClient = suite.Client
+		// BeforeAll establishes cluster connectivity and ensures the storage-node
+		// label is present on at least one worker node.  It intentionally does NOT
+		// deploy or uninstall the Helm chart — that lifecycle is owned by the
+		// InternalAgentSuite in internal_agent_test.go.
+		//
+		// The storage-node label (pillar-csi.bhyoo.com/storage-node=true) is
+		// managed by the pillar-csi controller: it is added when a PillarTarget
+		// CR referencing the node is created, and removed when the last such
+		// PillarTarget is deleted.  If the InternalAgent functional suite ran
+		// before this container and deleted its test PillarTargets, the label may
+		// have been stripped from the storage worker.  Re-applying it here
+		// ensures that all DaemonSet scheduling assertions see the label regardless
+		// of which suites executed first.
+		BeforeAll(func(ctx context.Context) {
+			By("connecting to the Kind cluster for DaemonSet readiness validation")
+			suite, err := framework.SetupSuite(framework.WithConnectTimeout(dsConnectTimeout))
+			Expect(err).NotTo(HaveOccurred(),
+				"DaemonSet readiness: cluster connectivity check failed — "+
+					"ensure KUBECONFIG is set and 'hack/e2e-setup.sh' has been run")
+			dsClient = suite.Client
 
-		// Re-apply the storage-node label on the first worker node so that
-		// DaemonSet scheduling tests are not sensitive to Ginkgo suite ordering.
-		// The label is already set by TestMain via ensureStorageNodeLabel(), but
-		// the pillar-csi controller removes it when PillarTarget CRs that
-		// reference the node are deleted.
-		By("ensuring storage-node label is present on the first worker node")
-		allNodes := &corev1.NodeList{}
-		Expect(dsClient.List(ctx, allNodes)).To(Succeed(),
-			"list all cluster nodes to find the storage worker")
-		for i := range allNodes.Items {
-			n := &allNodes.Items[i]
-			// Skip control-plane nodes.
-			if _, isCP := n.Labels["node-role.kubernetes.io/control-plane"]; isCP {
-				continue
-			}
-			// Worker node found.  Patch the storage-node label if missing.
-			if n.Labels[dsStorageNodeLabel] != "true" {
-				patch := client.MergeFrom(n.DeepCopy())
-				if n.Labels == nil {
-					n.Labels = make(map[string]string)
+			// Re-apply the storage-node label on the first worker node so that
+			// DaemonSet scheduling tests are not sensitive to Ginkgo suite ordering.
+			// The label is already set by TestMain via ensureStorageNodeLabel(), but
+			// the pillar-csi controller removes it when PillarTarget CRs that
+			// reference the node are deleted.
+			By("ensuring storage-node label is present on the first worker node")
+			allNodes := &corev1.NodeList{}
+			Expect(dsClient.List(ctx, allNodes)).To(Succeed(),
+				"list all cluster nodes to find the storage worker")
+			for i := range allNodes.Items {
+				n := &allNodes.Items[i]
+				// Skip control-plane nodes.
+				if _, isCP := n.Labels["node-role.kubernetes.io/control-plane"]; isCP {
+					continue
 				}
-				n.Labels[dsStorageNodeLabel] = "true"
-				Expect(dsClient.Patch(ctx, n, patch)).To(Succeed(),
-					"re-apply storage-node label on worker node %s", n.Name)
-				By(fmt.Sprintf("re-applied storage-node label on worker node %s", n.Name))
-			} else {
-				By(fmt.Sprintf("storage-node label already present on worker node %s", n.Name))
-			}
-			break // Only label the first worker node.
-		}
-
-		// Log existing DaemonSets for diagnostic purposes before waiting.
-		// This is particularly useful when the DaemonSet Readiness suite runs
-		// after the functional tests (which delete PillarTargets causing the
-		// controller to strip the storage-node label).
-		allDS := &appsv1.DaemonSetList{}
-		if listErr := dsClient.List(ctx, allDS); listErr == nil {
-			_, _ = fmt.Fprintf(GinkgoWriter,
-				"DaemonSet Readiness BeforeAll: found %d DaemonSets in cluster:\n",
-				len(allDS.Items))
-			for _, ds := range allDS.Items {
-				_, _ = fmt.Fprintf(GinkgoWriter,
-					"  - %s/%s (desired=%d, ready=%d)\n",
-					ds.Namespace, ds.Name,
-					ds.Status.DesiredNumberScheduled,
-					ds.Status.NumberReady)
-			}
-		}
-
-		// Wait for the agent DaemonSet to reflect the (possibly updated)
-		// storage-node label by polling until DesiredNumberScheduled > 0.
-		// The DaemonSet controller updates this field asynchronously after a
-		// node label change.
-		By(fmt.Sprintf("waiting for agent DaemonSet %s/%s to reflect the storage-node label",
-			dsNamespace, dsAgentName))
-		Eventually(func(g Gomega) {
-			ds := &appsv1.DaemonSet{}
-			err := dsClient.Get(ctx, client.ObjectKey{
-				Name:      dsAgentName,
-				Namespace: dsNamespace,
-			}, ds)
-			if err != nil {
-				// Log all DaemonSets on failure for diagnostics.
-				diagDS := &appsv1.DaemonSetList{}
-				if diagErr := dsClient.List(ctx, diagDS); diagErr == nil {
-					_, _ = fmt.Fprintf(GinkgoWriter,
-						"DaemonSet GET failed (%v); cluster DaemonSets:\n", err)
-					for _, d := range diagDS.Items {
-						_, _ = fmt.Fprintf(GinkgoWriter,
-							"  %s/%s desired=%d\n", d.Namespace, d.Name,
-							d.Status.DesiredNumberScheduled)
+				// Worker node found.  Patch the storage-node label if missing.
+				if n.Labels[dsStorageNodeLabel] != "true" {
+					patch := client.MergeFrom(n.DeepCopy())
+					if n.Labels == nil {
+						n.Labels = make(map[string]string)
 					}
+					n.Labels[dsStorageNodeLabel] = "true"
+					Expect(dsClient.Patch(ctx, n, patch)).To(Succeed(),
+						"re-apply storage-node label on worker node %s", n.Name)
+					By(fmt.Sprintf("re-applied storage-node label on worker node %s", n.Name))
+				} else {
+					By(fmt.Sprintf("storage-node label already present on worker node %s", n.Name))
+				}
+				break // Only label the first worker node.
+			}
+
+			// Log existing DaemonSets for diagnostic purposes before waiting.
+			// This is particularly useful when the DaemonSet Readiness suite runs
+			// after the functional tests (which delete PillarTargets causing the
+			// controller to strip the storage-node label).
+			allDS := &appsv1.DaemonSetList{}
+			if listErr := dsClient.List(ctx, allDS); listErr == nil {
+				_, _ = fmt.Fprintf(GinkgoWriter,
+					"DaemonSet Readiness BeforeAll: found %d DaemonSets in cluster:\n",
+					len(allDS.Items))
+				for _, ds := range allDS.Items {
+					_, _ = fmt.Fprintf(GinkgoWriter,
+						"  - %s/%s (desired=%d, ready=%d)\n",
+						ds.Namespace, ds.Name,
+						ds.Status.DesiredNumberScheduled,
+						ds.Status.NumberReady)
 				}
 			}
-			g.Expect(err).To(Succeed())
-			g.Expect(ds.Status.DesiredNumberScheduled).To(BeNumerically(">", 0),
-				"agent DaemonSet must have at least 1 desired pod after "+
-					"storage-node label is applied")
-		}, dsReadinessTimeout, 2*time.Second).Should(Succeed(),
-			"agent DaemonSet DesiredNumberScheduled did not become > 0 within "+
-				dsReadinessTimeout.String()+
-				" after storage-node label was applied")
-	})
 
-	// ─── Helm release objects ───────────────────────────────────────────────
-
-	Describe("Helm release objects", func() {
-		It("creates the agent DaemonSet in the pillar-csi-system namespace", func(ctx context.Context) {
-			ds := &appsv1.DaemonSet{}
-			err := dsClient.Get(ctx, client.ObjectKey{
-				Name:      dsAgentName,
-				Namespace: dsNamespace,
-			}, ds)
-			Expect(err).NotTo(HaveOccurred(),
-				"agent DaemonSet %q must exist in namespace %q — "+
-					"verify that 'hack/e2e-setup.sh' completed without error",
-				dsAgentName, dsNamespace)
-			By(fmt.Sprintf("agent DaemonSet found: desired=%d current=%d ready=%d",
-				ds.Status.DesiredNumberScheduled,
-				ds.Status.CurrentNumberScheduled,
-				ds.Status.NumberReady,
-			))
-		})
-
-		It("creates the node DaemonSet in the pillar-csi-system namespace", func(ctx context.Context) {
-			ds := &appsv1.DaemonSet{}
-			err := dsClient.Get(ctx, client.ObjectKey{
-				Name:      dsNodeName,
-				Namespace: dsNamespace,
-			}, ds)
-			Expect(err).NotTo(HaveOccurred(),
-				"node DaemonSet %q must exist in namespace %q",
-				dsNodeName, dsNamespace)
-			By(fmt.Sprintf("node DaemonSet found: desired=%d current=%d ready=%d",
-				ds.Status.DesiredNumberScheduled,
-				ds.Status.CurrentNumberScheduled,
-				ds.Status.NumberReady,
-			))
-		})
-	})
-
-	// ─── Agent DaemonSet scheduling ────────────────────────────────────────
-
-	Describe("agent DaemonSet scheduling", func() {
-		It("is scheduled on at least one storage node", func(ctx context.Context) {
-			// Count nodes labelled as storage nodes.
-			nodeList := &corev1.NodeList{}
-			Expect(dsClient.List(ctx, nodeList,
-				client.MatchingLabels{dsStorageNodeLabel: "true"},
-			)).To(Succeed(), "list nodes with label %s=true", dsStorageNodeLabel)
-
-			storageNodeCount := len(nodeList.Items)
-			Expect(storageNodeCount).To(BeNumerically(">", 0),
-				"expected at least one node labelled %s=true; "+
-					"check hack/kind-config.yaml for the storage-worker node label", dsStorageNodeLabel)
-
-			By(fmt.Sprintf("found %d storage node(s) with label %s=true", storageNodeCount, dsStorageNodeLabel))
-		})
-
-		It("DesiredNumberScheduled matches the number of storage-node-labelled Kind nodes", func(ctx context.Context) {
-			nodeList := &corev1.NodeList{}
-			Expect(dsClient.List(ctx, nodeList,
-				client.MatchingLabels{dsStorageNodeLabel: "true"},
-			)).To(Succeed())
-			storageNodeCount := len(nodeList.Items)
-
-			ds := &appsv1.DaemonSet{}
-			Expect(dsClient.Get(ctx, client.ObjectKey{
-				Name:      dsAgentName,
-				Namespace: dsNamespace,
-			}, ds)).To(Succeed())
-
-			Expect(int(ds.Status.DesiredNumberScheduled)).To(Equal(storageNodeCount),
-				"agent DaemonSet DesiredNumberScheduled (%d) must equal the number of "+
-					"nodes labelled %s=true (%d)",
-				ds.Status.DesiredNumberScheduled, dsStorageNodeLabel, storageNodeCount)
-		})
-	})
-
-	// ─── Agent DaemonSet rollout readiness ─────────────────────────────────
-
-	Describe("agent DaemonSet rollout", func() {
-		It("reaches full readiness (all pods Running) within the timeout", func(ctx context.Context) {
+			// Wait for the agent DaemonSet to reflect the (possibly updated)
+			// storage-node label by polling until DesiredNumberScheduled > 0.
+			// The DaemonSet controller updates this field asynchronously after a
+			// node label change.
+			By(fmt.Sprintf("waiting for agent DaemonSet %s/%s to reflect the storage-node label",
+				dsNamespace, dsAgentName))
 			Eventually(func(g Gomega) {
 				ds := &appsv1.DaemonSet{}
-				g.Expect(dsClient.Get(ctx, client.ObjectKey{
+				err := dsClient.Get(ctx, client.ObjectKey{
+					Name:      dsAgentName,
+					Namespace: dsNamespace,
+				}, ds)
+				if err != nil {
+					// Log all DaemonSets on failure for diagnostics.
+					diagDS := &appsv1.DaemonSetList{}
+					if diagErr := dsClient.List(ctx, diagDS); diagErr == nil {
+						_, _ = fmt.Fprintf(GinkgoWriter,
+							"DaemonSet GET failed (%v); cluster DaemonSets:\n", err)
+						for _, d := range diagDS.Items {
+							_, _ = fmt.Fprintf(GinkgoWriter,
+								"  %s/%s desired=%d\n", d.Namespace, d.Name,
+								d.Status.DesiredNumberScheduled)
+						}
+					}
+				}
+				g.Expect(err).To(Succeed())
+				g.Expect(ds.Status.DesiredNumberScheduled).To(BeNumerically(">", 0),
+					"agent DaemonSet must have at least 1 desired pod after "+
+						"storage-node label is applied")
+			}, dsReadinessTimeout, 2*time.Second).Should(Succeed(),
+				"agent DaemonSet DesiredNumberScheduled did not become > 0 within "+
+					dsReadinessTimeout.String()+
+					" after storage-node label was applied")
+		})
+
+		// ─── Helm release objects ───────────────────────────────────────────────
+
+		Describe("Helm release objects", func() {
+			It("creates the agent DaemonSet in the pillar-csi-system namespace", func(ctx context.Context) {
+				ds := &appsv1.DaemonSet{}
+				err := dsClient.Get(ctx, client.ObjectKey{
+					Name:      dsAgentName,
+					Namespace: dsNamespace,
+				}, ds)
+				Expect(err).NotTo(HaveOccurred(),
+					"agent DaemonSet %q must exist in namespace %q — "+
+						"verify that 'hack/e2e-setup.sh' completed without error",
+					dsAgentName, dsNamespace)
+				By(fmt.Sprintf("agent DaemonSet found: desired=%d current=%d ready=%d",
+					ds.Status.DesiredNumberScheduled,
+					ds.Status.CurrentNumberScheduled,
+					ds.Status.NumberReady,
+				))
+			})
+
+			It("creates the node DaemonSet in the pillar-csi-system namespace", func(ctx context.Context) {
+				ds := &appsv1.DaemonSet{}
+				err := dsClient.Get(ctx, client.ObjectKey{
+					Name:      dsNodeName,
+					Namespace: dsNamespace,
+				}, ds)
+				Expect(err).NotTo(HaveOccurred(),
+					"node DaemonSet %q must exist in namespace %q",
+					dsNodeName, dsNamespace)
+				By(fmt.Sprintf("node DaemonSet found: desired=%d current=%d ready=%d",
+					ds.Status.DesiredNumberScheduled,
+					ds.Status.CurrentNumberScheduled,
+					ds.Status.NumberReady,
+				))
+			})
+		})
+
+		// ─── Agent DaemonSet scheduling ────────────────────────────────────────
+
+		Describe("agent DaemonSet scheduling", func() {
+			It("is scheduled on at least one storage node", func(ctx context.Context) {
+				// Count nodes labelled as storage nodes.
+				nodeList := &corev1.NodeList{}
+				Expect(dsClient.List(ctx, nodeList,
+					client.MatchingLabels{dsStorageNodeLabel: "true"},
+				)).To(Succeed(), "list nodes with label %s=true", dsStorageNodeLabel)
+
+				storageNodeCount := len(nodeList.Items)
+				Expect(storageNodeCount).To(BeNumerically(">", 0),
+					"expected at least one node labelled %s=true; "+
+						"check hack/kind-config.yaml for the storage-worker node label", dsStorageNodeLabel)
+
+				By(fmt.Sprintf("found %d storage node(s) with label %s=true", storageNodeCount, dsStorageNodeLabel))
+			})
+
+			It("DesiredNumberScheduled matches the number of storage-node-labelled Kind nodes", func(ctx context.Context) {
+				nodeList := &corev1.NodeList{}
+				Expect(dsClient.List(ctx, nodeList,
+					client.MatchingLabels{dsStorageNodeLabel: "true"},
+				)).To(Succeed())
+				storageNodeCount := len(nodeList.Items)
+
+				ds := &appsv1.DaemonSet{}
+				Expect(dsClient.Get(ctx, client.ObjectKey{
 					Name:      dsAgentName,
 					Namespace: dsNamespace,
 				}, ds)).To(Succeed())
 
-				g.Expect(ds.Status.DesiredNumberScheduled).To(BeNumerically(">", 0),
-					"agent DaemonSet must be scheduled on at least one node")
-				g.Expect(ds.Status.NumberUnavailable).To(BeZero(),
-					"agent DaemonSet must have 0 unavailable pods (got %d unavailable, %d/%d ready)",
-					ds.Status.NumberUnavailable,
-					ds.Status.NumberReady,
-					ds.Status.DesiredNumberScheduled,
-				)
-				g.Expect(ds.Status.NumberReady).To(Equal(ds.Status.DesiredNumberScheduled),
-					"agent DaemonSet NumberReady (%d) must equal DesiredNumberScheduled (%d)",
-					ds.Status.NumberReady, ds.Status.DesiredNumberScheduled)
-				g.Expect(ds.Status.UpdatedNumberScheduled).To(Equal(ds.Status.DesiredNumberScheduled),
-					"agent DaemonSet UpdatedNumberScheduled (%d) must equal DesiredNumberScheduled (%d)",
-					ds.Status.UpdatedNumberScheduled, ds.Status.DesiredNumberScheduled)
-			}, dsReadinessTimeout, dsPollInterval).Should(Succeed(),
-				"agent DaemonSet %q did not reach full readiness within %s",
-				dsAgentName, dsReadinessTimeout)
-		})
-	})
-
-	// ─── Agent pod container-level checks ──────────────────────────────────
-
-	Describe("agent DaemonSet pods", func() {
-		It("all pods are in the Running phase", func(ctx context.Context) {
-			pods, err := dsFetchPods(ctx, dsClient, dsAgentName, dsNamespace)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(pods).NotTo(BeEmpty(),
-				"agent DaemonSet must have at least one pod")
-
-			for i := range pods {
-				pod := &pods[i]
-				By(fmt.Sprintf("checking pod %s on node %s", pod.Name, pod.Spec.NodeName))
-				Expect(pod.Status.Phase).To(Equal(corev1.PodRunning),
-					"agent pod %q on node %q must be in Running phase (got %s)",
-					pod.Name, pod.Spec.NodeName, pod.Status.Phase)
-			}
+				Expect(int(ds.Status.DesiredNumberScheduled)).To(Equal(storageNodeCount),
+					"agent DaemonSet DesiredNumberScheduled (%d) must equal the number of "+
+						"nodes labelled %s=true (%d)",
+					ds.Status.DesiredNumberScheduled, dsStorageNodeLabel, storageNodeCount)
+			})
 		})
 
-		It("all pods have the Ready condition == True (liveness/readiness probes passing)", func(ctx context.Context) {
-			pods, err := dsFetchPods(ctx, dsClient, dsAgentName, dsNamespace)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(pods).NotTo(BeEmpty(), "agent DaemonSet must have at least one pod")
+		// ─── Agent DaemonSet rollout readiness ─────────────────────────────────
 
-			for i := range pods {
-				pod := &pods[i]
-				By(fmt.Sprintf("checking Ready condition of pod %s", pod.Name))
+		Describe("agent DaemonSet rollout", func() {
+			It("reaches full readiness (all pods Running) within the timeout", func(ctx context.Context) {
+				Eventually(func(g Gomega) {
+					ds := &appsv1.DaemonSet{}
+					g.Expect(dsClient.Get(ctx, client.ObjectKey{
+						Name:      dsAgentName,
+						Namespace: dsNamespace,
+					}, ds)).To(Succeed())
 
-				readyCond := dsPodCondition(*pod, corev1.PodReady)
-				Expect(readyCond).NotTo(BeNil(),
-					"agent pod %q must have a Ready condition", pod.Name)
-				Expect(readyCond.Status).To(Equal(corev1.ConditionTrue),
-					"agent pod %q Ready condition must be True (got %s; message: %q)",
-					pod.Name, readyCond.Status, readyCond.Message)
-			}
-		})
-
-		It("all containers are Ready (ContainerStatuses.Ready)", func(ctx context.Context) {
-			pods, err := dsFetchPods(ctx, dsClient, dsAgentName, dsNamespace)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(pods).NotTo(BeEmpty(), "agent DaemonSet must have at least one pod")
-
-			for i := range pods {
-				pod := &pods[i]
-				By(fmt.Sprintf("checking container statuses in pod %s", pod.Name))
-				Expect(pod.Status.ContainerStatuses).NotTo(BeEmpty(),
-					"pod %q must have at least one container status", pod.Name)
-
-				for _, cs := range pod.Status.ContainerStatuses {
-					Expect(cs.Ready).To(BeTrue(),
-						"container %q in agent pod %q must be Ready "+
-							"(state: %s; restarts: %d)",
-						cs.Name, pod.Name,
-						dsContainerStateString(cs.State),
-						cs.RestartCount,
+					g.Expect(ds.Status.DesiredNumberScheduled).To(BeNumerically(">", 0),
+						"agent DaemonSet must be scheduled on at least one node")
+					g.Expect(ds.Status.NumberUnavailable).To(BeZero(),
+						"agent DaemonSet must have 0 unavailable pods (got %d unavailable, %d/%d ready)",
+						ds.Status.NumberUnavailable,
+						ds.Status.NumberReady,
+						ds.Status.DesiredNumberScheduled,
 					)
-					Expect(cs.State.Running).NotTo(BeNil(),
-						"container %q in agent pod %q must be in Running state "+
-							"(current state: %s)",
-						cs.Name, pod.Name, dsContainerStateString(cs.State))
-				}
-			}
+					g.Expect(ds.Status.NumberReady).To(Equal(ds.Status.DesiredNumberScheduled),
+						"agent DaemonSet NumberReady (%d) must equal DesiredNumberScheduled (%d)",
+						ds.Status.NumberReady, ds.Status.DesiredNumberScheduled)
+					g.Expect(ds.Status.UpdatedNumberScheduled).To(Equal(ds.Status.DesiredNumberScheduled),
+						"agent DaemonSet UpdatedNumberScheduled (%d) must equal DesiredNumberScheduled (%d)",
+						ds.Status.UpdatedNumberScheduled, ds.Status.DesiredNumberScheduled)
+				}, dsReadinessTimeout, dsPollInterval).Should(Succeed(),
+					"agent DaemonSet %q did not reach full readiness within %s",
+					dsAgentName, dsReadinessTimeout)
+			})
 		})
 
-		It("all init containers completed successfully (exit 0)", func(ctx context.Context) {
-			pods, err := dsFetchPods(ctx, dsClient, dsAgentName, dsNamespace)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(pods).NotTo(BeEmpty(), "agent DaemonSet must have at least one pod")
+		// ─── Agent pod container-level checks ──────────────────────────────────
 
-			for i := range pods {
-				pod := &pods[i]
-				By(fmt.Sprintf("checking init container statuses in pod %s", pod.Name))
-				// init containers are optional; skip if there are none.
-				for _, cs := range pod.Status.InitContainerStatuses {
-					Expect(cs.State.Terminated).NotTo(BeNil(),
-						"init container %q in pod %q must have terminated",
-						cs.Name, pod.Name)
-					Expect(cs.State.Terminated.ExitCode).To(BeZero(),
-						"init container %q in pod %q must have exited 0 (got %d; reason: %s)",
-						cs.Name, pod.Name,
-						cs.State.Terminated.ExitCode,
-						cs.State.Terminated.Reason,
+		Describe("agent DaemonSet pods", func() {
+			It("all pods are in the Running phase", func(ctx context.Context) {
+				pods, err := dsFetchPods(ctx, dsClient, dsAgentName, dsNamespace)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(pods).NotTo(BeEmpty(),
+					"agent DaemonSet must have at least one pod")
+
+				for i := range pods {
+					pod := &pods[i]
+					By(fmt.Sprintf("checking pod %s on node %s", pod.Name, pod.Spec.NodeName))
+					Expect(pod.Status.Phase).To(Equal(corev1.PodRunning),
+						"agent pod %q on node %q must be in Running phase (got %s)",
+						pod.Name, pod.Spec.NodeName, pod.Status.Phase)
+				}
+			})
+
+			It("all pods have the Ready condition == True (liveness/readiness probes passing)", func(ctx context.Context) {
+				pods, err := dsFetchPods(ctx, dsClient, dsAgentName, dsNamespace)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(pods).NotTo(BeEmpty(), "agent DaemonSet must have at least one pod")
+
+				for i := range pods {
+					pod := &pods[i]
+					By(fmt.Sprintf("checking Ready condition of pod %s", pod.Name))
+
+					readyCond := dsPodCondition(*pod, corev1.PodReady)
+					Expect(readyCond).NotTo(BeNil(),
+						"agent pod %q must have a Ready condition", pod.Name)
+					Expect(readyCond.Status).To(Equal(corev1.ConditionTrue),
+						"agent pod %q Ready condition must be True (got %s; message: %q)",
+						pod.Name, readyCond.Status, readyCond.Message)
+				}
+			})
+
+			It("all containers are Ready (ContainerStatuses.Ready)", func(ctx context.Context) {
+				pods, err := dsFetchPods(ctx, dsClient, dsAgentName, dsNamespace)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(pods).NotTo(BeEmpty(), "agent DaemonSet must have at least one pod")
+
+				for i := range pods {
+					pod := &pods[i]
+					By(fmt.Sprintf("checking container statuses in pod %s", pod.Name))
+					Expect(pod.Status.ContainerStatuses).NotTo(BeEmpty(),
+						"pod %q must have at least one container status", pod.Name)
+
+					for _, cs := range pod.Status.ContainerStatuses {
+						Expect(cs.Ready).To(BeTrue(),
+							"container %q in agent pod %q must be Ready "+
+								"(state: %s; restarts: %d)",
+							cs.Name, pod.Name,
+							dsContainerStateString(cs.State),
+							cs.RestartCount,
+						)
+						Expect(cs.State.Running).NotTo(BeNil(),
+							"container %q in agent pod %q must be in Running state "+
+								"(current state: %s)",
+							cs.Name, pod.Name, dsContainerStateString(cs.State))
+					}
+				}
+			})
+
+			It("all init containers completed successfully (exit 0)", func(ctx context.Context) {
+				pods, err := dsFetchPods(ctx, dsClient, dsAgentName, dsNamespace)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(pods).NotTo(BeEmpty(), "agent DaemonSet must have at least one pod")
+
+				for i := range pods {
+					pod := &pods[i]
+					By(fmt.Sprintf("checking init container statuses in pod %s", pod.Name))
+					// init containers are optional; skip if there are none.
+					for _, cs := range pod.Status.InitContainerStatuses {
+						Expect(cs.State.Terminated).NotTo(BeNil(),
+							"init container %q in pod %q must have terminated",
+							cs.Name, pod.Name)
+						Expect(cs.State.Terminated.ExitCode).To(BeZero(),
+							"init container %q in pod %q must have exited 0 (got %d; reason: %s)",
+							cs.Name, pod.Name,
+							cs.State.Terminated.ExitCode,
+							cs.State.Terminated.Reason,
+						)
+					}
+				}
+			})
+		})
+
+		// ─── Node DaemonSet rollout readiness ──────────────────────────────────
+
+		Describe("node DaemonSet rollout", func() {
+			It("reaches full readiness (all pods Running) within the timeout", func(ctx context.Context) {
+				Eventually(func(g Gomega) {
+					ds := &appsv1.DaemonSet{}
+					g.Expect(dsClient.Get(ctx, client.ObjectKey{
+						Name:      dsNodeName,
+						Namespace: dsNamespace,
+					}, ds)).To(Succeed())
+
+					g.Expect(ds.Status.DesiredNumberScheduled).To(BeNumerically(">", 0),
+						"node DaemonSet must be scheduled on at least one node")
+					g.Expect(ds.Status.NumberUnavailable).To(BeZero(),
+						"node DaemonSet must have 0 unavailable pods (got %d unavailable, %d/%d ready)",
+						ds.Status.NumberUnavailable,
+						ds.Status.NumberReady,
+						ds.Status.DesiredNumberScheduled,
 					)
+					g.Expect(ds.Status.NumberReady).To(Equal(ds.Status.DesiredNumberScheduled),
+						"node DaemonSet NumberReady (%d) must equal DesiredNumberScheduled (%d)",
+						ds.Status.NumberReady, ds.Status.DesiredNumberScheduled)
+				}, dsReadinessTimeout, dsPollInterval).Should(Succeed(),
+					"node DaemonSet %q did not reach full readiness within %s",
+					dsNodeName, dsReadinessTimeout)
+			})
+		})
+
+		// ─── Node pod container-level checks ───────────────────────────────────
+
+		Describe("node DaemonSet pods", func() {
+			It("all pods are in the Running phase", func(ctx context.Context) {
+				pods, err := dsFetchPods(ctx, dsClient, dsNodeName, dsNamespace)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(pods).NotTo(BeEmpty(), "node DaemonSet must have at least one pod")
+
+				for i := range pods {
+					pod := &pods[i]
+					By(fmt.Sprintf("checking pod %s on node %s", pod.Name, pod.Spec.NodeName))
+					Expect(pod.Status.Phase).To(Equal(corev1.PodRunning),
+						"node pod %q on node %q must be in Running phase (got %s)",
+						pod.Name, pod.Spec.NodeName, pod.Status.Phase)
 				}
-			}
-		})
-	})
+			})
 
-	// ─── Node DaemonSet rollout readiness ──────────────────────────────────
+			It("all pods have the Ready condition == True (liveness probe passing)", func(ctx context.Context) {
+				pods, err := dsFetchPods(ctx, dsClient, dsNodeName, dsNamespace)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(pods).NotTo(BeEmpty(), "node DaemonSet must have at least one pod")
 
-	Describe("node DaemonSet rollout", func() {
-		It("reaches full readiness (all pods Running) within the timeout", func(ctx context.Context) {
-			Eventually(func(g Gomega) {
-				ds := &appsv1.DaemonSet{}
-				g.Expect(dsClient.Get(ctx, client.ObjectKey{
-					Name:      dsNodeName,
-					Namespace: dsNamespace,
-				}, ds)).To(Succeed())
+				for i := range pods {
+					pod := &pods[i]
+					By(fmt.Sprintf("checking Ready condition of pod %s", pod.Name))
 
-				g.Expect(ds.Status.DesiredNumberScheduled).To(BeNumerically(">", 0),
-					"node DaemonSet must be scheduled on at least one node")
-				g.Expect(ds.Status.NumberUnavailable).To(BeZero(),
-					"node DaemonSet must have 0 unavailable pods (got %d unavailable, %d/%d ready)",
-					ds.Status.NumberUnavailable,
-					ds.Status.NumberReady,
-					ds.Status.DesiredNumberScheduled,
-				)
-				g.Expect(ds.Status.NumberReady).To(Equal(ds.Status.DesiredNumberScheduled),
-					"node DaemonSet NumberReady (%d) must equal DesiredNumberScheduled (%d)",
-					ds.Status.NumberReady, ds.Status.DesiredNumberScheduled)
-			}, dsReadinessTimeout, dsPollInterval).Should(Succeed(),
-				"node DaemonSet %q did not reach full readiness within %s",
-				dsNodeName, dsReadinessTimeout)
-		})
-	})
-
-	// ─── Node pod container-level checks ───────────────────────────────────
-
-	Describe("node DaemonSet pods", func() {
-		It("all pods are in the Running phase", func(ctx context.Context) {
-			pods, err := dsFetchPods(ctx, dsClient, dsNodeName, dsNamespace)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(pods).NotTo(BeEmpty(), "node DaemonSet must have at least one pod")
-
-			for i := range pods {
-				pod := &pods[i]
-				By(fmt.Sprintf("checking pod %s on node %s", pod.Name, pod.Spec.NodeName))
-				Expect(pod.Status.Phase).To(Equal(corev1.PodRunning),
-					"node pod %q on node %q must be in Running phase (got %s)",
-					pod.Name, pod.Spec.NodeName, pod.Status.Phase)
-			}
-		})
-
-		It("all pods have the Ready condition == True (liveness probe passing)", func(ctx context.Context) {
-			pods, err := dsFetchPods(ctx, dsClient, dsNodeName, dsNamespace)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(pods).NotTo(BeEmpty(), "node DaemonSet must have at least one pod")
-
-			for i := range pods {
-				pod := &pods[i]
-				By(fmt.Sprintf("checking Ready condition of pod %s", pod.Name))
-
-				readyCond := dsPodCondition(*pod, corev1.PodReady)
-				Expect(readyCond).NotTo(BeNil(),
-					"node pod %q must have a Ready condition", pod.Name)
-				Expect(readyCond.Status).To(Equal(corev1.ConditionTrue),
-					"node pod %q Ready condition must be True (got %s; message: %q)",
-					pod.Name, readyCond.Status, readyCond.Message)
-			}
-		})
-
-		It("all containers are Ready (ContainerStatuses.Ready)", func(ctx context.Context) {
-			pods, err := dsFetchPods(ctx, dsClient, dsNodeName, dsNamespace)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(pods).NotTo(BeEmpty(), "node DaemonSet must have at least one pod")
-
-			for i := range pods {
-				pod := &pods[i]
-				By(fmt.Sprintf("checking container statuses in pod %s", pod.Name))
-				Expect(pod.Status.ContainerStatuses).NotTo(BeEmpty(),
-					"pod %q must have at least one container status", pod.Name)
-
-				for _, cs := range pod.Status.ContainerStatuses {
-					Expect(cs.Ready).To(BeTrue(),
-						"container %q in node pod %q must be Ready "+
-							"(state: %s; restarts: %d)",
-						cs.Name, pod.Name,
-						dsContainerStateString(cs.State),
-						cs.RestartCount,
-					)
+					readyCond := dsPodCondition(*pod, corev1.PodReady)
+					Expect(readyCond).NotTo(BeNil(),
+						"node pod %q must have a Ready condition", pod.Name)
+					Expect(readyCond.Status).To(Equal(corev1.ConditionTrue),
+						"node pod %q Ready condition must be True (got %s; message: %q)",
+						pod.Name, readyCond.Status, readyCond.Message)
 				}
-			}
+			})
+
+			It("all containers are Ready (ContainerStatuses.Ready)", func(ctx context.Context) {
+				pods, err := dsFetchPods(ctx, dsClient, dsNodeName, dsNamespace)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(pods).NotTo(BeEmpty(), "node DaemonSet must have at least one pod")
+
+				for i := range pods {
+					pod := &pods[i]
+					By(fmt.Sprintf("checking container statuses in pod %s", pod.Name))
+					Expect(pod.Status.ContainerStatuses).NotTo(BeEmpty(),
+						"pod %q must have at least one container status", pod.Name)
+
+					for _, cs := range pod.Status.ContainerStatuses {
+						Expect(cs.Ready).To(BeTrue(),
+							"container %q in node pod %q must be Ready "+
+								"(state: %s; restarts: %d)",
+							cs.Name, pod.Name,
+							dsContainerStateString(cs.State),
+							cs.RestartCount,
+						)
+					}
+				}
+			})
 		})
-	})
 	}) // end Describe("InternalAgent DaemonSet Readiness")
 	return true
 }()

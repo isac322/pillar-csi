@@ -139,7 +139,10 @@ func (c *NVMeoFConnector) Disconnect(_ context.Context, subsysNQN string) error 
 				continue
 			}
 			deletePath := filepath.Join(c.sysfsRoot, "class", "nvme", name, "delete_controller")
-			_ = os.WriteFile(deletePath, []byte("1"), 0o600) //nolint:gosec
+			writeErr := os.WriteFile(deletePath, []byte("1"), 0o600)
+			if writeErr != nil {
+				continue // best-effort; ignore controller delete errors
+			}
 		}
 	}
 	return nil

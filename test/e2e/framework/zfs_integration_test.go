@@ -78,9 +78,9 @@ func TestCreateLoopbackZFSPool_Integration(t *testing.T) {
 
 	// ── Cleanup any leftovers from a previous interrupted run ─────────────
 	// Ignore errors — the pool / device / file may not exist.
-	_ = h.ExecOnHost(ctx, "zpool destroy "+poolName)             //nolint:errcheck
-	_ = h.ExecOnHost(ctx, "losetup -j "+imagePath+" | cut -d: -f1 | xargs -r losetup -d") //nolint:errcheck
-	_ = h.ExecOnHost(ctx, "rm -f "+imagePath)                    //nolint:errcheck
+	_, _ = h.ExecOnHost(ctx, "zpool destroy "+poolName)             //nolint:errcheck
+	_, _ = h.ExecOnHost(ctx, "losetup -j "+imagePath+" | cut -d: -f1 | xargs -r losetup -d") //nolint:errcheck
+	_, _ = h.ExecOnHost(ctx, "rm -f "+imagePath)                    //nolint:errcheck
 
 	// ── Create the pool ───────────────────────────────────────────────────
 	t.Logf("creating ZFS pool %q backed by %s (%s) on %s",

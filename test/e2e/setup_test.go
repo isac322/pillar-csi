@@ -542,11 +542,35 @@ func kindNodePathExists(container, path string) error {
 	return nil
 }
 
+// thirdPartyImages is the list of third-party images used by the Helm chart
+// (init containers and CSI sidecars) that are NOT built locally.  These must
+// be pulled from their registries and pre-loaded into Kind nodes before Helm
+// install so that pods can start without hitting registry rate-limits
+// (e.g. Docker Hub 429 responses for busybox).
+//
+// Keep this list in sync with charts/pillar-csi/values.yaml.
+var thirdPartyImages = []string{
+	// Init containers (busybox with kmod for modprobe)
+	"busybox:1.36",
+	// CSI sidecar images (registry.k8s.io — rate-limit-free but slow to pull;
+	// pre-loading avoids per-node pull latency inside Kind containers).
+	"registry.k8s.io/sig-storage/csi-provisioner:v5.2.0",
+	"registry.k8s.io/sig-storage/csi-attacher:v4.8.1",
+	"registry.k8s.io/sig-storage/csi-resizer:v1.13.2",
+	"registry.k8s.io/sig-storage/livenessprobe:v2.15.0",
+	"registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.13.0",
+}
+
 // buildAndLoadImages builds the controller, agent, and node Docker images and
 // loads each one into every node of the Kind cluster.  Images are tagged with
 // the full registry paths used in the Helm chart (ghcr.io/bhyoo/pillar-csi/*)
 // so that pods with imagePullPolicy: Never find the correct image name in the
 // Kind node's container-image cache.
+//
+// After building pillar-csi images, it also pulls (if absent) and loads all
+// third-party images (busybox init container, CSI sidecars) from thirdPartyImages
+// so that no pod ever needs to pull from an external registry at runtime.
+// This eliminates Docker Hub rate-limit failures (HTTP 429) on CI runners.
 //
 // Why not "kind load docker-image":
 //
@@ -598,6 +622,27 @@ func buildAndLoadImages() error {
 			return fmt.Errorf("load image %s into kind nodes: %w", img.name, err)
 		}
 	}
+
+	// Pre-load third-party images into Kind nodes to avoid runtime registry pulls.
+	// "docker pull" is a no-op when the image is already present in the local
+	// daemon cache, so this is fast on subsequent runs.
+	for _, img := range thirdPartyImages {
+		fmt.Fprintf(os.Stdout, "e2e setup: pulling third-party image %s\n", img)
+		if err := runCmd("docker", "pull", img); err != nil {
+			// Non-fatal: log and continue.  If the image is already present in
+			// the daemon cache the pull is a no-op and will succeed; if it fails
+			// for an unrecoverable reason (e.g. network outage) the subsequent
+			// loadImageIntoKindNodes call will also fail with a clear error.
+			fmt.Fprintf(os.Stdout, "e2e setup: warning: docker pull %s: %v\n", img, err)
+		}
+
+		fmt.Fprintf(os.Stdout, "e2e setup: loading third-party image %s into kind cluster %s\n",
+			img, testEnv.ClusterName)
+		if err := loadImageIntoKindNodes(img); err != nil {
+			return fmt.Errorf("load third-party image %s into kind nodes: %w", img, err)
+		}
+	}
+
 	return nil
 }
 

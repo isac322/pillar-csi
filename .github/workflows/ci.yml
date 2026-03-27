@@ -120,6 +120,24 @@ jobs:
           sudo modprobe nvmet_tcp
           sudo modprobe nvme_tcp
 
+      # ── pre-pull third-party images ────────────────────────────────────────
+      # Pull init-container and CSI sidecar images from their public registries
+      # into the Docker daemon cache BEFORE TestMain creates the Kind cluster.
+      # buildAndLoadImages() then copies them from the daemon cache into Kind
+      # nodes via docker save + docker cp + ctr import.
+      #
+      # This step prevents Docker Hub rate-limit errors (HTTP 429) during
+      # the Helm install phase when Kind pods would otherwise try to pull
+      # busybox:1.36 from the public internet.
+      - name: Pre-pull third-party images
+        run: |
+          docker pull busybox:1.36
+          docker pull registry.k8s.io/sig-storage/csi-provisioner:v5.2.0
+          docker pull registry.k8s.io/sig-storage/csi-attacher:v4.8.1
+          docker pull registry.k8s.io/sig-storage/csi-resizer:v1.13.2
+          docker pull registry.k8s.io/sig-storage/livenessprobe:v2.15.0
+          docker pull registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.13.0
+
       # ── run tests ─────────────────────────────────────────────────────────
       # make test-e2e is the single entry point for the full e2e lifecycle.
       # TestMain (test/e2e/setup_test.go) creates the Kind cluster, builds and

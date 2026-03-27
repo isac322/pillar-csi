@@ -27,6 +27,7 @@ import (
 	"errors"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -71,6 +72,8 @@ import (
 //
 // Function fields let each test install per-call behavior.
 type csiMockConnector struct {
+	mu sync.Mutex
+
 	connectFn    func(ctx context.Context, subsysNQN, trAddr, trSvcID string) error
 	disconnectFn func(ctx context.Context, subsysNQN string) error
 	getDeviceFn  func(ctx context.Context, subsysNQN string) (string, error)
@@ -85,25 +88,34 @@ type csiMockConnector struct {
 var _ pillarcsi.Connector = (*csiMockConnector)(nil)
 
 func (m *csiMockConnector) Connect(ctx context.Context, subsysNQN, trAddr, trSvcID string) error {
+	m.mu.Lock()
 	m.connectCalls++
-	if m.connectFn != nil {
-		return m.connectFn(ctx, subsysNQN, trAddr, trSvcID)
+	fn := m.connectFn
+	m.mu.Unlock()
+	if fn != nil {
+		return fn(ctx, subsysNQN, trAddr, trSvcID)
 	}
 	return nil // default: success
 }
 
 func (m *csiMockConnector) Disconnect(ctx context.Context, subsysNQN string) error {
+	m.mu.Lock()
 	m.disconnectCalls++
-	if m.disconnectFn != nil {
-		return m.disconnectFn(ctx, subsysNQN)
+	fn := m.disconnectFn
+	m.mu.Unlock()
+	if fn != nil {
+		return fn(ctx, subsysNQN)
 	}
 	return nil // default: success
 }
 
 func (m *csiMockConnector) GetDevicePath(ctx context.Context, subsysNQN string) (string, error) {
+	m.mu.Lock()
 	m.getDeviceCalls++
-	if m.getDeviceFn != nil {
-		return m.getDeviceFn(ctx, subsysNQN)
+	fn := m.getDeviceFn
+	m.mu.Unlock()
+	if fn != nil {
+		return fn(ctx, subsysNQN)
 	}
 	return "/dev/nvme0n1", nil // default: device ready immediately
 }
@@ -144,6 +156,8 @@ func (m *csiMockConnector) GetDevicePath(ctx context.Context, subsysNQN string) 
 //     atomic: a call either fully succeeds or returns the preset error without
 //     any intermediate state change.
 type csiMockMounter struct {
+	mu sync.Mutex
+
 	formatAndMountFn func(source, target, fsType string, options []string) error
 	mountFn          func(source, target, fsType string, options []string) error
 	unmountFn        func(target string) error
@@ -167,38 +181,59 @@ func newCsiMockMounter() *csiMockMounter {
 }
 
 func (m *csiMockMounter) FormatAndMount(source, target, fsType string, options []string) error {
+	m.mu.Lock()
 	m.formatAndMountCalls++
-	if m.formatAndMountFn != nil {
-		return m.formatAndMountFn(source, target, fsType, options)
+	fn := m.formatAndMountFn
+	m.mu.Unlock()
+	if fn != nil {
+		return fn(source, target, fsType, options)
 	}
+	m.mu.Lock()
 	m.mounted[target] = true
+	m.mu.Unlock()
 	return nil
 }
 
 func (m *csiMockMounter) Mount(source, target, fsType string, options []string) error {
+	m.mu.Lock()
 	m.mountCalls++
-	if m.mountFn != nil {
-		return m.mountFn(source, target, fsType, options)
+	fn := m.mountFn
+	m.mu.Unlock()
+	if fn != nil {
+		return fn(source, target, fsType, options)
 	}
+	m.mu.Lock()
 	m.mounted[target] = true
+	m.mu.Unlock()
 	return nil
 }
 
 func (m *csiMockMounter) Unmount(target string) error {
+	m.mu.Lock()
 	m.unmountCalls++
-	if m.unmountFn != nil {
-		return m.unmountFn(target)
+	fn := m.unmountFn
+	m.mu.Unlock()
+	if fn != nil {
+		return fn(target)
 	}
+	m.mu.Lock()
 	delete(m.mounted, target)
+	m.mu.Unlock()
 	return nil
 }
 
 func (m *csiMockMounter) IsMounted(target string) (bool, error) {
+	m.mu.Lock()
 	m.isMountedCalls++
-	if m.isMountedFn != nil {
-		return m.isMountedFn(target)
+	fn := m.isMountedFn
+	m.mu.Unlock()
+	if fn != nil {
+		return fn(target)
 	}
-	return m.mounted[target], nil
+	m.mu.Lock()
+	v := m.mounted[target]
+	m.mu.Unlock()
+	return v, nil
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -189,33 +189,33 @@ var _ = func() bool {
 		return false
 	}
 	Describe("InternalAgent", Ordered, Label("internal-agent"), func() {
-	// BeforeAll deploys the full pillar-csi stack (including agent DaemonSet)
-	// exactly once before any spec in this container runs.
-	BeforeAll(func(ctx context.Context) {
-		internalAgentSuite = newInternalAgentSuite()
-		internalAgentSuite.BeforeSuite(ctx)
-	})
+		// BeforeAll deploys the full pillar-csi stack (including agent DaemonSet)
+		// exactly once before any spec in this container runs.
+		BeforeAll(func(ctx context.Context) {
+			internalAgentSuite = newInternalAgentSuite()
+			internalAgentSuite.BeforeSuite(ctx)
+		})
 
-	// AfterAll tears down the Helm release once after all specs in this
-	// container have completed (pass or fail).
-	AfterAll(func(ctx context.Context) {
-		if internalAgentSuite != nil {
-			internalAgentSuite.AfterSuite(ctx)
-		}
-	})
+		// AfterAll tears down the Helm release once after all specs in this
+		// container have completed (pass or fail).
+		AfterAll(func(ctx context.Context) {
+			if internalAgentSuite != nil {
+				internalAgentSuite.AfterSuite(ctx)
+			}
+		})
 
-	// ── DaemonSet readiness check ─────────────────────────────────────────
+		// ── DaemonSet readiness check ─────────────────────────────────────────
 
-	// Verify that BeforeAll successfully connected to the cluster and that
-	// the InternalAgentSuite was initialised.  Real functional specs live in
-	// dedicated *_test.go files alongside this one (e.g.
-	// internal_agent_functional_test.go, internal_agent_daemonset_test.go).
-	It("has the agent DaemonSet deployed and Running", func() {
-		Expect(internalAgentSuite).NotTo(BeNil(),
-			"InternalAgentSuite must be initialised by BeforeAll")
-		Expect(internalAgentSuite.Client).NotTo(BeNil(),
-			"Kubernetes client must be connected to the test cluster")
-	})
+		// Verify that BeforeAll successfully connected to the cluster and that
+		// the InternalAgentSuite was initialised.  Real functional specs live in
+		// dedicated *_test.go files alongside this one (e.g.
+		// internal_agent_functional_test.go, internal_agent_daemonset_test.go).
+		It("has the agent DaemonSet deployed and Running", func() {
+			Expect(internalAgentSuite).NotTo(BeNil(),
+				"InternalAgentSuite must be initialised by BeforeAll")
+			Expect(internalAgentSuite.Client).NotTo(BeNil(),
+				"Kubernetes client must be connected to the test cluster")
+		})
 	}) // end Describe("InternalAgent")
 	return true
 }()

@@ -295,7 +295,7 @@ func (c *fabricsConnector) GetDevicePath(ctx context.Context, subsysNQN string) 
 //
 // The subsysPath argument is the absolute path to the nvme-subsystem class directory for
 // the matching NQN, e.g. /sys/class/nvme-subsystem/nvme-subsys2.
-func (c *fabricsConnector) getDevicePathViaController(subsysPath string) (string, error) { //nolint:gocognit
+func (c *fabricsConnector) getDevicePathViaController(subsysPath string) (string, error) { //nolint:gocognit,gocyclo
 	ctrlEntries, err := os.ReadDir(subsysPath)
 	if err != nil {
 		return "", fmt.Errorf("readdir %s: %w", subsysPath, err)
@@ -407,7 +407,7 @@ func (c *fabricsConnector) getDevicePathViaNvmeCli(ctx context.Context, subsysNQ
 			continue
 		}
 		// Query the subsystem NQN of this device via nvme id-ctrl.
-		nqn, nqnErr := c.nvmeIdCtrlSubNQN(ctx, devPath)
+		nqn, nqnErr := c.nvmeIDCtrlSubNQN(ctx, devPath)
 		if nqnErr != nil {
 			fmt.Fprintf(os.Stderr,
 				"pillar-node: nvme-cli: id-ctrl %s failed: %v\n", devPath, nqnErr)
@@ -423,9 +423,9 @@ func (c *fabricsConnector) getDevicePathViaNvmeCli(ctx context.Context, subsysNQ
 	return "", nil
 }
 
-// nvmeIdCtrlSubNQN runs "nvme id-ctrl -o json <devPath>" and returns the
+// nvmeIDCtrlSubNQN runs "nvme id-ctrl -o json <devPath>" and returns the
 // subnqn field.  Returns ("", err) on any failure.
-func (_ *fabricsConnector) nvmeIdCtrlSubNQN(ctx context.Context, devPath string) (string, error) {
+func (*fabricsConnector) nvmeIDCtrlSubNQN(ctx context.Context, devPath string) (string, error) {
 	out, err := exec.CommandContext(ctx, "nvme", "id-ctrl", "-o", "json", devPath).Output() //nolint:gosec
 	if err != nil {
 		return "", fmt.Errorf("nvme id-ctrl %s: %w", devPath, err)
@@ -446,7 +446,7 @@ func (_ *fabricsConnector) nvmeIdCtrlSubNQN(ctx context.Context, devPath string)
 // It tries /sys/class/nvme-subsystem/ first (fast path), then falls back to
 // scanning /dev/nvme*n* with nvme id-ctrl (for containerized environments
 // where the sysfs nvme-subsystem class is restricted by network namespace).
-func (c *fabricsConnector) isConnected(ctx context.Context, subsysNQN string) (bool, error) {
+func (c *fabricsConnector) isConnected(ctx context.Context, subsysNQN string) (bool, error) { //nolint:unparam
 	// ── Primary: sysfs scan ──────────────────────────────────────────────────
 	subsysDir := filepath.Join(c.sysfsRoot, "class", "nvme-subsystem")
 	entries, err := os.ReadDir(subsysDir)
@@ -469,7 +469,7 @@ func (c *fabricsConnector) isConnected(ctx context.Context, subsysNQN string) (b
 	// Sysfs nvme-subsystem is unavailable; scan /dev/nvme*n* instead.
 	path, nvmeErr := c.getDevicePathViaNvmeCli(ctx, subsysNQN)
 	if nvmeErr != nil {
-		return false, nil // Can't determine; assume not connected
+		return false, nil //nolint:nilerr // can't determine; assume not connected
 	}
 	return path != "", nil
 }
@@ -503,7 +503,8 @@ type mkdirMounter struct {
 // FormatAndMount creates the target directory if it does not exist, then
 // delegates to the wrapped Mounter's FormatAndMount.
 func (m *mkdirMounter) FormatAndMount(source, target, fsType string, options []string) error {
-	if mkdirErr := os.MkdirAll(target, 0o750); mkdirErr != nil {
+	mkdirErr := os.MkdirAll(target, 0o750)
+	if mkdirErr != nil {
 		return fmt.Errorf("mkdirMounter: create mount target %q: %w", target, mkdirErr)
 	}
 	return m.wrapped.FormatAndMount(source, target, fsType, options)
@@ -513,7 +514,8 @@ func (m *mkdirMounter) FormatAndMount(source, target, fsType string, options []s
 // NodePublishVolume bind mounts when the CO has not yet pre-created the
 // target pod volume path), then delegates to the wrapped Mounter's Mount.
 func (m *mkdirMounter) Mount(source, target, fsType string, options []string) error {
-	if mkdirErr := os.MkdirAll(target, 0o750); mkdirErr != nil {
+	mkdirErr := os.MkdirAll(target, 0o750)
+	if mkdirErr != nil {
 		return fmt.Errorf("mkdirMounter: create mount target %q: %w", target, mkdirErr)
 	}
 	return m.wrapped.Mount(source, target, fsType, options)

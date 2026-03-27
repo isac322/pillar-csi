@@ -85,262 +85,262 @@ var _ = func() bool {
 	}
 	Describe("PVCProvision", Ordered, func() {
 
-	var (
-		suite *framework.Suite
-		stack *framework.KindE2EStack
-		ns    *corev1.Namespace
-		pvc   *corev1.PersistentVolumeClaim
-	)
-
-	// ── BeforeAll: cluster client + CR stack setup ───────────────────────────
-	BeforeAll(func(ctx SpecContext) {
-		var err error
-		suite, err = framework.SetupSuite(
-			framework.WithConnectTimeout(30 * time.Second),
+		var (
+			suite *framework.Suite
+			stack *framework.KindE2EStack
+			ns    *corev1.Namespace
+			pvc   *corev1.PersistentVolumeClaim
 		)
-		Expect(err).NotTo(HaveOccurred(),
-			"connect to Kind cluster — KUBECONFIG must point at the e2e cluster "+
-				"(TestMain sets KUBECONFIG before m.Run() is called)")
 
-		// Build a uniquely-named CR stack so parallel test runs on the same
-		// cluster do not collide on resource names.
-		prefix := framework.UniqueName("pvc-prov")
-		stack = framework.NewKindE2EStack(prefix, testEnv.ExternalAgentAddr, testEnv.ZFSPoolName)
-
-		// Register CR cleanup BEFORE creating any resources so that all CRs
-		// are removed even when an assertion below fails.  CRs are deleted in
-		// reverse dependency order (innermost dependents first).
-		DeferCleanup(func(dctx SpecContext) {
-			if suite == nil {
-				return
-			}
-			for _, obj := range stack.ReverseObjects() {
-				if err := framework.EnsureGone(dctx, suite.Client, obj, 2*time.Minute); err != nil {
-					_, _ = fmt.Fprintf(GinkgoWriter,
-						"warning: cleanup %T %q: %v\n", obj, obj.GetName(), err)
-				}
-			}
-			suite.TeardownSuite()
-		})
-	})
-
-	// ── Step 1: Apply the full CR stack ─────────────────────────────────────
-	//
-	// Apply each CR individually (in dependency order) so that reviewers can
-	// see exactly which step failed.
-	It("Step 1: applies all four pillar-csi CRs to the cluster", func(ctx SpecContext) {
-		By(fmt.Sprintf("applying PillarTarget %q (external agent at %s)",
-			stack.Target.Name, testEnv.ExternalAgentAddr))
-		Expect(framework.Apply(ctx, suite.Client, stack.Target)).To(Succeed(),
-			"PillarTarget must be accepted by the API server")
-
-		By(fmt.Sprintf("applying PillarPool %q (ZFS pool %q)",
-			stack.Pool.Name, testEnv.ZFSPoolName))
-		Expect(framework.Apply(ctx, suite.Client, stack.Pool)).To(Succeed(),
-			"PillarPool with ZFS zvol backend must be accepted by the API server")
-
-		By(fmt.Sprintf("applying PillarProtocol %q (NVMe-oF TCP port %d)",
-			stack.Proto.Name, framework.KindNVMeOFPort))
-		Expect(framework.Apply(ctx, suite.Client, stack.Proto)).To(Succeed(),
-			"PillarProtocol with NVMe-oF TCP must be accepted by the API server")
-
-		By(fmt.Sprintf("applying PillarBinding %q (pool=%q, protocol=%q)",
-			stack.Binding.Name, stack.Pool.Name, stack.Proto.Name))
-		Expect(framework.Apply(ctx, suite.Client, stack.Binding)).To(Succeed(),
-			"PillarBinding wiring pool and protocol must be accepted by the API server")
-
-		By("verifying all CRs have a non-zero creationTimestamp (API server accepted them)")
-		for _, obj := range stack.Objects() {
-			Expect(obj.GetCreationTimestamp()).NotTo(Equal(metav1.Time{}),
-				"%T %q must have a non-zero creationTimestamp after Apply",
-				obj, obj.GetName())
-		}
-	})
-
-	// ── Step 2: Wait for the StorageClass to be auto-created ─────────────────
-	//
-	// The PillarBinding controller reconciler creates a Kubernetes StorageClass
-	// once both PillarPool and PillarProtocol are in Ready state.  We wait for
-	// StorageClassCreated=True on the binding — the controller's authoritative
-	// signal that the StorageClass is available for PVC creation.
-	//
-	// The 5-minute timeout accommodates:
-	//   - PillarTarget controller dialling the agent (gRPC dial + health check)
-	//   - PillarPool controller polling the agent for pool discovery
-	//   - PillarProtocol controller computing bindingCount / activeTargets
-	//   - PillarBinding controller reconciling (periodic requeue every 15 s)
-	It("Step 2: StorageClass is auto-created by the PillarBinding controller",
-		func(ctx SpecContext) {
-			By(fmt.Sprintf(
-				"waiting for PillarBinding %q StorageClassCreated=True (up to 5 m)",
-				stack.Binding.Name))
-
-			waitBinding := &v1alpha1.PillarBinding{}
-			waitBinding.Name = stack.Binding.Name
-
-			Expect(framework.WaitForCondition(
-				ctx, suite.Client, waitBinding,
-				"StorageClassCreated", metav1.ConditionTrue, 5*time.Minute,
-			)).To(Succeed(),
-				"PillarBinding %q must reach StorageClassCreated=True within 5 m — "+
-					"check that the controller pod is running in namespace %q and that "+
-					"PillarTarget %q reached AgentConnected=True",
-				stack.Binding.Name, testEnv.HelmNamespace, stack.Target.Name,
-			)
-
-			By(fmt.Sprintf(
-				"verifying PillarBinding.Status.StorageClassName == %q",
-				stack.Binding.Name))
-			Expect(waitBinding.Status.StorageClassName).To(Equal(stack.Binding.Name),
-				"PillarBinding.Status.StorageClassName must equal the binding's name "+
-					"when no spec.storageClass.name override is set")
-		})
-
-	// ── Step 3: Create test namespace and PVC ─────────────────────────────────
-	//
-	// The PVC is created in a freshly allocated, isolated Namespace so that
-	// cleanup is simple (deleting the Namespace removes all namespaced resources)
-	// and concurrent test runs on the same cluster do not collide.
-	//
-	// The StorageClass name equals the PillarBinding name (auto-created in Step 2).
-	It("Step 3: creates a test namespace and a PVC referencing the StorageClass",
-		func(ctx SpecContext) {
-			// Create an isolated namespace for this PVC.
+		// ── BeforeAll: cluster client + CR stack setup ───────────────────────────
+		BeforeAll(func(ctx SpecContext) {
 			var err error
-			ns, err = framework.CreateTestNamespace(ctx, suite.Client, "pvc-prov")
+			suite, err = framework.SetupSuite(
+				framework.WithConnectTimeout(30 * time.Second),
+			)
 			Expect(err).NotTo(HaveOccurred(),
-				"create test namespace with prefix 'pvc-prov'")
-			By(fmt.Sprintf("created test namespace %q", ns.Name))
+				"connect to Kind cluster — KUBECONFIG must point at the e2e cluster "+
+					"(TestMain sets KUBECONFIG before m.Run() is called)")
 
-			// Register namespace cleanup BEFORE the PVC so that the namespace
-			// (and everything inside it) is removed on test failure.
+			// Build a uniquely-named CR stack so parallel test runs on the same
+			// cluster do not collide on resource names.
+			prefix := framework.UniqueName("pvc-prov")
+			stack = framework.NewKindE2EStack(prefix, testEnv.ExternalAgentAddr, testEnv.ZFSPoolName)
+
+			// Register CR cleanup BEFORE creating any resources so that all CRs
+			// are removed even when an assertion below fails.  CRs are deleted in
+			// reverse dependency order (innermost dependents first).
 			DeferCleanup(func(dctx SpecContext) {
-				By(fmt.Sprintf("cleanup: deleting test namespace %q", ns.Name))
-				if err := framework.EnsureNamespaceGone(dctx, suite.Client, ns.Name, 3*time.Minute); err != nil {
-					_, _ = fmt.Fprintf(GinkgoWriter,
-						"warning: cleanup EnsureNamespaceGone %q: %v\n", ns.Name, err)
+				if suite == nil {
+					return
 				}
+				for _, obj := range stack.ReverseObjects() {
+					if err := framework.EnsureGone(dctx, suite.Client, obj, 2*time.Minute); err != nil {
+						_, _ = fmt.Fprintf(GinkgoWriter,
+							"warning: cleanup %T %q: %v\n", obj, obj.GetName(), err)
+					}
+				}
+				suite.TeardownSuite()
+			})
+		})
+
+		// ── Step 1: Apply the full CR stack ─────────────────────────────────────
+		//
+		// Apply each CR individually (in dependency order) so that reviewers can
+		// see exactly which step failed.
+		It("Step 1: applies all four pillar-csi CRs to the cluster", func(ctx SpecContext) {
+			By(fmt.Sprintf("applying PillarTarget %q (external agent at %s)",
+				stack.Target.Name, testEnv.ExternalAgentAddr))
+			Expect(framework.Apply(ctx, suite.Client, stack.Target)).To(Succeed(),
+				"PillarTarget must be accepted by the API server")
+
+			By(fmt.Sprintf("applying PillarPool %q (ZFS pool %q)",
+				stack.Pool.Name, testEnv.ZFSPoolName))
+			Expect(framework.Apply(ctx, suite.Client, stack.Pool)).To(Succeed(),
+				"PillarPool with ZFS zvol backend must be accepted by the API server")
+
+			By(fmt.Sprintf("applying PillarProtocol %q (NVMe-oF TCP port %d)",
+				stack.Proto.Name, framework.KindNVMeOFPort))
+			Expect(framework.Apply(ctx, suite.Client, stack.Proto)).To(Succeed(),
+				"PillarProtocol with NVMe-oF TCP must be accepted by the API server")
+
+			By(fmt.Sprintf("applying PillarBinding %q (pool=%q, protocol=%q)",
+				stack.Binding.Name, stack.Pool.Name, stack.Proto.Name))
+			Expect(framework.Apply(ctx, suite.Client, stack.Binding)).To(Succeed(),
+				"PillarBinding wiring pool and protocol must be accepted by the API server")
+
+			By("verifying all CRs have a non-zero creationTimestamp (API server accepted them)")
+			for _, obj := range stack.Objects() {
+				Expect(obj.GetCreationTimestamp()).NotTo(Equal(metav1.Time{}),
+					"%T %q must have a non-zero creationTimestamp after Apply",
+					obj, obj.GetName())
+			}
+		})
+
+		// ── Step 2: Wait for the StorageClass to be auto-created ─────────────────
+		//
+		// The PillarBinding controller reconciler creates a Kubernetes StorageClass
+		// once both PillarPool and PillarProtocol are in Ready state.  We wait for
+		// StorageClassCreated=True on the binding — the controller's authoritative
+		// signal that the StorageClass is available for PVC creation.
+		//
+		// The 5-minute timeout accommodates:
+		//   - PillarTarget controller dialling the agent (gRPC dial + health check)
+		//   - PillarPool controller polling the agent for pool discovery
+		//   - PillarProtocol controller computing bindingCount / activeTargets
+		//   - PillarBinding controller reconciling (periodic requeue every 15 s)
+		It("Step 2: StorageClass is auto-created by the PillarBinding controller",
+			func(ctx SpecContext) {
+				By(fmt.Sprintf(
+					"waiting for PillarBinding %q StorageClassCreated=True (up to 5 m)",
+					stack.Binding.Name))
+
+				waitBinding := &v1alpha1.PillarBinding{}
+				waitBinding.Name = stack.Binding.Name
+
+				Expect(framework.WaitForCondition(
+					ctx, suite.Client, waitBinding,
+					"StorageClassCreated", metav1.ConditionTrue, 5*time.Minute,
+				)).To(Succeed(),
+					"PillarBinding %q must reach StorageClassCreated=True within 5 m — "+
+						"check that the controller pod is running in namespace %q and that "+
+						"PillarTarget %q reached AgentConnected=True",
+					stack.Binding.Name, testEnv.HelmNamespace, stack.Target.Name,
+				)
+
+				By(fmt.Sprintf(
+					"verifying PillarBinding.Status.StorageClassName == %q",
+					stack.Binding.Name))
+				Expect(waitBinding.Status.StorageClassName).To(Equal(stack.Binding.Name),
+					"PillarBinding.Status.StorageClassName must equal the binding's name "+
+						"when no spec.storageClass.name override is set")
 			})
 
-			// Build the PVC.  StorageClass name == binding name (per pillar-csi convention).
-			// Request 1 Gi — small enough to be cheap on a loopback-backed ZFS pool
-			// but large enough to exercise the zvol allocation path.
-			storageClassName := stack.Binding.Name
-			pvcCapacity := resource.MustParse("1Gi")
-			pvc = framework.NewPillarPVC(
-				framework.UniqueName("pvc"),
-				ns.Name,
-				storageClassName,
-				pvcCapacity,
+		// ── Step 3: Create test namespace and PVC ─────────────────────────────────
+		//
+		// The PVC is created in a freshly allocated, isolated Namespace so that
+		// cleanup is simple (deleting the Namespace removes all namespaced resources)
+		// and concurrent test runs on the same cluster do not collide.
+		//
+		// The StorageClass name equals the PillarBinding name (auto-created in Step 2).
+		It("Step 3: creates a test namespace and a PVC referencing the StorageClass",
+			func(ctx SpecContext) {
+				// Create an isolated namespace for this PVC.
+				var err error
+				ns, err = framework.CreateTestNamespace(ctx, suite.Client, "pvc-prov")
+				Expect(err).NotTo(HaveOccurred(),
+					"create test namespace with prefix 'pvc-prov'")
+				By(fmt.Sprintf("created test namespace %q", ns.Name))
+
+				// Register namespace cleanup BEFORE the PVC so that the namespace
+				// (and everything inside it) is removed on test failure.
+				DeferCleanup(func(dctx SpecContext) {
+					By(fmt.Sprintf("cleanup: deleting test namespace %q", ns.Name))
+					if err := framework.EnsureNamespaceGone(dctx, suite.Client, ns.Name, 3*time.Minute); err != nil {
+						_, _ = fmt.Fprintf(GinkgoWriter,
+							"warning: cleanup EnsureNamespaceGone %q: %v\n", ns.Name, err)
+					}
+				})
+
+				// Build the PVC.  StorageClass name == binding name (per pillar-csi convention).
+				// Request 1 Gi — small enough to be cheap on a loopback-backed ZFS pool
+				// but large enough to exercise the zvol allocation path.
+				storageClassName := stack.Binding.Name
+				pvcCapacity := resource.MustParse("1Gi")
+				pvc = framework.NewPillarPVC(
+					framework.UniqueName("pvc"),
+					ns.Name,
+					storageClassName,
+					pvcCapacity,
+				)
+
+				By(fmt.Sprintf("creating PVC %q/%q (storageClass=%q, size=%s)",
+					pvc.Namespace, pvc.Name, storageClassName, pvcCapacity.String()))
+				Expect(framework.CreatePVC(ctx, suite.Client, pvc)).To(Succeed(),
+					"PVC %q/%q with StorageClass %q must be accepted by the API server — "+
+						"verify that the StorageClass exists (Step 2 must have succeeded)",
+					pvc.Namespace, pvc.Name, storageClassName,
+				)
+			})
+
+		// ── Step 4: PVC reaches Bound phase ──────────────────────────────────────
+		//
+		// Wait for the CSI controller plugin (running in the Kind cluster via Helm)
+		// to reconcile the PVC:
+		//   a) The external-provisioner sidecar calls CreateVolume on the CSI controller.
+		//   b) The CSI controller calls CreateVolume on the pillar-agent gRPC API.
+		//   c) The agent creates the ZFS zvol and responds with the volume ID.
+		//   d) The external-provisioner creates a PersistentVolume and binds it to
+		//      the PVC.
+		//
+		// The 5-minute timeout covers all async provisioner steps.
+		It("Step 4: PVC reaches the Bound phase within 5 minutes", func(ctx SpecContext) {
+			By(fmt.Sprintf("waiting for PVC %q/%q to reach Bound phase (up to 5 m)",
+				pvc.Namespace, pvc.Name))
+
+			Expect(framework.WaitForPVCBound(ctx, suite.Client, pvc, 5*time.Minute)).To(Succeed(),
+				"PVC %q/%q must reach the Bound phase within 5 m — verify that:\n"+
+					"  1. The pillar-csi controller plugin is running in namespace %q\n"+
+					"  2. The external-provisioner sidecar is healthy\n"+
+					"  3. The agent at %s can call CreateVolume on ZFS pool %q\n"+
+					"  4. The ZFS pool %q exists on the remote host",
+				pvc.Namespace, pvc.Name,
+				testEnv.HelmNamespace,
+				testEnv.ExternalAgentAddr,
+				testEnv.ZFSPoolName, testEnv.ZFSPoolName,
 			)
 
-			By(fmt.Sprintf("creating PVC %q/%q (storageClass=%q, size=%s)",
-				pvc.Namespace, pvc.Name, storageClassName, pvcCapacity.String()))
-			Expect(framework.CreatePVC(ctx, suite.Client, pvc)).To(Succeed(),
-				"PVC %q/%q with StorageClass %q must be accepted by the API server — "+
-					"verify that the StorageClass exists (Step 2 must have succeeded)",
-				pvc.Namespace, pvc.Name, storageClassName,
-			)
+			By(fmt.Sprintf("PVC %q/%q is Bound — bound to PV %q",
+				pvc.Namespace, pvc.Name, pvc.Spec.VolumeName))
 		})
 
-	// ── Step 4: PVC reaches Bound phase ──────────────────────────────────────
-	//
-	// Wait for the CSI controller plugin (running in the Kind cluster via Helm)
-	// to reconcile the PVC:
-	//   a) The external-provisioner sidecar calls CreateVolume on the CSI controller.
-	//   b) The CSI controller calls CreateVolume on the pillar-agent gRPC API.
-	//   c) The agent creates the ZFS zvol and responds with the volume ID.
-	//   d) The external-provisioner creates a PersistentVolume and binds it to
-	//      the PVC.
-	//
-	// The 5-minute timeout covers all async provisioner steps.
-	It("Step 4: PVC reaches the Bound phase within 5 minutes", func(ctx SpecContext) {
-		By(fmt.Sprintf("waiting for PVC %q/%q to reach Bound phase (up to 5 m)",
-			pvc.Namespace, pvc.Name))
+		// ── Step 5: Verify the bound PV ──────────────────────────────────────────
+		//
+		// After the PVC is Bound, retrieve the PersistentVolume and assert that the
+		// pillar-csi provisioner set all expected fields:
+		//
+		//   - Capacity ≥ 1 Gi   — the provisioner must honour the request size
+		//   - StorageClass       — must match the PillarBinding name (auto-created SC)
+		//   - ReclaimPolicy      — must be Delete (the default set by the binding)
+		//   - AccessModes        — must include ReadWriteOnce (block device capability)
+		It("Step 5: the bound PV has the expected capacity, StorageClass, reclaimPolicy, and access modes",
+			func(ctx SpecContext) {
+				pv, err := framework.GetBoundPV(ctx, suite.Client, pvc)
+				Expect(err).NotTo(HaveOccurred(),
+					"GetBoundPV must succeed — PVC %q/%q must be Bound (Step 4 must have passed)",
+					pvc.Namespace, pvc.Name)
 
-		Expect(framework.WaitForPVCBound(ctx, suite.Client, pvc, 5*time.Minute)).To(Succeed(),
-			"PVC %q/%q must reach the Bound phase within 5 m — verify that:\n"+
-				"  1. The pillar-csi controller plugin is running in namespace %q\n"+
-				"  2. The external-provisioner sidecar is healthy\n"+
-				"  3. The agent at %s can call CreateVolume on ZFS pool %q\n"+
-				"  4. The ZFS pool %q exists on the remote host",
-			pvc.Namespace, pvc.Name,
-			testEnv.HelmNamespace,
-			testEnv.ExternalAgentAddr,
-			testEnv.ZFSPoolName, testEnv.ZFSPoolName,
-		)
+				By(fmt.Sprintf("fetched PV %q — verifying fields", pv.Name))
 
-		By(fmt.Sprintf("PVC %q/%q is Bound — bound to PV %q",
-			pvc.Namespace, pvc.Name, pvc.Spec.VolumeName))
-	})
+				// ── 5a: Capacity ───────────────────────────────────────────────────
+				wantCapacity := resource.MustParse("1Gi")
+				Expect(framework.AssertPVCapacity(pv, wantCapacity)).To(Succeed(),
+					"PV %q must have capacity ≥ %s — the provisioner must honour the "+
+						"PVC request size",
+					pv.Name, wantCapacity.String(),
+				)
 
-	// ── Step 5: Verify the bound PV ──────────────────────────────────────────
-	//
-	// After the PVC is Bound, retrieve the PersistentVolume and assert that the
-	// pillar-csi provisioner set all expected fields:
-	//
-	//   - Capacity ≥ 1 Gi   — the provisioner must honour the request size
-	//   - StorageClass       — must match the PillarBinding name (auto-created SC)
-	//   - ReclaimPolicy      — must be Delete (the default set by the binding)
-	//   - AccessModes        — must include ReadWriteOnce (block device capability)
-	It("Step 5: the bound PV has the expected capacity, StorageClass, reclaimPolicy, and access modes",
-		func(ctx SpecContext) {
-			pv, err := framework.GetBoundPV(ctx, suite.Client, pvc)
-			Expect(err).NotTo(HaveOccurred(),
-				"GetBoundPV must succeed — PVC %q/%q must be Bound (Step 4 must have passed)",
-				pvc.Namespace, pvc.Name)
+				// ── 5b: StorageClass ───────────────────────────────────────────────
+				// The StorageClass name on the PV must match the auto-created SC that
+				// was generated by the PillarBinding controller.
+				Expect(framework.AssertPVStorageClass(pv, stack.Binding.Name)).To(Succeed(),
+					"PV %q StorageClass must be %q (the PillarBinding name) — the "+
+						"provisioner must record the originating StorageClass",
+					pv.Name, stack.Binding.Name,
+				)
 
-			By(fmt.Sprintf("fetched PV %q — verifying fields", pv.Name))
+				// ── 5c: ReclaimPolicy ──────────────────────────────────────────────
+				// The PillarBinding controller sets reclaimPolicy=Delete on the
+				// auto-created StorageClass.  The external-provisioner sidecar copies
+				// the StorageClass reclaimPolicy to the provisioned PV.
+				Expect(framework.AssertPVReclaimPolicy(pv, corev1.PersistentVolumeReclaimDelete)).To(Succeed(),
+					"PV %q reclaimPolicy must be Delete — the StorageClass was created "+
+						"with reclaimPolicy=Delete (pillar-csi default for ZFS zvol block devices)",
+					pv.Name,
+				)
 
-			// ── 5a: Capacity ───────────────────────────────────────────────────
-			wantCapacity := resource.MustParse("1Gi")
-			Expect(framework.AssertPVCapacity(pv, wantCapacity)).To(Succeed(),
-				"PV %q must have capacity ≥ %s — the provisioner must honour the "+
-					"PVC request size",
-				pv.Name, wantCapacity.String(),
-			)
+				// ── 5d: AccessModes ────────────────────────────────────────────────
+				// ZFS zvol block devices support ReadWriteOnce (exclusive block access
+				// from a single node).  The PVC was created with ReadWriteOnce, so the
+				// bound PV must include that access mode.
+				Expect(framework.AssertPVAccessModes(pv,
+					[]corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+				)).To(Succeed(),
+					"PV %q must include ReadWriteOnce — ZFS zvol block devices support "+
+						"exclusive read/write access from one node at a time",
+					pv.Name,
+				)
 
-			// ── 5b: StorageClass ───────────────────────────────────────────────
-			// The StorageClass name on the PV must match the auto-created SC that
-			// was generated by the PillarBinding controller.
-			Expect(framework.AssertPVStorageClass(pv, stack.Binding.Name)).To(Succeed(),
-				"PV %q StorageClass must be %q (the PillarBinding name) — the "+
-					"provisioner must record the originating StorageClass",
-				pv.Name, stack.Binding.Name,
-			)
-
-			// ── 5c: ReclaimPolicy ──────────────────────────────────────────────
-			// The PillarBinding controller sets reclaimPolicy=Delete on the
-			// auto-created StorageClass.  The external-provisioner sidecar copies
-			// the StorageClass reclaimPolicy to the provisioned PV.
-			Expect(framework.AssertPVReclaimPolicy(pv, corev1.PersistentVolumeReclaimDelete)).To(Succeed(),
-				"PV %q reclaimPolicy must be Delete — the StorageClass was created "+
-					"with reclaimPolicy=Delete (pillar-csi default for ZFS zvol block devices)",
-				pv.Name,
-			)
-
-			// ── 5d: AccessModes ────────────────────────────────────────────────
-			// ZFS zvol block devices support ReadWriteOnce (exclusive block access
-			// from a single node).  The PVC was created with ReadWriteOnce, so the
-			// bound PV must include that access mode.
-			Expect(framework.AssertPVAccessModes(pv,
-				[]corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
-			)).To(Succeed(),
-				"PV %q must include ReadWriteOnce — ZFS zvol block devices support "+
-					"exclusive read/write access from one node at a time",
-				pv.Name,
-			)
-
-			pvCapacity := pv.Spec.Capacity[corev1.ResourceStorage]
-			By(fmt.Sprintf(
-				"PV %q verified: capacity=%s storageClass=%q reclaimPolicy=%s accessModes=%v",
-				pv.Name,
-				pvCapacity.String(),
-				pv.Spec.StorageClassName,
-				pv.Spec.PersistentVolumeReclaimPolicy,
-				pv.Spec.AccessModes,
-			))
-		})
+				pvCapacity := pv.Spec.Capacity[corev1.ResourceStorage]
+				By(fmt.Sprintf(
+					"PV %q verified: capacity=%s storageClass=%q reclaimPolicy=%s accessModes=%v",
+					pv.Name,
+					pvCapacity.String(),
+					pv.Spec.StorageClassName,
+					pv.Spec.PersistentVolumeReclaimPolicy,
+					pv.Spec.AccessModes,
+				))
+			})
 	}) // end Describe("PVCProvision")
 	return true
 }()
