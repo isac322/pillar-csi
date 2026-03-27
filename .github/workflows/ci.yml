@@ -93,17 +93,32 @@ jobs:
       - name: Install Helm
         uses: azure/setup-helm@v5
 
-      # ── install ZFS ────────────────────────────────────────────────────────
+      # ── install ZFS and NVMe kernel modules ───────────────────────────────
       # ZFS userspace tools (zpool, zfs, losetup) must be present on the
       # GitHub Actions runner host because DockerHostExec runs privileged
       # commands via `nsenter -t 1 -m ...` into the host's mount namespace.
-      # The host kernel already ships the ZFS module on ubuntu-latest;
-      # `modprobe zfs` loads it so /dev/zfs is available for zpool operations.
-      - name: Install ZFS tools and load kernel modules
+      #
+      # NVMe-oF kernel modules are required for two reasons:
+      #   1. kind-config.yaml bind-mounts /dev/nvme-fabrics into the compute-
+      #      worker Kind node; Kind/Docker fails to create the node container
+      #      if the source device does not exist on the host.  Loading
+      #      nvme_fabrics causes the kernel to create /dev/nvme-fabrics.
+      #   2. The mount/unmount lifecycle e2e specs write a real NVMe-oF TCP
+      #      target to /sys/kernel/config/nvmet (via docker exec into the
+      #      storage-worker Kind container, which bind-mounts /sys/kernel/config
+      #      from the host), then use nvme_tcp to connect from the compute-worker.
+      #
+      # linux-modules-extra-$(uname -r) ships all four modules on ubuntu-latest.
+      - name: Install ZFS and NVMe kernel modules
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y zfsutils-linux
+          sudo apt-get install -y zfsutils-linux linux-modules-extra-$(uname -r) || \
+            sudo apt-get install -y zfsutils-linux
           sudo modprobe zfs
+          sudo modprobe nvme_fabrics
+          sudo modprobe nvmet
+          sudo modprobe nvmet_tcp
+          sudo modprobe nvme_tcp
 
       # ── run tests ─────────────────────────────────────────────────────────
       # make test-e2e is the single entry point for the full e2e lifecycle.
@@ -114,13 +129,6 @@ jobs:
         run: |
           go mod tidy
           make test-e2e
-        env:
-          KIND_CLUSTER: ${{ env.KIND_CLUSTER }}
-          E2E_IMAGE_TAG: ${{ env.E2E_IMAGE_TAG }}
-          E2E_HELM_NAMESPACE: ${{ env.E2E_HELM_NAMESPACE }}
-          # Use the unix socket so docker/kind/helm sub-processes reach the
-          # local Docker daemon on ubuntu-latest (TCP is not exposed by default).
-          DOCKER_HOST: unix:///var/run/docker.sock
 
   build:
     name: Build (all platforms)
