@@ -73,10 +73,12 @@ spec:
                   iscsi.
                 properties:
                   acl:
-                    default: true
+                    default: false
                     description: |-
                       acl enables initiator IQN-based access control when true.
                       When false the target allows any initiator.
+                      Defaults to false so that e2e tests and simple deployments work
+                      without registering initiator IQNs.
                     type: boolean
                   loginTimeout:
                     description: |-
@@ -130,10 +132,12 @@ spec:
                   type is nvmeof-tcp.
                 properties:
                   acl:
-                    default: true
+                    default: false
                     description: |-
                       acl enables host NQN-based access control when true.
                       When false the subsystem uses allow_any_host.
+                      Defaults to false (allow_any_host) so that e2e tests and simple
+                      deployments work without registering initiator NQNs.
                     type: boolean
                   ctrlLossTmo:
                     description: |-

@@ -45,8 +45,10 @@ type NVMeOFTCPConfig struct {
 
 	// acl enables host NQN-based access control when true.
 	// When false the subsystem uses allow_any_host.
+	// Defaults to false (allow_any_host) so that e2e tests and simple
+	// deployments work without registering initiator NQNs.
 	// +optional
-	// +kubebuilder:default=true
+	// +kubebuilder:default=false
 	ACL bool `json:"acl"`
 
 	// maxQueueSize is the maximum number of I/O queue entries per connection.
@@ -83,8 +85,10 @@ type ISCSIConfig struct {
 
 	// acl enables initiator IQN-based access control when true.
 	// When false the target allows any initiator.
+	// Defaults to false so that e2e tests and simple deployments work
+	// without registering initiator IQNs.
 	// +optional
-	// +kubebuilder:default=true
+	// +kubebuilder:default=false
 	ACL bool `json:"acl"`
 
 	// loginTimeout is the number of seconds to wait for a login response.
