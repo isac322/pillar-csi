@@ -291,8 +291,8 @@ var _ = func() bool {
 					}, 2*time.Minute)
 				Expect(err).NotTo(HaveOccurred(),
 					"status.resolvedAddress must be populated once AgentConnected=True")
-				Expect(target.Status.ResolvedAddress).To(Equal(clusterHost),
-					"resolvedAddress must match the configured external agent address")
+				Expect(target.Status.ResolvedAddress).To(Equal(fmt.Sprintf("%s:%d", clusterHost, clusterPort)),
+					"resolvedAddress must be host:port — controller stores the full dial address")
 
 				By(fmt.Sprintf("status.resolvedAddress = %q", target.Status.ResolvedAddress))
 			})

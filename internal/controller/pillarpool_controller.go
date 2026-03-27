@@ -192,6 +192,53 @@ func (r *PillarPoolReconciler) reconcileNormal(
 		return ctrl.Result{}, fmt.Errorf("failed to get PillarTarget %q: %w", pool.Spec.TargetRef, err)
 	}
 
+	// Target exists — check if it is being deleted before evaluating readiness.
+	if !target.DeletionTimestamp.IsZero() {
+		log.Info("Referenced PillarTarget is being deleted; marking pool TargetReady=False",
+			"pool", pool.Name, "target", pool.Spec.TargetRef)
+		meta.SetStatusCondition(&pool.Status.Conditions, metav1.Condition{
+			Type:               "TargetReady",
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: pool.Generation,
+			Reason:             "TargetDeleting",
+			Message: fmt.Sprintf(
+				"PillarTarget %q is being deleted", pool.Spec.TargetRef,
+			),
+		})
+		meta.SetStatusCondition(&pool.Status.Conditions, metav1.Condition{
+			Type:               "PoolDiscovered",
+			Status:             metav1.ConditionUnknown,
+			ObservedGeneration: pool.Generation,
+			Reason:             "TargetDeleting",
+			Message: fmt.Sprintf(
+				"Cannot discover pool: PillarTarget %q is being deleted", pool.Spec.TargetRef,
+			),
+		})
+		meta.SetStatusCondition(&pool.Status.Conditions, metav1.Condition{
+			Type:               "BackendSupported",
+			Status:             metav1.ConditionUnknown,
+			ObservedGeneration: pool.Generation,
+			Reason:             "TargetDeleting",
+			Message: fmt.Sprintf(
+				"Cannot verify backend support: PillarTarget %q is being deleted", pool.Spec.TargetRef,
+			),
+		})
+		meta.SetStatusCondition(&pool.Status.Conditions, metav1.Condition{
+			Type:               "Ready",
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: pool.Generation,
+			Reason:             "TargetDeleting",
+			Message: fmt.Sprintf(
+				"PillarPool is not ready: PillarTarget %q is being deleted", pool.Spec.TargetRef,
+			),
+		})
+		statusErr := r.Status().Update(ctx, pool)
+		if statusErr != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to update PillarPool status: %w", statusErr)
+		}
+		return ctrl.Result{}, nil
+	}
+
 	// Target exists — check whether it reports Ready=True.
 	targetReadyCond := meta.FindStatusCondition(target.Status.Conditions, "Ready")
 	targetReady := targetReadyCond != nil && targetReadyCond.Status == metav1.ConditionTrue

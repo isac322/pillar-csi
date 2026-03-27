@@ -105,7 +105,14 @@ var _ = func() bool {
 			// Build a uniquely-named CR stack so parallel test runs on the same
 			// cluster do not collide on resource names.
 			prefix := framework.UniqueName("pvc-prov")
-			stack = framework.NewKindE2EStack(prefix, testEnv.ExternalAgentAddr, testEnv.ZFSPoolName)
+			// Use the cluster-accessible agent address (reachable from inside Kind pods).
+			// TestMain sets EXTERNAL_AGENT_CLUSTER_ADDRESS automatically when
+			// E2E_LAUNCH_EXTERNAL_AGENT=true; fall back to ExternalAgentAddr when not set.
+			agentAddr := extAgentClusterAddress()
+			if agentAddr == "" {
+				agentAddr = testEnv.ExternalAgentAddr
+			}
+			stack = framework.NewKindE2EStack(prefix, agentAddr, testEnv.ZFSPoolName)
 
 			// Register CR cleanup BEFORE creating any resources so that all CRs
 			// are removed even when an assertion below fails.  CRs are deleted in

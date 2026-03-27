@@ -47,7 +47,7 @@ type NVMeOFTCPConfig struct {
 	// When false the subsystem uses allow_any_host.
 	// +optional
 	// +kubebuilder:default=true
-	ACL bool `json:"acl,omitempty"`
+	ACL bool `json:"acl"`
 
 	// maxQueueSize is the maximum number of I/O queue entries per connection.
 	// +optional
@@ -85,7 +85,7 @@ type ISCSIConfig struct {
 	// When false the target allows any initiator.
 	// +optional
 	// +kubebuilder:default=true
-	ACL bool `json:"acl,omitempty"`
+	ACL bool `json:"acl"`
 
 	// loginTimeout is the number of seconds to wait for a login response.
 	// Defaults to 15.
