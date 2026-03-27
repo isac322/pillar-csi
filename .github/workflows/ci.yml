@@ -93,6 +93,18 @@ jobs:
       - name: Install Helm
         uses: azure/setup-helm@v5
 
+      # ── install ZFS ────────────────────────────────────────────────────────
+      # ZFS userspace tools (zpool, zfs, losetup) must be present on the
+      # GitHub Actions runner host because DockerHostExec runs privileged
+      # commands via `nsenter -t 1 -m ...` into the host's mount namespace.
+      # The host kernel already ships the ZFS module on ubuntu-latest;
+      # `modprobe zfs` loads it so /dev/zfs is available for zpool operations.
+      - name: Install ZFS tools and load kernel modules
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y zfsutils-linux
+          sudo modprobe zfs
+
       # ── run tests ─────────────────────────────────────────────────────────
       # make test-e2e is the single entry point for the full e2e lifecycle.
       # TestMain (test/e2e/setup_test.go) creates the Kind cluster, builds and
@@ -106,6 +118,9 @@ jobs:
           KIND_CLUSTER: ${{ env.KIND_CLUSTER }}
           E2E_IMAGE_TAG: ${{ env.E2E_IMAGE_TAG }}
           E2E_HELM_NAMESPACE: ${{ env.E2E_HELM_NAMESPACE }}
+          # Use the unix socket so docker/kind/helm sub-processes reach the
+          # local Docker daemon on ubuntu-latest (TCP is not exposed by default).
+          DOCKER_HOST: unix:///var/run/docker.sock
 
   build:
     name: Build (all platforms)
