@@ -513,9 +513,17 @@ func (t *NvmetTarget) Remove() error {
 	//    Clean up subsystem pseudo-files (tests only; kernel auto-removes).
 	bestEffort(removeDir(filepath.Join(t.subsystemDir(), "allowed_hosts")))
 	bestEffort(removeDir(filepath.Join(t.subsystemDir(), "namespaces")))
-	bestEffort(os.Remove(filepath.Join(t.subsystemDir(), "attr_allow_any_host")))
+	attrPath := filepath.Join(t.subsystemDir(), "attr_allow_any_host")
+	bestEffort(os.Remove(attrPath))
 	err = removeDir(t.subsystemDir())
 	if err != nil {
+		// removeDir failed — the subsystem directory still exists (e.g. a
+		// concurrent Apply recreated a child entry).  Restore
+		// attr_allow_any_host to maintain the invariant: "if the subsystem
+		// directory exists, attr_allow_any_host is present".  Without this
+		// restore a future Apply would find the directory but no attr file,
+		// leaving the subsystem in a permanently inconsistent state.
+		bestEffort(writeFile(attrPath, "1"))
 		return fmt.Errorf("Remove: subsystem dir: %w", err)
 	}
 

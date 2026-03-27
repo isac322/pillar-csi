@@ -276,6 +276,9 @@ func setupE2E() error {
 	if err := buildAndLoadImages(); err != nil {
 		return fmt.Errorf("docker images: %w", err)
 	}
+	if err := preloadSidecarImages(); err != nil {
+		return fmt.Errorf("sidecar images: %w", err)
+	}
 	if err := setupZFSPool(); err != nil {
 		return fmt.Errorf("zfs pool: %w", err)
 	}
@@ -616,6 +619,111 @@ func buildAndLoadImages() error {
 		if err := loadImageIntoKindNodes(img.name); err != nil {
 			return fmt.Errorf("load image %s into kind nodes: %w", img.name, err)
 		}
+	}
+	return nil
+}
+
+// preloadSidecarImages pulls all CSI sidecar images into the local Docker
+// daemon and then loads them into every Kind WORKER node via the same
+// file-copy mechanism used by loadImageIntoKindNodes.
+//
+// Rationale: Kind nodes run an internal containerd that has no access to the
+// local Docker daemon image cache.  On a freshly-created cluster every image
+// must be pulled from the registry, which can take minutes for CSI sidecar
+// images from registry.k8s.io on slow or rate-limited networks.  By
+// preloading these images the Helm --wait phase starts with all required
+// images already present in containerd, allowing pods to start within seconds
+// and keeping the 5-minute Helm timeout comfortable.
+//
+// Only worker nodes are targeted (not the control-plane) because:
+//   - Kubernetes taints the control-plane with NoSchedule so workload pods
+//     (controller deployment, DaemonSets) are only scheduled on workers.
+//   - The control-plane node runs kube-apiserver/etcd/scheduler and may have
+//     insufficient free memory for large image imports (exit 137 / OOM).
+//
+// The image list must stay in sync with the versions declared in
+// charts/pillar-csi/values.yaml.  The global imagePullPolicy is
+// "IfNotPresent" in the e2e helm-values.yaml so preloaded images are used
+// and the registry is not contacted during pod start-up.
+func preloadSidecarImages() error {
+	sidecarImages := []string{
+		"registry.k8s.io/sig-storage/csi-provisioner:v5.2.0",
+		"registry.k8s.io/sig-storage/csi-attacher:v4.8.1",
+		"registry.k8s.io/sig-storage/csi-resizer:v1.13.2",
+		"registry.k8s.io/sig-storage/livenessprobe:v2.15.0",
+		"registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.13.0",
+		"busybox:1.36",
+	}
+
+	// Discover worker nodes only.  Kind labels each node container with
+	// io.x-k8s.kind.role=worker or =control-plane; filtering by "worker"
+	// prevents the expensive import step from running on the control-plane.
+	nodesOut, err := captureOutput("docker", "ps",
+		"--filter", "label=io.x-k8s.kind.cluster="+testEnv.ClusterName,
+		"--filter", "label=io.x-k8s.kind.role=worker",
+		"--format", "{{.Names}}")
+	if err != nil {
+		return fmt.Errorf("docker ps for worker nodes: %s: %w", strings.TrimSpace(nodesOut), err)
+	}
+
+	var workerNodes []string
+	for _, node := range strings.Split(strings.TrimSpace(nodesOut), "\n") {
+		node = strings.TrimSpace(node)
+		if node != "" {
+			workerNodes = append(workerNodes, node)
+		}
+	}
+	if len(workerNodes) == 0 {
+		return fmt.Errorf("no worker nodes found in cluster %q", testEnv.ClusterName)
+	}
+
+	for _, img := range sidecarImages {
+		fmt.Fprintf(os.Stdout,
+			"e2e setup: preloading sidecar image %s into %d worker nodes\n",
+			img, len(workerNodes))
+
+		// Pull into the local Docker daemon (no-op when already present).
+		if err := runCmd("docker", "pull", img); err != nil {
+			return fmt.Errorf("docker pull %s: %w", img, err)
+		}
+
+		// Save the image to a local tar file then copy+import it into each
+		// worker node (the same approach used by loadImageIntoKindNodes).
+		localTar, err := os.CreateTemp("", "kind-sidecar-*.tar")
+		if err != nil {
+			return fmt.Errorf("create temp tar for %s: %w", img, err)
+		}
+		localTarPath := localTar.Name()
+		localTar.Close()
+
+		if err := runCmd("docker", "save", img, "-o", localTarPath); err != nil {
+			_ = os.Remove(localTarPath)
+			return fmt.Errorf("docker save %s: %w", img, err)
+		}
+
+		for _, node := range workerNodes {
+			const nodeTar = "/root/kind-sidecar.tar"
+
+			fmt.Fprintf(os.Stdout, "e2e setup: copying sidecar image tar to node %s\n", node)
+			if err := runCmd("docker", "cp", localTarPath, node+":"+nodeTar); err != nil {
+				_ = os.Remove(localTarPath)
+				return fmt.Errorf("docker cp sidecar image to %s: %w", node, err)
+			}
+
+			fmt.Fprintf(os.Stdout, "e2e setup: importing sidecar image on node %s\n", node)
+			if err := runCmd("docker", "exec", node,
+				"ctr", "--namespace=k8s.io", "images", "import",
+				"--all-platforms", "--digests", "--snapshotter=overlayfs",
+				nodeTar,
+			); err != nil {
+				_ = os.Remove(localTarPath)
+				return fmt.Errorf("ctr import sidecar image on %s: %w", node, err)
+			}
+
+			_ = runCmd("docker", "exec", node, "rm", nodeTar) //nolint:errcheck
+		}
+
+		_ = os.Remove(localTarPath)
 	}
 	return nil
 }

@@ -66,14 +66,19 @@ func (s *Server) ExportVolume(
 	// configfs never receives an invalid (non-existent) device path.
 	//
 	// Device-presence polling is skipped when configfsRoot is not the real
-	// kernel configfs mount point.  In that mode (e.g. --configfs-root=/tmp
-	// used by e2e tests) the NVMe kernel module is not involved, so the kernel
-	// never validates the device_path pseudo-file.  The zvol block device also
-	// only appears on the host's /dev, not inside the container's /dev, so the
-	// os.Stat() probe would always time out — causing ExportVolume to fail with
+	// kernel configfs mount point AND no custom deviceChecker has been injected.
+	// In that mode (e.g. --configfs-root=/tmp used by e2e tests) the NVMe
+	// kernel module is not involved, so the kernel never validates the
+	// device_path pseudo-file.  The zvol block device also only appears on the
+	// host's /dev, not inside the container's /dev, so the os.Stat() probe
+	// would always time out — causing ExportVolume to fail with
 	// FailedPrecondition even though the configfs write succeeds.
+	//
+	// When a custom deviceChecker is explicitly injected (tests), polling is
+	// always enabled so that the checker is exercised regardless of the
+	// configfsRoot value.
 	realConfigfs := s.configfsRoot == "" || s.configfsRoot == nvmeof.DefaultConfigfsRoot
-	if realConfigfs {
+	if realConfigfs || s.deviceChecker != nil {
 		pollInterval := s.devicePollInterval
 		if pollInterval == 0 {
 			pollInterval = nvmeof.DefaultDevicePollInterval
