@@ -45,7 +45,12 @@ const metricsServiceName = "pillar-csi-controller-manager-metrics-service"
 // metricsRoleBindingName is the name of the RBAC that will be created to allow get the metrics data
 const metricsRoleBindingName = "pillar-csi-metrics-binding"
 
-var _ = Describe("Manager", Ordered, func() {
+// PDescribe marks the legacy Manager scaffold suite as pending.  These specs
+// use the "make deploy / make undeploy" lifecycle which conflicts with the
+// Helm-managed setup that TestMain always uses.  They are not run in the
+// unified e2e suite but are preserved here for reference and potential future
+// standalone use.
+var _ = PDescribe("Manager", Ordered, func() {
 	var controllerPodName string
 
 	// Before running the tests, set up the environment by creating the namespace,

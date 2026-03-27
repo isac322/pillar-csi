@@ -94,18 +94,11 @@ import (
 // The Describe is Ordered so that each step runs in declaration order and a
 // failure in an earlier step causes subsequent steps to be skipped rather than
 // running against a partially-constructed stack.
-var _ = Describe("CROrchestration", Ordered, func() {
-
-	// ── BeforeAll: prerequisite guards ──────────────────────────────────────
-	BeforeAll(func() {
-		if testEnv.ExternalAgentAddr == "" {
-			Skip(
-				"CROrchestration: external agent not running — " +
-					"set E2E_LAUNCH_EXTERNAL_AGENT=true or EXTERNAL_AGENT_ADDR " +
-					"to enable sequential CR orchestration tests",
-			)
-		}
-	})
+var _ = func() bool {
+	if !isExternalAgentMode() {
+		return false
+	}
+	Describe("CROrchestration", Ordered, func() {
 
 	var (
 		suite *framework.Suite
@@ -411,4 +404,6 @@ var _ = Describe("CROrchestration", Ordered, func() {
 				params["pillar-csi.bhyoo.com/nvmeof-port"],
 			))
 		})
-})
+	}) // end Describe("CROrchestration")
+	return true
+}()

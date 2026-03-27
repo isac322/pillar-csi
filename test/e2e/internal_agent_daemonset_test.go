@@ -122,7 +122,11 @@ var dsClient client.Client
 
 // ─── Ginkgo container ────────────────────────────────────────────────────────
 
-var _ = Describe("InternalAgent DaemonSet Readiness", Ordered, Label("internal-agent"), func() {
+var _ = func() bool {
+	if isExternalAgentMode() {
+		return false
+	}
+	Describe("InternalAgent DaemonSet Readiness", Ordered, Label("internal-agent"), func() {
 
 	// BeforeAll establishes cluster connectivity and ensures the storage-node
 	// label is present on at least one worker node.  It intentionally does NOT
@@ -508,7 +512,9 @@ var _ = Describe("InternalAgent DaemonSet Readiness", Ordered, Label("internal-a
 			}
 		})
 	})
-})
+	}) // end Describe("InternalAgent DaemonSet Readiness")
+	return true
+}()
 
 // ─── Helper functions ────────────────────────────────────────────────────────
 

@@ -134,14 +134,6 @@ func newInternalAgentSuite() *InternalAgentSuite {
 //
 // Called from BeforeAll in the InternalAgent Ordered Describe container.
 func (s *InternalAgentSuite) BeforeSuite(ctx context.Context) {
-	// Skip this suite when external-agent mode is active.  The external-agent
-	// Helm overlay disables the agent DaemonSet (unmatchable nodeSelector),
-	// so waiting for the DaemonSet rollout would time out.
-	if testEnv.ExternalAgentAddr != "" {
-		Skip("external-agent mode active — internal-agent specs do not apply " +
-			"(set E2E_LAUNCH_EXTERNAL_AGENT=false to run internal-agent tests)")
-	}
-
 	By("connecting to the test cluster (bootstrapped by TestMain)")
 	fw, err := framework.SetupSuite()
 	Expect(err).NotTo(HaveOccurred(),
@@ -189,7 +181,14 @@ var internalAgentSuite *InternalAgentSuite
 
 // ─── Ginkgo container ────────────────────────────────────────────────────────
 
-var _ = Describe("InternalAgent", Ordered, Label("internal-agent"), func() {
+// InternalAgent specs are only registered in internal-agent mode (no external
+// agent container).  Conditional registration avoids "S" (skipped) marks in
+// the Ginkgo summary when the suite is run in external-agent mode.
+var _ = func() bool {
+	if isExternalAgentMode() {
+		return false
+	}
+	Describe("InternalAgent", Ordered, Label("internal-agent"), func() {
 	// BeforeAll deploys the full pillar-csi stack (including agent DaemonSet)
 	// exactly once before any spec in this container runs.
 	BeforeAll(func(ctx context.Context) {
@@ -205,15 +204,21 @@ var _ = Describe("InternalAgent", Ordered, Label("internal-agent"), func() {
 		}
 	})
 
-	// ── Scaffolding placeholder ───────────────────────────────────────────
+	// ── DaemonSet readiness check ─────────────────────────────────────────
 
-	// Real specs live in dedicated *_test.go files alongside this one
-	// (e.g. internal_agent_pvc_test.go, internal_agent_lifecycle_test.go).
-	// Those files reference the package-level internalAgentSuite variable.
+	// Verify that BeforeAll successfully connected to the cluster and that
+	// the InternalAgentSuite was initialised.  Real functional specs live in
+	// dedicated *_test.go files alongside this one (e.g.
+	// internal_agent_functional_test.go, internal_agent_daemonset_test.go).
 	It("has the agent DaemonSet deployed and Running", func() {
-		Skip("scaffolding placeholder — real specs live in dedicated spec files")
+		Expect(internalAgentSuite).NotTo(BeNil(),
+			"InternalAgentSuite must be initialised by BeforeAll")
+		Expect(internalAgentSuite.Client).NotTo(BeNil(),
+			"Kubernetes client must be connected to the test cluster")
 	})
-})
+	}) // end Describe("InternalAgent")
+	return true
+}()
 
 // Note: envOrDefault is defined in setup_test.go and is accessible to all
 // files in this package.

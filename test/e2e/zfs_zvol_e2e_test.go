@@ -85,23 +85,15 @@ import (
 // test process runs outside the cluster.  Verifying that ExportVolume returns
 // a populated ExportInfo is sufficient to confirm end-to-end NVMe-oF target
 // creation.
-var _ = Describe("ZFSZvolRealExport", Ordered, func() {
+var _ = func() bool {
+	if !isExternalAgentMode() {
+		return false
+	}
+	Describe("ZFSZvolRealExport", Ordered, func() {
 	// ── BeforeAll: prerequisite guards ──────────────────────────────────────
 	BeforeAll(func() {
-		if testEnv.ExternalAgentAddr == "" {
-			Skip(
-				"ZFSZvolRealExport: external agent not running — " +
-					"set E2E_LAUNCH_EXTERNAL_AGENT=true or EXTERNAL_AGENT_ADDR " +
-					"to enable ZFS zvol real-export tests",
-			)
-		}
-		if testEnv.zfsHostExec == nil {
-			Skip(
-				"ZFSZvolRealExport: ZFS host-exec helper not available — " +
-					"setupZFSPool() must have succeeded (check DOCKER_HOST and ZFS " +
-					"module availability on the remote host)",
-			)
-		}
+		Expect(testEnv.zfsHostExec).NotTo(BeNil(),
+			"ZFS host-exec helper must be available — setupZFSPool() must have succeeded")
 	})
 
 	// ── It: ExportVolume exports a real ZFS zvol over NVMe-oF TCP ─────────
@@ -314,9 +306,15 @@ var _ = Describe("ZFSZvolRealExport", Ordered, func() {
 			"configfs verified: subsystem=%q namespace=%d portID=%d",
 			nqn, nsid, portID))
 	})
-})
+	}) // end Describe("ZFSZvolRealExport")
+	return true
+}()
 
-var _ = Describe("ZFSZvolRealCreate", Ordered, func() {
+var _ = func() bool {
+	if !isExternalAgentMode() {
+		return false
+	}
+	Describe("ZFSZvolRealCreate", Ordered, func() {
 	// ── BeforeAll: prerequisite guards ──────────────────────────────────────
 	//
 	// Both the external agent and the ZFS host-exec helper must be available.
@@ -324,20 +322,8 @@ var _ = Describe("ZFSZvolRealCreate", Ordered, func() {
 	// suite can run in environments that lack a real ZFS kernel module or
 	// in internal-agent mode.
 	BeforeAll(func() {
-		if testEnv.ExternalAgentAddr == "" {
-			Skip(
-				"ZFSZvolRealCreate: external agent not running — " +
-					"set E2E_LAUNCH_EXTERNAL_AGENT=true or EXTERNAL_AGENT_ADDR " +
-					"to enable ZFS zvol real-create tests",
-			)
-		}
-		if testEnv.zfsHostExec == nil {
-			Skip(
-				"ZFSZvolRealCreate: ZFS host-exec helper not available — " +
-					"setupZFSPool() must have succeeded (check DOCKER_HOST and ZFS " +
-					"module availability on the remote host)",
-			)
-		}
+		Expect(testEnv.zfsHostExec).NotTo(BeNil(),
+			"ZFS host-exec helper must be available — setupZFSPool() must have succeeded")
 	})
 
 	// ── It: CreateVolume creates a real ZFS zvol ──────────────────────────
@@ -434,4 +420,6 @@ var _ = Describe("ZFSZvolRealCreate", Ordered, func() {
 
 		By(fmt.Sprintf("confirmed: %s exists on the remote host", devPath))
 	})
-})
+	}) // end Describe("ZFSZvolRealCreate")
+	return true
+}()

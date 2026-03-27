@@ -100,17 +100,15 @@ var reconState *reconAgentState
 // ExternalAgentReconciliation Ginkgo suite
 // ─────────────────────────────────────────────────────────────────────────────
 
-var _ = Describe("ExternalAgentReconciliation", Ordered, func() {
+var _ = func() bool {
+	if !isExternalAgentMode() {
+		return false
+	}
+	Describe("ExternalAgentReconciliation", Ordered, func() {
 
 	// ── BeforeAll: consume Docker-started agent + optional cluster connection ─
 	BeforeAll(func(ctx SpecContext) {
 		reconState = &reconAgentState{}
-
-		// Skip when TestMain did not start an external agent Docker container.
-		if testEnv.ExternalAgentAddr == "" {
-			Skip("external-agent mode not enabled — set E2E_LAUNCH_EXTERNAL_AGENT=true " +
-				"or EXTERNAL_AGENT_ADDR to run external-agent reconciliation tests")
-		}
 
 		// Consume the Docker-started agent address from TestMain.
 		reconState.addr = testEnv.ExternalAgentAddr
@@ -1080,7 +1078,9 @@ var _ = Describe("ExternalAgentReconciliation", Ordered, func() {
 			By("deletion cascade confirmed: PillarPool TargetReady=False after target deletion")
 		})
 	})
-})
+	}) // end Describe("ExternalAgentReconciliation")
+	return true
+}()
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Configuration helpers
@@ -1131,18 +1131,11 @@ type reconClusterAddr struct {
 //   - reconState.suite must be non-nil (cluster connection established)
 //   - EXTERNAL_AGENT_CLUSTER_ADDRESS must be set and parseable
 func reconGuardCluster(state *reconAgentState) reconClusterAddr {
-	if state == nil || state.suite == nil {
-		Skip("cluster not reachable — " +
-			"skipping K8s CR reconciliation tests " +
-			"(ensure KUBECONFIG points at a running cluster)")
-	}
+	Expect(state).NotTo(BeNil(), "cluster not reachable — ensure KUBECONFIG points at a running cluster")
+	Expect(state.suite).NotTo(BeNil(), "cluster must be reachable — ensure KUBECONFIG points at a running cluster")
 
 	raw := os.Getenv("EXTERNAL_AGENT_CLUSTER_ADDRESS")
-	if raw == "" {
-		Skip("EXTERNAL_AGENT_CLUSTER_ADDRESS not set — " +
-			"skipping K8s CR reconciliation tests " +
-			"(set to <host>:<port> reachable from inside the Kind cluster)")
-	}
+	Expect(raw).NotTo(BeEmpty(), "EXTERNAL_AGENT_CLUSTER_ADDRESS must be set — TestMain sets this automatically when E2E_LAUNCH_EXTERNAL_AGENT=true")
 
 	host, portStr, err := net.SplitHostPort(raw)
 	Expect(err).NotTo(HaveOccurred(),

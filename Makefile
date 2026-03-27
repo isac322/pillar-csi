@@ -89,7 +89,7 @@ E2E_HELM_NAMESPACE ?= pillar-csi-system
 ## Example: make test-e2e E2E_RUN=TestAgentConnected
 E2E_RUN ?=
 
-## Override go test timeout (default 30m).
+## Override go test timeout per mode (default 30m each).
 E2E_TIMEOUT ?= 30m
 
 ## Docker daemon endpoint used by docker, kind, and helm sub-processes spawned
@@ -99,17 +99,51 @@ E2E_TIMEOUT ?= 30m
 ## Example: make test-e2e DOCKER_HOST=tcp://localhost:2375
 DOCKER_HOST ?= tcp://localhost:2375
 
-# test-e2e is the single entry point for the full e2e lifecycle.
-# TestMain (test/e2e/setup_test.go) always deletes any pre-existing Kind
-# cluster with the same name, creates a fresh one, builds images, installs
-# Helm, runs all tests, and tears down — guaranteeing no state leakage between
-# runs.
+# Common env vars injected into every e2e invocation.
+E2E_COMMON_ENV = DOCKER_HOST=$(DOCKER_HOST) \
+	KIND_CLUSTER=$(KIND_CLUSTER) \
+	E2E_IMAGE_TAG=$(E2E_IMAGE_TAG) \
+	E2E_HELM_RELEASE=$(E2E_HELM_RELEASE) \
+	E2E_HELM_NAMESPACE=$(E2E_HELM_NAMESPACE) \
+	CERT_MANAGER_INSTALL_SKIP=true
+
+# Common go test flags shared by every e2e invocation.
+E2E_GO_FLAGS = -tags=e2e ./test/e2e/ -v -timeout=$(E2E_TIMEOUT) $(if $(E2E_RUN),-run $(E2E_RUN))
+
+# test-e2e runs the full e2e suite in BOTH internal-agent and external-agent
+# modes sequentially.  TestMain always creates a fresh Kind cluster for each
+# mode and tears it down unconditionally at the end, guaranteeing no state
+# leakage between the two runs.
 #
-# E2E_RUN filters which tests to run (passed to go test -run), e.g.:
-#   make test-e2e E2E_RUN=TestAgentConnected
+#   Internal-agent mode (first):
+#     The pillar-agent runs as a DaemonSet inside the Kind cluster.
+#     All internal-agent specs execute; external-agent specs are skipped.
+#
+#   External-agent mode (second):
+#     TestMain starts a Docker container running the agent image before tests.
+#     All external-agent specs execute; internal-agent specs are skipped.
+#
+# To run a single mode, use test-e2e-internal or test-e2e-external directly.
+# To filter which tests run within a mode, pass E2E_RUN=<pattern>.
 .PHONY: test-e2e
-test-e2e: manifests generate fmt vet ## Run e2e tests; TestMain always creates a fresh Kind cluster and fully tears it down.
-	DOCKER_HOST=$(DOCKER_HOST) KIND_CLUSTER=$(KIND_CLUSTER) E2E_IMAGE_TAG=$(E2E_IMAGE_TAG) E2E_HELM_RELEASE=$(E2E_HELM_RELEASE) E2E_HELM_NAMESPACE=$(E2E_HELM_NAMESPACE) CERT_MANAGER_INSTALL_SKIP=true go test -tags=e2e ./test/e2e/ -v -timeout=$(E2E_TIMEOUT) $(if $(E2E_RUN),-run $(E2E_RUN))
+test-e2e: manifests generate fmt vet ## Run e2e tests in both internal-agent and external-agent modes (sequential).
+	@echo "=== e2e: internal-agent mode ==="
+	$(E2E_COMMON_ENV) go test $(E2E_GO_FLAGS)
+	@echo "=== e2e: external-agent mode ==="
+	$(E2E_COMMON_ENV) E2E_LAUNCH_EXTERNAL_AGENT=true go test $(E2E_GO_FLAGS)
+
+# test-e2e-internal runs only the internal-agent (DaemonSet) mode e2e tests.
+# The pillar-agent runs as a DaemonSet inside the Kind cluster.
+.PHONY: test-e2e-internal
+test-e2e-internal: manifests generate fmt vet ## Run e2e tests in internal-agent (DaemonSet) mode only.
+	$(E2E_COMMON_ENV) go test $(E2E_GO_FLAGS)
+
+# test-e2e-external runs only the external-agent (out-of-cluster) mode e2e tests.
+# TestMain starts a Docker container running the agent image, wires it to the
+# Kind network, and installs the Helm chart with the external-agent overlay.
+.PHONY: test-e2e-external
+test-e2e-external: manifests generate fmt vet ## Run e2e tests in external-agent (out-of-cluster Docker container) mode only.
+	$(E2E_COMMON_ENV) E2E_LAUNCH_EXTERNAL_AGENT=true go test $(E2E_GO_FLAGS)
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter

@@ -70,4 +70,12 @@ nodes:
 
   # ── worker node 2 ──────────────────────────────────────────────────────────
   # General-purpose worker for application pods and initiator-side CSI tests.
+  # /dev/nvme-fabrics is mounted so that the NVMe-oF initiator (nvme-cli /
+  # kernel driver) inside the Kind node container can discover and connect to
+  # NVMe-oF targets.  This device node is created by the host kernel when the
+  # nvme_fabrics module is loaded and is required for "nvme connect" commands
+  # issued by the initiator-side CSI tests running on this worker node.
   - role: worker
+    extraMounts:
+      - hostPath: /dev/nvme-fabrics
+        containerPath: /dev/nvme-fabrics

@@ -25,11 +25,13 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime/debug"
 	"strings"
 	"syscall"
@@ -46,12 +48,205 @@ import (
 const driverName = "pillar-csi.bhyoo.com"
 
 // ─────────────────────────────────────────────────────────────────────────────
-// No stubs — real NVMe-oF connector and mount helper are in internal/csi/.
-// ─────────────────────────────────────────────────────────────────────────────.
+// fabricsConnector — kernel-native NVMe-oF TCP connector
+// ─────────────────────────────────────────────────────────────────────────────
+
+// fabricsConnector implements the csisvc.Connector interface using the Linux
+// /dev/nvme-fabrics kernel character device.  Unlike NVMeoFConnector it does
+// NOT require nvme-cli to be installed in the container image — it speaks to
+// the kernel NVMe-fabrics driver directly via the text-based write interface
+// that has been available since Linux 4.15.
+//
+// Connect writes a comma-separated key=value option string to /dev/nvme-fabrics;
+// the kernel nvme_fabrics module parses the string and initiates a TCP
+// connection to the target.
+//
+// Disconnect removes each controller for the given subsystem NQN by writing
+// "1" to its delete_controller sysfs entry.
+//
+// GetDevicePath scans /sys/class/nvme-subsystem/ for the matching NQN and
+// returns the first namespace block device (nvmeXnY pattern) found there.
+type fabricsConnector struct {
+	// sysfsRoot is the root of the sysfs virtual filesystem.
+	// Production value: "/sys".
+	sysfsRoot string
+
+	// fabricsDev is the path to the NVMe-fabrics character device.
+	// Production value: "/dev/nvme-fabrics".
+	fabricsDev string
+}
+
+// newFabricsConnector returns a production-ready fabricsConnector that uses
+// /sys as the sysfs root and /dev/nvme-fabrics for connection requests.
+func newFabricsConnector() *fabricsConnector {
+	return &fabricsConnector{
+		sysfsRoot:  "/sys",
+		fabricsDev: "/dev/nvme-fabrics",
+	}
+}
+
+// Connect establishes an NVMe-oF TCP connection to the given subsystem NQN
+// at the given transport address (trAddr) and service ID (TCP port, trSvcID).
+//
+// It is idempotent: if the subsystem NQN is already connected (detected by
+// scanning /sys/class/nvme-subsystem/) the method returns nil immediately.
+//
+// On a new connection it opens /dev/nvme-fabrics and writes:
+//
+//	transport=tcp,traddr=<trAddr>,trsvcid=<trSvcID>,nqn=<subsysNQN>
+//
+// The kernel nvme_fabrics module parses the string, creates the controller,
+// and initiates the TCP connection synchronously.  Write returns an error if
+// the connection fails (target unreachable, invalid NQN, etc.).
+func (c *fabricsConnector) Connect(_ context.Context, subsysNQN, trAddr, trSvcID string) error {
+	already, err := c.isConnected(subsysNQN)
+	if err != nil {
+		return fmt.Errorf("fabricsConnector Connect: check existing connection for %q: %w", subsysNQN, err)
+	}
+	if already {
+		return nil
+	}
+
+	f, err := os.OpenFile(c.fabricsDev, os.O_RDWR, 0)
+	if err != nil {
+		return fmt.Errorf("fabricsConnector Connect: open %s: %w", c.fabricsDev, err)
+	}
+	defer f.Close()
+
+	// Write the connection parameters as a comma-separated key=value string.
+	// The kernel nvme_fabrics driver parses this in nvmf_dev_write() and
+	// initiates the TCP connection via nvmf_create_ctrl().
+	opts := fmt.Sprintf("transport=tcp,traddr=%s,trsvcid=%s,nqn=%s", trAddr, trSvcID, subsysNQN)
+	if _, err := fmt.Fprintf(f, "%s\n", opts); err != nil {
+		return fmt.Errorf("fabricsConnector Connect: write to %s (nqn=%s): %w",
+			c.fabricsDev, subsysNQN, err)
+	}
+	return nil
+}
+
+// Disconnect tears down all NVMe-oF controllers associated with the given
+// subsystem NQN by writing "1" to each controller's delete_controller sysfs
+// entry.
+//
+// It is idempotent: if the NQN is not connected the method returns nil
+// immediately.
+func (c *fabricsConnector) Disconnect(_ context.Context, subsysNQN string) error {
+	subsysDir := filepath.Join(c.sysfsRoot, "class", "nvme-subsystem")
+
+	entries, err := os.ReadDir(subsysDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("fabricsConnector Disconnect: read %s: %w", subsysDir, err)
+	}
+
+	for _, entry := range entries {
+		nqnFile := filepath.Join(subsysDir, entry.Name(), "subsysnqn")
+		nqnBytes, readErr := os.ReadFile(nqnFile) //nolint:gosec
+		if readErr != nil || strings.TrimSpace(string(nqnBytes)) != subsysNQN {
+			continue
+		}
+		// Found the matching subsystem.  Scan for controller entries (nvmeX,
+		// not namespace entries nvmeXnY) and delete each one.
+		subsysPath := filepath.Join(subsysDir, entry.Name())
+		ctrlEntries, readErr := os.ReadDir(subsysPath)
+		if readErr != nil {
+			continue
+		}
+		for _, ctrlEntry := range ctrlEntries {
+			name := ctrlEntry.Name()
+			if !strings.HasPrefix(name, "nvme") {
+				continue
+			}
+			// Namespace entries match nvmeXnY (contain 'n' after the controller
+			// number digits); controller entries are nvmeX (no 'n' in suffix).
+			suffix := strings.TrimPrefix(name, "nvme")
+			if strings.ContainsRune(suffix, 'n') {
+				continue // skip namespace entries
+			}
+			deletePath := filepath.Join(c.sysfsRoot, "class", "nvme", name, "delete_controller")
+			_ = os.WriteFile(deletePath, []byte("1"), 0o600) //nolint:gosec
+		}
+	}
+	return nil
+}
+
+// GetDevicePath returns the /dev/nvmeXnY block-device path for the given
+// subsystem NQN after a successful Connect call.
+//
+// It scans /sys/class/nvme-subsystem/ looking for a subsystem whose
+// "subsysnqn" file matches subsysNQN, then finds the first namespace entry
+// (nvmeXnY pattern) within that subsystem directory and constructs the /dev/
+// path.
+//
+// Returns ("", nil) when the device is not yet visible in sysfs; callers
+// should poll until a non-empty path is returned or a deadline is exceeded.
+func (c *fabricsConnector) GetDevicePath(_ context.Context, subsysNQN string) (string, error) {
+	subsysDir := filepath.Join(c.sysfsRoot, "class", "nvme-subsystem")
+
+	entries, err := os.ReadDir(subsysDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("fabricsConnector GetDevicePath: read %s: %w", subsysDir, err)
+	}
+
+	for _, entry := range entries {
+		subsysPath := filepath.Join(subsysDir, entry.Name())
+		nqnFile := filepath.Join(subsysPath, "subsysnqn")
+		nqnBytes, readErr := os.ReadFile(nqnFile) //nolint:gosec
+		if readErr != nil || strings.TrimSpace(string(nqnBytes)) != subsysNQN {
+			continue
+		}
+		nsEntries, readErr := os.ReadDir(subsysPath)
+		if readErr != nil {
+			return "", fmt.Errorf("fabricsConnector GetDevicePath: read %s: %w", subsysPath, readErr)
+		}
+		for _, nsEntry := range nsEntries {
+			name := nsEntry.Name()
+			if strings.HasPrefix(name, "nvme") && strings.Contains(name, "n") {
+				suffix := strings.TrimPrefix(name, "nvme")
+				if strings.ContainsRune(suffix, 'n') {
+					return "/dev/" + name, nil
+				}
+			}
+		}
+		// Subsystem found but no namespace device visible yet.
+		return "", nil
+	}
+	return "", nil
+}
+
+// isConnected returns true when the given NQN has an entry in
+// /sys/class/nvme-subsystem/, indicating an active NVMe-oF connection.
+func (c *fabricsConnector) isConnected(subsysNQN string) (bool, error) {
+	subsysDir := filepath.Join(c.sysfsRoot, "class", "nvme-subsystem")
+
+	entries, err := os.ReadDir(subsysDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("read %s: %w", subsysDir, err)
+	}
+	for _, entry := range entries {
+		nqnFile := filepath.Join(subsysDir, entry.Name(), "subsysnqn")
+		nqnBytes, readErr := os.ReadFile(nqnFile) //nolint:gosec
+		if readErr != nil {
+			continue
+		}
+		if strings.TrimSpace(string(nqnBytes)) == subsysNQN {
+			return true, nil
+		}
+	}
+	return false, nil
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // main
-// ─────────────────────────────────────────────────────────────────────────────.
+// ─────────────────────────────────────────────────────────────────────────────
 
 func main() {
 	nodeID := flag.String("node-id", "",
@@ -77,8 +272,11 @@ func main() {
 	}
 
 	// ── Build the CSI service implementations ──────────────────────────────
+	// fabricsConnector uses the Linux /dev/nvme-fabrics kernel interface for
+	// NVMe-oF TCP connections.  It does not require nvme-cli to be installed
+	// in the container image, which simplifies the Dockerfile.
 	identitySrv := csisvc.NewIdentityServer(driverName, version)
-	nodeSrv := csisvc.NewNodeServer(*nodeID, csisvc.NewNVMeoFConnector(), csisvc.NewKubeMounter())
+	nodeSrv := csisvc.NewNodeServer(*nodeID, newFabricsConnector(), csisvc.NewKubeMounter())
 
 	// ── Open the Unix socket ───────────────────────────────────────────────
 	// Remove a stale socket file from a previous run so that net.Listen

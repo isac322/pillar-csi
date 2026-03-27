@@ -97,7 +97,11 @@ var extState *externalAgentState
 // ExternalAgent Ginkgo suite
 // ─────────────────────────────────────────────────────────────────────────────
 
-var _ = Describe("ExternalAgent", Ordered, func() {
+var _ = func() bool {
+	if !isExternalAgentMode() {
+		return false
+	}
+	Describe("ExternalAgent", Ordered, func() {
 	// ── BeforeAll: connect to Docker-started agent + cluster ────────────────
 	//
 	// BeforeAll runs once before the first spec in this Ordered Describe block.
@@ -106,14 +110,6 @@ var _ = Describe("ExternalAgent", Ordered, func() {
 	// container started by TestMain.
 	BeforeAll(func(ctx SpecContext) {
 		extState = &externalAgentState{}
-
-		// Skip when TestMain did not start an external agent Docker container.
-		// Enable external-agent mode by setting E2E_LAUNCH_EXTERNAL_AGENT=true
-		// or by pre-setting EXTERNAL_AGENT_ADDR before running the suite.
-		if testEnv.ExternalAgentAddr == "" {
-			Skip("external-agent mode not enabled — set E2E_LAUNCH_EXTERNAL_AGENT=true " +
-				"or EXTERNAL_AGENT_ADDR to run external-agent tests")
-		}
 
 		// Consume the Docker-started agent address from TestMain.
 		extState.addr = testEnv.ExternalAgentAddr
@@ -218,18 +214,12 @@ var _ = Describe("ExternalAgent", Ordered, func() {
 		// It guards against missing prerequisites and creates the PillarTarget CR.
 		BeforeAll(func(ctx SpecContext) {
 			// Guard: require the outer BeforeAll to have initialised the suite.
-			if extState == nil || extState.suite == nil {
-				Skip("outer BeforeAll did not complete successfully — " +
-					"skipping PillarTarget registration tests")
-			}
+			Expect(extState).NotTo(BeNil(), "outer BeforeAll must have initialised extState")
+			Expect(extState.suite).NotTo(BeNil(), "outer BeforeAll must have connected to the cluster")
 
-			// Skip gracefully when the cluster-accessible address is not provided.
+			// Fail when the cluster-accessible address is not provided.
 			clusterAddr := extAgentClusterAddress()
-			if clusterAddr == "" {
-				Skip("EXTERNAL_AGENT_CLUSTER_ADDRESS not set — " +
-					"skipping PillarTarget registration tests " +
-					"(set to <host>:<port> reachable from inside the Kind cluster)")
-			}
+			Expect(clusterAddr).NotTo(BeEmpty(), "EXTERNAL_AGENT_CLUSTER_ADDRESS must be set — TestMain sets this automatically when E2E_LAUNCH_EXTERNAL_AGENT=true")
 
 			var ok bool
 			clusterHost, clusterPort, ok = extAgentClusterAddrParts(clusterAddr)
@@ -418,7 +408,9 @@ var _ = Describe("ExternalAgent", Ordered, func() {
 			By("heartbeat confirmed: Ready=True held for 30 s without condition flip")
 		})
 	})
-})
+	}) // end Describe("ExternalAgent")
+	return true
+}()
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Configuration helpers (environment variable resolution)

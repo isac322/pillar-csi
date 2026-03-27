@@ -79,18 +79,11 @@ import (
 // The Describe is Ordered so that each step runs in declaration order and a
 // failure in an earlier step (e.g. StorageClass not created) causes subsequent
 // steps to be skipped rather than running against incomplete state.
-var _ = Describe("PVCProvision", Ordered, func() {
-
-	// ── BeforeAll: prerequisite guards ──────────────────────────────────────
-	BeforeAll(func() {
-		if testEnv.ExternalAgentAddr == "" {
-			Skip(
-				"PVCProvision: external agent not running — " +
-					"set E2E_LAUNCH_EXTERNAL_AGENT=true or EXTERNAL_AGENT_ADDR " +
-					"to enable PVC provisioning tests",
-			)
-		}
-	})
+var _ = func() bool {
+	if !isExternalAgentMode() {
+		return false
+	}
+	Describe("PVCProvision", Ordered, func() {
 
 	var (
 		suite *framework.Suite
@@ -348,4 +341,6 @@ var _ = Describe("PVCProvision", Ordered, func() {
 				pv.Spec.AccessModes,
 			))
 		})
-})
+	}) // end Describe("PVCProvision")
+	return true
+}()

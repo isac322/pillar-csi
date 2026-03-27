@@ -75,6 +75,7 @@ RUN set -eux \
     && apk add --no-cache \
          'util-linux~=2.40' \
          'e2fsprogs~=1.47' \
+         'nvme-cli' \
     && addgroup -g 65532 nonroot \
     && adduser  -u 65532 -G nonroot -s /sbin/nologin -D nonroot \
     # Strip SUID/SGID bits from every file on the root filesystem.

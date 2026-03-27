@@ -74,6 +74,9 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
+	"strconv"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -131,7 +134,16 @@ var iatK8sClient client.Client
 
 // ─── Ginkgo container ────────────────────────────────────────────────────────
 
-var _ = Describe("InternalAgent functional", Ordered, Label("internal-agent"), func() {
+// InternalAgent functional specs are only registered in internal-agent mode.
+// The agent DaemonSet is disabled in external-agent mode (unmatchable
+// nodeSelector), so running these specs there would time out waiting for
+// AgentConnected to become True.  Conditional registration keeps the Ginkgo
+// skip count at zero.
+var _ = func() bool {
+	if isExternalAgentMode() {
+		return false
+	}
+	Describe("InternalAgent functional", Ordered, Label("internal-agent"), func() {
 	// storageNodeName is the Kubernetes Node name of the storage-worker resolved
 	// in BeforeAll and referenced by all inner specs that create PillarTargets
 	// with NodeRef.
@@ -343,29 +355,38 @@ var _ = Describe("InternalAgent functional", Ordered, Label("internal-agent"), f
 
 			crSuffix := fmt.Sprintf("%d", time.Now().UnixMilli()%100000)
 
-			// PillarTarget (NodeRef → storage-worker)
+			// Pre-compute names so they are stable across Eventually retries.
 			targetName := fmt.Sprintf("iat-stack-target-%s", crSuffix)
-			target = framework.NewNodeRefPillarTarget(targetName, storageNodeName, nil)
-			Expect(framework.Apply(ctx, iatK8sClient, target)).To(Succeed(),
-				"create PillarTarget %q for CR stack lifecycle test", targetName)
-
-			// PillarPool (ZFS zvol backend)
 			poolName := fmt.Sprintf("iat-stack-pool-%s", crSuffix)
-			pool = framework.NewZFSZvolPool(poolName, targetName, zfsPool)
-			Expect(framework.Apply(ctx, iatK8sClient, pool)).To(Succeed(),
-				"create PillarPool %q (zfs-zvol, pool=%s)", poolName, zfsPool)
-
-			// PillarProtocol (NVMe-oF TCP)
 			protoName := fmt.Sprintf("iat-stack-proto-%s", crSuffix)
-			protocol = framework.NewNVMeOFTCPProtocol(protoName)
-			Expect(framework.Apply(ctx, iatK8sClient, protocol)).To(Succeed(),
-				"create PillarProtocol %q (nvmeof-tcp)", protoName)
-
-			// PillarBinding (links pool + protocol → generates StorageClass)
 			bindingName := fmt.Sprintf("iat-stack-binding-%s", crSuffix)
-			binding = framework.NewSimplePillarBinding(bindingName, poolName, protoName)
-			Expect(framework.Apply(ctx, iatK8sClient, binding)).To(Succeed(),
-				"create PillarBinding %q (pool=%s, proto=%s)", bindingName, poolName, protoName)
+
+			// Apply all four CRs with retry to handle transient REST-mapper cache
+			// misses or brief API-server hiccups that can occur just after the
+			// previous Describe group's DeferCleanup has finished.
+			Eventually(func(g Gomega) {
+				t := framework.NewNodeRefPillarTarget(targetName, storageNodeName, nil)
+				g.Expect(framework.Apply(ctx, iatK8sClient, t)).To(Succeed(),
+					"apply PillarTarget %q for CR stack lifecycle test", targetName)
+				target = t
+
+				p := framework.NewZFSZvolPool(poolName, targetName, zfsPool)
+				g.Expect(framework.Apply(ctx, iatK8sClient, p)).To(Succeed(),
+					"apply PillarPool %q (zfs-zvol, pool=%s)", poolName, zfsPool)
+				pool = p
+
+				proto := framework.NewNVMeOFTCPProtocol(protoName)
+				g.Expect(framework.Apply(ctx, iatK8sClient, proto)).To(Succeed(),
+					"apply PillarProtocol %q (nvmeof-tcp)", protoName)
+				protocol = proto
+
+				b := framework.NewSimplePillarBinding(bindingName, poolName, protoName)
+				g.Expect(framework.Apply(ctx, iatK8sClient, b)).To(Succeed(),
+					"apply PillarBinding %q (pool=%s, proto=%s)", bindingName, poolName, protoName)
+				binding = b
+			}, 60*time.Second, 5*time.Second).Should(Succeed(),
+				"CR stack apply: API server did not accept all four CRs within 60s "+
+					"after Group 1 DeferCleanup completed")
 
 			// Register cleanup in reverse creation order so dependencies are respected.
 			DeferCleanup(func(dctx context.Context) {
@@ -476,22 +497,33 @@ var _ = Describe("InternalAgent functional", Ordered, Label("internal-agent"), f
 
 			crSuffix := fmt.Sprintf("%d", time.Now().UnixMilli()%100000)
 
-			// Build the full CR stack required for provisioning.
+			// Pre-compute names so they are stable across Eventually retries.
 			targetName := fmt.Sprintf("iat-prov-target-%s", crSuffix)
-			target = framework.NewNodeRefPillarTarget(targetName, storageNodeName, nil)
-			Expect(framework.Apply(ctx, iatK8sClient, target)).To(Succeed())
-
 			poolName := fmt.Sprintf("iat-prov-pool-%s", crSuffix)
-			pool = framework.NewZFSZvolPool(poolName, targetName, zfsPool)
-			Expect(framework.Apply(ctx, iatK8sClient, pool)).To(Succeed())
-
 			protoName := fmt.Sprintf("iat-prov-proto-%s", crSuffix)
-			protocol = framework.NewNVMeOFTCPProtocol(protoName)
-			Expect(framework.Apply(ctx, iatK8sClient, protocol)).To(Succeed())
-
 			bindingName = fmt.Sprintf("iat-prov-binding-%s", crSuffix)
-			binding = framework.NewSimplePillarBinding(bindingName, poolName, protoName)
-			Expect(framework.Apply(ctx, iatK8sClient, binding)).To(Succeed())
+
+			// Apply all four CRs with retry to handle transient REST-mapper cache
+			// misses or brief API-server hiccups between Describe groups.
+			// Build the full CR stack required for provisioning.
+			Eventually(func(g Gomega) {
+				t := framework.NewNodeRefPillarTarget(targetName, storageNodeName, nil)
+				g.Expect(framework.Apply(ctx, iatK8sClient, t)).To(Succeed())
+				target = t
+
+				p := framework.NewZFSZvolPool(poolName, targetName, zfsPool)
+				g.Expect(framework.Apply(ctx, iatK8sClient, p)).To(Succeed())
+				pool = p
+
+				proto := framework.NewNVMeOFTCPProtocol(protoName)
+				g.Expect(framework.Apply(ctx, iatK8sClient, proto)).To(Succeed())
+				protocol = proto
+
+				b := framework.NewSimplePillarBinding(bindingName, poolName, protoName)
+				g.Expect(framework.Apply(ctx, iatK8sClient, b)).To(Succeed())
+				binding = b
+			}, 60*time.Second, 5*time.Second).Should(Succeed(),
+				"CSI provisioning CR stack: API server did not accept all four CRs within 60s")
 
 			// Wait for the binding to become Ready before creating any PVCs.
 			By("waiting for PillarBinding to be Ready before creating test PVCs")
@@ -620,12 +652,11 @@ var _ = Describe("InternalAgent functional", Ordered, Label("internal-agent"), f
 			if zfsPool == "" {
 				Skip("PILLAR_E2E_ZFS_POOL not set — skipping mount/unmount lifecycle tests")
 			}
-			if os.Getenv("PILLAR_E2E_REAL_NVMEOF") != "true" {
-				Skip("PILLAR_E2E_REAL_NVMEOF not set — pillar-node uses stub connector; " +
-					"mount/unmount lifecycle requires a real NVMe-oF initiator implementation")
-			}
-
 			crSuffix := fmt.Sprintf("%d", time.Now().UnixMilli()%100000)
+
+			// computeNodeName holds the Kubernetes node name of the compute-worker
+			// (NVMe-oF initiator side) labelled for test-pod scheduling below.
+			var computeNodeName string
 
 			// Build full CR stack.
 			targetName := fmt.Sprintf("iat-mount-target-%s", crSuffix)
@@ -653,15 +684,220 @@ var _ = Describe("InternalAgent functional", Ordered, Label("internal-agent"), f
 			testNS, err = framework.CreateTestNamespace(ctx, iatK8sClient, "iat-mount")
 			Expect(err).NotTo(HaveOccurred())
 
+			// Label the compute-worker node (non-storage worker) so that the test
+			// Pod can be scheduled there via the iatComputeNodeLabel nodeSelector.
+			// The label is removed in the DeferCleanup below.
+			{
+				By("labelling compute-worker node for NVMe-oF initiator test pod")
+				nodeList := &corev1.NodeList{}
+				Expect(iatK8sClient.List(ctx, nodeList)).To(Succeed())
+				for i := range nodeList.Items {
+					n := &nodeList.Items[i]
+					// Skip control-plane nodes and the storage-worker.
+					if _, ctrl := n.Labels["node-role.kubernetes.io/control-plane"]; ctrl {
+						continue
+					}
+					if n.Labels[iatStorageNodeLabel] == "true" {
+						continue
+					}
+					computeNodeName = n.Name
+					break
+				}
+				Expect(computeNodeName).NotTo(BeEmpty(),
+					"a non-storage worker node must exist to run the NVMe-oF initiator test pod")
+				var cn corev1.Node
+				Expect(iatK8sClient.Get(ctx, client.ObjectKey{Name: computeNodeName}, &cn)).To(Succeed())
+				if cn.Labels == nil {
+					cn.Labels = make(map[string]string)
+				}
+				cn.Labels[iatComputeNodeLabel] = "true"
+				Expect(iatK8sClient.Update(ctx, &cn)).To(Succeed())
+				By(fmt.Sprintf("labelled compute-worker %q with %s=true", computeNodeName, iatComputeNodeLabel))
+			}
+
 			// Create and wait for the PVC to be bound before creating the Pod.
 			pvc = framework.NewPillarPVC("iat-mount-vol", testNS.Name, bindingName,
 				resource.MustParse("1Gi"))
 			Expect(framework.CreatePVC(ctx, iatK8sClient, pvc)).To(Succeed())
+
+			// Launch a background goroutine that bridges the zvol device-node gap.
+			// The agent's ExportVolume polls /dev/zvol/<pool>/<vol> inside the Kind
+			// storage-worker container, but ZFS zvol block devices only appear on
+			// the Docker host's devtmpfs (not inside the container — only /dev/zfs
+			// is bind-mounted from the host).  This goroutine polls the host for
+			// new zvols in zfsPool and creates their block-device nodes inside the
+			// Kind storage-worker container via mknod so ExportVolume can succeed
+			// when the CSI external-provisioner retries CreateVolume.
+			bridgeCtx, bridgeCancel := context.WithCancel(ctx)
+			defer bridgeCancel()
+			go func() {
+				knownZvols := make(map[string]bool)
+				for {
+					select {
+					case <-bridgeCtx.Done():
+						return
+					case <-time.After(500 * time.Millisecond):
+					}
+
+					if testEnv.zfsHostExec == nil {
+						continue
+					}
+					res, resErr := testEnv.zfsHostExec.ExecOnHost(bridgeCtx,
+						"zfs list -H -t volume -o name 2>/dev/null || true")
+					if resErr != nil {
+						continue
+					}
+
+					for _, line := range strings.Split(strings.TrimSpace(res.Stdout), "\n") {
+						if line == "" || knownZvols[line] {
+							continue
+						}
+						if !strings.HasPrefix(line, zfsPool+"/") {
+							continue
+						}
+						knownZvols[line] = true
+						_, _ = fmt.Fprintf(GinkgoWriter, "[bridge] new zvol: %s\n", line)
+
+						// Get the major:minor device numbers on the host.
+						// /dev/zvol/<pool>/<name> is a symlink to /dev/zdX;
+						// use -L to follow the symlink so we get the real device
+						// numbers.  Retry up to 10x (5s) in case udevd hasn't
+						// created the symlink yet.
+						var parts []string
+						for retry := 0; retry < 10; retry++ {
+							statRes, _ := testEnv.zfsHostExec.ExecOnHost(bridgeCtx,
+								fmt.Sprintf(
+									"stat -L -c '%%t %%T' /dev/zvol/%s 2>/dev/null || true",
+									line))
+							pp := strings.Fields(strings.TrimSpace(statRes.Stdout))
+							if len(pp) == 2 && (pp[0] != "0" || pp[1] != "0") {
+								parts = pp
+								break
+							}
+							select {
+							case <-bridgeCtx.Done():
+								return
+							case <-time.After(500 * time.Millisecond):
+							}
+						}
+						if len(parts) != 2 {
+							_, _ = fmt.Fprintf(GinkgoWriter,
+								"[bridge] cannot get major:minor for %s after retries\n", line)
+							continue
+						}
+						major, errMaj := strconv.ParseInt(parts[0], 16, 64)
+						minor, errMin := strconv.ParseInt(parts[1], 16, 64)
+						if errMaj != nil || errMin != nil {
+							_, _ = fmt.Fprintf(GinkgoWriter,
+								"[bridge] parse major/minor failed for %s: maj=%v min=%v\n",
+								line, errMaj, errMin)
+							continue
+						}
+
+						// Create the directory and block-device node inside the Kind
+						// storage-worker container so the agent's ExportVolume poll
+						// can find the device.
+						zvolPath := "/dev/zvol/" + line
+						poolDir := "/dev/zvol/" + strings.SplitN(line, "/", 2)[0]
+						mknodScript := fmt.Sprintf(
+							"mkdir -p %s && mknod %s b %d %d 2>/dev/null || true",
+							poolDir, zvolPath, major, minor)
+						cmd := exec.CommandContext(bridgeCtx,
+							"docker", "exec", storageNodeName, "sh", "-c", mknodScript)
+						cmd.Env = append(os.Environ(), "DOCKER_HOST="+testEnv.DockerHost)
+						cmdOut, cmdErr := cmd.CombinedOutput()
+						if cmdErr != nil {
+							_, _ = fmt.Fprintf(GinkgoWriter,
+								"[bridge] mknod failed for %s: %v: %s\n",
+								line, cmdErr, cmdOut)
+						} else {
+							_, _ = fmt.Fprintf(GinkgoWriter,
+								"[bridge] created device node %s (major=%d minor=%d) in %s\n",
+								zvolPath, major, minor, storageNodeName)
+						}
+					}
+				}
+			}()
+
 			Expect(framework.WaitForPVCBound(ctx, iatK8sClient, pvc, iatProvisioningTimeout)).To(Succeed(),
 				"PVC must be Bound before creating the mount-lifecycle test Pod")
 			By(fmt.Sprintf("PVC %q/%q is Bound to PV %q", testNS.Name, pvc.Name, pvc.Spec.VolumeName))
 
-			// Register cleanup: Pod → PVC → CRs → Namespace.
+			// ── NVMe-oF target setup ────────────────────────────────────────────
+			// The pillar-agent runs with --configfs-root=/tmp (fake configfs) so it
+			// never starts a real kernel NVMe-oF listener. Now that the PVC is Bound
+			// we can read the volumeAttributes from the PV and set up a real kernel
+			// NVMe-oF TCP target on the Docker host so the node plugin can connect via
+			// /dev/nvme-fabrics during NodeStageVolume on the compute-worker.
+			By("reading PV volumeAttributes to set up real NVMe-oF TCP target")
+			nvmPV, pvErr := framework.GetBoundPV(ctx, iatK8sClient, pvc)
+			Expect(pvErr).NotTo(HaveOccurred(), "GetBoundPV after PVC Bound")
+			Expect(nvmPV.Spec.CSI).NotTo(BeNil(), "PV must have a CSI spec with volumeAttributes")
+
+			nvmNQN := nvmPV.Spec.CSI.VolumeAttributes["target_id"]
+			nvmPort := nvmPV.Spec.CSI.VolumeAttributes["port"]
+			Expect(nvmNQN).NotTo(BeEmpty(), "PV must have target_id volumeAttribute (NQN)")
+			Expect(nvmPort).NotTo(BeEmpty(), "PV must have port volumeAttribute (TCP port)")
+
+			// agentVolID is the 4th "/" component: "<target>/<proto>/<backend>/<agentVolID>"
+			vhParts := strings.SplitN(nvmPV.Spec.CSI.VolumeHandle, "/", 4)
+			Expect(len(vhParts)).To(Equal(4), "volumeHandle must have 4 slash-separated parts")
+			nvmDevPath := "/dev/zvol/" + vhParts[3]
+
+			By(fmt.Sprintf("configuring NVMe-oF TCP target: nqn=%s port=%s dev=%s",
+				nvmNQN, nvmPort, nvmDevPath))
+
+			// Set up the nvmet target inside the storage-worker Kind container.
+			// Running via "docker exec <storageNodeName>" places the process in the
+			// container's network namespace (IP == storageWorkerIP), so nvmet binds
+			// on the container's IP which is what the compute-worker connects to.
+			// The Kind storage-worker mounts /sys/kernel/config from the host so
+			// configfs writes here are visible to the host nvmet kernel module.
+			nvmSetupScript := fmt.Sprintf(`set -e
+NVMET=/sys/kernel/config/nvmet
+NQN='%s'
+DEVPATH='%s'
+TRSVCID='%s'
+PORTID='%s'
+mkdir -p "$NVMET/subsystems/$NQN"
+echo 1 > "$NVMET/subsystems/$NQN/attr_allow_any_host"
+mkdir -p "$NVMET/subsystems/$NQN/namespaces/1"
+echo "$DEVPATH" > "$NVMET/subsystems/$NQN/namespaces/1/device_path"
+echo 1 > "$NVMET/subsystems/$NQN/namespaces/1/enable"
+if [ ! -d "$NVMET/ports/$PORTID" ]; then
+  mkdir -p "$NVMET/ports/$PORTID"
+  echo tcp   > "$NVMET/ports/$PORTID/addr_trtype"
+  echo ipv4  > "$NVMET/ports/$PORTID/addr_adrfam"
+  echo 0.0.0.0 > "$NVMET/ports/$PORTID/addr_traddr"
+  echo "$TRSVCID" > "$NVMET/ports/$PORTID/addr_trsvcid"
+fi
+test -L "$NVMET/ports/$PORTID/subsystems/$NQN" || \
+  ln -s "$NVMET/subsystems/$NQN" "$NVMET/ports/$PORTID/subsystems/$NQN"
+`, nvmNQN, nvmDevPath, nvmPort, nvmPort)
+			setupOut, setupErr := captureOutput("docker", "exec", storageNodeName, "sh", "-c", nvmSetupScript)
+			Expect(setupErr).NotTo(HaveOccurred(),
+				"NVMe-oF target setup failed: %s", setupOut)
+			By(fmt.Sprintf("NVMe-oF TCP target listening: nqn=%s port=%s", nvmNQN, nvmPort))
+
+			// Register NVMe-oF teardown FIRST (LIFO: runs LAST, after Pod/PVC are gone).
+			capturedNQN := nvmNQN
+			capturedPortID := nvmPort
+			DeferCleanup(func(_ context.Context) {
+				By("tearing down NVMe-oF TCP target configfs entries")
+				nvmCleanScript := fmt.Sprintf(`
+NVMET=/sys/kernel/config/nvmet
+NQN='%s'
+PORTID='%s'
+rm -f  "$NVMET/ports/$PORTID/subsystems/$NQN" 2>/dev/null || true
+echo 0 > "$NVMET/subsystems/$NQN/namespaces/1/enable" 2>/dev/null || true
+rmdir  "$NVMET/subsystems/$NQN/namespaces/1" 2>/dev/null || true
+rmdir  "$NVMET/subsystems/$NQN" 2>/dev/null || true
+rmdir  "$NVMET/ports/$PORTID" 2>/dev/null || true
+`, capturedNQN, capturedPortID)
+				_, _ = captureOutput("docker", "exec", storageNodeName, "sh", "-c", nvmCleanScript)
+			})
+
+			// Register cleanup: Pod → PVC → CRs → Namespace → node label.
 			DeferCleanup(func(dctx context.Context) {
 				By("cleaning up mount/unmount lifecycle resources")
 				if pod != nil {
@@ -679,6 +915,14 @@ var _ = Describe("InternalAgent functional", Ordered, Label("internal-agent"), f
 				}
 				if testNS != nil {
 					_ = framework.EnsureNamespaceGone(dctx, iatK8sClient, testNS.Name, iatCleanupTimeout)
+				}
+				// Remove the compute-node label added for test pod scheduling.
+				if computeNodeName != "" {
+					var cn corev1.Node
+					if err := iatK8sClient.Get(dctx, client.ObjectKey{Name: computeNodeName}, &cn); err == nil {
+						delete(cn.Labels, iatComputeNodeLabel)
+						_ = iatK8sClient.Update(dctx, &cn)
+					}
 				}
 			})
 		})
@@ -994,7 +1238,9 @@ var _ = Describe("InternalAgent functional", Ordered, Label("internal-agent"), f
 			})
 		})
 	})
-})
+	}) // end Describe("InternalAgent functional")
+	return true
+}()
 
 // ─── Helper functions ─────────────────────────────────────────────────────────
 

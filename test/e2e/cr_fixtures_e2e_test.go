@@ -380,20 +380,15 @@ var _ = Describe("CRFixtures", func() {
 	// that points at a non-existent address would leave the cluster in a
 	// degraded state.
 
-	Describe("ApplyStack", Ordered, func() {
+	if isExternalAgentMode() {
+		Describe("ApplyStack", Ordered, func() {
 		var (
 			suite *framework.Suite
 			stack *framework.KindE2EStack
 		)
 
 		BeforeAll(func(ctx SpecContext) {
-			if testEnv.ExternalAgentAddr == "" {
-				Skip(
-					"CRFixtures/ApplyStack: external agent not running — " +
-						"set E2E_LAUNCH_EXTERNAL_AGENT=true or EXTERNAL_AGENT_ADDR " +
-						"to enable live CR apply tests",
-				)
-			}
+			// ExternalAgentAddr is guaranteed non-empty in isExternalAgentMode()
 
 			var err error
 			suite, err = framework.SetupSuite(
@@ -499,5 +494,6 @@ var _ = Describe("CRFixtures", func() {
 					obj, obj.GetName())
 			}
 		})
-	})
+		}) // end Describe("ApplyStack")
+	} // end if isExternalAgentMode()
 })

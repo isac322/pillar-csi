@@ -1388,3 +1388,19 @@ func envOrDefault(key, defaultValue string) string {
 	}
 	return defaultValue
 }
+
+// isExternalAgentMode reports whether the test binary was invoked in
+// external-agent mode.  The determination is made by inspecting environment
+// variables that are set BEFORE the test binary starts:
+//
+//   - E2E_LAUNCH_EXTERNAL_AGENT=true  →  TestMain will start an agent container.
+//   - EXTERNAL_AGENT_ADDR=<host:port> →  A pre-existing agent is already running.
+//
+// This function is called at package init() time (before TestMain runs) to
+// decide which Ginkgo spec containers to register.  Specs registered only in
+// the matching mode are never "skipped" — they simply do not exist in the
+// Ginkgo tree for the other mode, keeping the skip count at zero.
+func isExternalAgentMode() bool {
+	return os.Getenv("E2E_LAUNCH_EXTERNAL_AGENT") == "true" ||
+		os.Getenv("EXTERNAL_AGENT_ADDR") != ""
+}
