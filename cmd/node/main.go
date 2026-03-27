@@ -111,13 +111,14 @@ func (c *fabricsConnector) Connect(_ context.Context, subsysNQN, trAddr, trSvcID
 	if err != nil {
 		return fmt.Errorf("fabricsConnector Connect: open %s: %w", c.fabricsDev, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }() //nolint:errcheck
 
 	// Write the connection parameters as a comma-separated key=value string.
 	// The kernel nvme_fabrics driver parses this in nvmf_dev_write() and
 	// initiates the TCP connection via nvmf_create_ctrl().
 	opts := fmt.Sprintf("transport=tcp,traddr=%s,trsvcid=%s,nqn=%s", trAddr, trSvcID, subsysNQN)
-	if _, err := fmt.Fprintf(f, "%s\n", opts); err != nil {
+	_, err = fmt.Fprintf(f, "%s\n", opts)
+	if err != nil {
 		return fmt.Errorf("fabricsConnector Connect: write to %s (nqn=%s): %w",
 			c.fabricsDev, subsysNQN, err)
 	}
@@ -166,7 +167,7 @@ func (c *fabricsConnector) Disconnect(_ context.Context, subsysNQN string) error
 				continue // skip namespace entries
 			}
 			deletePath := filepath.Join(c.sysfsRoot, "class", "nvme", name, "delete_controller")
-			_ = os.WriteFile(deletePath, []byte("1"), 0o600) //nolint:gosec
+			_ = os.WriteFile(deletePath, []byte("1"), 0o600) //nolint:errcheck
 		}
 	}
 	return nil
