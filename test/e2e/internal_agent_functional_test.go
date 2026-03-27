@@ -713,6 +713,22 @@ var _ = func() bool {
 				cn.Labels[iatComputeNodeLabel] = "true"
 				Expect(iatK8sClient.Update(ctx, &cn)).To(Succeed())
 				By(fmt.Sprintf("labelled compute-worker %q with %s=true", computeNodeName, iatComputeNodeLabel))
+
+				// Pre-pull the test pod container image into the compute-worker node
+				// so that pod creation is not delayed by a cold image pull from Docker
+				// Hub (which can exceed the iatMountTimeout in constrained CI environments).
+				By(fmt.Sprintf("pre-pulling busybox:1.36 into compute-worker %q", computeNodeName))
+				prePullCmd := exec.CommandContext(ctx, "docker", "exec", computeNodeName,
+					"ctr", "images", "pull", "docker.io/library/busybox:1.36")
+				prePullCmd.Env = append(os.Environ(), "DOCKER_HOST="+testEnv.DockerHost)
+				if prePullOut, prePullErr := prePullCmd.CombinedOutput(); prePullErr != nil {
+					_, _ = fmt.Fprintf(GinkgoWriter,
+						"[prepull] WARNING: busybox:1.36 pre-pull failed (pod may still work): %v: %s\n",
+						prePullErr, prePullOut)
+				} else {
+					_, _ = fmt.Fprintf(GinkgoWriter,
+						"[prepull] busybox:1.36 pre-pulled into %s\n", computeNodeName)
+				}
 			}
 
 			// Create and wait for the PVC to be bound before creating the Pod.
@@ -922,17 +938,23 @@ test -L "$NVMET/ports/$PORTID/subsystems/$NQN" || \
 							continue
 						}
 						knownNvmeDevs[devName] = true
+						// Create the device node in the compute-worker container.
+						// Use --privileged so mknod succeeds even when docker exec
+						// does not inherit all container capabilities by default.
+						// The idempotent check avoids EEXIST errors on retries.
 						mknodScript := fmt.Sprintf(
-							"mknod /dev/%s b %d %d 2>/dev/null || true",
-							devName, major, minor)
+							"[ -e /dev/%s ] || mknod /dev/%s b %d %d",
+							devName, devName, major, minor)
 						cmd := exec.CommandContext(nvmBridgeCtx,
-							"docker", "exec", computeNodeName, "sh", "-c", mknodScript)
-						cmd.Env = append(os.Environ(), "DOCKER_HOST="+testEnv.DockerHost)
+							"docker", "exec", "--privileged", computeNodeName, "sh", "-c", mknodScript)
+						cmd.Env = injectDockerHost(os.Environ())
 						cmdOut, cmdErr := cmd.CombinedOutput()
 						if cmdErr != nil {
 							_, _ = fmt.Fprintf(GinkgoWriter,
 								"[nvme-bridge] mknod failed for %s: %v: %s\n",
 								devName, cmdErr, cmdOut)
+							// Remove from knownNvmeDevs so we retry next poll.
+							delete(knownNvmeDevs, devName)
 						} else {
 							_, _ = fmt.Fprintf(GinkgoWriter,
 								"[nvme-bridge] created device node /dev/%s (major=%d minor=%d) in %s\n",
@@ -958,6 +980,25 @@ rmdir  "$NVMET/subsystems/$NQN" 2>/dev/null || true
 rmdir  "$NVMET/ports/$PORTID" 2>/dev/null || true
 `, capturedNQN, capturedPortID)
 				_, _ = captureOutput("docker", "exec", storageNodeName, "sh", "-c", nvmCleanScript)
+			})
+
+			// Disconnect the NVMe initiator on the compute-worker.
+			// Registered before the pod/PVC cleanup DeferCleanup so it runs
+			// AFTER pod deletion (LIFO) but BEFORE nvmet target teardown.
+			// This ensures the kernel NVMe connection is cleaned up even if
+			// NodeUnstageVolume was not called (e.g. when the pod never started),
+			// preventing orphaned nvme* device files on the host that could
+			// cause resource contention in subsequent test runs.
+			capturedComputeNodeName := computeNodeName
+			DeferCleanup(func(_ context.Context) {
+				if capturedComputeNodeName == "" || capturedNQN == "" {
+					return
+				}
+				By("disconnecting NVMe-oF initiator on compute-worker (safety cleanup)")
+				disconnScript := fmt.Sprintf(
+					"nvme disconnect -n '%s' 2>/dev/null || true", capturedNQN)
+				_, _ = captureOutput("docker", "exec", capturedComputeNodeName,
+					"sh", "-c", disconnScript)
 			})
 
 			// Register cleanup: Pod → PVC → CRs → Namespace → node label.
@@ -1006,10 +1047,53 @@ rmdir  "$NVMET/ports/$PORTID" 2>/dev/null || true
 
 			By(fmt.Sprintf("waiting for Pod %q to reach Running phase (up to %s)",
 				podName, iatMountTimeout))
+			// Periodically collect pillar-node DaemonSet logs while waiting.
+			// This captures nvme-cli diagnostics and GetDevicePath output from
+			// the node plugin running on the compute-worker.
+			logCollectCtx, logCollectCancel := context.WithCancel(ctx)
+			defer logCollectCancel()
+			go func() {
+				ticker := time.NewTicker(30 * time.Second)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-logCollectCtx.Done():
+						return
+					case <-ticker.C:
+						nodeLogsOut, _ := captureOutput(
+							"kubectl", "logs",
+							"-l", "app.kubernetes.io/component=node",
+							"-n", testEnv.HelmNamespace,
+							"-c", "node",
+							"--tail=40",
+							"--prefix",
+						)
+						_, _ = fmt.Fprintf(GinkgoWriter,
+							"[node-logs] pillar-node logs (last 40 lines):\n%s\n",
+							nodeLogsOut)
+					}
+				}
+			}()
 			Eventually(func(g Gomega) {
 				current := &corev1.Pod{}
 				g.Expect(iatK8sClient.Get(ctx,
 					client.ObjectKey{Name: podName, Namespace: testNS.Name}, current)).To(Succeed())
+				// Log pod conditions and container statuses for debugging.
+				var condStrs []string
+				for _, c := range current.Status.Conditions {
+					condStrs = append(condStrs, fmt.Sprintf("%s=%s", c.Type, c.Status))
+				}
+				_, _ = fmt.Fprintf(GinkgoWriter,
+					"[pod-wait] phase=%s node=%s conditions=[%s]\n",
+					current.Status.Phase, current.Spec.NodeName,
+					strings.Join(condStrs, ","))
+				for _, cs := range current.Status.ContainerStatuses {
+					if cs.State.Waiting != nil {
+						_, _ = fmt.Fprintf(GinkgoWriter,
+							"[pod-wait] container %q waiting: reason=%s msg=%s\n",
+							cs.Name, cs.State.Waiting.Reason, cs.State.Waiting.Message)
+					}
+				}
 				g.Expect(current.Status.Phase).To(Equal(corev1.PodRunning),
 					"Pod must be Running after NVMe-oF connect + format + mount; "+
 						"current phase: %s (ensure nvme_tcp module is loaded on compute-worker)",
