@@ -20,57 +20,38 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 )
 
 // NVMeoFConnector is the production Connector implementation that uses the
-// nvme-cli tool to manage NVMe-oF TCP connections on the worker node.
+// Linux /dev/nvme-fabrics kernel character device to manage NVMe-oF TCP
+// connections.  It does NOT require nvme-cli — it speaks to the kernel
+// NVMe-fabrics driver directly via the text-based write interface that has
+// been available since Linux 4.15.
 //
-// Connect calls "nvme connect -t tcp -a <addr> -s <port> -n <nqn>".
-// Disconnect calls "nvme disconnect -n <nqn>".
-// GetDevicePath scans /sys/class/nvme-subsystem/ to find the /dev/nvmeXnY
-// block-device path associated with a given subsystem NQN.
+// Connect writes "transport=tcp,traddr=X,trsvcid=Y,nqn=Z" to /dev/nvme-fabrics.
+// Disconnect writes "1" to each controller's delete_controller sysfs entry.
+// GetDevicePath scans /sys/class/nvme-subsystem/ for the block device.
 //
 // Both Connect and Disconnect are idempotent:
 //   - Connect on an already-connected NQN is a no-op (success).
 //   - Disconnect on an NQN that is not connected is a no-op (success).
-//
-// NVMeoFConnector has no exported fields and is constructed via
-// NewNVMeoFConnector. The zero value is not valid.
 type NVMeoFConnector struct {
 	// sysfsRoot is the root of the sysfs virtual filesystem.  In production
-	// this is "/sys"; tests may override it to a tmpdir to avoid kernel
-	// interaction.
+	// this is "/sys"; tests may override it to a tmpdir.
 	sysfsRoot string
 
-	// execCommand is the function used to run external processes.  In
-	// production this is defaultExecCommand (os/exec); tests may inject a
-	// fake to avoid calling real nvme-cli.
-	execCommand execCommandFunc
-}
-
-// execCommandFunc is the signature for running an external command and
-// returning its combined stdout+stderr output and any error.
-type execCommandFunc func(name string, args ...string) ([]byte, error)
-
-// defaultExecCommand runs an external command with os/exec and returns the
-// combined stdout+stderr output.
-func defaultExecCommand(name string, args ...string) ([]byte, error) {
-	out, err := exec.Command(name, args...).CombinedOutput() //nolint:gosec
-	if err != nil {
-		return out, fmt.Errorf("exec %s: %w", name, err)
-	}
-	return out, nil
+	// fabricsDev is the path to the NVMe-fabrics character device.
+	// Production value: "/dev/nvme-fabrics".
+	fabricsDev string
 }
 
 // NewNVMeoFConnector constructs a production-ready NVMeoFConnector.
-// It uses /sys as the sysfs root and os/exec to invoke nvme-cli.
 func NewNVMeoFConnector() *NVMeoFConnector {
 	return &NVMeoFConnector{
-		sysfsRoot:   "/sys",
-		execCommand: defaultExecCommand,
+		sysfsRoot:  "/sys",
+		fabricsDev: "/dev/nvme-fabrics",
 	}
 }
 
@@ -85,14 +66,12 @@ var _ Connector = (*NVMeoFConnector)(nil)
 // at the given transport address (trAddr) and service ID (TCP port, trSvcID).
 //
 // It is idempotent: if the subsystem NQN is already connected (detected by
-// scanning /sys/class/nvme-subsystem/) the method returns nil immediately
-// without invoking nvme-cli again.
+// scanning /sys/class/nvme-subsystem/) the method returns nil immediately.
 //
-// On a new connection it runs:
+// On a new connection it opens /dev/nvme-fabrics and writes:
 //
-//	nvme connect -t tcp -a <trAddr> -s <trSvcID> -n <subsysNQN>
+//	transport=tcp,traddr=<trAddr>,trsvcid=<trSvcID>,nqn=<subsysNQN>
 func (c *NVMeoFConnector) Connect(_ context.Context, subsysNQN, trAddr, trSvcID string) error {
-	// Idempotency check: return early if already connected.
 	already, err := c.isConnected(subsysNQN)
 	if err != nil {
 		return fmt.Errorf("nvmeof Connect: check existing connection for %q: %w", subsysNQN, err)
@@ -101,15 +80,17 @@ func (c *NVMeoFConnector) Connect(_ context.Context, subsysNQN, trAddr, trSvcID 
 		return nil
 	}
 
-	out, cmdErr := c.execCommand("nvme", "connect",
-		"-t", "tcp",
-		"-a", trAddr,
-		"-s", trSvcID,
-		"-n", subsysNQN,
-	)
-	if cmdErr != nil {
-		return fmt.Errorf("nvme connect -t tcp -a %s -s %s -n %s: %w: %s",
-			trAddr, trSvcID, subsysNQN, cmdErr, strings.TrimSpace(string(out)))
+	f, err := os.OpenFile(c.fabricsDev, os.O_RDWR, 0)
+	if err != nil {
+		return fmt.Errorf("nvmeof Connect: open %s: %w", c.fabricsDev, err)
+	}
+	defer f.Close() //nolint:errcheck
+
+	opts := fmt.Sprintf("transport=tcp,traddr=%s,trsvcid=%s,nqn=%s", trAddr, trSvcID, subsysNQN)
+	_, err = fmt.Fprintf(f, "%s\n", opts)
+	if err != nil {
+		return fmt.Errorf("nvmeof Connect: write to %s (nqn=%s): %w",
+			c.fabricsDev, subsysNQN, err)
 	}
 	return nil
 }
@@ -118,29 +99,48 @@ func (c *NVMeoFConnector) Connect(_ context.Context, subsysNQN, trAddr, trSvcID 
 // Disconnect
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Disconnect tears down the NVMe-oF connection to the given subsystem NQN.
+// Disconnect tears down all NVMe-oF controllers associated with the given
+// subsystem NQN by writing "1" to each controller's delete_controller sysfs
+// entry.
 //
-// It is idempotent: if the subsystem NQN is not currently connected (detected
-// by scanning /sys/class/nvme-subsystem/) the method returns nil immediately
-// without invoking nvme-cli.
-//
-// On an existing connection it runs:
-//
-//	nvme disconnect -n <subsysNQN>
+// It is idempotent: if the NQN is not connected the method returns nil.
 func (c *NVMeoFConnector) Disconnect(_ context.Context, subsysNQN string) error {
-	// Idempotency check: return early if not connected.
-	already, err := c.isConnected(subsysNQN)
+	subsysDir := filepath.Join(c.sysfsRoot, "class", "nvme-subsystem")
+
+	entries, err := os.ReadDir(subsysDir)
 	if err != nil {
-		return fmt.Errorf("nvmeof Disconnect: check existing connection for %q: %w", subsysNQN, err)
-	}
-	if !already {
-		return nil
+		if os.IsNotExist(err) {
+			return nil // no nvme-subsystem class — nothing to disconnect
+		}
+		return fmt.Errorf("nvmeof Disconnect: read %s: %w", subsysDir, err)
 	}
 
-	out, cmdErr := c.execCommand("nvme", "disconnect", "-n", subsysNQN)
-	if cmdErr != nil {
-		return fmt.Errorf("nvme disconnect -n %s: %w: %s",
-			subsysNQN, cmdErr, strings.TrimSpace(string(out)))
+	for _, entry := range entries {
+		nqnFile := filepath.Join(subsysDir, entry.Name(), "subsysnqn")
+		nqnBytes, readErr := os.ReadFile(nqnFile) //nolint:gosec
+		if readErr != nil || strings.TrimSpace(string(nqnBytes)) != subsysNQN {
+			continue
+		}
+
+		// Found matching subsystem — delete each controller (nvmeX entries).
+		subsysPath := filepath.Join(subsysDir, entry.Name())
+		ctrlEntries, readErr := os.ReadDir(subsysPath)
+		if readErr != nil {
+			continue
+		}
+		for _, ctrlEntry := range ctrlEntries {
+			name := ctrlEntry.Name()
+			if !strings.HasPrefix(name, "nvme") {
+				continue
+			}
+			// Skip namespace entries (nvmeXnY); only delete controllers (nvmeX).
+			suffix := strings.TrimPrefix(name, "nvme")
+			if strings.ContainsRune(suffix, 'n') {
+				continue
+			}
+			deletePath := filepath.Join(c.sysfsRoot, "class", "nvme", name, "delete_controller")
+			_ = os.WriteFile(deletePath, []byte("1"), 0o600) //nolint:gosec
+		}
 	}
 	return nil
 }
@@ -152,10 +152,6 @@ func (c *NVMeoFConnector) Disconnect(_ context.Context, subsysNQN string) error 
 // GetDevicePath returns the /dev/nvmeXnY block-device path for the given
 // subsystem NQN after a successful Connect call.
 //
-// It scans /sys/class/nvme-subsystem/ looking for a subsystem whose
-// "subsysnqn" file matches subsysNQN, then finds the first namespace entry
-// (nvmeXnY) within that subsystem directory and constructs the /dev/ path.
-//
 // Returns ("", nil) when the device is not yet visible in sysfs; callers
 // should poll until a non-empty path is returned or a deadline is exceeded.
 func (c *NVMeoFConnector) GetDevicePath(_ context.Context, subsysNQN string) (string, error) {
@@ -164,7 +160,6 @@ func (c *NVMeoFConnector) GetDevicePath(_ context.Context, subsysNQN string) (st
 	entries, err := os.ReadDir(subsysDir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			// sysfs directory doesn't exist yet — device not present.
 			return "", nil
 		}
 		return "", fmt.Errorf("GetDevicePath: read %s: %w", subsysDir, err)
@@ -172,20 +167,13 @@ func (c *NVMeoFConnector) GetDevicePath(_ context.Context, subsysNQN string) (st
 
 	for _, entry := range entries {
 		subsysPath := filepath.Join(subsysDir, entry.Name())
-
-		// Read the subsysnqn file to check if this is our subsystem.
 		nqnFile := filepath.Join(subsysPath, "subsysnqn")
 		nqnBytes, readErr := os.ReadFile(nqnFile) //nolint:gosec
-		if readErr != nil {
-			// Skip entries without a subsysnqn file.
-			continue
-		}
-		if strings.TrimSpace(string(nqnBytes)) != subsysNQN {
+		if readErr != nil || strings.TrimSpace(string(nqnBytes)) != subsysNQN {
 			continue
 		}
 
-		// Found the matching subsystem.  Look for namespace block devices
-		// (nvmeXnY pattern) within the subsystem directory.
+		// Found matching subsystem — look for namespace block devices (nvmeXnY).
 		nsEntries, readErr := os.ReadDir(subsysPath)
 		if readErr != nil {
 			return "", fmt.Errorf("GetDevicePath: read subsystem dir %s: %w", subsysPath, readErr)
@@ -193,18 +181,12 @@ func (c *NVMeoFConnector) GetDevicePath(_ context.Context, subsysNQN string) (st
 
 		for _, nsEntry := range nsEntries {
 			name := nsEntry.Name()
-			// NVMe namespace block devices follow the pattern nvmeXnY (e.g. nvme0n1).
-			// They contain at least one 'n' and start with "nvme" but are not
-			// just controllers (which look like nvmeX without the nY suffix).
-			if strings.HasPrefix(name, "nvme") && strings.Contains(name, "n") {
-				// Verify it looks like nvmeXnY by checking both 'e' and 'n' are present
-				// after "nvm" — simple check: controller names are nvme0, nvme1, etc.
-				// Namespace names are nvme0n1, nvme0n2, etc.
-				// A namespace name has the form nvme<ctrl>n<ns> so it has 'n' after 'e'.
-				suffix := strings.TrimPrefix(name, "nvme")
-				if strings.ContainsRune(suffix, 'n') {
-					return "/dev/" + name, nil
-				}
+			if !strings.HasPrefix(name, "nvme") {
+				continue
+			}
+			suffix := strings.TrimPrefix(name, "nvme")
+			if strings.ContainsRune(suffix, 'n') {
+				return "/dev/" + name, nil
 			}
 		}
 
@@ -212,7 +194,6 @@ func (c *NVMeoFConnector) GetDevicePath(_ context.Context, subsysNQN string) (st
 		return "", nil
 	}
 
-	// No matching subsystem found — not connected or device not yet visible.
 	return "", nil
 }
 
@@ -221,7 +202,7 @@ func (c *NVMeoFConnector) GetDevicePath(_ context.Context, subsysNQN string) (st
 // ─────────────────────────────────────────────────────────────────────────────
 
 // isConnected returns true when the given NQN already has an entry in
-// /sys/class/nvme-subsystem/, indicating an active NVMe-oF connection.
+// /sys/class/nvme-subsystem/.
 func (c *NVMeoFConnector) isConnected(subsysNQN string) (bool, error) {
 	subsysDir := filepath.Join(c.sysfsRoot, "class", "nvme-subsystem")
 
