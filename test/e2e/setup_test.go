@@ -371,19 +371,36 @@ func ensureKindCluster() error {
 	}
 	defer os.Remove(configFile) //nolint:errcheck
 
+	// Write kubeconfig to /tmp so Kind does NOT modify ~/.kube/config.
+	kubeconfigFile, err := os.CreateTemp("", "kubeconfig-"+testEnv.ClusterName+"-*.yaml")
+	if err != nil {
+		return fmt.Errorf("create temp kubeconfig: %w", err)
+	}
+	kubeconfigFile.Close() //nolint:errcheck
+	kubeconfigPath := kubeconfigFile.Name()
+
 	fmt.Fprintf(os.Stdout, "e2e setup: creating kind cluster %q\n", testEnv.ClusterName)
 	if err := runCmd("kind", "create", "cluster",
 		"--name", testEnv.ClusterName,
 		"--config", configFile,
+		"--kubeconfig", kubeconfigPath,
 	); err != nil {
+		os.Remove(kubeconfigPath) //nolint:errcheck
 		return fmt.Errorf("kind create cluster: %w", err)
 	}
 
-	// Capture kubeconfig and point KUBECONFIG at it.
-	kubeconfigPath, err := writeKindKubeconfig(testEnv.ClusterName)
-	if err != nil {
-		return fmt.Errorf("get kubeconfig: %w", err)
+	// When DOCKER_HOST points to a remote daemon, the kubeconfig contains
+	// "server: https://127.0.0.1:<port>" which is unreachable from the local
+	// machine.  Rewrite to the remote host IP.
+	if remoteHost := dockerHostIP(testEnv.DockerHost); remoteHost != "" && remoteHost != "127.0.0.1" {
+		raw, readErr := os.ReadFile(kubeconfigPath)
+		if readErr == nil {
+			patched := strings.ReplaceAll(string(raw), "https://127.0.0.1:", "https://"+remoteHost+":")
+			patched = strings.ReplaceAll(patched, "https://0.0.0.0:", "https://"+remoteHost+":")
+			_ = os.WriteFile(kubeconfigPath, []byte(patched), 0o600)
+		}
 	}
+
 	testEnv.KubeconfigPath = kubeconfigPath
 	if err := os.Setenv("KUBECONFIG", kubeconfigPath); err != nil {
 		return fmt.Errorf("setenv KUBECONFIG: %w", err)

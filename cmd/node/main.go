@@ -25,7 +25,6 @@ limitations under the License.
 package main
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"net"
@@ -47,57 +46,8 @@ import (
 const driverName = "pillar-csi.bhyoo.com"
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Phase-1 stub implementations of Connector and Mounter
-//
-// Real implementations that issue nvme-cli / mount(8) syscalls are deferred
-// to a later phase.  The stubs satisfy the interfaces so the binary compiles
-// and the gRPC server can start; actual volume-attach logic returns Unimplemented.
+// No stubs — real NVMe-oF connector and mount helper are in internal/csi/.
 // ─────────────────────────────────────────────────────────────────────────────.
-
-// stubConnector is a placeholder Connector that logs calls and returns errors,
-// making it clear that the real NVMe-oF implementation is not yet wired in.
-type stubConnector struct{}
-
-func (stubConnector) Connect(_ context.Context, subsysNQN, trAddr, trSvcID string) error {
-	fmt.Fprintf(os.Stderr, "pillar-node: stubConnector.Connect nqn=%s addr=%s port=%s — not yet implemented\n",
-		subsysNQN, trAddr, trSvcID)
-	return fmt.Errorf("NVMe-oF connect not yet implemented in this build")
-}
-
-func (stubConnector) Disconnect(_ context.Context, subsysNQN string) error {
-	fmt.Fprintf(os.Stderr, "pillar-node: stubConnector.Disconnect nqn=%s — not yet implemented\n", subsysNQN)
-	return fmt.Errorf("NVMe-oF disconnect not yet implemented in this build")
-}
-
-func (stubConnector) GetDevicePath(_ context.Context, subsysNQN string) (string, error) {
-	fmt.Fprintf(os.Stderr, "pillar-node: stubConnector.GetDevicePath nqn=%s — not yet implemented\n", subsysNQN)
-	return "", fmt.Errorf("NVMe-oF get-device-path not yet implemented in this build")
-}
-
-// stubMounter is a placeholder Mounter that logs calls and returns errors.
-type stubMounter struct{}
-
-func (stubMounter) FormatAndMount(source, target, fsType string, options []string) error {
-	msg := "pillar-node: stubMounter.FormatAndMount src=%s target=%s fs=%s opts=%s — not yet implemented\n"
-	fmt.Fprintf(os.Stderr, msg, source, target, fsType, strings.Join(options, ","))
-	return fmt.Errorf("FormatAndMount not yet implemented in this build")
-}
-
-func (stubMounter) Mount(source, target, fsType string, options []string) error {
-	fmt.Fprintf(os.Stderr, "pillar-node: stubMounter.Mount src=%s target=%s fs=%s opts=%s — not yet implemented\n",
-		source, target, fsType, strings.Join(options, ","))
-	return fmt.Errorf("mount not yet implemented in this build")
-}
-
-func (stubMounter) Unmount(target string) error {
-	fmt.Fprintf(os.Stderr, "pillar-node: stubMounter.Unmount target=%s — not yet implemented\n", target)
-	return fmt.Errorf("unmount not yet implemented in this build")
-}
-
-func (stubMounter) IsMounted(target string) (bool, error) {
-	fmt.Fprintf(os.Stderr, "pillar-node: stubMounter.IsMounted target=%s — not yet implemented\n", target)
-	return false, fmt.Errorf("IsMounted not yet implemented in this build")
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // main
@@ -128,7 +78,7 @@ func main() {
 
 	// ── Build the CSI service implementations ──────────────────────────────
 	identitySrv := csisvc.NewIdentityServer(driverName, version)
-	nodeSrv := csisvc.NewNodeServer(*nodeID, stubConnector{}, stubMounter{})
+	nodeSrv := csisvc.NewNodeServer(*nodeID, csisvc.NewNVMeoFConnector(), csisvc.NewKubeMounter())
 
 	// ── Open the Unix socket ───────────────────────────────────────────────
 	// Remove a stale socket file from a previous run so that net.Listen
