@@ -68,15 +68,6 @@ nodes:
       - hostPath: /dev/zfs
         containerPath: /dev/zfs
 
-  # ── compute worker node 2 ──────────────────────────────────────────────────
-  # Labelled as a compute node (NVMe-oF initiator side) so that test Pods that
-  # mount CSI volumes are scheduled here.  The pillar-node DaemonSet runs on
-  # all nodes (nodeSelector: {}), so this node will have the node-driver plugin
-  # running and can handle NodeStage + NodePublish RPCs.
-  # The label pillar-csi.bhyoo.com/compute-node=true is used by e2e test pods
-  # (iatBuildTestPod in internal_agent_functional_test.go) to pin workloads to
-  # the initiator node and avoid scheduling them on the storage-worker that
-  # runs the agent.
+  # ── worker node 2 ──────────────────────────────────────────────────────────
+  # General-purpose worker for application pods and initiator-side CSI tests.
   - role: worker
-    labels:
-      pillar-csi.bhyoo.com/compute-node: "true"

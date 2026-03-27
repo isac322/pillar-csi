@@ -71,15 +71,10 @@ package framework
 
 import (
 	"context"
-	stderrors "errors"
 	"fmt"
-	"net/url"
-	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/util/wait"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -226,74 +221,14 @@ func (s *Suite) CreateTestNamespaceTracked(
 // Internal helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-// verifyClusterConnectivity polls the API server until it is reachable within
-// the context deadline.  It lists the well-known "default" Namespace, which is
-// present on every Kubernetes cluster and requires only basic RBAC read
-// permissions.
-//
-// Transient errors (connection refused, service unavailable, etc.) are retried
-// every 2 seconds.  Permanent errors (e.g. 403 Forbidden) fail immediately.
+// verifyClusterConnectivity performs a lightweight, read-only API server call
+// to confirm that the cluster is reachable.  It lists the well-known "default"
+// Namespace which is present on every Kubernetes cluster and requires only
+// basic RBAC read permissions.
 func verifyClusterConnectivity(ctx context.Context, c client.Client) error {
-	const pollInterval = 2 * time.Second
-	var lastErr error
-	// Use PollUntilContextCancel to honour the ctx deadline directly.
-	// PollUntilContextTimeout(ctx, interval, 0, ...) would create a child
-	// context with timeout=0, which expires immediately and is not what we want.
-	pollErr := wait.PollUntilContextCancel(ctx, pollInterval, true /*immediate*/,
-		func(ctx context.Context) (bool, error) {
-			ns := &corev1.Namespace{}
-			if err := c.Get(ctx, client.ObjectKey{Name: "default"}, ns); err != nil {
-				if isSuiteTransientErr(err) {
-					lastErr = err
-					return false, nil
-				}
-				// Also treat rate-limiter / context errors as transient so we
-				// keep retrying until the outer context expires.
-				if isRateLimiterOrContextErr(err) {
-					lastErr = err
-					return false, nil
-				}
-				return false, err // permanent error — fail immediately
-			}
-			return true, nil
-		},
-	)
-	if pollErr != nil {
-		if lastErr != nil {
-			return fmt.Errorf("get default namespace: %w (last transient error: %v)", pollErr, lastErr)
-		}
-		return fmt.Errorf("get default namespace: %w", pollErr)
+	ns := &corev1.Namespace{}
+	if err := c.Get(ctx, client.ObjectKey{Name: "default"}, ns); err != nil {
+		return fmt.Errorf("get default namespace: %w", err)
 	}
 	return nil
-}
-
-// isSuiteTransientErr returns true for errors that are safe to retry during
-// cluster connectivity checks.  Mirrors the logic in wait.go's isTransientFetchErr
-// but is defined here to avoid a cross-package dependency within the test
-// framework package.
-func isSuiteTransientErr(err error) bool {
-	if errors.IsServerTimeout(err) ||
-		errors.IsServiceUnavailable(err) ||
-		errors.IsTimeout(err) ||
-		errors.IsTooManyRequests(err) {
-		return true
-	}
-	// url.Error wraps net-level dial errors (connection refused, EOF, etc.)
-	var urlErr *url.Error
-	return stderrors.As(err, &urlErr)
-}
-
-// isRateLimiterOrContextErr returns true for errors that originate from the
-// client-go rate limiter or from a cancelled/expired context.  These should
-// be retried (with the outer context as the deadline) rather than treated as
-// permanent failures.
-func isRateLimiterOrContextErr(err error) bool {
-	if err == nil {
-		return false
-	}
-	if stderrors.Is(err, context.DeadlineExceeded) || stderrors.Is(err, context.Canceled) {
-		return true
-	}
-	// client-go rate limiter wraps context errors with this prefix
-	return strings.Contains(err.Error(), "rate limiter")
 }

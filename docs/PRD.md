@@ -601,7 +601,6 @@ type ProtocolTarget interface {
 type ProtocolInitiator interface {
     Connect(ctx context.Context, exportInfo *ExportInfo, opts ConnectOpts) (*LocalDevice, error)
     Disconnect(ctx context.Context, localDevice *LocalDevice) error
-    GetDevicePath(ctx context.Context, nqn string) (string, error)
     GetInitiatorID(ctx context.Context) (string, error)
 }
 ```
@@ -616,46 +615,6 @@ type ProtocolInitiator interface {
 | **기본 포트** | 4420 | 3260 | 2049 | 445 |
 | **커널 모듈 (target)** | nvmet, nvmet_tcp | target_core_mod, iscsi_target_mod | nfsd | (user-space) |
 | **커널 모듈 (initiator)** | nvme_tcp, nvme_fabrics | iscsi_tcp, libiscsi | nfs (built-in) | cifs |
-
-### 4.1 NVMe-oF TCP Initiator 구현 세부사항 (Phase 1)
-
-#### CLI 명령어
-
-```bash
-# 연결
-nvme connect -t tcp -a <addr> -s <port> -n <nqn> \
-  [--ctrl-loss-tmo <sec>] [--reconnect-delay <sec>] [--keep-alive-tmo <sec>]
-
-# 연결 해제
-nvme disconnect -n <nqn>
-```
-
-#### 멱등성 (Idempotency)
-
-- **Connect**: 동일 NQN이 이미 연결된 경우 → 에러 없이 no-op (기존 디바이스 경로 반환)
-- **Disconnect**: 해당 NQN의 연결이 존재하지 않는 경우 → 에러 없이 no-op
-
-연결 여부 확인은 `/sys/class/nvme-subsystem/` 스캔으로 결정한다. `nvme connect` 재실행은 중복 연결을 만들지 않는다.
-
-#### GetDevicePath — 블록 디바이스 탐색
-
-NQN에 대응하는 블록 디바이스 경로(`/dev/nvmeXnY`)를 찾으려면 sysfs를 직접 스캔한다:
-
-```
-/sys/class/nvme-subsystem/
-  nvme-subsys0/
-    subsysnqn          ← NQN 값 (예: nqn.2024-01.com.bhyoo.pillar-csi:rock5bp:pvc-abc123)
-    nvme0/
-      nvme0n1/         ← 네임스페이스 = 블록 디바이스 /dev/nvme0n1
-```
-
-구현 절차:
-1. `/sys/class/nvme-subsystem/` 아래 모든 서브시스템 디렉토리를 순회
-2. 각 서브시스템의 `subsysnqn` 파일에서 NQN 읽기
-3. NQN 매치 시 해당 서브시스템의 하위 nvme 컨트롤러 → 네임스페이스 디렉토리를 찾아 `/dev/<namespace>` 반환
-4. 매치 없으면 에러 반환
-
-이 방식은 커널 인터페이스를 직접 사용하므로 `nvme list` CLI 파싱보다 안정적이다.
 
 ## 5. 볼륨 생명주기
 

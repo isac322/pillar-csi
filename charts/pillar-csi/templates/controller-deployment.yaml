@@ -86,13 +86,14 @@ spec:
             - name: metrics
               containerPort: {{ .Values.controller.metricsPort }}
               protocol: TCP
+            # csi-healthz is served by the liveness-probe sidecar over the CSI socket.
+            # Declaring it here allows the probe below to reference it by name.
+            - name: csi-healthz
+              containerPort: {{ .Values.controller.livenessPort }}
+              protocol: TCP
           # livenessProbe checks the CSI socket health via the liveness-probe sidecar.
           # The sidecar issues a CSI GetPluginInfo RPC and exposes the result on
           # controller.livenessPort; an HTTP 200 means the socket is healthy.
-          # The port name "csi-healthz" is declared only on the liveness-probe
-          # sidecar container (below) to avoid a duplicate-port-name warning from
-          # Kubernetes; named ports are resolved across all containers in a pod so
-          # the probe here correctly resolves to the sidecar's port.
           livenessProbe:
             httpGet:
               path: /healthz

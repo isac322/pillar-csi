@@ -21,9 +21,7 @@ package framework
 
 import (
 	"context"
-	stderrors "errors"
 	"fmt"
-	"net/url"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -82,10 +80,6 @@ func WaitForCondition(
 			if fetchErr := c.Get(ctx, key, obj); fetchErr != nil {
 				if errors.IsNotFound(fetchErr) {
 					lastMsg = fmt.Sprintf("%T %q: object not found", obj, key)
-					return false, nil
-				}
-				if isTransientFetchErr(fetchErr) {
-					lastMsg = fmt.Sprintf("transient API error: %v", fetchErr)
 					return false, nil
 				}
 				return false, fetchErr
@@ -165,9 +159,6 @@ func WaitForDeletion(
 				if errors.IsNotFound(fetchErr) {
 					return true, nil
 				}
-				if isTransientFetchErr(fetchErr) {
-					return false, nil
-				}
 				return false, fetchErr
 			}
 			return false, nil
@@ -223,9 +214,6 @@ func WaitForField[T client.Object](
 				if errors.IsNotFound(fetchErr) {
 					return false, nil
 				}
-				if isTransientFetchErr(fetchErr) {
-					return false, nil
-				}
 				return false, fetchErr
 			}
 			return predicate(obj), nil
@@ -240,26 +228,6 @@ func WaitForField[T client.Object](
 // ─────────────────────────────────────────────────────────────────────────────
 // Internal helpers
 // ─────────────────────────────────────────────────────────────────────────────
-
-// isTransientFetchErr returns true for errors that are safe to retry:
-//   - standard Kubernetes server-side transient errors (timeout, service unavailable, etc.)
-//   - network-level errors such as TCP "connection refused" or "EOF" that occur when
-//     the API server is briefly unreachable (e.g. during Kind cluster startup or a
-//     transient control-plane blip in CI).
-//
-// Permanent client errors (403 Forbidden, 422 Unprocessable Entity, etc.) are NOT
-// considered transient so they still propagate and fail the test immediately.
-func isTransientFetchErr(err error) bool {
-	if errors.IsServerTimeout(err) ||
-		errors.IsServiceUnavailable(err) ||
-		errors.IsTimeout(err) ||
-		errors.IsTooManyRequests(err) {
-		return true
-	}
-	// url.Error wraps all net-level dial/read errors (connection refused, EOF, etc.)
-	var urlErr *url.Error
-	return stderrors.As(err, &urlErr)
-}
 
 // conditionsOf extracts the []metav1.Condition slice from the known pillar-csi
 // object types.  Returns nil for unrecognised types.

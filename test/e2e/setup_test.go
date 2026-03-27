@@ -267,17 +267,11 @@ func setupE2E() error {
 	if err := ensureStorageNodeLabel(); err != nil {
 		return fmt.Errorf("storage node label: %w", err)
 	}
-	if err := ensureComputeNodeLabel(); err != nil {
-		return fmt.Errorf("compute node label: %w", err)
-	}
 	if err := validateWorkerNodeMounts(); err != nil {
 		return fmt.Errorf("worker node mounts: %w", err)
 	}
 	if err := buildAndLoadImages(); err != nil {
 		return fmt.Errorf("docker images: %w", err)
-	}
-	if err := preloadSidecarImages(); err != nil {
-		return fmt.Errorf("sidecar images: %w", err)
 	}
 	if err := setupZFSPool(); err != nil {
 		return fmt.Errorf("zfs pool: %w", err)
@@ -377,32 +371,12 @@ func ensureKindCluster() error {
 	}
 	defer os.Remove(configFile) //nolint:errcheck
 
-	// Create the cluster with up to 3 retries.  On a memory-pressured host,
-	// kubeadm init can fail transiently (e.g. OOM / 403 on livez during
-	// startup race).  Retrying with a brief pause usually succeeds.
-	const kindCreateRetries = 3
-	var createErr error
-	for attempt := 1; attempt <= kindCreateRetries; attempt++ {
-		fmt.Fprintf(os.Stdout, "e2e setup: creating kind cluster %q (attempt %d/%d)\n",
-			testEnv.ClusterName, attempt, kindCreateRetries)
-		if createErr = runCmd("kind", "create", "cluster",
-			"--name", testEnv.ClusterName,
-			"--config", configFile,
-		); createErr == nil {
-			break
-		}
-		fmt.Fprintf(os.Stderr, "e2e setup: kind create cluster attempt %d failed: %v\n",
-			attempt, createErr)
-		if attempt < kindCreateRetries {
-			// Delete the partial cluster before retrying so we start clean.
-			_ = runCmd("kind", "delete", "cluster", "--name", testEnv.ClusterName)
-			// Brief pause to let Docker and the kernel settle after the
-			// failed kubeadm init before attempting again.
-			time.Sleep(10 * time.Second)
-		}
-	}
-	if createErr != nil {
-		return fmt.Errorf("kind create cluster: %w", createErr)
+	fmt.Fprintf(os.Stdout, "e2e setup: creating kind cluster %q\n", testEnv.ClusterName)
+	if err := runCmd("kind", "create", "cluster",
+		"--name", testEnv.ClusterName,
+		"--config", configFile,
+	); err != nil {
+		return fmt.Errorf("kind create cluster: %w", err)
 	}
 
 	// Capture kubeconfig and point KUBECONFIG at it.
@@ -476,39 +450,6 @@ func ensureStorageNodeLabel() error {
 	}
 	return runCmd("kubectl", "label", "node", workerNode,
 		"pillar-csi.bhyoo.com/storage-node=true", "--overwrite")
-}
-
-// ensureComputeNodeLabel labels the second worker node as a compute node so
-// that e2e test Pods that mount CSI volumes (NVMe-oF initiator side) are
-// scheduled on a dedicated compute worker.  The Kind cluster is always freshly
-// created; this step ensures the label is present on every run.
-//
-// The kind-config.yaml already sets the label via its `labels:` block, but
-// this function provides a belt-and-suspenders guarantee: if the label was
-// removed after cluster creation, or if the kind-config.yaml diverges from
-// the running cluster, the label is re-applied here.
-//
-// The "second worker" is identified as the first node that has neither the
-// control-plane role nor the storage-node label.  This mirrors the Kind
-// topology in kind-config.yaml (control-plane, storage-worker, compute-worker).
-func ensureComputeNodeLabel() error {
-	fmt.Fprintf(os.Stdout, "e2e setup: ensuring compute-node label on second worker\n")
-	// Find the compute worker: a node that is not the control-plane and does
-	// not already have the storage-node label.
-	out, err := captureOutput("kubectl", "get", "nodes",
-		"-l", "!node-role.kubernetes.io/control-plane,!pillar-csi.bhyoo.com/storage-node",
-		"-o", "jsonpath={.items[0].metadata.name}")
-	if err != nil {
-		return fmt.Errorf("find compute worker node: %s: %w", strings.TrimSpace(out), err)
-	}
-	computeNode := strings.TrimSpace(out)
-	if computeNode == "" {
-		return fmt.Errorf("no compute worker node found in cluster %q "+
-			"(expected a worker without pillar-csi.bhyoo.com/storage-node label)",
-			testEnv.ClusterName)
-	}
-	return runCmd("kubectl", "label", "node", computeNode,
-		"pillar-csi.bhyoo.com/compute-node=true", "--overwrite")
 }
 
 // validateWorkerNodeMounts checks that the Kind worker node containers have
@@ -643,121 +584,6 @@ func buildAndLoadImages() error {
 	return nil
 }
 
-// preloadSidecarImages pulls all CSI sidecar images into the local Docker
-// daemon and then loads them into every Kind WORKER node via the same
-// file-copy mechanism used by loadImageIntoKindNodes.
-//
-// Rationale: Kind nodes run an internal containerd that has no access to the
-// local Docker daemon image cache.  On a freshly-created cluster every image
-// must be pulled from the registry, which can take minutes for CSI sidecar
-// images from registry.k8s.io on slow or rate-limited networks.  By
-// preloading these images the Helm --wait phase starts with all required
-// images already present in containerd, allowing pods to start within seconds
-// and keeping the 5-minute Helm timeout comfortable.
-//
-// Only worker nodes are targeted (not the control-plane) because:
-//   - Kubernetes taints the control-plane with NoSchedule so workload pods
-//     (controller deployment, DaemonSets) are only scheduled on workers.
-//   - The control-plane node runs kube-apiserver/etcd/scheduler and may have
-//     insufficient free memory for large image imports (exit 137 / OOM).
-//
-// The image list must stay in sync with the versions declared in
-// charts/pillar-csi/values.yaml.  The global imagePullPolicy is
-// "IfNotPresent" in the e2e helm-values.yaml so preloaded images are used
-// and the registry is not contacted during pod start-up.
-func preloadSidecarImages() error {
-	sidecarImages := []string{
-		"registry.k8s.io/sig-storage/csi-provisioner:v5.2.0",
-		"registry.k8s.io/sig-storage/csi-attacher:v4.8.1",
-		"registry.k8s.io/sig-storage/csi-resizer:v1.13.2",
-		"registry.k8s.io/sig-storage/livenessprobe:v2.15.0",
-		"registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.13.0",
-		"busybox:1.36",
-	}
-
-	// Discover worker nodes.  We list all Kind cluster containers and then
-	// exclude the control-plane by name suffix.  This avoids using
-	// --filter "label=io.x-k8s.kind.role=worker" which can miss containers
-	// in transition states on some Docker daemon versions.  Kind always
-	// names node containers <cluster>-control-plane (control-plane) and
-	// <cluster>-worker[N] (workers), so name-based filtering is reliable.
-	nodesOut, err := captureOutput("docker", "ps",
-		"--filter", "label=io.x-k8s.kind.cluster="+testEnv.ClusterName,
-		"--format", "{{.Names}}")
-	if err != nil {
-		return fmt.Errorf("docker ps for kind nodes: %s: %w", strings.TrimSpace(nodesOut), err)
-	}
-
-	var workerNodes []string
-	for _, node := range strings.Split(strings.TrimSpace(nodesOut), "\n") {
-		node = strings.TrimSpace(node)
-		if node == "" || strings.HasSuffix(node, "-control-plane") {
-			continue
-		}
-		workerNodes = append(workerNodes, node)
-	}
-	if len(workerNodes) == 0 {
-		return fmt.Errorf("no worker nodes found in cluster %q", testEnv.ClusterName)
-	}
-
-	for _, img := range sidecarImages {
-		fmt.Fprintf(os.Stdout,
-			"e2e setup: preloading sidecar image %s into %d worker nodes\n",
-			img, len(workerNodes))
-
-		// Pull into the local Docker daemon (no-op when already present).
-		if err := runCmd("docker", "pull", img); err != nil {
-			return fmt.Errorf("docker pull %s: %w", img, err)
-		}
-
-		// Save the image to a local tar file then copy+import it into each
-		// worker node (the same approach used by loadImageIntoKindNodes).
-		localTar, err := os.CreateTemp("", "kind-sidecar-*.tar")
-		if err != nil {
-			return fmt.Errorf("create temp tar for %s: %w", img, err)
-		}
-		localTarPath := localTar.Name()
-		localTar.Close()
-
-		if err := runCmd("docker", "save", img, "-o", localTarPath); err != nil {
-			_ = os.Remove(localTarPath)
-			return fmt.Errorf("docker save %s: %w", img, err)
-		}
-
-		for _, node := range workerNodes {
-			const nodeTar = "/root/kind-sidecar.tar"
-
-			fmt.Fprintf(os.Stdout, "e2e setup: copying sidecar image tar to node %s\n", node)
-			if err := runCmd("docker", "cp", localTarPath, node+":"+nodeTar); err != nil {
-				// Best-effort: log and skip this node rather than aborting.
-				// If the image is missing when pods start, containerd will
-				// pull it from the registry (imagePullPolicy: IfNotPresent).
-				fmt.Fprintf(os.Stderr, "e2e setup: WARNING: docker cp sidecar image %s to %s: %v (skipping node)\n",
-					img, node, err)
-				continue
-			}
-
-			fmt.Fprintf(os.Stdout, "e2e setup: importing sidecar image on node %s\n", node)
-			if err := runCmd("docker", "exec", node,
-				"ctr", "--namespace=k8s.io", "images", "import",
-				"--all-platforms", "--digests", "--snapshotter=overlayfs",
-				nodeTar,
-			); err != nil {
-				// Best-effort: a failed ctr import (e.g. exit 137 / OOM under
-				// memory pressure) should not abort the entire test setup.
-				// The node will pull the image from the registry on first use.
-				fmt.Fprintf(os.Stderr, "e2e setup: WARNING: ctr import sidecar image %s on %s: %v (skipping node)\n",
-					img, node, err)
-			}
-
-			_ = runCmd("docker", "exec", node, "rm", nodeTar) //nolint:errcheck
-		}
-
-		_ = os.Remove(localTarPath)
-	}
-	return nil
-}
-
 // loadImageIntoKindNodes loads a Docker image into all Kind cluster nodes
 // using a file-based copy approach that is reliable over a remote TCP Docker
 // daemon (unlike "kind load docker-image" which uses streaming exec).
@@ -782,25 +608,11 @@ func loadImageIntoKindNodes(imageName string) error {
 		return fmt.Errorf("docker save %s: %w", imageName, err)
 	}
 
-	// Step 2 — List all Kind nodes using docker ps with the Kind cluster label,
-	// then skip the control-plane by name.  We avoid using the
-	// --filter "label=io.x-k8s.kind.role=worker" form because Docker label
-	// filters can miss containers that are in transition (being created or
-	// removed) on some daemon versions, leading to spurious "no worker nodes
-	// found" failures.  Filtering by container name suffix is more reliable:
-	// Kind always names node containers <cluster>-control-plane (for the
-	// control-plane) and <cluster>-worker[N] (for workers).
-	//
+	// Step 2 — List all Kind nodes using docker ps with the Kind cluster label.
 	// We use docker ps rather than "kind get nodes" because the latter can
 	// return non-empty output like "No kind nodes found for cluster..." when
 	// it misidentifies the cluster state, leading to that message being
 	// (incorrectly) treated as a container name.
-	//
-	// Only worker nodes are targeted (not the control-plane) because:
-	//   - Kubernetes taints the control-plane with NoSchedule so no workload
-	//     pods are scheduled there, making the image import unnecessary.
-	//   - The control-plane node runs kube-apiserver/etcd/scheduler and has
-	//     limited free memory; importing large images can trigger OOM (exit 137).
 	nodesOut, err := captureOutput("docker", "ps",
 		"--filter", "label=io.x-k8s.kind.cluster="+testEnv.ClusterName,
 		"--format", "{{.Names}}")
@@ -811,14 +623,6 @@ func loadImageIntoKindNodes(imageName string) error {
 	for _, node := range strings.Split(strings.TrimSpace(nodesOut), "\n") {
 		node = strings.TrimSpace(node)
 		if node == "" {
-			continue
-		}
-		// Skip the control-plane node by name suffix.  Kind always names it
-		// "<cluster>-control-plane".  Skipping by name is more reliable than
-		// using --filter "label=io.x-k8s.kind.role=worker" because label
-		// filters can miss containers in transition states on some Docker
-		// daemon versions.
-		if strings.HasSuffix(node, "-control-plane") {
 			continue
 		}
 
@@ -905,7 +709,7 @@ func installHelm() error {
 		"--set", "agent.image.tag="+testEnv.ImageTag,
 		"--set", "node.image.tag="+testEnv.ImageTag,
 		"--wait",
-		"--timeout", "10m",
+		"--timeout", "5m",
 	)
 
 	if err := runCmd("helm", args...); err != nil {

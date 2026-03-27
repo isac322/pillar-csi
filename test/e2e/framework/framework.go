@@ -47,18 +47,6 @@ import (
 	v1alpha1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
 )
 
-// testClientQPS and testClientBurst set generous rate-limiter parameters on
-// the controller-runtime clients used by e2e tests.  The default values
-// (QPS=5, Burst=10) are designed for production controllers; they are far too
-// restrictive for tests that make many sequential API calls in tight loops.
-// Using higher values prevents spurious "client rate limiter Wait returned an
-// error: context deadline exceeded" failures when many test specs run back to
-// back on the same client instance.
-const (
-	testClientQPS   = 100
-	testClientBurst = 200
-)
-
 // Scheme contains all pillar-csi Custom Resource types (PillarTarget,
 // PillarPool, PillarProtocol, PillarBinding, PillarVolume) plus the core
 // Kubernetes API types (Pods, Services, …).
@@ -93,12 +81,6 @@ func NewClient() (client.Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("framework: load kubeconfig: %w", err)
 	}
-
-	// Override rate-limiter settings: tests make many calls in tight loops and
-	// the production defaults (QPS=5, burst=10) cause spurious rate-limiter
-	// timeouts when many BeforeAll / It blocks execute back-to-back.
-	restConfig.QPS = testClientQPS
-	restConfig.Burst = testClientBurst
 
 	c, err := client.New(restConfig, client.Options{Scheme: Scheme})
 	if err != nil {

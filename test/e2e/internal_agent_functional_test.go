@@ -620,9 +620,9 @@ var _ = Describe("InternalAgent functional", Ordered, Label("internal-agent"), f
 			if zfsPool == "" {
 				Skip("PILLAR_E2E_ZFS_POOL not set — skipping mount/unmount lifecycle tests")
 			}
-			if os.Getenv("PILLAR_E2E_NVMEOF_TCP") != "true" {
-				Skip("PILLAR_E2E_NVMEOF_TCP not set — skipping mount/unmount lifecycle tests " +
-					"(real NVMe-oF TCP target configuration required; agent uses --configfs-root=/tmp in this environment)")
+			if os.Getenv("PILLAR_E2E_REAL_NVMEOF") != "true" {
+				Skip("PILLAR_E2E_REAL_NVMEOF not set — pillar-node uses stub connector; " +
+					"mount/unmount lifecycle requires a real NVMe-oF initiator implementation")
 			}
 
 			crSuffix := fmt.Sprintf("%d", time.Now().UnixMilli()%100000)

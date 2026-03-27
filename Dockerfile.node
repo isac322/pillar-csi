@@ -7,7 +7,7 @@
 # NodeStageVolume / NodePublishVolume / NodeUnpublishVolume operations.
 #
 # Security posture:
-#   • Minimal runtime base: alpine:3.21 (mount utilities + nvme-cli added)
+#   • Minimal runtime base: alpine:3.21 (only mount utilities added)
 #   • Non-root default user: UID/GID 65532 ("nonroot" convention)
 #   • All SUID/SGID bits stripped from installed packages
 #   • No shell left in the final image (/bin/sh removed)
@@ -58,9 +58,8 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 # docker pull alpine:3.21 --platform linux/amd64
 FROM alpine:3.21@sha256:56fa17d2a7e7f168a043a2712e63aed1f8543aeafdcee47c58dcffe38ed51099
 
-# ① Install mount utilities (util-linux provides mount(8)/umount(8)/blkid(8)),
-#   e2fsprogs for ext4 formatting (NodeFormatVolume), and nvme-cli for
-#   NVMe-oF TCP initiator operations (NodeStageVolume).  Additional
+# ① Install mount utilities (util-linux provides mount(8)/umount(8)/blkid(8))
+#   and e2fsprogs for ext4 formatting (NodeFormatVolume).  Additional
 #   filesystem tools (xfsprogs, etc.) can be added when those backends are wired.
 # ② Add the non-root service user/group (UID/GID 65532 — same convention used
 #   by gcr.io/distroless/static:nonroot so manifests stay consistent).
@@ -76,7 +75,6 @@ RUN set -eux \
     && apk add --no-cache \
          'util-linux~=2.40' \
          'e2fsprogs~=1.47' \
-         'nvme-cli' \
     && addgroup -g 65532 nonroot \
     && adduser  -u 65532 -G nonroot -s /sbin/nologin -D nonroot \
     # Strip SUID/SGID bits from every file on the root filesystem.

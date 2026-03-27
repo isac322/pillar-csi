@@ -30,13 +30,6 @@ controller:
     tag: "e2e"
     pullPolicy: Never
 
-  # Pin the controller to the storage worker node.  This ensures the
-  # controller and its CSI sidecar images (csi-provisioner, csi-attacher,
-  # csi-resizer) are pre-loaded into exactly one node, reducing memory
-  # pressure when preloading images under the Kind cluster.
-  nodeSelector:
-    pillar-csi.bhyoo.com/storage-node: "true"
-
   # Disable webhooks and secure metrics in e2e (no cert-manager available).
   extraArgs:
     - --metrics-secure=false
