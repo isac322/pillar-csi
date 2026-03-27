@@ -267,6 +267,9 @@ func setupE2E() error {
 	if err := ensureStorageNodeLabel(); err != nil {
 		return fmt.Errorf("storage node label: %w", err)
 	}
+	if err := ensureComputeNodeLabel(); err != nil {
+		return fmt.Errorf("compute node label: %w", err)
+	}
 	if err := validateWorkerNodeMounts(); err != nil {
 		return fmt.Errorf("worker node mounts: %w", err)
 	}
@@ -450,6 +453,39 @@ func ensureStorageNodeLabel() error {
 	}
 	return runCmd("kubectl", "label", "node", workerNode,
 		"pillar-csi.bhyoo.com/storage-node=true", "--overwrite")
+}
+
+// ensureComputeNodeLabel labels the second worker node as a compute node so
+// that e2e test Pods that mount CSI volumes (NVMe-oF initiator side) are
+// scheduled on a dedicated compute worker.  The Kind cluster is always freshly
+// created; this step ensures the label is present on every run.
+//
+// The kind-config.yaml already sets the label via its `labels:` block, but
+// this function provides a belt-and-suspenders guarantee: if the label was
+// removed after cluster creation, or if the kind-config.yaml diverges from
+// the running cluster, the label is re-applied here.
+//
+// The "second worker" is identified as the first node that has neither the
+// control-plane role nor the storage-node label.  This mirrors the Kind
+// topology in kind-config.yaml (control-plane, storage-worker, compute-worker).
+func ensureComputeNodeLabel() error {
+	fmt.Fprintf(os.Stdout, "e2e setup: ensuring compute-node label on second worker\n")
+	// Find the compute worker: a node that is not the control-plane and does
+	// not already have the storage-node label.
+	out, err := captureOutput("kubectl", "get", "nodes",
+		"-l", "!node-role.kubernetes.io/control-plane,!pillar-csi.bhyoo.com/storage-node",
+		"-o", "jsonpath={.items[0].metadata.name}")
+	if err != nil {
+		return fmt.Errorf("find compute worker node: %s: %w", strings.TrimSpace(out), err)
+	}
+	computeNode := strings.TrimSpace(out)
+	if computeNode == "" {
+		return fmt.Errorf("no compute worker node found in cluster %q "+
+			"(expected a worker without pillar-csi.bhyoo.com/storage-node label)",
+			testEnv.ClusterName)
+	}
+	return runCmd("kubectl", "label", "node", computeNode,
+		"pillar-csi.bhyoo.com/compute-node=true", "--overwrite")
 }
 
 // validateWorkerNodeMounts checks that the Kind worker node containers have
