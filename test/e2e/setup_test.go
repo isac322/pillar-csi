@@ -655,23 +655,26 @@ func preloadSidecarImages() error {
 		"busybox:1.36",
 	}
 
-	// Discover worker nodes only.  Kind labels each node container with
-	// io.x-k8s.kind.role=worker or =control-plane; filtering by "worker"
-	// prevents the expensive import step from running on the control-plane.
+	// Discover worker nodes.  We list all Kind cluster containers and then
+	// exclude the control-plane by name suffix.  This avoids using
+	// --filter "label=io.x-k8s.kind.role=worker" which can miss containers
+	// in transition states on some Docker daemon versions.  Kind always
+	// names node containers <cluster>-control-plane (control-plane) and
+	// <cluster>-worker[N] (workers), so name-based filtering is reliable.
 	nodesOut, err := captureOutput("docker", "ps",
 		"--filter", "label=io.x-k8s.kind.cluster="+testEnv.ClusterName,
-		"--filter", "label=io.x-k8s.kind.role=worker",
 		"--format", "{{.Names}}")
 	if err != nil {
-		return fmt.Errorf("docker ps for worker nodes: %s: %w", strings.TrimSpace(nodesOut), err)
+		return fmt.Errorf("docker ps for kind nodes: %s: %w", strings.TrimSpace(nodesOut), err)
 	}
 
 	var workerNodes []string
 	for _, node := range strings.Split(strings.TrimSpace(nodesOut), "\n") {
 		node = strings.TrimSpace(node)
-		if node != "" {
-			workerNodes = append(workerNodes, node)
+		if node == "" || strings.HasSuffix(node, "-control-plane") {
+			continue
 		}
+		workerNodes = append(workerNodes, node)
 	}
 	if len(workerNodes) == 0 {
 		return fmt.Errorf("no worker nodes found in cluster %q", testEnv.ClusterName)
@@ -752,11 +755,25 @@ func loadImageIntoKindNodes(imageName string) error {
 		return fmt.Errorf("docker save %s: %w", imageName, err)
 	}
 
-	// Step 2 — List all Kind nodes using docker ps with the Kind cluster label.
+	// Step 2 — List all Kind nodes using docker ps with the Kind cluster label,
+	// then skip the control-plane by name.  We avoid using the
+	// --filter "label=io.x-k8s.kind.role=worker" form because Docker label
+	// filters can miss containers that are in transition (being created or
+	// removed) on some daemon versions, leading to spurious "no worker nodes
+	// found" failures.  Filtering by container name suffix is more reliable:
+	// Kind always names node containers <cluster>-control-plane (for the
+	// control-plane) and <cluster>-worker[N] (for workers).
+	//
 	// We use docker ps rather than "kind get nodes" because the latter can
 	// return non-empty output like "No kind nodes found for cluster..." when
 	// it misidentifies the cluster state, leading to that message being
 	// (incorrectly) treated as a container name.
+	//
+	// Only worker nodes are targeted (not the control-plane) because:
+	//   - Kubernetes taints the control-plane with NoSchedule so no workload
+	//     pods are scheduled there, making the image import unnecessary.
+	//   - The control-plane node runs kube-apiserver/etcd/scheduler and has
+	//     limited free memory; importing large images can trigger OOM (exit 137).
 	nodesOut, err := captureOutput("docker", "ps",
 		"--filter", "label=io.x-k8s.kind.cluster="+testEnv.ClusterName,
 		"--format", "{{.Names}}")
@@ -767,6 +784,14 @@ func loadImageIntoKindNodes(imageName string) error {
 	for _, node := range strings.Split(strings.TrimSpace(nodesOut), "\n") {
 		node = strings.TrimSpace(node)
 		if node == "" {
+			continue
+		}
+		// Skip the control-plane node by name suffix.  Kind always names it
+		// "<cluster>-control-plane".  Skipping by name is more reliable than
+		// using --filter "label=io.x-k8s.kind.role=worker" because label
+		// filters can miss containers in transition states on some Docker
+		// daemon versions.
+		if strings.HasSuffix(node, "-control-plane") {
 			continue
 		}
 
