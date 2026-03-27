@@ -72,8 +72,13 @@ func (s *Server) ExportVolume(
 	// only appears on the host's /dev, not inside the container's /dev, so the
 	// os.Stat() probe would always time out — causing ExportVolume to fail with
 	// FailedPrecondition even though the configfs write succeeds.
+	//
+	// However, when an explicit deviceChecker has been injected (e.g. in unit
+	// tests via SetDeviceChecker or the WithDeviceChecker option), we always
+	// perform polling so that tests exercising the timeout/retry path work
+	// correctly regardless of the configfsRoot value.
 	realConfigfs := s.configfsRoot == "" || s.configfsRoot == nvmeof.DefaultConfigfsRoot
-	if realConfigfs {
+	if realConfigfs || s.deviceChecker != nil {
 		pollInterval := s.devicePollInterval
 		if pollInterval == 0 {
 			pollInterval = nvmeof.DefaultDevicePollInterval
