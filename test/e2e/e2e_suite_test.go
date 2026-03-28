@@ -26,6 +26,7 @@ import (
 	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
+	"github.com/onsi/ginkgo/v2/types"
 	. "github.com/onsi/gomega"
 
 	"github.com/bhyoo/pillar-csi/test/utils"
@@ -54,6 +55,15 @@ func TestE2E(t *testing.T) {
 	_, _ = fmt.Fprintf(GinkgoWriter, "Starting pillar-csi integration test suite\n")
 	RunSpecs(t, "e2e suite")
 }
+
+// ReportAfterEach prints per-spec timing so bottlenecks are visible in logs.
+var _ = ReportAfterEach(func(report SpecReport) {
+	if report.State.Is(types.SpecStatePassed | types.SpecStateFailed) {
+		name := report.FullText()
+		dur := report.RunTime.Seconds()
+		fmt.Fprintf(os.Stdout, "e2e spec: %7.1fs  %s\n", dur, name)
+	}
+})
 
 var _ = BeforeSuite(func() {
 	// When TestMain (setup_test.go) is present in this package it owns the

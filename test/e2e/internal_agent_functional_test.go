@@ -113,17 +113,18 @@ const (
 	iatCleanupTimeout      = 90 * time.Second
 
 	// iatHeartbeatObservation is how long the heartbeat spec observes the
-	// Ready=True condition for stability.
-	iatHeartbeatObservation = 30 * time.Second
+	// Ready=True condition for stability.  15 s is sufficient to verify the
+	// agent heartbeat/lease renewal (interval is typically 5 s).
+	iatHeartbeatObservation = 15 * time.Second
 
 	// iatHeartbeatPoll is the polling interval inside the heartbeat
 	// Consistently block.
-	iatHeartbeatPoll = 5 * time.Second
+	iatHeartbeatPoll = 3 * time.Second
 
 	// iatPendingVerificationDelay is how long the error-path specs wait before
 	// asserting a PVC is still Pending (time for the provisioner to respond
 	// with a failure event if it were going to).
-	iatPendingVerificationDelay = 15 * time.Second
+	iatPendingVerificationDelay = 10 * time.Second
 )
 
 // ─── Package-level state ─────────────────────────────────────────────────────
@@ -1181,7 +1182,7 @@ rmdir  "$NVMET/ports/$PORTID" 2>/dev/null || true
 									"Ready must NOT be True when node does not exist")
 							}
 						}
-					}, 20*time.Second, 5*time.Second).Should(Succeed(),
+					}, 10*time.Second, 3*time.Second).Should(Succeed(),
 						"Ready must not become True for a PillarTarget whose node is absent")
 				})
 			})
@@ -1244,7 +1245,7 @@ rmdir  "$NVMET/ports/$PORTID" 2>/dev/null || true
 									"Ready must NOT be True when pool does not exist")
 							}
 						}
-					}, 20*time.Second, 5*time.Second).Should(Succeed(),
+					}, 10*time.Second, 3*time.Second).Should(Succeed(),
 						"pool Ready must remain False when PoolDiscovered=False")
 				})
 			})

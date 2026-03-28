@@ -34,8 +34,10 @@ import (
 
 const (
 	// DefaultPollInterval is the time between successive polls in all Wait*
-	// helpers when no interval is specified explicitly.
-	DefaultPollInterval = 2 * time.Second
+	// helpers when no interval is specified explicitly.  500 ms provides a
+	// good balance between responsiveness (conditions are often satisfied in
+	// < 1 s) and API-server load.
+	DefaultPollInterval = 500 * time.Millisecond
 
 	// DefaultWaitTimeout is substituted when a caller passes timeout == 0.
 	DefaultWaitTimeout = 90 * time.Second

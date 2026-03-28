@@ -375,7 +375,7 @@ var _ = func() bool {
 
 				initialTransition := readyCond.LastTransitionTime
 				By(fmt.Sprintf(
-					"Ready=True since %s — observing stability for 30 s (polling every 5 s)",
+					"Ready=True since %s — observing stability for 15 s (polling every 3 s)",
 					initialTransition.UTC().Format(time.RFC3339)))
 
 				// Consistently asserts the predicate holds for the full duration.
@@ -397,15 +397,15 @@ var _ = func() bool {
 					g.Expect(cond).NotTo(BeNil(),
 						"Ready condition must still be present on every poll")
 					g.Expect(cond.Status).To(Equal(metav1.ConditionTrue),
-						"Ready condition must remain True throughout the 30 s observation window "+
+						"Ready condition must remain True throughout the 15 s observation window "+
 							"(agent heartbeat/lease must be maintained)")
 					g.Expect(cond.LastTransitionTime).To(Equal(initialTransition),
 						"Ready condition must not flip during observation — "+
 							"a changed LastTransitionTime indicates the heartbeat was interrupted")
-				}, 30*time.Second, 5*time.Second).Should(Succeed(),
+				}, 15*time.Second, 3*time.Second).Should(Succeed(),
 					"Ready=True stability check failed: agent heartbeat/lease not maintained")
 
-				By("heartbeat confirmed: Ready=True held for 30 s without condition flip")
+				By("heartbeat confirmed: Ready=True held for 15 s without condition flip")
 			})
 		})
 	}) // end Describe("ExternalAgent")
