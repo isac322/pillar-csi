@@ -578,6 +578,14 @@ var thirdPartyImages = []string{
 // so that no pod ever needs to pull from an external registry at runtime.
 // This eliminates Docker Hub rate-limit failures (HTTP 429) on CI runners.
 //
+// Parallelism strategy:
+//   - Phase 1: all 3 pillar-csi docker builds run concurrently.
+//   - Phase 2: all 3 kind loads run concurrently (after all builds succeed).
+//   - Phase 3: all third-party pull+load pairs run concurrently.
+//
+// loadImageIntoKindNodes already parallelises across Kind nodes internally;
+// the outer goroutines here parallelise across distinct images.
+//
 // Why not "kind load docker-image":
 //
 // "kind load docker-image" internally pipes the image tar through a
@@ -591,13 +599,13 @@ var thirdPartyImages = []string{
 // Instead, this function uses a file-based approach:
 //  1. "docker save -o localTar image:tag" — downloads the image from the
 //     remote daemon and writes it to a temporary file on the local machine.
-//  2. "docker cp localTar node:/tmp/kind-image.tar" — uploads the local
+//  2. "docker cp localTar node:/root/kind-image.tar" — uploads the local
 //     tar file into each Kind node container via the Docker API's
 //     file-copy endpoint, which is a complete HTTP transaction with no
 //     interactive exec channel.
-//  3. "docker exec node ctr images import /tmp/kind-image.tar" — imports
+//  3. "docker exec node ctr images import /root/kind-image.tar" — imports
 //     from the local file inside the container; no streaming required.
-//  4. "docker exec node rm /tmp/kind-image.tar" — cleans up the tar.
+//  4. "docker exec node rm /root/kind-image.tar" — cleans up the tar.
 //
 // The extra round-trip (download then upload) costs bandwidth but eliminates
 // the exec-streaming reliability problem.
@@ -614,52 +622,99 @@ func buildAndLoadImages() error {
 		{"Dockerfile.node", "ghcr.io/bhyoo/pillar-csi/node:" + testEnv.ImageTag},
 	}
 
+	// ── Phase 1: build all 3 pillar-csi images in parallel ────────────────
+	buildAllDone := logStep("  docker build all images (parallel)")
+	var buildWg sync.WaitGroup
+	buildErrCh := make(chan error, len(images))
 	for _, img := range images {
-		fmt.Fprintf(os.Stdout, "e2e setup: building image %s from %s\n", img.name, img.dockerfile)
-		buildDone := logStep("  docker build " + img.dockerfile)
-		if err := runCmd("docker", "build",
-			"-f", img.dockerfile,
-			"-t", img.name,
-			".",
-		); err != nil {
+		buildWg.Add(1)
+		go func(img imageSpec) {
+			defer buildWg.Done()
+			fmt.Fprintf(os.Stdout, "e2e setup: building image %s from %s\n", img.name, img.dockerfile)
+			buildDone := logStep("  docker build " + img.dockerfile)
+			err := runCmd("docker", "build", "-f", img.dockerfile, "-t", img.name, ".")
 			buildDone()
-			return fmt.Errorf("docker build %s: %w", img.name, err)
+			if err != nil {
+				buildErrCh <- fmt.Errorf("docker build %s: %w", img.name, err)
+			}
+		}(img)
+	}
+	buildWg.Wait()
+	close(buildErrCh)
+	buildAllDone()
+	for err := range buildErrCh {
+		if err != nil {
+			return err
 		}
-		buildDone()
-
-		fmt.Fprintf(os.Stdout, "e2e setup: loading image %s into kind cluster %s\n",
-			img.name, testEnv.ClusterName)
-		loadDone := logStep("  kind load " + img.dockerfile)
-		if err := loadImageIntoKindNodes(img.name); err != nil {
-			loadDone()
-			return fmt.Errorf("load image %s into kind nodes: %w", img.name, err)
-		}
-		loadDone()
 	}
 
-	// Pre-load third-party images into Kind nodes to avoid runtime registry pulls.
-	// "docker pull" is a no-op when the image is already present in the local
-	// daemon cache, so this is fast on subsequent runs.
-	for _, img := range thirdPartyImages {
-		fmt.Fprintf(os.Stdout, "e2e setup: pulling third-party image %s\n", img)
-		pullDone := logStep("  docker pull " + img)
-		if err := runCmd("docker", "pull", img); err != nil {
-			// Non-fatal: log and continue.  If the image is already present in
-			// the daemon cache the pull is a no-op and will succeed; if it fails
-			// for an unrecoverable reason (e.g. network outage) the subsequent
-			// loadImageIntoKindNodes call will also fail with a clear error.
-			fmt.Fprintf(os.Stdout, "e2e setup: warning: docker pull %s: %v\n", img, err)
+	// ── Phase 2: load all 3 pillar-csi images into Kind in parallel ────────
+	loadAllDone := logStep("  kind load all images (parallel)")
+	var loadWg sync.WaitGroup
+	loadErrCh := make(chan error, len(images))
+	for _, img := range images {
+		loadWg.Add(1)
+		go func(img imageSpec) {
+			defer loadWg.Done()
+			fmt.Fprintf(os.Stdout, "e2e setup: loading image %s into kind cluster %s\n",
+				img.name, testEnv.ClusterName)
+			loadDone := logStep("  kind load " + img.dockerfile)
+			err := loadImageIntoKindNodes(img.name)
+			loadDone()
+			if err != nil {
+				loadErrCh <- fmt.Errorf("load image %s into kind nodes: %w", img.name, err)
+			}
+		}(img)
+	}
+	loadWg.Wait()
+	close(loadErrCh)
+	loadAllDone()
+	for err := range loadErrCh {
+		if err != nil {
+			return err
 		}
-		pullDone()
+	}
 
-		fmt.Fprintf(os.Stdout, "e2e setup: loading third-party image %s into kind cluster %s\n",
-			img, testEnv.ClusterName)
-		loadTPDone := logStep("  kind load (3rd-party) " + img)
-		if err := loadImageIntoKindNodes(img); err != nil {
-			loadTPDone()
-			return fmt.Errorf("load third-party image %s into kind nodes: %w", img, err)
+	// ── Phase 3: pull + load all third-party images in parallel ───────────
+	//
+	// Each goroutine pulls its image (no-op when already cached) and then loads
+	// it into all Kind nodes.  Pull and load are sequential within each image
+	// so we only load images that have been successfully pulled.
+	tpAllDone := logStep("  3rd-party pull+load (parallel)")
+	var tpWg sync.WaitGroup
+	tpErrCh := make(chan error, len(thirdPartyImages))
+	for _, img := range thirdPartyImages {
+		tpWg.Add(1)
+		go func(img string) {
+			defer tpWg.Done()
+			fmt.Fprintf(os.Stdout, "e2e setup: pulling third-party image %s\n", img)
+			pullDone := logStep("  docker pull " + img)
+			if err := runCmd("docker", "pull", img); err != nil {
+				// Non-fatal: log and continue.  If the image is already present in
+				// the daemon cache the pull is a no-op and will succeed; if it fails
+				// for an unrecoverable reason (e.g. network outage) the subsequent
+				// loadImageIntoKindNodes call will also fail with a clear error.
+				fmt.Fprintf(os.Stdout, "e2e setup: warning: docker pull %s: %v\n", img, err)
+			}
+			pullDone()
+
+			fmt.Fprintf(os.Stdout, "e2e setup: loading third-party image %s into kind cluster %s\n",
+				img, testEnv.ClusterName)
+			loadDone := logStep("  kind load (3rd-party) " + img)
+			err := loadImageIntoKindNodes(img)
+			loadDone()
+			if err != nil {
+				tpErrCh <- fmt.Errorf("load third-party image %s into kind nodes: %w", img, err)
+			}
+		}(img)
+	}
+	tpWg.Wait()
+	close(tpErrCh)
+	tpAllDone()
+	for err := range tpErrCh {
+		if err != nil {
+			return err
 		}
-		loadTPDone()
 	}
 
 	return nil
@@ -675,6 +730,10 @@ func buildAndLoadImages() error {
 //  3. Import the tar inside the container with "ctr images import <file>".
 //  4. Remove the tar from the container.
 //  5. Remove the local temporary tar file.
+//
+// The on-node tar filename includes an image-derived slug so that multiple
+// concurrent loadImageIntoKindNodes calls (one per image) do not collide on
+// the same Kind node container.
 func loadImageIntoKindNodes(imageName string) error {
 	// Step 1 — Save image to a local tar file.
 	localTar, err := os.CreateTemp("", "kind-image-*.tar")
@@ -703,6 +762,11 @@ func loadImageIntoKindNodes(imageName string) error {
 
 	nodes := strings.Split(strings.TrimSpace(nodesOut), "\n")
 
+	// Derive a safe filename slug from the image name so that concurrent calls
+	// for different images do not overwrite each other's tar on the same node.
+	// e.g. "ghcr.io/bhyoo/pillar-csi/controller:e2e" → "ghcr.io-bhyoo-pillar-csi-controller-e2e"
+	safeImage := strings.NewReplacer("/", "-", ":", "-", ".", "-").Replace(imageName)
+
 	// Load image into all Kind nodes in parallel.
 	var wg sync.WaitGroup
 	errCh := make(chan error, len(nodes))
@@ -718,7 +782,9 @@ func loadImageIntoKindNodes(imageName string) error {
 			// Use /root/ instead of /tmp/: Kind node containers mount /tmp as
 			// tmpfs, and docker cp silently fails to write into tmpfs paths when
 			// the Docker daemon is remote.
-			nodeTar := "/root/kind-image-" + node + ".tar"
+			// Include safeImage in the name to avoid collisions across parallel
+			// loadImageIntoKindNodes calls targeting the same node.
+			nodeTar := "/root/kind-image-" + safeImage + "-" + node + ".tar"
 
 			if err := runCmd("docker", "cp", localTarPath, node+":"+nodeTar); err != nil {
 				errCh <- fmt.Errorf("docker cp to %s: %w", node, err)
