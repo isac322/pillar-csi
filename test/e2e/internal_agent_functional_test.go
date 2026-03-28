@@ -107,10 +107,10 @@ const (
 
 	// Timeout constants used across all specs in this file.
 	iatConnectTimeout      = 30 * time.Second
-	iatConditionTimeout    = 2 * time.Minute
-	iatProvisioningTimeout = 3 * time.Minute
-	iatMountTimeout        = 4 * time.Minute
-	iatCleanupTimeout      = 2 * time.Minute
+	iatConditionTimeout    = 90 * time.Second
+	iatProvisioningTimeout = 90 * time.Second
+	iatMountTimeout        = 90 * time.Second
+	iatCleanupTimeout      = 90 * time.Second
 
 	// iatHeartbeatObservation is how long the heartbeat spec observes the
 	// Ready=True condition for stability.
@@ -717,17 +717,17 @@ var _ = func() bool {
 					// Pre-pull the test pod container image into the compute-worker node
 					// so that pod creation is not delayed by a cold image pull from Docker
 					// Hub (which can exceed the iatMountTimeout in constrained CI environments).
-					By(fmt.Sprintf("pre-pulling busybox:1.36 into compute-worker %q", computeNodeName))
+					By(fmt.Sprintf("pre-pulling %s into compute-worker %q", framework.ImageBusybox, computeNodeName))
 					prePullCmd := exec.CommandContext(ctx, "docker", "exec", computeNodeName,
-						"ctr", "images", "pull", "docker.io/library/busybox:1.36")
+						"ctr", "images", "pull", framework.ImageBusyboxFullyQualified)
 					prePullCmd.Env = append(os.Environ(), "DOCKER_HOST="+testEnv.DockerHost)
 					if prePullOut, prePullErr := prePullCmd.CombinedOutput(); prePullErr != nil {
 						_, _ = fmt.Fprintf(GinkgoWriter,
-							"[prepull] WARNING: busybox:1.36 pre-pull failed (pod may still work): %v: %s\n",
-							prePullErr, prePullOut)
+							"[prepull] WARNING: %s pre-pull failed (pod may still work): %v: %s\n",
+							framework.ImageBusybox, prePullErr, prePullOut)
 					} else {
 						_, _ = fmt.Fprintf(GinkgoWriter,
-							"[prepull] busybox:1.36 pre-pulled into %s\n", computeNodeName)
+							"[prepull] %s pre-pulled into %s\n", framework.ImageBusybox, computeNodeName)
 					}
 				}
 
@@ -1281,16 +1281,16 @@ rmdir  "$NVMET/ports/$PORTID" 2>/dev/null || true
 				})
 
 				It("PVC remains in Pending phase", func(ctx context.Context) {
-					By(fmt.Sprintf("waiting %s then asserting PVC is still Pending",
-						iatPendingVerificationDelay))
-					time.Sleep(iatPendingVerificationDelay)
-
-					current := &corev1.PersistentVolumeClaim{}
-					Expect(iatK8sClient.Get(ctx,
-						client.ObjectKeyFromObject(pvc), current)).To(Succeed())
-					Expect(current.Status.Phase).To(Equal(corev1.ClaimPending),
-						"PVC referencing a non-existent StorageClass must remain Pending — "+
-							"the provisioner must not attempt to provision against an unknown class")
+					By(fmt.Sprintf("asserting PVC stays Pending for %s (polling every %s)",
+						iatPendingVerificationDelay, iatHeartbeatPoll))
+					Consistently(func(g Gomega) {
+						current := &corev1.PersistentVolumeClaim{}
+						g.Expect(iatK8sClient.Get(ctx,
+							client.ObjectKeyFromObject(pvc), current)).To(Succeed())
+						g.Expect(current.Status.Phase).To(Equal(corev1.ClaimPending),
+							"PVC referencing a non-existent StorageClass must remain Pending — "+
+								"the provisioner must not attempt to provision against an unknown class")
+					}, iatPendingVerificationDelay, iatHeartbeatPoll).Should(Succeed())
 				})
 			})
 
@@ -1432,7 +1432,7 @@ func iatZFSPool() string {
 //   - runs on a compute-worker node (pillar-csi.bhyoo.com/compute-node=true)
 //     which is the NVMe-oF initiator side in the Kind topology
 //   - mounts the named PVC at /data
-//   - uses busybox:1.36 to minimise image pull time in CI
+//   - uses framework.ImageBusybox to minimise image pull time in CI
 //   - uses RestartPolicy=Never so a failed start is immediately visible
 func iatBuildTestPod(name, namespace, pvcName string) *corev1.Pod {
 	return &corev1.Pod{
@@ -1449,7 +1449,7 @@ func iatBuildTestPod(name, namespace, pvcName string) *corev1.Pod {
 			Containers: []corev1.Container{
 				{
 					Name:    "test",
-					Image:   "busybox:1.36",
+					Image:   framework.ImageBusybox,
 					Command: []string{"sleep", "infinity"},
 					VolumeMounts: []corev1.VolumeMount{
 						{

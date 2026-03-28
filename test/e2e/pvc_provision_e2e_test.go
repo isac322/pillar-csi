@@ -134,14 +134,14 @@ var _ = func() bool {
 				// Delete the test namespace (and PVC inside it) if Step 3 created it.
 				if ns != nil {
 					By(fmt.Sprintf("cleanup: deleting test namespace %q", ns.Name))
-					if err := framework.EnsureNamespaceGone(dctx, suite.Client, ns.Name, 3*time.Minute); err != nil {
+					if err := framework.EnsureNamespaceGone(dctx, suite.Client, ns.Name, 90*time.Second); err != nil {
 						_, _ = fmt.Fprintf(GinkgoWriter,
 							"warning: cleanup EnsureNamespaceGone %q: %v\n", ns.Name, err)
 					}
 				}
 				// Delete CRs in reverse dependency order (innermost dependents first).
 				for _, obj := range stack.ReverseObjects() {
-					if err := framework.EnsureGone(dctx, suite.Client, obj, 2*time.Minute); err != nil {
+					if err := framework.EnsureGone(dctx, suite.Client, obj, 90*time.Second); err != nil {
 						_, _ = fmt.Fprintf(GinkgoWriter,
 							"warning: cleanup %T %q: %v\n", obj, obj.GetName(), err)
 					}
@@ -198,7 +198,7 @@ var _ = func() bool {
 		It("Step 2: StorageClass is auto-created by the PillarBinding controller",
 			func(ctx SpecContext) {
 				By(fmt.Sprintf(
-					"waiting for PillarBinding %q StorageClassCreated=True (up to 5 m)",
+					"waiting for PillarBinding %q StorageClassCreated=True (up to 90 s)",
 					stack.Binding.Name))
 
 				waitBinding := &v1alpha1.PillarBinding{}
@@ -206,9 +206,9 @@ var _ = func() bool {
 
 				Expect(framework.WaitForCondition(
 					ctx, suite.Client, waitBinding,
-					"StorageClassCreated", metav1.ConditionTrue, 5*time.Minute,
+					"StorageClassCreated", metav1.ConditionTrue, 90*time.Second,
 				)).To(Succeed(),
-					"PillarBinding %q must reach StorageClassCreated=True within 5 m — "+
+					"PillarBinding %q must reach StorageClassCreated=True within 90 s — "+
 						"check that the controller pod is running in namespace %q and that "+
 						"PillarTarget %q reached AgentConnected=True",
 					stack.Binding.Name, testEnv.HelmNamespace, stack.Target.Name,
@@ -274,12 +274,12 @@ var _ = func() bool {
 		//      the PVC.
 		//
 		// The 5-minute timeout covers all async provisioner steps.
-		It("Step 4: PVC reaches the Bound phase within 5 minutes", func(ctx SpecContext) {
-			By(fmt.Sprintf("waiting for PVC %q/%q to reach Bound phase (up to 5 m)",
+		It("Step 4: PVC reaches the Bound phase within 90 seconds", func(ctx SpecContext) {
+			By(fmt.Sprintf("waiting for PVC %q/%q to reach Bound phase (up to 90 s)",
 				pvc.Namespace, pvc.Name))
 
-			Expect(framework.WaitForPVCBound(ctx, suite.Client, pvc, 5*time.Minute)).To(Succeed(),
-				"PVC %q/%q must reach the Bound phase within 5 m — verify that:\n"+
+			Expect(framework.WaitForPVCBound(ctx, suite.Client, pvc, 90*time.Second)).To(Succeed(),
+				"PVC %q/%q must reach the Bound phase within 90 s — verify that:\n"+
 					"  1. The pillar-csi controller plugin is running in namespace %q\n"+
 					"  2. The external-provisioner sidecar is healthy\n"+
 					"  3. The agent at %s can call CreateVolume on ZFS pool %q\n"+

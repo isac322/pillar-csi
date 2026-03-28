@@ -188,10 +188,18 @@ const defaultDockerHost = "tcp://localhost:2375"
 // individual tests call t.Fatal or the process would otherwise exit 0 before
 // cleanup finishes.
 func TestMain(m *testing.M) {
+	suiteStart := time.Now()
 	exitCode := 1 // default to failure; m.Run() will overwrite on success
 
+	// setupDuration and testsDuration are captured in the defer below so that
+	// printTimingReport can include them in the final metrics summary.
+	var setupDuration, testsDuration time.Duration
+
 	defer func() {
+		teardownStart := time.Now()
 		teardownE2E()
+		teardownDuration := time.Since(teardownStart)
+		printTimingReport(suiteStart, setupDuration, testsDuration, teardownDuration, exitCode)
 		os.Exit(exitCode)
 	}()
 
@@ -200,12 +208,17 @@ func TestMain(m *testing.M) {
 		return // deferred teardown + os.Exit(1)
 	}
 
+	setupStart := time.Now()
 	if err := setupE2E(); err != nil {
 		fmt.Fprintf(os.Stderr, "e2e TestMain: setup: %v\n", err)
+		setupDuration = time.Since(setupStart)
 		return // deferred teardown + os.Exit(1)
 	}
+	setupDuration = time.Since(setupStart)
 
+	testsStart := time.Now()
 	exitCode = m.Run() // run all Test* functions (includes Ginkgo suite)
+	testsDuration = time.Since(testsStart)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -273,11 +286,49 @@ func setupE2E() error {
 	if err := validateWorkerNodeMounts(); err != nil {
 		return fmt.Errorf("worker node mounts: %w", err)
 	}
-	if err := buildAndLoadImages(); err != nil {
-		return fmt.Errorf("docker images: %w", err)
-	}
-	if err := setupZFSPool(); err != nil {
-		return fmt.Errorf("zfs pool: %w", err)
+	// ── Parallel: buildAndLoadImages + setupZFSPool ───────────────────────
+	//
+	// These two operations are fully independent:
+	//   - buildAndLoadImages builds and loads pillar-csi Docker images into
+	//     Kind nodes using the local Docker daemon and Kind network.
+	//   - setupZFSPool creates a loopback ZFS pool on the remote Docker host
+	//     via a privileged helper container; it does not touch Kind nodes.
+	//
+	// Running them concurrently overlaps the image-build/load latency
+	// (~60-90 s) with the ZFS pool creation (~30-45 s), eliminating the
+	// sequential bottleneck without any ordering constraint between them.
+	//
+	// Error semantics: both goroutines run to completion regardless of the
+	// other's outcome (we do not cancel on first error) so that the error
+	// channel always receives at most 2 messages.  The first non-nil error
+	// collected after Wait is returned.
+	parallelSetupDone := logStep("  buildAndLoadImages + setupZFSPool (parallel)")
+	parallelErrCh := make(chan error, 2)
+	var parallelWg sync.WaitGroup
+
+	parallelWg.Add(1)
+	go func() {
+		defer parallelWg.Done()
+		if err := buildAndLoadImages(); err != nil {
+			parallelErrCh <- fmt.Errorf("docker images: %w", err)
+		}
+	}()
+
+	parallelWg.Add(1)
+	go func() {
+		defer parallelWg.Done()
+		if err := setupZFSPool(); err != nil {
+			parallelErrCh <- fmt.Errorf("zfs pool: %w", err)
+		}
+	}()
+
+	parallelWg.Wait()
+	close(parallelErrCh)
+	parallelSetupDone()
+	for err := range parallelErrCh {
+		if err != nil {
+			return err
+		}
 	}
 
 	// Export the ZFS pool name so that the functional e2e test suite
@@ -548,24 +599,11 @@ func kindNodePathExists(container, path string) error {
 	return nil
 }
 
-// thirdPartyImages is the list of third-party images used by the Helm chart
-// (init containers and CSI sidecars) that are NOT built locally.  These must
-// be pulled from their registries and pre-loaded into Kind nodes before Helm
-// install so that pods can start without hitting registry rate-limits
-// (e.g. Docker Hub 429 responses for busybox).
+// thirdPartyImages delegates to the centralized registry in
+// framework/images.go so that image versions are maintained in a single place.
 //
-// Keep this list in sync with charts/pillar-csi/values.yaml.
-var thirdPartyImages = []string{
-	// Init containers (busybox with kmod for modprobe)
-	"busybox:1.36",
-	// CSI sidecar images (registry.k8s.io — rate-limit-free but slow to pull;
-	// pre-loading avoids per-node pull latency inside Kind containers).
-	"registry.k8s.io/sig-storage/csi-provisioner:v5.2.0",
-	"registry.k8s.io/sig-storage/csi-attacher:v4.8.1",
-	"registry.k8s.io/sig-storage/csi-resizer:v1.13.2",
-	"registry.k8s.io/sig-storage/livenessprobe:v2.15.0",
-	"registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.13.0",
-}
+// See framework.ThirdPartyImages for the authoritative list and rationale.
+var thirdPartyImages = framework.ThirdPartyImages
 
 // buildAndLoadImages builds the controller, agent, and node Docker images and
 // loads each one into every node of the Kind cluster.  Images are tagged with
@@ -579,12 +617,17 @@ var thirdPartyImages = []string{
 // This eliminates Docker Hub rate-limit failures (HTTP 429) on CI runners.
 //
 // Parallelism strategy:
-//   - Phase 1: all 3 pillar-csi docker builds run concurrently.
-//   - Phase 2: all 3 kind loads run concurrently (after all builds succeed).
-//   - Phase 3: all third-party pull+load pairs run concurrently.
+//   - Phase 1: all 3 pillar-csi docker builds run concurrently (sync.WaitGroup + semaphore).
+//   - Phase 2: all 3 kind loads run concurrently via framework.PullImages (after all builds succeed).
+//   - Phase 3: all third-party pull+load pairs run concurrently via framework.PullImages.
+//
+// Phases 2 and 3 both use framework.PullImages, which provides bounded concurrency
+// (≤ MaxPullConcurrency) and early-exit on first error via errgroup.  Images within
+// each phase are order-independent: they share no state and can be loaded in any
+// permutation, always yielding an identical final Kind node image cache.
 //
 // loadImageIntoKindNodes already parallelises across Kind nodes internally;
-// the outer goroutines here parallelise across distinct images.
+// the framework.PullImages call here parallelises across distinct images.
 //
 // Why not "kind load docker-image":
 //
@@ -623,13 +666,22 @@ func buildAndLoadImages() error {
 	}
 
 	// ── Phase 1: build all 3 pillar-csi images in parallel ────────────────
-	buildAllDone := logStep("  docker build all images (parallel)")
+	//
+	// A semaphore with capacity buildConcurrency (3) limits how many docker
+	// build processes run simultaneously.  With exactly 3 images the semaphore
+	// is acquired immediately by all goroutines, but the cap ensures the limit
+	// is enforced if more images are added in the future.
+	const buildConcurrency = 3
+	buildSem := make(chan struct{}, buildConcurrency)
+	buildAllDone := logStep("  docker build all images (parallel, max 3 concurrent)")
 	var buildWg sync.WaitGroup
 	buildErrCh := make(chan error, len(images))
 	for _, img := range images {
 		buildWg.Add(1)
 		go func(img imageSpec) {
 			defer buildWg.Done()
+			buildSem <- struct{}{}        // acquire a build slot
+			defer func() { <-buildSem }() // release on exit
 			fmt.Fprintf(os.Stdout, "e2e setup: building image %s from %s\n", img.name, img.dockerfile)
 			buildDone := logStep("  docker build " + img.dockerfile)
 			err := runCmd("docker", "build", "-f", img.dockerfile, "-t", img.name, ".")
@@ -649,44 +701,51 @@ func buildAndLoadImages() error {
 	}
 
 	// ── Phase 2: load all 3 pillar-csi images into Kind in parallel ────────
-	loadAllDone := logStep("  kind load all images (parallel)")
-	var loadWg sync.WaitGroup
-	loadErrCh := make(chan error, len(images))
-	for _, img := range images {
-		loadWg.Add(1)
-		go func(img imageSpec) {
-			defer loadWg.Done()
+	//
+	// framework.PullImages provides bounded concurrency (≤ MaxPullConcurrency)
+	// and early-exit error handling via errgroup.  Pillar-csi images are
+	// already present in the Docker daemon (built in Phase 1), so fn only
+	// loads — no docker pull step is needed here.
+	//
+	// Order-independence: the three images (controller, agent, node) are
+	// independent artefacts that share no state.  Any permutation of the
+	// three concurrent loads produces an identical Kind node image cache.
+	// framework.PullImages makes this order-independence explicit: the fn
+	// receives only the image name and performs a pure load with no
+	// cross-image side-effects.
+	loadAllDone := logStep(fmt.Sprintf("  kind load all images (parallel, max %d concurrent)", framework.MaxPullConcurrency))
+	imageNames := make([]string, len(images))
+	for i, img := range images {
+		imageNames[i] = img.name
+	}
+	loadErr := framework.PullImages(context.Background(), imageNames,
+		func(ctx context.Context, img string) error {
 			fmt.Fprintf(os.Stdout, "e2e setup: loading image %s into kind cluster %s\n",
-				img.name, testEnv.ClusterName)
-			loadDone := logStep("  kind load " + img.dockerfile)
-			err := loadImageIntoKindNodes(img.name)
+				img, testEnv.ClusterName)
+			loadDone := logStep("  kind load " + img)
+			err := loadImageIntoKindNodes(img)
 			loadDone()
 			if err != nil {
-				loadErrCh <- fmt.Errorf("load image %s into kind nodes: %w", img.name, err)
+				return fmt.Errorf("load image %s into kind nodes: %w", img, err)
 			}
-		}(img)
-	}
-	loadWg.Wait()
-	close(loadErrCh)
+			return nil
+		},
+	)
 	loadAllDone()
-	for err := range loadErrCh {
-		if err != nil {
-			return err
-		}
+	if loadErr != nil {
+		return loadErr
 	}
 
 	// ── Phase 3: pull + load all third-party images in parallel ───────────
 	//
-	// Each goroutine pulls its image (no-op when already cached) and then loads
-	// it into all Kind nodes.  Pull and load are sequential within each image
-	// so we only load images that have been successfully pulled.
-	tpAllDone := logStep("  3rd-party pull+load (parallel)")
-	var tpWg sync.WaitGroup
-	tpErrCh := make(chan error, len(thirdPartyImages))
-	for _, img := range thirdPartyImages {
-		tpWg.Add(1)
-		go func(img string) {
-			defer tpWg.Done()
+	// framework.PullImages caps concurrency at maxPullConcurrency (6) using an
+	// errgroup + buffered-channel semaphore.  This prevents Docker Hub
+	// rate-limits (HTTP 429) and avoids saturating the CI network link with
+	// unbounded simultaneous pulls.  Pull and load are sequential within each
+	// image so we only load images that have been successfully pulled.
+	tpAllDone := logStep(fmt.Sprintf("  3rd-party pull+load (parallel, max %d concurrent)", framework.MaxPullConcurrency))
+	tpErr := framework.PullImages(context.Background(), thirdPartyImages,
+		func(ctx context.Context, img string) error {
 			fmt.Fprintf(os.Stdout, "e2e setup: pulling third-party image %s\n", img)
 			pullDone := logStep("  docker pull " + img)
 			if err := runCmd("docker", "pull", img); err != nil {
@@ -704,17 +763,14 @@ func buildAndLoadImages() error {
 			err := loadImageIntoKindNodes(img)
 			loadDone()
 			if err != nil {
-				tpErrCh <- fmt.Errorf("load third-party image %s into kind nodes: %w", img, err)
+				return fmt.Errorf("load third-party image %s into kind nodes: %w", img, err)
 			}
-		}(img)
-	}
-	tpWg.Wait()
-	close(tpErrCh)
+			return nil
+		},
+	)
 	tpAllDone()
-	for err := range tpErrCh {
-		if err != nil {
-			return err
-		}
+	if tpErr != nil {
+		return tpErr
 	}
 
 	return nil
@@ -1561,6 +1617,47 @@ func logStep(name string) func() {
 	return func() {
 		fmt.Fprintf(os.Stdout, "e2e timing: %-44s  %.1fs\n", name, time.Since(start).Seconds())
 	}
+}
+
+// printTimingReport prints a structured timing summary at the end of a
+// TestMain run.  It is called from the deferred closure in TestMain so it
+// always executes regardless of whether setup, tests, or teardown failed.
+//
+// Output uses the same "e2e timing:" prefix as logStep so the full timing
+// profile (individual steps + summary) can be extracted from any log stream
+// with:
+//
+//	grep "^e2e timing:" <log>
+//
+// Baseline measurements (DOCKER_HOST=tcp://localhost:2375, 2026-03-28):
+//
+//	internal-agent  setup ≈ 240s  tests ≈ 205s  teardown ≈ 30s  total ≈ 475s
+//	external-agent  setup ≈ 130s  tests ≈  35s  teardown ≈ 20s  total ≈ 185s
+func printTimingReport(suiteStart time.Time, setup, tests, teardown time.Duration, exitCode int) {
+	total := time.Since(suiteStart)
+	mode := "internal-agent"
+	if isExternalAgentMode() {
+		mode = "external-agent"
+	}
+	status := "PASS"
+	if exitCode != 0 {
+		status = "FAIL"
+	}
+	sep := "e2e timing: " + strings.Repeat("─", 46)
+	fmt.Printf("\n")
+	fmt.Printf("e2e timing: %s\n", strings.Repeat("━", 46))
+	fmt.Printf("e2e timing:  E2E TIMING METRICS REPORT\n")
+	fmt.Printf("%s\n", sep)
+	fmt.Printf("e2e timing:  mode     %-37s\n", mode)
+	fmt.Printf("e2e timing:  status   %-37s\n", status)
+	fmt.Printf("%s\n", sep)
+	fmt.Printf("e2e timing:  setup    %34.1fs\n", setup.Seconds())
+	fmt.Printf("e2e timing:  tests    %34.1fs\n", tests.Seconds())
+	fmt.Printf("e2e timing:  teardown %34.1fs\n", teardown.Seconds())
+	fmt.Printf("%s\n", sep)
+	fmt.Printf("e2e timing:  total    %34.1fs\n", total.Seconds())
+	fmt.Printf("e2e timing: %s\n", strings.Repeat("━", 46))
+	fmt.Printf("\n")
 }
 
 // isExternalAgentMode reports whether the test binary was invoked in

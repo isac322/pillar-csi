@@ -81,8 +81,8 @@ import (
 // ─────────────────────────────────────────────────────────────────────────────
 
 // hostExecImage is the container image used for the privileged helper.
-// debian:bookworm-slim ships nsenter (util-linux) on both amd64 and arm64.
-const hostExecImage = "debian:bookworm-slim"
+// Defined in framework/images.go as ImageDebianBookwormSlim.
+const hostExecImage = ImageDebianBookwormSlim
 
 // hostExecContainerName is a deterministic name for the helper container.
 // A fixed name means that interrupted test runs leave at most one stale

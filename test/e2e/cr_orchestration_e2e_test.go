@@ -135,7 +135,7 @@ var _ = func() bool {
 					return
 				}
 				for _, obj := range stack.ReverseObjects() {
-					if err := framework.EnsureGone(dctx, suite.Client, obj, 2*time.Minute); err != nil {
+					if err := framework.EnsureGone(dctx, suite.Client, obj, 90*time.Second); err != nil {
 						_, _ = fmt.Fprintf(GinkgoWriter,
 							"warning: cleanup %T %q: %v\n", obj, obj.GetName(), err)
 					}
@@ -292,7 +292,7 @@ var _ = func() bool {
 				// updates it in-place, so after the call returns successfully the
 				// binding object carries the latest server state.
 				By(fmt.Sprintf(
-					"waiting for PillarBinding %q StorageClassCreated=True (up to 5 m)",
+					"waiting for PillarBinding %q StorageClassCreated=True (up to 90 s)",
 					stack.Binding.Name))
 
 				// Use a fresh binding object with only the name set; WaitForCondition
@@ -302,9 +302,9 @@ var _ = func() bool {
 
 				Expect(framework.WaitForCondition(
 					ctx, suite.Client, waitBinding,
-					"StorageClassCreated", metav1.ConditionTrue, 5*time.Minute,
+					"StorageClassCreated", metav1.ConditionTrue, 90*time.Second,
 				)).To(Succeed(),
-					"PillarBinding %q must reach StorageClassCreated=True within 5 m — "+
+					"PillarBinding %q must reach StorageClassCreated=True within 90 s — "+
 						"check that the controller pod is running in namespace %q, that "+
 						"PillarTarget %q reached AgentConnected=True, and that PillarPool "+
 						"%q reached Ready=True",

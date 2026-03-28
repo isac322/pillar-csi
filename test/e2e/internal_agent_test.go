@@ -65,7 +65,7 @@ const (
 
 	// defaultInternalAgentReadyTimeout is the maximum time to wait for all
 	// agent DaemonSet pods to become Ready before aborting BeforeSuite.
-	defaultInternalAgentReadyTimeout = 3 * time.Minute
+	defaultInternalAgentReadyTimeout = 90 * time.Second
 )
 
 // ─── InternalAgentSuite ──────────────────────────────────────────────────────

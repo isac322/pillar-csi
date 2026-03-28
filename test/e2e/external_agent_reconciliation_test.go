@@ -718,15 +718,17 @@ var _ = func() bool {
 			// spec: status.bindingCount starts at zero (no bindings yet).
 
 			It("status.bindingCount is zero when no PillarBindings reference the protocol", func(ctx SpecContext) {
-				// Poll briefly to let the reconciler set initial status.
-				time.Sleep(3 * time.Second)
-
-				fresh := &v1alpha1.PillarProtocol{}
-				Expect(reconState.suite.Client.Get(ctx,
-					client.ObjectKey{Name: protoName}, fresh)).To(Succeed())
-
-				Expect(fresh.Status.BindingCount).To(BeNumerically("==", 0),
-					"bindingCount must be 0 when no PillarBinding references the protocol")
+				// Poll until the reconciler sets the initial status instead of
+				// using a fixed sleep; exits as soon as the condition holds and
+				// retries if the reconciler is briefly slow.
+				Eventually(func(g Gomega) {
+					fresh := &v1alpha1.PillarProtocol{}
+					g.Expect(reconState.suite.Client.Get(ctx,
+						client.ObjectKey{Name: protoName}, fresh)).To(Succeed())
+					g.Expect(fresh.Status.BindingCount).To(BeNumerically("==", 0),
+						"bindingCount must be 0 when no PillarBinding references the protocol")
+				}, 30*time.Second, time.Second).Should(Succeed(),
+					"PillarProtocol bindingCount must remain 0 when no PillarBindings exist")
 				By("PillarProtocol bindingCount=0 confirmed (no bindings)")
 			})
 		})
@@ -839,7 +841,7 @@ var _ = func() bool {
 				err := framework.WaitForField(ctx, reconState.suite.Client, binding,
 					func(b *v1alpha1.PillarBinding) bool {
 						return b.Status.StorageClassName != ""
-					}, 3*time.Minute)
+					}, 90*time.Second)
 				Expect(err).NotTo(HaveOccurred(),
 					"status.storageClassName must be populated once the controller "+
 						"creates or identifies the StorageClass for this binding")
@@ -881,8 +883,8 @@ var _ = func() bool {
 					g.Expect(sc.Provisioner).NotTo(BeEmpty(),
 						"StorageClass provisioner must be set")
 					storageClass = sc
-				}, 2*time.Minute, 2*time.Second).Should(Succeed(),
-					"StorageClass %q must be created by the controller within 2 min", scName)
+				}, 90*time.Second, 2*time.Second).Should(Succeed(),
+					"StorageClass %q must be created by the controller within 90 s", scName)
 
 				By(fmt.Sprintf(
 					"StorageClass %q exists (provisioner=%s)",

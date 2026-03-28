@@ -118,14 +118,11 @@ var _ = Describe("CRFixtures", func() {
 		})
 
 		It("generates different names on successive calls", func() {
-			// Two calls within the same millisecond could collide; sleep briefly
-			// if needed.  In practice test processes are fast enough that the
-			// UnixMilli modulus differs between calls.
 			n1 := framework.UniqueName("e2e")
-			time.Sleep(2 * time.Millisecond)
 			n2 := framework.UniqueName("e2e")
-			// We cannot guarantee uniqueness in all edge cases, but we can
-			// verify both are non-empty and look reasonable.
+			// Verify both names are non-empty and look reasonable.
+			// Exact uniqueness is not guaranteed (same millisecond) but is
+			// typical; the assertions below are the authoritative contract.
 			Expect(n1).NotTo(BeEmpty())
 			Expect(n2).NotTo(BeEmpty())
 		})

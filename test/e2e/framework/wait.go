@@ -38,7 +38,7 @@ const (
 	DefaultPollInterval = 2 * time.Second
 
 	// DefaultWaitTimeout is substituted when a caller passes timeout == 0.
-	DefaultWaitTimeout = 2 * time.Minute
+	DefaultWaitTimeout = 90 * time.Second
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
