@@ -121,14 +121,32 @@ jobs:
           sudo modprobe nvme_tcp
 
       # ── pre-pull third-party images ────────────────────────────────────────
-      # Pull init-container and CSI sidecar images from their public registries
-      # into the Docker daemon cache BEFORE TestMain creates the Kind cluster.
-      # buildAndLoadImages() then copies them from the daemon cache into Kind
-      # nodes via docker save + docker cp + ctr import.
+      # Pull all Docker Hub base images and third-party sidecar images into
+      # the local Docker daemon cache BEFORE any docker build or Kind cluster
+      # creation.  Two categories:
       #
-      # This step prevents Docker Hub rate-limit errors (HTTP 429) during
-      # the Helm install phase when Kind pods would otherwise try to pull
-      # busybox:1.36 from the public internet.
+      # 1. Dockerfile base images — alpine:3.21 and golang:1.26-alpine3.23 are
+      #    the FROM stages in Dockerfile, Dockerfile.agent, and Dockerfile.node.
+      #    Pre-pulling them here means "docker build" finds them in the local
+      #    cache and never contacts Docker Hub, avoiding HTTP 429 rate-limit
+      #    and HTTP 401 auth errors for anonymous runners.
+      #
+      # 2. Helm chart runtime images — buildAndLoadImages() copies them from
+      #    the daemon cache into Kind nodes via docker save + docker cp so that
+      #    pods start without hitting registry rate-limits at runtime.
+      - name: Pre-pull Docker Hub base images (Dockerfile stages)
+        run: |
+          # Runtime base used by Dockerfile.agent and Dockerfile.node.
+          # Pull by the same digest that is pinned in the Dockerfiles so the
+          # layer cache is warm when "docker build" resolves the FROM line.
+          docker pull alpine:3.21@sha256:56fa17d2a7e7f168a043a2712e63aed1f8543aeafdcee47c58dcffe38ed51099
+          # Re-tag to the plain tag as well so the build stage resolves it.
+          docker tag \
+            alpine:3.21@sha256:56fa17d2a7e7f168a043a2712e63aed1f8543aeafdcee47c58dcffe38ed51099 \
+            alpine:3.21
+          # Builder stage used by all three Dockerfiles.
+          docker pull golang:1.26-alpine3.23
+
       - name: Pre-pull third-party images
         run: |
           docker pull busybox:1.36
