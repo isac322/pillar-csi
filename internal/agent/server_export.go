@@ -105,7 +105,9 @@ func (s *Server) ExportVolume(
 		Port:         params.GetPort(),
 		ACLEnabled:   req.GetAclEnabled(),
 	}
+	unlock := s.lockNQN(nqn)
 	applyErr := t.Apply()
+	unlock()
 	if applyErr != nil {
 		return nil, status.Errorf(codes.Internal, "ExportVolume: %v", applyErr)
 	}
@@ -145,8 +147,11 @@ func (s *Server) UnexportVolume(
 	if req.GetProtocolType() != agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP {
 		return nil, status.Errorf(codes.Unimplemented, errOnlyNvmeofTCP)
 	}
+	nqn := volumeNQN(req.GetVolumeId())
 	t := s.targetForVolume(req.GetVolumeId())
+	unlock := s.lockNQN(nqn)
 	removeErr := t.Remove()
+	unlock()
 	if removeErr != nil {
 		return nil, status.Errorf(codes.Internal, "UnexportVolume: %v", removeErr)
 	}

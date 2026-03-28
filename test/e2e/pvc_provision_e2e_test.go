@@ -46,14 +46,21 @@ limitations under the License.
 //
 // # Cleanup
 //
-// DeferCleanup handlers are registered before any state is created so that
-// the PVC, namespace, and all CRs are always removed — even when an assertion
-// fails.  Cleanup order (LIFO):
+// All cleanup is registered in BeforeAll's DeferCleanup so that it runs as an
+// AfterAll node — after ALL specs in the Ordered container complete (or after
+// the last executed spec when a failure causes subsequent specs to be skipped).
 //
-//	PVC deleted (EnsurePVCGone)
-//	  → test namespace deleted (EnsureNamespaceGone)
-//	    → CRs deleted in reverse dependency order (Binding→Protocol→Pool→Target)
-//	      → suite client closed (TeardownSuite)
+// IMPORTANT: In Ginkgo v2, DeferCleanup inside an It block behaves like
+// AfterEach (runs after THAT spec, before the next spec).  For Ordered
+// containers where later specs depend on state created in earlier specs, all
+// shared cleanup must be registered in BeforeAll's DeferCleanup (AfterAll
+// semantics) rather than in individual It blocks.
+//
+// Cleanup order (LIFO within BeforeAll's DeferCleanup):
+//
+//	test namespace deleted (EnsureNamespaceGone) — includes PVC and any PV
+//	  → CRs deleted in reverse dependency order (Binding→Protocol→Pool→Target)
+//	    → suite client closed (TeardownSuite)
 //
 // Note: because PVs are cluster-scoped and owned by the provisioner, the PV
 // is reclaimed automatically when the PVC is deleted (ReclaimPolicy=Delete).
@@ -114,13 +121,25 @@ var _ = func() bool {
 			}
 			stack = framework.NewKindE2EStack(prefix, agentAddr, testEnv.ZFSPoolName)
 
-			// Register CR cleanup BEFORE creating any resources so that all CRs
-			// are removed even when an assertion below fails.  CRs are deleted in
-			// reverse dependency order (innermost dependents first).
+			// Register ALL cleanup in BeforeAll's DeferCleanup so it runs as an
+			// AfterAll node (after ALL specs complete).  This is essential because
+			// later specs (Steps 4–5) depend on state created in earlier specs
+			// (Step 3 creates the namespace and PVC).  A DeferCleanup inside an
+			// It block behaves like AfterEach and would delete the namespace after
+			// Step 3, before Step 4 can check the PVC phase.
 			DeferCleanup(func(dctx SpecContext) {
 				if suite == nil {
 					return
 				}
+				// Delete the test namespace (and PVC inside it) if Step 3 created it.
+				if ns != nil {
+					By(fmt.Sprintf("cleanup: deleting test namespace %q", ns.Name))
+					if err := framework.EnsureNamespaceGone(dctx, suite.Client, ns.Name, 3*time.Minute); err != nil {
+						_, _ = fmt.Fprintf(GinkgoWriter,
+							"warning: cleanup EnsureNamespaceGone %q: %v\n", ns.Name, err)
+					}
+				}
+				// Delete CRs in reverse dependency order (innermost dependents first).
 				for _, obj := range stack.ReverseObjects() {
 					if err := framework.EnsureGone(dctx, suite.Client, obj, 2*time.Minute); err != nil {
 						_, _ = fmt.Fprintf(GinkgoWriter,
@@ -219,15 +238,9 @@ var _ = func() bool {
 					"create test namespace with prefix 'pvc-prov'")
 				By(fmt.Sprintf("created test namespace %q", ns.Name))
 
-				// Register namespace cleanup BEFORE the PVC so that the namespace
-				// (and everything inside it) is removed on test failure.
-				DeferCleanup(func(dctx SpecContext) {
-					By(fmt.Sprintf("cleanup: deleting test namespace %q", ns.Name))
-					if err := framework.EnsureNamespaceGone(dctx, suite.Client, ns.Name, 3*time.Minute); err != nil {
-						_, _ = fmt.Fprintf(GinkgoWriter,
-							"warning: cleanup EnsureNamespaceGone %q: %v\n", ns.Name, err)
-					}
-				})
+				// NOTE: namespace cleanup is registered in BeforeAll's DeferCleanup
+				// (AfterAll semantics) so it runs after ALL steps complete — not here
+				// (which would run as AfterEach, deleting the namespace before Step 4).
 
 				// Build the PVC.  StorageClass name == binding name (per pillar-csi convention).
 				// Request 1 Gi — small enough to be cheap on a loopback-backed ZFS pool

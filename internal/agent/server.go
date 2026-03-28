@@ -21,6 +21,7 @@ package agent
 
 import (
 	"strings"
+	"sync"
 	"time"
 
 	"google.golang.org/grpc"
@@ -75,6 +76,12 @@ type Server struct {
 	// nvmeof.OsStatDeviceChecker (os.Stat-based) is used as the production
 	// default.  Override in tests via SetDeviceChecker (export_test.go).
 	deviceChecker nvmeof.DeviceChecker
+
+	// nqnMu serializes ExportVolume and UnexportVolume on the same NQN to
+	// prevent partial-state races when export and unexport are called
+	// concurrently for the same volume (e.g. during reconciliation).
+	// Values are *sync.Mutex; LoadOrStore is used to create on first access.
+	nqnMu sync.Map
 }
 
 // Ensure Server satisfies the interface at compile time.
@@ -109,6 +116,20 @@ func (s *Server) Register(g *grpc.Server) {
 // Example: "tank/pvc-abc" → "nqn.2026-01.com.bhyoo.pillar-csi:tank.pvc-abc".
 func volumeNQN(volumeID string) string {
 	return nqnPrefix + strings.ReplaceAll(volumeID, "/", ".")
+}
+
+// lockNQN acquires the per-NQN mutex and returns an unlock function.
+// It serializes concurrent ExportVolume / UnexportVolume calls for the same
+// volume so that configfs state is always internally consistent.
+func (s *Server) lockNQN(nqn string) func() {
+	v, _ := s.nqnMu.LoadOrStore(nqn, &sync.Mutex{})
+	mu, ok := v.(*sync.Mutex)
+	if !ok {
+		// Should never happen: only *sync.Mutex values are stored in nqnMu.
+		mu = &sync.Mutex{}
+	}
+	mu.Lock()
+	return mu.Unlock
 }
 
 // poolFromVolumeID extracts the pool name from a volumeID of form
