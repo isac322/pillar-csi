@@ -51,6 +51,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -682,45 +683,47 @@ func loadImageIntoKindNodes(imageName string) error {
 		return fmt.Errorf("docker ps for kind nodes: %s: %w", strings.TrimSpace(nodesOut), err)
 	}
 
-	for _, node := range strings.Split(strings.TrimSpace(nodesOut), "\n") {
-		node = strings.TrimSpace(node)
+	nodes := strings.Split(strings.TrimSpace(nodesOut), "\n")
+
+	// Load image into all Kind nodes in parallel.
+	var wg sync.WaitGroup
+	errCh := make(chan error, len(nodes))
+
+	for _, rawNode := range nodes {
+		node := strings.TrimSpace(rawNode)
 		if node == "" {
 			continue
 		}
+		wg.Add(1)
+		go func(node string) {
+			defer wg.Done()
+			// Use /root/ instead of /tmp/: Kind node containers mount /tmp as
+			// tmpfs, and docker cp silently fails to write into tmpfs paths when
+			// the Docker daemon is remote.
+			nodeTar := "/root/kind-image-" + node + ".tar"
 
-		// Use /root/ instead of /tmp/: Kind node containers mount /tmp as
-		// tmpfs, and docker cp silently fails to write into tmpfs paths when
-		// the Docker daemon is remote (returns exit 0 but no file appears).
-		// /root/ is backed by the container's overlay filesystem and accepts
-		// docker cp writes reliably.
-		const nodeTar = "/root/kind-image.tar"
+			if err := runCmd("docker", "cp", localTarPath, node+":"+nodeTar); err != nil {
+				errCh <- fmt.Errorf("docker cp to %s: %w", node, err)
+				return
+			}
+			if err := runCmd("docker", "exec", node,
+				"ctr", "--namespace=k8s.io", "images", "import",
+				"--all-platforms", "--digests", "--snapshotter=overlayfs",
+				nodeTar,
+			); err != nil {
+				errCh <- fmt.Errorf("ctr import on %s: %w", node, err)
+				return
+			}
+			_ = runCmd("docker", "exec", node, "rm", nodeTar)
+		}(node)
+	}
+	wg.Wait()
+	close(errCh)
 
-		// Step 3 — Copy tar into the node container.
-		fmt.Fprintf(os.Stdout, "e2e setup: copying image tar to node %s\n", node)
-		if err := runCmd("docker", "cp", localTarPath, node+":"+nodeTar); err != nil {
-			return fmt.Errorf("docker cp to %s: %w", node, err)
+	for err := range errCh {
+		if err != nil {
+			return err
 		}
-
-		// Verify the file landed in the container.
-		if err := runCmd("docker", "exec", node, "test", "-f", nodeTar); err != nil {
-			return fmt.Errorf(
-				"file %s missing in %s immediately after docker cp "+
-					"(docker cp may not support remote daemon file upload): %w",
-				nodeTar, node, err)
-		}
-
-		// Step 4 — Import from the file (no exec-streaming needed).
-		fmt.Fprintf(os.Stdout, "e2e setup: importing image on node %s\n", node)
-		if err := runCmd("docker", "exec", node,
-			"ctr", "--namespace=k8s.io", "images", "import",
-			"--all-platforms", "--digests", "--snapshotter=overlayfs",
-			nodeTar,
-		); err != nil {
-			return fmt.Errorf("ctr import on %s: %w", node, err)
-		}
-
-		// Step 5 — Remove tar from the container.
-		_ = runCmd("docker", "exec", node, "rm", nodeTar) //nolint:errcheck
 	}
 	return nil
 }
@@ -771,6 +774,7 @@ func installHelm() error {
 		"--set", "agent.image.tag="+testEnv.ImageTag,
 		"--set", "node.image.tag="+testEnv.ImageTag,
 		"--wait",
+		"--atomic",
 		"--timeout", "5m",
 	)
 
