@@ -262,6 +262,8 @@ func initE2EEnv() error {
 //     network and wait for it to become ready.
 //  4. Install the Helm chart (with external-agent overlay when applicable).
 func setupE2E() error {
+	defer logStep("setupE2E (total)")()
+
 	if err := ensureKindCluster(); err != nil {
 		return fmt.Errorf("kind cluster: %w", err)
 	}
@@ -332,6 +334,7 @@ func setupE2E() error {
 // state.  Either outcome violates the "always fresh" guarantee, so we
 // return a hard error and abort setup entirely.
 func ensureKindCluster() error {
+	defer logStep("ensureKindCluster")()
 	// Delete any pre-existing cluster with the same name to guarantee a clean
 	// slate and prevent state leakage between runs.
 	//
@@ -454,6 +457,7 @@ kubeadmConfigPatches:
 // the label is present on every run (Kind applies node labels only during
 // "kind create cluster", which we always invoke).
 func ensureStorageNodeLabel() error {
+	defer logStep("ensureStorageNodeLabel")()
 	fmt.Fprintf(os.Stdout, "e2e setup: ensuring storage-node label on first worker\n")
 	// Find the first worker node (not control-plane).
 	out, err := captureOutput("kubectl", "get", "nodes",
@@ -493,6 +497,7 @@ func ensureStorageNodeLabel() error {
 // configuration surfaces as a clear error message rather than a cryptic
 // timeout later in the suite.
 func validateWorkerNodeMounts() error {
+	defer logStep("validateWorkerNodeMounts")()
 	fmt.Fprintf(os.Stdout, "e2e setup: validating worker node mount accessibility\n")
 
 	// ── /sys/kernel/config on the storage worker ──────────────────────────
@@ -597,6 +602,8 @@ var thirdPartyImages = []string{
 // The extra round-trip (download then upload) costs bandwidth but eliminates
 // the exec-streaming reliability problem.
 func buildAndLoadImages() error {
+	defer logStep("buildAndLoadImages (total)")()
+
 	type imageSpec struct {
 		dockerfile string
 		name       string
@@ -609,19 +616,25 @@ func buildAndLoadImages() error {
 
 	for _, img := range images {
 		fmt.Fprintf(os.Stdout, "e2e setup: building image %s from %s\n", img.name, img.dockerfile)
+		buildDone := logStep("  docker build " + img.dockerfile)
 		if err := runCmd("docker", "build",
 			"-f", img.dockerfile,
 			"-t", img.name,
 			".",
 		); err != nil {
+			buildDone()
 			return fmt.Errorf("docker build %s: %w", img.name, err)
 		}
+		buildDone()
 
 		fmt.Fprintf(os.Stdout, "e2e setup: loading image %s into kind cluster %s\n",
 			img.name, testEnv.ClusterName)
+		loadDone := logStep("  kind load " + img.dockerfile)
 		if err := loadImageIntoKindNodes(img.name); err != nil {
+			loadDone()
 			return fmt.Errorf("load image %s into kind nodes: %w", img.name, err)
 		}
+		loadDone()
 	}
 
 	// Pre-load third-party images into Kind nodes to avoid runtime registry pulls.
@@ -629,6 +642,7 @@ func buildAndLoadImages() error {
 	// daemon cache, so this is fast on subsequent runs.
 	for _, img := range thirdPartyImages {
 		fmt.Fprintf(os.Stdout, "e2e setup: pulling third-party image %s\n", img)
+		pullDone := logStep("  docker pull " + img)
 		if err := runCmd("docker", "pull", img); err != nil {
 			// Non-fatal: log and continue.  If the image is already present in
 			// the daemon cache the pull is a no-op and will succeed; if it fails
@@ -636,12 +650,16 @@ func buildAndLoadImages() error {
 			// loadImageIntoKindNodes call will also fail with a clear error.
 			fmt.Fprintf(os.Stdout, "e2e setup: warning: docker pull %s: %v\n", img, err)
 		}
+		pullDone()
 
 		fmt.Fprintf(os.Stdout, "e2e setup: loading third-party image %s into kind cluster %s\n",
 			img, testEnv.ClusterName)
+		loadTPDone := logStep("  kind load (3rd-party) " + img)
 		if err := loadImageIntoKindNodes(img); err != nil {
+			loadTPDone()
 			return fmt.Errorf("load third-party image %s into kind nodes: %w", img, err)
 		}
+		loadTPDone()
 	}
 
 	return nil
@@ -739,6 +757,8 @@ func loadImageIntoKindNodes(imageName string) error {
 // ensure the chart references the exact images loaded into Kind — even when
 // ImageTag differs from the hardcoded "e2e" default in the embedded YAML.
 func installHelm() error {
+	defer logStep("installHelm (total)")()
+
 	valuesFile, err := writeTempFile("helm-values-*.yaml", HelmValuesYAML)
 	if err != nil {
 		return fmt.Errorf("write helm values: %w", err)
@@ -778,9 +798,12 @@ func installHelm() error {
 		"--timeout", "5m",
 	)
 
+	helmDone := logStep("  helm upgrade --install")
 	if err := runCmd("helm", args...); err != nil {
+		helmDone()
 		return err
 	}
+	helmDone()
 
 	// Wait for the pillar-csi CRDs to be fully established in the API server.
 	//
@@ -795,6 +818,7 @@ func installHelm() error {
 	// has registered the REST endpoint, making subsequent client operations
 	// reliable.  All five pillar-csi CRDs must be established before tests run.
 	fmt.Fprintf(os.Stdout, "e2e setup: waiting for pillar-csi CRDs to be established\n")
+	crdDone := logStep("  wait CRDs established")
 	crdWaitErr := runCmd("kubectl", "wait",
 		"--for=condition=established",
 		"--timeout=60s",
@@ -804,6 +828,7 @@ func installHelm() error {
 		"crd/pillarbindings.pillar-csi.pillar-csi.bhyoo.com",
 		"crd/pillarvolumes.pillar-csi.pillar-csi.bhyoo.com",
 	)
+	crdDone()
 	if crdWaitErr != nil {
 		return fmt.Errorf("wait for pillar-csi CRDs to be established: %w", crdWaitErr)
 	}
@@ -829,6 +854,7 @@ func installHelm() error {
 	// discovery).  A 60-second deadline is more than enough for the API server
 	// to refresh its discovery document after CRD establishment.
 	fmt.Fprintf(os.Stdout, "e2e setup: waiting for pillar-csi API group to appear in discovery\n")
+	discDone := logStep("  wait API group discoverable")
 	discoveryDeadline := time.Now().Add(60 * time.Second)
 	for time.Now().Before(discoveryDeadline) {
 		out, _ := captureOutput("kubectl", "get",
@@ -840,6 +866,7 @@ func installHelm() error {
 		}
 		time.Sleep(2 * time.Second)
 	}
+	discDone()
 	fmt.Fprintf(os.Stdout, "e2e setup: pillar-csi API group is discoverable\n")
 
 	// Wait for the agent DaemonSet object to exist in the cluster.
@@ -855,6 +882,7 @@ func installHelm() error {
 	// a rollout-status wait would succeed immediately anyway.
 	if testEnv.ExternalAgentAddr == "" {
 		fmt.Fprintf(os.Stdout, "e2e setup: waiting for agent DaemonSet pillar-csi-agent to exist\n")
+		dsDone := logStep("  wait agent DaemonSet exists")
 		agentDSDeadline := time.Now().Add(2 * time.Minute)
 		for time.Now().Before(agentDSDeadline) {
 			out, err := captureOutput("kubectl", "get", "daemonset", "pillar-csi-agent",
@@ -867,11 +895,13 @@ func installHelm() error {
 			fmt.Fprintf(os.Stdout, "e2e setup: agent DaemonSet not yet present, retrying...\n")
 			time.Sleep(3 * time.Second)
 		}
+		dsDone()
 		fmt.Fprintf(os.Stdout, "e2e setup: agent DaemonSet pillar-csi-agent is present\n")
 
 		// Wait for the agent DaemonSet rollout to complete so that all test
 		// specs that assert DaemonSet readiness start from a known-good state.
 		fmt.Fprintf(os.Stdout, "e2e setup: waiting for agent DaemonSet rollout\n")
+		rolloutDone := logStep("  wait agent DaemonSet rollout")
 		if err := runCmd("kubectl", "rollout", "status",
 			"daemonset/pillar-csi-agent",
 			"--namespace", testEnv.HelmNamespace,
@@ -880,6 +910,7 @@ func installHelm() error {
 			fmt.Fprintf(os.Stderr,
 				"e2e setup: WARNING: agent DaemonSet rollout did not complete: %v\n", err)
 		}
+		rolloutDone()
 		fmt.Fprintf(os.Stdout, "e2e setup: agent DaemonSet rollout complete\n")
 	}
 
@@ -905,6 +936,8 @@ func installHelm() error {
 // steps.  The only exception to the "best-effort" rule is the final cluster
 // deletion, which runs unconditionally even after Helm or container failures.
 func teardownE2E() {
+	defer logStep("teardownE2E (total)")()
+
 	if os.Getenv("E2E_SKIP_TEARDOWN") == "true" {
 		fmt.Fprintf(os.Stdout, "e2e teardown: SKIPPED (E2E_SKIP_TEARDOWN=true) — cluster %q left running for debugging\n", testEnv.ClusterName)
 		return
@@ -912,12 +945,14 @@ func teardownE2E() {
 	if testEnv.HelmRelease != "" {
 		fmt.Fprintf(os.Stdout, "e2e teardown: uninstalling helm release %q\n",
 			testEnv.HelmRelease)
+		helmDone := logStep("  helm uninstall")
 		if err := runCmd("helm", "uninstall", testEnv.HelmRelease,
 			"--namespace", testEnv.HelmNamespace,
 			"--ignore-not-found",
 		); err != nil {
 			fmt.Fprintf(os.Stderr, "e2e teardown: helm uninstall: %v\n", err)
 		}
+		helmDone()
 	}
 
 	// Stop and remove the external-agent container started by TestMain.
@@ -945,11 +980,13 @@ func teardownE2E() {
 	}
 	fmt.Fprintf(os.Stdout, "e2e teardown: deleting kind cluster %q (unconditional)\n",
 		clusterName)
+	kindDone := logStep("  kind delete cluster")
 	if err := runCmd("kind", "delete", "cluster",
 		"--name", clusterName,
 	); err != nil {
 		fmt.Fprintf(os.Stderr, "e2e teardown: kind delete cluster: %v\n", err)
 	}
+	kindDone()
 
 	// Remove the temporary kubeconfig written by writeKindKubeconfig.
 	if testEnv.KubeconfigPath != "" {
@@ -978,6 +1015,7 @@ func teardownE2E() {
 // file) are cleaned up inside CreateLoopbackZFSPool via its internal deferred
 // guards, so no additional cleanup is required here on failure.
 func setupZFSPool() error {
+	defer logStep("setupZFSPool")()
 	ctx := context.Background()
 
 	fmt.Fprintf(os.Stdout,
@@ -1030,6 +1068,7 @@ func teardownZFSPool() {
 	if h == nil {
 		return
 	}
+	defer logStep("teardownZFSPool")()
 
 	ctx := context.Background()
 
@@ -1059,6 +1098,7 @@ func teardownZFSPool() {
 // the kube-apiserver to restart.  Calling waitForAPIServer before running
 // Helm guarantees that the API is reachable before Helm sends API requests.
 func waitForAPIServer(timeout time.Duration) error {
+	defer logStep("waitForAPIServer")()
 	deadline := time.Now().Add(timeout)
 	fmt.Fprintf(os.Stdout, "e2e setup: waiting up to %s for Kubernetes API server to be ready\n",
 		timeout)
@@ -1254,6 +1294,7 @@ func externalAgentImageRef() string {
 // On error all resources allocated so far are left for stopExternalAgentContainer
 // to clean up via testEnv.externalAgentContainerID (set on first success).
 func startExternalAgentContainer() error {
+	defer logStep("startExternalAgentContainer")()
 	name := externalAgentContainerName()
 	image := externalAgentImageRef()
 	hostAddr := net.JoinHostPort("127.0.0.1", testEnv.ExternalAgentPort)
@@ -1344,6 +1385,7 @@ func stopExternalAgentContainer() {
 	if id == "" {
 		return
 	}
+	defer logStep("stopExternalAgentContainer")()
 
 	fmt.Fprintf(os.Stdout, "e2e teardown: stopping external agent container (id %.12s)\n", id)
 
@@ -1436,6 +1478,23 @@ func envOrDefault(key, defaultValue string) string {
 		return v
 	}
 	return defaultValue
+}
+
+// logStep logs that a named setup/teardown step has started and returns a
+// function that logs how long it took.  Intended for use as:
+//
+//	defer logStep("myStep")()
+//
+// in setup and teardown functions so that every exit path (normal return,
+// early return on error, panic+recover) records the elapsed wall-clock time.
+// Output is prefixed with "e2e timing:" so it is easy to grep out of verbose
+// test logs to identify bottlenecks.
+func logStep(name string) func() {
+	start := time.Now()
+	fmt.Fprintf(os.Stdout, "e2e timing: %-44s  [start]\n", name)
+	return func() {
+		fmt.Fprintf(os.Stdout, "e2e timing: %-44s  %.1fs\n", name, time.Since(start).Seconds())
+	}
 }
 
 // isExternalAgentMode reports whether the test binary was invoked in
