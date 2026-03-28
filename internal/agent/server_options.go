@@ -49,13 +49,3 @@ func WithDevicePollParams(interval, timeout time.Duration) ServerOption {
 		s.devicePollTimeout = timeout
 	}
 }
-
-// WithSysModuleZFSPath overrides the filesystem path used by HealthCheck to
-// verify that the ZFS kernel module is loaded.
-//
-// In production this defaults to /sys/module/zfs.  Tests supply a tmpdir-based
-// path so the health check can be exercised without requiring ZFS to be
-// installed on the test host.
-func WithSysModuleZFSPath(path string) ServerOption {
-	return func(s *Server) { s.sysModuleZFSPath = path }
-}

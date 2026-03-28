@@ -30,21 +30,6 @@ import (
 	"github.com/bhyoo/pillar-csi/internal/agent/nvmeof"
 )
 
-// SetServerSysModuleZFSPath overrides the path used by checkZFSModule to
-// verify that the ZFS kernel module is loaded.  In production the path
-// defaults to /sys/module/zfs; tests supply a t.TempDir()-based path so the
-// check can be made to return either healthy or unhealthy without requiring
-// ZFS to be installed in the CI environment.
-//
-// The original value is restored automatically via t.Cleanup so that parallel
-// tests cannot interfere with each other.
-func SetServerSysModuleZFSPath(t *testing.T, s *Server, path string) {
-	t.Helper()
-	orig := s.sysModuleZFSPath
-	s.sysModuleZFSPath = path
-	t.Cleanup(func() { s.sysModuleZFSPath = orig })
-}
-
 // SetDeviceChecker overrides the DeviceChecker used by ExportVolume to probe
 // whether the zvol block device is present.  In production the server uses
 // nvmeof.OsStatDeviceChecker (os.Stat-based); tests substitute a mock so that

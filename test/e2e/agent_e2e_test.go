@@ -103,6 +103,12 @@ func (m *agentE2EMockBackend) DevicePath(_ string) string {
 	return m.devicePath
 }
 
+// Type identifies the e2e mock as a ZFS zvol backend so that GetCapabilities
+// returns the correct supported backend types without hardcoding.
+func (*agentE2EMockBackend) Type() agentv1.BackendType {
+	return agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL
+}
+
 // Compile-time interface check.
 var _ backend.VolumeBackend = (*agentE2EMockBackend)(nil)
 
@@ -300,15 +306,15 @@ func TestAgent_HealthCheck(t *testing.T) {
 		t.Error("CheckedAt timestamp is nil")
 	}
 
-	// Must have subsystem entries.
+	// Must have subsystem entries: nvmet_configfs + pool/tank (≥ 2).
 	subsystems := resp.GetSubsystems()
-	if len(subsystems) < 3 { // zfs_module + nvmet_configfs + pool/tank
-		t.Errorf("expected ≥ 3 subsystems, got %d: %v", len(subsystems), subsystemNames(subsystems))
+	if len(subsystems) < 2 { // nvmet_configfs + pool/tank
+		t.Errorf("expected ≥ 2 subsystems, got %d: %v", len(subsystems), subsystemNames(subsystems))
 	}
 
-	// Verify required subsystem names are present.
+	// Verify required backend-agnostic subsystem names are present.
 	names := subsystemNames(subsystems)
-	wantNames := []string{"zfs_module", "nvmet_configfs", "pool/tank"}
+	wantNames := []string{"nvmet_configfs", "pool/tank"}
 	for _, want := range wantNames {
 		found := slices.Contains(names, want)
 		if !found {

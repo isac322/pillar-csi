@@ -54,7 +54,7 @@ func Degraded(msg string) ComponentStatus {
 
 // PoolStatus pairs a pool name with the health status of that pool's backend.
 type PoolStatus struct {
-	// Pool is the ZFS pool name (e.g. "tank", "hot-data").
+	// Pool is the storage pool name (e.g. "tank", "hot-data").
 	Pool string
 	// Status is the operational health of this pool's backend.
 	Status ComponentStatus
@@ -66,15 +66,16 @@ type PoolStatus struct {
 // inspect individual components without iterating over a generic list or
 // performing string comparisons on names.
 //
-//	ZFSModule     — kernel module (/sys/module/zfs existence check)
 //	NvmetConfigfs — nvmet configfs tree accessibility
 //	PerPoolStatus — per-pool backend reachability (one entry per registered pool)
 //
+// Backend-specific prerequisite checks (e.g. kernel-module presence) are
+// intentionally omitted from this struct: they are backend-private concerns
+// that do not belong in a generic health model.  Per-pool reachability
+// (PerPoolStatus) serves as the authoritative signal for backend health.
+//
 //nolint:revive // "health.HealthStatus" is intentional: avoids ambiguity with ComponentStatus/PoolStatus.
 type HealthStatus struct {
-	// ZFSModule reports whether the ZFS kernel module is loaded.
-	ZFSModule ComponentStatus
-
 	// NvmetConfigfs reports whether the nvmet configfs directory tree is
 	// mounted and accessible at the expected path.
 	NvmetConfigfs ComponentStatus
@@ -87,7 +88,7 @@ type HealthStatus struct {
 // AllHealthy returns true only when every component — including all pools —
 // is healthy.
 func (h HealthStatus) AllHealthy() bool {
-	if !h.ZFSModule.Healthy || !h.NvmetConfigfs.Healthy {
+	if !h.NvmetConfigfs.Healthy {
 		return false
 	}
 	for _, p := range h.PerPoolStatus {
@@ -103,17 +104,11 @@ func (h HealthStatus) AllHealthy() bool {
 //
 // Name conventions used in the output (stable, used by callers that parse the
 // response):
-//   - "zfs_module"        — ZFS kernel module check
 //   - "nvmet_configfs"    — nvmet configfs check
 //   - "pool/<pool-name>"  — per-pool backend check
 func (h HealthStatus) ToProtoSubsystems() []*agentv1.SubsystemStatus {
 	result := append(
-		make([]*agentv1.SubsystemStatus, 0, 2+len(h.PerPoolStatus)),
-		&agentv1.SubsystemStatus{
-			Name:    "zfs_module",
-			Healthy: h.ZFSModule.Healthy,
-			Message: h.ZFSModule.Message,
-		},
+		make([]*agentv1.SubsystemStatus, 0, 1+len(h.PerPoolStatus)),
 		&agentv1.SubsystemStatus{
 			Name:    "nvmet_configfs",
 			Healthy: h.NvmetConfigfs.Healthy,

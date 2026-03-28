@@ -137,6 +137,13 @@ func (m *mockVolumeBackend) DevicePath(_ string) string {
 	return m.devicePathResult
 }
 
+// Type satisfies the backend.VolumeBackend interface.  The mock always
+// identifies itself as a ZFS zvol backend so that GetCapabilities and
+// collectPoolInfo work correctly in component tests.
+func (*mockVolumeBackend) Type() agentv1.BackendType {
+	return agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL
+}
+
 var _ backend.VolumeBackend = (*mockVolumeBackend)(nil)
 
 // ---------------------------------------------------------------------------
@@ -1100,17 +1107,11 @@ func TestAgentServer_ListExports_ReturnsEmpty(t *testing.T) {
 // ---------------------------------------------------------------------------.
 
 // TestAgentServer_HealthCheck_AllHealthy validates that HealthCheck reports
-// healthy when ZFS module path and configfs nvmet dir exist.
+// healthy when the configfs nvmet dir exists and all pool backends are reachable.
 func TestAgentServer_HealthCheck_AllHealthy(t *testing.T) {
 	t.Parallel()
 
 	tmpDir := t.TempDir()
-
-	// Create a fake ZFS module path directory.
-	zfsModulePath := filepath.Join(tmpDir, "zfs-module")
-	if err := os.MkdirAll(zfsModulePath, 0o750); err != nil {
-		t.Fatalf("create zfs module dir: %v", err)
-	}
 
 	// Create the nvmet directory inside the configfs root.
 	nvmetDir := filepath.Join(tmpDir, "configfs", "nvmet")
@@ -1126,7 +1127,6 @@ func TestAgentServer_HealthCheck_AllHealthy(t *testing.T) {
 	srv := agent.NewServer(backends,
 		filepath.Join(tmpDir, "configfs"),
 		agent.WithDeviceChecker(nvmeof.AlwaysPresentChecker),
-		agent.WithSysModuleZFSPath(zfsModulePath),
 	)
 
 	resp, err := srv.HealthCheck(context.Background(), &agentv1.HealthCheckRequest{})
@@ -1138,9 +1138,10 @@ func TestAgentServer_HealthCheck_AllHealthy(t *testing.T) {
 	}
 }
 
-// TestAgentServer_HealthCheck_ZFSModuleMissing validates that HealthCheck
-// reports unhealthy when the ZFS module path does not exist.
-func TestAgentServer_HealthCheck_ZFSModuleMissing(t *testing.T) {
+// TestAgentServer_HealthCheck_NvmetConfigfsHealthy validates that HealthCheck
+// reports healthy for the nvmet_configfs subsystem when the nvmet directory
+// exists, regardless of the backend type.
+func TestAgentServer_HealthCheck_NvmetConfigfsHealthy(t *testing.T) {
 	t.Parallel()
 
 	tmpDir := t.TempDir()
@@ -1160,30 +1161,25 @@ func TestAgentServer_HealthCheck_ZFSModuleMissing(t *testing.T) {
 	srv := agent.NewServer(backends,
 		filepath.Join(tmpDir, "configfs"),
 		agent.WithDeviceChecker(nvmeof.AlwaysPresentChecker),
-		// sysModuleZFSPath points to a non-existent path.
-		agent.WithSysModuleZFSPath(filepath.Join(tmpDir, "nonexistent-module")),
 	)
 
 	resp, err := srv.HealthCheck(context.Background(), &agentv1.HealthCheckRequest{})
 	if err != nil {
 		t.Fatalf("HealthCheck unexpected error: %v", err)
 	}
-	if resp.GetHealthy() {
-		t.Error("expected Healthy=false when ZFS module path missing, got true")
-	}
 
-	// Find the zfs_module subsystem and verify it is degraded.
-	foundZFSModule := false
+	// Find the nvmet_configfs subsystem and verify it is healthy.
+	foundNvmet := false
 	for _, sub := range resp.GetSubsystems() {
-		if sub.GetName() == "zfs_module" {
-			foundZFSModule = true
-			if sub.GetHealthy() {
-				t.Error("zfs_module subsystem should be unhealthy")
+		if sub.GetName() == "nvmet_configfs" {
+			foundNvmet = true
+			if !sub.GetHealthy() {
+				t.Errorf("nvmet_configfs subsystem should be healthy: %s", sub.GetMessage())
 			}
 		}
 	}
-	if !foundZFSModule {
-		t.Error("zfs_module subsystem missing from response")
+	if !foundNvmet {
+		t.Error("nvmet_configfs subsystem missing from response")
 	}
 }
 
@@ -1193,12 +1189,6 @@ func TestAgentServer_HealthCheck_ConfigfsMissing(t *testing.T) {
 	t.Parallel()
 
 	tmpDir := t.TempDir()
-
-	// Create ZFS module path so that module check passes.
-	zfsModulePath := filepath.Join(tmpDir, "zfs-module")
-	if err := os.MkdirAll(zfsModulePath, 0o750); err != nil {
-		t.Fatalf("create zfs module dir: %v", err)
-	}
 
 	// DO NOT create nvmet dir — configfs check should fail.
 	backends := map[string]backend.VolumeBackend{
@@ -1210,7 +1200,6 @@ func TestAgentServer_HealthCheck_ConfigfsMissing(t *testing.T) {
 	srv := agent.NewServer(backends,
 		filepath.Join(tmpDir, "configfs-missing"), // no nvmet dir here
 		agent.WithDeviceChecker(nvmeof.AlwaysPresentChecker),
-		agent.WithSysModuleZFSPath(zfsModulePath),
 	)
 
 	resp, err := srv.HealthCheck(context.Background(), &agentv1.HealthCheckRequest{})
@@ -1228,10 +1217,6 @@ func TestAgentServer_HealthCheck_PoolDegraded(t *testing.T) {
 	t.Parallel()
 
 	tmpDir := t.TempDir()
-	zfsModulePath := filepath.Join(tmpDir, "zfs-module")
-	if err := os.MkdirAll(zfsModulePath, 0o750); err != nil {
-		t.Fatalf("create zfs module dir: %v", err)
-	}
 	nvmetDir := filepath.Join(tmpDir, "configfs", "nvmet")
 	if err := os.MkdirAll(nvmetDir, 0o750); err != nil {
 		t.Fatalf("create nvmet dir: %v", err)
@@ -1245,7 +1230,6 @@ func TestAgentServer_HealthCheck_PoolDegraded(t *testing.T) {
 	srv := agent.NewServer(backends,
 		filepath.Join(tmpDir, "configfs"),
 		agent.WithDeviceChecker(nvmeof.AlwaysPresentChecker),
-		agent.WithSysModuleZFSPath(zfsModulePath),
 	)
 
 	resp, err := srv.HealthCheck(context.Background(), &agentv1.HealthCheckRequest{})

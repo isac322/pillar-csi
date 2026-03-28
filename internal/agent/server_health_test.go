@@ -17,10 +17,9 @@ limitations under the License.
 // Package agent_test provides focused unit tests for the HealthCheck RPC.
 //
 // Design principles applied in this file:
-//   - os.Stat is mocked by pointing sysModuleZFSPath (via SetServerSysModuleZFSPath)
-//     and configfsRoot (via NewServer) at t.TempDir() paths so that the ZFS module
-//     and nvmet configfs checks can be driven into healthy or unhealthy states
-//     without requiring kernel modules or real configfs mounts.
+//   - configfsRoot (via NewServer) is pointed at t.TempDir() paths so that the
+//     nvmet configfs check can be driven into healthy or unhealthy states without
+//     requiring real configfs mounts.
 //   - backend.Capacity() is mocked via mockBackend.capacityErr so that per-pool
 //     reachability can be driven to healthy or unhealthy.
 //   - Every assertion targets a NAMED SubsystemStatus field (Name, Healthy, Message)
@@ -75,14 +74,6 @@ func subsysNames(subs []*agentv1.SubsystemStatus) []string {
 	return names
 }
 
-// makeZFSDir creates a directory at path, simulating a loaded ZFS kernel module.
-func makeZFSDir(t *testing.T, path string) {
-	t.Helper()
-	if err := os.MkdirAll(path, 0o750); err != nil {
-		t.Fatalf("create fake ZFS module dir %q: %v", path, err)
-	}
-}
-
 // makeNvmetDir creates the nvmet/ subdirectory inside cfgRoot,
 // simulating a mounted nvmet configfs tree.
 func makeNvmetDir(t *testing.T, cfgRoot string) {
@@ -97,7 +88,6 @@ func makeNvmetDir(t *testing.T, cfgRoot string) {
 
 // TestHealthCheck_Structured_AllHealthy verifies the structured field values
 // produced by HealthCheck when every component is fully operational:
-//   - ZFS module path exists          → zfs_module:   Healthy=true, Message non-empty
 //   - nvmet configfs dir exists       → nvmet_configfs: Healthy=true, Message non-empty
 //   - backend.Capacity() succeeds     → pool/tank:    Healthy=true, Message non-empty
 //   - top-level Healthy flag          → true
@@ -110,11 +100,6 @@ func TestHealthCheck_Structured_AllHealthy(t *testing.T) {
 	}
 	srv, cfgRoot := newExportTestServer(t, mb)
 
-	// Simulate loaded ZFS module.
-	fakeZFSPath := filepath.Join(t.TempDir(), "zfs")
-	makeZFSDir(t, fakeZFSPath)
-	agent.SetServerSysModuleZFSPath(t, srv, fakeZFSPath)
-
 	// Simulate mounted nvmet configfs.
 	makeNvmetDir(t, cfgRoot)
 
@@ -123,15 +108,6 @@ func TestHealthCheck_Structured_AllHealthy(t *testing.T) {
 	// --- top-level healthy flag ---
 	if !resp.GetHealthy() {
 		t.Error("resp.Healthy = false, want true when all components are healthy")
-	}
-
-	// --- zfs_module structured fields ---
-	zfsSub := requireSubsystem(t, resp.GetSubsystems(), "zfs_module")
-	if !zfsSub.GetHealthy() {
-		t.Errorf("zfs_module.Healthy = false, want true; Message: %q", zfsSub.GetMessage())
-	}
-	if zfsSub.GetMessage() == "" {
-		t.Error("zfs_module.Message must be non-empty when healthy")
 	}
 
 	// --- nvmet_configfs structured fields ---
@@ -150,44 +126,6 @@ func TestHealthCheck_Structured_AllHealthy(t *testing.T) {
 	}
 	if poolSub.GetMessage() == "" {
 		t.Errorf("pool/%s.Message must be non-empty when healthy", testPool)
-	}
-}
-
-// TestHealthCheck_Structured_ZFSModuleAbsent verifies the structured field
-// values produced by HealthCheck when the ZFS kernel module is not loaded
-// (the sysModuleZFSPath does not exist):
-//   - zfs_module: Healthy=false, Name="zfs_module", Message non-empty
-//   - top-level Healthy flag: false
-func TestHealthCheck_Structured_ZFSModuleAbsent(t *testing.T) {
-	t.Parallel()
-
-	srv, _ := newExportTestServer(t, &mockBackend{})
-
-	// Point at a non-existent path — no ZFS module.
-	agent.SetServerSysModuleZFSPath(t, srv, filepath.Join(t.TempDir(), "zfs-missing"))
-
-	resp := healthCheckResp(t, srv)
-
-	// --- top-level healthy flag must be false ---
-	if resp.GetHealthy() {
-		t.Error("resp.Healthy = true, want false when ZFS module is absent")
-	}
-
-	// --- zfs_module structured fields ---
-	sub := requireSubsystem(t, resp.GetSubsystems(), "zfs_module")
-
-	if sub.GetName() != "zfs_module" {
-		t.Errorf("zfs_module.Name = %q, want \"zfs_module\"", sub.GetName())
-	}
-	if sub.GetHealthy() {
-		t.Error("zfs_module.Healthy = true, want false when module path is absent")
-	}
-	if sub.GetMessage() == "" {
-		t.Error("zfs_module.Message must be non-empty when unhealthy")
-	}
-	// Message should mention the failure context (not just a generic error).
-	if !strings.Contains(strings.ToLower(sub.GetMessage()), "zfs") {
-		t.Errorf("zfs_module.Message %q expected to reference \"zfs\"", sub.GetMessage())
 	}
 }
 
@@ -286,8 +224,7 @@ func TestHealthCheck_Structured_AgentMetadata(t *testing.T) {
 }
 
 // TestHealthCheck_Structured_SubsystemCount verifies that the response always
-// contains exactly two core entries (zfs_module + nvmet_configfs) plus one
-// entry per registered pool.
+// contains exactly one core entry (nvmet_configfs) plus one entry per registered pool.
 func TestHealthCheck_Structured_SubsystemCount(t *testing.T) {
 	t.Parallel()
 
@@ -295,8 +232,8 @@ func TestHealthCheck_Structured_SubsystemCount(t *testing.T) {
 
 	resp := healthCheckResp(t, srv)
 
-	// 1 pool ("tank") registered, so 2 core + 1 pool = 3 total.
-	const wantTotal = 3
+	// 1 pool ("tank") registered, so 1 core + 1 pool = 2 total.
+	const wantTotal = 2
 	if got := len(resp.GetSubsystems()); got != wantTotal {
 		t.Errorf("len(Subsystems) = %d, want %d; names: %v",
 			got, wantTotal, subsysNames(resp.GetSubsystems()))

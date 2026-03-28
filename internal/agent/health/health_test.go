@@ -51,7 +51,6 @@ func TestDegraded_IsUnhealthy(t *testing.T) {
 func TestAllHealthy_AllOK(t *testing.T) {
 	t.Parallel()
 	hs := health.HealthStatus{
-		ZFSModule:     health.OK("zfs loaded"),
 		NvmetConfigfs: health.OK("configfs mounted"),
 		PerPoolStatus: []health.PoolStatus{
 			{Pool: "tank", Status: health.OK("pool healthy")},
@@ -62,21 +61,9 @@ func TestAllHealthy_AllOK(t *testing.T) {
 	}
 }
 
-func TestAllHealthy_ZFSDegraded(t *testing.T) {
-	t.Parallel()
-	hs := health.HealthStatus{
-		ZFSModule:     health.Degraded("zfs module missing"),
-		NvmetConfigfs: health.OK("configfs mounted"),
-	}
-	if hs.AllHealthy() {
-		t.Error("AllHealthy() should be false when ZFSModule is degraded")
-	}
-}
-
 func TestAllHealthy_NvmetDegraded(t *testing.T) {
 	t.Parallel()
 	hs := health.HealthStatus{
-		ZFSModule:     health.OK("zfs loaded"),
 		NvmetConfigfs: health.Degraded("nvmet dir missing"),
 	}
 	if hs.AllHealthy() {
@@ -87,7 +74,6 @@ func TestAllHealthy_NvmetDegraded(t *testing.T) {
 func TestAllHealthy_PoolDegraded(t *testing.T) {
 	t.Parallel()
 	hs := health.HealthStatus{
-		ZFSModule:     health.OK("zfs loaded"),
 		NvmetConfigfs: health.OK("configfs mounted"),
 		PerPoolStatus: []health.PoolStatus{
 			{Pool: "hot-data", Status: health.OK("pool healthy")},
@@ -103,7 +89,6 @@ func TestAllHealthy_EmptyPools(t *testing.T) {
 	t.Parallel()
 	// Zero PerPoolStatus entries should not affect overall health.
 	hs := health.HealthStatus{
-		ZFSModule:     health.OK("zfs loaded"),
 		NvmetConfigfs: health.OK("configfs mounted"),
 	}
 	if !hs.AllHealthy() {
@@ -116,22 +101,20 @@ func TestAllHealthy_EmptyPools(t *testing.T) {
 func TestToProtoSubsystems_AlwaysContainsCoreEntries(t *testing.T) {
 	t.Parallel()
 	hs := health.HealthStatus{
-		ZFSModule:     health.OK("zfs loaded"),
 		NvmetConfigfs: health.Degraded("nvmet dir missing"),
 	}
 
 	subs := hs.ToProtoSubsystems()
 
-	// Must always emit exactly two core entries plus pool entries.
-	if len(subs) != 2 {
-		t.Fatalf("len(subsystems) = %d, want 2", len(subs))
+	// Must always emit exactly one core entry (nvmet_configfs) plus pool entries.
+	if len(subs) != 1 {
+		t.Fatalf("len(subsystems) = %d, want 1", len(subs))
 	}
 }
 
 func TestToProtoSubsystems_NameConventions(t *testing.T) {
 	t.Parallel()
 	hs := health.HealthStatus{
-		ZFSModule:     health.OK("zfs loaded"),
 		NvmetConfigfs: health.OK("configfs mounted"),
 		PerPoolStatus: []health.PoolStatus{
 			{Pool: "tank", Status: health.OK("pool healthy")},
@@ -140,7 +123,7 @@ func TestToProtoSubsystems_NameConventions(t *testing.T) {
 
 	subs := hs.ToProtoSubsystems()
 
-	wantNames := []string{"zfs_module", "nvmet_configfs", "pool/tank"}
+	wantNames := []string{"nvmet_configfs", "pool/tank"}
 	if len(subs) != len(wantNames) {
 		t.Fatalf("len(subsystems) = %d, want %d", len(subs), len(wantNames))
 	}
@@ -154,7 +137,6 @@ func TestToProtoSubsystems_NameConventions(t *testing.T) {
 func TestToProtoSubsystems_HealthyFieldMirrored(t *testing.T) {
 	t.Parallel()
 	hs := health.HealthStatus{
-		ZFSModule:     health.Degraded("no module"),
 		NvmetConfigfs: health.OK("mounted"),
 		PerPoolStatus: []health.PoolStatus{
 			{Pool: "tank", Status: health.Degraded("io error")},
@@ -163,37 +145,28 @@ func TestToProtoSubsystems_HealthyFieldMirrored(t *testing.T) {
 
 	subs := hs.ToProtoSubsystems()
 
-	// zfs_module → unhealthy
-	if subs[0].GetHealthy() {
-		t.Error("zfs_module subsystem should be unhealthy")
-	}
 	// nvmet_configfs → healthy
-	if !subs[1].GetHealthy() {
+	if !subs[0].GetHealthy() {
 		t.Error("nvmet_configfs subsystem should be healthy")
 	}
 	// pool/tank → unhealthy
-	if subs[2].GetHealthy() {
+	if subs[1].GetHealthy() {
 		t.Error("pool/tank subsystem should be unhealthy")
 	}
 }
 
 func TestToProtoSubsystems_MessageMirrored(t *testing.T) {
 	t.Parallel()
-	const zfsMsg = "ZFS kernel module loaded."
 	const nvmetMsg = "nvmet configfs directory accessible."
 
 	hs := health.HealthStatus{
-		ZFSModule:     health.OK(zfsMsg),
 		NvmetConfigfs: health.OK(nvmetMsg),
 	}
 
 	subs := hs.ToProtoSubsystems()
 
-	if subs[0].GetMessage() != zfsMsg {
-		t.Errorf("zfs_module message = %q, want %q", subs[0].GetMessage(), zfsMsg)
-	}
-	if subs[1].GetMessage() != nvmetMsg {
-		t.Errorf("nvmet_configfs message = %q, want %q", subs[1].GetMessage(), nvmetMsg)
+	if subs[0].GetMessage() != nvmetMsg {
+		t.Errorf("nvmet_configfs message = %q, want %q", subs[0].GetMessage(), nvmetMsg)
 	}
 }
 
@@ -205,22 +178,21 @@ func TestToProtoSubsystems_MultiplePoolsPreserveOrder(t *testing.T) {
 		{Pool: "gamma", Status: health.Degraded("degraded")},
 	}
 	hs := health.HealthStatus{
-		ZFSModule:     health.OK("loaded"),
 		NvmetConfigfs: health.OK("mounted"),
 		PerPoolStatus: pools,
 	}
 
 	subs := hs.ToProtoSubsystems()
 
-	// 2 core + 3 pool entries = 5 total
-	if len(subs) != 5 {
-		t.Fatalf("len(subsystems) = %d, want 5", len(subs))
+	// 1 core + 3 pool entries = 4 total
+	if len(subs) != 4 {
+		t.Fatalf("len(subsystems) = %d, want 4", len(subs))
 	}
 	wantPoolNames := []string{"pool/alpha", "pool/beta", "pool/gamma"}
 	for i, want := range wantPoolNames {
-		got := subs[i+2].GetName()
+		got := subs[i+1].GetName()
 		if got != want {
-			t.Errorf("subsystems[%d].Name = %q, want %q", i+2, got, want)
+			t.Errorf("subsystems[%d].Name = %q, want %q", i+1, got, want)
 		}
 	}
 }

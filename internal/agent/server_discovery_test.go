@@ -24,7 +24,6 @@ import (
 	"testing"
 
 	agentv1 "github.com/bhyoo/pillar-csi/gen/go/pillar_csi/agent/v1"
-	"github.com/bhyoo/pillar-csi/internal/agent"
 )
 
 // GetCapabilities tests.
@@ -191,9 +190,9 @@ func TestHealthCheck_SubsystemsPresent(t *testing.T) {
 		t.Fatalf("HealthCheck unexpected error: %v", err)
 	}
 
-	// Expect at least two core subsystems (zfs_module and nvmet_configfs)
+	// Expect at least one core subsystem (nvmet_configfs)
 	// plus one pool entry for "tank".
-	const wantMinSubsystems = 3
+	const wantMinSubsystems = 2
 	if len(resp.GetSubsystems()) < wantMinSubsystems {
 		t.Errorf("expected >= %d subsystems, got %d", wantMinSubsystems, len(resp.GetSubsystems()))
 	}
@@ -210,7 +209,6 @@ func TestHealthCheck_SubsystemsPresent(t *testing.T) {
 
 // TestHealthCheck_NamedSubsystemFields verifies that the structured HealthStatus
 // model produces subsystem entries with the expected stable name conventions:
-//   - "zfs_module"       for the ZFS kernel module check
 //   - "nvmet_configfs"   for the nvmet configfs check
 //   - "pool/<pool-name>" for each registered pool
 func TestHealthCheck_NamedSubsystemFields(t *testing.T) {
@@ -223,11 +221,6 @@ func TestHealthCheck_NamedSubsystemFields(t *testing.T) {
 	resp, err := srv.HealthCheck(context.Background(), &agentv1.HealthCheckRequest{})
 	if err != nil {
 		t.Fatalf("HealthCheck unexpected error: %v", err)
-	}
-
-	// zfs_module must be present.
-	if sub := findSubsystem(resp.GetSubsystems(), "zfs_module"); sub == nil {
-		t.Error("subsystem \"zfs_module\" not found in HealthCheck response")
 	}
 
 	// nvmet_configfs must be present.
@@ -290,92 +283,5 @@ func TestHealthCheck_PoolStatusDegraded(t *testing.T) {
 	}
 	if resp.GetHealthy() {
 		t.Error("overall Healthy should be false when a pool is degraded")
-	}
-}
-
-// ZFS module health-check tests.
-//
-// These tests use SetServerSysModuleZFSPath (exported via export_test.go) to
-// inject a t.TempDir()-based path so the check can be exercised in both the
-// healthy and unhealthy states without requiring the ZFS kernel module to be
-// installed in the CI environment.
-
-// TestHealthCheck_ZFSModuleHealthy verifies that checkZFSModule reports
-// healthy when the target path exists (simulating a loaded kernel module).
-func TestHealthCheck_ZFSModuleHealthy(t *testing.T) {
-	t.Parallel()
-	srv, _ := newExportTestServer(t, &mockBackend{})
-
-	// Create a fake "zfs" directory to simulate /sys/module/zfs being present.
-	fakeZFSPath := filepath.Join(t.TempDir(), "zfs")
-	if err := os.MkdirAll(fakeZFSPath, 0o750); err != nil {
-		t.Fatalf("create fake ZFS module dir: %v", err)
-	}
-	agent.SetServerSysModuleZFSPath(t, srv, fakeZFSPath)
-
-	resp, err := srv.HealthCheck(context.Background(), &agentv1.HealthCheckRequest{})
-	if err != nil {
-		t.Fatalf("HealthCheck unexpected error: %v", err)
-	}
-
-	sub := findSubsystem(resp.GetSubsystems(), "zfs_module")
-	if sub == nil {
-		t.Fatal("zfs_module subsystem not found in HealthCheck response")
-	}
-	if !sub.GetHealthy() {
-		t.Errorf("zfs_module should be healthy when path exists: %s", sub.GetMessage())
-	}
-}
-
-// TestHealthCheck_ZFSModuleUnhealthy verifies that checkZFSModule reports
-// unhealthy when the target path does not exist (simulating a missing module).
-func TestHealthCheck_ZFSModuleUnhealthy(t *testing.T) {
-	t.Parallel()
-	srv, _ := newExportTestServer(t, &mockBackend{})
-
-	// Point to a path that does not exist — no ZFS module present.
-	agent.SetServerSysModuleZFSPath(t, srv, filepath.Join(t.TempDir(), "zfs-not-present"))
-
-	resp, err := srv.HealthCheck(context.Background(), &agentv1.HealthCheckRequest{})
-	if err != nil {
-		t.Fatalf("HealthCheck unexpected error: %v", err)
-	}
-
-	sub := findSubsystem(resp.GetSubsystems(), "zfs_module")
-	if sub == nil {
-		t.Fatal("zfs_module subsystem not found in HealthCheck response")
-	}
-	if sub.GetHealthy() {
-		t.Error("zfs_module should be unhealthy when path does not exist")
-	}
-	if sub.GetMessage() == "" {
-		t.Error("zfs_module unhealthy message must be non-empty")
-	}
-}
-
-// TestHealthCheck_ZFSModuleUnhealthy_OverallHealthFalse verifies that an
-// unhealthy ZFS module causes the overall HealthCheck response to be unhealthy.
-func TestHealthCheck_ZFSModuleUnhealthy_OverallHealthFalse(t *testing.T) {
-	t.Parallel()
-	mb := &mockBackend{
-		capacityTotal:     10 << 30,
-		capacityAvailable: 8 << 30,
-	}
-	srv, cfgRoot := newExportTestServer(t, mb)
-
-	// Create nvmet dir so that subsystem is healthy.
-	if err := os.MkdirAll(filepath.Join(cfgRoot, "nvmet"), 0o750); err != nil {
-		t.Fatalf("create nvmet dir: %v", err)
-	}
-
-	// Point ZFS module check at a non-existent path.
-	agent.SetServerSysModuleZFSPath(t, srv, filepath.Join(t.TempDir(), "no-zfs"))
-
-	resp, err := srv.HealthCheck(context.Background(), &agentv1.HealthCheckRequest{})
-	if err != nil {
-		t.Fatalf("HealthCheck unexpected error: %v", err)
-	}
-	if resp.GetHealthy() {
-		t.Error("overall Healthy should be false when ZFS module is missing")
 	}
 }

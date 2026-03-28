@@ -18,6 +18,7 @@ limitations under the License.
 //
 // These tests verify:
 //   - poolsFlag accumulates one entry per --zfs-pool invocation.
+//   - backendFlag parses type=zfs-zvol,pool=<name>[,parent=<p>] values.
 //   - The backend-registration loop in main() produces exactly one distinct
 //     *zfs.Backend instance per pool, keyed by pool name, with no aliasing.
 //   - Each backend is correctly bound to its own pool (DevicePath output is
@@ -318,5 +319,205 @@ func TestBuildBackends_FromPoolsFlag(t *testing.T) {
 			t.Errorf("pools %q and %q share the same backend instance", prev, pool)
 		}
 		seen[b] = pool
+	}
+}
+
+// BackendFlag tests — validate the pluggable --backend flag parsing.
+
+// TestBackendFlag_Set_BasicZfsZvol verifies that a well-formed
+// "type=zfs-zvol,pool=<name>" value is parsed correctly.
+func TestBackendFlag_Set_BasicZfsZvol(t *testing.T) {
+	t.Parallel()
+
+	var bf backendFlag
+	if err := bf.Set("type=zfs-zvol,pool=tank"); err != nil {
+		t.Fatalf("backendFlag.Set: unexpected error: %v", err)
+	}
+	if got, want := len(bf), 1; got != want {
+		t.Fatalf("len(backendFlag) = %d; want %d", got, want)
+	}
+	if got, want := bf[0].typ, "zfs-zvol"; got != want {
+		t.Errorf("spec.typ = %q; want %q", got, want)
+	}
+	if got, want := bf[0].pool, "tank"; got != want {
+		t.Errorf("spec.pool = %q; want %q", got, want)
+	}
+	if got, want := bf[0].parent, ""; got != want {
+		t.Errorf("spec.parent = %q; want %q", got, want)
+	}
+}
+
+// TestBackendFlag_Set_WithParent verifies that the optional parent= key is
+// parsed and stored correctly.
+func TestBackendFlag_Set_WithParent(t *testing.T) {
+	t.Parallel()
+
+	var bf backendFlag
+	if err := bf.Set("type=zfs-zvol,pool=hot-data,parent=k8s"); err != nil {
+		t.Fatalf("backendFlag.Set: unexpected error: %v", err)
+	}
+	if got, want := bf[0].parent, "k8s"; got != want {
+		t.Errorf("spec.parent = %q; want %q", got, want)
+	}
+}
+
+// TestBackendFlag_Set_Repeated verifies that multiple Set calls accumulate
+// distinct backendSpec entries in order.
+func TestBackendFlag_Set_Repeated(t *testing.T) {
+	t.Parallel()
+
+	values := []string{
+		"type=zfs-zvol,pool=alpha",
+		"type=zfs-zvol,pool=beta,parent=ds",
+		"type=zfs-zvol,pool=gamma",
+	}
+
+	var bf backendFlag
+	for _, v := range values {
+		if err := bf.Set(v); err != nil {
+			t.Fatalf("backendFlag.Set(%q): %v", v, err)
+		}
+	}
+
+	if got, want := len(bf), len(values); got != want {
+		t.Fatalf("len(backendFlag) = %d; want %d", got, want)
+	}
+
+	pools := []string{"alpha", "beta", "gamma"}
+	for i, want := range pools {
+		if got := bf[i].pool; got != want {
+			t.Errorf("bf[%d].pool = %q; want %q", i, got, want)
+		}
+	}
+}
+
+// TestBackendFlag_Set_RejectsEmpty verifies that an empty value returns an
+// error.
+func TestBackendFlag_Set_RejectsEmpty(t *testing.T) {
+	t.Parallel()
+
+	var bf backendFlag
+	if err := bf.Set(""); err == nil {
+		t.Error("backendFlag.Set(\"\") expected error, got nil")
+	}
+}
+
+// TestBackendFlag_Set_RejectsMissingType verifies that omitting the type=
+// key returns an error.
+func TestBackendFlag_Set_RejectsMissingType(t *testing.T) {
+	t.Parallel()
+
+	var bf backendFlag
+	if err := bf.Set("pool=tank"); err == nil {
+		t.Error("backendFlag.Set without type= expected error, got nil")
+	}
+}
+
+// TestBackendFlag_Set_RejectsMissingPool verifies that omitting the pool=
+// key returns an error.
+func TestBackendFlag_Set_RejectsMissingPool(t *testing.T) {
+	t.Parallel()
+
+	var bf backendFlag
+	if err := bf.Set("type=zfs-zvol"); err == nil {
+		t.Error("backendFlag.Set without pool= expected error, got nil")
+	}
+}
+
+// TestBackendFlag_Set_RejectsUnknownType verifies that an unsupported type
+// value returns an error.
+func TestBackendFlag_Set_RejectsUnknownType(t *testing.T) {
+	t.Parallel()
+
+	var bf backendFlag
+	if err := bf.Set("type=lvm,pool=vg0"); err == nil {
+		t.Error("backendFlag.Set with unsupported type expected error, got nil")
+	}
+}
+
+// TestBackendFlag_Set_RejectsUnknownKey verifies that an unrecognized key
+// causes an error so that typos are detected early.
+func TestBackendFlag_Set_RejectsUnknownKey(t *testing.T) {
+	t.Parallel()
+
+	var bf backendFlag
+	if err := bf.Set("type=zfs-zvol,pool=tank,bogus=val"); err == nil {
+		t.Error("backendFlag.Set with unknown key expected error, got nil")
+	}
+}
+
+// TestBackendFlag_Set_RejectsNonKeyValue verifies that a token without '='
+// returns an error.
+func TestBackendFlag_Set_RejectsNonKeyValue(t *testing.T) {
+	t.Parallel()
+
+	var bf backendFlag
+	if err := bf.Set("type=zfs-zvol,notakeyvalue,pool=tank"); err == nil {
+		t.Error("backendFlag.Set with bare token expected error, got nil")
+	}
+}
+
+// TestBackendFlag_String_Empty verifies that String() returns "" on a
+// zero-value flag.
+func TestBackendFlag_String_Empty(t *testing.T) {
+	t.Parallel()
+
+	var bf backendFlag
+	if got := bf.String(); got != "" {
+		t.Errorf("empty backendFlag.String() = %q; want %q", got, "")
+	}
+}
+
+// TestBackendFlag_String_MultipleSpecs verifies that String() produces a
+// space-separated summary for multiple registered specs.
+func TestBackendFlag_String_MultipleSpecs(t *testing.T) {
+	t.Parallel()
+
+	var bf backendFlag
+	if err := bf.Set("type=zfs-zvol,pool=alpha"); err != nil {
+		t.Fatalf("bf.Set(alpha): %v", err)
+	}
+	if err := bf.Set("type=zfs-zvol,pool=beta,parent=k8s"); err != nil {
+		t.Fatalf("bf.Set(beta): %v", err)
+	}
+
+	s := bf.String()
+	if !strings.Contains(s, "pool=alpha") {
+		t.Errorf("backendFlag.String() = %q; missing pool=alpha", s)
+	}
+	if !strings.Contains(s, "pool=beta") {
+		t.Errorf("backendFlag.String() = %q; missing pool=beta", s)
+	}
+	if !strings.Contains(s, "parent=k8s") {
+		t.Errorf("backendFlag.String() = %q; missing parent=k8s", s)
+	}
+}
+
+// TestBackendFlag_BuildsCorrectBackend verifies that a backendFlag parsed
+// from a --backend value produces a backend whose DevicePath includes the
+// pool name — i.e. the spec is wired correctly to zfs.New.
+func TestBackendFlag_BuildsCorrectBackend(t *testing.T) {
+	t.Parallel()
+
+	var bf backendFlag
+	if err := bf.Set("type=zfs-zvol,pool=mypool,parent=ds"); err != nil {
+		t.Fatalf("backendFlag.Set: %v", err)
+	}
+
+	// Replicate the --backend build loop from main().
+	bs := make(map[string]backend.VolumeBackend, len(bf))
+	for _, spec := range bf {
+		bs[spec.pool] = zfs.New(spec.pool, spec.parent)
+	}
+
+	b, ok := bs["mypool"]
+	if !ok {
+		t.Fatal("backend for pool 'mypool' not found in registry")
+	}
+
+	devPath := b.DevicePath("mypool/pvc-test")
+	wantPrefix := "/dev/zvol/mypool/"
+	if !strings.HasPrefix(devPath, wantPrefix) {
+		t.Errorf("DevicePath(%q) = %q; want prefix %q", "mypool/pvc-test", devPath, wantPrefix)
 	}
 }

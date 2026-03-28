@@ -43,7 +43,7 @@ const errOnlyNvmeofTCP = "only NVMe-oF TCP is supported"
 const nqnPrefix = "nqn.2026-01.com.bhyoo.pillar-csi:"
 
 // Server implements agentv1.AgentServiceServer.  It is bound to a set of
-// named storage backends (one per ZFS pool) and a configfs root directory.
+// named storage backends and a configfs root directory.
 type Server struct {
 	agentv1.UnimplementedAgentServiceServer
 
@@ -53,12 +53,6 @@ type Server struct {
 	// configfsRoot is the root of the nvmet configfs tree.  Defaults to
 	// DefaultConfigfsRoot when empty.
 	configfsRoot string
-
-	// sysModuleZFSPath is the path used by checkZFSModule to verify that the
-	// ZFS kernel module is loaded.  It defaults to /sys/module/zfs in
-	// production; tests may override it to a temporary directory via
-	// SetServerSysModuleZFSPath (defined in export_test.go).
-	sysModuleZFSPath string
 
 	// devicePollInterval is the cadence passed to nvmeof.WaitForDevice in
 	// ExportVolume.  When zero, nvmeof.DefaultDevicePollInterval is used.

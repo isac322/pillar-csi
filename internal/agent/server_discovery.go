@@ -33,15 +33,16 @@ import (
 
 // GetCapabilities returns the backend types and protocols supported by this
 // agent, together with the storage pools it has been configured with.
+//
+// SupportedBackends is derived from the registered backends so that the
+// response reflects the actual configuration rather than hardcoded values.
 func (s *Server) GetCapabilities(
 	ctx context.Context,
 	_ *agentv1.GetCapabilitiesRequest,
 ) (*agentv1.GetCapabilitiesResponse, error) {
 	return &agentv1.GetCapabilitiesResponse{
-		AgentVersion: agentVersion,
-		SupportedBackends: []agentv1.BackendType{
-			agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
-		},
+		AgentVersion:      agentVersion,
+		SupportedBackends: s.collectSupportedBackendTypes(),
 		SupportedProtocols: []agentv1.ProtocolType{
 			agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 		},
@@ -49,8 +50,26 @@ func (s *Server) GetCapabilities(
 	}, nil
 }
 
+// collectSupportedBackendTypes returns the deduplicated set of BackendType
+// values reported by every registered backend.  Using each backend's own
+// Type() method ensures that the list is always consistent with the actual
+// runtime configuration.
+func (s *Server) collectSupportedBackendTypes() []agentv1.BackendType {
+	seen := make(map[agentv1.BackendType]struct{}, len(s.backends))
+	for _, b := range s.backends {
+		seen[b.Type()] = struct{}{}
+	}
+	types := make([]agentv1.BackendType, 0, len(seen))
+	for t := range seen {
+		types = append(types, t)
+	}
+	return types
+}
+
 // collectPoolInfo queries each registered backend for its capacity and builds
-// the list of PoolInfo records for GetCapabilities.
+// the list of PoolInfo records for GetCapabilities.  BackendType is read from
+// the backend's own Type() method so that the response is correct regardless
+// of which backend implementation is registered for each pool.
 func (s *Server) collectPoolInfo(ctx context.Context) []*agentv1.PoolInfo {
 	pools := make([]*agentv1.PoolInfo, 0, len(s.backends))
 	for name, b := range s.backends {
@@ -60,7 +79,7 @@ func (s *Server) collectPoolInfo(ctx context.Context) []*agentv1.PoolInfo {
 		}
 		pools = append(pools, &agentv1.PoolInfo{
 			Name:           name,
-			BackendType:    agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
+			BackendType:    b.Type(),
 			TotalBytes:     total,
 			AvailableBytes: avail,
 		})
@@ -117,10 +136,10 @@ func (*Server) ListExports(
 	}, nil
 }
 
-// HealthCheck reports the liveness of the ZFS and NVMe-oF subsystems, as
-// well as per-pool backend reachability.  The response is built from the
-// structured health.HealthStatus model so that individual components can be
-// queried by name without fragile string comparisons.
+// HealthCheck reports the liveness of the NVMe-oF subsystem as well as
+// per-pool backend reachability.  The response is built from the structured
+// health.HealthStatus model so that individual components can be queried by
+// name without fragile string comparisons.
 func (s *Server) HealthCheck(
 	ctx context.Context,
 	_ *agentv1.HealthCheckRequest,
@@ -138,28 +157,9 @@ func (s *Server) HealthCheck(
 // agent instance by probing each known subsystem.
 func (s *Server) collectHealthStatus(ctx context.Context) health.HealthStatus {
 	return health.HealthStatus{
-		ZFSModule:     s.checkZFSModule(),
 		NvmetConfigfs: s.checkNvmetConfigfs(),
 		PerPoolStatus: s.checkPerPoolStatus(ctx),
 	}
-}
-
-// checkZFSModule reports whether the ZFS kernel module is loaded by checking
-// whether the /sys/module/zfs directory is present.
-//
-// The path checked defaults to /sys/module/zfs; it can be overridden for
-// testing via Server.sysModuleZFSPath (exposed by SetServerSysModuleZFSPath
-// in export_test.go).
-func (s *Server) checkZFSModule() health.ComponentStatus {
-	p := s.sysModuleZFSPath
-	if p == "" {
-		p = "/sys/module/zfs"
-	}
-	_, err := os.Stat(p)
-	if err == nil {
-		return health.OK("ZFS kernel module loaded.")
-	}
-	return health.Degraded(fmt.Sprintf("ZFS module check failed: %v", err))
 }
 
 // checkNvmetConfigfs reports whether the nvmet configfs directory tree is

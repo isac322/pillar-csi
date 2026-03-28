@@ -96,6 +96,13 @@ func (m *mockBackend) DevicePath(_ string) string {
 	return m.devicePathResult
 }
 
+// Type returns BACKEND_TYPE_ZFS_ZVOL so that the mock satisfies the
+// VolumeBackend interface and makes GetCapabilities / collectPoolInfo tests
+// pass without hardcoding a backend type in production code.
+func (*mockBackend) Type() agentv1.BackendType {
+	return agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL
+}
+
 // Ensure mockBackend satisfies the interface.
 var _ backend.VolumeBackend = (*mockBackend)(nil)
 

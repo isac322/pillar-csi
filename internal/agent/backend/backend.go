@@ -87,4 +87,11 @@ type VolumeBackend interface {
 	//   ZFS zvol  → /dev/zvol/<pool>[/<parentDataset>]/<name>
 	//   LVM LV    → /dev/<vg>/<lv>
 	DevicePath(volumeID string) string
+
+	// Type returns the agentv1.BackendType enum value that identifies this
+	// backend implementation.  It is used by GetCapabilities to advertise
+	// supported backend types and by collectPoolInfo to tag each pool's
+	// PoolInfo record with its actual backend type, making both RPCs
+	// backend-agnostic.
+	Type() agentv1.BackendType
 }

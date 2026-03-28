@@ -199,6 +199,14 @@ func (z *Backend) DevicePath(volumeID string) string {
 	return path.Join(z.devZvolBase, ds)
 }
 
+// Type returns BACKEND_TYPE_ZFS_ZVOL, identifying this backend as a ZFS zvol
+// implementation.  It satisfies the backend.VolumeBackend interface so that
+// callers (e.g. GetCapabilities) can report supported backend types
+// dynamically without hardcoding ZFS-specific values.
+func (*Backend) Type() agentv1.BackendType {
+	return agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL
+}
+
 // volsizeBytes queries ZFS for the current volsize of dataset in bytes.
 // It returns a *notExistError when the dataset does not exist at all, which
 // allows callers to distinguish "missing" from other errors.
