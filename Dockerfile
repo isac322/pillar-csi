@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # Build the manager binary
-FROM --platform=$BUILDPLATFORM golang:1.26-alpine3.23 AS builder
+FROM --platform=$BUILDPLATFORM public.ecr.aws/docker/library/golang:1.26-alpine3.23 AS builder
 ARG TARGETOS
 ARG TARGETARCH
 
