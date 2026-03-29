@@ -1,0 +1,19 @@
+version: 2
+updates:
+  # Go modules (go.mod)
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: daily
+
+  # Dockerfile base images (Dockerfile, Dockerfile.agent, Dockerfile.node)
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: daily
+
+  # GitHub Actions (ci.yml, release.yml)
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: daily
