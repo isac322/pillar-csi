@@ -290,6 +290,20 @@ agent:
     # -- Per-container image pull policy override.
     pullPolicy: ""
 
+  # -- Backend specifications passed as --backend flags to the pillar-agent.
+  # Each entry renders one --backend type=<type>,pool=<pool>[,parent=<parent>] flag.
+  # At least one backend is required; the agent exits with an error if none are
+  # provided.  Currently only type=zfs-zvol is supported.
+  #
+  # Example:
+  #   backends:
+  #     - type: zfs-zvol
+  #       pool: tank
+  #     - type: zfs-zvol
+  #       pool: hot-data
+  #       parent: k8s
+  backends: []
+
   # -- Extra command-line arguments appended to the pillar-agent entrypoint.
   extraArgs: []
 

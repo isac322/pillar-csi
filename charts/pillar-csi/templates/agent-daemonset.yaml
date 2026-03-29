@@ -84,9 +84,15 @@ spec:
             # block non-privileged access even for root+SYS_ADMIN containers.
             privileged: {{ .Values.agent.privileged | default false }}
             allowPrivilegeEscalation: true
-          {{- with .Values.agent.extraArgs }}
+          {{- if or .Values.agent.backends .Values.agent.extraArgs }}
           args:
-            {{- toYaml . | nindent 12 }}
+            {{- range .Values.agent.backends }}
+            - --backend
+            - {{ printf "type=%s,pool=%s" .type .pool }}{{ if .parent }}{{ printf ",parent=%s" .parent }}{{ end }}
+            {{- end }}
+            {{- range .Values.agent.extraArgs }}
+            - {{ . | quote }}
+            {{- end }}
           {{- end }}
           env:
             - name: NODE_NAME
