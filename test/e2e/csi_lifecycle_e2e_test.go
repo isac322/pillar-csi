@@ -165,7 +165,7 @@ func (e *csiLifecycleEnv) defaultLifecycleCreateParams() map[string]string {
 		"pillar-csi.bhyoo.com/target":        e.TargetName,
 		"pillar-csi.bhyoo.com/backend-type":  "zfs-zvol",
 		"pillar-csi.bhyoo.com/protocol-type": "nvmeof-tcp",
-		"pillar-csi.bhyoo.com/pool":           "tank",
+		"pillar-csi.bhyoo.com/pool":          "tank",
 	}
 }
 

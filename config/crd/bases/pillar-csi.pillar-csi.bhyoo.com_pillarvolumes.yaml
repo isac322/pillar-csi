@@ -69,9 +69,9 @@ spec:
             properties:
               agentVolumeID:
                 description: |-
-                  agentVolumeID is the volume identifier used in agent RPCs.  For ZFS
-                  backends this is "<pool>/<volume-name>" where pool is sourced from the
-                  PillarPool CRD; for others it is "<pool>/<volume-name>" or just "<volume-name>".
+                  agentVolumeID is the volume identifier used in agent RPCs.  The format
+                  is "<pool>/<volume-name>" where pool is the storage pool name (e.g. ZFS
+                  pool name), or just "<volume-name>" for backends with no pool prefix.
                 minLength: 1
                 type: string
               backendType:

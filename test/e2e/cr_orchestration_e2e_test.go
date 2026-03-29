@@ -361,10 +361,11 @@ var _ = func() bool {
 				Expect(params).NotTo(BeNil(),
 					"StorageClass.parameters must not be nil")
 
-				// Pool and protocol references — used by the CSI controller to route
-				// CreateVolume / ExportVolume calls to the correct agent.
-				Expect(params["pillar-csi.bhyoo.com/pool"]).To(Equal(stack.Pool.Name),
-					"parameter pool must equal the binding's spec.poolRef")
+				// Pool carries the ZFS pool name on the agent host (not the K8s CR name)
+				// so the CSI controller can construct agent volume IDs without an extra lookup.
+				Expect(params["pillar-csi.bhyoo.com/pool"]).To(Equal(testEnv.ZFSPoolName),
+					"parameter pool must equal the ZFS pool name (PillarPool.spec.backend.zfs.pool)")
+				// Protocol reference — the K8s PillarProtocol CR name used for dispatch.
 				Expect(params["pillar-csi.bhyoo.com/protocol"]).To(Equal(stack.Proto.Name),
 					"parameter protocol must equal the binding's spec.protocolRef")
 
@@ -378,10 +379,6 @@ var _ = func() bool {
 				// Target reference — the PillarTarget that owns the agent this pool lives on.
 				Expect(params["pillar-csi.bhyoo.com/target"]).To(Equal(stack.Target.Name),
 					"parameter target must equal the pool's spec.targetRef (PillarTarget name)")
-
-				// Pool parameter carries the ZFS pool name on the agent host.
-				Expect(params["pillar-csi.bhyoo.com/pool"]).To(Equal(testEnv.ZFSPoolName),
-					"parameter pool must equal the ZFS pool name on the agent host")
 
 				// NVMe-oF TCP parameters — port and ACL toggle.
 				Expect(params["pillar-csi.bhyoo.com/nvmeof-port"]).To(Equal("4421"),
