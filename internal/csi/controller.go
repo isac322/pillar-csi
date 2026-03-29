@@ -520,7 +520,7 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 	agentProtocolType := mapProtocolType(protocolTypeStr)
 
 	// ── Build the agent-level volume ID ──────────────────────────────────────
-	// For ZFS backends: "<zfs-pool>/<volume-name>".
+	// For ZFS backends: "<pool>/<volume-name>" (pool = ZFS pool name from StorageClass params).
 	// Fallback: "<pillar-pool-name>/<volume-name>".
 	agentVolID := buildAgentVolumeID(params, req.GetName())
 
@@ -1175,8 +1175,9 @@ func (s *ControllerServer) applyPVCAnnotationOverrides(
 
 // buildAgentVolumeID constructs the volume identifier used in all agent RPCs.
 //
-// For ZFS backends the format is "<zfs-pool>/<volume-name>" which matches the
-// agent's internal naming convention (the zvol lives at /dev/zvol/<pool>/<name>).
+// For ZFS backends the format is "<pool>/<volume-name>" where pool is the ZFS
+// pool name from the pillar-csi.bhyoo.com/zfs-pool StorageClass parameter,
+// matching the agent's internal naming convention (/dev/zvol/<pool>/<name>).
 // For other backends it falls back to "<pillar-pool-name>/<volume-name>".
 func buildAgentVolumeID(params map[string]string, volumeName string) string {
 	if zfsPool := params[paramZFSPool]; zfsPool != "" {

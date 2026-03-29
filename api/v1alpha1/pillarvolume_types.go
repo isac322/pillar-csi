@@ -148,9 +148,9 @@ type PillarVolumeSpec struct {
 	// +kubebuilder:validation:MinLength=1
 	VolumeID string `json:"volumeID"`
 
-	// agentVolumeID is the volume identifier used in agent RPCs.  For ZFS
-	// backends this is "<zfs-pool>/<volume-name>"; for others it is
-	// "<pool>/<volume-name>" or just "<volume-name>".
+	// agentVolumeID is the volume identifier used in agent RPCs.  The format
+	// is "<pool>/<volume-name>" where pool is the storage pool name (e.g. ZFS
+	// pool name), or just "<volume-name>" for backends with no pool prefix.
 	// +required
 	// +kubebuilder:validation:MinLength=1
 	AgentVolumeID string `json:"agentVolumeID"`

@@ -37,35 +37,6 @@ import (
 	"github.com/bhyoo/pillar-csi/internal/tlscreds"
 )
 
-// poolsFlag is a repeatable string flag that accumulates one ZFS pool name
-// per --zfs-pool invocation.  It satisfies the flag.Value interface so that
-// the standard flag package can be used without importing a third-party CLI
-// library.
-//
-// Usage:
-//
-//	pillar-agent --zfs-pool tank --zfs-pool hot-data
-type poolsFlag []string
-
-// String returns a comma-separated representation of all collected pool names.
-// The flag package calls this when printing usage/defaults.
-func (p *poolsFlag) String() string {
-	if p == nil || len(*p) == 0 {
-		return ""
-	}
-	return strings.Join(*p, ",")
-}
-
-// Set appends a single pool name to the slice.  Called by flag.Parse for
-// each --zfs-pool occurrence on the command line.
-func (p *poolsFlag) Set(v string) error {
-	if v == "" {
-		return fmt.Errorf("pool name must not be empty")
-	}
-	*p = append(*p, v)
-	return nil
-}
-
 // backendSpec holds the parsed fields from a single --backend flag value.
 // The flag value is a comma-separated list of key=value pairs, e.g.:
 //
@@ -162,14 +133,9 @@ func (b *backendFlag) Set(v string) error {
 	return nil
 }
 
-// buildVolumeBackends constructs the pool→backend registry from the legacy
-// --zfs-pool flags and the new --backend flags.  Legacy entries are inserted
-// first so that a --backend entry for the same pool name takes precedence.
-func buildVolumeBackends(pools poolsFlag, zfsParent string, specs backendFlag) map[string]backend.VolumeBackend {
-	m := make(map[string]backend.VolumeBackend, len(pools)+len(specs))
-	for _, pool := range pools {
-		m[pool] = zfs.New(pool, zfsParent)
-	}
+// buildVolumeBackends constructs the pool→backend registry from --backend flags.
+func buildVolumeBackends(specs backendFlag) map[string]backend.VolumeBackend {
+	m := make(map[string]backend.VolumeBackend, len(specs))
 	for _, spec := range specs {
 		m[spec.pool] = zfs.New(spec.pool, spec.parent)
 	}
@@ -195,14 +161,6 @@ func buildGRPCOpts(tlsEnabled bool, cert, key, ca string) ([]grpc.ServerOption, 
 func main() {
 	listenAddr := flag.String("listen-address", ":50051", "gRPC listen address (host:port)")
 
-	// --zfs-pool / --zfs-parent-dataset: legacy flags kept for backward
-	// compatibility.  New deployments should prefer --backend.
-	var zfsPools poolsFlag
-	flag.Var(&zfsPools, "zfs-pool",
-		"ZFS pool name; may be repeated.\n"+
-			"Deprecated: use --backend type=zfs-zvol,pool=<name>[,parent=<p>] instead.")
-	zfsParent := flag.String("zfs-parent-dataset", "", "ZFS parent dataset within each pool (used with --zfs-pool)")
-
 	// --backend: pluggable backend flag.  Format: type=<t>,pool=<p>[,parent=<ds>]
 	var backends backendFlag
 	flag.Var(&backends, "backend",
@@ -218,10 +176,9 @@ func main() {
 
 	flag.Parse()
 
-	if len(zfsPools) == 0 && len(backends) == 0 {
+	if len(backends) == 0 {
 		fmt.Fprintln(os.Stderr,
-			"error: at least one backend is required: use --backend type=zfs-zvol,pool=<name> "+
-				"or the legacy --zfs-pool <name> flag")
+			"error: at least one backend is required: use --backend type=zfs-zvol,pool=<name>")
 		os.Exit(1)
 	}
 
@@ -231,7 +188,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	volumeBackends := buildVolumeBackends(zfsPools, *zfsParent, backends)
+	volumeBackends := buildVolumeBackends(backends)
 	srv := agent.NewServer(volumeBackends, *cfgRoot)
 
 	lis, err := net.Listen("tcp", *listenAddr)
