@@ -113,10 +113,6 @@ type E2EEnv struct {
 	// Sourced from E2E_EXTERNAL_AGENT_PORT; default: "9500".
 	ExternalAgentPort string
 
-	// ExternalAgentZFSPool is the --zfs-pool flag passed to the agent container.
-	// Sourced from E2E_EXTERNAL_AGENT_ZFS_POOL; default: "e2e-pool".
-	ExternalAgentZFSPool string
-
 	// ExternalAgentReadyTimeout is how long TestMain waits for the agent
 	// container's gRPC port to become reachable before giving up.
 	// Sourced from E2E_EXTERNAL_AGENT_READY_TIMEOUT in seconds; default: 60 s.
@@ -241,7 +237,6 @@ func initE2EEnv() error {
 	// External agent Docker container lifecycle.
 	testEnv.LaunchExternalAgent = os.Getenv("E2E_LAUNCH_EXTERNAL_AGENT") == "true"
 	testEnv.ExternalAgentPort = envOrDefault("E2E_EXTERNAL_AGENT_PORT", "9500")
-	testEnv.ExternalAgentZFSPool = envOrDefault("E2E_EXTERNAL_AGENT_ZFS_POOL", "e2e-pool")
 
 	// Parse ready timeout (seconds → duration).
 	if secs := os.Getenv("E2E_EXTERNAL_AGENT_READY_TIMEOUT"); secs != "" {
@@ -1453,7 +1448,7 @@ func startExternalAgentContainer() error {
 		"--mount", "type=tmpfs,destination=/tmp",
 		image,
 		"--listen-address=0.0.0.0:9500",
-		"--zfs-pool="+testEnv.ExternalAgentZFSPool,
+		"--backend=type=zfs-zvol,pool="+testEnv.ZFSPoolName,
 		"--configfs-root=/tmp",
 	)
 	if err != nil {

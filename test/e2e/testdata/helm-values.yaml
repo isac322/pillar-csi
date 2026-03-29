@@ -124,14 +124,14 @@ agent:
     tag: "e2e"
     pullPolicy: Never
 
-  # Agent requires --zfs-pool; the e2e pool name matches the ZFS loopback pool
-  # created by TestMain via framework.CreateLoopbackZFSPool ("e2e-pool").
-  # The Kind storage worker has /dev/zfs bind-mounted from the host so the
-  # agent can access the ZFS kernel module and enumerate pools.
+  # --backend registers the ZFS zvol backend.  The e2e pool name matches the
+  # ZFS loopback pool created by TestMain via framework.CreateLoopbackZFSPool
+  # ("e2e-pool").  The Kind storage worker has /dev/zfs bind-mounted from the
+  # host so the agent can access the ZFS kernel module and enumerate pools.
   # --configfs-root=/tmp avoids requiring real nvmet kernel modules for the
   # NVMe-oF configfs path (pure ZFS tests do not need it).
   extraArgs:
-    - --zfs-pool=e2e-pool
+    - --backend=type=zfs-zvol,pool=e2e-pool
     - --configfs-root=/tmp
     - --listen-address=:9500
 

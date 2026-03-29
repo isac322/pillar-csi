@@ -1089,9 +1089,9 @@ var _ = func() bool {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // reconAgentZFSPool returns the ZFS pool name for this suite's agent.
-// Reads EXTERNAL_AGENT_ZFS_POOL (default: "e2e-pool").
+// Reads the shared testEnv.ZFSPoolName (sourced from E2E_ZFS_POOL, default "e2e-pool").
 func reconAgentZFSPool() string {
-	return extAgentZFSPool() // reuse the same env-var logic from external_agent_test.go
+	return testEnv.ZFSPoolName
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

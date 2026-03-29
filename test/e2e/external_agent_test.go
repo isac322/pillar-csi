@@ -413,19 +413,6 @@ var _ = func() bool {
 }()
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Configuration helpers (environment variable resolution)
-// ─────────────────────────────────────────────────────────────────────────────
-
-// extAgentZFSPool returns the ZFS pool name passed to the agent via --zfs-pool.
-// Reads EXTERNAL_AGENT_ZFS_POOL (default: "e2e-pool").
-func extAgentZFSPool() string {
-	if v := os.Getenv("EXTERNAL_AGENT_ZFS_POOL"); v != "" {
-		return v
-	}
-	return "e2e-pool"
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // gRPC helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
