@@ -1,10 +1,17 @@
 version: 2
 updates:
   # Go modules (go.mod)
+  # controller-runtime and k8s.io/* form a tightly coupled set that must be
+  # upgraded together (they share the same Kubernetes release cycle).
+  # Dependabot opens one PR per package, which breaks the build.
+  # Upgrade these manually as a coordinated batch.
   - package-ecosystem: gomod
     directory: /
     schedule:
       interval: daily
+    ignore:
+      - dependency-name: "sigs.k8s.io/controller-runtime"
+      - dependency-name: "k8s.io/*"
 
   # Dockerfile base images (Dockerfile, Dockerfile.agent, Dockerfile.node)
   - package-ecosystem: docker
