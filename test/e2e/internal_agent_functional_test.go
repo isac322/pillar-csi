@@ -880,6 +880,16 @@ mkdir -p "$NVMET/subsystems/$NQN"
 echo 1 > "$NVMET/subsystems/$NQN/attr_allow_any_host"
 mkdir -p "$NVMET/subsystems/$NQN/namespaces/1"
 echo "$DEVPATH" > "$NVMET/subsystems/$NQN/namespaces/1/device_path"
+# Wait up to 15 s for the zvol device node to be visible in this container.
+# The bridge goroutine in the test process polls the host every 500 ms and
+# mknods the zvol block device here; there is a small race between PVC Bound
+# and the first bridge poll cycle completing.
+_w=0
+while [ $_w -lt 30 ] && ! [ -b "$DEVPATH" ]; do
+  sleep 0.5
+  _w=$((_w+1))
+done
+[ -b "$DEVPATH" ] || { echo "device $DEVPATH not found after 15s" >&2; exit 1; }
 echo 1 > "$NVMET/subsystems/$NQN/namespaces/1/enable"
 if [ ! -d "$NVMET/ports/$PORTID" ]; then
   mkdir -p "$NVMET/ports/$PORTID"
