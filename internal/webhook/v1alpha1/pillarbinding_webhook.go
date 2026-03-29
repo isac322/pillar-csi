@@ -59,7 +59,9 @@ type PillarBindingCustomDefaulter struct {
 var _ admission.Defaulter[*pillarcsiv1alpha1.PillarBinding] = &PillarBindingCustomDefaulter{}
 
 // Default implements admission.Defaulter so a webhook will be registered for the Kind PillarBinding.
-func (d *PillarBindingCustomDefaulter) Default(ctx context.Context, pillarbinding *pillarcsiv1alpha1.PillarBinding) error {
+func (d *PillarBindingCustomDefaulter) Default(
+	ctx context.Context, pillarbinding *pillarcsiv1alpha1.PillarBinding,
+) error {
 	pillarbindinglog.Info("Defaulting for PillarBinding", "name", pillarbinding.GetName())
 
 	// Auto-set allowVolumeExpansion from the referenced pool's backend type when
@@ -187,7 +189,9 @@ func (v *PillarBindingCustomValidator) ValidateUpdate(
 }
 
 // ValidateDelete implements admission.Validator so a webhook will be registered for the type PillarBinding.
-func (*PillarBindingCustomValidator) ValidateDelete(_ context.Context, pillarbinding *pillarcsiv1alpha1.PillarBinding) (admission.Warnings, error) {
+func (*PillarBindingCustomValidator) ValidateDelete(
+	_ context.Context, pillarbinding *pillarcsiv1alpha1.PillarBinding,
+) (admission.Warnings, error) {
 	pillarbindinglog.Info("Validation for PillarBinding upon deletion", "name", pillarbinding.GetName())
 
 	// TODO(user): fill in your validation logic upon object deletion.

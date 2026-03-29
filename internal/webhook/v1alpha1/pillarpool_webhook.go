@@ -55,7 +55,9 @@ type PillarPoolCustomValidator struct {
 var _ admission.Validator[*pillarcsiv1alpha1.PillarPool] = &PillarPoolCustomValidator{}
 
 // ValidateCreate implements admission.Validator so a webhook will be registered for the type PillarPool.
-func (*PillarPoolCustomValidator) ValidateCreate(_ context.Context, pillarpool *pillarcsiv1alpha1.PillarPool) (admission.Warnings, error) {
+func (*PillarPoolCustomValidator) ValidateCreate(
+	_ context.Context, pillarpool *pillarcsiv1alpha1.PillarPool,
+) (admission.Warnings, error) {
 	pillarpoollog.Info("Validation for PillarPool upon creation", "name", pillarpool.GetName())
 
 	// TODO(user): fill in your validation logic upon object creation.
@@ -99,7 +101,9 @@ func (*PillarPoolCustomValidator) ValidateUpdate(
 }
 
 // ValidateDelete implements admission.Validator so a webhook will be registered for the type PillarPool.
-func (*PillarPoolCustomValidator) ValidateDelete(_ context.Context, pillarpool *pillarcsiv1alpha1.PillarPool) (admission.Warnings, error) {
+func (*PillarPoolCustomValidator) ValidateDelete(
+	_ context.Context, pillarpool *pillarcsiv1alpha1.PillarPool,
+) (admission.Warnings, error) {
 	pillarpoollog.Info("Validation for PillarPool upon deletion", "name", pillarpool.GetName())
 
 	// TODO(user): fill in your validation logic upon object deletion.

@@ -55,7 +55,9 @@ type PillarTargetCustomValidator struct {
 var _ admission.Validator[*pillarcsiv1alpha1.PillarTarget] = &PillarTargetCustomValidator{}
 
 // ValidateCreate implements admission.Validator so a webhook will be registered for the type PillarTarget.
-func (*PillarTargetCustomValidator) ValidateCreate(_ context.Context, pillartarget *pillarcsiv1alpha1.PillarTarget) (admission.Warnings, error) {
+func (*PillarTargetCustomValidator) ValidateCreate(
+	_ context.Context, pillartarget *pillarcsiv1alpha1.PillarTarget,
+) (admission.Warnings, error) {
 	pillartargetlog.Info("Validation for PillarTarget upon creation", "name", pillartarget.GetName())
 
 	// TODO(user): fill in your validation logic upon object creation.
@@ -122,7 +124,9 @@ func (*PillarTargetCustomValidator) ValidateUpdate(
 }
 
 // ValidateDelete implements admission.Validator so a webhook will be registered for the type PillarTarget.
-func (*PillarTargetCustomValidator) ValidateDelete(_ context.Context, pillartarget *pillarcsiv1alpha1.PillarTarget) (admission.Warnings, error) {
+func (*PillarTargetCustomValidator) ValidateDelete(
+	_ context.Context, pillartarget *pillarcsiv1alpha1.PillarTarget,
+) (admission.Warnings, error) {
 	pillartargetlog.Info("Validation for PillarTarget upon deletion", "name", pillartarget.GetName())
 
 	// TODO(user): fill in your validation logic upon object deletion.
