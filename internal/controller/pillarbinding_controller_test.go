@@ -1515,7 +1515,7 @@ var _ = Describe("buildStorageClassParams", func() {
 		Expect(params["pillar-csi.bhyoo.com/target"]).To(Equal("my-target"))
 	})
 
-	It("should include zfs-pool and zfs-parent-dataset when ZFS backend is configured", func() {
+	It("should set pool to the ZFS pool name and include zfs-parent-dataset when ZFS backend is configured", func() {
 		binding := makeBinding("zfs-pool", "proto", nil)
 		pool := makeZFSPool("target", "tank", "volumes", pillarcsiv1alpha1.BackendTypeZFSZvol)
 		protocol := &pillarcsiv1alpha1.PillarProtocol{
@@ -1523,8 +1523,9 @@ var _ = Describe("buildStorageClassParams", func() {
 		}
 		params := buildStorageClassParams(binding, pool, protocol)
 
-		Expect(params).To(HaveKey("pillar-csi.bhyoo.com/zfs-pool"))
-		Expect(params["pillar-csi.bhyoo.com/zfs-pool"]).To(Equal("tank"))
+		// pool is overwritten with the actual ZFS pool name (not the K8s PoolRef)
+		Expect(params["pillar-csi.bhyoo.com/pool"]).To(Equal("tank"))
+		Expect(params).NotTo(HaveKey("pillar-csi.bhyoo.com/zfs-pool"))
 		Expect(params).To(HaveKey("pillar-csi.bhyoo.com/zfs-parent-dataset"))
 		Expect(params["pillar-csi.bhyoo.com/zfs-parent-dataset"]).To(Equal("volumes"))
 	})
@@ -1542,7 +1543,6 @@ var _ = Describe("buildStorageClassParams", func() {
 		}
 		params := buildStorageClassParams(binding, pool, protocol)
 
-		Expect(params).NotTo(HaveKey("pillar-csi.bhyoo.com/zfs-pool"))
 		Expect(params).NotTo(HaveKey("pillar-csi.bhyoo.com/zfs-parent-dataset"))
 	})
 

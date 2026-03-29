@@ -494,10 +494,12 @@ func buildStorageClassParams(
 		"pillar-csi.bhyoo.com/target":        pool.Spec.TargetRef,
 	}
 
-	// ZFS backend parameters.
+	// ZFS backend parameters: overwrite the generic pool reference with the
+	// actual ZFS pool name so the CSI controller can construct agent volume
+	// IDs and backend params without a separate zfs-pool parameter.
 	if pool.Spec.Backend.ZFS != nil {
 		if pool.Spec.Backend.ZFS.Pool != "" {
-			params["pillar-csi.bhyoo.com/zfs-pool"] = pool.Spec.Backend.ZFS.Pool
+			params["pillar-csi.bhyoo.com/pool"] = pool.Spec.Backend.ZFS.Pool
 		}
 		if pool.Spec.Backend.ZFS.ParentDataset != "" {
 			params["pillar-csi.bhyoo.com/zfs-parent-dataset"] = pool.Spec.Backend.ZFS.ParentDataset

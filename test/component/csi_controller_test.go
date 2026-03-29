@@ -371,7 +371,7 @@ func baseCSICreateVolumeRequest() *csipb.CreateVolumeRequest {
 			"pillar-csi.bhyoo.com/target":        "storage-node-1",
 			"pillar-csi.bhyoo.com/backend-type":  "zfs-zvol",
 			"pillar-csi.bhyoo.com/protocol-type": "nvmeof-tcp",
-			"pillar-csi.bhyoo.com/zfs-pool":      "tank",
+			"pillar-csi.bhyoo.com/pool":           "tank",
 		},
 	}
 }

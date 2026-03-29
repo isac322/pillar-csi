@@ -346,7 +346,7 @@ func TestCSIExpand_FullExpandRoundTrip(t *testing.T) {
 			"pillar-csi.bhyoo.com/target":        env.TargetName,
 			"pillar-csi.bhyoo.com/backend-type":  "zfs-zvol",
 			"pillar-csi.bhyoo.com/protocol-type": "nvmeof-tcp",
-			"pillar-csi.bhyoo.com/zfs-pool":      "tank",
+			"pillar-csi.bhyoo.com/pool":           "tank",
 		},
 	})
 	assertNoError(t, createErr, "CreateVolume")

@@ -491,16 +491,16 @@ func newCSIControllerE2EEnv(t *testing.T, targetName string) *csiControllerE2EEn
 // parameters for a CreateVolume CSI request targeting this environment's
 // PillarTarget.  Tests may override individual keys after calling this helper.
 //
-//	target      = env.TargetName
+//	target       = env.TargetName
 //	backend-type = "zfs-zvol"
 //	protocol-type = "nvmeof-tcp"
-//	zfs-pool    = "tank"
+//	pool         = "tank"
 func (e *csiControllerE2EEnv) defaultCreateVolumeParams() map[string]string {
 	return map[string]string{
 		"pillar-csi.bhyoo.com/target":        e.TargetName,
 		"pillar-csi.bhyoo.com/backend-type":  "zfs-zvol",
 		"pillar-csi.bhyoo.com/protocol-type": "nvmeof-tcp",
-		"pillar-csi.bhyoo.com/zfs-pool":      "tank",
+		"pillar-csi.bhyoo.com/pool":          "tank",
 	}
 }
 

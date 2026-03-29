@@ -379,7 +379,6 @@ const (
 	paramBackendType  = "pillar-csi.bhyoo.com/backend-type"
 	paramProtocolType = "pillar-csi.bhyoo.com/protocol-type"
 	paramTarget       = "pillar-csi.bhyoo.com/target"
-	paramZFSPool      = "pillar-csi.bhyoo.com/zfs-pool"
 	paramZFSParent    = "pillar-csi.bhyoo.com/zfs-parent-dataset"
 	paramNVMeOFPort   = "pillar-csi.bhyoo.com/nvmeof-port"
 	paramISCSIPort    = "pillar-csi.bhyoo.com/iscsi-port"
@@ -1175,14 +1174,12 @@ func (s *ControllerServer) applyPVCAnnotationOverrides(
 
 // buildAgentVolumeID constructs the volume identifier used in all agent RPCs.
 //
-// For ZFS backends the format is "<pool>/<volume-name>" where pool is the ZFS
-// pool name from the pillar-csi.bhyoo.com/zfs-pool StorageClass parameter,
-// matching the agent's internal naming convention (/dev/zvol/<pool>/<name>).
-// For other backends it falls back to "<pillar-pool-name>/<volume-name>".
+// The format is "<pool>/<volume-name>" where pool is the storage pool name
+// from the pillar-csi.bhyoo.com/pool StorageClass parameter.  For ZFS
+// backends this matches the agent's internal naming convention
+// (/dev/zvol/<pool>/<name>); for other backends it is the pool name passed
+// to --backend type=<t>,pool=<name>.
 func buildAgentVolumeID(params map[string]string, volumeName string) string {
-	if zfsPool := params[paramZFSPool]; zfsPool != "" {
-		return zfsPool + "/" + volumeName
-	}
 	if pool := params[paramPool]; pool != "" {
 		return pool + "/" + volumeName
 	}
@@ -1269,7 +1266,7 @@ func buildBackendParams(params map[string]string, backendType agentv1.BackendTyp
 		return &agentv1.BackendParams{
 			Params: &agentv1.BackendParams_Zfs{
 				Zfs: &agentv1.ZfsVolumeParams{
-					Pool:          params[paramZFSPool],
+					Pool:          params[paramPool],
 					ParentDataset: params[paramZFSParent],
 					Properties:    zfsProps,
 				},

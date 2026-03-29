@@ -45,12 +45,11 @@ limitations under the License.
 //     AllowVolumeExpansion=true (non-NFS default).
 //  4. The StorageClass parameter map carries all expected keys that the CSI
 //     controller/node plugin uses during provisioning:
-//     - pillar-csi.bhyoo.com/pool        → binding.Spec.PoolRef
+//     - pillar-csi.bhyoo.com/pool        → ZFS pool name (from PillarPool spec.backend.zfs.pool)
 //     - pillar-csi.bhyoo.com/protocol    → binding.Spec.ProtocolRef
 //     - pillar-csi.bhyoo.com/backend-type → "zfs-zvol"
 //     - pillar-csi.bhyoo.com/protocol-type → "nvmeof-tcp"
 //     - pillar-csi.bhyoo.com/target      → pool's targetRef (PillarTarget name)
-//     - pillar-csi.bhyoo.com/zfs-pool    → ZFS pool name
 //     - pillar-csi.bhyoo.com/nvmeof-port → "4421"
 //     - pillar-csi.bhyoo.com/acl-enabled → "false"
 //     - csi.storage.k8s.io/fstype        → "ext4"
@@ -380,9 +379,9 @@ var _ = func() bool {
 				Expect(params["pillar-csi.bhyoo.com/target"]).To(Equal(stack.Target.Name),
 					"parameter target must equal the pool's spec.targetRef (PillarTarget name)")
 
-				// ZFS-specific parameters — pool name on the agent host.
-				Expect(params["pillar-csi.bhyoo.com/zfs-pool"]).To(Equal(testEnv.ZFSPoolName),
-					"parameter zfs-pool must equal the ZFS pool name on the agent host")
+				// Pool parameter carries the ZFS pool name on the agent host.
+				Expect(params["pillar-csi.bhyoo.com/pool"]).To(Equal(testEnv.ZFSPoolName),
+					"parameter pool must equal the ZFS pool name on the agent host")
 
 				// NVMe-oF TCP parameters — port and ACL toggle.
 				Expect(params["pillar-csi.bhyoo.com/nvmeof-port"]).To(Equal("4421"),
@@ -398,7 +397,7 @@ var _ = func() bool {
 				By(fmt.Sprintf(
 					"StorageClass %q verified: provisioner=%q reclaimPolicy=%s "+
 						"volumeBindingMode=%s allowVolumeExpansion=%v pool=%q protocol=%q "+
-						"target=%q zfsPool=%q nvmeofPort=%q",
+						"target=%q nvmeofPort=%q",
 					sc.Name,
 					sc.Provisioner,
 					*sc.ReclaimPolicy,
@@ -407,7 +406,6 @@ var _ = func() bool {
 					params["pillar-csi.bhyoo.com/pool"],
 					params["pillar-csi.bhyoo.com/protocol"],
 					params["pillar-csi.bhyoo.com/target"],
-					params["pillar-csi.bhyoo.com/zfs-pool"],
 					params["pillar-csi.bhyoo.com/nvmeof-port"],
 				))
 			})

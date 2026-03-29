@@ -129,7 +129,7 @@ func TestCSIController_CreateVolume(t *testing.T) { //nolint:gocyclo // CreateVo
 		t.Fatalf("expected 1 ExportVolume agent call, got %d", len(exportCalls))
 	}
 
-	// Verify agent volume ID: "tank/<volName>" (zfs-pool + "/" + volume name).
+	// Verify agent volume ID: "tank/<volName>" (pool + "/" + volume name).
 	wantAgentVolID := "tank/" + volName
 	if createCalls[0].VolumeID != wantAgentVolID {
 		t.Errorf("agent CreateVolume: VolumeID = %q, want %q",
@@ -864,7 +864,7 @@ func TestCSIController_CreateVolume_MissingParams(t *testing.T) {
 			params: map[string]string{
 				"pillar-csi.bhyoo.com/backend-type":  "zfs-zvol",
 				"pillar-csi.bhyoo.com/protocol-type": "nvmeof-tcp",
-				"pillar-csi.bhyoo.com/zfs-pool":      "tank",
+				"pillar-csi.bhyoo.com/pool":          "tank",
 			},
 			wantCode: codes.InvalidArgument,
 		},
@@ -873,7 +873,7 @@ func TestCSIController_CreateVolume_MissingParams(t *testing.T) {
 			params: map[string]string{
 				"pillar-csi.bhyoo.com/target":        "storage-1",
 				"pillar-csi.bhyoo.com/protocol-type": "nvmeof-tcp",
-				"pillar-csi.bhyoo.com/zfs-pool":      "tank",
+				"pillar-csi.bhyoo.com/pool":          "tank",
 			},
 			wantCode: codes.InvalidArgument,
 		},
@@ -882,7 +882,7 @@ func TestCSIController_CreateVolume_MissingParams(t *testing.T) {
 			params: map[string]string{
 				"pillar-csi.bhyoo.com/target":       "storage-1",
 				"pillar-csi.bhyoo.com/backend-type": "zfs-zvol",
-				"pillar-csi.bhyoo.com/zfs-pool":     "tank",
+				"pillar-csi.bhyoo.com/pool":         "tank",
 			},
 			wantCode: codes.InvalidArgument,
 		},

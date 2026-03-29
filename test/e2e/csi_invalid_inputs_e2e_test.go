@@ -338,7 +338,7 @@ func TestCSIEdge_CreateVolume_MissingBackendType(t *testing.T) {
 	params := map[string]string{
 		"pillar-csi.bhyoo.com/target":        env.TargetName,
 		"pillar-csi.bhyoo.com/protocol-type": "nvmeof-tcp",
-		"pillar-csi.bhyoo.com/zfs-pool":      "tank",
+		"pillar-csi.bhyoo.com/pool":           "tank",
 		// backend-type deliberately omitted
 	}
 
