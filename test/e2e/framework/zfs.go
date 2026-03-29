@@ -40,7 +40,7 @@ package framework
 //	var loopDev  string
 //
 //	var _ = BeforeSuite(func() {
-//	    hostExec, _ = framework.NewDockerHostExec(ctx, "tcp://10.111.0.1:2375")
+//	    hostExec, _ = framework.NewDockerHostExec(ctx, "tcp://localhost:2375")
 //	    loopDev, _ = framework.CreateLoopbackZFSPool(ctx, hostExec,
 //	        "e2e-pool",
 //	        "/tmp/e2e-pool.img",

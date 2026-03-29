@@ -63,9 +63,9 @@ var _ = Describe("CRFixtures", func() {
 
 	Describe("ParseAgentAddr", func() {
 		It("parses a valid IPv4 host:port address", func() {
-			host, port, ok := framework.ParseAgentAddr("10.111.0.1:9500")
+			host, port, ok := framework.ParseAgentAddr("192.168.1.100:9500")
 			Expect(ok).To(BeTrue(), "ParseAgentAddr must succeed for valid address")
-			Expect(host).To(Equal("10.111.0.1"), "host must match")
+			Expect(host).To(Equal("192.168.1.100"), "host must match")
 			Expect(port).To(Equal(int32(9500)), "port must match")
 		})
 
@@ -134,7 +134,7 @@ var _ = Describe("CRFixtures", func() {
 
 	Describe("KindExternalTarget", func() {
 		It("builds a PillarTarget with spec.external populated", func() {
-			target := framework.KindExternalTarget("test-target", "10.111.0.1:9500")
+			target := framework.KindExternalTarget("test-target", "192.168.1.100:9500")
 
 			Expect(target).NotTo(BeNil())
 			Expect(target.Name).To(Equal("test-target"))
@@ -142,7 +142,7 @@ var _ = Describe("CRFixtures", func() {
 				"spec.external must be set for an external target")
 			Expect(target.Spec.NodeRef).To(BeNil(),
 				"spec.nodeRef must be nil when external is used")
-			Expect(target.Spec.External.Address).To(Equal("10.111.0.1"),
+			Expect(target.Spec.External.Address).To(Equal("192.168.1.100"),
 				"address must be the host part of the addr string")
 			Expect(target.Spec.External.Port).To(Equal(int32(9500)),
 				"port must be the numeric port from the addr string")
@@ -270,7 +270,7 @@ var _ = Describe("CRFixtures", func() {
 
 	Describe("KindE2EStack", func() {
 		const (
-			testAddr = "10.111.0.1:9500"
+			testAddr = "192.168.1.100:9500"
 			testPool = "e2e-pool"
 		)
 

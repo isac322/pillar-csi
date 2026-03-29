@@ -73,9 +73,9 @@ type E2EEnv struct {
 
 	// DockerHost is the Docker daemon endpoint used for all docker, kind, and
 	// helm sub-processes spawned by the e2e lifecycle helpers.  Sourced from
-	// DOCKER_HOST; defaults to "tcp://localhost:2375".  Injected explicitly
-	// into every exec.Command env so sub-processes use the correct daemon even
-	// when the caller did not export DOCKER_HOST.
+	// DOCKER_HOST.  When empty, sub-processes use Docker's default behaviour
+	// (local Unix socket).  Injected explicitly into every exec.Command env
+	// only when non-empty.
 	DockerHost string
 
 	// KubeconfigPath is the absolute path to the kubeconfig file written by
@@ -166,10 +166,11 @@ var testEnv = &E2EEnv{}
 // defaultClusterName is used when KIND_CLUSTER is not set.
 const defaultClusterName = "pillar-csi-e2e"
 
-// defaultDockerHost is the Docker daemon endpoint injected into all
-// docker/kind/helm sub-processes when DOCKER_HOST is not set in the
-// calling environment.
-const defaultDockerHost = "tcp://localhost:2375"
+// defaultDockerHost is empty — when DOCKER_HOST is not set in the calling
+// environment, sub-processes inherit Docker's own default behaviour (typically
+// the local Unix socket /var/run/docker.sock).  Set DOCKER_HOST explicitly
+// when the daemon listens on a TCP socket or a remote host.
+const defaultDockerHost = ""
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TestMain — entry point
@@ -233,7 +234,7 @@ func TestMain(m *testing.M) {
 // defaults.  No external commands are run at this stage.
 func initE2EEnv() error {
 	testEnv.ClusterName = envOrDefault("KIND_CLUSTER", defaultClusterName)
-	testEnv.DockerHost = envOrDefault("DOCKER_HOST", defaultDockerHost)
+	testEnv.DockerHost = os.Getenv("DOCKER_HOST") // empty = Docker default (local socket)
 	testEnv.ImageTag = envOrDefault("E2E_IMAGE_TAG", "e2e")
 	testEnv.HelmRelease = envOrDefault("E2E_HELM_RELEASE", "pillar-csi")
 	testEnv.HelmNamespace = envOrDefault("E2E_HELM_NAMESPACE", "pillar-csi-system")
@@ -284,6 +285,20 @@ func initE2EEnv() error {
 //  4. Install the Helm chart (with external-agent overlay when applicable).
 func setupE2E() error {
 	defer logStep("setupE2E (total)")()
+
+	// Fail fast if Docker is unreachable — all subsequent steps depend on it.
+	if err := verifyDockerAccess(); err != nil {
+		return fmt.Errorf("docker: %w", err)
+	}
+
+	// Verify /dev/nvme-fabrics is a character device BEFORE creating the Kind
+	// cluster.  kind-config.yaml bind-mounts this device into the compute-worker
+	// node.  If nvme_fabrics is not loaded, Docker creates an empty directory
+	// instead — and NodeStageVolume fails with "open /dev/nvme-fabrics: is a
+	// directory".  This check catches the problem before the slow cluster-create.
+	if err := verifyHostNVMeFabrics(); err != nil {
+		return fmt.Errorf("nvme-fabrics device: %w", err)
+	}
 
 	if err := ensureKindCluster(); err != nil {
 		return fmt.Errorf("kind cluster: %w", err)
@@ -374,6 +389,68 @@ func setupE2E() error {
 	return nil
 }
 
+// verifyDockerAccess runs `docker info` to confirm the Docker daemon is
+// reachable.  Called at the very start of setupE2E so that permission errors,
+// network failures, or missing DOCKER_HOST produce a clear, early message
+// instead of a cryptic timeout deep in the cluster-creation flow.
+func verifyDockerAccess() error {
+	defer logStep("verifyDockerAccess")()
+	endpoint := testEnv.DockerHost
+	if endpoint == "" {
+		endpoint = "(default local socket)"
+	}
+	fmt.Fprintf(os.Stdout, "e2e setup: verifying Docker daemon access [%s]\n", endpoint)
+
+	out, err := captureOutput("docker", "info", "--format", "{{.ServerVersion}}")
+	trimmed := strings.TrimSpace(out)
+	if err != nil {
+		return fmt.Errorf(
+			"cannot reach Docker daemon [%s]: %s: %w\n"+
+				"  Ensure the Docker daemon is running and accessible.\n"+
+				"  Set DOCKER_HOST if the daemon listens on a non-default endpoint.",
+			endpoint, trimmed, err)
+	}
+	// docker info can exit 0 even when the daemon is unreachable (e.g. the
+	// CLI prints a connection error as output).  Detect this by checking
+	// whether the output looks like a version string (digits and dots) rather
+	// than an error message.
+	if trimmed == "" || strings.Contains(trimmed, "dial tcp") || strings.Contains(trimmed, "Cannot connect") {
+		return fmt.Errorf(
+			"cannot reach Docker daemon [%s]: docker info returned: %s\n"+
+				"  Ensure the Docker daemon is running and accessible.\n"+
+				"  Set DOCKER_HOST if the daemon listens on a non-default endpoint.",
+			endpoint, trimmed)
+	}
+	fmt.Fprintf(os.Stdout, "e2e setup: Docker daemon OK (server %s)\n", trimmed)
+	return nil
+}
+
+// verifyHostNVMeFabrics checks that /dev/nvme-fabrics is a character device on
+// the Docker host.  This MUST run before "kind create cluster" because
+// kind-config.yaml bind-mounts /dev/nvme-fabrics into the compute-worker node.
+// If the nvme_fabrics kernel module is not loaded, /dev/nvme-fabrics does not
+// exist and Docker creates an empty directory at the mount-source path — making
+// NVMe-oF connect fail with "open /dev/nvme-fabrics: is a directory".
+func verifyHostNVMeFabrics() error {
+	defer logStep("verifyHostNVMeFabrics")()
+	// Use `docker run --rm --privileged` to check on the Docker host.
+	out, err := captureOutput("docker", "run", "--rm",
+		"--privileged", "--pid=host",
+		framework.ImageDebianBookwormSlim,
+		"nsenter", "-t", "1", "-m", "--",
+		"test", "-c", "/dev/nvme-fabrics",
+	)
+	if err != nil {
+		return fmt.Errorf(
+			"/dev/nvme-fabrics is not a character device on the Docker host.\n"+
+				"  The nvme_fabrics kernel module must be loaded BEFORE running e2e tests.\n"+
+				"  Run: sudo modprobe nvme_fabrics nvme_tcp nvmet nvmet_tcp\n"+
+				"  Output: %s", strings.TrimSpace(out))
+	}
+	fmt.Fprintf(os.Stdout, "e2e setup: /dev/nvme-fabrics verified on Docker host\n")
+	return nil
+}
+
 // ensureKindCluster always creates a fresh Kind cluster.  Any pre-existing
 // cluster with the same name is deleted first to guarantee a clean slate and
 // prevent state leakage between runs.  On success testEnv.KubeconfigPath is
@@ -420,7 +497,7 @@ func ensureKindCluster() error {
 	// Build the Kind config, optionally appending kubeadmConfigPatches that
 	// add the remote Docker daemon's IP to the API server certificate SANs.
 	//
-	// When Kind runs on a remote Docker daemon (e.g. tcp://10.111.0.1:2375),
+	// When Kind runs on a remote Docker daemon (e.g. tcp://192.168.1.100:2375),
 	// the embedded kind-config.yaml sets apiServerAddress=0.0.0.0 so that the
 	// API server port is reachable from outside the daemon host.  However, the
 	// API server TLS certificate only includes 0.0.0.0 and internal IPs in its
@@ -480,7 +557,7 @@ func ensureKindCluster() error {
 // Without this patch, the API server certificate only includes internal cluster
 // addresses and 0.0.0.0 in its SANs.  kubectl, helm, and client-go all verify
 // the server certificate by default; they would reject the connection with
-// "x509: certificate is not valid for 10.111.0.1" when connecting via the
+// "x509: certificate is not valid for <remote-host>" when connecting via the
 // remote host IP.  Adding the IP as a SAN makes TLS verification succeed.
 func buildKindConfig() string {
 	base := string(KindConfigYAML)
@@ -1275,14 +1352,10 @@ func captureOutput(name string, args ...string) (string, error) {
 }
 
 // injectDockerHost returns a copy of env with DOCKER_HOST set to the value
-// stored in testEnv.DockerHost (defaulting to defaultDockerHost when empty).
-// Any existing DOCKER_HOST entry in env is replaced so the sub-process always
-// uses the configured daemon endpoint.
+// stored in testEnv.DockerHost.  When DockerHost is empty, existing
+// DOCKER_HOST entries are stripped so that sub-processes use Docker's default
+// behaviour (local Unix socket).
 func injectDockerHost(env []string) []string {
-	host := testEnv.DockerHost
-	if host == "" {
-		host = defaultDockerHost
-	}
 	const key = "DOCKER_HOST="
 	out := make([]string, 0, len(env)+1)
 	for _, e := range env {
@@ -1290,7 +1363,10 @@ func injectDockerHost(env []string) []string {
 			out = append(out, e)
 		}
 	}
-	return append(out, key+host)
+	if testEnv.DockerHost != "" {
+		out = append(out, key+testEnv.DockerHost)
+	}
+	return out
 }
 
 // writeKindKubeconfig runs "kind get kubeconfig --name <cluster>", rewrites
@@ -1298,8 +1374,8 @@ func injectDockerHost(env []string) []string {
 // 127.0.0.1 which only works on the Docker daemon host), and writes the result
 // to a new temporary file.
 //
-// When Kind runs on a remote Docker daemon (e.g. tcp://10.111.0.1:2375), the
-// kubeconfig it emits contains "server: https://127.0.0.1:<port>".  That
+// When Kind runs on a remote Docker daemon (e.g. tcp://192.168.1.100:2375),
+// the kubeconfig it emits contains "server: https://127.0.0.1:<port>".  That
 // loopback address is on the remote machine, not on the local machine where
 // the test binary runs.  Replacing 127.0.0.1 with the remote host's IP makes
 // kubectl and client-go connect to the correct API server endpoint.
@@ -1333,7 +1409,7 @@ func writeKindKubeconfig(clusterName string) (string, error) {
 }
 
 // dockerHostIP extracts the IP address portion from a Docker daemon endpoint
-// URL such as "tcp://10.111.0.1:2375".  Returns an empty string when the
+// URL such as "tcp://192.168.1.100:2375".  Returns an empty string when the
 // endpoint is not a TCP URL or when parsing fails.
 func dockerHostIP(dockerHost string) string {
 	if dockerHost == "" {

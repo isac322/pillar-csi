@@ -64,18 +64,11 @@ func TestCoexecutionSharedEnvIsPopulated(t *testing.T) {
 	if testEnv.HelmNamespace == "" {
 		t.Fatal("testEnv.HelmNamespace must be non-empty: initE2EEnv must run before m.Run()")
 	}
-	// DockerHost is critical: every docker/kind/helm sub-process spawned by
-	// TestMain (including the deferred teardownE2E) uses this value.  An empty
-	// DockerHost would cause all sub-processes to use the default daemon socket
-	// instead of the DOCKER_HOST=tcp://localhost:2375 endpoint required in CI.
-	if testEnv.DockerHost == "" {
-		t.Fatal("testEnv.DockerHost must be non-empty: injectDockerHost requires a " +
-			"configured Docker daemon endpoint; expected tcp://localhost:2375 when " +
-			"DOCKER_HOST is unset")
-	}
+	// DockerHost may be empty — when DOCKER_HOST is not set, sub-processes
+	// use Docker's default behaviour (local Unix socket).
 
 	t.Logf("shared testEnv populated OK: cluster=%s imageTag=%s helmRelease=%s "+
-		"namespace=%s dockerHost=%s externalAgentAddr=%q",
+		"namespace=%s dockerHost=%q externalAgentAddr=%q",
 		testEnv.ClusterName, testEnv.ImageTag,
 		testEnv.HelmRelease, testEnv.HelmNamespace,
 		testEnv.DockerHost, testEnv.ExternalAgentAddr)
@@ -260,17 +253,15 @@ func TestCoexecutionTeardownGuarantee(t *testing.T) {
 			"(pass or fail)", testEnv.ClusterName)
 	}
 
-	// Precondition 2: DockerHost must be non-empty so Kind/docker/helm
-	// sub-processes (including "kind delete cluster" in teardown) use the
-	// correct daemon endpoint.  Without this, teardown would fail in CI
-	// environments where DOCKER_HOST is not set in the shell environment.
-	if testEnv.DockerHost == "" {
-		t.Fatal("testEnv.DockerHost must be non-empty: " +
-			"Kind/docker/helm teardown commands need a Docker daemon endpoint; " +
-			"expected default tcp://localhost:2375 when DOCKER_HOST is unset")
+	// Precondition 2: DockerHost — when empty, sub-processes use Docker's
+	// default (local Unix socket).  Log either way for diagnostics.
+	if testEnv.DockerHost != "" {
+		t.Logf("teardown precondition OK: DockerHost=%q will be injected into all "+
+			"Kind/docker/helm sub-processes via injectDockerHost()", testEnv.DockerHost)
+	} else {
+		t.Log("teardown precondition OK: DockerHost is empty — sub-processes " +
+			"will use Docker's default daemon endpoint (local socket)")
 	}
-	t.Logf("teardown precondition OK: DockerHost=%q will be injected into all "+
-		"Kind/docker/helm sub-processes via injectDockerHost()", testEnv.DockerHost)
 }
 
 // TestCoexecutionModesMutuallyExclusive verifies that internal-agent and

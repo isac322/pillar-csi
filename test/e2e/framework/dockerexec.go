@@ -21,9 +21,9 @@ package framework
 
 // dockerexec.go — Remote Docker exec helper for ZFS + NVMe-oF e2e tests.
 //
-// DockerHostExec lets e2e tests run privileged shell commands on the remote
-// Docker host (DOCKER_HOST=tcp://10.111.0.1:2375) without requiring root on
-// the test-runner process itself.  It works by:
+// DockerHostExec lets e2e tests run privileged shell commands on the Docker
+// daemon host (e.g. DOCKER_HOST=tcp://192.168.1.100:2375) without requiring
+// root on the test-runner process itself.  It works by:
 //
 //  1. Starting a single, long-lived "host-exec" container on the remote Docker
 //     host with the following flags:
@@ -51,7 +51,7 @@ package framework
 //
 //	var _ = BeforeSuite(func() {
 //	    var err error
-//	    hostExec, err = framework.NewDockerHostExec(ctx, "tcp://10.111.0.1:2375")
+//	    hostExec, err = framework.NewDockerHostExec(ctx, "tcp://localhost:2375")
 //	    Expect(err).NotTo(HaveOccurred())
 //	})
 //
@@ -129,7 +129,7 @@ type DockerHostExec struct {
 	// remains functional even if the caller's view of the ID drifts.
 	containerID string
 
-	// dockerHost is the Docker daemon endpoint (e.g. "tcp://10.111.0.1:2375").
+	// dockerHost is the Docker daemon endpoint (e.g. "tcp://localhost:2375").
 	// It is injected as DOCKER_HOST into every sub-process environment.
 	dockerHost string
 }

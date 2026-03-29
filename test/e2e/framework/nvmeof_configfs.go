@@ -97,7 +97,7 @@ import (
 //
 // Construct with NewNVMeConfigfs; all methods are safe to call concurrently.
 type NVMeConfigfs struct {
-	// dockerHost is the Docker daemon endpoint, e.g. "tcp://10.111.0.1:2375".
+	// dockerHost is the Docker daemon endpoint, e.g. "tcp://localhost:2375".
 	// Injected as DOCKER_HOST into every docker exec sub-process.
 	dockerHost string
 
@@ -116,7 +116,7 @@ type NVMeConfigfs struct {
 //
 // Parameters:
 //
-//	dockerHost   – Docker daemon endpoint (e.g. "tcp://10.111.0.1:2375")
+//	dockerHost   – Docker daemon endpoint (e.g. "tcp://localhost:2375")
 //	container    – Docker container name or ID (e.g. "pillar-csi-e2e-agent")
 //	configfsRoot – root of the configfs mount inside the container
 //	               ("/tmp" for e2e tests; "/sys/kernel/config" in production)

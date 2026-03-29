@@ -92,15 +92,13 @@ E2E_RUN ?=
 ## Override go test timeout per mode (default 30m each).
 E2E_TIMEOUT ?= 30m
 
-## Docker daemon endpoint used by docker, kind, and helm sub-processes spawned
-## by TestMain.  Set to the TCP socket so that the test binary (and any child
-## processes it launches) all talk to the same daemon regardless of the
-## DOCKER_HOST value in the calling shell.
+## Docker daemon endpoint.  When unset, Docker uses its default (local Unix
+## socket).  Set explicitly when the daemon listens on TCP or a remote host.
 ## Example: make test-e2e DOCKER_HOST=tcp://localhost:2375
-DOCKER_HOST ?= tcp://localhost:2375
 
 # Common env vars injected into every e2e invocation.
-E2E_COMMON_ENV = DOCKER_HOST=$(DOCKER_HOST) \
+# DOCKER_HOST is forwarded only when explicitly set by the caller.
+E2E_COMMON_ENV = $(if $(DOCKER_HOST),DOCKER_HOST=$(DOCKER_HOST)) \
 	KIND_CLUSTER=$(KIND_CLUSTER) \
 	E2E_IMAGE_TAG=$(E2E_IMAGE_TAG) \
 	E2E_HELM_RELEASE=$(E2E_HELM_RELEASE) \

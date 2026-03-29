@@ -54,7 +54,7 @@ package framework
 //
 // # Typical usage in a Ginkgo Ordered Describe block
 //
-//	agentAddr := testEnv.ExternalAgentAddr  // e.g. "10.111.0.1:9500"
+//	agentAddr := testEnv.ExternalAgentAddr  // e.g. "192.168.1.100:9500"
 //	poolName  := testEnv.ZFSPoolName        // e.g. "e2e-pool"
 //
 //	target   := framework.KindExternalTarget("my-target", agentAddr)
@@ -100,8 +100,8 @@ import (
 //
 // Example:
 //
-//	host, port, ok := framework.ParseAgentAddr("10.111.0.1:9500")
-//	// host="10.111.0.1", port=9500, ok=true
+//	host, port, ok := framework.ParseAgentAddr("192.168.1.100:9500")
+//	// host="192.168.1.100", port=9500, ok=true
 func ParseAgentAddr(addr string) (host string, port int32, ok bool) {
 	if addr == "" {
 		return "", 0, false
@@ -137,7 +137,7 @@ func KindExternalTarget(name, addr string) *v1alpha1.PillarTarget {
 	if !ok {
 		panic(fmt.Sprintf(
 			"framework.KindExternalTarget(%q): cannot parse agent address %q — "+
-				"expected \"host:port\" format (e.g. \"10.111.0.1:9500\")",
+				"expected \"host:port\" format (e.g. \"192.168.1.100:9500\")",
 			name, addr,
 		))
 	}
@@ -325,7 +325,7 @@ type KindE2EStack struct {
 //   - Proto:   "<prefix>-proto"
 //   - Binding: "<prefix>-binding"
 //
-// agentAddr must be a "host:port" string (e.g. "10.111.0.1:9500").
+// agentAddr must be a "host:port" string (e.g. "192.168.1.100:9500").
 // zfsPool must be the ZFS pool name on the agent host (e.g. "e2e-pool").
 func NewKindE2EStack(prefix, agentAddr, zfsPool string) *KindE2EStack {
 	targetName  := prefix + "-target"

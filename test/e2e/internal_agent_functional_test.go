@@ -715,21 +715,9 @@ var _ = func() bool {
 					Expect(iatK8sClient.Update(ctx, &cn)).To(Succeed())
 					By(fmt.Sprintf("labelled compute-worker %q with %s=true", computeNodeName, iatComputeNodeLabel))
 
-					// Pre-pull the test pod container image into the compute-worker node
-					// so that pod creation is not delayed by a cold image pull from Docker
-					// Hub (which can exceed the iatMountTimeout in constrained CI environments).
-					By(fmt.Sprintf("pre-pulling %s into compute-worker %q", framework.ImageBusybox, computeNodeName))
-					prePullCmd := exec.CommandContext(ctx, "docker", "exec", computeNodeName,
-						"ctr", "images", "pull", framework.ImageBusyboxFullyQualified)
-					prePullCmd.Env = append(os.Environ(), "DOCKER_HOST="+testEnv.DockerHost)
-					if prePullOut, prePullErr := prePullCmd.CombinedOutput(); prePullErr != nil {
-						_, _ = fmt.Fprintf(GinkgoWriter,
-							"[prepull] WARNING: %s pre-pull failed (pod may still work): %v: %s\n",
-							framework.ImageBusybox, prePullErr, prePullOut)
-					} else {
-						_, _ = fmt.Fprintf(GinkgoWriter,
-							"[prepull] %s pre-pulled into %s\n", framework.ImageBusybox, computeNodeName)
-					}
+					// busybox is already pre-loaded into all Kind nodes by
+					// buildAndLoadImages (setup_test.go Phase 3) via "kind load
+					// docker-image".  No Docker Hub pull is needed here.
 				}
 
 				// Create and wait for the PVC to be bound before creating the Pod.
@@ -839,6 +827,31 @@ var _ = func() bool {
 				Expect(framework.WaitForPVCBound(ctx, iatK8sClient, pvc, iatProvisioningTimeout)).To(Succeed(),
 					"PVC must be Bound before creating the mount-lifecycle test Pod")
 				By(fmt.Sprintf("PVC %q/%q is Bound to PV %q", testNS.Name, pvc.Name, pvc.Spec.VolumeName))
+
+				// ── Ensure nvmet kernel modules are loaded ──────────────────────────
+				// In internal-agent mode the agent DaemonSet's modprobe init container
+				// loads nvmet + nvmet_tcp on the storage-worker node.  However, the
+				// init container may not have run yet (or the Kind node image may lack
+				// the pre-loaded modules).  Explicitly load them now via docker exec
+				// into the storage-worker — a no-op if already loaded.  On kernels
+				// where nvmet is built-in (CONFIG_NVME_TARGET=y), modprobe exits 1
+				// even though the subsystem is active, so we tolerate that and verify
+				// /sys/kernel/config/nvmet exists as the authoritative check.
+				By("ensuring nvmet kernel modules are loaded on storage-worker")
+				// Attempt to load nvmet and nvmet_tcp modules.  On kernels where
+				// nvmet is compiled in (CONFIG_NVME_TARGET=y rather than =m),
+				// modprobe exits 1 with "not found in directory" even though the
+				// subsystem is already active.  Tolerate that with "|| true" and
+				// verify /sys/kernel/config/nvmet exists as the authoritative check.
+				modprobeOut, modprobeErr := captureOutput("docker", "exec", storageNodeName,
+					"sh", "-c", "modprobe nvmet nvmet_tcp 2>/dev/null || true; test -d /sys/kernel/config/nvmet")
+				Expect(modprobeErr).NotTo(HaveOccurred(),
+					"modprobe nvmet/nvmet_tcp failed on %s: /sys/kernel/config/nvmet not found after modprobe — "+
+						"the host kernel must have NVMe-oF target support "+
+						"(CONFIG_NVME_TARGET=y or =m). "+
+						"Check that the nvmet and nvmet_tcp kernel modules are available. "+
+						"Output: %s", storageNodeName, modprobeOut)
+				By("nvmet modules loaded — /sys/kernel/config/nvmet exists on storage-worker")
 
 				// ── NVMe-oF target setup ────────────────────────────────────────────
 				// The pillar-agent runs with --configfs-root=/tmp (fake configfs) so it
@@ -1082,6 +1095,51 @@ rmdir  "$NVMET/ports/$PORTID" 2>/dev/null || true
 							_, _ = fmt.Fprintf(GinkgoWriter,
 								"[node-logs] pillar-node logs (last 40 lines):\n%s\n",
 								nodeLogsOut)
+							// Controller + attacher logs for VolumeAttachment diagnosis.
+							ctrlLogsOut, _ := captureOutput(
+								"kubectl", "logs",
+								"-l", "app.kubernetes.io/component=controller",
+								"-n", testEnv.HelmNamespace,
+								"--all-containers",
+								"--tail=40",
+								"--prefix",
+							)
+							_, _ = fmt.Fprintf(GinkgoWriter,
+								"[ctrl-logs] controller+sidecars (last 40 lines):\n%s\n",
+								ctrlLogsOut)
+							// VolumeAttachment status.
+							vaOut, _ := captureOutput(
+								"kubectl", "get", "volumeattachments",
+								"-o", "wide",
+							)
+							_, _ = fmt.Fprintf(GinkgoWriter,
+								"[volume-attachments]\n%s\n", vaOut)
+							// Pod events for mount/volume diagnosis.
+							evOut, _ := captureOutput(
+								"kubectl", "get", "events",
+								"-n", testNS.Name,
+								"--sort-by=.lastTimestamp",
+								"--field-selector", "involvedObject.name="+podName,
+							)
+							_, _ = fmt.Fprintf(GinkgoWriter,
+								"[pod-events]\n%s\n", evOut)
+							// Describe pod for detailed volume conditions.
+							descOut, _ := captureOutput(
+								"kubectl", "describe", "pod", podName,
+								"-n", testNS.Name,
+							)
+							// Print only the Events and Volumes section.
+							for _, line := range strings.Split(descOut, "\n") {
+								if strings.Contains(line, "Events:") ||
+									strings.Contains(line, "Volume") ||
+									strings.Contains(line, "Mount") ||
+									strings.Contains(line, "Warning") ||
+									strings.Contains(line, "Normal") ||
+									strings.Contains(line, "FailedMount") ||
+									strings.Contains(line, "Unable") {
+									_, _ = fmt.Fprintf(GinkgoWriter, "[describe] %s\n", line)
+								}
+							}
 						}
 					}
 				}()
@@ -1443,7 +1501,7 @@ func iatZFSPool() string {
 //   - runs on a compute-worker node (pillar-csi.bhyoo.com/compute-node=true)
 //     which is the NVMe-oF initiator side in the Kind topology
 //   - mounts the named PVC at /data
-//   - uses framework.ImageBusybox to minimise image pull time in CI
+//   - uses framework.ImageBusybox with PullNever (pre-loaded via kind load)
 //   - uses RestartPolicy=Never so a failed start is immediately visible
 func iatBuildTestPod(name, namespace, pvcName string) *corev1.Pod {
 	return &corev1.Pod{
@@ -1459,9 +1517,10 @@ func iatBuildTestPod(name, namespace, pvcName string) *corev1.Pod {
 			},
 			Containers: []corev1.Container{
 				{
-					Name:    "test",
-					Image:   framework.ImageBusybox,
-					Command: []string{"sleep", "infinity"},
+					Name:            "test",
+					Image:           framework.ImageBusybox,
+					ImagePullPolicy: corev1.PullNever,
+					Command:         []string{"sleep", "infinity"},
 					VolumeMounts: []corev1.VolumeMount{
 						{
 							Name:      "data",

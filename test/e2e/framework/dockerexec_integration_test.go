@@ -26,7 +26,7 @@ package framework_test
 //	go test -tags='e2e integration' ./test/e2e/framework/ \
 //	    -run TestDockerHostExec_Integration -v
 //
-// DOCKER_HOST must point at the remote daemon (default tcp://10.111.0.1:2375).
+// DOCKER_HOST must point at the Docker daemon (default tcp://localhost:2375).
 // The tests pull debian:bookworm-slim if not already present.
 
 import (
@@ -39,20 +39,23 @@ import (
 	"github.com/bhyoo/pillar-csi/test/e2e/framework"
 )
 
-// remoteDockerHost returns the Docker daemon endpoint to use for integration
-// tests.  DOCKER_HOST overrides the default remote address.
-func remoteDockerHost() string {
-	if h := os.Getenv("DOCKER_HOST"); h != "" {
-		return h
+// dockerHost returns the Docker daemon endpoint for integration tests.
+// DOCKER_HOST must be set; the test is skipped when it is absent because
+// DockerHostExec requires an explicit endpoint string.
+func dockerHost(t *testing.T) string {
+	t.Helper()
+	h := os.Getenv("DOCKER_HOST")
+	if h == "" {
+		t.Skip("DOCKER_HOST not set — skipping DockerHostExec integration test")
 	}
-	return "tcp://10.111.0.1:2375"
+	return h
 }
 
 func TestDockerHostExec_Integration_ExecBasic(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
-	h, err := framework.NewDockerHostExec(ctx, remoteDockerHost())
+	h, err := framework.NewDockerHostExec(ctx, dockerHost(t))
 	if err != nil {
 		t.Fatalf("NewDockerHostExec: %v", err)
 	}
@@ -120,7 +123,7 @@ func TestDockerHostExec_Integration_ExecOnHost(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
-	h, err := framework.NewDockerHostExec(ctx, remoteDockerHost())
+	h, err := framework.NewDockerHostExec(ctx, dockerHost(t))
 	if err != nil {
 		t.Fatalf("NewDockerHostExec: %v", err)
 	}
@@ -168,13 +171,13 @@ func TestDockerHostExec_Integration_Idempotent(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
-	h1, err := framework.NewDockerHostExec(ctx, remoteDockerHost())
+	h1, err := framework.NewDockerHostExec(ctx, dockerHost(t))
 	if err != nil {
 		t.Fatalf("first NewDockerHostExec: %v", err)
 	}
 	// Do NOT close h1 — intentionally simulate an interrupted run.
 
-	h2, err := framework.NewDockerHostExec(ctx, remoteDockerHost())
+	h2, err := framework.NewDockerHostExec(ctx, dockerHost(t))
 	if err != nil {
 		t.Fatalf("second NewDockerHostExec (idempotent): %v", err)
 	}

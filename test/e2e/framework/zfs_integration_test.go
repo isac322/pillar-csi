@@ -21,10 +21,10 @@ package framework_test
 // zfs_integration_test.go — Live integration tests for CreateLoopbackZFSPool.
 //
 // These tests require:
-//   - A reachable remote Docker daemon (DOCKER_HOST, default tcp://10.111.0.1:2375)
-//   - The ZFS kernel module loaded on the remote host  (`zfs` and `zpool` in PATH)
-//   - `losetup` available on the remote host
-//   - `truncate` available on the remote host
+//   - DOCKER_HOST set to the Docker daemon endpoint (e.g. tcp://localhost:2375)
+//   - The ZFS kernel module loaded on the host (`zfs` and `zpool` in PATH)
+//   - `losetup` available on the host
+//   - `truncate` available on the host
 //
 // Run with:
 //
@@ -56,7 +56,7 @@ func TestCreateLoopbackZFSPool_Integration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	h, err := framework.NewDockerHostExec(ctx, remoteDockerHost())
+	h, err := framework.NewDockerHostExec(ctx, dockerHost(t))
 	if err != nil {
 		t.Fatalf("NewDockerHostExec: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestCreateLoopbackZFSPool_Integration(t *testing.T) {
 
 	// ── Create the pool ───────────────────────────────────────────────────
 	t.Logf("creating ZFS pool %q backed by %s (%s) on %s",
-		poolName, imagePath, imageSize, remoteDockerHost())
+		poolName, imagePath, imageSize, dockerHost(t))
 
 	loopDev, err := framework.CreateLoopbackZFSPool(ctx, h, poolName, imagePath, imageSize)
 	if err != nil {
@@ -187,7 +187,7 @@ func TestDestroyLoopbackZFSPool_EmptyArgs_Integration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	h, err := framework.NewDockerHostExec(ctx, remoteDockerHost())
+	h, err := framework.NewDockerHostExec(ctx, dockerHost(t))
 	if err != nil {
 		t.Fatalf("NewDockerHostExec: %v", err)
 	}

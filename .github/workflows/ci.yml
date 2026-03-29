@@ -2,6 +2,7 @@ name: CI
 
 on:
   push:
+    branches: [master]
   pull_request:
 
 jobs:
@@ -64,9 +65,8 @@ jobs:
       E2E_HELM_NAMESPACE: "pillar-csi-system"
 
       # ── Docker daemon endpoint ────────────────────────────────────────────
-      # On GitHub Actions ubuntu-latest the Docker daemon listens on the Unix
-      # socket only; override the Makefile default of tcp://localhost:2375 so
-      # that kind, docker, and helm sub-processes all reach the correct daemon.
+      # Explicitly set the Docker daemon endpoint so that all sub-processes
+      # (kind, docker, helm) use the same daemon.
       DOCKER_HOST: "unix:///var/run/docker.sock"
 
     steps:

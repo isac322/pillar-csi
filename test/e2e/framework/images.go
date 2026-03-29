@@ -52,9 +52,9 @@ const (
 	//   - test pod image in e2e specs that mount PVCs (minimises pull time)
 	//
 	// The Docker Hub fully-qualified name (docker.io/library/busybox:1.36) is
-	// required when passing the image to containerd's `ctr images pull` CLI
-	// inside a Kind node; the short form works for Kubernetes pod specs and
-	// docker CLI commands.
+	// the canonical reference used by containerd inside Kind nodes.  It is
+	// kept for reference but no longer used for runtime `ctr images pull`;
+	// all images are pre-loaded via `kind load` during test setup.
 	ImageBusybox                   = "busybox:1.36"
 	ImageBusyboxFullyQualified     = "docker.io/library/busybox:1.36"
 

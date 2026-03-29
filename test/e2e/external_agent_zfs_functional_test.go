@@ -395,19 +395,9 @@ var _ = func() bool {
 				Expect(k8sClient.Update(ctx, &cn)).To(Succeed())
 				By(fmt.Sprintf("labelled compute-worker %q with %s=true", computeNodeName, iatComputeNodeLabel))
 
-				// Pre-pull the test pod container image into the compute-worker node.
-				By(fmt.Sprintf("pre-pulling %s into compute-worker %q", framework.ImageBusybox, computeNodeName))
-				prePullCmd := exec.CommandContext(ctx, "docker", "exec", computeNodeName,
-					"ctr", "images", "pull", framework.ImageBusyboxFullyQualified)
-				prePullCmd.Env = injectDockerHost(os.Environ())
-				if prePullOut, prePullErr := prePullCmd.CombinedOutput(); prePullErr != nil {
-					_, _ = fmt.Fprintf(GinkgoWriter,
-						"[prepull] WARNING: %s pre-pull failed (pod may still work): %v: %s\n",
-						framework.ImageBusybox, prePullErr, prePullOut)
-				} else {
-					_, _ = fmt.Fprintf(GinkgoWriter,
-						"[prepull] %s pre-pulled into %s\n", framework.ImageBusybox, computeNodeName)
-				}
+				// busybox is already pre-loaded into all Kind nodes by
+				// buildAndLoadImages (setup_test.go Phase 3) via "kind load
+				// docker-image".  No Docker Hub pull is needed here.
 			}
 
 			// Create and wait for the PVC to be Bound before setting up NVMe-oF.

@@ -11,10 +11,10 @@
 # install.  Changing this value requires updating the corresponding constant
 # in test/e2e/setup.go (E2EImageTag).
 
-# Global pull policy is IfNotPresent so CSI sidecar images (registry.k8s.io/*)
-# and init container images (busybox) can be pulled normally from registries.
-# Pillar-csi images are individually set to Never (loaded into Kind directly).
-imagePullPolicy: IfNotPresent
+# Global pull policy is Never — all images (CSI sidecars, busybox init
+# containers) are pre-loaded into Kind nodes via buildAndLoadImages Phase 3.
+# This eliminates Docker Hub pulls (HTTP 429 rate limits) at test runtime.
+imagePullPolicy: Never
 
 # Install CRDs as part of the Helm release so the test cluster is
 # self-contained and does not rely on a separately managed CRD chart.
