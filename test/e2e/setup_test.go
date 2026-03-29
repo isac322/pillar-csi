@@ -118,6 +118,14 @@ type E2EEnv struct {
 	// Sourced from E2E_EXTERNAL_AGENT_READY_TIMEOUT in seconds; default: 60 s.
 	ExternalAgentReadyTimeout time.Duration
 
+	// ExternalAgentContainerName is the Docker container name of a pre-existing
+	// external-agent container when using EXTERNAL_AGENT_ADDR to point at an
+	// already-running agent.  When non-empty, NVMe-oF mount tests can docker-exec
+	// into this container even without E2E_LAUNCH_EXTERNAL_AGENT=true.
+	// Sourced from E2E_EXTERNAL_AGENT_CONTAINER_NAME; empty means derive from
+	// the Kind cluster name ("<KIND_CLUSTER>-agent").
+	ExternalAgentContainerName string
+
 	// externalAgentContainerID is the Docker container ID created by
 	// startExternalAgentContainer.  Empty when LaunchExternalAgent is false or
 	// when the container could not be started.  Used by teardown to stop/remove.
@@ -237,6 +245,11 @@ func initE2EEnv() error {
 	// External agent Docker container lifecycle.
 	testEnv.LaunchExternalAgent = os.Getenv("E2E_LAUNCH_EXTERNAL_AGENT") == "true"
 	testEnv.ExternalAgentPort = envOrDefault("E2E_EXTERNAL_AGENT_PORT", "9500")
+
+	// Optional explicit container name for a pre-existing external-agent
+	// container.  When set, NVMe-oF mount tests can docker-exec into this
+	// container even when E2E_LAUNCH_EXTERNAL_AGENT is not true.
+	testEnv.ExternalAgentContainerName = os.Getenv("E2E_EXTERNAL_AGENT_CONTAINER_NAME")
 
 	// Parse ready timeout (seconds → duration).
 	if secs := os.Getenv("E2E_EXTERNAL_AGENT_READY_TIMEOUT"); secs != "" {
@@ -1379,10 +1392,22 @@ func clusterExists(output, clusterName string) bool {
 // External agent Docker container lifecycle
 // ─────────────────────────────────────────────────────────────────────────────
 
-// externalAgentContainerName returns the Docker container name derived from
-// the Kind cluster name so that multiple concurrent CI runs on the same host
-// (using distinct KIND_CLUSTER values) do not collide.
+// externalAgentContainerName returns the Docker container name used for
+// docker-exec calls into the external agent container.
+//
+// Resolution order:
+//  1. E2E_EXTERNAL_AGENT_CONTAINER_NAME env var — explicit override, used when
+//     pointing at a pre-existing agent container whose name is known.
+//  2. Derived from the Kind cluster name ("<KIND_CLUSTER>-agent") — the default
+//     when E2E_LAUNCH_EXTERNAL_AGENT=true and TestMain started the container.
+//
+// Reading the env var directly (rather than testEnv.ExternalAgentContainerName)
+// makes this safe to call from both init-time registration guards and from
+// BeforeAll/It closures that run after TestMain has populated testEnv.
 func externalAgentContainerName() string {
+	if name := os.Getenv("E2E_EXTERNAL_AGENT_CONTAINER_NAME"); name != "" {
+		return name
+	}
 	return testEnv.ClusterName + "-agent"
 }
 
@@ -1438,6 +1463,15 @@ func startExternalAgentContainer() error {
 	//                      kernel/ZFS version combinations.
 	//   --mount tmpfs    → writable /tmp so --configfs-root=/tmp works without
 	//                      needing kernel nvmet modules
+	//   -v /sys/kernel/config:/sys/kernel/config
+	//                    → expose the host configfs inside the container so the
+	//                      e2e ExternalAgentZFSMount test can write real NVMe-oF
+	//                      target entries (nvmet is either built-in or already
+	//                      loaded on the host).  Without this bind-mount the
+	//                      container sees a private (empty) configfs and
+	//                      "/sys/kernel/config/nvmet" would not exist.
+	//                      The agent itself uses --configfs-root=/tmp and never
+	//                      touches /sys/kernel/config, so there is no conflict.
 	out, err := captureOutput("docker", "run",
 		"--detach",
 		"--name", name,
@@ -1446,6 +1480,7 @@ func startExternalAgentContainer() error {
 		"--privileged",
 		"--user=root",
 		"--mount", "type=tmpfs,destination=/tmp",
+		"-v", "/sys/kernel/config:/sys/kernel/config",
 		image,
 		"--listen-address=0.0.0.0:9500",
 		"--backend=type=zfs-zvol,pool="+testEnv.ZFSPoolName,

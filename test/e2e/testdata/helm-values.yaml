@@ -36,6 +36,9 @@ controller:
   extraEnv:
     - name: ENABLE_WEBHOOKS
       value: "false"
+    # Speed up reconcile loops so e2e tests do not need long polling timeouts.
+    - name: PILLAR_RECONCILE_INTERVAL
+      value: "2s"
 
   # Reduced limits for CI runners.
   resources:

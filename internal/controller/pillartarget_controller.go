@@ -22,6 +22,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"os"
 	"strings"
 	"time"
 
@@ -61,7 +62,9 @@ const (
 	// Requeue interval for periodic agent connectivity re-checks.
 	// Both the connected and disconnected cases requeue at this interval so
 	// that transient failures are retried and live agents are re-verified.
-	requeueAfterAgentHealthCheck = 30 * time.Second
+	// The default is overridden by PILLAR_RECONCILE_INTERVAL env var (parsed
+	// as a Go duration string, e.g. "5s").
+	defaultRequeueAfterAgentHealthCheck = 30 * time.Second
 
 	// Timeout for a single agent health-check RPC call.
 	agentHealthCheckTimeout = 5 * time.Second
@@ -72,6 +75,21 @@ const (
 	// LabelValueTrue is the string "true" used in Kubernetes label values.
 	labelValueTrue = "true"
 )
+
+// requeueAfterAgentHealthCheck is the effective requeue interval for agent
+// health-check cycles.  It is initialized once at package load time from the
+// PILLAR_RECONCILE_INTERVAL environment variable (parsed as a Go duration
+// string, e.g. "5s").  When the variable is absent or unparseable the
+// hardcoded default of 30 s is used.
+var requeueAfterAgentHealthCheck = func() time.Duration {
+	if raw := os.Getenv("PILLAR_RECONCILE_INTERVAL"); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err == nil && d > 0 {
+			return d
+		}
+	}
+	return defaultRequeueAfterAgentHealthCheck
+}()
 
 // PillarTargetReconciler reconciles a PillarTarget object.
 type PillarTargetReconciler struct {
