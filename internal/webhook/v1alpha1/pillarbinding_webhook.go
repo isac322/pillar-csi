@@ -21,13 +21,11 @@ import (
 	"context"
 	"fmt"
 
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	pillarcsiv1alpha1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
@@ -37,7 +35,7 @@ var pillarbindinglog = logf.Log.WithName("pillarbinding-resource")
 
 // SetupPillarBindingWebhookWithManager registers the webhook for PillarBinding in the manager.
 func SetupPillarBindingWebhookWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewWebhookManagedBy(mgr).For(&pillarcsiv1alpha1.PillarBinding{}).
+	return ctrl.NewWebhookManagedBy(mgr, &pillarcsiv1alpha1.PillarBinding{}).
 		WithValidator(&PillarBindingCustomValidator{Client: mgr.GetClient()}).
 		WithDefaulter(&PillarBindingCustomDefaulter{Client: mgr.GetClient()}).
 		Complete()
@@ -58,14 +56,12 @@ type PillarBindingCustomDefaulter struct {
 	Client client.Client
 }
 
-var _ webhook.CustomDefaulter = &PillarBindingCustomDefaulter{}
+var _ admission.Defaulter[*pillarcsiv1alpha1.PillarBinding] = &PillarBindingCustomDefaulter{}
 
-// Default implements webhook.CustomDefaulter so a webhook will be registered for the Kind PillarBinding.
-func (d *PillarBindingCustomDefaulter) Default(ctx context.Context, obj runtime.Object) error {
-	pillarbinding, ok := obj.(*pillarcsiv1alpha1.PillarBinding)
-	if !ok {
-		return fmt.Errorf("expected an PillarBinding object but got %T", obj)
-	}
+// Default implements admission.Defaulter so a webhook will be registered for the Kind PillarBinding.
+func (d *PillarBindingCustomDefaulter) Default(
+	ctx context.Context, pillarbinding *pillarcsiv1alpha1.PillarBinding,
+) error {
 	pillarbindinglog.Info("Defaulting for PillarBinding", "name", pillarbinding.GetName())
 
 	// Auto-set allowVolumeExpansion from the referenced pool's backend type when
@@ -130,16 +126,12 @@ type PillarBindingCustomValidator struct {
 	Client client.Client
 }
 
-var _ webhook.CustomValidator = &PillarBindingCustomValidator{}
+var _ admission.Validator[*pillarcsiv1alpha1.PillarBinding] = &PillarBindingCustomValidator{}
 
-// ValidateCreate implements webhook.CustomValidator so a webhook will be registered for the type PillarBinding.
+// ValidateCreate implements admission.Validator so a webhook will be registered for the type PillarBinding.
 func (v *PillarBindingCustomValidator) ValidateCreate(
-	ctx context.Context, obj runtime.Object,
+	ctx context.Context, pillarbinding *pillarcsiv1alpha1.PillarBinding,
 ) (admission.Warnings, error) {
-	pillarbinding, ok := obj.(*pillarcsiv1alpha1.PillarBinding)
-	if !ok {
-		return nil, fmt.Errorf("expected a PillarBinding object but got %T", obj)
-	}
 	pillarbindinglog.Info("Validation for PillarBinding upon creation", "name", pillarbinding.GetName())
 
 	err := v.validateCompatibility(ctx, pillarbinding)
@@ -150,18 +142,10 @@ func (v *PillarBindingCustomValidator) ValidateCreate(
 	return nil, nil
 }
 
-// ValidateUpdate implements webhook.CustomValidator so a webhook will be registered for the type PillarBinding.
+// ValidateUpdate implements admission.Validator so a webhook will be registered for the type PillarBinding.
 func (v *PillarBindingCustomValidator) ValidateUpdate(
-	ctx context.Context, oldObj, newObj runtime.Object,
+	ctx context.Context, oldBinding, newBinding *pillarcsiv1alpha1.PillarBinding,
 ) (admission.Warnings, error) {
-	newBinding, ok := newObj.(*pillarcsiv1alpha1.PillarBinding)
-	if !ok {
-		return nil, fmt.Errorf("expected a PillarBinding object for the newObj but got %T", newObj)
-	}
-	oldBinding, ok := oldObj.(*pillarcsiv1alpha1.PillarBinding)
-	if !ok {
-		return nil, fmt.Errorf("expected a PillarBinding object for the oldObj but got %T", oldObj)
-	}
 	pillarbindinglog.Info("Validation for PillarBinding upon update", "name", newBinding.GetName())
 
 	var allErrs field.ErrorList
@@ -204,12 +188,10 @@ func (v *PillarBindingCustomValidator) ValidateUpdate(
 	return nil, nil
 }
 
-// ValidateDelete implements webhook.CustomValidator so a webhook will be registered for the type PillarBinding.
-func (*PillarBindingCustomValidator) ValidateDelete(_ context.Context, obj runtime.Object) (admission.Warnings, error) {
-	pillarbinding, ok := obj.(*pillarcsiv1alpha1.PillarBinding)
-	if !ok {
-		return nil, fmt.Errorf("expected a PillarBinding object but got %T", obj)
-	}
+// ValidateDelete implements admission.Validator so a webhook will be registered for the type PillarBinding.
+func (*PillarBindingCustomValidator) ValidateDelete(
+	_ context.Context, pillarbinding *pillarcsiv1alpha1.PillarBinding,
+) (admission.Warnings, error) {
 	pillarbindinglog.Info("Validation for PillarBinding upon deletion", "name", pillarbinding.GetName())
 
 	// TODO(user): fill in your validation logic upon object deletion.
