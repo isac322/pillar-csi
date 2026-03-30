@@ -17,8 +17,8 @@
 #   --cap-drop ALL --cap-add SYS_ADMIN  (ZFS + configfs need SYS_ADMIN)
 
 # ── Stage 1: Build ─────────────────────────────────────────────────────────────
-# public.ecr.aws/docker/library/golang:1.26-alpine3.23 — matches the version used by the main controller image.
-FROM --platform=$BUILDPLATFORM public.ecr.aws/docker/library/golang:1.26-alpine3.23 AS builder
+# golang:1.26-alpine3.23 — matches the version used by the main controller image.
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine3.23 AS builder
 ARG TARGETOS
 ARG TARGETARCH
 
@@ -51,7 +51,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 # Pin the image to a specific digest to guard against tag mutation.
 # Digest last verified: 2026-03-25.  Rotate during dependency upgrades.
 # docker pull alpine:3.21 --platform linux/amd64
-FROM public.ecr.aws/docker/library/alpine:3.21
+FROM alpine:3.21
 
 # ① Install ZFS userspace utilities (required by the ZFS volume backend which
 #   invokes zfs(8) and zpool(8) via os/exec).
