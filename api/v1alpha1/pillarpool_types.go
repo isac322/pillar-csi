@@ -51,6 +51,46 @@ type ZFSBackendConfig struct {
 	Properties map[string]string `json:"properties,omitempty"`
 }
 
+// LVMProvisioningMode selects between linear and thin LV provisioning.
+// +kubebuilder:validation:Enum=linear;thin
+type LVMProvisioningMode string
+
+// Supported LVMProvisioningMode values.
+const (
+	// LVMProvisioningModeLinear creates fully-allocated linear logical volumes
+	// directly in the volume group (lvcreate -L <size>b).
+	LVMProvisioningModeLinear LVMProvisioningMode = "linear"
+
+	// LVMProvisioningModeThin creates thin-provisioned logical volumes inside a
+	// pre-existing thin pool LV (lvcreate -V <size>b --thinpool <pool>).
+	LVMProvisioningModeThin LVMProvisioningMode = "thin"
+)
+
+// LVMBackendConfig holds LVM-specific volume group and thin pool settings.
+type LVMBackendConfig struct {
+	// volumeGroup is the LVM Volume Group name that pillar-csi will create
+	// logical volumes in (e.g. "data-vg").  The VG must be pre-created on
+	// the node before the agent starts; the driver does not manage VG lifecycle.
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	VolumeGroup string `json:"volumeGroup"`
+
+	// thinPool is the name of the LVM thin pool LV within the volume group
+	// (e.g. "thin-pool-0").  When non-empty the backend operates in thin-
+	// provisioned mode; when empty it creates fully-allocated linear LVs.
+	// The thin pool must be pre-created before the agent starts.
+	// +optional
+	ThinPool string `json:"thinPool,omitempty"`
+
+	// provisioningMode controls whether new volumes are created as fully-
+	// allocated linear LVs or as thin-provisioned LVs inside the thinPool.
+	// Defaults to "linear"; set to "thin" together with a non-empty thinPool
+	// to enable thin provisioning.
+	// +optional
+	// +kubebuilder:default=linear
+	ProvisioningMode LVMProvisioningMode `json:"provisioningMode,omitempty"`
+}
+
 // BackendSpec describes the storage technology and its configuration.
 // Exactly one backend config field must be set to match the chosen type.
 type BackendSpec struct {
@@ -61,6 +101,10 @@ type BackendSpec struct {
 	// zfs holds ZFS-specific configuration; required when type is zfs-zvol or zfs-dataset.
 	// +optional
 	ZFS *ZFSBackendConfig `json:"zfs,omitempty"`
+
+	// lvm holds LVM-specific configuration; required when type is lvm-lv.
+	// +optional
+	LVM *LVMBackendConfig `json:"lvm,omitempty"`
 }
 
 // PoolCapacity reports the measured capacity of the pool.

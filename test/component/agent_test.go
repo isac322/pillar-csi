@@ -100,7 +100,7 @@ func (m *mockVolumeBackend) Create(
 	_ context.Context,
 	_ string,
 	_ int64,
-	_ *agentv1.ZfsVolumeParams,
+	_ *agentv1.BackendParams,
 ) (devicePath string, allocatedBytes int64, err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

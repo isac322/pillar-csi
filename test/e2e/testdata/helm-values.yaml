@@ -127,14 +127,24 @@ agent:
     tag: "e2e"
     pullPolicy: Never
 
-  # --backend registers the ZFS zvol backend.  The e2e pool name matches the
-  # ZFS loopback pool created by TestMain via framework.CreateLoopbackZFSPool
-  # ("e2e-pool").  The Kind storage worker has /dev/zfs bind-mounted from the
-  # host so the agent can access the ZFS kernel module and enumerate pools.
+  # --backend registers storage backends.
+  #
+  # ZFS zvol backend: the e2e pool name matches the ZFS loopback pool created
+  # by TestMain via framework.CreateLoopbackZFSPool ("e2e-pool").  The Kind
+  # storage worker has /dev/zfs bind-mounted from the host so the agent can
+  # access the ZFS kernel module and enumerate pools.
+  #
+  # LVM thin backend: the VG and thin pool are created by TestMain via
+  # framework.SetupLoopbackLVMVG inside the Kind storage-node container.
+  # The VG name ("e2e-vg") and thin pool name ("e2e-thinpool") match the
+  # defaults in E2EEnv.  lvm2 is installed inside the Kind worker container
+  # by the setup script if not already present.
+  #
   # --configfs-root=/tmp avoids requiring real nvmet kernel modules for the
-  # NVMe-oF configfs path (pure ZFS tests do not need it).
+  # NVMe-oF configfs path (pure ZFS/LVM tests do not need it).
   extraArgs:
     - --backend=type=zfs-zvol,pool=e2e-pool
+    - --backend=type=lvm-lv,vg=e2e-vg,thinpool=e2e-thinpool
     - --configfs-root=/tmp
     - --listen-address=:9500
 
@@ -144,6 +154,15 @@ agent:
   # when runAsUser=0 + SYS_ADMIN are set, causing "zpool list e2e-pool" to
   # fail and DiscoveredPools to remain empty (PoolDiscovered stays Unknown).
   privileged: true
+
+  # Load kernel modules required by the agent backends before the agent
+  # container starts.  dm_thin_pool is required for the LVM thin-provisioning
+  # backend; nvmet and nvmet_tcp are required for NVMe-oF target exposure.
+  initModprobe:
+    modules:
+      - nvmet
+      - nvmet_tcp
+      - dm_thin_pool
 
   resources:
     limits:

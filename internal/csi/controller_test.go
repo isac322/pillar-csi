@@ -1129,3 +1129,314 @@ func TestCreateVolume_PVCAnnotationOverride_NoPVCMetadata(t *testing.T) {
 		t.Errorf("agent.CreateVolume call count = %d, want 1", env.agent.createVolumeCalls)
 	}
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LVM mode parameter-parsing unit tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TestBuildBackendParams_LVM_WithThinMode verifies that buildBackendParams
+// correctly propagates the "thin" provisioning mode from the merged parameter
+// map into LvmVolumeParams.ProvisionMode.
+func TestBuildBackendParams_LVM_WithThinMode(t *testing.T) {
+	t.Parallel()
+
+	params := map[string]string{
+		paramLVMVG:   "data-vg",
+		paramLVMMode: "thin",
+	}
+	got := buildBackendParams(params, agentv1.BackendType_BACKEND_TYPE_LVM)
+	if got == nil {
+		t.Fatal("buildBackendParams returned nil")
+	}
+	lvm := got.GetLvm()
+	if lvm == nil {
+		t.Fatal("BackendParams.Lvm is nil")
+	}
+	if lvm.GetVolumeGroup() != "data-vg" {
+		t.Errorf("VolumeGroup = %q, want %q", lvm.GetVolumeGroup(), "data-vg")
+	}
+	if lvm.GetProvisionMode() != "thin" {
+		t.Errorf("ProvisionMode = %q, want %q", lvm.GetProvisionMode(), "thin")
+	}
+}
+
+// TestBuildBackendParams_LVM_WithLinearMode verifies that "linear" mode is
+// forwarded correctly.
+func TestBuildBackendParams_LVM_WithLinearMode(t *testing.T) {
+	t.Parallel()
+
+	params := map[string]string{
+		paramLVMVG:   "fast-vg",
+		paramLVMMode: "linear",
+	}
+	got := buildBackendParams(params, agentv1.BackendType_BACKEND_TYPE_LVM)
+	lvm := got.GetLvm()
+	if lvm == nil {
+		t.Fatal("BackendParams.Lvm is nil")
+	}
+	if lvm.GetProvisionMode() != "linear" {
+		t.Errorf("ProvisionMode = %q, want %q", lvm.GetProvisionMode(), "linear")
+	}
+}
+
+// TestBuildBackendParams_LVM_AbsentMode verifies that when paramLVMMode is
+// absent from the parameter map, ProvisionMode is the empty string (letting the
+// agent backend use its compiled-in default).
+func TestBuildBackendParams_LVM_AbsentMode(t *testing.T) {
+	t.Parallel()
+
+	params := map[string]string{
+		paramLVMVG: "data-vg",
+		// paramLVMMode intentionally absent
+	}
+	got := buildBackendParams(params, agentv1.BackendType_BACKEND_TYPE_LVM)
+	lvm := got.GetLvm()
+	if lvm == nil {
+		t.Fatal("BackendParams.Lvm is nil")
+	}
+	if lvm.GetProvisionMode() != "" {
+		t.Errorf("ProvisionMode = %q, want empty string", lvm.GetProvisionMode())
+	}
+}
+
+// TestMergeParamsFromCRDs_LVM_PoolDefault verifies that the PillarPool-level
+// LVM provisioning mode (Layer 1) is propagated into the merged parameter map
+// as paramLVMMode when no binding-level override is present.
+func TestMergeParamsFromCRDs_LVM_PoolDefault(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme v1alpha1: %v", err)
+	}
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme corev1: %v", err)
+	}
+
+	pool := &v1alpha1.PillarPool{
+		ObjectMeta: metav1.ObjectMeta{Name: "lvm-pool"},
+		Spec: v1alpha1.PillarPoolSpec{
+			TargetRef: "storage-node-1",
+			Backend: v1alpha1.BackendSpec{
+				Type: v1alpha1.BackendTypeLVMLV,
+				LVM: &v1alpha1.LVMBackendConfig{
+					VolumeGroup:      "data-vg",
+					ThinPool:         "thin-pool-0",
+					ProvisioningMode: v1alpha1.LVMProvisioningModeThin,
+				},
+			},
+		},
+	}
+	binding := &v1alpha1.PillarBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: "lvm-binding"},
+		Spec: v1alpha1.PillarBindingSpec{
+			PoolRef:     "lvm-pool",
+			ProtocolRef: "nvmeof-tcp",
+			// No LVM overrides — pool default should surface.
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(pool, binding).
+		Build()
+
+	srv := NewControllerServerWithDialer(fakeClient, "pillar-csi.bhyoo.com", nil)
+
+	scParams := map[string]string{
+		paramBinding: "lvm-binding",
+	}
+	merged, err := srv.mergeParamsFromCRDs(context.Background(), scParams)
+	if err != nil {
+		t.Fatalf("mergeParamsFromCRDs unexpected error: %v", err)
+	}
+
+	if got := merged[paramLVMMode]; got != "thin" {
+		t.Errorf("merged[paramLVMMode] = %q, want %q", got, "thin")
+	}
+}
+
+// TestMergeParamsFromCRDs_LVM_BindingOverride verifies that the PillarBinding-
+// level LVM provisioning mode override (Layer 3) wins over the pool-level
+// default (Layer 1).
+func TestMergeParamsFromCRDs_LVM_BindingOverride(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme v1alpha1: %v", err)
+	}
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme corev1: %v", err)
+	}
+
+	// Pool default is "linear" …
+	pool := &v1alpha1.PillarPool{
+		ObjectMeta: metav1.ObjectMeta{Name: "lvm-pool2"},
+		Spec: v1alpha1.PillarPoolSpec{
+			TargetRef: "storage-node-1",
+			Backend: v1alpha1.BackendSpec{
+				Type: v1alpha1.BackendTypeLVMLV,
+				LVM: &v1alpha1.LVMBackendConfig{
+					VolumeGroup:      "data-vg",
+					ThinPool:         "thin-pool-0",
+					ProvisioningMode: v1alpha1.LVMProvisioningModeLinear,
+				},
+			},
+		},
+	}
+	// … but binding overrides to "thin".
+	binding := &v1alpha1.PillarBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: "lvm-binding2"},
+		Spec: v1alpha1.PillarBindingSpec{
+			PoolRef:     "lvm-pool2",
+			ProtocolRef: "nvmeof-tcp",
+			Overrides: &v1alpha1.BindingOverrides{
+				Backend: &v1alpha1.BackendOverrides{
+					LVM: &v1alpha1.LVMOverrides{
+						ProvisioningMode: v1alpha1.LVMProvisioningModeThin,
+					},
+				},
+			},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(pool, binding).
+		Build()
+
+	srv := NewControllerServerWithDialer(fakeClient, "pillar-csi.bhyoo.com", nil)
+
+	scParams := map[string]string{
+		paramBinding: "lvm-binding2",
+	}
+	merged, err := srv.mergeParamsFromCRDs(context.Background(), scParams)
+	if err != nil {
+		t.Fatalf("mergeParamsFromCRDs unexpected error: %v", err)
+	}
+
+	// The binding override ("thin") must beat the pool default ("linear").
+	if got := merged[paramLVMMode]; got != "thin" {
+		t.Errorf("merged[paramLVMMode] = %q, want %q (binding override should win)", got, "thin")
+	}
+}
+
+// TestMergeParamsFromCRDs_LVM_SCOverridePool verifies that an explicit lvm-mode
+// value already present in the StorageClass parameters (Layer 2) takes priority
+// over the PillarPool-level default (Layer 1).  The StorageClass value must be
+// preserved unchanged after mergeParamsFromCRDs returns.
+func TestMergeParamsFromCRDs_LVM_SCOverridePool(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme v1alpha1: %v", err)
+	}
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme corev1: %v", err)
+	}
+
+	// Pool wants "thin" provisioning …
+	pool := &v1alpha1.PillarPool{
+		ObjectMeta: metav1.ObjectMeta{Name: "lvm-pool-sc"},
+		Spec: v1alpha1.PillarPoolSpec{
+			TargetRef: "storage-node-1",
+			Backend: v1alpha1.BackendSpec{
+				Type: v1alpha1.BackendTypeLVMLV,
+				LVM: &v1alpha1.LVMBackendConfig{
+					VolumeGroup:      "data-vg",
+					ThinPool:         "thin-pool-0",
+					ProvisioningMode: v1alpha1.LVMProvisioningModeThin,
+				},
+			},
+		},
+	}
+	binding := &v1alpha1.PillarBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: "lvm-binding-sc"},
+		Spec: v1alpha1.PillarBindingSpec{
+			PoolRef:     "lvm-pool-sc",
+			ProtocolRef: "nvmeof-tcp",
+			// No LVM overrides — pool default should remain below SC value.
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(pool, binding).
+		Build()
+
+	srv := NewControllerServerWithDialer(fakeClient, "pillar-csi.bhyoo.com", nil)
+
+	// StorageClass explicitly opts into "linear" even though the pool defaults to "thin".
+	scParams := map[string]string{
+		paramBinding: "lvm-binding-sc",
+		paramLVMMode: "linear", // SC override
+	}
+	merged, err := srv.mergeParamsFromCRDs(context.Background(), scParams)
+	if err != nil {
+		t.Fatalf("mergeParamsFromCRDs unexpected error: %v", err)
+	}
+
+	// SC value must win over pool default.
+	if got := merged[paramLVMMode]; got != "linear" {
+		t.Errorf("merged[paramLVMMode] = %q, want %q (SC override should beat pool default)", got, "linear")
+	}
+}
+
+// TestMergeParamsFromCRDs_LVM_NoModeConfigured verifies that paramLVMMode is
+// absent from the merged map when neither the pool nor the binding specifies a
+// provisioning mode.  This lets the agent use its compiled-in default.
+func TestMergeParamsFromCRDs_LVM_NoModeConfigured(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme v1alpha1: %v", err)
+	}
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme corev1: %v", err)
+	}
+
+	pool := &v1alpha1.PillarPool{
+		ObjectMeta: metav1.ObjectMeta{Name: "lvm-pool3"},
+		Spec: v1alpha1.PillarPoolSpec{
+			TargetRef: "storage-node-1",
+			Backend: v1alpha1.BackendSpec{
+				Type: v1alpha1.BackendTypeLVMLV,
+				LVM: &v1alpha1.LVMBackendConfig{
+					VolumeGroup: "data-vg",
+					// ProvisioningMode deliberately omitted.
+				},
+			},
+		},
+	}
+	binding := &v1alpha1.PillarBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: "lvm-binding3"},
+		Spec: v1alpha1.PillarBindingSpec{
+			PoolRef:     "lvm-pool3",
+			ProtocolRef: "nvmeof-tcp",
+			// No overrides.
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(pool, binding).
+		Build()
+
+	srv := NewControllerServerWithDialer(fakeClient, "pillar-csi.bhyoo.com", nil)
+
+	scParams := map[string]string{
+		paramBinding: "lvm-binding3",
+	}
+	merged, err := srv.mergeParamsFromCRDs(context.Background(), scParams)
+	if err != nil {
+		t.Fatalf("mergeParamsFromCRDs unexpected error: %v", err)
+	}
+
+	// paramLVMMode must not be set — absent key means "use agent default".
+	if got, present := merged[paramLVMMode]; present {
+		t.Errorf("merged[paramLVMMode] = %q, want key absent", got)
+	}
+}

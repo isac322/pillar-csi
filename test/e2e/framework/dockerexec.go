@@ -122,12 +122,17 @@ func (r ExecResult) String() string {
 // DockerHostExec runs privileged shell commands on a remote Docker host by
 // forwarding them into a long-lived privileged container via `docker exec`.
 //
-// Construct with NewDockerHostExec; release with Close.
+// Construct with NewDockerHostExec or NewDockerHostExecNamed; release with Close.
 type DockerHostExec struct {
 	// containerID is the Docker container ID returned by `docker run`.
-	// We also use hostExecContainerName for exec calls so that the object
-	// remains functional even if the caller's view of the ID drifts.
+	// Used by Close() to remove the specific container.
 	containerID string
+
+	// containerName is the Docker container name used when starting the
+	// container.  Used by execArgs() so that named helpers (e.g. the LVM
+	// host-exec helper named "pillar-csi-lvm-exec") target the correct
+	// container rather than always using hostExecContainerName.
+	containerName string
 
 	// dockerHost is the Docker daemon endpoint (e.g. "tcp://localhost:2375").
 	// It is injected as DOCKER_HOST into every sub-process environment.
@@ -148,17 +153,31 @@ type DockerHostExec struct {
 // Any pre-existing container named hostExecContainerName is removed first so
 // that stale containers from previous interrupted runs do not block creation.
 func NewDockerHostExec(ctx context.Context, dockerHost string) (*DockerHostExec, error) {
+	return newDockerHostExecNamed(ctx, dockerHost, hostExecContainerName)
+}
+
+// NewDockerHostExecNamed is like NewDockerHostExec but allows callers to
+// specify a custom container name.  Use this when multiple independent
+// privileged exec helpers need to run concurrently without name conflicts
+// (e.g. ZFS setup and LVM setup running in parallel goroutines).
+func NewDockerHostExecNamed(ctx context.Context, dockerHost, containerName string) (*DockerHostExec, error) {
+	return newDockerHostExecNamed(ctx, dockerHost, containerName)
+}
+
+// newDockerHostExecNamed is the internal implementation shared by
+// NewDockerHostExec and NewDockerHostExecNamed.
+func newDockerHostExecNamed(ctx context.Context, dockerHost, containerName string) (*DockerHostExec, error) {
 	env := buildDockerEnv(dockerHost)
 
 	// ── 1. Remove any stale container from a previous run ─────────────────
-	rmCmd := exec.CommandContext(ctx, "docker", "rm", "-f", hostExecContainerName)
+	rmCmd := exec.CommandContext(ctx, "docker", "rm", "-f", containerName)
 	rmCmd.Env = env
 	_ = rmCmd.Run() // intentionally ignore error; container may not exist
 
 	// ── 2. Start the privileged helper container ───────────────────────────
 	runArgs := []string{
 		"run", "--detach",
-		"--name", hostExecContainerName,
+		"--name", containerName,
 		"--privileged",
 		"--pid=host",
 		"--network=host",
@@ -175,15 +194,16 @@ func NewDockerHostExec(ctx context.Context, dockerHost string) (*DockerHostExec,
 	if err != nil {
 		return nil, fmt.Errorf(
 			"dockerexec: start privileged container %q (image %s): %s: %w",
-			hostExecContainerName, hostExecImage,
+			containerName, hostExecImage,
 			strings.TrimSpace(string(out)), err,
 		)
 	}
 
 	containerID := strings.TrimSpace(string(out))
 	return &DockerHostExec{
-		containerID: containerID,
-		dockerHost:  dockerHost,
+		containerID:   containerID,
+		containerName: containerName,
+		dockerHost:    dockerHost,
 	}, nil
 }
 
@@ -268,6 +288,19 @@ func (h *DockerHostExec) ContainerID() string {
 	return h.containerID
 }
 
+// DockerHost returns the Docker daemon endpoint used by this helper.
+// Returns an empty string when using the default local socket.
+//
+// This is useful when other framework helpers need to run `docker exec`
+// commands against the same daemon (e.g. for setting up block devices inside
+// Kind node containers).
+func (h *DockerHostExec) DockerHost() string {
+	if h == nil {
+		return ""
+	}
+	return h.dockerHost
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Internal helpers
 // ─────────────────────────────────────────────────────────────────────────────
@@ -282,11 +315,16 @@ func (h *DockerHostExec) ContainerID() string {
 // (container gone, daemon unreachable).  A non-zero exit code from the
 // command is reflected in ExecResult.ExitCode only.
 func (h *DockerHostExec) execArgs(ctx context.Context, argv ...string) (ExecResult, error) {
-	// Build: docker exec <containerName> <argv...>
-	// We use the well-known name rather than the ID so that the object
-	// continues to work even when containerID was not captured (e.g. test
-	// helpers that reuse a pre-existing container by name).
-	args := append([]string{"exec", hostExecContainerName}, argv...)
+	// Build: docker exec <target> <argv...>
+	// Prefer the container name (which is deterministic and human-readable)
+	// over the raw ID.  Fall back to hostExecContainerName only when
+	// containerName was not set (e.g. objects constructed before the named
+	// constructor was introduced).
+	target := h.containerName
+	if target == "" {
+		target = hostExecContainerName
+	}
+	args := append([]string{"exec", target}, argv...)
 
 	var stdout, stderr bytes.Buffer
 	cmd := exec.CommandContext(ctx, "docker", args...) //nolint:gosec
@@ -309,7 +347,7 @@ func (h *DockerHostExec) execArgs(ctx context.Context, argv ...string) (ExecResu
 			// not found, …). Return a proper Go error.
 			return ExecResult{}, fmt.Errorf(
 				"dockerexec: exec in container %q: %w (stderr: %s)",
-				hostExecContainerName, err,
+				target, err,
 				strings.TrimSpace(stderr.String()),
 			)
 		}

@@ -1,0 +1,46 @@
+# Helm values overlay for pillar-csi e2e tests — LVM backend.
+#
+# Applied on top of helm-values.yaml (via --values) when the Go test framework
+# detects that an LVM VG (e2e-vg) has been set up on the storage worker node.
+# It replaces the agent.extraArgs list to add the LVM backend alongside the
+# ZFS backend that is already configured by the base values file.
+#
+# VG and thin-pool names here MUST match the defaults used by the e2e TestMain
+# (E2E_LVM_VG="e2e-vg", E2E_LVM_THINPOOL="e2e-thinpool").  Override those env
+# vars together with this file if you need a different VG/pool name.
+#
+# DM_DISABLE_UDEV=1 instructs LVM to create device-mapper device nodes directly
+# (via ioctl) instead of waiting for udev to do so.  Inside a privileged pod
+# running in a Kind node container, udev notifications may not reach the pod's
+# device namespace in time; disabling udev-sync prevents lvcreate/lvremove from
+# hanging waiting for udev acknowledgement.
+
+# ── agent ──────────────────────────────────────────────────────────────────────
+agent:
+  # Replace the base extraArgs list so both the ZFS and LVM backends are
+  # registered with the agent.  The ZFS pool name (e2e-pool) and LVM VG/
+  # thinpool names (e2e-vg / e2e-thinpool) match TestMain's defaults.
+  #
+  # Helm merges --values files with last-writer-wins for scalar fields but
+  # REPLACES lists entirely.  That is intentional here: we want exactly these
+  # four flags (no more, no less) so that the agent does not receive stale
+  # flags from a previous test run overlay.
+  extraArgs:
+    - --backend=type=zfs-zvol,pool=e2e-pool
+    - --backend=type=lvm-lv,vg=e2e-vg,thinpool=e2e-thinpool
+    - --configfs-root=/tmp
+    - --listen-address=:9500
+
+  # DM_DISABLE_UDEV=1: bypass udev synchronisation for device-mapper operations.
+  # Required when running lvm2 inside a Kubernetes pod where udev socket
+  # communication between the pod and the host udev daemon is unreliable.
+  # Without this flag, lvcreate and lvremove can hang waiting for udev ACK.
+  extraEnv:
+    - name: DM_DISABLE_UDEV
+      value: "1"
+
+  # The agent must run privileged to open /dev/zfs (ZFS backend) and
+  # /dev/mapper/control (LVM backend) inside the Kind node container.
+  # Privileged mode also grants access to the loop block devices that back
+  # the e2e LVM VG.
+  privileged: true

@@ -156,6 +156,44 @@ type E2EEnv struct {
 	// teardownZFSPool uses it to destroy the pool and then calls Close on it.
 	// Nil until setupZFSPool has successfully started the helper container.
 	zfsHostExec *framework.DockerHostExec
+
+	// ── LVM loopback VG ──────────────────────────────────────────────────────
+
+	// LVMVGName is the LVM Volume Group name created inside the Kind storage
+	// worker container.  Sourced from E2E_LVM_VG; defaults to "e2e-vg".
+	LVMVGName string
+
+	// LVMThinPoolName is the thin pool LV name within LVMVGName.
+	// Sourced from E2E_LVM_THINPOOL; defaults to "e2e-thinpool".
+	LVMThinPoolName string
+
+	// LVMImagePath is the absolute path inside the Kind worker container for
+	// the sparse loopback image backing the LVM VG.
+	// Sourced from E2E_LVM_IMAGE_PATH; defaults to "/tmp/e2e-lvm.img".
+	LVMImagePath string
+
+	// LVMImageSize is the size string passed to truncate(1) when creating
+	// the backing image (e.g. "4G").
+	// Sourced from E2E_LVM_IMAGE_SIZE; defaults to "4G".
+	LVMImageSize string
+
+	// LVMStorageNode is the Kind worker node/container name where the LVM VG
+	// was created.  Populated by setupLVMVG after successful setup.
+	LVMStorageNode string
+
+	// lvmVGReady is true when setupLVMVG completed successfully and the VG
+	// is active.  When false, LVM tests should be skipped.
+	lvmVGReady bool
+
+	// lvmLoopDev is the loop device path returned by SetupKindLVMVG
+	// (e.g. "/dev/loop6").  Stored so teardownLVMVG can pass it to
+	// TeardownKindLVMVG.  Empty until setupLVMVG succeeds.
+	lvmLoopDev string
+
+	// lvmHostExec is the privileged exec helper created by setupLVMVG.
+	// teardownLVMVG uses it to destroy the VG and then calls Close on it.
+	// Nil until setupLVMVG has successfully started the helper container.
+	lvmHostExec *framework.DockerHostExec
 }
 
 // testEnv is the single, shared E2EEnv populated by TestMain.  All e2e test
@@ -268,6 +306,12 @@ func initE2EEnv() error {
 	testEnv.ZFSImagePath = envOrDefault("E2E_ZFS_IMAGE_PATH", "/tmp/e2e-zfs.img")
 	testEnv.ZFSImageSize = envOrDefault("E2E_ZFS_IMAGE_SIZE", "4G")
 
+	// LVM loopback VG.
+	testEnv.LVMVGName = envOrDefault("E2E_LVM_VG", "e2e-vg")
+	testEnv.LVMThinPoolName = envOrDefault("E2E_LVM_THINPOOL", "e2e-thinpool")
+	testEnv.LVMImagePath = envOrDefault("E2E_LVM_IMAGE_PATH", "/tmp/e2e-lvm.img")
+	testEnv.LVMImageSize = envOrDefault("E2E_LVM_IMAGE_SIZE", "4G")
+
 	return nil
 }
 
@@ -309,23 +353,27 @@ func setupE2E() error {
 	if err := validateWorkerNodeMounts(); err != nil {
 		return fmt.Errorf("worker node mounts: %w", err)
 	}
-	// ── Parallel: buildAndLoadImages + setupZFSPool ───────────────────────
+	// ── Parallel: buildAndLoadImages + setupZFSPool + setupLVMVG ─────────
 	//
-	// These two operations are fully independent:
+	// All three operations are fully independent:
 	//   - buildAndLoadImages builds and loads pillar-csi Docker images into
 	//     Kind nodes using the local Docker daemon and Kind network.
 	//   - setupZFSPool creates a loopback ZFS pool on the remote Docker host
 	//     via a privileged helper container; it does not touch Kind nodes.
+	//   - setupLVMVG creates a loopback LVM Volume Group inside the Kind
+	//     storage-node container via docker exec, requiring no separate
+	//     host-exec helper.
 	//
 	// Running them concurrently overlaps the image-build/load latency
-	// (~60-90 s) with the ZFS pool creation (~30-45 s), eliminating the
+	// (~60-90 s) with storage setup (~30-45 s each), eliminating the
 	// sequential bottleneck without any ordering constraint between them.
 	//
-	// Error semantics: both goroutines run to completion regardless of the
-	// other's outcome (we do not cancel on first error) so that the error
-	// channel always receives at most 2 messages.  The first non-nil error
-	// collected after Wait is returned.
-	parallelSetupDone := logStep("  buildAndLoadImages + setupZFSPool (parallel)")
+	// Error semantics: buildAndLoadImages and setupZFSPool send to
+	// parallelErrCh on failure (fatal — both are required for the test suite).
+	// setupLVMVG is non-fatal: LVM tests are gated on PILLAR_E2E_LVM_VG so a
+	// failure only causes LVM specs to be skipped while ZFS specs continue.
+	parallelSetupDone := logStep("  buildAndLoadImages + setupZFSPool + setupLVMVG (parallel)")
+	// parallelErrCh capacity 2 — image-build and ZFS pool failures are fatal.
 	parallelErrCh := make(chan error, 2)
 	var parallelWg sync.WaitGroup
 
@@ -342,6 +390,15 @@ func setupE2E() error {
 		defer parallelWg.Done()
 		if err := setupZFSPool(); err != nil {
 			parallelErrCh <- fmt.Errorf("zfs pool: %w", err)
+		}
+	}()
+
+	parallelWg.Add(1)
+	go func() {
+		defer parallelWg.Done()
+		if err := setupLVMVG(); err != nil {
+			// Non-fatal: LVM tests are gated on PILLAR_E2E_LVM_VG.
+			fmt.Fprintf(os.Stderr, "e2e setup: warning: lvm vg setup failed (LVM tests will be skipped): %v\n", err)
 		}
 	}()
 
@@ -365,6 +422,21 @@ func setupE2E() error {
 		}
 	}
 
+	// Export the LVM VG name so that LVM-dependent spec groups can gate on its
+	// availability.  The VG was created by setupLVMVG above; setting
+	// PILLAR_E2E_LVM_VG enables the LVM CR stack lifecycle and CSI provisioning
+	// test groups.
+	if testEnv.lvmVGReady {
+		if err := os.Setenv("PILLAR_E2E_LVM_VG", testEnv.LVMVGName); err != nil {
+			return fmt.Errorf("setenv PILLAR_E2E_LVM_VG: %w", err)
+		}
+		if testEnv.LVMThinPoolName != "" {
+			if err := os.Setenv("PILLAR_E2E_LVM_THIN_POOL", testEnv.LVMThinPoolName); err != nil {
+				return fmt.Errorf("setenv PILLAR_E2E_LVM_THIN_POOL: %w", err)
+			}
+		}
+	}
+
 	// Start the external agent container when requested and no pre-existing
 	// address has been supplied via EXTERNAL_AGENT_ADDR.
 	if testEnv.LaunchExternalAgent && testEnv.ExternalAgentAddr == "" {
@@ -379,7 +451,7 @@ func setupE2E() error {
 	// usage and cause the kube-apiserver to restart briefly.  We poll
 	// "kubectl version" until it succeeds (or we time out) to ensure the
 	// API is ready before the Helm install sends API requests.
-	if err := waitForAPIServer(2 * time.Minute); err != nil {
+	if err := waitForAPIServer(5 * time.Minute); err != nil {
 		return fmt.Errorf("API server not ready before helm install: %w", err)
 	}
 
@@ -994,6 +1066,24 @@ func installHelm() error {
 		args = append(args, "--values", extValuesFile)
 	}
 
+	// When the LVM VG was set up successfully, overlay the LVM values so that
+	// the agent DaemonSet receives both --backend flags (ZFS + LVM) and the
+	// DM_DISABLE_UDEV=1 environment variable.
+	//
+	// testEnv.lvmVGReady is true only when setupLVMVG succeeded; using it
+	// as the gate avoids deploying the LVM overlay when the VG creation failed
+	// or was skipped.
+	if testEnv.lvmVGReady {
+		lvmValuesFile, err := writeTempFile("helm-values-lvm-*.yaml", HelmValuesLVMYAML)
+		if err != nil {
+			return fmt.Errorf("write helm values lvm: %w", err)
+		}
+		defer os.Remove(lvmValuesFile) //nolint:errcheck
+		args = append(args, "--values", lvmValuesFile)
+		fmt.Fprintf(os.Stdout, "e2e setup: applying LVM helm values overlay (vg=%s, thinpool=%s)\n",
+			testEnv.LVMVGName, testEnv.LVMThinPoolName)
+	}
+
 	// Override image tags via --set so the chart uses whatever tag TestMain
 	// built and loaded into Kind, regardless of what the embedded YAML contains.
 	args = append(args,
@@ -1168,6 +1258,11 @@ func teardownE2E() {
 	// Destroy the loopback ZFS pool and release the DockerHostExec helper.
 	teardownZFSPool()
 
+	// Destroy the loopback LVM VG inside the Kind storage worker container.
+	// Must run before the Kind cluster is deleted (LVM state lives inside the
+	// worker container, not on the Docker host).
+	teardownLVMVG()
+
 	// Always delete the Kind cluster — unconditionally, with no guard.
 	//
 	// If testEnv.ClusterName is empty (initE2EEnv was interrupted before the
@@ -1292,6 +1387,122 @@ func teardownZFSPool() {
 		fmt.Fprintf(os.Stderr, "e2e teardown: close host-exec container: %v\n", err)
 	}
 	testEnv.zfsHostExec = nil
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LVM volume group lifecycle
+// ─────────────────────────────────────────────────────────────────────────────
+
+// setupLVMVG creates a loopback-backed LVM volume group (and thin pool) inside
+// the Kind storage worker container.
+//
+// It uses docker exec to run a bash script that:
+//  1. Installs lvm2 in the Kind worker container (if not already present).
+//  2. Loads the dm_thin_pool kernel module (best-effort).
+//  3. Creates a sparse loopback image, PV, VG, and thin pool.
+//
+// On success, testEnv.LVMStorageNode is populated with the worker container
+// name and testEnv.lvmVGReady is set to true.
+//
+// On error the function logs to stderr and returns a non-nil error.  The
+// caller (the parallel setup goroutine in setupE2E) treats LVM failures as
+// non-fatal: LVM tests are skipped but ZFS tests continue.
+func setupLVMVG() error {
+	defer logStep("setupLVMVG")()
+
+	// Find the storage worker node name.
+	storageNodeOut, err := captureOutput("kubectl", "get", "nodes",
+		"-l", "pillar-csi.bhyoo.com/storage-node=true",
+		"-o", "jsonpath={.items[0].metadata.name}")
+	if err != nil {
+		return fmt.Errorf("find storage worker node: %s: %w", strings.TrimSpace(storageNodeOut), err)
+	}
+	storageNode := strings.TrimSpace(storageNodeOut)
+	if storageNode == "" {
+		return fmt.Errorf("no storage worker node (label pillar-csi.bhyoo.com/storage-node=true) found")
+	}
+	testEnv.LVMStorageNode = storageNode
+
+	fmt.Fprintf(os.Stdout,
+		"e2e setup: creating LVM VG %q in Kind worker %q (image %s, size %s)\n",
+		testEnv.LVMVGName, storageNode, testEnv.LVMImagePath, testEnv.LVMImageSize)
+
+	if err := framework.SetupLoopbackLVMVG(
+		context.Background(),
+		testEnv.DockerHost,
+		storageNode,
+		testEnv.LVMVGName,
+		testEnv.LVMThinPoolName,
+		testEnv.LVMImagePath,
+		testEnv.LVMImageSize,
+	); err != nil {
+		return fmt.Errorf(
+			"create loopback LVM VG %q in Kind worker %q: %w\n"+
+				"  Check that the Kind worker container is running and reachable.\n"+
+				"  Check that apt-get can download lvm2 packages (network access required).",
+			testEnv.LVMVGName, storageNode, err)
+	}
+
+	testEnv.lvmVGReady = true
+	fmt.Fprintf(os.Stdout,
+		"e2e setup: LVM VG %q ready in Kind worker %q (image %s)\n",
+		testEnv.LVMVGName, storageNode, testEnv.LVMImagePath)
+	return nil
+}
+
+// teardownLVMVG destroys the loopback LVM VG created by setupLVMVG inside the
+// Kind storage worker container.
+//
+// All errors are logged to stderr but do not abort teardown — subsequent steps
+// (ZFS teardown, Kind cluster deletion) must still run.  This matches the
+// best-effort contract of teardownE2E.
+//
+// teardownLVMVG is a no-op when lvmVGReady is false (setupLVMVG was never
+// called or failed before creating the VG).
+func teardownLVMVG() {
+	if !testEnv.lvmVGReady {
+		return
+	}
+	defer logStep("teardownLVMVG")()
+
+	ctx := context.Background()
+
+	fmt.Fprintf(os.Stdout,
+		"e2e teardown: destroying LVM VG %q in Kind worker %q (image %s)\n",
+		testEnv.LVMVGName, testEnv.LVMStorageNode, testEnv.LVMImagePath)
+	if err := framework.TeardownLoopbackLVMVG(ctx,
+		testEnv.DockerHost,
+		testEnv.LVMStorageNode,
+		testEnv.LVMVGName,
+		testEnv.LVMImagePath,
+	); err != nil {
+		fmt.Fprintf(os.Stderr, "e2e teardown: destroy LVM VG %q: %v\n",
+			testEnv.LVMVGName, err)
+	}
+	testEnv.lvmVGReady = false
+}
+
+// getStorageNodeContainerName returns the Docker container name of the Kind
+// storage-node (the first node labelled pillar-csi.bhyoo.com/storage-node=true).
+//
+// In Kind, the Kubernetes node name IS the Docker container name (e.g.
+// "pillar-csi-e2e-worker").  We use kubectl to look up the label and derive
+// the container name from the node name.
+func getStorageNodeContainerName() (string, error) {
+	out, err := captureOutput("kubectl", "get", "nodes",
+		"-l", "pillar-csi.bhyoo.com/storage-node=true",
+		"-o", "jsonpath={.items[0].metadata.name}")
+	if err != nil {
+		return "", fmt.Errorf("find storage worker node: %s: %w",
+			strings.TrimSpace(out), err)
+	}
+	name := strings.TrimSpace(out)
+	if name == "" {
+		return "", fmt.Errorf(
+			"no node with label pillar-csi.bhyoo.com/storage-node=true found "+
+				"in cluster %q", testEnv.ClusterName)
+	}
+	return name, nil
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

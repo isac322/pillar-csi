@@ -53,8 +53,10 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 # docker pull alpine:3.21 --platform linux/amd64
 FROM alpine:3.21
 
-# ① Install ZFS userspace utilities (required by the ZFS volume backend which
-#   invokes zfs(8) and zpool(8) via os/exec).
+# ① Install storage backend utilities:
+#      zfs  — ZFS volume backend invokes zfs(8) and zpool(8) via os/exec.
+#      lvm2 — LVM backend invokes lvcreate(8), lvremove(8), lvextend(8),
+#              lvs(8), vgs(8) via os/exec.  No CGO or lvm2app bindings.
 # ② Add the non-root service user/group (UID/GID 65532 — same convention used
 #   by gcr.io/distroless/static:nonroot so manifests stay consistent).
 # ③ Strip all SUID and SGID bits to prevent privilege escalation via installed
@@ -64,7 +66,7 @@ FROM alpine:3.21
 # ⑤ Remove the shell so that `kubectl exec` shell escapes are unavailable
 #   (the gRPC binary is the only entry point).
 RUN set -eux \
-    && apk add --no-cache 'zfs~=2.2' \
+    && apk add --no-cache 'zfs~=2.2' lvm2 \
     && addgroup -g 65532 nonroot \
     && adduser  -u 65532 -G nonroot -s /sbin/nologin -D nonroot \
     # Strip SUID/SGID bits from every file on the root filesystem.

@@ -32,6 +32,7 @@ import (
 
 	"github.com/bhyoo/pillar-csi/internal/agent"
 	"github.com/bhyoo/pillar-csi/internal/agent/backend"
+	"github.com/bhyoo/pillar-csi/internal/agent/backend/lvm"
 	"github.com/bhyoo/pillar-csi/internal/agent/backend/zfs"
 	"github.com/bhyoo/pillar-csi/internal/agent/nvmeof"
 	"github.com/bhyoo/pillar-csi/internal/tlscreds"
@@ -42,17 +43,29 @@ import (
 //
 //	type=zfs-zvol,pool=tank
 //	type=zfs-zvol,pool=hot-data,parent=k8s
+//	type=lvm-lv,vg=data-vg
+//	type=lvm-lv,vg=data-vg,thinpool=thin-pool-0
 type backendSpec struct {
-	// typ is the backend type identifier.  Currently only "zfs-zvol" is
-	// supported.
+	// typ is the backend type identifier.  Supported values: "zfs-zvol", "lvm-lv".
 	typ string
 
 	// pool is the storage pool name (ZFS pool for type=zfs-zvol).
+	// Not used for lvm-lv; use vg instead.
 	pool string
 
-	// parent is the optional parent dataset / volume-group path within the
-	// pool.  For ZFS this maps to the parentDataset argument of zfs.New.
+	// parent is the optional parent dataset path within the ZFS pool.
+	// For ZFS this maps to the parentDataset argument of zfs.New.
+	// Not used for lvm-lv.
 	parent string
+
+	// vg is the LVM Volume Group name (required for type=lvm-lv).
+	// Used as the backend registry key and passed to lvm.New.
+	vg string
+
+	// thinpool is the LVM thin pool LV name within vg (optional for type=lvm-lv).
+	// When empty the backend operates in linear provisioning mode.
+	// When non-empty the backend creates thin-provisioned LVs inside this pool.
+	thinpool string
 }
 
 // backendFlag is a repeatable flag that accumulates one backendSpec per
@@ -63,6 +76,8 @@ type backendSpec struct {
 //
 //	pillar-agent --backend type=zfs-zvol,pool=tank
 //	pillar-agent --backend type=zfs-zvol,pool=tank,parent=k8s --backend type=zfs-zvol,pool=hot-data
+//	pillar-agent --backend type=lvm-lv,vg=data-vg
+//	pillar-agent --backend type=lvm-lv,vg=data-vg,thinpool=thin-pool-0
 type backendFlag []backendSpec
 
 // String returns a human-readable summary of all registered backend specs.
@@ -73,9 +88,17 @@ func (b *backendFlag) String() string {
 	}
 	parts := make([]string, len(*b))
 	for i, s := range *b {
-		parts[i] = "type=" + s.typ + ",pool=" + s.pool
-		if s.parent != "" {
-			parts[i] += ",parent=" + s.parent
+		switch s.typ {
+		case "lvm-lv":
+			parts[i] = "type=" + s.typ + ",vg=" + s.vg
+			if s.thinpool != "" {
+				parts[i] += ",thinpool=" + s.thinpool
+			}
+		default:
+			parts[i] = "type=" + s.typ + ",pool=" + s.pool
+			if s.parent != "" {
+				parts[i] += ",parent=" + s.parent
+			}
 		}
 	}
 	return strings.Join(parts, " ")
@@ -84,12 +107,13 @@ func (b *backendFlag) String() string {
 // Set parses a single --backend flag value and appends the resulting
 // backendSpec.  Called by flag.Parse for each --backend occurrence.
 //
-// The value must contain at least type=<t> and pool=<p> keys.  An unknown
-// key causes an error so that typos are caught early.  Supported keys:
+// Supported key sets per backend type:
 //
-//	type   – backend type; currently only "zfs-zvol" is accepted
-//	pool   – pool / volume-group name (required)
-//	parent – parent dataset within the pool (optional)
+//	type=zfs-zvol  — pool (required), parent (optional)
+//	type=lvm-lv    — vg (required), thinpool (optional)
+//
+// An unknown key causes an error so that typos are caught early.
+// Supported keys across all types: type, pool, parent, vg, thinpool.
 func (b *backendFlag) Set(v string) error {
 	if v == "" {
 		return fmt.Errorf("backend: value must not be empty")
@@ -114,19 +138,30 @@ func (b *backendFlag) Set(v string) error {
 			spec.pool = val
 		case "parent":
 			spec.parent = val
+		case "vg":
+			spec.vg = val
+		case "thinpool":
+			spec.thinpool = val
 		default:
-			return fmt.Errorf("backend: unknown key %q (supported: type, pool, parent)", key)
+			return fmt.Errorf("backend: unknown key %q (supported: type, pool, parent, vg, thinpool)", key)
 		}
 	}
 
 	if spec.typ == "" {
 		return fmt.Errorf("backend: type= key is required")
 	}
-	if spec.pool == "" {
-		return fmt.Errorf("backend: pool= key is required")
-	}
-	if spec.typ != "zfs-zvol" {
-		return fmt.Errorf("backend: unsupported type %q (supported: zfs-zvol)", spec.typ)
+
+	switch spec.typ {
+	case "zfs-zvol":
+		if spec.pool == "" {
+			return fmt.Errorf("backend: pool= key is required for type=zfs-zvol")
+		}
+	case "lvm-lv":
+		if spec.vg == "" {
+			return fmt.Errorf("backend: vg= key is required for type=lvm-lv")
+		}
+	default:
+		return fmt.Errorf("backend: unsupported type %q (supported: zfs-zvol, lvm-lv)", spec.typ)
 	}
 
 	*b = append(*b, spec)
@@ -134,10 +169,18 @@ func (b *backendFlag) Set(v string) error {
 }
 
 // buildVolumeBackends constructs the pool→backend registry from --backend flags.
+// For ZFS backends the registry key is the pool name.
+// For LVM backends the registry key is the VG name (used as the "pool" prefix
+// in VolumeIDs of the form "<vg>/<lv-name>").
 func buildVolumeBackends(specs backendFlag) map[string]backend.VolumeBackend {
 	m := make(map[string]backend.VolumeBackend, len(specs))
 	for _, spec := range specs {
-		m[spec.pool] = zfs.New(spec.pool, spec.parent)
+		switch spec.typ {
+		case "lvm-lv":
+			m[spec.vg] = lvm.New(spec.vg, spec.thinpool)
+		default: // "zfs-zvol"
+			m[spec.pool] = zfs.New(spec.pool, spec.parent)
+		}
 	}
 	return m
 }
@@ -161,12 +204,16 @@ func buildGRPCOpts(tlsEnabled bool, cert, key, ca string) ([]grpc.ServerOption, 
 func main() {
 	listenAddr := flag.String("listen-address", ":50051", "gRPC listen address (host:port)")
 
-	// --backend: pluggable backend flag.  Format: type=<t>,pool=<p>[,parent=<ds>]
+	// --backend: pluggable backend flag.
+	// ZFS:  type=zfs-zvol,pool=<pool>[,parent=<dataset>]
+	// LVM:  type=lvm-lv,vg=<vg>[,thinpool=<pool>]
 	var backends backendFlag
 	flag.Var(&backends, "backend",
 		"Backend spec as comma-separated key=value pairs.\n"+
-			"Required: type (zfs-zvol), pool.  Optional: parent.\n"+
-			"Example: --backend type=zfs-zvol,pool=tank,parent=k8s")
+			"ZFS:  type=zfs-zvol,pool=<pool>[,parent=<dataset>]\n"+
+			"LVM:  type=lvm-lv,vg=<vg>[,thinpool=<thinpool>]\n"+
+			"Example (ZFS):  --backend type=zfs-zvol,pool=tank,parent=k8s\n"+
+			"Example (LVM):  --backend type=lvm-lv,vg=data-vg,thinpool=thin-pool-0")
 
 	cfgRoot := flag.String("configfs-root", nvmeof.DefaultConfigfsRoot,
 		"nvmet configfs root directory (override in tests)")
@@ -178,7 +225,9 @@ func main() {
 
 	if len(backends) == 0 {
 		fmt.Fprintln(os.Stderr,
-			"error: at least one backend is required: use --backend type=zfs-zvol,pool=<name>")
+			"error: at least one backend is required; examples:\n"+
+				"  --backend type=zfs-zvol,pool=<pool>\n"+
+				"  --backend type=lvm-lv,vg=<vg>")
 		os.Exit(1)
 	}
 

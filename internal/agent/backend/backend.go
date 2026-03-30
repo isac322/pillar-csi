@@ -49,11 +49,17 @@ func (e *ConflictError) Error() string {
 //
 // Implementations:
 //   - zfs.ZfsBackend  — ZFS zvol backed by os/exec calls to zfs(8) / zpool(8)
+//   - lvm.Backend     — LVM logical volume backed by os/exec calls to lvm(8)
 type VolumeBackend interface {
 	// Create provisions a new block volume (zvol, LV, …) with at least
 	// capacityBytes of usable storage.  On success it returns the host path to
 	// the block device and the actual allocated size (which may exceed
 	// capacityBytes due to backend rounding).
+	//
+	// params is the backend-specific oneof wrapper from the gRPC request.
+	// Each backend implementation extracts the relevant sub-message
+	// (e.g. params.GetZfs() for ZFS, params.GetLvm() for LVM).
+	// Callers may pass nil when no backend-specific parameters are needed.
 	//
 	// Idempotent: if a volume with volumeID already exists and has compatible
 	// parameters, Create MUST return the existing device path and size without
@@ -62,7 +68,7 @@ type VolumeBackend interface {
 		ctx context.Context,
 		volumeID string,
 		capacityBytes int64,
-		params *agentv1.ZfsVolumeParams,
+		params *agentv1.BackendParams,
 	) (devicePath string, allocatedBytes int64, err error)
 
 	// Delete destroys the backend storage resource identified by volumeID.

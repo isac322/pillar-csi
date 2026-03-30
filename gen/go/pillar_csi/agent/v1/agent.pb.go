@@ -309,7 +309,13 @@ type LvmVolumeParams struct {
 	// LVM volume group name.
 	VolumeGroup string `protobuf:"bytes,1,opt,name=volume_group,json=volumeGroup,proto3" json:"volume_group,omitempty"`
 	// Additional lvcreate flags, e.g. "--type thin".
-	ExtraFlags    []string `protobuf:"bytes,2,rep,name=extra_flags,json=extraFlags,proto3" json:"extra_flags,omitempty"`
+	ExtraFlags []string `protobuf:"bytes,2,rep,name=extra_flags,json=extraFlags,proto3" json:"extra_flags,omitempty"`
+	// provision_mode overrides the backend-level provisioning mode for this
+	// individual volume.  Accepted values: "linear" (fully-allocated LV in the
+	// VG) or "thin" (thin-provisioned LV inside the backend's thin pool).
+	// An empty string (the default) means "use the backend default", i.e. thin
+	// when the backend was started with a thinpool= flag, linear otherwise.
+	ProvisionMode string `protobuf:"bytes,3,opt,name=provision_mode,json=provisionMode,proto3" json:"provision_mode,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -356,6 +362,13 @@ func (x *LvmVolumeParams) GetExtraFlags() []string {
 		return x.ExtraFlags
 	}
 	return nil
+}
+
+func (x *LvmVolumeParams) GetProvisionMode() string {
+	if x != nil {
+		return x.ProvisionMode
+	}
+	return ""
 }
 
 // BackendParams is a oneof wrapper for backend-specific creation parameters.
@@ -2959,11 +2972,12 @@ const file_pillar_csi_agent_v1_agent_proto_rawDesc = "" +
 	"properties\x1a=\n" +
 	"\x0fPropertiesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"U\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"|\n" +
 	"\x0fLvmVolumeParams\x12!\n" +
 	"\fvolume_group\x18\x01 \x01(\tR\vvolumeGroup\x12\x1f\n" +
 	"\vextra_flags\x18\x02 \x03(\tR\n" +
-	"extraFlags\"\x8d\x01\n" +
+	"extraFlags\x12%\n" +
+	"\x0eprovision_mode\x18\x03 \x01(\tR\rprovisionMode\"\x8d\x01\n" +
 	"\rBackendParams\x128\n" +
 	"\x03zfs\x18\x01 \x01(\v2$.pillar_csi.agent.v1.ZfsVolumeParamsH\x00R\x03zfs\x128\n" +
 	"\x03lvm\x18\x02 \x01(\v2$.pillar_csi.agent.v1.LvmVolumeParamsH\x00R\x03lvmB\b\n" +

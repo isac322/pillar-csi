@@ -93,10 +93,19 @@ jobs:
       - name: Install Helm
         uses: azure/setup-helm@v5
 
-      # ── install ZFS and NVMe kernel modules ───────────────────────────────
-      # ZFS userspace tools (zpool, zfs, losetup) must be present on the
-      # GitHub Actions runner host because DockerHostExec runs privileged
-      # commands via `nsenter -t 1 -m ...` into the host's mount namespace.
+      # ── install ZFS, LVM, and NVMe kernel modules ────────────────────────
+      # ZFS userspace tools (zpool, zfs, losetup) and LVM tools (pvcreate,
+      # vgcreate, lvcreate, etc.) must be present on the GitHub Actions runner
+      # host because DockerHostExec runs privileged commands via
+      # `nsenter -t 1 -m ...` into the host's mount namespace.  The commands
+      # run inside the host's filesystem, so the binaries must be installed
+      # there — not just inside the privileged helper container.
+      #
+      # LVM tools are required because the e2e TestMain creates a loopback-
+      # backed LVM Volume Group (e2e-vg) and thin pool (e2e-thinpool) on the
+      # Docker host via DockerHostExec.ExecOnHost().  These commands need:
+      #   - lvm2: pvcreate, vgcreate, lvcreate, lvremove, lvs, vgs
+      #   - thin-provisioning-tools: thin_check (validates thin pool metadata)
       #
       # NVMe-oF kernel modules are required for two reasons:
       #   1. kind-config.yaml bind-mounts /dev/nvme-fabrics into the compute-
@@ -108,17 +117,40 @@ jobs:
       #      storage-worker Kind container, which bind-mounts /sys/kernel/config
       #      from the host), then use nvme_tcp to connect from the compute-worker.
       #
-      # linux-modules-extra-$(uname -r) ships all four modules on ubuntu-latest.
-      - name: Install ZFS and NVMe kernel modules
+      # Device-mapper kernel modules are required for LVM:
+      #   - dm_mod: base device-mapper module; creates /dev/mapper/control
+      #   - dm_thin_pool: thin-provisioning target for LVM thin pools
+      #
+      # ── ZFS + LVM co-execution strategy ──────────────────────────────────
+      # ZFS and LVM e2e tests run SEQUENTIALLY (not in parallel) in a single
+      # `go test` invocation.  They cannot be parallelised because they share:
+      #   1. The same Kind cluster (1 control-plane + 2 worker nodes).
+      #   2. The same storage worker node (both /dev/zfs and /dev/mapper mounted).
+      #   3. The same agent DaemonSet pod (ZFS and LVM backends registered on
+      #      the same agent process).
+      #   4. The same NVMe-oF protocol stack (shared configfs, shared TCP ports).
+      # Running in parallel would risk NVMe-oF port/configfs conflicts.
+      # Ginkgo's default sequential spec execution within a single binary
+      # guarantees correct ordering without any explicit serialisation barriers.
+      #
+      # linux-modules-extra-$(uname -r) ships all four NVMe modules on ubuntu-latest.
+      - name: Install ZFS, LVM, and NVMe kernel modules
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y zfsutils-linux linux-modules-extra-$(uname -r) || \
-            sudo apt-get install -y zfsutils-linux
+          sudo apt-get install -y zfsutils-linux lvm2 thin-provisioning-tools \
+            linux-modules-extra-$(uname -r) || \
+            sudo apt-get install -y zfsutils-linux lvm2 thin-provisioning-tools
           sudo modprobe zfs
+          sudo modprobe dm_mod
+          sudo modprobe dm_thin_pool
           sudo modprobe nvme_fabrics
           sudo modprobe nvmet
           sudo modprobe nvmet_tcp
           sudo modprobe nvme_tcp
+          # Verify /dev/mapper/control exists (created by dm_mod) so that
+          # kind-config.yaml's /dev/mapper Bidirectional extraMount succeeds.
+          test -e /dev/mapper/control && echo "LVM: /dev/mapper/control present" || \
+            (echo "ERROR: /dev/mapper/control missing after dm_mod load" && exit 1)
 
       # ── pre-pull third-party images ────────────────────────────────────────
       # Pull all Docker Hub base images and third-party sidecar images into
@@ -161,7 +193,15 @@ jobs:
       # TestMain (test/e2e/setup_test.go) creates the Kind cluster, builds and
       # loads the container images, installs the Helm chart, runs all tests,
       # and tears everything down — no external scripts required.
-      - name: Run e2e tests
+      #
+      # ZFS + LVM orchestration: both backends run in the SAME cluster via
+      # a single `go test` invocation (sequential, NOT parallel).  See the
+      # Makefile comment on test-e2e for the full rationale.  Briefly:
+      # ZFS and LVM share the storage worker node, the agent DaemonSet pod,
+      # and the NVMe-oF protocol stack — running them in parallel risks
+      # configfs conflicts.  Ginkgo's default sequential execution handles
+      # all ordering guarantees automatically.
+      - name: Run e2e tests (ZFS + LVM, sequential)
         run: |
           go mod tidy
           make test-e2e

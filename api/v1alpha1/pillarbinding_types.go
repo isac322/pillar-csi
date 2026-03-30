@@ -75,6 +75,19 @@ type ZFSPropertyOverrides struct {
 	Properties map[string]string `json:"properties,omitempty"`
 }
 
+// LVMOverrides holds per-binding overrides for LVM backend configuration.
+// These settings override the PillarPool-level LVM defaults for volumes
+// created through this specific binding.
+type LVMOverrides struct {
+	// provisioningMode overrides the LVM provisioning mode for this binding.
+	// Accepted values: "linear" (fully-allocated LV) or "thin"
+	// (thin-provisioned LV inside the backend's thin pool).
+	// When omitted, the PillarPool-level default is used.
+	// +optional
+	// +kubebuilder:validation:Enum=linear;thin
+	ProvisioningMode LVMProvisioningMode `json:"provisioningMode,omitempty"`
+}
+
 // BackendOverrides holds per-binding overrides for backend configuration.
 // Only the field matching the pool's backend type is used.
 type BackendOverrides struct {
@@ -82,6 +95,10 @@ type BackendOverrides struct {
 	// zfs-zvol or zfs-dataset.
 	// +optional
 	ZFS *ZFSPropertyOverrides `json:"zfs,omitempty"`
+
+	// lvm overrides LVM-specific parameters; used when the pool backend is lvm-lv.
+	// +optional
+	LVM *LVMOverrides `json:"lvm,omitempty"`
 }
 
 // NVMeOFTCPOverrides holds per-binding NVMe-oF/TCP parameter overrides.

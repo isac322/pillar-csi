@@ -12,10 +12,18 @@
 # Note on /dev: mounting the entire host /dev directory into Kind node containers
 # causes the container init to fail with "open /dev/console: input/output error"
 # because the host console device is not accessible from within the container
-# context.  Only /dev/zfs is mounted selectively so that the pillar-agent
-# DaemonSet can access the host ZFS kernel module from within the Kind node
-# container.  NVMe block device access (for the initiator side) is provided
-# through the DockerHostExec framework helper when needed.
+# context.  /dev/zfs is mounted selectively for the ZFS backend, and /dev/mapper
+# is mounted for the LVM backend (with Bidirectional propagation so that
+# device-mapper devices created by the agent appear on the host and vice-versa).
+# NVMe block device access (for the initiator side) is provided through the
+# DockerHostExec framework helper when needed.
+#
+# LVM backend: The e2e TestMain creates a loopback-backed LVM VG (e2e-vg) and
+# thin pool (e2e-thinpool) on the host via DockerHostExec before installing the
+# Helm chart.  The /dev/mapper Bidirectional mount makes those dm devices
+# visible inside the Kind storage worker so the pillar-agent DaemonSet can open
+# them.  The agent's lvcreate calls produce new /dev/mapper entries that
+# propagate back to the host for cleanup during teardown.
 #
 # API server binding: apiServerAddress is set to "0.0.0.0" so that the
 # Kubernetes API server is reachable from outside the Docker daemon host.
@@ -67,6 +75,23 @@ nodes:
       # /dev is bind-mounted into the Kind node container.
       - hostPath: /dev/zfs
         containerPath: /dev/zfs
+      # Mount /dev/mapper with Bidirectional propagation so that LVM device
+      # mapper devices created on the host are visible inside the Kind node
+      # container, and vice-versa.  This is required for the pillar-agent LVM
+      # backend:
+      #   - The host LVM VG (created by setupLVMVG in the e2e TestMain) exports
+      #     its logical volumes via device mapper entries in /dev/mapper on the
+      #     host.  Bidirectional propagation makes those DM devices visible
+      #     inside the Kind node so the agent DaemonSet can open them.
+      #   - New LVs created by the agent (lvcreate inside the Kind node) also
+      #     propagate back to the host, which simplifies debugging.
+      # Note: /dev/mapper is NOT the same as bind-mounting all of /dev.
+      # Mounting /dev entirely causes Kind node container init to fail with
+      # "open /dev/console: input/output error".  Mounting only /dev/mapper is
+      # safe because it is a subdirectory, not the full device filesystem.
+      - hostPath: /dev/mapper
+        containerPath: /dev/mapper
+        propagation: Bidirectional
 
   # ── worker node 2 ──────────────────────────────────────────────────────────
   # General-purpose worker for application pods and initiator-side CSI tests.

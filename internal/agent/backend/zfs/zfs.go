@@ -232,7 +232,7 @@ func (z *Backend) volsizeBytes(ctx context.Context, dataset string) (int64, erro
 // If a zvol with this volumeID already exists, Create returns its current
 // device path and size without error (idempotent).  If it does not exist,
 // `zfs create -V <size>` is called, optionally with per-volume ZFS properties
-// from params.Properties.
+// from params.GetZfs().GetProperties().
 //
 // The actual allocated size is read back after creation and returned; ZFS may
 // round the requested size up to the next volblocksize boundary.
@@ -240,7 +240,7 @@ func (z *Backend) Create(
 	ctx context.Context,
 	volumeID string,
 	capacityBytes int64,
-	params *agentv1.ZfsVolumeParams,
+	params *agentv1.BackendParams,
 ) (devicePath string, allocatedBytes int64, err error) {
 	ds := z.datasetName(volumeID)
 
@@ -265,10 +265,10 @@ func (z *Backend) Create(
 
 	// -V <size> sets the volsize property; ZFS accepts raw byte integers.
 	args := []string{"create", "-V", strconv.FormatInt(capacityBytes, 10)}
-	if params != nil {
+	if zfsParams := params.GetZfs(); zfsParams != nil {
 		// Append arbitrary ZFS properties from the gRPC request.  Unknown
 		// property names are forwarded verbatim; zfs(8) will reject them.
-		for k, v := range params.GetProperties() {
+		for k, v := range zfsParams.GetProperties() {
 			args = append(args, "-o", k+"="+v)
 		}
 	}

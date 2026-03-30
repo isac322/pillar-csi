@@ -173,6 +173,47 @@ func NewZFSDatasetPool(name, targetRef, zfsPool string) *v1alpha1.PillarPool {
 	})
 }
 
+// NewLVMLinearPool is a convenience builder for a PillarPool backed by LVM
+// linear logical volumes.  Volumes are fully allocated from the Volume Group
+// immediately on creation (lvcreate -L).
+//
+// Example:
+//
+//	pool := framework.NewLVMLinearPool("lvm-pool-1", "agent-1", "data-vg")
+func NewLVMLinearPool(name, targetRef, vgName string) *v1alpha1.PillarPool {
+	return NewPillarPool(name, v1alpha1.PillarPoolSpec{
+		TargetRef: targetRef,
+		Backend: v1alpha1.BackendSpec{
+			Type: v1alpha1.BackendTypeLVMLV,
+			LVM: &v1alpha1.LVMBackendConfig{
+				VolumeGroup:      vgName,
+				ProvisioningMode: v1alpha1.LVMProvisioningModeLinear,
+			},
+		},
+	})
+}
+
+// NewLVMThinPool is a convenience builder for a PillarPool backed by LVM
+// thin-provisioned logical volumes.  Volumes are created inside the named thin
+// pool LV (lvcreate -V --thinpool), enabling over-provisioning.
+//
+// Example:
+//
+//	pool := framework.NewLVMThinPool("lvm-thin-1", "agent-1", "data-vg", "thin-pool-0")
+func NewLVMThinPool(name, targetRef, vgName, thinPoolName string) *v1alpha1.PillarPool {
+	return NewPillarPool(name, v1alpha1.PillarPoolSpec{
+		TargetRef: targetRef,
+		Backend: v1alpha1.BackendSpec{
+			Type: v1alpha1.BackendTypeLVMLV,
+			LVM: &v1alpha1.LVMBackendConfig{
+				VolumeGroup:      vgName,
+				ThinPool:         thinPoolName,
+				ProvisioningMode: v1alpha1.LVMProvisioningModeThin,
+			},
+		},
+	})
+}
+
 // NewPillarProtocol returns a PillarProtocol with the given name and spec,
 // ready to be passed to Apply.
 func NewPillarProtocol(name string, spec v1alpha1.PillarProtocolSpec) *v1alpha1.PillarProtocol {

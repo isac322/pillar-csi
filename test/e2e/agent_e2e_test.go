@@ -67,7 +67,7 @@ func (m *agentE2EMockBackend) Create(
 	_ context.Context,
 	_ string,
 	capacityBytes int64,
-	_ *agentv1.ZfsVolumeParams,
+	_ *agentv1.BackendParams,
 ) (devicePath string, allocatedBytes int64, err error) {
 	if m.createErr != nil {
 		return "", 0, m.createErr

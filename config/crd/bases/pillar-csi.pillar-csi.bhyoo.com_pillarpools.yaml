@@ -64,6 +64,38 @@ spec:
                 description: backend describes the storage technology and pool to
                   use.
                 properties:
+                  lvm:
+                    description: lvm holds LVM-specific configuration; required when
+                      type is lvm-lv.
+                    properties:
+                      provisioningMode:
+                        default: linear
+                        description: |-
+                          provisioningMode controls whether new volumes are created as fully-
+                          allocated linear LVs or as thin-provisioned LVs inside the thinPool.
+                          Defaults to "linear"; set to "thin" together with a non-empty thinPool
+                          to enable thin provisioning.
+                        enum:
+                        - linear
+                        - thin
+                        type: string
+                      thinPool:
+                        description: |-
+                          thinPool is the name of the LVM thin pool LV within the volume group
+                          (e.g. "thin-pool-0").  When non-empty the backend operates in thin-
+                          provisioned mode; when empty it creates fully-allocated linear LVs.
+                          The thin pool must be pre-created before the agent starts.
+                        type: string
+                      volumeGroup:
+                        description: |-
+                          volumeGroup is the LVM Volume Group name that pillar-csi will create
+                          logical volumes in (e.g. "data-vg").  The VG must be pre-created on
+                          the node before the agent starts; the driver does not manage VG lifecycle.
+                        minLength: 1
+                        type: string
+                    required:
+                    - volumeGroup
+                    type: object
                   type:
                     description: type identifies the backend driver.
                     enum:

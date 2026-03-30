@@ -55,3 +55,15 @@ var HelmValuesYAML []byte
 //
 //go:embed testdata/helm-values-external.yaml
 var HelmValuesExternalYAML []byte
+
+// HelmValuesLVMYAML contains the Helm values overlay applied on top of
+// HelmValuesYAML when the LVM backend has been set up on the storage worker
+// node (PILLAR_E2E_LVM_VG is non-empty after TestMain runs setupLVMVG).
+//
+// It replaces agent.extraArgs to register BOTH the ZFS zvol backend and the
+// LVM logical-volume backend, and sets DM_DISABLE_UDEV=1 in the agent
+// environment to prevent lvcreate/lvremove from hanging on udev
+// synchronisation inside the Kind node container.
+//
+//go:embed testdata/helm-values-lvm.yaml
+var HelmValuesLVMYAML []byte

@@ -23,8 +23,105 @@ import (
 	"path/filepath"
 	"testing"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	agentv1 "github.com/bhyoo/pillar-csi/gen/go/pillar_csi/agent/v1"
 )
+
+// GetCapacity handler tests for LVM linear provisioning mode.
+//
+// The GetCapacity RPC is backend-agnostic: it delegates to the registered
+// backend's Capacity() method and computes UsedBytes = TotalBytes - AvailableBytes.
+// For the LVM linear provisioning mode, the underlying backend queries:
+//
+//	vgs --noheadings -o vg_size,vg_free --units b --nosuffix <vg>
+//
+// These tests verify the RPC handler behaviour using a mock backend that
+// simulates LVM-style capacity responses.
+
+// TestGetCapacity_LVM_LinearVGFreeReturned verifies that the VG free space
+// reported by the backend (simulating `vg_free` from `vgs`) is passed through
+// correctly as AvailableBytes, and that UsedBytes is derived as
+// TotalBytes - AvailableBytes.
+func TestGetCapacity_LVM_LinearVGFreeReturned(t *testing.T) {
+	t.Parallel()
+
+	const total = int64(100 << 30) // 100 GiB — simulates vg_size
+	const avail = int64(60 << 30)  // 60 GiB free — simulates vg_free
+	const wantUsed = total - avail // 40 GiB used
+
+	mb := &mockBackend{
+		capacityTotal:     total,
+		capacityAvailable: avail,
+	}
+	srv := newTestServer(mb)
+
+	resp, err := srv.GetCapacity(context.Background(), &agentv1.GetCapacityRequest{
+		PoolName: testPool,
+	})
+	if err != nil {
+		t.Fatalf("GetCapacity (LVM linear): unexpected error: %v", err)
+	}
+	if resp.GetTotalBytes() != total {
+		t.Errorf("TotalBytes = %d; want %d (vg_size)", resp.GetTotalBytes(), total)
+	}
+	if resp.GetAvailableBytes() != avail {
+		t.Errorf("AvailableBytes = %d; want %d (vg_free)", resp.GetAvailableBytes(), avail)
+	}
+	if resp.GetUsedBytes() != wantUsed {
+		t.Errorf("UsedBytes = %d; want %d (= total - vg_free)", resp.GetUsedBytes(), wantUsed)
+	}
+}
+
+// TestGetCapacity_LVM_ZeroVGFree verifies that a fully-consumed VG (vg_free == 0)
+// is reported correctly: AvailableBytes = 0, UsedBytes = TotalBytes.
+func TestGetCapacity_LVM_ZeroVGFree(t *testing.T) {
+	t.Parallel()
+
+	const total = int64(50 << 30)
+	mb := &mockBackend{
+		capacityTotal:     total,
+		capacityAvailable: 0, // VG entirely consumed — vg_free = 0
+	}
+	srv := newTestServer(mb)
+
+	resp, err := srv.GetCapacity(context.Background(), &agentv1.GetCapacityRequest{
+		PoolName: testPool,
+	})
+	if err != nil {
+		t.Fatalf("GetCapacity (LVM full VG): unexpected error: %v", err)
+	}
+	if resp.GetAvailableBytes() != 0 {
+		t.Errorf("AvailableBytes = %d; want 0 (full VG)", resp.GetAvailableBytes())
+	}
+	if resp.GetUsedBytes() != total {
+		t.Errorf("UsedBytes = %d; want %d (full VG)", resp.GetUsedBytes(), total)
+	}
+}
+
+// TestGetCapacity_LVM_VGNotFound verifies that when the backend's Capacity
+// call fails (e.g. the `vgs` command reports VG not found), GetCapacity
+// surfaces a codes.Internal gRPC error.
+func TestGetCapacity_LVM_VGNotFound(t *testing.T) {
+	t.Parallel()
+
+	mb := &mockBackend{
+		capacityErr: errors.New("vgs: volume group \"data-vg\" not found"),
+	}
+	srv := newTestServer(mb)
+
+	_, err := srv.GetCapacity(context.Background(), &agentv1.GetCapacityRequest{
+		PoolName: testPool,
+	})
+	if err == nil {
+		t.Fatal("GetCapacity (LVM VG not found): expected error, got nil")
+	}
+	st, _ := status.FromError(err)
+	if st.Code() != codes.Internal {
+		t.Errorf("code = %v; want %v (vgs failure should map to Internal)", st.Code(), codes.Internal)
+	}
+}
 
 // GetCapabilities tests.
 

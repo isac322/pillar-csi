@@ -228,6 +228,51 @@ func KindZFSZvolPoolWithParent(name, targetRef, zfsPool, parentDataset string) *
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// KindLVMLinearPool / KindLVMThinPool — PillarPool with LVM defaults for Kind
+// ─────────────────────────────────────────────────────────────────────────────
+
+// KindLVMLinearPool creates a PillarPool backed by LVM linear logical volumes.
+//
+// Linear LVs are fully allocated from the Volume Group immediately on creation
+// (lvcreate -L).  Use this when thin provisioning is not required or when the
+// test specifically validates linear allocation behaviour.
+//
+// Parameters:
+//
+//	name      — Kubernetes name of the PillarPool CR
+//	targetRef — name of the PillarTarget this pool lives on
+//	vgName    — LVM Volume Group name on the agent host (e.g. "e2e-vg")
+//
+// Example:
+//
+//	pool := framework.KindLVMLinearPool("e2e-lvm-linear", "e2e-target", "e2e-vg")
+func KindLVMLinearPool(name, targetRef, vgName string) *v1alpha1.PillarPool {
+	return NewLVMLinearPool(name, targetRef, vgName)
+}
+
+// KindLVMThinPool creates a PillarPool backed by LVM thin-provisioned logical
+// volumes inside a pre-existing thin pool LV.
+//
+// Thin LVs are provisioned lazily from the named thin pool (lvcreate -V
+// --thinpool), enabling over-provisioning on the test VG.  The thin pool LV
+// must be pre-created before the agent starts; the driver does not manage thin
+// pool lifecycle.
+//
+// Parameters:
+//
+//	name         — Kubernetes name of the PillarPool CR
+//	targetRef    — name of the PillarTarget this pool lives on
+//	vgName       — LVM Volume Group name on the agent host (e.g. "e2e-vg")
+//	thinPoolName — name of the thin pool LV in the VG (e.g. "e2e-thin-pool")
+//
+// Example:
+//
+//	pool := framework.KindLVMThinPool("e2e-lvm-thin", "e2e-target", "e2e-vg", "e2e-thin-pool")
+func KindLVMThinPool(name, targetRef, vgName, thinPoolName string) *v1alpha1.PillarPool {
+	return NewLVMThinPool(name, targetRef, vgName, thinPoolName)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // KindNVMeOFTCPProtocol — PillarProtocol for NVMe-oF/TCP with Kind-safe defaults
 // ─────────────────────────────────────────────────────────────────────────────
 

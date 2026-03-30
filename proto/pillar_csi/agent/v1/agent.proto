@@ -235,6 +235,12 @@ message LvmVolumeParams {
   string volume_group = 1;
   // Additional lvcreate flags, e.g. "--type thin".
   repeated string extra_flags = 2;
+  // provision_mode overrides the backend-level provisioning mode for this
+  // individual volume.  Accepted values: "linear" (fully-allocated LV in the
+  // VG) or "thin" (thin-provisioned LV inside the backend's thin pool).
+  // An empty string (the default) means "use the backend default", i.e. thin
+  // when the backend was started with a thinpool= flag, linear otherwise.
+  string provision_mode = 3;
 }
 
 // BackendParams is a oneof wrapper for backend-specific creation parameters.

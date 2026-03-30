@@ -70,6 +70,25 @@ spec:
                   backend:
                     description: backend contains backend-specific parameter overrides.
                     properties:
+                      lvm:
+                        description: lvm overrides LVM-specific parameters; used when
+                          the pool backend is lvm-lv.
+                        properties:
+                          provisioningMode:
+                            allOf:
+                            - enum:
+                              - linear
+                              - thin
+                            - enum:
+                              - linear
+                              - thin
+                            description: |-
+                              provisioningMode overrides the LVM provisioning mode for this binding.
+                              Accepted values: "linear" (fully-allocated LV) or "thin"
+                              (thin-provisioned LV inside the backend's thin pool).
+                              When omitted, the PillarPool-level default is used.
+                            type: string
+                        type: object
                       zfs:
                         description: |-
                           zfs overrides ZFS-specific properties; used when the pool backend is

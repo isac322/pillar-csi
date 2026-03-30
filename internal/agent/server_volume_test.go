@@ -69,7 +69,7 @@ func (m *mockBackend) Create(
 	_ context.Context,
 	volumeID string,
 	capacityBytes int64,
-	_ *agentv1.ZfsVolumeParams,
+	_ *agentv1.BackendParams,
 ) (devicePath string, allocatedBytes int64, err error) {
 	m.createCalledWith = append(m.createCalledWith, createArgs{volumeID, capacityBytes})
 	return m.createDevicePath, m.createAllocated, m.createErr

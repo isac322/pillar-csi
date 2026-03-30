@@ -108,6 +108,28 @@ E2E_COMMON_ENV = $(if $(DOCKER_HOST),DOCKER_HOST=$(DOCKER_HOST)) \
 # Common go test flags shared by every e2e invocation.
 E2E_GO_FLAGS = -tags=e2e ./test/e2e/ -v -timeout=$(E2E_TIMEOUT) $(if $(E2E_RUN),-run $(E2E_RUN))
 
+# ── ZFS + LVM co-execution strategy ──────────────────────────────────────────
+#
+# ZFS and LVM e2e tests run SEQUENTIALLY (not in parallel) in a single
+# `go test` invocation.  They share:
+#
+#   1. The same Kind cluster (1 control-plane + 2 worker nodes).
+#   2. The same storage worker node (both /dev/zfs and /dev/mapper mounted).
+#   3. The same agent DaemonSet pod (both ZFS and LVM backends registered on
+#      the same agent process via separate --backend flags).
+#   4. The same NVMe-oF protocol stack (shared configfs paths and TCP ports).
+#
+# Running them in parallel across separate goroutines or processes would risk
+# NVMe-oF port/configfs namespace collisions where one backend's target
+# creation interferes with another's.  Ginkgo's default sequential spec
+# execution within a single binary guarantees correct ordering: the ZFS
+# Describe block fully completes before the LVM Describe block begins, with
+# no additional synchronisation code required.
+#
+# Use E2E_RUN=<pattern> to filter individual backend suites for local debugging:
+#   make test-e2e-internal E2E_RUN=LVM    # run only LVM specs
+#   make test-e2e-internal E2E_RUN=ZFS    # run only ZFS specs
+#
 # test-e2e runs the full e2e suite in BOTH internal-agent and external-agent
 # modes sequentially.  TestMain always creates a fresh Kind cluster for each
 # mode and tears it down unconditionally at the end, guaranteeing no state
@@ -116,6 +138,7 @@ E2E_GO_FLAGS = -tags=e2e ./test/e2e/ -v -timeout=$(E2E_TIMEOUT) $(if $(E2E_RUN),
 #   Internal-agent mode (first):
 #     The pillar-agent runs as a DaemonSet inside the Kind cluster.
 #     All internal-agent specs execute; external-agent specs are skipped.
+#     Both ZFS and LVM backends are registered and tested sequentially.
 #
 #   External-agent mode (second):
 #     TestMain starts a Docker container running the agent image before tests.
@@ -125,13 +148,15 @@ E2E_GO_FLAGS = -tags=e2e ./test/e2e/ -v -timeout=$(E2E_TIMEOUT) $(if $(E2E_RUN),
 # To filter which tests run within a mode, pass E2E_RUN=<pattern>.
 .PHONY: test-e2e
 test-e2e: manifests generate fmt vet ## Run e2e tests in both internal-agent and external-agent modes (sequential).
-	@echo "=== e2e: internal-agent mode ==="
+	@echo "=== e2e: internal-agent mode (ZFS + LVM backends, sequential) ==="
 	$(E2E_COMMON_ENV) go test $(E2E_GO_FLAGS)
-	@echo "=== e2e: external-agent mode ==="
+	@echo "=== e2e: external-agent mode (ZFS + LVM backends, sequential) ==="
 	$(E2E_COMMON_ENV) E2E_LAUNCH_EXTERNAL_AGENT=true go test $(E2E_GO_FLAGS)
 
 # test-e2e-internal runs only the internal-agent (DaemonSet) mode e2e tests.
 # The pillar-agent runs as a DaemonSet inside the Kind cluster.
+# Both ZFS and LVM backends are registered; all backend-specific specs execute
+# sequentially within the single Ginkgo runner.
 .PHONY: test-e2e-internal
 test-e2e-internal: manifests generate fmt vet ## Run e2e tests in internal-agent (DaemonSet) mode only.
 	$(E2E_COMMON_ENV) go test $(E2E_GO_FLAGS)
@@ -142,6 +167,21 @@ test-e2e-internal: manifests generate fmt vet ## Run e2e tests in internal-agent
 .PHONY: test-e2e-external
 test-e2e-external: manifests generate fmt vet ## Run e2e tests in external-agent (out-of-cluster Docker container) mode only.
 	$(E2E_COMMON_ENV) E2E_LAUNCH_EXTERNAL_AGENT=true go test $(E2E_GO_FLAGS)
+
+# test-e2e-zfs runs only the ZFS-specific e2e specs in internal-agent mode.
+# Uses E2E_RUN=ZFS to filter Ginkgo Describe blocks that match "ZFS".
+# Useful for local debugging when only the ZFS backend needs verification.
+.PHONY: test-e2e-zfs
+test-e2e-zfs: manifests generate fmt vet ## Run ZFS-only e2e specs in internal-agent mode (debug helper).
+	$(E2E_COMMON_ENV) E2E_RUN=ZFS go test $(E2E_GO_FLAGS)
+
+# test-e2e-lvm runs only the LVM-specific e2e specs in internal-agent mode.
+# Uses E2E_RUN=LVM to filter Ginkgo Describe blocks that match "LVM".
+# Useful for local debugging when only the LVM backend needs verification.
+# Prerequisites: lvm2 installed on host, dm_thin_pool module loaded.
+.PHONY: test-e2e-lvm
+test-e2e-lvm: manifests generate fmt vet ## Run LVM-only e2e specs in internal-agent mode (debug helper).
+	$(E2E_COMMON_ENV) E2E_RUN=LVM go test $(E2E_GO_FLAGS)
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter

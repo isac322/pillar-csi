@@ -385,6 +385,17 @@ const (
 	paramNFSVersion   = "pillar-csi.bhyoo.com/nfs-version"
 	paramLVMVG        = "pillar-csi.bhyoo.com/lvm-vg"
 
+	// paramLVMMode is the StorageClass/PillarBinding parameter key that selects
+	// the LVM provisioning mode for new volumes.  Accepted values: "linear",
+	// "thin".  When absent the LVM backend uses its compiled-in default (thin
+	// when the backend was started with a thinpool= flag, linear otherwise).
+	//
+	// Layer 1 (PillarPool):   populated from LVMBackendConfig.ProvisioningMode.
+	// Layer 3 (PillarBinding): overridden by LVMOverrides.ProvisioningMode.
+	// Layer 4 (PVC annotation): highest-priority override via
+	//   "pillar-csi.bhyoo.com/param.lvm-mode" PVC annotation.
+	paramLVMMode = "pillar-csi.bhyoo.com/lvm-mode"
+
 	// ParamACLEnabled controls NVMe-oF host NQN ACL enforcement.
 	// Value: "true" (default, ACL enforced) or "false" (allow_any_host=1).
 	// Set by the PillarBinding controller from the PillarProtocol NVMeOFTCPConfig.ACL field.
@@ -1106,6 +1117,16 @@ func (s *ControllerServer) mergeParamsFromCRDs(
 		}
 	}
 
+	// Apply Pool-level LVM provisioning mode as the lowest-priority LVM mode layer.
+	// Only set when a non-empty mode is configured AND the StorageClass has not
+	// already supplied an explicit override.  An absent key in the final merged
+	// map lets the agent backend use its compiled-in default.
+	if pool.Spec.Backend.LVM != nil && pool.Spec.Backend.LVM.ProvisioningMode != "" {
+		if _, alreadySet := merged[paramLVMMode]; !alreadySet {
+			merged[paramLVMMode] = string(pool.Spec.Backend.LVM.ProvisioningMode)
+		}
+	}
+
 	// ── Layer 3: apply Binding ZFS property overrides ────────────────────────
 	// (Layer 2 — protocol params — are already embedded in the StorageClass.)
 	if binding.Spec.Overrides != nil &&
@@ -1114,6 +1135,15 @@ func (s *ControllerServer) mergeParamsFromCRDs(
 		for k, v := range binding.Spec.Overrides.Backend.ZFS.Properties {
 			merged[paramZFSPropPrefix+k] = v
 		}
+	}
+
+	// Apply Binding-level LVM provisioning mode override (Layer 3).
+	// A non-empty value here wins over the Pool-level default applied above.
+	if binding.Spec.Overrides != nil &&
+		binding.Spec.Overrides.Backend != nil &&
+		binding.Spec.Overrides.Backend.LVM != nil &&
+		binding.Spec.Overrides.Backend.LVM.ProvisioningMode != "" {
+		merged[paramLVMMode] = string(binding.Spec.Overrides.Backend.LVM.ProvisioningMode)
 	}
 
 	// ── Layer 4: PVC annotation overrides (highest priority) ─────────────────
@@ -1276,7 +1306,8 @@ func buildBackendParams(params map[string]string, backendType agentv1.BackendTyp
 		return &agentv1.BackendParams{
 			Params: &agentv1.BackendParams_Lvm{
 				Lvm: &agentv1.LvmVolumeParams{
-					VolumeGroup: params["pillar-csi.bhyoo.com/lvm-vg"],
+					VolumeGroup:   params[paramLVMVG],
+					ProvisionMode: params[paramLVMMode],
 				},
 			},
 		}

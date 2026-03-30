@@ -320,9 +320,13 @@ func TestZFSBackend_Create_WithProperties(t *testing.T) {
 	}
 
 	b := zfs.NewWithExecFn("tank", "", exec)
-	params := &agentv1.ZfsVolumeParams{
-		Properties: map[string]string{
-			"compression": "lz4",
+	params := &agentv1.BackendParams{
+		Params: &agentv1.BackendParams_Zfs{
+			Zfs: &agentv1.ZfsVolumeParams{
+				Properties: map[string]string{
+					"compression": "lz4",
+				},
+			},
 		},
 	}
 	_, _, err := b.Create(context.Background(), "tank/pvc-abc", 10*1024*1024*1024, params)

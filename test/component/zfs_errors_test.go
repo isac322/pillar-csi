@@ -133,9 +133,13 @@ func TestZFSBackend_Error_InvalidProperties(t *testing.T) {
 	}
 
 	b := zfs.NewWithExecFn("tank", "", exec)
-	params := &agentv1.ZfsVolumeParams{
-		Properties: map[string]string{
-			"bad-property": "invalid-value",
+	params := &agentv1.BackendParams{
+		Params: &agentv1.BackendParams_Zfs{
+			Zfs: &agentv1.ZfsVolumeParams{
+				Properties: map[string]string{
+					"bad-property": "invalid-value",
+				},
+			},
 		},
 	}
 

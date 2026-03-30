@@ -42,7 +42,7 @@ func (s *Server) CreateVolume(
 		ctx,
 		req.GetVolumeId(),
 		req.GetCapacityBytes(),
-		req.GetBackendParams().GetZfs(),
+		req.GetBackendParams(),
 	)
 	if err != nil {
 		var conflictErr *backend.ConflictError
