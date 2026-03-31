@@ -32,6 +32,7 @@
 
 ## Git 커밋 규칙
 
+- **커밋 전 반드시 `make lint` 실행하여 0 issues 확인** — lint 에러가 있으면 커밋하지 말 것
 - 매 작업 단계마다 커밋
 - 커밋 메시지는 "why not what" — 왜 그런 변경인지 (코드에 없는 정보)
 - `Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>` 포함

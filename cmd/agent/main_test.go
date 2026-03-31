@@ -35,6 +35,8 @@ import (
 	"github.com/bhyoo/pillar-csi/internal/agent/backend/zfs"
 )
 
+const testVGDataVG = "data-vg"
+
 // Backend registry tests.
 
 // buildBackends creates the pool→backend registry for testing, mirroring the
@@ -181,7 +183,7 @@ func TestBackendFlag_Set_BasicZfsZvol(t *testing.T) {
 	if got, want := len(bf), 1; got != want {
 		t.Fatalf("len(backendFlag) = %d; want %d", got, want)
 	}
-	if got, want := bf[0].typ, "zfs-zvol"; got != want {
+	if got, want := bf[0].typ, backendTypeZfsZvol; got != want {
 		t.Errorf("spec.typ = %q; want %q", got, want)
 	}
 	if got, want := bf[0].pool, "tank"; got != want {
@@ -383,10 +385,10 @@ func TestBackendFlag_Set_BasicLvmLV(t *testing.T) {
 	if got, want := len(bf), 1; got != want {
 		t.Fatalf("len(backendFlag) = %d; want %d", got, want)
 	}
-	if got, want := bf[0].typ, "lvm-lv"; got != want {
+	if got, want := bf[0].typ, backendTypeLvmLV; got != want {
 		t.Errorf("spec.typ = %q; want %q", got, want)
 	}
-	if got, want := bf[0].vg, "data-vg"; got != want {
+	if got, want := bf[0].vg, testVGDataVG; got != want {
 		t.Errorf("spec.vg = %q; want %q", got, want)
 	}
 	if got, want := bf[0].thinpool, ""; got != want {
@@ -403,7 +405,7 @@ func TestBackendFlag_Set_LvmLV_WithThinpool(t *testing.T) {
 	if err := bf.Set("type=lvm-lv,vg=data-vg,thinpool=thin-pool-0"); err != nil {
 		t.Fatalf("backendFlag.Set: unexpected error: %v", err)
 	}
-	if got, want := bf[0].vg, "data-vg"; got != want {
+	if got, want := bf[0].vg, testVGDataVG; got != want {
 		t.Errorf("spec.vg = %q; want %q", got, want)
 	}
 	if got, want := bf[0].thinpool, "thin-pool-0"; got != want {
@@ -453,13 +455,13 @@ func TestBackendFlag_Set_MixedZfsAndLvm(t *testing.T) {
 	if got, want := len(bf), 3; got != want {
 		t.Fatalf("len(backendFlag) = %d; want %d", got, want)
 	}
-	if bf[0].typ != "zfs-zvol" {
+	if bf[0].typ != backendTypeZfsZvol {
 		t.Errorf("bf[0].typ = %q; want zfs-zvol", bf[0].typ)
 	}
-	if bf[1].typ != "lvm-lv" || bf[1].vg != "data-vg" {
+	if bf[1].typ != backendTypeLvmLV || bf[1].vg != testVGDataVG {
 		t.Errorf("bf[1]: typ=%q vg=%q; want lvm-lv data-vg", bf[1].typ, bf[1].vg)
 	}
-	if bf[2].typ != "lvm-lv" || bf[2].vg != "ssd-vg" || bf[2].thinpool != "fast-pool" {
+	if bf[2].typ != backendTypeLvmLV || bf[2].vg != "ssd-vg" || bf[2].thinpool != "fast-pool" {
 		t.Errorf("bf[2]: typ=%q vg=%q thinpool=%q; want lvm-lv ssd-vg fast-pool",
 			bf[2].typ, bf[2].vg, bf[2].thinpool)
 	}
@@ -570,8 +572,12 @@ func TestBuildVolumeBackends_LvmAndZfsMixed(t *testing.T) {
 	t.Parallel()
 
 	var bf backendFlag
-	_ = bf.Set("type=zfs-zvol,pool=tank")
-	_ = bf.Set("type=lvm-lv,vg=data-vg")
+	if err := bf.Set("type=zfs-zvol,pool=tank"); err != nil {
+		t.Fatalf("bf.Set(zfs-zvol): %v", err)
+	}
+	if err := bf.Set("type=lvm-lv,vg=data-vg"); err != nil {
+		t.Fatalf("bf.Set(lvm-lv): %v", err)
+	}
 
 	bs := buildVolumeBackends(bf)
 

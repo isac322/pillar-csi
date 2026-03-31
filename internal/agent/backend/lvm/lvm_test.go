@@ -29,6 +29,8 @@ import (
 	"github.com/bhyoo/pillar-csi/internal/agent/backend/lvm"
 )
 
+const testVolIDPvcA = "data-vg/pvc-a"
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Test helpers
 // ─────────────────────────────────────────────────────────────────────────────
@@ -130,8 +132,8 @@ func fail(out string) fakeResponse {
 }
 
 // lvNotExistResp simulates the LVM "Failed to find logical volume" error output.
-func lvNotExistResp(vg, lv string) fakeResponse {
-	return fail(fmt.Sprintf("  Failed to find logical volume \"%s/%s\"", vg, lv))
+func lvNotExistResp(lv string) fakeResponse {
+	return fail(fmt.Sprintf("  Failed to find logical volume \"data-vg/%s\"", lv))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -317,9 +319,9 @@ func TestCreate_LinearLV(t *testing.T) {
 
 	// Sequence: lvsBytes → not-exist, lvcreate → ok, lvsBytes → 4GiB
 	fake := newFake(t,
-		lvNotExistResp("data-vg", "pvc-new"), // existence check: not found
-		ok(""),                               // lvcreate succeeds
-		ok("4294967296\n"),                   // read-back lv_size = 4 GiB
+		lvNotExistResp("pvc-new"), // existence check: not found
+		ok(""),                    // lvcreate succeeds
+		ok("4294967296\n"),        // read-back lv_size = 4 GiB
 	)
 	b := lvm.New("data-vg", "")
 	lvm.SetBackendExec(t, b, fake.exec())
@@ -350,9 +352,9 @@ func TestCreate_ThinLV(t *testing.T) {
 	t.Parallel()
 
 	fake := newFake(t,
-		lvNotExistResp("data-vg", "pvc-thin"), // existence check: not found
-		ok(""),                                // lvcreate succeeds
-		ok("2147483648\n"),                    // read-back lv_size = 2 GiB
+		lvNotExistResp("pvc-thin"), // existence check: not found
+		ok(""),                     // lvcreate succeeds
+		ok("2147483648\n"),         // read-back lv_size = 2 GiB
 	)
 	b := lvm.New("data-vg", "thin-pool-0")
 	lvm.SetBackendExec(t, b, fake.exec())
@@ -373,7 +375,8 @@ func TestCreate_ThinLV(t *testing.T) {
 	fake.assertCallCount(3)
 	// Second call: lvcreate with --virtualsize (long form) and --thinpool flag.
 	// createThinLV uses the long form --virtualsize for clarity in logs.
-	fake.assertArgsContain(1, "lvcreate", "-n", "pvc-thin", "--virtualsize", "2147483648b", "--thinpool", "thin-pool-0", "data-vg")
+	fake.assertArgsContain(1, "lvcreate", "-n", "pvc-thin",
+		"--virtualsize", "2147483648b", "--thinpool", "thin-pool-0", "data-vg")
 }
 
 func TestCreate_Idempotent_AlreadyExists(t *testing.T) {
@@ -404,7 +407,7 @@ func TestCreate_CommandFails(t *testing.T) {
 	t.Parallel()
 
 	fake := newFake(t,
-		lvNotExistResp("data-vg", "pvc-fail"),
+		lvNotExistResp("pvc-fail"),
 		fail("  Insufficient free space: 1024 extents needed, but only 512 available"),
 	)
 	b := lvm.New("data-vg", "")
@@ -506,9 +509,9 @@ func TestCreate_VGOverrideMatch(t *testing.T) {
 	t.Parallel()
 
 	fake := newFake(t,
-		lvNotExistResp("data-vg", "pvc-vg-ok"), // existence check: not found
-		ok(""),                                 // lvcreate succeeds
-		ok("1073741824\n"),                     // read-back lv_size = 1 GiB
+		lvNotExistResp("pvc-vg-ok"), // existence check: not found
+		ok(""),                      // lvcreate succeeds
+		ok("1073741824\n"),          // read-back lv_size = 1 GiB
 	)
 	b := lvm.New("data-vg", "")
 	lvm.SetBackendExec(t, b, fake.exec())
@@ -540,9 +543,9 @@ func TestCreate_ExtraFlagsLinear(t *testing.T) {
 	t.Parallel()
 
 	fake := newFake(t,
-		lvNotExistResp("data-vg", "pvc-tagged"), // existence check: not found
-		ok(""),                                  // lvcreate succeeds
-		ok("1073741824\n"),                      // read-back lv_size = 1 GiB
+		lvNotExistResp("pvc-tagged"), // existence check: not found
+		ok(""),                       // lvcreate succeeds
+		ok("1073741824\n"),           // read-back lv_size = 1 GiB
 	)
 	b := lvm.New("data-vg", "")
 	lvm.SetBackendExec(t, b, fake.exec())
@@ -573,9 +576,9 @@ func TestCreate_ExtraFlagsThin(t *testing.T) {
 	t.Parallel()
 
 	fake := newFake(t,
-		lvNotExistResp("data-vg", "pvc-thin-tagged"), // existence check: not found
-		ok(""),             // lvcreate succeeds
-		ok("2147483648\n"), // read-back lv_size = 2 GiB
+		lvNotExistResp("pvc-thin-tagged"), // existence check: not found
+		ok(""),                            // lvcreate succeeds
+		ok("2147483648\n"),                // read-back lv_size = 2 GiB
 	)
 	b := lvm.New("data-vg", "thin-pool-0")
 	lvm.SetBackendExec(t, b, fake.exec())
@@ -720,8 +723,8 @@ func TestCreate_ReadBackFails(t *testing.T) {
 	t.Parallel()
 
 	fake := newFake(t,
-		lvNotExistResp("data-vg", "pvc-readfail"), // existence check: not found
-		ok(""), // lvcreate succeeds
+		lvNotExistResp("pvc-readfail"), // existence check: not found
+		ok(""),                         // lvcreate succeeds
 		fail("  I/O error reading lv_size for data-vg/pvc-readfail"), // read-back fails
 	)
 	b := lvm.New("data-vg", "")
@@ -744,8 +747,8 @@ func TestCreate_ReadBackFails_ThinLV(t *testing.T) {
 	t.Parallel()
 
 	fake := newFake(t,
-		lvNotExistResp("data-vg", "pvc-thin-readfail"), // existence check: not found
-		ok(""), // lvcreate --virtualsize succeeds
+		lvNotExistResp("pvc-thin-readfail"), // existence check: not found
+		ok(""),                              // lvcreate --virtualsize succeeds
 		fail("  I/O error reading lv_size for data-vg/pvc-thin-readfail"), // read-back fails
 	)
 	b := lvm.New("data-vg", "thin-pool-0")
@@ -768,7 +771,7 @@ func TestCreate_ThinCommandFails(t *testing.T) {
 	t.Parallel()
 
 	fake := newFake(t,
-		lvNotExistResp("data-vg", "pvc-thin-nospace"),                      // existence check: not found
+		lvNotExistResp("pvc-thin-nospace"),                                 // existence check: not found
 		fail("  Insufficient free space in thin pool data-vg/thin-pool-0"), // lvcreate fails
 	)
 	b := lvm.New("data-vg", "thin-pool-0")
@@ -822,7 +825,7 @@ func TestCreateThinLV_UsesVirtualsize(t *testing.T) {
 	b := lvm.New("data-vg", "thin-pool-0")
 	lvm.SetBackendExec(t, b, fake.exec())
 
-	err := lvm.CreateThinLV(b, context.Background(), "data-vg", "pvc-thin-helper", "thin-pool-0", 2<<30, nil)
+	err := lvm.CreateThinLV(context.Background(), b, "data-vg", "pvc-thin-helper", "thin-pool-0", 2<<30, nil)
 	if err != nil {
 		t.Fatalf("CreateThinLV: unexpected error: %v", err)
 	}
@@ -853,7 +856,7 @@ func TestCreateThinLV_Idempotent_AlreadyExists(t *testing.T) {
 	b := lvm.New("data-vg", "thin-pool-0")
 	lvm.SetBackendExec(t, b, fake.exec())
 
-	err := lvm.CreateThinLV(b, context.Background(), "data-vg", "pvc-dup", "thin-pool-0", 1<<30, nil)
+	err := lvm.CreateThinLV(context.Background(), b, "data-vg", "pvc-dup", "thin-pool-0", 1<<30, nil)
 	if err != nil {
 		t.Fatalf("CreateThinLV (already exists): expected nil for idempotent case, got: %v", err)
 	}
@@ -871,7 +874,7 @@ func TestCreateThinLV_ErrorPropagated(t *testing.T) {
 	b := lvm.New("data-vg", "thin-pool-0")
 	lvm.SetBackendExec(t, b, fake.exec())
 
-	err := lvm.CreateThinLV(b, context.Background(), "data-vg", "pvc-nospace", "thin-pool-0", 100<<30, nil)
+	err := lvm.CreateThinLV(context.Background(), b, "data-vg", "pvc-nospace", "thin-pool-0", 100<<30, nil)
 	if err == nil {
 		t.Fatal("CreateThinLV: expected error when lvcreate fails")
 	}
@@ -893,7 +896,7 @@ func TestCreateThinLV_ExtraFlagsForwarded(t *testing.T) {
 	lvm.SetBackendExec(t, b, fake.exec())
 
 	extraFlags := []string{"--addtag", "env=prod", "--addtag", "owner=team-a"}
-	err := lvm.CreateThinLV(b, context.Background(), "data-vg", "pvc-tagged", "thin-pool-0", 4<<30, extraFlags)
+	err := lvm.CreateThinLV(context.Background(), b, "data-vg", "pvc-tagged", "thin-pool-0", 4<<30, extraFlags)
 	if err != nil {
 		t.Fatalf("CreateThinLV (extra flags): unexpected error: %v", err)
 	}
@@ -919,7 +922,7 @@ func TestCreateThinLV_DifferentThinPool(t *testing.T) {
 
 	// Call with a pool name that differs from b.thinpool to confirm the
 	// parameter is forwarded as-is.
-	err := lvm.CreateThinLV(b, context.Background(), "data-vg", "pvc-alt", "thin-pool-alt", 1<<30, nil)
+	err := lvm.CreateThinLV(context.Background(), b, "data-vg", "pvc-alt", "thin-pool-alt", 1<<30, nil)
 	if err != nil {
 		t.Fatalf("CreateThinLV (alt pool): unexpected error: %v", err)
 	}
@@ -984,7 +987,7 @@ func TestDelete_Idempotent_NotExist(t *testing.T) {
 	// lvremove exits non-zero with "Failed to find logical volume" → should be
 	// swallowed for idempotency.
 	fake := newFake(t,
-		lvNotExistResp("data-vg", "pvc-gone"),
+		lvNotExistResp("pvc-gone"),
 	)
 	b := lvm.New("data-vg", "")
 	lvm.SetBackendExec(t, b, fake.exec())
@@ -1217,7 +1220,7 @@ func TestExpand_LVNotExist(t *testing.T) {
 	t.Parallel()
 
 	fake := newFake(t,
-		lvNotExistResp("data-vg", "pvc-missing"), // pre-check: LV not found
+		lvNotExistResp("pvc-missing"), // pre-check: LV not found
 	)
 	b := lvm.New("data-vg", "")
 	lvm.SetBackendExec(t, b, fake.exec())
@@ -2009,7 +2012,7 @@ func TestCapacity_ThinTabSeparatedOutput(t *testing.T) {
 	fake.assertCallCount(1)
 }
 
-// TestCapacity_ThinOverProvisioned verifies the behaviour when a thin pool
+// TestCapacity_ThinOverProvisioned verifies the behavior when a thin pool
 // reports data_percent > 100.  This can occur in LVM when the thin pool
 // metadata volume is also partially full and LVM reports combined usage, or
 // when the pool has been over-committed and actual written data exceeds the
@@ -2036,8 +2039,7 @@ func TestCapacity_ThinOverProvisioned(t *testing.T) {
 		t.Errorf("Capacity (thin over-provisioned): totalBytes = %d; want %d", gotTotal, total)
 	}
 
-	// usedBytes = int64(float64(total) * 110.0 / 100.0) > total
-	// availableBytes = total - usedBytes < 0
+	// Over-provisioned: usedBytes exceeds total so availableBytes is negative.
 	expectedUsed := int64(float64(total) * dataPercent / 100.0)
 	expectedFree := total - expectedUsed // will be negative
 	if gotFree != expectedFree {
@@ -2206,8 +2208,8 @@ func TestListVolumes_MultipleVolumes(t *testing.T) {
 		t.Fatalf("ListVolumes: got %d volumes; want 2", len(vols))
 	}
 
-	if vols[0].GetVolumeId() != "data-vg/pvc-a" {
-		t.Errorf("vols[0].VolumeId = %q; want %q", vols[0].GetVolumeId(), "data-vg/pvc-a")
+	if vols[0].GetVolumeId() != testVolIDPvcA {
+		t.Errorf("vols[0].VolumeId = %q; want %q", vols[0].GetVolumeId(), testVolIDPvcA)
 	}
 	if vols[0].GetCapacityBytes() != 4<<30 {
 		t.Errorf("vols[0].CapacityBytes = %d; want %d", vols[0].GetCapacityBytes(), int64(4<<30))
@@ -2296,8 +2298,8 @@ func TestListVolumes_ThinMode_SkipsThinPool(t *testing.T) {
 	if len(vols) != 1 {
 		t.Fatalf("ListVolumes (thin, skip pool): got %d volumes; want 1", len(vols))
 	}
-	if vols[0].GetVolumeId() != "data-vg/pvc-a" {
-		t.Errorf("vols[0].VolumeId = %q; want %q", vols[0].GetVolumeId(), "data-vg/pvc-a")
+	if vols[0].GetVolumeId() != testVolIDPvcA {
+		t.Errorf("vols[0].VolumeId = %q; want %q", vols[0].GetVolumeId(), testVolIDPvcA)
 	}
 }
 
@@ -2460,8 +2462,8 @@ func TestListVolumes_ThinMode_MultipleVolumes(t *testing.T) {
 		t.Fatalf("ListVolumes (thin multi): got %d volumes; want 2", len(vols))
 	}
 
-	if vols[0].GetVolumeId() != "data-vg/pvc-a" {
-		t.Errorf("vols[0].VolumeId = %q; want %q", vols[0].GetVolumeId(), "data-vg/pvc-a")
+	if vols[0].GetVolumeId() != testVolIDPvcA {
+		t.Errorf("vols[0].VolumeId = %q; want %q", vols[0].GetVolumeId(), testVolIDPvcA)
 	}
 	if vols[0].GetCapacityBytes() != 4<<30 {
 		t.Errorf("vols[0].CapacityBytes = %d; want %d", vols[0].GetCapacityBytes(), int64(4<<30))
@@ -2751,7 +2753,6 @@ func TestParseProvisionMode_CaseInsensitive(t *testing.T) {
 		{"  linear  ", lvm.ProvisionModeLinear},
 	}
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.input, func(t *testing.T) {
 			t.Parallel()
 			mode, ok := lvm.ParseProvisionMode(tc.input)
@@ -2778,7 +2779,6 @@ func TestParseProvisionMode_Unknown(t *testing.T) {
 	t.Parallel()
 
 	for _, s := range []string{"stripe", "raid", "unknown", "snapshot"} {
-		s := s
 		t.Run(s, func(t *testing.T) {
 			t.Parallel()
 			_, ok := lvm.ParseProvisionMode(s)
@@ -2900,9 +2900,9 @@ func TestCreate_LinearOverride_OnThinBackend(t *testing.T) {
 	// Backend is configured with a thinpool, but the request overrides mode to
 	// "linear".  Expect: linear lvcreate (no --virtualsize, no --thinpool).
 	fake := newFake(t,
-		lvNotExistResp("data-vg", "pvc-linear-override"), // existence check
-		ok(""),             // lvcreate (linear) succeeds
-		ok("2147483648\n"), // read-back lv_size = 2 GiB
+		lvNotExistResp("pvc-linear-override"), // existence check
+		ok(""),                                // lvcreate (linear) succeeds
+		ok("2147483648\n"),                    // read-back lv_size = 2 GiB
 	)
 	b := lvm.New("data-vg", "thin-pool-0") // backend default = thin
 	lvm.SetBackendExec(t, b, fake.exec())
@@ -2999,9 +2999,9 @@ func TestCreate_ThinOverride_WithThinPool(t *testing.T) {
 	t.Parallel()
 
 	fake := newFake(t,
-		lvNotExistResp("data-vg", "pvc-thin-ok"), // existence check
-		ok(""),                                   // lvcreate (thin) succeeds
-		ok("1073741824\n"),                       // read-back lv_size = 1 GiB
+		lvNotExistResp("pvc-thin-ok"), // existence check
+		ok(""),                        // lvcreate (thin) succeeds
+		ok("1073741824\n"),            // read-back lv_size = 1 GiB
 	)
 	b := lvm.New("data-vg", "thin-pool-0") // backend default already = thin
 	lvm.SetBackendExec(t, b, fake.exec())

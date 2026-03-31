@@ -54,6 +54,8 @@ import (
 	agentv1 "github.com/bhyoo/pillar-csi/gen/go/pillar_csi/agent/v1"
 )
 
+const testModeThin = "thin"
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Mock AgentServiceClient
 // ─────────────────────────────────────────────────────────────────────────────.
@@ -1142,7 +1144,7 @@ func TestBuildBackendParams_LVM_WithThinMode(t *testing.T) {
 
 	params := map[string]string{
 		paramLVMVG:   "data-vg",
-		paramLVMMode: "thin",
+		paramLVMMode: testModeThin,
 	}
 	got := buildBackendParams(params, agentv1.BackendType_BACKEND_TYPE_LVM)
 	if got == nil {
@@ -1155,8 +1157,8 @@ func TestBuildBackendParams_LVM_WithThinMode(t *testing.T) {
 	if lvm.GetVolumeGroup() != "data-vg" {
 		t.Errorf("VolumeGroup = %q, want %q", lvm.GetVolumeGroup(), "data-vg")
 	}
-	if lvm.GetProvisionMode() != "thin" {
-		t.Errorf("ProvisionMode = %q, want %q", lvm.GetProvisionMode(), "thin")
+	if lvm.GetProvisionMode() != testModeThin {
+		t.Errorf("ProvisionMode = %q, want %q", lvm.GetProvisionMode(), testModeThin)
 	}
 }
 
@@ -1251,8 +1253,8 @@ func TestMergeParamsFromCRDs_LVM_PoolDefault(t *testing.T) {
 		t.Fatalf("mergeParamsFromCRDs unexpected error: %v", err)
 	}
 
-	if got := merged[paramLVMMode]; got != "thin" {
-		t.Errorf("merged[paramLVMMode] = %q, want %q", got, "thin")
+	if got := merged[paramLVMMode]; got != testModeThin {
+		t.Errorf("merged[paramLVMMode] = %q, want %q", got, testModeThin)
 	}
 }
 
@@ -1317,8 +1319,8 @@ func TestMergeParamsFromCRDs_LVM_BindingOverride(t *testing.T) {
 	}
 
 	// The binding override ("thin") must beat the pool default ("linear").
-	if got := merged[paramLVMMode]; got != "thin" {
-		t.Errorf("merged[paramLVMMode] = %q, want %q (binding override should win)", got, "thin")
+	if got := merged[paramLVMMode]; got != testModeThin {
+		t.Errorf("merged[paramLVMMode] = %q, want %q (binding override should win)", got, testModeThin)
 	}
 }
 

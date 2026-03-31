@@ -38,6 +38,11 @@ import (
 	"github.com/bhyoo/pillar-csi/internal/tlscreds"
 )
 
+const (
+	backendTypeZfsZvol = "zfs-zvol"
+	backendTypeLvmLV   = "lvm-lv"
+)
+
 // backendSpec holds the parsed fields from a single --backend flag value.
 // The flag value is a comma-separated list of key=value pairs, e.g.:
 //
@@ -89,7 +94,7 @@ func (b *backendFlag) String() string {
 	parts := make([]string, len(*b))
 	for i, s := range *b {
 		switch s.typ {
-		case "lvm-lv":
+		case backendTypeLvmLV:
 			parts[i] = "type=" + s.typ + ",vg=" + s.vg
 			if s.thinpool != "" {
 				parts[i] += ",thinpool=" + s.thinpool
@@ -152,16 +157,16 @@ func (b *backendFlag) Set(v string) error {
 	}
 
 	switch spec.typ {
-	case "zfs-zvol":
+	case backendTypeZfsZvol:
 		if spec.pool == "" {
-			return fmt.Errorf("backend: pool= key is required for type=zfs-zvol")
+			return fmt.Errorf("backend: pool= key is required for type=%s", backendTypeZfsZvol)
 		}
-	case "lvm-lv":
+	case backendTypeLvmLV:
 		if spec.vg == "" {
-			return fmt.Errorf("backend: vg= key is required for type=lvm-lv")
+			return fmt.Errorf("backend: vg= key is required for type=%s", backendTypeLvmLV)
 		}
 	default:
-		return fmt.Errorf("backend: unsupported type %q (supported: zfs-zvol, lvm-lv)", spec.typ)
+		return fmt.Errorf("backend: unsupported type %q (supported: %s, %s)", spec.typ, backendTypeZfsZvol, backendTypeLvmLV)
 	}
 
 	*b = append(*b, spec)
@@ -176,9 +181,9 @@ func buildVolumeBackends(specs backendFlag) map[string]backend.VolumeBackend {
 	m := make(map[string]backend.VolumeBackend, len(specs))
 	for _, spec := range specs {
 		switch spec.typ {
-		case "lvm-lv":
+		case backendTypeLvmLV:
 			m[spec.vg] = lvm.New(spec.vg, spec.thinpool)
-		default: // "zfs-zvol"
+		default: // backendTypeZfsZvol
 			m[spec.pool] = zfs.New(spec.pool, spec.parent)
 		}
 	}

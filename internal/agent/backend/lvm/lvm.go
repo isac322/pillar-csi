@@ -143,51 +143,6 @@ func ValidateLVName(lv string) error {
 	return nil
 }
 
-// validateSizeBytes returns an error if size is not a positive byte count.
-func validateSizeBytes(size int64) error {
-	if size <= 0 {
-		return fmt.Errorf("lvm: capacity bytes must be positive, got %d", size)
-	}
-	return nil
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// CreateVolume request type and validation
-// ─────────────────────────────────────────────────────────────────────────────
-
-// createRequest holds the fully-validated parameters for a single lvcreate(8)
-// invocation.  It is produced by parseCreateRequest and consumed directly by
-// the Create execution path.
-//
-// Keeping validation (parseCreateRequest) separate from execution (Create)
-// makes the validation logic unit-testable without requiring LVM binaries, and
-// makes it easy to inspect what parameters will be sent to lvcreate before any
-// side-effecting command runs.
-type createRequest struct {
-	// vg is the validated volume group name.  It is taken from the Backend
-	// default but may be replaced by LvmVolumeParams.VolumeGroup when that
-	// field is set and passes ValidateParams consistency checking.
-	vg string
-
-	// lvName is the logical volume name extracted from the volumeID by stripping
-	// the "<vg>/" prefix.  It has passed ValidateLVName before being stored here.
-	lvName string
-
-	// sizeBytes is the validated requested capacity in bytes (> 0).
-	sizeBytes int64
-
-	// thinPool is the thin-pool LV name within vg; empty means linear mode.
-	// It comes from the Backend default (set at construction time from the
-	// --backend CLI flag's thinpool= key) and is immutable per request.
-	thinPool string
-
-	// extraFlags are optional lvcreate arguments from LvmVolumeParams.ExtraFlags.
-	// They are appended verbatim to the lvcreate invocation after the size and
-	// thinpool flags; unknown flags are forwarded to lvcreate(8) which will
-	// reject them with an error.
-	extraFlags []string
-}
-
 // defaultDevBase is the production /dev directory prefix under which the kernel
 // exposes LVM LV block devices as /dev/<vg>/<lv>.
 const defaultDevBase = "/dev"
@@ -265,10 +220,10 @@ func (p Params) HasModeOverride() bool { return p.hasModeOverride }
 
 // ParseProvisionMode converts a wire-level provisioning mode string (as carried
 // in LvmVolumeParams.provision_mode) to the typed ProvisionMode enum.  It
-// returns the mode and a boolean indicating whether the string was a recognised
+// returns the mode and a boolean indicating whether the string was a recognized
 // non-empty value.
 //
-// Recognised values (case-insensitive):
+// Recognized values (case-insensitive):
 //   - "linear" → ProvisionModeLinear, true
 //   - "thin"   → ProvisionModeThin, true
 //   - ""       → ProvisionModeLinear, false  (caller should treat as "no override")
@@ -317,7 +272,7 @@ func ParseParams(p *agentv1.LvmVolumeParams) Params {
 //   - ProvisionModeOverride is ProvisionModeThin but the backend has no thin
 //     pool configured (no thinpool= CLI flag was given).
 //   - The raw provision_mode string from the proto was non-empty but not a
-//     recognised value (detected via HasModeOverride() being false).
+//     recognized value (detected via HasModeOverride() being false).
 func ValidateParams(p Params, backendVG, backendThinPool string) error {
 	if p.VGOverride != "" && p.VGOverride != backendVG {
 		return fmt.Errorf(
@@ -337,7 +292,7 @@ func ValidateParams(p Params, backendVG, backendThinPool string) error {
 }
 
 // validateProvisionModeString returns an error when s is a non-empty string
-// that is not a recognised provisioning mode.  An empty s (meaning "use
+// that is not a recognized provisioning mode.  An empty s (meaning "use
 // backend default") is always valid.
 func validateProvisionModeString(s string) error {
 	if s == "" {
@@ -351,81 +306,6 @@ func validateProvisionModeString(s string) error {
 		)
 	}
 	return nil
-}
-
-// parseCreateRequest validates the gRPC-level inputs for a CreateVolume call
-// and assembles a createRequest ready for lvcreate(8) execution.
-//
-// Validation order:
-//  1. capacityBytes > 0 (validateSizeBytes)
-//  2. per-volume LvmVolumeParams consistency (ValidateParams) — VGOverride
-//     must be empty or equal to the backend VG; ExtraFlags are collected;
-//     provision_mode (if set) must be a recognised value and must be
-//     compatible with the backend's thinpool configuration.
-//  3. effective VG name character/length validity (ValidateVGName)
-//  4. LV name extracted from volumeID (ValidateLVName)
-//
-// A nil *agentv1.BackendParams (or a BackendParams whose lvm field is nil) is
-// treated as "no per-volume overrides" and is valid.
-func (b *Backend) parseCreateRequest(
-	volumeID string,
-	capacityBytes int64,
-	params *agentv1.BackendParams,
-) (createRequest, error) {
-	// 1. Validate the requested capacity.
-	if err := validateSizeBytes(capacityBytes); err != nil {
-		return createRequest{}, err
-	}
-
-	// 2. Apply per-volume overrides from LvmVolumeParams (if any).
-	//    The effective VG is the backend default unless LvmVolumeParams supplies
-	//    a non-empty VGOverride that matches the backend VG.
-	vg := b.vg
-	thinPool := b.thinpool
-	var extraFlags []string
-	if lvmProto := params.GetLvm(); lvmProto != nil {
-		// Reject unknown provision_mode values before ParseParams discards them.
-		if err := validateProvisionModeString(lvmProto.GetProvisionMode()); err != nil {
-			return createRequest{}, err
-		}
-		parsed := ParseParams(lvmProto)
-		if err := ValidateParams(parsed, b.vg, b.thinpool); err != nil {
-			return createRequest{}, err
-		}
-		if parsed.VGOverride != "" {
-			vg = parsed.VGOverride
-		}
-		extraFlags = parsed.ExtraFlags
-		// Apply provisioning mode override: "linear" clears the thinPool so
-		// that the linear lvcreate path is used; "thin" keeps it (already
-		// validated by ValidateParams that a thinpool is configured).
-		if parsed.hasModeOverride {
-			if parsed.ProvisionModeOverride == ProvisionModeLinear {
-				thinPool = ""
-			}
-			// ProvisionModeThin keeps thinPool = b.thinpool (already set above).
-		}
-	}
-
-	// 3. Validate the effective VG name.
-	if err := ValidateVGName(vg); err != nil {
-		return createRequest{}, err
-	}
-
-	// 4. Validate the LV name derived from the volumeID.
-	//    volumeID format: "<vg>/<lv-name>" — lvName strips the "<vg>/" prefix.
-	lv := b.lvName(volumeID)
-	if err := ValidateLVName(lv); err != nil {
-		return createRequest{}, fmt.Errorf("lvm: volume %q: %w", volumeID, err)
-	}
-
-	return createRequest{
-		vg:         vg,
-		lvName:     lv,
-		sizeBytes:  capacityBytes,
-		thinPool:   thinPool,
-		extraFlags: extraFlags,
-	}, nil
 }
 
 // executor abstracts os/exec so that unit tests can inject a fake without
@@ -476,7 +356,7 @@ func isNotExistOutput(out []byte) bool {
 }
 
 // isAlreadyExistsOutput returns true when LVM command output indicates that the
-// logical volume already exists in the volume group.  lvcreate(8) exits non-zero
+// logical volume already exists in the volume group.  Lvcreate(8) exits non-zero
 // with a message like "Logical volume <name> already exists in volume group <vg>"
 // when asked to create an LV that is already present; callers can use this
 // predicate to distinguish that benign case from genuine failures.
@@ -518,7 +398,7 @@ type Backend struct {
 var _ backend.VolumeBackend = (*Backend)(nil)
 
 // New creates a Backend bound to the given volume group.
-// thinpool may be empty for linear provisioning mode, or non-empty for thin-
+// Thinpool may be empty for linear provisioning mode, or non-empty for thin-
 // provisioned LVs within the named thin pool.
 // Neither argument is validated here; callers should supply values that have
 // already been sanitized (no path separators, no empty vg).
@@ -604,12 +484,6 @@ func (b *Backend) lvName(volumeID string) string {
 	return strings.TrimPrefix(volumeID, b.vg+"/")
 }
 
-// lvPath returns the canonical LVM path string "<vg>/<lv>" used by LVM CLI
-// tools to reference a specific logical volume.
-func (b *Backend) lvPath(volumeID string) string {
-	return b.vg + "/" + b.lvName(volumeID)
-}
-
 // DevicePath returns the host path to the LV block device for volumeID.
 // The path is constructed purely from vg/lv name metadata — no kernel or
 // filesystem calls are made.
@@ -680,11 +554,12 @@ func (b *Backend) createThinLV(
 ) error {
 	// Build lvcreate arguments for a thin-provisioned LV.
 	// Argument order: flags first, then the positional VG argument last.
-	args := []string{
-		"--virtualsize", strconv.FormatInt(sizeBytes, 10) + "b",
+	args := make([]string, 0, 6+len(extraFlags)+1)
+	args = append(args,
+		"--virtualsize", strconv.FormatInt(sizeBytes, 10)+"b",
 		"--thinpool", thinPool,
 		"-n", lvName,
-	}
+	)
 	// Caller-supplied extra flags are appended before the VG so they can
 	// include additional --option value pairs without disrupting argument
 	// parsing.
@@ -756,12 +631,14 @@ func (b *Backend) Create(
 	// A nil params or nil params.GetLvm() is valid — treated as no overrides.
 	lvmProto := params.GetLvm()
 	if lvmProto != nil {
-		if modeErr := validateProvisionModeString(lvmProto.GetProvisionMode()); modeErr != nil {
+		modeErr := validateProvisionModeString(lvmProto.GetProvisionMode())
+		if modeErr != nil {
 			return "", 0, fmt.Errorf("lvm: create %q: %w", volumeID, modeErr)
 		}
 	}
 	lvmParams := ParseParams(lvmProto)
-	if validateErr := ValidateParams(lvmParams, b.vg, b.thinpool); validateErr != nil {
+	validateErr := ValidateParams(lvmParams, b.vg, b.thinpool)
+	if validateErr != nil {
 		return "", 0, fmt.Errorf("lvm: create %q: %w", volumeID, validateErr)
 	}
 
@@ -796,15 +673,17 @@ func (b *Backend) Create(
 	if effectiveThinPool != "" {
 		// Thin-provisioned LV: delegate to the dedicated helper which uses
 		// lvcreate --virtualsize and handles its own idempotency guard.
-		if createErr := b.createThinLV(ctx, b.vg, lv, effectiveThinPool, capacityBytes, lvmParams.ExtraFlags); createErr != nil {
+		createErr := b.createThinLV(ctx, b.vg, lv, effectiveThinPool, capacityBytes, lvmParams.ExtraFlags)
+		if createErr != nil {
 			return "", 0, createErr
 		}
 	} else {
 		// Linear LV: lvcreate -n <lv> -L <size>b [extraFlags...] <vg>
-		args := []string{
+		args := make([]string, 0, 4+len(lvmParams.ExtraFlags)+1)
+		args = append(args,
 			"-n", lv,
-			"-L", strconv.FormatInt(capacityBytes, 10) + "b",
-		}
+			"-L", strconv.FormatInt(capacityBytes, 10)+"b",
+		)
 		// Append any caller-supplied extra flags before the VG positional argument.
 		args = append(args, lvmParams.ExtraFlags...)
 		// VG is always the final positional argument to lvcreate.

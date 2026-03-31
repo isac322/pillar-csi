@@ -64,8 +64,8 @@ func SetBackendExec(
 // directly — verifying argument construction, error handling, and idempotency
 // logic — without going through the full Create code path.
 func CreateThinLV(
-	b *Backend,
 	ctx context.Context,
+	b *Backend,
 	vg, lvName, thinPool string,
 	sizeBytes int64,
 	extraFlags []string,
