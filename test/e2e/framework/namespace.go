@@ -134,14 +134,14 @@ func DeleteNamespace(ctx context.Context, c client.Client, name string, opts ...
 // This function does not issue a Delete call — use DeleteNamespace or
 // EnsureNamespaceGone to trigger deletion first.
 //
-// Pass 0 for timeout to use DefaultWaitTimeout.
+// Pass 0 for timeout to use WaitTimeout.
 func WaitForNamespaceDeletion(ctx context.Context, c client.Client, name string, timeout time.Duration) error {
 	if timeout == 0 {
-		timeout = DefaultWaitTimeout
+		timeout = WaitTimeout
 	}
 
 	ns := &corev1.Namespace{}
-	err := wait.PollUntilContextTimeout(ctx, DefaultPollInterval, timeout, true,
+	err := wait.PollUntilContextTimeout(ctx, PollInterval, timeout, true,
 		func(ctx context.Context) (bool, error) {
 			if fetchErr := c.Get(ctx, client.ObjectKey{Name: name}, ns); fetchErr != nil {
 				if errors.IsNotFound(fetchErr) {
@@ -160,7 +160,7 @@ func WaitForNamespaceDeletion(ctx context.Context, c client.Client, name string,
 
 // EnsureNamespaceGone deletes the Namespace (if present) with a zero grace
 // period and then blocks until it is fully removed from the API server.
-// Pass 0 for timeout to use DefaultWaitTimeout.
+// Pass 0 for timeout to use WaitTimeout.
 //
 // Suitable for AfterEach and DeferCleanup blocks where the Namespace may or
 // may not exist at cleanup time.  Deleting the Namespace cascades to all

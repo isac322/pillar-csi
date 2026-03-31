@@ -22,6 +22,8 @@ package framework
 import (
 	"context"
 	"fmt"
+	"os"
+	"strconv"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -32,16 +34,33 @@ import (
 	v1alpha1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
 )
 
-const (
-	// DefaultPollInterval is the time between successive polls in all Wait*
-	// helpers when no interval is specified explicitly.  500 ms provides a
-	// good balance between responsiveness (conditions are often satisfied in
-	// < 1 s) and API-server load.
-	DefaultPollInterval = 500 * time.Millisecond
-
-	// DefaultWaitTimeout is substituted when a caller passes timeout == 0.
-	DefaultWaitTimeout = 90 * time.Second
+// PollInterval and WaitTimeout are the active values used by all Wait*
+// helpers.  They default to conservative values suitable for any environment
+// and can be overridden via E2E_POLL_INTERVAL_MS and E2E_WAIT_TIMEOUT_S
+// environment variables for faster feedback on fast machines.
+//
+// These values live in test code only (behind the e2e build tag) and have
+// zero effect on production binaries.
+var (
+	PollInterval = initPollInterval()
+	WaitTimeout  = initWaitTimeout()
 )
+
+func initPollInterval() time.Duration {
+	ms, err := strconv.Atoi(os.Getenv("E2E_POLL_INTERVAL_MS"))
+	if err == nil && ms > 0 {
+		return time.Duration(ms) * time.Millisecond
+	}
+	return 500 * time.Millisecond
+}
+
+func initWaitTimeout() time.Duration {
+	s, err := strconv.Atoi(os.Getenv("E2E_WAIT_TIMEOUT_S"))
+	if err == nil && s > 0 {
+		return time.Duration(s) * time.Second
+	}
+	return 90 * time.Second
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // WaitForCondition
@@ -54,7 +73,7 @@ const (
 // Parameters:
 //   - condType   – the Condition.Type string, e.g. "Ready", "AgentConnected"
 //   - wantStatus – desired metav1.ConditionStatus ("True", "False", "Unknown")
-//   - timeout    – maximum wait duration; pass 0 to use DefaultWaitTimeout
+//   - timeout    – maximum wait duration; pass 0 to use WaitTimeout
 //
 // obj is updated in-place with the latest server state on every poll cycle.
 // On success the caller can inspect obj.Status to read the final state.
@@ -71,13 +90,13 @@ func WaitForCondition(
 	timeout time.Duration,
 ) error {
 	if timeout == 0 {
-		timeout = DefaultWaitTimeout
+		timeout = WaitTimeout
 	}
 
 	key := client.ObjectKeyFromObject(obj)
 	var lastMsg string
 
-	err := wait.PollUntilContextTimeout(ctx, DefaultPollInterval, timeout, true,
+	err := wait.PollUntilContextTimeout(ctx, PollInterval, timeout, true,
 		func(ctx context.Context) (bool, error) {
 			if fetchErr := c.Get(ctx, key, obj); fetchErr != nil {
 				if errors.IsNotFound(fetchErr) {
@@ -150,12 +169,12 @@ func WaitForDeletion(
 	timeout time.Duration,
 ) error {
 	if timeout == 0 {
-		timeout = DefaultWaitTimeout
+		timeout = WaitTimeout
 	}
 
 	key := client.ObjectKeyFromObject(obj)
 
-	err := wait.PollUntilContextTimeout(ctx, DefaultPollInterval, timeout, true,
+	err := wait.PollUntilContextTimeout(ctx, PollInterval, timeout, true,
 		func(ctx context.Context) (bool, error) {
 			if fetchErr := c.Get(ctx, key, obj); fetchErr != nil {
 				if errors.IsNotFound(fetchErr) {
@@ -205,12 +224,12 @@ func WaitForField[T client.Object](
 	timeout time.Duration,
 ) error {
 	if timeout == 0 {
-		timeout = DefaultWaitTimeout
+		timeout = WaitTimeout
 	}
 
 	key := client.ObjectKeyFromObject(obj)
 
-	err := wait.PollUntilContextTimeout(ctx, DefaultPollInterval, timeout, true,
+	err := wait.PollUntilContextTimeout(ctx, PollInterval, timeout, true,
 		func(ctx context.Context) (bool, error) {
 			if fetchErr := c.Get(ctx, key, obj); fetchErr != nil {
 				if errors.IsNotFound(fetchErr) {

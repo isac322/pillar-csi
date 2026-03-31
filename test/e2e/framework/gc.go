@@ -100,19 +100,19 @@ type ResourceTracker struct {
 	cleanupTimeout time.Duration
 }
 
-// NewResourceTracker returns a ResourceTracker with DefaultWaitTimeout as the
+// NewResourceTracker returns a ResourceTracker with WaitTimeout as the
 // per-resource cleanup timeout.
 func NewResourceTracker() *ResourceTracker {
 	return &ResourceTracker{
-		cleanupTimeout: DefaultWaitTimeout,
+		cleanupTimeout: WaitTimeout,
 	}
 }
 
 // SetCleanupTimeout overrides the per-resource deletion wait timeout used by
-// Cleanup.  Pass 0 to restore DefaultWaitTimeout.
+// Cleanup.  Pass 0 to restore WaitTimeout.
 func (rt *ResourceTracker) SetCleanupTimeout(d time.Duration) {
 	if d == 0 {
-		rt.cleanupTimeout = DefaultWaitTimeout
+		rt.cleanupTimeout = WaitTimeout
 		return
 	}
 	rt.cleanupTimeout = d

@@ -80,7 +80,7 @@ func Delete(ctx context.Context, c client.Client, obj client.Object, opts ...cli
 // function returns immediately.
 //
 // The timeout applies to the wait phase only; the initial Delete call is
-// not bounded.  Pass 0 to use DefaultWaitTimeout.
+// not bounded.  Pass 0 to use WaitTimeout.
 func EnsureGone(ctx context.Context, c client.Client, obj client.Object, timeout time.Duration) error {
 	if err := Delete(ctx, c, obj, client.GracePeriodSeconds(0)); err != nil {
 		return err
