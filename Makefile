@@ -131,27 +131,29 @@ E2E_GO_FLAGS = -tags=e2e ./test/e2e/ -v -timeout=$(E2E_TIMEOUT) $(if $(E2E_RUN),
 #   make test-e2e-internal E2E_RUN=ZFS    # run only ZFS specs
 #
 # test-e2e runs the full e2e suite in BOTH internal-agent and external-agent
-# modes sequentially.  TestMain always creates a fresh Kind cluster for each
-# mode and tears it down unconditionally at the end, guaranteeing no state
-# leakage between the two runs.
+# modes sequentially, reusing a single Kind cluster across both runs.
 #
-#   Internal-agent mode (first):
-#     The pillar-agent runs as a DaemonSet inside the Kind cluster.
-#     All internal-agent specs execute; external-agent specs are skipped.
-#     Both ZFS and LVM backends are registered and tested sequentially.
+# The first run (internal-agent) creates the Kind cluster if it doesn't
+# already exist, builds and loads images, and sets up storage pools.
+# Teardown only uninstalls the Helm chart — the cluster, images, and
+# storage pools are preserved.
 #
-#   External-agent mode (second):
-#     TestMain starts a Docker container running the agent image before tests.
-#     All external-agent specs execute; internal-agent specs are skipped.
+# The second run (external-agent) reuses the existing cluster, skips image
+# builds (images already loaded on Kind nodes), and only reinstalls the
+# Helm chart with the external-agent overlay.  This saves ~130s vs
+# creating a fresh cluster.
 #
-# To run a single mode, use test-e2e-internal or test-e2e-external directly.
-# To filter which tests run within a mode, pass E2E_RUN=<pattern>.
+# The Kind cluster is deleted at the end by an explicit `kind delete cluster`.
+# For iterative development, run test-e2e-internal or test-e2e-external
+# directly — the cluster stays alive between runs.
 .PHONY: test-e2e
 test-e2e: manifests generate fmt vet ## Run e2e tests in both internal-agent and external-agent modes (sequential).
 	@echo "=== e2e: internal-agent mode (ZFS + LVM backends, sequential) ==="
 	$(E2E_COMMON_ENV) go test $(E2E_GO_FLAGS)
 	@echo "=== e2e: external-agent mode (ZFS + LVM backends, sequential) ==="
 	$(E2E_COMMON_ENV) E2E_LAUNCH_EXTERNAL_AGENT=true go test $(E2E_GO_FLAGS)
+	@echo "=== e2e: cleaning up Kind cluster ==="
+	-kind delete cluster --name $(KIND_CLUSTER)
 
 # test-e2e-internal runs only the internal-agent (DaemonSet) mode e2e tests.
 # The pillar-agent runs as a DaemonSet inside the Kind cluster.

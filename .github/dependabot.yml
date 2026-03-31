@@ -15,7 +15,7 @@ updates:
           - "k8s.io/*"
           - "sigs.k8s.io/controller-runtime"
 
-  # Dockerfile base images (Dockerfile, Dockerfile.agent, Dockerfile.node)
+  # Dockerfile base images (unified multi-target Dockerfile)
   - package-ecosystem: docker
     directory: /
     schedule:

@@ -81,9 +81,9 @@ jobs:
 
       # ── install tooling ────────────────────────────────────────────────────
       # install_only=true: lay down the kind binary without creating a cluster.
-      # TestMain in test/e2e/setup_test.go owns the full cluster lifecycle
-      # (create → build images → helm install → run tests → helm uninstall →
-      # delete cluster) so no cluster is created here.
+      # TestMain in test/e2e/setup_test.go owns cluster lifecycle (create if
+      # missing, reuse if healthy, build images, helm install, run tests).
+      # Cluster deletion is handled by `make test-e2e` at the end.
       - name: Install Kind ${{ env.KIND_VERSION }}
         uses: helm/kind-action@v1
         with:
@@ -158,7 +158,7 @@ jobs:
       # creation.  Two categories:
       #
       # 1. Dockerfile base images — alpine:3.21 and golang:1.26-alpine3.23 are
-      #    the FROM stages in Dockerfile, Dockerfile.agent, and Dockerfile.node.
+      #    the FROM stages in the unified multi-target Dockerfile.
       #    Pre-pulling them here means "docker build" finds them in the local
       #    cache and never contacts Docker Hub, avoiding HTTP 429 rate-limit
       #    and HTTP 401 auth errors for anonymous runners.
@@ -168,15 +168,12 @@ jobs:
       #    pods start without hitting registry rate-limits at runtime.
       - name: Pre-pull Docker Hub base images (Dockerfile stages)
         run: |
-          # Runtime base used by Dockerfile.agent and Dockerfile.node.
-          # Pull by the same digest that is pinned in the Dockerfiles so the
-          # layer cache is warm when "docker build" resolves the FROM line.
+          # Runtime base used by agent and node targets in the unified Dockerfile.
           docker pull alpine:3.21@sha256:56fa17d2a7e7f168a043a2712e63aed1f8543aeafdcee47c58dcffe38ed51099
-          # Re-tag to the plain tag as well so the build stage resolves it.
           docker tag \
             alpine:3.21@sha256:56fa17d2a7e7f168a043a2712e63aed1f8543aeafdcee47c58dcffe38ed51099 \
             alpine:3.21
-          # Builder stage used by all three Dockerfiles.
+          # Shared builder stage used by all three targets.
           docker pull golang:1.26-alpine3.23
 
       - name: Pre-pull third-party images
@@ -189,18 +186,9 @@ jobs:
           docker pull registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.13.0
 
       # ── run tests ─────────────────────────────────────────────────────────
-      # make test-e2e is the single entry point for the full e2e lifecycle.
-      # TestMain (test/e2e/setup_test.go) creates the Kind cluster, builds and
-      # loads the container images, installs the Helm chart, runs all tests,
-      # and tears everything down — no external scripts required.
-      #
-      # ZFS + LVM orchestration: both backends run in the SAME cluster via
-      # a single `go test` invocation (sequential, NOT parallel).  See the
-      # Makefile comment on test-e2e for the full rationale.  Briefly:
-      # ZFS and LVM share the storage worker node, the agent DaemonSet pod,
-      # and the NVMe-oF protocol stack — running them in parallel risks
-      # configfs conflicts.  Ginkgo's default sequential execution handles
-      # all ordering guarantees automatically.
+      # make test-e2e runs internal-agent and external-agent modes
+      # sequentially, reusing the same Kind cluster across both runs.
+      # The cluster is created once, and deleted at the end by the Makefile.
       - name: Run e2e tests (ZFS + LVM, sequential)
         run: |
           go mod tidy
@@ -233,9 +221,9 @@ jobs:
           cache-dir: buildkit-cache
           skip-extraction: ${{ steps.cache.outputs.cache-hit }}
 
-      - name: Build for all platforms
-        uses: docker/build-push-action@v7
+      - name: Build all images for all platforms
+        uses: docker/bake-action@v5
         with:
-          context: .
-          push: false
-          platforms: linux/amd64,linux/arm64,linux/arm/v7,linux/s390x,linux/ppc64le,linux/riscv64
+          files: docker-bake.hcl
+          set: |
+            *.platform=linux/amd64,linux/arm64,linux/arm/v7,linux/s390x,linux/ppc64le,linux/riscv64
