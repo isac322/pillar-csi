@@ -623,26 +623,9 @@ rmdir  "$NVMET/ports/$PORTID" 2>/dev/null || true
 						"current status: %+v", updated.Status)
 
 				wantCap := resource.MustParse("2Gi")
-				// Also log PVC conditions and PV capacity for diagnostics.
-				condStr := ""
-				for _, c := range updated.Status.Conditions {
-					condStr += fmt.Sprintf(" %s=%s", c.Type, c.Status)
-					if c.Message != "" {
-						condStr += fmt.Sprintf("(%s)", c.Message)
-					}
-				}
-				pvCap := ""
-				if updated.Spec.VolumeName != "" {
-					pv := &corev1.PersistentVolume{}
-					if pvErr := k8sClient.Get(ctx, client.ObjectKey{Name: updated.Spec.VolumeName}, pv); pvErr == nil {
-						if cap, ok := pv.Spec.Capacity[corev1.ResourceStorage]; ok {
-							pvCap = cap.String()
-						}
-					}
-				}
 				_, _ = fmt.Fprintf(GinkgoWriter,
-					"[expand-wait] PVC status.capacity=%s PV.capacity=%s conditions=[%s]\n",
-					actualCap.String(), pvCap, strings.TrimSpace(condStr))
+					"[expand-wait] PVC status.capacity.storage=%s (want >= %s)\n",
+					actualCap.String(), wantCap.String())
 
 				g.Expect(actualCap.Cmp(wantCap)).To(BeNumerically(">=", 0),
 					"PVC status.capacity.storage must be >= 2Gi after expansion "+

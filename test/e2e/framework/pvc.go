@@ -54,13 +54,11 @@ package framework
 import (
 	"context"
 	"fmt"
-	"os"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
-	"k8s.io/apimachinery/pkg/fields"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -289,8 +287,6 @@ func WaitForPVCPhase(
 		},
 	)
 	if err != nil {
-		// Dump PVC events to help diagnose why provisioning didn't happen.
-		dumpPVCEvents(ctx, c, key)
 		return fmt.Errorf(
 			"WaitForPVCPhase %q/%q: want phase=%s, last observed phase=%s: %w",
 			key.Namespace, key.Name, wantPhase, lastPhase, err,
@@ -299,34 +295,6 @@ func WaitForPVCPhase(
 	return nil
 }
 
-// dumpPVCEvents prints Kubernetes events for the PVC to stdout for diagnostics.
-func dumpPVCEvents(ctx context.Context, c client.Client, key client.ObjectKey) {
-	evList := &corev1.EventList{}
-	listOpts := &client.ListOptions{
-		Namespace: key.Namespace,
-		FieldSelector: fields.SelectorFromSet(fields.Set{
-			"involvedObject.name": key.Name,
-			"involvedObject.kind": "PersistentVolumeClaim",
-		}),
-	}
-	diagCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if listErr := c.List(diagCtx, evList, listOpts); listErr != nil {
-		fmt.Fprintf(os.Stdout, "  [diag] failed to list events for PVC %s/%s: %v\n", key.Namespace, key.Name, listErr)
-		return
-	}
-	if len(evList.Items) == 0 {
-		fmt.Fprintf(os.Stdout, "  [diag] no events found for PVC %s/%s\n", key.Namespace, key.Name)
-		return
-	}
-	fmt.Fprintf(os.Stdout, "  [diag] events for PVC %s/%s (%d events):\n", key.Namespace, key.Name, len(evList.Items))
-	for i := range evList.Items {
-		ev := &evList.Items[i]
-		fmt.Fprintf(os.Stdout, "    %s %s/%s: %s (count=%d, age=%s)\n",
-			ev.Reason, ev.InvolvedObject.Kind, ev.InvolvedObject.Name,
-			ev.Message, ev.Count, time.Since(ev.LastTimestamp.Time).Round(time.Second))
-	}
-}
 
 // waitForPVCDeletion polls until pvc is fully removed from the API server.
 func waitForPVCDeletion(
