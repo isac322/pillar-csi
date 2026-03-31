@@ -44,7 +44,7 @@
 - PRD: `docs/PRD.md`
 
 <!-- ooo:START -->
-<!-- ooo:VERSION:0.14.0 -->
+<!-- ooo:VERSION:0.26.6 -->
 # Ouroboros — Specification-First AI Development
 
 > Before telling AI what to build, define what should be built.
