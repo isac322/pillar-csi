@@ -22,6 +22,7 @@ import (
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	ctrl "sigs.k8s.io/controller-runtime"
 
 	agentv1 "github.com/bhyoo/pillar-csi/gen/go/pillar_csi/agent/v1"
 	"github.com/bhyoo/pillar-csi/internal/agent/backend"
@@ -110,7 +111,15 @@ func (s *Server) ExpandVolume(
 		NamespaceID:  1,
 	}
 	// Best-effort: namespace may not exist if the volume is not exported.
-	_ = target.ResizeNamespace() //nolint:errcheck // non-fatal; initiator rescans on reconnect
+	resizeErr := target.ResizeNamespace()
+	if resizeErr != nil {
+		ctrl.Log.WithName("agent").WithName("volume").Error(
+			resizeErr,
+			"ExpandVolume namespace resize failed after backend expansion; continuing",
+			"volumeID", req.GetVolumeId(),
+			"nqn", nqn,
+		)
+	}
 
 	return &agentv1.ExpandVolumeResponse{CapacityBytes: allocated}, nil
 }

@@ -40,6 +40,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 )
 
 const (
@@ -146,6 +148,21 @@ func (t *NvmetTarget) portSubsystemLink(portID uint32) string {
 // error-message formatting.  They are unexported because callers outside this
 // package never drive configfs directly.
 
+// writeFileLocks serializes writes to the same configfs path within this
+// process so immediate read-back verification observes the just-written value
+// instead of a sibling goroutine's concurrent truncate/write cycle on regular
+// test filesystems.
+var writeFileLocks sync.Map
+
+func writeFileLock(path string) *sync.Mutex {
+	actual, _ := writeFileLocks.LoadOrStore(path, &sync.Mutex{})
+	lock, ok := actual.(*sync.Mutex)
+	if !ok {
+		panic(fmt.Sprintf("writeFileLocks stored non-mutex for %q", path))
+	}
+	return lock
+}
+
 // writeFile writes content to the configfs pseudo-file at path, creating or
 // truncating it.
 // Configfs pseudo-files are single-valued: each write replaces the previous value.
@@ -153,10 +170,34 @@ func (t *NvmetTarget) portSubsystemLink(portID uint32) string {
 // The function is intentionally simple — it does not retry — because configfs
 // operations are synchronous kernel calls and transient errors are not expected.
 func writeFile(path, content string) error {
+	lock := writeFileLock(path)
+	lock.Lock()
+	defer lock.Unlock()
+
 	err := os.WriteFile(path, []byte(content), 0o600)
 	if err != nil {
 		return fmt.Errorf("configfs write %q = %q: %w", path, content, err)
 	}
+
+	//nolint:gosec // G304: path is constructed from a configfs root under controller control.
+	readback, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("configfs verify %q after write %q: %w", path, content, err)
+	}
+
+	want := strings.TrimSpace(content)
+	got := strings.TrimSpace(string(readback))
+	if got != want {
+		return fmt.Errorf(
+			"configfs verify %q after write %q: want %q, got %q (raw readback %q)",
+			path,
+			content,
+			want,
+			got,
+			string(readback),
+		)
+	}
+
 	return nil
 }
 
