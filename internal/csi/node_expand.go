@@ -183,8 +183,8 @@ func (*execResizer) ResizeFS(mountPath, fsType string) error {
 // deviceFromMount helper
 // ─────────────────────────────────────────────────────────────────────────────.
 
-// findExecutable returns the first existing path from candidates, falling back
-// to the base name (which relies on $PATH) if none of the candidates exist.
+// findExecutable locates filesystem utilities that may live in non-standard
+// paths inside minimal container images (e.g. /usr/sbin vs /sbin in Alpine).
 func findExecutable(baseName string, candidates ...string) string {
 	for _, p := range candidates {
 		_, statErr := os.Stat(p)

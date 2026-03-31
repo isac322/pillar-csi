@@ -101,13 +101,8 @@ func (s *Server) ExpandVolume(
 		SubsystemNQN: nqn,
 		NamespaceID:  1,
 	}
-	resizeErr := target.ResizeNamespace()
-	if resizeErr != nil {
-		// Log but do not fail: the backend expansion succeeded; the
-		// initiator can still rescan the namespace manually or on
-		// reconnect.
-		_ = resizeErr
-	}
+	// Best-effort: namespace may not exist if the volume is not exported.
+	_ = target.ResizeNamespace() //nolint:errcheck // non-fatal; initiator rescans on reconnect
 
 	return &agentv1.ExpandVolumeResponse{CapacityBytes: allocated}, nil
 }
