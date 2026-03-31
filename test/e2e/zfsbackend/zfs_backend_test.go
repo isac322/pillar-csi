@@ -160,7 +160,7 @@ func TestMain(m *testing.M) {
 		"zfsbackend: creating ZFS pool %q (image %s, size %s)\n",
 		zfsPool, zfsImagePath, zfsImageSize)
 	loopDev, poolErr := framework.CreateLoopbackZFSPool(ctx, hostExecHelper,
-		zfsPool, zfsImagePath, zfsImageSize)
+		zfsPool, zfsImagePath, zfsImageSize, false)
 	if poolErr != nil {
 		fmt.Fprintf(os.Stderr, "zfsbackend: create ZFS pool %q: %v\n", zfsPool, poolErr)
 		return

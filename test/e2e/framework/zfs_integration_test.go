@@ -86,7 +86,7 @@ func TestCreateLoopbackZFSPool_Integration(t *testing.T) {
 	t.Logf("creating ZFS pool %q backed by %s (%s) on %s",
 		poolName, imagePath, imageSize, dockerHost(t))
 
-	loopDev, err := framework.CreateLoopbackZFSPool(ctx, h, poolName, imagePath, imageSize)
+	loopDev, err := framework.CreateLoopbackZFSPool(ctx, h, poolName, imagePath, imageSize, false)
 	if err != nil {
 		t.Fatalf("CreateLoopbackZFSPool: %v", err)
 	}

@@ -718,6 +718,11 @@ func ensureStorageNodeLabel() error {
 	if workerNode == "" {
 		return fmt.Errorf("no worker node found in cluster %q", testEnv.ClusterName)
 	}
+	// Export the storage node name so that iatResolveStorageNode (used by
+	// both ZFS and LVM tests) can resolve it without relying on the label,
+	// which the controller removes when PillarTargets are deleted between
+	// test groups.
+	os.Setenv("PILLAR_E2E_STORAGE_NODE", workerNode)
 	return runCmd("kubectl", "label", "node", workerNode,
 		"pillar-csi.bhyoo.com/storage-node=true", "--overwrite")
 }
@@ -1378,7 +1383,8 @@ func setupZFSPool() error {
 		testEnv.ZFSPoolName, testEnv.DockerHost,
 		testEnv.ZFSImagePath, testEnv.ZFSImageSize)
 	loopDev, err := framework.CreateLoopbackZFSPool(ctx, h,
-		testEnv.ZFSPoolName, testEnv.ZFSImagePath, testEnv.ZFSImageSize)
+		testEnv.ZFSPoolName, testEnv.ZFSImagePath, testEnv.ZFSImageSize,
+		testEnv.clusterReused)
 	if err != nil {
 		return fmt.Errorf(
 			"create loopback ZFS pool %q (image %s, size %s): %w\n"+
@@ -1441,6 +1447,7 @@ func setupLVMVG() error {
 		testEnv.LVMThinPoolName,
 		testEnv.LVMImagePath,
 		testEnv.LVMImageSize,
+		testEnv.clusterReused,
 	); err != nil {
 		return fmt.Errorf(
 			"create loopback LVM VG %q in Kind worker %q: %w\n"+
@@ -1452,7 +1459,7 @@ func setupLVMVG() error {
 	// Create a privileged DockerHostExec for the storage worker container so
 	// that LVM e2e tests can run commands on the host (e.g. inspect device
 	// nodes, check NVMe block devices).  This mirrors setupZFSPool's pattern.
-	lvmH, hErr := framework.NewDockerHostExec(context.Background(), testEnv.DockerHost)
+	lvmH, hErr := framework.NewDockerHostExecNamed(context.Background(), testEnv.DockerHost, "pillar-csi-lvm-host-exec")
 	if hErr != nil {
 		fmt.Fprintf(os.Stderr,
 			"e2e setup: warning: could not create LVM host-exec helper: %v\n", hErr)

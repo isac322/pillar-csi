@@ -318,13 +318,18 @@ echo 1 > "$NVMET/subsystems/$NQN/attr_allow_any_host"
 mkdir -p "$NVMET/subsystems/$NQN/namespaces/1"
 echo "$DEVPATH" > "$NVMET/subsystems/$NQN/namespaces/1/device_path"
 echo 1 > "$NVMET/subsystems/$NQN/namespaces/1/enable"
-if [ ! -d "$NVMET/ports/$PORTID" ]; then
-  mkdir -p "$NVMET/ports/$PORTID"
-  echo tcp   > "$NVMET/ports/$PORTID/addr_trtype"
-  echo ipv4  > "$NVMET/ports/$PORTID/addr_adrfam"
-  echo 0.0.0.0 > "$NVMET/ports/$PORTID/addr_traddr"
-  echo "$TRSVCID" > "$NVMET/ports/$PORTID/addr_trsvcid"
+# Recreate the port to ensure the TCP listener is active.
+if [ -d "$NVMET/ports/$PORTID" ]; then
+  for sub in "$NVMET/ports/$PORTID/subsystems/"*; do
+    [ -L "$sub" ] && rm -f "$sub"
+  done
+  rmdir "$NVMET/ports/$PORTID" 2>/dev/null || true
 fi
+mkdir -p "$NVMET/ports/$PORTID"
+echo tcp   > "$NVMET/ports/$PORTID/addr_trtype"
+echo ipv4  > "$NVMET/ports/$PORTID/addr_adrfam"
+echo 0.0.0.0 > "$NVMET/ports/$PORTID/addr_traddr"
+echo "$TRSVCID" > "$NVMET/ports/$PORTID/addr_trsvcid"
 test -L "$NVMET/ports/$PORTID/subsystems/$NQN" || \
   ln -s "$NVMET/subsystems/$NQN" "$NVMET/ports/$PORTID/subsystems/$NQN"
 `, nvmNQN, nvmDevPath, nvmPort, nvmPort)
@@ -447,7 +452,7 @@ rmdir  "$NVMET/ports/$PORTID" 2>/dev/null || true
 					_ = framework.EnsureGone(dctx, k8sClient, pod, iatCleanupTimeout)
 				}
 				if pvc != nil {
-					_ = framework.EnsurePVCGone(dctx, k8sClient, pvc, iatCleanupTimeout)
+					_ = framework.EnsurePVCAndPVGone(dctx, k8sClient, pvc, iatCleanupTimeout)
 				}
 				for _, obj := range []client.Object{binding, protocol, pool, target} {
 					if obj == nil {
@@ -547,26 +552,22 @@ rmdir  "$NVMET/ports/$PORTID" 2>/dev/null || true
 			Expect(pod).NotTo(BeNil(),
 				"pod must have been created and reached Running in the previous spec")
 
-			By(fmt.Sprintf("exec into Pod %q/%q: df --output=size /data",
+			By(fmt.Sprintf("exec into Pod %q/%q: df -k /data",
 				testNS.Name, pod.Name))
 
 			// Poll until the exec succeeds (pod may still be initialising the mount).
 			var initialKiB int64
 			Eventually(func(g Gomega) {
+				// Use "df -k" (POSIX/BusyBox compatible) instead of
+				// "df --output=size" (GNU coreutils only).
 				out, execErr := captureOutput(
 					"kubectl", "exec",
 					"-n", testNS.Name, pod.Name,
-					"--", "df", "--output=size", "/data",
+					"--", "df", "-k", "/data",
 				)
 				g.Expect(execErr).NotTo(HaveOccurred(),
 					"kubectl exec df /data failed: %s", out)
-				// df --output=size prints a header "1K-blocks" then a numeric value.
-				lines := strings.Fields(strings.TrimSpace(out))
-				g.Expect(len(lines)).To(BeNumerically(">=", 2),
-					"df output must have at least header + data lines, got: %q", out)
-				kiB, parseErr := strconv.ParseInt(lines[len(lines)-1], 10, 64)
-				g.Expect(parseErr).NotTo(HaveOccurred(),
-					"parse df output %q as int: %v", lines[len(lines)-1], parseErr)
+				kiB := parseDfSizeKiB(g, out)
 				initialKiB = kiB
 			}, iatMountTimeout, 5*time.Second).Should(Succeed(),
 				"failed to read filesystem size inside Pod %q/%q",
@@ -622,9 +623,26 @@ rmdir  "$NVMET/ports/$PORTID" 2>/dev/null || true
 						"current status: %+v", updated.Status)
 
 				wantCap := resource.MustParse("2Gi")
+				// Also log PVC conditions and PV capacity for diagnostics.
+				condStr := ""
+				for _, c := range updated.Status.Conditions {
+					condStr += fmt.Sprintf(" %s=%s", c.Type, c.Status)
+					if c.Message != "" {
+						condStr += fmt.Sprintf("(%s)", c.Message)
+					}
+				}
+				pvCap := ""
+				if updated.Spec.VolumeName != "" {
+					pv := &corev1.PersistentVolume{}
+					if pvErr := k8sClient.Get(ctx, client.ObjectKey{Name: updated.Spec.VolumeName}, pv); pvErr == nil {
+						if cap, ok := pv.Spec.Capacity[corev1.ResourceStorage]; ok {
+							pvCap = cap.String()
+						}
+					}
+				}
 				_, _ = fmt.Fprintf(GinkgoWriter,
-					"[expand-wait] PVC status.capacity.storage=%s (want >= %s)\n",
-					actualCap.String(), wantCap.String())
+					"[expand-wait] PVC status.capacity=%s PV.capacity=%s conditions=[%s]\n",
+					actualCap.String(), pvCap, strings.TrimSpace(condStr))
 
 				g.Expect(actualCap.Cmp(wantCap)).To(BeNumerically(">=", 0),
 					"PVC status.capacity.storage must be >= 2Gi after expansion "+
@@ -664,17 +682,12 @@ rmdir  "$NVMET/ports/$PORTID" 2>/dev/null || true
 				out, execErr := captureOutput(
 					"kubectl", "exec",
 					"-n", testNS.Name, pod.Name,
-					"--", "df", "--output=size", "/data",
+					"--", "df", "-k", "/data",
 				)
 				g.Expect(execErr).NotTo(HaveOccurred(),
 					"kubectl exec df /data failed during expansion wait: %s", out)
 
-				lines := strings.Fields(strings.TrimSpace(out))
-				g.Expect(len(lines)).To(BeNumerically(">=", 2),
-					"df output must have at least header + data lines, got: %q", out)
-				kiB, parseErr := strconv.ParseInt(lines[len(lines)-1], 10, 64)
-				g.Expect(parseErr).NotTo(HaveOccurred(),
-					"parse df output %q as int: %v", lines[len(lines)-1], parseErr)
+				kiB := parseDfSizeKiB(g, out)
 
 				_, _ = fmt.Fprintf(GinkgoWriter,
 					"[resize-wait] filesystem size = %d KiB (want >= %d KiB)\n",
@@ -724,3 +737,24 @@ rmdir  "$NVMET/ports/$PORTID" 2>/dev/null || true
 
 	return true
 }()
+
+// parseDfSizeKiB extracts the total size in KiB from "df -k" output.
+// BusyBox df -k output format:
+//
+//	Filesystem           1K-blocks      Used Available Use% Mounted on
+//	/dev/nvme0n1           1038336     34716    987236   3% /data
+//
+// The function parses the second column (1K-blocks) of the data line.
+func parseDfSizeKiB(g Gomega, dfOutput string) int64 {
+	lines := strings.Split(strings.TrimSpace(dfOutput), "\n")
+	g.Expect(len(lines)).To(BeNumerically(">=", 2),
+		"df output must have at least header + data lines, got: %q", dfOutput)
+	// Parse the last data line (skip header).
+	fields := strings.Fields(lines[len(lines)-1])
+	g.Expect(len(fields)).To(BeNumerically(">=", 4),
+		"df data line must have at least 4 columns, got: %q", lines[len(lines)-1])
+	kiB, parseErr := strconv.ParseInt(fields[1], 10, 64)
+	g.Expect(parseErr).NotTo(HaveOccurred(),
+		"parse df 1K-blocks column %q as int: %v", fields[1], parseErr)
+	return kiB
+}

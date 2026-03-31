@@ -192,7 +192,7 @@ var _ = func() bool {
 			DeferCleanup(func(dctx SpecContext) {
 				By("ExternalAgentZFSExpansion: cleaning up PVC, CRs, and namespace")
 				if pvc != nil {
-					_ = framework.EnsurePVCGone(dctx, k8sClient, pvc, iatCleanupTimeout)
+					_ = framework.EnsurePVCAndPVGone(dctx, k8sClient, pvc, iatCleanupTimeout)
 				}
 				for _, obj := range []client.Object{binding, protocol, pool, target} {
 					if obj == nil {
@@ -587,13 +587,18 @@ while [ $_w -lt 30 ] && ! [ -b "$DEVPATH" ]; do
 done
 [ -b "$DEVPATH" ] || { echo "device $DEVPATH not found after 15s" >&2; exit 1; }
 echo 1 > "$NVMET/subsystems/$NQN/namespaces/1/enable"
-if [ ! -d "$NVMET/ports/$PORTID" ]; then
-  mkdir -p "$NVMET/ports/$PORTID"
-  echo tcp   > "$NVMET/ports/$PORTID/addr_trtype"
-  echo ipv4  > "$NVMET/ports/$PORTID/addr_adrfam"
-  echo 0.0.0.0 > "$NVMET/ports/$PORTID/addr_traddr"
-  echo "$TRSVCID" > "$NVMET/ports/$PORTID/addr_trsvcid"
+# Recreate the port to ensure the TCP listener is active.
+if [ -d "$NVMET/ports/$PORTID" ]; then
+  for sub in "$NVMET/ports/$PORTID/subsystems/"*; do
+    [ -L "$sub" ] && rm -f "$sub"
+  done
+  rmdir "$NVMET/ports/$PORTID" 2>/dev/null || true
 fi
+mkdir -p "$NVMET/ports/$PORTID"
+echo tcp   > "$NVMET/ports/$PORTID/addr_trtype"
+echo ipv4  > "$NVMET/ports/$PORTID/addr_adrfam"
+echo 0.0.0.0 > "$NVMET/ports/$PORTID/addr_traddr"
+echo "$TRSVCID" > "$NVMET/ports/$PORTID/addr_trsvcid"
 test -L "$NVMET/ports/$PORTID/subsystems/$NQN" || \
   ln -s "$NVMET/subsystems/$NQN" "$NVMET/ports/$PORTID/subsystems/$NQN"
 `, nvmNQN, nvmDevPath, nvmPort, nvmPort)
@@ -719,7 +724,7 @@ rmdir  "$NVMET/ports/$PORTID" 2>/dev/null || true
 					_ = framework.EnsureGone(dctx, k8sClient, pod, iatCleanupTimeout)
 				}
 				if pvc != nil {
-					_ = framework.EnsurePVCGone(dctx, k8sClient, pvc, iatCleanupTimeout)
+					_ = framework.EnsurePVCAndPVGone(dctx, k8sClient, pvc, iatCleanupTimeout)
 				}
 				for _, obj := range []client.Object{binding, protocol, pool, target} {
 					if obj == nil {

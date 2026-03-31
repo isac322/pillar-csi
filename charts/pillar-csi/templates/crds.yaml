@@ -1,14 +1,12 @@
 {{- if .Values.installCRDs }}
 ---
+---
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.19.0
-    helm.sh/resource-policy: keep
   name: pillarbindings.pillar-csi.pillar-csi.bhyoo.com
-  labels:
-    {{- include "pillar-csi.labels" . | nindent 4 }}
 spec:
   group: pillar-csi.pillar-csi.bhyoo.com
   names:
@@ -74,6 +72,25 @@ spec:
                   backend:
                     description: backend contains backend-specific parameter overrides.
                     properties:
+                      lvm:
+                        description: lvm overrides LVM-specific parameters; used when
+                          the pool backend is lvm-lv.
+                        properties:
+                          provisioningMode:
+                            allOf:
+                            - enum:
+                              - linear
+                              - thin
+                            - enum:
+                              - linear
+                              - thin
+                            description: |-
+                              provisioningMode overrides the LVM provisioning mode for this binding.
+                              Accepted values: "linear" (fully-allocated LV) or "thin"
+                              (thin-provisioned LV inside the backend's thin pool).
+                              When omitted, the PillarPool-level default is used.
+                            type: string
+                        type: object
                       zfs:
                         description: |-
                           zfs overrides ZFS-specific properties; used when the pool backend is
@@ -271,15 +288,13 @@ spec:
     subresources:
       status: {}
 ---
+---
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.19.0
-    helm.sh/resource-policy: keep
   name: pillarpools.pillar-csi.pillar-csi.bhyoo.com
-  labels:
-    {{- include "pillar-csi.labels" . | nindent 4 }}
 spec:
   group: pillar-csi.pillar-csi.bhyoo.com
   names:
@@ -339,6 +354,38 @@ spec:
                 description: backend describes the storage technology and pool to
                   use.
                 properties:
+                  lvm:
+                    description: lvm holds LVM-specific configuration; required when
+                      type is lvm-lv.
+                    properties:
+                      provisioningMode:
+                        default: linear
+                        description: |-
+                          provisioningMode controls whether new volumes are created as fully-
+                          allocated linear LVs or as thin-provisioned LVs inside the thinPool.
+                          Defaults to "linear"; set to "thin" together with a non-empty thinPool
+                          to enable thin provisioning.
+                        enum:
+                        - linear
+                        - thin
+                        type: string
+                      thinPool:
+                        description: |-
+                          thinPool is the name of the LVM thin pool LV within the volume group
+                          (e.g. "thin-pool-0").  When non-empty the backend operates in thin-
+                          provisioned mode; when empty it creates fully-allocated linear LVs.
+                          The thin pool must be pre-created before the agent starts.
+                        type: string
+                      volumeGroup:
+                        description: |-
+                          volumeGroup is the LVM Volume Group name that pillar-csi will create
+                          logical volumes in (e.g. "data-vg").  The VG must be pre-created on
+                          the node before the agent starts; the driver does not manage VG lifecycle.
+                        minLength: 1
+                        type: string
+                    required:
+                    - volumeGroup
+                    type: object
                   type:
                     description: type identifies the backend driver.
                     enum:
@@ -488,15 +535,13 @@ spec:
     subresources:
       status: {}
 ---
+---
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.19.0
-    helm.sh/resource-policy: keep
   name: pillarprotocols.pillar-csi.pillar-csi.bhyoo.com
-  labels:
-    {{- include "pillar-csi.labels" . | nindent 4 }}
 spec:
   group: pillar-csi.pillar-csi.bhyoo.com
   names:
@@ -565,10 +610,12 @@ spec:
                   iscsi.
                 properties:
                   acl:
-                    default: true
+                    default: false
                     description: |-
                       acl enables initiator IQN-based access control when true.
                       When false the target allows any initiator.
+                      Defaults to false so that e2e tests and simple deployments work
+                      without registering initiator IQNs.
                     type: boolean
                   loginTimeout:
                     description: |-
@@ -622,10 +669,12 @@ spec:
                   type is nvmeof-tcp.
                 properties:
                   acl:
-                    default: true
+                    default: false
                     description: |-
                       acl enables host NQN-based access control when true.
                       When false the subsystem uses allow_any_host.
+                      Defaults to false (allow_any_host) so that e2e tests and simple
+                      deployments work without registering initiator NQNs.
                     type: boolean
                   ctrlLossTmo:
                     description: |-
@@ -761,15 +810,13 @@ spec:
     subresources:
       status: {}
 ---
+---
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.19.0
-    helm.sh/resource-policy: keep
   name: pillartargets.pillar-csi.pillar-csi.bhyoo.com
-  labels:
-    {{- include "pillar-csi.labels" . | nindent 4 }}
 spec:
   group: pillar-csi.pillar-csi.bhyoo.com
   names:
@@ -906,7 +953,14 @@ spec:
 
                   Known condition types:
                   - "NodeExists"     – the referenced K8s Node is present in the cluster.
-                  - "AgentConnected" – the gRPC connection to the agent is healthy.
+                  - "AgentConnected" – the gRPC connection to the storage agent.
+                    The reason field distinguishes the authentication level:
+                      True  / "Authenticated"      – mTLS handshake succeeded; both sides verified.
+                      True  / "Dialed"             – TCP connection established; no mTLS in use.
+                      False / "TLSHandshakeFailed" – mTLS configured but handshake failed (cert error).
+                      False / "HealthCheckFailed"  – TCP-level or transport error.
+                      False / "AgentUnhealthy"     – agent reachable but reports degraded health.
+                      False / "DialerNotConfigured"– no gRPC dialer is wired (dev/test only).
                   - "Ready"          – all checks pass; the target is ready to serve pools.
                 items:
                   description: Condition contains details for one aspect of the current
@@ -1012,21 +1066,21 @@ spec:
     subresources:
       status: {}
 ---
+---
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.19.0
-    helm.sh/resource-policy: keep
   name: pillarvolumes.pillar-csi.pillar-csi.bhyoo.com
-  labels:
-    {{- include "pillar-csi.labels" . | nindent 4 }}
 spec:
   group: pillar-csi.pillar-csi.bhyoo.com
   names:
     kind: PillarVolume
     listKind: PillarVolumeList
     plural: pillarvolumes
+    shortNames:
+    - pv
     singular: pillarvolume
   scope: Cluster
   versions:
@@ -1051,13 +1105,30 @@ spec:
       openAPIV3Schema:
         description: |-
           PillarVolume tracks the lifecycle state of a single CSI volume provisioned
-          by pillar-csi.
+          by pillar-csi.  The controller creates a PillarVolume during CreateVolume,
+          updates it at each lifecycle stage, and deletes it during DeleteVolume.
+
+          The primary purpose of PillarVolume is to provide durable partial-failure
+          state tracking: if CreateVolume creates the backend zvol but then crashes
+          before ExportVolume returns, the PillarVolumePhaseCreatePartial phase is
+          already written to etcd, allowing the next CreateVolume call (or an
+          automated recovery controller) to skip the backend-creation step and retry
+          only the export.
         properties:
           apiVersion:
-            description: APIVersion defines the versioned schema of this representation of an object.
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
             type: string
           kind:
-            description: Kind is a string value representing the REST resource this object represents.
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
             type: string
           metadata:
             type: object
@@ -1065,20 +1136,38 @@ spec:
             description: spec holds the immutable volume identity and routing parameters.
             properties:
               agentVolumeID:
+                description: |-
+                  agentVolumeID is the volume identifier used in agent RPCs.  The format
+                  is "<pool>/<volume-name>" where pool is the storage pool name (e.g. ZFS
+                  pool name), or just "<volume-name>" for backends with no pool prefix.
                 minLength: 1
                 type: string
               backendType:
+                description: |-
+                  backendType is the storage backend driver string (e.g. "zfs-zvol",
+                  "lvm-lv").  Mirrors the pillar-csi.bhyoo.com/backend-type StorageClass
+                  parameter.
                 type: string
               capacityBytes:
+                description: capacityBytes is the requested volume size in bytes.
                 format: int64
                 minimum: 0
                 type: integer
               protocolType:
+                description: |-
+                  protocolType is the network storage protocol string (e.g. "nvmeof-tcp",
+                  "iscsi").  Mirrors the pillar-csi.bhyoo.com/protocol-type StorageClass
+                  parameter.
                 type: string
               targetRef:
+                description: targetRef is the name of the PillarTarget that hosts
+                  this volume.
                 minLength: 1
                 type: string
               volumeID:
+                description: |-
+                  volumeID is the CSI volume ID assigned by the controller.
+                  Format: <target-name>/<protocol-type>/<backend-type>/<agent-vol-id>
                 minLength: 1
                 type: string
             required:
@@ -1092,33 +1181,66 @@ spec:
             description: status reflects the mutable lifecycle state of the volume.
             properties:
               backendDevicePath:
+                description: |-
+                  backendDevicePath is the device path returned by agent.CreateVolume
+                  (e.g. "/dev/zvol/pool/pvc-abc123").  Persisted when the volume enters
+                  the CreatePartial phase so that a retry of CreateVolume can skip the
+                  backend-creation step and call agent.ExportVolume directly, using this
+                  stored path rather than re-querying the agent.
+                  Cleared when the volume reaches the Ready phase.
                 type: string
               conditions:
+                description: |-
+                  conditions represent the current observed state of the PillarVolume.
+
+                  Known condition types:
+                  - "BackendCreated"  – the backend storage resource exists on the agent.
+                  - "ExportCreated"   – the network export exists on the agent.
+                  - "Ready"           – both backend and export exist; volume is usable.
                 items:
-                  description: Condition contains details for one aspect of the current state of this API Resource.
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
                   properties:
                     lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
                       format: date-time
                       type: string
                     message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
                       maxLength: 32768
                       type: string
                     observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
                       format: int64
                       minimum: 0
                       type: integer
                     reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
                       maxLength: 1024
                       minLength: 1
                       pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
                       type: string
                     status:
+                      description: status of the condition, one of True, False, Unknown.
                       enum:
                       - "True"
                       - "False"
                       - Unknown
                       type: string
                     type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
                       maxLength: 316
                       pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
                       type: string
@@ -1134,37 +1256,82 @@ spec:
                 - type
                 x-kubernetes-list-type: map
               exportInfo:
+                description: |-
+                  exportInfo holds the network export parameters returned by ExportVolume.
+                  Populated when phase is Ready or later.  Used by DeleteVolume to
+                  unmount the export after a controller restart without re-querying the
+                  agent.
                 properties:
                   address:
+                    description: |-
+                      address is the IP address of the storage node (same as
+                      PillarTarget.Status.ResolvedAddress with the port stripped).
                     type: string
                   port:
+                    description: port is the TCP port on which the NVMe-oF or iSCSI
+                      target listens.
                     format: int32
                     type: integer
                   targetID:
+                    description: |-
+                      targetID is the NVMe Qualified Name (NQN) of the NVMe-oF subsystem, or
+                      the iSCSI Qualified Name (IQN) of the iSCSI target.
                     type: string
                   volumeRef:
+                    description: |-
+                      volumeRef is the protocol-level reference for this volume (e.g., the
+                      NVMe-oF subsystem name or the iSCSI target LUN identifier).
                     type: string
                 type: object
               partialFailure:
+                description: |-
+                  partialFailure is populated whenever the volume is in a partial-failure
+                  phase (CreatePartial, NodeStagePartial).  It records what succeeded and
+                  what failed so that the recovery controller can take the minimum
+                  necessary corrective action.  Cleared when the partial failure is
+                  resolved.
                 properties:
                   backendCreated:
+                    description: |-
+                      backendCreated is true when the backend storage resource (zvol, LVM LV,
+                      etc.) was successfully created before the failure occurred.  When false,
+                      DeleteVolume only needs to call UnexportVolume (idempotent no-op); when
+                      true, it must also call DeleteVolume on the agent to reclaim the storage.
                     type: boolean
                   exportCreated:
+                    description: |-
+                      exportCreated is true when the network export (NVMe-oF target, iSCSI
+                      target, NFS share) was successfully created before the failure.  When
+                      true, cleanup must call UnexportVolume before DeleteVolume.
                     type: boolean
                   failedAt:
+                    description: failedAt is the time when the partial failure was
+                      recorded.
                     format: date-time
                     type: string
                   failedOperation:
+                    description: |-
+                      failedOperation is the name of the CSI or agent-level operation that
+                      failed (e.g., "ExportVolume", "NodeStageMount").
                     type: string
                   message:
+                    description: |-
+                      message is a human-readable sentence describing what failed and how to
+                      recover.
                     type: string
                   reason:
+                    description: |-
+                      reason is a brief, machine-readable CamelCase word that describes the
+                      category of failure (e.g., "AgentRPCFailed", "MountFailed").
                     type: string
                 required:
                 - failedAt
                 - failedOperation
                 type: object
               phase:
+                description: |-
+                  phase is the current lifecycle phase of the volume.
+                  See PillarVolumePhase for the full state diagram.
                 enum:
                 - Provisioning
                 - CreatePartial

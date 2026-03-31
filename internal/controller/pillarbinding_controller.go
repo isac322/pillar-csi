@@ -506,10 +506,12 @@ func buildStorageClassParams(
 		}
 	}
 
-	// LVM backend parameters: populate the volume group name so the CSI
-	// controller can construct agent volume IDs and LvmVolumeParams.
+	// LVM backend parameters: overwrite the generic pool reference with the
+	// actual LVM Volume Group name so the CSI controller can construct agent
+	// volume IDs correctly (mirroring the ZFS pattern above).
 	if pool.Spec.Backend.LVM != nil {
 		if pool.Spec.Backend.LVM.VolumeGroup != "" {
+			params["pillar-csi.bhyoo.com/pool"] = pool.Spec.Backend.LVM.VolumeGroup
 			params["pillar-csi.bhyoo.com/lvm-vg"] = pool.Spec.Backend.LVM.VolumeGroup
 		}
 	}

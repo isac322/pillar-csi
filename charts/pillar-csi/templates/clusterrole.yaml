@@ -22,6 +22,15 @@ rules:
       - patch
       - update
       - watch
+  # Core: Pod access (csi-resizer needs to list pods for volume-in-use detection)
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+    verbs:
+      - get
+      - list
+      - watch
   # Core: PVC access (controller watches PVCs to reconcile PillarBinding lifecycle)
   - apiGroups:
       - ""

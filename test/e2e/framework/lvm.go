@@ -44,7 +44,9 @@ package framework
 //	    err := framework.SetupLoopbackLVMVG(ctx, "",
 //	        "pillar-csi-e2e-worker",
 //	        "e2e-vg", "e2e-thinpool",
-//	        "/tmp/e2e-lvm.img", "4G")
+//	        "/tmp/e2e-lvm.img", "4G",
+//	        false, // reuseIfHealthy
+//	    )
 //	    Expect(err).NotTo(HaveOccurred())
 //	})
 //
@@ -82,9 +84,14 @@ import (
 // On success the VG (and thin pool if thinPoolName is non-empty) are active and
 // ready for use.  On error a descriptive message is returned; partial resources
 // (loop device, image file) are cleaned up by the inline script's error handler.
+// SetupLoopbackLVMVG creates a loopback-backed LVM VG inside a Kind worker
+// container.  When reuseIfHealthy is true and the VG already exists with a
+// valid backing PV device, the VG is reused.  Otherwise any stale VG is
+// destroyed before creating a fresh one.
 func SetupLoopbackLVMVG(
 	ctx context.Context,
 	dockerHost, containerName, vgName, thinPoolName, imagePath, imageSize string,
+	reuseIfHealthy bool,
 ) error {
 	// Build thin-pool creation fragment (empty when not requested).
 	thinPoolSection := ""
@@ -167,17 +174,48 @@ fi
 # Export DM_DISABLE_UDEV to tell libdevmapper to skip udev interaction.
 export DM_DISABLE_UDEV=1
 
-# ── Step 2: clean up stale state from a previous interrupted run ──────────
+# ── Step 2: reuse existing healthy VG or clean up stale state ────────────
 if "${LVM_BIN}vgdisplay" "$VG" >/dev/null 2>&1; then
-    echo "Cleaning up stale VG ${VG} from a previous run..."
+    # Activate the VG and verify that its backing PV device is accessible.
+    # A VG whose underlying loop device was detached (e.g. after Kind cluster
+    # deletion) still appears in vgdisplay but cannot service I/O.
+    "${LVM_BIN}vgchange" -ay "$VG" 2>/dev/null || true
+    dmsetup mknodes 2>/dev/null || true
+    PV_DEV=$("${LVM_BIN}pvs" --noheadings -o pv_name -S "vg_name=$VG" 2>/dev/null | tr -d ' ')
+    if %s && [ -n "$PV_DEV" ] && [ -b "$PV_DEV" ] && [ -f "$IMG" ] && \
+       "${LVM_BIN}vgs" --noheadings -o vg_name "$VG" >/dev/null 2>&1; then
+        echo "VG ${VG} already exists and is healthy (PV=${PV_DEV}) — reusing"
+        echo "SUCCESS: LVM VG '${VG}' reused (existing)"
+        exit 0
+    fi
+    # VG exists but PV device is gone or VG is unhealthy — destroy and recreate.
+    echo "VG ${VG} exists but is stale (PV=${PV_DEV:-unknown}) — cleaning up..."
+    # Remove all LVs, then VG, then detach PV loop device.
+    for LV in $("${LVM_BIN}lvs" --noheadings -o lv_name "$VG" 2>/dev/null | tr -d ' '); do
+        echo "  removing LV ${VG}/${LV}..."
+        "${LVM_BIN}lvremove" -f "${VG}/${LV}" 2>/dev/null || true
+    done
     "${LVM_BIN}vgchange" -an "$VG" 2>/dev/null || true
-    "${LVM_BIN}vgremove" -f  "$VG" 2>/dev/null || true
+    "${LVM_BIN}vgremove" -ff "$VG" 2>/dev/null || true
+    # Wipe VG metadata from the PV if still accessible.
+    if [ -n "$PV_DEV" ] && [ -b "$PV_DEV" ]; then
+        "${LVM_BIN}pvremove" -ff "$PV_DEV" 2>/dev/null || true
+    fi
+    if [ -n "$PV_DEV" ] && echo "$PV_DEV" | grep -q '^/dev/loop'; then
+        losetup -d "$PV_DEV" 2>/dev/null || true
+    fi
 fi
 if [ -f "$IMG" ]; then
     echo "Cleaning up stale image ${IMG}..."
     losetup -j "$IMG" 2>/dev/null | cut -d: -f1 | xargs -r losetup -d 2>/dev/null || true
     rm -f "$IMG"
 fi
+# Detach any stale loop devices pointing to old LVM image files from
+# previous host environments (visible via bind-mounted /dev).
+for dev in $(losetup -a 2>/dev/null | grep 'e2e-lvm' | cut -d: -f1); do
+    echo "Detaching stale loop device $dev (old LVM image)..."
+    losetup -d "$dev" 2>/dev/null || true
+done
 
 # ── Step 3: create sparse loopback image ──────────────────────────────────
 echo "Creating sparse image ${IMG} (${SIZE})..."
@@ -217,6 +255,7 @@ trap - ERR
 echo "SUCCESS: LVM VG '${VG}' ready (loop=${LOOP}, image=${IMG})"
 `,
 		shellQuote(imagePath), shellQuote(vgName), shellQuote(imageSize),
+		boolShell(reuseIfHealthy),
 		thinPoolSection,
 	)
 

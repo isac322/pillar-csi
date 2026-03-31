@@ -159,14 +159,16 @@ func (*execResizer) ResizeFS(mountPath, fsType string) error {
 		if err != nil {
 			return fmt.Errorf("find block device for mount %q: %w", mountPath, err)
 		}
-		out, cmdErr := exec.Command("resize2fs", device).CombinedOutput() //nolint:gosec // device is from /proc/mounts
+		resize2fs := findExecutable("resize2fs", "/usr/sbin/resize2fs", "/sbin/resize2fs")
+		out, cmdErr := exec.Command(resize2fs, device).CombinedOutput() //nolint:gosec // device is from /proc/mounts
 		if cmdErr != nil {
 			return fmt.Errorf("resize2fs %q: %w: %s", device, cmdErr, strings.TrimSpace(string(out)))
 		}
 		return nil
 
 	case xfsFsType:
-		out, cmdErr := exec.Command("xfs_growfs", mountPath).CombinedOutput() //nolint:gosec // mountPath validated by caller
+		xfsGrowfs := findExecutable("xfs_growfs", "/usr/sbin/xfs_growfs", "/sbin/xfs_growfs")
+		out, cmdErr := exec.Command(xfsGrowfs, mountPath).CombinedOutput() //nolint:gosec // mountPath validated by caller
 		if cmdErr != nil {
 			return fmt.Errorf("xfs_growfs %q: %w: %s", mountPath, cmdErr, strings.TrimSpace(string(out)))
 		}
@@ -180,6 +182,18 @@ func (*execResizer) ResizeFS(mountPath, fsType string) error {
 // ─────────────────────────────────────────────────────────────────────────────
 // deviceFromMount helper
 // ─────────────────────────────────────────────────────────────────────────────.
+
+// findExecutable returns the first existing path from candidates, falling back
+// to the base name (which relies on $PATH) if none of the candidates exist.
+func findExecutable(baseName string, candidates ...string) string {
+	for _, p := range candidates {
+		_, statErr := os.Stat(p)
+		if statErr == nil {
+			return p
+		}
+	}
+	return baseName
+}
 
 // deviceFromMount parses /proc/mounts and returns the block device (source)
 // that backs the given mountPath.  Returns an error if mountPath is not found.

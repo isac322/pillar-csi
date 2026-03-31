@@ -280,27 +280,34 @@ var _ = func() bool {
 				"testEnv.lvmHostExec must be non-nil — setupLVMVG() must have succeeded")
 
 			// Resolve the storage-worker node name.
-			storageNode, nodeErr := func() (string, error) {
+			// Prefer the env var (set by ensureStorageNodeLabel) since the
+			// controller may remove the label between test groups.
+			storageNode := os.Getenv("PILLAR_E2E_STORAGE_NODE")
+			if storageNode == "" {
 				out, err := captureOutput("kubectl", "get", "nodes",
 					"-l", "pillar-csi.bhyoo.com/storage-node=true",
 					"-o", "jsonpath={.items[0].metadata.name}")
-				if err != nil {
-					return "", fmt.Errorf("find storage worker node: %s: %w",
-						strings.TrimSpace(out), err)
-				}
-				n := strings.TrimSpace(out)
-				if n == "" {
-					return "", fmt.Errorf("no storage-worker node (label pillar-csi.bhyoo.com/storage-node=true) found")
-				}
-				return n, nil
-			}()
-			Expect(nodeErr).NotTo(HaveOccurred(), "must find a storage-worker node")
+				Expect(err).NotTo(HaveOccurred(),
+					"find storage worker node: %s", strings.TrimSpace(out))
+				storageNode = strings.TrimSpace(out)
+			}
+			Expect(storageNode).NotTo(BeEmpty(), "must find a storage-worker node")
 			By(fmt.Sprintf("storage-worker node: %s", storageNode))
 
-			// Find the agent pod running on the storage worker.
-			podName, podErr := findAgentPodOnStorageNode(storageNode, testEnv.HelmNamespace)
-			Expect(podErr).NotTo(HaveOccurred(),
-				"must find a running pillar-agent pod on the storage-worker node %q", storageNode)
+			// Re-apply the storage-node label (the controller removes it when
+			// PillarTargets from earlier test groups are deleted).
+			_ = runCmd("kubectl", "label", "node", storageNode,
+				"pillar-csi.bhyoo.com/storage-node=true", "--overwrite")
+
+			// Wait for the agent pod to be scheduled and running.
+			var podName string
+			Eventually(func() error {
+				var err error
+				podName, err = findAgentPodOnStorageNode(storageNode, testEnv.HelmNamespace)
+				return err
+			}, 60*time.Second, 2*time.Second).Should(Succeed(),
+				"must find a running pillar-agent pod on the storage-worker node %q "+
+					"(the DaemonSet may need time to reschedule after re-labelling)", storageNode)
 			By(fmt.Sprintf("agent pod: %s", podName))
 
 			// Start kubectl port-forward to the agent pod.
@@ -778,24 +785,29 @@ var _ = func() bool {
 			}
 
 			// Resolve the storage-worker node name.
-			storageNode, nodeErr := func() (string, error) {
+			storageNode := os.Getenv("PILLAR_E2E_STORAGE_NODE")
+			if storageNode == "" {
 				out, err := captureOutput("kubectl", "get", "nodes",
 					"-l", "pillar-csi.bhyoo.com/storage-node=true",
 					"-o", "jsonpath={.items[0].metadata.name}")
-				if err != nil {
-					return "", fmt.Errorf("find storage worker node: %s: %w",
-						strings.TrimSpace(out), err)
-				}
-				n := strings.TrimSpace(out)
-				if n == "" {
-					return "", fmt.Errorf("no storage-worker node found")
-				}
-				return n, nil
-			}()
-			Expect(nodeErr).NotTo(HaveOccurred(), "must find a storage-worker node")
+				Expect(err).NotTo(HaveOccurred(),
+					"find storage worker node: %s", strings.TrimSpace(out))
+				storageNode = strings.TrimSpace(out)
+			}
+			Expect(storageNode).NotTo(BeEmpty(), "must find a storage-worker node")
 
-			podName, podErr := findAgentPodOnStorageNode(storageNode, testEnv.HelmNamespace)
-			Expect(podErr).NotTo(HaveOccurred(),
+			// Re-apply storage-node label and wait for agent pod.
+			_ = runCmd("kubectl", "label", "node", storageNode,
+				"pillar-csi.bhyoo.com/storage-node=true", "--overwrite")
+
+			var podName string
+			Eventually(func() error {
+				var err error
+				podName, err = findAgentPodOnStorageNode(storageNode, testEnv.HelmNamespace)
+				return err
+			}, 60*time.Second, 2*time.Second).Should(Succeed(),
+				"must find a running pillar-agent pod on the storage-worker node %q", storageNode)
+			Expect(podName).NotTo(BeEmpty(),
 				"must find running agent pod on storage-worker node %q", storageNode)
 
 			// Use a different local port from LVMBackendCoreRPCs to avoid collisions.

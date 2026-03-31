@@ -48,6 +48,7 @@ import (
 	"context"
 	"net"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -57,7 +58,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	v1alpha1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
@@ -67,6 +70,12 @@ import (
 	"github.com/bhyoo/pillar-csi/internal/testutil/testcerts"
 	"github.com/bhyoo/pillar-csi/internal/tlscreds"
 )
+
+// initControllerRuntimeLogger suppresses the controller-runtime SetLogger
+// warning that fires when Reconcile is invoked outside a real manager.
+var initControllerRuntimeLogger = sync.OnceFunc(func() {
+	ctrl.SetLogger(zap.New(zap.UseDevMode(true)))
+})
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Test-only gRPC server double
@@ -149,6 +158,7 @@ func newMTLSControllerEnv(
 	dialer agentclient.Dialer,
 ) *mtlsControllerEnv {
 	t.Helper()
+	initControllerRuntimeLogger()
 
 	// Split "host:port" from the listener address so we can populate the
 	// ExternalSpec fields individually.

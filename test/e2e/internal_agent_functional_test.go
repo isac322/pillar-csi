@@ -548,14 +548,15 @@ var _ = func() bool {
 				Expect(framework.CreatePVC(ctx, iatK8sClient, pvc2)).To(Succeed(),
 					"create second PVC %q/%q against StorageClass %q", testNS.Name, pvc2.Name, bindingName)
 
-				// Register cleanup: PVCs first, then CRs, then namespace.
+				// Register cleanup: PVCs + PVs first (so CSI DeleteVolume runs
+				// while PillarTarget still exists), then CRs, then namespace.
 				DeferCleanup(func(dctx context.Context) {
 					By("cleaning up CSI provisioning test resources")
 					for _, p := range []*corev1.PersistentVolumeClaim{pvc, pvc2} {
 						if p == nil {
 							continue
 						}
-						if err := framework.EnsurePVCGone(dctx, iatK8sClient, p, iatCleanupTimeout); err != nil {
+						if err := framework.EnsurePVCAndPVGone(dctx, iatK8sClient, p, iatCleanupTimeout); err != nil {
 							_, _ = fmt.Fprintf(GinkgoWriter,
 								"WARNING: cleanup PVC %q/%q: %v\n", p.Namespace, p.Name, err)
 						}
@@ -904,13 +905,18 @@ while [ $_w -lt 30 ] && ! [ -b "$DEVPATH" ]; do
 done
 [ -b "$DEVPATH" ] || { echo "device $DEVPATH not found after 15s" >&2; exit 1; }
 echo 1 > "$NVMET/subsystems/$NQN/namespaces/1/enable"
-if [ ! -d "$NVMET/ports/$PORTID" ]; then
-  mkdir -p "$NVMET/ports/$PORTID"
-  echo tcp   > "$NVMET/ports/$PORTID/addr_trtype"
-  echo ipv4  > "$NVMET/ports/$PORTID/addr_adrfam"
-  echo 0.0.0.0 > "$NVMET/ports/$PORTID/addr_traddr"
-  echo "$TRSVCID" > "$NVMET/ports/$PORTID/addr_trsvcid"
+# Recreate the port to ensure the TCP listener is active.
+if [ -d "$NVMET/ports/$PORTID" ]; then
+  for sub in "$NVMET/ports/$PORTID/subsystems/"*; do
+    [ -L "$sub" ] && rm -f "$sub"
+  done
+  rmdir "$NVMET/ports/$PORTID" 2>/dev/null || true
 fi
+mkdir -p "$NVMET/ports/$PORTID"
+echo tcp   > "$NVMET/ports/$PORTID/addr_trtype"
+echo ipv4  > "$NVMET/ports/$PORTID/addr_adrfam"
+echo 0.0.0.0 > "$NVMET/ports/$PORTID/addr_traddr"
+echo "$TRSVCID" > "$NVMET/ports/$PORTID/addr_trsvcid"
 test -L "$NVMET/ports/$PORTID/subsystems/$NQN" || \
   ln -s "$NVMET/subsystems/$NQN" "$NVMET/ports/$PORTID/subsystems/$NQN"
 `, nvmNQN, nvmDevPath, nvmPort, nvmPort)
@@ -1025,7 +1031,9 @@ rmdir  "$NVMET/ports/$PORTID" 2>/dev/null || true
 						"sh", "-c", disconnScript)
 				})
 
-				// Register cleanup: Pod → PVC → CRs → Namespace → node label.
+				// Register cleanup: Pod → PVC+PV → CRs → Namespace → node label.
+				// PV must be fully deleted before CRs so CSI DeleteVolume can
+				// reach the agent via PillarTarget.
 				DeferCleanup(func(dctx context.Context) {
 					By("cleaning up mount/unmount lifecycle resources")
 					if pod != nil {
@@ -1033,7 +1041,7 @@ rmdir  "$NVMET/ports/$PORTID" 2>/dev/null || true
 						_ = framework.EnsureGone(dctx, iatK8sClient, pod, iatCleanupTimeout)
 					}
 					if pvc != nil {
-						_ = framework.EnsurePVCGone(dctx, iatK8sClient, pvc, iatCleanupTimeout)
+						_ = framework.EnsurePVCAndPVGone(dctx, iatK8sClient, pvc, iatCleanupTimeout)
 					}
 					for _, obj := range []client.Object{binding, protocol, pool, target} {
 						if err := framework.EnsureGone(dctx, iatK8sClient, obj, iatCleanupTimeout); err != nil {
@@ -1425,7 +1433,7 @@ rmdir  "$NVMET/ports/$PORTID" 2>/dev/null || true
 						"PVC must be Bound before attempting expansion")
 
 					DeferCleanup(func(dctx context.Context) {
-						_ = framework.EnsurePVCGone(dctx, iatK8sClient, pvc, iatCleanupTimeout)
+						_ = framework.EnsurePVCAndPVGone(dctx, iatK8sClient, pvc, iatCleanupTimeout)
 						for _, obj := range []client.Object{binding, protocol, pool, target} {
 							_ = framework.EnsureGone(dctx, iatK8sClient, obj, iatCleanupTimeout)
 						}

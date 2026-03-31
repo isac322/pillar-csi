@@ -45,6 +45,7 @@ package framework
 //	        "e2e-pool",
 //	        "/tmp/e2e-pool.img",
 //	        "2G",
+//	        false, // reuseIfHealthy
 //	    )
 //	})
 //
@@ -82,25 +83,56 @@ import (
 // On error the function attempts a best-effort cleanup of any resources that
 // were partially allocated (loop device detached, image file removed) before
 // returning.
+// boolShell returns "true" or "false" for embedding in a shell script.
+func boolShell(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
+}
+
+// CreateLoopbackZFSPool creates a loopback-backed ZFS pool on the Docker host.
+// When reuseIfHealthy is true and the pool already exists and is usable, the
+// pool is reused as-is (saving ~0.5s).  Otherwise any stale pool is destroyed
+// before creating a fresh one.
 func CreateLoopbackZFSPool(
 	ctx context.Context,
 	h *DockerHostExec,
 	poolName, imagePath, imageSize string,
+	reuseIfHealthy bool,
 ) (loopDev string, err error) {
-	// ── Step 0: destroy any stale pool from a previous interrupted run ───
-	// A prior e2e run may have crashed before teardown. If the pool already
-	// exists, destroy it and detach its loop device so we start clean.
+	// ── Step 0: destroy any stale pool from a previous run ──────────────
+	// A prior e2e run may have left the pool alive (teardown preserves pools
+	// for cluster reuse).  If reuseIfHealthy is true and the pool is usable,
+	// return immediately.  Otherwise destroy it so we start clean.
 	cleanCmd := fmt.Sprintf(
 		"if zpool list %s >/dev/null 2>&1; then "+
+			"if %s; then "+
+			// Destroy any stale child datasets (leftover PVCs from previous
+			// test runs whose CSI DeleteVolume may not have cleaned up).
+			"for ds in $(zfs list -H -o name -r %s 2>/dev/null | tail -n +2); do "+
+			"zfs destroy -f \"$ds\" 2>/dev/null; done; "+
+			"LOOP=$(losetup -j %s 2>/dev/null | head -1 | cut -d: -f1); "+
+			"echo \"reuse:$LOOP\"; "+
+			"else "+
 			"zpool destroy -f %s 2>/dev/null; "+
 			"losetup -j %s 2>/dev/null | cut -d: -f1 | xargs -r losetup -d 2>/dev/null; "+
 			"rm -f %s; "+
-			"echo cleaned; "+
+			"echo cleaned; fi; "+
 			"else echo fresh; fi",
-		shellQuote(poolName), shellQuote(poolName),
-		shellQuote(imagePath), shellQuote(imagePath))
+		shellQuote(poolName),
+		boolShell(reuseIfHealthy),
+		shellQuote(poolName),
+		shellQuote(imagePath),
+		shellQuote(poolName), shellQuote(imagePath), shellQuote(imagePath))
 	if cleanRes, cleanErr := h.ExecOnHost(ctx, cleanCmd); cleanErr == nil && cleanRes.Success() {
-		if strings.TrimSpace(cleanRes.Stdout) == "cleaned" {
+		out := strings.TrimSpace(cleanRes.Stdout)
+		if strings.HasPrefix(out, "reuse:") {
+			dev := strings.TrimPrefix(out, "reuse:")
+			fmt.Fprintf(os.Stdout, "  zfs pool %q: healthy — reusing (loop %s)\n", poolName, dev)
+			return dev, nil
+		}
+		if out == "cleaned" {
 			fmt.Fprintf(os.Stdout, "  zfs pool %q: destroyed stale pool from previous run\n", poolName)
 		}
 	}

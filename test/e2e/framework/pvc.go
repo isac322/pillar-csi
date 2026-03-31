@@ -54,11 +54,13 @@ package framework
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/apimachinery/pkg/fields"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -152,7 +154,7 @@ func DeletePVC(ctx context.Context, c client.Client, pvc *corev1.PersistentVolum
 // the API server.  If the PVC is already absent the function returns
 // immediately.
 //
-// Pass 0 for timeout to use DefaultWaitTimeout.
+// Pass 0 for timeout to use WaitTimeout.
 func DeletePVCAndWait(ctx context.Context, c client.Client, pvc *corev1.PersistentVolumeClaim, timeout time.Duration) error {
 	if err := DeletePVC(ctx, c, pvc, client.GracePeriodSeconds(0)); err != nil {
 		return err
@@ -165,12 +167,67 @@ func DeletePVCAndWait(ctx context.Context, c client.Client, pvc *corev1.Persiste
 // removal.  Suitable for AfterEach cleanup blocks where the PVC may or may not
 // exist at cleanup time.
 //
-// Pass 0 for timeout to use DefaultWaitTimeout.
+// Pass 0 for timeout to use WaitTimeout.
 func EnsurePVCGone(ctx context.Context, c client.Client, pvc *corev1.PersistentVolumeClaim, timeout time.Duration) error {
 	if err := DeletePVC(ctx, c, pvc, client.GracePeriodSeconds(0)); err != nil {
 		return err
 	}
 	return waitForPVCDeletion(ctx, c, pvc, timeout)
+}
+
+// EnsurePVCAndPVGone deletes pvc and waits for both the PVC and its bound PV
+// to be fully removed.  This ensures that the CSI DeleteVolume RPC completes
+// before returning, preventing stale backend resources (e.g. ZFS zvols) from
+// accumulating across test runs.
+func EnsurePVCAndPVGone(ctx context.Context, c client.Client, pvc *corev1.PersistentVolumeClaim, timeout time.Duration) error {
+	if timeout == 0 {
+		timeout = WaitTimeout
+	}
+	// Capture the bound PV name before deleting the PVC.
+	key := client.ObjectKeyFromObject(pvc)
+	if err := c.Get(ctx, key, pvc); err != nil {
+		if errors.IsNotFound(err) {
+			return nil // already gone
+		}
+		return fmt.Errorf("framework EnsurePVCAndPVGone: get PVC %q/%q: %w", key.Namespace, key.Name, err)
+	}
+	pvName := pvc.Spec.VolumeName
+
+	// Delete PVC and wait for it to disappear.
+	if err := EnsurePVCGone(ctx, c, pvc, timeout); err != nil {
+		return err
+	}
+
+	// If the PVC was bound to a PV, wait for the PV to be deleted too.
+	if pvName == "" {
+		return nil
+	}
+	pv := &corev1.PersistentVolume{}
+	pv.Name = pvName
+	return waitForPVDeletion(ctx, c, pv, timeout)
+}
+
+// waitForPVDeletion polls until pv is fully removed from the API server.
+func waitForPVDeletion(ctx context.Context, c client.Client, pv *corev1.PersistentVolume, timeout time.Duration) error {
+	if timeout == 0 {
+		timeout = WaitTimeout
+	}
+	key := client.ObjectKeyFromObject(pv)
+	err := wait.PollUntilContextTimeout(ctx, PollInterval, timeout, true,
+		func(ctx context.Context) (bool, error) {
+			if fetchErr := c.Get(ctx, key, pv); fetchErr != nil {
+				if errors.IsNotFound(fetchErr) {
+					return true, nil
+				}
+				return false, fetchErr
+			}
+			return false, nil
+		},
+	)
+	if err != nil {
+		return fmt.Errorf("waitForPVDeletion %q: %w", key.Name, err)
+	}
+	return nil
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -184,7 +241,7 @@ func EnsurePVCGone(ctx context.Context, c client.Client, pvc *corev1.PersistentV
 // On success the caller can inspect pvc.Spec.VolumeName to obtain the bound
 // PV name.
 //
-// Pass 0 for timeout to use DefaultWaitTimeout.
+// Pass 0 for timeout to use WaitTimeout.
 //
 // Example:
 //
@@ -203,7 +260,7 @@ func WaitForPVCBound(
 //
 // pvc is updated in-place with the latest server state on each poll cycle.
 //
-// Pass 0 for timeout to use DefaultWaitTimeout.
+// Pass 0 for timeout to use WaitTimeout.
 func WaitForPVCPhase(
 	ctx context.Context,
 	c client.Client,
@@ -212,13 +269,13 @@ func WaitForPVCPhase(
 	timeout time.Duration,
 ) error {
 	if timeout == 0 {
-		timeout = DefaultWaitTimeout
+		timeout = WaitTimeout
 	}
 
 	key := client.ObjectKeyFromObject(pvc)
 	var lastPhase corev1.PersistentVolumeClaimPhase
 
-	err := wait.PollUntilContextTimeout(ctx, DefaultPollInterval, timeout, true,
+	err := wait.PollUntilContextTimeout(ctx, PollInterval, timeout, true,
 		func(ctx context.Context) (bool, error) {
 			if fetchErr := c.Get(ctx, key, pvc); fetchErr != nil {
 				if errors.IsNotFound(fetchErr) {
@@ -232,12 +289,43 @@ func WaitForPVCPhase(
 		},
 	)
 	if err != nil {
+		// Dump PVC events to help diagnose why provisioning didn't happen.
+		dumpPVCEvents(ctx, c, key)
 		return fmt.Errorf(
 			"WaitForPVCPhase %q/%q: want phase=%s, last observed phase=%s: %w",
 			key.Namespace, key.Name, wantPhase, lastPhase, err,
 		)
 	}
 	return nil
+}
+
+// dumpPVCEvents prints Kubernetes events for the PVC to stdout for diagnostics.
+func dumpPVCEvents(ctx context.Context, c client.Client, key client.ObjectKey) {
+	evList := &corev1.EventList{}
+	listOpts := &client.ListOptions{
+		Namespace: key.Namespace,
+		FieldSelector: fields.SelectorFromSet(fields.Set{
+			"involvedObject.name": key.Name,
+			"involvedObject.kind": "PersistentVolumeClaim",
+		}),
+	}
+	diagCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if listErr := c.List(diagCtx, evList, listOpts); listErr != nil {
+		fmt.Fprintf(os.Stdout, "  [diag] failed to list events for PVC %s/%s: %v\n", key.Namespace, key.Name, listErr)
+		return
+	}
+	if len(evList.Items) == 0 {
+		fmt.Fprintf(os.Stdout, "  [diag] no events found for PVC %s/%s\n", key.Namespace, key.Name)
+		return
+	}
+	fmt.Fprintf(os.Stdout, "  [diag] events for PVC %s/%s (%d events):\n", key.Namespace, key.Name, len(evList.Items))
+	for i := range evList.Items {
+		ev := &evList.Items[i]
+		fmt.Fprintf(os.Stdout, "    %s %s/%s: %s (count=%d, age=%s)\n",
+			ev.Reason, ev.InvolvedObject.Kind, ev.InvolvedObject.Name,
+			ev.Message, ev.Count, time.Since(ev.LastTimestamp.Time).Round(time.Second))
+	}
 }
 
 // waitForPVCDeletion polls until pvc is fully removed from the API server.
@@ -248,12 +336,12 @@ func waitForPVCDeletion(
 	timeout time.Duration,
 ) error {
 	if timeout == 0 {
-		timeout = DefaultWaitTimeout
+		timeout = WaitTimeout
 	}
 
 	key := client.ObjectKeyFromObject(pvc)
 
-	err := wait.PollUntilContextTimeout(ctx, DefaultPollInterval, timeout, true,
+	err := wait.PollUntilContextTimeout(ctx, PollInterval, timeout, true,
 		func(ctx context.Context) (bool, error) {
 			if fetchErr := c.Get(ctx, key, pvc); fetchErr != nil {
 				if errors.IsNotFound(fetchErr) {
@@ -412,7 +500,7 @@ type ProvisioningOutcome struct {
 // a single call covers the full "PVC created → PV provisioned → PV correct"
 // flow.
 //
-// Pass 0 for timeout to use DefaultWaitTimeout.
+// Pass 0 for timeout to use WaitTimeout.
 //
 // Example:
 //
