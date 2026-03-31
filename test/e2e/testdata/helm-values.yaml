@@ -127,6 +127,13 @@ agent:
     tag: "e2e"
     pullPolicy: Never
 
+  # DM_DISABLE_UDEV tells libdevmapper to manage device nodes directly instead
+  # of delegating to udev.  This is required in containers where udevd is not
+  # running (Kind nodes, CI pods).  Safe on bare-metal hosts too.
+  extraEnv:
+    - name: DM_DISABLE_UDEV
+      value: "1"
+
   # --backend registers storage backends.
   #
   # ZFS zvol backend: the e2e pool name matches the ZFS loopback pool created

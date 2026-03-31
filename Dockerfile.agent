@@ -67,6 +67,12 @@ FROM alpine:3.21
 #   (the gRPC binary is the only entry point).
 RUN set -eux \
     && apk add --no-cache 'zfs~=2.2' lvm2 \
+    # Configure LVM for container environments where udevd is not running.
+    # Without these overrides, LVM commands may hang waiting for udev events
+    # or fail to create device nodes.  This is safe on bare-metal hosts too.
+    && sed -i 's/obtain_device_list_from_udev = 1/obtain_device_list_from_udev = 0/' /etc/lvm/lvm.conf \
+    && sed -i 's/udev_sync = 1/udev_sync = 0/' /etc/lvm/lvm.conf \
+    && sed -i 's/udev_rules = 1/udev_rules = 0/' /etc/lvm/lvm.conf \
     && addgroup -g 65532 nonroot \
     && adduser  -u 65532 -G nonroot -s /sbin/nologin -D nonroot \
     # Strip SUID/SGID bits from every file on the root filesystem.

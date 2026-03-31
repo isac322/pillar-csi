@@ -93,8 +93,20 @@ func SetupLoopbackLVMVG(
 # ── Create thin pool LV ──────────────────────────────────────────────────
 # -T creates a thin-provisioned pool; -l 80%%FREE uses 80%% of the VG space
 # leaving headroom for LVM metadata.
+#
+# Container udev fix: Kind node containers do not run udevd, so device-mapper
+# nodes under /dev/mapper/ are not automatically created when lvcreate issues
+# DM ioctls.  We disable udev synchronisation in LVM so that lvcreate creates
+# the device nodes itself via mknod(2) instead of waiting for a udev event
+# that will never arrive.  This is the standard approach for LVM in containers.
+echo "Ensuring device-mapper nodes exist..."
+dmsetup mknodes 2>/dev/null || true
 echo "Creating thin pool %s in VG %s..."
-"${LVM_BIN}lvcreate" -T -l '80%%FREE' -n %s %s
+"${LVM_BIN}lvcreate" --config 'activation { udev_sync = 0 udev_rules = 0 }' \
+    -Zn -Wn -T -l '80%%FREE' -n %s %s
+# Refresh device nodes after thin pool creation.
+dmsetup mknodes 2>/dev/null || true
+"${LVM_BIN}vgscan" --mknodes 2>/dev/null || true
 `,
 			shellQuote(thinPoolName), shellQuote(vgName),
 			shellQuote(thinPoolName), shellQuote(vgName),
@@ -143,6 +155,18 @@ else
 fi
 echo "lvm2 binaries prefix: '${LVM_BIN}' (empty = default PATH)"
 
+# ── Step 1.5: disable udev synchronisation for container environments ─────
+# Kind node containers do not run udevd, so LVM commands that create
+# device-mapper devices would hang or fail when waiting for udev events.
+# Disable udev sync/rules globally so LVM creates device nodes itself.
+echo "Disabling LVM udev synchronisation (container mode)..."
+if [ -f /etc/lvm/lvm.conf ]; then
+    sed -i 's/udev_sync = 1/udev_sync = 0/g'   /etc/lvm/lvm.conf 2>/dev/null || true
+    sed -i 's/udev_rules = 1/udev_rules = 0/g'  /etc/lvm/lvm.conf 2>/dev/null || true
+fi
+# Export DM_DISABLE_UDEV to tell libdevmapper to skip udev interaction.
+export DM_DISABLE_UDEV=1
+
 # ── Step 2: clean up stale state from a previous interrupted run ──────────
 if "${LVM_BIN}vgdisplay" "$VG" >/dev/null 2>&1; then
     echo "Cleaning up stale VG ${VG} from a previous run..."
@@ -178,6 +202,10 @@ echo "Creating PV on ${LOOP}..."
 
 echo "Creating VG ${VG} on ${LOOP}..."
 "${LVM_BIN}vgcreate" "$VG" "$LOOP"
+
+# Ensure device-mapper nodes exist after VG creation (udev may not run in containers).
+dmsetup mknodes 2>/dev/null || true
+"${LVM_BIN}vgscan" --mknodes 2>/dev/null || true
 %s
 # Activate the VG so its block device symlinks appear under /dev/<vg>/
 echo "Activating VG ${VG}..."
