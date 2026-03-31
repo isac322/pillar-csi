@@ -21,24 +21,24 @@ package e2e
 
 // setup_test.go — TestMain-based e2e test lifecycle management.
 //
-// This file owns the full lifecycle of the e2e Kind cluster AND, when
-// external-agent mode is requested, the Docker container that runs the
-// out-of-cluster pillar-agent:
+// This file owns the Kind cluster lifecycle and, when external-agent mode is
+// requested, the Docker container that runs the out-of-cluster pillar-agent:
 //
 //  1. TestMain reads configuration from environment variables.
-//  2. A multi-node Kind cluster is always freshly created from the embedded
-//     kind-config.yaml located in testdata/ (any pre-existing cluster with the
-//     same name is deleted first).
-//  3. Pillar-CSI Docker images are built and loaded into the cluster.
-//  4. When E2E_LAUNCH_EXTERNAL_AGENT=true, a Docker container running the
-//     agent image is started on the Kind Docker network, port-mapped to the
-//     host, and polled until the gRPC port is accepting connections.
-//  5. The Helm chart is installed via `helm upgrade --install`.
-//  6. All e2e test functions (including the Ginkgo suite in e2e_suite_test.go)
-//     are executed via m.Run().
-//  7. The Helm release is removed, the external-agent container (if any) is
-//     stopped and removed, and the Kind cluster is always deleted.  Teardown
-//     is unconditional: it runs via defer even when m.Run() or setup panics.
+//  2. If a healthy Kind cluster already exists, it is reused.  Otherwise a
+//     new multi-node cluster is created from the embedded kind-config.yaml.
+//  3. Pillar-CSI Docker images are built via `docker buildx bake` and loaded
+//     into Kind nodes.  If images are already present (reused cluster), the
+//     build+load phase is skipped entirely.
+//  4. ZFS and LVM storage pools are created if not already present.
+//  5. When E2E_LAUNCH_EXTERNAL_AGENT=true, a Docker container running the
+//     agent image is started on the Kind Docker network.
+//  6. The Helm chart is installed via `helm upgrade --install`.
+//  7. All e2e test functions (including the Ginkgo suite) are executed.
+//  8. Teardown uninstalls Helm and stops the external-agent container.
+//     The Kind cluster, images, and storage pools are preserved for reuse
+//     by subsequent runs.  Cluster deletion is handled by `make test-e2e`
+//     or manually via `kind delete cluster`.
 //
 // Shared state is stored in the package-level testEnv variable so that
 // individual test files can read cluster coordinates (kubeconfig path, image
@@ -148,12 +148,10 @@ type E2EEnv struct {
 	ZFSImageSize string
 
 	// zfsLoopDev is the loop device path returned by CreateLoopbackZFSPool
-	// (e.g. "/dev/loop5").  Stored so teardownZFSPool can pass it to
-	// DestroyLoopbackZFSPool.  Empty until setupZFSPool succeeds.
+	// (e.g. "/dev/loop5").  Empty until setupZFSPool succeeds.
 	zfsLoopDev string
 
 	// zfsHostExec is the privileged exec helper created by setupZFSPool.
-	// teardownZFSPool uses it to destroy the pool and then calls Close on it.
 	// Nil until setupZFSPool has successfully started the helper container.
 	zfsHostExec *framework.DockerHostExec
 
@@ -186,14 +184,17 @@ type E2EEnv struct {
 	lvmVGReady bool
 
 	// lvmLoopDev is the loop device path returned by SetupKindLVMVG
-	// (e.g. "/dev/loop6").  Stored so teardownLVMVG can pass it to
-	// TeardownKindLVMVG.  Empty until setupLVMVG succeeds.
+	// (e.g. "/dev/loop6").  Empty until setupLVMVG succeeds.
 	lvmLoopDev string
 
 	// lvmHostExec is the privileged exec helper created by setupLVMVG.
-	// teardownLVMVG uses it to destroy the VG and then calls Close on it.
 	// Nil until setupLVMVG has successfully started the helper container.
 	lvmHostExec *framework.DockerHostExec
+
+	// clusterReused is true when an existing healthy Kind cluster was found
+	// and reused instead of creating a new one.  When true, image builds
+	// are skipped if images are already present on Kind nodes.
+	clusterReused bool
 }
 
 // testEnv is the single, shared E2EEnv populated by TestMain.  All e2e test
@@ -321,12 +322,11 @@ func initE2EEnv() error {
 
 // setupE2E orchestrates full cluster bootstrap:
 //
-//  1. Always freshly create the Kind cluster (deleting any pre-existing one).
-//  2. Build and load Docker images.
-//  3. When E2E_LAUNCH_EXTERNAL_AGENT=true and EXTERNAL_AGENT_ADDR is not
-//     already set, start the external agent Docker container on the Kind
-//     network and wait for it to become ready.
-//  4. Install the Helm chart (with external-agent overlay when applicable).
+//  1. Reuse an existing healthy Kind cluster, or create a new one.
+//  2. Build and load Docker images (skipped if already present on Kind nodes).
+//  3. Set up ZFS and LVM storage pools (idempotent — clean up stale state).
+//  4. When E2E_LAUNCH_EXTERNAL_AGENT=true, start the external agent container.
+//  5. Install the Helm chart (with external-agent overlay when applicable).
 func setupE2E() error {
 	defer logStep("setupE2E (total)")()
 
@@ -523,45 +523,52 @@ func verifyHostNVMeFabrics() error {
 	return nil
 }
 
-// ensureKindCluster always creates a fresh Kind cluster.  Any pre-existing
-// cluster with the same name is deleted first to guarantee a clean slate and
-// prevent state leakage between runs.  On success testEnv.KubeconfigPath is
-// populated and KUBECONFIG is exported.  The embedded KindConfigYAML (from
-// testdata_embed.go) is written to a temporary file so Kind can read it via
-// --config.
+// ensureKindCluster ensures a healthy Kind cluster exists.  If a cluster with
+// the configured name already exists and is reachable (kubectl version
+// succeeds), it is reused as-is — saving 60-90s of cluster creation time.
+// If the existing cluster is unhealthy, it is deleted and recreated.
+// If no cluster exists, a new one is created from the embedded kind-config.yaml.
 //
-// # Why kind delete failure is fatal here (vs non-fatal in teardownE2E)
-//
-// In teardownE2E, a delete failure is logged but ignored because the cluster
-// may genuinely not exist (setup never created it) and the CI system will
-// start fresh on the next run.
-//
-// Here in setup, we are ABOUT to create a new cluster.  If the old cluster
-// cannot be deleted we cannot guarantee a clean starting state: the new
-// "create" would either fail (name collision) or succeed on top of stale
-// state.  Either outcome violates the "always fresh" guarantee, so we
-// return a hard error and abort setup entirely.
+// On success testEnv.KubeconfigPath is populated and KUBECONFIG is exported.
+// testEnv.clusterReused is set to true when an existing cluster was reused.
 func ensureKindCluster() error {
 	defer logStep("ensureKindCluster")()
-	// Delete any pre-existing cluster with the same name to guarantee a clean
-	// slate and prevent state leakage between runs.
-	//
-	// clusterExists() is used here to produce a clear log message and to avoid
-	// an unconditional "kind delete" invocation that would always print a
-	// "Deleting cluster ... (not found)" line even on first-ever runs.  If
-	// ensureKindCluster were ever simplified to an unconditional delete
-	// (treating not-found as success), clusterExists would become dead code and
-	// should be removed at that time.
+
 	existingClusters, _ := captureOutput("kind", "get", "clusters")
-	if clusterExists(existingClusters, testEnv.ClusterName) {
+	alreadyExists := clusterExists(existingClusters, testEnv.ClusterName)
+
+	// If a cluster already exists, try to reuse it.  This saves 60-90s of
+	// cluster creation on repeated runs.  If the cluster is unhealthy,
+	// delete and recreate.
+	if alreadyExists {
 		fmt.Fprintf(os.Stdout,
-			"e2e setup: kind cluster %q already exists — deleting for a fresh start\n",
+			"e2e setup: kind cluster %q already exists — checking health\n",
 			testEnv.ClusterName)
+
+		kubeconfigPath, kubeErr := recoverKubeconfig()
+		if kubeErr == nil {
+			testEnv.KubeconfigPath = kubeconfigPath
+			if err := os.Setenv("KUBECONFIG", kubeconfigPath); err != nil {
+				return fmt.Errorf("setenv KUBECONFIG: %w", err)
+			}
+
+			// Verify the cluster is healthy.
+			if _, healthErr := captureOutput("kubectl", "version"); healthErr == nil {
+				testEnv.clusterReused = true
+				fmt.Fprintf(os.Stdout, "e2e setup: reusing existing kind cluster %q\n",
+					testEnv.ClusterName)
+				return nil
+			}
+			fmt.Fprintf(os.Stdout,
+				"e2e setup: existing cluster %q is unhealthy — recreating\n",
+				testEnv.ClusterName)
+			_ = os.Remove(kubeconfigPath)
+		}
+
+		// Unhealthy or kubeconfig recovery failed — delete and recreate.
 		if err := runCmd("kind", "delete", "cluster",
 			"--name", testEnv.ClusterName,
 		); err != nil {
-			// Fatal: we cannot proceed with a stale cluster.  See function
-			// doc comment for the rationale.
 			return fmt.Errorf("kind delete existing cluster: %w", err)
 		}
 	}
@@ -620,6 +627,40 @@ func ensureKindCluster() error {
 	return nil
 }
 
+// recoverKubeconfig extracts the kubeconfig from an existing Kind cluster,
+// writes it to a temp file, and patches the server address for remote Docker.
+func recoverKubeconfig() (string, error) {
+	kubeOut, err := captureOutput("kind", "get", "kubeconfig",
+		"--name", testEnv.ClusterName)
+	if err != nil {
+		return "", fmt.Errorf("kind get kubeconfig: %w", err)
+	}
+
+	kubeconfigFile, err := os.CreateTemp("", "kubeconfig-"+testEnv.ClusterName+"-*.yaml")
+	if err != nil {
+		return "", fmt.Errorf("create temp kubeconfig: %w", err)
+	}
+	kubeconfigPath := kubeconfigFile.Name()
+	kubeconfigFile.Close() //nolint:errcheck
+
+	if err := os.WriteFile(kubeconfigPath, []byte(kubeOut), 0o600); err != nil {
+		_ = os.Remove(kubeconfigPath)
+		return "", fmt.Errorf("write kubeconfig: %w", err)
+	}
+
+	// Rewrite kubeconfig for remote Docker if needed.
+	if remoteHost := dockerHostIP(testEnv.DockerHost); remoteHost != "" && remoteHost != "127.0.0.1" {
+		raw, readErr := os.ReadFile(kubeconfigPath)
+		if readErr == nil {
+			patched := strings.ReplaceAll(string(raw), "https://127.0.0.1:", "https://"+remoteHost+":")
+			patched = strings.ReplaceAll(patched, "https://0.0.0.0:", "https://"+remoteHost+":")
+			_ = os.WriteFile(kubeconfigPath, []byte(patched), 0o600)
+		}
+	}
+
+	return kubeconfigPath, nil
+}
+
 // buildKindConfig returns the Kind cluster configuration YAML to be passed to
 // "kind create cluster --config".  It starts from the embedded KindConfigYAML
 // and appends a kubeadmConfigPatches block that adds the remote Docker daemon
@@ -661,9 +702,8 @@ kubeadmConfigPatches:
 
 // ensureStorageNodeLabel labels the first worker node as a storage node so that
 // the agent DaemonSet (nodeSelector: pillar-csi.bhyoo.com/storage-node=true) is
-// scheduled.  The Kind cluster is always freshly created, so this step ensures
-// the label is present on every run (Kind applies node labels only during
-// "kind create cluster", which we always invoke).
+// scheduled.  This is idempotent — re-labeling an already-labeled node is a
+// no-op, so it is safe to call on both fresh and reused clusters.
 func ensureStorageNodeLabel() error {
 	defer logStep("ensureStorageNodeLabel")()
 	fmt.Fprintf(os.Stdout, "e2e setup: ensuring storage-node label on first worker\n")
@@ -809,53 +849,84 @@ var thirdPartyImages = framework.ThirdPartyImages
 //
 // The extra round-trip (download then upload) costs bandwidth but eliminates
 // the exec-streaming reliability problem.
+// imageExistsOnKindNodes checks if an image is already present on all Kind
+// cluster nodes.  Returns true only when every node has the image.
+func imageExistsOnKindNodes(imageName string) bool {
+	nodesOut, err := captureOutput("docker", "ps",
+		"--filter", "label=io.x-k8s.kind.cluster="+testEnv.ClusterName,
+		"--format", "{{.Names}}")
+	if err != nil {
+		return false
+	}
+	nodes := strings.Split(strings.TrimSpace(nodesOut), "\n")
+	for _, rawNode := range nodes {
+		node := strings.TrimSpace(rawNode)
+		if node == "" {
+			continue
+		}
+		// Check if containerd on this node has the image.
+		out, err := captureOutput("docker", "exec", node,
+			"ctr", "--namespace=k8s.io", "images", "check",
+			"name==docker.io/"+imageName)
+		if err != nil || strings.TrimSpace(out) == "" {
+			// Also try without docker.io prefix (for images like ghcr.io/...).
+			out, err = captureOutput("docker", "exec", node,
+				"ctr", "--namespace=k8s.io", "images", "check",
+				"name=="+imageName)
+			if err != nil || strings.TrimSpace(out) == "" {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 func buildAndLoadImages() error {
 	defer logStep("buildAndLoadImages (total)")()
 
-	type imageSpec struct {
-		dockerfile string
-		name       string
-	}
-	images := []imageSpec{
-		{"Dockerfile", "ghcr.io/bhyoo/pillar-csi/controller:" + testEnv.ImageTag},
-		{"Dockerfile.agent", "ghcr.io/bhyoo/pillar-csi/agent:" + testEnv.ImageTag},
-		{"Dockerfile.node", "ghcr.io/bhyoo/pillar-csi/node:" + testEnv.ImageTag},
+	imageNames := []string{
+		"ghcr.io/bhyoo/pillar-csi/controller:" + testEnv.ImageTag,
+		"ghcr.io/bhyoo/pillar-csi/agent:" + testEnv.ImageTag,
+		"ghcr.io/bhyoo/pillar-csi/node:" + testEnv.ImageTag,
 	}
 
-	// ── Phase 1: build all 3 pillar-csi images in parallel ────────────────
-	//
-	// A semaphore with capacity buildConcurrency (3) limits how many docker
-	// build processes run simultaneously.  With exactly 3 images the semaphore
-	// is acquired immediately by all goroutines, but the cap ensures the limit
-	// is enforced if more images are added in the future.
-	const buildConcurrency = 3
-	buildSem := make(chan struct{}, buildConcurrency)
-	buildAllDone := logStep("  docker build all images (parallel, max 3 concurrent)")
-	var buildWg sync.WaitGroup
-	buildErrCh := make(chan error, len(images))
-	for _, img := range images {
-		buildWg.Add(1)
-		go func(img imageSpec) {
-			defer buildWg.Done()
-			buildSem <- struct{}{}        // acquire a build slot
-			defer func() { <-buildSem }() // release on exit
-			fmt.Fprintf(os.Stdout, "e2e setup: building image %s from %s\n", img.name, img.dockerfile)
-			buildDone := logStep("  docker build " + img.dockerfile)
-			err := runCmd("docker", "build", "-f", img.dockerfile, "-t", img.name, ".")
-			buildDone()
-			if err != nil {
-				buildErrCh <- fmt.Errorf("docker build %s: %w", img.name, err)
+	// When reusing a cluster, check if images are already loaded on all nodes.
+	// If all pillar-csi images are present, skip the entire build+load phase.
+	if testEnv.clusterReused {
+		allPresent := true
+		for _, img := range imageNames {
+			if !imageExistsOnKindNodes(img) {
+				allPresent = false
+				break
 			}
-		}(img)
-	}
-	buildWg.Wait()
-	close(buildErrCh)
-	buildAllDone()
-	for err := range buildErrCh {
-		if err != nil {
-			return err
 		}
+		if allPresent {
+			fmt.Fprintf(os.Stdout, "e2e setup: all pillar-csi images already present on Kind nodes — skipping build+load\n")
+			// Still check third-party images.
+			return loadThirdPartyImages()
+		}
+		fmt.Fprintf(os.Stdout, "e2e setup: some pillar-csi images missing — rebuilding\n")
 	}
+
+	// ── Phase 1: build all 3 pillar-csi images via docker buildx bake ────
+	//
+	// docker-bake.hcl defines a shared builder stage and three targets
+	// (controller, agent, node).  BuildKit deduplicates the shared stage
+	// (go mod download, COPY) and builds all three targets in parallel.
+	// --load imports the built images into the local Docker daemon.
+	buildAllDone := logStep("  docker buildx bake (all images, parallel)")
+	fmt.Fprintf(os.Stdout, "e2e setup: building all images via docker buildx bake\n")
+	if err := runCmd("docker", "buildx", "bake",
+		"--load",
+		"--set", "*.tags=", // clear default tags; override per-target below
+		"--set", "controller.tags="+imageNames[0],
+		"--set", "agent.tags="+imageNames[1],
+		"--set", "node.tags="+imageNames[2],
+	); err != nil {
+		buildAllDone()
+		return fmt.Errorf("docker buildx bake: %w", err)
+	}
+	buildAllDone()
 
 	// ── Phase 2: load all 3 pillar-csi images into Kind in parallel ────────
 	//
@@ -871,10 +942,6 @@ func buildAndLoadImages() error {
 	// receives only the image name and performs a pure load with no
 	// cross-image side-effects.
 	loadAllDone := logStep(fmt.Sprintf("  kind load all images (parallel, max %d concurrent)", framework.MaxPullConcurrency))
-	imageNames := make([]string, len(images))
-	for i, img := range images {
-		imageNames[i] = img.name
-	}
 	loadErr := framework.PullImages(context.Background(), imageNames,
 		func(ctx context.Context, img string) error {
 			fmt.Fprintf(os.Stdout, "e2e setup: loading image %s into kind cluster %s\n",
@@ -893,23 +960,24 @@ func buildAndLoadImages() error {
 		return loadErr
 	}
 
-	// ── Phase 3: pull + load all third-party images in parallel ───────────
-	//
-	// framework.PullImages caps concurrency at maxPullConcurrency (6) using an
-	// errgroup + buffered-channel semaphore.  This prevents Docker Hub
-	// rate-limits (HTTP 429) and avoids saturating the CI network link with
-	// unbounded simultaneous pulls.  Pull and load are sequential within each
-	// image so we only load images that have been successfully pulled.
+	return loadThirdPartyImages()
+}
+
+// loadThirdPartyImages pulls and loads all third-party images (CSI sidecars,
+// busybox, etc.) into the Kind cluster nodes.
+func loadThirdPartyImages() error {
 	tpAllDone := logStep(fmt.Sprintf("  3rd-party pull+load (parallel, max %d concurrent)", framework.MaxPullConcurrency))
 	tpErr := framework.PullImages(context.Background(), thirdPartyImages,
 		func(ctx context.Context, img string) error {
+			// When reusing a cluster, skip images already present on all nodes.
+			if testEnv.clusterReused && imageExistsOnKindNodes(img) {
+				fmt.Fprintf(os.Stdout, "e2e setup: 3rd-party image %s already on Kind nodes — skipping\n", img)
+				return nil
+			}
+
 			fmt.Fprintf(os.Stdout, "e2e setup: pulling third-party image %s\n", img)
 			pullDone := logStep("  docker pull " + img)
 			if err := runCmd("docker", "pull", img); err != nil {
-				// Non-fatal: log and continue.  If the image is already present in
-				// the daemon cache the pull is a no-op and will succeed; if it fails
-				// for an unrecoverable reason (e.g. network outage) the subsequent
-				// loadImageIntoKindNodes call will also fail with a clear error.
 				fmt.Fprintf(os.Stdout, "e2e setup: warning: docker pull %s: %v\n", img, err)
 			}
 			pullDone()
@@ -926,16 +994,46 @@ func buildAndLoadImages() error {
 		},
 	)
 	tpAllDone()
-	if tpErr != nil {
-		return tpErr
-	}
-
-	return nil
+	return tpErr
 }
 
-// loadImageIntoKindNodes loads a Docker image into all Kind cluster nodes
-// using a file-based copy approach that is reliable over a remote TCP Docker
-// daemon (unlike "kind load docker-image" which uses streaming exec).
+// isRemoteDocker reports whether DOCKER_HOST points to a non-local daemon
+// (i.e. a TCP address that is not 127.0.0.1).  When true, the streaming
+// exec approach used by "kind load docker-image" is unreliable and we must
+// fall back to the file-based copy approach.
+func isRemoteDocker() bool {
+	ip := dockerHostIP(testEnv.DockerHost)
+	return ip != "" && ip != "127.0.0.1"
+}
+
+// loadImageIntoKindNodes loads a Docker image into all Kind cluster nodes.
+//
+// Strategy:
+//   - Local Docker daemon: uses "kind load docker-image" which streams
+//     the image tar directly into containerd via exec — fast and reliable
+//     over a Unix socket.
+//   - Remote Docker daemon: uses a file-based copy approach (docker save →
+//     docker cp → ctr import) to avoid exec-streaming reliability issues
+//     over TCP connections.
+func loadImageIntoKindNodes(imageName string) error {
+	if !isRemoteDocker() {
+		return loadImageViaKindLoad(imageName)
+	}
+	return loadImageViaFileCopy(imageName)
+}
+
+// loadImageViaKindLoad uses the native "kind load docker-image" command.
+// This is faster than the file-based approach but requires a local Docker
+// daemon (Unix socket or tcp://127.0.0.1).
+func loadImageViaKindLoad(imageName string) error {
+	return runCmd("kind", "load", "docker-image",
+		"--name", testEnv.ClusterName,
+		imageName,
+	)
+}
+
+// loadImageViaFileCopy loads an image using the file-based approach that is
+// reliable over remote TCP Docker daemons.
 //
 // Steps:
 //  1. Save the image to a local temporary tar file via "docker save -o".
@@ -943,11 +1041,7 @@ func buildAndLoadImages() error {
 //  3. Import the tar inside the container with "ctr images import <file>".
 //  4. Remove the tar from the container.
 //  5. Remove the local temporary tar file.
-//
-// The on-node tar filename includes an image-derived slug so that multiple
-// concurrent loadImageIntoKindNodes calls (one per image) do not collide on
-// the same Kind node container.
-func loadImageIntoKindNodes(imageName string) error {
+func loadImageViaFileCopy(imageName string) error {
 	// Step 1 — Save image to a local tar file.
 	localTar, err := os.CreateTemp("", "kind-image-*.tar")
 	if err != nil {
@@ -962,10 +1056,6 @@ func loadImageIntoKindNodes(imageName string) error {
 	}
 
 	// Step 2 — List all Kind nodes using docker ps with the Kind cluster label.
-	// We use docker ps rather than "kind get nodes" because the latter can
-	// return non-empty output like "No kind nodes found for cluster..." when
-	// it misidentifies the cluster state, leading to that message being
-	// (incorrectly) treated as a container name.
 	nodesOut, err := captureOutput("docker", "ps",
 		"--filter", "label=io.x-k8s.kind.cluster="+testEnv.ClusterName,
 		"--format", "{{.Names}}")
@@ -977,7 +1067,6 @@ func loadImageIntoKindNodes(imageName string) error {
 
 	// Derive a safe filename slug from the image name so that concurrent calls
 	// for different images do not overwrite each other's tar on the same node.
-	// e.g. "ghcr.io/bhyoo/pillar-csi/controller:e2e" → "ghcr.io-bhyoo-pillar-csi-controller-e2e"
 	safeImage := strings.NewReplacer("/", "-", ":", "-", ".", "-").Replace(imageName)
 
 	// Load image into all Kind nodes in parallel.
@@ -992,11 +1081,6 @@ func loadImageIntoKindNodes(imageName string) error {
 		wg.Add(1)
 		go func(node string) {
 			defer wg.Done()
-			// Use /root/ instead of /tmp/: Kind node containers mount /tmp as
-			// tmpfs, and docker cp silently fails to write into tmpfs paths when
-			// the Docker daemon is remote.
-			// Include safeImage in the name to avoid collisions across parallel
-			// loadImageIntoKindNodes calls targeting the same node.
 			nodeTar := "/root/kind-image-" + safeImage + "-" + node + ".tar"
 
 			if err := runCmd("docker", "cp", localTarPath, node+":"+nodeTar); err != nil {
@@ -1091,7 +1175,7 @@ func installHelm() error {
 		"--set", "agent.image.tag="+testEnv.ImageTag,
 		"--set", "node.image.tag="+testEnv.ImageTag,
 		"--wait",
-		"--atomic",
+		"--rollback-on-failure",
 		"--timeout", "5m",
 	)
 
@@ -1218,27 +1302,16 @@ func installHelm() error {
 // Teardown
 // ─────────────────────────────────────────────────────────────────────────────
 
-// teardownE2E removes the Helm release, stops the external-agent container
-// (if TestMain started one), and always deletes the Kind cluster.  All errors
-// are logged to stderr but do not affect the exit code — that was already
-// captured by the m.Run() call in TestMain.
-//
-// Cluster deletion is unconditional: even if testEnv.ClusterName is somehow
-// empty (e.g. initE2EEnv was interrupted before setting it), teardownE2E falls
-// back to defaultClusterName so that no cluster is ever left behind.  This
-// hard guarantee prevents state leakage between runs regardless of how or when
-// the process exits.
+// teardownE2E uninstalls the Helm release and stops the external-agent
+// container.  The Kind cluster, images, and storage pools are preserved
+// for reuse by subsequent runs.  Cluster deletion is handled by
+// `make test-e2e` or manually via `kind delete cluster --name <name>`.
 //
 // All steps are best-effort: errors are logged but do not abort subsequent
-// steps.  The only exception to the "best-effort" rule is the final cluster
-// deletion, which runs unconditionally even after Helm or container failures.
+// steps or affect the exit code.
 func teardownE2E() {
 	defer logStep("teardownE2E (total)")()
 
-	if os.Getenv("E2E_SKIP_TEARDOWN") == "true" {
-		fmt.Fprintf(os.Stdout, "e2e teardown: SKIPPED (E2E_SKIP_TEARDOWN=true) — cluster %q left running for debugging\n", testEnv.ClusterName)
-		return
-	}
 	if testEnv.HelmRelease != "" {
 		fmt.Fprintf(os.Stdout, "e2e teardown: uninstalling helm release %q\n",
 			testEnv.HelmRelease)
@@ -1255,42 +1328,11 @@ func teardownE2E() {
 	// Stop and remove the external-agent container started by TestMain.
 	stopExternalAgentContainer()
 
-	// Destroy the loopback ZFS pool and release the DockerHostExec helper.
-	teardownZFSPool()
+	// Keep the Kind cluster, ZFS pool, and LVM VG alive for reuse.
+	// Cluster deletion is handled by `make test-e2e` (kind delete cluster)
+	// or manually by the developer.
 
-	// Destroy the loopback LVM VG inside the Kind storage worker container.
-	// Must run before the Kind cluster is deleted (LVM state lives inside the
-	// worker container, not on the Docker host).
-	teardownLVMVG()
-
-	// Always delete the Kind cluster — unconditionally, with no guard.
-	//
-	// If testEnv.ClusterName is empty (initE2EEnv was interrupted before the
-	// first envOrDefault call), fall back to defaultClusterName so we still
-	// attempt to clean up.  This fallback is a safety net: in normal operation
-	// ClusterName is always non-empty because initE2EEnv sets it on its very
-	// first line.
-	//
-	// Errors here are non-fatal (logged and ignored) for two reasons:
-	//  1. The cluster may never have been created (e.g. setup failed early).
-	//  2. Subsequent CI runs will call ensureKindCluster() which checks for
-	//     and deletes any pre-existing cluster — a missed teardown is thus
-	//     corrected at the next setup.
-	clusterName := testEnv.ClusterName
-	if clusterName == "" {
-		clusterName = defaultClusterName
-	}
-	fmt.Fprintf(os.Stdout, "e2e teardown: deleting kind cluster %q (unconditional)\n",
-		clusterName)
-	kindDone := logStep("  kind delete cluster")
-	if err := runCmd("kind", "delete", "cluster",
-		"--name", clusterName,
-	); err != nil {
-		fmt.Fprintf(os.Stderr, "e2e teardown: kind delete cluster: %v\n", err)
-	}
-	kindDone()
-
-	// Remove the temporary kubeconfig written by writeKindKubeconfig.
+	// Remove the temporary kubeconfig.
 	if testEnv.KubeconfigPath != "" {
 		_ = os.Remove(testEnv.KubeconfigPath)
 	}
@@ -1309,8 +1351,7 @@ func teardownE2E() {
 //  2. Attach the image to a free loop device via losetup.
 //  3. Create the ZFS pool named testEnv.ZFSPoolName on that loop device.
 //
-// The resulting loop device path is stored in testEnv.zfsLoopDev so that
-// teardownZFSPool can pass it to DestroyLoopbackZFSPool.
+// The resulting loop device path is stored in testEnv.zfsLoopDev.
 //
 // On error the function returns a descriptive message that TestMain prints to
 // stderr before calling os.Exit(1).  Partial resources (loop device, image
@@ -1330,8 +1371,6 @@ func setupZFSPool() error {
 				"  (ZFS pool %q cannot be created without a privileged exec helper)",
 			testEnv.DockerHost, err, testEnv.ZFSPoolName)
 	}
-	// Store immediately so teardownZFSPool can close h even when subsequent
-	// steps fail.
 	testEnv.zfsHostExec = h
 
 	fmt.Fprintf(os.Stdout,
@@ -1354,39 +1393,6 @@ func setupZFSPool() error {
 		"e2e setup: ZFS pool %q ready (loop device %s, image %s)\n",
 		testEnv.ZFSPoolName, loopDev, testEnv.ZFSImagePath)
 	return nil
-}
-
-// teardownZFSPool destroys the loopback ZFS pool created by setupZFSPool and
-// closes the DockerHostExec helper container.
-//
-// All errors are logged to stderr but do not abort teardown — subsequent steps
-// (Kind cluster deletion, kubeconfig removal) must still run even when pool
-// destruction fails.  This matches the best-effort contract of teardownE2E.
-//
-// teardownZFSPool is a no-op when testEnv.zfsHostExec is nil (i.e. when
-// setupZFSPool was never called or failed before allocating the helper).
-func teardownZFSPool() {
-	h := testEnv.zfsHostExec
-	if h == nil {
-		return
-	}
-	defer logStep("teardownZFSPool")()
-
-	ctx := context.Background()
-
-	fmt.Fprintf(os.Stdout,
-		"e2e teardown: destroying ZFS pool %q (loop %s, image %s)\n",
-		testEnv.ZFSPoolName, testEnv.zfsLoopDev, testEnv.ZFSImagePath)
-	if err := framework.DestroyLoopbackZFSPool(ctx, h,
-		testEnv.ZFSPoolName, testEnv.zfsLoopDev, testEnv.ZFSImagePath); err != nil {
-		fmt.Fprintf(os.Stderr, "e2e teardown: destroy ZFS pool %q: %v\n",
-			testEnv.ZFSPoolName, err)
-	}
-
-	if err := h.Close(); err != nil {
-		fmt.Fprintf(os.Stderr, "e2e teardown: close host-exec container: %v\n", err)
-	}
-	testEnv.zfsHostExec = nil
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1460,46 +1466,6 @@ func setupLVMVG() error {
 		"e2e setup: LVM VG %q ready in Kind worker %q (image %s)\n",
 		testEnv.LVMVGName, storageNode, testEnv.LVMImagePath)
 	return nil
-}
-
-// teardownLVMVG destroys the loopback LVM VG created by setupLVMVG inside the
-// Kind storage worker container.
-//
-// All errors are logged to stderr but do not abort teardown — subsequent steps
-// (ZFS teardown, Kind cluster deletion) must still run.  This matches the
-// best-effort contract of teardownE2E.
-//
-// teardownLVMVG is a no-op when lvmVGReady is false (setupLVMVG was never
-// called or failed before creating the VG).
-func teardownLVMVG() {
-	if !testEnv.lvmVGReady {
-		return
-	}
-	defer logStep("teardownLVMVG")()
-
-	ctx := context.Background()
-
-	fmt.Fprintf(os.Stdout,
-		"e2e teardown: destroying LVM VG %q in Kind worker %q (image %s)\n",
-		testEnv.LVMVGName, testEnv.LVMStorageNode, testEnv.LVMImagePath)
-	if err := framework.TeardownLoopbackLVMVG(ctx,
-		testEnv.DockerHost,
-		testEnv.LVMStorageNode,
-		testEnv.LVMVGName,
-		testEnv.LVMImagePath,
-	); err != nil {
-		fmt.Fprintf(os.Stderr, "e2e teardown: destroy LVM VG %q: %v\n",
-			testEnv.LVMVGName, err)
-	}
-	testEnv.lvmVGReady = false
-
-	// Close the privileged host-exec helper if it was created.
-	if testEnv.lvmHostExec != nil {
-		if err := testEnv.lvmHostExec.Close(); err != nil {
-			fmt.Fprintf(os.Stderr, "e2e teardown: close LVM host-exec container: %v\n", err)
-		}
-		testEnv.lvmHostExec = nil
-	}
 }
 
 // getStorageNodeContainerName returns the Docker container name of the Kind
@@ -1678,14 +1644,8 @@ func writeTempFile(pattern string, data []byte) (string, error) {
 }
 
 // clusterExists reports whether clusterName appears as a full line in the
-// whitespace-trimmed output of "kind get clusters".
-//
-// It is currently used by ensureKindCluster() to decide whether to log
-// "already exists — deleting for a fresh start" before the unconditional
-// setup-time delete.  If ensureKindCluster() is ever simplified to always
-// call "kind delete cluster" without checking first (treating not-found as
-// success), clusterExists becomes dead code and should be removed at that
-// time.
+// whitespace-trimmed output of "kind get clusters".  Used by
+// ensureKindCluster to decide whether to attempt cluster reuse.
 func clusterExists(output, clusterName string) bool {
 	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
 		if strings.TrimSpace(line) == clusterName {
@@ -1765,7 +1725,7 @@ func startExternalAgentContainer() error {
 	//                      NVMe-oF configfs writes (/sys/kernel/config).
 	//                      Without this flag, 'zfs create' inside the container
 	//                      fails with EPERM because /dev/zfs is inaccessible.
-	//   --user=root      → override Dockerfile.agent's USER 65532; ZFS ioctl
+	//   --user=root      → override the agent image's USER 65532; ZFS ioctl
 	//                      checks UID 0 in addition to CAP_SYS_ADMIN on some
 	//                      kernel/ZFS version combinations.
 	//   --mount tmpfs    → writable /tmp so --configfs-root=/tmp works without
