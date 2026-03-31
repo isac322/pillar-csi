@@ -385,7 +385,7 @@ const (
 	paramNFSVersion   = "pillar-csi.bhyoo.com/nfs-version"
 	paramLVMVG        = "pillar-csi.bhyoo.com/lvm-vg"
 
-	// paramLVMMode is the StorageClass/PillarBinding parameter key that selects
+	// LVM provisioning mode parameter key for StorageClass/PillarBinding that selects
 	// the LVM provisioning mode for new volumes.  Accepted values: "linear",
 	// "thin".  When absent the LVM backend uses its compiled-in default (thin
 	// when the backend was started with a thinpool= flag, linear otherwise).

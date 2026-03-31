@@ -37,7 +37,7 @@ import (
 //
 //	vgs --noheadings -o vg_size,vg_free --units b --nosuffix <vg>
 //
-// These tests verify the RPC handler behaviour using a mock backend that
+// These tests verify the RPC handler behavior using a mock backend that
 // simulates LVM-style capacity responses.
 
 // TestGetCapacity_LVM_LinearVGFreeReturned verifies that the VG free space
