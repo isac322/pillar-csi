@@ -30,6 +30,13 @@
 | `internal/agent/` | Agent gRPC 서버, Backend/Protocol 플러그인 |
 | `internal/csi/` | CSI Controller/Node 서비스 구현 |
 
+## No Silent Failures 에러 보고 원칙
+
+- `configfs`, `sysfs` 등 커널 인터페이스에 대한 write 실패를 `continue`, 무시, debug-only 로그로 삼키지 말 것
+- write 후 실제 상태가 중요하면 즉시 read-back 검증을 수행하고, 기대값과 다르면 명시적 에러로 반환할 것
+- cleanup/rollback 경로라도 스토리지 상태나 연결 상태에 영향을 주는 실패는 호출자에게 반환하거나 최소한 `log.Error`로 남길 것
+- 에러 메시지에는 작업 종류(`write`, `disconnect`, `expand`), 대상(`path`, `NQN`, `device`, `volumeID`)과 원인(`%w`)을 포함할 것
+
 ## Git 커밋 규칙
 
 - **커밋 전 반드시 `make lint` 실행하여 0 issues 확인** — lint 에러가 있으면 커밋하지 말 것
