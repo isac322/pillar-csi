@@ -1443,6 +1443,18 @@ func setupLVMVG() error {
 			testEnv.LVMVGName, storageNode, err)
 	}
 
+	// Create a privileged DockerHostExec for the storage worker container so
+	// that LVM e2e tests can run commands on the host (e.g. inspect device
+	// nodes, check NVMe block devices).  This mirrors setupZFSPool's pattern.
+	lvmH, hErr := framework.NewDockerHostExec(context.Background(), testEnv.DockerHost)
+	if hErr != nil {
+		fmt.Fprintf(os.Stderr,
+			"e2e setup: warning: could not create LVM host-exec helper: %v\n", hErr)
+		// Non-fatal: core LVM tests still run; only host-exec-dependent tests skip.
+	} else {
+		testEnv.lvmHostExec = lvmH
+	}
+
 	testEnv.lvmVGReady = true
 	fmt.Fprintf(os.Stdout,
 		"e2e setup: LVM VG %q ready in Kind worker %q (image %s)\n",
@@ -1480,6 +1492,14 @@ func teardownLVMVG() {
 			testEnv.LVMVGName, err)
 	}
 	testEnv.lvmVGReady = false
+
+	// Close the privileged host-exec helper if it was created.
+	if testEnv.lvmHostExec != nil {
+		if err := testEnv.lvmHostExec.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "e2e teardown: close LVM host-exec container: %v\n", err)
+		}
+		testEnv.lvmHostExec = nil
+	}
 }
 
 // getStorageNodeContainerName returns the Docker container name of the Kind
