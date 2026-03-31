@@ -137,6 +137,18 @@ var ForbiddenZFSAnnotationKeys = map[string]struct{}{
 	"parentDataset": {},
 }
 
+// ForbiddenLVMAnnotationKeys is the set of JSON/YAML field names that are
+// structural within the LVM backend section of [AnnotationBackendOverride].
+//
+// These correspond to [LVMBackendConfig] fields that identify the volume
+// group / thin pool topology and cannot be overridden per-volume:
+//   - "volumeGroup" — LVM Volume Group name
+//   - "thinPool"    — thin pool LV name within the VG
+var ForbiddenLVMAnnotationKeys = map[string]struct{}{
+	"volumeGroup": {},
+	"thinPool":    {},
+}
+
 // ForbiddenNVMeOFTCPAnnotationKeys is the set of JSON/YAML field names that
 // are structural within the nvmeofTcp section of [AnnotationProtocolOverride].
 //
@@ -174,6 +186,15 @@ var ForbiddenISCSIAnnotationKeys = map[string]struct{}{
 // This set is used in error messages to guide users toward valid overrides.
 var SupportedZFSAnnotationKeys = map[string]struct{}{
 	"properties": {},
+}
+
+// SupportedLVMAnnotationKeys enumerates the JSON/YAML field names that are
+// supported within the lvm section of [AnnotationBackendOverride].
+//
+// Currently the only supported key is "provisioningMode": selects between
+// "linear" (fully-allocated) and "thin" (thin-provisioned) LV creation.
+var SupportedLVMAnnotationKeys = map[string]struct{}{
+	"provisioningMode": {},
 }
 
 // SupportedNVMeOFTCPAnnotationKeys enumerates the JSON/YAML field names that

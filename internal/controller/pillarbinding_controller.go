@@ -506,6 +506,14 @@ func buildStorageClassParams(
 		}
 	}
 
+	// LVM backend parameters: populate the volume group name so the CSI
+	// controller can construct agent volume IDs and LvmVolumeParams.
+	if pool.Spec.Backend.LVM != nil {
+		if pool.Spec.Backend.LVM.VolumeGroup != "" {
+			params["pillar-csi.bhyoo.com/lvm-vg"] = pool.Spec.Backend.LVM.VolumeGroup
+		}
+	}
+
 	// Protocol-specific parameters.
 	switch protocol.Spec.Type {
 	case pillarcsiv1alpha1.ProtocolTypeNVMeOFTCP:

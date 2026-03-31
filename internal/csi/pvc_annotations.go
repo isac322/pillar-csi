@@ -159,6 +159,14 @@ var blockedZFSFields = map[string]bool{
 	"parentDataset": true,
 }
 
+// blockedLVMFields is the set of LVM sub-fields that are structural (define
+// which volume group/thin pool to use) and therefore cannot be overridden via
+// PVC annotations.  Only the provisioning mode is allowed.
+var blockedLVMFields = map[string]bool{
+	"volumeGroup": true,
+	"thinPool":    true,
+}
+
 // blockedNVMeOFFields is the set of NVMe-oF TCP sub-fields that are
 // structural and cannot be overridden via PVC annotations.
 var blockedNVMeOFFields = map[string]bool{
@@ -189,7 +197,7 @@ var blockedISCSIFields = map[string]bool{
 // formed by stripping the prefix (legacy / low-level override path).
 //
 // ParsePVCAnnotations returns an error if any annotation attempts to override
-// a blocked structural field (e.g. zfs.pool, nvmeofTcp.port).  All other
+// a blocked structural field (e.g. zfs.pool, lvm.volumeGroup, nvmeofTcp.port).  All other
 // errors (YAML parse errors, type mismatches) are also returned so that the
 // caller can surface them as InvalidArgument failures.
 //
@@ -240,11 +248,13 @@ func ParsePVCAnnotations(annotations map[string]string) (map[string]string, erro
 
 // parseBackendOverride parses the backend-override YAML annotation into out.
 //
-// Supported YAML structure (Phase 1 — ZFS only):
+// Supported YAML structure:
 //
 //	zfs:
 //	  properties:
 //	    <name>: <value>
+//	lvm:
+//	  provisioningMode: linear | thin
 //
 // Returns an error if a blocked structural field is present or the YAML is
 // malformed.
@@ -258,30 +268,64 @@ func parseBackendOverride(yamlStr string, out map[string]string) error {
 		return nil // empty document
 	}
 
-	// ── ZFS backend ────────────────────────────────────────────────────────
 	if zfsRaw, ok := raw["zfs"]; ok {
-		zfsMap, ok := zfsRaw.(map[string]any)
-		if !ok {
-			return fmt.Errorf("zfs: expected a map, got %T", zfsRaw)
-		}
-
-		for field := range zfsMap {
-			if blockedZFSFields[field] {
-				return fmt.Errorf("zfs.%s is a structural parameter and cannot be overridden via PVC annotation", field)
-			}
-		}
-
-		if propsRaw, ok := zfsMap["properties"]; ok {
-			propsMap, ok := propsRaw.(map[string]any)
-			if !ok {
-				return fmt.Errorf("zfs.properties: expected a map, got %T", propsRaw)
-			}
-			for k, v := range propsMap {
-				out[paramZFSPropPrefix+k] = fmt.Sprintf("%v", v)
-			}
+		zfsErr := parseZFSBackendOverride(zfsRaw, out)
+		if zfsErr != nil {
+			return zfsErr
 		}
 	}
 
+	if lvmRaw, ok := raw["lvm"]; ok {
+		lvmErr := parseLVMBackendOverride(lvmRaw, out)
+		if lvmErr != nil {
+			return lvmErr
+		}
+	}
+
+	return nil
+}
+
+// parseZFSBackendOverride handles the "zfs" section of backend-override.
+func parseZFSBackendOverride(zfsRaw any, out map[string]string) error {
+	zfsMap, ok := zfsRaw.(map[string]any)
+	if !ok {
+		return fmt.Errorf("zfs: expected a map, got %T", zfsRaw)
+	}
+
+	for field := range zfsMap {
+		if blockedZFSFields[field] {
+			return fmt.Errorf("zfs.%s is a structural parameter and cannot be overridden via PVC annotation", field)
+		}
+	}
+
+	if propsRaw, ok := zfsMap["properties"]; ok {
+		propsMap, ok := propsRaw.(map[string]any)
+		if !ok {
+			return fmt.Errorf("zfs.properties: expected a map, got %T", propsRaw)
+		}
+		for k, v := range propsMap {
+			out[paramZFSPropPrefix+k] = fmt.Sprintf("%v", v)
+		}
+	}
+	return nil
+}
+
+// parseLVMBackendOverride handles the "lvm" section of backend-override.
+func parseLVMBackendOverride(lvmRaw any, out map[string]string) error {
+	lvmMap, ok := lvmRaw.(map[string]any)
+	if !ok {
+		return fmt.Errorf("lvm: expected a map, got %T", lvmRaw)
+	}
+
+	for field := range lvmMap {
+		if blockedLVMFields[field] {
+			return fmt.Errorf("lvm.%s is a structural parameter and cannot be overridden via PVC annotation", field)
+		}
+	}
+
+	if modeRaw, ok := lvmMap["provisioningMode"]; ok {
+		out[paramLVMMode] = fmt.Sprintf("%v", modeRaw)
+	}
 	return nil
 }
 

@@ -237,6 +237,55 @@ zfs:
 	}
 }
 
+// ── LVM backend-override ─────────────────────────────────────────────────.
+
+func TestParsePVCAnnotations_BackendOverride_LVM_ProvisioningMode(t *testing.T) {
+	ann := map[string]string{
+		AnnotationBackendOverride: `
+lvm:
+  provisioningMode: linear
+`,
+	}
+	result := mustParseAnnotations(t, ann)
+	assertParam(t, result, paramLVMMode, "linear")
+}
+
+func TestParsePVCAnnotations_BackendOverride_LVM_BlockedVolumeGroup(t *testing.T) {
+	ann := map[string]string{
+		AnnotationBackendOverride: `
+lvm:
+  volumeGroup: hacked-vg
+`,
+	}
+	_, err := ParsePVCAnnotations(ann)
+	if err == nil {
+		t.Fatal("expected error for blocked lvm.volumeGroup field")
+	}
+}
+
+func TestParsePVCAnnotations_BackendOverride_LVM_BlockedThinPool(t *testing.T) {
+	ann := map[string]string{
+		AnnotationBackendOverride: `
+lvm:
+  thinPool: hacked-pool
+`,
+	}
+	_, err := ParsePVCAnnotations(ann)
+	if err == nil {
+		t.Fatal("expected error for blocked lvm.thinPool field")
+	}
+}
+
+func TestParsePVCAnnotations_BackendOverride_LVM_NotAMap(t *testing.T) {
+	ann := map[string]string{
+		AnnotationBackendOverride: "lvm: just-a-string",
+	}
+	_, err := ParsePVCAnnotations(ann)
+	if err == nil {
+		t.Fatal("expected error when lvm is not a map")
+	}
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // protocol-override annotation
 // ─────────────────────────────────────────────────────────────────────────────.
