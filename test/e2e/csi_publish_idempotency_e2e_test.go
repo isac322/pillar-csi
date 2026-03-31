@@ -64,6 +64,9 @@ func TestCSIPublishIdempotency_ControllerPublishVolume_DoubleSameArgs(t *testing
 		volumeID = "storage-1/nvmeof-tcp/zfs-zvol/tank/pvc-double-publish"
 	)
 
+	// Seed CSINode so the controller can resolve the NVMe-oF initiator identity.
+	seedCSINodeForNVMeOF(ctx, t, env.K8sClient, nodeID, nodeID)
+
 	req := &csi.ControllerPublishVolumeRequest{
 		VolumeId:         volumeID,
 		NodeId:           nodeID,
@@ -157,6 +160,10 @@ func TestCSIPublishIdempotency_ControllerPublishVolume_DifferentNodes(t *testing
 		nodeID2  = "nqn.2014-08.org.nvmexpress:uuid:worker-node-b"
 		volumeID = "storage-1/nvmeof-tcp/zfs-zvol/tank/pvc-multi-node"
 	)
+	// Seed CSINode objects so the controller can resolve initiator identities.
+	seedCSINodeForNVMeOF(ctx, t, env.K8sClient, nodeID1, nodeID1)
+	seedCSINodeForNVMeOF(ctx, t, env.K8sClient, nodeID2, nodeID2)
+
 	volCap := defaultVolumeCapabilities()[0]
 
 	_, err := env.Controller.ControllerPublishVolume(ctx, &csi.ControllerPublishVolumeRequest{

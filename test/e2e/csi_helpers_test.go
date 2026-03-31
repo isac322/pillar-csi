@@ -56,6 +56,7 @@ import (
 	csi "github.com/container-storage-interface/spec/lib/go/csi"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	storagev1 "k8s.io/api/storage/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -435,6 +436,9 @@ func newCSIControllerE2EEnv(t *testing.T, targetName string) *csiControllerE2EEn
 	if err := v1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatalf("csiControllerE2EEnv: AddToScheme: %v", err)
 	}
+	if err := storagev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("csiControllerE2EEnv: storagev1.AddToScheme: %v", err)
+	}
 
 	pillarTarget := &v1alpha1.PillarTarget{
 		ObjectMeta: metav1.ObjectMeta{
@@ -484,6 +488,28 @@ func newCSIControllerE2EEnv(t *testing.T, targetName string) *csiControllerE2EEn
 		AgentAddr:  agentAddr,
 		K8sClient:  fakeClient,
 		grpcSrv:    grpcSrv,
+	}
+}
+
+// seedCSINodeForNVMeOF creates a CSINode object in the fake Kubernetes client
+// with the NVMe-oF host NQN annotation set to hostNQN.
+//
+// The controller's resolveInitiatorID reads this annotation when handling
+// ControllerPublishVolume / ControllerUnpublishVolume for nvmeof-tcp volumes.
+// Tests that exercise those paths must call this helper before issuing the
+// publish or unpublish RPC so that the annotation is present.
+func seedCSINodeForNVMeOF(ctx context.Context, t *testing.T, k8sClient client.Client, nodeID, hostNQN string) {
+	t.Helper()
+	csiNode := &storagev1.CSINode{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: nodeID,
+			Annotations: map[string]string{
+				csisrv.AnnotationNVMeOFHostNQN: hostNQN,
+			},
+		},
+	}
+	if err := k8sClient.Create(ctx, csiNode); err != nil {
+		t.Fatalf("seedCSINodeForNVMeOF %q: %v", nodeID, err)
 	}
 }
 
@@ -821,6 +847,12 @@ func newCSILifecycleEnvWithSM(
 
 	// Build the controller environment (includes mock agent gRPC listener).
 	ctrl := newCSIControllerE2EEnv(t, targetName)
+
+	// Seed CSINode so the controller can resolve the NVMe-oF initiator identity
+	// from the annotation during ControllerPublishVolume / ControllerUnpublishVolume.
+	// The annotation value is set to nodeID so that ordering tests can assert
+	// InitiatorID == env.NodeID without requiring a separate NQN constant.
+	seedCSINodeForNVMeOF(context.Background(), t, ctrl.K8sClient, nodeID, nodeID)
 
 	// Configure the mock agent's ExportInfo so the NQN/address/port from
 	// CreateVolume flow through to NodeStageVolume correctly.

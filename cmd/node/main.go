@@ -38,8 +38,11 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"google.golang.org/grpc"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 
 	csi "github.com/container-storage-interface/spec/lib/go/csi"
 
@@ -558,6 +561,20 @@ func main() {
 		version = bi.Main.Version
 	}
 
+	// ── Publish node identity annotations to the CSINode object ──────────
+	// Read /etc/nvme/hostnqn and write it as the
+	// pillar-csi.bhyoo.com/nvmeof-host-nqn annotation on the CSINode named
+	// after this node.  The controller plugin reads this annotation when
+	// processing ControllerPublishVolume to resolve the initiator identity
+	// without assuming node_id == NQN (RFC §5.2).
+	//
+	// Publication is best-effort with a short retry loop: the CSINode object
+	// is created by kubelet during driver registration, which may race with
+	// this startup path.  If publication fails after retries we log and
+	// continue — volume attach will return FailedPrecondition until the
+	// annotation is present, which is the expected degraded behavior.
+	publishNodeIdentity(*nodeID)
+
 	// ── Build the CSI service implementations ──────────────────────────────
 	// fabricsConnector uses the Linux /dev/nvme-fabrics kernel interface for
 	// NVMe-oF TCP connections.  It does not require nvme-cli to be installed
@@ -612,6 +629,64 @@ func main() {
 		fmt.Fprintf(os.Stderr, "pillar-node: serve: %v\n", serveErr)
 		os.Exit(1)
 	}
+}
+
+// publishNodeIdentity writes the NVMe host NQN to the CSINode object
+// annotations using the in-cluster Kubernetes client.
+//
+// It retries up to 10 times with 3-second back-off to tolerate the race where
+// kubelet has not yet created the CSINode object at driver registration time.
+// Failures after all retries are logged but do not prevent the node plugin
+// from starting — the controller will return FailedPrecondition for attach
+// requests until the annotation is visible (RFC §5.2 degraded behavior).
+func publishNodeIdentity(nodeName string) {
+	cfg, err := rest.InClusterConfig()
+	if err != nil {
+		fmt.Fprintf(os.Stderr,
+			"pillar-node: publishNodeIdentity: build in-cluster config: %v"+
+				" (skipping CSINode annotation — running outside a cluster?)\n", err)
+		return
+	}
+
+	kubeClient, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr,
+			"pillar-node: publishNodeIdentity: create kube client: %v\n", err)
+		return
+	}
+
+	patcher := csisvc.NewKubeCSINodePatcher(kubeClient)
+
+	const maxRetries = 10
+	const retryInterval = 3 * time.Second
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(maxRetries)*retryInterval+5*time.Second)
+	defer cancel()
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		pubErr := csisvc.PublishNVMeOfIdentity(ctx, patcher, nodeName)
+		if pubErr == nil {
+			fmt.Fprintf(os.Stderr,
+				"pillar-node: published NVMe host NQN annotation on CSINode %q\n", nodeName)
+			return
+		}
+		fmt.Fprintf(os.Stderr,
+			"pillar-node: publishNodeIdentity attempt %d/%d failed: %v\n",
+			attempt, maxRetries, pubErr)
+		if attempt < maxRetries {
+			select {
+			case <-ctx.Done():
+				fmt.Fprintf(os.Stderr,
+					"pillar-node: publishNodeIdentity: context canceled, giving up\n")
+				return
+			case <-time.After(retryInterval):
+			}
+		}
+	}
+	fmt.Fprintf(os.Stderr,
+		"pillar-node: publishNodeIdentity: all %d attempts failed; "+
+			"ControllerPublishVolume will return FailedPrecondition until annotation is set\n",
+		maxRetries)
 }
 
 // socketParentDir returns the directory portion of the given socket path.

@@ -198,6 +198,13 @@ type NodeServer struct {
 	// When nil, linuxBlockDeviceSize is used.  Override in tests to return a
 	// synthetic size without opening a real block device.
 	blockDeviceSizeFn func(string) (int64, error)
+
+	// topologyProber determines which storage protocols are available on this
+	// node and is consulted by NodeGetInfo to build AccessibleTopology.
+	// When nil, the default sysfsProber is used (checks kernel modules,
+	// system binaries, and config files on the real host).
+	// Override in tests via WithTopologyProber to inject a mock prober.
+	topologyProber ProtocolProber
 }
 
 // Ensure NodeServer satisfies the interface at compile time.
@@ -207,8 +214,8 @@ var _ csi.NodeServer = (*NodeServer)(nil)
 // injectable operation backends.  The staging state directory defaults to
 // /var/lib/pillar-csi/node.
 //
-//   - nodeID     – unique node name used in NodeGetInfo (typically the
-//     Kubernetes node name, e.g. "worker-1").
+//   - nodeID     – Kubernetes node name returned verbatim by NodeGetInfo.NodeId
+//     (RFC §5.1 stable node handle, e.g. "worker-1").
 //   - connector  – NVMe-oF connect/disconnect implementation.
 //   - mounter    – filesystem format/mount/unmount implementation.
 func NewNodeServer(nodeID string, connector Connector, mounter Mounter) *NodeServer {
@@ -307,14 +314,14 @@ func (*NodeServer) NodeGetCapabilities(
 // placement decisions.
 //
 // The response contains:
-//   - NodeId: the node identifier supplied at construction time (typically the
-//     Kubernetes node name).  The CO records this in the CSI node object so that
-//     the Controller can target AllowInitiator / DenyInitiator calls to the
-//     correct agent.
+//   - NodeId: the Kubernetes node name — the stable node handle used by this
+//     driver.  Per RFC §5.1, node_id is NOT a transport-level identity (NVMe
+//     host NQN, iSCSI initiator IQN, etc.).  Protocol-specific identities are
+//     published separately as CSINode annotations so that the controller can
+//     look them up by node name.
 //
-// MaxVolumesPerNode is left at 0 (unlimited) for Phase 1.
-// AccessibleTopology is left empty for Phase 1; topology-aware provisioning
-// is a future enhancement.
+// MaxVolumesPerNode is left at 0 (unlimited).
+// AccessibleTopology reports which storage protocols are available on this node.
 func (n *NodeServer) NodeGetInfo(
 	_ context.Context,
 	_ *csi.NodeGetInfoRequest,
@@ -323,10 +330,31 @@ func (n *NodeServer) NodeGetInfo(
 		return nil, status.Error(codes.Internal, "node server has no node ID configured") //nolint:wrapcheck
 	}
 
+	// ── Resolve topology prober ──────────────────────────────────────────────
+	// Use the injected prober when available (tests); fall back to the
+	// production sysfsProber that inspects kernel modules and system binaries.
+	prober := n.topologyProber
+	if prober == nil {
+		prober = &sysfsProber{}
+	}
+
+	// ── Build AccessibleTopology ─────────────────────────────────────────────
+	// RFC §5.8: report which storage protocols are available on this node so
+	// that the CO can schedule volumes only on protocol-capable nodes.
+	// Only include topology keys for protocols that are actually available;
+	// omit unavailable protocols so StorageClass allowedTopologies selectors
+	// (using In/NotIn operators) work correctly with sparse maps.
+	segs := buildTopologySegments(prober)
+
+	var topology *csi.Topology
+	if len(segs) > 0 {
+		topology = &csi.Topology{Segments: segs}
+	}
+
 	return &csi.NodeGetInfoResponse{
 		NodeId: n.nodeID,
 		// MaxVolumesPerNode: 0 means unlimited (CSI spec default).
-		// AccessibleTopology: nil means no topology constraints for Phase 1.
+		AccessibleTopology: topology,
 	}, nil
 }
 

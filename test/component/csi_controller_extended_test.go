@@ -562,6 +562,12 @@ func TestCSIErrors_ControllerUnpublish_DenyInitiatorNonNotFound(t *testing.T) {
 	env := newCSIControllerTestEnv(t)
 	ctx := context.Background()
 
+	const nodeID = "nqn.test:node-deny-fail"
+	// Seed CSINode so resolveInitiatorID succeeds and DenyInitiator is reached.
+	// Without the CSINode, the controller treats FailedPrecondition as "already
+	// revoked" and returns success before calling the agent.
+	seedCSINodeForNVMeOF(ctx, t, env.k8sClient, nodeID, nodeID)
+
 	env.agent.denyInitiatorFn = func(
 		_ context.Context, _ *agentv1.DenyInitiatorRequest,
 	) (*agentv1.DenyInitiatorResponse, error) {
@@ -570,7 +576,7 @@ func TestCSIErrors_ControllerUnpublish_DenyInitiatorNonNotFound(t *testing.T) {
 
 	_, err := env.srv.ControllerUnpublishVolume(ctx, &csipb.ControllerUnpublishVolumeRequest{
 		VolumeId: expectedCSIVolumeID,
-		NodeId:   "nqn.test:node-deny-fail",
+		NodeId:   nodeID,
 	})
 	requireNonOKGRPC(t, err)
 }

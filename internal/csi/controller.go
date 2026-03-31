@@ -48,6 +48,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 	corev1 "k8s.io/api/core/v1"
+	storagev1 "k8s.io/api/storage/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -357,14 +358,7 @@ func describeSupportedModes() string {
 	for _, m := range supportedAccessModes {
 		names = append(names, m.String())
 	}
-	var result strings.Builder
-	for i, n := range names {
-		if i > 0 {
-			result.WriteString(", ")
-		}
-		result.WriteString(n)
-	}
-	return result.String()
+	return strings.Join(names, ", ")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -439,6 +433,27 @@ const (
 	// Parsing uses strings.SplitN(id, "/", 4) which always yields exactly four
 	// fields (the last field may itself contain slashes, e.g. "tank/pvc-abc123").
 	volumeIDParts = 4
+)
+
+// CSINode annotation keys for protocol-specific initiator identity.
+//
+// These annotations are written by the node plugin at startup (pillar-node) and
+// read by the controller during ControllerPublishVolume/ControllerUnpublishVolume
+// to resolve the protocol-specific initiator identity.
+//
+// This decouples node_id (Kubernetes node name) from transport-level identifiers
+// so that a single node can hold both an NQN and an IQN without conflating them
+// with the stable node handle.
+const (
+	// AnnotationNVMeOFHostNQN is the CSINode annotation that stores the NVMe-oF
+	// host NQN for this node (read from /etc/nvme/hostnqn).
+	// Example value: "nqn.2014-08.org.nvmexpress:uuid:xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx".
+	AnnotationNVMeOFHostNQN = "pillar-csi.bhyoo.com/nvmeof-host-nqn"
+
+	// AnnotationISCSIInitiatorIQN is the CSINode annotation that stores the
+	// iSCSI initiator IQN for this node (read from /etc/iscsi/initiatorname.iscsi).
+	// Example value: "iqn.1993-08.org.debian:01:xxxxxxxx".
+	AnnotationISCSIInitiatorIQN = "pillar-csi.bhyoo.com/iscsi-initiator-iqn"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1237,15 +1252,63 @@ func mapBackendType(s string) agentv1.BackendType {
 	}
 }
 
+// resolveInitiatorID looks up the protocol-specific initiator identity for the
+// given Kubernetes node by reading the appropriate CSINode annotation.
+//
+// Identity resolution by protocol:
+//
+//	NVMe-oF TCP → CSINode.annotations["pillar-csi.bhyoo.com/nvmeof-host-nqn"]
+//	iSCSI       → CSINode.annotations["pillar-csi.bhyoo.com/iscsi-initiator-iqn"]
+//	NFS/SMB     → nodeID (annotation-based resolution is a future Phase 2 item)
+//
+// Returns FailedPrecondition if the CSINode does not exist or the required
+// annotation is absent.  This causes the CO (external-attacher) to retry with
+// exponential backoff, giving the node plugin time to publish its identity
+// after a fresh node bootstrap.
+func (s *ControllerServer) resolveInitiatorID(ctx context.Context, nodeID, protocolTypeStr string) (string, error) {
+	var annotationKey string
+	switch v1alpha1.ProtocolType(protocolTypeStr) {
+	case v1alpha1.ProtocolTypeNVMeOFTCP:
+		annotationKey = AnnotationNVMeOFHostNQN
+	case v1alpha1.ProtocolTypeISCSI:
+		annotationKey = AnnotationISCSIInitiatorIQN
+	default:
+		// NFS, SMB and unknown protocols: initiator identity is not stored in a
+		// CSINode annotation in Phase 1.  Return nodeID as-is so that the caller
+		// can pass it unchanged to AllowInitiator/DenyInitiator.
+		return nodeID, nil
+	}
+
+	csiNode := &storagev1.CSINode{}
+	err := s.k8sClient.Get(ctx, types.NamespacedName{Name: nodeID}, csiNode)
+	if err != nil {
+		if k8serrors.IsNotFound(err) {
+			return "", status.Errorf(codes.FailedPrecondition,
+				"CSINode %q not found; node plugin may not have registered yet", nodeID)
+		}
+		return "", status.Errorf(codes.Internal,
+			"failed to get CSINode %q: %v", nodeID, err)
+	}
+
+	initiatorID := csiNode.Annotations[annotationKey]
+	if initiatorID == "" {
+		return "", status.Errorf(codes.FailedPrecondition,
+			"CSINode %q is missing annotation %q; node plugin may not have published its identity yet",
+			nodeID, annotationKey)
+	}
+
+	return initiatorID, nil
+}
+
 // mapProtocolType converts the StorageClass protocol-type string to the agent
 // protobuf enum value.
 func mapProtocolType(s string) agentv1.ProtocolType {
-	switch s {
-	case "nvmeof-tcp":
+	switch v1alpha1.ProtocolType(s) {
+	case v1alpha1.ProtocolTypeNVMeOFTCP:
 		return agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP
-	case "iscsi":
+	case v1alpha1.ProtocolTypeISCSI:
 		return agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI
-	case "nfs":
+	case v1alpha1.ProtocolTypeNFS:
 		return agentv1.ProtocolType_PROTOCOL_TYPE_NFS
 	default:
 		return agentv1.ProtocolType_PROTOCOL_TYPE_UNSPECIFIED
@@ -1397,15 +1460,18 @@ func parseACLEnabled(val string) bool {
 // ControllerPublishVolume grants a specific node access to a volume by
 // calling agent.AllowInitiator on the storage node.
 //
-// The CSI node_id provided in the request is used directly as the
-// initiator_id passed to the agent:
+// The node_id in the request is the Kubernetes node name (stable handle).
+// The protocol-specific initiator identity is resolved by reading the
+// appropriate CSINode annotation that was written by the node plugin at
+// startup:
 //
-//	NVMe-oF TCP → host NQN (e.g. "nqn.2014-08.org.nvmexpress:uuid:…")
-//	iSCSI       → IQN (e.g. "iqn.1993-08.org.debian:…")
-//	NFS/SMB     → client IP address or CIDR
+//	NVMe-oF TCP → CSINode["pillar-csi.bhyoo.com/nvmeof-host-nqn"] (host NQN)
+//	iSCSI       → CSINode["pillar-csi.bhyoo.com/iscsi-initiator-iqn"] (IQN)
+//	NFS/SMB     → nodeID used as-is (annotation-based resolution is Phase 2)
 //
-// The NodeServer populates this identifier in NodeGetInfo so that the CO
-// can route the publish call correctly.
+// If the required CSINode annotation is absent, FailedPrecondition is returned
+// and the CO (external-attacher) retries with exponential backoff, giving the
+// node plugin time to publish its identity after a fresh node bootstrap.
 //
 // Idempotency: AllowInitiator is idempotent on the agent side; calling it
 // twice for the same volume / initiator pair is safe.
@@ -1460,6 +1526,15 @@ func (s *ControllerServer) ControllerPublishVolume(
 			"PillarTarget %q has no resolved address; agent may not be ready", targetName)
 	}
 
+	// ── Resolve initiator identity from CSINode annotation ───────────────────
+	// node_id is the Kubernetes node name (stable handle).  The protocol-specific
+	// initiator identity (NQN for NVMe-oF, IQN for iSCSI) is stored in the
+	// CSINode annotation by the node plugin at startup.
+	initiatorID, resolveErr := s.resolveInitiatorID(ctx, nodeID, protocolTypeStr)
+	if resolveErr != nil {
+		return nil, resolveErr
+	}
+
 	// ── Dial the agent ────────────────────────────────────────────────────────
 	agentClient, closer, err := s.dialAgent(ctx, agentAddr)
 	if err != nil {
@@ -1469,19 +1544,19 @@ func (s *ControllerServer) ControllerPublishVolume(
 	defer closer.Close() //nolint:errcheck // best-effort close; dial errors already handled
 
 	// ── Grant initiator access ────────────────────────────────────────────────
-	// node_id serves as the initiator_id:
-	//   NVMe-oF → host NQN, iSCSI → IQN, NFS/SMB → client IP.
+	// initiatorID is the protocol-specific identity resolved from CSINode:
+	//   NVMe-oF TCP → host NQN, iSCSI → IQN, NFS/SMB → nodeID (Phase 2).
 	allowResp, allowErr := agentClient.AllowInitiator(ctx, &agentv1.AllowInitiatorRequest{
 		VolumeId:     agentVolID,
 		ProtocolType: agentProtocolType,
-		InitiatorId:  nodeID,
+		InitiatorId:  initiatorID,
 	})
 	_ = allowResp
 	if allowErr != nil {
 		grpcSt, _ := status.FromError(allowErr)
 		return nil, status.Errorf(grpcSt.Code(),
 			"agent AllowInitiator(%q, initiator=%q) failed: %v",
-			agentVolID, nodeID, allowErr)
+			agentVolID, initiatorID, allowErr)
 	}
 
 	// ── Advance state machine to ControllerPublished ─────────────────────────
@@ -1568,6 +1643,22 @@ func (s *ControllerServer) ControllerUnpublishVolume(
 		return &csi.ControllerUnpublishVolumeResponse{}, nil
 	}
 
+	// ── Resolve initiator identity from CSINode annotation ───────────────────
+	// node_id is the Kubernetes node name (stable handle).  The protocol-specific
+	// initiator identity (NQN for NVMe-oF, IQN for iSCSI) is stored in the
+	// CSINode annotation by the node plugin at startup.
+	// If the CSINode annotation is missing during unpublish (e.g. the node was
+	// decommissioned), treat it as already revoked and return success.
+	initiatorID, resolveErr := s.resolveInitiatorID(ctx, nodeID, protocolTypeStr)
+	if resolveErr != nil {
+		if st, _ := status.FromError(resolveErr); st.Code() == codes.FailedPrecondition {
+			// Annotation absent during unpublish — the node's identity is gone,
+			// so there is no ACL entry to revoke.  Return success idempotently.
+			return &csi.ControllerUnpublishVolumeResponse{}, nil
+		}
+		return nil, resolveErr
+	}
+
 	// ── Dial the agent ────────────────────────────────────────────────────────
 	agentClient, closer, err := s.dialAgent(ctx, agentAddr)
 	if err != nil {
@@ -1580,7 +1671,7 @@ func (s *ControllerServer) ControllerUnpublishVolume(
 	denyResp, denyErr := agentClient.DenyInitiator(ctx, &agentv1.DenyInitiatorRequest{
 		VolumeId:     agentVolID,
 		ProtocolType: agentProtocolType,
-		InitiatorId:  nodeID,
+		InitiatorId:  initiatorID,
 	})
 	_ = denyResp
 	if denyErr != nil {
@@ -1588,7 +1679,7 @@ func (s *ControllerServer) ControllerUnpublishVolume(
 		if st.Code() != codes.NotFound {
 			return nil, status.Errorf(st.Code(),
 				"agent DenyInitiator(%q, initiator=%q) failed: %v",
-				agentVolID, nodeID, denyErr)
+				agentVolID, initiatorID, denyErr)
 		}
 		// NotFound → ACL entry already absent; success.
 	}

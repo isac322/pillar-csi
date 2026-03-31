@@ -119,6 +119,12 @@ func newCSILifecycleEnv(
 	// Build the controller environment (includes the mock agent gRPC listener).
 	ctrl := newCSIControllerE2EEnv(t, targetName)
 
+	// Seed CSINode so the controller can resolve the NVMe-oF initiator identity
+	// from the annotation during ControllerPublishVolume / ControllerUnpublishVolume.
+	// The annotation value is set to nodeID so that tests can assert
+	// InitiatorID == env.NodeID without requiring a separate NQN constant.
+	seedCSINodeForNVMeOF(context.Background(), t, ctrl.K8sClient, nodeID, nodeID)
+
 	// Configure the mock agent's ExportInfo so the NQN/address/port flow
 	// through to NodeStageVolume.
 	ctrl.AgentMock.ExportVolumeInfo = &agentv1.ExportInfo{

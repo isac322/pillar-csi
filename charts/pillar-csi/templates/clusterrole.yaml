@@ -163,7 +163,8 @@ rules:
     verbs:
       - get
       - patch
-  # CSI sidecar: CSINode (external-provisioner reads node topology)
+  # CSI sidecar: CSINode (external-provisioner reads node topology;
+  # controller resolves initiator identity from annotations)
   - apiGroups:
       - storage.k8s.io
     resources:
@@ -190,6 +191,33 @@ rules:
     resources:
       - pillarvolumes/status
       - pillarvolumes/finalizers
+    verbs:
+      - get
+      - patch
+      - update
+{{- end }}
+---
+{{/*
+ClusterRole for the pillar-node DaemonSet.
+Grants CSINode get/update/patch so the node plugin can publish protocol-specific
+initiator identity annotations (RFC §5.2).
+Controlled by .Values.rbac.create
+*/}}
+{{- if .Values.rbac.create -}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "pillar-csi.fullname" . }}-node
+  labels:
+    {{- include "pillar-csi.componentLabels" (dict "root" . "component" "node") | nindent 4 }}
+rules:
+  # Node plugin must patch CSINode annotations to publish NVMe host NQN and
+  # iSCSI initiator IQN so that the controller can resolve initiator identity
+  # without assuming node_id == NQN (RFC §5.2).
+  - apiGroups:
+      - storage.k8s.io
+    resources:
+      - csinodes
     verbs:
       - get
       - patch
