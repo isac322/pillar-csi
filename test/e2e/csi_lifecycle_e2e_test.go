@@ -231,7 +231,7 @@ func TestCSILifecycle_FullCycle(t *testing.T) { //nolint:gocognit,gocyclo // ful
 	// needed by NodeStageVolume.  These must use the exact key names that
 	// the NodeServer reads (target_id, address, port).
 	for _, key := range []string{
-		csisrv.VolumeContextKeyTargetNQN,
+		csisrv.VolumeContextKeyTargetID,
 		csisrv.VolumeContextKeyAddress,
 		csisrv.VolumeContextKeyPort,
 	} {
@@ -239,10 +239,10 @@ func TestCSILifecycle_FullCycle(t *testing.T) { //nolint:gocognit,gocyclo // ful
 			t.Errorf("CreateVolume: VolumeContext missing required key %q", key)
 		}
 	}
-	if volumeContext[csisrv.VolumeContextKeyTargetNQN] != lifecycleTestNQN {
+	if volumeContext[csisrv.VolumeContextKeyTargetID] != lifecycleTestNQN {
 		t.Errorf("VolumeContext[%s] = %q, want %q",
-			csisrv.VolumeContextKeyTargetNQN,
-			volumeContext[csisrv.VolumeContextKeyTargetNQN],
+			csisrv.VolumeContextKeyTargetID,
+			volumeContext[csisrv.VolumeContextKeyTargetID],
 			lifecycleTestNQN)
 	}
 	if volumeContext[csisrv.VolumeContextKeyAddress] != lifecycleTestAddress {
@@ -774,9 +774,9 @@ func TestCSILifecycle_VolumeContextFlowThrough(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("expected 1 Connect call, got %d", len(calls))
 	}
-	if calls[0].SubsysNQN != vc[csisrv.VolumeContextKeyTargetNQN] {
+	if calls[0].SubsysNQN != vc[csisrv.VolumeContextKeyTargetID] {
 		t.Errorf("Connect: SubsysNQN = %q, want %q (from VolumeContext)",
-			calls[0].SubsysNQN, vc[csisrv.VolumeContextKeyTargetNQN])
+			calls[0].SubsysNQN, vc[csisrv.VolumeContextKeyTargetID])
 	}
 	if calls[0].TrAddr != vc[csisrv.VolumeContextKeyAddress] {
 		t.Errorf("Connect: TrAddr = %q, want %q (from VolumeContext)",

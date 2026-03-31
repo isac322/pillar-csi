@@ -245,9 +245,9 @@ func TestCSIEdge_NodeStage_EmptyNQN(t *testing.T) {
 
 	// Provide all required keys but set target_id to the empty string.
 	volCtx := map[string]string{
-		csisrv.VolumeContextKeyTargetNQN: "", // deliberately empty
-		csisrv.VolumeContextKeyAddress:   "127.0.0.1",
-		csisrv.VolumeContextKeyPort:      "4420",
+		csisrv.VolumeContextKeyTargetID: "", // deliberately empty
+		csisrv.VolumeContextKeyAddress:  "127.0.0.1",
+		csisrv.VolumeContextKeyPort:     "4420",
 	}
 
 	_, err := env.Node.NodeStageVolume(ctx, &csi.NodeStageVolumeRequest{

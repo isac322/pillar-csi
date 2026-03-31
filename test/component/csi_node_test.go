@@ -268,9 +268,9 @@ func baseStageRequest(stagingPath string) *csipb.NodeStageVolumeRequest {
 		VolumeId:          "storage-node-1/nvmeof-tcp/zfs-zvol/tank/pvc-node-test",
 		StagingTargetPath: stagingPath,
 		VolumeContext: map[string]string{
-			pillarcsi.VolumeContextKeyTargetNQN: "nqn.2026-01.com.pillar-csi:pvc-node-test",
-			pillarcsi.VolumeContextKeyAddress:   "192.168.1.10",
-			pillarcsi.VolumeContextKeyPort:      "4420",
+			pillarcsi.VolumeContextKeyTargetID: "nqn.2026-01.com.pillar-csi:pvc-node-test",
+			pillarcsi.VolumeContextKeyAddress:  "192.168.1.10",
+			pillarcsi.VolumeContextKeyPort:     "4420",
 		},
 		VolumeCapability: &csipb.VolumeCapability{
 			AccessType: &csipb.VolumeCapability_Mount{
@@ -436,9 +436,9 @@ func TestCSINode_NodeStageVolume_BlockAccess(t *testing.T) {
 		VolumeId:          "storage-node-1/nvmeof-tcp/zfs-zvol/tank/pvc-block-test",
 		StagingTargetPath: stagingPath,
 		VolumeContext: map[string]string{
-			pillarcsi.VolumeContextKeyTargetNQN: "nqn.2026-01.com.pillar-csi:pvc-block-test",
-			pillarcsi.VolumeContextKeyAddress:   "192.168.1.10",
-			pillarcsi.VolumeContextKeyPort:      "4420",
+			pillarcsi.VolumeContextKeyTargetID: "nqn.2026-01.com.pillar-csi:pvc-block-test",
+			pillarcsi.VolumeContextKeyAddress:  "192.168.1.10",
+			pillarcsi.VolumeContextKeyPort:     "4420",
 		},
 		VolumeCapability: &csipb.VolumeCapability{
 			AccessType: &csipb.VolumeCapability_Block{
@@ -650,7 +650,7 @@ func TestCSINode_NodeStageVolume_MissingVolumeContext(t *testing.T) {
 		name    string
 		dropKey string
 	}{
-		{"missing NQN", pillarcsi.VolumeContextKeyTargetNQN},
+		{"missing target_id", pillarcsi.VolumeContextKeyTargetID},
 		{"missing address", pillarcsi.VolumeContextKeyAddress},
 		{"missing port", pillarcsi.VolumeContextKeyPort},
 	}
@@ -952,9 +952,9 @@ func TestCSINode_NodeStageUnstagePublishUnpublish_FullLifecycle(t *testing.T) {
 		VolumeId:          volumeID,
 		StagingTargetPath: stagingPath,
 		VolumeContext: map[string]string{
-			pillarcsi.VolumeContextKeyTargetNQN: nqn,
-			pillarcsi.VolumeContextKeyAddress:   "10.0.0.1",
-			pillarcsi.VolumeContextKeyPort:      "4420",
+			pillarcsi.VolumeContextKeyTargetID: nqn,
+			pillarcsi.VolumeContextKeyAddress:  "10.0.0.1",
+			pillarcsi.VolumeContextKeyPort:     "4420",
 		},
 		VolumeCapability: &csipb.VolumeCapability{
 			AccessType: &csipb.VolumeCapability_Mount{
@@ -1167,9 +1167,9 @@ func TestCSINode_NodeStage_StateDirUnwritable(t *testing.T) {
 		VolumeId:          "storage-node-1/nvmeof-tcp/zfs-zvol/tank/pvc-unwritable",
 		StagingTargetPath: stagingPath,
 		VolumeContext: map[string]string{
-			pillarcsi.VolumeContextKeyTargetNQN: "nqn.2026-01.com.pillar-csi:pvc-unwritable",
-			pillarcsi.VolumeContextKeyAddress:   "192.168.1.10",
-			pillarcsi.VolumeContextKeyPort:      "4420",
+			pillarcsi.VolumeContextKeyTargetID: "nqn.2026-01.com.pillar-csi:pvc-unwritable",
+			pillarcsi.VolumeContextKeyAddress:  "192.168.1.10",
+			pillarcsi.VolumeContextKeyPort:     "4420",
 		},
 		VolumeCapability: &csipb.VolumeCapability{
 			AccessType: &csipb.VolumeCapability_Mount{
@@ -1265,9 +1265,9 @@ func TestCSINode_NodeStageVolume_MissingStagingTargetPath(t *testing.T) {
 		VolumeId:          "storage-node-1/nvmeof-tcp/zfs-zvol/tank/pvc-missing-staging",
 		StagingTargetPath: "", // missing
 		VolumeContext: map[string]string{
-			pillarcsi.VolumeContextKeyTargetNQN: "nqn.2026-01.com.pillar-csi:pvc-missing-staging",
-			pillarcsi.VolumeContextKeyAddress:   "192.168.1.10",
-			pillarcsi.VolumeContextKeyPort:      "4420",
+			pillarcsi.VolumeContextKeyTargetID: "nqn.2026-01.com.pillar-csi:pvc-missing-staging",
+			pillarcsi.VolumeContextKeyAddress:  "192.168.1.10",
+			pillarcsi.VolumeContextKeyPort:     "4420",
 		},
 		VolumeCapability: &csipb.VolumeCapability{
 			AccessType: &csipb.VolumeCapability_Mount{
@@ -1300,9 +1300,9 @@ func TestCSINode_NodeStageVolume_NilVolumeCapability(t *testing.T) {
 		VolumeId:          "storage-node-1/nvmeof-tcp/zfs-zvol/tank/pvc-nil-cap",
 		StagingTargetPath: t.TempDir(),
 		VolumeContext: map[string]string{
-			pillarcsi.VolumeContextKeyTargetNQN: "nqn.2026-01.com.pillar-csi:pvc-nil-cap",
-			pillarcsi.VolumeContextKeyAddress:   "192.168.1.10",
-			pillarcsi.VolumeContextKeyPort:      "4420",
+			pillarcsi.VolumeContextKeyTargetID: "nqn.2026-01.com.pillar-csi:pvc-nil-cap",
+			pillarcsi.VolumeContextKeyAddress:  "192.168.1.10",
+			pillarcsi.VolumeContextKeyPort:     "4420",
 		},
 		VolumeCapability: nil, // nil capability
 	})

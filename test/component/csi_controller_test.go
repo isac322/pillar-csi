@@ -441,8 +441,8 @@ func TestCSIController_CreateVolume_Success(t *testing.T) {
 
 	// VolumeContext must carry connection parameters for NodeStageVolume.
 	vc := vol.GetVolumeContext()
-	if vc[pillarcsi.VolumeContextKeyTargetNQN] == "" {
-		t.Errorf("VolumeContext[%q] is empty", pillarcsi.VolumeContextKeyTargetNQN)
+	if vc[pillarcsi.VolumeContextKeyTargetID] == "" {
+		t.Errorf("VolumeContext[%q] is empty", pillarcsi.VolumeContextKeyTargetID)
 	}
 	if vc[pillarcsi.VolumeContextKeyAddress] == "" {
 		t.Errorf("VolumeContext[%q] is empty", pillarcsi.VolumeContextKeyAddress)

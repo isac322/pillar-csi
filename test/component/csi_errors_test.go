@@ -657,9 +657,9 @@ func TestCSIErrors_NodeStage_InvalidParams_MissingVolumeID(t *testing.T) {
 		VolumeId:          "",
 		StagingTargetPath: t.TempDir(),
 		VolumeContext: map[string]string{
-			pillarcsi.VolumeContextKeyTargetNQN: "nqn.2026-01.com.pillar-csi:pvc-empty-id",
-			pillarcsi.VolumeContextKeyAddress:   "192.168.1.10",
-			pillarcsi.VolumeContextKeyPort:      "4420",
+			pillarcsi.VolumeContextKeyTargetID: "nqn.2026-01.com.pillar-csi:pvc-empty-id",
+			pillarcsi.VolumeContextKeyAddress:  "192.168.1.10",
+			pillarcsi.VolumeContextKeyPort:     "4420",
 		},
 		VolumeCapability: &csipb.VolumeCapability{
 			AccessType: &csipb.VolumeCapability_Mount{

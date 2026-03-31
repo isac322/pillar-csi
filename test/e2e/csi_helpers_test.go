@@ -789,9 +789,9 @@ func newCSINodeE2EEnv(t *testing.T, nodeID string) *csiNodeE2EEnv {
 //	port      = "4420"
 func defaultStageVolumeContext(subsysNQN string) map[string]string {
 	return map[string]string{
-		csisrv.VolumeContextKeyTargetNQN: subsysNQN,
-		csisrv.VolumeContextKeyAddress:   "127.0.0.1",
-		csisrv.VolumeContextKeyPort:      "4420",
+		csisrv.VolumeContextKeyTargetID: subsysNQN,
+		csisrv.VolumeContextKeyAddress:  "127.0.0.1",
+		csisrv.VolumeContextKeyPort:     "4420",
 	}
 }
 

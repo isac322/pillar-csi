@@ -418,9 +418,9 @@ const (
 	// as the exported VolumeContextKey* constants in node.go so that the
 	// VolumeContext written by CreateVolume can be passed directly to
 	// NodeStageVolume by the CO without any translation.
-	vcTargetID = VolumeContextKeyTargetNQN // "target_id"
-	vcAddress  = VolumeContextKeyAddress   // "address"
-	vcPort     = VolumeContextKeyPort      // "port"
+	vcTargetID = VolumeContextKeyTargetID // "target_id"
+	vcAddress  = VolumeContextKeyAddress  // "address"
+	vcPort     = VolumeContextKeyPort     // "port"
 
 	// VcVolumeRef and vcProtocolType are additional context keys not consumed
 	// by NodeStageVolume but useful for diagnostics and future extensions.
@@ -1330,6 +1330,18 @@ func accessTypeForProtocol(p agentv1.ProtocolType) agentv1.VolumeAccessType {
 	}
 }
 
+// isFileProtocol reports whether the given ProtocolType is a file-based
+// (network filesystem) protocol.  File protocols (NFS, SMB) handle resize
+// entirely on the server side; NodeExpandVolume is not needed.
+func isFileProtocol(p v1alpha1.ProtocolType) bool {
+	switch p {
+	case v1alpha1.ProtocolTypeNFS, v1alpha1.ProtocolTypeSMB:
+		return true
+	default:
+		return false
+	}
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Backend / export parameter builders
 // ─────────────────────────────────────────────────────────────────────────────.
@@ -1708,10 +1720,11 @@ func (s *ControllerServer) ControllerUnpublishVolume(
 // ControllerExpandVolume resizes a volume on the storage backend by delegating
 // to agent.ExpandVolume.
 //
-// The method returns the actual capacity after expansion and sets
-// node_expansion_required to true so that the CO will subsequently call
-// NodeExpandVolume on the consuming node to resize the filesystem or
-// re-detect the larger block device.
+// The method returns the actual capacity after expansion. For block protocols
+// (nvmeof-tcp, iscsi) node_expansion_required is set to true so that the CO
+// will subsequently call NodeExpandVolume to rescan the block device and
+// resize the filesystem. For file protocols (nfs, smb) node_expansion_required
+// is set to false because the resize is fully server-side.
 //
 // Idempotency: ExpandVolume on the agent is idempotent — calling it with a
 // requested_bytes ≤ current size is a no-op and returns the current size.
@@ -1743,6 +1756,7 @@ func (s *ControllerServer) ControllerExpandVolume(
 			volumeID)
 	}
 	targetName := parts[0]
+	protocolTypeStr := parts[1]
 	backendTypeStr := parts[2]
 	agentVolID := parts[3]
 
@@ -1793,13 +1807,15 @@ func (s *ControllerServer) ControllerExpandVolume(
 		actualBytes = requiredBytes
 	}
 
-	// node_expansion_required=true instructs the CO to call NodeExpandVolume
-	// so that the node can either:
-	//   • rescan the NVMe-oF namespace to pick up the new block-device size, or
-	//   • run resize2fs / xfs_growfs for mounted filesystems.
+	// File-protocol volumes (NFS, SMB) are resized entirely on the server side;
+	// the node does not need to rescan a block device or grow a filesystem.
+	// Block-protocol volumes (nvmeof-tcp, iscsi) require a node-side rescan
+	// to pick up the new block-device size and optionally run resize2fs/xfs_growfs.
+	nodeExpansionRequired := !isFileProtocol(v1alpha1.ProtocolType(protocolTypeStr))
+
 	return &csi.ControllerExpandVolumeResponse{
 		CapacityBytes:         actualBytes,
-		NodeExpansionRequired: true,
+		NodeExpansionRequired: nodeExpansionRequired,
 	}, nil
 }
 

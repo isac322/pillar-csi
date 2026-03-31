@@ -94,9 +94,9 @@ func TestCSINode_StateMachine_NodeStage_WrongOrder(t *testing.T) {
 		VolumeId:          volumeID,
 		StagingTargetPath: stagingPath,
 		VolumeContext: map[string]string{
-			pillarcsi.VolumeContextKeyTargetNQN: "nqn.2026-01.com.pillar-csi:" + volumeID,
-			pillarcsi.VolumeContextKeyAddress:   "192.168.1.10",
-			pillarcsi.VolumeContextKeyPort:      "4420",
+			pillarcsi.VolumeContextKeyTargetID: "nqn.2026-01.com.pillar-csi:" + volumeID,
+			pillarcsi.VolumeContextKeyAddress:  "192.168.1.10",
+			pillarcsi.VolumeContextKeyPort:     "4420",
 		},
 		VolumeCapability: &csipb.VolumeCapability{
 			AccessType: &csipb.VolumeCapability_Mount{
@@ -228,9 +228,9 @@ func TestCSINode_StateMachine_FullLifecycleWithSM(t *testing.T) {
 		VolumeId:          volumeID,
 		StagingTargetPath: stagingPath,
 		VolumeContext: map[string]string{
-			pillarcsi.VolumeContextKeyTargetNQN: "nqn.2026-01.com.pillar-csi:pvc-sm-lifecycle",
-			pillarcsi.VolumeContextKeyAddress:   "192.168.1.10",
-			pillarcsi.VolumeContextKeyPort:      "4420",
+			pillarcsi.VolumeContextKeyTargetID: "nqn.2026-01.com.pillar-csi:pvc-sm-lifecycle",
+			pillarcsi.VolumeContextKeyAddress:  "192.168.1.10",
+			pillarcsi.VolumeContextKeyPort:     "4420",
 		},
 		VolumeCapability: &csipb.VolumeCapability{
 			AccessType: &csipb.VolumeCapability_Mount{
@@ -314,9 +314,9 @@ func TestCSINode_Concurrent_StageSameVolume_NoDeadlock(t *testing.T) {
 				VolumeId:          volumeID,
 				StagingTargetPath: stagingPath,
 				VolumeContext: map[string]string{
-					pillarcsi.VolumeContextKeyTargetNQN: "nqn.2026-01.com.pillar-csi:pvc-concurrent-same",
-					pillarcsi.VolumeContextKeyAddress:   "192.168.1.10",
-					pillarcsi.VolumeContextKeyPort:      "4420",
+					pillarcsi.VolumeContextKeyTargetID: "nqn.2026-01.com.pillar-csi:pvc-concurrent-same",
+					pillarcsi.VolumeContextKeyAddress:  "192.168.1.10",
+					pillarcsi.VolumeContextKeyPort:     "4420",
 				},
 				VolumeCapability: &csipb.VolumeCapability{
 					AccessType: &csipb.VolumeCapability_Mount{
@@ -368,9 +368,9 @@ func TestCSINode_Concurrent_StageDifferentVolumes_AllSucceed(t *testing.T) {
 				VolumeId:          volumeID,
 				StagingTargetPath: stagingPath,
 				VolumeContext: map[string]string{
-					pillarcsi.VolumeContextKeyTargetNQN: fmt.Sprintf("nqn.2026-01.com.pillar-csi:pvc-concurrent-%d", idx),
-					pillarcsi.VolumeContextKeyAddress:   "192.168.1.10",
-					pillarcsi.VolumeContextKeyPort:      "4420",
+					pillarcsi.VolumeContextKeyTargetID: fmt.Sprintf("nqn.2026-01.com.pillar-csi:pvc-concurrent-%d", idx),
+					pillarcsi.VolumeContextKeyAddress:  "192.168.1.10",
+					pillarcsi.VolumeContextKeyPort:     "4420",
 				},
 				VolumeCapability: &csipb.VolumeCapability{
 					AccessType: &csipb.VolumeCapability_Mount{

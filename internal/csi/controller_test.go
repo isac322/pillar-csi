@@ -84,6 +84,10 @@ type mockAgentClient struct {
 	getCapacityResp *agentv1.GetCapacityResponse
 	getCapacityErr  error
 
+	// Responses for ExpandVolume.
+	expandVolumeResp *agentv1.ExpandVolumeResponse
+	expandVolumeErr  error
+
 	// Responses for AllowInitiator / DenyInitiator.
 	allowInitiatorErr  error
 	denyInitiatorErr   error
@@ -96,6 +100,7 @@ type mockAgentClient struct {
 	unexportVolumeCalls int
 	deleteVolumeCalls   int
 	getCapacityCalls    int
+	expandVolumeCalls   int
 	allowInitiatorCalls int
 	denyInitiatorCalls  int
 
@@ -219,12 +224,21 @@ func (*mockAgentClient) HealthCheck(
 ) (*agentv1.HealthCheckResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "not implemented in mock")
 }
-func (*mockAgentClient) ExpandVolume(
+func (m *mockAgentClient) ExpandVolume(
 	_ context.Context,
 	_ *agentv1.ExpandVolumeRequest,
 	_ ...grpc.CallOption,
 ) (*agentv1.ExpandVolumeResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "not implemented in mock")
+	m.expandVolumeCalls++
+	if m.expandVolumeErr != nil {
+		return nil, m.expandVolumeErr
+	}
+	if m.expandVolumeResp != nil {
+		return m.expandVolumeResp, nil
+	}
+	return &agentv1.ExpandVolumeResponse{
+		CapacityBytes: 2147483648, // 2 GiB default
+	}, nil
 }
 func (m *mockAgentClient) AllowInitiator(
 	_ context.Context,
@@ -406,8 +420,8 @@ func TestCreateVolume_FirstCall(t *testing.T) {
 
 	// VolumeContext must carry connection parameters.
 	vc := vol.GetVolumeContext()
-	if vc[VolumeContextKeyTargetNQN] == "" {
-		t.Errorf("VolumeContext[%q] is empty", VolumeContextKeyTargetNQN)
+	if vc[VolumeContextKeyTargetID] == "" {
+		t.Errorf("VolumeContext[%q] is empty", VolumeContextKeyTargetID)
 	}
 	if vc[VolumeContextKeyAddress] == "" {
 		t.Errorf("VolumeContext[%q] is empty", VolumeContextKeyAddress)

@@ -53,9 +53,9 @@ import (
 // VolumeContext produced by CreateVolume can be passed directly to
 // NodeStageVolume without key translation.
 const (
-	ctrlVCTargetID     = csisrv.VolumeContextKeyTargetNQN // "target_id"
-	ctrlVCAddress      = csisrv.VolumeContextKeyAddress   // "address"
-	ctrlVCPort         = csisrv.VolumeContextKeyPort      // "port"
+	ctrlVCTargetID     = csisrv.VolumeContextKeyTargetID // "target_id"
+	ctrlVCAddress      = csisrv.VolumeContextKeyAddress  // "address"
+	ctrlVCPort         = csisrv.VolumeContextKeyPort     // "port"
 	ctrlVCVolumeRef    = "pillar-csi.bhyoo.com/volume-ref"
 	ctrlVCProtocolType = "pillar-csi.bhyoo.com/protocol-type"
 )

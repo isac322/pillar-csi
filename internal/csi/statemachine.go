@@ -39,9 +39,9 @@ package csi
 //
 // # Partial-failure states
 //
-//	NodeStagePartial: NVMe-oF Connect succeeded but the mount step failed.
+//	NodeStagePartial: Protocol attach succeeded but the mount step failed.
 //	  - Retry: NodeStageVolume → NodeStaged
-//	  - Cleanup: NodeUnstageVolume → ControllerPublished (disconnects the fabric)
+//	  - Cleanup: NodeUnstageVolume → ControllerPublished (detaches the volume)
 
 import (
 	"fmt"
@@ -71,13 +71,13 @@ const (
 	StateCreated
 
 	// StateControllerPublished means ControllerPublishVolume has succeeded.
-	// The volume's NVMe-oF target (or equivalent) has been authorized to accept
-	// connections from the target node's initiator NQN.
+	// The volume's storage target has been authorized to accept connections from
+	// the node's initiator (e.g., NQN, IQN, or equivalent identifier).
 	StateControllerPublished
 
 	// StateNodeStaged means NodeStageVolume has succeeded.  The node is
-	// connected to the NVMe-oF target and the volume is formatted (if
-	// necessary) and mounted at the staging target path.
+	// attached to the storage target (via the appropriate protocol) and the
+	// volume is formatted (if necessary) and mounted at the staging target path.
 	StateNodeStaged
 
 	// StateNodePublished means NodePublishVolume has succeeded.  The staging
@@ -86,10 +86,10 @@ const (
 	StateNodePublished
 
 	// StateNodeStagePartial is a partial-failure state that arises when
-	// NodeStageVolume completes the NVMe-oF connect step but fails during the
+	// NodeStageVolume completes the protocol attach step but fails during the
 	// mount step.  From this state:
 	//   - NodeStageVolume may be retried (transitions to StateNodeStaged).
-	//   - NodeUnstageVolume performs cleanup (disconnects NVMe-oF, transitions
+	//   - NodeUnstageVolume performs cleanup (detaches the volume, transitions
 	//     to StateControllerPublished).
 	StateNodeStagePartial
 
@@ -168,7 +168,7 @@ const (
 	OpNodeUnpublish VolumeOperation = "NodeUnpublishVolume"
 
 	// OpNodeStageConnected is an internal pseudo-operation used by
-	// NodeStageVolume to record that the NVMe-oF connect step has succeeded
+	// NodeStageVolume to record that the protocol attach step has succeeded
 	// but the mount step has not yet started.  It drives the volume into
 	// StateNodeStagePartial so that a subsequent mount failure leaves the
 	// state machine in a recoverable partial-failure state rather than the
@@ -257,7 +257,7 @@ var legalTransitions = map[transitionKey]transitionResult{
 	{StateControllerPublished, OpNodeStage}: {to: StateNodeStaged},
 	{StateNodeStaged, OpNodeStage}:          {to: StateNodeStaged, isNoop: true},
 
-	// NodeStageConnected records that the NVMe-oF connect succeeded but mount
+	// NodeStageConnected records that the protocol attach succeeded but mount
 	// has not yet been attempted.  This is an internal operation that drives
 	// the volume into the NodeStagePartial state.
 	{StateControllerPublished, OpNodeStageConnected}: {to: StateNodeStagePartial},
@@ -297,8 +297,8 @@ var legalTransitions = map[transitionKey]transitionResult{
 //	if err != nil { return nil, err }
 //	if isNoop { return &csi.NodeStageVolumeResponse{}, nil }
 //
-//	// Mark partial: NVMe-oF connect succeeded, mount not yet started.
-//	if err := connector.Connect(ctx, nqn, addr, port); err != nil { … }
+//	// Mark partial: protocol attach succeeded, mount not yet started.
+//	if err := handler.Attach(ctx, params); err != nil { … }
 //	_, _ = sm.Transition(volumeID, csiState.OpNodeStageConnected)
 //
 //	if err := mounter.FormatAndMount(…); err != nil {

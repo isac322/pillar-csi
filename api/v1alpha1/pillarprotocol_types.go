@@ -21,7 +21,7 @@ import (
 )
 
 // ProtocolType enumerates supported network storage protocols.
-// +kubebuilder:validation:Enum=nvmeof-tcp;iscsi;nfs
+// +kubebuilder:validation:Enum=nvmeof-tcp;iscsi;nfs;smb
 type ProtocolType string
 
 // Supported ProtocolType values.
@@ -29,6 +29,7 @@ const (
 	ProtocolTypeNVMeOFTCP ProtocolType = "nvmeof-tcp"
 	ProtocolTypeISCSI     ProtocolType = "iscsi"
 	ProtocolTypeNFS       ProtocolType = "nfs"
+	ProtocolTypeSMB       ProtocolType = "smb"
 )
 
 // NVMeOFTCPConfig holds NVMe-oF/TCP-specific protocol parameters.
