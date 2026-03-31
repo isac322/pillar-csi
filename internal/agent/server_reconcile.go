@@ -18,25 +18,24 @@ package agent
 
 import (
 	"context"
-	"fmt"
 
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	agentv1 "github.com/bhyoo/pillar-csi/gen/go/pillar_csi/agent/v1"
-	"github.com/bhyoo/pillar-csi/internal/agent/nvmeof"
 )
 
 // ReconcileState applies the full desired state for all volumes managed by
 // this agent.  It is called after an agent restart or node reboot to
 // re-create configfs entries that are lost on reboot.
 func (s *Server) ReconcileState(
-	_ context.Context,
+	ctx context.Context,
 	req *agentv1.ReconcileStateRequest,
 ) (*agentv1.ReconcileStateResponse, error) {
 	vols := req.GetVolumes()
 	results := make([]*agentv1.ReconcileItemResult, 0, len(vols))
 	for _, vol := range vols {
-		results = append(results, s.reconcileVolume(vol))
+		results = append(results, s.reconcileVolume(ctx, vol))
 	}
 	return &agentv1.ReconcileStateResponse{
 		Results:      results,
@@ -46,48 +45,52 @@ func (s *Server) ReconcileState(
 
 // reconcileVolume applies all desired exports for one volume and returns a
 // per-volume result.
-func (s *Server) reconcileVolume(vol *agentv1.VolumeDesiredState) *agentv1.ReconcileItemResult {
+func (s *Server) reconcileVolume(
+	ctx context.Context,
+	vol *agentv1.VolumeDesiredState,
+) *agentv1.ReconcileItemResult {
+	desiredByProtocol := make(map[agentv1.ProtocolType][]ExportDesiredState, len(vol.GetExports()))
+	protocolOrder := make([]agentv1.ProtocolType, 0, len(vol.GetExports()))
+
 	for _, export := range vol.GetExports() {
-		err := s.applyExport(vol.GetVolumeId(), vol.GetDevicePath(), export)
+		protocolType := export.GetProtocolType()
+		if _, ok := desiredByProtocol[protocolType]; !ok {
+			protocolOrder = append(protocolOrder, protocolType)
+		}
+		desiredByProtocol[protocolType] = append(desiredByProtocol[protocolType], ExportDesiredState{
+			VolumeID:          vol.GetVolumeId(),
+			DevicePath:        vol.GetDevicePath(),
+			ProtocolParams:    export.GetExportParams(),
+			AllowedInitiators: export.GetAllowedInitiators(),
+		})
+	}
+
+	for _, protocolType := range protocolOrder {
+		handler, err := s.handlerForProtocol(protocolType)
 		if err != nil {
-			return &agentv1.ReconcileItemResult{
-				VolumeId:     vol.GetVolumeId(),
-				Success:      false,
-				ErrorMessage: err.Error(),
-			}
+			return reconcileFailure(vol.GetVolumeId(), err)
+		}
+		err = handler.Reconcile(ctx, desiredByProtocol[protocolType])
+		if err != nil {
+			return reconcileFailure(vol.GetVolumeId(), err)
 		}
 	}
+
 	return &agentv1.ReconcileItemResult{
 		VolumeId: vol.GetVolumeId(),
 		Success:  true,
 	}
 }
 
-// applyExport applies a single desired export state for NVMe-oF TCP.
-// Non-NVMe-oF exports are silently skipped (Phase 1 only supports NVMe-oF TCP).
-func (s *Server) applyExport(
-	volumeID, devicePath string,
-	export *agentv1.ExportDesiredState,
-) error {
-	if export.GetProtocolType() != agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP {
-		return nil
+func reconcileFailure(volumeID string, err error) *agentv1.ReconcileItemResult {
+	msg := err.Error()
+	if st, ok := status.FromError(err); ok {
+		msg = st.Message()
 	}
-	params := export.GetExportParams().GetNvmeofTcp()
-	if params == nil {
-		return nil
+
+	return &agentv1.ReconcileItemResult{
+		VolumeId:     volumeID,
+		Success:      false,
+		ErrorMessage: msg,
 	}
-	t := &nvmeof.NvmetTarget{
-		ConfigfsRoot: s.configfsRoot,
-		SubsystemNQN: volumeNQN(volumeID),
-		NamespaceID:  1,
-		DevicePath:   devicePath,
-		BindAddress:  params.GetBindAddress(),
-		Port:         params.GetPort(),
-		AllowedHosts: export.GetAllowedInitiators(),
-	}
-	applyErr := t.Apply()
-	if applyErr != nil {
-		return fmt.Errorf("applyExport %q: %w", volumeID, applyErr)
-	}
-	return nil
 }

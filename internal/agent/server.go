@@ -36,9 +36,6 @@ import (
 // agentVersion is the semver version string embedded in discovery responses.
 const agentVersion = "0.1.0"
 
-// errOnlyNvmeofTCP is returned by Phase-1 handlers for unsupported protocols.
-const errOnlyNvmeofTCP = "only NVMe-oF TCP is supported"
-
 // nqnPrefix is the fixed NQN prefix used for all NVMe subsystem names.
 const nqnPrefix = "nqn.2026-01.com.bhyoo.pillar-csi:"
 
@@ -71,15 +68,26 @@ type Server struct {
 	// default.  Override in tests via SetDeviceChecker (export_test.go).
 	deviceChecker nvmeof.DeviceChecker
 
-	// nqnMu serializes ExportVolume and UnexportVolume on the same NQN to
-	// prevent partial-state races when export and unexport are called
-	// concurrently for the same volume (e.g. during reconciliation).
+	// targetMu serializes protocol handler operations on the same
+	// protocol-qualified target ID to prevent partial-state races when export
+	// and unexport are called concurrently for the same volume
+	// (e.g. during reconciliation).
 	// Values are *sync.Mutex; LoadOrStore is used to create on first access.
-	nqnMu sync.Map
+	targetMu sync.Map
+
+	// protocolHandlerResolver optionally overrides handler selection for this
+	// server instance. Production uses the built-in resolver; tests inject a
+	// per-server resolver to verify dispatch without global state.
+	protocolHandlerResolver func(agentv1.ProtocolType) (AgentProtocolHandler, error)
 }
 
 // Ensure Server satisfies the interface at compile time.
 var _ agentv1.AgentServiceServer = (*Server)(nil)
+
+type targetLockKey struct {
+	protocolType agentv1.ProtocolType
+	targetID     string
+}
 
 // NewServer constructs an AgentService Server bound to the given backends and
 // configfs root directory.  An empty configfsRoot falls back to
@@ -104,22 +112,18 @@ func (s *Server) Register(g *grpc.Server) {
 	agentv1.RegisterAgentServiceServer(g, s)
 }
 
-// volumeNQN derives the NVMe Qualified Name for a volume ID.
-//
-// Format: nqn.2026-01.com.bhyoo.pillar-csi:<pool>.<name>
-// Example: "tank/pvc-abc" → "nqn.2026-01.com.bhyoo.pillar-csi:tank.pvc-abc".
-func volumeNQN(volumeID string) string {
-	return nqnPrefix + strings.ReplaceAll(volumeID, "/", ".")
-}
-
-// lockNQN acquires the per-NQN mutex and returns an unlock function.
-// It serializes concurrent ExportVolume / UnexportVolume calls for the same
-// volume so that configfs state is always internally consistent.
-func (s *Server) lockNQN(nqn string) func() {
-	v, _ := s.nqnMu.LoadOrStore(nqn, &sync.Mutex{})
+// lockTarget acquires the per-target mutex and returns an unlock function.
+// It serializes concurrent protocol mutations for the same protocol-qualified
+// target so that target state is always internally consistent.
+func (s *Server) lockTarget(protocolType agentv1.ProtocolType, targetID string) func() {
+	key := targetLockKey{
+		protocolType: protocolType,
+		targetID:     targetID,
+	}
+	v, _ := s.targetMu.LoadOrStore(key, &sync.Mutex{})
 	mu, ok := v.(*sync.Mutex)
 	if !ok {
-		// Should never happen: only *sync.Mutex values are stored in nqnMu.
+		// Should never happen: only *sync.Mutex values are stored in targetMu.
 		mu = &sync.Mutex{}
 	}
 	mu.Lock()

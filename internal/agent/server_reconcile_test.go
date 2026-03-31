@@ -20,6 +20,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	agentv1 "github.com/bhyoo/pillar-csi/gen/go/pillar_csi/agent/v1"
@@ -93,9 +94,8 @@ func TestReconcileState_NvmeofExportCreatesConfigfs(t *testing.T) {
 	}
 }
 
-func TestReconcileState_NonNvmeofSkipped(t *testing.T) {
+func TestReconcileState_UnsupportedProtocolReported(t *testing.T) {
 	t.Parallel()
-	// Non-NVMe-oF exports are silently skipped (Phase 1 only supports NVMe-oF TCP).
 	srv, _ := newExportTestServer(t, &mockBackend{})
 
 	resp, err := srv.ReconcileState(context.Background(), &agentv1.ReconcileStateRequest{
@@ -118,10 +118,14 @@ func TestReconcileState_NonNvmeofSkipped(t *testing.T) {
 	if len(resp.GetResults()) != 1 {
 		t.Fatalf("Results len = %d, want 1", len(resp.GetResults()))
 	}
-	// Non-NVMe-oF export is silently skipped → success.
-	if !resp.GetResults()[0].GetSuccess() {
-		t.Errorf("expected success for skipped non-NVMe-oF export, got error: %q",
-			resp.GetResults()[0].GetErrorMessage())
+	if resp.GetResults()[0].GetSuccess() {
+		t.Fatal("expected unsupported protocol to be reported as a reconcile failure")
+	}
+	if !strings.Contains(
+		resp.GetResults()[0].GetErrorMessage(),
+		"protocol PROTOCOL_TYPE_ISCSI is not supported by this agent",
+	) {
+		t.Errorf("ErrorMessage = %q, want unsupported protocol detail", resp.GetResults()[0].GetErrorMessage())
 	}
 }
 
