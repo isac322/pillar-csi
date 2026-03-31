@@ -127,6 +127,10 @@ spec:
             # /dev — required for block device operations (NVMe-oF, iSCSI target discovery).
             - name: dev
               mountPath: /dev
+            # /sys — required for NVMe device discovery (/sys/class/nvme-subsystem)
+            # and NVMe controller rescan during online volume expansion.
+            - name: sys
+              mountPath: /sys
           resources:
             {{- toYaml .Values.node.resources | nindent 12 }}
 
@@ -202,6 +206,11 @@ spec:
         - name: dev
           hostPath:
             path: /dev
+            type: Directory
+        # sys: host /sys for NVMe device discovery and controller rescan.
+        - name: sys
+          hostPath:
+            path: /sys
             type: Directory
         # lib-modules: host kernel modules needed by the modprobe init container.
         - name: lib-modules

@@ -277,4 +277,32 @@ func TestExecResizer_UnsupportedFsType(t *testing.T) {
 	}
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// nvmeControllerName unit tests
+// ─────────────────────────────────────────────────────────────────────────────.
+
+func TestNvmeControllerName(t *testing.T) {
+	tests := []struct {
+		device string
+		want   string
+	}{
+		{"/dev/nvme0n1", "nvme0"},
+		{"/dev/nvme10n1", "nvme10"},
+		{"/dev/nvme0n2", "nvme0"},
+		{"/dev/sda", ""},
+		{"/dev/dm-0", ""},
+		{"nvme0n1", "nvme0"},        // no leading /dev/
+		{"/dev/nvme", ""},           // no namespace
+		{"/dev/nvmen1", ""},         // 'n' at position 0 after "nvme" — malformed
+		{"/dev/loop0", ""},          // loopback device
+		{"/dev/nvme2n1p1", "nvme2"}, // partition: controller is still nvme2
+	}
+	for _, tt := range tests {
+		got := nvmeControllerName(tt.device)
+		if got != tt.want {
+			t.Errorf("nvmeControllerName(%q) = %q, want %q", tt.device, got, tt.want)
+		}
+	}
+}
+
 // ContainsSubstring is defined in statemachine_test.go (same package).
