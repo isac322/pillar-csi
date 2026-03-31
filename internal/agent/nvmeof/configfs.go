@@ -329,6 +329,23 @@ func (t *NvmetTarget) createNamespace() error {
 	return nil
 }
 
+// ResizeNamespace toggles the namespace enable flag (0 → 1) to force the
+// kernel to re-read the backing block device size.  Call this after expanding
+// the backend volume (e.g. lvextend, zfs set volsize) so that NVMe-oF
+// initiators see the new capacity without reconnecting.
+func (t *NvmetTarget) ResizeNamespace() error {
+	enablePath := filepath.Join(t.namespaceDir(), "enable")
+	err := writeFile(enablePath, "0")
+	if err != nil {
+		return fmt.Errorf("ResizeNamespace %q ns=%d disable: %w", t.SubsystemNQN, t.NamespaceID, err)
+	}
+	err = writeFile(enablePath, "1")
+	if err != nil {
+		return fmt.Errorf("ResizeNamespace %q ns=%d re-enable: %w", t.SubsystemNQN, t.NamespaceID, err)
+	}
+	return nil
+}
+
 // createPort creates the configfs port directory for this target's bind
 // address and TCP port, then configures the transport attributes.
 //

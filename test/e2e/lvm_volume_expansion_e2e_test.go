@@ -648,9 +648,10 @@ rmdir  "$NVMET/ports/$PORTID" 2>/dev/null || true
 					"PVC status.capacity.storage must be >= 2Gi after expansion "+
 						"(current: %s) — check the CSI resizer sidecar and agent ExpandVolume RPC",
 					actualCap.String())
-			}, iatProvisioningTimeout, 5*time.Second).Should(Succeed(),
-				"PVC status.capacity did not reflect 2Gi within the timeout — "+
-					"check the external-resizer sidecar and agent ExpandVolume RPC; "+
+			}, 3*time.Minute, 5*time.Second).Should(Succeed(),
+				"PVC status.capacity did not reflect 2Gi within 3m — "+
+					"check the external-resizer sidecar, agent ExpandVolume RPC, "+
+					"and kubelet NodeExpandVolume; "+
 					"also verify lvextend ran successfully on VG %q", vgName)
 
 			By("PVC status.capacity.storage reflects >= 2Gi: ControllerExpandVolume + agent.ExpandVolume succeeded")
@@ -697,8 +698,8 @@ rmdir  "$NVMET/ports/$PORTID" 2>/dev/null || true
 					"filesystem inside Pod must be >= %d KiB (~1.85 Gi) after resize; "+
 						"current: %d KiB — NodeExpandVolume + resize2fs may not have run yet",
 					wantMinKiB, kiB)
-			}, iatProvisioningTimeout, 5*time.Second).Should(Succeed(),
-				"filesystem inside Pod %q/%q did not expand to >= 2Gi within %s — "+
+			}, 3*time.Minute, 5*time.Second).Should(Succeed(),
+				"filesystem inside Pod %q/%q did not expand to >= 2Gi within 3m — "+
 					"check the pillar-node NodeExpandVolume logs and verify that "+
 					"resize2fs completed on the NVMe-oF block device",
 				testNS.Name, pod.Name, iatProvisioningTimeout)

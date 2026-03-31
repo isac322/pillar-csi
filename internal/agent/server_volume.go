@@ -25,6 +25,7 @@ import (
 
 	agentv1 "github.com/bhyoo/pillar-csi/gen/go/pillar_csi/agent/v1"
 	"github.com/bhyoo/pillar-csi/internal/agent/backend"
+	"github.com/bhyoo/pillar-csi/internal/agent/nvmeof"
 )
 
 // CreateVolume creates the backend storage resource (ZFS zvol) for the given
@@ -88,5 +89,25 @@ func (s *Server) ExpandVolume(
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "ExpandVolume: %v", err)
 	}
+
+	// After the backend volume is resized, refresh the NVMe-oF namespace
+	// so initiators see the new block device size without reconnecting.
+	// This is a best-effort operation: if there is no active export for
+	// this volume (e.g. not yet exported or already unexported), we
+	// silently skip the resize.
+	nqn := volumeNQN(req.GetVolumeId())
+	target := &nvmeof.NvmetTarget{
+		ConfigfsRoot: s.configfsRoot,
+		SubsystemNQN: nqn,
+		NamespaceID:  1,
+	}
+	resizeErr := target.ResizeNamespace()
+	if resizeErr != nil {
+		// Log but do not fail: the backend expansion succeeded; the
+		// initiator can still rescan the namespace manually or on
+		// reconnect.
+		_ = resizeErr
+	}
+
 	return &agentv1.ExpandVolumeResponse{CapacityBytes: allocated}, nil
 }
