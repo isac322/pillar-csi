@@ -152,6 +152,16 @@ spec:
                             minimum: 1
                             type: integer
                         type: object
+                      smb:
+                        description: smb overrides SMB/CIFS parameters.
+                        properties:
+                          port:
+                            description: port overrides the protocol-level SMB port.
+                            format: int32
+                            maximum: 65535
+                            minimum: 1
+                            type: integer
+                        type: object
                     type: object
                 type: object
               poolRef:

@@ -174,12 +174,27 @@ spec:
                     minimum: 0
                     type: integer
                 type: object
+              smb:
+                description: smb holds SMB/CIFS configuration; required when type
+                  is smb.
+                properties:
+                  port:
+                    default: 445
+                    description: |-
+                      port is the TCP port on which the SMB server listens.
+                      Defaults to 445.
+                    format: int32
+                    maximum: 65535
+                    minimum: 1
+                    type: integer
+                type: object
               type:
                 description: type identifies the network storage protocol.
                 enum:
                 - nvmeof-tcp
                 - iscsi
                 - nfs
+                - smb
                 type: string
             required:
             - type

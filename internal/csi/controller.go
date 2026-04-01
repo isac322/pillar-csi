@@ -233,20 +233,16 @@ func pillarVolumePhaseToVolumeState(phase v1alpha1.PillarVolumePhase) VolumeStat
 // Capability declarations
 // ─────────────────────────────────────────────────────────────────────────────.
 
-// supportedAccessModes lists every VolumeCapability access mode that
-// pillar-csi can honor.
-//
-// Pillar-csi exposes raw block devices over NVMe-oF TCP.  A single namespace
-// may be attached read-write to exactly one node (RWO / RWOP) or read-only to
-// multiple nodes (ROX).  ReadWriteMany (RWX) is not supported because NVMe-oF
-// block devices do not provide multi-writer coordination at the protocol level.
+// baseSupportedAccessModes lists the VolumeCapability access modes pillar-csi
+// supports for every protocol. File protocols add shared-writer modes on top
+// of this baseline.
 //
 // Access-mode mapping (Kubernetes PVC → CSI constant):
 //
 //	ReadWriteOnce    (RWO)  → SINGLE_NODE_WRITER
 //	ReadWriteOncePod (RWOP) → SINGLE_NODE_SINGLE_WRITER   (CSI spec v1.5+)
 //	ReadOnlyMany     (ROX)  → MULTI_NODE_READER_ONLY
-var supportedAccessModes = []csi.VolumeCapability_AccessMode_Mode{
+var baseSupportedAccessModes = []csi.VolumeCapability_AccessMode_Mode{
 	// RWO: one node may mount read-write.
 	csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER,
 	// RWO (K8s 1.35+): Kubernetes maps ReadWriteOnce to SINGLE_NODE_MULTI_WRITER.
@@ -256,6 +252,13 @@ var supportedAccessModes = []csi.VolumeCapability_AccessMode_Mode{
 	csi.VolumeCapability_AccessMode_SINGLE_NODE_SINGLE_WRITER,
 	// ROX: multiple nodes may mount read-only simultaneously.
 	csi.VolumeCapability_AccessMode_MULTI_NODE_READER_ONLY,
+}
+
+// fileProtocolAdditionalAccessModes are only supported by file protocols. NFS
+// and SMB can satisfy shared writer semantics; block protocols cannot.
+var fileProtocolAdditionalAccessModes = []csi.VolumeCapability_AccessMode_Mode{
+	csi.VolumeCapability_AccessMode_MULTI_NODE_SINGLE_WRITER,
+	csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER,
 }
 
 // ControllerGetCapabilities reports the operations this controller supports.
@@ -319,18 +322,25 @@ func (s *ControllerServer) ValidateVolumeCapabilities(
 		return nil, status.Error(codes.InvalidArgument, "volume_capabilities must not be empty")
 	}
 
+	protocolType := protocolTypeFromValidateVolumeCapabilitiesRequest(req)
 	for _, cap := range req.GetVolumeCapabilities() {
 		if cap.GetAccessMode() == nil {
 			//nolint:wrapcheck // gRPC status errors must not be double-wrapped
 			return nil, status.Error(codes.InvalidArgument,
 				"each volume capability must specify an access_mode")
 		}
-		if !isSupportedAccessMode(cap.GetAccessMode().GetMode()) {
+		if cap.GetBlock() != nil && isFileProtocol(protocolType) {
+			//nolint:wrapcheck // gRPC status errors must not be double-wrapped
+			return nil, status.Error(codes.InvalidArgument,
+				"raw block volume mode is not supported with file protocols (NFS/SMB)")
+		}
+		if !isSupportedAccessMode(protocolType, cap.GetAccessMode().GetMode()) {
 			return &csi.ValidateVolumeCapabilitiesResponse{
 				Message: fmt.Sprintf(
-					"access mode %s is not supported by pillar-csi; supported modes: %s",
+					"access mode %s is not supported for protocol %q; supported modes: %s",
 					cap.GetAccessMode().GetMode(),
-					describeSupportedModes(),
+					protocolType,
+					describeSupportedModes(protocolType),
 				),
 			}, nil
 		}
@@ -346,16 +356,49 @@ func (s *ControllerServer) ValidateVolumeCapabilities(
 	}, nil
 }
 
-// isSupportedAccessMode returns true when mode is in supportedAccessModes.
-func isSupportedAccessMode(mode csi.VolumeCapability_AccessMode_Mode) bool {
-	return slices.Contains(supportedAccessModes, mode)
+func protocolTypeFromValidateVolumeCapabilitiesRequest(
+	req *csi.ValidateVolumeCapabilitiesRequest,
+) v1alpha1.ProtocolType {
+	if parts := strings.SplitN(req.GetVolumeId(), "/", volumeIDParts); len(parts) == volumeIDParts {
+		if protocolType := v1alpha1.ProtocolType(parts[1]); protocolType != "" {
+			return protocolType
+		}
+	}
+	if protocolType := v1alpha1.ProtocolType(req.GetVolumeContext()[vcProtocolType]); protocolType != "" {
+		return protocolType
+	}
+	return v1alpha1.ProtocolType(req.GetParameters()[paramProtocolType])
+}
+
+// supportedAccessModesForProtocol returns the access modes supported for the
+// given protocol. File protocols accept shared writer modes; block protocols
+// do not.
+func supportedAccessModesForProtocol(protocolType v1alpha1.ProtocolType) []csi.VolumeCapability_AccessMode_Mode {
+	if !isFileProtocol(protocolType) {
+		return baseSupportedAccessModes
+	}
+
+	modes := make([]csi.VolumeCapability_AccessMode_Mode, 0,
+		len(baseSupportedAccessModes)+len(fileProtocolAdditionalAccessModes))
+	modes = append(modes, baseSupportedAccessModes...)
+	modes = append(modes, fileProtocolAdditionalAccessModes...)
+	return modes
+}
+
+// isSupportedAccessMode returns true when mode is supported for the protocol.
+func isSupportedAccessMode(
+	protocolType v1alpha1.ProtocolType,
+	mode csi.VolumeCapability_AccessMode_Mode,
+) bool {
+	return slices.Contains(supportedAccessModesForProtocol(protocolType), mode)
 }
 
 // describeSupportedModes returns a comma-separated string of the supported
 // access mode names, used in diagnostic messages.
-func describeSupportedModes() string {
-	names := make([]string, 0, len(supportedAccessModes))
-	for _, m := range supportedAccessModes {
+func describeSupportedModes(protocolType v1alpha1.ProtocolType) string {
+	supportedModes := supportedAccessModesForProtocol(protocolType)
+	names := make([]string, 0, len(supportedModes))
+	for _, m := range supportedModes {
 		names = append(names, m.String())
 	}
 	return strings.Join(names, ", ")
@@ -496,10 +539,6 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 			return nil, status.Error(codes.InvalidArgument,
 				"each volume_capability must specify an access_mode")
 		}
-		if !isSupportedAccessMode(cap.GetAccessMode().GetMode()) {
-			return nil, status.Errorf(codes.InvalidArgument,
-				"unsupported access mode %s", cap.GetAccessMode().GetMode())
-		}
 	}
 
 	scParams := req.GetParameters()
@@ -539,6 +578,17 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 	if protocolTypeStr == "" {
 		return nil, status.Errorf(codes.InvalidArgument,
 			"StorageClass parameter %q is required", paramProtocolType)
+	}
+
+	protocolType := v1alpha1.ProtocolType(protocolTypeStr)
+	for _, cap := range req.GetVolumeCapabilities() {
+		if !isSupportedAccessMode(protocolType, cap.GetAccessMode().GetMode()) {
+			return nil, status.Errorf(codes.InvalidArgument,
+				"access mode %s is not supported for protocol %q; supported modes: %s",
+				cap.GetAccessMode().GetMode(),
+				protocolType,
+				describeSupportedModes(protocolType))
+		}
 	}
 
 	agentBackendType := mapBackendType(backendTypeStr)
@@ -671,7 +721,7 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 			CapacityBytes: capacityBytes,
 			BackendType:   agentBackendType,
 			BackendParams: buildBackendParams(params, agentBackendType),
-			AccessType:    accessTypeForProtocol(agentProtocolType),
+			AccessType:    accessTypeForBackend(agentBackendType),
 		})
 		if createErr != nil {
 			grpcSt, _ := status.FromError(createErr)
@@ -1238,14 +1288,14 @@ func buildAgentVolumeID(params map[string]string, volumeName string) string {
 // mapBackendType converts the StorageClass backend-type string to the agent
 // protobuf enum value.
 func mapBackendType(s string) agentv1.BackendType {
-	switch s {
-	case "zfs-zvol":
+	switch v1alpha1.BackendType(s) {
+	case v1alpha1.BackendTypeZFSZvol:
 		return agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL
-	case "zfs-dataset":
+	case v1alpha1.BackendTypeZFSDataset:
 		return agentv1.BackendType_BACKEND_TYPE_ZFS_DATASET
-	case "lvm-lv":
+	case v1alpha1.BackendTypeLVMLV:
 		return agentv1.BackendType_BACKEND_TYPE_LVM
-	case "dir":
+	case v1alpha1.BackendTypeDir:
 		return agentv1.BackendType_BACKEND_TYPE_DIRECTORY
 	default:
 		return agentv1.BackendType_BACKEND_TYPE_UNSPECIFIED
@@ -1315,15 +1365,16 @@ func mapProtocolType(s string) agentv1.ProtocolType {
 	}
 }
 
-// accessTypeForProtocol returns the VolumeAccessType to request from the agent
-// for the given network storage protocol.
+// accessTypeForBackend returns the VolumeAccessType to request from the agent
+// for the given storage backend.
 //
-// Block protocols (NVMe-oF TCP, iSCSI) transport raw block devices, so the
-// agent creates a BLOCK resource.  File protocols (NFS, SMB) export
-// filesystems, so the agent creates a MOUNT resource.
-func accessTypeForProtocol(p agentv1.ProtocolType) agentv1.VolumeAccessType {
-	switch p {
-	case agentv1.ProtocolType_PROTOCOL_TYPE_NFS, agentv1.ProtocolType_PROTOCOL_TYPE_SMB:
+// Filesystem backends (ZFS datasets, directories) produce mounted filesystems,
+// so the agent creates a MOUNT resource. Block-oriented backends (zvols, LVM
+// LVs, and future raw block backends) produce block devices, so the agent
+// creates a BLOCK resource.
+func accessTypeForBackend(bt agentv1.BackendType) agentv1.VolumeAccessType {
+	switch bt {
+	case agentv1.BackendType_BACKEND_TYPE_ZFS_DATASET, agentv1.BackendType_BACKEND_TYPE_DIRECTORY:
 		return agentv1.VolumeAccessType_VOLUME_ACCESS_TYPE_MOUNT
 	default:
 		return agentv1.VolumeAccessType_VOLUME_ACCESS_TYPE_BLOCK

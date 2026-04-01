@@ -176,26 +176,23 @@ func TestCSIProtocol_CreateVolume_UnknownProtocol_MapsToUnspecified(t *testing.T
 	}
 }
 
-// TestCSIProtocol_ControllerPublish_ISCSIUnimplemented verifies that when
+// TestCSIProtocol_ControllerPublish_ISCSIMissingAnnotation verifies that when
 // ControllerPublishVolume is called for a volume whose ID encodes an iSCSI
-// protocol and the agent's AllowInitiator returns codes.Unimplemented, the
-// non-OK status is propagated to the CSI caller.
+// protocol but the CSINode lacks the iSCSI initiator IQN annotation,
+// FailedPrecondition is returned (the controller cannot resolve the
+// initiator identity without the annotation).
 //
 // E22.1 — test ID 174.
-func TestCSIProtocol_ControllerPublish_ISCSIUnimplemented(t *testing.T) {
+func TestCSIProtocol_ControllerPublish_ISCSIMissingAnnotation(t *testing.T) {
 	t.Parallel()
 	env := newCSIControllerE2EEnv(t, "storage-1")
 	ctx := context.Background()
-
-	// Inject Unimplemented from the agent's AllowInitiator RPC.
-	env.AgentMock.AllowInitiatorErr = status.Errorf(
-		codes.Unimplemented, "protocol PROTOCOL_TYPE_ISCSI is not supported by this agent")
 
 	// Volume ID encodes the iSCSI protocol in position [1] of the slash-separated
 	// path: <target>/<protocol>/<backend>/<pool>/<volume>.
 	const (
 		volumeID = "storage-1/iscsi/zfs-zvol/tank/pvc-iscsi-publish"
-		nodeID   = "iqn.1993-08.org.debian:01:example-initiator"
+		nodeID   = "worker-node-1"
 	)
 
 	_, err := env.Controller.ControllerPublishVolume(ctx, &csi.ControllerPublishVolumeRequest{
@@ -205,14 +202,14 @@ func TestCSIProtocol_ControllerPublish_ISCSIUnimplemented(t *testing.T) {
 	})
 
 	if err == nil {
-		t.Fatal("expected error for iSCSI ControllerPublish (Unimplemented from agent), got nil")
+		t.Fatal("expected error for iSCSI ControllerPublish (missing CSINode annotation), got nil")
 	}
 	st, ok := status.FromError(err)
 	if !ok {
 		t.Fatalf("expected gRPC status error, got: %v", err)
 	}
-	if st.Code() != codes.Unimplemented {
-		t.Fatalf("code = %v, want Unimplemented", st.Code())
+	if st.Code() != codes.FailedPrecondition {
+		t.Fatalf("code = %v, want FailedPrecondition", st.Code())
 	}
 }
 

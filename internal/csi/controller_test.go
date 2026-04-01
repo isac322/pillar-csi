@@ -428,6 +428,153 @@ func TestCreateVolume_FirstCall(t *testing.T) {
 	}
 }
 
+// TestCreateVolume_UsesBackendTypeForAccessType verifies that the controller
+// derives agent access type from the backend type, not the network protocol.
+func TestCreateVolume_UsesBackendTypeForAccessType(t *testing.T) {
+	t.Parallel()
+
+	env := newControllerTestEnv(t)
+	ctx := context.Background()
+	req := baseCreateVolumeRequest()
+
+	req.VolumeCapabilities = []*csi.VolumeCapability{
+		{
+			AccessType: &csi.VolumeCapability_Mount{
+				Mount: &csi.VolumeCapability_MountVolume{},
+			},
+			AccessMode: &csi.VolumeCapability_AccessMode{
+				Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER,
+			},
+		},
+	}
+	req.Parameters["pillar-csi.bhyoo.com/backend-type"] = string(v1alpha1.BackendTypeZFSDataset)
+	req.Parameters["pillar-csi.bhyoo.com/protocol-type"] = testProtocolNFS
+
+	if _, err := env.srv.CreateVolume(ctx, req); err != nil {
+		t.Fatalf("CreateVolume unexpected error: %v", err)
+	}
+
+	if env.agent.lastCreateVolumeReq == nil {
+		t.Fatal("lastCreateVolumeReq is nil")
+	}
+	if got, want := env.agent.lastCreateVolumeReq.GetAccessType(),
+		agentv1.VolumeAccessType_VOLUME_ACCESS_TYPE_MOUNT; got != want {
+		t.Errorf("CreateVolume agent access type = %v, want %v", got, want)
+	}
+}
+
+func TestValidateVolumeCapabilities_FileProtocolAcceptsRWX(t *testing.T) {
+	t.Parallel()
+
+	srv := &ControllerServer{}
+	req := &csi.ValidateVolumeCapabilitiesRequest{
+		VolumeId: "storage-node-1/nfs/zfs-dataset/tank/pvc-abc123",
+		VolumeContext: map[string]string{
+			vcProtocolType: testProtocolNFS,
+		},
+		VolumeCapabilities: []*csi.VolumeCapability{
+			{
+				AccessType: &csi.VolumeCapability_Mount{
+					Mount: &csi.VolumeCapability_MountVolume{},
+				},
+				AccessMode: &csi.VolumeCapability_AccessMode{
+					Mode: csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER,
+				},
+			},
+		},
+	}
+
+	resp, err := srv.ValidateVolumeCapabilities(context.Background(), req)
+	if err != nil {
+		t.Fatalf("ValidateVolumeCapabilities unexpected error: %v", err)
+	}
+	if resp.GetConfirmed() == nil {
+		t.Fatalf("ValidateVolumeCapabilities rejected file protocol RWX: %q", resp.GetMessage())
+	}
+}
+
+func TestValidateVolumeCapabilities_BlockProtocolRejectsRWX(t *testing.T) {
+	t.Parallel()
+
+	srv := &ControllerServer{}
+	req := &csi.ValidateVolumeCapabilitiesRequest{
+		VolumeId: "storage-node-1/nvmeof-tcp/zfs-zvol/tank/pvc-abc123",
+		VolumeContext: map[string]string{
+			vcProtocolType: string(v1alpha1.ProtocolTypeNVMeOFTCP),
+		},
+		VolumeCapabilities: []*csi.VolumeCapability{
+			{
+				AccessType: &csi.VolumeCapability_Block{
+					Block: &csi.VolumeCapability_BlockVolume{},
+				},
+				AccessMode: &csi.VolumeCapability_AccessMode{
+					Mode: csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER,
+				},
+			},
+		},
+	}
+
+	resp, err := srv.ValidateVolumeCapabilities(context.Background(), req)
+	if err != nil {
+		t.Fatalf("ValidateVolumeCapabilities unexpected error: %v", err)
+	}
+	if resp.GetConfirmed() != nil {
+		t.Fatal("ValidateVolumeCapabilities unexpectedly confirmed block protocol RWX")
+	}
+	if resp.GetMessage() == "" {
+		t.Fatal("ValidateVolumeCapabilities rejection message is empty")
+	}
+}
+
+func TestCreateVolume_FileProtocolAcceptsRWX(t *testing.T) {
+	t.Parallel()
+
+	env := newControllerTestEnv(t)
+	ctx := context.Background()
+	req := baseCreateVolumeRequest()
+	req.Parameters["pillar-csi.bhyoo.com/backend-type"] = string(v1alpha1.BackendTypeZFSDataset)
+	req.Parameters["pillar-csi.bhyoo.com/protocol-type"] = testProtocolNFS
+	req.VolumeCapabilities = []*csi.VolumeCapability{
+		{
+			AccessType: &csi.VolumeCapability_Mount{
+				Mount: &csi.VolumeCapability_MountVolume{},
+			},
+			AccessMode: &csi.VolumeCapability_AccessMode{
+				Mode: csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER,
+			},
+		},
+	}
+
+	if _, err := env.srv.CreateVolume(ctx, req); err != nil {
+		t.Fatalf("CreateVolume unexpected error for file protocol RWX: %v", err)
+	}
+}
+
+func TestCreateVolume_BlockProtocolRejectsRWX(t *testing.T) {
+	t.Parallel()
+
+	env := newControllerTestEnv(t)
+	ctx := context.Background()
+	req := baseCreateVolumeRequest()
+	req.VolumeCapabilities[0].GetAccessMode().Mode = csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER
+
+	_, err := env.srv.CreateVolume(ctx, req)
+	if err == nil {
+		t.Fatal("expected InvalidArgument for block protocol RWX, got nil")
+	}
+
+	st, ok := status.FromError(err)
+	if !ok {
+		t.Fatalf("expected gRPC status error, got: %v", err)
+	}
+	if st.Code() != codes.InvalidArgument {
+		t.Errorf("error code = %v, want %v", st.Code(), codes.InvalidArgument)
+	}
+	if env.agent.createVolumeCalls != 0 || env.agent.exportVolumeCalls != 0 {
+		t.Errorf("agent was contacted despite block protocol RWX validation failure")
+	}
+}
+
 // TestCreateVolume_IdempotentWhenAlreadyCreated verifies the CSI §5.1.1
 // idempotency requirement: a second CreateVolume call for a volume that is
 // already in the Ready phase (StateCreated) must return the cached response
@@ -1674,5 +1821,82 @@ func TestControllerPublishVolume_FailedPrecondition_ISCSIAnnotationMissing(t *te
 	}
 	if st.Code() != codes.FailedPrecondition {
 		t.Errorf("error code = %v, want %v", st.Code(), codes.FailedPrecondition)
+	}
+}
+
+func TestValidateVolumeCapabilities_RejectsRawBlockForFileProtocols(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name     string
+		protocol string
+	}{
+		{name: "nfs", protocol: string(v1alpha1.ProtocolTypeNFS)},
+		{name: "smb", protocol: string(v1alpha1.ProtocolTypeSMB)},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			env := newControllerTestEnv(t)
+			req := &csi.ValidateVolumeCapabilitiesRequest{
+				VolumeId: "storage-node-1/" + tc.protocol + "/zfs-dataset/tank/pvc-abc123",
+				VolumeCapabilities: []*csi.VolumeCapability{
+					{
+						AccessType: &csi.VolumeCapability_Block{
+							Block: &csi.VolumeCapability_BlockVolume{},
+						},
+						AccessMode: &csi.VolumeCapability_AccessMode{
+							Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER,
+						},
+					},
+				},
+			}
+
+			_, err := env.srv.ValidateVolumeCapabilities(context.Background(), req)
+			if err == nil {
+				t.Fatal("expected InvalidArgument error, got nil")
+			}
+
+			st, ok := status.FromError(err)
+			if !ok {
+				t.Fatalf("expected gRPC status error, got: %v", err)
+			}
+			if st.Code() != codes.InvalidArgument {
+				t.Fatalf("error code = %v, want %v", st.Code(), codes.InvalidArgument)
+			}
+			const wantMessage = "raw block volume mode is not supported with file protocols (NFS/SMB)"
+			if st.Message() != wantMessage {
+				t.Fatalf("error message = %q, want %q", st.Message(), wantMessage)
+			}
+		})
+	}
+}
+
+func TestValidateVolumeCapabilities_AllowsFilesystemVolumeModeForFileProtocol(t *testing.T) {
+	t.Parallel()
+
+	env := newControllerTestEnv(t)
+	req := &csi.ValidateVolumeCapabilitiesRequest{
+		VolumeId: "storage-node-1/nfs/zfs-dataset/tank/pvc-abc123",
+		VolumeCapabilities: []*csi.VolumeCapability{
+			{
+				AccessType: &csi.VolumeCapability_Mount{
+					Mount: &csi.VolumeCapability_MountVolume{},
+				},
+				AccessMode: &csi.VolumeCapability_AccessMode{
+					Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER,
+				},
+			},
+		},
+	}
+
+	resp, err := env.srv.ValidateVolumeCapabilities(context.Background(), req)
+	if err != nil {
+		t.Fatalf("ValidateVolumeCapabilities unexpected error: %v", err)
+	}
+	if resp.GetConfirmed() == nil {
+		t.Fatal("Confirmed is nil")
 	}
 }
