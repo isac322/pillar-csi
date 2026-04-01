@@ -24,12 +24,13 @@ import "fmt"
 
 // Protocol type string constants used in nodeStageState.ProtocolType,
 // AttachParams.ProtocolType, and handler map keys.
+// Exported so that cmd/node can reference them for handler registration.
 const (
 	// ProtocolNVMeoFTCP identifies the NVMe-oF TCP transport protocol.
-	protocolNVMeoFTCP = "nvmeof-tcp"
-	protocolISCSI     = "iscsi"
-	protocolNFS       = "nfs"
-	protocolSMB       = "smb"
+	ProtocolNVMeoFTCP = "nvmeof-tcp"
+	ProtocolISCSI     = "iscsi"
+	ProtocolNFS       = "nfs"
+	ProtocolSMB       = "smb"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -159,7 +160,7 @@ func isLegacyFormat(raw *legacyNodeStageState) bool {
 // only requires SubsysNQN to disconnect a session.
 func migrateFromLegacy(raw *legacyNodeStageState) *nodeStageState {
 	return &nodeStageState{
-		ProtocolType: protocolNVMeoFTCP,
+		ProtocolType: ProtocolNVMeoFTCP,
 		NVMeoF: &NVMeoFStageState{
 			SubsysNQN: raw.SubsysNQN,
 			// Address and Port are unavailable from Phase 1 files; Detach only
@@ -189,7 +190,7 @@ func (s *nodeStageState) ToProtocolState() (ProtocolState, error) {
 		return nil, fmt.Errorf("nil stage state")
 	}
 	switch s.ProtocolType {
-	case protocolNVMeoFTCP:
+	case ProtocolNVMeoFTCP:
 		if s.NVMeoF == nil {
 			return nil, fmt.Errorf("NVMe-oF stage state sub-struct is nil")
 		}
@@ -198,7 +199,7 @@ func (s *nodeStageState) ToProtocolState() (ProtocolState, error) {
 			Address:   s.NVMeoF.Address,
 			Port:      s.NVMeoF.Port,
 		}, nil
-	case protocolISCSI, protocolNFS, protocolSMB:
+	case ProtocolISCSI, ProtocolNFS, ProtocolSMB:
 		// Protocol states to be populated when those handlers are implemented.
 		return nil, fmt.Errorf("protocol %q stage state conversion not yet implemented", s.ProtocolType)
 	default:
@@ -232,7 +233,7 @@ func stageStateFromAttachResult(
 	// NVMe-oF TCP: prefer state from AttachResult if it carries a concrete
 	// NVMeoFProtocolState; fall back to VolumeContext fields for the legacy path.
 	// iSCSI, NFS, SMB: sub-structs populated when those handlers are implemented.
-	if protocolType == protocolNVMeoFTCP {
+	if protocolType == ProtocolNVMeoFTCP {
 		subsysNQN := targetID
 		trAddr := address
 		trSvcID := port

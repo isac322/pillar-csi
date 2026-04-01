@@ -76,7 +76,7 @@ func TestNodeStageVolume_Dispatch_VolumeContextKey(t *testing.T) {
 		},
 	}
 	env := newHandlerNodeTestEnv(t, map[string]ProtocolHandler{
-		protocolNVMeoFTCP: handler,
+		ProtocolNVMeoFTCP: handler,
 	})
 	stagingPath := t.TempDir()
 
@@ -88,7 +88,7 @@ func TestNodeStageVolume_Dispatch_VolumeContextKey(t *testing.T) {
 			VolumeContextKeyTargetID:     nqn,
 			VolumeContextKeyAddress:      address,
 			VolumeContextKeyPort:         port,
-			VolumeContextKeyProtocolType: protocolNVMeoFTCP,
+			VolumeContextKeyProtocolType: ProtocolNVMeoFTCP,
 		},
 	})
 	if err != nil {
@@ -99,8 +99,8 @@ func TestNodeStageVolume_Dispatch_VolumeContextKey(t *testing.T) {
 	if len(handler.attachCalls) != 1 {
 		t.Fatalf("Attach called %d times, want 1", len(handler.attachCalls))
 	}
-	if got := handler.attachCalls[0].ProtocolType; got != protocolNVMeoFTCP {
-		t.Errorf("AttachParams.ProtocolType = %q, want %q", got, protocolNVMeoFTCP)
+	if got := handler.attachCalls[0].ProtocolType; got != ProtocolNVMeoFTCP {
+		t.Errorf("AttachParams.ProtocolType = %q, want %q", got, ProtocolNVMeoFTCP)
 	}
 }
 
@@ -131,7 +131,7 @@ func TestNodeStageVolume_Dispatch_VolumeIDPathComponent(t *testing.T) {
 		},
 	}
 	env := newHandlerNodeTestEnv(t, map[string]ProtocolHandler{
-		protocolNVMeoFTCP: handler,
+		ProtocolNVMeoFTCP: handler,
 	})
 	stagingPath := t.TempDir()
 
@@ -157,8 +157,8 @@ func TestNodeStageVolume_Dispatch_VolumeIDPathComponent(t *testing.T) {
 	if len(handler.attachCalls) != 1 {
 		t.Fatalf("Attach called %d times, want 1", len(handler.attachCalls))
 	}
-	if got := handler.attachCalls[0].ProtocolType; got != protocolNVMeoFTCP {
-		t.Errorf("AttachParams.ProtocolType = %q, want %q", got, protocolNVMeoFTCP)
+	if got := handler.attachCalls[0].ProtocolType; got != ProtocolNVMeoFTCP {
+		t.Errorf("AttachParams.ProtocolType = %q, want %q", got, ProtocolNVMeoFTCP)
 	}
 }
 
@@ -189,7 +189,7 @@ func TestNodeStageVolume_Dispatch_DefaultFallbackHandlerCalled(t *testing.T) {
 		},
 	}
 	env := newHandlerNodeTestEnv(t, map[string]ProtocolHandler{
-		protocolNVMeoFTCP: handler,
+		ProtocolNVMeoFTCP: handler,
 	})
 	stagingPath := t.TempDir()
 
@@ -212,8 +212,8 @@ func TestNodeStageVolume_Dispatch_DefaultFallbackHandlerCalled(t *testing.T) {
 		t.Fatalf("Attach called %d times, want 1", len(handler.attachCalls))
 	}
 	// The resolved protocol must be the backward-compatible default.
-	if got := handler.attachCalls[0].ProtocolType; got != protocolNVMeoFTCP {
-		t.Errorf("AttachParams.ProtocolType = %q, want %q", got, protocolNVMeoFTCP)
+	if got := handler.attachCalls[0].ProtocolType; got != ProtocolNVMeoFTCP {
+		t.Errorf("AttachParams.ProtocolType = %q, want %q", got, ProtocolNVMeoFTCP)
 	}
 }
 
@@ -229,7 +229,7 @@ func TestNodeStageVolume_Dispatch_NoHandlerRegistered(t *testing.T) {
 
 	// Only NVMe-oF is registered; the volume declares "iscsi".
 	env := newHandlerNodeTestEnv(t, map[string]ProtocolHandler{
-		protocolNVMeoFTCP: &fakeProtocolHandler{},
+		ProtocolNVMeoFTCP: &fakeProtocolHandler{},
 	})
 	stagingPath := t.TempDir()
 
@@ -274,7 +274,7 @@ func TestNodeStageVolume_Dispatch_VolumeContextKeyPrecedence(t *testing.T) {
 		},
 	}
 	env := newHandlerNodeTestEnv(t, map[string]ProtocolHandler{
-		protocolNVMeoFTCP: nvmeHandler,
+		ProtocolNVMeoFTCP: nvmeHandler,
 		"iscsi":           iscsiHandler,
 	})
 	stagingPath := t.TempDir()
@@ -319,7 +319,7 @@ func TestNodeStageVolume_Dispatch_AttachError(t *testing.T) {
 		attachErr: sentinelErr,
 	}
 	env := newHandlerNodeTestEnv(t, map[string]ProtocolHandler{
-		protocolNVMeoFTCP: handler,
+		ProtocolNVMeoFTCP: handler,
 	})
 	stagingPath := t.TempDir()
 
@@ -367,7 +367,7 @@ func TestNodeStageVolume_Dispatch_AttachParamsForwarded(t *testing.T) {
 		},
 	}
 	env := newHandlerNodeTestEnv(t, map[string]ProtocolHandler{
-		protocolNVMeoFTCP: handler,
+		ProtocolNVMeoFTCP: handler,
 	})
 	stagingPath := t.TempDir()
 
@@ -398,8 +398,8 @@ func TestNodeStageVolume_Dispatch_AttachParamsForwarded(t *testing.T) {
 	if p.Port != port {
 		t.Errorf("AttachParams.Port = %q, want %q", p.Port, port)
 	}
-	if p.ProtocolType != protocolNVMeoFTCP {
-		t.Errorf("AttachParams.ProtocolType = %q, want %q", p.ProtocolType, protocolNVMeoFTCP)
+	if p.ProtocolType != ProtocolNVMeoFTCP {
+		t.Errorf("AttachParams.ProtocolType = %q, want %q", p.ProtocolType, ProtocolNVMeoFTCP)
 	}
 }
 
@@ -431,7 +431,7 @@ func TestNodeStageVolume_Dispatch_StateWrittenAfterAttach(t *testing.T) {
 		},
 	}
 	env := newHandlerNodeTestEnv(t, map[string]ProtocolHandler{
-		protocolNVMeoFTCP: handler,
+		ProtocolNVMeoFTCP: handler,
 	})
 	stagingPath := t.TempDir()
 
@@ -457,8 +457,8 @@ func TestNodeStageVolume_Dispatch_StateWrittenAfterAttach(t *testing.T) {
 		t.Fatal("stage state is nil after NodeStageVolume")
 	}
 	// Discriminated union: ProtocolType must identify the active sub-struct.
-	if state.ProtocolType != protocolNVMeoFTCP {
-		t.Errorf("state.ProtocolType = %q, want %q", state.ProtocolType, protocolNVMeoFTCP)
+	if state.ProtocolType != ProtocolNVMeoFTCP {
+		t.Errorf("state.ProtocolType = %q, want %q", state.ProtocolType, ProtocolNVMeoFTCP)
 	}
 	if state.NVMeoF == nil {
 		t.Fatal("state.NVMeoF sub-struct is nil after NVMe-oF stage")
@@ -498,13 +498,13 @@ func TestNodeStageVolume_Dispatch_IdempotentWhenAlreadyMounted(t *testing.T) {
 		},
 	}
 	env := newHandlerNodeTestEnv(t, map[string]ProtocolHandler{
-		protocolNVMeoFTCP: handler,
+		ProtocolNVMeoFTCP: handler,
 	})
 	stagingPath := t.TempDir()
 
 	// Pre-write a stage state file as if NodeStageVolume had already succeeded.
 	if err := env.srv.writeStageState(volID, &nodeStageState{
-		ProtocolType: protocolNVMeoFTCP,
+		ProtocolType: ProtocolNVMeoFTCP,
 		NVMeoF: &NVMeoFStageState{
 			SubsysNQN: nqn,
 			Address:   address,
@@ -593,7 +593,7 @@ func TestNodeStageVolume_Dispatch_MultipleProtocols(t *testing.T) {
 	}
 
 	env := newHandlerNodeTestEnv(t, map[string]ProtocolHandler{
-		protocolNVMeoFTCP: nvmeHandler,
+		ProtocolNVMeoFTCP: nvmeHandler,
 		"iscsi":           iscsiHandler,
 	})
 
@@ -607,7 +607,7 @@ func TestNodeStageVolume_Dispatch_MultipleProtocols(t *testing.T) {
 			VolumeContextKeyTargetID:     "nqn.test:multi",
 			VolumeContextKeyAddress:      "10.0.0.1",
 			VolumeContextKeyPort:         "4420",
-			VolumeContextKeyProtocolType: protocolNVMeoFTCP,
+			VolumeContextKeyProtocolType: ProtocolNVMeoFTCP,
 		},
 	})
 	if err != nil {

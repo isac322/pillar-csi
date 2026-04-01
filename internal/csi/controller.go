@@ -1360,6 +1360,8 @@ func mapProtocolType(s string) agentv1.ProtocolType {
 		return agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI
 	case v1alpha1.ProtocolTypeNFS:
 		return agentv1.ProtocolType_PROTOCOL_TYPE_NFS
+	case v1alpha1.ProtocolTypeSMB:
+		return agentv1.ProtocolType_PROTOCOL_TYPE_SMB
 	default:
 		return agentv1.ProtocolType_PROTOCOL_TYPE_UNSPECIFIED
 	}

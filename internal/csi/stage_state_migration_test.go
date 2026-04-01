@@ -49,7 +49,7 @@ func TestIsLegacyFormat_NewFormatNotLegacy(t *testing.T) {
 	t.Parallel()
 	raw := &legacyNodeStageState{
 		SubsysNQN:    "nqn.2024-01.com.example:vol1",
-		ProtocolType: protocolNVMeoFTCP,
+		ProtocolType: ProtocolNVMeoFTCP,
 	}
 	if isLegacyFormat(raw) {
 		t.Error("expected isLegacyFormat to return false when protocol_type is present")
@@ -79,8 +79,8 @@ func TestMigrateFromLegacy_SetsProtocolType(t *testing.T) {
 	t.Parallel()
 	raw := &legacyNodeStageState{SubsysNQN: "nqn.2024-01.com.example:vol1"}
 	got := migrateFromLegacy(raw)
-	if got.ProtocolType != protocolNVMeoFTCP {
-		t.Errorf("ProtocolType = %q; want %q", got.ProtocolType, protocolNVMeoFTCP)
+	if got.ProtocolType != ProtocolNVMeoFTCP {
+		t.Errorf("ProtocolType = %q; want %q", got.ProtocolType, ProtocolNVMeoFTCP)
 	}
 }
 
@@ -151,8 +151,8 @@ func TestReadStageState_LegacyFormatMigratedInMemory(t *testing.T) {
 	if state == nil {
 		t.Fatal("readStageState returned nil state for legacy file")
 	}
-	if state.ProtocolType != protocolNVMeoFTCP {
-		t.Errorf("ProtocolType = %q; want %q", state.ProtocolType, protocolNVMeoFTCP)
+	if state.ProtocolType != ProtocolNVMeoFTCP {
+		t.Errorf("ProtocolType = %q; want %q", state.ProtocolType, ProtocolNVMeoFTCP)
 	}
 	if state.NVMeoF == nil {
 		t.Fatal("NVMeoF sub-struct is nil after migration")
@@ -191,8 +191,8 @@ func TestReadStageState_LegacyFormatMigratedOnDisk(t *testing.T) {
 	if err := json.Unmarshal(rawData, &onDisk); err != nil {
 		t.Fatalf("unmarshal migrated state file: %v", err)
 	}
-	if onDisk.ProtocolType != protocolNVMeoFTCP {
-		t.Errorf("on-disk ProtocolType = %q; want %q", onDisk.ProtocolType, protocolNVMeoFTCP)
+	if onDisk.ProtocolType != ProtocolNVMeoFTCP {
+		t.Errorf("on-disk ProtocolType = %q; want %q", onDisk.ProtocolType, ProtocolNVMeoFTCP)
 	}
 	if onDisk.NVMeoF == nil || onDisk.NVMeoF.SubsysNQN != nqn {
 		t.Errorf("on-disk NVMeoF.SubsysNQN = %q; want %q",
@@ -209,7 +209,7 @@ func TestReadStageState_LegacyFormatMigratedOnDisk(t *testing.T) {
 	if err2 != nil {
 		t.Fatalf("second readStageState after migration: %v", err2)
 	}
-	if state2 == nil || state2.ProtocolType != protocolNVMeoFTCP {
+	if state2 == nil || state2.ProtocolType != ProtocolNVMeoFTCP {
 		t.Error("second read after migration should use new format directly")
 	}
 }
@@ -226,7 +226,7 @@ func TestReadStageState_NewFormatUnchanged(t *testing.T) {
 
 	// Write a Phase 2 state file.
 	newState := &nodeStageState{
-		ProtocolType: protocolNVMeoFTCP,
+		ProtocolType: ProtocolNVMeoFTCP,
 		NVMeoF: &NVMeoFStageState{
 			SubsysNQN: nqn,
 			Address:   addr,
@@ -249,7 +249,7 @@ func TestReadStageState_NewFormatUnchanged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("readStageState: %v", err)
 	}
-	if state == nil || state.ProtocolType != protocolNVMeoFTCP {
+	if state == nil || state.ProtocolType != ProtocolNVMeoFTCP {
 		t.Errorf("expected nvmeof-tcp state, got %+v", state)
 	}
 	if state.NVMeoF == nil || state.NVMeoF.Address != addr || state.NVMeoF.Port != port {
@@ -312,7 +312,7 @@ func TestReadStageState_LegacyMigratedToProtocolState(t *testing.T) {
 	if nvmeState.SubsysNQN != nqn {
 		t.Errorf("NVMeoFProtocolState.SubsysNQN = %q; want %q", nvmeState.SubsysNQN, nqn)
 	}
-	if nvmeState.ProtocolType() != protocolNVMeoFTCP {
+	if nvmeState.ProtocolType() != ProtocolNVMeoFTCP {
 		t.Errorf("ProtocolType() = %q; want %q", nvmeState.ProtocolType(), "nvmeof-tcp")
 	}
 }
@@ -324,7 +324,7 @@ func TestReadStageState_LegacyMigratedToProtocolState(t *testing.T) {
 func TestToProtocolState_NVMeoF(t *testing.T) {
 	t.Parallel()
 	s := &nodeStageState{
-		ProtocolType: protocolNVMeoFTCP,
+		ProtocolType: ProtocolNVMeoFTCP,
 		NVMeoF: &NVMeoFStageState{
 			SubsysNQN: "nqn.2024-01.com.example:vol1",
 			Address:   "10.0.0.1",
@@ -352,7 +352,7 @@ func TestToProtocolState_NVMeoF(t *testing.T) {
 
 func TestToProtocolState_NVMeoF_NilSubStruct(t *testing.T) {
 	t.Parallel()
-	s := &nodeStageState{ProtocolType: protocolNVMeoFTCP, NVMeoF: nil}
+	s := &nodeStageState{ProtocolType: ProtocolNVMeoFTCP, NVMeoF: nil}
 	if _, err := s.ToProtocolState(); err == nil {
 		t.Error("expected error when NVMeoF sub-struct is nil")
 	}

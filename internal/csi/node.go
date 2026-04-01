@@ -184,7 +184,7 @@ func (a *connectorProtocolHandlerAdapter) Attach(ctx context.Context, params Att
 func (a *connectorProtocolHandlerAdapter) Detach(ctx context.Context, state ProtocolState) error {
 	nvmeState, ok := state.(*NVMeoFProtocolState)
 	if !ok || nvmeState == nil {
-		return nil // Unknown state type: skip disconnect.
+		return fmt.Errorf("connectorProtocolHandlerAdapter Detach: expected *NVMeoFProtocolState, got %T", state)
 	}
 	err := a.conn.Disconnect(ctx, nvmeState.SubsysNQN)
 	if err != nil {
@@ -212,7 +212,7 @@ func handlersFromConnector(conn Connector) map[string]ProtocolHandler {
 		return nil
 	}
 	return map[string]ProtocolHandler{
-		protocolNVMeoFTCP: &connectorProtocolHandlerAdapter{
+		ProtocolNVMeoFTCP: &connectorProtocolHandlerAdapter{
 			conn:         conn,
 			pollTimeout:  deviceWaitTimeout,
 			pollInterval: devicePollInterval,
@@ -228,10 +228,10 @@ func handlersFromConnector(conn Connector) map[string]ProtocolHandler {
 // by this driver.  It is used by resolveProtocolType to validate protocol-type
 // strings extracted from volumeID path components (which could be any string).
 var knownProtocolTypes = map[string]struct{}{
-	protocolNVMeoFTCP: {},
-	protocolISCSI:     {},
-	protocolNFS:       {},
-	protocolSMB:       {},
+	ProtocolNVMeoFTCP: {},
+	ProtocolISCSI:     {},
+	ProtocolNFS:       {},
+	ProtocolSMB:       {},
 }
 
 // resolveProtocolType derives the storage protocol type for the given volume.
@@ -262,7 +262,7 @@ func resolveProtocolType(volumeID string, volCtx map[string]string) string {
 	}
 
 	// 3. Backward-compatible default.
-	return protocolNVMeoFTCP
+	return ProtocolNVMeoFTCP
 }
 
 // Mounter is the interface for filesystem-level mount/unmount operations.
@@ -615,7 +615,7 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 
 	// NVMe-oF TCP requires target_id (NQN), address, and port.
 	// iSCSI, NFS, SMB: handlers validate their own required parameters inside Attach.
-	if protocolType == protocolNVMeoFTCP {
+	if protocolType == ProtocolNVMeoFTCP {
 		if targetID == "" {
 			return nil, status.Errorf(codes.InvalidArgument,
 				"NodeStageVolume: volume_context missing required key %q", VolumeContextKeyTargetID)

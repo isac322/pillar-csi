@@ -689,7 +689,7 @@ func main() {
 	// Additional protocol handlers (iSCSI, NFS, SMB) are registered here
 	// as they are implemented per the multi-protocol RFC.
 	handlers := map[string]csisvc.ProtocolHandler{
-		"nvmeof-tcp": newFabricsConnector(),
+		csisvc.ProtocolNVMeoFTCP: newFabricsConnector(),
 	}
 	identitySrv := csisvc.NewIdentityServer(driverName, version)
 	nodeSrv := csisvc.NewNodeServer(*nodeID, handlers, &mkdirMounter{wrapped: csisvc.NewKubeMounter()})

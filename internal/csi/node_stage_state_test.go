@@ -58,7 +58,7 @@ func TestNodeStageState_JSON_NVMeoF(t *testing.T) {
 	t.Parallel()
 
 	s := &nodeStageState{
-		ProtocolType: protocolNVMeoFTCP,
+		ProtocolType: ProtocolNVMeoFTCP,
 		NVMeoF: &NVMeoFStageState{
 			SubsysNQN: "nqn.2024-01.com.example:vol1",
 			Address:   "192.168.1.10",
@@ -196,8 +196,8 @@ func TestNodeStageState_Unmarshal_NVMeoF(t *testing.T) {
 	if err := json.Unmarshal([]byte(raw), &s); err != nil {
 		t.Fatalf("json.Unmarshal: %v", err)
 	}
-	if s.ProtocolType != protocolNVMeoFTCP {
-		t.Errorf("ProtocolType = %q; want %q", s.ProtocolType, protocolNVMeoFTCP)
+	if s.ProtocolType != ProtocolNVMeoFTCP {
+		t.Errorf("ProtocolType = %q; want %q", s.ProtocolType, ProtocolNVMeoFTCP)
 	}
 	if s.NVMeoF == nil {
 		t.Fatal("NVMeoF sub-struct is nil")
@@ -311,7 +311,7 @@ func TestNodeStageState_Unmarshal_UnknownFieldsIgnored(t *testing.T) {
 	if err := json.Unmarshal([]byte(raw), &s); err != nil {
 		t.Fatalf("json.Unmarshal should ignore unknown fields: %v", err)
 	}
-	if s.ProtocolType != protocolNVMeoFTCP {
+	if s.ProtocolType != ProtocolNVMeoFTCP {
 		t.Errorf("ProtocolType = %q", s.ProtocolType)
 	}
 }
@@ -326,7 +326,7 @@ func TestNodeStageState_DiscriminatedUnion_OnlyNVMeoFSet(t *testing.T) {
 	t.Parallel()
 
 	orig := &nodeStageState{
-		ProtocolType: protocolNVMeoFTCP,
+		ProtocolType: ProtocolNVMeoFTCP,
 		NVMeoF:       &NVMeoFStageState{SubsysNQN: "nqn.x:vol", Address: "1.2.3.4", Port: "4420"},
 	}
 
@@ -663,7 +663,7 @@ func TestNodeStageState_ToProtocolState_NVMeoFFieldsPreserved(t *testing.T) {
 	)
 
 	s := &nodeStageState{
-		ProtocolType: protocolNVMeoFTCP,
+		ProtocolType: ProtocolNVMeoFTCP,
 		NVMeoF:       &NVMeoFStageState{SubsysNQN: subsysNQN, Address: address, Port: port},
 	}
 
@@ -687,8 +687,8 @@ func TestNodeStageState_ToProtocolState_NVMeoFFieldsPreserved(t *testing.T) {
 		t.Errorf("Port = %q; want %q", nvme.Port, port)
 	}
 	// ProtocolType() must match the package constant.
-	if nvme.ProtocolType() != protocolNVMeoFTCP {
-		t.Errorf("ProtocolType() = %q; want %q", nvme.ProtocolType(), protocolNVMeoFTCP)
+	if nvme.ProtocolType() != ProtocolNVMeoFTCP {
+		t.Errorf("ProtocolType() = %q; want %q", nvme.ProtocolType(), ProtocolNVMeoFTCP)
 	}
 }
 
@@ -766,7 +766,7 @@ func TestStageStateFromAttachResult_NVMeoFEmptyAttachResultState(t *testing.T) {
 		State:      nil, // no state in AttachResult
 	}
 
-	s := stageStateFromAttachResult(protocolNVMeoFTCP, nqn, addr, port, result)
+	s := stageStateFromAttachResult(ProtocolNVMeoFTCP, nqn, addr, port, result)
 	if s == nil {
 		t.Fatal("stageStateFromAttachResult returned nil")
 	}
@@ -803,7 +803,7 @@ func TestStageStateFromAttachResult_NVMeoFResultStateTakesPrecedence(t *testing.
 		},
 	}
 
-	s := stageStateFromAttachResult(protocolNVMeoFTCP,
+	s := stageStateFromAttachResult(ProtocolNVMeoFTCP,
 		"nqn.x:vol-from-volctx", "volctx-addr", "volctx-port",
 		result,
 	)

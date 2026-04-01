@@ -73,8 +73,8 @@ func TestNVMeoFProtocolState_ImplementsProtocolState(t *testing.T) {
 // the expected "nvmeof-tcp" string.
 func TestNVMeoFProtocolState_ProtocolType(t *testing.T) {
 	s := &NVMeoFProtocolState{SubsysNQN: "nqn.2024-01.com.example:vol1"}
-	if got := s.ProtocolType(); got != protocolNVMeoFTCP {
-		t.Errorf("expected %q, got %q", protocolNVMeoFTCP, got)
+	if got := s.ProtocolType(); got != ProtocolNVMeoFTCP {
+		t.Errorf("expected %q, got %q", ProtocolNVMeoFTCP, got)
 	}
 }
 
@@ -101,7 +101,7 @@ func TestNVMeoFTCPHandler_Attach_Success(t *testing.T) {
 	h := newTestHandler(sysfsRoot, fabricsDev)
 
 	result, err := h.Attach(context.Background(), AttachParams{
-		ProtocolType: protocolNVMeoFTCP,
+		ProtocolType: ProtocolNVMeoFTCP,
 		ConnectionID: nqn,
 		Address:      addr,
 		Port:         port,
@@ -169,7 +169,7 @@ func TestNVMeoFTCPHandler_Attach_NewConnect(t *testing.T) {
 	}
 
 	_, attachErr := h.Attach(context.Background(), AttachParams{
-		ProtocolType: protocolNVMeoFTCP,
+		ProtocolType: ProtocolNVMeoFTCP,
 		ConnectionID: nqn,
 		Address:      addr,
 		Port:         port,
@@ -199,7 +199,7 @@ func TestNVMeoFTCPHandler_Attach_NewConnect(t *testing.T) {
 func TestNVMeoFTCPHandler_Attach_MissingConnectionID(t *testing.T) {
 	h := newTestHandler(t.TempDir(), "")
 	_, err := h.Attach(context.Background(), AttachParams{
-		ProtocolType: protocolNVMeoFTCP,
+		ProtocolType: ProtocolNVMeoFTCP,
 		Address:      "192.168.1.10",
 		Port:         "4420",
 	})
@@ -213,7 +213,7 @@ func TestNVMeoFTCPHandler_Attach_MissingConnectionID(t *testing.T) {
 func TestNVMeoFTCPHandler_Attach_MissingAddress(t *testing.T) {
 	h := newTestHandler(t.TempDir(), "")
 	_, err := h.Attach(context.Background(), AttachParams{
-		ProtocolType: protocolNVMeoFTCP,
+		ProtocolType: ProtocolNVMeoFTCP,
 		ConnectionID: "nqn.2024-01.com.example:vol1",
 		Port:         "4420",
 	})
@@ -227,7 +227,7 @@ func TestNVMeoFTCPHandler_Attach_MissingAddress(t *testing.T) {
 func TestNVMeoFTCPHandler_Attach_MissingPort(t *testing.T) {
 	h := newTestHandler(t.TempDir(), "")
 	_, err := h.Attach(context.Background(), AttachParams{
-		ProtocolType: protocolNVMeoFTCP,
+		ProtocolType: ProtocolNVMeoFTCP,
 		ConnectionID: "nqn.2024-01.com.example:vol1",
 		Address:      "192.168.1.10",
 	})
@@ -417,7 +417,7 @@ func TestNVMeoFTCPHandler_Attach_Detach_RoundTrip(t *testing.T) {
 
 	// Attach
 	result, err := h.Attach(context.Background(), AttachParams{
-		ProtocolType: protocolNVMeoFTCP,
+		ProtocolType: ProtocolNVMeoFTCP,
 		ConnectionID: nqn,
 		Address:      addr,
 		Port:         port,

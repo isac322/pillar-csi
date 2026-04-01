@@ -371,12 +371,12 @@ func TestStageStateFromAttachResult_NVMeoF_UsesProtocolStateFields(t *testing.T)
 		},
 	}
 
-	state := stageStateFromAttachResult(protocolNVMeoFTCP, "other-nqn", "other-addr", "other-port", result)
+	state := stageStateFromAttachResult(ProtocolNVMeoFTCP, "other-nqn", "other-addr", "other-port", result)
 	if state == nil {
 		t.Fatal("stageStateFromAttachResult returned nil")
 	}
-	if state.ProtocolType != protocolNVMeoFTCP {
-		t.Errorf("ProtocolType = %q; want %q", state.ProtocolType, protocolNVMeoFTCP)
+	if state.ProtocolType != ProtocolNVMeoFTCP {
+		t.Errorf("ProtocolType = %q; want %q", state.ProtocolType, ProtocolNVMeoFTCP)
 	}
 	if state.NVMeoF == nil {
 		t.Fatal("NVMeoF sub-struct is nil")
@@ -409,7 +409,7 @@ func TestStageStateFromAttachResult_NVMeoF_FallsBackToVolumeContextFields(t *tes
 		State:      &fakeProtocolState{protocol: "nvmeof-tcp"},
 	}
 
-	state := stageStateFromAttachResult(protocolNVMeoFTCP, targetID, address, port, result)
+	state := stageStateFromAttachResult(ProtocolNVMeoFTCP, targetID, address, port, result)
 	if state == nil {
 		t.Fatal("stageStateFromAttachResult returned nil")
 	}
@@ -431,12 +431,12 @@ func TestStageStateFromAttachResult_NVMeoF_FallsBackToVolumeContextFields(t *tes
 // stageStateFromAttachResult handles a nil AttachResult gracefully.
 func TestStageStateFromAttachResult_NVMeoF_NilAttachResult(t *testing.T) {
 	t.Parallel()
-	state := stageStateFromAttachResult(protocolNVMeoFTCP, "nqn.x:vol", "1.2.3.4", "4420", nil)
+	state := stageStateFromAttachResult(ProtocolNVMeoFTCP, "nqn.x:vol", "1.2.3.4", "4420", nil)
 	if state == nil {
 		t.Fatal("stageStateFromAttachResult returned nil for nil AttachResult")
 	}
-	if state.ProtocolType != protocolNVMeoFTCP {
-		t.Errorf("ProtocolType = %q; want %q", state.ProtocolType, protocolNVMeoFTCP)
+	if state.ProtocolType != ProtocolNVMeoFTCP {
+		t.Errorf("ProtocolType = %q; want %q", state.ProtocolType, ProtocolNVMeoFTCP)
 	}
 	if state.NVMeoF == nil {
 		t.Fatal("NVMeoF sub-struct is nil for nil AttachResult")

@@ -148,7 +148,7 @@ func TestNodeUnstageVolume_Dispatch_NVMeoF(t *testing.T) {
 
 	handler := &mockProtocolHandler{}
 	handlers := map[string]ProtocolHandler{
-		protocolNVMeoFTCP: handler,
+		ProtocolNVMeoFTCP: handler,
 	}
 	env := newHandlerNodeTestEnv(t, handlers)
 	stagingPath := t.TempDir()
@@ -162,7 +162,7 @@ func TestNodeUnstageVolume_Dispatch_NVMeoF(t *testing.T) {
 
 	// Pre-write a Phase 2 NVMe-oF state file (simulating a prior NodeStageVolume).
 	if err := env.srv.writeStageState(volumeID, &nodeStageState{
-		ProtocolType: protocolNVMeoFTCP,
+		ProtocolType: ProtocolNVMeoFTCP,
 		NVMeoF: &NVMeoFStageState{
 			SubsysNQN: nqn,
 			Address:   addr,
@@ -228,7 +228,7 @@ func TestNodeUnstageVolume_Dispatch_LegacyMigration(t *testing.T) {
 
 	handler := &mockProtocolHandler{}
 	handlers := map[string]ProtocolHandler{
-		protocolNVMeoFTCP: handler,
+		ProtocolNVMeoFTCP: handler,
 	}
 	env := newHandlerNodeTestEnv(t, handlers)
 	stagingPath := t.TempDir()
@@ -278,7 +278,7 @@ func TestNodeUnstageVolume_Dispatch_UnknownProtocol(t *testing.T) {
 
 	// Register only the NVMe-oF handler; the state file will claim "iscsi".
 	handlers := map[string]ProtocolHandler{
-		protocolNVMeoFTCP: &mockProtocolHandler{},
+		ProtocolNVMeoFTCP: &mockProtocolHandler{},
 	}
 	env := newHandlerNodeTestEnv(t, handlers)
 	stagingPath := t.TempDir()
@@ -318,7 +318,7 @@ func TestNodeUnstageVolume_Dispatch_DetachError(t *testing.T) {
 		detachErr: errors.New("transport failure"),
 	}
 	handlers := map[string]ProtocolHandler{
-		protocolNVMeoFTCP: handler,
+		ProtocolNVMeoFTCP: handler,
 	}
 	env := newHandlerNodeTestEnv(t, handlers)
 	stagingPath := t.TempDir()
@@ -327,7 +327,7 @@ func TestNodeUnstageVolume_Dispatch_DetachError(t *testing.T) {
 
 	// Write a valid NVMe-oF state file.
 	if err := env.srv.writeStageState(volumeID, &nodeStageState{
-		ProtocolType: protocolNVMeoFTCP,
+		ProtocolType: ProtocolNVMeoFTCP,
 		NVMeoF: &NVMeoFStageState{
 			SubsysNQN: "nqn.test:detach-err",
 			Address:   "192.0.2.1", // RFC 5737 TEST-NET-1
@@ -361,7 +361,7 @@ func TestNodeUnstageVolume_Dispatch_NoStateFile_NoDetach(t *testing.T) {
 
 	handler := &mockProtocolHandler{}
 	handlers := map[string]ProtocolHandler{
-		protocolNVMeoFTCP: handler,
+		ProtocolNVMeoFTCP: handler,
 	}
 	env := newHandlerNodeTestEnv(t, handlers)
 	stagingPath := t.TempDir()

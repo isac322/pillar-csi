@@ -53,7 +53,7 @@ type NVMeoFProtocolState struct {
 }
 
 // ProtocolType satisfies the ProtocolState interface.
-func (*NVMeoFProtocolState) ProtocolType() string { return protocolNVMeoFTCP }
+func (*NVMeoFProtocolState) ProtocolType() string { return ProtocolNVMeoFTCP }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // NVMeoFTCPHandler

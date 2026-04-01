@@ -304,7 +304,7 @@ func TestNodeStageVolume_MountAccess(t *testing.T) { //nolint:gocyclo // multipl
 	if state == nil {
 		t.Fatal("stage state is nil after NodeStageVolume")
 	}
-	if state.ProtocolType != protocolNVMeoFTCP {
+	if state.ProtocolType != ProtocolNVMeoFTCP {
 		t.Errorf("state.ProtocolType = %q, want %q", state.ProtocolType, "nvmeof-tcp")
 	}
 	if state.NVMeoF == nil {
@@ -868,7 +868,7 @@ func TestStageState_WriteReadDelete(t *testing.T) {
 
 	const volumeID = "pool/vol-1"
 	want := &nodeStageState{
-		ProtocolType: protocolNVMeoFTCP,
+		ProtocolType: ProtocolNVMeoFTCP,
 		NVMeoF:       &NVMeoFStageState{SubsysNQN: "nqn.test:pool.vol-1"},
 	}
 
@@ -921,7 +921,7 @@ func TestStageState_VolumeIDSanitization(t *testing.T) {
 	ids := []string{"pool/vol-a", "pool/vol-b", "other-pool/vol-c"}
 	for _, id := range ids {
 		st := &nodeStageState{
-			ProtocolType: protocolNVMeoFTCP,
+			ProtocolType: ProtocolNVMeoFTCP,
 			NVMeoF:       &NVMeoFStageState{SubsysNQN: "nqn.test:" + id},
 		}
 		if err := srv.writeStageState(id, st); err != nil {
@@ -954,7 +954,7 @@ func TestStageState_DiscriminatedUnion_NVMeoF(t *testing.T) {
 	const volumeID = "pool/nvme-vol"
 
 	want := &nodeStageState{
-		ProtocolType: protocolNVMeoFTCP,
+		ProtocolType: ProtocolNVMeoFTCP,
 		NVMeoF: &NVMeoFStageState{
 			SubsysNQN: "nqn.2024-01.com.example:vol1",
 			Address:   "192.168.1.10",
@@ -972,7 +972,7 @@ func TestStageState_DiscriminatedUnion_NVMeoF(t *testing.T) {
 	if got == nil {
 		t.Fatal("readStageState returned nil")
 	}
-	if got.ProtocolType != protocolNVMeoFTCP {
+	if got.ProtocolType != ProtocolNVMeoFTCP {
 		t.Errorf("ProtocolType = %q, want %q", got.ProtocolType, "nvmeof-tcp")
 	}
 	if got.NVMeoF == nil {
@@ -1140,7 +1140,7 @@ func TestStageState_LegacyMigration(t *testing.T) {
 	if got == nil {
 		t.Fatal("readStageState returned nil for legacy file")
 	}
-	if got.ProtocolType != protocolNVMeoFTCP {
+	if got.ProtocolType != ProtocolNVMeoFTCP {
 		t.Errorf("migrated ProtocolType = %q, want %q", got.ProtocolType, "nvmeof-tcp")
 	}
 	if got.NVMeoF == nil {
@@ -1167,7 +1167,7 @@ func TestStageState_ToProtocolState_NVMeoF(t *testing.T) {
 	t.Parallel()
 
 	s := &nodeStageState{
-		ProtocolType: protocolNVMeoFTCP,
+		ProtocolType: ProtocolNVMeoFTCP,
 		NVMeoF: &NVMeoFStageState{
 			SubsysNQN: "nqn.test:vol1",
 			Address:   testStorageAddr,
@@ -1212,7 +1212,7 @@ func TestStageState_ToProtocolState_NilAndUnknown(t *testing.T) {
 	}
 
 	// nvmeof-tcp with nil NVMeoF sub-struct
-	noSub := &nodeStageState{ProtocolType: protocolNVMeoFTCP, NVMeoF: nil}
+	noSub := &nodeStageState{ProtocolType: ProtocolNVMeoFTCP, NVMeoF: nil}
 	if _, err := noSub.ToProtocolState(); err == nil {
 		t.Error("nvmeof-tcp+nil.ToProtocolState() should return error")
 	}
@@ -1343,8 +1343,8 @@ func TestResolveProtocolType_DefaultFallback(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			got := resolveProtocolType(tt.volumeID, tt.volCtx)
-			if got != protocolNVMeoFTCP {
-				t.Errorf("resolveProtocolType = %q, want %q (default)", got, protocolNVMeoFTCP)
+			if got != ProtocolNVMeoFTCP {
+				t.Errorf("resolveProtocolType = %q, want %q (default)", got, ProtocolNVMeoFTCP)
 			}
 		})
 	}
@@ -1400,8 +1400,8 @@ func TestNodeStageVolume_ProtocolDispatch_NVMeoF(t *testing.T) {
 	if state == nil {
 		t.Fatal("state is nil after NodeStageVolume")
 	}
-	if state.ProtocolType != protocolNVMeoFTCP {
-		t.Errorf("state.ProtocolType = %q, want %q", state.ProtocolType, protocolNVMeoFTCP)
+	if state.ProtocolType != ProtocolNVMeoFTCP {
+		t.Errorf("state.ProtocolType = %q, want %q", state.ProtocolType, ProtocolNVMeoFTCP)
 	}
 }
 
@@ -1481,9 +1481,9 @@ func TestStageStateFromAttachResult_NVMeoF(t *testing.T) {
 		},
 	}
 
-	s := stageStateFromAttachResult(protocolNVMeoFTCP, "nqn.test:vol", testStorageAddr, "4420", result)
-	if s.ProtocolType != protocolNVMeoFTCP {
-		t.Errorf("ProtocolType = %q, want %q", s.ProtocolType, protocolNVMeoFTCP)
+	s := stageStateFromAttachResult(ProtocolNVMeoFTCP, "nqn.test:vol", testStorageAddr, "4420", result)
+	if s.ProtocolType != ProtocolNVMeoFTCP {
+		t.Errorf("ProtocolType = %q, want %q", s.ProtocolType, ProtocolNVMeoFTCP)
 	}
 	if s.NVMeoF == nil {
 		t.Fatal("NVMeoF sub-struct is nil")

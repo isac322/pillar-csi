@@ -98,7 +98,11 @@ func (s *Server) handlerForProtocol(protocol agentv1.ProtocolType) (AgentProtoco
 
 // NewNVMeoFTCPAgentHandler binds the NVMe-oF TCP handler to a Server so it can
 // reuse backend lookup, device polling configuration, and per-target locking.
+// Panics if server is nil — callers must provide a valid server reference.
 func NewNVMeoFTCPAgentHandler(server *Server) *NVMeoFTCPAgentHandler {
+	if server == nil {
+		panic("NewNVMeoFTCPAgentHandler: server must not be nil")
+	}
 	return &NVMeoFTCPAgentHandler{server: server}
 }
 
@@ -107,11 +111,6 @@ func (h *NVMeoFTCPAgentHandler) Export(
 	ctx context.Context,
 	params ExportParams,
 ) (*ExportResult, error) {
-	if h.server == nil {
-		return nil, status.Errorf(codes.FailedPrecondition,
-			"Export: NVMeoFTCPAgentHandler requires a server")
-	}
-
 	bindAddress, port, err := nvmeofEndpoint(params.BindAddress, params.Port, params.ProtocolParams)
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "Export: nvmeof_tcp export params required")
@@ -162,21 +161,12 @@ func (h *NVMeoFTCPAgentHandler) Export(
 
 // Unexport removes the NVMe-oF TCP configfs target for a volume.
 func (h *NVMeoFTCPAgentHandler) Unexport(_ context.Context, volumeID string) error {
-	if h.server == nil {
-		return status.Errorf(codes.FailedPrecondition,
-			"Unexport: NVMeoFTCPAgentHandler requires a server")
-	}
-
-	targetID, err := volumeTargetID(agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP, volumeID)
-	if err != nil {
-		return err
-	}
 	target, err := h.targetForVolume(volumeID)
 	if err != nil {
 		return err
 	}
 
-	unlock := h.server.lockTarget(agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP, targetID)
+	unlock := h.server.lockTarget(agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP, target.SubsystemNQN)
 	defer unlock()
 
 	removeErr := target.Remove()
@@ -191,15 +181,13 @@ func (h *NVMeoFTCPAgentHandler) AllowInitiator(
 	_ context.Context,
 	volumeID, initiatorID string,
 ) error {
-	if h.server == nil {
-		return status.Errorf(codes.FailedPrecondition,
-			"AllowInitiator: NVMeoFTCPAgentHandler requires a server")
-	}
-
 	target, err := h.targetForVolume(volumeID)
 	if err != nil {
 		return err
 	}
+
+	unlock := h.server.lockTarget(agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP, target.SubsystemNQN)
+	defer unlock()
 
 	allowErr := target.AllowHost(initiatorID)
 	if allowErr != nil {
@@ -213,15 +201,13 @@ func (h *NVMeoFTCPAgentHandler) DenyInitiator(
 	_ context.Context,
 	volumeID, initiatorID string,
 ) error {
-	if h.server == nil {
-		return status.Errorf(codes.FailedPrecondition,
-			"DenyInitiator: NVMeoFTCPAgentHandler requires a server")
-	}
-
 	target, err := h.targetForVolume(volumeID)
 	if err != nil {
 		return err
 	}
+
+	unlock := h.server.lockTarget(agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP, target.SubsystemNQN)
+	defer unlock()
 
 	denyErr := target.DenyHost(initiatorID)
 	if denyErr != nil {
@@ -235,15 +221,10 @@ func (h *NVMeoFTCPAgentHandler) Reconcile(
 	_ context.Context,
 	desired []ExportDesiredState,
 ) error {
-	if h.server == nil {
-		return status.Errorf(codes.FailedPrecondition,
-			"Reconcile: NVMeoFTCPAgentHandler requires a server")
-	}
-
 	for _, export := range desired {
 		bindAddress, port, err := nvmeofEndpoint(export.BindAddress, export.Port, export.ProtocolParams)
 		if err != nil {
-			continue
+			return fmt.Errorf("Reconcile: volume %q: %w", export.VolumeID, err)
 		}
 
 		targetID, err := volumeTargetID(agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP, export.VolumeID)
