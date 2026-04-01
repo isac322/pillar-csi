@@ -277,7 +277,7 @@ func TestVolumeStateMachine_PartialFailure_RetrySucceeds(t *testing.T) {
 	mustTransition(t, sm, vol, OpControllerPublish)
 	assertState(t, sm, vol, StateControllerPublished)
 
-	// NVMe-oF connect succeeded; record the partial state.
+	// Protocol attach succeeded; record the partial state.
 	noop := mustTransition(t, sm, vol, OpNodeStageConnected)
 	if noop {
 		t.Error("NodeStageConnected from ControllerPublished: expected non-noop")

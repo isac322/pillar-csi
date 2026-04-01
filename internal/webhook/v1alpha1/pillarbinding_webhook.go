@@ -199,15 +199,11 @@ func (*PillarBindingCustomValidator) ValidateDelete(
 	return nil, nil
 }
 
-// validateCompatibility checks that the backend type of the referenced PillarPool
-// and the protocol type of the referenced PillarProtocol are a valid combination.
-// Block-device backends (zfs-zvol, lvm-lv) only work with block protocols
-// (nvmeof-tcp, iscsi); filesystem/directory backends (zfs-dataset, dir) only
-// work with the file protocol (nfs).
-//
-// If either referenced resource does not yet exist the check is skipped: the
-// controller will detect and surface the mismatch via status conditions once
-// both resources are available.
+// validateCompatibility checks that the backend type of the referenced
+// PillarPool and the protocol type of the referenced PillarProtocol are a
+// valid combination. If either referenced resource does not yet exist the
+// check is skipped: the controller will detect and surface the mismatch via
+// status conditions once both resources are available.
 func (v *PillarBindingCustomValidator) validateCompatibility(
 	ctx context.Context, pb *pillarcsiv1alpha1.PillarBinding,
 ) error {
@@ -235,35 +231,14 @@ func (v *PillarBindingCustomValidator) validateCompatibility(
 
 	backendType := pool.Spec.Backend.Type
 	protocolType := protocol.Spec.Type
-	if !isBackendProtocolCompatible(backendType, protocolType) {
+	compat := pillarcsiv1alpha1.Compatible(backendType, protocolType)
+	if !compat.OK {
 		return field.Invalid(
 			field.NewPath("spec", "protocolRef"),
 			pb.Spec.ProtocolRef,
-			fmt.Sprintf(
-				"backend type %q is incompatible with protocol type %q: "+
-					"block backends (zfs-zvol, lvm-lv) require block protocols (nvmeof-tcp, iscsi); "+
-					"file backends (zfs-dataset, dir) require the file protocol (nfs)",
-				backendType, protocolType,
-			),
+			compat.Message,
 		)
 	}
 
 	return nil
-}
-
-// isBackendProtocolCompatible returns true when the given backend/protocol
-// pair is a valid combination.
-//
-// Compatibility matrix:
-//
-//	backend      | block protocols (nvmeof-tcp, iscsi) | file protocol (nfs)
-//	-------------|-------------------------------------|--------------------
-//	zfs-zvol     | ✓                                   | ✗
-//	lvm-lv       | ✓                                   | ✗
-//	zfs-dataset  | ✗                                   | ✓
-//	dir          | ✗                                   | ✓
-func isBackendProtocolCompatible(bt pillarcsiv1alpha1.BackendType, pt pillarcsiv1alpha1.ProtocolType) bool {
-	isBlockBackend := bt == pillarcsiv1alpha1.BackendTypeZFSZvol || bt == pillarcsiv1alpha1.BackendTypeLVMLV
-	isBlockProtocol := pt == pillarcsiv1alpha1.ProtocolTypeNVMeOFTCP || pt == pillarcsiv1alpha1.ProtocolTypeISCSI
-	return isBlockBackend == isBlockProtocol
 }

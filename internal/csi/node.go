@@ -45,19 +45,32 @@ import (
 
 // VolumeContext keys set by the controller in CreateVolume and stored in the
 // PersistentVolume spec.csi.volumeAttributes map.  The CO propagates these
-// to NodeStageVolume so the node knows how to connect to the NVMe-oF target.
+// to NodeStageVolume so the node knows how to connect to the storage target.
 const (
-	// VolumeContextKeyTargetNQN is the NVMe Qualified Name of the target
-	// subsystem.  Corresponds to ExportInfo.TargetId returned by the agent.
-	VolumeContextKeyTargetNQN = "target_id"
+	// VolumeContextKeyTargetID is the protocol-agnostic target identifier set
+	// by the controller in CreateVolume.  Corresponds to ExportInfo.TargetId
+	// returned by the agent.  The semantics depend on the protocol:
+	//   - NVMe-oF TCP: NVMe Qualified Name (NQN), e.g. "nqn.2024-01.com.example:vol1"
+	//   - iSCSI:       target IQN, e.g. "iqn.2024-01.com.example:vol1"
+	//   - NFS/SMB:     server IP address (the primary connection identifier)
+	VolumeContextKeyTargetID = "target_id"
 
-	// VolumeContextKeyAddress is the IP address (or hostname) of the NVMe-oF
-	// TCP target.  Corresponds to ExportInfo.Address.
+	// VolumeContextKeyAddress is the IP address (or hostname) of the storage
+	// target.  Corresponds to ExportInfo.Address.
 	VolumeContextKeyAddress = "address"
 
-	// VolumeContextKeyPort is the TCP port of the NVMe-oF target encoded as a
-	// decimal string, e.g. "4420".  Derived from ExportInfo.Port.
+	// VolumeContextKeyPort is the TCP port of the storage target encoded as a
+	// decimal string.  Derived from ExportInfo.Port.
+	// Examples: "4420" for NVMe-oF TCP, "3260" for iSCSI.
+	// May be empty for file protocols (NFS, SMB).
 	VolumeContextKeyPort = "port"
+
+	// VolumeContextKeyProtocolType is the storage protocol type set by the
+	// controller in CreateVolume.  It is used by NodeStageVolume to dispatch
+	// the volume to the correct ProtocolHandler (e.g. NVMeoFTCPHandler).
+	// Known values: "nvmeof-tcp", "iscsi", "nfs", "smb".
+	// Matches the StorageClass parameter "pillar-csi.bhyoo.com/protocol-type".
+	VolumeContextKeyProtocolType = "pillar-csi.bhyoo.com/protocol-type"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -82,14 +95,7 @@ const xfsFsType = "xfs"
 // when NodeServer is created via NewNodeServer.
 const defaultStateDir = "/var/lib/pillar-csi/node"
 
-// nodeStageState is the on-disk structure persisted during NodeStageVolume.
-// It records just enough information for NodeUnstageVolume to disconnect the
-// NVMe-oF subsystem without re-reading the PersistentVolume attributes
-// (which NodeUnstageVolume does not receive).
-type nodeStageState struct {
-	// SubsysNQN is the NVMe Qualified Name of the connected subsystem.
-	SubsysNQN string `json:"subsys_nqn"`
-}
+// NodeStageState discriminated union is defined in stage_state.go.
 
 // Connector is the interface for NVMe-oF connect/disconnect operations.
 // A real implementation issues nvme-cli commands or writes to /sys/class/nvme-fabrics.
@@ -111,6 +117,152 @@ type Connector interface {
 	// device is not yet visible; callers should poll until it appears or a
 	// deadline is exceeded.
 	GetDevicePath(ctx context.Context, subsysNQN string) (string, error)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// connectorProtocolHandlerAdapter
+// ─────────────────────────────────────────────────────────────────────────────
+
+// connectorProtocolHandlerAdapter adapts the legacy Connector interface to the
+// ProtocolHandler interface (RFC §5.4.2).  It is used internally by the
+// Connector-based constructors (NewNodeServerWithStateDir,
+// NewNodeServerWithStateMachine) so that NodeStageVolume and NodeUnstageVolume
+// can use the new handlers map uniformly without requiring every existing unit
+// test to migrate away from the legacy Connector mocks.
+//
+// Attach calls connector.Connect followed by a poll of connector.GetDevicePath,
+// mirroring the behavior previously embedded in NodeStageVolume.
+// Detach calls connector.Disconnect with the NQN from the NVMeoFProtocolState.
+// Rescan is a no-op because the legacy Connector has no rescan API.
+type connectorProtocolHandlerAdapter struct {
+	conn         Connector
+	pollTimeout  time.Duration
+	pollInterval time.Duration
+}
+
+// Ensure connectorProtocolHandlerAdapter satisfies ProtocolHandler at compile time.
+var _ ProtocolHandler = (*connectorProtocolHandlerAdapter)(nil)
+
+// Attach implements ProtocolHandler.Attach for the legacy Connector.
+// It calls conn.Connect then polls conn.GetDevicePath until the device appears
+// or the deadline is exceeded.
+func (a *connectorProtocolHandlerAdapter) Attach(ctx context.Context, params AttachParams) (*AttachResult, error) {
+	connErr := a.conn.Connect(ctx, params.ConnectionID, params.Address, params.Port)
+	if connErr != nil {
+		return nil, fmt.Errorf("connect: %w", connErr)
+	}
+
+	// Poll for the block device path.
+	pollCtx, pollCancel := context.WithTimeout(ctx, a.pollTimeout)
+	defer pollCancel()
+
+	for {
+		devPath, devErr := a.conn.GetDevicePath(pollCtx, params.ConnectionID)
+		if devErr != nil {
+			return nil, fmt.Errorf("get device path: %w", devErr)
+		}
+		if devPath != "" {
+			return &AttachResult{
+				DevicePath: devPath,
+				State: &NVMeoFProtocolState{
+					SubsysNQN: params.ConnectionID,
+					Address:   params.Address,
+					Port:      params.Port,
+				},
+			}, nil
+		}
+		select {
+		case <-pollCtx.Done():
+			return nil, fmt.Errorf("timed out waiting for block device: %w", pollCtx.Err())
+		case <-time.After(a.pollInterval):
+			// next iteration
+		}
+	}
+}
+
+// Detach implements ProtocolHandler.Detach for the legacy Connector.
+func (a *connectorProtocolHandlerAdapter) Detach(ctx context.Context, state ProtocolState) error {
+	nvmeState, ok := state.(*NVMeoFProtocolState)
+	if !ok || nvmeState == nil {
+		return fmt.Errorf("connectorProtocolHandlerAdapter Detach: expected *NVMeoFProtocolState, got %T", state)
+	}
+	err := a.conn.Disconnect(ctx, nvmeState.SubsysNQN)
+	if err != nil {
+		return fmt.Errorf("disconnect: %w", err)
+	}
+	return nil
+}
+
+// Rescan implements ProtocolHandler.Rescan for the legacy Connector.
+// The legacy Connector has no rescan API so this is always a no-op.
+func (*connectorProtocolHandlerAdapter) Rescan(_ context.Context, _ ProtocolState) error {
+	return nil
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// handlersFromConnector — bridge for Connector-based constructors
+// ─────────────────────────────────────────────────────────────────────────────
+
+// handlersFromConnector wraps conn in a connectorProtocolHandlerAdapter keyed
+// as "nvmeof-tcp" and returns the resulting handler map.  A nil connector
+// produces a nil map (no handlers registered), which is safe for constructors
+// that pass nil for state-only test servers that never call NodeStageVolume.
+func handlersFromConnector(conn Connector) map[string]ProtocolHandler {
+	if conn == nil {
+		return nil
+	}
+	return map[string]ProtocolHandler{
+		ProtocolNVMeoFTCP: &connectorProtocolHandlerAdapter{
+			conn:         conn,
+			pollTimeout:  deviceWaitTimeout,
+			pollInterval: devicePollInterval,
+		},
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// resolveProtocolType — extract protocol type for handler dispatch
+// ─────────────────────────────────────────────────────────────────────────────
+
+// knownProtocolTypes is the set of valid protocol-type string values recognized
+// by this driver.  It is used by resolveProtocolType to validate protocol-type
+// strings extracted from volumeID path components (which could be any string).
+var knownProtocolTypes = map[string]struct{}{
+	ProtocolNVMeoFTCP: {},
+	ProtocolISCSI:     {},
+	ProtocolNFS:       {},
+	ProtocolSMB:       {},
+}
+
+// resolveProtocolType derives the storage protocol type for the given volume.
+//
+// Resolution order (first non-empty, valid value wins):
+//  1. VolumeContext["pillar-csi.bhyoo.com/protocol-type"] — set by the
+//     controller in CreateVolume for all newly provisioned volumes.
+//  2. volumeID path component — the volumeID format used by this driver is
+//     "<target-name>/<protocol-type>/<backend-type>/<agent-vol-id>"; when the
+//     second slash-separated component is a known protocol type it is used.
+//  3. Default: "nvmeof-tcp" — backward-compatible fallback for volumes
+//     provisioned before Phase 2 that do not carry a protocol-type in their
+//     VolumeContext, and for unit tests that use simplified volumeID strings.
+func resolveProtocolType(volumeID string, volCtx map[string]string) string {
+	// 1. Explicit VolumeContext key (preferred; always present for new volumes).
+	if pt := volCtx[VolumeContextKeyProtocolType]; pt != "" {
+		return pt
+	}
+
+	// 2. Parse from volumeID: <target>/<protocol-type>/<backend-type>/<agent-vol-id>
+	// SplitN with limit 4 keeps the last segment intact (it may contain slashes).
+	parts := strings.SplitN(volumeID, "/", 4)
+	if len(parts) >= 2 {
+		candidate := parts[1]
+		if _, known := knownProtocolTypes[candidate]; known {
+			return candidate
+		}
+	}
+
+	// 3. Backward-compatible default.
+	return ProtocolNVMeoFTCP
 }
 
 // Mounter is the interface for filesystem-level mount/unmount operations.
@@ -138,12 +290,12 @@ type Mounter interface {
 }
 
 // NodeServer implements csi.NodeServer.  It handles the per-node portion of
-// the CSI lifecycle: connecting volumes via NVMe-oF, formatting filesystems,
-// and bind-mounting into pod target paths.
+// the CSI lifecycle: connecting volumes via ProtocolHandler, formatting
+// filesystems, and bind-mounting into pod target paths.
 //
-// All privileged operations are delegated to the injectable Connector and
-// Mounter interfaces so that the server can be tested without kernel modules
-// or root privileges.
+// All privileged operations are delegated to the injectable ProtocolHandler
+// and Mounter interfaces so that the server can be tested without kernel
+// modules or root privileges.
 //
 // When sm is non-nil the NodeServer consults the VolumeStateMachine before
 // executing any operation and returns gRPC FailedPrecondition for out-of-order
@@ -158,8 +310,15 @@ type NodeServer struct {
 	// included in NodeGetInfo responses and used for topology key labeling.
 	nodeID string
 
-	// connector performs NVMe-oF connect / disconnect / device-path resolution.
-	connector Connector
+	// handlers maps protocol-type string (e.g. "nvmeof-tcp") to the
+	// corresponding ProtocolHandler implementation.  NodeStageVolume dispatches
+	// to the handler matched by the volume's protocol type and calls Attach.
+	// NodeUnstageVolume calls Detach with the persisted stage state.
+	//
+	// Backward-compatible constructors (NewNodeServerWithStateDir,
+	// NewNodeServerWithStateMachine) wrap the legacy Connector argument in a
+	// connectorProtocolHandlerAdapter keyed as "nvmeof-tcp".
+	handlers map[string]ProtocolHandler
 
 	// mounter performs filesystem format and bind-mount operations.
 	mounter Mounter
@@ -198,20 +357,29 @@ type NodeServer struct {
 	// When nil, linuxBlockDeviceSize is used.  Override in tests to return a
 	// synthetic size without opening a real block device.
 	blockDeviceSizeFn func(string) (int64, error)
+
+	// topologyProber determines which storage protocols are available on this
+	// node and is consulted by NodeGetInfo to build AccessibleTopology.
+	// When nil, the default sysfsProber is used (checks kernel modules,
+	// system binaries, and config files on the real host).
+	// Override in tests via WithTopologyProber to inject a mock prober.
+	topologyProber ProtocolProber
 }
 
 // Ensure NodeServer satisfies the interface at compile time.
 var _ csi.NodeServer = (*NodeServer)(nil)
 
-// NewNodeServer constructs a NodeServer with the given node identity and
-// injectable operation backends.  The staging state directory defaults to
-// /var/lib/pillar-csi/node.
+// NewNodeServerWithConnector constructs a NodeServer with the given node
+// identity and a legacy Connector backend.  The staging state directory
+// defaults to /var/lib/pillar-csi/node.
 //
-//   - nodeID     – unique node name used in NodeGetInfo (typically the
-//     Kubernetes node name, e.g. "worker-1").
+//   - nodeID     – Kubernetes node name returned verbatim by NodeGetInfo.NodeId
+//     (RFC §5.1 stable node handle, e.g. "worker-1").
 //   - connector  – NVMe-oF connect/disconnect implementation.
 //   - mounter    – filesystem format/mount/unmount implementation.
-func NewNodeServer(nodeID string, connector Connector, mounter Mounter) *NodeServer {
+//
+// Deprecated: use NewNodeServer(nodeID, handlers, mounter) instead.
+func NewNodeServerWithConnector(nodeID string, connector Connector, mounter Mounter) *NodeServer {
 	return NewNodeServerWithStateDir(nodeID, connector, mounter, defaultStateDir)
 }
 
@@ -220,6 +388,11 @@ func NewNodeServer(nodeID string, connector Connector, mounter Mounter) *NodeSer
 // t.TempDir() so that staging state is isolated between test cases and does
 // not require /var/lib to exist.
 //
+// The connector is automatically wrapped in a connectorProtocolHandlerAdapter
+// and stored as the "nvmeof-tcp" handler.  Existing tests that pass a legacy
+// Connector mock continue to work unchanged: their Connect/Disconnect/GetDevicePath
+// calls are transparently delegated by the adapter.
+//
 //   - nodeID    – unique node name used in NodeGetInfo.
 //   - connector – NVMe-oF connect/disconnect implementation.
 //   - mounter   – filesystem format/mount/unmount implementation.
@@ -227,10 +400,10 @@ func NewNodeServer(nodeID string, connector Connector, mounter Mounter) *NodeSer
 //     use if absent.
 func NewNodeServerWithStateDir(nodeID string, connector Connector, mounter Mounter, stateDir string) *NodeServer {
 	return &NodeServer{
-		nodeID:    nodeID,
-		connector: connector,
-		mounter:   mounter,
-		stateDir:  stateDir,
+		nodeID:   nodeID,
+		handlers: handlersFromConnector(connector),
+		mounter:  mounter,
+		stateDir: stateDir,
 	}
 }
 
@@ -239,6 +412,9 @@ func NewNodeServerWithStateDir(nodeID string, connector Connector, mounter Mount
 // operation validates the volume's current lifecycle state before executing
 // privileged work, returning FailedPrecondition for out-of-order requests
 // (e.g. NodeStageVolume before ControllerPublishVolume).
+//
+// The connector is automatically wrapped in a connectorProtocolHandlerAdapter
+// and stored as the "nvmeof-tcp" handler (see NewNodeServerWithStateDir).
 //
 // Use this constructor in end-to-end tests that verify cross-component
 // ordering.  For unit tests that exercise the node in isolation, use
@@ -257,11 +433,30 @@ func NewNodeServerWithStateMachine(
 	sm *VolumeStateMachine,
 ) *NodeServer {
 	return &NodeServer{
-		nodeID:    nodeID,
-		connector: connector,
-		mounter:   mounter,
-		stateDir:  stateDir,
-		sm:        sm,
+		nodeID:   nodeID,
+		handlers: handlersFromConnector(connector),
+		mounter:  mounter,
+		stateDir: stateDir,
+		sm:       sm,
+	}
+}
+
+// NewNodeServer constructs a NodeServer accepting a protocol-handler map.
+// This overload replaces the legacy Connector-based signature and is used by
+// the production node binary (cmd/node/main.go) after the Phase 2 migration.
+//
+//   - nodeID   – Kubernetes node name returned verbatim by NodeGetInfo.
+//   - handlers – map from protocol-type string to ProtocolHandler implementation.
+//   - mounter  – filesystem format/mount/unmount implementation.
+//
+// Deprecated overloads (Connector-based) remain available for existing unit
+// tests; they are removed once all callers migrate to the handlers map.
+func NewNodeServer(nodeID string, handlers map[string]ProtocolHandler, mounter Mounter) *NodeServer {
+	return &NodeServer{
+		nodeID:   nodeID,
+		handlers: handlers,
+		mounter:  mounter,
+		stateDir: defaultStateDir,
 	}
 }
 
@@ -307,14 +502,14 @@ func (*NodeServer) NodeGetCapabilities(
 // placement decisions.
 //
 // The response contains:
-//   - NodeId: the node identifier supplied at construction time (typically the
-//     Kubernetes node name).  The CO records this in the CSI node object so that
-//     the Controller can target AllowInitiator / DenyInitiator calls to the
-//     correct agent.
+//   - NodeId: the Kubernetes node name — the stable node handle used by this
+//     driver.  Per RFC §5.1, node_id is NOT a transport-level identity (NVMe
+//     host NQN, iSCSI initiator IQN, etc.).  Protocol-specific identities are
+//     published separately as CSINode annotations so that the controller can
+//     look them up by node name.
 //
-// MaxVolumesPerNode is left at 0 (unlimited) for Phase 1.
-// AccessibleTopology is left empty for Phase 1; topology-aware provisioning
-// is a future enhancement.
+// MaxVolumesPerNode is left at 0 (unlimited).
+// AccessibleTopology reports which storage protocols are available on this node.
 func (n *NodeServer) NodeGetInfo(
 	_ context.Context,
 	_ *csi.NodeGetInfoRequest,
@@ -323,10 +518,31 @@ func (n *NodeServer) NodeGetInfo(
 		return nil, status.Error(codes.Internal, "node server has no node ID configured") //nolint:wrapcheck
 	}
 
+	// ── Resolve topology prober ──────────────────────────────────────────────
+	// Use the injected prober when available (tests); fall back to the
+	// production sysfsProber that inspects kernel modules and system binaries.
+	prober := n.topologyProber
+	if prober == nil {
+		prober = &sysfsProber{}
+	}
+
+	// ── Build AccessibleTopology ─────────────────────────────────────────────
+	// RFC §5.8: report which storage protocols are available on this node so
+	// that the CO can schedule volumes only on protocol-capable nodes.
+	// Only include topology keys for protocols that are actually available;
+	// omit unavailable protocols so StorageClass allowedTopologies selectors
+	// (using In/NotIn operators) work correctly with sparse maps.
+	segs := buildTopologySegments(prober)
+
+	var topology *csi.Topology
+	if len(segs) > 0 {
+		topology = &csi.Topology{Segments: segs}
+	}
+
 	return &csi.NodeGetInfoResponse{
 		NodeId: n.nodeID,
 		// MaxVolumesPerNode: 0 means unlimited (CSI spec default).
-		// AccessibleTopology: nil means no topology constraints for Phase 1.
+		AccessibleTopology: topology,
 	}, nil
 }
 
@@ -334,26 +550,26 @@ func (n *NodeServer) NodeGetInfo(
 // NodeStageVolume
 // ─────────────────────────────────────────────────────────────────────────────.
 
-// NodeStageVolume connects this node to a volume via NVMe-oF TCP and prepares
-// it for use by pods.
+// NodeStageVolume connects this node to a volume and prepares it for use by pods.
 //
 // Sequence:
-//  1. Validate required fields and extract NVMe-oF target parameters from the
-//     VolumeContext (target_id, address, port) set by the controller.
-//  2. Check idempotency: if the volume is already staged and its staging path
+//  1. Validate required fields.
+//  2. Resolve the protocol type from VolumeContext or volumeID (RFC §5.4.3).
+//  3. Look up the ProtocolHandler registered for the resolved protocol type.
+//  4. Perform protocol-specific VolumeContext validation.
+//  5. Check idempotency: if the volume is already staged and its staging path
 //     is currently mounted, return success immediately.
-//  3. Connect to the NVMe-oF subsystem via the injected Connector.  Connect
-//     is idempotent: calling it on an already-connected subsystem is a no-op.
-//  4. Poll for the block-device path until it appears or the deadline expires.
-//  5. Format-and-mount (for MOUNT access type) or bind-mount the raw device
+//  6. Call handler.Attach to establish the transport connection.  Attach is
+//     idempotent: calling it on an already-connected target is a no-op.
+//  7. Format-and-mount (for MOUNT access type) or bind-mount the raw device
 //     (for BLOCK access type) at the staging target path.
-//  6. Persist a JSON state file in stateDir recording the subsystem NQN so
-//     that NodeUnstageVolume can disconnect the correct subsystem without
+//  8. Persist a JSON state file in stateDir recording the protocol state so
+//     that NodeUnstageVolume can disconnect the correct target without
 //     re-reading the VolumeContext.
 //
 // Per CSI spec §4.7 the staging_target_path is guaranteed to be a pre-created
 // directory (for MOUNT) or a pre-created file (for BLOCK) by the CO.
-func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-step NVMe-oF connect/mount/persist
+func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-step attach/mount/persist
 	ctx context.Context,
 	req *csi.NodeStageVolumeRequest,
 ) (*csi.NodeStageVolumeResponse, error) {
@@ -373,23 +589,45 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 	volCtx := req.GetVolumeContext()
 	volCap := req.GetVolumeCapability()
 
-	// Extract NVMe-oF connection parameters set by the controller during
-	// CreateVolume (sourced from the agent's ExportInfo).
-	subsysNQN := volCtx[VolumeContextKeyTargetNQN]
-	trAddr := volCtx[VolumeContextKeyAddress]
-	trSvcID := volCtx[VolumeContextKeyPort]
+	// ── Step 1: Resolve protocol type ───────────────────────────────────────
+	// Derive the protocol type from VolumeContext["pillar-csi.bhyoo.com/protocol-type"]
+	// (preferred; set by the controller for all new volumes) or from the
+	// volumeID path component.  Falls back to "nvmeof-tcp" for backward
+	// compatibility with volumes provisioned before Phase 2.
+	protocolType := resolveProtocolType(volumeID, volCtx)
 
-	if subsysNQN == "" {
-		return nil, status.Errorf(codes.InvalidArgument,
-			"NodeStageVolume: volume_context missing required key %q", VolumeContextKeyTargetNQN)
+	// ── Step 2: Protocol handler dispatch ───────────────────────────────────
+	// Look up the handler registered for this protocol type.  A nil handlers
+	// map means no handlers were registered (e.g., a state-only test server).
+	handler := n.handlers[protocolType]
+	if handler == nil {
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"NodeStageVolume: no handler registered for protocol %q", protocolType)
 	}
-	if trAddr == "" {
-		return nil, status.Errorf(codes.InvalidArgument,
-			"NodeStageVolume: volume_context missing required key %q", VolumeContextKeyAddress)
-	}
-	if trSvcID == "" {
-		return nil, status.Errorf(codes.InvalidArgument,
-			"NodeStageVolume: volume_context missing required key %q", VolumeContextKeyPort)
+
+	// ── Step 3: Protocol-specific VolumeContext validation ──────────────────
+	// Extract common VolumeContext parameters used across protocols.
+	// File protocols (NFS, SMB) may not require all three fields; their
+	// handlers validate their own required parameters inside Attach.
+	targetID := volCtx[VolumeContextKeyTargetID]
+	address := volCtx[VolumeContextKeyAddress]
+	port := volCtx[VolumeContextKeyPort]
+
+	// NVMe-oF TCP requires target_id (NQN), address, and port.
+	// iSCSI, NFS, SMB: handlers validate their own required parameters inside Attach.
+	if protocolType == ProtocolNVMeoFTCP {
+		if targetID == "" {
+			return nil, status.Errorf(codes.InvalidArgument,
+				"NodeStageVolume: volume_context missing required key %q", VolumeContextKeyTargetID)
+		}
+		if address == "" {
+			return nil, status.Errorf(codes.InvalidArgument,
+				"NodeStageVolume: volume_context missing required key %q", VolumeContextKeyAddress)
+		}
+		if port == "" {
+			return nil, status.Errorf(codes.InvalidArgument,
+				"NodeStageVolume: volume_context missing required key %q", VolumeContextKeyPort)
+		}
 	}
 
 	// ── State machine ordering guard ────────────────────────────────────────
@@ -403,7 +641,7 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 		case StateControllerPublished:
 			// Happy path: ControllerPublishVolume was called — proceed.
 		case StateNodeStagePartial:
-			// Retry after a partial failure (NVMe-oF connect succeeded but
+			// Retry after a partial failure (connect succeeded but
 			// mount failed on a prior attempt).  Fall through to re-attempt.
 		case StateNodeStaged:
 			// Already staged: fall through to the file-based idempotency check
@@ -440,16 +678,29 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 		// Fall through to re-connect and re-mount below.
 	}
 
-	// ── Step 1: Connect to the NVMe-oF subsystem ───────────────────────────
-	// Connector.Connect is idempotent: calling it when already connected is safe.
-	connectErr := n.connector.Connect(ctx, subsysNQN, trAddr, trSvcID)
-	if connectErr != nil {
+	// ── Step 4: Attach via protocol handler ─────────────────────────────────
+	// Attach performs transport-level connection setup (RFC §5.4.2 Layer 1)
+	// and returns the device path (block protocols) or mount source (file
+	// protocols) for Layer 2 presentation.
+	attachResult, attachErr := handler.Attach(ctx, AttachParams{
+		ProtocolType: protocolType,
+		ConnectionID: targetID,
+		Address:      address,
+		Port:         port,
+		Extra:        volCtx,
+	})
+	if attachErr != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return nil, status.Errorf(codes.DeadlineExceeded,
+				"NodeStageVolume: timed out waiting for device for volume %q (protocol %q)",
+				volumeID, protocolType)
+		}
 		return nil, status.Errorf(codes.Internal,
-			"NodeStageVolume: NVMe-oF connect to %q at %s:%s: %v",
-			subsysNQN, trAddr, trSvcID, connectErr)
+			"NodeStageVolume: attach volume %q (protocol %q): %v", volumeID, protocolType, attachErr)
 	}
+	devicePath := attachResult.DevicePath
 
-	// Record partial state: NVMe-oF connect succeeded; mount not yet started.
+	// Record partial state: transport attached; mount not yet started.
 	// This drives the volume into NodeStagePartial so that a subsequent mount
 	// failure leaves the SM in a recoverable state.  Only transition if the
 	// SM is currently at ControllerPublished (not already at NodeStagePartial
@@ -458,34 +709,7 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 		_, _ = n.sm.Transition(volumeID, OpNodeStageConnected) //nolint:errcheck // best-effort; does not affect mount
 	}
 
-	// ── Step 2: Wait for the block device to appear ─────────────────────────
-	// After Connect the kernel enqueues a uevent that eventually creates the
-	// /dev/nvmeXnY node; we poll until it appears or the deadline is exceeded.
-	var devicePath string
-	pollCtx, pollCancel := context.WithTimeout(ctx, deviceWaitTimeout)
-	defer pollCancel()
-
-	for {
-		devPath, devErr := n.connector.GetDevicePath(pollCtx, subsysNQN)
-		if devErr != nil {
-			return nil, status.Errorf(codes.Internal,
-				"NodeStageVolume: get device path for %q: %v", subsysNQN, devErr)
-		}
-		if devPath != "" {
-			devicePath = devPath
-			break
-		}
-		select {
-		case <-pollCtx.Done():
-			return nil, status.Errorf(codes.DeadlineExceeded,
-				"NodeStageVolume: block device for NQN %q did not appear within %s",
-				subsysNQN, deviceWaitTimeout)
-		case <-time.After(devicePollInterval):
-			// Poll again.
-		}
-	}
-
-	// ── Step 3: Mount or bind-mount depending on access type ───────────────
+	// ── Step 5: Mount or bind-mount depending on access type ───────────────
 	switch {
 	case volCap.GetMount() != nil:
 		// MOUNT access: format (if not already formatted) and mount to staging path.
@@ -533,16 +757,19 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 			"NodeStageVolume: volume_capability must specify mount or block access type")
 	}
 
-	// ── Step 4: Persist stage state ─────────────────────────────────────────
-	// Write the subsystem NQN to a state file so NodeUnstageVolume can
-	// disconnect the correct NQN even though it does not receive VolumeContext.
-	writeErr := n.writeStageState(volumeID, &nodeStageState{SubsysNQN: subsysNQN})
+	// ── Step 6: Persist stage state ─────────────────────────────────────────
+	// Write the protocol state to a state file so NodeUnstageVolume can
+	// disconnect the correct target even though it does not receive VolumeContext.
+	// The state is derived from the AttachResult so each protocol stores exactly
+	// the teardown parameters its handler needs.
+	stageState := stageStateFromAttachResult(protocolType, targetID, address, port, attachResult)
+	writeErr := n.writeStageState(volumeID, stageState)
 	if writeErr != nil {
 		return nil, status.Errorf(codes.Internal,
 			"NodeStageVolume: persist stage state for %q: %v", volumeID, writeErr)
 	}
 
-	// ── Step 5: Advance state machine to NodeStaged ──────────────────────────
+	// ── Step 7: Advance state machine to NodeStaged ──────────────────────────
 	// All staging work (connect + mount + state file) completed successfully.
 	// Force the SM directly to NodeStaged regardless of whether we entered
 	// from ControllerPublished (→ NodeStagePartial via Step 1 above) or from
@@ -558,21 +785,22 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 // NodeUnstageVolume
 // ─────────────────────────────────────────────────────────────────────────────.
 
-// NodeUnstageVolume unmounts the staging path and disconnects the NVMe-oF
-// subsystem for the given volume.
+// NodeUnstageVolume unmounts the staging path and disconnects the storage
+// target for the given volume.
 //
 // Sequence:
 //  1. Validate required fields.
 //  2. Unmount the staging target path (skipped if not currently mounted).
-//  3. Read the persisted stage state file to recover the subsystem NQN.
-//     If no state file exists the volume was never staged (or already unstaged);
-//     the call succeeds idempotently.
-//  4. Disconnect the NVMe-oF subsystem via the injected Connector.  Disconnect
-//     is idempotent: calling it on a non-connected NQN is a no-op.
+//  3. Read the persisted stage state file to recover the protocol-specific
+//     teardown state.  If no state file exists the volume was never staged
+//     (or already unstaged); the call succeeds idempotently.
+//  4. Dispatch to the ProtocolHandler registered for the persisted protocol
+//     type and call Detach.  Detach is idempotent: disconnecting an already-
+//     disconnected target is a no-op.
 //  5. Remove the stage state file to mark the volume as fully unstaged.
 //
 // The operation is idempotent per CSI spec §4.7.
-func (n *NodeServer) NodeUnstageVolume( //nolint:gocyclo // SM guard + unmount + disconnect + state cleanup
+func (n *NodeServer) NodeUnstageVolume( //nolint:gocyclo,funlen // SM guard + unmount + dispatch + state cleanup
 	ctx context.Context,
 	req *csi.NodeUnstageVolumeRequest,
 ) (*csi.NodeUnstageVolumeResponse, error) {
@@ -632,7 +860,7 @@ func (n *NodeServer) NodeUnstageVolume( //nolint:gocyclo // SM guard + unmount +
 		}
 	}
 
-	// ── Step 2: Read stage state to recover the NQN ─────────────────────────
+	// ── Step 2: Read stage state to recover protocol teardown state ─────────
 	state, readErr := n.readStageState(volumeID)
 	if readErr != nil {
 		return nil, status.Errorf(codes.Internal,
@@ -644,14 +872,26 @@ func (n *NodeServer) NodeUnstageVolume( //nolint:gocyclo // SM guard + unmount +
 		return &csi.NodeUnstageVolumeResponse{}, nil
 	}
 
-	// ── Step 3: Disconnect the NVMe-oF subsystem ────────────────────────────
-	// Connector.Disconnect is idempotent: disconnecting a non-connected NQN
-	// must succeed without error per the Connector interface contract.
-	disconnectErr := n.connector.Disconnect(ctx, state.SubsysNQN)
-	if disconnectErr != nil {
-		return nil, status.Errorf(codes.Internal,
-			"NodeUnstageVolume: NVMe-oF disconnect from %q: %v",
-			state.SubsysNQN, disconnectErr)
+	// ── Step 3: Disconnect the storage target ───────────────────────────────
+	// Dispatch to the ProtocolHandler registered for the persisted protocol type.
+	// Detach is idempotent: disconnecting an already-disconnected target is a no-op.
+	if n.handlers != nil {
+		handler, ok := n.handlers[state.ProtocolType]
+		if !ok {
+			return nil, status.Errorf(codes.Internal,
+				"NodeUnstageVolume: no handler registered for protocol %q", state.ProtocolType)
+		}
+		protoState, protoErr := state.ToProtocolState()
+		if protoErr != nil {
+			return nil, status.Errorf(codes.Internal,
+				"NodeUnstageVolume: convert stage state for %q: %v", volumeID, protoErr)
+		}
+		detachErr := handler.Detach(ctx, protoState)
+		if detachErr != nil {
+			return nil, status.Errorf(codes.Internal,
+				"NodeUnstageVolume: detach (protocol %q): %v",
+				state.ProtocolType, detachErr)
+		}
 	}
 
 	// ── Step 4: Remove stage state file ─────────────────────────────────────
@@ -908,6 +1148,12 @@ func (n *NodeServer) writeStageState(volumeID string, state *nodeStageState) err
 // readStageState reads and deserialises the stage state for volumeID.
 // Returns (nil, nil) when no state file exists (volume not yet staged or
 // already cleanly unstaged).
+//
+// Legacy migration (RFC §5.5.2): state files written by the pre-discriminated-
+// union code have the format {"subsys_nqn": "nqn.…"} with no protocol_type
+// field.  When such a file is detected, readStageState converts it in-place to
+// the new discriminated union format so that NodeUnstageVolume can use the
+// typed ProtocolHandler path on the very next call.
 func (n *NodeServer) readStageState(volumeID string) (*nodeStageState, error) {
 	stateFile := n.stateFilePath(volumeID)
 	data, readErr := os.ReadFile(stateFile) //nolint:gosec // G304: sanitized path under controlled stateDir
@@ -922,6 +1168,23 @@ func (n *NodeServer) readStageState(volumeID string) (*nodeStageState, error) {
 	if unmarshalErr != nil {
 		return nil, fmt.Errorf("unmarshal state file %q: %w", stateFile, unmarshalErr)
 	}
+
+	// Legacy migration (RFC §5.5.2): state files written by pre-Phase2 code
+	// have the format {"subsys_nqn":"nqn.…"} with no "protocol_type" field.
+	// Detect this shape and upgrade in place so that NodeUnstageVolume and
+	// node-restart scenarios use the discriminated union path going forward.
+	if state.ProtocolType == "" {
+		var raw legacyNodeStageState
+		legErr := json.Unmarshal(data, &raw)
+		if legErr == nil && isLegacyFormat(&raw) {
+			migrated := migrateFromLegacy(&raw)
+			state = *migrated
+			// In-place migration: rewrite the file in the new format.
+			// Non-fatal: if the write fails we still return the migrated in-memory state.
+			_ = n.writeStageState(volumeID, migrated) //nolint:errcheck // best-effort; non-fatal on write failure
+		}
+	}
+
 	return &state, nil
 }
 

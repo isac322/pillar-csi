@@ -45,9 +45,11 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	corev1 "k8s.io/api/core/v1"
+	storagev1 "k8s.io/api/storage/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	v1alpha1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
@@ -82,12 +84,25 @@ type mockAgentClient struct {
 	getCapacityResp *agentv1.GetCapacityResponse
 	getCapacityErr  error
 
+	// Responses for ExpandVolume.
+	expandVolumeResp *agentv1.ExpandVolumeResponse
+	expandVolumeErr  error
+
+	// Responses for AllowInitiator / DenyInitiator.
+	allowInitiatorErr  error
+	denyInitiatorErr   error
+	lastAllowInitiator *agentv1.AllowInitiatorRequest
+	lastDenyInitiator  *agentv1.DenyInitiatorRequest
+
 	// Call counters — verified by tests.
 	createVolumeCalls   int
 	exportVolumeCalls   int
 	unexportVolumeCalls int
 	deleteVolumeCalls   int
 	getCapacityCalls    int
+	expandVolumeCalls   int
+	allowInitiatorCalls int
+	denyInitiatorCalls  int
 
 	// lastCreateVolumeReq captures the most recent CreateVolume request for
 	// assertion on backend/export params in annotation integration tests.
@@ -209,26 +224,45 @@ func (*mockAgentClient) HealthCheck(
 ) (*agentv1.HealthCheckResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "not implemented in mock")
 }
-func (*mockAgentClient) ExpandVolume(
+func (m *mockAgentClient) ExpandVolume(
 	_ context.Context,
 	_ *agentv1.ExpandVolumeRequest,
 	_ ...grpc.CallOption,
 ) (*agentv1.ExpandVolumeResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "not implemented in mock")
+	m.expandVolumeCalls++
+	if m.expandVolumeErr != nil {
+		return nil, m.expandVolumeErr
+	}
+	if m.expandVolumeResp != nil {
+		return m.expandVolumeResp, nil
+	}
+	return &agentv1.ExpandVolumeResponse{
+		CapacityBytes: 2147483648, // 2 GiB default
+	}, nil
 }
-func (*mockAgentClient) AllowInitiator(
+func (m *mockAgentClient) AllowInitiator(
 	_ context.Context,
-	_ *agentv1.AllowInitiatorRequest,
+	req *agentv1.AllowInitiatorRequest,
 	_ ...grpc.CallOption,
 ) (*agentv1.AllowInitiatorResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "not implemented in mock")
+	m.allowInitiatorCalls++
+	m.lastAllowInitiator = req
+	if m.allowInitiatorErr != nil {
+		return nil, m.allowInitiatorErr
+	}
+	return &agentv1.AllowInitiatorResponse{}, nil
 }
-func (*mockAgentClient) DenyInitiator(
+func (m *mockAgentClient) DenyInitiator(
 	_ context.Context,
-	_ *agentv1.DenyInitiatorRequest,
+	req *agentv1.DenyInitiatorRequest,
 	_ ...grpc.CallOption,
 ) (*agentv1.DenyInitiatorResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "not implemented in mock")
+	m.denyInitiatorCalls++
+	m.lastDenyInitiator = req
+	if m.denyInitiatorErr != nil {
+		return nil, m.denyInitiatorErr
+	}
+	return &agentv1.DenyInitiatorResponse{}, nil
 }
 func (*mockAgentClient) SendVolume(
 	_ context.Context,
@@ -281,6 +315,9 @@ func newControllerTestEnv(t *testing.T) *controllerTestEnv {
 	}
 	if err := corev1.AddToScheme(scheme); err != nil {
 		t.Fatalf("corev1.AddToScheme: %v", err)
+	}
+	if err := storagev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("storagev1.AddToScheme: %v", err)
 	}
 
 	// Seed the fake client with a ready PillarTarget.
@@ -383,11 +420,158 @@ func TestCreateVolume_FirstCall(t *testing.T) {
 
 	// VolumeContext must carry connection parameters.
 	vc := vol.GetVolumeContext()
-	if vc[VolumeContextKeyTargetNQN] == "" {
-		t.Errorf("VolumeContext[%q] is empty", VolumeContextKeyTargetNQN)
+	if vc[VolumeContextKeyTargetID] == "" {
+		t.Errorf("VolumeContext[%q] is empty", VolumeContextKeyTargetID)
 	}
 	if vc[VolumeContextKeyAddress] == "" {
 		t.Errorf("VolumeContext[%q] is empty", VolumeContextKeyAddress)
+	}
+}
+
+// TestCreateVolume_UsesBackendTypeForAccessType verifies that the controller
+// derives agent access type from the backend type, not the network protocol.
+func TestCreateVolume_UsesBackendTypeForAccessType(t *testing.T) {
+	t.Parallel()
+
+	env := newControllerTestEnv(t)
+	ctx := context.Background()
+	req := baseCreateVolumeRequest()
+
+	req.VolumeCapabilities = []*csi.VolumeCapability{
+		{
+			AccessType: &csi.VolumeCapability_Mount{
+				Mount: &csi.VolumeCapability_MountVolume{},
+			},
+			AccessMode: &csi.VolumeCapability_AccessMode{
+				Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER,
+			},
+		},
+	}
+	req.Parameters["pillar-csi.bhyoo.com/backend-type"] = string(v1alpha1.BackendTypeZFSDataset)
+	req.Parameters["pillar-csi.bhyoo.com/protocol-type"] = testProtocolNFS
+
+	if _, err := env.srv.CreateVolume(ctx, req); err != nil {
+		t.Fatalf("CreateVolume unexpected error: %v", err)
+	}
+
+	if env.agent.lastCreateVolumeReq == nil {
+		t.Fatal("lastCreateVolumeReq is nil")
+	}
+	if got, want := env.agent.lastCreateVolumeReq.GetAccessType(),
+		agentv1.VolumeAccessType_VOLUME_ACCESS_TYPE_MOUNT; got != want {
+		t.Errorf("CreateVolume agent access type = %v, want %v", got, want)
+	}
+}
+
+func TestValidateVolumeCapabilities_FileProtocolAcceptsRWX(t *testing.T) {
+	t.Parallel()
+
+	srv := &ControllerServer{}
+	req := &csi.ValidateVolumeCapabilitiesRequest{
+		VolumeId: "storage-node-1/nfs/zfs-dataset/tank/pvc-abc123",
+		VolumeContext: map[string]string{
+			vcProtocolType: testProtocolNFS,
+		},
+		VolumeCapabilities: []*csi.VolumeCapability{
+			{
+				AccessType: &csi.VolumeCapability_Mount{
+					Mount: &csi.VolumeCapability_MountVolume{},
+				},
+				AccessMode: &csi.VolumeCapability_AccessMode{
+					Mode: csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER,
+				},
+			},
+		},
+	}
+
+	resp, err := srv.ValidateVolumeCapabilities(context.Background(), req)
+	if err != nil {
+		t.Fatalf("ValidateVolumeCapabilities unexpected error: %v", err)
+	}
+	if resp.GetConfirmed() == nil {
+		t.Fatalf("ValidateVolumeCapabilities rejected file protocol RWX: %q", resp.GetMessage())
+	}
+}
+
+func TestValidateVolumeCapabilities_BlockProtocolRejectsRWX(t *testing.T) {
+	t.Parallel()
+
+	srv := &ControllerServer{}
+	req := &csi.ValidateVolumeCapabilitiesRequest{
+		VolumeId: "storage-node-1/nvmeof-tcp/zfs-zvol/tank/pvc-abc123",
+		VolumeContext: map[string]string{
+			vcProtocolType: string(v1alpha1.ProtocolTypeNVMeOFTCP),
+		},
+		VolumeCapabilities: []*csi.VolumeCapability{
+			{
+				AccessType: &csi.VolumeCapability_Block{
+					Block: &csi.VolumeCapability_BlockVolume{},
+				},
+				AccessMode: &csi.VolumeCapability_AccessMode{
+					Mode: csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER,
+				},
+			},
+		},
+	}
+
+	resp, err := srv.ValidateVolumeCapabilities(context.Background(), req)
+	if err != nil {
+		t.Fatalf("ValidateVolumeCapabilities unexpected error: %v", err)
+	}
+	if resp.GetConfirmed() != nil {
+		t.Fatal("ValidateVolumeCapabilities unexpectedly confirmed block protocol RWX")
+	}
+	if resp.GetMessage() == "" {
+		t.Fatal("ValidateVolumeCapabilities rejection message is empty")
+	}
+}
+
+func TestCreateVolume_FileProtocolAcceptsRWX(t *testing.T) {
+	t.Parallel()
+
+	env := newControllerTestEnv(t)
+	ctx := context.Background()
+	req := baseCreateVolumeRequest()
+	req.Parameters["pillar-csi.bhyoo.com/backend-type"] = string(v1alpha1.BackendTypeZFSDataset)
+	req.Parameters["pillar-csi.bhyoo.com/protocol-type"] = testProtocolNFS
+	req.VolumeCapabilities = []*csi.VolumeCapability{
+		{
+			AccessType: &csi.VolumeCapability_Mount{
+				Mount: &csi.VolumeCapability_MountVolume{},
+			},
+			AccessMode: &csi.VolumeCapability_AccessMode{
+				Mode: csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER,
+			},
+		},
+	}
+
+	if _, err := env.srv.CreateVolume(ctx, req); err != nil {
+		t.Fatalf("CreateVolume unexpected error for file protocol RWX: %v", err)
+	}
+}
+
+func TestCreateVolume_BlockProtocolRejectsRWX(t *testing.T) {
+	t.Parallel()
+
+	env := newControllerTestEnv(t)
+	ctx := context.Background()
+	req := baseCreateVolumeRequest()
+	req.VolumeCapabilities[0].GetAccessMode().Mode = csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER
+
+	_, err := env.srv.CreateVolume(ctx, req)
+	if err == nil {
+		t.Fatal("expected InvalidArgument for block protocol RWX, got nil")
+	}
+
+	st, ok := status.FromError(err)
+	if !ok {
+		t.Fatalf("expected gRPC status error, got: %v", err)
+	}
+	if st.Code() != codes.InvalidArgument {
+		t.Errorf("error code = %v, want %v", st.Code(), codes.InvalidArgument)
+	}
+	if env.agent.createVolumeCalls != 0 || env.agent.exportVolumeCalls != 0 {
+		t.Errorf("agent was contacted despite block protocol RWX validation failure")
 	}
 }
 
@@ -1440,5 +1624,279 @@ func TestMergeParamsFromCRDs_LVM_NoModeConfigured(t *testing.T) {
 	// paramLVMMode must not be set — absent key means "use agent default".
 	if got, present := merged[paramLVMMode]; present {
 		t.Errorf("merged[paramLVMMode] = %q, want key absent", got)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ControllerPublishVolume — CSINode annotation lookup and FailedPrecondition
+// ─────────────────────────────────────────────────────────────────────────────
+
+// newPublishTestEnv builds a ControllerServer wired to a fake k8s client that
+// has a PillarTarget but no CSINode by default.  Callers can seed CSINode
+// objects as needed for each test case.
+func newPublishTestEnv(t *testing.T, objs ...ctrlclient.Object) *controllerTestEnv {
+	t.Helper()
+
+	scheme := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme v1alpha1: %v", err)
+	}
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme corev1: %v", err)
+	}
+	if err := storagev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme storagev1: %v", err)
+	}
+
+	target := &v1alpha1.PillarTarget{
+		ObjectMeta: metav1.ObjectMeta{Name: "storage-node-1"},
+		Status: v1alpha1.PillarTargetStatus{
+			ResolvedAddress: "192.168.1.10:9500",
+		},
+	}
+
+	allObjs := append([]ctrlclient.Object{target}, objs...)
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(allObjs...).
+		WithStatusSubresource(&v1alpha1.PillarTarget{}).
+		Build()
+
+	agent := &mockAgentClient{}
+	dialer := func(_ context.Context, _ string) (agentv1.AgentServiceClient, io.Closer, error) {
+		return agent, nopCloser{}, nil
+	}
+
+	srv := NewControllerServerWithDialer(fakeClient, "pillar-csi.bhyoo.com", dialer)
+	return &controllerTestEnv{srv: srv, agent: agent, scheme: scheme}
+}
+
+// basePublishRequest returns a minimal valid ControllerPublishVolumeRequest for
+// the nvmeof-tcp protocol targeting "worker-node-1".
+func basePublishRequest() *csi.ControllerPublishVolumeRequest {
+	return &csi.ControllerPublishVolumeRequest{
+		VolumeId: "storage-node-1/nvmeof-tcp/zfs-zvol/tank/pvc-abc123",
+		NodeId:   "worker-node-1",
+		VolumeCapability: &csi.VolumeCapability{
+			AccessType: &csi.VolumeCapability_Block{
+				Block: &csi.VolumeCapability_BlockVolume{},
+			},
+			AccessMode: &csi.VolumeCapability_AccessMode{
+				Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER,
+			},
+		},
+	}
+}
+
+// TestControllerPublishVolume_FailedPrecondition_CSINodeNotFound verifies that
+// ControllerPublishVolume returns FailedPrecondition when the CSINode object
+// does not exist yet (node plugin has not registered).
+func TestControllerPublishVolume_FailedPrecondition_CSINodeNotFound(t *testing.T) {
+	t.Parallel()
+
+	// No CSINode objects seeded → CSINode lookup will return NotFound.
+	env := newPublishTestEnv(t)
+	ctx := context.Background()
+
+	_, err := env.srv.ControllerPublishVolume(ctx, basePublishRequest())
+	if err == nil {
+		t.Fatal("expected FailedPrecondition error, got nil")
+	}
+
+	st, ok := status.FromError(err)
+	if !ok {
+		t.Fatalf("expected gRPC status error, got: %v", err)
+	}
+	if st.Code() != codes.FailedPrecondition {
+		t.Errorf("error code = %v, want %v", st.Code(), codes.FailedPrecondition)
+	}
+}
+
+// TestControllerPublishVolume_FailedPrecondition_AnnotationMissing verifies
+// that ControllerPublishVolume returns FailedPrecondition when the CSINode
+// exists but the nvmeof-host-nqn annotation is absent.
+//
+// This is the "annotation write race" scenario described in RFC Section 5.2:
+// the node plugin has not yet written its identity after a fresh node bootstrap.
+func TestControllerPublishVolume_FailedPrecondition_AnnotationMissing(t *testing.T) {
+	t.Parallel()
+
+	// CSINode exists but has no annotations.
+	csiNode := &storagev1.CSINode{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "worker-node-1",
+			// Annotations deliberately omitted.
+		},
+	}
+	env := newPublishTestEnv(t, csiNode)
+	ctx := context.Background()
+
+	_, err := env.srv.ControllerPublishVolume(ctx, basePublishRequest())
+	if err == nil {
+		t.Fatal("expected FailedPrecondition error, got nil")
+	}
+
+	st, ok := status.FromError(err)
+	if !ok {
+		t.Fatalf("expected gRPC status error, got: %v", err)
+	}
+	if st.Code() != codes.FailedPrecondition {
+		t.Errorf("error code = %v, want %v", st.Code(), codes.FailedPrecondition)
+	}
+}
+
+// TestControllerPublishVolume_SuccessWithAnnotation verifies that
+// ControllerPublishVolume resolves the NQN from the CSINode annotation and
+// passes it as initiator_id to AllowInitiator when the annotation is present.
+func TestControllerPublishVolume_SuccessWithAnnotation(t *testing.T) {
+	t.Parallel()
+
+	const hostNQN = "nqn.2014-08.org.nvmexpress:uuid:worker-node-1-nqn"
+
+	csiNode := &storagev1.CSINode{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "worker-node-1",
+			Annotations: map[string]string{
+				AnnotationNVMeOFHostNQN: hostNQN,
+			},
+		},
+	}
+	env := newPublishTestEnv(t, csiNode)
+	ctx := context.Background()
+
+	_, err := env.srv.ControllerPublishVolume(ctx, basePublishRequest())
+	if err != nil {
+		t.Fatalf("ControllerPublishVolume unexpected error: %v", err)
+	}
+
+	// AllowInitiator must have been called exactly once with the resolved NQN.
+	if env.agent.allowInitiatorCalls != 1 {
+		t.Errorf("AllowInitiator call count = %d, want 1", env.agent.allowInitiatorCalls)
+	}
+	if env.agent.lastAllowInitiator == nil {
+		t.Fatal("lastAllowInitiator is nil")
+	}
+	if got := env.agent.lastAllowInitiator.InitiatorId; got != hostNQN {
+		t.Errorf("AllowInitiator.InitiatorId = %q, want %q", got, hostNQN)
+	}
+}
+
+// TestControllerPublishVolume_FailedPrecondition_ISCSIAnnotationMissing verifies
+// that ControllerPublishVolume returns FailedPrecondition for the iSCSI protocol
+// when the iscsi-initiator-iqn annotation is absent.
+func TestControllerPublishVolume_FailedPrecondition_ISCSIAnnotationMissing(t *testing.T) {
+	t.Parallel()
+
+	// CSINode exists but has no iSCSI IQN annotation.
+	csiNode := &storagev1.CSINode{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "worker-node-1",
+			// No iscsi-initiator-iqn annotation.
+		},
+	}
+	env := newPublishTestEnv(t, csiNode)
+	ctx := context.Background()
+
+	req := &csi.ControllerPublishVolumeRequest{
+		VolumeId: "storage-node-1/iscsi/zfs-zvol/tank/pvc-abc123",
+		NodeId:   "worker-node-1",
+		VolumeCapability: &csi.VolumeCapability{
+			AccessType: &csi.VolumeCapability_Block{
+				Block: &csi.VolumeCapability_BlockVolume{},
+			},
+			AccessMode: &csi.VolumeCapability_AccessMode{
+				Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER,
+			},
+		},
+	}
+
+	_, err := env.srv.ControllerPublishVolume(ctx, req)
+	if err == nil {
+		t.Fatal("expected FailedPrecondition error, got nil")
+	}
+
+	st, ok := status.FromError(err)
+	if !ok {
+		t.Fatalf("expected gRPC status error, got: %v", err)
+	}
+	if st.Code() != codes.FailedPrecondition {
+		t.Errorf("error code = %v, want %v", st.Code(), codes.FailedPrecondition)
+	}
+}
+
+func TestValidateVolumeCapabilities_RejectsRawBlockForFileProtocols(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name     string
+		protocol string
+	}{
+		{name: "nfs", protocol: string(v1alpha1.ProtocolTypeNFS)},
+		{name: "smb", protocol: string(v1alpha1.ProtocolTypeSMB)},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			env := newControllerTestEnv(t)
+			req := &csi.ValidateVolumeCapabilitiesRequest{
+				VolumeId: "storage-node-1/" + tc.protocol + "/zfs-dataset/tank/pvc-abc123",
+				VolumeCapabilities: []*csi.VolumeCapability{
+					{
+						AccessType: &csi.VolumeCapability_Block{
+							Block: &csi.VolumeCapability_BlockVolume{},
+						},
+						AccessMode: &csi.VolumeCapability_AccessMode{
+							Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER,
+						},
+					},
+				},
+			}
+
+			_, err := env.srv.ValidateVolumeCapabilities(context.Background(), req)
+			if err == nil {
+				t.Fatal("expected InvalidArgument error, got nil")
+			}
+
+			st, ok := status.FromError(err)
+			if !ok {
+				t.Fatalf("expected gRPC status error, got: %v", err)
+			}
+			if st.Code() != codes.InvalidArgument {
+				t.Fatalf("error code = %v, want %v", st.Code(), codes.InvalidArgument)
+			}
+			const wantMessage = "raw block volume mode is not supported with file protocols (NFS/SMB)"
+			if st.Message() != wantMessage {
+				t.Fatalf("error message = %q, want %q", st.Message(), wantMessage)
+			}
+		})
+	}
+}
+
+func TestValidateVolumeCapabilities_AllowsFilesystemVolumeModeForFileProtocol(t *testing.T) {
+	t.Parallel()
+
+	env := newControllerTestEnv(t)
+	req := &csi.ValidateVolumeCapabilitiesRequest{
+		VolumeId: "storage-node-1/nfs/zfs-dataset/tank/pvc-abc123",
+		VolumeCapabilities: []*csi.VolumeCapability{
+			{
+				AccessType: &csi.VolumeCapability_Mount{
+					Mount: &csi.VolumeCapability_MountVolume{},
+				},
+				AccessMode: &csi.VolumeCapability_AccessMode{
+					Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER,
+				},
+			},
+		},
+	}
+
+	resp, err := env.srv.ValidateVolumeCapabilities(context.Background(), req)
+	if err != nil {
+		t.Fatalf("ValidateVolumeCapabilities unexpected error: %v", err)
+	}
+	if resp.GetConfirmed() == nil {
+		t.Fatal("Confirmed is nil")
 	}
 }

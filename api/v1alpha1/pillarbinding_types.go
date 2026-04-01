@@ -137,6 +137,19 @@ type ProtocolOverrides struct {
 	// iscsi overrides iSCSI parameters.
 	// +optional
 	ISCSI *ISCSIOverrides `json:"iscsi,omitempty"`
+
+	// smb overrides SMB/CIFS parameters.
+	// +optional
+	SMB *SMBOverrides `json:"smb,omitempty"`
+}
+
+// SMBOverrides holds per-binding SMB parameter overrides.
+type SMBOverrides struct {
+	// port overrides the protocol-level SMB port.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	Port *int32 `json:"port,omitempty"`
 }
 
 // BindingOverrides is the optional layer of per-binding parameter overrides

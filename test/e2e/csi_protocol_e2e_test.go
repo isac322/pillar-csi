@@ -19,8 +19,8 @@ limitations under the License.
 // These tests exercise the CSI ControllerServer's handling of unsupported or
 // incompatible protocol/backend type combinations, verifying that:
 //
-//   - An agent-returned codes.Unimplemented (e.g. "only NVMe-oF TCP is supported")
-//     is faithfully propagated to the CSI caller without being swallowed.
+//   - An agent-returned protocol error is faithfully propagated to the CSI
+//     caller without being swallowed.
 //   - Unknown protocol-type strings (e.g. "smb-v3-unknown") are mapped to
 //     PROTOCOL_TYPE_UNSPECIFIED(0) before reaching the agent — not silently dropped.
 //   - Unknown backend-type strings (e.g. "fuse-experimental") are mapped to
@@ -63,7 +63,7 @@ func TestCSIProtocol_CreateVolume_ISCSIUnimplemented(t *testing.T) {
 
 	// Inject Unimplemented from the agent's ExportVolume RPC (iSCSI not supported).
 	env.AgentMock.ExportVolumeErr = status.Errorf(
-		codes.Unimplemented, "only NVMe-oF TCP is supported")
+		codes.Unimplemented, "protocol PROTOCOL_TYPE_ISCSI is not supported by this agent")
 
 	params := env.defaultCreateVolumeParams()
 	params["pillar-csi.bhyoo.com/protocol-type"] = "iscsi"
@@ -82,8 +82,8 @@ func TestCSIProtocol_CreateVolume_ISCSIUnimplemented(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected gRPC status error, got: %v", err)
 	}
-	if st.Code() == codes.OK {
-		t.Fatalf("expected non-OK gRPC status, got OK")
+	if st.Code() != codes.Unimplemented {
+		t.Fatalf("code = %v, want Unimplemented", st.Code())
 	}
 }
 
@@ -99,7 +99,7 @@ func TestCSIProtocol_CreateVolume_NFSUnimplemented(t *testing.T) {
 
 	// NFS protocol not supported by the agent.
 	env.AgentMock.ExportVolumeErr = status.Errorf(
-		codes.Unimplemented, "only NVMe-oF TCP is supported")
+		codes.Unimplemented, "protocol PROTOCOL_TYPE_NFS is not supported by this agent")
 
 	params := env.defaultCreateVolumeParams()
 	params["pillar-csi.bhyoo.com/protocol-type"] = "nfs"
@@ -118,16 +118,16 @@ func TestCSIProtocol_CreateVolume_NFSUnimplemented(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected gRPC status error, got: %v", err)
 	}
-	if st.Code() == codes.OK {
-		t.Fatalf("expected non-OK gRPC status, got OK")
+	if st.Code() != codes.Unimplemented {
+		t.Fatalf("code = %v, want Unimplemented", st.Code())
 	}
 }
 
 // TestCSIProtocol_CreateVolume_UnknownProtocol_MapsToUnspecified verifies that
 // an unrecognized protocol-type string (e.g. "smb-v3-unknown") is mapped to
 // PROTOCOL_TYPE_UNSPECIFIED(0) by mapProtocolType and that value is forwarded
-// to agent.ExportVolume.  The test also confirms that the resulting agent error
-// (Unimplemented) is propagated to the caller.
+// to agent.ExportVolume. The test also confirms that the resulting agent error
+// (InvalidArgument) is propagated to the caller.
 //
 // E22.1 — test ID 173.
 func TestCSIProtocol_CreateVolume_UnknownProtocol_MapsToUnspecified(t *testing.T) {
@@ -135,9 +135,9 @@ func TestCSIProtocol_CreateVolume_UnknownProtocol_MapsToUnspecified(t *testing.T
 	env := newCSIControllerE2EEnv(t, "storage-1")
 	ctx := context.Background()
 
-	// Agent rejects PROTOCOL_TYPE_UNSPECIFIED (unknown protocol) with Unimplemented.
+	// Agent rejects PROTOCOL_TYPE_UNSPECIFIED (unknown protocol) with InvalidArgument.
 	env.AgentMock.ExportVolumeErr = status.Errorf(
-		codes.Unimplemented, "only NVMe-oF TCP is supported")
+		codes.InvalidArgument, "handlerForProtocol: protocol_type is required")
 
 	params := env.defaultCreateVolumeParams()
 	params["pillar-csi.bhyoo.com/protocol-type"] = "smb-v3-unknown"
@@ -156,8 +156,8 @@ func TestCSIProtocol_CreateVolume_UnknownProtocol_MapsToUnspecified(t *testing.T
 	if !ok {
 		t.Fatalf("expected gRPC status error, got: %v", err)
 	}
-	if st.Code() == codes.OK {
-		t.Fatalf("expected non-OK gRPC status, got OK")
+	if st.Code() != codes.InvalidArgument {
+		t.Fatalf("code = %v, want InvalidArgument", st.Code())
 	}
 
 	// Verify that the unknown protocol string was mapped to PROTOCOL_TYPE_UNSPECIFIED
@@ -176,26 +176,23 @@ func TestCSIProtocol_CreateVolume_UnknownProtocol_MapsToUnspecified(t *testing.T
 	}
 }
 
-// TestCSIProtocol_ControllerPublish_ISCSIUnimplemented verifies that when
+// TestCSIProtocol_ControllerPublish_ISCSIMissingAnnotation verifies that when
 // ControllerPublishVolume is called for a volume whose ID encodes an iSCSI
-// protocol and the agent's AllowInitiator returns codes.Unimplemented, the
-// non-OK status is propagated to the CSI caller.
+// protocol but the CSINode lacks the iSCSI initiator IQN annotation,
+// FailedPrecondition is returned (the controller cannot resolve the
+// initiator identity without the annotation).
 //
 // E22.1 — test ID 174.
-func TestCSIProtocol_ControllerPublish_ISCSIUnimplemented(t *testing.T) {
+func TestCSIProtocol_ControllerPublish_ISCSIMissingAnnotation(t *testing.T) {
 	t.Parallel()
 	env := newCSIControllerE2EEnv(t, "storage-1")
 	ctx := context.Background()
-
-	// Inject Unimplemented from the agent's AllowInitiator RPC.
-	env.AgentMock.AllowInitiatorErr = status.Errorf(
-		codes.Unimplemented, "only NVMe-oF TCP is supported")
 
 	// Volume ID encodes the iSCSI protocol in position [1] of the slash-separated
 	// path: <target>/<protocol>/<backend>/<pool>/<volume>.
 	const (
 		volumeID = "storage-1/iscsi/zfs-zvol/tank/pvc-iscsi-publish"
-		nodeID   = "iqn.1993-08.org.debian:01:example-initiator"
+		nodeID   = "worker-node-1"
 	)
 
 	_, err := env.Controller.ControllerPublishVolume(ctx, &csi.ControllerPublishVolumeRequest{
@@ -205,14 +202,14 @@ func TestCSIProtocol_ControllerPublish_ISCSIUnimplemented(t *testing.T) {
 	})
 
 	if err == nil {
-		t.Fatal("expected error for iSCSI ControllerPublish (Unimplemented from agent), got nil")
+		t.Fatal("expected error for iSCSI ControllerPublish (missing CSINode annotation), got nil")
 	}
 	st, ok := status.FromError(err)
 	if !ok {
 		t.Fatalf("expected gRPC status error, got: %v", err)
 	}
-	if st.Code() == codes.OK {
-		t.Fatalf("expected non-OK gRPC status, got OK")
+	if st.Code() != codes.FailedPrecondition {
+		t.Fatalf("code = %v, want FailedPrecondition", st.Code())
 	}
 }
 

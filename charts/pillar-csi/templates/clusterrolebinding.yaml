@@ -18,3 +18,25 @@ subjects:
     name: {{ include "pillar-csi.controllerServiceAccountName" . }}
     namespace: {{ include "pillar-csi.namespace" . }}
 {{- end }}
+---
+{{/*
+ClusterRoleBinding: binds the pillar-node ClusterRole to the node DaemonSet ServiceAccount.
+Grants CSINode get/update/patch so the node plugin can publish initiator identity annotations.
+Controlled by .Values.rbac.create
+*/}}
+{{- if .Values.rbac.create -}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "pillar-csi.fullname" . }}-node
+  labels:
+    {{- include "pillar-csi.componentLabels" (dict "root" . "component" "node") | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "pillar-csi.fullname" . }}-node
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "pillar-csi.nodeServiceAccountName" . }}
+    namespace: {{ include "pillar-csi.namespace" . }}
+{{- end }}

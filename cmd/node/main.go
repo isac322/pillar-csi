@@ -38,8 +38,11 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"google.golang.org/grpc"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 
 	csi "github.com/container-storage-interface/spec/lib/go/csi"
 
@@ -51,27 +54,26 @@ import (
 const driverName = "pillar-csi.bhyoo.com"
 
 // ─────────────────────────────────────────────────────────────────────────────
-// fabricsConnector — kernel-native NVMe-oF TCP connector
+// fabricsConnector — kernel-native NVMe-oF TCP protocol handler
 // ─────────────────────────────────────────────────────────────────────────────
 
-// fabricsConnector implements the csisvc.Connector interface using the Linux
-// /dev/nvme-fabrics kernel character device.  Unlike NVMeoFConnector it does
-// NOT require nvme-cli to be installed in the container image — it speaks to
-// the kernel NVMe-fabrics driver directly via the text-based write interface
-// that has been available since Linux 4.15.
+// fabricsConnector implements the csisvc.ProtocolHandler interface for the
+// NVMe-oF TCP transport using the Linux /dev/nvme-fabrics kernel character
+// device.  Unlike NVMeoFConnector it does NOT require nvme-cli to be installed
+// in the container image — it speaks to the kernel NVMe-fabrics driver
+// directly via the text-based write interface available since Linux 4.15.
 //
-// Connect writes a comma-separated key=value option string to /dev/nvme-fabrics;
-// the kernel nvme_fabrics module parses the string and initiates a TCP
-// connection to the target.
+// Attach writes a comma-separated key=value option string to /dev/nvme-fabrics
+// and polls sysfs until the block device node appears.
 //
-// Disconnect removes each controller for the given subsystem NQN by writing
+// Detach removes each controller for the given subsystem NQN by writing
 // "1" to its delete_controller sysfs entry.
 //
-// GetDevicePath scans /sys/class/nvme-subsystem/ for the matching NQN and
-// returns the first namespace block device (nvmeXnY pattern) found there.
-// When sysfs is unavailable (e.g. inside a Kubernetes pod with a restricted
-// sysfs view), it falls back to scanning /dev/nvme*n* and querying each
-// device's NQN via nvme-cli.
+// Rescan writes "1" to rescan_controller sysfs entries so the device
+// re-reads its capacity after an online volume expansion.
+//
+// The three sysfs scan methods (nvmeGetDevicePath, nvmeGetDevicePath­ViaController,
+// getDevicePathViaNvmeCli) are retained as private helpers.
 type fabricsConnector struct {
 	// sysfsRoot is the root of the sysfs virtual filesystem.
 	// Production value: "/sys".
@@ -91,7 +93,7 @@ func newFabricsConnector() *fabricsConnector {
 	}
 }
 
-// Connect establishes an NVMe-oF TCP connection to the given subsystem NQN
+// nvmeConnect establishes an NVMe-oF TCP connection to the given subsystem NQN
 // at the given transport address (trAddr) and service ID (TCP port, trSvcID).
 //
 // It is idempotent: if the subsystem NQN is already connected (detected by
@@ -105,10 +107,10 @@ func newFabricsConnector() *fabricsConnector {
 // The kernel nvme_fabrics module parses the string, creates the controller,
 // and initiates the TCP connection synchronously.  Write returns an error if
 // the connection fails (target unreachable, invalid NQN, etc.).
-func (c *fabricsConnector) Connect(ctx context.Context, subsysNQN, trAddr, trSvcID string) error {
+func (c *fabricsConnector) nvmeConnect(ctx context.Context, subsysNQN, trAddr, trSvcID string) error {
 	already, err := c.isConnected(ctx, subsysNQN)
 	if err != nil {
-		return fmt.Errorf("fabricsConnector Connect: check existing connection for %q: %w", subsysNQN, err)
+		return fmt.Errorf("fabricsConnector nvmeConnect: check existing connection for %q: %w", subsysNQN, err)
 	}
 	if already {
 		return nil
@@ -116,7 +118,7 @@ func (c *fabricsConnector) Connect(ctx context.Context, subsysNQN, trAddr, trSvc
 
 	f, err := os.OpenFile(c.fabricsDev, os.O_RDWR, 0)
 	if err != nil {
-		return fmt.Errorf("fabricsConnector Connect: open %s: %w", c.fabricsDev, err)
+		return fmt.Errorf("fabricsConnector nvmeConnect: open %s: %w", c.fabricsDev, err)
 	}
 	defer func() { _ = f.Close() }() //nolint:errcheck
 
@@ -126,19 +128,16 @@ func (c *fabricsConnector) Connect(ctx context.Context, subsysNQN, trAddr, trSvc
 	opts := fmt.Sprintf("transport=tcp,traddr=%s,trsvcid=%s,nqn=%s", trAddr, trSvcID, subsysNQN)
 	_, err = fmt.Fprintf(f, "%s\n", opts)
 	if err != nil {
-		return fmt.Errorf("fabricsConnector Connect: write to %s (nqn=%s): %w",
+		return fmt.Errorf("fabricsConnector nvmeConnect: write to %s (nqn=%s): %w",
 			c.fabricsDev, subsysNQN, err)
 	}
 	return nil
 }
 
-// Disconnect tears down all NVMe-oF controllers associated with the given
-// subsystem NQN by writing "1" to each controller's delete_controller sysfs
-// entry.
-//
-// It is idempotent: if the NQN is not connected the method returns nil
-// immediately.
-func (c *fabricsConnector) Disconnect(_ context.Context, subsysNQN string) error {
+// forEachNVMeController scans /sys/class/nvme-subsystem/ for the given NQN
+// and invokes fn for each NVMe controller name (nvmeX, not nvmeXnY) found
+// under that subsystem.  Returns nil when the subsystem is not present.
+func (c *fabricsConnector) forEachNVMeController(subsysNQN string, fn func(ctrlName string)) error {
 	subsysDir := filepath.Join(c.sysfsRoot, "class", "nvme-subsystem")
 
 	entries, err := os.ReadDir(subsysDir)
@@ -146,7 +145,7 @@ func (c *fabricsConnector) Disconnect(_ context.Context, subsysNQN string) error
 		if os.IsNotExist(err) {
 			return nil
 		}
-		return fmt.Errorf("fabricsConnector Disconnect: read %s: %w", subsysDir, err)
+		return fmt.Errorf("fabricsConnector: read %s: %w", subsysDir, err)
 	}
 
 	for _, entry := range entries {
@@ -155,8 +154,8 @@ func (c *fabricsConnector) Disconnect(_ context.Context, subsysNQN string) error
 		if readErr != nil || strings.TrimSpace(string(nqnBytes)) != subsysNQN {
 			continue
 		}
-		// Found the matching subsystem.  Scan for controller entries (nvmeX,
-		// not namespace entries nvmeXnY) and delete each one.
+		// Found the matching subsystem.  Iterate controller entries (nvmeX,
+		// not namespace entries nvmeXnY).
 		subsysPath := filepath.Join(subsysDir, entry.Name())
 		ctrlEntries, readErr := os.ReadDir(subsysPath)
 		if readErr != nil {
@@ -167,21 +166,33 @@ func (c *fabricsConnector) Disconnect(_ context.Context, subsysNQN string) error
 			if !strings.HasPrefix(name, "nvme") {
 				continue
 			}
-			// Namespace entries match nvmeXnY (contain 'n' after the controller
-			// number digits); controller entries are nvmeX (no 'n' in suffix).
+			// Namespace entries contain 'n' after the controller number
+			// digits (nvmeXnY); controller entries are nvmeX (no 'n').
 			suffix := strings.TrimPrefix(name, "nvme")
 			if strings.ContainsRune(suffix, 'n') {
-				continue // skip namespace entries
+				continue
 			}
-			deletePath := filepath.Join(c.sysfsRoot, "class", "nvme", name, "delete_controller")
-			_ = os.WriteFile(deletePath, []byte("1"), 0o600) //nolint:errcheck
+			fn(name)
 		}
 	}
 	return nil
 }
 
-// GetDevicePath returns the /dev/nvmeXnY block-device path for the given
-// subsystem NQN after a successful Connect call.
+// nvmeDisconnect tears down all NVMe-oF controllers associated with the given
+// subsystem NQN by writing "1" to each controller's delete_controller sysfs
+// entry.
+//
+// It is idempotent: if the NQN is not connected the method returns nil
+// immediately.
+func (c *fabricsConnector) nvmeDisconnect(_ context.Context, subsysNQN string) error {
+	return c.forEachNVMeController(subsysNQN, func(name string) {
+		deletePath := filepath.Join(c.sysfsRoot, "class", "nvme", name, "delete_controller")
+		_ = os.WriteFile(deletePath, []byte("1"), 0o600) //nolint:errcheck
+	})
+}
+
+// nvmeGetDevicePath returns the /dev/nvmeXnY block-device path for the given
+// subsystem NQN after a successful nvmeConnect call.
 //
 // Strategy:
 //  1. Fast path: scan /sys/class/nvme-subsystem/ for the matching NQN and
@@ -199,7 +210,7 @@ func (c *fabricsConnector) Disconnect(_ context.Context, subsysNQN string) error
 //
 // Returns ("", nil) when the device is not yet visible; callers
 // should poll until a non-empty path is returned or a deadline is exceeded.
-func (c *fabricsConnector) GetDevicePath(ctx context.Context, subsysNQN string) (string, error) { //nolint:gocognit
+func (c *fabricsConnector) nvmeGetDevicePath(ctx context.Context, subsysNQN string) (string, error) { //nolint:gocognit
 	// ── Primary path: sysfs nvme-subsystem scan ──────────────────────────────
 	subsysDir := filepath.Join(c.sysfsRoot, "class", "nvme-subsystem")
 	entries, err := os.ReadDir(subsysDir)
@@ -261,14 +272,14 @@ func (c *fabricsConnector) GetDevicePath(ctx context.Context, subsysNQN string) 
 				return dp, nil
 			}
 			fmt.Fprintf(os.Stderr,
-				"pillar-node: GetDevicePath: NQN %q found in sysfs but no "+
+				"pillar-node: nvmeGetDevicePath: NQN %q found in sysfs but no "+
 					"namespace in subsystem dir %s; falling back to nvme-cli\n",
 				subsysNQN, subsysPath)
 			break
 		}
 		if !nqnFound {
 			// The subsystem NQN was not found in sysfs at all.  This means
-			// Connect() has not yet completed (or the subsystem is not yet
+			// nvmeConnect() has not yet completed (or the subsystem is not yet
 			// visible to this container).  Return "" to keep polling; do NOT
 			// fall through to nvme-cli because the device cannot exist yet.
 			return "", nil
@@ -475,6 +486,104 @@ func (c *fabricsConnector) isConnected(ctx context.Context, subsysNQN string) (b
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// ProtocolHandler interface implementation
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Compile-time assertion that fabricsConnector satisfies ProtocolHandler.
+var _ csisvc.ProtocolHandler = (*fabricsConnector)(nil)
+
+// nvmeAttachTimeout is the maximum time Attach waits for the NVMe block
+// device to appear in /dev after a successful nvmeConnect call.
+const nvmeAttachTimeout = 30 * time.Second
+
+// nvmeAttachPollInterval is the sleep between successive device-path polls.
+const nvmeAttachPollInterval = 500 * time.Millisecond
+
+// Attach establishes the NVMe-oF TCP connection and waits for the block
+// device to appear.  It returns an AttachResult with the DevicePath set
+// to the /dev/nvmeXnY path and a NVMeoFStageState suitable for Detach/Rescan.
+//
+// Attach is idempotent: if the subsystem NQN is already connected the
+// nvmeConnect step is a no-op and the polling resolves immediately.
+func (c *fabricsConnector) Attach(ctx context.Context, params csisvc.AttachParams) (*csisvc.AttachResult, error) {
+	subsysNQN := params.ConnectionID
+	trAddr := params.Address
+	trSvcID := params.Port
+
+	// Step 1: establish the NVMe-oF TCP connection (idempotent).
+	connectErr := c.nvmeConnect(ctx, subsysNQN, trAddr, trSvcID)
+	if connectErr != nil {
+		return nil, fmt.Errorf("fabricsConnector Attach: connect to %q at %s:%s: %w",
+			subsysNQN, trAddr, trSvcID, connectErr)
+	}
+
+	// Step 2: poll until the block-device node appears in /dev.
+	pollCtx, cancel := context.WithTimeout(ctx, nvmeAttachTimeout)
+	defer cancel()
+
+	for {
+		devPath, devErr := c.nvmeGetDevicePath(pollCtx, subsysNQN)
+		if devErr != nil {
+			return nil, fmt.Errorf("fabricsConnector Attach: get device path for %q: %w",
+				subsysNQN, devErr)
+		}
+		if devPath != "" {
+			return &csisvc.AttachResult{
+				DevicePath: devPath,
+				State: &csisvc.NVMeoFProtocolState{
+					SubsysNQN: subsysNQN,
+					Address:   trAddr,
+					Port:      trSvcID,
+				},
+			}, nil
+		}
+		select {
+		case <-pollCtx.Done():
+			return nil, fmt.Errorf("fabricsConnector Attach: block device for NQN %q "+
+				"did not appear within %s", subsysNQN, nvmeAttachTimeout)
+		case <-time.After(nvmeAttachPollInterval):
+			// next iteration
+		}
+	}
+}
+
+// Detach tears down the NVMe-oF TCP connection identified by the persisted
+// ProtocolState.  The state must be a *csisvc.NVMeoFProtocolState.
+//
+// Detach is idempotent: if the NQN is not currently connected the call
+// returns nil immediately.
+func (c *fabricsConnector) Detach(ctx context.Context, state csisvc.ProtocolState) error {
+	nvmeoFState, ok := state.(*csisvc.NVMeoFProtocolState)
+	if !ok {
+		return fmt.Errorf("fabricsConnector Detach: expected *NVMeoFProtocolState, got %T", state)
+	}
+	return c.nvmeDisconnect(ctx, nvmeoFState.SubsysNQN)
+}
+
+// Rescan triggers a controller rescan on the NVMe subsystem so that the
+// block device re-reads its capacity after an online volume expansion.
+//
+// It writes "1" to the rescan_controller sysfs entry for every NVMe
+// controller associated with the given subsystem NQN.  If the sysfs path
+// does not exist (e.g. in a test environment) Rescan is a no-op.
+func (c *fabricsConnector) Rescan(_ context.Context, state csisvc.ProtocolState) error {
+	nvmeoFState, ok := state.(*csisvc.NVMeoFProtocolState)
+	if !ok {
+		return fmt.Errorf("fabricsConnector Rescan: expected *NVMeoFProtocolState, got %T", state)
+	}
+	return c.nvmeRescan(nvmeoFState.SubsysNQN)
+}
+
+// nvmeRescan writes "1" to the rescan_controller sysfs file for every NVMe
+// controller under the given subsystem NQN.
+func (c *fabricsConnector) nvmeRescan(subsysNQN string) error {
+	return c.forEachNVMeController(subsysNQN, func(name string) {
+		rescanPath := filepath.Join(c.sysfsRoot, "class", "nvme", name, "rescan_controller")
+		_ = os.WriteFile(rescanPath, []byte("1"), 0o600) //nolint:errcheck
+	})
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // mkdirMounter — Mounter wrapper that pre-creates mount-target directories
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -558,12 +667,32 @@ func main() {
 		version = bi.Main.Version
 	}
 
+	// ── Publish node identity annotations to the CSINode object ──────────
+	// Read /etc/nvme/hostnqn and write it as the
+	// pillar-csi.bhyoo.com/nvmeof-host-nqn annotation on the CSINode named
+	// after this node.  The controller plugin reads this annotation when
+	// processing ControllerPublishVolume to resolve the initiator identity
+	// without assuming node_id == NQN (RFC §5.2).
+	//
+	// Publication is best-effort with a short retry loop: the CSINode object
+	// is created by kubelet during driver registration, which may race with
+	// this startup path.  If publication fails after retries we log and
+	// continue — volume attach will return FailedPrecondition until the
+	// annotation is present, which is the expected degraded behavior.
+	publishNodeIdentity(*nodeID)
+
 	// ── Build the CSI service implementations ──────────────────────────────
-	// fabricsConnector uses the Linux /dev/nvme-fabrics kernel interface for
-	// NVMe-oF TCP connections.  It does not require nvme-cli to be installed
-	// in the container image, which simplifies the Dockerfile.
+	// Build the protocol handler map.  fabricsConnector provides the
+	// production NVMe-oF TCP implementation using /dev/nvme-fabrics directly
+	// (no nvme-cli required in the container image).
+	//
+	// Additional protocol handlers (iSCSI, NFS, SMB) are registered here
+	// as they are implemented per the multi-protocol RFC.
+	handlers := map[string]csisvc.ProtocolHandler{
+		csisvc.ProtocolNVMeoFTCP: newFabricsConnector(),
+	}
 	identitySrv := csisvc.NewIdentityServer(driverName, version)
-	nodeSrv := csisvc.NewNodeServer(*nodeID, newFabricsConnector(), &mkdirMounter{wrapped: csisvc.NewKubeMounter()})
+	nodeSrv := csisvc.NewNodeServer(*nodeID, handlers, &mkdirMounter{wrapped: csisvc.NewKubeMounter()})
 
 	// ── Open the Unix socket ───────────────────────────────────────────────
 	// Remove a stale socket file from a previous run so that net.Listen
@@ -612,6 +741,64 @@ func main() {
 		fmt.Fprintf(os.Stderr, "pillar-node: serve: %v\n", serveErr)
 		os.Exit(1)
 	}
+}
+
+// publishNodeIdentity writes the NVMe host NQN to the CSINode object
+// annotations using the in-cluster Kubernetes client.
+//
+// It retries up to 10 times with 3-second back-off to tolerate the race where
+// kubelet has not yet created the CSINode object at driver registration time.
+// Failures after all retries are logged but do not prevent the node plugin
+// from starting — the controller will return FailedPrecondition for attach
+// requests until the annotation is visible (RFC §5.2 degraded behavior).
+func publishNodeIdentity(nodeName string) {
+	cfg, err := rest.InClusterConfig()
+	if err != nil {
+		fmt.Fprintf(os.Stderr,
+			"pillar-node: publishNodeIdentity: build in-cluster config: %v"+
+				" (skipping CSINode annotation — running outside a cluster?)\n", err)
+		return
+	}
+
+	kubeClient, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr,
+			"pillar-node: publishNodeIdentity: create kube client: %v\n", err)
+		return
+	}
+
+	patcher := csisvc.NewKubeCSINodePatcher(kubeClient)
+
+	const maxRetries = 10
+	const retryInterval = 3 * time.Second
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(maxRetries)*retryInterval+5*time.Second)
+	defer cancel()
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		pubErr := csisvc.PublishNVMeOfIdentity(ctx, patcher, nodeName)
+		if pubErr == nil {
+			fmt.Fprintf(os.Stderr,
+				"pillar-node: published NVMe host NQN annotation on CSINode %q\n", nodeName)
+			return
+		}
+		fmt.Fprintf(os.Stderr,
+			"pillar-node: publishNodeIdentity attempt %d/%d failed: %v\n",
+			attempt, maxRetries, pubErr)
+		if attempt < maxRetries {
+			select {
+			case <-ctx.Done():
+				fmt.Fprintf(os.Stderr,
+					"pillar-node: publishNodeIdentity: context canceled, giving up\n")
+				return
+			case <-time.After(retryInterval):
+			}
+		}
+	}
+	fmt.Fprintf(os.Stderr,
+		"pillar-node: publishNodeIdentity: all %d attempts failed; "+
+			"ControllerPublishVolume will return FailedPrecondition until annotation is set\n",
+		maxRetries)
 }
 
 // socketParentDir returns the directory portion of the given socket path.

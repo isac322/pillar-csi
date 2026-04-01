@@ -53,9 +53,9 @@ import (
 // VolumeContext produced by CreateVolume can be passed directly to
 // NodeStageVolume without key translation.
 const (
-	ctrlVCTargetID     = csisrv.VolumeContextKeyTargetNQN // "target_id"
-	ctrlVCAddress      = csisrv.VolumeContextKeyAddress   // "address"
-	ctrlVCPort         = csisrv.VolumeContextKeyPort      // "port"
+	ctrlVCTargetID     = csisrv.VolumeContextKeyTargetID // "target_id"
+	ctrlVCAddress      = csisrv.VolumeContextKeyAddress  // "address"
+	ctrlVCPort         = csisrv.VolumeContextKeyPort     // "port"
 	ctrlVCVolumeRef    = "pillar-csi.bhyoo.com/volume-ref"
 	ctrlVCProtocolType = "pillar-csi.bhyoo.com/protocol-type"
 )
@@ -448,6 +448,9 @@ func TestCSIController_ControllerPublishVolume(t *testing.T) {
 	ctx := context.Background()
 
 	const nodeID = "nqn.2014-08.org.nvmexpress:uuid:worker-1"
+	// Seed CSINode so the controller can resolve the NVMe-oF initiator identity.
+	seedCSINodeForNVMeOF(ctx, t, env.K8sClient, nodeID, nodeID)
+
 	volumeID := "storage-1/nvmeof-tcp/zfs-zvol/tank/pvc-publish-test"
 
 	resp, err := env.Controller.ControllerPublishVolume(ctx, &csi.ControllerPublishVolumeRequest{
@@ -496,6 +499,9 @@ func TestCSIController_ControllerPublishVolume_Idempotency(t *testing.T) {
 	ctx := context.Background()
 
 	const nodeID = "nqn.2014-08.org.nvmexpress:uuid:worker-1"
+	// Seed CSINode so the controller can resolve the NVMe-oF initiator identity.
+	seedCSINodeForNVMeOF(ctx, t, env.K8sClient, nodeID, nodeID)
+
 	volumeID := "storage-1/nvmeof-tcp/zfs-zvol/tank/pvc-publish-idempotent"
 	volCap := defaultVolumeCapabilities()[0]
 
@@ -531,6 +537,9 @@ func TestCSIController_ControllerUnpublishVolume(t *testing.T) {
 	ctx := context.Background()
 
 	const nodeID = "nqn.2014-08.org.nvmexpress:uuid:worker-1"
+	// Seed CSINode so the controller can resolve the NVMe-oF initiator identity.
+	seedCSINodeForNVMeOF(ctx, t, env.K8sClient, nodeID, nodeID)
+
 	volumeID := "storage-1/nvmeof-tcp/zfs-zvol/tank/pvc-unpublish-test"
 
 	_, err := env.Controller.ControllerUnpublishVolume(ctx, &csi.ControllerUnpublishVolumeRequest{
@@ -730,6 +739,9 @@ func TestCSIController_FullRoundTrip(t *testing.T) {
 		capBytes = 1 << 30 // 1 GiB
 		nodeID   = "nqn.2014-08.org.nvmexpress:uuid:worker-node-1"
 	)
+
+	// Seed CSINode so the controller can resolve the NVMe-oF initiator identity.
+	seedCSINodeForNVMeOF(ctx, t, env.K8sClient, nodeID, nodeID)
 
 	// ── Step 1: CreateVolume ──────────────────────────────────────────────────
 	createResp, err := env.Controller.CreateVolume(ctx, &csi.CreateVolumeRequest{

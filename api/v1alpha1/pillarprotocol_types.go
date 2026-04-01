@@ -21,7 +21,7 @@ import (
 )
 
 // ProtocolType enumerates supported network storage protocols.
-// +kubebuilder:validation:Enum=nvmeof-tcp;iscsi;nfs
+// +kubebuilder:validation:Enum=nvmeof-tcp;iscsi;nfs;smb
 type ProtocolType string
 
 // Supported ProtocolType values.
@@ -29,6 +29,7 @@ const (
 	ProtocolTypeNVMeOFTCP ProtocolType = "nvmeof-tcp"
 	ProtocolTypeISCSI     ProtocolType = "iscsi"
 	ProtocolTypeNFS       ProtocolType = "nfs"
+	ProtocolTypeSMB       ProtocolType = "smb"
 )
 
 // NVMeOFTCPConfig holds NVMe-oF/TCP-specific protocol parameters.
@@ -118,6 +119,17 @@ type NFSConfig struct {
 	Version string `json:"version,omitempty"`
 }
 
+// SMBConfig holds SMB/CIFS-specific protocol parameters.
+type SMBConfig struct {
+	// port is the TCP port on which the SMB server listens.
+	// Defaults to 445.
+	// +optional
+	// +kubebuilder:default=445
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	Port int32 `json:"port,omitempty"`
+}
+
 // PillarProtocolSpec defines the desired state of PillarProtocol.
 // Exactly one protocol config field must be set, matching the chosen type.
 type PillarProtocolSpec struct {
@@ -136,6 +148,10 @@ type PillarProtocolSpec struct {
 	// nfs holds NFS configuration; required when type is nfs.
 	// +optional
 	NFS *NFSConfig `json:"nfs,omitempty"`
+
+	// smb holds SMB/CIFS configuration; required when type is smb.
+	// +optional
+	SMB *SMBConfig `json:"smb,omitempty"`
 
 	// fsType is the default filesystem type for block protocols when
 	// volumeMode is Filesystem.  Only relevant for block-based protocols

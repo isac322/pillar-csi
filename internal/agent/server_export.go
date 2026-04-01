@@ -18,176 +18,132 @@ package agent
 
 import (
 	"context"
+	"fmt"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
 	agentv1 "github.com/bhyoo/pillar-csi/gen/go/pillar_csi/agent/v1"
-	"github.com/bhyoo/pillar-csi/internal/agent/nvmeof"
 )
 
-// targetForVolume builds a minimal NvmetTarget for the given volumeID using
-// only the NQN.  Used for ACL and unexport operations where the bind address
-// is not carried in the request; Remove() scans configfs ports internally.
-func (s *Server) targetForVolume(volumeID string) *nvmeof.NvmetTarget {
-	return &nvmeof.NvmetTarget{
-		ConfigfsRoot: s.configfsRoot,
-		SubsystemNQN: volumeNQN(volumeID),
-		NamespaceID:  1,
-	}
-}
-
-// ExportVolume creates the NVMe-oF TCP target entry in configfs that exposes
-// the already-created volume to the network.  The operation is idempotent.
-//
-// Before writing any configfs state, ExportVolume waits for the zvol block
-// device to appear at the expected path (using nvmeof.WaitForDevice).  If the
-// device is still absent after the retry window, the call fails with gRPC
-// status FailedPrecondition so the caller can retry later.
+// ExportVolume dispatches the export request to the protocol-specific handler.
+// The operation is idempotent.
 func (s *Server) ExportVolume(
 	ctx context.Context,
 	req *agentv1.ExportVolumeRequest,
 ) (*agentv1.ExportVolumeResponse, error) {
-	if req.GetProtocolType() != agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP {
-		return nil, status.Errorf(codes.Unimplemented, errOnlyNvmeofTCP)
-	}
-	params := req.GetExportParams().GetNvmeofTcp()
-	if params == nil {
-		return nil, status.Errorf(codes.InvalidArgument, "nvmeof_tcp export params required")
-	}
-	devicePath, err := s.resolveDevicePath(req)
+	handler, err := s.handlerForProtocol(req.GetProtocolType())
 	if err != nil {
-		return nil, err
+		return nil, protocolRPCError(err)
+	}
+	params, err := exportParamsForRequest(req)
+	if err != nil {
+		return nil, protocolRPCError(err)
 	}
 
-	// Wait for the zvol block device to appear before touching configfs.
-	// After "zfs create -V …" the kernel schedules a uevent that causes udevd
-	// to create the /dev/zvol/… symlink asynchronously.  We poll here so that
-	// configfs never receives an invalid (non-existent) device path.
-	//
-	// Device-presence polling is skipped when configfsRoot is not the real
-	// kernel configfs mount point.  In that mode (e.g. --configfs-root=/tmp
-	// used by e2e tests) the NVMe kernel module is not involved, so the kernel
-	// never validates the device_path pseudo-file.  The zvol block device also
-	// only appears on the host's /dev, not inside the container's /dev, so the
-	// os.Stat() probe would always time out — causing ExportVolume to fail with
-	// FailedPrecondition even though the configfs write succeeds.
-	//
-	// However, when an explicit deviceChecker has been injected (e.g. in unit
-	// tests via SetDeviceChecker or the WithDeviceChecker option), we always
-	// perform polling so that tests exercising the timeout/retry path work
-	// correctly regardless of the configfsRoot value.
-	realConfigfs := s.configfsRoot == "" || s.configfsRoot == nvmeof.DefaultConfigfsRoot
-	if realConfigfs || s.deviceChecker != nil {
-		pollInterval := s.devicePollInterval
-		if pollInterval == 0 {
-			pollInterval = nvmeof.DefaultDevicePollInterval
-		}
-		pollTimeout := s.devicePollTimeout
-		if pollTimeout == 0 {
-			pollTimeout = nvmeof.DefaultDevicePollTimeout
-		}
-		waitErr := nvmeof.WaitForDevice(ctx, devicePath, pollInterval, pollTimeout, s.deviceChecker)
-		if waitErr != nil {
-			return nil, status.Errorf(codes.FailedPrecondition,
-				"ExportVolume: zvol device %q not ready after %s: %v",
-				devicePath, pollTimeout, waitErr)
-		}
-	}
-
-	nqn := volumeNQN(req.GetVolumeId())
-	t := &nvmeof.NvmetTarget{
-		ConfigfsRoot: s.configfsRoot,
-		SubsystemNQN: nqn,
-		NamespaceID:  1,
-		DevicePath:   devicePath,
-		BindAddress:  params.GetBindAddress(),
-		Port:         params.GetPort(),
-		ACLEnabled:   req.GetAclEnabled(),
-	}
-	unlock := s.lockNQN(nqn)
-	applyErr := t.Apply()
-	unlock()
-	if applyErr != nil {
-		return nil, status.Errorf(codes.Internal, "ExportVolume: %v", applyErr)
-	}
-	port := params.GetPort()
-	if port == 0 {
-		port = nvmeof.DefaultPort
+	result, err := handler.Export(ctx, params)
+	if err != nil {
+		return nil, protocolRPCError(err)
 	}
 	return &agentv1.ExportVolumeResponse{
 		ExportInfo: &agentv1.ExportInfo{
-			TargetId:  nqn,
-			Address:   params.GetBindAddress(),
-			Port:      port,
-			VolumeRef: "1",
+			TargetId:  result.TargetID,
+			Address:   result.Address,
+			Port:      result.Port,
+			VolumeRef: result.VolumeRef,
 		},
 	}, nil
 }
 
-// resolveDevicePath returns the device path from the request, falling back to
-// the backend's DevicePath if the request field is empty.
-func (s *Server) resolveDevicePath(req *agentv1.ExportVolumeRequest) (string, error) {
-	if req.GetDevicePath() != "" {
-		return req.GetDevicePath(), nil
+func exportParamsForRequest(req *agentv1.ExportVolumeRequest) (ExportParams, error) {
+	params := ExportParams{
+		VolumeID:       req.GetVolumeId(),
+		DevicePath:     req.GetDevicePath(),
+		ProtocolParams: req.GetExportParams(),
+		ACLEnabled:     req.GetAclEnabled(),
 	}
-	b, err := s.backendFor(req.GetVolumeId())
-	if err != nil {
-		return "", err
+
+	switch req.GetProtocolType() {
+	case agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP:
+		if req.GetExportParams().GetNvmeofTcp() == nil {
+			return ExportParams{}, status.Errorf(codes.InvalidArgument, "nvmeof_tcp export params required")
+		}
+	case agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI:
+		if req.GetExportParams().GetIscsi() == nil {
+			return ExportParams{}, status.Errorf(codes.InvalidArgument, "iscsi export params required")
+		}
+	case agentv1.ProtocolType_PROTOCOL_TYPE_NFS:
+		if req.GetExportParams().GetNfs() == nil {
+			return ExportParams{}, status.Errorf(codes.InvalidArgument, "nfs export params required")
+		}
+	case agentv1.ProtocolType_PROTOCOL_TYPE_SMB:
+		if req.GetExportParams().GetSmb() == nil {
+			return ExportParams{}, status.Errorf(codes.InvalidArgument, "smb export params required")
+		}
+	case agentv1.ProtocolType_PROTOCOL_TYPE_UNSPECIFIED:
+		return ExportParams{}, status.Errorf(codes.InvalidArgument,
+			"exportParamsForRequest: protocol_type is required")
+	default:
+		return ExportParams{}, status.Errorf(codes.InvalidArgument,
+			"protocol %s has no export parameter mapping", req.GetProtocolType().String())
 	}
-	return b.DevicePath(req.GetVolumeId()), nil
+
+	return params, nil
 }
 
-// UnexportVolume removes the NVMe-oF TCP target entry from configfs.
-// The operation is idempotent.
+// UnexportVolume removes a protocol export entry. The operation is idempotent.
 func (s *Server) UnexportVolume(
-	_ context.Context,
+	ctx context.Context,
 	req *agentv1.UnexportVolumeRequest,
 ) (*agentv1.UnexportVolumeResponse, error) {
-	if req.GetProtocolType() != agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP {
-		return nil, status.Errorf(codes.Unimplemented, errOnlyNvmeofTCP)
+	handler, err := s.handlerForProtocol(req.GetProtocolType())
+	if err != nil {
+		return nil, protocolRPCError(err)
 	}
-	nqn := volumeNQN(req.GetVolumeId())
-	t := s.targetForVolume(req.GetVolumeId())
-	unlock := s.lockNQN(nqn)
-	removeErr := t.Remove()
-	unlock()
-	if removeErr != nil {
-		return nil, status.Errorf(codes.Internal, "UnexportVolume: %v", removeErr)
+	err = handler.Unexport(ctx, req.GetVolumeId())
+	if err != nil {
+		return nil, protocolRPCError(err)
 	}
 	return &agentv1.UnexportVolumeResponse{}, nil
 }
 
-// AllowInitiator grants NVMe-oF TCP access to the given initiator NQN.
+// AllowInitiator grants protocol-specific access to the given initiator.
 // The operation is idempotent.
 func (s *Server) AllowInitiator(
-	_ context.Context,
+	ctx context.Context,
 	req *agentv1.AllowInitiatorRequest,
 ) (*agentv1.AllowInitiatorResponse, error) {
-	if req.GetProtocolType() != agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP {
-		return nil, status.Errorf(codes.Unimplemented, errOnlyNvmeofTCP)
+	handler, err := s.handlerForProtocol(req.GetProtocolType())
+	if err != nil {
+		return nil, protocolRPCError(err)
 	}
-	t := s.targetForVolume(req.GetVolumeId())
-	allowErr := t.AllowHost(req.GetInitiatorId())
-	if allowErr != nil {
-		return nil, status.Errorf(codes.Internal, "AllowInitiator: %v", allowErr)
+	err = handler.AllowInitiator(ctx, req.GetVolumeId(), req.GetInitiatorId())
+	if err != nil {
+		return nil, protocolRPCError(err)
 	}
 	return &agentv1.AllowInitiatorResponse{}, nil
 }
 
-// DenyInitiator revokes NVMe-oF TCP access for the given initiator NQN.
+// DenyInitiator revokes protocol-specific access for the given initiator.
 // The operation is idempotent.
 func (s *Server) DenyInitiator(
-	_ context.Context,
+	ctx context.Context,
 	req *agentv1.DenyInitiatorRequest,
 ) (*agentv1.DenyInitiatorResponse, error) {
-	if req.GetProtocolType() != agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP {
-		return nil, status.Errorf(codes.Unimplemented, errOnlyNvmeofTCP)
+	handler, err := s.handlerForProtocol(req.GetProtocolType())
+	if err != nil {
+		return nil, protocolRPCError(err)
 	}
-	t := s.targetForVolume(req.GetVolumeId())
-	denyErr := t.DenyHost(req.GetInitiatorId())
-	if denyErr != nil {
-		return nil, status.Errorf(codes.Internal, "DenyInitiator: %v", denyErr)
+	err = handler.DenyInitiator(ctx, req.GetVolumeId(), req.GetInitiatorId())
+	if err != nil {
+		return nil, protocolRPCError(err)
 	}
 	return &agentv1.DenyInitiatorResponse{}, nil
+}
+
+func protocolRPCError(err error) error {
+	if st, ok := status.FromError(err); ok {
+		return status.Errorf(st.Code(), "%s", st.Message())
+	}
+	return fmt.Errorf("protocol handler: %w", err)
 }

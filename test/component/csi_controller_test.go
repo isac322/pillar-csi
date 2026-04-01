@@ -30,8 +30,10 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	storagev1 "k8s.io/api/storage/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	v1alpha1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
@@ -269,8 +271,9 @@ func (csiNopCloser) Close() error { return nil }
 //     Status().Update() to be segregated from the main object store; otherwise
 //     status fields are ignored on Update calls.
 type csiControllerTestEnv struct {
-	srv   *pillarcsi.ControllerServer
-	agent *csiMockAgent
+	srv       *pillarcsi.ControllerServer
+	agent     *csiMockAgent
+	k8sClient client.Client
 }
 
 // newCSIControllerTestEnv builds a ControllerServer backed by:
@@ -283,6 +286,9 @@ func newCSIControllerTestEnv(t *testing.T) *csiControllerTestEnv {
 	scheme := runtime.NewScheme()
 	if err := v1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatalf("AddToScheme: %v", err)
+	}
+	if err := storagev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("storagev1.AddToScheme: %v", err)
 	}
 
 	target := &v1alpha1.PillarTarget{
@@ -315,8 +321,9 @@ func newCSIControllerTestEnv(t *testing.T) *csiControllerTestEnv {
 	srv := pillarcsi.NewControllerServerWithDialer(fakeClient, "pillar-csi.bhyoo.com", dialer)
 
 	return &csiControllerTestEnv{
-		srv:   srv,
-		agent: agent,
+		srv:       srv,
+		agent:     agent,
+		k8sClient: fakeClient,
 	}
 }
 
@@ -328,6 +335,9 @@ func newCSIControllerTestEnvWithDialErr(t *testing.T, dialErr error) *csiControl
 	scheme := runtime.NewScheme()
 	if err := v1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatalf("AddToScheme: %v", err)
+	}
+	if err := storagev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("storagev1.AddToScheme: %v", err)
 	}
 
 	target := &v1alpha1.PillarTarget{
@@ -347,6 +357,28 @@ func newCSIControllerTestEnvWithDialErr(t *testing.T, dialErr error) *csiControl
 
 	srv := pillarcsi.NewControllerServerWithDialer(fakeClient, "pillar-csi.bhyoo.com", dialer)
 	return &csiControllerTestEnv{srv: srv, agent: nil}
+}
+
+// seedCSINodeForNVMeOF creates a CSINode object in the fake Kubernetes client
+// with the NVMe-oF host NQN annotation set to hostNQN.
+//
+// The controller's resolveInitiatorID reads this annotation when handling
+// ControllerPublishVolume / ControllerUnpublishVolume for nvmeof-tcp volumes.
+// Tests that exercise those paths must call this helper before issuing the
+// publish or unpublish RPC so that the annotation is present.
+func seedCSINodeForNVMeOF(ctx context.Context, t *testing.T, k8sClient client.Client, nodeID, hostNQN string) {
+	t.Helper()
+	csiNode := &storagev1.CSINode{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: nodeID,
+			Annotations: map[string]string{
+				pillarcsi.AnnotationNVMeOFHostNQN: hostNQN,
+			},
+		},
+	}
+	if err := k8sClient.Create(ctx, csiNode); err != nil {
+		t.Fatalf("seedCSINodeForNVMeOF %q: %v", nodeID, err)
+	}
 }
 
 // baseCSICreateVolumeRequest returns a valid CreateVolumeRequest for
@@ -409,8 +441,8 @@ func TestCSIController_CreateVolume_Success(t *testing.T) {
 
 	// VolumeContext must carry connection parameters for NodeStageVolume.
 	vc := vol.GetVolumeContext()
-	if vc[pillarcsi.VolumeContextKeyTargetNQN] == "" {
-		t.Errorf("VolumeContext[%q] is empty", pillarcsi.VolumeContextKeyTargetNQN)
+	if vc[pillarcsi.VolumeContextKeyTargetID] == "" {
+		t.Errorf("VolumeContext[%q] is empty", pillarcsi.VolumeContextKeyTargetID)
 	}
 	if vc[pillarcsi.VolumeContextKeyAddress] == "" {
 		t.Errorf("VolumeContext[%q] is empty", pillarcsi.VolumeContextKeyAddress)
@@ -797,6 +829,9 @@ func TestCSIController_ControllerPublishVolume_Success(t *testing.T) {
 	ctx := context.Background()
 
 	const nodeNQN = "nqn.2014-08.org.nvmexpress:uuid:test-node-001"
+	// Seed CSINode so the controller can resolve the NVMe-oF initiator identity.
+	seedCSINodeForNVMeOF(ctx, t, env.k8sClient, nodeNQN, nodeNQN)
+
 	var capturedInitiatorID string
 	env.agent.allowInitiatorFn = func(
 		_ context.Context, req *agentv1.AllowInitiatorRequest,
@@ -840,6 +875,10 @@ func TestCSIController_ControllerPublishVolume_AlreadyPublished(t *testing.T) {
 	env := newCSIControllerTestEnv(t)
 	ctx := context.Background()
 
+	const nodeID = "nqn.2014-08.org.nvmexpress:uuid:node-abc"
+	// Seed CSINode so the controller can resolve the NVMe-oF initiator identity.
+	seedCSINodeForNVMeOF(ctx, t, env.k8sClient, nodeID, nodeID)
+
 	pubReq := &csipb.ControllerPublishVolumeRequest{
 		VolumeId: expectedCSIVolumeID,
 		NodeId:   "nqn.2014-08.org.nvmexpress:uuid:node-abc",
@@ -873,6 +912,9 @@ func TestCSIController_ControllerUnpublishVolume_Success(t *testing.T) {
 	ctx := context.Background()
 
 	const nodeNQN = "nqn.2014-08.org.nvmexpress:uuid:test-node-001"
+	// Seed CSINode so the controller can resolve the NVMe-oF initiator identity.
+	seedCSINodeForNVMeOF(ctx, t, env.k8sClient, nodeNQN, nodeNQN)
+
 	var capturedInitiatorID string
 	env.agent.denyInitiatorFn = func(
 		_ context.Context, req *agentv1.DenyInitiatorRequest,

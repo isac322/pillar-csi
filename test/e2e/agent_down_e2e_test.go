@@ -321,10 +321,10 @@ func TestCSINode_NodeStageVolume_AgentUnreachable(t *testing.T) {
 	volumeContext := vol.GetVolumeContext()
 	t.Logf("E18.1c: CreateVolume succeeded; VolumeId=%q VolumeContext=%v", volumeID, volumeContext)
 
-	// Sanity-check that the VolumeContext has the expected NQN.
-	if got := volumeContext[csisrv.VolumeContextKeyTargetNQN]; got != agentDownNQN {
+	// Sanity-check that the VolumeContext has the expected target identifier.
+	if got := volumeContext[csisrv.VolumeContextKeyTargetID]; got != agentDownNQN {
 		t.Fatalf("E18.1c setup: VolumeContext[%s]=%q, want %q",
-			csisrv.VolumeContextKeyTargetNQN, got, agentDownNQN)
+			csisrv.VolumeContextKeyTargetID, got, agentDownNQN)
 	}
 
 	// ── Step 2: Stop the agent gRPC server (agent goes down) ──────────────
