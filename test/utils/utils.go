@@ -23,8 +23,11 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 
+	"github.com/bhyoo/pillar-csi/internal/runtimepaths"
 	. "github.com/onsi/ginkgo/v2" //nolint:revive,staticcheck
 )
 
@@ -42,15 +45,31 @@ func warnError(err error) {
 
 // Run executes the provided command within this context.
 func Run(cmd *exec.Cmd) (string, error) {
-	dir, _ := GetProjectDir()
-	cmd.Dir = dir
-
-	err := os.Chdir(cmd.Dir)
+	projectDir, err := GetProjectDir()
 	if err != nil {
-		_, _ = fmt.Fprintf(GinkgoWriter, "chdir dir: %q\n", err)
+		return "", err
 	}
 
-	cmd.Env = append(os.Environ(), "GO111MODULE=on")
+	if cmd.Dir == "" {
+		cmd.Dir = runtimepaths.ResolveCommandWorkDir(projectDir)
+	}
+
+	tempDir := runtimepaths.ResolveCommandTempDir()
+	if err := os.MkdirAll(tempDir, 0o755); err != nil { //nolint:gosec // tempdir is created as 0o755
+		return "", fmt.Errorf("create command temp dir %q: %w", tempDir, err)
+	}
+
+	baseEnv := append(
+		os.Environ(),
+		"GO111MODULE=on",
+		"TMPDIR="+tempDir,
+	)
+	if cmd.Env == nil {
+		cmd.Env = baseEnv
+	} else {
+		cmd.Env = append(baseEnv, cmd.Env...)
+	}
+
 	command := strings.Join(cmd.Args, " ")
 	_, _ = fmt.Fprintf(GinkgoWriter, "running: %q\n", command)
 	output, err := cmd.CombinedOutput()
@@ -169,12 +188,11 @@ func GetNonEmptyLines(output string) []string {
 
 // GetProjectDir will return the directory where the project is.
 func GetProjectDir() (string, error) {
-	wd, err := os.Getwd()
-	if err != nil {
-		return wd, fmt.Errorf("failed to get current working directory: %w", err)
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		return "", fmt.Errorf("failed to resolve project directory from runtime caller")
 	}
-	wd = strings.ReplaceAll(wd, "/test/e2e", "")
-	return wd, nil
+	return filepath.Clean(filepath.Join(filepath.Dir(file), "..", "..")), nil
 }
 
 // UncommentCode searches for target in the file and remove the comment prefix
