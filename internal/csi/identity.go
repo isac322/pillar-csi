@@ -206,7 +206,7 @@ func (s *IdentityServer) Probe(
 
 // RegisterGRPC registers an IdentityServer and a ControllerServer with s.
 //
-// This convenience wrapper is used by the controller binary (cmd/main.go) so
+// This convenience wrapper is used by the controller binary (cmd/controller/main.go) so
 // that it does not need to import the CSI spec library directly.  The node
 // binary (cmd/node/main.go) calls RegisterNodeGRPC instead.
 func RegisterGRPC(s *grpc.Server, identity *IdentityServer, ctrl *ControllerServer) {
