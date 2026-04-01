@@ -155,6 +155,25 @@ var _ = Describe("PillarPool Webhook", func() {
 				"Valid PillarPool creation should be allowed")
 		})
 
+		// ── E32.1 TC-280 ─────────────────────────────────────────────────────
+		// TestPillarPool_LVM_MissingLVMConfig_Rejected
+		// When backend.type == "lvm-lv" but backend.lvm is nil the cross-field
+		// constraint validated by validatePillarPoolSpec must return an error.
+		It("TC-280: TestPillarPool_LVM_MissingLVMConfig_Rejected — lvm-lv without backend.lvm is rejected by ValidateCreate", func() {
+			By("calling ValidateCreate with a PillarPool that has type=lvm-lv and no backend.lvm")
+			obj.Spec.TargetRef = "storage-1"
+			obj.Spec.Backend = pillarcsiv1alpha1.BackendSpec{
+				Type: pillarcsiv1alpha1.BackendTypeLVMLV,
+				// LVM field intentionally omitted — must be rejected.
+			}
+
+			_, err := validator.ValidateCreate(ctx, obj)
+			Expect(err).To(HaveOccurred(),
+				"ValidateCreate should reject a PillarPool with type=lvm-lv and no backend.lvm section")
+			Expect(err.Error()).To(ContainSubstring("lvm"),
+				"error message should mention the missing lvm section")
+		})
+
 		// ── E20.1.2 ──────────────────────────────────────────────────────────
 		// TestPillarPoolWebhook_ValidCreate_Dir
 		It("Should allow valid PillarPool creation with dir backend type (no ZFS config needed)", func() {

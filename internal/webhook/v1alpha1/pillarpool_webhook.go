@@ -60,9 +60,36 @@ func (*PillarPoolCustomValidator) ValidateCreate(
 ) (admission.Warnings, error) {
 	pillarpoollog.Info("Validation for PillarPool upon creation", "name", pillarpool.GetName())
 
-	// TODO(user): fill in your validation logic upon object creation.
+	return nil, validatePillarPoolSpec(pillarpool)
+}
 
-	return nil, nil
+// validatePillarPoolSpec applies cross-field validation rules to a PillarPool spec.
+// These rules enforce constraints that cannot be expressed in OpenAPI schema alone
+// (e.g., requiring backend.lvm when backend.type == "lvm-lv").
+func validatePillarPoolSpec(pool *pillarcsiv1alpha1.PillarPool) error {
+	var allErrs field.ErrorList
+
+	// When backend.type is lvm-lv, the backend.lvm section must be present and
+	// must provide at minimum a non-empty volumeGroup so that the agent knows
+	// which LVM Volume Group to use.
+	if pool.Spec.Backend.Type == pillarcsiv1alpha1.BackendTypeLVMLV {
+		if pool.Spec.Backend.LVM == nil {
+			allErrs = append(allErrs, field.Required(
+				field.NewPath("spec", "backend", "lvm"),
+				fmt.Sprintf("spec.backend.lvm is required when spec.backend.type is %q", pillarcsiv1alpha1.BackendTypeLVMLV),
+			))
+		} else if pool.Spec.Backend.LVM.VolumeGroup == "" {
+			allErrs = append(allErrs, field.Required(
+				field.NewPath("spec", "backend", "lvm", "volumeGroup"),
+				"spec.backend.lvm.volumeGroup must be non-empty when spec.backend.type is lvm-lv",
+			))
+		}
+	}
+
+	if len(allErrs) > 0 {
+		return allErrs.ToAggregate()
+	}
+	return nil
 }
 
 // ValidateUpdate implements admission.Validator so a webhook will be registered for the type PillarPool.

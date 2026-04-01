@@ -89,6 +89,7 @@ var _ = Describe("PillarBinding Webhook", func() {
 					TargetRef: "test-target",
 					Backend: pillarcsiv1alpha1.BackendSpec{
 						Type: pillarcsiv1alpha1.BackendTypeLVMLV,
+						LVM:  &pillarcsiv1alpha1.LVMBackendConfig{VolumeGroup: "data-vg"},
 					},
 				},
 			}
@@ -320,7 +321,10 @@ var _ = Describe("PillarBinding Webhook", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: "compat-pool-lvm-iscsi"},
 				Spec: pillarcsiv1alpha1.PillarPoolSpec{
 					TargetRef: "test-target",
-					Backend:   pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeLVMLV},
+					Backend: pillarcsiv1alpha1.BackendSpec{
+						Type: pillarcsiv1alpha1.BackendTypeLVMLV,
+						LVM:  &pillarcsiv1alpha1.LVMBackendConfig{VolumeGroup: "data-vg"},
+					},
 				},
 			}
 			Expect(k8sClient.Create(ctx, pool)).To(Succeed())
@@ -433,13 +437,20 @@ var _ = Describe("PillarBinding Webhook", func() {
 			Expect(err.Error()).To(ContainSubstring("incompatible"))
 		})
 
-		It("Should deny block backend (lvm-lv) with file protocol (nfs) on create", func() {
+		// ── E32.2 TC-284 ─────────────────────────────────────────────────────
+		// TestPillarBinding_LVM_NFS_Incompatible
+		// lvm-lv (block backend) + nfs (file protocol) is an incompatible pairing.
+		// ValidateCreate fetches the referenced pool and protocol and rejects.
+		It("TC-284: TestPillarBinding_LVM_NFS_Incompatible — lvm-lv + nfs is rejected as incompatible", func() {
 			By("creating incompatible pool and protocol resources")
 			pool := &pillarcsiv1alpha1.PillarPool{
 				ObjectMeta: metav1.ObjectMeta{Name: "incompat-pool-lvm-nfs"},
 				Spec: pillarcsiv1alpha1.PillarPoolSpec{
 					TargetRef: "test-target",
-					Backend:   pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeLVMLV},
+					Backend: pillarcsiv1alpha1.BackendSpec{
+						Type: pillarcsiv1alpha1.BackendTypeLVMLV,
+						LVM:  &pillarcsiv1alpha1.LVMBackendConfig{VolumeGroup: "data-vg"},
+					},
 				},
 			}
 			Expect(k8sClient.Create(ctx, pool)).To(Succeed())
