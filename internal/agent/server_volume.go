@@ -95,7 +95,10 @@ func (s *Server) ExpandVolume(
 	// This is a best-effort operation: if there is no active export for
 	// this volume (e.g. not yet exported or already unexported), we
 	// silently skip the resize.
-	nqn := volumeNQN(req.GetVolumeId())
+	nqn, nqnErr := volumeTargetID(agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP, req.GetVolumeId())
+	if nqnErr != nil {
+		return nil, status.Errorf(codes.Internal, "ExpandVolume: derive target NQN: %v", nqnErr)
+	}
 	target := &nvmeof.NvmetTarget{
 		ConfigfsRoot: s.configfsRoot,
 		SubsystemNQN: nqn,
