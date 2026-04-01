@@ -19,7 +19,7 @@
 #
 # See docker-bake.hcl for the build matrix and CI integration.
 
-# ── Shared builder stage ──────────────────────────────────────────────────────
+# ── Builder stage ─────────────────────────────────────────────────────────────
 FROM --platform=$BUILDPLATFORM golang:1.26-alpine3.23 AS builder
 ARG TARGETOS
 ARG TARGETARCH
@@ -32,45 +32,23 @@ RUN go mod download
 
 COPY . .
 
-# ── Build stages (one per binary) ────────────────────────────────────────────
-# BuildKit builds only the stages reachable from the requested --target,
-# and deduplicates the shared builder stage when building multiple targets
-# via `docker buildx bake`.
-
-FROM builder AS build-controller
-RUN --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
-    go build \
-      -trimpath \
-      -pgo=auto \
-      -ldflags="-s" \
-      -o manager \
-      cmd/main.go
-
-FROM builder AS build-agent
+# Build all binaries under cmd/ in one invocation.  The -o flag with a
+# directory target writes each binary (named after its package directory)
+# into that directory.  This works with cross-compilation unlike go install
+# which rejects GOBIN when GOOS/GOARCH differ from the host.
 RUN --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
     go build \
       -trimpath \
       -pgo=auto \
       -ldflags="-s -w" \
-      -o pillar-agent \
-      ./cmd/agent/
-
-FROM builder AS build-node
-RUN --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
-    go build \
-      -trimpath \
-      -pgo=auto \
-      -ldflags="-s -w" \
-      -o pillar-node \
-      ./cmd/node/
+      -o /workspace/bin/ \
+      ./cmd/...
 
 # ── Runtime: controller ───────────────────────────────────────────────────────
 # Distroless — no shell, no package manager, minimal attack surface.
 FROM gcr.io/distroless/static:nonroot AS controller
-COPY --from=build-controller --link /workspace/manager /usr/bin/manager
+COPY --from=builder --link /workspace/bin/controller /usr/bin/manager
 USER 65532:65532
 ENTRYPOINT ["/usr/bin/manager"]
 
@@ -97,7 +75,7 @@ RUN set -eux \
     && rm -rf /sbin/apk /etc/apk /lib/apk /usr/share/apk /var/lib/apk \
     # Remove shell (no interactive escape path).
     && rm -f /bin/sh /bin/bash /usr/bin/env
-COPY --from=build-agent --link --chmod=0555 /workspace/pillar-agent /usr/bin/pillar-agent
+COPY --from=builder --link --chmod=0555 /workspace/bin/agent /usr/bin/pillar-agent
 USER 65532:65532
 EXPOSE 50051
 ENTRYPOINT ["/usr/bin/pillar-agent"]
@@ -123,6 +101,6 @@ RUN set -eux \
     && rm -rf /sbin/apk /etc/apk /lib/apk /usr/share/apk /var/lib/apk \
     # Remove shell (no interactive escape path).
     && rm -f /bin/sh /bin/bash /usr/bin/env
-COPY --from=build-node --link --chmod=0555 /workspace/pillar-node /usr/bin/pillar-node
+COPY --from=builder --link --chmod=0555 /workspace/bin/node /usr/bin/pillar-node
 USER 65532:65532
 ENTRYPOINT ["/usr/bin/pillar-node"]

@@ -9,8 +9,8 @@
 // CI usage (GitHub Actions):
 //   docker buildx bake --set "*.cache-from=type=gha" --set "*.cache-to=type=gha,mode=max"
 //
-// BuildKit deduplicates the shared builder stage automatically when building
-// multiple targets in parallel — go mod download and COPY run only once.
+// All runtime targets share a single builder stage that compiles every binary
+// in one `go install` invocation — go mod download, COPY, and build run once.
 
 variable "TAG" {
   default = "latest"

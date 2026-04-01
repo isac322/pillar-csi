@@ -341,10 +341,10 @@ linters:
       # error return; GinkgoWriter failures are non-actionable in tests.
       - linters: [errcheck]
         path: "test/utils/.*\\.go$"
-      # cmd/main.go is kubebuilder bootstrap with unavoidable flag-parsing
+      # cmd/controller/main.go is kubebuilder bootstrap with unavoidable flag-parsing
       # boilerplate; a statement-count limit is not meaningful here.
       - linters: [funlen]
-        path: "cmd/main\\.go$"
+        path: "cmd/controller/main\\.go$"
     paths:
       - vendor$
       - third_party$

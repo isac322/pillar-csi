@@ -184,13 +184,13 @@ Tests: `statemachine_test.go` — 20+ test cases covering happy path, partial fa
 **PRD scope:** `pillar-controller` binary runs the CSI Controller service on a Unix socket; `pillar-node` binary runs the CSI Node service.
 
 **Status:** `internal/csi/` package is fully implemented and tested, but:
-- `cmd/main.go` does NOT import `internal/csi` or start a CSI gRPC socket.
+- `cmd/controller/main.go` does NOT import `internal/csi` or start a CSI gRPC socket.
 - There is NO `cmd/node/` directory — no pillar-node binary entry point.
 
 **Impact:** The CSI controller and node implementations cannot be deployed or used until wired up.
 
 **Files needed:**
-- `cmd/main.go`: import `internal/csi`, start CSI gRPC socket (e.g., `unix:///var/lib/kubelet/plugins/pillar-csi.bhyoo.com/csi.sock`), register `IdentityServer` + `ControllerServer`
+- `cmd/controller/main.go`: import `internal/csi`, start CSI gRPC socket (e.g., `unix:///var/lib/kubelet/plugins/pillar-csi.bhyoo.com/csi.sock`), register `IdentityServer` + `ControllerServer`
 - `cmd/node/main.go`: pillar-node entry point registering `IdentityServer` + `NodeServer`
 
 ### 2. NodeExpandVolume Not Implemented ⚠️
@@ -281,9 +281,9 @@ Tests: `statemachine_test.go` — 20+ test cases covering happy path, partial fa
 | Health check | `internal/agent/health/health.go` |
 | AgentClient | `internal/agentclient/dialer.go` |
 | Agent binary | `cmd/agent/main.go` |
-| Controller binary | `cmd/main.go` (no CSI socket yet) |
+| Controller binary | `cmd/controller/main.go` (no CSI socket yet) |
 | Proto definition | `proto/pillar_csi/agent/v1/agent.proto` |
 | Generated gRPC stubs | `gen/go/pillar_csi/agent/v1/` |
-| **CSI socket in cmd/main.go** | ⚠️ **not yet wired** |
+| **CSI socket in cmd/controller/main.go** | ⚠️ **not yet wired** |
 | **cmd/node/ binary** | ⚠️ **not yet created** |
 | **Helm chart** | ❌ **not yet present** |
