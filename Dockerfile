@@ -60,7 +60,7 @@ ENTRYPOINT ["/usr/bin/manager"]
 #   --security-opt=no-new-privileges:true
 #   --read-only  (combine with tmpfs mounts for /tmp, /run)
 #   --cap-drop ALL --cap-add SYS_ADMIN  (ZFS + configfs need SYS_ADMIN)
-FROM alpine:3.21 AS agent
+FROM alpine:3.23 AS agent
 RUN set -eux \
     && apk add --no-cache 'zfs~=2.2' lvm2 \
     # Configure LVM for container environments where udevd is not running.
@@ -87,7 +87,7 @@ ENTRYPOINT ["/usr/bin/pillar-agent"]
 #   --security-opt=no-new-privileges:true
 #   --read-only  (combine with tmpfs mounts for /tmp, /run)
 #   --cap-drop ALL --cap-add SYS_ADMIN  (mount(8) and NVMe-oF need SYS_ADMIN)
-FROM alpine:3.21 AS node
+FROM alpine:3.23 AS node
 RUN set -eux \
     && apk add --no-cache \
          'util-linux~=2.40' \
