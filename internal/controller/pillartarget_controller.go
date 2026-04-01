@@ -713,8 +713,6 @@ func isTLSHandshakeError(err error) bool {
 // reconciler requeues until they are removed.  Only once no references remain
 // does it clean up the storage-node label on the referenced Node and release
 // the finalizer.
-//
-//nolint:gocognit // Deletion flow branches across pool-reference check, node-label cleanup, and multiple error paths.
 func (r *PillarTargetReconciler) reconcileDelete(
 	ctx context.Context,
 	target *pillarcsiv1alpha1.PillarTarget,
@@ -756,37 +754,11 @@ func (r *PillarTargetReconciler) reconcileDelete(
 
 	// No remaining PillarPool references — proceed with cleanup.
 
-	// Remove the storage-node label from the referenced Kubernetes Node.
+	// Remove the storage-node label unless another PillarTarget still needs it.
 	if target.Spec.NodeRef != nil {
-		node := &corev1.Node{}
-		nodeErr := r.Get(ctx, types.NamespacedName{Name: target.Spec.NodeRef.Name}, node)
-		switch {
-		case nodeErr == nil:
-			if node.Labels != nil {
-				if _, hasLabel := node.Labels[storageNodeLabel]; hasLabel {
-					patch := client.MergeFrom(node.DeepCopy())
-					delete(node.Labels, storageNodeLabel)
-					patchErr := r.Patch(ctx, node, patch)
-					if patchErr != nil {
-						return ctrl.Result{}, fmt.Errorf(
-							"failed to remove storage-node label from Node %q: %w",
-							target.Spec.NodeRef.Name, patchErr,
-						)
-					}
-					log.Info("Removed storage-node label from node during deletion",
-						"node", target.Spec.NodeRef.Name, "label", storageNodeLabel)
-				}
-			}
-		case client.IgnoreNotFound(nodeErr) == nil:
-			// Node already gone — nothing to clean up.
-			log.Info("Referenced node not found during deletion cleanup; skipping label removal",
-				"name", target.Name, "node", target.Spec.NodeRef.Name)
-		default:
-			// Transient error — requeue so we retry label removal.
-			return ctrl.Result{}, fmt.Errorf(
-				"failed to get node %q for label cleanup: %w",
-				target.Spec.NodeRef.Name, nodeErr,
-			)
+		labelErr := r.maybeRemoveStorageNodeLabel(ctx, target)
+		if labelErr != nil {
+			return ctrl.Result{}, labelErr
 		}
 	}
 
@@ -844,10 +816,77 @@ func resolveNodeAddress(node *corev1.Node, nodeRef *pillarcsiv1alpha1.NodeRefSpe
 	return "", fmt.Errorf("no %q address found on node %q", addressType, node.Name)
 }
 
-// SetupWithManager sets up the controller with the Manager.
-//
-// In addition to the primary PillarTarget watch it registers two secondary
-// watches:
+// maybeRemoveStorageNodeLabel removes the storage-node label from the node
+// referenced by target, but only if no other PillarTarget references the same
+// node.  This prevents the agent DaemonSet from being evicted when one of
+// several targets sharing a node is deleted.
+func (r *PillarTargetReconciler) maybeRemoveStorageNodeLabel(
+	ctx context.Context,
+	target *pillarcsiv1alpha1.PillarTarget,
+) error {
+	log := logf.FromContext(ctx)
+	nodeName := target.Spec.NodeRef.Name
+
+	hasOther, checkErr := r.otherTargetOnNode(ctx, target.Name, nodeName)
+	if checkErr != nil {
+		return checkErr
+	}
+	if hasOther {
+		log.Info("Other PillarTargets still reference this node; keeping storage-node label",
+			"node", nodeName, "deletingTarget", target.Name)
+		return nil
+	}
+
+	node := &corev1.Node{}
+	nodeErr := r.Get(ctx, types.NamespacedName{Name: nodeName}, node)
+	switch {
+	case nodeErr == nil:
+		if node.Labels != nil {
+			if _, hasLabel := node.Labels[storageNodeLabel]; hasLabel {
+				patch := client.MergeFrom(node.DeepCopy())
+				delete(node.Labels, storageNodeLabel)
+				patchErr := r.Patch(ctx, node, patch)
+				if patchErr != nil {
+					return fmt.Errorf("failed to remove storage-node label from Node %q: %w", nodeName, patchErr)
+				}
+				log.Info("Removed storage-node label from node during deletion",
+					"node", nodeName, "label", storageNodeLabel)
+			}
+		}
+	case client.IgnoreNotFound(nodeErr) == nil:
+		log.Info("Referenced node not found during deletion cleanup; skipping label removal",
+			"name", target.Name, "node", nodeName)
+	default:
+		return fmt.Errorf("failed to get node %q for label cleanup: %w", nodeName, nodeErr)
+	}
+	return nil
+}
+
+// otherTargetOnNode returns true if any PillarTarget other than excludeName
+// references the given nodeName.  This is used during deletion to decide
+// whether the storage-node label should be preserved on the node.
+func (r *PillarTargetReconciler) otherTargetOnNode(
+	ctx context.Context, excludeName, nodeName string,
+) (bool, error) {
+	allTargets := &pillarcsiv1alpha1.PillarTargetList{}
+	listErr := r.List(ctx, allTargets)
+	if listErr != nil {
+		return false, fmt.Errorf("list PillarTargets to check node %q references: %w", nodeName, listErr)
+	}
+	for i := range allTargets.Items {
+		t := &allTargets.Items[i]
+		if t.Name == excludeName {
+			continue
+		}
+		if t.Spec.NodeRef != nil && t.Spec.NodeRef.Name == nodeName {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// SetupWithManager registers the PillarTarget controller with the manager and
+// configures watches:
 //   - Node objects: re-enqueues any PillarTarget whose spec.nodeRef.name
 //     matches the changed node so that NodeExists / resolvedAddress stay
 //     current when nodes appear, change, or disappear.

@@ -153,6 +153,7 @@ var _ = func() bool {
 		)
 
 		BeforeAll(func(ctx context.Context) {
+			reapplyStorageNodeLabel()
 			vgName = lvmVGName()
 			if vgName == "" {
 				Skip("PILLAR_E2E_LVM_VG not set — skipping LVM PVC provisioning tests " +
@@ -401,6 +402,7 @@ var _ = func() bool {
 		)
 
 		BeforeAll(func(ctx context.Context) {
+			reapplyStorageNodeLabel()
 			vgName = lvmVGName()
 			if vgName == "" {
 				Skip("PILLAR_E2E_LVM_VG not set — skipping LVM mount/unmount lifecycle tests")

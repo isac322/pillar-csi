@@ -185,6 +185,7 @@ var _ = func() bool {
 			)
 
 			BeforeAll(func(ctx context.Context) {
+				reapplyStorageNodeLabel()
 				targetName = fmt.Sprintf("iat-conn-%d", time.Now().UnixMilli()%100000)
 				By(fmt.Sprintf("creating PillarTarget %q → node %s", targetName, storageNodeName))
 				// Wrap Apply in Eventually to retry transient REST-mapper cache misses.
@@ -348,6 +349,7 @@ var _ = func() bool {
 			)
 
 			BeforeAll(func(ctx context.Context) {
+				reapplyStorageNodeLabel()
 				zfsPool = iatZFSPool()
 				if zfsPool == "" {
 					Skip("PILLAR_E2E_ZFS_POOL not set — skipping CR stack lifecycle tests " +
@@ -491,6 +493,7 @@ var _ = func() bool {
 			)
 
 			BeforeAll(func(ctx context.Context) {
+				reapplyStorageNodeLabel()
 				zfsPool = iatZFSPool()
 				if zfsPool == "" {
 					Skip("PILLAR_E2E_ZFS_POOL not set — skipping CSI volume provisioning tests")
@@ -650,6 +653,7 @@ var _ = func() bool {
 			)
 
 			BeforeAll(func(ctx context.Context) {
+				reapplyStorageNodeLabel()
 				zfsPool = iatZFSPool()
 				if zfsPool == "" {
 					Skip("PILLAR_E2E_ZFS_POOL not set — skipping mount/unmount lifecycle tests")

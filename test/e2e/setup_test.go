@@ -727,6 +727,23 @@ func ensureStorageNodeLabel() error {
 		"pillar-csi.bhyoo.com/storage-node=true", "--overwrite")
 }
 
+// reapplyStorageNodeLabel re-applies the storage-node label to the Kind worker.
+// Call this at the start of each test group's BeforeAll to prevent the agent
+// DaemonSet pod from being evicted between test groups.  When a previous
+// group's DeferCleanup deletes its PillarTarget, the controller removes the
+// label; this function restores it so the DaemonSet keeps the pod running.
+func reapplyStorageNodeLabel() {
+	node := os.Getenv("PILLAR_E2E_STORAGE_NODE")
+	if node == "" {
+		return
+	}
+	err := runCmd("kubectl", "label", "node", node,
+		"pillar-csi.bhyoo.com/storage-node=true", "--overwrite")
+	if err != nil {
+		fmt.Fprintf(GinkgoWriter, "WARNING: reapplyStorageNodeLabel: %v\n", err)
+	}
+}
+
 // validateWorkerNodeMounts checks that the Kind worker node containers have
 // the filesystem paths that were specified via extraMounts in kind-config.yaml
 // accessible.

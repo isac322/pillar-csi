@@ -125,6 +125,7 @@ var _ = func() bool {
 		)
 
 		BeforeAll(func(ctx context.Context) {
+			reapplyStorageNodeLabel()
 			vgName = lvmVGName()
 			if vgName == "" {
 				Skip("PILLAR_E2E_LVM_VG not set — skipping LVM volume expansion tests " +

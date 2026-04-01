@@ -267,6 +267,7 @@ var _ = func() bool {
 
 		// ── BeforeAll: prerequisites + port-forward ────────────────────────────
 		BeforeAll(func(ctx context.Context) {
+			reapplyStorageNodeLabel()
 			vgName = lvmVGName()
 			if vgName == "" {
 				Skip("PILLAR_E2E_LVM_VG not set — skipping LVM backend core RPC tests " +
@@ -779,6 +780,7 @@ var _ = func() bool {
 		)
 
 		BeforeAll(func(ctx context.Context) {
+			reapplyStorageNodeLabel()
 			if lvmVGName() == "" {
 				Skip("PILLAR_E2E_LVM_VG not set — skipping LVM GetCapacity error-path test " +
 					"(requires a running agent with LVM backend registered)")

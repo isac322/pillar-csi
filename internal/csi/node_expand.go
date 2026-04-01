@@ -19,7 +19,6 @@ package csi
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -329,15 +328,12 @@ func ensureNVMeCtrlDev(ctrl string) string {
 	}
 
 	// Create the character device node.  Requires CAP_MKNOD (privileged).
-	devNum := major<<8 | minor
+	// Use the full Linux dev_t encoding so minor numbers >= 256 work.
+	devNum := (minor & 0xff) | (major << 8) | ((minor & 0xfff00) << 12)
 	mknodErr := syscall.Mknod(ctrlPath, syscall.S_IFCHR|0o600, devNum)
 	if mknodErr != nil {
-		log.Printf("pillar-node: mknod %q (major=%d minor=%d): %v",
-			ctrlPath, major, minor, mknodErr)
 		return ""
 	}
-	log.Printf("pillar-node: created missing NVMe ctrl device %q (major=%d minor=%d)",
-		ctrlPath, major, minor)
 	return ctrlPath
 }
 
