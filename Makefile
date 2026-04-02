@@ -134,6 +134,7 @@ E2E_COMMON_ENV = $(if $(DOCKER_HOST),DOCKER_HOST=$(DOCKER_HOST)) \
 	CERT_MANAGER_INSTALL_SKIP=true \
 	GINKGO=$(GINKGO) \
 	PILLAR_E2E_PROCS=$(E2E_PROCS) \
+	E2E_FAILFAST=$(E2E_FAIL_FAST) \
 	E2E_FAIL_FAST=$(E2E_FAIL_FAST)
 
 # Common go test flags shared by every e2e invocation.
@@ -225,9 +226,17 @@ test-e2e-lvm: manifests generate fmt vet ## Run LVM-only e2e specs in internal-a
 ## Override on the command line: make test-e2e E2E_PROCS=4
 E2E_PROCS ?= $(shell nproc)
 
-## AC 6: default continue-on-failure so the full summary report is always emitted.
-## Set E2E_FAIL_FAST=true to stop after the first failure (e.g. in fast CI paths).
+## AC 10: default continue-on-failure so the full summary report is always emitted.
+## E2E_FAILFAST=1 (canonical, no underscore) stops after the first spec failure.
+## E2E_FAIL_FAST=true is the legacy alias accepted for backward compatibility.
+## Both "1", "true", and "yes" values activate fail-fast mode.
+E2E_FAILFAST ?=
 E2E_FAIL_FAST ?= false
+# If the caller set E2E_FAILFAST (no underscore), forward it as E2E_FAIL_FAST so
+# the Ginkgo flag and the Go env var both pick it up.
+ifneq ($(E2E_FAILFAST),)
+E2E_FAIL_FAST := $(E2E_FAILFAST)
+endif
 
 ## Directory for aggregated parallel Ginkgo reports.
 E2E_REPORT_DIR ?= /tmp/pillar-csi-e2e-reports
@@ -286,9 +295,20 @@ E2E_GINKGO_TEST_FLAGS = -- -test.run='^TestE2E$$'
 test-e2e: manifests generate fmt vet ginkgo ## Phase-sequenced e2e: prereq→cluster→images→backends→parallel tests→teardown.
 	@mkdir -p "$(E2E_REPORT_DIR)"
 	@echo "=== e2e pipeline: prereq → cluster-create → image-build → backend-setup → $(E2E_PROCS)-worker tests → teardown ==="
+	@_e2e_pid=; \
+	_e2e_cleanup() { \
+		if [ -n "$$_e2e_pid" ]; then \
+			kill -TERM "$$_e2e_pid" 2>/dev/null || true; \
+			wait "$$_e2e_pid" 2>/dev/null || true; \
+		fi; \
+		$(if $(DOCKER_HOST),DOCKER_HOST=$(DOCKER_HOST) )kind delete cluster --name $(KIND_CLUSTER) 2>/dev/null || true; \
+	}; \
+	trap '_e2e_cleanup' EXIT INT TERM; \
 	$(E2E_COMMON_ENV) go test -tags=e2e -v -count=1 -timeout=$(E2E_TIMEOUT) \
 		$(if $(E2E_RUN),-run $(E2E_RUN)) \
-		./test/e2e/...
+		./test/e2e/... & \
+	_e2e_pid=$$!; \
+	wait $$_e2e_pid
 
 # test-e2e-parallel is kept as an alias for backward compatibility.
 .PHONY: test-e2e-parallel

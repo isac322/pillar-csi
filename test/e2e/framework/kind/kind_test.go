@@ -75,3 +75,17 @@ func TestDeleteClusterEmptyNameErrors(t *testing.T) {
 		t.Error("DeleteCluster(\"\") should have returned an error, got nil")
 	}
 }
+
+// TestReapOrphanClustersEmptyPrefixErrors verifies that an empty prefix is
+// rejected before any Docker/Kind calls are made.
+func TestReapOrphanClustersEmptyPrefixErrors(t *testing.T) {
+	t.Parallel()
+
+	err := kindhelper.ReapOrphanClusters("")
+	if err == nil {
+		t.Error("ReapOrphanClusters(\"\") should have returned an error, got nil")
+	}
+	if !strings.Contains(err.Error(), "prefix must not be empty") {
+		t.Errorf("ReapOrphanClusters(\"\") error = %q; want 'prefix must not be empty'", err)
+	}
+}

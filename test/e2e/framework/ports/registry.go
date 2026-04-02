@@ -165,6 +165,12 @@ func NewRegistry() *Registry {
 // happens outside the per-TC scope lifecycle.
 var Global = NewRegistry()
 
+// allocMaxAttempts is the maximum number of OS port picks attempted before
+// giving up.  In practice the first attempt succeeds; retries are only needed
+// when the OS returns a port that a previous probe-and-release allocation
+// already registered in this registry.
+const allocMaxAttempts = 20
+
 // Allocate reserves a free loopback TCP port for the given service kind and
 // label.  The OS assigns the port (via net.Listen("tcp","127.0.0.1:0")) so
 // the number is guaranteed unique within this process.  The returned Allocation
@@ -173,31 +179,51 @@ var Global = NewRegistry()
 //
 // This is the preferred strategy for in-process services (gRPC servers, HTTP
 // servers, etc.) started directly in the test binary.
+//
+// Conflict avoidance: when the OS returns a port that was previously issued by
+// a probe-and-release AllocateForContainer call (and is therefore still tracked
+// in the registry), Allocate closes the listener and retries.  This prevents
+// duplicate-port collisions between host-bound and container allocations.
 func (r *Registry) Allocate(service ServiceKind, label string) (*Allocation, error) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return nil, fmt.Errorf("ports: allocate %s/%s: %w", service, label, err)
-	}
+	for range allocMaxAttempts {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			return nil, fmt.Errorf("ports: allocate %s/%s: %w", service, label, err)
+		}
 
-	port, err := listenerPort(ln)
-	if err != nil {
-		_ = ln.Close()
-		return nil, fmt.Errorf("ports: parse listener port %s/%s: %w", service, label, err)
-	}
+		port, err := listenerPort(ln)
+		if err != nil {
+			_ = ln.Close()
+			return nil, fmt.Errorf("ports: parse listener port %s/%s: %w", service, label, err)
+		}
 
-	a := &Allocation{
-		Service:  service,
-		Label:    label,
-		Host:     "127.0.0.1",
-		Port:     port,
-		Addr:     ln.Addr().String(),
-		listener: ln,
-		reg:      r,
-	}
+		// Check and register atomically while holding the registry lock.
+		// We still hold the OS listener, so the port cannot be re-assigned to
+		// any other goroutine during the check.
+		r.mu.Lock()
+		if _, conflict := r.active[port]; conflict {
+			// Port already tracked (e.g. from a prior probe-and-release
+			// allocation).  Release and try again.
+			r.mu.Unlock()
+			_ = ln.Close()
+			continue
+		}
+		a := &Allocation{
+			Service:  service,
+			Label:    label,
+			Host:     "127.0.0.1",
+			Port:     port,
+			Addr:     ln.Addr().String(),
+			listener: ln,
+			reg:      r,
+		}
+		r.active[port] = a
+		r.mu.Unlock()
 
-	r.register(a)
-	r.totalIssued.Add(1)
-	return a, nil
+		r.totalIssued.Add(1)
+		return a, nil
+	}
+	return nil, fmt.Errorf("ports: allocate %s/%s: exhausted %d attempts (registry conflict on every OS pick)", service, label, allocMaxAttempts)
 }
 
 // AllocateForContainer reserves a free loopback TCP port and immediately
@@ -208,38 +234,60 @@ func (r *Registry) Allocate(service ServiceKind, label string) (*Allocation, err
 // Use this for services that bind inside a Kind container (e.g. iSCSI LIO
 // targets) whose host port mapping must be configured at cluster-creation time.
 // There is a brief TOCTOU window between listener release and container bind;
-// this is acceptable for test environments.
+// this is acceptable in test environments where the window is negligible.
+//
+// Collision safety: the registry is updated while the OS listener is still
+// open (before Close), so no concurrent net.Listen(":0") call within this
+// process can return the same port number during the registration step.
+// A conflict-checking retry loop guards against the rare case where the OS
+// re-offers a port that is still tracked in the registry from a prior call.
 func (r *Registry) AllocateForContainer(service ServiceKind, label string) (*Allocation, error) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return nil, fmt.Errorf("ports: allocate-for-container %s/%s: %w", service, label, err)
-	}
+	for range allocMaxAttempts {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			return nil, fmt.Errorf("ports: allocate-for-container %s/%s: %w", service, label, err)
+		}
 
-	port, err := listenerPort(ln)
-	if err != nil {
-		_ = ln.Close()
-		return nil, fmt.Errorf("ports: parse listener port %s/%s: %w", service, label, err)
-	}
+		port, err := listenerPort(ln)
+		if err != nil {
+			_ = ln.Close()
+			return nil, fmt.Errorf("ports: parse listener port %s/%s: %w", service, label, err)
+		}
 
-	// Release immediately so the container can bind, but record the port to
-	// prevent this process from re-issuing it.
-	if err := ln.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
-		return nil, fmt.Errorf("ports: release probe listener %s/%s: %w", service, label, err)
-	}
+		// Check and register atomically while still holding the OS listener.
+		// The OS cannot re-assign this port to any other goroutine while the
+		// listener is open, so the registry update is race-free.
+		r.mu.Lock()
+		if _, conflict := r.active[port]; conflict {
+			// Already tracked; close and retry for a different port.
+			r.mu.Unlock()
+			_ = ln.Close()
+			continue
+		}
+		a := &Allocation{
+			Service: service,
+			Label:   label,
+			Host:    "127.0.0.1",
+			Port:    port,
+			Addr:    fmt.Sprintf("127.0.0.1:%d", port),
+			reg:     r,
+			// listener is nil — probe-and-release allocation
+		}
+		r.active[port] = a
+		r.mu.Unlock()
 
-	a := &Allocation{
-		Service: service,
-		Label:   label,
-		Host:    "127.0.0.1",
-		Port:    port,
-		Addr:    fmt.Sprintf("127.0.0.1:%d", port),
-		reg:     r,
-		// listener is nil — probe-and-release allocation
-	}
+		// Release the host listener so the container can bind to this port.
+		// The registry entry is already committed; a post-close conflict from
+		// another goroutine getting this port is caught by its own retry loop.
+		if err := ln.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			r.deregister(port)
+			return nil, fmt.Errorf("ports: release probe listener %s/%s: %w", service, label, err)
+		}
 
-	r.register(a)
-	r.totalIssued.Add(1)
-	return a, nil
+		r.totalIssued.Add(1)
+		return a, nil
+	}
+	return nil, fmt.Errorf("ports: allocate-for-container %s/%s: exhausted %d attempts (registry conflict on every OS pick)", service, label, allocMaxAttempts)
 }
 
 // AllocateISCSITarget is a convenience wrapper that allocates a port for an
@@ -290,12 +338,6 @@ func (r *Registry) Snapshot() []*Allocation {
 }
 
 // ─── internal helpers ────────────────────────────────────────────────────────
-
-func (r *Registry) register(a *Allocation) {
-	r.mu.Lock()
-	r.active[a.Port] = a
-	r.mu.Unlock()
-}
 
 func (r *Registry) deregister(port int) {
 	r.mu.Lock()

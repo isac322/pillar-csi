@@ -70,7 +70,7 @@ var _ = Describe("E34: LVM Kind 클러스터 E2E — 실제 LVM VG + iSCSI",
 				e34SkipIfNoInfra()
 
 				testNamespace = fmt.Sprintf("e34-ctrl-%d", GinkgoParallelProcess())
-				pvcName = "e34-ctrl-pvc"
+				pvcName = fmt.Sprintf("e34-ctrl-pvc-%d", GinkgoParallelProcess())
 
 				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 				defer cancel()

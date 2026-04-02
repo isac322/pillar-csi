@@ -801,6 +801,12 @@ var _ = Describe("E27: Helm 차트 설치 및 릴리스 검증", Label("helm", "
 				_, err := e27KubectlOutput(ctx, "apply", "-f", sampleFile)
 				Expect(err).NotTo(HaveOccurred(),
 					"[TC-E27.217w] kubectl apply pillartarget must succeed")
+				// Ensure cleanup even if assertions below fail.
+				DeferCleanup(func() {
+					cleanCtx, cleanCancel := context.WithTimeout(context.Background(), 30*time.Second)
+					defer cleanCancel()
+					_, _ = e27KubectlOutput(cleanCtx, "delete", "-f", sampleFile, "--ignore-not-found=true")
+				})
 
 				out, err := e27KubectlOutput(ctx, "get", "pt")
 				Expect(err).NotTo(HaveOccurred(),
@@ -821,6 +827,12 @@ var _ = Describe("E27: Helm 차트 설치 및 릴리스 검증", Label("helm", "
 				_, err := e27KubectlOutput(ctx, "apply", "-f", sampleFile)
 				Expect(err).NotTo(HaveOccurred(),
 					"[TC-E27.217x] kubectl apply pillarpool must succeed")
+				// Ensure cleanup even if assertions below fail.
+				DeferCleanup(func() {
+					cleanCtx, cleanCancel := context.WithTimeout(context.Background(), 30*time.Second)
+					defer cleanCancel()
+					_, _ = e27KubectlOutput(cleanCtx, "delete", "-f", sampleFile, "--ignore-not-found=true")
+				})
 
 				out, err := e27KubectlOutput(ctx, "get", "pp")
 				Expect(err).NotTo(HaveOccurred(),
@@ -841,6 +853,12 @@ var _ = Describe("E27: Helm 차트 설치 및 릴리스 검증", Label("helm", "
 				_, err := e27KubectlOutput(ctx, "apply", "-f", sampleFile)
 				Expect(err).NotTo(HaveOccurred(),
 					"[TC-E27.217y] kubectl apply pillarprotocol must succeed")
+				// Ensure cleanup even if assertions below fail.
+				DeferCleanup(func() {
+					cleanCtx, cleanCancel := context.WithTimeout(context.Background(), 30*time.Second)
+					defer cleanCancel()
+					_, _ = e27KubectlOutput(cleanCtx, "delete", "-f", sampleFile, "--ignore-not-found=true")
+				})
 
 				out, err := e27KubectlOutput(ctx, "get", "ppr")
 				Expect(err).NotTo(HaveOccurred(),
@@ -861,6 +879,12 @@ var _ = Describe("E27: Helm 차트 설치 및 릴리스 검증", Label("helm", "
 				_, err := e27KubectlOutput(ctx, "apply", "-f", sampleFile)
 				Expect(err).NotTo(HaveOccurred(),
 					"[TC-E27.217z] kubectl apply pillarbinding must succeed")
+				// Ensure cleanup even if assertions below fail.
+				DeferCleanup(func() {
+					cleanCtx, cleanCancel := context.WithTimeout(context.Background(), 30*time.Second)
+					defer cleanCancel()
+					_, _ = e27KubectlOutput(cleanCtx, "delete", "-f", sampleFile, "--ignore-not-found=true")
+				})
 
 				out, err := e27KubectlOutput(ctx, "get", "pb")
 				Expect(err).NotTo(HaveOccurred(),

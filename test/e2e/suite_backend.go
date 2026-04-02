@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/bhyoo/pillar-csi/test/e2e/framework/lvm"
+	"github.com/bhyoo/pillar-csi/test/e2e/framework/provisioner"
 	"github.com/bhyoo/pillar-csi/test/e2e/framework/zfs"
 )
 
@@ -93,29 +94,50 @@ type suiteBackendState struct {
 
 // ─── Provisioning ─────────────────────────────────────────────────────────────
 
-// bootstrapSuiteBackends provisions shared ZFS and LVM backend resources
-// inside the Kind cluster's control-plane container.
+// bootstrapSuiteBackends provisions shared backend resources inside the Kind
+// cluster's control-plane container.
 //
-// It is called once from runPrimary in suite_test.go after bootstrapSuiteCluster
+// It is called once from runPrimary in main_test.go after bootstrapSuiteCluster
 // succeeds. The provisioned resources are registered with suiteInvocationTeardown
 // so that cleanup runs before the Kind cluster is deleted.
 //
-// Provisioning is opportunistic:
-//   - ZFS pool is created only when the "zfs" kernel module is loaded.
-//   - LVM VG is created only when the "dm_thin_pool" kernel module is loaded.
+// # Dependency injection
 //
-// On success the provisioned resources are exported via os.Setenv so that
-// ginkgo workers inherit them through os.Environ() in reexecViaGinkgoCLI.
+// The optional provisioners variadic parameter accepts any number of
+// [provisioner.BackendProvisioner] implementations. When no provisioners are
+// passed, the default pipeline is used: one [provisioner.ZFSProvisioner] and
+// one [provisioner.LVMProvisioner] for the cluster's control-plane container.
 //
-// bootstrapSuiteBackends never returns an error when a backend module is
-// absent — it logs a warning and skips that backend. It does return an error
-// when a module is present but provisioning encounters an unexpected failure.
+// This allows callers to inject custom backends without modifying any
+// framework code:
+//
+//	// Use default ZFS + LVM backends (no provisioners passed):
+//	state, err := bootstrapSuiteBackends(ctx, clusterState, os.Stderr)
+//
+//	// Inject a custom backend via DI:
+//	state, err := bootstrapSuiteBackends(ctx, clusterState, os.Stderr,
+//	    &MyCustomProvisioner{NodeContainer: container},
+//	)
+//
+// # Soft-skip semantics
+//
+// Provisioning is opportunistic: when a kernel module is absent or a required
+// container tool is not installed, the backend is skipped (returns nil, nil)
+// rather than failing the suite. Test cases that depend on an absent backend
+// check whether the corresponding env var is set and skip accordingly.
+//
+// # Error handling
+//
+// When one or more backends return a hard error, bootstrapSuiteBackends
+// destroys any already-provisioned resources (to avoid leaks), then returns
+// a wrapped error with the [AC5.2] tag for log traceability.
 //
 // The returned *suiteBackendState is nil only if clusterState is nil.
 func bootstrapSuiteBackends(
 	ctx context.Context,
 	clusterState *kindBootstrapState,
 	output io.Writer,
+	provisioners ...provisioner.BackendProvisioner,
 ) (*suiteBackendState, error) {
 	if clusterState == nil {
 		return nil, errors.New("[AC5.2] bootstrapSuiteBackends: cluster state is nil")
@@ -127,120 +149,100 @@ func bootstrapSuiteBackends(
 	nodeContainer := zfs.KindNodeContainerName(clusterState.ClusterName, 0)
 	suffix := backendNameSuffix(clusterState.ClusterName)
 
-	state := &suiteBackendState{NodeContainer: nodeContainer}
-
-	// ── ZFS pool ─────────────────────────────────────────────────────────────
+	// ── AC4: Install backend tools in the Kind container ──────────────────────
 	//
-	// The ZFS kernel module must be loaded on the host because Kind containers
-	// share the host kernel. We check /proc/modules before attempting any
-	// docker exec to give a clear diagnostic rather than a cryptic container
-	// exec failure.
+	// The standard Kind node image does not ship ZFS userspace tools (zpool,
+	// zfs) or LVM2 tools (pvcreate, vgcreate). Install them now via docker exec
+	// so the provisioner pipeline below can create real ZFS pools and LVM VGs
+	// inside the container.
 	//
-	// We also tolerate the case where the ZFS userspace tools (zpool, zfs) are
-	// not installed inside the Kind node container. The standard Kind node image
-	// does not ship ZFS userspace utilities; a custom image or a privileged
-	// install step is required.  When the binary is absent we log a warning and
-	// skip ZFS provisioning exactly as if the kernel module were absent — the
-	// ZFS-specific test cases will then be skipped at spec time due to the
-	// absent PILLAR_E2E_ZFS_POOL env var.
-	if isKernelModuleLoaded("zfs") {
-		poolName := "pillar-e2e-zfs-" + suffix
-		pool, err := zfs.CreatePool(ctx, zfs.CreatePoolOptions{
-			NodeContainer: nodeContainer,
-			PoolName:      poolName,
-			SizeMiB:       512,
-		})
-		switch {
-		case err == nil:
-			// Verify the pool reached ONLINE state before exposing it to tests.
-			// zpool create is synchronous but we confirm health explicitly so that
-			// any unexpected degraded state (e.g. missing loop device) is caught
-			// with a clear diagnostic rather than a cryptic test failure later.
-			if verifyErr := zfs.VerifyOnline(ctx, nodeContainer, pool.PoolName); verifyErr != nil {
-				// Pool creation succeeded but the pool is not ONLINE. Destroy it
-				// and surface the error — test cases must never run against a
-				// non-ONLINE pool.
-				_ = pool.Destroy(ctx)
-				return nil, fmt.Errorf("[AC5.2] ZFS pool %q on %s is not ONLINE after creation: %w",
-					pool.PoolName, nodeContainer, verifyErr)
-			}
-			state.ZFSPool = pool
-			_, _ = fmt.Fprintf(output,
-				"[AC5.2] ZFS pool %q provisioned and ONLINE on container %s\n",
-				pool.PoolName, nodeContainer)
-		case isContainerToolNotFoundError(err):
-			// Soft skip: zpool binary absent in the container — treat like
-			// kernel module not loaded.  ZFS tests will be skipped at spec time.
-			_, _ = fmt.Fprintf(output,
-				"[AC5.2] zpool binary not found in container %s — "+
-					"skipping ZFS pool provisioning (install zfsutils-linux in the Kind node image)\n",
-				nodeContainer)
-		default:
-			// ZFS module is loaded AND zpool is present but provisioning failed —
-			// this is a genuine error that must be surfaced.
-			return nil, fmt.Errorf("[AC5.2] provision ZFS pool %q on %s: %w",
-				poolName, nodeContainer, err)
-		}
-	} else {
+	// installKindContainerBackendTools is best-effort: if installation fails
+	// (e.g. no network in CI, non-Debian image), it logs a warning and returns
+	// nil — the provisioners detect the missing binaries and soft-skip.
+	if installErr := installKindContainerBackendTools(ctx, nodeContainer, output); installErr != nil {
+		// installKindContainerBackendTools only returns non-nil for internal
+		// logic errors (e.g. nil context), not for apt failures — those are
+		// handled internally and result in soft-skip at provisioning time.
 		_, _ = fmt.Fprintf(output,
-			"[AC5.2] zfs kernel module not loaded — skipping ZFS pool provisioning\n")
+			"[AC4] warn: install backend tools in %s: %v\n", nodeContainer, installErr)
 	}
 
-	// ── LVM VG ───────────────────────────────────────────────────────────────
+	// ── Build the provisioner pipeline ────────────────────────────────────────
 	//
-	// LVM requires dm_thin_pool for thin-provisioning support (the primary LVM
-	// mode used by pillar-csi). We skip silently when the module is absent.
-	//
-	// Same soft-skip logic as ZFS above: when lvm2 userspace tools (pvcreate,
-	// vgcreate) are absent from the Kind container, we log a warning and skip
-	// rather than failing the entire suite.
-	if isKernelModuleLoaded("dm_thin_pool") {
-		vgName := "pillar-e2e-lvm-" + suffix
-		vg, err := lvm.CreateVG(ctx, lvm.CreateVGOptions{
+	// When no provisioners are injected, construct the default pipeline with the
+	// built-in ZFS and LVM backends. This preserves full backward compatibility:
+	// existing callers that pass only (ctx, clusterState, output) still get the
+	// same ZFS + LVM provisioning behaviour as before, while new callers can
+	// supply custom backends without touching any framework code.
+	pipeline := provisioner.NewPipeline()
+	if len(provisioners) == 0 {
+		pipeline.AddBackend(&provisioner.ZFSProvisioner{
 			NodeContainer: nodeContainer,
-			VGName:        vgName,
+			PoolName:      "pillar-e2e-zfs-" + suffix,
 			SizeMiB:       512,
 		})
-		switch {
-		case err == nil:
-			// Verify the VG is writable and non-partial before exposing it to
-			// tests.  vgcreate is synchronous but we confirm the attribute flags
-			// explicitly so that any unexpected degraded state (e.g. partial PV,
-			// exported VG) is caught here with a clear diagnostic rather than
-			// producing cryptic failures inside individual test cases.
-			if verifyErr := lvm.VerifyActive(ctx, nodeContainer, vg.VGName); verifyErr != nil {
-				// VG was created but is not in an active/writable state. Destroy
-				// it and surface the error — test cases must never run against a
-				// non-active VG.
-				_ = vg.Destroy(ctx)
-				return nil, fmt.Errorf("[AC5.2] LVM VG %q on %s failed active check after creation: %w",
-					vg.VGName, nodeContainer, verifyErr)
-			}
-			state.LVMVG = vg
-			_, _ = fmt.Fprintf(output,
-				"[AC5.2] LVM VG %q provisioned and active on container %s\n",
-				vg.VGName, nodeContainer)
-		case isContainerToolNotFoundError(err):
-			// Soft skip: LVM userspace tools absent — treat like module not loaded.
-			_, _ = fmt.Fprintf(output,
-				"[AC5.2] pvcreate/vgcreate binary not found in container %s — "+
-					"skipping LVM VG provisioning (install lvm2 in the Kind node image)\n",
-				nodeContainer)
-		default:
-			// Module is loaded AND tools are present but provisioning failed.
-			// Clean up any provisioned ZFS pool so we don't leak resources.
-			if state.ZFSPool != nil {
-				cleanCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				defer cancel()
-				_ = state.ZFSPool.Destroy(cleanCtx)
-				state.ZFSPool = nil
-			}
-			return nil, fmt.Errorf("[AC5.2] provision LVM VG %q on %s: %w",
-				vgName, nodeContainer, err)
-		}
+		pipeline.AddBackend(&provisioner.LVMProvisioner{
+			NodeContainer: nodeContainer,
+			VGName:        "pillar-e2e-lvm-" + suffix,
+			SizeMiB:       512,
+		})
 	} else {
-		_, _ = fmt.Fprintf(output,
-			"[AC5.2] dm_thin_pool kernel module not loaded — skipping LVM VG provisioning\n")
+		for _, p := range provisioners {
+			pipeline.AddBackend(p)
+		}
+	}
+
+	// ── Run the pipeline (concurrently) ──────────────────────────────────────
+	//
+	// Sub-AC 2.1 optimisation: ZFS pool creation and LVM VG creation are
+	// completely independent operations. RunAllConcurrent provisions both in
+	// parallel, cutting backend-setup wall-clock time roughly in half (from
+	// sequential sum to the maximum of the two durations). The results slice
+	// is still returned in registration order (ZFS at index 0, LVM at index 1)
+	// regardless of which provisioner finishes first.
+	results, provErr := pipeline.RunAllConcurrent(ctx, output)
+
+	// On hard error: clean up any successfully provisioned resources before
+	// returning so we do not leak ZFS pools or LVM VGs in the container.
+	if provErr != nil {
+		cleanCtx, cleanCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cleanCancel()
+		for _, r := range results {
+			if r.Resource != nil && !r.Skipped && r.Err == nil {
+				_ = r.Resource.Destroy(cleanCtx)
+			}
+		}
+		return nil, fmt.Errorf("[AC5.2] backend provisioning: %w", provErr)
+	}
+
+	// ── Map results to suiteBackendState ─────────────────────────────────────
+	//
+	// Type-assert each provisioned resource back to its concrete type so the
+	// typed ZFSPool / LVMVG fields of suiteBackendState can be populated.
+	// Results from unknown backend types or from skipped / errored backends are
+	// ignored — they are not part of the suite state.
+	state := &suiteBackendState{NodeContainer: nodeContainer}
+
+	for _, r := range results {
+		if r.Skipped || r.Err != nil || r.Resource == nil {
+			continue
+		}
+		switch r.BackendType {
+		case "zfs":
+			if pool, ok := r.Resource.(*zfs.Pool); ok {
+				state.ZFSPool = pool
+				_, _ = fmt.Fprintf(output,
+					"[AC5.2] ZFS pool %q provisioned and ONLINE on container %s\n",
+					pool.PoolName, nodeContainer)
+			}
+		case "lvm":
+			if vg, ok := r.Resource.(*lvm.VG); ok {
+				state.LVMVG = vg
+				_, _ = fmt.Fprintf(output,
+					"[AC5.2] LVM VG %q provisioned and active on container %s\n",
+					vg.VGName, nodeContainer)
+			}
+		}
 	}
 
 	return state, nil

@@ -52,10 +52,10 @@ var _ = Describe("E34: LVM Kind 클러스터 E2E — 실제 LVM VG + iSCSI",
 				e34SkipIfNoInfra()
 
 				testNamespace = fmt.Sprintf("e34-exp-%d", GinkgoParallelProcess())
-				fsPVCName = "e34-exp-fs-pvc"
-				blockPVCName = "e34-exp-block-pvc"
-				fsPodName = "e34-exp-fs-pod"
-				blockPodName = "e34-exp-block-pod"
+				fsPVCName = fmt.Sprintf("e34-exp-fs-pvc-%d", GinkgoParallelProcess())
+				blockPVCName = fmt.Sprintf("e34-exp-block-pvc-%d", GinkgoParallelProcess())
+				fsPodName = fmt.Sprintf("e34-exp-fs-pod-%d", GinkgoParallelProcess())
+				blockPodName = fmt.Sprintf("e34-exp-block-pod-%d", GinkgoParallelProcess())
 
 				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 				defer cancel()

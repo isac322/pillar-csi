@@ -19,8 +19,11 @@ package e2e
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -55,9 +58,20 @@ func TestAC51DefaultParallelNodesEqualsCPUCount(t *testing.T) {
 // The actual env var is NOT set in this test (to avoid side-effects); instead
 // we replicate the selection logic that runs inside reexecViaGinkgoCLI.
 //
-// AC 5.1 contract: procs = PILLAR_E2E_PROCS if set, else DefaultParallelNodes.
+// AC 5.1 / Sub-AC 2.1 contract:
+//
+//	procs = PILLAR_E2E_PROCS                              if set
+//	      = max(DefaultParallelNodes, minParallelProcs)   otherwise
+//
+// The minParallelProcs floor (8) ensures the 45-second test-exec budget is
+// achievable on low-CPU machines without relying on the PILLAR_E2E_PROCS
+// override being set by the Makefile.
 func TestAC51WorkerCountOverrideViaEnvVar(t *testing.T) {
 	t.Parallel()
+
+	// effectiveDefault mirrors the Sub-AC 2.1 logic in reexecViaGinkgoCLI:
+	// enforce a minimum of minParallelProcs to meet the 45s test-exec budget.
+	effectiveDefault := max(DefaultParallelNodes, minParallelProcs)
 
 	cases := []struct {
 		name       string
@@ -67,7 +81,7 @@ func TestAC51WorkerCountOverrideViaEnvVar(t *testing.T) {
 		{
 			name:       "default (no env var)",
 			envVal:     "",
-			wantResult: strconv.Itoa(DefaultParallelNodes),
+			wantResult: strconv.Itoa(effectiveDefault),
 		},
 		{
 			name:       "explicit 1 worker",
@@ -95,9 +109,13 @@ func TestAC51WorkerCountOverrideViaEnvVar(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			// Replicate the selection logic from reexecViaGinkgoCLI.
+			// Replicate the Sub-AC 2.1 selection logic from reexecViaGinkgoCLI.
 			// Do NOT use os.Setenv — that would race with other parallel tests.
-			procs := strconv.Itoa(DefaultParallelNodes)
+			effectiveProcs := DefaultParallelNodes
+			if effectiveProcs < minParallelProcs {
+				effectiveProcs = minParallelProcs
+			}
+			procs := strconv.Itoa(effectiveProcs)
 			if tc.envVal != "" {
 				procs = tc.envVal
 			}
@@ -416,4 +434,76 @@ func TestAC51WorkerCountIsPositive(t *testing.T) {
 	if DefaultParallelNodes < 1 {
 		t.Errorf("AC51: DefaultParallelNodes = %d, must be ≥ 1", DefaultParallelNodes)
 	}
+}
+
+// ── 9. Sub-AC 2.2: precompiled binary path ────────────────────────────────────
+
+// TestAC51SubAC22ResolveTestBinaryPathReturnsNonEmpty verifies that
+// resolveTestBinaryPath never returns an empty string. The function must
+// return either a valid .test binary path (the fast path that skips
+// recompilation) or the fallback "." package path.
+//
+// Sub-AC 2.2 contract: resolveTestBinaryPath() returns a non-empty string.
+func TestAC51SubAC22ResolveTestBinaryPathReturnsNonEmpty(t *testing.T) {
+	t.Parallel()
+
+	path := resolveTestBinaryPath()
+	if path == "" {
+		t.Fatal("Sub-AC 2.2: resolveTestBinaryPath() returned empty string — " +
+			"must return either a .test binary path or the fallback \".\"")
+	}
+	t.Logf("Sub-AC 2.2: resolveTestBinaryPath() = %q", path)
+}
+
+// TestAC51SubAC22ResolveTestBinaryPathReturnsDotOrTestBinary verifies that
+// resolveTestBinaryPath returns either "." (fallback) or an absolute path to
+// an existing .test binary. This guards against invalid intermediate values
+// that would cause ginkgo to fail silently.
+//
+// Sub-AC 2.2 contract: result is "." OR an absolute path to a .test binary.
+func TestAC51SubAC22ResolveTestBinaryPathReturnsDotOrTestBinary(t *testing.T) {
+	t.Parallel()
+
+	path := resolveTestBinaryPath()
+
+	if path == "." {
+		// Fallback path: ginkgo will compile the package. This is acceptable
+		// in environments where os.Executable() doesn't return a .test binary
+		// (e.g., direct binary execution without go test).
+		t.Logf("Sub-AC 2.2: resolveTestBinaryPath() = \".\" (fallback; ginkgo will compile)")
+		return
+	}
+
+	// Fast path: verify the returned path is absolute, has .test suffix, and exists.
+	if !filepath.IsAbs(path) {
+		t.Errorf("Sub-AC 2.2: resolveTestBinaryPath() = %q is not an absolute path", path)
+	}
+	if !strings.HasSuffix(path, ".test") {
+		t.Errorf("Sub-AC 2.2: resolveTestBinaryPath() = %q does not end in .test", path)
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Errorf("Sub-AC 2.2: resolveTestBinaryPath() = %q: stat failed: %v", path, err)
+	} else if fi.IsDir() {
+		t.Errorf("Sub-AC 2.2: resolveTestBinaryPath() = %q is a directory, not a binary", path)
+	} else {
+		t.Logf("Sub-AC 2.2: resolveTestBinaryPath() = %q (size=%d, mode=%s)",
+			path, fi.Size(), fi.Mode())
+	}
+}
+
+// TestAC51SubAC22MinParallelProcsFloor verifies that minParallelProcs is ≥ 8
+// so the 45-second test-exec budget is achievable on low-CPU machines.
+//
+// Sub-AC 2.1+2.2 contract: minParallelProcs ≥ 8.
+func TestAC51SubAC22MinParallelProcsFloor(t *testing.T) {
+	t.Parallel()
+
+	const want = 8
+	if minParallelProcs < want {
+		t.Errorf("Sub-AC 2.2: minParallelProcs = %d, want ≥ %d "+
+			"(required to meet the 45s test-exec budget on low-CPU machines)",
+			minParallelProcs, want)
+	}
+	t.Logf("Sub-AC 2.2: minParallelProcs = %d", minParallelProcs)
 }

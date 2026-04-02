@@ -107,7 +107,23 @@ const suiteLevelTimeout = 2 * time.Minute
 //
 // TestMain reads this value when launching the ginkgo CLI re-exec. Override
 // by setting PILLAR_E2E_PROCS in the environment before running go test.
+//
+// NOTE: reexecViaGinkgoCLI enforces a minimum of minParallelProcs workers
+// to meet the 45-second test-exec budget even on low-CPU machines.
+// DefaultParallelNodes itself is left at runtime.NumCPU() so that tests
+// checking the default value (TestAC51DefaultParallelNodesEqualsCPUCount)
+// continue to pass.
 var DefaultParallelNodes = runtime.NumCPU()
+
+// minParallelProcs is the minimum number of Ginkgo parallel workers enforced
+// by reexecViaGinkgoCLI when neither PILLAR_E2E_PROCS nor a sufficient
+// DefaultParallelNodes value provides enough parallelism.
+//
+// The 45-second test-exec budget (testsBudgetSeconds = 45) requires at least
+// 8 workers to distribute the ~91 cluster-level specs (E10, E27, E33-E35)
+// so that no worker's share exceeds the per-worker budget. On a 1-7 CPU
+// machine, defaulting to runtime.NumCPU() would starve parallelism.
+const minParallelProcs = 8
 
 // ── Auto-parallel re-exec constants ──────────────────────────────────────────
 
@@ -248,6 +264,17 @@ func TestMain(m *testing.M) {
 			_, _ = fmt.Fprintln(os.Stderr, err.Error())
 			os.Exit(1)
 		}
+	}
+
+	// Orphan reaper — primary process only.
+	//
+	// Before creating a new Kind cluster, scan for any clusters matching the
+	// pillar-csi-e2e-* naming pattern and delete them. These are left behind
+	// when a previous test run was SIGKILL'd (signal 9 cannot be caught by Go
+	// signal handlers). The reaper is best-effort: a failed delete is logged
+	// but does not abort the run.
+	if !isGinkgoParallelWorker() && !isReexecGuarded() {
+		reapOrphanedClusters(os.Stderr)
 	}
 
 	// Route to the appropriate execution path based on the process role.
@@ -623,6 +650,14 @@ func isSequentialMode() bool {
 // cmd.Env via os.Environ(), so workers inherit KUBECONFIG, KIND_CLUSTER, etc.
 // without any additional plumbing.
 //
+// Sub-AC 2.2: the current compiled test binary is passed to ginkgo instead of
+// the package path "." so that ginkgo skips recompilation. Recompiling the e2e
+// package from scratch adds 10–20 s to the stageTestExec budget (consuming
+// 22–44% of the 45 s test-exec budget before a single spec runs). Using the
+// precompiled binary eliminates this overhead and also preserves the -tags=e2e
+// build configuration that is required for kind_bootstrap_e2e_test.go's
+// SynchronizedBeforeSuite to register.
+//
 // Return values:
 //
 //	>= 0  ginkgo completed with this exit code (0 = all specs passed).
@@ -633,7 +668,15 @@ func reexecViaGinkgoCLI(stdout, stderr io.Writer) int {
 		return -1
 	}
 
-	procs := strconv.Itoa(DefaultParallelNodes)
+	// Sub-AC 2.1: enforce a minimum of minParallelProcs workers so that the
+	// 45-second test-exec budget is achievable on low-CPU machines. On machines
+	// with ≥ 8 CPUs (the typical CI/developer host), DefaultParallelNodes
+	// (= runtime.NumCPU()) already exceeds minParallelProcs and is used as-is.
+	effectiveProcs := DefaultParallelNodes
+	if effectiveProcs < minParallelProcs {
+		effectiveProcs = minParallelProcs
+	}
+	procs := strconv.Itoa(effectiveProcs)
 	if p := os.Getenv("PILLAR_E2E_PROCS"); p != "" {
 		procs = p
 	}
@@ -641,13 +684,23 @@ func reexecViaGinkgoCLI(stdout, stderr io.Writer) int {
 	reportDir := filepath.Join(os.TempDir(), "pillar-csi-e2e-reports")
 	_ = os.MkdirAll(reportDir, 0o755)
 
+	// Sub-AC 2.2: resolve the path of the already-compiled test binary so ginkgo
+	// can use it directly without recompiling the package from scratch.
+	// resolveTestBinaryPath() returns "." as a fallback when os.Executable()
+	// cannot locate a suitable compiled binary (e.g., in unusual test harnesses).
+	testBinPath := resolveTestBinaryPath()
+	if testBinPath != "." {
+		_, _ = fmt.Fprintf(stderr,
+			"e2e: [Sub-AC 2.2] using precompiled binary %s (skipping ginkgo recompilation)\n",
+			testBinPath)
+	}
+
 	ginkgoArgs := []string{
 		"--procs=" + procs,
 		"--timeout=2m",
-		"-v",
 		"--output-dir=" + reportDir,
 		"--json-report=e2e-auto.json",
-		".",
+		testBinPath,
 		"--",
 		// Note: flags after "--" are forwarded to the compiled test binary.
 		// -count is a `go test` runner flag that the test binary does NOT
@@ -662,7 +715,7 @@ func reexecViaGinkgoCLI(stdout, stderr io.Writer) int {
 		ginkgoArgs = append([]string{"--fail-fast"}, ginkgoArgs...)
 	}
 	if tcRunFocusOverride != "" {
-		// Prepend the focus flag so ginkgo applies it before "." package path.
+		// Prepend the focus flag so ginkgo applies it before the binary path.
 		ginkgoArgs = append([]string{"--focus=" + tcRunFocusOverride}, ginkgoArgs...)
 	}
 
@@ -730,4 +783,42 @@ func findGinkgoBinary() string {
 	}
 
 	return ""
+}
+
+// resolveTestBinaryPath returns the path of the currently-running compiled test
+// binary, which ginkgo v2 accepts directly as a "package" argument to skip
+// recompilation (Sub-AC 2.2).
+//
+// When invoked by `go test -tags=e2e ./test/e2e/...`, the binary at
+// os.Executable() is a compiled .test file that already contains the e2e build
+// tag. Ginkgo v2 recognises a path ending in ".test" as a precompiled binary
+// and runs it without invoking the Go toolchain, saving 10–20 s.
+//
+// Falls back to "." (package path, forces recompilation) when:
+//   - os.Executable() fails
+//   - the resolved path does not end in ".test"
+//   - the resolved path does not exist or is a directory
+//
+// The "." fallback ensures ginkgo still works when resolveTestBinaryPath is
+// called in unusual environments (e.g., direct binary execution or CI harnesses
+// that strip the .test suffix).
+func resolveTestBinaryPath() string {
+	exePath, err := os.Executable()
+	if err != nil || exePath == "" {
+		return "."
+	}
+	// Resolve symlinks so ginkgo gets the real file path.
+	if resolved, err := filepath.EvalSymlinks(exePath); err == nil {
+		exePath = resolved
+	}
+	// Ginkgo v2 identifies precompiled test binaries by the ".test" suffix.
+	// Go's `go test` always produces binaries with this suffix (e.g. e2e.test).
+	if !strings.HasSuffix(exePath, ".test") {
+		return "."
+	}
+	// Final existence check: make sure the file is present and not a directory.
+	if fi, err := os.Stat(exePath); err != nil || fi.IsDir() {
+		return "."
+	}
+	return exePath
 }

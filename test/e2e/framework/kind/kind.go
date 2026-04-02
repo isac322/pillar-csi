@@ -127,6 +127,47 @@ func KubeconfigPath(name string) string {
 	return kubeconfigPathForName(name)
 }
 
+// ReapOrphanClusters lists all existing Kind clusters whose names start with
+// the given prefix and deletes each one. It is intended to be called at the
+// start of TestMain — before a new cluster is created — to clean up clusters
+// left behind by previous test runs that were SIGKILL'd (which cannot be
+// caught by Go signal handlers).
+//
+// Errors from individual cluster deletions are collected and returned as a
+// combined error so the caller sees the full picture. The function always
+// attempts to delete every matching cluster regardless of intermediate errors.
+//
+// The function completes quickly (<5 s in the common case where no orphans
+// exist) because provider.List() only queries Docker for container labels.
+func ReapOrphanClusters(prefix string) error {
+	if prefix == "" {
+		return fmt.Errorf("kind: reap orphan clusters: prefix must not be empty")
+	}
+
+	provider := kindcluster.NewProvider()
+
+	clusters, err := provider.List()
+	if err != nil {
+		return fmt.Errorf("kind: reap orphan clusters: list clusters: %w", err)
+	}
+
+	var errs []string
+	for _, name := range clusters {
+		if !strings.HasPrefix(name, prefix) {
+			continue
+		}
+		// DeleteCluster is idempotent; ignore "not found" internally.
+		if delErr := DeleteCluster(name); delErr != nil {
+			errs = append(errs, fmt.Sprintf("delete %q: %v", name, delErr))
+		}
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("kind: reap orphan clusters: %s", strings.Join(errs, "; "))
+	}
+	return nil
+}
+
 // ─── internal helpers ────────────────────────────────────────────────────────
 
 // kubeconfigDir returns the /tmp directory used for the given cluster's

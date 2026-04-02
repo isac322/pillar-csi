@@ -50,8 +50,8 @@ var _ = Describe("E33: LVM Kind 클러스터 E2E — 실제 LVM VG + NVMe-oF TCP
 				e33SkipIfNoInfra()
 
 				testNamespace = fmt.Sprintf("e33-exp-%d", GinkgoParallelProcess())
-				pvcName = "e33-exp-pvc"
-				podName = "e33-exp-pod"
+				pvcName = fmt.Sprintf("e33-exp-pvc-%d", GinkgoParallelProcess())
+				podName = fmt.Sprintf("e33-exp-pod-%d", GinkgoParallelProcess())
 
 				ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 				defer cancel()

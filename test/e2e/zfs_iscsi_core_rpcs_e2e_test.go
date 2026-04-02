@@ -89,7 +89,7 @@ var _ = Describe("E35: ZFS Kind 클러스터 E2E — 실제 ZFS zvol + iSCSI",
 				e35SkipIfNoInfra()
 
 				testNamespace = fmt.Sprintf("e35-ctrl-%d", GinkgoParallelProcess())
-				pvcName = "e35-ctrl-pvc"
+				pvcName = fmt.Sprintf("e35-ctrl-pvc-%d", GinkgoParallelProcess())
 
 				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 				defer cancel()

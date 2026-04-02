@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strings"
 	"sync"
@@ -13,6 +14,39 @@ import (
 	"testing"
 	"time"
 )
+
+// signalTestChildSentinel is set in the environment of subprocess re-execs so
+// that the child's test body runs the real signal logic instead of spawning
+// another subprocess.
+const signalTestChildSentinel = "PILLAR_SIGNAL_TEST_CHILD"
+
+// runSignalTestInSubprocess re-execs the current test binary as a child
+// process running only the named test.  The child has no suite-level signal
+// handler installed (TestMain's fast-path skips cluster bootstrap when the
+// -test.run pattern does not match "TestE2E"), so it can safely send real OS
+// signals to itself without killing the parent test binary.
+//
+// The parent asserts that the child exits with code 0 (all assertions inside
+// the child passed).  If the child exits non-zero or is killed by a signal,
+// the parent calls t.Fatal.
+func runSignalTestInSubprocess(t *testing.T, testName string) {
+	t.Helper()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	cmd := exec.Command(exe,
+		"-test.run=^"+testName+"$",
+		"-test.count=1",
+		"-test.v=false",
+	)
+	cmd.Env = append(os.Environ(), signalTestChildSentinel+"=1")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("signal test subprocess %s failed: %v", testName, err)
+	}
+}
 
 func newValidKindBootstrapState(t *testing.T) *kindBootstrapState {
 	t.Helper()
@@ -189,12 +223,12 @@ func TestInstallInvocationSignalHandlersSIGTERM(t *testing.T) {
 	// Not parallel: sends a real signal to the current process; must not race
 	// with other signal-sending tests.
 
-	// Skip when TestMain's real signal handler is active (live cluster running).
-	// Sending a real OS signal to the process would trigger the suite-level
-	// handler and call os.Exit(143), terminating the test binary before this
-	// test can check its own mock exit code.
-	if os.Getenv("KIND_CLUSTER") != "" {
-		t.Skip("skipping real-signal test: TestMain's signal handler is active with live cluster")
+	// When the suite-level signal handler is active (KIND_CLUSTER is set) and we
+	// are not already in a subprocess, re-exec as a child so the signal is
+	// delivered to a process that has no suite signal handler installed.
+	if os.Getenv("KIND_CLUSTER") != "" && os.Getenv(signalTestChildSentinel) == "" {
+		runSignalTestInSubprocess(t, "TestInstallInvocationSignalHandlersSIGTERM")
+		return
 	}
 
 	state := newValidKindBootstrapState(t)
@@ -269,12 +303,12 @@ func TestInstallInvocationSignalHandlersSIGTERM(t *testing.T) {
 func TestInstallInvocationSignalHandlersSIGINT(t *testing.T) {
 	// Not parallel: sends a real signal to the current process.
 
-	// Skip when TestMain's real signal handler is active (live cluster running).
-	// Sending a real OS signal to the process would trigger the suite-level
-	// handler and call os.Exit(130), terminating the test binary before this
-	// test can check its own mock exit code.
-	if os.Getenv("KIND_CLUSTER") != "" {
-		t.Skip("skipping real-signal test: TestMain's signal handler is active with live cluster")
+	// When the suite-level signal handler is active (KIND_CLUSTER is set) and we
+	// are not already in a subprocess, re-exec as a child so the signal is
+	// delivered to a process that has no suite signal handler installed.
+	if os.Getenv("KIND_CLUSTER") != "" && os.Getenv(signalTestChildSentinel) == "" {
+		runSignalTestInSubprocess(t, "TestInstallInvocationSignalHandlersSIGINT")
+		return
 	}
 
 	state := newValidKindBootstrapState(t)
@@ -348,11 +382,12 @@ func TestInstallInvocationSignalHandlersSIGINT(t *testing.T) {
 func TestInstallInvocationSignalHandlersStopPreventsCleanup(t *testing.T) {
 	// Not parallel: manipulates global signal.Notify state.
 
-	// Skip when TestMain's real signal handler is active (live cluster running).
-	// Sending SIGTERM (even to the safety channel) races with the suite-level
-	// handler; the suite handler fires first and calls os.Exit, killing the test.
-	if os.Getenv("KIND_CLUSTER") != "" {
-		t.Skip("skipping real-signal test: TestMain's signal handler is active with live cluster")
+	// When the suite-level signal handler is active (KIND_CLUSTER is set) and we
+	// are not already in a subprocess, re-exec as a child so the signal is
+	// delivered to a process that has no suite signal handler installed.
+	if os.Getenv("KIND_CLUSTER") != "" && os.Getenv(signalTestChildSentinel) == "" {
+		runSignalTestInSubprocess(t, "TestInstallInvocationSignalHandlersStopPreventsCleanup")
+		return
 	}
 
 	state := newValidKindBootstrapState(t)
@@ -614,5 +649,141 @@ func TestHandleInvocationSignalSIGTERMLogsAndExits(t *testing.T) {
 	}
 	if _, err := os.Stat(state.SuiteRootDir); !os.IsNotExist(err) {
 		t.Fatalf("suite root still exists after SIGTERM handleInvocationSignal: %v", err)
+	}
+}
+
+// TestAC4NormalCompletionWithSignalHandlersStillCleansUp verifies that when
+// tests complete normally (no signal, no panic), the deferred cleanup runs even
+// though signal handlers were installed.
+//
+// This tests the LIFO defer interaction in runPrimary:
+//
+//	defer func() { recover(); deleteOnExit() }()  ← runs last (outermost)
+//	stopSignals := installInvocationSignalHandlers(...)
+//	defer stopSignals()                            ← runs first (innermost)
+//
+// The expected sequence on normal return is:
+//  1. stopSignals() — deregisters the signal handler (no duplicate cleanup on
+//     a stray signal after the test body exits).
+//  2. deleteOnExit() → suiteInvocationTeardown.Cleanup() — runs the actual
+//     cluster/backend teardown exactly once.
+//
+// Since invocationTeardown.Cleanup is idempotent (takeKindCluster nilifies the
+// stored state on first call), even if a signal somehow arrives between steps 1
+// and 2 the second Cleanup call is a safe no-op.
+func TestAC4NormalCompletionWithSignalHandlersStillCleansUp(t *testing.T) {
+	t.Parallel()
+
+	state := newValidKindBootstrapState(t)
+	// Write the kubeconfig so destroyCluster finds a non-empty suite root.
+	if err := os.WriteFile(state.KubeconfigPath, []byte("apiVersion: v1\n"), 0o600); err != nil {
+		t.Fatalf("write kubeconfig: %v", err)
+	}
+
+	manager := newInvocationTeardown()
+	if _, err := manager.RegisterKindCluster(state); err != nil {
+		t.Fatalf("RegisterKindCluster: %v", err)
+	}
+
+	fakeRunner := &fakeCommandRunner{
+		t: t,
+		outputs: map[string]fakeCommandResult{
+			"kind delete cluster --name " + state.ClusterName: {},
+		},
+	}
+	manager.runnerFactory = func(_ io.Writer) commandRunner {
+		return fakeRunner
+	}
+
+	// Simulate the runPrimary pattern: signal handler installed, test body
+	// executes, then defers unwind in LIFO order.
+	var cleanupCalled bool
+	exitCode := func() (code int) {
+		defer func() {
+			if r := recover(); r != nil {
+				code = 1
+			}
+			// deleteOnExit equivalent — the outer defer runs last.
+			if err := manager.Cleanup(io.Discard); err != nil {
+				t.Errorf("Cleanup: %v", err)
+				code = 1
+			}
+			cleanupCalled = true
+		}()
+
+		// Inner defer runs first (LIFO), deregistering the signal handler before
+		// the outer defer executes Cleanup. This mirrors runPrimary exactly.
+		stopSignals := installInvocationSignalHandlers(manager, io.Discard, func(int) {
+			t.Error("exit called unexpectedly during normal-completion test")
+		})
+		defer stopSignals()
+
+		// Test body returns normally — no panic, no signal.
+		return 0
+	}()
+
+	if !cleanupCalled {
+		t.Fatal("AC4: deferred cleanup was not called on normal completion")
+	}
+	if exitCode != 0 {
+		t.Fatalf("AC4: exit code = %d on normal completion, want 0", exitCode)
+	}
+	// Kind delete cluster must be called exactly once.
+	if len(fakeRunner.calls) != 1 {
+		t.Fatalf("AC4: kind delete cluster called %d times, want 1", len(fakeRunner.calls))
+	}
+	// Suite temp directory must be removed.
+	if _, statErr := os.Stat(state.SuiteRootDir); !os.IsNotExist(statErr) {
+		t.Fatalf("AC4: suite root still exists after normal-completion cleanup: %v", statErr)
+	}
+}
+
+// TestAC4NormalCompletionCleanupIsIdempotent verifies that if both the deferred
+// cleanup and a concurrent signal handler both call Cleanup, the cluster is
+// deleted exactly once and no error is returned on the second call.
+//
+// This guards the idempotency contract of invocationTeardown.Cleanup that
+// makes the signal-handler + defer combination safe.
+func TestAC4NormalCompletionCleanupIsIdempotent(t *testing.T) {
+	t.Parallel()
+
+	state := newValidKindBootstrapState(t)
+	if err := os.WriteFile(state.KubeconfigPath, []byte("apiVersion: v1\n"), 0o600); err != nil {
+		t.Fatalf("write kubeconfig: %v", err)
+	}
+
+	manager := newInvocationTeardown()
+	if _, err := manager.RegisterKindCluster(state); err != nil {
+		t.Fatalf("RegisterKindCluster: %v", err)
+	}
+
+	fakeRunner := &fakeCommandRunner{
+		t: t,
+		outputs: map[string]fakeCommandResult{
+			"kind delete cluster --name " + state.ClusterName: {},
+		},
+	}
+	manager.runnerFactory = func(_ io.Writer) commandRunner {
+		return fakeRunner
+	}
+
+	// First call — simulates signal handler firing just before normal teardown.
+	if err := manager.Cleanup(io.Discard); err != nil {
+		t.Fatalf("AC4: first Cleanup call: %v", err)
+	}
+
+	// Second call — simulates the deferred deleteOnExit running after the signal
+	// handler already cleaned up. Must be a safe no-op.
+	if err := manager.Cleanup(io.Discard); err != nil {
+		t.Fatalf("AC4: second Cleanup (idempotent) call: %v", err)
+	}
+
+	// Cluster deletion must have happened exactly once.
+	if len(fakeRunner.calls) != 1 {
+		t.Fatalf("AC4: kind delete cluster called %d times, want 1", len(fakeRunner.calls))
+	}
+	// Suite temp directory cleaned up on first call.
+	if _, statErr := os.Stat(state.SuiteRootDir); !os.IsNotExist(statErr) {
+		t.Fatalf("AC4: suite root still exists after idempotent cleanup: %v", statErr)
 	}
 }

@@ -6,9 +6,11 @@ package e2e
 // and emits a summary report at the end.  This ensures the full set of failures
 // is visible in a single run rather than requiring re-runs to discover each one.
 //
-// Fail-fast mode: the -e2e.fail-fast flag (or E2E_FAIL_FAST=true env var)
-// enables stopping after the first spec failure — useful in CI fast paths or
-// when debugging a single known-broken TC.
+// Fail-fast mode: the -e2e.fail-fast flag (or E2E_FAILFAST=1 / E2E_FAIL_FAST=true
+// env vars) enables stopping after the first spec failure — useful in CI fast
+// paths or when debugging a single known-broken TC.
+// E2E_FAILFAST (no underscore) is the canonical AC 10 interface; E2E_FAIL_FAST
+// (with underscore) is the legacy alias accepted for backward compatibility.
 //
 // Summary report: always written to stderr by the ReportAfterSuite hook,
 // regardless of whether -e2e.profile is set.  The report is intentionally
@@ -44,9 +46,17 @@ import (
 )
 
 const (
-	// envFailFast is the environment variable name for fail-fast mode.
-	// Priority: -e2e.fail-fast flag (when explicitly set) > E2E_FAIL_FAST env var > false.
+	// envFailFast is the primary environment variable name for fail-fast mode.
+	// Priority: -e2e.fail-fast flag (when explicitly set) > E2E_FAILFAST env var >
+	// E2E_FAIL_FAST env var > false.
 	envFailFast = "E2E_FAIL_FAST"
+
+	// envFailFastAlt is the alternate (no-underscore) environment variable name
+	// for fail-fast mode.  E2E_FAILFAST=1 is the documented AC 10 interface;
+	// E2E_FAIL_FAST is kept as a legacy alias for backward compatibility.
+	// Both names are accepted and either value "1", "true", or "yes" activates
+	// fail-fast mode.
+	envFailFastAlt = "E2E_FAILFAST"
 )
 
 // e2eFailFastFlag corresponds to -e2e.fail-fast.
@@ -57,13 +67,17 @@ const (
 var e2eFailFastFlag = flag.Bool(
 	"e2e.fail-fast",
 	false,
-	"stop after the first spec failure (env: E2E_FAIL_FAST); "+
+	"stop after the first spec failure (env: E2E_FAILFAST or E2E_FAIL_FAST); "+
 		"default false runs all specs and emits a complete summary report",
 )
 
 // resolveFailFast returns the effective fail-fast setting.
 // Priority: -e2e.fail-fast flag (when explicitly set via command line) >
-// E2E_FAIL_FAST env var > false (default).
+// E2E_FAILFAST env var > E2E_FAIL_FAST env var > false (default).
+//
+// E2E_FAILFAST (no underscore between FAIL and FAST) is the canonical AC 10
+// interface.  E2E_FAIL_FAST (with underscore) is accepted as a legacy alias
+// so that existing scripts and CI configs continue to work without changes.
 func resolveFailFast() bool {
 	// Check whether the flag was explicitly set on the command line.
 	// flag.Visit only visits flags that were explicitly set, so when
@@ -80,7 +94,13 @@ func resolveFailFast() bool {
 		}
 	}
 
-	// Fall back to the E2E_FAIL_FAST environment variable.
+	// Check the canonical AC 10 env var: E2E_FAILFAST (no underscore).
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(envFailFastAlt))) {
+	case "true", "1", "yes":
+		return true
+	}
+
+	// Fall back to the legacy E2E_FAIL_FAST env var (with underscore).
 	switch strings.ToLower(strings.TrimSpace(os.Getenv(envFailFast))) {
 	case "true", "1", "yes":
 		return true

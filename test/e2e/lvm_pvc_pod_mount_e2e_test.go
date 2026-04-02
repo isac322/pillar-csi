@@ -66,9 +66,9 @@ var _ = Describe("E33: LVM Kind 클러스터 E2E — 실제 LVM VG + NVMe-oF TCP
 
 				testNamespace = fmt.Sprintf("e33-mount-%d", GinkgoParallelProcess())
 				storageClass = fmt.Sprintf("e33-lvm-nvmeof-%d", GinkgoParallelProcess())
-				pvcName1 = "e33-pvc-1gi"
-				pvcName2 = "e33-pvc-2gi"
-				podName = "e33-pod-mount"
+				pvcName1 = fmt.Sprintf("e33-pvc-1gi-%d", GinkgoParallelProcess())
+				pvcName2 = fmt.Sprintf("e33-pvc-2gi-%d", GinkgoParallelProcess())
+				podName = fmt.Sprintf("e33-pod-mount-%d", GinkgoParallelProcess())
 
 				ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 				defer cancel()
@@ -90,6 +90,18 @@ var _ = Describe("E33: LVM Kind 클러스터 E2E — 실제 LVM VG + NVMe-oF TCP
 				}
 				ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 				defer cancel()
+				// Explicit Pod/PVC cleanup before namespace deletion avoids
+				// namespace termination hangs when volumes are still attached.
+				if podName != "" {
+					_, _ = e33KubectlOutput(ctx, "delete", "pod", podName,
+						"-n", testNamespace, "--ignore-not-found=true", "--wait=true", "--timeout=60s")
+				}
+				for _, pvc := range []string{pvcName1, pvcName2} {
+					if pvc != "" {
+						_, _ = e33KubectlOutput(ctx, "delete", "pvc", pvc,
+							"-n", testNamespace, "--ignore-not-found=true", "--wait=true", "--timeout=60s")
+					}
+				}
 				_, _ = e33KubectlOutput(ctx, "delete", "namespace", testNamespace, "--ignore-not-found=true", "--wait=true")
 			})
 
