@@ -304,7 +304,7 @@ test-e2e: manifests generate fmt vet ginkgo ## Phase-sequenced e2e: prereq→clu
 		$(if $(DOCKER_HOST),DOCKER_HOST=$(DOCKER_HOST) )kind delete cluster --name $(KIND_CLUSTER) 2>/dev/null || true; \
 	}; \
 	trap '_e2e_cleanup' EXIT INT TERM; \
-	$(E2E_COMMON_ENV) go test -tags=e2e -v -count=1 -timeout=$(E2E_TIMEOUT) \
+	$(E2E_COMMON_ENV) E2E_DOCKER_BUILD_CACHE=true go test -tags=e2e -v -count=1 -timeout=$(E2E_TIMEOUT) \
 		$(if $(E2E_RUN),-run $(E2E_RUN)) \
 		./test/e2e/... & \
 	_e2e_pid=$$!; \

@@ -132,10 +132,16 @@ const minParallelProcs = 8
 // value is > 1 the current process is already coordinated by the Ginkgo
 // parallel runner; TestMain must NOT re-exec.
 //
-// Unlike the env-var approach, ginkgo v2 never sets an environment variable
-// on parallel workers — it communicates via CLI flags (-ginkgo.parallel.total,
-// -ginkgo.parallel.process, -ginkgo.parallel.host).
-const ginkgoParallelTotalFlag = "ginkgo.parallel.total"
+// Ginkgo v2 (≥ v2.0) registers this flag as "parallel.total" (without the
+// "ginkgo." prefix).  Earlier community documentation and some older ginkgo v1
+// guides used "ginkgo.parallel.total", but v2's config.go defines:
+//
+//	{KeyPath: "S.ParallelTotal", Name: "parallel.total", ...}
+//
+// Using the wrong name causes flag.Lookup to return nil on every worker
+// process, so isGinkgoParallelWorker() always returns false, and every worker
+// incorrectly calls runPrimary() instead of runWorker().
+const ginkgoParallelTotalFlag = "parallel.total"
 
 // reexecSentinelEnv is injected into the environment of the ginkgo process
 // spawned by reexecViaGinkgoCLI. When present, TestMain skips the re-exec
@@ -605,19 +611,31 @@ func runWorker(m *testing.M) (exitCode int) {
 		}
 	}()
 
-	stopSignals := installInvocationSignalHandlers(suiteInvocationTeardown, os.Stderr, os.Exit)
-	defer stopSignals()
-
+	// NOTE: Do NOT install signal handlers in ginkgo parallel workers.
+	//
+	// installInvocationSignalHandlers calls os.Exit when SIGTERM/SIGINT is
+	// received. In a ginkgo parallel worker, os.Exit bypasses ginkgo's internal
+	// suite-done reporting protocol: the worker exits without sending the
+	// "suite complete" message to ginkgo's coordinator server, which then waits
+	// up to 1 second and prints:
+	//   "Ginkgo timed out waiting for all parallel procs to report back"
+	//
+	// Workers have no cluster resource to clean up (suiteInvocationTeardown is
+	// empty — the cluster is owned by runPrimary). Signal handling here provides
+	// no safety benefit but causes the parallel timeout failure.
+	//
+	// The primary process retains its signal handler via runPrimary so that
+	// cluster deletion fires even on Ctrl-C or external kill signals.
 	return m.Run()
 }
 
 // isGinkgoParallelWorker returns true when the current process was spawned by
 // the ginkgo CLI as a parallel worker node.
 //
-// Detection strategy: ginkgo v2 registers the -ginkgo.parallel.total flag at
-// package init time and passes "--ginkgo.parallel.total=N" to every parallel
-// worker process it spawns. When total > 1 the process is operating as a
-// coordinated worker and MUST NOT re-exec into another ginkgo invocation.
+// Detection strategy: ginkgo v2 registers the -parallel.total flag at package
+// init time and passes "--parallel.total=N" to every parallel worker process
+// it spawns. When total > 1 the process is operating as a coordinated worker
+// and MUST NOT re-exec into another ginkgo invocation.
 //
 // Note: ginkgo v2 does NOT set any environment variable on workers, so an
 // env-var check (e.g. GINKGO_PROC_HANDLE) would always return false.

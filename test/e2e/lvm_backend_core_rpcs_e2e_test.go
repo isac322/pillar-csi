@@ -158,7 +158,7 @@ func e33SkipIfNoInfra() {
 var _ = Describe("E33: LVM Kind 클러스터 E2E — 실제 LVM VG + NVMe-oF TCP",
 	Label("lvm", "rpc", "e33"),
 	func() {
-		Describe("E33.1 LVM 백엔드 Core RPC", func() {
+		Describe("E33.1 LVM 백엔드 Core RPC", Ordered, func() {
 
 			var (
 				agentClient agentv1.AgentServiceClient

@@ -33,7 +33,20 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 	//     bootstrapSuiteCluster.  We bootstrap the cluster here on node 1.
 	state, envErr := kindBootstrapStateFromEnv()
 	if envErr != nil {
-		// Path B: cluster not yet created — bootstrap now on ginkgo node 1.
+		// In the make test-e2e path, TestMain (runPrimary) already called
+		// bootstrapSuiteCluster before spawning ginkgo workers, and exported
+		// KUBECONFIG / KIND_CLUSTER / suite-path env vars so every worker
+		// process inherits them via reexecViaGinkgoCLI.  If we are running
+		// inside that re-exec guard and the env vars are missing or invalid,
+		// something went wrong in the primary — fail fast with a clear message
+		// rather than attempting a second cluster bootstrap from inside a worker.
+		Expect(isReexecGuarded()).To(BeFalse(),
+			"[AC4] SynchronizedBeforeSuite: running under PILLAR_E2E_REEXEC_GUARD "+
+				"but kindBootstrapStateFromEnv failed — KUBECONFIG/KIND_CLUSTER env vars "+
+				"must be exported by TestMain before spawning ginkgo workers: %v", envErr)
+
+		// Path B: direct ginkgo invocation (not re-exec guarded) and cluster not
+		// yet created — bootstrap now on ginkgo node 1.
 		var bootstrapErr error
 		state, bootstrapErr = bootstrapSuiteCluster(GinkgoWriter)
 		Expect(bootstrapErr).NotTo(HaveOccurred(),
@@ -73,6 +86,18 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 	_, _ = fmt.Fprintf(GinkgoWriter,
 		"[AC4c] rest.Config ready: host=%s kubeconfig=%s\n",
 		suiteRestConfig.Host, state.KubeconfigPath)
+
+	// Pre-warm every in-process verifier on this Ginkgo node, mirroring the
+	// behaviour of the non-e2e SynchronizedBeforeSuite
+	// (tc_id_uniqueness_guard_suite_test.go).  Each verifier uses sync.Once
+	// internally; warmUpLocalBackend eagerly triggers that initialisation so
+	// backends are ready before specs run, amortising first-call overhead and
+	// surfacing verifier failures at suite-setup time (fast-fail).
+	warmUpLocalBackend()
+
+	_, _ = fmt.Fprintf(GinkgoWriter,
+		"[AC2b] node %d: in-process backends initialised (%d verifiers pre-warmed)\n",
+		GinkgoParallelProcess(), len(allLocalVerifierNames))
 })
 
 // SynchronizedAfterSuite is the belt-and-suspenders cleanup path for the
