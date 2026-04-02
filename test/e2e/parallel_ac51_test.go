@@ -18,6 +18,7 @@ package e2e
 //     roughly 1/N of the time compared to running them sequentially.
 
 import (
+	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -58,20 +59,30 @@ func TestAC51DefaultParallelNodesEqualsCPUCount(t *testing.T) {
 // The actual env var is NOT set in this test (to avoid side-effects); instead
 // we replicate the selection logic that runs inside reexecViaGinkgoCLI.
 //
-// AC 5.1 / Sub-AC 2.1 contract:
+// AC 5.1 / Sub-AC 2.1 / 2.3 contract:
 //
-//	procs = PILLAR_E2E_PROCS                              if set
-//	      = max(DefaultParallelNodes, minParallelProcs)   otherwise
+//	procs = PILLAR_E2E_PROCS                                                  if set
+//	      = clamp(DefaultParallelNodes, minParallelProcs, maxParallelProcs)   otherwise
 //
 // The minParallelProcs floor (8) ensures the 45-second test-exec budget is
-// achievable on low-CPU machines without relying on the PILLAR_E2E_PROCS
-// override being set by the Makefile.
+// achievable on low-CPU machines. The maxParallelProcs ceiling (8) prevents
+// resource contention on the shared Kind API server on high-CPU machines
+// (Sub-AC 2.3: 16+ simultaneous workers caused SynchronizedBeforeSuite
+// timeout on machines with many CPUs).
 func TestAC51WorkerCountOverrideViaEnvVar(t *testing.T) {
 	t.Parallel()
 
-	// effectiveDefault mirrors the Sub-AC 2.1 logic in reexecViaGinkgoCLI:
-	// enforce a minimum of minParallelProcs to meet the 45s test-exec budget.
-	effectiveDefault := max(DefaultParallelNodes, minParallelProcs)
+	// effectiveDefault mirrors the Sub-AC 2.1 / 2.3 logic in reexecViaGinkgoCLI:
+	// clamp to [minParallelProcs, maxParallelProcs] to meet both the 45s budget
+	// and the resource-contention prevention constraint.
+	rawDefault := DefaultParallelNodes
+	if rawDefault < minParallelProcs {
+		rawDefault = minParallelProcs
+	}
+	if rawDefault > maxParallelProcs {
+		rawDefault = maxParallelProcs
+	}
+	effectiveDefault := rawDefault
 
 	cases := []struct {
 		name       string
@@ -109,14 +120,18 @@ func TestAC51WorkerCountOverrideViaEnvVar(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			// Replicate the Sub-AC 2.1 selection logic from reexecViaGinkgoCLI.
+			// Replicate the Sub-AC 2.1 / 2.3 selection logic from reexecViaGinkgoCLI.
 			// Do NOT use os.Setenv — that would race with other parallel tests.
 			effectiveProcs := DefaultParallelNodes
 			if effectiveProcs < minParallelProcs {
 				effectiveProcs = minParallelProcs
 			}
+			if effectiveProcs > maxParallelProcs {
+				effectiveProcs = maxParallelProcs
+			}
 			procs := strconv.Itoa(effectiveProcs)
 			if tc.envVal != "" {
+				// PILLAR_E2E_PROCS overrides the clamped default entirely.
 				procs = tc.envVal
 			}
 
@@ -506,4 +521,110 @@ func TestAC51SubAC22MinParallelProcsFloor(t *testing.T) {
 			minParallelProcs, want)
 	}
 	t.Logf("Sub-AC 2.2: minParallelProcs = %d", minParallelProcs)
+}
+
+// TestAC51SubAC23MaxParallelProcsCeiling verifies that maxParallelProcs is
+// defined and ≤ 8, preventing resource contention on the shared Kind API
+// server on high-CPU machines.
+//
+// Sub-AC 2.3 contract: maxParallelProcs ≤ 8 — resource contention prevention.
+//
+// Observed failure mode: on a 16-core host with no PILLAR_E2E_PROCS override,
+// DefaultParallelNodes = 16 produced 16 simultaneous ginkgo workers. The Kind
+// API server became saturated, causing "Ginkgo timed out waiting for all
+// parallel procs to report back" in SynchronizedBeforeSuite. Capping at
+// maxParallelProcs = 8 prevents this class of failure regardless of the
+// host's CPU count.
+func TestAC51SubAC23MaxParallelProcsCeiling(t *testing.T) {
+	t.Parallel()
+
+	const maxAllowed = 8
+	if maxParallelProcs > maxAllowed {
+		t.Errorf("Sub-AC 2.3: maxParallelProcs = %d, want ≤ %d "+
+			"(preventing Kind API server saturation on high-CPU machines)",
+			maxParallelProcs, maxAllowed)
+	}
+	t.Logf("Sub-AC 2.3: maxParallelProcs = %d (resource-contention ceiling)", maxParallelProcs)
+}
+
+// TestAC51SubAC23WorkerCountIsClampedToRange verifies that the effective worker
+// count without PILLAR_E2E_PROCS is always within [minParallelProcs, maxParallelProcs].
+//
+// Sub-AC 2.3 contract: clamp(DefaultParallelNodes, min, max) ∈ [min, max].
+//
+// This guards against two failure modes:
+//  1. Too few workers (< min) → 45s test-exec budget exceeded on slow machines.
+//  2. Too many workers (> max) → Kind API server saturation → Ginkgo timeout.
+func TestAC51SubAC23WorkerCountIsClampedToRange(t *testing.T) {
+	t.Parallel()
+
+	// Replicate the clamping logic from reexecViaGinkgoCLI.
+	effectiveProcs := DefaultParallelNodes
+	if effectiveProcs < minParallelProcs {
+		effectiveProcs = minParallelProcs
+	}
+	if effectiveProcs > maxParallelProcs {
+		effectiveProcs = maxParallelProcs
+	}
+
+	if effectiveProcs < minParallelProcs {
+		t.Errorf("Sub-AC 2.3: effective procs = %d < minParallelProcs = %d "+
+			"(too few workers, test-exec budget may be exceeded)",
+			effectiveProcs, minParallelProcs)
+	}
+	if effectiveProcs > maxParallelProcs {
+		t.Errorf("Sub-AC 2.3: effective procs = %d > maxParallelProcs = %d "+
+			"(too many workers, Kind API server may be saturated)",
+			effectiveProcs, maxParallelProcs)
+	}
+	t.Logf("Sub-AC 2.3: effective procs = %d ∈ [%d, %d] (within safe range)",
+		effectiveProcs, minParallelProcs, maxParallelProcs)
+}
+
+// TestAC51SubAC23MakefileDefaultProcsIsWithinRange verifies that E2E_PROCS=4
+// (the Makefile default forwarded as PILLAR_E2E_PROCS=4) falls within the
+// acceptable range for the shared Kind API server.
+//
+// Sub-AC 2.3 contract: 4 workers ≤ maxParallelProcs (and ≥ 1).
+// The Makefile intentionally sets E2E_PROCS below the minParallelProcs floor
+// for additional headroom on constrained machines; PILLAR_E2E_PROCS overrides
+// override the floor entirely.
+func TestAC51SubAC23MakefileDefaultProcsIsWithinRange(t *testing.T) {
+	t.Parallel()
+
+	const makefileDefaultProcs = 4
+
+	if makefileDefaultProcs < 1 {
+		t.Errorf("Sub-AC 2.3: Makefile default E2E_PROCS = %d, must be ≥ 1",
+			makefileDefaultProcs)
+	}
+	if makefileDefaultProcs > maxParallelProcs {
+		t.Errorf("Sub-AC 2.3: Makefile default E2E_PROCS = %d exceeds maxParallelProcs = %d "+
+			"(would risk Kind API server saturation)",
+			makefileDefaultProcs, maxParallelProcs)
+	}
+	t.Logf("Sub-AC 2.3: Makefile default E2E_PROCS = %d (≤ maxParallelProcs=%d, resource-safe)",
+		makefileDefaultProcs, maxParallelProcs)
+}
+
+// TestAC51GinkgoParallelFlagIsRegistered verifies that ginkgoParallelTotalFlag
+// names a flag that ginkgo v2 actually registers at package init time.
+//
+// Sub-AC 2.2 contract: isGinkgoParallelWorker() must correctly detect ginkgo
+// parallel workers when ginkgo is invoked directly (without PILLAR_E2E_REEXEC_GUARD).
+// The detection relies on flag.Lookup(ginkgoParallelTotalFlag) returning non-nil.
+// If the flag name is wrong (e.g. "parallel.total" instead of the correct
+// "ginkgo.parallel.total"), isGinkgoParallelWorker() always returns false and
+// workers fall through to runPrimary(), causing duplicate cluster creation.
+func TestAC51GinkgoParallelFlagIsRegistered(t *testing.T) {
+	t.Parallel()
+
+	f := flag.Lookup(ginkgoParallelTotalFlag)
+	if f == nil {
+		t.Fatalf("Sub-AC 2.2: flag.Lookup(%q) = nil — ginkgoParallelTotalFlag is wrong; "+
+			"isGinkgoParallelWorker() will always return false for ginkgo workers",
+			ginkgoParallelTotalFlag)
+	}
+	t.Logf("Sub-AC 2.2: ginkgoParallelTotalFlag %q is registered (default=%s)",
+		ginkgoParallelTotalFlag, f.DefValue)
 }

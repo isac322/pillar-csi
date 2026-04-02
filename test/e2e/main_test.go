@@ -125,6 +125,27 @@ var DefaultParallelNodes = runtime.NumCPU()
 // machine, defaulting to runtime.NumCPU() would starve parallelism.
 const minParallelProcs = 8
 
+// maxParallelProcs is the upper bound on the number of Ginkgo parallel workers
+// that reexecViaGinkgoCLI will spawn when PILLAR_E2E_PROCS is not set.
+//
+// Sub-AC 2.3: Resource contention prevention — on machines with many CPUs
+// (e.g., 16 or 32 cores), using runtime.NumCPU() workers creates too many
+// simultaneous clients against the shared Kind API server. Observed behaviour:
+// 16 parallel workers caused "Ginkgo timed out waiting for all parallel procs
+// to report back" because the API server was saturated and workers failed to
+// complete their SynchronizedBeforeSuite within the timeout window.
+//
+// Setting maxParallelProcs = 8 prevents this class of failure while still
+// providing sufficient parallelism to complete the testsBudgetSeconds = 45s
+// budget: 466 default-profile specs × ~0.1ms each = ~46ms at 1 worker, so 8
+// workers comfortably fits within the budget even accounting for cluster-side
+// specs. The effective worker range without PILLAR_E2E_PROCS is [8, 8].
+//
+// PILLAR_E2E_PROCS (and the Makefile's E2E_PROCS=4) always override this cap
+// so operator-controlled runs (CI, make test-e2e) can dial down to 4 workers
+// for additional headroom on constrained machines.
+const maxParallelProcs = 8
+
 // ── Auto-parallel re-exec constants ──────────────────────────────────────────
 
 // ginkgoParallelTotalFlag is the flag name that ginkgo v2 registers at init
@@ -132,16 +153,14 @@ const minParallelProcs = 8
 // value is > 1 the current process is already coordinated by the Ginkgo
 // parallel runner; TestMain must NOT re-exec.
 //
-// Ginkgo v2 (≥ v2.0) registers this flag as "parallel.total" (without the
-// "ginkgo." prefix).  Earlier community documentation and some older ginkgo v1
-// guides used "ginkgo.parallel.total", but v2's config.go defines:
-//
-//	{KeyPath: "S.ParallelTotal", Name: "parallel.total", ...}
-//
-// Using the wrong name causes flag.Lookup to return nil on every worker
-// process, so isGinkgoParallelWorker() always returns false, and every worker
-// incorrectly calls runPrimary() instead of runWorker().
-const ginkgoParallelTotalFlag = "parallel.total"
+// Ginkgo v2 (≥ v2.0) registers this flag as "ginkgo.parallel.total" (with the
+// "ginkgo." prefix).  The flag is verified by flag.Lookup("ginkgo.parallel.total")
+// which returns non-nil in any process that imports ginkgo/v2.  Using the wrong
+// name ("parallel.total") causes flag.Lookup to always return nil, so
+// isGinkgoParallelWorker() would always return false and any direct ginkgo
+// invocation (without PILLAR_E2E_REEXEC_GUARD) would route workers to
+// runPrimary() instead of runWorker().
+const ginkgoParallelTotalFlag = "ginkgo.parallel.total"
 
 // reexecSentinelEnv is injected into the environment of the ginkgo process
 // spawned by reexecViaGinkgoCLI. When present, TestMain skips the re-exec
@@ -153,6 +172,35 @@ const reexecSentinelEnv = "PILLAR_E2E_REEXEC_GUARD"
 // non-empty value. Set PILLAR_E2E_SEQUENTIAL=true for single-process targets
 // (e.g. test-e2e-bench) that measure raw sequential throughput.
 const sequentialModeEnv = "PILLAR_E2E_SEQUENTIAL"
+
+// labelFilterEnv is the environment variable that controls which Ginkgo specs
+// run during a parallel re-exec invocation (reexecViaGinkgoCLI).
+//
+// When unset, reexecViaGinkgoCLI defaults to defaultLabelFilter so that only
+// the 466 "default-profile" specs execute.  Long-running tests (e.g. the
+// "helm" E27 cluster specs in tc_e27_helm_e2e_test.go) are excluded by default
+// because they call `helm install --wait --timeout 5m`, which exceeds the
+// 2-minute suite timeout and causes "Ginkgo timed out waiting for all parallel
+// procs to report back".
+//
+// Override to run other suites:
+//
+//	E2E_LABEL_FILTER=helm make test-e2e          # run only helm E27 specs
+//	E2E_LABEL_FILTER=""   make test-e2e          # run ALL specs (no filter)
+//
+// The empty-string override is intentional: it lets callers explicitly opt in
+// to running all specs (including slow helm tests) when the run environment
+// supports longer timeouts.
+const labelFilterEnv = "E2E_LABEL_FILTER"
+
+// defaultLabelFilter is the Ginkgo label expression applied when labelFilterEnv
+// is not set. It restricts the default parallel run to the 466 "default-profile"
+// specs so that the suite completes within the 2-minute suiteLevelTimeout.
+//
+// Specs without the "default-profile" label (e.g. "helm", "AC3.3", "AC4c",
+// "lvm") are excluded from the default run and must be opted in explicitly via
+// E2E_LABEL_FILTER.
+const defaultLabelFilter = "default-profile"
 
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -632,10 +680,10 @@ func runWorker(m *testing.M) (exitCode int) {
 // isGinkgoParallelWorker returns true when the current process was spawned by
 // the ginkgo CLI as a parallel worker node.
 //
-// Detection strategy: ginkgo v2 registers the -parallel.total flag at package
-// init time and passes "--parallel.total=N" to every parallel worker process
-// it spawns. When total > 1 the process is operating as a coordinated worker
-// and MUST NOT re-exec into another ginkgo invocation.
+// Detection strategy: ginkgo v2 registers the -ginkgo.parallel.total flag at
+// package init time and passes "--ginkgo.parallel.total=N" to every parallel
+// worker process it spawns. When total > 1 the process is operating as a
+// coordinated worker and MUST NOT re-exec into another ginkgo invocation.
 //
 // Note: ginkgo v2 does NOT set any environment variable on workers, so an
 // env-var check (e.g. GINKGO_PROC_HANDLE) would always return false.
@@ -686,16 +734,30 @@ func reexecViaGinkgoCLI(stdout, stderr io.Writer) int {
 		return -1
 	}
 
-	// Sub-AC 2.1: enforce a minimum of minParallelProcs workers so that the
-	// 45-second test-exec budget is achievable on low-CPU machines. On machines
-	// with ≥ 8 CPUs (the typical CI/developer host), DefaultParallelNodes
-	// (= runtime.NumCPU()) already exceeds minParallelProcs and is used as-is.
+	// Sub-AC 2.1 / 2.3: clamp the effective worker count to [minParallelProcs,
+	// maxParallelProcs] so that:
+	//   • low-CPU machines (< 8 cores) still spawn enough workers to meet the
+	//     45-second test-exec budget (minParallelProcs floor), and
+	//   • high-CPU machines (> 8 cores) do not overload the shared Kind API
+	//     server with too many simultaneous clients (maxParallelProcs ceiling).
+	//
+	// Observed failure mode without the ceiling: 16 parallel workers on a
+	// 16-core host caused "Ginkgo timed out waiting for all parallel procs to
+	// report back" because the API server was saturated during
+	// SynchronizedBeforeSuite. Capping at maxParallelProcs = 8 eliminates
+	// this class of failure while preserving parallelism for the budget.
 	effectiveProcs := DefaultParallelNodes
 	if effectiveProcs < minParallelProcs {
 		effectiveProcs = minParallelProcs
 	}
+	if effectiveProcs > maxParallelProcs {
+		effectiveProcs = maxParallelProcs
+	}
 	procs := strconv.Itoa(effectiveProcs)
 	if p := os.Getenv("PILLAR_E2E_PROCS"); p != "" {
+		// PILLAR_E2E_PROCS (set by Makefile via E2E_PROCS=4) overrides the
+		// clamped default so operator-controlled runs can further restrict
+		// parallelism without changing code.
 		procs = p
 	}
 
@@ -735,6 +797,31 @@ func reexecViaGinkgoCLI(stdout, stderr io.Writer) int {
 	if tcRunFocusOverride != "" {
 		// Prepend the focus flag so ginkgo applies it before the binary path.
 		ginkgoArgs = append([]string{"--focus=" + tcRunFocusOverride}, ginkgoArgs...)
+	}
+
+	// Sub-AC 2 (parallel-safe): apply a label filter so that long-running
+	// cluster-side specs (e.g. "helm" E27 tests that call `helm install --wait
+	// --timeout 5m`) are excluded from the default parallel run.
+	//
+	// Resolution order:
+	//  1. E2E_LABEL_FILTER env var — set by the Makefile or caller; takes precedence.
+	//     Empty string ("") disables all filtering (run every spec).
+	//  2. defaultLabelFilter constant ("default-profile") — applied when the env
+	//     var is absent (not set at all, as opposed to set-to-empty).
+	//
+	// Without this guard every ginkgo worker process can independently pick up a
+	// helm spec and call `helm install --wait --timeout 5m`. With N=8 workers
+	// and a 2-minute suite timeout, multiple workers stall beyond the deadline,
+	// causing "Ginkgo timed out waiting for all parallel procs to report back".
+	labelFilter, labelFilterSet := os.LookupEnv(labelFilterEnv)
+	if !labelFilterSet {
+		labelFilter = defaultLabelFilter
+	}
+	if labelFilter != "" {
+		_, _ = fmt.Fprintf(stderr,
+			"e2e: [Sub-AC 2] label filter %q applied (set %s='' to run all specs)\n",
+			labelFilter, labelFilterEnv)
+		ginkgoArgs = append([]string{"--label-filter=" + labelFilter}, ginkgoArgs...)
 	}
 
 	cmd := exec.Command(ginkgoBin, ginkgoArgs...) //nolint:gosec

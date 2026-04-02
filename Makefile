@@ -135,7 +135,8 @@ E2E_COMMON_ENV = $(if $(DOCKER_HOST),DOCKER_HOST=$(DOCKER_HOST)) \
 	GINKGO=$(GINKGO) \
 	PILLAR_E2E_PROCS=$(E2E_PROCS) \
 	E2E_FAILFAST=$(E2E_FAIL_FAST) \
-	E2E_FAIL_FAST=$(E2E_FAIL_FAST)
+	E2E_FAIL_FAST=$(E2E_FAIL_FAST) \
+	$(if $(E2E_LABEL_FILTER),E2E_LABEL_FILTER=$(E2E_LABEL_FILTER))
 
 # Common go test flags shared by every e2e invocation.
 E2E_GO_FLAGS = -tags=e2e ./test/e2e/ -v -timeout=$(E2E_TIMEOUT) $(if $(E2E_RUN),-run $(E2E_RUN))
@@ -220,11 +221,15 @@ test-e2e-zfs: manifests generate fmt vet ## Run ZFS-only e2e specs in internal-a
 test-e2e-lvm: manifests generate fmt vet ## Run LVM-only e2e specs in internal-agent mode (debug helper).
 	$(E2E_COMMON_ENV) E2E_RUN=LVM go test $(E2E_GO_FLAGS)
 
-## Number of parallel Ginkgo worker processes.  Defaults to nproc (all logical CPUs).
+## Number of parallel Ginkgo worker processes.  Defaults to 4.
+## 4 workers is sufficient to complete 466 default-profile specs within the
+## 45-second test-exec budget while avoiding resource contention on the shared
+## Kind API server (16 simultaneous clients caused "Ginkgo timed out waiting
+## for all parallel procs to report back" on machines with many CPUs).
 ## Each worker gets a unique NVMe-oF TCP port (4421 + worker_index) so
 ## parallel tests never conflict on NVMe listeners or CRD names.
-## Override on the command line: make test-e2e E2E_PROCS=4
-E2E_PROCS ?= $(shell nproc)
+## Override on the command line: make test-e2e E2E_PROCS=8
+E2E_PROCS ?= 4
 
 ## AC 10: default continue-on-failure so the full summary report is always emitted.
 ## E2E_FAILFAST=1 (canonical, no underscore) stops after the first spec failure.

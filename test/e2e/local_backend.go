@@ -137,6 +137,12 @@ var defaultLocalVerifierRegistry = newLocalVerifierRegistry()
 // The order is chosen so that cheap verifiers (controller, node, CRD) run before
 // the heavier ones (agent gRPC server, mTLS, ZFS/LVM) so that any early failure
 // is diagnosed quickly without blocking on slower initialisation.
+//
+// localVerifierHelm is included so that E27 "cluster" specs in the default
+// profile (which call defaultLocalVerifierRegistry.Result(localVerifierHelm))
+// always find a cached result rather than paying the first-call overhead
+// mid-spec.  verifyHelmChartLocalContracts is a pure filesystem check and
+// completes in <1 ms, so pre-warming it is free.
 var allLocalVerifierNames = []localVerifierName{
 	localVerifierController,
 	localVerifierNode,
@@ -146,6 +152,7 @@ var allLocalVerifierNames = []localVerifierName{
 	localVerifierMTLS,
 	localVerifierLVM,
 	localVerifierZFS,
+	localVerifierHelm,
 }
 
 // warmUpLocalBackend eagerly initialises every in-process verifier on the
