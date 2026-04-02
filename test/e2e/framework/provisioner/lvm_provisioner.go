@@ -79,8 +79,8 @@ func (l *LVMProvisioner) Provision(ctx context.Context) (registry.Resource, erro
 		SizeMiB:       l.SizeMiB,
 	})
 	if err != nil {
-		if isContainerToolNotFoundError(err) {
-			return nil, nil //nolint:nilnil // soft skip: BackendProvisioner contract (nil,nil) = absent tool
+		if isContainerToolNotFoundError(err) || isDockerExecSystemError(err) {
+			return nil, nil //nolint:nilnil // soft skip: BackendProvisioner contract (nil,nil) = absent or unreachable tool
 		}
 		return nil, fmt.Errorf("lvm provisioner: create VG %q in %s: %w",
 			l.VGName, l.NodeContainer, err)
