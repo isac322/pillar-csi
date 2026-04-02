@@ -608,6 +608,34 @@ func runPrimary(m *testing.M) (exitCode int) {
 		// time spent running specs.
 		doneTestExec := stageTimer.StartStage(stageTestExec)
 
+		// ── Signal handler unit tests ─────────────────────────────────────
+		//
+		// Sub-AC 2.2: run the three signal handler unit tests in a dedicated
+		// subprocess before spawning ginkgo workers.
+		//
+		// These tests (TestInstallInvocationSignalHandlersSIGTERM,
+		// TestInstallInvocationSignalHandlersSIGINT,
+		// TestInstallInvocationSignalHandlersStopPreventsCleanup) send real
+		// OS signals to the current process and must not race with ginkgo's
+		// internal suite coordination protocol.  They are plain Go tests (not
+		// Ginkgo specs) and are excluded from the ginkgo worker run
+		// (-test.run=^TestE2E$), so without this call they would never execute.
+		//
+		// The subprocess takes the AC7 fast-path: the pattern
+		// signalHandlerTestPattern cannot match "TestE2E", so TestMain calls
+		// resetSuiteInvocationEnvironment() (clearing KIND_CLUSTER) and then
+		// os.Exit(m.Run()) directly, skipping cluster bootstrap entirely.
+		// With KIND_CLUSTER unset the signal tests run their actual signal
+		// logic rather than delegating to another subprocess.
+		if !isSequentialMode() {
+			if signalCode := runSignalHandlerTestsInSubprocess(os.Stdout, os.Stderr); signalCode != 0 {
+				_, _ = fmt.Fprintf(os.Stderr,
+					"e2e: [Sub-AC 2.2] signal handler unit tests failed (exit %d)\n", signalCode)
+				doneTestExec()
+				return signalCode
+			}
+		}
+
 		// ── Auto-parallel re-exec ─────────────────────────────────────────
 		//
 		// Cluster env vars are already exported (by bootstrapSuiteCluster).
@@ -926,4 +954,86 @@ func resolveTestBinaryPath() string {
 		return "."
 	}
 	return exePath
+}
+
+// signalHandlerTestPattern is the -test.run regex that selects the three
+// signal-handler unit tests that must run as part of the e2e pipeline:
+//
+//   - TestInstallInvocationSignalHandlersSIGTERM
+//   - TestInstallInvocationSignalHandlersSIGINT
+//   - TestInstallInvocationSignalHandlersStopPreventsCleanup
+//
+// These are plain Go tests (not Ginkgo specs) that send real OS signals to
+// the current process. They are excluded from the ginkgo parallel run
+// (-test.run=^TestE2E$) and must therefore be invoked explicitly via
+// runSignalHandlerTestsInSubprocess before the ginkgo re-exec step.
+const signalHandlerTestPattern = "^TestInstallInvocationSignalHandlers"
+
+// runSignalHandlerTestsInSubprocess re-execs the current test binary with
+// signalHandlerTestPattern as the -test.run filter so the three signal
+// handler unit tests execute and their results are captured.
+//
+// # Subprocess execution path
+//
+// The subprocess is NOT re-exec guarded (no PILLAR_E2E_REEXEC_GUARD), so its
+// TestMain calls resetSuiteInvocationEnvironment() which unsets KIND_CLUSTER
+// and other suite-owned env vars.  With KIND_CLUSTER unset, the AC7 fast-path
+// activates: canMatchGinkgoSuite(signalHandlerTestPattern) returns false and
+// TestMain calls os.Exit(m.Run()) directly, skipping Kind cluster bootstrap,
+// prereq checks, and the ginkgo re-exec.
+//
+// Inside m.Run(), each signal test sees os.Getenv("KIND_CLUSTER") == ""
+// (cleared by resetSuiteInvocationEnvironment) so it runs its actual signal
+// logic (installs a handler, sends a real SIGTERM/SIGINT via syscall.Kill,
+// asserts the exit code and cleanup) rather than delegating to yet another
+// subprocess.
+//
+// # Why subprocess and not direct m.Run()
+//
+// A direct call to m.Run() in the primary process would also run TestE2E,
+// causing the Ginkgo suite to execute in-process (sequentially) before the
+// parallel ginkgo re-exec. Running the signal tests in a subprocess scopes the
+// signal delivery to a fresh process with no ginkgo coordination state, avoiding
+// interference with the primary process's signal handler (installed by
+// installInvocationSignalHandlers).
+//
+// Returns 0 when all three tests pass; non-zero on any failure.
+func runSignalHandlerTestsInSubprocess(stdout, stderr io.Writer) int {
+	exePath, err := os.Executable()
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr,
+			"e2e: runSignalHandlerTestsInSubprocess: os.Executable: %v\n", err)
+		return 1
+	}
+	// Resolve symlinks so the subprocess receives the canonical binary path.
+	if resolved, err := filepath.EvalSymlinks(exePath); err == nil {
+		exePath = resolved
+	}
+
+	cmd := exec.Command(exePath, //nolint:gosec
+		"-test.run="+signalHandlerTestPattern,
+		"-test.count=1",
+		"-test.v=true",
+	)
+	// Inherit the current environment. resetSuiteInvocationEnvironment() in
+	// the subprocess's TestMain will clear KIND_CLUSTER and other suite vars
+	// before any test runs, giving each signal test a clean environment.
+	cmd.Env = os.Environ()
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+
+	_, _ = fmt.Fprintf(stderr,
+		"e2e: [Sub-AC 2.2] running signal handler unit tests (pattern=%q)\n",
+		signalHandlerTestPattern)
+
+	if err := cmd.Run(); err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			return exitErr.ExitCode()
+		}
+		_, _ = fmt.Fprintf(stderr,
+			"e2e: signal handler test subprocess: %v\n", err)
+		return 1
+	}
+	return 0
 }
