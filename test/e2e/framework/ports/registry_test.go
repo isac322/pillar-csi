@@ -277,53 +277,58 @@ func TestAllocate_ConcurrentAllocationNeverCollides(t *testing.T) {
 	reg := ports.NewRegistry()
 
 	type result struct {
-		port int
-		err  error
+		alloc *ports.Allocation
+		err   error
 	}
 
+	// Use a buffered channel large enough to hold all results without blocking.
 	results := make(chan result, goroutines*2)
 	var wg sync.WaitGroup
 
-	// Host-bound allocations.
+	// Host-bound allocations — keep listener open until we release below.
 	for i := range goroutines {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
 			a, err := reg.Allocate(ports.KindGeneric, fmt.Sprintf("concurrent-%d", i))
-			if err != nil {
-				results <- result{err: err}
-				return
-			}
-			results <- result{port: a.Port}
-			defer a.Release()
+			results <- result{alloc: a, err: err}
 		}(i)
 	}
 
-	// Container allocations.
+	// Container allocations — port is released from the host perspective but
+	// remains registered in the registry until a.Release() is called.
 	for i := range goroutines {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
 			a, err := reg.AllocateForContainer(ports.KindISCSITarget, fmt.Sprintf("container-%d", i))
-			if err != nil {
-				results <- result{err: err}
-				return
-			}
-			results <- result{port: a.Port}
-			defer a.Release()
+			results <- result{alloc: a, err: err}
 		}(i)
 	}
 
 	wg.Wait()
 	close(results)
 
+	// Collect all allocations before checking for duplicates.
+	// Releasing allocations eagerly (e.g. via defer inside goroutines) would
+	// allow ports to be reused by still-running goroutines, causing false
+	// duplicate reports.  We hold all allocations here and release after the
+	// uniqueness check.
+	var allocs []*ports.Allocation
 	seen := make(map[int]int) // port → count
 	for r := range results {
 		if r.err != nil {
 			t.Errorf("concurrent allocation error: %v", r.err)
 			continue
 		}
-		seen[r.port]++
+		seen[r.alloc.Port]++
+		allocs = append(allocs, r.alloc)
+	}
+
+	// Release all allocations now that the uniqueness check has captured the
+	// port numbers.
+	for _, a := range allocs {
+		_ = a.Release()
 	}
 
 	for port, count := range seen {
