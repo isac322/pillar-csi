@@ -46,6 +46,7 @@ import (
 	"github.com/bhyoo/pillar-csi/internal/agentclient"
 	"github.com/bhyoo/pillar-csi/internal/controller"
 	"github.com/bhyoo/pillar-csi/internal/csi"
+	"github.com/bhyoo/pillar-csi/internal/runtimepaths"
 	webhookv1alpha1 "github.com/bhyoo/pillar-csi/internal/webhook/v1alpha1"
 	// +kubebuilder:scaffold:imports
 )
@@ -136,6 +137,10 @@ const (
 	// Kubernetes CSI external-provisioner side-car to contact the driver.
 	defaultCSIEndpoint = "unix:///var/lib/kubelet/plugins/pillar-csi.bhyoo.com/csi.sock"
 )
+
+func resolvedDefaultCSIEndpoint() string {
+	return runtimepaths.ResolveControllerCSIEndpoint(defaultCSIEndpoint)
+}
 
 // csiGRPCServer is a controller-runtime Runnable that starts the CSI gRPC
 // server on a Unix-domain socket.  Adding it to the manager ensures that it
@@ -285,7 +290,7 @@ func main() {
 	flag.StringVar(&agentTLSServerName, "agent-tls-server-name", "",
 		"Override the TLS server name used for SAN verification when connecting to pillar-agent. "+
 			"Leave empty to derive the server name from the resolved agent address.")
-	flag.StringVar(&csiEndpoint, "csi-endpoint", defaultCSIEndpoint,
+	flag.StringVar(&csiEndpoint, "csi-endpoint", resolvedDefaultCSIEndpoint(),
 		"Unix socket endpoint for the CSI gRPC server served by the controller binary "+
 			"(IdentityServer + ControllerServer). The Kubernetes external-provisioner "+
 			"side-car must be configured with the same path.")

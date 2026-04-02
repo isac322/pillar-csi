@@ -35,6 +35,7 @@ import (
 	"github.com/bhyoo/pillar-csi/internal/agent/backend/lvm"
 	"github.com/bhyoo/pillar-csi/internal/agent/backend/zfs"
 	"github.com/bhyoo/pillar-csi/internal/agent/nvmeof"
+	"github.com/bhyoo/pillar-csi/internal/runtimepaths"
 	"github.com/bhyoo/pillar-csi/internal/tlscreds"
 )
 
@@ -220,7 +221,7 @@ func main() {
 			"Example (ZFS):  --backend type=zfs-zvol,pool=tank,parent=k8s\n"+
 			"Example (LVM):  --backend type=lvm-lv,vg=data-vg,thinpool=thin-pool-0")
 
-	cfgRoot := flag.String("configfs-root", nvmeof.DefaultConfigfsRoot,
+	cfgRoot := flag.String("configfs-root", resolvedDefaultConfigfsRoot(),
 		"nvmet configfs root directory (override in tests)")
 	tlsCert := flag.String("tls-cert", "", "path to PEM server certificate for mTLS")
 	tlsKey := flag.String("tls-key", "", "path to PEM server private key for mTLS")
@@ -273,4 +274,8 @@ func main() {
 		fmt.Fprintf(os.Stderr, "serve: %v\n", serveErr)
 		os.Exit(1)
 	}
+}
+
+func resolvedDefaultConfigfsRoot() string {
+	return runtimepaths.ResolveAgentConfigfsRoot(nvmeof.DefaultConfigfsRoot)
 }

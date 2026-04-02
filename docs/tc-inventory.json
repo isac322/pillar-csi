@@ -1,0 +1,6450 @@
+[
+  {
+    "id": "E1.1-1",
+    "category": "E1",
+    "type": "A",
+    "description": "CreateVolume이 agent.CreateVolume → agent.ExportVolume을 순서대로 호출하고 올바른 VolumeId/VolumeContext를 반환",
+    "subsection": "E1.1",
+    "in_437": true
+  },
+  {
+    "id": "E1.1-2",
+    "category": "E1",
+    "type": "A",
+    "description": "동일한 볼륨 이름으로 CreateVolume을 두 번 호출하면 두 번째 호출은 agent.CreateVolume/ExportVolume을 재호출하지 않고 동일한 응답 반환",
+    "subsection": "E1.1",
+    "in_437": true
+  },
+  {
+    "id": "E1.10-1",
+    "category": "E1",
+    "type": "A",
+    "description": "PVC 어노테이션의 ZFS compression 프로퍼티가 agent BackendParams에 반영",
+    "subsection": "E1.10",
+    "in_437": true
+  },
+  {
+    "id": "E1.10-2",
+    "category": "E1",
+    "type": "A",
+    "description": "구조적 필드()를 어노테이션으로 오버라이드하면 InvalidArgument 반환",
+    "subsection": "E1.10",
+    "in_437": true
+  },
+  {
+    "id": "E1.10-3",
+    "category": "E1",
+    "type": "A",
+    "description": "pvc-name에 해당하는 PVC가 없으면 어노테이션 오버라이드 없이 기본 파라미터로 진행",
+    "subsection": "E1.10",
+    "in_437": true
+  },
+  {
+    "id": "E1.10-4",
+    "category": "E1",
+    "type": "A",
+    "description": "저수준 어노테이션()이 반영",
+    "subsection": "E1.10",
+    "in_437": true
+  },
+  {
+    "id": "E1.11-1",
+    "category": "E1",
+    "type": "A",
+    "description": "ZFS pool 이름에 슬래시 포함 시 agent-vol-id 파싱 정확성",
+    "subsection": "E1.11",
+    "in_437": true
+  },
+  {
+    "id": "E1.11-2",
+    "category": "E1",
+    "type": "A",
+    "description": "ZFS parent dataset 파라미터 설정 시 agent-vol-id에 반영",
+    "subsection": "E1.11",
+    "in_437": true
+  },
+  {
+    "id": "E1.11-3",
+    "category": "E1",
+    "type": "A",
+    "description": "볼륨 이름이 빈 문자열이면 InvalidArgument",
+    "subsection": "E1.11",
+    "in_437": true
+  },
+  {
+    "id": "E1.11-4",
+    "category": "E1",
+    "type": "A",
+    "description": "StorageClass parameter에 target 키 없으면 InvalidArgument",
+    "subsection": "E1.11",
+    "in_437": true
+  },
+  {
+    "id": "E1.11-5",
+    "category": "E1",
+    "type": "A",
+    "description": "StorageClass parameter에 backend-type 키 없으면 InvalidArgument",
+    "subsection": "E1.11",
+    "in_437": true
+  },
+  {
+    "id": "E1.11-6",
+    "category": "E1",
+    "type": "A",
+    "description": "StorageClass parameter에 protocol-type 키 없으면 InvalidArgument",
+    "subsection": "E1.11",
+    "in_437": true
+  },
+  {
+    "id": "E1.2-1",
+    "category": "E1",
+    "type": "A",
+    "description": "StorageClass 파라미터 누락 시 InvalidArgument 반환",
+    "subsection": "E1.2",
+    "in_437": true
+  },
+  {
+    "id": "E1.2-2",
+    "category": "E1",
+    "type": "A",
+    "description": "참조된 PillarTarget이 존재하지 않으면 NotFound 반환",
+    "subsection": "E1.2",
+    "in_437": true
+  },
+  {
+    "id": "E1.2-3",
+    "category": "E1",
+    "type": "A",
+    "description": "agent.CreateVolume 실패 시 오류 전파",
+    "subsection": "E1.2",
+    "in_437": true
+  },
+  {
+    "id": "E1.2-4",
+    "category": "E1",
+    "type": "A",
+    "description": "agent.CreateVolume 성공 후 agent.ExportVolume 실패 시 오류 전파",
+    "subsection": "E1.2",
+    "in_437": true
+  },
+  {
+    "id": "E1.3-1",
+    "category": "E1",
+    "type": "A",
+    "description": "DeleteVolume이 agent.UnexportVolume → agent.DeleteVolume을 순서대로 호출",
+    "subsection": "E1.3",
+    "in_437": true
+  },
+  {
+    "id": "E1.3-2",
+    "category": "E1",
+    "type": "A",
+    "description": "이미 삭제된 볼륨을 다시 DeleteVolume해도 성공 (멱등성)",
+    "subsection": "E1.3",
+    "in_437": true
+  },
+  {
+    "id": "E1.3-3",
+    "category": "E1",
+    "type": "A",
+    "description": "agent가 NotFound를 반환해도 DeleteVolume은 성공 처리",
+    "subsection": "E1.3",
+    "in_437": true
+  },
+  {
+    "id": "E1.4-1",
+    "category": "E1",
+    "type": "A",
+    "description": "잘못된 형식의 VolumeId는 InvalidArgument 반환",
+    "subsection": "E1.4",
+    "in_437": true
+  },
+  {
+    "id": "E1.4-2",
+    "category": "E1",
+    "type": "A",
+    "description": "agent.UnexportVolume 또는 agent.DeleteVolume 실패 시 오류 전파",
+    "subsection": "E1.4",
+    "in_437": true
+  },
+  {
+    "id": "E1.5-1",
+    "category": "E1",
+    "type": "A",
+    "description": "CreateVolume → ControllerPublishVolume → ControllerUnpublishVolume → DeleteVolume 전체 CSI Controller 왕복 테스트",
+    "subsection": "E1.5",
+    "in_437": true
+  },
+  {
+    "id": "E1.5-2",
+    "category": "E1",
+    "type": "A",
+    "description": "VolumeId 포맷(\"target/protocol/backend/pool/name\")이 생성-게시-삭제 전 주기에서 보존됨",
+    "subsection": "E1.5",
+    "in_437": true
+  },
+  {
+    "id": "E1.6-1",
+    "category": "E1",
+    "type": "A",
+    "description": "SINGLE_NODE_WRITER(RWO) 접근 모드로 CreateVolume 성공",
+    "subsection": "E1.6",
+    "in_437": true
+  },
+  {
+    "id": "E1.6-2",
+    "category": "E1",
+    "type": "A",
+    "description": "SINGLE_NODE_SINGLE_WRITER(RWOP) 접근 모드로 CreateVolume 성공",
+    "subsection": "E1.6",
+    "in_437": true
+  },
+  {
+    "id": "E1.6-3",
+    "category": "E1",
+    "type": "A",
+    "description": "MULTI_NODE_READER_ONLY(ROX) 접근 모드로 CreateVolume 성공",
+    "subsection": "E1.6",
+    "in_437": true
+  },
+  {
+    "id": "E1.6-4",
+    "category": "E1",
+    "type": "A",
+    "description": "MULTI_NODE_MULTI_WRITER(RWX) 접근 모드는 드라이버 수준에서 거부",
+    "subsection": "E1.6",
+    "in_437": true
+  },
+  {
+    "id": "E1.6-5",
+    "category": "E1",
+    "type": "A",
+    "description": "정의되지 않은(UNKNOWN=0) 접근 모드는 거부",
+    "subsection": "E1.6",
+    "in_437": true
+  },
+  {
+    "id": "E1.6-6",
+    "category": "E1",
+    "type": "A",
+    "description": "VolumeCapability에 AccessMode 필드 자체가 없으면 InvalidArgument",
+    "subsection": "E1.6",
+    "in_437": true
+  },
+  {
+    "id": "E1.6-7",
+    "category": "E1",
+    "type": "A",
+    "description": "VolumeCapabilities가 빈 슬라이스이면 InvalidArgument",
+    "subsection": "E1.6",
+    "in_437": true
+  },
+  {
+    "id": "E1.6-8",
+    "category": "E1",
+    "type": "A",
+    "description": "여러 VolumeCapability 중 하나라도 미지원 모드이면 전체 거부",
+    "subsection": "E1.6",
+    "in_437": true
+  },
+  {
+    "id": "E1.7-1",
+    "category": "E1",
+    "type": "A",
+    "description": "CapacityRange 미지정 시 드라이버가 기본 크기 선택",
+    "subsection": "E1.7",
+    "in_437": true
+  },
+  {
+    "id": "E1.7-2",
+    "category": "E1",
+    "type": "A",
+    "description": "RequiredBytes만 지정, LimitBytes 미지정",
+    "subsection": "E1.7",
+    "in_437": true
+  },
+  {
+    "id": "E1.7-3",
+    "category": "E1",
+    "type": "A",
+    "description": "LimitBytes만 지정, RequiredBytes 미지정",
+    "subsection": "E1.7",
+    "in_437": true
+  },
+  {
+    "id": "E1.7-4",
+    "category": "E1",
+    "type": "A",
+    "description": "RequiredBytes=1GiB, LimitBytes=2GiB 동시 지정 (유효 범위)",
+    "subsection": "E1.7",
+    "in_437": true
+  },
+  {
+    "id": "E1.7-5",
+    "category": "E1",
+    "type": "A",
+    "description": "기존 볼륨(1GiB)이 새 RequiredBytes(2GiB)보다 작으면 AlreadyExists",
+    "subsection": "E1.7",
+    "in_437": true
+  },
+  {
+    "id": "E1.7-6",
+    "category": "E1",
+    "type": "A",
+    "description": "기존 볼륨(4GiB)이 새 LimitBytes(2GiB)보다 크면 AlreadyExists",
+    "subsection": "E1.7",
+    "in_437": true
+  },
+  {
+    "id": "E1.7-7",
+    "category": "E1",
+    "type": "A",
+    "description": "기존 볼륨(2GiB)이 RequiredBytes=1GiB, LimitBytes=3GiB 범위 내이면 캐시 반환",
+    "subsection": "E1.7",
+    "in_437": true
+  },
+  {
+    "id": "E1.8-1",
+    "category": "E1",
+    "type": "A",
+    "description": "PillarTarget이 존재하지만 ResolvedAddress=\"\"이면 Unavailable 반환",
+    "subsection": "E1.8",
+    "in_437": true
+  },
+  {
+    "id": "E1.8-2",
+    "category": "E1",
+    "type": "A",
+    "description": "Parameters[\"target\"]이 존재하지 않는 PillarTarget을 참조하면 NotFound 반환",
+    "subsection": "E1.8",
+    "in_437": true
+  },
+  {
+    "id": "E1.8-3",
+    "category": "E1",
+    "type": "A",
+    "description": "agent 다이얼 자체가 실패하면 Unavailable 반환",
+    "subsection": "E1.8",
+    "in_437": true
+  },
+  {
+    "id": "E1.9-1",
+    "category": "E1",
+    "type": "A",
+    "description": "agent.CreateVolume 성공 후 agent.ExportVolume 실패 시 PillarVolume CRD에 CreatePartial 기록",
+    "subsection": "E1.9",
+    "in_437": true
+  },
+  {
+    "id": "E1.9-2",
+    "category": "E1",
+    "type": "A",
+    "description": "CreatePartial 상태에서 재시도 시 agent.CreateVolume 생략, agent.ExportVolume만 재호출",
+    "subsection": "E1.9",
+    "in_437": true
+  },
+  {
+    "id": "E1.9-3",
+    "category": "E1",
+    "type": "A",
+    "description": "첫 번째 호출(export 실패) → 두 번째 호출(정상) 연속 시나리오",
+    "subsection": "E1.9",
+    "in_437": true
+  },
+  {
+    "id": "E1.9-4",
+    "category": "E1",
+    "type": "A",
+    "description": "persistCreatePartial CRD 저장 실패 시 Internal 반환 (zvol은 생성됐으나 상태 기록 불가)",
+    "subsection": "E1.9",
+    "in_437": true
+  },
+  {
+    "id": "E1.9-5",
+    "category": "E1",
+    "type": "A",
+    "description": "컨트롤러 재기동 시 기존 PillarVolume CRD에서 상태 복원",
+    "subsection": "E1.9",
+    "in_437": true
+  },
+  {
+    "id": "E10.1-1",
+    "category": "E10",
+    "type": "B",
+    "description": "pillar-csi-controller-manager 파드가 네임스페이스에서 정상 실행됨",
+    "subsection": "E10.1",
+    "in_437": true
+  },
+  {
+    "id": "E10.1-2",
+    "category": "E10",
+    "type": "B",
+    "description": "RBAC RoleBinding 생성 후 엔드포인트에서 메트릭 수집 가능",
+    "subsection": "E10.1",
+    "in_437": true
+  },
+  {
+    "id": "E10.1-3",
+    "category": "E10",
+    "type": "B",
+    "description": "cert-manager가 설치된 환경에서 TLS 인증서 발급 동작",
+    "subsection": "E10.1",
+    "in_437": true
+  },
+  {
+    "id": "E11.1-1",
+    "category": "E11",
+    "type": "A",
+    "description": "ControllerExpandVolume이 agent.ExpandVolume을 올바른 VolumeId·BackendType·RequestedBytes로 호출하고 node_expansion_required=true를 반환",
+    "subsection": "E11.1",
+    "in_437": true
+  },
+  {
+    "id": "E11.1-2",
+    "category": "E11",
+    "type": "A",
+    "description": "agent.ExpandVolume이 CapacityBytes=0을 반환하면 RequiredBytes를 폴백으로 사용",
+    "subsection": "E11.1",
+    "in_437": true
+  },
+  {
+    "id": "E11.2-1",
+    "category": "E11",
+    "type": "A",
+    "description": "NodeExpandVolume이 ext4 파일시스템에서 mockResizer.ResizeFS(\"ext4\")를 호출",
+    "subsection": "E11.2",
+    "in_437": true
+  },
+  {
+    "id": "E11.2-2",
+    "category": "E11",
+    "type": "A",
+    "description": "NodeExpandVolume이 xfs 파일시스템에서 mockResizer.ResizeFS(\"xfs\")를 호출",
+    "subsection": "E11.2",
+    "in_437": true
+  },
+  {
+    "id": "E11.3-1",
+    "category": "E11",
+    "type": "A",
+    "description": "CreateVolume → ControllerExpandVolume → NodeExpandVolume 전체 확장 흐름",
+    "subsection": "E11.3",
+    "in_437": true
+  },
+  {
+    "id": "E11.3-2",
+    "category": "E11",
+    "type": "A",
+    "description": "이미 확장된 볼륨에 동일한 크기로 ControllerExpandVolume 재호출 — 멱등성",
+    "subsection": "E11.3",
+    "in_437": true
+  },
+  {
+    "id": "E11.4-1",
+    "category": "E11",
+    "type": "A",
+    "description": "agent.ExpandVolume 실패 시 ControllerExpandVolume이 오류 코드를 전파",
+    "subsection": "E11.4",
+    "in_437": true
+  },
+  {
+    "id": "E11.4-2",
+    "category": "E11",
+    "type": "A",
+    "description": "mockResizer.ResizeFS 실패 시 NodeExpandVolume이 Internal 반환",
+    "subsection": "E11.4",
+    "in_437": true
+  },
+  {
+    "id": "E12.1-1",
+    "category": "E12",
+    "type": "A",
+    "description": "CSI CreateSnapshot이 현재 미구현으로 gRPC Unimplemented를 반환",
+    "subsection": "E12.1",
+    "in_437": true
+  },
+  {
+    "id": "E12.1-2",
+    "category": "E12",
+    "type": "A",
+    "description": "CSI DeleteSnapshot이 현재 미구현으로 gRPC Unimplemented를 반환",
+    "subsection": "E12.1",
+    "in_437": true
+  },
+  {
+    "id": "E12.1-3",
+    "category": "E12",
+    "type": "A",
+    "description": "CSI ListSnapshots이 현재 미구현으로 gRPC Unimplemented를 반환",
+    "subsection": "E12.1",
+    "in_437": true
+  },
+  {
+    "id": "E12.2-1",
+    "category": "E12",
+    "type": "A",
+    "description": "GetPluginCapabilities 응답에 VolumeSnapshot 역량이 포함되지 않음",
+    "subsection": "E12.2",
+    "in_437": true
+  },
+  {
+    "id": "E13.1-1",
+    "category": "E13",
+    "type": "A",
+    "description": "VolumeContentSource.Snapshot이 포함된 CreateVolume 호출 시 스냅샷 소스를 무시하고 빈 볼륨을 생성 (현재 동작 고정 테스트)",
+    "subsection": "E13.1",
+    "in_437": true
+  },
+  {
+    "id": "E13.1-2",
+    "category": "E13",
+    "type": "A",
+    "description": "VolumeContentSource.Volume이 포함된 CreateVolume 호출 시 소스 볼륨을 무시하고 빈 볼륨을 생성 (현재 동작 고정 테스트)",
+    "subsection": "E13.1",
+    "in_437": true
+  },
+  {
+    "id": "E14.1-1",
+    "category": "E14",
+    "type": "A",
+    "description": "극도로 긴 볼륨 이름(2048자)으로 CreateVolume 호출",
+    "subsection": "E14.1",
+    "in_437": true
+  },
+  {
+    "id": "E14.1-2",
+    "category": "E14",
+    "type": "A",
+    "description": "볼륨 이름에 슬래시(\"/\") 포함 — VolumeId 파싱 혼동 유발 시도",
+    "subsection": "E14.1",
+    "in_437": true
+  },
+  {
+    "id": "E14.1-3",
+    "category": "E14",
+    "type": "A",
+    "description": "빈 VolumeId로 DeleteVolume 호출",
+    "subsection": "E14.1",
+    "in_437": true
+  },
+  {
+    "id": "E14.1-4",
+    "category": "E14",
+    "type": "A",
+    "description": "NodeId가 빈 문자열인 ControllerPublishVolume",
+    "subsection": "E14.1",
+    "in_437": true
+  },
+  {
+    "id": "E14.2-1",
+    "category": "E14",
+    "type": "A",
+    "description": "LimitBytes < RequiredBytes로 CreateVolume",
+    "subsection": "E14.2",
+    "in_437": true
+  },
+  {
+    "id": "E14.2-2",
+    "category": "E14",
+    "type": "A",
+    "description": "ControllerExpandVolume에서 RequiredBytes=0",
+    "subsection": "E14.2",
+    "in_437": true
+  },
+  {
+    "id": "E14.2-3",
+    "category": "E14",
+    "type": "A",
+    "description": "현재 크기보다 작은 RequiredBytes로 ControllerExpandVolume",
+    "subsection": "E14.2",
+    "in_437": true
+  },
+  {
+    "id": "E14.2-4",
+    "category": "E14",
+    "type": "A",
+    "description": "RequiredBytes == LimitBytes (경계값) 로 CreateVolume",
+    "subsection": "E14.2",
+    "in_437": true
+  },
+  {
+    "id": "E14.3-1",
+    "category": "E14",
+    "type": "A",
+    "description": "VolumeContext.port가 숫자가 아닌 문자열",
+    "subsection": "E14.3",
+    "in_437": true
+  },
+  {
+    "id": "E14.3-2",
+    "category": "E14",
+    "type": "A",
+    "description": "VolumeContext.target_id(NQN)가 빈 문자열",
+    "subsection": "E14.3",
+    "in_437": true
+  },
+  {
+    "id": "E14.3-3",
+    "category": "E14",
+    "type": "A",
+    "description": "VolumeContext 자체가 nil인 NodeStageVolume",
+    "subsection": "E14.3",
+    "in_437": true
+  },
+  {
+    "id": "E14.4-1",
+    "category": "E14",
+    "type": "A",
+    "description": "알 수 없는 backend-type 파라미터로 CreateVolume",
+    "subsection": "E14.4",
+    "in_437": true
+  },
+  {
+    "id": "E14.4-2",
+    "category": "E14",
+    "type": "A",
+    "description": "protocol-type 파라미터 값이 빈 문자열",
+    "subsection": "E14.4",
+    "in_437": true
+  },
+  {
+    "id": "E14.5-1",
+    "category": "E14",
+    "type": "A",
+    "description": "블록 접근 모드 VolumeCapability에 FsType 지정 (잘못된 조합)",
+    "subsection": "E14.5",
+    "in_437": true
+  },
+  {
+    "id": "E14.5-2",
+    "category": "E14",
+    "type": "A",
+    "description": "MULTI_NODE_MULTI_WRITER 접근 모드로 ValidateVolumeCapabilities",
+    "subsection": "E14.5",
+    "in_437": true
+  },
+  {
+    "id": "E15.1-1",
+    "category": "E15",
+    "type": "A",
+    "description": "스토리지 풀 가득 참 시 CreateVolume 실패 — gRPC 오류 코드 전파 검증",
+    "subsection": "E15.1",
+    "in_437": true
+  },
+  {
+    "id": "E15.1-2",
+    "category": "E15",
+    "type": "A",
+    "description": "ControllerExpandVolume이 풀 용량 초과 시도 — 오류 전파 검증",
+    "subsection": "E15.1",
+    "in_437": true
+  },
+  {
+    "id": "E15.1-3",
+    "category": "E15",
+    "type": "A",
+    "description": "요청 용량이 사용 가능 용량보다 큰 경우",
+    "subsection": "E15.1",
+    "in_437": true
+  },
+  {
+    "id": "E15.2-1",
+    "category": "E15",
+    "type": "A",
+    "description": "agent.CreateVolume이 연속 5회 실패해도 상태 오염 없음",
+    "subsection": "E15.2",
+    "in_437": true
+  },
+  {
+    "id": "E15.2-2",
+    "category": "E15",
+    "type": "A",
+    "description": "NVMe-oF 연결 타임아웃 시 NodeStage 실패 — 상태 파일 미생성 검증",
+    "subsection": "E15.2",
+    "in_437": true
+  },
+  {
+    "id": "E15.2-3",
+    "category": "E15",
+    "type": "A",
+    "description": "NVMe-oF 연결 성공 후 디바이스가 폴링 타임아웃 내에 나타나지 않음",
+    "subsection": "E15.2",
+    "in_437": true
+  },
+  {
+    "id": "E16.1-1",
+    "category": "E16",
+    "type": "A",
+    "description": "동일 이름으로 5개 고루틴이 동시에 CreateVolume 호출해도 패닉/데드락 없음",
+    "subsection": "E16.1",
+    "in_437": true
+  },
+  {
+    "id": "E16.1-2",
+    "category": "E16",
+    "type": "A",
+    "description": "5개 고루틴이 각각 다른 이름의 볼륨을 동시에 생성",
+    "subsection": "E16.1",
+    "in_437": true
+  },
+  {
+    "id": "E16.1-3",
+    "category": "E16",
+    "type": "A",
+    "description": "볼륨 생성과 삭제를 동시에 수행 — 최종 상태 일관성 검증",
+    "subsection": "E16.1",
+    "in_437": true
+  },
+  {
+    "id": "E16.2-1",
+    "category": "E16",
+    "type": "A",
+    "description": "동일 VolumeId를 서로 다른 스테이징 경로로 동시에 NodeStage 호출",
+    "subsection": "E16.2",
+    "in_437": true
+  },
+  {
+    "id": "E16.2-2",
+    "category": "E16",
+    "type": "A",
+    "description": "스테이지 완료 후 3개 고루틴이 서로 다른 targetPath로 동시 NodePublish",
+    "subsection": "E16.2",
+    "in_437": true
+  },
+  {
+    "id": "E16.3-1",
+    "category": "E16",
+    "type": "A",
+    "description": "다른 NodeId에 대해 동시에 ControllerPublishVolume 3회 호출해도 각 annotation에서 독립 identity를 해석",
+    "subsection": "E16.3",
+    "in_437": true
+  },
+  {
+    "id": "E16.3-2",
+    "category": "E16",
+    "type": "A",
+    "description": "3개 노드에서 동시에 ControllerUnpublishVolume 호출",
+    "subsection": "E16.3",
+    "in_437": true
+  },
+  {
+    "id": "E17.1-1",
+    "category": "E17",
+    "type": "A",
+    "description": "NodeStageVolume에서 Connect 실패 시 상태 파일이 생성되지 않음",
+    "subsection": "E17.1",
+    "in_437": true
+  },
+  {
+    "id": "E17.1-2",
+    "category": "E17",
+    "type": "A",
+    "description": "FormatAndMount 실패 시 이미 완료된 NVMe-oF 연결이 정리(롤백)됨",
+    "subsection": "E17.1",
+    "in_437": true
+  },
+  {
+    "id": "E17.1-3",
+    "category": "E17",
+    "type": "A",
+    "description": "Connector.Disconnect 실패 시 상태 파일이 보존됨 — 재시도 가능 상태 유지",
+    "subsection": "E17.1",
+    "in_437": true
+  },
+  {
+    "id": "E17.2-1",
+    "category": "E17",
+    "type": "A",
+    "description": "성공적 DeleteVolume 후 PillarVolume CRD가 fake k8s 클라이언트에서 완전히 삭제됨",
+    "subsection": "E17.2",
+    "in_437": true
+  },
+  {
+    "id": "E17.2-2",
+    "category": "E17",
+    "type": "A",
+    "description": "부분 생성 상태(Phase=CreatePartial) CRD도 DeleteVolume으로 정리됨",
+    "subsection": "E17.2",
+    "in_437": true
+  },
+  {
+    "id": "E17.2-3",
+    "category": "E17",
+    "type": "A",
+    "description": "전체 라이프사이클 완료 후 모든 상태가 완전히 정리됨",
+    "subsection": "E17.2",
+    "in_437": true
+  },
+  {
+    "id": "E17.3-1",
+    "category": "E17",
+    "type": "A",
+    "description": "동일 이름의 볼륨을 10회 반복 생성/삭제해도 상태 오염 없음",
+    "subsection": "E17.3",
+    "in_437": true
+  },
+  {
+    "id": "E17.3-2",
+    "category": "E17",
+    "type": "A",
+    "description": "동일 볼륨을 5회 반복 NodeStage/NodeUnstage해도 상태 파일 누적 없음",
+    "subsection": "E17.3",
+    "in_437": true
+  },
+  {
+    "id": "E18.1-1",
+    "category": "E18",
+    "type": "A",
+    "description": "가 반환 시 이 을 그대로 전파 — 에이전트 프로세스가 완전히 다운된 경우 시뮬레이션",
+    "subsection": "E18.1",
+    "in_437": true
+  },
+  {
+    "id": "E18.1-2",
+    "category": "E18",
+    "type": "A",
+    "description": "가 평문 Go error 반환 시(DNS 실패, 즉각적 연결 거부) 오류가 CO에 전파됨 — gRPC 상태 코드가 아닌 네트워크 레이어 오류 시뮬레이션",
+    "subsection": "E18.1",
+    "in_437": true
+  },
+  {
+    "id": "E18.2-1",
+    "category": "E18",
+    "type": "A",
+    "description": "이 (\"agent: ZFS command timed out\") 반환 시 가 CO에 비-OK 상태 전파 — 에이전트 내부 ZFS 작업 타임아웃(스토리지 노드 과부하) 시뮬레이션",
+    "subsection": "E18.2",
+    "in_437": true
+  },
+  {
+    "id": "E18.2-2",
+    "category": "E18",
+    "type": "A",
+    "description": "이 (\"agent: ZFS expand timed out\") 반환 시 이 비-OK 전파 — 확장 작업 중 에이전트 타임아웃",
+    "subsection": "E18.2",
+    "in_437": true
+  },
+  {
+    "id": "E18.2-3",
+    "category": "E18",
+    "type": "A",
+    "description": "이 (\"agent: unexport timed out\") 반환 시 이 비-OK 전파 — 정리 작업 중 에이전트 타임아웃",
+    "subsection": "E18.2",
+    "in_437": true
+  },
+  {
+    "id": "E18.2-4",
+    "category": "E18",
+    "type": "A",
+    "description": "가 configfs 쓰기 실패() 반환 시 이 오류 전파 — identity 해석 이후의 ACL 적용 실패를 시뮬레이션",
+    "subsection": "E18.2",
+    "in_437": true
+  },
+  {
+    "id": "E18.3-1",
+    "category": "E18",
+    "type": "A",
+    "description": "에이전트 재시작 후 호출이 configfs NVMe-oF 서브시스템 엔트리를 재구성 — 프로세스 재시작으로 인메모리 상태가 사라진 후에도 configfs에 원하는 상태를 강제 적용",
+    "subsection": "E18.3",
+    "in_437": true
+  },
+  {
+    "id": "E19.1.1",
+    "category": "E19",
+    "type": "C",
+    "description": "+ 가 모두 설정된 external 스펙으로 ValidateCreate 통과",
+    "subsection": "E19.1",
+    "in_437": true
+  },
+  {
+    "id": "E19.1.2",
+    "category": "E19",
+    "type": "C",
+    "description": "만 설정된 nodeRef 스펙으로 ValidateCreate 통과",
+    "subsection": "E19.1",
+    "in_437": true
+  },
+  {
+    "id": "E19.1.3",
+    "category": "E19",
+    "type": "C",
+    "description": "PillarTarget 생성 후 첫 번째 호출에서 파이널라이저 자동 추가",
+    "subsection": "E19.1",
+    "in_437": true
+  },
+  {
+    "id": "E19.2.1",
+    "category": "E19",
+    "type": "C",
+    "description": "이 빈 문자열인 경우 API 서버가 HTTP 422로 거부",
+    "subsection": "E19.2",
+    "in_437": true
+  },
+  {
+    "id": "E19.2.2",
+    "category": "E19",
+    "type": "C",
+    "description": "(최솟값 미달) 시 API 서버가 거부",
+    "subsection": "E19.2",
+    "in_437": true
+  },
+  {
+    "id": "E19.2.3",
+    "category": "E19",
+    "type": "C",
+    "description": "(최댓값 초과) 시 API 서버가 거부",
+    "subsection": "E19.2",
+    "in_437": true
+  },
+  {
+    "id": "E19.2.4",
+    "category": "E19",
+    "type": "C",
+    "description": "가 빈 문자열인 경우 거부",
+    "subsection": "E19.2",
+    "in_437": true
+  },
+  {
+    "id": "E19.3.1",
+    "category": "E19",
+    "type": "C",
+    "description": "→ 로 판별자(discriminant) 전환 시 거부",
+    "subsection": "E19.3",
+    "in_437": true
+  },
+  {
+    "id": "E19.3.2",
+    "category": "E19",
+    "type": "C",
+    "description": "→ 로 역전환 시 거부",
+    "subsection": "E19.3",
+    "in_437": true
+  },
+  {
+    "id": "E19.3.3",
+    "category": "E19",
+    "type": "C",
+    "description": "변경 시 거부 — 에이전트 호스트 변경 방지",
+    "subsection": "E19.3",
+    "in_437": true
+  },
+  {
+    "id": "E19.3.4",
+    "category": "E19",
+    "type": "C",
+    "description": "변경 시 거부",
+    "subsection": "E19.3",
+    "in_437": true
+  },
+  {
+    "id": "E19.3.5",
+    "category": "E19",
+    "type": "C",
+    "description": "변경 시 거부",
+    "subsection": "E19.3",
+    "in_437": true
+  },
+  {
+    "id": "E19.3.6",
+    "category": "E19",
+    "type": "C",
+    "description": "변경은 허용 (식별 필드 아님; 접속 방법만 변경)",
+    "subsection": "E19.3",
+    "in_437": true
+  },
+  {
+    "id": "E19.4.1",
+    "category": "E19",
+    "type": "C",
+    "description": "external 모드 PillarTarget에서 설정 — external 모드는 K8s Node를 참조하지 않음",
+    "subsection": "E19.4",
+    "in_437": true
+  },
+  {
+    "id": "E19.4.2",
+    "category": "E19",
+    "type": "C",
+    "description": "nodeRef 모드에서 참조된 K8s Node가 존재하면",
+    "subsection": "E19.4",
+    "in_437": true
+  },
+  {
+    "id": "E19.4.3",
+    "category": "E19",
+    "type": "C",
+    "description": "nodeRef 모드에서 참조된 K8s Node가 없으면",
+    "subsection": "E19.4",
+    "in_437": true
+  },
+  {
+    "id": "E19.5.1",
+    "category": "E19",
+    "type": "C",
+    "description": "이면 — 개발/테스트 환경",
+    "subsection": "E19.5",
+    "in_437": true
+  },
+  {
+    "id": "E19.5.2",
+    "category": "E19",
+    "type": "C",
+    "description": "→ — 평문 TCP 연결 시뮬레이션",
+    "subsection": "E19.5",
+    "in_437": true
+  },
+  {
+    "id": "E19.5.3",
+    "category": "E19",
+    "type": "C",
+    "description": "→ — mTLS 연결 시뮬레이션",
+    "subsection": "E19.5",
+    "in_437": true
+  },
+  {
+    "id": "E19.5.4",
+    "category": "E19",
+    "type": "C",
+    "description": "→ — 네트워크 오류 시뮬레이션",
+    "subsection": "E19.5",
+    "in_437": true
+  },
+  {
+    "id": "E19.5.5",
+    "category": "E19",
+    "type": "C",
+    "description": "→ — 에이전트 자가 보고 비정상 상태",
+    "subsection": "E19.5",
+    "in_437": true
+  },
+  {
+    "id": "E19.6.1",
+    "category": "E19",
+    "type": "C",
+    "description": "+ →",
+    "subsection": "E19.6",
+    "in_437": true
+  },
+  {
+    "id": "E19.6.2",
+    "category": "E19",
+    "type": "C",
+    "description": "→ — 노드 없음 시 전체 준비 불가",
+    "subsection": "E19.6",
+    "in_437": true
+  },
+  {
+    "id": "E19.6.3",
+    "category": "E19",
+    "type": "C",
+    "description": "→ — 에이전트 미도달 시 전체 준비 불가",
+    "subsection": "E19.6",
+    "in_437": true
+  },
+  {
+    "id": "E19.7.1",
+    "category": "E19",
+    "type": "C",
+    "description": "참조 PillarPool이 존재하는 동안 삭제 차단;",
+    "subsection": "E19.7",
+    "in_437": true
+  },
+  {
+    "id": "E19.7.2",
+    "category": "E19",
+    "type": "C",
+    "description": "참조 PillarPool 없을 때 즉시 파이널라이저 제거 및 삭제 진행",
+    "subsection": "E19.7",
+    "in_437": true
+  },
+  {
+    "id": "E19.7.3",
+    "category": "E19",
+    "type": "C",
+    "description": "참조 PillarPool 제거 후 다음 조정에서 파이널라이저 제거 및 삭제 완료",
+    "subsection": "E19.7",
+    "in_437": true
+  },
+  {
+    "id": "E19.7.4",
+    "category": "E19",
+    "type": "C",
+    "description": "여러 PillarPool이 동일 PillarTarget을 참조할 때, 하나라도 남아 있으면 차단 지속",
+    "subsection": "E19.7",
+    "in_437": true
+  },
+  {
+    "id": "E2.1-1",
+    "category": "E2",
+    "type": "A",
+    "description": "ControllerPublishVolume이 annotation에서 NVMe host NQN을 해석해 agent.AllowInitiator를 호출",
+    "subsection": "E2.1",
+    "in_437": true
+  },
+  {
+    "id": "E2.1-2",
+    "category": "E2",
+    "type": "A",
+    "description": "iSCSI 볼륨 publish 시 controller가 annotation에서 initiator IQN을 해석해 AllowInitiator 호출",
+    "subsection": "E2.1",
+    "in_437": true
+  },
+  {
+    "id": "E2.1-4",
+    "category": "E2",
+    "type": "A",
+    "description": "이미 Publish된 볼륨·노드 조합으로 재호출 성공 (컴포넌트 테스트)",
+    "subsection": "E2.1",
+    "in_437": true
+  },
+  {
+    "id": "E2.2-1",
+    "category": "E2",
+    "type": "A",
+    "description": "ControllerUnpublishVolume이 annotation에서 NVMe host NQN을 해석해 agent.DenyInitiator를 호출",
+    "subsection": "E2.2",
+    "in_437": true
+  },
+  {
+    "id": "E2.2-2",
+    "category": "E2",
+    "type": "A",
+    "description": "ControllerUnpublishVolume 정상 경로 (컴포넌트 테스트)",
+    "subsection": "E2.2",
+    "in_437": true
+  },
+  {
+    "id": "E2.2-4",
+    "category": "E2",
+    "type": "A",
+    "description": "이미 Unpublish된 볼륨에 재호출 성공 (컴포넌트 테스트)",
+    "subsection": "E2.2",
+    "in_437": true
+  },
+  {
+    "id": "E2.2-5",
+    "category": "E2",
+    "type": "A",
+    "description": "VolumeId=\"\"이면 InvalidArgument 반환; DenyInitiator 0회 (컴포넌트 테스트)",
+    "subsection": "E2.2",
+    "in_437": true
+  },
+  {
+    "id": "E2.2-6",
+    "category": "E2",
+    "type": "A",
+    "description": "NodeId=\"\"이면 성공 + no-op (CSI 명세 §4.3.4: 빈 NodeId = \"모든 노드에서 Unpublish\"; pillar-csi는 no-op)",
+    "subsection": "E2.2",
+    "in_437": true
+  },
+  {
+    "id": "E2.2-7",
+    "category": "E2",
+    "type": "A",
+    "description": "VolumeId=\"badformat\"(슬래시 없음)이면 성공 반환 (컴포넌트 테스트; CSI 명세상 Unpublish malformed ID는 성공 no-op 허용)",
+    "subsection": "E2.2",
+    "in_437": true
+  },
+  {
+    "id": "E2.2-8",
+    "category": "E2",
+    "type": "A",
+    "description": "agent.DenyInitiator가 Internal 오류 반환 시 ControllerUnpublishVolume이 비-OK gRPC 상태 전파 (NotFound만 성공 처리)",
+    "subsection": "E2.2",
+    "in_437": true
+  },
+  {
+    "id": "E2.3-1",
+    "category": "E2",
+    "type": "A",
+    "description": "ControllerExpandVolume이 agent.ExpandVolume을 올바른 새 용량으로 호출",
+    "subsection": "E2.3",
+    "in_437": true
+  },
+  {
+    "id": "E2.3-2",
+    "category": "E2",
+    "type": "A",
+    "description": "CapacityRange 없으면 InvalidArgument",
+    "subsection": "E2.3",
+    "in_437": true
+  },
+  {
+    "id": "E2.4-1",
+    "category": "E2",
+    "type": "A",
+    "description": "지원 가능한 접근 모드(SINGLE_NODE_WRITER 등)는 확인됨, 지원 불가 모드(MULTI_NODE_MULTI_WRITER 등)는 거부됨",
+    "subsection": "E2.4",
+    "in_437": true
+  },
+  {
+    "id": "E2.5-1",
+    "category": "E2",
+    "type": "A",
+    "description": "NVMe-oF publish에서 이 annotation의 host NQN으로 해석되어 AllowInitiator에 전달됨",
+    "subsection": "E2.5",
+    "in_437": true
+  },
+  {
+    "id": "E2.5-2",
+    "category": "E2",
+    "type": "A",
+    "description": "iSCSI publish에서 가 annotation의 initiator IQN으로 해석되어 AllowInitiator에 전달됨",
+    "subsection": "E2.5",
+    "in_437": true
+  },
+  {
+    "id": "E2.5-3",
+    "category": "E2",
+    "type": "A",
+    "description": "동일 볼륨에 대해 2개의 서로 다른 node handle(worker-a, worker-b)이 각각 다른 annotation을 통해 독립 AllowInitiator 항목을 생성",
+    "subsection": "E2.5",
+    "in_437": true
+  },
+  {
+    "id": "E2.6-1",
+    "category": "E2",
+    "type": "A",
+    "description": "agent.AllowInitiator가 Internal 오류 반환 시 ControllerPublishVolume이 비-OK gRPC 상태 반환; 오류 은폐 없음 (실제로는 configfs ACL 쓰기 실패 시 발생)",
+    "subsection": "E2.6",
+    "in_437": true
+  },
+  {
+    "id": "E2.6-2",
+    "category": "E2",
+    "type": "A",
+    "description": "는 존재하지만 protocol별 initiator annotation이 없으면 ControllerPublishVolume이 FailedPrecondition 반환; agent 호출 없음",
+    "subsection": "E2.6",
+    "in_437": true
+  },
+  {
+    "id": "E2.6-3",
+    "category": "E2",
+    "type": "A",
+    "description": "VolumeId=\"\" — agent 호출 전 입력 검증 실패 → InvalidArgument",
+    "subsection": "E2.6",
+    "in_437": true
+  },
+  {
+    "id": "E2.6-4",
+    "category": "E2",
+    "type": "A",
+    "description": "NodeId=\"\" — agent 호출 전 입력 검증 실패 → InvalidArgument",
+    "subsection": "E2.6",
+    "in_437": true
+  },
+  {
+    "id": "E2.6-5",
+    "category": "E2",
+    "type": "A",
+    "description": "VolumeCapability=nil — 입력 검증 실패 → InvalidArgument",
+    "subsection": "E2.6",
+    "in_437": true
+  },
+  {
+    "id": "E2.6-6",
+    "category": "E2",
+    "type": "A",
+    "description": "VolumeId=\"badformat\"(슬래시 없음) — VolumeId 파싱 실패 → InvalidArgument",
+    "subsection": "E2.6",
+    "in_437": true
+  },
+  {
+    "id": "E2.6-7",
+    "category": "E2",
+    "type": "A",
+    "description": "VolumeId의 target 이름이 PillarTarget CRD에 없음 → NotFound; agent 호출 전 실패",
+    "subsection": "E2.6",
+    "in_437": true
+  },
+  {
+    "id": "E2.6-8",
+    "category": "E2",
+    "type": "A",
+    "description": "PillarTarget.Status.ResolvedAddress=\"\"이면 Unavailable 반환; agent 다이얼 미시도",
+    "subsection": "E2.6",
+    "in_437": true
+  },
+  {
+    "id": "E20.1.1",
+    "category": "E20",
+    "type": "C",
+    "description": "+ ZFS 설정으로 ValidateCreate 통과",
+    "subsection": "E20.1",
+    "in_437": true
+  },
+  {
+    "id": "E20.1.2",
+    "category": "E20",
+    "type": "C",
+    "description": "로 ValidateCreate 통과 (ZFS 설정 불필요)",
+    "subsection": "E20.1",
+    "in_437": true
+  },
+  {
+    "id": "E20.1.3",
+    "category": "E20",
+    "type": "C",
+    "description": "PillarPool 생성 후 첫 번째 호출에서 파이널라이저 자동 추가",
+    "subsection": "E20.1",
+    "in_437": true
+  },
+  {
+    "id": "E20.1.4",
+    "category": "E20",
+    "type": "C",
+    "description": "동일 PillarPool을 두 번 조정해도 파이널라이저 중복 없음",
+    "subsection": "E20.1",
+    "in_437": true
+  },
+  {
+    "id": "E20.10.1",
+    "category": "E20",
+    "type": "C",
+    "description": "PillarTarget이 Not-Ready → Ready로 전이 후 PillarPool 재조정 시 로 갱신",
+    "subsection": "E20.10",
+    "in_437": true
+  },
+  {
+    "id": "E20.10.2",
+    "category": "E20",
+    "type": "C",
+    "description": "PillarTarget이 Ready → Not-Ready로 전이 후 PillarPool 재조정 시 ; 하위 조건 Unknown으로 후퇴",
+    "subsection": "E20.10",
+    "in_437": true
+  },
+  {
+    "id": "E20.2.1",
+    "category": "E20",
+    "type": "C",
+    "description": "가 빈 문자열인 경우 API 서버가 거부",
+    "subsection": "E20.2",
+    "in_437": true
+  },
+  {
+    "id": "E20.2.2",
+    "category": "E20",
+    "type": "C",
+    "description": "에 열거형 외 값 설정 시 거부",
+    "subsection": "E20.2",
+    "in_437": true
+  },
+  {
+    "id": "E20.2.3",
+    "category": "E20",
+    "type": "C",
+    "description": "이 빈 문자열인 경우 거부",
+    "subsection": "E20.2",
+    "in_437": true
+  },
+  {
+    "id": "E20.3.1",
+    "category": "E20",
+    "type": "C",
+    "description": "변경 시 거부 — 풀이 묶인 스토리지 노드 변경 방지",
+    "subsection": "E20.3",
+    "in_437": true
+  },
+  {
+    "id": "E20.3.2",
+    "category": "E20",
+    "type": "C",
+    "description": "변경 시 거부 — 기존 볼륨의 드라이버 변경 방지",
+    "subsection": "E20.3",
+    "in_437": true
+  },
+  {
+    "id": "E20.3.3",
+    "category": "E20",
+    "type": "C",
+    "description": "와 동시 변경 시 두 오류 모두 반환",
+    "subsection": "E20.3",
+    "in_437": true
+  },
+  {
+    "id": "E20.3.4",
+    "category": "E20",
+    "type": "C",
+    "description": "변경은 허용 (불변 필드 아님)",
+    "subsection": "E20.3",
+    "in_437": true
+  },
+  {
+    "id": "E20.4.1",
+    "category": "E20",
+    "type": "C",
+    "description": "참조 PillarTarget이 없으면 ; 하위 조건도 모두 False",
+    "subsection": "E20.4",
+    "in_437": true
+  },
+  {
+    "id": "E20.4.2",
+    "category": "E20",
+    "type": "C",
+    "description": "참조 PillarTarget이 존재하지만 이면 ; 하위 조건 Unknown",
+    "subsection": "E20.4",
+    "in_437": true
+  },
+  {
+    "id": "E20.4.3",
+    "category": "E20",
+    "type": "C",
+    "description": "참조 PillarTarget이 이면",
+    "subsection": "E20.4",
+    "in_437": true
+  },
+  {
+    "id": "E20.5.1",
+    "category": "E20",
+    "type": "C",
+    "description": "PillarTarget 이지만 이면",
+    "subsection": "E20.5",
+    "in_437": true
+  },
+  {
+    "id": "E20.5.2",
+    "category": "E20",
+    "type": "C",
+    "description": "에 ZFS 풀 이름이 일치하는 항목이 있으면",
+    "subsection": "E20.5",
+    "in_437": true
+  },
+  {
+    "id": "E20.5.3",
+    "category": "E20",
+    "type": "C",
+    "description": "에 ZFS 풀 이름이 없으면",
+    "subsection": "E20.5",
+    "in_437": true
+  },
+  {
+    "id": "E20.5.4",
+    "category": "E20",
+    "type": "C",
+    "description": "백엔드는 명시적 풀 이름 없이 에 항목만 있으면",
+    "subsection": "E20.5",
+    "in_437": true
+  },
+  {
+    "id": "E20.6.1",
+    "category": "E20",
+    "type": "C",
+    "description": "PillarTarget 이지만 이면",
+    "subsection": "E20.6",
+    "in_437": true
+  },
+  {
+    "id": "E20.6.2",
+    "category": "E20",
+    "type": "C",
+    "description": "에 해당 이 있으면",
+    "subsection": "E20.6",
+    "in_437": true
+  },
+  {
+    "id": "E20.6.3",
+    "category": "E20",
+    "type": "C",
+    "description": "에 해당 이 없으면",
+    "subsection": "E20.6",
+    "in_437": true
+  },
+  {
+    "id": "E20.7.1",
+    "category": "E20",
+    "type": "C",
+    "description": "모든 조건 True →",
+    "subsection": "E20.7",
+    "in_437": true
+  },
+  {
+    "id": "E20.7.2",
+    "category": "E20",
+    "type": "C",
+    "description": "→ (, 이어도)",
+    "subsection": "E20.7",
+    "in_437": true
+  },
+  {
+    "id": "E20.7.3",
+    "category": "E20",
+    "type": "C",
+    "description": "→",
+    "subsection": "E20.7",
+    "in_437": true
+  },
+  {
+    "id": "E20.8.1",
+    "category": "E20",
+    "type": "C",
+    "description": "에 Total, Available 있으면 에 반영; 자동 계산",
+    "subsection": "E20.8",
+    "in_437": true
+  },
+  {
+    "id": "E20.8.2",
+    "category": "E20",
+    "type": "C",
+    "description": "비정상 데이터에서 으로 클램핑 (음수 방지)",
+    "subsection": "E20.8",
+    "in_437": true
+  },
+  {
+    "id": "E20.8.3",
+    "category": "E20",
+    "type": "C",
+    "description": "또는 Unknown이면 기존 capacity 제거",
+    "subsection": "E20.8",
+    "in_437": true
+  },
+  {
+    "id": "E20.9.1",
+    "category": "E20",
+    "type": "C",
+    "description": "참조 PillarBinding이 존재하는 동안 삭제 차단; 설정",
+    "subsection": "E20.9",
+    "in_437": true
+  },
+  {
+    "id": "E20.9.2",
+    "category": "E20",
+    "type": "C",
+    "description": "참조 PillarBinding 없을 때 즉시 파이널라이저 제거 및 삭제 진행",
+    "subsection": "E20.9",
+    "in_437": true
+  },
+  {
+    "id": "E20.9.3",
+    "category": "E20",
+    "type": "C",
+    "description": "참조 PillarBinding 제거 후 다음 조정에서 파이널라이저 제거 및 삭제 완료",
+    "subsection": "E20.9",
+    "in_437": true
+  },
+  {
+    "id": "E20.9.4",
+    "category": "E20",
+    "type": "C",
+    "description": "여러 PillarBinding이 참조할 때 상태 메시지에 모든 이름이 나열됨",
+    "subsection": "E20.9",
+    "in_437": true
+  },
+  {
+    "id": "E21.1",
+    "category": "E21",
+    "type": "A",
+    "description": "A (in-process)",
+    "subsection": "E21",
+    "in_437": true
+  },
+  {
+    "id": "E21.1-1",
+    "category": "E21",
+    "type": "A",
+    "description": "PillarTarget이 존재하나 가 빈 문자열 — 에이전트 주소 미확정 상태",
+    "subsection": "E21.1",
+    "in_437": true
+  },
+  {
+    "id": "E21.1-2",
+    "category": "E21",
+    "type": "A",
+    "description": "PillarTarget의 와 이 모두 nil — 연결 정보 없음 (fake client에서만 가능; 웹훅 미실행)",
+    "subsection": "E21.1",
+    "in_437": true
+  },
+  {
+    "id": "E21.1-3",
+    "category": "E21",
+    "type": "A",
+    "description": "ControllerPublishVolume 시 PillarTarget의 가 빈 문자열",
+    "subsection": "E21.1",
+    "in_437": true
+  },
+  {
+    "id": "E21.1-4",
+    "category": "E21",
+    "type": "A",
+    "description": "PillarVolume CRD가 정의되지 않은 Phase 값을 가질 때 가 로 처리하고 패닉 없음",
+    "subsection": "E21.1",
+    "in_437": true
+  },
+  {
+    "id": "E21.1-5",
+    "category": "E21",
+    "type": "A",
+    "description": "실패 시 가 오류를 반환하고 SM 상태를 오염시키지 않음",
+    "subsection": "E21.1",
+    "in_437": true
+  },
+  {
+    "id": "E21.1-6",
+    "category": "E21",
+    "type": "A",
+    "description": "ControllerExpandVolume 시 PillarTarget 가 빈 문자열",
+    "subsection": "E21.1",
+    "in_437": true
+  },
+  {
+    "id": "E21.2",
+    "category": "E21",
+    "type": "C",
+    "description": "C (envtest)",
+    "subsection": "E21",
+    "in_437": true
+  },
+  {
+    "id": "E21.2-1",
+    "category": "E21",
+    "type": "C",
+    "description": "→ 전환 시도 거부",
+    "subsection": "E21.2",
+    "in_437": true
+  },
+  {
+    "id": "E21.2-2",
+    "category": "E21",
+    "type": "C",
+    "description": "→ 전환 시도 거부",
+    "subsection": "E21.2",
+    "in_437": true
+  },
+  {
+    "id": "E21.2-3",
+    "category": "E21",
+    "type": "C",
+    "description": "변경 시도 거부",
+    "subsection": "E21.2",
+    "in_437": true
+  },
+  {
+    "id": "E21.2-4",
+    "category": "E21",
+    "type": "C",
+    "description": "변경 시도 거부",
+    "subsection": "E21.2",
+    "in_437": true
+  },
+  {
+    "id": "E21.2-5",
+    "category": "E21",
+    "type": "C",
+    "description": "변경 시도 거부",
+    "subsection": "E21.2",
+    "in_437": true
+  },
+  {
+    "id": "E21.2-6",
+    "category": "E21",
+    "type": "C",
+    "description": "이 변경되지 않고 비식별 필드()만 변경된 업데이트는 허용됨",
+    "subsection": "E21.2",
+    "in_437": true
+  },
+  {
+    "id": "E21.2-7",
+    "category": "E21",
+    "type": "C",
+    "description": "유효한 PillarTarget 생성 시 웹훅이 허용 (현재 ValidateCreate는 no-op 스캐폴딩)",
+    "subsection": "E21.2",
+    "in_437": true
+  },
+  {
+    "id": "E21.3",
+    "category": "E21",
+    "type": "C",
+    "description": "C (envtest)",
+    "subsection": "E21",
+    "in_437": true
+  },
+  {
+    "id": "E21.3-1",
+    "category": "E21",
+    "type": "C",
+    "description": "변경 시도 거부",
+    "subsection": "E21.3",
+    "in_437": true
+  },
+  {
+    "id": "E21.3-2",
+    "category": "E21",
+    "type": "C",
+    "description": "변경 시도 거부",
+    "subsection": "E21.3",
+    "in_437": true
+  },
+  {
+    "id": "E21.3-3",
+    "category": "E21",
+    "type": "C",
+    "description": "변경 없이 ZFS 풀 이름만 변경된 업데이트는 허용됨",
+    "subsection": "E21.3",
+    "in_437": true
+  },
+  {
+    "id": "E21.3-4",
+    "category": "E21",
+    "type": "C",
+    "description": "와 모두 변경 시도 → 두 필드 모두 Forbidden 오류 포함",
+    "subsection": "E21.3",
+    "in_437": true
+  },
+  {
+    "id": "E21.3-5",
+    "category": "E21",
+    "type": "C",
+    "description": "유효한 PillarPool 생성 시 웹훅이 허용 (현재 ValidateCreate는 no-op 스캐폴딩)",
+    "subsection": "E21.3",
+    "in_437": true
+  },
+  {
+    "id": "E21.4",
+    "category": "E21",
+    "type": "C",
+    "description": "C (envtest)",
+    "subsection": "E21",
+    "in_437": true
+  },
+  {
+    "id": "E21.4-1",
+    "category": "E21",
+    "type": "C",
+    "description": "인 PillarTarget 생성 시도 → 위반",
+    "subsection": "E21.4",
+    "in_437": true
+  },
+  {
+    "id": "E21.4-2",
+    "category": "E21",
+    "type": "C",
+    "description": "→ 위반",
+    "subsection": "E21.4",
+    "in_437": true
+  },
+  {
+    "id": "E21.4-3",
+    "category": "E21",
+    "type": "C",
+    "description": "→ 위반",
+    "subsection": "E21.4",
+    "in_437": true
+  },
+  {
+    "id": "E21.4-4",
+    "category": "E21",
+    "type": "C",
+    "description": "→ 위반",
+    "subsection": "E21.4",
+    "in_437": true
+  },
+  {
+    "id": "E21.4-5",
+    "category": "E21",
+    "type": "C",
+    "description": "인 PillarPool 생성 → 위반",
+    "subsection": "E21.4",
+    "in_437": true
+  },
+  {
+    "id": "E21.4-6",
+    "category": "E21",
+    "type": "C",
+    "description": "→ 위반",
+    "subsection": "E21.4",
+    "in_437": true
+  },
+  {
+    "id": "E21.4-7",
+    "category": "E21",
+    "type": "C",
+    "description": "— 위반",
+    "subsection": "E21.4",
+    "in_437": true
+  },
+  {
+    "id": "E21.4-8",
+    "category": "E21",
+    "type": "C",
+    "description": "→ 위반",
+    "subsection": "E21.4",
+    "in_437": true
+  },
+  {
+    "id": "E22.1",
+    "category": "E22",
+    "type": "A",
+    "description": "A (in-process)",
+    "subsection": "E22",
+    "in_437": true
+  },
+  {
+    "id": "E22.1-1",
+    "category": "E22",
+    "type": "A",
+    "description": "로 CreateVolume 호출 시 agent.ExportVolume이 (\"only NVMe-oF TCP is supported\") 반환 → CSI 컨트롤러가 비-OK 상태 전파",
+    "subsection": "E22.1",
+    "in_437": true
+  },
+  {
+    "id": "E22.1-2",
+    "category": "E22",
+    "type": "A",
+    "description": "로 CreateVolume 호출 시 agent.ExportVolume이 반환",
+    "subsection": "E22.1",
+    "in_437": true
+  },
+  {
+    "id": "E22.1-3",
+    "category": "E22",
+    "type": "A",
+    "description": "— 알 수 없는 프로토콜 문자열이 으로 매핑되어 agent에 전달됨 → agent가 Unimplemented 반환",
+    "subsection": "E22.1",
+    "in_437": true
+  },
+  {
+    "id": "E22.1-4",
+    "category": "E22",
+    "type": "A",
+    "description": "ControllerPublishVolume에서 볼륨 ID를 가진 PillarVolume CRD 존재 시 agent.AllowInitiator가 반환 → ControllerPublishVolume이 오류 전파",
+    "subsection": "E22.1",
+    "in_437": true
+  },
+  {
+    "id": "E22.2",
+    "category": "E22",
+    "type": "A",
+    "description": "A (in-process)",
+    "subsection": "E22",
+    "in_437": true
+  },
+  {
+    "id": "E22.2-1",
+    "category": "E22",
+    "type": "A",
+    "description": "에 지정 시 반환 및 configfs 사이드 이펙트 없음 — 경계 검사 동작",
+    "subsection": "E22.2",
+    "in_437": true
+  },
+  {
+    "id": "E22.2-2",
+    "category": "E22",
+    "type": "A",
+    "description": "에 지정 시 반환 — 이 알 수 없는 문자열을 UNSPECIFIED로 변환하는 엔드투엔드 경로 커버",
+    "subsection": "E22.2",
+    "in_437": true
+  },
+  {
+    "id": "E22.2-3",
+    "category": "E22",
+    "type": "A",
+    "description": "에 지정 시 반환 및 디렉터리 미생성 — 경계 검사",
+    "subsection": "E22.2",
+    "in_437": true
+  },
+  {
+    "id": "E22.2-4",
+    "category": "E22",
+    "type": "A",
+    "description": "에 지정 시 반환 — 경계 검사",
+    "subsection": "E22.2",
+    "in_437": true
+  },
+  {
+    "id": "E22.2-5",
+    "category": "E22",
+    "type": "A",
+    "description": "에 지정 시 반환 — 존재하지 않는 iSCSI 서브시스템 삭제 시도 없음; 경계 검사",
+    "subsection": "E22.2",
+    "in_437": true
+  },
+  {
+    "id": "E22.2-6",
+    "category": "E22",
+    "type": "A",
+    "description": "에 NVMe-oF TCP 이외 프로토콜 엔트리 포함 시 해당 항목 로 보고하고, NVMe-oF TCP 항목은 정상 처리 — 프로토콜 타입 검사 동작",
+    "subsection": "E22.2",
+    "in_437": true
+  },
+  {
+    "id": "E22.3",
+    "category": "E22",
+    "type": "A",
+    "description": "A (in-process)",
+    "subsection": "E22",
+    "in_437": true
+  },
+  {
+    "id": "E22.3-1",
+    "category": "E22",
+    "type": "A",
+    "description": "— 알 수 없는 백엔드 타입 문자열이 으로 매핑되어 요청에 전달됨",
+    "subsection": "E22.3",
+    "in_437": true
+  },
+  {
+    "id": "E22.3-2",
+    "category": "E22",
+    "type": "A",
+    "description": "으로 CreateVolume 호출 시 agent.CreateVolume이 반환 — 현재 단일 ZFS 스토리지 노드에서 LVM 백엔드를 지원하지 않는 시나리오",
+    "subsection": "E22.3",
+    "in_437": true
+  },
+  {
+    "id": "E22.4",
+    "category": "E22",
+    "type": "A",
+    "description": "수동/스테이징",
+    "subsection": "E22",
+    "in_437": true
+  },
+  {
+    "id": "E23.1.1",
+    "category": "E23",
+    "type": "C",
+    "description": "스펙으로 ValidateCreate 통과 (현재 구현은 항상 허용)",
+    "subsection": "E23.1",
+    "in_437": true
+  },
+  {
+    "id": "E23.1.2",
+    "category": "E23",
+    "type": "C",
+    "description": "스펙으로 ValidateCreate 통과",
+    "subsection": "E23.1",
+    "in_437": true
+  },
+  {
+    "id": "E23.1.3",
+    "category": "E23",
+    "type": "C",
+    "description": "스펙으로 ValidateCreate 통과",
+    "subsection": "E23.1",
+    "in_437": true
+  },
+  {
+    "id": "E23.1.4",
+    "category": "E23",
+    "type": "C",
+    "description": "PillarProtocol 생성 후 첫 번째 호출에서 파이널라이저 자동 추가",
+    "subsection": "E23.1",
+    "in_437": true
+  },
+  {
+    "id": "E23.1.5",
+    "category": "E23",
+    "type": "C",
+    "description": "동일 PillarProtocol을 두 번 조정해도 파이널라이저 중복 없음",
+    "subsection": "E23.1",
+    "in_437": true
+  },
+  {
+    "id": "E23.2.1",
+    "category": "E23",
+    "type": "C",
+    "description": "에 열거형 외 값 설정 시 API 서버가 HTTP 422로 거부",
+    "subsection": "E23.2",
+    "in_437": true
+  },
+  {
+    "id": "E23.2.2",
+    "category": "E23",
+    "type": "C",
+    "description": "(최솟값 미달) 시 API 서버가 거부",
+    "subsection": "E23.2",
+    "in_437": true
+  },
+  {
+    "id": "E23.2.3",
+    "category": "E23",
+    "type": "C",
+    "description": "(최댓값 초과) 시 API 서버가 거부",
+    "subsection": "E23.2",
+    "in_437": true
+  },
+  {
+    "id": "E23.2.4",
+    "category": "E23",
+    "type": "C",
+    "description": "에 허용 외 값(, 외) 설정 시 거부",
+    "subsection": "E23.2",
+    "in_437": true
+  },
+  {
+    "id": "E23.3.1",
+    "category": "E23",
+    "type": "C",
+    "description": "→ 변경 시 오류 반환",
+    "subsection": "E23.3",
+    "in_437": true
+  },
+  {
+    "id": "E23.3.2",
+    "category": "E23",
+    "type": "C",
+    "description": "→ 변경 시 거부",
+    "subsection": "E23.3",
+    "in_437": true
+  },
+  {
+    "id": "E23.3.3",
+    "category": "E23",
+    "type": "C",
+    "description": "변경은 허용 (식별 필드 아님)",
+    "subsection": "E23.3",
+    "in_437": true
+  },
+  {
+    "id": "E23.4.1",
+    "category": "E23",
+    "type": "C",
+    "description": "참조 PillarBinding 없는 정상 조정에서",
+    "subsection": "E23.4",
+    "in_437": true
+  },
+  {
+    "id": "E23.4.2",
+    "category": "E23",
+    "type": "C",
+    "description": "참조 PillarBinding이 존재하는 정상 조정에서도",
+    "subsection": "E23.4",
+    "in_437": true
+  },
+  {
+    "id": "E23.4.3",
+    "category": "E23",
+    "type": "C",
+    "description": "조건 메시지에 값이 포함됨",
+    "subsection": "E23.4",
+    "in_437": true
+  },
+  {
+    "id": "E23.4.4",
+    "category": "E23",
+    "type": "C",
+    "description": "삭제 요청 중 참조 PillarBinding 존재 시",
+    "subsection": "E23.4",
+    "in_437": true
+  },
+  {
+    "id": "E23.4.5",
+    "category": "E23",
+    "type": "C",
+    "description": "정상 상태에서 — 불필요한 재조정 없음",
+    "subsection": "E23.4",
+    "in_437": true
+  },
+  {
+    "id": "E23.5.1",
+    "category": "E23",
+    "type": "C",
+    "description": "참조 PillarBinding 없을 때 ,",
+    "subsection": "E23.5",
+    "in_437": true
+  },
+  {
+    "id": "E23.5.2",
+    "category": "E23",
+    "type": "C",
+    "description": "참조 PillarBinding 1개 시",
+    "subsection": "E23.5",
+    "in_437": true
+  },
+  {
+    "id": "E23.5.3",
+    "category": "E23",
+    "type": "C",
+    "description": "PillarBinding → PillarPool → 체인으로 자동 계산",
+    "subsection": "E23.5",
+    "in_437": true
+  },
+  {
+    "id": "E23.5.4",
+    "category": "E23",
+    "type": "C",
+    "description": "여러 PillarBinding이 동일 풀 참조해도 에 중복 없이 정렬된 목록",
+    "subsection": "E23.5",
+    "in_437": true
+  },
+  {
+    "id": "E23.5.5",
+    "category": "E23",
+    "type": "C",
+    "description": "참조 PillarPool이 없을 때 는 정확히 집계되나 (우아한 저하)",
+    "subsection": "E23.5",
+    "in_437": true
+  },
+  {
+    "id": "E23.5.6",
+    "category": "E23",
+    "type": "C",
+    "description": "PillarBinding 삭제 후 조정 시 감소",
+    "subsection": "E23.5",
+    "in_437": true
+  },
+  {
+    "id": "E23.6.1",
+    "category": "E23",
+    "type": "C",
+    "description": "참조 PillarBinding이 존재하는 동안 삭제 차단;",
+    "subsection": "E23.6",
+    "in_437": true
+  },
+  {
+    "id": "E23.6.2",
+    "category": "E23",
+    "type": "C",
+    "description": "삭제 차단 시 설정; 에 차단 바인딩 수 반영",
+    "subsection": "E23.6",
+    "in_437": true
+  },
+  {
+    "id": "E23.6.3",
+    "category": "E23",
+    "type": "C",
+    "description": "삭제 차단 중 파이널라이저 제거되지 않음",
+    "subsection": "E23.6",
+    "in_437": true
+  },
+  {
+    "id": "E23.6.4",
+    "category": "E23",
+    "type": "C",
+    "description": "참조 PillarBinding 없을 때 즉시 파이널라이저 제거 및 삭제 진행",
+    "subsection": "E23.6",
+    "in_437": true
+  },
+  {
+    "id": "E23.6.5",
+    "category": "E23",
+    "type": "C",
+    "description": "참조 PillarBinding 제거 후 다음 조정에서 파이널라이저 제거 및 삭제 완료",
+    "subsection": "E23.6",
+    "in_437": true
+  },
+  {
+    "id": "E23.6.6",
+    "category": "E23",
+    "type": "C",
+    "description": "여러 PillarBinding이 참조할 때 상태 메시지에 모든 이름이 나열됨",
+    "subsection": "E23.6",
+    "in_437": true
+  },
+  {
+    "id": "E24.1",
+    "category": "E24",
+    "type": "A",
+    "description": "4개",
+    "subsection": "E24.10",
+    "in_437": true
+  },
+  {
+    "id": "E24.1-1",
+    "category": "E24",
+    "type": "A",
+    "description": "8단계 전체 라이프사이클 정상 경로 완전 검증. 를 통해 ControllerServer와 NodeServer가 단일 mockAgentServer를 공유하며 전체 체인을 인프로세스로 실행",
+    "subsection": "E24.1",
+    "in_437": true
+  },
+  {
+    "id": "E24.1-2",
+    "category": "E24",
+    "type": "A",
+    "description": "CreateVolume의 VolumeContext(NQN/address/port)가 키 변환 없이 NodeStageVolume의 인수로 전달됨을 검증. 컨트롤러와 노드 서버가 VolumeContext 키 이름에 합의(no translation)되어 있어야 함",
+    "subsection": "E24.1",
+    "in_437": true
+  },
+  {
+    "id": "E24.1-3",
+    "category": "E24",
+    "type": "A",
+    "description": "8단계 체인에서 올바른 순서 준수: 각 단계 완료 후 다음 단계 진행 시 모든 agent RPC가 정확히 1회씩 호출됨",
+    "subsection": "E24.1",
+    "in_437": true
+  },
+  {
+    "id": "E24.1-4",
+    "category": "E24",
+    "type": "A",
+    "description": "8단계 각 단계를 두 번씩 동일 인수로 호출해도 오류 없이 최종 상태 동일 — CSI 명세의 멱등성 요구 통합 검증",
+    "subsection": "E24.1",
+    "in_437": true
+  },
+  {
+    "id": "E24.10",
+    "category": "E24",
+    "type": "A",
+    "description": "2개",
+    "subsection": "E24.10",
+    "in_437": true
+  },
+  {
+    "id": "E24.10-1",
+    "category": "E24",
+    "type": "A",
+    "description": "순서 제약 위반 (NodeStage 전 NodePublish 등) 탐지 및 FailedPrecondition 반환",
+    "subsection": "E24.10",
+    "in_437": true
+  },
+  {
+    "id": "E24.10-2",
+    "category": "E24",
+    "type": "A",
+    "description": "존재하지 않는 VolumeId에 DeleteVolume 멱등 성공",
+    "subsection": "E24.10",
+    "in_437": true
+  },
+  {
+    "id": "E24.2",
+    "category": "E24",
+    "type": "A",
+    "description": "4개",
+    "subsection": "E24.10",
+    "in_437": true
+  },
+  {
+    "id": "E24.2-1",
+    "category": "E24",
+    "type": "A",
+    "description": "agent.CreateVolume 성공 + agent.ExportVolume 실패 시 PillarVolume CRD Phase=CreatePartial",
+    "subsection": "E24.2",
+    "in_437": true
+  },
+  {
+    "id": "E24.2-2",
+    "category": "E24",
+    "type": "A",
+    "description": "부분 실패 후 재시도 시 CRD Phase=Ready 전환 및 ExportInfo 채워짐",
+    "subsection": "E24.2",
+    "in_437": true
+  },
+  {
+    "id": "E24.2-3",
+    "category": "E24",
+    "type": "A",
+    "description": "skipBackend 최적화 — 재시도 시 agent.CreateVolume 재호출 없음",
+    "subsection": "E24.2",
+    "in_437": true
+  },
+  {
+    "id": "E24.2-4",
+    "category": "E24",
+    "type": "A",
+    "description": "export 실패 후 재시도 시 zvol 중복 생성 없음 (E6.3-1 상위 통합 뷰)",
+    "subsection": "E24.2",
+    "in_437": true
+  },
+  {
+    "id": "E24.3",
+    "category": "E24",
+    "type": "A",
+    "description": "2개",
+    "subsection": "E24.10",
+    "in_437": true
+  },
+  {
+    "id": "E24.3-1",
+    "category": "E24",
+    "type": "A",
+    "description": "AllowInitiator 실패 시 ControllerPublishVolume이 오류 반환",
+    "subsection": "E24.3",
+    "in_437": true
+  },
+  {
+    "id": "E24.3-2",
+    "category": "E24",
+    "type": "A",
+    "description": "동일 인수로 ControllerPublishVolume 2회 호출 시 멱등 성공 (E7.1 상위 통합 뷰)",
+    "subsection": "E24.3",
+    "in_437": true
+  },
+  {
+    "id": "E24.4",
+    "category": "E24",
+    "type": "A",
+    "description": "3개",
+    "subsection": "E24.10",
+    "in_437": true
+  },
+  {
+    "id": "E24.4-1",
+    "category": "E24",
+    "type": "A",
+    "description": "NVMe-oF 연결 실패 시 NodeStageVolume이 오류 반환",
+    "subsection": "E24.4",
+    "in_437": true
+  },
+  {
+    "id": "E24.4-2",
+    "category": "E24",
+    "type": "A",
+    "description": "디바이스 포맷 실패 시 NodeStageVolume이 오류 반환",
+    "subsection": "E24.4",
+    "in_437": true
+  },
+  {
+    "id": "E24.4-3",
+    "category": "E24",
+    "type": "A",
+    "description": "이미 스테이징된 볼륨을 다시 NodeStageVolume 호출 시 멱등 성공",
+    "subsection": "E24.4",
+    "in_437": true
+  },
+  {
+    "id": "E24.5",
+    "category": "E24",
+    "type": "A",
+    "description": "3개",
+    "subsection": "E24.10",
+    "in_437": true
+  },
+  {
+    "id": "E24.5-1",
+    "category": "E24",
+    "type": "A",
+    "description": "바인드 마운트 실패 시 NodePublishVolume이 오류 반환",
+    "subsection": "E24.5",
+    "in_437": true
+  },
+  {
+    "id": "E24.5-2",
+    "category": "E24",
+    "type": "A",
+    "description": "NodePublishVolume 2회 호출 시 두 번째는 no-op (E7.2 상위 통합 뷰)",
+    "subsection": "E24.5",
+    "in_437": true
+  },
+  {
+    "id": "E24.5-3",
+    "category": "E24",
+    "type": "A",
+    "description": "읽기 전용 NodePublishVolume 2회 호출 멱등성 (E7.2 상위 통합 뷰)",
+    "subsection": "E24.5",
+    "in_437": true
+  },
+  {
+    "id": "E24.6",
+    "category": "E24",
+    "type": "A",
+    "description": "2개",
+    "subsection": "E24.10",
+    "in_437": true
+  },
+  {
+    "id": "E24.6-1",
+    "category": "E24",
+    "type": "A",
+    "description": "언마운트 실패 시 NodeUnpublishVolume이 오류 반환",
+    "subsection": "E24.6",
+    "in_437": true
+  },
+  {
+    "id": "E24.6-2",
+    "category": "E24",
+    "type": "A",
+    "description": "이미 언마운트된 TargetPath에 NodeUnpublishVolume 멱등 성공",
+    "subsection": "E24.6",
+    "in_437": true
+  },
+  {
+    "id": "E24.7",
+    "category": "E24",
+    "type": "A",
+    "description": "2개",
+    "subsection": "E24.10",
+    "in_437": true
+  },
+  {
+    "id": "E24.7-1",
+    "category": "E24",
+    "type": "A",
+    "description": "NVMe-oF 연결 해제 실패 시 NodeUnstageVolume이 오류 반환",
+    "subsection": "E24.7",
+    "in_437": true
+  },
+  {
+    "id": "E24.7-2",
+    "category": "E24",
+    "type": "A",
+    "description": "이미 언스테이징된 볼륨에 NodeUnstageVolume 멱등 성공",
+    "subsection": "E24.7",
+    "in_437": true
+  },
+  {
+    "id": "E24.8",
+    "category": "E24",
+    "type": "A",
+    "description": "2개",
+    "subsection": "E24.10",
+    "in_437": true
+  },
+  {
+    "id": "E24.8-1",
+    "category": "E24",
+    "type": "A",
+    "description": "DenyInitiator 실패 시 ControllerUnpublishVolume이 오류 반환",
+    "subsection": "E24.8",
+    "in_437": true
+  },
+  {
+    "id": "E24.8-2",
+    "category": "E24",
+    "type": "A",
+    "description": "존재하지 않는 볼륨에 ControllerUnpublishVolume 시 NotFound 또는 성공",
+    "subsection": "E24.8",
+    "in_437": true
+  },
+  {
+    "id": "E24.9",
+    "category": "E24",
+    "type": "A",
+    "description": "4개",
+    "subsection": "E24.10",
+    "in_437": true
+  },
+  {
+    "id": "E24.9-1",
+    "category": "E24",
+    "type": "A",
+    "description": "agent.DeleteVolume 일시적 실패 시 DeleteVolume이 오류 반환 (CO 재시도 허용)",
+    "subsection": "E24.9",
+    "in_437": true
+  },
+  {
+    "id": "E24.9-2",
+    "category": "E24",
+    "type": "A",
+    "description": "성공적인 DeleteVolume이 PillarVolume CRD를 제거 (E6.2 상위 통합 뷰)",
+    "subsection": "E24.9",
+    "in_437": true
+  },
+  {
+    "id": "E24.9-3",
+    "category": "E24",
+    "type": "A",
+    "description": "CreatePartial 상태 볼륨의 DeleteVolume 성공 및 CRD 정리 (E6.2 상위 통합 뷰)",
+    "subsection": "E24.9",
+    "in_437": true
+  },
+  {
+    "id": "E24.9-4",
+    "category": "E24",
+    "type": "A",
+    "description": "부분 생성 상태 DeleteVolume 후 zvol 레지스트리 정확한 1→0 감소 (E6.3 상위 통합 뷰)",
+    "subsection": "E24.9",
+    "in_437": true
+  },
+  {
+    "id": "E25.1.1",
+    "category": "E25",
+    "type": "C",
+    "description": "와 가 설정된 유효한 스펙으로 ValidateCreate 통과",
+    "subsection": "E25.1",
+    "in_437": true
+  },
+  {
+    "id": "E25.1.2",
+    "category": "E25",
+    "type": "C",
+    "description": "PillarBinding 생성 후 첫 번째 호출에서 파이널라이저 자동 추가",
+    "subsection": "E25.1",
+    "in_437": true
+  },
+  {
+    "id": "E25.1.3",
+    "category": "E25",
+    "type": "C",
+    "description": "동일 PillarBinding을 두 번 조정해도 파이널라이저 중복 없음",
+    "subsection": "E25.1",
+    "in_437": true
+  },
+  {
+    "id": "E25.10.1",
+    "category": "E25",
+    "type": "C",
+    "description": "설정 시 StorageClass에 반영",
+    "subsection": "E25.10",
+    "in_437": true
+  },
+  {
+    "id": "E25.10.2",
+    "category": "E25",
+    "type": "C",
+    "description": "설정 시 StorageClass에 반영",
+    "subsection": "E25.10",
+    "in_437": true
+  },
+  {
+    "id": "E25.11.1",
+    "category": "E25",
+    "type": "C",
+    "description": "StorageClass를 참조하는 PVC 존재 시 삭제 차단; ;",
+    "subsection": "E25.11",
+    "in_437": true
+  },
+  {
+    "id": "E25.11.2",
+    "category": "E25",
+    "type": "C",
+    "description": "삭제 차단 중 파이널라이저 제거되지 않음",
+    "subsection": "E25.11",
+    "in_437": true
+  },
+  {
+    "id": "E25.11.3",
+    "category": "E25",
+    "type": "C",
+    "description": "참조 PVC 없을 때 StorageClass 삭제 후 파이널라이저 제거;",
+    "subsection": "E25.11",
+    "in_437": true
+  },
+  {
+    "id": "E25.11.4",
+    "category": "E25",
+    "type": "C",
+    "description": "PVC 제거 후 다음 조정에서 파이널라이저 제거 및 StorageClass 삭제 완료",
+    "subsection": "E25.11",
+    "in_437": true
+  },
+  {
+    "id": "E25.2.1",
+    "category": "E25",
+    "type": "C",
+    "description": "가 빈 문자열인 경우 API 서버가 HTTP 422로 거부",
+    "subsection": "E25.2",
+    "in_437": true
+  },
+  {
+    "id": "E25.2.2",
+    "category": "E25",
+    "type": "C",
+    "description": "가 빈 문자열인 경우 API 서버가 거부",
+    "subsection": "E25.2",
+    "in_437": true
+  },
+  {
+    "id": "E25.2.3",
+    "category": "E25",
+    "type": "C",
+    "description": "에 허용 외 값 설정 시 거부",
+    "subsection": "E25.2",
+    "in_437": true
+  },
+  {
+    "id": "E25.3.1",
+    "category": "E25",
+    "type": "C",
+    "description": "변경 시 오류 반환",
+    "subsection": "E25.3",
+    "in_437": true
+  },
+  {
+    "id": "E25.3.2",
+    "category": "E25",
+    "type": "C",
+    "description": "변경 시 오류 반환",
+    "subsection": "E25.3",
+    "in_437": true
+  },
+  {
+    "id": "E25.3.3",
+    "category": "E25",
+    "type": "C",
+    "description": "변경은 허용 (비식별 필드)",
+    "subsection": "E25.3",
+    "in_437": true
+  },
+  {
+    "id": "E25.4.1",
+    "category": "E25",
+    "type": "C",
+    "description": "풀 참조 시 자동 설정",
+    "subsection": "E25.4",
+    "in_437": true
+  },
+  {
+    "id": "E25.4.2",
+    "category": "E25",
+    "type": "C",
+    "description": "풀 참조 시 자동 설정",
+    "subsection": "E25.4",
+    "in_437": true
+  },
+  {
+    "id": "E25.4.3",
+    "category": "E25",
+    "type": "C",
+    "description": "풀 참조 시 자동 설정",
+    "subsection": "E25.4",
+    "in_437": true
+  },
+  {
+    "id": "E25.4.4",
+    "category": "E25",
+    "type": "C",
+    "description": "풀 참조 시 자동 설정",
+    "subsection": "E25.4",
+    "in_437": true
+  },
+  {
+    "id": "E25.4.5",
+    "category": "E25",
+    "type": "C",
+    "description": "이 명시적으로 설정된 경우 Defaulter가 덮어쓰지 않음",
+    "subsection": "E25.4",
+    "in_437": true
+  },
+  {
+    "id": "E25.4.6",
+    "category": "E25",
+    "type": "C",
+    "description": "참조 PillarPool이 없을 때 설정 건너뜀 (nil 유지, 오류 없음)",
+    "subsection": "E25.4",
+    "in_437": true
+  },
+  {
+    "id": "E25.5.1",
+    "category": "E25",
+    "type": "C",
+    "description": "블록 백엔드(zfs-zvol) + 블록 프로토콜(nvmeof-tcp) → 허용",
+    "subsection": "E25.5",
+    "in_437": true
+  },
+  {
+    "id": "E25.5.10",
+    "category": "E25",
+    "type": "C",
+    "description": "protocol 미존재 시 호환성 검사 건너뜀 — 컨트롤러 조건으로 위임",
+    "subsection": "E25.5",
+    "in_437": true
+  },
+  {
+    "id": "E25.5.2",
+    "category": "E25",
+    "type": "C",
+    "description": "블록 백엔드(lvm-lv) + 블록 프로토콜(iscsi) → 허용",
+    "subsection": "E25.5",
+    "in_437": true
+  },
+  {
+    "id": "E25.5.3",
+    "category": "E25",
+    "type": "C",
+    "description": "파일 백엔드(zfs-dataset) + 파일 프로토콜(nfs) → 허용",
+    "subsection": "E25.5",
+    "in_437": true
+  },
+  {
+    "id": "E25.5.4",
+    "category": "E25",
+    "type": "C",
+    "description": "파일 백엔드(dir) + 파일 프로토콜(nfs) → 허용",
+    "subsection": "E25.5",
+    "in_437": true
+  },
+  {
+    "id": "E25.5.5",
+    "category": "E25",
+    "type": "C",
+    "description": "블록 백엔드(zfs-zvol) + 파일 프로토콜(nfs) → 거부; 경로 오류",
+    "subsection": "E25.5",
+    "in_437": true
+  },
+  {
+    "id": "E25.5.6",
+    "category": "E25",
+    "type": "C",
+    "description": "블록 백엔드(lvm-lv) + 파일 프로토콜(nfs) → 거부",
+    "subsection": "E25.5",
+    "in_437": true
+  },
+  {
+    "id": "E25.5.7",
+    "category": "E25",
+    "type": "C",
+    "description": "파일 백엔드(zfs-dataset) + 블록 프로토콜(nvmeof-tcp) → 거부",
+    "subsection": "E25.5",
+    "in_437": true
+  },
+  {
+    "id": "E25.5.8",
+    "category": "E25",
+    "type": "C",
+    "description": "파일 백엔드(dir) + 블록 프로토콜(iscsi) → 거부",
+    "subsection": "E25.5",
+    "in_437": true
+  },
+  {
+    "id": "E25.5.9",
+    "category": "E25",
+    "type": "C",
+    "description": "pool 미존재 시 호환성 검사 건너뜀 — 컨트롤러 조건으로 위임",
+    "subsection": "E25.5",
+    "in_437": true
+  },
+  {
+    "id": "E25.6.1",
+    "category": "E25",
+    "type": "C",
+    "description": "참조 PillarPool 미존재 시 ; ;",
+    "subsection": "E25.6",
+    "in_437": true
+  },
+  {
+    "id": "E25.6.2",
+    "category": "E25",
+    "type": "C",
+    "description": "참조 PillarPool의 Ready 조건이 False일 때 ; pool의 오류 메시지 전파",
+    "subsection": "E25.6",
+    "in_437": true
+  },
+  {
+    "id": "E25.6.3",
+    "category": "E25",
+    "type": "C",
+    "description": "PillarPool에 Ready 조건이 아직 없을 때",
+    "subsection": "E25.6",
+    "in_437": true
+  },
+  {
+    "id": "E25.7.1",
+    "category": "E25",
+    "type": "C",
+    "description": "PillarPool Ready + PillarProtocol 미존재 시 ; 유지",
+    "subsection": "E25.7",
+    "in_437": true
+  },
+  {
+    "id": "E25.7.2",
+    "category": "E25",
+    "type": "C",
+    "description": "PillarProtocol Ready 조건이 False일 때 ; protocol 오류 메시지 전파",
+    "subsection": "E25.7",
+    "in_437": true
+  },
+  {
+    "id": "E25.7.3",
+    "category": "E25",
+    "type": "C",
+    "description": "PillarProtocol에 Ready 조건이 없을 때",
+    "subsection": "E25.7",
+    "in_437": true
+  },
+  {
+    "id": "E25.8.1",
+    "category": "E25",
+    "type": "C",
+    "description": "zfs-zvol + nvmeof-tcp 조합 → ; ; StorageClass 생성",
+    "subsection": "E25.8",
+    "in_437": true
+  },
+  {
+    "id": "E25.8.2",
+    "category": "E25",
+    "type": "C",
+    "description": "zfs-zvol + nfs 비호환 → ; ; StorageClass 미생성",
+    "subsection": "E25.8",
+    "in_437": true
+  },
+  {
+    "id": "E25.8.3",
+    "category": "E25",
+    "type": "C",
+    "description": "모든 조건 충족 시 — 불필요한 재조정 없음",
+    "subsection": "E25.8",
+    "in_437": true
+  },
+  {
+    "id": "E25.9.1",
+    "category": "E25",
+    "type": "C",
+    "description": "생성된 StorageClass에 PillarBinding을 가리키는 ownerReference(, ) 설정",
+    "subsection": "E25.9",
+    "in_437": true
+  },
+  {
+    "id": "E25.9.2",
+    "category": "E25",
+    "type": "C",
+    "description": "생성된 StorageClass의 provisioner가",
+    "subsection": "E25.9",
+    "in_437": true
+  },
+  {
+    "id": "E25.9.3",
+    "category": "E25",
+    "type": "C",
+    "description": "생성된 StorageClass의 parameters에 pool, protocol, backend-type, protocol-type 파라미터 포함",
+    "subsection": "E25.9",
+    "in_437": true
+  },
+  {
+    "id": "E25.9.4",
+    "category": "E25",
+    "type": "C",
+    "description": "StorageClass ReclaimPolicy 기본값",
+    "subsection": "E25.9",
+    "in_437": true
+  },
+  {
+    "id": "E25.9.5",
+    "category": "E25",
+    "type": "C",
+    "description": "StorageClass VolumeBindingMode 기본값",
+    "subsection": "E25.9",
+    "in_437": true
+  },
+  {
+    "id": "E25.9.6",
+    "category": "E25",
+    "type": "C",
+    "description": "StorageClass 생성 후 에 이름 반영",
+    "subsection": "E25.9",
+    "in_437": true
+  },
+  {
+    "id": "E25.9.7",
+    "category": "E25",
+    "type": "C",
+    "description": "설정 시 해당 이름으로 StorageClass 생성; 바인딩 이름으로는 미생성; 업데이트",
+    "subsection": "E25.9",
+    "in_437": true
+  },
+  {
+    "id": "E26.1.1",
+    "category": "E26",
+    "type": "C",
+    "description": "PillarPool 생성 시 참조 PillarTarget이 없으면 조건 설정",
+    "subsection": "E26.1",
+    "in_437": true
+  },
+  {
+    "id": "E26.1.2",
+    "category": "E26",
+    "type": "C",
+    "description": "참조 PillarTarget이 존재하지만 이면 조건 설정",
+    "subsection": "E26.1",
+    "in_437": true
+  },
+  {
+    "id": "E26.1.3",
+    "category": "E26",
+    "type": "C",
+    "description": "참조 PillarTarget이 이면 조건 설정",
+    "subsection": "E26.1",
+    "in_437": true
+  },
+  {
+    "id": "E26.1.4",
+    "category": "E26",
+    "type": "C",
+    "description": "PillarBinding 생성 시 참조 PillarPool이 없으면 조건 설정",
+    "subsection": "E26.1",
+    "in_437": true
+  },
+  {
+    "id": "E26.1.5",
+    "category": "E26",
+    "type": "C",
+    "description": "참조 PillarPool이 존재하지만 이면 조건 설정",
+    "subsection": "E26.1",
+    "in_437": true
+  },
+  {
+    "id": "E26.1.6",
+    "category": "E26",
+    "type": "C",
+    "description": "PillarBinding 생성 시 참조 PillarProtocol이 없으면 조건 설정",
+    "subsection": "E26.1",
+    "in_437": true
+  },
+  {
+    "id": "E26.1.7",
+    "category": "E26",
+    "type": "C",
+    "description": "PillarPool과 PillarProtocol 둘 다 없을 때 두 조건 모두",
+    "subsection": "E26.1",
+    "in_437": true
+  },
+  {
+    "id": "E26.1.8",
+    "category": "E26",
+    "type": "C",
+    "description": "Pool + Protocol → Binding , StorageClass 생성",
+    "subsection": "E26.1",
+    "in_437": true
+  },
+  {
+    "id": "E26.2.1",
+    "category": "E26",
+    "type": "C",
+    "description": "PillarTarget이 로 전환 시 PillarPool의 조건이 로 전이",
+    "subsection": "E26.2",
+    "in_437": true
+  },
+  {
+    "id": "E26.2.2",
+    "category": "E26",
+    "type": "C",
+    "description": "PillarTarget이 로 회복 시 PillarPool 복원",
+    "subsection": "E26.2",
+    "in_437": true
+  },
+  {
+    "id": "E26.2.3",
+    "category": "E26",
+    "type": "C",
+    "description": "PillarPool이 로 전환 시 PillarBinding의 조건이 로 전이",
+    "subsection": "E26.2",
+    "in_437": true
+  },
+  {
+    "id": "E26.2.4",
+    "category": "E26",
+    "type": "C",
+    "description": "PillarProtocol이 로 전환 시 PillarBinding 전이",
+    "subsection": "E26.2",
+    "in_437": true
+  },
+  {
+    "id": "E26.2.5",
+    "category": "E26",
+    "type": "C",
+    "description": "PillarTarget 회복 시 Pool→Binding 전체 체인 Ready 복원",
+    "subsection": "E26.2",
+    "in_437": true
+  },
+  {
+    "id": "E26.2.6",
+    "category": "E26",
+    "type": "C",
+    "description": "모든 상위 의존성 Ready 후 Binding Ready 전이 시 StorageClass 생성",
+    "subsection": "E26.2",
+    "in_437": true
+  },
+  {
+    "id": "E26.2.7",
+    "category": "E26",
+    "type": "C",
+    "description": "PillarBinding 조정 완료 시 PillarProtocol 증가",
+    "subsection": "E26.2",
+    "in_437": true
+  },
+  {
+    "id": "E26.3.1",
+    "category": "E26",
+    "type": "C",
+    "description": "PillarPool이 로 참조하는 PillarTarget 삭제 시 파이널라이저로 차단",
+    "subsection": "E26.3",
+    "in_437": true
+  },
+  {
+    "id": "E26.3.2",
+    "category": "E26",
+    "type": "C",
+    "description": "참조 PillarPool 삭제 후 PillarTarget 삭제 완료",
+    "subsection": "E26.3",
+    "in_437": true
+  },
+  {
+    "id": "E26.3.3",
+    "category": "E26",
+    "type": "C",
+    "description": "PillarBinding이 로 참조하는 PillarPool 삭제 시 파이널라이저로 차단",
+    "subsection": "E26.3",
+    "in_437": true
+  },
+  {
+    "id": "E26.3.4",
+    "category": "E26",
+    "type": "C",
+    "description": "참조 PillarBinding 삭제 후 PillarPool 삭제 완료",
+    "subsection": "E26.3",
+    "in_437": true
+  },
+  {
+    "id": "E26.3.5",
+    "category": "E26",
+    "type": "C",
+    "description": "PillarBinding이 로 참조하는 PillarProtocol 삭제 시 파이널라이저로 차단",
+    "subsection": "E26.3",
+    "in_437": true
+  },
+  {
+    "id": "E26.3.6",
+    "category": "E26",
+    "type": "C",
+    "description": "참조 PillarBinding 삭제 후 PillarProtocol 삭제 완료",
+    "subsection": "E26.3",
+    "in_437": true
+  },
+  {
+    "id": "E26.3.7",
+    "category": "E26",
+    "type": "C",
+    "description": "의존 역순(Binding→Pool→Target) 삭제 시 전체 체인 정상 삭제 완료",
+    "subsection": "E26.3",
+    "in_437": true
+  },
+  {
+    "id": "E26.3.8",
+    "category": "E26",
+    "type": "C",
+    "description": "참조 하위 CRD가 없는 CRD는 파이널라이저 즉시 제거 후 삭제 완료",
+    "subsection": "E26.3",
+    "in_437": true
+  },
+  {
+    "id": "E27.1-1",
+    "category": "E27",
+    "type": "B",
+    "description": "을 기본값으로 실행하면 릴리스가 상태로 완료된다",
+    "subsection": "E27.1",
+    "in_437": true
+  },
+  {
+    "id": "E27.10-1",
+    "category": "E27",
+    "type": "B",
+    "description": "이 성공하고 Deployment·DaemonSet이 삭제된다",
+    "subsection": "E27.10",
+    "in_437": true
+  },
+  {
+    "id": "E27.10-2",
+    "category": "E27",
+    "type": "B",
+    "description": "후에도 CRD는 보존된다( 어노테이션)",
+    "subsection": "E27.10",
+    "in_437": true
+  },
+  {
+    "id": "E27.11-1",
+    "category": "E27",
+    "type": "B",
+    "description": "Helm 배포 후 네임스페이스의 모든 파드가 상태이고 재시작 없음을 종합 검증한다",
+    "subsection": "E27.11",
+    "in_437": true
+  },
+  {
+    "id": "E27.11-2",
+    "category": "E27",
+    "type": "B",
+    "description": "controller 파드에 5개 컨테이너(, , , , )가 모두 임을 검증한다",
+    "subsection": "E27.11",
+    "in_437": true
+  },
+  {
+    "id": "E27.11-3",
+    "category": "E27",
+    "type": "B",
+    "description": "node DaemonSet 파드에 메인 컨테이너 3개와 init 컨테이너 1개()가 올바른 상태임을 검증한다",
+    "subsection": "E27.11",
+    "in_437": true
+  },
+  {
+    "id": "E27.11-4",
+    "category": "E27",
+    "type": "B",
+    "description": "스토리지 레이블()이 없는 Kind 기본 환경에서 agent 파드가 0개임을 검증한다",
+    "subsection": "E27.11",
+    "in_437": true
+  },
+  {
+    "id": "E27.11-5",
+    "category": "E27",
+    "type": "B",
+    "description": "스토리지 레이블을 부여한 노드에 agent 파드가 스케줄되어 상태임을 검증한다",
+    "subsection": "E27.11",
+    "in_437": true
+  },
+  {
+    "id": "E27.11-6",
+    "category": "E27",
+    "type": "B",
+    "description": "Helm 완료 후 모든 파드의 조건이 이고, 이 5분 이내임을 검증한다",
+    "subsection": "E27.11",
+    "in_437": true
+  },
+  {
+    "id": "E27.11-7",
+    "category": "E27",
+    "type": "B",
+    "description": "모든 파드가 Running 전환 후 5분 동안 재시작 없이 안정적임을 검증한다",
+    "subsection": "E27.11",
+    "in_437": true
+  },
+  {
+    "id": "E27.12.1-1",
+    "category": "E27",
+    "type": "B",
+    "description": "Helm 설치 후 이름의 CSIDriver 오브젝트가 클러스터에 존재한다",
+    "subsection": "E27.12.1",
+    "in_437": true
+  },
+  {
+    "id": "E27.12.1-2",
+    "category": "E27",
+    "type": "B",
+    "description": "출력이 유효한 JSON이고 CSIDriver 오브젝트 구조가 올바르다",
+    "subsection": "E27.12.1",
+    "in_437": true
+  },
+  {
+    "id": "E27.12.2-1",
+    "category": "E27",
+    "type": "B",
+    "description": "CSIDriver 가 이다 — ControllerPublishVolume/ControllerUnpublishVolume 호출이 필수임을 선언",
+    "subsection": "E27.12.2",
+    "in_437": true
+  },
+  {
+    "id": "E27.12.3-1",
+    "category": "E27",
+    "type": "B",
+    "description": "CSIDriver 가 이다 — NodePublishVolume 호출 시 Pod 메타데이터가 volumeAttributes로 주입됨",
+    "subsection": "E27.12.3",
+    "in_437": true
+  },
+  {
+    "id": "E27.12.4-1",
+    "category": "E27",
+    "type": "B",
+    "description": "CSIDriver 가 이다 — kubelet이 항상 재귀적으로 볼륨 소유권을 fsGroup으로 변경",
+    "subsection": "E27.12.4",
+    "in_437": true
+  },
+  {
+    "id": "E27.12.4-236a",
+    "category": "E27",
+    "type": "B",
+    "description": "CSIDriver 값이 Kubernetes 허용 범위(, , ) 내에 있다",
+    "subsection": "E27.12.4",
+    "in_437": true
+  },
+  {
+    "id": "E27.12.5-1",
+    "category": "E27",
+    "type": "B",
+    "description": "CSIDriver 에 항목이 존재한다",
+    "subsection": "E27.12.5",
+    "in_437": true
+  },
+  {
+    "id": "E27.12.5-237a",
+    "category": "E27",
+    "type": "B",
+    "description": "기본 values에서 CSIDriver 에 항목이 없다",
+    "subsection": "E27.12.5",
+    "in_437": true
+  },
+  {
+    "id": "E27.12.6-1",
+    "category": "E27",
+    "type": "B",
+    "description": "CSIDriver에 Helm 표준 레이블()이 올바르게 설정되어 있다",
+    "subsection": "E27.12.6",
+    "in_437": true
+  },
+  {
+    "id": "E27.12.6-2",
+    "category": "E27",
+    "type": "B",
+    "description": "CSIDriver에 Helm 관리 어노테이션()이 설정되어 있다",
+    "subsection": "E27.12.6",
+    "in_437": true
+  },
+  {
+    "id": "E27.12.6-238a",
+    "category": "E27",
+    "type": "B",
+    "description": "CSIDriver에 레이블이 있다",
+    "subsection": "E27.12.6",
+    "in_437": true
+  },
+  {
+    "id": "E27.12.7-1",
+    "category": "E27",
+    "type": "B",
+    "description": "로 설치하면 CSIDriver 오브젝트가 생성되지 않는다",
+    "subsection": "E27.12.7",
+    "in_437": true
+  },
+  {
+    "id": "E27.12.8-1",
+    "category": "E27",
+    "type": "B",
+    "description": "로 설치 시 CSIDriver 가 이다",
+    "subsection": "E27.12.8",
+    "in_437": true
+  },
+  {
+    "id": "E27.12.8-2",
+    "category": "E27",
+    "type": "B",
+    "description": "으로 설치 시 CSIDriver 가 이다",
+    "subsection": "E27.12.8",
+    "in_437": true
+  },
+  {
+    "id": "E27.12.8-3",
+    "category": "E27",
+    "type": "B",
+    "description": "로 업그레이드 시 CSIDriver spec이 갱신된다",
+    "subsection": "E27.12.8",
+    "in_437": true
+  },
+  {
+    "id": "E27.2-1",
+    "category": "E27",
+    "type": "B",
+    "description": "명령이 릴리스 메타데이터를 올바르게 반환한다",
+    "subsection": "E27.2",
+    "in_437": true
+  },
+  {
+    "id": "E27.2-2",
+    "category": "E27",
+    "type": "B",
+    "description": "출력이 파싱 가능한 JSON이고 필수 필드를 포함한다",
+    "subsection": "E27.2",
+    "in_437": true
+  },
+  {
+    "id": "E27.3-1",
+    "category": "E27",
+    "type": "B",
+    "description": "가 설치된 릴리스 항목을 반환한다",
+    "subsection": "E27.3",
+    "in_437": true
+  },
+  {
+    "id": "E27.3-2",
+    "category": "E27",
+    "type": "B",
+    "description": "이 파싱 가능한 배열을 반환하고 릴리스가 포함된다",
+    "subsection": "E27.3",
+    "in_437": true
+  },
+  {
+    "id": "E27.4-1",
+    "category": "E27",
+    "type": "B",
+    "description": "Helm 설치 후 controller Deployment가 Available 상태이고 파드가 Running이다",
+    "subsection": "E27.4",
+    "in_437": true
+  },
+  {
+    "id": "E27.4-2",
+    "category": "E27",
+    "type": "B",
+    "description": "Helm 설치 후 node DaemonSet이 존재하고 스케줄 가능한 노드 수만큼 파드가 Running이다",
+    "subsection": "E27.4",
+    "in_437": true
+  },
+  {
+    "id": "E27.4-3",
+    "category": "E27",
+    "type": "B",
+    "description": "Helm 설치 후 agent DaemonSet이 존재하고 스토리지 레이블 노드에만 파드가 스케줄된다",
+    "subsection": "E27.4",
+    "in_437": true
+  },
+  {
+    "id": "E27.4-4",
+    "category": "E27",
+    "type": "B",
+    "description": "컨트롤러·노드·에이전트 ServiceAccount 3개가 생성된다",
+    "subsection": "E27.4",
+    "in_437": true
+  },
+  {
+    "id": "E27.4-5",
+    "category": "E27",
+    "type": "B",
+    "description": "CSIDriver 객체 이 올바른 스펙으로 등록된다",
+    "subsection": "E27.4",
+    "in_437": true
+  },
+  {
+    "id": "E27.5.1-1",
+    "category": "E27",
+    "type": "B",
+    "description": "Helm 설치 후 pillar-csi CRD 4종이 모두 등록되고 Established=True 이다",
+    "subsection": "E27.5.1",
+    "in_437": true
+  },
+  {
+    "id": "E27.5.1-217a",
+    "category": "E27",
+    "type": "B",
+    "description": "PillarTarget CRD가 이고 이다",
+    "subsection": "E27.5.1",
+    "in_437": true
+  },
+  {
+    "id": "E27.5.1-217b",
+    "category": "E27",
+    "type": "B",
+    "description": "PillarPool CRD가 이고 이다",
+    "subsection": "E27.5.1",
+    "in_437": true
+  },
+  {
+    "id": "E27.5.1-217c",
+    "category": "E27",
+    "type": "B",
+    "description": "PillarProtocol CRD가 이고 이다",
+    "subsection": "E27.5.1",
+    "in_437": true
+  },
+  {
+    "id": "E27.5.1-217d",
+    "category": "E27",
+    "type": "B",
+    "description": "PillarBinding CRD가 이고 이다",
+    "subsection": "E27.5.1",
+    "in_437": true
+  },
+  {
+    "id": "E27.5.2-217e",
+    "category": "E27",
+    "type": "B",
+    "description": "PillarTarget CRD 스펙의 그룹·버전·범위·shortName이 올바르다",
+    "subsection": "E27.5.2",
+    "in_437": true
+  },
+  {
+    "id": "E27.5.2-217f",
+    "category": "E27",
+    "type": "B",
+    "description": "PillarPool CRD 스펙의 그룹·버전·범위·shortName이 올바르다",
+    "subsection": "E27.5.2",
+    "in_437": true
+  },
+  {
+    "id": "E27.5.2-217g",
+    "category": "E27",
+    "type": "B",
+    "description": "PillarProtocol CRD 스펙의 그룹·버전·범위·shortName이 올바르다",
+    "subsection": "E27.5.2",
+    "in_437": true
+  },
+  {
+    "id": "E27.5.2-217h",
+    "category": "E27",
+    "type": "B",
+    "description": "PillarBinding CRD 스펙의 그룹·버전·범위·shortName이 올바르다",
+    "subsection": "E27.5.2",
+    "in_437": true
+  },
+  {
+    "id": "E27.5.3-217i",
+    "category": "E27",
+    "type": "B",
+    "description": "출력에서 pillar-csi 그룹의 4종 리소스가 모두 노출된다",
+    "subsection": "E27.5.3",
+    "in_437": true
+  },
+  {
+    "id": "E27.5.3-217j",
+    "category": "E27",
+    "type": "B",
+    "description": "가 API 서버에서 PillarTarget 리소스를 조회한다",
+    "subsection": "E27.5.3",
+    "in_437": true
+  },
+  {
+    "id": "E27.5.3-217k",
+    "category": "E27",
+    "type": "B",
+    "description": "가 API 서버에서 PillarPool 리소스를 조회한다",
+    "subsection": "E27.5.3",
+    "in_437": true
+  },
+  {
+    "id": "E27.5.3-217l",
+    "category": "E27",
+    "type": "B",
+    "description": "가 API 서버에서 PillarProtocol 리소스를 조회한다",
+    "subsection": "E27.5.3",
+    "in_437": true
+  },
+  {
+    "id": "E27.5.3-217m",
+    "category": "E27",
+    "type": "B",
+    "description": "가 API 서버에서 PillarBinding 리소스를 조회한다",
+    "subsection": "E27.5.3",
+    "in_437": true
+  },
+  {
+    "id": "E27.5.4-217n",
+    "category": "E27",
+    "type": "B",
+    "description": "PillarTarget CRD 버전에 OpenAPI v3 스키마가 정의되어 있다",
+    "subsection": "E27.5.4",
+    "in_437": true
+  },
+  {
+    "id": "E27.5.4-217o",
+    "category": "E27",
+    "type": "B",
+    "description": "PillarPool CRD 버전에 OpenAPI v3 스키마가 정의되어 있다",
+    "subsection": "E27.5.4",
+    "in_437": true
+  },
+  {
+    "id": "E27.5.4-217p",
+    "category": "E27",
+    "type": "B",
+    "description": "PillarProtocol CRD 버전에 OpenAPI v3 스키마가 정의되어 있다",
+    "subsection": "E27.5.4",
+    "in_437": true
+  },
+  {
+    "id": "E27.5.4-217q",
+    "category": "E27",
+    "type": "B",
+    "description": "PillarBinding CRD 버전에 OpenAPI v3 스키마가 정의되어 있다",
+    "subsection": "E27.5.4",
+    "in_437": true
+  },
+  {
+    "id": "E27.5.5-217r",
+    "category": "E27",
+    "type": "B",
+    "description": "PillarTarget CRD에 , , , 프린터 컬럼이 정의되어 있다",
+    "subsection": "E27.5.5",
+    "in_437": true
+  },
+  {
+    "id": "E27.5.5-217s",
+    "category": "E27",
+    "type": "B",
+    "description": "PillarPool CRD에 , , , , 프린터 컬럼이 정의되어 있다",
+    "subsection": "E27.5.5",
+    "in_437": true
+  },
+  {
+    "id": "E27.5.5-217t",
+    "category": "E27",
+    "type": "B",
+    "description": "PillarProtocol CRD에 , , , 프린터 컬럼이 정의되어 있다",
+    "subsection": "E27.5.5",
+    "in_437": true
+  },
+  {
+    "id": "E27.5.5-217u",
+    "category": "E27",
+    "type": "B",
+    "description": "PillarBinding CRD에 , , , , 프린터 컬럼이 정의되어 있다",
+    "subsection": "E27.5.5",
+    "in_437": true
+  },
+  {
+    "id": "E27.5.6-217v",
+    "category": "E27",
+    "type": "B",
+    "description": "모든 CRD에 어노테이션이 설정되어 있다",
+    "subsection": "E27.5.6",
+    "in_437": true
+  },
+  {
+    "id": "E27.5.7-217w",
+    "category": "E27",
+    "type": "B",
+    "description": "Helm 설치 후 PillarTarget 오브젝트를 생성·조회·삭제할 수 있다",
+    "subsection": "E27.5.7",
+    "in_437": true
+  },
+  {
+    "id": "E27.5.7-217x",
+    "category": "E27",
+    "type": "B",
+    "description": "Helm 설치 후 PillarPool 오브젝트를 생성·조회·삭제할 수 있다",
+    "subsection": "E27.5.7",
+    "in_437": true
+  },
+  {
+    "id": "E27.5.7-217y",
+    "category": "E27",
+    "type": "B",
+    "description": "Helm 설치 후 PillarProtocol 오브젝트를 생성·조회·삭제할 수 있다",
+    "subsection": "E27.5.7",
+    "in_437": true
+  },
+  {
+    "id": "E27.5.7-217z",
+    "category": "E27",
+    "type": "B",
+    "description": "Helm 설치 후 PillarBinding 오브젝트를 생성·조회·삭제할 수 있다",
+    "subsection": "E27.5.7",
+    "in_437": true
+  },
+  {
+    "id": "E27.6-1",
+    "category": "E27",
+    "type": "B",
+    "description": "플래그로 값을 오버라이드하면 Deployment 스펙에 반영된다",
+    "subsection": "E27.6",
+    "in_437": true
+  },
+  {
+    "id": "E27.7-1",
+    "category": "E27",
+    "type": "B",
+    "description": "로 설치하면 CRD가 생성되지 않고 다른 리소스는 정상 생성된다",
+    "subsection": "E27.7",
+    "in_437": true
+  },
+  {
+    "id": "E27.8-1",
+    "category": "E27",
+    "type": "B",
+    "description": "동일 릴리스 이름으로 을 재시도하면 명확한 오류가 반환된다",
+    "subsection": "E27.8",
+    "in_437": true
+  },
+  {
+    "id": "E27.9-1",
+    "category": "E27",
+    "type": "B",
+    "description": "로 릴리스를 업그레이드하면 REVISION이 증가하고 STATUS가 를 유지한다",
+    "subsection": "E27.9",
+    "in_437": true
+  },
+  {
+    "id": "E27.9-2",
+    "category": "E27",
+    "type": "B",
+    "description": "가 이전 릴리스 이력을 반환한다",
+    "subsection": "E27.9",
+    "in_437": true
+  },
+  {
+    "id": "E28.1",
+    "category": "E28",
+    "type": "A",
+    "description": "LVM 역량 및 헬스체크",
+    "subsection": "E28.11",
+    "in_437": true
+  },
+  {
+    "id": "E28.1-1",
+    "category": "E28",
+    "type": "A",
+    "description": "GetCapabilities 응답에 BACKEND_TYPE_LVM 포함",
+    "subsection": "E28.1",
+    "in_437": true
+  },
+  {
+    "id": "E28.1-2",
+    "category": "E28",
+    "type": "A",
+    "description": "LVM backend 등록 상태에서 HealthCheck가 정상 응답",
+    "subsection": "E28.1",
+    "in_437": true
+  },
+  {
+    "id": "E28.10",
+    "category": "E28",
+    "type": "A",
+    "description": "Thin pool 고갈 — near-full, full CreateVolume 거부",
+    "subsection": "E28.11",
+    "in_437": true
+  },
+  {
+    "id": "E28.10-263i",
+    "category": "E28",
+    "type": "A",
+    "description": "thin pool data_percent=95% 상태에서 잔여 용량 초과 크기 CreateVolume 시 오류",
+    "subsection": "E28.10",
+    "in_437": true
+  },
+  {
+    "id": "E28.10-263j",
+    "category": "E28",
+    "type": "A",
+    "description": "thin pool data_percent=100% — CreateVolume 거부",
+    "subsection": "E28.10",
+    "in_437": true
+  },
+  {
+    "id": "E28.11",
+    "category": "E28",
+    "type": "A",
+    "description": "멀티 백엔드 agent — ZFS + LVM 동시",
+    "subsection": "E28.11",
+    "in_437": true
+  },
+  {
+    "id": "E28.11-263k",
+    "category": "E28",
+    "type": "A",
+    "description": "ZFS와 LVM 백엔드 동시 등록 시 GetCapabilities가 둘 다 보고",
+    "subsection": "E28.11",
+    "in_437": true
+  },
+  {
+    "id": "E28.2",
+    "category": "E28",
+    "type": "A",
+    "description": "LVM 전체 왕복 (linear + thin)",
+    "subsection": "E28.11",
+    "in_437": true
+  },
+  {
+    "id": "E28.2-1",
+    "category": "E28",
+    "type": "A",
+    "description": "Linear LV로 CreateVolume → ExportVolume → AllowInitiator → DenyInitiator → UnexportVolume → DeleteVolume 전체 왕복",
+    "subsection": "E28.2",
+    "in_437": true
+  },
+  {
+    "id": "E28.2-2",
+    "category": "E28",
+    "type": "A",
+    "description": "Thin LV로 동일 전체 왕복 — 전달",
+    "subsection": "E28.2",
+    "in_437": true
+  },
+  {
+    "id": "E28.3",
+    "category": "E28",
+    "type": "A",
+    "description": "GetCapacity — linear VG, thin pool, over-provisioned, full VG",
+    "subsection": "E28.11",
+    "in_437": true
+  },
+  {
+    "id": "E28.3-1",
+    "category": "E28",
+    "type": "A",
+    "description": "Linear VG의 GetCapacity가 vg_size/vg_free를 TotalBytes/AvailableBytes로 반환",
+    "subsection": "E28.3",
+    "in_437": true
+  },
+  {
+    "id": "E28.3-2",
+    "category": "E28",
+    "type": "A",
+    "description": "Thin pool의 GetCapacity가 pool_size와 data_percent 기반 available 반환",
+    "subsection": "E28.3",
+    "in_437": true
+  },
+  {
+    "id": "E28.3-3",
+    "category": "E28",
+    "type": "A",
+    "description": "Over-provisioned thin pool(data_percent > 100%) 시 AvailableBytes=0 반환 — 음수 아닌 정상 응답",
+    "subsection": "E28.3",
+    "in_437": true
+  },
+  {
+    "id": "E28.3-4",
+    "category": "E28",
+    "type": "A",
+    "description": "VG 가득 참(vg_free=0) 시 AvailableBytes=0",
+    "subsection": "E28.3",
+    "in_437": true
+  },
+  {
+    "id": "E28.4",
+    "category": "E28",
+    "type": "A",
+    "description": "ListVolumes — thin pool LV 필터링",
+    "subsection": "E28.11",
+    "in_437": true
+  },
+  {
+    "id": "E28.4-1",
+    "category": "E28",
+    "type": "A",
+    "description": "ListVolumes에서 thin pool 인프라 LV 제외, 데이터 LV만 반환",
+    "subsection": "E28.4",
+    "in_437": true
+  },
+  {
+    "id": "E28.4-2",
+    "category": "E28",
+    "type": "A",
+    "description": "Linear 모드에서 VG 내 모든 LV 반환 (thin pool 없으므로 필터링 없음)",
+    "subsection": "E28.4",
+    "in_437": true
+  },
+  {
+    "id": "E28.5",
+    "category": "E28",
+    "type": "A",
+    "description": "프로비저닝 모드 gRPC 전파",
+    "subsection": "E28.11",
+    "in_437": true
+  },
+  {
+    "id": "E28.5-1",
+    "category": "E28",
+    "type": "A",
+    "description": "가 gRPC를 통해 backend까지 전달",
+    "subsection": "E28.5",
+    "in_437": true
+  },
+  {
+    "id": "E28.5-2",
+    "category": "E28",
+    "type": "A",
+    "description": "이 backend까지 전달",
+    "subsection": "E28.5",
+    "in_437": true
+  },
+  {
+    "id": "E28.5-3",
+    "category": "E28",
+    "type": "A",
+    "description": "ProvisionMode 빈 문자열 시 backend 기본 모드 사용",
+    "subsection": "E28.5",
+    "in_437": true
+  },
+  {
+    "id": "E28.6",
+    "category": "E28",
+    "type": "A",
+    "description": "오류 처리 — VG 미존재, 축소 거부, thin pool 미설정, 멱등성",
+    "subsection": "E28.11",
+    "in_437": true
+  },
+  {
+    "id": "E28.6-1",
+    "category": "E28",
+    "type": "A",
+    "description": "존재하지 않는 pool(VG)로 CreateVolume 시 오류 반환",
+    "subsection": "E28.6",
+    "in_437": true
+  },
+  {
+    "id": "E28.6-2",
+    "category": "E28",
+    "type": "A",
+    "description": "현재 크기보다 작은 값으로 ExpandVolume 시 거부",
+    "subsection": "E28.6",
+    "in_437": true
+  },
+  {
+    "id": "E28.6-3",
+    "category": "E28",
+    "type": "A",
+    "description": "thin 모드 요청이나 backend에 thinpool 미설정 시 오류",
+    "subsection": "E28.6",
+    "in_437": true
+  },
+  {
+    "id": "E28.6-4",
+    "category": "E28",
+    "type": "A",
+    "description": "동일 volumeId/크기로 CreateVolume 2회 호출 시 멱등",
+    "subsection": "E28.6",
+    "in_437": true
+  },
+  {
+    "id": "E28.6-5",
+    "category": "E28",
+    "type": "A",
+    "description": "존재하지 않는 LV 삭제 성공 (멱등)",
+    "subsection": "E28.6",
+    "in_437": true
+  },
+  {
+    "id": "E28.7",
+    "category": "E28",
+    "type": "A",
+    "description": "ReconcileState — configfs 복원",
+    "subsection": "E28.11",
+    "in_437": true
+  },
+  {
+    "id": "E28.7-1",
+    "category": "E28",
+    "type": "A",
+    "description": "LVM 볼륨의 NVMe-oF export를 configfs에 복원",
+    "subsection": "E28.7",
+    "in_437": true
+  },
+  {
+    "id": "E28.8",
+    "category": "E28",
+    "type": "A",
+    "description": "이름 검증 — 예약 접두사, 길이 한계, 잘못된 첫 문자",
+    "subsection": "E28.11",
+    "in_437": true
+  },
+  {
+    "id": "E28.8-263a",
+    "category": "E28",
+    "type": "A",
+    "description": "LV 이름이 \"snapshot\"으로 시작하면 거부",
+    "subsection": "E28.8",
+    "in_437": true
+  },
+  {
+    "id": "E28.8-263b",
+    "category": "E28",
+    "type": "A",
+    "description": "LV 이름이 \"pvmove\"로 시작하면 거부",
+    "subsection": "E28.8",
+    "in_437": true
+  },
+  {
+    "id": "E28.8-263c",
+    "category": "E28",
+    "type": "A",
+    "description": "LV 이름 첫 문자가 하이픈이면 거부",
+    "subsection": "E28.8",
+    "in_437": true
+  },
+  {
+    "id": "E28.8-263d",
+    "category": "E28",
+    "type": "A",
+    "description": "128자 LV 이름은 허용",
+    "subsection": "E28.8",
+    "in_437": true
+  },
+  {
+    "id": "E28.8-263e",
+    "category": "E28",
+    "type": "A",
+    "description": "129자 LV 이름은 거부",
+    "subsection": "E28.8",
+    "in_437": true
+  },
+  {
+    "id": "E28.9",
+    "category": "E28",
+    "type": "A",
+    "description": "ExtraFlags 전달 + VG override 불일치 거부",
+    "subsection": "E28.11",
+    "in_437": true
+  },
+  {
+    "id": "E28.9-263f",
+    "category": "E28",
+    "type": "A",
+    "description": "가 backend까지 전달",
+    "subsection": "E28.9",
+    "in_437": true
+  },
+  {
+    "id": "E28.9-263g",
+    "category": "E28",
+    "type": "A",
+    "description": "ExtraFlags 빈 배열이면 추가 인자 없이 생성",
+    "subsection": "E28.9",
+    "in_437": true
+  },
+  {
+    "id": "E28.9-263h",
+    "category": "E28",
+    "type": "A",
+    "description": "이 backend VG와 다르면 거부 — cross-VG 프로비저닝 방지",
+    "subsection": "E28.9",
+    "in_437": true
+  },
+  {
+    "id": "E29.1",
+    "category": "E29",
+    "type": "A",
+    "description": "LVM CreateVolume 정상 경로 (linear, thin, VolumeId 형식)",
+    "subsection": "E29.4",
+    "in_437": true
+  },
+  {
+    "id": "E29.1-1",
+    "category": "E29",
+    "type": "A",
+    "description": "LVM linear 모드 CreateVolume 시 agent에 BackendType=LVM, LvmVolumeParams{VolumeGroup, ProvisionMode=\"linear\"} 전달",
+    "subsection": "E29.1",
+    "in_437": true
+  },
+  {
+    "id": "E29.1-2",
+    "category": "E29",
+    "type": "A",
+    "description": "LVM thin 모드 CreateVolume 시 agent에 ProvisionMode=\"thin\" 전달",
+    "subsection": "E29.1",
+    "in_437": true
+  },
+  {
+    "id": "E29.1-3",
+    "category": "E29",
+    "type": "A",
+    "description": "LVM VolumeId가 \"target/nvmeof-tcp/lvm-lv/data-vg/pvc-xxx\" 5세그먼트 형식",
+    "subsection": "E29.1",
+    "in_437": true
+  },
+  {
+    "id": "E29.2",
+    "category": "E29",
+    "type": "A",
+    "description": "프로비저닝 모드 오버라이드 3계층 + PVC annotation 엣지 케이스",
+    "subsection": "E29.4",
+    "in_437": true
+  },
+  {
+    "id": "E29.2-1",
+    "category": "E29",
+    "type": "A",
+    "description": "Pool 레벨 provisioningMode가 기본값으로 agent에 전달",
+    "subsection": "E29.2",
+    "in_437": true
+  },
+  {
+    "id": "E29.2-2",
+    "category": "E29",
+    "type": "A",
+    "description": "Binding 레벨이 Pool 기본값 오버라이드",
+    "subsection": "E29.2",
+    "in_437": true
+  },
+  {
+    "id": "E29.2-269a",
+    "category": "E29",
+    "type": "A",
+    "description": "PVC annotation에 잘못된 lvm-mode 값(\"striped\") 시 agent가 거부",
+    "subsection": "E29.2",
+    "in_437": true
+  },
+  {
+    "id": "E29.2-269b",
+    "category": "E29",
+    "type": "A",
+    "description": "PVC annotation lvm-mode=\"\" 빈 문자열 시 Binding 레벨 값 사용",
+    "subsection": "E29.2",
+    "in_437": true
+  },
+  {
+    "id": "E29.2-3",
+    "category": "E29",
+    "type": "A",
+    "description": "PVC annotation이 Binding 레벨 오버라이드",
+    "subsection": "E29.2",
+    "in_437": true
+  },
+  {
+    "id": "E29.2-4",
+    "category": "E29",
+    "type": "A",
+    "description": "모든 레이어 미지정 시 빈 문자열 → agent backend 컴파일 시점 기본값",
+    "subsection": "E29.2",
+    "in_437": true
+  },
+  {
+    "id": "E29.3",
+    "category": "E29",
+    "type": "A",
+    "description": "LVM DeleteVolume 및 ControllerExpandVolume",
+    "subsection": "E29.4",
+    "in_437": true
+  },
+  {
+    "id": "E29.3-1",
+    "category": "E29",
+    "type": "A",
+    "description": "LVM VolumeId로 DeleteVolume 시 agent.UnexportVolume → agent.DeleteVolume 순서 호출",
+    "subsection": "E29.3",
+    "in_437": true
+  },
+  {
+    "id": "E29.3-2",
+    "category": "E29",
+    "type": "A",
+    "description": "LVM 볼륨의 ControllerExpandVolume이 agent.ExpandVolume(BACKEND_TYPE_LVM) 호출",
+    "subsection": "E29.3",
+    "in_437": true
+  },
+  {
+    "id": "E29.4",
+    "category": "E29",
+    "type": "A",
+    "description": "LVM 전체 왕복 (4단계 Controller 체인)",
+    "subsection": "E29.4",
+    "in_437": true
+  },
+  {
+    "id": "E29.4-1",
+    "category": "E29",
+    "type": "A",
+    "description": "LVM 백엔드로 CreateVolume → ControllerPublishVolume → ControllerUnpublishVolume → DeleteVolume 전체 왕복",
+    "subsection": "E29.4",
+    "in_437": true
+  },
+  {
+    "id": "E3.1-1",
+    "category": "E3",
+    "type": "A",
+    "description": "NodeStageVolume → NodePublishVolume → NodeUnpublishVolume → NodeUnstageVolume 전체 마운트 접근 라이프사이클",
+    "subsection": "E3.1",
+    "in_437": true
+  },
+  {
+    "id": "E3.10-1",
+    "category": "E3",
+    "type": "A",
+    "description": "여러 볼륨이 독립적인 스테이징 상태를 유지",
+    "subsection": "E3.10",
+    "in_437": true
+  },
+  {
+    "id": "E3.11-1",
+    "category": "E3",
+    "type": "A",
+    "description": "로 NodeStageVolume 호출 시 FormatAndMount에 \"xfs\" 전달됨",
+    "subsection": "E3.11",
+    "in_437": true
+  },
+  {
+    "id": "E3.11-2",
+    "category": "E3",
+    "type": "A",
+    "description": "(빈 문자열) 시 기본 파일시스템(ext4)으로 포맷",
+    "subsection": "E3.11",
+    "in_437": true
+  },
+  {
+    "id": "E3.11-3",
+    "category": "E3",
+    "type": "A",
+    "description": "블록 접근 모드에서 FormatAndMount가 호출되지 않음",
+    "subsection": "E3.11",
+    "in_437": true
+  },
+  {
+    "id": "E3.12-1",
+    "category": "E3",
+    "type": "A",
+    "description": "VolumeContext의 NQN/address/port가 Connector.Connect 호출 시 정확히 전달됨",
+    "subsection": "E3.12",
+    "in_437": true
+  },
+  {
+    "id": "E3.12-2",
+    "category": "E3",
+    "type": "A",
+    "description": "비표준 포트(4421)도 정확히 전달됨",
+    "subsection": "E3.12",
+    "in_437": true
+  },
+  {
+    "id": "E3.12-3",
+    "category": "E3",
+    "type": "A",
+    "description": "VolumeContext에서 address 키 누락 시 InvalidArgument",
+    "subsection": "E3.12",
+    "in_437": true
+  },
+  {
+    "id": "E3.12-4",
+    "category": "E3",
+    "type": "A",
+    "description": "VolumeContext에서 port 키 누락 시 InvalidArgument",
+    "subsection": "E3.12",
+    "in_437": true
+  },
+  {
+    "id": "E3.12-5",
+    "category": "E3",
+    "type": "A",
+    "description": "NVMe-oF 연결 성공 후 상태 파일에 NQN이 저장됨 (재시작 복구 지원)",
+    "subsection": "E3.12",
+    "in_437": true
+  },
+  {
+    "id": "E3.13-1",
+    "category": "E3",
+    "type": "A",
+    "description": "NodeUnstageVolume이 Connector.Disconnect를 정확한 NQN으로 호출",
+    "subsection": "E3.13",
+    "in_437": true
+  },
+  {
+    "id": "E3.13-2",
+    "category": "E3",
+    "type": "A",
+    "description": "스테이지된 적 없는 볼륨에 NodeUnstageVolume 호출 시 성공 (멱등성)",
+    "subsection": "E3.13",
+    "in_437": true
+  },
+  {
+    "id": "E3.13-3",
+    "category": "E3",
+    "type": "A",
+    "description": "Connector.Disconnect 실패 시 gRPC Internal 반환",
+    "subsection": "E3.13",
+    "in_437": true
+  },
+  {
+    "id": "E3.13-4",
+    "category": "E3",
+    "type": "A",
+    "description": "정상 디태치 후 상태 파일 제거 확인",
+    "subsection": "E3.13",
+    "in_437": true
+  },
+  {
+    "id": "E3.14-1",
+    "category": "E3",
+    "type": "A",
+    "description": "동일 스테이징 경로에서 두 타깃 경로로 NodePublishVolume 각각 성공",
+    "subsection": "E3.14",
+    "in_437": true
+  },
+  {
+    "id": "E3.14-2",
+    "category": "E3",
+    "type": "A",
+    "description": "두 타깃 중 하나 NodeUnpublish 시 나머지 마운트는 유지됨",
+    "subsection": "E3.14",
+    "in_437": true
+  },
+  {
+    "id": "E3.15-1",
+    "category": "E3",
+    "type": "A",
+    "description": "SINGLE_NODE_WRITER 접근 모드에서 쓰기 가능 마운트",
+    "subsection": "E3.15",
+    "in_437": true
+  },
+  {
+    "id": "E3.15-2",
+    "category": "E3",
+    "type": "A",
+    "description": "SINGLE_NODE_READER_ONLY 접근 모드에서 읽기 전용 마운트",
+    "subsection": "E3.15",
+    "in_437": true
+  },
+  {
+    "id": "E3.16-1",
+    "category": "E3",
+    "type": "A",
+    "description": "GetDevicePath가 항상 을 반환하면 폴링 루프가 컨텍스트 타임아웃으로 종료",
+    "subsection": "E3.16",
+    "in_437": true
+  },
+  {
+    "id": "E3.16-2",
+    "category": "E3",
+    "type": "A",
+    "description": "200 ms 타임아웃으로 디바이스 폴링 루프 타임아웃 검증",
+    "subsection": "E3.16",
+    "in_437": true
+  },
+  {
+    "id": "E3.16-3",
+    "category": "E3",
+    "type": "A",
+    "description": "GetDevicePath가 오류()를 반환 → 폴링 중단 후 Internal",
+    "subsection": "E3.16",
+    "in_437": true
+  },
+  {
+    "id": "E3.16-4",
+    "category": "E3",
+    "type": "A",
+    "description": "GetDevicePath 오류 → NodeStage (컴포넌트 패키지)",
+    "subsection": "E3.16",
+    "in_437": true
+  },
+  {
+    "id": "E3.17-1",
+    "category": "E3",
+    "type": "A",
+    "description": "(빈 문자열) 일 때 에 기본 파일시스템 타입()이 전달됨",
+    "subsection": "E3.17",
+    "in_437": true
+  },
+  {
+    "id": "E3.17-2",
+    "category": "E3",
+    "type": "A",
+    "description": "필드 자체가 nil(Mount/Block 미설정) →",
+    "subsection": "E3.17",
+    "in_437": true
+  },
+  {
+    "id": "E3.18-1",
+    "category": "E3",
+    "type": "A",
+    "description": "상태 파일 있음 + 스테이징 경로 언마운트된 상태에서 재스테이징 → 재마운트 성공",
+    "subsection": "E3.18",
+    "in_437": true
+  },
+  {
+    "id": "E3.18-2",
+    "category": "E3",
+    "type": "A",
+    "description": "상태 파일 있음 + 경로 마운트된 상태에서 재스테이징 → 재호출 없음 (CI 컴포넌트 테스트)",
+    "subsection": "E3.18",
+    "in_437": true
+  },
+  {
+    "id": "E3.19-1",
+    "category": "E3",
+    "type": "A",
+    "description": "스테이징 경로가 이미 언마운트된 상태(노드 재부팅 시뮬레이션) — NodeUnstageVolume 성공하며 Disconnect는 호출됨",
+    "subsection": "E3.19",
+    "in_437": true
+  },
+  {
+    "id": "E3.19-2",
+    "category": "E3",
+    "type": "A",
+    "description": "가 오류 반환 → NodeUnstageVolume",
+    "subsection": "E3.19",
+    "in_437": true
+  },
+  {
+    "id": "E3.19-3",
+    "category": "E3",
+    "type": "A",
+    "description": "가 반환 → NodeUnstageVolume",
+    "subsection": "E3.19",
+    "in_437": true
+  },
+  {
+    "id": "E3.19-4",
+    "category": "E3",
+    "type": "A",
+    "description": "Stage → Unstage → Unstage(2회) — 두 번째 Unstage는 no-op, Disconnect는 총 1회만",
+    "subsection": "E3.19",
+    "in_437": true
+  },
+  {
+    "id": "E3.2-1",
+    "category": "E3",
+    "type": "A",
+    "description": "블록 디바이스 접근 모드 전체 라이프사이클",
+    "subsection": "E3.2",
+    "in_437": true
+  },
+  {
+    "id": "E3.20-1",
+    "category": "E3",
+    "type": "A",
+    "description": "stateDir에 유효하지 않은 JSON() 상태 파일 직접 기록 후 NodeUnstageVolume 호출",
+    "subsection": "E3.20",
+    "in_437": true
+  },
+  {
+    "id": "E3.20-2",
+    "category": "E3",
+    "type": "A",
+    "description": "stateDir을 (읽기 전용)로 변경 후 NodeStageVolume — 상태 파일 쓰기 실패",
+    "subsection": "E3.20",
+    "in_437": true
+  },
+  {
+    "id": "E3.20-3",
+    "category": "E3",
+    "type": "A",
+    "description": "상태 파일 없음 + 스테이징 경로 언마운트 → NodeUnstageVolume 성공 (no-op)",
+    "subsection": "E3.20",
+    "in_437": true
+  },
+  {
+    "id": "E3.20-4",
+    "category": "E3",
+    "type": "A",
+    "description": "상태 파일 쓰기 → 읽기 → 삭제 → 삭제 후 읽기 단위 기능 라운드트립",
+    "subsection": "E3.20",
+    "in_437": true
+  },
+  {
+    "id": "E3.20-5",
+    "category": "E3",
+    "type": "A",
+    "description": "존재하지 않는 상태 파일 삭제 → 무시하고 성공",
+    "subsection": "E3.20",
+    "in_437": true
+  },
+  {
+    "id": "E3.20-6",
+    "category": "E3",
+    "type": "A",
+    "description": "VolumeID에 슬래시() 포함 시 상태 파일명 안전하게 변환 — 경로 탈출(path traversal) 방지",
+    "subsection": "E3.20",
+    "in_437": true
+  },
+  {
+    "id": "E3.21-1",
+    "category": "E3",
+    "type": "A",
+    "description": "MOUNT 접근 유형에서 NodePublishVolume이 스테이징 경로 → 타깃 경로로 바인드 마운트를 수행",
+    "subsection": "E3.21",
+    "in_437": true
+  },
+  {
+    "id": "E3.21-10",
+    "category": "E3",
+    "type": "A",
+    "description": "오류 발생 시 반환",
+    "subsection": "E3.21",
+    "in_437": true
+  },
+  {
+    "id": "E3.21-2",
+    "category": "E3",
+    "type": "A",
+    "description": "BLOCK 접근 유형에서 NodePublishVolume이 스테이징 경로를 타깃 경로로 바인드 마운트",
+    "subsection": "E3.21",
+    "in_437": true
+  },
+  {
+    "id": "E3.21-3",
+    "category": "E3",
+    "type": "A",
+    "description": "인 요청에서 마운트 옵션에 가 추가됨",
+    "subsection": "E3.21",
+    "in_437": true
+  },
+  {
+    "id": "E3.21-4",
+    "category": "E3",
+    "type": "A",
+    "description": "동일 요청을 2회 호출하면 두 번째는 마운트를 수행하지 않음 (멱등성)",
+    "subsection": "E3.21",
+    "in_437": true
+  },
+  {
+    "id": "E3.21-5",
+    "category": "E3",
+    "type": "A",
+    "description": "누락 시 반환",
+    "subsection": "E3.21",
+    "in_437": true
+  },
+  {
+    "id": "E3.21-6",
+    "category": "E3",
+    "type": "A",
+    "description": "누락 시 반환",
+    "subsection": "E3.21",
+    "in_437": true
+  },
+  {
+    "id": "E3.21-7",
+    "category": "E3",
+    "type": "A",
+    "description": "누락 시 반환",
+    "subsection": "E3.21",
+    "in_437": true
+  },
+  {
+    "id": "E3.21-8",
+    "category": "E3",
+    "type": "A",
+    "description": "누락 시 반환",
+    "subsection": "E3.21",
+    "in_437": true
+  },
+  {
+    "id": "E3.21-9",
+    "category": "E3",
+    "type": "A",
+    "description": "오류 발생 시 반환",
+    "subsection": "E3.21",
+    "in_437": true
+  },
+  {
+    "id": "E3.22-1",
+    "category": "E3",
+    "type": "A",
+    "description": "NodePublishVolume으로 마운트한 타깃 경로를 NodeUnpublishVolume이 정확히 해제",
+    "subsection": "E3.22",
+    "in_437": true
+  },
+  {
+    "id": "E3.22-2",
+    "category": "E3",
+    "type": "A",
+    "description": "타깃 경로가 이미 마운트 해제된 상태에서 NodeUnpublishVolume 호출 시 성공 (no-op)",
+    "subsection": "E3.22",
+    "in_437": true
+  },
+  {
+    "id": "E3.22-3",
+    "category": "E3",
+    "type": "A",
+    "description": "Publish→Unpublish→Unpublish 사이클에서 Unmount는 정확히 1회",
+    "subsection": "E3.22",
+    "in_437": true
+  },
+  {
+    "id": "E3.22-4",
+    "category": "E3",
+    "type": "A",
+    "description": "누락 시 반환",
+    "subsection": "E3.22",
+    "in_437": true
+  },
+  {
+    "id": "E3.22-5",
+    "category": "E3",
+    "type": "A",
+    "description": "누락 시 반환",
+    "subsection": "E3.22",
+    "in_437": true
+  },
+  {
+    "id": "E3.22-6",
+    "category": "E3",
+    "type": "A",
+    "description": "오류 발생 시 반환",
+    "subsection": "E3.22",
+    "in_437": true
+  },
+  {
+    "id": "E3.22-7",
+    "category": "E3",
+    "type": "A",
+    "description": "오류 발생 시 반환",
+    "subsection": "E3.22",
+    "in_437": true
+  },
+  {
+    "id": "E3.23-1",
+    "category": "E3",
+    "type": "A",
+    "description": "Stage → Publish → Unpublish → Unstage 전체 노드 라이프사이클 단위 검증",
+    "subsection": "E3.23",
+    "in_437": true
+  },
+  {
+    "id": "E3.3-1",
+    "category": "E3",
+    "type": "A",
+    "description": "NodeStage 시 NVMe-oF 연결 후 디바이스 경로 탐색",
+    "subsection": "E3.3",
+    "in_437": true
+  },
+  {
+    "id": "E3.4-1",
+    "category": "E3",
+    "type": "A",
+    "description": "NodeStageVolume 2회 호출: 두 번째는 no-op",
+    "subsection": "E3.4",
+    "in_437": true
+  },
+  {
+    "id": "E3.4-2",
+    "category": "E3",
+    "type": "A",
+    "description": "NodePublishVolume 2회 호출: 두 번째는 no-op",
+    "subsection": "E3.4",
+    "in_437": true
+  },
+  {
+    "id": "E3.4-3",
+    "category": "E3",
+    "type": "A",
+    "description": "NodeUnstageVolume 2회 호출: 두 번째는 no-op",
+    "subsection": "E3.4",
+    "in_437": true
+  },
+  {
+    "id": "E3.4-4",
+    "category": "E3",
+    "type": "A",
+    "description": "NodeUnpublishVolume 2회 호출: 두 번째는 no-op",
+    "subsection": "E3.4",
+    "in_437": true
+  },
+  {
+    "id": "E3.5-1",
+    "category": "E3",
+    "type": "A",
+    "description": "NodePublishVolume에서 readonly=true 플래그가 마운터에 전달됨",
+    "subsection": "E3.5",
+    "in_437": true
+  },
+  {
+    "id": "E3.6-1",
+    "category": "E3",
+    "type": "A",
+    "description": "NodeStage 후 스테이징 상태 파일이 StateDir에 저장되고, 이후 NodeUnstage 시 제거됨",
+    "subsection": "E3.6",
+    "in_437": true
+  },
+  {
+    "id": "E3.7-1",
+    "category": "E3",
+    "type": "A",
+    "description": "NodeGetInfo가 올바른 NodeId와 토폴로지 키 반환",
+    "subsection": "E3.7",
+    "in_437": true
+  },
+  {
+    "id": "E3.7-2",
+    "category": "E3",
+    "type": "A",
+    "description": "NodeGetCapabilities가 지원 역량 목록 반환",
+    "subsection": "E3.7",
+    "in_437": true
+  },
+  {
+    "id": "E3.8-1",
+    "category": "E3",
+    "type": "A",
+    "description": "필수 파라미터 누락 시 InvalidArgument 반환",
+    "subsection": "E3.8",
+    "in_437": true
+  },
+  {
+    "id": "E3.9-1",
+    "category": "E3",
+    "type": "A",
+    "description": "NVMe-oF 연결 실패 시 NodeStage 실패",
+    "subsection": "E3.9",
+    "in_437": true
+  },
+  {
+    "id": "E3.9-2",
+    "category": "E3",
+    "type": "A",
+    "description": "NVMe-oF 연결 해제 실패 시 NodeUnstage 실패",
+    "subsection": "E3.9",
+    "in_437": true
+  },
+  {
+    "id": "E3.9-3",
+    "category": "E3",
+    "type": "A",
+    "description": "파일시스템 마운트 실패 시 NodeStage 실패",
+    "subsection": "E3.9",
+    "in_437": true
+  },
+  {
+    "id": "E3.9-4",
+    "category": "E3",
+    "type": "A",
+    "description": "바인드 마운트 실패 시 NodePublish 실패",
+    "subsection": "E3.9",
+    "in_437": true
+  },
+  {
+    "id": "E30-1",
+    "category": "E30",
+    "type": "A",
+    "description": "export 실패 후 재시도 시 LV가 정확히 1개만 존재 — skipBackend 동작 확인",
+    "subsection": "E30",
+    "in_437": true
+  },
+  {
+    "id": "E30-2",
+    "category": "E30",
+    "type": "A",
+    "description": "부분 생성 후 DeleteVolume 시 LV 레지스트리 1→0 감소",
+    "subsection": "E30",
+    "in_437": true
+  },
+  {
+    "id": "E30-3",
+    "category": "E30",
+    "type": "A",
+    "description": "연속 3회 export 실패 후 최종 성공 — 매 재시도마다 LV 수 1 유지",
+    "subsection": "E30",
+    "in_437": true
+  },
+  {
+    "id": "E32.1",
+    "category": "E32",
+    "type": "C",
+    "description": "PillarPool LVM 설정 — 정상(linear/thin), VG 누락, 잘못된 모드, LVM config 누락",
+    "subsection": "E32.2",
+    "in_437": true
+  },
+  {
+    "id": "E32.1-1",
+    "category": "E32",
+    "type": "C",
+    "description": "type=lvm-lv, volumeGroup 지정, provisioningMode=linear 설정이 유효",
+    "subsection": "E32.1",
+    "in_437": true
+  },
+  {
+    "id": "E32.1-2",
+    "category": "E32",
+    "type": "C",
+    "description": "type=lvm-lv, volumeGroup + thinPool, provisioningMode=thin 유효",
+    "subsection": "E32.1",
+    "in_437": true
+  },
+  {
+    "id": "E32.1-3",
+    "category": "E32",
+    "type": "C",
+    "description": "type=lvm-lv이나 lvm.volumeGroup 미지정 시 검증 실패",
+    "subsection": "E32.1",
+    "in_437": true
+  },
+  {
+    "id": "E32.1-4",
+    "category": "E32",
+    "type": "C",
+    "description": "provisioningMode에 \"linear\"/\"thin\" 외 값 지정 시 거부",
+    "subsection": "E32.1",
+    "in_437": true
+  },
+  {
+    "id": "E32.1-5",
+    "category": "E32",
+    "type": "C",
+    "description": "type=lvm-lv이나 backend.lvm 섹션 자체 누락 시 웹훅 거부",
+    "subsection": "E32.1",
+    "in_437": true
+  },
+  {
+    "id": "E32.2",
+    "category": "E32",
+    "type": "C",
+    "description": "PillarBinding LVM — 정상 오버라이드, 잘못된 값, nvmeof-tcp 호환, nfs 비호환",
+    "subsection": "E32.2",
+    "in_437": true
+  },
+  {
+    "id": "E32.2-1",
+    "category": "E32",
+    "type": "C",
+    "description": "LVM provisioningMode 오버라이드 설정 유효",
+    "subsection": "E32.2",
+    "in_437": true
+  },
+  {
+    "id": "E32.2-2",
+    "category": "E32",
+    "type": "C",
+    "description": "provisioningMode에 잘못된 Enum 값 시 거부",
+    "subsection": "E32.2",
+    "in_437": true
+  },
+  {
+    "id": "E32.2-3",
+    "category": "E32",
+    "type": "C",
+    "description": "lvm-lv(Block) + nvmeof-tcp(Block) 조합이 Compatible=True",
+    "subsection": "E32.2",
+    "in_437": true
+  },
+  {
+    "id": "E32.2-4",
+    "category": "E32",
+    "type": "C",
+    "description": "lvm-lv(Block) + nfs(Filesystem) 조합이 비호환 거부",
+    "subsection": "E32.2",
+    "in_437": true
+  },
+  {
+    "id": "E33.1",
+    "category": "E33",
+    "type": "B",
+    "description": "Core RPC — linear/thin create, delete, expand, capacity, list, idempotency, error",
+    "subsection": "E33.4",
+    "in_437": true
+  },
+  {
+    "id": "E33.1-1",
+    "category": "E33",
+    "type": "B",
+    "description": "실제 LVM VG의 GetCapacity가 양수 total/available 반환",
+    "subsection": "E33.1",
+    "in_437": true
+  },
+  {
+    "id": "E33.1-2",
+    "category": "E33",
+    "type": "B",
+    "description": "Thin LV 생성 시 형식 device_path",
+    "subsection": "E33.1",
+    "in_437": true
+  },
+  {
+    "id": "E33.1-3",
+    "category": "E33",
+    "type": "B",
+    "description": "ProvisionMode=\"linear\" 오버라이드로 linear LV 생성",
+    "subsection": "E33.1",
+    "in_437": true
+  },
+  {
+    "id": "E33.1-4",
+    "category": "E33",
+    "type": "B",
+    "description": "LV 삭제 + 동일 ID 재삭제 멱등",
+    "subsection": "E33.1",
+    "in_437": true
+  },
+  {
+    "id": "E33.1-5",
+    "category": "E33",
+    "type": "B",
+    "description": "LV 확장 후 capacity_bytes ≥ 요청 크기 — PE 반올림 허용",
+    "subsection": "E33.1",
+    "in_437": true
+  },
+  {
+    "id": "E33.1-6",
+    "category": "E33",
+    "type": "B",
+    "description": "생성된 LV가 올바른 device_path와 함께 ListVolumes에 포함",
+    "subsection": "E33.1",
+    "in_437": true
+  },
+  {
+    "id": "E33.1-7",
+    "category": "E33",
+    "type": "B",
+    "description": "동일 volumeId linear LV 재생성 멱등",
+    "subsection": "E33.1",
+    "in_437": true
+  },
+  {
+    "id": "E33.1-8",
+    "category": "E33",
+    "type": "B",
+    "description": "동일 volumeId thin LV 재생성 멱등",
+    "subsection": "E33.1",
+    "in_437": true
+  },
+  {
+    "id": "E33.1-9",
+    "category": "E33",
+    "type": "B",
+    "description": "존재하지 않는 VG로 GetCapacity 오류",
+    "subsection": "E33.1",
+    "in_437": true
+  },
+  {
+    "id": "E33.2",
+    "category": "E33",
+    "type": "B",
+    "description": "PVC 프로비저닝 → Pod 마운트 → 정리 전체 라이프사이클",
+    "subsection": "E33.4",
+    "in_437": true
+  },
+  {
+    "id": "E33.2-1",
+    "category": "E33",
+    "type": "B",
+    "description": "agent가 lvm-lv 백엔드 지원 보고",
+    "subsection": "E33.2",
+    "in_437": true
+  },
+  {
+    "id": "E33.2-10",
+    "category": "E33",
+    "type": "B",
+    "description": "NVMe-oF TCP 경유 Pod 마운트 성공 — NodeStage(connect) + NodePublish(mount)",
+    "subsection": "E33.2",
+    "in_437": true
+  },
+  {
+    "id": "E33.2-11",
+    "category": "E33",
+    "type": "B",
+    "description": "Pod 삭제 시 NVMe-oF disconnect + umount 정리",
+    "subsection": "E33.2",
+    "in_437": true
+  },
+  {
+    "id": "E33.2-12",
+    "category": "E33",
+    "type": "B",
+    "description": "PVC 삭제 → agent에서 LV 제거",
+    "subsection": "E33.2",
+    "in_437": true
+  },
+  {
+    "id": "E33.2-2",
+    "category": "E33",
+    "type": "B",
+    "description": "agent가 LVM VG 발견",
+    "subsection": "E33.2",
+    "in_437": true
+  },
+  {
+    "id": "E33.2-3",
+    "category": "E33",
+    "type": "B",
+    "description": "PillarPool Ready + VG 용량 보고",
+    "subsection": "E33.2",
+    "in_437": true
+  },
+  {
+    "id": "E33.2-4",
+    "category": "E33",
+    "type": "B",
+    "description": "StorageClass 자동 생성",
+    "subsection": "E33.2",
+    "in_437": true
+  },
+  {
+    "id": "E33.2-5",
+    "category": "E33",
+    "type": "B",
+    "description": "1GiB PVC → LVM LV 프로비저닝 → Bound",
+    "subsection": "E33.2",
+    "in_437": true
+  },
+  {
+    "id": "E33.2-6",
+    "category": "E33",
+    "type": "B",
+    "description": "PV capacity ≥ 1Gi — LVM PE 반올림 가능",
+    "subsection": "E33.2",
+    "in_437": true
+  },
+  {
+    "id": "E33.2-7",
+    "category": "E33",
+    "type": "B",
+    "description": "PV StorageClass 참조 정확",
+    "subsection": "E33.2",
+    "in_437": true
+  },
+  {
+    "id": "E33.2-8",
+    "category": "E33",
+    "type": "B",
+    "description": "PV reclaimPolicy=Delete",
+    "subsection": "E33.2",
+    "in_437": true
+  },
+  {
+    "id": "E33.2-9",
+    "category": "E33",
+    "type": "B",
+    "description": "두 번째 PVC 독립 Bound",
+    "subsection": "E33.2",
+    "in_437": true
+  },
+  {
+    "id": "E33.3",
+    "category": "E33",
+    "type": "B",
+    "description": "온라인 볼륨 확장 — ControllerExpand(lvextend) + NodeExpand(resize2fs)",
+    "subsection": "E33.4",
+    "in_437": true
+  },
+  {
+    "id": "E33.3-1",
+    "category": "E33",
+    "type": "B",
+    "description": "1Gi PVC 마운트 Pod Running",
+    "subsection": "E33.3",
+    "in_437": true
+  },
+  {
+    "id": "E33.3-2",
+    "category": "E33",
+    "type": "B",
+    "description": "확장 전 출력 ≈ 1Gi",
+    "subsection": "E33.3",
+    "in_437": true
+  },
+  {
+    "id": "E33.3-3",
+    "category": "E33",
+    "type": "B",
+    "description": "PVC spec 2Gi 패치 후 status.capacity 갱신 — 실행 확인",
+    "subsection": "E33.3",
+    "in_437": true
+  },
+  {
+    "id": "E33.3-4",
+    "category": "E33",
+    "type": "B",
+    "description": "후 Pod 내 ≥ 2Gi",
+    "subsection": "E33.3",
+    "in_437": true
+  },
+  {
+    "id": "E33.3-5",
+    "category": "E33",
+    "type": "B",
+    "description": "확장된 볼륨 Pod/PVC 정리",
+    "subsection": "E33.3",
+    "in_437": true
+  },
+  {
+    "id": "E33.4",
+    "category": "E33",
+    "type": "B",
+    "description": "백엔드 독립 E2E — Docker 직접 agent, 호스트 디바이스 검증",
+    "subsection": "E33.4",
+    "in_437": true
+  },
+  {
+    "id": "E33.4-1",
+    "category": "E33",
+    "type": "B",
+    "description": "Thin LV 생성 + 호스트에서 존재 확인",
+    "subsection": "E33.4",
+    "in_437": true
+  },
+  {
+    "id": "E33.4-2",
+    "category": "E33",
+    "type": "B",
+    "description": "Linear LV 생성 + ProvisionMode 오버라이드 검증",
+    "subsection": "E33.4",
+    "in_437": true
+  },
+  {
+    "id": "E33.4-3",
+    "category": "E33",
+    "type": "B",
+    "description": "LV 삭제 + 디바이스 소멸 + 재삭제 멱등",
+    "subsection": "E33.4",
+    "in_437": true
+  },
+  {
+    "id": "E33.4-4",
+    "category": "E33",
+    "type": "B",
+    "description": "LV 확장 후 capacity_bytes ≥ 요청",
+    "subsection": "E33.4",
+    "in_437": true
+  },
+  {
+    "id": "E33.4-5",
+    "category": "E33",
+    "type": "B",
+    "description": "VG 용량: total > 0, available ≤ total",
+    "subsection": "E33.4",
+    "in_437": true
+  },
+  {
+    "id": "E33.4-6",
+    "category": "E33",
+    "type": "B",
+    "description": "생성된 LV가 ListVolumes에 포함",
+    "subsection": "E33.4",
+    "in_437": true
+  },
+  {
+    "id": "E33.4-7",
+    "category": "E33",
+    "type": "B",
+    "description": "CreateVolume과 ListVolumes 모두 형식 일관",
+    "subsection": "E33.4",
+    "in_437": true
+  },
+  {
+    "id": "E34.1",
+    "category": "E34",
+    "type": "B",
+    "description": "iSCSI generated StorageClass, CreateVolume , Publish/Unpublish ACL",
+    "subsection": "E34.3",
+    "in_437": true
+  },
+  {
+    "id": "E34.1-1",
+    "category": "E34",
+    "type": "B",
+    "description": "generated StorageClass가 , , iSCSI timeout 파라미터를 포함",
+    "subsection": "E34.1",
+    "in_437": true
+  },
+  {
+    "id": "E34.1-2",
+    "category": "E34",
+    "type": "B",
+    "description": "iSCSI CreateVolume이 PV 에 target IQN, portal IP, port, LUN을 기록",
+    "subsection": "E34.1",
+    "in_437": true
+  },
+  {
+    "id": "E34.1-3",
+    "category": "E34",
+    "type": "B",
+    "description": "node-side publisher가 compute-worker의 initiator IQN을 annotation에 반영하고, 이 그 값을 사용해 ACL을 추가",
+    "subsection": "E34.1",
+    "in_437": true
+  },
+  {
+    "id": "E34.1-4",
+    "category": "E34",
+    "type": "B",
+    "description": "Pod 삭제 시 annotation에서 해석된 동일 IQN ACL이 제거",
+    "subsection": "E34.1",
+    "in_437": true
+  },
+  {
+    "id": "E34.2",
+    "category": "E34",
+    "type": "B",
+    "description": "Filesystem PVC 프로비저닝, Pod mount, per-volume timeout override, logout/cleanup",
+    "subsection": "E34.3",
+    "in_437": true
+  },
+  {
+    "id": "E34.2-1",
+    "category": "E34",
+    "type": "B",
+    "description": "를 참조하는 StorageClass로 PVC가 정상 Bound",
+    "subsection": "E34.2",
+    "in_437": true
+  },
+  {
+    "id": "E34.2-2",
+    "category": "E34",
+    "type": "B",
+    "description": "Pod 생성 시 compute-worker에서 iSCSI discovery/login 후 마운트 성공",
+    "subsection": "E34.2",
+    "in_437": true
+  },
+  {
+    "id": "E34.2-3",
+    "category": "E34",
+    "type": "B",
+    "description": "PVC annotation이 단일 volume의 iSCSI timeout만 오버라이드",
+    "subsection": "E34.2",
+    "in_437": true
+  },
+  {
+    "id": "E34.2-4",
+    "category": "E34",
+    "type": "B",
+    "description": "Pod 삭제 시 bind mount 해제, staging 해제, session logout 수행",
+    "subsection": "E34.2",
+    "in_437": true
+  },
+  {
+    "id": "E34.2-5",
+    "category": "E34",
+    "type": "B",
+    "description": "PVC 삭제 시 target export와 backend LV가 모두 정리",
+    "subsection": "E34.2",
+    "in_437": true
+  },
+  {
+    "id": "E34.3",
+    "category": "E34",
+    "type": "B",
+    "description": "Raw block, online expansion, NodeGetVolumeStats, 재스테이징 멱등성",
+    "subsection": "E34.3",
+    "in_437": true
+  },
+  {
+    "id": "E34.3-1",
+    "category": "E34",
+    "type": "B",
+    "description": "PVC가 raw block device로 publish",
+    "subsection": "E34.3",
+    "in_437": true
+  },
+  {
+    "id": "E34.3-2",
+    "category": "E34",
+    "type": "B",
+    "description": "PVC 확장 시 backend LV와 node filesystem이 모두 커짐",
+    "subsection": "E34.3",
+    "in_437": true
+  },
+  {
+    "id": "E34.3-3",
+    "category": "E34",
+    "type": "B",
+    "description": "iSCSI 경로에서도 가 filesystem/block 모드별로 올바른 usage를 반환",
+    "subsection": "E34.3",
+    "in_437": true
+  },
+  {
+    "id": "E34.3-4",
+    "category": "E34",
+    "type": "B",
+    "description": "node plugin 재시작 후 재스테이징이 session 중복 없이 복구",
+    "subsection": "E34.3",
+    "in_437": true
+  },
+  {
+    "id": "E35.1",
+    "category": "E35",
+    "type": "B",
+    "description": "zvol+iSCSI generated StorageClass, CreateVolume , Publish/Unpublish ACL",
+    "subsection": "E35.3",
+    "in_437": true
+  },
+  {
+    "id": "E35.1-1",
+    "category": "E35",
+    "type": "B",
+    "description": "generated StorageClass가 , pool/zvol 파라미터, , iSCSI timer 파라미터를 함께 포함",
+    "subsection": "E35.1",
+    "in_437": true
+  },
+  {
+    "id": "E35.1-2",
+    "category": "E35",
+    "type": "B",
+    "description": "zvol-backed iSCSI CreateVolume이 PV 에 target IQN, portal IP, port, LUN을 기록하고 backend zvol을 준비",
+    "subsection": "E35.1",
+    "in_437": true
+  },
+  {
+    "id": "E35.1-3",
+    "category": "E35",
+    "type": "B",
+    "description": "이 annotation의 compute-worker initiator IQN을 사용해 zvol-backed target ACL을 추가",
+    "subsection": "E35.1",
+    "in_437": true
+  },
+  {
+    "id": "E35.1-4",
+    "category": "E35",
+    "type": "B",
+    "description": "Pod 삭제 시 동일 IQN ACL만 제거되고 export 삭제는 PVC 삭제 단계까지 보류",
+    "subsection": "E35.1",
+    "in_437": true
+  },
+  {
+    "id": "E35.2",
+    "category": "E35",
+    "type": "B",
+    "description": "Filesystem PVC 프로비저닝, Pod mount, ZFS 파라미터 유지, logout/cleanup",
+    "subsection": "E35.3",
+    "in_437": true
+  },
+  {
+    "id": "E35.2-1",
+    "category": "E35",
+    "type": "B",
+    "description": "를 참조하는 zfs-zvol StorageClass로 PVC가 정상 Bound",
+    "subsection": "E35.2",
+    "in_437": true
+  },
+  {
+    "id": "E35.2-2",
+    "category": "E35",
+    "type": "B",
+    "description": "Pod 생성 시 compute-worker에서 iSCSI discovery/login 후 마운트 성공",
+    "subsection": "E35.2",
+    "in_437": true
+  },
+  {
+    "id": "E35.2-3",
+    "category": "E35",
+    "type": "B",
+    "description": ", 같은 ZFS 파라미터가 iSCSI 경로에서도 유지",
+    "subsection": "E35.2",
+    "in_437": true
+  },
+  {
+    "id": "E35.2-4",
+    "category": "E35",
+    "type": "B",
+    "description": "Pod 삭제 시 bind mount 해제, staging 해제, session logout 수행",
+    "subsection": "E35.2",
+    "in_437": true
+  },
+  {
+    "id": "E35.2-5",
+    "category": "E35",
+    "type": "B",
+    "description": "PVC 삭제 시 target export와 backend zvol이 모두 정리",
+    "subsection": "E35.2",
+    "in_437": true
+  },
+  {
+    "id": "E35.3",
+    "category": "E35",
+    "type": "B",
+    "description": "Raw block, online expansion, NodeGetVolumeStats, 재스테이징 멱등성",
+    "subsection": "E35.3",
+    "in_437": true
+  },
+  {
+    "id": "E35.3-1",
+    "category": "E35",
+    "type": "B",
+    "description": "PVC가 zvol-backed raw block device로 publish",
+    "subsection": "E35.3",
+    "in_437": true
+  },
+  {
+    "id": "E35.3-2",
+    "category": "E35",
+    "type": "B",
+    "description": "PVC 확장 시 backend zvol과 node filesystem이 모두 커짐",
+    "subsection": "E35.3",
+    "in_437": true
+  },
+  {
+    "id": "E35.3-3",
+    "category": "E35",
+    "type": "B",
+    "description": "iSCSI + zvol 경로에서도 가 filesystem/block 모드별로 올바른 usage를 반환",
+    "subsection": "E35.3",
+    "in_437": true
+  },
+  {
+    "id": "E35.3-4",
+    "category": "E35",
+    "type": "B",
+    "description": "node plugin 재시작 후 재스테이징이 session 중복 없이 복구",
+    "subsection": "E35.3",
+    "in_437": true
+  },
+  {
+    "id": "E4.1-1",
+    "category": "E4",
+    "type": "A",
+    "description": "Controller→Node 전체 경로: CreateVolume → ControllerPublish → NodeStage → NodePublish → NodeUnpublish → NodeUnstage → ControllerUnpublish → DeleteVolume",
+    "subsection": "E4.1",
+    "in_437": true
+  },
+  {
+    "id": "E4.2-1",
+    "category": "E4",
+    "type": "A",
+    "description": "ControllerPublish 전 NodeStage 호출 → FailedPrecondition",
+    "subsection": "E4.2",
+    "in_437": true
+  },
+  {
+    "id": "E4.3-1",
+    "category": "E4",
+    "type": "A",
+    "description": "라이프사이클 각 단계를 두 번씩 호출해도 최종 상태 동일",
+    "subsection": "E4.3",
+    "in_437": true
+  },
+  {
+    "id": "E4.4-1",
+    "category": "E4",
+    "type": "A",
+    "description": "CreateVolume이 설정한 VolumeContext(NQN/address/port)가 NodeStageVolume에 키 변환 없이 그대로 전달됨",
+    "subsection": "E4.4",
+    "in_437": true
+  },
+  {
+    "id": "E5.1-1",
+    "category": "E5",
+    "type": "A",
+    "description": "ControllerPublish 없이 NodeStage 호출 → FailedPrecondition",
+    "subsection": "E5.1",
+    "in_437": true
+  },
+  {
+    "id": "E5.1-2",
+    "category": "E5",
+    "type": "A",
+    "description": "NodeStage 없이 NodePublish 호출 → FailedPrecondition",
+    "subsection": "E5.1",
+    "in_437": true
+  },
+  {
+    "id": "E5.1-3",
+    "category": "E5",
+    "type": "A",
+    "description": "NodeUnpublish 없이 NodeUnstage 호출 → FailedPrecondition",
+    "subsection": "E5.1",
+    "in_437": true
+  },
+  {
+    "id": "E5.1-4",
+    "category": "E5",
+    "type": "A",
+    "description": "NodeUnstage 후 NodePublish 재시도 → FailedPrecondition",
+    "subsection": "E5.1",
+    "in_437": true
+  },
+  {
+    "id": "E5.2-1",
+    "category": "E5",
+    "type": "A",
+    "description": "공유 SM을 사용한 전체 순서 라이프사이클 성공",
+    "subsection": "E5.2",
+    "in_437": true
+  },
+  {
+    "id": "E5.2-2",
+    "category": "E5",
+    "type": "A",
+    "description": "올바른 상태에서의 재호출은 순서 제약 위반 아님",
+    "subsection": "E5.2",
+    "in_437": true
+  },
+  {
+    "id": "E6.1",
+    "category": "E6",
+    "type": "A",
+    "description": "부분 실패 시 CRD Phase=CreatePartial 생성, 재시도 시 Ready 전환, skipBackend 호출 횟수",
+    "subsection": "E6.3",
+    "in_437": true
+  },
+  {
+    "id": "E6.1-1",
+    "category": "E6",
+    "type": "A",
+    "description": "agent.CreateVolume 성공 + agent.ExportVolume 실패 시 PillarVolume CRD가 Phase=CreatePartial, BackendCreated=true로 생성됨",
+    "subsection": "E6.1",
+    "in_437": true
+  },
+  {
+    "id": "E6.1-2",
+    "category": "E6",
+    "type": "A",
+    "description": "부분 실패 후 재시도 시 CRD가 Phase=Ready로 전환되고 ExportInfo 채워짐",
+    "subsection": "E6.1",
+    "in_437": true
+  },
+  {
+    "id": "E6.1-3",
+    "category": "E6",
+    "type": "A",
+    "description": "재시도 시 skipBackend 최적화로 agent.CreateVolume 재호출 없음",
+    "subsection": "E6.1",
+    "in_437": true
+  },
+  {
+    "id": "E6.2",
+    "category": "E6",
+    "type": "A",
+    "description": "DeleteVolume 성공 후 CRD 제거, 부분 생성 상태 볼륨 정리",
+    "subsection": "E6.3",
+    "in_437": true
+  },
+  {
+    "id": "E6.2-1",
+    "category": "E6",
+    "type": "A",
+    "description": "성공적인 DeleteVolume이 PillarVolume CRD를 삭제",
+    "subsection": "E6.2",
+    "in_437": true
+  },
+  {
+    "id": "E6.2-2",
+    "category": "E6",
+    "type": "A",
+    "description": "부분 생성 상태의 볼륨도 DeleteVolume으로 올바르게 정리됨",
+    "subsection": "E6.2",
+    "in_437": true
+  },
+  {
+    "id": "E6.3",
+    "category": "E6",
+    "type": "A",
+    "description": "zvol 중복 방지 — 단일 재시도, 삭제 후 레지스트리 검증, 다중 재시도 무중복",
+    "subsection": "E6.3",
+    "in_437": true
+  },
+  {
+    "id": "E6.3-1",
+    "category": "E6",
+    "type": "A",
+    "description": "export 실패 후 재시도 시 zvol이 정확히 1개만 존재 — skipBackend 최적화 동작 확인",
+    "subsection": "E6.3",
+    "in_437": true
+  },
+  {
+    "id": "E6.3-2",
+    "category": "E6",
+    "type": "A",
+    "description": "부분 생성 상태에서 DeleteVolume 시 zvol 레지스트리가 1→0으로 정확히 감소",
+    "subsection": "E6.3",
+    "in_437": true
+  },
+  {
+    "id": "E6.3-3",
+    "category": "E6",
+    "type": "A",
+    "description": "연속 3회 export 실패 후 최종 성공 — 매 재시도마다 zvol 수 1 유지",
+    "subsection": "E6.3",
+    "in_437": true
+  },
+  {
+    "id": "E7.1-1",
+    "category": "E7",
+    "type": "A",
+    "description": "동일 인수로 ControllerPublishVolume 2회 호출: 두 호출 모두 성공, AllowInitiator는 총 2회",
+    "subsection": "E7.1",
+    "in_437": true
+  },
+  {
+    "id": "E7.1-2",
+    "category": "E7",
+    "type": "A",
+    "description": "서로 다른 node handle에 대한 ControllerPublishVolume은 각 annotation에서 해석된 identity로 독립적으로 성공",
+    "subsection": "E7.1",
+    "in_437": true
+  },
+  {
+    "id": "E7.2-1",
+    "category": "E7",
+    "type": "A",
+    "description": "동일 타깃 경로로 NodePublishVolume 2회 호출: 두 번째는 no-op",
+    "subsection": "E7.2",
+    "in_437": true
+  },
+  {
+    "id": "E7.2-2",
+    "category": "E7",
+    "type": "A",
+    "description": "블록 접근 모드에서도 NodePublishVolume 2회 호출 멱등성 보장",
+    "subsection": "E7.2",
+    "in_437": true
+  },
+  {
+    "id": "E7.2-3",
+    "category": "E7",
+    "type": "A",
+    "description": "읽기 전용 NodePublishVolume 2회 호출 멱등성",
+    "subsection": "E7.2",
+    "in_437": true
+  },
+  {
+    "id": "E8.1-1",
+    "category": "E8",
+    "type": "A",
+    "description": "올바른 mTLS 자격증명으로 연결 시 PillarTarget 상태 AgentConnected=True/Authenticated",
+    "subsection": "E8.1",
+    "in_437": true
+  },
+  {
+    "id": "E8.1-2",
+    "category": "E8",
+    "type": "A",
+    "description": "평문 클라이언트가 mTLS 서버에 거부됨",
+    "subsection": "E8.1",
+    "in_437": true
+  },
+  {
+    "id": "E8.1-3",
+    "category": "E8",
+    "type": "A",
+    "description": "다른 CA가 서명한 클라이언트 인증서는 거부됨",
+    "subsection": "E8.1",
+    "in_437": true
+  },
+  {
+    "id": "E9.1-1",
+    "category": "E9",
+    "type": "A",
+    "description": "실제 gRPC 연결을 통한 GetCapabilities 호출이 올바른 역량 목록 반환",
+    "subsection": "E9.1",
+    "in_437": true
+  },
+  {
+    "id": "E9.1-2",
+    "category": "E9",
+    "type": "A",
+    "description": "실제 gRPC 연결을 통한 HealthCheck 호출",
+    "subsection": "E9.1",
+    "in_437": true
+  },
+  {
+    "id": "E9.2-1",
+    "category": "E9",
+    "type": "A",
+    "description": "CreateVolume → ExportVolume → AllowInitiator → DenyInitiator → UnexportVolume → DeleteVolume 전체 왕복을 실제 gRPC를 통해 검증",
+    "subsection": "E9.2",
+    "in_437": true
+  },
+  {
+    "id": "E9.3-1",
+    "category": "E9",
+    "type": "A",
+    "description": "ReconcileState가 재시작 후 configfs 엔트리를 올바르게 복원",
+    "subsection": "E9.3",
+    "in_437": true
+  },
+  {
+    "id": "E9.4-1",
+    "category": "E9",
+    "type": "A",
+    "description": "다양한 오류 시나리오(잘못된 pool ID, backend 오류 등)가 적절한 gRPC 상태 코드로 매핑",
+    "subsection": "E9.4",
+    "in_437": true
+  },
+  {
+    "id": "E9.5-1",
+    "category": "E9",
+    "type": "A",
+    "description": "Phase 1에서 지원하는 모든 RPC를 한 테스트에서 순차적으로 검증",
+    "subsection": "E9.5",
+    "in_437": true
+  },
+  {
+    "id": "F1.1",
+    "category": "F1",
+    "type": "F",
+    "description": "실제 ZFS pool에서 zvol을 생성하고 블록 디바이스가 나타남을 검증",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "F1.2",
+    "category": "F1",
+    "type": "F",
+    "description": "동일 zvol을 두 번 생성해도 동일한 devicePath 반환; 두 번째 호출 시 미실행",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "F1.3",
+    "category": "F1",
+    "type": "F",
+    "description": "호출 후 zvol 및 디바이스 노드가 완전히 제거됨",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "F1.4",
+    "category": "F1",
+    "type": "F",
+    "description": "ZFS pool 용량이 부족할 때 CreateVolume이 적절한 오류를 반환",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "F1.5",
+    "category": "F1",
+    "type": "F",
+    "description": "실제 zvol의 크기를 를 통해 확장 후 블록 디바이스 크기 반영 검증",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "F10.1",
+    "category": "F10",
+    "type": "F",
+    "description": "NodeUnstage가 마운트 해제 → → 제거까지 수행",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "F11.1",
+    "category": "F11",
+    "type": "F",
+    "description": "NVMe-oF connect 성공 후 디바이스가 즉시 나타나지 않고 지연되는 환경에서 폴링 로직이 정상 대기하고 최종 성공",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "F11.2",
+    "category": "F11",
+    "type": "F",
+    "description": "디바이스가 폴링 타임아웃 내에 끝내 나타나지 않을 때 적절한 오류 반환",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "F12.1",
+    "category": "F12",
+    "type": "F",
+    "description": "동일 NQN에 두 개의 네트워크 인터페이스로 연결 시 NodeStage가 올바른 블록 디바이스를 선택",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "F12.2",
+    "category": "F12",
+    "type": "F",
+    "description": "멀티패스 연결 중 하나의 경로가 끊어져도 파일시스템 I/O 지속",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "F13.1",
+    "category": "F13",
+    "type": "F",
+    "description": "CSI CreateSnapshot 호출 시 실제 실행 및 ReadyToUse=true 반환",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "F13.2",
+    "category": "F13",
+    "type": "F",
+    "description": "동일 스냅샷 이름으로 두 번 CreateSnapshot 호출 시 동일 응답 반환",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "F14.1",
+    "category": "F14",
+    "type": "F",
+    "description": "CSI DeleteSnapshot 호출 시 실행 및 스냅샷 제거",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "F14.2",
+    "category": "F14",
+    "type": "F",
+    "description": "이미 삭제된 스냅샷 DeleteSnapshot 호출 시 성공 반환 (멱등성)",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "F15.1",
+    "category": "F15",
+    "type": "F",
+    "description": "CSI ListSnapshots 호출 시 결과를 올바르게 변환",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "F16.1",
+    "category": "F16",
+    "type": "F",
+    "description": "VolumeSnapshot CRD 생성 → PVC(RestoreFrom) → Pod 마운트 후 데이터 일관성 검증",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "F17.1",
+    "category": "F17",
+    "type": "F",
+    "description": "스트리밍 RPC가 스트림을 gRPC 청크로 수신하고 checksum 일치",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "F17.2",
+    "category": "F17",
+    "type": "F",
+    "description": "전송 중 네트워크 중단 시 적절한 스트리밍 오류 반환",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "F18.1",
+    "category": "F18",
+    "type": "F",
+    "description": "스트리밍 RPC가 gRPC 스트림을 수신하여 로 볼륨 복원",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "F18.2",
+    "category": "F18",
+    "type": "F",
+    "description": "손상된 스트림 수신 시 오류 처리 및 불완전 볼륨 정리",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "F19.1",
+    "category": "F19",
+    "type": "F",
+    "description": "노드 A에서 SendVolume → 노드 B에서 ReceiveVolume 크로스 노드 마이그레이션; 마이그레이션 후 데이터 동일성 검증",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "F19.2",
+    "category": "F19",
+    "type": "F",
+    "description": "10GiB 볼륨 크로스 노드 마이그레이션; 스트림 청크 수, 총 소요 시간, 처리량 측정",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "F2.1",
+    "category": "F2",
+    "type": "F",
+    "description": "실제 에 NQN 서브시스템과 포트 설정이 생성됨",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "F2.2",
+    "category": "F2",
+    "type": "F",
+    "description": "동일한 볼륨을 두 번 ExportVolume 해도 configfs 구조 중복 없음",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "F2.3",
+    "category": "F2",
+    "type": "F",
+    "description": "호출 후 configfs 항목 완전 제거",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "F20.1",
+    "category": "F20",
+    "type": "F",
+    "description": "호출 시 실행 후 새 zvol이 독립적으로 동작",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "F20.2",
+    "category": "F20",
+    "type": "F",
+    "description": "클론 볼륨 삭제 시 원본 스냅샷이 유지됨",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "F21.1",
+    "category": "F21",
+    "type": "F",
+    "description": "실행 중인 Pod의 PVC를 확장하면 Pod 내 파일시스템이 재시작 없이 새 크기로 자동 갱신",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "F21.2",
+    "category": "F21",
+    "type": "F",
+    "description": "ext4 파일시스템 리사이즈가 를 통해 성공적으로 수행됨",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "F21.3",
+    "category": "F21",
+    "type": "F",
+    "description": "xfs 파일시스템 리사이즈가 를 통해 수행됨",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "F22.1",
+    "category": "F22",
+    "type": "F",
+    "description": "ZFS pool을 거의 가득 채운 후 새 zvol 생성 시도 시 실제 ENOSPC 오류 전파 검증",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "F22.2",
+    "category": "F22",
+    "type": "F",
+    "description": "용량 부족으로 실패한 CreateVolume이 불완전한 ZFS 자원을 정리함",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "F23.1",
+    "category": "F23",
+    "type": "F",
+    "description": "현재 pool 여유 공간 이상의 용량으로 ExpandVolume 시도 시 실제 \"out of space\" 오류",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "F24.1",
+    "category": "F24",
+    "type": "F",
+    "description": "동일 볼륨에 NodeStage/NodeUnstage를 동시 호출 시 커널 레벨 레이스 컨디션 없음 검증",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "F24.2",
+    "category": "F24",
+    "type": "F",
+    "description": "동일 스테이징 경로에서 3개 타깃으로 동시 NodePublish",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "F25.1",
+    "category": "F25",
+    "type": "F",
+    "description": "100개 PVC 동시 생성 — controller, agent, ZFS 백엔드 확장성 및 레이스 컨디션 검증",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "F25.2",
+    "category": "F25",
+    "type": "F",
+    "description": "F25.1에서 생성한 100개 PVC를 동시 삭제 — 정리 완전성 검증",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "F26.1",
+    "category": "F26",
+    "type": "F",
+    "description": "마운트 포인트가 사용 중 (로 프로세스 점유)일 때 NodeUnstage 호출 시 EBUSY 오류 처리 검증",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "F26.2",
+    "category": "F26",
+    "type": "F",
+    "description": "lazy unmount () 옵션이 활성화된 경우 EBUSY 상태에서도 NodeUnstage가 성공적으로 완료",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "F27.1",
+    "category": "F27",
+    "type": "F",
+    "description": "실제 VG에서 linear LV 생성 및 존재 검증",
+    "subsection": "E35.3",
+    "in_437": true
+  },
+  {
+    "id": "F27.2",
+    "category": "F27",
+    "type": "F",
+    "description": "thin pool 내 thin LV 생성 + 컬럼 검증",
+    "subsection": "E35.3",
+    "in_437": true
+  },
+  {
+    "id": "F27.3",
+    "category": "F27",
+    "type": "F",
+    "description": "동일 LV 재생성 시 동일 device_path; 결과에 1개만",
+    "subsection": "E35.3",
+    "in_437": true
+  },
+  {
+    "id": "F27.4",
+    "category": "F27",
+    "type": "F",
+    "description": "LV 삭제 후 및 에서 완전 제거",
+    "subsection": "E35.3",
+    "in_437": true
+  },
+  {
+    "id": "F27.5",
+    "category": "F27",
+    "type": "F",
+    "description": "후 및 반영",
+    "subsection": "E35.3",
+    "in_437": true
+  },
+  {
+    "id": "F27.6",
+    "category": "F27",
+    "type": "F",
+    "description": "실제 결과와 GetCapacity 응답 일치",
+    "subsection": "E35.3",
+    "in_437": true
+  },
+  {
+    "id": "F27.7",
+    "category": "F27",
+    "type": "F",
+    "description": "thin pool 와 GetCapacity 일치",
+    "subsection": "E35.3",
+    "in_437": true
+  },
+  {
+    "id": "F27.8",
+    "category": "F27",
+    "type": "F",
+    "description": "VG 가득 차면 적절한 오류 반환",
+    "subsection": "E35.3",
+    "in_437": true
+  },
+  {
+    "id": "F27.9",
+    "category": "F27",
+    "type": "F",
+    "description": "비-PE 정렬 크기 요청 시 PE 반올림 동작",
+    "subsection": "E35.3",
+    "in_437": true
+  },
+  {
+    "id": "F28.1",
+    "category": "F28",
+    "type": "F",
+    "description": "LVM LV device_path로 NVMe-oF subsystem 생성 + configfs 검증",
+    "subsection": "E35.3",
+    "in_437": true
+  },
+  {
+    "id": "F28.2",
+    "category": "F28",
+    "type": "F",
+    "description": "UnexportVolume 후 configfs 완전 제거",
+    "subsection": "E35.3",
+    "in_437": true
+  },
+  {
+    "id": "F29.1",
+    "category": "F29",
+    "type": "F",
+    "description": "LVM LV 기반 NVMe-oF subsystem에 TCP 연결 + 탑재",
+    "subsection": "E35.3",
+    "in_437": true
+  },
+  {
+    "id": "F29.2",
+    "category": "F29",
+    "type": "F",
+    "description": "NVMe-oF disconnect 후 디바이스 제거",
+    "subsection": "E35.3",
+    "in_437": true
+  },
+  {
+    "id": "F29.3",
+    "category": "F29",
+    "type": "F",
+    "description": "LVM LV 생성 → Export → Connect → mkfs → mount → I/O → umount → Disconnect → Unexport → Delete 전체 스토리지 경로",
+    "subsection": "E35.3",
+    "in_437": true
+  },
+  {
+    "id": "F3.1",
+    "category": "F3",
+    "type": "F",
+    "description": "성공 후 블록 디바이스 탑재 검증",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "F3.2",
+    "category": "F3",
+    "type": "F",
+    "description": "NVMe-oF 연결 후 실행 시 디바이스 노드 제거 검증",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "F3.3",
+    "category": "F3",
+    "type": "F",
+    "description": "NVMe-oF connect 후 udev 처리 지연 환경에서 폴링 로직이 올바르게 대기하고 성공",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "F30.1",
+    "category": "F30",
+    "type": "F",
+    "description": "StorageClass(lvm-lv) PVC → LVM LV 프로비저닝 → Bound",
+    "subsection": "E35.3",
+    "in_437": true
+  },
+  {
+    "id": "F30.2",
+    "category": "F30",
+    "type": "F",
+    "description": "Pod이 LVM PVC를 NVMe-oF TCP 경유 마운트 + I/O 검증",
+    "subsection": "E35.3",
+    "in_437": true
+  },
+  {
+    "id": "F30.3",
+    "category": "F30",
+    "type": "F",
+    "description": "PVC 삭제 후 LV + NVMe-oF subsystem 완전 정리",
+    "subsection": "E35.3",
+    "in_437": true
+  },
+  {
+    "id": "F31.1",
+    "category": "F31",
+    "type": "F",
+    "description": "ControllerExpandVolume → → 실제 LV 크기 증가",
+    "subsection": "E35.3",
+    "in_437": true
+  },
+  {
+    "id": "F31.2",
+    "category": "F31",
+    "type": "F",
+    "description": "NodeExpandVolume → → Pod 내 파일시스템 확장",
+    "subsection": "E35.3",
+    "in_437": true
+  },
+  {
+    "id": "F4.1",
+    "category": "F4",
+    "type": "F",
+    "description": "StorageClass 생성 → PVC 생성 → PV 자동 프로비저닝 → Pod 마운트까지 전체 흐름",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "F4.2",
+    "category": "F4",
+    "type": "F",
+    "description": "Pod 삭제 → PVC 삭제 시 PV, ZFS zvol, NVMe-oF configfs 항목이 모두 정리됨",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "F4.3",
+    "category": "F4",
+    "type": "F",
+    "description": "ReadWriteOnce PVC는 두 번째 Pod에서 동시 마운트가 불가능함을 검증",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "F5.1",
+    "category": "F5",
+    "type": "F",
+    "description": "PVC 용량 증가 요청 → ControllerExpandVolume → NodeExpandVolume → Pod 내 파일시스템 크기 자동 갱신",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "F5.2",
+    "category": "F5",
+    "type": "F",
+    "description": "볼륨을 여러 번 단계적으로 확장해도 각 단계에서 Pod 내 파일시스템 크기 반영",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "F6.1",
+    "category": "F6",
+    "type": "F",
+    "description": "스토리지 노드 재시작 후 pillar-agent가 configfs 상태를 자동으로 복원하고 기존 PVC 연결이 재개됨",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "F6.2",
+    "category": "F6",
+    "type": "F",
+    "description": "pillar-agent 재시작 후 mTLS 인증서로 CSI 컨트롤러에 재연결 성공",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "F7.1",
+    "category": "F7",
+    "type": "F",
+    "description": "cert-manager가 짧은 유효 기간 인증서를 자동 갱신하고 갱신 중 gRPC 연결 유지",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "F7.2",
+    "category": "F7",
+    "type": "F",
+    "description": "만료된 인증서로 연결 시도 시 gRPC 연결 거부",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "F8.1",
+    "category": "F8",
+    "type": "F",
+    "description": "NodeStageVolume이 실제 NVMe-oF connect → 디바이스 → → 스테이징 경로 마운트를 순서대로 수행",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "F8.2",
+    "category": "F8",
+    "type": "F",
+    "description": "fsType=xfs로 NodeStageVolume 수행",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "F8.3",
+    "category": "F8",
+    "type": "F",
+    "description": "NodeStageVolume 두 번째 호출이 멱등성 보장 (이미 마운트됨 감지 후 성공 반환)",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "F9.1",
+    "category": "F9",
+    "type": "F",
+    "description": "NodePublish가 스테이징 경로를 타깃 경로로 바인드 마운트 수행",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "F9.2",
+    "category": "F9",
+    "type": "F",
+    "description": "동일 스테이징에서 여러 타깃으로 바인드 마운트",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "M1.1",
+    "category": "M1",
+    "type": "M",
+    "description": "에이전트 롤링 업그레이드 — I/O 유지",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "M1.2",
+    "category": "M1",
+    "type": "M",
+    "description": "컨트롤러 롤링 업그레이드",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "M1.3",
+    "category": "M1",
+    "type": "M",
+    "description": "구버전 에이전트 + 신버전 컨트롤러 공존(혼합 버전)",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "M1.4",
+    "category": "M1",
+    "type": "M",
+    "description": "롤백 시나리오 — 업그레이드 실패 후 이전 버전 복구",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "M10.1",
+    "category": "M10",
+    "type": "M",
+    "description": "단기 TTL 인증서(24시간) 갱신 사이클",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "M10.2",
+    "category": "M10",
+    "type": "M",
+    "description": "인증서 수동 교체(Manual Rotation) — 다운타임 없음",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "M10.3",
+    "category": "M10",
+    "type": "M",
+    "description": "루트 CA 교체(CA Rotation) — 완전한 PKI 재발급",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "M10.4",
+    "category": "M10",
+    "type": "M",
+    "description": "인증서 만료(Expiry) — 갱신 실패 시 동작",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "M10.5",
+    "category": "M10",
+    "type": "M",
+    "description": "SAN(Subject Alternative Name) 불일치 — 연결 거부",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "M10.6",
+    "category": "M10",
+    "type": "M",
+    "description": "Webhook TLS 인증서 갱신 중 CRD 어드미션 가용성",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "M10.7",
+    "category": "M10",
+    "type": "M",
+    "description": "cert-manager 완전 장애 — 기존 인증서 활용 유지",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "M2.1",
+    "category": "M2",
+    "type": "M",
+    "description": "스토리지 네트워크 완전 차단 → 복구",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "M2.2",
+    "category": "M2",
+    "type": "M",
+    "description": "패킷 손실 20% 주입",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "M2.3",
+    "category": "M2",
+    "type": "M",
+    "description": "스토리지 노드 재부팅 중 I/O",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "M2.4",
+    "category": "M2",
+    "type": "M",
+    "description": "스토리지 네트워크 링크 플랩(Link Flap) — 10초 간격 반복",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "M2.5",
+    "category": "M2",
+    "type": "M",
+    "description": "컨트롤 플레인 ↔ 스토리지 노드 통신 차단 (NVMe-oF는 유지)",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "M3.1",
+    "category": "M3",
+    "type": "M",
+    "description": "RAIDZ1 구성 중 디스크 1개 오프라인",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "M3.2",
+    "category": "M3",
+    "type": "M",
+    "description": "디스크 교체 및 재실버링(Resilver) 중 I/O 유지",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "M3.3",
+    "category": "M3",
+    "type": "M",
+    "description": "불량 블록(Bad Block) 시뮬레이션 — ZFS 스크럽",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "M3.4",
+    "category": "M3",
+    "type": "M",
+    "description": "스토리지 노드 전원 강제 차단(Power Loss) 시뮬레이션",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "M4.1",
+    "category": "M4",
+    "type": "M",
+    "description": "커널 5.15 LTS (Ubuntu 22.04 기본)",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "M4.2",
+    "category": "M4",
+    "type": "M",
+    "description": "커널 6.1 LTS",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "M4.3",
+    "category": "M4",
+    "type": "M",
+    "description": "커널 6.8 (최신 안정 버전)",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "M4.4",
+    "category": "M4",
+    "type": "M",
+    "description": "ZFS 커널 모듈 버전 조합 검증",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "M4.5",
+    "category": "M4",
+    "type": "M",
+    "description": "RHEL 9 / Rocky Linux 9 호환성",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "M5.1",
+    "category": "M5",
+    "type": "M",
+    "description": "100개 PVC 동시 프로비저닝 성능",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "M5.2",
+    "category": "M5",
+    "type": "M",
+    "description": "지속 I/O 부하 — 4시간 안정성(Soak) 테스트",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "M5.3",
+    "category": "M5",
+    "type": "M",
+    "description": "500 GiB 대용량 볼륨 생성/삭제 사이클",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "M5.4",
+    "category": "M5",
+    "type": "M",
+    "description": "볼륨 확장 중 I/O 유지 — 대용량 파일시스템",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "M5.5",
+    "category": "M5",
+    "type": "M",
+    "description": "다수 스토리지 노드 동시 에이전트 gRPC 호출 스트레스",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "M6.1",
+    "category": "M6",
+    "type": "M",
+    "description": "mTLS 클라이언트 인증서 미제시 → 연결 거부",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "M6.2",
+    "category": "M6",
+    "type": "M",
+    "description": "RBAC 최소 권한 검증",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "M6.3",
+    "category": "M6",
+    "type": "M",
+    "description": "컨테이너 보안 컨텍스트 검증",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "M6.4",
+    "category": "M6",
+    "type": "M",
+    "description": "네트워크 정책(NetworkPolicy) 우회 시도",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "M7.1",
+    "category": "M7",
+    "type": "M",
+    "description": "10 GiB 랜덤 데이터 기록 후 재마운트 검증",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "M7.2",
+    "category": "M7",
+    "type": "M",
+    "description": "볼륨 확장 전후 데이터 무결성",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "M7.3",
+    "category": "M7",
+    "type": "M",
+    "description": "ZFS 스냅샷 → 복원 후 데이터 일치",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "M7.4",
+    "category": "M7",
+    "type": "M",
+    "description": "크로스-노드 볼륨 마이그레이션 데이터 무결성",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "M7.5",
+    "category": "M7",
+    "type": "M",
+    "description": "XFS 파일시스템 무결성 — I/O 중 에이전트 재시작",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "M8.1",
+    "category": "M8",
+    "type": "M",
+    "description": "Helm 차트 마이너 업그레이드 (v0.x → v0.x+1)",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "M8.2",
+    "category": "M8",
+    "type": "M",
+    "description": "CRD 스키마 변경이 포함된 업그레이드",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "M8.3",
+    "category": "M8",
+    "type": "M",
+    "description": "다운그레이드 절차 — 긴급 롤백",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "M8.4",
+    "category": "M8",
+    "type": "M",
+    "description": "업그레이드 후 전체 E2E 회귀 테스트 (Smoke Test)",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "M9.1",
+    "category": "M9",
+    "type": "M",
+    "description": "테넌트 A의 PVC에 테넌트 B 접근 불가 (RBAC)",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "M9.2",
+    "category": "M9",
+    "type": "M",
+    "description": "NVMe-oF NQN 수준 호스트 격리 — 다른 NQN으로 볼륨 접근 불가",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "M9.3",
+    "category": "M9",
+    "type": "M",
+    "description": "StorageClass 테넌트 격리 — 잘못된 StorageClass 사용 거부",
+    "subsection": "E35.3",
+    "in_437": false
+  },
+  {
+    "id": "M9.4",
+    "category": "M9",
+    "type": "M",
+    "description": "PillarTarget 접근 제어 — 테넌트별 스토리지 노드 격리",
+    "subsection": "E35.3",
+    "in_437": false
+  }
+]

@@ -1,0 +1,733 @@
+// Package e2e — main_test.go is the single entry point for the pillar-csi E2E
+// test binary. It wires the full phase-sequenced pipeline:
+//
+//	Phase 1 — prereq check       : Docker daemon reachable + kernel modules loaded
+//	Phase 2 — cluster creation   : Kind cluster created and kubeconfig exported
+//	Phase 3 — image build/load   : docker build × 3 + kind load × 3
+//	Phase 4 — backend provision  : ZFS pool + LVM VG provisioned in Kind container
+//	Phase 5 — parallel test exec : ginkgo CLI re-exec with N workers (or sequential)
+//	Phase 6 — teardown           : backends destroyed, cluster deleted, temp dirs removed
+//
+// All phases run inside a single `go test` invocation triggered by `make test-e2e`.
+// The pipeline aborts on the first failure; teardown always runs via deferred cleanup.
+//
+// Environment variables consumed:
+//
+//	DOCKER_HOST              — Docker daemon endpoint (env only, never hardcoded)
+//	KIND_CLUSTER             — Kind cluster name
+//	E2E_IMAGE_TAG            — image tag for all three component images
+//	E2E_SKIP_IMAGE_BUILD     — "true" skips docker build + kind load
+//	E2E_USE_EXISTING_CLUSTER — "true" skips Kind cluster creation
+//	E2E_DOCKER_BUILD_CACHE   — "true" enables --cache-from for faster rebuilds
+//	E2E_STAGE_TIMING         — "1" emits wall-clock stage breakdown
+//	GINKGO                   — absolute path to the ginkgo binary
+//	PILLAR_E2E_PROCS         — parallel worker count (default: nproc)
+//	E2E_FAIL_FAST            — "true" stops after the first spec failure
+package e2e
+
+import (
+	"context"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"runtime"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/bhyoo/pillar-csi/test/e2e/framework/prereq"
+)
+
+// tcRunFocusOverride is set by TestMain when the -test.run flag looks like a
+// TC-ID pattern (e.g. "TC-E1.2" or "TC-F"). It is applied as a Ginkgo
+// FocusStrings entry in TestE2E so that only matching specs execute.
+var tcRunFocusOverride string
+
+// isTCRunPattern reports whether pattern is a TC-ID filter that should be
+// routed through Ginkgo's focus mechanism rather than Go's native test-
+// function matching. Recognized patterns start with "TC-" (case-sensitive)
+// so they can match node names like "[TC-E1.2]" or "[TC-F27.1]".
+//
+// Examples that return true:  "TC-E1.2", "TC-F", "TC-E", "TC-F27.1".
+// Examples that return false: "TestE2E", "TestAC3", "", "^TestE2E$".
+func isTCRunPattern(pattern string) bool {
+	return strings.HasPrefix(pattern, "TC-")
+}
+
+// canMatchGinkgoSuite returns true when the given test.run regex pattern
+// could select the Ginkgo suite entry point "TestE2E". When this function
+// returns false, the Kind cluster bootstrap and ginkgo re-exec can be
+// safely skipped, enabling efficient iteration on plain Go unit tests
+// (e.g. go test -run TestAC7 ./test/e2e/) without the 20-30 second
+// cluster creation overhead.
+//
+// AC 7 fast-path contract:
+//
+//	pattern = ""          → true  (empty pattern matches everything)
+//	pattern = "TestE2E"  → true  (direct match)
+//	pattern = "^TestE2E$"→ true  (anchored exact match)
+//	pattern = "Test"     → true  (prefix regex matches TestE2E)
+//	pattern = "TestAC7"  → false (does not match TestE2E)
+//	pattern = "TestAC61" → false (does not match TestE2E)
+//	pattern = "^TestE2E$"→ true  (rewritten by isTCRunPattern from TC-* patterns)
+//
+// On regex parse error the function is conservative and returns true so
+// that the caller proceeds through the full cluster-creation path rather
+// than silently skipping it.
+func canMatchGinkgoSuite(pattern string) bool {
+	if pattern == "" {
+		return true
+	}
+	matched, err := regexp.MatchString(pattern, "TestE2E")
+	if err != nil {
+		// Invalid regex: be conservative — assume it could match.
+		return true
+	}
+	return matched
+}
+
+// suiteLevelTimeout is the maximum wall-clock duration the full E2E suite is
+// allowed to consume in a single go test invocation. It is applied as the
+// Ginkgo suite timeout whenever no explicit --timeout flag has been provided.
+//
+// Parallel execution is the mechanism that keeps total wall-clock time below
+// this threshold. TestMain automatically fans out DefaultParallelNodes
+// parallel Ginkgo workers when not already running under the ginkgo CLI.
+const suiteLevelTimeout = 2 * time.Minute
+
+// DefaultParallelNodes is the recommended default number of parallel Ginkgo
+// nodes for a full suite run. It equals runtime.NumCPU() so that the suite
+// scales automatically to the host machine.
+//
+// TestMain reads this value when launching the ginkgo CLI re-exec. Override
+// by setting PILLAR_E2E_PROCS in the environment before running go test.
+var DefaultParallelNodes = runtime.NumCPU()
+
+// ── Auto-parallel re-exec constants ──────────────────────────────────────────
+
+// ginkgoParallelTotalFlag is the flag name that ginkgo v2 registers at init
+// time and populates on every parallel worker process it spawns. When its
+// value is > 1 the current process is already coordinated by the Ginkgo
+// parallel runner; TestMain must NOT re-exec.
+//
+// Unlike the env-var approach, ginkgo v2 never sets an environment variable
+// on parallel workers — it communicates via CLI flags (-ginkgo.parallel.total,
+// -ginkgo.parallel.process, -ginkgo.parallel.host).
+const ginkgoParallelTotalFlag = "ginkgo.parallel.total"
+
+// reexecSentinelEnv is injected into the environment of the ginkgo process
+// spawned by reexecViaGinkgoCLI. When present, TestMain skips the re-exec
+// path so that ginkgo worker processes and sequential ginkgo runs proceed
+// directly to RunSpecs without entering another re-exec cycle.
+const reexecSentinelEnv = "PILLAR_E2E_REEXEC_GUARD"
+
+// sequentialModeEnv disables the auto-parallel re-exec entirely when set to a
+// non-empty value. Set PILLAR_E2E_SEQUENTIAL=true for single-process targets
+// (e.g. test-e2e-bench) that measure raw sequential throughput.
+const sequentialModeEnv = "PILLAR_E2E_SEQUENTIAL"
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TestMain is the single entry point for the E2E test binary. It orchestrates
+// the full phase-sequenced pipeline in order, aborting on the first failure:
+//
+//  1. Prerequisite check  — Docker daemon reachable + kernel modules present
+//  2. Kind cluster create — ephemeral cluster for the invocation lifetime
+//  3. Image build/load   — docker build × 3 + kind load docker-image × 3
+//  4. Backend provision  — ZFS pool + LVM VG inside the Kind container
+//  5. Parallel test exec — ginkgo CLI re-exec with N workers (or sequential)
+//  6. Teardown           — backend destroy → cluster delete → temp dir removal
+//
+// Execution paths
+//
+//	Primary (non-worker) process
+//	  → Phase 1 prereq check
+//	  → bootstrapSuiteCluster: creates Kind cluster, exports KUBECONFIG /
+//	    KIND_CLUSTER / suite-path env vars so ginkgo workers inherit them.
+//	  → bootstrapSuiteImages: docker build + kind load
+//	  → bootstrapSuiteBackends: ZFS pool + LVM VG provisioned
+//	  → runPrimary: either re-execs via the ginkgo CLI (parallel) or calls
+//	    m.Run() directly (sequential). A deferred cleanup in runPrimary
+//	    deletes the cluster even when the inner call panics.
+//
+//	Ginkgo parallel worker / re-exec guarded process
+//	  → runWorker: the cluster is already created; workers inherit env vars from
+//	    the primary. runWorker runs m.Run() with panic-safe cleanup of any
+//	    worker-local resources.
+//
+// Auto-parallel behaviour
+//
+//	go test ./test/e2e/... -count=1          → fans out DefaultParallelNodes workers
+//	PILLAR_E2E_PROCS=4 go test ./test/e2e/   → fans out exactly 4 workers
+//	PILLAR_E2E_SEQUENTIAL=true go test ...   → runs sequentially (no re-exec)
+//	make test-e2e-bench                      → sets PILLAR_E2E_SEQUENTIAL=true
+//	ginkgo --procs=N ./test/e2e/             → ginkgo CLI; no re-exec needed
+//
+// AC 7 fast-path for unit test iteration
+//
+//	go test -run=TestAC7  ./test/e2e/...    → unit tests only; no Kind cluster
+//	go test -run=TestAC61 ./test/e2e/...    → unit tests only; no Kind cluster
+//
+// TC-ID routing
+//
+//	go test -run=TC-E1.2 ./test/e2e/...     → runs only [TC-E1.2] spec
+//	go test -run=TC-F    ./test/e2e/...     → runs all [TC-F*] specs
+func TestMain(m *testing.M) {
+	// Parse flags early so we can inspect flag values (e.g. -test.run) before
+	// m.Run() does so internally. flag.Parse() is idempotent.
+	if !flag.Parsed() {
+		flag.Parse()
+	}
+
+	// Reset invocation-scoped environment variables only in the primary
+	// process. Ginkgo parallel workers and re-exec guarded processes inherit
+	// the cluster environment (KUBECONFIG, KIND_CLUSTER, suite paths) that was
+	// exported by bootstrapSuiteCluster; resetting it here would orphan the
+	// cluster from the worker processes.
+	if !isGinkgoParallelWorker() && !isReexecGuarded() {
+		if err := resetSuiteInvocationEnvironment(); err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "reset e2e invocation environment: %v\n", err)
+			os.Exit(1)
+		}
+	}
+
+	// TC-pattern routing: when the caller uses go test -run=TC-E1.2 or
+	// go test -run=TC-F, the pattern does not match the Go test function name
+	// "TestE2E". Intercept the flag, save it as a Ginkgo focus override, and
+	// rewrite -test.run to "^TestE2E$" so Go's runner selects TestE2E. TestE2E
+	// will then apply the saved pattern as a Ginkgo FocusStrings filter.
+	if runFlag := flag.Lookup("test.run"); runFlag != nil {
+		pattern := runFlag.Value.String()
+		if isTCRunPattern(pattern) {
+			tcRunFocusOverride = pattern
+			if err := runFlag.Value.Set("^TestE2E$"); err != nil {
+				_, _ = fmt.Fprintf(os.Stderr,
+					"e2e: failed to rewrite -test.run for TC routing: %v\n", err)
+				os.Exit(1)
+			}
+		}
+	}
+
+	// AC 7 fast-path: when the effective -test.run pattern cannot reach
+	// "TestE2E" (the Ginkgo suite entry point), skip Kind cluster bootstrap
+	// and ginkgo re-exec entirely. Plain Go unit tests — such as TestAC7*,
+	// TestAC61*, TestKindBootstrap, etc. — complete in milliseconds and must
+	// not pay the 20-30 second cluster creation cost.
+	//
+	// This check runs only in the primary process (workers are already
+	// dispatched above via isGinkgoParallelWorker / isReexecGuarded). After
+	// isTCRunPattern rewrites any "TC-*" flag to "^TestE2E$", the flag value
+	// seen here is the effective pattern: "^TestE2E$" for all TC-* runs, and
+	// the original pattern for everything else.
+	if !isGinkgoParallelWorker() && !isReexecGuarded() {
+		if runFlag := flag.Lookup("test.run"); runFlag != nil {
+			if !canMatchGinkgoSuite(runFlag.Value.String()) {
+				_, _ = fmt.Fprintf(os.Stderr,
+					"e2e: [AC7] fast-path: pattern %q cannot match TestE2E; "+
+						"skipping Kind cluster bootstrap\n",
+					runFlag.Value.String())
+				os.Exit(m.Run())
+			}
+		}
+	}
+
+	// Phase 1 — Prerequisite check
+	//
+	// AC 1: Verify Docker daemon and kernel modules are present before we
+	// attempt to create a Kind cluster or run any test. Only the primary
+	// process performs this check; parallel workers and re-exec guarded
+	// processes inherit a pre-validated environment from the primary.
+	if !isGinkgoParallelWorker() && !isReexecGuarded() {
+		if err := prereq.CheckHostPrerequisites(); err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, err.Error())
+			os.Exit(1)
+		}
+	}
+
+	// Route to the appropriate execution path based on the process role.
+	//
+	// Primary process  — owns cluster lifecycle: CreateCluster → tests →
+	//                    DeleteCluster (deferred, panic-safe).
+	// Worker / guarded — cluster already exists; just run m.Run() with
+	//                    panic-safe cleanup of worker-local resources.
+	if isGinkgoParallelWorker() || isReexecGuarded() {
+		os.Exit(runWorker(m))
+	}
+	os.Exit(runPrimary(m))
+}
+
+// bootstrapSuiteCluster creates (or reuses) the Kind cluster for this test
+// invocation, exports the cluster connection details (KUBECONFIG, KIND_CLUSTER,
+// suite-path vars) to the process environment so that parallel ginkgo workers
+// can inherit them, and registers the cluster with suiteInvocationTeardown so
+// signal-based cleanup works.
+//
+// Sub-AC 5.4: when E2E_USE_EXISTING_CLUSTER=true, cluster creation is skipped
+// and the caller-supplied cluster (KUBECONFIG + KIND_CLUSTER) is used directly.
+// This saves ~30-60 seconds on repeated runs during iterative development.
+//
+// Must only be called from the primary (non-worker) process. Returns the
+// bootstrap state and any error; on error the caller should exit immediately.
+func bootstrapSuiteCluster(output io.Writer) (*kindBootstrapState, error) {
+	// Sub-AC 5.4: reuse an existing cluster when requested.
+	if resolveUseExistingCluster() {
+		_, _ = fmt.Fprintf(output,
+			"[AC4] %s=true — skipping kind create cluster; reusing existing cluster\n",
+			useExistingClusterEnvVar)
+		state, err := existingClusterState()
+		if err != nil {
+			return nil, fmt.Errorf("[AC4] %s: %w", useExistingClusterEnvVar, err)
+		}
+		// Export the cluster connection details so ginkgo workers can inherit them.
+		if err := state.exportEnvironment(); err != nil {
+			_ = os.RemoveAll(state.SuiteRootDir)
+			return nil, fmt.Errorf("[AC4] export existing cluster environment: %w", err)
+		}
+		_, _ = fmt.Fprintf(output,
+			"[AC4] reusing kind cluster %q: kubeconfig=%s context=%s\n",
+			state.ClusterName, state.KubeconfigPath, state.KubeContext)
+		return state, nil
+	}
+
+	state, err := newKindBootstrapState()
+	if err != nil {
+		return nil, fmt.Errorf("[AC4] create kind bootstrap state: %w", err)
+	}
+
+	runner := execCommandRunner{Output: output}
+	ctx, cancel := context.WithTimeout(context.Background(), state.CreateTimeout+30*time.Second)
+	defer cancel()
+
+	// Pre-create assertion: the cluster must not already exist so each go test
+	// invocation starts from a clean slate.
+	if err := state.verifyClusterAbsent(ctx, runner); err != nil {
+		_ = os.RemoveAll(state.SuiteRootDir)
+		return nil, fmt.Errorf("[AC4] pre-create check: %w", err)
+	}
+
+	// Phase 2 — Kind cluster creation.
+	//
+	// CreateCluster — this is the canonical call site for cluster creation.
+	// DeleteCluster is called by the defer in runPrimary, ensuring it runs on
+	// every exit including panics.
+	if err := state.createCluster(ctx, runner); err != nil {
+		_ = os.RemoveAll(state.SuiteRootDir)
+		return nil, fmt.Errorf("[AC4] create cluster: %w", err)
+	}
+
+	// Post-create assertion: the cluster must appear in "kind get clusters"
+	// immediately after creation so we have hard evidence the cluster is live.
+	if err := state.verifyClusterPresent(ctx, runner); err != nil {
+		cleanCtx, cleanCancel := context.WithTimeout(context.Background(), state.DeleteTimeout)
+		defer cleanCancel()
+		_ = state.destroyCluster(cleanCtx, runner)
+		_ = os.RemoveAll(state.SuiteRootDir)
+		return nil, fmt.Errorf("[AC4] post-create check: %w", err)
+	}
+
+	// Register with suiteInvocationTeardown so that SIGINT / SIGTERM also
+	// trigger cluster deletion before the process exits.
+	if _, err := suiteInvocationTeardown.RegisterKindCluster(state); err != nil {
+		cleanCtx, cleanCancel := context.WithTimeout(context.Background(), state.DeleteTimeout)
+		defer cleanCancel()
+		_ = state.destroyCluster(cleanCtx, runner)
+		_ = os.RemoveAll(state.SuiteRootDir)
+		return nil, fmt.Errorf("[AC4] register kind cluster: %w", err)
+	}
+
+	// Export connection details to the process environment so parallel ginkgo
+	// workers (spawned by reexecViaGinkgoCLI) inherit them via os.Environ().
+	if err := state.exportEnvironment(); err != nil {
+		_ = suiteInvocationTeardown.Cleanup(output)
+		return nil, fmt.Errorf("[AC4] export cluster environment: %w", err)
+	}
+
+	_, _ = fmt.Fprintf(output,
+		"[AC4] kind cluster %q created: kubeconfig=%s context=%s\n",
+		state.ClusterName, state.KubeconfigPath, state.KubeContext)
+
+	return state, nil
+}
+
+// runPrimary is the TestMain execution path for the primary (non-worker)
+// process. It performs the full cluster and backend lifecycle:
+//
+//  1. Calls bootstrapSuiteCluster to create the Kind cluster and export cluster
+//     env vars (KUBECONFIG, KIND_CLUSTER, suite-path vars).
+//  2. Calls bootstrapSuiteImages to build Docker images and load them into the
+//     Kind cluster (AC8).
+//  3. Calls bootstrapSuiteBackends to provision ZFS pools and LVM VGs inside
+//     the Kind container (AC5.2). Provisioned resource names are exported as
+//     PILLAR_E2E_ZFS_POOL, PILLAR_E2E_LVM_VG so ginkgo workers inherit them.
+//  4. Either re-execs via the ginkgo CLI (parallel mode) or calls m.Run()
+//     directly (sequential mode / ginkgo-not-found fallback).
+//  5. Defers a panic-safe cleanup that fires on every exit:
+//     a. Backend teardown (ZFS/LVM) — while the container is still alive.
+//     b. Kind cluster deletion.
+//
+// Sub-AC 5.4: stage timing profiling is active when E2E_STAGE_TIMING=1.
+// Each pipeline stage (cluster-create, image-build, backend-setup, test-exec)
+// is bracketed with timer.StartStage() / done() so that Emit at the end of
+// runPrimary prints a wall-clock breakdown identifying the bottleneck.
+//
+// The return value is the exit code to pass to os.Exit.
+func runPrimary(m *testing.M) (exitCode int) {
+	// Sub-AC 5.4: initialise the stage timer. Emit is deferred so the summary
+	// is always written even when runPrimary returns early on error.
+	stageTimer := newPipelineStageTimer()
+	defer stageTimer.Emit(os.Stderr)
+
+	// ── Phase 2: Kind cluster creation ───────────────────────────────────────
+	doneCluster := stageTimer.StartStage(stageClusterCreate)
+	state, err := bootstrapSuiteCluster(os.Stderr)
+	doneCluster()
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "e2e: %v\n", err)
+		return 1
+	}
+
+	// ── Phase 3: image build + kind load ─────────────────────────────────────
+	//
+	// AC8: Build Docker images and load them into the Kind cluster.
+	//
+	// Images must be present on Kind nodes before any spec deploys a DaemonSet or
+	// Deployment that references them. Building here (once per go test invocation,
+	// before ginkgo workers are spawned) avoids duplicate builds across workers.
+	// DOCKER_HOST is inherited from the process environment automatically.
+	// Set E2E_SKIP_IMAGE_BUILD=true to skip for iterative test development.
+	// Set E2E_DOCKER_BUILD_CACHE=true to enable --cache-from for faster rebuilds.
+	doneImages := stageTimer.StartStage(stageImageBuild)
+	imageCtx, imageCancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	imageErr := bootstrapSuiteImages(imageCtx, state, os.Stderr)
+	imageCancel()
+	doneImages()
+	if imageErr != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "e2e: [AC8] image build/load: %v\n", imageErr)
+		cleanCtx, cleanCancel := context.WithTimeout(context.Background(), state.DeleteTimeout)
+		defer cleanCancel()
+		_ = suiteInvocationTeardown.CleanupWithRunner(cleanCtx, execCommandRunner{Output: os.Stderr})
+		return 1
+	}
+
+	// ── Phase 4: backend provisioning ────────────────────────────────────────
+	//
+	// AC5.2: Provision shared ZFS pool and LVM VG once per suite run.
+	//
+	// The context timeout covers both ZFS and LVM provisioning. Each backend
+	// allocates a 512 MiB loop device image (dd) and runs pool/VG creation —
+	// typically 2-5 seconds total.
+	doneBackend := stageTimer.StartStage(stageBackendSetup)
+	backendCtx, backendCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	backendState, backendErr := bootstrapSuiteBackends(backendCtx, state, os.Stderr)
+	backendCancel()
+	doneBackend()
+	if backendErr != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "e2e: [AC5.2] backend provisioning: %v\n", backendErr)
+		// Clean up the cluster before returning because the deferred cleanup
+		// below will not run when we return early here.
+		cleanCtx, cleanCancel := context.WithTimeout(context.Background(), state.DeleteTimeout)
+		defer cleanCancel()
+		_ = suiteInvocationTeardown.CleanupWithRunner(cleanCtx, execCommandRunner{Output: os.Stderr})
+		return 1
+	}
+	if err := suiteInvocationTeardown.RegisterBackend(backendState); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "e2e: [AC5.2] register backend: %v\n", err)
+		return 1
+	}
+	// Export backend env vars BEFORE spawning ginkgo workers so they inherit
+	// PILLAR_E2E_ZFS_POOL, PILLAR_E2E_LVM_VG, PILLAR_E2E_BACKEND_CONTAINER.
+	if err := backendState.exportBackendEnvironment(); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "e2e: [AC5.2] export backend environment: %v\n", err)
+		return 1
+	}
+
+	// deleteOnExit tears down the cluster, removes suite temp dirs, and
+	// verifies the cluster is absent from "kind get clusters". It is invoked
+	// from the deferred function below and thus runs on every exit path.
+	//
+	// Sub-AC 5.4: when E2E_USE_EXISTING_CLUSTER=true the cluster is not owned by
+	// this invocation (clusterCreated=false), so we skip deletion and the
+	// post-destroy verify. The suite temp dir is still removed so ephemeral
+	// kubeconfig copies and workspace dirs are cleaned up.
+	deleteOnExit := func() {
+		runner := execCommandRunner{Output: os.Stderr}
+		ctx, cancel := context.WithTimeout(context.Background(), state.DeleteTimeout+30*time.Second)
+		defer cancel()
+
+		// Phase 6 — Teardown.
+		//
+		// suiteInvocationTeardown.Cleanup is idempotent; if SynchronizedAfterSuite
+		// already cleaned up (sequential path), this is a safe no-op.
+		// When using an existing cluster (clusterCreated=false) Cleanup only
+		// removes the suite temp dir, not the Kind cluster itself.
+		if cleanErr := suiteInvocationTeardown.Cleanup(os.Stderr); cleanErr != nil {
+			_, _ = fmt.Fprintf(os.Stderr,
+				"e2e: [AC4] cluster cleanup: %v\n", cleanErr)
+			if exitCode == 0 {
+				exitCode = 1
+			}
+		}
+
+		// Post-destroy assertion: skip when using an existing cluster because
+		// we intentionally did not delete it.
+		if resolveUseExistingCluster() {
+			_, _ = fmt.Fprintf(os.Stderr,
+				"[AC4] %s=true — skipping post-destroy cluster-absent check\n",
+				useExistingClusterEnvVar)
+			return
+		}
+
+		// Sub-AC 3.3 post-destroy assertion: the cluster must no longer appear in
+		// "kind get clusters" after cleanup, proving this invocation fully
+		// released its cluster rather than leaving a dangling resource.
+		// This is the teardown half of the AC3.3 cluster lifecycle smoke contract.
+		if verifyErr := state.verifyClusterAbsent(ctx, runner); verifyErr != nil {
+			_, _ = fmt.Fprintf(os.Stderr,
+				"e2e: [AC3.3] cluster %q still present after teardown: %v\n",
+				state.ClusterName, verifyErr)
+			if exitCode == 0 {
+				exitCode = 1
+			}
+		} else {
+			_, _ = fmt.Fprintf(os.Stderr,
+				"[AC3.3] kind cluster %q confirmed absent after teardown\n",
+				state.ClusterName)
+		}
+	}
+
+	// The nested function holds the defer so it executes before returning to
+	// TestMain (which calls os.Exit). recover() catches any panic from
+	// m.Run() or reexecViaGinkgoCLI, ensuring deleteOnExit always fires.
+	return func() (code int) {
+		defer func() {
+			if r := recover(); r != nil {
+				_, _ = fmt.Fprintf(os.Stderr,
+					"e2e: [AC4] panic in primary test runner: %v\n", r)
+				code = 1
+			}
+			deleteOnExit()
+		}()
+
+		// Install signal handlers so SIGINT / SIGTERM also trigger cleanup.
+		// stopSignals is deferred to unregister the handler after the run.
+		stopSignals := installInvocationSignalHandlers(suiteInvocationTeardown, os.Stderr, os.Exit)
+		defer stopSignals()
+
+		// ── Phase 5: test execution ───────────────────────────────────────
+		//
+		// Sub-AC 5.4: the test-exec stage covers all ginkgo worker time (or
+		// sequential m.Run()). We start the stage timer here and close it
+		// after the inner call returns so the duration captures the total
+		// time spent running specs.
+		doneTestExec := stageTimer.StartStage(stageTestExec)
+
+		// ── Auto-parallel re-exec ─────────────────────────────────────────
+		//
+		// Cluster env vars are already exported (by bootstrapSuiteCluster).
+		// Spawn ginkgo workers now; they will inherit KUBECONFIG, KIND_CLUSTER,
+		// and the suite-path vars via cmd.Env = append(os.Environ(), ...) in
+		// reexecViaGinkgoCLI.
+		if !isSequentialMode() {
+			if code := reexecViaGinkgoCLI(os.Stdout, os.Stderr); code >= 0 {
+				doneTestExec()
+				return code
+			}
+			// Ginkgo binary not found — fall through to sequential execution.
+			_, _ = fmt.Fprintln(os.Stderr,
+				"e2e: ginkgo CLI not found; running specs sequentially (install via `make ginkgo`)")
+		}
+
+		// Sequential path: run specs in-process.
+		seqCode := m.Run()
+		doneTestExec()
+		return seqCode
+	}()
+}
+
+// runWorker is the TestMain execution path for ginkgo parallel workers and
+// re-exec guarded processes. The cluster was already created by runPrimary
+// (the parent process) and is reachable via environment variables
+// (KUBECONFIG, KIND_CLUSTER, etc.) that were inherited at process spawn time.
+//
+// Workers must not create or delete the cluster. Their role is to run a
+// subset of Ginkgo specs, release any worker-local resources on exit, and
+// propagate the correct exit code.
+//
+// A recover() wrapper ensures any spec panic is logged and the exit code is
+// set to 1 rather than crashing the worker silently.
+func runWorker(m *testing.M) (exitCode int) {
+	defer func() {
+		if r := recover(); r != nil {
+			_, _ = fmt.Fprintf(os.Stderr,
+				"e2e: [AC4] panic in worker test runner: %v\n", r)
+			exitCode = 1
+		}
+		// Release any worker-local resources (e.g. per-worker namespace
+		// cleanups registered by specs). suiteInvocationTeardown is empty
+		// in worker processes (the cluster is owned by the primary); this call
+		// is therefore a safe no-op for the cluster itself.
+		if cleanErr := suiteInvocationTeardown.Cleanup(os.Stderr); cleanErr != nil {
+			_, _ = fmt.Fprintf(os.Stderr,
+				"e2e: worker cleanup: %v\n", cleanErr)
+		}
+	}()
+
+	stopSignals := installInvocationSignalHandlers(suiteInvocationTeardown, os.Stderr, os.Exit)
+	defer stopSignals()
+
+	return m.Run()
+}
+
+// isGinkgoParallelWorker returns true when the current process was spawned by
+// the ginkgo CLI as a parallel worker node.
+//
+// Detection strategy: ginkgo v2 registers the -ginkgo.parallel.total flag at
+// package init time and passes "--ginkgo.parallel.total=N" to every parallel
+// worker process it spawns. When total > 1 the process is operating as a
+// coordinated worker and MUST NOT re-exec into another ginkgo invocation.
+//
+// Note: ginkgo v2 does NOT set any environment variable on workers, so an
+// env-var check (e.g. GINKGO_PROC_HANDLE) would always return false.
+func isGinkgoParallelWorker() bool {
+	f := flag.Lookup(ginkgoParallelTotalFlag)
+	if f == nil {
+		return false
+	}
+	total, err := strconv.Atoi(f.Value.String())
+	return err == nil && total > 1
+}
+
+// isReexecGuarded returns true when the current process was launched (directly
+// or transitively) by reexecViaGinkgoCLI, indicating it must not re-exec again.
+func isReexecGuarded() bool {
+	return os.Getenv(reexecSentinelEnv) != ""
+}
+
+// isSequentialMode returns true when PILLAR_E2E_SEQUENTIAL is set to a
+// non-empty value, opting out of the auto-parallel re-exec.
+func isSequentialMode() bool {
+	return os.Getenv(sequentialModeEnv) != ""
+}
+
+// reexecViaGinkgoCLI re-executes the current test suite under the ginkgo CLI
+// with DefaultParallelNodes parallel workers. It sets reexecSentinelEnv so
+// that the spawned ginkgo workers do not enter another re-exec cycle.
+//
+// The cluster env vars exported by bootstrapSuiteCluster are included in
+// cmd.Env via os.Environ(), so workers inherit KUBECONFIG, KIND_CLUSTER, etc.
+// without any additional plumbing.
+//
+// Return values:
+//
+//	>= 0  ginkgo completed with this exit code (0 = all specs passed).
+//	  -1  ginkgo binary not found; caller should fall back to sequential.
+func reexecViaGinkgoCLI(stdout, stderr io.Writer) int {
+	ginkgoBin := findGinkgoBinary()
+	if ginkgoBin == "" {
+		return -1
+	}
+
+	procs := strconv.Itoa(DefaultParallelNodes)
+	if p := os.Getenv("PILLAR_E2E_PROCS"); p != "" {
+		procs = p
+	}
+
+	reportDir := filepath.Join(os.TempDir(), "pillar-csi-e2e-reports")
+	_ = os.MkdirAll(reportDir, 0o755)
+
+	ginkgoArgs := []string{
+		"--procs=" + procs,
+		"--timeout=2m",
+		"-v",
+		"--output-dir=" + reportDir,
+		"--json-report=e2e-auto.json",
+		".",
+		"--",
+		// Note: flags after "--" are forwarded to the compiled test binary.
+		// -count is a `go test` runner flag that the test binary does NOT
+		// recognise; pass only test-binary flags here.
+		"-test.run=^TestE2E$",
+	}
+	// AC 6: propagate fail-fast setting to the ginkgo CLI.
+	// resolveFailFast() reads -e2e.fail-fast flag and E2E_FAIL_FAST env var.
+	// The default is false (continue on failure). When true, --fail-fast is
+	// prepended so the ginkgo worker stops after the first spec failure.
+	if resolveFailFast() {
+		ginkgoArgs = append([]string{"--fail-fast"}, ginkgoArgs...)
+	}
+	if tcRunFocusOverride != "" {
+		// Prepend the focus flag so ginkgo applies it before "." package path.
+		ginkgoArgs = append([]string{"--focus=" + tcRunFocusOverride}, ginkgoArgs...)
+	}
+
+	cmd := exec.Command(ginkgoBin, ginkgoArgs...) //nolint:gosec
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	// Inject the re-exec guard so ginkgo workers skip this re-exec path.
+	// os.Environ() includes the cluster env vars (KUBECONFIG, KIND_CLUSTER, …)
+	// exported by bootstrapSuiteCluster, so workers inherit the cluster.
+	cmd.Env = append(os.Environ(), reexecSentinelEnv+"=1")
+
+	_, _ = fmt.Fprintf(stderr,
+		"e2e: auto-parallel: running %s workers via %s\n", procs, ginkgoBin)
+
+	if err := cmd.Run(); err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			return exitErr.ExitCode()
+		}
+		return 1
+	}
+	return 0
+}
+
+// findGinkgoBinary returns the absolute path of the ginkgo CLI binary.
+//
+// Search order:
+//  1. $GINKGO environment variable (Makefile sets GINKGO=$(LOCALBIN)/ginkgo)
+//  2. bin/ginkgo under the module root (local `make ginkgo` install)
+//  3. System PATH
+//
+// Returns "" if the binary cannot be found.
+func findGinkgoBinary() string {
+	// 1. Explicit path via environment variable (set by Makefile).
+	if g := os.Getenv("GINKGO"); g != "" {
+		if _, err := os.Stat(g); err == nil {
+			return g
+		}
+	}
+
+	// 2. Local bin/ directory relative to cwd.
+	//    When running as `go test ./test/e2e/...`, cwd is the package dir
+	//    (test/e2e/). Walk up to find the module root's bin/ directory.
+	if wd, err := os.Getwd(); err == nil {
+		candidates := []string{
+			// Direct: cwd is already the repo root (rare but possible)
+			filepath.Join(wd, "bin", "ginkgo"),
+			// From test/e2e/: two levels up
+			filepath.Join(wd, "..", "..", "bin", "ginkgo"),
+			// From test/e2e/subpkg/: three levels up
+			filepath.Join(wd, "..", "..", "..", "bin", "ginkgo"),
+		}
+		for _, c := range candidates {
+			if abs, err := filepath.Abs(c); err == nil {
+				if _, err := os.Stat(abs); err == nil {
+					return abs
+				}
+			}
+		}
+	}
+
+	// 3. System PATH.
+	if g, err := exec.LookPath("ginkgo"); err == nil {
+		return g
+	}
+
+	return ""
+}

@@ -89,24 +89,39 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 // suiteInvocationTeardown is empty (cluster is owned by the primary).
 // CleanupWithRunner is therefore a safe no-op; the primary's deleteOnExit
 // handles the actual deletion after reexecViaGinkgoCLI returns.
-var _ = SynchronizedAfterSuite(func() {}, func() {
-	runner := execCommandRunner{Output: GinkgoWriter}
-	deleteTimeout := 2 * time.Minute
-	if suiteKindCluster != nil {
-		deleteTimeout = suiteKindCluster.DeleteTimeout
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), deleteTimeout)
-	defer cancel()
+var _ = SynchronizedAfterSuite(
+	// ── All-nodes phase ───────────────────────────────────────────────────────
+	// Sub-AC 5.3: drain any in-flight background TC cleanup goroutines before
+	// this worker exits. Each parallel worker has its own suiteAsyncCleanup
+	// batch; draining here ensures no goroutines are left running when the
+	// worker process ends. Cleanup errors are logged, not fatal.
+	func() {
+		if err := DrainPendingCleanups(30 * time.Second); err != nil {
+			_, _ = fmt.Fprintf(GinkgoWriter,
+				"[AC5.3] node %d: background TC cleanup errors (informational): %v\n",
+				GinkgoParallelProcess(), err)
+		}
+	},
+	// ── Primary phase ────────────────────────────────────────────────────────
+	func() {
+		runner := execCommandRunner{Output: GinkgoWriter}
+		deleteTimeout := 2 * time.Minute
+		if suiteKindCluster != nil {
+			deleteTimeout = suiteKindCluster.DeleteTimeout
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), deleteTimeout)
+		defer cancel()
 
-	// Idempotent: no-op in parallel workers (empty teardown) and safe to
-	// call again from runPrimary.deleteOnExit.
-	if err := suiteInvocationTeardown.CleanupWithRunner(ctx, runner); err != nil {
-		_, _ = fmt.Fprintf(GinkgoWriter,
-			"[AC4] SynchronizedAfterSuite: cluster cleanup: %v\n", err)
-	}
-	suiteKindCluster = nil
-	// AC4c: nil out the shared rest.Config so any spec that accidentally
-	// retains a reference after suite teardown panics immediately rather
-	// than silently using stale cluster state.
-	suiteRestConfig = nil
-})
+		// Idempotent: no-op in parallel workers (empty teardown) and safe to
+		// call again from runPrimary.deleteOnExit.
+		if err := suiteInvocationTeardown.CleanupWithRunner(ctx, runner); err != nil {
+			_, _ = fmt.Fprintf(GinkgoWriter,
+				"[AC4] SynchronizedAfterSuite: cluster cleanup: %v\n", err)
+		}
+		suiteKindCluster = nil
+		// AC4c: nil out the shared rest.Config so any spec that accidentally
+		// retains a reference after suite teardown panics immediately rather
+		// than silently using stale cluster state.
+		suiteRestConfig = nil
+	},
+)

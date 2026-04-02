@@ -21,9 +21,67 @@ jobs:
       - name: Run linter
         uses: golangci/golangci-lint-action@v9
 
+  verify-tc-coverage:
+    name: TC Coverage Verification
+    runs-on: ubuntu-latest
+    # Skip when commit message contains [skip tc-verify] (infrastructure-only
+    # changes that don't affect the E2E spec coverage).
+    if: |
+      !contains(github.event.head_commit.message, '[skip tc-verify]')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # ── Install Ginkgo CLI ─────────────────────────────────────────────────
+      # Ginkgo is needed by verify-tc-coverage-runtime; the static mode used
+      # in this CI job does not require it, but installing it here keeps the
+      # job self-contained and ready for future upgrade to runtime mode.
+      - name: Install Ginkgo CLI
+        run: go install github.com/onsi/ginkgo/v2/ginkgo@latest
+
+      # ── Static coverage check ───────────────────────────────────────────────
+      # Scans test/e2e/*.go for "[TC-<ID>]" inside Ginkgo It/Describe literals.
+      # Reports MISSING, EXTRA, and DUPLICATE; exits 0 (report-only) so that
+      # the pipeline is not broken while specs are still being implemented.
+      #
+      # Switch to --strict once all 437 specs are implemented to turn this into
+      # a hard gate: make verify-tc-coverage-strict
+      - name: Run TC coverage verification (static, report-only)
+        id: tc_verify
+        run: |
+          go mod tidy
+          make verify-tc-coverage 2>&1 | tee /tmp/tc-coverage-report.txt
+          # Extract summary line for the step output
+          SUMMARY=$(grep -m1 '^declared_total=' /tmp/tc-coverage-report.txt || echo "no summary found")
+          echo "summary=${SUMMARY}" >> "$GITHUB_OUTPUT"
+
+      # ── Emit step summary ──────────────────────────────────────────────────
+      - name: Emit coverage summary
+        if: always()
+        run: |
+          REPORT=/tmp/tc-coverage-report.txt
+          {
+            echo "## TC Coverage Verification"
+            echo ""
+            if [ -f "$REPORT" ]; then
+              echo '```'
+              cat "$REPORT"
+              echo '```'
+            else
+              echo "_Report not generated_"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
   test:
     name: Test
     runs-on: ubuntu-latest
+    needs: [verify-tc-coverage]
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -63,6 +121,10 @@ jobs:
       E2E_IMAGE_TAG: "e2e"
       # Helm namespace where pillar-csi is deployed.
       E2E_HELM_NAMESPACE: "pillar-csi-system"
+      # Ginkgo parallel worker count for the full e2e suite.
+      E2E_PROCS: "8"
+      # Stop scheduling new specs after the first failure.
+      E2E_FAIL_FAST: "true"
 
       # ── Docker daemon endpoint ────────────────────────────────────────────
       # Explicitly set the Docker daemon endpoint so that all sub-processes
@@ -83,7 +145,7 @@ jobs:
       # install_only=true: lay down the kind binary without creating a cluster.
       # TestMain in test/e2e/setup_test.go owns cluster lifecycle (create if
       # missing, reuse if healthy, build images, helm install, run tests).
-      # Cluster deletion is handled by `make test-e2e` at the end.
+      # Cluster deletion is handled by the selected Make e2e target at the end.
       - name: Install Kind ${{ env.KIND_VERSION }}
         uses: helm/kind-action@v1
         with:
@@ -121,17 +183,13 @@ jobs:
       #   - dm_mod: base device-mapper module; creates /dev/mapper/control
       #   - dm_thin_pool: thin-provisioning target for LVM thin pools
       #
-      # ── ZFS + LVM co-execution strategy ──────────────────────────────────
-      # ZFS and LVM e2e tests run SEQUENTIALLY (not in parallel) in a single
-      # `go test` invocation.  They cannot be parallelised because they share:
-      #   1. The same Kind cluster (1 control-plane + 2 worker nodes).
-      #   2. The same storage worker node (both /dev/zfs and /dev/mapper mounted).
-      #   3. The same agent DaemonSet pod (ZFS and LVM backends registered on
-      #      the same agent process).
-      #   4. The same NVMe-oF protocol stack (shared configfs, shared TCP ports).
-      # Running in parallel would risk NVMe-oF port/configfs conflicts.
-      # Ginkgo's default sequential spec execution within a single binary
-      # guarantees correct ordering without any explicit serialisation barriers.
+      # ── Parallel Ginkgo execution strategy ───────────────────────────────
+      # The full Ginkgo suite runs through `make test-e2e-parallel` with
+      # --procs=${E2E_PROCS}.  The suite-level isolation work derives per-worker
+      # NVMe-oF ports and unique cluster-scoped names, while Ordered containers
+      # still preserve ordering within each worker.  The Make target performs
+      # two passes (internal-agent then external-agent), emits per-pass and
+      # total wall-clock timing, and deletes the Kind cluster at the end.
       #
       # linux-modules-extra-$(uname -r) ships all four NVMe modules on ubuntu-latest.
       - name: Install ZFS, LVM, and NVMe kernel modules
@@ -186,13 +244,129 @@ jobs:
           docker pull registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.13.0
 
       # ── run tests ─────────────────────────────────────────────────────────
-      # make test-e2e runs internal-agent and external-agent modes
-      # sequentially, reusing the same Kind cluster across both runs.
-      # The cluster is created once, and deleted at the end by the Makefile.
-      - name: Run e2e tests (ZFS + LVM, sequential)
+      # make test-e2e is the canonical entry point for the full 437-TC Ginkgo
+      # suite.  The timing gate below records wall-clock duration and fails the
+      # job if it exceeds the 120-second budget mandated by the spec.
+      #
+      # Implementation notes:
+      #   - SECONDS is a Bash built-in that auto-increments each second; using
+      #     it avoids a second `date` call and is immune to clock skew.
+      #   - The make invocation is run with `&&` so that a test failure is still
+      #     captured in MAKE_RC and the timing check runs regardless.
+      #   - go mod tidy is intentionally placed before SECONDS is read so that
+      #     module-cache warm-up time is excluded from the budget measurement.
+      - name: Run full e2e suite with 120s timing gate
+        id: e2e_run
         run: |
           go mod tidy
-          make test-e2e
+          E2E_START=$SECONDS
+          make test-e2e && MAKE_RC=0 || MAKE_RC=$?
+          E2E_ELAPSED=$(( SECONDS - E2E_START ))
+          echo "elapsed=${E2E_ELAPSED}" >> "$GITHUB_OUTPUT"
+          echo "::notice title=e2e-timing::make test-e2e wall-clock ${E2E_ELAPSED}s (budget 120s)"
+          if [ "${MAKE_RC}" -ne 0 ]; then
+            echo "::error title=e2e-failed::make test-e2e exited with status ${MAKE_RC}"
+            exit "${MAKE_RC}"
+          fi
+          if [ "${E2E_ELAPSED}" -gt 120 ]; then
+            echo "::error title=e2e-timeout::make test-e2e took ${E2E_ELAPSED}s which exceeds the 120s budget"
+            exit 1
+          fi
+
+      # Emit a step summary table regardless of pass/fail so the timing is
+      # always visible in the GitHub Actions UI without opening the log.
+      - name: Emit e2e timing summary
+        if: always()
+        run: |
+          ELAPSED="${{ steps.e2e_run.outputs.elapsed }}"
+          if [ -z "$ELAPSED" ]; then ELAPSED="unknown"; fi
+          {
+            echo "## E2E Timing Gate"
+            echo ""
+            echo "| Metric | Value |"
+            echo "|--------|-------|"
+            echo "| Wall-clock | ${ELAPSED}s |"
+            echo "| Budget | 120s |"
+            if [ "$ELAPSED" != "unknown" ] && [ "$ELAPSED" -gt 120 ] 2>/dev/null; then
+              echo "| Status | ❌ EXCEEDED — job failed |"
+            elif [ "$ELAPSED" = "unknown" ]; then
+              echo "| Status | ⚠️ timing unavailable |"
+            else
+              echo "| Status | ✅ within budget |"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ── e2e-bench ──────────────────────────────────────────────────────────────
+  # CI baseline benchmark job.
+  #
+  # Runs the in-process e2e suite (no -tags=e2e → no Kind cluster, no ZFS/LVM)
+  # via `go test ./test/e2e/... -count=1` and fails the build if total
+  # wall-clock time exceeds 120 seconds.
+  #
+  # This job acts as a canary: if a newly added spec or a shared setup change
+  # causes the in-process suite to slow beyond the 2-minute budget the build
+  # breaks immediately, before the heavier Kind-cluster jobs are scheduled.
+  #
+  # Skip with [skip e2e] or [e2e skip] in the commit message (same gate as
+  # the full e2e job so that hotfixes bypass both in one flag).
+  e2e-bench:
+    name: E2E Baseline Benchmark (≤120s)
+    runs-on: ubuntu-latest
+    if: |
+      !contains(github.event.head_commit.message, '[skip e2e]') &&
+      !contains(github.event.head_commit.message, '[e2e skip]')
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # go mod tidy ensures the module cache is warm before timing begins so
+      # network latency does not inflate the wall-clock measurement.
+      - name: Warm module cache
+        run: go mod tidy
+
+      # Record the start timestamp so we can emit an independent wall-clock
+      # measurement in the step summary even if make test-e2e-bench exits
+      # non-zero (i.e. tests failed before the 120s limit was hit).
+      - name: Run e2e baseline benchmark
+        id: bench
+        run: |
+          BENCH_START=$(date +%s)
+          make test-e2e-bench && BENCH_RC=0 || BENCH_RC=$?
+          BENCH_ELAPSED=$(( $(date +%s) - BENCH_START ))
+          echo "elapsed=${BENCH_ELAPSED}" >> "$GITHUB_OUTPUT"
+          echo "::notice title=e2e-bench::Wall-clock ${BENCH_ELAPSED}s (limit 120s)"
+          exit ${BENCH_RC}
+
+      # Always emit a step summary so the elapsed time is visible in the GHA
+      # UI regardless of pass/fail.  The summary references the TC budget so
+      # reviewers understand the threshold without consulting the Makefile.
+      - name: Emit benchmark summary
+        if: always()
+        run: |
+          ELAPSED="${{ steps.bench.outputs.elapsed }}"
+          if [ -z "$ELAPSED" ]; then ELAPSED="unknown"; fi
+          {
+            echo "## E2E Baseline Benchmark"
+            echo ""
+            echo "| Metric | Value |"
+            echo "|--------|-------|"
+            echo "| Wall-clock | ${ELAPSED}s |"
+            echo "| Budget | 120s |"
+            if [ "$ELAPSED" != "unknown" ] && [ "$ELAPSED" -gt 120 ] 2>/dev/null; then
+              echo "| Status | ❌ EXCEEDED |"
+            else
+              echo "| Status | ✅ PASS |"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
   build:
     name: Build (all platforms)

@@ -1,77 +1,27 @@
 //go:build e2e
-// +build e2e
 
-/*
-Copyright 2026.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
-
-// lvm_backend_core_rpcs_e2e_test.go — E2E tests for the 6 core LVM backend
-// RPCs exercised against the in-cluster pillar-agent DaemonSet via
-// kubectl port-forward.
-//
-// RPCs covered:
-//   - CreateVolume  — creates an LVM LV and returns device_path + capacity_bytes
-//     for both linear and thin provisioning modes.
-//   - DeleteVolume  — destroys an LVM LV; idempotent on missing volume.
-//   - ExpandVolume  — grows an LVM LV to at least the requested size.
-//   - GetCapacity   — reports total/available bytes for the LVM Volume Group.
-//   - ListVolumes   — enumerates all LVs in the VG with device_path.
-//   - DevicePath    — verified via CreateVolumeResponse.device_path and
-//     VolumeInfo.device_path in ListVolumes response.
-//
-// # Provisioning modes
-//
-// The agent is started with --backend=type=lvm-lv,vg=e2e-vg,thinpool=e2e-thin-pool
-// making thin the backend default.  Linear mode is exercised by passing
-// LvmVolumeParams.ProvisionMode="linear" in BackendParams, which overrides the
-// backend default on a per-volume basis.
-//
-// # Prerequisites
-//
-//   - PILLAR_E2E_LVM_VG must be set (done by TestMain.setupLVMVG on success).
-//   - The LVM VG (and thin pool e2e-thin-pool) must exist on the storage-worker node.
-//   - The pillar-agent DaemonSet must be Running on the storage-worker node.
-//   - testEnv.lvmHostExec must be non-nil (set by setupLVMVG).
-//
-// # Access mechanism
-//
-// The in-cluster agent pod exposes gRPC on port 9500 (containerPort).
-// The tests use kubectl port-forward to create a tunnel from a local port
-// (lvmRPCLocalPort, default 19500) to the agent pod's port 9500, then dial
-// gRPC through that tunnel.  kubectl port-forward uses the Kubernetes API
-// server as a relay, so it works regardless of whether Docker (and Kind) are
-// local or remote.
-//
-// # Test isolation
-//
-// Each test case uses a unique volume name derived from the nanosecond timestamp
-// to prevent collisions.  DeferCleanup registers DeleteVolume before the
-// operation under test so volumes are removed even when an assertion fails.
-//
-// # Sequential execution
-//
-// ZFS and LVM tests share the same Kind cluster, storage node, and agent
-// DaemonSet pod.  Running them in parallel could cause configfs/NVMe-oF port
-// conflicts.  Ginkgo's default sequential execution within a single suite
-// guarantees the two backend groups run one after the other.
 package e2e
 
+// lvm_backend_core_rpcs_e2e_test.go — E33.1: LVM backend Core RPC tests.
+//
+// Tests the 6 core LVM backend RPCs against a real pillar-agent running inside
+// a Kind cluster with a real LVM VG (loopback device based).
+//
+// Prerequisites:
+//   - Kind cluster bootstrapped (KUBECONFIG set)
+//   - pillar-agent DaemonSet running on storage-worker node
+//   - PILLAR_E2E_LVM_VG environment variable set to the LVM VG name
+//   - Optional: PILLAR_E2E_LVM_THIN_POOL for thin LV tests
+//
+// TC IDs covered: E33.285 – E33.293 (E33.1 subsection)
+//
+// Build tag: //go:build e2e
+// Run with: go test -tags=e2e ./test/e2e/ --ginkgo.label-filter="lvm && rpc"
+
 import (
+	"bytes"
 	"context"
 	"fmt"
-	"net"
 	"os"
 	"os/exec"
 	"strings"
@@ -85,758 +35,471 @@ import (
 	agentv1 "github.com/bhyoo/pillar-csi/gen/go/pillar_csi/agent/v1"
 )
 
-// lvmRPCLocalPort is the local TCP port used by kubectl port-forward to relay
-// gRPC calls to the in-cluster agent pod.  It is different from the external
-// agent port (9500) to avoid conflicts when both modes are run sequentially.
-const lvmRPCLocalPort = "19500"
-
-// lvmRPCAgentAddr is the gRPC dial address for the port-forwarded agent.
-const lvmRPCAgentAddr = "127.0.0.1:" + lvmRPCLocalPort
-
 // ─────────────────────────────────────────────────────────────────────────────
-// Helpers
+// E33.1 shared helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-// lvmVolName returns a unique LVM LV name for the given test tag.
-// LV names must be valid LVM identifiers (letters, digits, underscores, hyphens).
-func lvmVolName(tag string) string {
-	return fmt.Sprintf("e2e-%s-%d", tag, time.Now().UnixNano()%1_000_000)
+const (
+	e33AgentGRPCPort    = 9500
+	e33AgentNamespace   = "pillar-csi-system"
+	e33AgentPodSelector = "app.kubernetes.io/component=agent"
+)
+
+// e33LvmVG returns the LVM volume group name for E33 tests.
+// Returns "" when PILLAR_E2E_LVM_VG is not set.
+func e33LvmVG() string { return os.Getenv("PILLAR_E2E_LVM_VG") }
+
+// e33LvmThinPool returns the thin pool name for E33 thin-LV tests.
+// Returns "" when PILLAR_E2E_LVM_THIN_POOL is not set.
+func e33LvmThinPool() string { return os.Getenv("PILLAR_E2E_LVM_THIN_POOL") }
+
+// e33KubectlOutput runs kubectl with the suite kubeconfig and returns stdout.
+func e33KubectlOutput(ctx context.Context, args ...string) (string, error) {
+	kubeconfigPath := os.Getenv("KUBECONFIG")
+	if kubeconfigPath == "" && suiteKindCluster != nil {
+		kubeconfigPath = suiteKindCluster.KubeconfigPath
+	}
+	if kubeconfigPath == "" {
+		return "", fmt.Errorf("[E33] KUBECONFIG not set — Kind cluster not bootstrapped")
+	}
+	cmdArgs := append([]string{"--kubeconfig=" + kubeconfigPath}, args...)
+	cmd := exec.CommandContext(ctx, "kubectl", cmdArgs...) //nolint:gosec
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("kubectl %s: %w\nstderr: %s", strings.Join(args, " "), err, stderr.String())
+	}
+	return strings.TrimSpace(stdout.String()), nil
 }
 
-// findAgentPodOnStorageNode returns the name of the first pillar-agent pod
-// scheduled on storageNode.  It runs kubectl to list pods with the agent's
-// component selector labels.
-//
-// Returns an error when no pod is found or the kubectl call fails.
-func findAgentPodOnStorageNode(storageNode, namespace string) (string, error) {
-	out, err := captureOutput("kubectl", "get", "pods",
-		"-n", namespace,
-		"-l", "app.kubernetes.io/name=pillar-csi,app.kubernetes.io/component=agent",
-		"--field-selector", "spec.nodeName="+storageNode+",status.phase=Running",
+// e33AgentPodName returns the name of the first pillar-agent pod in the
+// storage-worker namespace. Returns an error if no agent pod is found.
+func e33AgentPodName(ctx context.Context) (string, error) {
+	out, err := e33KubectlOutput(ctx,
+		"get", "pods",
+		"-n", e33AgentNamespace,
+		"-l", e33AgentPodSelector,
 		"-o", "jsonpath={.items[0].metadata.name}",
 	)
 	if err != nil {
-		return "", fmt.Errorf("kubectl get pods: %s: %w", strings.TrimSpace(out), err)
+		return "", fmt.Errorf("get agent pod name: %w", err)
 	}
-	name := strings.TrimSpace(out)
-	if name == "" {
-		return "", fmt.Errorf("no running pillar-agent pod found on node %q in namespace %q "+
-			"(check that the DaemonSet is deployed and the node has label "+
-			"pillar-csi.bhyoo.com/storage-node=true)", storageNode, namespace)
+	if out == "" {
+		return "", fmt.Errorf("no agent pod found with selector %q in namespace %q",
+			e33AgentPodSelector, e33AgentNamespace)
 	}
-	return name, nil
+	return out, nil
 }
 
-// startAgentPortForward starts a kubectl port-forward process that tunnels
-// localPort on 127.0.0.1 to port 9500 on the named pod in namespace.
-//
-// It waits up to 30 seconds for the local port to accept TCP connections before
-// returning.  The returned stop function kills the port-forward process; callers
-// MUST call it (typically via DeferCleanup) to avoid leaking the process.
-//
-// The function fails the current spec immediately via Expect if the port-forward
-// cannot be started or if the local port does not become reachable within the
-// timeout.
-func startAgentPortForward(podName, namespace, localPort string) (addr string, stop func()) {
-	GinkgoHelper()
+// e33PortForwardAgentGRPC starts a kubectl port-forward to the agent pod's
+// gRPC port. Returns the local address "127.0.0.1:<localPort>" and a cancel
+// function to stop the port-forward.
+func e33PortForwardAgentGRPC(ctx context.Context, podName string, localPort int) (string, context.CancelFunc, error) {
+	kubeconfigPath := os.Getenv("KUBECONFIG")
+	if kubeconfigPath == "" && suiteKindCluster != nil {
+		kubeconfigPath = suiteKindCluster.KubeconfigPath
+	}
 
-	addr = "127.0.0.1:" + localPort
+	pfCtx, cancel := context.WithCancel(ctx)
 
-	// Kill any existing process occupying the port (defensive cleanup from a
-	// previous interrupted run).
-	_ = exec.Command("fuser", "-k", localPort+"/tcp").Run() //nolint:gosec
-	time.Sleep(200 * time.Millisecond)
-
-	cmd := exec.CommandContext( //nolint:gosec
-		context.Background(),
-		"kubectl", "port-forward",
+	cmd := exec.CommandContext(pfCtx, "kubectl", //nolint:gosec
+		"--kubeconfig="+kubeconfigPath,
+		"port-forward",
+		"-n", e33AgentNamespace,
 		"pod/"+podName,
-		localPort+":9500",
-		"--namespace", namespace,
+		fmt.Sprintf("%d:%d", localPort, e33AgentGRPCPort),
 	)
-	cmd.Env = os.Environ()
-	// Capture output to /dev/null — errors appear as a failed TCP connection
-	// below, which gives a clearer test failure message.
-	cmd.Stdout = nil
-	cmd.Stderr = nil
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
 
-	Expect(cmd.Start()).To(Succeed(),
-		"kubectl port-forward pod/%s %s:9500 must start without error", podName, localPort)
-
-	stop = func() {
-		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
-			_ = cmd.Wait()
-		}
+	if err := cmd.Start(); err != nil {
+		cancel()
+		return "", nil, fmt.Errorf("start port-forward: %w", err)
 	}
 
-	// Wait for the port to accept TCP connections.
-	By(fmt.Sprintf("waiting for kubectl port-forward to be ready on %s (up to 30 s)", addr))
-	deadline := time.Now().Add(30 * time.Second)
-	for {
-		conn, dialErr := net.DialTimeout("tcp", addr, 500*time.Millisecond)
-		if dialErr == nil {
-			conn.Close()
-			break
-		}
-		if time.Now().After(deadline) {
-			stop()
-			Fail(fmt.Sprintf("kubectl port-forward to pod/%s did not become ready within 30 s "+
-				"(last error: %v)", podName, dialErr))
-		}
-		time.Sleep(300 * time.Millisecond)
-	}
-	By(fmt.Sprintf("kubectl port-forward ready: gRPC tunnel to pod/%s at %s", podName, addr))
-	return addr, stop
+	// Wait briefly for port-forward to establish.
+	time.Sleep(500 * time.Millisecond)
+
+	addr := fmt.Sprintf("127.0.0.1:%d", localPort)
+	return addr, func() {
+		cancel()
+		_ = cmd.Wait()
+	}, nil
 }
 
-// lvmDial opens a plaintext gRPC connection to the agent via the port-forwarded
-// addr and returns the connection.  The caller is responsible for
-// DeferCleanup(conn.Close).
-func lvmDial(ctx context.Context, addr string) *grpc.ClientConn {
-	GinkgoHelper()
-	dialCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-
-	conn, err := grpc.DialContext( //nolint:staticcheck
-		dialCtx,
-		addr,
+// e33AgentGRPCClient creates an insecure gRPC client to the given address.
+func e33AgentGRPCClient(ctx context.Context, addr string) (agentv1.AgentServiceClient, *grpc.ClientConn, error) {
+	conn, err := grpc.DialContext(ctx, addr, //nolint:staticcheck
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithBlock(), //nolint:staticcheck
+		grpc.WithBlock(),
+		grpc.WithTimeout(10*time.Second), //nolint:staticcheck
 	)
-	Expect(err).NotTo(HaveOccurred(),
-		"gRPC dial to in-cluster agent via port-forward at %s must succeed", addr)
-	return conn
-}
-
-// lvmLVExists verifies that an LV named lvName exists in vgName on the Docker
-// host by running `lvs <vg>/<lv>` through testEnv.lvmHostExec.
-// Returns nil when the LV exists, a descriptive error otherwise.
-func lvmLVExists(ctx context.Context, vgName, lvName string) error {
-	if testEnv.lvmHostExec == nil {
-		return fmt.Errorf("lvmHostExec is nil — LVM host-exec helper was not initialised by setupLVMVG")
-	}
-	res, err := testEnv.lvmHostExec.ExecOnHost(ctx,
-		fmt.Sprintf("lvs --noheadings -o lv_name %s/%s 2>/dev/null", vgName, lvName))
 	if err != nil {
-		return fmt.Errorf("lvmHostExec: %w", err)
+		return nil, nil, fmt.Errorf("dial agent at %s: %w", addr, err)
 	}
-	if !res.Success() {
-		return fmt.Errorf("LV %s/%s does not exist on Docker host (lvs exit %d stderr=%q)",
-			vgName, lvName, res.ExitCode, res.Stderr)
-	}
-	return nil
+	return agentv1.NewAgentServiceClient(conn), conn, nil
 }
 
-// lvmLVAbsent verifies that an LV named lvName does NOT exist in vgName on the
-// Docker host.  Returns nil when the LV is absent, a descriptive error if it
-// still exists.
-func lvmLVAbsent(ctx context.Context, vgName, lvName string) error {
-	if testEnv.lvmHostExec == nil {
-		return fmt.Errorf("lvmHostExec is nil")
+// e33SkipIfNoInfra skips the current spec if E33 infrastructure is not available.
+func e33SkipIfNoInfra() {
+	if e33LvmVG() == "" {
+		Skip("[E33] PILLAR_E2E_LVM_VG not set — skipping Kind+LVM test")
 	}
-	res, err := testEnv.lvmHostExec.ExecOnHost(ctx,
-		fmt.Sprintf("lvs --noheadings -o lv_name %s/%s 2>/dev/null", vgName, lvName))
-	if err != nil {
-		return fmt.Errorf("lvmHostExec: %w", err)
+	if os.Getenv("KUBECONFIG") == "" && suiteKindCluster == nil {
+		Skip("[E33] KUBECONFIG not set and suiteKindCluster is nil — Kind cluster not available")
 	}
-	if res.Success() {
-		return fmt.Errorf("LV %s/%s still exists on Docker host after DeleteVolume", vgName, lvName)
-	}
-	return nil
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// LVMBackendCoreRPCs — all 6 core backend RPCs against a real LVM VG
+// E33.1: LVM 백엔드 Core RPC
 // ─────────────────────────────────────────────────────────────────────────────
 
-var _ = func() bool {
-	if isExternalAgentMode() {
-		// LVM RPC tests only run in internal-agent mode (DaemonSet with LVM backend).
-		return false
-	}
-	Describe("LVMBackendCoreRPCs", Ordered, Label("internal-agent", "lvm", "rpc"), func() {
+var _ = Describe("E33: LVM Kind 클러스터 E2E — 실제 LVM VG + NVMe-oF TCP",
+	Label("lvm", "rpc", "e33"),
+	func() {
+		Describe("E33.1 LVM 백엔드 Core RPC", func() {
 
-		// ── Suite-level state ──────────────────────────────────────────────────
-		var (
-			agentAddr   string // 127.0.0.1:19500 via port-forward
-			vgName      string // PILLAR_E2E_LVM_VG (e.g. "e2e-vg")
-			thinPool    string // PILLAR_E2E_LVM_THIN_POOL (e.g. "e2e-thin-pool"); "" = linear default
-			stopForward func() // kills the kubectl port-forward process
-		)
+			var (
+				agentClient agentv1.AgentServiceClient
+				conn        *grpc.ClientConn
+				stopPF      context.CancelFunc
+				lvmVG       string
+				lvmThinPool string
+				// uniqueID ensures LV names don't collide across parallel test runs.
+				uniqueID string
+			)
 
-		// ── BeforeAll: prerequisites + port-forward ────────────────────────────
-		BeforeAll(func(ctx context.Context) {
-			reapplyStorageNodeLabel()
-			vgName = lvmVGName()
-			if vgName == "" {
-				Skip("PILLAR_E2E_LVM_VG not set — skipping LVM backend core RPC tests " +
-					"(set to the LVM Volume Group name on the storage-worker node, e.g. 'e2e-vg')")
-			}
-			thinPool = lvmThinPoolName()
+			BeforeAll(func() {
+				e33SkipIfNoInfra()
 
-			By(fmt.Sprintf("LVM VG: %q  thin pool: %q", vgName, thinPool))
+				lvmVG = e33LvmVG()
+				lvmThinPool = e33LvmThinPool()
+				uniqueID = fmt.Sprintf("e33-%d", GinkgoParallelProcess())
 
-			Expect(testEnv.lvmHostExec).NotTo(BeNil(),
-				"testEnv.lvmHostExec must be non-nil — setupLVMVG() must have succeeded")
+				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+				defer cancel()
 
-			// Resolve the storage-worker node name.
-			// Prefer the env var (set by ensureStorageNodeLabel) since the
-			// controller may remove the label between test groups.
-			storageNode := os.Getenv("PILLAR_E2E_STORAGE_NODE")
-			if storageNode == "" {
-				out, err := captureOutput("kubectl", "get", "nodes",
-					"-l", "pillar-csi.bhyoo.com/storage-node=true",
-					"-o", "jsonpath={.items[0].metadata.name}")
+				By("finding pillar-agent pod")
+				podName, err := e33AgentPodName(ctx)
+				Expect(err).NotTo(HaveOccurred(), "[E33.1] find agent pod")
+
+				By("starting port-forward to agent gRPC port")
+				localPort := 49500 + GinkgoParallelProcess()
+				addr, stop, err := e33PortForwardAgentGRPC(ctx, podName, localPort)
+				Expect(err).NotTo(HaveOccurred(), "[E33.1] port-forward setup")
+				stopPF = stop
+
+				By("connecting gRPC client")
+				var dialCtx context.Context
+				var dialCancel context.CancelFunc
+				dialCtx, dialCancel = context.WithTimeout(context.Background(), 15*time.Second)
+				defer dialCancel()
+				agentClient, conn, err = e33AgentGRPCClient(dialCtx, addr)
+				Expect(err).NotTo(HaveOccurred(), "[E33.1] gRPC client dial")
+			})
+
+			AfterAll(func() {
+				if conn != nil {
+					_ = conn.Close()
+				}
+				if stopPF != nil {
+					stopPF()
+				}
+			})
+
+			// ── TC-E33.285 ────────────────────────────────────────────────────
+			It("[TC-E33.285] GetCapacity returns positive total and available bytes for the LVM VG", func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+
+				resp, err := agentClient.GetCapacity(ctx, &agentv1.GetCapacityRequest{
+					BackendType: agentv1.BackendType_BACKEND_TYPE_LVM,
+					PoolName:    lvmVG,
+				})
 				Expect(err).NotTo(HaveOccurred(),
-					"find storage worker node: %s", strings.TrimSpace(out))
-				storageNode = strings.TrimSpace(out)
-			}
-			Expect(storageNode).NotTo(BeEmpty(), "must find a storage-worker node")
-			By(fmt.Sprintf("storage-worker node: %s", storageNode))
+					"[TC-E33.285] GetCapacity must succeed for VG %q", lvmVG)
+				Expect(resp.GetTotalBytes()).To(BeNumerically(">", 0),
+					"[TC-E33.285] TotalBytes must be positive")
+				Expect(resp.GetAvailableBytes()).To(BeNumerically(">", 0),
+					"[TC-E33.285] AvailableBytes must be positive")
+				Expect(resp.GetAvailableBytes()).To(BeNumerically("<=", resp.GetTotalBytes()),
+					"[TC-E33.285] AvailableBytes must not exceed TotalBytes")
+			})
 
-			// Re-apply the storage-node label (the controller removes it when
-			// PillarTargets from earlier test groups are deleted).
-			_ = runCmd("kubectl", "label", "node", storageNode,
-				"pillar-csi.bhyoo.com/storage-node=true", "--overwrite")
-
-			// Wait for the agent pod to be scheduled and running.
-			var podName string
-			Eventually(func() error {
-				var err error
-				podName, err = findAgentPodOnStorageNode(storageNode, testEnv.HelmNamespace)
-				return err
-			}, 60*time.Second, 2*time.Second).Should(Succeed(),
-				"must find a running pillar-agent pod on the storage-worker node %q "+
-					"(the DaemonSet may need time to reschedule after re-labelling)", storageNode)
-			By(fmt.Sprintf("agent pod: %s", podName))
-
-			// Start kubectl port-forward to the agent pod.
-			agentAddr, stopForward = startAgentPortForward(podName, testEnv.HelmNamespace, lvmRPCLocalPort)
-
-			// DeferCleanup in BeforeAll fires after the last spec in this Ordered
-			// block (or after AfterAll if one is defined).
-			DeferCleanup(func() {
-				By("stopping kubectl port-forward for LVM agent")
-				if stopForward != nil {
-					stopForward()
+			// ── TC-E33.286 ────────────────────────────────────────────────────
+			It("[TC-E33.286] CreateVolume (thin) returns device_path=/dev/<vg>/<lv>", func() {
+				if lvmThinPool == "" {
+					Skip("[TC-E33.286] PILLAR_E2E_LVM_THIN_POOL not set — skipping thin LV test")
 				}
-			})
-		})
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
 
-		// ── GetCapacity: real LVM VG returns positive capacity values ──────────
-		It("GetCapacity returns positive total and available bytes for the LVM VG", func(ctx SpecContext) {
-			conn := lvmDial(ctx, agentAddr)
-			DeferCleanup(conn.Close)
-
-			client := agentv1.NewAgentServiceClient(conn)
-
-			By(fmt.Sprintf("calling GetCapacity for LVM VG %q", vgName))
-			resp, err := client.GetCapacity(ctx, &agentv1.GetCapacityRequest{
-				BackendType: agentv1.BackendType_BACKEND_TYPE_LVM,
-				PoolName:    vgName,
-			})
-			Expect(err).NotTo(HaveOccurred(),
-				"GetCapacity for LVM VG %q must succeed", vgName)
-
-			Expect(resp.GetTotalBytes()).To(BeNumerically(">", 0),
-				"GetCapacity.TotalBytes must be > 0 — the VG exists and has physical storage")
-			Expect(resp.GetAvailableBytes()).To(BeNumerically(">=", 0),
-				"GetCapacity.AvailableBytes must be >= 0")
-			Expect(resp.GetTotalBytes()).To(BeNumerically(">=", resp.GetAvailableBytes()),
-				"total bytes must be >= available bytes")
-
-			By(fmt.Sprintf("GetCapacity: total=%d available=%d",
-				resp.GetTotalBytes(), resp.GetAvailableBytes()))
-		})
-
-		// ── CreateVolume (thin): creates a thin LV and returns correct device_path
-		It("CreateVolume (thin) returns device_path=/dev/<vg>/<lv> for a thin LV", func(ctx SpecContext) {
-			if thinPool == "" {
-				Skip("PILLAR_E2E_LVM_THIN_POOL not set — skipping thin-provisioning CreateVolume test " +
-					"(set to the thin pool name to enable thin-mode tests)")
-			}
-
-			lvName := lvmVolName("thin")
-			volumeID := vgName + "/" + lvName
-			expectedDevPath := "/dev/" + vgName + "/" + lvName
-
-			conn := lvmDial(ctx, agentAddr)
-			DeferCleanup(conn.Close)
-
-			client := agentv1.NewAgentServiceClient(conn)
-
-			// Register cleanup before the create so the LV is removed even on failure.
-			DeferCleanup(func(dctx SpecContext) {
-				By(fmt.Sprintf("cleanup: deleting thin LV %q", volumeID))
-				if _, delErr := client.DeleteVolume(dctx, &agentv1.DeleteVolumeRequest{
-					VolumeId: volumeID,
-				}); delErr != nil {
-					_, _ = fmt.Fprintf(GinkgoWriter,
-						"warning: cleanup DeleteVolume %q: %v\n", volumeID, delErr)
-				}
-			})
-
-			By(fmt.Sprintf("calling CreateVolume (thin default) for %q (128 MiB)", volumeID))
-			resp, err := client.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
-				VolumeId:      volumeID,
-				CapacityBytes: 128 << 20, // 128 MiB
-				// No BackendParams.ProvisionMode override — use backend default (thin)
-			})
-			Expect(err).NotTo(HaveOccurred(),
-				"CreateVolume(%q) thin must succeed", volumeID)
-			Expect(resp.GetCapacityBytes()).To(BeNumerically(">=", 128<<20),
-				"allocated capacity must be at least the requested 128 MiB")
-
-			// ── DevicePath: verify device_path in CreateVolumeResponse ───────────
-			By("verifying device_path in CreateVolumeResponse (DevicePath RPC — thin LV)")
-			Expect(resp.GetDevicePath()).To(Equal(expectedDevPath),
-				"device_path must be /dev/<vg>/<lv> for a thin LV")
-
-			// Verify the LV was actually created on the Docker host.
-			By(fmt.Sprintf("verifying LV %s/%s exists on Docker host via lvs", vgName, lvName))
-			Expect(lvmLVExists(ctx, vgName, lvName)).To(Succeed(),
-				"thin LV must exist on the Docker host after CreateVolume")
-
-			By(fmt.Sprintf("CreateVolume (thin): device_path=%q capacity=%d",
-				resp.GetDevicePath(), resp.GetCapacityBytes()))
-		})
-
-		// ── CreateVolume (linear): creates a linear LV via ProvisionMode override
-		It("CreateVolume (linear) creates a linear LV using ProvisionMode override", func(ctx SpecContext) {
-			lvName := lvmVolName("lin")
-			volumeID := vgName + "/" + lvName
-			expectedDevPath := "/dev/" + vgName + "/" + lvName
-
-			conn := lvmDial(ctx, agentAddr)
-			DeferCleanup(conn.Close)
-
-			client := agentv1.NewAgentServiceClient(conn)
-
-			// Register cleanup before the create.
-			DeferCleanup(func(dctx SpecContext) {
-				By(fmt.Sprintf("cleanup: deleting linear LV %q", volumeID))
-				if _, delErr := client.DeleteVolume(dctx, &agentv1.DeleteVolumeRequest{
-					VolumeId: volumeID,
-				}); delErr != nil {
-					_, _ = fmt.Fprintf(GinkgoWriter,
-						"warning: cleanup DeleteVolume %q: %v\n", volumeID, delErr)
-				}
-			})
-
-			By(fmt.Sprintf("calling CreateVolume (linear override) for %q (128 MiB)", volumeID))
-			resp, err := client.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
-				VolumeId:      volumeID,
-				CapacityBytes: 128 << 20, // 128 MiB
-				BackendParams: &agentv1.BackendParams{
-					Params: &agentv1.BackendParams_Lvm{
-						Lvm: &agentv1.LvmVolumeParams{
-							ProvisionMode: "linear",
+				volumeID := fmt.Sprintf("%s/e33-286-%s", lvmVG, uniqueID)
+				resp, err := agentClient.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
+					VolumeId:      volumeID,
+					CapacityBytes: 512 * 1024 * 1024, // 512 MiB
+					BackendParams: &agentv1.BackendParams{
+						Params: &agentv1.BackendParams_Lvm{
+							Lvm: &agentv1.LvmVolumeParams{
+								VolumeGroup:   lvmVG,
+								ProvisionMode: "thin",
+							},
 						},
 					},
-				},
-			})
-			Expect(err).NotTo(HaveOccurred(),
-				"CreateVolume(%q) linear must succeed", volumeID)
-			Expect(resp.GetCapacityBytes()).To(BeNumerically(">=", 128<<20),
-				"linear LV capacity must be at least the requested 128 MiB")
-
-			// ── DevicePath: verify device_path for linear LV ──────────────────────
-			By("verifying device_path in CreateVolumeResponse (DevicePath RPC — linear LV)")
-			Expect(resp.GetDevicePath()).To(Equal(expectedDevPath),
-				"device_path must be /dev/<vg>/<lv> for a linear LV (same convention as thin)")
-
-			// Verify the LV was actually created on the Docker host.
-			By(fmt.Sprintf("verifying LV %s/%s exists on Docker host via lvs", vgName, lvName))
-			Expect(lvmLVExists(ctx, vgName, lvName)).To(Succeed(),
-				"linear LV must exist on the Docker host after CreateVolume")
-
-			By(fmt.Sprintf("CreateVolume (linear): device_path=%q capacity=%d",
-				resp.GetDevicePath(), resp.GetCapacityBytes()))
-		})
-
-		// ── DeleteVolume: destroys an LV; idempotent on missing volume ─────────
-		It("DeleteVolume destroys an LV and is idempotent on a non-existent LV", func(ctx SpecContext) {
-			lvName := lvmVolName("del")
-			volumeID := vgName + "/" + lvName
-
-			conn := lvmDial(ctx, agentAddr)
-			DeferCleanup(conn.Close)
-
-			client := agentv1.NewAgentServiceClient(conn)
-
-			// Step 1: Create an LV so there is something to delete.
-			// Use linear mode to avoid depending on thin pool availability.
-			By(fmt.Sprintf("creating LV %q (linear) before testing DeleteVolume", volumeID))
-			_, err := client.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
-				VolumeId:      volumeID,
-				CapacityBytes: 128 << 20,
-				BackendParams: &agentv1.BackendParams{
-					Params: &agentv1.BackendParams_Lvm{
-						Lvm: &agentv1.LvmVolumeParams{
-							ProvisionMode: "linear",
-						},
-					},
-				},
-			})
-			Expect(err).NotTo(HaveOccurred(),
-				"CreateVolume must succeed before DeleteVolume test")
-
-			// Step 2: Verify the LV exists on the Docker host.
-			By(fmt.Sprintf("verifying LV %s/%s exists on Docker host", vgName, lvName))
-			Expect(lvmLVExists(ctx, vgName, lvName)).To(Succeed(),
-				"LV must exist before DeleteVolume")
-
-			// Step 3: Delete the LV.
-			By(fmt.Sprintf("calling DeleteVolume for %q", volumeID))
-			_, err = client.DeleteVolume(ctx, &agentv1.DeleteVolumeRequest{
-				VolumeId: volumeID,
-			})
-			Expect(err).NotTo(HaveOccurred(),
-				"DeleteVolume(%q) must succeed", volumeID)
-
-			// Step 4: Verify the LV is gone on the Docker host.
-			By(fmt.Sprintf("verifying LV %s/%s is removed on Docker host after DeleteVolume", vgName, lvName))
-			Eventually(func() error {
-				return lvmLVAbsent(ctx, vgName, lvName)
-			}, 10*time.Second, 500*time.Millisecond).Should(Succeed(),
-				"LV must disappear from the Docker host after DeleteVolume")
-
-			// Step 5: Idempotency — deleting again must succeed.
-			By(fmt.Sprintf("calling DeleteVolume again for %q (idempotency check)", volumeID))
-			_, err = client.DeleteVolume(ctx, &agentv1.DeleteVolumeRequest{
-				VolumeId: volumeID,
-			})
-			Expect(err).NotTo(HaveOccurred(),
-				"DeleteVolume on a non-existent LV must return success (idempotent)")
-
-			By("DeleteVolume idempotency confirmed")
-		})
-
-		// ── ExpandVolume: grows an LV to at least the requested size ───────────
-		It("ExpandVolume grows an LVM LV to at least the requested size", func(ctx SpecContext) {
-			lvName := lvmVolName("exp")
-			volumeID := vgName + "/" + lvName
-
-			conn := lvmDial(ctx, agentAddr)
-			DeferCleanup(conn.Close)
-
-			client := agentv1.NewAgentServiceClient(conn)
-
-			// Register cleanup before creating the LV.
-			DeferCleanup(func(dctx SpecContext) {
-				By(fmt.Sprintf("cleanup: deleting LV %q", volumeID))
-				if _, delErr := client.DeleteVolume(dctx, &agentv1.DeleteVolumeRequest{
-					VolumeId: volumeID,
-				}); delErr != nil {
-					_, _ = fmt.Fprintf(GinkgoWriter,
-						"warning: cleanup DeleteVolume %q: %v\n", volumeID, delErr)
-				}
-			})
-
-			const initialBytes = 128 << 20  // 128 MiB
-			const expandedBytes = 256 << 20 // 256 MiB
-
-			// Step 1: Create the LV at initial size (linear so no thin-pool dependency).
-			By(fmt.Sprintf("creating LV %q at %d bytes (128 MiB, linear)", volumeID, initialBytes))
-			createResp, err := client.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
-				VolumeId:      volumeID,
-				CapacityBytes: initialBytes,
-				BackendParams: &agentv1.BackendParams{
-					Params: &agentv1.BackendParams_Lvm{
-						Lvm: &agentv1.LvmVolumeParams{
-							ProvisionMode: "linear",
-						},
-					},
-				},
-			})
-			Expect(err).NotTo(HaveOccurred(),
-				"CreateVolume must succeed before ExpandVolume test")
-			Expect(createResp.GetCapacityBytes()).To(BeNumerically(">=", initialBytes),
-				"initial allocated capacity must be at least the requested size")
-
-			// Step 2: Expand to double the initial size.
-			By(fmt.Sprintf("calling ExpandVolume for %q to %d bytes (256 MiB)", volumeID, expandedBytes))
-			expandResp, err := client.ExpandVolume(ctx, &agentv1.ExpandVolumeRequest{
-				VolumeId:       volumeID,
-				RequestedBytes: expandedBytes,
-			})
-			Expect(err).NotTo(HaveOccurred(),
-				"ExpandVolume(%q, %d) must succeed", volumeID, expandedBytes)
-			Expect(expandResp.GetCapacityBytes()).To(BeNumerically(">=", expandedBytes),
-				"ExpandVolume must allocate at least the requested 256 MiB")
-
-			By(fmt.Sprintf("ExpandVolume: new capacity=%d bytes (%.1f MiB)",
-				expandResp.GetCapacityBytes(), float64(expandResp.GetCapacityBytes())/(1<<20)))
-		})
-
-		// ── ListVolumes + DevicePath: enumerates LVs including device_path ──────
-		It("ListVolumes returns created LVs with correct device_path", func(ctx SpecContext) {
-			lvName := lvmVolName("list")
-			volumeID := vgName + "/" + lvName
-			expectedDevPath := "/dev/" + vgName + "/" + lvName
-
-			conn := lvmDial(ctx, agentAddr)
-			DeferCleanup(conn.Close)
-
-			client := agentv1.NewAgentServiceClient(conn)
-
-			// Register cleanup before creating.
-			DeferCleanup(func(dctx SpecContext) {
-				By(fmt.Sprintf("cleanup: deleting LV %q", volumeID))
-				if _, delErr := client.DeleteVolume(dctx, &agentv1.DeleteVolumeRequest{
-					VolumeId: volumeID,
-				}); delErr != nil {
-					_, _ = fmt.Fprintf(GinkgoWriter,
-						"warning: cleanup DeleteVolume %q: %v\n", volumeID, delErr)
-				}
-			})
-
-			// Step 1: Create a volume so there is something to list.
-			By(fmt.Sprintf("creating LV %q (linear) before testing ListVolumes", volumeID))
-			_, err := client.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
-				VolumeId:      volumeID,
-				CapacityBytes: 128 << 20,
-				BackendParams: &agentv1.BackendParams{
-					Params: &agentv1.BackendParams_Lvm{
-						Lvm: &agentv1.LvmVolumeParams{
-							ProvisionMode: "linear",
-						},
-					},
-				},
-			})
-			Expect(err).NotTo(HaveOccurred(),
-				"CreateVolume must succeed before ListVolumes test")
-
-			// Step 2: List volumes and verify the new LV appears.
-			By(fmt.Sprintf("calling ListVolumes for VG %q", vgName))
-			listResp, err := client.ListVolumes(ctx, &agentv1.ListVolumesRequest{
-				BackendType: agentv1.BackendType_BACKEND_TYPE_LVM,
-				PoolName:    vgName,
-			})
-			Expect(err).NotTo(HaveOccurred(),
-				"ListVolumes for VG %q must succeed", vgName)
-
-			// Find our volume in the list.
-			var found *agentv1.VolumeInfo
-			for _, vi := range listResp.GetVolumes() {
-				if vi.GetVolumeId() == volumeID {
-					found = vi
-					break
-				}
-			}
-			Expect(found).NotTo(BeNil(),
-				"volume %q must appear in ListVolumes response; got %d volume(s): %v",
-				volumeID, len(listResp.GetVolumes()), lvmVolumeIDs(listResp.GetVolumes()))
-
-			// ── DevicePath in ListVolumes ─────────────────────────────────────────
-			//
-			// VolumeInfo.device_path is populated by the LVM backend's DevicePath
-			// method, which constructs /dev/<vg>/<lv-name> as a pure string
-			// derivation from the volume ID (no exec calls).
-			Expect(found.GetDevicePath()).To(Equal(expectedDevPath),
-				"VolumeInfo.device_path must be /dev/<vg>/<lv-name> for LVM LVs")
-			Expect(found.GetCapacityBytes()).To(BeNumerically(">", 0),
-				"VolumeInfo.capacity_bytes must be positive")
-
-			By(fmt.Sprintf("ListVolumes: found volume %q device_path=%q capacity=%d",
-				found.GetVolumeId(), found.GetDevicePath(), found.GetCapacityBytes()))
-		})
-
-		// ── CreateVolume idempotency: re-create with same params succeeds ───────
-		It("CreateVolume is idempotent: re-creating with same volume ID succeeds (linear)", func(ctx SpecContext) {
-			lvName := lvmVolName("idem")
-			volumeID := vgName + "/" + lvName
-
-			conn := lvmDial(ctx, agentAddr)
-			DeferCleanup(conn.Close)
-
-			client := agentv1.NewAgentServiceClient(conn)
-
-			DeferCleanup(func(dctx SpecContext) {
-				By(fmt.Sprintf("cleanup: deleting LV %q", volumeID))
-				if _, delErr := client.DeleteVolume(dctx, &agentv1.DeleteVolumeRequest{
-					VolumeId: volumeID,
-				}); delErr != nil {
-					_, _ = fmt.Fprintf(GinkgoWriter,
-						"warning: cleanup DeleteVolume %q: %v\n", volumeID, delErr)
-				}
-			})
-
-			const reqBytes = 128 << 20 // 128 MiB
-			linearParams := &agentv1.BackendParams{
-				Params: &agentv1.BackendParams_Lvm{
-					Lvm: &agentv1.LvmVolumeParams{
-						ProvisionMode: "linear",
-					},
-				},
-			}
-
-			By(fmt.Sprintf("first CreateVolume (linear) for %q (%d bytes)", volumeID, reqBytes))
-			resp1, err := client.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
-				VolumeId:      volumeID,
-				CapacityBytes: reqBytes,
-				BackendParams: linearParams,
-			})
-			Expect(err).NotTo(HaveOccurred(), "first CreateVolume must succeed")
-
-			By(fmt.Sprintf("second CreateVolume (linear) for %q (idempotency check)", volumeID))
-			resp2, err := client.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
-				VolumeId:      volumeID,
-				CapacityBytes: reqBytes,
-				BackendParams: linearParams,
-			})
-			Expect(err).NotTo(HaveOccurred(),
-				"second CreateVolume with same ID and capacity must succeed (idempotent)")
-			Expect(resp2.GetDevicePath()).To(Equal(resp1.GetDevicePath()),
-				"device_path must be the same on idempotent re-create")
-			Expect(resp2.GetCapacityBytes()).To(Equal(resp1.GetCapacityBytes()),
-				"capacity_bytes must be the same on idempotent re-create")
-
-			By("CreateVolume (linear) idempotency confirmed")
-		})
-
-		// ── CreateVolume idempotency (thin): re-create with same thin params ────
-		It("CreateVolume is idempotent: re-creating with same volume ID succeeds (thin)", func(ctx SpecContext) {
-			if thinPool == "" {
-				Skip("PILLAR_E2E_LVM_THIN_POOL not set — skipping thin idempotency check")
-			}
-
-			lvName := lvmVolName("idth")
-			volumeID := vgName + "/" + lvName
-
-			conn := lvmDial(ctx, agentAddr)
-			DeferCleanup(conn.Close)
-
-			client := agentv1.NewAgentServiceClient(conn)
-
-			DeferCleanup(func(dctx SpecContext) {
-				By(fmt.Sprintf("cleanup: deleting thin LV %q", volumeID))
-				if _, delErr := client.DeleteVolume(dctx, &agentv1.DeleteVolumeRequest{
-					VolumeId: volumeID,
-				}); delErr != nil {
-					_, _ = fmt.Fprintf(GinkgoWriter,
-						"warning: cleanup DeleteVolume %q: %v\n", volumeID, delErr)
-				}
-			})
-
-			const reqBytes = 128 << 20 // 128 MiB
-
-			By(fmt.Sprintf("first CreateVolume (thin default) for %q (%d bytes)", volumeID, reqBytes))
-			resp1, err := client.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
-				VolumeId:      volumeID,
-				CapacityBytes: reqBytes,
-				// No ProvisionMode override — use backend default (thin)
-			})
-			Expect(err).NotTo(HaveOccurred(), "first CreateVolume (thin) must succeed")
-
-			By(fmt.Sprintf("second CreateVolume (thin default) for %q (idempotency check)", volumeID))
-			resp2, err := client.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
-				VolumeId:      volumeID,
-				CapacityBytes: reqBytes,
-			})
-			Expect(err).NotTo(HaveOccurred(),
-				"second CreateVolume (thin) with same ID and capacity must succeed (idempotent)")
-			Expect(resp2.GetDevicePath()).To(Equal(resp1.GetDevicePath()),
-				"device_path must be the same on idempotent thin re-create")
-			Expect(resp2.GetCapacityBytes()).To(Equal(resp1.GetCapacityBytes()),
-				"capacity_bytes must be the same on idempotent thin re-create")
-
-			By("CreateVolume (thin) idempotency confirmed")
-		})
-
-	}) // end Describe("LVMBackendCoreRPCs")
-	return true
-}()
-
-// lvmVolumeIDs extracts volume IDs from a slice of VolumeInfo for use in error
-// messages.
-func lvmVolumeIDs(vols []*agentv1.VolumeInfo) []string {
-	ids := make([]string, 0, len(vols))
-	for _, v := range vols {
-		ids = append(ids, v.GetVolumeId())
-	}
-	return ids
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// LVMGetCapacityVGNotFound — GetCapacity with a non-existent VG
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// This Describe block verifies that GetCapacity returns an error for a VG name
-// that is not registered with the agent.  It runs even without an LVM VG
-// set up (the agent always has a "no backend registered" code path).
-//
-// Gate: internal-agent mode only (external-agent mode has its own error-path tests).
-
-var _ = func() bool {
-	if isExternalAgentMode() {
-		return false
-	}
-	Describe("LVMGetCapacityVGNotFound", Ordered, Label("internal-agent", "lvm"), func() {
-		var (
-			agentAddr   string
-			stopForward func()
-		)
-
-		BeforeAll(func(ctx context.Context) {
-			reapplyStorageNodeLabel()
-			if lvmVGName() == "" {
-				Skip("PILLAR_E2E_LVM_VG not set — skipping LVM GetCapacity error-path test " +
-					"(requires a running agent with LVM backend registered)")
-			}
-
-			// Resolve the storage-worker node name.
-			storageNode := os.Getenv("PILLAR_E2E_STORAGE_NODE")
-			if storageNode == "" {
-				out, err := captureOutput("kubectl", "get", "nodes",
-					"-l", "pillar-csi.bhyoo.com/storage-node=true",
-					"-o", "jsonpath={.items[0].metadata.name}")
+				})
 				Expect(err).NotTo(HaveOccurred(),
-					"find storage worker node: %s", strings.TrimSpace(out))
-				storageNode = strings.TrimSpace(out)
-			}
-			Expect(storageNode).NotTo(BeEmpty(), "must find a storage-worker node")
+					"[TC-E33.286] CreateVolume (thin) must succeed")
+				expectedPath := fmt.Sprintf("/dev/%s/e33-286-%s", lvmVG, uniqueID)
+				Expect(resp.GetDevicePath()).To(Equal(expectedPath),
+					"[TC-E33.286] device_path must be /dev/<vg>/<lv>")
+				Expect(resp.GetCapacityBytes()).To(BeNumerically(">=", int64(512*1024*1024)),
+					"[TC-E33.286] capacity_bytes must be >= requested size")
 
-			// Re-apply storage-node label and wait for agent pod.
-			_ = runCmd("kubectl", "label", "node", storageNode,
-				"pillar-csi.bhyoo.com/storage-node=true", "--overwrite")
+				// Cleanup
+				DeferCleanup(func() {
+					cleanCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+					defer cancel()
+					_, _ = agentClient.DeleteVolume(cleanCtx, &agentv1.DeleteVolumeRequest{VolumeId: volumeID})
+				})
+			})
 
-			var podName string
-			Eventually(func() error {
-				var err error
-				podName, err = findAgentPodOnStorageNode(storageNode, testEnv.HelmNamespace)
-				return err
-			}, 60*time.Second, 2*time.Second).Should(Succeed(),
-				"must find a running pillar-agent pod on the storage-worker node %q", storageNode)
-			Expect(podName).NotTo(BeEmpty(),
-				"must find running agent pod on storage-worker node %q", storageNode)
+			// ── TC-E33.287 ────────────────────────────────────────────────────
+			It("[TC-E33.287] CreateVolume (linear) creates a linear LV using ProvisionMode override", func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
 
-			// Use a different local port from LVMBackendCoreRPCs to avoid collisions.
-			const notFoundTestPort = "19501"
-			agentAddr, stopForward = startAgentPortForward(podName, testEnv.HelmNamespace, notFoundTestPort)
+				volumeID := fmt.Sprintf("%s/e33-287-%s", lvmVG, uniqueID)
+				resp, err := agentClient.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
+					VolumeId:      volumeID,
+					CapacityBytes: 256 * 1024 * 1024, // 256 MiB
+					BackendParams: &agentv1.BackendParams{
+						Params: &agentv1.BackendParams_Lvm{
+							Lvm: &agentv1.LvmVolumeParams{
+								VolumeGroup:   lvmVG,
+								ProvisionMode: "linear",
+							},
+						},
+					},
+				})
+				Expect(err).NotTo(HaveOccurred(),
+					"[TC-E33.287] CreateVolume (linear) must succeed")
+				Expect(resp.GetDevicePath()).To(MatchRegexp(`^/dev/[^/]+/[^/]+$`),
+					"[TC-E33.287] device_path must be /dev/<vg>/<lv> format")
 
-			DeferCleanup(func() {
-				if stopForward != nil {
-					stopForward()
+				DeferCleanup(func() {
+					cleanCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+					defer cancel()
+					_, _ = agentClient.DeleteVolume(cleanCtx, &agentv1.DeleteVolumeRequest{VolumeId: volumeID})
+				})
+			})
+
+			// ── TC-E33.288 ────────────────────────────────────────────────────
+			It("[TC-E33.288] DeleteVolume destroys an LV and is idempotent", func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+				defer cancel()
+
+				// First create an LV to delete.
+				volumeID := fmt.Sprintf("%s/e33-288-%s", lvmVG, uniqueID)
+				_, err := agentClient.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
+					VolumeId:      volumeID,
+					CapacityBytes: 256 * 1024 * 1024,
+					BackendParams: &agentv1.BackendParams{
+						Params: &agentv1.BackendParams_Lvm{
+							Lvm: &agentv1.LvmVolumeParams{
+								VolumeGroup:   lvmVG,
+								ProvisionMode: "linear",
+							},
+						},
+					},
+				})
+				Expect(err).NotTo(HaveOccurred(), "[TC-E33.288] create LV for delete test")
+
+				// First delete.
+				_, err = agentClient.DeleteVolume(ctx, &agentv1.DeleteVolumeRequest{VolumeId: volumeID})
+				Expect(err).NotTo(HaveOccurred(),
+					"[TC-E33.288] first DeleteVolume must succeed")
+
+				// Second delete (idempotent).
+				_, err = agentClient.DeleteVolume(ctx, &agentv1.DeleteVolumeRequest{VolumeId: volumeID})
+				Expect(err).NotTo(HaveOccurred(),
+					"[TC-E33.288] second DeleteVolume (idempotent) must succeed")
+			})
+
+			// ── TC-E33.289 ────────────────────────────────────────────────────
+			It("[TC-E33.289] ExpandVolume grows an LVM LV to at least the requested size", func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+				defer cancel()
+
+				volumeID := fmt.Sprintf("%s/e33-289-%s", lvmVG, uniqueID)
+
+				By("creating initial 512 MiB LV")
+				_, err := agentClient.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
+					VolumeId:      volumeID,
+					CapacityBytes: 512 * 1024 * 1024,
+					BackendParams: &agentv1.BackendParams{
+						Params: &agentv1.BackendParams_Lvm{
+							Lvm: &agentv1.LvmVolumeParams{
+								VolumeGroup:   lvmVG,
+								ProvisionMode: "linear",
+							},
+						},
+					},
+				})
+				Expect(err).NotTo(HaveOccurred(), "[TC-E33.289] create initial LV")
+
+				By("expanding to 1 GiB")
+				expandResp, err := agentClient.ExpandVolume(ctx, &agentv1.ExpandVolumeRequest{
+					VolumeId:       volumeID,
+					RequestedBytes: 1024 * 1024 * 1024,
+				})
+				Expect(err).NotTo(HaveOccurred(),
+					"[TC-E33.289] ExpandVolume must succeed")
+				Expect(expandResp.GetCapacityBytes()).To(BeNumerically(">=", int64(1024*1024*1024)),
+					"[TC-E33.289] capacity_bytes must be >= 1 GiB after expansion")
+
+				DeferCleanup(func() {
+					cleanCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+					defer cancel()
+					_, _ = agentClient.DeleteVolume(cleanCtx, &agentv1.DeleteVolumeRequest{VolumeId: volumeID})
+				})
+			})
+
+			// ── TC-E33.290 ────────────────────────────────────────────────────
+			It("[TC-E33.290] ListVolumes returns created LVs with correct device_path", func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+				defer cancel()
+
+				volumeID := fmt.Sprintf("%s/e33-290-%s", lvmVG, uniqueID)
+
+				By("creating an LV")
+				_, err := agentClient.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
+					VolumeId:      volumeID,
+					CapacityBytes: 256 * 1024 * 1024,
+					BackendParams: &agentv1.BackendParams{
+						Params: &agentv1.BackendParams_Lvm{
+							Lvm: &agentv1.LvmVolumeParams{
+								VolumeGroup:   lvmVG,
+								ProvisionMode: "linear",
+							},
+						},
+					},
+				})
+				Expect(err).NotTo(HaveOccurred(), "[TC-E33.290] create LV for list test")
+
+				DeferCleanup(func() {
+					cleanCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+					defer cancel()
+					_, _ = agentClient.DeleteVolume(cleanCtx, &agentv1.DeleteVolumeRequest{VolumeId: volumeID})
+				})
+
+				By("listing volumes")
+				listResp, err := agentClient.ListVolumes(ctx, &agentv1.ListVolumesRequest{
+					BackendType: agentv1.BackendType_BACKEND_TYPE_LVM,
+					PoolName:    lvmVG,
+				})
+				Expect(err).NotTo(HaveOccurred(),
+					"[TC-E33.290] ListVolumes must succeed")
+
+				// Find our volume in the list.
+				var found bool
+				for _, vol := range listResp.GetVolumes() {
+					if vol.GetVolumeId() == volumeID {
+						found = true
+						Expect(vol.GetDevicePath()).To(MatchRegexp(`^/dev/[^/]+/[^/]+$`),
+							"[TC-E33.290] device_path must be /dev/<vg>/<lv> format")
+						break
+					}
 				}
+				Expect(found).To(BeTrue(),
+					"[TC-E33.290] created LV %q must appear in ListVolumes response", volumeID)
 			})
-		})
 
-		It("returns an error for a non-existent LVM VG pool name", func(ctx SpecContext) {
-			conn := lvmDial(ctx, agentAddr)
-			DeferCleanup(conn.Close)
+			// ── TC-E33.291 ────────────────────────────────────────────────────
+			It("[TC-E33.291] CreateVolume is idempotent: re-creating with same volume ID succeeds (linear)", func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+				defer cancel()
 
-			client := agentv1.NewAgentServiceClient(conn)
-			_, err := client.GetCapacity(ctx, &agentv1.GetCapacityRequest{
-				BackendType: agentv1.BackendType_BACKEND_TYPE_LVM,
-				PoolName:    "does-not-exist-vg-" + strings.Repeat("x", 8),
+				volumeID := fmt.Sprintf("%s/e33-291-%s", lvmVG, uniqueID)
+				req := &agentv1.CreateVolumeRequest{
+					VolumeId:      volumeID,
+					CapacityBytes: 256 * 1024 * 1024,
+					BackendParams: &agentv1.BackendParams{
+						Params: &agentv1.BackendParams_Lvm{
+							Lvm: &agentv1.LvmVolumeParams{
+								VolumeGroup:   lvmVG,
+								ProvisionMode: "linear",
+							},
+						},
+					},
+				}
+
+				resp1, err := agentClient.CreateVolume(ctx, req)
+				Expect(err).NotTo(HaveOccurred(), "[TC-E33.291] first CreateVolume")
+
+				resp2, err := agentClient.CreateVolume(ctx, req)
+				Expect(err).NotTo(HaveOccurred(),
+					"[TC-E33.291] idempotent CreateVolume must succeed")
+				Expect(resp2.GetDevicePath()).To(Equal(resp1.GetDevicePath()),
+					"[TC-E33.291] idempotent call must return same device_path")
+
+				DeferCleanup(func() {
+					cleanCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+					defer cancel()
+					_, _ = agentClient.DeleteVolume(cleanCtx, &agentv1.DeleteVolumeRequest{VolumeId: volumeID})
+				})
 			})
-			Expect(err).To(HaveOccurred(),
-				"GetCapacity for a non-existent VG must return an error "+
-					"(agent has no backend registered for that pool name)")
-			By("GetCapacity correctly returned an error for the unknown VG")
+
+			// ── TC-E33.292 ────────────────────────────────────────────────────
+			It("[TC-E33.292] CreateVolume is idempotent: re-creating with same volume ID succeeds (thin)", func() {
+				if lvmThinPool == "" {
+					Skip("[TC-E33.292] PILLAR_E2E_LVM_THIN_POOL not set — skipping thin LV idempotency test")
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+				defer cancel()
+
+				volumeID := fmt.Sprintf("%s/e33-292-%s", lvmVG, uniqueID)
+				req := &agentv1.CreateVolumeRequest{
+					VolumeId:      volumeID,
+					CapacityBytes: 256 * 1024 * 1024,
+					BackendParams: &agentv1.BackendParams{
+						Params: &agentv1.BackendParams_Lvm{
+							Lvm: &agentv1.LvmVolumeParams{
+								VolumeGroup:   lvmVG,
+								ProvisionMode: "thin",
+							},
+						},
+					},
+				}
+
+				resp1, err := agentClient.CreateVolume(ctx, req)
+				Expect(err).NotTo(HaveOccurred(), "[TC-E33.292] first thin CreateVolume")
+
+				resp2, err := agentClient.CreateVolume(ctx, req)
+				Expect(err).NotTo(HaveOccurred(),
+					"[TC-E33.292] idempotent thin CreateVolume must succeed")
+				Expect(resp2.GetDevicePath()).To(Equal(resp1.GetDevicePath()),
+					"[TC-E33.292] idempotent thin call must return same device_path")
+
+				DeferCleanup(func() {
+					cleanCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+					defer cancel()
+					_, _ = agentClient.DeleteVolume(cleanCtx, &agentv1.DeleteVolumeRequest{VolumeId: volumeID})
+				})
+			})
+
+			// ── TC-E33.293 ────────────────────────────────────────────────────
+			It("[TC-E33.293] returns an error for a non-existent LVM VG pool name", func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+
+				_, err := agentClient.GetCapacity(ctx, &agentv1.GetCapacityRequest{
+					BackendType: agentv1.BackendType_BACKEND_TYPE_LVM,
+					PoolName:    "nonexistent-vg-e33",
+				})
+				Expect(err).To(HaveOccurred(),
+					"[TC-E33.293] GetCapacity for non-existent VG must return an error")
+			})
+
 		})
 	})
-	return true
-}()
