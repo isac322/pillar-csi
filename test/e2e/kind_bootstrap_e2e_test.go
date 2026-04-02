@@ -28,18 +28,21 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 	//  A. go test entry point (TestMain runPrimary) — TestMain already called
 	//     bootstrapSuiteCluster and exported KUBECONFIG / KIND_CLUSTER env vars
 	//     before spawning ginkgo workers.  We read the state from env here.
-	//  B. Direct ginkgo invocation (make test-e2e) — TestMain sees
-	//     isGinkgoParallelWorker()=true and calls runWorker(), skipping
+	//  B. Direct ginkgo CLI invocation (NOT make test-e2e) — the test binary is
+	//     launched directly by the ginkgo CLI, so TestMain sees
+	//     isGinkgoParallelWorker()=true on node 1 and calls runWorker(), skipping
 	//     bootstrapSuiteCluster.  We bootstrap the cluster here on node 1.
+	//     NOTE: make test-e2e uses PATH A (go test → TestMain runPrimary).
 	state, envErr := kindBootstrapStateFromEnv()
 	if envErr != nil {
-		// In the make test-e2e path, TestMain (runPrimary) already called
-		// bootstrapSuiteCluster before spawning ginkgo workers, and exported
-		// KUBECONFIG / KIND_CLUSTER / suite-path env vars so every worker
-		// process inherits them via reexecViaGinkgoCLI.  If we are running
-		// inside that re-exec guard and the env vars are missing or invalid,
-		// something went wrong in the primary — fail fast with a clear message
-		// rather than attempting a second cluster bootstrap from inside a worker.
+		// In PATH A (make test-e2e / go test → TestMain runPrimary), TestMain
+		// already called bootstrapSuiteCluster before spawning ginkgo workers,
+		// and exported KUBECONFIG / KIND_CLUSTER / suite-path env vars so every
+		// worker process inherits them via reexecViaGinkgoCLI (which sets
+		// PILLAR_E2E_REEXEC_GUARD=1).  If we are running inside that re-exec
+		// guard and the env vars are missing or invalid, something went wrong in
+		// the primary — fail fast with a clear message rather than attempting a
+		// second cluster bootstrap from inside a worker.
 		Expect(isReexecGuarded()).To(BeFalse(),
 			"[AC4] SynchronizedBeforeSuite: running under PILLAR_E2E_REEXEC_GUARD "+
 				"but kindBootstrapStateFromEnv failed — KUBECONFIG/KIND_CLUSTER env vars "+
