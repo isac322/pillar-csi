@@ -607,6 +607,38 @@ func TestAC51SubAC23MakefileDefaultProcsIsWithinRange(t *testing.T) {
 		makefileDefaultProcs, maxParallelProcs)
 }
 
+// ── Sub-AC 3: ginkgo CLI timeout matches suite-level timeout ─────────────────
+
+// TestAC3GinkgoCliTimeoutMatchesSuiteLevelTimeout verifies that ginkgoCliTimeout,
+// when parsed as a duration, equals suiteLevelTimeout. This guards against drift
+// between the --timeout value passed to the ginkgo CLI (ginkgoCliTimeout) and
+// the Ginkgo suite timeout used by TestE2E (suiteLevelTimeout).
+//
+// Sub-AC 3 contract: time.ParseDuration(ginkgoCliTimeout) == suiteLevelTimeout.
+//
+// If the two values diverge (e.g. suiteLevelTimeout is bumped to 3m but
+// ginkgoCliTimeout is left at "2m"), the Ginkgo coordinator would enforce a
+// different budget than TestE2E expects, leading to confusing "timed out" errors.
+func TestAC3GinkgoCliTimeoutMatchesSuiteLevelTimeout(t *testing.T) {
+	t.Parallel()
+
+	parsed, err := time.ParseDuration(ginkgoCliTimeout)
+	if err != nil {
+		t.Fatalf("Sub-AC 3: time.ParseDuration(ginkgoCliTimeout=%q) failed: %v "+
+			"— ginkgoCliTimeout must be a valid duration string (e.g. \"2m\")",
+			ginkgoCliTimeout, err)
+	}
+
+	if parsed != suiteLevelTimeout {
+		t.Errorf("Sub-AC 3: ginkgoCliTimeout=%q parses to %v but suiteLevelTimeout=%v — "+
+			"the --timeout value passed to the ginkgo CLI must equal the Ginkgo suite timeout; "+
+			"update ginkgoCliTimeout in main_test.go to match suiteLevelTimeout",
+			ginkgoCliTimeout, parsed, suiteLevelTimeout)
+	}
+
+	t.Logf("Sub-AC 3: ginkgoCliTimeout=%q == suiteLevelTimeout=%v (consistent budget)", ginkgoCliTimeout, suiteLevelTimeout)
+}
+
 // TestAC51GinkgoParallelFlagIsRegistered verifies that ginkgoParallelTotalFlag
 // names a flag that ginkgo v2 actually registers at package init time.
 //

@@ -62,15 +62,54 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 			"kubeconfig=%s context=%s\n",
 		state.ClusterName, state.KubeconfigPath, state.KubeContext)
 
-	payload, err := state.encode()
+	// Sub-AC 2: conditional Helm bootstrap — node-1 installs the suite-level
+	// Helm release when E2E_HELM_BOOTSTRAP=true.  Other workers are blocked in
+	// SynchronizedBeforeSuite until this function returns the payload, so the
+	// install is guaranteed to complete before any spec runs.
+	//
+	// Use E2E_HELM_BOOTSTRAP=true when running cluster-level tests that require
+	// a pre-installed pillar-csi deployment (e.g. --label-filter=E10-cluster).
+	// Do NOT set E2E_HELM_BOOTSTRAP when running E27 Helm tests
+	// (--label-filter=helm) because TC-E27.207 itself tests `helm install`.
+	var helmState *helmBootstrapState
+	if resolveHelmBootstrap() {
+		helmCtx, helmCancel := context.WithTimeout(context.Background(), helmInstallTimeout)
+		defer helmCancel()
+
+		var helmErr error
+		helmState, helmErr = bootstrapSuiteHelm(helmCtx, state, GinkgoWriter)
+		Expect(helmErr).NotTo(HaveOccurred(),
+			"[helm-bootstrap] SynchronizedBeforeSuite: helm install failed — "+
+				"set E2E_HELM_BOOTSTRAP=false to skip Helm pre-install: %v", helmErr)
+	}
+
+	// Encode both the cluster state and the (optional) Helm state into the
+	// synchronizedSuitePayload that all workers will receive.
+	encoded, err := encodeSuitePayload(synchronizedSuitePayload{
+		KindState: state,
+		HelmState: helmState,
+	})
 	Expect(err).NotTo(HaveOccurred())
-	return payload
+	return encoded
 }, func(data []byte) {
 	// All-nodes function: run on every parallel worker with the bytes
 	// produced by the node-1 function above.
-	state, err := decodeKindBootstrapState(data)
+	//
+	// Sub-AC 2: decodes both the cluster state and the optional Helm state
+	// so that specs can use SuiteKubeRestConfig() and suiteHelmBootstrap
+	// without any additional synchronisation.
+	suitePayload, err := decodeSuitePayload(data)
 	Expect(err).NotTo(HaveOccurred())
+
+	state := suitePayload.KindState
 	suiteKindCluster = state
+	suiteHelmBootstrap = suitePayload.HelmState
+
+	if suiteHelmBootstrap != nil {
+		_, _ = fmt.Fprintf(GinkgoWriter,
+			"[helm-bootstrap] node %d: suite-level release %q available in namespace %q\n",
+			GinkgoParallelProcess(), suiteHelmBootstrap.Release, suiteHelmBootstrap.Namespace)
+	}
 
 	// AC4c: Build the shared rest.Config from the per-invocation kubeconfig
 	// so every spec on this node can connect to the ephemeral Kind cluster
@@ -139,6 +178,18 @@ var _ = SynchronizedAfterSuite(
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), deleteTimeout)
 		defer cancel()
+
+		// Sub-AC 2: uninstall the suite-level Helm release (if pre-installed by
+		// bootstrapSuiteHelm) before the Kind cluster is deleted. This keeps
+		// Helm's release registry consistent and avoids "release already installed"
+		// errors on the next run. Errors are non-fatal: the cluster deletion that
+		// follows will clean up all Kubernetes resources regardless.
+		if suiteHelmBootstrap != nil {
+			helmCtx, helmCancel := context.WithTimeout(context.Background(), helmTeardownTimeout)
+			defer helmCancel()
+			teardownSuiteHelm(helmCtx, suiteHelmBootstrap, suiteKindCluster, GinkgoWriter)
+			suiteHelmBootstrap = nil
+		}
 
 		// Idempotent: no-op in parallel workers (empty teardown) and safe to
 		// call again from runPrimary.deleteOnExit.

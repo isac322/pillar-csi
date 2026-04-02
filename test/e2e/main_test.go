@@ -101,6 +101,16 @@ func canMatchGinkgoSuite(pattern string) bool {
 // parallel Ginkgo workers when not already running under the ginkgo CLI.
 const suiteLevelTimeout = 2 * time.Minute
 
+// ginkgoCliTimeout is the --timeout value passed to the ginkgo CLI in
+// reexecViaGinkgoCLI. It must equal suiteLevelTimeout (2m) so that the Ginkgo
+// coordinator enforces the same 2-minute wall-clock budget that TestE2E applies
+// via suiteConfig.Timeout.
+//
+// Sub-AC 3: use this named constant instead of the raw string literal "2m" so
+// that any future change to suiteLevelTimeout is surfaced at compile time and
+// caught by TestAC3GinkgoCliTimeoutMatchesSuiteLevelTimeout.
+const ginkgoCliTimeout = "2m"
+
 // DefaultParallelNodes is the recommended default number of parallel Ginkgo
 // nodes for a full suite run. It equals runtime.NumCPU() so that the suite
 // scales automatically to the host machine.
@@ -805,7 +815,7 @@ func reexecViaGinkgoCLI(stdout, stderr io.Writer) int {
 
 	ginkgoArgs := []string{
 		"--procs=" + procs,
-		"--timeout=2m",
+		"--timeout=" + ginkgoCliTimeout,
 		"--output-dir=" + reportDir,
 		"--json-report=e2e-auto.json",
 		testBinPath,
