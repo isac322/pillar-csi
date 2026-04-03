@@ -50,8 +50,8 @@ const (
 	// ac23DefaultProfileCaseCount is the total number of in-process ("default
 	// profile") TCs tracked in the budget model.  This is the 437 value from
 	// the Seed specification; the actual defaultProfileCaseCount in catalog.go
-	// is 466 because it includes the 29 Helm E27 specs that are excluded from
-	// the fast in-process path.  Sub-AC 2.3 budgets for the slower 437 value.
+	// is 421 because it includes the 29 Helm E27 specs and excludes E34/E35/F27-F31
+	// from the fast in-process path.  Sub-AC 2.3 budgets for the slower 437 value.
 	ac23DefaultProfileCaseCount = 437
 
 	// ac23WorkerCount is the effective number of parallel Ginkgo workers used

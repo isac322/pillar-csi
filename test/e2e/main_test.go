@@ -147,7 +147,7 @@ const minParallelProcs = 8
 //
 // Setting maxParallelProcs = 8 prevents this class of failure while still
 // providing sufficient parallelism to complete the testsBudgetSeconds = 45s
-// budget: 466 default-profile specs × ~0.1ms each = ~46ms at 1 worker, so 8
+// budget: 421 default-profile specs × ~0.1ms each = ~42ms at 1 worker, so 8
 // workers comfortably fits within the budget even accounting for cluster-side
 // specs. The effective worker range without PILLAR_E2E_PROCS is [8, 8].
 //
@@ -187,7 +187,7 @@ const sequentialModeEnv = "PILLAR_E2E_SEQUENTIAL"
 // run during a parallel re-exec invocation (reexecViaGinkgoCLI).
 //
 // When unset, reexecViaGinkgoCLI defaults to defaultLabelFilter so that only
-// the 466 "default-profile" specs execute.  Long-running tests (e.g. the
+// the 421 "default-profile" specs execute.  Long-running tests (e.g. the
 // "helm" E27 cluster specs in tc_e27_helm_e2e_test.go) are excluded by default
 // because they call `helm install --wait --timeout 5m`, which exceeds the
 // 2-minute suite timeout and causes "Ginkgo timed out waiting for all parallel
@@ -204,7 +204,7 @@ const sequentialModeEnv = "PILLAR_E2E_SEQUENTIAL"
 const labelFilterEnv = "E2E_LABEL_FILTER"
 
 // defaultLabelFilter is the Ginkgo label expression applied when labelFilterEnv
-// is not set. It restricts the default parallel run to the 466 "default-profile"
+// is not set. It restricts the default parallel run to the 421 "default-profile"
 // specs so that the suite completes within the 2-minute suiteLevelTimeout.
 //
 // Specs without the "default-profile" label (e.g. "helm", "AC3.3", "AC4c",

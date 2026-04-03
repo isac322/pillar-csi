@@ -1,3 +1,5 @@
+//go:build e2e
+
 package e2e
 
 // zfs_iscsi_volume_expansion_e2e_test.go — E35.3: Raw Block, 확장, 통계 및 재스테이징
@@ -32,7 +34,7 @@ import (
 // ─────────────────────────────────────────────────────────────────────────────
 
 var _ = Describe("E35: ZFS Kind 클러스터 E2E — 실제 ZFS zvol + iSCSI",
-	Label("default-profile", "iscsi", "zfs", "expansion", "e35"),
+	Label("iscsi", "zfs", "expansion", "e35"),
 	func() {
 		Describe("E35.3 Raw Block, 확장, 통계 및 재스테이징", Ordered, func() {
 
@@ -95,7 +97,7 @@ var _ = Describe("E35: ZFS Kind 클러스터 E2E — 실제 ZFS zvol + iSCSI",
 			// ── TC-E35.340 ────────────────────────────────────────────────────
 			It("[TC-E35.340] raw block PVC is published as an unformatted block device from a zvol-backed iSCSI LUN", func() {
 				if zfsISCSISCName == "" {
-					Skip("[TC-E35.340] no ZFS+iSCSI StorageClass — skipping")
+					Fail("[TC-E35.340] MISSING PREREQUISITE: no ZFS+iSCSI StorageClass — skipping")
 				}
 				ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
 				defer cancel()
@@ -174,7 +176,7 @@ spec:
 			// ── TC-E35.341 ────────────────────────────────────────────────────
 			It("[TC-E35.341] online expansion grows the zvol, rescans the iSCSI session and expands the filesystem inside the running Pod", func() {
 				if zfsISCSISCName == "" {
-					Skip("[TC-E35.341] no ZFS+iSCSI StorageClass — skipping")
+					Fail("[TC-E35.341] MISSING PREREQUISITE: no ZFS+iSCSI StorageClass — skipping")
 				}
 				ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
 				defer cancel()
@@ -269,7 +271,7 @@ spec:
 					"-n", testNamespace, "-o", "jsonpath={.status.phase}", "--ignore-not-found=true")
 
 				if fsPodPhase != "Running" && blockPodPhase != "Running" {
-					Skip("[TC-E35.342] no Running Pods — TC-E35.340/E35.341 may have skipped")
+					Fail("[TC-E35.342] MISSING PREREQUISITE: no Running Pods — TC-E35.340/E35.341 may have skipped")
 				}
 
 				// NodeGetVolumeStats is called by kubelet internally. We verify
@@ -311,7 +313,7 @@ spec:
 				fsPodPhase, _ := e33KubectlOutput(ctx, "get", "pod", fsPodName,
 					"-n", testNamespace, "-o", "jsonpath={.status.phase}", "--ignore-not-found=true")
 				if fsPodPhase != "Running" {
-					Skip("[TC-E35.343] filesystem Pod not Running — TC-E35.341 may have skipped")
+					Fail("[TC-E35.343] MISSING PREREQUISITE: filesystem Pod not Running — TC-E35.341 may have skipped")
 				}
 
 				By("finding and deleting the node plugin pod to trigger restart")
@@ -321,7 +323,7 @@ spec:
 					"-l", "app.kubernetes.io/component=node",
 					"-o", "jsonpath={.items[*].metadata.name}")
 				if err != nil || nodePluginList == "" {
-					Skip("[TC-E35.343] no node plugin pods found — skipping restart test")
+					Fail("[TC-E35.343] MISSING PREREQUISITE: no node plugin pods found — skipping restart test")
 				}
 
 				nodePluginPod := strings.Fields(nodePluginList)[0]

@@ -1,3 +1,5 @@
+//go:build e2e
+
 package e2e
 
 // lvm_iscsi_volume_expansion_e2e_test.go — E34.3: Raw Block, 확장, 통계 및 재스테이징
@@ -33,7 +35,7 @@ import (
 // ─────────────────────────────────────────────────────────────────────────────
 
 var _ = Describe("E34: LVM Kind 클러스터 E2E — 실제 LVM VG + iSCSI",
-	Label("default-profile", "iscsi", "lvm", "expansion", "e34"),
+	Label("iscsi", "lvm", "expansion", "e34"),
 	func() {
 		Describe("E34.3 Raw Block, 확장, 통계 및 재스테이징", Ordered, func() {
 
@@ -96,7 +98,7 @@ var _ = Describe("E34: LVM Kind 클러스터 E2E — 실제 LVM VG + iSCSI",
 			// ── TC-E34.327 ────────────────────────────────────────────────────
 			It("[TC-E34.327] raw block PVC is published as an unformatted block device to the Pod", func() {
 				if iscsiSCName == "" {
-					Skip("[TC-E34.327] no iSCSI StorageClass — skipping")
+					Fail("[TC-E34.327] MISSING PREREQUISITE: no iSCSI StorageClass — skipping")
 				}
 				ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
 				defer cancel()
@@ -175,7 +177,7 @@ spec:
 			// ── TC-E34.328 ────────────────────────────────────────────────────
 			It("[TC-E34.328] online expansion rescans the iSCSI session and grows the filesystem inside the running Pod", func() {
 				if iscsiSCName == "" {
-					Skip("[TC-E34.328] no iSCSI StorageClass — skipping")
+					Fail("[TC-E34.328] MISSING PREREQUISITE: no iSCSI StorageClass — skipping")
 				}
 				ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
 				defer cancel()
@@ -270,7 +272,7 @@ spec:
 					"-n", testNamespace, "-o", "jsonpath={.status.phase}", "--ignore-not-found=true")
 
 				if fsPodPhase != "Running" && blockPodPhase != "Running" {
-					Skip("[TC-E34.329] no Running Pods — TC-E34.327/E34.328 may have skipped")
+					Fail("[TC-E34.329] MISSING PREREQUISITE: no Running Pods — TC-E34.327/E34.328 may have skipped")
 				}
 
 				// NodeGetVolumeStats is invoked by kubelet internally.
@@ -312,7 +314,7 @@ spec:
 				fsPodPhase, _ := e33KubectlOutput(ctx, "get", "pod", fsPodName,
 					"-n", testNamespace, "-o", "jsonpath={.status.phase}", "--ignore-not-found=true")
 				if fsPodPhase != "Running" {
-					Skip("[TC-E34.330] filesystem Pod not Running — TC-E34.328 may have skipped")
+					Fail("[TC-E34.330] MISSING PREREQUISITE: filesystem Pod not Running — TC-E34.328 may have skipped")
 				}
 
 				By("finding and deleting the node plugin pod to trigger restart")
@@ -322,7 +324,7 @@ spec:
 					"-l", "app.kubernetes.io/component=node",
 					"-o", "jsonpath={.items[*].metadata.name}")
 				if err != nil || nodePluginList == "" {
-					Skip("[TC-E34.330] no node plugin pods found — skipping restart test")
+					Fail("[TC-E34.330] MISSING PREREQUISITE: no node plugin pods found — skipping restart test")
 				}
 
 				nodePluginPod := strings.Fields(nodePluginList)[0]

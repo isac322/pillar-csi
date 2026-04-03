@@ -1,3 +1,5 @@
+//go:build e2e
+
 package e2e
 
 // lvm_full_e2e_test.go — F27–F31: 실제 LVM 백엔드 및 NVMe-oF E2E 테스트
@@ -200,7 +202,7 @@ func fNvmeofExportParams(bindAddr string, port int32) *agentv1.ExportParams {
 // ─────────────────────────────────────────────────────────────────────────────
 
 var _ = Describe("F27: 실제 LVM LV 생성/삭제/확장/용량",
-	Label("default-profile", "lvm", "full", "f27"),
+	Label("lvm", "full", "f27"),
 	Ordered,
 	func() {
 
@@ -262,7 +264,7 @@ var _ = Describe("F27: 실제 LVM LV 생성/삭제/확장/용량",
 		It("[TC-F27.2] TestRealLVM_CreateVolume_Thin — thin LV creation inside thin pool", func() {
 			thinPool := os.Getenv("LVM_THIN_POOL")
 			if thinPool == "" {
-				Skip("[TC-F27.2] LVM_THIN_POOL not set — skipping thin LV test")
+				Fail("[TC-F27.2] MISSING PREREQUISITE: LVM_THIN_POOL not set — skipping thin LV test")
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
@@ -414,7 +416,7 @@ var _ = Describe("F27: 실제 LVM LV 생성/삭제/확장/용량",
 		It("[TC-F27.7] TestRealLVM_GetCapacity_ThinPool — thin pool capacity is reported", func() {
 			thinPool := os.Getenv("LVM_THIN_POOL")
 			if thinPool == "" {
-				Skip("[TC-F27.7] LVM_THIN_POOL not set — skipping thin pool capacity test")
+				Fail("[TC-F27.7] MISSING PREREQUISITE: LVM_THIN_POOL not set — skipping thin pool capacity test")
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
@@ -484,7 +486,7 @@ var _ = Describe("F27: 실제 LVM LV 생성/삭제/확장/용량",
 // ─────────────────────────────────────────────────────────────────────────────
 
 var _ = Describe("F28: 실제 LVM + NVMe-oF configfs 내보내기",
-	Label("default-profile", "lvm", "nvmeof", "full", "f28"),
+	Label("lvm", "nvmeof", "full", "f28"),
 	Ordered,
 	func() {
 
@@ -513,7 +515,7 @@ var _ = Describe("F28: 실제 LVM + NVMe-oF configfs 내보내기",
 				CapacityBytes: 512 << 20,
 			})
 			if err != nil {
-				Skip(fmt.Sprintf("[F28] BeforeAll: CreateVolume failed: %v — skipping F28 tests", err))
+				Fail(fmt.Sprintf("[F28] MISSING PREREQUISITE: BeforeAll: CreateVolume failed: %v — skipping F28 tests", err))
 			}
 			devPath = resp.DevicePath
 		})
@@ -586,7 +588,7 @@ var _ = Describe("F28: 실제 LVM + NVMe-oF configfs 내보내기",
 // ─────────────────────────────────────────────────────────────────────────────
 
 var _ = Describe("F29: 실제 LVM + NVMe-oF TCP 연결",
-	Label("default-profile", "lvm", "nvmeof", "connect", "full", "f29"),
+	Label("lvm", "nvmeof", "connect", "full", "f29"),
 	Ordered,
 	func() {
 
@@ -617,7 +619,7 @@ var _ = Describe("F29: 실제 LVM + NVMe-oF TCP 연결",
 				CapacityBytes: 512 << 20,
 			})
 			if err != nil {
-				Skip(fmt.Sprintf("[F29] BeforeAll: CreateVolume failed: %v", err))
+				Fail(fmt.Sprintf("[F29] MISSING PREREQUISITE: BeforeAll: CreateVolume failed: %v", err))
 			}
 
 			_, err = agentClient.ExportVolume(ctx, &agentv1.ExportVolumeRequest{
@@ -627,7 +629,7 @@ var _ = Describe("F29: 실제 LVM + NVMe-oF TCP 연결",
 				ExportParams: fNvmeofExportParams("127.0.0.1", 4420),
 			})
 			if err != nil {
-				Skip(fmt.Sprintf("[F29] BeforeAll: ExportVolume failed: %v", err))
+				Fail(fmt.Sprintf("[F29] MISSING PREREQUISITE: BeforeAll: ExportVolume failed: %v", err))
 			}
 		})
 
@@ -692,7 +694,7 @@ var _ = Describe("F29: 실제 LVM + NVMe-oF TCP 연결",
 			defer cancel()
 
 			if os.Geteuid() != 0 {
-				Skip("[TC-F29.3] root required for mount — skipping full storage path test")
+				Fail("[TC-F29.3] MISSING PREREQUISITE: root required for mount — skipping full storage path test")
 			}
 
 			fullVolName := fmt.Sprintf("f29-full-%d", GinkgoParallelProcess())
@@ -742,7 +744,7 @@ var _ = Describe("F29: 실제 LVM + NVMe-oF TCP 연결",
 			}).Within(30*time.Second).ProbeEvery(2*time.Second).Should(BeTrue(),
 				"[TC-F29.3] NVMe device must appear")
 
-			mountDir, err := os.MkdirTemp("/tmp", "f29-mount-")
+			mountDir, err := os.MkdirTemp(tcTempRoot, "f29-mount-")
 			Expect(err).NotTo(HaveOccurred())
 			defer os.RemoveAll(mountDir)
 
@@ -798,7 +800,7 @@ var _ = Describe("F29: 실제 LVM + NVMe-oF TCP 연결",
 // ─────────────────────────────────────────────────────────────────────────────
 
 var _ = Describe("F30: K8s PVC + 실제 LVM 통합",
-	Label("default-profile", "lvm", "k8s", "full", "f30"),
+	Label("lvm", "k8s", "full", "f30"),
 	Ordered,
 	func() {
 
@@ -812,7 +814,7 @@ var _ = Describe("F30: K8s PVC + 실제 LVM 통합",
 		BeforeAll(func() {
 			fFailIfNoLVM()
 			if os.Getenv("KUBECONFIG") == "" && suiteKindCluster == nil {
-				Skip("[F30] KUBECONFIG not set and suiteKindCluster is nil — Kind cluster not available")
+				Fail("[F30] MISSING PREREQUISITE: KUBECONFIG not set and suiteKindCluster is nil — Kind cluster not available")
 			}
 
 			testNamespace = fmt.Sprintf("f30-%d", GinkgoParallelProcess())
@@ -825,7 +827,7 @@ var _ = Describe("F30: K8s PVC + 실제 LVM 통합",
 			scOut, err := fKubectlOutput(ctx, "get", "storageclass",
 				"-o", "jsonpath={.items[?(@.provisioner=='pillar-csi.bhyoo.com')].metadata.name}")
 			if err != nil || scOut == "" {
-				Skip("[F30] no pillar-csi StorageClass available")
+				Fail("[F30] MISSING PREREQUISITE: no pillar-csi StorageClass available")
 			}
 			scName = strings.Fields(scOut)[0]
 
@@ -890,7 +892,7 @@ spec:
 			pvcPhase, err := fKubectlOutput(ctx, "get", "pvc", pvcName,
 				"-n", testNamespace, "-o", "jsonpath={.status.phase}", "--ignore-not-found=true")
 			if err != nil || pvcPhase != "Bound" {
-				Skip("[TC-F30.2] PVC not Bound — TC-F30.1 may have failed")
+				Fail("[TC-F30.2] MISSING PREREQUISITE: PVC not Bound — TC-F30.1 may have failed")
 			}
 
 			podYAML := fmt.Sprintf(`
@@ -968,7 +970,7 @@ spec:
 // ─────────────────────────────────────────────────────────────────────────────
 
 var _ = Describe("F31: 실제 LVM 온라인 볼륨 확장",
-	Label("default-profile", "lvm", "expansion", "full", "f31"),
+	Label("lvm", "expansion", "full", "f31"),
 	Ordered,
 	func() {
 
@@ -982,7 +984,7 @@ var _ = Describe("F31: 실제 LVM 온라인 볼륨 확장",
 		BeforeAll(func() {
 			fFailIfNoLVM()
 			if os.Getenv("KUBECONFIG") == "" && suiteKindCluster == nil {
-				Skip("[F31] KUBECONFIG not set and suiteKindCluster is nil — Kind cluster not available")
+				Fail("[F31] MISSING PREREQUISITE: KUBECONFIG not set and suiteKindCluster is nil — Kind cluster not available")
 			}
 
 			testNamespace = fmt.Sprintf("f31-%d", GinkgoParallelProcess())
@@ -995,7 +997,7 @@ var _ = Describe("F31: 실제 LVM 온라인 볼륨 확장",
 			scOut, err := fKubectlOutput(ctx, "get", "storageclass",
 				"-o", "jsonpath={.items[?(@.provisioner=='pillar-csi.bhyoo.com')].metadata.name}")
 			if err != nil || scOut == "" {
-				Skip("[F31] no pillar-csi StorageClass available")
+				Fail("[F31] MISSING PREREQUISITE: no pillar-csi StorageClass available")
 			}
 			scName = strings.Fields(scOut)[0]
 
@@ -1015,7 +1017,7 @@ spec:
   storageClassName: %s
 `, pvcName, testNamespace, scName)
 			if err := fApplyStdin(ctx, pvcYAML); err != nil {
-				Skip(fmt.Sprintf("[F31] BeforeAll: apply PVC failed: %v", err))
+				Fail(fmt.Sprintf("[F31] MISSING PREREQUISITE: BeforeAll: apply PVC failed: %v", err))
 			}
 
 			podYAML := fmt.Sprintf(`
@@ -1038,7 +1040,7 @@ spec:
       claimName: %s
 `, podName, testNamespace, pvcName)
 			if err := fApplyStdin(ctx, podYAML); err != nil {
-				Skip(fmt.Sprintf("[F31] BeforeAll: apply Pod failed: %v", err))
+				Fail(fmt.Sprintf("[F31] MISSING PREREQUISITE: BeforeAll: apply Pod failed: %v", err))
 			}
 
 			Eventually(func(g Gomega) {
@@ -1074,7 +1076,7 @@ spec:
 			podPhase, err := fKubectlOutput(ctx, "get", "pod", podName,
 				"-n", testNamespace, "-o", "jsonpath={.status.phase}", "--ignore-not-found=true")
 			if err != nil || podPhase != "Running" {
-				Skip("[TC-F31.1] Pod not Running — BeforeAll may have failed")
+				Fail("[TC-F31.1] MISSING PREREQUISITE: Pod not Running — BeforeAll may have failed")
 			}
 
 			By("patching PVC to 2Gi")
@@ -1104,7 +1106,7 @@ spec:
 			podPhase, err := fKubectlOutput(ctx, "get", "pod", podName,
 				"-n", testNamespace, "-o", "jsonpath={.status.phase}", "--ignore-not-found=true")
 			if err != nil || podPhase != "Running" {
-				Skip("[TC-F31.2] Pod not Running — TC-F31.1 may have failed")
+				Fail("[TC-F31.2] MISSING PREREQUISITE: Pod not Running — TC-F31.1 may have failed")
 			}
 
 			By("checking df /mnt inside the Pod shows filesystem")

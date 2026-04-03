@@ -9,7 +9,7 @@ package e2e
 //  2. PILLAR_E2E_PROCS env var overrides the worker count in reexecViaGinkgoCLI,
 //     allowing CI and local runs to dial up or down parallelism.
 //  3. suiteLevelTimeout is exactly 2 minutes — achievable only with sufficient
-//     parallelism (sequential execution of 466 TCs takes 5–15 minutes).
+//     parallelism (sequential execution of 421 TCs takes 5–15 minutes).
 //  4. Multiple independent TCs can run concurrently without sharing any mutable
 //     resource: each TC gets a distinct RootDir, backend fixture, and port lease.
 //  5. TestCaseScope operations are safe for concurrent goroutine access (no data
@@ -147,7 +147,7 @@ func TestAC51WorkerCountOverrideViaEnvVar(t *testing.T) {
 
 // TestAC51SuiteLevelTimeoutIs2Minutes verifies that suiteLevelTimeout is
 // exactly 2 minutes. This constraint is achievable only with parallel execution:
-// sequential execution of all 466 TCs takes 5-15 minutes depending on hardware.
+// sequential execution of all 421 TCs takes 5-15 minutes depending on hardware.
 //
 // AC 5.1 contract: suiteLevelTimeout == 2 * time.Minute.
 func TestAC51SuiteLevelTimeoutIs2Minutes(t *testing.T) {
@@ -339,15 +339,16 @@ func TestAC51IsolationScopeIsThreadSafe(t *testing.T) {
 // TestAC51ParallelSpeedupOverSerial verifies the core Sub-AC 5.1 performance
 // invariant: running N TCs in parallel completes significantly faster than
 // running them sequentially.  Without this speedup, the 2-minute suite budget
-// could not be met with 466 TCs.
+// could not be met with 421 TCs.
 //
 // AC 5.1 contract: parallel throughput > sequential throughput by ≥ 1.5×.
 func TestAC51ParallelSpeedupOverSerial(t *testing.T) {
 	t.Parallel()
 
-	// Skip on single-core machines where goroutines can't run truly in parallel.
+	// Hard-fail on single-core machines: the E2E environment must have ≥2 CPUs
+	// for the parallel speedup invariant to hold.
 	if runtime.NumCPU() < 2 {
-		t.Skip("AC51: skipping parallel-speedup test on single-core machine (GOMAXPROCS=1 cannot achieve speedup)")
+		t.Fatalf("AC51: single-core machine detected (GOMAXPROCS=%d) — E2E environment requires ≥2 CPUs for parallel speedup to be measurable", runtime.NumCPU())
 	}
 
 	const (

@@ -1,3 +1,5 @@
+//go:build e2e
+
 package e2e
 
 // zfs_iscsi_pvc_pod_mount_e2e_test.go — E35.2: zvol-backed Filesystem PVC 및 Pod 마운트
@@ -32,7 +34,7 @@ import (
 // ─────────────────────────────────────────────────────────────────────────────
 
 var _ = Describe("E35: ZFS Kind 클러스터 E2E — 실제 ZFS zvol + iSCSI",
-	Label("default-profile", "iscsi", "zfs", "mount", "e35"),
+	Label("iscsi", "zfs", "mount", "e35"),
 	func() {
 		Describe("E35.2 zvol-backed Filesystem PVC 및 Pod 마운트", Ordered, func() {
 
@@ -87,7 +89,7 @@ var _ = Describe("E35: ZFS Kind 클러스터 E2E — 실제 ZFS zvol + iSCSI",
 			// ── TC-E35.335 ────────────────────────────────────────────────────
 			It("[TC-E35.335] filesystem PVC becomes Bound via ZFS zvol + iSCSI", func() {
 				if zfsISCSISCName == "" {
-					Skip("[TC-E35.335] no ZFS+iSCSI StorageClass — skipping")
+					Fail("[TC-E35.335] MISSING PREREQUISITE: no ZFS+iSCSI StorageClass — skipping")
 				}
 				ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 				defer cancel()
@@ -136,7 +138,7 @@ spec:
 			// ── TC-E35.336 ────────────────────────────────────────────────────
 			It("[TC-E35.336] a Pod mounting the zvol-backed iSCSI PVC reaches Running on the compute-worker node", func() {
 				if zfsISCSISCName == "" {
-					Skip("[TC-E35.336] no ZFS+iSCSI StorageClass — skipping")
+					Fail("[TC-E35.336] MISSING PREREQUISITE: no ZFS+iSCSI StorageClass — skipping")
 				}
 				ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
 				defer cancel()
@@ -144,7 +146,7 @@ spec:
 				phase, err := e33KubectlOutput(ctx, "get", "pvc", pvcName,
 					"-n", testNamespace, "-o", "jsonpath={.status.phase}", "--ignore-not-found=true")
 				if err != nil || phase != "Bound" {
-					Skip("[TC-E35.336] PVC not Bound — TC-E35.335 may have skipped")
+					Fail("[TC-E35.336] MISSING PREREQUISITE: PVC not Bound — TC-E35.335 may have skipped")
 				}
 
 				kubeconfig := e34Kubeconfig()
@@ -190,7 +192,7 @@ spec:
 				podPhase, err := e33KubectlOutput(ctx, "get", "pod", podName,
 					"-n", testNamespace, "-o", "jsonpath={.status.phase}", "--ignore-not-found=true")
 				if err != nil || podPhase != "Running" {
-					Skip("[TC-E35.337] Pod not Running — TC-E35.336 may have skipped")
+					Fail("[TC-E35.337] MISSING PREREQUISITE: Pod not Running — TC-E35.336 may have skipped")
 				}
 
 				By("verifying PV VolumeContext includes ZFS-specific parameters")
@@ -229,7 +231,7 @@ spec:
 				podPhase, err := e33KubectlOutput(ctx, "get", "pod", podName,
 					"-n", testNamespace, "-o", "jsonpath={.status.phase}", "--ignore-not-found=true")
 				if err != nil || podPhase != "Running" {
-					Skip("[TC-E35.338] Pod not Running — TC-E35.336 may have skipped")
+					Fail("[TC-E35.338] MISSING PREREQUISITE: Pod not Running — TC-E35.336 may have skipped")
 				}
 
 				By("deleting the Pod")
@@ -264,7 +266,7 @@ spec:
 				pvcPhase, err := e33KubectlOutput(ctx, "get", "pvc", pvcName,
 					"-n", testNamespace, "-o", "jsonpath={.status.phase}", "--ignore-not-found=true")
 				if err != nil || pvcPhase == "" {
-					Skip("[TC-E35.339] PVC not found — skipping cleanup verification")
+					Fail("[TC-E35.339] MISSING PREREQUISITE: PVC not found — skipping cleanup verification")
 				}
 
 				pvName, _ := e33KubectlOutput(ctx, "get", "pvc", pvcName,

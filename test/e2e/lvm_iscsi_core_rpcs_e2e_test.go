@@ -1,3 +1,5 @@
+//go:build e2e
+
 package e2e
 
 // lvm_iscsi_core_rpcs_e2e_test.go — E34.1: LVM+iSCSI control plane and export contract tests.
@@ -58,7 +60,7 @@ func e34FailIfNoInfra() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 var _ = Describe("E34: LVM Kind 클러스터 E2E — 실제 LVM VG + iSCSI",
-	Label("default-profile", "iscsi", "lvm", "controlplane", "e34"),
+	Label("iscsi", "lvm", "controlplane", "e34"),
 	func() {
 		Describe("E34.1 iSCSI 제어면 및 export 계약", Ordered, func() {
 
@@ -115,7 +117,7 @@ var _ = Describe("E34: LVM Kind 클러스터 E2E — 실제 LVM VG + iSCSI",
 			// ── TC-E34.318 ────────────────────────────────────────────────────
 			It("[TC-E34.318] PillarBinding generates an iSCSI StorageClass with protocol-type=iscsi and timer parameters", func() {
 				if iscsiSCName == "" {
-					Skip("[TC-E34.318] no iSCSI StorageClass found — PillarBinding with iSCSI protocol not configured")
+					Fail("[TC-E34.318] MISSING PREREQUISITE: no iSCSI StorageClass found — PillarBinding with iSCSI protocol not configured")
 				}
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer cancel()
@@ -134,7 +136,7 @@ var _ = Describe("E34: LVM Kind 클러스터 E2E — 실제 LVM VG + iSCSI",
 			// ── TC-E34.319 ────────────────────────────────────────────────────
 			It("[TC-E34.319] CreateVolume returns target IQN, portal, port and LUN in VolumeContext", func() {
 				if iscsiSCName == "" {
-					Skip("[TC-E34.319] no iSCSI StorageClass")
+					Fail("[TC-E34.319] MISSING PREREQUISITE: no iSCSI StorageClass")
 				}
 				ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 				defer cancel()
@@ -199,7 +201,7 @@ spec:
 					"-n", testNamespace, "-o", "jsonpath={.status.phase}",
 					"--ignore-not-found=true")
 				if err != nil || phase != "Bound" {
-					Skip("[TC-E34.320] PVC not Bound — TC-E34.319 may have skipped")
+					Fail("[TC-E34.320] MISSING PREREQUISITE: PVC not Bound — TC-E34.319 may have skipped")
 				}
 
 				By("checking compute-worker CSINode for initiator IQN annotation")
@@ -225,7 +227,7 @@ spec:
 				// the IQN annotation would be present. We accept skipping if not found
 				// since this requires full node plugin configuration.
 				if !iqnFound {
-					Skip("[TC-E34.320] no iSCSI initiator IQN found in CSINode annotations — node plugin may not be fully configured")
+					Fail("[TC-E34.320] MISSING PREREQUISITE: no iSCSI initiator IQN found in CSINode annotations — node plugin may not be fully configured")
 				}
 				Expect(iqnFound).To(BeTrue(),
 					"[TC-E34.320] at least one CSINode must have iSCSI initiator IQN annotation")

@@ -1,3 +1,5 @@
+//go:build e2e
+
 package e2e
 
 // zfs_iscsi_core_rpcs_e2e_test.go — E35.1: zvol 백엔드 제어면 및 export 계약
@@ -78,7 +80,7 @@ func e35FailIfNoInfra() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 var _ = Describe("E35: ZFS Kind 클러스터 E2E — 실제 ZFS zvol + iSCSI",
-	Label("default-profile", "iscsi", "zfs", "controlplane", "e35"),
+	Label("iscsi", "zfs", "controlplane", "e35"),
 	func() {
 		Describe("E35.1 zvol 백엔드 제어면 및 export 계약", Ordered, func() {
 
@@ -129,7 +131,7 @@ var _ = Describe("E35: ZFS Kind 클러스터 E2E — 실제 ZFS zvol + iSCSI",
 			// ── TC-E35.331 ────────────────────────────────────────────────────
 			It("[TC-E35.331] PillarBinding generates an iSCSI StorageClass for zfs-zvol pools without losing zvol parameters", func() {
 				if zfsISCSISCName == "" {
-					Skip("[TC-E35.331] no ZFS+iSCSI StorageClass found — PillarBinding with ZFS+iSCSI not configured")
+					Fail("[TC-E35.331] MISSING PREREQUISITE: no ZFS+iSCSI StorageClass found — PillarBinding with ZFS+iSCSI not configured")
 				}
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer cancel()
@@ -154,7 +156,7 @@ var _ = Describe("E35: ZFS Kind 클러스터 E2E — 실제 ZFS zvol + iSCSI",
 			// ── TC-E35.332 ────────────────────────────────────────────────────
 			It("[TC-E35.332] CreateVolume provisions a zvol-backed volume and returns target IQN, portal, port and LUN in VolumeContext", func() {
 				if zfsISCSISCName == "" {
-					Skip("[TC-E35.332] no ZFS+iSCSI StorageClass")
+					Fail("[TC-E35.332] MISSING PREREQUISITE: no ZFS+iSCSI StorageClass")
 				}
 				ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 				defer cancel()
@@ -209,7 +211,7 @@ spec:
 					"-n", testNamespace, "-o", "jsonpath={.status.phase}",
 					"--ignore-not-found=true")
 				if err != nil || phase != "Bound" {
-					Skip("[TC-E35.333] PVC not Bound — TC-E35.332 may have skipped")
+					Fail("[TC-E35.333] MISSING PREREQUISITE: PVC not Bound — TC-E35.332 may have skipped")
 				}
 
 				By("checking compute-worker CSINode for initiator IQN annotation")
@@ -232,7 +234,7 @@ spec:
 				}
 
 				if !iqnFound {
-					Skip("[TC-E35.333] no iSCSI initiator IQN found in CSINode annotations — node plugin may not be fully configured")
+					Fail("[TC-E35.333] MISSING PREREQUISITE: no iSCSI initiator IQN found in CSINode annotations — node plugin may not be fully configured")
 				}
 				Expect(iqnFound).To(BeTrue(),
 					"[TC-E35.333] at least one CSINode must have iSCSI initiator IQN annotation")

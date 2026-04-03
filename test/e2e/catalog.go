@@ -12,7 +12,7 @@ import (
 // defaultProfileCaseCount is the number of TC entries assembled by
 // buildDefaultProfile() — the catalog-driven portion of the default profile.
 //
-// The 466 originally documented cases break down as:
+// The default-profile cases break down as:
 //
 //	239 in-process (E1–E24, E28–E30)
 //	104 envtest    (E19, E20, E23, E25–E26, E32)
@@ -26,11 +26,15 @@ import (
 //	──────────────
 //	388 catalog cases assembled by buildDefaultProfile()
 //
-// The remaining 78 cases (E33=33, E34=13, E35=13, F27=9, F28=2, F29=3,
-// F30=3, F31=2 = 78) are implemented as real-backend Ginkgo specs in
-// dedicated *_e2e_test.go files that carry Label("default-profile",...).
+// The remaining 33 cases (E33=33) are implemented as real-backend Ginkgo specs
+// in dedicated *_e2e_test.go files that carry Label("default-profile",...).
 // Those files compile unconditionally and run under the default label
-// filter, so the total default-profile spec count remains 388+78 = 466.
+// filter, so the total default-profile spec count is 388+33 = 421.
+//
+// Note: E34 (13), E35 (13), F27 (9), F28 (2), F29 (3), F30 (3), F31 (2) = 45
+// specs are NOT in the default-profile because they require host-level iSCSI
+// or NVMe-oF initiator tooling (iscsi_tcp module / iscsiadm / nvme CLI) that
+// is not available in the standard CI host environment.
 const defaultProfileCaseCount = 388
 
 type documentedCase struct {

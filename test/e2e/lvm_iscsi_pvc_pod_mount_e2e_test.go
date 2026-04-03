@@ -1,3 +1,5 @@
+//go:build e2e
+
 package e2e
 
 // lvm_iscsi_pvc_pod_mount_e2e_test.go — E34.2: iSCSI PVC 프로비저닝 및 Pod 마운트
@@ -35,7 +37,7 @@ import (
 // ─────────────────────────────────────────────────────────────────────────────
 
 var _ = Describe("E34: LVM Kind 클러스터 E2E — 실제 LVM VG + iSCSI",
-	Label("default-profile", "iscsi", "lvm", "mount", "e34"),
+	Label("iscsi", "lvm", "mount", "e34"),
 	func() {
 		Describe("E34.2 iSCSI PVC 프로비저닝 및 Pod 마운트", Ordered, func() {
 
@@ -90,7 +92,7 @@ var _ = Describe("E34: LVM Kind 클러스터 E2E — 실제 LVM VG + iSCSI",
 			// ── TC-E34.322 ────────────────────────────────────────────────────
 			It("[TC-E34.322] filesystem PVC becomes Bound via LVM + iSCSI", func() {
 				if iscsiSCName == "" {
-					Skip("[TC-E34.322] no iSCSI StorageClass found — skipping")
+					Fail("[TC-E34.322] MISSING PREREQUISITE: no iSCSI StorageClass found — skipping")
 				}
 				ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 				defer cancel()
@@ -139,7 +141,7 @@ spec:
 			// ── TC-E34.323 ────────────────────────────────────────────────────
 			It("[TC-E34.323] a Pod mounting the iSCSI PVC reaches Running on the compute-worker node", func() {
 				if iscsiSCName == "" {
-					Skip("[TC-E34.323] no iSCSI StorageClass — skipping")
+					Fail("[TC-E34.323] MISSING PREREQUISITE: no iSCSI StorageClass — skipping")
 				}
 				ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
 				defer cancel()
@@ -147,7 +149,7 @@ spec:
 				phase, err := e33KubectlOutput(ctx, "get", "pvc", pvcName,
 					"-n", testNamespace, "-o", "jsonpath={.status.phase}", "--ignore-not-found=true")
 				if err != nil || phase != "Bound" {
-					Skip("[TC-E34.323] PVC not Bound — TC-E34.322 may have skipped")
+					Fail("[TC-E34.323] MISSING PREREQUISITE: PVC not Bound — TC-E34.322 may have skipped")
 				}
 
 				kubeconfig := e34Kubeconfig()
@@ -193,7 +195,7 @@ spec:
 				podPhase, err := e33KubectlOutput(ctx, "get", "pod", podName,
 					"-n", testNamespace, "-o", "jsonpath={.status.phase}", "--ignore-not-found=true")
 				if err != nil || podPhase != "Running" {
-					Skip("[TC-E34.324] Pod not Running — TC-E34.323 may have skipped")
+					Fail("[TC-E34.324] MISSING PREREQUISITE: Pod not Running — TC-E34.323 may have skipped")
 				}
 
 				By("verifying PVC protocol parameters are reflected per-volume")
@@ -225,7 +227,7 @@ spec:
 				podPhase, err := e33KubectlOutput(ctx, "get", "pod", podName,
 					"-n", testNamespace, "-o", "jsonpath={.status.phase}", "--ignore-not-found=true")
 				if err != nil || podPhase != "Running" {
-					Skip("[TC-E34.325] Pod not Running — TC-E34.323 may have skipped")
+					Fail("[TC-E34.325] MISSING PREREQUISITE: Pod not Running — TC-E34.323 may have skipped")
 				}
 
 				By("deleting the Pod")
@@ -260,7 +262,7 @@ spec:
 				pvcPhase, err := e33KubectlOutput(ctx, "get", "pvc", pvcName,
 					"-n", testNamespace, "-o", "jsonpath={.status.phase}", "--ignore-not-found=true")
 				if err != nil || pvcPhase == "" {
-					Skip("[TC-E34.326] PVC not found — skipping cleanup verification")
+					Fail("[TC-E34.326] MISSING PREREQUISITE: PVC not found — skipping cleanup verification")
 				}
 
 				pvName, _ := e33KubectlOutput(ctx, "get", "pvc", pvcName,

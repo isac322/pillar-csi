@@ -222,7 +222,7 @@ test-e2e-lvm: manifests generate fmt vet ## Run LVM-only e2e specs in internal-a
 	$(E2E_COMMON_ENV) E2E_RUN=LVM go test $(E2E_GO_FLAGS)
 
 ## Number of parallel Ginkgo worker processes.  Defaults to 4.
-## 4 workers is sufficient to complete 466 default-profile specs within the
+## 4 workers is sufficient to complete 421 default-profile specs within the
 ## 45-second test-exec budget while avoiding resource contention on the shared
 ## Kind API server (16 simultaneous clients caused "Ginkgo timed out waiting
 ## for all parallel procs to report back" on machines with many CPUs).
@@ -256,10 +256,15 @@ E2E_GINKGO_FOCUS ?= $(E2E_RUN)
 E2E_LABEL_FILTER ?=
 
 # Common Ginkgo CLI flags shared by the parallel-only suite runner.
+# By default, "optional:*" labels are excluded from the run:
+#   optional:cert-manager — TC-E10.70: requires cert-manager pre-installed
+#   optional:stability    — TC-E27.231: 5-min stability check (opt-in via E2E_STABILITY_CHECKS=true)
+# To run all tests including optional ones: make test-e2e E2E_LABEL_FILTER=""
 E2E_GINKGO_FAIL_FAST_FLAG = $(if $(filter true TRUE 1 yes YES,$(E2E_FAIL_FAST)),--fail-fast,)
+E2E_GINKGO_DEFAULT_LABEL_FILTER ?= !optional:cert-manager && !optional:stability
 E2E_GINKGO_FLAGS = --tags=e2e --procs=$(E2E_PROCS) -v --timeout=2m $(E2E_GINKGO_FAIL_FAST_FLAG) \
 	$(if $(E2E_GINKGO_FOCUS),--focus=$(E2E_GINKGO_FOCUS)) \
-	$(if $(E2E_LABEL_FILTER),--label-filter=$(E2E_LABEL_FILTER))
+	$(if $(E2E_LABEL_FILTER),--label-filter=$(E2E_LABEL_FILTER),--label-filter=$(E2E_GINKGO_DEFAULT_LABEL_FILTER))
 E2E_GINKGO_TEST_FLAGS = -- -test.run='^TestE2E$$'
 
 # test-e2e is the canonical e2e entry point.
