@@ -319,6 +319,29 @@ test-e2e: manifests generate fmt vet ginkgo ## Phase-sequenced e2e: prereq→clu
 .PHONY: test-e2e-parallel
 test-e2e-parallel: test-e2e ## Alias for test-e2e (backward compatibility).
 
+# e2e is the canonical user-facing shorthand for the full parallel E2E suite.
+#
+# Sub-AC 2.1: workers default to all available CPU cores ($(shell nproc)) so
+# that `make e2e` runs all specs concurrently with no flags required.  The
+# suite entrypoint (TestMain / reexecViaGinkgoCLI) also defaults to
+# runtime.NumCPU() workers, but the Makefile's E2E_PROCS=4 override in
+# E2E_COMMON_ENV would cap that to 4.  Passing E2E_PROCS=$(shell nproc) here
+# lets the worker count match the available hardware without any user flags.
+#
+# On Linux `nproc` is always available.  On macOS fall back to `sysctl -n
+# hw.ncpu`.  If both fail, default to 8 workers (minParallelProcs in the suite
+# code) — sufficient to meet the 45-second test-exec budget on any hardware.
+#
+# Common usage:
+#   make e2e                                # full pipeline, nproc workers
+#   make e2e E2E_RUN=TC-F-ZFS-001          # single TC
+#   make e2e E2E_LABEL_FILTER=helm         # helm-only specs
+#   make e2e E2E_USE_EXISTING_CLUSTER=true \
+#             E2E_SKIP_IMAGE_BUILD=true    # fast iteration
+.PHONY: e2e
+e2e: ## Sub-AC 2.1: full parallel E2E suite, workers=nproc, no flags required.
+	$(MAKE) test-e2e E2E_PROCS=$$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8)
+
 ## E2E_BENCH_LIMIT is the maximum wall-clock seconds allowed for a test-e2e-bench run.
 ## Override on the command line: make test-e2e-bench E2E_BENCH_LIMIT=90
 E2E_BENCH_LIMIT ?= 120

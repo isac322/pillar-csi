@@ -304,24 +304,24 @@ var inProcessAssertions = map[string]func(documentedCase){
 	"TestCSIController_LVM_NoDup_MultipleRetries":    assertE30_LVM_NoDup_MultipleRetries,
 	// ── E24: 8-stage full lifecycle integration ───────────────────────────────
 	// E24.1: Normal path — complete 8-stage chain
-	"TestCSILifecycle_FullCycle":             assertE24_FullCycle,
+	"TestCSILifecycle_FullCycle":                assertE24_FullCycle,
 	"TestCSILifecycle_VolumeContextFlowThrough": assertE24_VolumeContextFlowThrough,
-	"TestCSILifecycle_OrderingConstraints":   assertE24_OrderingConstraints,
-	"TestCSILifecycle_IdempotentSteps":       assertE24_IdempotentSteps,
+	"TestCSILifecycle_OrderingConstraints":      assertE24_OrderingConstraints,
+	"TestCSILifecycle_IdempotentSteps":          assertE24_IdempotentSteps,
 	// E24.2: CreateVolume stage failure/recovery
-	"TestCSIController_PartialFailure_CRDCreatedOnExportFailure":     assertE24_PartialFailure_CRDCreatedOnExportFailure,
-	"TestCSIController_PartialFailure_RetryAdvancesToReady":          assertE24_PartialFailure_RetryAdvancesToReady,
+	"TestCSIController_PartialFailure_CRDCreatedOnExportFailure":          assertE24_PartialFailure_CRDCreatedOnExportFailure,
+	"TestCSIController_PartialFailure_RetryAdvancesToReady":               assertE24_PartialFailure_RetryAdvancesToReady,
 	"TestCSIController_PartialFailure_AgentCreateVolumeCalledOnceOnRetry": assertE24_PartialFailure_AgentCreateVolumeCalledOnceOnRetry,
 	// E24.3: ControllerPublish stage failure (E24.3-2 reuses E2 assertion)
 	"TestCSIController_ControllerPublishVolume_AgentAllowInitiatorFails": assertE24_ControllerPublishVolume_AgentAllowInitiatorFails,
 	// E24.4: NodeStage stage failure/recovery
-	"TestCSINode_NodeStageVolume_ConnectFails":    assertE24_NodeStageVolume_ConnectFails,
-	"TestCSINode_NodeStageVolume_FormatFails":     assertE24_NodeStageVolume_FormatFails,
+	"TestCSINode_NodeStageVolume_ConnectFails":      assertE24_NodeStageVolume_ConnectFails,
+	"TestCSINode_NodeStageVolume_FormatFails":       assertE24_NodeStageVolume_FormatFails,
 	"TestCSINode_NodeStageVolume_IdempotentReStage": assertE24_NodeStageVolume_IdempotentReStage,
 	// E24.5: NodePublish stage failure (E24.5-2 and E24.5-3 reuse E7 assertions)
 	"TestCSINode_NodePublishVolume_MountFails": assertE24_NodePublishVolume_MountFails,
 	// E24.6: NodeUnpublish stage failure/recovery
-	"TestCSINode_NodeUnpublishVolume_UnmountFails":     assertE24_NodeUnpublishVolume_UnmountFails,
+	"TestCSINode_NodeUnpublishVolume_UnmountFails":       assertE24_NodeUnpublishVolume_UnmountFails,
 	"TestCSINode_NodeUnpublishVolume_AlreadyUnpublished": assertE24_NodeUnpublishVolume_AlreadyUnpublished,
 	// E24.7: NodeUnstage stage failure/recovery
 	"TestCSINode_NodeUnstageVolume_DisconnectFails": assertE24_NodeUnstageVolume_DisconnectFails,
@@ -332,7 +332,7 @@ var inProcessAssertions = map[string]func(documentedCase){
 	// E24.9: DeleteVolume stage failure (E24.9-2, E24.9-3, E24.9-4 reuse E6 assertions)
 	"TestCSIController_DeleteVolume_AgentDeleteVolumeFailsTransient": assertE24_DeleteVolume_AgentDeleteVolumeFailsTransient,
 	// E24.10: Aborted lifecycle cleanup paths
-	"TestCSILifecycle_OutOfOrderOperationsDetected":  assertE24_OutOfOrderOperationsDetected,
+	"TestCSILifecycle_OutOfOrderOperationsDetected":    assertE24_OutOfOrderOperationsDetected,
 	"TestCSIController_DeleteVolume_NonExistentVolume": assertE24_DeleteVolume_NonExistentVolume,
 }
 
