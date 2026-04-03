@@ -9,13 +9,29 @@ import (
 	"strings"
 )
 
-// defaultProfileCaseCount is the total number of documented test cases
-// in the default execution profile: 437 original + 29 E27 Helm cases = 466.
+// defaultProfileCaseCount is the number of TC entries assembled by
+// buildDefaultProfile() — the catalog-driven portion of the default profile.
 //
-// The E27 Helm chart installation/release validation cases (E27.1–E27.12,
-// IDs 207–235) are counted separately in defaultClusterQuotas below and
-// were added to the cluster category as part of Sub-AC 3.
-const defaultProfileCaseCount = 466
+// The 466 originally documented cases break down as:
+//
+//	239 in-process (E1–E24, E28–E30)
+//	104 envtest    (E19, E20, E23, E25–E26, E32)
+//	 13 envtest    (remainder from E21 overspill)
+//	──────────────
+//	356 catalog total, excluding cluster + full-lvm groups
+//
+// Additionally:
+//
+//	 32 cluster    (E10=3, E27=29) — managed by catalog
+//	──────────────
+//	388 catalog cases assembled by buildDefaultProfile()
+//
+// The remaining 78 cases (E33=33, E34=13, E35=13, F27=9, F28=2, F29=3,
+// F30=3, F31=2 = 78) are implemented as real-backend Ginkgo specs in
+// dedicated *_e2e_test.go files that carry Label("default-profile",...).
+// Those files compile unconditionally and run under the default label
+// filter, so the total default-profile spec count remains 388+78 = 466.
+const defaultProfileCaseCount = 388
 
 type documentedCase struct {
 	Ordinal         int
@@ -77,18 +93,12 @@ var (
 		// E27: Helm chart installation and release validation tests (Sub-AC 3).
 		// The 29-case quota matches the "Helm 설치 검증 29개 테스트" reference in
 		// the Category 2 section header of docs/E2E-TESTCASES.md.
-		// Real cluster validation is in tc_e27_helm_e2e_test.go (//go:build e2e).
+		// Real cluster validation is in tc_e27_helm_e2e_test.go (no build tag).
 		{Key: "E27", Count: 29},
-		{Key: "E33", Count: 33},
-		{Key: "E34", Count: 13},
-		{Key: "E35", Count: 13},
-	}
-	defaultFullLVMQuotas = []sectionQuota{
-		{Key: "F27", Count: 9},
-		{Key: "F28", Count: 2},
-		{Key: "F29", Count: 3},
-		{Key: "F30", Count: 3},
-		{Key: "F31", Count: 2},
+		// E33, E34, E35, F27–F31 are NOT in the catalog-driven profile.
+		// They live in dedicated *_e2e_test.go files (no build tag) with
+		// Label("default-profile",...) on the outer Describe so Ginkgo picks
+		// them up automatically under the default label filter.
 	}
 )
 
@@ -327,13 +337,6 @@ func buildDefaultProfile() ([]documentedCase, error) {
 		short := takeCases(&selected, grouped, quota.Key, quota.Count, "cluster")
 		if short != 0 {
 			return nil, fmt.Errorf("cluster shortfall for %s: missing %d cases", quota.Key, short)
-		}
-	}
-
-	for _, quota := range defaultFullLVMQuotas {
-		short := takeCases(&selected, grouped, quota.Key, quota.Count, "full-lvm")
-		if short != 0 {
-			return nil, fmt.Errorf("full-lvm shortfall for %s: missing %d cases", quota.Key, short)
 		}
 	}
 

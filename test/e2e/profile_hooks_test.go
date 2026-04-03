@@ -119,6 +119,7 @@ func simulateLiveProfileCaptureHook(capture *liveProfileCapture, report types.Sp
 		TCID:       tcID,
 		Category:   category,
 		TestName:   testName,
+		Passed:     specStatePassed(report.State),
 		TotalNanos: report.RunTime.Nanoseconds(),
 		Phases:     phases,
 	})

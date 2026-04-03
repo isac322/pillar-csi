@@ -1,5 +1,3 @@
-//go:build e2e_full
-
 package e2e
 
 // lvm_full_e2e_test.go — F27–F31: 실제 LVM 백엔드 및 NVMe-oF E2E 테스트
@@ -64,24 +62,37 @@ func fLvmVG() string {
 	return f27DefaultVG
 }
 
-// fSkipIfNoLVM skips if LVM tools are unavailable.
-func fSkipIfNoLVM() {
+// fFailIfNoLVM fails if LVM tools are unavailable.
+func fFailIfNoLVM() {
 	if _, err := exec.LookPath("lvcreate"); err != nil {
-		Skip("[F27] lvcreate not found — LVM tools not installed")
+		Fail("[F27] MISSING PREREQUISITE: LVM tools not installed.\n" +
+			"  Required binary: lvcreate\n" +
+			"  Install with: sudo apt install lvm2  (Debian/Ubuntu)\n" +
+			"               sudo dnf install lvm2   (Fedora/RHEL)\n" +
+			"  Then ensure dm_thin_pool module is loaded: sudo modprobe dm_thin_pool")
 	}
 }
 
-// fSkipIfNoNVMeKernelModules skips if NVMe-oF kernel modules are not loaded.
-func fSkipIfNoNVMeKernelModules() {
+// fFailIfNoNVMeKernelModules fails if NVMe-oF kernel modules are not loaded.
+func fFailIfNoNVMeKernelModules() {
 	if _, err := os.Stat(f27AgentConfigRoot); os.IsNotExist(err) {
-		Skip(fmt.Sprintf("[F28] %s not found — nvmet kernel module not loaded", f27AgentConfigRoot))
+		Fail(fmt.Sprintf("[F28] MISSING PREREQUISITE: NVMe-oF configfs not found at %s\n"+
+			"  The nvmet kernel module must be loaded.\n"+
+			"  Install and load with:\n"+
+			"    sudo modprobe nvmet nvmet-tcp\n"+
+			"  Verify: ls /sys/kernel/config/nvmet", f27AgentConfigRoot))
 	}
 }
 
-// fSkipIfNoNVMeCLI skips if nvme-cli is not installed.
-func fSkipIfNoNVMeCLI() {
+// fFailIfNoNVMeCLI fails if nvme-cli is not installed.
+func fFailIfNoNVMeCLI() {
 	if _, err := exec.LookPath("nvme"); err != nil {
-		Skip("[F29] nvme-cli not found — nvme-tcp kernel module may not be loaded")
+		Fail("[F29] MISSING PREREQUISITE: nvme-cli not installed.\n" +
+			"  Required binary: nvme\n" +
+			"  Install with: sudo apt install nvme-cli  (Debian/Ubuntu)\n" +
+			"               sudo dnf install nvme-cli   (Fedora/RHEL)\n" +
+			"  Also ensure kernel modules are loaded:\n" +
+			"    sudo modprobe nvme-tcp nvme-fabrics")
 	}
 }
 
@@ -189,7 +200,8 @@ func fNvmeofExportParams(bindAddr string, port int32) *agentv1.ExportParams {
 // ─────────────────────────────────────────────────────────────────────────────
 
 var _ = Describe("F27: 실제 LVM LV 생성/삭제/확장/용량",
-	Label("lvm", "full", "f27"),
+	Label("default-profile", "lvm", "full", "f27"),
+	Ordered,
 	func() {
 
 		var (
@@ -199,7 +211,7 @@ var _ = Describe("F27: 실제 LVM LV 생성/삭제/확장/용량",
 		)
 
 		BeforeAll(func() {
-			fSkipIfNoLVM()
+			fFailIfNoLVM()
 			vg = fLvmVG()
 			agentClient, cleanup = startLocalAgentServer(vg, "", f27AgentConfigRoot)
 		})
@@ -472,7 +484,8 @@ var _ = Describe("F27: 실제 LVM LV 생성/삭제/확장/용량",
 // ─────────────────────────────────────────────────────────────────────────────
 
 var _ = Describe("F28: 실제 LVM + NVMe-oF configfs 내보내기",
-	Label("lvm", "nvmeof", "full", "f28"),
+	Label("default-profile", "lvm", "nvmeof", "full", "f28"),
+	Ordered,
 	func() {
 
 		var (
@@ -484,8 +497,8 @@ var _ = Describe("F28: 실제 LVM + NVMe-oF configfs 내보내기",
 		)
 
 		BeforeAll(func() {
-			fSkipIfNoLVM()
-			fSkipIfNoNVMeKernelModules()
+			fFailIfNoLVM()
+			fFailIfNoNVMeKernelModules()
 			vg = fLvmVG()
 			agentClient, cleanup = startLocalAgentServer(vg, "", f27AgentConfigRoot)
 
@@ -573,7 +586,8 @@ var _ = Describe("F28: 실제 LVM + NVMe-oF configfs 내보내기",
 // ─────────────────────────────────────────────────────────────────────────────
 
 var _ = Describe("F29: 실제 LVM + NVMe-oF TCP 연결",
-	Label("lvm", "nvmeof", "connect", "full", "f29"),
+	Label("default-profile", "lvm", "nvmeof", "connect", "full", "f29"),
+	Ordered,
 	func() {
 
 		var (
@@ -585,9 +599,9 @@ var _ = Describe("F29: 실제 LVM + NVMe-oF TCP 연결",
 		)
 
 		BeforeAll(func() {
-			fSkipIfNoLVM()
-			fSkipIfNoNVMeKernelModules()
-			fSkipIfNoNVMeCLI()
+			fFailIfNoLVM()
+			fFailIfNoNVMeKernelModules()
+			fFailIfNoNVMeCLI()
 			vg = fLvmVG()
 			agentClient, cleanup = startLocalAgentServer(vg, "", f27AgentConfigRoot)
 
@@ -784,7 +798,8 @@ var _ = Describe("F29: 실제 LVM + NVMe-oF TCP 연결",
 // ─────────────────────────────────────────────────────────────────────────────
 
 var _ = Describe("F30: K8s PVC + 실제 LVM 통합",
-	Label("lvm", "k8s", "full", "f30"),
+	Label("default-profile", "lvm", "k8s", "full", "f30"),
+	Ordered,
 	func() {
 
 		var (
@@ -795,7 +810,7 @@ var _ = Describe("F30: K8s PVC + 실제 LVM 통합",
 		)
 
 		BeforeAll(func() {
-			fSkipIfNoLVM()
+			fFailIfNoLVM()
 			if os.Getenv("KUBECONFIG") == "" && suiteKindCluster == nil {
 				Skip("[F30] KUBECONFIG not set and suiteKindCluster is nil — Kind cluster not available")
 			}
@@ -953,7 +968,8 @@ spec:
 // ─────────────────────────────────────────────────────────────────────────────
 
 var _ = Describe("F31: 실제 LVM 온라인 볼륨 확장",
-	Label("lvm", "expansion", "full", "f31"),
+	Label("default-profile", "lvm", "expansion", "full", "f31"),
+	Ordered,
 	func() {
 
 		var (
@@ -964,7 +980,7 @@ var _ = Describe("F31: 실제 LVM 온라인 볼륨 확장",
 		)
 
 		BeforeAll(func() {
-			fSkipIfNoLVM()
+			fFailIfNoLVM()
 			if os.Getenv("KUBECONFIG") == "" && suiteKindCluster == nil {
 				Skip("[F31] KUBECONFIG not set and suiteKindCluster is nil — Kind cluster not available")
 			}

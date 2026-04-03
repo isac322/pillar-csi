@@ -56,6 +56,13 @@ type TCProfile struct {
 	// TestName is the human-readable test name from the Ginkgo leaf node.
 	TestName string `json:"testName"`
 
+	// Passed is true when the spec completed with SpecStatePassed; false for
+	// any non-passing outcome (failed, panicked, timed out, skipped, pending).
+	// This field provides per-TC pass/fail traceability in the JSON report so
+	// consumers can correlate timing data with test outcomes without re-parsing
+	// the full Ginkgo JSON report.
+	Passed bool `json:"passed"`
+
 	// TotalNanos is the wall-clock duration of the entire TC invocation in
 	// nanoseconds, spanning from BeforeEach start to AfterEach end.
 	TotalNanos int64 `json:"totalNanos"`

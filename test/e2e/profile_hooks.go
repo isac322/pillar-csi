@@ -147,10 +147,12 @@ var _ = ReportAfterEach(func(report types.SpecReport) {
 
 	// SpecReport.RunTime is the authoritative Ginkgo-computed total duration
 	// for this spec, covering setup + body + teardown (all DeferCleanup nodes).
+	// report.State carries the final outcome; specStatePassed converts it to bool.
 	suiteLiveProfileCapture.record(TCProfile{
 		TCID:       tcID,
 		Category:   category,
 		TestName:   testName,
+		Passed:     specStatePassed(report.State),
 		TotalNanos: report.RunTime.Nanoseconds(),
 		Phases:     phases,
 	})

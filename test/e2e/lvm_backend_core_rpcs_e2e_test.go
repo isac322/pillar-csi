@@ -1,5 +1,3 @@
-//go:build e2e
-
 package e2e
 
 // lvm_backend_core_rpcs_e2e_test.go — E33.1: LVM backend Core RPC tests.
@@ -132,7 +130,7 @@ func e33PortForwardAgentGRPC(ctx context.Context, podName string, localPort int)
 func e33AgentGRPCClient(ctx context.Context, addr string) (agentv1.AgentServiceClient, *grpc.ClientConn, error) {
 	conn, err := grpc.DialContext(ctx, addr, //nolint:staticcheck
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithBlock(),
+		grpc.WithBlock(),                 //nolint:staticcheck
 		grpc.WithTimeout(10*time.Second), //nolint:staticcheck
 	)
 	if err != nil {
@@ -141,13 +139,18 @@ func e33AgentGRPCClient(ctx context.Context, addr string) (agentv1.AgentServiceC
 	return agentv1.NewAgentServiceClient(conn), conn, nil
 }
 
-// e33SkipIfNoInfra skips the current spec if E33 infrastructure is not available.
-func e33SkipIfNoInfra() {
+// e33FailIfNoInfra fails the current spec if E33 infrastructure is not available.
+func e33FailIfNoInfra() {
 	if e33LvmVG() == "" {
-		Skip("[E33] PILLAR_E2E_LVM_VG not set — skipping Kind+LVM test")
+		Fail("[E33] MISSING PREREQUISITE: PILLAR_E2E_LVM_VG not set.\n" +
+			"  This env var must be set to the LVM volume group name provisioned inside the Kind cluster.\n" +
+			"  It is normally exported by main_test.go bootstrapSuiteBackends during suite setup.\n" +
+			"  Run: export PILLAR_E2E_LVM_VG=<vg-name>  to set it manually.")
 	}
 	if os.Getenv("KUBECONFIG") == "" && suiteKindCluster == nil {
-		Skip("[E33] KUBECONFIG not set and suiteKindCluster is nil — Kind cluster not available")
+		Fail("[E33] MISSING PREREQUISITE: No Kind cluster available.\n" +
+			"  KUBECONFIG must point to a running cluster or the Kind cluster must be bootstrapped.\n" +
+			"  Run: export KUBECONFIG=<path-to-kubeconfig>  or run go test without -run to bootstrap Kind.")
 	}
 }
 
@@ -156,7 +159,7 @@ func e33SkipIfNoInfra() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 var _ = Describe("E33: LVM Kind 클러스터 E2E — 실제 LVM VG + NVMe-oF TCP",
-	Label("lvm", "rpc", "e33"),
+	Label("default-profile", "lvm", "rpc", "e33"),
 	func() {
 		Describe("E33.1 LVM 백엔드 Core RPC", Ordered, func() {
 
@@ -171,7 +174,7 @@ var _ = Describe("E33: LVM Kind 클러스터 E2E — 실제 LVM VG + NVMe-oF TCP
 			)
 
 			BeforeAll(func() {
-				e33SkipIfNoInfra()
+				e33FailIfNoInfra()
 
 				lvmVG = e33LvmVG()
 				lvmThinPool = e33LvmThinPool()

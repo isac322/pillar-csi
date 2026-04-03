@@ -11,6 +11,17 @@ import (
 	"github.com/onsi/ginkgo/v2/types"
 )
 
+// specStatePassed reports whether the given Ginkgo SpecState represents a
+// passing (green) test outcome. All other states (failed, panicked, timed out,
+// skipped, pending, interrupted, aborted) map to false.
+//
+// This helper centralises the state-to-bool conversion so that profile_hooks.go
+// and buildProfileReport can both use the identical mapping without duplicating
+// the logic.
+func specStatePassed(state types.SpecState) bool {
+	return state == types.SpecStatePassed
+}
+
 // timedSpecRecord is an internal helper used by the human-readable text
 // summary. It is separate from TCProfile so the text format can be computed
 // without the full JSON marshalling path.
@@ -121,6 +132,7 @@ func buildProfileReport(report types.Report, bottleneckLimit int, slowSetupPhase
 			TCID:       tcID,
 			Category:   category,
 			TestName:   testName,
+			Passed:     specStatePassed(spec.State),
 			TotalNanos: spec.RunTime.Nanoseconds(),
 			Phases:     phases,
 		})
