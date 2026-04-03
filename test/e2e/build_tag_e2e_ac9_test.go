@@ -6,12 +6,16 @@ package e2e
 // # AC 9 Contract
 //
 // Every real-backend spec file in test/e2e/ that is gated behind the "e2e"
-// build constraint MUST declare "//go:build e2e" as its very first line.
-// This guarantees:
+// build constraint MUST declare "//go:build e2e" (or a superset such as
+// "//go:build e2e && e2e_helm") as its very first line.  This guarantees:
 //
 //  1. Files are excluded when running unit/integration tests without -tags=e2e.
-//  2. Files are included when `make test-e2e` passes -tags=e2e to go test.
-//  3. No real-backend spec file accidentally compiles in all builds (which
+//  2. Files with exactly "//go:build e2e" are included when `make test-e2e`
+//     passes -tags=e2e to go test.
+//  3. Files with "//go:build e2e && e2e_helm" (Helm-only specs: E34, E35,
+//     F27–F31) are included only when both tags are active; they are excluded
+//     from the default `make test-e2e` run and counted as non-default-profile.
+//  4. No real-backend spec file accidentally compiles in all builds (which
 //     would pull in Kind cluster, Docker exec, and real storage backend
 //     dependencies into unit test binaries).
 //
@@ -47,13 +51,17 @@ import (
 
 // TestAC9RealBackendSpecFilesHaveE2EBuildTag verifies that every file in
 // test/e2e/ whose name ends in "_e2e_test.go" or "_e2e.go" carries
-// "//go:build e2e" as its very first line.
+// "//go:build e2e" (or "//go:build e2e && ...") as its very first line.
 //
 // Rationale: these files contain Ginkgo specs that require a live Kind cluster
 // with real ZFS/LVM/iSCSI/NVMe-oF backends. Compiling them without
 // -tags=e2e would introduce unwanted dependencies (docker exec, kubeconfig,
 // real storage drivers) into every unit test binary, and would cause test
 // failures on developer machines without the storage infrastructure.
+//
+// Files with "//go:build e2e && e2e_helm" (Helm-only specs) satisfy the
+// constraint because they also require the "e2e" tag — they just add an extra
+// "e2e_helm" gate for specs that need the Helm-deployed agent.
 func TestAC9RealBackendSpecFilesHaveE2EBuildTag(t *testing.T) {
 	t.Parallel()
 
@@ -93,21 +101,27 @@ func TestAC9RealBackendSpecFilesHaveE2EBuildTag(t *testing.T) {
 				return
 			}
 
-			if firstLine != "//go:build e2e" {
+			// Accept "//go:build e2e" (default) or "//go:build e2e && ..."
+			// (e.g. "//go:build e2e && e2e_helm" for Helm-only specs).
+			// The critical invariant is that the "e2e" tag is required.
+			hasE2ETag := firstLine == "//go:build e2e" ||
+				strings.HasPrefix(firstLine, "//go:build e2e ")
+			if !hasE2ETag {
 				t.Errorf(
 					"[AC9] MISSING BUILD TAG in %s\n"+
 						"  First line: %q\n"+
-						"  Expected  : %q\n"+
+						"  Expected  : %q (or %q for Helm-only specs)\n"+
 						"\n"+
-						"  Real-backend spec files MUST start with '//go:build e2e' so they\n"+
-						"  are excluded from unit test runs and included only when\n"+
-						"  `make test-e2e` passes -tags=e2e to go test.\n"+
+						"  Real-backend spec files MUST start with '//go:build e2e' (or\n"+
+						"  '//go:build e2e && e2e_helm' for Helm-only specs) so they are\n"+
+						"  excluded from unit test runs.\n"+
 						"\n"+
 						"  Fix: add '//go:build e2e' as the first line of %s",
-					relName, firstLine, "//go:build e2e", relName,
+					relName, firstLine,
+					"//go:build e2e", "//go:build e2e && e2e_helm", relName,
 				)
 			} else {
-				t.Logf("[AC9] ✓ %s  //go:build e2e present", relName)
+				t.Logf("[AC9] ✓ %s  %s present", relName, firstLine)
 			}
 		})
 	}

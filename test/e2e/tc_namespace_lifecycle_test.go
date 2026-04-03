@@ -24,6 +24,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -116,8 +117,13 @@ var _ = Describe("Namespace lifecycle integration", Label("ac:3.2", "framework",
 			})
 
 			It("3.2.7 namespace dir is deleted by DeferCleanup before the next spec body", func() {
-				// DeferCleanup from the previous It ran after 3.2.6 finished,
-				// removing the entire scope root (which includes the namespace dir).
+				// DeferCleanup from the previous It ran after 3.2.6 finished and
+				// started cleanup in a background goroutine via CloseBackground().
+				// We must drain pending cleanups before inspecting the filesystem so
+				// that the background goroutine has completed.
+				_ = DrainPendingCleanups(5 * time.Second)
+
+				// Removing the entire scope root (which includes the namespace dir).
 				Expect(previousNsDir).NotTo(BeEmpty(),
 					"previous namespace dir must have been captured in AC3.2.6")
 

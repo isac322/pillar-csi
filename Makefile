@@ -362,6 +362,10 @@ E2E_BENCH_LIMIT ?= 120
 #     sequential throughput and avoids the compilation overhead of re-exec.
 #   • No -tags=e2e → SynchronizedBeforeSuite in kind_bootstrap_e2e_test.go is
 #     excluded; only the in-process default-profile Ginkgo specs run.
+#   • E2E_LABEL_FILTER="default-profile && !E9 && !E28" excludes cluster-required
+#     in-process tests (E9: Agent gRPC with real ZFS/LVM via docker exec;
+#     E28: LVM Agent gRPC with real backends) that would fail without a Kind
+#     cluster.  These tests run under the full make test-e2e pipeline.
 #   • -count=1 disables test-result caching so every CI run measures real time.
 #   • -timeout=2m matches suiteLevelTimeout defined in suite_test.go, giving
 #     the Go testing runtime a hard ceiling independent of the wall-clock check.
@@ -374,7 +378,9 @@ E2E_BENCH_LIMIT ?= 120
 test-e2e-bench: ## CI baseline benchmark: run in-process e2e suite sequentially, fail if wall-clock > E2E_BENCH_LIMIT seconds.
 	@echo "=== e2e-bench: starting (limit=$(E2E_BENCH_LIMIT)s, timeout=2m, sequential) ==="
 	@_start=$$(date +%s); \
-	PILLAR_E2E_SEQUENTIAL=true go test ./test/e2e/... -count=1 -timeout=2m -v; \
+	PILLAR_E2E_SEQUENTIAL=true \
+	E2E_LABEL_FILTER="default-profile && !E9 && !E28" \
+	go test ./test/e2e/... -count=1 -timeout=2m -v; \
 	_rc=$$?; \
 	_elapsed=$$(( $$(date +%s) - $$_start )); \
 	echo "=== e2e-bench: wall-clock $${_elapsed}s (limit=$(E2E_BENCH_LIMIT)s) ==="; \

@@ -11,8 +11,8 @@ package e2e
 //     ZFS + LVM pipeline (backward-compatible zero-argument call).
 //  3. Custom provisioners are invoked by the pipeline; their resources are
 //     mapped to suiteBackendState for typed ZFS/LVM access.
-//  4. A provisioner that returns (nil, nil) (soft skip) does not produce an
-//     error and leaves the corresponding suiteBackendState field nil.
+//  4. A provisioner that returns (nil, nil) triggers a protocol-violation error
+//     from the provisioner pipeline (soft-skip semantics are no longer supported).
 //  5. A provisioner that returns a hard error causes bootstrapSuiteBackends to
 //     return a wrapped error with the [AC5] tag and all previously provisioned
 //     resources are cleaned up.
@@ -71,7 +71,9 @@ func (d *diZFSProvisioner) Provision(_ context.Context) (registry.Resource, erro
 		return nil, d.provideErr
 	}
 	if d.pool == nil {
-		return nil, nil //nolint:nilnil // soft skip: BackendProvisioner contract (nil,nil) = absent resource
+		// Use an explicit error to signal absence; (nil, nil) is a protocol
+		// violation in the current provisioner contract.
+		return nil, fmt.Errorf("zfs: backend absent in test (pool not injected)")
 	}
 	return d.pool, nil
 }
@@ -92,7 +94,9 @@ func (d *diLVMProvisioner) Provision(_ context.Context) (registry.Resource, erro
 		return nil, d.provideErr
 	}
 	if d.vg == nil {
-		return nil, nil //nolint:nilnil // soft skip: BackendProvisioner contract (nil,nil) = absent resource
+		// Use an explicit error to signal absence; (nil, nil) is a protocol
+		// violation in the current provisioner contract.
+		return nil, fmt.Errorf("lvm: backend absent in test (vg not injected)")
 	}
 	return d.vg, nil
 }
@@ -301,12 +305,17 @@ func TestDIInjectedLVMProvisionerPopulatesLVMVGField(t *testing.T) {
 	t.Logf("DI: LVM DI provisioner correctly mapped to LVMVG field: %q", state.LVMVG.VGName)
 }
 
-// ── 5. Soft-skip from injected provisioner leaves field nil ──────────────────
+// ── 5. Absent provisioner returns error (protocol violation) ─────────────────
 
-// TestDISoftSkipFromInjectedProvisionerLeavesFieldNil verifies that when an
-// injected provisioner returns (nil, nil) (soft skip), bootstrapSuiteBackends
-// returns no error and the corresponding state field remains nil.
-func TestDISoftSkipFromInjectedProvisionerLeavesFieldNil(t *testing.T) {
+// TestDIAbsentProvisionerReturnsError verifies that when injected provisioners
+// signal backend absence via an error, bootstrapSuiteBackends returns a
+// wrapped error with the [AC5] tag (protocol violation path).
+//
+// Background: the old "soft-skip" contract where Provision could return
+// (nil, nil) to signal absence has been removed. Provisioners MUST return
+// (resource, nil) on success or (nil, err) on failure. (nil, nil) is a
+// protocol violation in framework/provisioner/provisioner.go.
+func TestDIAbsentProvisionerReturnsError(t *testing.T) {
 	t.Parallel()
 
 	clusterState := stubKindBootstrapState(t, "pillar-csi-e2e-p00004-abcd1234")
@@ -314,25 +323,19 @@ func TestDISoftSkipFromInjectedProvisionerLeavesFieldNil(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// Both provisioners return soft skip.
-	state, err := bootstrapSuiteBackends(ctx, clusterState, nil,
-		&diZFSProvisioner{pool: nil}, // soft skip
-		&diLVMProvisioner{vg: nil},   // soft skip
+	// Both provisioners return errors signalling backend absence.
+	// diZFSProvisioner{pool: nil} and diLVMProvisioner{vg: nil} return (nil, err).
+	_, err := bootstrapSuiteBackends(ctx, clusterState, nil,
+		&diZFSProvisioner{pool: nil}, // absent → (nil, err)
+		&diLVMProvisioner{vg: nil},   // absent → (nil, err)
 	)
-	if err != nil {
-		t.Fatalf("DI: soft skip provisioners returned unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("DI: absent provisioners should return an error — got nil")
 	}
-	if state == nil {
-		t.Fatal("DI: state is nil — must be non-nil even when all backends skip")
+	if !strings.Contains(err.Error(), "[AC5]") {
+		t.Errorf("DI: error %q must contain [AC5] tag", err.Error())
 	}
-	if state.ZFSPool != nil {
-		t.Errorf("DI: ZFSPool = %v, want nil (soft skip)", state.ZFSPool)
-	}
-	if state.LVMVG != nil {
-		t.Errorf("DI: LVMVG = %v, want nil (soft skip)", state.LVMVG)
-	}
-
-	t.Logf("DI: soft-skip from injected provisioners leaves state fields nil — correct")
+	t.Logf("DI: absent provisioners correctly trigger error: %v", err)
 }
 
 // ── 6. Hard error from provisioner returns AC5-tagged error and cleans up ──

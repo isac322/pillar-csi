@@ -128,30 +128,30 @@ func CreatePool(ctx context.Context, opts CreatePoolOptions) (*Pool, error) {
 	// "losetup --find --show" picks a free loop device and prints its path.
 	//
 	// In containers (Kind nodes, CI environments) the next free loop number may
-	// exceed the pre-created /dev/loop* device nodes. For example, if the host
-	// already has /dev/loop0..loop59 in use (from other containers or host ZFS),
-	// losetup --find returns "/dev/loop60" but /dev/loop60 does not exist as a
-	// device node in the container's /dev tmpfs, causing:
+	// exceed the pre-created /dev/loop* device nodes. Kind containers run with
+	// --privileged so they share the HOST's /dev namespace — if the host has
+	// /dev/loop0..loop129 in use, losetup --find returns "/dev/loop130" but
+	// /dev/loop130 does not exist as a device node in the container, causing:
 	//   "losetup: /path/to/file.img: failed to set up loop device: No such file
 	//    or directory"
 	//
 	// Fix: use a bash compound command that:
-	//  1. Pre-creates loop device nodes /dev/loop0 through /dev/loop127 if they
-	//     are absent. The loop is idempotent — mknod exits non-zero for existing
-	//     nodes but we ignore that with "2>/dev/null; true".
-	//  2. Calls "losetup --find --show <image>" which atomically allocates a free
-	//     loop number via LOOP_CTL_GET_FREE and attaches the image. Now that all
-	//     needed /dev/loopN nodes exist, ENOENT cannot occur.
-	//
-	// Pre-creating nodes (rather than finding the free number first and then
-	// creating only that one node) avoids a TOCTOU race: "losetup --find" without
-	// a file uses a non-atomic scan of /dev/loop*, so two concurrent callers
-	// could get the same free number.  "losetup --find --show file" uses the
-	// kernel's atomic LOOP_CTL_GET_FREE ioctl which ensures unique allocation.
+	//  1. Calls "losetup -f" (no file, no attachment) to discover the CURRENT
+	//     free loop number (e.g. "/dev/loop130"). Extracts the numeric suffix.
+	//  2. Pre-creates loop device nodes /dev/loop0 through /dev/loop(FREE+5) so
+	//     that the atomically-allocated free device always has a node. The extra
+	//     +5 buffer absorbs races where another process claims the free device
+	//     between step 1 and the losetup --find --show call.
+	//  3. Calls "losetup --find --show <image>" which uses the kernel's atomic
+	//     LOOP_CTL_GET_FREE ioctl to allocate a unique free device and attach.
+	//     All needed /dev/loopN nodes now exist, so ENOENT cannot occur.
 	//
 	// bash is passed imagePath as $1 to avoid shell-quoting issues.
 	const losetupScript = `set -e; ` +
-		`for _n in $(seq 0 127); do ` +
+		`_free=$(losetup -f 2>/dev/null || echo /dev/loop0); ` +
+		`_max=${_free#/dev/loop}; ` +
+		`_max=$((_max + 5)); ` +
+		`for _n in $(seq 0 $_max); do ` +
 		`[ -e "/dev/loop$_n" ] || mknod "/dev/loop$_n" b 7 "$_n" 2>/dev/null || true; ` +
 		`done; ` +
 		`losetup --find --show "$1"`

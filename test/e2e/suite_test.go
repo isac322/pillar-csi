@@ -62,8 +62,15 @@ func TestE2E(t *testing.T) {
 
 		// Restrict to the default execution profile unless the caller has
 		// already narrowed or broadened the label expression.
+		// E2E_LABEL_FILTER env var allows overriding the label filter from
+		// outside — used by make test-e2e-bench to exclude cluster-required
+		// in-process tests (E9, E28) that would panic without a Kind cluster.
 		if strings.TrimSpace(suiteConfig.LabelFilter) == "" {
-			suiteConfig.LabelFilter = "default-profile"
+			if envFilter := os.Getenv("E2E_LABEL_FILTER"); envFilter != "" {
+				suiteConfig.LabelFilter = envFilter
+			} else {
+				suiteConfig.LabelFilter = "default-profile"
+			}
 		}
 	}
 
