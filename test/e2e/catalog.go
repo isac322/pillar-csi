@@ -27,17 +27,25 @@ import (
 //	388 catalog cases assembled by buildDefaultProfile()
 //
 // The remaining E33 cases are implemented as real-backend Ginkgo specs
-// in dedicated *_e2e_test.go files.  Of those, 24 carry Label("default-profile"):
+// in dedicated *_e2e_test.go files.  Of those, only 7 carry both the
+// "default-profile" label AND the plain "e2e" build tag (no "e2e_helm"):
 //
-//	lvm_backend_standalone_e2e_test.go  → 7 (TC-E33.311–317)
-//	lvm_pvc_pod_mount_e2e_test.go       → 12
-//	lvm_volume_expansion_e2e_test.go    → 5
+//	lvm_backend_standalone_e2e_test.go  → 7 (TC-E33.311–317, build: e2e)
 //
-// Additionally, teardown_panic_guarantee_test.go contributes 4 default-profile
-// framework-verification specs, so the total default-profile spec count is
-// 388+24+4 = 416.  This 416 total is the canonical "실제 실행되는 테스트 케이스"
-// count declared in docs/E2E-TESTCASES.md (239 in-process + 117 envtest + 60
-// cluster/framework).
+// Note: lvm_pvc_pod_mount_e2e_test.go (12 specs) and
+// lvm_volume_expansion_e2e_test.go (5 specs) have build tag "e2e && e2e_helm"
+// and do NOT carry Label("default-profile") — they require a Helm-deployed
+// pillar-csi agent and are excluded from the standard "make test-e2e" run.
+//
+// Additionally, the following default-profile specs from dedicated test files
+// are included in the canonical total but are NOT managed by buildDefaultProfile:
+//
+//	teardown_panic_guarantee_test.go    → 4 (ac:3 teardown-guarantee)
+//	backend_teardown_ac43_e2e_test.go   → 5 (ac:4.3 backend teardown absence)
+//
+// Total default-profile spec count: 388+7+4+5 = 404.
+// This 404 total is the canonical "실제 실행되는 테스트 케이스" count declared
+// in docs/E2E-TESTCASES.md (239 in-process + 117 envtest + 48 cluster).
 //
 // Note: lvm_backend_core_rpcs_e2e_test.go (9 E33.1 specs) intentionally omits
 // "default-profile" because those specs require a Helm-deployed agent pod that
@@ -72,9 +80,10 @@ var (
 
 	// Sub-AC 1 locks the default profile to a deterministic 388-case view from
 	// docs/E2E-TESTCASES.md (239 in-process + 117 envtest + 32 cluster).
-	// Combined with 24 E33 default-profile specs and 4 teardown-guarantee specs
-	// (in *_e2e_test.go files), the total default-profile running TC count is
-	// 416 as declared in docs/E2E-TESTCASES.md.
+	// Combined with 7 E33 standalone default-profile specs, 4 teardown-guarantee
+	// specs, and 5 backend teardown-absence specs (in *_e2e_test.go files), the
+	// total default-profile running TC count is 404 as declared in
+	// docs/E2E-TESTCASES.md (239 in-process + 117 envtest + 48 cluster).
 	// The selector below codifies deterministic quotas per group instead of
 	// depending on raw row count (which changes as the document evolves).
 	defaultInProcessQuotas = []sectionQuota{

@@ -296,7 +296,7 @@ func TestAC43LVMVGDestroyIdempotentAndAbsent(t *testing.T) {
 // the IsPresent probe. If the resource is still present, scope.Close() returns
 // a non-nil error — this is the per-TC absence assertion.
 
-var _ = Describe("Sub-AC 4.3: backend teardown absence verification", Label("ac:4.3", "teardown"), func() {
+var _ = Describe("Sub-AC 4.3: backend teardown absence verification", Label("ac:4.3", "teardown", "default-profile"), func() {
 
 	// ── ZFS per-TC teardown ───────────────────────────────────────────────────
 

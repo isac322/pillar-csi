@@ -39,7 +39,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
-var _ = Describe("Smoke: cluster reachability", Label("smoke", "AC1"), func() {
+var _ = Describe("Smoke: cluster reachability", Label("smoke", "AC1", "default-profile"), func() {
 
 	// ── TC-SMOKE-1: framework wiring ─────────────────────────────────────────
 

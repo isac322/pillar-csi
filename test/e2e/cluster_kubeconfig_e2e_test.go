@@ -37,7 +37,7 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-var _ = Describe("AC4c: per-invocation kubeconfig propagation", Label("AC4c"), func() {
+var _ = Describe("AC4c: per-invocation kubeconfig propagation", Label("AC4c", "default-profile"), func() {
 
 	// ── KUBECONFIG environment variable ──────────────────────────────────────
 

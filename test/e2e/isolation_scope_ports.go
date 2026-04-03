@@ -39,7 +39,7 @@ import (
 //	iscsiLease, err := scope.ReserveISCSITargetPort("zfs-pool")
 //	// … configure Kind portMapping with HostPort: int32(iscsiLease.Port) …
 func (s *TestCaseScope) ReserveISCSITargetPort(label string) (*PortLease, error) {
-	return s.reserveTypedPort(label, func() (*ports.Allocation, error) {
+	return s.reserveTypedPort("iscsi", label, func() (*ports.Allocation, error) {
 		return ports.Global.AllocateISCSITarget(label)
 	}, false /* probe-and-release: listener already closed */)
 }
@@ -47,7 +47,7 @@ func (s *TestCaseScope) ReserveISCSITargetPort(label string) (*PortLease, error)
 // RecreateISCSITargetPort closes any existing iSCSI target port lease for the
 // label and allocates a fresh port.
 func (s *TestCaseScope) RecreateISCSITargetPort(label string) (*PortLease, error) {
-	return s.recreateTypedPort(label, func() (*ports.Allocation, error) {
+	return s.recreateTypedPort("iscsi", label, func() (*ports.Allocation, error) {
 		return ports.Global.AllocateISCSITarget(label)
 	}, false)
 }
@@ -62,7 +62,7 @@ func (s *TestCaseScope) RecreateISCSITargetPort(label string) (*PortLease, error
 //	csiLease, err := scope.ReserveCSIGRPCPort("driver")
 //	grpcServer.Serve(csiLease.ToNetListener())
 func (s *TestCaseScope) ReserveCSIGRPCPort(label string) (*PortLease, error) {
-	return s.reserveTypedPort(label, func() (*ports.Allocation, error) {
+	return s.reserveTypedPort("csi-grpc", label, func() (*ports.Allocation, error) {
 		return ports.Global.AllocateCSIGRPC(label)
 	}, true /* listener held open */)
 }
@@ -70,7 +70,7 @@ func (s *TestCaseScope) ReserveCSIGRPCPort(label string) (*PortLease, error) {
 // RecreateCSIGRPCPort closes any existing CSI gRPC port lease for the label
 // and allocates a fresh port.
 func (s *TestCaseScope) RecreateCSIGRPCPort(label string) (*PortLease, error) {
-	return s.recreateTypedPort(label, func() (*ports.Allocation, error) {
+	return s.recreateTypedPort("csi-grpc", label, func() (*ports.Allocation, error) {
 		return ports.Global.AllocateCSIGRPC(label)
 	}, true)
 }
@@ -79,7 +79,7 @@ func (s *TestCaseScope) RecreateCSIGRPCPort(label string) (*PortLease, error) {
 // pillar-agent gRPC endpoint.  The host listener is held open until the scope
 // is closed.
 func (s *TestCaseScope) ReserveAgentGRPCPort(label string) (*PortLease, error) {
-	return s.reserveTypedPort(label, func() (*ports.Allocation, error) {
+	return s.reserveTypedPort("agent-grpc", label, func() (*ports.Allocation, error) {
 		return ports.Global.AllocateAgentGRPC(label)
 	}, true)
 }
@@ -87,7 +87,7 @@ func (s *TestCaseScope) ReserveAgentGRPCPort(label string) (*PortLease, error) {
 // RecreateAgentGRPCPort closes any existing agent gRPC port lease for the
 // label and allocates a fresh port.
 func (s *TestCaseScope) RecreateAgentGRPCPort(label string) (*PortLease, error) {
-	return s.recreateTypedPort(label, func() (*ports.Allocation, error) {
+	return s.recreateTypedPort("agent-grpc", label, func() (*ports.Allocation, error) {
 		return ports.Global.AllocateAgentGRPC(label)
 	}, true)
 }
@@ -168,10 +168,13 @@ func (s *TestCaseScope) RecreateISCSIPortRange(label string) (*ports.ISCSIPortRa
 // ─── internal helpers ────────────────────────────────────────────────────────
 
 // reserveTypedPort is the common implementation for the typed port reservation
-// methods.  allocFn performs the registry allocation; holdListener indicates
-// whether the underlying net.Listener should be surfaced through the PortLease
-// (host-bound case) or left nil (probe-and-release case).
+// methods.  serviceTag is the port service kind (e.g. "iscsi", "csi-grpc",
+// "agent-grpc") used to namespace the lease key so that different service types
+// with the same label don't collide.  allocFn performs the registry allocation;
+// holdListener indicates whether the underlying net.Listener should be surfaced
+// through the PortLease (host-bound case) or left nil (probe-and-release case).
 func (s *TestCaseScope) reserveTypedPort(
+	serviceTag string,
 	label string,
 	allocFn func() (*ports.Allocation, error),
 	holdListener bool,
@@ -183,8 +186,9 @@ func (s *TestCaseScope) reserveTypedPort(
 		return nil, errors.New("test case scope is closed")
 	}
 
-	// Use a namespaced key to avoid collisions with plain ReserveLoopbackPort.
-	key := "typed:" + pathToken(label)
+	// Use a namespaced key including the service tag so that different port
+	// types (e.g. iSCSI vs CSI gRPC) with the same label don't collide.
+	key := "typed:" + serviceTag + ":" + pathToken(label)
 	if existing, ok := s.portLeases[key]; ok {
 		return existing, nil
 	}
@@ -220,11 +224,12 @@ func (s *TestCaseScope) reserveTypedPort(
 // recreateTypedPort releases any existing typed port lease for the label and
 // allocates a fresh one.
 func (s *TestCaseScope) recreateTypedPort(
+	serviceTag string,
 	label string,
 	allocFn func() (*ports.Allocation, error),
 	holdListener bool,
 ) (*PortLease, error) {
-	key := "typed:" + pathToken(label)
+	key := "typed:" + serviceTag + ":" + pathToken(label)
 
 	s.mu.Lock()
 	if s.closed {
@@ -248,5 +253,5 @@ func (s *TestCaseScope) recreateTypedPort(
 		}
 	}
 
-	return s.reserveTypedPort(label, allocFn, holdListener)
+	return s.reserveTypedPort(serviceTag, label, allocFn, holdListener)
 }

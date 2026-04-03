@@ -499,6 +499,12 @@ func backendNameSuffix(clusterName string) string {
 // When this condition is detected, the caller should treat the backend as
 // unavailable (soft skip) rather than failing the suite, because the standard
 // Kind node image does not ship ZFS or LVM2 userspace tools.
+//
+// NOTE: The check intentionally does NOT include "no such file or directory"
+// because that phrase also appears when a backing image file is missing (e.g.
+// "losetup: /tmp/lvm-vg-*.img: failed to set up loop device: No such file or
+// directory") — a legitimate runtime error that must be surfaced as a test
+// failure, not silently classified as "tool not installed".
 func isContainerToolNotFoundError(err error) bool {
 	if err == nil {
 		return false
@@ -506,7 +512,6 @@ func isContainerToolNotFoundError(err error) bool {
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "executable file not found in $path") ||
 		strings.Contains(msg, "executable file not found") ||
-		strings.Contains(msg, "no such file or directory") ||
 		// containerd / runc variant: "exec: \"zpool\": executable file not found"
 		(strings.Contains(msg, "exec:") && strings.Contains(msg, "not found")) ||
 		// Generic "command not found" from shell wrappers

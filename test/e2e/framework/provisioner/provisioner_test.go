@@ -175,11 +175,11 @@ func TestPipelineRunAllCollectsAllResults(t *testing.T) {
 	p := provisioner.NewPipeline()
 	// Backend 1: success
 	p.AddBackend(&fakeBackend{name: "success-backend"})
-	// Backend 2: soft skip
+	// Backend 2: protocol violation — returns (nil, nil) which is now a hard error
 	p.AddBackend(&fakeBackend{
-		name: "skip-backend",
+		name: "violation-backend",
 		provisionFn: func(_ context.Context) (registry.Resource, error) {
-			return nil, nil //nolint:nilnil // soft skip: BackendProvisioner contract (nil,nil) = absent module
+			return nil, nil //nolint:nilnil // intentional protocol violation for test
 		},
 	})
 	// Backend 3: hard error
@@ -203,10 +203,18 @@ func TestPipelineRunAllCollectsAllResults(t *testing.T) {
 			results[0].Skipped, results[0].Err, results[0].Resource)
 	}
 
-	// Backend 2: skip.
-	if !results[1].Skipped || results[1].Err != nil || results[1].Resource != nil {
-		t.Errorf("backend 2 (skip): got skipped=%v err=%v resource=%v",
-			results[1].Skipped, results[1].Err, results[1].Resource)
+	// Backend 2: protocol violation — (nil, nil) must produce a hard error, not a skip.
+	if results[1].Err == nil {
+		t.Errorf("backend 2 (violation): expected hard error for (nil,nil) return, got nil error")
+	}
+	if results[1].Skipped {
+		t.Errorf("backend 2 (violation): Skipped must be false; soft-skip is no longer supported")
+	}
+	if results[1].Resource != nil {
+		t.Errorf("backend 2 (violation): Resource must be nil, got %v", results[1].Resource)
+	}
+	if !strings.Contains(results[1].Err.Error(), "protocol violation") {
+		t.Errorf("backend 2 (violation): error %q must mention 'protocol violation'", results[1].Err.Error())
 	}
 
 	// Backend 3: error.
@@ -215,9 +223,9 @@ func TestPipelineRunAllCollectsAllResults(t *testing.T) {
 			results[2].Skipped, results[2].Err, results[2].Resource)
 	}
 
-	// RunAll must return a non-nil error (from backend 3).
+	// RunAll must return a non-nil error (from backends 2 and 3).
 	if err == nil {
-		t.Error("RunAll: expected non-nil error for hard-error backend, got nil")
+		t.Error("RunAll: expected non-nil error for violation/error backends, got nil")
 	}
 	if !strings.Contains(err.Error(), "error-backend") {
 		t.Errorf("RunAll: error %q does not mention failed backend name", err.Error())
@@ -263,25 +271,30 @@ func TestRegisterResourcesNilRegistryNoop(t *testing.T) {
 	provisioner.RegisterResources(nil, results)
 }
 
-// ─── 5. Soft-skip propagation ─────────────────────────────────────────────────
+// ─── 5. Protocol violation: (nil, nil) is a hard error ───────────────────────
 
-// TestSoftSkipResultHasNilResourceAndSkippedFlag verifies that a backend
-// returning (nil, nil) from Provision produces a ProvisionResult with
-// Resource==nil, Skipped==true, and Err==nil.
-func TestSoftSkipResultHasNilResourceAndSkippedFlag(t *testing.T) {
+// TestProtocolViolationNilNilResultsInError verifies that a backend returning
+// (nil, nil) from Provision produces a ProvisionResult with Resource==nil,
+// Skipped==false, and a non-nil Err mentioning "protocol violation".
+//
+// Soft-skip semantics (nil, nil → Skipped=true, Err=nil) have been removed.
+// Production provisioners must return (resource, nil) or (nil, err); returning
+// (nil, nil) is now a hard error.
+func TestProtocolViolationNilNilResultsInError(t *testing.T) {
 	t.Parallel()
 
 	p := provisioner.NewPipeline()
 	p.AddBackend(&fakeBackend{
-		name: "skip-me",
+		name: "violation-backend",
 		provisionFn: func(_ context.Context) (registry.Resource, error) {
-			return nil, nil //nolint:nilnil // soft skip: BackendProvisioner contract (nil,nil) = absent module
+			return nil, nil //nolint:nilnil // intentional protocol violation for test
 		},
 	})
 
 	results, err := p.RunAll(context.Background(), nil)
-	if err != nil {
-		t.Fatalf("RunAll: unexpected error: %v", err)
+	// RunAll must return a non-nil error for the protocol violation.
+	if err == nil {
+		t.Fatal("RunAll: expected non-nil error for protocol violation, got nil")
 	}
 	if len(results) != 1 {
 		t.Fatalf("RunAll: got %d results, want 1", len(results))
@@ -289,13 +302,16 @@ func TestSoftSkipResultHasNilResourceAndSkippedFlag(t *testing.T) {
 
 	r := results[0]
 	if r.Resource != nil {
-		t.Errorf("soft-skip: Resource = %v, want nil", r.Resource)
+		t.Errorf("violation: Resource = %v, want nil", r.Resource)
 	}
-	if !r.Skipped {
-		t.Errorf("soft-skip: Skipped = false, want true")
+	if r.Skipped {
+		t.Errorf("violation: Skipped = true, want false (soft-skip removed)")
 	}
-	if r.Err != nil {
-		t.Errorf("soft-skip: Err = %v, want nil", r.Err)
+	if r.Err == nil {
+		t.Errorf("violation: Err is nil, want non-nil error")
+	}
+	if r.Err != nil && !strings.Contains(r.Err.Error(), "protocol violation") {
+		t.Errorf("violation: Err %q must contain 'protocol violation'", r.Err.Error())
 	}
 }
 
@@ -693,7 +709,8 @@ func TestRunAllConcurrentReturnsResultsInRegistrationOrder(t *testing.T) {
 }
 
 // TestRunAllConcurrentCollectsAllResults verifies that RunAllConcurrent handles
-// success, soft-skip, and hard-error outcomes correctly — same contract as RunAll.
+// success, protocol-violation, and hard-error outcomes correctly — same
+// contract as RunAll. (nil, nil) is a protocol violation, not a soft-skip.
 func TestRunAllConcurrentCollectsAllResults(t *testing.T) {
 	t.Parallel()
 
@@ -702,9 +719,9 @@ func TestRunAllConcurrentCollectsAllResults(t *testing.T) {
 	p := provisioner.NewPipeline()
 	p.AddBackend(&fakeBackend{name: "ok"})
 	p.AddBackend(&fakeBackend{
-		name: "skip",
+		name: "violation",
 		provisionFn: func(_ context.Context) (registry.Resource, error) {
-			return nil, nil //nolint:nilnil // soft skip: BackendProvisioner contract (nil,nil) = absent module
+			return nil, nil //nolint:nilnil // intentional protocol violation for test
 		},
 	})
 	p.AddBackend(&fakeBackend{
@@ -723,15 +740,21 @@ func TestRunAllConcurrentCollectsAllResults(t *testing.T) {
 		t.Errorf("results[0] (ok): skipped=%v err=%v resource=%v",
 			results[0].Skipped, results[0].Err, results[0].Resource)
 	}
-	if !results[1].Skipped || results[1].Err != nil || results[1].Resource != nil {
-		t.Errorf("results[1] (skip): skipped=%v err=%v resource=%v",
-			results[1].Skipped, results[1].Err, results[1].Resource)
+	// results[1] (violation): (nil, nil) must produce a hard error, not a skip.
+	if results[1].Err == nil {
+		t.Errorf("results[1] (violation): expected hard error for (nil,nil) return, got nil")
+	}
+	if results[1].Skipped {
+		t.Errorf("results[1] (violation): Skipped must be false; soft-skip is no longer supported")
+	}
+	if results[1].Resource != nil {
+		t.Errorf("results[1] (violation): Resource must be nil, got %v", results[1].Resource)
 	}
 	if results[2].Err == nil || results[2].Resource != nil {
 		t.Errorf("results[2] (fail): err=%v resource=%v", results[2].Err, results[2].Resource)
 	}
 	if err == nil {
-		t.Error("RunAllConcurrent: expected non-nil error for failing backend")
+		t.Error("RunAllConcurrent: expected non-nil error for violation/failing backends")
 	}
 }
 

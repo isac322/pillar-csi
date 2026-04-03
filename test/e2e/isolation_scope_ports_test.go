@@ -17,7 +17,7 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-var _ = Describe("TC isolation scope — typed port allocation", Label("ac:4b", "framework"), func() {
+var _ = Describe("TC isolation scope — typed port allocation", Label("ac:4b", "framework", "default-profile"), func() {
 	newScope := func(tcID string) *TestCaseScope {
 		GinkgoHelper()
 		scope, err := NewTestCaseScope(tcID)
@@ -241,7 +241,7 @@ var _ = Describe("TC isolation scope — typed port allocation", Label("ac:4b", 
 
 // ─── ReserveISCSIPortRange ───────────────────────────────────────────────────
 
-var _ = Describe("TC isolation scope — iSCSI port range allocator", Label("ac:5b", "framework"), func() {
+var _ = Describe("TC isolation scope — iSCSI port range allocator", Label("ac:5b", "framework", "default-profile"), func() {
 	newScope := func(tcID string) *TestCaseScope {
 		GinkgoHelper()
 		scope, err := NewTestCaseScope(tcID)

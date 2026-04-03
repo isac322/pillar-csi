@@ -35,7 +35,7 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-var _ = Describe("[AC3.3] Kind cluster lifecycle smoke", Label("AC3.3"), func() {
+var _ = Describe("[AC3.3] Kind cluster lifecycle smoke", Label("AC3.3", "default-profile"), func() {
 
 	// ── Setup-half: cluster must be present after bootstrapSuiteCluster ───────
 

@@ -10,7 +10,7 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-var _ = Describe("Per-TC teardown enforcement", Label("ac:3", "framework"), func() {
+var _ = Describe("Per-TC teardown enforcement", Label("ac:3", "framework", "default-profile"), func() {
 	Describe("UsePerTestCaseSetup", Ordered, func() {
 		var (
 			currentPID          int

@@ -76,7 +76,7 @@ users:
     token: test-token-scope-kube
 `
 
-var _ = Describe("TC isolation scope — Kubernetes isolation", Label("ac:2.2", "framework"), func() {
+var _ = Describe("TC isolation scope — Kubernetes isolation", Label("ac:2.2", "framework", "default-profile"), func() {
 	newScope := func(tcID string) *TestCaseScope {
 		GinkgoHelper()
 		scope, err := NewTestCaseScope(tcID)

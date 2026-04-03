@@ -124,13 +124,17 @@ type ProvisionResult struct {
 	// BackendType is the type identifier returned by BackendProvisioner.BackendType.
 	BackendType string
 
-	// Resource is the provisioned resource, or nil when the backend was skipped.
+	// Resource is the provisioned resource. Nil only when Err is non-nil.
+	// Production provisioners MUST NOT return (nil, nil); doing so is a protocol
+	// violation that results in a hard error stored in Err.
 	Resource registry.Resource
 
-	// Skipped is true when Provision returned (nil, nil) — soft skip.
+	// Skipped is always false. Soft-skip (nil, nil from Provision) is a protocol
+	// violation — it results in a hard error stored in Err, not a skip.
+	// This field is retained for API compatibility but is never set to true.
 	Skipped bool
 
-	// Err is non-nil when Provision returned a hard error.
+	// Err is non-nil when Provision returned a hard error or a protocol violation.
 	Err error
 
 	// Duration is the wall-clock time taken by Provision.
@@ -185,9 +189,10 @@ func (p *Pipeline) BackendCount() int {
 // The returned slice has one entry per registered backend, in registration
 // order.
 //
-// RunAll returns a non-nil error only when one or more backends returned a
-// hard error from Provision. Soft-skip results (nil, nil from Provision) are
-// NOT treated as errors — their ProvisionResult.Skipped field is set to true.
+// RunAll returns a non-nil error when one or more backends returned a hard
+// error from Provision, OR when Provision returned (nil, nil) — which is a
+// protocol violation (production provisioners must return (resource, nil) or
+// (nil, err), never (nil, nil)).
 //
 // On a hard error, RunAll continues provisioning the remaining backends rather
 // than aborting early. All errors are collected and returned together via
@@ -229,8 +234,15 @@ func (p *Pipeline) RunAll(ctx context.Context, output io.Writer) ([]ProvisionRes
 				btype, dur.Round(time.Millisecond), err)
 
 		case res == nil:
-			result.Skipped = true
-			_, _ = fmt.Fprintf(output, "[provisioner] backend %q skipped (kernel module or tool absent)\n", btype)
+			// (nil, nil) is a protocol violation: production provisioners MUST
+			// return (resource, nil) or (nil, err), never (nil, nil).
+			// This is a hard error, not a soft skip.
+			violation := fmt.Errorf("backend %q: Provision returned (nil, nil) — protocol violation; "+
+				"production provisioners must return (resource, nil) on success or (nil, err) on failure", btype)
+			result.Err = violation
+			errs = append(errs, violation)
+			_, _ = fmt.Fprintf(output, "[provisioner] backend %q PROTOCOL VIOLATION after %s: %v\n",
+				btype, dur.Round(time.Millisecond), violation)
 
 		default:
 			_, _ = fmt.Fprintf(output, "[provisioner] backend %q provisioned in %s: %s\n",
@@ -255,9 +267,10 @@ func (p *Pipeline) RunAll(ctx context.Context, output io.Writer) ([]ProvisionRes
 // RunAll) even though provisioning is concurrent.  The result at index i
 // corresponds to the provisioner registered at position i.
 //
-// Error handling follows the same rules as RunAll: soft-skip (nil, nil) sets
-// Skipped=true; hard errors are collected across all goroutines and joined.
-// A context cancellation cancels all in-flight Provision calls.
+// Error handling follows the same rules as RunAll: (nil, nil) is a protocol
+// violation and results in a hard error; hard errors are collected across all
+// goroutines and joined. A context cancellation cancels all in-flight Provision
+// calls.
 //
 // Calling RunAllConcurrent on a nil *Pipeline is a safe no-op.
 func (p *Pipeline) RunAllConcurrent(ctx context.Context, output io.Writer) ([]ProvisionResult, error) {
@@ -314,8 +327,14 @@ func (p *Pipeline) RunAllConcurrent(ctx context.Context, output io.Writer) ([]Pr
 					btype, dur.Round(time.Millisecond), err)
 
 			case res == nil:
-				result.Skipped = true
-				safeWrite("[provisioner] backend %q skipped (kernel module or tool absent)\n", btype)
+				// (nil, nil) is a protocol violation: production provisioners MUST
+				// return (resource, nil) or (nil, err), never (nil, nil).
+				violation := fmt.Errorf("backend %q: Provision returned (nil, nil) — protocol violation; "+
+					"production provisioners must return (resource, nil) on success or (nil, err) on failure", btype)
+				result.Err = violation
+				errs[idx] = violation
+				safeWrite("[provisioner] backend %q PROTOCOL VIOLATION after %s: %v\n",
+					btype, dur.Round(time.Millisecond), violation)
 
 			default:
 				safeWrite("[provisioner] backend %q provisioned in %s: %s\n",

@@ -12,7 +12,7 @@ import (
 
 var dnsLabelPattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 
-var _ = Describe("TC isolation scope", Label("ac:1", "framework"), func() {
+var _ = Describe("TC isolation scope", Label("ac:1", "framework", "default-profile"), func() {
 	newScope := func(tcID string) *TestCaseScope {
 		GinkgoHelper()
 

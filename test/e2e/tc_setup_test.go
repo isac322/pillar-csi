@@ -9,7 +9,7 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-var _ = Describe("Per-TC baseline setup", Label("ac:2", "framework"), func() {
+var _ = Describe("Per-TC baseline setup", Label("ac:2", "framework", "default-profile"), func() {
 	buildPlan := func(setupSeq int) TestCaseBaselinePlan {
 		return TestCaseBaselinePlan{
 			TempDirs:    []string{"workspace"},

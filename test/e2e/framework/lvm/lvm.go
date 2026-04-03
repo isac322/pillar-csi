@@ -130,9 +130,38 @@ func CreateVG(ctx context.Context, opts CreateVGOptions) (*VG, error) {
 
 	// ── Step 2: Attach image as loop device ───────────────────────────────────
 	//
-	// "--find --show" picks a free loop device and prints its path, e.g. "/dev/loop4".
+	// "losetup --find --show" picks a free loop device and prints its path.
+	//
+	// In containers (Kind nodes, CI environments) the next free loop number may
+	// exceed the pre-created /dev/loop* device nodes. For example, if the host
+	// already has /dev/loop0..loop59 in use (from other containers or host ZFS),
+	// losetup --find returns "/dev/loop60" but /dev/loop60 does not exist as a
+	// device node in the container's /dev tmpfs, causing:
+	//   "losetup: /path/to/file.img: failed to set up loop device: No such file
+	//    or directory"
+	//
+	// Fix: use a bash compound command that:
+	//  1. Pre-creates loop device nodes /dev/loop0 through /dev/loop127 if they
+	//     are absent. The loop is idempotent — mknod exits non-zero for existing
+	//     nodes but we ignore that with "2>/dev/null; true".
+	//  2. Calls "losetup --find --show <image>" which atomically allocates a free
+	//     loop number via LOOP_CTL_GET_FREE and attaches the image. Now that all
+	//     needed /dev/loopN nodes exist, ENOENT cannot occur.
+	//
+	// Pre-creating nodes (rather than finding the free number first and then
+	// creating only that one node) avoids a TOCTOU race: "losetup --find" without
+	// a file uses a non-atomic scan of /dev/loop*, so two concurrent callers
+	// could get the same free number.  "losetup --find --show file" uses the
+	// kernel's atomic LOOP_CTL_GET_FREE ioctl which ensures unique allocation.
+	//
+	// bash is passed imagePath as $1 to avoid shell-quoting issues.
+	const losetupScript = `set -e; ` +
+		`for _n in $(seq 0 127); do ` +
+		`[ -e "/dev/loop$_n" ] || mknod "/dev/loop$_n" b 7 "$_n" 2>/dev/null || true; ` +
+		`done; ` +
+		`losetup --find --show "$1"`
 	loopOut, err := containerExec(ctx, opts.NodeContainer,
-		"losetup", "--find", "--show", imagePath)
+		"bash", "-c", losetupScript, "bash", imagePath)
 	if err != nil {
 		cleanupImage()
 		return nil, fmt.Errorf("lvm: CreateVG: attach loop device for %s in %s: %w",

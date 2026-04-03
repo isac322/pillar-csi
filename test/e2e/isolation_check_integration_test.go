@@ -17,6 +17,7 @@ package e2e
 
 import (
 	"os"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -24,12 +25,22 @@ import (
 	"github.com/bhyoo/pillar-csi/test/e2e/framework"
 )
 
-var _ = Describe("Isolation check framework", Label("ac:3.4", "framework"), func() {
+var _ = Describe("Isolation check framework", Label("ac:3.4", "framework", "default-profile"), func() {
 
 	// The outer Describe installs the hook once; all child specs run under it.
 	// This validates that the hook does NOT incorrectly fail specs that clean
 	// up properly.
 	framework.InstallAfterEachIsolationCheck()
+
+	// Drain any background cleanups that were triggered by earlier specs in the
+	// same Ginkgo worker (e.g. UsePerTestCaseSetup with CloseBackground) before
+	// this spec's body runs. Without this drain, a background goroutine from a
+	// prior spec may still hold a /tmp directory that Close() has deregistered
+	// but not yet removed from disk — causing the AfterEach scan to report it
+	// as an orphan.
+	BeforeEach(func() {
+		_ = DrainPendingCleanups(5 * time.Second)
+	})
 
 	Describe("scope registry lifecycle", func() {
 

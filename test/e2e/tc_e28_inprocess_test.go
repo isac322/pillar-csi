@@ -27,6 +27,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	. "github.com/onsi/gomega"
 	"google.golang.org/grpc"
@@ -41,6 +42,7 @@ import (
 	lvmb "github.com/bhyoo/pillar-csi/internal/agent/backend/lvm"
 	zfsb "github.com/bhyoo/pillar-csi/internal/agent/backend/zfs"
 	nvmeof "github.com/bhyoo/pillar-csi/internal/agent/nvmeof"
+	framelvm "github.com/bhyoo/pillar-csi/test/e2e/framework/lvm"
 )
 
 // ─── validatingLVMBackend ─────────────────────────────────────────────────────
@@ -356,91 +358,67 @@ func assertE28_LVM_GetCapacity_ThinPoolOverProvisioned(tc documentedCase) {
 // = 4 MiB) so the clamping logic that prevents negative values is exercised.
 // [TC-E28.251]
 func assertE28_LVM_GetCapacity_FullVG(tc documentedCase) {
-	// MUST use newLinearAgentTestEnv — with a thin pool backend the backend
-	// reports physical thin-pool available bytes, which stays positive even after
-	// creating large virtual thin LVs (thin provisioning does not consume physical
-	// space on commit). Linear LVM is the only mode where filling virtual space
-	// drains physical capacity.
-	env := newLinearAgentTestEnv()
-	defer env.close()
-	// Cleanup: delete fill LV to prevent VG exhaustion for other parallel tests.
-	// LIFO: this defer runs BEFORE defer env.close() above.
-	defer lvmDeleteVolumeE28NoFail(env, "pvc-e28-exhaust-fullvg")
+	// Use a DEDICATED small isolated VG for this test to prevent interfering with
+	// other parallel E28 tests that share the suite LVM VG. Filling the suite VG
+	// would leave other parallel tests without free space.
+	//
+	// 20 MiB (5 extents of 4 MiB each) is sufficient to exercise the full-VG
+	// capacity reporting path: we fill all but ≤ 1 extent and verify GetCapacity
+	// returns ≤ 4 MiB.
+	container, zfsPool, _ := requireSuiteBackendEnv()
 
-	// Pre-cleanup: delete any leftover fill LV from a previous (failed) run.
-	lvmDeleteVolumeE28NoFail(env, "pvc-e28-exhaust-fullvg")
-
-	const extentSize = int64(4 << 20)
-	// maxFillAttempts: retry loop to handle the race where another parallel test
-	// deletes its LV between our fill creation and GetCapacity check, freeing
-	// space and making cap2 appear > 1 extent. Each attempt re-fills the newly
-	// freed space until cap2 ≤ extentSize. All fill LVs are deleted by the
-	// deferred cleanup registered above.
-	const maxFillAttempts = 5
-	var extraFillLVs []string
+	fillCtx := context.Background()
+	isolatedVGName := fmt.Sprintf("pillar-e2e-e28-fullvg-%d", os.Getpid())
+	vg, err := framelvm.CreateVG(fillCtx, framelvm.CreateVGOptions{
+		NodeContainer: container,
+		VGName:        isolatedVGName,
+		SizeMiB:       20, // 5 extents × 4 MiB = 20 MiB
+	})
+	Expect(err).NotTo(HaveOccurred(),
+		"%s: create isolated VG %q for FullVG test", tc.tcNodeLabel(), isolatedVGName)
 	defer func() {
-		for _, name := range extraFillLVs {
-			lvmDeleteVolumeE28NoFail(env, name)
-		}
+		destroyCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_ = vg.Destroy(destroyCtx)
 	}()
 
-	for attempt := 0; attempt < maxFillAttempts; attempt++ {
-		// Get current available capacity so we can fill dynamically.
-		// This handles any LVs already present in the shared VG from other tests.
-		cap1, err := env.client.GetCapacity(env.ctx, &agentv1.GetCapacityRequest{
-			PoolName: env.lvmVG,
-		})
-		Expect(err).NotTo(HaveOccurred(), "%s: GetCapacity before fill (attempt %d)",
-			tc.tcNodeLabel(), attempt)
+	// Create an agent env that points to the isolated VG (no thin pool = linear).
+	env := newAgentTestEnvWithBackends(container, zfsPool, isolatedVGName, "")
+	defer env.close()
 
-		avail := cap1.GetAvailableBytes()
-		if avail <= extentSize {
-			// VG is already full enough — the assertion is already satisfied.
-			return
-		}
+	// Get current available capacity so we can fill dynamically.
+	cap1, err := env.client.GetCapacity(env.ctx, &agentv1.GetCapacityRequest{
+		PoolName: env.lvmVG,
+	})
+	Expect(err).NotTo(HaveOccurred(), "%s: GetCapacity before fill", tc.tcNodeLabel())
 
-		// Round available bytes DOWN to a 4 MiB extent boundary so lvcreate
-		// succeeds. LVM extent size defaults to 4 MiB; requests that are not
-		// a multiple of the extent size are rounded down to the previous extent.
-		fillSize := (avail / extentSize) * extentSize
-		if fillSize <= 0 {
-			return // Less than one extent free — already effectively full.
-		}
-
-		var fillErr error
-		if attempt == 0 {
-			fillErr = lvmCreateVolumeE28(env, "pvc-e28-exhaust-fullvg", fillSize)
-		} else {
-			// Create an additional fill LV to reclaim space freed by concurrent tests.
-			extraName := fmt.Sprintf("pvc-e28-exhaust-extra%d", attempt)
-			extraFillLVs = append(extraFillLVs, extraName)
-			fillErr = lvmCreateVolumeE28(env, extraName, fillSize)
-		}
-		Expect(fillErr).NotTo(HaveOccurred(),
-			"%s: fill linear VG with %d bytes (attempt %d)",
-			tc.tcNodeLabel(), fillSize, attempt)
-
-		cap2, err := env.client.GetCapacity(env.ctx, &agentv1.GetCapacityRequest{
-			PoolName: env.lvmVG,
-		})
-		Expect(err).NotTo(HaveOccurred(), "%s: GetCapacity after fill (attempt %d)",
-			tc.tcNodeLabel(), attempt)
-		if cap2.GetAvailableBytes() <= extentSize {
-			// After filling to the extent boundary, at most one extent (4 MiB) can remain.
-			Expect(cap2.GetAvailableBytes()).To(BeNumerically("<=", extentSize),
-				"%s: AvailableBytes should be ≤ one LVM extent (4 MiB) after fill; "+
-					"clamping must not produce a negative value",
-				tc.tcNodeLabel())
-			return
-		}
-		// More space is available — a concurrent test freed an LV between fill and check.
-		// Retry to fill the new free space.
+	avail := cap1.GetAvailableBytes()
+	if avail <= 0 {
+		// VG is already full — the assertion is vacuously satisfied.
+		return
 	}
-	// After all attempts, perform the final assertion.
+
+	// Round available bytes DOWN to a 4 MiB extent boundary so lvcreate
+	// succeeds. LVM extent size defaults to 4 MiB; requests that are not
+	// a multiple of the extent size are rounded down to the previous extent.
+	const extentSize = int64(4 << 20)
+	fillSize := (avail / extentSize) * extentSize
+	if fillSize <= 0 {
+		// Less than one extent free — already effectively full.
+		return
+	}
+
+	// The isolated VG has no concurrent writers, so a single fill is deterministic.
+	defer lvmDeleteVolumeE28NoFail(env, "pvc-e28-exhaust-fullvg")
+	Expect(lvmCreateVolumeE28(env, "pvc-e28-exhaust-fullvg", fillSize)).To(Succeed(),
+		"%s: fill linear VG with %d bytes (%d extents)",
+		tc.tcNodeLabel(), fillSize, fillSize/extentSize)
+
 	cap2, err := env.client.GetCapacity(env.ctx, &agentv1.GetCapacityRequest{
 		PoolName: env.lvmVG,
 	})
-	Expect(err).NotTo(HaveOccurred(), "%s: GetCapacity final", tc.tcNodeLabel())
+	Expect(err).NotTo(HaveOccurred(), "%s: GetCapacity after fill", tc.tcNodeLabel())
+	// After filling to the extent boundary, at most one extent (4 MiB) can remain.
 	Expect(cap2.GetAvailableBytes()).To(BeNumerically("<=", extentSize),
 		"%s: AvailableBytes should be ≤ one LVM extent (4 MiB) after fill; "+
 			"clamping must not produce a negative value",

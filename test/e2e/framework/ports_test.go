@@ -399,8 +399,9 @@ func TestConcurrentHostPortAllocations_AllUnique(t *testing.T) {
 	const goroutines = 50
 
 	type result struct {
-		port int
-		err  error
+		port    int
+		release func()
+		err     error
 	}
 	ch := make(chan result, goroutines)
 
@@ -416,13 +417,17 @@ func TestConcurrentHostPortAllocations_AllUnique(t *testing.T) {
 				ch <- result{err: err}
 				return
 			}
-			defer release()
-			ch <- result{port: h.Port}
+			// Hold the port — do NOT release yet. Send the release function to
+			// the caller so it can release AFTER uniqueness is verified.
+			// Releasing inside the goroutine would allow reuse of port numbers
+			// by later goroutines, causing false duplicates in the seen map.
+			ch <- result{port: h.Port, release: release}
 		}(i)
 	}
 	wg.Wait()
 	close(ch)
 
+	var releases []func()
 	seen := make(map[int]int)
 	for r := range ch {
 		if r.err != nil {
@@ -430,6 +435,13 @@ func TestConcurrentHostPortAllocations_AllUnique(t *testing.T) {
 			continue
 		}
 		seen[r.port]++
+		if r.release != nil {
+			releases = append(releases, r.release)
+		}
+	}
+	// Release all ports only after uniqueness is verified.
+	for _, release := range releases {
+		release()
 	}
 	for port, count := range seen {
 		if count > 1 {

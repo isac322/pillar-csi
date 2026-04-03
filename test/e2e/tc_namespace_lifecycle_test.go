@@ -31,7 +31,7 @@ import (
 	"github.com/bhyoo/pillar-csi/test/e2e/framework/names"
 )
 
-var _ = Describe("Namespace lifecycle integration", Label("ac:3.2", "framework"), func() {
+var _ = Describe("Namespace lifecycle integration", Label("ac:3.2", "framework", "default-profile"), func() {
 
 	// ── 1. TestCaseScope integration ─────────────────────────────────────────
 	Describe("TestCaseScope.DerivedNamespace (BeforeEach via NewTestCaseScope)", func() {
@@ -338,7 +338,7 @@ var _ = Describe("Namespace lifecycle integration", Label("ac:3.2", "framework")
 
 	// ── 4. Namespace name is a valid DNS label with the e2e-tc- prefix ───────
 	Describe("names.Namespace integration — DNS label constraints", func() {
-		It("3.2.20 all 416 documented TC IDs produce a valid DerivedNamespace", func() {
+		It("3.2.20 all 388 catalog TC IDs produce a valid DerivedNamespace", func() {
 			profile, err := buildDefaultProfile()
 			Expect(err).NotTo(HaveOccurred())
 
