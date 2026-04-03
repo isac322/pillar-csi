@@ -198,7 +198,7 @@ func e28FullRoundTrip(env *agentTestEnv, lvName string, params *agentv1.LvmVolum
 
 	_, err := env.client.CreateVolume(env.ctx, &agentv1.CreateVolumeRequest{
 		VolumeId:      volumeID,
-		CapacityBytes: 1 << 30,
+		CapacityBytes: 10 << 20,
 		BackendParams: bp,
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: CreateVolume", tc.tcNodeLabel())
@@ -332,11 +332,10 @@ func assertE28_LVM_GetCapacity_ThinPoolOverProvisioned(tc documentedCase) {
 	env := newAgentTestEnv()
 	defer env.close()
 
-	// Create a thin LV with a large virtual size (10 GiB) to put the pool into
-	// a state where committed virtual space approaches or exceeds physical.
-	// With a 50 GiB thin pool, a 10 GiB virtual LV commits ~20% — enough to
-	// exercise the capacity calculation without requiring writing 80 GiB of data.
-	Expect(lvmCreateVolumeE28(env, "pvc-e28-overprov-thin", 10<<30)).To(Succeed(),
+	// Create a thin LV with a virtual size (300 MiB) larger than the physical
+	// 200 MiB thin pool to put the pool into a state where committed virtual
+	// space exceeds physical — exercising the capacity clamping logic.
+	Expect(lvmCreateVolumeE28(env, "pvc-e28-overprov-thin", 300<<20)).To(Succeed(),
 		"%s: create thin LV for over-provisioning test", tc.tcNodeLabel())
 
 	resp, err := env.client.GetCapacity(env.ctx, &agentv1.GetCapacityRequest{
@@ -436,8 +435,8 @@ func assertE28_LVM_ListVolumes_SkipsThinPoolLV(tc documentedCase) {
 	defer lvmDeleteVolumeE28NoFail(env, "pvc-e28-data-1")
 	defer lvmDeleteVolumeE28NoFail(env, "pvc-e28-data-2")
 
-	Expect(lvmCreateVolumeE28(env, "pvc-e28-data-1", 1<<30)).To(Succeed())
-	Expect(lvmCreateVolumeE28(env, "pvc-e28-data-2", 1<<30)).To(Succeed())
+	Expect(lvmCreateVolumeE28(env, "pvc-e28-data-1", 10<<20)).To(Succeed())
+	Expect(lvmCreateVolumeE28(env, "pvc-e28-data-2", 10<<20)).To(Succeed())
 
 	resp, err := env.client.ListVolumes(env.ctx, &agentv1.ListVolumesRequest{
 		PoolName: env.lvmVG,
@@ -468,9 +467,9 @@ func assertE28_LVM_ListVolumes_Linear_AllReturned(tc documentedCase) {
 	defer lvmDeleteVolumeE28NoFail(env, "pvc-e28-lv-b")
 	defer lvmDeleteVolumeE28NoFail(env, "pvc-e28-lv-c")
 
-	Expect(lvmCreateVolumeE28(env, "pvc-e28-lv-a", 1<<30)).To(Succeed())
-	Expect(lvmCreateVolumeE28(env, "pvc-e28-lv-b", 1<<30)).To(Succeed())
-	Expect(lvmCreateVolumeE28(env, "pvc-e28-lv-c", 1<<30)).To(Succeed())
+	Expect(lvmCreateVolumeE28(env, "pvc-e28-lv-a", 10<<20)).To(Succeed())
+	Expect(lvmCreateVolumeE28(env, "pvc-e28-lv-b", 10<<20)).To(Succeed())
+	Expect(lvmCreateVolumeE28(env, "pvc-e28-lv-c", 10<<20)).To(Succeed())
 
 	resp, err := env.client.ListVolumes(env.ctx, &agentv1.ListVolumesRequest{
 		PoolName: env.lvmVG,
@@ -498,7 +497,7 @@ func assertE28_LVM_CreateVolume_LinearModeParam(tc documentedCase) {
 
 	_, err := env.client.CreateVolume(env.ctx, &agentv1.CreateVolumeRequest{
 		VolumeId:      env.lvmVG + "/pvc-e28-linear-param",
-		CapacityBytes: 1 << 30,
+		CapacityBytes: 10 << 20,
 		BackendParams: &agentv1.BackendParams{
 			Params: &agentv1.BackendParams_Lvm{
 				Lvm: &agentv1.LvmVolumeParams{ProvisionMode: "linear"},
@@ -524,7 +523,7 @@ func assertE28_LVM_CreateVolume_ThinModeParam(tc documentedCase) {
 
 	_, err := env.client.CreateVolume(env.ctx, &agentv1.CreateVolumeRequest{
 		VolumeId:      env.lvmVG + "/pvc-e28-thin-param",
-		CapacityBytes: 1 << 30,
+		CapacityBytes: 10 << 20,
 		BackendParams: &agentv1.BackendParams{
 			Params: &agentv1.BackendParams_Lvm{
 				Lvm: &agentv1.LvmVolumeParams{ProvisionMode: "thin"},
@@ -550,7 +549,7 @@ func assertE28_LVM_CreateVolume_EmptyMode_DefaultsToBackend(tc documentedCase) {
 
 	_, err := env.client.CreateVolume(env.ctx, &agentv1.CreateVolumeRequest{
 		VolumeId:      env.lvmVG + "/pvc-e28-empty-mode",
-		CapacityBytes: 1 << 30,
+		CapacityBytes: 10 << 20,
 		BackendParams: &agentv1.BackendParams{
 			Params: &agentv1.BackendParams_Lvm{
 				Lvm: &agentv1.LvmVolumeParams{ProvisionMode: ""},
@@ -572,7 +571,7 @@ func assertE28_LVM_CreateVolume_VGNotFound(tc documentedCase) {
 
 	_, err := env.client.CreateVolume(env.ctx, &agentv1.CreateVolumeRequest{
 		VolumeId:      "nonexistent-vg/pvc-e28-vg-notfound",
-		CapacityBytes: 1 << 30,
+		CapacityBytes: 10 << 20,
 	})
 	Expect(err).To(HaveOccurred(), "%s: expected NotFound for unregistered VG", tc.tcNodeLabel())
 	Expect(status.Code(err)).To(Equal(codes.NotFound),
@@ -588,13 +587,13 @@ func assertE28_LVM_ExpandVolume_ShrinkRejected(tc documentedCase) {
 	defer env.close()
 	defer lvmDeleteVolumeE28NoFail(env, "pvc-e28-shrink")
 
-	Expect(lvmCreateVolumeE28(env, "pvc-e28-shrink", 2<<30)).To(Succeed(),
-		"%s: CreateVolume 2GiB", tc.tcNodeLabel())
+	Expect(lvmCreateVolumeE28(env, "pvc-e28-shrink", 20<<20)).To(Succeed(),
+		"%s: CreateVolume 20MiB", tc.tcNodeLabel())
 
 	// Real LVM rejects shrink requests natively.
 	_, err := env.client.ExpandVolume(env.ctx, &agentv1.ExpandVolumeRequest{
 		VolumeId:       env.lvmVG + "/pvc-e28-shrink",
-		RequestedBytes: 1 << 30, // smaller than 2GiB — shrink attempt
+		RequestedBytes: 10 << 20, // smaller than 20MiB — shrink attempt
 	})
 	Expect(err).To(HaveOccurred(), "%s: shrink should be rejected by real LVM", tc.tcNodeLabel())
 }
@@ -615,7 +614,7 @@ func assertE28_LVM_CreateVolume_ThinWithoutPool(tc documentedCase) {
 	// ValidateParams returns an error before any lvcreate is invoked.
 	_, err := env.client.CreateVolume(env.ctx, &agentv1.CreateVolumeRequest{
 		VolumeId:      env.lvmVG + "/pvc-e28-thin-nopool",
-		CapacityBytes: 1 << 30,
+		CapacityBytes: 10 << 20,
 		BackendParams: &agentv1.BackendParams{
 			Params: &agentv1.BackendParams_Lvm{
 				Lvm: &agentv1.LvmVolumeParams{ProvisionMode: "thin"},
@@ -635,7 +634,7 @@ func assertE28_LVM_CreateVolume_Idempotent(tc documentedCase) {
 
 	req := &agentv1.CreateVolumeRequest{
 		VolumeId:      env.lvmVG + "/pvc-e28-idempotent",
-		CapacityBytes: 1 << 30,
+		CapacityBytes: 10 << 20,
 	}
 	_, err := env.client.CreateVolume(env.ctx, req)
 	Expect(err).NotTo(HaveOccurred(), "%s: first CreateVolume", tc.tcNodeLabel())
@@ -673,8 +672,8 @@ func assertE28_LVM_ReconcileState_RestoresExports(tc documentedCase) {
 	defer lvmDeleteVolumeE28NoFail(env, "pvc-e28-reconcile-b")
 
 	// Create two LVM volumes to include in ReconcileState.
-	Expect(lvmCreateVolumeE28(env, "pvc-e28-reconcile-a", 1<<30)).To(Succeed())
-	Expect(lvmCreateVolumeE28(env, "pvc-e28-reconcile-b", 1<<30)).To(Succeed())
+	Expect(lvmCreateVolumeE28(env, "pvc-e28-reconcile-a", 10<<20)).To(Succeed())
+	Expect(lvmCreateVolumeE28(env, "pvc-e28-reconcile-b", 10<<20)).To(Succeed())
 
 	_, err := env.client.ReconcileState(env.ctx, &agentv1.ReconcileStateRequest{
 		Volumes: []*agentv1.VolumeDesiredState{
@@ -713,7 +712,7 @@ func assertE28_LVM_CreateVolume_ReservedPrefix_Snapshot(tc documentedCase) {
 
 	_, err := env.client.CreateVolume(env.ctx, &agentv1.CreateVolumeRequest{
 		VolumeId:      env.lvmVG + "/snapshot-pvc-1",
-		CapacityBytes: 1 << 30,
+		CapacityBytes: 10 << 20,
 	})
 	Expect(err).To(HaveOccurred(),
 		"%s: LV name with reserved 'snapshot' prefix should be rejected", tc.tcNodeLabel())
@@ -730,7 +729,7 @@ func assertE28_LVM_CreateVolume_ReservedPrefix_Pvmove(tc documentedCase) {
 
 	_, err := env.client.CreateVolume(env.ctx, &agentv1.CreateVolumeRequest{
 		VolumeId:      env.lvmVG + "/pvmove-temp",
-		CapacityBytes: 1 << 30,
+		CapacityBytes: 10 << 20,
 	})
 	Expect(err).To(HaveOccurred(),
 		"%s: LV name with reserved 'pvmove' prefix should be rejected", tc.tcNodeLabel())
@@ -747,7 +746,7 @@ func assertE28_LVM_CreateVolume_InvalidFirstChar_Hyphen(tc documentedCase) {
 
 	_, err := env.client.CreateVolume(env.ctx, &agentv1.CreateVolumeRequest{
 		VolumeId:      env.lvmVG + "/-invalid-name",
-		CapacityBytes: 1 << 30,
+		CapacityBytes: 10 << 20,
 	})
 	Expect(err).To(HaveOccurred(),
 		"%s: LV name starting with hyphen should be rejected", tc.tcNodeLabel())
@@ -773,7 +772,7 @@ func assertE28_LVM_CreateVolume_MaxLength_64(tc documentedCase) {
 
 	_, err := env.client.CreateVolume(env.ctx, &agentv1.CreateVolumeRequest{
 		VolumeId:      env.lvmVG + "/" + name64,
-		CapacityBytes: 1 << 30,
+		CapacityBytes: 10 << 20,
 	})
 	Expect(err).NotTo(HaveOccurred(),
 		"%s: 64-character LV name should be accepted", tc.tcNodeLabel())
@@ -791,7 +790,7 @@ func assertE28_LVM_CreateVolume_OverMaxLength_65(tc documentedCase) {
 
 	_, err := env.client.CreateVolume(env.ctx, &agentv1.CreateVolumeRequest{
 		VolumeId:      env.lvmVG + "/" + name65,
-		CapacityBytes: 1 << 30,
+		CapacityBytes: 10 << 20,
 	})
 	Expect(err).To(HaveOccurred(),
 		"%s: 65-character LV name should be rejected", tc.tcNodeLabel())
@@ -811,7 +810,7 @@ func assertE28_LVM_CreateVolume_ExtraFlags_Forwarded(tc documentedCase) {
 
 	_, err := env.client.CreateVolume(env.ctx, &agentv1.CreateVolumeRequest{
 		VolumeId:      env.lvmVG + "/pvc-e28-extraflags",
-		CapacityBytes: 1 << 30,
+		CapacityBytes: 10 << 20,
 		BackendParams: &agentv1.BackendParams{
 			Params: &agentv1.BackendParams_Lvm{
 				Lvm: &agentv1.LvmVolumeParams{
@@ -840,7 +839,7 @@ func assertE28_LVM_CreateVolume_ExtraFlags_Empty_NoEffect(tc documentedCase) {
 
 	_, err := env.client.CreateVolume(env.ctx, &agentv1.CreateVolumeRequest{
 		VolumeId:      env.lvmVG + "/pvc-e28-extraflags-empty",
-		CapacityBytes: 1 << 30,
+		CapacityBytes: 10 << 20,
 		BackendParams: &agentv1.BackendParams{
 			Params: &agentv1.BackendParams_Lvm{
 				Lvm: &agentv1.LvmVolumeParams{ExtraFlags: []string{}},
@@ -861,7 +860,7 @@ func assertE28_LVM_CreateVolume_VGOverride_Mismatch_Rejected(tc documentedCase) 
 
 	_, err := env.client.CreateVolume(env.ctx, &agentv1.CreateVolumeRequest{
 		VolumeId:      env.lvmVG + "/pvc-e28-vg-mismatch",
-		CapacityBytes: 1 << 30,
+		CapacityBytes: 10 << 20,
 		BackendParams: &agentv1.BackendParams{
 			Params: &agentv1.BackendParams_Lvm{
 				Lvm: &agentv1.LvmVolumeParams{VolumeGroup: "other-vg"},
@@ -972,7 +971,7 @@ func assertE28_LVM_Concurrent_CreateVolume(tc documentedCase) {
 			defer wg.Done()
 			_, errs[idx] = env.client.CreateVolume(env.ctx, &agentv1.CreateVolumeRequest{
 				VolumeId:      env.lvmVG + "/pvc-e28-concurrent-" + string(rune('a'+idx)),
-				CapacityBytes: 1 << 30,
+				CapacityBytes: 10 << 20,
 			})
 		}(i)
 	}

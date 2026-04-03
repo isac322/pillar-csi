@@ -152,7 +152,7 @@ spec:
   accessModes: [ReadWriteOnce]
   resources:
     requests:
-      storage: 1Gi
+      storage: 32Mi
   storageClassName: %s
 `, pvcName, testNamespace, iscsiSCName)
 

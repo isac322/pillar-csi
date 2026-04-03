@@ -87,11 +87,11 @@ var _ = Describe("E33: LVM Kind 클러스터 E2E — 실제 LVM VG + NVMe-oF TCP
 			})
 
 			// ── TC-E33.306 ────────────────────────────────────────────────────
-			It("[TC-E33.306] Pod mounts 1Gi LVM PVC and reaches Running", func() {
+			It("[TC-E33.306] Pod mounts 32Mi LVM PVC and reaches Running", func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 				defer cancel()
 
-				By("creating 1Gi PVC")
+				By("creating 32Mi PVC")
 				pvcYAML := fmt.Sprintf(`
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -102,7 +102,7 @@ spec:
   accessModes: [ReadWriteOnce]
   resources:
     requests:
-      storage: 1Gi
+      storage: 32Mi
   storageClassName: %s
 `, pvcName, testNamespace, scName)
 				cmd := exec.CommandContext(ctx, "kubectl", "--kubeconfig="+os.Getenv("KUBECONFIG"),
@@ -149,7 +149,7 @@ spec:
 			})
 
 			// ── TC-E33.307 ────────────────────────────────────────────────────
-			It("[TC-E33.307] filesystem inside Pod reports approximately 1Gi capacity before expansion", func() {
+			It("[TC-E33.307] filesystem inside Pod reports approximately 32Mi capacity before expansion", func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 				defer cancel()
 
@@ -165,7 +165,7 @@ spec:
 				)
 				Expect(err).NotTo(HaveOccurred(), "[TC-E33.307] df /data inside Pod")
 
-				// Parse df output: expect available space roughly proportional to 1Gi.
+				// Parse df output: expect available space roughly proportional to 32Mi.
 				// We just check that the output contains a numeric value indicating
 				// filesystem is mounted.
 				Expect(dfOut).To(ContainSubstring("/data"),
@@ -173,7 +173,7 @@ spec:
 			})
 
 			// ── TC-E33.308 ────────────────────────────────────────────────────
-			It("[TC-E33.308] PVC resize to 2Gi is reflected in PVC status capacity", func() {
+			It("[TC-E33.308] PVC resize to 64Mi is reflected in PVC status capacity", func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 				defer cancel()
 
@@ -183,14 +183,14 @@ spec:
 					Fail("[TC-E33.308] MISSING PREREQUISITE: PVC not Bound")
 				}
 
-				By("patching PVC to 2Gi")
-				patchJSON := `{"spec":{"resources":{"requests":{"storage":"2Gi"}}}}`
+				By("patching PVC to 64Mi")
+				patchJSON := `{"spec":{"resources":{"requests":{"storage":"64Mi"}}}}`
 				_, err = e33KubectlOutput(ctx, "patch", "pvc", pvcName,
 					"-n", testNamespace,
 					"--type=merge",
 					"-p", patchJSON,
 				)
-				Expect(err).NotTo(HaveOccurred(), "[TC-E33.308] patch PVC to 2Gi")
+				Expect(err).NotTo(HaveOccurred(), "[TC-E33.308] patch PVC to 64Mi")
 
 				Eventually(func(g Gomega) {
 					capacityStr, err := e33KubectlOutput(ctx, "get", "pvc", pvcName,
@@ -198,7 +198,7 @@ spec:
 						"-o", "jsonpath={.status.capacity.storage}",
 					)
 					g.Expect(err).NotTo(HaveOccurred())
-					// Accept any value >= 2Gi (may be "2Gi", "2148532224", etc.)
+					// Accept any value >= 64Mi (may be "64Mi", "67108864", etc.)
 					g.Expect(capacityStr).NotTo(BeEmpty(),
 						"[TC-E33.308] PVC status capacity must be updated")
 				}).WithContext(ctx).
@@ -209,7 +209,7 @@ spec:
 			})
 
 			// ── TC-E33.309 ────────────────────────────────────────────────────
-			It("[TC-E33.309] filesystem inside running Pod is resized to >= 2Gi after PVC expansion", func() {
+			It("[TC-E33.309] filesystem inside running Pod is resized to >= 64Mi after PVC expansion", func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 				defer cancel()
 

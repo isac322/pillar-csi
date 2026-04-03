@@ -21,17 +21,17 @@ func assertE11_ControllerExpandVolume(tc documentedCase) {
 		Name:               "pvc-e11-expand",
 		Parameters:         env.params,
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 1 << 30},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: CreateVolume", tc.tcNodeLabel())
 	volumeID := resp.GetVolume().GetVolumeId()
 
 	expandResp, err := env.controller.ControllerExpandVolume(env.ctx, &csiapi.ControllerExpandVolumeRequest{
 		VolumeId:      volumeID,
-		CapacityRange: &csiapi.CapacityRange{RequiredBytes: 2 << 30},
+		CapacityRange: &csiapi.CapacityRange{RequiredBytes: 20 << 20},
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: ControllerExpandVolume", tc.tcNodeLabel())
-	Expect(expandResp.GetCapacityBytes()).To(BeNumerically(">=", 2<<30),
+	Expect(expandResp.GetCapacityBytes()).To(BeNumerically(">=", 20<<20),
 		"%s: expanded capacity", tc.tcNodeLabel())
 	Expect(expandResp.GetNodeExpansionRequired()).To(BeTrue(),
 		"%s: node expansion required", tc.tcNodeLabel())
@@ -57,10 +57,10 @@ func assertE11_NodeExpandVolume(tc documentedCase) {
 		VolumeId:         volumeID,
 		VolumePath:       stagePath,
 		VolumeCapability: mountCapability("ext4"),
-		CapacityRange:    &csiapi.CapacityRange{RequiredBytes: 2 << 30},
+		CapacityRange:    &csiapi.CapacityRange{RequiredBytes: 20 << 20},
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: NodeExpandVolume", tc.tcNodeLabel())
-	Expect(expandResp.GetCapacityBytes()).To(BeNumerically(">=", 2<<30),
+	Expect(expandResp.GetCapacityBytes()).To(BeNumerically(">=", 20<<20),
 		"%s: node expanded capacity", tc.tcNodeLabel())
 }
 
@@ -72,7 +72,7 @@ func assertE11_ControllerExpandVolume_AgentErr(tc documentedCase) {
 		Name:               "pvc-e11-expand-agent-err",
 		Parameters:         env.params,
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 1 << 30},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: CreateVolume", tc.tcNodeLabel())
 	volumeID := resp.GetVolume().GetVolumeId()
@@ -83,7 +83,7 @@ func assertE11_ControllerExpandVolume_AgentErr(tc documentedCase) {
 
 	_, err = env.controller.ControllerExpandVolume(env.ctx, &csiapi.ControllerExpandVolumeRequest{
 		VolumeId:      volumeID,
-		CapacityRange: &csiapi.CapacityRange{RequiredBytes: 2 << 30},
+		CapacityRange: &csiapi.CapacityRange{RequiredBytes: 20 << 20},
 	})
 	Expect(err).To(HaveOccurred(), "%s: expected error when agent expand fails", tc.tcNodeLabel())
 }
@@ -110,7 +110,7 @@ func assertE11_NodeExpandVolume_ResizerErr(tc documentedCase) {
 		VolumeId:         volumeID,
 		VolumePath:       stagePath,
 		VolumeCapability: mountCapability("ext4"),
-		CapacityRange:    &csiapi.CapacityRange{RequiredBytes: 2 << 30},
+		CapacityRange:    &csiapi.CapacityRange{RequiredBytes: 20 << 20},
 	})
 	Expect(err).To(HaveOccurred(), "%s: expected resizer error", tc.tcNodeLabel())
 }
@@ -123,14 +123,14 @@ func assertE11_ControllerExpand_Idempotency(tc documentedCase) {
 		Name:               "pvc-e11-expand-idem",
 		Parameters:         env.params,
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 1 << 30},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: CreateVolume", tc.tcNodeLabel())
 	volumeID := resp.GetVolume().GetVolumeId()
 
 	req := &csiapi.ControllerExpandVolumeRequest{
 		VolumeId:      volumeID,
-		CapacityRange: &csiapi.CapacityRange{RequiredBytes: 2 << 30},
+		CapacityRange: &csiapi.CapacityRange{RequiredBytes: 20 << 20},
 	}
 	_, err = env.controller.ControllerExpandVolume(env.ctx, req)
 	Expect(err).NotTo(HaveOccurred(), "%s: first ControllerExpandVolume", tc.tcNodeLabel())
@@ -159,10 +159,10 @@ func assertE11_NodeExpand_XFS(tc documentedCase) {
 		VolumeId:         volumeID,
 		VolumePath:       stagePath,
 		VolumeCapability: mountCapability("xfs"),
-		CapacityRange:    &csiapi.CapacityRange{RequiredBytes: 2 << 30},
+		CapacityRange:    &csiapi.CapacityRange{RequiredBytes: 20 << 20},
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: NodeExpandVolume XFS", tc.tcNodeLabel())
-	Expect(expandResp.GetCapacityBytes()).To(BeNumerically(">=", 2<<30),
+	Expect(expandResp.GetCapacityBytes()).To(BeNumerically(">=", 20<<20),
 		"%s: XFS expanded capacity", tc.tcNodeLabel())
 }
 
@@ -176,7 +176,7 @@ func assertE11_NodeExpand_EmptyPath(tc documentedCase) {
 		VolumeId:         volumeID,
 		VolumePath:       "",
 		VolumeCapability: mountCapability("ext4"),
-		CapacityRange:    &csiapi.CapacityRange{RequiredBytes: 2 << 30},
+		CapacityRange:    &csiapi.CapacityRange{RequiredBytes: 20 << 20},
 	})
 	Expect(err).To(HaveOccurred(), "%s: expected error for empty path", tc.tcNodeLabel())
 	Expect(status.Code(err)).To(Equal(codes.InvalidArgument),
@@ -191,7 +191,7 @@ func assertE11_NodeExpand_MissingVolumeID(tc documentedCase) {
 		VolumeId:         "",
 		VolumePath:       "/some/path",
 		VolumeCapability: mountCapability("ext4"),
-		CapacityRange:    &csiapi.CapacityRange{RequiredBytes: 2 << 30},
+		CapacityRange:    &csiapi.CapacityRange{RequiredBytes: 20 << 20},
 	})
 	Expect(err).To(HaveOccurred(), "%s: expected error for missing volume ID", tc.tcNodeLabel())
 	Expect(status.Code(err)).To(Equal(codes.InvalidArgument),

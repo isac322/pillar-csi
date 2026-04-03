@@ -162,7 +162,7 @@ func (e *controllerTestEnv) createVolume(name string, caps []*csiapi.VolumeCapab
 		Name:               name,
 		Parameters:         e.params,
 		VolumeCapabilities: caps,
-		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 1 << 30},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 	})
 	if err != nil {
 		return "", err

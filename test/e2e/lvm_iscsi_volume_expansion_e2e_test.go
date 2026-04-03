@@ -117,7 +117,7 @@ spec:
   volumeMode: Block
   resources:
     requests:
-      storage: 1Gi
+      storage: 32Mi
   storageClassName: %s
 `, blockPVCName, testNamespace, iscsiSCName)
 				Expect(e34ApplyStdin(ctx, kubeconfig, blockPVCYAML)).To(Succeed(), "[TC-E34.327] apply block PVC")
@@ -195,7 +195,7 @@ spec:
   accessModes: [ReadWriteOnce]
   resources:
     requests:
-      storage: 1Gi
+      storage: 32Mi
   storageClassName: %s
 `, fsPVCName, testNamespace, iscsiSCName)
 				Expect(e34ApplyStdin(ctx, kubeconfig, fsPVCYAML)).To(Succeed(), "[TC-E34.328] apply fs PVC")
@@ -242,12 +242,12 @@ spec:
 					WithPolling(10 * time.Second).
 					Should(Succeed())
 
-				By("patching PVC to 2Gi")
+				By("patching PVC to 64Mi")
 				_, err := e33KubectlOutput(ctx, "patch", "pvc", fsPVCName,
 					"-n", testNamespace,
 					"--type=merge",
-					"-p", `{"spec":{"resources":{"requests":{"storage":"2Gi"}}}}`)
-				Expect(err).NotTo(HaveOccurred(), "[TC-E34.328] patch PVC to 2Gi")
+					"-p", `{"spec":{"resources":{"requests":{"storage":"64Mi"}}}}`)
+				Expect(err).NotTo(HaveOccurred(), "[TC-E34.328] patch PVC to 64Mi")
 
 				By("waiting for PVC capacity to be updated")
 				Eventually(func(g Gomega) {

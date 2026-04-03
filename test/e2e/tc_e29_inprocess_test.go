@@ -134,7 +134,7 @@ func assertE29_CreateVolume_LVM_Linear(tc documentedCase) {
 		Name:               "pvc-e29-linear",
 		Parameters:         params,
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 1 << 30},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: LVM linear CreateVolume", tc.tcNodeLabel())
 	Expect(resp.GetVolume().GetVolumeId()).NotTo(BeEmpty(), "%s: VolumeId", tc.tcNodeLabel())
@@ -159,7 +159,7 @@ func assertE29_CreateVolume_LVM_Thin(tc documentedCase) {
 		Name:               "pvc-e29-thin",
 		Parameters:         params,
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 1 << 30},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: LVM thin CreateVolume", tc.tcNodeLabel())
 	Expect(resp.GetVolume().GetVolumeId()).NotTo(BeEmpty(), "%s: VolumeId", tc.tcNodeLabel())
@@ -214,7 +214,7 @@ func assertE29_LVM_ModeOverride_PoolDefault(tc documentedCase) {
 		Name:               "pvc-e29-mode-pool",
 		Parameters:         params,
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 1 << 30},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: CreateVolume with Pool default mode", tc.tcNodeLabel())
 	Expect(resp.GetVolume().GetVolumeId()).NotTo(BeEmpty(), "%s: VolumeId", tc.tcNodeLabel())
@@ -242,7 +242,7 @@ func assertE29_LVM_ModeOverride_BindingOverridesPool(tc documentedCase) {
 		Name:               "pvc-e29-mode-bind",
 		Parameters:         params,
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 1 << 30},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: CreateVolume with Binding override mode", tc.tcNodeLabel())
 
@@ -274,7 +274,7 @@ func assertE29_LVM_ModeOverride_PVCAnnotationOverridesBinding(tc documentedCase)
 		Name:               "pvc-e29-mode-annot",
 		Parameters:         params,
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 1 << 30},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: CreateVolume with PVC annotation override", tc.tcNodeLabel())
 
@@ -300,7 +300,7 @@ func assertE29_LVM_ModeOverride_AbsentUsesBackendDefault(tc documentedCase) {
 		Name:               "pvc-e29-mode-absent",
 		Parameters:         params,
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 1 << 30},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: CreateVolume with absent mode", tc.tcNodeLabel())
 
@@ -334,7 +334,7 @@ func assertE29_LVM_ModeOverride_InvalidPVCAnnotation(tc documentedCase) {
 		Name:               "pvc-e29-invalid-mode",
 		Parameters:         params,
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 1 << 30},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 	})
 	Expect(err).To(HaveOccurred(),
 		"%s: CreateVolume with invalid provisioning mode should fail", tc.tcNodeLabel())
@@ -380,7 +380,7 @@ func assertE29_LVM_ModeOverride_EmptyPVCAnnotation_FallsThrough(tc documentedCas
 		Name:               "pvc-e29-empty-annot",
 		Parameters:         params,
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 1 << 30},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: CreateVolume with empty flat-key annotation", tc.tcNodeLabel())
 
@@ -405,7 +405,7 @@ func assertE29_DeleteVolume_LVM(tc documentedCase) {
 		Name:               "pvc-e29-del-lvm",
 		Parameters:         lvmControllerParams(env.target.Name),
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 1 << 30},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: LVM CreateVolume", tc.tcNodeLabel())
 	vid := resp.GetVolume().GetVolumeId()
@@ -431,17 +431,17 @@ func assertE29_ControllerExpandVolume_LVM(tc documentedCase) {
 		Name:               "pvc-e29-expand-lvm",
 		Parameters:         lvmControllerParams(env.target.Name),
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 1 << 30},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: LVM CreateVolume", tc.tcNodeLabel())
 	vid := resp.GetVolume().GetVolumeId()
 
 	expandResp, err := env.controller.ControllerExpandVolume(env.ctx, &csiapi.ControllerExpandVolumeRequest{
 		VolumeId:      vid,
-		CapacityRange: &csiapi.CapacityRange{RequiredBytes: 2 << 30},
+		CapacityRange: &csiapi.CapacityRange{RequiredBytes: 20 << 20},
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: LVM ControllerExpandVolume", tc.tcNodeLabel())
-	Expect(expandResp.GetCapacityBytes()).To(BeNumerically(">=", 2<<30),
+	Expect(expandResp.GetCapacityBytes()).To(BeNumerically(">=", 20<<20),
 		"%s: expanded capacity must be >= 2 GiB", tc.tcNodeLabel())
 	Expect(expandResp.GetNodeExpansionRequired()).To(BeTrue(),
 		"%s: NodeExpansionRequired must be true for LVM block device", tc.tcNodeLabel())
@@ -466,7 +466,7 @@ func assertE29_LVM_FullRoundTrip(tc documentedCase) {
 		Name:               "pvc-e29-fullroundtrip",
 		Parameters:         lvmControllerParams(env.target.Name),
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 1 << 30},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: stage 1 CreateVolume", tc.tcNodeLabel())
 	vid := createResp.GetVolume().GetVolumeId()

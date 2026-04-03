@@ -63,7 +63,7 @@ func assertE14_CreateVolume_UnknownParam(_ documentedCase) {
 		Name:               "pvc-e14-unknown-param",
 		Parameters:         params,
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 1 << 30},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 	})
 	// No panic = success. The test just verifies graceful handling.
 }

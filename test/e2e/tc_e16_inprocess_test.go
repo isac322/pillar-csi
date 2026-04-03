@@ -27,7 +27,7 @@ func assertE16_CreateVolume_SameName(tc documentedCase) {
 				Name:               "pvc-e16-same-name",
 				Parameters:         env.params,
 				VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-				CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 1 << 30},
+				CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 			})
 		}(i)
 	}
@@ -57,7 +57,7 @@ func assertE16_CreateVolume_DifferentNames(tc documentedCase) {
 				Name:               fmt.Sprintf("pvc-e16-diff-%d", idx),
 				Parameters:         env.params,
 				VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-				CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 1 << 30},
+				CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 			})
 		}(i)
 	}
@@ -75,7 +75,7 @@ func assertE16_DeleteVolume(tc documentedCase) {
 		Name:               "pvc-e16-concurrent-delete",
 		Parameters:         env.params,
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 1 << 30},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: CreateVolume for concurrent delete", tc.tcNodeLabel())
 	volumeID := resp.GetVolume().GetVolumeId()
@@ -104,7 +104,7 @@ func assertE16_ExpandVolume(tc documentedCase) {
 		Name:               "pvc-e16-concurrent-expand",
 		Parameters:         env.params,
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 1 << 30},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: CreateVolume for concurrent expand", tc.tcNodeLabel())
 	volumeID := resp.GetVolume().GetVolumeId()
@@ -118,7 +118,7 @@ func assertE16_ExpandVolume(tc documentedCase) {
 			defer wg.Done()
 			_, errs[idx] = env.controller.ControllerExpandVolume(env.ctx, &csiapi.ControllerExpandVolumeRequest{
 				VolumeId:      volumeID,
-				CapacityRange: &csiapi.CapacityRange{RequiredBytes: 2 << 30},
+				CapacityRange: &csiapi.CapacityRange{RequiredBytes: 20 << 20},
 			})
 		}(i)
 	}
@@ -204,7 +204,7 @@ func assertE16_ControllerPublish(tc documentedCase) {
 		Name:               "pvc-e16-concurrent-pub",
 		Parameters:         env.params,
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 1 << 30},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: CreateVolume", tc.tcNodeLabel())
 	volumeID := resp.GetVolume().GetVolumeId()

@@ -61,7 +61,7 @@ func newFakeAgentServer() *fakeAgentServer {
 	return &fakeAgentServer{
 		createVolumeResp: &agentv1.CreateVolumeResponse{
 			DevicePath:    "/dev/zvol/tank/pvc-fake",
-			CapacityBytes: 1 << 30,
+			CapacityBytes: 10 << 20,
 		},
 		exportVolumeResp: &agentv1.ExportVolumeResponse{
 			ExportInfo: &agentv1.ExportInfo{
@@ -72,7 +72,7 @@ func newFakeAgentServer() *fakeAgentServer {
 			},
 		},
 		expandVolumeResp: &agentv1.ExpandVolumeResponse{
-			CapacityBytes: 2 << 30,
+			CapacityBytes: 20 << 20,
 		},
 		getCapacityResp: &agentv1.GetCapacityResponse{
 			TotalBytes:     100 << 30,
@@ -172,7 +172,7 @@ func (s *fakeAgentServer) ExpandVolume(_ context.Context, _ *agentv1.ExpandVolum
 	if s.expandVolumeResp != nil {
 		return s.expandVolumeResp, nil
 	}
-	return &agentv1.ExpandVolumeResponse{CapacityBytes: 2 << 30}, nil
+	return &agentv1.ExpandVolumeResponse{CapacityBytes: 20 << 20}, nil
 }
 
 func (s *fakeAgentServer) GetCapacity(_ context.Context, _ *agentv1.GetCapacityRequest) (*agentv1.GetCapacityResponse, error) {

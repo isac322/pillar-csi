@@ -236,12 +236,12 @@ var _ = Describe("F27: 실제 LVM LV 생성/삭제/확장/용량",
 
 			resp, err := agentClient.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
 				VolumeId:      volID,
-				CapacityBytes: 1 << 30, // 1 GiB
+				CapacityBytes: 10 << 20, // 10 MiB
 			})
 			Expect(err).NotTo(HaveOccurred(), "[TC-F27.1] CreateVolume must succeed")
 			Expect(resp.DevicePath).NotTo(BeEmpty(), "[TC-F27.1] DevicePath must be set")
-			Expect(resp.CapacityBytes).To(BeNumerically(">=", 1<<30),
-				"[TC-F27.1] capacity_bytes must be >= 1 GiB (PE rounding up)")
+			Expect(resp.CapacityBytes).To(BeNumerically(">=", 10<<20),
+				"[TC-F27.1] capacity_bytes must be >= 10 MiB (PE rounding up)")
 
 			By("verifying /dev/<vg>/<lv> exists")
 			Eventually(func() error {
@@ -276,7 +276,7 @@ var _ = Describe("F27: 실제 LVM LV 생성/삭제/확장/용량",
 
 			resp, err := agentClient.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
 				VolumeId:      volID,
-				CapacityBytes: 1 << 30,
+				CapacityBytes: 10 << 20,
 				BackendParams: &agentv1.BackendParams{
 					Params: &agentv1.BackendParams_Lvm{
 						Lvm: &agentv1.LvmVolumeParams{
@@ -311,7 +311,7 @@ var _ = Describe("F27: 실제 LVM LV 생성/삭제/확장/용량",
 
 			req := &agentv1.CreateVolumeRequest{
 				VolumeId:      volID,
-				CapacityBytes: 1 << 30,
+				CapacityBytes: 10 << 20,
 			}
 
 			resp1, err := agentClient.CreateVolume(ctx, req)
@@ -338,7 +338,7 @@ var _ = Describe("F27: 실제 LVM LV 생성/삭제/확장/용량",
 			volID := vg + "/" + volName
 			createResp, err := agentClient.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
 				VolumeId:      volID,
-				CapacityBytes: 512 << 20,
+				CapacityBytes: 10 << 20,
 			})
 			Expect(err).NotTo(HaveOccurred(), "[TC-F27.4] CreateVolume must succeed")
 			devPath := createResp.DevicePath
@@ -370,7 +370,7 @@ var _ = Describe("F27: 실제 LVM LV 생성/삭제/확장/용량",
 			volID := vg + "/" + volName
 			createResp, err := agentClient.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
 				VolumeId:      volID,
-				CapacityBytes: 1 << 30,
+				CapacityBytes: 10 << 20,
 			})
 			Expect(err).NotTo(HaveOccurred(), "[TC-F27.5] CreateVolume must succeed")
 			DeferCleanup(func() {
@@ -379,18 +379,18 @@ var _ = Describe("F27: 실제 LVM LV 생성/삭제/확장/용량",
 				_, _ = agentClient.DeleteVolume(dctx, &agentv1.DeleteVolumeRequest{VolumeId: volID})
 			})
 
-			By("expanding LV from 1 GiB to 2 GiB")
+			By("expanding LV from 10 MiB to 20 MiB")
 			_, err = agentClient.ExpandVolume(ctx, &agentv1.ExpandVolumeRequest{
 				VolumeId:       volID,
-				RequestedBytes: 2 << 30,
+				RequestedBytes: 20 << 20,
 			})
 			Expect(err).NotTo(HaveOccurred(), "[TC-F27.5] ExpandVolume must succeed")
 
 			By("verifying blockdev shows expanded size")
 			size, err := fBlockDeviceSize(ctx, createResp.DevicePath)
 			Expect(err).NotTo(HaveOccurred(), "[TC-F27.5] blockdev must succeed")
-			Expect(size).To(BeNumerically(">=", 2<<30),
-				"[TC-F27.5] block device must be at least 2 GiB after expansion")
+			Expect(size).To(BeNumerically(">=", 20<<20),
+				"[TC-F27.5] block device must be at least 20 MiB after expansion")
 		})
 
 		// ── TC-F27.6 ─────────────────────────────────────────────────────────
@@ -454,7 +454,7 @@ var _ = Describe("F27: 실제 LVM LV 생성/삭제/확장/용량",
 			defer cancel()
 
 			// Request a size that is not aligned to 4 MiB PE.
-			requestedBytes := int64(999_999_488) // ~953.67 MiB, not 4 MiB aligned.
+			requestedBytes := int64(20*1024*1024 + 123) // ~20 MiB + 123 bytes, not 4 MiB aligned.
 			volName := fmt.Sprintf("f27-pe-%d", GinkgoParallelProcess())
 			volID := vg + "/" + volName
 			DeferCleanup(func() {
@@ -509,7 +509,7 @@ var _ = Describe("F28: 실제 LVM + NVMe-oF configfs 내보내기",
 
 			resp, err := agentClient.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
 				VolumeId:      volID,
-				CapacityBytes: 512 << 20,
+				CapacityBytes: 32 << 20,
 			})
 			if err != nil {
 				Fail(fmt.Sprintf("[F28] MISSING PREREQUISITE: BeforeAll: CreateVolume failed: %v — skipping F28 tests", err))
@@ -613,7 +613,7 @@ var _ = Describe("F29: 실제 LVM + NVMe-oF TCP 연결",
 
 			resp, err := agentClient.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
 				VolumeId:      volID,
-				CapacityBytes: 512 << 20,
+				CapacityBytes: 32 << 20,
 			})
 			if err != nil {
 				Fail(fmt.Sprintf("[F29] MISSING PREREQUISITE: BeforeAll: CreateVolume failed: %v", err))
@@ -701,7 +701,7 @@ var _ = Describe("F29: 실제 LVM + NVMe-oF TCP 연결",
 			By("creating LV")
 			createResp, err := agentClient.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
 				VolumeId:      fullVolID,
-				CapacityBytes: 512 << 20,
+				CapacityBytes: 32 << 20,
 			})
 			Expect(err).NotTo(HaveOccurred(), "[TC-F29.3] CreateVolume must succeed")
 
@@ -860,7 +860,7 @@ spec:
   accessModes: [ReadWriteOnce]
   resources:
     requests:
-      storage: 1Gi
+      storage: 32Mi
   storageClassName: %s
 `, pvcName, testNamespace, scName)
 			Expect(fApplyStdin(ctx, pvcYAML)).To(Succeed(), "[TC-F30.1] apply PVC")
@@ -1010,7 +1010,7 @@ spec:
   accessModes: [ReadWriteOnce]
   resources:
     requests:
-      storage: 1Gi
+      storage: 32Mi
   storageClassName: %s
 `, pvcName, testNamespace, scName)
 			if err := fApplyStdin(ctx, pvcYAML); err != nil {
@@ -1076,14 +1076,14 @@ spec:
 				Fail("[TC-F31.1] MISSING PREREQUISITE: Pod not Running — BeforeAll may have failed")
 			}
 
-			By("patching PVC to 2Gi")
+			By("patching PVC to 64Mi")
 			_, err = fKubectlOutput(ctx, "patch", "pvc", pvcName,
 				"-n", testNamespace,
 				"--type=merge",
-				"-p", `{"spec":{"resources":{"requests":{"storage":"2Gi"}}}}`)
-			Expect(err).NotTo(HaveOccurred(), "[TC-F31.1] patch PVC to 2Gi must succeed")
+				"-p", `{"spec":{"resources":{"requests":{"storage":"64Mi"}}}}`)
+			Expect(err).NotTo(HaveOccurred(), "[TC-F31.1] patch PVC to 64Mi must succeed")
 
-			By("waiting for PVC capacity to reflect 2Gi")
+			By("waiting for PVC capacity to reflect 64Mi")
 			Eventually(func(g Gomega) {
 				capacity, err := fKubectlOutput(ctx, "get", "pvc", pvcName,
 					"-n", testNamespace, "-o", "jsonpath={.status.capacity.storage}")

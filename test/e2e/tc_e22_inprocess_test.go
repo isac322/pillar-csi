@@ -105,7 +105,7 @@ func assertE22_AgentErrors_Export_InvalidProtocol(tc documentedCase) {
 
 	_, _ = env.client.CreateVolume(env.ctx, &agentv1.CreateVolumeRequest{
 		VolumeId:      "tank/pvc-e22-export-proto",
-		CapacityBytes: 1 << 30,
+		CapacityBytes: 10 << 20,
 	})
 
 	// Use an invalid protocol type

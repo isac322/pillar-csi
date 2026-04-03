@@ -658,9 +658,13 @@ func (b *Backend) Create(
 	}
 
 	// Idempotency check: if the LV already exists and has compatible size, return as-is.
+	// LVM rounds up requested sizes to the nearest PE boundary, so the existing size
+	// may be larger than the requested size. Treat existing >= requested as compatible
+	// (the volume satisfies the capacity request). Only reject if existing < requested
+	// (volume is too small for the new request).
 	existing, err := b.lvsBytes(ctx, volumeID)
 	if err == nil {
-		if existing != capacityBytes {
+		if existing < capacityBytes {
 			return "", existing, &backend.ConflictError{
 				VolumeID:       volumeID,
 				ExistingBytes:  existing,

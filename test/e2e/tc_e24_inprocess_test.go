@@ -106,7 +106,7 @@ func assertE24_FullCycle(tc documentedCase) {
 		Name:               "pvc-e24-full-cycle",
 		Parameters:         env.ctrlEnv.params,
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 1 << 30},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: CreateVolume", tc.tcNodeLabel())
 	volumeID := createResp.GetVolume().GetVolumeId()
@@ -197,7 +197,7 @@ func assertE24_VolumeContextFlowThrough(tc documentedCase) {
 		Name:               "pvc-e24-context-flow",
 		Parameters:         env.ctrlEnv.params,
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 1 << 30},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: CreateVolume", tc.tcNodeLabel())
 	volumeID := createResp.GetVolume().GetVolumeId()
@@ -247,7 +247,7 @@ func assertE24_OrderingConstraints(tc documentedCase) {
 		Name:               "pvc-e24-ordering",
 		Parameters:         env.ctrlEnv.params,
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 1 << 30},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: Phase1 CreateVolume", tc.tcNodeLabel())
 	volumeID := createResp.GetVolume().GetVolumeId()
@@ -323,7 +323,7 @@ func assertE24_IdempotentSteps(tc documentedCase) {
 		Name:               "pvc-e24-idempotent-steps",
 		Parameters:         env.ctrlEnv.params,
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 1 << 30},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 	}
 
 	// CreateVolume x2 — idempotent
@@ -415,7 +415,7 @@ func assertE24_PartialFailure_CRDCreatedOnExportFailure(tc documentedCase) {
 		Name:               pvcName,
 		Parameters:         env.params,
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 1 << 30},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 	})
 	Expect(err).To(HaveOccurred(), "%s: CreateVolume must fail on export error", tc.tcNodeLabel())
 
@@ -451,7 +451,7 @@ func assertE24_PartialFailure_RetryAdvancesToReady(tc documentedCase) {
 		Name:               pvcName,
 		Parameters:         env.params,
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 1 << 30},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 	}
 	_, err := env.controller.CreateVolume(env.ctx, req)
 	Expect(err).To(HaveOccurred(), "%s: first attempt must fail", tc.tcNodeLabel())
@@ -493,7 +493,7 @@ func assertE24_PartialFailure_AgentCreateVolumeCalledOnceOnRetry(tc documentedCa
 		Name:               pvcName,
 		Parameters:         env.params,
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 1 << 30},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 	}
 	_, err := env.controller.CreateVolume(env.ctx, req)
 	Expect(err).To(HaveOccurred(), "%s: first attempt must fail", tc.tcNodeLabel())
@@ -544,7 +544,7 @@ func assertE24_ControllerPublishVolume_AgentAllowInitiatorFails(tc documentedCas
 		Name:               "pvc-e24-allow-fail",
 		Parameters:         env.params,
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 1 << 30},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 	})
 	Expect(err).NotTo(HaveOccurred())
 	volumeID := resp.GetVolume().GetVolumeId()

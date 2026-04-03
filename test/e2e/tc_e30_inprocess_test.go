@@ -39,7 +39,7 @@ func assertE30_ExactlyOneLV_AfterExportFailureRetry(tc documentedCase) {
 		Name:               volName,
 		Parameters:         params,
 		VolumeCapabilities: caps,
-		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 1 << 30},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 	})
 	Expect(err).To(HaveOccurred(), "%s: first CreateVolume should fail (export error)", tc.tcNodeLabel())
 	createCallsAfterFirst := env.agentSrv.counts().CreateVolume
@@ -55,7 +55,7 @@ func assertE30_ExactlyOneLV_AfterExportFailureRetry(tc documentedCase) {
 		Name:               volName,
 		Parameters:         params,
 		VolumeCapabilities: caps,
-		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 1 << 30},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: retry CreateVolume should succeed (skipBackend)", tc.tcNodeLabel())
 	Expect(resp.GetVolume().GetVolumeId()).NotTo(BeEmpty(), "%s: VolumeId after retry", tc.tcNodeLabel())
@@ -160,7 +160,7 @@ func assertE30_MultipleRetries_NeverDuplicate(tc documentedCase) {
 		Name:               volName,
 		Parameters:         params,
 		VolumeCapabilities: caps,
-		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 1 << 30},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 	})
 	Expect(err).NotTo(HaveOccurred(),
 		"%s: 4th CreateVolume attempt should succeed", tc.tcNodeLabel())

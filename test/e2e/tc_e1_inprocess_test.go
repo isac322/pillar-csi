@@ -34,7 +34,7 @@ func assertE1_CreateVolume(tc documentedCase) {
 		Name:               "pvc-e1-create",
 		Parameters:         env.params,
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 1 << 30},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: CreateVolume failed", tc.tcNodeLabel())
 	Expect(resp.GetVolume().GetVolumeId()).NotTo(BeEmpty(), "%s: VolumeId empty", tc.tcNodeLabel())
@@ -52,7 +52,7 @@ func assertE1_CreateVolume_Idempotency(tc documentedCase) {
 		Name:               "pvc-e1-idempotent",
 		Parameters:         env.params,
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 1 << 30},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 	}
 
 	resp1, err := env.controller.CreateVolume(env.ctx, req)
@@ -234,7 +234,7 @@ func assertE1_FullRoundTrip(tc documentedCase) {
 		Name:               "pvc-e1-roundtrip",
 		Parameters:         env.params,
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 1 << 30},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: CreateVolume", tc.tcNodeLabel())
 	volumeID := createResp.GetVolume().GetVolumeId()
@@ -245,15 +245,15 @@ func assertE1_FullRoundTrip(tc documentedCase) {
 
 	// 3. ControllerExpandVolume
 	env.agentSrv.mu.Lock()
-	env.agentSrv.expandVolumeResp = &agentv1.ExpandVolumeResponse{CapacityBytes: 2 << 30}
+	env.agentSrv.expandVolumeResp = &agentv1.ExpandVolumeResponse{CapacityBytes: 20 << 20}
 	env.agentSrv.mu.Unlock()
 
 	expandResp, err := env.controller.ControllerExpandVolume(env.ctx, &csiapi.ControllerExpandVolumeRequest{
 		VolumeId:      volumeID,
-		CapacityRange: &csiapi.CapacityRange{RequiredBytes: 2 << 30},
+		CapacityRange: &csiapi.CapacityRange{RequiredBytes: 20 << 20},
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: ControllerExpandVolume", tc.tcNodeLabel())
-	Expect(expandResp.GetCapacityBytes()).To(BeNumerically(">=", 2<<30))
+	Expect(expandResp.GetCapacityBytes()).To(BeNumerically(">=", 20<<20))
 
 	// 4. DeleteVolume
 	_, err = env.controller.DeleteVolume(env.ctx, &csiapi.DeleteVolumeRequest{VolumeId: volumeID})
@@ -419,7 +419,7 @@ func assertE1_Capacity_RequiredOnly(tc documentedCase) {
 	env.agentSrv.mu.Lock()
 	env.agentSrv.createVolumeResp = &agentv1.CreateVolumeResponse{
 		DevicePath:    "/dev/zvol/tank/pvc-cap-req",
-		CapacityBytes: 1 << 30,
+		CapacityBytes: 10 << 20,
 	}
 	env.agentSrv.mu.Unlock()
 
@@ -427,10 +427,10 @@ func assertE1_Capacity_RequiredOnly(tc documentedCase) {
 		Name:               "pvc-cap-req",
 		Parameters:         env.params,
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 1 << 30},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s", tc.tcNodeLabel())
-	Expect(resp.GetVolume().GetCapacityBytes()).To(Equal(int64(1 << 30)))
+	Expect(resp.GetVolume().GetCapacityBytes()).To(Equal(int64(10 << 20)))
 }
 
 func assertE1_Capacity_LimitOnly(tc documentedCase) {
@@ -439,7 +439,7 @@ func assertE1_Capacity_LimitOnly(tc documentedCase) {
 	env.agentSrv.mu.Lock()
 	env.agentSrv.createVolumeResp = &agentv1.CreateVolumeResponse{
 		DevicePath:    "/dev/zvol/tank/pvc-cap-limit",
-		CapacityBytes: 1 << 30,
+		CapacityBytes: 10 << 20,
 	}
 	env.agentSrv.mu.Unlock()
 
@@ -447,10 +447,10 @@ func assertE1_Capacity_LimitOnly(tc documentedCase) {
 		Name:               "pvc-cap-limit",
 		Parameters:         env.params,
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-		CapacityRange:      &csiapi.CapacityRange{LimitBytes: 2 << 30},
+		CapacityRange:      &csiapi.CapacityRange{LimitBytes: 20 << 20},
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s", tc.tcNodeLabel())
-	Expect(resp.GetVolume().GetCapacityBytes()).To(BeNumerically("<=", int64(2<<30)))
+	Expect(resp.GetVolume().GetCapacityBytes()).To(BeNumerically("<=", int64(20<<20)))
 }
 
 func assertE1_Capacity_ValidRange(tc documentedCase) {
@@ -459,7 +459,7 @@ func assertE1_Capacity_ValidRange(tc documentedCase) {
 	env.agentSrv.mu.Lock()
 	env.agentSrv.createVolumeResp = &agentv1.CreateVolumeResponse{
 		DevicePath:    "/dev/zvol/tank/pvc-cap-range",
-		CapacityBytes: 1 << 30,
+		CapacityBytes: 10 << 20,
 	}
 	env.agentSrv.mu.Unlock()
 
@@ -467,26 +467,26 @@ func assertE1_Capacity_ValidRange(tc documentedCase) {
 		Name:               "pvc-cap-range",
 		Parameters:         env.params,
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 1 << 30, LimitBytes: 2 << 30},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20, LimitBytes: 20 << 20},
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s", tc.tcNodeLabel())
 	volCap := resp.GetVolume().GetCapacityBytes()
-	Expect(volCap).To(BeNumerically(">=", int64(1<<30)))
-	Expect(volCap).To(BeNumerically("<=", int64(2<<30)))
+	Expect(volCap).To(BeNumerically(">=", int64(10<<20)))
+	Expect(volCap).To(BeNumerically("<=", int64(20<<20)))
 }
 
 func assertE1_Capacity_ExistingTooSmall(tc documentedCase) {
 	env := newControllerTestEnv()
 	defer env.close()
 
-	// Pre-create a PillarVolume CRD with capacity=1GiB and phase=Ready
+	// Pre-create a PillarVolume CRD with capacity=10MiB and phase=Ready
 	pvcName := "pvc-cap-toosmall"
 	volumeID := "storage-1/nvmeof-tcp/zfs-zvol/tank/" + pvcName
 	pv := &pillarv1.PillarVolume{
 		ObjectMeta: metav1.ObjectMeta{Name: pvcName},
 		Spec: pillarv1.PillarVolumeSpec{
 			VolumeID:      volumeID,
-			CapacityBytes: 1 << 30,
+			CapacityBytes: 10 << 20,
 		},
 		Status: pillarv1.PillarVolumeStatus{
 			Phase: pillarv1.PillarVolumePhaseReady,
@@ -506,7 +506,7 @@ func assertE1_Capacity_ExistingTooSmall(tc documentedCase) {
 		Name:               pvcName,
 		Parameters:         env.params,
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 2 << 30}, // need 2GiB but existing is 1GiB
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 20 << 20}, // need 20MiB but existing is 10MiB
 	})
 	Expect(err).To(HaveOccurred(), "%s: existing capacity too small should fail", tc.tcNodeLabel())
 	Expect(status.Code(err)).To(Equal(codes.AlreadyExists))
@@ -522,7 +522,7 @@ func assertE1_Capacity_ExistingTooLarge(tc documentedCase) {
 		ObjectMeta: metav1.ObjectMeta{Name: pvcName},
 		Spec: pillarv1.PillarVolumeSpec{
 			VolumeID:      volumeID,
-			CapacityBytes: 4 << 30,
+			CapacityBytes: 40 << 20,
 		},
 		Status: pillarv1.PillarVolumeStatus{
 			Phase: pillarv1.PillarVolumePhaseReady,
@@ -542,7 +542,7 @@ func assertE1_Capacity_ExistingTooLarge(tc documentedCase) {
 		Name:               pvcName,
 		Parameters:         env.params,
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-		CapacityRange:      &csiapi.CapacityRange{LimitBytes: 2 << 30}, // limit 2GiB but existing is 4GiB
+		CapacityRange:      &csiapi.CapacityRange{LimitBytes: 20 << 20}, // limit 20MiB but existing is 40MiB
 	})
 	Expect(err).To(HaveOccurred(), "%s: existing capacity too large should fail", tc.tcNodeLabel())
 	Expect(status.Code(err)).To(Equal(codes.AlreadyExists))
@@ -558,7 +558,7 @@ func assertE1_Capacity_ExistingWithinRange(tc documentedCase) {
 		ObjectMeta: metav1.ObjectMeta{Name: pvcName},
 		Spec: pillarv1.PillarVolumeSpec{
 			VolumeID:      volumeID,
-			CapacityBytes: 2 << 30,
+			CapacityBytes: 20 << 20,
 		},
 		Status: pillarv1.PillarVolumeStatus{
 			Phase: pillarv1.PillarVolumePhaseReady,
@@ -578,10 +578,10 @@ func assertE1_Capacity_ExistingWithinRange(tc documentedCase) {
 		Name:               pvcName,
 		Parameters:         env.params,
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 1 << 30, LimitBytes: 3 << 30},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20, LimitBytes: 30 << 20},
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: existing within range should succeed", tc.tcNodeLabel())
-	Expect(resp.GetVolume().GetCapacityBytes()).To(Equal(int64(2 << 30)))
+	Expect(resp.GetVolume().GetCapacityBytes()).To(Equal(int64(20 << 20)))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -31,7 +31,7 @@ func assertE4_FullChain(tc documentedCase) {
 		Name:               "pvc-e4-full",
 		Parameters:         env.params,
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 1 << 30},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: CreateVolume", tc.tcNodeLabel())
 	volumeID := resp.GetVolume().GetVolumeId()
@@ -71,7 +71,7 @@ func assertE4_CreateAndExpand(tc documentedCase) {
 	defer env.close()
 
 	env.agentSrv.mu.Lock()
-	env.agentSrv.expandVolumeResp = &agentv1.ExpandVolumeResponse{CapacityBytes: 2 << 30}
+	env.agentSrv.expandVolumeResp = &agentv1.ExpandVolumeResponse{CapacityBytes: 20 << 20}
 	env.agentSrv.mu.Unlock()
 
 	resp, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
@@ -83,10 +83,10 @@ func assertE4_CreateAndExpand(tc documentedCase) {
 
 	expandResp, err := env.controller.ControllerExpandVolume(env.ctx, &csiapi.ControllerExpandVolumeRequest{
 		VolumeId:      resp.GetVolume().GetVolumeId(),
-		CapacityRange: &csiapi.CapacityRange{RequiredBytes: 2 << 30},
+		CapacityRange: &csiapi.CapacityRange{RequiredBytes: 20 << 20},
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: ControllerExpandVolume", tc.tcNodeLabel())
-	Expect(expandResp.GetCapacityBytes()).To(BeNumerically(">=", int64(2<<30)))
+	Expect(expandResp.GetCapacityBytes()).To(BeNumerically(">=", int64(20<<20)))
 	Expect(expandResp.GetNodeExpansionRequired()).To(BeTrue())
 }
 

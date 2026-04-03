@@ -106,7 +106,7 @@ spec:
   accessModes: [ReadWriteOnce]
   resources:
     requests:
-      storage: 1Gi
+      storage: 32Mi
   storageClassName: %s
 `, pvcName, testNamespace, zfsISCSISCName)
 				Expect(e34ApplyStdin(ctx, kubeconfig, pvcYAML)).To(Succeed(), "[TC-E35.335] apply ZFS+iSCSI PVC")

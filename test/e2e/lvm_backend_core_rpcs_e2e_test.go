@@ -248,7 +248,7 @@ var _ = Describe("E33: LVM Kind 클러스터 E2E — 실제 LVM VG + NVMe-oF TCP
 				volumeID := fmt.Sprintf("%s/e33-286-%s", lvmVG, uniqueID)
 				resp, err := agentClient.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
 					VolumeId:      volumeID,
-					CapacityBytes: 512 * 1024 * 1024, // 512 MiB
+					CapacityBytes: 32 * 1024 * 1024, // 32 MiB
 					BackendParams: &agentv1.BackendParams{
 						Params: &agentv1.BackendParams_Lvm{
 							Lvm: &agentv1.LvmVolumeParams{
@@ -263,7 +263,7 @@ var _ = Describe("E33: LVM Kind 클러스터 E2E — 실제 LVM VG + NVMe-oF TCP
 				expectedPath := fmt.Sprintf("/dev/%s/e33-286-%s", lvmVG, uniqueID)
 				Expect(resp.GetDevicePath()).To(Equal(expectedPath),
 					"[TC-E33.286] device_path must be /dev/<vg>/<lv>")
-				Expect(resp.GetCapacityBytes()).To(BeNumerically(">=", int64(512*1024*1024)),
+				Expect(resp.GetCapacityBytes()).To(BeNumerically(">=", int64(32*1024*1024)),
 					"[TC-E33.286] capacity_bytes must be >= requested size")
 
 				// Cleanup
@@ -282,7 +282,7 @@ var _ = Describe("E33: LVM Kind 클러스터 E2E — 실제 LVM VG + NVMe-oF TCP
 				volumeID := fmt.Sprintf("%s/e33-287-%s", lvmVG, uniqueID)
 				resp, err := agentClient.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
 					VolumeId:      volumeID,
-					CapacityBytes: 256 * 1024 * 1024, // 256 MiB
+					CapacityBytes: 32 * 1024 * 1024, // 32 MiB
 					BackendParams: &agentv1.BackendParams{
 						Params: &agentv1.BackendParams_Lvm{
 							Lvm: &agentv1.LvmVolumeParams{
@@ -313,7 +313,7 @@ var _ = Describe("E33: LVM Kind 클러스터 E2E — 실제 LVM VG + NVMe-oF TCP
 				volumeID := fmt.Sprintf("%s/e33-288-%s", lvmVG, uniqueID)
 				_, err := agentClient.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
 					VolumeId:      volumeID,
-					CapacityBytes: 256 * 1024 * 1024,
+					CapacityBytes: 32 * 1024 * 1024,
 					BackendParams: &agentv1.BackendParams{
 						Params: &agentv1.BackendParams_Lvm{
 							Lvm: &agentv1.LvmVolumeParams{
@@ -343,10 +343,10 @@ var _ = Describe("E33: LVM Kind 클러스터 E2E — 실제 LVM VG + NVMe-oF TCP
 
 				volumeID := fmt.Sprintf("%s/e33-289-%s", lvmVG, uniqueID)
 
-				By("creating initial 512 MiB LV")
+				By("creating initial 32 MiB LV")
 				_, err := agentClient.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
 					VolumeId:      volumeID,
-					CapacityBytes: 512 * 1024 * 1024,
+					CapacityBytes: 32 * 1024 * 1024,
 					BackendParams: &agentv1.BackendParams{
 						Params: &agentv1.BackendParams_Lvm{
 							Lvm: &agentv1.LvmVolumeParams{
@@ -358,15 +358,15 @@ var _ = Describe("E33: LVM Kind 클러스터 E2E — 실제 LVM VG + NVMe-oF TCP
 				})
 				Expect(err).NotTo(HaveOccurred(), "[TC-E33.289] create initial LV")
 
-				By("expanding to 1 GiB")
+				By("expanding to 64 MiB")
 				expandResp, err := agentClient.ExpandVolume(ctx, &agentv1.ExpandVolumeRequest{
 					VolumeId:       volumeID,
-					RequestedBytes: 1024 * 1024 * 1024,
+					RequestedBytes: 64 * 1024 * 1024,
 				})
 				Expect(err).NotTo(HaveOccurred(),
 					"[TC-E33.289] ExpandVolume must succeed")
-				Expect(expandResp.GetCapacityBytes()).To(BeNumerically(">=", int64(1024*1024*1024)),
-					"[TC-E33.289] capacity_bytes must be >= 1 GiB after expansion")
+				Expect(expandResp.GetCapacityBytes()).To(BeNumerically(">=", int64(64*1024*1024)),
+					"[TC-E33.289] capacity_bytes must be >= 64 MiB after expansion")
 
 				DeferCleanup(func() {
 					cleanCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -385,7 +385,7 @@ var _ = Describe("E33: LVM Kind 클러스터 E2E — 실제 LVM VG + NVMe-oF TCP
 				By("creating an LV")
 				_, err := agentClient.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
 					VolumeId:      volumeID,
-					CapacityBytes: 256 * 1024 * 1024,
+					CapacityBytes: 32 * 1024 * 1024,
 					BackendParams: &agentv1.BackendParams{
 						Params: &agentv1.BackendParams_Lvm{
 							Lvm: &agentv1.LvmVolumeParams{
@@ -433,7 +433,7 @@ var _ = Describe("E33: LVM Kind 클러스터 E2E — 실제 LVM VG + NVMe-oF TCP
 				volumeID := fmt.Sprintf("%s/e33-291-%s", lvmVG, uniqueID)
 				req := &agentv1.CreateVolumeRequest{
 					VolumeId:      volumeID,
-					CapacityBytes: 256 * 1024 * 1024,
+					CapacityBytes: 32 * 1024 * 1024,
 					BackendParams: &agentv1.BackendParams{
 						Params: &agentv1.BackendParams_Lvm{
 							Lvm: &agentv1.LvmVolumeParams{
@@ -471,7 +471,7 @@ var _ = Describe("E33: LVM Kind 클러스터 E2E — 실제 LVM VG + NVMe-oF TCP
 				volumeID := fmt.Sprintf("%s/e33-292-%s", lvmVG, uniqueID)
 				req := &agentv1.CreateVolumeRequest{
 					VolumeId:      volumeID,
-					CapacityBytes: 256 * 1024 * 1024,
+					CapacityBytes: 32 * 1024 * 1024,
 					BackendParams: &agentv1.BackendParams{
 						Params: &agentv1.BackendParams_Lvm{
 							Lvm: &agentv1.LvmVolumeParams{

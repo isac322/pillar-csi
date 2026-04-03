@@ -71,7 +71,7 @@ func assertE13_CreateVolume_ContentSource(tc documentedCase) {
 		Name:               "pvc-e13-source",
 		Parameters:         env.params,
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 1 << 30},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: CreateVolume source", tc.tcNodeLabel())
 	sourceID := sourceResp.GetVolume().GetVolumeId()
@@ -82,7 +82,7 @@ func assertE13_CreateVolume_ContentSource(tc documentedCase) {
 		Name:               "pvc-e13-clone",
 		Parameters:         env.params,
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 1 << 30},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 		VolumeContentSource: &csiapi.VolumeContentSource{
 			Type: &csiapi.VolumeContentSource_Volume{
 				Volume: &csiapi.VolumeContentSource_VolumeSource{
@@ -107,7 +107,7 @@ func assertE13_DeleteVolume_CloneSource(tc documentedCase) {
 		Name:               "pvc-e13-clone-src-delete",
 		Parameters:         env.params,
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 1 << 30},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: CreateVolume", tc.tcNodeLabel())
 

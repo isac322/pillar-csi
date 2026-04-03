@@ -34,7 +34,7 @@ func assertE17_DeleteVolumeRemovesCRD(tc documentedCase) {
 		Name:               "pvc-e17-delete-crd",
 		Parameters:         env.params,
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 1 << 30},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: CreateVolume", tc.tcNodeLabel())
 
@@ -67,7 +67,7 @@ func assertE17_ControllerUnpublishDeniesAccess(tc documentedCase) {
 		Name:               "pvc-e17-unpub",
 		Parameters:         env.params,
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 1 << 30},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: CreateVolume", tc.tcNodeLabel())
 	volumeID := resp.GetVolume().GetVolumeId()
@@ -143,7 +143,7 @@ func assertE17_NodeExpandVolumeResizesFS(_ documentedCase) {
 		VolumeId:          volumeID,
 		VolumePath:        filepath.Join(env.stateDir, "expand-mnt"),
 		StagingTargetPath: filepath.Join(env.stateDir, "stage-expand"),
-		CapacityRange:     &csiapi.CapacityRange{RequiredBytes: 2 << 30},
+		CapacityRange:     &csiapi.CapacityRange{RequiredBytes: 20 << 20},
 	})
 	// NodeExpandVolume either succeeds or returns an expected error —
 	// the important thing is no panic.
@@ -159,7 +159,7 @@ func assertE17_MultiVolumeIsolation(tc documentedCase) {
 		Name:               "pvc-e17-iso-a",
 		Parameters:         env.params,
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 1 << 30},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: CreateVolume A", tc.tcNodeLabel())
 
@@ -167,7 +167,7 @@ func assertE17_MultiVolumeIsolation(tc documentedCase) {
 		Name:               "pvc-e17-iso-b",
 		Parameters:         env.params,
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 2 << 30},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 20 << 20},
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: CreateVolume B", tc.tcNodeLabel())
 

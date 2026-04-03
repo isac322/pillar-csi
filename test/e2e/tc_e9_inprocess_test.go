@@ -16,7 +16,7 @@ func assertE9_CreateAndDeleteVolume(tc documentedCase) {
 
 	_, err := env.client.CreateVolume(env.ctx, &agentv1.CreateVolumeRequest{
 		VolumeId:      "tank/pvc-e9-create",
-		CapacityBytes: 1 << 30,
+		CapacityBytes: 10 << 20,
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: CreateVolume", tc.tcNodeLabel())
 
@@ -32,7 +32,7 @@ func assertE9_ExportAndUnexportVolume(tc documentedCase) {
 
 	_, err := env.client.CreateVolume(env.ctx, &agentv1.CreateVolumeRequest{
 		VolumeId:      "tank/pvc-e9-export",
-		CapacityBytes: 1 << 30,
+		CapacityBytes: 10 << 20,
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: CreateVolume", tc.tcNodeLabel())
 
@@ -56,7 +56,7 @@ func assertE9_AllowAndDenyInitiator(tc documentedCase) {
 
 	_, err := env.client.CreateVolume(env.ctx, &agentv1.CreateVolumeRequest{
 		VolumeId:      "tank/pvc-e9-initiator",
-		CapacityBytes: 1 << 30,
+		CapacityBytes: 10 << 20,
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: CreateVolume", tc.tcNodeLabel())
 
@@ -88,16 +88,16 @@ func assertE9_ExpandVolume(tc documentedCase) {
 
 	_, err := env.client.CreateVolume(env.ctx, &agentv1.CreateVolumeRequest{
 		VolumeId:      "tank/pvc-e9-expand",
-		CapacityBytes: 1 << 30,
+		CapacityBytes: 10 << 20,
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: CreateVolume", tc.tcNodeLabel())
 
 	resp, err := env.client.ExpandVolume(env.ctx, &agentv1.ExpandVolumeRequest{
 		VolumeId:       "tank/pvc-e9-expand",
-		RequestedBytes: 2 << 30,
+		RequestedBytes: 20 << 20,
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: ExpandVolume", tc.tcNodeLabel())
-	Expect(resp.GetCapacityBytes()).To(BeNumerically(">=", 2<<30),
+	Expect(resp.GetCapacityBytes()).To(BeNumerically(">=", 20<<20),
 		"%s: expanded capacity", tc.tcNodeLabel())
 }
 

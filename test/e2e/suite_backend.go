@@ -202,16 +202,17 @@ func bootstrapSuiteBackends(
 		pipeline.AddBackend(&provisioner.ZFSProvisioner{
 			NodeContainer: nodeContainer,
 			PoolName:      "pillar-e2e-zfs-" + suffix,
-			// 128 MiB sparse image — sufficient for e2e test zvols.
+			// 512 MiB sparse image — accommodates multiple 10–20 MiB test zvols
+			// across parallel Ginkgo workers plus ZFS metadata overhead.
 			// Sparse image — truncate creates it instantly with no actual disk I/O.
-			SizeMiB: 128,
+			SizeMiB: 512,
 		})
 		pipeline.AddBackend(&provisioner.LVMProvisioner{
 			NodeContainer: nodeContainer,
 			VGName:        "pillar-e2e-lvm-" + suffix,
-			// 256 MiB sparse image — truncate creates it instantly with no actual
-			// disk usage. Sufficient for e2e thin-provisioning tests.
-			SizeMiB: 256,
+			// 512 MiB sparse image — accommodates the thin pool (200 MiB) plus
+			// multiple 10–20 MiB test LVs across parallel Ginkgo workers.
+			SizeMiB: 512,
 		})
 	} else {
 		for _, p := range provisioners {
@@ -273,14 +274,14 @@ func bootstrapSuiteBackends(
 				// (TC-E28.247, TC-E28.249, TC-E28.250, TC-E28.252, TC-E28.255, etc.)
 				// can use ProvisionMode="thin" against a real thin pool.
 				//
-				// Thin pool size: 128 MiB (half of the 256 MiB sparse VG). The VG
-				// image is sparse, so this does not consume host disk space.
+				// Thin pool size: 200 MiB (less than half of the 512 MiB sparse VG).
+				// The VG image is sparse, so this does not consume host disk space.
 				//
 				// Non-fatal: if thin pool creation fails (e.g. dm_thin_pool module
 				// not loaded), we log a warning but do not abort the suite.
 				const thinPoolName = "pillar-e2e-pool"
 				thinCtx, thinCancel := context.WithTimeout(ctx, 30*time.Second)
-				thinErr := lvm.CreateThinPool(thinCtx, nodeContainer, vg.VGName, thinPoolName, 128)
+				thinErr := lvm.CreateThinPool(thinCtx, nodeContainer, vg.VGName, thinPoolName, 200)
 				thinCancel()
 				if thinErr != nil {
 					_, _ = fmt.Fprintf(output,

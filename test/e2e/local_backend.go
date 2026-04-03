@@ -305,7 +305,7 @@ func verifyControllerLocalBackend() error {
 	agentSrv := newFakeAgentServer()
 	agentSrv.createVolumeResp = &agentv1.CreateVolumeResponse{
 		DevicePath:    "/dev/test-device",
-		CapacityBytes: 1 << 30,
+		CapacityBytes: 10 << 20,
 	}
 	agentSrv.exportVolumeResp = &agentv1.ExportVolumeResponse{
 		ExportInfo: &agentv1.ExportInfo{
@@ -316,7 +316,7 @@ func verifyControllerLocalBackend() error {
 		},
 	}
 	agentSrv.expandVolumeResp = &agentv1.ExpandVolumeResponse{
-		CapacityBytes: 2 << 30,
+		CapacityBytes: 20 << 20,
 	}
 	agentSrv.getCapacityResp = &agentv1.GetCapacityResponse{
 		TotalBytes:     100 << 30,
@@ -364,7 +364,7 @@ func verifyControllerLocalBackend() error {
 		Name:               "pvc-local",
 		Parameters:         params,
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 1 << 30},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 	})
 	if err != nil {
 		return fmt.Errorf("controller create volume: %w", err)
@@ -390,12 +390,12 @@ func verifyControllerLocalBackend() error {
 
 	expandResp, err := controller.ControllerExpandVolume(ctx, &csiapi.ControllerExpandVolumeRequest{
 		VolumeId:      createResp.GetVolume().GetVolumeId(),
-		CapacityRange: &csiapi.CapacityRange{RequiredBytes: 2 << 30},
+		CapacityRange: &csiapi.CapacityRange{RequiredBytes: 20 << 20},
 	})
 	if err != nil {
 		return fmt.Errorf("controller expand volume: %w", err)
 	}
-	if !expandResp.GetNodeExpansionRequired() || expandResp.GetCapacityBytes() != 2<<30 {
+	if !expandResp.GetNodeExpansionRequired() || expandResp.GetCapacityBytes() != 20<<20 {
 		return fmt.Errorf("controller expand returned capacity=%d nodeExpansionRequired=%v",
 			expandResp.GetCapacityBytes(), expandResp.GetNodeExpansionRequired())
 	}
@@ -512,12 +512,12 @@ func verifyNodeLocalBackend() error {
 		VolumeId:         volumeID,
 		VolumePath:       targetPath,
 		VolumeCapability: mountCapability("ext4"),
-		CapacityRange:    &csiapi.CapacityRange{RequiredBytes: 2 << 30},
+		CapacityRange:    &csiapi.CapacityRange{RequiredBytes: 20 << 20},
 	})
 	if err != nil {
 		return fmt.Errorf("node expand volume: %w", err)
 	}
-	if expandResp.GetCapacityBytes() != 2<<30 || len(resizer.calls) != 1 {
+	if expandResp.GetCapacityBytes() != 20<<20 || len(resizer.calls) != 1 {
 		return fmt.Errorf("node expand returned capacity=%d resizeCalls=%d", expandResp.GetCapacityBytes(), len(resizer.calls))
 	}
 
@@ -595,7 +595,7 @@ func verifyAgentLocalBackendForProcess(processNum int) error {
 
 	if _, err := server.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
 		VolumeId:      volID,
-		CapacityBytes: 1 << 30,
+		CapacityBytes: 10 << 20, // 10 MiB — pool is 128 MiB, keep volumes small
 	}); err != nil {
 		return fmt.Errorf("agent create volume: %w", err)
 	}
@@ -1031,7 +1031,7 @@ func verifyLVMLocalBackend() error {
 
 	volumeID := lvmVG + "/pvc-verifier-local"
 
-	devicePath, allocated, err := backend.Create(ctx, volumeID, 1<<30, nil)
+	devicePath, allocated, err := backend.Create(ctx, volumeID, 10<<20, nil)
 	if err != nil {
 		return fmt.Errorf("lvm create: %w", err)
 	}
@@ -1039,16 +1039,16 @@ func verifyLVMLocalBackend() error {
 	if devicePath != wantPath {
 		return fmt.Errorf("lvm create returned path=%q, want %q", devicePath, wantPath)
 	}
-	if allocated != 1<<30 {
-		return fmt.Errorf("lvm create allocated=%d, want %d", allocated, 1<<30)
+	if allocated != 10<<20 {
+		return fmt.Errorf("lvm create allocated=%d, want %d", allocated, 10<<20)
 	}
 
-	allocated, err = backend.Expand(ctx, volumeID, 2<<30)
+	allocated, err = backend.Expand(ctx, volumeID, 20<<20)
 	if err != nil {
 		return fmt.Errorf("lvm expand: %w", err)
 	}
-	if allocated != 2<<30 {
-		return fmt.Errorf("lvm expand allocated=%d, want %d", allocated, 2<<30)
+	if allocated != 20<<20 {
+		return fmt.Errorf("lvm expand allocated=%d, want %d", allocated, 20<<20)
 	}
 
 	total, available, err := backend.Capacity(ctx)
@@ -1114,19 +1114,19 @@ func verifyZFSLocalBackend() error {
 	volumeID := zfsPool + "/pvc-verifier-local"
 	wantDevicePath := "/dev/zvol/" + zfsPool + "/k8s/pvc-verifier-local"
 
-	devicePath, allocated, err := backend.Create(ctx, volumeID, 1<<30, nil)
+	devicePath, allocated, err := backend.Create(ctx, volumeID, 10<<20, nil)
 	if err != nil {
 		return fmt.Errorf("zfs create: %w", err)
 	}
 	if devicePath != wantDevicePath {
 		return fmt.Errorf("zfs create returned path=%q, want %q", devicePath, wantDevicePath)
 	}
-	if allocated != 1<<30 {
-		return fmt.Errorf("zfs create allocated=%d, want %d", allocated, 1<<30)
+	if allocated != 10<<20 {
+		return fmt.Errorf("zfs create allocated=%d, want %d", allocated, 10<<20)
 	}
 
 	// Idempotent create (same size) must return existing device path and size.
-	dp2, alloc2, err := backend.Create(ctx, volumeID, 1<<30, nil)
+	dp2, alloc2, err := backend.Create(ctx, volumeID, 10<<20, nil)
 	if err != nil {
 		return fmt.Errorf("zfs create idempotent: %w", err)
 	}
@@ -1135,12 +1135,12 @@ func verifyZFSLocalBackend() error {
 			dp2, alloc2, devicePath, allocated)
 	}
 
-	allocated, err = backend.Expand(ctx, volumeID, 2<<30)
+	allocated, err = backend.Expand(ctx, volumeID, 20<<20)
 	if err != nil {
 		return fmt.Errorf("zfs expand: %w", err)
 	}
-	if allocated != 2<<30 {
-		return fmt.Errorf("zfs expand allocated=%d, want %d", allocated, 2<<30)
+	if allocated != 20<<20 {
+		return fmt.Errorf("zfs expand allocated=%d, want %d", allocated, 20<<20)
 	}
 
 	total, available, err := backend.Capacity(ctx)

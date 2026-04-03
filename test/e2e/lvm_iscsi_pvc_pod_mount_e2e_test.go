@@ -109,7 +109,7 @@ spec:
   accessModes: [ReadWriteOnce]
   resources:
     requests:
-      storage: 1Gi
+      storage: 32Mi
   storageClassName: %s
 `, pvcName, testNamespace, iscsiSCName)
 				Expect(e34ApplyStdin(ctx, kubeconfig, pvcYAML)).To(Succeed(), "[TC-E34.322] apply iSCSI PVC")

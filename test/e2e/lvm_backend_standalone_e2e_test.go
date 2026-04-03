@@ -127,12 +127,12 @@ var _ = Describe("E33.4: LVM 백엔드 독립 E2E (Standalone)", Label("default-
 		// Create a thin pool first.
 		_, err := e334ContainerExec(ctx,
 			"lvcreate", "--yes",
-			"-L", "200M",
+			"-L", "50M",
 			"-T", lvmVG+"/"+e334ThinPoolLV,
 		)
 		if err != nil {
 			Fail(fmt.Sprintf("[TC-E33.311] MISSING PREREQUISITE: cannot create thin pool in VG %q: %v\n"+
-				"  The VG must have at least 200 MiB of free space and dm_thin_pool kernel module must be loaded.\n"+
+				"  The VG must have at least 50 MiB of free space and dm_thin_pool kernel module must be loaded.\n"+
 				"  Load module: sudo modprobe dm_thin_pool", lvmVG, err))
 		}
 
@@ -140,7 +140,7 @@ var _ = Describe("E33.4: LVM 백엔드 독립 E2E (Standalone)", Label("default-
 		_, err = e334ContainerExec(ctx,
 			"lvcreate", "--yes",
 			"--name", e334ThinLV,
-			"-V", "100M",
+			"-V", "20M",
 			"--thinpool", e334ThinPoolLV,
 			lvmVG,
 		)
@@ -181,7 +181,7 @@ var _ = Describe("E33.4: LVM 백엔드 독립 E2E (Standalone)", Label("default-
 		_, err := e334ContainerExec(ctx,
 			"lvcreate", "--yes",
 			"--type", "linear",
-			"-L", "100M",
+			"-L", "20M",
 			"--name", e334LinearLV,
 			lvmVG,
 		)
@@ -216,7 +216,7 @@ var _ = Describe("E33.4: LVM 백엔드 독립 E2E (Standalone)", Label("default-
 		_, err := e334ContainerExec(ctx,
 			"lvcreate", "--yes",
 			"--type", "linear",
-			"-L", "50M",
+			"-L", "16M",
 			"--name", deleteLV,
 			lvmVG,
 		)
@@ -253,15 +253,15 @@ var _ = Describe("E33.4: LVM 백엔드 독립 E2E (Standalone)", Label("default-
 		_, _ = e334ContainerExec(ctx,
 			"lvcreate", "--yes",
 			"--type", "linear",
-			"-L", "100M",
+			"-L", "20M",
 			"--name", e334LinearLV,
 			lvmVG,
 		)
 
-		// Extend to 200M.
-		_, err := e334ContainerExec(ctx, "lvextend", "-L", "200M", lvmVG+"/"+e334LinearLV)
+		// Extend to 40M.
+		_, err := e334ContainerExec(ctx, "lvextend", "-L", "40M", lvmVG+"/"+e334LinearLV)
 		Expect(err).NotTo(HaveOccurred(),
-			"[TC-E33.314] lvextend to 200M must succeed")
+			"[TC-E33.314] lvextend to 40M must succeed")
 
 		// Verify new size via lvs.
 		out, err := e334ContainerExec(ctx, "lvs", "--noheadings", "--units", "b",
@@ -270,9 +270,9 @@ var _ = Describe("E33.4: LVM 백엔드 독립 E2E (Standalone)", Label("default-
 			"[TC-E33.314] lvs after expansion must succeed")
 		Expect(out).To(ContainSubstring(e334LinearLV),
 			"[TC-E33.314] expanded LV must appear in lvs output")
-		// lv_size in bytes must be >= 200 MiB = 209715200 bytes.
-		Expect(out).To(MatchRegexp(`[0-9]{9,}`),
-			"[TC-E33.314] lv_size in bytes must be >= 9 digits (≥200 MiB)")
+		// lv_size in bytes must be >= 40 MiB = 41943040 bytes.
+		Expect(out).To(MatchRegexp(`[0-9]{8,}`),
+			"[TC-E33.314] lv_size in bytes must be >= 8 digits (≥40 MiB)")
 	})
 
 	// ── TC-E33.315 ──────────────────────────────────────────────────────────────
@@ -321,7 +321,7 @@ var _ = Describe("E33.4: LVM 백엔드 독립 E2E (Standalone)", Label("default-
 		_, _ = e334ContainerExec(ctx,
 			"lvcreate", "--yes",
 			"--type", "linear",
-			"-L", "50M",
+			"-L", "16M",
 			"--name", e334ListLV,
 			lvmVG,
 		)

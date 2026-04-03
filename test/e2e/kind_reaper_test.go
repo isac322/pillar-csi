@@ -226,9 +226,9 @@ func TestReapKernelResourcesNoOrphans(t *testing.T) {
 	runner := &fakeCommandRunner{
 		t: t,
 		outputs: map[string]fakeCommandResult{
-			"zpool list -H -o name":          {stdout: "rpool\nother-pool\n"},
-			"losetup -a":                     {stdout: "/dev/loop0: []: (/var/lib/docker/overlay.img)\n"},
-			"vgs --noheadings -o vg_name":    {stdout: "  ubuntu-vg\n"},
+			"zpool list -H -o name":       {stdout: "rpool\nother-pool\n"},
+			"losetup -a":                  {stdout: "/dev/loop0: []: (/var/lib/docker/overlay.img)\n"},
+			"vgs --noheadings -o vg_name": {stdout: "  ubuntu-vg\n"},
 		},
 	}
 
@@ -252,10 +252,10 @@ func TestReapKernelResourcesOrphanedZFSPool(t *testing.T) {
 	runner := &fakeCommandRunner{
 		t: t,
 		outputs: map[string]fakeCommandResult{
-			"zpool list -H -o name":                          {stdout: "rpool\npillar-e2e-zfs-abcd1234\n"},
-			"zpool destroy -f pillar-e2e-zfs-abcd1234":      {},
-			"losetup -a":                                     {stdout: ""},
-			"vgs --noheadings -o vg_name":                   {stdout: ""},
+			"zpool list -H -o name":                    {stdout: "rpool\npillar-e2e-zfs-abcd1234\n"},
+			"zpool destroy -f pillar-e2e-zfs-abcd1234": {},
+			"losetup -a":                  {stdout: ""},
+			"vgs --noheadings -o vg_name": {stdout: ""},
 		},
 	}
 
@@ -282,10 +282,10 @@ func TestReapKernelResourcesOrphanedLoopDevice(t *testing.T) {
 	runner := &fakeCommandRunner{
 		t: t,
 		outputs: map[string]fakeCommandResult{
-			"zpool list -H -o name":                                                {stdout: ""},
-			"losetup -a":                                                           {stdout: "/dev/loop7: []: (/tmp/pillar-e2e-lvm-abcd1234.img)\n/dev/loop0: []: (/other.img)\n"},
-			"losetup -d /dev/loop7":                                                {},
-			"vgs --noheadings -o vg_name":                                         {stdout: ""},
+			"zpool list -H -o name":       {stdout: ""},
+			"losetup -a":                  {stdout: "/dev/loop7: []: (/tmp/pillar-e2e-lvm-abcd1234.img)\n/dev/loop0: []: (/other.img)\n"},
+			"losetup -d /dev/loop7":       {},
+			"vgs --noheadings -o vg_name": {stdout: ""},
 		},
 	}
 
@@ -312,10 +312,10 @@ func TestReapKernelResourcesOrphanedLVMVG(t *testing.T) {
 	runner := &fakeCommandRunner{
 		t: t,
 		outputs: map[string]fakeCommandResult{
-			"zpool list -H -o name":                   {stdout: ""},
-			"losetup -a":                              {stdout: ""},
-			"vgs --noheadings -o vg_name":             {stdout: "  ubuntu-vg\n  pillar-e2e-lvm-abcd1234\n"},
-			"vgremove -f pillar-e2e-lvm-abcd1234":    {},
+			"zpool list -H -o name":               {stdout: ""},
+			"losetup -a":                          {stdout: ""},
+			"vgs --noheadings -o vg_name":         {stdout: "  ubuntu-vg\n  pillar-e2e-lvm-abcd1234\n"},
+			"vgremove -f pillar-e2e-lvm-abcd1234": {},
 		},
 	}
 
@@ -343,8 +343,8 @@ func TestReapKernelResourcesToolNotInstalled(t *testing.T) {
 	runner := &fakeCommandRunner{
 		t: t,
 		outputs: map[string]fakeCommandResult{
-			"zpool list -H -o name":        {err: errors.New("zpool: command not found")},
-			"losetup -a":                   {err: errors.New("losetup: command not found")},
+			"zpool list -H -o name":       {err: errors.New("zpool: command not found")},
+			"losetup -a":                  {err: errors.New("losetup: command not found")},
 			"vgs --noheadings -o vg_name": {err: errors.New("vgs: command not found")},
 		},
 	}
@@ -366,10 +366,10 @@ func TestReapKernelResourcesDestroyFailureIsLogged(t *testing.T) {
 	runner := &fakeCommandRunner{
 		t: t,
 		outputs: map[string]fakeCommandResult{
-			"zpool list -H -o name":                     {stdout: "pillar-e2e-zfs-deadbeef\n"},
+			"zpool list -H -o name":                    {stdout: "pillar-e2e-zfs-deadbeef\n"},
 			"zpool destroy -f pillar-e2e-zfs-deadbeef": {err: errors.New("pool is busy")},
-			"losetup -a":                                {stdout: ""},
-			"vgs --noheadings -o vg_name":              {stdout: ""},
+			"losetup -a":                  {stdout: ""},
+			"vgs --noheadings -o vg_name": {stdout: ""},
 		},
 	}
 

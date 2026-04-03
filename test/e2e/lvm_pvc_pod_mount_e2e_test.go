@@ -318,7 +318,7 @@ spec:
 			})
 
 			// ── TC-E33.298 ────────────────────────────────────────────────────
-			It("[TC-E33.298] first PVC (1Gi) becomes Bound via LVM CreateVolume", func() {
+			It("[TC-E33.298] first PVC (32Mi) becomes Bound via LVM CreateVolume", func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 				defer cancel()
 
@@ -341,7 +341,7 @@ spec:
   accessModes: [ReadWriteOnce]
   resources:
     requests:
-      storage: 1Gi
+      storage: 32Mi
   storageClassName: %s
 `, pvcName1, testNamespace, scName)
 
@@ -373,7 +373,7 @@ spec:
 			})
 
 			// ── TC-E33.299 ────────────────────────────────────────────────────
-			It("[TC-E33.299] bound PV (first PVC) has capacity >= 1Gi", func() {
+			It("[TC-E33.299] bound PV (first PVC) has capacity >= 32Mi", func() {
 				if pvName1 == "" {
 					Fail("[TC-E33.299] MISSING PREREQUISITE: pvName1 not set — TC-E33.298 may have skipped")
 				}
@@ -387,7 +387,7 @@ spec:
 				Expect(err).NotTo(HaveOccurred(), "[TC-E33.299] get PV capacity")
 				Expect(storageStr).To(MatchRegexp(`^[0-9]+[KMGT]?i?$`),
 					"[TC-E33.299] PV capacity must be a valid quantity string")
-				// The capacity string should reflect at least 1Gi.
+				// The capacity string should reflect at least 32Mi.
 				Expect(storageStr).NotTo(BeEmpty(),
 					"[TC-E33.299] PV capacity must not be empty")
 			})
@@ -434,7 +434,7 @@ spec:
 			})
 
 			// ── TC-E33.302 ────────────────────────────────────────────────────
-			It("[TC-E33.302] second PVC (2Gi) is independently provisioned and Bound", func() {
+			It("[TC-E33.302] second PVC (64Mi) is independently provisioned and Bound", func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 				defer cancel()
 
@@ -456,14 +456,14 @@ spec:
   accessModes: [ReadWriteOnce]
   resources:
     requests:
-      storage: 2Gi
+      storage: 64Mi
   storageClassName: %s
 `, pvcName2, testNamespace, scName)
 
 				cmd := exec.CommandContext(ctx, "kubectl", "--kubeconfig="+os.Getenv("KUBECONFIG"),
 					"apply", "-f", "-")
 				cmd.Stdin = strings.NewReader(pvcYAML)
-				Expect(cmd.Run()).To(Succeed(), "[TC-E33.302] apply 2Gi PVC YAML")
+				Expect(cmd.Run()).To(Succeed(), "[TC-E33.302] apply 64Mi PVC YAML")
 
 				Eventually(func(g Gomega) {
 					phase, err := e33KubectlOutput(ctx, "get", "pvc", pvcName2,
@@ -472,12 +472,12 @@ spec:
 					)
 					g.Expect(err).NotTo(HaveOccurred())
 					g.Expect(phase).To(Equal("Bound"),
-						"[TC-E33.302] 2Gi PVC must reach Bound phase")
+						"[TC-E33.302] 64Mi PVC must reach Bound phase")
 				}).WithContext(ctx).
 					WithTimeout(90*time.Second).
 					WithPolling(5*time.Second).
 					Should(Succeed(),
-						"[TC-E33.302] 2Gi PVC must become Bound within 90s")
+						"[TC-E33.302] 64Mi PVC must become Bound within 90s")
 
 				// Verify it's a different PV than pvcName1.
 				pv2, err := e33KubectlOutput(ctx, "get", "pvc", pvcName2,
@@ -487,7 +487,7 @@ spec:
 				Expect(err).NotTo(HaveOccurred())
 				if pvName1 != "" {
 					Expect(pv2).NotTo(Equal(pvName1),
-						"[TC-E33.302] 2Gi PVC must get a different PV than 1Gi PVC")
+						"[TC-E33.302] 64Mi PVC must get a different PV than 32Mi PVC")
 				}
 			})
 

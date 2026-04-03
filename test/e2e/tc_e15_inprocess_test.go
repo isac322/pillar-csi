@@ -21,7 +21,7 @@ func assertE15_CreateVolume_AgentFullDisk(tc documentedCase) {
 		Name:               "pvc-e15-full-disk",
 		Parameters:         env.params,
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 1 << 30},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 	})
 	Expect(err).To(HaveOccurred(), "%s: expected error for full disk", tc.tcNodeLabel())
 }
@@ -38,7 +38,7 @@ func assertE15_CreateVolume_Timeout(tc documentedCase) {
 		Name:               "pvc-e15-timeout",
 		Parameters:         env.params,
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 1 << 30},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 	})
 	Expect(err).To(HaveOccurred(), "%s: expected error for timeout", tc.tcNodeLabel())
 }
@@ -51,7 +51,7 @@ func assertE15_ExpandVolume_ExceedsCapacity(tc documentedCase) {
 		Name:               "pvc-e15-expand-exceed",
 		Parameters:         env.params,
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 1 << 30},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: CreateVolume", tc.tcNodeLabel())
 	volumeID := resp.GetVolume().GetVolumeId()
@@ -114,7 +114,7 @@ func assertE15_ControllerPublish_AgentErr(tc documentedCase) {
 		Name:               "pvc-e15-pub-err",
 		Parameters:         env.params,
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 1 << 30},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: CreateVolume", tc.tcNodeLabel())
 

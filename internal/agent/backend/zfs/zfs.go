@@ -246,11 +246,13 @@ func (z *Backend) Create(
 
 	// If the zvol already exists, check that the requested size is compatible.
 	// An identical (or compatible) request is returned as-is (idempotent).
-	// A request for a different capacity is rejected with ConflictError so
-	// that the caller can surface gRPC codes.AlreadyExists with detail.
+	// ZFS may round up the requested size to the next volblocksize boundary, so the
+	// existing size may be larger than requested. Treat existing >= requested as
+	// compatible (the volume satisfies the capacity request). Only reject if
+	// existing < requested (volume is too small for the new request).
 	existing, err := z.volsizeBytes(ctx, ds)
 	if err == nil {
-		if existing != capacityBytes {
+		if existing < capacityBytes {
 			return "", existing, &backend.ConflictError{
 				VolumeID:       volumeID,
 				ExistingBytes:  existing,

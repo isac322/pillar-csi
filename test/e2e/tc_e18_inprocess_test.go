@@ -23,7 +23,7 @@ func assertE18_CreateVolume_AgentUnreachable(tc documentedCase) {
 		Name:               "pvc-e18-unreachable",
 		Parameters:         env.params,
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 1 << 30},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 	})
 	Expect(err).To(HaveOccurred(), "%s: expected error when agent unreachable", tc.tcNodeLabel())
 }
@@ -40,7 +40,7 @@ func assertE18_CreateVolume_AgentInternal(tc documentedCase) {
 		Name:               "pvc-e18-create-internal",
 		Parameters:         env.params,
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 1 << 30},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 	})
 	Expect(err).To(HaveOccurred(), "%s: expected error on agent internal error", tc.tcNodeLabel())
 }
@@ -53,7 +53,7 @@ func assertE18_DeleteVolume_AgentInternal(tc documentedCase) {
 		Name:               "pvc-e18-delete-internal",
 		Parameters:         env.params,
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 1 << 30},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: CreateVolume", tc.tcNodeLabel())
 
@@ -75,7 +75,7 @@ func assertE18_ControllerPublish_AgentInternal(tc documentedCase) {
 		Name:               "pvc-e18-pub-internal",
 		Parameters:         env.params,
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 1 << 30},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: CreateVolume", tc.tcNodeLabel())
 
@@ -100,7 +100,7 @@ func assertE18_ExpandVolume_AgentInternal(tc documentedCase) {
 		Name:               "pvc-e18-expand-internal",
 		Parameters:         env.params,
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 1 << 30},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: CreateVolume", tc.tcNodeLabel())
 
@@ -110,7 +110,7 @@ func assertE18_ExpandVolume_AgentInternal(tc documentedCase) {
 
 	_, err = env.controller.ControllerExpandVolume(env.ctx, &csiapi.ControllerExpandVolumeRequest{
 		VolumeId:      resp.GetVolume().GetVolumeId(),
-		CapacityRange: &csiapi.CapacityRange{RequiredBytes: 2 << 30},
+		CapacityRange: &csiapi.CapacityRange{RequiredBytes: 20 << 20},
 	})
 	Expect(err).To(HaveOccurred(), "%s: expected error on agent expand internal error", tc.tcNodeLabel())
 }
@@ -122,7 +122,7 @@ func assertE18_ReconcileState_PartialExport(tc documentedCase) {
 	// Create a volume to establish partial state.
 	_, _ = env.client.CreateVolume(env.ctx, &agentv1.CreateVolumeRequest{
 		VolumeId:      "tank/pvc-e18-partial",
-		CapacityBytes: 1 << 30,
+		CapacityBytes: 10 << 20,
 	})
 
 	// ReconcileState must not panic even with partial export state.
