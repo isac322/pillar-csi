@@ -48,7 +48,7 @@ func runSignalTestInSubprocess(t *testing.T, testName string) {
 	}
 }
 
-func newValidKindBootstrapState(t *testing.T) *kindBootstrapState {
+func newValidKindBootstrapState(t testing.TB) *kindBootstrapState {
 	t.Helper()
 
 	suitePaths := newTestSuiteTempPaths(t)

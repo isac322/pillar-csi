@@ -2,9 +2,13 @@ package e2e
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"os"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -61,6 +65,100 @@ func (k *kindBinaryRunner) Run(ctx context.Context, spec commandSpec) (string, e
 	return k.runner.Run(ctx, spec)
 }
 
+// pidFromClusterName extracts the process PID encoded in a pillar-csi-e2e
+// cluster name of the form:
+//
+//	pillar-csi-e2e-p{pid}-{entropy}
+//
+// Returns 0 when the name does not match the expected pattern or the PID
+// component cannot be parsed as a positive integer. A return value of 0 is
+// treated conservatively as "unable to determine owning PID" and the cluster
+// is not reaped.
+func pidFromClusterName(name string) int {
+	suffix := strings.TrimPrefix(name, orphanClusterPrefix)
+	if suffix == name {
+		return 0 // name does not start with orphanClusterPrefix
+	}
+	// suffix is "p{pid}-{entropy}" or an unrecognised pattern.
+	// Extract the first dash-delimited token.
+	dashIdx := strings.Index(suffix, "-")
+	pidToken := suffix
+	if dashIdx >= 0 {
+		pidToken = suffix[:dashIdx]
+	}
+	// PID token must start with 'p' (the literal prefix added by newKindBootstrapState).
+	if len(pidToken) < 2 || pidToken[0] != 'p' {
+		return 0
+	}
+	pid, err := strconv.Atoi(pidToken[1:])
+	if err != nil || pid <= 0 {
+		return 0
+	}
+	return pid
+}
+
+// processAliveChecker is the function used to check whether a process is alive.
+// It is a package-level variable so tests can substitute a fake implementation
+// without forking real processes.
+//
+// The default implementation uses kill(pid, 0) semantics.
+var processAliveChecker = defaultIsAliveProcess
+
+// isOrphanedCluster reports whether the Kind cluster with the given name was
+// created by a process that is no longer running, making it safe to delete
+// without risking concurrent-invocation collisions.
+//
+// Returns false (do not delete) when:
+//   - The name does not embed a recognisable PID component (unknown format).
+//   - The owning process (by PID) is still alive.
+//   - The liveness check is inconclusive (permission denied, etc.).
+func isOrphanedCluster(name string) bool {
+	pid := pidFromClusterName(name)
+	if pid <= 0 {
+		// Cannot determine ownership → be conservative, skip deletion.
+		return false
+	}
+	return !processAliveChecker(pid)
+}
+
+// defaultIsAliveProcess reports whether the process with the given PID is
+// currently running on this host.
+//
+// It uses (*os.Process).Signal(syscall.Signal(0)) — the traditional
+// kill(pid, 0) probe — and interprets the return value conservatively:
+//
+//   - nil error           → process exists (signal delivery succeeded).
+//   - os.ErrProcessDone   → process has exited (Go runtime sentinel).
+//   - syscall.ESRCH       → no such process (raw kernel sentinel).
+//   - syscall.EPERM       → process exists, no permission → treat as alive.
+//   - other error         → treat conservatively as alive.
+//
+// Note: os.FindProcess on Linux always succeeds without checking whether the
+// PID actually refers to a live process. The Signal(0) call performs the real
+// liveness probe. Go 1.16+ wraps the POSIX ESRCH error as os.ErrProcessDone
+// when the process struct's internal done flag is set; we check both.
+func defaultIsAliveProcess(pid int) bool {
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		// os.FindProcess never errors on UNIX; conservatively assume alive.
+		return true
+	}
+	err = proc.Signal(syscall.Signal(0))
+	if err == nil {
+		return true // process exists
+	}
+	// Go 1.16+: process already exited (internal done flag set).
+	if errors.Is(err, os.ErrProcessDone) {
+		return false
+	}
+	// Raw kernel: no such process.
+	if errors.Is(err, syscall.ESRCH) {
+		return false
+	}
+	// EPERM or other: process exists but we can't signal it → treat as alive.
+	return true
+}
+
 // reapOrphanClustersWithRunner is the testable core of reapOrphanedClusters.
 // It accepts an injected commandRunner so unit tests can supply a fake runner
 // without spawning real processes. The runner must use "kind" as the command
@@ -95,9 +193,20 @@ func reapOrphanClustersWithRunner(ctx context.Context, runner commandRunner, out
 	var orphans []string
 	for _, line := range strings.Split(out, "\n") {
 		name := strings.TrimSpace(line)
-		if strings.HasPrefix(name, orphanClusterPrefix) {
-			orphans = append(orphans, name)
+		if !strings.HasPrefix(name, orphanClusterPrefix) {
+			continue
 		}
+		// Sub-AC 2: Concurrent invocation safety — only reap clusters whose
+		// owning process (encoded as p{pid} in the cluster name) is no longer
+		// running. This prevents a concurrent go test invocation from deleting
+		// another live invocation's cluster.
+		if !isOrphanedCluster(name) {
+			_, _ = fmt.Fprintf(output,
+				"[reaper] skipping cluster %q — owning process is still running\n",
+				name)
+			continue
+		}
+		orphans = append(orphans, name)
 	}
 
 	if len(orphans) == 0 {

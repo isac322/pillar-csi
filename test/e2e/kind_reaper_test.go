@@ -4,8 +4,44 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
+)
+
+// withDeadPIDChecker overrides processAliveChecker for the duration of the
+// test so that all PID checks report the given pids as dead (not running).
+// All other PIDs are treated as alive. The original checker is restored via
+// t.Cleanup.
+//
+// This helper mutates a package-level variable; callers MUST NOT call
+// t.Parallel() when using it (or races will corrupt the shared state).
+func withDeadPIDChecker(t *testing.T, deadPIDs ...int) {
+	t.Helper()
+	original := processAliveChecker
+	t.Cleanup(func() { processAliveChecker = original })
+
+	dead := make(map[int]bool, len(deadPIDs))
+	for _, pid := range deadPIDs {
+		dead[pid] = true
+	}
+	processAliveChecker = func(pid int) bool {
+		return !dead[pid]
+	}
+}
+
+// impossiblePID is a PID value guaranteed to be above the Linux kernel's
+// maximum PID (typically 4,194,304 = 2^22). Cluster names embedding this PID
+// will always be treated as orphaned by defaultIsAliveProcess without any
+// mocking, making them suitable for parallel tests that must not modify the
+// package-level processAliveChecker.
+//
+// Note: any value > 4,194,304 works; we use 9,900,001–9,900,009 as a stable
+// pool of test-reserved fake PIDs.
+const (
+	impossiblePID1 = 9_900_001
+	impossiblePID2 = 9_900_002
+	impossiblePID3 = 9_900_003
 )
 
 // TestReapOrphanedClustersSkipsNonMatchingClusters verifies that clusters
@@ -36,12 +72,17 @@ func TestReapOrphanedClustersSkipsNonMatchingClusters(t *testing.T) {
 }
 
 // TestReapOrphanedClustersDeletesMatchingClusters verifies that clusters
-// whose names start with orphanClusterPrefix are deleted.
+// whose names start with orphanClusterPrefix are deleted when their owning
+// process is no longer running.
+//
+// We use impossiblePID1 and impossiblePID2 (> kernel pid_max = 4,194,304)
+// so defaultIsAliveProcess returns false without any mocking, enabling this
+// test to run in parallel safely.
 func TestReapOrphanedClustersDeletesMatchingClusters(t *testing.T) {
 	t.Parallel()
 
-	orphan1 := "pillar-csi-e2e-p0001-aabbccdd"
-	orphan2 := "pillar-csi-e2e-p0002-11223344"
+	orphan1 := fmt.Sprintf("pillar-csi-e2e-p%d-aabbccdd", impossiblePID1)
+	orphan2 := fmt.Sprintf("pillar-csi-e2e-p%d-11223344", impossiblePID2)
 
 	var buf bytes.Buffer
 	runner := &fakeCommandRunner{
@@ -146,7 +187,8 @@ func TestReapOrphanedClustersHandlesNoKindClustersFoundError(t *testing.T) {
 func TestReapOrphanedClustersDeleteFailureIsLogged(t *testing.T) {
 	t.Parallel()
 
-	orphan := "pillar-csi-e2e-p0001-deadbeef"
+	// Use impossiblePID3 (> pid_max) so no mocking is needed.
+	orphan := fmt.Sprintf("pillar-csi-e2e-p%d-deadbeef", impossiblePID3)
 
 	var buf bytes.Buffer
 	runner := &fakeCommandRunner{

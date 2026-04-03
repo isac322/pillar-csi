@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"syscall"
 
+	"github.com/bhyoo/pillar-csi/test/e2e/framework"
 	"github.com/bhyoo/pillar-csi/test/e2e/framework/names"
 	"github.com/bhyoo/pillar-csi/test/e2e/framework/ports"
 )
@@ -141,6 +142,13 @@ func NewTestCaseScope(tcID string) (*TestCaseScope, error) {
 	}
 
 	scopeTag := dnsLabel("tc", tcSlug, filepath.Base(rootDir))
+
+	// Register with the isolation checker so the directory is tracked as an
+	// active scope. The checker's AfterEach hook will flag the directory as
+	// "orphaned" if Close() (or CloseBackground) is not called, or if Close()
+	// fails to remove it.
+	framework.RegisterActiveScope(rootDir, tcID, scopeTag)
+
 	return &TestCaseScope{
 		TCID:             tcID,
 		RootDir:          rootDir,
@@ -415,6 +423,12 @@ func (s *TestCaseScope) Close() error {
 		}
 		rootDir = s.RootDir
 		s.mu.Unlock()
+
+		// Deregister from the isolation checker immediately after marking the
+		// scope as closed. From this point on, if the root directory still
+		// exists on disk (e.g. because the os.RemoveAll below fails), it will
+		// be detected as an orphan by the next AfterEach isolation scan.
+		framework.DeregisterActiveScope(rootDir)
 
 		var errs []error
 		if len(resources) > 0 {

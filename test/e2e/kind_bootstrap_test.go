@@ -10,7 +10,7 @@ import (
 )
 
 type fakeCommandRunner struct {
-	t       *testing.T
+	t       testing.TB
 	outputs map[string]fakeCommandResult
 	calls   []commandSpec
 }
@@ -30,7 +30,7 @@ func (f *fakeCommandRunner) Run(_ context.Context, cmd commandSpec) (string, err
 	return result.stdout, result.err
 }
 
-func newTestSuiteTempPaths(t *testing.T) *suiteTempPaths {
+func newTestSuiteTempPaths(t testing.TB) *suiteTempPaths {
 	t.Helper()
 
 	paths, err := newSuiteTempPaths()
