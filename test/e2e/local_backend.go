@@ -20,6 +20,8 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
+	corev1 "k8s.io/api/core/v1"
+	storagev1 "k8s.io/api/storage/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientfake "sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -249,6 +251,12 @@ func verifyControllerLocalBackend() error {
 	if err := pillarv1.AddToScheme(scheme); err != nil {
 		return fmt.Errorf("register pillar scheme: %w", err)
 	}
+	if err := corev1.AddToScheme(scheme); err != nil {
+		return fmt.Errorf("register corev1 scheme: %w", err)
+	}
+	if err := storagev1.AddToScheme(scheme); err != nil {
+		return fmt.Errorf("register storagev1 scheme: %w", err)
+	}
 
 	target := &pillarv1.PillarTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "target-local"},
@@ -257,10 +265,20 @@ func verifyControllerLocalBackend() error {
 		},
 	}
 
+	// CSINode is needed for ControllerPublishVolume to resolve initiator identity.
+	csiNode := &storagev1.CSINode{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "node-local",
+			Annotations: map[string]string{
+				"pillar-csi.bhyoo.com/nvmeof-host-nqn": "nqn.2026-01.io.example:node-local",
+			},
+		},
+	}
+
 	k8sClient := clientfake.NewClientBuilder().
 		WithScheme(scheme).
 		WithStatusSubresource(&pillarv1.PillarTarget{}, &pillarv1.PillarVolume{}).
-		WithObjects(target).
+		WithObjects(target, csiNode).
 		Build()
 
 	agentClient := &localMockAgentClient{
@@ -320,7 +338,7 @@ func verifyControllerLocalBackend() error {
 
 	if _, err := controller.ControllerPublishVolume(ctx, &csiapi.ControllerPublishVolumeRequest{
 		VolumeId:         createResp.GetVolume().GetVolumeId(),
-		NodeId:           "nqn.2026-01.io.example:node-local",
+		NodeId:           "node-local",
 		VolumeCapability: mountCapability("ext4"),
 	}); err != nil {
 		return fmt.Errorf("controller publish volume: %w", err)
@@ -357,7 +375,7 @@ func verifyControllerLocalBackend() error {
 
 	if _, err := controller.ControllerUnpublishVolume(ctx, &csiapi.ControllerUnpublishVolumeRequest{
 		VolumeId: createResp.GetVolume().GetVolumeId(),
-		NodeId:   "nqn.2026-01.io.example:node-local",
+		NodeId:   "node-local",
 	}); err != nil {
 		return fmt.Errorf("controller unpublish volume: %w", err)
 	}
@@ -741,6 +759,12 @@ func verifyCRDLocalContracts() error {
 	scheme := runtime.NewScheme()
 	if err := pillarv1.AddToScheme(scheme); err != nil {
 		return fmt.Errorf("register pillar scheme for CRD verifier: %w", err)
+	}
+	if err := corev1.AddToScheme(scheme); err != nil {
+		return fmt.Errorf("register corev1 scheme for CRD verifier: %w", err)
+	}
+	if err := storagev1.AddToScheme(scheme); err != nil {
+		return fmt.Errorf("register storagev1 scheme for CRD verifier: %w", err)
 	}
 
 	lvmPool := &pillarv1.PillarPool{

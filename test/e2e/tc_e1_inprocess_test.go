@@ -15,6 +15,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	corev1 "k8s.io/api/core/v1"
+	storagev1 "k8s.io/api/storage/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -591,6 +592,8 @@ func assertE1_CreateVolume_PillarTargetEmptyAddress(tc documentedCase) {
 	// Build fresh env with empty address target
 	scheme := runtime.NewScheme()
 	Expect(pillarv1.AddToScheme(scheme)).To(Succeed())
+	Expect(corev1.AddToScheme(scheme)).To(Succeed())
+	Expect(storagev1.AddToScheme(scheme)).To(Succeed())
 
 	target := &pillarv1.PillarTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "storage-empty-addr"},
@@ -628,6 +631,8 @@ func assertE1_CreateVolume_PillarTargetEmptyAddress(tc documentedCase) {
 func assertE1_CreateVolume_AgentDialFails(tc documentedCase) {
 	scheme := runtime.NewScheme()
 	Expect(pillarv1.AddToScheme(scheme)).To(Succeed())
+	Expect(corev1.AddToScheme(scheme)).To(Succeed())
+	Expect(storagev1.AddToScheme(scheme)).To(Succeed())
 
 	target := &pillarv1.PillarTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "storage-dial-fail"},

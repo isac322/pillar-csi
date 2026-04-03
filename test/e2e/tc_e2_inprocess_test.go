@@ -7,15 +7,17 @@ import (
 	. "github.com/onsi/gomega"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	corev1 "k8s.io/api/core/v1"
+	storagev1 "k8s.io/api/storage/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	csidrv "github.com/bhyoo/pillar-csi/internal/csi"
 )
 
-// makeCSINode creates a fake CSINode with the given NQN annotation in the fake k8s client.
+// makeCSINodeWithNQN creates a fake storagev1.CSINode with the given NVMe-oF
+// host NQN annotation so that ControllerPublishVolume can resolve the
+// initiator identity.
 func makeCSINodeWithNQN(env *controllerTestEnv, nodeName, hostNQN string) {
-	csiNode := &corev1.Node{
+	csiNode := &storagev1.CSINode{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: nodeName,
 			Annotations: map[string]string{
@@ -26,8 +28,11 @@ func makeCSINodeWithNQN(env *controllerTestEnv, nodeName, hostNQN string) {
 	_ = env.k8sClient.Create(env.ctx, csiNode)
 }
 
+// makeCSINodeWithIQN creates a fake storagev1.CSINode with the given iSCSI
+// initiator IQN annotation so that ControllerPublishVolume can resolve the
+// initiator identity.
 func makeCSINodeWithIQN(env *controllerTestEnv, nodeName, iqn string) {
-	node := &corev1.Node{
+	csiNode := &storagev1.CSINode{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: nodeName,
 			Annotations: map[string]string{
@@ -35,7 +40,7 @@ func makeCSINodeWithIQN(env *controllerTestEnv, nodeName, iqn string) {
 			},
 		},
 	}
-	_ = env.k8sClient.Create(env.ctx, node)
+	_ = env.k8sClient.Create(env.ctx, csiNode)
 }
 
 func assertE2_ControllerPublishVolume(tc documentedCase) {
@@ -311,10 +316,10 @@ func assertE2_MissingNodeIdentityAnnotation(tc documentedCase) {
 	defer env.close()
 
 	// Create CSINode without the required annotation
-	node := &corev1.Node{
+	csiNode := &storagev1.CSINode{
 		ObjectMeta: metav1.ObjectMeta{Name: "worker-noanno"},
 	}
-	_ = env.k8sClient.Create(env.ctx, node)
+	_ = env.k8sClient.Create(env.ctx, csiNode)
 
 	resp, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
 		Name:               "pvc-e2-noanno",

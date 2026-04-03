@@ -36,6 +36,8 @@ import (
 	"testing"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
+	storagev1 "k8s.io/api/storage/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -52,6 +54,12 @@ func newAC53FakeClient(targetName string) client.Client {
 	scheme := runtime.NewScheme()
 	if err := pillarv1.AddToScheme(scheme); err != nil {
 		panic(fmt.Sprintf("AC53: register pillar scheme: %v", err))
+	}
+	if err := corev1.AddToScheme(scheme); err != nil {
+		panic(fmt.Sprintf("AC53: register corev1 scheme: %v", err))
+	}
+	if err := storagev1.AddToScheme(scheme); err != nil {
+		panic(fmt.Sprintf("AC53: register storagev1 scheme: %v", err))
 	}
 
 	target := &pillarv1.PillarTarget{

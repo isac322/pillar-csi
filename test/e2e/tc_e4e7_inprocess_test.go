@@ -10,7 +10,7 @@ import (
 	. "github.com/onsi/gomega"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	corev1 "k8s.io/api/core/v1"
+	storagev1 "k8s.io/api/storage/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
@@ -37,7 +37,7 @@ func assertE4_FullChain(tc documentedCase) {
 	volumeID := resp.GetVolume().GetVolumeId()
 
 	// Publish
-	node := &corev1.Node{
+	csiNode := &storagev1.CSINode{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "worker-e4",
 			Annotations: map[string]string{
@@ -45,7 +45,7 @@ func assertE4_FullChain(tc documentedCase) {
 			},
 		},
 	}
-	_ = env.k8sClient.Create(env.ctx, node)
+	_ = env.k8sClient.Create(env.ctx, csiNode)
 
 	_, err = env.controller.ControllerPublishVolume(env.ctx, &csiapi.ControllerPublishVolumeRequest{
 		VolumeId:         volumeID,
@@ -94,7 +94,7 @@ func assertE4_PublishUnpublish(tc documentedCase) {
 	env := newControllerTestEnv()
 	defer env.close()
 
-	node := &corev1.Node{
+	csiNode := &storagev1.CSINode{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "worker-e4-pub",
 			Annotations: map[string]string{
@@ -102,7 +102,7 @@ func assertE4_PublishUnpublish(tc documentedCase) {
 			},
 		},
 	}
-	_ = env.k8sClient.Create(env.ctx, node)
+	_ = env.k8sClient.Create(env.ctx, csiNode)
 
 	resp, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
 		Name:               "pvc-e4-pub",
@@ -129,7 +129,7 @@ func assertE4_DeleteAfterPublish(tc documentedCase) {
 	env := newControllerTestEnv()
 	defer env.close()
 
-	node := &corev1.Node{
+	csiNode := &storagev1.CSINode{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "worker-e4-del",
 			Annotations: map[string]string{
@@ -137,7 +137,7 @@ func assertE4_DeleteAfterPublish(tc documentedCase) {
 			},
 		},
 	}
-	_ = env.k8sClient.Create(env.ctx, node)
+	_ = env.k8sClient.Create(env.ctx, csiNode)
 
 	resp, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
 		Name:               "pvc-e4-del",
@@ -260,13 +260,13 @@ func assertE5_DeleteBeforeControllerUnpublish(_ documentedCase) {
 	env := newControllerTestEnv()
 	defer env.close()
 
-	node := &corev1.Node{
+	csiNode := &storagev1.CSINode{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        "worker-e5-del",
 			Annotations: map[string]string{"pillar-csi.bhyoo.com/nvmeof-host-nqn": "nqn.test:e5"},
 		},
 	}
-	_ = env.k8sClient.Create(env.ctx, node)
+	_ = env.k8sClient.Create(env.ctx, csiNode)
 
 	resp, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
 		Name:               "pvc-e5-del-before",
@@ -492,13 +492,13 @@ func assertE7_ControllerPublishIdempotency(tc documentedCase) {
 	env := newControllerTestEnv()
 	defer env.close()
 
-	node := &corev1.Node{
+	csiNode := &storagev1.CSINode{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        "worker-e7",
 			Annotations: map[string]string{"pillar-csi.bhyoo.com/nvmeof-host-nqn": "nqn.test:e7"},
 		},
 	}
-	_ = env.k8sClient.Create(env.ctx, node)
+	_ = env.k8sClient.Create(env.ctx, csiNode)
 
 	resp, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
 		Name:               "pvc-e7-ctrl-pub",
