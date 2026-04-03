@@ -23,6 +23,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"
 	corev1 "k8s.io/api/core/v1"
+	storagev1 "k8s.io/api/storage/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientfake "sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -74,6 +75,10 @@ func newControllerTestEnv() *controllerTestEnv {
 	if err := corev1.AddToScheme(scheme); err != nil {
 		cancel()
 		panic(fmt.Sprintf("register corev1 scheme: %v", err))
+	}
+	if err := storagev1.AddToScheme(scheme); err != nil {
+		cancel()
+		panic(fmt.Sprintf("register storagev1 scheme: %v", err))
 	}
 
 	target := &pillarv1.PillarTarget{
