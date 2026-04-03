@@ -17,8 +17,8 @@ import (
 func makeNodeVolumeContext() map[string]string {
 	return map[string]string{
 		csidrv.VolumeContextKeyTargetID: "nqn.2026-01.com.test:fake",
-		csidrv.VolumeContextKeyAddress:   "127.0.0.1",
-		csidrv.VolumeContextKeyPort:      "4420",
+		csidrv.VolumeContextKeyAddress:  "127.0.0.1",
+		csidrv.VolumeContextKeyPort:     "4420",
 	}
 }
 

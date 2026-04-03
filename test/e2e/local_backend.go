@@ -426,8 +426,8 @@ func verifyNodeLocalBackend() error {
 		VolumeCapability:  mountCapability("ext4"),
 		VolumeContext: map[string]string{
 			csidrv.VolumeContextKeyTargetID: "nqn.2026-01.com.bhyoo.pillar-csi:tank.pvc-local",
-			csidrv.VolumeContextKeyAddress:   "127.0.0.1",
-			csidrv.VolumeContextKeyPort:      "4420",
+			csidrv.VolumeContextKeyAddress:  "127.0.0.1",
+			csidrv.VolumeContextKeyPort:     "4420",
 		},
 	}); err != nil {
 		return fmt.Errorf("node stage volume: %w", err)
