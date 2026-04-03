@@ -16,7 +16,7 @@ import (
 // makeNodeVolumeContext returns a minimal VolumeContext map for NodeStageVolume calls.
 func makeNodeVolumeContext() map[string]string {
 	return map[string]string{
-		csidrv.VolumeContextKeyTargetNQN: "nqn.2026-01.com.test:fake",
+		csidrv.VolumeContextKeyTargetID: "nqn.2026-01.com.test:fake",
 		csidrv.VolumeContextKeyAddress:   "127.0.0.1",
 		csidrv.VolumeContextKeyPort:      "4420",
 	}

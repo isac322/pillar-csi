@@ -425,7 +425,7 @@ func verifyNodeLocalBackend() error {
 		StagingTargetPath: stagePath,
 		VolumeCapability:  mountCapability("ext4"),
 		VolumeContext: map[string]string{
-			csidrv.VolumeContextKeyTargetNQN: "nqn.2026-01.com.bhyoo.pillar-csi:tank.pvc-local",
+			csidrv.VolumeContextKeyTargetID: "nqn.2026-01.com.bhyoo.pillar-csi:tank.pvc-local",
 			csidrv.VolumeContextKeyAddress:   "127.0.0.1",
 			csidrv.VolumeContextKeyPort:      "4420",
 		},

@@ -23,7 +23,7 @@ const (
 
 func nodeVolumeContext() map[string]string {
 	return map[string]string{
-		csidrv.VolumeContextKeyTargetNQN: testTargetNQN,
+		csidrv.VolumeContextKeyTargetID: testTargetNQN,
 		csidrv.VolumeContextKeyAddress:   testAgentAddr,
 		csidrv.VolumeContextKeyPort:      testAgentPort,
 	}
