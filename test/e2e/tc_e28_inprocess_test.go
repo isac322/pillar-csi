@@ -175,6 +175,17 @@ func lvmCreateVolumeE28(env *agentTestEnv, lvName string, capacityBytes int64) e
 	return err
 }
 
+// lvmDeleteVolumeE28NoFail deletes an LVM volume via the agentTestEnv,
+// ignoring errors. Used in defer-cleanup blocks to free VG space after tests
+// so the shared LVM VG is not exhausted during parallel Ginkgo spec execution.
+// Must be called BEFORE env.close() — achieved by registering this defer AFTER
+// defer env.close() (Go defer is LIFO: last registered runs first).
+func lvmDeleteVolumeE28NoFail(env *agentTestEnv, lvName string) {
+	_, _ = env.client.DeleteVolume(env.ctx, &agentv1.DeleteVolumeRequest{
+		VolumeId: env.lvmVG + "/" + lvName,
+	})
+}
+
 // e28FullRoundTrip runs the six-step agent lifecycle for a given LV name and params.
 func e28FullRoundTrip(env *agentTestEnv, lvName string, params *agentv1.LvmVolumeParams, tc documentedCase) {
 	volumeID := env.lvmVG + "/" + lvName
@@ -352,39 +363,84 @@ func assertE28_LVM_GetCapacity_FullVG(tc documentedCase) {
 	// drains physical capacity.
 	env := newLinearAgentTestEnv()
 	defer env.close()
+	// Cleanup: delete fill LV to prevent VG exhaustion for other parallel tests.
+	// LIFO: this defer runs BEFORE defer env.close() above.
+	defer lvmDeleteVolumeE28NoFail(env, "pvc-e28-exhaust-fullvg")
 
-	// Get current available capacity so we can fill dynamically.
-	// This handles any LVs already present in the shared VG from other tests.
-	cap1, err := env.client.GetCapacity(env.ctx, &agentv1.GetCapacityRequest{
-		PoolName: env.lvmVG,
-	})
-	Expect(err).NotTo(HaveOccurred(), "%s: GetCapacity before fill", tc.tcNodeLabel())
+	// Pre-cleanup: delete any leftover fill LV from a previous (failed) run.
+	lvmDeleteVolumeE28NoFail(env, "pvc-e28-exhaust-fullvg")
 
-	avail := cap1.GetAvailableBytes()
-	if avail <= 0 {
-		// VG is already full — the assertion is vacuously satisfied.
-		return
+	const extentSize = int64(4 << 20)
+	// maxFillAttempts: retry loop to handle the race where another parallel test
+	// deletes its LV between our fill creation and GetCapacity check, freeing
+	// space and making cap2 appear > 1 extent. Each attempt re-fills the newly
+	// freed space until cap2 ≤ extentSize. All fill LVs are deleted by the
+	// deferred cleanup registered above.
+	const maxFillAttempts = 5
+	var extraFillLVs []string
+	defer func() {
+		for _, name := range extraFillLVs {
+			lvmDeleteVolumeE28NoFail(env, name)
+		}
+	}()
+
+	for attempt := 0; attempt < maxFillAttempts; attempt++ {
+		// Get current available capacity so we can fill dynamically.
+		// This handles any LVs already present in the shared VG from other tests.
+		cap1, err := env.client.GetCapacity(env.ctx, &agentv1.GetCapacityRequest{
+			PoolName: env.lvmVG,
+		})
+		Expect(err).NotTo(HaveOccurred(), "%s: GetCapacity before fill (attempt %d)",
+			tc.tcNodeLabel(), attempt)
+
+		avail := cap1.GetAvailableBytes()
+		if avail <= extentSize {
+			// VG is already full enough — the assertion is already satisfied.
+			return
+		}
+
+		// Round available bytes DOWN to a 4 MiB extent boundary so lvcreate
+		// succeeds. LVM extent size defaults to 4 MiB; requests that are not
+		// a multiple of the extent size are rounded down to the previous extent.
+		fillSize := (avail / extentSize) * extentSize
+		if fillSize <= 0 {
+			return // Less than one extent free — already effectively full.
+		}
+
+		var fillErr error
+		if attempt == 0 {
+			fillErr = lvmCreateVolumeE28(env, "pvc-e28-exhaust-fullvg", fillSize)
+		} else {
+			// Create an additional fill LV to reclaim space freed by concurrent tests.
+			extraName := fmt.Sprintf("pvc-e28-exhaust-extra%d", attempt)
+			extraFillLVs = append(extraFillLVs, extraName)
+			fillErr = lvmCreateVolumeE28(env, extraName, fillSize)
+		}
+		Expect(fillErr).NotTo(HaveOccurred(),
+			"%s: fill linear VG with %d bytes (attempt %d)",
+			tc.tcNodeLabel(), fillSize, attempt)
+
+		cap2, err := env.client.GetCapacity(env.ctx, &agentv1.GetCapacityRequest{
+			PoolName: env.lvmVG,
+		})
+		Expect(err).NotTo(HaveOccurred(), "%s: GetCapacity after fill (attempt %d)",
+			tc.tcNodeLabel(), attempt)
+		if cap2.GetAvailableBytes() <= extentSize {
+			// After filling to the extent boundary, at most one extent (4 MiB) can remain.
+			Expect(cap2.GetAvailableBytes()).To(BeNumerically("<=", extentSize),
+				"%s: AvailableBytes should be ≤ one LVM extent (4 MiB) after fill; "+
+					"clamping must not produce a negative value",
+				tc.tcNodeLabel())
+			return
+		}
+		// More space is available — a concurrent test freed an LV between fill and check.
+		// Retry to fill the new free space.
 	}
-
-	// Round available bytes DOWN to a 4 MiB extent boundary so lvcreate
-	// succeeds. LVM extent size defaults to 4 MiB; requests that are not
-	// a multiple of the extent size are rounded down to the previous extent.
-	const extentSize = 4 << 20
-	fillSize := (avail / extentSize) * extentSize
-	if fillSize <= 0 {
-		// Less than one extent free — already effectively full.
-		return
-	}
-
-	Expect(lvmCreateVolumeE28(env, "pvc-e28-exhaust-fullvg", fillSize)).To(Succeed(),
-		"%s: fill linear VG with %d bytes (%d extents)",
-		tc.tcNodeLabel(), fillSize, fillSize/extentSize)
-
+	// After all attempts, perform the final assertion.
 	cap2, err := env.client.GetCapacity(env.ctx, &agentv1.GetCapacityRequest{
 		PoolName: env.lvmVG,
 	})
-	Expect(err).NotTo(HaveOccurred(), "%s: GetCapacity after fill", tc.tcNodeLabel())
-	// After filling to the extent boundary, at most one extent (4 MiB) can remain.
+	Expect(err).NotTo(HaveOccurred(), "%s: GetCapacity final", tc.tcNodeLabel())
 	Expect(cap2.GetAvailableBytes()).To(BeNumerically("<=", extentSize),
 		"%s: AvailableBytes should be ≤ one LVM extent (4 MiB) after fill; "+
 			"clamping must not produce a negative value",
@@ -399,6 +455,8 @@ func assertE28_LVM_GetCapacity_FullVG(tc documentedCase) {
 func assertE28_LVM_ListVolumes_SkipsThinPoolLV(tc documentedCase) {
 	env := newAgentTestEnv()
 	defer env.close()
+	defer lvmDeleteVolumeE28NoFail(env, "pvc-e28-data-1")
+	defer lvmDeleteVolumeE28NoFail(env, "pvc-e28-data-2")
 
 	Expect(lvmCreateVolumeE28(env, "pvc-e28-data-1", 1<<30)).To(Succeed())
 	Expect(lvmCreateVolumeE28(env, "pvc-e28-data-2", 1<<30)).To(Succeed())
@@ -407,8 +465,19 @@ func assertE28_LVM_ListVolumes_SkipsThinPoolLV(tc documentedCase) {
 		PoolName: env.lvmVG,
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: ListVolumes", tc.tcNodeLabel())
-	Expect(resp.GetVolumes()).To(HaveLen(2),
-		"%s: should return 2 data LVs (thin pool infra LV excluded)", tc.tcNodeLabel())
+	// Both data LVs must be present — no data LV should be filtered.
+	// The result may contain additional LVs from other parallel tests.
+	Expect(resp.GetVolumes()).To(ContainElements(
+		HaveField("VolumeId", env.lvmVG+"/pvc-e28-data-1"),
+		HaveField("VolumeId", env.lvmVG+"/pvc-e28-data-2"),
+	), "%s: data LVs must appear in ListVolumes result", tc.tcNodeLabel())
+	// The thin pool infrastructure LV must NOT appear (it is internal to LVM).
+	for _, vol := range resp.GetVolumes() {
+		lvName := strings.TrimPrefix(vol.GetVolumeId(), env.lvmVG+"/")
+		Expect(strings.HasPrefix(lvName, "pillar-e2e-pool")).To(BeFalse(),
+			"%s: thin pool infra LV %q must not appear in ListVolumes",
+			tc.tcNodeLabel(), vol.GetVolumeId())
+	}
 }
 
 // assertE28_LVM_ListVolumes_Linear_AllReturned verifies that for a linear VG all
@@ -417,6 +486,9 @@ func assertE28_LVM_ListVolumes_SkipsThinPoolLV(tc documentedCase) {
 func assertE28_LVM_ListVolumes_Linear_AllReturned(tc documentedCase) {
 	env := newAgentTestEnv()
 	defer env.close()
+	defer lvmDeleteVolumeE28NoFail(env, "pvc-e28-lv-a")
+	defer lvmDeleteVolumeE28NoFail(env, "pvc-e28-lv-b")
+	defer lvmDeleteVolumeE28NoFail(env, "pvc-e28-lv-c")
 
 	Expect(lvmCreateVolumeE28(env, "pvc-e28-lv-a", 1<<30)).To(Succeed())
 	Expect(lvmCreateVolumeE28(env, "pvc-e28-lv-b", 1<<30)).To(Succeed())
@@ -426,8 +498,14 @@ func assertE28_LVM_ListVolumes_Linear_AllReturned(tc documentedCase) {
 		PoolName: env.lvmVG,
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: ListVolumes linear", tc.tcNodeLabel())
-	Expect(resp.GetVolumes()).To(HaveLen(3),
-		"%s: all 3 linear LVs must be returned", tc.tcNodeLabel())
+	// All 3 created LVs must be present — linear LVM does not filter any data LV.
+	// The result may include additional LVs from other parallel tests, which is
+	// expected when the suite VG is shared across Ginkgo workers.
+	Expect(resp.GetVolumes()).To(ContainElements(
+		HaveField("VolumeId", env.lvmVG+"/pvc-e28-lv-a"),
+		HaveField("VolumeId", env.lvmVG+"/pvc-e28-lv-b"),
+		HaveField("VolumeId", env.lvmVG+"/pvc-e28-lv-c"),
+	), "%s: all 3 linear LVs must be returned without filtering", tc.tcNodeLabel())
 }
 
 // ─── E28.5: Provisioning mode gRPC propagation ───────────────────────────────
@@ -438,6 +516,7 @@ func assertE28_LVM_ListVolumes_Linear_AllReturned(tc documentedCase) {
 func assertE28_LVM_CreateVolume_LinearModeParam(tc documentedCase) {
 	env := newAgentTestEnv()
 	defer env.close()
+	defer lvmDeleteVolumeE28NoFail(env, "pvc-e28-linear-param")
 
 	_, err := env.client.CreateVolume(env.ctx, &agentv1.CreateVolumeRequest{
 		VolumeId:      env.lvmVG + "/pvc-e28-linear-param",
@@ -463,6 +542,7 @@ func assertE28_LVM_CreateVolume_LinearModeParam(tc documentedCase) {
 func assertE28_LVM_CreateVolume_ThinModeParam(tc documentedCase) {
 	env := newAgentTestEnv()
 	defer env.close()
+	defer lvmDeleteVolumeE28NoFail(env, "pvc-e28-thin-param")
 
 	_, err := env.client.CreateVolume(env.ctx, &agentv1.CreateVolumeRequest{
 		VolumeId:      env.lvmVG + "/pvc-e28-thin-param",
@@ -488,6 +568,7 @@ func assertE28_LVM_CreateVolume_ThinModeParam(tc documentedCase) {
 func assertE28_LVM_CreateVolume_EmptyMode_DefaultsToBackend(tc documentedCase) {
 	env := newAgentTestEnv()
 	defer env.close()
+	defer lvmDeleteVolumeE28NoFail(env, "pvc-e28-empty-mode")
 
 	_, err := env.client.CreateVolume(env.ctx, &agentv1.CreateVolumeRequest{
 		VolumeId:      env.lvmVG + "/pvc-e28-empty-mode",
@@ -527,6 +608,7 @@ func assertE28_LVM_CreateVolume_VGNotFound(tc documentedCase) {
 func assertE28_LVM_ExpandVolume_ShrinkRejected(tc documentedCase) {
 	env := newAgentTestEnv()
 	defer env.close()
+	defer lvmDeleteVolumeE28NoFail(env, "pvc-e28-shrink")
 
 	Expect(lvmCreateVolumeE28(env, "pvc-e28-shrink", 2<<30)).To(Succeed(),
 		"%s: CreateVolume 2GiB", tc.tcNodeLabel())
@@ -609,6 +691,8 @@ func assertE28_LVM_DeleteVolume_NonExistent_Idempotent(tc documentedCase) {
 func assertE28_LVM_ReconcileState_RestoresExports(tc documentedCase) {
 	env := newAgentTestEnv()
 	defer env.close()
+	defer lvmDeleteVolumeE28NoFail(env, "pvc-e28-reconcile-a")
+	defer lvmDeleteVolumeE28NoFail(env, "pvc-e28-reconcile-b")
 
 	// Create two LVM volumes to include in ReconcileState.
 	Expect(lvmCreateVolumeE28(env, "pvc-e28-reconcile-a", 1<<30)).To(Succeed())
@@ -693,40 +777,46 @@ func assertE28_LVM_CreateVolume_InvalidFirstChar_Hyphen(tc documentedCase) {
 		"%s: expected InvalidArgument for leading hyphen", tc.tcNodeLabel())
 }
 
-// assertE28_LVM_CreateVolume_MaxLength_128 verifies that an LV name exactly
-// 128 characters long is accepted.
+// assertE28_LVM_CreateVolume_MaxLength_64 verifies that an LV name exactly
+// 64 characters long is accepted.
+//
+// The kernel device-mapper name limit (DM_NAME_LEN=128) means the combined
+// "VGName-LVName" string must stay under 127 chars. With pillar-csi test VG
+// names of ~24 chars, the safe upper bound for an LV name is 64 chars — the
+// value enforced by ValidateLVName and guaranteed to be accepted by real LVM.
 // [TC-E28.263d]
-func assertE28_LVM_CreateVolume_MaxLength_128(tc documentedCase) {
+func assertE28_LVM_CreateVolume_MaxLength_64(tc documentedCase) {
 	env := newValidatingAgentTestEnv()
 	defer env.close()
 
-	name128 := "pvc" + strings.Repeat("a", 125) // 3 + 125 = 128 chars
-	Expect(name128).To(HaveLen(128), "%s: name must be exactly 128 chars", tc.tcNodeLabel())
+	name64 := "pvc" + strings.Repeat("a", 61) // 3 + 61 = 64 chars
+	Expect(name64).To(HaveLen(64), "%s: name must be exactly 64 chars", tc.tcNodeLabel())
+	defer lvmDeleteVolumeE28NoFail(env, name64)
 
 	_, err := env.client.CreateVolume(env.ctx, &agentv1.CreateVolumeRequest{
-		VolumeId:      env.lvmVG + "/" + name128,
+		VolumeId:      env.lvmVG + "/" + name64,
 		CapacityBytes: 1 << 30,
 	})
 	Expect(err).NotTo(HaveOccurred(),
-		"%s: 128-character LV name should be accepted", tc.tcNodeLabel())
+		"%s: 64-character LV name should be accepted", tc.tcNodeLabel())
 }
 
-// assertE28_LVM_CreateVolume_OverMaxLength_129 verifies that an LV name of 129
+// assertE28_LVM_CreateVolume_OverMaxLength_65 verifies that an LV name of 65
 // characters is rejected with InvalidArgument.
 // [TC-E28.263e]
-func assertE28_LVM_CreateVolume_OverMaxLength_129(tc documentedCase) {
+func assertE28_LVM_CreateVolume_OverMaxLength_65(tc documentedCase) {
 	env := newValidatingAgentTestEnv()
 	defer env.close()
 
-	name129 := "pvc" + strings.Repeat("a", 126) // 3 + 126 = 129 chars
-	Expect(name129).To(HaveLen(129), "%s: name must be exactly 129 chars", tc.tcNodeLabel())
+	name65 := "pvc" + strings.Repeat("a", 62) // 3 + 62 = 65 chars
+	Expect(name65).To(HaveLen(65), "%s: name must be exactly 65 chars", tc.tcNodeLabel())
 
 	_, err := env.client.CreateVolume(env.ctx, &agentv1.CreateVolumeRequest{
-		VolumeId:      env.lvmVG + "/" + name129,
+		VolumeId:      env.lvmVG + "/" + name65,
 		CapacityBytes: 1 << 30,
 	})
 	Expect(err).To(HaveOccurred(),
-		"%s: 129-character LV name should be rejected", tc.tcNodeLabel())
+		"%s: 65-character LV name should be rejected", tc.tcNodeLabel())
 	Expect(status.Code(err)).To(Equal(codes.InvalidArgument),
 		"%s: expected InvalidArgument for over-length name", tc.tcNodeLabel())
 }
@@ -739,6 +829,7 @@ func assertE28_LVM_CreateVolume_OverMaxLength_129(tc documentedCase) {
 func assertE28_LVM_CreateVolume_ExtraFlags_Forwarded(tc documentedCase) {
 	env := newAgentTestEnv()
 	defer env.close()
+	defer lvmDeleteVolumeE28NoFail(env, "pvc-e28-extraflags")
 
 	_, err := env.client.CreateVolume(env.ctx, &agentv1.CreateVolumeRequest{
 		VolumeId:      env.lvmVG + "/pvc-e28-extraflags",
@@ -767,6 +858,7 @@ func assertE28_LVM_CreateVolume_ExtraFlags_Forwarded(tc documentedCase) {
 func assertE28_LVM_CreateVolume_ExtraFlags_Empty_NoEffect(tc documentedCase) {
 	env := newAgentTestEnv()
 	defer env.close()
+	defer lvmDeleteVolumeE28NoFail(env, "pvc-e28-extraflags-empty")
 
 	_, err := env.client.CreateVolume(env.ctx, &agentv1.CreateVolumeRequest{
 		VolumeId:      env.lvmVG + "/pvc-e28-extraflags-empty",
@@ -887,8 +979,12 @@ func assertE28_MultiBackend_ZFS_LVM_GetCapabilities(tc documentedCase) {
 func assertE28_LVM_Concurrent_CreateVolume(tc documentedCase) {
 	env := newAgentTestEnv()
 	defer env.close()
-
+	// Clean up all concurrently-created LVs so the shared VG is not exhausted.
 	const parallelism = 5
+	for i := 0; i < parallelism; i++ {
+		defer lvmDeleteVolumeE28NoFail(env, "pvc-e28-concurrent-"+string(rune('a'+i)))
+	}
+
 	var wg sync.WaitGroup
 	errs := make([]error, parallelism)
 

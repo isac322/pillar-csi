@@ -163,7 +163,8 @@ func e33FailIfNoInfra() {
 // Note: "default-profile" is intentionally absent here.
 // E33 tests require a deployed pillar-agent pod (via Helm install) which is
 // NOT part of the 2-minute default make test-e2e run. Use:
-//   make test-e2e E2E_LABEL_FILTER="e33"  (after helm install)
+//
+//	make test-e2e E2E_LABEL_FILTER="e33"  (after helm install)
 var _ = Describe("E33: LVM Kind 클러스터 E2E — 실제 LVM VG + NVMe-oF TCP",
 	Label("lvm", "rpc", "e33"),
 	func() {

@@ -385,11 +385,11 @@ func TestGlobalISCSIRangeAllocator_PortsPerCaseMatchesConstant(t *testing.T) {
 	}
 }
 
-// ─── Integration: ranges from ISCSIPortsPerCase=10 cover 421 TCs ─────────────
+// ─── Integration: ranges from ISCSIPortsPerCase=10 cover 416 TCs ─────────────
 
-func TestISCSIRangeAllocator_421TestCasesFitInPortSpace(t *testing.T) {
+func TestISCSIRangeAllocator_416TestCasesFitInPortSpace(t *testing.T) {
 	a := ports.NewISCSIRangeAllocator(ports.ISCSIRangeBasePort, ports.ISCSIPortsPerCase)
-	const numCases = 421
+	const numCases = 416
 
 	var last *ports.ISCSIPortRange
 	for range numCases {
@@ -400,7 +400,7 @@ func TestISCSIRangeAllocator_421TestCasesFitInPortSpace(t *testing.T) {
 		t.Fatal("last Allocate() returned nil")
 	}
 	if last.End > 65535 {
-		t.Errorf("421 test cases exceed port space: last range ends at %d (> 65535)", last.End)
+		t.Errorf("416 test cases exceed port space: last range ends at %d (> 65535)", last.End)
 	}
-	t.Logf("421 TCs: last range = %s, max port used = %d", last, last.End-1)
+	t.Logf("416 TCs: last range = %s, max port used = %d", last, last.End-1)
 }

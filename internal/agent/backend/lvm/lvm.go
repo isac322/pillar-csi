@@ -116,8 +116,12 @@ func ValidateLVName(lv string) error {
 	if lv == "" {
 		return errors.New("lvm: logical volume name must not be empty")
 	}
-	if len(lv) > 128 {
-		return fmt.Errorf("lvm: logical volume name %q exceeds 128-character limit", lv)
+	// The kernel device-mapper name limit is DM_NAME_LEN=128 bytes (including
+	// null terminator). The full device path is "VGName-LVName"; reserving up to
+	// 62 chars for the VG name and 1 for the separator leaves 64 chars for the LV
+	// name as the safe cross-VG-length maximum.
+	if len(lv) > 64 {
+		return fmt.Errorf("lvm: logical volume name %q exceeds 64-character limit", lv)
 	}
 	if lv == "." || lv == ".." {
 		return fmt.Errorf("lvm: logical volume name %q is a reserved path", lv)

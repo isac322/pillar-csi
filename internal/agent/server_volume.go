@@ -50,6 +50,11 @@ func (s *Server) CreateVolume(
 		if errors.As(err, &conflictErr) {
 			return nil, status.Errorf(codes.AlreadyExists, "CreateVolume: %v", conflictErr)
 		}
+		// Preserve gRPC status codes returned by the backend (e.g. InvalidArgument
+		// from name-validation wrappers). Plain Go errors are wrapped with Internal.
+		if _, ok := status.FromError(err); ok {
+			return nil, err //nolint:wrapcheck // intentional: preserve backend status code
+		}
 		return nil, status.Errorf(codes.Internal, "CreateVolume: %v", err)
 	}
 	return &agentv1.CreateVolumeResponse{

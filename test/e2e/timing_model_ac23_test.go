@@ -2,13 +2,13 @@ package e2e
 
 // timing_model_ac23_test.go — Sub-AC 2.3: wall-clock runtime validation.
 //
-// Validates that the full 421-TC suite can complete within the 2-minute wall-
+// Validates that the full 416-TC suite can complete within the 2-minute wall-
 // clock budget by:
 //
 //  1. Measuring actual per-TC isolation-scope latency (setup + teardown)
 //     using real StartTestCase / Close calls — no mocks.
 //
-//  2. Computing the projected test-exec time for 421 TCs at the configured
+//  2. Computing the projected test-exec time for 416 TCs at the configured
 //     worker count using the measured latency as a conservative upper bound.
 //
 //  3. Asserting the projected time fits within testsBudgetSeconds (45s).
@@ -49,13 +49,13 @@ import (
 const (
 	// ac23DefaultProfileCaseCount is the total number of default-profile TCs
 	// tracked in the budget model.  This matches the canonical total declared in
-	// docs/E2E-TESTCASES.md (239 in-process + 117 envtest + 65 cluster = 421),
+	// docs/E2E-TESTCASES.md (239 in-process + 117 envtest + 60 cluster/framework = 416),
 	// which is the running TC count for `make test-e2e` with the default-profile
 	// label filter.  The 33 E33 real-backend specs add to this total but each
 	// completes in < 1s (cluster-scoped, not exercising the in-process budget).
-	// Sub-AC 2.3 budgets for 421 in-process TCs; E33 cluster specs are excluded
+	// Sub-AC 2.3 budgets for 416 in-process TCs; E33 cluster specs are excluded
 	// from the budget model as they are bounded by the 2-minute suite timeout.
-	ac23DefaultProfileCaseCount = 421
+	ac23DefaultProfileCaseCount = 416
 
 	// ac23WorkerCount is the effective number of parallel Ginkgo workers used
 	// in the budget model. It equals maxParallelProcs (8) and must match the
@@ -79,7 +79,7 @@ const (
 	ac23BudgetMultiplier = 3.0
 
 	// ac23TestsBudgetSecs is the per-stage time budget for the test-exec phase
-	// (stageTestExec). The model projects that 421 TCs at 8 workers must finish
+	// (stageTestExec). The model projects that 416 TCs at 8 workers must finish
 	// within this window.
 	ac23TestsBudgetSecs = testsBudgetSeconds // 45
 )
@@ -88,11 +88,11 @@ const (
 
 // TestAC23PerTCIsolationScopeLatencyProfile measures the actual wall-clock
 // duration for StartTestCase + Close for a sample of 50 real TCs and validates
-// that the projected 421-TC suite time with 8 workers fits within the 45-second
+// that the projected 416-TC suite time with 8 workers fits within the 45-second
 // test-exec budget.
 //
 // Sub-AC 2.3 contract:
-//   - measured average per-TC latency × 3 (overhead factor) × 421 TCs / 8 workers ≤ 45s
+//   - measured average per-TC latency × 3 (overhead factor) × 416 TCs / 8 workers ≤ 45s
 //   - all 50 sample TCs complete successfully (no resource leaks)
 func TestAC23PerTCIsolationScopeLatencyProfile(t *testing.T) {
 	t.Parallel()
@@ -161,9 +161,9 @@ func TestAC23PerTCIsolationScopeLatencyProfile(t *testing.T) {
 	// ── budget model projection ───────────────────────────────────────────────
 
 	// Conservative projection: apply the overhead multiplier to the average
-	// and distribute 421 TCs across 8 parallel workers.
+	// and distribute 416 TCs across 8 parallel workers.
 	//
-	// projected = ceil(421 / 8) × avg × 3
+	// projected = ceil(416 / 8) × avg × 3
 	tcsPerWorker := math.Ceil(float64(ac23DefaultProfileCaseCount) / float64(ac23WorkerCount))
 	projectedNanos := tcsPerWorker * avgTotalNanos * ac23BudgetMultiplier
 	projected := time.Duration(int64(projectedNanos))
@@ -249,7 +249,7 @@ func TestAC23BudgetModelConsistency(t *testing.T) {
 // ── 3. Worker count achieves 45-second test-exec budget ───────────────────────
 
 // TestAC23WorkerCountAchievesTestsBudget validates that the configured
-// maxParallelProcs (8) workers is sufficient to execute all 421 default-profile
+// maxParallelProcs (8) workers is sufficient to execute all 416 default-profile
 // TCs within the testsBudgetSeconds (45s) window, given the throughput model.
 //
 // The calculation uses a conservative latency estimate derived from the wall-
@@ -257,7 +257,7 @@ func TestAC23BudgetModelConsistency(t *testing.T) {
 //
 // Sub-AC 2.3 contract:
 //   - With 8 workers and a conservative 10ms per-TC estimate (100× measured avg),
-//     421 TCs complete in ceil(421/8) × 10ms = 53 × 10ms = 530ms ≪ 45s.
+//     416 TCs complete in ceil(416/8) × 10ms = 53 × 10ms = 530ms ≪ 45s.
 //   - The budget is achievable even if the real per-TC time is 100× the measured
 //     value (e.g. due to spec body work, Ginkgo hook overhead, etc.).
 func TestAC23WorkerCountAchievesTestsBudget(t *testing.T) {
@@ -265,7 +265,7 @@ func TestAC23WorkerCountAchievesTestsBudget(t *testing.T) {
 
 	// Conservative upper bound: 10ms per TC (100× the ~0.1ms measured avg for
 	// isolation scope overhead alone).  Real spec body execution adds to this,
-	// but in-process TCs (Category A, the majority of 421) complete in < 1ms
+	// but in-process TCs (Category A, the majority of 416) complete in < 1ms
 	// per the E2E-TESTCASES.md performance note.
 	const conservativePerTCMs = 10 // milliseconds
 
@@ -295,7 +295,7 @@ func TestAC23WorkerCountAchievesTestsBudget(t *testing.T) {
 // ac23WorkerCount (maxParallelProcs = 8) is the optimal value for meeting the
 // combined constraints:
 //
-//   - Minimum workers to meet the 45s test-exec budget (≥ ceil(421×10ms/45s) = 1)
+//   - Minimum workers to meet the 45s test-exec budget (≥ ceil(416×10ms/45s) = 1)
 //   - Maximum workers to prevent Kind API server saturation (≤ maxParallelProcs = 8)
 //
 // Sub-AC 2.3 contract: ac23WorkerCount ∈ [minRequired, maxParallelProcs].
@@ -305,7 +305,7 @@ func TestAC23ParallelWorkerCountIsOptimalForBudget(t *testing.T) {
 	const conservativePerTCMs = 10 // milliseconds, same as TestAC23WorkerCountAchievesTestsBudget
 	budgetMs := float64(ac23TestsBudgetSecs) * 1000
 
-	// Minimum workers = ceil(421 × conservativePerTCMs / budgetMs).
+	// Minimum workers = ceil(416 × conservativePerTCMs / budgetMs).
 	minRequired := math.Ceil(float64(ac23DefaultProfileCaseCount) * conservativePerTCMs / budgetMs)
 
 	t.Logf("AC23 optimal worker count:")
@@ -335,12 +335,12 @@ func TestAC23ParallelWorkerCountIsOptimalForBudget(t *testing.T) {
 // TestAC23ConcurrentThroughputMeetsTestsBudget measures the actual wall-clock
 // time to create and close N isolation scopes concurrently using the configured
 // worker count, and validates that the throughput projects to fit within the
-// test-exec budget for the full 421-TC suite.
+// test-exec budget for the full 416-TC suite.
 //
 // This is the most direct validation of Sub-AC 2.3: it runs real workers, real
 // scopes, and measures end-to-end throughput — not just per-TC averages.
 //
-// Sub-AC 2.3 contract: time to process 421 TCs at ac23WorkerCount workers
+// Sub-AC 2.3 contract: time to process 416 TCs at ac23WorkerCount workers
 // (measured with ac23SampleSize) ≤ ac23TestsBudgetSecs seconds.
 func TestAC23ConcurrentThroughputMeetsTestsBudget(t *testing.T) {
 	t.Parallel()
@@ -383,8 +383,8 @@ func TestAC23ConcurrentThroughputMeetsTestsBudget(t *testing.T) {
 		t.Fatalf("AC23 throughput: %d errors during concurrent scope creation", errCount.Load())
 	}
 
-	// Project the sample throughput to the full 421-TC suite.
-	// projected = elapsed × (421 / sampleSize)
+	// Project the sample throughput to the full 416-TC suite.
+	// projected = elapsed × (416 / sampleSize)
 	projectedForFullSuite := time.Duration(float64(elapsed) *
 		float64(ac23DefaultProfileCaseCount) / float64(ac23SampleSize))
 
@@ -393,7 +393,7 @@ func TestAC23ConcurrentThroughputMeetsTestsBudget(t *testing.T) {
 	t.Logf("AC23 throughput (%d TCs, %d workers):", ac23SampleSize, ac23WorkerCount)
 	t.Logf("  elapsed:              %s", elapsed)
 	t.Logf("  per-TC avg:           %s", elapsed/time.Duration(ac23SampleSize))
-	t.Logf("  projected (421 TCs):  %s", projectedForFullSuite)
+	t.Logf("  projected (416 TCs):  %s", projectedForFullSuite)
 	t.Logf("  budget:               %s", budget)
 
 	if projectedForFullSuite > budget {
@@ -514,12 +514,12 @@ func TestAC23BottleneckPhaseIdentification(t *testing.T) {
 	const phaseLatencyLimitMs = 100
 	if avgSetup > phaseLatencyLimitMs*time.Millisecond {
 		t.Errorf("AC23: avg setup latency %s exceeds %dms limit — "+
-			"isolation scope creation is too slow for 421-TC budget; "+
+			"isolation scope creation is too slow for 416-TC budget; "+
 			"tune: %s", avgSetup, phaseLatencyLimitMs, recommendation)
 	}
 	if avgTeardown > phaseLatencyLimitMs*time.Millisecond {
 		t.Errorf("AC23: avg teardown latency %s exceeds %dms limit — "+
-			"isolation scope teardown is too slow for 421-TC budget; "+
+			"isolation scope teardown is too slow for 416-TC budget; "+
 			"tune: %s", avgTeardown, phaseLatencyLimitMs, recommendation)
 	}
 }

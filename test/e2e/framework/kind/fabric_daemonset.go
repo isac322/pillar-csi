@@ -463,7 +463,7 @@ func formatMissingFabricModulesError(missing []FabricKernelModule) error {
 	sb.WriteString("\n╔══════════════════════════════════════════════════════════════╗\n")
 	sb.WriteString("║    pillar-csi E2E fabric kernel modules MISSING              ║\n")
 	sb.WriteString("╚══════════════════════════════════════════════════════════════╝\n")
-	sb.WriteString("\n  All 421 test cases require real storage backends including\n")
+	sb.WriteString("\n  All 416 test cases require real storage backends including\n")
 	sb.WriteString("  NVMe-oF TCP and iSCSI fabric transports.\n")
 	sb.WriteString("  Soft-skip is DISABLED — missing modules cause FAIL, not SKIP.\n")
 	sb.WriteString("\n  Missing fabric modules:\n\n")

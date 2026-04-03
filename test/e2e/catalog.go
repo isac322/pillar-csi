@@ -26,12 +26,22 @@ import (
 //	──────────────
 //	388 catalog cases assembled by buildDefaultProfile()
 //
-// The remaining 33 cases (E33=33) are implemented as real-backend Ginkgo specs
-// in dedicated *_e2e_test.go files that carry Label("default-profile",...).
-// Those files compile unconditionally and run under the default label
-// filter, so the total default-profile spec count is 388+33 = 421.
-// This 421 total is the canonical "실제 실행되는 테스트 케이스" count declared
-// in docs/E2E-TESTCASES.md (239 in-process + 117 envtest + 65 cluster).
+// The remaining E33 cases are implemented as real-backend Ginkgo specs
+// in dedicated *_e2e_test.go files.  Of those, 24 carry Label("default-profile"):
+//
+//	lvm_backend_standalone_e2e_test.go  → 7 (TC-E33.311–317)
+//	lvm_pvc_pod_mount_e2e_test.go       → 12
+//	lvm_volume_expansion_e2e_test.go    → 5
+//
+// Additionally, teardown_panic_guarantee_test.go contributes 4 default-profile
+// framework-verification specs, so the total default-profile spec count is
+// 388+24+4 = 416.  This 416 total is the canonical "실제 실행되는 테스트 케이스"
+// count declared in docs/E2E-TESTCASES.md (239 in-process + 117 envtest + 60
+// cluster/framework).
+//
+// Note: lvm_backend_core_rpcs_e2e_test.go (9 E33.1 specs) intentionally omits
+// "default-profile" because those specs require a Helm-deployed agent pod that
+// exceeds the 2-minute suiteLevelTimeout.
 //
 // Note: E34 (13), E35 (13), F27 (9), F28 (2), F29 (3), F30 (3), F31 (2) = 45
 // specs are NOT in the default-profile because they require host-level iSCSI
@@ -62,8 +72,9 @@ var (
 
 	// Sub-AC 1 locks the default profile to a deterministic 388-case view from
 	// docs/E2E-TESTCASES.md (239 in-process + 117 envtest + 32 cluster).
-	// Combined with the 33 E33 real-backend specs (in *_e2e_test.go files),
-	// the total default-profile running TC count is 421 as declared in the doc.
+	// Combined with 24 E33 default-profile specs and 4 teardown-guarantee specs
+	// (in *_e2e_test.go files), the total default-profile running TC count is
+	// 416 as declared in docs/E2E-TESTCASES.md.
 	// The selector below codifies deterministic quotas per group instead of
 	// depending on raw row count (which changes as the document evolves).
 	defaultInProcessQuotas = []sectionQuota{

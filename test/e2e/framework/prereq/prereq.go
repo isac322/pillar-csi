@@ -147,7 +147,7 @@ type kernelModule struct {
 // AC 10 policy: ALL modules are hard requirements.  The previous soft-skip
 // semantics (required: false) have been removed because:
 //
-//  1. All 421 TCs must run locally by default with no capability gating.
+//  1. All 416 TCs must run locally by default with no capability gating.
 //  2. "Never soft-skip" is a hard AC 10 constraint: missing modules cause
 //     an immediate FAIL with clear remediation, not a silent SKIP.
 //  3. The suite uses real ZFS, real LVM, real iSCSI, and real NVMe-oF TCP —

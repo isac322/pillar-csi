@@ -13,7 +13,7 @@ package e2e
 //
 // # Why "no stub/mock" enforcement?
 //
-// The project constraint is: ALL 421 TCs must run against real backends.
+// The project constraint is: ALL 416 TCs must run against real backends.
 // Soft-skip is explicitly forbidden (AC 10). This function verifies reachability
 // AND functionality — a backend that is present but non-functional (e.g. a pool
 // in a degraded state, an LVM VG with a missing PV, a configfs directory that

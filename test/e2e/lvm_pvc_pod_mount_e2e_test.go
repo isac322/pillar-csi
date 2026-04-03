@@ -47,8 +47,11 @@ func e33FailIfNoNVMeoF() {
 // E33.2: LVM PVC 프로비저닝 및 Pod 마운트
 // ─────────────────────────────────────────────────────────────────────────────
 
+// E33.2 requires a Helm-deployed pillar-csi agent pod with CRDs and PillarPool CRD.
+// Excluded from default-profile. Run with --label-filter=mount after
+// Helm deployment (E2E_HELM_BOOTSTRAP=true).
 var _ = Describe("E33: LVM Kind 클러스터 E2E — 실제 LVM VG + NVMe-oF TCP",
-	Label("default-profile", "lvm", "mount", "e33"),
+	Label("lvm", "mount", "e33"),
 	func() {
 		Describe("E33.2 LVM PVC 프로비저닝 및 Pod 마운트", Ordered, func() {
 

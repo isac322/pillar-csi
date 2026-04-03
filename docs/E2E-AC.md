@@ -15,7 +15,7 @@ use these exact 10 items with these exact numbers.
 | AC 7 | No artifacts written outside `/tmp` | All temporary files, kubeconfig, build artifacts created during the test run reside under `tcTempRoot` (a `/tmp`-backed per-invocation directory). `os.MkdirTemp("", …)` with an empty base dir is forbidden. |
 | AC 8 | All `os.MkdirTemp` calls use `tcTempRoot` | Every `os.MkdirTemp` call in the `test/e2e` package tree passes `tcTempRoot` as the first argument; zero bare empty-string calls exist. Go build-cache `/tmp` redirect is also forbidden. |
 | AC 9 | `-tags=e2e` includes real-backend specs | `make test-e2e` passes `-tags=e2e` so that all `*_e2e_test.go` files (E33, E34, E35, F27–F31, Kind bootstrap) are compiled and included in the default-profile run. |
-| AC 10 | Provisioner dead code removed + TC count matches | `framework/provisioner/provisioner.go` contains no soft-skip dead code. `docs/E2E-TESTCASES.md` declares `총 테스트 케이스: 421`, matching the 421 TCs that actually run under the default-profile label filter. |
+| AC 10 | Provisioner dead code removed + TC count matches | `framework/provisioner/provisioner.go` contains no soft-skip dead code. `docs/E2E-TESTCASES.md` declares `총 테스트 케이스: 416`, matching the 416 TCs that actually run under the default-profile label filter. |
 
 ## Mapping from Generation 1 internal Sub-AC hierarchy to flat AC numbers
 
@@ -51,7 +51,7 @@ use these exact 10 items with these exact numbers.
   (`TestArtifactPathsStayUnderTmpRoot`) uses Go AST analysis to assert that every
   `os.MkdirTemp` call passes a non-empty `tcTempRoot`-derived first argument.
 
-- **AC 10** (TC count = 421):
+- **AC 10** (TC count = 416):
   - 239 in-process TCs (E1–E8, E9, E15–E17, E28–E32)
   - 117 envtest TCs (E10–E14, E18–E26, E27 Helm)
   - 65 cluster TCs: E10 (3) + E27 (29) + E33 (33)

@@ -319,7 +319,7 @@ func formatMissingModulesError(missing []BackendKernelModule) error {
 	sb.WriteString("\n╔══════════════════════════════════════════════════════════════╗\n")
 	sb.WriteString("║      pillar-csi E2E backend kernel modules MISSING           ║\n")
 	sb.WriteString("╚══════════════════════════════════════════════════════════════╝\n")
-	sb.WriteString("\n  All 421 test cases require real storage backends.\n")
+	sb.WriteString("\n  All 416 test cases require real storage backends.\n")
 	sb.WriteString("  Soft-skip is DISABLED — missing modules cause FAIL, not SKIP.\n")
 	sb.WriteString("\n  Missing modules:\n\n")
 

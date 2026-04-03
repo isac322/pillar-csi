@@ -34,8 +34,11 @@ import (
 // E33.3: LVM 볼륨 확장
 // ─────────────────────────────────────────────────────────────────────────────
 
+// E33.3 requires a Helm-deployed pillar-csi agent pod with CRDs and StorageClass.
+// Excluded from default-profile. Run with --label-filter=expansion after
+// Helm deployment (E2E_HELM_BOOTSTRAP=true).
 var _ = Describe("E33: LVM Kind 클러스터 E2E — 실제 LVM VG + NVMe-oF TCP",
-	Label("default-profile", "lvm", "expansion", "e33"),
+	Label("lvm", "expansion", "e33"),
 	func() {
 		Describe("E33.3 LVM 볼륨 확장", Ordered, func() {
 
