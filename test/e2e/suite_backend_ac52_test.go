@@ -679,8 +679,8 @@ func TestAC52BootstrapSuiteBackendsRejectsNilClusterState(t *testing.T) {
 	if err == nil {
 		t.Fatal("AC52: bootstrapSuiteBackends(nil cluster) returned nil error, want non-nil")
 	}
-	if !strings.Contains(err.Error(), "AC5.2") {
-		t.Errorf("AC52: error %q does not contain [AC5.2] tag for traceability", err.Error())
+	if !strings.Contains(err.Error(), "[AC5]") {
+		t.Errorf("AC52: error %q does not contain [AC5] tag for traceability", err.Error())
 	}
 	t.Logf("AC52: nil cluster state correctly rejected: %v", err)
 }

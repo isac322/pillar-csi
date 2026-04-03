@@ -111,14 +111,13 @@ func checkDockerDaemon() error {
 		}
 
 		return fmt.Errorf(
-			"docker daemon not reachable via %s\n"+
-				"     Error: %s\n"+
-				"  Remediation:\n"+
-				"     • Start Docker:   sudo systemctl start docker\n"+
-				"     • Or set:         export DOCKER_HOST=unix:///var/run/docker.sock\n"+
-				"     • Verify with:    docker info\n"+
-				"     • Install Docker: https://docs.docker.com/engine/install/\n"+
-				"  AC 10: Docker daemon is required — no soft-skip allowed.",
+			"docker daemon not reachable via %s: "+
+				"error: %s; "+
+				"remediation: start Docker (sudo systemctl start docker), "+
+				"set DOCKER_HOST=unix:///var/run/docker.sock, "+
+				"verify with docker info, "+
+				"see https://docs.docker.com/engine/install/; "+
+				"AC 10: Docker daemon is required (no soft-skip)",
 			hint,
 			strings.TrimSpace(string(out)),
 		)
@@ -148,7 +147,7 @@ type kernelModule struct {
 // AC 10 policy: ALL modules are hard requirements.  The previous soft-skip
 // semantics (required: false) have been removed because:
 //
-//  1. All 437 TCs must run locally by default with no capability gating.
+//  1. All 421 TCs must run locally by default with no capability gating.
 //  2. "Never soft-skip" is a hard AC 10 constraint: missing modules cause
 //     an immediate FAIL with clear remediation, not a silent SKIP.
 //  3. The suite uses real ZFS, real LVM, real iSCSI, and real NVMe-oF TCP —

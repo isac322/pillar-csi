@@ -14,7 +14,7 @@ package e2e
 //  4. A provisioner that returns (nil, nil) (soft skip) does not produce an
 //     error and leaves the corresponding suiteBackendState field nil.
 //  5. A provisioner that returns a hard error causes bootstrapSuiteBackends to
-//     return a wrapped error with the [AC5.2] tag and all previously provisioned
+//     return a wrapped error with the [AC5] tag and all previously provisioned
 //     resources are cleaned up.
 //  6. Multiple custom provisioners can be injected simultaneously; results are
 //     mapped to the correct suiteBackendState fields by BackendType.
@@ -335,12 +335,12 @@ func TestDISoftSkipFromInjectedProvisionerLeavesFieldNil(t *testing.T) {
 	t.Logf("DI: soft-skip from injected provisioners leaves state fields nil — correct")
 }
 
-// ── 6. Hard error from provisioner returns AC5.2-tagged error and cleans up ──
+// ── 6. Hard error from provisioner returns AC5-tagged error and cleans up ──
 
 // TestDIHardErrorFromProvisionerReturnsAC52TaggedError verifies that when an
 // injected provisioner returns a hard error, bootstrapSuiteBackends:
 //
-//	(a) returns a non-nil error containing the "[AC5.2]" tag,
+//	(a) returns a non-nil error containing the "[AC5]" tag,
 //	(b) cleans up (calls Destroy on) any resources provisioned before the failure.
 func TestDIHardErrorFromProvisionerReturnsAC52TaggedError(t *testing.T) {
 	t.Parallel()
@@ -368,8 +368,8 @@ func TestDIHardErrorFromProvisionerReturnsAC52TaggedError(t *testing.T) {
 	if err == nil {
 		t.Fatal("DI: expected non-nil error from hard-error provisioner, got nil")
 	}
-	if !strings.Contains(err.Error(), "AC5.2") {
-		t.Errorf("DI: error %q does not contain [AC5.2] tag", err.Error())
+	if !strings.Contains(err.Error(), "AC5") {
+		t.Errorf("DI: error %q does not contain [AC5] tag", err.Error())
 	}
 	if !strings.Contains(err.Error(), "deliberate-hard-error") {
 		t.Errorf("DI: error %q does not mention the original error", err.Error())
@@ -434,10 +434,10 @@ func TestDIMultipleCustomBackendsInjectedSimultaneously(t *testing.T) {
 		state.ZFSPool.PoolName, state.LVMVG.VGName, unknownRes.description)
 }
 
-// ── 8. Nil clusterState still returns AC5.2 error ────────────────────────────
+// ── 8. Nil clusterState still returns AC5 error ────────────────────────────
 
 // TestDINilClusterStateWithProvisionersReturnsError verifies that passing nil
-// clusterState returns the [AC5.2]-tagged error regardless of which provisioners
+// clusterState returns the [AC5]-tagged error regardless of which provisioners
 // are injected. This preserves the existing nil-guard contract.
 func TestDINilClusterStateWithProvisionersReturnsError(t *testing.T) {
 	t.Parallel()
@@ -451,8 +451,8 @@ func TestDINilClusterStateWithProvisionersReturnsError(t *testing.T) {
 	if err == nil {
 		t.Fatal("DI: expected error for nil clusterState, got nil")
 	}
-	if !strings.Contains(err.Error(), "AC5.2") {
-		t.Errorf("DI: error %q does not contain [AC5.2] tag", err.Error())
+	if !strings.Contains(err.Error(), "AC5") {
+		t.Errorf("DI: error %q does not contain [AC5] tag", err.Error())
 	}
 
 	t.Logf("DI: nil clusterState correctly rejected with provisioners injected: %v", err)

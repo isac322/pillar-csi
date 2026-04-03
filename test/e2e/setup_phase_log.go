@@ -41,6 +41,17 @@ const (
 	// setupPhaseJustBeforeEach is the phase name for per-TC JustBeforeEach
 	// timing entries in the setup phase log.
 	setupPhaseJustBeforeEach = "just_before_each"
+
+	// setupPhaseAfterEach is the phase name for per-TC AfterEach timing entries.
+	// It spans from when the spec body (phaseSpecBody) ends (in JustAfterEach)
+	// to when the DeferCleanup installed by timing_capture.go's BeforeEach fires.
+	// This captures all AfterEach work that executes after the spec body, including
+	// per-TC teardown registered via DeferCleanup in nested BeforeEach blocks.
+	setupPhaseAfterEach = "after_each"
+
+	// setupPhaseAfterSuite is the phase name used for suite-level AfterSuite
+	// timing entries in the setup phase log.
+	setupPhaseAfterSuite = "after_suite"
 )
 
 // setupPhaseLogEntry is one record in the setup-phase structured timing log.

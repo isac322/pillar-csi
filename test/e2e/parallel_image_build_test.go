@@ -118,10 +118,6 @@ func TestParallelImageBuild_AllImagesBuilt(t *testing.T) {
 func TestParallelImageBuild_SpeedupOverSerial(t *testing.T) {
 	t.Parallel()
 
-	if testing.Short() {
-		t.Skip("skipping speedup test in short mode")
-	}
-
 	// Each "build" takes 30ms — negligible on its own but 3× faster in parallel.
 	const buildTime = 30 * time.Millisecond
 	const numImages = 3

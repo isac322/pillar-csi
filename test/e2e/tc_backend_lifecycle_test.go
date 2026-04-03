@@ -11,6 +11,7 @@ import (
 // derived from distinct TestCaseScopes are globally unique, preventing any
 // backend state sharing across parallel test cases.
 func TestBackendHandleNamesAreUniquePerTC(t *testing.T) {
+	t.Parallel()
 	const numScopes = 5
 
 	type names struct {
@@ -74,6 +75,7 @@ func TestBackendHandleNamesAreUniquePerTC(t *testing.T) {
 // TestBackendNamingDerivesFromScopeTag verifies that the derived pool/VG/IQN
 // names embed a substring from the TC scope tag, ensuring traceability.
 func TestBackendNamingDerivesFromScopeTag(t *testing.T) {
+	t.Parallel()
 	scope, err := NewTestCaseScope("naming-derive-tc-42")
 	if err != nil {
 		t.Fatalf("NewTestCaseScope: %v", err)
@@ -117,6 +119,7 @@ func TestBackendNamingDerivesFromScopeTag(t *testing.T) {
 //   - iSCSI IQNs: the suffix after "iqn.2024-01.io.pillar-csi:" must be
 //     alphanumeric + hyphens.
 func TestBackendNamesAreDNSSafe(t *testing.T) {
+	t.Parallel()
 	scope, err := NewTestCaseScope("dns-safe-tc-99")
 	if err != nil {
 		t.Fatalf("NewTestCaseScope: %v", err)
@@ -147,6 +150,7 @@ func TestBackendNamesAreDNSSafe(t *testing.T) {
 // TestZFSPoolNameFitsWithinOSLimits verifies that derived ZFS pool names are
 // within ZFS's 256-character pool name limit.
 func TestZFSPoolNameFitsWithinOSLimits(t *testing.T) {
+	t.Parallel()
 	const zfsPoolNameLimit = 256
 
 	scope, err := NewTestCaseScope("limits-zfs-tc-1234567890abcdef")
@@ -165,6 +169,7 @@ func TestZFSPoolNameFitsWithinOSLimits(t *testing.T) {
 // TestLVMVGNameFitsWithinOSLimits verifies that derived LVM VG names are
 // within LVM's 127-character Volume Group name limit.
 func TestLVMVGNameFitsWithinOSLimits(t *testing.T) {
+	t.Parallel()
 	const lvmVGNameLimit = 127
 
 	scope, err := NewTestCaseScope("limits-lvm-tc-1234567890abcdef")

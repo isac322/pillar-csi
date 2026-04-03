@@ -126,52 +126,39 @@ func TestNewBackendTypeRequiresNoFrameworkChanges(t *testing.T) {
 
 // TestZFSProvisionerImplementsBackendProvisioner verifies that ZFSProvisioner
 // satisfies BackendProvisioner at both compile-time and runtime.
+//
+// Soft-skip is DISABLED: ZFSProvisioner.Provision always hard-fails rather
+// than returning (nil, nil). The compile-time check above already guarantees
+// interface satisfaction; this test verifies BackendType() at runtime.
 func TestZFSProvisionerImplementsBackendProvisioner(t *testing.T) {
 	t.Parallel()
 
 	var prov provisioner.BackendProvisioner = &provisioner.ZFSProvisioner{
 		NodeContainer: "test-container",
 		PoolName:      "test-pool",
-		// ModuleCheckFn returns false → soft skip without docker exec.
-		ModuleCheckFn: func(_ string) bool { return false },
 	}
 
 	if got := prov.BackendType(); got != "zfs" {
 		t.Errorf("ZFSProvisioner.BackendType() = %q, want %q", got, "zfs")
 	}
-
-	// Provision returns nil, nil (soft skip) because ModuleCheckFn returns false.
-	res, err := prov.Provision(context.Background())
-	if err != nil {
-		t.Errorf("ZFSProvisioner.Provision (module absent): unexpected error: %v", err)
-	}
-	if res != nil {
-		t.Errorf("ZFSProvisioner.Provision (module absent): Resource = %v, want nil (soft skip)", res)
-	}
 }
 
 // TestLVMProvisionerImplementsBackendProvisioner verifies that LVMProvisioner
 // satisfies BackendProvisioner at both compile-time and runtime.
+//
+// Soft-skip is DISABLED: LVMProvisioner.Provision always hard-fails rather
+// than returning (nil, nil). The compile-time check above already guarantees
+// interface satisfaction; this test verifies BackendType() at runtime.
 func TestLVMProvisionerImplementsBackendProvisioner(t *testing.T) {
 	t.Parallel()
 
 	var prov provisioner.BackendProvisioner = &provisioner.LVMProvisioner{
 		NodeContainer: "test-container",
 		VGName:        "test-vg",
-		// ModuleCheckFn returns false → soft skip without docker exec.
-		ModuleCheckFn: func(_ string) bool { return false },
 	}
 
 	if got := prov.BackendType(); got != "lvm" {
 		t.Errorf("LVMProvisioner.BackendType() = %q, want %q", got, "lvm")
-	}
-
-	res, err := prov.Provision(context.Background())
-	if err != nil {
-		t.Errorf("LVMProvisioner.Provision (module absent): unexpected error: %v", err)
-	}
-	if res != nil {
-		t.Errorf("LVMProvisioner.Provision (module absent): Resource = %v, want nil (soft skip)", res)
 	}
 }
 
@@ -538,61 +525,22 @@ func TestProvisionResultBackendTypeMatchesProvisioner(t *testing.T) {
 	}
 }
 
-// ─── 13. ZFSProvisioner soft-skip when module absent ─────────────────────────
-
-// TestZFSProvisionerSoftSkipWhenModuleAbsent verifies the soft-skip path:
-// ZFSProvisioner returns (nil, nil) when ModuleCheckFn returns false.
-func TestZFSProvisionerSoftSkipWhenModuleAbsent(t *testing.T) {
-	t.Parallel()
-
-	prov := &provisioner.ZFSProvisioner{
-		NodeContainer: "container",
-		PoolName:      "pool",
-		ModuleCheckFn: func(_ string) bool { return false },
-	}
-
-	res, err := prov.Provision(context.Background())
-	if err != nil {
-		t.Errorf("ZFSProvisioner soft-skip: unexpected error: %v", err)
-	}
-	if res != nil {
-		t.Errorf("ZFSProvisioner soft-skip: Resource = %v, want nil", res)
-	}
-}
-
-// ─── 14. LVMProvisioner soft-skip when module absent ─────────────────────────
-
-// TestLVMProvisionerSoftSkipWhenModuleAbsent verifies the soft-skip path:
-// LVMProvisioner returns (nil, nil) when ModuleCheckFn returns false.
-func TestLVMProvisionerSoftSkipWhenModuleAbsent(t *testing.T) {
-	t.Parallel()
-
-	prov := &provisioner.LVMProvisioner{
-		NodeContainer: "container",
-		VGName:        "vg",
-		ModuleCheckFn: func(_ string) bool { return false },
-	}
-
-	res, err := prov.Provision(context.Background())
-	if err != nil {
-		t.Errorf("LVMProvisioner soft-skip: unexpected error: %v", err)
-	}
-	if res != nil {
-		t.Errorf("LVMProvisioner soft-skip: Resource = %v, want nil", res)
-	}
-}
-
-// ─── 15. ZFSProvisioner/LVMProvisioner validation errors ─────────────────────
+// ─── 13. ZFSProvisioner/LVMProvisioner validation errors ─────────────────────
+//
+// NOTE: Tests 13 and 14 ("soft-skip when module absent") have been removed
+// because soft-skip is DISABLED. ZFSProvisioner and LVMProvisioner no longer
+// return (nil, nil) — all failures are hard errors. kernel-module checks are
+// enforced upfront by [kind.CheckBackendKernelModules] before provisioning runs.
 
 // TestZFSProvisionerRejectsEmptyNodeContainer verifies that ZFSProvisioner
-// returns a hard error when NodeContainer is empty (even when module is loaded).
+// returns a hard error when NodeContainer is empty. The validation check
+// runs before any docker exec, so no real cluster is required.
 func TestZFSProvisionerRejectsEmptyNodeContainer(t *testing.T) {
 	t.Parallel()
 
 	prov := &provisioner.ZFSProvisioner{
 		NodeContainer: "", // invalid
 		PoolName:      "pool",
-		ModuleCheckFn: func(_ string) bool { return true }, // pretend module loaded
 	}
 
 	_, err := prov.Provision(context.Background())
@@ -602,14 +550,14 @@ func TestZFSProvisionerRejectsEmptyNodeContainer(t *testing.T) {
 }
 
 // TestLVMProvisionerRejectsEmptyVGName verifies that LVMProvisioner returns a
-// hard error when VGName is empty.
+// hard error when VGName is empty. The validation check runs before any docker
+// exec, so no real cluster is required.
 func TestLVMProvisionerRejectsEmptyVGName(t *testing.T) {
 	t.Parallel()
 
 	prov := &provisioner.LVMProvisioner{
 		NodeContainer: "container",
 		VGName:        "", // invalid
-		ModuleCheckFn: func(_ string) bool { return true },
 	}
 
 	_, err := prov.Provision(context.Background())

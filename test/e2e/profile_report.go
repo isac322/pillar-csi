@@ -69,11 +69,19 @@ var _ = ReportAfterSuite("suite timing profile", func(report types.Report) {
 	// the structured setup-phase log.  The consolidated Ginkgo report is the
 	// authoritative source for suite-level phase runtimes.
 	appendBeforeSuiteToSetupPhaseLog(report)
+	// Sub-AC 6.2: append AfterSuite / SynchronizedAfterSuite timing entries
+	// to the same structured setup-phase log.
+	appendAfterSuiteToSetupPhaseLog(report)
 
 	// Sub-AC 7c: render the full end-to-end pipeline timeline when the flag
 	// is set.  The consolidated report is required so this must run here rather
 	// than in an AfterEach hook.
 	emitDebugPipelineTimeline(report, cfg.TimingReport)
+
+	// Sub-AC 3: print the bottleneck summary table to stdout when -e2e.profile
+	// is set.  Outliers exceeding cfg.TimingReport.OutlierThresholdPct are
+	// flagged with "⚠ OUTLIER" in the TC ranking section.
+	_ = emitBottleneckSummary(cfg, report)
 })
 
 // emitSuiteTimingReport is the main entry point called by the hook. It emits
@@ -482,6 +490,42 @@ func appendBeforeSuiteToSetupPhaseLog(report types.Report) {
 			}
 			appendSetupPhaseEntry(setupPhaseLogEntry{
 				Phase:         setupPhaseBeforeSuite,
+				StartedAt:     startedAt,
+				FinishedAt:    finishedAt,
+				DurationNanos: spec.RunTime.Nanoseconds(),
+			})
+		}
+	}
+}
+
+// appendAfterSuiteToSetupPhaseLog scans the consolidated Ginkgo suite report
+// for AfterSuite and SynchronizedAfterSuite spec reports and appends one
+// setupPhaseLogEntry per report to suiteSetupPhaseLog (Sub-AC 6.2).
+//
+// Only reports with a positive RunTime are logged; reports with zero RunTime
+// (e.g. skipped suite-level nodes) are silently ignored.
+//
+// The StartedAt timestamp is taken from spec.StartTime when available; if
+// StartTime is zero the best available approximation is
+// spec.EndTime.Add(-spec.RunTime). When neither is available the entry is
+// still appended with a zero StartedAt so the log is complete.
+func appendAfterSuiteToSetupPhaseLog(report types.Report) {
+	for _, spec := range report.SpecReports {
+		switch spec.LeafNodeType {
+		case types.NodeTypeAfterSuite, types.NodeTypeSynchronizedAfterSuite:
+			if spec.RunTime <= 0 {
+				continue
+			}
+			startedAt := spec.StartTime
+			if startedAt.IsZero() && !spec.EndTime.IsZero() {
+				startedAt = spec.EndTime.Add(-spec.RunTime)
+			}
+			finishedAt := startedAt.Add(spec.RunTime)
+			if !spec.EndTime.IsZero() {
+				finishedAt = spec.EndTime
+			}
+			appendSetupPhaseEntry(setupPhaseLogEntry{
+				Phase:         setupPhaseAfterSuite,
 				StartedAt:     startedAt,
 				FinishedAt:    finishedAt,
 				DurationNanos: spec.RunTime.Nanoseconds(),

@@ -96,6 +96,7 @@ func TestAC7aDebugTCDurationEnvVarEnablesFeature(t *testing.T) {
 // emitDebugTCDurationLine writes the formatted elapsed line to DebugWriter
 // when DebugTCDuration is true.
 func TestAC7aDebugTCDurationWritesElapsedLineOnCompletion(t *testing.T) {
+	t.Parallel()
 	var debugSink bytes.Buffer
 	cfg := timingReportConfig{
 		DebugTCDuration: true,
@@ -105,7 +106,7 @@ func TestAC7aDebugTCDurationWritesElapsedLineOnCompletion(t *testing.T) {
 	profile := testCaseTimingProfile{
 		TCID:       "E1.2",
 		TestName:   "TestDebugDuration",
-		SpecText:   "TC[001/437] E1.2 :: TestDebugDuration",
+		SpecText:   "TC[001/388] E1.2 :: TestDebugDuration",
 		TotalNanos: (42 * time.Millisecond).Nanoseconds(),
 	}
 
@@ -127,6 +128,7 @@ func TestAC7aDebugTCDurationWritesElapsedLineOnCompletion(t *testing.T) {
 // TestAC7aDebugTCDurationSilentWhenDisabled verifies that no output is written
 // to DebugWriter when DebugTCDuration is false.
 func TestAC7aDebugTCDurationSilentWhenDisabled(t *testing.T) {
+	t.Parallel()
 	var debugSink bytes.Buffer
 	cfg := timingReportConfig{
 		DebugTCDuration: false,
@@ -136,7 +138,7 @@ func TestAC7aDebugTCDurationSilentWhenDisabled(t *testing.T) {
 	profile := testCaseTimingProfile{
 		TCID:       "E2.1",
 		TestName:   "TestSilent",
-		SpecText:   "TC[002/437] E2.1 :: TestSilent",
+		SpecText:   "TC[002/388] E2.1 :: TestSilent",
 		TotalNanos: (10 * time.Millisecond).Nanoseconds(),
 	}
 
@@ -151,6 +153,7 @@ func TestAC7aDebugTCDurationSilentWhenDisabled(t *testing.T) {
 // TestAC7aDebugTCDurationFallsBackToSpecTextWhenNoTCID verifies that TCs
 // without a structured TCID use SpecText as the fallback label.
 func TestAC7aDebugTCDurationFallsBackToSpecTextWhenNoTCID(t *testing.T) {
+	t.Parallel()
 	var debugSink bytes.Buffer
 	cfg := timingReportConfig{
 		DebugTCDuration: true,
@@ -179,6 +182,7 @@ func TestAC7aDebugTCDurationFallsBackToSpecTextWhenNoTCID(t *testing.T) {
 //   - per TC
 //   - stderr
 func TestAC7aDebugTCDurationFlagDescription(t *testing.T) {
+	t.Parallel()
 	usage := "print wall-clock duration for each TC to stderr upon completion " +
 		"(Sub-AC 7a: format '[TC-<id>] elapsed: <duration>'); " +
 		"env: E2E_DEBUG_TC_DURATION"

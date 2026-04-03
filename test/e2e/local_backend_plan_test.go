@@ -5,6 +5,11 @@ import "testing"
 func TestResolveLocalExecutionPlanForDefaultProfile(t *testing.T) {
 	t.Parallel()
 
+	// Use a fresh registry instance to check verifier membership without
+	// relying on the suiteLocalVerifierRegistry singleton (which is only
+	// initialised during SynchronizedBeforeSuite in a Ginkgo run).
+	reg := newLocalVerifierRegistry()
+
 	for _, tc := range mustBuildDefaultProfile() {
 		plan, err := resolveLocalExecutionPlan(tc)
 		if err != nil {
@@ -17,7 +22,7 @@ func TestResolveLocalExecutionPlanForDefaultProfile(t *testing.T) {
 			t.Fatalf("no verifiers for %s/%s", tc.GroupKey, tc.DocID)
 		}
 		for _, verifier := range plan.Verifiers {
-			if !defaultLocalVerifierRegistry.Has(verifier) {
+			if !reg.Has(verifier) {
 				t.Fatalf("missing verifier registry entry for %s (%s/%s)", verifier, tc.GroupKey, tc.DocID)
 			}
 		}

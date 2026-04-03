@@ -68,6 +68,12 @@ import (
 	. "github.com/onsi/gomega"
 )
 
+// TempRoot is the root directory under which all TC scope temporary directories
+// are created.  It mirrors the tcTempRoot constant in the parent e2e package so
+// that framework tests can use it without importing the e2e package (which would
+// create an import cycle).
+const TempRoot = "/tmp"
+
 // ─── IsolationViolationErrorKind ───────────────────────────────────────────────────
 
 // IsolationViolationErrorKind classifies an isolation boundary breach detected by
@@ -180,16 +186,16 @@ func (r *scopeRegistry) activeCount() int {
 	return len(r.active)
 }
 
-// orphanedDirs scans /tmp for directories matching the pillar-csi temp dir
+// orphanedDirs scans TempRoot for directories matching the pillar-csi temp dir
 // naming convention for this process, then returns a violation for every
 // directory that exists on disk but is NOT in the active-scope registry.
 //
 // The naming convention is: pillar-csi-*-p<pid>-*
-// (see isolation_scope.go: os.MkdirTemp("/tmp", "pillar-csi-<slug>-p<pid>-s<seq>-"))
+// (see isolation_scope.go: os.MkdirTemp(tcTempRoot, "pillar-csi-<slug>-p<pid>-s<seq>-"))
 //
 // Directories that belong to active scopes are silently skipped.
 func (r *scopeRegistry) orphanedDirs() ([]*IsolationViolationError, error) {
-	pattern := filepath.Join("/tmp", fmt.Sprintf("pillar-csi-*-p%d-*", r.pid))
+	pattern := filepath.Join(TempRoot, fmt.Sprintf("pillar-csi-*-p%d-*", r.pid))
 
 	matches, err := filepath.Glob(pattern)
 	if err != nil {

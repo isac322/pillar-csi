@@ -37,6 +37,8 @@ import (
 	"google.golang.org/grpc/status"
 
 	csi "github.com/container-storage-interface/spec/lib/go/csi"
+
+	"github.com/bhyoo/pillar-csi/internal/runtimepaths"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -456,7 +458,9 @@ func NewNodeServer(nodeID string, handlers map[string]ProtocolHandler, mounter M
 		nodeID:   nodeID,
 		handlers: handlers,
 		mounter:  mounter,
-		stateDir: defaultStateDir,
+		// Prefer the E2E suite workspace state dir when running under tests;
+		// falls back to defaultStateDir (/var/lib/pillar-csi/node) in production.
+		stateDir: runtimepaths.ResolveNodeStateDir(defaultStateDir),
 	}
 }
 

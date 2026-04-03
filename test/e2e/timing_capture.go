@@ -39,6 +39,15 @@ const (
 	// Ginkgo execution order places them before timing_capture.go's hook.
 	phaseJustBeforeEach executionPhase = "hook.just_before_each"
 
+	// phaseAfterEach measures the wall-clock duration of the AfterEach phase
+	// for a single TC, spanning from when the spec body ends (in
+	// timing_capture.go's JustAfterEach hook) to when timing_capture.go's
+	// DeferCleanup fires (installed by BeforeEach).  This captures all
+	// AfterEach and DeferCleanup teardown work that runs after the spec body,
+	// including per-TC teardown registered via DeferCleanup in nested
+	// BeforeEach blocks.
+	phaseAfterEach executionPhase = "hook.after_each"
+
 	phaseSpecBody            executionPhase = "spec.body"
 	phaseSetupTotal          executionPhase = "tc.setup.total"
 	phaseSetupScope          executionPhase = "tc.setup.scope"
@@ -357,11 +366,11 @@ func emitCurrentTimingReportEntry(report types.SpecReport) {
 	appendSetupPhasesFromTimingProfile(profile)
 }
 
-// appendSetupPhasesFromTimingProfile reads the phaseBeforeEach and
-// phaseJustBeforeEach samples from profile and appends them to the package-
-// level suiteSetupPhaseLog (Sub-AC 6.2). A missing or empty TCID is not an
-// error — the entry is appended with an empty tcID, which the log consumer
-// can filter.
+// appendSetupPhasesFromTimingProfile reads the phaseBeforeEach,
+// phaseJustBeforeEach, and phaseAfterEach samples from profile and appends
+// them to the package-level suiteSetupPhaseLog (Sub-AC 6.2). A missing or
+// empty TCID is not an error — the entry is appended with an empty tcID,
+// which the log consumer can filter.
 func appendSetupPhasesFromTimingProfile(profile testCaseTimingProfile) {
 	for _, sample := range profile.Phases {
 		switch executionPhase(sample.Name) {
@@ -383,6 +392,17 @@ func appendSetupPhasesFromTimingProfile(profile testCaseTimingProfile) {
 				FinishedAt:      sample.FinishedAt,
 				DurationNanos:   sample.DurationNanos,
 			})
+		case phaseAfterEach:
+			// Sub-AC 6.2: record per-TC AfterEach duration to the setup-phase
+			// log so consumers can identify TCs whose teardown is slow.
+			appendSetupPhaseEntry(setupPhaseLogEntry{
+				Phase:           setupPhaseAfterEach,
+				TCID:            profile.TCID,
+				ParallelProcess: profile.ParallelProcess,
+				StartedAt:       sample.StartedAt,
+				FinishedAt:      sample.FinishedAt,
+				DurationNanos:   sample.DurationNanos,
+			})
 		}
 	}
 }
@@ -393,6 +413,11 @@ var _ = BeforeEach(func() {
 	// BeforeEach blocks (including per-TC setup) take before JustBeforeEach fires.
 	suiteTimingRecorder.beginPhase(phaseBeforeEach)
 	DeferCleanup(func() {
+		// Sub-AC 6.2: end the AfterEach phase that was started in JustAfterEach.
+		// By the time DeferCleanup runs, all AfterEach hooks (including nested
+		// teardown DeferCleanups registered by BeforeEach blocks) have completed,
+		// so this measurement captures the full AfterEach + cleanup duration.
+		suiteTimingRecorder.endPhase(phaseAfterEach)
 		emitCurrentTimingReportEntry(CurrentSpecReport())
 	})
 })
@@ -411,6 +436,10 @@ var _ = JustBeforeEach(func() {
 
 var _ = JustAfterEach(func() {
 	suiteTimingRecorder.endPhase(phaseSpecBody)
+	// Sub-AC 6.2: begin the AfterEach phase immediately after the spec body ends.
+	// This phase spans JustAfterEach through all AfterEach work until the
+	// DeferCleanup installed by BeforeEach fires and calls endPhase(phaseAfterEach).
+	suiteTimingRecorder.beginPhase(phaseAfterEach)
 })
 
 // emitDebugTCDurationLine writes a one-line elapsed-time summary to

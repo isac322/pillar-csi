@@ -155,6 +155,7 @@ func TestAC7cDebugPipelineEnvVarEnablesFeature(t *testing.T) {
 // TestAC7cDebugPipelineFlagDescription verifies that the -e2e.debug-pipeline
 // flag is registered with a description mentioning key concepts.
 func TestAC7cDebugPipelineFlagDescription(t *testing.T) {
+	t.Parallel()
 	usage := "print full end-to-end pipeline timeline to stderr after all TCs complete " +
 		"(Sub-AC 7c: Gantt chart per process, queue-wait stats, parallelism summary); " +
 		"env: E2E_DEBUG_PIPELINE"
@@ -178,6 +179,7 @@ func TestAC7cDebugPipelineFlagDescription(t *testing.T) {
 // TestAC7cBuildPipelineTimelineEmpty verifies that an empty report produces an
 // empty timeline with zero PipelineNanos.
 func TestAC7cBuildPipelineTimelineEmpty(t *testing.T) {
+	t.Parallel()
 	report := types.Report{SuiteDescription: "Test Suite"}
 	tl := buildPipelineTimeline(report)
 
@@ -195,6 +197,7 @@ func TestAC7cBuildPipelineTimelineEmpty(t *testing.T) {
 // TestAC7cBuildPipelineTimelineSingleTC verifies that a report with one
 // instrumented spec produces a timeline with one TC and correct SuiteStart/End.
 func TestAC7cBuildPipelineTimelineSingleTC(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	start := now
 	end := now.Add(50 * time.Millisecond)
@@ -249,6 +252,7 @@ func TestAC7cBuildPipelineTimelineSingleTC(t *testing.T) {
 // TestAC7cBuildPipelineTimelineMultipleProcesses verifies that MaxProcess is
 // correctly computed across TCs on different Ginkgo processes.
 func TestAC7cBuildPipelineTimelineMultipleProcesses(t *testing.T) {
+	t.Parallel()
 	base := time.Now().UTC().Truncate(time.Millisecond)
 
 	p1 := makeTimingProfile("E1.1", 1, base, base.Add(10*time.Millisecond), nil)
@@ -284,6 +288,7 @@ func TestAC7cBuildPipelineTimelineMultipleProcesses(t *testing.T) {
 // TestAC7cBuildPipelineTimelineSortedByStartTime verifies that TCs are sorted
 // ascending by StartedAt, with TCID as the tiebreaker.
 func TestAC7cBuildPipelineTimelineSortedByStartTime(t *testing.T) {
+	t.Parallel()
 	base := time.Now().UTC().Truncate(time.Millisecond)
 
 	// Create profiles out of chronological order.
@@ -320,6 +325,7 @@ func TestAC7cBuildPipelineTimelineSortedByStartTime(t *testing.T) {
 // TestAC7cBuildPipelineTimelineSkipsSpecsWithoutTimestamps verifies that specs
 // without valid StartedAt / FinishedAt timestamps are excluded.
 func TestAC7cBuildPipelineTimelineSkipsSpecsWithoutTimestamps(t *testing.T) {
+	t.Parallel()
 	base := time.Now().UTC().Truncate(time.Millisecond)
 
 	// Valid profile.
@@ -365,6 +371,7 @@ func TestAC7cBuildPipelineTimelineSkipsSpecsWithoutTimestamps(t *testing.T) {
 // TestAC7cComputePeakConcurrencyEmpty verifies peak concurrency is 0 for an
 // empty timeline.
 func TestAC7cComputePeakConcurrencyEmpty(t *testing.T) {
+	t.Parallel()
 	tl := PipelineTimeline{}
 	if got := computePeakConcurrency(tl); got != 0 {
 		t.Errorf("Sub-AC 7c: peak concurrency for empty timeline = %d, want 0", got)
@@ -374,6 +381,7 @@ func TestAC7cComputePeakConcurrencyEmpty(t *testing.T) {
 // TestAC7cComputePeakConcurrencySequential verifies that non-overlapping TCs
 // have a peak concurrency of 1.
 func TestAC7cComputePeakConcurrencySequential(t *testing.T) {
+	t.Parallel()
 	base := time.Now().UTC()
 	tl := PipelineTimeline{
 		TCs: []pipelineTCRecord{
@@ -390,6 +398,7 @@ func TestAC7cComputePeakConcurrencySequential(t *testing.T) {
 // TestAC7cComputePeakConcurrencyParallel verifies that fully overlapping TCs
 // produce the correct peak concurrency.
 func TestAC7cComputePeakConcurrencyParallel(t *testing.T) {
+	t.Parallel()
 	base := time.Now().UTC()
 	// All four TCs overlap completely.
 	tl := PipelineTimeline{
@@ -408,6 +417,7 @@ func TestAC7cComputePeakConcurrencyParallel(t *testing.T) {
 // TestAC7cComputePeakConcurrencyMixed verifies peak concurrency with partial
 // overlaps. Three TCs overlap at the peak.
 func TestAC7cComputePeakConcurrencyMixed(t *testing.T) {
+	t.Parallel()
 	base := time.Now().UTC()
 	tl := PipelineTimeline{
 		TCs: []pipelineTCRecord{
@@ -432,6 +442,7 @@ func TestAC7cComputePeakConcurrencyMixed(t *testing.T) {
 
 // TestAC7cComputeQueueWaitStatsEmpty verifies all zeros for an empty timeline.
 func TestAC7cComputeQueueWaitStatsEmpty(t *testing.T) {
+	t.Parallel()
 	tl := PipelineTimeline{}
 	minW, maxW, avgW := computeQueueWaitStats(tl)
 	if minW != 0 || maxW != 0 || avgW != 0 {
@@ -443,6 +454,7 @@ func TestAC7cComputeQueueWaitStatsEmpty(t *testing.T) {
 // TestAC7cComputeQueueWaitStatsAllStart verifies that when all TCs start at
 // the same time as the suite, all queue wait values are 0.
 func TestAC7cComputeQueueWaitStatsAllStart(t *testing.T) {
+	t.Parallel()
 	base := time.Now().UTC()
 	tl := PipelineTimeline{
 		SuiteStart: base,
@@ -461,6 +473,7 @@ func TestAC7cComputeQueueWaitStatsAllStart(t *testing.T) {
 // TestAC7cComputeQueueWaitStatsVaried verifies correct min/max/avg when TCs
 // start at different offsets from the suite start.
 func TestAC7cComputeQueueWaitStatsVaried(t *testing.T) {
+	t.Parallel()
 	base := time.Now().UTC()
 	// TCs start at 0ms, 100ms, 300ms from base.
 	// min=0ms, max=300ms, avg=133ms.
@@ -494,6 +507,7 @@ func TestAC7cComputeQueueWaitStatsVaried(t *testing.T) {
 // TestAC7cBuildGanttRowWidth verifies that the returned row has exactly width
 // characters.
 func TestAC7cBuildGanttRowWidth(t *testing.T) {
+	t.Parallel()
 	base := time.Now().UTC()
 	tl := PipelineTimeline{
 		SuiteStart:    base,
@@ -515,6 +529,7 @@ func TestAC7cBuildGanttRowWidth(t *testing.T) {
 // TestAC7cBuildGanttRowIdleProcess verifies that a process with no TCs produces
 // a row of all '.' characters.
 func TestAC7cBuildGanttRowIdleProcess(t *testing.T) {
+	t.Parallel()
 	base := time.Now().UTC()
 	tl := PipelineTimeline{
 		SuiteStart:    base,
@@ -540,6 +555,7 @@ func TestAC7cBuildGanttRowIdleProcess(t *testing.T) {
 // TestAC7cBuildGanttRowFullyActive verifies that a TC spanning the full
 // pipeline produces a row of all '#' characters.
 func TestAC7cBuildGanttRowFullyActive(t *testing.T) {
+	t.Parallel()
 	base := time.Now().UTC()
 	pipelineNanos := int64(time.Second)
 	tl := PipelineTimeline{
@@ -564,6 +580,7 @@ func TestAC7cBuildGanttRowFullyActive(t *testing.T) {
 // TestAC7cBuildGanttRowPartialActivity verifies that a TC covering only the
 // first half of the pipeline marks the first half as '#' and second half as '.'.
 func TestAC7cBuildGanttRowPartialActivity(t *testing.T) {
+	t.Parallel()
 	base := time.Now().UTC()
 	pipelineNanos := int64(1000 * time.Millisecond)
 	tl := PipelineTimeline{
@@ -603,6 +620,7 @@ func TestAC7cBuildGanttRowPartialActivity(t *testing.T) {
 // TestAC7cPrintPipelineTimelineNilWriter verifies that printPipelineTimeline
 // is a no-op when the writer is nil.
 func TestAC7cPrintPipelineTimelineNilWriter(t *testing.T) {
+	t.Parallel()
 	// Should not panic.
 	base := time.Now().UTC()
 	tl := PipelineTimeline{
@@ -621,6 +639,7 @@ func TestAC7cPrintPipelineTimelineNilWriter(t *testing.T) {
 // TestAC7cPrintPipelineTimelineEmptyTCs verifies that printPipelineTimeline
 // is a no-op when the TCs slice is empty.
 func TestAC7cPrintPipelineTimelineEmptyTCs(t *testing.T) {
+	t.Parallel()
 	var buf bytes.Buffer
 	tl := PipelineTimeline{SuiteName: "Test Suite"}
 	printPipelineTimeline(&buf, tl)
@@ -633,6 +652,7 @@ func TestAC7cPrintPipelineTimelineEmptyTCs(t *testing.T) {
 // TestAC7cPrintPipelineTimelineContainsFourSections verifies that the output
 // contains all four expected sections.
 func TestAC7cPrintPipelineTimelineContainsFourSections(t *testing.T) {
+	t.Parallel()
 	base := time.Now().UTC().Truncate(time.Millisecond)
 	tl := PipelineTimeline{
 		SuiteName:     "Pillar CSI E2E Suite",
@@ -722,6 +742,7 @@ func TestAC7cPrintPipelineTimelineContainsFourSections(t *testing.T) {
 // TestAC7cPrintPipelineTimelineHeaderValues verifies specific values in the
 // header line (processes count, TC count, concurrency).
 func TestAC7cPrintPipelineTimelineHeaderValues(t *testing.T) {
+	t.Parallel()
 	base := time.Now().UTC().Truncate(time.Millisecond)
 	tl := PipelineTimeline{
 		SuiteName:     "Test",
@@ -759,6 +780,7 @@ func TestAC7cPrintPipelineTimelineHeaderValues(t *testing.T) {
 // TestAC7cEmitDebugPipelineTimelineDisabled verifies no output when
 // DebugPipeline is false.
 func TestAC7cEmitDebugPipelineTimelineDisabled(t *testing.T) {
+	t.Parallel()
 	var sink bytes.Buffer
 	cfg := timingReportConfig{
 		DebugPipeline:       false,
@@ -776,6 +798,7 @@ func TestAC7cEmitDebugPipelineTimelineDisabled(t *testing.T) {
 // TestAC7cEmitDebugPipelineTimelineEnabled verifies that the timeline header
 // is written when DebugPipeline is true and the report contains instrumented specs.
 func TestAC7cEmitDebugPipelineTimelineEnabled(t *testing.T) {
+	t.Parallel()
 	base := time.Now().UTC().Truncate(time.Millisecond)
 
 	profile := makeTimingProfile("E1.1", 1, base, base.Add(100*time.Millisecond), []phaseTimingSample{
@@ -813,6 +836,7 @@ func TestAC7cEmitDebugPipelineTimelineEnabled(t *testing.T) {
 
 // TestAC7cPipelineTCRecordLabel verifies the label() method priority order.
 func TestAC7cPipelineTCRecordLabel(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		rec      pipelineTCRecord
@@ -842,6 +866,7 @@ func TestAC7cPipelineTCRecordLabel(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got := tt.rec.label()
 			if !strings.Contains(got, tt.wantHave) {
 				t.Errorf("Sub-AC 7c: label()=%q, want it to contain %q", got, tt.wantHave)
@@ -853,6 +878,7 @@ func TestAC7cPipelineTCRecordLabel(t *testing.T) {
 // TestAC7cPipelineTCRecordLabelTruncatesLongSpecText verifies that SpecText
 // longer than 30 characters is truncated with "..." suffix.
 func TestAC7cPipelineTCRecordLabelTruncatesLongSpecText(t *testing.T) {
+	t.Parallel()
 	longText := strings.Repeat("x", 50)
 	rec := pipelineTCRecord{SpecText: longText}
 	got := rec.label()

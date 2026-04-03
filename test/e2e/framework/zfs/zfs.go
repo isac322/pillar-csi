@@ -107,14 +107,12 @@ func CreatePool(ctx context.Context, opts CreatePoolOptions) (*Pool, error) {
 
 	// ── Step 1: Allocate the loop device image ────────────────────────────────
 	//
-	// "dd if=/dev/zero …" is universally available in Kind nodes and avoids any
-	// dependency on fallocate / truncate which may behave differently across
-	// filesystem types.
+	// "truncate -s <sizeMiB>M" creates a sparse file instantly (no actual disk
+	// I/O for zeroing), which is critical for large pool sizes (e.g. 4 GiB).
+	// ZFS probes the loop device size via ioctl and doesn't require a pre-zeroed
+	// image. Sparse files are universally supported in Debian/Ubuntu Kind nodes.
 	if _, err := containerExec(ctx, opts.NodeContainer,
-		"dd", "if=/dev/zero",
-		fmt.Sprintf("of=%s", imagePath),
-		"bs=1M",
-		fmt.Sprintf("count=%d", sizeMiB),
+		"truncate", "-s", fmt.Sprintf("%dM", sizeMiB), imagePath,
 	); err != nil {
 		return nil, fmt.Errorf("zfs: CreatePool: allocate image %s in %s: %w",
 			imagePath, opts.NodeContainer, err)

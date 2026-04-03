@@ -8,22 +8,24 @@ import (
 	"github.com/bhyoo/pillar-csi/test/e2e/framework/prereq"
 )
 
-// TestCheckDockerDaemon_DockerPresent verifies that the Docker check passes
-// when docker is in PATH and the daemon is running (CI / dev machine expectation).
-// This test is skipped when docker is not in PATH, avoiding false failures in
-// stripped-down environments.
+// TestCheckDockerDaemon_DockerPresent verifies that when docker is in PATH
+// and the daemon is running, CheckHostPrerequisites still returns actionable
+// error messages for any OTHER failing prerequisites (kernel modules, binaries).
+//
+// AC 10: the presence of Docker does NOT suppress failures for other missing
+// prerequisites.  The error, if any, must always contain "Remediation".
+//
+// Note: With AC 10, the error may not mention "Docker" if Docker is working
+// but other prerequisites (kernel modules, tools) are missing.  The keyword
+// test validates only that a non-nil error is well-formed.
 func TestCheckDockerDaemon_DockerPresent(t *testing.T) {
 	if !dockerInPath() {
 		t.Skip("docker not found in PATH; skipping docker daemon check")
 	}
 
 	// The test calls CheckHostPrerequisites() via the exported entry point.
-	// If it fails we check that the error message contains the expected
-	// diagnostic keywords, not that it succeeds — because the daemon may
-	// legitimately be absent in some sandboxed test environments.
-	//
-	// AC 1 only requires friendly errors; it does NOT require the daemon to be
-	// running.  The quality gate is the message content.
+	// If it returns nil, all prerequisites are satisfied — nothing to assert.
+	// If it returns non-nil, verify the error is well-formed with remediation.
 	err := prereq.CheckHostPrerequisites()
 	if err == nil {
 		// Everything present — nothing more to assert.
@@ -31,14 +33,11 @@ func TestCheckDockerDaemon_DockerPresent(t *testing.T) {
 	}
 
 	msg := err.Error()
-	// Verify the error message contains actionable remediation instructions.
-	for _, keyword := range []string{
-		"Docker",
-		"Remediation",
-	} {
-		if !strings.Contains(msg, keyword) {
-			t.Errorf("error message missing keyword %q\ngot:\n%s", keyword, msg)
-		}
+	// AC 10: every non-nil error must contain "Remediation" to be actionable.
+	// "Docker" is only present when Docker itself is the failing component.
+	if !strings.Contains(msg, "Remediation") {
+		t.Errorf("error message missing keyword %q (AC 10: all errors must be actionable)\ngot:\n%s",
+			"Remediation", msg)
 	}
 }
 
@@ -46,8 +45,9 @@ func TestCheckDockerDaemon_DockerPresent(t *testing.T) {
 // feeding it synthetic content.  This validates the parsing logic without
 // requiring specific modules to be loaded on the test host.
 func TestLoadedKernelModules_ParsesCorrectly(t *testing.T) {
-	// Create a synthetic /proc/modules file in a temp location.
-	tmp, err := os.CreateTemp("", "proc-modules-*")
+	// Create a synthetic /proc/modules file in a temp location under /tmp.
+	// Use os.TempDir() explicitly (not "") so the parent directory is unambiguous.
+	tmp, err := os.CreateTemp(os.TempDir(), "proc-modules-*")
 	if err != nil {
 		t.Fatalf("create temp file: %v", err)
 	}
@@ -135,7 +135,7 @@ func TestCheckHostPrerequisites_ErrorShape(t *testing.T) {
 
 	requiredFragments := []string{
 		"pillar-csi E2E prerequisite check FAILED",
-		"Remediation",
+		"remediation",
 	}
 	for _, frag := range requiredFragments {
 		if !strings.Contains(msg, frag) {

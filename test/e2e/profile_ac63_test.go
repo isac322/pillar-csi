@@ -238,6 +238,7 @@ func TestAC63DefaultNWhenNeitherFlagNorEnvSet(t *testing.T) {
 // ── 5. SlowSetupPhases includes BeforeSuite and AfterSuite phases ─────────────
 
 func TestAC63SlowSetupPhasesIncludesBeforeAndAfterSuite(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	profilePath := filepath.Join(dir, "setup-phases.json")
 
@@ -294,6 +295,7 @@ func TestAC63SlowSetupPhasesIncludesBeforeAndAfterSuite(t *testing.T) {
 // ── 6. SlowSetupPhases is capped at the configured N ─────────────────────────
 
 func TestAC63SlowSetupPhasesCappedAtN(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	profilePath := filepath.Join(dir, "capped.json")
 
@@ -340,6 +342,7 @@ func TestAC63SlowSetupPhasesCappedAtN(t *testing.T) {
 // ── 7. SlowSetupPhases is ordered by TotalNanos descending ───────────────────
 
 func TestAC63SlowSetupPhasesOrderedByDurationDescending(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	profilePath := filepath.Join(dir, "ordered.json")
 
@@ -386,6 +389,7 @@ func TestAC63SlowSetupPhasesOrderedByDurationDescending(t *testing.T) {
 // ── 8. SlowSetupPhases PctOfSuiteRuntime is in (0, 100] ─────────────────────
 
 func TestAC63SlowSetupPhasesPctOfSuiteRuntimeIsValid(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	profilePath := filepath.Join(dir, "pct.json")
 
@@ -434,6 +438,7 @@ func TestAC63SlowSetupPhasesPctOfSuiteRuntimeIsValid(t *testing.T) {
 // ── 9. Per-TC setup phases appear in SlowSetupPhases ─────────────────────────
 
 func TestAC63TCSetupPhasesIncludedInSlowSetupPhases(t *testing.T) {
+	t.Parallel()
 	// Build TCProfile entries with TCSetupNanos populated.
 	tcs := []TCProfile{
 		{TCID: "E1.1", Phases: PhaseTimings{TCSetupNanos: (100 * time.Millisecond).Nanoseconds()}},
@@ -463,6 +468,7 @@ func TestAC63TCSetupPhasesIncludedInSlowSetupPhases(t *testing.T) {
 // ── 10. Text report includes "slowest setup phases:" section ─────────────────
 
 func TestAC63TextReportIncludesSetupPhaseSection(t *testing.T) {
+	t.Parallel()
 	var sink bytes.Buffer
 	cfg := suiteExecutionConfig{
 		TimingReport: timingReportConfig{
@@ -564,6 +570,7 @@ func TestAC63ConfigureSuiteWiresSlowSetupPhaseLimitFromN(t *testing.T) {
 // ── 12. ProfileCollector.Flush passes SlowSetupPhaseLimit to buildProfileReport
 
 func TestAC63ProfileCollectorFlushPassesSetupPhaseLimitToReport(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	profilePath := filepath.Join(dir, "setup-limit.json")
 
@@ -602,6 +609,7 @@ func TestAC63ProfileCollectorFlushPassesSetupPhaseLimitToReport(t *testing.T) {
 // ── 13. Rank ordering in SlowSetupPhases ────────────────────────────────────
 
 func TestAC63SlowSetupPhasesRankIsSequential(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	profilePath := filepath.Join(dir, "ranks.json")
 
@@ -743,6 +751,7 @@ func TestAC63ResolveProfilePathEmptyWhenBothUnset(t *testing.T) {
 // ── 16. SetupPhaseBottleneck type accessors ───────────────────────────────────
 
 func TestAC63SetupPhaseBottleneckTotalDurationAccessor(t *testing.T) {
+	t.Parallel()
 	b := SetupPhaseBottleneck{TotalNanos: (250 * time.Millisecond).Nanoseconds()}
 	if b.TotalDuration() != 250*time.Millisecond {
 		t.Errorf("TotalDuration() = %s, want 250ms", b.TotalDuration())
@@ -752,6 +761,7 @@ func TestAC63SetupPhaseBottleneckTotalDurationAccessor(t *testing.T) {
 // ── 17. ProfileReport SlowSetupPhases round-trips through JSON ────────────────
 
 func TestAC63ProfileReportSlowSetupPhasesRoundTripJSON(t *testing.T) {
+	t.Parallel()
 	pr := ProfileReport{
 		SuiteName: "Round-trip Test",
 		SlowSetupPhases: []SetupPhaseBottleneck{
@@ -798,6 +808,7 @@ func TestAC63ProfileReportSlowSetupPhasesRoundTripJSON(t *testing.T) {
 // ── 18. buildSlowSetupPhases unit tests ──────────────────────────────────────
 
 func TestAC63BuildSlowSetupPhasesEmptyWhenNoData(t *testing.T) {
+	t.Parallel()
 	report := types.Report{RunTime: 5 * time.Second}
 	phases := buildSlowSetupPhases(report, nil, 5)
 	if phases != nil {
@@ -806,6 +817,7 @@ func TestAC63BuildSlowSetupPhasesEmptyWhenNoData(t *testing.T) {
 }
 
 func TestAC63BuildSlowSetupPhasesIgnoresZeroRuntimePhases(t *testing.T) {
+	t.Parallel()
 	report := types.Report{
 		RunTime: 10 * time.Second,
 		SpecReports: types.SpecReports{
@@ -824,6 +836,7 @@ func TestAC63BuildSlowSetupPhasesIgnoresZeroRuntimePhases(t *testing.T) {
 }
 
 func TestAC63BuildSlowSetupPhasesSynchronizedBeforeSuiteIsIncluded(t *testing.T) {
+	t.Parallel()
 	report := types.Report{
 		RunTime: 10 * time.Second,
 		SpecReports: types.SpecReports{

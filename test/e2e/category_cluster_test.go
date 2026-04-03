@@ -36,7 +36,7 @@ import (
 // full cluster+backend integration path.
 func runClusterTCBody(tc documentedCase, plan localExecutionPlan) {
 	for _, verifierName := range plan.Verifiers {
-		result := defaultLocalVerifierRegistry.Result(verifierName)
+		result := suiteLocalVerifierRegistry.Result(verifierName)
 		Expect(result.Err).NotTo(HaveOccurred(),
 			"%s[%s] FAIL: cluster verifier %q failed after %s: %v",
 			tc.tcNodeLabel(), tc.SectionTitle, verifierName, result.Duration, result.Err,

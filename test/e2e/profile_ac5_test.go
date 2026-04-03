@@ -263,6 +263,7 @@ func TestAC5ProfileFlagEndToEndBottleneckIdentification(t *testing.T) {
 // synthetic reports), TCSetup/TCExecute/TCTeardown remain zero. The test verifies
 // that the accessor methods return correct values and the JSON fields are present.
 func TestAC5ProfileFlagPerPhaseTimingBreakdown(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	profilePath := filepath.Join(dir, "phases.json")
 
@@ -357,6 +358,7 @@ func TestAC5ProfileFlagPerPhaseTimingBreakdown(t *testing.T) {
 //   - Bottleneck TotalNanos are in non-increasing order.
 //   - Sum of all PctOfSuiteRuntime values <= 100 (no double-counting).
 func TestAC5BottleneckListInvariantsOnRealProfile(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	profilePath := filepath.Join(dir, "large-profile.json")
 
@@ -494,6 +496,7 @@ func TestAC5ProfileFlagDisabledProducesNoOutput(t *testing.T) {
 //
 // This ensures the flag is self-documenting for users who run `go test -h`.
 func TestAC5ProfileFlagTimingReportFlagDescription(t *testing.T) {
+	t.Parallel()
 	// The flag is registered as "e2e.profile" by profile_config.go.
 	// We verify its usage string contains the required keywords.
 	usage := "file path for JSON-structured timing profile: per-TC duration, " +

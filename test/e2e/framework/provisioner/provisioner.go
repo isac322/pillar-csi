@@ -18,13 +18,17 @@
 //  4. Tests run against the provisioned backends.
 //  5. Registry.Cleanup destroys each Resource in reverse registration order.
 //
-// # Soft-skip semantics
+// # Fail-fast policy
 //
-// When a required kernel module or container tool is absent, Provision should
-// return (nil, nil) rather than an error. The Pipeline records this as a
-// skipped backend and continues provisioning remaining backends. Test specs
-// that depend on the absent backend are responsible for checking the returned
-// [ProvisionResult.Resource] for nil and skipping accordingly.
+// Concrete provisioners (ZFSProvisioner, LVMProvisioner) do NOT implement
+// soft-skip semantics. All failures are hard errors (nil, err). Missing kernel
+// modules are detected upfront by [kind.CheckBackendKernelModules] and cause
+// an immediate FAIL with a clear remediation message.
+//
+// The pipeline framework supports (nil, nil) from Provision and records it as
+// a skipped backend (ProvisionResult.Skipped=true), but this path is only
+// exercised by framework-level tests using test-infrastructure fakes — it is
+// not a valid return value for production provisioner implementations.
 //
 // # Adding a new backend
 //
@@ -78,17 +82,21 @@ import (
 //
 //  2. Provision — creates the ephemeral storage resources needed by the test
 //     suite inside the Kind container node. On success it returns a
-//     [registry.Resource] that captures teardown logic. On soft-skip (absent
-//     kernel module or container tool) it returns (nil, nil). On hard error it
+//     [registry.Resource] that captures teardown logic. On hard error it
 //     returns (nil, err).
 //
-// # Soft-skip vs. hard error
+// # Return values
 //
 //   - (resource, nil): provisioning succeeded; tests may use this backend.
-//   - (nil, nil):      soft skip; required module/tool absent; tests using this
-//     backend should skip rather than fail.
-//   - (nil, err):      hard error; provisioning failed unexpectedly; the
-//     Pipeline reports this as a failure.
+//   - (nil, err):      hard error; provisioning failed; the Pipeline reports
+//     this as a failure and the caller must fix the issue before retrying.
+//
+// Concrete provisioner implementations MUST NOT return (nil, nil).
+// Missing kernel modules and absent container tools are detected upfront by
+// [kind.CheckBackendKernelModules] and must cause a hard FAIL, not a silent
+// skip. The pipeline framework recognises (nil, nil) and records it as
+// ProvisionResult.Skipped=true, but this path is reserved for
+// framework-level tests only — never for production provisioner code.
 //
 // # Idempotency and atomicity
 //
@@ -105,8 +113,9 @@ type BackendProvisioner interface {
 	//
 	// Returns:
 	//   - (resource, nil)  on success — resource implements [registry.Resource].
-	//   - (nil, nil)       on soft skip — kernel module or container tool absent.
 	//   - (nil, err)       on hard error — unexpected provisioning failure.
+	//
+	// Production implementations MUST NOT return (nil, nil).
 	Provision(ctx context.Context) (registry.Resource, error)
 }
 

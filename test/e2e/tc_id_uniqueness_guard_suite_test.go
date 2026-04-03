@@ -2,7 +2,8 @@
 
 package e2e
 
-// Sub-AC 2b + 3.3 — Parallel-safe SynchronizedBeforeSuite bootstrap (non-e2e build).
+// AC 2 + AC 3 — Parallel-safe SynchronizedBeforeSuite bootstrap (non-e2e build).
+// (Formerly "Sub-AC 2b + 3.3" — see docs/E2E-AC.md for the unified 10-AC mapping.)
 //
 // This file is excluded from //go:build e2e compilations because the e2e build
 // registers its own SynchronizedBeforeSuite in kind_bootstrap_e2e_test.go.
@@ -13,7 +14,7 @@ package e2e
 // SynchronizedBeforeSuite — two phases:
 //
 //  Primary phase (runs once on Ginkgo process node 1):
-//    • Validates TC node-label uniqueness across the full 437-case default profile.
+//    • Validates TC node-label uniqueness across the catalog-driven 388-case default profile.
 //    • Serialises a compact suiteSharedPayload (profile count) and returns it as
 //      []byte so every parallel worker node can verify the shared precondition.
 //
@@ -26,9 +27,10 @@ package e2e
 //        – Each parallel Ginkgo node owns exactly one initialised backend set.
 //
 // Isolation guarantee: each Ginkgo parallel worker is a separate OS process with
-// its own defaultLocalVerifierRegistry. Pre-warming in the all-nodes phase means
-// every node's registry entries are resolved before specs run, so no TC
-// experiences first-call overhead and no two TCs share mutable verifier state.
+// its own suiteLocalVerifierRegistry (created by warmUpLocalBackend). Pre-warming
+// in the all-nodes phase means every node's registry entries are resolved before
+// specs run, so no TC experiences first-call overhead and no two TCs share
+// mutable verifier state.
 //
 // NOTE: recordGroupSetupTiming must NOT be called from SynchronizedBeforeSuite.
 // The authoritative setup timing is extracted automatically from the consolidated
@@ -57,36 +59,36 @@ var _ = SynchronizedBeforeSuite(
 	// Runs exactly once, on Ginkgo process node 1, before any spec is scheduled.
 	// Returns a []byte payload that is forwarded to every parallel worker node.
 	func() []byte {
-		By("Sub-AC 3.3: validating TC node-label uniqueness at suite startup (primary node)")
+		By("AC 3: validating TC node-label uniqueness at suite startup (primary node)")
 
 		profile, err := buildDefaultProfile()
 		Expect(err).NotTo(HaveOccurred(),
-			"[AC3.3] default profile build failed at suite startup — "+
+			"[AC3] default profile build failed at suite startup — "+
 				"check docs/E2E-TESTCASES.md for duplicate or missing TC IDs")
 
 		Expect(profile).NotTo(BeEmpty(),
-			"[AC3.3] default profile is empty — expected %d documented cases",
+			"[AC3] default profile is empty — expected %d documented cases",
 			defaultProfileCaseCount)
 
 		// validateTCNodeLabelUniqueness is also called inside buildDefaultProfile,
 		// but calling it here with an explicit Expect ensures:
-		//   (a) the Ginkgo failure message carries the [AC3.3] annotation, and
+		//   (a) the Ginkgo failure message carries the [AC3] annotation, and
 		//   (b) the error surfaces at the SynchronizedBeforeSuite primary phase —
 		//       before any It node is scheduled — rather than only when a colliding
 		//       spec is run.
 		Expect(validateTCNodeLabelUniqueness(profile)).To(Succeed(),
-			"[AC3.3] TC node-label collision detected at suite startup — "+
+			"[AC3] TC node-label collision detected at suite startup — "+
 				"two or more It-node labels share the same [TC-<ID>] string; "+
 				"each TC ID must map to exactly one Ginkgo spec")
 
 		_, _ = fmt.Fprintf(GinkgoWriter,
-			"[AC3.3] TC node-label uniqueness verified: %d distinct [TC-<ID>] labels\n",
+			"[AC3] TC node-label uniqueness verified: %d distinct [TC-<ID>] labels\n",
 			len(profile))
 
 		payload := suiteSharedPayload{ProfileCount: len(profile)}
 		data, err := json.Marshal(payload)
 		Expect(err).NotTo(HaveOccurred(),
-			"[AC2b] SynchronizedBeforeSuite primary: failed to serialise shared payload")
+			"[AC2] SynchronizedBeforeSuite primary: failed to serialise shared payload")
 		return data
 	},
 
@@ -96,9 +98,9 @@ var _ = SynchronizedBeforeSuite(
 	func(data []byte) {
 		var shared suiteSharedPayload
 		Expect(json.Unmarshal(data, &shared)).To(Succeed(),
-			"[AC2b] SynchronizedBeforeSuite all-nodes: failed to deserialise shared payload")
+			"[AC2] SynchronizedBeforeSuite all-nodes: failed to deserialise shared payload")
 		Expect(shared.ProfileCount).To(Equal(defaultProfileCaseCount),
-			"[AC2b] SynchronizedBeforeSuite all-nodes: profile count mismatch — "+
+			"[AC2] SynchronizedBeforeSuite all-nodes: profile count mismatch — "+
 				"primary validated %d cases but this node expected %d",
 			shared.ProfileCount, defaultProfileCaseCount)
 
@@ -107,10 +109,10 @@ var _ = SynchronizedBeforeSuite(
 		// triggers that initialisation so backends are ready before specs run.
 		// Verifier errors are stored in the registry, not propagated here —
 		// individual specs decide whether a failed verifier is a test failure.
-		warmUpLocalBackend()
+		warmUpLocalBackend(GinkgoParallelProcess())
 
 		_, _ = fmt.Fprintf(GinkgoWriter,
-			"[AC2b] node %d: in-process backends initialised (%d verifiers pre-warmed)\n",
+			"[AC2] node %d: in-process backends initialised (%d verifiers pre-warmed)\n",
 			GinkgoParallelProcess(), len(allLocalVerifierNames))
 	},
 )

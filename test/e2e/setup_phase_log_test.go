@@ -29,6 +29,18 @@ package e2e
 //     when -e2e.setup-timing-log is empty (the default).
 // 12. installTestSetupPhaseLog replaces suiteSetupPhaseLog for the duration
 //     of the test and restores it on cleanup.
+// 13. appendSetupPhasesFromTimingProfile emits an after_each entry when
+//     phaseAfterEach is present in the timing profile (Sub-AC 2).
+// 14. appendAfterSuiteToSetupPhaseLog emits one entry per
+//     NodeTypeAfterSuite / NodeTypeSynchronizedAfterSuite spec report and
+//     correctly derives StartedAt / FinishedAt from the spec timestamps (Sub-AC 2).
+// 15. appendAfterSuiteToSetupPhaseLog skips reports with zero RunTime (Sub-AC 2).
+// 16. phaseAfterEach is present in the profile produced by a complete lifecycle
+//     that includes phaseAfterEach (Sub-AC 2).
+// 17. setupPhaseAfterEach and setupPhaseAfterSuite constants have the correct
+//     string values (Sub-AC 2).
+// 18. appendSetupPhasesFromTimingProfile emits all four phases (before_each,
+//     just_before_each, after_each) from a full lifecycle profile (Sub-AC 2).
 
 import (
 	"bufio"
@@ -46,6 +58,7 @@ import (
 // ── 1. setupPhaseLogEntry JSON round-trip ─────────────────────────────────────
 
 func TestSetupPhaseLogEntryJSONRoundTrip(t *testing.T) {
+	t.Parallel()
 	start := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
 	end := start.Add(17 * time.Millisecond)
 
@@ -89,6 +102,7 @@ func TestSetupPhaseLogEntryJSONRoundTrip(t *testing.T) {
 }
 
 func TestSetupPhaseLogEntryDurationAccessor(t *testing.T) {
+	t.Parallel()
 	want := 25 * time.Millisecond
 	entry := setupPhaseLogEntry{DurationNanos: want.Nanoseconds()}
 	if entry.Duration() != want {
@@ -97,6 +111,7 @@ func TestSetupPhaseLogEntryDurationAccessor(t *testing.T) {
 }
 
 func TestSetupPhaseLogEntryPhaseConstants(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		val  string
@@ -115,6 +130,7 @@ func TestSetupPhaseLogEntryPhaseConstants(t *testing.T) {
 // ── 2 + 3. fileSetupPhaseLogger ───────────────────────────────────────────────
 
 func TestFileSetupPhaseLoggerWritesJSONLines(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "setup-phases.jsonl")
 	logger := newFileSetupPhaseLogger(path)
@@ -173,6 +189,7 @@ func TestFileSetupPhaseLoggerWritesJSONLines(t *testing.T) {
 }
 
 func TestFileSetupPhaseLoggerAppendsToExistingFile(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "append-test.jsonl")
 
@@ -205,6 +222,7 @@ func TestFileSetupPhaseLoggerAppendsToExistingFile(t *testing.T) {
 }
 
 func TestFileSetupPhaseLoggerEmptyPathIsNoOp(t *testing.T) {
+	t.Parallel()
 	logger := newFileSetupPhaseLogger("") // empty path → no-op
 	err := logger.Append(setupPhaseLogEntry{Phase: setupPhaseBeforeEach, TCID: "E1.1"})
 	if err != nil {
@@ -217,6 +235,7 @@ func TestFileSetupPhaseLoggerEmptyPathIsNoOp(t *testing.T) {
 }
 
 func TestFileSetupPhaseLoggerNilIsNoOp(t *testing.T) {
+	t.Parallel()
 	var logger *fileSetupPhaseLogger
 	if err := logger.Append(setupPhaseLogEntry{}); err != nil {
 		t.Fatalf("nil Append: %v", err)
@@ -229,6 +248,7 @@ func TestFileSetupPhaseLoggerNilIsNoOp(t *testing.T) {
 // ── 4. inMemorySetupPhaseLogger ───────────────────────────────────────────────
 
 func TestInMemorySetupPhaseLoggerIsEmptyOnCreation(t *testing.T) {
+	t.Parallel()
 	m := newInMemorySetupPhaseLogger()
 	if m.Len() != 0 {
 		t.Fatalf("Len() = %d, want 0", m.Len())
@@ -239,6 +259,7 @@ func TestInMemorySetupPhaseLoggerIsEmptyOnCreation(t *testing.T) {
 }
 
 func TestInMemorySetupPhaseLoggerRecordAndSnapshot(t *testing.T) {
+	t.Parallel()
 	m := newInMemorySetupPhaseLogger()
 	entries := []setupPhaseLogEntry{
 		{Phase: setupPhaseBeforeEach, TCID: "E1.1", DurationNanos: 100},
@@ -273,6 +294,7 @@ func TestInMemorySetupPhaseLoggerRecordAndSnapshot(t *testing.T) {
 }
 
 func TestInMemorySetupPhaseLoggerSnapshotIsIsolated(t *testing.T) {
+	t.Parallel()
 	m := newInMemorySetupPhaseLogger()
 	_ = m.Append(setupPhaseLogEntry{Phase: setupPhaseBeforeEach, TCID: "E1.1"})
 
@@ -515,6 +537,7 @@ func TestAppendBeforeSuiteToSetupPhaseLogSkipsZeroRunTime(t *testing.T) {
 // ── 9. phaseBeforeEach and phaseJustBeforeEach in timing profile ──────────────
 
 func TestTimingProfileIncludesBeforeEachAndJustBeforeEachPhases(t *testing.T) {
+	t.Parallel()
 	clock := &steppingClock{
 		current: time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC),
 		step:    5 * time.Millisecond,
@@ -557,6 +580,7 @@ func TestTimingProfileIncludesBeforeEachAndJustBeforeEachPhases(t *testing.T) {
 }
 
 func TestPhaseBeforeEachConstantValue(t *testing.T) {
+	t.Parallel()
 	const want = "hook.before_each"
 	if string(phaseBeforeEach) != want {
 		t.Errorf("phaseBeforeEach = %q, want %q", phaseBeforeEach, want)
@@ -742,6 +766,398 @@ func TestSetupPhaseLogMultipleTCsAppendInOrder(t *testing.T) {
 	want := len(tcIDs) * 2
 	if len(snap) != want {
 		t.Fatalf("expected %d log entries, got %d", want, len(snap))
+	}
+}
+
+// ── 13. appendSetupPhasesFromTimingProfile — after_each ───────────────────────
+
+// TestAppendSetupPhasesFromTimingProfileEmitsAfterEach verifies that
+// appendSetupPhasesFromTimingProfile emits an after_each entry to
+// suiteSetupPhaseLog when phaseAfterEach is present in the timing profile
+// (Sub-AC 2: AfterEach phase timing).
+func TestAppendSetupPhasesFromTimingProfileEmitsAfterEach(t *testing.T) {
+	log := installTestSetupPhaseLog(t)
+
+	clock := &steppingClock{
+		current: time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC),
+		step:    10 * time.Millisecond,
+	}
+	recorder := newSuiteTimingRecorder(clock.Now)
+	report := types.SpecReport{
+		LeafNodeType:    types.NodeTypeIt,
+		LeafNodeText:    "TC[011/437] E9.1 :: TestAfterEachPhase",
+		ParallelProcess: 2,
+	}
+
+	recorder.start(report)
+	recorder.beginPhase(phaseBeforeEach)
+	recorder.endPhase(phaseBeforeEach)
+	recorder.beginPhase(phaseJustBeforeEach)
+	recorder.endPhase(phaseJustBeforeEach)
+	recorder.beginPhase(phaseSpecBody)
+	recorder.endPhase(phaseSpecBody)
+	// Sub-AC 2: also record AfterEach phase.
+	recorder.beginPhase(phaseAfterEach)
+	recorder.endPhase(phaseAfterEach)
+
+	profile, ok := recorder.finalize(report)
+	if !ok {
+		t.Fatal("finalize returned no profile")
+	}
+
+	appendSetupPhasesFromTimingProfile(profile)
+
+	snap := log.Snapshot()
+	// Expected: before_each + just_before_each + after_each = 3 entries.
+	if len(snap) != 3 {
+		t.Fatalf("expected 3 log entries (before_each + just_before_each + after_each), got %d: %+v", len(snap), snap)
+	}
+
+	var foundAfterEach bool
+	for _, e := range snap {
+		if e.Phase == setupPhaseAfterEach {
+			foundAfterEach = true
+			if e.TCID != "E9.1" {
+				t.Errorf("after_each entry TCID = %q, want E9.1", e.TCID)
+			}
+			if e.ParallelProcess != 2 {
+				t.Errorf("after_each ParallelProcess = %d, want 2", e.ParallelProcess)
+			}
+			if e.DurationNanos <= 0 {
+				t.Errorf("after_each DurationNanos = %d, want > 0", e.DurationNanos)
+			}
+		}
+	}
+	if !foundAfterEach {
+		t.Error("after_each entry not found in log")
+	}
+}
+
+// TestAppendSetupPhasesFromTimingProfileNoAfterEachWhenPhaseAbsent verifies
+// that appendSetupPhasesFromTimingProfile does NOT emit an after_each entry
+// when phaseAfterEach is absent from the timing profile (backward-compatible
+// behaviour when AfterEach instrumentation is not active).
+func TestAppendSetupPhasesFromTimingProfileNoAfterEachWhenPhaseAbsent(t *testing.T) {
+	log := installTestSetupPhaseLog(t)
+
+	clock := &steppingClock{
+		current: time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC),
+		step:    5 * time.Millisecond,
+	}
+	recorder := newSuiteTimingRecorder(clock.Now)
+	report := types.SpecReport{
+		LeafNodeType:    types.NodeTypeIt,
+		LeafNodeText:    "TC[012/437] E10.1 :: TestNoAfterEach",
+		ParallelProcess: 1,
+	}
+
+	recorder.start(report)
+	// Only record BeforeEach and spec body — no phaseAfterEach.
+	recorder.beginPhase(phaseBeforeEach)
+	recorder.endPhase(phaseBeforeEach)
+	recorder.beginPhase(phaseSpecBody)
+	recorder.endPhase(phaseSpecBody)
+
+	profile, ok := recorder.finalize(report)
+	if !ok {
+		t.Fatal("finalize returned no profile")
+	}
+
+	appendSetupPhasesFromTimingProfile(profile)
+
+	snap := log.Snapshot()
+	for _, e := range snap {
+		if e.Phase == setupPhaseAfterEach {
+			t.Errorf("unexpected after_each entry when phaseAfterEach was not recorded: %+v", e)
+		}
+	}
+}
+
+// ── 14. appendAfterSuiteToSetupPhaseLog ──────────────────────────────────────
+
+// TestAppendAfterSuiteToSetupPhaseLogEmitsAfterSuiteEntry verifies that
+// appendAfterSuiteToSetupPhaseLog emits one setupPhaseLogEntry with
+// phase="after_suite" for a NodeTypeAfterSuite spec report (Sub-AC 2).
+func TestAppendAfterSuiteToSetupPhaseLogEmitsAfterSuiteEntry(t *testing.T) {
+	log := installTestSetupPhaseLog(t)
+
+	start := time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC)
+	duration := 3 * time.Second
+
+	report := types.Report{
+		SpecReports: types.SpecReports{
+			{
+				LeafNodeType: types.NodeTypeAfterSuite,
+				StartTime:    start,
+				EndTime:      start.Add(duration),
+				RunTime:      duration,
+			},
+		},
+	}
+
+	appendAfterSuiteToSetupPhaseLog(report)
+
+	snap := log.Snapshot()
+	if len(snap) != 1 {
+		t.Fatalf("expected 1 log entry, got %d", len(snap))
+	}
+
+	e := snap[0]
+	if e.Phase != setupPhaseAfterSuite {
+		t.Errorf("Phase = %q, want %q", e.Phase, setupPhaseAfterSuite)
+	}
+	if e.DurationNanos != duration.Nanoseconds() {
+		t.Errorf("DurationNanos = %d, want %d", e.DurationNanos, duration.Nanoseconds())
+	}
+	if !e.StartedAt.Equal(start) {
+		t.Errorf("StartedAt = %v, want %v", e.StartedAt, start)
+	}
+	if !e.FinishedAt.Equal(start.Add(duration)) {
+		t.Errorf("FinishedAt = %v, want %v", e.FinishedAt, start.Add(duration))
+	}
+	// AfterSuite entries do not carry TCID or ParallelProcess.
+	if e.TCID != "" {
+		t.Errorf("TCID = %q, want empty for AfterSuite entry", e.TCID)
+	}
+}
+
+// TestAppendAfterSuiteToSetupPhaseLogHandlesSynchronizedAfterSuite verifies
+// that appendAfterSuiteToSetupPhaseLog handles
+// NodeTypeSynchronizedAfterSuite (which may produce multiple reports,
+// one per primary + one per worker) and appends one entry per report.
+func TestAppendAfterSuiteToSetupPhaseLogHandlesSynchronizedAfterSuite(t *testing.T) {
+	log := installTestSetupPhaseLog(t)
+
+	start := time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC)
+	primaryDur := 5 * time.Second
+	workerDur := 500 * time.Millisecond
+
+	report := types.Report{
+		SpecReports: types.SpecReports{
+			{
+				LeafNodeType: types.NodeTypeSynchronizedAfterSuite,
+				StartTime:    start,
+				EndTime:      start.Add(primaryDur),
+				RunTime:      primaryDur,
+			},
+			{
+				LeafNodeType: types.NodeTypeSynchronizedAfterSuite,
+				StartTime:    start,
+				EndTime:      start.Add(workerDur),
+				RunTime:      workerDur,
+			},
+		},
+	}
+
+	appendAfterSuiteToSetupPhaseLog(report)
+
+	snap := log.Snapshot()
+	if len(snap) != 2 {
+		t.Fatalf("expected 2 entries for 2 SynchronizedAfterSuite reports, got %d", len(snap))
+	}
+	for _, e := range snap {
+		if e.Phase != setupPhaseAfterSuite {
+			t.Errorf("Phase = %q, want %q", e.Phase, setupPhaseAfterSuite)
+		}
+		if e.DurationNanos <= 0 {
+			t.Errorf("DurationNanos = %d, want > 0", e.DurationNanos)
+		}
+	}
+}
+
+// ── 15. appendAfterSuiteToSetupPhaseLog — skip zero RunTime ──────────────────
+
+// TestAppendAfterSuiteToSetupPhaseLogSkipsZeroRunTime verifies that
+// appendAfterSuiteToSetupPhaseLog skips spec reports with zero RunTime
+// and only appends entries with positive RunTime (Sub-AC 2).
+func TestAppendAfterSuiteToSetupPhaseLogSkipsZeroRunTime(t *testing.T) {
+	log := installTestSetupPhaseLog(t)
+
+	report := types.Report{
+		SpecReports: types.SpecReports{
+			// Zero RunTime — should be skipped.
+			{
+				LeafNodeType: types.NodeTypeAfterSuite,
+				RunTime:      0,
+			},
+			// Positive RunTime — should be logged.
+			{
+				LeafNodeType: types.NodeTypeAfterSuite,
+				RunTime:      2 * time.Second,
+			},
+			// Non-suite nodes are ignored even with RunTime.
+			{
+				LeafNodeType: types.NodeTypeIt,
+				RunTime:      3 * time.Second,
+			},
+		},
+	}
+
+	appendAfterSuiteToSetupPhaseLog(report)
+
+	snap := log.Snapshot()
+	if len(snap) != 1 {
+		t.Fatalf("expected 1 entry (one positive-RunTime AfterSuite), got %d", len(snap))
+	}
+	if snap[0].DurationNanos != (2 * time.Second).Nanoseconds() {
+		t.Errorf("DurationNanos = %d, want %d", snap[0].DurationNanos, (2 * time.Second).Nanoseconds())
+	}
+}
+
+// ── 16. phaseAfterEach present in timing profile ──────────────────────────────
+
+// TestTimingProfileIncludesAfterEachPhase verifies that when phaseAfterEach is
+// explicitly recorded by the timingRecorder, it appears in the finalised
+// profile with a positive duration (Sub-AC 2).
+func TestTimingProfileIncludesAfterEachPhase(t *testing.T) {
+	t.Parallel()
+	clock := &steppingClock{
+		current: time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC),
+		step:    8 * time.Millisecond,
+	}
+	recorder := newSuiteTimingRecorder(clock.Now)
+	report := types.SpecReport{
+		LeafNodeType:    types.NodeTypeIt,
+		LeafNodeText:    "TC[013/437] E11.1 :: TestAfterEachPresence",
+		ParallelProcess: 1,
+	}
+
+	recorder.start(report)
+	recorder.beginPhase(phaseBeforeEach)
+	recorder.endPhase(phaseBeforeEach)
+	recorder.beginPhase(phaseSpecBody)
+	recorder.endPhase(phaseSpecBody)
+	// Sub-AC 2: record AfterEach phase.
+	recorder.beginPhase(phaseAfterEach)
+	recorder.endPhase(phaseAfterEach)
+
+	profile, ok := recorder.finalize(report)
+	if !ok {
+		t.Fatal("finalize returned no profile")
+	}
+
+	afterEachSample := findTimingPhase(profile, phaseAfterEach)
+	if afterEachSample == nil {
+		t.Fatalf("phaseAfterEach not found in profile: %+v", profile.Phases)
+	}
+	if afterEachSample.DurationNanos <= 0 {
+		t.Errorf("phaseAfterEach DurationNanos = %d, want > 0", afterEachSample.DurationNanos)
+	}
+}
+
+// ── 17. Phase constant values ─────────────────────────────────────────────────
+
+// TestSetupPhaseAfterEachConstantValue verifies that the setupPhaseAfterEach
+// constant has the correct string value "after_each" (Sub-AC 2).
+func TestSetupPhaseAfterEachConstantValue(t *testing.T) {
+	t.Parallel()
+	const want = "after_each"
+	if setupPhaseAfterEach != want {
+		t.Errorf("setupPhaseAfterEach = %q, want %q", setupPhaseAfterEach, want)
+	}
+}
+
+// TestSetupPhaseAfterSuiteConstantValue verifies that the setupPhaseAfterSuite
+// constant has the correct string value "after_suite" (Sub-AC 2).
+func TestSetupPhaseAfterSuiteConstantValue(t *testing.T) {
+	t.Parallel()
+	const want = "after_suite"
+	if setupPhaseAfterSuite != want {
+		t.Errorf("setupPhaseAfterSuite = %q, want %q", setupPhaseAfterSuite, want)
+	}
+}
+
+// TestPhaseAfterEachConstantValue verifies that the phaseAfterEach execution
+// phase constant has the correct string value "hook.after_each" (Sub-AC 2).
+func TestPhaseAfterEachConstantValue(t *testing.T) {
+	t.Parallel()
+	const want = "hook.after_each"
+	if string(phaseAfterEach) != want {
+		t.Errorf("phaseAfterEach = %q, want %q", phaseAfterEach, want)
+	}
+}
+
+// ── 18. All four phases from a full lifecycle ─────────────────────────────────
+
+// TestAppendSetupPhasesFromTimingProfileAllFourPhases verifies that
+// appendSetupPhasesFromTimingProfile emits all three per-TC phase log entries
+// (before_each, just_before_each, after_each) from a full lifecycle profile
+// that includes all of phaseBeforeEach, phaseJustBeforeEach, and phaseAfterEach
+// (Sub-AC 2: all per-TC phases covered).
+func TestAppendSetupPhasesFromTimingProfileAllFourPhases(t *testing.T) {
+	log := installTestSetupPhaseLog(t)
+
+	clock := &steppingClock{
+		current: time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC),
+		step:    15 * time.Millisecond,
+	}
+	recorder := newSuiteTimingRecorder(clock.Now)
+	report := types.SpecReport{
+		LeafNodeType:    types.NodeTypeIt,
+		LeafNodeText:    "TC[014/437] E12.1 :: TestAllPhases",
+		ParallelProcess: 4,
+	}
+
+	recorder.start(report)
+	recorder.beginPhase(phaseBeforeEach)
+	recorder.endPhase(phaseBeforeEach)
+	recorder.beginPhase(phaseJustBeforeEach)
+	recorder.endPhase(phaseJustBeforeEach)
+	recorder.beginPhase(phaseSpecBody)
+	recorder.endPhase(phaseSpecBody)
+	recorder.beginPhase(phaseAfterEach)
+	recorder.endPhase(phaseAfterEach)
+
+	profile, ok := recorder.finalize(report)
+	if !ok {
+		t.Fatal("finalize returned no profile")
+	}
+
+	appendSetupPhasesFromTimingProfile(profile)
+
+	snap := log.Snapshot()
+	// Expected: before_each + just_before_each + after_each = 3 entries.
+	if len(snap) != 3 {
+		t.Fatalf("expected 3 log entries (before_each + just_before_each + after_each), got %d: %+v", len(snap), snap)
+	}
+
+	phases := map[string]bool{}
+	for _, e := range snap {
+		phases[e.Phase] = true
+		if e.DurationNanos <= 0 {
+			t.Errorf("entry %q DurationNanos = %d, want > 0", e.Phase, e.DurationNanos)
+		}
+		if e.TCID != "E12.1" {
+			t.Errorf("entry %q TCID = %q, want E12.1", e.Phase, e.TCID)
+		}
+		if e.ParallelProcess != 4 {
+			t.Errorf("entry %q ParallelProcess = %d, want 4", e.Phase, e.ParallelProcess)
+		}
+	}
+	for _, want := range []string{setupPhaseBeforeEach, setupPhaseJustBeforeEach, setupPhaseAfterEach} {
+		if !phases[want] {
+			t.Errorf("phase %q not found in log entries", want)
+		}
+	}
+}
+
+// TestAllSetupPhaseConstantsDistinct verifies that all six setup-phase
+// constants have distinct string values (no accidental duplicates) (Sub-AC 2).
+func TestAllSetupPhaseConstantsDistinct(t *testing.T) {
+	t.Parallel()
+	constants := map[string]string{
+		"setupPhaseBeforeSuite":    setupPhaseBeforeSuite,
+		"setupPhaseBeforeEach":     setupPhaseBeforeEach,
+		"setupPhaseJustBeforeEach": setupPhaseJustBeforeEach,
+		"setupPhaseAfterEach":      setupPhaseAfterEach,
+		"setupPhaseAfterSuite":     setupPhaseAfterSuite,
+	}
+	seen := map[string]string{}
+	for name, val := range constants {
+		if other, exists := seen[val]; exists {
+			t.Errorf("constants %s and %s have the same value %q", name, other, val)
+		}
+		seen[val] = name
 	}
 }
 

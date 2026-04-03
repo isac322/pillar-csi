@@ -179,11 +179,14 @@ var _ = Describe("E10: 클러스터 레벨 E2E 테스트", Label("E10-cluster"),
 		// ── TC-E10.70 ─────────────────────────────────────────────────────────
 		// E10.70: cert-manager integration.
 		// TestE2E/cert-manager_통합
-		It("[TC-E10.70] cert-manager 통합 검증", func() {
-			// cert-manager tests are skipped when CERT_MANAGER_INSTALL_SKIP=true
-			// (Makefile default) to avoid requiring cert-manager in all CI envs.
+		It("[TC-E10.70] cert-manager 통합 검증", Label("optional:cert-manager"), func() {
+			// cert-manager is required for this test. If CERT_MANAGER_INSTALL_SKIP=true
+			// is set, this test will fail — either install cert-manager or exclude it
+			// from the run via --label-filter=!optional:cert-manager.
 			if os.Getenv("CERT_MANAGER_INSTALL_SKIP") == "true" {
-				Skip("[TC-E10.70] cert-manager integration skipped (CERT_MANAGER_INSTALL_SKIP=true)")
+				Fail("[TC-E10.70] cert-manager integration cannot run: CERT_MANAGER_INSTALL_SKIP=true is set. " +
+					"To run this test, unset CERT_MANAGER_INSTALL_SKIP or install cert-manager. " +
+					"To exclude it from the suite, add --label-filter=!optional:cert-manager.")
 			}
 
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)

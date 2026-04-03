@@ -1,3 +1,5 @@
+//go:build e2e
+
 package e2e
 
 // lvm_volume_expansion_e2e_test.go — E33.3: LVM volume expansion tests.
@@ -59,7 +61,7 @@ var _ = Describe("E33: LVM Kind 클러스터 E2E — 실제 LVM VG + NVMe-oF TCP
 					"-o", "jsonpath={.items[?(@.provisioner=='pillar-csi.bhyoo.com')].metadata.name}",
 				)
 				if err != nil || scOut == "" {
-					Skip("[E33.3] no pillar-csi StorageClass available")
+					Fail("[E33.3] MISSING PREREQUISITE: no pillar-csi StorageClass available")
 				}
 				scName = strings.Fields(scOut)[0]
 
@@ -151,7 +153,7 @@ spec:
 				phase, err := e33KubectlOutput(ctx, "get", "pod", podName,
 					"-n", testNamespace, "-o", "jsonpath={.status.phase}")
 				if err != nil || phase != "Running" {
-					Skip("[TC-E33.307] Pod not Running")
+					Fail("[TC-E33.307] MISSING PREREQUISITE: Pod not Running")
 				}
 
 				dfOut, err := e33KubectlOutput(ctx, "exec", podName,
@@ -175,7 +177,7 @@ spec:
 				phase, err := e33KubectlOutput(ctx, "get", "pvc", pvcName,
 					"-n", testNamespace, "-o", "jsonpath={.status.phase}")
 				if err != nil || phase != "Bound" {
-					Skip("[TC-E33.308] PVC not Bound")
+					Fail("[TC-E33.308] MISSING PREREQUISITE: PVC not Bound")
 				}
 
 				By("patching PVC to 2Gi")
@@ -211,7 +213,7 @@ spec:
 				phase, err := e33KubectlOutput(ctx, "get", "pod", podName,
 					"-n", testNamespace, "-o", "jsonpath={.status.phase}")
 				if err != nil || phase != "Running" {
-					Skip("[TC-E33.309] Pod not Running")
+					Fail("[TC-E33.309] MISSING PREREQUISITE: Pod not Running")
 				}
 
 				dfOut, err := e33KubectlOutput(ctx, "exec", podName,

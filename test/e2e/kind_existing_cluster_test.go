@@ -206,6 +206,7 @@ func TestExistingClusterState_CustomKubeContext(t *testing.T) {
 // ── 11. copyFile copies content ───────────────────────────────────────────────
 
 func TestCopyFile_CopiesContent(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	src := filepath.Join(dir, "source.txt")
 	dst := filepath.Join(dir, "dest.txt")
@@ -231,6 +232,7 @@ func TestCopyFile_CopiesContent(t *testing.T) {
 // ── 12. copyFile error when src does not exist ────────────────────────────────
 
 func TestCopyFile_SourceNotExist(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	dst := filepath.Join(dir, "dest.txt")
 

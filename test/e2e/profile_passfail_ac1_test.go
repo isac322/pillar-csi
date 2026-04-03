@@ -247,6 +247,7 @@ func TestAC1PassFailBuildProfileReportMixedPassFail(t *testing.T) {
 // produces a JSON file where each TCProfile entry includes the "passed" field and
 // that the value matches the spec.State.
 func TestAC1PassFailFlushWritesPassedFieldToJSON(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	profilePath := filepath.Join(dir, "passfail.json")
 
@@ -399,6 +400,7 @@ func TestAC1PassFailProfileReportJSONRoundTripPreservesPassed(t *testing.T) {
 // for a synthetic 437-TC report with a known pass/fail distribution. It verifies
 // that the final JSON report accurately reflects each spec's outcome.
 func TestAC1PassFailMixedSuiteAccuracy(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	profilePath := filepath.Join(dir, "mixed-suite.json")
 

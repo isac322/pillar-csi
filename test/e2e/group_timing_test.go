@@ -12,6 +12,7 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestSuiteGroupTimingRecordSetupNanosReturnsZeroWhenNotRecorded(t *testing.T) {
+	t.Parallel()
 	g := newSuiteGroupTimingRecord()
 	if got := g.SetupNanos(); got != 0 {
 		t.Fatalf("SetupNanos before recording = %d, want 0", got)
@@ -19,6 +20,7 @@ func TestSuiteGroupTimingRecordSetupNanosReturnsZeroWhenNotRecorded(t *testing.T
 }
 
 func TestSuiteGroupTimingRecordTeardownNanosReturnsZeroWhenNotRecorded(t *testing.T) {
+	t.Parallel()
 	g := newSuiteGroupTimingRecord()
 	if got := g.TeardownNanos(); got != 0 {
 		t.Fatalf("TeardownNanos before recording = %d, want 0", got)
@@ -26,6 +28,7 @@ func TestSuiteGroupTimingRecordTeardownNanosReturnsZeroWhenNotRecorded(t *testin
 }
 
 func TestSuiteGroupTimingRecordSetupNanosReturnsZeroWhenOnlyBeginCalled(t *testing.T) {
+	t.Parallel()
 	g := newSuiteGroupTimingRecord()
 	g.beginSetup(time.Now())
 	// endSetup never called – result must still be 0 (incomplete measurement).
@@ -35,6 +38,7 @@ func TestSuiteGroupTimingRecordSetupNanosReturnsZeroWhenOnlyBeginCalled(t *testi
 }
 
 func TestSuiteGroupTimingRecordSetupNanosReturnsPositiveDuration(t *testing.T) {
+	t.Parallel()
 	g := newSuiteGroupTimingRecord()
 	start := time.Now()
 	g.beginSetup(start)
@@ -51,6 +55,7 @@ func TestSuiteGroupTimingRecordSetupNanosReturnsPositiveDuration(t *testing.T) {
 }
 
 func TestSuiteGroupTimingRecordTeardownNanosReturnsPositiveDuration(t *testing.T) {
+	t.Parallel()
 	g := newSuiteGroupTimingRecord()
 	start := time.Now()
 	g.beginTeardown(start)
@@ -71,6 +76,7 @@ func TestSuiteGroupTimingRecordTeardownNanosReturnsPositiveDuration(t *testing.T
 // ---------------------------------------------------------------------------
 
 func TestCollectGroupTimingFromReportReturnsZerosForEmptyReport(t *testing.T) {
+	t.Parallel()
 	setup, teardown := collectGroupTimingFromReport(types.Report{})
 	if setup != 0 {
 		t.Fatalf("setupNanos from empty report = %d, want 0", setup)
@@ -81,6 +87,7 @@ func TestCollectGroupTimingFromReportReturnsZerosForEmptyReport(t *testing.T) {
 }
 
 func TestCollectGroupTimingFromReportIgnoresItNodes(t *testing.T) {
+	t.Parallel()
 	report := types.Report{
 		SpecReports: types.SpecReports{
 			{LeafNodeType: types.NodeTypeIt, RunTime: 5 * time.Second},
@@ -97,6 +104,7 @@ func TestCollectGroupTimingFromReportIgnoresItNodes(t *testing.T) {
 }
 
 func TestCollectGroupTimingFromReportExtractsBeforeSuiteRuntime(t *testing.T) {
+	t.Parallel()
 	report := types.Report{
 		SpecReports: types.SpecReports{
 			{LeafNodeType: types.NodeTypeBeforeSuite, RunTime: 3 * time.Second},
@@ -114,6 +122,7 @@ func TestCollectGroupTimingFromReportExtractsBeforeSuiteRuntime(t *testing.T) {
 }
 
 func TestCollectGroupTimingFromReportExtractsSynchronizedBeforeSuiteRuntime(t *testing.T) {
+	t.Parallel()
 	report := types.Report{
 		SpecReports: types.SpecReports{
 			// Primary process: long cluster creation.
@@ -131,6 +140,7 @@ func TestCollectGroupTimingFromReportExtractsSynchronizedBeforeSuiteRuntime(t *t
 }
 
 func TestCollectGroupTimingFromReportExtractsAfterSuiteRuntime(t *testing.T) {
+	t.Parallel()
 	report := types.Report{
 		SpecReports: types.SpecReports{
 			{LeafNodeType: types.NodeTypeAfterSuite, RunTime: 2 * time.Second},
@@ -147,6 +157,7 @@ func TestCollectGroupTimingFromReportExtractsAfterSuiteRuntime(t *testing.T) {
 }
 
 func TestCollectGroupTimingFromReportExtractsSynchronizedAfterSuiteRuntime(t *testing.T) {
+	t.Parallel()
 	report := types.Report{
 		SpecReports: types.SpecReports{
 			// Primary process: cluster deletion (slow).
@@ -163,6 +174,7 @@ func TestCollectGroupTimingFromReportExtractsSynchronizedAfterSuiteRuntime(t *te
 }
 
 func TestCollectGroupTimingFromReportExtractsBothPhases(t *testing.T) {
+	t.Parallel()
 	report := types.Report{
 		SpecReports: types.SpecReports{
 			{LeafNodeType: types.NodeTypeBeforeSuite, RunTime: 10 * time.Second},
@@ -184,6 +196,7 @@ func TestCollectGroupTimingFromReportExtractsBothPhases(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPhaseTimingsFromInternalProfilePopulatesGroupFields(t *testing.T) {
+	t.Parallel()
 	const setupNanos = int64(10_000_000)   // 10 ms
 	const teardownNanos = int64(5_000_000) // 5 ms
 
@@ -209,6 +222,7 @@ func TestPhaseTimingsFromInternalProfilePopulatesGroupFields(t *testing.T) {
 }
 
 func TestPhaseTimingsFromInternalProfileZeroGroupFieldsWhenZeroPassed(t *testing.T) {
+	t.Parallel()
 	pt := phaseTimingsFromInternalProfile(types.ReportEntries{}, 0, 0)
 	if pt.GroupSetupNanos != 0 {
 		t.Fatalf("GroupSetupNanos = %d, want 0", pt.GroupSetupNanos)
@@ -219,6 +233,7 @@ func TestPhaseTimingsFromInternalProfileZeroGroupFieldsWhenZeroPassed(t *testing
 }
 
 func TestPhaseTimingsFromInternalProfileMergesPerTCAndGroupPhases(t *testing.T) {
+	t.Parallel()
 	// Build a tc_timing internal profile that has setup, execute, teardown phases.
 	clock := &steppingClock{
 		current: time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC),
@@ -277,6 +292,7 @@ func TestPhaseTimingsFromInternalProfileMergesPerTCAndGroupPhases(t *testing.T) 
 // ---------------------------------------------------------------------------
 
 func TestBuildProfileReportPopulatesGroupSetupAndTeardownNanos(t *testing.T) {
+	t.Parallel()
 	report := types.Report{
 		SuiteDescription: "Pillar CSI E2E Suite",
 		PreRunStats: types.PreRunStats{
@@ -314,6 +330,7 @@ func TestBuildProfileReportPopulatesGroupSetupAndTeardownNanos(t *testing.T) {
 }
 
 func TestBuildProfileReportGroupTimingZeroWhenNoBeforeAfterSuite(t *testing.T) {
+	t.Parallel()
 	report := types.Report{
 		SpecReports: types.SpecReports{
 			sampleTimedSpecReport("E2.1", "TestNoGroup", 300*time.Millisecond),
@@ -334,6 +351,7 @@ func TestBuildProfileReportGroupTimingZeroWhenNoBeforeAfterSuite(t *testing.T) {
 }
 
 func TestBuildProfileReportGroupTimingFromSynchronizedSuite(t *testing.T) {
+	t.Parallel()
 	report := types.Report{
 		SuiteDescription: "Pillar CSI E2E Suite",
 		PreRunStats: types.PreRunStats{
@@ -377,6 +395,7 @@ func TestBuildProfileReportGroupTimingFromSynchronizedSuite(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRecordGroupSetupTimingCallsFn(t *testing.T) {
+	t.Parallel()
 	called := false
 	saved := suiteGroupTiming
 	suiteGroupTiming = newSuiteGroupTimingRecord()
@@ -393,6 +412,7 @@ func TestRecordGroupSetupTimingCallsFn(t *testing.T) {
 }
 
 func TestRecordGroupSetupTimingAcceptsNilFn(t *testing.T) {
+	t.Parallel()
 	saved := suiteGroupTiming
 	suiteGroupTiming = newSuiteGroupTimingRecord()
 	t.Cleanup(func() { suiteGroupTiming = saved })
@@ -402,6 +422,7 @@ func TestRecordGroupSetupTimingAcceptsNilFn(t *testing.T) {
 }
 
 func TestRecordGroupTeardownTimingCallsFn(t *testing.T) {
+	t.Parallel()
 	called := false
 	saved := suiteGroupTiming
 	suiteGroupTiming = newSuiteGroupTimingRecord()
@@ -418,6 +439,7 @@ func TestRecordGroupTeardownTimingCallsFn(t *testing.T) {
 }
 
 func TestRecordGroupTeardownTimingAcceptsNilFn(t *testing.T) {
+	t.Parallel()
 	saved := suiteGroupTiming
 	suiteGroupTiming = newSuiteGroupTimingRecord()
 	t.Cleanup(func() { suiteGroupTiming = saved })

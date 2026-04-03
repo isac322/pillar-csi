@@ -35,7 +35,7 @@ package e2e
 //
 // Isolation: runInProcessTCBody does NOT share mutable state between TCs. Each
 // per-TC assertion function creates a fresh isolated test environment. TCs that
-// don't yet have a specific assertion fall back to the defaultLocalVerifierRegistry
+// don't yet have a specific assertion fall back to the suiteLocalVerifierRegistry
 // cached verifier approach — this is intentional and correct for the current stage
 // of implementation.
 
@@ -46,7 +46,7 @@ import (
 // inProcessAssertions maps TestName → assertion function.
 // TCs whose TestName appears in this map get a fresh isolated environment
 // and specific per-TC assertions. All other TCs fall back to the cached
-// verifier in defaultLocalVerifierRegistry.
+// verifier in suiteLocalVerifierRegistry.
 var inProcessAssertions = map[string]func(documentedCase){
 	// ── E1: Volume Lifecycle ──────────────────────────────────────────────────
 	"TestCSIController_CreateVolume":                                            assertE1_CreateVolume,
@@ -354,7 +354,7 @@ func runInProcessTCBody(tc documentedCase, plan localExecutionPlan) {
 	}
 	// Fallback: use cached verifier for TCs not yet individually implemented.
 	for _, verifierName := range plan.Verifiers {
-		result := defaultLocalVerifierRegistry.Result(verifierName)
+		result := suiteLocalVerifierRegistry.Result(verifierName)
 		Expect(result.Err).NotTo(HaveOccurred(),
 			"%s[%s] FAIL: in-process verifier %q failed after %s: %v",
 			tc.tcNodeLabel(), tc.SectionTitle, verifierName, result.Duration, result.Err,

@@ -101,6 +101,7 @@ func TestAC7bDebugTCStepsEnvVarEnablesFeature(t *testing.T) {
 // emitDebugTCStepsLines writes the formatted step breakdown to DebugStepsWriter
 // when DebugTCSteps is true.
 func TestAC7bDebugTCStepsWritesBreakdownOnCompletion(t *testing.T) {
+	t.Parallel()
 	var sink bytes.Buffer
 	cfg := timingReportConfig{
 		DebugTCSteps:     true,
@@ -110,7 +111,7 @@ func TestAC7bDebugTCStepsWritesBreakdownOnCompletion(t *testing.T) {
 	profile := testCaseTimingProfile{
 		TCID:     "E1.2",
 		TestName: "TestDebugSteps",
-		SpecText: "TC[001/437] E1.2 :: TestDebugSteps",
+		SpecText: "TC[001/388] E1.2 :: TestDebugSteps",
 		Phases: []phaseTimingSample{
 			{Name: string(phaseSetupTotal), DurationNanos: (12 * time.Millisecond).Nanoseconds()},
 			{Name: string(phaseSpecBody), DurationNanos: (45 * time.Millisecond).Nanoseconds()},
@@ -141,6 +142,7 @@ func TestAC7bDebugTCStepsWritesBreakdownOnCompletion(t *testing.T) {
 // TestAC7bDebugTCStepsSilentWhenDisabled verifies that no output is written
 // to DebugStepsWriter when DebugTCSteps is false.
 func TestAC7bDebugTCStepsSilentWhenDisabled(t *testing.T) {
+	t.Parallel()
 	var sink bytes.Buffer
 	cfg := timingReportConfig{
 		DebugTCSteps:     false,
@@ -165,6 +167,7 @@ func TestAC7bDebugTCStepsSilentWhenDisabled(t *testing.T) {
 // TestAC7bDebugTCStepsFallsBackToSpecTextWhenNoTCID verifies that TCs
 // without a structured TCID use SpecText as the fallback label.
 func TestAC7bDebugTCStepsFallsBackToSpecTextWhenNoTCID(t *testing.T) {
+	t.Parallel()
 	var sink bytes.Buffer
 	cfg := timingReportConfig{
 		DebugTCSteps:     true,
@@ -190,6 +193,7 @@ func TestAC7bDebugTCStepsFallsBackToSpecTextWhenNoTCID(t *testing.T) {
 // TestAC7bDebugTCStepsSilentWhenBothIDAndTextEmpty verifies that nothing is
 // written when both TCID and SpecText are empty.
 func TestAC7bDebugTCStepsSilentWhenBothIDAndTextEmpty(t *testing.T) {
+	t.Parallel()
 	var sink bytes.Buffer
 	cfg := timingReportConfig{
 		DebugTCSteps:     true,
@@ -211,6 +215,7 @@ func TestAC7bDebugTCStepsSilentWhenBothIDAndTextEmpty(t *testing.T) {
 // TestAC7bExtractStepDurations verifies that extractStepDurations correctly
 // maps internal phase names to the three canonical step durations.
 func TestAC7bExtractStepDurations(t *testing.T) {
+	t.Parallel()
 	profile := testCaseTimingProfile{
 		Phases: []phaseTimingSample{
 			{Name: string(phaseSetupTotal), DurationNanos: (15 * time.Millisecond).Nanoseconds()},
@@ -239,6 +244,7 @@ func TestAC7bExtractStepDurations(t *testing.T) {
 // extractStepDurations uses hook.before_each as the setup duration when
 // tc.setup.total is absent.
 func TestAC7bExtractStepDurationsFallsBackToBeforeEach(t *testing.T) {
+	t.Parallel()
 	profile := testCaseTimingProfile{
 		Phases: []phaseTimingSample{
 			{Name: string(phaseBeforeEach), DurationNanos: (30 * time.Millisecond).Nanoseconds()},
@@ -263,6 +269,7 @@ func TestAC7bExtractStepDurationsFallsBackToBeforeEach(t *testing.T) {
 // TestAC7bExtractStepDurationsZeroWhenPhaseMissing verifies that
 // extractStepDurations returns 0s for phases not present in the profile.
 func TestAC7bExtractStepDurationsZeroWhenPhaseMissing(t *testing.T) {
+	t.Parallel()
 	// Only spec.body is present; setup and teardown should be 0.
 	profile := testCaseTimingProfile{
 		Phases: []phaseTimingSample{
@@ -286,6 +293,7 @@ func TestAC7bExtractStepDurationsZeroWhenPhaseMissing(t *testing.T) {
 // TestAC7bExtractStepDurationsEmptyProfile verifies that extractStepDurations
 // returns all zeros when no phases are recorded.
 func TestAC7bExtractStepDurationsEmptyProfile(t *testing.T) {
+	t.Parallel()
 	profile := testCaseTimingProfile{}
 
 	setup, action, teardown := extractStepDurations(profile)
@@ -302,6 +310,7 @@ func TestAC7bExtractStepDurationsEmptyProfile(t *testing.T) {
 //   - setup/action/teardown
 //   - stderr
 func TestAC7bDebugTCStepsFlagDescription(t *testing.T) {
+	t.Parallel()
 	usage := "print per-step timing breakdown for each TC to stderr upon completion " +
 		"(Sub-AC 7b: format '[TC-<id>] steps: setup=<dur> action=<dur> teardown=<dur>'); " +
 		"env: E2E_DEBUG_TC_STEPS"
@@ -322,6 +331,7 @@ func TestAC7bDebugTCStepsFlagDescription(t *testing.T) {
 // when BOTH tc.setup.total and hook.before_each are present, tc.setup.total
 // takes precedence as the setup duration.
 func TestAC7bDebugTCStepsSetupTotalTakesPrecedenceOverBeforeEach(t *testing.T) {
+	t.Parallel()
 	profile := testCaseTimingProfile{
 		Phases: []phaseTimingSample{
 			// hook.before_each is the outer envelope; tc.setup.total is the inner

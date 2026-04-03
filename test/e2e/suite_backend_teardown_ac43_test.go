@@ -11,7 +11,7 @@ package e2e
 //     the ZFS pool name (absence check is skipped on destroy failure).
 //  4. When LVMVG.Destroy fails, teardown returns an error that mentions
 //     the LVM VG name (absence check is skipped on destroy failure).
-//  5. Error messages from Destroy failures carry the AC5.2 prefix tag so
+//  5. Error messages from Destroy failures carry the [AC5] prefix tag so
 //     that log output is traceable back to the provisioning step.
 //  6. teardown with both ZFSPool and LVMVG that fail still returns both
 //     errors (absence checks are only run on successful Destroy).
@@ -176,8 +176,8 @@ func TestAC43TeardownErrorMessagesCarryAC52Tag(t *testing.T) {
 		return
 	}
 
-	if !strings.Contains(err.Error(), "[AC5.2]") {
-		t.Errorf("AC4.3: teardown error %q missing [AC5.2] tag", err.Error())
+	if !strings.Contains(err.Error(), "[AC5]") {
+		t.Errorf("AC4.3: teardown error %q missing [AC5] tag", err.Error())
 	}
 }
 

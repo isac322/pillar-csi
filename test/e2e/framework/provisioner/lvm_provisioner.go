@@ -1,3 +1,6 @@
+// Package provisioner provides E2E test helpers for provisioning backend resources.
+//
+//nolint:dupl // lvm_provisioner and zfs_provisioner share intentionally parallel structure
 package provisioner
 
 import (
@@ -12,12 +15,12 @@ import (
 // LVMProvisioner is a [BackendProvisioner] implementation that creates an
 // ephemeral LVM Volume Group inside a Kind container node.
 //
-// It implements the soft-skip semantics: when the "dm_thin_pool" kernel module
-// is not loaded on the host or the LVM userspace tools (pvcreate, vgcreate) are
-// absent from the container, Provision returns (nil, nil) instead of an error.
-//
 // All storage operations run inside the container via "docker exec". The
 // DOCKER_HOST environment variable is forwarded from the caller's environment.
+//
+// The "dm_thin_pool" kernel module and LVM userspace tools (pvcreate, vgcreate)
+// must be present before calling Provision. Call [kind.CheckBackendKernelModules]
+// upfront to enforce this — missing modules cause a hard FAIL, not a soft skip.
 type LVMProvisioner struct {
 	// NodeContainer is the Docker container name of the Kind node in which the
 	// LVM Volume Group should be created
@@ -32,12 +35,6 @@ type LVMProvisioner struct {
 	// SizeMiB is the size of the loop-device image in mebibytes.
 	// Values ≤ 0 default to 512 MiB.
 	SizeMiB int
-
-	// ModuleCheckFn is an optional function that reports whether the
-	// "dm_thin_pool" kernel module is loaded. When nil, the production
-	// implementation (reading /proc/modules) is used. Set this in tests to
-	// inject a fake.
-	ModuleCheckFn func(name string) bool
 }
 
 // BackendType returns the string "lvm", identifying this provisioner.
@@ -47,29 +44,19 @@ func (l *LVMProvisioner) BackendType() string {
 
 // Provision creates an ephemeral LVM Volume Group inside the Kind container node.
 //
-// Soft-skip conditions (return nil, nil):
-//   - The "dm_thin_pool" kernel module is not loaded on the host.
-//   - The LVM userspace tools (pvcreate, vgcreate) are absent from the container.
-//
 // Hard error conditions (return nil, err):
 //   - NodeContainer or VGName is empty.
-//   - lvm.CreateVG fails for reasons other than a missing binary.
+//   - lvm.CreateVG fails (the "dm_thin_pool" kernel module and LVM tools must
+//     be present — call [kind.CheckBackendKernelModules] before Provision).
 //   - The created VG is not in an active/writable state.
+//
+// Soft-skip (nil, nil) is not supported: all failures are hard errors.
 func (l *LVMProvisioner) Provision(ctx context.Context) (registry.Resource, error) {
 	if strings.TrimSpace(l.NodeContainer) == "" {
 		return nil, fmt.Errorf("lvm provisioner: NodeContainer must not be empty")
 	}
 	if strings.TrimSpace(l.VGName) == "" {
 		return nil, fmt.Errorf("lvm provisioner: VGName must not be empty")
-	}
-
-	// ── Soft-skip: kernel module check ──────────────────────────────────────
-	checkFn := l.ModuleCheckFn
-	if checkFn == nil {
-		checkFn = isKernelModuleLoaded
-	}
-	if !checkFn("dm_thin_pool") {
-		return nil, nil //nolint:nilnil // soft skip: BackendProvisioner contract (nil,nil) = absent module
 	}
 
 	// ── Provision ────────────────────────────────────────────────────────────
@@ -79,9 +66,6 @@ func (l *LVMProvisioner) Provision(ctx context.Context) (registry.Resource, erro
 		SizeMiB:       l.SizeMiB,
 	})
 	if err != nil {
-		if isContainerToolNotFoundError(err) || isDockerExecSystemError(err) {
-			return nil, nil //nolint:nilnil // soft skip: BackendProvisioner contract (nil,nil) = absent or unreachable tool
-		}
 		return nil, fmt.Errorf("lvm provisioner: create VG %q in %s: %w",
 			l.VGName, l.NodeContainer, err)
 	}

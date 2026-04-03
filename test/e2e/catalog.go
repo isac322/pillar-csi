@@ -30,6 +30,8 @@ import (
 // in dedicated *_e2e_test.go files that carry Label("default-profile",...).
 // Those files compile unconditionally and run under the default label
 // filter, so the total default-profile spec count is 388+33 = 421.
+// This 421 total is the canonical "실제 실행되는 테스트 케이스" count declared
+// in docs/E2E-TESTCASES.md (239 in-process + 117 envtest + 65 cluster).
 //
 // Note: E34 (13), E35 (13), F27 (9), F28 (2), F29 (3), F30 (3), F31 (2) = 45
 // specs are NOT in the default-profile because they require host-level iSCSI
@@ -58,10 +60,12 @@ var (
 	rowRE     = regexp.MustCompile("^\\|\\s*([^|]+?)\\s*\\|\\s*`([^`]+)`[^|]*\\|")
 	keyRE     = regexp.MustCompile(`^([EF]\d+)\b`)
 
-	// Sub-AC 1 locks the default profile to the top-level 437-case aggregate in
-	// docs/E2E-TESTCASES.md. The markdown currently contains conflicting lower-
-	// level subtotals and expanded sections, so the selector below codifies a
-	// deterministic 437-case view instead of depending on raw row count.
+	// Sub-AC 1 locks the default profile to a deterministic 388-case view from
+	// docs/E2E-TESTCASES.md (239 in-process + 117 envtest + 32 cluster).
+	// Combined with the 33 E33 real-backend specs (in *_e2e_test.go files),
+	// the total default-profile running TC count is 421 as declared in the doc.
+	// The selector below codifies deterministic quotas per group instead of
+	// depending on raw row count (which changes as the document evolves).
 	defaultInProcessQuotas = []sectionQuota{
 		{Key: "E1", Count: 13},
 		{Key: "E2", Count: 8},
@@ -125,7 +129,7 @@ func (tc documentedCase) tcNodeLabel() string {
 // legacy specText() (for ordinal, group, and human-readable test function
 // name). The format is:
 //
-//	[TC-E1.1] TC[001/437] E1.1 :: TestCSIController_CreateVolume
+//	[TC-E1.1] TC[001/388] E1.1 :: TestCSIController_CreateVolume
 //
 // Note: inferTimingIdentity in timing_capture.go relies on the "::" separator
 // and the LAST "]" appearing before the DocID token. The [TC-<ID>] prefix is

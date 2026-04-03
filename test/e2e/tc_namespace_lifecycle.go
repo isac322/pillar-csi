@@ -132,19 +132,19 @@ func UseNamespaceLifecycle(tcID string) *NamespaceLifecycleBinding {
 		// the current process PID; os.MkdirTemp appends a random suffix to
 		// ensure uniqueness even within the same process.
 		parentPattern := fmt.Sprintf("pillar-csi-ns-%s-", dnsLabelToken(tcID))
-		parent, err := os.MkdirTemp(os.TempDir(), parentPattern)
+		parent, err := os.MkdirTemp(tcTempRoot, parentPattern)
 		Expect(err).NotTo(HaveOccurred(),
 			"[%s] UseNamespaceLifecycle: create namespace parent dir", tcID)
 
-		// Verify that the parent dir is under /tmp (os.TempDir) so that the
-		// no-files-outside-tmp constraint is satisfied.
+		// Verify that the parent dir is under tcTempRoot so that the
+		// no-files-outside-tcTempRoot constraint is satisfied.
 		if !isUnderTempDir(parent) {
 			// Clean up and fail immediately; os.RemoveAll on a fresh empty dir
 			// is safe regardless of Remove errors.
 			_ = os.RemoveAll(parent)
 			Fail(fmt.Sprintf(
-				"[%s] UseNamespaceLifecycle: parent dir %q is outside os.TempDir() %q",
-				tcID, parent, os.TempDir()))
+				"[%s] UseNamespaceLifecycle: parent dir %q is outside tcTempRoot %q",
+				tcID, parent, tcTempRoot))
 		}
 
 		nsDir := filepath.Join(parent, nsName)

@@ -1,3 +1,5 @@
+//go:build e2e
+
 package e2e
 
 // lvm_backend_core_rpcs_e2e_test.go — E33.1: LVM backend Core RPC tests.
@@ -158,8 +160,12 @@ func e33FailIfNoInfra() {
 // E33.1: LVM 백엔드 Core RPC
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Note: "default-profile" is intentionally absent here.
+// E33 tests require a deployed pillar-agent pod (via Helm install) which is
+// NOT part of the 2-minute default make test-e2e run. Use:
+//   make test-e2e E2E_LABEL_FILTER="e33"  (after helm install)
 var _ = Describe("E33: LVM Kind 클러스터 E2E — 실제 LVM VG + NVMe-oF TCP",
-	Label("default-profile", "lvm", "rpc", "e33"),
+	Label("lvm", "rpc", "e33"),
 	func() {
 		Describe("E33.1 LVM 백엔드 Core RPC", Ordered, func() {
 
@@ -233,7 +239,7 @@ var _ = Describe("E33: LVM Kind 클러스터 E2E — 실제 LVM VG + NVMe-oF TCP
 			// ── TC-E33.286 ────────────────────────────────────────────────────
 			It("[TC-E33.286] CreateVolume (thin) returns device_path=/dev/<vg>/<lv>", func() {
 				if lvmThinPool == "" {
-					Skip("[TC-E33.286] PILLAR_E2E_LVM_THIN_POOL not set — skipping thin LV test")
+					Fail("[TC-E33.286] MISSING PREREQUISITE: PILLAR_E2E_LVM_THIN_POOL not set — skipping thin LV test")
 				}
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer cancel()
@@ -456,7 +462,7 @@ var _ = Describe("E33: LVM Kind 클러스터 E2E — 실제 LVM VG + NVMe-oF TCP
 			// ── TC-E33.292 ────────────────────────────────────────────────────
 			It("[TC-E33.292] CreateVolume is idempotent: re-creating with same volume ID succeeds (thin)", func() {
 				if lvmThinPool == "" {
-					Skip("[TC-E33.292] PILLAR_E2E_LVM_THIN_POOL not set — skipping thin LV idempotency test")
+					Fail("[TC-E33.292] MISSING PREREQUISITE: PILLAR_E2E_LVM_THIN_POOL not set — skipping thin LV idempotency test")
 				}
 				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 				defer cancel()

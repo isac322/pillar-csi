@@ -31,8 +31,10 @@ import (
 // ── 1. Disabled timer when env var is absent ──────────────────────────────────
 
 func TestStagetimer_Disabled_WhenEnvUnset(t *testing.T) {
-	t.Setenv(envStageTiming, "")
-	timer := newPipelineStageTimer()
+	t.Parallel()
+	// Use newPipelineStageTimerDisabled() instead of t.Setenv so that this test
+	// can safely run in parallel (t.Setenv and t.Parallel are incompatible in Go).
+	timer := newPipelineStageTimerDisabled()
 	if timer.enabled {
 		t.Fatal("timer should be disabled when E2E_STAGE_TIMING is empty")
 	}
@@ -41,6 +43,7 @@ func TestStagetimer_Disabled_WhenEnvUnset(t *testing.T) {
 // ── 2. Always-enabled constructor ────────────────────────────────────────────
 
 func TestStagetimer_Enabled_newPipelineStageTimerEnabled(t *testing.T) {
+	t.Parallel()
 	timer := newPipelineStageTimerEnabled()
 	if !timer.enabled {
 		t.Fatal("newPipelineStageTimerEnabled should always be enabled")
@@ -50,6 +53,7 @@ func TestStagetimer_Enabled_newPipelineStageTimerEnabled(t *testing.T) {
 // ── 3. StartStage / done records the stage name ───────────────────────────────
 
 func TestStagetimer_StartStage_RecordsName(t *testing.T) {
+	t.Parallel()
 	timer := newPipelineStageTimerEnabled()
 	done := timer.StartStage(stageClusterCreate)
 	done()
@@ -66,6 +70,7 @@ func TestStagetimer_StartStage_RecordsName(t *testing.T) {
 // ── 4. Multiple stages recorded in insertion order ────────────────────────────
 
 func TestStagetimer_MultipleStages_InOrder(t *testing.T) {
+	t.Parallel()
 	timer := newPipelineStageTimerEnabled()
 	timer.StartStage(stageClusterCreate)()
 	timer.StartStage(stageImageBuild)()
@@ -87,6 +92,7 @@ func TestStagetimer_MultipleStages_InOrder(t *testing.T) {
 // ── 5. Bottleneck returns the longest stage ───────────────────────────────────
 
 func TestStagetimer_Bottleneck_LongestStage(t *testing.T) {
+	t.Parallel()
 	timer := newPipelineStageTimerEnabled()
 
 	// Inject synthetic stage durations.
@@ -109,6 +115,7 @@ func TestStagetimer_Bottleneck_LongestStage(t *testing.T) {
 // ── 6. TotalDuration sums all stages ─────────────────────────────────────────
 
 func TestStagetimer_TotalDuration_Sum(t *testing.T) {
+	t.Parallel()
 	timer := newPipelineStageTimerEnabled()
 	timer.stages = []stageMeasurement{
 		{Name: stageClusterCreate, Duration: 30 * time.Second},
@@ -126,6 +133,7 @@ func TestStagetimer_TotalDuration_Sum(t *testing.T) {
 // ── 7. Emit writes a summary to an io.Writer ─────────────────────────────────
 
 func TestStagetimer_Emit_WritesHeader(t *testing.T) {
+	t.Parallel()
 	timer := newPipelineStageTimerEnabled()
 	timer.stages = []stageMeasurement{
 		{Name: stageClusterCreate, Duration: 30 * time.Second},
@@ -149,6 +157,7 @@ func TestStagetimer_Emit_WritesHeader(t *testing.T) {
 // ── 8. Emit marks the bottleneck with "▶" ─────────────────────────────────────
 
 func TestStagetimer_Emit_BottleneckMarker(t *testing.T) {
+	t.Parallel()
 	timer := newPipelineStageTimerEnabled()
 	timer.stages = []stageMeasurement{
 		{Name: stageClusterCreate, Duration: 30 * time.Second},
@@ -187,6 +196,7 @@ func TestStagetimer_Emit_BottleneckMarker(t *testing.T) {
 // ── 9. Emit writes WITHIN budget line when total < 120s ──────────────────────
 
 func TestStagetimer_Emit_WithinBudget(t *testing.T) {
+	t.Parallel()
 	timer := newPipelineStageTimerEnabled()
 	timer.stages = []stageMeasurement{
 		{Name: stageClusterCreate, Duration: 30 * time.Second},
@@ -213,6 +223,7 @@ func TestStagetimer_Emit_WithinBudget(t *testing.T) {
 // ── 10. Emit writes WARNING when total >= 120s ───────────────────────────────
 
 func TestStagetimer_Emit_ExceedsBudget(t *testing.T) {
+	t.Parallel()
 	timer := newPipelineStageTimerEnabled()
 	timer.stages = []stageMeasurement{
 		{Name: stageClusterCreate, Duration: 50 * time.Second},
@@ -234,6 +245,7 @@ func TestStagetimer_Emit_ExceedsBudget(t *testing.T) {
 // ── 11. Nil / disabled timer is a no-op ──────────────────────────────────────
 
 func TestStagetimer_NilReceiver_NoOp(t *testing.T) {
+	t.Parallel()
 	var timer *pipelineStageTimer
 
 	// None of these should panic.
@@ -251,8 +263,9 @@ func TestStagetimer_NilReceiver_NoOp(t *testing.T) {
 }
 
 func TestStagetimer_DisabledTimer_NoOp(t *testing.T) {
-	t.Setenv(envStageTiming, "")
-	timer := newPipelineStageTimer()
+	t.Parallel()
+	// Use newPipelineStageTimerDisabled() to avoid t.Setenv incompatibility with t.Parallel.
+	timer := newPipelineStageTimerDisabled()
 
 	timer.StartStage(stageClusterCreate)()
 	timer.StartStage(stageImageBuild)()
@@ -271,6 +284,7 @@ func TestStagetimer_DisabledTimer_NoOp(t *testing.T) {
 // ── 12. RecordedStages returns a copy ────────────────────────────────────────
 
 func TestStagetimer_RecordedStages_ReturnsCopy(t *testing.T) {
+	t.Parallel()
 	timer := newPipelineStageTimerEnabled()
 	timer.stages = []stageMeasurement{
 		{Name: stageClusterCreate, Duration: 30 * time.Second},
@@ -289,6 +303,7 @@ func TestStagetimer_RecordedStages_ReturnsCopy(t *testing.T) {
 // ── 13. Calling done() twice does not double-count ───────────────────────────
 
 func TestStagetimer_Done_Idempotent(t *testing.T) {
+	t.Parallel()
 	timer := newPipelineStageTimerEnabled()
 	done := timer.StartStage(stageClusterCreate)
 	done()
@@ -302,6 +317,7 @@ func TestStagetimer_Done_Idempotent(t *testing.T) {
 // ── 14. Emit finalises an in-progress stage ───────────────────────────────────
 
 func TestStagetimer_Emit_FinalisesInProgressStage(t *testing.T) {
+	t.Parallel()
 	timer := newPipelineStageTimerEnabled()
 	timer.StartStage(stageTestExec)
 	// Do NOT call done() — let Emit finalise it.
@@ -321,6 +337,7 @@ func TestStagetimer_Emit_FinalisesInProgressStage(t *testing.T) {
 // ── 15. bottleneck line mentions the bottleneck TC ───────────────────────────
 
 func TestStagetimer_Emit_BottleneckLine(t *testing.T) {
+	t.Parallel()
 	timer := newPipelineStageTimerEnabled()
 	timer.stages = []stageMeasurement{
 		{Name: stageClusterCreate, Duration: 5 * time.Second},

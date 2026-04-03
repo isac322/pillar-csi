@@ -11,7 +11,7 @@
 - 실제 커널 모듈, 실제 ZFS, 실제 NVMe-oF 장치를 요구하는 테스트는
   별도로 표시하고 현실적인 인프라 요구사항을 함께 기술한다.
 
-**총 테스트 케이스: 437** (인프로세스 239개 + envtest 통합 117개 + 클러스터 레벨 62개 + 유형 F LVM 19개; E28 LVM Agent gRPC 30개 · E29 CSI Controller LVM 파라미터 12개 · E30 LVM LV 중복 방지 3개 · E32 LVM CRD 라이프사이클 9개 · E33 Kind+LVM NVMe-oF 33개 · E34 Kind+LVM iSCSI 13개 · E35 Kind+ZFS iSCSI 13개 · F27–F31 LVM 완전 E2E 19개 포함 / 수동 AD 시나리오 3개 · BP 시나리오 4개 별도)
+**총 테스트 케이스: 421** (인프로세스 239개 + envtest 통합 117개 + 클러스터 레벨 65개; E28 LVM Agent gRPC 30개 · E29 CSI Controller LVM 파라미터 12개 · E30 LVM LV 중복 방지 3개 · E32 LVM CRD 라이프사이클 9개 · E33 Kind+LVM NVMe-oF 33개 포함 / 추가 문서화 비기본 TC: E34 Kind+LVM iSCSI 13개 · E35 Kind+ZFS iSCSI 13개 · F27–F31 LVM 완전 E2E 19개 — 특수 레이블 필터 필요 / 수동 AD 시나리오 3개 · BP 시나리오 4개 별도)
 
 ---
 

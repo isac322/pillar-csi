@@ -107,7 +107,7 @@ func TestBuildClusterRestConfigMissingFile(t *testing.T) {
 	// Ensure it truly does not exist.
 	_ = os.Remove(missingPath)
 	if _, err := os.Stat(missingPath); !os.IsNotExist(err) {
-		t.Skipf("could not arrange missing file at %s", missingPath)
+		t.Fatalf("could not arrange missing file at %s: file exists and could not be removed", missingPath)
 	}
 
 	cfg, err := buildClusterRestConfig(missingPath)

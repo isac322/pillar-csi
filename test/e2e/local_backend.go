@@ -87,17 +87,29 @@ type localVerifierRegistry struct {
 }
 
 func newLocalVerifierRegistry() *localVerifierRegistry {
+	return newLocalVerifierRegistryForProcess(0)
+}
+
+// newLocalVerifierRegistryForProcess creates a verifier registry where
+// verifiers that allocate shared backend resources use worker-specific names
+// derived from processNum to avoid collisions when multiple Ginkgo workers
+// run their SynchronizedBeforeSuite all-nodes phase concurrently.
+func newLocalVerifierRegistryForProcess(processNum int) *localVerifierRegistry {
 	return &localVerifierRegistry{
 		entries: map[localVerifierName]*localVerifierEntry{
 			localVerifierController: {fn: verifyControllerLocalBackend},
 			localVerifierNode:       {fn: verifyNodeLocalBackend},
-			localVerifierAgent:      {fn: verifyAgentLocalBackend},
-			localVerifierMTLS:       {fn: verifyMTLSLocalBackend},
-			localVerifierCRD:        {fn: verifyCRDLocalContracts},
-			localVerifierKind:       {fn: verifyKindBootstrapLocalContracts},
-			localVerifierLVM:        {fn: verifyLVMLocalBackend},
-			localVerifierZFS:        {fn: verifyZFSLocalBackend},
-			localVerifierHelm:       {fn: verifyHelmChartLocalContracts},
+			// Use process-specific volume name to prevent "dataset already exists"
+			// when 4 parallel workers all call verifyAgentLocalBackend at the same time.
+			localVerifierAgent: {fn: func() error {
+				return verifyAgentLocalBackendForProcess(processNum)
+			}},
+			localVerifierMTLS: {fn: verifyMTLSLocalBackend},
+			localVerifierCRD:  {fn: verifyCRDLocalContracts},
+			localVerifierKind: {fn: verifyKindBootstrapLocalContracts},
+			localVerifierLVM:  {fn: verifyLVMLocalBackend},
+			localVerifierZFS:  {fn: verifyZFSLocalBackend},
+			localVerifierHelm: {fn: verifyHelmChartLocalContracts},
 		},
 	}
 }
@@ -131,7 +143,12 @@ func (r *localVerifierRegistry) Has(name localVerifierName) bool {
 	return ok
 }
 
-var defaultLocalVerifierRegistry = newLocalVerifierRegistry()
+// suiteLocalVerifierRegistry holds the per-suite in-process verifier registry.
+// It is nil until warmUpLocalBackend() is called during SynchronizedBeforeSuite,
+// ensuring there is no package-level singleton initialised at import time.
+// Each Ginkgo parallel worker (OS process) creates its own registry instance
+// via warmUpLocalBackend(), so there is no shared mutable state across workers.
+var suiteLocalVerifierRegistry *localVerifierRegistry
 
 // allLocalVerifierNames enumerates every registered in-process verifier in the
 // order they should be pre-warmed during SynchronizedBeforeSuite.
@@ -141,7 +158,7 @@ var defaultLocalVerifierRegistry = newLocalVerifierRegistry()
 // is diagnosed quickly without blocking on slower initialisation.
 //
 // localVerifierHelm is included so that E27 "cluster" specs in the default
-// profile (which call defaultLocalVerifierRegistry.Result(localVerifierHelm))
+// profile (which call suiteLocalVerifierRegistry.Result(localVerifierHelm))
 // always find a cached result rather than paying the first-call overhead
 // mid-spec.  verifyHelmChartLocalContracts is a pure filesystem check and
 // completes in <1 ms, so pre-warming it is free.
@@ -157,9 +174,10 @@ var allLocalVerifierNames = []localVerifierName{
 	localVerifierHelm,
 }
 
-// warmUpLocalBackend eagerly initialises every in-process verifier on the
-// current Ginkgo node by calling defaultLocalVerifierRegistry.Result for each
-// known verifier name.
+// warmUpLocalBackend creates the per-suite verifier registry (if not yet
+// created) and eagerly initialises every in-process verifier on the current
+// Ginkgo node by calling suiteLocalVerifierRegistry.Result for each known
+// verifier name.
 //
 // Each verifier uses sync.Once internally so it runs at most once per OS
 // process. Calling warmUpLocalBackend in the SynchronizedBeforeSuite all-nodes
@@ -175,9 +193,16 @@ var allLocalVerifierNames = []localVerifierName{
 // registry and checked by individual specs via runInProcessTCBody and friends.
 // This allows a ZFS or LVM verifier failure to fail only the relevant specs
 // rather than aborting the entire suite.
-func warmUpLocalBackend() {
+// warmUpLocalBackend creates and pre-warms the verifier registry for the
+// given Ginkgo process node number. The processNum is used to assign unique
+// resource names per worker, preventing "dataset already exists" collisions
+// when multiple parallel workers warm up their verifiers concurrently.
+//
+// Pass GinkgoParallelProcess() (from Ginkgo test code) as processNum.
+func warmUpLocalBackend(processNum int) {
+	suiteLocalVerifierRegistry = newLocalVerifierRegistryForProcess(processNum)
 	for _, name := range allLocalVerifierNames {
-		_ = defaultLocalVerifierRegistry.Result(name)
+		_ = suiteLocalVerifierRegistry.Result(name)
 	}
 }
 
@@ -255,7 +280,7 @@ func verifyControllerLocalBackend() error {
 	target := &pillarv1.PillarTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "target-local"},
 		Status: pillarv1.PillarTargetStatus{
-			ResolvedAddress: "127.0.0.1:9500",
+			ResolvedAddress: "passthrough:///bufnet",
 		},
 	}
 
@@ -275,28 +300,50 @@ func verifyControllerLocalBackend() error {
 		WithObjects(target, csiNode).
 		Build()
 
-	agentClient := &localMockAgentClient{
-		createVolumeResp: &agentv1.CreateVolumeResponse{
-			DevicePath:    "/dev/test-device",
-			CapacityBytes: 1 << 30,
-		},
-		exportVolumeResp: &agentv1.ExportVolumeResponse{
-			ExportInfo: &agentv1.ExportInfo{
-				TargetId:  "nqn.2026-01.com.bhyoo.pillar-csi:tank.pvc-local",
-				Address:   "127.0.0.1",
-				Port:      4420,
-				VolumeRef: "tank/pvc-local",
-			},
-		},
-		expandVolumeResp: &agentv1.ExpandVolumeResponse{
-			CapacityBytes: 2 << 30,
-		},
-		getCapacityResp: &agentv1.GetCapacityResponse{
-			TotalBytes:     100 << 30,
-			AvailableBytes: 60 << 30,
-			UsedBytes:      40 << 30,
+	// Use fakeAgentServer (controllable gRPC server) to test the CSI controller
+	// protocol layer without requiring real storage backends.
+	agentSrv := newFakeAgentServer()
+	agentSrv.createVolumeResp = &agentv1.CreateVolumeResponse{
+		DevicePath:    "/dev/test-device",
+		CapacityBytes: 1 << 30,
+	}
+	agentSrv.exportVolumeResp = &agentv1.ExportVolumeResponse{
+		ExportInfo: &agentv1.ExportInfo{
+			TargetId:  "nqn.2026-01.com.bhyoo.pillar-csi:tank.pvc-local",
+			Address:   "127.0.0.1",
+			Port:      4420,
+			VolumeRef: "tank/pvc-local",
 		},
 	}
+	agentSrv.expandVolumeResp = &agentv1.ExpandVolumeResponse{
+		CapacityBytes: 2 << 30,
+	}
+	agentSrv.getCapacityResp = &agentv1.GetCapacityResponse{
+		TotalBytes:     100 << 30,
+		AvailableBytes: 60 << 30,
+		UsedBytes:      40 << 30,
+	}
+
+	lis := bufconn.Listen(inprocessBufSize)
+	grpcSrv := grpc.NewServer()
+	agentv1.RegisterAgentServiceServer(grpcSrv, agentSrv)
+	go func() { _ = grpcSrv.Serve(lis) }()
+	defer grpcSrv.Stop()
+	defer func() { _ = lis.Close() }()
+
+	dialOption := grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
+		return lis.DialContext(ctx)
+	})
+	conn, err := grpc.NewClient("passthrough:///bufnet",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		dialOption,
+	)
+	if err != nil {
+		return fmt.Errorf("verifyControllerLocalBackend: dial bufconn: %w", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	agentClient := agentv1.NewAgentServiceClient(conn)
 
 	controller := csidrv.NewControllerServerWithDialer(
 		k8sClient,
@@ -325,9 +372,9 @@ func verifyControllerLocalBackend() error {
 	if createResp.GetVolume() == nil || createResp.GetVolume().GetVolumeId() == "" {
 		return errors.New("controller create volume returned empty volume metadata")
 	}
-	if agentClient.createVolumeCalls != 1 || agentClient.exportVolumeCalls != 1 {
+	if agentSrv.createVolumeCalls != 1 || agentSrv.exportVolumeCalls != 1 {
 		return fmt.Errorf("controller create expected 1 create + 1 export agent call, got create=%d export=%d",
-			agentClient.createVolumeCalls, agentClient.exportVolumeCalls)
+			agentSrv.createVolumeCalls, agentSrv.exportVolumeCalls)
 	}
 
 	if _, err := controller.ControllerPublishVolume(ctx, &csiapi.ControllerPublishVolumeRequest{
@@ -337,8 +384,8 @@ func verifyControllerLocalBackend() error {
 	}); err != nil {
 		return fmt.Errorf("controller publish volume: %w", err)
 	}
-	if agentClient.allowInitiatorCalls != 1 {
-		return fmt.Errorf("controller publish expected allow initiator call, got %d", agentClient.allowInitiatorCalls)
+	if agentSrv.allowInitiatorCalls != 1 {
+		return fmt.Errorf("controller publish expected allow initiator call, got %d", agentSrv.allowInitiatorCalls)
 	}
 
 	expandResp, err := controller.ControllerExpandVolume(ctx, &csiapi.ControllerExpandVolumeRequest{
@@ -373,8 +420,8 @@ func verifyControllerLocalBackend() error {
 	}); err != nil {
 		return fmt.Errorf("controller unpublish volume: %w", err)
 	}
-	if agentClient.denyInitiatorCalls != 1 {
-		return fmt.Errorf("controller unpublish expected deny initiator call, got %d", agentClient.denyInitiatorCalls)
+	if agentSrv.denyInitiatorCalls != 1 {
+		return fmt.Errorf("controller unpublish expected deny initiator call, got %d", agentSrv.denyInitiatorCalls)
 	}
 
 	if _, err := controller.DeleteVolume(ctx, &csiapi.DeleteVolumeRequest{
@@ -382,9 +429,9 @@ func verifyControllerLocalBackend() error {
 	}); err != nil {
 		return fmt.Errorf("controller delete volume: %w", err)
 	}
-	if agentClient.unexportVolumeCalls != 1 || agentClient.deleteVolumeCalls != 1 {
+	if agentSrv.unexportVolumeCalls != 1 || agentSrv.deleteVolumeCalls != 1 {
 		return fmt.Errorf("controller delete expected 1 unexport + 1 delete agent call, got unexport=%d delete=%d",
-			agentClient.unexportVolumeCalls, agentClient.deleteVolumeCalls)
+			agentSrv.unexportVolumeCalls, agentSrv.deleteVolumeCalls)
 	}
 
 	_, err = controller.CreateVolume(ctx, &csiapi.CreateVolumeRequest{
@@ -498,6 +545,14 @@ func verifyNodeLocalBackend() error {
 }
 
 func verifyAgentLocalBackend() error {
+	return verifyAgentLocalBackendForProcess(0)
+}
+
+// verifyAgentLocalBackendForProcess runs the agent local backend verification
+// using a worker-specific volume name (pvc-local-<processNum>) to prevent
+// "dataset already exists" collisions when multiple Ginkgo parallel workers
+// each call this verifier concurrently in SynchronizedBeforeSuite.
+func verifyAgentLocalBackendForProcess(processNum int) error {
 	ctx := context.Background()
 	scope, err := NewTestCaseScope("verifier-agent-local")
 	if err != nil {
@@ -509,42 +564,46 @@ func verifyAgentLocalBackend() error {
 	if err != nil {
 		return err
 	}
-	deviceDir, err := scope.TempDir("device")
-	if err != nil {
-		return err
-	}
-	devicePath := filepath.Join(deviceDir, "zvol-local")
-	if err := os.WriteFile(devicePath, []byte("device"), 0o600); err != nil {
-		return fmt.Errorf("seed fake device: %w", err)
+
+	// Unique volume name per worker avoids dataset collision during parallel warmup.
+	volName := fmt.Sprintf("pvc-local-%d", processNum)
+
+	container, zfsPool, _ := requireSuiteBackendEnv()
+	execFn := realContainerExecFn(container)
+
+	// Ensure the ZFS namespace parent dataset exists inside the container.
+	if _, err := execFn(ctx, "zfs", "create", "-p", zfsPool+"/k8s"); err != nil {
+		if !strings.Contains(err.Error(), "already exists") &&
+			!strings.Contains(err.Error(), "dataset already exists") {
+			return fmt.Errorf("verifyAgentLocalBackend: create ZFS parent dataset %s/k8s: %w", zfsPool, err)
+		}
 	}
 
-	backend := &localMockVolumeBackend{
-		createDevicePath:  devicePath,
-		createAllocated:   1 << 30,
-		expandAllocated:   2 << 30,
-		capacityTotal:     10 << 30,
-		capacityAvailable: 8 << 30,
-		devicePathResult:  devicePath,
-	}
+	backend := zfsb.NewWithExecFn(zfsPool, "k8s", execFn)
 
 	server := agentsvc.NewServer(
-		map[string]agentbackend.VolumeBackend{"tank": backend},
+		map[string]agentbackend.VolumeBackend{zfsPool: backend},
 		configfsRoot,
 		agentsvc.WithDeviceChecker(nvmeof.AlwaysPresentChecker),
 	)
 
+	volID := zfsPool + "/" + volName
+
+	// Pre-cleanup: idempotently destroy any leftover zvol from a previous run
+	// that may have exited before the DeleteVolume step completed.
+	_, _ = server.DeleteVolume(ctx, &agentv1.DeleteVolumeRequest{VolumeId: volID})
+
 	if _, err := server.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
-		VolumeId:      "tank/pvc-local",
+		VolumeId:      volID,
 		CapacityBytes: 1 << 30,
 	}); err != nil {
 		return fmt.Errorf("agent create volume: %w", err)
 	}
-	if len(backend.createCalledWith) != 1 {
-		return fmt.Errorf("agent create expected backend create call, got %d", len(backend.createCalledWith))
-	}
+
+	devicePath := backend.DevicePath(volID)
 
 	exportResp, err := server.ExportVolume(ctx, &agentv1.ExportVolumeRequest{
-		VolumeId:     "tank/pvc-local",
+		VolumeId:     volID,
 		DevicePath:   devicePath,
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 		ExportParams: nvmeofTCPExportParams("127.0.0.1", 4420),
@@ -552,13 +611,13 @@ func verifyAgentLocalBackend() error {
 	if err != nil {
 		return fmt.Errorf("agent export volume: %w", err)
 	}
-	wantNQN := "nqn.2026-01.com.bhyoo.pillar-csi:tank.pvc-local"
+	wantNQN := "nqn.2026-01.com.bhyoo.pillar-csi:" + zfsPool + "." + volName
 	if exportResp.GetExportInfo().GetTargetId() != wantNQN {
 		return fmt.Errorf("agent export target id = %q, want %q", exportResp.GetExportInfo().GetTargetId(), wantNQN)
 	}
 
 	if _, err := server.AllowInitiator(ctx, &agentv1.AllowInitiatorRequest{
-		VolumeId:     "tank/pvc-local",
+		VolumeId:     volID,
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 		InitiatorId:  "nqn.2026-01.io.example:host-local",
 	}); err != nil {
@@ -578,7 +637,7 @@ func verifyAgentLocalBackend() error {
 	}
 
 	if _, err := server.DenyInitiator(ctx, &agentv1.DenyInitiatorRequest{
-		VolumeId:     "tank/pvc-local",
+		VolumeId:     volID,
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 		InitiatorId:  "nqn.2026-01.io.example:host-local",
 	}); err != nil {
@@ -589,19 +648,16 @@ func verifyAgentLocalBackend() error {
 	}
 
 	if _, err := server.UnexportVolume(ctx, &agentv1.UnexportVolumeRequest{
-		VolumeId:     "tank/pvc-local",
+		VolumeId:     volID,
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 	}); err != nil {
 		return fmt.Errorf("agent unexport volume: %w", err)
 	}
 
 	if _, err := server.DeleteVolume(ctx, &agentv1.DeleteVolumeRequest{
-		VolumeId: "tank/pvc-local",
+		VolumeId: volID,
 	}); err != nil {
 		return fmt.Errorf("agent delete volume: %w", err)
-	}
-	if len(backend.deleteCalledWith) != 1 {
-		return fmt.Errorf("agent delete expected backend delete call, got %d", len(backend.deleteCalledWith))
 	}
 
 	return nil
@@ -962,55 +1018,10 @@ func findHelmChartPath() (string, error) {
 
 func verifyLVMLocalBackend() error {
 	ctx := context.Background()
-	exec := &queuedExec{
-		responses: []queuedExecResponse{
-			{
-				name: "lvs",
-				args: []string{"--noheadings", "-o", "lv_size", "--units", "b", "--nosuffix", "data-vg/pvc-local"},
-				out:  "  Failed to find logical volume \"data-vg/pvc-local\"",
-				err:  errors.New("exit status 5"),
-			},
-			{
-				name: "lvcreate",
-				args: []string{"-n", "pvc-local", "-L", "1073741824b", "data-vg"},
-			},
-			{
-				name: "lvs",
-				args: []string{"--noheadings", "-o", "lv_size", "--units", "b", "--nosuffix", "data-vg/pvc-local"},
-				out:  "1073741824\n",
-			},
-			{
-				name: "lvs",
-				args: []string{"--noheadings", "-o", "lv_size", "--units", "b", "--nosuffix", "data-vg/pvc-local"},
-				out:  "1073741824\n",
-			},
-			{
-				name: "lvextend",
-				args: []string{"-L", "2147483648b", "data-vg/pvc-local"},
-			},
-			{
-				name: "lvs",
-				args: []string{"--noheadings", "-o", "lv_size", "--units", "b", "--nosuffix", "data-vg/pvc-local"},
-				out:  "2147483648\n",
-			},
-			{
-				name: "vgs",
-				args: []string{"--noheadings", "-o", "vg_size,vg_free", "--units", "b", "--nosuffix", "data-vg"},
-				out:  "4294967296 2147483648\n",
-			},
-			{
-				name: "lvs",
-				args: []string{"--noheadings", "-o", "lv_name,lv_size", "--units", "b", "--nosuffix", "data-vg"},
-				out:  "pvc-local 2147483648\n",
-			},
-			{
-				name: "lvremove",
-				args: []string{"-y", "data-vg/pvc-local"},
-			},
-		},
-	}
 
-	backend := lvmb.NewWithExecFn("data-vg", "", exec.Run)
+	container, _, lvmVG := requireSuiteBackendEnv()
+	execFn := realContainerExecFn(container)
+	backend := lvmb.NewWithExecFn(lvmVG, "", execFn)
 	if err := backend.Validate(); err != nil {
 		return fmt.Errorf("lvm validate: %w", err)
 	}
@@ -1018,15 +1029,21 @@ func verifyLVMLocalBackend() error {
 		return fmt.Errorf("lvm backend type = %v, want BACKEND_TYPE_LVM", backend.Type())
 	}
 
-	devicePath, allocated, err := backend.Create(ctx, "data-vg/pvc-local", 1<<30, nil)
+	volumeID := lvmVG + "/pvc-verifier-local"
+
+	devicePath, allocated, err := backend.Create(ctx, volumeID, 1<<30, nil)
 	if err != nil {
 		return fmt.Errorf("lvm create: %w", err)
 	}
-	if devicePath != "/dev/data-vg/pvc-local" || allocated != 1<<30 {
-		return fmt.Errorf("lvm create returned path=%q allocated=%d", devicePath, allocated)
+	wantPath := "/dev/" + lvmVG + "/pvc-verifier-local"
+	if devicePath != wantPath {
+		return fmt.Errorf("lvm create returned path=%q, want %q", devicePath, wantPath)
+	}
+	if allocated != 1<<30 {
+		return fmt.Errorf("lvm create allocated=%d, want %d", allocated, 1<<30)
 	}
 
-	allocated, err = backend.Expand(ctx, "data-vg/pvc-local", 2<<30)
+	allocated, err = backend.Expand(ctx, volumeID, 2<<30)
 	if err != nil {
 		return fmt.Errorf("lvm expand: %w", err)
 	}
@@ -1038,127 +1055,78 @@ func verifyLVMLocalBackend() error {
 	if err != nil {
 		return fmt.Errorf("lvm capacity: %w", err)
 	}
-	if total != 4<<30 || available != 2<<30 {
-		return fmt.Errorf("lvm capacity total=%d available=%d", total, available)
+	if total <= 0 {
+		return fmt.Errorf("lvm capacity total=%d, want > 0", total)
+	}
+	if available < 0 {
+		return fmt.Errorf("lvm capacity available=%d, want >= 0", available)
 	}
 
 	volumes, err := backend.ListVolumes(ctx)
 	if err != nil {
 		return fmt.Errorf("lvm list volumes: %w", err)
 	}
-	if len(volumes) != 1 || volumes[0].GetVolumeId() != "data-vg/pvc-local" {
-		return fmt.Errorf("lvm list volumes = %#v", volumes)
+	found := false
+	for _, v := range volumes {
+		if v.GetVolumeId() == volumeID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("lvm list volumes did not include %q: %#v", volumeID, volumes)
 	}
 
-	if err := backend.Delete(ctx, "data-vg/pvc-local"); err != nil {
+	if err := backend.Delete(ctx, volumeID); err != nil {
 		return fmt.Errorf("lvm delete: %w", err)
-	}
-	if !exec.Exhausted() {
-		return fmt.Errorf("lvm fake executor left %d unconsumed responses", len(exec.responses)-exec.index)
 	}
 
 	return nil
 }
 
-// verifyZFSLocalBackend exercises the ZFS VolumeBackend using a queuedExec
-// that simulates zfs(8)/zpool(8) command output without requiring a ZFS-capable
-// host or root access. All backend code paths (Create, idempotent Create,
-// Expand, Capacity, ListVolumes, Delete, idempotent Delete) are exercised
-// against the production implementation in internal/agent/backend/zfs.
+// verifyZFSLocalBackend exercises the ZFS VolumeBackend against real ZFS inside
+// the Kind cluster container. All backend code paths (Create, idempotent Create,
+// Expand, Capacity, ListVolumes, Delete, idempotent Delete) are exercised against
+// the production implementation in internal/agent/backend/zfs.
 //
-// This approach satisfies the "NO STUBS" contract: the real ZFS backend code is
-// executed on every call; only the underlying kernel I/O is intercepted by the
-// pre-programmed queuedExec responses.
-//
-// pool="tank", parentDataset="k8s", volumeID="tank/pvc-local"
-// → datasetName = "tank/k8s/pvc-local"
+// Commands execute via "docker exec <container>" using realContainerExecFn.
 func verifyZFSLocalBackend() error {
 	ctx := context.Background()
-	exec := &queuedExec{
-		responses: []queuedExecResponse{
-			// Create("tank/pvc-local", 1<<30): pre-create existence check → not found
-			{
-				name: "zfs",
-				args: []string{"get", "-Hp", "-o", "value", "volsize", "tank/k8s/pvc-local"},
-				out:  "cannot open 'tank/k8s/pvc-local': dataset does not exist",
-				err:  errors.New("exit status 1"),
-			},
-			// Create: zfs create -V 1073741824 tank/k8s/pvc-local
-			{
-				name: "zfs",
-				args: []string{"create", "-V", "1073741824", "tank/k8s/pvc-local"},
-			},
-			// Create: read-back volsize after creation
-			{
-				name: "zfs",
-				args: []string{"get", "-Hp", "-o", "value", "volsize", "tank/k8s/pvc-local"},
-				out:  "1073741824\n",
-			},
-			// Create idempotent: existence check returns existing size
-			{
-				name: "zfs",
-				args: []string{"get", "-Hp", "-o", "value", "volsize", "tank/k8s/pvc-local"},
-				out:  "1073741824\n",
-			},
-			// Expand("tank/pvc-local", 2<<30): zfs set volsize=2147483648
-			{
-				name: "zfs",
-				args: []string{"set", "volsize=2147483648", "tank/k8s/pvc-local"},
-			},
-			// Expand: read-back volsize after expand
-			{
-				name: "zfs",
-				args: []string{"get", "-Hp", "-o", "value", "volsize", "tank/k8s/pvc-local"},
-				out:  "2147483648\n",
-			},
-			// Capacity(): zpool list -Hp -o size,free tank
-			{
-				name: "zpool",
-				args: []string{"list", "-Hp", "-o", "size,free", "tank"},
-				out:  "4294967296\t2147483648\n",
-			},
-			// ListVolumes(): zfs list -Hp -t volume -o name,volsize -r tank/k8s
-			{
-				name: "zfs",
-				args: []string{"list", "-Hp", "-t", "volume", "-o", "name,volsize", "-r", "tank/k8s"},
-				out:  "tank/k8s/pvc-local\t2147483648\n",
-			},
-			// Delete("tank/pvc-local"): zfs destroy tank/k8s/pvc-local
-			{
-				name: "zfs",
-				args: []string{"destroy", "tank/k8s/pvc-local"},
-			},
-			// Delete idempotent: dataset does not exist → nil error (idempotent)
-			{
-				name: "zfs",
-				args: []string{"destroy", "tank/k8s/pvc-local"},
-				out:  "cannot open 'tank/k8s/pvc-local': dataset does not exist",
-				err:  errors.New("exit status 1"),
-			},
-			// ListVolumes after delete: empty output
-			{
-				name: "zfs",
-				args: []string{"list", "-Hp", "-t", "volume", "-o", "name,volsize", "-r", "tank/k8s"},
-				out:  "",
-			},
-		},
+
+	container, zfsPool, _ := requireSuiteBackendEnv()
+	execFn := realContainerExecFn(container)
+
+	// Ensure the ZFS namespace parent dataset exists.
+	// The ZFS backend (namespace "k8s") stores zvols at pool/k8s/<volname>;
+	// the parent filesystem dataset pool/k8s must be created first.
+	if _, err := execFn(ctx, "zfs", "create", "-p", zfsPool+"/k8s"); err != nil {
+		if !strings.Contains(err.Error(), "already exists") &&
+			!strings.Contains(err.Error(), "dataset already exists") {
+			return fmt.Errorf("verifyZFSLocalBackend: create parent dataset %s/k8s: %w", zfsPool, err)
+		}
 	}
 
-	backend := zfsb.NewWithExecFn("tank", "k8s", exec.Run)
+	backend := zfsb.NewWithExecFn(zfsPool, "k8s", execFn)
 	if backend.Type() != agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL {
 		return fmt.Errorf("zfs backend type = %v, want BACKEND_TYPE_ZFS_ZVOL", backend.Type())
 	}
 
-	devicePath, allocated, err := backend.Create(ctx, "tank/pvc-local", 1<<30, nil)
+	volumeID := zfsPool + "/pvc-verifier-local"
+	wantDevicePath := "/dev/zvol/" + zfsPool + "/k8s/pvc-verifier-local"
+
+	devicePath, allocated, err := backend.Create(ctx, volumeID, 1<<30, nil)
 	if err != nil {
 		return fmt.Errorf("zfs create: %w", err)
 	}
-	if devicePath != "/dev/zvol/tank/k8s/pvc-local" || allocated != 1<<30 {
-		return fmt.Errorf("zfs create returned path=%q allocated=%d", devicePath, allocated)
+	if devicePath != wantDevicePath {
+		return fmt.Errorf("zfs create returned path=%q, want %q", devicePath, wantDevicePath)
+	}
+	if allocated != 1<<30 {
+		return fmt.Errorf("zfs create allocated=%d, want %d", allocated, 1<<30)
 	}
 
 	// Idempotent create (same size) must return existing device path and size.
-	dp2, alloc2, err := backend.Create(ctx, "tank/pvc-local", 1<<30, nil)
+	dp2, alloc2, err := backend.Create(ctx, volumeID, 1<<30, nil)
 	if err != nil {
 		return fmt.Errorf("zfs create idempotent: %w", err)
 	}
@@ -1167,7 +1135,7 @@ func verifyZFSLocalBackend() error {
 			dp2, alloc2, devicePath, allocated)
 	}
 
-	allocated, err = backend.Expand(ctx, "tank/pvc-local", 2<<30)
+	allocated, err = backend.Expand(ctx, volumeID, 2<<30)
 	if err != nil {
 		return fmt.Errorf("zfs expand: %w", err)
 	}
@@ -1179,24 +1147,34 @@ func verifyZFSLocalBackend() error {
 	if err != nil {
 		return fmt.Errorf("zfs capacity: %w", err)
 	}
-	if total != 4<<30 || available != 2<<30 {
-		return fmt.Errorf("zfs capacity total=%d available=%d", total, available)
+	if total <= 0 {
+		return fmt.Errorf("zfs capacity total=%d, want > 0", total)
+	}
+	if available < 0 {
+		return fmt.Errorf("zfs capacity available=%d, want >= 0", available)
 	}
 
 	volumes, err := backend.ListVolumes(ctx)
 	if err != nil {
 		return fmt.Errorf("zfs list volumes: %w", err)
 	}
-	if len(volumes) != 1 || volumes[0].GetVolumeId() != "tank/pvc-local" {
-		return fmt.Errorf("zfs list volumes = %#v", volumes)
+	found := false
+	for _, v := range volumes {
+		if v.GetVolumeId() == volumeID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("zfs list volumes did not include %q: %#v", volumeID, volumes)
 	}
 
-	if err := backend.Delete(ctx, "tank/pvc-local"); err != nil {
+	if err := backend.Delete(ctx, volumeID); err != nil {
 		return fmt.Errorf("zfs delete: %w", err)
 	}
 
 	// Idempotent delete must return nil for a non-existent volume.
-	if err := backend.Delete(ctx, "tank/pvc-local"); err != nil {
+	if err := backend.Delete(ctx, volumeID); err != nil {
 		return fmt.Errorf("zfs delete idempotent: %w", err)
 	}
 
@@ -1204,12 +1182,10 @@ func verifyZFSLocalBackend() error {
 	if err != nil {
 		return fmt.Errorf("zfs list volumes after delete: %w", err)
 	}
-	if len(volumesAfter) != 0 {
-		return fmt.Errorf("zfs list volumes after delete: got %d volumes, want 0", len(volumesAfter))
-	}
-
-	if !exec.Exhausted() {
-		return fmt.Errorf("zfs fake executor left %d unconsumed responses", len(exec.responses)-exec.index)
+	for _, v := range volumesAfter {
+		if v.GetVolumeId() == volumeID {
+			return fmt.Errorf("zfs list volumes after delete: volume %q still present", volumeID)
+		}
 	}
 
 	return nil
@@ -1257,140 +1233,6 @@ func nvmeofTCPExportParams(addr string, port int32) *agentv1.ExportParams {
 			},
 		},
 	}
-}
-
-type localMockAgentClient struct {
-	createVolumeResp *agentv1.CreateVolumeResponse
-	createVolumeErr  error
-
-	exportVolumeResp *agentv1.ExportVolumeResponse
-	exportVolumeErr  error
-
-	expandVolumeResp *agentv1.ExpandVolumeResponse
-	expandVolumeErr  error
-
-	getCapacityResp *agentv1.GetCapacityResponse
-	getCapacityErr  error
-
-	unexportVolumeErr error
-	deleteVolumeErr   error
-	allowInitiatorErr error
-	denyInitiatorErr  error
-
-	createVolumeCalls   int
-	exportVolumeCalls   int
-	expandVolumeCalls   int
-	getCapacityCalls    int
-	unexportVolumeCalls int
-	deleteVolumeCalls   int
-	allowInitiatorCalls int
-	denyInitiatorCalls  int
-}
-
-var _ agentv1.AgentServiceClient = (*localMockAgentClient)(nil)
-
-func (m *localMockAgentClient) CreateVolume(_ context.Context, _ *agentv1.CreateVolumeRequest, _ ...grpc.CallOption) (*agentv1.CreateVolumeResponse, error) {
-	m.createVolumeCalls++
-	if m.createVolumeErr != nil {
-		return nil, m.createVolumeErr
-	}
-	if m.createVolumeResp != nil {
-		return m.createVolumeResp, nil
-	}
-	return &agentv1.CreateVolumeResponse{}, nil
-}
-
-func (m *localMockAgentClient) DeleteVolume(_ context.Context, _ *agentv1.DeleteVolumeRequest, _ ...grpc.CallOption) (*agentv1.DeleteVolumeResponse, error) {
-	m.deleteVolumeCalls++
-	if m.deleteVolumeErr != nil {
-		return nil, m.deleteVolumeErr
-	}
-	return &agentv1.DeleteVolumeResponse{}, nil
-}
-
-func (m *localMockAgentClient) ExpandVolume(_ context.Context, _ *agentv1.ExpandVolumeRequest, _ ...grpc.CallOption) (*agentv1.ExpandVolumeResponse, error) {
-	m.expandVolumeCalls++
-	if m.expandVolumeErr != nil {
-		return nil, m.expandVolumeErr
-	}
-	if m.expandVolumeResp != nil {
-		return m.expandVolumeResp, nil
-	}
-	return &agentv1.ExpandVolumeResponse{}, nil
-}
-
-func (m *localMockAgentClient) ExportVolume(_ context.Context, _ *agentv1.ExportVolumeRequest, _ ...grpc.CallOption) (*agentv1.ExportVolumeResponse, error) {
-	m.exportVolumeCalls++
-	if m.exportVolumeErr != nil {
-		return nil, m.exportVolumeErr
-	}
-	if m.exportVolumeResp != nil {
-		return m.exportVolumeResp, nil
-	}
-	return &agentv1.ExportVolumeResponse{}, nil
-}
-
-func (m *localMockAgentClient) UnexportVolume(_ context.Context, _ *agentv1.UnexportVolumeRequest, _ ...grpc.CallOption) (*agentv1.UnexportVolumeResponse, error) {
-	m.unexportVolumeCalls++
-	if m.unexportVolumeErr != nil {
-		return nil, m.unexportVolumeErr
-	}
-	return &agentv1.UnexportVolumeResponse{}, nil
-}
-
-func (m *localMockAgentClient) AllowInitiator(_ context.Context, _ *agentv1.AllowInitiatorRequest, _ ...grpc.CallOption) (*agentv1.AllowInitiatorResponse, error) {
-	m.allowInitiatorCalls++
-	if m.allowInitiatorErr != nil {
-		return nil, m.allowInitiatorErr
-	}
-	return &agentv1.AllowInitiatorResponse{}, nil
-}
-
-func (m *localMockAgentClient) DenyInitiator(_ context.Context, _ *agentv1.DenyInitiatorRequest, _ ...grpc.CallOption) (*agentv1.DenyInitiatorResponse, error) {
-	m.denyInitiatorCalls++
-	if m.denyInitiatorErr != nil {
-		return nil, m.denyInitiatorErr
-	}
-	return &agentv1.DenyInitiatorResponse{}, nil
-}
-
-func (*localMockAgentClient) GetCapabilities(_ context.Context, _ *agentv1.GetCapabilitiesRequest, _ ...grpc.CallOption) (*agentv1.GetCapabilitiesResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "local mock: GetCapabilities")
-}
-
-func (m *localMockAgentClient) GetCapacity(_ context.Context, _ *agentv1.GetCapacityRequest, _ ...grpc.CallOption) (*agentv1.GetCapacityResponse, error) {
-	m.getCapacityCalls++
-	if m.getCapacityErr != nil {
-		return nil, m.getCapacityErr
-	}
-	if m.getCapacityResp != nil {
-		return m.getCapacityResp, nil
-	}
-	return &agentv1.GetCapacityResponse{}, nil
-}
-
-func (*localMockAgentClient) ListVolumes(_ context.Context, _ *agentv1.ListVolumesRequest, _ ...grpc.CallOption) (*agentv1.ListVolumesResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "local mock: ListVolumes")
-}
-
-func (*localMockAgentClient) ListExports(_ context.Context, _ *agentv1.ListExportsRequest, _ ...grpc.CallOption) (*agentv1.ListExportsResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "local mock: ListExports")
-}
-
-func (*localMockAgentClient) HealthCheck(_ context.Context, _ *agentv1.HealthCheckRequest, _ ...grpc.CallOption) (*agentv1.HealthCheckResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "local mock: HealthCheck")
-}
-
-func (*localMockAgentClient) SendVolume(_ context.Context, _ *agentv1.SendVolumeRequest, _ ...grpc.CallOption) (grpc.ServerStreamingClient[agentv1.SendVolumeChunk], error) {
-	return nil, status.Error(codes.Unimplemented, "local mock: SendVolume")
-}
-
-func (*localMockAgentClient) ReceiveVolume(_ context.Context, _ ...grpc.CallOption) (grpc.ClientStreamingClient[agentv1.ReceiveVolumeChunk, agentv1.ReceiveVolumeResponse], error) {
-	return nil, status.Error(codes.Unimplemented, "local mock: ReceiveVolume")
-}
-
-func (*localMockAgentClient) ReconcileState(_ context.Context, _ *agentv1.ReconcileStateRequest, _ ...grpc.CallOption) (*agentv1.ReconcileStateResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "local mock: ReconcileState")
 }
 
 type localMockConnector struct {
@@ -1520,65 +1362,6 @@ func (m *localMockResizer) ResizeFS(mountPath, fsType string) error {
 	return m.err
 }
 
-type localMockVolumeBackend struct {
-	createDevicePath string
-	createAllocated  int64
-	createErr        error
-	createCalledWith []localCreateArgs
-
-	deleteErr        error
-	deleteCalledWith []string
-
-	expandAllocated int64
-	expandErr       error
-
-	capacityTotal     int64
-	capacityAvailable int64
-	capacityErr       error
-
-	listVolumesResult []*agentv1.VolumeInfo
-	listVolumesErr    error
-
-	devicePathResult string
-}
-
-type localCreateArgs struct {
-	volumeID      string
-	capacityBytes int64
-}
-
-var _ agentbackend.VolumeBackend = (*localMockVolumeBackend)(nil)
-
-func (m *localMockVolumeBackend) Create(_ context.Context, volumeID string, capacityBytes int64, _ *agentv1.BackendParams) (string, int64, error) {
-	m.createCalledWith = append(m.createCalledWith, localCreateArgs{volumeID: volumeID, capacityBytes: capacityBytes})
-	return m.createDevicePath, m.createAllocated, m.createErr
-}
-
-func (m *localMockVolumeBackend) Delete(_ context.Context, volumeID string) error {
-	m.deleteCalledWith = append(m.deleteCalledWith, volumeID)
-	return m.deleteErr
-}
-
-func (m *localMockVolumeBackend) Expand(_ context.Context, _ string, _ int64) (int64, error) {
-	return m.expandAllocated, m.expandErr
-}
-
-func (m *localMockVolumeBackend) Capacity(_ context.Context) (int64, int64, error) {
-	return m.capacityTotal, m.capacityAvailable, m.capacityErr
-}
-
-func (m *localMockVolumeBackend) ListVolumes(_ context.Context) ([]*agentv1.VolumeInfo, error) {
-	return m.listVolumesResult, m.listVolumesErr
-}
-
-func (m *localMockVolumeBackend) DevicePath(_ string) string {
-	return m.devicePathResult
-}
-
-func (*localMockVolumeBackend) Type() agentv1.BackendType {
-	return agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL
-}
-
 type localHealthServer struct {
 	agentv1.UnimplementedAgentServiceServer
 }
@@ -1588,41 +1371,4 @@ func (*localHealthServer) HealthCheck(_ context.Context, _ *agentv1.HealthCheckR
 		Healthy:      true,
 		AgentVersion: "local-mtls",
 	}, nil
-}
-
-type queuedExec struct {
-	mu        sync.Mutex
-	responses []queuedExecResponse
-	index     int
-}
-
-type queuedExecResponse struct {
-	name string
-	args []string
-	out  string
-	err  error
-}
-
-func (q *queuedExec) Run(_ context.Context, name string, args ...string) ([]byte, error) {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-
-	if q.index >= len(q.responses) {
-		return nil, fmt.Errorf("unexpected exec call %s %q", name, args)
-	}
-
-	response := q.responses[q.index]
-	q.index++
-
-	if response.name != name || !slices.Equal(response.args, args) {
-		return nil, fmt.Errorf("exec call #%d = %s %q, want %s %q", q.index, name, args, response.name, response.args)
-	}
-
-	return []byte(response.out), response.err
-}
-
-func (q *queuedExec) Exhausted() bool {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	return q.index == len(q.responses)
 }

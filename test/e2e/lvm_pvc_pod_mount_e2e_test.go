@@ -1,3 +1,5 @@
+//go:build e2e
+
 package e2e
 
 // lvm_pvc_pod_mount_e2e_test.go — E33.2: LVM PVC provisioning and Pod mount tests.
@@ -138,7 +140,7 @@ spec:
 				// we verify the API round-trip and pool creation.
 				err := cmd.Run()
 				if err != nil {
-					Skip(fmt.Sprintf("[TC-E33.294] PillarPool creation requires pillar-csi CRDs to be installed: %v", err))
+					Fail(fmt.Sprintf("[TC-E33.294] MISSING PREREQUISITE: PillarPool creation requires pillar-csi CRDs to be installed: %v", err))
 				}
 
 				DeferCleanup(func() {
@@ -190,7 +192,7 @@ spec:
 				cmd.Stderr = &errOut
 				err := cmd.Run()
 				if err != nil {
-					Skip(fmt.Sprintf("[TC-E33.295] PillarPool CRDs not installed: %v", err))
+					Fail(fmt.Sprintf("[TC-E33.295] MISSING PREREQUISITE: PillarPool CRDs not installed: %v", err))
 				}
 
 				DeferCleanup(func() {
@@ -240,7 +242,7 @@ spec:
 				var errOut bytes.Buffer
 				cmd.Stderr = &errOut
 				if err := cmd.Run(); err != nil {
-					Skip(fmt.Sprintf("[TC-E33.296] PillarPool CRDs not installed: %v", err))
+					Fail(fmt.Sprintf("[TC-E33.296] MISSING PREREQUISITE: PillarPool CRDs not installed: %v", err))
 				}
 
 				DeferCleanup(func() {
@@ -306,7 +308,7 @@ spec:
 					"-o", "jsonpath={.items[?(@.provisioner=='pillar-csi.bhyoo.com')].metadata.name}",
 				)
 				if err != nil || scListOut == "" {
-					Skip(fmt.Sprintf("[TC-E33.297] no pillar-csi StorageClass found; binding %q not configured", bindingName))
+					Fail(fmt.Sprintf("[TC-E33.297] MISSING PREREQUISITE: no pillar-csi StorageClass found; binding %q not configured", bindingName))
 				}
 				Expect(scListOut).NotTo(BeEmpty(),
 					"[TC-E33.297] at least one pillar-csi StorageClass must exist")
@@ -322,7 +324,7 @@ spec:
 					"-o", "jsonpath={.items[?(@.provisioner=='pillar-csi.bhyoo.com')].metadata.name}",
 				)
 				if err != nil || scOut == "" {
-					Skip("[TC-E33.298] no pillar-csi StorageClass available")
+					Fail("[TC-E33.298] MISSING PREREQUISITE: no pillar-csi StorageClass available")
 				}
 				scName := strings.Fields(scOut)[0]
 
@@ -370,7 +372,7 @@ spec:
 			// ── TC-E33.299 ────────────────────────────────────────────────────
 			It("[TC-E33.299] bound PV (first PVC) has capacity >= 1Gi", func() {
 				if pvName1 == "" {
-					Skip("[TC-E33.299] pvName1 not set — TC-E33.298 may have skipped")
+					Fail("[TC-E33.299] MISSING PREREQUISITE: pvName1 not set — TC-E33.298 may have skipped")
 				}
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer cancel()
@@ -390,7 +392,7 @@ spec:
 			// ── TC-E33.300 ────────────────────────────────────────────────────
 			It("[TC-E33.300] bound PV (first PVC) references the correct StorageClass", func() {
 				if pvName1 == "" {
-					Skip("[TC-E33.300] pvName1 not set")
+					Fail("[TC-E33.300] MISSING PREREQUISITE: pvName1 not set")
 				}
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer cancel()
@@ -415,7 +417,7 @@ spec:
 			// ── TC-E33.301 ────────────────────────────────────────────────────
 			It("[TC-E33.301] bound PV (first PVC) uses the Delete reclaim policy", func() {
 				if pvName1 == "" {
-					Skip("[TC-E33.301] pvName1 not set")
+					Fail("[TC-E33.301] MISSING PREREQUISITE: pvName1 not set")
 				}
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer cancel()
@@ -437,7 +439,7 @@ spec:
 					"-o", "jsonpath={.items[?(@.provisioner=='pillar-csi.bhyoo.com')].metadata.name}",
 				)
 				if err != nil || scOut == "" {
-					Skip("[TC-E33.302] no pillar-csi StorageClass available")
+					Fail("[TC-E33.302] MISSING PREREQUISITE: no pillar-csi StorageClass available")
 				}
 				scName := strings.Fields(scOut)[0]
 
@@ -492,13 +494,13 @@ spec:
 				defer cancel()
 
 				if pvcName1 == "" {
-					Skip("[TC-E33.303] pvcName1 not set")
+					Fail("[TC-E33.303] MISSING PREREQUISITE: pvcName1 not set")
 				}
 				// Check pvcName1 is Bound.
 				phase, err := e33KubectlOutput(ctx, "get", "pvc", pvcName1,
 					"-n", testNamespace, "-o", "jsonpath={.status.phase}")
 				if err != nil || phase != "Bound" {
-					Skip("[TC-E33.303] PVC not Bound — previous provisioning test may have skipped")
+					Fail("[TC-E33.303] MISSING PREREQUISITE: PVC not Bound — previous provisioning test may have skipped")
 				}
 
 				podYAML := fmt.Sprintf(`
@@ -548,7 +550,7 @@ spec:
 				podPhase, err := e33KubectlOutput(ctx, "get", "pod", podName,
 					"-n", testNamespace, "-o", "jsonpath={.status.phase}")
 				if err != nil || podPhase != "Running" {
-					Skip("[TC-E33.304] Pod not Running — TC-E33.303 may have skipped")
+					Fail("[TC-E33.304] MISSING PREREQUISITE: Pod not Running — TC-E33.303 may have skipped")
 				}
 
 				By("deleting Pod")
@@ -580,7 +582,7 @@ spec:
 					"-n", testNamespace, "-o", "jsonpath={.status.phase}",
 					"--ignore-not-found=true")
 				if err != nil || pvcPhase == "" {
-					Skip("[TC-E33.305] PVC not found — earlier tests may have skipped")
+					Fail("[TC-E33.305] MISSING PREREQUISITE: PVC not found — earlier tests may have skipped")
 				}
 
 				By("deleting PVC")

@@ -109,14 +109,15 @@ func CreateVG(ctx context.Context, opts CreateVGOptions) (*VG, error) {
 
 	// ── Step 1: Allocate the loop device image ────────────────────────────────
 	//
-	// "dd if=/dev/zero …" is universally available in Kind nodes and avoids any
-	// dependency on fallocate / truncate which may behave differently across
-	// filesystem types.
+	// "truncate -s <size>M" creates a sparse file instantly — no actual disk
+	// blocks are allocated until data is written.  This keeps VG setup time
+	// constant (~50 ms) regardless of size and allows large (100 GiB) VGs that
+	// enable realistic thin-provisioning tests without filling the host disk.
+	//
+	// "dd if=/dev/zero" (dense fill) was replaced because writing 100 GiB of
+	// zeroes takes 30–60 s, which blows the 2-minute suite budget.
 	if _, err := containerExec(ctx, opts.NodeContainer,
-		"dd", "if=/dev/zero",
-		fmt.Sprintf("of=%s", imagePath),
-		"bs=1M",
-		fmt.Sprintf("count=%d", sizeMiB),
+		"truncate", "-s", fmt.Sprintf("%dM", sizeMiB), imagePath,
 	); err != nil {
 		return nil, fmt.Errorf("lvm: CreateVG: allocate image %s in %s: %w",
 			imagePath, opts.NodeContainer, err)
@@ -375,6 +376,63 @@ func VerifyActive(ctx context.Context, nodeContainer, vgName string) error {
 			vgName, nodeContainer, attrs)
 	}
 
+	return nil
+}
+
+// CreateThinPool creates an LVM thin pool logical volume inside an existing VG.
+//
+// A thin pool consists of two LVs managed by LVM:
+//   - a data LV that stores the actual thin-provisioned data
+//   - a metadata LV that tracks thin LV allocation maps
+//
+// Steps (run inside the container via docker exec):
+//
+//  1. "lvcreate --type thin-pool -L <sizeMiB>m -n <poolName> <vgName>" — creates
+//     the thin pool. Values ≤ 0 for sizeMiB default to 50 * 1024 MiB (50 GiB).
+//  2. "lvs --noheadings -o lv_attr <vgName>/<poolName>" — verifies the LV was
+//     created with type 't' (thin pool) in the attribute string.
+//
+// Callers must create the VG first (via [CreateVG]) before calling CreateThinPool.
+// The poolName must be unique within the VG for the lifetime of the test.
+func CreateThinPool(ctx context.Context, nodeContainer, vgName, poolName string, sizeMiB int) error {
+	if strings.TrimSpace(nodeContainer) == "" {
+		return fmt.Errorf("lvm: CreateThinPool: nodeContainer must not be empty")
+	}
+	if strings.TrimSpace(vgName) == "" {
+		return fmt.Errorf("lvm: CreateThinPool: vgName must not be empty")
+	}
+	if strings.TrimSpace(poolName) == "" {
+		return fmt.Errorf("lvm: CreateThinPool: poolName must not be empty")
+	}
+	if sizeMiB <= 0 {
+		sizeMiB = 50 * 1024 // 50 GiB default
+	}
+
+	// Create the thin pool.
+	if _, err := containerExec(ctx, nodeContainer,
+		"lvcreate", "--yes",
+		"--type", "thin-pool",
+		"-L", fmt.Sprintf("%dm", sizeMiB),
+		"-n", poolName,
+		vgName,
+	); err != nil {
+		return fmt.Errorf("lvm: CreateThinPool: lvcreate thin-pool %s/%s in %s: %w",
+			vgName, poolName, nodeContainer, err)
+	}
+
+	// Verify the thin pool attribute — first character of lv_attr should be 't'.
+	out, err := containerExec(ctx, nodeContainer,
+		"lvs", "--noheadings", "-o", "lv_attr", vgName+"/"+poolName,
+	)
+	if err != nil {
+		return fmt.Errorf("lvm: CreateThinPool: verify %s/%s in %s: %w",
+			vgName, poolName, nodeContainer, err)
+	}
+	attrs := strings.TrimSpace(out)
+	if len(attrs) == 0 || attrs[0] != 't' {
+		return fmt.Errorf("lvm: CreateThinPool: %s/%s in %s: expected lv_attr[0]='t', got %q",
+			vgName, poolName, nodeContainer, attrs)
+	}
 	return nil
 }
 

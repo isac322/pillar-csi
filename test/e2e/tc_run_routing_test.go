@@ -209,7 +209,7 @@ func TestAC7FocusPatternMatchesExactDocID(t *testing.T) {
 		t.Fatalf("AC7 [catalog]: build default profile: %v", err)
 	}
 	if len(profile) == 0 {
-		t.Skip("AC7: empty default profile")
+		t.Fatalf("AC7: empty default profile — buildDefaultProfile returned empty profile, cannot validate focus pattern routing")
 	}
 
 	// Sample one TC from each category to test focus matching.
@@ -262,6 +262,7 @@ func TestAC7FocusPatternMatchesExactDocID(t *testing.T) {
 // This test only validates via the flag value; the Ginkgo focus is applied in
 // TestE2E at suite-run time.
 func TestAC7FlagRewriteIsActive(t *testing.T) {
+	t.Parallel()
 	flagValue := flag.Lookup("test.run").Value.String()
 	t.Logf("current test.run = %q, tcRunFocusOverride = %q",
 		flagValue, tcRunFocusOverride)

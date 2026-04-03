@@ -11,14 +11,14 @@ package e2e
 //	F30 — LVM error paths (VG not found, LV name collision, etc.)
 //	F31 — LVM + NVMe-oF TCP export contracts
 //
-// These TCs validate the LVM backend stub implementation. All assertions run
-// locally using verifyLVMLocalBackend and verifyKindBootstrapLocalContracts —
-// no real LVM devices, VGs, or NVMe hardware are required.
+// These TCs validate the LVM backend via real LVM inside the Kind cluster
+// container. All assertions run using verifyLVMLocalBackend which exercises
+// the real LVM backend via docker exec into the Kind container.
 //
 // The "full-lvm" label in the default profile signals that these specs are
-// gated behind a Kind + LVM integration scenario. In the local (no-hardware)
-// execution model used by the default profile, the LVM verifier exercises the
-// FakeLVMBackend from test/e2e/helpers/stubs.go.
+// gated behind a Kind + LVM integration scenario. The LVM verifier uses the
+// real LVM backend (internal/agent/backend/lvm) via docker exec into the Kind
+// cluster container — no fake/stub backends are used.
 //
 // Every assertion embeds tc.tcNodeLabel() and tc.SectionTitle in its message so
 // that the tc_failure_output.go ReportAfterEach hook can emit a structured
@@ -32,12 +32,11 @@ import (
 //
 // Strategy: run all verifiers in the local execution plan (kind bootstrap +
 // LVM backend) and assert no errors. The LVM backend verifier exercises volume
-// lifecycle, snapshot, thin-provisioning, error injection, and NVMe-oF export
-// using the FakeLVMBackend stub — the tests are fully deterministic and
-// require no real storage devices.
+// lifecycle, expand, capacity, and list operations using the real LVM backend
+// via docker exec into the Kind cluster container.
 func runFullLVMTCBody(tc documentedCase, plan localExecutionPlan) {
 	for _, verifierName := range plan.Verifiers {
-		result := defaultLocalVerifierRegistry.Result(verifierName)
+		result := suiteLocalVerifierRegistry.Result(verifierName)
 		Expect(result.Err).NotTo(HaveOccurred(),
 			"%s[%s] FAIL: full-lvm verifier %q failed after %s: %v",
 			tc.tcNodeLabel(), tc.SectionTitle, verifierName, result.Duration, result.Err,

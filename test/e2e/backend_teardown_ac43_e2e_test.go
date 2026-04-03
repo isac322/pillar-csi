@@ -57,12 +57,12 @@ func ac43BackendContainer() string {
 	return os.Getenv(suiteBackendContainerEnvVar)
 }
 
-// ac43SkipIfNoContainer skips the current test when the Kind container env var
-// is not set, which means the E2E backend environment is not available.
-func ac43SkipIfNoContainer(t *testing.T) {
+// ac43RequireContainer fails the current test when the Kind container env var
+// is not set, meaning the E2E backend environment was not provisioned.
+func ac43RequireContainer(t *testing.T) {
 	t.Helper()
 	if ac43BackendContainer() == "" {
-		t.Skipf("[AC4.3] %s not set — Kind cluster not available, skipping teardown E2E",
+		t.Fatalf("[AC4.3] %s not set — Kind cluster not available; run via 'make test-e2e' to provision the backend",
 			suiteBackendContainerEnvVar)
 	}
 }
@@ -76,7 +76,8 @@ func ac43SkipIfNoContainer(t *testing.T) {
 // This test directly exercises the framework-level ZFS teardown path
 // (zfs.CreatePool → Pool.Destroy → PoolExists) without going through Ginkgo.
 func TestAC43ZFSPoolDestroyAndVerifyAbsent(t *testing.T) {
-	ac43SkipIfNoContainer(t)
+	t.Parallel()
+	ac43RequireContainer(t)
 	nodeContainer := ac43BackendContainer()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -91,7 +92,7 @@ func TestAC43ZFSPoolDestroyAndVerifyAbsent(t *testing.T) {
 	})
 	if err != nil {
 		if isContainerToolNotFoundError(err) {
-			t.Skipf("[AC4.3] ZFS userspace tools not available in container %s — "+
+			t.Fatalf("[AC4.3] ZFS userspace tools not available in container %s — "+
 				"install zfsutils-linux in the Kind node image", nodeContainer)
 		}
 		t.Fatalf("[AC4.3] CreatePool %q: %v", poolName, err)
@@ -132,7 +133,8 @@ func TestAC43ZFSPoolDestroyAndVerifyAbsent(t *testing.T) {
 // twice on the same pool succeeds (idempotent) and that PoolExists returns
 // false after both calls.
 func TestAC43ZFSPoolDestroyIdempotentAndAbsent(t *testing.T) {
-	ac43SkipIfNoContainer(t)
+	t.Parallel()
+	ac43RequireContainer(t)
 	nodeContainer := ac43BackendContainer()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -146,7 +148,7 @@ func TestAC43ZFSPoolDestroyIdempotentAndAbsent(t *testing.T) {
 	})
 	if err != nil {
 		if isContainerToolNotFoundError(err) {
-			t.Skipf("[AC4.3] ZFS tools not available in container %s", nodeContainer)
+			t.Fatalf("[AC4.3] ZFS tools not available in container %s — install zfsutils-linux in the Kind node image", nodeContainer)
 		}
 		t.Fatalf("[AC4.3] CreatePool %q: %v", poolName, err)
 	}
@@ -183,7 +185,8 @@ func TestAC43ZFSPoolDestroyIdempotentAndAbsent(t *testing.T) {
 // This test directly exercises the framework-level LVM teardown path
 // (lvm.CreateVG → VG.Destroy → VGExists) without going through Ginkgo.
 func TestAC43LVMVGDestroyAndVerifyAbsent(t *testing.T) {
-	ac43SkipIfNoContainer(t)
+	t.Parallel()
+	ac43RequireContainer(t)
 	nodeContainer := ac43BackendContainer()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -198,7 +201,7 @@ func TestAC43LVMVGDestroyAndVerifyAbsent(t *testing.T) {
 	})
 	if err != nil {
 		if isContainerToolNotFoundError(err) {
-			t.Skipf("[AC4.3] LVM userspace tools not available in container %s — "+
+			t.Fatalf("[AC4.3] LVM userspace tools not available in container %s — "+
 				"install lvm2 in the Kind node image", nodeContainer)
 		}
 		t.Fatalf("[AC4.3] CreateVG %q: %v", vgName, err)
@@ -239,7 +242,8 @@ func TestAC43LVMVGDestroyAndVerifyAbsent(t *testing.T) {
 // twice on the same VG succeeds (idempotent) and that VGExists returns false
 // after both calls.
 func TestAC43LVMVGDestroyIdempotentAndAbsent(t *testing.T) {
-	ac43SkipIfNoContainer(t)
+	t.Parallel()
+	ac43RequireContainer(t)
 	nodeContainer := ac43BackendContainer()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -253,7 +257,7 @@ func TestAC43LVMVGDestroyIdempotentAndAbsent(t *testing.T) {
 	})
 	if err != nil {
 		if isContainerToolNotFoundError(err) {
-			t.Skipf("[AC4.3] LVM tools not available in container %s", nodeContainer)
+			t.Fatalf("[AC4.3] LVM tools not available in container %s — install lvm2 in the Kind node image", nodeContainer)
 		}
 		t.Fatalf("[AC4.3] CreateVG %q: %v", vgName, err)
 	}
@@ -300,7 +304,7 @@ var _ = Describe("Sub-AC 4.3: backend teardown absence verification", Label("ac:
 		It("provisions a ZFS pool, closes the scope, and asserts pool is absent", func() {
 			nodeContainer := ac43BackendContainer()
 			if nodeContainer == "" {
-				Skip(suiteBackendContainerEnvVar + " not set — Kind cluster not available")
+				Fail("[AC4.3] " + suiteBackendContainerEnvVar + " not set — Kind cluster not available; run via 'make test-e2e'")
 			}
 
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -316,7 +320,7 @@ var _ = Describe("Sub-AC 4.3: backend teardown absence verification", Label("ac:
 			if provErr != nil {
 				if isContainerToolNotFoundError(provErr) {
 					_ = scope.Close()
-					Skip("[AC4.3] ZFS userspace tools not in container " + nodeContainer +
+					Fail("[AC4.3] ZFS userspace tools not in container " + nodeContainer +
 						" — install zfsutils-linux in the Kind node image")
 				}
 				Expect(provErr).NotTo(HaveOccurred(), "[AC4.3] ProvisionZFSPool")
@@ -351,7 +355,7 @@ var _ = Describe("Sub-AC 4.3: backend teardown absence verification", Label("ac:
 		It("provisions an LVM VG, closes the scope, and asserts VG is absent", func() {
 			nodeContainer := ac43BackendContainer()
 			if nodeContainer == "" {
-				Skip(suiteBackendContainerEnvVar + " not set — Kind cluster not available")
+				Fail("[AC4.3] " + suiteBackendContainerEnvVar + " not set — Kind cluster not available; run via 'make test-e2e'")
 			}
 
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -366,7 +370,7 @@ var _ = Describe("Sub-AC 4.3: backend teardown absence verification", Label("ac:
 			if provErr != nil {
 				if isContainerToolNotFoundError(provErr) {
 					_ = scope.Close()
-					Skip("[AC4.3] LVM userspace tools not in container " + nodeContainer +
+					Fail("[AC4.3] LVM userspace tools not in container " + nodeContainer +
 						" — install lvm2 in the Kind node image")
 				}
 				Expect(provErr).NotTo(HaveOccurred(), "[AC4.3] ProvisionLVMVG")
@@ -399,7 +403,7 @@ var _ = Describe("Sub-AC 4.3: backend teardown absence verification", Label("ac:
 		It("suiteBackendState.teardown destroys ZFS pool and confirms absence via PoolExists", func() {
 			nodeContainer := ac43BackendContainer()
 			if nodeContainer == "" {
-				Skip(suiteBackendContainerEnvVar + " not set — Kind cluster not available")
+				Fail("[AC4.3] " + suiteBackendContainerEnvVar + " not set — Kind cluster not available; run via 'make test-e2e'")
 			}
 
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -413,7 +417,7 @@ var _ = Describe("Sub-AC 4.3: backend teardown absence verification", Label("ac:
 			})
 			if err != nil {
 				if isContainerToolNotFoundError(err) {
-					Skip("[AC4.3] ZFS tools not in container " + nodeContainer)
+					Fail("[AC4.3] ZFS tools not in container " + nodeContainer + " — install zfsutils-linux in the Kind node image")
 				}
 				Expect(err).NotTo(HaveOccurred(), "[AC4.3] zfs.CreatePool")
 			}
@@ -439,7 +443,7 @@ var _ = Describe("Sub-AC 4.3: backend teardown absence verification", Label("ac:
 		It("suiteBackendState.teardown destroys LVM VG and confirms absence via VGExists", func() {
 			nodeContainer := ac43BackendContainer()
 			if nodeContainer == "" {
-				Skip(suiteBackendContainerEnvVar + " not set — Kind cluster not available")
+				Fail("[AC4.3] " + suiteBackendContainerEnvVar + " not set — Kind cluster not available; run via 'make test-e2e'")
 			}
 
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -453,7 +457,7 @@ var _ = Describe("Sub-AC 4.3: backend teardown absence verification", Label("ac:
 			})
 			if err != nil {
 				if isContainerToolNotFoundError(err) {
-					Skip("[AC4.3] LVM tools not in container " + nodeContainer)
+					Fail("[AC4.3] LVM tools not in container " + nodeContainer + " — install lvm2 in the Kind node image")
 				}
 				Expect(err).NotTo(HaveOccurred(), "[AC4.3] lvm.CreateVG")
 			}
@@ -482,7 +486,7 @@ var _ = Describe("Sub-AC 4.3: backend teardown absence verification", Label("ac:
 		It("destroys both ZFS pool and LVM VG and confirms both absent", func() {
 			nodeContainer := ac43BackendContainer()
 			if nodeContainer == "" {
-				Skip(suiteBackendContainerEnvVar + " not set — Kind cluster not available")
+				Fail("[AC4.3] " + suiteBackendContainerEnvVar + " not set — Kind cluster not available; run via 'make test-e2e'")
 			}
 
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
@@ -502,10 +506,10 @@ var _ = Describe("Sub-AC 4.3: backend teardown absence verification", Label("ac:
 				SizeMiB:       128,
 			})
 
-			// Skip when tools are unavailable; skip both if either is.
-			zfsSkip := zfsErr != nil && isContainerToolNotFoundError(zfsErr)
-			lvmSkip := lvmErr != nil && isContainerToolNotFoundError(lvmErr)
-			if zfsSkip || lvmSkip {
+			// Fail when tools are unavailable — these are required backend tools.
+			zfsToolMissing := zfsErr != nil && isContainerToolNotFoundError(zfsErr)
+			lvmToolMissing := lvmErr != nil && isContainerToolNotFoundError(lvmErr)
+			if zfsToolMissing || lvmToolMissing {
 				if pool != nil {
 					_ = pool.Destroy(ctx)
 				}
@@ -513,13 +517,13 @@ var _ = Describe("Sub-AC 4.3: backend teardown absence verification", Label("ac:
 					_ = vg.Destroy(ctx)
 				}
 				reasons := []string{}
-				if zfsSkip {
-					reasons = append(reasons, "ZFS tools missing")
+				if zfsToolMissing {
+					reasons = append(reasons, "ZFS tools missing — install zfsutils-linux")
 				}
-				if lvmSkip {
-					reasons = append(reasons, "LVM tools missing")
+				if lvmToolMissing {
+					reasons = append(reasons, "LVM tools missing — install lvm2")
 				}
-				Skip("[AC4.3] skipping combined test: " + strings.Join(reasons, ", "))
+				Fail("[AC4.3] required tools unavailable in container " + nodeContainer + ": " + strings.Join(reasons, ", "))
 			}
 
 			Expect(zfsErr).NotTo(HaveOccurred(), "[AC4.3] zfs.CreatePool")

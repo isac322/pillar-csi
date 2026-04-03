@@ -119,7 +119,27 @@ func bootstrapSuiteImages(
 	}
 
 	// Fast-path: skip build/load when explicitly disabled.
-	if resolveSkipImageBuild() {
+	return bootstrapSuiteImagesWithSkip(ctx, state, output, resolveSkipImageBuild())
+}
+
+// bootstrapSuiteImagesWithSkip is the injectable form of bootstrapSuiteImages.
+// The skip parameter controls whether the fast-path (no docker build/load) is
+// taken. Tests use this directly to avoid t.Setenv (which is incompatible with
+// t.Parallel in Go 1.21+).
+func bootstrapSuiteImagesWithSkip(
+	ctx context.Context,
+	state *kindBootstrapState,
+	output io.Writer,
+	skip bool,
+) error {
+	if state == nil {
+		return fmt.Errorf("[AC8] bootstrapSuiteImages: cluster state is nil")
+	}
+	if output == nil {
+		output = io.Discard
+	}
+
+	if skip {
 		_, _ = fmt.Fprintf(output,
 			"[AC8] %s set — skipping docker build and kind load (reusing existing images)\n",
 			skipImageBuildEnvVar)
@@ -240,7 +260,14 @@ func (cw *concurrentWriter) Write(p []byte) (int, error) {
 // resolveE2EImageTag returns the Docker image tag for E2E images.
 // Reads E2E_IMAGE_TAG; defaults to "e2e" when unset or empty.
 func resolveE2EImageTag() string {
-	if t := strings.TrimSpace(os.Getenv(imageTagEnvVar)); t != "" {
+	return resolveE2EImageTagFromValue(os.Getenv(imageTagEnvVar))
+}
+
+// resolveE2EImageTagFromValue resolves the image tag from an explicit value string.
+// This allows tests to verify the resolution logic without setting environment
+// variables (which is incompatible with t.Parallel).
+func resolveE2EImageTagFromValue(val string) string {
+	if t := strings.TrimSpace(val); t != "" {
 		return t
 	}
 	return defaultE2EImageTag
@@ -248,14 +275,28 @@ func resolveE2EImageTag() string {
 
 // resolveSkipImageBuild returns true when E2E_SKIP_IMAGE_BUILD is "true" or "1".
 func resolveSkipImageBuild() bool {
-	v := strings.TrimSpace(strings.ToLower(os.Getenv(skipImageBuildEnvVar)))
+	return resolveSkipImageBuildFromValue(os.Getenv(skipImageBuildEnvVar))
+}
+
+// resolveSkipImageBuildFromValue resolves the skip-image-build setting from an
+// explicit value string. This allows tests to verify the resolution logic without
+// setting environment variables (which is incompatible with t.Parallel).
+func resolveSkipImageBuildFromValue(val string) bool {
+	v := strings.TrimSpace(strings.ToLower(val))
 	return v == "true" || v == "1"
 }
 
 // resolveDockerBuildCache returns true when E2E_DOCKER_BUILD_CACHE is "true"
 // or "1", enabling --cache-from in docker build commands.
 func resolveDockerBuildCache() bool {
-	v := strings.TrimSpace(strings.ToLower(os.Getenv(dockerBuildCacheEnvVar)))
+	return resolveDockerBuildCacheFromValue(os.Getenv(dockerBuildCacheEnvVar))
+}
+
+// resolveDockerBuildCacheFromValue resolves the docker-build-cache setting from an
+// explicit value string. This allows tests to verify the resolution logic without
+// setting environment variables (which is incompatible with t.Parallel).
+func resolveDockerBuildCacheFromValue(val string) bool {
+	v := strings.TrimSpace(strings.ToLower(val))
 	return v == "true" || v == "1"
 }
 

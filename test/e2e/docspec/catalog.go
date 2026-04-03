@@ -178,7 +178,7 @@ func FindRepoRoot(start string) (string, error) {
 // LoadCatalog parses docs/E2E-TESTCASES.md and returns the extracted catalog.
 //
 // The parser stops at the manual-only Type M section because the declared
-// 437-case total explicitly excludes those manual scenarios.
+// total explicitly excludes those manual scenarios.
 func LoadCatalog(repoRoot string) (Catalog, error) {
 	documentPath := filepath.Join(repoRoot, documentRelativePath)
 	file, err := os.Open(documentPath)
@@ -555,7 +555,7 @@ func FindGinkgoNodeBindings(repoRoot string, catalog Catalog) (GinkgoTraceabilit
 //
 // specNames format: each element is one full Ginkgo spec name such as
 //
-//	"[TC-E1.1] TC[001/437] E1.1 :: TestCSIController_CreateVolume"
+//	"[TC-E1.1] TC[001/388] E1.1 :: TestCSIController_CreateVolume"
 //
 // The source Path and Line in returned GinkgoNodeBindings are set to the
 // pseudo-path "spec-list:<index>" so callers can identify the entry.

@@ -7,8 +7,9 @@ package e2e
 //
 // nodeTestEnv creates a fresh, isolated NodeServer with fake connector/mounter.
 //
-// agentTestEnv creates a real agentsvc.Server backed by FakeZFSBackend/
-// FakeLVMBackend, exposed via bufconn for E9 and E28 TCs.
+// agentTestEnv creates a real agentsvc.Server backed by real ZFS/LVM backends
+// executing inside the Kind cluster container via docker exec, exposed via
+// bufconn for E9 and E28 TCs.
 
 import (
 	"context"
@@ -16,6 +17,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 
 	csiapi "github.com/container-storage-interface/spec/lib/go/csi"
@@ -32,9 +34,10 @@ import (
 	agentv1 "github.com/bhyoo/pillar-csi/gen/go/pillar_csi/agent/v1"
 	agentsvc "github.com/bhyoo/pillar-csi/internal/agent"
 	agentbackend "github.com/bhyoo/pillar-csi/internal/agent/backend"
+	lvmb "github.com/bhyoo/pillar-csi/internal/agent/backend/lvm"
+	zfsb "github.com/bhyoo/pillar-csi/internal/agent/backend/zfs"
 	nvmeof "github.com/bhyoo/pillar-csi/internal/agent/nvmeof"
 	csidrv "github.com/bhyoo/pillar-csi/internal/csi"
-	"github.com/bhyoo/pillar-csi/test/e2e/helpers"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -186,7 +189,7 @@ type nodeTestEnv struct {
 func newNodeTestEnv() *nodeTestEnv {
 	ctx, cancel := context.WithCancel(context.Background())
 
-	stateDir, err := os.MkdirTemp("", "pillar-csi-node-test-*")
+	stateDir, err := os.MkdirTemp(tcTempRoot, "pillar-csi-node-test-*")
 	if err != nil {
 		cancel()
 		panic(fmt.Sprintf("newNodeTestEnv: create temp dir: %v", err))
@@ -222,14 +225,17 @@ func (e *nodeTestEnv) close() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // agentTestEnv is for direct agent gRPC tests (E9, E28).
-// Uses the REAL agentsvc.Server with a FakeZFSBackend/FakeLVMBackend.
+// Uses the REAL agentsvc.Server with REAL ZFS/LVM backends inside the Kind cluster.
+// Commands execute via "docker exec <container>" to reach real ZFS/LVM in the Kind node.
 type agentTestEnv struct {
-	ctx          context.Context
-	cancel       context.CancelFunc
-	server       *agentsvc.Server // real agent server
-	client       agentv1.AgentServiceClient
-	backend      *helpers.FakeZFSBackend
-	lvmBackend   *helpers.FakeLVMBackend
+	ctx    context.Context
+	cancel context.CancelFunc
+	server *agentsvc.Server // real agent server
+	client agentv1.AgentServiceClient
+	// Real backend info (read from suite env vars).
+	zfsPool      string
+	lvmVG        string
+	container    string
 	configfsRoot string
 	lis          *bufconn.Listener
 	grpcSrv      *grpc.Server
@@ -237,20 +243,62 @@ type agentTestEnv struct {
 }
 
 func newAgentTestEnv() *agentTestEnv {
+	container, zfsPool, lvmVG := requireSuiteBackendEnv()
+	lvmThinPool := os.Getenv(suiteLVMThinPoolEnvVar)
+	return newAgentTestEnvWithBackends(container, zfsPool, lvmVG, lvmThinPool)
+}
+
+// newLinearAgentTestEnv creates an agentTestEnv with a LINEAR LVM backend
+// (no thin pool configured). Use this for TCs that need to verify failure
+// behaviour when thin provisioning is requested without a configured pool
+// (TC-E28.259) or when capacity-exhaustion rejection is needed with real
+// linear LVM semantics (TC-E28.263i, TC-E28.263j).
+func newLinearAgentTestEnv() *agentTestEnv {
+	container, zfsPool, lvmVG := requireSuiteBackendEnv()
+	return newAgentTestEnvWithBackends(container, zfsPool, lvmVG, "") // "" = no thin pool = linear
+}
+
+func newAgentTestEnvWithBackends(container, zfsPool, lvmVG, lvmThinPool string) *agentTestEnv {
 	ctx, cancel := context.WithCancel(context.Background())
 
-	configfsRoot, err := os.MkdirTemp("", "pillar-csi-configfs-*")
+	configfsRoot, err := os.MkdirTemp(tcTempRoot, "pillar-csi-configfs-*")
 	if err != nil {
 		cancel()
 		panic(fmt.Sprintf("newAgentTestEnv: create configfs dir: %v", err))
 	}
 
-	zfsBackend := helpers.NewFakeZFSBackend("tank", 100<<30, 80<<30)
-	lvmBackend := helpers.NewFakeLVMBackend("data-vg", 100<<30, 80<<30)
+	// Pre-create the nvmet directory that health.checkNvmetConfigfs expects.
+	// Without this, HealthCheck always returns healthy=false because
+	// os.Stat(configfsRoot+"/nvmet") fails.
+	if err := os.MkdirAll(filepath.Join(configfsRoot, "nvmet"), 0755); err != nil {
+		_ = os.RemoveAll(configfsRoot)
+		cancel()
+		panic(fmt.Sprintf("newAgentTestEnv: create nvmet dir: %v", err))
+	}
+
+	execFn := realContainerExecFn(container)
+
+	// Ensure the ZFS namespace parent dataset exists inside the container.
+	// The ZFS backend (namespace "k8s") creates zvols at pool/k8s/<volname>;
+	// the parent dataset pool/k8s must exist before any zvol can be created.
+	if _, zfsCreateErr := execFn(ctx, "zfs", "create", "-p", zfsPool+"/k8s"); zfsCreateErr != nil {
+		// Tolerate "already exists" — parent may have been created by a prior
+		// test run or concurrent worker.
+		if !strings.Contains(zfsCreateErr.Error(), "already exists") &&
+			!strings.Contains(zfsCreateErr.Error(), "dataset already exists") {
+			_ = os.RemoveAll(configfsRoot)
+			cancel()
+			panic(fmt.Sprintf("newAgentTestEnv: create ZFS namespace parent %s/k8s: %v", zfsPool, zfsCreateErr))
+		}
+	}
+
+	zfsBackend := zfsb.NewWithExecFn(zfsPool, "k8s", execFn)
+	// lvmThinPool: "" = linear backend (no over-provisioning), non-empty = thin pool.
+	lvmBackend := lvmb.NewWithExecFn(lvmVG, lvmThinPool, execFn)
 
 	backends := map[string]agentbackend.VolumeBackend{
-		"tank":    zfsBackend,
-		"data-vg": lvmBackend,
+		zfsPool: zfsBackend,
+		lvmVG:   lvmBackend,
 	}
 
 	server := agentsvc.NewServer(
@@ -284,8 +332,9 @@ func newAgentTestEnv() *agentTestEnv {
 		cancel:       cancel,
 		server:       server,
 		client:       agentv1.NewAgentServiceClient(conn),
-		backend:      zfsBackend,
-		lvmBackend:   lvmBackend,
+		zfsPool:      zfsPool,
+		lvmVG:        lvmVG,
+		container:    container,
 		configfsRoot: configfsRoot,
 		lis:          lis,
 		grpcSrv:      grpcSrv,

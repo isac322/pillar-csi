@@ -7,19 +7,19 @@ import (
 )
 
 func assertE8_MTLSHandshake(tc documentedCase) {
-	result := defaultLocalVerifierRegistry.Result(localVerifierMTLS)
+	result := suiteLocalVerifierRegistry.Result(localVerifierMTLS)
 	Expect(result.Err).NotTo(HaveOccurred(),
 		"%s: mTLS handshake verifier failed: %v", tc.tcNodeLabel(), result.Err)
 }
 
 func assertE8_MTLSPlaintextReject(tc documentedCase) {
-	result := defaultLocalVerifierRegistry.Result(localVerifierMTLS)
+	result := suiteLocalVerifierRegistry.Result(localVerifierMTLS)
 	Expect(result.Err).NotTo(HaveOccurred(),
 		"%s: mTLS plaintext-reject verifier failed: %v", tc.tcNodeLabel(), result.Err)
 }
 
 func assertE8_MTLSWrongCA(tc documentedCase) {
-	result := defaultLocalVerifierRegistry.Result(localVerifierMTLS)
+	result := suiteLocalVerifierRegistry.Result(localVerifierMTLS)
 	Expect(result.Err).NotTo(HaveOccurred(),
 		"%s: mTLS wrong-CA verifier failed: %v", tc.tcNodeLabel(), result.Err)
 }

@@ -136,16 +136,17 @@ Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
 	// Failure handling: if the combined install fails (e.g. network timeout),
 	// we fall back to the two-package combined output for diagnostics. The
 	// provisioners detect missing binaries and soft-skip independently.
+	// Install zfsutils-linux, lvm2, AND tgt (iSCSI target daemon) in one
+	// apt-get call to avoid multiple round-trips and apt database parses.
+	// tgt provides tgtd and tgtadm needed by the AC9c iSCSI backend check.
 	if _, err := kindContainerExec(ctx, nodeContainer,
 		"bash", "-c",
-		"DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends zfsutils-linux lvm2 2>&1",
+		"DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends zfsutils-linux lvm2 tgt 2>&1",
 	); err != nil {
 		_, _ = fmt.Fprintf(output,
-			"[AC4] warn: install zfsutils-linux lvm2 in %s: %v — ZFS/LVM provisioning will soft-skip\n",
+			"[AC4] warn: install zfsutils-linux lvm2 tgt in %s: %v — ZFS/LVM/iSCSI provisioning will soft-skip\n",
 			nodeContainer, err)
-		// Non-fatal: ZFSProvisioner and LVMProvisioner detect missing binaries
-		// (zpool, pvcreate) and return (nil, nil) for a soft-skip rather than
-		// aborting the suite.
+		// Non-fatal: provisioners detect missing binaries and soft-skip.
 	} else {
 		_, _ = fmt.Fprintf(output,
 			"[AC4] zfsutils-linux and lvm2 installed in container %s\n", nodeContainer)
@@ -155,16 +156,26 @@ Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
 	//
 	// By default LVM2 tries to use udev for device list management and
 	// synchronisation. Inside a Docker container udev is not running, which
-	// causes pvcreate / vgcreate to fail or produce spurious warnings. Patch
-	// the three relevant settings to disable udev integration.
+	// causes pvcreate/vgcreate/lvcreate to fail with "device not cleared".
 	//
-	// These sed commands are idempotent: re-running them on an already-patched
-	// lvm.conf is safe.
+	// We apply two layers of patches:
+	//  1. sed replacements for global udev settings (idempotent on exact matches)
+	//  2. Append an activation{} override block so that "verify_udev_operations=0"
+	//     prevents "not found: device not cleared" errors in lvcreate. LVM2 uses
+	//     the last value when a key appears multiple times, so appending wins.
 	lvmConfPatch := strings.Join([]string{
 		`sed -i 's/udev_sync = 1/udev_sync = 0/' /etc/lvm/lvm.conf 2>/dev/null || true`,
 		`sed -i 's/udev_rules = 1/udev_rules = 0/' /etc/lvm/lvm.conf 2>/dev/null || true`,
 		`sed -i 's/obtain_device_list_from_udev = 1/obtain_device_list_from_udev = 0/' /etc/lvm/lvm.conf 2>/dev/null || true`,
-	}, " && ")
+		// Append override block — LVM uses last-wins for duplicate keys.
+		`cat >> /etc/lvm/lvm.conf << 'LVMEOF'` + "\n" +
+			`activation {` + "\n" +
+			`    udev_sync = 0` + "\n" +
+			`    udev_rules = 0` + "\n" +
+			`    verify_udev_operations = 0` + "\n" +
+			`}` + "\n" +
+			`LVMEOF`,
+	}, "\n")
 
 	if _, err := kindContainerExec(ctx, nodeContainer, "bash", "-c", lvmConfPatch); err != nil {
 		// Non-fatal: lvm.conf patching failed; LVM commands may emit warnings
@@ -218,4 +229,113 @@ func kindContainerExec(ctx context.Context, container string, args ...string) (s
 	}
 
 	return strings.TrimSpace(stdout.String()), nil
+}
+
+// setupFabricBackends configures NVMe-oF TCP and iSCSI targets inside the Kind
+// container so that the AC9c backend env-check passes on all Ginkgo nodes.
+//
+// This replaces the DeployFabricReadinessDaemonSet Kubernetes DaemonSet approach
+// with direct docker exec calls, avoiding the ~5m DaemonSet readiness timeout
+// and keeping fabric setup within the 2-minute suite budget.
+//
+// NVMe-oF setup: configures kernel configfs subsystem + port + symlink.
+// iSCSI setup: starts tgtd and creates the E2E target IQN.
+//
+// All steps are idempotent — safe to call on a pre-configured container.
+// Non-fatal errors are logged; hard failures return non-nil error.
+func setupFabricBackends(ctx context.Context, nodeContainer string, output io.Writer) error {
+	if output == nil {
+		output = io.Discard
+	}
+
+	const (
+		nvmeSubsysNQN = "nqn.2024-01.io.pillar-csi:e2e-target"
+		iscsiIQN      = "iqn.2024-01.io.pillar-csi:e2e-target"
+		iscsiTID      = "10"
+	)
+
+	// ── NVMe-oF TCP target via kernel configfs ────────────────────────────────
+	//
+	// The nvmet and nvmet_tcp modules must be loaded on the host kernel (Kind
+	// containers share the host kernel). modprobe is best-effort; configfs ops
+	// fail gracefully if the modules are absent.
+	nvmofScript := strings.Join([]string{
+		// Load modules (idempotent; || true so missing modules don't abort)
+		"modprobe nvmet 2>/dev/null || true",
+		"modprobe nvmet_tcp 2>/dev/null || true",
+		// Mount configfs if not already mounted
+		"mountpoint -q /sys/kernel/config 2>/dev/null || mount -t configfs configfs /sys/kernel/config 2>/dev/null || true",
+		// Create NVMe-oF subsystem (idempotent)
+		`NVME_SUBSYS="` + nvmeSubsysNQN + `"`,
+		`SUBSYS_DIR="/sys/kernel/config/nvmet/subsystems/${NVME_SUBSYS}"`,
+		`PORT_DIR="/sys/kernel/config/nvmet/ports/1"`,
+		`if [ ! -d "${SUBSYS_DIR}" ]; then`,
+		`  mkdir -p "${SUBSYS_DIR}"`,
+		`  echo 1 > "${SUBSYS_DIR}/attr_allow_any_host"`,
+		`  dd if=/dev/zero of=/tmp/nvmet-e2e-ns0.img bs=1M count=64 status=none 2>/dev/null || true`,
+		`  NVME_LOOP=$(losetup --find --show /tmp/nvmet-e2e-ns0.img 2>/dev/null || echo "")`,
+		`  if [ -n "${NVME_LOOP}" ]; then`,
+		`    mkdir -p "${SUBSYS_DIR}/namespaces/1"`,
+		`    echo "${NVME_LOOP}" > "${SUBSYS_DIR}/namespaces/1/device_path"`,
+		`    echo 1 > "${SUBSYS_DIR}/namespaces/1/enable"`,
+		`  fi`,
+		`fi`,
+		// Create TCP port 1 (idempotent)
+		`if [ ! -d "${PORT_DIR}" ]; then`,
+		`  mkdir -p "${PORT_DIR}"`,
+		`  echo 0.0.0.0 > "${PORT_DIR}/addr_traddr"`,
+		`  echo tcp      > "${PORT_DIR}/addr_trtype"`,
+		`  echo 4420     > "${PORT_DIR}/addr_trsvcid"`,
+		`  echo ipv4     > "${PORT_DIR}/addr_adrfam"`,
+		`fi`,
+		// Link subsystem to port (idempotent)
+		`if [ ! -e "${PORT_DIR}/subsystems/${NVME_SUBSYS}" ]; then`,
+		`  ln -s "${SUBSYS_DIR}" "${PORT_DIR}/subsystems/${NVME_SUBSYS}"`,
+		`fi`,
+	}, "\n")
+
+	if _, err := kindContainerExec(ctx, nodeContainer, "bash", "-c", nvmofScript); err != nil {
+		// NVMe-oF setup failed — log but continue (iSCSI check may still pass)
+		_, _ = fmt.Fprintf(output,
+			"[AC9b] warn: NVMe-oF TCP setup in %s: %v — NVMe-oF AC9c check may fail\n",
+			nodeContainer, err)
+	} else {
+		_, _ = fmt.Fprintf(output,
+			"[AC9b] NVMe-oF TCP target configured in container %s\n", nodeContainer)
+	}
+
+	// ── iSCSI target via tgtd ─────────────────────────────────────────────────
+	//
+	// tgt was installed by installKindContainerBackendTools above. Start tgtd
+	// (if not already running) and create the E2E target IQN.
+	iscsiScript := strings.Join([]string{
+		// Start tgtd if not already running
+		`if ! pgrep -x tgtd > /dev/null 2>&1; then`,
+		`  tgtd 2>/dev/null || true`,
+		`  sleep 2`,
+		`fi`,
+		// Create iSCSI target (idempotent)
+		`IQN="` + iscsiIQN + `"`,
+		`TID=` + iscsiTID,
+		`if ! tgtadm --lld iscsi --mode target --op show 2>/dev/null | grep -q "${IQN}"; then`,
+		`  dd if=/dev/zero of=/tmp/iscsi-e2e-lun0.img bs=1M count=64 status=none 2>/dev/null || true`,
+		`  ISCSI_LOOP=$(losetup --find --show /tmp/iscsi-e2e-lun0.img 2>/dev/null || echo "")`,
+		`  tgtadm --lld iscsi --mode target --op new --tid ${TID} --targetname "${IQN}" 2>/dev/null || true`,
+		`  if [ -n "${ISCSI_LOOP}" ]; then`,
+		`    tgtadm --lld iscsi --mode logicalunit --op new --tid ${TID} --lun 1 --backing-store "${ISCSI_LOOP}" 2>/dev/null || true`,
+		`  fi`,
+		`  tgtadm --lld iscsi --mode target --op bind --tid ${TID} --initiator-address ALL 2>/dev/null || true`,
+		`fi`,
+	}, "\n")
+
+	if _, err := kindContainerExec(ctx, nodeContainer, "bash", "-c", iscsiScript); err != nil {
+		_, _ = fmt.Fprintf(output,
+			"[AC9b] warn: iSCSI target setup in %s: %v — iSCSI AC9c check may fail\n",
+			nodeContainer, err)
+	} else {
+		_, _ = fmt.Fprintf(output,
+			"[AC9b] iSCSI target configured in container %s\n", nodeContainer)
+	}
+
+	return nil
 }

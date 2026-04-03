@@ -429,7 +429,7 @@ var _ = Describe("Sub-AC 3: teardown guarantee on spec failure and panic",
 
 		// ── AC3-G1.1: simulated DeferCleanup on Fail() ───────────────────────────
 
-		It("[TC-E99.1] DeferCleanup pattern fires on simulated spec panic",
+		It("[AC3-G1.1] DeferCleanup pattern fires on simulated spec panic",
 			Label("ac:3.1"),
 			func() {
 				// Verify the defer+recover+cleanup pattern that Ginkgo v2 uses for
@@ -460,7 +460,7 @@ var _ = Describe("Sub-AC 3: teardown guarantee on spec failure and panic",
 
 		// ── AC3-G1.2: real scope cleanup via panic-safe defer ────────────────────
 
-		It("[TC-E99.2] TestCaseScope.Close fires from panic-safe defer (DeferCleanup simulation)",
+		It("[AC3-G1.2] TestCaseScope.Close fires from panic-safe defer (DeferCleanup simulation)",
 			Label("ac:3.1"),
 			func() {
 				scope, err := NewTestCaseScope("ac3-g1-scope-panic")
@@ -501,7 +501,7 @@ var _ = Describe("Sub-AC 3: teardown guarantee on spec failure and panic",
 
 		// ── AC3-G1.3: CloseBackground goroutine does not propagate panics ────────
 
-		It("[TC-E99.3] CloseBackground goroutine delivers error via channel, not panic",
+		It("[AC3-G1.3] CloseBackground goroutine delivers error via channel, not panic",
 			Label("ac:3.2"),
 			func() {
 				// Verify that if scope.Close() encounters an error (resource remained
@@ -538,7 +538,7 @@ var _ = Describe("Sub-AC 3: teardown guarantee on spec failure and panic",
 
 		// ── AC3-G1.4: signal handler + defer combination is panic-safe ───────────
 
-		It("[TC-E99.4] signal handler + deferred cleanup combination is panic-safe",
+		It("[AC3-G1.4] signal handler + deferred cleanup combination is panic-safe",
 			Label("ac:3.3"),
 			func() {
 				// This test verifies the combined guarantee from invocation_cleanup.go:

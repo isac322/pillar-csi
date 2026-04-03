@@ -48,6 +48,7 @@ func findTimingPhase(profile testCaseTimingProfile, phase executionPhase) *phase
 }
 
 func TestTimingProfileRoundTripFromReportEntry(t *testing.T) {
+	t.Parallel()
 	clock := &steppingClock{
 		current: time.Date(2026, time.April, 1, 12, 0, 0, 0, time.UTC),
 		step:    5 * time.Millisecond,
@@ -55,7 +56,7 @@ func TestTimingProfileRoundTripFromReportEntry(t *testing.T) {
 	recorder := newSuiteTimingRecorder(clock.Now)
 	report := types.SpecReport{
 		LeafNodeType:    types.NodeTypeIt,
-		LeafNodeText:    "TC[437/437] F27.1 :: TestSlowPath",
+		LeafNodeText:    "TC[388/388] F27.1 :: TestSlowPath",
 		ParallelProcess: 3,
 	}
 
@@ -114,7 +115,7 @@ func TestStartTestCaseAndCloseRecordStructuredSetupAndTeardownPhases(t *testing.
 	recorder := installTestTimingRecorder(t, 7*time.Millisecond)
 	report := types.SpecReport{
 		LeafNodeType:    types.NodeTypeIt,
-		LeafNodeText:    "TC[021/437] E17.1 :: TestTimingLifecycle",
+		LeafNodeText:    "TC[021/388] E17.1 :: TestTimingLifecycle",
 		ParallelProcess: 1,
 	}
 	recorder.start(report)

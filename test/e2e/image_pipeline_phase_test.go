@@ -59,6 +59,7 @@ import (
 // always run as Phase 3, after the Kind cluster is live (Phase 2) and before
 // ZFS/LVM backend provisioning begins (Phase 4).
 func TestAC8_PipelineStageOrder_ImageBuildBetweenClusterAndBackend(t *testing.T) {
+	t.Parallel()
 	clusterIdx, imageIdx, backendIdx := -1, -1, -1
 
 	for i, stage := range pipelineStageOrder {
@@ -102,21 +103,23 @@ func TestAC8_PipelineStageOrder_ImageBuildBetweenClusterAndBackend(t *testing.T)
 // TestAC8_ResolveDockerBuildCache_DefaultFalse verifies that build-cache mode
 // is disabled by default (env var unset).
 func TestAC8_ResolveDockerBuildCache_DefaultFalse(t *testing.T) {
-	t.Setenv(dockerBuildCacheEnvVar, "")
-	if resolveDockerBuildCache() {
-		t.Errorf("[AC8] resolveDockerBuildCache()=true, want false when %s is empty",
-			dockerBuildCacheEnvVar)
+	t.Parallel()
+	// Use the value-based helper to avoid t.Setenv incompatibility with t.Parallel.
+	if resolveDockerBuildCacheFromValue("") {
+		t.Errorf("[AC8] resolveDockerBuildCacheFromValue(\"\")=true, want false when value is empty")
 	}
 }
 
 // TestAC8_ResolveDockerBuildCache_TrueValues verifies that "true" and "1"
 // both enable the build-cache mode (E2E_DOCKER_BUILD_CACHE).
 func TestAC8_ResolveDockerBuildCache_TrueValues(t *testing.T) {
+	t.Parallel()
 	for _, val := range []string{"true", "TRUE", "True", "1"} {
+		val := val
 		t.Run(val, func(t *testing.T) {
-			t.Setenv(dockerBuildCacheEnvVar, val)
-			if !resolveDockerBuildCache() {
-				t.Errorf("[AC8] resolveDockerBuildCache()=false, want true for %q", val)
+			t.Parallel()
+			if !resolveDockerBuildCacheFromValue(val) {
+				t.Errorf("[AC8] resolveDockerBuildCacheFromValue(%q)=false, want true", val)
 			}
 		})
 	}
@@ -125,11 +128,13 @@ func TestAC8_ResolveDockerBuildCache_TrueValues(t *testing.T) {
 // TestAC8_ResolveDockerBuildCache_FalseValues verifies that "false", "0",
 // "no", and "off" keep build-cache mode disabled.
 func TestAC8_ResolveDockerBuildCache_FalseValues(t *testing.T) {
+	t.Parallel()
 	for _, val := range []string{"false", "0", "no", "off", "FALSE"} {
+		val := val
 		t.Run(val, func(t *testing.T) {
-			t.Setenv(dockerBuildCacheEnvVar, val)
-			if resolveDockerBuildCache() {
-				t.Errorf("[AC8] resolveDockerBuildCache()=true, want false for %q", val)
+			t.Parallel()
+			if resolveDockerBuildCacheFromValue(val) {
+				t.Errorf("[AC8] resolveDockerBuildCacheFromValue(%q)=true, want false", val)
 			}
 		})
 	}
@@ -142,6 +147,7 @@ func TestAC8_ResolveDockerBuildCache_FalseValues(t *testing.T) {
 // execCommandRunner which inherits os.Environ() unchanged — this ensures
 // DOCKER_HOST flows through automatically without any special forwarding code.
 func TestAC8_BuildCommandEnv_CacheDisabled(t *testing.T) {
+	t.Parallel()
 	env := buildCommandEnv(false)
 	if len(env) != 0 {
 		t.Errorf("[AC8] buildCommandEnv(false) = %v, want nil (no extra env vars)", env)
@@ -152,6 +158,7 @@ func TestAC8_BuildCommandEnv_CacheDisabled(t *testing.T) {
 // includes DOCKER_BUILDKIT=1 so that Docker BuildKit layer caching is active
 // when E2E_DOCKER_BUILD_CACHE=true.
 func TestAC8_BuildCommandEnv_CacheEnabled(t *testing.T) {
+	t.Parallel()
 	env := buildCommandEnv(true)
 	if len(env) == 0 {
 		t.Fatal("[AC8] buildCommandEnv(true) returned empty slice, want DOCKER_BUILDKIT=1")
@@ -176,6 +183,7 @@ func TestAC8_BuildCommandEnv_CacheEnabled(t *testing.T) {
 // pipeline ordering at runtime: the image phase cannot proceed without the
 // cluster state produced by bootstrapSuiteCluster.
 func TestAC8_BootstrapSuiteImages_NilStateFails(t *testing.T) {
+	t.Parallel()
 	err := bootstrapSuiteImages(context.Background(), nil, os.Stderr)
 	if err == nil {
 		t.Error("[AC8] bootstrapSuiteImages(nil state) returned nil error, want non-nil")
@@ -230,6 +238,7 @@ func TestAC8_BootstrapSuiteImages_SkipPreservesClusterState(t *testing.T) {
 // three pillar-csi component images (controller, agent, node) with non-empty
 // Target and Name fields.
 func TestAC8_ImageSpecs_RequiredTargets(t *testing.T) {
+	t.Parallel()
 	required := map[string]bool{
 		"controller": false,
 		"agent":      false,
@@ -263,6 +272,7 @@ func TestAC8_ImageSpecs_RequiredTargets(t *testing.T) {
 // contains ":" — the image tag is appended at runtime via resolveE2EImageTag,
 // so a pre-tagged Name would produce malformed refs like "name:tag1:tag2".
 func TestAC8_ImageSpecs_NamesHaveNoTag(t *testing.T) {
+	t.Parallel()
 	for _, img := range e2eImageSpecs {
 		for _, ch := range img.Name {
 			if ch == ':' {
@@ -280,6 +290,7 @@ func TestAC8_ImageSpecs_NamesHaveNoTag(t *testing.T) {
 // constant equals the human-readable string "image-build" used in Makefile
 // comments, pipeline timing output, and make test-e2e-profile reports.
 func TestAC8_StageImageBuild_ConstantValue(t *testing.T) {
+	t.Parallel()
 	const want = "image-build"
 	if string(stageImageBuild) != want {
 		t.Errorf("[AC8] stageImageBuild = %q, want %q", stageImageBuild, want)

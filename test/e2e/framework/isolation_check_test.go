@@ -74,7 +74,7 @@ func TestScanOrphanedTempDirsFindsLeakedDir(t *testing.T) {
 	pid := os.Getpid()
 
 	// Create a directory that looks like a TC scope root but is NOT registered.
-	dir, err := os.MkdirTemp("/tmp",
+	dir, err := os.MkdirTemp(framework.TempRoot,
 		"pillar-csi-isolation-check-test-p"+itoa(pid)+"-s99999-")
 	if err != nil {
 		t.Fatalf("create temp dir for orphan test: %v", err)
@@ -115,7 +115,7 @@ func TestScanOrphanedTempDirsIgnoresActiveScope(t *testing.T) {
 
 	pid := os.Getpid()
 
-	dir, err := os.MkdirTemp("/tmp",
+	dir, err := os.MkdirTemp(framework.TempRoot,
 		"pillar-csi-isolation-check-test-active-p"+itoa(pid)+"-s88888-")
 	if err != nil {
 		t.Fatalf("create temp dir for active scope test: %v", err)
@@ -148,7 +148,7 @@ func TestScanOrphanedTempDirsAfterDeregister(t *testing.T) {
 
 	pid := os.Getpid()
 
-	dir, err := os.MkdirTemp("/tmp",
+	dir, err := os.MkdirTemp(framework.TempRoot,
 		"pillar-csi-isolation-check-test-after-dereg-p"+itoa(pid)+"-s77777-")
 	if err != nil {
 		t.Fatalf("create temp dir: %v", err)

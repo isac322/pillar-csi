@@ -142,6 +142,13 @@ func newPipelineStageTimerEnabled() *pipelineStageTimer {
 	return &pipelineStageTimer{enabled: true}
 }
 
+// newPipelineStageTimerDisabled creates a stage timer with timing always disabled.
+// Used by tests to verify no-op behaviour without env var manipulation, allowing
+// t.Parallel() to be used safely alongside other concurrent tests.
+func newPipelineStageTimerDisabled() *pipelineStageTimer {
+	return &pipelineStageTimer{enabled: false}
+}
+
 // StartStage records the start of a named pipeline stage and returns a done
 // function that finalises the stage duration when called.  If a previous stage
 // was started but not finished, it is finalised first.

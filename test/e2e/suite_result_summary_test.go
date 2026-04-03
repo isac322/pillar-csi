@@ -25,7 +25,6 @@ package e2e
 import (
 	"bytes"
 	"fmt"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -77,6 +76,7 @@ func sampleBeforeSuiteSpec(state types.SpecState, dur time.Duration) types.SpecR
 // ── 1. collectSuiteResultSummary: basic counting ─────────────────────────────
 
 func TestAC6CollectSummaryCountsPassedSpecs(t *testing.T) {
+	t.Parallel()
 	report := types.Report{
 		SuiteDescription: "Pillar CSI E2E Suite",
 		SuiteSucceeded:   true,
@@ -104,6 +104,7 @@ func TestAC6CollectSummaryCountsPassedSpecs(t *testing.T) {
 }
 
 func TestAC6CollectSummaryCountsFailedSpecs(t *testing.T) {
+	t.Parallel()
 	report := types.Report{
 		SuiteDescription: "Pillar CSI E2E Suite",
 		SuiteSucceeded:   false,
@@ -141,6 +142,7 @@ func TestAC6CollectSummaryCountsFailedSpecs(t *testing.T) {
 // ── 2. BeforeSuite / AfterSuite nodes are excluded ───────────────────────────
 
 func TestAC6CollectSummaryExcludesBeforeSuiteNode(t *testing.T) {
+	t.Parallel()
 	report := types.Report{
 		SuiteDescription: "Pillar CSI E2E Suite",
 		SuiteSucceeded:   true,
@@ -163,6 +165,7 @@ func TestAC6CollectSummaryExcludesBeforeSuiteNode(t *testing.T) {
 }
 
 func TestAC6CollectSummaryExcludesAfterSuiteNode(t *testing.T) {
+	t.Parallel()
 	report := types.Report{
 		SuiteDescription: "Pillar CSI E2E Suite",
 		SuiteSucceeded:   true,
@@ -182,6 +185,7 @@ func TestAC6CollectSummaryExcludesAfterSuiteNode(t *testing.T) {
 // ── 3. Failed TCs are listed with TCID and category ──────────────────────────
 
 func TestAC6CollectSummaryFailedTCsContainIDAndCategory(t *testing.T) {
+	t.Parallel()
 	report := types.Report{
 		SuiteDescription: "Pillar CSI E2E Suite",
 		SuiteSucceeded:   false,
@@ -216,6 +220,7 @@ func TestAC6CollectSummaryFailedTCsContainIDAndCategory(t *testing.T) {
 // ── 4. FailedTCs list is sorted by TCID ascending ────────────────────────────
 
 func TestAC6FailedTCsSortedByTCID(t *testing.T) {
+	t.Parallel()
 	report := types.Report{
 		SuiteDescription: "Pillar CSI E2E Suite",
 		SuiteSucceeded:   false,
@@ -244,6 +249,7 @@ func TestAC6FailedTCsSortedByTCID(t *testing.T) {
 // ── 5. writeSuiteResultSummary output format ─────────────────────────────────
 
 func TestAC6WriteSummaryFailCaseContainsExpectedLines(t *testing.T) {
+	t.Parallel()
 	s := SuiteResultSummary{
 		SuiteName:   "Pillar CSI E2E Suite",
 		Total:       437,
@@ -284,6 +290,7 @@ func TestAC6WriteSummaryFailCaseContainsExpectedLines(t *testing.T) {
 // ── 6. All-pass case shows PASS and no failed-TC section ─────────────────────
 
 func TestAC6WriteSummaryPassCaseHasNoFailedTCSection(t *testing.T) {
+	t.Parallel()
 	s := SuiteResultSummary{
 		SuiteName:   "Pillar CSI E2E Suite",
 		Total:       437,
@@ -312,14 +319,9 @@ func TestAC6WriteSummaryPassCaseHasNoFailedTCSection(t *testing.T) {
 // ── 7. resolveFailFast defaults to false ────────────────────────────────────
 
 func TestAC6ResolveFailFastDefaultIsFalse(t *testing.T) {
-	// Save and restore the env var.
-	original := os.Getenv(envFailFast)
+	// t.Setenv clears the env var for the duration of this test and restores it
+	// afterward — no conditional Skip is needed.
 	t.Setenv(envFailFast, "")
-
-	if original != "" {
-		// Skip this test when E2E_FAIL_FAST is set in the environment (e.g., CI).
-		t.Skipf("E2E_FAIL_FAST=%q is set; skipping default-false test", original)
-	}
 
 	// With no env var and the flag at its default (false), resolveFailFast
 	// must return false — this is the AC 6 "continue on failure" contract.
@@ -411,6 +413,7 @@ func TestAC6ApplyFailFastIsNoOpWhenDisabled(t *testing.T) {
 // ── 12. SuiteStatus is FAIL when SuiteSucceeded=false ───────────────────────
 
 func TestAC6SuiteStatusFailWhenSuiteSucceededFalse(t *testing.T) {
+	t.Parallel()
 	// Even with zero failed specs, if SuiteSucceeded is false (e.g., due to a
 	// BeforeSuite failure), the summary status must be FAIL.
 	report := types.Report{
@@ -428,6 +431,7 @@ func TestAC6SuiteStatusFailWhenSuiteSucceededFalse(t *testing.T) {
 // ── 13. truncateForSummary ───────────────────────────────────────────────────
 
 func TestAC6TruncateForSummaryShortMessageUnchanged(t *testing.T) {
+	t.Parallel()
 	msg := "Expected true to be false"
 	got := truncateForSummary(msg)
 	if got != msg {
@@ -436,6 +440,7 @@ func TestAC6TruncateForSummaryShortMessageUnchanged(t *testing.T) {
 }
 
 func TestAC6TruncateForSummaryLongMessageTruncated(t *testing.T) {
+	t.Parallel()
 	// Build a message longer than 120 characters.
 	long := strings.Repeat("x", 200)
 	got := truncateForSummary(long)
@@ -448,6 +453,7 @@ func TestAC6TruncateForSummaryLongMessageTruncated(t *testing.T) {
 }
 
 func TestAC6TruncateForSummaryExactly120CharsUnchanged(t *testing.T) {
+	t.Parallel()
 	msg := strings.Repeat("a", 120)
 	got := truncateForSummary(msg)
 	if got != msg {
@@ -458,6 +464,7 @@ func TestAC6TruncateForSummaryExactly120CharsUnchanged(t *testing.T) {
 // ── 14. writeSuiteResultSummary handles nil writer ───────────────────────────
 
 func TestAC6WriteSummaryNilWriterIsNoOp(t *testing.T) {
+	t.Parallel()
 	s := SuiteResultSummary{SuiteName: "Test", Total: 1, Passed: 1, SuiteStatus: "PASS"}
 	if err := writeSuiteResultSummary(nil, s); err != nil {
 		t.Fatalf("writeSuiteResultSummary(nil): %v", err)
@@ -469,6 +476,7 @@ func TestAC6WriteSummaryNilWriterIsNoOp(t *testing.T) {
 // TestAC6SummaryContainsSuiteName verifies that the suite name from the Ginkgo
 // report appears verbatim in the written summary.
 func TestAC6SummaryContainsSuiteName(t *testing.T) {
+	t.Parallel()
 	const suiteName = "Pillar CSI E2E Suite"
 	report := types.Report{
 		SuiteDescription: suiteName,
@@ -491,6 +499,7 @@ func TestAC6SummaryContainsSuiteName(t *testing.T) {
 // has no "tc_category" report entry, the failure line omits the [category:...]
 // tag rather than printing "[category:]".
 func TestAC6FailedTCWithoutCategoryHasNoCategory(t *testing.T) {
+	t.Parallel()
 	s := SuiteResultSummary{
 		SuiteName:   "Test Suite",
 		Total:       1,
@@ -519,6 +528,7 @@ func TestAC6FailedTCWithoutCategoryHasNoCategory(t *testing.T) {
 // -e2e.fail-fast flag usage string contains the key concept "default false" so
 // users who run `go test -h` see the AC 6 continue-on-failure contract.
 func TestAC6DefaultFailFastDocstringMatchesACContract(t *testing.T) {
+	t.Parallel()
 	usage := "stop after the first spec failure (env: E2E_FAIL_FAST); " +
 		"default false runs all specs and emits a complete summary report"
 

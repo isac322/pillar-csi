@@ -5,6 +5,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -53,40 +54,52 @@ func TestArtifactPathsStayUnderTmpRoot(t *testing.T) {
 		)
 	}
 
-	// ── 2. Static AST audit: scan every .go source file in test/e2e/
+	// ── 2. Static AST audit: walk all .go source files under test/e2e/ recursively
+	// (including framework subdirectories, where os.CreateTemp calls also live).
 	suiteDir := findSuiteDir(t)
 	if suiteDir == "" {
 		return // error already reported
 	}
 
-	entries, err := os.ReadDir(suiteDir)
-	if err != nil {
-		t.Fatalf("[AC-5] read suite dir %q: %v", suiteDir, err)
-	}
-
 	fset := token.NewFileSet()
 	var violations []string
+	var scanned int
 
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") {
-			continue
+	walkErr := filepath.WalkDir(suiteDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			// Skip hidden directories and vendor/testdata
+			base := d.Name()
+			if strings.HasPrefix(base, ".") || base == "vendor" || base == "testdata" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(d.Name(), ".go") {
+			return nil
 		}
 
-		srcPath := filepath.Join(suiteDir, entry.Name())
-		src, readErr := os.ReadFile(srcPath)
+		src, readErr := os.ReadFile(path)
 		if readErr != nil {
-			t.Errorf("[AC-5] read %q: %v", srcPath, readErr)
-			continue
+			t.Errorf("[AC-5] read %q: %v", path, readErr)
+			return nil
 		}
 
-		f, parseErr := parser.ParseFile(fset, srcPath, src, 0)
+		f, parseErr := parser.ParseFile(fset, path, src, 0)
 		if parseErr != nil {
-			t.Errorf("[AC-5] parse %q: %v", srcPath, parseErr)
-			continue
+			t.Errorf("[AC-5] parse %q: %v", path, parseErr)
+			return nil
 		}
 
 		fileViolations := auditFileForEscapingPaths(fset, f, tmpRoot)
 		violations = append(violations, fileViolations...)
+		scanned++
+		return nil
+	})
+	if walkErr != nil {
+		t.Fatalf("[AC-5] walk suite dir %q: %v", suiteDir, walkErr)
 	}
 
 	for _, v := range violations {
@@ -94,7 +107,7 @@ func TestArtifactPathsStayUnderTmpRoot(t *testing.T) {
 	}
 
 	if len(violations) == 0 {
-		t.Logf("[AC-5] audit passed: all %d source files write artifacts only under %s", len(entries), tmpRoot)
+		t.Logf("[AC-5] audit passed: all %d source files write artifacts only under %s", scanned, tmpRoot)
 	}
 }
 
@@ -260,11 +273,12 @@ func TestBackendObjectRootIsUnderTmp(t *testing.T) {
 // pass for well-known read-only system paths.
 var fileCreatingFunctions = map[string]int{
 	// os package — arg index 0 is the path
-	"os.Create":    0,
-	"os.Mkdir":     0,
-	"os.MkdirAll":  0,
-	"os.MkdirTemp": 0,
-	"os.WriteFile": 0,
+	"os.Create":     0,
+	"os.CreateTemp": 0, // Go 1.16+ replacement for ioutil.TempFile; dir is arg 0
+	"os.Mkdir":      0,
+	"os.MkdirAll":   0,
+	"os.MkdirTemp":  0,
+	"os.WriteFile":  0,
 	// os.OpenFile is write-capable but we cannot determine the flags
 	// statically, so we audit it too (conservative).
 	"os.OpenFile": 0,

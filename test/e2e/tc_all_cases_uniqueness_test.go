@@ -4,7 +4,7 @@ package e2e
 // or unique object name set derived from its TC ID.
 //
 // This file provides the comprehensive uniqueness verification that covers all
-// 437 documented test case IDs simultaneously.  The independence matrix in
+// catalog-driven documented test case IDs simultaneously.  The independence matrix in
 // tc_independence_test.go covers behavioural independence (same outcome in any
 // schedule); this file covers structural uniqueness (no two TC scopes share an
 // identifier even when created in a tight concurrent burst).
@@ -19,7 +19,7 @@ import (
 )
 
 // allCasesUniquenessResult holds the identifiers generated for a single TC
-// scope so the uniqueness sweeps can compare across all 437 cases.
+// scope so the uniqueness sweeps can compare across all documented cases.
 type allCasesUniquenessResult struct {
 	TCID        string
 	Namespace   string
@@ -31,11 +31,11 @@ type allCasesUniquenessResult struct {
 }
 
 // TestAC3AllDocumentedTCIDsProduceUniqueScopes creates one TestCaseScope for
-// every documented TC in the default 437-case profile and asserts that no two
+// every documented TC in the catalog-driven default profile and asserts that no two
 // scopes share a namespace, volume name, backend object name, root directory,
 // or scope tag.
 //
-// Concurrency: all 437 scopes are created in parallel (bounded by
+// Concurrency: all catalog-driven scopes are created in parallel (bounded by
 // GOMAXPROCS*4) so the test also validates that the atomic sequence counter
 // provides uniqueness under real concurrent load.
 func TestAC3AllDocumentedTCIDsProduceUniqueScopes(t *testing.T) {

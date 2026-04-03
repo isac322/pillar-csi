@@ -442,8 +442,9 @@ func TestConcurrentContainerPortAllocations_AllUnique(t *testing.T) {
 	const goroutines = 50
 
 	type result struct {
-		port int
-		err  error
+		port    int
+		release func()
+		err     error
 	}
 	ch := make(chan result, goroutines)
 
@@ -459,21 +460,37 @@ func TestConcurrentContainerPortAllocations_AllUnique(t *testing.T) {
 				ch <- result{err: err}
 				return
 			}
-			defer release()
-			ch <- result{port: h.Port}
+			// Do NOT defer release here: hold the registry entry open until after
+			// the uniqueness check. Probe-and-release ports are deregistered on
+			// release(), making the port number available to the OS again. If we
+			// released inside the goroutine, a concurrent goroutine could receive
+			// the same port number before it has been observed by the collector,
+			// causing a spurious duplicate.
+			ch <- result{port: h.Port, release: release}
 		}(i)
 	}
 	wg.Wait()
 	close(ch)
 
 	seen := make(map[int]int)
+	var releases []func()
 	for r := range ch {
 		if r.err != nil {
 			t.Errorf("concurrent AllocateContainerPort error: %v", r.err)
 			continue
 		}
 		seen[r.port]++
+		if r.release != nil {
+			releases = append(releases, r.release)
+		}
 	}
+
+	// Release all ports AFTER uniqueness check so that no allocation is
+	// deregistered while a concurrent goroutine is still running.
+	for _, rel := range releases {
+		rel()
+	}
+
 	for port, count := range seen {
 		if count > 1 {
 			t.Errorf("port %d allocated %d times; must be unique", port, count)

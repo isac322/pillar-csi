@@ -1205,9 +1205,14 @@ var _ = Describe("E27: Helm 차트 설치 및 릴리스 검증", Label("helm", "
 			}
 		})
 
-		It("[TC-E27.231] 파드 재시작 없음 5분 관찰 (opt-in)", func() {
+		It("[TC-E27.231] 파드 재시작 없음 5분 관찰 (opt-in)", Label("optional:stability"), func() {
+			// This test runs for 5 minutes. It is excluded from the default suite run
+			// via --label-filter=!optional:stability. To enable it, set E2E_STABILITY_CHECKS=true.
 			if os.Getenv("E2E_STABILITY_CHECKS") != "true" {
-				Skip("[TC-E27.231] skipped — set E2E_STABILITY_CHECKS=true to enable 5-min stability check")
+				Fail("[TC-E27.231] E2E_STABILITY_CHECKS is not set to 'true'. " +
+					"This 5-minute stability check is opt-in. " +
+					"To run it: E2E_STABILITY_CHECKS=true make test-e2e. " +
+					"To exclude it from the default suite, add --label-filter=!optional:stability.")
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 			defer cancel()
@@ -1667,7 +1672,8 @@ var _ = Describe("E27: Helm installCRDs=false 설치 모드", Label("helm", "E27
 			"get", "crd", "pillartargets."+crdGroup, "--ignore-not-found",
 		)
 		if err != nil {
-			Skip("[TC-E27.219] CRDs must be pre-installed for installCRDs=false test")
+			Fail("[TC-E27.219] CRDs must be pre-installed for installCRDs=false test: " +
+				"kubectl get crd pillartargets." + crdGroup + " failed: " + err.Error())
 		}
 
 		installErr := e27HelmInstall(ctx, noCRDRelease, noCRDNamespace, e27ChartPath(),

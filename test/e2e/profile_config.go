@@ -8,6 +8,11 @@ import (
 	"sync"
 )
 
+// defaultOutlierThresholdPct is the default percentage of suite runtime above
+// which a TC is flagged as an outlier in the bottleneck summary table printed
+// to stdout when -e2e.profile is set (Sub-AC 3).
+const defaultOutlierThresholdPct = 10.0
+
 const (
 	// defaultTimingReportSlowSpecLimit is the number of slowest TCs retained
 	// in the text-format suite timing summary when -e2e.profile.top-n is not set.
@@ -54,6 +59,19 @@ const (
 	// the -e2e.debug-pipeline flag. The flag value takes precedence when both
 	// are set. Any non-empty value enables the end-to-end pipeline timeline output.
 	envDebugPipeline = "E2E_DEBUG_PIPELINE"
+
+	// envProfileOutlierThreshold is the environment variable name for the
+	// configurable outlier threshold percentage (Sub-AC 3).
+	// The flag value takes precedence when both are set.
+	// Example: E2E_PROFILE_THRESHOLD=15 flags TCs consuming > 15% of suite runtime.
+	envProfileOutlierThreshold = "E2E_PROFILE_THRESHOLD"
+
+	// outlierThresholdFlagSentinel is the sentinel value used as the default for
+	// e2eProfileOutlierThresholdFlag to distinguish "not set on the command line"
+	// from an explicit 0.0 (which means "flag every TC with any runtime").
+	// When the flag is still at the sentinel, the env var and then the built-in
+	// default (defaultOutlierThresholdPct) are consulted.
+	outlierThresholdFlagSentinel = -1.0
 
 	// envTimingPipeline is the canonical AC-7 environment variable name for the
 	// full pipeline timeline output. It is checked as an alias for
@@ -182,6 +200,26 @@ var e2eDebugPipelineFlag = flag.Bool(
 		"env: E2E_TIMING_PIPELINE or E2E_DEBUG_PIPELINE",
 )
 
+// e2eProfileOutlierThresholdFlag corresponds to -e2e.profile.threshold (Sub-AC 3).
+// It sets the percentage of suite runtime above which a TC is flagged as an
+// outlier in the bottleneck summary table printed to stdout when -e2e.profile
+// is set.
+//
+// The sentinel default (-1.0) indicates the flag was not set on the command
+// line; in that case the E2E_PROFILE_THRESHOLD env var is checked, falling back
+// to the built-in default of 10.0%.
+//
+// Setting the flag to 0.0 explicitly means "flag every TC with any runtime".
+// Setting it to 100.0 effectively disables outlier flagging.
+var e2eProfileOutlierThresholdFlag = flag.Float64(
+	"e2e.profile.threshold",
+	outlierThresholdFlagSentinel,
+	"percentage of suite runtime above which a TC is flagged as an outlier "+
+		"in the bottleneck summary table (Sub-AC 3: default 10.0); "+
+		"use 0.0 to flag every TC, 100.0 to disable outlier flagging; "+
+		"env: E2E_PROFILE_THRESHOLD",
+)
+
 // timingReportConfig bundles the runtime settings derived from the
 // -e2e.profile, -e2e.profile.top-n, -e2e.setup-timing-log, and
 // -e2e.debug-tc-duration flag values.
@@ -253,6 +291,18 @@ type timingReportConfig struct {
 	// written when DebugPipeline is true. It defaults to os.Stderr.
 	// It is io.Discard when DebugPipeline is false.
 	DebugPipelineWriter io.Writer
+
+	// OutlierThresholdPct is the configurable percentage of suite runtime above
+	// which a TC is flagged as an outlier in the bottleneck summary table
+	// (Sub-AC 3). It is resolved from -e2e.profile.threshold, then
+	// E2E_PROFILE_THRESHOLD, then the built-in default (10.0%).
+	OutlierThresholdPct float64
+
+	// SummaryWriter is the io.Writer for the stdout bottleneck summary table
+	// (Sub-AC 3). It is os.Stdout when Enabled is true; io.Discard otherwise.
+	// Tests may inspect this field to confirm wiring without capturing actual
+	// stdout output.
+	SummaryWriter io.Writer
 }
 
 // suiteExecutionConfig is the top-level runtime configuration snapshot used
@@ -272,6 +322,8 @@ var (
 			DebugWriter:         io.Discard,
 			DebugStepsWriter:    io.Discard,
 			DebugPipelineWriter: io.Discard,
+			OutlierThresholdPct: defaultOutlierThresholdPct,
+			SummaryWriter:       io.Discard,
 		},
 	}
 )
@@ -349,6 +401,26 @@ func resolveDebugPipeline() bool {
 	return os.Getenv(envDebugPipeline) != ""
 }
 
+// resolveProfileOutlierThreshold returns the effective outlier threshold
+// percentage for the bottleneck summary table (Sub-AC 3).
+//
+// Priority:
+//  1. -e2e.profile.threshold flag when it has been set (i.e. is ≥ 0, not at
+//     the sentinel value of -1.0).
+//  2. E2E_PROFILE_THRESHOLD env var parsed as a float64 ≥ 0.
+//  3. Built-in default: defaultOutlierThresholdPct (10.0).
+func resolveProfileOutlierThreshold() float64 {
+	if v := *e2eProfileOutlierThresholdFlag; v >= 0 {
+		return v // flag was explicitly set on the command line
+	}
+	if env := os.Getenv(envProfileOutlierThreshold); env != "" {
+		if v, err := strconv.ParseFloat(env, 64); err == nil && v >= 0 {
+			return v
+		}
+	}
+	return defaultOutlierThresholdPct
+}
+
 // configureSuiteExecution must be called from TestMain / TestE2E before
 // RunSpecs. It snapshots the flag values and wires up the output destination.
 // It also configures suiteSetupPhaseLog (Sub-AC 6.2) based on the
@@ -409,6 +481,16 @@ func configureSuiteExecution(stderr io.Writer) {
 		debugPipelineWriter = stderr
 	}
 
+	// Sub-AC 3: resolve outlier threshold and wire the stdout summary writer.
+	// The summary writer is os.Stdout when profiling is enabled so the
+	// bottleneck summary table always appears on stdout (not on the stderr
+	// parameter, which is used for the human-readable text summary).
+	outlierThreshold := resolveProfileOutlierThreshold()
+	summaryWriter := io.Writer(io.Discard) //nolint:unconvert
+	if enabled {
+		summaryWriter = os.Stdout
+	}
+
 	suiteExecutionState = suiteExecutionConfig{
 		TimingReport: timingReportConfig{
 			Enabled:             enabled,
@@ -424,6 +506,8 @@ func configureSuiteExecution(stderr io.Writer) {
 			DebugStepsWriter:    debugStepsWriter,
 			DebugPipeline:       debugPipeline,
 			DebugPipelineWriter: debugPipelineWriter,
+			OutlierThresholdPct: outlierThreshold,
+			SummaryWriter:       summaryWriter,
 		},
 	}
 

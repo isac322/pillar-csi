@@ -5,6 +5,7 @@ package e2e
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -135,11 +136,55 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 	// internally; warmUpLocalBackend eagerly triggers that initialisation so
 	// backends are ready before specs run, amortising first-call overhead and
 	// surfacing verifier failures at suite-setup time (fast-fail).
-	warmUpLocalBackend()
+	warmUpLocalBackend(GinkgoParallelProcess())
 
 	_, _ = fmt.Fprintf(GinkgoWriter,
 		"[AC2b] node %d: in-process backends initialised (%d verifiers pre-warmed)\n",
 		GinkgoParallelProcess(), len(allLocalVerifierNames))
+
+	// ── AC9c: Assert all four real backends are reachable and functional ──────
+	//
+	// runAllBackendEnvChecks verifies that ZFS, LVM, NVMe-oF TCP, and iSCSI are
+	// all provisioned and genuinely functional inside the Kind container. It
+	// fails the suite immediately if ANY backend is absent or non-functional,
+	// ensuring that no TC can silently run against a fake/stub/mock backend.
+	//
+	// The check runs on EVERY parallel worker node so that every node confirms
+	// the shared backend environment before it begins executing specs. All four
+	// checks are read-only (docker exec with zpool list, vgs, test -d, tgtadm
+	// show) and complete in under 10 seconds even on loaded hosts.
+	//
+	// AC 10 policy: Soft-skip is DISABLED. A non-nil error from
+	// runAllBackendEnvChecks causes an unconditional Fail, aborting this
+	// worker's spec queue and the entire Ginkgo run.
+	envCheckCtx, envCheckCancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer envCheckCancel()
+
+	nodeContainer := os.Getenv(suiteBackendContainerEnvVar)
+	if nodeContainer == "" && state != nil {
+		// Derive the container name from the cluster name when the env var was
+		// not explicitly exported (e.g. direct ginkgo CLI invocation path B).
+		nodeContainer = state.ClusterName + "-control-plane"
+	}
+	zfsPool := os.Getenv(suiteZFSPoolEnvVar)
+	lvmVG := os.Getenv(suiteLVMVGEnvVar)
+
+	_, _ = fmt.Fprintf(GinkgoWriter,
+		"[AC9c] node %d: running backend env-check (container=%s zfsPool=%s lvmVG=%s)...\n",
+		GinkgoParallelProcess(), nodeContainer, zfsPool, lvmVG)
+
+	envCheckErr := runAllBackendEnvChecks(envCheckCtx, nodeContainer, zfsPool, lvmVG, GinkgoWriter)
+	Expect(envCheckErr).NotTo(HaveOccurred(),
+		"[AC9c] Backend env-check FAILED on Ginkgo node %d: "+
+			"one or more real backends are absent or replaced by a stub/mock.\n"+
+			"AC 10 policy: soft-skip is DISABLED — ALL four backends must be real.\n"+
+			"See the error above for remediation steps.",
+		GinkgoParallelProcess())
+
+	_, _ = fmt.Fprintf(GinkgoWriter,
+		"[AC9c] node %d: all four backends (ZFS, LVM, NVMe-oF, iSCSI) verified — "+
+			"no fake/stub/mock backend detected\n",
+		GinkgoParallelProcess())
 })
 
 // SynchronizedAfterSuite is the belt-and-suspenders cleanup path for the

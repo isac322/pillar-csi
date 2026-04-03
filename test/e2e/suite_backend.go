@@ -46,6 +46,11 @@ const (
 	// into all ginkgo workers.
 	suiteLVMVGEnvVar = "PILLAR_E2E_LVM_VG"
 
+	// suiteLVMThinPoolEnvVar carries the LVM thin pool logical volume name
+	// created inside the suite VG. Workers use this name to configure thin
+	// provisioning in the LVM backend.
+	suiteLVMThinPoolEnvVar = "PILLAR_E2E_LVM_THIN_POOL"
+
 	// suiteBackendContainerEnvVar carries the Kind control-plane Docker container
 	// name where backend resources were provisioned.
 	suiteBackendContainerEnvVar = "PILLAR_E2E_BACKEND_CONTAINER"
@@ -62,6 +67,7 @@ const (
 var suiteOwnedBackendEnvVars = []string{
 	suiteZFSPoolEnvVar,
 	suiteLVMVGEnvVar,
+	suiteLVMThinPoolEnvVar,
 	suiteBackendContainerEnvVar,
 	suiteBackendProvisionedEnvVar,
 }
@@ -90,6 +96,12 @@ type suiteBackendState struct {
 	// Nil when the "dm_thin_pool" kernel module was not loaded at provisioning
 	// time.
 	LVMVG *lvm.VG
+
+	// LVMThinPool is the name of the thin-pool logical volume created inside
+	// LVMVG. Empty when thin-pool creation failed (non-fatal) or LVMVG is nil.
+	// Workers use this name to configure the LVM backend in thin-provisioning
+	// mode.
+	LVMThinPool string
 }
 
 // ─── Provisioning ─────────────────────────────────────────────────────────────
@@ -130,7 +142,7 @@ type suiteBackendState struct {
 //
 // When one or more backends return a hard error, bootstrapSuiteBackends
 // destroys any already-provisioned resources (to avoid leaks), then returns
-// a wrapped error with the [AC5.2] tag for log traceability.
+// a wrapped error with the [AC5] tag for log traceability.
 //
 // The returned *suiteBackendState is nil only if clusterState is nil.
 func bootstrapSuiteBackends(
@@ -140,7 +152,7 @@ func bootstrapSuiteBackends(
 	provisioners ...provisioner.BackendProvisioner,
 ) (*suiteBackendState, error) {
 	if clusterState == nil {
-		return nil, errors.New("[AC5.2] bootstrapSuiteBackends: cluster state is nil")
+		return nil, errors.New("[AC5] bootstrapSuiteBackends: cluster state is nil")
 	}
 	if output == nil {
 		output = io.Discard
@@ -167,6 +179,17 @@ func bootstrapSuiteBackends(
 			"[AC4] warn: install backend tools in %s: %v\n", nodeContainer, installErr)
 	}
 
+	// ── AC9b: Set up NVMe-oF and iSCSI fabric backends ────────────────────────
+	//
+	// Configure kernel-level NVMe-oF TCP target and start tgtd iSCSI daemon
+	// directly via docker exec. This avoids the multi-minute Kubernetes
+	// DaemonSet deployment path and keeps fabric setup within the 2-minute
+	// suite budget. AC9c checks these backends in SynchronizedBeforeSuite.
+	if fabricErr := setupFabricBackends(ctx, nodeContainer, output); fabricErr != nil {
+		_, _ = fmt.Fprintf(output,
+			"[AC9b] warn: fabric backend setup in %s: %v\n", nodeContainer, fabricErr)
+	}
+
 	// ── Build the provisioner pipeline ────────────────────────────────────────
 	//
 	// When no provisioners are injected, construct the default pipeline with the
@@ -179,12 +202,18 @@ func bootstrapSuiteBackends(
 		pipeline.AddBackend(&provisioner.ZFSProvisioner{
 			NodeContainer: nodeContainer,
 			PoolName:      "pillar-e2e-zfs-" + suffix,
-			SizeMiB:       512,
+			// 4 GiB: large enough for the 1 GiB zvol created in verifyAgentLocalBackend
+			// (ZFS refreservation requires free space >= zvol size) plus ZFS metadata.
+			// Sparse image — truncate creates it instantly with no actual disk usage.
+			SizeMiB: 4 * 1024,
 		})
 		pipeline.AddBackend(&provisioner.LVMProvisioner{
 			NodeContainer: nodeContainer,
 			VGName:        "pillar-e2e-lvm-" + suffix,
-			SizeMiB:       512,
+			// 100 GiB sparse image — truncate creates it instantly with no actual
+			// disk usage. The large size allows realistic thin-provisioning tests
+			// (e.g. 80 GiB virtual thin LVs) while keeping setup time < 1 second.
+			SizeMiB: 100 * 1024,
 		})
 	} else {
 		for _, p := range provisioners {
@@ -212,7 +241,7 @@ func bootstrapSuiteBackends(
 				_ = r.Resource.Destroy(cleanCtx)
 			}
 		}
-		return nil, fmt.Errorf("[AC5.2] backend provisioning: %w", provErr)
+		return nil, fmt.Errorf("[AC5] backend provisioning: %w", provErr)
 	}
 
 	// ── Map results to suiteBackendState ─────────────────────────────────────
@@ -232,15 +261,39 @@ func bootstrapSuiteBackends(
 			if pool, ok := r.Resource.(*zfs.Pool); ok {
 				state.ZFSPool = pool
 				_, _ = fmt.Fprintf(output,
-					"[AC5.2] ZFS pool %q provisioned and ONLINE on container %s\n",
+					"[AC5] ZFS pool %q provisioned and ONLINE on container %s\n",
 					pool.PoolName, nodeContainer)
 			}
 		case "lvm":
 			if vg, ok := r.Resource.(*lvm.VG); ok {
 				state.LVMVG = vg
 				_, _ = fmt.Fprintf(output,
-					"[AC5.2] LVM VG %q provisioned and active on container %s\n",
+					"[AC5] LVM VG %q provisioned and active on container %s\n",
 					vg.VGName, nodeContainer)
+
+				// Create a thin pool inside the VG so that thin-provisioning TCs
+				// (TC-E28.247, TC-E28.249, TC-E28.250, TC-E28.252, TC-E28.255, etc.)
+				// can use ProvisionMode="thin" against a real thin pool.
+				//
+				// Thin pool size: 50 GiB (half of the 100 GiB sparse VG). The VG
+				// image is sparse, so this does not consume host disk space.
+				//
+				// Non-fatal: if thin pool creation fails (e.g. dm_thin_pool module
+				// not loaded), we log a warning but do not abort the suite.
+				const thinPoolName = "pillar-e2e-pool"
+				thinCtx, thinCancel := context.WithTimeout(ctx, 30*time.Second)
+				thinErr := lvm.CreateThinPool(thinCtx, nodeContainer, vg.VGName, thinPoolName, 50*1024)
+				thinCancel()
+				if thinErr != nil {
+					_, _ = fmt.Fprintf(output,
+						"[AC5] warn: thin pool creation in VG %q failed (thin-mode TCs will be skipped): %v\n",
+						vg.VGName, thinErr)
+				} else {
+					state.LVMThinPool = thinPoolName
+					_, _ = fmt.Fprintf(output,
+						"[AC5] LVM thin pool %q created in VG %q on container %s\n",
+						thinPoolName, vg.VGName, nodeContainer)
+				}
 			}
 		}
 	}
@@ -263,25 +316,30 @@ func (s *suiteBackendState) exportBackendEnvironment() error {
 	}
 
 	if err := os.Setenv(suiteBackendContainerEnvVar, s.NodeContainer); err != nil {
-		return fmt.Errorf("[AC5.2] export %s: %w", suiteBackendContainerEnvVar, err)
+		return fmt.Errorf("[AC5] export %s: %w", suiteBackendContainerEnvVar, err)
 	}
 
 	if s.ZFSPool != nil {
 		if err := os.Setenv(suiteZFSPoolEnvVar, s.ZFSPool.PoolName); err != nil {
-			return fmt.Errorf("[AC5.2] export %s: %w", suiteZFSPoolEnvVar, err)
+			return fmt.Errorf("[AC5] export %s: %w", suiteZFSPoolEnvVar, err)
 		}
 	}
 
 	if s.LVMVG != nil {
 		if err := os.Setenv(suiteLVMVGEnvVar, s.LVMVG.VGName); err != nil {
-			return fmt.Errorf("[AC5.2] export %s: %w", suiteLVMVGEnvVar, err)
+			return fmt.Errorf("[AC5] export %s: %w", suiteLVMVGEnvVar, err)
+		}
+		if s.LVMThinPool != "" {
+			if err := os.Setenv(suiteLVMThinPoolEnvVar, s.LVMThinPool); err != nil {
+				return fmt.Errorf("[AC5] export %s: %w", suiteLVMThinPoolEnvVar, err)
+			}
 		}
 	}
 
 	// Mark provisioning complete so workers can assert the env is ready.
 	if s.ZFSPool != nil || s.LVMVG != nil {
 		if err := os.Setenv(suiteBackendProvisionedEnvVar, "1"); err != nil {
-			return fmt.Errorf("[AC5.2] export %s: %w", suiteBackendProvisionedEnvVar, err)
+			return fmt.Errorf("[AC5] export %s: %w", suiteBackendProvisionedEnvVar, err)
 		}
 	}
 
@@ -317,26 +375,26 @@ func (s *suiteBackendState) teardown(ctx context.Context, output io.Writer) erro
 	// may have created inside the pool, releasing their loop devices cleanly.
 	if s.ZFSPool != nil {
 		if err := s.ZFSPool.Destroy(ctx); err != nil {
-			errs = append(errs, fmt.Errorf("[AC5.2] destroy ZFS pool %q: %w",
+			errs = append(errs, fmt.Errorf("[AC5] destroy ZFS pool %q: %w",
 				s.ZFSPool.PoolName, err))
 		} else {
 			_, _ = fmt.Fprintf(output,
-				"[AC5.2] ZFS pool %q destroyed on container %s\n",
+				"[AC5] ZFS pool %q destroyed on container %s\n",
 				s.ZFSPool.PoolName, s.NodeContainer)
 
 			// Sub-AC 4.3: verify the pool is absent after teardown so that a
 			// silent failure in zpool destroy does not go undetected.
 			exists, checkErr := zfs.PoolExists(ctx, s.ZFSPool.NodeContainer, s.ZFSPool.PoolName)
 			if checkErr != nil {
-				errs = append(errs, fmt.Errorf("[AC4.3] verify ZFS pool %q absent on %s: %w",
+				errs = append(errs, fmt.Errorf("[AC4] verify ZFS pool %q absent on %s: %w",
 					s.ZFSPool.PoolName, s.ZFSPool.NodeContainer, checkErr))
 			} else if exists {
 				errs = append(errs, fmt.Errorf(
-					"[AC4.3] ZFS pool %q still present on container %s after teardown",
+					"[AC4] ZFS pool %q still present on container %s after teardown",
 					s.ZFSPool.PoolName, s.ZFSPool.NodeContainer))
 			} else {
 				_, _ = fmt.Fprintf(output,
-					"[AC4.3] ZFS pool %q confirmed absent on container %s\n",
+					"[AC4] ZFS pool %q confirmed absent on container %s\n",
 					s.ZFSPool.PoolName, s.ZFSPool.NodeContainer)
 			}
 		}
@@ -346,26 +404,26 @@ func (s *suiteBackendState) teardown(ctx context.Context, output io.Writer) erro
 	// removing the VG and PV, allowing the loop device to be detached.
 	if s.LVMVG != nil {
 		if err := s.LVMVG.Destroy(ctx); err != nil {
-			errs = append(errs, fmt.Errorf("[AC5.2] destroy LVM VG %q: %w",
+			errs = append(errs, fmt.Errorf("[AC5] destroy LVM VG %q: %w",
 				s.LVMVG.VGName, err))
 		} else {
 			_, _ = fmt.Fprintf(output,
-				"[AC5.2] LVM VG %q destroyed on container %s\n",
+				"[AC5] LVM VG %q destroyed on container %s\n",
 				s.LVMVG.VGName, s.NodeContainer)
 
 			// Sub-AC 4.3: verify the VG is absent after teardown so that a
 			// silent failure in vgremove does not go undetected.
 			exists, checkErr := lvm.VGExists(ctx, s.LVMVG.NodeContainer, s.LVMVG.VGName)
 			if checkErr != nil {
-				errs = append(errs, fmt.Errorf("[AC4.3] verify LVM VG %q absent on %s: %w",
+				errs = append(errs, fmt.Errorf("[AC4] verify LVM VG %q absent on %s: %w",
 					s.LVMVG.VGName, s.LVMVG.NodeContainer, checkErr))
 			} else if exists {
 				errs = append(errs, fmt.Errorf(
-					"[AC4.3] LVM VG %q still present on container %s after teardown",
+					"[AC4] LVM VG %q still present on container %s after teardown",
 					s.LVMVG.VGName, s.LVMVG.NodeContainer))
 			} else {
 				_, _ = fmt.Fprintf(output,
-					"[AC4.3] LVM VG %q confirmed absent on container %s\n",
+					"[AC4] LVM VG %q confirmed absent on container %s\n",
 					s.LVMVG.VGName, s.LVMVG.NodeContainer)
 			}
 		}

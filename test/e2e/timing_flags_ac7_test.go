@@ -346,6 +346,7 @@ func TestAC7AllThreeFlagsCanBeEnabledSimultaneously(t *testing.T) {
 // DebugTCDuration, emitDebugTCDurationLine produces the expected format:
 // "[TC-<id>] elapsed: <duration>\n"
 func TestAC7TimingTCWritesElapsedLine(t *testing.T) {
+	t.Parallel()
 	var sink bytes.Buffer
 	cfg := timingReportConfig{
 		DebugTCDuration: true,
@@ -377,6 +378,7 @@ func TestAC7TimingTCWritesElapsedLine(t *testing.T) {
 // DebugTCSteps, emitDebugTCStepsLines produces the expected format:
 // "[TC-<id>] steps: setup=<dur> action=<dur> teardown=<dur>\n"
 func TestAC7TimingStepsWritesStepsLine(t *testing.T) {
+	t.Parallel()
 	var sink bytes.Buffer
 	cfg := timingReportConfig{
 		DebugTCSteps:     true,

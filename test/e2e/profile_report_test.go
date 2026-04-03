@@ -72,6 +72,7 @@ func TestConfigureSuiteExecutionEnablesTimingReportingWhenFlagSet(t *testing.T) 
 }
 
 func TestEmitSuiteTimingReportIncludesSlowestTCsAndBottleneck(t *testing.T) {
+	t.Parallel()
 	var sink bytes.Buffer
 	cfg := suiteExecutionConfig{
 		TimingReport: timingReportConfig{
@@ -130,6 +131,7 @@ func TestEmitSuiteTimingReportIncludesSlowestTCsAndBottleneck(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestBuildProfileReportContainsAllTCsAndBottlenecks(t *testing.T) {
+	t.Parallel()
 	report := types.Report{
 		SuiteDescription: "Pillar CSI E2E Suite",
 		PreRunStats: types.PreRunStats{
@@ -190,6 +192,7 @@ func TestBuildProfileReportContainsAllTCsAndBottlenecks(t *testing.T) {
 }
 
 func TestBuildProfileReportBottleneckLimitCappedAtFive(t *testing.T) {
+	t.Parallel()
 	var specs types.SpecReports
 	for i := 0; i < 10; i++ {
 		tcID := fmt.Sprintf("E%d.1", i+1)
@@ -209,6 +212,7 @@ func TestBuildProfileReportBottleneckLimitCappedAtFive(t *testing.T) {
 }
 
 func TestProfileReportRoundTripJSON(t *testing.T) {
+	t.Parallel()
 	pr := ProfileReport{
 		SuiteName:         "Test Suite",
 		TotalSpecs:        437,
@@ -270,6 +274,7 @@ func TestProfileReportRoundTripJSON(t *testing.T) {
 }
 
 func TestPhaseTimingsDurationAccessors(t *testing.T) {
+	t.Parallel()
 	pt := PhaseTimings{
 		GroupSetupNanos:    int64(10 * time.Millisecond),
 		TCSetupNanos:       int64(20 * time.Millisecond),
@@ -297,6 +302,7 @@ func TestPhaseTimingsDurationAccessors(t *testing.T) {
 }
 
 func TestEmitSuiteTimingReportEmitsTextSummaryOnly(t *testing.T) {
+	t.Parallel()
 	// emitSuiteTimingReport now emits only the human-readable text summary to
 	// cfg.TimingReport.Output. The JSON ProfileReport is written separately by
 	// ProfileCollector.Flush via the ReportAfterSuite hook.
@@ -347,6 +353,7 @@ func TestEmitSuiteTimingReportEmitsTextSummaryOnly(t *testing.T) {
 }
 
 func TestProfileCollectorFlushWritesJSONToFile(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	profilePath := filepath.Join(dir, "profile.json")
 
@@ -405,6 +412,7 @@ func TestProfileCollectorFlushWritesJSONToFile(t *testing.T) {
 }
 
 func TestProfileCollectorFlushComputesTop5Bottlenecks(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	profilePath := filepath.Join(dir, "profile.json")
 
@@ -458,6 +466,7 @@ func TestProfileCollectorFlushComputesTop5Bottlenecks(t *testing.T) {
 }
 
 func TestProfileCollectorFlushNoOpWhenPathEmpty(t *testing.T) {
+	t.Parallel()
 	collector := newProfileCollector("", profileReportBottleneckLimit)
 	if err := collector.Flush(types.Report{}); err != nil {
 		t.Fatalf("Flush with empty path should be no-op, got error: %v", err)
@@ -465,6 +474,7 @@ func TestProfileCollectorFlushNoOpWhenPathEmpty(t *testing.T) {
 }
 
 func TestProfileCollectorFlushNoOpOnNilReceiver(t *testing.T) {
+	t.Parallel()
 	var collector *ProfileCollector
 	if err := collector.Flush(types.Report{}); err != nil {
 		t.Fatalf("Flush on nil receiver should be no-op, got error: %v", err)
@@ -472,6 +482,7 @@ func TestProfileCollectorFlushNoOpOnNilReceiver(t *testing.T) {
 }
 
 func TestProfileCollectorFlushErrorsWhenDirMissing(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "nonexistent-subdir", "profile.json")
 	collector := newProfileCollector(path, profileReportBottleneckLimit)
 	if err := collector.Flush(types.Report{}); err == nil {

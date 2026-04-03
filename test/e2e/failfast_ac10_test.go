@@ -31,7 +31,6 @@ package e2e
 
 import (
 	"bytes"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -45,17 +44,10 @@ import (
 // when neither E2E_FAILFAST nor E2E_FAIL_FAST is set, confirming the AC 10
 // "continue on failure" default contract.
 func TestAC10DefaultContinueOnFailure(t *testing.T) {
+	// t.Setenv clears the env var for the duration of this test and restores it
+	// afterward — no conditional Skip is needed.
 	t.Setenv(envFailFastAlt, "")
 	t.Setenv(envFailFast, "")
-
-	original := os.Getenv(envFailFastAlt)
-	if original != "" {
-		t.Skipf("%s=%q is set; skipping default-false test", envFailFastAlt, original)
-	}
-	originalLegacy := os.Getenv(envFailFast)
-	if originalLegacy != "" {
-		t.Skipf("%s=%q is set; skipping default-false test", envFailFast, originalLegacy)
-	}
 
 	if resolveFailFast() {
 		t.Error("resolveFailFast() = true, want false (AC 10: default continue-on-failure)")
@@ -250,6 +242,7 @@ func TestAC10ApplyFailFastIsNoOpWhenDisabled(t *testing.T) {
 // always writes the "=== E2E Result Summary ===" header, regardless of whether
 // any tests failed.
 func TestAC10SummaryHeaderAlwaysEmitted(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name      string
 		status    string
@@ -262,6 +255,7 @@ func TestAC10SummaryHeaderAlwaysEmitted(t *testing.T) {
 	} {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			s := SuiteResultSummary{
 				SuiteName:   "Pillar CSI E2E Suite",
 				Total:       max10(tc.failed, 5),
@@ -299,6 +293,7 @@ func max10(a, b int) int {
 // TestAC10SummaryPassStatusWhenNoFailures verifies that the summary emits
 // "status: PASS" when no specs failed, confirming the continue-on-failure path.
 func TestAC10SummaryPassStatusWhenNoFailures(t *testing.T) {
+	t.Parallel()
 	report := types.Report{
 		SuiteDescription: "Pillar CSI E2E Suite",
 		SuiteSucceeded:   true,
@@ -326,6 +321,7 @@ func TestAC10SummaryPassStatusWhenNoFailures(t *testing.T) {
 // "status: FAIL" when at least one spec failed, confirming the failure is
 // visible in the summary even when the suite continues after failure.
 func TestAC10SummaryFailStatusWhenAnySpecFails(t *testing.T) {
+	t.Parallel()
 	report := types.Report{
 		SuiteDescription: "Pillar CSI E2E Suite",
 		SuiteSucceeded:   false,
@@ -353,6 +349,7 @@ func TestAC10SummaryFailStatusWhenAnySpecFails(t *testing.T) {
 // failed TCs, not just the first one. This is the core AC 10 contract: the
 // continue-on-failure default enables collecting every failure in a single run.
 func TestAC10SummaryListsAllFailedTCs(t *testing.T) {
+	t.Parallel()
 	report := types.Report{
 		SuiteDescription: "Pillar CSI E2E Suite",
 		SuiteSucceeded:   false,
@@ -389,6 +386,7 @@ func TestAC10SummaryListsAllFailedTCs(t *testing.T) {
 // TestAC10SummaryNoFailedTCsSectionWhenAllPass verifies that when no TCs fail,
 // the summary does NOT emit a "failed TCs" section, keeping the output clean.
 func TestAC10SummaryNoFailedTCsSectionWhenAllPass(t *testing.T) {
+	t.Parallel()
 	report := types.Report{
 		SuiteDescription: "Pillar CSI E2E Suite",
 		SuiteSucceeded:   true,
@@ -416,6 +414,7 @@ func TestAC10SummaryNoFailedTCsSectionWhenAllPass(t *testing.T) {
 // twice with the same input produces identical output, confirming that the
 // function is purely functional and has no internal state.
 func TestAC10SummaryWriteIsIdempotent(t *testing.T) {
+	t.Parallel()
 	s := SuiteResultSummary{
 		SuiteName:   "Pillar CSI E2E Suite",
 		Total:       3,
@@ -447,6 +446,7 @@ func TestAC10SummaryWriteIsIdempotent(t *testing.T) {
 // equals the canonical AC 10 env var name "E2E_FAILFAST" (no underscore between
 // FAIL and FAST). This ensures the Go code and documentation are in sync.
 func TestAC10EnvFailFastAltIsE2EFailfast(t *testing.T) {
+	t.Parallel()
 	const want = "E2E_FAILFAST"
 	if envFailFastAlt != want {
 		t.Errorf("envFailFastAlt = %q, want %q (AC 10 canonical env var)", envFailFastAlt, want)
@@ -459,6 +459,7 @@ func TestAC10EnvFailFastAltIsE2EFailfast(t *testing.T) {
 // is listed in the expected constant value. This is a simple sanity check that
 // the constant follows the documented AC 10 interface.
 func TestAC10CanonicalEnvVarNameContainsFailfast(t *testing.T) {
+	t.Parallel()
 	if !strings.Contains(envFailFastAlt, "FAILFAST") {
 		t.Errorf("canonical fail-fast env var %q should contain 'FAILFAST'", envFailFastAlt)
 	}

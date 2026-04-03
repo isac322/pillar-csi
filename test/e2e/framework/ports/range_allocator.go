@@ -21,8 +21,8 @@
 //	…
 //
 // All ports are above 1024 so they can be forwarded on the host without
-// elevated privileges.  The 437-TC suite with the default 10-port stride
-// occupies [30100, 34470) — well within the ephemeral range.
+// elevated privileges.  The 421-TC suite with the default 10-port stride
+// occupies [30100, 34310) — well within the ephemeral range.
 //
 // Usage:
 //
@@ -222,7 +222,7 @@ func (a *ISCSIRangeAllocator) TotalAllocated() int {
 //
 // It uses ISCSIRangeBasePort (30100) and ISCSIPortsPerCase (10), which
 // accommodates up to 3543 parallel test cases before exhausting the 16-bit port
-// space — far above the current suite size of 437 test cases.
+// space — far above the current suite size of 421 test cases.
 //
 // TestCaseScope.ReserveISCSIPortRange delegates to this allocator.  Tests
 // that need isolated range accounting (e.g. unit tests of the allocator itself)
