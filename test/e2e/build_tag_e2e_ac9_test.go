@@ -43,6 +43,7 @@ package e2e
 import (
 	"bufio"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -306,4 +307,143 @@ func containsTestE2EWithTag(makefileText string) bool {
 		}
 	}
 	return false
+}
+
+// TestAC9GoListVerifiesRealBackendFilesCompiled uses `go list -tags=e2e` to
+// confirm that the Go toolchain actually includes real-backend spec files when
+// the "e2e" build tag is active.
+//
+// This is the programmatic equivalent of running:
+//
+//	go list -tags=e2e -f '{{json .TestGoFiles}}' ./test/e2e/
+//
+// and verifying that the returned list contains the expected real-backend spec
+// files (those named *_e2e_test.go with "//go:build e2e" constraints).
+//
+// # Two-phase verification
+//
+//  1. WITH -tags=e2e: real-backend spec files (*_e2e_test.go) MUST be included.
+//     Failure here means the build tag is not activating the real-backend specs,
+//     which would silently exclude them from `make test-e2e` runs.
+//
+//  2. WITHOUT -tags=e2e: real-backend spec files MUST NOT appear in the
+//     compiled set (except build_tag_e2e_ac9_test.go which has no build
+//     constraint — it's a static verifier that runs in all builds).
+//     Failure here means a real-backend file accidentally lost its build tag,
+//     which would pull Kind cluster / Docker exec dependencies into unit tests.
+//
+// # Verify command (run after make test-e2e passes):
+//
+//	go list -tags=e2e -f '{{json .TestGoFiles}}' ./test/e2e/ | \
+//	    python3 -c "import json,sys; files=json.load(sys.stdin); \
+//	    e2e=[f for f in files if f.endswith('_e2e_test.go') and not f.startswith('build_tag')]; \
+//	    print(f'PASS: {len(e2e)} real-backend spec files compiled'); sys.exit(0 if len(e2e)>=5 else 1)"
+func TestAC9GoListVerifiesRealBackendFilesCompiled(t *testing.T) {
+	t.Parallel()
+
+	e2eDir := resolveE2EDir(t)
+	// Resolve module root (two levels up from test/e2e/)
+	moduleRoot := filepath.Join(e2eDir, "..", "..")
+
+	// ── Phase 1: WITH -tags=e2e ───────────────────────────────────────────────
+
+	withTagFiles := goListTestGoFiles(t, moduleRoot, []string{"-tags=e2e"}, "./test/e2e/")
+
+	// Filter to real-backend spec files: name ends with _e2e_test.go.
+	// build_tag_e2e_ac9_test.go is excluded because it has no build tag
+	// (it is a static verifier that runs in all builds).
+	var withTagE2EFiles []string
+	for _, f := range withTagFiles {
+		if strings.HasSuffix(f, "_e2e_test.go") && !strings.HasPrefix(f, "build_tag_") {
+			withTagE2EFiles = append(withTagE2EFiles, f)
+		}
+	}
+
+	const minRealBackendSpecs = 5 // backend_teardown, cluster_kubeconfig, kind_bootstrap, kind_smoke, lvm_backend_standalone
+	if len(withTagE2EFiles) < minRealBackendSpecs {
+		t.Errorf(
+			"[AC9/go-list] WITH -tags=e2e: found only %d real-backend spec files (want >= %d).\n"+
+				"  Files found: %v\n"+
+				"\n"+
+				"  `go list -tags=e2e` output should include *_e2e_test.go files.\n"+
+				"  If this fails, real-backend spec files may have lost their //go:build e2e constraint\n"+
+				"  or were removed from the test/e2e/ directory.\n"+
+				"\n"+
+				"  Verify command:\n"+
+				"    go list -tags=e2e -f '{{json .TestGoFiles}}' ./test/e2e/",
+			len(withTagE2EFiles), minRealBackendSpecs, withTagE2EFiles,
+		)
+	} else {
+		t.Logf("[AC9/go-list] ✓ WITH -tags=e2e: %d real-backend spec files compiled: %v",
+			len(withTagE2EFiles), withTagE2EFiles)
+	}
+
+	// ── Phase 2: WITHOUT -tags=e2e ────────────────────────────────────────────
+
+	withoutTagFiles := goListTestGoFiles(t, moduleRoot, nil, "./test/e2e/")
+
+	// Real-backend spec files must NOT appear in the non-e2e build.
+	// The only exception is build_tag_e2e_ac9_test.go (no build constraint).
+	var withoutTagE2EFiles []string
+	for _, f := range withoutTagFiles {
+		if strings.HasSuffix(f, "_e2e_test.go") && !strings.HasPrefix(f, "build_tag_") {
+			withoutTagE2EFiles = append(withoutTagE2EFiles, f)
+		}
+	}
+
+	if len(withoutTagE2EFiles) > 0 {
+		t.Errorf(
+			"[AC9/go-list] WITHOUT -tags=e2e: %d real-backend spec file(s) incorrectly compiled: %v\n"+
+				"\n"+
+				"  These files should NOT be compiled without -tags=e2e because they\n"+
+				"  require a live Kind cluster with real storage backends.\n"+
+				"  Check that each file starts with '//go:build e2e' as its first line.\n"+
+				"\n"+
+				"  Verify command:\n"+
+				"    go list -f '{{json .TestGoFiles}}' ./test/e2e/",
+			len(withoutTagE2EFiles), withoutTagE2EFiles,
+		)
+	} else {
+		t.Logf("[AC9/go-list] ✓ WITHOUT -tags=e2e: no real-backend spec files compiled (correct isolation)")
+	}
+}
+
+// goListTestGoFiles runs `go list [extraFlags] -f '{{.TestGoFiles}}' [pkg]`
+// in the given module root directory and returns the list of test Go files
+// reported by the Go toolchain.
+//
+// This is the authoritative source of truth for which files the Go compiler
+// will include in a test binary — it reflects the actual build constraint
+// evaluation, unlike file-system scanning which can miss edge cases.
+//
+// Output format from `go list -f '{{.TestGoFiles}}'` is:
+//
+//	[file1.go file2.go ...]
+//
+// which is parsed by trimming the surrounding brackets and splitting on whitespace.
+func goListTestGoFiles(t *testing.T, moduleRoot string, extraFlags []string, pkg string) []string {
+	t.Helper()
+
+	args := []string{"list"}
+	args = append(args, extraFlags...)
+	args = append(args, "-f", "{{.TestGoFiles}}", pkg)
+
+	cmd := exec.Command("go", args...) //nolint:gosec // args are controlled
+	cmd.Dir = moduleRoot
+
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("[AC9/go-list] `go %v` in %s failed: %v",
+			args, moduleRoot, err)
+	}
+
+	// Parse "[file1 file2 ...]" → ["file1", "file2", ...]
+	raw := strings.TrimSpace(string(out))
+	raw = strings.TrimPrefix(raw, "[")
+	raw = strings.TrimSuffix(raw, "]")
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	return strings.Fields(raw)
 }

@@ -119,18 +119,18 @@ func bootstrapSuiteImages(
 	}
 
 	// Fast-path: skip build/load when explicitly disabled.
-	return bootstrapSuiteImagesWithSkip(ctx, state, output, resolveSkipImageBuild())
+	return bootstrapSuiteImagesDirect(ctx, state, output, resolveSkipImageBuild())
 }
 
-// bootstrapSuiteImagesWithSkip is the injectable form of bootstrapSuiteImages.
-// The skip parameter controls whether the fast-path (no docker build/load) is
+// bootstrapSuiteImagesDirect is the injectable form of bootstrapSuiteImages.
+// The skipBuild parameter controls whether the fast-path (no docker build/load) is
 // taken. Tests use this directly to avoid t.Setenv (which is incompatible with
 // t.Parallel in Go 1.21+).
-func bootstrapSuiteImagesWithSkip(
+func bootstrapSuiteImagesDirect(
 	ctx context.Context,
 	state *kindBootstrapState,
 	output io.Writer,
-	skip bool,
+	skipBuild bool,
 ) error {
 	if state == nil {
 		return fmt.Errorf("[AC8] bootstrapSuiteImages: cluster state is nil")
@@ -139,7 +139,7 @@ func bootstrapSuiteImagesWithSkip(
 		output = io.Discard
 	}
 
-	if skip {
+	if skipBuild {
 		_, _ = fmt.Fprintf(output,
 			"[AC8] %s set — skipping docker build and kind load (reusing existing images)\n",
 			skipImageBuildEnvVar)

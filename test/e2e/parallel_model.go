@@ -11,7 +11,7 @@ package e2e
 //
 // 이 패키지에는 두 가지 독립적인 테스트 레이어가 존재한다:
 //
-// ### Layer 1 — Ginkgo 스펙 (416개 문서화된 TC)
+// ### Layer 1 — Ginkgo 스펙 (404개 문서화된 TC)
 //
 // TestE2E (suite_test.go) 가 단일 Ginkgo 진입점이다. 내부 병렬성은 Ginkgo
 // 자체의 프로세스 레벨 병렬화(--procs N)로 관리된다:

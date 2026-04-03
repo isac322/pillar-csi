@@ -172,8 +172,9 @@ var _ = Describe("TC isolation scope — typed port allocation", Label("ac:4b", 
 		const count = 40
 
 		type portResult struct {
-			port int
-			err  error
+			port  int
+			err   error
+			scope *TestCaseScope // kept alive until uniqueness check completes
 		}
 		results := make(chan portResult, count)
 
@@ -187,26 +188,44 @@ var _ = Describe("TC isolation scope — typed port allocation", Label("ac:4b", 
 					results <- portResult{err: err}
 					return
 				}
-				defer scope.Close() //nolint:errcheck
 				lease, err := scope.ReserveISCSITargetPort("target")
 				if err != nil {
+					_ = scope.Close()
 					results <- portResult{err: err}
 					return
 				}
-				results <- portResult{port: lease.Port}
+				// Do NOT close scope here. Pass it out so the port stays
+				// registered in ports.Global until the uniqueness check completes.
+				// Closing inside the goroutine would deregister the port and allow
+				// OS to re-issue the same number to a later goroutine — causing a
+				// spurious "port allocated 2 times" failure (probe-and-release race).
+				results <- portResult{port: lease.Port, scope: scope}
 			}(i)
 		}
 		wg.Wait()
 		close(results)
 
 		seen := make(map[int]int)
+		var openScopes []*TestCaseScope
 		for r := range results {
 			Expect(r.err).NotTo(HaveOccurred(), "concurrent iSCSI allocation must not error")
 			seen[r.port]++
+			if r.scope != nil {
+				openScopes = append(openScopes, r.scope)
+			}
 		}
+
+		// Check uniqueness while all scopes (and therefore their port registrations)
+		// are still open. This prevents a port released by an early goroutine from
+		// being re-issued to a later goroutine during the check window.
 		for port, count := range seen {
 			Expect(count).To(Equal(1),
 				"port %d was allocated %d times; must be unique", port, count)
+		}
+
+		// Close all scopes after the uniqueness check to deregister the ports.
+		for _, s := range openScopes {
+			Expect(s.Close()).To(Succeed())
 		}
 	})
 

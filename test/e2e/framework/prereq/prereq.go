@@ -41,7 +41,7 @@ import (
 // items with per-item remediation commands.
 //
 // AC 10 contract: this function never silently omits a check or degrades to a
-// "partial" run.  All default-profile TCs (388 catalog + 33 E33 standalone)
+// "partial" run.  All default-profile TCs (388 catalog + 7 E33 standalone + 9 other = 404)
 // require the listed modules and tools; a missing item causes an immediate FAIL.
 //
 // Note: iscsi_tcp and iscsiadm are NOT checked here because iSCSI initiator
@@ -147,7 +147,7 @@ type kernelModule struct {
 // AC 10 policy: ALL modules are hard requirements.  The previous soft-skip
 // semantics (required: false) have been removed because:
 //
-//  1. All 416 TCs must run locally by default with no capability gating.
+//  1. All 404 TCs must run locally by default with no capability gating.
 //  2. "Never soft-skip" is a hard AC 10 constraint: missing modules cause
 //     an immediate FAIL with clear remediation, not a silent SKIP.
 //  3. The suite uses real ZFS, real LVM, real iSCSI, and real NVMe-oF TCP —

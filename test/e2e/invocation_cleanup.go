@@ -138,11 +138,24 @@ func (t *invocationTeardown) Cleanup(output io.Writer) error {
 }
 
 func (t *invocationTeardown) CleanupWithRunner(ctx context.Context, runner commandRunner) error {
+	var errs []error
+
+	// Step 1: Destroy backend resources (ZFS pools, LVM VGs) before the Kind
+	// cluster is deleted so that the Docker container is still reachable.
+	backendState := t.takeBackend()
+	if backendState != nil {
+		if err := backendState.teardown(ctx, io.Discard); err != nil {
+			errs = append(errs, err)
+			// Continue to cluster deletion even if backend teardown partially failed.
+		}
+	}
+
+	// Step 2: Destroy the Kind cluster and suite temp dirs.
 	state := t.takeKindCluster()
 	if state == nil {
-		return nil
+		return errors.Join(errs...)
 	}
-	return state.destroyCluster(ctx, runner)
+	return errors.Join(append(errs, state.destroyCluster(ctx, runner))...)
 }
 
 // takeBackend atomically takes and clears the backend state so that Cleanup is

@@ -15,9 +15,6 @@ package e2e
 //   - F30/F31: Kind cluster bootstrapped (KUBECONFIG set), pillar-csi deployed
 //
 // TC IDs covered: F27.1–F27.9, F28.1–F28.2, F29.1–F29.3, F30.1–F30.3, F31.1–F31.2
-//
-// Build tag: //go:build e2e_full
-// Run with: go test -tags=e2e_full ./test/e2e/ -v
 
 import (
 	"bytes"

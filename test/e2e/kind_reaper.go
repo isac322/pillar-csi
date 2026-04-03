@@ -27,6 +27,12 @@ const (
 	reaperTimeout = 30 * time.Second
 )
 
+// orphanKernelResourcePrefix is the naming prefix used for all pillar-csi E2E
+// backend resources (ZFS pools, LVM VGs) and their backing loop-device images.
+// The reaper uses this prefix to identify orphaned host kernel resources that
+// must be cleaned up directly on the host after orphaned Kind clusters are deleted.
+const orphanKernelResourcePrefix = "pillar-e2e"
+
 // reapOrphanedClusters scans for Kind clusters whose name starts with
 // orphanClusterPrefix and deletes every match. It is called once by TestMain
 // in the primary process, before bootstrapSuiteCluster creates a new cluster,
@@ -49,6 +55,15 @@ func reapOrphanedClusters(output io.Writer) {
 
 	runner := execCommandRunner{Output: output}
 	_ = reapOrphanClustersWithRunner(ctx, &kindBinaryRunner{runner: runner, kindBin: kindBin}, output)
+
+	// After cluster deletion, clean up any orphaned host kernel resources
+	// (ZFS pools, loop devices, LVM VGs) left behind by previously SIGKILL'd
+	// runs. These resources reside in the host kernel and are NOT removed by
+	// "kind delete cluster" because Kind only removes the container, not the
+	// host-level storage that was bind-mounted or created via --privileged.
+	// We run these commands directly on the host — never via docker exec.
+	hostRunner := execCommandRunner{Output: output}
+	_ = reapOrphanKernelResourcesWithRunner(ctx, hostRunner, output)
 }
 
 // kindBinaryRunner wraps execCommandRunner and substitutes the configured kind
@@ -157,6 +172,112 @@ func defaultIsAliveProcess(pid int) bool {
 	}
 	// EPERM or other: process exists but we can't signal it → treat as alive.
 	return true
+}
+
+// reapOrphanKernelResourcesWithRunner scans the host kernel for orphaned
+// storage resources whose names contain orphanKernelResourcePrefix and removes
+// them. It must be called AFTER orphaned Kind clusters have been deleted.
+//
+// Resources cleaned up (all run directly on the host, never via docker exec):
+//
+//   - ZFS pools: `zpool list -H -o name` → filter → `zpool destroy -f {name}`
+//   - Loop devices: `losetup -a` → filter → `losetup -d {device}`
+//   - LVM VGs: `vgs --noheadings -o vg_name` → filter → `vgremove -f {name}`
+//
+// The function is best-effort: individual cleanup failures are logged but do
+// not abort the reaper so that one un-removable resource does not block others.
+// Missing tools (zpool/losetup/vgs not installed) are silently ignored.
+func reapOrphanKernelResourcesWithRunner(ctx context.Context, runner commandRunner, output io.Writer) error {
+	var errs []error
+
+	// ── ZFS pools ────────────────────────────────────────────────────────────
+	zpoolOut, zpoolErr := runner.Run(ctx, commandSpec{
+		Name: "zpool",
+		Args: []string{"list", "-H", "-o", "name"},
+	})
+	if zpoolErr == nil {
+		for _, line := range strings.Split(zpoolOut, "\n") {
+			name := strings.TrimSpace(line)
+			if name == "" || !strings.Contains(name, orphanKernelResourcePrefix) {
+				continue
+			}
+			_, _ = fmt.Fprintf(output, "[reaper] destroying orphaned ZFS pool %q\n", name)
+			if _, err := runner.Run(ctx, commandSpec{
+				Name: "zpool",
+				Args: []string{"destroy", "-f", name},
+			}); err != nil {
+				_, _ = fmt.Fprintf(output,
+					"[reaper] WARNING: failed to destroy ZFS pool %q: %v\n", name, err)
+				errs = append(errs, err)
+			} else {
+				_, _ = fmt.Fprintf(output, "[reaper] destroyed ZFS pool %q\n", name)
+			}
+		}
+	}
+	// Ignore zpoolErr: zpool may not be installed on this host.
+
+	// ── Loop devices ─────────────────────────────────────────────────────────
+	losetupOut, losetupErr := runner.Run(ctx, commandSpec{
+		Name: "losetup",
+		Args: []string{"-a"},
+	})
+	if losetupErr == nil {
+		for _, line := range strings.Split(losetupOut, "\n") {
+			if !strings.Contains(line, orphanKernelResourcePrefix) {
+				continue
+			}
+			// losetup -a output format: "/dev/loopN: [inode] (/path/to/file)"
+			// Extract the device path (field before the first ':').
+			colonIdx := strings.Index(line, ":")
+			if colonIdx < 0 {
+				continue
+			}
+			device := strings.TrimSpace(line[:colonIdx])
+			if device == "" {
+				continue
+			}
+			_, _ = fmt.Fprintf(output, "[reaper] detaching orphaned loop device %q\n", device)
+			if _, err := runner.Run(ctx, commandSpec{
+				Name: "losetup",
+				Args: []string{"-d", device},
+			}); err != nil {
+				_, _ = fmt.Fprintf(output,
+					"[reaper] WARNING: failed to detach loop device %q: %v\n", device, err)
+				errs = append(errs, err)
+			} else {
+				_, _ = fmt.Fprintf(output, "[reaper] detached loop device %q\n", device)
+			}
+		}
+	}
+	// Ignore losetupErr: losetup may not be installed or may output nothing.
+
+	// ── LVM Volume Groups ────────────────────────────────────────────────────
+	vgsOut, vgsErr := runner.Run(ctx, commandSpec{
+		Name: "vgs",
+		Args: []string{"--noheadings", "-o", "vg_name"},
+	})
+	if vgsErr == nil {
+		for _, line := range strings.Split(vgsOut, "\n") {
+			name := strings.TrimSpace(line)
+			if name == "" || !strings.Contains(name, orphanKernelResourcePrefix) {
+				continue
+			}
+			_, _ = fmt.Fprintf(output, "[reaper] removing orphaned LVM VG %q\n", name)
+			if _, err := runner.Run(ctx, commandSpec{
+				Name: "vgremove",
+				Args: []string{"-f", name},
+			}); err != nil {
+				_, _ = fmt.Fprintf(output,
+					"[reaper] WARNING: failed to remove LVM VG %q: %v\n", name, err)
+				errs = append(errs, err)
+			} else {
+				_, _ = fmt.Fprintf(output, "[reaper] removed LVM VG %q\n", name)
+			}
+		}
+	}
+	// Ignore vgsErr: lvm2 tools may not be installed on this host.
+
+	return errors.Join(errs...)
 }
 
 // reapOrphanClustersWithRunner is the testable core of reapOrphanedClusters.

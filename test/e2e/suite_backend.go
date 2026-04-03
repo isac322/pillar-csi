@@ -202,18 +202,16 @@ func bootstrapSuiteBackends(
 		pipeline.AddBackend(&provisioner.ZFSProvisioner{
 			NodeContainer: nodeContainer,
 			PoolName:      "pillar-e2e-zfs-" + suffix,
-			// 4 GiB: large enough for the 1 GiB zvol created in verifyAgentLocalBackend
-			// (ZFS refreservation requires free space >= zvol size) plus ZFS metadata.
-			// Sparse image — truncate creates it instantly with no actual disk usage.
-			SizeMiB: 4 * 1024,
+			// 128 MiB sparse image — sufficient for e2e test zvols.
+			// Sparse image — truncate creates it instantly with no actual disk I/O.
+			SizeMiB: 128,
 		})
 		pipeline.AddBackend(&provisioner.LVMProvisioner{
 			NodeContainer: nodeContainer,
 			VGName:        "pillar-e2e-lvm-" + suffix,
-			// 100 GiB sparse image — truncate creates it instantly with no actual
-			// disk usage. The large size allows realistic thin-provisioning tests
-			// (e.g. 80 GiB virtual thin LVs) while keeping setup time < 1 second.
-			SizeMiB: 100 * 1024,
+			// 256 MiB sparse image — truncate creates it instantly with no actual
+			// disk usage. Sufficient for e2e thin-provisioning tests.
+			SizeMiB: 256,
 		})
 	} else {
 		for _, p := range provisioners {
@@ -237,7 +235,7 @@ func bootstrapSuiteBackends(
 		cleanCtx, cleanCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cleanCancel()
 		for _, r := range results {
-			if r.Resource != nil && !r.Skipped && r.Err == nil {
+			if r.Resource != nil && r.Err == nil {
 				_ = r.Resource.Destroy(cleanCtx)
 			}
 		}
@@ -248,12 +246,12 @@ func bootstrapSuiteBackends(
 	//
 	// Type-assert each provisioned resource back to its concrete type so the
 	// typed ZFSPool / LVMVG fields of suiteBackendState can be populated.
-	// Results from unknown backend types or from skipped / errored backends are
+	// Results from unknown backend types or from errored backends are
 	// ignored — they are not part of the suite state.
 	state := &suiteBackendState{NodeContainer: nodeContainer}
 
 	for _, r := range results {
-		if r.Skipped || r.Err != nil || r.Resource == nil {
+		if r.Err != nil || r.Resource == nil {
 			continue
 		}
 		switch r.BackendType {
@@ -275,14 +273,14 @@ func bootstrapSuiteBackends(
 				// (TC-E28.247, TC-E28.249, TC-E28.250, TC-E28.252, TC-E28.255, etc.)
 				// can use ProvisionMode="thin" against a real thin pool.
 				//
-				// Thin pool size: 50 GiB (half of the 100 GiB sparse VG). The VG
+				// Thin pool size: 128 MiB (half of the 256 MiB sparse VG). The VG
 				// image is sparse, so this does not consume host disk space.
 				//
 				// Non-fatal: if thin pool creation fails (e.g. dm_thin_pool module
 				// not loaded), we log a warning but do not abort the suite.
 				const thinPoolName = "pillar-e2e-pool"
 				thinCtx, thinCancel := context.WithTimeout(ctx, 30*time.Second)
-				thinErr := lvm.CreateThinPool(thinCtx, nodeContainer, vg.VGName, thinPoolName, 50*1024)
+				thinErr := lvm.CreateThinPool(thinCtx, nodeContainer, vg.VGName, thinPoolName, 128)
 				thinCancel()
 				if thinErr != nil {
 					_, _ = fmt.Fprintf(output,

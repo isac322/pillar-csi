@@ -6,7 +6,7 @@ package e2e
 // installation and release validation (TC-E27.207 through TC-E27.243).
 //
 // These specs require a running Kind cluster and are NOT labeled "default-profile"
-// so they do not run in the standard 437-case in-process suite.  They run when:
+// so they do not run in the standard 404-case default-profile suite.  They run when:
 //
 //	go test -tags=e2e ./test/e2e/ -run TestE2E -- --label-filter=helm
 //

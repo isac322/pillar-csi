@@ -34,7 +34,7 @@
 //     contiguous, non-overlapping block of ports [Base, Base+Count) from a
 //     global atomic counter.  This gives tests that set up multiple simultaneous
 //     iSCSI targets a predictable set of port numbers without per-port OS calls.
-//     The 416-TC suite with the default 10-port stride occupies [30100, 34310).
+//     The 404-TC suite with the default 10-port stride occupies [30100, 34140).
 //
 // # Usage
 //

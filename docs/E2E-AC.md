@@ -9,7 +9,7 @@ use these exact 10 items with these exact numbers.
 | AC 1 | All TCs pass, no skips | `make test-e2e` runs with skip=0 and fail=0. Every TC must either pass or hard-fail — `Skip()` is forbidden in TC implementation code. |
 | AC 2 | 2-minute suite budget | `make test-e2e` (Ginkgo spec execution phase) completes within 120 seconds. `suiteLevelTimeout = 2 * time.Minute` enforces this; parallel workers are capped at 8 to avoid Kind API-server saturation. |
 | AC 3 | 7 E33 standalone specs in default-profile | All seven E33.4 standalone specs (TC-E33.311 through TC-E33.317) carry the `default-profile` Ginkgo label and bind to static `[TC-E33.xxx]` literals in `lvm_backend_standalone_e2e_test.go`. |
-| AC 4 | No `defaultLocalVerifierRegistry` singleton | The old package-level `defaultLocalVerifierRegistry` global is replaced by `suiteLocalVerifierRegistry`, initialised per Ginkgo worker process in `warmUpLocalBackend()`. No shared mutable state crosses worker boundaries. |
+| AC 4 | No package-level verifier singleton | The package-level verifier global (formerly a single process-wide registry) is replaced by `suiteLocalVerifierRegistry`, initialised per Ginkgo worker process in `warmUpLocalBackend()`. No shared mutable state crosses worker boundaries. |
 | AC 5 | No conditional `Skip()` in TC code | TC implementation files (`tc_*.go`, `category_*.go`) contain zero `Skip()` / `GinkgoSkip()` calls. All gate conditions use hard `Fail()` / `Expect()`. |
 | AC 6 | `go build -tags=e2e ./... && go vet -tags=e2e ./...` pass | The entire codebase compiles and passes vet under the `e2e` build tag. No build errors, no vet warnings. |
 | AC 7 | No artifacts written outside `/tmp` | All temporary files, kubeconfig, build artifacts created during the test run reside under `tcTempRoot` (a `/tmp`-backed per-invocation directory). `os.MkdirTemp("", …)` with an empty base dir is forbidden. |
@@ -24,7 +24,7 @@ use these exact 10 items with these exact numbers.
 | Sub-AC 1 (pass/fail profile) | AC 1 |
 | Sub-AC 2, 2a, 2b, 2.1, 2.2, 2.3 | AC 2 |
 | Sub-AC 3, 3.3 (E33 standalone) | AC 3 |
-| Sub-AC 4 (defaultLocalVerifierRegistry) | AC 4 |
+| Sub-AC 4 (verifier singleton removal) | AC 4 |
 | Sub-AC 5 (Skip() removal) | AC 5 |
 | Sub-AC 6, AC6 (build/vet) | AC 6 |
 | Sub-AC 7, [AC5], [AC5.2], [AC5.3] (/tmp artifacts) | AC 7 |

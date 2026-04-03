@@ -120,7 +120,7 @@ var _ = Describe("E33.4: LVM 백엔드 독립 E2E (Standalone)", Label("default-
 
 	// ── TC-E33.311 ──────────────────────────────────────────────────────────────
 	// TestLVMBackend_CreateVolume_Thin
-	It("[TC-E33.311] Thin LV 생성 + 호스트에서 /dev/<vg>/<lv> 존재 확인", func() {
+	It("[TC-E33.311] Thin LV 생성 + 호스트에서 /dev/<vg>/<lv> 존재 확인", Label("default-profile", "E33-standalone"), func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 
@@ -173,7 +173,7 @@ var _ = Describe("E33.4: LVM 백엔드 독립 E2E (Standalone)", Label("default-
 
 	// ── TC-E33.312 ──────────────────────────────────────────────────────────────
 	// TestLVMBackend_CreateVolume_Linear
-	It("[TC-E33.312] Linear LV 생성 + ProvisionMode 오버라이드 검증", func() {
+	It("[TC-E33.312] Linear LV 생성 + ProvisionMode 오버라이드 검증", Label("default-profile", "E33-standalone"), func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 
@@ -207,7 +207,7 @@ var _ = Describe("E33.4: LVM 백엔드 독립 E2E (Standalone)", Label("default-
 
 	// ── TC-E33.313 ──────────────────────────────────────────────────────────────
 	// TestLVMBackend_DeleteVolume
-	It("[TC-E33.313] LV 삭제 + 디바이스 소멸 + 재삭제 멱등", func() {
+	It("[TC-E33.313] LV 삭제 + 디바이스 소멸 + 재삭제 멱등", Label("default-profile", "E33-standalone"), func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 
@@ -244,7 +244,7 @@ var _ = Describe("E33.4: LVM 백엔드 독립 E2E (Standalone)", Label("default-
 
 	// ── TC-E33.314 ──────────────────────────────────────────────────────────────
 	// TestLVMBackend_ExpandVolume
-	It("[TC-E33.314] LV 확장 후 lvs 및 blockdev --getsize64 반영", func() {
+	It("[TC-E33.314] LV 확장 후 lvs 및 blockdev --getsize64 반영", Label("default-profile", "E33-standalone"), func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 
@@ -277,7 +277,7 @@ var _ = Describe("E33.4: LVM 백엔드 독립 E2E (Standalone)", Label("default-
 
 	// ── TC-E33.315 ──────────────────────────────────────────────────────────────
 	// TestLVMBackend_GetCapacity
-	It("[TC-E33.315] VG 용량: total > 0, available ≤ total", func() {
+	It("[TC-E33.315] VG 용량: total > 0, available ≤ total", Label("default-profile", "E33-standalone"), func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
@@ -313,7 +313,7 @@ var _ = Describe("E33.4: LVM 백엔드 독립 E2E (Standalone)", Label("default-
 
 	// ── TC-E33.316 ──────────────────────────────────────────────────────────────
 	// TestLVMBackend_ListVolumes
-	It("[TC-E33.316] 생성된 LV가 lvs에 포함됨 (ListVolumes 동등 동작)", func() {
+	It("[TC-E33.316] 생성된 LV가 lvs에 포함됨 (ListVolumes 동등 동작)", Label("default-profile", "E33-standalone"), func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 
@@ -339,7 +339,7 @@ var _ = Describe("E33.4: LVM 백엔드 독립 E2E (Standalone)", Label("default-
 
 	// ── TC-E33.317 ──────────────────────────────────────────────────────────────
 	// TestLVMBackend_DevicePath
-	It("[TC-E33.317] CreateVolume과 ListVolumes 모두 /dev/<vg>/<lv> 형식 일관", func() {
+	It("[TC-E33.317] CreateVolume과 ListVolumes 모두 /dev/<vg>/<lv> 형식 일관", Label("default-profile", "E33-standalone"), func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 

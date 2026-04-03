@@ -111,9 +111,6 @@ func TestNewBackendTypeRequiresNoFrameworkChanges(t *testing.T) {
 		if r.Err != nil {
 			t.Errorf("backend %q: unexpected error: %v", r.BackendType, r.Err)
 		}
-		if r.Skipped {
-			t.Errorf("backend %q: unexpectedly skipped", r.BackendType)
-		}
 		if r.Resource == nil {
 			t.Errorf("backend %q: Resource is nil, want non-nil", r.BackendType)
 		}
@@ -198,17 +195,14 @@ func TestPipelineRunAllCollectsAllResults(t *testing.T) {
 	}
 
 	// Backend 1: success.
-	if results[0].Skipped || results[0].Err != nil || results[0].Resource == nil {
-		t.Errorf("backend 1 (success): got skipped=%v err=%v resource=%v",
-			results[0].Skipped, results[0].Err, results[0].Resource)
+	if results[0].Err != nil || results[0].Resource == nil {
+		t.Errorf("backend 1 (success): got err=%v resource=%v",
+			results[0].Err, results[0].Resource)
 	}
 
-	// Backend 2: protocol violation — (nil, nil) must produce a hard error, not a skip.
+	// Backend 2: protocol violation — (nil, nil) must produce a hard error.
 	if results[1].Err == nil {
 		t.Errorf("backend 2 (violation): expected hard error for (nil,nil) return, got nil error")
-	}
-	if results[1].Skipped {
-		t.Errorf("backend 2 (violation): Skipped must be false; soft-skip is no longer supported")
 	}
 	if results[1].Resource != nil {
 		t.Errorf("backend 2 (violation): Resource must be nil, got %v", results[1].Resource)
@@ -219,8 +213,8 @@ func TestPipelineRunAllCollectsAllResults(t *testing.T) {
 
 	// Backend 3: error.
 	if results[2].Err == nil || results[2].Resource != nil {
-		t.Errorf("backend 3 (error): got skipped=%v err=%v resource=%v",
-			results[2].Skipped, results[2].Err, results[2].Resource)
+		t.Errorf("backend 3 (error): got err=%v resource=%v",
+			results[2].Err, results[2].Resource)
 	}
 
 	// RunAll must return a non-nil error (from backends 2 and 3).
@@ -235,7 +229,7 @@ func TestPipelineRunAllCollectsAllResults(t *testing.T) {
 // ─── 4. RegisterResources ─────────────────────────────────────────────────────
 
 // TestRegisterResourcesOnlyRegistersSuccessful verifies that RegisterResources
-// registers only resources from successful (non-nil, non-skipped, non-errored)
+// registers only resources from successful (non-nil Resource, nil Err)
 // ProvisionResults.
 func TestRegisterResourcesOnlyRegistersSuccessful(t *testing.T) {
 	t.Parallel()
@@ -244,10 +238,10 @@ func TestRegisterResourcesOnlyRegistersSuccessful(t *testing.T) {
 	res2 := &fakeResource{description: "resource-2"}
 
 	results := []provisioner.ProvisionResult{
-		{BackendType: "success-1", Resource: res1},             // should be registered
-		{BackendType: "skipped", Resource: nil, Skipped: true}, // should NOT be registered
-		{BackendType: "error-backend", Err: errors.New("x")},   // should NOT be registered
-		{BackendType: "success-2", Resource: res2},             // should be registered
+		{BackendType: "success-1", Resource: res1},           // should be registered
+		{BackendType: "nil-resource", Resource: nil},         // should NOT be registered (nil Resource)
+		{BackendType: "error-backend", Err: errors.New("x")}, // should NOT be registered
+		{BackendType: "success-2", Resource: res2},           // should be registered
 	}
 
 	reg := registry.New()
@@ -274,12 +268,11 @@ func TestRegisterResourcesNilRegistryNoop(t *testing.T) {
 // ─── 5. Protocol violation: (nil, nil) is a hard error ───────────────────────
 
 // TestProtocolViolationNilNilResultsInError verifies that a backend returning
-// (nil, nil) from Provision produces a ProvisionResult with Resource==nil,
-// Skipped==false, and a non-nil Err mentioning "protocol violation".
+// (nil, nil) from Provision produces a ProvisionResult with Resource==nil and
+// a non-nil Err mentioning "protocol violation".
 //
-// Soft-skip semantics (nil, nil → Skipped=true, Err=nil) have been removed.
 // Production provisioners must return (resource, nil) or (nil, err); returning
-// (nil, nil) is now a hard error.
+// (nil, nil) is a hard protocol-violation error.
 func TestProtocolViolationNilNilResultsInError(t *testing.T) {
 	t.Parallel()
 
@@ -303,9 +296,6 @@ func TestProtocolViolationNilNilResultsInError(t *testing.T) {
 	r := results[0]
 	if r.Resource != nil {
 		t.Errorf("violation: Resource = %v, want nil", r.Resource)
-	}
-	if r.Skipped {
-		t.Errorf("violation: Skipped = true, want false (soft-skip removed)")
 	}
 	if r.Err == nil {
 		t.Errorf("violation: Err is nil, want non-nil error")
@@ -736,16 +726,13 @@ func TestRunAllConcurrentCollectsAllResults(t *testing.T) {
 	if len(results) != 3 {
 		t.Fatalf("RunAllConcurrent: got %d results, want 3", len(results))
 	}
-	if results[0].Err != nil || results[0].Skipped || results[0].Resource == nil {
-		t.Errorf("results[0] (ok): skipped=%v err=%v resource=%v",
-			results[0].Skipped, results[0].Err, results[0].Resource)
+	if results[0].Err != nil || results[0].Resource == nil {
+		t.Errorf("results[0] (ok): err=%v resource=%v",
+			results[0].Err, results[0].Resource)
 	}
-	// results[1] (violation): (nil, nil) must produce a hard error, not a skip.
+	// results[1] (violation): (nil, nil) must produce a hard error.
 	if results[1].Err == nil {
 		t.Errorf("results[1] (violation): expected hard error for (nil,nil) return, got nil")
-	}
-	if results[1].Skipped {
-		t.Errorf("results[1] (violation): Skipped must be false; soft-skip is no longer supported")
 	}
 	if results[1].Resource != nil {
 		t.Errorf("results[1] (violation): Resource must be nil, got %v", results[1].Resource)

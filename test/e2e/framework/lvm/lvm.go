@@ -114,7 +114,7 @@ func CreateVG(ctx context.Context, opts CreateVGOptions) (*VG, error) {
 	// constant (~50 ms) regardless of size and allows large (100 GiB) VGs that
 	// enable realistic thin-provisioning tests without filling the host disk.
 	//
-	// "dd if=/dev/zero" (dense fill) was replaced because writing 100 GiB of
+	// "dd if=/dev/zero" (dense fill) was replaced because writing large amounts of
 	// zeroes takes 30–60 s, which blows the 2-minute suite budget.
 	if _, err := containerExec(ctx, opts.NodeContainer,
 		"truncate", "-s", fmt.Sprintf("%dM", sizeMiB), imagePath,
@@ -417,7 +417,7 @@ func VerifyActive(ctx context.Context, nodeContainer, vgName string) error {
 // Steps (run inside the container via docker exec):
 //
 //  1. "lvcreate --type thin-pool -L <sizeMiB>m -n <poolName> <vgName>" — creates
-//     the thin pool. Values ≤ 0 for sizeMiB default to 50 * 1024 MiB (50 GiB).
+//     the thin pool. Values ≤ 0 for sizeMiB default to 128 MiB.
 //  2. "lvs --noheadings -o lv_attr <vgName>/<poolName>" — verifies the LV was
 //     created with type 't' (thin pool) in the attribute string.
 //
@@ -434,7 +434,7 @@ func CreateThinPool(ctx context.Context, nodeContainer, vgName, poolName string,
 		return fmt.Errorf("lvm: CreateThinPool: poolName must not be empty")
 	}
 	if sizeMiB <= 0 {
-		sizeMiB = 50 * 1024 // 50 GiB default
+		sizeMiB = 128 // 128 MiB default
 	}
 
 	// Create the thin pool.

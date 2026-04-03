@@ -45,10 +45,10 @@ func TestAC4InstallToolsWhitespaceContainerReturnsError(t *testing.T) {
 	}
 }
 
-// TestAC4InstallToolsNonExistentContainerSoftSkip verifies that
+// TestAC4InstallToolsNonExistentContainerBestEffort verifies that
 // installKindContainerBackendTools returns nil (not an error) when docker exec
 // fails because the container does not exist. The function must be best-effort.
-func TestAC4InstallToolsNonExistentContainerSoftSkip(t *testing.T) {
+func TestAC4InstallToolsNonExistentContainerBestEffort(t *testing.T) {
 	t.Parallel()
 
 	var buf bytes.Buffer

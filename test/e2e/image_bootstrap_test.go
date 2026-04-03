@@ -116,9 +116,9 @@ func TestBootstrapSuiteImages_SkipWhenEnvSet(t *testing.T) {
 	state.KubeconfigPath = state.GeneratedDir + "/kubeconfig"
 
 	// Pass skip=true directly to test the fast-path without env var manipulation.
-	err := bootstrapSuiteImagesWithSkip(context.Background(), state, os.Stderr, true)
+	err := bootstrapSuiteImagesDirect(context.Background(), state, os.Stderr, true)
 	if err != nil {
-		t.Errorf("bootstrapSuiteImagesWithSkip with skip=true returned error: %v", err)
+		t.Errorf("bootstrapSuiteImagesDirect with skipBuild=true returned error: %v", err)
 	}
 }
 

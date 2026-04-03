@@ -20,7 +20,7 @@ package e2e
 //
 //	=== E2E Result Summary ===
 //	suite: Pillar CSI E2E Suite
-//	total: 416 | passed: 406 | failed: 15 | skipped: 0 | pending: 0
+//	total: 404 | passed: 394 | failed: 15 | skipped: 0 | pending: 0
 //	failed TCs (15):
 //	  [TC-E1.2] [category:in-process] Expected true to be false
 //	  [TC-F27.1] [category:full-lvm] Expected non-nil PVC to be nil
@@ -30,7 +30,7 @@ package e2e
 //
 //	=== E2E Result Summary ===
 //	suite: Pillar CSI E2E Suite
-//	total: 416 | passed: 416 | failed: 0 | skipped: 0 | pending: 0
+//	total: 404 | passed: 404 | failed: 0 | skipped: 0 | pending: 0
 //	status: PASS
 
 import (

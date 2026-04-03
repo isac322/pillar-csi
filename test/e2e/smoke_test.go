@@ -23,7 +23,7 @@ package e2e
 //   - "smoke" — selectable via --label-filter=smoke
 //   - "AC1"   — selectable via --label-filter=AC1
 //
-// NOT labeled "default-profile" to avoid counting towards the 416-case budget.
+// NOT labeled "default-profile" to avoid counting towards the 404-case budget.
 //
 // Run with:
 //

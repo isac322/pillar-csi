@@ -25,10 +25,9 @@
 // modules are detected upfront by [kind.CheckBackendKernelModules] and cause
 // an immediate FAIL with a clear remediation message.
 //
-// The pipeline framework supports (nil, nil) from Provision and records it as
-// a skipped backend (ProvisionResult.Skipped=true), but this path is only
-// exercised by framework-level tests using test-infrastructure fakes — it is
-// not a valid return value for production provisioner implementations.
+// The pipeline framework detects (nil, nil) from Provision and records it as
+// a hard protocol-violation error — it is not a valid return value for any
+// provisioner implementation (framework-level tests included).
 //
 // # Adding a new backend
 //
@@ -94,9 +93,8 @@ import (
 // Concrete provisioner implementations MUST NOT return (nil, nil).
 // Missing kernel modules and absent container tools are detected upfront by
 // [kind.CheckBackendKernelModules] and must cause a hard FAIL, not a silent
-// skip. The pipeline framework recognises (nil, nil) and records it as
-// ProvisionResult.Skipped=true, but this path is reserved for
-// framework-level tests only — never for production provisioner code.
+// skip. The pipeline framework recognises (nil, nil) and records it as a
+// protocol-violation error — never a skip.
 //
 // # Idempotency and atomicity
 //
@@ -128,11 +126,6 @@ type ProvisionResult struct {
 	// Production provisioners MUST NOT return (nil, nil); doing so is a protocol
 	// violation that results in a hard error stored in Err.
 	Resource registry.Resource
-
-	// Skipped is always false. Soft-skip (nil, nil from Provision) is a protocol
-	// violation — it results in a hard error stored in Err, not a skip.
-	// This field is retained for API compatibility but is never set to true.
-	Skipped bool
 
 	// Err is non-nil when Provision returned a hard error or a protocol violation.
 	Err error
@@ -349,8 +342,9 @@ func (p *Pipeline) RunAllConcurrent(ctx context.Context, output io.Writer) ([]Pr
 	return results, errors.Join(errs...)
 }
 
-// RegisterResources registers all non-nil provisioned Resources from results
-// with reg. Skipped and failed results are silently ignored.
+// RegisterResources registers all successfully provisioned Resources from
+// results with reg. Failed results (non-nil Err) and results with nil Resource
+// are silently ignored.
 //
 // This is a convenience helper for the common pattern of registering all
 // provisioned resources with the suite Registry after RunAll returns.
@@ -359,7 +353,7 @@ func RegisterResources(reg *registry.Registry, results []ProvisionResult) {
 		return
 	}
 	for _, r := range results {
-		if r.Resource != nil && !r.Skipped && r.Err == nil {
+		if r.Resource != nil && r.Err == nil {
 			reg.Register(r.Resource)
 		}
 	}
