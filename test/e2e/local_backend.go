@@ -218,16 +218,10 @@ func resolveLocalExecutionPlan(tc documentedCase) (localExecutionPlan, error) {
 			Summary:   "helm chart structure and template rendering contracts",
 			Verifiers: []localVerifierName{localVerifierHelm},
 		}, nil
-	case "E33", "E34", "F27", "F28", "F29", "F30", "F31":
-		return localExecutionPlan{
-			Summary:   "kind lifecycle plus local LVM backend contracts",
-			Verifiers: []localVerifierName{localVerifierKind, localVerifierLVM},
-		}, nil
-	case "E35":
-		return localExecutionPlan{
-			Summary:   "kind lifecycle plus local ZFS backend contracts",
-			Verifiers: []localVerifierName{localVerifierKind, localVerifierZFS},
-		}, nil
+	// E33, E34, E35, F27–F31 are NOT catalog-driven.
+	// Their Ginkgo specs live in dedicated *_e2e_test.go files and run under
+	// the "default-profile" label filter directly — no dispatch through
+	// resolveLocalExecutionPlan / runTCBody needed.
 	default:
 		return localExecutionPlan{}, fmt.Errorf("no local execution plan for group %q", tc.GroupKey)
 	}

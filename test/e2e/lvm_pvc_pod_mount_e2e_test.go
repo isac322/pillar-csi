@@ -1,5 +1,3 @@
-//go:build e2e
-
 package e2e
 
 // lvm_pvc_pod_mount_e2e_test.go — E33.2: LVM PVC provisioning and Pod mount tests.
@@ -37,10 +35,10 @@ import (
 // e33PVCKubectlOutput runs kubectl using the suite kubeconfig, returning stdout.
 // Reuses e33KubectlOutput defined in lvm_backend_core_rpcs_e2e_test.go.
 
-// e33SkipIfNoNVMeoF skips if NVMe-oF is not available (no PILLAR_E2E_LVM_VG
+// e33FailIfNoNVMeoF fails if NVMe-oF is not available (no PILLAR_E2E_LVM_VG
 // or KUBECONFIG). Used by E33.2 and E33.3 tests.
-func e33SkipIfNoNVMeoF() {
-	e33SkipIfNoInfra()
+func e33FailIfNoNVMeoF() {
+	e33FailIfNoInfra()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -48,7 +46,7 @@ func e33SkipIfNoNVMeoF() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 var _ = Describe("E33: LVM Kind 클러스터 E2E — 실제 LVM VG + NVMe-oF TCP",
-	Label("lvm", "mount", "e33"),
+	Label("default-profile", "lvm", "mount", "e33"),
 	func() {
 		Describe("E33.2 LVM PVC 프로비저닝 및 Pod 마운트", Ordered, func() {
 
@@ -62,7 +60,7 @@ var _ = Describe("E33: LVM Kind 클러스터 E2E — 실제 LVM VG + NVMe-oF TCP
 			)
 
 			BeforeAll(func() {
-				e33SkipIfNoNVMeoF()
+				e33FailIfNoNVMeoF()
 
 				testNamespace = fmt.Sprintf("e33-mount-%d", GinkgoParallelProcess())
 				storageClass = fmt.Sprintf("e33-lvm-nvmeof-%d", GinkgoParallelProcess())

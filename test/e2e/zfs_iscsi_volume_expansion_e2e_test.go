@@ -1,5 +1,3 @@
-//go:build e2e
-
 package e2e
 
 // zfs_iscsi_volume_expansion_e2e_test.go — E35.3: Raw Block, 확장, 통계 및 재스테이징
@@ -34,7 +32,7 @@ import (
 // ─────────────────────────────────────────────────────────────────────────────
 
 var _ = Describe("E35: ZFS Kind 클러스터 E2E — 실제 ZFS zvol + iSCSI",
-	Label("iscsi", "zfs", "expansion", "e35"),
+	Label("default-profile", "iscsi", "zfs", "expansion", "e35"),
 	func() {
 		Describe("E35.3 Raw Block, 확장, 통계 및 재스테이징", Ordered, func() {
 
@@ -48,7 +46,7 @@ var _ = Describe("E35: ZFS Kind 클러스터 E2E — 실제 ZFS zvol + iSCSI",
 			)
 
 			BeforeAll(func() {
-				e35SkipIfNoInfra()
+				e35FailIfNoInfra()
 
 				testNamespace = fmt.Sprintf("e35-exp-%d", GinkgoParallelProcess())
 				fsPVCName = fmt.Sprintf("e35-exp-fs-pvc-%d", GinkgoParallelProcess())

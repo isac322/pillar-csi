@@ -1,5 +1,3 @@
-//go:build e2e
-
 package e2e
 
 // zfs_iscsi_pvc_pod_mount_e2e_test.go — E35.2: zvol-backed Filesystem PVC 및 Pod 마운트
@@ -34,7 +32,7 @@ import (
 // ─────────────────────────────────────────────────────────────────────────────
 
 var _ = Describe("E35: ZFS Kind 클러스터 E2E — 실제 ZFS zvol + iSCSI",
-	Label("iscsi", "zfs", "mount", "e35"),
+	Label("default-profile", "iscsi", "zfs", "mount", "e35"),
 	func() {
 		Describe("E35.2 zvol-backed Filesystem PVC 및 Pod 마운트", Ordered, func() {
 
@@ -46,7 +44,7 @@ var _ = Describe("E35: ZFS Kind 클러스터 E2E — 실제 ZFS zvol + iSCSI",
 			)
 
 			BeforeAll(func() {
-				e35SkipIfNoInfra()
+				e35FailIfNoInfra()
 
 				testNamespace = fmt.Sprintf("e35-mount-%d", GinkgoParallelProcess())
 				pvcName = fmt.Sprintf("e35-mount-pvc-%d", GinkgoParallelProcess())

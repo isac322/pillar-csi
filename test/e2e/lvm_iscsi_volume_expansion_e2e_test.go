@@ -1,5 +1,3 @@
-//go:build e2e
-
 package e2e
 
 // lvm_iscsi_volume_expansion_e2e_test.go — E34.3: Raw Block, 확장, 통계 및 재스테이징
@@ -35,7 +33,7 @@ import (
 // ─────────────────────────────────────────────────────────────────────────────
 
 var _ = Describe("E34: LVM Kind 클러스터 E2E — 실제 LVM VG + iSCSI",
-	Label("iscsi", "lvm", "expansion", "e34"),
+	Label("default-profile", "iscsi", "lvm", "expansion", "e34"),
 	func() {
 		Describe("E34.3 Raw Block, 확장, 통계 및 재스테이징", Ordered, func() {
 
@@ -49,7 +47,7 @@ var _ = Describe("E34: LVM Kind 클러스터 E2E — 실제 LVM VG + iSCSI",
 			)
 
 			BeforeAll(func() {
-				e34SkipIfNoInfra()
+				e34FailIfNoInfra()
 
 				testNamespace = fmt.Sprintf("e34-exp-%d", GinkgoParallelProcess())
 				fsPVCName = fmt.Sprintf("e34-exp-fs-pvc-%d", GinkgoParallelProcess())

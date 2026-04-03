@@ -1,5 +1,3 @@
-//go:build e2e
-
 package e2e
 
 // lvm_iscsi_pvc_pod_mount_e2e_test.go — E34.2: iSCSI PVC 프로비저닝 및 Pod 마운트
@@ -37,7 +35,7 @@ import (
 // ─────────────────────────────────────────────────────────────────────────────
 
 var _ = Describe("E34: LVM Kind 클러스터 E2E — 실제 LVM VG + iSCSI",
-	Label("iscsi", "lvm", "mount", "e34"),
+	Label("default-profile", "iscsi", "lvm", "mount", "e34"),
 	func() {
 		Describe("E34.2 iSCSI PVC 프로비저닝 및 Pod 마운트", Ordered, func() {
 
@@ -49,7 +47,7 @@ var _ = Describe("E34: LVM Kind 클러스터 E2E — 실제 LVM VG + iSCSI",
 			)
 
 			BeforeAll(func() {
-				e34SkipIfNoInfra()
+				e34FailIfNoInfra()
 
 				testNamespace = fmt.Sprintf("e34-mount-%d", GinkgoParallelProcess())
 				pvcName = fmt.Sprintf("e34-mount-pvc-%d", GinkgoParallelProcess())

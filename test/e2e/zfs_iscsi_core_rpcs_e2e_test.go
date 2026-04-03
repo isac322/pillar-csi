@@ -1,5 +1,3 @@
-//go:build e2e
-
 package e2e
 
 // zfs_iscsi_core_rpcs_e2e_test.go — E35.1: zvol 백엔드 제어면 및 export 계약
@@ -60,13 +58,18 @@ func e35Kubeconfig() string {
 	return ""
 }
 
-// e35SkipIfNoInfra skips if E35 infrastructure is unavailable.
-func e35SkipIfNoInfra() {
+// e35FailIfNoInfra fails if E35 infrastructure is unavailable.
+func e35FailIfNoInfra() {
 	if e35ZFSPool() == "" {
-		Skip("[E35] PILLAR_E2E_ZFS_POOL not set — skipping ZFS+iSCSI test")
+		Fail("[E35] MISSING PREREQUISITE: PILLAR_E2E_ZFS_POOL not set.\n" +
+			"  This env var must be set to the ZFS pool name provisioned inside the Kind cluster.\n" +
+			"  It is normally exported by main_test.go bootstrapSuiteBackends during suite setup.\n" +
+			"  Run: export PILLAR_E2E_ZFS_POOL=<pool-name>  to set it manually.")
 	}
 	if os.Getenv("KUBECONFIG") == "" && suiteKindCluster == nil {
-		Skip("[E35] KUBECONFIG not set and suiteKindCluster is nil — Kind cluster not available")
+		Fail("[E35] MISSING PREREQUISITE: No Kind cluster available.\n" +
+			"  KUBECONFIG must point to a running cluster or the Kind cluster must be bootstrapped.\n" +
+			"  Run: export KUBECONFIG=<path-to-kubeconfig>  or run go test without -run to bootstrap Kind.")
 	}
 }
 
@@ -75,7 +78,7 @@ func e35SkipIfNoInfra() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 var _ = Describe("E35: ZFS Kind 클러스터 E2E — 실제 ZFS zvol + iSCSI",
-	Label("iscsi", "zfs", "controlplane", "e35"),
+	Label("default-profile", "iscsi", "zfs", "controlplane", "e35"),
 	func() {
 		Describe("E35.1 zvol 백엔드 제어면 및 export 계약", Ordered, func() {
 
@@ -86,7 +89,7 @@ var _ = Describe("E35: ZFS Kind 클러스터 E2E — 실제 ZFS zvol + iSCSI",
 			)
 
 			BeforeAll(func() {
-				e35SkipIfNoInfra()
+				e35FailIfNoInfra()
 
 				testNamespace = fmt.Sprintf("e35-ctrl-%d", GinkgoParallelProcess())
 				pvcName = fmt.Sprintf("e35-ctrl-pvc-%d", GinkgoParallelProcess())

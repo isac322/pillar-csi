@@ -1,5 +1,3 @@
-//go:build e2e
-
 package e2e
 
 // lvm_volume_expansion_e2e_test.go — E33.3: LVM volume expansion tests.
@@ -35,7 +33,7 @@ import (
 // ─────────────────────────────────────────────────────────────────────────────
 
 var _ = Describe("E33: LVM Kind 클러스터 E2E — 실제 LVM VG + NVMe-oF TCP",
-	Label("lvm", "expansion", "e33"),
+	Label("default-profile", "lvm", "expansion", "e33"),
 	func() {
 		Describe("E33.3 LVM 볼륨 확장", Ordered, func() {
 
@@ -47,7 +45,7 @@ var _ = Describe("E33: LVM Kind 클러스터 E2E — 실제 LVM VG + NVMe-oF TCP
 			)
 
 			BeforeAll(func() {
-				e33SkipIfNoInfra()
+				e33FailIfNoInfra()
 
 				testNamespace = fmt.Sprintf("e33-exp-%d", GinkgoParallelProcess())
 				pvcName = fmt.Sprintf("e33-exp-pvc-%d", GinkgoParallelProcess())

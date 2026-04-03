@@ -1,5 +1,3 @@
-//go:build e2e
-
 package e2e
 
 // lvm_iscsi_core_rpcs_e2e_test.go — E34.1: LVM+iSCSI control plane and export contract tests.
@@ -41,13 +39,17 @@ func e34ISCSIPort() string {
 	return "3260"
 }
 
-// e34SkipIfNoInfra skips if E34 infrastructure is unavailable.
-func e34SkipIfNoInfra() {
+// e34FailIfNoInfra fails if E34 infrastructure is unavailable.
+func e34FailIfNoInfra() {
 	if e34LvmVG() == "" {
-		Skip("[E34] PILLAR_E2E_LVM_VG not set — skipping Kind+LVM+iSCSI test")
+		Fail("[E34] MISSING PREREQUISITE: PILLAR_E2E_LVM_VG not set.\n" +
+			"  This env var must be set to the LVM volume group name provisioned inside the Kind cluster.\n" +
+			"  Run: export PILLAR_E2E_LVM_VG=<vg-name>  to set it manually.")
 	}
 	if os.Getenv("KUBECONFIG") == "" && suiteKindCluster == nil {
-		Skip("[E34] KUBECONFIG not set and suiteKindCluster is nil — Kind cluster not available")
+		Fail("[E34] MISSING PREREQUISITE: No Kind cluster available.\n" +
+			"  KUBECONFIG must point to a running cluster or the Kind cluster must be bootstrapped.\n" +
+			"  Run: export KUBECONFIG=<path-to-kubeconfig>  or run go test without -run to bootstrap Kind.")
 	}
 }
 
@@ -56,7 +58,7 @@ func e34SkipIfNoInfra() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 var _ = Describe("E34: LVM Kind 클러스터 E2E — 실제 LVM VG + iSCSI",
-	Label("iscsi", "lvm", "controlplane", "e34"),
+	Label("default-profile", "iscsi", "lvm", "controlplane", "e34"),
 	func() {
 		Describe("E34.1 iSCSI 제어면 및 export 계약", Ordered, func() {
 
@@ -67,7 +69,7 @@ var _ = Describe("E34: LVM Kind 클러스터 E2E — 실제 LVM VG + iSCSI",
 			)
 
 			BeforeAll(func() {
-				e34SkipIfNoInfra()
+				e34FailIfNoInfra()
 
 				testNamespace = fmt.Sprintf("e34-ctrl-%d", GinkgoParallelProcess())
 				pvcName = fmt.Sprintf("e34-ctrl-pvc-%d", GinkgoParallelProcess())

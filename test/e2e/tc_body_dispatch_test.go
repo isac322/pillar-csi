@@ -8,16 +8,19 @@ package e2e
 // validates that it is non-empty, then invokes the category-specific body
 // function that performs the real assertions.
 //
-// Category routing:
+// Category routing (catalog-driven TCs only):
 //
 //	"in-process" → runInProcessTCBody(tc)
 //	"envtest"    → runEnvtestTCBody(tc)
 //	"cluster"    → runClusterTCBody(tc)
-//	"full-lvm"   → runFullLVMTCBody(tc)
+//
+// E33, E34, E35, F27–F31 are NOT dispatched through runTCBody.
+// Their specs live directly in *_e2e_test.go files with Label("default-profile")
+// and run under the default label filter without going through the catalog.
 //
 // The category files (category_inprocess_test.go, category_envtest_test.go,
-// category_cluster_test.go, category_lvm_test.go) each define their body
-// function targeting their subset of TCs without overlap.
+// category_cluster_test.go) each define their body function targeting their
+// subset of TCs without overlap.
 //
 // Failure output: each body function is responsible for embedding the
 // tc.tcNodeLabel() and tc.SectionTitle in its Expect/Fail messages so that the
@@ -57,8 +60,6 @@ func runTCBody(tc documentedCase) {
 		runEnvtestTCBody(tc, plan)
 	case "cluster":
 		runClusterTCBody(tc, plan)
-	case "full-lvm":
-		runFullLVMTCBody(tc, plan)
 	default:
 		Fail(fmt.Sprintf("%s[%s] FAIL: unknown TC category %q",
 			tc.tcNodeLabel(), tc.SectionTitle, tc.Category))
