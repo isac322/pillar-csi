@@ -14,12 +14,28 @@ import (
 )
 
 const (
-	documentRelativePath = "docs/E2E-TESTCASES.md"
-	manualSectionHeading = "## 유형 M:"
+	// documentDirRelativePath is the repo-relative directory that holds all 6
+	// test-category spec files.
+	documentDirRelativePath = "docs/testing"
+	// manualSectionHeading is the substring that marks the start of the manual /
+	// staging-only test section.  The parser stops at any heading line that
+	// contains this substring, regardless of heading level (## or ###).
+	manualSectionHeading = "유형 M:"
 	goModFileName        = "go.mod"
 )
 
-// Case captures one concrete executable case row from docs/E2E-TESTCASES.md.
+// documentFiles is the ordered list of the 6 spec files under docs/testing/.
+// LoadCatalog parses them in this order and merges the results.
+var documentFiles = []string{
+	"UNIT-TESTS.md",
+	"COMPONENT-TESTS.md",
+	"INTEGRATION-TESTS.md",
+	"E2E-TESTS.md",
+	"CSI-SANITY.md",
+	"PERFORMANCE-TESTS.md",
+}
+
+// Case captures one concrete executable case row from the test spec documents.
 type Case struct {
 	ID         string
 	Symbol     string
@@ -30,6 +46,9 @@ type Case struct {
 	// normalised TC IDs for cluster-level sections whose table rows carry plain
 	// ordinal integers instead of E/F-prefixed identifiers.
 	SectionKey string
+	// SourceFile is the repo-relative path of the spec file that contained this
+	// row (e.g. "docs/testing/E2E-TESTS.md").
+	SourceFile string
 	Line       int
 }
 
@@ -113,10 +132,10 @@ func (r GinkgoTraceabilityReport) ExtraCount() int { return len(r.Extra) }
 // Ginkgo node label.
 func (r GinkgoTraceabilityReport) DuplicateCount() int { return len(r.Duplicates) }
 
-// Catalog is the parsed machine-readable view of the E2E spec document.
+// Catalog is the parsed machine-readable view of the test spec documents.
 type Catalog struct {
 	RepoRoot         string
-	DocumentPath     string
+	DocumentPath     string // path to the docs/testing/ directory
 	DeclaredTotal    int
 	Cases            []Case
 	CanonicalCases   []Case
@@ -155,6 +174,8 @@ var (
 )
 
 // FindRepoRoot walks upward from start until it finds the repository root.
+// It recognises the root as the directory that contains both go.mod and the
+// docs/testing/ spec directory.
 func FindRepoRoot(start string) (string, error) {
 	dir, err := filepath.Abs(start)
 	if err != nil {
@@ -163,7 +184,7 @@ func FindRepoRoot(start string) (string, error) {
 
 	for {
 		if fileExists(filepath.Join(dir, goModFileName)) &&
-			fileExists(filepath.Join(dir, documentRelativePath)) {
+			dirExists(filepath.Join(dir, documentDirRelativePath)) {
 			return dir, nil
 		}
 
@@ -175,15 +196,64 @@ func FindRepoRoot(start string) (string, error) {
 	}
 }
 
-// LoadCatalog parses docs/E2E-TESTCASES.md and returns the extracted catalog.
+// LoadCatalog parses the 6 spec files under docs/testing/ and returns the
+// merged catalog.
 //
-// The parser stops at the manual-only Type M section because the declared
-// total explicitly excludes those manual scenarios.
+// Files parsed (in order):
+//   - UNIT-TESTS.md
+//   - COMPONENT-TESTS.md
+//   - INTEGRATION-TESTS.md
+//   - E2E-TESTS.md
+//   - CSI-SANITY.md
+//   - PERFORMANCE-TESTS.md
+//
+// Parsing stops at the manual/staging section heading ("유형 M:") within each
+// file so that manual test cases are excluded from the automated catalog.
 func LoadCatalog(repoRoot string) (Catalog, error) {
-	documentPath := filepath.Join(repoRoot, documentRelativePath)
-	file, err := os.Open(documentPath)
+	docDir := filepath.Join(repoRoot, documentDirRelativePath)
+
+	var (
+		declaredTotal int
+		allCases      []Case
+	)
+
+	for _, filename := range documentFiles {
+		filePath := filepath.Join(docDir, filename)
+		relPath := filepath.ToSlash(filepath.Join(documentDirRelativePath, filename))
+		cases, fileTotal, err := parseSpecFile(filePath, relPath)
+		if err != nil {
+			return Catalog{}, fmt.Errorf("parse %s: %w", filename, err)
+		}
+		allCases = append(allCases, cases...)
+		declaredTotal += fileTotal
+	}
+
+	canonicalCases, duplicateSymbols := canonicalizeCases(allCases)
+
+	// If no explicit declared total was found in any file, use the count of
+	// canonical cases as the authoritative total.
+	if declaredTotal == 0 {
+		declaredTotal = len(canonicalCases)
+	}
+
+	return Catalog{
+		RepoRoot:         repoRoot,
+		DocumentPath:     docDir,
+		DeclaredTotal:    declaredTotal,
+		Cases:            allCases,
+		CanonicalCases:   canonicalCases,
+		DuplicateSymbols: duplicateSymbols,
+	}, nil
+}
+
+// parseSpecFile reads one spec markdown file and returns the extracted cases
+// and any explicitly declared total (총 테스트 케이스:).
+//
+// relPath is the repo-relative path stored in Case.SourceFile.
+func parseSpecFile(filePath, relPath string) ([]Case, int, error) {
+	file, err := os.Open(filePath) //nolint:gosec // path constructed from known constants
 	if err != nil {
-		return Catalog{}, fmt.Errorf("open spec document: %w", err)
+		return nil, 0, fmt.Errorf("open: %w", err)
 	}
 	defer file.Close()
 
@@ -201,7 +271,8 @@ func LoadCatalog(repoRoot string) (Catalog, error) {
 		lineNo++
 		line := scanner.Text()
 
-		if strings.HasPrefix(line, manualSectionHeading) {
+		// Stop parsing at the manual/staging section.
+		if isManualSectionHeading(line) {
 			break
 		}
 
@@ -226,27 +297,27 @@ func LoadCatalog(repoRoot string) (Catalog, error) {
 			}
 		}
 
-		tc, ok := parseCaseRow(line, currentSection, currentSectionKey, currentSubsection, lineNo)
+		tc, ok := parseCaseRow(line, currentSection, currentSectionKey, currentSubsection, relPath, lineNo)
 		if ok {
 			cases = append(cases, tc)
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return Catalog{}, fmt.Errorf("scan spec document: %w", err)
-	}
-	if declaredTotal == 0 {
-		return Catalog{}, fmt.Errorf("declared total not found in %s", documentRelativePath)
+		return nil, 0, fmt.Errorf("scan: %w", err)
 	}
 
-	canonicalCases, duplicateSymbols := canonicalizeCases(cases)
-	return Catalog{
-		RepoRoot:         repoRoot,
-		DocumentPath:     documentPath,
-		DeclaredTotal:    declaredTotal,
-		Cases:            cases,
-		CanonicalCases:   canonicalCases,
-		DuplicateSymbols: duplicateSymbols,
-	}, nil
+	return cases, declaredTotal, nil
+}
+
+// isManualSectionHeading reports whether line is a heading line (any level)
+// that marks the start of the manual/staging-only test section.
+func isManualSectionHeading(line string) bool {
+	if !strings.HasPrefix(line, "#") {
+		return false
+	}
+	// Strip leading '#' characters to get the heading text.
+	trimmed := strings.TrimLeft(line, "#")
+	return strings.Contains(trimmed, manualSectionHeading)
 }
 
 // BuildTraceabilityReport scans the Go tree and reports which documented cases
@@ -317,7 +388,7 @@ func parseDeclaredTotal(line string) (int, bool) {
 	return value, true
 }
 
-func parseCaseRow(line, section, sectionKey, subsection string, lineNo int) (Case, bool) {
+func parseCaseRow(line, section, sectionKey, subsection, sourceFile string, lineNo int) (Case, bool) {
 	if !strings.HasPrefix(line, "|") {
 		return Case{}, false
 	}
@@ -339,6 +410,7 @@ func parseCaseRow(line, section, sectionKey, subsection string, lineNo int) (Cas
 		Section:    section,
 		SectionKey: sectionKey,
 		Subsection: subsection,
+		SourceFile: sourceFile,
 		Line:       lineNo,
 	}, true
 }
@@ -353,22 +425,72 @@ func splitMarkdownRow(line string) []string {
 	return cells
 }
 
+// looksLikeCaseID reports whether value looks like a valid TC ID from any of
+// the 6 spec documents.  Supported formats:
+//
+//   - All-numeric ordinals:         43, 311
+//   - Standard E/F/M prefix:        E1.6-1, E19.3.6, F27.3, M1
+//   - Extended E-word IDs:          E-FAULT-1-1, E-NEW-1-1
+//   - Performance IDs:              P1-1, P2-2
+//   - Component PRD-gap IDs:        C-NEW-1-1, C-NEW-14-2
+//   - Unit PRD-gap IDs:             NEW-U1-1, NEW-U5-3
 func looksLikeCaseID(value string) bool {
 	if value == "" {
 		return false
 	}
+	// All-numeric ordinals.
 	if allDigits(value) {
 		return true
 	}
-	if strings.HasPrefix(value, "E") || strings.HasPrefix(value, "F") || strings.HasPrefix(value, "M") {
-		for _, r := range value[1:] {
+	// Extended E-WORD-N-M IDs (e.g. E-FAULT-1-1, E-NEW-1-1).
+	// Must have at least one character after "E-".
+	if strings.HasPrefix(value, "E-") {
+		if len(value) <= 2 {
+			return false
+		}
+		for _, r := range value[2:] {
+			if !isUpperAlphaDigitOrHyphen(r) {
+				return false
+			}
+		}
+		return true
+	}
+	// Standard E/F/M-prefix IDs: letter followed immediately by a digit,
+	// then any mix of digits, dots, hyphens.
+	if len(value) >= 2 &&
+		(value[0] == 'E' || value[0] == 'F' || value[0] == 'M') &&
+		value[1] >= '0' && value[1] <= '9' {
+		for _, r := range value[2:] {
 			if (r < '0' || r > '9') && r != '.' && r != '-' {
 				return false
 			}
 		}
 		return true
 	}
+	// P-prefix performance IDs: P followed immediately by a digit.
+	if value[0] == 'P' && len(value) >= 2 && value[1] >= '0' && value[1] <= '9' {
+		for _, r := range value[2:] {
+			if (r < '0' || r > '9') && r != '-' {
+				return false
+			}
+		}
+		return true
+	}
+	// C-NEW-N-M component PRD-gap IDs.
+	if strings.HasPrefix(value, "C-NEW-") {
+		return allDigitsOrHyphens(value[len("C-NEW-"):])
+	}
+	// NEW-UN-M unit PRD-gap IDs (e.g. NEW-U1-1, NEW-U5-3).
+	if strings.HasPrefix(value, "NEW-U") {
+		return allDigitsOrHyphens(value[len("NEW-U"):])
+	}
 	return false
+}
+
+// isUpperAlphaDigitOrHyphen reports whether r is an uppercase ASCII letter,
+// an ASCII digit, or a hyphen.
+func isUpperAlphaDigitOrHyphen(r rune) bool {
+	return (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-'
 }
 
 func looksLikeBacktickedSymbol(value string) bool {
@@ -382,6 +504,20 @@ func allDigits(value string) bool {
 		}
 	}
 	return value != ""
+}
+
+// allDigitsOrHyphens reports whether value is non-empty and contains only
+// ASCII digits and hyphens.
+func allDigitsOrHyphens(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, r := range value {
+		if (r < '0' || r > '9') && r != '-' {
+			return false
+		}
+	}
+	return true
 }
 
 func canonicalizeCases(cases []Case) ([]Case, map[string][]Case) {
@@ -422,7 +558,7 @@ func loadGoFiles(repoRoot string) ([]sourceFile, error) {
 			return nil
 		}
 
-		content, err := os.ReadFile(path)
+		content, err := os.ReadFile(path) //nolint:gosec
 		if err != nil {
 			return fmt.Errorf("read %s: %w", path, err)
 		}
@@ -487,6 +623,11 @@ func findBinding(file sourceFile, tc Case) (Binding, bool) {
 func fileExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && !info.IsDir()
+}
+
+func dirExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
 }
 
 // ginkgoNodeLabelRE matches "[TC-<ID>]" tokens inside Ginkgo node-name string
