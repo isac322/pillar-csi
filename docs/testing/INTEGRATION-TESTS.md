@@ -746,6 +746,70 @@ leader election 등 envtest 경계에서 검증 가능한 항목을 다룬다.
 
 ---
 
+#### I-NEW-13 다중 풀 페일오버 — 교차 바인딩 풀 격리
+
+> **Integration test 근거:** 동일 PillarTarget을 참조하는 여러 PillarPool이 존재할 때,
+> 한 풀의 상태 변화가 다른 풀을 참조하는 바인딩에 영향을 주지 않음을 검증한다.
+> 이는 SSOT(단일 진실 공급원) 정책과 조건 격리를 envtest에서 end-to-end로 확인하는 유일한 방법이다.
+
+**위치:** `internal/controller/cross_resource_gaps_test.go`
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| I-NEW-13-1 | `TestMultiPool_TwoBindings_OnePoolFails_OtherStaysReady` | 두 바인딩이 서로 다른 풀 참조, 풀 A 비Ready → 바인딩 A만 PoolReady=False | envtest; pool-mp-a(Ready), pool-mp-b(Ready), binding-mp-a→pool-mp-a, binding-mp-b→pool-mp-b | 1) 두 바인딩 2회 reconcile; 2) pool-mp-a를 not-ready로; 3) binding-mp-a reconcile; 4) binding-mp-b reconcile | binding-mp-a `PoolReady=False`; binding-mp-b `Ready=True` | `BindCRD`, `BindCtrl`, `PoolCRD` |
+| I-NEW-13-2 | `TestMultiPool_SharedTarget_TargetFails_BothPoolsLoseTargetReady` | 두 풀이 동일 PillarTarget 참조 시 Target 비Ready → 두 풀 모두 TargetReady=False | envtest; target-mp2; pool-mp-c/d 모두 target-mp2 참조; target-mp2 Ready | 1) 각 풀 finalizer reconcile; 2) target-mp2를 not-ready로; 3) 각 풀 reconcile | pool-mp-c `TargetReady=False`; pool-mp-d `TargetReady=False` | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
+| I-NEW-13-3 | `TestMultiPool_PoolRecovery_BindingRegainsReady` | 비Ready 풀이 Ready로 복구되면 참조 바인딩이 Ready 복원 | envtest; pool-mp-e(not-ready), protocol-mp2(Ready), binding-mp-e → pool-mp-e + protocol-mp2 | 1) binding-mp-e reconcile → PoolReady=False; 2) pool-mp-e Ready로 복구; 3) binding-mp-e reconcile | `PoolReady=True`; `Ready=True` | `BindCRD`, `BindCtrl`, `PoolCRD` |
+
+---
+
+#### I-NEW-14 SSOT 강제 적용 — 컨트롤러 수준 스펙 제약 검증
+
+> **Integration test 근거:** 인프라 SSOT 문서가 정의하는 스펙 제약(백엔드-프로토콜 호환성,
+> 조건 격리)이 컨트롤러 조정 단계에서도 올바르게 강제되는지 검증.
+> 웹훅이 우회된 경우에도 reconciler가 Compatible=False를 설정함을 보장한다.
+
+**위치:** `internal/controller/cross_resource_gaps_test.go`
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| I-NEW-14-1 | `TestMultiPool_TwoPoolsSameTarget_IndependentConditions` | 동일 PillarTarget 참조하는 두 풀의 조건이 독립적으로 관리됨 | envtest; target-ssot1(Ready); pool-ssot-a, pool-ssot-b 모두 target-ssot1 참조 | 1) 각 풀 2회 reconcile; 2) 각 풀의 TargetReady 조건 확인 | pool-ssot-a와 pool-ssot-b 각각 고유한 조건 목록; 각각 `TargetReady=True`; 조건 개수 중복 없음 | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
+| I-NEW-14-2 | `TestPillarBindingReconciler_IncompatiblePair_CompatibleFalse` | 비호환 백엔드+프로토콜 바인딩: reconciler가 Compatible=False 설정 | envtest; pool-ssot2(lvm-lv, Ready), protocol-ssot2(nfs, Ready), binding-ssot2(lvm-lv+nfs — 비호환) | 1) binding-ssot2 2회 reconcile | `Compatible=False`; Reason="Incompatible"; Message에 백엔드+프로토콜 타입 포함 | `BindCRD`, `BindCtrl`, `PoolCRD`, `PProtCRD` |
+| I-NEW-14-3 | `TestPillarPoolReconciler_ConditionStability_NoDuplicateOnSameStatus` | 동일 상태로 여러 번 reconcile해도 조건 목록에 중복이 없음 | envtest; pool-ssot3(target 미존재) | 1) 3회 reconcile | status.conditions에서 동일 Type 조건이 하나씩만 존재; 전체 조건 수 안정 | `PoolCRD`, `PoolCtrl` |
+
+---
+
+#### I-NEW-15 웹훅 검증 체인 — 다단계 리소스 생성 검증
+
+> **Integration test 근거:** PillarTarget → PillarPool → PillarProtocol → PillarBinding의
+> 생성 순서에 따라 각 리소스의 웹훅 검증기(CustomValidator)가 독립적으로 올바르게 동작하고,
+> 비호환 조합은 바인딩 웹훅이 거부함을 검증.
+
+**위치:** `internal/webhook/v1alpha1/webhook_chain_test.go`
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| I-NEW-15-1 | `TestWebhookChain_FullStack_CreateAndValidate` | 전체 스택(Target→Pool→Protocol→Binding) 순차 생성 시 모든 웹훅 통과 | envtest; PillarTarget(external), PillarPool(zfs-zvol), PillarProtocol(nvmeof-tcp), PillarBinding | 1) Target ValidateCreate → OK; 2) Pool ValidateCreate → OK; 3) Protocol ValidateCreate → OK; 4) Binding ValidateCreate → OK | 모든 단계 `err=nil`; `warnings=nil` | `TgtWH`, `BindWH` |
+| I-NEW-15-2 | `TestWebhookChain_BindingIncompatible_WebhookRejects` | 비호환 조합(lvm-lv+nfs) 바인딩 생성 시 웹훅이 거부 | envtest; PillarPool(lvm-lv), PillarProtocol(nfs); k8sClient로 두 리소스 사전 생성 | 1) PillarBinding(poolRef=lvm-pool, protocolRef=nfs-proto) ValidateCreate 호출 | `err != nil`; `"incompatible"` 포함; `field.Invalid` | `BindWH`, `PoolCRD`, `PProtCRD` |
+
+---
+
+#### I-NEW-16 Reconciler 멱등성 — 반복 조정 안정성
+
+> **Integration test 근거:** 각 CRD의 reconciler를 동일 상태에서 여러 번 호출해도
+> 조건 목록에 중복이 없고 파생 리소스(StorageClass)가 하나만 생성됨을 검증.
+> 이는 컨트롤러의 멱등성 보장 — controller-runtime 패턴의 핵심 요구사항이다.
+
+**위치:** `internal/controller/cross_resource_gaps_test.go`
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| I-NEW-16-1 | `TestIdempotency_PillarTarget_MultipleReconciles_StableConditions` | PillarTarget 5회 reconcile 후 조건 안정성 검증 | envtest; target-idem1(external) | 1) 5회 Reconcile | status.conditions에서 동일 Type 중복 없음; 2회 이후 조건 변화 없음 | `TgtCRD`, `TgtCtrl` |
+| I-NEW-16-2 | `TestIdempotency_PillarPool_MultipleReconciles_NoDuplicateConditions` | PillarPool 5회 reconcile 후 조건 중복 없음 | envtest; pool-idem2(target-idem2, target Not-Ready) | 1) 5회 Reconcile | status.conditions에서 TargetReady, PoolDiscovered, BackendSupported, Ready 각 1개씩; 총 4개 이하 | `PoolCRD`, `PoolCtrl` |
+| I-NEW-16-3 | `TestIdempotency_PillarBinding_MultipleReconciles_SingleStorageClass` | PillarBinding 5회 reconcile 후 StorageClass 1개만 존재 | envtest; pool-idem3(Ready), protocol-idem3(Ready), binding-idem3 | 1) 5회 Reconcile | SC "binding-idem3" 정확히 1개; 파라미터 일관성 유지 | `BindCRD`, `BindCtrl`, `SC` |
+| I-NEW-16-4 | `TestIdempotency_PillarProtocol_MultipleReconciles_StableBindingCount` | PillarProtocol 5회 reconcile 후 bindingCount 안정 | envtest; proto-idem4; binding-idem4a + binding-idem4b 참조 | 1) 5회 Protocol Reconcile | `status.bindingCount=2` 일정 유지; 누적 증가 없음 | `PProtCRD`, `PProtCtrl`, `BindCRD` |
+
+---
+
 ## 카테고리: 실제 Backend (loopback device)
 
 > **경계:** 실제 LVM 명령어(`lvcreate`, `lvremove` 등)를 loopback device 위의
