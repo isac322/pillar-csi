@@ -353,6 +353,11 @@ var inProcessAssertions = map[string]func(documentedCase){
 	// E24.10: Aborted lifecycle cleanup paths
 	"TestCSILifecycle_OutOfOrderOperationsDetected":    assertE24_OutOfOrderOperationsDetected,
 	"TestCSIController_DeleteVolume_NonExistentVolume": assertE24_DeleteVolume_NonExistentVolume,
+	// ── E-FAULT: Fault injection scenarios ───────────────────────────────────
+	"TestE2E_AgentNetworkPartition_CreateVolumeFails":   assertEFAULT_AgentNetworkPartition_CreateVolumeFails,
+	"TestE2E_PoolExhaustion_CreateVolumeFails":          assertEFAULT_PoolExhaustion_CreateVolumeFails,
+	"TestE2E_BackingDeviceRemoved_GracefulError":        assertEFAULT_BackingDeviceRemoved_GracefulError,
+	"TestE2E_MultiNode_VolumeAccessFromDifferentWorker": assertEFAULT_MultiNode_VolumeAccessFromDifferentWorker,
 }
 
 // runInProcessTCBody executes the assertion body for an in-process TC.
