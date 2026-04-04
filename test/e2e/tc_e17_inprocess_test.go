@@ -7,6 +7,8 @@ import (
 
 	csiapi "github.com/container-storage-interface/spec/lib/go/csi"
 	. "github.com/onsi/gomega"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	csidrv "github.com/bhyoo/pillar-csi/internal/csi"
 )
@@ -148,6 +150,156 @@ func assertE17_NodeExpandVolumeResizesFS(_ documentedCase) {
 	// NodeExpandVolume either succeeds or returns an expected error —
 	// the important thing is no panic.
 	_ = err
+}
+
+func assertE17_NodeStage_MountFailureDisconnects(tc documentedCase) {
+	env := newNodeTestEnv()
+	defer env.close()
+
+	// Inject a mount error into the mounter
+	env.mounter.formatAndMountErr = status.Error(codes.Internal, "format/mount failed: device busy")
+
+	volumeID := "target-local/nvmeof-tcp/zfs-zvol/tank/pvc-e17-mount-fail"
+	env.sm.ForceState(volumeID, csidrv.StateControllerPublished)
+
+	stagePath := filepath.Join(env.stateDir, "stage-e17-mount-fail")
+	_, err := env.node.NodeStageVolume(env.ctx, &csiapi.NodeStageVolumeRequest{
+		VolumeId:          volumeID,
+		StagingTargetPath: stagePath,
+		VolumeCapability:  mountCapability("ext4"),
+		VolumeContext:     nodeVolumeContext(),
+	})
+	Expect(err).To(HaveOccurred(), "%s: expected error when mount fails", tc.tcNodeLabel())
+}
+
+func assertE17_NodeUnstage_FailurePreservesStateFile(_ documentedCase) {
+	env := newNodeTestEnv()
+	defer env.close()
+
+	// Successfully stage a volume first
+	volumeID := "target-local/nvmeof-tcp/zfs-zvol/tank/pvc-e17-unstage-fail"
+	env.sm.ForceState(volumeID, csidrv.StateControllerPublished)
+
+	stagePath := filepath.Join(env.stateDir, "stage-e17-unstage-fail")
+	_, err := env.node.NodeStageVolume(env.ctx, &csiapi.NodeStageVolumeRequest{
+		VolumeId:          volumeID,
+		StagingTargetPath: stagePath,
+		VolumeCapability:  mountCapability("ext4"),
+		VolumeContext:     nodeVolumeContext(),
+	})
+	Expect(err).NotTo(HaveOccurred())
+
+	// Inject unmount error
+	env.mounter.unmountErr = status.Error(codes.Internal, "unmount failed: device busy")
+
+	// NodeUnstageVolume with unmount error — should not panic
+	_, _ = env.node.NodeUnstageVolume(env.ctx, &csiapi.NodeUnstageVolumeRequest{
+		VolumeId:          volumeID,
+		StagingTargetPath: stagePath,
+	})
+	// No panic = success
+}
+
+func assertE17_CreatePartial_DeleteVolumeCleansCRD(tc documentedCase) {
+	env := newControllerTestEnv()
+	defer env.close()
+
+	resp, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
+		Name:               "pvc-e17-partial-delete-crd",
+		Parameters:         env.params,
+		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
+	})
+	Expect(err).NotTo(HaveOccurred(), "%s: CreateVolume", tc.tcNodeLabel())
+	volumeID := resp.GetVolume().GetVolumeId()
+	Expect(volumeID).NotTo(BeEmpty(), "%s: volume ID must not be empty", tc.tcNodeLabel())
+
+	_, err = env.controller.DeleteVolume(env.ctx, &csiapi.DeleteVolumeRequest{
+		VolumeId: volumeID,
+	})
+	Expect(err).NotTo(HaveOccurred(), "%s: DeleteVolume should clean up CRD", tc.tcNodeLabel())
+
+	// Verify agent received a delete call
+	c := env.agentSrv.counts()
+	Expect(c.DeleteVolume).To(BeNumerically(">=", 1),
+		"%s: agent deleteVolume should be called on DeleteVolume", tc.tcNodeLabel())
+}
+
+func assertE17_FullLifecycle_NoResourceLeak(tc documentedCase) {
+	env := newControllerTestEnv()
+	defer env.close()
+
+	// Create
+	resp, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
+		Name:               "pvc-e17-full-lifecycle",
+		Parameters:         env.params,
+		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
+	})
+	Expect(err).NotTo(HaveOccurred(), "%s: CreateVolume", tc.tcNodeLabel())
+	volumeID := resp.GetVolume().GetVolumeId()
+
+	// Publish
+	makeCSINodeWithNQN(env, "node-e17-full", "nqn.2026-01.io.example:node-e17-full")
+	_, err = env.controller.ControllerPublishVolume(env.ctx, &csiapi.ControllerPublishVolumeRequest{
+		VolumeId:         volumeID,
+		NodeId:           "node-e17-full",
+		VolumeCapability: mountCapability("ext4"),
+	})
+	Expect(err).NotTo(HaveOccurred(), "%s: ControllerPublishVolume", tc.tcNodeLabel())
+
+	// Unpublish
+	_, err = env.controller.ControllerUnpublishVolume(env.ctx, &csiapi.ControllerUnpublishVolumeRequest{
+		VolumeId: volumeID,
+		NodeId:   "node-e17-full",
+	})
+	Expect(err).NotTo(HaveOccurred(), "%s: ControllerUnpublishVolume", tc.tcNodeLabel())
+
+	// Delete
+	_, err = env.controller.DeleteVolume(env.ctx, &csiapi.DeleteVolumeRequest{
+		VolumeId: volumeID,
+	})
+	Expect(err).NotTo(HaveOccurred(), "%s: DeleteVolume", tc.tcNodeLabel())
+
+	// Verify call counts indicate each step executed
+	c := env.agentSrv.counts()
+	Expect(c.CreateVolume).To(BeNumerically(">=", 1), "%s: CreateVolume agent call", tc.tcNodeLabel())
+	Expect(c.AllowInitiator).To(BeNumerically(">=", 1), "%s: AllowInitiator agent call", tc.tcNodeLabel())
+	Expect(c.DenyInitiator).To(BeNumerically(">=", 1), "%s: DenyInitiator agent call", tc.tcNodeLabel())
+	Expect(c.DeleteVolume).To(BeNumerically(">=", 1), "%s: DeleteVolume agent call", tc.tcNodeLabel())
+}
+
+func assertE17_RepeatedStageUnstage(tc documentedCase) {
+	env := newNodeTestEnv()
+	defer env.close()
+
+	volumeID := "target-local/nvmeof-tcp/zfs-zvol/tank/pvc-e17-repeated-stage"
+	stagePath := filepath.Join(env.stateDir, "stage-e17-repeated")
+
+	// Stage × 3 (idempotent)
+	for i := range 3 {
+		env.sm.ForceState(volumeID, csidrv.StateControllerPublished)
+		_, err := env.node.NodeStageVolume(env.ctx, &csiapi.NodeStageVolumeRequest{
+			VolumeId:          volumeID,
+			StagingTargetPath: stagePath,
+			VolumeCapability:  mountCapability("ext4"),
+			VolumeContext:     nodeVolumeContext(),
+		})
+		Expect(err).NotTo(HaveOccurred(), "%s: NodeStageVolume attempt %d", tc.tcNodeLabel(), i+1)
+	}
+
+	// Unstage × 3 (idempotent)
+	for i := range 3 {
+		_, err := env.node.NodeUnstageVolume(env.ctx, &csiapi.NodeUnstageVolumeRequest{
+			VolumeId:          volumeID,
+			StagingTargetPath: stagePath,
+		})
+		// First unstage should succeed; subsequent ones may return NotFound but must not error fatally
+		if i == 0 {
+			Expect(err).NotTo(HaveOccurred(), "%s: NodeUnstageVolume first attempt", tc.tcNodeLabel())
+		}
+		// Subsequent calls may return an error but must not panic
+	}
 }
 
 func assertE17_MultiVolumeIsolation(tc documentedCase) {

@@ -639,7 +639,7 @@ var _ = Describe("PillarTarget Controller", func() {
 			Expect(cond.Reason).To(Equal("NodeFound"))
 		})
 
-		It("should populate status.resolvedAddress from the node's InternalIP", func() {
+		It("I-NEW-1-1 TestPillarTargetReconciler_ResolvesInternalIP: should populate status.resolvedAddress from the node's InternalIP", func() {
 			_, err := doFoundReconcile()
 			Expect(err).NotTo(HaveOccurred())
 
@@ -649,7 +649,7 @@ var _ = Describe("PillarTarget Controller", func() {
 				"resolvedAddress should be <nodeIP>:<defaultPort> when no port override is set")
 		})
 
-		It("should apply the storage-node label to the referenced node", func() {
+		It("I-NEW-4-1 TestPillarTargetReconciler_AddsStorageNodeLabel: should apply the storage-node label to the referenced node", func() {
 			_, err := doFoundReconcile()
 			Expect(err).NotTo(HaveOccurred())
 
@@ -687,7 +687,7 @@ var _ = Describe("PillarTarget Controller", func() {
 				"Ready should be False while AgentConnected is False")
 		})
 
-		It("should not duplicate the storage-node label on repeated reconciles", func() {
+		It("I-NEW-4-3 TestPillarTargetReconciler_LabelIdempotent: should not duplicate the storage-node label on repeated reconciles", func() {
 			// Reconcile twice — label should still be present exactly once.
 			_, err := doFoundReconcile()
 			Expect(err).NotTo(HaveOccurred())
@@ -700,7 +700,7 @@ var _ = Describe("PillarTarget Controller", func() {
 				"label value should remain 'true' after multiple reconciles")
 		})
 
-		It("should remove the storage-node label from the node on target deletion", func() {
+		It("I-NEW-4-2 TestPillarTargetReconciler_RemovesStorageNodeLabel: should remove the storage-node label from the node on target deletion", func() {
 			// First ensure label is applied.
 			_, err := doFoundReconcile()
 			Expect(err).NotTo(HaveOccurred())

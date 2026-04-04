@@ -441,6 +441,7 @@ func splitMarkdownRow(line string) []string {
 //   - Performance IDs:              P1-1, P2-2
 //   - Component PRD-gap IDs:        C-NEW-1-1, C-NEW-14-2
 //   - Unit PRD-gap IDs:             NEW-U1-1, NEW-U5-3
+//   - Integration PRD-gap IDs:      I-NEW-1-1, I-NEW-8-2
 func looksLikeCaseID(value string) bool {
 	if value == "" {
 		return false
@@ -490,6 +491,10 @@ func looksLikeCaseID(value string) bool {
 	// NEW-UN-M unit PRD-gap IDs (e.g. NEW-U1-1, NEW-U5-3).
 	if strings.HasPrefix(value, "NEW-U") {
 		return allDigitsOrHyphens(value[len("NEW-U"):])
+	}
+	// I-NEW-N-M integration PRD-gap IDs (e.g. I-NEW-1-1, I-NEW-8-2).
+	if strings.HasPrefix(value, "I-NEW-") {
+		return allDigitsOrHyphens(value[len("I-NEW-"):])
 	}
 	return false
 }

@@ -447,9 +447,11 @@ func TestLooksLikeCaseID_NewFormats(t *testing.T) {
 		"C-NEW-1-1", "C-NEW-14-2",
 		// Unit PRD-gap IDs
 		"NEW-U1-1", "NEW-U5-3",
+		// Integration PRD-gap IDs
+		"I-NEW-1-1", "I-NEW-8-2", "I-NEW-3-2",
 	}
 	invalid := []string{
-		"", "ID", "TC-1", "test", "E", "E.", "P", "C-NEW-",
+		"", "ID", "TC-1", "test", "E", "E.", "P", "C-NEW-", "I-NEW-",
 	}
 
 	for _, id := range valid {
