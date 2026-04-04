@@ -271,7 +271,7 @@ var inProcessAssertions = map[string]func(documentedCase){
 	"TestCSIProtocol_ControllerPublish_ISCSIUnimplemented":              assertE22_ControllerPublish_ISCSIUnimplemented,
 	"TestCSIProtocol_CreateVolume_UnknownBackendType_MapsToUnspecified": assertE22_CreateVolume_UnknownBackendType_MapsToUnspecified,
 	// ── E28: LVM Agent gRPC ───────────────────────────────────────────────────
-	// Key = TestName from docs/E2E-TESTCASES.md; Value = assert function in tc_e28_inprocess_test.go.
+	// Key = TestName from docs/testing/{COMPONENT,INTEGRATION,E2E}-TESTS.md; Value = assert function in tc_e28_inprocess_test.go.
 	"TestAgent_LVM_GetCapabilities":                           assertE28_LVM_GetCapabilities,
 	"TestAgent_LVM_HealthCheck":                               assertE28_LVM_HealthCheck,
 	"TestAgent_LVM_RoundTrip_Linear":                          assertE28_LVM_RoundTrip_Linear,
@@ -303,7 +303,7 @@ var inProcessAssertions = map[string]func(documentedCase){
 	"TestAgent_LVM_CreateVolume_ThinPool_Full":                assertE28_LVM_CreateVolume_ThinPool_Full,
 	"TestAgent_MultiBackend_ZFS_LVM_GetCapabilities":          assertE28_MultiBackend_ZFS_LVM_GetCapabilities,
 	// ── E29: CSI Controller LVM parameter propagation ─────────────────────────
-	// Key = TestName from docs/E2E-TESTCASES.md; Value = assert function in tc_e29_inprocess_test.go.
+	// Key = TestName from docs/testing/{COMPONENT,INTEGRATION,E2E}-TESTS.md; Value = assert function in tc_e29_inprocess_test.go.
 	"TestCSIController_CreateVolume_LVM_Linear":                          assertE29_CreateVolume_LVM_Linear,
 	"TestCSIController_CreateVolume_LVM_Thin":                            assertE29_CreateVolume_LVM_Thin,
 	"TestCSIController_CreateVolume_LVM_VolumeIdFormat":                  assertE29_CreateVolume_LVM_VolumeIdFormat,
@@ -317,7 +317,7 @@ var inProcessAssertions = map[string]func(documentedCase){
 	"TestCSIController_ControllerExpandVolume_LVM":                       assertE29_ControllerExpandVolume_LVM,
 	"TestCSIController_LVM_FullRoundTrip":                                assertE29_LVM_FullRoundTrip,
 	// ── E30: LVM LV no-duplication ────────────────────────────────────────────
-	// Key = TestName from docs/E2E-TESTCASES.md; Value = assert function in tc_e30_inprocess_test.go.
+	// Key = TestName from docs/testing/{COMPONENT,INTEGRATION,E2E}-TESTS.md; Value = assert function in tc_e30_inprocess_test.go.
 	"TestCSILVMNoDup_ExactlyOneLVAfterExportFailureRetry":        assertE30_ExactlyOneLV_AfterExportFailureRetry,
 	"TestCSILVMNoDup_LVRegistryReflectsDeleteAfterPartialCreate": assertE30_LVRegistry_DeleteAfterPartialCreate,
 	"TestCSILVMNoDup_MultipleRetriesNeverDuplicate":              assertE30_MultipleRetries_NeverDuplicate,

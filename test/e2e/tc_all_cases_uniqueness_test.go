@@ -46,7 +46,7 @@ func TestAC3AllDocumentedTCIDsProduceUniqueScopes(t *testing.T) {
 		t.Fatalf("AC3 [catalog]: build default profile: %v", err)
 	}
 	if len(profile) == 0 {
-		t.Fatal("AC3 [catalog]: no documented cases found — check docs/E2E-TESTCASES.md")
+		t.Fatal("AC3 [catalog]: no documented cases found — check docs/testing/{COMPONENT,INTEGRATION,E2E}-TESTS.md")
 	}
 	if len(profile) != defaultProfileCaseCount {
 		t.Fatalf("AC3 [catalog]: expected %d cases, got %d", defaultProfileCaseCount, len(profile))

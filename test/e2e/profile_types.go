@@ -46,7 +46,7 @@ func (p PhaseTimings) GroupTeardown() time.Duration { return time.Duration(p.Gro
 // TCProfile holds the timing profile for a single test case.
 // It is the per-TC element of ProfileReport.TCs.
 type TCProfile struct {
-	// TCID is the canonical TC identifier as it appears in E2E-TESTCASES.md
+	// TCID is the canonical TC identifier as it appears in docs/testing/{COMPONENT,INTEGRATION,E2E}-TESTS.md
 	// (e.g. "E1.2", "F27.1"). It matches the [TC-<TCID>] Ginkgo node label.
 	TCID string `json:"tcID"`
 

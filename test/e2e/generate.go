@@ -6,7 +6,7 @@
 //   - Runtime mode (default when ginkgo CLI is on PATH):
 //     Executes `ginkgo --dry-run ./test/e2e/` to enumerate actual Ginkgo node
 //     names, then asserts a 1-to-1 match with the 437 TC IDs documented in
-//     docs/E2E-TESTCASES.md.  This mode correctly handles dynamically-generated
+//     docs/testing/{COMPONENT,INTEGRATION,E2E}-TESTS.md.  This mode correctly handles dynamically-generated
 //     node names (produced via tc.tcNodeName()) that the static scanner cannot
 //     see.  Exit code 1 when any TC ID is missing or unrecognised.
 //

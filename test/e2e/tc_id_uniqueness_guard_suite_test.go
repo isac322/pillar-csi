@@ -64,7 +64,7 @@ var _ = SynchronizedBeforeSuite(
 		profile, err := buildDefaultProfile()
 		Expect(err).NotTo(HaveOccurred(),
 			"[AC3] default profile build failed at suite startup — "+
-				"check docs/E2E-TESTCASES.md for duplicate or missing TC IDs")
+				"check docs/testing/{COMPONENT,INTEGRATION,E2E}-TESTS.md for duplicate or missing TC IDs")
 
 		Expect(profile).NotTo(BeEmpty(),
 			"[AC3] default profile is empty — expected %d documented cases",

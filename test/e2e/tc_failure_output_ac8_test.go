@@ -4,7 +4,7 @@ package e2e
 //
 // AC 8 contract: Every spec failure MUST produce output containing a
 // "[TC-<ID>]" token that identifies the corresponding entry in
-// docs/E2E-TESTCASES.md, making "grep TC-<ID>" a reliable tool for locating
+// docs/testing/{COMPONENT,INTEGRATION,E2E}-TESTS.md, making "grep TC-<ID>" a reliable tool for locating
 // the failure context in raw test output.
 //
 // This file complements tc_failure_output_test.go (unit tests for individual
@@ -12,7 +12,7 @@ package e2e
 //
 //  1. Full output pipeline: SpecReport → extractTCIDFromReport →
 //     extractCategoryFromReport → formatFailurePrefix → failure line.
-//  2. All-catalog coverage: every TC ID from docs/E2E-TESTCASES.md produces
+//  2. All-catalog coverage: every TC ID from docs/testing/{COMPONENT,INTEGRATION,E2E}-TESTS.md produces
 //     a grep-able failure line.
 //  3. Non-failing state: the hook is a no-op for passed/skipped/pending specs.
 //  4. Panic tracing: panicked specs (ForwardedPanic) are traced with TC ID.
@@ -473,10 +473,10 @@ func TestAC8_NoOutputForNonTCFrameworkSpec(t *testing.T) {
 	}
 }
 
-// ── 7. All-catalog: every TC ID from docs/E2E-TESTCASES.md ───────────────────
+// ── 7. All-catalog: every TC ID from docs/testing/{COMPONENT,INTEGRATION,E2E}-TESTS.md ───────────────────
 
 // TestAC8_AllCatalogTCIDsProduceGrepableLines verifies that for every TC ID in
-// docs/E2E-TESTCASES.md, a simulated failure produces a line where
+// docs/testing/{COMPONENT,INTEGRATION,E2E}-TESTS.md, a simulated failure produces a line where
 // "grep TC-<ID>" would match unambiguously.
 //
 // This is the authoritative proof that AC 8 holds for the entire 437-case set:
@@ -494,7 +494,7 @@ func TestAC8_AllCatalogTCIDsProduceGrepableLines(t *testing.T) {
 	}
 
 	if len(catalog.CanonicalCases) == 0 {
-		t.Fatal("[AC-8] catalog is empty — check docs/E2E-TESTCASES.md")
+		t.Fatal("[AC-8] catalog is empty — check docs/testing/{COMPONENT,INTEGRATION,E2E}-TESTS.md")
 	}
 
 	// categories that appear in the spec document
@@ -759,7 +759,7 @@ func TestAC8_NoFalsePositiveIDExtraction(t *testing.T) {
 		"BeforeSuite: cluster creation",
 		"error: connection refused at port 6443",
 		"// E1 is the first group",
-		"see E2E-TESTCASES.md for details",
+		"see docs/testing/{COMPONENT,INTEGRATION,E2E}-TESTS.md for details",
 	}
 
 	for _, text := range nonMatchingTexts {

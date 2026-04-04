@@ -2,7 +2,7 @@ package e2e
 
 // tc_e28_inprocess_test.go — Per-TC assertions for E28: LVM Agent gRPC E2E tests.
 //
-// All 30 TCs in this file use names matching docs/E2E-TESTCASES.md sections
+// All 30 TCs in this file use names matching docs/testing/{COMPONENT,INTEGRATION,E2E}-TESTS.md sections
 // E28.1 through E28.11.  Each function creates a fresh agentTestEnv (real
 // agentsvc.Server + real LVM backend via docker exec inside the Kind cluster)
 // providing true per-TC isolation with no shared mutable state.

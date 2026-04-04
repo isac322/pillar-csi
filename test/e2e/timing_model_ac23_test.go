@@ -49,7 +49,7 @@ import (
 const (
 	// ac23DefaultProfileCaseCount is the total number of default-profile TCs
 	// tracked in the budget model.  This matches the canonical total declared in
-	// docs/E2E-TESTCASES.md (239 in-process + 117 envtest + 48 cluster = 404),
+	// docs/docs/testing/{COMPONENT,INTEGRATION,E2E}-TESTS.md (239 in-process + 117 envtest + 48 cluster = 404),
 	// which is the running TC count for `make test-e2e` with the default-profile
 	// label filter.  The 7 E33 standalone real-backend specs are included in the
 	// 404 total (cluster category, bounded by the 2-minute suite timeout).
@@ -265,7 +265,7 @@ func TestAC23WorkerCountAchievesTestsBudget(t *testing.T) {
 	// Conservative upper bound: 10ms per TC (100× the ~0.1ms measured avg for
 	// isolation scope overhead alone).  Real spec body execution adds to this,
 	// but in-process TCs (Category A, the majority of 404) complete in < 1ms
-	// per the E2E-TESTCASES.md performance note.
+	// per the docs/testing/{COMPONENT,INTEGRATION,E2E}-TESTS.md performance note.
 	const conservativePerTCMs = 10 // milliseconds
 
 	tcsPerWorker := math.Ceil(float64(ac23DefaultProfileCaseCount) / float64(ac23WorkerCount))
