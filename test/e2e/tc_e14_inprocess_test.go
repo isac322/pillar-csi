@@ -242,3 +242,68 @@ func assertE14_ValidateVolumeCapabilities(tc documentedCase) {
 		Expect(resp).NotTo(BeNil(), "%s: response should not be nil", tc.tcNodeLabel())
 	}
 }
+
+func assertE14_ControllerPublish_EmptyNodeId(tc documentedCase) {
+	env := newControllerTestEnv()
+	defer env.close()
+
+	resp, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
+		Name:               "pvc-e14-pub-empty-node",
+		Parameters:         env.params,
+		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
+	})
+	Expect(err).NotTo(HaveOccurred(), "%s: CreateVolume", tc.tcNodeLabel())
+	volumeID := resp.GetVolume().GetVolumeId()
+
+	_, err = env.controller.ControllerPublishVolume(env.ctx, &csiapi.ControllerPublishVolumeRequest{
+		VolumeId:         volumeID,
+		NodeId:           "",
+		VolumeCapability: mountCapability("ext4"),
+	})
+	Expect(err).To(HaveOccurred(), "%s: expected error for empty NodeId", tc.tcNodeLabel())
+	Expect(status.Code(err)).To(Equal(codes.InvalidArgument),
+		"%s: expected InvalidArgument for empty NodeId", tc.tcNodeLabel())
+}
+
+func assertE14_CreateVolume_LimitLessThanRequired(tc documentedCase) {
+	env := newControllerTestEnv()
+	defer env.close()
+
+	// LimitBytes < RequiredBytes is an invalid CapacityRange
+	_, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
+		Name:               "pvc-e14-limit-less-than-required",
+		Parameters:         env.params,
+		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
+		CapacityRange: &csiapi.CapacityRange{
+			RequiredBytes: 100 << 20,
+			LimitBytes:    10 << 20, // limit < required
+		},
+	})
+	Expect(err).To(HaveOccurred(), "%s: expected error for LimitBytes < RequiredBytes", tc.tcNodeLabel())
+	Expect(status.Code(err)).To(Equal(codes.InvalidArgument),
+		"%s: expected InvalidArgument for invalid CapacityRange", tc.tcNodeLabel())
+}
+
+func assertE14_CreateVolume_MultiNodeMultiWriter(tc documentedCase) {
+	env := newControllerTestEnv()
+	defer env.close()
+
+	// MULTI_NODE_MULTI_WRITER access mode — pillar-csi rejects this (block storage, single writer)
+	multiWriterCap := &csiapi.VolumeCapability{
+		AccessType: &csiapi.VolumeCapability_Mount{
+			Mount: &csiapi.VolumeCapability_MountVolume{FsType: "ext4"},
+		},
+		AccessMode: &csiapi.VolumeCapability_AccessMode{
+			Mode: csiapi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER,
+		},
+	}
+	_, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
+		Name:               "pvc-e14-multi-node-multi-writer",
+		Parameters:         env.params,
+		VolumeCapabilities: []*csiapi.VolumeCapability{multiWriterCap},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
+	})
+	// MULTI_NODE_MULTI_WRITER should be rejected as unsupported
+	Expect(err).To(HaveOccurred(), "%s: expected error for MULTI_NODE_MULTI_WRITER", tc.tcNodeLabel())
+}

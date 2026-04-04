@@ -174,6 +174,22 @@ var _ = Describe("PillarPool Webhook", func() {
 				"error message should mention the missing lvm section")
 		})
 
+		// ── E20.1.1 ──────────────────────────────────────────────────────────
+		// TestPillarPoolWebhook_ValidCreate_ZFSZvol
+		// Create PillarPool with ZFS zvol backend → accepted.
+		It("E20.1.1 TestPillarPoolWebhook_ValidCreate_ZFSZvol: should accept valid PillarPool with ZFS zvol backend", func() {
+			By("creating a PillarPool with backend.type=zfs-zvol and a valid zfs.pool name")
+			obj.Spec.TargetRef = "storage-target-1"
+			obj.Spec.Backend = pillarcsiv1alpha1.BackendSpec{
+				Type: pillarcsiv1alpha1.BackendTypeZFSZvol,
+				ZFS:  &pillarcsiv1alpha1.ZFSBackendConfig{Pool: "tank"},
+			}
+
+			_, err := validator.ValidateCreate(ctx, obj)
+			Expect(err).NotTo(HaveOccurred(),
+				"ValidateCreate should accept a PillarPool with a valid ZFS zvol backend")
+		})
+
 		// ── E20.1.2 ──────────────────────────────────────────────────────────
 		// TestPillarPoolWebhook_ValidCreate_Dir
 		It("Should allow valid PillarPool creation with dir backend type (no ZFS config needed)", func() {
@@ -186,6 +202,57 @@ var _ = Describe("PillarPool Webhook", func() {
 			_, err := validator.ValidateCreate(ctx, obj)
 			Expect(err).NotTo(HaveOccurred(),
 				"dir backend PillarPool creation should be allowed; no ZFS config is required")
+		})
+
+		// ── E20.3.1 ──────────────────────────────────────────────────────────
+		// TestPillarPoolWebhook_ImmutableUpdate_TargetRefChange
+		// Changing spec.targetRef is rejected.
+		It("E20.3.1 TestPillarPoolWebhook_ImmutableUpdate_TargetRefChange: changing spec.targetRef is rejected", func() {
+			By("setting oldObj.spec.targetRef='old-target' and newObj.spec.targetRef='new-target'")
+			oldObj.Spec.TargetRef = "old-target"
+			oldObj.Spec.Backend = pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeZFSZvol}
+			obj.Spec.TargetRef = "new-target"
+			obj.Spec.Backend = pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeZFSZvol}
+
+			_, err := validator.ValidateUpdate(ctx, oldObj, obj)
+			Expect(err).To(HaveOccurred(),
+				"Changing spec.targetRef should be rejected as it is an immutable field")
+			Expect(err.Error()).To(ContainSubstring("spec.targetRef"))
+		})
+
+		// ── E20.3.2 ──────────────────────────────────────────────────────────
+		// TestPillarPoolWebhook_ImmutableUpdate_BackendTypeChange
+		// Changing spec.backendType is rejected.
+		It("E20.3.2 TestPillarPoolWebhook_ImmutableUpdate_BackendTypeChange: changing spec.backendType is rejected", func() {
+			By("changing backend.type from zfs-zvol to dir")
+			oldObj.Spec.TargetRef = "same-target"
+			oldObj.Spec.Backend = pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeZFSZvol}
+			obj.Spec.TargetRef = "same-target"
+			obj.Spec.Backend = pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeDir}
+
+			_, err := validator.ValidateUpdate(ctx, oldObj, obj)
+			Expect(err).To(HaveOccurred(),
+				"Changing spec.backend.type should be rejected as it is an immutable field")
+			Expect(err.Error()).To(ContainSubstring("spec.backend.type"))
+		})
+
+		// ── E20.3.3 ──────────────────────────────────────────────────────────
+		// TestPillarPoolWebhook_ImmutableUpdate_BothFieldsChange
+		// Changing both spec.targetRef and spec.backendType is rejected.
+		It("E20.3.3 TestPillarPoolWebhook_ImmutableUpdate_BothFieldsChange: changing both targetRef and backendType is rejected", func() {
+			By("changing both spec.targetRef and spec.backend.type simultaneously")
+			oldObj.Spec.TargetRef = "target-a"
+			oldObj.Spec.Backend = pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeZFSZvol}
+			obj.Spec.TargetRef = "target-b"
+			obj.Spec.Backend = pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeDir}
+
+			_, err := validator.ValidateUpdate(ctx, oldObj, obj)
+			Expect(err).To(HaveOccurred(),
+				"Changing both immutable fields should produce errors for each")
+			Expect(err.Error()).To(ContainSubstring("spec.targetRef"),
+				"error should mention spec.targetRef")
+			Expect(err.Error()).To(ContainSubstring("spec.backend.type"),
+				"error should mention spec.backend.type")
 		})
 
 		// ── E20.3.4 ──────────────────────────────────────────────────────────

@@ -12,8 +12,8 @@ import (
 	csiapi "github.com/container-storage-interface/spec/lib/go/csi"
 )
 
-// BenchmarkProvisioning_ZFSZvol measures end-to-end CreateVolume+DeleteVolume
-// throughput against the in-process fake agent (bufconn transport).
+// BenchmarkProvisioning_ZFSZvol measures end-to-end CreateVolume throughput
+// against the in-process fake agent (bufconn transport).
 //
 // This benchmark establishes a baseline for provisioning latency and helps
 // detect regressions in the controller's gRPC dispatch path.

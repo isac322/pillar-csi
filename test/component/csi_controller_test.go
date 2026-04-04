@@ -356,7 +356,7 @@ func newCSIControllerTestEnvWithDialErr(t *testing.T, dialErr error) *csiControl
 	})
 
 	srv := pillarcsi.NewControllerServerWithDialer(fakeClient, "pillar-csi.bhyoo.com", dialer)
-	return &csiControllerTestEnv{srv: srv, agent: nil}
+	return &csiControllerTestEnv{srv: srv, agent: nil, k8sClient: fakeClient}
 }
 
 // seedCSINodeForNVMeOF creates a CSINode object in the fake Kubernetes client
@@ -461,13 +461,13 @@ func TestCSIController_CreateVolume_Success(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// TestCSIController_CreateVolume_CapacityRange
+// TestCSIController_CreateVolume_Capacity_RequiredOnly (E1.7-2)
 // ─────────────────────────────────────────────────────────────────────────────.
 
-// TestCSIController_CreateVolume_CapacityRange verifies that the controller
+// TestCSIController_CreateVolume_Capacity_RequiredOnly verifies that the controller
 // correctly propagates the CapacityRange.RequiredBytes to the agent and
 // the agent's reported capacity is reflected in the response.
-func TestCSIController_CreateVolume_CapacityRange(t *testing.T) {
+func TestCSIController_CreateVolume_Capacity_RequiredOnly(t *testing.T) {
 	t.Parallel()
 	env := newCSIControllerTestEnv(t)
 	ctx := context.Background()
@@ -589,12 +589,12 @@ func TestCSIController_CreateVolume_AgentUnreachable(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// TestCSIController_CreateVolume_MissingName
+// TestCSIController_CreateVolume_MissingVolumeName (E1.11-3)
 // ─────────────────────────────────────────────────────────────────────────────.
 
-// TestCSIController_CreateVolume_MissingName verifies that an empty volume
+// TestCSIController_CreateVolume_MissingVolumeName verifies that an empty volume
 // name is rejected with InvalidArgument before any agent call.
-func TestCSIController_CreateVolume_MissingName(t *testing.T) {
+func TestCSIController_CreateVolume_MissingVolumeName(t *testing.T) {
 	t.Parallel()
 	env := newCSIControllerTestEnv(t)
 	ctx := context.Background()
@@ -640,40 +640,62 @@ func TestCSIController_CreateVolume_TargetNotFound(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// TestCSIController_CreateVolume_MissingParams
+// TestCSIController_CreateVolume_MissingTargetParam (E1.11-4)
+// TestCSIController_CreateVolume_MissingBackendTypeParam (E1.11-5)
+// TestCSIController_CreateVolume_MissingProtocolTypeParam (E1.11-6)
 // ─────────────────────────────────────────────────────────────────────────────.
 
-// TestCSIController_CreateVolume_MissingParams verifies that missing required
-// StorageClass parameters are rejected with InvalidArgument.
-func TestCSIController_CreateVolume_MissingParams(t *testing.T) {
+// TestCSIController_CreateVolume_MissingTargetParam verifies that a missing
+// "pillar-csi.bhyoo.com/target" StorageClass parameter is rejected with InvalidArgument.
+func TestCSIController_CreateVolume_MissingTargetParam(t *testing.T) {
 	t.Parallel()
+	env := newCSIControllerTestEnv(t)
 	ctx := context.Background()
-
-	tests := []struct {
-		name        string
-		removeParam string
-	}{
-		{"missing target", "pillar-csi.bhyoo.com/target"},
-		{"missing backend-type", "pillar-csi.bhyoo.com/backend-type"},
-		{"missing protocol-type", "pillar-csi.bhyoo.com/protocol-type"},
+	req := baseCSICreateVolumeRequest()
+	delete(req.Parameters, "pillar-csi.bhyoo.com/target")
+	_, err := env.srv.CreateVolume(ctx, req)
+	if err == nil {
+		t.Fatal("expected error, got nil")
 	}
+	st, _ := status.FromError(err)
+	if st.Code() != codes.InvalidArgument {
+		t.Errorf("error code = %v, want %v", st.Code(), codes.InvalidArgument)
+	}
+}
 
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			env := newCSIControllerTestEnv(t)
-			req := baseCSICreateVolumeRequest()
-			delete(req.Parameters, tc.removeParam)
+// TestCSIController_CreateVolume_MissingBackendTypeParam verifies that a missing
+// "pillar-csi.bhyoo.com/backend-type" StorageClass parameter is rejected with InvalidArgument.
+func TestCSIController_CreateVolume_MissingBackendTypeParam(t *testing.T) {
+	t.Parallel()
+	env := newCSIControllerTestEnv(t)
+	ctx := context.Background()
+	req := baseCSICreateVolumeRequest()
+	delete(req.Parameters, "pillar-csi.bhyoo.com/backend-type")
+	_, err := env.srv.CreateVolume(ctx, req)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	st, _ := status.FromError(err)
+	if st.Code() != codes.InvalidArgument {
+		t.Errorf("error code = %v, want %v", st.Code(), codes.InvalidArgument)
+	}
+}
 
-			_, err := env.srv.CreateVolume(ctx, req)
-			if err == nil {
-				t.Fatalf("expected error for %q, got nil", tc.removeParam)
-			}
-			st, _ := status.FromError(err)
-			if st.Code() != codes.InvalidArgument {
-				t.Errorf("error code = %v, want %v", st.Code(), codes.InvalidArgument)
-			}
-		})
+// TestCSIController_CreateVolume_MissingProtocolTypeParam verifies that a missing
+// "pillar-csi.bhyoo.com/protocol-type" StorageClass parameter is rejected with InvalidArgument.
+func TestCSIController_CreateVolume_MissingProtocolTypeParam(t *testing.T) {
+	t.Parallel()
+	env := newCSIControllerTestEnv(t)
+	ctx := context.Background()
+	req := baseCSICreateVolumeRequest()
+	delete(req.Parameters, "pillar-csi.bhyoo.com/protocol-type")
+	_, err := env.srv.CreateVolume(ctx, req)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	st, _ := status.FromError(err)
+	if st.Code() != codes.InvalidArgument {
+		t.Errorf("error code = %v, want %v", st.Code(), codes.InvalidArgument)
 	}
 }
 

@@ -106,6 +106,30 @@ func assertE15_DeleteVolume_AgentErr(tc documentedCase) {
 	Expect(err).To(HaveOccurred(), "%s: expected error when agent delete fails", tc.tcNodeLabel())
 }
 
+func assertE15_ExpandVolume_ExceedsPoolCapacity(tc documentedCase) {
+	env := newControllerTestEnv()
+	defer env.close()
+
+	resp, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
+		Name:               "pvc-e15-expand-pool-cap",
+		Parameters:         env.params,
+		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
+	})
+	Expect(err).NotTo(HaveOccurred(), "%s: CreateVolume", tc.tcNodeLabel())
+	volumeID := resp.GetVolume().GetVolumeId()
+
+	env.agentSrv.mu.Lock()
+	env.agentSrv.expandVolumeErr = status.Error(codes.ResourceExhausted, "pool capacity exceeded")
+	env.agentSrv.mu.Unlock()
+
+	_, err = env.controller.ControllerExpandVolume(env.ctx, &csiapi.ControllerExpandVolumeRequest{
+		VolumeId:      volumeID,
+		CapacityRange: &csiapi.CapacityRange{RequiredBytes: 10000 << 30},
+	})
+	Expect(err).To(HaveOccurred(), "%s: expected error when expand exceeds pool capacity", tc.tcNodeLabel())
+}
+
 func assertE15_ControllerPublish_AgentErr(tc documentedCase) {
 	env := newControllerTestEnv()
 	defer env.close()

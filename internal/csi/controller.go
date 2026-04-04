@@ -470,6 +470,10 @@ const (
 	vcVolumeRef    = "pillar-csi.bhyoo.com/volume-ref"
 	vcProtocolType = "pillar-csi.bhyoo.com/protocol-type"
 
+	// VcACLEnabled carries the ACL flag from CreateVolume into ControllerPublish/Unpublish.
+	// Value: "true" (ACL enforced, default) or "false" (allow_any_host, no per-initiator ACL).
+	vcACLEnabled = paramACLEnabled
+
 	// VolumeID format: <target-name>/<protocol-type>/<backend-type>/<agent-vol-id>
 	// Example: storage-node-1/nvmeof-tcp/zfs-zvol/tank/pvc-abc123
 	//
@@ -794,6 +798,7 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 		vcPort:         strconv.Itoa(int(info.GetPort())),
 		vcVolumeRef:    info.GetVolumeRef(),
 		vcProtocolType: protocolTypeStr,
+		vcACLEnabled:   params[paramACLEnabled],
 	}
 
 	return &csi.CreateVolumeResponse{
@@ -1609,19 +1614,26 @@ func (s *ControllerServer) ControllerPublishVolume(
 	defer closer.Close() //nolint:errcheck // best-effort close; dial errors already handled
 
 	// ── Grant initiator access ────────────────────────────────────────────────
-	// initiatorID is the protocol-specific identity resolved from CSINode:
-	//   NVMe-oF TCP → host NQN, iSCSI → IQN, NFS/SMB → nodeID (Phase 2).
-	allowResp, allowErr := agentClient.AllowInitiator(ctx, &agentv1.AllowInitiatorRequest{
-		VolumeId:     agentVolID,
-		ProtocolType: agentProtocolType,
-		InitiatorId:  initiatorID,
-	})
-	_ = allowResp
-	if allowErr != nil {
-		grpcSt, _ := status.FromError(allowErr)
-		return nil, status.Errorf(grpcSt.Code(),
-			"agent AllowInitiator(%q, initiator=%q) failed: %v",
-			agentVolID, initiatorID, allowErr)
+	// When ACL is disabled (allow_any_host mode set by CreateVolume), there are
+	// no per-initiator ACL entries to manage — the agent already configured
+	// attr_allow_any_host=1 during ExportVolume.  Skip AllowInitiator so we
+	// do not create unnecessary host NQN entries in the subsystem.
+	aclEnabled := parseACLEnabled(req.GetVolumeContext()[vcACLEnabled])
+	if aclEnabled {
+		// initiatorID is the protocol-specific identity resolved from CSINode:
+		//   NVMe-oF TCP → host NQN, iSCSI → IQN, NFS/SMB → nodeID (Phase 2).
+		allowResp, allowErr := agentClient.AllowInitiator(ctx, &agentv1.AllowInitiatorRequest{
+			VolumeId:     agentVolID,
+			ProtocolType: agentProtocolType,
+			InitiatorId:  initiatorID,
+		})
+		_ = allowResp
+		if allowErr != nil {
+			grpcSt, _ := status.FromError(allowErr)
+			return nil, status.Errorf(grpcSt.Code(),
+				"agent AllowInitiator(%q, initiator=%q) failed: %v",
+				agentVolID, initiatorID, allowErr)
+		}
 	}
 
 	// ── Advance state machine to ControllerPublished ─────────────────────────

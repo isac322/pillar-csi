@@ -1412,3 +1412,251 @@ var _ = Describe("PillarPool Controller", func() {
 		})
 	})
 })
+
+// =============================================================================
+// E20 traceability — explicit symbol bindings for TraceabilityReport gap=0
+//
+// The tests below bind the remaining E20 symbol names that are not yet covered
+// by an It() string in the blocks above.  Each It() block re-exercises an
+// existing behaviour using the canonical TC symbol so that findBinding() picks
+// it up without duplicating full test logic.
+// =============================================================================
+
+var _ = Describe("PillarPool Controller — E20 traceability bindings", func() {
+	var (
+		bctx       context.Context
+		reconciler *PillarPoolReconciler
+	)
+
+	BeforeEach(func() {
+		bctx = context.Background()
+		reconciler = &PillarPoolReconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+		}
+	})
+
+	// ── E20.1.3 ──────────────────────────────────────────────────────────────
+	// TestPillarPoolController_FinalizerAddedOnFirstReconcile
+	Context("E20.1.3 — finalizer added on first reconcile", func() {
+		const name = "e20-1-3-pool"
+		nn := types.NamespacedName{Name: name}
+
+		AfterEach(func() {
+			p := &pillarcsiv1alpha1.PillarPool{}
+			if err := k8sClient.Get(bctx, nn, p); err == nil {
+				controllerutil.RemoveFinalizer(p, pillarPoolFinalizer)
+				Expect(k8sClient.Update(bctx, p)).To(Succeed())
+				Expect(k8sClient.Delete(bctx, p)).To(Succeed())
+			}
+		})
+
+		It("E20.1.3 TestPillarPoolController_FinalizerAddedOnFirstReconcile: finalizer added on first reconcile", func() {
+			By("creating a PillarPool and reconciling once")
+			pool := &pillarcsiv1alpha1.PillarPool{
+				ObjectMeta: metav1.ObjectMeta{Name: name},
+				Spec: pillarcsiv1alpha1.PillarPoolSpec{
+					TargetRef: "some-target",
+					Backend:   pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeZFSZvol},
+				},
+			}
+			Expect(k8sClient.Create(bctx, pool)).To(Succeed())
+
+			_, err := reconciler.Reconcile(bctx, reconcile.Request{NamespacedName: nn})
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := &pillarcsiv1alpha1.PillarPool{}
+			Expect(k8sClient.Get(bctx, nn, fetched)).To(Succeed())
+			Expect(controllerutil.ContainsFinalizer(fetched, pillarPoolFinalizer)).To(BeTrue(),
+				"finalizer %q should be present after first reconcile", pillarPoolFinalizer)
+		})
+	})
+
+	// ── E20.1.4 ──────────────────────────────────────────────────────────────
+	// TestPillarPoolController_FinalizerNotDuplicated
+	Context("E20.1.4 — finalizer not duplicated on subsequent reconciles", func() {
+		const name = "e20-1-4-pool"
+		nn := types.NamespacedName{Name: name}
+
+		AfterEach(func() {
+			p := &pillarcsiv1alpha1.PillarPool{}
+			if err := k8sClient.Get(bctx, nn, p); err == nil {
+				controllerutil.RemoveFinalizer(p, pillarPoolFinalizer)
+				Expect(k8sClient.Update(bctx, p)).To(Succeed())
+				Expect(k8sClient.Delete(bctx, p)).To(Succeed())
+			}
+		})
+
+		It("E20.1.4 TestPillarPoolController_FinalizerNotDuplicated: reconciling twice does not duplicate finalizer", func() {
+			By("creating a PillarPool and reconciling twice")
+			pool := &pillarcsiv1alpha1.PillarPool{
+				ObjectMeta: metav1.ObjectMeta{Name: name},
+				Spec: pillarcsiv1alpha1.PillarPoolSpec{
+					TargetRef: "some-target",
+					Backend:   pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeZFSZvol},
+				},
+			}
+			Expect(k8sClient.Create(bctx, pool)).To(Succeed())
+
+			_, err := reconciler.Reconcile(bctx, reconcile.Request{NamespacedName: nn})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = reconciler.Reconcile(bctx, reconcile.Request{NamespacedName: nn})
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := &pillarcsiv1alpha1.PillarPool{}
+			Expect(k8sClient.Get(bctx, nn, fetched)).To(Succeed())
+			count := 0
+			for _, f := range fetched.Finalizers {
+				if f == pillarPoolFinalizer {
+					count++
+				}
+			}
+			Expect(count).To(Equal(1), "finalizer should appear exactly once after two reconciles")
+		})
+	})
+
+	// ── E20.4.x ──────────────────────────────────────────────────────────────
+	// TargetReady condition variants.
+	Context("E20.4.x — TargetReady condition", func() {
+		const absentPoolName = "e20-4-1-absent-pool"
+		const notReadyPoolName = "e20-4-2-not-ready-pool"
+		const readyPoolName = "e20-4-3-ready-pool"
+		const e20TargetName = "e20-4-target"
+
+		cleanupPool := func(name string) {
+			p := &pillarcsiv1alpha1.PillarPool{}
+			if err := k8sClient.Get(bctx, types.NamespacedName{Name: name}, p); err == nil {
+				controllerutil.RemoveFinalizer(p, pillarPoolFinalizer)
+				Expect(k8sClient.Update(bctx, p)).To(Succeed())
+				Expect(k8sClient.Delete(bctx, p)).To(Succeed())
+			}
+		}
+		cleanupTarget := func(name string) {
+			t := &pillarcsiv1alpha1.PillarTarget{}
+			if err := k8sClient.Get(bctx, types.NamespacedName{Name: name}, t); err == nil {
+				controllerutil.RemoveFinalizer(t, pillarTargetFinalizer)
+				Expect(k8sClient.Update(bctx, t)).To(Succeed())
+				Expect(k8sClient.Delete(bctx, t)).To(Succeed())
+			}
+		}
+
+		It("E20.4.1 TestPillarPoolController_TargetReady_False_TargetAbsent: absent target sets TargetReady=False", func() {
+			By("creating a pool referencing a non-existent target and reconciling twice")
+			pool := &pillarcsiv1alpha1.PillarPool{
+				ObjectMeta: metav1.ObjectMeta{Name: absentPoolName},
+				Spec: pillarcsiv1alpha1.PillarPoolSpec{
+					TargetRef: "ghost-target-e20-4",
+					Backend:   pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeZFSZvol},
+				},
+			}
+			Expect(k8sClient.Create(bctx, pool)).To(Succeed())
+			defer cleanupPool(absentPoolName)
+
+			absentNN := types.NamespacedName{Name: absentPoolName}
+			_, err := reconciler.Reconcile(bctx, reconcile.Request{NamespacedName: absentNN})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = reconciler.Reconcile(bctx, reconcile.Request{NamespacedName: absentNN})
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := &pillarcsiv1alpha1.PillarPool{}
+			Expect(k8sClient.Get(bctx, absentNN, fetched)).To(Succeed())
+			cond := meta.FindStatusCondition(fetched.Status.Conditions, "TargetReady")
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cond.Reason).To(Equal("TargetNotFound"))
+		})
+
+		It("E20.4.2 TestPillarPoolController_TargetReady_False_TargetNotReady: target exists but not ready sets TargetReady=False", func() {
+			By("creating a pool and target with no Ready condition, then reconciling twice")
+			pool := &pillarcsiv1alpha1.PillarPool{
+				ObjectMeta: metav1.ObjectMeta{Name: notReadyPoolName},
+				Spec: pillarcsiv1alpha1.PillarPoolSpec{
+					TargetRef: e20TargetName,
+					Backend:   pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeZFSZvol},
+				},
+			}
+			Expect(k8sClient.Create(bctx, pool)).To(Succeed())
+			defer cleanupPool(notReadyPoolName)
+
+			// Create target without setting any Ready condition.
+			target := &pillarcsiv1alpha1.PillarTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: e20TargetName},
+				Spec: pillarcsiv1alpha1.PillarTargetSpec{
+					External: &pillarcsiv1alpha1.ExternalSpec{Address: "192.0.2.90", Port: 9500},
+				},
+			}
+			Expect(k8sClient.Create(bctx, target)).To(Succeed())
+			defer cleanupTarget(e20TargetName)
+
+			notReadyNN := types.NamespacedName{Name: notReadyPoolName}
+			_, err := reconciler.Reconcile(bctx, reconcile.Request{NamespacedName: notReadyNN})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = reconciler.Reconcile(bctx, reconcile.Request{NamespacedName: notReadyNN})
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := &pillarcsiv1alpha1.PillarPool{}
+			Expect(k8sClient.Get(bctx, notReadyNN, fetched)).To(Succeed())
+			cond := meta.FindStatusCondition(fetched.Status.Conditions, "TargetReady")
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cond.Reason).To(Equal("TargetNotReady"))
+		})
+
+		It("E20.4.3 TestPillarPoolController_TargetReady_True_TargetReady: ready target sets TargetReady=True", func() {
+			By("creating a pool and a ready target, then reconciling twice")
+			pool := &pillarcsiv1alpha1.PillarPool{
+				ObjectMeta: metav1.ObjectMeta{Name: readyPoolName},
+				Spec: pillarcsiv1alpha1.PillarPoolSpec{
+					TargetRef: e20TargetName,
+					Backend:   pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeZFSZvol},
+				},
+			}
+			Expect(k8sClient.Create(bctx, pool)).To(Succeed())
+			defer cleanupPool(readyPoolName)
+
+			// Create target with Ready=True.
+			target := &pillarcsiv1alpha1.PillarTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: e20TargetName},
+				Spec: pillarcsiv1alpha1.PillarTargetSpec{
+					External: &pillarcsiv1alpha1.ExternalSpec{Address: "192.0.2.91", Port: 9500},
+				},
+			}
+			// Only create if it doesn't already exist from the previous It block.
+			existingTarget := &pillarcsiv1alpha1.PillarTarget{}
+			if err := k8sClient.Get(bctx, types.NamespacedName{Name: e20TargetName}, existingTarget); errors.IsNotFound(err) {
+				Expect(k8sClient.Create(bctx, target)).To(Succeed())
+				defer cleanupTarget(e20TargetName)
+			} else {
+				defer cleanupTarget(e20TargetName)
+			}
+
+			// Patch status to set Ready=True.
+			t := &pillarcsiv1alpha1.PillarTarget{}
+			Expect(k8sClient.Get(bctx, types.NamespacedName{Name: e20TargetName}, t)).To(Succeed())
+			t.Status.ResolvedAddress = "192.0.2.91:9500"
+			t.Status.Conditions = []metav1.Condition{
+				{
+					Type:               "Ready",
+					Status:             metav1.ConditionTrue,
+					Reason:             "AgentConnected",
+					Message:            "agent connected",
+					LastTransitionTime: metav1.Now(),
+				},
+			}
+			Expect(k8sClient.Status().Update(bctx, t)).To(Succeed())
+
+			readyNN := types.NamespacedName{Name: readyPoolName}
+			_, err := reconciler.Reconcile(bctx, reconcile.Request{NamespacedName: readyNN})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = reconciler.Reconcile(bctx, reconcile.Request{NamespacedName: readyNN})
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := &pillarcsiv1alpha1.PillarPool{}
+			Expect(k8sClient.Get(bctx, readyNN, fetched)).To(Succeed())
+			cond := meta.FindStatusCondition(fetched.Status.Conditions, "TargetReady")
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+			Expect(cond.Reason).To(Equal("TargetReady"))
+		})
+	})
+})

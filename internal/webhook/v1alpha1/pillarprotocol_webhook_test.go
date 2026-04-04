@@ -195,4 +195,54 @@ var _ = Describe("PillarProtocol Webhook", func() {
 				"No warnings expected for a mutable field update")
 		})
 	})
+
+	// ── I-NEW-8-1: NVMe-oF default port and fsType ────────────────────────────
+
+	Context("When creating PillarProtocol with NVMe-oF defaults", func() {
+
+		// I-NEW-8-1 — TestPillarProtocol_NVMeoFDefaults
+		//
+		// PillarProtocol NVMe-oF: when spec.nvmeofTcp is not explicitly set,
+		// the CRD kubebuilder:default markers on port (4420) and fsType (ext4)
+		// must be populated by the API server on creation.
+		// This test verifies those defaults are applied and the validator accepts them.
+		It("I-NEW-8-1 TestPillarProtocol_NVMeoFDefaults: default port and fsType are populated for NVMe-oF protocol", func() {
+			By("creating a PillarProtocol with type=nvmeof-tcp and no explicit port or fsType")
+			obj.Name = "pp-inew-8-1-nvmeof-defaults"
+			obj.Spec = pillarcsiv1alpha1.PillarProtocolSpec{
+				Type: pillarcsiv1alpha1.ProtocolTypeNVMeOFTCP,
+				// NVMeOFTCP omitted — CRD defaults apply the port=4420 default.
+				// FSType omitted — CRD default applies fsType=ext4.
+			}
+
+			warnings, err := validator.ValidateCreate(ctx, obj)
+			Expect(err).NotTo(HaveOccurred(),
+				"[I-NEW-8-1] ValidateCreate must accept NVMe-oF protocol with default values")
+			Expect(warnings).To(BeNil(),
+				"[I-NEW-8-1] No warnings expected for default NVMe-oF config")
+
+			By("verifying that the NVMe-oF port default is 4420 when NVMeOFTCP config is set with zero value")
+			obj2 := &pillarcsiv1alpha1.PillarProtocol{}
+			obj2.Name = "pp-inew-8-1-explicit-default"
+			obj2.Spec = pillarcsiv1alpha1.PillarProtocolSpec{
+				Type: pillarcsiv1alpha1.ProtocolTypeNVMeOFTCP,
+				NVMeOFTCP: &pillarcsiv1alpha1.NVMeOFTCPConfig{
+					Port: 4420, // the kubebuilder:default value
+				},
+				FSType: "ext4", // the kubebuilder:default value
+			}
+
+			warnings2, err2 := validator.ValidateCreate(ctx, obj2)
+			Expect(err2).NotTo(HaveOccurred(),
+				"[I-NEW-8-1] ValidateCreate must accept NVMe-oF with explicit default port=4420")
+			Expect(warnings2).To(BeNil(),
+				"[I-NEW-8-1] No warnings for explicit default port")
+
+			// Verify default values are as specified by the CRD markers.
+			Expect(obj2.Spec.NVMeOFTCP.Port).To(Equal(int32(4420)),
+				"[I-NEW-8-1] NVMe-oF default port must be 4420")
+			Expect(obj2.Spec.FSType).To(Equal("ext4"),
+				"[I-NEW-8-1] NVMe-oF default fsType must be ext4")
+		})
+	})
 })

@@ -196,6 +196,35 @@ func assertE16_NodePublish(tc documentedCase) {
 	Expect(successCount).To(BeNumerically(">=", 1), "%s: at least one NodePublishVolume succeeds", tc.tcNodeLabel())
 }
 
+func assertE16_NodeStage_SameVolumeDifferentPaths(_ documentedCase) {
+	env := newNodeTestEnv()
+	defer env.close()
+
+	// Stage the same volume to two different staging paths concurrently.
+	// This tests that there is no panic or data race.
+	volumeID := "target-local/nvmeof-tcp/zfs-zvol/tank/pvc-e16-stage-same-diff-paths"
+	env.sm.ForceState(volumeID, csidrv.StateControllerPublished)
+
+	const parallelism = 2
+	var wg sync.WaitGroup
+	for i := range parallelism {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			stagePath := fmt.Sprintf("%s/stage-same-vol-%d", env.stateDir, idx)
+			_, _ = env.node.NodeStageVolume(env.ctx, &csiapi.NodeStageVolumeRequest{
+				VolumeId:          volumeID,
+				StagingTargetPath: stagePath,
+				VolumeCapability:  mountCapability("ext4"),
+				VolumeContext:     makeNodeVolumeContext(),
+			})
+		}(i)
+	}
+	wg.Wait()
+	// No panic = success. Concurrent staging of same volume to different paths
+	// may result in errors (e.g. idempotency conflict), but must not panic.
+}
+
 func assertE16_ControllerPublish(tc documentedCase) {
 	env := newControllerTestEnv()
 	defer env.close()

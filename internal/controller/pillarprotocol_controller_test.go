@@ -644,6 +644,247 @@ var _ = Describe("PillarProtocol Controller", func() {
 	})
 
 	// =========================================================================
+	// E23 catalog bindings — named It() blocks so findBinding() resolves all TC symbols.
+	Context("E23 catalog bindings", func() {
+		BeforeEach(func() {
+			createProtocol()
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		AfterEach(func() {
+			deleteBinding()
+			deletePool()
+			forceRemoveProtocolFinalizer()
+			deleteProtocol()
+		})
+
+		// E23.1.4
+		It("E23.1.4 TestPillarProtocolController_FinalizerAddedOnFirstReconcile: After first reconcile, finalizer added", func() {
+			fetched := fetchProtocol()
+			Expect(controllerutil.ContainsFinalizer(fetched, pillarProtocolFinalizer)).To(BeTrue(),
+				"E23.1.4: finalizer %q must be present after first reconcile", pillarProtocolFinalizer)
+		})
+
+		// E23.1.5
+		It("E23.1.5 TestPillarProtocolController_FinalizerNotDuplicated: Second reconcile doesn't add duplicate finalizer", func() {
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := fetchProtocol()
+			count := 0
+			for _, f := range fetched.Finalizers {
+				if f == pillarProtocolFinalizer {
+					count++
+				}
+			}
+			Expect(count).To(Equal(1), "E23.1.5: finalizer should appear exactly once after second reconcile")
+		})
+
+		// E23.4.1
+		It("E23.4.1 TestPillarProtocolController_Ready_True_NoBindings: No bindings: Ready=True (protocol is available even without bindings)", func() {
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := fetchProtocol()
+			cond := findProtocolCondition(fetched, "Ready")
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Status).To(Equal(metav1.ConditionTrue), "E23.4.1: Ready must be True when no bindings exist")
+		})
+
+		// E23.4.2
+		It("E23.4.2 TestPillarProtocolController_Ready_True_WithBindings: With bindings: Ready=True", func() {
+			createPool()
+			createBinding()
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := fetchProtocol()
+			cond := findProtocolCondition(fetched, "Ready")
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Status).To(Equal(metav1.ConditionTrue), "E23.4.2: Ready must be True even when bindings exist")
+		})
+
+		// E23.4.3
+		It("E23.4.3 TestPillarProtocolController_Ready_Message_ContainsType: Ready condition message contains protocol type string", func() {
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := fetchProtocol()
+			cond := findProtocolCondition(fetched, "Ready")
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Message).To(ContainSubstring(string(pillarcsiv1alpha1.ProtocolTypeNVMeOFTCP)),
+				"E23.4.3: Ready message must contain the protocol type")
+		})
+
+		// E23.4.4
+		It("E23.4.4 TestPillarProtocolController_Ready_False_DeletionBlocked: Deletion blocked: condition message reflects blocked state", func() {
+			createBinding()
+			deleteProtocol()
+
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := fetchProtocol()
+			cond := findProtocolCondition(fetched, "Ready")
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse), "E23.4.4: Ready must be False when deletion is blocked")
+			Expect(cond.Reason).To(Equal("DeletionBlocked"))
+		})
+
+		// E23.4.5
+		It("E23.4.5 TestPillarProtocolController_NoRequeue_WhenReady: When ready, reconcile result has no requeue", func() {
+			result, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(BeZero(), "E23.4.5: RequeueAfter must be zero when protocol is ready")
+		})
+
+		// E23.5.1
+		It("E23.5.1 TestPillarProtocolController_BindingCount_Zero_NoBindings: No PillarBindings → bindingCount=0 in status", func() {
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := fetchProtocol()
+			Expect(fetched.Status.BindingCount).To(Equal(int32(0)), "E23.5.1: BindingCount must be 0 when no bindings exist")
+		})
+
+		// E23.5.2
+		It("E23.5.2 TestPillarProtocolController_BindingCount_One_SingleBinding: One PillarBinding → bindingCount=1", func() {
+			createPool()
+			createBinding()
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := fetchProtocol()
+			Expect(fetched.Status.BindingCount).To(Equal(int32(1)), "E23.5.2: BindingCount must be 1 when one binding exists")
+		})
+
+		// E23.5.3
+		It("E23.5.3 TestPillarProtocolController_ActiveTargets_PopulatedFromPool: Protocol with pool → activeTargets has pool's target", func() {
+			createPool()
+			createBinding()
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := fetchProtocol()
+			Expect(fetched.Status.ActiveTargets).To(ContainElement(pprTargetName),
+				"E23.5.3: ActiveTargets must include the pool's targetRef")
+		})
+
+		// E23.5.5
+		It("E23.5.5 TestPillarProtocolController_ActiveTargets_EmptyWhenPoolNotFound: Pool not found → activeTargets empty", func() {
+			// Create binding referencing pprPoolName, but do NOT create the pool.
+			createBinding()
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := fetchProtocol()
+			Expect(fetched.Status.ActiveTargets).To(BeEmpty(),
+				"E23.5.5: ActiveTargets must be empty when pool is not found")
+		})
+
+		// E23.5.6
+		It("E23.5.6 TestPillarProtocolController_BindingCount_Decremented_AfterBindingRemoval: After removing binding → count decremented", func() {
+			createPool()
+			createBinding()
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := fetchProtocol()
+			Expect(fetched.Status.BindingCount).To(Equal(int32(1)))
+
+			deleteBinding()
+			_, err = doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched = fetchProtocol()
+			Expect(fetched.Status.BindingCount).To(Equal(int32(0)),
+				"E23.5.6: BindingCount must decrement to 0 after binding removal")
+		})
+
+		// E23.6.1
+		It("E23.6.1 TestPillarProtocolController_DeletionBlocked_ReferencingBindingExists: Binding exists → deletion blocked, finalizer kept", func() {
+			createBinding()
+			deleteProtocol()
+
+			result, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(requeueAfterProtocolDeletionBlock),
+				"E23.6.1: must requeue when deletion is blocked by a referencing binding")
+		})
+
+		// E23.6.2
+		It("E23.6.2 TestPillarProtocolController_DeletionBlocked_StatusUpdated: Status updated with blocked reason", func() {
+			createBinding()
+			deleteProtocol()
+
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := fetchProtocol()
+			cond := findProtocolCondition(fetched, "Ready")
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Reason).To(Equal("DeletionBlocked"),
+				"E23.6.2: Ready condition reason must be DeletionBlocked")
+		})
+
+		// E23.6.3
+		It("E23.6.3 TestPillarProtocolController_DeletionBlocked_FinalizerKept: Finalizer still present when blocked", func() {
+			createBinding()
+			deleteProtocol()
+
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := fetchProtocol()
+			Expect(controllerutil.ContainsFinalizer(fetched, pillarProtocolFinalizer)).To(BeTrue(),
+				"E23.6.3: finalizer must remain while deletion is blocked")
+		})
+
+		// E23.6.4
+		It("E23.6.4 TestPillarProtocolController_DeletionAllowed_NoReferencingBindings: No bindings → deletion allowed, finalizer removed", func() {
+			deleteProtocol()
+
+			result, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(BeZero(), "E23.6.4: should not requeue after clean deletion")
+
+			fetched := &pillarcsiv1alpha1.PillarProtocol{}
+			err = k8sClient.Get(pctx, protocolNamespacedName, fetched)
+			if err == nil {
+				Expect(controllerutil.ContainsFinalizer(fetched, pillarProtocolFinalizer)).To(BeFalse(),
+					"E23.6.4: finalizer must be removed when no bindings block deletion")
+			}
+		})
+
+		// E23.6.5
+		It("E23.6.5 TestPillarProtocolController_DeletionAllowed_AfterBindingRemoval: After removing binding → deletion proceeds", func() {
+			createBinding()
+			deleteProtocol()
+
+			// First reconcile — blocked.
+			result, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(requeueAfterProtocolDeletionBlock))
+
+			// Remove the blocking binding.
+			deleteBinding()
+
+			// Second reconcile — unblocked.
+			result, err = doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(BeZero(), "E23.6.5: should not requeue once blocking binding is removed")
+
+			fetched := &pillarcsiv1alpha1.PillarProtocol{}
+			err = k8sClient.Get(pctx, protocolNamespacedName, fetched)
+			if err == nil {
+				Expect(controllerutil.ContainsFinalizer(fetched, pillarProtocolFinalizer)).To(BeFalse(),
+					"E23.6.5: finalizer must be removed after binding removal unblocks deletion")
+			}
+		})
+	})
+
+	// =========================================================================
 	// E23.5.4 — TestPillarProtocolController_ActiveTargets_DeduplicatedSorted
 	Context("ActiveTargets — deduplicated when multiple bindings share the same pool", func() {
 		const (

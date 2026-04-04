@@ -1,15 +1,14 @@
 package e2e
 
-// category_lvm_test.go — Sub-AC 3: Real test assertions for all
-// "full-lvm" category TCs.
+// category_lvm_test.go — Real test assertions for E33 LVM TCs.
 //
-// Full-LVM TCs cover the following spec groups:
+// E33 LVM TCs cover the following spec groups:
 //
-//	F27 — LVM volume lifecycle (create, delete, expand)
-//	F28 — LVM snapshot lifecycle
-//	F29 — LVM thin-provisioning contracts
-//	F30 — LVM error paths (VG not found, LV name collision, etc.)
-//	F31 — LVM + NVMe-oF TCP export contracts
+//	E33.1 — LVM core RPC tests (via real pillar-agent in Kind)
+//	E33.2 — LVM PVC provisioning and Pod mount
+//	E33.3 — LVM online volume expansion
+//	E33.4 — LVM backend standalone (Docker direct)
+//	(See docs/testing/E2E-TESTS.md for complete E33 specification)
 //
 // These TCs validate the LVM backend via real LVM inside the Kind cluster
 // container. All assertions run using verifyLVMLocalBackend which exercises

@@ -190,6 +190,67 @@ var _ = Describe("PillarTarget Webhook", func() {
 				"ValidateCreate should succeed for a valid nodeRef spec")
 			Expect(warnings).To(BeEmpty())
 		})
+
+		// ── E19.3.2 ───────────────────────────────────────────────────────────
+		// TestPillarTargetWebhook_ImmutableUpdate_ExternalToNodeRef
+		// Changing spec from external to nodeRef should be rejected (spec type change is immutable).
+		It("E19.3.2 TestPillarTargetWebhook_ImmutableUpdate_ExternalToNodeRef: changing spec from external to nodeRef should be rejected", func() {
+			By("setting oldObj with spec.external and newObj with spec.nodeRef")
+			oldObj.Spec.External = &pillarcsiv1alpha1.ExternalSpec{Address: "10.0.0.1", Port: 9500}
+			oldObj.Spec.NodeRef = nil
+			obj.Spec.NodeRef = &pillarcsiv1alpha1.NodeRefSpec{Name: "node-1"}
+			obj.Spec.External = nil
+
+			_, err := validator.ValidateUpdate(ctx, oldObj, obj)
+			Expect(err).To(HaveOccurred(),
+				"Switching from external to nodeRef spec type should be rejected as immutable")
+			Expect(err.Error()).To(ContainSubstring("cannot switch between nodeRef and external"))
+		})
+
+		// ── E19.3.3 ───────────────────────────────────────────────────────────
+		// TestPillarTargetWebhook_ImmutableUpdate_NodeRefNameChange
+		// Changing spec.nodeRef.name should be rejected.
+		It("E19.3.3 TestPillarTargetWebhook_ImmutableUpdate_NodeRefNameChange: changing spec.nodeRef.name should be rejected", func() {
+			By("setting oldObj.spec.nodeRef.name='node-x' and newObj.spec.nodeRef.name='node-y'")
+			oldObj.Spec.NodeRef = &pillarcsiv1alpha1.NodeRefSpec{Name: "node-x"}
+			obj.Spec.NodeRef = &pillarcsiv1alpha1.NodeRefSpec{Name: "node-y"}
+
+			_, err := validator.ValidateUpdate(ctx, oldObj, obj)
+			Expect(err).To(HaveOccurred(),
+				"Changing spec.nodeRef.name should be rejected as it is an immutable identity field")
+			Expect(err.Error()).To(ContainSubstring("node-x"))
+			Expect(err.Error()).To(ContainSubstring("node-y"))
+		})
+
+		// ── E19.3.4 ───────────────────────────────────────────────────────────
+		// TestPillarTargetWebhook_ImmutableUpdate_ExternalAddressChange
+		// Changing spec.external.address should be rejected.
+		It("E19.3.4 TestPillarTargetWebhook_ImmutableUpdate_ExternalAddressChange: changing spec.external.address should be rejected", func() {
+			By("setting oldObj.spec.external.address='10.1.1.1' and newObj to '10.2.2.2'")
+			oldObj.Spec.External = &pillarcsiv1alpha1.ExternalSpec{Address: "10.1.1.1", Port: 9500}
+			obj.Spec.External = &pillarcsiv1alpha1.ExternalSpec{Address: "10.2.2.2", Port: 9500}
+
+			_, err := validator.ValidateUpdate(ctx, oldObj, obj)
+			Expect(err).To(HaveOccurred(),
+				"Changing spec.external.address should be rejected as it is an immutable identity field")
+			Expect(err.Error()).To(ContainSubstring("10.1.1.1"))
+			Expect(err.Error()).To(ContainSubstring("10.2.2.2"))
+		})
+
+		// ── E19.3.5 ───────────────────────────────────────────────────────────
+		// TestPillarTargetWebhook_ImmutableUpdate_ExternalPortChange
+		// Changing spec.external.port should be rejected.
+		It("E19.3.5 TestPillarTargetWebhook_ImmutableUpdate_ExternalPortChange: changing spec.external.port should be rejected", func() {
+			By("setting oldObj.spec.external.port=9501 and newObj.spec.external.port=9502")
+			oldObj.Spec.External = &pillarcsiv1alpha1.ExternalSpec{Address: "10.0.0.5", Port: 9501}
+			obj.Spec.External = &pillarcsiv1alpha1.ExternalSpec{Address: "10.0.0.5", Port: 9502}
+
+			_, err := validator.ValidateUpdate(ctx, oldObj, obj)
+			Expect(err).To(HaveOccurred(),
+				"Changing spec.external.port should be rejected as it is an immutable identity field")
+			Expect(err.Error()).To(ContainSubstring("9501"))
+			Expect(err.Error()).To(ContainSubstring("9502"))
+		})
 	})
 })
 

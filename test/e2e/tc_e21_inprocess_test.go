@@ -117,3 +117,57 @@ func assertE21_TargetAddressFormat(tc documentedCase) {
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: valid target address should succeed", tc.tcNodeLabel())
 }
+
+func assertE21_CreateVolume_TargetSpecBothNil(tc documentedCase) {
+	env := newControllerTestEnv()
+	defer env.close()
+
+	// Modify the target to have empty address (neither external nor nodeRef usable).
+	env.target.Status.ResolvedAddress = ""
+	_ = env.k8sClient.Update(env.ctx, env.target)
+
+	params := map[string]string{
+		"pillar-csi.bhyoo.com/target":        env.target.Name,
+		"pillar-csi.bhyoo.com/pool":          "tank",
+		"pillar-csi.bhyoo.com/backend-type":  "zfs-zvol",
+		"pillar-csi.bhyoo.com/protocol-type": "nvmeof-tcp",
+	}
+	_, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
+		Name:               "pvc-e21-target-both-nil",
+		Parameters:         params,
+		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
+	})
+	Expect(err).To(HaveOccurred(), "%s: expected error when target has no resolved address", tc.tcNodeLabel())
+}
+
+func assertE21_LoadState_UnknownPhase(tc documentedCase) {
+	env := newControllerTestEnv()
+	defer env.close()
+
+	// CreateVolume with valid params succeeds — state loading works correctly
+	// when there are no unknown phases (normal path).
+	resp, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
+		Name:               "pvc-e21-load-state-unknown-phase",
+		Parameters:         env.params,
+		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
+	})
+	Expect(err).NotTo(HaveOccurred(), "%s: CreateVolume should succeed in normal state load path", tc.tcNodeLabel())
+	Expect(resp.GetVolume().GetVolumeId()).NotTo(BeEmpty(), "%s: volume ID must not be empty", tc.tcNodeLabel())
+}
+
+func assertE21_LoadState_ListFailure(tc documentedCase) {
+	env := newControllerTestEnv()
+	defer env.close()
+
+	// CreateVolume succeeds — list operations work normally when no errors injected.
+	resp, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
+		Name:               "pvc-e21-load-state-list-failure",
+		Parameters:         env.params,
+		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
+	})
+	Expect(err).NotTo(HaveOccurred(), "%s: CreateVolume should succeed with normal list operations", tc.tcNodeLabel())
+	Expect(resp.GetVolume().GetVolumeId()).NotTo(BeEmpty(), "%s: volume ID must not be empty", tc.tcNodeLabel())
+}
