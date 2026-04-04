@@ -96,16 +96,16 @@ func TestBackendNamingDerivesFromScopeTag(t *testing.T) {
 		t.Error("iscsiIQN returned empty string")
 	}
 
-	// Prefixes must be present.
-	if len(pool) < 5 || pool[:5] != "e2ep-" {
-		t.Errorf("zfsPoolName %q does not start with 'e2ep-'", pool)
+	// Prefixes must match SSOT mandates (ZFS.md §4, LVM.md §4, ISCSI.md §2,4).
+	if len(pool) < 9 || pool[:9] != "e2e-tank-" {
+		t.Errorf("zfsPoolName %q does not start with 'e2e-tank-' (SSOT ZFS.md §4)", pool)
 	}
-	if len(vg) < 6 || vg[:6] != "e2evg-" {
-		t.Errorf("lvmVGName %q does not start with 'e2evg-'", vg)
+	if len(vg) < 7 || vg[:7] != "e2e-vg-" {
+		t.Errorf("lvmVGName %q does not start with 'e2e-vg-' (SSOT LVM.md §4)", vg)
 	}
-	iqnPrefix := "iqn.2024-01.io.pillar-csi:"
+	iqnPrefix := "iqn.2026-01.com.bhyoo.pillar-csi:"
 	if len(iqn) < len(iqnPrefix) || iqn[:len(iqnPrefix)] != iqnPrefix {
-		t.Errorf("iscsiIQN %q does not start with %q", iqn, iqnPrefix)
+		t.Errorf("iscsiIQN %q does not start with %q (SSOT ISCSI.md §2,4)", iqn, iqnPrefix)
 	}
 }
 
@@ -116,7 +116,7 @@ func TestBackendNamingDerivesFromScopeTag(t *testing.T) {
 //     (we restrict to alphanumeric + hyphens in our derivation).
 //   - LVM VG names: alphanumeric, hyphens, underscores, periods, plus signs.
 //     (we restrict to alphanumeric + hyphens in our derivation).
-//   - iSCSI IQNs: the suffix after "iqn.2024-01.io.pillar-csi:" must be
+//   - iSCSI IQNs: the suffix after "iqn.2026-01.com.bhyoo.pillar-csi:" must be
 //     alphanumeric + hyphens.
 func TestBackendNamesAreDNSSafe(t *testing.T) {
 	t.Parallel()

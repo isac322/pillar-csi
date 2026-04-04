@@ -249,8 +249,9 @@ func setupFabricBackends(ctx context.Context, nodeContainer string, output io.Wr
 	}
 
 	const (
-		nvmeSubsysNQN = "nqn.2024-01.io.pillar-csi:e2e-target"
-		iscsiIQN      = "iqn.2024-01.io.pillar-csi:e2e-target"
+		// NQN/IQN format per SSOT: NVMEOF.md §2 and ISCSI.md §2
+		nvmeSubsysNQN = "nqn.2026-01.com.bhyoo.pillar-csi:e2e-target"
+		iscsiIQN      = "iqn.2026-01.com.bhyoo.pillar-csi:e2e-target"
 		iscsiTID      = "10"
 	)
 
@@ -272,7 +273,7 @@ func setupFabricBackends(ctx context.Context, nodeContainer string, output io.Wr
 		`if [ ! -d "${SUBSYS_DIR}" ]; then`,
 		`  mkdir -p "${SUBSYS_DIR}"`,
 		`  echo 1 > "${SUBSYS_DIR}/attr_allow_any_host"`,
-		`  dd if=/dev/zero of=/tmp/nvmet-e2e-ns0.img bs=1M count=64 status=none 2>/dev/null || true`,
+		`  truncate -s 64M /tmp/nvmet-e2e-ns0.img 2>/dev/null || true`,
 		`  NVME_LOOP=$(losetup --find --show /tmp/nvmet-e2e-ns0.img 2>/dev/null || echo "")`,
 		`  if [ -n "${NVME_LOOP}" ]; then`,
 		`    mkdir -p "${SUBSYS_DIR}/namespaces/1"`,
@@ -318,7 +319,7 @@ func setupFabricBackends(ctx context.Context, nodeContainer string, output io.Wr
 		`IQN="` + iscsiIQN + `"`,
 		`TID=` + iscsiTID,
 		`if ! tgtadm --lld iscsi --mode target --op show 2>/dev/null | grep -q "${IQN}"; then`,
-		`  dd if=/dev/zero of=/tmp/iscsi-e2e-lun0.img bs=1M count=64 status=none 2>/dev/null || true`,
+		`  truncate -s 64M /tmp/iscsi-e2e-lun0.img 2>/dev/null || true`,
 		`  ISCSI_LOOP=$(losetup --find --show /tmp/iscsi-e2e-lun0.img 2>/dev/null || echo "")`,
 		`  tgtadm --lld iscsi --mode target --op new --tid ${TID} --targetname "${IQN}" 2>/dev/null || true`,
 		`  if [ -n "${ISCSI_LOOP}" ]; then`,

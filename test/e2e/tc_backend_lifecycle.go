@@ -46,8 +46,8 @@ type BackendHandle struct {
 //
 // The pool name is derived from scope.ScopeTag to ensure global uniqueness
 // across parallel test runs. ZFS pool names have a 256-character limit; the
-// derived name uses the prefix "e2ep-" followed by the first 8 characters of
-// the scope tag (always well under the limit).
+// derived name uses the SSOT-mandated prefix "e2e-tank-" (ZFS.md §4) followed
+// by the last 8 characters of the scope tag (always well under the limit).
 //
 // Teardown is registered via TrackBackendRecord so that the pool is destroyed
 // and verified absent when the scope closes, regardless of spec outcome.
@@ -100,8 +100,8 @@ func ProvisionZFSPool(ctx context.Context, scope *TestCaseScope, nodeContainer s
 //
 // The VG name is derived from scope.ScopeTag to ensure global uniqueness
 // across parallel test runs. LVM VG names have a 127-character limit; the
-// derived name uses the prefix "e2evg-" followed by the first 8 characters of
-// the scope tag (always well under the limit).
+// derived name uses the SSOT-mandated prefix "e2e-vg-" (LVM.md §4) followed
+// by the last 8 characters of the scope tag (always well under the limit).
 func ProvisionLVMVG(ctx context.Context, scope *TestCaseScope, nodeContainer string) (*BackendHandle, error) { //nolint:dupl
 	if scope == nil {
 		return nil, fmt.Errorf("ProvisionLVMVG: scope is required")
@@ -149,8 +149,9 @@ func ProvisionLVMVG(ctx context.Context, scope *TestCaseScope, nodeContainer str
 // Kind container node and registers its teardown with the TC scope.
 //
 // The IQN is derived from scope.ScopeTag to ensure global uniqueness across
-// parallel test runs. The IQN uses the prefix "iqn.2024-01.io.pillar-csi:"
-// followed by the first 12 characters of the scope tag.
+// parallel test runs. The IQN uses the SSOT-mandated prefix per ISCSI.md §2,4:
+// "iqn.2026-01.com.bhyoo.pillar-csi:" followed by the last 12 characters of
+// the scope tag.
 func ProvisionISCSITarget(ctx context.Context, scope *TestCaseScope, nodeContainer string) (*BackendHandle, error) {
 	if scope == nil {
 		return nil, fmt.Errorf("ProvisionISCSITarget: scope is required")
@@ -199,29 +200,31 @@ func ProvisionISCSITarget(ctx context.Context, scope *TestCaseScope, nodeContain
 
 // zfsPoolName derives a ZFS pool name from a TC scope tag.
 //
-// Format: "e2ep-<uniqueSuffix>" where uniqueSuffix is the last 8 characters
-// of the scope tag (always unique per TC due to the hash embedded by
-// NewTestCaseScope). ZFS pool names have a 256-character limit; this name is
-// always ≤ 14 chars.
+// Format: "e2e-tank-<uniqueSuffix>" per SSOT ZFS.md §4 mandate. The suffix is
+// the last 8 characters of the scope tag (always unique per TC due to the hash
+// embedded by NewTestCaseScope). ZFS pool names have a 256-character limit;
+// this name is always ≤ 17 chars. The "e2e-" prefix ensures the pool is caught
+// by the suite scavenger cleanup (grep '^e2e-').
 func zfsPoolName(scopeTag string) string {
-	return "e2ep-" + scopeTagSuffix(scopeTag, 8)
+	return "e2e-tank-" + scopeTagSuffix(scopeTag, 8)
 }
 
 // lvmVGName derives an LVM Volume Group name from a TC scope tag.
 //
-// Format: "e2evg-<uniqueSuffix>" where uniqueSuffix is the last 8 characters
-// of the scope tag. LVM VG names have a 127-character limit; this name is
-// always ≤ 15 chars.
+// Format: "e2e-vg-<uniqueSuffix>" per SSOT LVM.md §4 mandate. The suffix is
+// the last 8 characters of the scope tag. LVM VG names have a 127-character
+// limit; this name is always ≤ 15 chars. The "e2e-vg-" prefix ensures the VG
+// is caught by the suite scavenger cleanup (grep 'e2e-vg-').
 func lvmVGName(scopeTag string) string {
-	return "e2evg-" + scopeTagSuffix(scopeTag, 8)
+	return "e2e-vg-" + scopeTagSuffix(scopeTag, 8)
 }
 
 // iscsiIQN derives an iSCSI IQN from a TC scope tag.
 //
-// Format: "iqn.2024-01.io.pillar-csi:<uniqueSuffix>" where uniqueSuffix is
-// the last 12 characters of the scope tag.
+// Format: "iqn.2026-01.com.bhyoo.pillar-csi:<uniqueSuffix>" per SSOT ISCSI.md
+// §2,4 mandate. The uniqueSuffix is the last 12 characters of the scope tag.
 func iscsiIQN(scopeTag string) string {
-	return "iqn.2024-01.io.pillar-csi:" + scopeTagSuffix(scopeTag, 12)
+	return "iqn.2026-01.com.bhyoo.pillar-csi:" + scopeTagSuffix(scopeTag, 12)
 }
 
 // scopeTagSuffix returns the last n characters of the scope tag.

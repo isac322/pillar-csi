@@ -21,7 +21,7 @@
 //
 //	target, err := iscsi.CreateTarget(ctx, iscsi.CreateTargetOptions{
 //	    NodeContainer: "pillar-csi-e2e-abc123-control-plane",
-//	    IQN:           "iqn.2024-01.io.pillar-csi:abc123test",
+//	    IQN:           "iqn.2026-01.com.bhyoo.pillar-csi:abc123test",
 //	    SizeMiB:       512,
 //	})
 //	if err != nil { ... }
@@ -48,7 +48,7 @@ type Target struct {
 	NodeContainer string
 
 	// IQN is the iSCSI Qualified Name of the target
-	// (e.g. "iqn.2024-01.io.pillar-csi:abc123test").
+	// (e.g. "iqn.2026-01.com.bhyoo.pillar-csi:abc123test").
 	IQN string
 
 	// ImagePath is the absolute path of the loop-device image file inside the
@@ -72,7 +72,7 @@ type CreateTargetOptions struct {
 
 	// IQN is the iSCSI Qualified Name to use for the target. It must be unique
 	// within the container for the lifetime of the test. Must not be empty.
-	// Recommended format: "iqn.2024-01.io.pillar-csi:<unique-suffix>"
+	// Recommended format: "iqn.2026-01.com.bhyoo.pillar-csi:<unique-suffix>"
 	IQN string
 
 	// SizeMiB is the size of the loop device image in mebibytes.
@@ -85,8 +85,8 @@ type CreateTargetOptions struct {
 //
 // Steps:
 //
-//  1. Allocates a loop-device image file inside the container under /tmp.
-//  2. Attaches the image as a loop device.
+//  1. Allocates a sparse loop-device image file inside the container under /tmp.
+//  2. Attaches the image as a loop device (with mknod pre-creation for safety).
 //  3. Allocates a target ID (TID) by inspecting existing tgtadm targets.
 //  4. Creates the iSCSI target via "tgtadm".
 //  5. Adds LUN 1 backed by the loop device.
@@ -123,14 +123,12 @@ func CreateTarget(ctx context.Context, opts CreateTargetOptions) (*Target, error
 
 	// ── Step 1: Allocate the loop device image ────────────────────────────────
 	//
-	// "dd if=/dev/zero …" is universally available in Kind nodes and avoids any
-	// dependency on fallocate / truncate which may behave differently across
-	// filesystem types.
+	// "truncate -s <sizeMiB>M" creates a sparse file instantly — no actual disk
+	// blocks are allocated until data is written. This keeps iSCSI target setup
+	// time constant (~50 ms) regardless of size, consistent with the LVM and ZFS
+	// framework helpers which also use sparse files per the infrastructure SSOT.
 	if _, err := containerExec(ctx, opts.NodeContainer,
-		"dd", "if=/dev/zero",
-		fmt.Sprintf("of=%s", imagePath),
-		"bs=1M",
-		fmt.Sprintf("count=%d", sizeMiB),
+		"truncate", "-s", fmt.Sprintf("%dM", sizeMiB), imagePath,
 	); err != nil {
 		return nil, fmt.Errorf("iscsi: CreateTarget: allocate image %s in %s: %w",
 			imagePath, opts.NodeContainer, err)
@@ -143,9 +141,29 @@ func CreateTarget(ctx context.Context, opts CreateTargetOptions) (*Target, error
 
 	// ── Step 2: Attach image as loop device ───────────────────────────────────
 	//
-	// "--find --show" picks a free loop device and prints its path, e.g. "/dev/loop4".
+	// "losetup --find --show" picks a free loop device and prints its path.
+	//
+	// In containers (Kind nodes, CI environments) the next free loop number may
+	// exceed the pre-created /dev/loop* device nodes. Kind containers run with
+	// --privileged so they share the HOST's /dev namespace — if the host has
+	// /dev/loop0..loop129 in use, losetup --find returns "/dev/loop130" but
+	// /dev/loop130 does not exist as a device node in the container, causing:
+	//   "losetup: /path/to/file.img: failed to set up loop device: No such file
+	//    or directory"
+	//
+	// Fix: use a bash compound command that pre-creates /dev/loopN nodes via
+	// mknod before calling losetup --find --show, matching the approach used by
+	// the LVM and ZFS framework helpers per the infrastructure SSOT.
+	const losetupScript = `set -e; ` +
+		`_free=$(losetup -f 2>/dev/null || echo /dev/loop0); ` +
+		`_max=${_free#/dev/loop}; ` +
+		`_max=$((_max + 5)); ` +
+		`for _n in $(seq 0 $_max); do ` +
+		`[ -e "/dev/loop$_n" ] || mknod "/dev/loop$_n" b 7 "$_n" 2>/dev/null || true; ` +
+		`done; ` +
+		`losetup --find --show "$1"`
 	loopOut, err := containerExec(ctx, opts.NodeContainer,
-		"losetup", "--find", "--show", imagePath)
+		"bash", "-c", losetupScript, "bash", imagePath)
 	if err != nil {
 		cleanupImage()
 		return nil, fmt.Errorf("iscsi: CreateTarget: attach loop device for %s in %s: %w",
@@ -303,7 +321,7 @@ func (t *Target) Destroy(ctx context.Context) error {
 // Description returns a human-readable identifier for this iSCSI target,
 // satisfying the [registry.Resource] interface.
 //
-// Example output: `iscsi target "iqn.2024-01.io.pillar-csi:abc123" (tid=3) on container "pillar-csi-e2e-abc123-control-plane"`
+// Example output: `iscsi target "iqn.2026-01.com.bhyoo.pillar-csi:abc123" (tid=3) on container "pillar-csi-e2e-abc123-control-plane"`
 func (t *Target) Description() string {
 	return fmt.Sprintf("iscsi target %q (tid=%d) on container %q", t.IQN, t.TID, t.NodeContainer)
 }
@@ -369,7 +387,7 @@ func allocateTID(ctx context.Context, nodeContainer string) (int, error) {
 	maxTID := 0
 	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimSpace(line)
-		// Lines look like: "Target 1: iqn.2024-01.io.pillar-csi:foo"
+		// Lines look like: "Target 1: iqn.2026-01.com.bhyoo.pillar-csi:foo"
 		if !strings.HasPrefix(line, "Target ") {
 			continue
 		}

@@ -516,12 +516,12 @@ func TestRegisterISCSITarget_IncreasesCount(t *testing.T) {
 	r := New()
 	r.RegisterISCSITarget(&iscsi.Target{
 		NodeContainer: "test-container",
-		IQN:           "iqn.2024-01.io.pillar-csi:test1",
+		IQN:           "iqn.2026-01.com.bhyoo.pillar-csi:test1",
 		TID:           1,
 	})
 	r.RegisterISCSITarget(&iscsi.Target{
 		NodeContainer: "test-container",
-		IQN:           "iqn.2024-01.io.pillar-csi:test2",
+		IQN:           "iqn.2026-01.com.bhyoo.pillar-csi:test2",
 		TID:           2,
 	})
 
@@ -660,11 +660,11 @@ func TestDescription_ISCSITarget(t *testing.T) {
 
 	target := &iscsi.Target{
 		NodeContainer: "my-node",
-		IQN:           "iqn.2024-01.io.pillar-csi:test",
+		IQN:           "iqn.2026-01.com.bhyoo.pillar-csi:test",
 		TID:           42,
 	}
 	desc := target.Description()
-	if !strings.Contains(desc, "iqn.2024-01.io.pillar-csi:test") {
+	if !strings.Contains(desc, "iqn.2026-01.com.bhyoo.pillar-csi:test") {
 		t.Errorf("iscsi.Target.Description() = %q, want it to contain IQN", desc)
 	}
 	if !strings.Contains(desc, "my-node") {

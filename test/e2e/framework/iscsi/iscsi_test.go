@@ -15,7 +15,7 @@ func TestTargetIQNFormat(t *testing.T) {
 	}{
 		{
 			name:    "valid IQN",
-			iqn:     "iqn.2024-01.io.pillar-csi:abc123",
+			iqn:     "iqn.2026-01.com.bhyoo.pillar-csi:abc123",
 			wantErr: false,
 		},
 		{
@@ -62,7 +62,7 @@ func TestCreateTarget_ValidationErrors(t *testing.T) {
 	t.Run("empty NodeContainer", func(t *testing.T) {
 		_, err := CreateTarget(context.Background(), CreateTargetOptions{
 			NodeContainer: "",
-			IQN:           "iqn.2024-01.io.pillar-csi:test",
+			IQN:           "iqn.2026-01.com.bhyoo.pillar-csi:test",
 			SizeMiB:       64,
 		})
 		if err == nil {
@@ -76,7 +76,7 @@ func TestCreateTarget_ValidationErrors(t *testing.T) {
 	t.Run("whitespace NodeContainer", func(t *testing.T) {
 		_, err := CreateTarget(context.Background(), CreateTargetOptions{
 			NodeContainer: "   ",
-			IQN:           "iqn.2024-01.io.pillar-csi:test",
+			IQN:           "iqn.2026-01.com.bhyoo.pillar-csi:test",
 			SizeMiB:       64,
 		})
 		if err == nil {

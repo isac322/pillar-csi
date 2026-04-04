@@ -168,7 +168,7 @@ func TestFabricDaemonSetConstants(t *testing.T) {
 		{
 			name: "NVMeOFSubsystemNQN",
 			got:  kindhelper.NVMeOFSubsystemNQN,
-			want: "nqn.2024-01.io.pillar-csi:e2e-target",
+			want: "nqn.2026-01.com.bhyoo.pillar-csi:e2e-target",
 		},
 		{
 			name: "NVMeOFTCPPort",
@@ -178,7 +178,7 @@ func TestFabricDaemonSetConstants(t *testing.T) {
 		{
 			name: "ISCSITargetIQN",
 			got:  kindhelper.ISCSITargetIQN,
-			want: "iqn.2024-01.io.pillar-csi:e2e-target",
+			want: "iqn.2026-01.com.bhyoo.pillar-csi:e2e-target",
 		},
 		{
 			name: "ISCSITargetTID",

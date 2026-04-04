@@ -107,14 +107,16 @@ const (
 	// NVMeOFSubsystemNQN is the NVMe Qualified Name for the E2E target subsystem
 	// created in the kernel's configfs.  This NQN is stable across test runs and
 	// must be unique on the test host; pillar-csi-e2e is a unique prefix.
-	NVMeOFSubsystemNQN = "nqn.2024-01.io.pillar-csi:e2e-target"
+	// Format follows SSOT NVMEOF.md §2: nqn.2026-01.com.bhyoo.pillar-csi:<suffix>
+	NVMeOFSubsystemNQN = "nqn.2026-01.com.bhyoo.pillar-csi:e2e-target"
 
 	// NVMeOFTCPPort is the TCP port on which the E2E NVMe-oF TCP target listens.
 	// Port 4420 is the IANA-assigned well-known port for NVMe-oF.
 	NVMeOFTCPPort = "4420"
 
 	// ISCSITargetIQN is the IQN for the E2E iSCSI target created by tgtd.
-	ISCSITargetIQN = "iqn.2024-01.io.pillar-csi:e2e-target"
+	// Format follows SSOT ISCSI.md §2: iqn.2026-01.com.bhyoo.pillar-csi:<suffix>
+	ISCSITargetIQN = "iqn.2026-01.com.bhyoo.pillar-csi:e2e-target"
 
 	// ISCSITargetTID is the fixed tgtadm target ID used for the E2E iSCSI target.
 	// TID 10 is chosen to avoid collisions with dynamically allocated TIDs in
@@ -226,7 +228,7 @@ spec:
             modprobe nvmet   2>/dev/null || true
             modprobe nvmet_tcp 2>/dev/null || true
 
-            NVME_SUBSYS="nqn.2024-01.io.pillar-csi:e2e-target"
+            NVME_SUBSYS="nqn.2026-01.com.bhyoo.pillar-csi:e2e-target"
             NVME_SUBSYS_DIR="/sys/kernel/config/nvmet/subsystems/${NVME_SUBSYS}"
             NVME_PORT_DIR="/sys/kernel/config/nvmet/ports/1"
 
@@ -236,8 +238,9 @@ spec:
               mkdir -p "${NVME_SUBSYS_DIR}"
               echo 1 > "${NVME_SUBSYS_DIR}/attr_allow_any_host"
 
-              # Back the namespace with a sparse loop-device image.
-              dd if=/dev/zero of=/tmp/nvmet-e2e-ns0.img bs=1M count=64 status=none
+              # Back the namespace with a sparse loop-device image (truncate = sparse,
+              # consistent with LVM/ZFS infrastructure SSOT mandating sparse files).
+              truncate -s 64M /tmp/nvmet-e2e-ns0.img
               NVME_LOOP=$(losetup --find --show /tmp/nvmet-e2e-ns0.img)
 
               mkdir -p "${NVME_SUBSYS_DIR}/namespaces/1"
@@ -285,7 +288,7 @@ spec:
               echo "[fabric-installer] tgtd started."
             fi
 
-            ISCSI_IQN="iqn.2024-01.io.pillar-csi:e2e-target"
+            ISCSI_IQN="iqn.2026-01.com.bhyoo.pillar-csi:e2e-target"
             ISCSI_TID=10
 
             # Create iSCSI target — idempotent.
@@ -294,7 +297,8 @@ spec:
             else
               echo "[fabric-installer] Creating iSCSI target ${ISCSI_IQN}..."
 
-              dd if=/dev/zero of=/tmp/iscsi-e2e-lun0.img bs=1M count=64 status=none
+              # Sparse file (truncate) — consistent with LVM/ZFS infrastructure SSOT.
+              truncate -s 64M /tmp/iscsi-e2e-lun0.img
               ISCSI_LOOP=$(losetup --find --show /tmp/iscsi-e2e-lun0.img)
 
               tgtadm --lld iscsi --mode target --op new \
@@ -338,7 +342,7 @@ spec:
               #   a) configfs is mounted on the Kind node,
               #   b) the nvmet module loaded the subsystem configuration,
               #   c) the nvmet_tcp module bound the TCP port.
-              NVME_LINK="/sys/kernel/config/nvmet/ports/1/subsystems/nqn.2024-01.io.pillar-csi:e2e-target"
+              NVME_LINK="/sys/kernel/config/nvmet/ports/1/subsystems/nqn.2026-01.com.bhyoo.pillar-csi:e2e-target"
               nsenter --mount=/proc/1/ns/mnt -- test -L "${NVME_LINK}" 2>/dev/null || {
                 echo "[readiness] FAIL: NVMe-oF subsystem→port symlink absent: ${NVME_LINK}"
                 echo "[readiness]   Check: nvmet and nvmet_tcp modules loaded?"
@@ -357,7 +361,7 @@ spec:
               # Verify tgtd is running and the E2E target is accessible.
               nsenter --mount=/proc/1/ns/mnt -- \
                 tgtadm --lld iscsi --mode target --op show 2>/dev/null \
-                | grep -q "iqn.2024-01.io.pillar-csi:e2e-target" || {
+                | grep -q "iqn.2026-01.com.bhyoo.pillar-csi:e2e-target" || {
                 echo "[readiness] FAIL: iSCSI target not found in tgtd — is tgtd running?"
                 exit 1
               }

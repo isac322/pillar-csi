@@ -224,7 +224,7 @@ func TestDIInjectedZFSProvisionerPopulatesZFSPoolField(t *testing.T) {
 	const (
 		clusterName = "pillar-csi-e2e-p00002-abcd1234"
 		container   = "pillar-csi-e2e-p00002-abcd1234-control-plane"
-		poolName    = "e2ep-abcd1234"
+		poolName    = "e2e-tank-abcd1234"
 	)
 
 	pool := &zfs.Pool{
@@ -270,7 +270,7 @@ func TestDIInjectedLVMProvisionerPopulatesLVMVGField(t *testing.T) {
 	const (
 		clusterName = "pillar-csi-e2e-p00003-abcd1234"
 		container   = "pillar-csi-e2e-p00003-abcd1234-control-plane"
-		vgName      = "e2evg-abcd1234"
+		vgName      = "e2e-vg-abcd1234"
 	)
 
 	vg := &lvm.VG{
@@ -400,8 +400,8 @@ func TestDIMultipleCustomBackendsInjectedSimultaneously(t *testing.T) {
 	const (
 		clusterName = "pillar-csi-e2e-p00006-abcd1234"
 		container   = "pillar-csi-e2e-p00006-abcd1234-control-plane"
-		poolName    = "e2ep-abcd1234"
-		vgName      = "e2evg-abcd1234"
+		poolName    = "e2e-tank-abcd1234"
+		vgName      = "e2e-vg-abcd1234"
 	)
 
 	pool := &zfs.Pool{NodeContainer: container, PoolName: poolName}
