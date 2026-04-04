@@ -231,6 +231,11 @@ func assertE2_DenyInitiatorNonNotFound(tc documentedCase) {
 	env.agentSrv.denyInitiatorErr = status.Error(codes.Internal, "deny initiator failed")
 	env.agentSrv.mu.Unlock()
 
+	// Create CSINode so resolveInitiatorID can find the NQN for "worker-1".
+	// Without CSINode, ControllerUnpublishVolume returns success (idempotent
+	// "no ACL entry to revoke") before ever calling DenyInitiator.
+	makeCSINodeWithNQN(env, "worker-1", "nqn.2026-01.io.example:worker-1")
+
 	resp, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
 		Name:               "pvc-e2-deny-err",
 		Parameters:         env.params,

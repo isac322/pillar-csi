@@ -741,7 +741,7 @@ func verifyMTLSLocalBackend() error {
 }
 
 func verifyCRDLocalContracts() error {
-	repoRoot := filepath.Dir(filepath.Dir(docCatalogPath()))
+	repoRoot := repoRootFromCaller()
 	requiredCRDs := []string{
 		filepath.Join(repoRoot, "config", "crd", "bases", "pillar-csi.pillar-csi.bhyoo.com_pillartargets.yaml"),
 		filepath.Join(repoRoot, "config", "crd", "bases", "pillar-csi.pillar-csi.bhyoo.com_pillarpools.yaml"),

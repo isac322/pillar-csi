@@ -880,7 +880,9 @@ func assertE1_PVCAnnotation_StructuralFieldBlocked(tc documentedCase) {
 			Name:      "pvc-annot-blocked",
 			Namespace: "default",
 			Annotations: map[string]string{
-				"pillar-csi.bhyoo.com/backend-override": `{"pillar-csi.bhyoo.com/pool":"overridden-pool"}`,
+				// Use the nested YAML format that parseZFSBackendOverride checks:
+				// {"zfs":{"pool":"..."}} triggers blockedZFSFields rejection.
+				"pillar-csi.bhyoo.com/backend-override": `{"zfs":{"pool":"overridden-pool"}}`,
 			},
 		},
 		Spec: corev1.PersistentVolumeClaimSpec{},
@@ -888,8 +890,10 @@ func assertE1_PVCAnnotation_StructuralFieldBlocked(tc documentedCase) {
 	Expect(env.k8sClient.Create(env.ctx, pvc)).To(Succeed())
 
 	params := copyParams(env.params)
-	params["csi.storage.k8s.io/pvc/name"] = pvc.Name
-	params["csi.storage.k8s.io/pvc/namespace"] = pvc.Namespace
+	// Use the correct param keys that external-provisioner injects:
+	// "csi.storage.k8s.io/pvc-name" (hyphen, not slash) — see paramPVCName constant.
+	params["csi.storage.k8s.io/pvc-name"] = pvc.Name
+	params["csi.storage.k8s.io/pvc-namespace"] = pvc.Namespace
 
 	_, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
 		Name:               "pvc-annot-blocked",

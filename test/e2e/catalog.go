@@ -2,60 +2,54 @@ package e2e
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
-	"regexp"
-	"runtime"
+	goruntime "runtime"
 	"strings"
+
+	"github.com/bhyoo/pillar-csi/test/e2e/docspec"
 )
 
 // defaultProfileCaseCount is the number of TC entries assembled by
 // buildDefaultProfile() — the catalog-driven portion of the default profile.
 //
-// The default-profile cases break down as:
+// The default-profile cases break down (new 6-file catalog structure):
 //
-//	239 in-process (E1–E24, E28–E30)
-//	104 envtest    (E19, E20, E23, E25–E26, E32)
-//	 13 envtest    (remainder from E21 overspill)
+//	219 in-process  (COMPONENT-TESTS.md E1–E30 + INTEGRATION-TESTS.md E28)
+//	166 envtest     (INTEGRATION-TESTS.md E19, E20, E21, E23, E25, E26, E32)
+//	 40 cluster     (INTEGRATION-TESTS.md E27 + E2E-TESTS.md E10)
 //	──────────────
-//	356 catalog total, excluding cluster + full-lvm groups
-//
-// Additionally:
-//
-//	 32 cluster    (E10=3, E27=29) — managed by catalog
-//	──────────────
-//	388 catalog cases assembled by buildDefaultProfile()
-//
-// The remaining E33 cases are implemented as real-backend Ginkgo specs
-// in dedicated *_e2e_test.go files.  Of those, only 7 carry both the
-// "default-profile" label AND the plain "e2e" build tag (no "e2e_helm"):
-//
-//	lvm_backend_standalone_e2e_test.go  → 7 (TC-E33.311–317, build: e2e)
-//
-// Note: lvm_pvc_pod_mount_e2e_test.go (12 specs) and
-// lvm_volume_expansion_e2e_test.go (5 specs) have build tag "e2e && e2e_helm"
-// and do NOT carry Label("default-profile") — they require a Helm-deployed
-// pillar-csi agent and are excluded from the standard "make test-e2e" run.
+//	425 catalog total, excluding standalone E33/E34/E35, F27-F31, and PRD-gap
+//	    cases without execution plans (C-NEW, E-NEW, E-FAULT, NEW-U).
 //
 // Additionally, the following default-profile specs from dedicated test files
 // are included in the canonical total but are NOT managed by buildDefaultProfile:
 //
-//	teardown_panic_guarantee_test.go    → 4 (ac:3 teardown-guarantee)
 //	backend_teardown_ac43_e2e_test.go   → 5 (ac:4.3 backend teardown absence)
+//	teardown_panic_guarantee_test.go    → 4 (ac:3 teardown-guarantee)
+//	lvm_backend_standalone_e2e_test.go  → 7 (TC-E33.311–317, build: e2e)
 //
-// Total default-profile spec count: 388+7+4+5 = 404.
-// This 404 total is the canonical "실제 실행되는 테스트 케이스" count declared
-// in docs/E2E-TESTCASES.md (239 in-process + 117 envtest + 48 cluster).
+// Total default-profile spec count: 425 + 7 + 4 + 5 = 441.
 //
-// Note: lvm_backend_core_rpcs_e2e_test.go (9 E33.1 specs) intentionally omits
-// "default-profile" because those specs require a Helm-deployed agent pod that
-// exceeds the 2-minute suiteLevelTimeout.
-//
-// Note: E34 (13), E35 (13), F27 (9), F28 (2), F29 (3), F30 (3), F31 (2) = 45
-// specs are NOT in the default-profile because they require host-level iSCSI
-// or NVMe-oF initiator tooling (iscsi_tcp module / iscsiadm / nvme CLI) that
-// is not available in the standard CI host environment.
-const defaultProfileCaseCount = 388
+// Note: E33, E34, E35, F27–F31 standalone cluster specs are NOT in the
+// catalog-driven profile. They live directly in *_e2e_test.go files with
+// Label("default-profile") and run under the default label filter without
+// going through the catalog.
+const defaultProfileCaseCount = 425
+
+// componentSectionKeys is the set of E-group section keys from
+// COMPONENT-TESTS.md that are included in the in-process default profile.
+// These keys have known execution plans in resolveLocalExecutionPlan().
+var componentSectionKeys = map[string]bool{
+	"E1": true, "E2": true, "E3": true, "E7": true, "E8": true, "E9": true,
+	"E11": true, "E15": true, "E16": true, "E17": true, "E18": true,
+	"E21": true, "E24": true, "E29": true, "E30": true,
+}
+
+// envtestSectionKeys is the set of E-group section keys from
+// INTEGRATION-TESTS.md that are included in the envtest default profile.
+var envtestSectionKeys = map[string]bool{
+	"E19": true, "E20": true, "E21": true,
+	"E23": true, "E25": true, "E26": true, "E32": true,
+}
 
 type documentedCase struct {
 	Ordinal         int
@@ -67,68 +61,6 @@ type documentedCase struct {
 	SubsectionTitle string
 	DocLine         int
 }
-
-type sectionQuota struct {
-	Key   string
-	Count int
-}
-
-var (
-	headingRE = regexp.MustCompile(`^(#{2,6})\s+(.*)$`)
-	rowRE     = regexp.MustCompile("^\\|\\s*([^|]+?)\\s*\\|\\s*`([^`]+)`[^|]*\\|")
-	keyRE     = regexp.MustCompile(`^([EF]\d+)\b`)
-
-	// Sub-AC 1 locks the default profile to a deterministic 388-case view from
-	// docs/E2E-TESTCASES.md (239 in-process + 117 envtest + 32 cluster).
-	// Combined with 7 E33 standalone default-profile specs, 4 teardown-guarantee
-	// specs, and 5 backend teardown-absence specs (in *_e2e_test.go files), the
-	// total default-profile running TC count is 404 as declared in
-	// docs/E2E-TESTCASES.md (239 in-process + 117 envtest + 48 cluster).
-	// The selector below codifies deterministic quotas per group instead of
-	// depending on raw row count (which changes as the document evolves).
-	defaultInProcessQuotas = []sectionQuota{
-		{Key: "E1", Count: 13},
-		{Key: "E2", Count: 8},
-		{Key: "E3", Count: 70},
-		{Key: "E4", Count: 4},
-		{Key: "E5", Count: 6},
-		{Key: "E6", Count: 5},
-		{Key: "E7", Count: 5},
-		{Key: "E8", Count: 3},
-		{Key: "E9", Count: 6},
-		{Key: "E11", Count: 8},
-		{Key: "E12", Count: 4},
-		{Key: "E13", Count: 2},
-		{Key: "E14", Count: 15},
-		{Key: "E15", Count: 6},
-		{Key: "E16", Count: 7},
-		{Key: "E17", Count: 8},
-		{Key: "E18", Count: 6},
-		{Key: "E21", Count: 6},
-		{Key: "E22", Count: 12},
-		{Key: "E28", Count: 30},
-		{Key: "E29", Count: 12},
-		{Key: "E30", Count: 3},
-	}
-	defaultEnvtestQuotas = []sectionQuota{
-		{Key: "E19", Count: 19},
-		{Key: "E20", Count: 20},
-		{Key: "E23", Count: 24},
-		{Key: "E25", Count: 41},
-	}
-	defaultClusterQuotas = []sectionQuota{
-		{Key: "E10", Count: 3},
-		// E27: Helm chart installation and release validation tests (Sub-AC 3).
-		// The 29-case quota matches the "Helm 설치 검증 29개 테스트" reference in
-		// the Category 2 section header of docs/E2E-TESTCASES.md.
-		// Real cluster validation is in tc_e27_helm_e2e_test.go (no build tag).
-		{Key: "E27", Count: 29},
-		// E33, E34, E35, F27–F31 are NOT in the catalog-driven profile.
-		// They live in dedicated *_e2e_test.go files (no build tag) with
-		// Label("default-profile",...) on the outer Describe so Ginkgo picks
-		// them up automatically under the default label filter.
-	}
-)
 
 func (tc documentedCase) specText() string {
 	return fmt.Sprintf("TC[%03d/%03d] %s :: %s", tc.Ordinal, defaultProfileCaseCount, tc.DocID, tc.TestName)
@@ -149,7 +81,7 @@ func (tc documentedCase) tcNodeLabel() string {
 // legacy specText() (for ordinal, group, and human-readable test function
 // name). The format is:
 //
-//	[TC-E1.1] TC[001/388] E1.1 :: TestCSIController_CreateVolume
+//	[TC-E1.1] TC[001/425] E1.1 :: TestCSIController_CreateVolume
 //
 // Note: inferTimingIdentity in timing_capture.go relies on the "::" separator
 // and the LAST "]" appearing before the DocID token. The [TC-<ID>] prefix is
@@ -159,238 +91,147 @@ func (tc documentedCase) tcNodeName() string {
 	return fmt.Sprintf("%s %s", tc.tcNodeLabel(), tc.specText())
 }
 
-func docCatalogPath() string {
-	_, file, _, ok := runtime.Caller(0)
+// repoRootFromCaller returns the repository root directory by walking up from
+// this source file's location (catalog.go in test/e2e/).
+func repoRootFromCaller() string {
+	_, file, _, ok := goruntime.Caller(0)
 	if !ok {
 		panic("unable to resolve caller path for e2e catalog")
 	}
-
-	return filepath.Join(filepath.Dir(file), "..", "..", "docs", "E2E-TESTCASES.md")
+	// catalog.go is at <repo>/test/e2e/catalog.go
+	// go up two directories: test/e2e -> test -> repo root
+	return resolveRepoRoot(file)
 }
 
-func isCaseTableHeader(line string) bool {
-	trimmed := strings.TrimSpace(line)
-	return strings.HasPrefix(trimmed, "| ID | 테스트 함수 |") ||
-		strings.HasPrefix(trimmed, "| # | 테스트 함수 |")
+func resolveRepoRoot(catalogFile string) string {
+	// Walk up from test/e2e/catalog.go to repo root.
+	// The file path is: .../test/e2e/catalog.go
+	// We need: .../
+	parts := strings.Split(catalogFile, "/")
+	// Remove "catalog.go", "e2e", "test" from the end
+	if len(parts) >= 3 {
+		parts = parts[:len(parts)-3]
+	}
+	return strings.Join(parts, "/")
 }
 
-func extractGroupKey(title string) string {
-	matches := keyRE.FindStringSubmatch(strings.TrimSpace(title))
-	if len(matches) != 2 {
-		return ""
-	}
-
-	return matches[1]
-}
-
-func parseDocumentedCases() ([]documentedCase, error) {
-	path := docCatalogPath()
-	content, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", path, err)
-	}
-
-	lines := strings.Split(string(content), "\n")
-	cases := make([]documentedCase, 0, 768)
-
-	var (
-		sectionTitle string
-		sectionKey   string
-		subTitle     string
-		subKey       string
-		inTable      bool
-	)
-
-	for idx, line := range lines {
-		if matches := headingRE.FindStringSubmatch(line); len(matches) == 3 {
-			level := len(matches[1])
-			title := strings.TrimSpace(matches[2])
-			switch level {
-			case 2:
-				sectionTitle = title
-				sectionKey = extractGroupKey(title)
-				subTitle = ""
-				subKey = ""
-			default:
-				subTitle = title
-				subKey = extractGroupKey(title)
-			}
-		}
-
-		if isCaseTableHeader(line) {
-			inTable = true
-			continue
-		}
-
-		if !inTable {
-			continue
-		}
-
-		if strings.HasPrefix(line, "|---") || strings.HasPrefix(line, "|----") {
-			continue
-		}
-
-		if !strings.HasPrefix(line, "|") {
-			inTable = false
-			continue
-		}
-
-		matches := rowRE.FindStringSubmatch(line)
-		if len(matches) != 3 {
-			continue
-		}
-
-		groupKey := sectionKey
-		if strings.HasPrefix(sectionTitle, "유형 F") && subKey != "" {
-			groupKey = subKey
-		}
-
-		if groupKey == "" {
-			continue
-		}
-
-		rawDocID := strings.TrimSpace(matches[1])
-		// Rows in cluster / full-E2E sections use plain ordinal numbers as the
-		// first column (e.g. 285, 318) instead of E-prefixed identifiers.
-		// Prefix them with the group key so the TC node name starts with
-		// [TC-E33.285], [TC-E34.318], etc. — required by AC 7 which checks
-		// that every spec node name contains [TC-<EorF><digit>].
-		docID := rawDocID
-		if isAllDigits(rawDocID) && groupKey != "" {
-			docID = groupKey + "." + rawDocID
-		}
-
-		cases = append(cases, documentedCase{
-			GroupKey:        groupKey,
-			DocID:           docID,
-			TestName:        strings.TrimSpace(matches[2]),
-			SectionTitle:    sectionTitle,
-			SubsectionTitle: subTitle,
-			DocLine:         idx + 1,
-		})
-	}
-
-	return cases, nil
-}
-
-func cloneByGroup(cases []documentedCase) map[string][]documentedCase {
-	grouped := make(map[string][]documentedCase)
-	for _, tc := range cases {
-		grouped[tc.GroupKey] = append(grouped[tc.GroupKey], tc)
-	}
-
-	return grouped
-}
-
-func takeCases(selected *[]documentedCase, grouped map[string][]documentedCase, key string, count int, category string) int {
-	group := grouped[key]
-	if len(group) == 0 {
-		return count
-	}
-
-	if len(group) > count {
-		group = group[:count]
-	}
-
-	for _, tc := range group {
-		tc.Category = category
-		*selected = append(*selected, tc)
-	}
-
-	grouped[key] = grouped[key][len(group):]
-	return count - len(group)
-}
-
-func takeOneCase(selected *[]documentedCase, grouped map[string][]documentedCase, key string, category string) bool {
-	if len(grouped[key]) == 0 {
-		return false
-	}
-
-	tc := grouped[key][0]
-	tc.Category = category
-	*selected = append(*selected, tc)
-	grouped[key] = grouped[key][1:]
-	return true
-}
-
+// buildDefaultProfile loads the 6-file catalog via docspec.LoadCatalog() and
+// selects the cases that belong to the catalog-driven default profile.
+//
+// Cases are included based on their source file and section key:
+//
+//	COMPONENT-TESTS.md + componentSectionKeys  → "in-process"
+//	INTEGRATION-TESTS.md + E28                 → "in-process" (agent gRPC)
+//	INTEGRATION-TESTS.md + envtestSectionKeys  → "envtest"
+//	INTEGRATION-TESTS.md + E27                 → "cluster" (Helm chart)
+//	E2E-TESTS.md + E10                         → "cluster" (Kind bootstrap)
+//
+// Cases that do not match any of the above rules are excluded from the
+// catalog-driven profile (they are handled by standalone *_e2e_test.go files
+// or belong to unit/performance test layers).
 func buildDefaultProfile() ([]documentedCase, error) {
-	allCases, err := parseDocumentedCases()
+	repoRoot := repoRootFromCaller()
+
+	cat, err := docspec.LoadCatalog(repoRoot)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("load test catalog: %w", err)
 	}
 
-	grouped := cloneByGroup(allCases)
 	selected := make([]documentedCase, 0, defaultProfileCaseCount)
 
-	for _, quota := range defaultInProcessQuotas {
-		short := takeCases(&selected, grouped, quota.Key, quota.Count, "in-process")
-		for short > 0 {
-			// E3's summary count is one higher than the currently documented row
-			// count. Roll the remaining slot into the next documented in-process
-			// integration section instead of silently shrinking the 239-case budget.
-			if !takeOneCase(&selected, grouped, "E24", "in-process") {
-				return nil, fmt.Errorf("in-process shortfall for %s: missing %d cases", quota.Key, short)
-			}
-			short--
-		}
-	}
-
-	for _, quota := range defaultEnvtestQuotas {
-		short := takeCases(&selected, grouped, quota.Key, quota.Count, "envtest")
-		if short != 0 {
-			return nil, fmt.Errorf("envtest shortfall for %s: missing %d cases", quota.Key, short)
-		}
-	}
-
-	const (
-		defaultInProcessCount = 239
-		defaultEnvtestCount   = 117
-	)
-
-	for len(selected) < defaultInProcessCount+defaultEnvtestCount {
-		if takeOneCase(&selected, grouped, "E26", "envtest") {
+	for _, c := range cat.CanonicalCases {
+		dc, include := specCaseToDocumentedCase(c)
+		if !include {
 			continue
 		}
-		if takeOneCase(&selected, grouped, "E32", "envtest") {
-			continue
-		}
-		if takeOneCase(&selected, grouped, "E21", "envtest") {
-			continue
-		}
-
-		return nil, fmt.Errorf("unable to fill envtest profile to %d cases", defaultEnvtestCount)
-	}
-
-	for _, quota := range defaultClusterQuotas {
-		short := takeCases(&selected, grouped, quota.Key, quota.Count, "cluster")
-		if short != 0 {
-			return nil, fmt.Errorf("cluster shortfall for %s: missing %d cases", quota.Key, short)
-		}
+		selected = append(selected, dc)
 	}
 
 	if len(selected) != defaultProfileCaseCount {
-		return nil, fmt.Errorf("default profile expected %d cases, found %d", defaultProfileCaseCount, len(selected))
+		return nil, fmt.Errorf(
+			"default profile expected %d cases, found %d — "+
+				"update defaultProfileCaseCount or adjust catalog filters",
+			defaultProfileCaseCount, len(selected),
+		)
 	}
 
+	// Assign ordinals after selection so the ordinal reflects the ordered
+	// position in the profile (matches TC[001/425] display in spec names).
 	seen := make(map[string]struct{}, len(selected))
 	for i := range selected {
 		selected[i].Ordinal = i + 1
-		traceKey := fmt.Sprintf("%s|%s|%s", selected[i].GroupKey, selected[i].DocID, selected[i].TestName)
+		traceKey := fmt.Sprintf("%s|%s|%s",
+			selected[i].GroupKey, selected[i].DocID, selected[i].TestName)
 		if _, exists := seen[traceKey]; exists {
 			return nil, fmt.Errorf("duplicate trace key in default profile: %s", traceKey)
 		}
 		seen[traceKey] = struct{}{}
 	}
 
-	// Sub-AC 3.3: validate that all TC node labels ([TC-<DocID>]) are distinct.
-	// The composite traceKey check above allows two cases with the same DocID
-	// but different TestName to pass, which would produce colliding [TC-<ID>]
-	// node labels and break per-spec focus filtering.
+	// Validate that all TC node labels ([TC-<DocID>]) are distinct.
 	if err := validateTCNodeLabelUniqueness(selected); err != nil {
 		return nil, err
 	}
 
 	return selected, nil
+}
+
+// specCaseToDocumentedCase converts a docspec.Case into a documentedCase and
+// reports whether the case should be included in the default profile.
+//
+// Category assignment follows the source-file and section-key rules described
+// in buildDefaultProfile().
+func specCaseToDocumentedCase(c docspec.Case) (documentedCase, bool) {
+	var category string
+
+	switch {
+	// In-process: COMPONENT-TESTS.md with known section keys
+	case strings.HasSuffix(c.SourceFile, "COMPONENT-TESTS.md") &&
+		componentSectionKeys[c.SectionKey]:
+		category = "in-process"
+
+	// In-process: INTEGRATION-TESTS.md E28 (agent gRPC + LVM backend)
+	case strings.HasSuffix(c.SourceFile, "INTEGRATION-TESTS.md") &&
+		c.SectionKey == "E28":
+		category = "in-process"
+
+	// Envtest: INTEGRATION-TESTS.md with envtest section keys
+	case strings.HasSuffix(c.SourceFile, "INTEGRATION-TESTS.md") &&
+		envtestSectionKeys[c.SectionKey]:
+		category = "envtest"
+
+	// Cluster: INTEGRATION-TESTS.md E27 (Helm chart deployment tests)
+	case strings.HasSuffix(c.SourceFile, "INTEGRATION-TESTS.md") &&
+		c.SectionKey == "E27":
+		category = "cluster"
+
+	// Cluster: E2E-TESTS.md E10 (Kind bootstrap lifecycle)
+	case strings.HasSuffix(c.SourceFile, "E2E-TESTS.md") &&
+		c.SectionKey == "E10":
+		category = "cluster"
+
+	default:
+		// Exclude: unit tests, performance tests, CSI sanity tests,
+		// E33/E34/E35 (standalone files), F27–F31 (standalone files),
+		// E-FAULT/E-NEW (standalone files), C-NEW/I-NEW/NEW-U (PRD gap).
+		return documentedCase{}, false
+	}
+
+	// Compute DocID: numeric ordinals get prefixed with the section key.
+	docID := c.ID
+	if isAllDigits(c.ID) && c.SectionKey != "" {
+		docID = c.SectionKey + "." + c.ID
+	}
+
+	return documentedCase{
+		Category:        category,
+		GroupKey:        c.SectionKey,
+		DocID:           docID,
+		TestName:        c.Symbol,
+		SectionTitle:    c.Section,
+		SubsectionTitle: c.Subsection,
+		DocLine:         c.Line,
+	}, true
 }
 
 func mustBuildDefaultProfile() []documentedCase {

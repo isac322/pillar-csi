@@ -98,6 +98,9 @@ func CreateVG(ctx context.Context, opts CreateVGOptions) (*VG, error) {
 		return nil, fmt.Errorf("lvm: CreateVG: VGName must not be empty")
 	}
 
+	// SSOT compliance: docs/testing/infra/LVM.md §5 (사이징) mandates 512 MiB
+	// as the default loop-device image size for standard E2E tests.
+	// Fault/exhaustion TCs may override SizeMiB to 64 MiB per LVM.md §5.
 	sizeMiB := opts.SizeMiB
 	if sizeMiB <= 0 {
 		sizeMiB = 512
@@ -105,10 +108,14 @@ func CreateVG(ctx context.Context, opts CreateVGOptions) (*VG, error) {
 
 	// Place the image under /tmp inside the container so that it is
 	// automatically cleaned up if the container is killed before Destroy runs.
+	// SSOT compliance: docs/testing/infra/LVM.md §6 (실패 시 정리) mandates
+	// that cleanup functions are registered immediately after resource creation.
 	imagePath := fmt.Sprintf("/tmp/lvm-vg-%s.img", opts.VGName)
 
 	// ── Step 1: Allocate the loop device image ────────────────────────────────
 	//
+	// SSOT compliance: docs/testing/infra/LVM.md §7 (루프백 기반 격리) mandates
+	// sparse files via truncate for loopback-based LVM VG creation.
 	// "truncate -s <size>M" creates a sparse file instantly — no actual disk
 	// blocks are allocated until data is written.  This keeps VG setup time
 	// constant (~50 ms) regardless of size and allows large (100 GiB) VGs that

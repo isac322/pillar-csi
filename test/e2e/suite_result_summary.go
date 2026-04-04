@@ -23,7 +23,7 @@ package e2e
 //	total: 404 | passed: 394 | failed: 15 | skipped: 0 | pending: 0
 //	failed TCs (15):
 //	  [TC-E1.2] [category:in-process] Expected true to be false
-//	  [TC-F27.1] [category:full-lvm] Expected non-nil PVC to be nil
+//	  [TC-E33.285] [category:lvm-kind] Expected non-nil PVC to be nil
 //	status: FAIL
 //
 // Example output (all-pass case):

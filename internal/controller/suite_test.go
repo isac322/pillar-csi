@@ -23,6 +23,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -51,6 +52,13 @@ var (
 
 func TestControllers(t *testing.T) {
 	RegisterFailHandler(Fail)
+
+	// SSOT compliance: docs/testing/infra/ENVTEST.md §9 (테스트 프레임워크 패턴) mandates:
+	//   - Eventually timeout: 5s default, polling interval 200ms.
+	// These values are appropriate for envtest (in-process kube-apiserver) where
+	// reconcile loops complete in < 500ms and no real I/O is involved.
+	SetDefaultEventuallyTimeout(5 * time.Second)
+	SetDefaultEventuallyPollingInterval(200 * time.Millisecond)
 
 	RunSpecs(t, "Controller Suite")
 }

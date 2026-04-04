@@ -192,7 +192,7 @@ func TestAC6CollectSummaryFailedTCsContainIDAndCategory(t *testing.T) {
 		SpecReports: types.SpecReports{
 			sampleItSpec("E1.1", "in-process", types.SpecStatePassed, 100*time.Millisecond),
 			sampleItSpec("E3.5", "envtest", types.SpecStateFailed, 300*time.Millisecond),
-			sampleItSpec("F27.1", "full-lvm", types.SpecStateFailed, 1*time.Second),
+			sampleItSpec("E33.285", "lvm-kind", types.SpecStateFailed, 1*time.Second),
 		},
 	}
 
@@ -202,18 +202,18 @@ func TestAC6CollectSummaryFailedTCsContainIDAndCategory(t *testing.T) {
 		t.Fatalf("len(FailedTCs) = %d, want 2", len(s.FailedTCs))
 	}
 
-	// Sorted by TCID: E3.5 < F27.1
+	// Sorted by TCID: E3.5 < E33.285
 	if s.FailedTCs[0].TCID != "E3.5" {
 		t.Errorf("FailedTCs[0].TCID = %q, want E3.5", s.FailedTCs[0].TCID)
 	}
 	if s.FailedTCs[0].Category != "envtest" {
 		t.Errorf("FailedTCs[0].Category = %q, want envtest", s.FailedTCs[0].Category)
 	}
-	if s.FailedTCs[1].TCID != "F27.1" {
-		t.Errorf("FailedTCs[1].TCID = %q, want F27.1", s.FailedTCs[1].TCID)
+	if s.FailedTCs[1].TCID != "E33.285" {
+		t.Errorf("FailedTCs[1].TCID = %q, want E33.285", s.FailedTCs[1].TCID)
 	}
-	if s.FailedTCs[1].Category != "full-lvm" {
-		t.Errorf("FailedTCs[1].Category = %q, want full-lvm", s.FailedTCs[1].Category)
+	if s.FailedTCs[1].Category != "lvm-kind" {
+		t.Errorf("FailedTCs[1].Category = %q, want lvm-kind", s.FailedTCs[1].Category)
 	}
 }
 
@@ -225,7 +225,7 @@ func TestAC6FailedTCsSortedByTCID(t *testing.T) {
 		SuiteDescription: "Pillar CSI E2E Suite",
 		SuiteSucceeded:   false,
 		SpecReports: types.SpecReports{
-			sampleItSpec("F27.1", "full-lvm", types.SpecStateFailed, 1*time.Second),
+			sampleItSpec("E33.285", "lvm-kind", types.SpecStateFailed, 1*time.Second),
 			sampleItSpec("E1.2", "in-process", types.SpecStateFailed, 200*time.Millisecond),
 			sampleItSpec("E3.5", "envtest", types.SpecStateFailed, 300*time.Millisecond),
 		},
@@ -237,8 +237,8 @@ func TestAC6FailedTCsSortedByTCID(t *testing.T) {
 		t.Fatalf("len(FailedTCs) = %d, want 3", len(s.FailedTCs))
 	}
 
-	// Expect ascending order: E1.2, E3.5, F27.1
-	want := []string{"E1.2", "E3.5", "F27.1"}
+	// Expect ascending order: E1.2, E3.5, E33.285
+	want := []string{"E1.2", "E3.5", "E33.285"}
 	for i, wantID := range want {
 		if s.FailedTCs[i].TCID != wantID {
 			t.Errorf("FailedTCs[%d].TCID = %q, want %q (sorted ascending)", i, s.FailedTCs[i].TCID, wantID)
@@ -260,7 +260,7 @@ func TestAC6WriteSummaryFailCaseContainsExpectedLines(t *testing.T) {
 		SuiteStatus: "FAIL",
 		FailedTCs: []failedTCRecord{
 			{TCID: "E1.2", Category: "in-process", Message: "Expected true to be false"},
-			{TCID: "F27.1", Category: "full-lvm", Message: "Expected non-nil PVC to be nil"},
+			{TCID: "E33.285", Category: "lvm-kind", Message: "Expected non-nil PVC to be nil"},
 		},
 	}
 
@@ -276,7 +276,7 @@ func TestAC6WriteSummaryFailCaseContainsExpectedLines(t *testing.T) {
 		"total: 437 | passed: 420 | failed: 15 | skipped: 2 | pending: 0",
 		"failed TCs (15):",
 		"[TC-E1.2] [category:in-process] Expected true to be false",
-		"[TC-F27.1] [category:full-lvm] Expected non-nil PVC to be nil",
+		"[TC-E33.285] [category:lvm-kind] Expected non-nil PVC to be nil",
 		"status: FAIL",
 	}
 

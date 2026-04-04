@@ -42,6 +42,7 @@ var knownCategories = map[string]struct{}{
 	"envtest":    {},
 	"cluster":    {},
 	"full-lvm":   {},
+	"lvm-kind":   {},
 }
 
 // specTextTCIDPatterns lists, in priority order, the regular expressions used

@@ -123,8 +123,9 @@ func assertE21_CreateVolume_TargetSpecBothNil(tc documentedCase) {
 	defer env.close()
 
 	// Modify the target to have empty address (neither external nor nodeRef usable).
+	// Must use Status().Update() — plain Update() only persists Spec, not Status.
 	env.target.Status.ResolvedAddress = ""
-	_ = env.k8sClient.Update(env.ctx, env.target)
+	_ = env.k8sClient.Status().Update(env.ctx, env.target)
 
 	params := map[string]string{
 		"pillar-csi.bhyoo.com/target":        env.target.Name,

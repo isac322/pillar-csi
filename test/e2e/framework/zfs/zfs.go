@@ -96,6 +96,9 @@ func CreatePool(ctx context.Context, opts CreatePoolOptions) (*Pool, error) {
 		return nil, fmt.Errorf("zfs: CreatePool: PoolName must not be empty")
 	}
 
+	// SSOT compliance: docs/testing/infra/ZFS.md §5 (사이징) mandates 512 MiB
+	// as the default loop-device image size for standard E2E tests.
+	// Fault/exhaustion TCs may override SizeMiB to 64 MiB per ZFS.md §5.
 	sizeMiB := opts.SizeMiB
 	if sizeMiB <= 0 {
 		sizeMiB = 512
@@ -103,6 +106,8 @@ func CreatePool(ctx context.Context, opts CreatePoolOptions) (*Pool, error) {
 
 	// Place the image under /tmp inside the container so that it is
 	// automatically cleaned up if the container is killed before Destroy runs.
+	// SSOT compliance: docs/testing/infra/ZFS.md §6 (실패 시 정리) mandates
+	// that cleanup functions are registered immediately after resource creation.
 	imagePath := fmt.Sprintf("/tmp/zfs-pool-%s.img", opts.PoolName)
 
 	// ── Step 1: Allocate the loop device image ────────────────────────────────
@@ -111,6 +116,8 @@ func CreatePool(ctx context.Context, opts CreatePoolOptions) (*Pool, error) {
 	// I/O for zeroing), which is critical for large pool sizes (e.g. 4 GiB).
 	// ZFS probes the loop device size via ioctl and doesn't require a pre-zeroed
 	// image. Sparse files are universally supported in Debian/Ubuntu Kind nodes.
+	// SSOT compliance: docs/testing/infra/ZFS.md §3 (루프백 기반 격리) mandates
+	// sparse files via truncate for loopback-based ZFS pool creation.
 	if _, err := containerExec(ctx, opts.NodeContainer,
 		"truncate", "-s", fmt.Sprintf("%dM", sizeMiB), imagePath,
 	); err != nil {

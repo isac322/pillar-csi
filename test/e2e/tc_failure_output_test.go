@@ -16,13 +16,13 @@ func TestExtractTCIDFromText(t *testing.T) {
 	}{
 		// New [TC-E1.2] format (AC 7)
 		{"[TC-E1.2] some description", "E1.2"},
-		{"[TC-F27.3] LVM full lifecycle", "F27.3"},
+		{"[TC-E33.287] LVM CreateVolume linear", "E33.287"},
 		// New [TC-NNN] numeric format
 		{"[TC-100] TC[133/437] 100 :: TestCSIClone_CreateVolume", "100"},
 		{"[TC-437] TC[437/437] 437 :: TestLVMEnd2End", "437"},
 		// Legacy TC[nnn/437] format, named IDs
 		{"TC[001/437] E1.2 :: testCreateVolume", "E1.2"},
-		{"TC[437/437] F31.1 :: testLVMEnd2End", "F31.1"},
+		{"TC[437/437] E33.310 :: testLVMEnd2End", "E33.310"},
 		// Legacy TC[nnn/437] format, numeric IDs
 		{"TC[133/437] 100 :: testCSIClone", "100"},
 		// Bare ID fallback
@@ -50,7 +50,7 @@ func TestFormatFailurePrefix(t *testing.T) {
 		want     string
 	}{
 		{"E1.2", "in-process", "[TC-E1.2] [category:in-process]"},
-		{"F27.1", "full-lvm", "[TC-F27.1] [category:full-lvm]"},
+		{"E33.285", "lvm-kind", "[TC-E33.285] [category:lvm-kind]"},
 		{"E3.16", "", "[TC-E3.16]"},
 		{"", "in-process", ""},
 		{"", "", ""},
@@ -117,7 +117,7 @@ func TestExtractFailureMessage(t *testing.T) {
 func TestFailureLineMustContainTCID(t *testing.T) {
 	t.Parallel()
 
-	tcIDs := []string{"E1.2", "E3.16", "F27.1", "E28.5", "100", "437"}
+	tcIDs := []string{"E1.2", "E3.16", "E33.285", "E28.5", "100", "437"}
 	lineRE := regexp.MustCompile(`\[TC-([^\]]+)\]`)
 
 	for _, tcID := range tcIDs {
@@ -169,7 +169,7 @@ func TestExtractCategoryFromLabels(t *testing.T) {
 		{[]string{"default-profile", "in-process", "E1"}, "in-process"},
 		{[]string{"default-profile", "envtest", "E19"}, "envtest"},
 		{[]string{"default-profile", "cluster", "E10"}, "cluster"},
-		{[]string{"default-profile", "full-lvm", "F27"}, "full-lvm"},
+		{[]string{"default-profile", "lvm-kind", "E33"}, "lvm-kind"},
 		{[]string{"default-profile", "E1"}, ""},
 	}
 

@@ -255,9 +255,9 @@ func TestAC61FormatElapsedEntryContainsTCIDAndDuration(t *testing.T) {
 			wantParts:  []string{"[TC-E1.2]", "elapsed:"},
 		},
 		{
-			tcID:       "F27.1",
+			tcID:       "E33.285",
 			totalNanos: (1 * time.Second).Nanoseconds(),
-			wantParts:  []string{"[TC-F27.1]", "elapsed:", "1s"},
+			wantParts:  []string{"[TC-E33.285]", "elapsed:", "1s"},
 		},
 		{
 			tcID:       "E33.5",
@@ -352,7 +352,7 @@ func TestAC61ReportAfterEachElapsedTimeForMultipleTCs(t *testing.T) {
 		{"E1.1", 50 * time.Millisecond},
 		{"E1.2", 100 * time.Millisecond},
 		{"E2.1", 200 * time.Millisecond},
-		{"F27.1", 1 * time.Second},
+		{"E33.285", 1 * time.Second},
 	}
 
 	for _, tc := range tcData {

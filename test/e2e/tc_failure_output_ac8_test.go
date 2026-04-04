@@ -163,13 +163,13 @@ func TestAC8_FullPipelineFailedSpec(t *testing.T) {
 func TestAC8_FullPipelinePanickedSpec(t *testing.T) {
 	t.Parallel()
 
-	report := buildPanickedSpecReport("F27.1", "full-lvm", "index out of range [3]")
+	report := buildPanickedSpecReport("E33.285", "lvm-kind", "index out of range [3]")
 	line := formatFullFailureLine(report)
 
 	if line == "" {
 		t.Fatal("[AC-8] formatFullFailureLine returned empty string for panicked spec")
 	}
-	assertLineContainsTCID(t, line, "F27.1")
+	assertLineContainsTCID(t, line, "E33.285")
 
 	if !strings.Contains(line, "panic:") {
 		t.Errorf("[AC-8] panicked spec failure line %q missing 'panic:' prefix", line)
@@ -563,7 +563,7 @@ func TestAC8_AllCatalogTCIDsProduceGrepableLines(t *testing.T) {
 func TestAC8_SuiteResultSummaryListsFailedTCIDs(t *testing.T) {
 	t.Parallel()
 
-	failedIDs := []string{"E1.2", "E3.16", "F27.1", "E28.5"}
+	failedIDs := []string{"E1.2", "E3.16", "E33.285", "E28.5"}
 
 	var specs types.SpecReports
 	// Add failing specs.
@@ -725,8 +725,8 @@ func TestAC8_TCNodeLabelFormat(t *testing.T) {
 		{"E1.1", "[TC-E1.1]"},
 		{"E3.16", "[TC-E3.16]"},
 		{"E28.5", "[TC-E28.5]"},
-		{"F27.1", "[TC-F27.1]"},
-		{"F31.2", "[TC-F31.2]"},
+		{"E33.285", "[TC-E33.285]"},
+		{"E33.310", "[TC-E33.310]"},
 	}
 
 	for _, tc := range cases {
@@ -790,7 +790,7 @@ func TestAC8_GrepRoundTripForDocumentedIDs(t *testing.T) {
 		"E10.1", "E11.1", "E12.1", "E13.1", "E14.1", "E15.1",
 		"E16.1", "E17.1", "E18.1", "E19.1", "E21.1", "E22.1",
 		"E24.1", "E28.1", "E28.30", "E29.1", "E30.1",
-		"F27.1", "F28.1", "F29.1", "F30.1", "F31.1",
+		"E33.285", "E33.286", "E33.294", "E33.306", "E33.311",
 	}
 
 	for _, id := range sampleIDs {

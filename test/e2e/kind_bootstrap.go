@@ -158,6 +158,74 @@ func (s *kindBootstrapState) encode() ([]byte, error) {
 	return payload, nil
 }
 
+// kindClusterConfigYAML generates a Kind cluster configuration YAML that
+// satisfies the SSOT requirements in docs/testing/infra/KIND.md §2 (리소스 생성).
+//
+// # ExtraMount strategy
+//
+// The SSOT mandates bind-mounting three host paths into every Kind node
+// container so that storage subsystems work inside the container:
+//
+//	/dev/mapper          → Bidirectional    (LVM device-mapper)
+//	/dev/nvme-fabrics    → HostToContainer  (NVMe-oF fabric driver)
+//	/sys/kernel/config   → Bidirectional    (configfs: NVMe-oF + iSCSI)
+//
+// Each mount is included ONLY when its host path actually exists, so that
+// cluster creation succeeds on development machines that do not have every
+// storage subsystem configured. CI always has all three paths because
+// CI-HOST-SETUP.md loads the required kernel modules in a dedicated step
+// before `make test-e2e`.
+//
+// When none of the paths exist (e.g., in CI-less unit-test environments),
+// the function returns a minimal single-node config without extraMounts.
+//
+// # Node topology
+//
+// The SSOT specifies 1 control-plane node for the pillar-csi E2E suite.
+// Worker nodes are not provisioned here because backend resources (ZFS pools,
+// LVM VGs) are only set up on the control-plane container, and the CSI
+// DaemonSet relies on those resources being present on the node it runs on.
+// A multi-node topology upgrade is tracked separately.
+func kindClusterConfigYAML(generatedDir string) (configPath string, err error) {
+	type mountSpec struct {
+		hostPath      string
+		containerPath string
+		propagation   string
+	}
+
+	// SSOT-mandated extraMounts (docs/testing/infra/KIND.md §2).
+	candidates := []mountSpec{
+		{"/dev/mapper", "/dev/mapper", "Bidirectional"},
+		{"/dev/nvme-fabrics", "/dev/nvme-fabrics", "HostToContainer"},
+		{"/sys/kernel/config", "/sys/kernel/config", "Bidirectional"},
+	}
+
+	var mountsYAML strings.Builder
+	for _, m := range candidates {
+		if _, statErr := os.Stat(m.hostPath); statErr != nil {
+			// Host path absent — skip this mount to avoid cluster-creation failure.
+			continue
+		}
+		fmt.Fprintf(&mountsYAML,
+			"  - hostPath: %s\n    containerPath: %s\n    propagation: %s\n",
+			m.hostPath, m.containerPath, m.propagation,
+		)
+	}
+
+	var cfg strings.Builder
+	cfg.WriteString("kind: Cluster\napiVersion: kind.x-k8s.io/v1alpha4\n")
+	if mountsYAML.Len() > 0 {
+		cfg.WriteString("nodes:\n- role: control-plane\n  extraMounts:\n")
+		cfg.WriteString(mountsYAML.String())
+	}
+
+	configPath = filepath.Join(generatedDir, "kind-config.yaml")
+	if writeErr := os.WriteFile(configPath, []byte(cfg.String()), 0o644); writeErr != nil {
+		return "", fmt.Errorf("write kind cluster config %q: %w", configPath, writeErr)
+	}
+	return configPath, nil
+}
+
 func (s *kindBootstrapState) createCluster(ctx context.Context, runner commandRunner) (err error) {
 	if s == nil {
 		return errors.New("kind bootstrap state is nil")
@@ -182,6 +250,14 @@ func (s *kindBootstrapState) createCluster(ctx context.Context, runner commandRu
 		return fmt.Errorf("create kubeconfig directory: %w", err)
 	}
 
+	// SSOT compliance: docs/testing/infra/KIND.md §2 mandates kind-config.yaml
+	// with extraMounts for /dev/mapper, /dev/nvme-fabrics, /sys/kernel/config.
+	// kindClusterConfigYAML writes the config file and returns its path.
+	configPath, cfgErr := kindClusterConfigYAML(filepath.Dir(s.KubeconfigPath))
+	if cfgErr != nil {
+		return fmt.Errorf("generate kind cluster config: %w", cfgErr)
+	}
+
 	_, err = runner.Run(ctx, commandSpec{
 		Name: s.KindBinary,
 		Args: []string{
@@ -189,6 +265,7 @@ func (s *kindBootstrapState) createCluster(ctx context.Context, runner commandRu
 			"--name", s.ClusterName,
 			"--kubeconfig", s.KubeconfigPath,
 			"--wait", s.CreateTimeout.String(),
+			"--config", configPath,
 		},
 	})
 	if err != nil {

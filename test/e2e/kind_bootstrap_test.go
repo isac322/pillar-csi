@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -105,10 +106,15 @@ func TestKindBootstrapCreateClusterUsesKindKubeconfigAndContext(t *testing.T) {
 		DeleteTimeout:  2 * time.Minute,
 	}
 
+	// SSOT compliance: createCluster now writes a kind-config.yaml to GeneratedDir
+	// and passes --config <path> to kind create cluster.  The config path is
+	// deterministic: GeneratedDir/kind-config.yaml.
+	configPath := filepath.Join(suitePaths.GeneratedDir, "kind-config.yaml")
+
 	fakeRunner := &fakeCommandRunner{
 		t: t,
 		outputs: map[string]fakeCommandResult{
-			"kind create cluster --name pillar-csi-e2e-p1234-abcd1234 --kubeconfig " + state.KubeconfigPath + " --wait 2m0s": {},
+			"kind create cluster --name pillar-csi-e2e-p1234-abcd1234 --kubeconfig " + state.KubeconfigPath + " --wait 2m0s --config " + configPath: {},
 			"kubectl config current-context --kubeconfig " + state.KubeconfigPath: {
 				stdout: "kind-pillar-csi-e2e-p1234-abcd1234\n",
 			},
@@ -131,6 +137,7 @@ func TestKindBootstrapCreateClusterUsesKindKubeconfigAndContext(t *testing.T) {
 				"--name", state.ClusterName,
 				"--kubeconfig", state.KubeconfigPath,
 				"--wait", "2m0s",
+				"--config", configPath,
 			},
 		},
 		{
@@ -143,6 +150,75 @@ func TestKindBootstrapCreateClusterUsesKindKubeconfigAndContext(t *testing.T) {
 	}
 	if !reflect.DeepEqual(fakeRunner.calls, wantCalls) {
 		t.Fatalf("calls = %#v, want %#v", fakeRunner.calls, wantCalls)
+	}
+}
+
+// TestKindClusterConfigYAMLWritesFile verifies that kindClusterConfigYAML
+// writes a valid YAML file under the given generatedDir.
+func TestKindClusterConfigYAMLWritesFile(t *testing.T) {
+	t.Parallel()
+
+	suitePaths := newTestSuiteTempPaths(t)
+
+	configPath, err := kindClusterConfigYAML(suitePaths.GeneratedDir)
+	if err != nil {
+		t.Fatalf("kindClusterConfigYAML: %v", err)
+	}
+
+	// Config file must exist in GeneratedDir.
+	wantPath := filepath.Join(suitePaths.GeneratedDir, "kind-config.yaml")
+	if configPath != wantPath {
+		t.Errorf("configPath = %q, want %q", configPath, wantPath)
+	}
+
+	data, readErr := os.ReadFile(configPath)
+	if readErr != nil {
+		t.Fatalf("read kind-config.yaml: %v", readErr)
+	}
+	content := string(data)
+
+	// Must start with the Kind cluster header.
+	if !strings.Contains(content, "kind: Cluster") {
+		t.Errorf("kind-config.yaml missing 'kind: Cluster':\n%s", content)
+	}
+	if !strings.Contains(content, "apiVersion: kind.x-k8s.io/v1alpha4") {
+		t.Errorf("kind-config.yaml missing apiVersion:\n%s", content)
+	}
+}
+
+// TestKindClusterConfigYAMLExtraMountsForExistingPaths verifies that
+// extraMounts entries are generated only for host paths that exist.
+func TestKindClusterConfigYAMLExtraMountsForExistingPaths(t *testing.T) {
+	t.Parallel()
+
+	// /tmp always exists; use it as a stand-in for a "device that exists".
+	suitePaths := newTestSuiteTempPaths(t)
+
+	configPath, err := kindClusterConfigYAML(suitePaths.GeneratedDir)
+	if err != nil {
+		t.Fatalf("kindClusterConfigYAML: %v", err)
+	}
+	data, _ := os.ReadFile(configPath)
+	content := string(data)
+
+	// If /dev/mapper exists on this machine, the config must include it.
+	if _, statErr := os.Stat("/dev/mapper"); statErr == nil {
+		if !strings.Contains(content, "/dev/mapper") {
+			t.Errorf("kind-config.yaml must include /dev/mapper extraMount (path exists):\n%s", content)
+		}
+		if !strings.Contains(content, "Bidirectional") {
+			t.Errorf("kind-config.yaml /dev/mapper mount must use Bidirectional propagation:\n%s", content)
+		}
+	}
+
+	// If /dev/nvme-fabrics exists, it must be present with HostToContainer.
+	if _, statErr := os.Stat("/dev/nvme-fabrics"); statErr == nil {
+		if !strings.Contains(content, "/dev/nvme-fabrics") {
+			t.Errorf("kind-config.yaml must include /dev/nvme-fabrics extraMount (path exists):\n%s", content)
+		}
+		if !strings.Contains(content, "HostToContainer") {
+			t.Errorf("kind-config.yaml /dev/nvme-fabrics mount must use HostToContainer propagation:\n%s", content)
+		}
 	}
 }
 

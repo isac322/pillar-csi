@@ -554,13 +554,15 @@ AlreadyExists) are tested within this component.
 | # | Test Function | Description | Setup | Expected Outcome |
 |---|--------------|-------------|-------|-----------------|
 | 1 | `TestCSIController_CreateVolume_Success` | Full CreateVolume flow creates backend and export | Mock agent: CreateVolume→OK, ExportVolume→OK | Returns CreateVolumeResponse with volume_id and context |
-| 2 | `TestCSIController_CreateVolume_CapacityRange` | Respects limit_bytes in capacity range | Request with limit_bytes=10 GiB | Returns volume sized within [required_bytes, limit_bytes] |
+| 2 | `TestCSIController_CreateVolume_Capacity_RequiredOnly` | Respects limit_bytes in capacity range | Request with limit_bytes=10 GiB | Returns volume sized within [required_bytes, limit_bytes] |
 | 3 | `TestCSIController_CreateVolume_IdempotentRetry` | Identical CreateVolume request can be retried | Same name and capacity called twice | Both calls succeed; same volume returned |
 | 4 | `TestCSIController_CreateVolume_AgentError` | Agent generic error maps to Internal | Mock agent: CreateVolume→gRPC Internal | Returns gRPC Internal |
 | 5 | `TestCSIController_CreateVolume_AgentUnreachable` | Agent unreachable maps to non-OK status | Mock agent: CreateVolume→gRPC Unavailable | Returns non-OK gRPC status |
-| 6 | `TestCSIController_CreateVolume_MissingName` | Missing volume name returns InvalidArgument | Name="" in request | Returns gRPC InvalidArgument |
+| 6 | `TestCSIController_CreateVolume_MissingVolumeName` | Missing volume name returns InvalidArgument | Name="" in request | Returns gRPC InvalidArgument |
 | 7 | `TestCSIController_CreateVolume_TargetNotFound` | Target node not found returns NotFound | Mock agent lookup fails for target | Returns gRPC NotFound or Internal |
-| 8 | `TestCSIController_CreateVolume_MissingParams` | Missing required storage parameters returns InvalidArgument | No pool parameter in volume context | Returns gRPC InvalidArgument |
+| 8a | `TestCSIController_CreateVolume_MissingTargetParam` | Missing target param returns InvalidArgument | No target key in StorageClass parameters | Returns gRPC InvalidArgument |
+| 8b | `TestCSIController_CreateVolume_MissingBackendTypeParam` | Missing backend-type param returns InvalidArgument | No backend-type key in StorageClass parameters | Returns gRPC InvalidArgument |
+| 8c | `TestCSIController_CreateVolume_MissingProtocolTypeParam` | Missing protocol-type param returns InvalidArgument | No protocol-type key in StorageClass parameters | Returns gRPC InvalidArgument |
 | 9 | `TestCSIController_CreateVolume_DuplicateName` | Same name with conflicting capacity returns AlreadyExists | Mock agent: CreateVolume→gRPC AlreadyExists | Returns gRPC AlreadyExists |
 
 ---
@@ -1078,8 +1080,10 @@ call is made.
 | 1 – Agent | `TestAgentErrors_DeleteVolume_EmptyVolumeID` | VolumeID="" on DeleteVolume |
 | 1 – Agent | `TestAgentErrors_ExpandVolume_EmptyVolumeID` | VolumeID="" on ExpandVolume |
 | 1 – Agent | `TestAgentErrors_ExportVolume_MissingNvmeofTcpParams` | NVMEOF_TCP protocol with nil params |
-| 4 – CSI Controller | `TestCSIController_CreateVolume_MissingName` | Empty volume name |
-| 4 – CSI Controller | `TestCSIController_CreateVolume_MissingParams` | Missing required storage class params |
+| 4 – CSI Controller | `TestCSIController_CreateVolume_MissingVolumeName` | Empty volume name |
+| 4 – CSI Controller | `TestCSIController_CreateVolume_MissingTargetParam` | Missing target StorageClass param |
+| 4 – CSI Controller | `TestCSIController_CreateVolume_MissingBackendTypeParam` | Missing backend-type StorageClass param |
+| 4 – CSI Controller | `TestCSIController_CreateVolume_MissingProtocolTypeParam` | Missing protocol-type StorageClass param |
 | 4 – CSI Controller | `TestCSIErrors_CreateVolume_InvalidCapabilities_Nil` | Nil VolumeCapabilities |
 | 4 – CSI Controller | `TestCSIErrors_ControllerExpand_InvalidArgument_EmptyVolumeID` | VolumeID="" on ControllerExpandVolume |
 | 5 – CSI Node | `TestCSIErrors_NodeStage_InvalidParams_MissingVolumeID` | VolumeID="" on NodeStageVolume |

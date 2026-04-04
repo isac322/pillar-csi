@@ -6,7 +6,8 @@ package e2e
 //
 // Problem: When running Helm-related specs (e.g., with --label-filter=helm),
 // the E27 Describe blocks each include a BeforeAll or It node that executes
-// `helm install --wait --timeout 5m`. With N parallel Ginkgo workers assigned
+// `helm install --wait --timeout 5m` (TC-E27.207 tests helm install itself).
+// With N parallel Ginkgo workers assigned
 // to different Ordered containers, multiple workers can attempt concurrent Helm
 // installs that individually take 5 minutes. The suite-level --timeout=2m is
 // then exceeded, causing:
@@ -37,7 +38,9 @@ package e2e
 // # DO NOT combine with E27 Helm install tests
 //
 // E27 Helm tests (--label-filter=helm) include TC-E27.207 which itself runs
-// `helm install pillar-csi … --wait --timeout 5m`. If E2E_HELM_BOOTSTRAP=true
+// plain `helm install pillar-csi … --wait --timeout 5m` to test the install
+// behaviour directly. The suite-level bootstrap here uses `helm upgrade --install`
+// (idempotent). If E2E_HELM_BOOTSTRAP=true
 // is also set, node-1 pre-installs the same release and TC-E27.207 fails with
 // "cannot re-use a name that is still in use". Use E2E_HELM_BOOTSTRAP only
 // when running tests that REQUIRE a pre-installed chart (e.g., E10-cluster)
@@ -69,9 +72,12 @@ const (
 	// The Makefile forwards E2E_HELM_NAMESPACE (default: "pillar-csi-system").
 	helmNamespaceEnvVar = "E2E_HELM_NAMESPACE"
 
-	// helmInstallTimeout is the maximum duration allowed for `helm install --wait`
-	// inside bootstrapSuiteHelm. 5 minutes for chart deployment plus 2 minutes
-	// headroom for slow Kind nodes.
+	// helmInstallTimeout is the maximum duration allowed for `helm upgrade --install
+	// --wait --timeout=120s` inside bootstrapSuiteHelm. 2 minutes for chart
+	// deployment (helm --timeout=120s) plus headroom for slow Kind nodes.
+	//
+	// SSOT compliance: docs/testing/infra/HELM.md mandates
+	// `helm upgrade --install ... --wait --timeout=120s` for idempotent installation.
 	helmInstallTimeout = 7 * time.Minute
 
 	// helmTeardownTimeout is the maximum duration for `helm uninstall --wait`
@@ -185,13 +191,19 @@ func bootstrapSuiteHelm(
 		release, namespace, chartPath)
 
 	var stdoutBuf, stderrBuf bytes.Buffer
+	// SSOT compliance: docs/testing/infra/HELM.md §2 mandates
+	//   `helm upgrade --install` for idempotency (not plain `helm install`)
+	//   `--wait --timeout=120s` for Pod readiness gating.
+	// Plain `helm install` is intentionally reserved for TC-E27.207 which tests
+	// the install behavior itself; the suite-level bootstrap always uses
+	// `helm upgrade --install` so it is idempotent across re-runs.
 	cmd := exec.CommandContext(ctx, "helm", //nolint:gosec
 		"--kubeconfig="+clusterState.KubeconfigPath,
-		"install", release, chartPath,
+		"upgrade", "--install", release, chartPath,
 		"--namespace", namespace,
 		"--create-namespace",
 		"--wait",
-		"--timeout", "5m",
+		"--timeout=120s",
 	)
 	cmd.Stdout = io.MultiWriter(output, &stdoutBuf)
 	cmd.Stderr = io.MultiWriter(output, &stderrBuf)
@@ -201,7 +213,7 @@ func bootstrapSuiteHelm(
 		if errMsg == "" {
 			errMsg = err.Error()
 		}
-		return nil, fmt.Errorf("[helm-bootstrap] helm install %q: %w\nstderr: %s",
+		return nil, fmt.Errorf("[helm-bootstrap] helm upgrade --install %q: %w\nstderr: %s",
 			release, err, errMsg)
 	}
 

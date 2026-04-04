@@ -44,6 +44,10 @@ const (
 // to be ready, and returns the raw YAML kubeconfig string.  The kubeconfig
 // file is written under /tmp so it never touches the source tree.
 //
+// SSOT compliance: docs/testing/infra/KIND.md §2 (리소스 생성) mandates that
+// the cluster name uses the "pillar-e2e-<suite>" naming pattern and that
+// kubeconfig is stored under a temporary directory, never in the source tree.
+//
 // The caller is responsible for calling DeleteCluster when finished.  If
 // CreateCluster returns an error the cluster (if partially created) is cleaned
 // up internally; callers do not need to call DeleteCluster on error.
