@@ -508,6 +508,81 @@ E35는 E34보다도 호스트 요구사항이 높다. `zfs` 커널 모듈과 실
 
 ---
 
+## F27: 실제 LVM 볼륨 CRUD E2E — loopback VG
+
+> **빌드 태그:** `//go:build e2e && e2e_helm`
+> **실행:** `go test ./test/e2e/ -tags='e2e e2e_helm' -v -run TestRealLVM`
+>
+> 실제 loopback 장치 기반 LVM VG에서 gRPC Agent를 통한 볼륨 생성/삭제/확장을 검증한다.
+
+| ID | 테스트 함수 | 설명 | 기대 결과 |
+|----|------------|------|----------|
+| F27.1 | `TestRealLVM_CreateVolume_Linear` | linear LV 생성 및 /dev/<vg>/<lv> 존재 검증 | DevicePath 설정; /dev 경로 존재 |
+| F27.2 | `TestRealLVM_CreateVolume_Thin` | thin pool 내 thin LV 생성 검증 | thin LV 생성; pool_lv 컬럼 확인 |
+| F27.3 | `TestRealLVM_CreateVolume_Idempotent` | 동일 LV 재생성 시 동일 device_path 반환 (멱등성) | 동일 DevicePath; LV 1개만 존재 |
+| F27.4 | `TestRealLVM_DeleteVolume` | DeleteVolume 후 /dev 및 lvs에서 LV 제거 | 블록 장치 제거; lvs 미노출 |
+| F27.5 | `TestRealLVM_ExpandVolume` | lvextend가 lvs 및 blockdev에 반영 | 확장 후 20 MiB 이상 |
+| F27.6 | `TestRealLVM_GetCapacity_LinearVG` | GetCapacity가 vgs 출력과 일치 | TotalBytes > 0; AvailableBytes >= 0 |
+| F27.7 | `TestRealLVM_GetCapacity_ThinPool` | thin pool 용량 보고 | ThinPoolBytes > 0 |
+| F27.8 | `TestRealLVM_VGFull_CreateFails` | VG 여유 공간보다 큰 LV 생성 시 오류 | 에러 반환 |
+| F27.9 | `TestRealLVM_ExtentRounding` | PE 정렬되지 않은 요청이 PE 경계로 반올림 | capacity_bytes >= 요청 크기; PE 배수 |
+
+---
+
+## F28: 실제 LVM NVMe-oF export/unexport E2E
+
+> **빌드 태그:** `//go:build e2e && e2e_helm`
+>
+> 실제 loopback LVM LV와 nvmet configfs를 사용하여 NVMe-oF export/unexport를 검증한다.
+
+| ID | 테스트 함수 | 설명 | 기대 결과 |
+|----|------------|------|----------|
+| F28.1 | `TestRealLVM_NVMeoF_Export` | NVMe-oF subsystem이 configfs에 생성됨 | /sys/kernel/config/nvmet/subsystems/ 아래 엔트리 존재 |
+| F28.2 | `TestRealLVM_NVMeoF_Unexport` | UnexportVolume 후 configfs subsystem 제거 | subsystem 엔트리 소멸 |
+
+---
+
+## F29: 실제 LVM NVMe-oF connect/disconnect E2E
+
+> **빌드 태그:** `//go:build e2e && e2e_helm`
+>
+> 실제 NVMe-oF TCP connect/disconnect 및 전체 스토리지 경로를 검증한다.
+
+| ID | 테스트 함수 | 설명 | 기대 결과 |
+|----|------------|------|----------|
+| F29.1 | `TestRealLVM_NVMeoF_Connect` | NVMe-oF TCP connect가 /dev/nvme* 장치를 생성 | /dev/nvme* 장치 존재 |
+| F29.2 | `TestRealLVM_NVMeoF_Disconnect` | NVMe-oF disconnect 후 장치 제거 | /dev/nvme* 장치 소멸 |
+| F29.3 | `TestRealLVM_NVMeoF_FullStoragePath` | create→export→connect→mkfs→mount→I/O→umount→disconnect→unexport→delete 전체 경로 | 전체 경로 에러 없음; 데이터 I/O 성공 |
+
+---
+
+## F30: Kubernetes LVM PVC 프로비저닝 E2E
+
+> **빌드 태그:** `//go:build e2e && e2e_helm`
+>
+> 실제 Kind 클러스터에서 LVM 기반 PVC 프로비저닝, Pod 마운트, PVC 삭제를 검증한다.
+
+| ID | 테스트 함수 | 설명 | 기대 결과 |
+|----|------------|------|----------|
+| F30.1 | `TestKubernetes_LVM_PVCProvision` | LVM PVC가 실제 LV로 Bound 상태 | PVC Bound; LV 생성 확인 |
+| F30.2 | `TestKubernetes_LVM_PodMount` | Pod이 LVM PVC를 NVMe-oF TCP로 마운트하고 I/O 수행 | Pod Running; 데이터 I/O 성공 |
+| F30.3 | `TestKubernetes_LVM_PVCDelete` | PVC 삭제 시 LV 및 NVMe-oF subsystem 정리 | LV 제거; subsystem 소멸 |
+
+---
+
+## F31: 실제 LVM 온라인 볼륨 확장 E2E
+
+> **빌드 태그:** `//go:build e2e && e2e_helm`
+>
+> ControllerExpandVolume 및 NodeExpandVolume을 통한 온라인 볼륨 확장을 검증한다.
+
+| ID | 테스트 함수 | 설명 | 기대 결과 |
+|----|------------|------|----------|
+| F31.1 | `TestRealLVM_OnlineExpand_ControllerSide` | ControllerExpandVolume이 lvextend를 트리거하고 LV 증가 | LV 크기 증가 확인 |
+| F31.2 | `TestRealLVM_OnlineExpand_NodeSide` | NodeExpandVolume이 resize2fs를 트리거하고 Pod이 더 큰 파일시스템 인식 | 파일시스템 크기 증가; Pod 내 확인 |
+
+---
+
 ## E-NEW: PRD 갭 — 추가 TC
 
 ### E-NEW-1: init container modprobe best-effort

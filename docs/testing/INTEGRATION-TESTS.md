@@ -906,33 +906,86 @@ go test ./test/e2e/ -tags=e2e -v -run TestHelm
 
 ---
 
-#### E27.5 CRD 등록 및 가용성 검증 (E27.5.1-E27.5.7, 총 TCs)
+#### E27.5 CRD 등록 및 가용성 검증
 
-- **E27.5.1** CRD 4종 일괄 존재 및 Established (5 TCs): 217, 217a-d
-- **E27.5.2** 메타데이터 상세 검증 (4 TCs): 217e-h
-- **E27.5.3** kubectl api-resources 검증 (5 TCs): 217i-m
-- **E27.5.4** OpenAPI v3 스키마 존재 (4 TCs): 217n-q
-- **E27.5.5** 프린터 컬럼 검증 (4 TCs): 217r-u
-- **E27.5.6** resource-policy: keep 어노테이션 (1 TC): 217v
-- **E27.5.7** 샘플 오브젝트 CRUD (4 TCs): 217w-z
-
-> 상세 테이블은 원본 E2E-TESTCASES.md E27.5 참조.
+| ID | 테스트 함수 | 설명 | 기대 결과 |
+|----|------------|------|----------|
+| 217 | `TestHelmChart_CRD_설치_및_Established_검증` | CRD 4종 일괄 설치 및 Established 상태 검증 | 4개 CRD Established=True |
 
 ---
 
-#### E27.6-E27.12 (나머지 소섹션)
+#### E27.6 커스텀 values 오버라이드 설치
 
-| 소섹션 | 설명 | TCs |
-|--------|------|-----|
-| E27.6 | 커스텀 values 오버라이드 설치 | 1 (218) |
-| E27.7 | installCRDs=false 설치 모드 | 1 (219) |
-| E27.8 | 중복 설치 시도 오류 | 1 (220) |
-| E27.9 | Helm 업그레이드 + 히스토리 | 2 (221-222) |
-| E27.10 | 설치 해제 및 CRD 보존 | 2 (223-224) |
-| E27.11 | 전체 파드 Running 종합 | 7 (225-231) |
-| E27.12 | CSIDriver 객체 설정 검증 | 12 (232-243) |
+| ID | 테스트 함수 | 설명 | 기대 결과 |
+|----|------------|------|----------|
+| 218 | `TestHelmChart_커스텀values_오버라이드_설치_검증` | 커스텀 values로 Helm 설치 성공 | 오버라이드 값 반영; STATUS: deployed |
 
-> 상세 테이블은 원본 E2E-TESTCASES.md E27.6-E27.12 참조.
+---
+
+#### E27.7 installCRDs=false 설치 모드
+
+| ID | 테스트 함수 | 설명 | 기대 결과 |
+|----|------------|------|----------|
+| 219 | `TestHelmChart_installCRDs_false_모드_검증` | installCRDs=false 모드에서 Deployment 존재 검증 | Deployment Running; CRD 미설치 |
+
+---
+
+#### E27.8 중복 설치 시도 오류
+
+| ID | 테스트 함수 | 설명 | 기대 결과 |
+|----|------------|------|----------|
+| 220 | `TestHelmChart_중복설치_오류_검증` | 동일 릴리스 재설치 시도 시 오류 | helm install 에러 반환 |
+
+---
+
+#### E27.9 Helm 업그레이드 + 히스토리
+
+| ID | 테스트 함수 | 설명 | 기대 결과 |
+|----|------------|------|----------|
+| 221 | `TestHelmChart_업그레이드_성공_검증` | Helm 차트 업그레이드 성공 | REVISION: 2; STATUS: deployed |
+| 222 | `TestHelmChart_업그레이드_히스토리_검증` | 업그레이드 후 히스토리 2건 | helm history 2 rows |
+
+---
+
+#### E27.10 설치 해제 및 CRD 보존
+
+| ID | 테스트 함수 | 설명 | 기대 결과 |
+|----|------------|------|----------|
+| 223 | `TestHelmChart_설치해제_성공_검증` | Helm uninstall 성공 | 릴리스 삭제; 리소스 정리 |
+| 224 | `TestHelmChart_설치해제_후_CRD_보존_검증` | uninstall 후 CRD 보존 (resource-policy:keep) | CRD 4종 여전히 존재 |
+
+---
+
+#### E27.11 전체 파드 Running 종합
+
+| ID | 테스트 함수 | 설명 | 기대 결과 |
+|----|------------|------|----------|
+| 225 | `TestHelmChart_전체파드_Running_종합_검증` | 전체 파드 Running 상태 종합 검증 | 모든 파드 Running |
+| 226 | `TestHelmChart_컨트롤러파드_Ready_검증` | 컨트롤러 파드 컨테이너 Ready 검증 | 컨테이너 Ready=True |
+| 227 | `TestHelmChart_노드파드_컨테이너_검증` | 노드 파드 컨테이너 및 init 컨테이너 검증 | init+main 컨테이너 Ready |
+| 228 | `TestHelmChart_에이전트DaemonSet_레이블없는환경_파드0개` | 에이전트 DaemonSet 스토리지 레이블 없는 환경에서 파드 0개 | desiredNumberScheduled=0 |
+| 229 | `TestHelmChart_에이전트파드_스토리지레이블_Running_검증` | 에이전트 파드 스토리지 레이블 노드에서 Running 검증 | 파드 Running |
+| 230 | `TestHelmChart_파드Ready_Condition_Timeout_검증` | 파드 Ready Condition Timeout 검증 | 타임아웃 이내 Ready |
+| 231 | `TestHelmChart_파드재시작없음_5분관찰` | 파드 재시작 없음 5분 관찰 (opt-in) | restartCount=0 |
+
+---
+
+#### E27.12 CSIDriver 객체 설정 검증
+
+| ID | 테스트 함수 | 설명 | 기대 결과 |
+|----|------------|------|----------|
+| 232 | `TestHelmChart_CSIDriver_존재_검증` | CSIDriver 존재 검증 | CSIDriver 오브젝트 존재 |
+| 233 | `TestHelmChart_CSIDriver_JSON_파싱가능` | CSIDriver JSON 파싱 가능 | JSON 파싱 성공 |
+| 234 | `TestHelmChart_CSIDriver_attachRequired_true` | CSIDriver.spec.attachRequired==true | attachRequired=true |
+| 235 | `TestHelmChart_CSIDriver_podInfoOnMount_true` | CSIDriver.spec.podInfoOnMount==true | podInfoOnMount=true |
+| 236 | `TestHelmChart_CSIDriver_fsGroupPolicy_File` | CSIDriver.spec.fsGroupPolicy=="File" | fsGroupPolicy=File |
+| 237 | `TestHelmChart_CSIDriver_volumeLifecycleModes_Persistent` | CSIDriver.spec.volumeLifecycleModes contains Persistent | Persistent 포함 |
+| 238 | `TestHelmChart_CSIDriver_Helm_레이블_검증` | CSIDriver Helm 레이블 검증 | helm.sh/* 레이블 존재 |
+| 239 | `TestHelmChart_CSIDriver_helm_어노테이션_검증` | CSIDriver meta.helm.sh 어노테이션 검증 | meta.helm.sh/* 어노테이션 존재 |
+| 240 | `TestHelmChart_csiDriver_create_false_CSIDriver_미생성` | csiDriver.create=false 시 CSIDriver 미생성 검증 | CSIDriver 미존재 |
+| 241 | `TestHelmChart_CSIDriver_podInfoOnMount_false_오버라이드` | CSIDriver.podInfoOnMount=false 오버라이드 검증 | podInfoOnMount=false |
+| 242 | `TestHelmChart_CSIDriver_fsGroupPolicy_None_오버라이드` | CSIDriver.fsGroupPolicy=None 오버라이드 검증 | fsGroupPolicy=None |
+| 243 | `TestHelmChart_upgrade_CSIDriver_spec_변경_반영` | Helm upgrade CSIDriver spec 변경 반영 검증 | upgrade 후 spec 반영 |
 
 ---
 

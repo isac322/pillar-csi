@@ -289,6 +289,13 @@ func parseSpecFile(filePath, relPath string) ([]Case, int, error) {
 			}
 		case strings.HasPrefix(line, "### "):
 			currentSubsection = strings.TrimSpace(strings.TrimPrefix(line, "### "))
+			// If the ### heading carries an E/F-group key, update the active
+			// section key.  This handles documents where E-series sections
+			// (e.g. E27) appear as ### sub-headings under a generic category ##
+			// heading that has no E/F prefix of its own.
+			if m := sectionKeyRE.FindStringSubmatch(currentSubsection); len(m) == 2 {
+				currentSectionKey = m[1]
+			}
 		}
 
 		if declaredTotal == 0 {
