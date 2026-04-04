@@ -682,6 +682,70 @@ leader election 등 envtest 경계에서 검증 가능한 항목을 다룬다.
 
 ---
 
+#### I-NEW-9 바인딩 충돌 — StorageClass 이름 충돌
+
+> **Integration test 근거:** 두 PillarBinding이 동일한 커스텀 StorageClass 이름을 지정할 때 두 번째 바인딩이 소유권 충돌을 감지하는지 검증.
+> StorageClass ownerReference 설정 실패는 envtest의 실제 kube-apiserver가 필요하다.
+
+**위치:** `internal/controller/pillarbinding_lifecycle_gaps_test.go`
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| I-NEW-9-1 | `TestPillarBinding_ConflictingSCName_FirstBindingWins` (Context: `I-NEW-9-1`) | 첫 번째 바인딩이 커스텀 SC 이름을 성공적으로 소유 | envtest; conflict-pool(Ready), conflict-protocol(Ready); conflict-binding-a(SC name="shared-sc-conflict") | 1) binding-a finalizer 추가 reconcile; 2) 일반 reconcile | `Ready=True`; SC "shared-sc-conflict" 생성; ownerRef=binding-a | `BindCRD`, `BindCtrl`, `SC` |
+| I-NEW-9-2 | `TestPillarBinding_ConflictingSCName_SecondBindingGetsStorageClassError` (Context: `I-NEW-9-2`) | 두 번째 바인딩이 이미 소유된 SC 이름 충돌 감지 | envtest; binding-a가 "shared-sc-conflict" 소유 후 binding-b 동일 이름 설정 | 1) binding-b reconcile; 2) 상태 확인 | SC 소유권이 binding-a 유지; binding-a는 `Ready=True` 유지 | `BindCRD`, `BindCtrl`, `SC` |
+| I-NEW-9-3 | `TestPillarBinding_MultipleBindings_UniqueNames_BothReady` (Context: `I-NEW-9-3`) | 동일 pool/protocol 참조 + 고유 SC 이름 → 두 바인딩 모두 Ready | envtest; unique-binding-x(SC="unique-sc-x"), unique-binding-y(SC="unique-sc-y") | 1) 각각 2회 reconcile | 두 바인딩 `Ready=True`; 각 SC 독립적으로 존재 | `BindCRD`, `BindCtrl`, `SC` |
+
+---
+
+#### I-NEW-10 프로토콜 불일치 — 추가 호환성 케이스
+
+> **Integration test 근거:** 호환성 매트릭스의 추가 Valid 조합(lvm-lv+iscsi, zfs-zvol+iscsi)을
+> 컨트롤러 수준에서 검증. Compatible 조건 메시지 형식도 포함.
+
+**위치:** `internal/controller/pillarbinding_lifecycle_gaps_test.go`
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| I-NEW-10-1 | `TestPillarBinding_Compatible_LVMLV_ISCSI` (Context: `I-NEW-10-1`) | lvm-lv + iscsi → Compatible=True | envtest; PillarPool(lvm-lv, Ready), PillarProtocol(iscsi, Ready) | 1) 바인딩 생성; 2) 2회 reconcile | `Compatible=True`; `Ready=True` | `BindCRD`, `BindCtrl`, `SC` |
+| I-NEW-10-2 | `TestPillarBinding_Compatible_ZFSZvol_ISCSI` (Context: `I-NEW-10-2`) | zfs-zvol + iscsi → Compatible=True | envtest; PillarPool(zfs-zvol, Ready), PillarProtocol(iscsi, Ready) | 1) 바인딩 생성; 2) 2회 reconcile | `Compatible=True` | `BindCRD`, `BindCtrl`, `SC` |
+| I-NEW-10-3 | `TestPillarBinding_Compatible_CompatibleConditionMessage_ContainsBothTypes` (Context: `I-NEW-10-3`) | Compatible=True 메시지에 백엔드·프로토콜 타입 모두 포함 | envtest; zfs-zvol + nvmeof-tcp (호환 조합) | 1) 2회 reconcile; 2) 메시지 확인 | `Compatible.Message`에 "zfs-zvol"과 "nvmeof-tcp" 포함 | `BindCRD`, `BindCtrl` |
+
+---
+
+#### I-NEW-11 동시 바인딩 — BindingCount 정확성
+
+> **Integration test 근거:** PillarProtocol 컨트롤러의 `status.bindingCount` 필드가
+> 3개 이상의 바인딩 생성/삭제 시나리오에서도 정확히 동기화되는지 검증.
+
+**위치:** `internal/controller/pillarbinding_lifecycle_gaps_test.go`
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| I-NEW-11-1 | `TestPillarProtocol_BindingCount_ThreeBindings` (Context: `I-NEW-11-1`) | 3개 바인딩 → BindingCount=3 | envtest; conc-protocol; conc-binding-1/2/3 | 1) 프로토콜 reconcile | `bindingCount=3` | `PProtCRD`, `PProtCtrl`, `BindCRD` |
+| I-NEW-11-2 | `TestPillarProtocol_BindingCount_SequentialAdditions` (Context: `I-NEW-11-2`) | 바인딩 순차 추가 시 BindingCount 증가 검증 | envtest; 초기 0 → 바인딩 1개씩 추가 | 1) 0→1→2→3 순서로 reconcile | 각 단계에서 BindingCount = 바인딩 수 | `PProtCRD`, `PProtCtrl`, `BindCRD` |
+| I-NEW-11-3 | `TestPillarProtocol_BindingCount_AddThenRemove_Accurate` (Context: `I-NEW-11-3`) | 3개 생성 후 1개 삭제 → BindingCount=2 검증 | envtest; binding-1/2/3 → binding-3 삭제 | 1) 삭제; 2) reconcile; 3) 확인 | `bindingCount=2`; 모두 삭제 시 `bindingCount=0` | `PProtCRD`, `PProtCtrl`, `BindCRD` |
+
+---
+
+#### I-NEW-12 정리 순서 — 올바른 삭제 시퀀스
+
+> **Integration test 근거:** PillarBinding/PillarProtocol 삭제 시 올바른 순서 적용을 검증.
+> 바인딩 삭제 → SC 삭제 + BindingCount 감소가 동시에 이루어지는지,
+> 바인딩이 존재하는 동안 프로토콜 삭제가 차단되는지, 그리고
+> 두 바인딩 중 하나를 삭제해도 나머지 바인딩이 영향받지 않는지 검증.
+
+**위치:** `internal/controller/pillarbinding_lifecycle_gaps_test.go`
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| I-NEW-12-1a | `TestPillarBinding_CleanupOrdering_BindingDeletion_SCDeleted` (Context: `I-NEW-12-1`) | 바인딩 삭제 시 소유 SC 함께 삭제 | envtest; clean-binding-alpha(Ready), SC 존재 | 1) 바인딩 삭제; 2) reconcile | SC NotFound; `RequeueAfter=0` | `BindCRD`, `BindCtrl`, `SC` |
+| I-NEW-12-1b | `TestPillarBinding_CleanupOrdering_BindingDeletion_DecrementsProtocolBindingCount` (Context: `I-NEW-12-1`) | 바인딩 삭제 후 프로토콜 BindingCount=0 | envtest; binding-alpha 삭제 후 프로토콜 reconcile | 1) 삭제; 2) binding reconcile; 3) protocol reconcile | `bindingCount=0` | `PProtCRD`, `PProtCtrl`, `BindCRD`, `BindCtrl` |
+| I-NEW-12-2 | `TestPillarBinding_CleanupOrdering_ProtocolBlockedByBinding_ProperOrder` (Context: `I-NEW-12-2`) | 올바른 정리 순서: 바인딩 먼저 삭제 후 프로토콜 삭제 | envtest; clean-binding-alpha 존재 | 1) 프로토콜 삭제 시도 → 차단; 2) 바인딩 삭제; 3) 프로토콜 reconcile | 차단 후 해제; 프로토콜 최종 삭제 | `PProtCRD`, `PProtCtrl`, `BindCRD`, `BindCtrl` |
+| I-NEW-12-3a | `TestPillarBinding_CleanupOrdering_PartialDeletion_RemainingBindingStaysReady` (Context: `I-NEW-12-3`) | 두 바인딩 중 하나 삭제 → 나머지 Ready 유지 | envtest; binding-alpha + binding-beta 모두 Ready | 1) binding-alpha 삭제; 2) reconcile; 3) beta 상태 확인 | beta `Ready=True`; beta SC 존재 | `BindCRD`, `BindCtrl`, `SC` |
+| I-NEW-12-3b | `TestPillarBinding_CleanupOrdering_PartialDeletion_ProtocolBindingCountDecrement` (Context: `I-NEW-12-3`) | 두 바인딩 중 하나 삭제 → BindingCount=1 | envtest; 초기 BindingCount=2 | 1) binding-alpha 삭제; 2) protocol reconcile | `bindingCount=1` | `PProtCRD`, `PProtCtrl`, `BindCRD` |
+
+---
+
 ## 카테고리: 실제 Backend (loopback device)
 
 > **경계:** 실제 LVM 명령어(`lvcreate`, `lvremove` 등)를 loopback device 위의
