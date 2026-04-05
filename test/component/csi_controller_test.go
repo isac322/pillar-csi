@@ -412,14 +412,14 @@ func baseCSICreateVolumeRequest() *csipb.CreateVolumeRequest {
 const expectedCSIVolumeID = "storage-node-1/nvmeof-tcp/zfs-zvol/tank/pvc-component-test"
 
 // ─────────────────────────────────────────────────────────────────────────────
-// TestCSIController_CreateVolume_Success
+// TestCSIController_CreateVolume
 // ─────────────────────────────────────────────────────────────────────────────.
 
-// TestCSIController_CreateVolume_Success verifies the happy-path CreateVolume
+// TestCSIController_CreateVolume verifies the happy-path CreateVolume
 // flow: both agent.CreateVolume and agent.ExportVolume are called exactly once,
 // the returned VolumeId encodes target/protocol/backend/agentVolID, and the
 // VolumeContext contains the NVMe-oF connection parameters.
-func TestCSIController_CreateVolume_Success(t *testing.T) {
+func TestCSIController_CreateVolume(t *testing.T) {
 	t.Parallel()
 	env := newCSIControllerTestEnv(t)
 	ctx := context.Background()
@@ -499,13 +499,13 @@ func TestCSIController_CreateVolume_Capacity_RequiredOnly(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// TestCSIController_CreateVolume_IdempotentRetry
+// TestCSIController_CreateVolume_Idempotency
 // ─────────────────────────────────────────────────────────────────────────────.
 
-// TestCSIController_CreateVolume_IdempotentRetry verifies that a second
+// TestCSIController_CreateVolume_Idempotency verifies that a second
 // CreateVolume call for the same volume returns the cached response without
 // calling the agent again (CSI spec §5.1.1 idempotency requirement).
-func TestCSIController_CreateVolume_IdempotentRetry(t *testing.T) {
+func TestCSIController_CreateVolume_Idempotency(t *testing.T) {
 	t.Parallel()
 	env := newCSIControllerTestEnv(t)
 	ctx := context.Background()
@@ -540,12 +540,12 @@ func TestCSIController_CreateVolume_IdempotentRetry(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// TestCSIController_CreateVolume_AgentError
+// TestCSIController_CreateVolume_AgentCreateError
 // ─────────────────────────────────────────────────────────────────────────────.
 
-// TestCSIController_CreateVolume_AgentError verifies that an agent-side
+// TestCSIController_CreateVolume_AgentCreateError verifies that an agent-side
 // CreateVolume error is propagated to the CO with the same gRPC status code.
-func TestCSIController_CreateVolume_AgentError(t *testing.T) {
+func TestCSIController_CreateVolume_AgentCreateError(t *testing.T) {
 	t.Parallel()
 	env := newCSIControllerTestEnv(t)
 	ctx := context.Background()
@@ -616,12 +616,12 @@ func TestCSIController_CreateVolume_MissingVolumeName(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// TestCSIController_CreateVolume_TargetNotFound
+// TestCSIController_CreateVolume_PillarTargetNotFound
 // ─────────────────────────────────────────────────────────────────────────────.
 
-// TestCSIController_CreateVolume_TargetNotFound verifies that referencing a
+// TestCSIController_CreateVolume_PillarTargetNotFound verifies that referencing a
 // non-existent PillarTarget returns NotFound.
-func TestCSIController_CreateVolume_TargetNotFound(t *testing.T) {
+func TestCSIController_CreateVolume_PillarTargetNotFound(t *testing.T) {
 	t.Parallel()
 	env := newCSIControllerTestEnv(t)
 	ctx := context.Background()
@@ -749,12 +749,12 @@ func TestCSIController_CreateVolume_DuplicateName(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// TestCSIController_DeleteVolume_Success
+// TestCSIController_DeleteVolume
 // ─────────────────────────────────────────────────────────────────────────────.
 
-// TestCSIController_DeleteVolume_Success verifies that DeleteVolume calls both
+// TestCSIController_DeleteVolume verifies that DeleteVolume calls both
 // agent.UnexportVolume and agent.DeleteVolume.
-func TestCSIController_DeleteVolume_Success(t *testing.T) {
+func TestCSIController_DeleteVolume(t *testing.T) {
 	t.Parallel()
 	env := newCSIControllerTestEnv(t)
 	ctx := context.Background()
@@ -779,13 +779,13 @@ func TestCSIController_DeleteVolume_Success(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// TestCSIController_DeleteVolume_Idempotent
+// TestCSIController_DeleteVolume_Idempotency
 // ─────────────────────────────────────────────────────────────────────────────.
 
-// TestCSIController_DeleteVolume_Idempotent verifies that if the agent returns
+// TestCSIController_DeleteVolume_Idempotency verifies that if the agent returns
 // NotFound for both Unexport and Delete, the controller still returns success
 // (idempotent behavior per CSI spec §4.3.2).
-func TestCSIController_DeleteVolume_Idempotent(t *testing.T) {
+func TestCSIController_DeleteVolume_Idempotency(t *testing.T) {
 	t.Parallel()
 	env := newCSIControllerTestEnv(t)
 	ctx := context.Background()
@@ -839,13 +839,13 @@ func TestCSIController_DeleteVolume_AgentError(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// TestCSIController_ControllerPublishVolume_Success
+// TestCSIController_ControllerPublishVolume
 // ─────────────────────────────────────────────────────────────────────────────.
 
-// TestCSIController_ControllerPublishVolume_Success verifies that
+// TestCSIController_ControllerPublishVolume verifies that
 // ControllerPublishVolume calls agent.AllowInitiator with the node's NQN and
 // returns an empty PublishContext.
-func TestCSIController_ControllerPublishVolume_Success(t *testing.T) {
+func TestCSIController_ControllerPublishVolume(t *testing.T) {
 	t.Parallel()
 	env := newCSIControllerTestEnv(t)
 	ctx := context.Background()
@@ -988,13 +988,13 @@ func TestCSIController_ControllerUnpublishVolume_AlreadyUnpublished(t *testing.T
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// TestCSIController_ExpandVolume_Success
+// TestCSIExpand_ControllerExpandVolume
 // ─────────────────────────────────────────────────────────────────────────────.
 
-// TestCSIController_ExpandVolume_Success verifies the happy-path expand:
+// TestCSIExpand_ControllerExpandVolume verifies the happy-path expand:
 // agent.ExpandVolume is called with the requested bytes, and the response
 // has NodeExpansionRequired = true.
-func TestCSIController_ExpandVolume_Success(t *testing.T) {
+func TestCSIExpand_ControllerExpandVolume(t *testing.T) {
 	t.Parallel()
 	env := newCSIControllerTestEnv(t)
 	ctx := context.Background()
@@ -1025,12 +1025,12 @@ func TestCSIController_ExpandVolume_Success(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// TestCSIController_ExpandVolume_AgentError
+// TestCSIExpand_ControllerExpandVolume_AgentErr
 // ─────────────────────────────────────────────────────────────────────────────.
 
-// TestCSIController_ExpandVolume_AgentError verifies that an agent error
+// TestCSIExpand_ControllerExpandVolume_AgentErr verifies that an agent error
 // (e.g., shrink rejected) is propagated with the correct gRPC code.
-func TestCSIController_ExpandVolume_AgentError(t *testing.T) {
+func TestCSIExpand_ControllerExpandVolume_AgentErr(t *testing.T) {
 	t.Parallel()
 	env := newCSIControllerTestEnv(t)
 	ctx := context.Background()

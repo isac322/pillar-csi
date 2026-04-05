@@ -16,7 +16,7 @@ limitations under the License.
 
 // Extended component tests for the CSI Controller Service (internal/csi.ControllerServer).
 //
-// This file covers sections 4.7 – 4.9 of TESTCASES.md:
+// This file covers edge-case and extended scenarios from docs/testing/COMPONENT-TESTS.md:
 //
 //	4.7 Input Validation Edge Cases
 //	4.8 PillarTarget State Errors
@@ -339,13 +339,13 @@ func TestCSIController_ExpandVolume_MalformedVolumeID(t *testing.T) {
 // Section 4.8 — PillarTarget State Errors
 // ─────────────────────────────────────────────────────────────────────────────.
 
-// TestCSIController_CreateVolume_TargetNoResolvedAddress verifies that a
+// TestCSIController_CreateVolume_PillarTargetEmptyAddress verifies that a
 // PillarTarget with an empty ResolvedAddress causes CreateVolume to return
 // Unavailable (the agent pod has not yet registered its address).
 //
 //	Setup:   PillarTarget seeded with empty Status.ResolvedAddress
 //	Expect:  Returns gRPC Unavailable
-func TestCSIController_CreateVolume_TargetNoResolvedAddress(t *testing.T) {
+func TestCSIController_CreateVolume_PillarTargetEmptyAddress(t *testing.T) {
 	t.Parallel()
 	env := newCSIControllerTestEnvNoResolvedAddr(t)
 	ctx := context.Background()
@@ -519,13 +519,13 @@ func TestCSIController_CreateVolume_ExportFails_RecordsCreatePartial(t *testing.
 	}
 }
 
-// TestCSIController_ExpandVolume_AgentReturnsZeroBytes verifies that when the
+// TestCSIExpand_ControllerExpandVolume_AgentReturnsZeroCapacity verifies that when the
 // agent's ExpandVolume RPC returns CapacityBytes=0, the controller falls back
 // to using the requested bytes in the response.
 //
 //	Setup:   Mock agent: ExpandVolume→{CapacityBytes:0}; request required_bytes=20 GiB
 //	Expect:  Returns ControllerExpandVolumeResponse.CapacityBytes=20 GiB
-func TestCSIController_ExpandVolume_AgentReturnsZeroBytes(t *testing.T) {
+func TestCSIExpand_ControllerExpandVolume_AgentReturnsZeroCapacity(t *testing.T) {
 	t.Parallel()
 	env := newCSIControllerTestEnv(t)
 	ctx := context.Background()

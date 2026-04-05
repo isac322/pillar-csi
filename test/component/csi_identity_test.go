@@ -45,7 +45,7 @@ limitations under the License.
 //   - Call counter is not goroutine-safe; tests that need concurrent safety
 //     must add external synchronization.
 //
-// See test/component/TESTCASES.md §6 for the authoritative test-case spec.
+// See docs/testing/COMPONENT-TESTS.md for the authoritative test-case spec.
 package component_test
 
 import (
@@ -117,13 +117,13 @@ func newIdentityServerWithMock(t *testing.T, mock *identityMockReady) *pillarcsi
 
 // ─────────────────────────────────────────────────────────────────────────────
 // § 6.1 GetPluginInfo
-// TESTCASES.md §6.1 tests 1–2
+// docs/testing/COMPONENT-TESTS.md.1 tests 1–2
 // ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIIdentity_GetPluginInfo_Success verifies that GetPluginInfo returns the
 // correct driver name and vendor version (test case 1).
 //
-// See TESTCASES.md §6.1, row 1.
+// See docs/testing/COMPONENT-TESTS.md.1, row 1.
 func TestCSIIdentity_GetPluginInfo_Success(t *testing.T) {
 	t.Parallel()
 	srv := newIdentityServer(t)
@@ -143,7 +143,7 @@ func TestCSIIdentity_GetPluginInfo_Success(t *testing.T) {
 // TestCSIIdentity_GetPluginInfo_NameNotEmpty verifies that the driver name is
 // always non-empty in the response (test case 2).
 //
-// See TESTCASES.md §6.1, row 2.
+// See docs/testing/COMPONENT-TESTS.md.1, row 2.
 func TestCSIIdentity_GetPluginInfo_NameNotEmpty(t *testing.T) {
 	t.Parallel()
 	srv := newIdentityServer(t)
@@ -159,13 +159,13 @@ func TestCSIIdentity_GetPluginInfo_NameNotEmpty(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // § 6.2 GetPluginCapabilities
-// TESTCASES.md §6.2 tests 3–4
+// docs/testing/COMPONENT-TESTS.md.2 tests 3–4
 // ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIIdentity_GetPluginCapabilities_IncludesControllerService verifies
 // that GetPluginCapabilities includes CONTROLLER_SERVICE (test case 3).
 //
-// See TESTCASES.md §6.2, row 3.
+// See docs/testing/COMPONENT-TESTS.md.2, row 3.
 func TestCSIIdentity_GetPluginCapabilities_IncludesControllerService(t *testing.T) {
 	t.Parallel()
 	srv := newIdentityServer(t)
@@ -191,7 +191,7 @@ func TestCSIIdentity_GetPluginCapabilities_IncludesControllerService(t *testing.
 // TestCSIIdentity_GetPluginCapabilities_IncludesVolumeExpansion verifies
 // that GetPluginCapabilities includes a VOLUME_EXPANSION capability (test case 4).
 //
-// See TESTCASES.md §6.2, row 4.
+// See docs/testing/COMPONENT-TESTS.md.2, row 4.
 func TestCSIIdentity_GetPluginCapabilities_IncludesVolumeExpansion(t *testing.T) {
 	t.Parallel()
 	srv := newIdentityServer(t)
@@ -215,13 +215,13 @@ func TestCSIIdentity_GetPluginCapabilities_IncludesVolumeExpansion(t *testing.T)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // § 6.3 Probe
-// TESTCASES.md §6.3 tests 5–7
+// docs/testing/COMPONENT-TESTS.md.3 tests 5–7
 // ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIIdentity_Probe_Ready verifies that Probe returns Ready=true when the
 // readyFn returns (true, nil) (test case 5).
 //
-// See TESTCASES.md §6.3, row 5.
+// See docs/testing/COMPONENT-TESTS.md.3, row 5.
 func TestCSIIdentity_Probe_Ready(t *testing.T) {
 	t.Parallel()
 	mock := &identityMockReady{ready: true}
@@ -245,7 +245,7 @@ func TestCSIIdentity_Probe_Ready(t *testing.T) {
 // TestCSIIdentity_Probe_NotReady verifies that Probe returns Ready=false when
 // the readyFn returns (false, nil) (test case 6).
 //
-// See TESTCASES.md §6.3, row 6.
+// See docs/testing/COMPONENT-TESTS.md.3, row 6.
 func TestCSIIdentity_Probe_NotReady(t *testing.T) {
 	t.Parallel()
 	mock := &identityMockReady{ready: false}
@@ -267,7 +267,7 @@ func TestCSIIdentity_Probe_NotReady(t *testing.T) {
 // IdentityServer (created via NewIdentityServer, no readyFn) always returns
 // Ready=true (test case 7).
 //
-// See TESTCASES.md §6.3, row 7.
+// See docs/testing/COMPONENT-TESTS.md.3, row 7.
 func TestCSIIdentity_Probe_DefaultAlwaysReady(t *testing.T) {
 	t.Parallel()
 	// Use the simple constructor — no readyFn supplied.
@@ -287,7 +287,7 @@ func TestCSIIdentity_Probe_DefaultAlwaysReady(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // § 6.4 Error Paths
-// TESTCASES.md §6.4 tests 8–12
+// docs/testing/COMPONENT-TESTS.md.4 tests 8–12
 // ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIIdentity_GetPluginInfo_ContextDeadlineExceeded verifies that
@@ -298,7 +298,7 @@ func TestCSIIdentity_Probe_DefaultAlwaysReady(t *testing.T) {
 // ctx.Err() before doing any work and converts the context error into the
 // corresponding gRPC status.
 //
-// See TESTCASES.md §6.4, row 8.
+// See docs/testing/COMPONENT-TESTS.md.4, row 8.
 func TestCSIIdentity_GetPluginInfo_ContextDeadlineExceeded(t *testing.T) {
 	t.Parallel()
 	srv := newIdentityServer(t)
@@ -323,7 +323,7 @@ func TestCSIIdentity_GetPluginInfo_ContextDeadlineExceeded(t *testing.T) {
 // GetPluginCapabilities returns codes.Canceled when the context is already
 // canceled before the handler runs (test case 9).
 //
-// See TESTCASES.md §6.4, row 9.
+// See docs/testing/COMPONENT-TESTS.md.4, row 9.
 func TestCSIIdentity_GetPluginCapabilities_ContextCancelled(t *testing.T) {
 	t.Parallel()
 	srv := newIdentityServer(t)
@@ -349,7 +349,7 @@ func TestCSIIdentity_GetPluginCapabilities_ContextCancelled(t *testing.T) {
 // This validates that the context check happens BEFORE the potentially
 // expensive readyFn call — a performance and correctness requirement.
 //
-// See TESTCASES.md §6.4, row 10.
+// See docs/testing/COMPONENT-TESTS.md.4, row 10.
 func TestCSIIdentity_Probe_ContextDeadlineExceeded(t *testing.T) {
 	t.Parallel()
 
@@ -385,7 +385,7 @@ func TestCSIIdentity_Probe_ContextDeadlineExceeded(t *testing.T) {
 // retry away.  The CO should treat Internal as a driver problem rather than a
 // transient "not ready" condition.
 //
-// See TESTCASES.md §6.4, row 11.
+// See docs/testing/COMPONENT-TESTS.md.4, row 11.
 func TestCSIIdentity_Probe_ReadyFnError_ReturnsInternal(t *testing.T) {
 	t.Parallel()
 
@@ -424,7 +424,7 @@ func TestCSIIdentity_Probe_ReadyFnError_ReturnsInternal(t *testing.T) {
 //   - Probe returns codes.DeadlineExceeded within ~500 ms.
 //   - readyFn was called once.
 //
-// See TESTCASES.md §6.4, row 12.
+// See docs/testing/COMPONENT-TESTS.md.4, row 12.
 func TestCSIIdentity_Probe_ReadyFnContextError_PropagatesCode(t *testing.T) {
 	t.Parallel()
 
