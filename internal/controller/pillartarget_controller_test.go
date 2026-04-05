@@ -350,7 +350,7 @@ var _ = Describe("PillarTarget Controller", func() {
 				}
 			})
 
-			It("E19.7.4 TestPillarTargetController_DeletionBlocked_MultiplePoolsRequireAllRemoved", func() {
+			It("[TC-E19.7.4] E19.7.4 TestPillarTargetController_DeletionBlocked_MultiplePoolsRequireAllRemoved", func() {
 				// Step 1: Trigger deletion of the PillarTarget.
 				Expect(k8sClient.Delete(bctx, &pillarcsiv1alpha1.PillarTarget{
 					ObjectMeta: metav1.ObjectMeta{Name: multiTargetName},
@@ -1375,7 +1375,7 @@ var _ = Describe("PillarTarget Controller — E19 traceability bindings", func()
 			}
 		})
 
-		It("E19.1.3 TestPillarTargetController_FinalizerAddedOnFirstReconcile: finalizer added on first reconcile", func() {
+		It("[TC-E19.1.3] E19.1.3 TestPillarTargetController_FinalizerAddedOnFirstReconcile: finalizer added on first reconcile", func() {
 			By("creating a PillarTarget and reconciling once")
 			obj := &pillarcsiv1alpha1.PillarTarget{
 				ObjectMeta: metav1.ObjectMeta{Name: name},
@@ -1418,7 +1418,7 @@ var _ = Describe("PillarTarget Controller — E19 traceability bindings", func()
 			}
 		})
 
-		It("E19.4.1 TestPillarTargetController_NodeExists_Unknown_ExternalMode: external-mode target sets NodeExists=Unknown", func() {
+		It("[TC-E19.4.1] E19.4.1 TestPillarTargetController_NodeExists_Unknown_ExternalMode: external-mode target sets NodeExists=Unknown", func() {
 			By("creating an external-mode PillarTarget and reconciling twice")
 			obj := &pillarcsiv1alpha1.PillarTarget{
 				ObjectMeta: metav1.ObjectMeta{Name: externalName},
@@ -1441,7 +1441,7 @@ var _ = Describe("PillarTarget Controller — E19 traceability bindings", func()
 				"NodeExists should be Unknown for external-mode targets (no node to check)")
 		})
 
-		It("E19.4.2 TestPillarTargetController_NodeExists_True_NodePresent: nodeRef-mode target with matching Node sets NodeExists=True", func() {
+		It("[TC-E19.4.2] E19.4.2 TestPillarTargetController_NodeExists_True_NodePresent: nodeRef-mode target with matching Node sets NodeExists=True", func() {
 			By("creating a Node and a nodeRef PillarTarget, then reconciling twice")
 			node := &corev1.Node{
 				ObjectMeta: metav1.ObjectMeta{Name: nodeName},
@@ -1475,7 +1475,7 @@ var _ = Describe("PillarTarget Controller — E19 traceability bindings", func()
 				"NodeExists should be True when the referenced node is present in the cluster")
 		})
 
-		It("E19.4.3 TestPillarTargetController_NodeExists_False_NodeMissing: nodeRef-mode target with missing Node sets NodeExists=False", func() {
+		It("[TC-E19.4.3] E19.4.3 TestPillarTargetController_NodeExists_False_NodeMissing: nodeRef-mode target with missing Node sets NodeExists=False", func() {
 			By("creating a nodeRef PillarTarget for a non-existent node, then reconciling twice")
 			obj := &pillarcsiv1alpha1.PillarTarget{
 				ObjectMeta: metav1.ObjectMeta{Name: nodeRefMissingName},
@@ -1527,7 +1527,7 @@ var _ = Describe("PillarTarget Controller — E19 traceability bindings", func()
 			Expect(k8sClient.Create(bctx, obj)).To(Succeed())
 		}
 
-		It("E19.5.1 TestPillarTargetController_AgentConnected_False_DialerNil: no dialer configured sets AgentConnected=False", func() {
+		It("[TC-E19.5.1] E19.5.1 TestPillarTargetController_AgentConnected_False_DialerNil: no dialer configured sets AgentConnected=False", func() {
 			By("using a reconciler without a Dialer and reconciling twice")
 			createExternalTarget(noDialerName, "192.0.2.60")
 			nn := types.NamespacedName{Name: noDialerName}
@@ -1546,7 +1546,7 @@ var _ = Describe("PillarTarget Controller — E19 traceability bindings", func()
 			Expect(cond.Reason).To(Equal("DialerNotConfigured"))
 		})
 
-		It("E19.5.2 TestPillarTargetController_AgentConnected_True_PlainTCP: dialer with successful health check sets AgentConnected=True reason=Dialed", func() {
+		It("[TC-E19.5.2] E19.5.2 TestPillarTargetController_AgentConnected_True_PlainTCP: dialer with successful health check sets AgentConnected=True reason=Dialed", func() {
 			By("using a reconciler with a healthy plain-TCP mockDialer and reconciling twice")
 			createExternalTarget(plainTCPName, "192.0.2.61")
 			nn := types.NamespacedName{Name: plainTCPName}
@@ -1571,7 +1571,7 @@ var _ = Describe("PillarTarget Controller — E19 traceability bindings", func()
 				"reason should be Dialed for a plaintext (non-mTLS) connection")
 		})
 
-		It("E19.5.3 TestPillarTargetController_AgentConnected_True_MTLS: mTLS dialer sets AgentConnected=True reason=Authenticated", func() {
+		It("[TC-E19.5.3] E19.5.3 TestPillarTargetController_AgentConnected_True_MTLS: mTLS dialer sets AgentConnected=True reason=Authenticated", func() {
 			By("using a reconciler with a healthy mTLS mockDialer and reconciling twice")
 			createExternalTarget(mtlsName, "192.0.2.62")
 			nn := types.NamespacedName{Name: mtlsName}
@@ -1595,7 +1595,7 @@ var _ = Describe("PillarTarget Controller — E19 traceability bindings", func()
 			Expect(cond.Reason).To(Equal("Authenticated"))
 		})
 
-		It("E19.5.4 TestPillarTargetController_AgentConnected_False_HealthCheckError: health check error sets AgentConnected=False", func() {
+		It("[TC-E19.5.4] E19.5.4 TestPillarTargetController_AgentConnected_False_HealthCheckError: health check error sets AgentConnected=False", func() {
 			By("using a reconciler with a failing mockDialer and reconciling twice")
 			createExternalTarget(hcErrName, "192.0.2.63")
 			nn := types.NamespacedName{Name: hcErrName}
@@ -1619,7 +1619,7 @@ var _ = Describe("PillarTarget Controller — E19 traceability bindings", func()
 			Expect(cond.Reason).To(Equal("HealthCheckFailed"))
 		})
 
-		It("E19.5.5 TestPillarTargetController_AgentConnected_False_AgentUnhealthy: agent responds degraded sets AgentConnected=True reason=AgentDegraded", func() {
+		It("[TC-E19.5.5] E19.5.5 TestPillarTargetController_AgentConnected_False_AgentUnhealthy: agent responds degraded sets AgentConnected=True reason=AgentDegraded", func() {
 			// Note: per current implementation, healthy=false → AgentConnected=True/AgentDegraded
 			// (accept partial health). This TC documents that behaviour.
 			By("using a reconciler with a degraded-health mockDialer and reconciling twice")
@@ -1662,7 +1662,7 @@ var _ = Describe("PillarTarget Controller — E19 traceability bindings", func()
 			}
 		}
 
-		It("E19.6.1 TestPillarTargetController_Ready_True_AllConditionsMet: healthy agent sets Ready=True", func() {
+		It("[TC-E19.6.1] E19.6.1 TestPillarTargetController_Ready_True_AllConditionsMet: healthy agent sets Ready=True", func() {
 			By("reconciling an external target with a healthy mock dialer twice")
 			obj := &pillarcsiv1alpha1.PillarTarget{
 				ObjectMeta: metav1.ObjectMeta{Name: readyAllName},
@@ -1692,7 +1692,7 @@ var _ = Describe("PillarTarget Controller — E19 traceability bindings", func()
 				"Ready should be True when all conditions are satisfied")
 		})
 
-		It("E19.6.2 TestPillarTargetController_Ready_False_NodeMissing: missing node sets Ready=False", func() {
+		It("[TC-E19.6.2] E19.6.2 TestPillarTargetController_Ready_False_NodeMissing: missing node sets Ready=False", func() {
 			By("reconciling a nodeRef target with no matching node twice")
 			obj := &pillarcsiv1alpha1.PillarTarget{
 				ObjectMeta: metav1.ObjectMeta{Name: readyNodeMissingName},
@@ -1717,7 +1717,7 @@ var _ = Describe("PillarTarget Controller — E19 traceability bindings", func()
 				"Ready should be False when the referenced node is missing")
 		})
 
-		It("E19.6.3 TestPillarTargetController_Ready_False_AgentUnreachable: agent unreachable sets Ready=False", func() {
+		It("[TC-E19.6.3] E19.6.3 TestPillarTargetController_Ready_False_AgentUnreachable: agent unreachable sets Ready=False", func() {
 			By("reconciling with a failing dialer twice")
 			obj := &pillarcsiv1alpha1.PillarTarget{
 				ObjectMeta: metav1.ObjectMeta{Name: readyAgentUnreachName},
@@ -1772,7 +1772,7 @@ var _ = Describe("PillarTarget Controller — E19 traceability bindings", func()
 			}
 		}
 
-		It("E19.7.1 TestPillarTargetController_DeletionBlocked_ReferencingPoolExists: pool referencing target blocks deletion", func() {
+		It("[TC-E19.7.1] E19.7.1 TestPillarTargetController_DeletionBlocked_ReferencingPoolExists: pool referencing target blocks deletion", func() {
 			By("creating a target+pool, seeding finalizer, then deleting and reconciling")
 			obj := &pillarcsiv1alpha1.PillarTarget{
 				ObjectMeta: metav1.ObjectMeta{Name: blockTargetName},
@@ -1814,7 +1814,7 @@ var _ = Describe("PillarTarget Controller — E19 traceability bindings", func()
 				"finalizer should be retained while the referencing pool exists")
 		})
 
-		It("E19.7.2 TestPillarTargetController_DeletionAllowed_NoReferencingPools: no pools allows deletion", func() {
+		It("[TC-E19.7.2] E19.7.2 TestPillarTargetController_DeletionAllowed_NoReferencingPools: no pools allows deletion", func() {
 			By("creating a target with no referencing pools, seeding finalizer, then deleting")
 			obj := &pillarcsiv1alpha1.PillarTarget{
 				ObjectMeta: metav1.ObjectMeta{Name: allowTargetName},
@@ -1842,7 +1842,7 @@ var _ = Describe("PillarTarget Controller — E19 traceability bindings", func()
 				"PillarTarget should be deleted when no pools reference it")
 		})
 
-		It("E19.7.3 TestPillarTargetController_DeletionAllowed_AfterPoolRemoval: removing pool allows deletion", func() {
+		It("[TC-E19.7.3] E19.7.3 TestPillarTargetController_DeletionAllowed_AfterPoolRemoval: removing pool allows deletion", func() {
 			By("creating target+pool, deleting target, blocking, then removing pool and reconciling again")
 			obj := &pillarcsiv1alpha1.PillarTarget{
 				ObjectMeta: metav1.ObjectMeta{Name: afterRemovalTargetName},

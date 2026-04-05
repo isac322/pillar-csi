@@ -96,7 +96,7 @@ var _ = Describe("E34: LVM Kind 클러스터 E2E — 실제 LVM VG + iSCSI",
 			})
 
 			// ── TC-E34.327 ────────────────────────────────────────────────────
-			It("[TC-E34.327] raw block PVC is published as an unformatted block device to the Pod", func() {
+			It("raw block PVC is published as an unformatted block device to the Pod", func() {
 				if iscsiSCName == "" {
 					Fail("[TC-E34.327] MISSING PREREQUISITE: no iSCSI StorageClass — skipping")
 				}
@@ -175,7 +175,7 @@ spec:
 			})
 
 			// ── TC-E34.328 ────────────────────────────────────────────────────
-			It("[TC-E34.328] online expansion rescans the iSCSI session and grows the filesystem inside the running Pod", func() {
+			It("online expansion rescans the iSCSI session and grows the filesystem inside the running Pod", func() {
 				if iscsiSCName == "" {
 					Fail("[TC-E34.328] MISSING PREREQUISITE: no iSCSI StorageClass — skipping")
 				}
@@ -262,7 +262,7 @@ spec:
 			})
 
 			// ── TC-E34.329 ────────────────────────────────────────────────────
-			It("[TC-E34.329] NodeGetVolumeStats reports bytes and inodes for filesystem volumes and bytes for raw block volumes", func() {
+			It("NodeGetVolumeStats reports bytes and inodes for filesystem volumes and bytes for raw block volumes", func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 				defer cancel()
 
@@ -307,7 +307,7 @@ spec:
 			})
 
 			// ── TC-E34.330 ────────────────────────────────────────────────────
-			It("[TC-E34.330] after node plugin restart, restaging is idempotent and does not create duplicate iSCSI sessions", func() {
+			It("after node plugin restart, restaging is idempotent and does not create duplicate iSCSI sessions", func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 				defer cancel()
 

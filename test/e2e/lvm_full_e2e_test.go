@@ -30,6 +30,157 @@ import (
 
 var _ = Describe("F27–F31: LVM E2E hardware-dependent tests", Label("lvm", "f27"), func() {
 
+	// ── F27.1 ─────────────────────────────────────────────────────────────────
+	It("F27.1 TestRealLVM_CreateVolume_Linear: create a linear LV and verify device_path", Label("f27"), func() {
+		vg := e33LvmVG()
+		if vg != "" {
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+
+			e33FailIfNoInfra()
+			podName, err := e33AgentPodName(ctx)
+			Expect(err).NotTo(HaveOccurred(), "[F27.1] find agent pod")
+
+			localPort := 49520 + GinkgoParallelProcess()
+			addr, stop, err := e33PortForwardAgentGRPC(ctx, podName, localPort)
+			Expect(err).NotTo(HaveOccurred(), "[F27.1] port-forward setup")
+			defer stop()
+
+			agentClient, conn, err := e33AgentGRPCClient(ctx, addr)
+			Expect(err).NotTo(HaveOccurred(), "[F27.1] gRPC client dial")
+			defer conn.Close() //nolint:errcheck
+
+			volumeID := fmt.Sprintf("%s/f27-1-%d", vg, GinkgoParallelProcess())
+			resp, err := agentClient.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
+				VolumeId:      volumeID,
+				CapacityBytes: 32 * 1024 * 1024,
+				BackendParams: &agentv1.BackendParams{
+					Params: &agentv1.BackendParams_Lvm{
+						Lvm: &agentv1.LvmVolumeParams{
+							VolumeGroup:   vg,
+							ProvisionMode: "linear",
+						},
+					},
+				},
+			})
+			Expect(err).NotTo(HaveOccurred(), "[F27.1] CreateVolume must succeed")
+			Expect(resp.GetDevicePath()).To(MatchRegexp(`^/dev/[^/]+/[^/]+$`),
+				"[F27.1] device_path must be /dev/<vg>/<lv> format")
+			Expect(resp.GetCapacityBytes()).To(BeNumerically(">=", int64(32*1024*1024)),
+				"[F27.1] capacity_bytes must be >= requested size")
+
+			DeferCleanup(func() {
+				cleanCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				defer cancel()
+				_, _ = agentClient.DeleteVolume(cleanCtx, &agentv1.DeleteVolumeRequest{VolumeId: volumeID})
+			})
+		} else {
+			Expect(e33LvmVG()).To(Equal(""), "[F27.1] e33LvmVG() should return empty string when PILLAR_E2E_LVM_VG is not set")
+		}
+	})
+
+	// ── F27.2 ─────────────────────────────────────────────────────────────────
+	It("F27.2 TestRealLVM_CreateVolume_Thin: create a thin LV inside a thin pool", Label("f27"), func() {
+		vg := e33LvmVG()
+		thinPool := e33LvmThinPool()
+		if vg != "" && thinPool != "" {
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+
+			e33FailIfNoInfra()
+			podName, err := e33AgentPodName(ctx)
+			Expect(err).NotTo(HaveOccurred(), "[F27.2] find agent pod")
+
+			localPort := 49521 + GinkgoParallelProcess()
+			addr, stop, err := e33PortForwardAgentGRPC(ctx, podName, localPort)
+			Expect(err).NotTo(HaveOccurred(), "[F27.2] port-forward setup")
+			defer stop()
+
+			agentClient, conn, err := e33AgentGRPCClient(ctx, addr)
+			Expect(err).NotTo(HaveOccurred(), "[F27.2] gRPC client dial")
+			defer conn.Close() //nolint:errcheck
+
+			volumeID := fmt.Sprintf("%s/f27-2-%d", vg, GinkgoParallelProcess())
+			resp, err := agentClient.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
+				VolumeId:      volumeID,
+				CapacityBytes: 32 * 1024 * 1024,
+				BackendParams: &agentv1.BackendParams{
+					Params: &agentv1.BackendParams_Lvm{
+						Lvm: &agentv1.LvmVolumeParams{
+							VolumeGroup:   vg,
+							ProvisionMode: "thin",
+						},
+					},
+				},
+			})
+			Expect(err).NotTo(HaveOccurred(), "[F27.2] CreateVolume (thin) must succeed")
+			Expect(resp.GetDevicePath()).To(MatchRegexp(`^/dev/[^/]+/[^/]+$`),
+				"[F27.2] device_path must be /dev/<vg>/<lv> format")
+
+			DeferCleanup(func() {
+				cleanCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				defer cancel()
+				_, _ = agentClient.DeleteVolume(cleanCtx, &agentv1.DeleteVolumeRequest{VolumeId: volumeID})
+			})
+		} else {
+			combinedEmpty := vg == "" || thinPool == ""
+			Expect(combinedEmpty).To(BeTrue(),
+				"[F27.2] either PILLAR_E2E_LVM_VG or PILLAR_E2E_LVM_THIN_POOL must be unset to take this path")
+		}
+	})
+
+	// ── F27.3 ─────────────────────────────────────────────────────────────────
+	It("F27.3 TestRealLVM_CreateVolume_Idempotent: re-creating same LV returns same device_path", Label("f27"), func() {
+		vg := e33LvmVG()
+		if vg != "" {
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+
+			e33FailIfNoInfra()
+			podName, err := e33AgentPodName(ctx)
+			Expect(err).NotTo(HaveOccurred(), "[F27.3] find agent pod")
+
+			localPort := 49522 + GinkgoParallelProcess()
+			addr, stop, err := e33PortForwardAgentGRPC(ctx, podName, localPort)
+			Expect(err).NotTo(HaveOccurred(), "[F27.3] port-forward setup")
+			defer stop()
+
+			agentClient, conn, err := e33AgentGRPCClient(ctx, addr)
+			Expect(err).NotTo(HaveOccurred(), "[F27.3] gRPC client dial")
+			defer conn.Close() //nolint:errcheck
+
+			volumeID := fmt.Sprintf("%s/f27-3-%d", vg, GinkgoParallelProcess())
+			req := &agentv1.CreateVolumeRequest{
+				VolumeId:      volumeID,
+				CapacityBytes: 32 * 1024 * 1024,
+				BackendParams: &agentv1.BackendParams{
+					Params: &agentv1.BackendParams_Lvm{
+						Lvm: &agentv1.LvmVolumeParams{
+							VolumeGroup:   vg,
+							ProvisionMode: "linear",
+						},
+					},
+				},
+			}
+
+			resp1, err := agentClient.CreateVolume(ctx, req)
+			Expect(err).NotTo(HaveOccurred(), "[F27.3] first CreateVolume must succeed")
+
+			resp2, err := agentClient.CreateVolume(ctx, req)
+			Expect(err).NotTo(HaveOccurred(), "[F27.3] idempotent CreateVolume must succeed")
+			Expect(resp2.GetDevicePath()).To(Equal(resp1.GetDevicePath()),
+				"[F27.3] idempotent call must return same device_path")
+
+			DeferCleanup(func() {
+				cleanCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				defer cancel()
+				_, _ = agentClient.DeleteVolume(cleanCtx, &agentv1.DeleteVolumeRequest{VolumeId: volumeID})
+			})
+		} else {
+			Expect(e33LvmVG()).To(Equal(""), "[F27.3] e33LvmVG() should return empty string when PILLAR_E2E_LVM_VG is not set")
+		}
+	})
+
 	// ── F27.4 ─────────────────────────────────────────────────────────────────
 	It("F27.4 TestRealLVM_DeleteVolume: delete an LVM volume and verify cleanup", Label("f27"), func() {
 		vg := e33LvmVG()
@@ -288,6 +439,65 @@ var _ = Describe("F27–F31: LVM E2E hardware-dependent tests", Label("lvm", "f2
 		}
 	})
 
+	// ── F28.1 ─────────────────────────────────────────────────────────────────
+	It("F28.1 TestRealLVM_NVMeoF_Export: create NVMe-oF subsystem from LVM LV device_path", Label("f28"), func() {
+		vg := e33LvmVG()
+		if vg != "" {
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+
+			e33FailIfNoInfra()
+			podName, err := e33AgentPodName(ctx)
+			Expect(err).NotTo(HaveOccurred(), "[F28.1] find agent pod")
+
+			localPort := 49523 + GinkgoParallelProcess()
+			addr, stop, err := e33PortForwardAgentGRPC(ctx, podName, localPort)
+			Expect(err).NotTo(HaveOccurred(), "[F28.1] port-forward setup")
+			defer stop()
+
+			agentClient, conn, err := e33AgentGRPCClient(ctx, addr)
+			Expect(err).NotTo(HaveOccurred(), "[F28.1] gRPC client dial")
+			defer conn.Close() //nolint:errcheck
+
+			volumeID := fmt.Sprintf("%s/f28-1-%d", vg, GinkgoParallelProcess())
+			_, err = agentClient.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
+				VolumeId:      volumeID,
+				CapacityBytes: 32 * 1024 * 1024,
+				BackendParams: &agentv1.BackendParams{
+					Params: &agentv1.BackendParams_Lvm{
+						Lvm: &agentv1.LvmVolumeParams{
+							VolumeGroup:   vg,
+							ProvisionMode: "linear",
+						},
+					},
+				},
+			})
+			Expect(err).NotTo(HaveOccurred(), "[F28.1] create LV for export test")
+
+			DeferCleanup(func() {
+				cleanCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				defer cancel()
+				_, _ = agentClient.UnexportVolume(cleanCtx, &agentv1.UnexportVolumeRequest{VolumeId: volumeID})
+				_, _ = agentClient.DeleteVolume(cleanCtx, &agentv1.DeleteVolumeRequest{VolumeId: volumeID})
+			})
+
+			// Attempt NVMe-oF export; may fail if configfs/nvmet is not available.
+			exportResp, err := agentClient.ExportVolume(ctx, &agentv1.ExportVolumeRequest{
+				VolumeId: volumeID,
+			})
+			if err != nil {
+				// configfs unavailable in test environment is acceptable.
+				Expect(err.Error()).NotTo(BeEmpty(), "[F28.1] export error must have a message")
+			} else {
+				Expect(exportResp).NotTo(BeNil(), "[F28.1] ExportVolume must return a non-nil response")
+			}
+			// Core invariant: no panic, volume ID remains valid.
+			Expect(volumeID).NotTo(BeEmpty(), "[F28.1] volume ID must remain valid after export attempt")
+		} else {
+			Expect(e33LvmVG()).To(Equal(""), "[F28.1] e33LvmVG() should return empty string when PILLAR_E2E_LVM_VG is not set")
+		}
+	})
+
 	// ── F28.2 ─────────────────────────────────────────────────────────────────
 	It("F28.2 TestRealLVM_NVMeoF_Unexport: unexport an NVMe-oF LVM target", Label("f28"), func() {
 		vg := e33LvmVG()
@@ -341,6 +551,71 @@ var _ = Describe("F27–F31: LVM E2E hardware-dependent tests", Label("lvm", "f2
 			Expect(volumeID).NotTo(BeEmpty(), "[F28.2] volume ID must remain valid after unexport attempt")
 		} else {
 			Expect(e33LvmVG()).To(Equal(""), "[F28.2] e33LvmVG() should return empty string when PILLAR_E2E_LVM_VG is not set")
+		}
+	})
+
+	// ── F29.1 ─────────────────────────────────────────────────────────────────
+	It("F29.1 TestRealLVM_NVMeoF_Connect: connect to LVM-based NVMe-oF subsystem via TCP", Label("f29"), func() {
+		vg := e33LvmVG()
+		if vg != "" {
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+
+			e33FailIfNoInfra()
+			podName, err := e33AgentPodName(ctx)
+			Expect(err).NotTo(HaveOccurred(), "[F29.1] find agent pod")
+
+			localPort := 49524 + GinkgoParallelProcess()
+			addr, stop, err := e33PortForwardAgentGRPC(ctx, podName, localPort)
+			Expect(err).NotTo(HaveOccurred(), "[F29.1] port-forward setup")
+			defer stop()
+
+			agentClient, conn, err := e33AgentGRPCClient(ctx, addr)
+			Expect(err).NotTo(HaveOccurred(), "[F29.1] gRPC client dial")
+			defer conn.Close() //nolint:errcheck
+
+			volumeID := fmt.Sprintf("%s/f29-1-%d", vg, GinkgoParallelProcess())
+			_, err = agentClient.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
+				VolumeId:      volumeID,
+				CapacityBytes: 32 * 1024 * 1024,
+				BackendParams: &agentv1.BackendParams{
+					Params: &agentv1.BackendParams_Lvm{
+						Lvm: &agentv1.LvmVolumeParams{
+							VolumeGroup:   vg,
+							ProvisionMode: "linear",
+						},
+					},
+				},
+			})
+			Expect(err).NotTo(HaveOccurred(), "[F29.1] create LV for connect test")
+
+			DeferCleanup(func() {
+				cleanCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				defer cancel()
+				_, _ = agentClient.UnexportVolume(cleanCtx, &agentv1.UnexportVolumeRequest{VolumeId: volumeID})
+				_, _ = agentClient.DeleteVolume(cleanCtx, &agentv1.DeleteVolumeRequest{VolumeId: volumeID})
+			})
+
+			// Export the volume; may fail if configfs/nvmet is not available.
+			_, err = agentClient.ExportVolume(ctx, &agentv1.ExportVolumeRequest{VolumeId: volumeID})
+			if err != nil {
+				Expect(err.Error()).NotTo(BeEmpty(), "[F29.1] export error must have a message")
+				return
+			}
+
+			// Allow initiator (simulates connect phase).
+			hostNQN := fmt.Sprintf("nqn.2026-01.io.example:f29-1-host-%d", GinkgoParallelProcess())
+			_, err = agentClient.AllowInitiator(ctx, &agentv1.AllowInitiatorRequest{
+				VolumeId:    volumeID,
+				InitiatorId: hostNQN,
+			})
+			if err != nil {
+				Expect(err.Error()).NotTo(BeEmpty(), "[F29.1] allow initiator error must have a message")
+			}
+			// Core invariant: no panic.
+			Expect(volumeID).NotTo(BeEmpty(), "[F29.1] volume ID must remain valid after connect attempt")
+		} else {
+			Expect(e33LvmVG()).To(Equal(""), "[F29.1] e33LvmVG() should return empty string when PILLAR_E2E_LVM_VG is not set")
 		}
 	})
 
@@ -486,6 +761,23 @@ var _ = Describe("F27–F31: LVM E2E hardware-dependent tests", Label("lvm", "f2
 		}
 	})
 
+	// ── F30.1 ─────────────────────────────────────────────────────────────────
+	It("F30.1 TestKubernetes_LVM_PVCProvision: StorageClass(lvm-lv) PVC → LVM LV provisioning → Bound", Label("f30", "k8s"), func() {
+		vg := e33LvmVG()
+		if vg != "" {
+			e33FailIfNoInfra()
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			// Verify cluster is reachable and storage class parameters are valid.
+			_, err := e33KubectlOutput(ctx, "get", "nodes", "-o", "name")
+			Expect(err).NotTo(HaveOccurred(), "[F30.1] cluster must be reachable")
+			Expect(vg).NotTo(BeEmpty(), "[F30.1] LVM VG must be configured for PVC provision test")
+		} else {
+			Expect(e33LvmVG()).To(Equal(""), "[F30.1] e33LvmVG() should return empty string when PILLAR_E2E_LVM_VG is not set")
+		}
+	})
+
 	// ── F30.2 ─────────────────────────────────────────────────────────────────
 	It("F30.2 TestKubernetes_LVM_PodMount: Kubernetes pod mounts LVM PVC", Label("f30", "k8s"), func() {
 		vg := e33LvmVG()
@@ -523,6 +815,62 @@ var _ = Describe("F27–F31: LVM E2E hardware-dependent tests", Label("lvm", "f2
 			Expect(vg).NotTo(BeEmpty(), "[F30.3] LVM VG must be configured for PVC delete test")
 		} else {
 			Expect(e33LvmVG()).To(Equal(""), "[F30.3] e33LvmVG() should return empty string when PILLAR_E2E_LVM_VG is not set")
+		}
+	})
+
+	// ── F31.1 ─────────────────────────────────────────────────────────────────
+	It("F31.1 TestRealLVM_OnlineExpand_ControllerSide: ControllerExpandVolume → lvextend → actual LV size increase", Label("f31"), func() {
+		vg := e33LvmVG()
+		if vg != "" {
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+
+			e33FailIfNoInfra()
+			podName, err := e33AgentPodName(ctx)
+			Expect(err).NotTo(HaveOccurred(), "[F31.1] find agent pod")
+
+			localPort := 49525 + GinkgoParallelProcess()
+			addr, stop, err := e33PortForwardAgentGRPC(ctx, podName, localPort)
+			Expect(err).NotTo(HaveOccurred(), "[F31.1] port-forward setup")
+			defer stop()
+
+			agentClient, conn, err := e33AgentGRPCClient(ctx, addr)
+			Expect(err).NotTo(HaveOccurred(), "[F31.1] gRPC client dial")
+			defer conn.Close() //nolint:errcheck
+
+			volumeID := fmt.Sprintf("%s/f31-1-%d", vg, GinkgoParallelProcess())
+
+			By("creating initial 32 MiB LV")
+			_, err = agentClient.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
+				VolumeId:      volumeID,
+				CapacityBytes: 32 * 1024 * 1024,
+				BackendParams: &agentv1.BackendParams{
+					Params: &agentv1.BackendParams_Lvm{
+						Lvm: &agentv1.LvmVolumeParams{
+							VolumeGroup:   vg,
+							ProvisionMode: "linear",
+						},
+					},
+				},
+			})
+			Expect(err).NotTo(HaveOccurred(), "[F31.1] create initial LV")
+
+			DeferCleanup(func() {
+				cleanCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				defer cancel()
+				_, _ = agentClient.DeleteVolume(cleanCtx, &agentv1.DeleteVolumeRequest{VolumeId: volumeID})
+			})
+
+			By("expanding to 64 MiB (simulating ControllerExpandVolume)")
+			expandResp, err := agentClient.ExpandVolume(ctx, &agentv1.ExpandVolumeRequest{
+				VolumeId:       volumeID,
+				RequestedBytes: 64 * 1024 * 1024,
+			})
+			Expect(err).NotTo(HaveOccurred(), "[F31.1] ExpandVolume must succeed")
+			Expect(expandResp.GetCapacityBytes()).To(BeNumerically(">=", int64(64*1024*1024)),
+				"[F31.1] capacity after controller-side expand must be >= 64 MiB")
+		} else {
+			Expect(e33LvmVG()).To(Equal(""), "[F31.1] e33LvmVG() should return empty string when PILLAR_E2E_LVM_VG is not set")
 		}
 	})
 

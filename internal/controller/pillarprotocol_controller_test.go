@@ -660,14 +660,14 @@ var _ = Describe("PillarProtocol Controller", func() {
 		})
 
 		// E23.1.4
-		It("E23.1.4 TestPillarProtocolController_FinalizerAddedOnFirstReconcile: After first reconcile, finalizer added", func() {
+		It("[TC-E23.1.4] E23.1.4 TestPillarProtocolController_FinalizerAddedOnFirstReconcile: After first reconcile, finalizer added", func() {
 			fetched := fetchProtocol()
 			Expect(controllerutil.ContainsFinalizer(fetched, pillarProtocolFinalizer)).To(BeTrue(),
 				"E23.1.4: finalizer %q must be present after first reconcile", pillarProtocolFinalizer)
 		})
 
 		// E23.1.5
-		It("E23.1.5 TestPillarProtocolController_FinalizerNotDuplicated: Second reconcile doesn't add duplicate finalizer", func() {
+		It("[TC-E23.1.5] E23.1.5 TestPillarProtocolController_FinalizerNotDuplicated: Second reconcile doesn't add duplicate finalizer", func() {
 			_, err := doReconcile()
 			Expect(err).NotTo(HaveOccurred())
 
@@ -682,7 +682,7 @@ var _ = Describe("PillarProtocol Controller", func() {
 		})
 
 		// E23.4.1
-		It("E23.4.1 TestPillarProtocolController_Ready_True_NoBindings: No bindings: Ready=True (protocol is available even without bindings)", func() {
+		It("[TC-E23.4.1] E23.4.1 TestPillarProtocolController_Ready_True_NoBindings: No bindings: Ready=True (protocol is available even without bindings)", func() {
 			_, err := doReconcile()
 			Expect(err).NotTo(HaveOccurred())
 
@@ -693,7 +693,7 @@ var _ = Describe("PillarProtocol Controller", func() {
 		})
 
 		// E23.4.2
-		It("E23.4.2 TestPillarProtocolController_Ready_True_WithBindings: With bindings: Ready=True", func() {
+		It("[TC-E23.4.2] E23.4.2 TestPillarProtocolController_Ready_True_WithBindings: With bindings: Ready=True", func() {
 			createPool()
 			createBinding()
 			_, err := doReconcile()
@@ -706,7 +706,7 @@ var _ = Describe("PillarProtocol Controller", func() {
 		})
 
 		// E23.4.3
-		It("E23.4.3 TestPillarProtocolController_Ready_Message_ContainsType: Ready condition message contains protocol type string", func() {
+		It("[TC-E23.4.3] E23.4.3 TestPillarProtocolController_Ready_Message_ContainsType: Ready condition message contains protocol type string", func() {
 			_, err := doReconcile()
 			Expect(err).NotTo(HaveOccurred())
 
@@ -718,7 +718,7 @@ var _ = Describe("PillarProtocol Controller", func() {
 		})
 
 		// E23.4.4
-		It("E23.4.4 TestPillarProtocolController_Ready_False_DeletionBlocked: Deletion blocked: condition message reflects blocked state", func() {
+		It("[TC-E23.4.4] E23.4.4 TestPillarProtocolController_Ready_False_DeletionBlocked: Deletion blocked: condition message reflects blocked state", func() {
 			createBinding()
 			deleteProtocol()
 
@@ -733,14 +733,14 @@ var _ = Describe("PillarProtocol Controller", func() {
 		})
 
 		// E23.4.5
-		It("E23.4.5 TestPillarProtocolController_NoRequeue_WhenReady: When ready, reconcile result has no requeue", func() {
+		It("[TC-E23.4.5] E23.4.5 TestPillarProtocolController_NoRequeue_WhenReady: When ready, reconcile result has no requeue", func() {
 			result, err := doReconcile()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.RequeueAfter).To(BeZero(), "E23.4.5: RequeueAfter must be zero when protocol is ready")
 		})
 
 		// E23.5.1
-		It("E23.5.1 TestPillarProtocolController_BindingCount_Zero_NoBindings: No PillarBindings → bindingCount=0 in status", func() {
+		It("[TC-E23.5.1] E23.5.1 TestPillarProtocolController_BindingCount_Zero_NoBindings: No PillarBindings → bindingCount=0 in status", func() {
 			_, err := doReconcile()
 			Expect(err).NotTo(HaveOccurred())
 
@@ -749,7 +749,7 @@ var _ = Describe("PillarProtocol Controller", func() {
 		})
 
 		// E23.5.2
-		It("E23.5.2 TestPillarProtocolController_BindingCount_One_SingleBinding: One PillarBinding → bindingCount=1", func() {
+		It("[TC-E23.5.2] E23.5.2 TestPillarProtocolController_BindingCount_One_SingleBinding: One PillarBinding → bindingCount=1", func() {
 			createPool()
 			createBinding()
 			_, err := doReconcile()
@@ -760,7 +760,7 @@ var _ = Describe("PillarProtocol Controller", func() {
 		})
 
 		// E23.5.3
-		It("E23.5.3 TestPillarProtocolController_ActiveTargets_PopulatedFromPool: Protocol with pool → activeTargets has pool's target", func() {
+		It("[TC-E23.5.3] E23.5.3 TestPillarProtocolController_ActiveTargets_PopulatedFromPool: Protocol with pool → activeTargets has pool's target", func() {
 			createPool()
 			createBinding()
 			_, err := doReconcile()
@@ -772,7 +772,7 @@ var _ = Describe("PillarProtocol Controller", func() {
 		})
 
 		// E23.5.5
-		It("E23.5.5 TestPillarProtocolController_ActiveTargets_EmptyWhenPoolNotFound: Pool not found → activeTargets empty", func() {
+		It("[TC-E23.5.5] E23.5.5 TestPillarProtocolController_ActiveTargets_EmptyWhenPoolNotFound: Pool not found → activeTargets empty", func() {
 			// Create binding referencing pprPoolName, but do NOT create the pool.
 			createBinding()
 			_, err := doReconcile()
@@ -784,7 +784,7 @@ var _ = Describe("PillarProtocol Controller", func() {
 		})
 
 		// E23.5.6
-		It("E23.5.6 TestPillarProtocolController_BindingCount_Decremented_AfterBindingRemoval: After removing binding → count decremented", func() {
+		It("[TC-E23.5.6] E23.5.6 TestPillarProtocolController_BindingCount_Decremented_AfterBindingRemoval: After removing binding → count decremented", func() {
 			createPool()
 			createBinding()
 			_, err := doReconcile()
@@ -803,7 +803,7 @@ var _ = Describe("PillarProtocol Controller", func() {
 		})
 
 		// E23.6.1
-		It("E23.6.1 TestPillarProtocolController_DeletionBlocked_ReferencingBindingExists: Binding exists → deletion blocked, finalizer kept", func() {
+		It("[TC-E23.6.1] E23.6.1 TestPillarProtocolController_DeletionBlocked_ReferencingBindingExists: Binding exists → deletion blocked, finalizer kept", func() {
 			createBinding()
 			deleteProtocol()
 
@@ -814,7 +814,7 @@ var _ = Describe("PillarProtocol Controller", func() {
 		})
 
 		// E23.6.2
-		It("E23.6.2 TestPillarProtocolController_DeletionBlocked_StatusUpdated: Status updated with blocked reason", func() {
+		It("[TC-E23.6.2] E23.6.2 TestPillarProtocolController_DeletionBlocked_StatusUpdated: Status updated with blocked reason", func() {
 			createBinding()
 			deleteProtocol()
 
@@ -829,7 +829,7 @@ var _ = Describe("PillarProtocol Controller", func() {
 		})
 
 		// E23.6.3
-		It("E23.6.3 TestPillarProtocolController_DeletionBlocked_FinalizerKept: Finalizer still present when blocked", func() {
+		It("[TC-E23.6.3] E23.6.3 TestPillarProtocolController_DeletionBlocked_FinalizerKept: Finalizer still present when blocked", func() {
 			createBinding()
 			deleteProtocol()
 
@@ -842,7 +842,7 @@ var _ = Describe("PillarProtocol Controller", func() {
 		})
 
 		// E23.6.4
-		It("E23.6.4 TestPillarProtocolController_DeletionAllowed_NoReferencingBindings: No bindings → deletion allowed, finalizer removed", func() {
+		It("[TC-E23.6.4] E23.6.4 TestPillarProtocolController_DeletionAllowed_NoReferencingBindings: No bindings → deletion allowed, finalizer removed", func() {
 			deleteProtocol()
 
 			result, err := doReconcile()
@@ -858,7 +858,7 @@ var _ = Describe("PillarProtocol Controller", func() {
 		})
 
 		// E23.6.5
-		It("E23.6.5 TestPillarProtocolController_DeletionAllowed_AfterBindingRemoval: After removing binding → deletion proceeds", func() {
+		It("[TC-E23.6.5] E23.6.5 TestPillarProtocolController_DeletionAllowed_AfterBindingRemoval: After removing binding → deletion proceeds", func() {
 			createBinding()
 			deleteProtocol()
 

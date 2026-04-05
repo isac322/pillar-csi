@@ -243,7 +243,7 @@ linters:
         - "^\\s*nolint"
         - "^\\s*\\+"      # kubebuilder marker directives (e.g. +kubebuilder:, +groupName=)
         - "^─"            # visual section-separator lines (e.g. // ─────...─────)
-        - "^E2E-TESTCASES" # test-case reference tags (e.g. // E2E-TESTCASES.md: E18.1 | ...)
+        - "^docs/testing" # test-case reference tags (e.g. // docs/testing/E2E-TESTS.md: E18.1 | ...)
       capital: true
 
     dupl:
@@ -316,10 +316,10 @@ linters:
       # godot's "end with period" rule does not apply to decorative dividers.
       - linters: [godot]
         source: "^// [─═─-]{10,}"
-      # E2E test-case reference tags (e.g. // E2E-TESTCASES.md: E18.1 | ...) are
+      # E2E test-case reference tags (e.g. // docs/testing/E2E-TESTS.md: E18.1 | ...) are
       # cross-references, not documentation sentences.
       - linters: [godot]
-        source: "^// E2E-TESTCASES"
+        source: "^// docs/testing"
       # json:",inline" is a well-known K8s embedding convention; revive struct-tag
       # does not recognise it as valid, producing a false positive.
       - linters: [revive]

@@ -481,9 +481,10 @@ test-e2e-cache: manifests generate fmt vet ginkgo ## Run test-e2e with Docker Bu
 
 ##@ TC Coverage Verification
 #
-# verify-tc-coverage performs a 1-to-1 coverage check between the 404 TC IDs
-# documented in docs/E2E-TESTCASES.md and the Ginkgo node labels found in the
-# compiled test binary (via ginkgo --dry-run) or in Go source literal strings.
+# verify-tc-coverage performs a 1-to-1 coverage check between TC IDs
+# documented in docs/testing/*.md (6 spec files) and the Ginkgo node labels
+# found in the compiled test binary (via ginkgo --dry-run) or in Go source
+# literal strings.
 #
 # Three modes are available:
 #
@@ -496,7 +497,7 @@ test-e2e-cache: manifests generate fmt vet ginkgo ## Run test-e2e with Docker Bu
 # bypass the check during infrastructure-only changes.
 #
 # Output columns:
-#   declared_total  — TC count from "총 테스트 케이스:" line in docs/E2E-TESTCASES.md
+#   declared_total  — TC count from "총 테스트 케이스:" lines in docs/testing/*.md
 #   canonical_cases — de-duplicated TC count after symbol canonicalization
 #   bound           — TC IDs with at least one matching Ginkgo node label
 #   missing         — TC IDs with no matching Ginkgo node label (regression risk)
@@ -531,9 +532,9 @@ verify-tc-coverage-json: ## Emit TC coverage report as JSON to stdout.
 
 # verify-tc-ids is the canonical Sub-AC 4 CI gate target.
 #
-# It re-parses docs/E2E-TESTCASES.md, extracts all 404 TC IDs, and asserts a
-# strict 1-to-1 match with Ginkgo node names.  The runtime mode runs
-# `ginkgo --dry-run ./test/e2e/` to enumerate actual node labels (including
+# It re-parses docs/testing/*.md (6 spec files), extracts all documented TC IDs,
+# and asserts a strict 1-to-1 match with Ginkgo node names.  The runtime mode
+# runs `ginkgo --dry-run ./test/e2e/` to enumerate actual node labels (including
 # dynamically-generated ones via tc.tcNodeName()), then compares against the
 # catalogue.  Exit 1 if any TC ID is MISSING, EXTRA, or DUPLICATE.
 #

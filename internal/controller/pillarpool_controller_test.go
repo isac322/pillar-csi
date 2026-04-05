@@ -1451,7 +1451,7 @@ var _ = Describe("PillarPool Controller — E20 traceability bindings", func() {
 			}
 		})
 
-		It("E20.1.3 TestPillarPoolController_FinalizerAddedOnFirstReconcile: finalizer added on first reconcile", func() {
+		It("[TC-E20.1.3] E20.1.3 TestPillarPoolController_FinalizerAddedOnFirstReconcile: finalizer added on first reconcile", func() {
 			By("creating a PillarPool and reconciling once")
 			pool := &pillarcsiv1alpha1.PillarPool{
 				ObjectMeta: metav1.ObjectMeta{Name: name},
@@ -1487,7 +1487,7 @@ var _ = Describe("PillarPool Controller — E20 traceability bindings", func() {
 			}
 		})
 
-		It("E20.1.4 TestPillarPoolController_FinalizerNotDuplicated: reconciling twice does not duplicate finalizer", func() {
+		It("[TC-E20.1.4] E20.1.4 TestPillarPoolController_FinalizerNotDuplicated: reconciling twice does not duplicate finalizer", func() {
 			By("creating a PillarPool and reconciling twice")
 			pool := &pillarcsiv1alpha1.PillarPool{
 				ObjectMeta: metav1.ObjectMeta{Name: name},
@@ -1540,7 +1540,7 @@ var _ = Describe("PillarPool Controller — E20 traceability bindings", func() {
 			}
 		}
 
-		It("E20.4.1 TestPillarPoolController_TargetReady_False_TargetAbsent: absent target sets TargetReady=False", func() {
+		It("[TC-E20.4.1] E20.4.1 TestPillarPoolController_TargetReady_False_TargetAbsent: absent target sets TargetReady=False", func() {
 			By("creating a pool referencing a non-existent target and reconciling twice")
 			pool := &pillarcsiv1alpha1.PillarPool{
 				ObjectMeta: metav1.ObjectMeta{Name: absentPoolName},
@@ -1566,7 +1566,7 @@ var _ = Describe("PillarPool Controller — E20 traceability bindings", func() {
 			Expect(cond.Reason).To(Equal("TargetNotFound"))
 		})
 
-		It("E20.4.2 TestPillarPoolController_TargetReady_False_TargetNotReady: target exists but not ready sets TargetReady=False", func() {
+		It("[TC-E20.4.2] E20.4.2 TestPillarPoolController_TargetReady_False_TargetNotReady: target exists but not ready sets TargetReady=False", func() {
 			By("creating a pool and target with no Ready condition, then reconciling twice")
 			pool := &pillarcsiv1alpha1.PillarPool{
 				ObjectMeta: metav1.ObjectMeta{Name: notReadyPoolName},
@@ -1602,7 +1602,7 @@ var _ = Describe("PillarPool Controller — E20 traceability bindings", func() {
 			Expect(cond.Reason).To(Equal("TargetNotReady"))
 		})
 
-		It("E20.4.3 TestPillarPoolController_TargetReady_True_TargetReady: ready target sets TargetReady=True", func() {
+		It("[TC-E20.4.3] E20.4.3 TestPillarPoolController_TargetReady_True_TargetReady: ready target sets TargetReady=True", func() {
 			By("creating a pool and a ready target, then reconciling twice")
 			pool := &pillarcsiv1alpha1.PillarPool{
 				ObjectMeta: metav1.ObjectMeta{Name: readyPoolName},

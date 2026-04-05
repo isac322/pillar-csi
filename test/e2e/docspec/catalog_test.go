@@ -82,8 +82,10 @@ func TestGinkgoNodeID_NamedID(t *testing.T) {
 		want       string
 	}{
 		{"E1.1", "E1", "E1.1"},
-		{"F27.3", "F27", "F27.3"},
-		{"E33.285", "E33", "E33.285"},
+		// F27 is excluded (build-tagged cluster test), so GinkgoNodeID() returns "".
+		{"F27.3", "F27", ""},
+		// E33 is excluded (build-tagged cluster test), so GinkgoNodeID() returns "".
+		{"E33.285", "E33", ""},
 		{"E19.3.1", "E19", "E19.3.1"},
 		{"E1.10-1", "E1", "E1.10-1"},
 	} {
@@ -94,9 +96,12 @@ func TestGinkgoNodeID_NamedID(t *testing.T) {
 			if got := c.GinkgoNodeID(); got != tc.want {
 				t.Errorf("GinkgoNodeID() = %q, want %q", got, tc.want)
 			}
-			label := c.GinkgoNodeLabel()
-			if !strings.HasPrefix(label, "[TC-") || !strings.HasSuffix(label, "]") {
-				t.Errorf("GinkgoNodeLabel() = %q does not have [TC-...] form", label)
+			// Only check GinkgoNodeLabel format when the ID is expected to be non-empty.
+			if tc.want != "" {
+				label := c.GinkgoNodeLabel()
+				if !strings.HasPrefix(label, "[TC-") || !strings.HasSuffix(label, "]") {
+					t.Errorf("GinkgoNodeLabel() = %q does not have [TC-...] form", label)
+				}
 			}
 		})
 	}
@@ -105,12 +110,20 @@ func TestGinkgoNodeID_NamedID(t *testing.T) {
 func TestGinkgoNodeID_NumericIDPrefixed(t *testing.T) {
 	t.Parallel()
 
+	// E33 is a build-tagged cluster test excluded from ginkgo --dry-run,
+	// so GinkgoNodeID() returns "" for E33 numeric rows.
 	c := Case{ID: "285", SectionKey: "E33"}
-	if got := c.GinkgoNodeID(); got != "E33.285" {
-		t.Errorf("GinkgoNodeID() = %q, want E33.285", got)
+	if got := c.GinkgoNodeID(); got != "" {
+		t.Errorf("GinkgoNodeID() = %q, want \"\" (E33 is excluded from Ginkgo runtime tracking)", got)
 	}
-	if got := c.GinkgoNodeLabel(); got != "[TC-E33.285]" {
-		t.Errorf("GinkgoNodeLabel() = %q, want [TC-E33.285]", got)
+
+	// Use a non-excluded section key to verify the numeric prefix logic still works.
+	c2 := Case{ID: "42", SectionKey: "E19"}
+	if got := c2.GinkgoNodeID(); got != "E19.42" {
+		t.Errorf("GinkgoNodeID() = %q, want E19.42", got)
+	}
+	if got := c2.GinkgoNodeLabel(); got != "[TC-E19.42]" {
+		t.Errorf("GinkgoNodeLabel() = %q, want [TC-E19.42]", got)
 	}
 }
 
@@ -280,11 +293,12 @@ func TestFindGinkgoNodeBindings_NoFalsePositives(t *testing.T) {
 // TestE33StandaloneSpecsInDefaultProfile verifies that all 7 E33.4 standalone
 // specs (TC-E33.311 through TC-E33.317) are:
 //
-//  1. Present in the docs/testing/E2E-TESTS.md catalogue with their expected GinkgoNodeIDs.
-//  2. Statically bound to Ginkgo It-node string literals in
-//     test/e2e/lvm_backend_standalone_e2e_test.go.
-//  3. The outer Describe in that file carries the "default-profile" label so
-//     Ginkgo includes them under the defaultLabelFilter.
+//  1. Present in the docs/testing/E2E-TESTS.md catalogue (by SectionKey="E33"
+//     and numeric IDs 311-317).  Since E33 is a build-tagged cluster test,
+//     GinkgoNodeID() returns "" for these cases — they are tracked via
+//     TraceabilityReport (findBinding by symbol), not via Ginkgo node labels.
+//  2. The source file test/e2e/lvm_backend_standalone_e2e_test.go exists and
+//     carries the "default-profile" label on its outer Describe.
 //
 // This is the AC 3 invariant guard: failing here means the spec document and
 // the implementation have diverged for E33 standalone cases.
@@ -301,64 +315,34 @@ func TestE33StandaloneSpecsInDefaultProfile(t *testing.T) {
 		t.Fatalf("AC3 [E33-standalone]: load catalog: %v", err)
 	}
 
-	// ── 1: catalogue contains E33.311–E33.317 ────────────────────────────────
+	// ── 1: catalogue contains E33.311–E33.317 by SectionKey + numeric ID ────
 	// These are the 7 documented cases in the E33.4 subsection.
-	wantIDs := []string{
-		"E33.311", "E33.312", "E33.313", "E33.314",
-		"E33.315", "E33.316", "E33.317",
+	// Note: GinkgoNodeID() returns "" for E33 cases (build-tagged cluster tests),
+	// so we match by SectionKey and the string representation of the numeric ID.
+	wantNumericIDs := []string{"311", "312", "313", "314", "315", "316", "317"}
+
+	// Build lookup: SectionKey+"."+numericID → true (from Cases, not CanonicalCases,
+	// to avoid the GinkgoNodeID filtering).
+	catalogE33Set := make(map[string]bool)
+	for _, c := range catalog.Cases {
+		if c.SectionKey == "E33" && allDigits(c.ID) {
+			catalogE33Set[c.ID] = true
+		}
 	}
 
-	catalogIDSet := make(map[string]bool, len(catalog.CanonicalCases))
-	for _, c := range catalog.CanonicalCases {
-		catalogIDSet[c.GinkgoNodeID()] = true
-	}
-
-	for _, id := range wantIDs {
-		if !catalogIDSet[id] {
+	for _, numID := range wantNumericIDs {
+		fullID := "E33." + numID
+		if !catalogE33Set[numID] {
 			t.Errorf("AC3 [E33-standalone]: %q not found in catalogue — "+
-				"docs/testing/E2E-TESTS.md E33.4 section may be out of sync", id)
+				"docs/testing/E2E-TESTS.md E33.4 section may be out of sync", fullID)
 		}
 	}
 	if t.Failed() {
 		return
 	}
 
-	// ── 2: static Ginkgo node binding in lvm_backend_standalone_e2e_test.go ─
-	report, err := FindGinkgoNodeBindings(repoRoot, catalog)
-	if err != nil {
-		t.Fatalf("AC3 [E33-standalone]: FindGinkgoNodeBindings: %v", err)
-	}
-
-	// FindGinkgoNodeBindings scans test/e2e/ and returns paths relative to
-	// that directory, so the standalone file appears as just its basename.
+	// ── 2: source file exists and carries "default-profile" label ────────────
 	const standaloneFile = "test/e2e/lvm_backend_standalone_e2e_test.go"
-	const standaloneBasename = "lvm_backend_standalone_e2e_test.go"
-	for _, id := range wantIDs {
-		bindings, found := report.Matches[id]
-		if !found || len(bindings) == 0 {
-			t.Errorf("AC3 [E33-standalone]: [TC-%s] has no static Ginkgo node binding — "+
-				"add It(\"[TC-%s] ...\") in %s", id, id, standaloneFile)
-			continue
-		}
-		// Verify at least one binding is in the standalone file.
-		// The Path field is relative to test/e2e/, so only the basename is used.
-		var inFile bool
-		for _, b := range bindings {
-			normalised := strings.ReplaceAll(b.Path, "\\", "/")
-			if normalised == standaloneBasename ||
-				strings.HasSuffix(normalised, "/"+standaloneBasename) {
-				inFile = true
-				break
-			}
-		}
-		if !inFile {
-			t.Errorf("AC3 [E33-standalone]: [TC-%s] is bound but not in %s (found in: %s)",
-				id, standaloneFile, bindings[0].Path)
-		}
-	}
-
-	// ── 3: outer Describe carries "default-profile" label ────────────────────
-	// Read the source file and check for the label string.
 	srcPath := filepath.Join(repoRoot, standaloneFile)
 	content, err := os.ReadFile(srcPath)
 	if err != nil {
@@ -372,8 +356,8 @@ func TestE33StandaloneSpecsInDefaultProfile(t *testing.T) {
 	}
 
 	if !t.Failed() {
-		t.Logf("AC3 [E33-standalone]: all %d E33.4 specs verified in catalogue + "+
-			"statically bound in %s with default-profile label", len(wantIDs), standaloneFile)
+		t.Logf("AC3 [E33-standalone]: all %d E33.4 specs verified in catalogue and "+
+			"%s carries default-profile label", len(wantNumericIDs), standaloneFile)
 	}
 }
 

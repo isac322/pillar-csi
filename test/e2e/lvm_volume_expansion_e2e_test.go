@@ -87,7 +87,7 @@ var _ = Describe("E33: LVM Kind 클러스터 E2E — 실제 LVM VG + NVMe-oF TCP
 			})
 
 			// ── TC-E33.306 ────────────────────────────────────────────────────
-			It("[TC-E33.306] Pod mounts 32Mi LVM PVC and reaches Running", func() {
+			It("Pod mounts 32Mi LVM PVC and reaches Running", func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 				defer cancel()
 
@@ -149,7 +149,7 @@ spec:
 			})
 
 			// ── TC-E33.307 ────────────────────────────────────────────────────
-			It("[TC-E33.307] filesystem inside Pod reports approximately 32Mi capacity before expansion", func() {
+			It("filesystem inside Pod reports approximately 32Mi capacity before expansion", func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 				defer cancel()
 
@@ -173,7 +173,7 @@ spec:
 			})
 
 			// ── TC-E33.308 ────────────────────────────────────────────────────
-			It("[TC-E33.308] PVC resize to 64Mi is reflected in PVC status capacity", func() {
+			It("PVC resize to 64Mi is reflected in PVC status capacity", func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 				defer cancel()
 
@@ -209,7 +209,7 @@ spec:
 			})
 
 			// ── TC-E33.309 ────────────────────────────────────────────────────
-			It("[TC-E33.309] filesystem inside running Pod is resized to >= 64Mi after PVC expansion", func() {
+			It("filesystem inside running Pod is resized to >= 64Mi after PVC expansion", func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 				defer cancel()
 
@@ -237,7 +237,7 @@ spec:
 			})
 
 			// ── TC-E33.310 ────────────────────────────────────────────────────
-			It("[TC-E33.310] Pod deletion and PVC deletion complete cleanly after expansion", func() {
+			It("Pod deletion and PVC deletion complete cleanly after expansion", func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 				defer cancel()
 

@@ -129,7 +129,7 @@ var _ = Describe("E35: ZFS Kind 클러스터 E2E — 실제 ZFS zvol + iSCSI",
 			})
 
 			// ── TC-E35.331 ────────────────────────────────────────────────────
-			It("[TC-E35.331] PillarBinding generates an iSCSI StorageClass for zfs-zvol pools without losing zvol parameters", func() {
+			It("PillarBinding generates an iSCSI StorageClass for zfs-zvol pools without losing zvol parameters", func() {
 				if zfsISCSISCName == "" {
 					Fail("[TC-E35.331] MISSING PREREQUISITE: no ZFS+iSCSI StorageClass found — PillarBinding with ZFS+iSCSI not configured")
 				}
@@ -154,7 +154,7 @@ var _ = Describe("E35: ZFS Kind 클러스터 E2E — 실제 ZFS zvol + iSCSI",
 			})
 
 			// ── TC-E35.332 ────────────────────────────────────────────────────
-			It("[TC-E35.332] CreateVolume provisions a zvol-backed volume and returns target IQN, portal, port and LUN in VolumeContext", func() {
+			It("CreateVolume provisions a zvol-backed volume and returns target IQN, portal, port and LUN in VolumeContext", func() {
 				if zfsISCSISCName == "" {
 					Fail("[TC-E35.332] MISSING PREREQUISITE: no ZFS+iSCSI StorageClass")
 				}
@@ -203,7 +203,7 @@ spec:
 			})
 
 			// ── TC-E35.333 ────────────────────────────────────────────────────
-			It("[TC-E35.333] ControllerPublishVolume resolves the compute-worker initiator IQN from CSINode annotations for a zvol-backed target", func() {
+			It("ControllerPublishVolume resolves the compute-worker initiator IQN from CSINode annotations for a zvol-backed target", func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 				defer cancel()
 
@@ -241,7 +241,7 @@ spec:
 			})
 
 			// ── TC-E35.334 ────────────────────────────────────────────────────
-			It("[TC-E35.334] ControllerUnpublishVolume revokes the CSINode-derived initiator IQN ACL without deleting the zvol-backed target before PVC cleanup", func() {
+			It("ControllerUnpublishVolume revokes the CSINode-derived initiator IQN ACL without deleting the zvol-backed target before PVC cleanup", func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 				defer cancel()
 

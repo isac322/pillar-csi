@@ -90,7 +90,7 @@ var _ = Describe("E34: LVM Kind 클러스터 E2E — 실제 LVM VG + iSCSI",
 			})
 
 			// ── TC-E34.322 ────────────────────────────────────────────────────
-			It("[TC-E34.322] filesystem PVC becomes Bound via LVM + iSCSI", func() {
+			It("filesystem PVC becomes Bound via LVM + iSCSI", func() {
 				if iscsiSCName == "" {
 					Fail("[TC-E34.322] MISSING PREREQUISITE: no iSCSI StorageClass found — skipping")
 				}
@@ -139,7 +139,7 @@ spec:
 			})
 
 			// ── TC-E34.323 ────────────────────────────────────────────────────
-			It("[TC-E34.323] a Pod mounting the iSCSI PVC reaches Running on the compute-worker node", func() {
+			It("a Pod mounting the iSCSI PVC reaches Running on the compute-worker node", func() {
 				if iscsiSCName == "" {
 					Fail("[TC-E34.323] MISSING PREREQUISITE: no iSCSI StorageClass — skipping")
 				}
@@ -188,7 +188,7 @@ spec:
 			})
 
 			// ── TC-E34.324 ────────────────────────────────────────────────────
-			It("[TC-E34.324] PVC protocol override changes the iSCSI replacement timeout for one volume only", func() {
+			It("PVC protocol override changes the iSCSI replacement timeout for one volume only", func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 				defer cancel()
 
@@ -220,7 +220,7 @@ spec:
 			})
 
 			// ── TC-E34.325 ────────────────────────────────────────────────────
-			It("[TC-E34.325] deleting the Pod triggers NodeUnpublish, NodeUnstage and iSCSI logout", func() {
+			It("deleting the Pod triggers NodeUnpublish, NodeUnstage and iSCSI logout", func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 				defer cancel()
 
@@ -255,7 +255,7 @@ spec:
 			})
 
 			// ── TC-E34.326 ────────────────────────────────────────────────────
-			It("[TC-E34.326] deleting the PVC removes the exported target and destroys the LV", func() {
+			It("deleting the PVC removes the exported target and destroys the LV", func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 				defer cancel()
 

@@ -61,7 +61,7 @@ var _ = Describe("PillarTarget Webhook", func() {
 
 		// ── E21.2 — ID 151 ──────────────────────────────────────────────────────
 		// TestPillarTargetWebhook_Update_DiscriminantSwitch_NodeToExternal
-		It("Should deny update when switching discriminant from nodeRef to external", func() {
+		It("[TC-E21.151] 151 TestPillarTargetWebhook_Update_DiscriminantSwitch_NodeToExternal: Should deny update when switching discriminant from nodeRef to external", func() {
 			By("setting up oldObj with spec.nodeRef and newObj with spec.external")
 			oldObj.Spec.NodeRef = &pillarcsiv1alpha1.NodeRefSpec{Name: "node1"}
 			obj.Spec.NodeRef = nil
@@ -75,7 +75,7 @@ var _ = Describe("PillarTarget Webhook", func() {
 
 		// ── E21.2 — ID 152 ──────────────────────────────────────────────────────
 		// TestPillarTargetWebhook_Update_DiscriminantSwitch_ExternalToNode
-		It("Should deny update when switching discriminant from external to nodeRef", func() {
+		It("[TC-E21.152] 152 TestPillarTargetWebhook_Update_DiscriminantSwitch_ExternalToNode: Should deny update when switching discriminant from external to nodeRef", func() {
 			By("setting up oldObj with spec.external and newObj with spec.nodeRef")
 			oldObj.Spec.External = &pillarcsiv1alpha1.ExternalSpec{Address: "1.2.3.4", Port: 9500}
 			oldObj.Spec.NodeRef = nil
@@ -90,7 +90,7 @@ var _ = Describe("PillarTarget Webhook", func() {
 
 		// ── E21.2 — ID 153 ──────────────────────────────────────────────────────
 		// TestPillarTargetWebhook_Update_NodeRefNameImmutable
-		It("Should deny update when spec.nodeRef.name is changed", func() {
+		It("[TC-E21.153] 153 TestPillarTargetWebhook_Update_NodeRefNameImmutable: Should deny update when spec.nodeRef.name is changed", func() {
 			By("setting oldObj.spec.nodeRef.name to node-a and newObj.spec.nodeRef.name to node-b")
 			oldObj.Spec.NodeRef = &pillarcsiv1alpha1.NodeRefSpec{Name: "node-a"}
 			obj.Spec.NodeRef = &pillarcsiv1alpha1.NodeRefSpec{Name: "node-b"}
@@ -105,7 +105,7 @@ var _ = Describe("PillarTarget Webhook", func() {
 
 		// ── E21.2 — ID 154 ──────────────────────────────────────────────────────
 		// TestPillarTargetWebhook_Update_ExternalAddressImmutable
-		It("Should deny update when spec.external.address is changed", func() {
+		It("[TC-E21.154] 154 TestPillarTargetWebhook_Update_ExternalAddressImmutable: Should deny update when spec.external.address is changed", func() {
 			By("setting oldObj.spec.external.address to 1.2.3.4 and newObj to 5.6.7.8")
 			oldObj.Spec.External = &pillarcsiv1alpha1.ExternalSpec{Address: "1.2.3.4", Port: 9500}
 			obj.Spec.External = &pillarcsiv1alpha1.ExternalSpec{Address: "5.6.7.8", Port: 9500}
@@ -120,7 +120,7 @@ var _ = Describe("PillarTarget Webhook", func() {
 
 		// ── E21.2 — ID 155 ──────────────────────────────────────────────────────
 		// TestPillarTargetWebhook_Update_ExternalPortImmutable
-		It("Should deny update when spec.external.port is changed", func() {
+		It("[TC-E21.155] 155 TestPillarTargetWebhook_Update_ExternalPortImmutable: Should deny update when spec.external.port is changed", func() {
 			By("setting oldObj.spec.external.port to 9500 and newObj to 9600")
 			oldObj.Spec.External = &pillarcsiv1alpha1.ExternalSpec{Address: "1.2.3.4", Port: 9500}
 			obj.Spec.External = &pillarcsiv1alpha1.ExternalSpec{Address: "1.2.3.4", Port: 9600}
@@ -135,7 +135,7 @@ var _ = Describe("PillarTarget Webhook", func() {
 
 		// ── E21.2 — ID 156 ──────────────────────────────────────────────────────
 		// TestPillarTargetWebhook_Update_NodeRefNonIdentityFieldChange_OK
-		It("Should allow update when only non-identity nodeRef fields change (addressType)", func() {
+		It("[TC-E21.156] 156 TestPillarTargetWebhook_Update_NodeRefNonIdentityFieldChange_OK: Should allow update when only non-identity nodeRef fields change (addressType)", func() {
 			By("changing only addressType while keeping nodeRef.name the same")
 			oldObj.Spec.NodeRef = &pillarcsiv1alpha1.NodeRefSpec{
 				Name:        "node-a",
@@ -153,7 +153,7 @@ var _ = Describe("PillarTarget Webhook", func() {
 
 		// ── E21.2 — ID 157 ──────────────────────────────────────────────────────
 		// TestPillarTargetWebhook_Create_Valid
-		It("Should allow valid PillarTarget creation (current ValidateCreate is no-op scaffolding)", func() {
+		It("[TC-E21.157] 157 TestPillarTargetWebhook_Create_Valid: Should allow valid PillarTarget creation (current ValidateCreate is no-op scaffolding)", func() {
 			By("creating a PillarTarget with spec.nodeRef set to a valid node name")
 			obj.Spec.NodeRef = &pillarcsiv1alpha1.NodeRefSpec{Name: "storage-node-1"}
 
@@ -165,7 +165,7 @@ var _ = Describe("PillarTarget Webhook", func() {
 		// ── E19.1.1 ───────────────────────────────────────────────────────────
 		// TestPillarTargetWebhook_ValidCreate_External
 		// ValidateCreate should pass without error for a well-formed external spec.
-		It("E19.1.1 TestPillarTargetWebhook_ValidCreate_External: should accept external spec with address+port", func() {
+		It("[TC-E19.1.1] E19.1.1 TestPillarTargetWebhook_ValidCreate_External: should accept external spec with address+port", func() {
 			By("setting spec.external.address='10.0.0.1' and spec.external.port=9500")
 			obj.Spec.External = &pillarcsiv1alpha1.ExternalSpec{Address: "10.0.0.1", Port: 9500}
 
@@ -180,7 +180,7 @@ var _ = Describe("PillarTarget Webhook", func() {
 		// TestPillarTargetWebhook_ValidCreate_NodeRef
 		// ValidateCreate should pass without error for a well-formed nodeRef spec.
 		// (This overlaps with ID 157 above; kept explicitly for E19 traceability.)
-		It("E19.1.2 TestPillarTargetWebhook_ValidCreate_NodeRef: should accept nodeRef spec with node name set", func() {
+		It("[TC-E19.1.2] E19.1.2 TestPillarTargetWebhook_ValidCreate_NodeRef: should accept nodeRef spec with node name set", func() {
 			By("setting spec.nodeRef.name='worker-1'")
 			obj.Spec.NodeRef = &pillarcsiv1alpha1.NodeRefSpec{Name: "worker-1"}
 
@@ -194,7 +194,7 @@ var _ = Describe("PillarTarget Webhook", func() {
 		// ── E19.3.1 ───────────────────────────────────────────────────────────
 		// TestPillarTargetWebhook_ImmutableUpdate_NodeRefToExternal
 		// Changing spec from nodeRef to external should be rejected (spec type change is immutable).
-		It("E19.3.1 TestPillarTargetWebhook_ImmutableUpdate_NodeRefToExternal: changing spec from nodeRef to external should be rejected", func() {
+		It("[TC-E19.3.1] E19.3.1 TestPillarTargetWebhook_ImmutableUpdate_NodeRefToExternal: changing spec from nodeRef to external should be rejected", func() {
 			By("setting oldObj with spec.nodeRef and newObj with spec.external")
 			oldObj.Spec.NodeRef = &pillarcsiv1alpha1.NodeRefSpec{Name: "node-1"}
 			oldObj.Spec.External = nil
@@ -210,7 +210,7 @@ var _ = Describe("PillarTarget Webhook", func() {
 		// ── E19.3.2 ───────────────────────────────────────────────────────────
 		// TestPillarTargetWebhook_ImmutableUpdate_ExternalToNodeRef
 		// Changing spec from external to nodeRef should be rejected (spec type change is immutable).
-		It("E19.3.2 TestPillarTargetWebhook_ImmutableUpdate_ExternalToNodeRef: changing spec from external to nodeRef should be rejected", func() {
+		It("[TC-E19.3.2] E19.3.2 TestPillarTargetWebhook_ImmutableUpdate_ExternalToNodeRef: changing spec from external to nodeRef should be rejected", func() {
 			By("setting oldObj with spec.external and newObj with spec.nodeRef")
 			oldObj.Spec.External = &pillarcsiv1alpha1.ExternalSpec{Address: "10.0.0.1", Port: 9500}
 			oldObj.Spec.NodeRef = nil
@@ -226,7 +226,7 @@ var _ = Describe("PillarTarget Webhook", func() {
 		// ── E19.3.3 ───────────────────────────────────────────────────────────
 		// TestPillarTargetWebhook_ImmutableUpdate_NodeRefNameChange
 		// Changing spec.nodeRef.name should be rejected.
-		It("E19.3.3 TestPillarTargetWebhook_ImmutableUpdate_NodeRefNameChange: changing spec.nodeRef.name should be rejected", func() {
+		It("[TC-E19.3.3] E19.3.3 TestPillarTargetWebhook_ImmutableUpdate_NodeRefNameChange: changing spec.nodeRef.name should be rejected", func() {
 			By("setting oldObj.spec.nodeRef.name='node-x' and newObj.spec.nodeRef.name='node-y'")
 			oldObj.Spec.NodeRef = &pillarcsiv1alpha1.NodeRefSpec{Name: "node-x"}
 			obj.Spec.NodeRef = &pillarcsiv1alpha1.NodeRefSpec{Name: "node-y"}
@@ -241,7 +241,7 @@ var _ = Describe("PillarTarget Webhook", func() {
 		// ── E19.3.4 ───────────────────────────────────────────────────────────
 		// TestPillarTargetWebhook_ImmutableUpdate_ExternalAddressChange
 		// Changing spec.external.address should be rejected.
-		It("E19.3.4 TestPillarTargetWebhook_ImmutableUpdate_ExternalAddressChange: changing spec.external.address should be rejected", func() {
+		It("[TC-E19.3.4] E19.3.4 TestPillarTargetWebhook_ImmutableUpdate_ExternalAddressChange: changing spec.external.address should be rejected", func() {
 			By("setting oldObj.spec.external.address='10.1.1.1' and newObj to '10.2.2.2'")
 			oldObj.Spec.External = &pillarcsiv1alpha1.ExternalSpec{Address: "10.1.1.1", Port: 9500}
 			obj.Spec.External = &pillarcsiv1alpha1.ExternalSpec{Address: "10.2.2.2", Port: 9500}
@@ -256,7 +256,7 @@ var _ = Describe("PillarTarget Webhook", func() {
 		// ── E19.3.5 ───────────────────────────────────────────────────────────
 		// TestPillarTargetWebhook_ImmutableUpdate_ExternalPortChange
 		// Changing spec.external.port should be rejected.
-		It("E19.3.5 TestPillarTargetWebhook_ImmutableUpdate_ExternalPortChange: changing spec.external.port should be rejected", func() {
+		It("[TC-E19.3.5] E19.3.5 TestPillarTargetWebhook_ImmutableUpdate_ExternalPortChange: changing spec.external.port should be rejected", func() {
 			By("setting oldObj.spec.external.port=9501 and newObj.spec.external.port=9502")
 			oldObj.Spec.External = &pillarcsiv1alpha1.ExternalSpec{Address: "10.0.0.5", Port: 9501}
 			obj.Spec.External = &pillarcsiv1alpha1.ExternalSpec{Address: "10.0.0.5", Port: 9502}
@@ -271,7 +271,7 @@ var _ = Describe("PillarTarget Webhook", func() {
 		// ── E19.3.6 ───────────────────────────────────────────────────────────
 		// TestPillarTargetWebhook_MutableUpdate_AddressTypeChange
 		// Changing spec.nodeRef.addressType should be allowed (it is a mutable, non-identity field).
-		It("E19.3.6 TestPillarTargetWebhook_MutableUpdate_AddressTypeChange: changing spec.nodeRef.addressType should be allowed", func() {
+		It("[TC-E19.3.6] E19.3.6 TestPillarTargetWebhook_MutableUpdate_AddressTypeChange: changing spec.nodeRef.addressType should be allowed", func() {
 			By("setting oldObj.spec.nodeRef.name='node-1', addressType=InternalIP and newObj.spec.nodeRef.name='node-1', addressType=ExternalIP")
 			oldObj.Spec.NodeRef = &pillarcsiv1alpha1.NodeRefSpec{
 				Name:        "node-1",
@@ -305,7 +305,7 @@ var _ = Describe("PillarTarget Webhook", func() {
 // =============================================================================
 var _ = Describe("PillarTarget CRD Schema Validation", func() {
 	Context("E19.2 — k8sClient.Create should be rejected for invalid specs", func() {
-		It("E19.2.1 TestPillarTargetCRD_InvalidCreate_EmptyNodeRefName: should reject spec.nodeRef.name=''", func() {
+		It("[TC-E19.2.1] E19.2.1 TestPillarTargetCRD_InvalidCreate_EmptyNodeRefName: should reject spec.nodeRef.name=''", func() {
 			By("creating a PillarTarget with spec.nodeRef.name='' (violates MinLength=1)")
 			target := &pillarcsiv1alpha1.PillarTarget{
 				ObjectMeta: metav1.ObjectMeta{Name: "e19-invalid-noderef-name"},
@@ -322,7 +322,7 @@ var _ = Describe("PillarTarget CRD Schema Validation", func() {
 				"API server should reject PillarTarget with empty spec.nodeRef.name")
 		})
 
-		It("E19.2.2 TestPillarTargetCRD_InvalidCreate_ExternalPortTooLow: should reject spec.external.port=0", func() {
+		It("[TC-E19.2.2] E19.2.2 TestPillarTargetCRD_InvalidCreate_ExternalPortTooLow: should reject spec.external.port=0", func() {
 			By("creating a PillarTarget with spec.external.port=0 (violates Minimum=1)")
 			target := &pillarcsiv1alpha1.PillarTarget{
 				ObjectMeta: metav1.ObjectMeta{Name: "e19-invalid-port-low"},
@@ -339,7 +339,7 @@ var _ = Describe("PillarTarget CRD Schema Validation", func() {
 				"API server should reject PillarTarget with spec.external.port=0 (below minimum 1)")
 		})
 
-		It("E19.2.3 TestPillarTargetCRD_InvalidCreate_ExternalPortTooHigh: should reject spec.external.port=65536", func() {
+		It("[TC-E19.2.3] E19.2.3 TestPillarTargetCRD_InvalidCreate_ExternalPortTooHigh: should reject spec.external.port=65536", func() {
 			By("creating a PillarTarget with spec.external.port=65536 (violates Maximum=65535)")
 			target := &pillarcsiv1alpha1.PillarTarget{
 				ObjectMeta: metav1.ObjectMeta{Name: "e19-invalid-port-high"},
@@ -356,7 +356,7 @@ var _ = Describe("PillarTarget CRD Schema Validation", func() {
 				"API server should reject PillarTarget with spec.external.port=65536 (above maximum 65535)")
 		})
 
-		It("E19.2.4 TestPillarTargetCRD_InvalidCreate_EmptyExternalAddress: should reject spec.external.address=''", func() {
+		It("[TC-E19.2.4] E19.2.4 TestPillarTargetCRD_InvalidCreate_EmptyExternalAddress: should reject spec.external.address=''", func() {
 			By("creating a PillarTarget with spec.external.address='' (violates MinLength=1)")
 			target := &pillarcsiv1alpha1.PillarTarget{
 				ObjectMeta: metav1.ObjectMeta{Name: "e19-invalid-empty-address"},

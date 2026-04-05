@@ -91,6 +91,91 @@ func assertEFAULT_BackingDeviceRemoved_GracefulError(tc documentedCase) {
 		"%s: DeleteVolume must return error when backing device is removed", tc.tcNodeLabel())
 }
 
+// assertEFAULT_NodeReboot_AgentRecovery verifies that after the mock agent is
+// restarted (simulating a node reboot), the CSI controller can successfully
+// re-establish connectivity and execute CreateVolume without panicking.
+func assertEFAULT_NodeReboot_AgentRecovery(tc documentedCase) {
+	// Phase 1: Create a volume successfully before "reboot".
+	env := newControllerTestEnv()
+	defer env.close()
+
+	_, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
+		Name:               "pvc-efault-1-1-pre",
+		Parameters:         env.params,
+		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
+	})
+	Expect(err).NotTo(HaveOccurred(),
+		"%s: CreateVolume must succeed before simulated reboot", tc.tcNodeLabel())
+
+	// Phase 2: Simulate node reboot by injecting a transient Unavailable error,
+	// then clearing it (agent "recovered").
+	env.agentSrv.mu.Lock()
+	env.agentSrv.createVolumeErr = status.Error(codes.Unavailable, "agent restarting after node reboot")
+	env.agentSrv.mu.Unlock()
+
+	_, err = env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
+		Name:               "pvc-efault-1-1-during",
+		Parameters:         env.params,
+		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
+	})
+	Expect(err).To(HaveOccurred(),
+		"%s: CreateVolume must fail while agent is unavailable (during reboot)", tc.tcNodeLabel())
+
+	// Phase 3: Agent recovers — clear the injected error.
+	env.agentSrv.mu.Lock()
+	env.agentSrv.createVolumeErr = nil
+	env.agentSrv.mu.Unlock()
+
+	_, err = env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
+		Name:               "pvc-efault-1-1-post",
+		Parameters:         env.params,
+		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
+	})
+	Expect(err).NotTo(HaveOccurred(),
+		"%s: CreateVolume must succeed after agent recovery (post-reboot)", tc.tcNodeLabel())
+}
+
+// assertEFAULT_AgentNetworkPartition_Recovery verifies that after a simulated
+// network partition clears, the CSI controller can successfully resume
+// operations without requiring a restart.
+func assertEFAULT_AgentNetworkPartition_Recovery(tc documentedCase) {
+	env := newControllerTestEnv()
+	defer env.close()
+
+	// Simulate network partition.
+	env.agentSrv.mu.Lock()
+	env.agentSrv.createVolumeErr = status.Error(codes.Unavailable, "network partition: agent unreachable")
+	env.agentSrv.mu.Unlock()
+
+	_, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
+		Name:               "pvc-efault-2-2-during",
+		Parameters:         env.params,
+		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
+	})
+	Expect(err).To(HaveOccurred(),
+		"%s: CreateVolume must fail during network partition", tc.tcNodeLabel())
+	Expect(status.Code(err)).To(BeElementOf(codes.Unavailable, codes.Internal, codes.Unknown),
+		"%s: error code must indicate network issue", tc.tcNodeLabel())
+
+	// Network partition recovers — clear the injected error.
+	env.agentSrv.mu.Lock()
+	env.agentSrv.createVolumeErr = nil
+	env.agentSrv.mu.Unlock()
+
+	_, err = env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
+		Name:               "pvc-efault-2-2-after",
+		Parameters:         env.params,
+		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
+		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
+	})
+	Expect(err).NotTo(HaveOccurred(),
+		"%s: CreateVolume must succeed after network partition recovery", tc.tcNodeLabel())
+}
+
 // assertEFAULT_MultiNode_VolumeAccessFromDifferentWorker verifies the behavior
 // when two nodes attempt to publish a volume concurrently under SINGLE_NODE_WRITER
 // access mode. The second publish must either fail or the controller must enforce

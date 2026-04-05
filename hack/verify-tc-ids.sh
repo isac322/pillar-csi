@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # verify-tc-ids.sh — CI verification script for TC-ID 1-to-1 coverage.
 #
-# Re-parses docs/E2E-TESTCASES.md, extracts the 437 documented TC IDs, and
-# asserts a 1-to-1 match with the Ginkgo node names in test/e2e/.
+# Re-parses docs/testing/*.md (6 spec files), extracts all documented TC IDs,
+# and asserts a 1-to-1 match with the Ginkgo node names in test/e2e/.
 #
 # Exit codes:
 #   0  — all TC IDs matched: no missing, no extra, no duplicates
@@ -46,10 +46,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-# Sanity-check: the spec document must exist.
-SPEC_DOC="${REPO_ROOT}/docs/E2E-TESTCASES.md"
-if [[ ! -f "${SPEC_DOC}" ]]; then
-  echo "verify-tc-ids: spec document not found: ${SPEC_DOC}" >&2
+# Sanity-check: the spec directory must exist.
+SPEC_DIR="${REPO_ROOT}/docs/testing"
+if [[ ! -d "${SPEC_DIR}" ]]; then
+  echo "verify-tc-ids: spec directory not found: ${SPEC_DIR}" >&2
   exit 2
 fi
 

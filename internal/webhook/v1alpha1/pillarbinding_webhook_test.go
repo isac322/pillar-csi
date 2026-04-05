@@ -582,7 +582,7 @@ var _ = Describe("PillarBinding Webhook", func() {
 
 	Context("E25 defaulter catalog bindings", func() {
 		// E25.4.1
-		It("E25.4.1 TestPillarBindingDefaulter_AllowVolumeExpansion_True_ZFSZvol: ZFS zvol → AllowVolumeExpansion defaulted to true", func() {
+		It("[TC-E25.4.1] E25.4.1 TestPillarBindingDefaulter_AllowVolumeExpansion_True_ZFSZvol: ZFS zvol → AllowVolumeExpansion defaulted to true", func() {
 			pool := &pillarcsiv1alpha1.PillarPool{
 				ObjectMeta: metav1.ObjectMeta{Name: "e25-pool-zvol"},
 				Spec: pillarcsiv1alpha1.PillarPoolSpec{
@@ -608,7 +608,7 @@ var _ = Describe("PillarBinding Webhook", func() {
 		})
 
 		// E25.4.2
-		It("E25.4.2 TestPillarBindingDefaulter_AllowVolumeExpansion_True_LVMLV: LVM LV → AllowVolumeExpansion defaulted to true", func() {
+		It("[TC-E25.4.2] E25.4.2 TestPillarBindingDefaulter_AllowVolumeExpansion_True_LVMLV: LVM LV → AllowVolumeExpansion defaulted to true", func() {
 			pool := &pillarcsiv1alpha1.PillarPool{
 				ObjectMeta: metav1.ObjectMeta{Name: "e25-pool-lvm"},
 				Spec: pillarcsiv1alpha1.PillarPoolSpec{
@@ -634,7 +634,7 @@ var _ = Describe("PillarBinding Webhook", func() {
 		})
 
 		// E25.4.3
-		It("E25.4.3 TestPillarBindingDefaulter_AllowVolumeExpansion_False_ZFSDataset: ZFS Dataset → AllowVolumeExpansion defaulted to false", func() {
+		It("[TC-E25.4.3] E25.4.3 TestPillarBindingDefaulter_AllowVolumeExpansion_False_ZFSDataset: ZFS Dataset → AllowVolumeExpansion defaulted to false", func() {
 			pool := &pillarcsiv1alpha1.PillarPool{
 				ObjectMeta: metav1.ObjectMeta{Name: "e25-pool-zfsds"},
 				Spec: pillarcsiv1alpha1.PillarPoolSpec{
@@ -660,7 +660,7 @@ var _ = Describe("PillarBinding Webhook", func() {
 		})
 
 		// E25.4.4
-		It("E25.4.4 TestPillarBindingDefaulter_AllowVolumeExpansion_False_Dir: Dir backend → AllowVolumeExpansion defaulted to false", func() {
+		It("[TC-E25.4.4] E25.4.4 TestPillarBindingDefaulter_AllowVolumeExpansion_False_Dir: Dir backend → AllowVolumeExpansion defaulted to false", func() {
 			pool := &pillarcsiv1alpha1.PillarPool{
 				ObjectMeta: metav1.ObjectMeta{Name: "e25-pool-dir"},
 				Spec: pillarcsiv1alpha1.PillarPoolSpec{
@@ -683,7 +683,7 @@ var _ = Describe("PillarBinding Webhook", func() {
 		})
 
 		// E25.4.5
-		It("E25.4.5 TestPillarBindingDefaulter_AllowVolumeExpansion_NotOverridden_Explicit: Explicit value not overridden by defaulter", func() {
+		It("[TC-E25.4.5] E25.4.5 TestPillarBindingDefaulter_AllowVolumeExpansion_NotOverridden_Explicit: Explicit value not overridden by defaulter", func() {
 			pool := &pillarcsiv1alpha1.PillarPool{
 				ObjectMeta: metav1.ObjectMeta{Name: "e25-pool-override"},
 				Spec: pillarcsiv1alpha1.PillarPoolSpec{
@@ -713,7 +713,7 @@ var _ = Describe("PillarBinding Webhook", func() {
 		})
 
 		// E25.4.6
-		It("E25.4.6 TestPillarBindingDefaulter_AllowVolumeExpansion_NilWhenPoolNotFound: Pool not found → AllowVolumeExpansion nil", func() {
+		It("[TC-E25.4.6] E25.4.6 TestPillarBindingDefaulter_AllowVolumeExpansion_NilWhenPoolNotFound: Pool not found → AllowVolumeExpansion nil", func() {
 			obj.Name = "e25-binding-nopool"
 			obj.Spec = pillarcsiv1alpha1.PillarBindingSpec{
 				PoolRef:     "nonexistent-pool-e25",
@@ -727,7 +727,7 @@ var _ = Describe("PillarBinding Webhook", func() {
 
 	Context("E25 validator compatibility catalog bindings", func() {
 		// E25.5.1
-		It("E25.5.1 TestPillarBindingWebhook_Compatible_ZFSZvol_NVMeOFTCP: ZFS zvol + NVMe-oF TCP = compatible, creation accepted", func() {
+		It("[TC-E25.5.1] E25.5.1 TestPillarBindingWebhook_Compatible_ZFSZvol_NVMeOFTCP: ZFS zvol + NVMe-oF TCP = compatible, creation accepted", func() {
 			pool := &pillarcsiv1alpha1.PillarPool{
 				ObjectMeta: metav1.ObjectMeta{Name: "e25-compat-pool-zvol-nvme"},
 				Spec: pillarcsiv1alpha1.PillarPoolSpec{
@@ -758,7 +758,7 @@ var _ = Describe("PillarBinding Webhook", func() {
 		})
 
 		// E25.5.2
-		It("E25.5.2 TestPillarBindingWebhook_Compatible_LVMLV_ISCSI: LVM LV + iSCSI = compatible", func() {
+		It("[TC-E25.5.2] E25.5.2 TestPillarBindingWebhook_Compatible_LVMLV_ISCSI: LVM LV + iSCSI = compatible", func() {
 			pool := &pillarcsiv1alpha1.PillarPool{
 				ObjectMeta: metav1.ObjectMeta{Name: "e25-compat-pool-lvm-iscsi"},
 				Spec: pillarcsiv1alpha1.PillarPoolSpec{
@@ -789,7 +789,7 @@ var _ = Describe("PillarBinding Webhook", func() {
 		})
 
 		// E25.5.3
-		It("E25.5.3 TestPillarBindingWebhook_Compatible_ZFSDataset_NFS: ZFS Dataset + NFS = compatible", func() {
+		It("[TC-E25.5.3] E25.5.3 TestPillarBindingWebhook_Compatible_ZFSDataset_NFS: ZFS Dataset + NFS = compatible", func() {
 			pool := &pillarcsiv1alpha1.PillarPool{
 				ObjectMeta: metav1.ObjectMeta{Name: "e25-compat-pool-zfsds-nfs"},
 				Spec: pillarcsiv1alpha1.PillarPoolSpec{
@@ -820,7 +820,7 @@ var _ = Describe("PillarBinding Webhook", func() {
 		})
 
 		// E25.5.4
-		It("E25.5.4 TestPillarBindingWebhook_Compatible_Dir_NFS: Dir + NFS = compatible", func() {
+		It("[TC-E25.5.4] E25.5.4 TestPillarBindingWebhook_Compatible_Dir_NFS: Dir + NFS = compatible", func() {
 			pool := &pillarcsiv1alpha1.PillarPool{
 				ObjectMeta: metav1.ObjectMeta{Name: "e25-compat-pool-dir-nfs"},
 				Spec: pillarcsiv1alpha1.PillarPoolSpec{
@@ -848,7 +848,7 @@ var _ = Describe("PillarBinding Webhook", func() {
 		})
 
 		// E25.5.5
-		It("E25.5.5 TestPillarBindingWebhook_Incompatible_ZFSZvol_NFS: ZFS zvol + NFS = incompatible, rejected", func() {
+		It("[TC-E25.5.5] E25.5.5 TestPillarBindingWebhook_Incompatible_ZFSZvol_NFS: ZFS zvol + NFS = incompatible, rejected", func() {
 			pool := &pillarcsiv1alpha1.PillarPool{
 				ObjectMeta: metav1.ObjectMeta{Name: "e25-incompat-pool-zvol-nfs"},
 				Spec: pillarcsiv1alpha1.PillarPoolSpec{
@@ -880,7 +880,7 @@ var _ = Describe("PillarBinding Webhook", func() {
 		})
 
 		// E25.5.6
-		It("E25.5.6 TestPillarBindingWebhook_Incompatible_LVMLV_NFS: LVM LV + NFS = incompatible", func() {
+		It("[TC-E25.5.6] E25.5.6 TestPillarBindingWebhook_Incompatible_LVMLV_NFS: LVM LV + NFS = incompatible", func() {
 			pool := &pillarcsiv1alpha1.PillarPool{
 				ObjectMeta: metav1.ObjectMeta{Name: "e25-incompat-pool-lvm-nfs"},
 				Spec: pillarcsiv1alpha1.PillarPoolSpec{
@@ -912,7 +912,7 @@ var _ = Describe("PillarBinding Webhook", func() {
 		})
 
 		// E25.5.7
-		It("E25.5.7 TestPillarBindingWebhook_Incompatible_ZFSDataset_NVMeOFTCP: ZFS Dataset + NVMe-oF TCP = incompatible", func() {
+		It("[TC-E25.5.7] E25.5.7 TestPillarBindingWebhook_Incompatible_ZFSDataset_NVMeOFTCP: ZFS Dataset + NVMe-oF TCP = incompatible", func() {
 			pool := &pillarcsiv1alpha1.PillarPool{
 				ObjectMeta: metav1.ObjectMeta{Name: "e25-incompat-pool-zfsds-nvme"},
 				Spec: pillarcsiv1alpha1.PillarPoolSpec{
@@ -944,7 +944,7 @@ var _ = Describe("PillarBinding Webhook", func() {
 		})
 
 		// E25.5.8
-		It("E25.5.8 TestPillarBindingWebhook_Incompatible_Dir_ISCSI: Dir + iSCSI = incompatible", func() {
+		It("[TC-E25.5.8] E25.5.8 TestPillarBindingWebhook_Incompatible_Dir_ISCSI: Dir + iSCSI = incompatible", func() {
 			pool := &pillarcsiv1alpha1.PillarPool{
 				ObjectMeta: metav1.ObjectMeta{Name: "e25-incompat-pool-dir-iscsi"},
 				Spec: pillarcsiv1alpha1.PillarPoolSpec{
@@ -973,7 +973,7 @@ var _ = Describe("PillarBinding Webhook", func() {
 		})
 
 		// E25.5.9
-		It("E25.5.9 TestPillarBindingWebhook_CompatibilitySkipped_PoolNotFound: Pool not found → compatibility check skipped, creation allowed", func() {
+		It("[TC-E25.5.9] E25.5.9 TestPillarBindingWebhook_CompatibilitySkipped_PoolNotFound: Pool not found → compatibility check skipped, creation allowed", func() {
 			proto := &pillarcsiv1alpha1.PillarProtocol{
 				ObjectMeta: metav1.ObjectMeta{Name: "e25-skip-proto-nopool"},
 				Spec:       pillarcsiv1alpha1.PillarProtocolSpec{Type: pillarcsiv1alpha1.ProtocolTypeNFS},
@@ -992,7 +992,7 @@ var _ = Describe("PillarBinding Webhook", func() {
 		})
 
 		// E25.5.10
-		It("E25.5.10 TestPillarBindingWebhook_CompatibilitySkipped_ProtocolNotFound: Protocol not found → check skipped, allowed", func() {
+		It("[TC-E25.5.10] E25.5.10 TestPillarBindingWebhook_CompatibilitySkipped_ProtocolNotFound: Protocol not found → check skipped, allowed", func() {
 			pool := &pillarcsiv1alpha1.PillarPool{
 				ObjectMeta: metav1.ObjectMeta{Name: "e25-skip-pool-noproto"},
 				Spec: pillarcsiv1alpha1.PillarPoolSpec{

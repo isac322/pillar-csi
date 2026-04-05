@@ -1,6 +1,6 @@
 {
   "meta": {
-    "source": "docs/E2E-TESTCASES.md",
+    "source": "docs/testing",
     "claimed_total": 437,
     "actual_total": 718,
     "in_scope": 615,

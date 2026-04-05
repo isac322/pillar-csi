@@ -115,7 +115,7 @@ var _ = Describe("E34: LVM Kind 클러스터 E2E — 실제 LVM VG + iSCSI",
 			})
 
 			// ── TC-E34.318 ────────────────────────────────────────────────────
-			It("[TC-E34.318] PillarBinding generates an iSCSI StorageClass with protocol-type=iscsi and timer parameters", func() {
+			It("PillarBinding generates an iSCSI StorageClass with protocol-type=iscsi and timer parameters", func() {
 				if iscsiSCName == "" {
 					Fail("[TC-E34.318] MISSING PREREQUISITE: no iSCSI StorageClass found — PillarBinding with iSCSI protocol not configured")
 				}
@@ -134,7 +134,7 @@ var _ = Describe("E34: LVM Kind 클러스터 E2E — 실제 LVM VG + iSCSI",
 			})
 
 			// ── TC-E34.319 ────────────────────────────────────────────────────
-			It("[TC-E34.319] CreateVolume returns target IQN, portal, port and LUN in VolumeContext", func() {
+			It("CreateVolume returns target IQN, portal, port and LUN in VolumeContext", func() {
 				if iscsiSCName == "" {
 					Fail("[TC-E34.319] MISSING PREREQUISITE: no iSCSI StorageClass")
 				}
@@ -192,7 +192,7 @@ spec:
 			})
 
 			// ── TC-E34.320 ────────────────────────────────────────────────────
-			It("[TC-E34.320] pillar-node publishes the initiator IQN to CSINode annotations and ControllerPublishVolume uses it for ACLs", func() {
+			It("pillar-node publishes the initiator IQN to CSINode annotations and ControllerPublishVolume uses it for ACLs", func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 				defer cancel()
 
@@ -234,7 +234,7 @@ spec:
 			})
 
 			// ── TC-E34.321 ────────────────────────────────────────────────────
-			It("[TC-E34.321] ControllerUnpublishVolume revokes the same CSINode-derived initiator IQN ACL", func() {
+			It("ControllerUnpublishVolume revokes the same CSINode-derived initiator IQN ACL", func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 				defer cancel()
 

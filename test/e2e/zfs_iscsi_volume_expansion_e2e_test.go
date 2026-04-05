@@ -95,7 +95,7 @@ var _ = Describe("E35: ZFS Kind 클러스터 E2E — 실제 ZFS zvol + iSCSI",
 			})
 
 			// ── TC-E35.340 ────────────────────────────────────────────────────
-			It("[TC-E35.340] raw block PVC is published as an unformatted block device from a zvol-backed iSCSI LUN", func() {
+			It("raw block PVC is published as an unformatted block device from a zvol-backed iSCSI LUN", func() {
 				if zfsISCSISCName == "" {
 					Fail("[TC-E35.340] MISSING PREREQUISITE: no ZFS+iSCSI StorageClass — skipping")
 				}
@@ -174,7 +174,7 @@ spec:
 			})
 
 			// ── TC-E35.341 ────────────────────────────────────────────────────
-			It("[TC-E35.341] online expansion grows the zvol, rescans the iSCSI session and expands the filesystem inside the running Pod", func() {
+			It("online expansion grows the zvol, rescans the iSCSI session and expands the filesystem inside the running Pod", func() {
 				if zfsISCSISCName == "" {
 					Fail("[TC-E35.341] MISSING PREREQUISITE: no ZFS+iSCSI StorageClass — skipping")
 				}
@@ -261,7 +261,7 @@ spec:
 			})
 
 			// ── TC-E35.342 ────────────────────────────────────────────────────
-			It("[TC-E35.342] NodeGetVolumeStats reports bytes and inodes for filesystem volumes and bytes for raw block volumes on zvol-backed iSCSI volumes", func() {
+			It("NodeGetVolumeStats reports bytes and inodes for filesystem volumes and bytes for raw block volumes on zvol-backed iSCSI volumes", func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 				defer cancel()
 
@@ -306,7 +306,7 @@ spec:
 			})
 
 			// ── TC-E35.343 ────────────────────────────────────────────────────
-			It("[TC-E35.343] after node plugin restart, restaging is idempotent and does not create duplicate iSCSI sessions for the same zvol-backed volume", func() {
+			It("after node plugin restart, restaging is idempotent and does not create duplicate iSCSI sessions for the same zvol-backed volume", func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 				defer cancel()
 

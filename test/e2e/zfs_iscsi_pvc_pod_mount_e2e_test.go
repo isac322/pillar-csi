@@ -87,7 +87,7 @@ var _ = Describe("E35: ZFS Kind 클러스터 E2E — 실제 ZFS zvol + iSCSI",
 			})
 
 			// ── TC-E35.335 ────────────────────────────────────────────────────
-			It("[TC-E35.335] filesystem PVC becomes Bound via ZFS zvol + iSCSI", func() {
+			It("filesystem PVC becomes Bound via ZFS zvol + iSCSI", func() {
 				if zfsISCSISCName == "" {
 					Fail("[TC-E35.335] MISSING PREREQUISITE: no ZFS+iSCSI StorageClass — skipping")
 				}
@@ -136,7 +136,7 @@ spec:
 			})
 
 			// ── TC-E35.336 ────────────────────────────────────────────────────
-			It("[TC-E35.336] a Pod mounting the zvol-backed iSCSI PVC reaches Running on the compute-worker node", func() {
+			It("a Pod mounting the zvol-backed iSCSI PVC reaches Running on the compute-worker node", func() {
 				if zfsISCSISCName == "" {
 					Fail("[TC-E35.336] MISSING PREREQUISITE: no ZFS+iSCSI StorageClass — skipping")
 				}
@@ -185,7 +185,7 @@ spec:
 			})
 
 			// ── TC-E35.337 ────────────────────────────────────────────────────
-			It("[TC-E35.337] zfs-specific volume parameters remain effective when the protocol is iSCSI", func() {
+			It("zfs-specific volume parameters remain effective when the protocol is iSCSI", func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 				defer cancel()
 
@@ -224,7 +224,7 @@ spec:
 			})
 
 			// ── TC-E35.338 ────────────────────────────────────────────────────
-			It("[TC-E35.338] deleting the Pod triggers NodeUnpublish, NodeUnstage and iSCSI logout for the zvol-backed volume", func() {
+			It("deleting the Pod triggers NodeUnpublish, NodeUnstage and iSCSI logout for the zvol-backed volume", func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 				defer cancel()
 
@@ -259,7 +259,7 @@ spec:
 			})
 
 			// ── TC-E35.339 ────────────────────────────────────────────────────
-			It("[TC-E35.339] deleting the PVC removes the exported target and destroys the zvol", func() {
+			It("deleting the PVC removes the exported target and destroys the zvol", func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 				defer cancel()
 

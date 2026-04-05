@@ -59,7 +59,7 @@ var _ = Describe("PillarPool Webhook", func() {
 
 		// ── E21.3 — ID 158 ──────────────────────────────────────────────────────
 		// TestPillarPoolWebhook_Update_TargetRefImmutable
-		It("Should deny update when spec.targetRef is changed", func() {
+		It("[TC-E21.158] 158 TestPillarPoolWebhook_Update_TargetRefImmutable: Should deny update when spec.targetRef is changed", func() {
 			By("setting oldObj.spec.targetRef to target-a and newObj.spec.targetRef to target-b")
 			oldObj.Spec.TargetRef = "target-a"
 			oldObj.Spec.Backend = pillarcsiv1alpha1.BackendSpec{
@@ -80,7 +80,7 @@ var _ = Describe("PillarPool Webhook", func() {
 
 		// ── E21.3 — ID 159 ──────────────────────────────────────────────────────
 		// TestPillarPoolWebhook_Update_BackendTypeImmutable
-		It("Should deny update when spec.backend.type is changed", func() {
+		It("[TC-E21.159] 159 TestPillarPoolWebhook_Update_BackendTypeImmutable: Should deny update when spec.backend.type is changed", func() {
 			By("changing backend.type from zfs-zvol to lvm-lv")
 			oldObj.Spec.TargetRef = "t1"
 			oldObj.Spec.Backend = pillarcsiv1alpha1.BackendSpec{
@@ -101,7 +101,7 @@ var _ = Describe("PillarPool Webhook", func() {
 
 		// ── E21.3 — ID 160 ──────────────────────────────────────────────────────
 		// TestPillarPoolWebhook_Update_ZFSPoolChange_OK
-		It("Should allow update when only the ZFS pool name changes (backend.type unchanged)", func() {
+		It("[TC-E21.160] 160 TestPillarPoolWebhook_Update_ZFSPoolChange_OK: Should allow update when only the ZFS pool name changes (backend.type unchanged)", func() {
 			By("keeping backend.type as zfs-zvol but changing zfs.pool from tank to new-tank")
 			oldObj.Spec.TargetRef = "t1"
 			oldObj.Spec.Backend = pillarcsiv1alpha1.BackendSpec{
@@ -121,7 +121,7 @@ var _ = Describe("PillarPool Webhook", func() {
 
 		// ── E21.3 — ID 161 ──────────────────────────────────────────────────────
 		// TestPillarPoolWebhook_Update_BothFieldsChanged_MultipleErrors
-		It("Should return errors for both spec.targetRef and spec.backend.type when both change", func() {
+		It("[TC-E21.161] 161 TestPillarPoolWebhook_Update_BothFieldsChanged_MultipleErrors: Should return errors for both spec.targetRef and spec.backend.type when both change", func() {
 			By("changing both targetRef and backend.type simultaneously")
 			oldObj.Spec.TargetRef = "t1"
 			oldObj.Spec.Backend = pillarcsiv1alpha1.BackendSpec{
@@ -142,7 +142,7 @@ var _ = Describe("PillarPool Webhook", func() {
 
 		// ── E21.3 — ID 162 ──────────────────────────────────────────────────────
 		// TestPillarPoolWebhook_Create_Valid
-		It("Should allow valid PillarPool creation (current ValidateCreate is no-op scaffolding)", func() {
+		It("[TC-E21.162] 162 TestPillarPoolWebhook_Create_Valid: Should allow valid PillarPool creation (current ValidateCreate is no-op scaffolding)", func() {
 			By("creating a PillarPool with valid spec.targetRef and spec.backend")
 			obj.Spec.TargetRef = "target-1"
 			obj.Spec.Backend = pillarcsiv1alpha1.BackendSpec{
@@ -177,7 +177,7 @@ var _ = Describe("PillarPool Webhook", func() {
 		// ── E20.1.1 ──────────────────────────────────────────────────────────
 		// TestPillarPoolWebhook_ValidCreate_ZFSZvol
 		// Create PillarPool with ZFS zvol backend → accepted.
-		It("E20.1.1 TestPillarPoolWebhook_ValidCreate_ZFSZvol: should accept valid PillarPool with ZFS zvol backend", func() {
+		It("[TC-E20.1.1] E20.1.1 TestPillarPoolWebhook_ValidCreate_ZFSZvol: should accept valid PillarPool with ZFS zvol backend", func() {
 			By("creating a PillarPool with backend.type=zfs-zvol and a valid zfs.pool name")
 			obj.Spec.TargetRef = "storage-target-1"
 			obj.Spec.Backend = pillarcsiv1alpha1.BackendSpec{
@@ -207,7 +207,7 @@ var _ = Describe("PillarPool Webhook", func() {
 		// ── E20.3.1 ──────────────────────────────────────────────────────────
 		// TestPillarPoolWebhook_ImmutableUpdate_TargetRefChange
 		// Changing spec.targetRef is rejected.
-		It("E20.3.1 TestPillarPoolWebhook_ImmutableUpdate_TargetRefChange: changing spec.targetRef is rejected", func() {
+		It("[TC-E20.3.1] E20.3.1 TestPillarPoolWebhook_ImmutableUpdate_TargetRefChange: changing spec.targetRef is rejected", func() {
 			By("setting oldObj.spec.targetRef='old-target' and newObj.spec.targetRef='new-target'")
 			oldObj.Spec.TargetRef = "old-target"
 			oldObj.Spec.Backend = pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeZFSZvol}
@@ -223,7 +223,7 @@ var _ = Describe("PillarPool Webhook", func() {
 		// ── E20.3.2 ──────────────────────────────────────────────────────────
 		// TestPillarPoolWebhook_ImmutableUpdate_BackendTypeChange
 		// Changing spec.backendType is rejected.
-		It("E20.3.2 TestPillarPoolWebhook_ImmutableUpdate_BackendTypeChange: changing spec.backendType is rejected", func() {
+		It("[TC-E20.3.2] E20.3.2 TestPillarPoolWebhook_ImmutableUpdate_BackendTypeChange: changing spec.backendType is rejected", func() {
 			By("changing backend.type from zfs-zvol to dir")
 			oldObj.Spec.TargetRef = "same-target"
 			oldObj.Spec.Backend = pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeZFSZvol}
@@ -239,7 +239,7 @@ var _ = Describe("PillarPool Webhook", func() {
 		// ── E20.3.3 ──────────────────────────────────────────────────────────
 		// TestPillarPoolWebhook_ImmutableUpdate_BothFieldsChange
 		// Changing both spec.targetRef and spec.backendType is rejected.
-		It("E20.3.3 TestPillarPoolWebhook_ImmutableUpdate_BothFieldsChange: changing both targetRef and backendType is rejected", func() {
+		It("[TC-E20.3.3] E20.3.3 TestPillarPoolWebhook_ImmutableUpdate_BothFieldsChange: changing both targetRef and backendType is rejected", func() {
 			By("changing both spec.targetRef and spec.backend.type simultaneously")
 			oldObj.Spec.TargetRef = "target-a"
 			oldObj.Spec.Backend = pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeZFSZvol}

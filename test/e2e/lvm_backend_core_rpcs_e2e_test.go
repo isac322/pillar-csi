@@ -219,7 +219,7 @@ var _ = Describe("E33: LVM Kind 클러스터 E2E — 실제 LVM VG + NVMe-oF TCP
 			})
 
 			// ── TC-E33.285 ────────────────────────────────────────────────────
-			It("[TC-E33.285] GetCapacity returns positive total and available bytes for the LVM VG", func() {
+			It("GetCapacity returns positive total and available bytes for the LVM VG", func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer cancel()
 
@@ -238,7 +238,7 @@ var _ = Describe("E33: LVM Kind 클러스터 E2E — 실제 LVM VG + NVMe-oF TCP
 			})
 
 			// ── TC-E33.286 ────────────────────────────────────────────────────
-			It("[TC-E33.286] CreateVolume (thin) returns device_path=/dev/<vg>/<lv>", func() {
+			It("CreateVolume (thin) returns device_path=/dev/<vg>/<lv>", func() {
 				if lvmThinPool == "" {
 					Fail("[TC-E33.286] MISSING PREREQUISITE: PILLAR_E2E_LVM_THIN_POOL not set — skipping thin LV test")
 				}
@@ -275,7 +275,7 @@ var _ = Describe("E33: LVM Kind 클러스터 E2E — 실제 LVM VG + NVMe-oF TCP
 			})
 
 			// ── TC-E33.287 ────────────────────────────────────────────────────
-			It("[TC-E33.287] CreateVolume (linear) creates a linear LV using ProvisionMode override", func() {
+			It("CreateVolume (linear) creates a linear LV using ProvisionMode override", func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer cancel()
 
@@ -305,7 +305,7 @@ var _ = Describe("E33: LVM Kind 클러스터 E2E — 실제 LVM VG + NVMe-oF TCP
 			})
 
 			// ── TC-E33.288 ────────────────────────────────────────────────────
-			It("[TC-E33.288] DeleteVolume destroys an LV and is idempotent", func() {
+			It("DeleteVolume destroys an LV and is idempotent", func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 				defer cancel()
 
@@ -337,7 +337,7 @@ var _ = Describe("E33: LVM Kind 클러스터 E2E — 실제 LVM VG + NVMe-oF TCP
 			})
 
 			// ── TC-E33.289 ────────────────────────────────────────────────────
-			It("[TC-E33.289] ExpandVolume grows an LVM LV to at least the requested size", func() {
+			It("ExpandVolume grows an LVM LV to at least the requested size", func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 				defer cancel()
 
@@ -376,7 +376,7 @@ var _ = Describe("E33: LVM Kind 클러스터 E2E — 실제 LVM VG + NVMe-oF TCP
 			})
 
 			// ── TC-E33.290 ────────────────────────────────────────────────────
-			It("[TC-E33.290] ListVolumes returns created LVs with correct device_path", func() {
+			It("ListVolumes returns created LVs with correct device_path", func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 				defer cancel()
 
@@ -426,7 +426,7 @@ var _ = Describe("E33: LVM Kind 클러스터 E2E — 실제 LVM VG + NVMe-oF TCP
 			})
 
 			// ── TC-E33.291 ────────────────────────────────────────────────────
-			It("[TC-E33.291] CreateVolume is idempotent: re-creating with same volume ID succeeds (linear)", func() {
+			It("CreateVolume is idempotent: re-creating with same volume ID succeeds (linear)", func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 				defer cancel()
 
@@ -461,7 +461,7 @@ var _ = Describe("E33: LVM Kind 클러스터 E2E — 실제 LVM VG + NVMe-oF TCP
 			})
 
 			// ── TC-E33.292 ────────────────────────────────────────────────────
-			It("[TC-E33.292] CreateVolume is idempotent: re-creating with same volume ID succeeds (thin)", func() {
+			It("CreateVolume is idempotent: re-creating with same volume ID succeeds (thin)", func() {
 				if lvmThinPool == "" {
 					Fail("[TC-E33.292] MISSING PREREQUISITE: PILLAR_E2E_LVM_THIN_POOL not set — skipping thin LV idempotency test")
 				}
@@ -499,7 +499,7 @@ var _ = Describe("E33: LVM Kind 클러스터 E2E — 실제 LVM VG + NVMe-oF TCP
 			})
 
 			// ── TC-E33.293 ────────────────────────────────────────────────────
-			It("[TC-E33.293] returns an error for a non-existent LVM VG pool name", func() {
+			It("returns an error for a non-existent LVM VG pool name", func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer cancel()
 

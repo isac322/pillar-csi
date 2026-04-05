@@ -354,10 +354,14 @@ var inProcessAssertions = map[string]func(documentedCase){
 	"TestCSILifecycle_OutOfOrderOperationsDetected":    assertE24_OutOfOrderOperationsDetected,
 	"TestCSIController_DeleteVolume_NonExistentVolume": assertE24_DeleteVolume_NonExistentVolume,
 	// ── E-FAULT: Fault injection scenarios ───────────────────────────────────
+	"TestE2E_NodeReboot_AgentRecovery":                  assertEFAULT_NodeReboot_AgentRecovery,
 	"TestE2E_AgentNetworkPartition_CreateVolumeFails":   assertEFAULT_AgentNetworkPartition_CreateVolumeFails,
+	"TestE2E_AgentNetworkPartition_Recovery":            assertEFAULT_AgentNetworkPartition_Recovery,
 	"TestE2E_PoolExhaustion_CreateVolumeFails":          assertEFAULT_PoolExhaustion_CreateVolumeFails,
 	"TestE2E_BackingDeviceRemoved_GracefulError":        assertEFAULT_BackingDeviceRemoved_GracefulError,
 	"TestE2E_MultiNode_VolumeAccessFromDifferentWorker": assertEFAULT_MultiNode_VolumeAccessFromDifferentWorker,
+	// ── E-NEW: PRD gap E2E scenarios ─────────────────────────────────────────
+	"TestHelm_InitContainer_ModprobeFailure_PodStarts": assertENEW_Helm_InitContainer_ModprobeFailure_PodStarts,
 }
 
 // runInProcessTCBody executes the assertion body for an in-process TC.

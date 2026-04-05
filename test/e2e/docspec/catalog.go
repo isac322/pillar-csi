@@ -71,6 +71,30 @@ func (c Case) GinkgoNodeID() string {
 	if c.ID == "" {
 		return ""
 	}
+
+	// Non-Ginkgo test layers: unit tests, performance tests, and CSI sanity
+	// tests are NOT tracked via Ginkgo [TC-<ID>] node labels.
+	if strings.HasSuffix(c.SourceFile, "UNIT-TESTS.md") ||
+		strings.HasSuffix(c.SourceFile, "PERFORMANCE-TESTS.md") ||
+		strings.HasSuffix(c.SourceFile, "CSI-SANITY.md") {
+		return ""
+	}
+
+	// PRD-gap component and integration TCs are tracked via TraceabilityReport
+	// (findBinding by symbol) only — not via Ginkgo node labels.
+	if strings.HasPrefix(c.ID, "C-NEW-") || strings.HasPrefix(c.ID, "I-NEW-") {
+		return ""
+	}
+
+	// E33-E35 and F27-F31 are standalone cluster E2E tests that live in
+	// build-tagged (*_e2e_test.go) files excluded from ginkgo --dry-run.
+	// They are tracked via TraceabilityReport (findBinding), not via
+	// GinkgoTraceabilityReport runtime checks.
+	switch c.SectionKey {
+	case "E33", "E34", "E35", "F27", "F28", "F29", "F30", "F31":
+		return ""
+	}
+
 	first := c.ID[0]
 	if first == 'E' || first == 'F' || first == 'M' {
 		return c.ID
@@ -666,7 +690,7 @@ func dirExists(path string) bool {
 //	\d+          — group number (e.g. 1, 27, 33)
 //	(?:\.\d+)+   — one or more ".N" decimal segments (e.g. .1, .10, .3.1)
 //	(?:-\d+)?    — optional hyphen-suffix (e.g. -1 in E1.10-1)
-const tcIDFragment = `[EF]\d+(?:\.\d+)+(?:-\d+)?`
+const tcIDFragment = `[EF]\d+(?:\.\d+)+(?:-\d+)?|E-[A-Z]+-\d+-\d+`
 
 var ginkgoNodeLabelRE = regexp.MustCompile(
 	`(?:It|Describe|Context|When|DescribeTable|Entry)\s*\(\s*"[^"]*\[TC-(` + tcIDFragment + `)\]`,
@@ -679,22 +703,39 @@ var ginkgoNodeLabelRE = regexp.MustCompile(
 // where each line IS a spec name.
 var ginkgoNodeLabelLooseRE = regexp.MustCompile(`\[TC-(` + tcIDFragment + `)\]`)
 
-// FindGinkgoNodeBindings scans all Go files under repoRoot/test/e2e/ for
-// "[TC-<ID>]" tokens inside Ginkgo It/Describe/Context/When/DescribeTable
-// string-literal arguments and returns a GinkgoTraceabilityReport.
+// FindGinkgoNodeBindings scans all Go files under repoRoot/test/e2e/ and
+// repoRoot/internal/ for "[TC-<ID>]" tokens inside Ginkgo
+// It/Describe/Context/When/DescribeTable string-literal arguments and returns
+// a GinkgoTraceabilityReport.
 //
 // The scan uses ginkgoNodeLabelRE which requires the TC label to appear inside
 // a Ginkgo function call string, filtering out TC ID mentions in comments,
 // test helper data, or plain strings.
 //
+// Integration tests (//go:build integration) live in internal/ and also carry
+// [TC-<ID>] labels; scanning both directories ensures the report covers all
+// automated test layers.
+//
 // For dynamic node names built at runtime (e.g. tc.tcNodeName()), use
 // FindGinkgoNodeBindingsFromSpecNames with the output of `ginkgo --dry-run`.
 func FindGinkgoNodeBindings(repoRoot string, catalog Catalog) (GinkgoTraceabilityReport, error) {
+	var files []sourceFile
+
+	// Scan test/e2e/ (E2E and component Ginkgo tests).
 	e2eDir := filepath.Join(repoRoot, "test", "e2e")
-	files, err := loadGoFiles(e2eDir)
+	e2eFiles, err := loadGoFiles(e2eDir)
 	if err != nil {
 		return GinkgoTraceabilityReport{}, fmt.Errorf("scan test/e2e Go files: %w", err)
 	}
+	files = append(files, e2eFiles...)
+
+	// Scan internal/ (integration tests with //go:build integration).
+	internalDir := filepath.Join(repoRoot, "internal")
+	internalFiles, err := loadGoFiles(internalDir)
+	if err != nil {
+		return GinkgoTraceabilityReport{}, fmt.Errorf("scan internal Go files: %w", err)
+	}
+	files = append(files, internalFiles...)
 
 	allBindings := collectGinkgoBindingsFromFiles(files, false)
 	return buildGinkgoReport(catalog, allBindings), nil

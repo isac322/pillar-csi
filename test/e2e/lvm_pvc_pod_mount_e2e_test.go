@@ -109,7 +109,7 @@ var _ = Describe("E33: LVM Kind 클러스터 E2E — 실제 LVM VG + NVMe-oF TCP
 			})
 
 			// ── TC-E33.294 ────────────────────────────────────────────────────
-			It("[TC-E33.294] PillarPool BackendSupported condition becomes True (agent advertises lvm-lv)", func() {
+			It("PillarPool BackendSupported condition becomes True (agent advertises lvm-lv)", func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 				defer cancel()
 
@@ -168,7 +168,7 @@ spec:
 			})
 
 			// ── TC-E33.295 ────────────────────────────────────────────────────
-			It("[TC-E33.295] PillarPool PoolDiscovered condition becomes True (VG is visible to agent)", func() {
+			It("PillarPool PoolDiscovered condition becomes True (VG is visible to agent)", func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 				defer cancel()
 
@@ -219,7 +219,7 @@ spec:
 			})
 
 			// ── TC-E33.296 ────────────────────────────────────────────────────
-			It("[TC-E33.296] PillarPool reaches Ready=True and reports capacity", func() {
+			It("PillarPool reaches Ready=True and reports capacity", func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 				defer cancel()
 
@@ -291,7 +291,7 @@ spec:
 			})
 
 			// ── TC-E33.297 ────────────────────────────────────────────────────
-			It("[TC-E33.297] PillarBinding generates a Kubernetes StorageClass with the pillar-csi provisioner", func() {
+			It("PillarBinding generates a Kubernetes StorageClass with the pillar-csi provisioner", func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 				defer cancel()
 
@@ -318,7 +318,7 @@ spec:
 			})
 
 			// ── TC-E33.298 ────────────────────────────────────────────────────
-			It("[TC-E33.298] first PVC (32Mi) becomes Bound via LVM CreateVolume", func() {
+			It("first PVC (32Mi) becomes Bound via LVM CreateVolume", func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 				defer cancel()
 
@@ -373,7 +373,7 @@ spec:
 			})
 
 			// ── TC-E33.299 ────────────────────────────────────────────────────
-			It("[TC-E33.299] bound PV (first PVC) has capacity >= 32Mi", func() {
+			It("bound PV (first PVC) has capacity >= 32Mi", func() {
 				if pvName1 == "" {
 					Fail("[TC-E33.299] MISSING PREREQUISITE: pvName1 not set — TC-E33.298 may have skipped")
 				}
@@ -393,7 +393,7 @@ spec:
 			})
 
 			// ── TC-E33.300 ────────────────────────────────────────────────────
-			It("[TC-E33.300] bound PV (first PVC) references the correct StorageClass", func() {
+			It("bound PV (first PVC) references the correct StorageClass", func() {
 				if pvName1 == "" {
 					Fail("[TC-E33.300] MISSING PREREQUISITE: pvName1 not set")
 				}
@@ -418,7 +418,7 @@ spec:
 			})
 
 			// ── TC-E33.301 ────────────────────────────────────────────────────
-			It("[TC-E33.301] bound PV (first PVC) uses the Delete reclaim policy", func() {
+			It("bound PV (first PVC) uses the Delete reclaim policy", func() {
 				if pvName1 == "" {
 					Fail("[TC-E33.301] MISSING PREREQUISITE: pvName1 not set")
 				}
@@ -434,7 +434,7 @@ spec:
 			})
 
 			// ── TC-E33.302 ────────────────────────────────────────────────────
-			It("[TC-E33.302] second PVC (64Mi) is independently provisioned and Bound", func() {
+			It("second PVC (64Mi) is independently provisioned and Bound", func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 				defer cancel()
 
@@ -492,7 +492,7 @@ spec:
 			})
 
 			// ── TC-E33.303 ────────────────────────────────────────────────────
-			It("[TC-E33.303] a Pod mounting the LVM PVC starts Running on the compute-worker node", func() {
+			It("a Pod mounting the LVM PVC starts Running on the compute-worker node", func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 				defer cancel()
 
@@ -545,7 +545,7 @@ spec:
 			})
 
 			// ── TC-E33.304 ────────────────────────────────────────────────────
-			It("[TC-E33.304] Pod deletion triggers NodeUnpublish + NodeUnstage + ControllerUnpublish", func() {
+			It("Pod deletion triggers NodeUnpublish + NodeUnstage + ControllerUnpublish", func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 				defer cancel()
 
@@ -576,7 +576,7 @@ spec:
 			})
 
 			// ── TC-E33.305 ────────────────────────────────────────────────────
-			It("[TC-E33.305] PVC deletion after Pod removal triggers DeleteVolume (LV destroyed on agent)", func() {
+			It("PVC deletion after Pod removal triggers DeleteVolume (LV destroyed on agent)", func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 				defer cancel()
 
