@@ -191,6 +191,22 @@ var _ = Describe("PillarTarget Webhook", func() {
 			Expect(warnings).To(BeEmpty())
 		})
 
+		// ── E19.3.1 ───────────────────────────────────────────────────────────
+		// TestPillarTargetWebhook_ImmutableUpdate_NodeRefToExternal
+		// Changing spec from nodeRef to external should be rejected (spec type change is immutable).
+		It("E19.3.1 TestPillarTargetWebhook_ImmutableUpdate_NodeRefToExternal: changing spec from nodeRef to external should be rejected", func() {
+			By("setting oldObj with spec.nodeRef and newObj with spec.external")
+			oldObj.Spec.NodeRef = &pillarcsiv1alpha1.NodeRefSpec{Name: "node-1"}
+			oldObj.Spec.External = nil
+			obj.Spec.External = &pillarcsiv1alpha1.ExternalSpec{Address: "10.0.0.1", Port: 9500}
+			obj.Spec.NodeRef = nil
+
+			_, err := validator.ValidateUpdate(ctx, oldObj, obj)
+			Expect(err).To(HaveOccurred(),
+				"Switching from nodeRef to external spec type should be rejected as immutable")
+			Expect(err.Error()).To(ContainSubstring("cannot switch between nodeRef and external"))
+		})
+
 		// ── E19.3.2 ───────────────────────────────────────────────────────────
 		// TestPillarTargetWebhook_ImmutableUpdate_ExternalToNodeRef
 		// Changing spec from external to nodeRef should be rejected (spec type change is immutable).
@@ -250,6 +266,27 @@ var _ = Describe("PillarTarget Webhook", func() {
 				"Changing spec.external.port should be rejected as it is an immutable identity field")
 			Expect(err.Error()).To(ContainSubstring("9501"))
 			Expect(err.Error()).To(ContainSubstring("9502"))
+		})
+
+		// ── E19.3.6 ───────────────────────────────────────────────────────────
+		// TestPillarTargetWebhook_MutableUpdate_AddressTypeChange
+		// Changing spec.nodeRef.addressType should be allowed (it is a mutable, non-identity field).
+		It("E19.3.6 TestPillarTargetWebhook_MutableUpdate_AddressTypeChange: changing spec.nodeRef.addressType should be allowed", func() {
+			By("setting oldObj.spec.nodeRef.name='node-1', addressType=InternalIP and newObj.spec.nodeRef.name='node-1', addressType=ExternalIP")
+			oldObj.Spec.NodeRef = &pillarcsiv1alpha1.NodeRefSpec{
+				Name:        "node-1",
+				AddressType: "InternalIP",
+			}
+			obj.Spec.NodeRef = &pillarcsiv1alpha1.NodeRefSpec{
+				Name:        "node-1",
+				AddressType: "ExternalIP",
+			}
+
+			warnings, err := validator.ValidateUpdate(ctx, oldObj, obj)
+			Expect(err).NotTo(HaveOccurred(),
+				"Changing addressType should be allowed — it is a mutable non-identity field")
+			Expect(warnings).To(BeNil(),
+				"No warnings expected for a mutable field update")
 		})
 	})
 })
