@@ -2,7 +2,7 @@
   "meta": {
     "source": "docs/testing",
     "claimed_total": 437,
-    "actual_total": 718,
+    "actual_total": 725,
     "in_scope": 615,
     "type_dist_scope": {
       "A": 328,
@@ -7199,6 +7199,76 @@
       "in_437_scope": false,
       "test_func": "**cert-manager 완전 장애 — 기존 인증서 활용 유지**",
       "description": "cert-manager 네임스페이스 전체 삭제; 기존 발급된 인증서 Secret 보존"
+    },
+    {
+      "tc_id": "E-FAULT-1-1",
+      "group_id": "E-FAULT-1",
+      "top_section": "E-FAULT",
+      "category": "E-FAULT-1: 노드 리부트 후 Agent ReconcileState 복구",
+      "type": "B",
+      "in_437_scope": false,
+      "test_func": "TestE2E_NodeReboot_AgentRecovery",
+      "description": "스토리지 노드 리부트 후 기존 볼륨의 NVMe-oF export가 자동 복구"
+    },
+    {
+      "tc_id": "E-FAULT-2-1",
+      "group_id": "E-FAULT-2",
+      "top_section": "E-FAULT",
+      "category": "E-FAULT-2: Agent 네트워크 단절 및 복구",
+      "type": "B",
+      "in_437_scope": false,
+      "test_func": "TestE2E_AgentNetworkPartition_CreateVolumeFails",
+      "description": "agent 네트워크 차단 중 CreateVolume 시도 → 적절한 에러 반환"
+    },
+    {
+      "tc_id": "E-FAULT-2-2",
+      "group_id": "E-FAULT-2",
+      "top_section": "E-FAULT",
+      "category": "E-FAULT-2: Agent 네트워크 단절 및 복구",
+      "type": "B",
+      "in_437_scope": false,
+      "test_func": "TestE2E_AgentNetworkPartition_Recovery",
+      "description": "네트워크 복구 후 대기 중이던 PVC가 자동 프로비저닝"
+    },
+    {
+      "tc_id": "E-FAULT-3-1",
+      "group_id": "E-FAULT-3",
+      "top_section": "E-FAULT",
+      "category": "E-FAULT-3: 스토리지 풀 용량 고갈 (loopback)",
+      "type": "B",
+      "in_437_scope": false,
+      "test_func": "TestE2E_PoolExhaustion_CreateVolumeFails",
+      "description": "풀 용량 부족 시 PVC가 적절한 에러와 함께 Pending"
+    },
+    {
+      "tc_id": "E-FAULT-4-1",
+      "group_id": "E-FAULT-4",
+      "top_section": "E-FAULT",
+      "category": "E-FAULT-4: 블록 디바이스 제거 (loopback detach)",
+      "type": "B",
+      "in_437_scope": false,
+      "test_func": "TestE2E_BackingDeviceRemoved_GracefulError",
+      "description": "백킹 디바이스 제거 후 새 볼륨 생성 시 명확한 에러"
+    },
+    {
+      "tc_id": "E-FAULT-5-1",
+      "group_id": "E-FAULT-5",
+      "top_section": "E-FAULT",
+      "category": "E-FAULT-5: 다중 노드 시나리오",
+      "type": "B",
+      "in_437_scope": false,
+      "test_func": "TestE2E_MultiNode_VolumeAccessFromDifferentWorker",
+      "description": "스토리지 노드가 아닌 다른 워커에서 볼륨 접근"
+    },
+    {
+      "tc_id": "E-NEW-1-1",
+      "group_id": "E-NEW-1",
+      "top_section": "E-NEW",
+      "category": "E-NEW-1: init container modprobe best-effort",
+      "type": "B",
+      "in_437_scope": false,
+      "test_func": "TestHelm_InitContainer_ModprobeFailure_PodStarts",
+      "description": "init container의 modprobe가 실패해도(존재하지 않는 모듈) pod이 정상 시작"
     }
   ]
 }
