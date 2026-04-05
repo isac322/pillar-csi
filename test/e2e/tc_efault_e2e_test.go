@@ -89,7 +89,7 @@ var _ = Describe("E-FAULT-1: Node Reboot — Agent ReconcileState Recovery",
 			})
 
 			// ── TC-E-FAULT-1-1 ────────────────────────────────────────────────
-			It("[TC-E-FAULT-1-1] TestE2E_NodeReboot_AgentRecovery: agent pod recovers after storage node container restart", func() {
+			It("TestE2E_NodeReboot_AgentRecovery: agent pod recovers after storage node container restart", func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 				defer cancel()
 
@@ -226,7 +226,7 @@ var _ = Describe("E-FAULT-2: Agent Network Partition",
 			})
 
 			// ── TC-E-FAULT-2-1 ────────────────────────────────────────────────
-			It("[TC-E-FAULT-2-1] TestE2E_AgentNetworkPartition_CreateVolumeFails: PVC stays Pending when agent gRPC port is blocked", func() {
+			It("TestE2E_AgentNetworkPartition_CreateVolumeFails: PVC stays Pending when agent gRPC port is blocked", func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 				defer cancel()
 
@@ -326,7 +326,7 @@ spec:
 			})
 
 			// ── TC-E-FAULT-2-2 ────────────────────────────────────────────────
-			It("[TC-E-FAULT-2-2] TestE2E_AgentNetworkPartition_Recovery: agent becomes reachable after iptables rule is removed", func() {
+			It("TestE2E_AgentNetworkPartition_Recovery: agent becomes reachable after iptables rule is removed", func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 				defer cancel()
 
@@ -384,7 +384,7 @@ var _ = Describe("E-FAULT-3: Storage Pool Exhaustion",
 			})
 
 			// ── TC-E-FAULT-3-1 ────────────────────────────────────────────────
-			It("[TC-E-FAULT-3-1] TestE2E_PoolExhaustion_CreateVolumeFails: agent returns error when VG cannot accommodate request", func() {
+			It("TestE2E_PoolExhaustion_CreateVolumeFails: agent returns error when VG cannot accommodate request", func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 				defer cancel()
 
@@ -443,7 +443,7 @@ var _ = Describe("E-FAULT-4: Backing Device Removed",
 			})
 
 			// ── TC-E-FAULT-4-1 ────────────────────────────────────────────────
-			It("[TC-E-FAULT-4-1] TestE2E_BackingDeviceRemoved_GracefulError: agent returns structured error after loopback detach", func() {
+			It("TestE2E_BackingDeviceRemoved_GracefulError: agent returns structured error after loopback detach", func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 				defer cancel()
 
@@ -536,7 +536,7 @@ var _ = Describe("E-FAULT-5: Multi-Node Volume Access",
 			})
 
 			// ── TC-E-FAULT-5-1 ────────────────────────────────────────────────
-			It("[TC-E-FAULT-5-1] TestE2E_MultiNode_VolumeAccessFromDifferentWorker: volume provisioned on storage node is accessible from compute worker via NVMe-oF", func() {
+			It("TestE2E_MultiNode_VolumeAccessFromDifferentWorker: volume provisioned on storage node is accessible from compute worker via NVMe-oF", func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 				defer cancel()
 

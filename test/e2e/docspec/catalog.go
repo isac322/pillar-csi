@@ -86,6 +86,14 @@ func (c Case) GinkgoNodeID() string {
 		return ""
 	}
 
+	// E-FAULT and E-NEW are cluster-level fault-injection and PRD-gap E2E tests
+	// that live in build-tagged (*_e2e_test.go) files excluded from ginkgo --dry-run.
+	// They are tracked via TraceabilityReport (findBinding), not via
+	// GinkgoTraceabilityReport runtime checks.
+	if strings.HasPrefix(c.ID, "E-FAULT-") || strings.HasPrefix(c.ID, "E-NEW-") {
+		return ""
+	}
+
 	// E33-E35 and F27-F31 are standalone cluster E2E tests that live in
 	// build-tagged (*_e2e_test.go) files excluded from ginkgo --dry-run.
 	// They are tracked via TraceabilityReport (findBinding), not via

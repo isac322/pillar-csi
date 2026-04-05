@@ -157,7 +157,7 @@ var _ = Describe("E-NEW-1: init container modprobe best-effort",
 			})
 
 			// ── TC-E-NEW-1-1 ──────────────────────────────────────────────────
-			It("[TC-E-NEW-1-1] TestHelm_InitContainer_ModprobeFailure_PodStarts: pod starts Running even when init container modprobe fails for a non-existent module", func() {
+			It("TestHelm_InitContainer_ModprobeFailure_PodStarts: pod starts Running even when init container modprobe fails for a non-existent module", func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 				defer cancel()
 
