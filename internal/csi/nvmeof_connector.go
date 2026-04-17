@@ -18,6 +18,7 @@ package csi
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -106,6 +107,7 @@ func (c *NVMeoFConnector) Connect(_ context.Context, subsysNQN, trAddr, trSvcID 
 // It is idempotent: if the NQN is not connected the method returns nil.
 func (c *NVMeoFConnector) Disconnect(_ context.Context, subsysNQN string) error {
 	subsysDir := filepath.Join(c.sysfsRoot, "class", "nvme-subsystem")
+	var disconnectErr error
 
 	entries, err := os.ReadDir(subsysDir)
 	if err != nil {
@@ -116,34 +118,66 @@ func (c *NVMeoFConnector) Disconnect(_ context.Context, subsysNQN string) error 
 	}
 
 	for _, entry := range entries {
-		nqnFile := filepath.Join(subsysDir, entry.Name(), "subsysnqn")
-		nqnBytes, readErr := os.ReadFile(nqnFile) //nolint:gosec
-		if readErr != nil || strings.TrimSpace(string(nqnBytes)) != subsysNQN {
+		matches, readErr := SubsystemMatchesNQN(subsysDir, entry.Name(), subsysNQN)
+		if readErr != nil {
+			disconnectErr = errors.Join(disconnectErr, readErr)
+			continue
+		}
+		if !matches {
+			continue
+		}
+		disconnectErr = errors.Join(disconnectErr, DeleteSubsystemControllers(c.sysfsRoot, subsysDir, entry.Name()))
+	}
+	if disconnectErr != nil {
+		return fmt.Errorf("nvmeof Disconnect: delete controllers: %w", disconnectErr)
+	}
+	return nil
+}
+
+// SubsystemMatchesNQN reads the subsysnqn sysfs file for the given subsystem
+// entry and returns whether it matches the target NQN.
+func SubsystemMatchesNQN(subsysDir, subsystemName, subsysNQN string) (bool, error) {
+	nqnFile := filepath.Join(subsysDir, subsystemName, "subsysnqn")
+	nqnBytes, err := os.ReadFile(nqnFile) //nolint:gosec // G304: sysfs path is built from connector-controlled roots.
+	if err != nil {
+		return false, fmt.Errorf("read subsystem NQN %s: %w", nqnFile, err)
+	}
+	return strings.TrimSpace(string(nqnBytes)) == subsysNQN, nil
+}
+
+// IsNVMeControllerEntry returns true for NVMe controller sysfs entries (nvmeX)
+// and false for namespace entries (nvmeXnY).
+func IsNVMeControllerEntry(name string) bool {
+	if !strings.HasPrefix(name, "nvme") {
+		return false
+	}
+	return !strings.ContainsRune(strings.TrimPrefix(name, "nvme"), 'n')
+}
+
+// DeleteSubsystemControllers writes "1" to each controller's delete_controller
+// sysfs entry for the given subsystem. Errors are collected and returned.
+func DeleteSubsystemControllers(sysfsRoot, subsysDir, subsystemName string) error {
+	subsysPath := filepath.Join(subsysDir, subsystemName)
+	ctrlEntries, err := os.ReadDir(subsysPath)
+	if err != nil {
+		return fmt.Errorf("read subsystem dir %s: %w", subsysPath, err)
+	}
+
+	var errs []error
+	for _, ctrlEntry := range ctrlEntries {
+		name := ctrlEntry.Name()
+		if !IsNVMeControllerEntry(name) {
 			continue
 		}
 
-		// Found matching subsystem — delete each controller (nvmeX entries).
-		subsysPath := filepath.Join(subsysDir, entry.Name())
-		ctrlEntries, readErr := os.ReadDir(subsysPath)
-		if readErr != nil {
-			continue
+		deletePath := filepath.Join(sysfsRoot, "class", "nvme", name, "delete_controller")
+		writeErr := os.WriteFile(deletePath, []byte("1"), 0o600)
+		if writeErr != nil {
+			errs = append(errs, fmt.Errorf("write %s: %w", deletePath, writeErr))
 		}
-		for _, ctrlEntry := range ctrlEntries {
-			name := ctrlEntry.Name()
-			if !strings.HasPrefix(name, "nvme") {
-				continue
-			}
-			// Skip namespace entries (nvmeXnY); only delete controllers (nvmeX).
-			suffix := strings.TrimPrefix(name, "nvme")
-			if strings.ContainsRune(suffix, 'n') {
-				continue
-			}
-			deletePath := filepath.Join(c.sysfsRoot, "class", "nvme", name, "delete_controller")
-			writeErr := os.WriteFile(deletePath, []byte("1"), 0o600)
-			if writeErr != nil {
-				continue // best-effort; ignore controller delete errors
-			}
-		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("delete controllers for %s: %w", subsystemName, errors.Join(errs...))
 	}
 	return nil
 }
