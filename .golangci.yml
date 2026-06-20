@@ -421,8 +421,6 @@ linters:
       # readability; extracting them to constants would reduce clarity.
       - linters: [goconst]
         path: "test/e2e/.*\\.go$"
-      - linters: [goconst]
-        path: "test/component/.*\\.go$"
       # test/utils intentionally omits error checks for GinkgoWriter helpers.
       - linters: [errcheck, goimports, gosec]
         path: "test/utils/.*\\.go$"
