@@ -1031,6 +1031,7 @@ var _ = Describe("E26.2: Cross-CRD Cascading Status Updates", func() {
 
 		By("reconciling pool — it should now see target as Ready and become Ready itself")
 		reconcilePoolE262(poolName)
+		reconcilePoolE262(poolName)
 
 		poolFetched := &pillarcsiv1alpha1.PillarPool{}
 		Expect(k8sClient.Get(bctx, types.NamespacedName{Name: poolName}, poolFetched)).To(Succeed())

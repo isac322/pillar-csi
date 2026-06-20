@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -104,6 +105,8 @@ var _ = Describe("Per-TC baseline setup", Label("ac:2", "framework", "default-pr
 			Expect(setupCalls).To(Equal(2))
 			Expect(tc.Scope()).NotTo(BeNil())
 			Expect(tc.Scope().RootDir).NotTo(Equal(previousRootDir))
+
+			Expect(DrainPendingCleanups(5 * time.Second)).To(Succeed())
 
 			_, err := os.Stat(previousRootDir)
 			Expect(os.IsNotExist(err)).To(BeTrue())
