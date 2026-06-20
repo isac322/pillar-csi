@@ -95,15 +95,23 @@ type fabricsConnector struct {
 	// nvme-cli does that, and pillar-node writes /dev/nvme-fabrics
 	// directly.
 	hostNQN string
+
+	// hostID is the NVMe host ID UUID written as the `hostid=` option on
+	// every fabrics connect.  Recent Linux kernels reject the write with
+	// EINVAL when `hostnqn=` is set without a matching `hostid=`, so the
+	// two fields must always travel together.  Persisted to
+	// /etc/nvme/hostid alongside the host NQN.
+	hostID string
 }
 
 // newFabricsConnector returns a production-ready fabricsConnector that uses
 // /sys as the sysfs root and /dev/nvme-fabrics for connection requests.
-func newFabricsConnector(hostNQN string) *fabricsConnector {
+func newFabricsConnector(hostNQN, hostID string) *fabricsConnector {
 	return &fabricsConnector{
 		sysfsRoot:  "/sys",
 		fabricsDev: "/dev/nvme-fabrics",
 		hostNQN:    hostNQN,
+		hostID:     hostID,
 	}
 }
 
@@ -116,13 +124,18 @@ func newFabricsConnector(hostNQN string) *fabricsConnector {
 //
 // On a new connection it opens /dev/nvme-fabrics and writes:
 //
-//	transport=tcp,traddr=<trAddr>,trsvcid=<trSvcID>,nqn=<subsysNQN>,hostnqn=<c.hostNQN>
+//	transport=tcp,traddr=<trAddr>,trsvcid=<trSvcID>,nqn=<subsysNQN>,hostnqn=<c.hostNQN>,hostid=<c.hostID>
 //
-// The `hostnqn=` field is mandatory whenever the target enforces ACLs
-// (`attr_allow_any_host=0`, which is the pillar-csi default).  The kernel
-// /dev/nvme-fabrics interface does not consult /etc/nvme/hostnqn on its
-// own — only nvme-cli userland does — so omitting hostnqn causes the
-// kernel to send a random/empty NQN that the target rejects with EIO.
+// Both identity fields are mandatory:
+//
+//   - `hostnqn=` whenever the target enforces ACLs (the pillar-csi default
+//     with `attr_allow_any_host=0`); the kernel /dev/nvme-fabrics interface
+//     does not consult /etc/nvme/hostnqn on its own — only nvme-cli does —
+//     so omitting it makes the target reject the connect with EIO.
+//   - `hostid=` because recent Linux kernels (~6.x) reject writes that set
+//     `hostnqn=` without a matching `hostid=` UUID with EINVAL at parse
+//     time, before any TCP attempt; nvme-cli always sends both for the
+//     same reason.
 //
 // The kernel nvme_fabrics module parses the string, creates the controller,
 // and initiates the TCP connection synchronously.  Write returns an error if
@@ -145,7 +158,8 @@ func (c *fabricsConnector) nvmeConnect(ctx context.Context, subsysNQN, trAddr, t
 	// Write the connection parameters as a comma-separated key=value string.
 	// The kernel nvme_fabrics driver parses this in nvmf_dev_write() and
 	// initiates the TCP connection via nvmf_create_ctrl().
-	opts := fmt.Sprintf("transport=tcp,traddr=%s,trsvcid=%s,nqn=%s,hostnqn=%s", trAddr, trSvcID, subsysNQN, c.hostNQN)
+	opts := fmt.Sprintf("transport=tcp,traddr=%s,trsvcid=%s,nqn=%s,hostnqn=%s,hostid=%s",
+		trAddr, trSvcID, subsysNQN, c.hostNQN, c.hostID)
 	_, err = fmt.Fprintf(f, "%s\n", opts)
 	if err != nil {
 		return fmt.Errorf("fabricsConnector nvmeConnect: write to %s (nqn=%s): %w",
@@ -715,12 +729,7 @@ func main() {
 	// generated /etc/nvme/hostnqn.  The fabricsConnector must thread this
 	// exact value into every nvme-fabrics connect; see the field doc on
 	// fabricsConnector.hostNQN for the kernel-vs-userland contract.
-	hostNQN, hostNQNErr := csisvc.ReadHostNQN()
-	if hostNQNErr != nil {
-		fmt.Fprintf(os.Stderr,
-			"pillar-node: read host NQN: %v\n", hostNQNErr)
-		os.Exit(1)
-	}
+	hostNQN, hostID := resolveHostIdentityOrExit()
 
 	// ── Build the CSI service implementations ──────────────────────────────
 	// Build the protocol handler map.  fabricsConnector provides the
@@ -730,7 +739,7 @@ func main() {
 	// Additional protocol handlers (iSCSI, NFS, SMB) are registered here
 	// as they are implemented per the multi-protocol RFC.
 	handlers := map[string]csisvc.ProtocolHandler{
-		csisvc.ProtocolNVMeoFTCP: newFabricsConnector(hostNQN),
+		csisvc.ProtocolNVMeoFTCP: newFabricsConnector(hostNQN, hostID),
 	}
 	identitySrv := csisvc.NewIdentityServer(driverName, version)
 	nodeSrv := csisvc.NewNodeServer(*nodeID, handlers, &mkdirMounter{wrapped: csisvc.NewKubeMounter()})
@@ -782,6 +791,26 @@ func main() {
 		fmt.Fprintf(os.Stderr, "pillar-node: serve: %v\n", serveErr)
 		os.Exit(1)
 	}
+}
+
+// resolveHostIdentityOrExit reads (and on first start, generates) the local
+// host NQN and host ID from /etc/nvme/{hostnqn,hostid}, exiting the process
+// non-zero on failure.  Both values are required for every nvme-fabrics
+// connect; see the fabricsConnector.hostNQN / hostID field docs for the
+// kernel-vs-userland and EIO/EINVAL rationale.
+func resolveHostIdentityOrExit() (hostNQN, hostID string) {
+	var err error
+	hostNQN, err = csisvc.ReadHostNQN()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "pillar-node: read host NQN: %v\n", err)
+		os.Exit(1)
+	}
+	hostID, err = csisvc.ReadHostID()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "pillar-node: read host ID: %v\n", err)
+		os.Exit(1)
+	}
+	return hostNQN, hostID
 }
 
 // publishNodeIdentity writes the NVMe host NQN to the CSINode object
