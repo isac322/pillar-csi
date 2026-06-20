@@ -22,8 +22,12 @@ CLUSTER_NAME="${CLUSTER_NAME:-pillar-csi-ext-e2e}"
 HELM_NAMESPACE="${HELM_NAMESPACE:-pillar-csi-system}"
 HELM_RELEASE="${HELM_RELEASE:-pillar-csi}"
 IMAGE_TAG="${IMAGE_TAG:-ext-e2e}"
-ZFS_POOL_NAME="${ZFS_POOL_NAME:-tank}"
-ZFS_POOL_SIZE="${ZFS_POOL_SIZE:-5G}"
+# LVM (not ZFS) for the in-cluster backend.  ZFS userland in the Kind node
+# image must match the kernel module version loaded on the runner; LVM has
+# no such coupling and Just Works once dm_mod / dm_thin_pool are loaded.
+VG_NAME="${VG_NAME:-pillar-vg}"
+VG_SIZE="${VG_SIZE:-5G}"
+VG_IMG_PATH="/var/lib/${VG_NAME}.img"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 CONTROL_PLANE="${CLUSTER_NAME}-control-plane"
@@ -33,10 +37,9 @@ log() { printf "[bootstrap] %s\n" "$*" >&2; }
 # ── 1. Kind cluster ──────────────────────────────────────────────────────────
 log "Ensuring Kind cluster ${CLUSTER_NAME} exists"
 if ! kind get clusters | grep -qx "${CLUSTER_NAME}"; then
-  # Bind-mount the host's /dev/zfs and /dev/mapper into the control-plane
-  # node so zfs and lvm commands inside the container can talk to the
-  # kernel modules loaded on the runner.  Without these mounts every zpool
-  # / zfs / lvm call fails with "no such pool or dataset" or EACCES.
+  # Bind-mount the host's /dev/mapper and /sys/kernel/config so LVM commands
+  # and the NVMe-oF / iSCSI configfs target setup inside the container can
+  # reach the kernel modules already loaded on the runner.
   KIND_CONFIG="$(mktemp)"
   cat > "${KIND_CONFIG}" <<EOF
 kind: Cluster
@@ -44,9 +47,6 @@ apiVersion: kind.x-k8s.io/v1alpha4
 nodes:
 - role: control-plane
   extraMounts:
-  - hostPath: /dev/zfs
-    containerPath: /dev/zfs
-    propagation: HostToContainer
   - hostPath: /dev/mapper
     containerPath: /dev/mapper
     propagation: Bidirectional
@@ -61,31 +61,28 @@ else
 fi
 kind export kubeconfig --name "${CLUSTER_NAME}"
 
-# ── 2. ZFS pool inside the control-plane node container ──────────────────────
-log "Installing zfsutils-linux + provisioning pool ${ZFS_POOL_NAME} inside ${CONTROL_PLANE}"
+# ── 2. LVM volume group inside the control-plane node container ─────────────
+log "Installing lvm2 + provisioning VG ${VG_NAME} inside ${CONTROL_PLANE}"
 docker exec "${CONTROL_PLANE}" bash -c "
   set -e
   export DEBIAN_FRONTEND=noninteractive
-  if ! command -v zpool >/dev/null 2>&1; then
-    # zfsutils-linux ships in Debian contrib, not main.  Append 'contrib' to
-    # whichever sources file the Kind node image uses (modern deb822 or
-    # legacy one-line) rather than dropping a new file: the new file would
-    # collide with the signed-by setting of the upstream sources and apt
-    # refuses to load conflicting Signed-By values.
-    if [ -f /etc/apt/sources.list.d/debian.sources ]; then
-      sed -i 's/^\(Components:[[:space:]]*main\)\$/\1 contrib/' /etc/apt/sources.list.d/debian.sources
-    fi
-    if [ -f /etc/apt/sources.list ]; then
-      sed -i 's/\\(^deb .*main\\)\$/\\1 contrib/' /etc/apt/sources.list
-    fi
+  if ! command -v vgcreate >/dev/null 2>&1; then
     apt-get update -qq
-    apt-get install -y -q --no-install-recommends zfsutils-linux
+    apt-get install -y -q --no-install-recommends lvm2 thin-provisioning-tools
+    # Disable udev integration in LVM — udev is not running inside the
+    # container; without these flips pvcreate / vgcreate either fail or
+    # warn loudly on every invocation.
+    for setting in udev_sync udev_rules obtain_device_list_from_udev; do
+      sed -i \"s/\${setting} = 1/\${setting} = 0/\" /etc/lvm/lvm.conf 2>/dev/null || true
+    done
   fi
-  if ! zpool list -H -o name 2>/dev/null | grep -qx '${ZFS_POOL_NAME}'; then
-    truncate -s ${ZFS_POOL_SIZE} /var/lib/${ZFS_POOL_NAME}.img
-    zpool create -f ${ZFS_POOL_NAME} /var/lib/${ZFS_POOL_NAME}.img
+  if ! vgs --noheadings -o vg_name 2>/dev/null | grep -qw '${VG_NAME}'; then
+    truncate -s ${VG_SIZE} ${VG_IMG_PATH}
+    LOOP=\$(losetup --find --show ${VG_IMG_PATH})
+    pvcreate --yes --force \"\${LOOP}\"
+    vgcreate ${VG_NAME} \"\${LOOP}\"
   fi
-  zpool list ${ZFS_POOL_NAME}
+  vgs ${VG_NAME}
 "
 
 # ── 3. Build + load pillar-csi images ────────────────────────────────────────
@@ -113,8 +110,8 @@ helm upgrade --install "${HELM_RELEASE}" "${REPO_ROOT}/charts/pillar-csi" \
   --set "agent.image.tag=${IMAGE_TAG}" \
   --set "agent.image.pullPolicy=Never" \
   --set "agent.privileged=true" \
-  --set "agent.backends[0].type=zfs-zvol" \
-  --set "agent.backends[0].pool=${ZFS_POOL_NAME}"
+  --set "agent.backends[0].type=lvm-lv" \
+  --set "agent.backends[0].vg=${VG_NAME}"
 
 # ── 5. Apply PillarTarget / PillarPool / PillarProtocol ─────────────────────
 log "Applying PillarTarget / PillarPool / PillarProtocol"
@@ -132,13 +129,13 @@ spec:
 apiVersion: pillar-csi.pillar-csi.bhyoo.com/v1alpha1
 kind: PillarPool
 metadata:
-  name: ${ZFS_POOL_NAME}
+  name: ${VG_NAME}
 spec:
   targetRef: pillar-target-default
   backend:
-    type: zfs-zvol
-    zfs:
-      pool: ${ZFS_POOL_NAME}
+    type: lvm-lv
+    lvm:
+      volumeGroup: ${VG_NAME}
 ---
 apiVersion: pillar-csi.pillar-csi.bhyoo.com/v1alpha1
 kind: PillarProtocol

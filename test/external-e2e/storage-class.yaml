@@ -13,6 +13,6 @@ allowVolumeExpansion: true
 reclaimPolicy: Delete
 parameters:
   pillar-csi.bhyoo.com/target: pillar-target-default
-  pillar-csi.bhyoo.com/pool: tank
-  pillar-csi.bhyoo.com/backend-type: zfs-zvol
+  pillar-csi.bhyoo.com/pool: pillar-vg
+  pillar-csi.bhyoo.com/backend-type: lvm-lv
   pillar-csi.bhyoo.com/protocol-type: nvmeof-tcp
