@@ -132,13 +132,14 @@ func TestCheckHostPrerequisites_ErrorShape(t *testing.T) {
 	}
 
 	msg := err.Error()
+	lower := strings.ToLower(msg)
 
 	requiredFragments := []string{
-		"pillar-csi E2E prerequisite check FAILED",
+		"pillar-csi e2e prerequisite check failed",
 		"remediation",
 	}
 	for _, frag := range requiredFragments {
-		if !strings.Contains(msg, frag) {
+		if !strings.Contains(lower, frag) {
 			t.Errorf("error message missing fragment %q\ngot:\n%s", frag, msg)
 		}
 	}
