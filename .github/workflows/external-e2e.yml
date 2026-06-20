@@ -13,12 +13,6 @@ on:
   workflow_dispatch: {}
   schedule:
     - cron: '0 7 * * *'  # 07:00 UTC daily
-  # Validation trigger active only on the conformance feature branch so the
-  # bootstrap script can be exercised in CI before the workflow lands on
-  # master.  Remove this block before merge.
-  push:
-    branches:
-      - test/csi-conformance
 
 permissions:
   contents: read
