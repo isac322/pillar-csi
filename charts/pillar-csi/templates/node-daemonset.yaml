@@ -131,6 +131,15 @@ spec:
             # and NVMe controller rescan during online volume expansion.
             - name: sys
               mountPath: /sys
+            # /etc/nvme — read/write hostPath holding the persistent host NQN.
+            # ReadHostNQN writes a freshly-generated UUID NQN here on first
+            # boot when nvme-cli has not seeded the file, and reads back the
+            # same value on subsequent starts.  Persistence on the host is
+            # required so the NQN published to the CSINode annotation matches
+            # the one nvme-cli (or the kernel) will use when the node later
+            # issues `nvme connect`.
+            - name: etc-nvme
+              mountPath: /etc/nvme
           resources:
             {{- toYaml .Values.node.resources | nindent 12 }}
 
@@ -217,6 +226,14 @@ spec:
           hostPath:
             path: /lib/modules
             type: Directory
+        # etc-nvme: persistent storage for /etc/nvme/hostnqn.
+        # DirectoryOrCreate so hosts without nvme-cli still receive a usable
+        # directory; the node plugin generates and persists the file on first
+        # start.  See the /etc/nvme volumeMount above for the full rationale.
+        - name: etc-nvme
+          hostPath:
+            path: /etc/nvme
+            type: DirectoryOrCreate
       # ── Scheduling ───────────────────────────────────────────────────────────
       {{- with .Values.node.nodeSelector }}
       nodeSelector:

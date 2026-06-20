@@ -357,6 +357,21 @@ func newControllerTestEnv(t *testing.T) *controllerTestEnv {
 	}
 }
 
+// seedPillarVolume creates a stub PillarVolume CRD with the given name so
+// that lookups in code paths that gate on volume existence (e.g.
+// ValidateVolumeCapabilities, ControllerPublishVolume) see the object.  The
+// stub carries only the metadata Name; tests that need richer status fields
+// should patch the object directly after seeding.
+func seedPillarVolume(t *testing.T, env *controllerTestEnv, name string) {
+	t.Helper()
+	pv := &v1alpha1.PillarVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+	}
+	if err := env.srv.k8sClient.Create(context.Background(), pv); err != nil {
+		t.Fatalf("seed PillarVolume %q: %v", name, err)
+	}
+}
+
 // baseCreateVolumeRequest returns a minimal valid CreateVolumeRequest.
 func baseCreateVolumeRequest() *csi.CreateVolumeRequest {
 	return &csi.CreateVolumeRequest{
@@ -943,7 +958,10 @@ func TestGetCapacity_Success(t *testing.T) {
 }
 
 // TestGetCapacity_MissingTargetParam verifies that omitting the required
-// target parameter returns codes.InvalidArgument.
+// target parameter returns AvailableCapacity=0 with no error.  Per CSI spec
+// §4.1.2 the parameters field is informational; the driver must not fail
+// GetCapacity when it cannot resolve a pool from the supplied parameters,
+// and instead reports zero so the CO knows no pool was selectable.
 func TestGetCapacity_MissingTargetParam(t *testing.T) {
 	t.Parallel()
 	env := newControllerTestEnv(t)
@@ -951,24 +969,22 @@ func TestGetCapacity_MissingTargetParam(t *testing.T) {
 
 	req := &csi.GetCapacityRequest{
 		Parameters: map[string]string{
-			// target intentionally omitted
 			"pillar-csi.bhyoo.com/pool":         "tank",
 			"pillar-csi.bhyoo.com/backend-type": "zfs-zvol",
 		},
 	}
 
-	_, err := env.srv.GetCapacity(ctx, req)
-	if err == nil {
-		t.Fatal("expected error, got nil")
+	resp, err := env.srv.GetCapacity(ctx, req)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
 	}
-	st, _ := status.FromError(err)
-	if st.Code() != codes.InvalidArgument {
-		t.Errorf("error code = %v, want InvalidArgument", st.Code())
+	if resp.GetAvailableCapacity() != 0 {
+		t.Errorf("AvailableCapacity = %d, want 0", resp.GetAvailableCapacity())
 	}
 }
 
-// TestGetCapacity_MissingPoolParam verifies that omitting the required
-// pool parameter returns codes.InvalidArgument.
+// TestGetCapacity_MissingPoolParam verifies the same zero-capacity contract
+// when the pool parameter is omitted; see TestGetCapacity_MissingTargetParam.
 func TestGetCapacity_MissingPoolParam(t *testing.T) {
 	t.Parallel()
 	env := newControllerTestEnv(t)
@@ -976,24 +992,22 @@ func TestGetCapacity_MissingPoolParam(t *testing.T) {
 
 	req := &csi.GetCapacityRequest{
 		Parameters: map[string]string{
-			"pillar-csi.bhyoo.com/target": "storage-node-1",
-			// pool intentionally omitted
+			"pillar-csi.bhyoo.com/target":       "storage-node-1",
 			"pillar-csi.bhyoo.com/backend-type": "zfs-zvol",
 		},
 	}
 
-	_, err := env.srv.GetCapacity(ctx, req)
-	if err == nil {
-		t.Fatal("expected error, got nil")
+	resp, err := env.srv.GetCapacity(ctx, req)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
 	}
-	st, _ := status.FromError(err)
-	if st.Code() != codes.InvalidArgument {
-		t.Errorf("error code = %v, want InvalidArgument", st.Code())
+	if resp.GetAvailableCapacity() != 0 {
+		t.Errorf("AvailableCapacity = %d, want 0", resp.GetAvailableCapacity())
 	}
 }
 
-// TestGetCapacity_MissingBackendTypeParam verifies that omitting the required
-// backend-type parameter returns codes.InvalidArgument.
+// TestGetCapacity_MissingBackendTypeParam verifies the same zero-capacity
+// contract when backend-type is omitted; see TestGetCapacity_MissingTargetParam.
 func TestGetCapacity_MissingBackendTypeParam(t *testing.T) {
 	t.Parallel()
 	env := newControllerTestEnv(t)
@@ -1003,17 +1017,15 @@ func TestGetCapacity_MissingBackendTypeParam(t *testing.T) {
 		Parameters: map[string]string{
 			"pillar-csi.bhyoo.com/target": "storage-node-1",
 			"pillar-csi.bhyoo.com/pool":   "tank",
-			// backend-type intentionally omitted
 		},
 	}
 
-	_, err := env.srv.GetCapacity(ctx, req)
-	if err == nil {
-		t.Fatal("expected error, got nil")
+	resp, err := env.srv.GetCapacity(ctx, req)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
 	}
-	st, _ := status.FromError(err)
-	if st.Code() != codes.InvalidArgument {
-		t.Errorf("error code = %v, want InvalidArgument", st.Code())
+	if resp.GetAvailableCapacity() != 0 {
+		t.Errorf("AvailableCapacity = %d, want 0", resp.GetAvailableCapacity())
 	}
 }
 
@@ -1691,24 +1703,29 @@ func basePublishRequest() *csi.ControllerPublishVolumeRequest {
 // TestControllerPublishVolume_FailedPrecondition_CSINodeNotFound verifies that
 // ControllerPublishVolume returns FailedPrecondition when the CSINode object
 // does not exist yet (node plugin has not registered).
-func TestControllerPublishVolume_FailedPrecondition_CSINodeNotFound(t *testing.T) {
+func TestControllerPublishVolume_NotFound_CSINodeNotFound(t *testing.T) {
 	t.Parallel()
 
 	// No CSINode objects seeded → CSINode lookup will return NotFound.
+	// CSI spec §4.5 requires NotFound for an unknown node_id in
+	// ControllerPublishVolume specifically — see the resolveInitiatorID
+	// FailedPrecondition→NotFound translation in controller.go.  Other
+	// callers of resolveInitiatorID (e.g. Unpublish) retain the
+	// FailedPrecondition signal for retry-friendly behavior.
 	env := newPublishTestEnv(t)
 	ctx := context.Background()
 
 	_, err := env.srv.ControllerPublishVolume(ctx, basePublishRequest())
 	if err == nil {
-		t.Fatal("expected FailedPrecondition error, got nil")
+		t.Fatal("expected NotFound error, got nil")
 	}
 
 	st, ok := status.FromError(err)
 	if !ok {
 		t.Fatalf("expected gRPC status error, got: %v", err)
 	}
-	if st.Code() != codes.FailedPrecondition {
-		t.Errorf("error code = %v, want %v", st.Code(), codes.FailedPrecondition)
+	if st.Code() != codes.NotFound {
+		t.Errorf("error code = %v, want %v", st.Code(), codes.NotFound)
 	}
 }
 
@@ -1840,6 +1857,7 @@ func TestValidateVolumeCapabilities_RejectsRawBlockForFileProtocols(t *testing.T
 			t.Parallel()
 
 			env := newControllerTestEnv(t)
+			seedPillarVolume(t, env, "pvc-abc123")
 			req := &csi.ValidateVolumeCapabilitiesRequest{
 				VolumeId: "storage-node-1/" + tc.protocol + "/zfs-dataset/tank/pvc-abc123",
 				VolumeCapabilities: []*csi.VolumeCapability{
@@ -1878,6 +1896,7 @@ func TestValidateVolumeCapabilities_AllowsFilesystemVolumeModeForFileProtocol(t 
 	t.Parallel()
 
 	env := newControllerTestEnv(t)
+	seedPillarVolume(t, env, "pvc-abc123")
 	req := &csi.ValidateVolumeCapabilitiesRequest{
 		VolumeId: "storage-node-1/nfs/zfs-dataset/tank/pvc-abc123",
 		VolumeCapabilities: []*csi.VolumeCapability{

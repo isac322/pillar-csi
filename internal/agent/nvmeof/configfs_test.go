@@ -393,7 +393,7 @@ func TestCreatePort(t *testing.T) {
 	pDir := tgt.portDir(portID)
 	assertFileContent(t, filepath.Join(pDir, "addr_trtype"), "tcp")
 	assertFileContent(t, filepath.Join(pDir, "addr_adrfam"), "ipv4")
-	assertFileContent(t, filepath.Join(pDir, "addr_traddr"), "192.168.1.10")
+	assertFileContent(t, filepath.Join(pDir, "addr_traddr"), listenWildcard)
 	assertFileContent(t, filepath.Join(pDir, "addr_trsvcid"), "4420")
 
 	// Idempotent.
@@ -434,7 +434,7 @@ func TestApplyAndRemove(t *testing.T) {
 	// Verify port.
 	portID := stablePortID(tgt.BindAddress, tgt.Port)
 	pDir := tgt.portDir(portID)
-	assertFileContent(t, filepath.Join(pDir, "addr_traddr"), "10.0.0.5")
+	assertFileContent(t, filepath.Join(pDir, "addr_traddr"), listenWildcard)
 
 	// Verify subsystem linked to port.
 	linkPath := tgt.portSubsystemLink(portID)

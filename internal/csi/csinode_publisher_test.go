@@ -19,7 +19,8 @@ package csi
 // Unit tests for the CSINode annotation publisher (csinode_publisher.go).
 //
 // Tests cover:
-//   - PublishNVMeOfIdentity: error when the host NQN file is missing
+//   - PublishNVMeOfIdentity: generate-and-persist when the host NQN file is missing
+//   - PublishNVMeOfIdentity: regenerate when the host NQN file is empty
 //   - PublishNVMeOfIdentity: error wrapping when patcher returns NotFound
 //   - PublishNVMeOfIdentity: error wrapping when patcher returns a generic error
 //   - KubeCSINodePatcher.PatchAnnotations: success via fake k8s client
@@ -36,6 +37,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	storagev1 "k8s.io/api/storage/v1"
@@ -85,7 +87,7 @@ func (m *mockNodeAnnotationPatcher) PatchAnnotations(
 // This helper exists in the test file (same package) rather than production
 // code to keep the production API clean.
 func publishNVMeOfIdentityWithFile(ctx context.Context, patcher NodeAnnotationPatcher, nodeName, nqnFile string) error {
-	nqn, err := readHostNQNFrom(nqnFile)
+	nqn, err := readOrGenerateHostNQN(nqnFile)
 	if err != nil {
 		return fmt.Errorf("PublishNVMeOfIdentity: read host NQN: %w", err)
 	}
@@ -109,29 +111,40 @@ func publishNVMeOfIdentityWithFile(ctx context.Context, patcher NodeAnnotationPa
 // PublishNVMeOfIdentity tests
 // ─────────────────────────────────────────────────────────────────────────────
 
-// TestPublishNVMeOfIdentity_MissingNQNFile verifies that PublishNVMeOfIdentity
-// returns an error when the host NQN file does not exist.  This tests the
-// "node never had NVMe kernel module loaded" scenario.
-func TestPublishNVMeOfIdentity_MissingNQNFile(t *testing.T) {
+// TestPublishNVMeOfIdentity_MissingNQNFileGenerates verifies that
+// PublishNVMeOfIdentity transparently generates a host NQN when the file is
+// absent, persists it, and publishes it through the patcher.  This is the
+// out-of-the-box path on containerized hosts where nvme-cli has not seeded
+// /etc/nvme/hostnqn.
+func TestPublishNVMeOfIdentity_MissingNQNFileGenerates(t *testing.T) {
 	t.Parallel()
 
 	patcher := &mockNodeAnnotationPatcher{}
+	dir := t.TempDir()
+	f := filepath.Join(dir, "nvme", "hostnqn")
+
 	err := publishNVMeOfIdentityWithFile(
-		context.Background(), patcher, "node-missing-nqn-file",
-		filepath.Join(t.TempDir(), "nonexistent-hostnqn"),
+		context.Background(), patcher, "node-missing-nqn-file", f,
 	)
-	if err == nil {
-		t.Fatal("expected error for missing NQN file, got nil")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	// Patcher must NOT have been called because the NQN read failed first.
-	if patcher.callCount != 0 {
-		t.Errorf("patcher.callCount = %d, want 0 (should not be called when NQN read fails)", patcher.callCount)
+	if patcher.callCount != 1 {
+		t.Fatalf("patcher.callCount = %d, want 1", patcher.callCount)
+	}
+	gotNQN := patcher.lastAnnotations[AnnotationNVMeOFHostNQN]
+	if !strings.HasPrefix(gotNQN, hostNQNUUIDPrefix) {
+		t.Errorf("published NQN %q does not start with %q", gotNQN, hostNQNUUIDPrefix)
+	}
+	if _, statErr := os.Stat(f); statErr != nil {
+		t.Errorf("generated NQN file was not persisted: %v", statErr)
 	}
 }
 
-// TestPublishNVMeOfIdentity_EmptyNQNFile verifies that an empty hostnqn
-// file causes an early error before the patcher is called.
-func TestPublishNVMeOfIdentity_EmptyNQNFile(t *testing.T) {
+// TestPublishNVMeOfIdentity_EmptyNQNFileRegenerates verifies that an existing
+// but empty hostnqn file is overwritten with a freshly-generated NQN rather
+// than surfacing as an error.
+func TestPublishNVMeOfIdentity_EmptyNQNFileRegenerates(t *testing.T) {
 	t.Parallel()
 
 	f := filepath.Join(t.TempDir(), "hostnqn")
@@ -140,11 +153,15 @@ func TestPublishNVMeOfIdentity_EmptyNQNFile(t *testing.T) {
 	}
 	patcher := &mockNodeAnnotationPatcher{}
 	err := publishNVMeOfIdentityWithFile(context.Background(), patcher, "node-empty-nqn", f)
-	if err == nil {
-		t.Fatal("expected error for empty NQN file, got nil")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if patcher.callCount != 0 {
-		t.Errorf("patcher.callCount = %d, want 0", patcher.callCount)
+	if patcher.callCount != 1 {
+		t.Fatalf("patcher.callCount = %d, want 1", patcher.callCount)
+	}
+	gotNQN := patcher.lastAnnotations[AnnotationNVMeOFHostNQN]
+	if !strings.HasPrefix(gotNQN, hostNQNUUIDPrefix) {
+		t.Errorf("published NQN %q does not start with %q", gotNQN, hostNQNUUIDPrefix)
 	}
 }
 

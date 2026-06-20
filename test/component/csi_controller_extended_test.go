@@ -204,10 +204,16 @@ func TestCSIController_ControllerPublishVolume_NilVolumeCapability(t *testing.T)
 }
 
 // TestCSIController_ControllerPublishVolume_MalformedVolumeID verifies that a
-// malformed volumeID (no slashes, wrong number of parts) returns InvalidArgument.
+// malformed volumeID (no slashes, wrong number of parts) returns NotFound.
+//
+// Per CSI spec §4.5: ControllerPublishVolume MUST return NotFound when the
+// volume_id is unknown.  A volume_id that does not parse into this driver's
+// "<target>/<protocol>/<backend>/<vol-id>" format cannot identify any
+// volume the driver provisioned, so it is treated as unknown rather than
+// bad input.
 //
 //	Setup:   VolumeID="badformat" (no slashes); valid NodeID and capability
-//	Expect:  Returns gRPC InvalidArgument
+//	Expect:  Returns gRPC NotFound
 func TestCSIController_ControllerPublishVolume_MalformedVolumeID(t *testing.T) {
 	t.Parallel()
 	env := newCSIControllerTestEnv(t)
@@ -217,7 +223,7 @@ func TestCSIController_ControllerPublishVolume_MalformedVolumeID(t *testing.T) {
 	req.VolumeId = "badformat"
 
 	_, err := env.srv.ControllerPublishVolume(ctx, req)
-	requireGRPCCode(t, err, codes.InvalidArgument)
+	requireGRPCCode(t, err, codes.NotFound)
 }
 
 // TestCSIController_ControllerUnpublishVolume_EmptyVolumeID verifies that an

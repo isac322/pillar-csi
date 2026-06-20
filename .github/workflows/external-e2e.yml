@@ -1,0 +1,97 @@
+# SIG-Storage External Storage e2e — runs upstream `e2e.test
+# -storage.testdriver=external-driver.yaml` against a freshly bootstrapped
+# Kind cluster with pillar-csi Helm-installed.  Exercised on every PR and
+# master push so the in-cluster storage contract is gated alongside the
+# in-process csi-sanity check.  A nightly schedule keeps the signal alive
+# even when no PRs land.
+
+name: External Storage E2E
+
+on:
+  pull_request: {}
+  push:
+    branches: [master]
+  workflow_dispatch: {}
+  schedule:
+    - cron: '0 7 * * *'  # 07:00 UTC daily
+
+permissions:
+  contents: read
+
+jobs:
+  external-e2e:
+    name: SIG-Storage External Storage e2e
+    runs-on: ubuntu-latest
+    # The default skip set keeps the active spec count to roughly 60 (no
+    # pod-mount lifecycle tests).  30 minutes is enough headroom to absorb
+    # one or two retries while preventing a stuck spec from holding the
+    # PR signal back indefinitely.
+    timeout-minutes: 30
+    env:
+      KIND_VERSION: "v0.27.0"
+      KIND_CLUSTER: "pillar-csi-ext-e2e"
+      E2E_HELM_NAMESPACE: "pillar-csi-system"
+      DOCKER_HOST: "unix:///var/run/docker.sock"
+      # K8S_VERSION pin lets run.sh skip the dl.k8s.io stable.txt lookup so
+      # the cached e2e.test bundle is shared across runs.
+      K8S_VERSION: "v1.31.4"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install Kind ${{ env.KIND_VERSION }}
+        uses: helm/kind-action@v1
+        with:
+          install_only: true
+          version: ${{ env.KIND_VERSION }}
+
+      - name: Install Helm
+        uses: azure/setup-helm@v5
+
+      - name: Install ZFS, LVM, and NVMe-oF kernel modules
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y zfsutils-linux lvm2 thin-provisioning-tools \
+            linux-modules-extra-$(uname -r) || \
+            sudo apt-get install -y zfsutils-linux lvm2 thin-provisioning-tools
+          sudo modprobe zfs
+          sudo modprobe dm_mod
+          sudo modprobe dm_thin_pool
+          sudo modprobe nvme_fabrics
+          sudo modprobe nvmet
+          sudo modprobe nvmet_tcp
+          sudo modprobe nvme_tcp
+
+      - name: Pre-pull base + sidecar images
+        run: |
+          docker pull alpine:3.21
+          docker pull golang:1.26-alpine3.23
+          docker pull busybox:1.36
+          docker pull registry.k8s.io/sig-storage/csi-provisioner:v5.2.0
+          docker pull registry.k8s.io/sig-storage/csi-attacher:v4.8.1
+          docker pull registry.k8s.io/sig-storage/csi-resizer:v1.13.2
+          docker pull registry.k8s.io/sig-storage/livenessprobe:v2.15.0
+          docker pull registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.13.0
+
+      - name: Bootstrap cluster + Helm-deploy pillar-csi
+        env:
+          CLUSTER_NAME: "${{ env.KIND_CLUSTER }}"
+          HELM_NAMESPACE: "${{ env.E2E_HELM_NAMESPACE }}"
+        run: ./test/external-e2e/bootstrap.sh
+
+      - name: Run External Storage e2e
+        env:
+          KUBECONFIG: "/home/runner/.kube/config"
+        run: make test-external-e2e
+
+      - name: Teardown Kind cluster
+        if: always()
+        run: |
+          kind delete cluster --name "${KIND_CLUSTER}" || true

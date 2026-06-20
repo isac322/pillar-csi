@@ -41,6 +41,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	csi "github.com/container-storage-interface/spec/lib/go/csi"
 	"google.golang.org/grpc"
@@ -309,10 +310,9 @@ func (s *ControllerServer) ControllerGetCapabilities(
 // existence is not verified here; that is the responsibility of CreateVolume
 // and the CO's own state machine.
 func (s *ControllerServer) ValidateVolumeCapabilities(
-	_ context.Context,
+	ctx context.Context,
 	req *csi.ValidateVolumeCapabilitiesRequest,
 ) (*csi.ValidateVolumeCapabilitiesResponse, error) {
-	_ = s // satisfy revive unused-receiver; capability check is static
 	if req.GetVolumeId() == "" {
 		//nolint:wrapcheck // gRPC status errors must not be double-wrapped
 		return nil, status.Error(codes.InvalidArgument, "volume_id is required")
@@ -320,6 +320,17 @@ func (s *ControllerServer) ValidateVolumeCapabilities(
 	if len(req.GetVolumeCapabilities()) == 0 {
 		//nolint:wrapcheck // gRPC status errors must not be double-wrapped
 		return nil, status.Error(codes.InvalidArgument, "volume_capabilities must not be empty")
+	}
+
+	// CSI spec §4.4: ValidateVolumeCapabilities MUST return NotFound when the
+	// referenced volume does not exist.  We look up the PillarVolume CRD —
+	// that record is the authoritative source for "does this driver own this
+	// volume?".  A malformed volume_id (rejected by the same lookup as
+	// not-found) is also treated as NotFound per the same paragraph: an ID
+	// the driver did not issue cannot identify any volume it provisioned.
+	existsErr := s.assertVolumeExists(ctx, req.GetVolumeId())
+	if existsErr != nil {
+		return nil, existsErr
 	}
 
 	protocolType := protocolTypeFromValidateVolumeCapabilitiesRequest(req)
@@ -946,6 +957,90 @@ func (s *ControllerServer) loadPillarVolume(
 	return pv, true, nil
 }
 
+// getPillarVolumeWithCacheSettle issues client.Get and retries when the
+// object is reported NotFound, accommodating the brief window after a
+// successful client.Create during which the controller-runtime cache has not
+// yet observed the new resource.  The total wait is bounded so that a
+// permanently missing object still surfaces as an error to the caller (which
+// then propagates a clear ProvisioningFailed event to the CO).
+//
+// The poll interval grows exponentially from 50 ms up to 400 ms with a
+// total budget of cachePollBudget (2 s).  All other errors (e.g. genuine
+// API failures) are returned immediately without retry.
+func getPillarVolumeWithCacheSettle(
+	ctx context.Context,
+	c client.Client,
+	pvName string,
+	out *v1alpha1.PillarVolume,
+) error {
+	const cachePollBudget = 2 * time.Second
+	delay := 50 * time.Millisecond
+	deadline := time.Now().Add(cachePollBudget)
+	var lastErr error
+	for {
+		lastErr = c.Get(ctx, types.NamespacedName{Name: pvName}, out)
+		if lastErr == nil {
+			return nil
+		}
+		if !k8serrors.IsNotFound(lastErr) {
+			return lastErr //nolint:wrapcheck // caller wraps with operation context
+		}
+		if !time.Now().Before(deadline) {
+			return lastErr //nolint:wrapcheck // caller wraps with operation context
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err() //nolint:wrapcheck // caller wraps with operation context
+		case <-time.After(delay):
+		}
+		if delay < 400*time.Millisecond {
+			delay *= 2
+		}
+	}
+}
+
+// pillarVolumeNameFromVolumeID extracts the PillarVolume object name from an
+// encoded CSI volume_id "<target>/<protocol>/<backend>/<pool>/<pv-name>"
+// (or the trailing "<pool>/<pv-name>" segment when the leading parts are
+// already stripped).  Returns "" when the volume_id does not parse, signaling
+// "this is not a volume_id this driver issued".
+func pillarVolumeNameFromVolumeID(volumeID string) string {
+	parts := strings.SplitN(volumeID, "/", volumeIDParts)
+	if len(parts) != volumeIDParts {
+		return ""
+	}
+	agentVolID := parts[3]
+	if idx := strings.LastIndex(agentVolID, "/"); idx >= 0 {
+		return agentVolID[idx+1:]
+	}
+	return agentVolID
+}
+
+// assertVolumeExists returns a gRPC NotFound error when no PillarVolume CRD
+// records the given volume_id, satisfying CSI spec §4.4 / §4.5 / §4.6 / §4.7
+// for ValidateVolumeCapabilities, ControllerPublishVolume, and the equivalent
+// node-side checks that mandate NotFound for unknown volumes.  A malformed
+// volume_id is treated identically because the driver provably never issued
+// it.  The function returns nil when the volume exists or when the client is
+// nil (fake clients used in low-level unit tests skip CRD plumbing).
+func (s *ControllerServer) assertVolumeExists(ctx context.Context, volumeID string) error {
+	if s.k8sClient == nil {
+		return nil
+	}
+	pvName := pillarVolumeNameFromVolumeID(volumeID)
+	if pvName == "" {
+		return status.Errorf(codes.NotFound, "volume %q not found", volumeID)
+	}
+	_, exists, err := s.loadPillarVolume(ctx, pvName)
+	if err != nil {
+		return status.Errorf(codes.Internal, "lookup PillarVolume %q: %v", pvName, err)
+	}
+	if !exists {
+		return status.Errorf(codes.NotFound, "volume %q not found", volumeID)
+	}
+	return nil
+}
+
 // persistCreatePartial creates or updates a PillarVolume CRD with
 // PillarVolumePhaseCreatePartial, recording that the backend storage resource
 // has been created but ExportVolume has not yet succeeded.
@@ -1004,8 +1099,15 @@ func (s *ControllerServer) persistCreatePartial(
 			}
 			// Race: another instance created it; fall through to update below.
 		}
-		// Refresh to get the assigned resourceVersion before the status update.
-		err = s.k8sClient.Get(ctx, types.NamespacedName{Name: pvName}, pv)
+		// controller-runtime's manager-backed client reads from a watch-fed
+		// cache, so a Get issued immediately after a successful Create can
+		// observe the object's absence for a few hundred milliseconds until
+		// the informer fires.  external-provisioner retries CreateVolume
+		// while the cache catches up, but the persistCreatePartial → Get
+		// chain races that retry and the resulting "not found" surfaces as
+		// a provisioning failure event.  Poll for cache convergence with a
+		// short, bounded backoff before giving up.
+		err = getPillarVolumeWithCacheSettle(ctx, s.k8sClient, pvName, pv)
 		if err != nil {
 			return fmt.Errorf("get PillarVolume %q after create: %w", pvName, err)
 		}
@@ -1561,11 +1663,15 @@ func (s *ControllerServer) ControllerPublishVolume(
 	}
 
 	// ── Parse the encoded volume ID ───────────────────────────────────────────
+	// CSI spec §4.5.1: a malformed or non-existent volume_id must return
+	// NotFound, not InvalidArgument.  A volume_id that does not match this
+	// driver's encoded format provably cannot identify any volume that this
+	// driver provisioned, so it is treated as "not found" rather than "bad
+	// input" — matching the behavior csi-sanity expects.
 	parts := strings.SplitN(volumeID, "/", volumeIDParts)
 	if len(parts) != volumeIDParts {
-		return nil, status.Errorf(codes.InvalidArgument,
-			"malformed volume_id %q: expected format <target>/<protocol>/<backend>/<vol-id>",
-			volumeID)
+		return nil, status.Errorf(codes.NotFound,
+			"volume %q not found (unknown volume_id format)", volumeID)
 	}
 	targetName := parts[0]
 	protocolTypeStr := parts[1]
@@ -1592,11 +1698,18 @@ func (s *ControllerServer) ControllerPublishVolume(
 	}
 
 	// ── Resolve initiator identity from CSINode annotation ───────────────────
-	// node_id is the Kubernetes node name (stable handle).  The protocol-specific
-	// initiator identity (NQN for NVMe-oF, IQN for iSCSI) is stored in the
-	// CSINode annotation by the node plugin at startup.
+	// CSI spec §4.5.1: an unknown node_id must return NotFound.  resolveInitiatorID
+	// returns FailedPrecondition when the CSINode object is missing (used in
+	// production to signal "retry later, the node plugin is still registering").
+	// For ControllerPublishVolume specifically the spec is explicit, so we
+	// promote that one signal to NotFound while leaving other failure modes
+	// (annotation present but blank) at FailedPrecondition.
 	initiatorID, resolveErr := s.resolveInitiatorID(ctx, nodeID, protocolTypeStr)
 	if resolveErr != nil {
+		if st, ok := status.FromError(resolveErr); ok && st.Code() == codes.FailedPrecondition &&
+			strings.Contains(st.Message(), "node plugin may not have registered yet") {
+			return nil, status.Errorf(codes.NotFound, "node %q not found", nodeID)
+		}
 		return nil, resolveErr
 	}
 
@@ -1897,17 +2010,13 @@ func (s *ControllerServer) GetCapacity(
 	poolName := params[paramPool]
 	backendTypeStr := params[paramBackendType]
 
-	if targetName == "" {
-		return nil, status.Errorf(codes.InvalidArgument,
-			"StorageClass parameter %q is required for GetCapacity", paramTarget)
-	}
-	if poolName == "" {
-		return nil, status.Errorf(codes.InvalidArgument,
-			"StorageClass parameter %q is required for GetCapacity", paramPool)
-	}
-	if backendTypeStr == "" {
-		return nil, status.Errorf(codes.InvalidArgument,
-			"StorageClass parameter %q is required for GetCapacity", paramBackendType)
+	// CSI spec §4.1.2: GetCapacity MAY be called with empty parameters and
+	// MUST NOT fail in that case — it should return zero available capacity
+	// so the CO knows no pool is selectable.  Returning InvalidArgument here
+	// breaks csi-sanity's "no optional values added" test and is wrong per
+	// the spec; the parameters field is informational, not validated.
+	if targetName == "" || poolName == "" || backendTypeStr == "" {
+		return &csi.GetCapacityResponse{AvailableCapacity: 0}, nil
 	}
 
 	agentBackendType := mapBackendType(backendTypeStr)

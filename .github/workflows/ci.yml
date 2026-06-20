@@ -98,6 +98,21 @@ jobs:
           go mod tidy
           make test
 
+  csi-sanity:
+    name: csi-sanity (in-process CSI conformance)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Run csi-sanity
+        run: make test-csi-sanity
+
   e2e:
     name: E2E Tests (multi-node Kind)
     runs-on: ubuntu-latest
