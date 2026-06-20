@@ -1,7 +1,11 @@
 {{- /*
 Node DaemonSet — CSI Node service + protocol initiators (NVMe-oF, iSCSI, NFS).
 Runs on every worker node. Uses privileged security context for mount operations.
-hostNetwork is intentionally absent — the node service does not expose any host ports.
+hostNetwork: true is required for the NVMe-oF/iSCSI data plane: the kernel
+issues `nvme connect` TCP SYNs in the netns of the process that writes
+`/dev/nvme-fabrics`.  With hostNetwork: false the initiator lives in the pod
+netns, which cannot reach the host-network nvmet listener exposed by the
+agent.  See PRD §2.4.
 Init container loads initiator kernel modules best-effort (pod start is NOT blocked on failure).
 */ -}}
 apiVersion: apps/v1
@@ -41,6 +45,10 @@ spec:
       {{- end }}
       serviceAccountName: {{ include "pillar-csi.nodeServiceAccountName" . }}
       priorityClassName: system-node-critical
+      hostNetwork: {{ .Values.node.hostNetwork }}
+      {{- if .Values.node.hostNetwork }}
+      dnsPolicy: ClusterFirstWithHostNet
+      {{- end }}
       # ── Init containers ──────────────────────────────────────────────────────
       # Loads initiator kernel modules (NVMe-oF, iSCSI, NFS).
       # Each modprobe is run with "|| true" so the init container always exits 0.

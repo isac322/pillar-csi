@@ -27,31 +27,24 @@ K8S_VERSION="${K8S_VERSION:-}"
 CACHE_DIR="${CACHE_DIR:-${HOME}/.cache/pillar-csi/external-e2e}"
 GINKGO_FOCUS="${GINKGO_FOCUS:-External.Storage}"
 
-# Default skip set is calibrated for the pillar-csi Kind environment, which
-# cannot drive the NVMe-oF TCP data plane end-to-end:
+# Default skip set drops only categories that are intentionally out of scope
+# for the PR-gating job:
 #
-#   * Per PRD §2.4 the agent DaemonSet runs with hostNetwork: false, which
-#     binds the nvmet kernel target listener in the agent pod's network
-#     namespace rather than the host's.
-#   * The node DaemonSet is also hostNetwork: false, so `nvme connect`
-#     writes to /dev/nvme-fabrics issue TCP SYNs from the node pod's
-#     network namespace.
-#   * In Kind those two pod namespaces are isolated, so the connect SYN
-#     never reaches the target listener; NodeStageVolume returns
-#     "connection refused" and any spec that actually mounts a pod times
-#     out after five minutes.
+#   * [Slow] / [Serial] / [Disruptive] — standard upstream categories that
+#     blow the per-job runtime budget; covered by the scheduled bare-metal
+#     run, not by every PR.
+#   * Generic Ephemeral-volume — not declared as a supported capability in
+#     external-driver.yaml.
 #
-# Bare-metal clusters with hostNetwork: true (the deployment topology
-# pillar-csi is designed to run against in production) exercise these
-# paths successfully; only the Kind-based PR job is affected.  The skip
-# below lists the spec patterns that depend on a pod to actually mount
-# the volume and run a workload; control-plane categories (CSIDriver
-# registration, capabilities, topology metadata, provisioning RPC error
-# paths, validation) continue to gate every PR.
+# Data-plane workload specs (provisioning + actual pod mount + store data +
+# exec + topology + volume-expand) are now in scope: with agent + node
+# DaemonSets running hostNetwork: true the kernel nvmet listener and the
+# `nvme connect` initiator share the host netns and the connect SYN reaches
+# the listener (see PRD §2.4 for the kernel netns rationale).
 #
-# Override with GINKGO_SKIP='' on a host with the data plane to run the
-# full suite.
-GINKGO_SKIP="${GINKGO_SKIP:-\\[Slow\\]|\\[Serial\\]|\\[Disruptive\\]|Generic Ephemeral-volume|subPath|fsgroupchangepolicy|multiVolume|volume-expand|provisioning.*should provision|volumes should store data|volumes should allow exec|topology should provision a volume}"
+# Override with GINKGO_SKIP='' to opt into the otherwise-excluded categories
+# locally.
+GINKGO_SKIP="${GINKGO_SKIP:-\\[Slow\\]|\\[Serial\\]|\\[Disruptive\\]|Generic Ephemeral-volume}"
 
 if [[ -z "${KUBECONFIG:-}" ]]; then
   echo "ERROR: KUBECONFIG is not set." >&2

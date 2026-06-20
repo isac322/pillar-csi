@@ -439,7 +439,7 @@ spec:
 │  │    - NFS: kernel nfsd 설정                             │ │
 │  │    - SMB: Samba 설정                                   │ │
 │  │  • K8s API 의존성 없음 — 순수 gRPC 서버                  │ │
-│  │  • hostNetwork 불필요 (hostPort: 9500으로 노드 IP 노출) │ │
+│  │  • hostNetwork: true (커널 netns에 nvmet listener 바인딩 필요) │ │
 │  │  • Init container: target 커널 모듈 modprobe            │ │
 │  └───────────────────────────────────────────────────────┘ │
 │                                                           │
@@ -488,9 +488,12 @@ Agent는 **완전히 stateless**하다. 로컬 상태를 저장하지 않는다.
 | `/sys/kernel/config` 마운트 | nvmet/LIO configfs 접근 |
 | `/dev` 마운트 | 블록 디바이스(zvol 등) 접근 |
 | `/lib/modules` 읽기 마운트 (init) | modprobe용 |
-| `hostPort: 9500` (DaemonSet) | agent gRPC 서버를 노드 IP로 노출 (hostNetwork 없이) |
+| `hostPort: 9500` (DaemonSet) | agent gRPC 서버를 노드 IP로 노출 |
+| `hostNetwork: true` (agent + node DaemonSet) | NVMe-oF/iSCSI target listener와 initiator를 호스트 netns에 바인딩 |
 
-**hostNetwork 불필요.** NVMe-oF/iSCSI target은 호스트 커널 레벨 서비스이므로, agent pod 네트워킹 모드와 무관하게 호스트 네트워크에서 listen한다. Target bind IP는 controller가 PillarTarget nodeRef에서 resolve하여 gRPC로 agent에 전달한다.
+**hostNetwork 필수.** 커널의 `nvmet_tcp`는 listening socket을, `nvme-fabrics`는 outbound TCP 연결을 **configfs/`/dev/nvme-fabrics`에 쓴 프로세스의 network namespace에 바인딩한다.** Agent/node DaemonSet을 `hostNetwork: false`로 두면 listener는 agent pod netns에, initiator의 SYN은 node pod netns에서 출발하기 때문에 두 netns 간 격리로 인해 데이터 플레인이 동작하지 않는다 (`NodeStageVolume`에서 `connection refused`). 이는 Kind뿐 아니라 bare-metal에서도 동일하게 재현되며, democratic-csi, OpenEBS Mayastor, Lightbits, NetApp Trident 등 모든 메이저 NVMe-oF/iSCSI CSI 드라이버가 agent + node DaemonSet 둘 다 `hostNetwork: true`로 운용한다. 트레이드오프는 호스트 포트 점유 및 NetworkPolicy 미적용이며, 그 외에 데이터 플레인을 동작시킬 방법이 없으므로 업계 전체가 수용하는 표준 구성이다.
+
+Target bind IP는 controller가 PillarTarget nodeRef에서 resolve하여 gRPC로 agent에 전달한다.
 
 #### gRPC 보안
 
