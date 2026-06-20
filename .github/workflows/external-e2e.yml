@@ -87,6 +87,8 @@ jobs:
         run: ./test/external-e2e/bootstrap.sh
 
       - name: Run External Storage e2e
+        env:
+          KUBECONFIG: "/home/runner/.kube/config"
         run: make test-external-e2e
 
       - name: Teardown Kind cluster
