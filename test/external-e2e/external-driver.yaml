@@ -41,4 +41,4 @@ DriverInfo:
     snapshotDataSource: false
     pvcDataSource: false
   TopologyKeys:
-    - topology.pillar-csi.bhyoo.com/node
+    - pillar-csi.bhyoo.com/nvmeof
