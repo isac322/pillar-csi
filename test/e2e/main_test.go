@@ -306,6 +306,12 @@ func TestMain(m *testing.M) {
 	// seen here is the effective pattern: "^TestE2E$" for all TC-* runs, and
 	// the original pattern for everything else.
 	if !isGinkgoParallelWorker() && !isReexecGuarded() {
+		if !isE2EBuild {
+			_, _ = fmt.Fprintln(os.Stderr,
+				"e2e: in-process build (no -tags=e2e); "+
+					"skipping Kind cluster bootstrap")
+			os.Exit(m.Run())
+		}
 		if runFlag := flag.Lookup("test.run"); runFlag != nil {
 			if !canMatchGinkgoSuite(runFlag.Value.String()) {
 				_, _ = fmt.Fprintf(os.Stderr,
