@@ -45,13 +45,17 @@ docker exec "${CONTROL_PLANE}" bash -c "
   set -e
   export DEBIAN_FRONTEND=noninteractive
   if ! command -v zpool >/dev/null 2>&1; then
-    # zfsutils-linux ships in Debian contrib, not main.  Mirror the contrib
-    # source list that test/e2e/framework/kind/backend_daemonset.go writes.
-    cat > /etc/apt/sources.list.d/e2e-contrib.list <<APTEOF
-deb http://deb.debian.org/debian bookworm main contrib
-deb http://deb.debian.org/debian bookworm-updates main contrib
-deb http://security.debian.org/debian-security bookworm-security main contrib
-APTEOF
+    # zfsutils-linux ships in Debian contrib, not main.  Append 'contrib' to
+    # whichever sources file the Kind node image uses (modern deb822 or
+    # legacy one-line) rather than dropping a new file: the new file would
+    # collide with the signed-by setting of the upstream sources and apt
+    # refuses to load conflicting Signed-By values.
+    if [ -f /etc/apt/sources.list.d/debian.sources ]; then
+      sed -i 's/^\(Components:[[:space:]]*main\)\$/\1 contrib/' /etc/apt/sources.list.d/debian.sources
+    fi
+    if [ -f /etc/apt/sources.list ]; then
+      sed -i 's/\\(^deb .*main\\)\$/\\1 contrib/' /etc/apt/sources.list
+    fi
     apt-get update -qq
     apt-get install -y -q --no-install-recommends zfsutils-linux
   fi
