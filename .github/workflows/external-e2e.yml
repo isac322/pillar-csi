@@ -89,10 +89,11 @@ jobs:
       - name: Run External Storage e2e
         env:
           KUBECONFIG: "/home/runner/.kube/config"
+          E2E_FAIL_FAST: "1"
         run: make test-external-e2e
 
       - name: Dump cluster + kernel diagnostics on failure
-        if: failure()
+        if: ${{ failure() || cancelled() }}
         env:
           KUBECONFIG: "/home/runner/.kube/config"
           NS: "${{ env.E2E_HELM_NAMESPACE }}"

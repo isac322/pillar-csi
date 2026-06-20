@@ -121,6 +121,11 @@ cp "${SC_YAML}" "${KUBE_ROOT_DIR}/storage-class.yaml"
 
 cd "${KUBE_TEST_BIN_DIR}"
 
+if [[ -n "${E2E_FAIL_FAST:-}" ]]; then
+  EXTRA_ARGS+=("-ginkgo.fail-fast")
+  echo "    fail-fast       : enabled"
+fi
+
 exec "${E2E_TEST_BIN}" \
   -kubeconfig="${KUBECONFIG}" \
   -storage.testdriver="${DRIVER_YAML}" \
