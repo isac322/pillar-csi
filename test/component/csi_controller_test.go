@@ -327,6 +327,20 @@ func newCSIControllerTestEnv(t *testing.T) *csiControllerTestEnv {
 	}
 }
 
+// seedComponentPillarVolume creates a stub PillarVolume CRD so that lookups
+// gating on volume existence treat the named volume as a driver-issued
+// volume — used by tests like ValidateVolumeCapabilities that operate on a
+// pre-existing volume rather than provisioning a new one.
+func seedComponentPillarVolume(t *testing.T, env *csiControllerTestEnv, name string) {
+	t.Helper()
+	pv := &v1alpha1.PillarVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+	}
+	if err := env.k8sClient.Create(context.Background(), pv); err != nil {
+		t.Fatalf("seed PillarVolume %q: %v", name, err)
+	}
+}
+
 // newCSIControllerTestEnvWithDialErr builds a ControllerServer whose AgentDialer
 // always returns an error — simulating an unreachable agent.
 func newCSIControllerTestEnvWithDialErr(t *testing.T, dialErr error) *csiControllerTestEnv {
@@ -1041,6 +1055,7 @@ func TestCSIController_ExpandVolume_AgentError(t *testing.T) {
 func TestCSIController_ValidateVolumeCapabilities_Supported(t *testing.T) {
 	t.Parallel()
 	env := newCSIControllerTestEnv(t)
+	seedComponentPillarVolume(t, env, "pvc-component-test")
 	ctx := context.Background()
 
 	supported := []csipb.VolumeCapability_AccessMode_Mode{
@@ -1086,6 +1101,7 @@ func TestCSIController_ValidateVolumeCapabilities_Supported(t *testing.T) {
 func TestCSIController_ValidateVolumeCapabilities_Unsupported(t *testing.T) {
 	t.Parallel()
 	env := newCSIControllerTestEnv(t)
+	seedComponentPillarVolume(t, env, "pvc-component-test")
 	ctx := context.Background()
 
 	unsupported := []csipb.VolumeCapability_AccessMode_Mode{
