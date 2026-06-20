@@ -164,7 +164,15 @@ EOF
 
 # ── 6. Wait for PillarTarget Ready ──────────────────────────────────────────
 log "Waiting for PillarTarget condition=Ready"
-kubectl wait --for=condition=Ready --timeout=2m pillartarget/pillar-target-default
+if ! kubectl wait --for=condition=Ready --timeout=3m pillartarget/pillar-target-default; then
+  log "PillarTarget never reached Ready; dumping CR + dependencies"
+  kubectl get pillartarget pillar-target-default -o yaml || true
+  kubectl get pillarpool ${VG_NAME} -o yaml || true
+  kubectl get pillarprotocol nvmeof-tcp -o yaml || true
+  kubectl -n "${HELM_NAMESPACE}" logs deploy/${HELM_RELEASE}-controller -c controller --tail=120 || true
+  kubectl -n "${HELM_NAMESPACE}" logs ds/${HELM_RELEASE}-agent --tail=80 || true
+  exit 1
+fi
 
 log "Bootstrap complete"
 log "  KUBECONFIG=$(kind get kubeconfig --name=${CLUSTER_NAME} 2>/dev/null | head -1 || echo "$(kubectl config view --minify --raw -o jsonpath='{.clusters[0].cluster.server}')")"
