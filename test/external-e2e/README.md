@@ -67,3 +67,20 @@ pillar-csi behaves like a real CSI driver in a real Kubernetes cluster.
 If you are bringing up a new backend (LVM, ZFS, etc.) duplicate
 `storage-class.yaml` and point `external-driver.yaml.StorageClass.FromFile` at
 the copy. The suite can be run per-backend by varying the StorageClass.
+
+## CI
+
+The suite is wired into [`.github/workflows/external-e2e.yml`](../../.github/workflows/external-e2e.yml)
+with **`workflow_dispatch` only** for now (no per-PR or scheduled run). The
+workflow scaffold installs Kind, kernel modules and pre-pulls all sidecar
+images, but the cluster bootstrap + Helm install + PillarTarget seed step is a
+TODO that will land in a follow-up PR — manual triggers will fail until that
+step is implemented. Once the bootstrap is in place the `schedule` trigger
+will be uncommented for nightly runs.
+
+Why scheduled instead of per-PR: the upstream suite is heavy (~10 minutes,
+large download, real backend required) and would dominate PR-cycle time
+without proportional regression-signal value. csi-sanity covers the gRPC
+surface on every PR; external-e2e covers the in-cluster contract nightly.
+That matches the cadence chosen by Ceph-CSI, AWS EBS CSI, Longhorn and the
+other public CSI drivers that run this suite.
