@@ -6,26 +6,13 @@
 # deliberately kept out of the per-PR CI matrix.  csi-sanity covers the gRPC
 # surface on every PR; this workflow covers the in-cluster storage contract on
 # a slower cadence.
-#
-# Current state:
-#   * Triggers: workflow_dispatch only (schedule is commented out until the
-#     cluster-bootstrap step is wired up — see TODO below).
-#   * Tooling install (Kind, Helm, ZFS, LVM, NVMe-oF kernel modules,
-#     pre-pulled images) mirrors the in-PR `e2e` job so the host environment
-#     is identical.
-#   * The Helm-install + PillarTarget seeding step is a TODO: it requires
-#     either a new Makefile target that drives the project's TestMain setup
-#     without running the Ginkgo suite, or a hand-written bootstrap script.
-#     The follow-up PR that lands the bootstrap will uncomment the schedule
-#     trigger.
 
 name: External Storage E2E
 
 on:
   workflow_dispatch: {}
-  # TODO: enable schedule once the bootstrap step below is implemented.
-  # schedule:
-  #   - cron: '0 7 * * *'  # 07:00 UTC daily
+  schedule:
+    - cron: '0 7 * * *'  # 07:00 UTC daily
 
 permissions:
   contents: read
@@ -87,31 +74,13 @@ jobs:
           docker pull registry.k8s.io/sig-storage/livenessprobe:v2.15.0
           docker pull registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.13.0
 
-      # TODO: replace this placeholder step with the real cluster bootstrap.
-      #
-      # Required actions:
-      #   1. Create the Kind cluster (kind-config.yaml from test/e2e/).
-      #   2. Build + kind-load the controller / node / agent images.
-      #   3. Provision the ZFS pool + LVM VG on the storage-worker node (the
-      #      project's TestMain currently owns this via DockerHostExec).
-      #   4. helm install pillar-csi from ./charts/pillar-csi with values that
-      #      point the agent at the in-cluster backend.
-      #   5. kubectl apply a PillarTarget / PillarPool / PillarProtocol CR
-      #      matching the parameters block in test/external-e2e/storage-class.yaml.
-      #
-      # The follow-up PR that implements this will likely factor out the
-      # corresponding sections of test/e2e/main_test.go into a reusable
-      # `make bootstrap-external-e2e-cluster` target.
-      - name: Bootstrap cluster + Helm install (TODO)
-        run: |
-          echo "::warning title=external-e2e bootstrap::"\
-               "Cluster bootstrap is not implemented yet."\
-               "The run.sh step below will fail until the TODO is addressed."
-          exit 1
+      - name: Bootstrap cluster + Helm-deploy pillar-csi
+        env:
+          CLUSTER_NAME: "${{ env.KIND_CLUSTER }}"
+          HELM_NAMESPACE: "${{ env.E2E_HELM_NAMESPACE }}"
+        run: ./test/external-e2e/bootstrap.sh
 
       - name: Run External Storage e2e
-        env:
-          KUBECONFIG: "${{ runner.temp }}/.kube/config"
         run: make test-external-e2e
 
       - name: Teardown Kind cluster

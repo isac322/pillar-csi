@@ -71,12 +71,18 @@ the copy. The suite can be run per-backend by varying the StorageClass.
 ## CI
 
 The suite is wired into [`.github/workflows/external-e2e.yml`](../../.github/workflows/external-e2e.yml)
-with **`workflow_dispatch` only** for now (no per-PR or scheduled run). The
-workflow scaffold installs Kind, kernel modules and pre-pulls all sidecar
-images, but the cluster bootstrap + Helm install + PillarTarget seed step is a
-TODO that will land in a follow-up PR — manual triggers will fail until that
-step is implemented. Once the bootstrap is in place the `schedule` trigger
-will be uncommented for nightly runs.
+on a `schedule: '0 7 * * *'` (07:00 UTC daily) plus `workflow_dispatch` for
+manual on-demand runs. The workflow:
+
+1. Installs Kind, Helm, ZFS / LVM / NVMe-oF kernel modules and pre-pulls all
+   sidecar images, identical to the in-PR `e2e` job.
+2. Invokes [`bootstrap.sh`](./bootstrap.sh) — creates a Kind cluster,
+   provisions a ZFS pool inside the control-plane node container, builds and
+   `kind load`s the controller / agent / node images, `helm install`s
+   pillar-csi, and applies the PillarTarget / PillarPool / PillarProtocol
+   triple that the StorageClass references.
+3. Runs `make test-external-e2e` against the prepared cluster.
+4. Deletes the Kind cluster on completion (success or failure).
 
 Why scheduled instead of per-PR: the upstream suite is heavy (~10 minutes,
 large download, real backend required) and would dominate PR-cycle time
