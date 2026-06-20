@@ -91,6 +91,84 @@ jobs:
           KUBECONFIG: "/home/runner/.kube/config"
         run: make test-external-e2e
 
+      - name: Dump cluster + kernel diagnostics on failure
+        if: failure()
+        env:
+          KUBECONFIG: "/home/runner/.kube/config"
+          NS: "${{ env.E2E_HELM_NAMESPACE }}"
+          KIND_NODE: "${{ env.KIND_CLUSTER }}-control-plane"
+        run: |
+          echo "==== Pods in pillar-csi namespace ===="
+          kubectl -n "${NS}" get pods -o wide || true
+          echo
+          echo "==== Recent pillar-csi events (all namespaces, sorted) ===="
+          kubectl get events -A --sort-by=.lastTimestamp 2>/dev/null | tail -80 || true
+          echo
+          for pod in $(kubectl -n "${NS}" get pods -o name 2>/dev/null); do
+            for ctr in $(kubectl -n "${NS}" get "${pod}" \
+                -o jsonpath='{range .spec.containers[*]}{.name}{"\n"}{end}' 2>/dev/null); do
+              echo "==== ${pod} container=${ctr} (last 200 lines) ===="
+              kubectl -n "${NS}" logs --tail=200 "${pod}" -c "${ctr}" 2>/dev/null || true
+              echo
+            done
+          done
+          echo "==== PillarTarget / PillarPool / PillarProtocol ===="
+          kubectl get pillartargets,pillarpools,pillarprotocols -o yaml 2>/dev/null || true
+          echo
+          echo "==== PVC / PV / VolumeAttachment ===="
+          kubectl get pvc,pv,volumeattachment -A 2>/dev/null || true
+          echo
+          echo "==== Kind node: nvmet configfs (subsystems + namespaces enable state) ===="
+          docker exec "${KIND_NODE}" sh -c '
+            set -x
+            ls /sys/kernel/config/nvmet/subsystems/ 2>/dev/null || true
+            for sub in /sys/kernel/config/nvmet/subsystems/*/; do
+              echo "--- ${sub}"
+              cat "${sub}attr_allow_any_host" 2>/dev/null || true
+              ls "${sub}allowed_hosts/" 2>/dev/null || true
+              for ns in "${sub}namespaces/"*/; do
+                echo "  namespace ${ns}"
+                cat "${ns}device_path" 2>/dev/null || true
+                cat "${ns}enable" 2>/dev/null || true
+              done
+            done
+            echo "--- ports"
+            ls /sys/kernel/config/nvmet/ports/ 2>/dev/null || true
+            for port in /sys/kernel/config/nvmet/ports/*/; do
+              echo "  port ${port}"
+              cat "${port}addr_traddr" 2>/dev/null || true
+              cat "${port}addr_trsvcid" 2>/dev/null || true
+              cat "${port}addr_trtype" 2>/dev/null || true
+              ls "${port}subsystems/" 2>/dev/null || true
+            done
+            echo "--- hosts"
+            ls /sys/kernel/config/nvmet/hosts/ 2>/dev/null || true
+          ' || true
+          echo
+          echo "==== Kind node: sysfs nvme initiator side ===="
+          docker exec "${KIND_NODE}" sh -c '
+            set -x
+            ls /sys/class/nvme/ 2>/dev/null || true
+            ls /sys/class/nvme-subsystem/ 2>/dev/null || true
+            for sub in /sys/class/nvme-subsystem/*/; do
+              echo "--- ${sub}"
+              cat "${sub}subsysnqn" 2>/dev/null || true
+              ls "${sub}" 2>/dev/null || true
+            done
+            for c in /sys/class/nvme/nvme*; do
+              echo "--- controller ${c}"
+              cat "${c}/subsysnqn" 2>/dev/null || true
+              cat "${c}/state" 2>/dev/null || true
+              cat "${c}/address" 2>/dev/null || true
+              ls "${c}" 2>/dev/null || true
+            done
+            ls /dev/nvme* 2>/dev/null || true
+          ' || true
+          echo
+          echo "==== Kind node: kernel ring buffer (nvme + nvmet only, last 200 lines) ===="
+          docker exec "${KIND_NODE}" sh -c \
+            "dmesg 2>/dev/null | grep -iE 'nvme|nvmet' | tail -200" || true
+
       - name: Teardown Kind cluster
         if: always()
         run: |
