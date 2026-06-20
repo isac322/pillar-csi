@@ -94,6 +94,11 @@ fi
 # to be reachable as "../../test/..." from where it was invoked).  Cd into
 # kubernetes/test/bin so that "../.." lands on the extracted source root.
 KUBE_TEST_BIN_DIR="$(dirname "${E2E_TEST_BIN}")"
+
+# external-driver.yaml's StorageClass.FromFile is also resolved relative to
+# e2e.test's cwd, so stage a copy of storage-class.yaml next to the binary.
+cp "${SC_YAML}" "${KUBE_TEST_BIN_DIR}/storage-class.yaml"
+
 cd "${KUBE_TEST_BIN_DIR}"
 
 exec "${E2E_TEST_BIN}" \
