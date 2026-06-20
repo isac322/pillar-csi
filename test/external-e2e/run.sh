@@ -89,6 +89,13 @@ if [[ -n "${GINKGO_SKIP}" ]]; then
   EXTRA_ARGS+=("-ginkgo.skip=${GINKGO_SKIP}")
 fi
 
+# e2e.test resolves testing-manifests via paths relative to its cwd
+# (it expects test/conformance/testdata/... and test/e2e/testing-manifests/...
+# to be reachable as "../../test/..." from where it was invoked).  Cd into
+# kubernetes/test/bin so that "../.." lands on the extracted source root.
+KUBE_TEST_BIN_DIR="$(dirname "${E2E_TEST_BIN}")"
+cd "${KUBE_TEST_BIN_DIR}"
+
 exec "${E2E_TEST_BIN}" \
   -kubeconfig="${KUBECONFIG}" \
   -storage.testdriver="${DRIVER_YAML}" \
