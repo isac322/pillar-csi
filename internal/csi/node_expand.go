@@ -96,6 +96,25 @@ func (n *NodeServer) NodeExpandVolume(
 		return nil, status.Error(codes.InvalidArgument, "NodeExpandVolume: volume_path is required") //nolint:wrapcheck
 	}
 
+	// CSI spec §4.16: NodeExpandVolume must return NotFound when the volume
+	// the CO references does not exist on this node — i.e. nothing is mounted
+	// at volume_path.  Without this check the call falls through to the
+	// resizer, which returns Internal for an absent device and breaks the
+	// "should fail when volume is not found" sanity test.  We accept the
+	// path as "present" if it exists at all (file or directory), matching
+	// the staging-target semantics; the resizer below handles the mount
+	// lookup and surfaces a real Internal error when the path exists but
+	// isn't a mount point.
+	_, statErr := os.Stat(volumePath)
+	if statErr != nil {
+		if os.IsNotExist(statErr) {
+			return nil, status.Errorf(codes.NotFound,
+				"NodeExpandVolume: volume_path %q does not exist", volumePath)
+		}
+		return nil, status.Errorf(codes.Internal,
+			"NodeExpandVolume: stat %q: %v", volumePath, statErr)
+	}
+
 	// ── Determine filesystem type ────────────────────────────────────────────
 	// Prefer the fsType from the VolumeCapability when present; fall back to
 	// the project default (ext4) when the CO does not supply a capability.

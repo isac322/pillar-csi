@@ -78,7 +78,7 @@ func newExpandServer(t *testing.T, r Resizer) *NodeServer {
 func TestNodeExpandVolume_MissingVolumeID(t *testing.T) {
 	srv := newExpandServer(t, &mockResizer{})
 	_, err := srv.NodeExpandVolume(context.Background(), &csi.NodeExpandVolumeRequest{
-		VolumePath: "/mnt/staging/vol1",
+		VolumePath: t.TempDir(),
 	})
 	if err == nil {
 		t.Fatal("expected error for missing volume_id, got nil")
@@ -107,10 +107,11 @@ func TestNodeExpandVolume_Ext4_DefaultFsType(t *testing.T) {
 	// When no VolumeCapability is provided the server defaults to ext4.
 	mock := &mockResizer{}
 	srv := newExpandServer(t, mock)
+	volumePath := t.TempDir()
 
 	resp, err := srv.NodeExpandVolume(context.Background(), &csi.NodeExpandVolumeRequest{
 		VolumeId:   "vol-1",
-		VolumePath: "/mnt/staging/vol-1",
+		VolumePath: volumePath,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -121,8 +122,8 @@ func TestNodeExpandVolume_Ext4_DefaultFsType(t *testing.T) {
 	if mock.called != 1 {
 		t.Fatalf("expected ResizeFS called once, got %d", mock.called)
 	}
-	if mock.capturedMount != "/mnt/staging/vol-1" {
-		t.Errorf("expected mountPath %q, got %q", "/mnt/staging/vol-1", mock.capturedMount)
+	if mock.capturedMount != volumePath {
+		t.Errorf("expected mountPath %q, got %q", volumePath, mock.capturedMount)
 	}
 	if mock.capturedFsType != defaultFsType {
 		t.Errorf("expected fsType %q (default), got %q", defaultFsType, mock.capturedFsType)
@@ -135,7 +136,7 @@ func TestNodeExpandVolume_Ext4_ExplicitFsType(t *testing.T) {
 
 	resp, err := srv.NodeExpandVolume(context.Background(), &csi.NodeExpandVolumeRequest{
 		VolumeId:   "vol-2",
-		VolumePath: "/mnt/staging/vol-2",
+		VolumePath: t.TempDir(),
 		VolumeCapability: &csi.VolumeCapability{
 			AccessType: &csi.VolumeCapability_Mount{
 				Mount: &csi.VolumeCapability_MountVolume{FsType: defaultFsType},
@@ -156,10 +157,11 @@ func TestNodeExpandVolume_Ext4_ExplicitFsType(t *testing.T) {
 func TestNodeExpandVolume_XFS(t *testing.T) {
 	mock := &mockResizer{}
 	srv := newExpandServer(t, mock)
+	volumePath := t.TempDir()
 
 	resp, err := srv.NodeExpandVolume(context.Background(), &csi.NodeExpandVolumeRequest{
 		VolumeId:   "vol-xfs",
-		VolumePath: "/mnt/staging/vol-xfs",
+		VolumePath: volumePath,
 		VolumeCapability: &csi.VolumeCapability{
 			AccessType: &csi.VolumeCapability_Mount{
 				Mount: &csi.VolumeCapability_MountVolume{FsType: "xfs"},
@@ -175,8 +177,8 @@ func TestNodeExpandVolume_XFS(t *testing.T) {
 	if mock.capturedFsType != "xfs" {
 		t.Errorf("expected fsType %q, got %q", "xfs", mock.capturedFsType)
 	}
-	if mock.capturedMount != "/mnt/staging/vol-xfs" {
-		t.Errorf("expected mountPath %q, got %q", "/mnt/staging/vol-xfs", mock.capturedMount)
+	if mock.capturedMount != volumePath {
+		t.Errorf("expected mountPath %q, got %q", volumePath, mock.capturedMount)
 	}
 }
 
@@ -190,7 +192,7 @@ func TestNodeExpandVolume_CapacityRangeEchoed(t *testing.T) {
 
 	resp, err := srv.NodeExpandVolume(context.Background(), &csi.NodeExpandVolumeRequest{
 		VolumeId:      "vol-3",
-		VolumePath:    "/mnt/staging/vol-3",
+		VolumePath:    t.TempDir(),
 		CapacityRange: &csi.CapacityRange{RequiredBytes: reqBytes},
 	})
 	if err != nil {
@@ -208,7 +210,7 @@ func TestNodeExpandVolume_NoCapacityRange_ZeroBytes(t *testing.T) {
 
 	resp, err := srv.NodeExpandVolume(context.Background(), &csi.NodeExpandVolumeRequest{
 		VolumeId:   "vol-4",
-		VolumePath: "/mnt/staging/vol-4",
+		VolumePath: t.TempDir(),
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -226,7 +228,7 @@ func TestNodeExpandVolume_ResizerError_ReturnsInternal(t *testing.T) {
 
 	_, err := srv.NodeExpandVolume(context.Background(), &csi.NodeExpandVolumeRequest{
 		VolumeId:   "vol-fail",
-		VolumePath: "/mnt/staging/vol-fail",
+		VolumePath: t.TempDir(),
 	})
 	if err == nil {
 		t.Fatal("expected error, got nil")
@@ -247,7 +249,7 @@ func TestNodeExpandVolume_NilCapabilityMountBlock(t *testing.T) {
 
 	_, err := srv.NodeExpandVolume(context.Background(), &csi.NodeExpandVolumeRequest{
 		VolumeId:   "vol-5",
-		VolumePath: "/mnt/staging/vol-5",
+		VolumePath: t.TempDir(),
 		VolumeCapability: &csi.VolumeCapability{
 			AccessType: &csi.VolumeCapability_Mount{
 				Mount: &csi.VolumeCapability_MountVolume{FsType: ""},
