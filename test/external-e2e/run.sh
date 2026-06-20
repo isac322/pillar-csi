@@ -64,9 +64,9 @@ if [[ -z "${E2E_TEST_BIN:-}" ]]; then
 
     echo "==> Extracting to ${EXTRACT_DIR}"
     mkdir -p "${EXTRACT_DIR}"
-    tar -xzf "${TARBALL}" -C "${EXTRACT_DIR}" \
-      kubernetes/test/bin/e2e.test \
-      kubernetes/test/bin/ginkgo
+    # Extract everything: e2e.test relies on testing-manifests being present
+    # at "../../testing-manifests" relative to its binary location.
+    tar -xzf "${TARBALL}" -C "${EXTRACT_DIR}"
   fi
 fi
 
