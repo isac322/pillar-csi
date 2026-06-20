@@ -97,6 +97,18 @@ done
 
 # ── 4. Helm install pillar-csi ──────────────────────────────────────────────
 log "Helm-installing release ${HELM_RELEASE} into namespace ${HELM_NAMESPACE}"
+# Dump every pod / event in the release namespace on Helm failure so the CI
+# log captures the actual reason instead of just "context deadline exceeded".
+trap 'rc=$?; if [ $rc -ne 0 ]; then
+  log "Helm install failed; dumping namespace ${HELM_NAMESPACE} state";
+  kubectl -n "${HELM_NAMESPACE}" get pods,events --sort-by=.metadata.creationTimestamp || true;
+  for pod in $(kubectl -n "${HELM_NAMESPACE}" get pods -o name 2>/dev/null); do
+    log "---- describe ${pod} ----";
+    kubectl -n "${HELM_NAMESPACE}" describe "${pod}" || true;
+    log "---- logs ${pod} (all containers, last 80 lines) ----";
+    kubectl -n "${HELM_NAMESPACE}" logs "${pod}" --all-containers --tail=80 --prefix=true || true;
+  done;
+fi; exit $rc' EXIT
 helm upgrade --install "${HELM_RELEASE}" "${REPO_ROOT}/charts/pillar-csi" \
   --namespace "${HELM_NAMESPACE}" --create-namespace \
   --wait --timeout 5m \
