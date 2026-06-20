@@ -19,8 +19,8 @@ multi-pod attach, etc.) works in a real cluster.
    [Helm chart](../../charts/pillar-csi/)).
 3. A `PillarTarget` matching the StorageClass `parameters` block in
    [`storage-class.yaml`](./storage-class.yaml) — by default
-   `pillar-target-default` with pool `tank`, ZFS zvol backend, NVMe-oF TCP
-   protocol.
+   `pillar-target-default` with LVM volume group `pillar-vg`, `lvm-lv`
+   backend, and NVMe-oF TCP protocol.
 4. `curl`, `tar` and `kubectl` on PATH.
 
 ## Run
@@ -71,22 +71,16 @@ the copy. The suite can be run per-backend by varying the StorageClass.
 ## CI
 
 The suite is wired into [`.github/workflows/external-e2e.yml`](../../.github/workflows/external-e2e.yml)
-on a `schedule: '0 7 * * *'` (07:00 UTC daily) plus `workflow_dispatch` for
-manual on-demand runs. The workflow:
+and runs on every pull request, every push to `master`, and a daily
+`schedule: '0 7 * * *'` (07:00 UTC) — plus `workflow_dispatch` for manual
+on-demand runs. The workflow:
 
-1. Installs Kind, Helm, ZFS / LVM / NVMe-oF kernel modules and pre-pulls all
+1. Installs Kind, Helm, LVM / NVMe-oF kernel modules and pre-pulls all
    sidecar images, identical to the in-PR `e2e` job.
 2. Invokes [`bootstrap.sh`](./bootstrap.sh) — creates a Kind cluster,
-   provisions a ZFS pool inside the control-plane node container, builds and
-   `kind load`s the controller / agent / node images, `helm install`s
-   pillar-csi, and applies the PillarTarget / PillarPool / PillarProtocol
-   triple that the StorageClass references.
+   provisions an LVM Volume Group inside the control-plane node container,
+   builds and `kind load`s the controller / agent / node images,
+   `helm install`s pillar-csi, and applies the PillarTarget / PillarPool /
+   PillarProtocol triple that the StorageClass references.
 3. Runs `make test-external-e2e` against the prepared cluster.
 4. Deletes the Kind cluster on completion (success or failure).
-
-Why scheduled instead of per-PR: the upstream suite is heavy (~10 minutes,
-large download, real backend required) and would dominate PR-cycle time
-without proportional regression-signal value. csi-sanity covers the gRPC
-surface on every PR; external-e2e covers the in-cluster contract nightly.
-That matches the cadence chosen by Ceph-CSI, AWS EBS CSI, Longhorn and the
-other public CSI drivers that run this suite.

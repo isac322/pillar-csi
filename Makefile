@@ -224,15 +224,9 @@ test-e2e-lvm: manifests generate fmt vet ## Run LVM-only e2e specs in internal-a
 # ─── De-facto CSI test suites ─────────────────────────────────────────────────
 # Two industry-standard test suites that every CSI driver should pass.
 
-# SANITY_SKIP lists the csi-sanity specs that surface real CSI specification
-# deviations in the driver (tracked separately for fix-up).  Override on the
-# command line to widen / narrow the skip set:
-#   make test-csi-sanity SANITY_SKIP=''
-SANITY_SKIP ?= GetCapacity.*no optional values|ValidateVolumeCapabilities.*does not exist|ControllerPublishVolume.*does not exist|NodeExpandVolume.*volume is not found
-
 .PHONY: test-csi-sanity
 test-csi-sanity: fmt vet ## Run the upstream kubernetes-csi/csi-test sanity suite (in-process, no cluster).
-	go test -tags=csi_sanity -timeout=180s -v ./test/sanity/... -ginkgo.skip='$(SANITY_SKIP)'
+	go test -tags=csi_sanity -timeout=180s -v ./test/sanity/...
 
 .PHONY: test-external-e2e
 test-external-e2e: ## Run the SIG-Storage External Storage e2e suite against a running Kind cluster. Requires KUBECONFIG.

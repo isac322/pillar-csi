@@ -1,15 +1,16 @@
-# SIG-Storage External Storage e2e — scheduled / on-demand workflow.
-#
-# Runs the upstream `e2e.test -storage.testdriver=external-driver.yaml` suite
-# against a freshly bootstrapped Kind cluster with pillar-csi Helm-installed.
-# The suite is heavy (~10 min, large download, real backend required) so it is
-# deliberately kept out of the per-PR CI matrix.  csi-sanity covers the gRPC
-# surface on every PR; this workflow covers the in-cluster storage contract on
-# a slower cadence.
+# SIG-Storage External Storage e2e — runs upstream `e2e.test
+# -storage.testdriver=external-driver.yaml` against a freshly bootstrapped
+# Kind cluster with pillar-csi Helm-installed.  Exercised on every PR and
+# master push so the in-cluster storage contract is gated alongside the
+# in-process csi-sanity check.  A nightly schedule keeps the signal alive
+# even when no PRs land.
 
 name: External Storage E2E
 
 on:
+  pull_request: {}
+  push:
+    branches: [master]
   workflow_dispatch: {}
   schedule:
     - cron: '0 7 * * *'  # 07:00 UTC daily

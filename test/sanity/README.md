@@ -27,11 +27,8 @@ in-memory `Connector` / `Mounter` / `Resizer` fakes.
 
 ```bash
 make test-csi-sanity
-# or, exercising every spec (including the known driver gaps below):
-make test-csi-sanity SANITY_SKIP=''
 # or raw:
-go test -tags=csi_sanity -timeout=180s -v ./test/sanity/... \
-    -ginkgo.skip='GetCapacity.*no optional values|ValidateVolumeCapabilities.*does not exist|ControllerPublishVolume.*does not exist|NodeExpandVolume.*volume is not found'
+go test -tags=csi_sanity -timeout=180s -v ./test/sanity/...
 ```
 
 The `csi_sanity` build tag keeps the `kubernetes-csi/csi-test` dependency out
@@ -46,16 +43,12 @@ of the default test/build matrix.
 | `fakes.go` | In-memory `Connector` / `Mounter` / `Resizer` fakes for the node service. |
 | `doc.go` | Package documentation (always compiled so `go list` works without the build tag). |
 
-## Known driver compliance gaps
+## Coverage
 
-Running the suite today surfaces real CSI spec deviations that the driver
-itself needs to address (these are not test infrastructure problems):
+Every spec the driver's advertised capabilities exercise is asserted on every
+CI run.  Adding a new RPC or capability is enough to enrol it: csi-sanity
+picks the spec set up from `Identity.GetPluginCapabilities`,
+`Controller.ControllerGetCapabilities` and `Node.NodeGetCapabilities`.
 
-* `Controller.GetCapacity` rejects empty `parameters`; the spec allows it.
-* `Controller.ValidateVolumeCapabilities` returns OK for a non-existent volume;
-  the spec mandates `NotFound`.
-* `Controller.ControllerPublishVolume` returns `InvalidArgument` for unknown
-  volume / node IDs; the spec mandates `NotFound`.
-* `Node.NodeExpandVolume` returns the wrong code when the volume is missing.
-
-Fix these in the driver and the corresponding spec entries will turn green.
+A single spec is currently `Pending` upstream (CSI `ListVolumes` pagination
+edge case); it is owned by the csi-test maintainers, not by this driver.
