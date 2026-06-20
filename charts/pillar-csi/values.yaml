@@ -81,7 +81,7 @@ controller:
         # -- csi-provisioner image repository.
         repository: registry.k8s.io/sig-storage/csi-provisioner
         # -- csi-provisioner image tag.
-        tag: "v5.2.0"
+        tag: "v6.3.0"
         pullPolicy: ""
       # -- Resource requests/limits for the provisioner sidecar.
       resources:
@@ -99,7 +99,7 @@ controller:
         # -- csi-attacher image repository.
         repository: registry.k8s.io/sig-storage/csi-attacher
         # -- csi-attacher image tag.
-        tag: "v4.8.1"
+        tag: "v4.12.0"
         pullPolicy: ""
       # -- Resource requests/limits for the attacher sidecar.
       resources:
@@ -117,7 +117,7 @@ controller:
         # -- csi-resizer image repository.
         repository: registry.k8s.io/sig-storage/csi-resizer
         # -- csi-resizer image tag.
-        tag: "v1.13.2"
+        tag: "v2.2.0"
         pullPolicy: ""
       # -- Resource requests/limits for the resizer sidecar.
       resources:
@@ -135,7 +135,7 @@ controller:
         # -- livenessprobe image repository.
         repository: registry.k8s.io/sig-storage/livenessprobe
         # -- livenessprobe image tag (shared with node liveness sidecar).
-        tag: "v2.15.0"
+        tag: "v2.19.0"
         pullPolicy: ""
       # -- Resource requests/limits for the liveness-probe sidecar.
       resources:
@@ -221,7 +221,7 @@ node:
       # -- Image used for the modprobe init container (needs kmod/modprobe binary).
       repository: busybox
       # -- Init container image tag.
-      tag: "1.36"
+      tag: "1.36.1"
       pullPolicy: ""
     # -- Kernel modules to load. Failures are silently ignored (best-effort).
     # nvme_fabrics must be listed before nvme_tcp (it is a dependency).
@@ -246,7 +246,7 @@ node:
         # -- csi-node-driver-registrar image repository.
         repository: registry.k8s.io/sig-storage/csi-node-driver-registrar
         # -- csi-node-driver-registrar image tag.
-        tag: "v2.13.0"
+        tag: "v2.17.0"
         pullPolicy: ""
       # -- Resource requests/limits for the node-driver-registrar sidecar.
       resources:
@@ -264,7 +264,7 @@ node:
         # -- livenessprobe image repository (can differ from controller's).
         repository: registry.k8s.io/sig-storage/livenessprobe
         # -- livenessprobe image tag.
-        tag: "v2.15.0"
+        tag: "v2.19.0"
         pullPolicy: ""
       # -- Resource requests/limits for the liveness-probe sidecar.
       resources:
@@ -361,7 +361,7 @@ agent:
       # -- Image used for the modprobe init container (needs kmod/modprobe binary).
       repository: busybox
       # -- Init container image tag.
-      tag: "1.36"
+      tag: "1.36.1"
       pullPolicy: ""
     # -- Kernel modules to load. Failures are silently ignored (best-effort).
     modules:

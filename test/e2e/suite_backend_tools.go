@@ -77,28 +77,38 @@ func installKindContainerBackendTools(ctx context.Context, nodeContainer string,
 
 	// ── Step 1: Enable contrib component ─────────────────────────────────────
 	//
-	// zfsutils-linux is in the Debian bookworm "contrib" component. The
-	// standard kindest/node image only has "main" in its apt sources, so we
-	// must add "contrib" before the package will be found.
+	// zfsutils-linux is in the Debian "contrib" component. The standard
+	// kindest/node image only has "main" in its apt sources, so we must add
+	// "contrib" before the package will be found.
+	//
+	// The Debian codename is detected at runtime from the node's
+	// /etc/os-release so this works on bookworm (kind <= v0.27.0) and trixie+
+	// (kind >= v0.32.0) without changes — hardcoding bookworm caused
+	// perl-base version conflicts when kind v0.32.0 switched the default
+	// node image to trixie.
 	//
 	// We write a new sources entry file rather than modifying the existing one
 	// to minimise the risk of corrupting the package index.
-	const contribSources = `Types: deb
+	const contribSourcesScript = `set -e
+CODENAME=$(. /etc/os-release 2>/dev/null; echo "${VERSION_CODENAME:-bookworm}")
+cat > /etc/apt/sources.list.d/debian.sources <<APTEOF
+Types: deb
 URIs: http://deb.debian.org/debian
-Suites: bookworm bookworm-updates
+Suites: ${CODENAME} ${CODENAME}-updates
 Components: main contrib
 Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
 
 Types: deb
 URIs: http://deb.debian.org/debian-security
-Suites: bookworm-security
+Suites: ${CODENAME}-security
 Components: main contrib
 Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
+APTEOF
 `
 
 	if _, err := kindContainerExec(ctx, nodeContainer,
 		"bash", "-c",
-		fmt.Sprintf("cat > /etc/apt/sources.list.d/debian.sources << 'SOURCES_EOF'\n%sSOURCES_EOF", contribSources),
+		contribSourcesScript,
 	); err != nil {
 		_, _ = fmt.Fprintf(output,
 			"[AC4] warn: enable contrib apt source in %s: %v — continuing\n",

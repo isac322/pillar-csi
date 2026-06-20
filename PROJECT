@@ -2,7 +2,7 @@
 # This file is used to track the info used to scaffold your project
 # and allow the plugins properly work.
 # More info: https://book.kubebuilder.io/reference/project-config.html
-cliVersion: v4.10.1
+cliVersion: v4.15.0
 domain: pillar-csi.bhyoo.com
 layout:
 - go.kubebuilder.io/v4

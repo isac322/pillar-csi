@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup Go
         uses: actions/setup-go@v6
@@ -21,7 +21,7 @@ jobs:
       - name: Run linter
         uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.11.4
+          version: v2.12.2
 
   verify-tc-coverage:
     name: TC Coverage Verification
@@ -32,7 +32,7 @@ jobs:
       !contains(github.event.head_commit.message, '[skip tc-verify]')
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup Go
         uses: actions/setup-go@v6
@@ -86,7 +86,7 @@ jobs:
     needs: [verify-tc-coverage]
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup Go
         uses: actions/setup-go@v6
@@ -103,7 +103,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup Go
         uses: actions/setup-go@v6
@@ -131,7 +131,7 @@ jobs:
       # ── Kind tooling ──────────────────────────────────────────────────────
       # kind tool release to install.  Bump together with KIND_NODE_IMAGE when
       # upgrading the Kubernetes version used in the e2e cluster.
-      KIND_VERSION: "v0.27.0"
+      KIND_VERSION: "v0.32.0"
 
       # ── Cluster & image names ─────────────────────────────────────────────
       KIND_CLUSTER: "pillar-csi-e2e"
@@ -150,7 +150,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup Go
         uses: actions/setup-go@v6
@@ -232,7 +232,7 @@ jobs:
       # the local Docker daemon cache BEFORE any docker build or Kind cluster
       # creation.  Two categories:
       #
-      # 1. Dockerfile base images — alpine:3.21 and golang:1.26-alpine3.23 are
+      # 1. Dockerfile base images — alpine:3.24 and golang:1.26-alpine3.24 are
       #    the FROM stages in the unified multi-target Dockerfile.
       #    Pre-pulling them here means "docker build" finds them in the local
       #    cache and never contacts Docker Hub, avoiding HTTP 429 rate-limit
@@ -244,21 +244,18 @@ jobs:
       - name: Pre-pull Docker Hub base images (Dockerfile stages)
         run: |
           # Runtime base used by agent and node targets in the unified Dockerfile.
-          docker pull alpine:3.21@sha256:56fa17d2a7e7f168a043a2712e63aed1f8543aeafdcee47c58dcffe38ed51099
-          docker tag \
-            alpine:3.21@sha256:56fa17d2a7e7f168a043a2712e63aed1f8543aeafdcee47c58dcffe38ed51099 \
-            alpine:3.21
+          docker pull alpine:3.24
           # Shared builder stage used by all three targets.
-          docker pull golang:1.26-alpine3.23
+          docker pull golang:1.26-alpine3.24
 
       - name: Pre-pull third-party images
         run: |
-          docker pull busybox:1.36
-          docker pull registry.k8s.io/sig-storage/csi-provisioner:v5.2.0
-          docker pull registry.k8s.io/sig-storage/csi-attacher:v4.8.1
-          docker pull registry.k8s.io/sig-storage/csi-resizer:v1.13.2
-          docker pull registry.k8s.io/sig-storage/livenessprobe:v2.15.0
-          docker pull registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.13.0
+          docker pull busybox:1.36.1
+          docker pull registry.k8s.io/sig-storage/csi-provisioner:v6.3.0
+          docker pull registry.k8s.io/sig-storage/csi-attacher:v4.12.0
+          docker pull registry.k8s.io/sig-storage/csi-resizer:v2.2.0
+          docker pull registry.k8s.io/sig-storage/livenessprobe:v2.19.0
+          docker pull registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.17.0
 
       # ── run tests ─────────────────────────────────────────────────────────
       # make test-e2e is the canonical entry point for the full 437-TC Ginkgo
@@ -339,7 +336,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup Go
         uses: actions/setup-go@v6
@@ -392,7 +389,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up Docker Buildx
         id: buildx
