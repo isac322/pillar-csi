@@ -40,6 +40,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 const (
@@ -74,9 +75,17 @@ type NvmetTarget struct {
 	// e.g. "/dev/zvol/tank/pvc-abc123".
 	DevicePath string
 
-	// BindAddress is the IP address on which the NVMe-oF TCP port will listen,
-	// e.g. "192.168.1.10".  Resolved by the controller from PillarTarget and
-	// passed in the MountVolume RPC call — never looked up by the agent itself.
+	// BindAddress is the publicly-advertised IP address of the NVMe-oF TCP
+	// endpoint as seen by the initiator, e.g. "192.168.1.10".  Resolved by
+	// the controller from PillarTarget and forwarded verbatim to the
+	// initiator via ExportInfo.Address; the agent never resolves it itself.
+	//
+	// It is NOT written to nvmet's addr_traddr — that file holds the kernel
+	// bind address, which must be reachable from the agent process's network
+	// namespace.  In Kubernetes deployments the agent runs without host
+	// networking, so the only address guaranteed to be bindable is the
+	// wildcard "0.0.0.0".  See createPort for how this separation is
+	// enforced.
 	BindAddress string
 
 	// Port is the TCP port number the target listens on (default: 4420).
@@ -158,6 +167,22 @@ func writeFile(path, content string) error {
 		return fmt.Errorf("configfs write %q = %q: %w", path, content, err)
 	}
 	return nil
+}
+
+// readFileTrimmed reads a configfs pseudo-file and returns the trimmed value.
+// A missing file is reported as "" + nil so callers can distinguish "freshly
+// created, no value yet" from a real I/O error.  This is the dual of
+// writeFile and is used to make subsystem-level writes idempotent against
+// configfs's "write-once-while-enabled" enforcement (EBUSY on device_path).
+func readFileTrimmed(path string) (string, error) {
+	data, err := os.ReadFile(path) //nolint:gosec // configfs paths constructed from validated NQN/namespace inputs
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("configfs read %q: %w", path, err)
+	}
+	return strings.TrimRight(string(data), "\x00\n"), nil
 }
 
 // mkdirAll creates path and all missing parent directories, mirroring
@@ -316,11 +341,27 @@ func (t *NvmetTarget) createNamespace() error {
 	if err != nil {
 		return fmt.Errorf("createNamespace %q ns=%d: %w", t.SubsystemNQN, t.NamespaceID, err)
 	}
+
+	// The kernel rejects writes to device_path while the namespace is
+	// enabled, returning EBUSY.  Apply is expected to be idempotent, so a
+	// retry after a partially-successful previous Apply (e.g. port-symlink
+	// failure leaving the namespace enabled) must not surface as an EBUSY
+	// here.  Read the current value first and skip the write when it
+	// already matches the desired device path.
 	devPath := filepath.Join(nsDir, "device_path")
-	err = writeFile(devPath, t.DevicePath)
-	if err != nil {
-		return fmt.Errorf("createNamespace %q ns=%d: %w", t.SubsystemNQN, t.NamespaceID, err)
+	current, readErr := readFileTrimmed(devPath)
+	if readErr != nil {
+		return fmt.Errorf("createNamespace %q ns=%d read device_path: %w",
+			t.SubsystemNQN, t.NamespaceID, readErr)
 	}
+	if current != t.DevicePath {
+		err = writeFile(devPath, t.DevicePath)
+		if err != nil {
+			return fmt.Errorf("createNamespace %q ns=%d: %w",
+				t.SubsystemNQN, t.NamespaceID, err)
+		}
+	}
+
 	enablePath := filepath.Join(nsDir, "enable")
 	err = writeFile(enablePath, "1")
 	if err != nil {
@@ -346,6 +387,17 @@ func (t *NvmetTarget) ResizeNamespace() error {
 	return nil
 }
 
+// listenWildcard is the kernel-side bind address written to nvmet's
+// addr_traddr.  It is intentionally distinct from NvmetTarget.BindAddress:
+// the latter is what the initiator connects to (a routable node IP) while
+// addr_traddr is what the kernel binds inside the agent's network namespace.
+// In pod-networked deployments the routable node IP is not present on any
+// interface visible to the pod, so the kernel returns EADDRNOTAVAIL when the
+// subsystem-to-port symlink is created.  Binding the wildcard accepts
+// connections from every interface — including the host bridge — and lets
+// initiators use the advertised BindAddress unchanged.
+const listenWildcard = "0.0.0.0"
+
 // createPort creates the configfs port directory for this target's bind
 // address and TCP port, then configures the transport attributes.
 //
@@ -355,7 +407,7 @@ func (t *NvmetTarget) ResizeNamespace() error {
 // After the port directory is created the function writes:
 //   - addr_trtype  = "tcp"
 //   - addr_adrfam  = "ipv4"  (TODO: detect IPv6 from BindAddress)
-//   - addr_traddr  = <BindAddress>
+//   - addr_traddr  = "0.0.0.0"  (kernel-side bind; see listenWildcard)
 //   - addr_trsvcid = <Port>
 //
 // The operation is idempotent: repeated calls with the same parameters
@@ -376,7 +428,7 @@ func (t *NvmetTarget) createPort() (uint32, error) {
 	attrs := map[string]string{
 		"addr_trtype":  "tcp",
 		"addr_adrfam":  "ipv4",
-		"addr_traddr":  t.BindAddress,
+		"addr_traddr":  listenWildcard,
 		"addr_trsvcid": fmt.Sprintf("%d", port),
 	}
 	for attr, val := range attrs {

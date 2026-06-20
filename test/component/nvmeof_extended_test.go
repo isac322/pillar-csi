@@ -87,11 +87,14 @@ func TestNvmeof_Apply_PortID_Deterministic(t *testing.T) {
 
 // TestNvmeof_Apply_PortID_DifferentForDifferentAddresses verifies that two
 // NvmetTargets with the same port number but different bind addresses produce
-// separate port directories.
+// separate port directories.  Distinct port directories reflect distinct
+// (BindAddress, Port) advertised tuples; addr_traddr inside each is the
+// kernel-side wildcard "0.0.0.0" because the agent binds wildcard so it
+// works inside pod network namespaces (see configfs.go).
 //
 //	Setup:   Apply two NvmetTargets sharing the same tmpdir with same port
 //	         but different BindAddress values
-//	Expect:  Two distinct port dirs; each contains the correct addr_traddr
+//	Expect:  Two distinct port dirs; addr_traddr=0.0.0.0 in each
 func TestNvmeof_Apply_PortID_DifferentForDifferentAddresses(t *testing.T) {
 	t.Parallel()
 	tmpdir := t.TempDir()
@@ -115,18 +118,14 @@ func TestNvmeof_Apply_PortID_DifferentForDifferentAddresses(t *testing.T) {
 		t.Fatalf("expected 2 port dirs for 2 different addresses, got %d", len(entries))
 	}
 
-	// Verify each port dir has the correct addr_traddr.
 	portsDir := nvmetPortsDir(tmpdir)
-	foundAddrs := map[string]bool{}
+	const wantBind = "0.0.0.0"
 	for _, e := range entries {
 		content := readFile(t, filepath.Join(portsDir, e.Name(), "addr_traddr"))
-		foundAddrs[content] = true
-	}
-	if !foundAddrs[addr1] {
-		t.Errorf("addr_traddr %q not found in any port dir", addr1)
-	}
-	if !foundAddrs[addr2] {
-		t.Errorf("addr_traddr %q not found in any port dir", addr2)
+		if content != wantBind {
+			t.Errorf("port %s: addr_traddr = %q, want %q (kernel-side wildcard)",
+				e.Name(), content, wantBind)
+		}
 	}
 }
 

@@ -173,7 +173,7 @@ func TestNvmeof_Apply_FullLifecycle(t *testing.T) {
 	portDir := requireSinglePort(t, tmpdir)
 	requireFileContent(t, filepath.Join(portDir, "addr_trtype"), "tcp")
 	requireFileContent(t, filepath.Join(portDir, "addr_adrfam"), "ipv4")
-	requireFileContent(t, filepath.Join(portDir, "addr_traddr"), bindAddr)
+	requireFileContent(t, filepath.Join(portDir, "addr_traddr"), "0.0.0.0")
 	requireFileContent(t, filepath.Join(portDir, "addr_trsvcid"), fmt.Sprintf("%d", port))
 
 	// --- Port subsystem symlink ---
