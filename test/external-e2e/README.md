@@ -84,3 +84,23 @@ on-demand runs. The workflow:
    PillarProtocol triple that the StorageClass references.
 3. Runs `make test-external-e2e` against the prepared cluster.
 4. Deletes the Kind cluster on completion (success or failure).
+
+### Skipped spec categories
+
+`run.sh` ships a default `GINKGO_SKIP` that excludes the test patterns whose
+successful execution requires the full in-Kind NVMe-oF data plane:
+
+| Pattern | Why excluded today |
+| --- | --- |
+| `\[Slow\]` `\[Serial\]` `\[Disruptive\]` | Upstream tags that gate slow / disruptive tests on PR cadence, matching the SIG-Storage default. |
+| `Generic Ephemeral-volume` | Inline ephemeral volumes require the ephemeral PVC controller plus successful pod-mount of an NVMe-oF target. |
+| `subPath` | Pod sub-path mounting via a CSI-provisioned NVMe-oF volume inside Kind. |
+| `fsgroupchangepolicy` `multiVolume` `volume-expand` | Same root cause — pod-level mount of an NVMe-oF target inside the Kind node container. |
+| `provisioning.*should provision` `volumes should store data` | Tests that write data into the mounted filesystem. |
+
+The driver code paths these tests would cover are exercised by the
+in-process csi-sanity suite and the component tests; the gap surfaces only
+when the full pod-mount lifecycle runs end-to-end inside Kind.
+
+Set `GINKGO_SKIP=''` to run the full suite locally on a bare-metal cluster
+where the NVMe-oF data plane is available.

@@ -22,6 +22,11 @@ jobs:
   external-e2e:
     name: SIG-Storage External Storage e2e
     runs-on: ubuntu-latest
+    # The default skip set keeps the active spec count to roughly 60 (no
+    # pod-mount lifecycle tests).  30 minutes is enough headroom to absorb
+    # one or two retries while preventing a stuck spec from holding the
+    # PR signal back indefinitely.
+    timeout-minutes: 30
     env:
       KIND_VERSION: "v0.27.0"
       KIND_CLUSTER: "pillar-csi-ext-e2e"
