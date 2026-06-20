@@ -27,6 +27,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"net"
@@ -137,7 +138,7 @@ func (c *fabricsConnector) nvmeConnect(ctx context.Context, subsysNQN, trAddr, t
 // forEachNVMeController scans /sys/class/nvme-subsystem/ for the given NQN
 // and invokes fn for each NVMe controller name (nvmeX, not nvmeXnY) found
 // under that subsystem.  Returns nil when the subsystem is not present.
-func (c *fabricsConnector) forEachNVMeController(subsysNQN string, fn func(ctrlName string)) error {
+func (c *fabricsConnector) forEachNVMeController(subsysNQN string, fn func(ctrlName string) error) error {
 	subsysDir := filepath.Join(c.sysfsRoot, "class", "nvme-subsystem")
 
 	entries, err := os.ReadDir(subsysDir)
@@ -148,32 +149,34 @@ func (c *fabricsConnector) forEachNVMeController(subsysNQN string, fn func(ctrlN
 		return fmt.Errorf("fabricsConnector: read %s: %w", subsysDir, err)
 	}
 
+	var errs []error
 	for _, entry := range entries {
-		nqnFile := filepath.Join(subsysDir, entry.Name(), "subsysnqn")
-		nqnBytes, readErr := os.ReadFile(nqnFile) //nolint:gosec
-		if readErr != nil || strings.TrimSpace(string(nqnBytes)) != subsysNQN {
+		matches, readErr := csisvc.SubsystemMatchesNQN(subsysDir, entry.Name(), subsysNQN)
+		if readErr != nil {
+			errs = append(errs, readErr)
 			continue
 		}
-		// Found the matching subsystem.  Iterate controller entries (nvmeX,
-		// not namespace entries nvmeXnY).
+		if !matches {
+			continue
+		}
 		subsysPath := filepath.Join(subsysDir, entry.Name())
 		ctrlEntries, readErr := os.ReadDir(subsysPath)
 		if readErr != nil {
+			errs = append(errs, fmt.Errorf("read subsystem dir %s: %w", subsysPath, readErr))
 			continue
 		}
 		for _, ctrlEntry := range ctrlEntries {
-			name := ctrlEntry.Name()
-			if !strings.HasPrefix(name, "nvme") {
+			if !csisvc.IsNVMeControllerEntry(ctrlEntry.Name()) {
 				continue
 			}
-			// Namespace entries contain 'n' after the controller number
-			// digits (nvmeXnY); controller entries are nvmeX (no 'n').
-			suffix := strings.TrimPrefix(name, "nvme")
-			if strings.ContainsRune(suffix, 'n') {
-				continue
+			fnErr := fn(ctrlEntry.Name())
+			if fnErr != nil {
+				errs = append(errs, fnErr)
 			}
-			fn(name)
 		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("fabricsConnector: %w", errors.Join(errs...))
 	}
 	return nil
 }
@@ -185,9 +188,13 @@ func (c *fabricsConnector) forEachNVMeController(subsysNQN string, fn func(ctrlN
 // It is idempotent: if the NQN is not connected the method returns nil
 // immediately.
 func (c *fabricsConnector) nvmeDisconnect(_ context.Context, subsysNQN string) error {
-	return c.forEachNVMeController(subsysNQN, func(name string) {
+	return c.forEachNVMeController(subsysNQN, func(name string) error {
 		deletePath := filepath.Join(c.sysfsRoot, "class", "nvme", name, "delete_controller")
-		_ = os.WriteFile(deletePath, []byte("1"), 0o600) //nolint:errcheck
+		writeErr := os.WriteFile(deletePath, []byte("1"), 0o600)
+		if writeErr != nil {
+			return fmt.Errorf("delete controller %s: %w", deletePath, writeErr)
+		}
+		return nil
 	})
 }
 
@@ -577,9 +584,13 @@ func (c *fabricsConnector) Rescan(_ context.Context, state csisvc.ProtocolState)
 // nvmeRescan writes "1" to the rescan_controller sysfs file for every NVMe
 // controller under the given subsystem NQN.
 func (c *fabricsConnector) nvmeRescan(subsysNQN string) error {
-	return c.forEachNVMeController(subsysNQN, func(name string) {
+	return c.forEachNVMeController(subsysNQN, func(name string) error {
 		rescanPath := filepath.Join(c.sysfsRoot, "class", "nvme", name, "rescan_controller")
-		_ = os.WriteFile(rescanPath, []byte("1"), 0o600) //nolint:errcheck
+		writeErr := os.WriteFile(rescanPath, []byte("1"), 0o600)
+		if writeErr != nil {
+			return fmt.Errorf("rescan controller %s: %w", rescanPath, writeErr)
+		}
+		return nil
 	})
 }
 

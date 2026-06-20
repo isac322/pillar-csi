@@ -18,9 +18,15 @@ limitations under the License.
 package nvmeof
 
 import (
+	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 // Each test uses t.TempDir() as a stand-in for the configfs mount so the
@@ -41,6 +47,60 @@ func TestWriteFile(t *testing.T) {
 		t.Fatalf("second write: %v", err)
 	}
 	assertFileContent(t, path, "1")
+}
+
+func TestWriteFileReadOnly(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "attr_allow_any_host")
+
+	if err := os.WriteFile(path, []byte("0"), 0o600); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
+	makeFileReadOnly(t, path)
+
+	err := writeFile(path, "1")
+	if err == nil {
+		t.Fatal("expected error when writing read-only file, got nil")
+	}
+	if !strings.Contains(err.Error(), "configfs write") {
+		t.Fatalf("expected configfs write error, got %v", err)
+	}
+
+	assertFileContent(t, path, "0")
+}
+
+func TestWriteFileVerificationMismatch(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "attr_allow_any_host")
+
+	const written = "1"
+	const readback = "0"
+
+	if err := syscall.Mkfifo(path, 0o600); err != nil {
+		t.Fatalf("mkfifo: %v", err)
+	}
+
+	helperDone := startWriteFileVerificationHelper(path, written, readback)
+
+	err := writeFile(path, written)
+	if err == nil {
+		t.Fatal("expected verification mismatch error, got nil")
+	}
+	if !strings.Contains(err.Error(), "configfs verify") {
+		t.Fatalf("expected configfs verify error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), `want "1", got "0"`) {
+		t.Fatalf("expected mismatch details in error, got %v", err)
+	}
+
+	select {
+	case err := <-helperDone:
+		if err != nil {
+			t.Fatalf("fifo helper: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for fifo helper")
+	}
 }
 
 // TestMkdirAll verifies that mkdirAll creates nested directories.
@@ -654,4 +714,84 @@ func assertFileContent(t *testing.T, path, want string) {
 	if string(got) != want {
 		t.Errorf("file %q: got %q, want %q", path, got, want)
 	}
+}
+
+func makeFileReadOnly(t *testing.T, path string) {
+	t.Helper()
+	if os.Getuid() == 0 {
+		t.Skip("requires non-root: root bypasses Unix DAC permission checks")
+	}
+
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %q before chmod: %v", path, err)
+	}
+	origMode := fi.Mode().Perm()
+
+	if err := os.Chmod(path, origMode&^0o222); err != nil {
+		t.Fatalf("chmod %q read-only: %v", path, err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(path, origMode); err != nil {
+			t.Logf("restore mode for %q: %v", path, err)
+		}
+	})
+}
+
+func startWriteFileVerificationHelper(path, written, readback string) <-chan error {
+	helperDone := make(chan error, 1)
+	go func() {
+		helperDone <- runWriteFileVerificationHelper(path, written, readback)
+	}()
+	return helperDone
+}
+
+func runWriteFileVerificationHelper(path, written, readback string) error {
+	data, err := readFIFO(path)
+	if err != nil {
+		return fmt.Errorf("drain fifo write payload: %w", err)
+	}
+	if string(data) != written {
+		return fmt.Errorf("drain fifo write payload: got %q, want %q", data, written)
+	}
+	return writeFIFO(path, readback)
+}
+
+func readFIFO(path string) ([]byte, error) {
+	//nolint:gosec // G304: test helper reads from t.TempDir() FIFO paths only.
+	reader, err := os.OpenFile(path, os.O_RDONLY, 0)
+	if err != nil {
+		return nil, fmt.Errorf("open fifo for write drain: %w", err)
+	}
+
+	data, readErr := io.ReadAll(reader)
+	if closeErr := reader.Close(); closeErr != nil && readErr == nil {
+		readErr = closeErr
+	}
+	if readErr != nil {
+		return nil, readErr
+	}
+	return data, nil
+}
+
+func writeFIFO(path, readback string) error {
+	//nolint:gosec // G304: test helper writes to t.TempDir() FIFO paths only.
+	writer, err := os.OpenFile(path, os.O_WRONLY, 0)
+	if err != nil {
+		return fmt.Errorf("open fifo for verify payload: %w", err)
+	}
+
+	if _, err := writer.WriteString(readback); err != nil {
+		if closeErr := writer.Close(); closeErr != nil {
+			return errors.Join(
+				fmt.Errorf("write fifo verify payload: %w", err),
+				fmt.Errorf("close fifo verify payload: %w", closeErr),
+			)
+		}
+		return fmt.Errorf("write fifo verify payload: %w", err)
+	}
+	if err := writer.Close(); err != nil {
+		return fmt.Errorf("close fifo verify payload: %w", err)
+	}
+	return nil
 }
