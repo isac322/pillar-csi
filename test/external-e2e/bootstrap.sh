@@ -123,7 +123,7 @@ helm upgrade --install "${HELM_RELEASE}" "${REPO_ROOT}/charts/pillar-csi" \
   --set "agent.image.pullPolicy=Never" \
   --set "agent.privileged=true" \
   --set-string "agent.extraArgs[0]=--backend" \
-  --set-string "agent.extraArgs[1]=type=lvm-lv,vg=${VG_NAME}" \
+  --set-string "agent.extraArgs[1]=type=lvm-lv\,vg=${VG_NAME}" \
   --set-string "controller.extraEnv[0].name=ENABLE_WEBHOOKS" \
   --set-string "controller.extraEnv[0].value=false"
 
