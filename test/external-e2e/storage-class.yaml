@@ -1,0 +1,18 @@
+# StorageClass used by the SIG-Storage External Storage e2e suite.
+#
+# Adjust the `parameters` block to point at a PillarTarget that exists in the
+# cluster under test.  The driver name must match Identity.GetPluginInfo.Name
+# advertised by pillar-csi.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: pillar-csi-external-e2e
+provisioner: pillar-csi.bhyoo.com
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+reclaimPolicy: Delete
+parameters:
+  pillar-csi.bhyoo.com/target: pillar-target-default
+  pillar-csi.bhyoo.com/pool: tank
+  pillar-csi.bhyoo.com/backend-type: zfs-zvol
+  pillar-csi.bhyoo.com/protocol-type: nvmeof-tcp

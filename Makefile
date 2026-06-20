@@ -221,6 +221,17 @@ test-e2e-zfs: manifests generate fmt vet ## Run ZFS-only e2e specs in internal-a
 test-e2e-lvm: manifests generate fmt vet ## Run LVM-only e2e specs in internal-agent mode (debug helper).
 	$(E2E_COMMON_ENV) E2E_RUN=LVM go test $(E2E_GO_FLAGS)
 
+# ─── De-facto CSI test suites ─────────────────────────────────────────────────
+# Two industry-standard test suites that every CSI driver should pass.
+
+.PHONY: test-csi-sanity
+test-csi-sanity: fmt vet ## Run the upstream kubernetes-csi/csi-test sanity suite (in-process, no cluster).
+	go test -tags=csi_sanity -timeout=180s -v ./test/sanity/...
+
+.PHONY: test-external-e2e
+test-external-e2e: ## Run the SIG-Storage External Storage e2e suite against a running Kind cluster. Requires KUBECONFIG.
+	@./test/external-e2e/run.sh
+
 ## Number of parallel Ginkgo worker processes.  Defaults to 4.
 ## 4 workers is sufficient to complete 421 default-profile specs within the
 ## 45-second test-exec budget while avoiding resource contention on the shared

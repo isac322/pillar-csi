@@ -1,0 +1,44 @@
+# External Storage TestDriver manifest for pillar-csi.
+#
+# Consumed by the upstream `e2e.test` binary from
+# kubernetes/test/e2e/storage/external/external.go.  Run with:
+#
+#   e2e.test \
+#     -storage.testdriver=external-driver.yaml \
+#     -ginkgo.focus='External.Storage' \
+#     -kubeconfig=$KUBECONFIG
+#
+# Capability flags reflect the RPCs that pillar-csi advertises through
+# Identity.GetPluginCapabilities, Controller.ControllerGetCapabilities and
+# Node.NodeGetCapabilities.  Toggle individual capabilities off as the driver
+# implements them so the suite can pick up newly supported tests.
+ShortName: pillar-csi
+StorageClass:
+  FromName: false
+  FromFile: storage-class.yaml
+SnapshotClass:
+  FromName: false
+DriverInfo:
+  Name: pillar-csi.bhyoo.com
+  SupportedSizeRange:
+    Min: 1Mi
+    Max: 100Gi
+  SupportedFsTypes:
+    ext4: {}
+    xfs: {}
+  Capabilities:
+    persistence: true
+    block: true
+    fsGroup: true
+    exec: true
+    multipods: true
+    controllerExpansion: true
+    nodeExpansion: true
+    volumeLimits: false
+    singleNodeVolume: true
+    topology: true
+    RWX: false
+    snapshotDataSource: false
+    pvcDataSource: false
+  TopologyKeys:
+    - topology.pillar-csi.bhyoo.com/node
