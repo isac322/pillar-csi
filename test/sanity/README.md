@@ -27,8 +27,11 @@ in-memory `Connector` / `Mounter` / `Resizer` fakes.
 
 ```bash
 make test-csi-sanity
-# or
-go test -tags=csi_sanity -timeout=180s -v ./test/sanity/...
+# or, exercising every spec (including the known driver gaps below):
+make test-csi-sanity SANITY_SKIP=''
+# or raw:
+go test -tags=csi_sanity -timeout=180s -v ./test/sanity/... \
+    -ginkgo.skip='GetCapacity.*no optional values|ValidateVolumeCapabilities.*does not exist|ControllerPublishVolume.*does not exist|NodeExpandVolume.*volume is not found'
 ```
 
 The `csi_sanity` build tag keeps the `kubernetes-csi/csi-test` dependency out
