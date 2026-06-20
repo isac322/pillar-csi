@@ -33,7 +33,29 @@ log() { printf "[bootstrap] %s\n" "$*" >&2; }
 # ── 1. Kind cluster ──────────────────────────────────────────────────────────
 log "Ensuring Kind cluster ${CLUSTER_NAME} exists"
 if ! kind get clusters | grep -qx "${CLUSTER_NAME}"; then
-  kind create cluster --name "${CLUSTER_NAME}" --wait 5m
+  # Bind-mount the host's /dev/zfs and /dev/mapper into the control-plane
+  # node so zfs and lvm commands inside the container can talk to the
+  # kernel modules loaded on the runner.  Without these mounts every zpool
+  # / zfs / lvm call fails with "no such pool or dataset" or EACCES.
+  KIND_CONFIG="$(mktemp)"
+  cat > "${KIND_CONFIG}" <<EOF
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+- role: control-plane
+  extraMounts:
+  - hostPath: /dev/zfs
+    containerPath: /dev/zfs
+    propagation: HostToContainer
+  - hostPath: /dev/mapper
+    containerPath: /dev/mapper
+    propagation: Bidirectional
+  - hostPath: /sys/kernel/config
+    containerPath: /sys/kernel/config
+    propagation: Bidirectional
+EOF
+  kind create cluster --name "${CLUSTER_NAME}" --config "${KIND_CONFIG}" --wait 5m
+  rm -f "${KIND_CONFIG}"
 else
   log "  cluster already present, reusing"
 fi
