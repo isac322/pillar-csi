@@ -1,3 +1,9 @@
+> **SUPERSEDED.** This audit reflects the state on 2026-03-24. Many of the
+> "Gaps / Partially Implemented" items below have since been resolved.
+> For the current status see
+> [docs/prd-audit-phase1-2026-06.md](./prd-audit-phase1-2026-06.md)
+> (dated 2026-06-21).
+
 # Phase 1 PRD Audit — Implementation Status
 
 **Date:** 2026-03-24 (final verification)
