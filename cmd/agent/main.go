@@ -266,11 +266,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	grpcSrv := grpc.NewServer(grpcOpts...)
-	srv.Register(grpcSrv)
-	healthSrv := healthsrv.NewServer()
-	healthpb.RegisterHealthServer(grpcSrv, healthSrv)
-	healthSrv.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
+	grpcSrv, healthSrv := newAgentGRPCServer(srv, grpcOpts)
 
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT)
