@@ -99,11 +99,16 @@ spec:
             # block non-privileged access even for root+SYS_ADMIN containers.
             privileged: {{ .Values.agent.privileged | default false }}
             allowPrivilegeEscalation: true
-          {{- if or .Values.agent.backends .Values.agent.extraArgs }}
+          {{- if or .Values.agent.backends .Values.agent.extraArgs .Values.mtls.enabled }}
           args:
             {{- range .Values.agent.backends }}
             - --backend
             - {{ printf "type=%s,pool=%s" .type .pool }}{{ if .parent }}{{ printf ",parent=%s" .parent }}{{ end }}
+            {{- end }}
+            {{- if .Values.mtls.enabled }}
+            - --tls-cert={{ include "pillar-csi.mtls.certDir" . }}/tls.crt
+            - --tls-key={{ include "pillar-csi.mtls.certDir" . }}/tls.key
+            - --tls-ca={{ include "pillar-csi.mtls.certDir" . }}/ca.crt
             {{- end }}
             {{- range .Values.agent.extraArgs }}
             - {{ . | quote }}
@@ -128,6 +133,11 @@ spec:
             # /dev — required for block device operations (target backstores).
             - name: dev
               mountPath: /dev
+            {{- if .Values.mtls.enabled }}
+            - name: mtls-certs
+              mountPath: {{ include "pillar-csi.mtls.certDir" . }}
+              readOnly: true
+            {{- end }}
           resources:
             {{- toYaml .Values.agent.resources | nindent 12 }}
       # ── Volumes ────────────────────────────────────────────────────────────
@@ -147,6 +157,12 @@ spec:
           hostPath:
             path: /lib/modules
             type: Directory
+        {{- if .Values.mtls.enabled }}
+        - name: mtls-certs
+          secret:
+            secretName: {{ include "pillar-csi.mtls.agentSecret" . }}
+            defaultMode: 0o400
+        {{- end }}
       # ── Scheduling ─────────────────────────────────────────────────────────
       # Run only on nodes labelled as storage nodes.
       nodeSelector:
