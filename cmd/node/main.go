@@ -42,6 +42,8 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	healthsrv "google.golang.org/grpc/health"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
@@ -56,6 +58,8 @@ import (
 const driverName = "pillar-csi.bhyoo.com"
 
 const defaultNodeStateDir = "/var/lib/pillar-csi/node"
+
+const defaultNodeShutdownGracePeriod = 5 * time.Second
 
 // ─────────────────────────────────────────────────────────────────────────────
 // fabricsConnector — kernel-native NVMe-oF TCP protocol handler
@@ -946,14 +950,16 @@ func main() {
 	grpcSrv := grpc.NewServer()
 	csi.RegisterIdentityServer(grpcSrv, identitySrv)
 	csi.RegisterNodeServer(grpcSrv, nodeSrv)
+	healthSrv := healthsrv.NewServer()
+	healthpb.RegisterHealthServer(grpcSrv, healthSrv)
+	healthSrv.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
 
 	// Graceful shutdown on SIGTERM / SIGINT.
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT)
 	go func() {
-		sig := <-sigs
-		fmt.Fprintf(os.Stderr, "pillar-node: received %s, shutting down\n", sig)
-		grpcSrv.GracefulStop()
+		<-sigs
+		runNodeShutdown(healthSrv, grpcSrv.GracefulStop, defaultNodeShutdownGracePeriod)
 	}()
 
 	fmt.Fprintf(os.Stderr, "pillar-node: node-id=%s version=%s socket=%s\n",
@@ -963,6 +969,12 @@ func main() {
 		fmt.Fprintf(os.Stderr, "pillar-node: serve: %v\n", serveErr)
 		os.Exit(1)
 	}
+}
+
+func runNodeShutdown(h *healthsrv.Server, gracefulStopFn func(), grace time.Duration) {
+	h.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)
+	time.Sleep(grace)
+	gracefulStopFn()
 }
 
 // resolveHostIdentityOrExit reads (and on first start, generates) the local
