@@ -456,9 +456,12 @@ func (c *fabricsConnector) getDevicePathViaController(subsysPath string) (string
 // is devPath on success and "" if the sysfs file is unreadable or malformed —
 // callers treat the empty string as "device not yet ready, keep polling".
 //
-// Idempotency: an existing devPath (os.IsExist) is treated as success and
-// returned unchanged so concurrent attempts or pre-existing udev-created
-// nodes do not break the polling loop.
+// Stale-node recovery: when devPath already exists, the existing major:minor
+// is compared against the sysfs value.  If they match, the node is reused
+// (idempotency for concurrent attempts and pre-existing udev-created nodes).
+// If they differ (the controller disconnected and the kernel re-issued a
+// new minor on reconnect), the stale node is unlinked and recreated so a
+// subsequent open(2) does not hit ENXIO on the prior minor.
 //
 // This is the shared mknod path used by both the primary subsystem-class scan
 // (nvmeGetDevicePath) and the controller-class fallback
@@ -489,6 +492,24 @@ func mknodFromSysfsDev(devPath, devFile string) (string, error) {
 	//   major bits 12+   → device bits 32+
 	dev := int((minor & 0xff) | ((major & 0xfff) << 8) | //nolint:gosec // G115: makedev bit-packing
 		((minor &^ 0xff) << 12) | ((major &^ 0xfff) << 32))
+
+	// Drop any pre-existing node whose major:minor does not match the
+	// current sysfs value.  The most common cause is a previous NodeStage
+	// cycle that left /dev/nvmeXnY behind; after detach + reconnect the
+	// kernel assigns a fresh minor and the stale node would resolve to a
+	// nonexistent kernel block device (open returns ENXIO).
+	st, statErr := os.Stat(devPath)
+	if statErr == nil {
+		sysSt, ok := st.Sys().(*syscall.Stat_t)
+		//nolint:gosec // G115: Linux dev_t fits in uint32 bounds well within int64.
+		if ok && int(sysSt.Rdev) != dev {
+			rmErr := os.Remove(devPath)
+			if rmErr != nil && !os.IsNotExist(rmErr) {
+				return "", fmt.Errorf("mknodFromSysfsDev: remove stale %s: %w", devPath, rmErr)
+			}
+		}
+	}
+
 	mknodErr := syscall.Mknod(devPath, syscall.S_IFBLK|0o600, dev)
 	if mknodErr != nil && !os.IsExist(mknodErr) {
 		return "", fmt.Errorf("mknodFromSysfsDev: mknod %s (%d:%d): %w", devPath, major, minor, mknodErr)
