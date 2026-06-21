@@ -1,0 +1,78 @@
+{{- if and .Values.mtls.enabled .Values.mtls.certManager.enabled }}
+{{- $fullname := include "pillar-csi.fullname" . }}
+{{- $ns := include "pillar-csi.namespace" . }}
+{{- $issuerName := .Values.mtls.certManager.issuerRef.name }}
+{{- if not $issuerName }}
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: {{ printf "%s-mtls" $fullname }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "pillar-csi.labels" . | nindent 4 }}
+spec:
+  selfSigned: {}
+{{- end }}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ printf "%s-controller-mtls" $fullname }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "pillar-csi.componentLabels" (dict "root" . "component" "controller") | nindent 4 }}
+spec:
+  secretName: {{ printf "%s-controller-mtls" $fullname }}
+  duration: {{ .Values.mtls.certManager.duration }}
+  renewBefore: {{ .Values.mtls.certManager.renewBefore }}
+  commonName: {{ printf "%s-controller.%s.svc" $fullname $ns }}
+  dnsNames:
+    - {{ printf "%s-controller.%s.svc" $fullname $ns }}
+    - {{ printf "%s-controller.%s.svc.cluster.local" $fullname $ns }}
+  usages:
+    - digital signature
+    - key encipherment
+    - client auth
+  issuerRef:
+    {{- if $issuerName }}
+    name: {{ $issuerName }}
+    kind: {{ default "Issuer" .Values.mtls.certManager.issuerRef.kind }}
+    group: {{ default "cert-manager.io" .Values.mtls.certManager.issuerRef.group }}
+    {{- else }}
+    name: {{ printf "%s-mtls" $fullname }}
+    kind: Issuer
+    group: cert-manager.io
+    {{- end }}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ printf "%s-agent-mtls" $fullname }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "pillar-csi.componentLabels" (dict "root" . "component" "agent") | nindent 4 }}
+spec:
+  secretName: {{ printf "%s-agent-mtls" $fullname }}
+  duration: {{ .Values.mtls.certManager.duration }}
+  renewBefore: {{ .Values.mtls.certManager.renewBefore }}
+  commonName: {{ printf "%s-agent.%s.svc" $fullname $ns }}
+  dnsNames:
+    - {{ printf "%s-agent.%s.svc" $fullname $ns }}
+    - {{ printf "%s-agent.%s.svc.cluster.local" $fullname $ns }}
+  usages:
+    - digital signature
+    - key encipherment
+    - server auth
+    - client auth
+  issuerRef:
+    {{- if $issuerName }}
+    name: {{ $issuerName }}
+    kind: {{ default "Issuer" .Values.mtls.certManager.issuerRef.kind }}
+    group: {{ default "cert-manager.io" .Values.mtls.certManager.issuerRef.group }}
+    {{- else }}
+    name: {{ printf "%s-mtls" $fullname }}
+    kind: Issuer
+    group: cert-manager.io
+    {{- end }}
+{{- end }}
