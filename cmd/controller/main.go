@@ -95,8 +95,9 @@ func setupControllers(mgr ctrl.Manager, agentDialer agentclient.Dialer) error {
 		return fmt.Errorf("PillarProtocol controller: %w", err)
 	}
 	err = (&controller.PillarBindingReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorderFor("pillarbinding-controller"),
 	}).SetupWithManager(mgr)
 	if err != nil {
 		return fmt.Errorf("PillarBinding controller: %w", err)
