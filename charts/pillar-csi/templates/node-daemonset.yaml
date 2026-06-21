@@ -1,7 +1,11 @@
 {{- /*
 Node DaemonSet — CSI Node service + protocol initiators (NVMe-oF, iSCSI, NFS).
 Runs on every worker node. Uses privileged security context for mount operations.
-hostNetwork is intentionally absent — the node service does not expose any host ports.
+hostNetwork: true is required for the NVMe-oF/iSCSI data plane: the kernel
+issues `nvme connect` TCP SYNs in the netns of the process that writes
+`/dev/nvme-fabrics`.  With hostNetwork: false the initiator lives in the pod
+netns, which cannot reach the host-network nvmet listener exposed by the
+agent.  See PRD §2.4.
 Init container loads initiator kernel modules best-effort (pod start is NOT blocked on failure).
 */ -}}
 apiVersion: apps/v1
@@ -41,6 +45,10 @@ spec:
       {{- end }}
       serviceAccountName: {{ include "pillar-csi.nodeServiceAccountName" . }}
       priorityClassName: system-node-critical
+      hostNetwork: {{ .Values.node.hostNetwork }}
+      {{- if .Values.node.hostNetwork }}
+      dnsPolicy: ClusterFirstWithHostNet
+      {{- end }}
       # ── Init containers ──────────────────────────────────────────────────────
       # Loads initiator kernel modules (NVMe-oF, iSCSI, NFS).
       # Each modprobe is run with "|| true" so the init container always exits 0.
@@ -123,6 +131,21 @@ spec:
             # mounts created inside the container are visible on the host (and vice-versa).
             - name: pods-mount-dir
               mountPath: /var/lib/kubelet/pods
+              mountPropagation: Bidirectional
+            # kubelet-managed CSI state directory.  For block-mode volumes,
+            # kubelet places staging/publish target paths at
+            # /var/lib/kubelet/plugins/kubernetes.io/csi/volumeDevices/{staging,publish}/<pvName>/[<podUID>],
+            # and expects the plugin's bind-mount of /dev/nvmeXnY onto those
+            # regular-file targets to be visible from the host (kubelet does
+            # filepath.EvalSymlinks on the publish path before mapping the
+            # device into the pod).  Without Bidirectional propagation the
+            # bind happens only inside the node container's mount namespace
+            # and kubelet's lstat returns ENOENT, failing every block-volume
+            # pod start with FailedMapVolume.  Filesystem-mode publish paths
+            # live under /var/lib/kubelet/pods and are already covered by
+            # the pods-mount-dir mount above.
+            - name: kubelet-csi-dir
+              mountPath: /var/lib/kubelet/plugins/kubernetes.io/csi
               mountPropagation: Bidirectional
             # /dev — required for block device operations (NVMe-oF, iSCSI target discovery).
             - name: dev
@@ -211,6 +234,15 @@ spec:
           hostPath:
             path: /var/lib/kubelet/pods
             type: Directory
+        # kubelet-csi-dir: kubelet-managed CSI state tree for block-mode
+        # staging/publish target paths.  DirectoryOrCreate because on a
+        # fresh node kubelet creates the subtree lazily on first CSI
+        # block-mode volume.  See the node container's volumeMount block
+        # for the propagation rationale.
+        - name: kubelet-csi-dir
+          hostPath:
+            path: /var/lib/kubelet/plugins/kubernetes.io/csi
+            type: DirectoryOrCreate
         # dev: host /dev for block device access during volume attach/detach.
         - name: dev
           hostPath:

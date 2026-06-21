@@ -83,14 +83,35 @@ type fabricsConnector struct {
 	// fabricsDev is the path to the NVMe-fabrics character device.
 	// Production value: "/dev/nvme-fabrics".
 	fabricsDev string
+
+	// hostNQN is the NVMe-oF host NQN this node identifies as during
+	// nvme-fabrics connect.  It MUST equal the NQN published on the
+	// CSINode annotation (and therefore the one the controller whitelists
+	// via agent.AllowInitiator), otherwise the target rejects the connect
+	// with EIO when ACL enforcement is enabled (the default).  Sourced
+	// from csisvc.ReadHostNQN at startup and threaded through every
+	// nvme-fabrics write as the explicit `hostnqn=` option, because the
+	// kernel does not read /etc/nvme/hostnqn itself — only userland
+	// nvme-cli does that, and pillar-node writes /dev/nvme-fabrics
+	// directly.
+	hostNQN string
+
+	// hostID is the NVMe host ID UUID written as the `hostid=` option on
+	// every fabrics connect.  Recent Linux kernels reject the write with
+	// EINVAL when `hostnqn=` is set without a matching `hostid=`, so the
+	// two fields must always travel together.  Persisted to
+	// /etc/nvme/hostid alongside the host NQN.
+	hostID string
 }
 
 // newFabricsConnector returns a production-ready fabricsConnector that uses
 // /sys as the sysfs root and /dev/nvme-fabrics for connection requests.
-func newFabricsConnector() *fabricsConnector {
+func newFabricsConnector(hostNQN, hostID string) *fabricsConnector {
 	return &fabricsConnector{
 		sysfsRoot:  "/sys",
 		fabricsDev: "/dev/nvme-fabrics",
+		hostNQN:    hostNQN,
+		hostID:     hostID,
 	}
 }
 
@@ -103,11 +124,33 @@ func newFabricsConnector() *fabricsConnector {
 //
 // On a new connection it opens /dev/nvme-fabrics and writes:
 //
-//	transport=tcp,traddr=<trAddr>,trsvcid=<trSvcID>,nqn=<subsysNQN>
+//	transport=tcp,traddr=<trAddr>,trsvcid=<trSvcID>,nqn=<subsysNQN>,hostnqn=<c.hostNQN>,hostid=<c.hostID>
+//
+// Both identity fields are mandatory:
+//
+//   - `hostnqn=` whenever the target enforces ACLs (the pillar-csi default
+//     with `attr_allow_any_host=0`); the kernel /dev/nvme-fabrics interface
+//     does not consult /etc/nvme/hostnqn on its own — only nvme-cli does —
+//     so omitting it makes the target reject the connect with EIO.
+//   - `hostid=` because recent Linux kernels (~6.x) reject writes that set
+//     `hostnqn=` without a matching `hostid=` UUID with EINVAL at parse
+//     time, before any TCP attempt; nvme-cli always sends both for the
+//     same reason.
 //
 // The kernel nvme_fabrics module parses the string, creates the controller,
 // and initiates the TCP connection synchronously.  Write returns an error if
 // the connection fails (target unreachable, invalid NQN, etc.).
+// Assembles the nvme-fabrics option string written to the kernel device
+// to drive a connect. Both hostnqn and hostid are mandatory together
+// because ACL-enforcing targets reject a missing hostnqn with EIO, and
+// recent Linux kernels reject a hostnqn without a matching hostid UUID
+// with EINVAL at parse time. Kept as a standalone function so the format
+// can be regression-tested without opening the kernel device.
+func buildFabricsConnectOpts(trAddr, trSvcID, subsysNQN, hostNQN, hostID string) string {
+	return fmt.Sprintf("transport=tcp,traddr=%s,trsvcid=%s,nqn=%s,hostnqn=%s,hostid=%s",
+		trAddr, trSvcID, subsysNQN, hostNQN, hostID)
+}
+
 func (c *fabricsConnector) nvmeConnect(ctx context.Context, subsysNQN, trAddr, trSvcID string) error {
 	already, err := c.isConnected(ctx, subsysNQN)
 	if err != nil {
@@ -125,8 +168,10 @@ func (c *fabricsConnector) nvmeConnect(ctx context.Context, subsysNQN, trAddr, t
 
 	// Write the connection parameters as a comma-separated key=value string.
 	// The kernel nvme_fabrics driver parses this in nvmf_dev_write() and
-	// initiates the TCP connection via nvmf_create_ctrl().
-	opts := fmt.Sprintf("transport=tcp,traddr=%s,trsvcid=%s,nqn=%s", trAddr, trSvcID, subsysNQN)
+	// initiates the TCP connection via nvmf_create_ctrl().  Build the
+	// string through buildFabricsConnectOpts so the format is unit-testable
+	// without opening /dev/nvme-fabrics.
+	opts := buildFabricsConnectOpts(trAddr, trSvcID, subsysNQN, c.hostNQN, c.hostID)
 	_, err = fmt.Fprintf(f, "%s\n", opts)
 	if err != nil {
 		return fmt.Errorf("fabricsConnector nvmeConnect: write to %s (nqn=%s): %w",
@@ -217,7 +262,9 @@ func (c *fabricsConnector) nvmeDisconnect(_ context.Context, subsysNQN string) e
 //
 // Returns ("", nil) when the device is not yet visible; callers
 // should poll until a non-empty path is returned or a deadline is exceeded.
-func (c *fabricsConnector) nvmeGetDevicePath(ctx context.Context, subsysNQN string) (string, error) { //nolint:gocognit
+//
+//nolint:gocognit,gocyclo // primary scan + fallback paths kept inline for locality
+func (c *fabricsConnector) nvmeGetDevicePath(ctx context.Context, subsysNQN string) (string, error) {
 	// ── Primary path: sysfs nvme-subsystem scan ──────────────────────────────
 	subsysDir := filepath.Join(c.sysfsRoot, "class", "nvme-subsystem")
 	entries, err := os.ReadDir(subsysDir)
@@ -263,8 +310,19 @@ func (c *fabricsConnector) nvmeGetDevicePath(ctx context.Context, subsysNQN stri
 					return devPath, nil
 				}
 				// Namespace visible in sysfs but device node not yet in /dev/.
-				// The test bridge goroutine (or udev) will create the node
-				// shortly; return "" to keep polling.
+				// Containerised hosts (Kind, most distroless images) do not run
+				// udev inside the node netns, so nothing else will mknod the
+				// block device.  Read major:minor from the subsystem-class
+				// sysfs "dev" file and create the node ourselves; udev hosts
+				// that already created it will return ENOENT on the stat above
+				// only briefly, and the mknod path is idempotent
+				// (os.IsExist).  See getDevicePathViaController for the same
+				// pattern applied to controller-class sysfs entries.
+				devFile := filepath.Join(subsysPath, name, "dev")
+				dp, mkErr := mknodFromSysfsDev(devPath, devFile)
+				if mkErr == nil && dp != "" {
+					return dp, nil
+				}
 				return "", nil
 			}
 			// The NQN was found in sysfs but no namespace entry appeared
@@ -391,6 +449,74 @@ func (c *fabricsConnector) getDevicePathViaController(subsysPath string) (string
 		}
 	}
 	return "", nil
+}
+
+// mknodFromSysfsDev reads "<major>:<minor>" from the sysfs file at devFile and
+// creates a block-device node at devPath using mknod(2).  The returned string
+// is devPath on success and "" if the sysfs file is unreadable or malformed —
+// callers treat the empty string as "device not yet ready, keep polling".
+//
+// Stale-node recovery: when devPath already exists, the existing major:minor
+// is compared against the sysfs value.  If they match, the node is reused
+// (idempotency for concurrent attempts and pre-existing udev-created nodes).
+// If they differ (the controller disconnected and the kernel re-issued a
+// new minor on reconnect), the stale node is unlinked and recreated so a
+// subsequent open(2) does not hit ENXIO on the prior minor.
+//
+// This is the shared mknod path used by both the primary subsystem-class scan
+// (nvmeGetDevicePath) and the controller-class fallback
+// (getDevicePathViaController); without it containerised hosts that lack udev
+// (Kind, distroless) would never see /dev/nvmeXnY appear and every
+// NodeStageVolume would hit the 30s attach timeout.
+func mknodFromSysfsDev(devPath, devFile string) (string, error) {
+	devBytes, readErr := os.ReadFile(devFile) //nolint:gosec // sysfs path under /sys/class/nvme*
+	if readErr != nil {
+		return "", readErr
+	}
+	parts := strings.SplitN(strings.TrimSpace(string(devBytes)), ":", 2)
+	if len(parts) != 2 {
+		return "", fmt.Errorf("mknodFromSysfsDev: malformed dev %q in %s", string(devBytes), devFile)
+	}
+	major, majErr := strconv.ParseUint(parts[0], 10, 32)
+	if majErr != nil {
+		return "", fmt.Errorf("mknodFromSysfsDev: parse major in %q: %w", string(devBytes), majErr)
+	}
+	minor, minErr := strconv.ParseUint(parts[1], 10, 32)
+	if minErr != nil {
+		return "", fmt.Errorf("mknodFromSysfsDev: parse minor in %q: %w", string(devBytes), minErr)
+	}
+	// Linux makedev bit-packing:
+	//   minor bits 0-7   → device bits 0-7
+	//   major bits 0-11  → device bits 8-19
+	//   minor bits 8-19  → device bits 20-31
+	//   major bits 12+   → device bits 32+
+	dev := int((minor & 0xff) | ((major & 0xfff) << 8) | //nolint:gosec // G115: makedev bit-packing
+		((minor &^ 0xff) << 12) | ((major &^ 0xfff) << 32))
+
+	// Drop any pre-existing node whose major:minor does not match the
+	// current sysfs value.  The most common cause is a previous NodeStage
+	// cycle that left /dev/nvmeXnY behind; after detach + reconnect the
+	// kernel assigns a fresh minor and the stale node would resolve to a
+	// nonexistent kernel block device (open returns ENXIO).
+	st, statErr := os.Stat(devPath)
+	if statErr == nil {
+		sysSt, ok := st.Sys().(*syscall.Stat_t)
+		//nolint:gosec // G115: Linux dev_t fits in uint32 bounds well within int64.
+		if ok && int(sysSt.Rdev) != dev {
+			rmErr := os.Remove(devPath)
+			if rmErr != nil && !os.IsNotExist(rmErr) {
+				return "", fmt.Errorf("mknodFromSysfsDev: remove stale %s: %w", devPath, rmErr)
+			}
+		}
+	}
+
+	mknodErr := syscall.Mknod(devPath, syscall.S_IFBLK|0o600, dev)
+	if mknodErr != nil && !os.IsExist(mknodErr) {
+		return "", fmt.Errorf("mknodFromSysfsDev: mknod %s (%d:%d): %w", devPath, major, minor, mknodErr)
+	}
+	fmt.Fprintf(os.Stderr,
+		"pillar-node: mknodFromSysfsDev: ensured %s (%d:%d)\n", devPath, major, minor)
+	return devPath, nil
 }
 
 // getDevicePathViaNvmeCli scans /dev/nvme*n* and uses "nvme id-ctrl -o json"
@@ -630,13 +756,53 @@ func (m *mkdirMounter) FormatAndMount(source, target, fsType string, options []s
 	return m.wrapped.FormatAndMount(source, target, fsType, options)
 }
 
-// Mount creates the target directory if it does not exist (required for
-// NodePublishVolume bind mounts when the CO has not yet pre-created the
-// target pod volume path), then delegates to the wrapped Mounter's Mount.
+// Mount provisions the target before delegating to the wrapped Mounter.
+//
+// For directory bind-mounts (NodePublishVolume of a Filesystem-mode volume)
+// the target must be an empty directory and we mkdir -p it.
+//
+// For block-device bind-mounts (NodeStageVolume / NodePublishVolume of a
+// Block-mode volume) the kernel rejects mount --bind when the target file
+// type does not match the source file type (the linux kernel requires
+// source and target to both be a regular file or both be a directory for
+// bind, and a block-device source can only be bound onto a regular-file
+// target — bound onto a directory it returns EXT_SOURCEMOUNTREJECTED which
+// surfaces as mount exit status 32).  We therefore detect a block source
+// by stat'ing it and touch an empty regular file at the target path.
 func (m *mkdirMounter) Mount(source, target, fsType string, options []string) error {
-	mkdirErr := os.MkdirAll(target, 0o750)
-	if mkdirErr != nil {
-		return fmt.Errorf("mkdirMounter: create mount target %q: %w", target, mkdirErr)
+	// Linux bind-mount requires source and target to have matching file
+	// types: directory-to-directory for Filesystem-mode mounts and
+	// (block-device or regular-file) -to-regular-file for block-mode
+	// mounts.  A type mismatch surfaces as mount(8) exit 32
+	// (EXT_SOURCEMOUNTREJECTED).  Pick the target provisioning strategy
+	// from the source type:
+	//   * directory   → mkdir -p target  (NodePublishVolume Filesystem)
+	//   * everything  → mkdir -p parent + touch regular file at target
+	//                  (block-device source on NodeStageVolume, or the
+	//                  staged block-mode regular-file source on the
+	//                  subsequent NodePublishVolume bind to the pod path).
+	st, statErr := os.Stat(source)
+	sourceIsDir := statErr == nil && st.IsDir()
+	if sourceIsDir {
+		mkdirErr := os.MkdirAll(target, 0o750)
+		if mkdirErr != nil {
+			return fmt.Errorf("mkdirMounter: create mount target %q: %w", target, mkdirErr)
+		}
+	} else {
+		mkParentErr := os.MkdirAll(filepath.Dir(target), 0o750)
+		if mkParentErr != nil {
+			return fmt.Errorf("mkdirMounter: create parent dir for file-bind target %q: %w", target, mkParentErr)
+		}
+		// target is a kubelet-managed CSI volumeDevices path under
+		// /var/lib/kubelet/plugins/.../volumeDevices/{staging,publish}/.
+		//nolint:gosec // G304: kubelet-controlled CSI staging path
+		f, createErr := os.OpenFile(target, os.O_RDWR|os.O_CREATE, 0o600)
+		if createErr != nil && !os.IsExist(createErr) {
+			return fmt.Errorf("mkdirMounter: create file bind-mount target %q: %w", target, createErr)
+		}
+		if f != nil {
+			_ = f.Close() //nolint:errcheck // best-effort close; only used as mount target sentinel
+		}
 	}
 	return m.wrapped.Mount(source, target, fsType, options)
 }
@@ -692,6 +858,12 @@ func main() {
 	// annotation is present, which is the expected degraded behavior.
 	publishNodeIdentity(*nodeID)
 
+	// Resolve the local host NQN now that publishNodeIdentity has read or
+	// generated /etc/nvme/hostnqn.  The fabricsConnector must thread this
+	// exact value into every nvme-fabrics connect; see the field doc on
+	// fabricsConnector.hostNQN for the kernel-vs-userland contract.
+	hostNQN, hostID := resolveHostIdentityOrExit()
+
 	// ── Build the CSI service implementations ──────────────────────────────
 	// Build the protocol handler map.  fabricsConnector provides the
 	// production NVMe-oF TCP implementation using /dev/nvme-fabrics directly
@@ -700,7 +872,7 @@ func main() {
 	// Additional protocol handlers (iSCSI, NFS, SMB) are registered here
 	// as they are implemented per the multi-protocol RFC.
 	handlers := map[string]csisvc.ProtocolHandler{
-		csisvc.ProtocolNVMeoFTCP: newFabricsConnector(),
+		csisvc.ProtocolNVMeoFTCP: newFabricsConnector(hostNQN, hostID),
 	}
 	identitySrv := csisvc.NewIdentityServer(driverName, version)
 	nodeSrv := csisvc.NewNodeServer(*nodeID, handlers, &mkdirMounter{wrapped: csisvc.NewKubeMounter()})
@@ -752,6 +924,26 @@ func main() {
 		fmt.Fprintf(os.Stderr, "pillar-node: serve: %v\n", serveErr)
 		os.Exit(1)
 	}
+}
+
+// resolveHostIdentityOrExit reads (and on first start, generates) the local
+// host NQN and host ID from /etc/nvme/{hostnqn,hostid}, exiting the process
+// non-zero on failure.  Both values are required for every nvme-fabrics
+// connect; see the fabricsConnector.hostNQN / hostID field docs for the
+// kernel-vs-userland and EIO/EINVAL rationale.
+func resolveHostIdentityOrExit() (hostNQN, hostID string) {
+	var err error
+	hostNQN, err = csisvc.ReadHostNQN()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "pillar-node: read host NQN: %v\n", err)
+		os.Exit(1)
+	}
+	hostID, err = csisvc.ReadHostID()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "pillar-node: read host ID: %v\n", err)
+		os.Exit(1)
+	}
+	return hostNQN, hostID
 }
 
 // publishNodeIdentity writes the NVMe host NQN to the CSINode object

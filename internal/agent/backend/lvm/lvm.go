@@ -557,9 +557,14 @@ func (b *Backend) createThinLV(
 	extraFlags []string,
 ) error {
 	// Build lvcreate arguments for a thin-provisioned LV.
-	// Argument order: flags first, then the positional VG argument last.
-	args := make([]string, 0, 6+len(extraFlags)+1)
+	// Argument order: -y first to auto-wipe any leftover filesystem
+	// signature on recycled extents (otherwise lvcreate prompts "Wipe
+	// it? [y/n]" interactively and, with no tty attached, the answer
+	// defaults to "n" and the create fails with exit status 5).  Flags
+	// next, then the positional VG argument last.
+	args := make([]string, 0, 7+len(extraFlags)+1)
 	args = append(args,
+		"-y",
 		"--virtualsize", strconv.FormatInt(sizeBytes, 10)+"b",
 		"--thinpool", thinPool,
 		"-n", lvName,
@@ -686,9 +691,12 @@ func (b *Backend) Create(
 			return "", 0, createErr
 		}
 	} else {
-		// Linear LV: lvcreate -n <lv> -L <size>b [extraFlags...] <vg>
-		args := make([]string, 0, 4+len(lvmParams.ExtraFlags)+1)
+		// Linear LV: lvcreate -y -n <lv> -L <size>b [extraFlags...] <vg>
+		// -y auto-confirms wiping leftover filesystem signatures on
+		// recycled extents; see createThinLV for the full rationale.
+		args := make([]string, 0, 5+len(lvmParams.ExtraFlags)+1)
 		args = append(args,
+			"-y",
 			"-n", lv,
 			"-L", strconv.FormatInt(capacityBytes, 10)+"b",
 		)

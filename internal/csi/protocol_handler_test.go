@@ -371,7 +371,9 @@ func TestStageStateFromAttachResult_NVMeoF_UsesProtocolStateFields(t *testing.T)
 		},
 	}
 
-	state := stageStateFromAttachResult(ProtocolNVMeoFTCP, "other-nqn", "other-addr", "other-port", result)
+	state := stageStateFromAttachResult(
+		ProtocolNVMeoFTCP, AccessTypeFilesystem,
+		"other-nqn", "other-addr", "other-port", result)
 	if state == nil {
 		t.Fatal("stageStateFromAttachResult returned nil")
 	}
@@ -409,7 +411,7 @@ func TestStageStateFromAttachResult_NVMeoF_FallsBackToVolumeContextFields(t *tes
 		State:      &fakeProtocolState{protocol: "nvmeof-tcp"},
 	}
 
-	state := stageStateFromAttachResult(ProtocolNVMeoFTCP, targetID, address, port, result)
+	state := stageStateFromAttachResult(ProtocolNVMeoFTCP, AccessTypeFilesystem, targetID, address, port, result)
 	if state == nil {
 		t.Fatal("stageStateFromAttachResult returned nil")
 	}
@@ -431,7 +433,7 @@ func TestStageStateFromAttachResult_NVMeoF_FallsBackToVolumeContextFields(t *tes
 // stageStateFromAttachResult handles a nil AttachResult gracefully.
 func TestStageStateFromAttachResult_NVMeoF_NilAttachResult(t *testing.T) {
 	t.Parallel()
-	state := stageStateFromAttachResult(ProtocolNVMeoFTCP, "nqn.x:vol", "1.2.3.4", "4420", nil)
+	state := stageStateFromAttachResult(ProtocolNVMeoFTCP, AccessTypeFilesystem, "nqn.x:vol", "1.2.3.4", "4420", nil)
 	if state == nil {
 		t.Fatal("stageStateFromAttachResult returned nil for nil AttachResult")
 	}
@@ -451,7 +453,7 @@ func TestStageStateFromAttachResult_NVMeoF_NilAttachResult(t *testing.T) {
 // is set and no typed sub-struct is populated.
 func TestStageStateFromAttachResult_OtherProtocol_OnlyProtocolTypeSet(t *testing.T) {
 	t.Parallel()
-	state := stageStateFromAttachResult("nfs", "server:/export", "", "", nil)
+	state := stageStateFromAttachResult("nfs", AccessTypeFilesystem, "server:/export", "", "", nil)
 	if state == nil {
 		t.Fatal("stageStateFromAttachResult returned nil")
 	}

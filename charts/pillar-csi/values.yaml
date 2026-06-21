@@ -214,6 +214,13 @@ node:
   # -- Liveness probe HTTP port exposed by the node liveness sidecar (hostPort NOT used).
   livenessPort: 9808
 
+  # -- Run the node Pod in the host network namespace.  Required because
+  # `nvme connect` writes to /dev/nvme-fabrics issue TCP SYNs from the
+  # caller's netns; with hostNetwork: false the SYNs originate in the pod
+  # netns and cannot reach the host-network nvmet listener exposed by the
+  # agent.  See PRD §2.4 for the kernel netns rationale.
+  hostNetwork: true
+
   # Init container that runs modprobe for initiator kernel modules (best-effort).
   # Pod startup is NOT blocked if modprobe fails.
   initModprobe:
@@ -279,7 +286,10 @@ node:
 # Kubernetes DaemonSet: gRPC agent on storage nodes.
 # Scheduled only on nodes labelled pillar-csi.bhyoo.com/storage-node=true
 # (the controller manages this label automatically via PillarTarget CRs).
-# hostNetwork MUST remain false — agent gRPC is exposed via hostPort only (PRD §2.4).
+# hostNetwork defaults to true so that nvmet_tcp listeners and `nvme connect`
+# TCP sockets are created in the host network namespace.  Disabling this
+# breaks the NVMe-oF/iSCSI data plane in every clustered deployment; see
+# PRD §2.4 for the kernel netns rationale.
 # Init container: best-effort modprobe for target kernel modules.
 agent:
   image:
@@ -345,6 +355,13 @@ agent:
 
   # -- Labels added to the agent Pod template.
   podLabels: {}
+
+  # -- Run the agent Pod in the host network namespace.  Required for the
+  # NVMe-oF/iSCSI data plane (see PRD §2.4).  Set to false only for isolated
+  # gRPC-only deployments where no kernel target is exported (e.g. unit-test
+  # harnesses); production NVMe-oF/iSCSI exports will fail with
+  # "connection refused" at NodeStageVolume when this is false.
+  hostNetwork: true
 
   # -- gRPC listen port inside the container (also exposed as hostPort).
   grpcPort: 9500

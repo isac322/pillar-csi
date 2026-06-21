@@ -701,7 +701,7 @@ func TestNodeStageState_ToProtocolState_NVMeoFFieldsPreserved(t *testing.T) {
 func TestStageStateFromAttachResult_ISCSIProtocol(t *testing.T) {
 	t.Parallel()
 
-	s := stageStateFromAttachResult(testProtocolISCSI, "iqn.x:vol", "1.2.3.4:3260", "", nil)
+	s := stageStateFromAttachResult(testProtocolISCSI, AccessTypeFilesystem, "iqn.x:vol", "1.2.3.4:3260", "", nil)
 	if s == nil {
 		t.Fatal("stageStateFromAttachResult returned nil")
 	}
@@ -722,7 +722,7 @@ func TestStageStateFromAttachResult_ISCSIProtocol(t *testing.T) {
 func TestStageStateFromAttachResult_NFSProtocol(t *testing.T) {
 	t.Parallel()
 
-	s := stageStateFromAttachResult(testProtocolNFS, "10.0.0.1:/export", "", "", nil)
+	s := stageStateFromAttachResult(testProtocolNFS, AccessTypeFilesystem, "10.0.0.1:/export", "", "", nil)
 	if s == nil {
 		t.Fatal("stageStateFromAttachResult returned nil")
 	}
@@ -739,7 +739,7 @@ func TestStageStateFromAttachResult_NFSProtocol(t *testing.T) {
 func TestStageStateFromAttachResult_SMBProtocol(t *testing.T) {
 	t.Parallel()
 
-	s := stageStateFromAttachResult(testProtocolSMB, "smb-srv/share", "", "", nil)
+	s := stageStateFromAttachResult(testProtocolSMB, AccessTypeFilesystem, "smb-srv/share", "", "", nil)
 	if s == nil {
 		t.Fatal("stageStateFromAttachResult returned nil")
 	}
@@ -766,7 +766,7 @@ func TestStageStateFromAttachResult_NVMeoFEmptyAttachResultState(t *testing.T) {
 		State:      nil, // no state in AttachResult
 	}
 
-	s := stageStateFromAttachResult(ProtocolNVMeoFTCP, nqn, addr, port, result)
+	s := stageStateFromAttachResult(ProtocolNVMeoFTCP, AccessTypeFilesystem, nqn, addr, port, result)
 	if s == nil {
 		t.Fatal("stageStateFromAttachResult returned nil")
 	}
@@ -803,7 +803,7 @@ func TestStageStateFromAttachResult_NVMeoFResultStateTakesPrecedence(t *testing.
 		},
 	}
 
-	s := stageStateFromAttachResult(ProtocolNVMeoFTCP,
+	s := stageStateFromAttachResult(ProtocolNVMeoFTCP, AccessTypeFilesystem,
 		"nqn.x:vol-from-volctx", "volctx-addr", "volctx-port",
 		result,
 	)
@@ -828,7 +828,7 @@ func TestStageStateFromAttachResult_NVMeoFResultStateTakesPrecedence(t *testing.
 func TestStageStateFromAttachResult_NVMeoFEmptyProtocolType(t *testing.T) {
 	t.Parallel()
 
-	s := stageStateFromAttachResult("", "nqn.x:vol", "1.2.3.4", "4420", nil)
+	s := stageStateFromAttachResult("", AccessTypeFilesystem, "nqn.x:vol", "1.2.3.4", "4420", nil)
 	if s == nil {
 		t.Fatal("stageStateFromAttachResult returned nil")
 	}
