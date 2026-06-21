@@ -486,8 +486,6 @@ func (r *PillarTargetReconciler) setAgentConnectedCondition(
 	log := logf.FromContext(ctx)
 
 	if r.Dialer == nil {
-		// No dialer configured — set condition False with an informative reason
-		// instead of the old opaque stub message.
 		meta.SetStatusCondition(&target.Status.Conditions, metav1.Condition{
 			Type:               "AgentConnected",
 			Status:             metav1.ConditionFalse,

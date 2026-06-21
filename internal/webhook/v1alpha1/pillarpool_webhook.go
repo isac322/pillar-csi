@@ -37,9 +37,6 @@ func SetupPillarPoolWebhookWithManager(mgr ctrl.Manager) error {
 		Complete()
 }
 
-// TODO(user): EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-
-// TODO(user): change verbs to "verbs=create;update;delete" if you want to enable deletion validation.
 // NOTE: If you want to customize the 'path', use the flags '--defaulting-path' or '--validation-path'.
 // +kubebuilder:webhook:path=/validate-pillar-csi-pillar-csi-bhyoo-com-v1alpha1-pillarpool,mutating=false,failurePolicy=fail,sideEffects=None,groups=pillar-csi.pillar-csi.bhyoo.com,resources=pillarpools,verbs=create;update,versions=v1alpha1,name=vpillarpool-v1alpha1.kb.io,admissionReviewVersions=v1
 
@@ -48,9 +45,7 @@ func SetupPillarPoolWebhookWithManager(mgr ctrl.Manager) error {
 //
 // NOTE: The +kubebuilder:object:generate=false marker prevents controller-gen from generating DeepCopy methods,
 // as this struct is used only for temporary operations and does not need to be deeply copied.
-type PillarPoolCustomValidator struct {
-	// TODO(user): Add more fields as needed for validation
-}
+type PillarPoolCustomValidator struct{}
 
 var _ admission.Validator[*pillarcsiv1alpha1.PillarPool] = &PillarPoolCustomValidator{}
 
@@ -141,8 +136,6 @@ func (*PillarPoolCustomValidator) ValidateDelete(
 	_ context.Context, pillarpool *pillarcsiv1alpha1.PillarPool,
 ) (admission.Warnings, error) {
 	pillarpoollog.Info("Validation for PillarPool upon deletion", "name", pillarpool.GetName())
-
-	// TODO(user): fill in your validation logic upon object deletion.
 
 	return nil, nil
 }

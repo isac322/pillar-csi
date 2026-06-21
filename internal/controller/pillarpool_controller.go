@@ -67,8 +67,7 @@ type PillarPoolReconciler struct {
 // For PillarPool the reconciler:
 //  1. Adds a finalizer on first creation (deletion protection).
 //  2. On normal operation: looks up the referenced PillarTarget, updates the
-//     TargetReady status condition, and sets PoolDiscovered / BackendSupported
-//     (stubbed False — awaiting gRPC agent integration in a later task).
+//     TargetReady status condition, and sets PoolDiscovered / BackendSupported.
 //  3. On deletion: blocks until no PillarBindings reference this pool, then
 //     removes the finalizer to allow the object to be garbage-collected.
 //
