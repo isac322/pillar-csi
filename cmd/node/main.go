@@ -144,6 +144,17 @@ func pathExists(path string) bool {
 }
 
 func stateDirWritable(stateDir string) bool {
+	if stateDir == "" {
+		return false
+	}
+	// MkdirAll is intentional: the chart does not bootstrap the host
+	// directory and a fresh node would otherwise report Ready=false
+	// forever because os.WriteFile cannot create through a missing
+	// parent.  Existing mode is preserved; new directories get 0o750.
+	mkErr := os.MkdirAll(stateDir, 0o750)
+	if mkErr != nil {
+		return false
+	}
 	probeFile := filepath.Join(stateDir, ".probe")
 	writeErr := os.WriteFile(probeFile, []byte("ok"), 0o600)
 	if writeErr != nil {

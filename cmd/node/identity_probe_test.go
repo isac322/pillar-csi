@@ -46,3 +46,28 @@ func TestProbe_Node_RequiresWritableStateDir(t *testing.T) {
 		t.Fatal("Probe ready with non-writable state dir = true, want false")
 	}
 }
+
+func TestProbe_Node_CreatesMissingStateDir(t *testing.T) {
+	fabricsDevice := filepath.Join(t.TempDir(), "nvme-fabrics")
+	if err := os.WriteFile(fabricsDevice, []byte("ok"), 0o600); err != nil {
+		t.Fatalf("write fake nvme-fabrics: %v", err)
+	}
+	parent := t.TempDir()
+	missingStateDir := filepath.Join(parent, "never-created", "node")
+	if _, statErr := os.Stat(missingStateDir); statErr == nil {
+		t.Fatalf("test precondition violated: %q must not exist yet", missingStateDir)
+	}
+
+	server := csisvc.NewIdentityServerWithReadyFn(driverName, "test", nodeReadyFn(fabricsDevice, missingStateDir))
+	response, err := server.Probe(context.Background(), &csispec.ProbeRequest{})
+
+	if err != nil {
+		t.Fatalf("Probe returned error: %v", err)
+	}
+	if !response.GetReady().GetValue() {
+		t.Fatal("Probe must report ready on a fresh node by creating the state dir, got ready=false")
+	}
+	if _, statErr := os.Stat(missingStateDir); statErr != nil {
+		t.Fatalf("state dir should have been auto-created: %v", statErr)
+	}
+}
