@@ -120,6 +120,15 @@ func (*PillarPoolCustomValidator) ValidateUpdate(
 				oldPool.Spec.Backend.Type, newPool.Spec.Backend.Type),
 		))
 	}
+	oldZFS := oldPool.Spec.Backend.ZFS
+	newZFS := newPool.Spec.Backend.ZFS
+	if (oldZFS == nil) != (newZFS == nil) ||
+		(oldZFS != nil && newZFS != nil && oldZFS.Pool != newZFS.Pool) {
+		allErrs = append(allErrs, field.Forbidden(
+			field.NewPath("spec", "backend", "zfs", "pool"),
+			"field is immutable",
+		))
+	}
 
 	if len(allErrs) > 0 {
 		return nil, allErrs.ToAggregate()
