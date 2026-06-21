@@ -187,10 +187,29 @@ assert_contains "${OVERRIDE_CTL}" "--agent-tls-server-name=my-agent.example.svc"
 # ──────────────────────────────────────────────────────────────────────────
 CM_OUT="$(render --set mtls.enabled=true --set mtls.certManager.enabled=true)"
 
-assert_contains "${CM_OUT}" "kind: Issuer" \
-  "certManager=on: chart must render cert-manager Issuer"
-assert_min_count "${CM_OUT}" "^kind: Certificate" 2 \
-  "certManager=on: chart must render exactly 2 Certificates (controller + agent)"
+assert_min_count "${CM_OUT}" "^kind: Issuer" 2 \
+  "certManager=on (chart-managed CA): chart must render bootstrap Issuer + CA Issuer (2 total)"
+assert_min_count "${CM_OUT}" "^kind: Certificate" 3 \
+  "certManager=on (chart-managed CA): chart must render CA Certificate + controller leaf + agent leaf (3 total)"
+assert_contains "${CM_OUT}" "isCA: true" \
+  "certManager=on: chart must render an isCA Certificate so leaves share a single trust root"
+assert_contains "${CM_OUT}" "ca:" \
+  "certManager=on: chart must render a kind=ca Issuer that references the bootstrap CA secret"
+
+# Operator-supplied issuerRef path: chart must NOT render the bootstrap
+# Issuer or the CA Certificate (the operator owns the CA already), and
+# both leaf Certificates must point at the supplied issuer.
+OVERRIDE_CM_OUT="$(render --set mtls.enabled=true --set mtls.certManager.enabled=true --set mtls.certManager.issuerRef.name=my-org-ca --set mtls.certManager.issuerRef.kind=ClusterIssuer)"
+assert_not_contains "${OVERRIDE_CM_OUT}" "kind: Issuer" \
+  "certManager=on (operator issuerRef): chart must NOT render any in-cluster Issuer"
+assert_not_contains "${OVERRIDE_CM_OUT}" "isCA: true" \
+  "certManager=on (operator issuerRef): chart must NOT render a CA Certificate"
+assert_min_count "${OVERRIDE_CM_OUT}" "^kind: Certificate" 2 \
+  "certManager=on (operator issuerRef): chart must render the 2 leaf Certificates only"
+assert_contains "${OVERRIDE_CM_OUT}" "name: my-org-ca" \
+  "certManager=on (operator issuerRef): both leaves must reference the supplied issuer name"
+assert_contains "${OVERRIDE_CM_OUT}" "kind: ClusterIssuer" \
+  "certManager=on (operator issuerRef): leaves must honour issuerRef.kind override"
 
 # Auto-generated Secret names propagate to the pod mounts.
 CM_CTL_DEP="$(extract_doc "${CM_OUT}" "controller-deployment.yaml")"

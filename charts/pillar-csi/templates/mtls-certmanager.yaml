@@ -1,18 +1,81 @@
 {{- if and .Values.mtls.enabled .Values.mtls.certManager.enabled }}
 {{- $fullname := include "pillar-csi.fullname" . }}
 {{- $ns := include "pillar-csi.namespace" . }}
-{{- $issuerName := .Values.mtls.certManager.issuerRef.name }}
-{{- if not $issuerName }}
+{{- $operatorIssuer := .Values.mtls.certManager.issuerRef.name }}
+{{- $caIssuerName := printf "%s-mtls-ca" $fullname }}
+{{- $caSecretName := printf "%s-mtls-ca" $fullname }}
+{{- /*
+  When the operator did NOT supply their own CA Issuer the chart must
+  bootstrap a real CA so the controller and agent leaf certs share a
+  single trust root.  Issuing both leaves from a selfSigned Issuer
+  directly is wrong: cert-manager re-keys for every Certificate, so each
+  Secret's ca.crt would be that leaf's own self-signature and mutual
+  verification would fail at runtime.
+
+  Canonical cert-manager pattern (https://cert-manager.io/docs/configuration/selfsigned/#bootstrapping-ca-issuers):
+    1. selfSigned Issuer — bootstrap, signs nothing else
+    2. Certificate isCA=true issued by (1) — produces the CA in
+       <fullname>-mtls-ca Secret (key+cert)
+    3. Issuer kind=ca referencing that Secret — signs the leaves
+    4. controller + agent leaf Certificates issued by (3) — both
+       Secrets' ca.crt fields are the SAME CA cert so the controller
+       can verify the agent cert and vice-versa.
+*/}}
+{{- if not $operatorIssuer }}
 ---
 apiVersion: cert-manager.io/v1
 kind: Issuer
 metadata:
-  name: {{ printf "%s-mtls" $fullname }}
+  name: {{ printf "%s-mtls-bootstrap" $fullname }}
   namespace: {{ $ns }}
   labels:
     {{- include "pillar-csi.labels" . | nindent 4 }}
 spec:
   selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ $caSecretName }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "pillar-csi.labels" . | nindent 4 }}
+spec:
+  secretName: {{ $caSecretName }}
+  isCA: true
+  commonName: {{ printf "%s mTLS CA" $fullname }}
+  duration: {{ .Values.mtls.certManager.duration }}
+  renewBefore: {{ .Values.mtls.certManager.renewBefore }}
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: {{ printf "%s-mtls-bootstrap" $fullname }}
+    kind: Issuer
+    group: cert-manager.io
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: {{ $caIssuerName }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "pillar-csi.labels" . | nindent 4 }}
+spec:
+  ca:
+    secretName: {{ $caSecretName }}
+{{- end }}
+{{- /*
+  Pick the issuer for the leaf Certificates: operator override wins,
+  else the chart-managed CA Issuer rendered above.
+*/}}
+{{- $leafIssuerName := $caIssuerName }}
+{{- $leafIssuerKind := "Issuer" }}
+{{- $leafIssuerGroup := "cert-manager.io" }}
+{{- if $operatorIssuer }}
+{{- $leafIssuerName = $operatorIssuer }}
+{{- $leafIssuerKind = default "Issuer" .Values.mtls.certManager.issuerRef.kind }}
+{{- $leafIssuerGroup = default "cert-manager.io" .Values.mtls.certManager.issuerRef.group }}
 {{- end }}
 ---
 apiVersion: cert-manager.io/v1
@@ -35,15 +98,9 @@ spec:
     - key encipherment
     - client auth
   issuerRef:
-    {{- if $issuerName }}
-    name: {{ $issuerName }}
-    kind: {{ default "Issuer" .Values.mtls.certManager.issuerRef.kind }}
-    group: {{ default "cert-manager.io" .Values.mtls.certManager.issuerRef.group }}
-    {{- else }}
-    name: {{ printf "%s-mtls" $fullname }}
-    kind: Issuer
-    group: cert-manager.io
-    {{- end }}
+    name: {{ $leafIssuerName }}
+    kind: {{ $leafIssuerKind }}
+    group: {{ $leafIssuerGroup }}
 ---
 apiVersion: cert-manager.io/v1
 kind: Certificate
@@ -66,13 +123,7 @@ spec:
     - server auth
     - client auth
   issuerRef:
-    {{- if $issuerName }}
-    name: {{ $issuerName }}
-    kind: {{ default "Issuer" .Values.mtls.certManager.issuerRef.kind }}
-    group: {{ default "cert-manager.io" .Values.mtls.certManager.issuerRef.group }}
-    {{- else }}
-    name: {{ printf "%s-mtls" $fullname }}
-    kind: Issuer
-    group: cert-manager.io
-    {{- end }}
+    name: {{ $leafIssuerName }}
+    kind: {{ $leafIssuerKind }}
+    group: {{ $leafIssuerGroup }}
 {{- end }}
