@@ -48,11 +48,14 @@ import (
 	csi "github.com/container-storage-interface/spec/lib/go/csi"
 
 	csisvc "github.com/bhyoo/pillar-csi/internal/csi"
+	"github.com/bhyoo/pillar-csi/internal/runtimepaths"
 )
 
 // driverName is the CSI provisioner name declared in the StorageClass.
 // It must match the name served by the controller plugin.
 const driverName = "pillar-csi.bhyoo.com"
+
+const defaultNodeStateDir = "/var/lib/pillar-csi/node"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // fabricsConnector — kernel-native NVMe-oF TCP protocol handler
@@ -81,7 +84,7 @@ type fabricsConnector struct {
 	sysfsRoot string
 
 	// fabricsDev is the path to the NVMe-fabrics character device.
-	// Production value: "/dev/nvme-fabrics".
+	// Production value: csisvc.NvmeFabricsDevice.
 	fabricsDev string
 
 	// hostNQN is the NVMe-oF host NQN this node identifies as during
@@ -109,10 +112,41 @@ type fabricsConnector struct {
 func newFabricsConnector(hostNQN, hostID string) *fabricsConnector {
 	return &fabricsConnector{
 		sysfsRoot:  "/sys",
-		fabricsDev: "/dev/nvme-fabrics",
+		fabricsDev: csisvc.NvmeFabricsDevice,
 		hostNQN:    hostNQN,
 		hostID:     hostID,
 	}
+}
+
+func resolvedDefaultStateDir() string {
+	return runtimepaths.ResolveNodeStateDir(defaultNodeStateDir)
+}
+
+func nodeReadyFn(fabricsDevice, stateDir string) func(context.Context) (bool, error) {
+	return func(_ context.Context) (bool, error) {
+		if !pathExists(fabricsDevice) {
+			return false, nil
+		}
+		if !stateDirWritable(stateDir) {
+			return false, nil
+		}
+		return true, nil
+	}
+}
+
+func pathExists(path string) bool {
+	_, statErr := os.Stat(path)
+	return statErr == nil
+}
+
+func stateDirWritable(stateDir string) bool {
+	probeFile := filepath.Join(stateDir, ".probe")
+	writeErr := os.WriteFile(probeFile, []byte("ok"), 0o600)
+	if writeErr != nil {
+		return false
+	}
+	removeErr := os.Remove(probeFile)
+	return removeErr == nil || os.IsNotExist(removeErr)
 }
 
 // nvmeConnect establishes an NVMe-oF TCP connection to the given subsystem NQN
@@ -874,7 +908,12 @@ func main() {
 	handlers := map[string]csisvc.ProtocolHandler{
 		csisvc.ProtocolNVMeoFTCP: newFabricsConnector(hostNQN, hostID),
 	}
-	identitySrv := csisvc.NewIdentityServer(driverName, version)
+	stateDir := resolvedDefaultStateDir()
+	identitySrv := csisvc.NewIdentityServerWithReadyFn(
+		driverName,
+		version,
+		nodeReadyFn(csisvc.NvmeFabricsDevice, stateDir),
+	)
 	nodeSrv := csisvc.NewNodeServer(*nodeID, handlers, &mkdirMounter{wrapped: csisvc.NewKubeMounter()})
 
 	// ── Open the Unix socket ───────────────────────────────────────────────

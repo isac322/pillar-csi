@@ -44,7 +44,7 @@ type NVMeoFConnector struct {
 	sysfsRoot string
 
 	// fabricsDev is the path to the NVMe-fabrics character device.
-	// Production value: "/dev/nvme-fabrics".
+	// Production value: NvmeFabricsDevice.
 	fabricsDev string
 }
 
@@ -52,7 +52,7 @@ type NVMeoFConnector struct {
 func NewNVMeoFConnector() *NVMeoFConnector {
 	return &NVMeoFConnector{
 		sysfsRoot:  "/sys",
-		fabricsDev: "/dev/nvme-fabrics",
+		fabricsDev: NvmeFabricsDevice,
 	}
 }
 

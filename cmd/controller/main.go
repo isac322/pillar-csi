@@ -26,6 +26,7 @@ import (
 	"os"
 	"runtime/debug"
 	"strings"
+	"sync/atomic"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -38,6 +39,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
@@ -140,6 +142,20 @@ const (
 
 func resolvedDefaultCSIEndpoint() string {
 	return runtimepaths.ResolveControllerCSIEndpoint(defaultCSIEndpoint)
+}
+
+func managerStartedReadyFn(started *atomic.Bool) func(context.Context) (bool, error) {
+	return func(_ context.Context) (bool, error) {
+		return started.Load(), nil
+	}
+}
+
+func managerStartedRunnable(started *atomic.Bool) manager.Runnable {
+	return manager.RunnableFunc(func(ctx context.Context) error {
+		started.Store(true)
+		<-ctx.Done()
+		return nil
+	})
 }
 
 // csiGRPCServer is a controller-runtime Runnable that starts the CSI gRPC
@@ -467,11 +483,17 @@ func runManager(mgr ctrl.Manager, agentDialer agentclient.Dialer, csiEndpoint st
 		driverVersion = bi.Main.Version
 	}
 
-	identitySrv := csi.NewIdentityServer(driverName, driverVersion)
+	var managerStarted atomic.Bool
+	identitySrv := csi.NewIdentityServerWithReadyFn(driverName, driverVersion, managerStartedReadyFn(&managerStarted))
 	ctrlSrv := csi.NewControllerServer(mgr.GetClient(), driverName)
 
 	csiGRPC := grpc.NewServer()
 	csi.RegisterGRPC(csiGRPC, identitySrv, ctrlSrv)
+
+	err = mgr.Add(managerStartedRunnable(&managerStarted))
+	if err != nil {
+		return fmt.Errorf("unable to add manager start marker to manager: %w", err)
+	}
 
 	err = mgr.Add(&csiGRPCServer{
 		endpoint: csiEndpoint,
