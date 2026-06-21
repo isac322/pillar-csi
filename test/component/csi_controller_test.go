@@ -222,6 +222,11 @@ func (*csiMockAgent) ReconcileState(
 ) (*agentv1.ReconcileStateResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "not used in controller tests")
 }
+func (*csiMockAgent) Drain(
+	_ context.Context, _ *agentv1.DrainRequest, _ ...grpc.CallOption,
+) (*agentv1.DrainResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "not used in controller tests")
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Test environment setup
