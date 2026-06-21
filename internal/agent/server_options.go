@@ -49,3 +49,8 @@ func WithDevicePollParams(interval, timeout time.Duration) ServerOption {
 		s.devicePollTimeout = timeout
 	}
 }
+
+// WithDrainStateDir overrides where Drain writes the .drained marker.
+func WithDrainStateDir(dir string) ServerOption {
+	return func(s *Server) { s.drainStateDir = dir }
+}
