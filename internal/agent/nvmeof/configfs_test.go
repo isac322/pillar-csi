@@ -703,6 +703,70 @@ func TestAllowAndDenyHost(t *testing.T) {
 	}
 }
 
+// TestAllowHost_IdempotentSymlinkSurvivesEEXIST nails down the contract that
+// makes csi-attacher retry-safe: when the allowed_hosts symlink already
+// exists from a prior successful AllowHost call, the second call MUST
+// swallow the configfs EEXIST and leave the existing symlink intact.
+//
+// A regression that "fixes" EEXIST by unlinking + recreating the symlink
+// would race with concurrent kernel-side ACL lookups and could briefly
+// reject in-flight nvme-fabrics connects; a regression that surfaces
+// EEXIST as a gRPC error would make csi-attacher mark the
+// VolumeAttachment FAILED on the second retry cycle and block the pod.
+// Both regressions look correct to the existing happy-path test, so this
+// test asserts the post-condition (symlink target unchanged) explicitly.
+func TestAllowHost_IdempotentSymlinkSurvivesEEXIST(t *testing.T) {
+	root := t.TempDir()
+	tgt := &NvmetTarget{
+		ConfigfsRoot: root,
+		SubsystemNQN: "nqn.2026-01.io.pillar-csi:pvc-eexist",
+		NamespaceID:  1,
+		DevicePath:   "/dev/zvol/tank/pvc-eexist",
+		BindAddress:  "10.0.0.7",
+		Port:         4420,
+	}
+	if err := tgt.createSubsystem(); err != nil {
+		t.Fatalf("createSubsystem: %v", err)
+	}
+
+	const hostNQN = "nqn.host:retry-victim"
+	if err := tgt.AllowHost(hostNQN); err != nil {
+		t.Fatalf("first AllowHost: %v", err)
+	}
+	linkPath := tgt.allowedHostLink(hostNQN)
+	firstTarget, readErr := os.Readlink(linkPath)
+	if readErr != nil {
+		t.Fatalf("readlink after first AllowHost: %v", readErr)
+	}
+	firstInfo, statErr := os.Lstat(linkPath)
+	if statErr != nil {
+		t.Fatalf("lstat after first AllowHost: %v", statErr)
+	}
+
+	if err := tgt.AllowHost(hostNQN); err != nil {
+		t.Fatalf("second AllowHost (EEXIST) must succeed: %v", err)
+	}
+
+	secondTarget, readErr := os.Readlink(linkPath)
+	if readErr != nil {
+		t.Fatalf("readlink after second AllowHost: %v", readErr)
+	}
+	if secondTarget != firstTarget {
+		t.Errorf("symlink target changed across idempotent AllowHost: %q → %q "+
+			"(EEXIST must be swallowed without unlink+recreate)",
+			firstTarget, secondTarget)
+	}
+	secondInfo, statErr := os.Lstat(linkPath)
+	if statErr != nil {
+		t.Fatalf("lstat after second AllowHost: %v", statErr)
+	}
+	if !secondInfo.ModTime().Equal(firstInfo.ModTime()) {
+		t.Errorf("symlink mtime changed across idempotent AllowHost: %v → %v "+
+			"(suggests unlink+recreate which races with kernel ACL lookups)",
+			firstInfo.ModTime(), secondInfo.ModTime())
+	}
+}
+
 // Test helpers.
 
 func assertFileContent(t *testing.T, path, want string) {

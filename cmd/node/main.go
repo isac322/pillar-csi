@@ -140,6 +140,17 @@ func newFabricsConnector(hostNQN, hostID string) *fabricsConnector {
 // The kernel nvme_fabrics module parses the string, creates the controller,
 // and initiates the TCP connection synchronously.  Write returns an error if
 // the connection fails (target unreachable, invalid NQN, etc.).
+// Assembles the nvme-fabrics option string written to the kernel device
+// to drive a connect. Both hostnqn and hostid are mandatory together
+// because ACL-enforcing targets reject a missing hostnqn with EIO, and
+// recent Linux kernels reject a hostnqn without a matching hostid UUID
+// with EINVAL at parse time. Kept as a standalone function so the format
+// can be regression-tested without opening the kernel device.
+func buildFabricsConnectOpts(trAddr, trSvcID, subsysNQN, hostNQN, hostID string) string {
+	return fmt.Sprintf("transport=tcp,traddr=%s,trsvcid=%s,nqn=%s,hostnqn=%s,hostid=%s",
+		trAddr, trSvcID, subsysNQN, hostNQN, hostID)
+}
+
 func (c *fabricsConnector) nvmeConnect(ctx context.Context, subsysNQN, trAddr, trSvcID string) error {
 	already, err := c.isConnected(ctx, subsysNQN)
 	if err != nil {
@@ -157,9 +168,10 @@ func (c *fabricsConnector) nvmeConnect(ctx context.Context, subsysNQN, trAddr, t
 
 	// Write the connection parameters as a comma-separated key=value string.
 	// The kernel nvme_fabrics driver parses this in nvmf_dev_write() and
-	// initiates the TCP connection via nvmf_create_ctrl().
-	opts := fmt.Sprintf("transport=tcp,traddr=%s,trsvcid=%s,nqn=%s,hostnqn=%s,hostid=%s",
-		trAddr, trSvcID, subsysNQN, c.hostNQN, c.hostID)
+	// initiates the TCP connection via nvmf_create_ctrl().  Build the
+	// string through buildFabricsConnectOpts so the format is unit-testable
+	// without opening /dev/nvme-fabrics.
+	opts := buildFabricsConnectOpts(trAddr, trSvcID, subsysNQN, c.hostNQN, c.hostID)
 	_, err = fmt.Fprintf(f, "%s\n", opts)
 	if err != nil {
 		return fmt.Errorf("fabricsConnector nvmeConnect: write to %s (nqn=%s): %w",

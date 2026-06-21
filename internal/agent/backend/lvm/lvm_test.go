@@ -342,8 +342,12 @@ func TestCreate_LinearLV(t *testing.T) {
 	fake.assertCallCount(3)
 	// First call: lvs existence check
 	fake.assertArgsContain(0, "lvs", "data-vg/pvc-new")
-	// Second call: lvcreate -n pvc-new -L <size>b data-vg
-	fake.assertArgsContain(1, "lvcreate", "-n", "pvc-new", "-L", "4294967296b", "data-vg")
+	// Second call: lvcreate -y -n pvc-new -L <size>b data-vg.
+	// The -y flag must be present — without it lvcreate prompts to wipe
+	// leftover filesystem signatures on recycled extents and, with no tty,
+	// answers "n" and aborts the create (see CreateLV in lvm.go for the
+	// kernel/util-linux interaction).
+	fake.assertArgsContain(1, "lvcreate", "-y", "-n", "pvc-new", "-L", "4294967296b", "data-vg")
 	// Third call: read-back lvs
 	fake.assertArgsContain(2, "lvs", "data-vg/pvc-new")
 }
@@ -373,9 +377,13 @@ func TestCreate_ThinLV(t *testing.T) {
 	}
 
 	fake.assertCallCount(3)
-	// Second call: lvcreate with --virtualsize (long form) and --thinpool flag.
-	// createThinLV uses the long form --virtualsize for clarity in logs.
-	fake.assertArgsContain(1, "lvcreate", "-n", "pvc-thin",
+	// Second call: lvcreate -y with --virtualsize (long form) and --thinpool
+	// flag.  createThinLV uses the long form --virtualsize for clarity in
+	// logs.  The -y flag is mandatory for the same recycled-extents
+	// signature-wipe reason as the linear-LV path (see
+	// TestCreate_LinearLV).  Thin LV creation is even more sensitive
+	// because thin allocator reuse happens on every PVC churn cycle.
+	fake.assertArgsContain(1, "lvcreate", "-y", "-n", "pvc-thin",
 		"--virtualsize", "2147483648b", "--thinpool", "thin-pool-0", "data-vg")
 }
 

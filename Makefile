@@ -232,6 +232,10 @@ test-csi-sanity: fmt vet ## Run the upstream kubernetes-csi/csi-test sanity suit
 test-external-e2e: ## Run the SIG-Storage External Storage e2e suite against a running Kind cluster. Requires KUBECONFIG.
 	@./test/external-e2e/run.sh
 
+.PHONY: test-chart
+test-chart: ## Helm chart render regression: assert hostNetwork:true + kubelet-csi-dir Bidirectional + dnsPolicy invariants survive future template edits.
+	@./charts/pillar-csi/test_render.sh
+
 ## Number of parallel Ginkgo worker processes.  Defaults to 4.
 ## 4 workers is sufficient to complete 421 default-profile specs within the
 ## 45-second test-exec budget while avoiding resource contention on the shared

@@ -341,8 +341,13 @@ func TestNodeStageVolume_DefaultFsType(t *testing.T) {
 	}
 }
 
-// TestNodeStageVolume_BlockAccess exercises the BLOCK access type: the staging
-// path should receive a bind mount of the raw device.
+// TestNodeStageVolume_BlockAccess exercises the BLOCK access type: the bind
+// mount must point /dev/nvmeXnY at the device-sentinel file inside the
+// kubelet-created staging directory (blockStagingDevicePath), NOT at the
+// staging directory itself.  Kubelet pre-creates stagingTargetPath as a
+// directory and the Linux kernel refuses a block-source → directory-target
+// bind with EXT_SOURCEMOUNTREJECTED, so binding to stagingTargetPath
+// directly would make every Block-mode workload pod fail at NodeStageVolume.
 func TestNodeStageVolume_BlockAccess(t *testing.T) {
 	t.Parallel()
 
@@ -367,6 +372,13 @@ func TestNodeStageVolume_BlockAccess(t *testing.T) {
 	mc := env.mounter.mountCalls[0]
 	if mc.source != env.connector.devicePath {
 		t.Errorf("Mount source = %q, want %q", mc.source, env.connector.devicePath)
+	}
+	wantTarget := blockStagingDevicePath(stagingPath)
+	if mc.target != wantTarget {
+		t.Errorf("Mount target = %q, want %q (in-staging device sentinel; "+
+			"binding to stagingPath itself would fail kernel "+
+			"EXT_SOURCEMOUNTREJECTED check)",
+			mc.target, wantTarget)
 	}
 	hasBindOpt := false
 	for _, o := range mc.options {

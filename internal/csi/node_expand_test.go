@@ -28,6 +28,7 @@ package csi
 import (
 	"context"
 	"errors"
+	"os"
 	"testing"
 
 	csi "github.com/container-storage-interface/spec/lib/go/csi"
@@ -262,6 +263,109 @@ func TestNodeExpandVolume_NilCapabilityMountBlock(t *testing.T) {
 	if mock.capturedFsType != defaultFsType {
 		t.Errorf("expected default fsType %q when FsType is empty, got %q", defaultFsType, mock.capturedFsType)
 	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Block-mode short-circuit regression tests
+// ─────────────────────────────────────────────────────────────────────────────.
+
+// TestNodeExpandVolume_BlockCapShortCircuit verifies that when the CO sends an
+// explicit Block VolumeCapability the resizer is NOT invoked.  Block-mode
+// volumes have no filesystem to grow on the node; calling resize2fs against
+// the device-sentinel publish target (a regular file bind-mounted onto
+// /dev/nvmeXnY) would always fail and stall the CO's PVC condition
+// transition.  The required_bytes from the capacity_range must be echoed
+// back unchanged.
+func TestNodeExpandVolume_BlockCapShortCircuit(t *testing.T) {
+	mock := &mockResizer{}
+	srv := newExpandServer(t, mock)
+	const want = int64(2 * 1024 * 1024 * 1024)
+
+	resp, err := srv.NodeExpandVolume(context.Background(), &csi.NodeExpandVolumeRequest{
+		VolumeId:   "tank/pvc-block-expand",
+		VolumePath: t.TempDir(),
+		VolumeCapability: &csi.VolumeCapability{
+			AccessType: &csi.VolumeCapability_Block{Block: &csi.VolumeCapability_BlockVolume{}},
+		},
+		CapacityRange: &csi.CapacityRange{RequiredBytes: want},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.GetCapacityBytes() != want {
+		t.Errorf("CapacityBytes = %d, want %d (required_bytes echoed back)", resp.GetCapacityBytes(), want)
+	}
+	if mock.called != 0 {
+		t.Errorf("ResizeFS called %d times for Block-mode expand, want 0", mock.called)
+	}
+}
+
+// TestNodeExpandVolume_NoCapRegularFileShortCircuit verifies the CSI 1.4+
+// fallback: when the CO omits VolumeCapability (allowed by spec), the server
+// stats volume_path and treats a non-directory path as a Block-mode publish
+// target (NodeStageVolume Block-mode binds onto a regular-file sentinel —
+// see blockStagingDevicePath).  The resizer must not run.
+func TestNodeExpandVolume_NoCapRegularFileShortCircuit(t *testing.T) {
+	mock := &mockResizer{}
+	srv := newExpandServer(t, mock)
+
+	volumePath := t.TempDir() + "/device"
+	if err := writeEmptyFile(t, volumePath); err != nil {
+		t.Fatalf("create regular file: %v", err)
+	}
+
+	resp, err := srv.NodeExpandVolume(context.Background(), &csi.NodeExpandVolumeRequest{
+		VolumeId:   "tank/pvc-block-no-cap",
+		VolumePath: volumePath,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("expected non-nil response")
+	}
+	if mock.called != 0 {
+		t.Errorf("ResizeFS called %d times for regular-file volume_path with nil "+
+			"VolumeCapability (CSI 1.4+ fallback), want 0", mock.called)
+	}
+}
+
+// TestNodeExpandVolume_NoCapDirectoryStillResizes guards the inverse of the
+// Block-mode fallback: when VolumeCapability is nil and volume_path is a
+// directory (Filesystem-mode publish target), the resizer must still run
+// with the default fsType so Filesystem-mode online expansion keeps working
+// after the CO drops the (optional) capability.
+func TestNodeExpandVolume_NoCapDirectoryStillResizes(t *testing.T) {
+	mock := &mockResizer{}
+	srv := newExpandServer(t, mock)
+	volumePath := t.TempDir()
+
+	_, err := srv.NodeExpandVolume(context.Background(), &csi.NodeExpandVolumeRequest{
+		VolumeId:   "tank/pvc-fs-no-cap",
+		VolumePath: volumePath,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if mock.called != 1 {
+		t.Fatalf("ResizeFS called %d times for directory volume_path with nil "+
+			"VolumeCapability, want 1 (Filesystem-mode fallback must not "+
+			"short-circuit)", mock.called)
+	}
+	if mock.capturedFsType != defaultFsType {
+		t.Errorf("expected fsType %q (default), got %q", defaultFsType, mock.capturedFsType)
+	}
+}
+
+// writeEmptyFile creates an empty regular file at path so the Block-mode
+// fallback's os.Stat sees a non-directory.
+func writeEmptyFile(t *testing.T, path string) error {
+	t.Helper()
+	f, err := os.Create(path) //nolint:gosec // G304: path is a t.TempDir() child controlled by the test
+	if err != nil {
+		return err
+	}
+	return f.Close()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
