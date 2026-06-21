@@ -115,11 +115,33 @@ func (n *NodeServer) NodeExpandVolume(
 			"NodeExpandVolume: stat %q: %v", volumePath, statErr)
 	}
 
+	// ── Block-mode short-circuit ─────────────────────────────────────────────
+	// Block-mode volumes have no filesystem to grow.  ControllerExpandVolume
+	// already enlarged the backing LV and the kernel's NVMe-oF initiator
+	// picks up the new namespace capacity via the controller's
+	// asynchronous-event "namespace attribute changed" notification, so the
+	// only work remaining on the node is to acknowledge the call.  Detect
+	// Block-mode via the explicit VolumeCapability (CSI 1.0+ always carries
+	// one for online expansion) and, when the CO omits it (CSI 1.4+ optional),
+	// fall back to a stat of volume_path: NodeStageVolume Block-mode binds
+	// /dev/nvmeXnY onto a regular file (see blockStagingDeviceFile and
+	// NodePublishVolume), so a non-directory volume_path identifies a
+	// Block-mode publish target.
+	volCap := req.GetVolumeCapability()
+	if volCap != nil && volCap.GetBlock() != nil {
+		return &csi.NodeExpandVolumeResponse{CapacityBytes: blockExpandCapacity(req)}, nil
+	}
+	if volCap == nil {
+		st, statBlockErr := os.Stat(volumePath)
+		if statBlockErr == nil && !st.IsDir() {
+			return &csi.NodeExpandVolumeResponse{CapacityBytes: blockExpandCapacity(req)}, nil
+		}
+	}
+
 	// ── Determine filesystem type ────────────────────────────────────────────
 	// Prefer the fsType from the VolumeCapability when present; fall back to
 	// the project default (ext4) when the CO does not supply a capability.
 	fsType := defaultFsType
-	volCap := req.GetVolumeCapability()
 	if volCap != nil {
 		if mnt := volCap.GetMount(); mnt != nil && mnt.GetFsType() != "" {
 			fsType = mnt.GetFsType()
@@ -142,12 +164,17 @@ func (n *NodeServer) NodeExpandVolume(
 	// Echo back the required_bytes from the capacity_range when provided so
 	// the CO can update the PersistentVolume capacity field.  A zero value
 	// means "fill the available block device capacity" — the CO accepts this.
-	var capacityBytes int64
-	if cr := req.GetCapacityRange(); cr != nil {
-		capacityBytes = cr.GetRequiredBytes()
-	}
+	return &csi.NodeExpandVolumeResponse{CapacityBytes: blockExpandCapacity(req)}, nil
+}
 
-	return &csi.NodeExpandVolumeResponse{CapacityBytes: capacityBytes}, nil
+// blockExpandCapacity echoes required_bytes from the request's capacity_range,
+// or 0 when the CO omitted it.  A zero capacity tells the CO to fill the
+// available block-device capacity.
+func blockExpandCapacity(req *csi.NodeExpandVolumeRequest) int64 {
+	if cr := req.GetCapacityRange(); cr != nil {
+		return cr.GetRequiredBytes()
+	}
+	return 0
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
