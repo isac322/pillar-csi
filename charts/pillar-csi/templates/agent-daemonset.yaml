@@ -43,6 +43,15 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       serviceAccountName: {{ include "pillar-csi.agentServiceAccountName" . }}
+      # terminationGracePeriodSeconds is the upper bound for the whole shutdown
+      # sequence: kubelet sends SIGTERM → preStop (5s wait for the endpoint
+      # controller to propagate readiness=false) → the binary's SIGTERM handler
+      # flips gRPC health to NOT_SERVING, runs Drain (waits for in-flight
+      # per-target operations to release their locks), waits the configured
+      # --shutdown-grace-period, then GracefulStop completes any remaining
+      # accepted RPCs.  60s gives the slowest path (drain + grace + RPC tail)
+      # comfortable headroom on a busy node without blocking node drain forever.
+      terminationGracePeriodSeconds: 60
       # ── Init containers ────────────────────────────────────────────────────
       # Loads target kernel modules. Failures are silently ignored (best-effort):
       # the pod does NOT fail to start if a module cannot be loaded.
@@ -126,6 +135,34 @@ spec:
             {{- with .Values.agent.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+          # gRPC native probes (kubelet >=1.24 beta, >=1.27 GA) read the
+          # standard grpc.health.v1 Health service the binary registers on
+          # the same gRPC port.  Kubelet flips the pod out of the Service
+          # endpoints as soon as readiness fails, which is what preStop
+          # waits 5s for before the binary's SIGTERM Drain runs.
+          livenessProbe:
+            grpc:
+              port: {{ .Values.agent.grpcPort }}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            grpc:
+              port: {{ .Values.agent.grpcPort }}
+            initialDelaySeconds: 2
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          # preStop gives the endpoint controller time to propagate
+          # readiness=false (and route new traffic away) BEFORE SIGTERM
+          # triggers Drain in the binary.  Drain itself only blocks until
+          # in-flight per-target ops release; the 5s here is purely the
+          # routing-propagation budget.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 5"]
           volumeMounts:
             # configfs — required for NVMe-oF target configuration via nvmet.
             - name: sys-kernel-config
