@@ -9,9 +9,9 @@ keywords:
   - csi
   - storage
   - kubernetes
-home: https://github.com/bhyoo/pillar-csi
+home: https://github.com/isac322/pillar-csi
 sources:
-  - https://github.com/bhyoo/pillar-csi
+  - https://github.com/isac322/pillar-csi
 maintainers:
   - name: bhyoo
     url: https://github.com/bhyoo
