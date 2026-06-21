@@ -487,3 +487,12 @@ mtls:
       secretName: pillar-controller-mtls
     agent:
       secretName: pillar-agent-mtls
+
+  # -- Override the TLS server name the controller uses when verifying the
+  # agent's certificate (SNI / SAN match). Required when the agent
+  # certificate is issued against a DNS name (cert-manager auto-issuance
+  # always does so) instead of the per-node IP the controller dials.
+  # Leave empty to let cert-manager mode auto-derive it as
+  # "<fullname>-agent.<namespace>.svc"; the operator must set it when
+  # providing custom Secrets whose agent cert SAN differs from the node IP.
+  serverName: ""

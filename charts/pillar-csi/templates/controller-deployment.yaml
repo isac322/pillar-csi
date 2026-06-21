@@ -87,6 +87,10 @@ spec:
             - --agent-tls-cert={{ include "pillar-csi.mtls.certDir" . }}/tls.crt
             - --agent-tls-key={{ include "pillar-csi.mtls.certDir" . }}/tls.key
             - --agent-tls-ca={{ include "pillar-csi.mtls.certDir" . }}/ca.crt
+            {{- $serverName := include "pillar-csi.mtls.serverName" . }}
+            {{- if $serverName }}
+            - --agent-tls-server-name={{ $serverName }}
+            {{- end }}
             {{- end }}
             {{- range .Values.controller.extraArgs }}
             - {{ . | quote }}

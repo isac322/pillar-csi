@@ -170,6 +170,18 @@ assert_not_contains "${MTLS_OUT}" "kind: Issuer" \
 assert_not_contains "${MTLS_OUT}" "kind: Certificate" \
   "mtls=on (secret mode): must NOT auto-render cert-manager Certificate"
 
+# Secret-mode without explicit mtls.serverName: controller must NOT
+# pass --agent-tls-server-name (operator-managed certs typically embed
+# the node IP as SAN so the runtime-resolved server name is correct).
+assert_not_contains "${CTL_DEP}" "--agent-tls-server-name" \
+  "mtls=on (secret mode, default): must NOT pass --agent-tls-server-name"
+
+# Secret-mode WITH explicit mtls.serverName: controller MUST pass it.
+OVERRIDE_OUT="$(render --set mtls.enabled=true --set mtls.serverName=my-agent.example.svc)"
+OVERRIDE_CTL="$(extract_doc "${OVERRIDE_OUT}" "controller-deployment.yaml")"
+assert_contains "${OVERRIDE_CTL}" "--agent-tls-server-name=my-agent.example.svc" \
+  "mtls=on (secret mode, serverName override): controller must pass --agent-tls-server-name=<override>"
+
 # ──────────────────────────────────────────────────────────────────────────
 # Mode 3: cert-manager mode
 # ──────────────────────────────────────────────────────────────────────────
@@ -188,6 +200,12 @@ assert_contains "${CM_CTL_DEP}" "secretName: ${RELEASE}-controller-mtls" \
 CM_AGT_DS="$(extract_doc "${CM_OUT}" "agent-daemonset.yaml")"
 assert_contains "${CM_AGT_DS}" "secretName: ${RELEASE}-agent-mtls" \
   "certManager=on: agent DaemonSet must mount auto-issued agent Secret"
+
+# cert-manager mode: controller MUST pass --agent-tls-server-name matching
+# the dnsNames the cert-manager Certificate generates, otherwise SAN
+# verification fails when the controller dials a node IP.
+assert_contains "${CM_CTL_DEP}" "--agent-tls-server-name=${RELEASE}-agent.default.svc" \
+  "certManager=on: controller must pass --agent-tls-server-name matching the agent Certificate dnsName"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Final verdict

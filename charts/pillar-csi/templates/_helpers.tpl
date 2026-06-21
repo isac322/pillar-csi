@@ -169,3 +169,19 @@ Same dispatch logic as the controller variant.
 {{ .Values.mtls.secretRefs.agent.secretName }}
 {{- end -}}
 {{- end }}
+
+{{/*
+mTLS — TLS server name the controller uses for SNI / SAN verification
+when dialing the agent.  Resolution order:
+  1. explicit .Values.mtls.serverName override (operator-managed Secrets)
+  2. cert-manager auto-issuance: "<fullname>-agent.<namespace>.svc"
+     (matches the dnsNames the chart's cert-manager template renders)
+  3. empty string (controller derives from the resolved agent address)
+*/}}
+{{- define "pillar-csi.mtls.serverName" -}}
+{{- if .Values.mtls.serverName -}}
+{{ .Values.mtls.serverName }}
+{{- else if .Values.mtls.certManager.enabled -}}
+{{ printf "%s-agent.%s.svc" (include "pillar-csi.fullname" .) (include "pillar-csi.namespace" .) }}
+{{- end -}}
+{{- end }}
