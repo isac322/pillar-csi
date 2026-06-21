@@ -134,3 +134,38 @@ ServiceAccount name for the agent DaemonSet.
 {{- printf "%s-agent" (include "pillar-csi.fullname" .) }}
 {{- end }}
 {{- end }}
+
+{{/*
+mTLS — directory inside controller and agent containers where the cert
+Secret is mounted.  Defaults to /etc/pillar-csi/mtls when mtls.certDir
+is unset.
+*/}}
+{{- define "pillar-csi.mtls.certDir" -}}
+{{- default "/etc/pillar-csi/mtls" .Values.mtls.certDir }}
+{{- end }}
+
+{{/*
+mTLS — name of the Secret holding the CONTROLLER mTLS cert chain.
+When cert-manager mode is enabled the chart auto-creates a Secret named
+"<fullname>-controller-mtls"; otherwise the operator-provided Secret
+name from mtls.secretRefs.controller.secretName is used.
+*/}}
+{{- define "pillar-csi.mtls.controllerSecret" -}}
+{{- if .Values.mtls.certManager.enabled -}}
+{{ printf "%s-controller-mtls" (include "pillar-csi.fullname" .) }}
+{{- else -}}
+{{ .Values.mtls.secretRefs.controller.secretName }}
+{{- end -}}
+{{- end }}
+
+{{/*
+mTLS — name of the Secret holding the AGENT mTLS cert chain.
+Same dispatch logic as the controller variant.
+*/}}
+{{- define "pillar-csi.mtls.agentSecret" -}}
+{{- if .Values.mtls.certManager.enabled -}}
+{{ printf "%s-agent-mtls" (include "pillar-csi.fullname" .) }}
+{{- else -}}
+{{ .Values.mtls.secretRefs.agent.secretName }}
+{{- end -}}
+{{- end }}
