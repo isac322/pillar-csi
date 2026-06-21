@@ -187,3 +187,6 @@ Temporary Items
 /node
 /agent
 .idea/
+
+# OhMyOpenCode agent-local artifacts (never commit)
+.omo/

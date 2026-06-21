@@ -29,7 +29,7 @@ var (
 	GroupVersion = schema.GroupVersion{Group: "pillar-csi.pillar-csi.bhyoo.com", Version: "v1alpha1"}
 
 	// SchemeBuilder is used to add go types to the GroupVersionKind scheme.
-	SchemeBuilder = &scheme.Builder{GroupVersion: GroupVersion}
+	SchemeBuilder = &scheme.Builder{GroupVersion: GroupVersion} //nolint:staticcheck // SA1019: scheme.Builder deprecated in controller-runtime v0.24; migration to k8s.io/apimachinery/pkg/runtime.SchemeBuilder requires per-type registration refactor and is tracked as a follow-up.
 
 	// AddToScheme adds the types in this group-version to the given scheme.
 	AddToScheme = SchemeBuilder.AddToScheme

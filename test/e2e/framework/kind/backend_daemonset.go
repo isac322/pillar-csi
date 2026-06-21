@@ -152,11 +152,15 @@ spec:
             export DEBIAN_FRONTEND=noninteractive
 
             # Enable contrib sources for zfsutils-linux (in Debian contrib, not main).
+            # Codename is detected at runtime from the Kind node's
+            # /etc/os-release so this works on bookworm (kind <= v0.27.0) and
+            # trixie+ (kind >= v0.32.0) without changes.
             if [ -d /etc/apt/sources.list.d ]; then
+              CODENAME=$(. /etc/os-release 2>/dev/null; echo "${VERSION_CODENAME:-bookworm}")
               cat > /etc/apt/sources.list.d/e2e-contrib.list <<APTEOF
-deb http://deb.debian.org/debian bookworm main contrib
-deb http://deb.debian.org/debian bookworm-updates main contrib
-deb http://security.debian.org/debian-security bookworm-security main contrib
+deb http://deb.debian.org/debian ${CODENAME} main contrib
+deb http://deb.debian.org/debian ${CODENAME}-updates main contrib
+deb http://security.debian.org/debian-security ${CODENAME}-security main contrib
 APTEOF
             fi
 

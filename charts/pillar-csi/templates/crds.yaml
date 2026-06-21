@@ -5,7 +5,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.19.0
+    controller-gen.kubebuilder.io/version: v0.21.0
   name: pillarbindings.pillar-csi.pillar-csi.bhyoo.com
 spec:
   group: pillar-csi.pillar-csi.bhyoo.com
@@ -77,18 +77,14 @@ spec:
                           the pool backend is lvm-lv.
                         properties:
                           provisioningMode:
-                            allOf:
-                            - enum:
-                              - linear
-                              - thin
-                            - enum:
-                              - linear
-                              - thin
                             description: |-
                               provisioningMode overrides the LVM provisioning mode for this binding.
                               Accepted values: "linear" (fully-allocated LV) or "thin"
                               (thin-provisioned LV inside the backend's thin pool).
                               When omitted, the PillarPool-level default is used.
+                            enum:
+                            - linear
+                            - thin
                             type: string
                         type: object
                       zfs:
@@ -151,6 +147,16 @@ spec:
                             description: maxQueueSize overrides the protocol-level
                               maxQueueSize.
                             format: int32
+                            minimum: 1
+                            type: integer
+                        type: object
+                      smb:
+                        description: smb overrides SMB/CIFS parameters.
+                        properties:
+                          port:
+                            description: port overrides the protocol-level SMB port.
+                            format: int32
+                            maximum: 65535
                             minimum: 1
                             type: integer
                         type: object
@@ -288,12 +294,11 @@ spec:
     subresources:
       status: {}
 ---
----
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.19.0
+    controller-gen.kubebuilder.io/version: v0.21.0
   name: pillarpools.pillar-csi.pillar-csi.bhyoo.com
 spec:
   group: pillar-csi.pillar-csi.bhyoo.com
@@ -535,12 +540,11 @@ spec:
     subresources:
       status: {}
 ---
----
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.19.0
+    controller-gen.kubebuilder.io/version: v0.21.0
   name: pillarprotocols.pillar-csi.pillar-csi.bhyoo.com
 spec:
   group: pillar-csi.pillar-csi.bhyoo.com
@@ -711,12 +715,27 @@ spec:
                     minimum: 0
                     type: integer
                 type: object
+              smb:
+                description: smb holds SMB/CIFS configuration; required when type
+                  is smb.
+                properties:
+                  port:
+                    default: 445
+                    description: |-
+                      port is the TCP port on which the SMB server listens.
+                      Defaults to 445.
+                    format: int32
+                    maximum: 65535
+                    minimum: 1
+                    type: integer
+                type: object
               type:
                 description: type identifies the network storage protocol.
                 enum:
                 - nvmeof-tcp
                 - iscsi
                 - nfs
+                - smb
                 type: string
             required:
             - type
@@ -810,12 +829,11 @@ spec:
     subresources:
       status: {}
 ---
----
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.19.0
+    controller-gen.kubebuilder.io/version: v0.21.0
   name: pillartargets.pillar-csi.pillar-csi.bhyoo.com
 spec:
   group: pillar-csi.pillar-csi.bhyoo.com
@@ -1066,12 +1084,11 @@ spec:
     subresources:
       status: {}
 ---
----
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.19.0
+    controller-gen.kubebuilder.io/version: v0.21.0
   name: pillarvolumes.pillar-csi.pillar-csi.bhyoo.com
 spec:
   group: pillar-csi.pillar-csi.bhyoo.com
