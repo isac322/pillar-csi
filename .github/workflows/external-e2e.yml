@@ -102,17 +102,36 @@ jobs:
           echo "==== Pods in pillar-csi namespace ===="
           kubectl -n "${NS}" get pods -o wide || true
           echo
-          echo "==== Recent pillar-csi events (all namespaces, sorted) ===="
-          kubectl get events -A --sort-by=.lastTimestamp 2>/dev/null | tail -80 || true
+          echo "==== Recent events from all namespaces (sorted) ===="
+          kubectl get events -A --sort-by=.lastTimestamp 2>/dev/null | tail -120 || true
+          echo
+          echo "==== Test pods still present (volume-* / provisioning-* / fsgroupchangepolicy-*) ===="
+          for ns in $(kubectl get ns -o name 2>/dev/null | command grep -E "volume-|provisioning-|fsgroupchangepolicy-|exec-|subpath-|expand-|multi-"); do
+            ns_name="${ns##namespace/}"
+            kubectl -n "${ns_name}" get pods,pvc -o wide 2>/dev/null || true
+            for pod in $(kubectl -n "${ns_name}" get pods -o name 2>/dev/null); do
+              echo "--- describe ${ns_name}/${pod} (Status + Events) ---"
+              kubectl -n "${ns_name}" describe "${pod}" 2>/dev/null | command grep -E "Status:|Phase:|Reason:|Message:|Events:|FailedMount|FailedUnmount|Killing|Unhealthy|Warning" -A1 || true
+            done
+          done
+          echo
+          echo "==== VolumeAttachment + CSINode state ===="
+          kubectl get volumeattachment -o wide 2>/dev/null || true
+          echo
+          kubectl get csinodes -o yaml 2>/dev/null | command grep -E "name:|nodeID:|drivers:|topologyKeys:" | head -40 || true
           echo
           for pod in $(kubectl -n "${NS}" get pods -o name 2>/dev/null); do
             for ctr in $(kubectl -n "${NS}" get "${pod}" \
                 -o jsonpath='{range .spec.containers[*]}{.name}{"\n"}{end}' 2>/dev/null); do
-              echo "==== ${pod} container=${ctr} (last 200 lines) ===="
-              kubectl -n "${NS}" logs --tail=200 "${pod}" -c "${ctr}" 2>/dev/null || true
+              echo "==== ${pod} container=${ctr} (last 500 lines) ===="
+              kubectl -n "${NS}" logs --tail=500 "${pod}" -c "${ctr}" 2>/dev/null || true
               echo
             done
           done
+          echo
+          echo "==== kubelet log: NodeUnstage / NodeUnpublish / Unmount activity ===="
+          docker exec "${KIND_NODE}" sh -c \
+            "journalctl -u kubelet --no-pager 2>/dev/null | grep -iE 'pillar|nvme|unstag|unpublish|unmount|terminating' | tail -200" || true
           echo "==== PillarTarget / PillarPool / PillarProtocol ===="
           kubectl get pillartargets,pillarpools,pillarprotocols -o yaml 2>/dev/null || true
           echo
