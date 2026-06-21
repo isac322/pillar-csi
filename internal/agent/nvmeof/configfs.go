@@ -657,7 +657,17 @@ func (t *NvmetTarget) AllowHost(hostNQN string) error {
 	linkPath := t.allowedHostLink(hostNQN)
 	err = symlink(hDir, linkPath)
 	if err != nil {
-		return fmt.Errorf("AllowHost %q: %w", hostNQN, err)
+		if !os.IsExist(err) {
+			return fmt.Errorf("AllowHost %q: %w", hostNQN, err)
+		}
+		// EEXIST is the post-success state: csi-attacher retries
+		// ControllerPublishVolume on the same (volume, node) pair, and the
+		// symlink we created on the previous attempt is still in place.
+		// Treat the existing link as success regardless of where it points
+		// — configfs only permits one allowed_hosts entry per host NQN per
+		// subsystem, and the host directory we just mkdir'd is the unique
+		// canonical target.  Surfacing EEXIST here would re-fail every
+		// retry, leaving the VolumeAttachment permanently Pending.
 	}
 	return nil
 }
