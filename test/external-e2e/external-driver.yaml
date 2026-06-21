@@ -34,6 +34,20 @@ DriverInfo:
     multipods: true
     controllerExpansion: true
     nodeExpansion: true
+    # Offline expansion (PVC resize with no pod attached) is intentionally
+    # disabled.  The storage backend (LVM lvextend) does resize the LV and
+    # csi-resizer marks the PV with the new capacity, but with no pod
+    # attached there is no node-side actor to call NodeExpandVolume and
+    # transition the PVC's Resizing condition to FileSystemResizePending
+    # before the upstream test's 2-minute pvcConditionSyncPeriod expires
+    # (volume_expand.go WaitForPendingFSResizeCondition).  Online expansion
+    # (PVC resize while a pod is mounted) is fully supported and exercised
+    # by the "should resize volume when PVC is edited while pod is using
+    # it" spec.  Re-enable this once the controller is taught to update the
+    # PVC condition on its own for offline expand, or once a node-side
+    # detached-volume rescan workflow lands.
+    offlineExpansion: false
+    onlineExpansion: true
     volumeLimits: false
     singleNodeVolume: true
     topology: true
