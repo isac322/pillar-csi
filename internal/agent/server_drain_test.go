@@ -188,3 +188,60 @@ func TestDrain_WaitsForInFlight(t *testing.T) {
 		t.Fatal("Drain did not complete after in-flight target lock was released")
 	}
 }
+
+func TestDrain_WaitsForInFlightInterceptedRPC(t *testing.T) {
+	stateDir := t.TempDir()
+	srv := newDrainTestServer(stateDir)
+	interceptor := DrainGuardInterceptor(srv)
+
+	handlerEntered := make(chan struct{})
+	releaseHandler := make(chan struct{})
+	type ok struct{}
+	slowHandler := grpc.UnaryHandler(func(_ context.Context, _ any) (any, error) {
+		close(handlerEntered)
+		<-releaseHandler
+		return ok{}, nil
+	})
+
+	rpcDone := make(chan error, 1)
+	go func() {
+		_, err := interceptor(
+			context.Background(), nil,
+			&grpc.UnaryServerInfo{FullMethod: "/pillar_csi.agent.v1.AgentService/GetCapacity"},
+			slowHandler,
+		)
+		rpcDone <- err
+	}()
+
+	<-handlerEntered
+
+	drainDone := make(chan error, 1)
+	go func() {
+		_, err := srv.Drain(context.Background(), &agentv1.DrainRequest{})
+		drainDone <- err
+	}()
+
+	select {
+	case err := <-drainDone:
+		if err != nil {
+			t.Fatalf("Drain returned early with error: %v", err)
+		}
+		t.Fatal("Drain completed while a non-Drain RPC was still in flight (race window open)")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(releaseHandler)
+
+	if err := <-rpcDone; err != nil {
+		t.Fatalf("intercepted RPC returned error: %v", err)
+	}
+
+	select {
+	case err := <-drainDone:
+		if err != nil {
+			t.Fatalf("Drain returned error after RPC released: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Drain did not complete after intercepted RPC released")
+	}
+}

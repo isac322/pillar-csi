@@ -83,6 +83,15 @@ type Server struct {
 	// with codes.Unavailable once true.
 	drained atomic.Bool
 
+	// drainGate sequences Drain against in-flight intercepted RPCs.  The
+	// DrainGuardInterceptor takes an RLock for the entire handler invocation;
+	// Drain takes the WLock so it blocks until every already-accepted RPC
+	// finishes.  Without this lock a handler could pass the drained check,
+	// then create a new targetMu entry AFTER Drain's per-target sweep had
+	// already finished, leaving its mutating work running while Drain
+	// reported clean shutdown.
+	drainGate sync.RWMutex
+
 	// drainStateDir is the directory where the .drained marker is written. When
 	// empty, Drain falls back to os.TempDir()/pillar-csi-agent.
 	drainStateDir string
