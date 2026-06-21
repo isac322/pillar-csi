@@ -56,6 +56,17 @@ nodes:
 EOF
   kind create cluster --name "${CLUSTER_NAME}" --config "${KIND_CONFIG}" --wait 5m
   rm -f "${KIND_CONFIG}"
+
+  # Kind ships its node Docker images with /sys bind-mounted read-only, which
+  # propagates to every hostPath-mounted /sys inside Pod containers.  The
+  # pillar-node NodeUnstageVolume path writes to
+  # /sys/class/nvme/nvmeX/delete_controller to tear down NVMe-oF controllers,
+  # and that write fails with EROFS when /sys is read-only — kubelet then
+  # retries forever, blocks attach-detach, and DeleteVolume can never run.
+  # Remount /sys read-write inside the Kind node so the writable sysfs entries
+  # the kernel exposes (delete_controller, rescan_controller, addr_traddr,
+  # etc.) become usable from privileged Pods.
+  docker exec "${CLUSTER_NAME}-control-plane" mount -o remount,rw /sys
 else
   log "  cluster already present, reusing"
 fi
