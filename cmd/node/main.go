@@ -723,13 +723,41 @@ func (m *mkdirMounter) FormatAndMount(source, target, fsType string, options []s
 	return m.wrapped.FormatAndMount(source, target, fsType, options)
 }
 
-// Mount creates the target directory if it does not exist (required for
-// NodePublishVolume bind mounts when the CO has not yet pre-created the
-// target pod volume path), then delegates to the wrapped Mounter's Mount.
+// Mount provisions the target before delegating to the wrapped Mounter.
+//
+// For directory bind-mounts (NodePublishVolume of a Filesystem-mode volume)
+// the target must be an empty directory and we mkdir -p it.
+//
+// For block-device bind-mounts (NodeStageVolume / NodePublishVolume of a
+// Block-mode volume) the kernel rejects mount --bind when the target file
+// type does not match the source file type (the linux kernel requires
+// source and target to both be a regular file or both be a directory for
+// bind, and a block-device source can only be bound onto a regular-file
+// target — bound onto a directory it returns EXT_SOURCEMOUNTREJECTED which
+// surfaces as mount exit status 32).  We therefore detect a block source
+// by stat'ing it and touch an empty regular file at the target path.
 func (m *mkdirMounter) Mount(source, target, fsType string, options []string) error {
-	mkdirErr := os.MkdirAll(target, 0o750)
-	if mkdirErr != nil {
-		return fmt.Errorf("mkdirMounter: create mount target %q: %w", target, mkdirErr)
+	st, statErr := os.Stat(source)
+	if statErr == nil && st.Mode()&os.ModeDevice != 0 {
+		mkParentErr := os.MkdirAll(filepath.Dir(target), 0o750)
+		if mkParentErr != nil {
+			return fmt.Errorf("mkdirMounter: create parent dir for block target %q: %w", target, mkParentErr)
+		}
+		// target is a kubelet-managed CSI staging path under
+		// /var/lib/kubelet/plugins/.../volumeDevices/staging/.
+		//nolint:gosec // G304: kubelet-controlled CSI staging path
+		f, createErr := os.OpenFile(target, os.O_RDWR|os.O_CREATE, 0o600)
+		if createErr != nil && !os.IsExist(createErr) {
+			return fmt.Errorf("mkdirMounter: create block bind-mount target %q: %w", target, createErr)
+		}
+		if f != nil {
+			_ = f.Close() //nolint:errcheck // best-effort close; only used as mount target sentinel
+		}
+	} else {
+		mkdirErr := os.MkdirAll(target, 0o750)
+		if mkdirErr != nil {
+			return fmt.Errorf("mkdirMounter: create mount target %q: %w", target, mkdirErr)
+		}
 	}
 	return m.wrapped.Mount(source, target, fsType, options)
 }
