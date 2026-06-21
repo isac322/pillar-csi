@@ -11,6 +11,9 @@
 #     - kubelet-csi-dir hostPath mount at /var/lib/kubelet/plugins/kubernetes.io/csi
 #       with mountPropagation: Bidirectional
 #       (required for Block-mode publish bind to reach the kubelet on host)
+#     - terminationGracePeriodSeconds + preStop hook + matching probes on
+#       both the agent and node pods so the SIGTERM-driven Drain contract
+#       has a chance to complete
 #     - no mTLS Secret references anywhere in the rendered output
 #       (mtls.enabled=false is the documented default)
 #
@@ -103,6 +106,24 @@ assert_contains "${NODE_DS}" "name: kubelet-csi-dir" \
   "default node container must reference the kubelet-csi-dir hostPath volume"
 assert_min_count "${NODE_DS}" "mountPropagation: Bidirectional" 2 \
   "default node DaemonSet must have ≥2 Bidirectional propagation mounts"
+
+# Cooperative shutdown contract — both the node and agent pods need preStop +
+# termGrace so the SIGTERM handler has the budget to Drain + GracefulStop.
+AGENT_DS_DEFAULT="$(extract_doc "${DEFAULT_OUT}" "agent-daemonset.yaml")"
+assert_contains "${AGENT_DS_DEFAULT}" "terminationGracePeriodSeconds: 60" \
+  "default agent DaemonSet must set terminationGracePeriodSeconds=60"
+assert_contains "${AGENT_DS_DEFAULT}" "command: [\"/bin/sh\", \"-c\", \"sleep 5\"]" \
+  "default agent DaemonSet must emit preStop sleep 5 on the agent container"
+assert_min_count "${AGENT_DS_DEFAULT}" "grpc:" 2 \
+  "default agent DaemonSet must expose grpc: liveness AND readiness probes (kubelet >=1.24)"
+
+assert_contains "${NODE_DS}" "terminationGracePeriodSeconds: 60" \
+  "default node DaemonSet must set terminationGracePeriodSeconds=60"
+# The node DaemonSet also carries the existing node-driver-registrar preStop
+# (rm -rf the registration socket), so we expect the literal sleep 5 entry
+# at least once for the node container itself.
+assert_contains "${NODE_DS}" "command: [\"/bin/sh\", \"-c\", \"sleep 5\"]" \
+  "default node DaemonSet must emit preStop sleep 5 on the node container"
 
 # No mTLS plumbing in the default render.
 assert_not_contains "${DEFAULT_OUT}" "name: mtls-certs" \
