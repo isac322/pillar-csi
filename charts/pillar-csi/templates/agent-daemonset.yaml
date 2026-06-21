@@ -158,10 +158,16 @@ spec:
           # triggers Drain in the binary.  Drain itself only blocks until
           # in-flight per-target ops release; the 5s here is purely the
           # routing-propagation budget.
+          #
+          # The runtime image strips /bin/sh /bin/bash /usr/bin/env for
+          # supply-chain hygiene (see Dockerfile agent stage); /bin/busybox
+          # is the only interpreter that ships in the image, so the
+          # preStop command must invoke busybox directly instead of via a
+          # shell.
           lifecycle:
             preStop:
               exec:
-                command: ["/bin/sh", "-c", "sleep 5"]
+                command: ["/bin/busybox", "sleep", "5"]
           volumeMounts:
             # configfs — required for NVMe-oF target configuration via nvmet.
             - name: sys-kernel-config

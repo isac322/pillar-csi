@@ -135,10 +135,14 @@ spec:
           # BEFORE SIGTERM triggers the binary's shutdown helper, which
           # flips the gRPC standard health to NOT_SERVING and runs
           # GracefulStop on the CSI socket.
+          #
+          # /bin/sh is stripped from the runtime image (see Dockerfile
+          # node stage); invoke /bin/busybox directly because it is the
+          # only interpreter present.
           lifecycle:
             preStop:
               exec:
-                command: ["/bin/sh", "-c", "sleep 5"]
+                command: ["/bin/busybox", "sleep", "5"]
           volumeMounts:
             # CSI Unix socket directory shared with sidecar containers.
             - name: plugin-dir

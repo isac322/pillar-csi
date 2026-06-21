@@ -112,18 +112,18 @@ assert_min_count "${NODE_DS}" "mountPropagation: Bidirectional" 2 \
 AGENT_DS_DEFAULT="$(extract_doc "${DEFAULT_OUT}" "agent-daemonset.yaml")"
 assert_contains "${AGENT_DS_DEFAULT}" "terminationGracePeriodSeconds: 60" \
   "default agent DaemonSet must set terminationGracePeriodSeconds=60"
-assert_contains "${AGENT_DS_DEFAULT}" "command: [\"/bin/sh\", \"-c\", \"sleep 5\"]" \
-  "default agent DaemonSet must emit preStop sleep 5 on the agent container"
+assert_contains "${AGENT_DS_DEFAULT}" "command: [\"/bin/busybox\", \"sleep\", \"5\"]" \
+  "default agent DaemonSet must emit preStop busybox sleep 5 (runtime image has no /bin/sh)"
 assert_min_count "${AGENT_DS_DEFAULT}" "grpc:" 2 \
   "default agent DaemonSet must expose grpc: liveness AND readiness probes (kubelet >=1.24)"
 
 assert_contains "${NODE_DS}" "terminationGracePeriodSeconds: 60" \
   "default node DaemonSet must set terminationGracePeriodSeconds=60"
 # The node DaemonSet also carries the existing node-driver-registrar preStop
-# (rm -rf the registration socket), so we expect the literal sleep 5 entry
-# at least once for the node container itself.
-assert_contains "${NODE_DS}" "command: [\"/bin/sh\", \"-c\", \"sleep 5\"]" \
-  "default node DaemonSet must emit preStop sleep 5 on the node container"
+# (rm -rf the registration socket), so we expect the literal busybox sleep 5
+# entry at least once for the node container itself.
+assert_contains "${NODE_DS}" "command: [\"/bin/busybox\", \"sleep\", \"5\"]" \
+  "default node DaemonSet must emit preStop busybox sleep 5 on the node container"
 
 # No mTLS plumbing in the default render.
 assert_not_contains "${DEFAULT_OUT}" "name: mtls-certs" \
