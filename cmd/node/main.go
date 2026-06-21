@@ -737,26 +737,38 @@ func (m *mkdirMounter) FormatAndMount(source, target, fsType string, options []s
 // surfaces as mount exit status 32).  We therefore detect a block source
 // by stat'ing it and touch an empty regular file at the target path.
 func (m *mkdirMounter) Mount(source, target, fsType string, options []string) error {
+	// Linux bind-mount requires source and target to have matching file
+	// types: directory-to-directory for Filesystem-mode mounts and
+	// (block-device or regular-file) -to-regular-file for block-mode
+	// mounts.  A type mismatch surfaces as mount(8) exit 32
+	// (EXT_SOURCEMOUNTREJECTED).  Pick the target provisioning strategy
+	// from the source type:
+	//   * directory   → mkdir -p target  (NodePublishVolume Filesystem)
+	//   * everything  → mkdir -p parent + touch regular file at target
+	//                  (block-device source on NodeStageVolume, or the
+	//                  staged block-mode regular-file source on the
+	//                  subsequent NodePublishVolume bind to the pod path).
 	st, statErr := os.Stat(source)
-	if statErr == nil && st.Mode()&os.ModeDevice != 0 {
-		mkParentErr := os.MkdirAll(filepath.Dir(target), 0o750)
-		if mkParentErr != nil {
-			return fmt.Errorf("mkdirMounter: create parent dir for block target %q: %w", target, mkParentErr)
-		}
-		// target is a kubelet-managed CSI staging path under
-		// /var/lib/kubelet/plugins/.../volumeDevices/staging/.
-		//nolint:gosec // G304: kubelet-controlled CSI staging path
-		f, createErr := os.OpenFile(target, os.O_RDWR|os.O_CREATE, 0o600)
-		if createErr != nil && !os.IsExist(createErr) {
-			return fmt.Errorf("mkdirMounter: create block bind-mount target %q: %w", target, createErr)
-		}
-		if f != nil {
-			_ = f.Close() //nolint:errcheck // best-effort close; only used as mount target sentinel
-		}
-	} else {
+	sourceIsDir := statErr == nil && st.IsDir()
+	if sourceIsDir {
 		mkdirErr := os.MkdirAll(target, 0o750)
 		if mkdirErr != nil {
 			return fmt.Errorf("mkdirMounter: create mount target %q: %w", target, mkdirErr)
+		}
+	} else {
+		mkParentErr := os.MkdirAll(filepath.Dir(target), 0o750)
+		if mkParentErr != nil {
+			return fmt.Errorf("mkdirMounter: create parent dir for file-bind target %q: %w", target, mkParentErr)
+		}
+		// target is a kubelet-managed CSI volumeDevices path under
+		// /var/lib/kubelet/plugins/.../volumeDevices/{staging,publish}/.
+		//nolint:gosec // G304: kubelet-controlled CSI staging path
+		f, createErr := os.OpenFile(target, os.O_RDWR|os.O_CREATE, 0o600)
+		if createErr != nil && !os.IsExist(createErr) {
+			return fmt.Errorf("mkdirMounter: create file bind-mount target %q: %w", target, createErr)
+		}
+		if f != nil {
+			_ = f.Close() //nolint:errcheck // best-effort close; only used as mount target sentinel
 		}
 	}
 	return m.wrapped.Mount(source, target, fsType, options)
