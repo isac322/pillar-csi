@@ -22,6 +22,7 @@ package agent
 import (
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"google.golang.org/grpc"
@@ -38,6 +39,9 @@ const agentVersion = "0.1.0"
 
 // nqnPrefix is the fixed NQN prefix used for all NVMe subsystem names.
 const nqnPrefix = "nqn.2026-01.com.bhyoo.pillar-csi:"
+
+// defaultDrainStateDir is the production directory for the .drained marker.
+const defaultDrainStateDir = "/var/lib/pillar-csi/agent"
 
 // Server implements agentv1.AgentServiceServer.  It is bound to a set of
 // named storage backends and a configfs root directory.
@@ -75,6 +79,23 @@ type Server struct {
 	// Values are *sync.Mutex; LoadOrStore is used to create on first access.
 	targetMu sync.Map
 
+	// drained reports whether Drain has been called; further RPCs are rejected
+	// with codes.Unavailable once true.
+	drained atomic.Bool
+
+	// drainGate sequences Drain against in-flight intercepted RPCs.  The
+	// DrainGuardInterceptor takes an RLock for the entire handler invocation;
+	// Drain takes the WLock so it blocks until every already-accepted RPC
+	// finishes.  Without this lock a handler could pass the drained check,
+	// then create a new targetMu entry AFTER Drain's per-target sweep had
+	// already finished, leaving its mutating work running while Drain
+	// reported clean shutdown.
+	drainGate sync.RWMutex
+
+	// drainStateDir is the directory where the .drained marker is written. When
+	// empty, Drain falls back to os.TempDir()/pillar-csi-agent.
+	drainStateDir string
+
 	// protocolHandlerResolver optionally overrides handler selection for this
 	// server instance. Production uses the built-in resolver; tests inject a
 	// per-server resolver to verify dispatch without global state.
@@ -98,8 +119,9 @@ type targetLockKey struct {
 // backward-compatible with callers that pass no options.
 func NewServer(backends map[string]backend.VolumeBackend, configfsRoot string, opts ...ServerOption) *Server {
 	s := &Server{
-		backends:     backends,
-		configfsRoot: configfsRoot,
+		backends:      backends,
+		configfsRoot:  configfsRoot,
+		drainStateDir: defaultDrainStateDir,
 	}
 	for _, o := range opts {
 		o(s)

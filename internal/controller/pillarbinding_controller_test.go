@@ -20,6 +20,8 @@ package controller
 
 import (
 	"context"
+	"strings"
+	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -28,7 +30,11 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/tools/record"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -36,6 +42,78 @@ import (
 
 	pillarcsiv1alpha1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
 )
+
+func TestPillarBinding_StorageClassDrift_EmitsEvent(t *testing.T) {
+	ctx := context.Background()
+	testScheme := runtime.NewScheme()
+	if err := clientgoscheme.AddToScheme(testScheme); err != nil {
+		t.Fatalf("add core scheme: %v", err)
+	}
+	if err := pillarcsiv1alpha1.AddToScheme(testScheme); err != nil {
+		t.Fatalf("add pillar-csi scheme: %v", err)
+	}
+
+	orderRecorder := record.NewFakeRecorder(1)
+	reconciler := &PillarBindingReconciler{
+		Client:   fake.NewClientBuilder().WithScheme(testScheme).Build(),
+		Scheme:   testScheme,
+		Recorder: orderRecorder,
+	}
+	binding := &pillarcsiv1alpha1.PillarBinding{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "pillar-csi.pillar-csi.bhyoo.com/v1alpha1",
+			Kind:       "PillarBinding",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "drift-binding",
+			UID:  types.UID("drift-binding-uid"),
+		},
+		Spec: pillarcsiv1alpha1.PillarBindingSpec{
+			PoolRef:     "drift-pool",
+			ProtocolRef: "drift-protocol",
+		},
+	}
+	pool := &pillarcsiv1alpha1.PillarPool{
+		Spec: pillarcsiv1alpha1.PillarPoolSpec{
+			TargetRef: "drift-target",
+			Backend: pillarcsiv1alpha1.BackendSpec{
+				Type: pillarcsiv1alpha1.BackendTypeZFSZvol,
+			},
+		},
+	}
+	protocol := &pillarcsiv1alpha1.PillarProtocol{
+		Spec: pillarcsiv1alpha1.PillarProtocolSpec{
+			Type:   pillarcsiv1alpha1.ProtocolTypeNVMeOFTCP,
+			FSType: "ext4",
+		},
+	}
+
+	if err := reconciler.reconcileStorageClass(ctx, binding, pool, protocol, binding.Name); err != nil {
+		t.Fatalf("create StorageClass: %v", err)
+	}
+	sc := &storagev1.StorageClass{}
+	if err := reconciler.Get(ctx, types.NamespacedName{Name: binding.Name}, sc); err != nil {
+		t.Fatalf("get StorageClass: %v", err)
+	}
+	sc.ResourceVersion = "1"
+	sc.Parameters["csi.storage.k8s.io/fstype"] = "xfs"
+	if err := reconciler.Update(ctx, sc); err != nil {
+		t.Fatalf("drift StorageClass: %v", err)
+	}
+
+	if err := reconciler.reconcileStorageClass(ctx, binding, pool, protocol, binding.Name); err != nil {
+		t.Fatalf("revert StorageClass drift: %v", err)
+	}
+
+	select {
+	case event := <-orderRecorder.Events:
+		if !strings.Contains(event, "StorageClassReverted") {
+			t.Fatalf("event = %q, want StorageClassReverted", event)
+		}
+	default:
+		t.Fatal("expected StorageClassReverted event, got none")
+	}
+}
 
 var _ = Describe("PillarBinding Controller", func() {
 	const (

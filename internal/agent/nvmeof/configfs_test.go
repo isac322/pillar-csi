@@ -466,6 +466,49 @@ func TestCreatePort(t *testing.T) {
 	}
 }
 
+func TestCreatePort_IPv6(t *testing.T) {
+	root := t.TempDir()
+	tgt := &NvmetTarget{
+		ConfigfsRoot: root,
+		SubsystemNQN: "nqn.test:vol-ipv6",
+		NamespaceID:  1,
+		DevicePath:   "/dev/zvol/tank/pvc-ipv6",
+		BindAddress:  "2001:db8::1",
+		Port:         4420,
+	}
+
+	portID, err := tgt.createPort()
+	if err != nil {
+		t.Fatalf("createPort: %v", err)
+	}
+
+	pDir := tgt.portDir(portID)
+	assertFileContent(t, filepath.Join(pDir, "addr_trtype"), "tcp")
+	assertFileContent(t, filepath.Join(pDir, "addr_adrfam"), "ipv6")
+	assertFileContent(t, filepath.Join(pDir, "addr_traddr"), listenWildcardV6)
+	assertFileContent(t, filepath.Join(pDir, "addr_trsvcid"), "4420")
+}
+
+func TestCreatePort_InvalidBindAddress(t *testing.T) {
+	root := t.TempDir()
+	tgt := &NvmetTarget{
+		ConfigfsRoot: root,
+		SubsystemNQN: "nqn.test:vol-bad",
+		NamespaceID:  1,
+		DevicePath:   "/dev/zvol/tank/pvc-bad",
+		BindAddress:  "not-an-ip-literal",
+		Port:         4420,
+	}
+
+	_, err := tgt.createPort()
+	if err == nil {
+		t.Fatal("createPort with invalid BindAddress: expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "BindAddress") {
+		t.Errorf("error message missing BindAddress context: %v", err)
+	}
+}
+
 // Apply / Remove tests.
 
 func TestApplyAndRemove(t *testing.T) {

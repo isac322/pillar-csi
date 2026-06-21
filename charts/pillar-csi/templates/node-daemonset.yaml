@@ -45,6 +45,13 @@ spec:
       {{- end }}
       serviceAccountName: {{ include "pillar-csi.nodeServiceAccountName" . }}
       priorityClassName: system-node-critical
+      # terminationGracePeriodSeconds bounds the SIGTERM sequence: preStop
+      # waits 5s for the endpoint controller to propagate readiness=false,
+      # the binary's SIGTERM handler flips gRPC health to NOT_SERVING and
+      # waits 5s more before GracefulStop drains the CSI socket.  60s
+      # covers that plus the tail of any short-lived in-flight CSI Node
+      # RPCs (mount, format) without blocking node drain forever.
+      terminationGracePeriodSeconds: 60
       hostNetwork: {{ .Values.node.hostNetwork }}
       {{- if .Values.node.hostNetwork }}
       dnsPolicy: ClusterFirstWithHostNet
@@ -123,6 +130,19 @@ spec:
             periodSeconds: 20
             timeoutSeconds: 3
             failureThreshold: 3
+          # preStop gives the kubelet's endpoint controller a 5s budget to
+          # propagate readiness=false (so new CSI ops route to a peer)
+          # BEFORE SIGTERM triggers the binary's shutdown helper, which
+          # flips the gRPC standard health to NOT_SERVING and runs
+          # GracefulStop on the CSI socket.
+          #
+          # /bin/sh is stripped from the runtime image (see Dockerfile
+          # node stage); invoke /bin/busybox directly because it is the
+          # only interpreter present.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/busybox", "sleep", "5"]
           volumeMounts:
             # CSI Unix socket directory shared with sidecar containers.
             - name: plugin-dir

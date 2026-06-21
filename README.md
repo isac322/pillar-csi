@@ -1,124 +1,236 @@
 # pillar-csi
-// TODO(user): Add simple overview of use/purpose
 
-## Description
-// TODO(user): An in-depth paragraph about your project and overview of use
+A Kubernetes CSI driver for self-hosted clusters that exposes local storage on
+storage nodes (ZFS zvol, LVM logical volume, …) to the rest of the cluster over
+modern network protocols (NVMe-oF/TCP, iSCSI*, NFS*).
 
-## Getting Started
+> *iSCSI and NFS are designed but not yet shipped — see [Roadmap](#roadmap).
+> Phase 1 ships **ZFS zvol + NVMe-oF/TCP**.
 
-### Prerequisites
-- go version v1.24.6+
-- docker version 17.03+.
-- kubectl version v1.11.3+.
-- Access to a Kubernetes v1.11.3+ cluster.
+pillar-csi is **not** a distributed filesystem. It does not pool, stripe or
+replicate storage across nodes. It takes whatever the operator has already
+configured on a storage node (a ZFS pool, a thin LVM VG, …) and exports it
+as-is over the wire.
 
-### To Deploy on the cluster
-**Build and push your image to the location specified by `IMG`:**
+## Why pillar-csi
 
-```sh
-make docker-build docker-push IMG=<some-registry>/pillar-csi:tag
+| Concern | democratic-csi | pillar-csi |
+|---|---|---|
+| Language / footprint | Node.js | Go — single static binary |
+| Deployment model | One Helm release per backend (controller + node DaemonSet duplicated) | Single cluster deployment, declarative `Pillar*` CRDs |
+| Multi-pool | Extra Helm release per pool (SSH config, RBAC, sidecars duplicated) | Add one `PillarPool` CR |
+| Storage-node IPC | SSH (parses shell output, key management, injection risk) | gRPC `pillar-agent` (typed, auto-reconnect, mTLS-capable) |
+| Target configuration | `targetcli` / `nvmetcli` CLI (Python dependency) | Direct configfs writes with read-back verification |
+| Node prerequisites | open-iscsi / nvme-cli pre-installed on every worker | Bundled in node image + init-container `modprobe` |
+| Parameter overrides | StorageClass parameters + PVC annotation | 4-layer hierarchy: Pool → Protocol → Binding → PVC annotation |
+| Backend / protocol extension | Driver-type hard-coded (`zfs-generic-iscsi`, …) | `Backend` and `Protocol` plugin interfaces |
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                     storage node                         │
+│                                                         │
+│   ZFS pool (zvol)     LVM VG (LV)     /data (dir)…       │
+│         │                  │                │            │
+│         └──────────────────┴────────────────┘            │
+│                            │                            │
+│                      pillar-agent                       │
+│              gRPC server + direct configfs              │
+│                            │                            │
+│              ┌─────────────┼─────────────┐              │
+│           NVMe-oF/TCP   iSCSI*         NFS*              │
+└─────────────┼─────────────┼─────────────┼────────────────┘
+              │             │             │
+              ▼             ▼             ▼
+         /dev/nvmeXnY    /dev/sdX     mount point
+                         worker node (Pod)
 ```
 
-**NOTE:** This image ought to be published in the personal registry you specified.
-And it is required to have access to pull the image from the working environment.
-Make sure you have the proper permission to the registry if the above commands don’t work.
+The control plane (`pillar-controller`) runs as a `Deployment` in the cluster
+and reconciles four cluster-scoped CRDs:
 
-**Install the CRDs into the cluster:**
+| CRD | Purpose |
+|---|---|
+| `PillarTarget` | Where the agent lives (in-cluster `nodeRef` or external `address`) |
+| `PillarPool` | A storage pool on a target (e.g. ZFS pool `tank`, LVM VG `data`) |
+| `PillarProtocol` | A network protocol with its tunables (NVMe-oF/TCP, iSCSI, NFS, SMB) |
+| `PillarBinding` | Pool × Protocol → auto-generated `StorageClass` |
 
-```sh
-make install
-```
+A fifth CRD, `PillarVolume`, carries durable per-volume state used to recover
+from partial provisioning failures.
 
-**Deploy the Manager to the cluster with the image specified by `IMG`:**
+`pillar-node` runs as a `DaemonSet` on every worker and implements the CSI
+Node service: `nvme connect` (today) / `iscsiadm login` (planned) + mkfs +
+mount.
 
-```sh
-make deploy IMG=<some-registry>/pillar-csi:tag
-```
+The full design lives in [`docs/PRD.md`](docs/PRD.md).
 
-> **NOTE**: If you encounter RBAC errors, you may need to grant yourself cluster-admin
-privileges or be logged in as admin.
+## Supported matrix
 
-**Create instances of your solution**
-You can apply the samples (examples) from the config/sample:
+| Backend | NVMe-oF/TCP | iSCSI* | NFS* |
+|---|:---:|:---:|:---:|
+| ZFS zvol | ✅ | 🚧 | — |
+| LVM LV  | ✅ | 🚧 | — |
+| ZFS dataset | — | — | 🚧 |
 
-```sh
-kubectl apply -k config/samples/
-```
+✅ Implemented & tested · 🚧 Designed, not yet shipped · — Not applicable
 
->**NOTE**: Ensure that the samples has default values to test it out.
+CSI features (Phase 1):
+`CreateVolume`, `DeleteVolume`, `ControllerPublish/Unpublish`,
+`ControllerExpandVolume`, `NodeStage/Unstage`, `NodePublish/Unpublish`,
+`NodeExpandVolume`, `NodeGetVolumeStats`, `ValidateVolumeCapabilities`,
+`GetCapacity`. Access modes: `ReadWriteOnce`, `ReadWriteOncePod`,
+`ReadOnlyMany`. Volume modes: `Filesystem` (ext4/xfs) and `Block`.
 
-### To Uninstall
-**Delete the instances (CRs) from the cluster:**
+## Install
 
-```sh
-kubectl delete -k config/samples/
-```
-
-**Delete the APIs(CRDs) from the cluster:**
-
-```sh
-make uninstall
-```
-
-**UnDeploy the controller from the cluster:**
+Pre-built Helm chart lives under [`charts/pillar-csi/`](charts/pillar-csi/).
 
 ```sh
-make undeploy
+helm install pillar-csi charts/pillar-csi \
+  --namespace pillar-csi --create-namespace
 ```
 
-## Project Distribution
-
-Following the options to release and provide this solution to the users.
-
-### By providing a bundle with all YAML files
-
-1. Build the installer for the image built and published in the registry:
+Optional flags:
 
 ```sh
-make build-installer IMG=<some-registry>/pillar-csi:tag
+# Enable mTLS between controller and agent.
+helm install pillar-csi charts/pillar-csi \
+  --set mtls.enabled=true \
+  --set mtls.certManager.enabled=true        # auto-issue with cert-manager
+# or
+  --set mtls.secretRefs.controller.secretName=ctl-mtls \
+  --set mtls.secretRefs.agent.secretName=agt-mtls   # user-provided Secret
 ```
 
-**NOTE:** The makefile target mentioned above generates an 'install.yaml'
-file in the dist directory. This file contains all the resources built
-with Kustomize, which are necessary to install this project without its
-dependencies.
+**Cluster requirement:** Kubernetes ≥ 1.24 (Helm chart uses native `grpc:`
+liveness/readiness probes which were promoted to beta in 1.24 and GA in 1.27).
 
-2. Using the installer
+**Storage node requirement:** kernel modules `nvmet`, `nvmet_tcp` (and ZFS or
+LVM userspace tooling for the chosen backend) are loaded by the agent's
+init-container, but the host kernel must support them — vanilla Linux ≥ 5.0
+is sufficient.
 
-Users can just run 'kubectl apply -f <URL for YAML BUNDLE>' to install
-the project, i.e.:
+## Quickstart
+
+Create a target + pool + protocol + binding:
+
+```yaml
+apiVersion: pillar-csi.bhyoo.com/v1alpha1
+kind: PillarTarget
+metadata:
+  name: rock5bp
+spec:
+  nodeRef:
+    name: rock5bp     # K8s node hosting the agent DaemonSet pod
+---
+apiVersion: pillar-csi.bhyoo.com/v1alpha1
+kind: PillarPool
+metadata:
+  name: rock5bp-hot
+spec:
+  targetRef: { name: rock5bp }
+  backend:
+    type: zfs-zvol
+    zfs:
+      pool: tank
+      parentDataset: k8s
+---
+apiVersion: pillar-csi.bhyoo.com/v1alpha1
+kind: PillarProtocol
+metadata:
+  name: nvmeof-default
+spec:
+  type: nvmeof-tcp
+  nvmeofTcp:
+    port: 4420
+    acl: true
+---
+apiVersion: pillar-csi.bhyoo.com/v1alpha1
+kind: PillarBinding
+metadata:
+  name: hot
+spec:
+  poolRef:     { name: rock5bp-hot }
+  protocolRef: { name: nvmeof-default }
+  storageClass:
+    name: pillar-hot
+    reclaimPolicy: Delete
+    volumeBindingMode: WaitForFirstConsumer
+```
+
+Then a normal PVC against the generated `pillar-hot` `StorageClass`:
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: { name: data, namespace: default }
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: pillar-hot
+  resources: { requests: { storage: 10Gi } }
+```
+
+## Troubleshooting
+
+Everything is reflected in standard Kubernetes resources — no extra CLI:
 
 ```sh
-kubectl apply -f https://raw.githubusercontent.com/<org>/pillar-csi/<tag or branch>/dist/install.yaml
+kubectl describe pillartarget rock5bp        # AgentConnected / Ready conditions
+kubectl describe pillarpool   rock5bp-hot    # PoolDiscovered / BackendSupported
+kubectl describe pillarbinding hot           # PoolReady / ProtocolValid / Compatible / StorageClassCreated
+kubectl describe pvc data                    # provisioner events
+kubectl get events --field-selector reason=ProvisioningFailed
 ```
 
-### By providing a Helm Chart
-
-1. Build the chart using the optional helm plugin
+Controller and node logs:
 
 ```sh
-kubebuilder edit --plugins=helm/v2-alpha
+kubectl logs -n pillar-csi deploy/pillar-csi-controller -c manager
+kubectl logs -n pillar-csi ds/pillar-csi-node          -c node
+kubectl logs -n pillar-csi ds/pillar-csi-agent         -c agent
 ```
 
-2. See that a chart was generated under 'dist/chart', and users
-can obtain this solution from there.
+## Documentation
 
-**NOTE:** If you change the project, you need to update the Helm Chart
-using the same command above to sync the latest changes. Furthermore,
-if you create webhooks, you need to use the above command with
-the '--force' flag and manually ensure that any custom configuration
-previously added to 'dist/chart/values.yaml' or 'dist/chart/manager/manager.yaml'
-is manually re-applied afterwards.
+- [`docs/PRD.md`](docs/PRD.md) — product requirements (architecture, CRDs, lifecycle)
+- [`docs/PRD-iscsi.md`](docs/PRD-iscsi.md) — iSCSI design (Phase 2)
+- [`docs/RFC-multi-protocol-driver-foundation.md`](docs/RFC-multi-protocol-driver-foundation.md) — multi-protocol driver foundation
+- [`docs/prd-audit-phase1-2026-06.md`](docs/prd-audit-phase1-2026-06.md) — current Phase 1 readiness audit
+- [`docs/decisions/`](docs/decisions/) — architecture decision records
+
+## Roadmap
+
+| Phase | Scope | Status |
+|---|---|---|
+| 1 | ZFS zvol + NVMe-oF/TCP, full CSI block lifecycle, Helm chart | **Shipped** |
+| 2 | iSCSI protocol (LIO configfs) + ZFS-zvol/LVM combinations | In progress |
+| 3 | ZFS dataset backend + NFS protocol + `RWX` | Planned |
+| 4 | CSI snapshots / clones (ZFS native) | Planned |
+| 5 | Standalone LVM backend hardening | Planned |
+| 6 | SMB protocol | Planned |
+| 7 | External (non-K8s) agent nodes | Planned |
+| 8 | Additional backends: raw block, directory, Btrfs subvolume | Planned |
 
 ## Contributing
-// TODO(user): Add detailed information on how you would like others to contribute to this project
 
-**NOTE:** Run `make help` for more information on all potential `make` targets
+Project conventions live in [`CLAUDE.md`](CLAUDE.md):
 
-More information can be found via the [Kubebuilder Documentation](https://book.kubebuilder.io/introduction.html)
+- kubebuilder CLI for new CRDs, controllers, webhooks (never hand-edit
+  `zz_generated.deepcopy.go` or `config/crd/`)
+- "No Silent Failures": every `configfs` / `sysfs` write needs read-back
+  verification or explicit `log.Error`
+- `make lint` must pass with **0 issues** before every commit
+- Commit messages: "why not what"
+
+`make help` lists every Make target.
 
 ## License
 
+Apache License 2.0.
+
+```
 Copyright 2026.
 
 Licensed under the Apache License, Version 2.0 (the "License");
@@ -132,4 +244,4 @@ distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
-
+```

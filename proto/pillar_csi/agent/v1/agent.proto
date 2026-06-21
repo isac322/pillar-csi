@@ -174,6 +174,22 @@ service AgentService {
   // target entries.  The agent MUST NOT return an error if configfs entries
   // already exist — it reconciles to the desired state.
   rpc ReconcileState(ReconcileStateRequest) returns (ReconcileStateResponse);
+
+  // ── Lifecycle ─────────────────────────────────────────────────────────────
+
+  // Drain stops the agent from accepting new mutating RPCs and waits until
+  // all in-flight per-target operations have released their locks.  After
+  // Drain returns successfully the agent persists a state-flush marker so
+  // the next restart can detect a clean shutdown.
+  //
+  // Idempotent: subsequent calls return was_already_drained=true and do not
+  // re-block; they are safe to invoke from a preStop hook that may run more
+  // than once.
+  //
+  // Once drained the agent will reject every other RPC with code
+  // UNAVAILABLE until the process is restarted; Drain itself is always
+  // accepted so that orchestrators can confirm the drained state.
+  rpc Drain(DrainRequest) returns (DrainResponse);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -712,4 +728,13 @@ message ReconcileStateResponse {
   repeated ReconcileItemResult results = 1;
   // Timestamp at which the reconcile was completed on the agent.
   google.protobuf.Timestamp reconciled_at = 2;
+}
+
+message DrainRequest {}
+
+message DrainResponse {
+  // True if a previous Drain call already put the agent into the drained
+  // state; the current call had no further effect.  False on the first
+  // successful Drain after process start.
+  bool was_already_drained = 1;
 }

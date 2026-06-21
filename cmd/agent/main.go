@@ -20,6 +20,7 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"net"
@@ -27,9 +28,13 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"google.golang.org/grpc"
+	healthsrv "google.golang.org/grpc/health"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 
+	agentv1 "github.com/bhyoo/pillar-csi/gen/go/pillar_csi/agent/v1"
 	"github.com/bhyoo/pillar-csi/internal/agent"
 	"github.com/bhyoo/pillar-csi/internal/agent/backend"
 	"github.com/bhyoo/pillar-csi/internal/agent/backend/lvm"
@@ -209,6 +214,9 @@ func buildGRPCOpts(tlsEnabled bool, cert, key, ca string) ([]grpc.ServerOption, 
 
 func main() {
 	listenAddr := flag.String("listen-address", ":50051", "gRPC listen address (host:port)")
+	gracePeriod := flag.Duration("shutdown-grace-period", 5*time.Second,
+		"Time to wait between health=NOT_SERVING and GracefulStop, giving "+
+			"any already-routed RPCs time to complete.")
 
 	// --backend: pluggable backend flag.
 	// ZFS:  type=zfs-zvol,pool=<pool>[,parent=<dataset>]
@@ -258,14 +266,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	grpcSrv := grpc.NewServer(grpcOpts...)
-	srv.Register(grpcSrv)
+	grpcSrv, healthSrv := newAgentGRPCServer(srv, grpcOpts)
 
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT)
 	go func() {
 		<-sigs
-		grpcSrv.GracefulStop()
+		runAgentShutdown(healthSrv, func(ctx context.Context) error {
+			_, drainErr := srv.Drain(ctx, &agentv1.DrainRequest{})
+			return drainErr
+		}, grpcSrv.GracefulStop, *gracePeriod)
 	}()
 
 	fmt.Fprintf(os.Stderr, "pillar-agent listening on %s\n", *listenAddr)
@@ -274,6 +284,23 @@ func main() {
 		fmt.Fprintf(os.Stderr, "serve: %v\n", serveErr)
 		os.Exit(1)
 	}
+}
+
+func runAgentShutdown(
+	h *healthsrv.Server,
+	drainFn func(context.Context) error,
+	gracefulStopFn func(),
+	grace time.Duration,
+) {
+	h.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	drainErr := drainFn(ctx)
+	if drainErr != nil {
+		fmt.Fprintf(os.Stderr, "pillar-agent: drain failed: %v\n", drainErr)
+	}
+	time.Sleep(grace)
+	gracefulStopFn()
 }
 
 func resolvedDefaultConfigfsRoot() string {

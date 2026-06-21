@@ -73,6 +73,7 @@ const (
 	AgentService_SendVolume_FullMethodName      = "/pillar_csi.agent.v1.AgentService/SendVolume"
 	AgentService_ReceiveVolume_FullMethodName   = "/pillar_csi.agent.v1.AgentService/ReceiveVolume"
 	AgentService_ReconcileState_FullMethodName  = "/pillar_csi.agent.v1.AgentService/ReconcileState"
+	AgentService_Drain_FullMethodName           = "/pillar_csi.agent.v1.AgentService/Drain"
 )
 
 // AgentServiceClient is the client API for AgentService service.
@@ -179,6 +180,19 @@ type AgentServiceClient interface {
 	// target entries.  The agent MUST NOT return an error if configfs entries
 	// already exist — it reconciles to the desired state.
 	ReconcileState(ctx context.Context, in *ReconcileStateRequest, opts ...grpc.CallOption) (*ReconcileStateResponse, error)
+	// Drain stops the agent from accepting new mutating RPCs and waits until
+	// all in-flight per-target operations have released their locks.  After
+	// Drain returns successfully the agent persists a state-flush marker so
+	// the next restart can detect a clean shutdown.
+	//
+	// Idempotent: subsequent calls return was_already_drained=true and do not
+	// re-block; they are safe to invoke from a preStop hook that may run more
+	// than once.
+	//
+	// Once drained the agent will reject every other RPC with code
+	// UNAVAILABLE until the process is restarted; Drain itself is always
+	// accepted so that orchestrators can confirm the drained state.
+	Drain(ctx context.Context, in *DrainRequest, opts ...grpc.CallOption) (*DrainResponse, error)
 }
 
 type agentServiceClient struct {
@@ -351,6 +365,16 @@ func (c *agentServiceClient) ReconcileState(ctx context.Context, in *ReconcileSt
 	return out, nil
 }
 
+func (c *agentServiceClient) Drain(ctx context.Context, in *DrainRequest, opts ...grpc.CallOption) (*DrainResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DrainResponse)
+	err := c.cc.Invoke(ctx, AgentService_Drain_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // AgentServiceServer is the server API for AgentService service.
 // All implementations must embed UnimplementedAgentServiceServer
 // for forward compatibility.
@@ -455,6 +479,19 @@ type AgentServiceServer interface {
 	// target entries.  The agent MUST NOT return an error if configfs entries
 	// already exist — it reconciles to the desired state.
 	ReconcileState(context.Context, *ReconcileStateRequest) (*ReconcileStateResponse, error)
+	// Drain stops the agent from accepting new mutating RPCs and waits until
+	// all in-flight per-target operations have released their locks.  After
+	// Drain returns successfully the agent persists a state-flush marker so
+	// the next restart can detect a clean shutdown.
+	//
+	// Idempotent: subsequent calls return was_already_drained=true and do not
+	// re-block; they are safe to invoke from a preStop hook that may run more
+	// than once.
+	//
+	// Once drained the agent will reject every other RPC with code
+	// UNAVAILABLE until the process is restarted; Drain itself is always
+	// accepted so that orchestrators can confirm the drained state.
+	Drain(context.Context, *DrainRequest) (*DrainResponse, error)
 	mustEmbedUnimplementedAgentServiceServer()
 }
 
@@ -509,6 +546,9 @@ func (UnimplementedAgentServiceServer) ReceiveVolume(grpc.ClientStreamingServer[
 }
 func (UnimplementedAgentServiceServer) ReconcileState(context.Context, *ReconcileStateRequest) (*ReconcileStateResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ReconcileState not implemented")
+}
+func (UnimplementedAgentServiceServer) Drain(context.Context, *DrainRequest) (*DrainResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Drain not implemented")
 }
 func (UnimplementedAgentServiceServer) mustEmbedUnimplementedAgentServiceServer() {}
 func (UnimplementedAgentServiceServer) testEmbeddedByValue()                      {}
@@ -783,6 +823,24 @@ func _AgentService_ReconcileState_Handler(srv interface{}, ctx context.Context, 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AgentService_Drain_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DrainRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentServiceServer).Drain(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentService_Drain_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentServiceServer).Drain(ctx, req.(*DrainRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // AgentService_ServiceDesc is the grpc.ServiceDesc for AgentService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -841,6 +899,10 @@ var AgentService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ReconcileState",
 			Handler:    _AgentService_ReconcileState_Handler,
+		},
+		{
+			MethodName: "Drain",
+			Handler:    _AgentService_Drain_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

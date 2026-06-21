@@ -41,8 +41,6 @@ func SetupPillarBindingWebhookWithManager(mgr ctrl.Manager) error {
 		Complete()
 }
 
-// TODO(user): EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-
 // +kubebuilder:webhook:path=/mutate-pillar-csi-pillar-csi-bhyoo-com-v1alpha1-pillarbinding,mutating=true,failurePolicy=fail,sideEffects=None,groups=pillar-csi.pillar-csi.bhyoo.com,resources=pillarbindings,verbs=create;update,versions=v1alpha1,name=mpillarbinding-v1alpha1.kb.io,admissionReviewVersions=v1
 
 // PillarBindingCustomDefaulter struct is responsible for setting default values on the custom resource of the
@@ -111,7 +109,6 @@ func backendSupportsVolumeExpansion(bt pillarcsiv1alpha1.BackendType) bool {
 	}
 }
 
-// TODO(user): change verbs to "verbs=create;update;delete" if you want to enable deletion validation.
 // NOTE: If you want to customize the 'path', use the flags '--defaulting-path' or '--validation-path'.
 // +kubebuilder:webhook:path=/validate-pillar-csi-pillar-csi-bhyoo-com-v1alpha1-pillarbinding,mutating=false,failurePolicy=fail,sideEffects=None,groups=pillar-csi.pillar-csi.bhyoo.com,resources=pillarbindings,verbs=create;update,versions=v1alpha1,name=vpillarbinding-v1alpha1.kb.io,admissionReviewVersions=v1
 
@@ -193,8 +190,6 @@ func (*PillarBindingCustomValidator) ValidateDelete(
 	_ context.Context, pillarbinding *pillarcsiv1alpha1.PillarBinding,
 ) (admission.Warnings, error) {
 	pillarbindinglog.Info("Validation for PillarBinding upon deletion", "name", pillarbinding.GetName())
-
-	// TODO(user): fill in your validation logic upon object deletion.
 
 	return nil, nil
 }

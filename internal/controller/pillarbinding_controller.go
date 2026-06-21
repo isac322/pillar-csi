@@ -24,11 +24,13 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -81,7 +83,15 @@ const (
 // PillarBindingReconciler reconciles a PillarBinding object.
 type PillarBindingReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme   *runtime.Scheme
+	Recorder record.EventRecorder
+}
+
+type desiredStorageClass struct {
+	params               map[string]string
+	reclaimPolicy        corev1.PersistentVolumeReclaimPolicy
+	volumeBindingMode    storagev1.VolumeBindingMode
+	allowVolumeExpansion *bool
 }
 
 // +kubebuilder:rbac:groups=pillar-csi.pillar-csi.bhyoo.com,resources=pillarbindings,verbs=get;list;watch;create;update;patch;delete
@@ -556,6 +566,17 @@ func (r *PillarBindingReconciler) reconcileStorageClass(
 	}
 
 	params := buildStorageClassParams(binding, pool, protocol)
+	allowVolumeExpansion := binding.Spec.StorageClass.AllowVolumeExpansion
+	if allowVolumeExpansion == nil {
+		defaultAllow := protocol.Spec.Type != pillarcsiv1alpha1.ProtocolTypeNFS
+		allowVolumeExpansion = &defaultAllow
+	}
+	desired := desiredStorageClass{
+		params:               params,
+		reclaimPolicy:        reclaimPolicy,
+		volumeBindingMode:    volumeBindingMode,
+		allowVolumeExpansion: allowVolumeExpansion,
+	}
 
 	sc := &storagev1.StorageClass{
 		ObjectMeta: metav1.ObjectMeta{
@@ -571,19 +592,21 @@ func (r *PillarBindingReconciler) reconcileStorageClass(
 			return fmt.Errorf("failed to set owner reference on StorageClass: %w", setErr)
 		}
 
-		sc.Provisioner = pillarCSIProvisioner
-		sc.Parameters = params
-		sc.ReclaimPolicy = &reclaimPolicy
-		sc.VolumeBindingMode = &volumeBindingMode
-
-		// AllowVolumeExpansion: use spec value when explicitly set.
-		if binding.Spec.StorageClass.AllowVolumeExpansion != nil {
-			sc.AllowVolumeExpansion = binding.Spec.StorageClass.AllowVolumeExpansion
-		} else {
-			// Default: allow expansion for block backends (zvol, lvm), not for NFS.
-			defaultAllow := protocol.Spec.Type != pillarcsiv1alpha1.ProtocolTypeNFS
-			sc.AllowVolumeExpansion = &defaultAllow
+		if r.Recorder != nil && sc.ResourceVersion != "" && storageClassDrifted(sc, desired) {
+			r.Recorder.Eventf(
+				binding,
+				corev1.EventTypeNormal,
+				"StorageClassReverted",
+				"StorageClass %q drifted, reverting to PillarBinding spec",
+				scName,
+			)
 		}
+
+		sc.Provisioner = pillarCSIProvisioner
+		sc.Parameters = desired.params
+		sc.ReclaimPolicy = &desired.reclaimPolicy
+		sc.VolumeBindingMode = &desired.volumeBindingMode
+		sc.AllowVolumeExpansion = desired.allowVolumeExpansion
 
 		return nil
 	})
@@ -593,6 +616,14 @@ func (r *PillarBindingReconciler) reconcileStorageClass(
 
 	log.Info("StorageClass reconciled", "name", scName, "operation", op)
 	return nil
+}
+
+func storageClassDrifted(sc *storagev1.StorageClass, desired desiredStorageClass) bool {
+	return sc.Provisioner != pillarCSIProvisioner ||
+		!equality.Semantic.DeepEqual(sc.Parameters, desired.params) ||
+		!equality.Semantic.DeepEqual(sc.ReclaimPolicy, &desired.reclaimPolicy) ||
+		!equality.Semantic.DeepEqual(sc.VolumeBindingMode, &desired.volumeBindingMode) ||
+		!equality.Semantic.DeepEqual(sc.AllowVolumeExpansion, desired.allowVolumeExpansion)
 }
 
 // setBindingNotReady is a helper that sets the top-level Ready condition to

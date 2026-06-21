@@ -1,0 +1,83 @@
+pillar-csi {{ .Chart.AppVersion }} installed.
+
+Release : {{ .Release.Name }}
+Namespace: {{ include "pillar-csi.namespace" . }}
+Driver  : pillar-csi.bhyoo.com
+
+────────────────────────────────────────────────────────────────────────
+Verify the install
+────────────────────────────────────────────────────────────────────────
+
+  kubectl get csidriver pillar-csi.bhyoo.com
+  kubectl -n {{ include "pillar-csi.namespace" . }} rollout status deploy/{{ include "pillar-csi.fullname" . }}-controller
+  kubectl -n {{ include "pillar-csi.namespace" . }} rollout status ds/{{ include "pillar-csi.fullname" . }}-node
+  kubectl -n {{ include "pillar-csi.namespace" . }} rollout status ds/{{ include "pillar-csi.fullname" . }}-agent
+  kubectl get crd | grep pillar-csi.bhyoo.com
+
+────────────────────────────────────────────────────────────────────────
+Tail the logs
+────────────────────────────────────────────────────────────────────────
+
+  kubectl -n {{ include "pillar-csi.namespace" . }} logs -f deploy/{{ include "pillar-csi.fullname" . }}-controller -c manager
+  kubectl -n {{ include "pillar-csi.namespace" . }} logs -f ds/{{ include "pillar-csi.fullname" . }}-agent      -c agent
+  kubectl -n {{ include "pillar-csi.namespace" . }} logs -f ds/{{ include "pillar-csi.fullname" . }}-node       -c node
+
+────────────────────────────────────────────────────────────────────────
+First-time configuration (cluster-scoped CRs)
+────────────────────────────────────────────────────────────────────────
+
+1. Declare a storage target on each storage node:
+
+   apiVersion: pillar-csi.bhyoo.com/v1alpha1
+   kind: PillarTarget
+   metadata:
+     name: <storage-node-name>
+   spec:
+     nodeRef:
+       name: <k8s-node-name>
+
+2. Declare a pool (ZFS or LVM) on that target, a protocol (NVMe-oF/TCP),
+   and a binding that produces the StorageClass:
+
+   See https://github.com/bhyoo/pillar-csi#quickstart for the full YAML.
+
+3. Watch readiness:
+
+   kubectl get pillartarget,pillarpool,pillarprotocol,pillarbinding
+   kubectl describe pillartarget <name>   # AgentConnected + Ready conditions
+
+{{- $mtls := default (dict) .Values.mtls }}
+{{- if $mtls.enabled }}
+
+────────────────────────────────────────────────────────────────────────
+mTLS is ENABLED — pre-flight check
+────────────────────────────────────────────────────────────────────────
+{{- $cm := default (dict) $mtls.certManager }}
+{{- if $cm.enabled }}
+Mode  : cert-manager (Issuer + Certificates auto-rendered by this chart)
+Verify:
+  kubectl -n {{ include "pillar-csi.namespace" . }} get issuer
+  kubectl -n {{ include "pillar-csi.namespace" . }} get certificate
+{{- else }}
+{{- $refs := default (dict) $mtls.secretRefs }}
+{{- $ctlRef := default (dict) $refs.controller }}
+{{- $agtRef := default (dict) $refs.agent }}
+Mode  : secret reference (operator-managed)
+The chart will NOT create the cert Secrets — make sure the following Secrets
+exist in {{ include "pillar-csi.namespace" . }} BEFORE workloads provision:
+  - {{ default "pillar-controller-mtls" $ctlRef.secretName }}  (keys: tls.crt, tls.key, ca.crt)
+  - {{ default "pillar-agent-mtls" $agtRef.secretName }}       (keys: tls.crt, tls.key, ca.crt)
+{{- end }}
+{{- else }}
+
+────────────────────────────────────────────────────────────────────────
+mTLS is DISABLED (default) — controller ↔ agent traffic is plaintext.
+Enable on production deployments:
+  helm upgrade pillar-csi charts/pillar-csi \
+    --reuse-values --set mtls.enabled=true \
+    --set mtls.certManager.enabled=true
+{{- end }}
+
+Docs:
+  https://github.com/bhyoo/pillar-csi/blob/main/docs/PRD.md
+  https://github.com/bhyoo/pillar-csi/blob/main/docs/prd-audit-phase1-2026-06.md

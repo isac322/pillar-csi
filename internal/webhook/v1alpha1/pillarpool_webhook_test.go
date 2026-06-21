@@ -1,5 +1,3 @@
-//go:build integration
-
 /*
 Copyright 2026.
 
@@ -19,6 +17,10 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"context"
+	"strings"
+	"testing"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -28,21 +30,23 @@ import (
 // E21.3: PillarPool webhook — immutable field update rejection tests.
 //
 // These tests validate that PillarPoolCustomValidator.ValidateUpdate() correctly
-// rejects mutations to spec.targetRef and spec.backend.type, which are immutable
-// because changing them would invalidate all volumes provisioned from the pool.
+// rejects mutations to spec.targetRef, spec.backend.type, and spec.backend.zfs.pool,
+// which are immutable because changing them would invalidate all volumes provisioned
+// from the pool.
 //
 // All tests call the validator directly — no envtest API server is required for
-// compilation or execution of the validator logic; the integration build tag is kept
-// for consistency with the suite setup file.
+// compilation or execution of the validator logic.
 
 var _ = Describe("PillarPool Webhook", func() {
 	var (
+		ctx       context.Context
 		obj       *pillarcsiv1alpha1.PillarPool
 		oldObj    *pillarcsiv1alpha1.PillarPool
 		validator PillarPoolCustomValidator
 	)
 
 	BeforeEach(func() {
+		ctx = context.Background()
 		obj = &pillarcsiv1alpha1.PillarPool{}
 		oldObj = &pillarcsiv1alpha1.PillarPool{}
 		validator = PillarPoolCustomValidator{}
@@ -56,7 +60,6 @@ var _ = Describe("PillarPool Webhook", func() {
 	})
 
 	Context("When creating or updating PillarPool under Validating Webhook", func() {
-
 		// ── E21.3 — ID 158 ──────────────────────────────────────────────────────
 		// TestPillarPoolWebhook_Update_TargetRefImmutable
 		It("Should deny update when spec.targetRef is changed", func() {
@@ -100,8 +103,8 @@ var _ = Describe("PillarPool Webhook", func() {
 		})
 
 		// ── E21.3 — ID 160 ──────────────────────────────────────────────────────
-		// TestPillarPoolWebhook_Update_ZFSPoolChange_OK
-		It("Should allow update when only the ZFS pool name changes (backend.type unchanged)", func() {
+		// TestPillarPoolWebhook_Update_ZFSPoolImmutable
+		It("Should deny update when only the ZFS pool name changes", func() {
 			By("keeping backend.type as zfs-zvol but changing zfs.pool from tank to new-tank")
 			oldObj.Spec.TargetRef = "t1"
 			oldObj.Spec.Backend = pillarcsiv1alpha1.BackendSpec{
@@ -115,8 +118,10 @@ var _ = Describe("PillarPool Webhook", func() {
 			}
 
 			_, err := validator.ValidateUpdate(ctx, oldObj, obj)
-			Expect(err).NotTo(HaveOccurred(),
-				"Changing only the ZFS pool name should be allowed")
+			Expect(err).To(HaveOccurred(),
+				"Changing the ZFS pool name should be rejected")
+			Expect(err.Error()).To(ContainSubstring("spec.backend.zfs.pool"),
+				"Error should mention spec.backend.zfs.pool field")
 		})
 
 		// ── E21.3 — ID 161 ──────────────────────────────────────────────────────
@@ -159,7 +164,8 @@ var _ = Describe("PillarPool Webhook", func() {
 		// TestPillarPool_LVM_MissingLVMConfig_Rejected
 		// When backend.type == "lvm-lv" but backend.lvm is nil the cross-field
 		// constraint validated by validatePillarPoolSpec must return an error.
-		It("TC-280: TestPillarPool_LVM_MissingLVMConfig_Rejected — lvm-lv without backend.lvm is rejected by ValidateCreate", func() {
+		It("TC-280: TestPillarPool_LVM_MissingLVMConfig_Rejected — "+
+			"lvm-lv without backend.lvm is rejected by ValidateCreate", func() {
 			By("calling ValidateCreate with a PillarPool that has type=lvm-lv and no backend.lvm")
 			obj.Spec.TargetRef = "storage-1"
 			obj.Spec.Backend = pillarcsiv1alpha1.BackendSpec{
@@ -215,3 +221,94 @@ var _ = Describe("PillarPool Webhook", func() {
 		})
 	})
 })
+
+func TestPillarPool_ZfsPoolImmutable(t *testing.T) {
+	tests := []struct {
+		name          string
+		oldBackend    pillarcsiv1alpha1.BackendSpec
+		newBackend    pillarcsiv1alpha1.BackendSpec
+		wantForbidden bool
+	}{
+		{
+			name: "rename forbidden",
+			oldBackend: pillarcsiv1alpha1.BackendSpec{
+				Type: pillarcsiv1alpha1.BackendTypeZFSZvol,
+				ZFS:  &pillarcsiv1alpha1.ZFSBackendConfig{Pool: "tank"},
+			},
+			newBackend: pillarcsiv1alpha1.BackendSpec{
+				Type: pillarcsiv1alpha1.BackendTypeZFSZvol,
+				ZFS:  &pillarcsiv1alpha1.ZFSBackendConfig{Pool: "tank2"},
+			},
+			wantForbidden: true,
+		},
+		{
+			name: "nil-block unchanged",
+			oldBackend: pillarcsiv1alpha1.BackendSpec{
+				Type: pillarcsiv1alpha1.BackendTypeLVMLV,
+				LVM:  &pillarcsiv1alpha1.LVMBackendConfig{VolumeGroup: "data-vg"},
+			},
+			newBackend: pillarcsiv1alpha1.BackendSpec{
+				Type: pillarcsiv1alpha1.BackendTypeLVMLV,
+				LVM:  &pillarcsiv1alpha1.LVMBackendConfig{VolumeGroup: "data-vg"},
+			},
+		},
+		{
+			name: "introduce mismatch",
+			oldBackend: pillarcsiv1alpha1.BackendSpec{
+				Type: pillarcsiv1alpha1.BackendTypeZFSZvol,
+			},
+			newBackend: pillarcsiv1alpha1.BackendSpec{
+				Type: pillarcsiv1alpha1.BackendTypeZFSZvol,
+				ZFS:  &pillarcsiv1alpha1.ZFSBackendConfig{Pool: "tank"},
+			},
+			wantForbidden: true,
+		},
+		{
+			name: "unchanged",
+			oldBackend: pillarcsiv1alpha1.BackendSpec{
+				Type: pillarcsiv1alpha1.BackendTypeZFSZvol,
+				ZFS:  &pillarcsiv1alpha1.ZFSBackendConfig{Pool: "tank"},
+			},
+			newBackend: pillarcsiv1alpha1.BackendSpec{
+				Type: pillarcsiv1alpha1.BackendTypeZFSZvol,
+				ZFS:  &pillarcsiv1alpha1.ZFSBackendConfig{Pool: "tank"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			oldPool := &pillarcsiv1alpha1.PillarPool{
+				Spec: pillarcsiv1alpha1.PillarPoolSpec{
+					TargetRef: "target-a",
+					Backend:   tt.oldBackend,
+				},
+			}
+			newPool := &pillarcsiv1alpha1.PillarPool{
+				Spec: pillarcsiv1alpha1.PillarPoolSpec{
+					TargetRef: "target-a",
+					Backend:   tt.newBackend,
+				},
+			}
+
+			_, err := (&PillarPoolCustomValidator{}).ValidateUpdate(context.Background(), oldPool, newPool)
+
+			if !tt.wantForbidden {
+				if err != nil {
+					t.Fatalf("ValidateUpdate() error = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("ValidateUpdate() error = nil, want forbidden spec.backend.zfs.pool error")
+			}
+			errText := err.Error()
+			if !strings.Contains(errText, "spec.backend.zfs.pool") {
+				t.Fatalf("ValidateUpdate() error = %v, want spec.backend.zfs.pool path", err)
+			}
+			if !strings.Contains(errText, "Forbidden") {
+				t.Fatalf("ValidateUpdate() error = %v, want field.Forbidden error", err)
+			}
+		})
+	}
+}

@@ -21,6 +21,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -125,15 +127,119 @@ func (s *Server) ListVolumes(
 	return &agentv1.ListVolumesResponse{Volumes: vols}, nil
 }
 
-// ListExports returns all active NVMe-oF TCP exports.  Phase 1 returns an
-// empty map; full configfs scanning is deferred to a later phase.
-func (*Server) ListExports(
+// ListExports returns all active NVMe-oF TCP exports from configfs.
+func (s *Server) ListExports(
 	_ context.Context,
 	_ *agentv1.ListExportsRequest,
 ) (*agentv1.ListExportsResponse, error) {
-	return &agentv1.ListExportsResponse{
-		Exports: make(map[string]*agentv1.ExportInfo),
-	}, nil
+	subsystems, err := nvmeof.ListExports(s.configfsRoot)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "list exports: scan subsystems: %v", err)
+	}
+	portsByNQN, err := scanPorts(s.configfsRoot)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "list exports: scan ports: %v", err)
+	}
+
+	exports := make(map[string]*agentv1.ExportInfo, len(subsystems))
+	for _, subsystem := range subsystems {
+		volumeID := volumeIDFromNQN(subsystem.NQN)
+		if volumeID == "" {
+			continue
+		}
+
+		port := portsByNQN[subsystem.NQN]
+		exports[volumeID] = &agentv1.ExportInfo{
+			TargetId:  subsystem.NQN,
+			Address:   port.addr,
+			Port:      port.port,
+			VolumeRef: subsystem.NamespaceDevicePaths[1],
+		}
+	}
+
+	return &agentv1.ListExportsResponse{Exports: exports}, nil
+}
+
+type portEntry struct {
+	addr string
+	port int32
+}
+
+func scanPorts(configfsRoot string) (map[string]portEntry, error) {
+	if configfsRoot == "" {
+		configfsRoot = nvmeof.DefaultConfigfsRoot
+	}
+	portsRoot := filepath.Join(configfsRoot, "nvmet", "ports")
+	entries, err := os.ReadDir(portsRoot)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return map[string]portEntry{}, nil
+		}
+		return nil, fmt.Errorf("read ports dir %q: %w", portsRoot, err)
+	}
+
+	portsByNQN := make(map[string]portEntry)
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		portDir := filepath.Join(portsRoot, entry.Name())
+		portSubsystems, err := os.ReadDir(filepath.Join(portDir, "subsystems"))
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, fmt.Errorf("read port %s subsystems: %w", entry.Name(), err)
+		}
+		if len(portSubsystems) == 0 {
+			continue
+		}
+
+		port, err := readPortEntry(portDir)
+		if err != nil {
+			return nil, fmt.Errorf("read port %s attrs: %w", entry.Name(), err)
+		}
+		for _, subsystemLink := range portSubsystems {
+			portsByNQN[subsystemLink.Name()] = port
+		}
+	}
+	return portsByNQN, nil
+}
+
+func readPortEntry(portDir string) (portEntry, error) {
+	addr, err := readTrimmedConfigfsFile(filepath.Join(portDir, "addr_traddr"))
+	if err != nil {
+		return portEntry{}, fmt.Errorf("addr_traddr: %w", err)
+	}
+	portText, err := readTrimmedConfigfsFile(filepath.Join(portDir, "addr_trsvcid"))
+	if err != nil {
+		return portEntry{}, fmt.Errorf("addr_trsvcid: %w", err)
+	}
+	port, err := strconv.ParseInt(portText, 10, 32)
+	if err != nil {
+		return portEntry{}, fmt.Errorf("addr_trsvcid %q: %w", portText, err)
+	}
+	return portEntry{addr: addr, port: int32(port)}, nil
+}
+
+func readTrimmedConfigfsFile(path string) (string, error) {
+	data, err := os.ReadFile(path) //nolint:gosec // G304: path is constructed from the configured configfs root.
+	if err != nil {
+		return "", fmt.Errorf("read %q: %w", path, err)
+	}
+	return strings.TrimSpace(string(data)), nil
+}
+
+func volumeIDFromNQN(nqn string) string {
+	suffix, ok := strings.CutPrefix(nqn, nqnPrefix)
+	if !ok {
+		return ""
+	}
+	pool, name, ok := strings.Cut(suffix, ".")
+	if !ok {
+		return ""
+	}
+	return pool + "/" + name
 }
 
 // HealthCheck reports the liveness of the NVMe-oF subsystem as well as

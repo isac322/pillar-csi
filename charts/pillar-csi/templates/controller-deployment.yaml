@@ -34,6 +34,15 @@ spec:
       serviceAccountName: {{ include "pillar-csi.controllerServiceAccountName" . }}
       securityContext:
         runAsNonRoot: true
+        # fsGroup is required so the controller (UID 65532) can read the
+        # mTLS Secret files mounted under .Values.mtls.certDir.  Without
+        # it the projected Secret comes up root-owned with mode 0440 and
+        # the binary fails to load tls.crt / tls.key / ca.crt at startup.
+        fsGroup: 65532
+        # OnRootMismatch skips the recursive chgrp on every restart for
+        # volumes whose root already has the right group — keeps controller
+        # restart latency flat as the cert chain grows.
+        fsGroupChangePolicy: OnRootMismatch
         seccompProfile:
           type: RuntimeDefault
       terminationGracePeriodSeconds: 10
@@ -52,6 +61,16 @@ spec:
       volumes:
         - name: socket-dir
           emptyDir: {}
+        {{- if .Values.mtls.enabled }}
+        - name: mtls-certs
+          secret:
+            secretName: {{ include "pillar-csi.mtls.controllerSecret" . }}
+            # 0440 = read for owner (root via projected secret) and group
+            # (fsGroup 65532, the controller's supplementary group).  The
+            # pod-level fsGroup directive chgrps the files into 65532 so
+            # the manager process can read them.
+            defaultMode: 0o440
+        {{- end }}
       containers:
         # ── pillar-csi controller (CRD reconciler + CSI Controller service) ───
         - name: controller
@@ -64,6 +83,15 @@ spec:
             - --health-probe-bind-address=:{{ .Values.controller.healthProbePort }}
             - --metrics-bind-address=:{{ .Values.controller.metricsPort }}
             - --csi-endpoint=unix://{{ .Values.controller.csiSocketPath }}
+            {{- if .Values.mtls.enabled }}
+            - --agent-tls-cert={{ include "pillar-csi.mtls.certDir" . }}/tls.crt
+            - --agent-tls-key={{ include "pillar-csi.mtls.certDir" . }}/tls.key
+            - --agent-tls-ca={{ include "pillar-csi.mtls.certDir" . }}/ca.crt
+            {{- $serverName := include "pillar-csi.mtls.serverName" . }}
+            {{- if $serverName }}
+            - --agent-tls-server-name={{ $serverName }}
+            {{- end }}
+            {{- end }}
             {{- range .Values.controller.extraArgs }}
             - {{ . | quote }}
             {{- end }}
@@ -123,6 +151,11 @@ spec:
           volumeMounts:
             - name: socket-dir
               mountPath: {{ .Values.controller.csiSocketPath | dir }}
+            {{- if .Values.mtls.enabled }}
+            - name: mtls-certs
+              mountPath: {{ include "pillar-csi.mtls.certDir" . }}
+              readOnly: true
+            {{- end }}
 
         # ── csi-provisioner sidecar ──────────────────────────────────────────
         - name: csi-provisioner

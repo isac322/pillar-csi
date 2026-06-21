@@ -37,9 +37,6 @@ func SetupPillarProtocolWebhookWithManager(mgr ctrl.Manager) error {
 		Complete()
 }
 
-// TODO(user): EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-
-// TODO(user): change verbs to "verbs=create;update;delete" if you want to enable deletion validation.
 // NOTE: If you want to customize the 'path', use the flags '--defaulting-path' or '--validation-path'.
 // +kubebuilder:webhook:path=/validate-pillar-csi-pillar-csi-bhyoo-com-v1alpha1-pillarprotocol,mutating=false,failurePolicy=fail,sideEffects=None,groups=pillar-csi.pillar-csi.bhyoo.com,resources=pillarprotocols,verbs=create;update,versions=v1alpha1,name=vpillarprotocol-v1alpha1.kb.io,admissionReviewVersions=v1
 
@@ -48,9 +45,7 @@ func SetupPillarProtocolWebhookWithManager(mgr ctrl.Manager) error {
 //
 // NOTE: The +kubebuilder:object:generate=false marker prevents controller-gen from generating DeepCopy methods,
 // as this struct is used only for temporary operations and does not need to be deeply copied.
-type PillarProtocolCustomValidator struct {
-	// TODO(user): Add more fields as needed for validation
-}
+type PillarProtocolCustomValidator struct{}
 
 var _ admission.Validator[*pillarcsiv1alpha1.PillarProtocol] = &PillarProtocolCustomValidator{}
 
@@ -59,8 +54,6 @@ func (*PillarProtocolCustomValidator) ValidateCreate(
 	_ context.Context, pillarprotocol *pillarcsiv1alpha1.PillarProtocol,
 ) (admission.Warnings, error) {
 	pillarprotocollog.Info("Validation for PillarProtocol upon creation", "name", pillarprotocol.GetName())
-
-	// TODO(user): fill in your validation logic upon object creation.
 
 	return nil, nil
 }
@@ -95,8 +88,6 @@ func (*PillarProtocolCustomValidator) ValidateDelete(
 	_ context.Context, pillarprotocol *pillarcsiv1alpha1.PillarProtocol,
 ) (admission.Warnings, error) {
 	pillarprotocollog.Info("Validation for PillarProtocol upon deletion", "name", pillarprotocol.GetName())
-
-	// TODO(user): fill in your validation logic upon object deletion.
 
 	return nil, nil
 }
