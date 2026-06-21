@@ -84,7 +84,9 @@ func TestNodePublishVolume_MountAccess(t *testing.T) {
 }
 
 // TestNodePublishVolume_BlockAccess verifies that NodePublishVolume performs a
-// bind mount for BLOCK access type using the same staging path as source.
+// bind mount for BLOCK access type from the in-staging device sentinel file
+// (blockStagingDevicePath) rather than the staging directory itself, because
+// the kernel rejects bind of a regular file onto a directory target.
 func TestNodePublishVolume_BlockAccess(t *testing.T) {
 	t.Parallel()
 
@@ -112,8 +114,9 @@ func TestNodePublishVolume_BlockAccess(t *testing.T) {
 		t.Fatalf("Mount called %d times, want 1", len(env.mounter.mountCalls))
 	}
 	mc := env.mounter.mountCalls[0]
-	if mc.source != stagingPath {
-		t.Errorf("Mount source = %q, want %q", mc.source, stagingPath)
+	wantSource := blockStagingDevicePath(stagingPath)
+	if mc.source != wantSource {
+		t.Errorf("Mount source = %q, want %q (in-staging device sentinel)", mc.source, wantSource)
 	}
 }
 

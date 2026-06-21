@@ -97,6 +97,43 @@ const xfsFsType = "xfs"
 // when NodeServer is created via NewNodeServer.
 const defaultStateDir = "/var/lib/pillar-csi/node"
 
+// blockStagingDeviceFile is the regular-file name that NodeStageVolume creates
+// inside the kubelet-supplied stagingTargetPath directory for Block-mode
+// volumes and bind-mounts the raw NVMe-oF/iSCSI device onto.
+//
+// Kubelet pre-creates stagingTargetPath as a DIRECTORY for both Filesystem
+// and Block-mode CSI volumes (kubelet csi_block_mapper.SetUpDevice calls
+// os.MkdirAll(stagingPath, 0o750) before issuing NodeStageVolume).  The
+// Linux kernel rejects mount --bind when source is a block device and
+// target is a directory (errno surfaces as mount(8) exit 32,
+// EXT_SOURCEMOUNTREJECTED), so the plugin must bind onto a regular file
+// instead.  Placing that file inside the kubelet-created directory keeps
+// the stage artifact scoped to the volume's staging path and lets
+// NodeUnstageVolume rely on os.Remove + the kubelet's eventual rmdir for
+// cleanup.  NodePublishVolume then bind-mounts the same regular file onto
+// the per-pod publish path.
+const blockStagingDeviceFile = "device"
+
+// blockStagingDevicePath returns the regular-file path inside the kubelet-
+// created stagingTargetPath that NodeStageVolume Block-mode binds the raw
+// NVMe-oF/iSCSI device onto.  See blockStagingDeviceFile for the kernel
+// rationale.
+func blockStagingDevicePath(stagingTargetPath string) string {
+	return filepath.Join(stagingTargetPath, blockStagingDeviceFile)
+}
+
+// stageBindTarget returns the filesystem path that NodeStageVolume mounts
+// (Filesystem mode) or bind-mounts (Block mode) for the given capability,
+// and that NodePublishVolume binds onto the per-pod target_path.  Block
+// mode resolves to blockStagingDevicePath; Filesystem mode resolves to
+// stagingTargetPath itself.
+func stageBindTarget(stagingTargetPath string, volCap *csi.VolumeCapability) string {
+	if volCap != nil && volCap.GetBlock() != nil {
+		return blockStagingDevicePath(stagingTargetPath)
+	}
+	return stagingTargetPath
+}
+
 // NodeStageState discriminated union is defined in stage_state.go.
 
 // Connector is the interface for NVMe-oF connect/disconnect operations.
@@ -669,10 +706,11 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 			"NodeStageVolume: read stage state for %q: %v", volumeID, stateErr)
 	}
 	if existingState != nil {
-		mounted, mountCheckErr := n.mounter.IsMounted(stagingPath)
+		bindTarget := stageBindTarget(stagingPath, volCap)
+		mounted, mountCheckErr := n.mounter.IsMounted(bindTarget)
 		if mountCheckErr != nil {
 			return nil, status.Errorf(codes.Internal,
-				"NodeStageVolume: check if %q is mounted: %v", stagingPath, mountCheckErr)
+				"NodeStageVolume: check if %q is mounted: %v", bindTarget, mountCheckErr)
 		}
 		if mounted {
 			// Already fully staged — idempotent success.
@@ -741,18 +779,21 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 		}
 
 	case volCap.GetBlock() != nil:
-		// BLOCK access: bind-mount the raw device to the staging path.
-		alreadyMounted, mountCheckErr := n.mounter.IsMounted(stagingPath)
+		// BLOCK access: bind-mount the raw device onto a regular file inside
+		// the kubelet-created stagingTargetPath directory.  See
+		// blockStagingDeviceFile for the kernel rationale.
+		bindTarget := blockStagingDevicePath(stagingPath)
+		alreadyMounted, mountCheckErr := n.mounter.IsMounted(bindTarget)
 		if mountCheckErr != nil {
 			return nil, status.Errorf(codes.Internal,
-				"NodeStageVolume: check if %q is mounted: %v", stagingPath, mountCheckErr)
+				"NodeStageVolume: check if %q is mounted: %v", bindTarget, mountCheckErr)
 		}
 		if !alreadyMounted {
-			bindErr := n.mounter.Mount(devicePath, stagingPath, "", []string{"bind"})
+			bindErr := n.mounter.Mount(devicePath, bindTarget, "", []string{"bind"})
 			if bindErr != nil {
 				return nil, status.Errorf(codes.Internal,
 					"NodeStageVolume: bind-mount block device %q → %q: %v",
-					devicePath, stagingPath, bindErr)
+					devicePath, bindTarget, bindErr)
 			}
 		}
 
@@ -804,7 +845,9 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 //  5. Remove the stage state file to mark the volume as fully unstaged.
 //
 // The operation is idempotent per CSI spec §4.7.
-func (n *NodeServer) NodeUnstageVolume( //nolint:gocyclo,funlen // SM guard + unmount + dispatch + state cleanup
+//
+//nolint:gocyclo,gocognit,funlen // SM guard + dual-mode unmount + dispatch + state cleanup
+func (n *NodeServer) NodeUnstageVolume(
 	ctx context.Context,
 	req *csi.NodeUnstageVolumeRequest,
 ) (*csi.NodeUnstageVolumeResponse, error) {
@@ -848,9 +891,32 @@ func (n *NodeServer) NodeUnstageVolume( //nolint:gocyclo,funlen // SM guard + un
 	}
 
 	// ── Step 1: Unmount staging path ────────────────────────────────────────
-	// IsMounted check provides idempotency; calling Unmount on an already-
-	// unmounted path would be a no-op in most implementations, but the check
-	// makes the intent explicit.
+	// NodeUnstageVolume does not receive a VolumeCapability, so it cannot
+	// know whether the volume was staged Filesystem-mode (mount at
+	// stagingPath itself) or Block-mode (bind at
+	// blockStagingDevicePath(stagingPath)).  Probe both: Block-mode first
+	// so the device sentinel file is removed before the Filesystem-mode
+	// check sees a stale entry, then Filesystem-mode.  IsMounted on a path
+	// that is not in the mount table returns (false, nil); only at most
+	// one of the two paths can be mounted for a given volume.
+	blockBindTarget := blockStagingDevicePath(stagingPath)
+	blockMounted, blockCheckErr := n.mounter.IsMounted(blockBindTarget)
+	if blockCheckErr != nil {
+		return nil, status.Errorf(codes.Internal,
+			"NodeUnstageVolume: check if %q is mounted: %v", blockBindTarget, blockCheckErr)
+	}
+	if blockMounted {
+		unmountErr := n.mounter.Unmount(blockBindTarget)
+		if unmountErr != nil {
+			return nil, status.Errorf(codes.Internal,
+				"NodeUnstageVolume: unmount %q: %v", blockBindTarget, unmountErr)
+		}
+		// Remove the sentinel file so the kubelet's eventual rmdir on
+		// stagingPath succeeds.  Best-effort: a leftover file would only
+		// surface as a kubelet warning on the next stage attempt, not as
+		// a stage failure.
+		_ = os.Remove(blockBindTarget) //nolint:errcheck // best-effort cleanup
+	}
 	mounted, mountCheckErr := n.mounter.IsMounted(stagingPath)
 	if mountCheckErr != nil {
 		return nil, status.Errorf(codes.Internal,
@@ -1016,15 +1082,17 @@ func (n *NodeServer) NodePublishVolume( //nolint:gocyclo // SM guard + capabilit
 	// ── Perform bind mount ──────────────────────────────────────────────────
 	switch {
 	case volCap.GetMount() != nil, volCap.GetBlock() != nil:
-		// Both MOUNT and BLOCK access types use a bind mount from the staging
-		// path to the target path.  For BLOCK the staging path holds a raw
-		// device bind already established during NodeStageVolume; we simply
-		// propagate it to the pod's target path.
-		bindErr := n.mounter.Mount(stagingPath, targetPath, fsType, mountOptions)
+		// Both MOUNT and BLOCK access types use a bind mount from the
+		// stage-side artifact to the pod's target path.  Filesystem mode
+		// binds the stagingTargetPath directory; Block mode binds the
+		// regular-file device sentinel created inside the staging
+		// directory by NodeStageVolume (see blockStagingDeviceFile).
+		bindSource := stageBindTarget(stagingPath, volCap)
+		bindErr := n.mounter.Mount(bindSource, targetPath, fsType, mountOptions)
 		if bindErr != nil {
 			return nil, status.Errorf(codes.Internal,
 				"NodePublishVolume: bind-mount %q → %q: %v",
-				stagingPath, targetPath, bindErr)
+				bindSource, targetPath, bindErr)
 		}
 	default:
 		return nil, status.Error(codes.InvalidArgument, //nolint:wrapcheck
