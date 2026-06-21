@@ -809,14 +809,21 @@ func TestCSIErrors_NodeUnstage_IsMountedError(t *testing.T) {
 	ctx := context.Background()
 	stagingPath := t.TempDir()
 
-	// Configure IsMounted to fail.
+	// Stage first so NodeUnstageVolume has persisted state to consult and
+	// proceeds to the IsMounted probe (an unstaged volume short-circuits to
+	// idempotent success per CSI spec §4.7 before any mount-table check).
+	stageReq := baseStageRequest(stagingPath)
+	if _, err := env.node.NodeStageVolume(ctx, stageReq); err != nil {
+		t.Fatalf("setup NodeStageVolume: %v", err)
+	}
+
 	const isMountedErrMsg = "stat /staging: permission denied"
 	env.mounter.isMountedFn = func(_ string) (bool, error) {
 		return false, errors.New(isMountedErrMsg)
 	}
 
 	_, err := env.node.NodeUnstageVolume(ctx, &csipb.NodeUnstageVolumeRequest{
-		VolumeId:          "storage-node-1/nvmeof-tcp/zfs-zvol/tank/pvc-ismounted-err",
+		VolumeId:          stageReq.GetVolumeId(),
 		StagingTargetPath: stagingPath,
 	})
 	if err == nil {

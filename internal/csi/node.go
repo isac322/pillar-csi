@@ -804,10 +804,15 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 
 	// ── Step 6: Persist stage state ─────────────────────────────────────────
 	// Write the protocol state to a state file so NodeUnstageVolume can
-	// disconnect the correct target even though it does not receive VolumeContext.
-	// The state is derived from the AttachResult so each protocol stores exactly
-	// the teardown parameters its handler needs.
-	stageState := stageStateFromAttachResult(protocolType, targetID, address, port, attachResult)
+	// disconnect the correct target even though it does not receive
+	// VolumeContext.  AccessType is captured here for the same reason: the
+	// unstage RPC has no VolumeCapability, so the access mode it should
+	// unmount is read back from this file instead of being guessed.
+	accessType := AccessTypeFilesystem
+	if volCap.GetBlock() != nil {
+		accessType = AccessTypeBlock
+	}
+	stageState := stageStateFromAttachResult(protocolType, accessType, targetID, address, port, attachResult)
 	writeErr := n.writeStageState(volumeID, stageState)
 	if writeErr != nil {
 		return nil, status.Errorf(codes.Internal,
@@ -890,56 +895,51 @@ func (n *NodeServer) NodeUnstageVolume(
 		}
 	}
 
-	// ── Step 1: Unmount staging path ────────────────────────────────────────
-	// NodeUnstageVolume does not receive a VolumeCapability, so it cannot
-	// know whether the volume was staged Filesystem-mode (mount at
-	// stagingPath itself) or Block-mode (bind at
-	// blockStagingDevicePath(stagingPath)).  Probe both: Block-mode first
-	// so the device sentinel file is removed before the Filesystem-mode
-	// check sees a stale entry, then Filesystem-mode.  IsMounted on a path
-	// that is not in the mount table returns (false, nil); only at most
-	// one of the two paths can be mounted for a given volume.
-	blockBindTarget := blockStagingDevicePath(stagingPath)
-	blockMounted, blockCheckErr := n.mounter.IsMounted(blockBindTarget)
-	if blockCheckErr != nil {
-		return nil, status.Errorf(codes.Internal,
-			"NodeUnstageVolume: check if %q is mounted: %v", blockBindTarget, blockCheckErr)
-	}
-	if blockMounted {
-		unmountErr := n.mounter.Unmount(blockBindTarget)
-		if unmountErr != nil {
-			return nil, status.Errorf(codes.Internal,
-				"NodeUnstageVolume: unmount %q: %v", blockBindTarget, unmountErr)
-		}
-		// Remove the sentinel file so the kubelet's eventual rmdir on
-		// stagingPath succeeds.  Best-effort: a leftover file would only
-		// surface as a kubelet warning on the next stage attempt, not as
-		// a stage failure.
-		_ = os.Remove(blockBindTarget) //nolint:errcheck // best-effort cleanup
-	}
-	mounted, mountCheckErr := n.mounter.IsMounted(stagingPath)
-	if mountCheckErr != nil {
-		return nil, status.Errorf(codes.Internal,
-			"NodeUnstageVolume: check if %q is mounted: %v", stagingPath, mountCheckErr)
-	}
-	if mounted {
-		unmountErr := n.mounter.Unmount(stagingPath)
-		if unmountErr != nil {
-			return nil, status.Errorf(codes.Internal,
-				"NodeUnstageVolume: unmount %q: %v", stagingPath, unmountErr)
-		}
-	}
-
-	// ── Step 2: Read stage state to recover protocol teardown state ─────────
+	// ── Step 1: Read stage state ────────────────────────────────────────────
+	// AccessType in the persisted state names the single mount/bind target
+	// to unmount; probing both Block and Filesystem paths would touch
+	// <stagingPath>/device, which sits INSIDE the Filesystem-mode mount
+	// and can return EIO during post-ControllerExpand NVMe namespace
+	// re-identify.  Reading state first avoids that whole class of
+	// false-positive errors.
 	state, readErr := n.readStageState(volumeID)
 	if readErr != nil {
 		return nil, status.Errorf(codes.Internal,
 			"NodeUnstageVolume: read stage state for %q: %v", volumeID, readErr)
 	}
 	if state == nil {
-		// No state file: volume was never staged or was already cleanly unstaged.
-		// Succeed idempotently — the CO may call NodeUnstageVolume more than once.
+		// CSI spec §4.7: NodeUnstageVolume must succeed if the volume was
+		// never staged (or was already cleanly unstaged on a prior call).
 		return &csi.NodeUnstageVolumeResponse{}, nil
+	}
+
+	// ── Step 2: Unmount the staged target ───────────────────────────────────
+	// Filesystem-mode mounts the formatted device at stagingPath itself;
+	// Block-mode binds /dev/nvmeXnY onto blockStagingDevicePath(stagingPath)
+	// (a regular file inside the kubelet-created staging directory).  The
+	// AccessType discriminator selects which surface to unmount.
+	unmountTarget := stagingPath
+	isBlock := state.AccessType == AccessTypeBlock
+	if isBlock {
+		unmountTarget = blockStagingDevicePath(stagingPath)
+	}
+	mounted, mountCheckErr := n.mounter.IsMounted(unmountTarget)
+	if mountCheckErr != nil {
+		return nil, status.Errorf(codes.Internal,
+			"NodeUnstageVolume: check if %q is mounted: %v", unmountTarget, mountCheckErr)
+	}
+	if mounted {
+		unmountErr := n.mounter.Unmount(unmountTarget)
+		if unmountErr != nil {
+			return nil, status.Errorf(codes.Internal,
+				"NodeUnstageVolume: unmount %q: %v", unmountTarget, unmountErr)
+		}
+	}
+	if isBlock {
+		// Block-mode leaves a regular-file sentinel that kubelet's
+		// subsequent rmdir on stagingPath would refuse; remove it
+		// best-effort so the directory can be reaped.
+		_ = os.Remove(unmountTarget) //nolint:errcheck // best-effort cleanup
 	}
 
 	// ── Step 3: Disconnect the storage target ───────────────────────────────
@@ -1255,6 +1255,16 @@ func (n *NodeServer) readStageState(volumeID string) (*nodeStageState, error) {
 			// Non-fatal: if the write fails we still return the migrated in-memory state.
 			_ = n.writeStageState(volumeID, migrated) //nolint:errcheck // best-effort; non-fatal on write failure
 		}
+	}
+
+	// Phase 3 backfill: AccessType joined the schema in the same change that
+	// introduced Block-mode staging, so any state file that already
+	// deserialised but lacks AccessType belongs to a Filesystem-mode volume.
+	// Backfill in memory and rewrite best-effort so subsequent reads see the
+	// canonical form.
+	if state.AccessType == "" {
+		state.AccessType = AccessTypeFilesystem
+		_ = n.writeStageState(volumeID, &state) //nolint:errcheck // best-effort; non-fatal on write failure
 	}
 
 	return &state, nil

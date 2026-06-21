@@ -215,7 +215,7 @@ func TestReadStageState_LegacyFormatMigratedOnDisk(t *testing.T) {
 }
 
 // TestReadStageState_NewFormatUnchanged verifies that readStageState does not
-// modify a state file that is already in the Phase 2 discriminated union format.
+// modify a state file that is already in the canonical (Phase 3) format.
 func TestReadStageState_NewFormatUnchanged(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
@@ -224,9 +224,10 @@ func TestReadStageState_NewFormatUnchanged(t *testing.T) {
 	const addr = "192.168.1.42"
 	const port = "4420"
 
-	// Write a Phase 2 state file.
+	// Write a canonical Phase 3 state file (ProtocolType + AccessType set).
 	newState := &nodeStageState{
 		ProtocolType: ProtocolNVMeoFTCP,
+		AccessType:   AccessTypeFilesystem,
 		NVMeoF: &NVMeoFStageState{
 			SubsysNQN: nqn,
 			Address:   addr,

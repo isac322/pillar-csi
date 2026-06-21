@@ -105,6 +105,7 @@ type mockMounter struct {
 	formatAndMountCalls []formatAndMountCall
 	mountCalls          []mountCall
 	unmountCalls        []string
+	isMountedCalls      []string
 }
 
 type formatAndMountCall struct {
@@ -149,6 +150,7 @@ func (m *mockMounter) Unmount(target string) error {
 }
 
 func (m *mockMounter) IsMounted(target string) (bool, error) {
+	m.isMountedCalls = append(m.isMountedCalls, target)
 	if m.isMountedErr != nil {
 		return false, m.isMountedErr
 	}
@@ -690,6 +692,58 @@ func TestNodeUnstageVolume_RoundTrip(t *testing.T) {
 	}
 	if state != nil {
 		t.Error("stage state still present after NodeUnstageVolume")
+	}
+}
+
+// TestNodeUnstageVolume_FilesystemMode_DoesNotProbeBlockSentinel guards the
+// AccessType-driven single-path dispatch: when state.AccessType is
+// Filesystem, the unmount probe must touch ONLY stagingPath and never
+// blockStagingDevicePath(stagingPath) (which lives inside the Filesystem
+// mount and can return EIO during post-ControllerExpand NVMe namespace
+// re-identify).  A regression that re-introduces the dual-probe would
+// surface that EIO as a gRPC Internal and trap kubelet in infinite
+// UnmountDevice retries.
+func TestNodeUnstageVolume_FilesystemMode_DoesNotProbeBlockSentinel(t *testing.T) {
+	t.Parallel()
+
+	env := newNodeTestEnv(t)
+	stagingPath := t.TempDir()
+	const (
+		volumeID = "tank/pvc-fs-unstage"
+		nqn      = "nqn.2026-01.com.bhyoo.pillar-csi:tank.pvc-fs-unstage"
+	)
+
+	_, err := env.srv.NodeStageVolume(context.Background(), &csi.NodeStageVolumeRequest{
+		VolumeId:          volumeID,
+		StagingTargetPath: stagingPath,
+		VolumeCapability:  mountCap("ext4"),
+		VolumeContext:     mountVolumeContext(nqn, testStorageAddr),
+	})
+	if err != nil {
+		t.Fatalf("NodeStageVolume: %v", err)
+	}
+
+	// Reset the probe log so we only count NodeUnstageVolume's probes.
+	env.mounter.isMountedCalls = nil
+
+	_, err = env.srv.NodeUnstageVolume(context.Background(), &csi.NodeUnstageVolumeRequest{
+		VolumeId:          volumeID,
+		StagingTargetPath: stagingPath,
+	})
+	if err != nil {
+		t.Fatalf("NodeUnstageVolume: %v", err)
+	}
+
+	blockSentinel := blockStagingDevicePath(stagingPath)
+	for _, probed := range env.mounter.isMountedCalls {
+		if probed == blockSentinel {
+			t.Errorf("NodeUnstageVolume probed block sentinel %q in Filesystem mode; calls=%v",
+				blockSentinel, env.mounter.isMountedCalls)
+		}
+	}
+	if len(env.mounter.isMountedCalls) != 1 || env.mounter.isMountedCalls[0] != stagingPath {
+		t.Errorf("expected exactly one IsMounted probe on %q; calls=%v",
+			stagingPath, env.mounter.isMountedCalls)
 	}
 }
 
@@ -1493,7 +1547,9 @@ func TestStageStateFromAttachResult_NVMeoF(t *testing.T) {
 		},
 	}
 
-	s := stageStateFromAttachResult(ProtocolNVMeoFTCP, "nqn.test:vol", testStorageAddr, "4420", result)
+	s := stageStateFromAttachResult(
+		ProtocolNVMeoFTCP, AccessTypeFilesystem,
+		"nqn.test:vol", testStorageAddr, "4420", result)
 	if s.ProtocolType != ProtocolNVMeoFTCP {
 		t.Errorf("ProtocolType = %q, want %q", s.ProtocolType, ProtocolNVMeoFTCP)
 	}
@@ -1517,7 +1573,7 @@ func TestStageStateFromAttachResult_NVMeoF(t *testing.T) {
 func TestStageStateFromAttachResult_UnknownProtocol(t *testing.T) {
 	t.Parallel()
 
-	s := stageStateFromAttachResult("fibrechannel", "target:fc1", "", "", nil)
+	s := stageStateFromAttachResult("fibrechannel", AccessTypeFilesystem, "target:fc1", "", "", nil)
 	if s.ProtocolType != "fibrechannel" {
 		t.Errorf("ProtocolType = %q, want %q", s.ProtocolType, "fibrechannel")
 	}

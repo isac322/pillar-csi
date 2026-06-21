@@ -22,11 +22,14 @@ jobs:
   external-e2e:
     name: SIG-Storage External Storage e2e
     runs-on: ubuntu-latest
-    # The default skip set keeps the active spec count to roughly 60 (no
-    # pod-mount lifecycle tests).  30 minutes is enough headroom to absorb
-    # one or two retries while preventing a stuck spec from holding the
-    # PR signal back indefinitely.
-    timeout-minutes: 30
+    # The pod-mount lifecycle specs each carry a 5-minute pod-running
+    # deadline, and v1.36+ added a same-node expand-and-recreate scenario
+    # that on a clean run takes ~18 minutes total.  45 minutes gives the
+    # bootstrap (~4 min), the suite (~20 min on a slow runner), and the
+    # post-failure diagnostic dump enough room before a stuck spec or a
+    # flaky kubelet retry triggers the GitHub timeout (which cancels the
+    # job before the dump step runs).
+    timeout-minutes: 45
     env:
       KIND_VERSION: "v0.32.0"
       KIND_CLUSTER: "pillar-csi-ext-e2e"

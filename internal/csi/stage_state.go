@@ -33,6 +33,20 @@ const (
 	ProtocolSMB       = "smb"
 )
 
+// CSI access-type string constants persisted in nodeStageState.AccessType so
+// that NodeUnstageVolume can pick the correct mount/bind target without a
+// VolumeCapability (which the CO does not send on the unstage RPC).
+const (
+	// AccessTypeFilesystem corresponds to VolumeCapability_Mount: NodeStageVolume
+	// formats and mounts the device at stagingTargetPath itself.
+	AccessTypeFilesystem = "filesystem"
+
+	// AccessTypeBlock corresponds to VolumeCapability_Block: NodeStageVolume
+	// bind-mounts the raw device onto a regular file inside stagingTargetPath
+	// (see blockStagingDevicePath).
+	AccessTypeBlock = "block"
+)
+
 // ─────────────────────────────────────────────────────────────────────────────
 // nodeStageState — discriminated union (RFC Section 5.5.1)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -54,6 +68,14 @@ type nodeStageState struct {
 	// ProtocolType identifies which typed sub-struct is populated.
 	// Known values: "nvmeof-tcp", "iscsi", "nfs", "smb".
 	ProtocolType string `json:"protocol_type"`
+
+	// AccessType records whether NodeStageVolume staged the volume in
+	// Filesystem or Block mode.  NodeUnstageVolume relies on this to pick
+	// the matching unmount target without re-receiving the original
+	// VolumeCapability.  Legacy state files written before this field
+	// existed deserialize to the empty string, which readStageState
+	// migrates to AccessTypeFilesystem (the only mode shipped historically).
+	AccessType string `json:"access_type,omitempty"`
 
 	// NVMeoF holds NVMe-oF TCP teardown state.  Non-nil when ProtocolType == "nvmeof-tcp".
 	NVMeoF *NVMeoFStageState `json:"nvmeof,omitempty"`
@@ -161,6 +183,10 @@ func isLegacyFormat(raw *legacyNodeStageState) bool {
 func migrateFromLegacy(raw *legacyNodeStageState) *nodeStageState {
 	return &nodeStageState{
 		ProtocolType: ProtocolNVMeoFTCP,
+		// Phase 1 only ever staged Filesystem-mode volumes (Block-mode bind
+		// landed in Phase 3 alongside this field), so existing on-disk state
+		// is unambiguously filesystem and gets the matching AccessType.
+		AccessType: AccessTypeFilesystem,
 		NVMeoF: &NVMeoFStageState{
 			SubsysNQN: raw.SubsysNQN,
 			// Address and Port are unavailable from Phase 1 files; Detach only
@@ -225,10 +251,10 @@ func (s *nodeStageState) ToProtocolState() (ProtocolState, error) {
 //   - Other protocols: only ProtocolType is set; typed sub-structs are populated
 //     when those handlers are implemented.
 func stageStateFromAttachResult(
-	protocolType, targetID, address, port string,
+	protocolType, accessType, targetID, address, port string,
 	attachResult *AttachResult,
 ) *nodeStageState {
-	s := &nodeStageState{ProtocolType: protocolType}
+	s := &nodeStageState{ProtocolType: protocolType, AccessType: accessType}
 
 	// NVMe-oF TCP: prefer state from AttachResult if it carries a concrete
 	// NVMeoFProtocolState; fall back to VolumeContext fields for the legacy path.
