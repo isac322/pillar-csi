@@ -132,6 +132,21 @@ spec:
             - name: pods-mount-dir
               mountPath: /var/lib/kubelet/pods
               mountPropagation: Bidirectional
+            # kubelet-managed CSI state directory.  For block-mode volumes,
+            # kubelet places staging/publish target paths at
+            # /var/lib/kubelet/plugins/kubernetes.io/csi/volumeDevices/{staging,publish}/<pvName>/[<podUID>],
+            # and expects the plugin's bind-mount of /dev/nvmeXnY onto those
+            # regular-file targets to be visible from the host (kubelet does
+            # filepath.EvalSymlinks on the publish path before mapping the
+            # device into the pod).  Without Bidirectional propagation the
+            # bind happens only inside the node container's mount namespace
+            # and kubelet's lstat returns ENOENT, failing every block-volume
+            # pod start with FailedMapVolume.  Filesystem-mode publish paths
+            # live under /var/lib/kubelet/pods and are already covered by
+            # the pods-mount-dir mount above.
+            - name: kubelet-csi-dir
+              mountPath: /var/lib/kubelet/plugins/kubernetes.io/csi
+              mountPropagation: Bidirectional
             # /dev — required for block device operations (NVMe-oF, iSCSI target discovery).
             - name: dev
               mountPath: /dev
@@ -219,6 +234,15 @@ spec:
           hostPath:
             path: /var/lib/kubelet/pods
             type: Directory
+        # kubelet-csi-dir: kubelet-managed CSI state tree for block-mode
+        # staging/publish target paths.  DirectoryOrCreate because on a
+        # fresh node kubelet creates the subtree lazily on first CSI
+        # block-mode volume.  See the node container's volumeMount block
+        # for the propagation rationale.
+        - name: kubelet-csi-dir
+          hostPath:
+            path: /var/lib/kubelet/plugins/kubernetes.io/csi
+            type: DirectoryOrCreate
         # dev: host /dev for block device access during volume attach/detach.
         - name: dev
           hostPath:
