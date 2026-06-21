@@ -34,6 +34,15 @@ spec:
       serviceAccountName: {{ include "pillar-csi.controllerServiceAccountName" . }}
       securityContext:
         runAsNonRoot: true
+        # fsGroup is required so the controller (UID 65532) can read the
+        # mTLS Secret files mounted under .Values.mtls.certDir.  Without
+        # it the projected Secret comes up root-owned with mode 0440 and
+        # the binary fails to load tls.crt / tls.key / ca.crt at startup.
+        fsGroup: 65532
+        # OnRootMismatch skips the recursive chgrp on every restart for
+        # volumes whose root already has the right group — keeps controller
+        # restart latency flat as the cert chain grows.
+        fsGroupChangePolicy: OnRootMismatch
         seccompProfile:
           type: RuntimeDefault
       terminationGracePeriodSeconds: 10
@@ -56,7 +65,11 @@ spec:
         - name: mtls-certs
           secret:
             secretName: {{ include "pillar-csi.mtls.controllerSecret" . }}
-            defaultMode: 0o400
+            # 0440 = read for owner (root via projected secret) and group
+            # (fsGroup 65532, the controller's supplementary group).  The
+            # pod-level fsGroup directive chgrps the files into 65532 so
+            # the manager process can read them.
+            defaultMode: 0o440
         {{- end }}
       containers:
         # ── pillar-csi controller (CRD reconciler + CSI Controller service) ───
