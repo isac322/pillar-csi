@@ -38,6 +38,7 @@ package nvmeof
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -427,7 +428,7 @@ func (t *NvmetTarget) ResizeNamespace() error {
 	return nil
 }
 
-// listenWildcard is the kernel-side bind address written to nvmet's
+// listenWildcard is the IPv4 kernel-side bind address written to nvmet's
 // addr_traddr.  It is intentionally distinct from NvmetTarget.BindAddress:
 // the latter is what the initiator connects to (a routable node IP) while
 // addr_traddr is what the kernel binds inside the agent's network namespace.
@@ -438,6 +439,12 @@ func (t *NvmetTarget) ResizeNamespace() error {
 // initiators use the advertised BindAddress unchanged.
 const listenWildcard = "0.0.0.0"
 
+// listenWildcardV6 is the IPv6 counterpart of listenWildcard.  Same rationale
+// as the IPv4 version: bind every interface so the published BindAddress
+// (which may live on the host's external IPv6 interface) does not need to be
+// reachable from inside the pod's network namespace.
+const listenWildcardV6 = "::"
+
 // createPort creates the configfs port directory for this target's bind
 // address and TCP port, then configures the transport attributes.
 //
@@ -446,9 +453,14 @@ const listenWildcard = "0.0.0.0"
 //
 // After the port directory is created the function writes:
 //   - addr_trtype  = "tcp"
-//   - addr_adrfam  = "ipv4"  (TODO: detect IPv6 from BindAddress)
-//   - addr_traddr  = "0.0.0.0"  (kernel-side bind; see listenWildcard)
+//   - addr_adrfam  = "ipv4" or "ipv6" — derived from BindAddress
+//   - addr_traddr  = "0.0.0.0" or "::" — kernel-side bind wildcard matching adrfam
 //   - addr_trsvcid = <Port>
+//
+// BindAddress must be a valid IP literal (IPv4 dotted-quad or IPv6); an
+// unparseable value is rejected up-front so the caller does not silently
+// produce a port that the kernel will reject when the subsystem symlink is
+// later created.
 //
 // The operation is idempotent: repeated calls with the same parameters
 // overwrite the pseudo-files with the same values.
@@ -456,6 +468,14 @@ func (t *NvmetTarget) createPort() (uint32, error) {
 	port := t.Port
 	if port == 0 {
 		port = DefaultPort
+	}
+	ip := net.ParseIP(t.BindAddress)
+	if ip == nil {
+		return 0, fmt.Errorf("createPort: invalid BindAddress %q: not an IP literal", t.BindAddress)
+	}
+	adrfam, wildcard := "ipv4", listenWildcard
+	if ip.To4() == nil {
+		adrfam, wildcard = "ipv6", listenWildcardV6
 	}
 	portID := stablePortID(t.BindAddress, port)
 	pDir := t.portDir(portID)
@@ -467,8 +487,8 @@ func (t *NvmetTarget) createPort() (uint32, error) {
 
 	attrs := map[string]string{
 		"addr_trtype":  "tcp",
-		"addr_adrfam":  "ipv4",
-		"addr_traddr":  listenWildcard,
+		"addr_adrfam":  adrfam,
+		"addr_traddr":  wildcard,
 		"addr_trsvcid": fmt.Sprintf("%d", port),
 	}
 	for attr, val := range attrs {
