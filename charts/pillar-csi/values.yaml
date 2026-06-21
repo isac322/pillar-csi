@@ -221,7 +221,7 @@ node:
       # -- Image used for the modprobe init container (needs kmod/modprobe binary).
       repository: busybox
       # -- Init container image tag.
-      tag: "1.36.1"
+      tag: "1.38.0"
       pullPolicy: ""
     # -- Kernel modules to load. Failures are silently ignored (best-effort).
     # nvme_fabrics must be listed before nvme_tcp (it is a dependency).
@@ -361,7 +361,7 @@ agent:
       # -- Image used for the modprobe init container (needs kmod/modprobe binary).
       repository: busybox
       # -- Init container image tag.
-      tag: "1.36.1"
+      tag: "1.38.0"
       pullPolicy: ""
     # -- Kernel modules to load. Failures are silently ignored (best-effort).
     modules:
