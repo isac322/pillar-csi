@@ -301,9 +301,12 @@ agent:
     pullPolicy: ""
 
   # -- Backend specifications passed as --backend flags to the pillar-agent.
-  # Each entry renders one --backend type=<type>,pool=<pool>[,parent=<parent>] flag.
+  # Each entry renders one --backend flag whose form depends on `type`:
+  #   - zfs-zvol: `pool` is required, `parent` is optional.
+  #   - lvm-lv:   `vg`   is required, `thinpool` is optional (thin pool name
+  #               for lvcreate -T; omit for thick LVs).
   # At least one backend is required; the agent exits with an error if none are
-  # provided.  Currently only type=zfs-zvol is supported.
+  # provided.  Unknown `type` values cause a chart render failure.
   #
   # Example:
   #   backends:
@@ -312,6 +315,9 @@ agent:
   #     - type: zfs-zvol
   #       pool: hot-data
   #       parent: k8s
+  #     - type: lvm-lv
+  #       vg: data-vg
+  #       thinpool: thin-pool-0
   backends: []
 
   # -- Extra command-line arguments appended to the pillar-agent entrypoint.

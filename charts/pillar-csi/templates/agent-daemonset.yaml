@@ -112,7 +112,13 @@ spec:
             - --listen-address=:{{ .Values.agent.grpcPort }}
             {{- range .Values.agent.backends }}
             - --backend
-            - {{ printf "type=%s,pool=%s" .type .pool }}{{ if .parent }}{{ printf ",parent=%s" .parent }}{{ end }}
+            {{- if eq .type "zfs-zvol" }}
+            - {{ printf "type=zfs-zvol,pool=%s" (required "agent.backends[].pool is required when type=zfs-zvol" .pool) }}{{ if .parent }}{{ printf ",parent=%s" .parent }}{{ end }}
+            {{- else if eq .type "lvm-lv" }}
+            - {{ printf "type=lvm-lv,vg=%s" (required "agent.backends[].vg is required when type=lvm-lv" .vg) }}{{ if .thinpool }}{{ printf ",thinpool=%s" .thinpool }}{{ end }}
+            {{- else }}
+            {{- fail (printf "agent.backends[].type %q is not supported; use zfs-zvol or lvm-lv" .type) }}
+            {{- end }}
             {{- end }}
             {{- if .Values.mtls.enabled }}
             - --tls-cert={{ include "pillar-csi.mtls.certDir" . }}/tls.crt

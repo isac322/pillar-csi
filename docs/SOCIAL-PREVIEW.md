@@ -1,0 +1,95 @@
+# Social Preview Image — Design Brief
+
+Source of truth for the **1280×640 PNG** uploaded as the repository's social
+preview at `Settings → General → Social preview` per
+[GitHub's documentation](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/customizing-your-repositorys-social-media-preview).
+
+GitHub serves this image as the OpenGraph card on Twitter/X, LinkedIn, Slack,
+Discord, and any other site that crawls `og:image`. The default image (auto-
+generated avatar collage) is currently in use, which is what triggered this
+brief.
+
+## Hard requirements
+
+| Attribute | Value |
+|---|---|
+| Dimensions | **1280 × 640 px** (2:1) |
+| Format | **PNG** (no JPEG) |
+| Max file size | **< 1 MB** (GitHub limit is 1 MB) |
+| Color depth | 24-bit + alpha |
+| Subject area safe zone | Center 1100 × 540 (avoid edge crop on social cards) |
+
+## Layout
+
+Two columns. Left = mark + product name + one-line value prop. Right = the
+data-plane pipeline diagram. Bottom-right corner = repo URL in muted text.
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                                                              │
+│   ▓▓▓                                ZFS ─┐                  │
+│   ▓▓▓   pillar-csi                        ├─▶  NVMe-oF/TCP  │
+│   ▓▓▓                                LVM ─┘                  │
+│                                                              │
+│   Kubernetes CSI driver for                                  │
+│   self-hosted clusters.                                      │
+│   ZFS + LVM over NVMe-oF/TCP.                                │
+│                                                              │
+│                                                              │
+│                                       github.com/isac322/    │
+│                                            pillar-csi        │
+└──────────────────────────────────────────────────────────────┘
+```
+
+## Color palette
+
+| Role | Hex | Notes |
+|---|---|---|
+| Background | `#0F172A` | slate-900 |
+| Primary text | `#F8FAFC` | slate-50 |
+| Accent (Go cyan) | `#00ADD8` | golang.org cyan, also used on the Go-version badge |
+| Secondary text | `#94A3B8` | slate-400 |
+| Path / network glow | `#06B6D4` | cyan-500 |
+
+## Typography
+
+- Title `pillar-csi` — **Inter** or **Geist** Bold, 96 px, tracking `-0.01em`.
+- Subtitle — Inter Medium, 36 px, line-height 1.25.
+- URL bottom-right — Inter Mono, 22 px, color `#94A3B8`.
+
+## Content rules
+
+- Title is lowercase `pillar-csi` (same as repo name).
+- Subtitle: exactly **"Kubernetes CSI driver for self-hosted clusters · ZFS + LVM over NVMe-oF/TCP"** — no marketing adjectives.
+- The pipeline arrow must read left-to-right (storage → network).
+- No CNCF logo (the project is not CNCF-affiliated).
+- No emoji.
+- No stock photography.
+- No AI-art tropes (swirls, particles, glow, glassmorphism, generative-art aesthetics).
+- No version number (the image outlives release tags).
+
+## Production
+
+The shipped asset lives at `docs/social-preview/pillar-csi-og.png` — a
+1280×640 PNG composed deterministically by `docs/social-preview/compose.py`
+using Pillow (PIL) over Adwaita Mono and Noto Sans Black. After multiple
+AI-generated attempts hit text-rendering artifacts and uncanny pseudo-3D
+panels, the design was finalized as a hand-composed Linear/Biome-style
+minimalist lockup: subtle dot grid, centroid-symmetric layered storage
+column mark in cyan, single wordmark, cyan eyebrow, and two monospace lines
+listing every supported backend and protocol.
+
+To regenerate the asset (after editing `compose.py`):
+
+```bash
+python3 docs/social-preview/compose.py
+# overwrites docs/social-preview/pillar-csi-og.png
+```
+
+To deploy:
+
+1. Open `Settings → General → Social preview`.
+2. Upload `docs/social-preview/pillar-csi-og.png`.
+3. Verify on the rendered repo page **and** by pasting the repo URL into a
+   Slack/Discord channel — the OpenGraph card must show this image, not the
+   default avatar collage.
