@@ -35,10 +35,10 @@
 
 - CRD 타입에는 `iscsi`가 이미 포함되어 있다.
   - `api/v1alpha1/pillarprotocol_types.go`
-  - `api/v1alpha1/pillarbinding_types.go`
+  - `api/v1alpha1/pillarstorageclass_types.go`
   - `api/v1alpha1/annotations.go`
-- `PillarBinding`는 generated `StorageClass`에 `iscsi-port`, `acl-enabled`를 넣을 준비가 되어 있다.
-  - `internal/controller/pillarbinding_controller.go`
+- `PillarStorageClass`는 generated `StorageClass`에 `iscsi-port`, `acl-enabled`를 넣을 준비가 되어 있다.
+  - `internal/controller/pillarstorageclass_controller.go`
 - CSI controller는 protocol type `iscsi`를 인식하고 agent `ExportVolume`용 iSCSI export params를 만들 수 있다.
   - `internal/csi/controller.go`
 - CSI Identity / Controller / Node 서비스라는 "driver 골격"은 이미 이 저장소의 기본 방향에 포함되어 있다.
@@ -89,7 +89,7 @@ NVMe-oF는 성능과 현대성 측면에서 유리하지만, 실제 self-hosted 
 ### 4.1 목표
 
 - `zfs-zvol`, `lvm-lv` 같은 block backend를 `iscsi`로 export할 수 있어야 한다.
-- `PillarProtocol` / `PillarBinding` / PVC override라는 기존 계층 모델을 그대로 유지해야 한다.
+- `PillarProtocol` / `PillarStorageClass` / PVC override라는 기존 계층 모델을 그대로 유지해야 한다.
 - 사용자는 `targetPortal`, `iqn`, `lun` 같은 저수준 iSCSI 세부값을 직접 만들지 않아도 되어야 한다.
 - `Filesystem`과 `Block` volumeMode를 모두 지원해야 한다.
 - core CSI block lifecycle은 NVMe-oF와 동등한 수준으로 제공해야 한다.
@@ -111,7 +111,7 @@ NVMe-oF는 성능과 현대성 측면에서 유리하지만, 실제 self-hosted 
 - iSCSI로 RWX 제공
 - iSCSI 자체만으로 CSI snapshot/clone을 새로 정의
 - 앱 팀이 `targetPortal`/`IQN`/`LUN`을 직접 입력하는 static PV 중심 UX
-- `PillarTarget.spec.external` 또는 기존 외부 SAN/NAS의 pre-existing iSCSI target을
+- `PillarAgent.spec.external` 또는 기존 외부 SAN/NAS의 pre-existing iSCSI target을
   바로 소비하는 static-import UX
 - Windows initiator 지원
 - 첫 출시에서 multipath와 CHAP을 동시에 넣는 것
@@ -177,7 +177,7 @@ NVMe-oF는 성능과 현대성 측면에서 유리하지만, 실제 self-hosted 
 `pillar-csi`의 iSCSI는 아래 원칙을 따라야 한다.
 
 - 저수준 iSCSI 연결 정보는 사용자 입력이 아니라 controller가 생성/관리한다.
-- 프로토콜 선택은 `PillarProtocol`, class-level 세부정책은 `PillarBinding`, volume-level 튜닝은 PVC override로 제한한다.
+- 프로토콜 선택은 `PillarProtocol`, class-level 세부정책은 `PillarStorageClass`, volume-level 튜닝은 PVC override로 제한한다.
 - CHAP/secret은 Kubernetes 표준 CSI secret path를 사용한다.
 - snapshots/clones는 "iSCSI 전용 기능"이 아니라 "block backend용 pillar-csi 공통 기능"으로 다룬다.
 - 추론:
@@ -194,14 +194,14 @@ NVMe-oF는 성능과 현대성 측면에서 유리하지만, 실제 self-hosted 
 
 클러스터 관리자는 기존과 동일하게 4개 리소스 조합으로 iSCSI를 사용한다.
 
-1. `PillarTarget`
+1. `PillarAgent`
    - MVP에서는 `nodeRef` 기반 storage node를 정의
    - `spec.external` 기반 외부 agent는 제품 전체 로드맵의 후속 단계로 둔다
-2. `PillarPool`
+2. `PillarStore`
    - `zfs-zvol` 또는 `lvm-lv` pool을 정의
 3. `PillarProtocol`
    - `type: iscsi`와 transport/security/timer 기본값을 정의
-4. `PillarBinding`
+4. `PillarStorageClass`
    - pool + protocol을 결합하고 StorageClass를 생성
 
 앱 팀은 생성된 StorageClass만 사용해 PVC를 만든다.
@@ -245,11 +245,11 @@ spec:
 
 ```yaml
 apiVersion: pillar-csi.bhyoo.com/v1alpha1
-kind: PillarBinding
+kind: PillarStorageClass
 metadata:
   name: fast-iscsi
 spec:
-  poolRef: hot-lvm
+  storeRef: hot-lvm
   protocolRef: iscsi-default
   storageClass:
     name: fast-iscsi
@@ -302,7 +302,7 @@ spec:
 |------|------|------|---------------------|
 | 설치/배포 | Helm values / node DaemonSet | 노드 패키징과 런타임 준비 | `open-iscsi` 번들, `iscsid` 실행 방식, initiator IQN 소스, multipath enable 여부 |
 | 프로토콜 기본값 | `PillarProtocol.spec.iscsi` | 클러스터 공통 transport/security/timer 정책 | `port`, `acl`, `loginTimeout`, `replacementTimeout`, `initialLoginRetryMax`, `noopOutInterval`, `noopOutTimeout` |
-| 클래스별 조정 | `PillarBinding.spec.overrides.protocol.iscsi` | 특정 StorageClass에만 적용할 차등 정책 | 상위 타이머 필드 override, 후속 단계의 CHAP secret ref |
+| 클래스별 조정 | `PillarStorageClass.spec.overrides.protocol.iscsi` | 특정 StorageClass에만 적용할 차등 정책 | 상위 타이머 필드 override, 후속 단계의 CHAP secret ref |
 | 표준 CSI 클래스 파라미터 | generated `StorageClass.parameters` | sidecar/kubelet이 해석하는 표준 키 | `csi.storage.k8s.io/fstype`, 향후 `csi.storage.k8s.io/node-stage-secret-*` |
 | 볼륨 단위 튜닝 | PVC annotation | 안전한 미세 조정 | timeout override, `fsType`, `mkfsOptions` |
 | 런타임 연결 정보 | PV `volumeAttributes` / CSI `VolumeContext` | attach/mount에 필요한 실제 export 정보 | `protocol-type=iscsi`, `target_id=<IQN>`, `address`, `port`, `volume_ref=<LUN>` |
@@ -329,9 +329,9 @@ MVP에서 제외할 값:
 - CHAP credential plain text
 - multipath 세션 수/iface별 세부값
 
-### 7.3 `PillarBinding`에 둘 값
+### 7.3 `PillarStorageClass`에 둘 값
 
-`PillarBinding`은 generated `StorageClass`의 제품 표면이다.
+`PillarStorageClass`은 generated `StorageClass`의 제품 표면이다.
 
 MVP에서는 다음을 둘 수 있다.
 
@@ -376,13 +376,13 @@ MVP에서 제품 문서와 테스트는 아래 이름을 기준으로 맞춘다.
 |----------|------|-------------------------------|----------------------|
 | `port` | `PillarProtocol.spec.iscsi.port` | `pillar-csi.bhyoo.com/iscsi-port` | agent export bind port |
 | `acl` | `PillarProtocol.spec.iscsi.acl` | `pillar-csi.bhyoo.com/acl-enabled` | ControllerPublish/Unpublish에서 ACL on/off |
-| `loginTimeout` | `PillarProtocol` / `PillarBinding` / PVC override | `pillar-csi.bhyoo.com/iscsi-login-timeout` | `iscsiadm` login timeout |
-| `replacementTimeout` | `PillarProtocol` / `PillarBinding` / PVC override | `pillar-csi.bhyoo.com/iscsi-replacement-timeout` | session recovery timeout |
-| `initialLoginRetryMax` | `PillarProtocol` / `PillarBinding` / PVC override | `pillar-csi.bhyoo.com/iscsi-initial-login-retry-max` | 초기 login 재시도 상한 |
-| `noopOutInterval` | `PillarProtocol` / `PillarBinding` / PVC override | `pillar-csi.bhyoo.com/iscsi-noop-out-interval` | connection keepalive ping 간격 |
-| `noopOutTimeout` | `PillarProtocol` / `PillarBinding` / PVC override | `pillar-csi.bhyoo.com/iscsi-noop-out-timeout` | ping 응답 대기 시간 |
-| `fsType` | `PillarProtocol` / `PillarBinding` / PVC override | `csi.storage.k8s.io/fstype` | `mkfs` / mount |
-| `mkfsOptions` | `PillarProtocol` / `PillarBinding` / PVC override | `pillar-csi.bhyoo.com/mkfs-options` | `mkfs` 인자 |
+| `loginTimeout` | `PillarProtocol` / `PillarStorageClass` / PVC override | `pillar-csi.bhyoo.com/iscsi-login-timeout` | `iscsiadm` login timeout |
+| `replacementTimeout` | `PillarProtocol` / `PillarStorageClass` / PVC override | `pillar-csi.bhyoo.com/iscsi-replacement-timeout` | session recovery timeout |
+| `initialLoginRetryMax` | `PillarProtocol` / `PillarStorageClass` / PVC override | `pillar-csi.bhyoo.com/iscsi-initial-login-retry-max` | 초기 login 재시도 상한 |
+| `noopOutInterval` | `PillarProtocol` / `PillarStorageClass` / PVC override | `pillar-csi.bhyoo.com/iscsi-noop-out-interval` | connection keepalive ping 간격 |
+| `noopOutTimeout` | `PillarProtocol` / `PillarStorageClass` / PVC override | `pillar-csi.bhyoo.com/iscsi-noop-out-timeout` | ping 응답 대기 시간 |
+| `fsType` | `PillarProtocol` / `PillarStorageClass` / PVC override | `csi.storage.k8s.io/fstype` | `mkfs` / mount |
+| `mkfsOptions` | `PillarProtocol` / `PillarStorageClass` / PVC override | `pillar-csi.bhyoo.com/mkfs-options` | `mkfs` 인자 |
 
 주의:
 
@@ -407,7 +407,7 @@ MVP는 다음 모델로 고정한다.
 
 - volume마다 iSCSI target 하나 생성
 - 각 target은 LUN 0 하나만 export
-- portal은 `PillarTarget.status.resolvedAddress` 하나만 사용
+- portal은 `PillarAgent.status.resolvedAddress` 하나만 사용
 - target IQN은 controller/agent가 자동 생성
 - 이 export 모델은 `zfs-zvol`과 `lvm-lv` 두 supported block backend에 동일하게 적용한다.
 
@@ -573,7 +573,7 @@ MVP 요구사항:
 
 | 기능 | MVP | 메모 |
 |------|:---:|------|
-| Dynamic provisioning | O | `PillarBinding`가 생성한 StorageClass 사용 |
+| Dynamic provisioning | O | `PillarStorageClass`가 생성한 StorageClass 사용 |
 | Delete / reclaim policy | O | 기존 block backend와 동일 |
 | ControllerPublish / Unpublish | O | node initiator IQN 기반 ACL |
 | NodeStage / Unstage | O | discovery/login/logout |
@@ -627,7 +627,7 @@ iSCSI를 추가한다고 해서 첫 출시에서 CSI ecosystem의 모든 optiona
 
 ### Phase C: multipath / multi-portal
 
-- `PillarTarget` 또는 protocol status에서 복수 portal advertise
+- `PillarAgent` 또는 protocol status에서 복수 portal advertise
 - `dm-multipath` 운영 가이드
 - disconnect reference counting
 
@@ -704,9 +704,9 @@ iSCSI를 추가한다고 해서 첫 출시에서 CSI ecosystem의 모든 optiona
 
 - 현재 저장소
   - `api/v1alpha1/pillarprotocol_types.go`
-  - `api/v1alpha1/pillarbinding_types.go`
+  - `api/v1alpha1/pillarstorageclass_types.go`
   - `api/v1alpha1/annotations.go`
-  - `internal/controller/pillarbinding_controller.go`
+  - `internal/controller/pillarstorageclass_controller.go`
   - `internal/csi/controller.go`
   - `internal/csi/node.go`
 - Kubernetes CSI external-provisioner docs

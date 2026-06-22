@@ -309,7 +309,7 @@ type controllerTestEnv struct {
 }
 
 // newControllerTestEnv builds a ControllerServer backed by:
-//   - a controller-runtime fake k8s client seeded with one PillarTarget
+//   - a controller-runtime fake k8s client seeded with one PillarAgent
 //     that reports ResolvedAddress = "192.168.1.10:9500"
 //   - a mockAgentClient injected via the AgentDialer
 func newControllerTestEnv(t *testing.T) *controllerTestEnv {
@@ -327,18 +327,18 @@ func newControllerTestEnv(t *testing.T) *controllerTestEnv {
 		t.Fatalf("storagev1.AddToScheme: %v", err)
 	}
 
-	// Seed the fake client with a ready PillarTarget.
-	target := &v1alpha1.PillarTarget{
+	// Seed the fake client with a ready PillarAgent.
+	target := &v1alpha1.PillarAgent{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "storage-node-1",
 		},
-		Spec: v1alpha1.PillarTargetSpec{
+		Spec: v1alpha1.PillarAgentSpec{
 			External: &v1alpha1.ExternalSpec{
 				Address: "192.168.1.10",
 				Port:    9500,
 			},
 		},
-		Status: v1alpha1.PillarTargetStatus{
+		Status: v1alpha1.PillarAgentStatus{
 			ResolvedAddress: "192.168.1.10:9500",
 		},
 	}
@@ -346,7 +346,7 @@ func newControllerTestEnv(t *testing.T) *controllerTestEnv {
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(target).
-		WithStatusSubresource(&v1alpha1.PillarVolume{}, &v1alpha1.PillarTarget{}).
+		WithStatusSubresource(&v1alpha1.PillarVolumeState{}, &v1alpha1.PillarAgent{}).
 		Build()
 
 	agent := &mockAgentClient{}
@@ -364,18 +364,18 @@ func newControllerTestEnv(t *testing.T) *controllerTestEnv {
 	}
 }
 
-// seedPillarVolume creates a stub PillarVolume CRD with the given name so
+// seedPillarVolumeState creates a stub PillarVolumeState CRD with the given name so
 // that lookups in code paths that gate on volume existence (e.g.
 // ValidateVolumeCapabilities, ControllerPublishVolume) see the object.  The
 // stub carries only the metadata Name; tests that need richer status fields
 // should patch the object directly after seeding.
-func seedPillarVolume(t *testing.T, env *controllerTestEnv, name string) {
+func seedPillarVolumeState(t *testing.T, env *controllerTestEnv, name string) {
 	t.Helper()
-	pv := &v1alpha1.PillarVolume{
+	pv := &v1alpha1.PillarVolumeState{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
 	}
 	if err := env.srv.k8sClient.Create(context.Background(), pv); err != nil {
-		t.Fatalf("seed PillarVolume %q: %v", name, err)
+		t.Fatalf("seed PillarVolumeState %q: %v", name, err)
 	}
 }
 
@@ -397,10 +397,10 @@ func baseCreateVolumeRequest() *csi.CreateVolumeRequest {
 			RequiredBytes: 1073741824, // 1 GiB
 		},
 		Parameters: map[string]string{
-			"pillar-csi.bhyoo.com/target":        "storage-node-1",
+			"pillar-csi.bhyoo.com/agent":         "storage-node-1",
 			"pillar-csi.bhyoo.com/backend-type":  "zfs-zvol",
 			"pillar-csi.bhyoo.com/protocol-type": "nvmeof-tcp",
-			"pillar-csi.bhyoo.com/pool":          "tank",
+			"pillar-csi.bhyoo.com/store":         "tank",
 		},
 	}
 }
@@ -716,7 +716,7 @@ func TestCreateVolume_SkipsBackendOnCreatePartialRetry(t *testing.T) {
 }
 
 // TestCreateVolume_CreatePartialRetry_DevicePathPreserved verifies that the
-// device path stored in the PillarVolume CRD during a CreatePartial transition
+// device path stored in the PillarVolumeState CRD during a CreatePartial transition
 // is the path passed to agent.ExportVolume on a retry, not a zero value.
 //
 // This ensures no silent data loss: the retry exports the same physical block
@@ -742,18 +742,18 @@ func TestCreateVolume_CreatePartialRetry_DevicePathPreserved(t *testing.T) {
 	//nolint:errcheck // first attempt is expected to fail; error is intentionally discarded
 	_, _ = env.srv.CreateVolume(ctx, baseCreateVolumeRequest())
 
-	// Verify PillarVolume CRD was created with the device path.
-	pv := &v1alpha1.PillarVolume{}
+	// Verify PillarVolumeState CRD was created with the device path.
+	pv := &v1alpha1.PillarVolumeState{}
 	if err := env.srv.k8sClient.Get(ctx,
 		ctrlKey("pvc-abc123"), pv); err != nil {
-		t.Fatalf("get PillarVolume after first attempt: %v", err)
+		t.Fatalf("get PillarVolumeState after first attempt: %v", err)
 	}
 	if pv.Status.BackendDevicePath != wantDevicePath {
-		t.Errorf("PillarVolume.Status.BackendDevicePath = %q, want %q",
+		t.Errorf("PillarVolumeState.Status.BackendDevicePath = %q, want %q",
 			pv.Status.BackendDevicePath, wantDevicePath)
 	}
-	if pv.Status.Phase != v1alpha1.PillarVolumePhaseCreatePartial {
-		t.Errorf("PillarVolume.Status.Phase = %q, want CreatePartial", pv.Status.Phase)
+	if pv.Status.Phase != v1alpha1.PillarVolumeStatePhaseCreatePartial {
+		t.Errorf("PillarVolumeState.Status.Phase = %q, want CreatePartial", pv.Status.Phase)
 	}
 
 	// Second attempt: capture what device path ExportVolume receives.
@@ -784,7 +784,7 @@ func TestCreateVolume_CreatePartialRetry_DevicePathPreserved(t *testing.T) {
 
 	// BackendDevicePath should be cleared from the CRD now that it's Ready.
 	if err := env.srv.k8sClient.Get(ctx, ctrlKey("pvc-abc123"), pv); err != nil {
-		t.Fatalf("get PillarVolume after retry: %v", err)
+		t.Fatalf("get PillarVolumeState after retry: %v", err)
 	}
 	if pv.Status.BackendDevicePath != "" {
 		t.Errorf("BackendDevicePath not cleared after reaching Ready: %q",
@@ -864,12 +864,12 @@ func TestCreateVolume_AgentUnavailable(t *testing.T) {
 		t.Fatalf("AddToScheme: %v", err)
 	}
 
-	target := &v1alpha1.PillarTarget{
+	target := &v1alpha1.PillarAgent{
 		ObjectMeta: metav1.ObjectMeta{Name: "storage-node-1"},
-		Spec: v1alpha1.PillarTargetSpec{
+		Spec: v1alpha1.PillarAgentSpec{
 			External: &v1alpha1.ExternalSpec{Address: "192.168.1.10", Port: 9500},
 		},
-		Status: v1alpha1.PillarTargetStatus{
+		Status: v1alpha1.PillarAgentStatus{
 			ResolvedAddress: "192.168.1.10:9500",
 		},
 	}
@@ -877,7 +877,7 @@ func TestCreateVolume_AgentUnavailable(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(target).
-		WithStatusSubresource(&v1alpha1.PillarVolume{}).
+		WithStatusSubresource(&v1alpha1.PillarVolumeState{}).
 		Build()
 
 	dialErr := status.Error(codes.Unavailable, "connection refused")
@@ -917,7 +917,7 @@ func (c *devicePathCapturingClient) ExportVolume(
 }
 
 // ctrlKey returns a NamespacedName with an empty namespace (cluster-scoped
-// resources like PillarVolume and PillarTarget use no namespace).
+// resources like PillarVolumeState and PillarAgent use no namespace).
 func ctrlKey(name string) types.NamespacedName {
 	return types.NamespacedName{Name: name}
 }
@@ -930,8 +930,8 @@ func ctrlKey(name string) types.NamespacedName {
 func baseGetCapacityRequest() *csi.GetCapacityRequest {
 	return &csi.GetCapacityRequest{
 		Parameters: map[string]string{
-			"pillar-csi.bhyoo.com/target":       "storage-node-1",
-			"pillar-csi.bhyoo.com/pool":         "tank",
+			"pillar-csi.bhyoo.com/agent":        "storage-node-1",
+			"pillar-csi.bhyoo.com/store":        "tank",
 			"pillar-csi.bhyoo.com/backend-type": "zfs-zvol",
 		},
 	}
@@ -976,7 +976,7 @@ func TestGetCapacity_MissingTargetParam(t *testing.T) {
 
 	req := &csi.GetCapacityRequest{
 		Parameters: map[string]string{
-			"pillar-csi.bhyoo.com/pool":         "tank",
+			"pillar-csi.bhyoo.com/store":        "tank",
 			"pillar-csi.bhyoo.com/backend-type": "zfs-zvol",
 		},
 	}
@@ -999,7 +999,7 @@ func TestGetCapacity_MissingPoolParam(t *testing.T) {
 
 	req := &csi.GetCapacityRequest{
 		Parameters: map[string]string{
-			"pillar-csi.bhyoo.com/target":       "storage-node-1",
+			"pillar-csi.bhyoo.com/agent":        "storage-node-1",
 			"pillar-csi.bhyoo.com/backend-type": "zfs-zvol",
 		},
 	}
@@ -1022,8 +1022,8 @@ func TestGetCapacity_MissingBackendTypeParam(t *testing.T) {
 
 	req := &csi.GetCapacityRequest{
 		Parameters: map[string]string{
-			"pillar-csi.bhyoo.com/target": "storage-node-1",
-			"pillar-csi.bhyoo.com/pool":   "tank",
+			"pillar-csi.bhyoo.com/agent": "storage-node-1",
+			"pillar-csi.bhyoo.com/store": "tank",
 		},
 	}
 
@@ -1037,7 +1037,7 @@ func TestGetCapacity_MissingBackendTypeParam(t *testing.T) {
 }
 
 // TestGetCapacity_TargetNotFound verifies that referencing a non-existent
-// PillarTarget returns codes.NotFound.
+// PillarAgent returns codes.NotFound.
 func TestGetCapacity_TargetNotFound(t *testing.T) {
 	t.Parallel()
 	env := newControllerTestEnv(t)
@@ -1045,8 +1045,8 @@ func TestGetCapacity_TargetNotFound(t *testing.T) {
 
 	req := &csi.GetCapacityRequest{
 		Parameters: map[string]string{
-			"pillar-csi.bhyoo.com/target":       "nonexistent-target",
-			"pillar-csi.bhyoo.com/pool":         "tank",
+			"pillar-csi.bhyoo.com/agent":        "nonexistent-target",
+			"pillar-csi.bhyoo.com/store":        "tank",
 			"pillar-csi.bhyoo.com/backend-type": "zfs-zvol",
 		},
 	}
@@ -1080,7 +1080,7 @@ func TestGetCapacity_AgentError(t *testing.T) {
 	}
 }
 
-// TestGetCapacity_TargetNoAddress verifies that a PillarTarget with an empty
+// TestGetCapacity_TargetNoAddress verifies that a PillarAgent with an empty
 // ResolvedAddress returns codes.Unavailable.
 func TestGetCapacity_TargetNoAddress(t *testing.T) {
 	t.Parallel()
@@ -1090,13 +1090,13 @@ func TestGetCapacity_TargetNoAddress(t *testing.T) {
 		t.Fatalf("AddToScheme: %v", err)
 	}
 
-	// Create a PillarTarget with no ResolvedAddress.
-	target := &v1alpha1.PillarTarget{
+	// Create a PillarAgent with no ResolvedAddress.
+	target := &v1alpha1.PillarAgent{
 		ObjectMeta: metav1.ObjectMeta{Name: "storage-node-1"},
-		Spec: v1alpha1.PillarTargetSpec{
+		Spec: v1alpha1.PillarAgentSpec{
 			External: &v1alpha1.ExternalSpec{Address: "192.168.1.10", Port: 9500},
 		},
-		Status: v1alpha1.PillarTargetStatus{
+		Status: v1alpha1.PillarAgentStatus{
 			ResolvedAddress: "", // empty — agent not ready
 		},
 	}
@@ -1104,7 +1104,7 @@ func TestGetCapacity_TargetNoAddress(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(target).
-		WithStatusSubresource(&v1alpha1.PillarTarget{}).
+		WithStatusSubresource(&v1alpha1.PillarAgent{}).
 		Build()
 
 	srv := NewControllerServerWithDialer(fakeClient, "pillar-csi.bhyoo.com",
@@ -1147,12 +1147,12 @@ func newControllerTestEnvWithPVC(
 		t.Fatalf("corev1.AddToScheme: %v", err)
 	}
 
-	target := &v1alpha1.PillarTarget{
+	target := &v1alpha1.PillarAgent{
 		ObjectMeta: metav1.ObjectMeta{Name: "storage-node-1"},
-		Spec: v1alpha1.PillarTargetSpec{
+		Spec: v1alpha1.PillarAgentSpec{
 			External: &v1alpha1.ExternalSpec{Address: "192.168.1.10", Port: 9500},
 		},
-		Status: v1alpha1.PillarTargetStatus{
+		Status: v1alpha1.PillarAgentStatus{
 			ResolvedAddress: "192.168.1.10:9500",
 		},
 	}
@@ -1168,7 +1168,7 @@ func newControllerTestEnvWithPVC(
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(target, pvc).
-		WithStatusSubresource(&v1alpha1.PillarVolume{}, &v1alpha1.PillarTarget{}).
+		WithStatusSubresource(&v1alpha1.PillarVolumeState{}, &v1alpha1.PillarAgent{}).
 		Build()
 
 	agent := &mockAgentClient{}
@@ -1404,7 +1404,7 @@ func TestBuildBackendParams_LVM_AbsentMode(t *testing.T) {
 	}
 }
 
-// TestMergeParamsFromCRDs_LVM_PoolDefault verifies that the PillarPool-level
+// TestMergeParamsFromCRDs_LVM_PoolDefault verifies that the PillarStore-level
 // LVM provisioning mode (Layer 1) is propagated into the merged parameter map
 // as paramLVMMode when no binding-level override is present.
 func TestMergeParamsFromCRDs_LVM_PoolDefault(t *testing.T) {
@@ -1418,10 +1418,10 @@ func TestMergeParamsFromCRDs_LVM_PoolDefault(t *testing.T) {
 		t.Fatalf("AddToScheme corev1: %v", err)
 	}
 
-	pool := &v1alpha1.PillarPool{
+	pool := &v1alpha1.PillarStore{
 		ObjectMeta: metav1.ObjectMeta{Name: "lvm-pool"},
-		Spec: v1alpha1.PillarPoolSpec{
-			TargetRef: "storage-node-1",
+		Spec: v1alpha1.PillarStoreSpec{
+			AgentRef: "storage-node-1",
 			Backend: v1alpha1.BackendSpec{
 				Type: v1alpha1.BackendTypeLVMLV,
 				LVM: &v1alpha1.LVMBackendConfig{
@@ -1432,10 +1432,10 @@ func TestMergeParamsFromCRDs_LVM_PoolDefault(t *testing.T) {
 			},
 		},
 	}
-	binding := &v1alpha1.PillarBinding{
+	binding := &v1alpha1.PillarStorageClass{
 		ObjectMeta: metav1.ObjectMeta{Name: "lvm-binding"},
-		Spec: v1alpha1.PillarBindingSpec{
-			PoolRef:     "lvm-pool",
+		Spec: v1alpha1.PillarStorageClassSpec{
+			StoreRef:    "lvm-pool",
 			ProtocolRef: "nvmeof-tcp",
 			// No LVM overrides — pool default should surface.
 		},
@@ -1461,7 +1461,7 @@ func TestMergeParamsFromCRDs_LVM_PoolDefault(t *testing.T) {
 	}
 }
 
-// TestMergeParamsFromCRDs_LVM_BindingOverride verifies that the PillarBinding-
+// TestMergeParamsFromCRDs_LVM_BindingOverride verifies that the PillarStorageClass-
 // level LVM provisioning mode override (Layer 3) wins over the pool-level
 // default (Layer 1).
 func TestMergeParamsFromCRDs_LVM_BindingOverride(t *testing.T) {
@@ -1476,10 +1476,10 @@ func TestMergeParamsFromCRDs_LVM_BindingOverride(t *testing.T) {
 	}
 
 	// Pool default is "linear" …
-	pool := &v1alpha1.PillarPool{
+	pool := &v1alpha1.PillarStore{
 		ObjectMeta: metav1.ObjectMeta{Name: "lvm-pool2"},
-		Spec: v1alpha1.PillarPoolSpec{
-			TargetRef: "storage-node-1",
+		Spec: v1alpha1.PillarStoreSpec{
+			AgentRef: "storage-node-1",
 			Backend: v1alpha1.BackendSpec{
 				Type: v1alpha1.BackendTypeLVMLV,
 				LVM: &v1alpha1.LVMBackendConfig{
@@ -1491,12 +1491,12 @@ func TestMergeParamsFromCRDs_LVM_BindingOverride(t *testing.T) {
 		},
 	}
 	// … but binding overrides to "thin".
-	binding := &v1alpha1.PillarBinding{
+	binding := &v1alpha1.PillarStorageClass{
 		ObjectMeta: metav1.ObjectMeta{Name: "lvm-binding2"},
-		Spec: v1alpha1.PillarBindingSpec{
-			PoolRef:     "lvm-pool2",
+		Spec: v1alpha1.PillarStorageClassSpec{
+			StoreRef:    "lvm-pool2",
 			ProtocolRef: "nvmeof-tcp",
-			Overrides: &v1alpha1.BindingOverrides{
+			Overrides: &v1alpha1.StorageClassOverrides{
 				Backend: &v1alpha1.BackendOverrides{
 					LVM: &v1alpha1.LVMOverrides{
 						ProvisioningMode: v1alpha1.LVMProvisioningModeThin,
@@ -1529,7 +1529,7 @@ func TestMergeParamsFromCRDs_LVM_BindingOverride(t *testing.T) {
 
 // TestMergeParamsFromCRDs_LVM_SCOverridePool verifies that an explicit lvm-mode
 // value already present in the StorageClass parameters (Layer 2) takes priority
-// over the PillarPool-level default (Layer 1).  The StorageClass value must be
+// over the PillarStore-level default (Layer 1).  The StorageClass value must be
 // preserved unchanged after mergeParamsFromCRDs returns.
 func TestMergeParamsFromCRDs_LVM_SCOverridePool(t *testing.T) {
 	t.Parallel()
@@ -1543,10 +1543,10 @@ func TestMergeParamsFromCRDs_LVM_SCOverridePool(t *testing.T) {
 	}
 
 	// Pool wants "thin" provisioning …
-	pool := &v1alpha1.PillarPool{
+	pool := &v1alpha1.PillarStore{
 		ObjectMeta: metav1.ObjectMeta{Name: "lvm-pool-sc"},
-		Spec: v1alpha1.PillarPoolSpec{
-			TargetRef: "storage-node-1",
+		Spec: v1alpha1.PillarStoreSpec{
+			AgentRef: "storage-node-1",
 			Backend: v1alpha1.BackendSpec{
 				Type: v1alpha1.BackendTypeLVMLV,
 				LVM: &v1alpha1.LVMBackendConfig{
@@ -1557,10 +1557,10 @@ func TestMergeParamsFromCRDs_LVM_SCOverridePool(t *testing.T) {
 			},
 		},
 	}
-	binding := &v1alpha1.PillarBinding{
+	binding := &v1alpha1.PillarStorageClass{
 		ObjectMeta: metav1.ObjectMeta{Name: "lvm-binding-sc"},
-		Spec: v1alpha1.PillarBindingSpec{
-			PoolRef:     "lvm-pool-sc",
+		Spec: v1alpha1.PillarStorageClassSpec{
+			StoreRef:    "lvm-pool-sc",
 			ProtocolRef: "nvmeof-tcp",
 			// No LVM overrides — pool default should remain below SC value.
 		},
@@ -1603,10 +1603,10 @@ func TestMergeParamsFromCRDs_LVM_NoModeConfigured(t *testing.T) {
 		t.Fatalf("AddToScheme corev1: %v", err)
 	}
 
-	pool := &v1alpha1.PillarPool{
+	pool := &v1alpha1.PillarStore{
 		ObjectMeta: metav1.ObjectMeta{Name: "lvm-pool3"},
-		Spec: v1alpha1.PillarPoolSpec{
-			TargetRef: "storage-node-1",
+		Spec: v1alpha1.PillarStoreSpec{
+			AgentRef: "storage-node-1",
 			Backend: v1alpha1.BackendSpec{
 				Type: v1alpha1.BackendTypeLVMLV,
 				LVM: &v1alpha1.LVMBackendConfig{
@@ -1616,10 +1616,10 @@ func TestMergeParamsFromCRDs_LVM_NoModeConfigured(t *testing.T) {
 			},
 		},
 	}
-	binding := &v1alpha1.PillarBinding{
+	binding := &v1alpha1.PillarStorageClass{
 		ObjectMeta: metav1.ObjectMeta{Name: "lvm-binding3"},
-		Spec: v1alpha1.PillarBindingSpec{
-			PoolRef:     "lvm-pool3",
+		Spec: v1alpha1.PillarStorageClassSpec{
+			StoreRef:    "lvm-pool3",
 			ProtocolRef: "nvmeof-tcp",
 			// No overrides.
 		},
@@ -1651,7 +1651,7 @@ func TestMergeParamsFromCRDs_LVM_NoModeConfigured(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // newPublishTestEnv builds a ControllerServer wired to a fake k8s client that
-// has a PillarTarget but no CSINode by default.  Callers can seed CSINode
+// has a PillarAgent but no CSINode by default.  Callers can seed CSINode
 // objects as needed for each test case.
 func newPublishTestEnv(t *testing.T, objs ...ctrlclient.Object) *controllerTestEnv {
 	t.Helper()
@@ -1667,9 +1667,9 @@ func newPublishTestEnv(t *testing.T, objs ...ctrlclient.Object) *controllerTestE
 		t.Fatalf("AddToScheme storagev1: %v", err)
 	}
 
-	target := &v1alpha1.PillarTarget{
+	target := &v1alpha1.PillarAgent{
 		ObjectMeta: metav1.ObjectMeta{Name: "storage-node-1"},
-		Status: v1alpha1.PillarTargetStatus{
+		Status: v1alpha1.PillarAgentStatus{
 			ResolvedAddress: "192.168.1.10:9500",
 		},
 	}
@@ -1678,7 +1678,7 @@ func newPublishTestEnv(t *testing.T, objs ...ctrlclient.Object) *controllerTestE
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(allObjs...).
-		WithStatusSubresource(&v1alpha1.PillarTarget{}).
+		WithStatusSubresource(&v1alpha1.PillarAgent{}).
 		Build()
 
 	agent := &mockAgentClient{}
@@ -1864,7 +1864,7 @@ func TestValidateVolumeCapabilities_RejectsRawBlockForFileProtocols(t *testing.T
 			t.Parallel()
 
 			env := newControllerTestEnv(t)
-			seedPillarVolume(t, env, "pvc-abc123")
+			seedPillarVolumeState(t, env, "pvc-abc123")
 			req := &csi.ValidateVolumeCapabilitiesRequest{
 				VolumeId: "storage-node-1/" + tc.protocol + "/zfs-dataset/tank/pvc-abc123",
 				VolumeCapabilities: []*csi.VolumeCapability{
@@ -1903,7 +1903,7 @@ func TestValidateVolumeCapabilities_AllowsFilesystemVolumeModeForFileProtocol(t 
 	t.Parallel()
 
 	env := newControllerTestEnv(t)
-	seedPillarVolume(t, env, "pvc-abc123")
+	seedPillarVolumeState(t, env, "pvc-abc123")
 	req := &csi.ValidateVolumeCapabilitiesRequest{
 		VolumeId: "storage-node-1/nfs/zfs-dataset/tank/pvc-abc123",
 		VolumeCapabilities: []*csi.VolumeCapability{

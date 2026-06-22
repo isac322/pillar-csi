@@ -48,7 +48,7 @@
 
 - API group: `pillar-csi.bhyoo.com`
 - CSI provisioner name: `pillar-csi.bhyoo.com`
-- CRDs (all cluster-scoped): PillarTarget, PillarPool, PillarProtocol, PillarBinding
+- CRDs (all cluster-scoped): PillarAgent, PillarStore, PillarProtocol, PillarStorageClass
 - PRD: `docs/PRD.md`
 
 <!-- ooo:START -->

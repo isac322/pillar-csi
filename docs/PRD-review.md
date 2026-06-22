@@ -96,7 +96,7 @@ v1.12.0 additions relevant to pillar-csi:
 
 ### I3. Storage capacity units inconsistent with Kubernetes conventions
 
-**Location:** Section 2.1 PillarTarget status, PillarPool status
+**Location:** Section 2.1 PillarAgent status, PillarStore status
 
 **Issue:** Status fields use SI decimal units (`712G`, `412G`, `32.7T`, `300G`) which are
 inconsistent with Kubernetes resource.Quantity conventions. Kubernetes uses binary SI
@@ -120,22 +120,22 @@ and can stay as strings.
 **Location:** Section 5, Volume ID 형식
 
 **Issue:** Volume ID is `<target>/<pool>/<volume-name>` where `pool` is described as
-"ZFS pool 이름" (e.g., `hot-data`), NOT the PillarPool CR name (`rock5bp-hot-data`).
+"ZFS pool 이름" (e.g., `hot-data`), NOT the PillarStore CR name (`rock5bp-hot-data`).
 
-If two PillarPools reference the **same ZFS pool** on the same PillarTarget with
+If two PillarStores reference the **same ZFS pool** on the same PillarAgent with
 different `parentDataset` values, both produce Volume IDs with the same prefix
 (`rock5bp/hot-data/...`), making routing from Volume ID alone ambiguous.
 
 Example collision:
 ```
-PillarPool A: targetRef=rock5bp, zfs.pool=hot-data, parentDataset=k8s
-PillarPool B: targetRef=rock5bp, zfs.pool=hot-data, parentDataset=k8s-staging
+PillarStore A: agentRef=rock5bp, zfs.pool=hot-data, parentDataset=k8s
+PillarStore B: agentRef=rock5bp, zfs.pool=hot-data, parentDataset=k8s-staging
 → Both produce: rock5bp/hot-data/<volume-name>
 ```
 
-**Fix:** Either use PillarPool CR name in Volume ID (e.g., `rock5bp/rock5bp-hot-data/pvc-abc123`),
-or explicitly document that multiple PillarPools must not share the same ZFS pool on the
-same PillarTarget.
+**Fix:** Either use PillarStore CR name in Volume ID (e.g., `rock5bp/rock5bp-hot-data/pvc-abc123`),
+or explicitly document that multiple PillarStores must not share the same ZFS pool on the
+same PillarAgent.
 
 ---
 
@@ -225,9 +225,9 @@ The PRD's condition examples omit `observedGeneration`.
 **Issue:** The PRD describes finalizer-based deletion protection but doesn't specify
 the finalizer name strings. Kubernetes finalizer names should follow the convention
 `{group}/{name}`, e.g.:
-- `pillar-csi.bhyoo.com/target-protection`
-- `pillar-csi.bhyoo.com/pool-protection`
-- `pillar-csi.bhyoo.com/binding-protection`
+- `pillar-csi.bhyoo.com/agent-protection`
+- `pillar-csi.bhyoo.com/store-protection`
+- `pillar-csi.bhyoo.com/storage-class-protection`
 
 **Fix:** Add finalizer name constants to the PRD.
 
@@ -261,21 +261,21 @@ If kept, clarify it's passed to `nvme connect` on the worker node, not to config
 
 ---
 
-### M7. PillarPool `discoveredPools` vs `parentDataset` — ZFS dataset hierarchy unclear
+### M7. PillarStore `discoveredPools` vs `parentDataset` — ZFS dataset hierarchy unclear
 
-**Location:** Section 2.1 PillarTarget status `discoveredPools`
+**Location:** Section 2.1 PillarAgent status `discoveredPools`
 
-**Issue:** `discoveredPools` in PillarTarget status lists pools with `type: zfs` and
-a pool name. This seems to list ZFS pools on the agent. However, `PillarPool.spec.backend.zfs`
+**Issue:** `discoveredPools` in PillarAgent status lists pools with `type: zfs` and
+a pool name. This seems to list ZFS pools on the agent. However, `PillarStore.spec.backend.zfs`
 also has `parentDataset` for organizing volumes within a pool.
 
-The relationship between `discoveredPools` (agent-reported pools) and `PillarPool.spec.backend.zfs.pool`
-(user-configured pool name) is not explicitly validated. If a user creates a PillarPool
+The relationship between `discoveredPools` (agent-reported pools) and `PillarStore.spec.backend.zfs.pool`
+(user-configured pool name) is not explicitly validated. If a user creates a PillarStore
 referencing `pool: non-existent-pool`, the `PoolDiscovered` condition would be False —
 this validation flow should be documented.
 
-**Fix:** Clarify that `PillarPool.spec.backend.zfs.pool` must match a name in
-`PillarTarget.status.discoveredPools` for `PoolDiscovered` condition to be True.
+**Fix:** Clarify that `PillarStore.spec.backend.zfs.pool` must match a name in
+`PillarAgent.status.discoveredPools` for `PoolDiscovered` condition to be True.
 
 ---
 
@@ -338,7 +338,7 @@ passing `50G` to ZFS will create a 50,000,000,000 byte volume (5% smaller).
 
 **Location:** Section 2.1 PillarProtocol NVMe-oF spec (line ~209)
 
-`fsType: ext4` is defined at both `PillarProtocol.spec` and `PillarBinding.spec.overrides`.
+`fsType: ext4` is defined at both `PillarProtocol.spec` and `PillarStorageClass.spec.overrides`.
 The override hierarchy makes sense, but for file system protocols (NFS), `fsType` is
 irrelevant. This should be documented as applying only to block protocols.
 
@@ -349,10 +349,10 @@ No change needed but worth keeping consistent in schema definitions.
 
 ### S4. `StorageClass.reclaimPolicy` ownership
 
-**Location:** Section 2.1 PillarBinding spec
+**Location:** Section 2.1 PillarStorageClass spec
 
-`reclaimPolicy: Delete` in PillarBinding creates a StorageClass with that policy.
-If a user changes `reclaimPolicy` in PillarBinding, existing PVs retain their original
+`reclaimPolicy: Delete` in PillarStorageClass creates a StorageClass with that policy.
+If a user changes `reclaimPolicy` in PillarStorageClass, existing PVs retain their original
 reclaim policy (PV.spec.persistentVolumeReclaimPolicy is copied at PV creation time).
 This behavior should be documented.
 
@@ -376,7 +376,7 @@ This behavior should be documented.
 | M4 | Low | Missing | Finalizer name strings not specified |
 | M5 | Medium | Missing | `hostPort: 9500` not documented for agent DaemonSet |
 | M6 | Medium | Wrong Layer | `inCapsuleDataSize` is initiator-side, not target-side |
-| M7 | Low | Clarification | `discoveredPools` validation flow for PillarPool not documented |
+| M7 | Low | Clarification | `discoveredPools` validation flow for PillarStore not documented |
 | M8 | Low | Scope | No rationale given for excluding `volumeMode: Block` from Phase 1 |
 | M9 | Low | Missing | NFS export options not specified in PillarProtocol |
 | S1 | Trivial | Style | API group uses hyphen (valid but atypical) |

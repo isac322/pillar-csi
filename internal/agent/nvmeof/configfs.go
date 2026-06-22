@@ -79,7 +79,7 @@ type NvmetTarget struct {
 
 	// BindAddress is the publicly-advertised IP address of the NVMe-oF TCP
 	// endpoint as seen by the initiator, e.g. "192.168.1.10".  Resolved by
-	// the controller from PillarTarget and forwarded verbatim to the
+	// the controller from PillarAgent and forwarded verbatim to the
 	// initiator via ExportInfo.Address; the agent never resolves it itself.
 	//
 	// It is NOT written to nvmet's addr_traddr — that file holds the kernel

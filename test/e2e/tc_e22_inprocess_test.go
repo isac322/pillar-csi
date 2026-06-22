@@ -18,8 +18,8 @@ func assertE22_CreateVolume_UnsupportedProtocol(tc documentedCase) {
 	defer env.close()
 
 	params := map[string]string{
-		"pillar-csi.bhyoo.com/target":        env.target.Name,
-		"pillar-csi.bhyoo.com/pool":          "tank",
+		"pillar-csi.bhyoo.com/agent":         env.target.Name,
+		"pillar-csi.bhyoo.com/store":         "tank",
 		"pillar-csi.bhyoo.com/backend-type":  "zfs-zvol",
 		"pillar-csi.bhyoo.com/protocol-type": "fc", // unsupported protocol
 	}
@@ -38,8 +38,8 @@ func assertE22_CreateVolume_NVMeOF_TCP(tc documentedCase) {
 	defer env.close()
 
 	params := map[string]string{
-		"pillar-csi.bhyoo.com/target":        env.target.Name,
-		"pillar-csi.bhyoo.com/pool":          "tank",
+		"pillar-csi.bhyoo.com/agent":         env.target.Name,
+		"pillar-csi.bhyoo.com/store":         "tank",
 		"pillar-csi.bhyoo.com/backend-type":  "zfs-zvol",
 		"pillar-csi.bhyoo.com/protocol-type": "nvmeof-tcp",
 	}
@@ -84,8 +84,8 @@ func assertE22_CreateVolume_iSCSI(tc documentedCase) {
 	defer env.close()
 
 	params := map[string]string{
-		"pillar-csi.bhyoo.com/target":        env.target.Name,
-		"pillar-csi.bhyoo.com/pool":          "tank",
+		"pillar-csi.bhyoo.com/agent":         env.target.Name,
+		"pillar-csi.bhyoo.com/store":         "tank",
 		"pillar-csi.bhyoo.com/backend-type":  "zfs-zvol",
 		"pillar-csi.bhyoo.com/protocol-type": "iscsi",
 	}
@@ -157,8 +157,8 @@ func assertE22_CreateVolume_UnknownBackendType_Rejected(tc documentedCase) {
 	defer env.close()
 
 	params := map[string]string{
-		"pillar-csi.bhyoo.com/target":        env.target.Name,
-		"pillar-csi.bhyoo.com/pool":          "tank",
+		"pillar-csi.bhyoo.com/agent":         env.target.Name,
+		"pillar-csi.bhyoo.com/store":         "tank",
 		"pillar-csi.bhyoo.com/backend-type":  "unknown-backend-xyz",
 		"pillar-csi.bhyoo.com/protocol-type": "nvmeof-tcp",
 	}
@@ -177,8 +177,8 @@ func assertE22_CreateVolume_UnknownBackendType_Error(tc documentedCase) {
 	defer env.close()
 
 	params := map[string]string{
-		"pillar-csi.bhyoo.com/target":        env.target.Name,
-		"pillar-csi.bhyoo.com/pool":          "tank",
+		"pillar-csi.bhyoo.com/agent":         env.target.Name,
+		"pillar-csi.bhyoo.com/store":         "tank",
 		"pillar-csi.bhyoo.com/backend-type":  fmt.Sprintf("unknown-%d", 999),
 		"pillar-csi.bhyoo.com/protocol-type": "nvmeof-tcp",
 	}
@@ -195,8 +195,8 @@ func assertE22_CreateVolume_LVMBackend_NVMeOF(tc documentedCase) {
 	defer env.close()
 
 	params := map[string]string{
-		"pillar-csi.bhyoo.com/target":        env.target.Name,
-		"pillar-csi.bhyoo.com/pool":          "tank",
+		"pillar-csi.bhyoo.com/agent":         env.target.Name,
+		"pillar-csi.bhyoo.com/store":         "tank",
 		"pillar-csi.bhyoo.com/backend-type":  "lvm-lv",
 		"pillar-csi.bhyoo.com/protocol-type": "nvmeof-tcp",
 	}
@@ -215,8 +215,8 @@ func assertE22_CreateVolume_LVMBackend_iSCSI(tc documentedCase) {
 	defer env.close()
 
 	params := map[string]string{
-		"pillar-csi.bhyoo.com/target":        env.target.Name,
-		"pillar-csi.bhyoo.com/pool":          "tank",
+		"pillar-csi.bhyoo.com/agent":         env.target.Name,
+		"pillar-csi.bhyoo.com/store":         "tank",
 		"pillar-csi.bhyoo.com/backend-type":  "lvm-lv",
 		"pillar-csi.bhyoo.com/protocol-type": "iscsi",
 	}

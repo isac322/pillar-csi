@@ -52,7 +52,7 @@ const (
 // controllerTestEnv is an isolated test environment for CSI controller TCs.
 // It creates:
 //   - A fakeAgentServer registered with a real gRPC server (bufconn transport)
-//   - A fake K8s client with pre-registered PillarTarget/PillarVolume/PVC objects
+//   - A fake K8s client with pre-registered PillarAgent/PillarVolumeState/PVC objects
 //   - A CSI ControllerServer dialing the bufconn gRPC server
 type controllerTestEnv struct {
 	ctx        context.Context
@@ -60,7 +60,7 @@ type controllerTestEnv struct {
 	controller *csidrv.ControllerServer
 	agentSrv   *fakeAgentServer // controllable fake agent
 	k8sClient  client.Client
-	target     *pillarv1.PillarTarget
+	target     *pillarv1.PillarAgent
 	params     map[string]string // default StorageClass params
 	lis        *bufconn.Listener
 	grpcSrv    *grpc.Server
@@ -84,16 +84,16 @@ func newControllerTestEnv() *controllerTestEnv {
 		panic(fmt.Sprintf("register storagev1 scheme: %v", err))
 	}
 
-	target := &pillarv1.PillarTarget{
+	target := &pillarv1.PillarAgent{
 		ObjectMeta: metav1.ObjectMeta{Name: "storage-1"},
-		Status: pillarv1.PillarTargetStatus{
+		Status: pillarv1.PillarAgentStatus{
 			ResolvedAddress: "passthrough:///bufnet",
 		},
 	}
 
 	k8sClient := clientfake.NewClientBuilder().
 		WithScheme(scheme).
-		WithStatusSubresource(&pillarv1.PillarTarget{}, &pillarv1.PillarVolume{}).
+		WithStatusSubresource(&pillarv1.PillarAgent{}, &pillarv1.PillarVolumeState{}).
 		WithObjects(target).
 		Build()
 
@@ -128,8 +128,8 @@ func newControllerTestEnv() *controllerTestEnv {
 	)
 
 	params := map[string]string{
-		"pillar-csi.bhyoo.com/target":        target.Name,
-		"pillar-csi.bhyoo.com/pool":          "tank",
+		"pillar-csi.bhyoo.com/agent":         target.Name,
+		"pillar-csi.bhyoo.com/store":         "tank",
 		"pillar-csi.bhyoo.com/backend-type":  "zfs-zvol",
 		"pillar-csi.bhyoo.com/protocol-type": "nvmeof-tcp",
 	}

@@ -48,11 +48,11 @@
 //	pvc := f.PVC("data", ns.Name(), storageClassName, "1Gi", corev1.ReadWriteOnce)
 //	_, err := clientset.CoreV1().PersistentVolumeClaims(ns.Name()).Create(ctx, pvc, metav1.CreateOptions{})
 //
-//	sc := f.StorageClass("sc", "pillar-csi.bhyoo.com", map[string]string{"poolRef": "my-pool"})
+//	sc := f.StorageClass("sc", "pillar-csi.bhyoo.com", map[string]string{"storeRef": "my-pool"})
 //	_, err = clientset.StorageV1().StorageClasses().Create(ctx, sc, metav1.CreateOptions{})
 //
-//	pt := f.PillarTarget("target", v1alpha1.PillarTargetSpec{External: &v1alpha1.ExternalSpec{Address: "10.0.0.1", Port: 9500}})
-//	_, err = crdClient.PillarTargets().Create(ctx, pt, metav1.CreateOptions{})
+//	pt := f.PillarAgent("target", v1alpha1.PillarAgentSpec{External: &v1alpha1.ExternalSpec{Address: "10.0.0.1", Port: 9500}})
+//	_, err = crdClient.PillarAgents().Create(ctx, pt, metav1.CreateOptions{})
 package resources
 
 import (
@@ -217,7 +217,7 @@ func (f *Factory) AnnotationsWithExtra(extra map[string]string) map[string]strin
 // ── ObjectMeta factories ──────────────────────────────────────────────────────
 
 // ObjectMeta returns a metav1.ObjectMeta suitable for cluster-scoped
-// Kubernetes objects (StorageClass, PersistentVolume, PillarTarget, …).
+// Kubernetes objects (StorageClass, PersistentVolume, PillarAgent, …).
 //
 //   - Name = ResourceName(suffix)
 //   - Namespace = "" (cluster-scoped)
@@ -334,7 +334,7 @@ type StorageClassOptions struct {
 // Parameters:
 //   - suffix     — resource name suffix (e.g. "sc", "sc-lvm")
 //   - provisioner — CSI driver name (e.g. "pillar-csi.bhyoo.com")
-//   - parameters  — StorageClass parameters map (e.g. poolRef, backendType)
+//   - parameters  — StorageClass parameters map (e.g. storeRef, backendType)
 //   - opts        — optional additional configuration (nil is safe)
 func (f *Factory) StorageClass(
 	suffix, provisioner string,
@@ -470,64 +470,64 @@ func (f *Factory) Pod(
 
 // ── pillar-csi CRD factories ──────────────────────────────────────────────────
 
-// PillarTargetOptions holds optional extra metadata for PillarTarget.
-type PillarTargetOptions struct {
+// PillarAgentOptions holds optional extra metadata for PillarAgent.
+type PillarAgentOptions struct {
 	ExtraLabels      map[string]string
 	ExtraAnnotations map[string]string
 }
 
-// PillarTarget returns a *pillarv1alpha1.PillarTarget with TC-scoped name,
+// PillarAgent returns a *pillarv1alpha1.PillarAgent with TC-scoped name,
 // labels, and annotations.
 //
 // Parameters:
 //   - suffix — resource name suffix (e.g. "target", "agent-0")
-//   - spec   — PillarTargetSpec; caller populates NodeRef or External
+//   - spec   — PillarAgentSpec; caller populates NodeRef or External
 //   - opts   — optional extra metadata (nil is safe)
-func (f *Factory) PillarTarget(
+func (f *Factory) PillarAgent(
 	suffix string,
-	spec pillarv1alpha1.PillarTargetSpec,
-	opts *PillarTargetOptions,
-) *pillarv1alpha1.PillarTarget {
+	spec pillarv1alpha1.PillarAgentSpec,
+	opts *PillarAgentOptions,
+) *pillarv1alpha1.PillarAgent {
 	meta := f.ObjectMeta(suffix)
 	if opts != nil {
 		meta.Labels = mergeLabels(meta.Labels, opts.ExtraLabels)
 		meta.Annotations = mergeAnnotations(meta.Annotations, opts.ExtraAnnotations)
 	}
-	return &pillarv1alpha1.PillarTarget{
+	return &pillarv1alpha1.PillarAgent{
 		ObjectMeta: meta,
 		Spec:       spec,
 	}
 }
 
-// PillarPoolOptions holds optional extra metadata for PillarPool.
-type PillarPoolOptions struct {
+// PillarStoreOptions holds optional extra metadata for PillarStore.
+type PillarStoreOptions struct {
 	ExtraLabels      map[string]string
 	ExtraAnnotations map[string]string
 }
 
-// PillarPool returns a *pillarv1alpha1.PillarPool with TC-scoped name, labels,
+// PillarStore returns a *pillarv1alpha1.PillarStore with TC-scoped name, labels,
 // and annotations.
 //
 // Parameters:
 //   - suffix    — resource name suffix (e.g. "pool", "zfs-pool")
-//   - targetRef — name of the PillarTarget this pool references
+//   - agentRef — name of the PillarAgent this pool references
 //   - backend   — BackendSpec (type + ZFS or LVM config)
 //   - opts      — optional extra metadata (nil is safe)
-func (f *Factory) PillarPool(
-	suffix, targetRef string,
+func (f *Factory) PillarStore(
+	suffix, agentRef string,
 	backend pillarv1alpha1.BackendSpec,
-	opts *PillarPoolOptions,
-) *pillarv1alpha1.PillarPool {
+	opts *PillarStoreOptions,
+) *pillarv1alpha1.PillarStore {
 	meta := f.ObjectMeta(suffix)
 	if opts != nil {
 		meta.Labels = mergeLabels(meta.Labels, opts.ExtraLabels)
 		meta.Annotations = mergeAnnotations(meta.Annotations, opts.ExtraAnnotations)
 	}
-	return &pillarv1alpha1.PillarPool{
+	return &pillarv1alpha1.PillarStore{
 		ObjectMeta: meta,
-		Spec: pillarv1alpha1.PillarPoolSpec{
-			TargetRef: targetRef,
-			Backend:   backend,
+		Spec: pillarv1alpha1.PillarStoreSpec{
+			AgentRef: agentRef,
+			Backend:  backend,
 		},
 	}
 }
@@ -541,9 +541,9 @@ type PillarProtocolOptions struct {
 // PillarProtocol returns a *pillarv1alpha1.PillarProtocol with TC-scoped name,
 // labels, and annotations.
 //
-// PillarProtocol is protocol-level and does not reference a PillarTarget
-// directly; the target association happens through PillarBinding → PillarPool →
-// PillarTarget.  Callers supply the full spec (including Type and the
+// PillarProtocol is protocol-level and does not reference a PillarAgent
+// directly; the target association happens through PillarStorageClass → PillarStore →
+// PillarAgent.  Callers supply the full spec (including Type and the
 // matching config field: NVMeOFTCP, ISCSI, NFS, or SMB).
 //
 // Parameters:
@@ -566,37 +566,37 @@ func (f *Factory) PillarProtocol(
 	}
 }
 
-// PillarBindingOptions holds optional extra metadata for PillarBinding.
-type PillarBindingOptions struct {
+// PillarStorageClassOptions holds optional extra metadata for PillarStorageClass.
+type PillarStorageClassOptions struct {
 	ExtraLabels      map[string]string
 	ExtraAnnotations map[string]string
 }
 
-// PillarBinding returns a *pillarv1alpha1.PillarBinding with TC-scoped name,
+// PillarStorageClass returns a *pillarv1alpha1.PillarStorageClass with TC-scoped name,
 // labels, and annotations.
 //
 // Parameters:
 //   - suffix      — resource name suffix (e.g. "binding", "bind-0")
-//   - poolRef     — name of the PillarPool to bind
+//   - storeRef     — name of the PillarStore to bind
 //   - protocolRef — name of the PillarProtocol to bind
 //   - scTemplate  — StorageClassTemplate (name, reclaimPolicy, bindingMode)
 //   - overrides   — optional BackendOverrides/ProtocolOverrides (nil is fine)
 //   - opts        — optional extra metadata (nil is safe)
-func (f *Factory) PillarBinding(
-	suffix, poolRef, protocolRef string,
+func (f *Factory) PillarStorageClass(
+	suffix, storeRef, protocolRef string,
 	scTemplate pillarv1alpha1.StorageClassTemplate,
-	overrides *pillarv1alpha1.BindingOverrides,
-	opts *PillarBindingOptions,
-) *pillarv1alpha1.PillarBinding {
+	overrides *pillarv1alpha1.StorageClassOverrides,
+	opts *PillarStorageClassOptions,
+) *pillarv1alpha1.PillarStorageClass {
 	meta := f.ObjectMeta(suffix)
 	if opts != nil {
 		meta.Labels = mergeLabels(meta.Labels, opts.ExtraLabels)
 		meta.Annotations = mergeAnnotations(meta.Annotations, opts.ExtraAnnotations)
 	}
-	return &pillarv1alpha1.PillarBinding{
+	return &pillarv1alpha1.PillarStorageClass{
 		ObjectMeta: meta,
-		Spec: pillarv1alpha1.PillarBindingSpec{
-			PoolRef:      poolRef,
+		Spec: pillarv1alpha1.PillarStorageClassSpec{
+			StoreRef:     storeRef,
 			ProtocolRef:  protocolRef,
 			StorageClass: scTemplate,
 			Overrides:    overrides,

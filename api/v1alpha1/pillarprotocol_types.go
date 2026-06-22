@@ -34,7 +34,7 @@ const (
 
 // NVMeOFTCPConfig holds NVMe-oF/TCP-specific protocol parameters.
 // Target bind IP is not included here — the controller resolves it
-// at runtime from the referenced PillarTarget.
+// at runtime from the referenced PillarAgent.
 type NVMeOFTCPConfig struct {
 	// port is the TCP port on which the NVMe-oF target listens.
 	// Defaults to 4420.
@@ -169,15 +169,15 @@ type PillarProtocolSpec struct {
 
 // PillarProtocolStatus defines the observed state of PillarProtocol.
 type PillarProtocolStatus struct {
-	// bindingCount is the number of PillarBinding resources that reference
+	// storageClassCount is the number of PillarStorageClass resources that reference
 	// this protocol.  Maintained automatically by the reconciler.
 	// +optional
-	BindingCount int32 `json:"bindingCount,omitempty"`
+	StorageClassCount int32 `json:"storageClassCount,omitempty"`
 
-	// activeTargets lists the names of PillarTargets currently serving
+	// activeAgents lists the names of PillarAgents currently serving
 	// volumes via this protocol.  Maintained automatically by the reconciler.
 	// +optional
-	ActiveTargets []string `json:"activeTargets,omitempty"`
+	ActiveAgents []string `json:"activeAgents,omitempty"`
 
 	// conditions represent the current state of the PillarProtocol resource.
 	//
@@ -192,16 +192,16 @@ type PillarProtocolStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Cluster,shortName=ppr
+// +kubebuilder:resource:scope=Cluster,shortName=pstr
 // +kubebuilder:printcolumn:name="Type",type=string,JSONPath=`.spec.type`
-// +kubebuilder:printcolumn:name="Bindings",type=integer,JSONPath=`.status.bindingCount`
+// +kubebuilder:printcolumn:name="Bindings",type=integer,JSONPath=`.status.storageClassCount`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // PillarProtocol describes a reusable network-storage protocol configuration.
 // It is node-independent: the same PillarProtocol can be referenced by multiple
-// PillarBinding resources across different pools and targets.  The controller
-// resolves the target bind address at runtime from the relevant PillarTarget.
+// PillarStorageClass resources across different pools and targets.  The controller
+// resolves the target bind address at runtime from the relevant PillarAgent.
 type PillarProtocol struct {
 	metav1.TypeMeta `json:",inline"`
 

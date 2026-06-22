@@ -29,8 +29,8 @@ import (
 // VolumeGroup propagation to the agent.
 func lvmControllerParams(target string) map[string]string {
 	return map[string]string{
-		"pillar-csi.bhyoo.com/target":        target,
-		"pillar-csi.bhyoo.com/pool":          "data-vg",
+		"pillar-csi.bhyoo.com/agent":         target,
+		"pillar-csi.bhyoo.com/store":         "data-vg",
 		"pillar-csi.bhyoo.com/backend-type":  "lvm-lv",
 		"pillar-csi.bhyoo.com/protocol-type": "nvmeof-tcp",
 	}
@@ -45,7 +45,7 @@ func agentCreateReqs(env *controllerTestEnv) []*agentv1.CreateVolumeRequest {
 	return out
 }
 
-// makeLVMBinding creates a PillarPool (lvm-lv type) and PillarBinding in the
+// makeLVMBinding creates a PillarStore (lvm-lv type) and PillarStorageClass in the
 // fake K8s client and returns the binding name for use as paramBinding.
 // poolMode may be empty (pool has no LVM mode preference).
 // bindingOverrideMode may be empty (no binding-level override).
@@ -58,10 +58,10 @@ func makeLVMBinding(
 	poolName := fmt.Sprintf("pool-lvm-%s", suffix)
 	bindingName := fmt.Sprintf("binding-lvm-%s", suffix)
 
-	pool := &pillarv1.PillarPool{
+	pool := &pillarv1.PillarStore{
 		ObjectMeta: metav1.ObjectMeta{Name: poolName},
-		Spec: pillarv1.PillarPoolSpec{
-			TargetRef: env.target.Name,
+		Spec: pillarv1.PillarStoreSpec{
+			AgentRef: env.target.Name,
 			Backend: pillarv1.BackendSpec{
 				Type: pillarv1.BackendTypeLVMLV,
 				LVM: &pillarv1.LVMBackendConfig{
@@ -74,15 +74,15 @@ func makeLVMBinding(
 	Expect(env.k8sClient.Create(env.ctx, pool)).To(Succeed(),
 		"create LVM pool %s for test", poolName)
 
-	binding := &pillarv1.PillarBinding{
+	binding := &pillarv1.PillarStorageClass{
 		ObjectMeta: metav1.ObjectMeta{Name: bindingName},
-		Spec: pillarv1.PillarBindingSpec{
-			PoolRef:     poolName,
+		Spec: pillarv1.PillarStorageClassSpec{
+			StoreRef:    poolName,
 			ProtocolRef: "proto-nvmeof",
 		},
 	}
 	if bindingOverrideMode != "" {
-		binding.Spec.Overrides = &pillarv1.BindingOverrides{
+		binding.Spec.Overrides = &pillarv1.StorageClassOverrides{
 			Backend: &pillarv1.BackendOverrides{
 				LVM: &pillarv1.LVMOverrides{
 					ProvisioningMode: bindingOverrideMode,
@@ -208,7 +208,7 @@ func assertE29_LVM_ModeOverride_PoolDefault(tc documentedCase) {
 	bindingName := makeLVMBinding(env, "pool-default", pillarv1.LVMProvisioningModeThin, "")
 
 	params := lvmControllerParams(env.target.Name)
-	params["pillar-csi.bhyoo.com/binding"] = bindingName
+	params["pillar-csi.bhyoo.com/storage-class"] = bindingName
 
 	resp, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
 		Name:               "pvc-e29-mode-pool",
@@ -225,9 +225,9 @@ func assertE29_LVM_ModeOverride_PoolDefault(tc documentedCase) {
 		"%s: Pool-level mode 'thin' must reach agent", tc.tcNodeLabel())
 }
 
-// TestCSIController_LVM_ModeOverride_BindingOverridesPool — Binding overrides Pool mode.
+// TestCSIController_LVM_ModeOverride_StorageClassOverridesPool — Binding overrides Pool mode.
 // Pool="thin", Binding override="linear" → agent receives "linear".
-func assertE29_LVM_ModeOverride_BindingOverridesPool(tc documentedCase) {
+func assertE29_LVM_ModeOverride_StorageClassOverridesPool(tc documentedCase) {
 	env := newControllerTestEnv()
 	defer env.close()
 
@@ -236,7 +236,7 @@ func assertE29_LVM_ModeOverride_BindingOverridesPool(tc documentedCase) {
 		pillarv1.LVMProvisioningModeThin, pillarv1.LVMProvisioningModeLinear)
 
 	params := lvmControllerParams(env.target.Name)
-	params["pillar-csi.bhyoo.com/binding"] = bindingName
+	params["pillar-csi.bhyoo.com/storage-class"] = bindingName
 
 	_, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
 		Name:               "pvc-e29-mode-bind",
@@ -266,7 +266,7 @@ func assertE29_LVM_ModeOverride_PVCAnnotationOverridesBinding(tc documentedCase)
 	pvc := makePVCWithBackendAnnotation(env, "pvc-e29-mode-annot", "thin")
 
 	params := lvmControllerParams(env.target.Name)
-	params["pillar-csi.bhyoo.com/binding"] = bindingName
+	params["pillar-csi.bhyoo.com/storage-class"] = bindingName
 	params["csi.storage.k8s.io/pvc-name"] = pvc.Name
 	params["csi.storage.k8s.io/pvc-namespace"] = pvc.Namespace
 
@@ -294,7 +294,7 @@ func assertE29_LVM_ModeOverride_AbsentUsesBackendDefault(tc documentedCase) {
 	bindingName := makeLVMBinding(env, "absent-mode", "", "")
 
 	params := lvmControllerParams(env.target.Name)
-	params["pillar-csi.bhyoo.com/binding"] = bindingName
+	params["pillar-csi.bhyoo.com/storage-class"] = bindingName
 
 	resp, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
 		Name:               "pvc-e29-mode-absent",
@@ -372,7 +372,7 @@ func assertE29_LVM_ModeOverride_EmptyPVCAnnotation_FallsThrough(tc documentedCas
 	Expect(env.k8sClient.Create(env.ctx, pvc)).To(Succeed())
 
 	params := lvmControllerParams(env.target.Name)
-	params["pillar-csi.bhyoo.com/binding"] = bindingName
+	params["pillar-csi.bhyoo.com/storage-class"] = bindingName
 	params["csi.storage.k8s.io/pvc-name"] = pvc.Name
 	params["csi.storage.k8s.io/pvc-namespace"] = pvc.Namespace
 

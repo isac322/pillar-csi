@@ -19,7 +19,7 @@
 | CRDs (4×) | ✅ All defined and cluster-scoped |
 | Controller reconcilers (4×) | ✅ All implemented |
 | Validation webhooks (4×) | ✅ All implemented |
-| Defaulting webhook for PillarBinding | ✅ Implemented |
+| Defaulting webhook for PillarStorageClass | ✅ Implemented |
 | Agent gRPC server — all Phase 1 RPCs | ✅ Implemented |
 | Backend: ZFS zvol | ✅ Implemented |
 | Protocol: NVMe-oF TCP via configfs | ✅ Implemented |
@@ -28,7 +28,7 @@
 | Volume expansion (ControllerExpandVolume) | ✅ Implemented |
 | Access modes: RWO, RWOP, ROX | ✅ Defined and validated in CSI controller |
 | Finalizer deletion protection | ✅ All 4 CRDs |
-| StorageClass auto-creation from PillarBinding | ✅ Implemented |
+| StorageClass auto-creation from PillarStorageClass | ✅ Implemented |
 | Agent stateless recovery (ReconcileState) | ✅ Implemented |
 | AgentConnected live gRPC HealthCheck | ✅ Implemented (was stub in previous audit) |
 | CSI Controller service | ✅ Implemented (new since previous audit) |
@@ -51,11 +51,11 @@ All four cluster-scoped CRDs are defined:
 
 | CRD | File | Notes |
 |-----|------|-------|
-| `PillarTarget` | `pillartarget_types.go` | `nodeRef` + `external` discriminated union, status conditions, resolvedAddress, AgentVersion/Capabilities/DiscoveredPools fields |
-| `PillarPool` | `pillarpool_types.go` | `targetRef`, `backend.zfs`, capacity status, conditions |
-| `PillarProtocol` | `pillarprotocol_types.go` | `nvmeofTcp` config with `acl` field, `bindingCount`/`activeTargets` status |
-| `PillarBinding` | `pillarbinding_types.go` | `poolRef`/`protocolRef`, StorageClass spec, overrides, conditions |
-| `PillarVolume` | `pillarvolume_types.go` | **New** — durable partial-failure tracking for CSI lifecycle |
+| `PillarAgent` | `pillaragent_types.go` | `nodeRef` + `external` discriminated union, status conditions, resolvedAddress, AgentVersion/Capabilities/DiscoveredPools fields |
+| `PillarStore` | `pillarstore_types.go` | `agentRef`, `backend.zfs`, capacity status, conditions |
+| `PillarProtocol` | `pillarprotocol_types.go` | `nvmeofTcp` config with `acl` field, `storageClassCount`/`activeAgents` status |
+| `PillarStorageClass` | `pillarstorageclass_types.go` | `storeRef`/`protocolRef`, StorageClass spec, overrides, conditions |
+| `PillarVolumeState` | `pillarvolumestate_types.go` | **New** — durable partial-failure tracking for CSI lifecycle |
 
 ### Controller Reconcilers (`internal/controller/`)
 
@@ -63,10 +63,10 @@ All four reconcilers are fully implemented:
 
 | Reconciler | File | Key capabilities |
 |-----------|------|-----------------|
-| `PillarTargetReconciler` | `pillartarget_controller.go` | Node IP resolution, live `HealthCheck` via `agentclient.Dialer`, `NodeExists`/`AgentConnected`/`Ready` conditions, mTLS vs plaintext reason codes, storage-node label management, finalizer + deletion blocking, Node + PillarPool watches, 30s requeue |
-| `PillarPoolReconciler` | `pillarpool_controller.go` | `TargetReady`/`PoolDiscovered`/`BackendSupported`/`Ready` conditions evaluated from `target.Status.DiscoveredPools`/`Capabilities`, capacity status, finalizer + deletion blocking on PillarBindings |
-| `PillarProtocolReconciler` | `pillarprotocol_controller.go` | `bindingCount`/`activeTargets` status, finalizer, PillarBinding watch |
-| `PillarBindingReconciler` | `pillarbinding_controller.go` | StorageClass auto-creation + ownerReference, `PoolReady`/`ProtocolValid`/`Compatible`/`StorageClassCreated`/`Ready` conditions, PVC-blocking deletion, PillarPool + PillarProtocol watches |
+| `PillarAgentReconciler` | `pillaragent_controller.go` | Node IP resolution, live `HealthCheck` via `agentclient.Dialer`, `NodeExists`/`AgentConnected`/`Ready` conditions, mTLS vs plaintext reason codes, storage-node label management, finalizer + deletion blocking, Node + PillarStore watches, 30s requeue |
+| `PillarStoreReconciler` | `pillarstore_controller.go` | `TargetReady`/`PoolDiscovered`/`BackendSupported`/`Ready` conditions evaluated from `target.Status.DiscoveredPools`/`Capabilities`, capacity status, finalizer + deletion blocking on PillarStorageClasss |
+| `PillarProtocolReconciler` | `pillarprotocol_controller.go` | `storageClassCount`/`activeAgents` status, finalizer, PillarStorageClass watch |
+| `PillarStorageClassReconciler` | `pillarstorageclass_controller.go` | StorageClass auto-creation + ownerReference, `PoolReady`/`ProtocolValid`/`Compatible`/`StorageClassCreated`/`Ready` conditions, PVC-blocking deletion, PillarStore + PillarProtocol watches |
 
 ### Validation Webhooks (`internal/webhook/v1alpha1/`)
 
@@ -74,17 +74,17 @@ All four CRD validation webhooks:
 
 | Webhook | File | Validates |
 |---------|------|----------|
-| `PillarTargetCustomValidator` | `pillartarget_webhook.go` | Immutability of `spec.nodeRef.name`, `spec.external.address/port`; discriminant switch forbidden |
-| `PillarPoolCustomValidator` | `pillarpool_webhook.go` | Immutability of `spec.targetRef`, `spec.backend.type`, `spec.backend.zfs.pool` |
+| `PillarAgentCustomValidator` | `pillaragent_webhook.go` | Immutability of `spec.nodeRef.name`, `spec.external.address/port`; discriminant switch forbidden |
+| `PillarStoreCustomValidator` | `pillarstore_webhook.go` | Immutability of `spec.agentRef`, `spec.backend.type`, `spec.backend.zfs.pool` |
 | `PillarProtocolCustomValidator` | `pillarprotocol_webhook.go` | Immutability of `spec.type` |
-| `PillarBindingCustomValidator` | `pillarbinding_webhook.go` | Immutability of `spec.poolRef`, `spec.protocolRef`; backend↔protocol compatibility check |
+| `PillarStorageClassCustomValidator` | `pillarstorageclass_webhook.go` | Immutability of `spec.storeRef`, `spec.protocolRef`; backend↔protocol compatibility check |
 
 ### Defaulting Webhook (`internal/webhook/v1alpha1/`)
 
-`PillarBindingCustomDefaulter` — registered via `WithDefaulter` in `pillarbinding_webhook.go`:
+`PillarStorageClassCustomDefaulter` — registered via `WithDefaulter` in `pillarstorageclass_webhook.go`:
 - `Default()` auto-sets `spec.storageClass.allowVolumeExpansion` based on backend type when not explicitly set by the user.
-- File: `pillarbinding_webhook.go` lines 50–118.
-- Tests: `pillarbinding_webhook_test.go`.
+- File: `pillarstorageclass_webhook.go` lines 50–118.
+- Tests: `pillarstorageclass_webhook_test.go`.
 
 ### Agent gRPC Server (`internal/agent/`)
 
@@ -131,7 +131,7 @@ All Phase 1 RPCs implemented:
 |--------|--------|-------|
 | `ControllerGetCapabilities` | ✅ | CREATE_DELETE_VOLUME, PUBLISH_UNPUBLISH, EXPAND_VOLUME, SINGLE_NODE_MULTI_WRITER |
 | `ValidateVolumeCapabilities` | ✅ | Validates RWO/RWOP/ROX; rejects RWX |
-| `CreateVolume` | ✅ | Calls agent CreateVolume + ExportVolume; idempotent; durable state via PillarVolume CRD |
+| `CreateVolume` | ✅ | Calls agent CreateVolume + ExportVolume; idempotent; durable state via PillarVolumeState CRD |
 | `DeleteVolume` | ✅ | Calls agent UnexportVolume + DeleteVolume; idempotent |
 | `ControllerPublishVolume` | ✅ | Calls agent AllowInitiator; records ACL state in VolumeStateMachine |
 | `ControllerUnpublishVolume` | ✅ | Calls agent DenyInitiator; idempotent on NotFound |
@@ -160,7 +160,7 @@ Tests: `node_stage_test.go`, `node_publish_test.go` — full stage/unstage/publi
 
 ### VolumeStateMachine (`internal/csi/statemachine.go`) — **New**
 
-Tracks in-memory + durable (via PillarVolume CRD) lifecycle state for each volume.
+Tracks in-memory + durable (via PillarVolumeState CRD) lifecycle state for each volume.
 States: `StateCreated` → `StateControllerPublished` → `StateNodeStaged` → `StateNodePublished`.
 Handles partial failures and idempotent retries.
 Tests: `statemachine_test.go` — 20+ test cases covering happy path, partial failure, illegal transitions, concurrency.
@@ -170,7 +170,7 @@ Tests: `statemachine_test.go` — 20+ test cases covering happy path, partial fa
 - `Manager` struct: caches one `*grpc.ClientConn` per resolved address
 - Supports plaintext (default, Phase 1) and mTLS transport credentials
 - `NewManagerFromFiles(certFile, keyFile, caFile, serverName)` — loads certs from disk
-- `HealthCheck(ctx, address)` — used by PillarTargetReconciler
+- `HealthCheck(ctx, address)` — used by PillarAgentReconciler
 - `Dial(ctx, address)` — used by CSI ControllerServer to reach agent RPCs
 - Tests: `dialer_test.go`, `mtls_test.go`, `mtls_files_test.go`
 
@@ -229,17 +229,17 @@ Tests: `statemachine_test.go` — 20+ test cases covering happy path, partial fa
 
 ### 6. AgentVersion / DiscoveredPools / Capabilities Not Populated ⚠️
 
-**PRD scope:** `status.agentVersion`, `status.capabilities`, `status.discoveredPools` in PillarTarget.
+**PRD scope:** `status.agentVersion`, `status.capabilities`, `status.discoveredPools` in PillarAgent.
 
-**Status:** These fields are defined in `pillartarget_types.go` but the controller never calls `GetCapabilities` RPC to populate them. Only `HealthCheck` is called. As a result, `PillarPool` conditions `PoolDiscovered` and `BackendSupported` will be `Unknown` until an agent responds and those fields are populated.
+**Status:** These fields are defined in `pillaragent_types.go` but the controller never calls `GetCapabilities` RPC to populate them. Only `HealthCheck` is called. As a result, `PillarStore` conditions `PoolDiscovered` and `BackendSupported` will be `Unknown` until an agent responds and those fields are populated.
 
-**File:** `internal/controller/pillartarget_controller.go` — no `GetCapabilities` call.
+**File:** `internal/controller/pillaragent_controller.go` — no `GetCapabilities` call.
 
 ### 7. PVC Annotation Parameter Overrides Not Implemented ⚠️
 
 **PRD scope:** "파라미터 오버라이드 계층 (Pool → Protocol → Binding → **PVC annotation**)"
 
-**Status:** The CRD spec types for overrides are defined (`PillarBinding.spec.overrides`). The `CreateVolume` implementation reads StorageClass parameters but does NOT parse or merge PVC annotations (`pillar-csi.bhyoo.com/backend-override`, `protocol-override`, `fs-override`). This is a CSI-layer feature dependent on item 1 (wiring) and additional CSI controller logic.
+**Status:** The CRD spec types for overrides are defined (`PillarStorageClass.spec.overrides`). The `CreateVolume` implementation reads StorageClass parameters but does NOT parse or merge PVC annotations (`pillar-csi.bhyoo.com/backend-override`, `protocol-override`, `fs-override`). This is a CSI-layer feature dependent on item 1 (wiring) and additional CSI controller logic.
 
 ### 8. Helm Chart Missing ❌
 
@@ -270,13 +270,13 @@ Tests: `statemachine_test.go` — 20+ test cases covering happy path, partial fa
 
 | Feature | Key Files |
 |---------|-----------|
-| CRD types | `api/v1alpha1/pillartarget_types.go`, `pillarpool_types.go`, `pillarprotocol_types.go`, `pillarbinding_types.go`, `pillarvolume_types.go` |
-| Controller: PillarTarget | `internal/controller/pillartarget_controller.go` |
-| Controller: PillarPool | `internal/controller/pillarpool_controller.go` |
+| CRD types | `api/v1alpha1/pillaragent_types.go`, `pillarstore_types.go`, `pillarprotocol_types.go`, `pillarstorageclass_types.go`, `pillarvolumestate_types.go` |
+| Controller: PillarAgent | `internal/controller/pillaragent_controller.go` |
+| Controller: PillarStore | `internal/controller/pillarstore_controller.go` |
 | Controller: PillarProtocol | `internal/controller/pillarprotocol_controller.go` |
-| Controller: PillarBinding | `internal/controller/pillarbinding_controller.go` |
+| Controller: PillarStorageClass | `internal/controller/pillarstorageclass_controller.go` |
 | Webhook: validation (4×) | `internal/webhook/v1alpha1/pillar*_webhook.go` |
-| Webhook: defaulting (PillarBinding) | `internal/webhook/v1alpha1/pillarbinding_webhook.go` (`PillarBindingCustomDefaulter`) |
+| Webhook: defaulting (PillarStorageClass) | `internal/webhook/v1alpha1/pillarstorageclass_webhook.go` (`PillarStorageClassCustomDefaulter`) |
 | CSI Controller | `internal/csi/controller.go` |
 | CSI Node | `internal/csi/node.go` |
 | CSI Identity | `internal/csi/identity.go` |

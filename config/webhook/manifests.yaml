@@ -10,19 +10,19 @@ webhooks:
     service:
       name: webhook-service
       namespace: system
-      path: /mutate-pillar-csi-pillar-csi-bhyoo-com-v1alpha1-pillarbinding
+      path: /mutate-pillar-csi-bhyoo-com-v1alpha1-pillarstorageclass
   failurePolicy: Fail
-  name: mpillarbinding-v1alpha1.kb.io
+  name: mpillarstorageclass-v1alpha1.kb.io
   rules:
   - apiGroups:
-    - pillar-csi.pillar-csi.bhyoo.com
+    - pillar-csi.bhyoo.com
     apiVersions:
     - v1alpha1
     operations:
     - CREATE
     - UPDATE
     resources:
-    - pillarbindings
+    - pillarstorageclasses
   sideEffects: None
 ---
 apiVersion: admissionregistration.k8s.io/v1
@@ -36,19 +36,19 @@ webhooks:
     service:
       name: webhook-service
       namespace: system
-      path: /validate-pillar-csi-pillar-csi-bhyoo-com-v1alpha1-pillarbinding
+      path: /validate-pillar-csi-bhyoo-com-v1alpha1-pillaragent
   failurePolicy: Fail
-  name: vpillarbinding-v1alpha1.kb.io
+  name: vpillaragent-v1alpha1.kb.io
   rules:
   - apiGroups:
-    - pillar-csi.pillar-csi.bhyoo.com
+    - pillar-csi.bhyoo.com
     apiVersions:
     - v1alpha1
     operations:
     - CREATE
     - UPDATE
     resources:
-    - pillarbindings
+    - pillaragents
   sideEffects: None
 - admissionReviewVersions:
   - v1
@@ -56,32 +56,12 @@ webhooks:
     service:
       name: webhook-service
       namespace: system
-      path: /validate-pillar-csi-pillar-csi-bhyoo-com-v1alpha1-pillarpool
-  failurePolicy: Fail
-  name: vpillarpool-v1alpha1.kb.io
-  rules:
-  - apiGroups:
-    - pillar-csi.pillar-csi.bhyoo.com
-    apiVersions:
-    - v1alpha1
-    operations:
-    - CREATE
-    - UPDATE
-    resources:
-    - pillarpools
-  sideEffects: None
-- admissionReviewVersions:
-  - v1
-  clientConfig:
-    service:
-      name: webhook-service
-      namespace: system
-      path: /validate-pillar-csi-pillar-csi-bhyoo-com-v1alpha1-pillarprotocol
+      path: /validate-pillar-csi-bhyoo-com-v1alpha1-pillarprotocol
   failurePolicy: Fail
   name: vpillarprotocol-v1alpha1.kb.io
   rules:
   - apiGroups:
-    - pillar-csi.pillar-csi.bhyoo.com
+    - pillar-csi.bhyoo.com
     apiVersions:
     - v1alpha1
     operations:
@@ -96,17 +76,37 @@ webhooks:
     service:
       name: webhook-service
       namespace: system
-      path: /validate-pillar-csi-pillar-csi-bhyoo-com-v1alpha1-pillartarget
+      path: /validate-pillar-csi-bhyoo-com-v1alpha1-pillarstorageclass
   failurePolicy: Fail
-  name: vpillartarget-v1alpha1.kb.io
+  name: vpillarstorageclass-v1alpha1.kb.io
   rules:
   - apiGroups:
-    - pillar-csi.pillar-csi.bhyoo.com
+    - pillar-csi.bhyoo.com
     apiVersions:
     - v1alpha1
     operations:
     - CREATE
     - UPDATE
     resources:
-    - pillartargets
+    - pillarstorageclasses
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-pillar-csi-bhyoo-com-v1alpha1-pillarstore
+  failurePolicy: Fail
+  name: vpillarstore-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - pillar-csi.bhyoo.com
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - pillarstores
   sideEffects: None

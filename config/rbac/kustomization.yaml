@@ -22,16 +22,16 @@ resources:
 # default, aiding admins in cluster management. Those roles are
 # not used by the pillar-csi itself. You can comment the following lines
 # if you do not want those helpers be installed with your Project.
-- pillarbinding_admin_role.yaml
-- pillarbinding_editor_role.yaml
-- pillarbinding_viewer_role.yaml
+- pillarstorageclass_admin_role.yaml
+- pillarstorageclass_editor_role.yaml
+- pillarstorageclass_viewer_role.yaml
 - pillarprotocol_admin_role.yaml
 - pillarprotocol_editor_role.yaml
 - pillarprotocol_viewer_role.yaml
-- pillarpool_admin_role.yaml
-- pillarpool_editor_role.yaml
-- pillarpool_viewer_role.yaml
-- pillartarget_admin_role.yaml
-- pillartarget_editor_role.yaml
-- pillartarget_viewer_role.yaml
+- pillarstore_admin_role.yaml
+- pillarstore_editor_role.yaml
+- pillarstore_viewer_role.yaml
+- pillaragent_admin_role.yaml
+- pillaragent_editor_role.yaml
+- pillaragent_viewer_role.yaml
 

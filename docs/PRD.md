@@ -42,7 +42,7 @@ pillar-csi는 **분산 파일시스템(DFS)이 아니다.** 여러 backend를 �
 |------|---------------|------------|
 | **언어** | Node.js | Go (경량, 단일 바이너리) |
 | **배포 모델** | backend마다 별도 Helm release (controller + node DaemonSet 중복) | 클러스터당 단일 배포. CRD로 선언적 관리 |
-| **멀티 pool** | pool마다 Helm release. SSH 설정, RBAC, 사이드카 모두 중복 | PillarPool CR 하나 추가 |
+| **멀티 pool** | pool마다 Helm release. SSH 설정, RBAC, 사이드카 모두 중복 | PillarStore CR 하나 추가 |
 | **스토리지 노드 통신** | SSH (셸 명령 파싱, 키 관리, 인젝션 위험) | gRPC agent (타입 안전, 자동 재연결) |
 | **Target 설정** | targetcli/nvmetcli CLI (Python 의존) | configfs 직접 조작 (의존성 제로) |
 | **노드 사전 설치** | 워커 노드에 open-iscsi, nvme-cli 등 필요 | 컨테이너에 번들 + init container modprobe |
@@ -58,7 +58,7 @@ CSI provisioner name: `pillar-csi.bhyoo.com`
 
 4개의 CRD를 사용한다. **모두 cluster-scoped**이다 (StorageClass와 동일한 인프라 레벨).
 
-#### PillarTarget
+#### PillarAgent
 
 스토리지 agent 인스턴스를 나타낸다. **사용자가 생성한다.** Agent의 위치를 정의하고, controller가 agent에 gRPC로 조회한 상태 정보를 status에 반영한다.
 
@@ -66,7 +66,7 @@ CSI provisioner name: `pillar-csi.bhyoo.com`
 
 ```yaml
 apiVersion: pillar-csi.bhyoo.com/v1alpha1
-kind: PillarTarget
+kind: PillarAgent
 metadata:
   name: rock5bp
 spec:
@@ -115,7 +115,7 @@ status:
       lastTransitionTime: "2025-01-15T10:00:00Z"
 ```
 
-**PillarTarget conditions:**
+**PillarAgent conditions:**
 | Condition | 의미 |
 |-----------|------|
 | `NodeExists` | nodeRef의 K8s Node가 존재하는지 |
@@ -127,17 +127,17 @@ gRPC 주소 결정 로직 (nodeRef):
 2. 동일 타입이 여러 개면 `addressSelector` CIDR로 필터
 3. 미지정 시 첫 번째 InternalIP 사용
 
-#### PillarPool
+#### PillarStore
 
 특정 target의 특정 스토리지 풀. Backend 타입과 설정을 포함한다. **사용자가 생성한다.**
 
 ```yaml
 apiVersion: pillar-csi.bhyoo.com/v1alpha1
-kind: PillarPool
+kind: PillarStore
 metadata:
   name: rock5bp-hot-data
 spec:
-  targetRef: rock5bp                   # PillarTarget 참조
+  agentRef: rock5bp                   # PillarAgent 참조
   backend:
     type: zfs-zvol
     zfs:
@@ -157,7 +157,7 @@ status:
     - type: TargetReady
       status: "True"
       reason: TargetReady
-      message: "PillarTarget rock5bp is Ready"
+      message: "PillarAgent rock5bp is Ready"
       lastTransitionTime: "2025-01-15T10:00:00Z"
     - type: PoolDiscovered
       status: "True"
@@ -176,19 +176,19 @@ status:
       lastTransitionTime: "2025-01-15T10:00:00Z"
 ```
 
-**PillarPool conditions:**
+**PillarStore conditions:**
 | Condition | 의미 |
 |-----------|------|
-| `TargetReady` | 참조 PillarTarget이 Ready인지 |
+| `TargetReady` | 참조 PillarAgent이 Ready인지 |
 | `PoolDiscovered` | agent에서 해당 pool이 발견되었는지 |
 | `BackendSupported` | backend 타입이 agent capabilities에 있는지 |
 | `Ready` | 전체 준비 상태 |
 
 #### PillarProtocol
 
-네트워크 공유 프로토콜의 타입과 기본 설정. **노드와 무관하게 재사용 가능하다.** Target bind IP는 포함하지 않는다 — controller가 런타임에 PillarTarget에서 resolve하여 agent에 전달한다.
+네트워크 공유 프로토콜의 타입과 기본 설정. **노드와 무관하게 재사용 가능하다.** Target bind IP는 포함하지 않는다 — controller가 런타임에 PillarAgent에서 resolve하여 agent에 전달한다.
 
-status에는 이 프로토콜을 참조하는 바인딩의 역참조 메타 정보를 포함한다 (`bindingCount`, `activeTargets`). Reconciler가 자동으로 계산한다.
+status에는 이 프로토콜을 참조하는 바인딩의 역참조 메타 정보를 포함한다 (`storageClassCount`, `activeAgents`). Reconciler가 자동으로 계산한다.
 
 ```yaml
 apiVersion: pillar-csi.bhyoo.com/v1alpha1
@@ -209,8 +209,8 @@ spec:
   fsType: ext4                         # ext4 | xfs (기본값: ext4)
   mkfsOptions: []                      # 예: ["-E", "lazy_itable_init=0"]
 status:
-  bindingCount: 2                      # 이 Protocol을 참조하는 PillarBinding 수
-  activeTargets: [rock5bp]             # 이 Protocol이 사용 중인 Target 목록
+  storageClassCount: 2                      # 이 Protocol을 참조하는 PillarStorageClass 수
+  activeAgents: [rock5bp]             # 이 Protocol이 사용 중인 Target 목록
 ```
 
 ```yaml
@@ -242,19 +242,19 @@ spec:
     version: "4.2"
 ```
 
-#### PillarBinding
+#### PillarStorageClass
 
-PillarPool과 PillarProtocol을 조합하여 Kubernetes StorageClass를 자동 생성한다. 파라미터 오버라이드 레이어를 제공한다. **사용자가 생성한다.**
+PillarStore과 PillarProtocol을 조합하여 Kubernetes StorageClass를 자동 생성한다. 파라미터 오버라이드 레이어를 제공한다. **사용자가 생성한다.**
 
 호환되지 않는 조합(Block backend + File protocol)은 validation webhook이 거부한다.
 
 ```yaml
 apiVersion: pillar-csi.bhyoo.com/v1alpha1
-kind: PillarBinding
+kind: PillarStorageClass
 metadata:
   name: fast-nvmeof
 spec:
-  poolRef: rock5bp-hot-data
+  storeRef: rock5bp-hot-data
   protocolRef: nvmeof-tcp
   storageClass:
     name: fast-nvmeof
@@ -277,7 +277,7 @@ status:
     - type: PoolReady
       status: "True"
       reason: PoolReady
-      message: "PillarPool rock5bp-hot-data is Ready"
+      message: "PillarStore rock5bp-hot-data is Ready"
       lastTransitionTime: "2025-01-15T10:00:00Z"
     - type: ProtocolValid
       status: "True"
@@ -301,10 +301,10 @@ status:
       lastTransitionTime: "2025-01-15T10:01:00Z"
 ```
 
-**PillarBinding conditions:**
+**PillarStorageClass conditions:**
 | Condition | 의미 |
 |-----------|------|
-| `PoolReady` | 참조 PillarPool이 Ready인지 |
+| `PoolReady` | 참조 PillarStore이 Ready인지 |
 | `ProtocolValid` | 참조 PillarProtocol이 존재하는지 |
 | `Compatible` | Backend-Protocol 호환성 검증 통과 |
 | `StorageClassCreated` | SC 자동 생성 완료 |
@@ -350,16 +350,16 @@ RWX는 Phase 3 (NFS)에서 지원한다.
 모든 스택(backend, protocol)의 파라미터를 **PVC 단위까지 세밀하게 커스터마이징**할 수 있다. 가장 구체적인 레벨이 우선한다.
 
 ```
-PillarPool (backend 기본값)
+PillarStore (backend 기본값)
   ↓ 오버라이드
 PillarProtocol (protocol 기본값)
   ↓ 오버라이드
-PillarBinding (바인딩별 오버라이드 — CRD typed schema)
+PillarStorageClass (바인딩별 오버라이드 — CRD typed schema)
   ↓ 오버라이드
 PVC annotation (볼륨별 오버라이드)
 ```
 
-PillarBinding의 오버라이드는 CRD typed schema를 사용한다 (JSON string이 아님). Phase 1에서는 ZFS + NVMe-oF 필드를 정적으로 정의하고, 타입 추가 시 kubebuilder marker로 확장한다.
+PillarStorageClass의 오버라이드는 CRD typed schema를 사용한다 (JSON string이 아님). Phase 1에서는 ZFS + NVMe-oF 필드를 정적으로 정의하고, 타입 추가 시 kubebuilder marker로 확장한다.
 
 오버라이드 가능 항목:
 - Backend 파라미터: ZFS properties(compression, volblocksize 등)
@@ -401,14 +401,14 @@ spec:
 ┌─ Kubernetes Cluster ──────────────────────────────────────┐
 │                                                           │
 │  ┌─ pillar-controller (Deployment, 1 replica) ──────────┐ │
-│  │  • CRD reconciler (PillarTarget/Pool/Protocol/        │ │
+│  │  • CRD reconciler (PillarAgent/Pool/Protocol/        │ │
 │  │    Binding)                                           │ │
 │  │  • CSI Controller service                             │ │
 │  │  • gRPC client → agent 통신                            │ │
-│  │  • PillarTarget status 관리                             │ │
-│  │  • Target bind IP resolve (PillarTarget → Node IP)    │ │
-│  │  • StorageClass 자동 생성 (PillarBinding → SC)         │ │
-│  │  • 노드 label 관리 (PillarTarget ↔ storage-node)      │ │
+│  │  • PillarAgent status 관리                             │ │
+│  │  • Target bind IP resolve (PillarAgent → Node IP)    │ │
+│  │  • StorageClass 자동 생성 (PillarStorageClass → SC)         │ │
+│  │  • 노드 label 관리 (PillarAgent ↔ storage-node)      │ │
 │  │  • CSI 작업 재시도 + 롤백 (exponential backoff)         │ │
 │  │  • Agent 복구: 연결 복구 시 전체 상태 push              │ │
 │  │  • CSI sidecars: provisioner, attacher, resizer,      │ │
@@ -429,7 +429,7 @@ spec:
 │  └───────────────────────────────────────────────────────┘ │
 │                                                           │
 │  ┌─ pillar-agent (DaemonSet, 스토리지 노드만) ───────────┐  │
-│  │  • nodeSelector: pillar-csi.bhyoo.com/storage-node    │ │
+│  │  • nodeSelector: pillar-csi.bhyoo.com/agent-node    │ │
 │  │  • gRPC server (Phase 1: 평문, TLS 옵션 준비)          │ │
 │  │  • 완전 stateless — 복구 시 controller에서 상태 수신     │ │
 │  │  • Backend 플러그인: ZFS, LVM, directory 등            │ │
@@ -468,12 +468,12 @@ CLI 도구 없이 **configfs 직접 조작**으로 target을 설정한다:
 
 #### Agent 디스커버리
 
-- **K8s 내부** (Phase 1): PillarTarget의 `nodeRef` → K8s Node `status.addresses`에서 IP 조회 → `<nodeIP>:<port>`로 직접 연결 (DaemonSet `hostPort` 사용, pod IP 조회 불필요)
-- **K8s 외부** (Phase N): PillarTarget의 `external` → 명시된 address로 직접 연결
+- **K8s 내부** (Phase 1): PillarAgent의 `nodeRef` → K8s Node `status.addresses`에서 IP 조회 → `<nodeIP>:<port>`로 직접 연결 (DaemonSet `hostPort` 사용, pod IP 조회 불필요)
+- **K8s 외부** (Phase N): PillarAgent의 `external` → 명시된 address로 직접 연결
 
 #### Agent DaemonSet 노드 선택
 
-PillarTarget CR 생성 시 controller가 해당 노드에 `pillar-csi.bhyoo.com/storage-node=true` label을 자동 부여한다. Agent DaemonSet은 이 label이 있는 노드에만 스케줄링된다. PillarTarget 삭제 시 label도 자동 제거된다. 사용자는 PillarTarget CR만 만들면 agent가 자동으로 배포된다.
+PillarAgent CR 생성 시 controller가 해당 노드에 `pillar-csi.bhyoo.com/agent-node=true` label을 자동 부여한다. Agent DaemonSet은 이 label이 있는 노드에만 스케줄링된다. PillarAgent 삭제 시 label도 자동 제거된다. 사용자는 PillarAgent CR만 만들면 agent가 자동으로 배포된다.
 
 #### Agent 크래시/리부트 복구
 
@@ -493,7 +493,7 @@ Agent는 **완전히 stateless**하다. 로컬 상태를 저장하지 않는다.
 
 **hostNetwork 필수.** 커널의 `nvmet_tcp`는 listening socket을, `nvme-fabrics`는 outbound TCP 연결을 **configfs/`/dev/nvme-fabrics`에 쓴 프로세스의 network namespace에 바인딩한다.** Agent/node DaemonSet을 `hostNetwork: false`로 두면 listener는 agent pod netns에, initiator의 SYN은 node pod netns에서 출발하기 때문에 두 netns 간 격리로 인해 데이터 플레인이 동작하지 않는다 (`NodeStageVolume`에서 `connection refused`). 이는 Kind뿐 아니라 bare-metal에서도 동일하게 재현되며, democratic-csi, OpenEBS Mayastor, Lightbits, NetApp Trident 등 모든 메이저 NVMe-oF/iSCSI CSI 드라이버가 agent + node DaemonSet 둘 다 `hostNetwork: true`로 운용한다. 트레이드오프는 호스트 포트 점유 및 NetworkPolicy 미적용이며, 그 외에 데이터 플레인을 동작시킬 방법이 없으므로 업계 전체가 수용하는 표준 구성이다.
 
-Target bind IP는 controller가 PillarTarget nodeRef에서 resolve하여 gRPC로 agent에 전달한다.
+Target bind IP는 controller가 PillarAgent nodeRef에서 resolve하여 gRPC로 agent에 전달한다.
 
 #### gRPC 보안
 
@@ -539,7 +539,7 @@ Phase 1에서는 평문 gRPC를 사용한다. TLS 지원은 아키텍처에 포�
 | targetcli, nvmetcli | 불필요 | configfs 직접 조작으로 대체 |
 
 **modprobe 실패 정책:** Init container는 best-effort로 modprobe를 실행한다. 실패해도 pod 시작을 차단하지 않는다.
-- **pillar-agent:** 모듈 로딩 실패 시 해당 프로토콜을 capabilities에서 제외하고 계속 동작. PillarTarget status에 반영.
+- **pillar-agent:** 모듈 로딩 실패 시 해당 프로토콜을 capabilities에서 제외하고 계속 동작. PillarAgent status에 반영.
 - **pillar-node:** 모듈 로딩 실패 시 pod은 정상 시작. 해당 프로토콜의 볼륨 마운트 요청이 오면 NodeStageVolume에서 명확한 에러 메시지 반환 (예: "nvme_tcp module not available on this node").
 
 **한계:** 커널 모듈이 커널에 빌드되지 않은 경우 (예: RPi의 nvme_tcp) modprobe가 실패한다. 이 경우 DKMS 패키지 사전 설치가 필요하다.
@@ -629,7 +629,7 @@ type ProtocolInitiator interface {
 Volume ID: rock5bp/hot-data/pvc-abc123
 
 파싱:
-  target: rock5bp       → PillarTarget 참조 → agent gRPC 주소
+  target: rock5bp       → PillarAgent 참조 → agent gRPC 주소
   pool: hot-data         → ZFS pool 이름
   name: pvc-abc123       → 볼륨 이름
 
@@ -643,11 +643,11 @@ NVMe NQN: nqn.2024-01.com.bhyoo.pillar-csi:rock5bp:pvc-abc123
 1. PVC 생성
 2. external-provisioner → CSI CreateVolume
 3. pillar-controller:
-   a. PillarBinding에서 poolRef, protocolRef 확인
+   a. PillarStorageClass에서 storeRef, protocolRef 확인
    b. 파라미터 머지 (Pool → Protocol → Binding → PVC annotation)
       - PVC annotation은 튜닝 파라미터만 허용, 구조적 참조 거부
    c. Backend-Protocol 호환성 검증
-   d. PillarPool → PillarTarget → Node IP resolve
+   d. PillarStore → PillarAgent → Node IP resolve
    e. gRPC로 agent에 CreateVolume + ExportVolume 요청
       (target bind IP도 함께 전달)
    f. 중간 실패 시 롤백 (예: export 실패 → 생성된 볼륨 삭제)
@@ -707,7 +707,7 @@ NVMe NQN: nqn.2024-01.com.bhyoo.pillar-csi:rock5bp:pvc-abc123
 ### Phase 1: ZFS zvol + NVMe-oF TCP (MVP)
 
 **범위:**
-- CRD: PillarTarget, PillarPool, PillarProtocol, PillarBinding (모두 cluster-scoped)
+- CRD: PillarAgent, PillarStore, PillarProtocol, PillarStorageClass (모두 cluster-scoped)
 - CRD controller + validation webhook (immutable 필드 검증)
 - CRD status conditions (K8s 표준 패턴)
 - Finalizer 기반 의존성 삭제 보호
@@ -716,11 +716,11 @@ NVMe NQN: nqn.2024-01.com.bhyoo.pillar-csi:rock5bp:pvc-abc123
 - pillar-node: NVMe-oF TCP initiator + init container modprobe (best-effort) + 도구 번들
 - pillar-controller: CSI Controller (CreateVolume, DeleteVolume, ExpandVolume, ControllerPublishVolume/UnpublishVolume, ValidateVolumeCapabilities, GetCapacity)
 - pillar-controller: CSI 작업 재시도/롤백 (exponential backoff)
-- pillar-controller: PillarTarget 노드 label 자동 관리
+- pillar-controller: PillarAgent 노드 label 자동 관리
 - CSI Node (Stage/Unstage/Publish/Unpublish, NodeGetVolumeStats, NodeExpandVolume)
 - NVMe-oF ACL on/off (PillarProtocol acl 필드)
 - NVMe-oF 타임아웃 파라미터 (PillarProtocol 필드)
-- StorageClass 자동 생성 (PillarBinding reconcile, ownerReference 관리)
+- StorageClass 자동 생성 (PillarStorageClass reconcile, ownerReference 관리)
 - 파라미터 오버라이드 계층 (Pool → Protocol → Binding → PVC annotation)
 - fsType/mkfsOptions 오버라이드 (기본값: ext4)
 - volumeMode: Filesystem 지원
@@ -747,7 +747,7 @@ NVMe NQN: nqn.2024-01.com.bhyoo.pillar-csi:rock5bp:pvc-abc123
 ### Phase 6: SMB Protocol
 
 ### Phase 7: 외부 노드 지원
-- PillarTarget `spec.external` + agent standalone 바이너리
+- PillarAgent `spec.external` + agent standalone 바이너리
 
 ### Phase 8: 추가 Backend
 - block-device, directory, Btrfs subvolume
@@ -758,7 +758,7 @@ NVMe NQN: nqn.2024-01.com.bhyoo.pillar-csi:rock5bp:pvc-abc123
 
 | 필드 구분 | 예시 | 수정 가능 |
 |----------|------|:---:|
-| **참조/타입** | targetRef, poolRef, protocolRef, backend.type, protocol.type | X (validation webhook 거부) |
+| **참조/타입** | agentRef, storeRef, protocolRef, backend.type, protocol.type | X (validation webhook 거부) |
 | **튜닝 파라미터** | properties, maxQueueSize, acl, fsType, ctrlLossTmo | O |
 
 ### 7.2 의존성 삭제 보호
@@ -766,14 +766,14 @@ NVMe NQN: nqn.2024-01.com.bhyoo.pillar-csi:rock5bp:pvc-abc123
 Finalizer를 사용하여 하위 참조가 있으면 삭제를 거부한다:
 
 ```
-PillarTarget ← PillarPool ← PillarBinding ← StorageClass ← PVC
+PillarAgent ← PillarStore ← PillarStorageClass ← StorageClass ← PVC
 ```
 
-- PillarPool이 참조하는 PillarTarget 삭제 시도 → **거부**
-- PillarBinding이 참조하는 PillarPool 삭제 시도 → **거부**
-- 활성 PVC가 있는 StorageClass의 PillarBinding 삭제 시도 → **거부**
+- PillarStore이 참조하는 PillarAgent 삭제 시도 → **거부**
+- PillarStorageClass이 참조하는 PillarStore 삭제 시도 → **거부**
+- 활성 PVC가 있는 StorageClass의 PillarStorageClass 삭제 시도 → **거부**
 
-사용자는 역순(PVC → PillarBinding → PillarPool → PillarTarget)으로 삭제해야 한다.
+사용자는 역순(PVC → PillarStorageClass → PillarStore → PillarAgent)으로 삭제해야 한다.
 
 ### 7.3 CRD Status Conditions
 
@@ -788,14 +788,14 @@ PillarTarget ← PillarPool ← PillarBinding ← StorageClass ← PVC
 
 ### 7.4 StorageClass 라이프사이클
 
-PillarBinding이 ownerReference로 StorageClass를 완전 관리한다:
+PillarStorageClass이 ownerReference로 StorageClass를 완전 관리한다:
 
-- PillarBinding 생성 → StorageClass 자동 생성
-- PillarBinding spec 수정 → StorageClass 업데이트
-- PillarBinding 삭제 → StorageClass 삭제
-- StorageClass 직접 수정(`kubectl edit sc`) → reconciler가 PillarBinding spec으로 되돌림
+- PillarStorageClass 생성 → StorageClass 자동 생성
+- PillarStorageClass spec 수정 → StorageClass 업데이트
+- PillarStorageClass 삭제 → StorageClass 삭제
+- StorageClass 직접 수정(`kubectl edit sc`) → reconciler가 PillarStorageClass spec으로 되돌림
 
-StorageClass 이름은 PillarBinding의 `spec.storageClass.name`에서 사용자가 명시적으로 지정한다. `allowVolumeExpansion`은 backend capability에서 자동 결정되되, 사용자가 오버라이드할 수 있다.
+StorageClass 이름은 PillarStorageClass의 `spec.storageClass.name`에서 사용자가 명시적으로 지정한다. `allowVolumeExpansion`은 backend capability에서 자동 결정되되, 사용자가 오버라이드할 수 있다.
 
 ### 7.5 CSI 작업 실패 시 롤백/재시도
 
@@ -806,15 +806,15 @@ StorageClass 이름은 PillarBinding의 `spec.storageClass.name`에서 사용자
 
 ### 7.6 용량 관리
 
-Controller는 사전 용량 검증을 하지 않는다. Agent에 요청을 보내고 `zfs create` 실패 시 에러를 반환한다. ZFS의 quota/reservation 기능은 PillarPool의 backend properties에서 설정 가능하다. Controller 레벨 quota (Pool별 최대 프로비저닝 제한)는 Phase 1 스코프 아님.
+Controller는 사전 용량 검증을 하지 않는다. Agent에 요청을 보내고 `zfs create` 실패 시 에러를 반환한다. ZFS의 quota/reservation 기능은 PillarStore의 backend properties에서 설정 가능하다. Controller 레벨 quota (Pool별 최대 프로비저닝 제한)는 Phase 1 스코프 아님.
 
 ### 7.7 에러/트러블슈팅 DX
 
 **kubectl 네이티브만** 사용한다. 별도 CLI나 웹 대시보드를 제공하지 않는다.
 
-- `kubectl describe pillartarget <name>` — conditions로 agent 연결, 노드 존재 여부 진단
-- `kubectl describe pillarpool <name>` — conditions로 pool 발견, backend 지원 여부 진단
-- `kubectl describe pillarbinding <name>` — conditions로 호환성, SC 생성 상태 진단
+- `kubectl describe pillaragent <name>` — conditions로 agent 연결, 노드 존재 여부 진단
+- `kubectl describe pillarstore <name>` — conditions로 pool 발견, backend 지원 여부 진단
+- `kubectl describe pillarstorageclass <name>` — conditions로 호환성, SC 생성 상태 진단
 - `kubectl describe pvc <name>` — Events에서 프로비저닝 실패 원인 확인
 - `kubectl get events --field-selector reason=ProvisioningFailed` — 볼륨 생성 실패 이벤트 조회
 
@@ -868,10 +868,10 @@ Controller는 사전 용량 검증을 하지 않는다. Agent에 요청을 보�
 |------|------|
 | **Backend** | 스토리지 노드에서 볼륨을 생성/관리하는 방법 (ZFS, LVM 등) |
 | **Protocol** | 볼륨을 네트워크로 공유하는 방법. 블록(NVMe-oF, iSCSI)과 파일(NFS, SMB) 두 카테고리 |
-| **PillarTarget** | 사용자가 생성하는 스토리지 agent 인스턴스 정의. 노드 위치 + agent 상태 |
-| **PillarPool** | PillarTarget의 특정 Backend 인스턴스 (예: rock5bp의 hot-data ZFS pool) |
+| **PillarAgent** | 사용자가 생성하는 스토리지 agent 인스턴스 정의. 노드 위치 + agent 상태 |
+| **PillarStore** | PillarAgent의 특정 Backend 인스턴스 (예: rock5bp의 hot-data ZFS pool) |
 | **PillarProtocol** | 프로토콜 타입과 기본 설정의 재사용 가능한 정의. 노드 무관 |
-| **PillarBinding** | PillarPool + PillarProtocol 조합. StorageClass를 자동 생성 |
+| **PillarStorageClass** | PillarStore + PillarProtocol 조합. StorageClass를 자동 생성 |
 | **Target** | 스토리지를 네트워크로 내보내는 측 (스토리지 노드, agent가 configfs로 관리) |
 | **Initiator** | 네트워크 스토리지에 연결하는 측 (워커 노드, CSI node plugin이 관리) |
 | **Agent** | 스토리지 노드의 gRPC 서버. Backend/Protocol target 플러그인. K8s 의존성 없음. Stateless |

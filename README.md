@@ -15,7 +15,7 @@ pillar-csi is a Go-based Kubernetes CSI driver that exports local ZFS zvols and 
 |---|---|---|
 | Language / footprint | Node.js | Go — single static binary |
 | Deployment model | One Helm release per backend (controller + node DaemonSet duplicated) | Single cluster deployment, declarative `Pillar*` CRDs |
-| Multi-pool | Extra Helm release per pool (SSH config, RBAC, sidecars duplicated) | Add one `PillarPool` CR |
+| Multi-pool | Extra Helm release per pool (SSH config, RBAC, sidecars duplicated) | Add one `PillarStore` CR |
 | Storage-node IPC | SSH (parses shell output, key management, injection risk) | gRPC agent (typed, auto-reconnect, mTLS-capable) |
 | Target configuration | `targetcli` / `nvmetcli` CLI (Python dependency) | Direct configfs writes with read-back verification |
 | Node prerequisites | open-iscsi / nvme-cli pre-installed on every worker | Bundled in node image + init-container `modprobe` |
@@ -44,16 +44,16 @@ pillar-csi is a Go-based Kubernetes CSI driver that exports local ZFS zvols and 
                          worker node (Pod)
 ```
 
-The control plane (`pillar-controller`) runs as a `Deployment` and reconciles the `Pillar*` CRDs. `pillar-agent` runs as a `DaemonSet` on storage nodes only (auto-labelled when a `PillarTarget` CR is created) and owns all configfs writes on the host; `pillar-node` runs on every worker and handles the CSI Node service — initiator connect, mkfs, bind-mount. Both DaemonSets use `hostNetwork: true` so the NVMe-oF/TCP data plane can bind to the host network namespace.
+The control plane (`pillar-controller`) runs as a `Deployment` and reconciles the `Pillar*` CRDs. `pillar-agent` runs as a `DaemonSet` on storage nodes only (auto-labelled when a `PillarAgent` CR is created) and owns all configfs writes on the host; `pillar-node` runs on every worker and handles the CSI Node service — initiator connect, mkfs, bind-mount. Both DaemonSets use `hostNetwork: true` so the NVMe-oF/TCP data plane can bind to the host network namespace.
 
 | CRD | Purpose |
 |---|---|
-| `PillarTarget` | Locates a storage agent (in-cluster `nodeRef` or external address) |
-| `PillarPool` | A storage pool on a target — ZFS pool name, LVM VG, and backend config |
+| `PillarAgent` | Locates a storage agent (in-cluster `nodeRef` or external address) |
+| `PillarStore` | A storage pool on a target — ZFS pool name, LVM VG, and backend config |
 | `PillarProtocol` | Network protocol configuration (NVMe-oF/TCP, iSCSI, NFS, SMB) |
-| `PillarBinding` | Pool × Protocol → auto-generated `StorageClass` |
+| `PillarStorageClass` | Pool × Protocol → auto-generated `StorageClass` |
 
-`PillarVolume` is an internal durable-state CRD used to recover from partial provisioning failures; users do not author it.
+`PillarVolumeState` is an internal durable-state CRD used to recover from partial provisioning failures; users do not author it.
 
 ## Supported matrix
 
@@ -102,27 +102,27 @@ helm install pillar-csi charts/pillar-csi \
 Apply target, pool, protocol, binding once per cluster, then provision PVCs against the generated `StorageClass`:
 
 ```yaml
-apiVersion: pillar-csi.pillar-csi.bhyoo.com/v1alpha1
-kind: PillarTarget
+apiVersion: pillar-csi.bhyoo.com/v1alpha1
+kind: PillarAgent
 metadata:
   name: rock5bp
 spec:
   nodeRef:
     name: rock5bp
 ---
-apiVersion: pillar-csi.pillar-csi.bhyoo.com/v1alpha1
-kind: PillarPool
+apiVersion: pillar-csi.bhyoo.com/v1alpha1
+kind: PillarStore
 metadata:
   name: rock5bp-hot
 spec:
-  targetRef: rock5bp
+  agentRef: rock5bp
   backend:
     type: zfs-zvol
     zfs:
       pool: tank
       parentDataset: k8s
 ---
-apiVersion: pillar-csi.pillar-csi.bhyoo.com/v1alpha1
+apiVersion: pillar-csi.bhyoo.com/v1alpha1
 kind: PillarProtocol
 metadata:
   name: nvmeof-default
@@ -132,12 +132,12 @@ spec:
     port: 4420
     acl: true
 ---
-apiVersion: pillar-csi.pillar-csi.bhyoo.com/v1alpha1
-kind: PillarBinding
+apiVersion: pillar-csi.bhyoo.com/v1alpha1
+kind: PillarStorageClass
 metadata:
   name: hot
 spec:
-  poolRef: rock5bp-hot
+  storeRef: rock5bp-hot
   protocolRef: nvmeof-default
   storageClass:
     name: pillar-hot
@@ -162,10 +162,10 @@ spec:
 Everything is reflected in standard Kubernetes resources — no extra CLI needed:
 
 ```sh
-kubectl describe pillartarget rock5bp        # AgentConnected / Ready conditions
-kubectl describe pillarpool   rock5bp-hot    # PoolDiscovered / BackendSupported
-kubectl describe pillarbinding hot           # PoolReady / ProtocolValid / Compatible / StorageClassCreated
-kubectl describe pillarvolume <name>         # internal volume state after provisioning
+kubectl describe pillaragent rock5bp        # AgentConnected / Ready conditions
+kubectl describe pillarstore   rock5bp-hot    # PoolDiscovered / BackendSupported
+kubectl describe pillarstorageclass hot           # PoolReady / ProtocolValid / Compatible / StorageClassCreated
+kubectl describe pillarvolumestate <name>         # internal volume state after provisioning
 kubectl describe pvc data                    # provisioner events
 kubectl get events --field-selector reason=ProvisioningFailed
 ```

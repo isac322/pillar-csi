@@ -7,8 +7,8 @@
 #   * Kind cluster ${CLUSTER_NAME} (default: pillar-csi-ext-e2e) exists.
 #   * KUBECONFIG points at the new cluster's kubeconfig.
 #   * pillar-csi is helm-installed in namespace ${HELM_NAMESPACE}.
-#   * A PillarTarget + PillarPool + PillarProtocol CR set is applied, with the
-#     PillarTarget reporting condition=Ready.
+#   * A PillarAgent + PillarStore + PillarProtocol CR set is applied, with the
+#     PillarAgent reporting condition=Ready.
 #
 # Required tools on PATH: kind, docker, kubectl, helm.
 #
@@ -139,11 +139,11 @@ helm upgrade --install "${HELM_RELEASE}" "${REPO_ROOT}/charts/pillar-csi" \
   --set-string "controller.extraEnv[0].name=ENABLE_WEBHOOKS" \
   --set-string "controller.extraEnv[0].value=false"
 
-# ── 5. Apply PillarTarget / PillarPool / PillarProtocol ─────────────────────
-log "Applying PillarTarget / PillarPool / PillarProtocol"
+# ── 5. Apply PillarAgent / PillarStore / PillarProtocol ─────────────────────
+log "Applying PillarAgent / PillarStore / PillarProtocol"
 kubectl apply -f - <<EOF
-apiVersion: pillar-csi.pillar-csi.bhyoo.com/v1alpha1
-kind: PillarTarget
+apiVersion: pillar-csi.bhyoo.com/v1alpha1
+kind: PillarAgent
 metadata:
   name: pillar-target-default
 spec:
@@ -152,18 +152,18 @@ spec:
     addressType: InternalIP
     port: 9500
 ---
-apiVersion: pillar-csi.pillar-csi.bhyoo.com/v1alpha1
-kind: PillarPool
+apiVersion: pillar-csi.bhyoo.com/v1alpha1
+kind: PillarStore
 metadata:
   name: ${VG_NAME}
 spec:
-  targetRef: pillar-target-default
+  agentRef: pillar-target-default
   backend:
     type: lvm-lv
     lvm:
       volumeGroup: ${VG_NAME}
 ---
-apiVersion: pillar-csi.pillar-csi.bhyoo.com/v1alpha1
+apiVersion: pillar-csi.bhyoo.com/v1alpha1
 kind: PillarProtocol
 metadata:
   name: nvmeof-tcp
@@ -174,12 +174,12 @@ spec:
   fsType: ext4
 EOF
 
-# ── 6. Wait for PillarTarget Ready ──────────────────────────────────────────
-log "Waiting for PillarTarget condition=Ready"
-if ! kubectl wait --for=condition=Ready --timeout=3m pillartarget/pillar-target-default; then
-  log "PillarTarget never reached Ready; dumping CR + dependencies"
-  kubectl get pillartarget pillar-target-default -o yaml || true
-  kubectl get pillarpool ${VG_NAME} -o yaml || true
+# ── 6. Wait for PillarAgent Ready ──────────────────────────────────────────
+log "Waiting for PillarAgent condition=Ready"
+if ! kubectl wait --for=condition=Ready --timeout=3m pillaragent/pillar-target-default; then
+  log "PillarAgent never reached Ready; dumping CR + dependencies"
+  kubectl get pillaragent pillar-target-default -o yaml || true
+  kubectl get pillarstore ${VG_NAME} -o yaml || true
   kubectl get pillarprotocol nvmeof-tcp -o yaml || true
   kubectl -n "${HELM_NAMESPACE}" logs deploy/${HELM_RELEASE}-controller -c controller --tail=120 || true
   kubectl -n "${HELM_NAMESPACE}" logs ds/${HELM_RELEASE}-agent --tail=80 || true

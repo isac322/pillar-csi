@@ -16,7 +16,7 @@ limitations under the License.
 
 // Package v1alpha1 contains API Schema definitions for the pillar-csi v1alpha1 API group.
 // +kubebuilder:object:generate=true
-// +groupName=pillar-csi.pillar-csi.bhyoo.com
+// +groupName=pillar-csi.bhyoo.com
 package v1alpha1
 
 import (
@@ -26,7 +26,7 @@ import (
 
 var (
 	// GroupVersion is group version used to register these objects.
-	GroupVersion = schema.GroupVersion{Group: "pillar-csi.pillar-csi.bhyoo.com", Version: "v1alpha1"}
+	GroupVersion = schema.GroupVersion{Group: "pillar-csi.bhyoo.com", Version: "v1alpha1"}
 
 	// SchemeBuilder is used to add go types to the GroupVersionKind scheme.
 	SchemeBuilder = &scheme.Builder{GroupVersion: GroupVersion} //nolint:staticcheck // SA1019: scheme.Builder deprecated in controller-runtime v0.24; migration to k8s.io/apimachinery/pkg/runtime.SchemeBuilder requires per-type registration refactor and is tracked as a follow-up.

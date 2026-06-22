@@ -5,7 +5,7 @@ package e2e
 // E30 verifies the CSI controller's skipBackend behaviour that prevents
 // duplicate LV creation when CreateVolume is retried after an export failure.
 // The first CreateVolume attempt creates the LV (agent.CreateVolume = 1) but
-// fails during export; the PillarVolume CRD is persisted with
+// fails during export; the PillarVolumeState CRD is persisted with
 // Phase=CreatePartial. On retry, the controller detects the CreatePartial CRD
 // and skips agent.CreateVolume entirely, going straight to agent.ExportVolume.
 //

@@ -106,7 +106,7 @@ const (
 	//     (idempotent, may be a no-op) and then DeleteVolume on the agent to
 	//     reclaim the backing storage.  The state returns to StateNonExistent.
 	//
-	// This state is persisted durably in a PillarVolume CRD so that the
+	// This state is persisted durably in a PillarVolumeState CRD so that the
 	// controller can recover correctly after a restart.
 	StateCreatePartial
 )
@@ -184,7 +184,7 @@ const (
 	// subsequent ExportVolume failure leaves the state machine in a
 	// recoverable partial-failure state.
 	//
-	// The controller also persists this transition durably in a PillarVolume
+	// The controller also persists this transition durably in a PillarVolumeState
 	// CRD so that a restart does not lose track of the partially-created
 	// volume.
 	//

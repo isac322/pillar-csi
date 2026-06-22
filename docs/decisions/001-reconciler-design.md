@@ -8,7 +8,7 @@
 ## Context
 
 Pillar-CSI manages storage provisioning across four interdependent CRDs:
-`PillarTarget`, `PillarPool`, `PillarProtocol`, and `PillarBinding`.  Each
+`PillarAgent`, `PillarStore`, `PillarProtocol`, and `PillarStorageClass`.  Each
 resource has both lifecycle dependencies (a Binding needs a Pool and a Protocol;
 a Pool needs a Target) and cleanup dependencies (a Target must not be deleted
 while Pools still reference it).
@@ -26,7 +26,7 @@ removed while PVCs still hold volumes.
 
 **Why:** Kubernetes `ownerReference` cascade-delete cannot protect across
 namespace boundaries or in cases where the "owner" is the *dependent* resource
-rather than the parent (e.g. a PillarPool is not owned by a PillarTarget; it
+rather than the parent (e.g. a PillarStore is not owned by a PillarAgent; it
 merely references one).  Finalizers give the controller an explicit hook to
 block the DELETE call until all safety checks pass, producing an observable,
 retryable failure instead of a silent race condition.
@@ -48,20 +48,20 @@ automated alerting or human debugging; a condition like
 
 ### 3. ownerReference on the generated StorageClass
 
-**Why:** A `PillarBinding` drives the creation of exactly one `StorageClass`.
+**Why:** A `PillarStorageClass` drives the creation of exactly one `StorageClass`.
 The StorageClass must be garbage-collected when the Binding is deleted, but
-`StorageClass` is a cluster-scoped resource while `PillarBinding` may be
+`StorageClass` is a cluster-scoped resource while `PillarStorageClass` may be
 namespace-scoped.  `SetControllerReference` from controller-runtime handles the
 cross-scope bookkeeping and makes the ownership explicit in `kubectl describe
 storageclass`.  The Binding additionally blocks deletion while PVCs still use
 the class, preventing silent data unavailability.
 
-### 4. Node auto-labeling from PillarTarget reconcile
+### 4. Node auto-labeling from PillarAgent reconcile
 
 **Why:** The CSI node plugin needs to advertise which nodes can serve as storage
 targets without requiring a separate DaemonSet or manual label management.
-Driving the label (`pillar-csi.bhyoo.com/storage-node=true`) from the
-`PillarTarget` reconciler means the label lifecycle is tied to the existence of
+Driving the label (`pillar-csi.bhyoo.com/agent-node=true`) from the
+`PillarAgent` reconciler means the label lifecycle is tied to the existence of
 a valid, connected target, not to operator intervention.  The label is removed
 during finalizer cleanup so workloads are not scheduled to a node whose storage
 target has been decommissioned.

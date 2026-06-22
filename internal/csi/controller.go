@@ -26,9 +26,9 @@ limitations under the License.
 //	        └─ AllowInitiator / DenyInitiator
 //
 // Routing: each CSI request carries a volumeID that encodes the
-// PillarBinding name; the controller uses the Kubernetes client to look up the
-// corresponding PillarPool and PillarTarget, resolves the agent address from
-// PillarTarget.Status.ResolvedAddress, and dials the agent via AgentDialer.
+// PillarStorageClass name; the controller uses the Kubernetes client to look up the
+// corresponding PillarStore and PillarAgent, resolves the agent address from
+// PillarAgent.Status.ResolvedAddress, and dials the agent via AgentDialer.
 package csi
 
 import (
@@ -125,9 +125,9 @@ func DefaultAgentDialer(_ context.Context, addr string) (agentv1.AgentServiceCli
 type ControllerServer struct {
 	csi.UnimplementedControllerServer
 
-	// k8sClient is used to look up PillarTarget, PillarPool, and PillarBinding
+	// k8sClient is used to look up PillarAgent, PillarStore, and PillarStorageClass
 	// resources to route volume operations to the correct storage node.
-	// It is also used to create/update PillarVolume CRDs for durable
+	// It is also used to create/update PillarVolumeState CRDs for durable
 	// partial-failure state tracking.
 	k8sClient client.Client
 
@@ -140,8 +140,8 @@ type ControllerServer struct {
 	driverName string
 
 	// sm tracks the in-memory lifecycle state of every volume managed by
-	// this controller instance.  It is initialized from persisted PillarVolume
-	// CRDs at startup (via LoadStateFromPillarVolumes) and updated at each
+	// this controller instance.  It is initialized from persisted PillarVolumeState
+	// CRDs at startup (via LoadStateFromPillarVolumeStates) and updated at each
 	// lifecycle step.
 	sm *VolumeStateMachine
 }
@@ -183,23 +183,23 @@ func (s *ControllerServer) GetStateMachine() *VolumeStateMachine {
 	return s.sm
 }
 
-// LoadStateFromPillarVolumes restores the in-memory VolumeStateMachine from
-// all PillarVolume CRDs currently persisted in the cluster.  This should be
+// LoadStateFromPillarVolumeStates restores the in-memory VolumeStateMachine from
+// all PillarVolumeState CRDs currently persisted in the cluster.  This should be
 // called once at controller startup so that the state machine reflects any
 // partial-failure states that survived a controller restart.
 //
 // Errors listing the CRDs are returned; individual volumes with unknown phases
 // are skipped with a warning rather than causing a fatal error, because the
 // CO will retry any in-progress operations.
-func (s *ControllerServer) LoadStateFromPillarVolumes(ctx context.Context) error {
-	pvList := &v1alpha1.PillarVolumeList{}
+func (s *ControllerServer) LoadStateFromPillarVolumeStates(ctx context.Context) error {
+	pvList := &v1alpha1.PillarVolumeStateList{}
 	err := s.k8sClient.List(ctx, pvList)
 	if err != nil {
-		return fmt.Errorf("list PillarVolumes: %w", err)
+		return fmt.Errorf("list PillarVolumeStates: %w", err)
 	}
 	for i := range pvList.Items {
 		pv := &pvList.Items[i]
-		state := pillarVolumePhaseToVolumeState(pv.Status.Phase)
+		state := pillarVolumeStatePhaseToVolumeState(pv.Status.Phase)
 		if state != StateNonExistent {
 			s.sm.ForceState(pv.Spec.VolumeID, state)
 		}
@@ -207,21 +207,21 @@ func (s *ControllerServer) LoadStateFromPillarVolumes(ctx context.Context) error
 	return nil
 }
 
-// pillarVolumePhaseToVolumeState converts a PillarVolumePhase to the
+// pillarVolumeStatePhaseToVolumeState converts a PillarVolumeStatePhase to the
 // corresponding in-memory VolumeState used by the state machine.
-func pillarVolumePhaseToVolumeState(phase v1alpha1.PillarVolumePhase) VolumeState {
+func pillarVolumeStatePhaseToVolumeState(phase v1alpha1.PillarVolumeStatePhase) VolumeState {
 	switch phase {
-	case v1alpha1.PillarVolumePhaseCreatePartial:
+	case v1alpha1.PillarVolumeStatePhaseCreatePartial:
 		return StateCreatePartial
-	case v1alpha1.PillarVolumePhaseReady:
+	case v1alpha1.PillarVolumeStatePhaseReady:
 		return StateCreated
-	case v1alpha1.PillarVolumePhaseControllerPublished:
+	case v1alpha1.PillarVolumeStatePhaseControllerPublished:
 		return StateControllerPublished
-	case v1alpha1.PillarVolumePhaseNodeStagePartial:
+	case v1alpha1.PillarVolumeStatePhaseNodeStagePartial:
 		return StateNodeStagePartial
-	case v1alpha1.PillarVolumePhaseNodeStaged:
+	case v1alpha1.PillarVolumeStatePhaseNodeStaged:
 		return StateNodeStaged
-	case v1alpha1.PillarVolumePhaseNodePublished:
+	case v1alpha1.PillarVolumeStatePhaseNodePublished:
 		return StateNodePublished
 	default:
 		// Provisioning and unknown phases are treated as NonExistent so that
@@ -323,7 +323,7 @@ func (s *ControllerServer) ValidateVolumeCapabilities(
 	}
 
 	// CSI spec §4.4: ValidateVolumeCapabilities MUST return NotFound when the
-	// referenced volume does not exist.  We look up the PillarVolume CRD —
+	// referenced volume does not exist.  We look up the PillarVolumeState CRD —
 	// that record is the authoritative source for "does this driver own this
 	// volume?".  A malformed volume_id (rejected by the same lookup as
 	// not-found) is also treated as NotFound per the same paragraph: an ID
@@ -420,33 +420,33 @@ func describeSupportedModes(protocolType v1alpha1.ProtocolType) string {
 // ─────────────────────────────────────────────────────────────────────────────.
 
 const (
-	// StorageClass parameter keys written by PillarBindingReconciler.
-	paramPool         = "pillar-csi.bhyoo.com/pool"
-	paramBinding      = "pillar-csi.bhyoo.com/binding"
+	// StorageClass parameter keys written by PillarStorageClassReconciler.
+	paramPool         = "pillar-csi.bhyoo.com/store"
+	paramBinding      = "pillar-csi.bhyoo.com/storage-class"
 	paramProtocol     = "pillar-csi.bhyoo.com/protocol"
 	paramBackendType  = "pillar-csi.bhyoo.com/backend-type"
 	paramProtocolType = "pillar-csi.bhyoo.com/protocol-type"
-	paramTarget       = "pillar-csi.bhyoo.com/target"
+	paramTarget       = "pillar-csi.bhyoo.com/agent"
 	paramZFSParent    = "pillar-csi.bhyoo.com/zfs-parent-dataset"
 	paramNVMeOFPort   = "pillar-csi.bhyoo.com/nvmeof-port"
 	paramISCSIPort    = "pillar-csi.bhyoo.com/iscsi-port"
 	paramNFSVersion   = "pillar-csi.bhyoo.com/nfs-version"
 	paramLVMVG        = "pillar-csi.bhyoo.com/lvm-vg"
 
-	// LVM provisioning mode parameter key for StorageClass/PillarBinding that selects
+	// LVM provisioning mode parameter key for StorageClass/PillarStorageClass that selects
 	// the LVM provisioning mode for new volumes.  Accepted values: "linear",
 	// "thin".  When absent the LVM backend uses its compiled-in default (thin
 	// when the backend was started with a thinpool= flag, linear otherwise).
 	//
-	// Layer 1 (PillarPool):   populated from LVMBackendConfig.ProvisioningMode.
-	// Layer 3 (PillarBinding): overridden by LVMOverrides.ProvisioningMode.
+	// Layer 1 (PillarStore):   populated from LVMBackendConfig.ProvisioningMode.
+	// Layer 3 (PillarStorageClass): overridden by LVMOverrides.ProvisioningMode.
 	// Layer 4 (PVC annotation): highest-priority override via
 	//   "pillar-csi.bhyoo.com/param.lvm-mode" PVC annotation.
 	paramLVMMode = "pillar-csi.bhyoo.com/lvm-mode"
 
 	// ParamACLEnabled controls NVMe-oF host NQN ACL enforcement.
 	// Value: "true" (default, ACL enforced) or "false" (allow_any_host=1).
-	// Set by the PillarBinding controller from the PillarProtocol NVMeOFTCPConfig.ACL field.
+	// Set by the PillarStorageClass controller from the PillarProtocol NVMeOFTCPConfig.ACL field.
 	paramACLEnabled = "pillar-csi.bhyoo.com/acl-enabled"
 
 	// ParamZFSPropPrefix is the key prefix used to pass individual ZFS
@@ -556,7 +556,7 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 
 	// ── 4-level merge hierarchy: Pool → Protocol → Binding → PVC annotation ──
 	// mergeParamsFromCRDs augments the StorageClass params with data fetched
-	// live from the PillarBinding, PillarPool, and PillarProtocol CRDs and
+	// live from the PillarStorageClass, PillarStore, and PillarProtocol CRDs and
 	// then overlays any per-PVC annotation overrides.  Falls back gracefully
 	// when the binding name is absent (e.g. manually-created StorageClasses).
 	params, err := s.mergeParamsFromCRDs(ctx, scParams)
@@ -618,17 +618,17 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 	)
 
 	// ── Load persisted state (idempotency and partial-failure recovery) ───────
-	// The PillarVolume CRD name is the CSI volume name, which is a
+	// The PillarVolumeState CRD name is the CSI volume name, which is a
 	// Kubernetes-compatible identifier assigned by the CO (e.g. "pvc-abc123").
 	pvName := req.GetName()
-	existingPV, pvExists, pvErr := s.loadPillarVolume(ctx, pvName)
+	existingPV, pvExists, pvErr := s.loadPillarVolumeState(ctx, pvName)
 	if pvErr != nil {
 		return nil, status.Errorf(codes.Internal,
-			"failed to load PillarVolume %q: %v", pvName, pvErr)
+			"failed to load PillarVolumeState %q: %v", pvName, pvErr)
 	}
 	if pvExists {
 		// Restore the in-memory state machine entry from the persisted phase.
-		s.sm.ForceState(volumeID, pillarVolumePhaseToVolumeState(existingPV.Status.Phase))
+		s.sm.ForceState(volumeID, pillarVolumeStatePhaseToVolumeState(existingPV.Status.Phase))
 	}
 	// If the volume is already fully provisioned, return the cached response.
 	if s.sm.GetState(volumeID) == StateCreated &&
@@ -668,22 +668,22 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 		}, nil
 	}
 
-	// ── Resolve the agent address from PillarTarget ───────────────────────────
-	target := &v1alpha1.PillarTarget{}
+	// ── Resolve the agent address from PillarAgent ───────────────────────────
+	target := &v1alpha1.PillarAgent{}
 	getTargetErr := s.k8sClient.Get(ctx, types.NamespacedName{Name: targetName}, target)
 	if getTargetErr != nil {
 		if k8serrors.IsNotFound(getTargetErr) {
 			return nil, status.Errorf(codes.NotFound,
-				"PillarTarget %q not found", targetName)
+				"PillarAgent %q not found", targetName)
 		}
 		return nil, status.Errorf(codes.Internal,
-			"failed to get PillarTarget %q: %v", targetName, getTargetErr)
+			"failed to get PillarAgent %q: %v", targetName, getTargetErr)
 	}
 
 	agentAddr := target.Status.ResolvedAddress
 	if agentAddr == "" {
 		return nil, status.Errorf(codes.Unavailable,
-			"PillarTarget %q has no resolved address; agent may not be ready", targetName)
+			"PillarAgent %q has no resolved address; agent may not be ready", targetName)
 	}
 
 	// ── Dial the agent ────────────────────────────────────────────────────────
@@ -709,7 +709,7 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 	// avoids an unnecessary round-trip, and ensures we never attempt to
 	// re-create a zvol that already holds data.
 	//
-	// The device path required by ExportVolume is read from the PillarVolume
+	// The device path required by ExportVolume is read from the PillarVolumeState
 	// CRD that was durably written during the prior partial attempt.
 	var (
 		devicePath     string
@@ -747,7 +747,7 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 
 		// ── Record backend creation (partial-failure guard) ──────────────────
 		// Transition: NonExistent → CreatePartial.  We persist this state to
-		// the PillarVolume CRD before calling ExportVolume so that a controller
+		// the PillarVolumeState CRD before calling ExportVolume so that a controller
 		// crash between these two steps is recoverable: the next CreateVolume
 		// call will find the CRD in CreatePartial phase, skip backend creation
 		// (already done, and skipBackend will be set), then retry ExportVolume.
@@ -777,7 +777,7 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 		AclEnabled:   parseACLEnabled(params[paramACLEnabled]),
 	})
 	if err != nil {
-		// ExportVolume failed.  The PillarVolume CRD already records the
+		// ExportVolume failed.  The PillarVolumeState CRD already records the
 		// CreatePartial state durably; the CO may retry safely.  The next
 		// CreateVolume call will skip Step 1 (idempotent) and retry Step 2.
 		grpcSt, _ := status.FromError(err)
@@ -788,7 +788,7 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 	// ── Advance to fully-created state ────────────────────────────────────────
 	s.sm.ForceState(volumeID, StateCreated)
 
-	// Best-effort: update the PillarVolume CRD to the Ready phase and cache
+	// Best-effort: update the PillarVolumeState CRD to the Ready phase and cache
 	// the export parameters for idempotent re-use on subsequent CreateVolume
 	// calls.  A failure here is not fatal — the volume is already provisioned
 	// and the CO will not retry a successful CreateVolume.
@@ -830,7 +830,7 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 //   - UnexportVolume on a non-existent export returns success.
 //   - DeleteVolume on a non-existent volume returns success.
 //
-// If the PillarTarget has been decommissioned (not found in the API server)
+// If the PillarAgent has been decommissioned (not found in the API server)
 // we treat that as the volume already being gone and return success.
 func (s *ControllerServer) DeleteVolume(
 	ctx context.Context,
@@ -858,8 +858,8 @@ func (s *ControllerServer) DeleteVolume(
 	agentProtocolType := mapProtocolType(protocolTypeStr)
 	agentBackendType := mapBackendType(backendTypeStr)
 
-	// ── Resolve the agent address from PillarTarget ───────────────────────────
-	target := &v1alpha1.PillarTarget{}
+	// ── Resolve the agent address from PillarAgent ───────────────────────────
+	target := &v1alpha1.PillarAgent{}
 	getTargetErrDV := s.k8sClient.Get(ctx, types.NamespacedName{Name: targetName}, target)
 	if getTargetErrDV != nil {
 		if k8serrors.IsNotFound(getTargetErrDV) {
@@ -867,7 +867,7 @@ func (s *ControllerServer) DeleteVolume(
 			return &csi.DeleteVolumeResponse{}, nil
 		}
 		return nil, status.Errorf(codes.Internal,
-			"failed to get PillarTarget %q: %v", targetName, getTargetErrDV)
+			"failed to get PillarAgent %q: %v", targetName, getTargetErrDV)
 	}
 
 	agentAddr := target.Status.ResolvedAddress
@@ -875,7 +875,7 @@ func (s *ControllerServer) DeleteVolume(
 		// Target exists but has no address yet.  This is a transient state;
 		// return Unavailable so the CO will retry.
 		return nil, status.Errorf(codes.Unavailable,
-			"PillarTarget %q has no resolved address", targetName)
+			"PillarAgent %q has no resolved address", targetName)
 	}
 
 	// ── Dial the agent ────────────────────────────────────────────────────────
@@ -919,45 +919,45 @@ func (s *ControllerServer) DeleteVolume(
 	// ── Update the in-memory state machine ────────────────────────────────────
 	s.sm.ForceState(volumeID, StateNonExistent)
 
-	// ── Clean up the PillarVolume CRD (best-effort) ───────────────────────────
+	// ── Clean up the PillarVolumeState CRD (best-effort) ───────────────────────────
 	// Extract the CSI volume name from the agentVolID (last path component).
-	// This recovers the PillarVolume resource name that CreateVolume used.
+	// This recovers the PillarVolumeState resource name that CreateVolume used.
 	pvName := agentVolID
 	if idx := strings.LastIndex(agentVolID, "/"); idx >= 0 {
 		pvName = agentVolID[idx+1:]
 	}
 	//nolint:errcheck // best-effort CRD cleanup; volume is already deleted from storage
-	_ = s.deletePillarVolume(ctx, pvName)
+	_ = s.deletePillarVolumeState(ctx, pvName)
 
 	return &csi.DeleteVolumeResponse{}, nil
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PillarVolume CRD helpers (partial-failure state persistence)
+// PillarVolumeState CRD helpers (partial-failure state persistence)
 // ─────────────────────────────────────────────────────────────────────────────.
 
-// loadPillarVolume returns the PillarVolume CRD for the given volume name,
+// loadPillarVolumeState returns the PillarVolumeState CRD for the given volume name,
 // along with a boolean indicating whether it was found.  A nil k8sClient or
 // a NotFound error are treated as "not found" (non-error).
-func (s *ControllerServer) loadPillarVolume(
+func (s *ControllerServer) loadPillarVolumeState(
 	ctx context.Context,
 	pvName string,
-) (*v1alpha1.PillarVolume, bool, error) {
+) (*v1alpha1.PillarVolumeState, bool, error) {
 	if s.k8sClient == nil {
 		return nil, false, nil
 	}
-	pv := &v1alpha1.PillarVolume{}
+	pv := &v1alpha1.PillarVolumeState{}
 	err := s.k8sClient.Get(ctx, types.NamespacedName{Name: pvName}, pv)
 	if err != nil {
 		if k8serrors.IsNotFound(err) {
 			return nil, false, nil
 		}
-		return nil, false, fmt.Errorf("get PillarVolume %q: %w", pvName, err)
+		return nil, false, fmt.Errorf("get PillarVolumeState %q: %w", pvName, err)
 	}
 	return pv, true, nil
 }
 
-// getPillarVolumeWithCacheSettle issues client.Get and retries when the
+// getPillarVolumeStateWithCacheSettle issues client.Get and retries when the
 // object is reported NotFound, accommodating the brief window after a
 // successful client.Create during which the controller-runtime cache has not
 // yet observed the new resource.  The total wait is bounded so that a
@@ -967,11 +967,11 @@ func (s *ControllerServer) loadPillarVolume(
 // The poll interval grows exponentially from 50 ms up to 400 ms with a
 // total budget of cachePollBudget (2 s).  All other errors (e.g. genuine
 // API failures) are returned immediately without retry.
-func getPillarVolumeWithCacheSettle(
+func getPillarVolumeStateWithCacheSettle(
 	ctx context.Context,
 	c client.Client,
 	pvName string,
-	out *v1alpha1.PillarVolume,
+	out *v1alpha1.PillarVolumeState,
 ) error {
 	const cachePollBudget = 2 * time.Second
 	delay := 50 * time.Millisecond
@@ -999,12 +999,12 @@ func getPillarVolumeWithCacheSettle(
 	}
 }
 
-// pillarVolumeNameFromVolumeID extracts the PillarVolume object name from an
+// pillarVolumeStateNameFromVolumeID extracts the PillarVolumeState object name from an
 // encoded CSI volume_id "<target>/<protocol>/<backend>/<pool>/<pv-name>"
 // (or the trailing "<pool>/<pv-name>" segment when the leading parts are
 // already stripped).  Returns "" when the volume_id does not parse, signaling
 // "this is not a volume_id this driver issued".
-func pillarVolumeNameFromVolumeID(volumeID string) string {
+func pillarVolumeStateNameFromVolumeID(volumeID string) string {
 	parts := strings.SplitN(volumeID, "/", volumeIDParts)
 	if len(parts) != volumeIDParts {
 		return ""
@@ -1016,7 +1016,7 @@ func pillarVolumeNameFromVolumeID(volumeID string) string {
 	return agentVolID
 }
 
-// assertVolumeExists returns a gRPC NotFound error when no PillarVolume CRD
+// assertVolumeExists returns a gRPC NotFound error when no PillarVolumeState CRD
 // records the given volume_id, satisfying CSI spec §4.4 / §4.5 / §4.6 / §4.7
 // for ValidateVolumeCapabilities, ControllerPublishVolume, and the equivalent
 // node-side checks that mandate NotFound for unknown volumes.  A malformed
@@ -1027,13 +1027,13 @@ func (s *ControllerServer) assertVolumeExists(ctx context.Context, volumeID stri
 	if s.k8sClient == nil {
 		return nil
 	}
-	pvName := pillarVolumeNameFromVolumeID(volumeID)
+	pvName := pillarVolumeStateNameFromVolumeID(volumeID)
 	if pvName == "" {
 		return status.Errorf(codes.NotFound, "volume %q not found", volumeID)
 	}
-	_, exists, err := s.loadPillarVolume(ctx, pvName)
+	_, exists, err := s.loadPillarVolumeState(ctx, pvName)
 	if err != nil {
-		return status.Errorf(codes.Internal, "lookup PillarVolume %q: %v", pvName, err)
+		return status.Errorf(codes.Internal, "lookup PillarVolumeState %q: %v", pvName, err)
 	}
 	if !exists {
 		return status.Errorf(codes.NotFound, "volume %q not found", volumeID)
@@ -1041,8 +1041,8 @@ func (s *ControllerServer) assertVolumeExists(ctx context.Context, volumeID stri
 	return nil
 }
 
-// persistCreatePartial creates or updates a PillarVolume CRD with
-// PillarVolumePhaseCreatePartial, recording that the backend storage resource
+// persistCreatePartial creates or updates a PillarVolumeState CRD with
+// PillarVolumeStatePhaseCreatePartial, recording that the backend storage resource
 // has been created but ExportVolume has not yet succeeded.
 //
 // DevicePath is the path returned by agent.CreateVolume (e.g.
@@ -1050,7 +1050,7 @@ func (s *ControllerServer) assertVolumeExists(ctx context.Context, volumeID stri
 // that a retry of CreateVolume can skip the backend-creation step and call
 // ExportVolume directly.
 //
-// PvExists must be true when a PillarVolume with pvName already exists in the
+// PvExists must be true when a PillarVolumeState with pvName already exists in the
 // cluster; the function then updates via Status().Update() instead of Create().
 func (s *ControllerServer) persistCreatePartial(
 	ctx context.Context,
@@ -1064,8 +1064,8 @@ func (s *ControllerServer) persistCreatePartial(
 		return nil
 	}
 	now := metav1.Now()
-	partialStatus := v1alpha1.PillarVolumeStatus{
-		Phase:             v1alpha1.PillarVolumePhaseCreatePartial,
+	partialStatus := v1alpha1.PillarVolumeStateStatus{
+		Phase:             v1alpha1.PillarVolumeStatePhaseCreatePartial,
 		BackendDevicePath: devicePath,
 		PartialFailure: &v1alpha1.PartialFailureInfo{
 			FailedOperation: "ExportVolume",
@@ -1079,14 +1079,14 @@ func (s *ControllerServer) persistCreatePartial(
 	}
 
 	if !pvExists {
-		pv := &v1alpha1.PillarVolume{
+		pv := &v1alpha1.PillarVolumeState{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: pvName,
 			},
-			Spec: v1alpha1.PillarVolumeSpec{
+			Spec: v1alpha1.PillarVolumeStateSpec{
 				VolumeID:      volumeID,
 				AgentVolumeID: agentVolID,
-				TargetRef:     targetName,
+				AgentRef:      targetName,
 				BackendType:   backendType,
 				ProtocolType:  protocolType,
 				CapacityBytes: capacity,
@@ -1095,7 +1095,7 @@ func (s *ControllerServer) persistCreatePartial(
 		err := s.k8sClient.Create(ctx, pv)
 		if err != nil {
 			if !k8serrors.IsAlreadyExists(err) {
-				return fmt.Errorf("create PillarVolume %q: %w", pvName, err)
+				return fmt.Errorf("create PillarVolumeState %q: %w", pvName, err)
 			}
 			// Race: another instance created it; fall through to update below.
 		}
@@ -1107,28 +1107,28 @@ func (s *ControllerServer) persistCreatePartial(
 		// chain races that retry and the resulting "not found" surfaces as
 		// a provisioning failure event.  Poll for cache convergence with a
 		// short, bounded backoff before giving up.
-		err = getPillarVolumeWithCacheSettle(ctx, s.k8sClient, pvName, pv)
+		err = getPillarVolumeStateWithCacheSettle(ctx, s.k8sClient, pvName, pv)
 		if err != nil {
-			return fmt.Errorf("get PillarVolume %q after create: %w", pvName, err)
+			return fmt.Errorf("get PillarVolumeState %q after create: %w", pvName, err)
 		}
 		pv.Status = partialStatus
 		updateErr := s.k8sClient.Status().Update(ctx, pv)
 		if updateErr != nil {
-			return fmt.Errorf("update PillarVolume %q status: %w", pvName, updateErr)
+			return fmt.Errorf("update PillarVolumeState %q status: %w", pvName, updateErr)
 		}
 		return nil
 	}
 
 	// pvExists == true: fetch the current object and update its status.
-	existing := &v1alpha1.PillarVolume{}
+	existing := &v1alpha1.PillarVolumeState{}
 	err := s.k8sClient.Get(ctx, types.NamespacedName{Name: pvName}, existing)
 	if err != nil {
-		return fmt.Errorf("get PillarVolume %q: %w", pvName, err)
+		return fmt.Errorf("get PillarVolumeState %q: %w", pvName, err)
 	}
 	existing.Status = partialStatus
 	updateErr := s.k8sClient.Status().Update(ctx, existing)
 	if updateErr != nil {
-		return fmt.Errorf("update PillarVolume %q status: %w", pvName, updateErr)
+		return fmt.Errorf("update PillarVolumeState %q status: %w", pvName, updateErr)
 	}
 	return nil
 }
@@ -1143,7 +1143,7 @@ type exportInfoGetter interface {
 	GetVolumeRef() string
 }
 
-// persistVolumeReady updates the PillarVolume CRD to PillarVolumePhaseReady
+// persistVolumeReady updates the PillarVolumeState CRD to PillarVolumeStatePhaseReady
 // and stores the export info returned by agent.ExportVolume for idempotent
 // re-use.  A NotFound error is treated as a no-op (CRD was never created).
 func (s *ControllerServer) persistVolumeReady(
@@ -1155,15 +1155,15 @@ func (s *ControllerServer) persistVolumeReady(
 	if s.k8sClient == nil || info == nil {
 		return nil
 	}
-	pv := &v1alpha1.PillarVolume{}
+	pv := &v1alpha1.PillarVolumeState{}
 	err := s.k8sClient.Get(ctx, types.NamespacedName{Name: pvName}, pv)
 	if err != nil {
 		if k8serrors.IsNotFound(err) {
 			return nil
 		}
-		return fmt.Errorf("get PillarVolume %q: %w", pvName, err)
+		return fmt.Errorf("get PillarVolumeState %q: %w", pvName, err)
 	}
-	pv.Status.Phase = v1alpha1.PillarVolumePhaseReady
+	pv.Status.Phase = v1alpha1.PillarVolumeStatePhaseReady
 	pv.Status.PartialFailure = nil
 	pv.Status.BackendDevicePath = "" // no longer needed once export is live
 	pv.Status.ExportInfo = &v1alpha1.VolumeExportInfo{
@@ -1177,25 +1177,25 @@ func (s *ControllerServer) persistVolumeReady(
 	}
 	updateErr := s.k8sClient.Status().Update(ctx, pv)
 	if updateErr != nil {
-		return fmt.Errorf("update PillarVolume %q status to ready: %w", pvName, updateErr)
+		return fmt.Errorf("update PillarVolumeState %q status to ready: %w", pvName, updateErr)
 	}
 	return nil
 }
 
-// deletePillarVolume removes the PillarVolume CRD for the given CSI volume
+// deletePillarVolumeState removes the PillarVolumeState CRD for the given CSI volume
 // name.  NotFound is treated as success (idempotent).
-func (s *ControllerServer) deletePillarVolume(ctx context.Context, pvName string) error {
+func (s *ControllerServer) deletePillarVolumeState(ctx context.Context, pvName string) error {
 	if s.k8sClient == nil {
 		return nil
 	}
-	pv := &v1alpha1.PillarVolume{}
+	pv := &v1alpha1.PillarVolumeState{}
 	pv.Name = pvName
 	err := s.k8sClient.Delete(ctx, pv)
 	if err != nil {
 		if k8serrors.IsNotFound(err) {
 			return nil
 		}
-		return fmt.Errorf("delete PillarVolume %q: %w", pvName, err)
+		return fmt.Errorf("delete PillarVolumeState %q: %w", pvName, err)
 	}
 	return nil
 }
@@ -1210,21 +1210,21 @@ func (s *ControllerServer) deletePillarVolume(ctx context.Context, pvName string
 
 // mergeParamsFromCRDs builds the 4-level parameter merge hierarchy:
 //
-//	Layer 1 (Pool)    – ZFS properties from PillarPool.spec.backend.zfs.properties
+//	Layer 1 (Pool)    – ZFS properties from PillarStore.spec.backend.zfs.properties
 //	Layer 2 (Protocol)– (protocol params already captured in StorageClass at bind time)
-//	Layer 3 (Binding) – ZFS property overrides from PillarBinding.spec.overrides.backend.zfs
+//	Layer 3 (Binding) – ZFS property overrides from PillarStorageClass.spec.overrides.backend.zfs
 //	Layer 4 (PVC)     – per-PVC annotation overrides prefixed with pvcAnnotationParamPrefix
 //
 // The StorageClass parameters (scParams) are the authoritative source for
 // routing metadata (target, backend-type, protocol-type, etc.) and serve as
 // the baseline.  ZFS properties (which are not stored in the StorageClass)
-// are fetched from the PillarPool CRD and layered on top, then Binding
+// are fetched from the PillarStore CRD and layered on top, then Binding
 // overrides are applied, and finally per-PVC annotation overrides win over
 // everything else.
 //
 // When the binding name is absent from scParams the function returns a shallow
 // copy of scParams unchanged, preserving backward compatibility with
-// manually-crafted StorageClasses that do not reference a PillarBinding.
+// manually-crafted StorageClasses that do not reference a PillarStorageClass.
 //
 //nolint:gocognit,gocyclo // complex but necessary parameter merge hierarchy
 func (s *ControllerServer) mergeParamsFromCRDs(
@@ -1247,8 +1247,8 @@ func (s *ControllerServer) mergeParamsFromCRDs(
 		return merged, nil
 	}
 
-	// ── Fetch PillarBinding ───────────────────────────────────────────────────
-	binding := &v1alpha1.PillarBinding{}
+	// ── Fetch PillarStorageClass ───────────────────────────────────────────────────
+	binding := &v1alpha1.PillarStorageClass{}
 	err := s.k8sClient.Get(ctx, types.NamespacedName{Name: bindingName}, binding)
 	if err != nil {
 		if k8serrors.IsNotFound(err) {
@@ -1260,12 +1260,12 @@ func (s *ControllerServer) mergeParamsFromCRDs(
 			}
 			return merged, nil
 		}
-		return nil, fmt.Errorf("fetch PillarBinding %q: %w", bindingName, err)
+		return nil, fmt.Errorf("fetch PillarStorageClass %q: %w", bindingName, err)
 	}
 
-	// ── Layer 1: fetch PillarPool and apply ZFS properties ───────────────────
-	pool := &v1alpha1.PillarPool{}
-	err = s.k8sClient.Get(ctx, types.NamespacedName{Name: binding.Spec.PoolRef}, pool)
+	// ── Layer 1: fetch PillarStore and apply ZFS properties ───────────────────
+	pool := &v1alpha1.PillarStore{}
+	err = s.k8sClient.Get(ctx, types.NamespacedName{Name: binding.Spec.StoreRef}, pool)
 	if err != nil {
 		if k8serrors.IsNotFound(err) {
 			err2 := s.applyPVCAnnotationOverrides(ctx, merged, scParams)
@@ -1274,7 +1274,7 @@ func (s *ControllerServer) mergeParamsFromCRDs(
 			}
 			return merged, nil
 		}
-		return nil, fmt.Errorf("fetch PillarPool %q: %w", binding.Spec.PoolRef, err)
+		return nil, fmt.Errorf("fetch PillarStore %q: %w", binding.Spec.StoreRef, err)
 	}
 
 	// Apply Pool-level ZFS properties as the lowest-priority ZFS property layer.
@@ -1372,7 +1372,7 @@ func (s *ControllerServer) applyPVCAnnotationOverrides(
 // buildAgentVolumeID constructs the volume identifier used in all agent RPCs.
 //
 // The format is "<pool>/<volume-name>" where pool is the storage pool name
-// from the pillar-csi.bhyoo.com/pool StorageClass parameter.  For ZFS
+// from the pillar-csi.bhyoo.com/store StorageClass parameter.  For ZFS
 // backends this matches the agent's internal naming convention
 // (/dev/zvol/<pool>/<name>); for other backends it is the pool name passed
 // to --backend type=<t>,pool=<name>.
@@ -1506,8 +1506,8 @@ func isFileProtocol(p v1alpha1.ProtocolType) bool {
 //
 // For ZFS backends the Properties map is populated from all params that carry
 // the paramZFSPropPrefix prefix (e.g. "pillar-csi.bhyoo.com/zfs-prop.compression").
-// These originate from PillarPool.spec.backend.zfs.properties (Layer 1),
-// PillarBinding.spec.overrides.backend.zfs.properties (Layer 3), or per-PVC
+// These originate from PillarStore.spec.backend.zfs.properties (Layer 1),
+// PillarStorageClass.spec.overrides.backend.zfs.properties (Layer 3), or per-PVC
 // annotation overrides (Layer 4) and have already been merged into params by
 // mergeParamsFromCRDs before CreateVolume calls buildBackendParams.
 func buildBackendParams(params map[string]string, backendType agentv1.BackendType) *agentv1.BackendParams {
@@ -1550,7 +1550,7 @@ func buildBackendParams(params map[string]string, backendType agentv1.BackendTyp
 // agent.ExportVolume RPC.
 //
 // BindAddress is the raw IP address of the storage node — specifically,
-// PillarTarget.Status.ResolvedAddress with the ":port" suffix stripped.
+// PillarAgent.Status.ResolvedAddress with the ":port" suffix stripped.
 // The NVMe-oF / iSCSI kernel targets bind to an IP, not an IP:port pair.
 func buildExportParams(
 	params map[string]string,
@@ -1609,7 +1609,7 @@ func buildExportParams(
 
 // parseACLEnabled interprets the acl-enabled StorageClass parameter.
 //
-// The parameter is written by the PillarBinding controller using the value of
+// The parameter is written by the PillarStorageClass controller using the value of
 // PillarProtocol.spec.nvmeofTcp.acl (or the iSCSI equivalent).  The default
 // behavior when the key is absent or empty is true (ACL enforced), which
 // matches the protocol-type defaults in the CRD schema.
@@ -1679,22 +1679,22 @@ func (s *ControllerServer) ControllerPublishVolume(
 
 	agentProtocolType := mapProtocolType(protocolTypeStr)
 
-	// ── Resolve the agent address from PillarTarget ───────────────────────────
-	target := &v1alpha1.PillarTarget{}
+	// ── Resolve the agent address from PillarAgent ───────────────────────────
+	target := &v1alpha1.PillarAgent{}
 	getTargetErrCPV := s.k8sClient.Get(ctx, types.NamespacedName{Name: targetName}, target)
 	if getTargetErrCPV != nil {
 		if k8serrors.IsNotFound(getTargetErrCPV) {
 			return nil, status.Errorf(codes.NotFound,
-				"PillarTarget %q not found", targetName)
+				"PillarAgent %q not found", targetName)
 		}
 		return nil, status.Errorf(codes.Internal,
-			"failed to get PillarTarget %q: %v", targetName, getTargetErrCPV)
+			"failed to get PillarAgent %q: %v", targetName, getTargetErrCPV)
 	}
 
 	agentAddr := target.Status.ResolvedAddress
 	if agentAddr == "" {
 		return nil, status.Errorf(codes.Unavailable,
-			"PillarTarget %q has no resolved address; agent may not be ready", targetName)
+			"PillarAgent %q has no resolved address; agent may not be ready", targetName)
 	}
 
 	// ── Resolve initiator identity from CSINode annotation ───────────────────
@@ -1762,7 +1762,7 @@ func (s *ControllerServer) ControllerPublishVolume(
 // agent.DenyInitiator.
 //
 // Idempotency:
-//   - If the PillarTarget no longer exists (node decommissioned), return
+//   - If the PillarAgent no longer exists (node decommissioned), return
 //     success — the volume and its ACL entries cannot exist either.
 //   - If the agent returns NotFound for DenyInitiator, return success — the
 //     ACL entry was already absent.
@@ -1796,8 +1796,8 @@ func (s *ControllerServer) ControllerUnpublishVolume(
 
 	agentProtocolType := mapProtocolType(protocolTypeStr)
 
-	// ── Resolve the agent address from PillarTarget ───────────────────────────
-	target := &v1alpha1.PillarTarget{}
+	// ── Resolve the agent address from PillarAgent ───────────────────────────
+	target := &v1alpha1.PillarAgent{}
 	getTargetErrCUV := s.k8sClient.Get(ctx, types.NamespacedName{Name: targetName}, target)
 	if getTargetErrCUV != nil {
 		if k8serrors.IsNotFound(getTargetErrCUV) {
@@ -1805,14 +1805,14 @@ func (s *ControllerServer) ControllerUnpublishVolume(
 			return &csi.ControllerUnpublishVolumeResponse{}, nil
 		}
 		return nil, status.Errorf(codes.Internal,
-			"failed to get PillarTarget %q: %v", targetName, getTargetErrCUV)
+			"failed to get PillarAgent %q: %v", targetName, getTargetErrCUV)
 	}
 
 	agentAddr := target.Status.ResolvedAddress
 	if agentAddr == "" {
 		// Transient; CO will retry.
 		return nil, status.Errorf(codes.Unavailable,
-			"PillarTarget %q has no resolved address", targetName)
+			"PillarAgent %q has no resolved address", targetName)
 	}
 
 	// If node_id is empty we cannot identify which initiator to deny.
@@ -1928,22 +1928,22 @@ func (s *ControllerServer) ControllerExpandVolume(
 
 	agentBackendType := mapBackendType(backendTypeStr)
 
-	// ── Resolve the agent address from PillarTarget ───────────────────────────
-	target := &v1alpha1.PillarTarget{}
+	// ── Resolve the agent address from PillarAgent ───────────────────────────
+	target := &v1alpha1.PillarAgent{}
 	getTargetErrEV := s.k8sClient.Get(ctx, types.NamespacedName{Name: targetName}, target)
 	if getTargetErrEV != nil {
 		if k8serrors.IsNotFound(getTargetErrEV) {
 			return nil, status.Errorf(codes.NotFound,
-				"PillarTarget %q not found", targetName)
+				"PillarAgent %q not found", targetName)
 		}
 		return nil, status.Errorf(codes.Internal,
-			"failed to get PillarTarget %q: %v", targetName, getTargetErrEV)
+			"failed to get PillarAgent %q: %v", targetName, getTargetErrEV)
 	}
 
 	agentAddr := target.Status.ResolvedAddress
 	if agentAddr == "" {
 		return nil, status.Errorf(codes.Unavailable,
-			"PillarTarget %q has no resolved address; agent may not be ready", targetName)
+			"PillarAgent %q has no resolved address; agent may not be ready", targetName)
 	}
 
 	// ── Dial the agent ────────────────────────────────────────────────────────
@@ -1997,8 +1997,8 @@ func (s *ControllerServer) ControllerExpandVolume(
 // query to the pillar-agent running on the storage node.
 //
 // Required StorageClass parameters:
-//   - pillar-csi.bhyoo.com/target       — name of the PillarTarget
-//   - pillar-csi.bhyoo.com/pool         — pool name on the storage node
+//   - pillar-csi.bhyoo.com/agent       — name of the PillarAgent
+//   - pillar-csi.bhyoo.com/store         — pool name on the storage node
 //   - pillar-csi.bhyoo.com/backend-type — e.g. "zfs-zvol"
 func (s *ControllerServer) GetCapacity(
 	ctx context.Context,
@@ -2021,22 +2021,22 @@ func (s *ControllerServer) GetCapacity(
 
 	agentBackendType := mapBackendType(backendTypeStr)
 
-	// ── Resolve the agent address from PillarTarget ───────────────────────────
-	target := &v1alpha1.PillarTarget{}
+	// ── Resolve the agent address from PillarAgent ───────────────────────────
+	target := &v1alpha1.PillarAgent{}
 	getTargetErrGC := s.k8sClient.Get(ctx, types.NamespacedName{Name: targetName}, target)
 	if getTargetErrGC != nil {
 		if k8serrors.IsNotFound(getTargetErrGC) {
 			return nil, status.Errorf(codes.NotFound,
-				"PillarTarget %q not found", targetName)
+				"PillarAgent %q not found", targetName)
 		}
 		return nil, status.Errorf(codes.Internal,
-			"failed to get PillarTarget %q: %v", targetName, getTargetErrGC)
+			"failed to get PillarAgent %q: %v", targetName, getTargetErrGC)
 	}
 
 	agentAddr := target.Status.ResolvedAddress
 	if agentAddr == "" {
 		return nil, status.Errorf(codes.Unavailable,
-			"PillarTarget %q has no resolved address; agent may not be ready", targetName)
+			"PillarAgent %q has no resolved address; agent may not be ready", targetName)
 	}
 
 	// ── Dial the agent ────────────────────────────────────────────────────────

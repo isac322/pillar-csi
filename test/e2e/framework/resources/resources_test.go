@@ -373,7 +373,7 @@ func TestPVC_ExtraLabels(t *testing.T) {
 
 func TestStorageClass_BasicFields(t *testing.T) {
 	f := resources.New("E1.1")
-	params := map[string]string{"poolRef": "my-pool", "backendType": "lvm-lv"}
+	params := map[string]string{"storeRef": "my-pool", "backendType": "lvm-lv"}
 	sc := f.StorageClass("sc", "pillar-csi.bhyoo.com", params, nil)
 
 	if sc == nil {
@@ -382,8 +382,8 @@ func TestStorageClass_BasicFields(t *testing.T) {
 	if sc.Provisioner != "pillar-csi.bhyoo.com" {
 		t.Errorf("sc.Provisioner = %q, want pillar-csi.bhyoo.com", sc.Provisioner)
 	}
-	if sc.Parameters["poolRef"] != "my-pool" {
-		t.Errorf("sc.Parameters[poolRef] = %q, want my-pool", sc.Parameters["poolRef"])
+	if sc.Parameters["storeRef"] != "my-pool" {
+		t.Errorf("sc.Parameters[storeRef] = %q, want my-pool", sc.Parameters["storeRef"])
 	}
 	if sc.Name != f.ResourceName("sc") {
 		t.Errorf("sc.Name = %q, want %q", sc.Name, f.ResourceName("sc"))
@@ -505,58 +505,58 @@ func TestPod_HasTCLabels(t *testing.T) {
 	}
 }
 
-// ── PillarTarget factory ──────────────────────────────────────────────────────
+// ── PillarAgent factory ──────────────────────────────────────────────────────
 
-func TestPillarTarget_BasicFields(t *testing.T) {
+func TestPillarAgent_BasicFields(t *testing.T) {
 	f := resources.New("E1.1")
-	spec := pillarv1alpha1.PillarTargetSpec{
+	spec := pillarv1alpha1.PillarAgentSpec{
 		External: &pillarv1alpha1.ExternalSpec{Address: "10.0.0.1", Port: 9500},
 	}
-	pt := f.PillarTarget("target", spec, nil)
+	pt := f.PillarAgent("target", spec, nil)
 
 	if pt == nil {
-		t.Fatal("PillarTarget() returned nil")
+		t.Fatal("PillarAgent() returned nil")
 	}
 	if pt.Namespace != "" {
-		t.Errorf("PillarTarget.Namespace = %q, want empty (cluster-scoped)", pt.Namespace)
+		t.Errorf("PillarAgent.Namespace = %q, want empty (cluster-scoped)", pt.Namespace)
 	}
 	if pt.Spec.External == nil || pt.Spec.External.Address != "10.0.0.1" {
-		t.Errorf("PillarTarget spec not preserved: %+v", pt.Spec)
+		t.Errorf("PillarAgent spec not preserved: %+v", pt.Spec)
 	}
 	if pt.Labels[resources.LabelManagedBy] != "e2e-fixture" {
-		t.Errorf("PillarTarget missing TC label")
+		t.Errorf("PillarAgent missing TC label")
 	}
 }
 
-func TestPillarTarget_NameFromResourceName(t *testing.T) {
+func TestPillarAgent_NameFromResourceName(t *testing.T) {
 	f := resources.New("E1.1")
-	pt := f.PillarTarget("target", pillarv1alpha1.PillarTargetSpec{}, nil)
+	pt := f.PillarAgent("target", pillarv1alpha1.PillarAgentSpec{}, nil)
 	if pt.Name != f.ResourceName("target") {
-		t.Errorf("PillarTarget.Name = %q, want %q", pt.Name, f.ResourceName("target"))
+		t.Errorf("PillarAgent.Name = %q, want %q", pt.Name, f.ResourceName("target"))
 	}
 }
 
-// ── PillarPool factory ────────────────────────────────────────────────────────
+// ── PillarStore factory ────────────────────────────────────────────────────────
 
-func TestPillarPool_BasicFields(t *testing.T) {
+func TestPillarStore_BasicFields(t *testing.T) {
 	f := resources.New("E1.1")
 	backend := pillarv1alpha1.BackendSpec{
 		Type: pillarv1alpha1.BackendTypeLVMLV,
 		LVM:  &pillarv1alpha1.LVMBackendConfig{VolumeGroup: "data-vg"},
 	}
-	pp := f.PillarPool("pool", "my-target", backend, nil)
+	pp := f.PillarStore("pool", "my-target", backend, nil)
 
 	if pp == nil {
-		t.Fatal("PillarPool() returned nil")
+		t.Fatal("PillarStore() returned nil")
 	}
-	if pp.Spec.TargetRef != "my-target" {
-		t.Errorf("PillarPool TargetRef = %q, want my-target", pp.Spec.TargetRef)
+	if pp.Spec.AgentRef != "my-target" {
+		t.Errorf("PillarStore AgentRef = %q, want my-target", pp.Spec.AgentRef)
 	}
 	if pp.Spec.Backend.Type != pillarv1alpha1.BackendTypeLVMLV {
-		t.Errorf("PillarPool backend type = %q, want lvm-lv", pp.Spec.Backend.Type)
+		t.Errorf("PillarStore backend type = %q, want lvm-lv", pp.Spec.Backend.Type)
 	}
 	if pp.Labels[resources.LabelManagedBy] != "e2e-fixture" {
-		t.Errorf("PillarPool missing TC label")
+		t.Errorf("PillarStore missing TC label")
 	}
 }
 
@@ -584,27 +584,27 @@ func TestPillarProtocol_BasicFields(t *testing.T) {
 	}
 }
 
-// ── PillarBinding factory ─────────────────────────────────────────────────────
+// ── PillarStorageClass factory ─────────────────────────────────────────────────────
 
-func TestPillarBinding_BasicFields(t *testing.T) {
+func TestPillarStorageClass_BasicFields(t *testing.T) {
 	f := resources.New("E1.1")
 	scTemplate := pillarv1alpha1.StorageClassTemplate{
 		ReclaimPolicy:     pillarv1alpha1.ReclaimPolicyDelete,
 		VolumeBindingMode: pillarv1alpha1.VolumeBindingImmediate,
 	}
-	pb := f.PillarBinding("binding", "my-pool", "my-proto", scTemplate, nil, nil)
+	pb := f.PillarStorageClass("binding", "my-pool", "my-proto", scTemplate, nil, nil)
 
 	if pb == nil {
-		t.Fatal("PillarBinding() returned nil")
+		t.Fatal("PillarStorageClass() returned nil")
 	}
-	if pb.Spec.PoolRef != "my-pool" {
-		t.Errorf("PillarBinding PoolRef = %q, want my-pool", pb.Spec.PoolRef)
+	if pb.Spec.StoreRef != "my-pool" {
+		t.Errorf("PillarStorageClass StoreRef = %q, want my-pool", pb.Spec.StoreRef)
 	}
 	if pb.Spec.ProtocolRef != "my-proto" {
-		t.Errorf("PillarBinding ProtocolRef = %q, want my-proto", pb.Spec.ProtocolRef)
+		t.Errorf("PillarStorageClass ProtocolRef = %q, want my-proto", pb.Spec.ProtocolRef)
 	}
 	if pb.Labels[resources.LabelManagedBy] != "e2e-fixture" {
-		t.Errorf("PillarBinding missing TC label")
+		t.Errorf("PillarStorageClass missing TC label")
 	}
 }
 

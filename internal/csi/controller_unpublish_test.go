@@ -49,7 +49,7 @@ import (
 )
 
 // newUnpublishTestEnv builds a ControllerServer wired to a fake k8s client
-// that has a PillarTarget but no CSINode by default.  Callers can seed CSINode
+// that has a PillarAgent but no CSINode by default.  Callers can seed CSINode
 // objects as needed for each test case.
 func newUnpublishTestEnv(t *testing.T, objs ...ctrlclient.Object) *controllerTestEnv {
 	t.Helper()
@@ -65,9 +65,9 @@ func newUnpublishTestEnv(t *testing.T, objs ...ctrlclient.Object) *controllerTes
 		t.Fatalf("AddToScheme storagev1: %v", err)
 	}
 
-	target := &v1alpha1.PillarTarget{
+	target := &v1alpha1.PillarAgent{
 		ObjectMeta: metav1.ObjectMeta{Name: "storage-node-1"},
-		Status: v1alpha1.PillarTargetStatus{
+		Status: v1alpha1.PillarAgentStatus{
 			ResolvedAddress: "192.168.1.10:9500",
 		},
 	}
@@ -76,7 +76,7 @@ func newUnpublishTestEnv(t *testing.T, objs ...ctrlclient.Object) *controllerTes
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(allObjs...).
-		WithStatusSubresource(&v1alpha1.PillarTarget{}).
+		WithStatusSubresource(&v1alpha1.PillarAgent{}).
 		Build()
 
 	agent := &mockAgentClient{}

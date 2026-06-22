@@ -189,7 +189,7 @@ func assertE14_GetCapacity_UnknownTarget(tc documentedCase) {
 
 	_, err := env.controller.GetCapacity(env.ctx, &csiapi.GetCapacityRequest{
 		Parameters: map[string]string{
-			"pillar-csi.bhyoo.com/target": "nonexistent-target",
+			"pillar-csi.bhyoo.com/agent": "nonexistent-target",
 		},
 	})
 	Expect(err).To(HaveOccurred(), "%s: expected error for unknown target", tc.tcNodeLabel())

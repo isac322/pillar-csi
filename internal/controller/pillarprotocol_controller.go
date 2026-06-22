@@ -39,10 +39,10 @@ import (
 
 const (
 	// Finalizer added to every PillarProtocol to prevent
-	// deletion while PillarBindings still reference it.
+	// deletion while PillarStorageClasss still reference it.
 	pillarProtocolFinalizer = "pillar-csi.bhyoo.com/protocol-protection"
 
-	// Requeue interval before re-checking whether blocking PillarBindings have been removed.
+	// Requeue interval before re-checking whether blocking PillarStorageClasss have been removed.
 	requeueAfterProtocolDeletionBlock = 10 * time.Second
 )
 
@@ -52,20 +52,20 @@ type PillarProtocolReconciler struct {
 	Scheme *runtime.Scheme
 }
 
-// +kubebuilder:rbac:groups=pillar-csi.pillar-csi.bhyoo.com,resources=pillarprotocols,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=pillar-csi.pillar-csi.bhyoo.com,resources=pillarprotocols/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=pillar-csi.pillar-csi.bhyoo.com,resources=pillarprotocols/finalizers,verbs=update
-// +kubebuilder:rbac:groups=pillar-csi.pillar-csi.bhyoo.com,resources=pillarbindings,verbs=get;list;watch
-// +kubebuilder:rbac:groups=pillar-csi.pillar-csi.bhyoo.com,resources=pillarpools,verbs=get;list;watch
+// +kubebuilder:rbac:groups=pillar-csi.bhyoo.com,resources=pillarprotocols,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=pillar-csi.bhyoo.com,resources=pillarprotocols/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=pillar-csi.bhyoo.com,resources=pillarprotocols/finalizers,verbs=update
+// +kubebuilder:rbac:groups=pillar-csi.bhyoo.com,resources=pillarstorageclasses,verbs=get;list;watch
+// +kubebuilder:rbac:groups=pillar-csi.bhyoo.com,resources=pillarstores,verbs=get;list;watch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
 //
 // For PillarProtocol the reconciler:
 //  1. Adds a finalizer on first creation.
-//  2. On normal operation: counts PillarBinding references and computes the
-//     set of activeTargets (via Binding→Pool→Target chain), then updates status.
-//  3. On deletion: blocks until no PillarBindings reference this protocol,
+//  2. On normal operation: counts PillarStorageClass references and computes the
+//     set of activeAgents (via Binding→Pool→Target chain), then updates status.
+//  3. On deletion: blocks until no PillarStorageClasss reference this protocol,
 //     then removes the finalizer to allow the object to be garbage-collected.
 //
 //nolint:dupl // All four CRD controllers share identical Reconcile boilerplate; extraction requires reflection.
@@ -107,21 +107,21 @@ func (r *PillarProtocolReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 // that is not being deleted.
 //
 // It:
-//  1. Lists all PillarBindings that reference this protocol to compute bindingCount.
-//  2. For each referencing binding, looks up its PillarPool to collect the
-//     pool's targetRef — building the deduplicated, sorted activeTargets list.
-//  3. Writes bindingCount, activeTargets, and the Ready condition to status.
+//  1. Lists all PillarStorageClasss that reference this protocol to compute storageClassCount.
+//  2. For each referencing binding, looks up its PillarStore to collect the
+//     pool's agentRef — building the deduplicated, sorted activeAgents list.
+//  3. Writes storageClassCount, activeAgents, and the Ready condition to status.
 func (r *PillarProtocolReconciler) reconcileNormal(
 	ctx context.Context,
 	protocol *pillarcsiv1alpha1.PillarProtocol,
 ) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
-	// List all PillarBindings (cluster-scoped, no namespace filter).
-	bindingList := &pillarcsiv1alpha1.PillarBindingList{}
+	// List all PillarStorageClasss (cluster-scoped, no namespace filter).
+	bindingList := &pillarcsiv1alpha1.PillarStorageClassList{}
 	err := r.List(ctx, bindingList)
 	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("failed to list PillarBindings: %w", err)
+		return ctrl.Result{}, fmt.Errorf("failed to list PillarStorageClasss: %w", err)
 	}
 
 	// Count references to this protocol and collect the referenced pool names.
@@ -130,48 +130,48 @@ func (r *PillarProtocolReconciler) reconcileNormal(
 	for i := range bindingList.Items {
 		if bindingList.Items[i].Spec.ProtocolRef == protocol.Name {
 			count++
-			poolNames[bindingList.Items[i].Spec.PoolRef] = struct{}{}
+			poolNames[bindingList.Items[i].Spec.StoreRef] = struct{}{}
 		}
 	}
 
 	log.Info("PillarProtocol binding count", "name", protocol.Name, "count", count)
 
-	// For each referenced pool, look up its targetRef to build activeTargets.
+	// For each referenced pool, look up its agentRef to build activeAgents.
 	// We use a set to deduplicate (multiple bindings may share the same target).
 	targetSet := make(map[string]struct{})
 	for poolName := range poolNames {
-		pool := &pillarcsiv1alpha1.PillarPool{}
+		pool := &pillarcsiv1alpha1.PillarStore{}
 		poolErr := r.Get(ctx, types.NamespacedName{Name: poolName}, pool)
 		if poolErr != nil {
 			if client.IgnoreNotFound(poolErr) != nil {
-				return ctrl.Result{}, fmt.Errorf("failed to get PillarPool %q: %w", poolName, poolErr)
+				return ctrl.Result{}, fmt.Errorf("failed to get PillarStore %q: %w", poolName, poolErr)
 			}
 			// Pool not found — binding may be in a degraded state; skip gracefully.
-			log.V(1).Info("Referenced PillarPool not found; skipping for activeTargets computation",
+			log.V(1).Info("Referenced PillarStore not found; skipping for activeAgents computation",
 				"protocol", protocol.Name, "pool", poolName)
 			continue
 		}
-		if pool.Spec.TargetRef != "" {
-			targetSet[pool.Spec.TargetRef] = struct{}{}
+		if pool.Spec.AgentRef != "" {
+			targetSet[pool.Spec.AgentRef] = struct{}{}
 		}
 	}
 
 	// Convert the set to a sorted slice for deterministic output.
-	activeTargets := make([]string, 0, len(targetSet))
+	activeAgents := make([]string, 0, len(targetSet))
 	for t := range targetSet {
-		activeTargets = append(activeTargets, t)
+		activeAgents = append(activeAgents, t)
 	}
-	sort.Strings(activeTargets)
+	sort.Strings(activeAgents)
 
 	log.Info("PillarProtocol active targets",
 		"name", protocol.Name,
-		"activeTargets", activeTargets,
-		"count", len(activeTargets),
+		"activeAgents", activeAgents,
+		"count", len(activeAgents),
 	)
 
 	// Build updated status fields.
-	protocol.Status.BindingCount = count
-	protocol.Status.ActiveTargets = activeTargets
+	protocol.Status.StorageClassCount = count
+	protocol.Status.ActiveAgents = activeAgents
 
 	meta.SetStatusCondition(&protocol.Status.Conditions, metav1.Condition{
 		Type:               "Ready",
@@ -180,7 +180,7 @@ func (r *PillarProtocolReconciler) reconcileNormal(
 		Reason:             "ProtocolConfigured",
 		Message: fmt.Sprintf(
 			"PillarProtocol is configured with type %q; referenced by %d binding(s) across %d active target(s)",
-			protocol.Spec.Type, count, len(activeTargets),
+			protocol.Spec.Type, count, len(activeAgents),
 		),
 	})
 
@@ -193,7 +193,7 @@ func (r *PillarProtocolReconciler) reconcileNormal(
 }
 
 // reconcileDelete handles the deletion flow.  The finalizer is only removed
-// once no PillarBindings reference this PillarProtocol.
+// once no PillarStorageClasss reference this PillarProtocol.
 func (r *PillarProtocolReconciler) reconcileDelete(
 	ctx context.Context,
 	protocol *pillarcsiv1alpha1.PillarProtocol,
@@ -205,13 +205,13 @@ func (r *PillarProtocolReconciler) reconcileDelete(
 		return ctrl.Result{}, nil
 	}
 
-	log.Info("PillarProtocol is being deleted — checking for referencing PillarBindings", "name", protocol.Name)
+	log.Info("PillarProtocol is being deleted — checking for referencing PillarStorageClasss", "name", protocol.Name)
 
-	// List all PillarBindings and find those that reference this protocol.
-	bindingList := &pillarcsiv1alpha1.PillarBindingList{}
+	// List all PillarStorageClasss and find those that reference this protocol.
+	bindingList := &pillarcsiv1alpha1.PillarStorageClassList{}
 	err := r.List(ctx, bindingList)
 	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("failed to list PillarBindings: %w", err)
+		return ctrl.Result{}, fmt.Errorf("failed to list PillarStorageClasss: %w", err)
 	}
 
 	var referencingNames []string
@@ -224,13 +224,13 @@ func (r *PillarProtocolReconciler) reconcileDelete(
 	if len(referencingNames) > 0 {
 		// Deletion is blocked — update status and requeue.
 		msg := fmt.Sprintf(
-			"Deletion blocked: PillarBinding(s) [%s] still reference this protocol; delete them first",
+			"Deletion blocked: PillarStorageClass(s) [%s] still reference this protocol; delete them first",
 			strings.Join(referencingNames, ", "),
 		)
 		log.Info(msg, "name", protocol.Name)
 
-		//nolint:gosec // BindingCount is bounded by available cluster resources and cannot realistically overflow int32.
-		protocol.Status.BindingCount = int32(len(referencingNames))
+		//nolint:gosec // StorageClassCount is bounded by available cluster resources and cannot realistically overflow int32.
+		protocol.Status.StorageClassCount = int32(len(referencingNames))
 		meta.SetStatusCondition(&protocol.Status.Conditions, metav1.Condition{
 			Type:               "Ready",
 			Status:             metav1.ConditionFalse,
@@ -249,7 +249,7 @@ func (r *PillarProtocolReconciler) reconcileDelete(
 	}
 
 	// No referencing bindings — safe to remove the finalizer.
-	log.Info("No PillarBindings reference this protocol; removing finalizer", "name", protocol.Name)
+	log.Info("No PillarStorageClasss reference this protocol; removing finalizer", "name", protocol.Name)
 	controllerutil.RemoveFinalizer(protocol, pillarProtocolFinalizer)
 	err = r.Update(ctx, protocol)
 	if err != nil {
@@ -263,16 +263,16 @@ func (r *PillarProtocolReconciler) reconcileDelete(
 //
 // The controller watches:
 //   - PillarProtocol (primary resource)
-//   - PillarBinding: re-enqueues the referenced PillarProtocol whenever a
-//     binding is created, updated, or deleted — so that bindingCount and the
+//   - PillarStorageClass: re-enqueues the referenced PillarProtocol whenever a
+//     binding is created, updated, or deleted — so that storageClassCount and the
 //     deletion-gate stay consistent.
-//   - PillarPool: re-enqueues the PillarProtocol(s) reachable via Pool→Binding→Protocol
-//     whenever a pool changes — so that activeTargets stays consistent.
+//   - PillarStore: re-enqueues the PillarProtocol(s) reachable via Pool→Binding→Protocol
+//     whenever a pool changes — so that activeAgents stays consistent.
 func (r *PillarProtocolReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	// mapBindingToProtocol extracts the protocolRef from a PillarBinding and
+	// mapBindingToProtocol extracts the protocolRef from a PillarStorageClass and
 	// returns a reconcile.Request for the referenced PillarProtocol.
 	mapBindingToProtocol := func(_ context.Context, obj client.Object) []reconcile.Request {
-		binding, ok := obj.(*pillarcsiv1alpha1.PillarBinding)
+		binding, ok := obj.(*pillarcsiv1alpha1.PillarStorageClass)
 		if !ok || binding.Spec.ProtocolRef == "" {
 			return nil
 		}
@@ -281,21 +281,21 @@ func (r *PillarProtocolReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		}
 	}
 
-	// mapPoolToProtocol: when a PillarPool changes, find all PillarBindings
+	// mapPoolToProtocol: when a PillarStore changes, find all PillarStorageClasss
 	// that reference it, then collect the distinct set of protocolRefs and
-	// enqueue each for reconciliation so activeTargets is recomputed.
+	// enqueue each for reconciliation so activeAgents is recomputed.
 	mapPoolToProtocol := func(ctx context.Context, obj client.Object) []reconcile.Request {
-		pool, ok := obj.(*pillarcsiv1alpha1.PillarPool)
+		pool, ok := obj.(*pillarcsiv1alpha1.PillarStore)
 		if !ok {
 			return nil
 		}
 
-		bindingList := &pillarcsiv1alpha1.PillarBindingList{}
+		bindingList := &pillarcsiv1alpha1.PillarStorageClassList{}
 		listErr := r.List(ctx, bindingList)
 		if listErr != nil {
 			// Cannot propagate error from a watch handler; log and return empty.
 			logf.FromContext(ctx).Error(listErr,
-				"Failed to list PillarBindings while mapping PillarPool event to PillarProtocol",
+				"Failed to list PillarStorageClasss while mapping PillarStore event to PillarProtocol",
 				"pool", pool.Name)
 			return nil
 		}
@@ -303,7 +303,7 @@ func (r *PillarProtocolReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		protocolSet := make(map[string]struct{})
 		for i := range bindingList.Items {
 			b := &bindingList.Items[i]
-			if b.Spec.PoolRef == pool.Name && b.Spec.ProtocolRef != "" {
+			if b.Spec.StoreRef == pool.Name && b.Spec.ProtocolRef != "" {
 				protocolSet[b.Spec.ProtocolRef] = struct{}{}
 			}
 		}
@@ -321,12 +321,12 @@ func (r *PillarProtocolReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&pillarcsiv1alpha1.PillarProtocol{}).
 		// Re-enqueue the protocol whenever a referencing binding changes.
 		Watches(
-			&pillarcsiv1alpha1.PillarBinding{},
+			&pillarcsiv1alpha1.PillarStorageClass{},
 			handler.EnqueueRequestsFromMapFunc(mapBindingToProtocol),
 		).
-		// Re-enqueue protocol(s) whenever a PillarPool changes (activeTargets may change).
+		// Re-enqueue protocol(s) whenever a PillarStore changes (activeAgents may change).
 		Watches(
-			&pillarcsiv1alpha1.PillarPool{},
+			&pillarcsiv1alpha1.PillarStore{},
 			handler.EnqueueRequestsFromMapFunc(mapPoolToProtocol),
 		).
 		Named("pillarprotocol").

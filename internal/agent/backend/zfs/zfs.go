@@ -98,7 +98,7 @@ func isNotExistOutput(out []byte) bool {
 // Backend implements backend.VolumeBackend using ZFS zvols.
 //
 // A single Backend instance is scoped to one ZFS pool and one optional
-// parent dataset within that pool.  This mirrors the PillarPool CRD concept
+// parent dataset within that pool.  This mirrors the PillarStore CRD concept
 // where each pool maps to exactly one backend instance on an agent.
 //
 // For backward compatibility the exported name ZfsBackend is kept as an alias.

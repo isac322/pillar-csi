@@ -4,7 +4,7 @@ package e2e
 
 // zfs_iscsi_core_rpcs_e2e_test.go — E35.1: zvol 백엔드 제어면 및 export 계약
 //
-// Validates that a PillarBinding combining zfs-zvol backend + iSCSI protocol
+// Validates that a PillarStorageClass combining zfs-zvol backend + iSCSI protocol
 // generates a correct StorageClass, that CreateVolume returns iSCSI VolumeContext
 // fields (IQN, portal, port, LUN) for a zvol-backed volume, and that
 // ControllerPublish/Unpublish correctly manages ACL entries via CSINode annotations.
@@ -129,9 +129,9 @@ var _ = Describe("E35: ZFS Kind 클러스터 E2E — 실제 ZFS zvol + iSCSI",
 			})
 
 			// ── TC-E35.331 ────────────────────────────────────────────────────
-			It("[TC-E35.331] PillarBinding generates an iSCSI StorageClass for zfs-zvol pools without losing zvol parameters", func() {
+			It("[TC-E35.331] PillarStorageClass generates an iSCSI StorageClass for zfs-zvol pools without losing zvol parameters", func() {
 				if zfsISCSISCName == "" {
-					Fail("[TC-E35.331] MISSING PREREQUISITE: no ZFS+iSCSI StorageClass found — PillarBinding with ZFS+iSCSI not configured")
+					Fail("[TC-E35.331] MISSING PREREQUISITE: no ZFS+iSCSI StorageClass found — PillarStorageClass with ZFS+iSCSI not configured")
 				}
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer cancel()

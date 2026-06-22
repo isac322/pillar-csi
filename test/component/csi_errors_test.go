@@ -69,18 +69,18 @@ func newCSIControllerErrEnv(t *testing.T, agnt *csiMockAgent) *csiControllerTest
 		t.Fatalf("AddToScheme: %v", err)
 	}
 
-	target := &v1alpha1.PillarTarget{
+	target := &v1alpha1.PillarAgent{
 		ObjectMeta: metav1.ObjectMeta{Name: "storage-node-1"},
-		Spec: v1alpha1.PillarTargetSpec{
+		Spec: v1alpha1.PillarAgentSpec{
 			External: &v1alpha1.ExternalSpec{Address: "192.168.1.10", Port: 9500},
 		},
-		Status: v1alpha1.PillarTargetStatus{ResolvedAddress: "192.168.1.10:9500"},
+		Status: v1alpha1.PillarAgentStatus{ResolvedAddress: "192.168.1.10:9500"},
 	}
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(target).
-		WithStatusSubresource(&v1alpha1.PillarVolume{}, &v1alpha1.PillarTarget{}).
+		WithStatusSubresource(&v1alpha1.PillarVolumeState{}, &v1alpha1.PillarAgent{}).
 		Build()
 
 	dialer := pillarcsi.AgentDialer(func(_ context.Context, _ string) (agentv1.AgentServiceClient, io.Closer, error) {

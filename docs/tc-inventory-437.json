@@ -107,7 +107,7 @@
     "id": "E1.2-2",
     "category": "E1",
     "type": "A",
-    "description": "참조된 PillarTarget이 존재하지 않으면 NotFound 반환",
+    "description": "참조된 PillarAgent이 존재하지 않으면 NotFound 반환",
     "subsection": "E1.2",
     "in_437": true
   },
@@ -307,7 +307,7 @@
     "id": "E1.8-1",
     "category": "E1",
     "type": "A",
-    "description": "PillarTarget이 존재하지만 ResolvedAddress=\"\"이면 Unavailable 반환",
+    "description": "PillarAgent이 존재하지만 ResolvedAddress=\"\"이면 Unavailable 반환",
     "subsection": "E1.8",
     "in_437": true
   },
@@ -315,7 +315,7 @@
     "id": "E1.8-2",
     "category": "E1",
     "type": "A",
-    "description": "Parameters[\"target\"]이 존재하지 않는 PillarTarget을 참조하면 NotFound 반환",
+    "description": "Parameters[\"target\"]이 존재하지 않는 PillarAgent을 참조하면 NotFound 반환",
     "subsection": "E1.8",
     "in_437": true
   },
@@ -331,7 +331,7 @@
     "id": "E1.9-1",
     "category": "E1",
     "type": "A",
-    "description": "agent.CreateVolume 성공 후 agent.ExportVolume 실패 시 PillarVolume CRD에 CreatePartial 기록",
+    "description": "agent.CreateVolume 성공 후 agent.ExportVolume 실패 시 PillarVolumeState CRD에 CreatePartial 기록",
     "subsection": "E1.9",
     "in_437": true
   },
@@ -363,7 +363,7 @@
     "id": "E1.9-5",
     "category": "E1",
     "type": "A",
-    "description": "컨트롤러 재기동 시 기존 PillarVolume CRD에서 상태 복원",
+    "description": "컨트롤러 재기동 시 기존 PillarVolumeState CRD에서 상태 복원",
     "subsection": "E1.9",
     "in_437": true
   },
@@ -755,7 +755,7 @@
     "id": "E17.2-1",
     "category": "E17",
     "type": "A",
-    "description": "성공적 DeleteVolume 후 PillarVolume CRD가 fake k8s 클라이언트에서 완전히 삭제됨",
+    "description": "성공적 DeleteVolume 후 PillarVolumeState CRD가 fake k8s 클라이언트에서 완전히 삭제됨",
     "subsection": "E17.2",
     "in_437": true
   },
@@ -867,7 +867,7 @@
     "id": "E19.1.3",
     "category": "E19",
     "type": "C",
-    "description": "PillarTarget 생성 후 첫 번째 호출에서 파이널라이저 자동 추가",
+    "description": "PillarAgent 생성 후 첫 번째 호출에서 파이널라이저 자동 추가",
     "subsection": "E19.1",
     "in_437": true
   },
@@ -955,7 +955,7 @@
     "id": "E19.4.1",
     "category": "E19",
     "type": "C",
-    "description": "external 모드 PillarTarget에서 설정 — external 모드는 K8s Node를 참조하지 않음",
+    "description": "external 모드 PillarAgent에서 설정 — external 모드는 K8s Node를 참조하지 않음",
     "subsection": "E19.4",
     "in_437": true
   },
@@ -1043,7 +1043,7 @@
     "id": "E19.7.1",
     "category": "E19",
     "type": "C",
-    "description": "참조 PillarPool이 존재하는 동안 삭제 차단;",
+    "description": "참조 PillarStore이 존재하는 동안 삭제 차단;",
     "subsection": "E19.7",
     "in_437": true
   },
@@ -1051,7 +1051,7 @@
     "id": "E19.7.2",
     "category": "E19",
     "type": "C",
-    "description": "참조 PillarPool 없을 때 즉시 파이널라이저 제거 및 삭제 진행",
+    "description": "참조 PillarStore 없을 때 즉시 파이널라이저 제거 및 삭제 진행",
     "subsection": "E19.7",
     "in_437": true
   },
@@ -1059,7 +1059,7 @@
     "id": "E19.7.3",
     "category": "E19",
     "type": "C",
-    "description": "참조 PillarPool 제거 후 다음 조정에서 파이널라이저 제거 및 삭제 완료",
+    "description": "참조 PillarStore 제거 후 다음 조정에서 파이널라이저 제거 및 삭제 완료",
     "subsection": "E19.7",
     "in_437": true
   },
@@ -1067,7 +1067,7 @@
     "id": "E19.7.4",
     "category": "E19",
     "type": "C",
-    "description": "여러 PillarPool이 동일 PillarTarget을 참조할 때, 하나라도 남아 있으면 차단 지속",
+    "description": "여러 PillarStore이 동일 PillarAgent을 참조할 때, 하나라도 남아 있으면 차단 지속",
     "subsection": "E19.7",
     "in_437": true
   },
@@ -1251,7 +1251,7 @@
     "id": "E2.6-7",
     "category": "E2",
     "type": "A",
-    "description": "VolumeId의 target 이름이 PillarTarget CRD에 없음 → NotFound; agent 호출 전 실패",
+    "description": "VolumeId의 target 이름이 PillarAgent CRD에 없음 → NotFound; agent 호출 전 실패",
     "subsection": "E2.6",
     "in_437": true
   },
@@ -1259,7 +1259,7 @@
     "id": "E2.6-8",
     "category": "E2",
     "type": "A",
-    "description": "PillarTarget.Status.ResolvedAddress=\"\"이면 Unavailable 반환; agent 다이얼 미시도",
+    "description": "PillarAgent.Status.ResolvedAddress=\"\"이면 Unavailable 반환; agent 다이얼 미시도",
     "subsection": "E2.6",
     "in_437": true
   },
@@ -1283,7 +1283,7 @@
     "id": "E20.1.3",
     "category": "E20",
     "type": "C",
-    "description": "PillarPool 생성 후 첫 번째 호출에서 파이널라이저 자동 추가",
+    "description": "PillarStore 생성 후 첫 번째 호출에서 파이널라이저 자동 추가",
     "subsection": "E20.1",
     "in_437": true
   },
@@ -1291,7 +1291,7 @@
     "id": "E20.1.4",
     "category": "E20",
     "type": "C",
-    "description": "동일 PillarPool을 두 번 조정해도 파이널라이저 중복 없음",
+    "description": "동일 PillarStore을 두 번 조정해도 파이널라이저 중복 없음",
     "subsection": "E20.1",
     "in_437": true
   },
@@ -1299,7 +1299,7 @@
     "id": "E20.10.1",
     "category": "E20",
     "type": "C",
-    "description": "PillarTarget이 Not-Ready → Ready로 전이 후 PillarPool 재조정 시 로 갱신",
+    "description": "PillarAgent이 Not-Ready → Ready로 전이 후 PillarStore 재조정 시 로 갱신",
     "subsection": "E20.10",
     "in_437": true
   },
@@ -1307,7 +1307,7 @@
     "id": "E20.10.2",
     "category": "E20",
     "type": "C",
-    "description": "PillarTarget이 Ready → Not-Ready로 전이 후 PillarPool 재조정 시 ; 하위 조건 Unknown으로 후퇴",
+    "description": "PillarAgent이 Ready → Not-Ready로 전이 후 PillarStore 재조정 시 ; 하위 조건 Unknown으로 후퇴",
     "subsection": "E20.10",
     "in_437": true
   },
@@ -1371,7 +1371,7 @@
     "id": "E20.4.1",
     "category": "E20",
     "type": "C",
-    "description": "참조 PillarTarget이 없으면 ; 하위 조건도 모두 False",
+    "description": "참조 PillarAgent이 없으면 ; 하위 조건도 모두 False",
     "subsection": "E20.4",
     "in_437": true
   },
@@ -1379,7 +1379,7 @@
     "id": "E20.4.2",
     "category": "E20",
     "type": "C",
-    "description": "참조 PillarTarget이 존재하지만 이면 ; 하위 조건 Unknown",
+    "description": "참조 PillarAgent이 존재하지만 이면 ; 하위 조건 Unknown",
     "subsection": "E20.4",
     "in_437": true
   },
@@ -1387,7 +1387,7 @@
     "id": "E20.4.3",
     "category": "E20",
     "type": "C",
-    "description": "참조 PillarTarget이 이면",
+    "description": "참조 PillarAgent이 이면",
     "subsection": "E20.4",
     "in_437": true
   },
@@ -1395,7 +1395,7 @@
     "id": "E20.5.1",
     "category": "E20",
     "type": "C",
-    "description": "PillarTarget 이지만 이면",
+    "description": "PillarAgent 이지만 이면",
     "subsection": "E20.5",
     "in_437": true
   },
@@ -1427,7 +1427,7 @@
     "id": "E20.6.1",
     "category": "E20",
     "type": "C",
-    "description": "PillarTarget 이지만 이면",
+    "description": "PillarAgent 이지만 이면",
     "subsection": "E20.6",
     "in_437": true
   },
@@ -1499,7 +1499,7 @@
     "id": "E20.9.1",
     "category": "E20",
     "type": "C",
-    "description": "참조 PillarBinding이 존재하는 동안 삭제 차단; 설정",
+    "description": "참조 PillarStorageClass이 존재하는 동안 삭제 차단; 설정",
     "subsection": "E20.9",
     "in_437": true
   },
@@ -1507,7 +1507,7 @@
     "id": "E20.9.2",
     "category": "E20",
     "type": "C",
-    "description": "참조 PillarBinding 없을 때 즉시 파이널라이저 제거 및 삭제 진행",
+    "description": "참조 PillarStorageClass 없을 때 즉시 파이널라이저 제거 및 삭제 진행",
     "subsection": "E20.9",
     "in_437": true
   },
@@ -1515,7 +1515,7 @@
     "id": "E20.9.3",
     "category": "E20",
     "type": "C",
-    "description": "참조 PillarBinding 제거 후 다음 조정에서 파이널라이저 제거 및 삭제 완료",
+    "description": "참조 PillarStorageClass 제거 후 다음 조정에서 파이널라이저 제거 및 삭제 완료",
     "subsection": "E20.9",
     "in_437": true
   },
@@ -1523,7 +1523,7 @@
     "id": "E20.9.4",
     "category": "E20",
     "type": "C",
-    "description": "여러 PillarBinding이 참조할 때 상태 메시지에 모든 이름이 나열됨",
+    "description": "여러 PillarStorageClass이 참조할 때 상태 메시지에 모든 이름이 나열됨",
     "subsection": "E20.9",
     "in_437": true
   },
@@ -1539,7 +1539,7 @@
     "id": "E21.1-1",
     "category": "E21",
     "type": "A",
-    "description": "PillarTarget이 존재하나 가 빈 문자열 — 에이전트 주소 미확정 상태",
+    "description": "PillarAgent이 존재하나 가 빈 문자열 — 에이전트 주소 미확정 상태",
     "subsection": "E21.1",
     "in_437": true
   },
@@ -1547,7 +1547,7 @@
     "id": "E21.1-2",
     "category": "E21",
     "type": "A",
-    "description": "PillarTarget의 와 이 모두 nil — 연결 정보 없음 (fake client에서만 가능; 웹훅 미실행)",
+    "description": "PillarAgent의 와 이 모두 nil — 연결 정보 없음 (fake client에서만 가능; 웹훅 미실행)",
     "subsection": "E21.1",
     "in_437": true
   },
@@ -1555,7 +1555,7 @@
     "id": "E21.1-3",
     "category": "E21",
     "type": "A",
-    "description": "ControllerPublishVolume 시 PillarTarget의 가 빈 문자열",
+    "description": "ControllerPublishVolume 시 PillarAgent의 가 빈 문자열",
     "subsection": "E21.1",
     "in_437": true
   },
@@ -1563,7 +1563,7 @@
     "id": "E21.1-4",
     "category": "E21",
     "type": "A",
-    "description": "PillarVolume CRD가 정의되지 않은 Phase 값을 가질 때 가 로 처리하고 패닉 없음",
+    "description": "PillarVolumeState CRD가 정의되지 않은 Phase 값을 가질 때 가 로 처리하고 패닉 없음",
     "subsection": "E21.1",
     "in_437": true
   },
@@ -1579,7 +1579,7 @@
     "id": "E21.1-6",
     "category": "E21",
     "type": "A",
-    "description": "ControllerExpandVolume 시 PillarTarget 가 빈 문자열",
+    "description": "ControllerExpandVolume 시 PillarAgent 가 빈 문자열",
     "subsection": "E21.1",
     "in_437": true
   },
@@ -1643,7 +1643,7 @@
     "id": "E21.2-7",
     "category": "E21",
     "type": "C",
-    "description": "유효한 PillarTarget 생성 시 웹훅이 허용 (현재 ValidateCreate는 no-op 스캐폴딩)",
+    "description": "유효한 PillarAgent 생성 시 웹훅이 허용 (현재 ValidateCreate는 no-op 스캐폴딩)",
     "subsection": "E21.2",
     "in_437": true
   },
@@ -1691,7 +1691,7 @@
     "id": "E21.3-5",
     "category": "E21",
     "type": "C",
-    "description": "유효한 PillarPool 생성 시 웹훅이 허용 (현재 ValidateCreate는 no-op 스캐폴딩)",
+    "description": "유효한 PillarStore 생성 시 웹훅이 허용 (현재 ValidateCreate는 no-op 스캐폴딩)",
     "subsection": "E21.3",
     "in_437": true
   },
@@ -1707,7 +1707,7 @@
     "id": "E21.4-1",
     "category": "E21",
     "type": "C",
-    "description": "인 PillarTarget 생성 시도 → 위반",
+    "description": "인 PillarAgent 생성 시도 → 위반",
     "subsection": "E21.4",
     "in_437": true
   },
@@ -1739,7 +1739,7 @@
     "id": "E21.4-5",
     "category": "E21",
     "type": "C",
-    "description": "인 PillarPool 생성 → 위반",
+    "description": "인 PillarStore 생성 → 위반",
     "subsection": "E21.4",
     "in_437": true
   },
@@ -1803,7 +1803,7 @@
     "id": "E22.1-4",
     "category": "E22",
     "type": "A",
-    "description": "ControllerPublishVolume에서 볼륨 ID를 가진 PillarVolume CRD 존재 시 agent.AllowInitiator가 반환 → ControllerPublishVolume이 오류 전파",
+    "description": "ControllerPublishVolume에서 볼륨 ID를 가진 PillarVolumeState CRD 존재 시 agent.AllowInitiator가 반환 → ControllerPublishVolume이 오류 전파",
     "subsection": "E22.1",
     "in_437": true
   },
@@ -1995,7 +1995,7 @@
     "id": "E23.4.1",
     "category": "E23",
     "type": "C",
-    "description": "참조 PillarBinding 없는 정상 조정에서",
+    "description": "참조 PillarStorageClass 없는 정상 조정에서",
     "subsection": "E23.4",
     "in_437": true
   },
@@ -2003,7 +2003,7 @@
     "id": "E23.4.2",
     "category": "E23",
     "type": "C",
-    "description": "참조 PillarBinding이 존재하는 정상 조정에서도",
+    "description": "참조 PillarStorageClass이 존재하는 정상 조정에서도",
     "subsection": "E23.4",
     "in_437": true
   },
@@ -2019,7 +2019,7 @@
     "id": "E23.4.4",
     "category": "E23",
     "type": "C",
-    "description": "삭제 요청 중 참조 PillarBinding 존재 시",
+    "description": "삭제 요청 중 참조 PillarStorageClass 존재 시",
     "subsection": "E23.4",
     "in_437": true
   },
@@ -2035,7 +2035,7 @@
     "id": "E23.5.1",
     "category": "E23",
     "type": "C",
-    "description": "참조 PillarBinding 없을 때 ,",
+    "description": "참조 PillarStorageClass 없을 때 ,",
     "subsection": "E23.5",
     "in_437": true
   },
@@ -2043,7 +2043,7 @@
     "id": "E23.5.2",
     "category": "E23",
     "type": "C",
-    "description": "참조 PillarBinding 1개 시",
+    "description": "참조 PillarStorageClass 1개 시",
     "subsection": "E23.5",
     "in_437": true
   },
@@ -2051,7 +2051,7 @@
     "id": "E23.5.3",
     "category": "E23",
     "type": "C",
-    "description": "PillarBinding → PillarPool → 체인으로 자동 계산",
+    "description": "PillarStorageClass → PillarStore → 체인으로 자동 계산",
     "subsection": "E23.5",
     "in_437": true
   },
@@ -2059,7 +2059,7 @@
     "id": "E23.5.4",
     "category": "E23",
     "type": "C",
-    "description": "여러 PillarBinding이 동일 풀 참조해도 에 중복 없이 정렬된 목록",
+    "description": "여러 PillarStorageClass이 동일 풀 참조해도 에 중복 없이 정렬된 목록",
     "subsection": "E23.5",
     "in_437": true
   },
@@ -2067,7 +2067,7 @@
     "id": "E23.5.5",
     "category": "E23",
     "type": "C",
-    "description": "참조 PillarPool이 없을 때 는 정확히 집계되나 (우아한 저하)",
+    "description": "참조 PillarStore이 없을 때 는 정확히 집계되나 (우아한 저하)",
     "subsection": "E23.5",
     "in_437": true
   },
@@ -2075,7 +2075,7 @@
     "id": "E23.5.6",
     "category": "E23",
     "type": "C",
-    "description": "PillarBinding 삭제 후 조정 시 감소",
+    "description": "PillarStorageClass 삭제 후 조정 시 감소",
     "subsection": "E23.5",
     "in_437": true
   },
@@ -2083,7 +2083,7 @@
     "id": "E23.6.1",
     "category": "E23",
     "type": "C",
-    "description": "참조 PillarBinding이 존재하는 동안 삭제 차단;",
+    "description": "참조 PillarStorageClass이 존재하는 동안 삭제 차단;",
     "subsection": "E23.6",
     "in_437": true
   },
@@ -2107,7 +2107,7 @@
     "id": "E23.6.4",
     "category": "E23",
     "type": "C",
-    "description": "참조 PillarBinding 없을 때 즉시 파이널라이저 제거 및 삭제 진행",
+    "description": "참조 PillarStorageClass 없을 때 즉시 파이널라이저 제거 및 삭제 진행",
     "subsection": "E23.6",
     "in_437": true
   },
@@ -2115,7 +2115,7 @@
     "id": "E23.6.5",
     "category": "E23",
     "type": "C",
-    "description": "참조 PillarBinding 제거 후 다음 조정에서 파이널라이저 제거 및 삭제 완료",
+    "description": "참조 PillarStorageClass 제거 후 다음 조정에서 파이널라이저 제거 및 삭제 완료",
     "subsection": "E23.6",
     "in_437": true
   },
@@ -2123,7 +2123,7 @@
     "id": "E23.6.6",
     "category": "E23",
     "type": "C",
-    "description": "여러 PillarBinding이 참조할 때 상태 메시지에 모든 이름이 나열됨",
+    "description": "여러 PillarStorageClass이 참조할 때 상태 메시지에 모든 이름이 나열됨",
     "subsection": "E23.6",
     "in_437": true
   },
@@ -2203,7 +2203,7 @@
     "id": "E24.2-1",
     "category": "E24",
     "type": "A",
-    "description": "agent.CreateVolume 성공 + agent.ExportVolume 실패 시 PillarVolume CRD Phase=CreatePartial",
+    "description": "agent.CreateVolume 성공 + agent.ExportVolume 실패 시 PillarVolumeState CRD Phase=CreatePartial",
     "subsection": "E24.2",
     "in_437": true
   },
@@ -2411,7 +2411,7 @@
     "id": "E24.9-2",
     "category": "E24",
     "type": "A",
-    "description": "성공적인 DeleteVolume이 PillarVolume CRD를 제거 (E6.2 상위 통합 뷰)",
+    "description": "성공적인 DeleteVolume이 PillarVolumeState CRD를 제거 (E6.2 상위 통합 뷰)",
     "subsection": "E24.9",
     "in_437": true
   },
@@ -2443,7 +2443,7 @@
     "id": "E25.1.2",
     "category": "E25",
     "type": "C",
-    "description": "PillarBinding 생성 후 첫 번째 호출에서 파이널라이저 자동 추가",
+    "description": "PillarStorageClass 생성 후 첫 번째 호출에서 파이널라이저 자동 추가",
     "subsection": "E25.1",
     "in_437": true
   },
@@ -2451,7 +2451,7 @@
     "id": "E25.1.3",
     "category": "E25",
     "type": "C",
-    "description": "동일 PillarBinding을 두 번 조정해도 파이널라이저 중복 없음",
+    "description": "동일 PillarStorageClass을 두 번 조정해도 파이널라이저 중복 없음",
     "subsection": "E25.1",
     "in_437": true
   },
@@ -2595,7 +2595,7 @@
     "id": "E25.4.6",
     "category": "E25",
     "type": "C",
-    "description": "참조 PillarPool이 없을 때 설정 건너뜀 (nil 유지, 오류 없음)",
+    "description": "참조 PillarStore이 없을 때 설정 건너뜀 (nil 유지, 오류 없음)",
     "subsection": "E25.4",
     "in_437": true
   },
@@ -2683,7 +2683,7 @@
     "id": "E25.6.1",
     "category": "E25",
     "type": "C",
-    "description": "참조 PillarPool 미존재 시 ; ;",
+    "description": "참조 PillarStore 미존재 시 ; ;",
     "subsection": "E25.6",
     "in_437": true
   },
@@ -2691,7 +2691,7 @@
     "id": "E25.6.2",
     "category": "E25",
     "type": "C",
-    "description": "참조 PillarPool의 Ready 조건이 False일 때 ; pool의 오류 메시지 전파",
+    "description": "참조 PillarStore의 Ready 조건이 False일 때 ; pool의 오류 메시지 전파",
     "subsection": "E25.6",
     "in_437": true
   },
@@ -2699,7 +2699,7 @@
     "id": "E25.6.3",
     "category": "E25",
     "type": "C",
-    "description": "PillarPool에 Ready 조건이 아직 없을 때",
+    "description": "PillarStore에 Ready 조건이 아직 없을 때",
     "subsection": "E25.6",
     "in_437": true
   },
@@ -2707,7 +2707,7 @@
     "id": "E25.7.1",
     "category": "E25",
     "type": "C",
-    "description": "PillarPool Ready + PillarProtocol 미존재 시 ; 유지",
+    "description": "PillarStore Ready + PillarProtocol 미존재 시 ; 유지",
     "subsection": "E25.7",
     "in_437": true
   },
@@ -2755,7 +2755,7 @@
     "id": "E25.9.1",
     "category": "E25",
     "type": "C",
-    "description": "생성된 StorageClass에 PillarBinding을 가리키는 ownerReference(, ) 설정",
+    "description": "생성된 StorageClass에 PillarStorageClass을 가리키는 ownerReference(, ) 설정",
     "subsection": "E25.9",
     "in_437": true
   },
@@ -2811,7 +2811,7 @@
     "id": "E26.1.1",
     "category": "E26",
     "type": "C",
-    "description": "PillarPool 생성 시 참조 PillarTarget이 없으면 조건 설정",
+    "description": "PillarStore 생성 시 참조 PillarAgent이 없으면 조건 설정",
     "subsection": "E26.1",
     "in_437": true
   },
@@ -2819,7 +2819,7 @@
     "id": "E26.1.2",
     "category": "E26",
     "type": "C",
-    "description": "참조 PillarTarget이 존재하지만 이면 조건 설정",
+    "description": "참조 PillarAgent이 존재하지만 이면 조건 설정",
     "subsection": "E26.1",
     "in_437": true
   },
@@ -2827,7 +2827,7 @@
     "id": "E26.1.3",
     "category": "E26",
     "type": "C",
-    "description": "참조 PillarTarget이 이면 조건 설정",
+    "description": "참조 PillarAgent이 이면 조건 설정",
     "subsection": "E26.1",
     "in_437": true
   },
@@ -2835,7 +2835,7 @@
     "id": "E26.1.4",
     "category": "E26",
     "type": "C",
-    "description": "PillarBinding 생성 시 참조 PillarPool이 없으면 조건 설정",
+    "description": "PillarStorageClass 생성 시 참조 PillarStore이 없으면 조건 설정",
     "subsection": "E26.1",
     "in_437": true
   },
@@ -2843,7 +2843,7 @@
     "id": "E26.1.5",
     "category": "E26",
     "type": "C",
-    "description": "참조 PillarPool이 존재하지만 이면 조건 설정",
+    "description": "참조 PillarStore이 존재하지만 이면 조건 설정",
     "subsection": "E26.1",
     "in_437": true
   },
@@ -2851,7 +2851,7 @@
     "id": "E26.1.6",
     "category": "E26",
     "type": "C",
-    "description": "PillarBinding 생성 시 참조 PillarProtocol이 없으면 조건 설정",
+    "description": "PillarStorageClass 생성 시 참조 PillarProtocol이 없으면 조건 설정",
     "subsection": "E26.1",
     "in_437": true
   },
@@ -2859,7 +2859,7 @@
     "id": "E26.1.7",
     "category": "E26",
     "type": "C",
-    "description": "PillarPool과 PillarProtocol 둘 다 없을 때 두 조건 모두",
+    "description": "PillarStore과 PillarProtocol 둘 다 없을 때 두 조건 모두",
     "subsection": "E26.1",
     "in_437": true
   },
@@ -2875,7 +2875,7 @@
     "id": "E26.2.1",
     "category": "E26",
     "type": "C",
-    "description": "PillarTarget이 로 전환 시 PillarPool의 조건이 로 전이",
+    "description": "PillarAgent이 로 전환 시 PillarStore의 조건이 로 전이",
     "subsection": "E26.2",
     "in_437": true
   },
@@ -2883,7 +2883,7 @@
     "id": "E26.2.2",
     "category": "E26",
     "type": "C",
-    "description": "PillarTarget이 로 회복 시 PillarPool 복원",
+    "description": "PillarAgent이 로 회복 시 PillarStore 복원",
     "subsection": "E26.2",
     "in_437": true
   },
@@ -2891,7 +2891,7 @@
     "id": "E26.2.3",
     "category": "E26",
     "type": "C",
-    "description": "PillarPool이 로 전환 시 PillarBinding의 조건이 로 전이",
+    "description": "PillarStore이 로 전환 시 PillarStorageClass의 조건이 로 전이",
     "subsection": "E26.2",
     "in_437": true
   },
@@ -2899,7 +2899,7 @@
     "id": "E26.2.4",
     "category": "E26",
     "type": "C",
-    "description": "PillarProtocol이 로 전환 시 PillarBinding 전이",
+    "description": "PillarProtocol이 로 전환 시 PillarStorageClass 전이",
     "subsection": "E26.2",
     "in_437": true
   },
@@ -2907,7 +2907,7 @@
     "id": "E26.2.5",
     "category": "E26",
     "type": "C",
-    "description": "PillarTarget 회복 시 Pool→Binding 전체 체인 Ready 복원",
+    "description": "PillarAgent 회복 시 Pool→Binding 전체 체인 Ready 복원",
     "subsection": "E26.2",
     "in_437": true
   },
@@ -2923,7 +2923,7 @@
     "id": "E26.2.7",
     "category": "E26",
     "type": "C",
-    "description": "PillarBinding 조정 완료 시 PillarProtocol 증가",
+    "description": "PillarStorageClass 조정 완료 시 PillarProtocol 증가",
     "subsection": "E26.2",
     "in_437": true
   },
@@ -2931,7 +2931,7 @@
     "id": "E26.3.1",
     "category": "E26",
     "type": "C",
-    "description": "PillarPool이 로 참조하는 PillarTarget 삭제 시 파이널라이저로 차단",
+    "description": "PillarStore이 로 참조하는 PillarAgent 삭제 시 파이널라이저로 차단",
     "subsection": "E26.3",
     "in_437": true
   },
@@ -2939,7 +2939,7 @@
     "id": "E26.3.2",
     "category": "E26",
     "type": "C",
-    "description": "참조 PillarPool 삭제 후 PillarTarget 삭제 완료",
+    "description": "참조 PillarStore 삭제 후 PillarAgent 삭제 완료",
     "subsection": "E26.3",
     "in_437": true
   },
@@ -2947,7 +2947,7 @@
     "id": "E26.3.3",
     "category": "E26",
     "type": "C",
-    "description": "PillarBinding이 로 참조하는 PillarPool 삭제 시 파이널라이저로 차단",
+    "description": "PillarStorageClass이 로 참조하는 PillarStore 삭제 시 파이널라이저로 차단",
     "subsection": "E26.3",
     "in_437": true
   },
@@ -2955,7 +2955,7 @@
     "id": "E26.3.4",
     "category": "E26",
     "type": "C",
-    "description": "참조 PillarBinding 삭제 후 PillarPool 삭제 완료",
+    "description": "참조 PillarStorageClass 삭제 후 PillarStore 삭제 완료",
     "subsection": "E26.3",
     "in_437": true
   },
@@ -2963,7 +2963,7 @@
     "id": "E26.3.5",
     "category": "E26",
     "type": "C",
-    "description": "PillarBinding이 로 참조하는 PillarProtocol 삭제 시 파이널라이저로 차단",
+    "description": "PillarStorageClass이 로 참조하는 PillarProtocol 삭제 시 파이널라이저로 차단",
     "subsection": "E26.3",
     "in_437": true
   },
@@ -2971,7 +2971,7 @@
     "id": "E26.3.6",
     "category": "E26",
     "type": "C",
-    "description": "참조 PillarBinding 삭제 후 PillarProtocol 삭제 완료",
+    "description": "참조 PillarStorageClass 삭제 후 PillarProtocol 삭제 완료",
     "subsection": "E26.3",
     "in_437": true
   },
@@ -3275,7 +3275,7 @@
     "id": "E27.5.1-217a",
     "category": "E27",
     "type": "B",
-    "description": "PillarTarget CRD가 이고 이다",
+    "description": "PillarAgent CRD가 이고 이다",
     "subsection": "E27.5.1",
     "in_437": true
   },
@@ -3283,7 +3283,7 @@
     "id": "E27.5.1-217b",
     "category": "E27",
     "type": "B",
-    "description": "PillarPool CRD가 이고 이다",
+    "description": "PillarStore CRD가 이고 이다",
     "subsection": "E27.5.1",
     "in_437": true
   },
@@ -3299,7 +3299,7 @@
     "id": "E27.5.1-217d",
     "category": "E27",
     "type": "B",
-    "description": "PillarBinding CRD가 이고 이다",
+    "description": "PillarStorageClass CRD가 이고 이다",
     "subsection": "E27.5.1",
     "in_437": true
   },
@@ -3307,7 +3307,7 @@
     "id": "E27.5.2-217e",
     "category": "E27",
     "type": "B",
-    "description": "PillarTarget CRD 스펙의 그룹·버전·범위·shortName이 올바르다",
+    "description": "PillarAgent CRD 스펙의 그룹·버전·범위·shortName이 올바르다",
     "subsection": "E27.5.2",
     "in_437": true
   },
@@ -3315,7 +3315,7 @@
     "id": "E27.5.2-217f",
     "category": "E27",
     "type": "B",
-    "description": "PillarPool CRD 스펙의 그룹·버전·범위·shortName이 올바르다",
+    "description": "PillarStore CRD 스펙의 그룹·버전·범위·shortName이 올바르다",
     "subsection": "E27.5.2",
     "in_437": true
   },
@@ -3331,7 +3331,7 @@
     "id": "E27.5.2-217h",
     "category": "E27",
     "type": "B",
-    "description": "PillarBinding CRD 스펙의 그룹·버전·범위·shortName이 올바르다",
+    "description": "PillarStorageClass CRD 스펙의 그룹·버전·범위·shortName이 올바르다",
     "subsection": "E27.5.2",
     "in_437": true
   },
@@ -3347,7 +3347,7 @@
     "id": "E27.5.3-217j",
     "category": "E27",
     "type": "B",
-    "description": "가 API 서버에서 PillarTarget 리소스를 조회한다",
+    "description": "가 API 서버에서 PillarAgent 리소스를 조회한다",
     "subsection": "E27.5.3",
     "in_437": true
   },
@@ -3355,7 +3355,7 @@
     "id": "E27.5.3-217k",
     "category": "E27",
     "type": "B",
-    "description": "가 API 서버에서 PillarPool 리소스를 조회한다",
+    "description": "가 API 서버에서 PillarStore 리소스를 조회한다",
     "subsection": "E27.5.3",
     "in_437": true
   },
@@ -3371,7 +3371,7 @@
     "id": "E27.5.3-217m",
     "category": "E27",
     "type": "B",
-    "description": "가 API 서버에서 PillarBinding 리소스를 조회한다",
+    "description": "가 API 서버에서 PillarStorageClass 리소스를 조회한다",
     "subsection": "E27.5.3",
     "in_437": true
   },
@@ -3379,7 +3379,7 @@
     "id": "E27.5.4-217n",
     "category": "E27",
     "type": "B",
-    "description": "PillarTarget CRD 버전에 OpenAPI v3 스키마가 정의되어 있다",
+    "description": "PillarAgent CRD 버전에 OpenAPI v3 스키마가 정의되어 있다",
     "subsection": "E27.5.4",
     "in_437": true
   },
@@ -3387,7 +3387,7 @@
     "id": "E27.5.4-217o",
     "category": "E27",
     "type": "B",
-    "description": "PillarPool CRD 버전에 OpenAPI v3 스키마가 정의되어 있다",
+    "description": "PillarStore CRD 버전에 OpenAPI v3 스키마가 정의되어 있다",
     "subsection": "E27.5.4",
     "in_437": true
   },
@@ -3403,7 +3403,7 @@
     "id": "E27.5.4-217q",
     "category": "E27",
     "type": "B",
-    "description": "PillarBinding CRD 버전에 OpenAPI v3 스키마가 정의되어 있다",
+    "description": "PillarStorageClass CRD 버전에 OpenAPI v3 스키마가 정의되어 있다",
     "subsection": "E27.5.4",
     "in_437": true
   },
@@ -3411,7 +3411,7 @@
     "id": "E27.5.5-217r",
     "category": "E27",
     "type": "B",
-    "description": "PillarTarget CRD에 , , , 프린터 컬럼이 정의되어 있다",
+    "description": "PillarAgent CRD에 , , , 프린터 컬럼이 정의되어 있다",
     "subsection": "E27.5.5",
     "in_437": true
   },
@@ -3419,7 +3419,7 @@
     "id": "E27.5.5-217s",
     "category": "E27",
     "type": "B",
-    "description": "PillarPool CRD에 , , , , 프린터 컬럼이 정의되어 있다",
+    "description": "PillarStore CRD에 , , , , 프린터 컬럼이 정의되어 있다",
     "subsection": "E27.5.5",
     "in_437": true
   },
@@ -3435,7 +3435,7 @@
     "id": "E27.5.5-217u",
     "category": "E27",
     "type": "B",
-    "description": "PillarBinding CRD에 , , , , 프린터 컬럼이 정의되어 있다",
+    "description": "PillarStorageClass CRD에 , , , , 프린터 컬럼이 정의되어 있다",
     "subsection": "E27.5.5",
     "in_437": true
   },
@@ -3451,7 +3451,7 @@
     "id": "E27.5.7-217w",
     "category": "E27",
     "type": "B",
-    "description": "Helm 설치 후 PillarTarget 오브젝트를 생성·조회·삭제할 수 있다",
+    "description": "Helm 설치 후 PillarAgent 오브젝트를 생성·조회·삭제할 수 있다",
     "subsection": "E27.5.7",
     "in_437": true
   },
@@ -3459,7 +3459,7 @@
     "id": "E27.5.7-217x",
     "category": "E27",
     "type": "B",
-    "description": "Helm 설치 후 PillarPool 오브젝트를 생성·조회·삭제할 수 있다",
+    "description": "Helm 설치 후 PillarStore 오브젝트를 생성·조회·삭제할 수 있다",
     "subsection": "E27.5.7",
     "in_437": true
   },
@@ -3475,7 +3475,7 @@
     "id": "E27.5.7-217z",
     "category": "E27",
     "type": "B",
-    "description": "Helm 설치 후 PillarBinding 오브젝트를 생성·조회·삭제할 수 있다",
+    "description": "Helm 설치 후 PillarStorageClass 오브젝트를 생성·조회·삭제할 수 있다",
     "subsection": "E27.5.7",
     "in_437": true
   },
@@ -4555,7 +4555,7 @@
     "id": "E32.1",
     "category": "E32",
     "type": "C",
-    "description": "PillarPool LVM 설정 — 정상(linear/thin), VG 누락, 잘못된 모드, LVM config 누락",
+    "description": "PillarStore LVM 설정 — 정상(linear/thin), VG 누락, 잘못된 모드, LVM config 누락",
     "subsection": "E32.2",
     "in_437": true
   },
@@ -4603,7 +4603,7 @@
     "id": "E32.2",
     "category": "E32",
     "type": "C",
-    "description": "PillarBinding LVM — 정상 오버라이드, 잘못된 값, nvmeof-tcp 호환, nfs 비호환",
+    "description": "PillarStorageClass LVM — 정상 오버라이드, 잘못된 값, nvmeof-tcp 호환, nfs 비호환",
     "subsection": "E32.2",
     "in_437": true
   },
@@ -4771,7 +4771,7 @@
     "id": "E33.2-3",
     "category": "E33",
     "type": "B",
-    "description": "PillarPool Ready + VG 용량 보고",
+    "description": "PillarStore Ready + VG 용량 보고",
     "subsection": "E33.2",
     "in_437": true
   },
@@ -5283,7 +5283,7 @@
     "id": "E6.1-1",
     "category": "E6",
     "type": "A",
-    "description": "agent.CreateVolume 성공 + agent.ExportVolume 실패 시 PillarVolume CRD가 Phase=CreatePartial, BackendCreated=true로 생성됨",
+    "description": "agent.CreateVolume 성공 + agent.ExportVolume 실패 시 PillarVolumeState CRD가 Phase=CreatePartial, BackendCreated=true로 생성됨",
     "subsection": "E6.1",
     "in_437": true
   },
@@ -5315,7 +5315,7 @@
     "id": "E6.2-1",
     "category": "E6",
     "type": "A",
-    "description": "성공적인 DeleteVolume이 PillarVolume CRD를 삭제",
+    "description": "성공적인 DeleteVolume이 PillarVolumeState CRD를 삭제",
     "subsection": "E6.2",
     "in_437": true
   },
@@ -5403,7 +5403,7 @@
     "id": "E8.1-1",
     "category": "E8",
     "type": "A",
-    "description": "올바른 mTLS 자격증명으로 연결 시 PillarTarget 상태 AgentConnected=True/Authenticated",
+    "description": "올바른 mTLS 자격증명으로 연결 시 PillarAgent 상태 AgentConnected=True/Authenticated",
     "subsection": "E8.1",
     "in_437": true
   },

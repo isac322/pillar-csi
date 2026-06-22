@@ -24,10 +24,10 @@ package e2e
 //	E18 — NodeGetVolumeStats
 //	E21 — Agent protocol negotiation
 //	E22 — Volume access mode matrix
-//	E24 — PillarBinding lifecycle
+//	E24 — PillarStorageClass lifecycle
 //	E28 — Agent ZFS backend
-//	E29 — PillarPool lifecycle
-//	E30 — PillarTarget lifecycle
+//	E29 — PillarStore lifecycle
+//	E30 — PillarAgent lifecycle
 //
 // Every assertion embeds tc.tcNodeLabel() and tc.SectionTitle in its message so
 // that the tc_failure_output.go ReportAfterEach hook can emit a structured
@@ -52,7 +52,7 @@ var inProcessAssertions = map[string]func(documentedCase){
 	"TestCSIController_CreateVolume":                                            assertE1_CreateVolume,
 	"TestCSIController_CreateVolume_Idempotency":                                assertE1_CreateVolume_Idempotency,
 	"TestCSIController_CreateVolume_MissingParams":                              assertE1_CreateVolume_MissingParams,
-	"TestCSIController_CreateVolume_PillarTargetNotFound":                       assertE1_CreateVolume_PillarTargetNotFound,
+	"TestCSIController_CreateVolume_PillarAgentNotFound":                        assertE1_CreateVolume_PillarAgentNotFound,
 	"TestCSIController_CreateVolume_AgentCreateError":                           assertE1_CreateVolume_AgentCreateError,
 	"TestCSIController_CreateVolume_AgentExportError":                           assertE1_CreateVolume_AgentExportError,
 	"TestCSIController_DeleteVolume":                                            assertE1_DeleteVolume,
@@ -77,7 +77,7 @@ var inProcessAssertions = map[string]func(documentedCase){
 	"TestCSIController_CreateVolume_Capacity_ExistingTooSmall":                  assertE1_Capacity_ExistingTooSmall,
 	"TestCSIController_CreateVolume_Capacity_ExistingTooLarge":                  assertE1_Capacity_ExistingTooLarge,
 	"TestCSIController_CreateVolume_Capacity_ExistingWithinRange":               assertE1_Capacity_ExistingWithinRange,
-	"TestCSIController_CreateVolume_PillarTargetEmptyAddress":                   assertE1_CreateVolume_PillarTargetEmptyAddress,
+	"TestCSIController_CreateVolume_PillarAgentEmptyAddress":                    assertE1_CreateVolume_PillarAgentEmptyAddress,
 	"TestCSIController_CreateVolume_AgentDialFails":                             assertE1_CreateVolume_AgentDialFails,
 	"TestCSIController_PartialFailure_CreateThenExportFail":                     assertE1_PartialFailure_CreateThenExportFail,
 	"TestCSIController_PartialFailure_ExportRetrySkipsBackend":                  assertE1_PartialFailure_ExportRetrySkipsBackend,
@@ -291,7 +291,7 @@ var inProcessAssertions = map[string]func(documentedCase){
 	"TestCSIController_CreateVolume_LVM_Thin":                            assertE29_CreateVolume_LVM_Thin,
 	"TestCSIController_CreateVolume_LVM_VolumeIdFormat":                  assertE29_CreateVolume_LVM_VolumeIdFormat,
 	"TestCSIController_LVM_ModeOverride_PoolDefault":                     assertE29_LVM_ModeOverride_PoolDefault,
-	"TestCSIController_LVM_ModeOverride_BindingOverridesPool":            assertE29_LVM_ModeOverride_BindingOverridesPool,
+	"TestCSIController_LVM_ModeOverride_StorageClassOverridesPool":       assertE29_LVM_ModeOverride_StorageClassOverridesPool,
 	"TestCSIController_LVM_ModeOverride_PVCAnnotationOverridesBinding":   assertE29_LVM_ModeOverride_PVCAnnotationOverridesBinding,
 	"TestCSIController_LVM_ModeOverride_AbsentUsesBackendDefault":        assertE29_LVM_ModeOverride_AbsentUsesBackendDefault,
 	"TestCSIController_LVM_ModeOverride_InvalidPVCAnnotation":            assertE29_LVM_ModeOverride_InvalidPVCAnnotation,

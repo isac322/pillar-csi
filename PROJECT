@@ -14,7 +14,7 @@ resources:
   controller: true
   domain: pillar-csi.bhyoo.com
   group: pillar-csi
-  kind: PillarTarget
+  kind: PillarAgent
   path: github.com/bhyoo/pillar-csi/api/v1alpha1
   version: v1alpha1
   webhooks:
@@ -25,7 +25,7 @@ resources:
   controller: true
   domain: pillar-csi.bhyoo.com
   group: pillar-csi
-  kind: PillarPool
+  kind: PillarStore
   path: github.com/bhyoo/pillar-csi/api/v1alpha1
   version: v1alpha1
   webhooks:
@@ -47,7 +47,7 @@ resources:
   controller: true
   domain: pillar-csi.bhyoo.com
   group: pillar-csi
-  kind: PillarBinding
+  kind: PillarStorageClass
   path: github.com/bhyoo/pillar-csi/api/v1alpha1
   version: v1alpha1
   webhooks:

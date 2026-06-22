@@ -187,8 +187,8 @@
       "category": "E1: 볼륨 라이프사이클 — CreateVolume / DeleteVolume",
       "type": "A",
       "in_437_scope": true,
-      "test_func": "TestCSIController_CreateVolume_PillarTargetEmptyAddress",
-      "description": "PillarTarget이 존재하지만 ResolvedAddress=\"\"이면 Unavailable 반환"
+      "test_func": "TestCSIController_CreateVolume_PillarAgentEmptyAddress",
+      "description": "PillarAgent이 존재하지만 ResolvedAddress=\"\"이면 Unavailable 반환"
     },
     {
       "tc_id": "E1.8-2",
@@ -197,8 +197,8 @@
       "category": "E1: 볼륨 라이프사이클 — CreateVolume / DeleteVolume",
       "type": "A",
       "in_437_scope": true,
-      "test_func": "TestCSIController_CreateVolume_PillarTargetNotFound",
-      "description": "Parameters[\"target\"]이 존재하지 않는 PillarTarget을 참조하면 NotFound 반환"
+      "test_func": "TestCSIController_CreateVolume_PillarAgentNotFound",
+      "description": "Parameters[\"target\"]이 존재하지 않는 PillarAgent을 참조하면 NotFound 반환"
     },
     {
       "tc_id": "E1.8-3",
@@ -218,7 +218,7 @@
       "type": "A",
       "in_437_scope": true,
       "test_func": "TestCSIController_PartialFailure_CreateThenExportFail",
-      "description": "agent.CreateVolume 성공 후 agent.ExportVolume 실패 시 PillarVolume CRD에 CreatePartial 기록"
+      "description": "agent.CreateVolume 성공 후 agent.ExportVolume 실패 시 PillarVolumeState CRD에 CreatePartial 기록"
     },
     {
       "tc_id": "E1.9-2",
@@ -258,7 +258,7 @@
       "type": "A",
       "in_437_scope": true,
       "test_func": "TestCSIController_PartialFailure_LoadStateFromCRD",
-      "description": "컨트롤러 재기동 시 기존 PillarVolume CRD에서 상태 복원"
+      "description": "컨트롤러 재기동 시 기존 PillarVolumeState CRD에서 상태 복원"
     },
     {
       "tc_id": "E1.10-1",
@@ -548,7 +548,7 @@
       "type": "A",
       "in_437_scope": true,
       "test_func": "TestCSIController_ControllerPublishVolume_TargetNotFound",
-      "description": "VolumeId의 target 이름이 PillarTarget CRD에 없음 → NotFound; agent 호출 전 실패"
+      "description": "VolumeId의 target 이름이 PillarAgent CRD에 없음 → NotFound; agent 호출 전 실패"
     },
     {
       "tc_id": "E2.6-8",
@@ -558,7 +558,7 @@
       "type": "A",
       "in_437_scope": true,
       "test_func": "TestCSIController_ControllerPublishVolume_TargetNoResolvedAddress",
-      "description": "PillarTarget.Status.ResolvedAddress=\"\"이면 Unavailable 반환; agent 다이얼 미시도"
+      "description": "PillarAgent.Status.ResolvedAddress=\"\"이면 Unavailable 반환; agent 다이얼 미시도"
     },
     {
       "tc_id": "E3",
@@ -577,8 +577,8 @@
       "category": "E1: 볼륨 라이프사이클 — CreateVolume / DeleteVolume",
       "type": "A",
       "in_437_scope": true,
-      "test_func": "TestCSIController_CreateVolume_PillarTargetNotFound",
-      "description": "참조된 PillarTarget이 존재하지 않으면 NotFound 반환"
+      "test_func": "TestCSIController_CreateVolume_PillarAgentNotFound",
+      "description": "참조된 PillarAgent이 존재하지 않으면 NotFound 반환"
     },
     {
       "tc_id": "E5",
@@ -754,281 +754,281 @@
       "tc_id": "E19.1.1",
       "group_id": "E19.1",
       "top_section": "E19",
-      "category": "E19: PillarTarget CRD 라이프사이클",
+      "category": "E19: PillarAgent CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarTargetWebhook_ValidCreate_External",
+      "test_func": "TestPillarAgentWebhook_ValidCreate_External",
       "description": "`spec.external.address` + `spec.external.port`가 모두 설정된 external 스펙으로 ValidateCreate 통과"
     },
     {
       "tc_id": "E19.1.2",
       "group_id": "E19.1",
       "top_section": "E19",
-      "category": "E19: PillarTarget CRD 라이프사이클",
+      "category": "E19: PillarAgent CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarTargetWebhook_ValidCreate_NodeRef",
+      "test_func": "TestPillarAgentWebhook_ValidCreate_NodeRef",
       "description": "`spec.nodeRef.name`만 설정된 nodeRef 스펙으로 ValidateCreate 통과"
     },
     {
       "tc_id": "E19.1.3",
       "group_id": "E19.1",
       "top_section": "E19",
-      "category": "E19: PillarTarget CRD 라이프사이클",
+      "category": "E19: PillarAgent CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarTargetController_FinalizerAddedOnFirstReconcile",
-      "description": "PillarTarget 생성 후 첫 번째 `Reconcile` 호출에서 `pillar-target-protection` 파이널라이저 자동 추가"
+      "test_func": "TestPillarAgentController_FinalizerAddedOnFirstReconcile",
+      "description": "PillarAgent 생성 후 첫 번째 `Reconcile` 호출에서 `pillar-agent-protection` 파이널라이저 자동 추가"
     },
     {
       "tc_id": "E19.2.1",
       "group_id": "E19.2",
       "top_section": "E19",
-      "category": "E19: PillarTarget CRD 라이프사이클",
+      "category": "E19: PillarAgent CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarTargetCRD_InvalidCreate_EmptyNodeRefName",
+      "test_func": "TestPillarAgentCRD_InvalidCreate_EmptyNodeRefName",
       "description": "`spec.nodeRef.name`이 빈 문자열인 경우 API 서버가 HTTP 422로 거부"
     },
     {
       "tc_id": "E19.2.2",
       "group_id": "E19.2",
       "top_section": "E19",
-      "category": "E19: PillarTarget CRD 라이프사이클",
+      "category": "E19: PillarAgent CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarTargetCRD_InvalidCreate_ExternalPortTooLow",
+      "test_func": "TestPillarAgentCRD_InvalidCreate_ExternalPortTooLow",
       "description": "`spec.external.port=0` (최솟값 미달) 시 API 서버가 거부"
     },
     {
       "tc_id": "E19.2.3",
       "group_id": "E19.2",
       "top_section": "E19",
-      "category": "E19: PillarTarget CRD 라이프사이클",
+      "category": "E19: PillarAgent CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarTargetCRD_InvalidCreate_ExternalPortTooHigh",
+      "test_func": "TestPillarAgentCRD_InvalidCreate_ExternalPortTooHigh",
       "description": "`spec.external.port=65536` (최댓값 초과) 시 API 서버가 거부"
     },
     {
       "tc_id": "E19.2.4",
       "group_id": "E19.2",
       "top_section": "E19",
-      "category": "E19: PillarTarget CRD 라이프사이클",
+      "category": "E19: PillarAgent CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarTargetCRD_InvalidCreate_EmptyExternalAddress",
+      "test_func": "TestPillarAgentCRD_InvalidCreate_EmptyExternalAddress",
       "description": "`spec.external.address`가 빈 문자열인 경우 거부"
     },
     {
       "tc_id": "E19.3.1",
       "group_id": "E19.3",
       "top_section": "E19",
-      "category": "E19: PillarTarget CRD 라이프사이클",
+      "category": "E19: PillarAgent CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarTargetWebhook_ImmutableUpdate_NodeRefToExternal",
+      "test_func": "TestPillarAgentWebhook_ImmutableUpdate_NodeRefToExternal",
       "description": "`spec.nodeRef` → `spec.external`로 판별자(discriminant) 전환 시 거부"
     },
     {
       "tc_id": "E19.3.2",
       "group_id": "E19.3",
       "top_section": "E19",
-      "category": "E19: PillarTarget CRD 라이프사이클",
+      "category": "E19: PillarAgent CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarTargetWebhook_ImmutableUpdate_ExternalToNodeRef",
+      "test_func": "TestPillarAgentWebhook_ImmutableUpdate_ExternalToNodeRef",
       "description": "`spec.external` → `spec.nodeRef`로 역전환 시 거부"
     },
     {
       "tc_id": "E19.3.3",
       "group_id": "E19.3",
       "top_section": "E19",
-      "category": "E19: PillarTarget CRD 라이프사이클",
+      "category": "E19: PillarAgent CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarTargetWebhook_ImmutableUpdate_NodeRefNameChange",
+      "test_func": "TestPillarAgentWebhook_ImmutableUpdate_NodeRefNameChange",
       "description": "`spec.nodeRef.name` 변경 시 거부 — 에이전트 호스트 변경 방지"
     },
     {
       "tc_id": "E19.3.4",
       "group_id": "E19.3",
       "top_section": "E19",
-      "category": "E19: PillarTarget CRD 라이프사이클",
+      "category": "E19: PillarAgent CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarTargetWebhook_ImmutableUpdate_ExternalAddressChange",
+      "test_func": "TestPillarAgentWebhook_ImmutableUpdate_ExternalAddressChange",
       "description": "`spec.external.address` 변경 시 거부"
     },
     {
       "tc_id": "E19.3.5",
       "group_id": "E19.3",
       "top_section": "E19",
-      "category": "E19: PillarTarget CRD 라이프사이클",
+      "category": "E19: PillarAgent CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarTargetWebhook_ImmutableUpdate_ExternalPortChange",
+      "test_func": "TestPillarAgentWebhook_ImmutableUpdate_ExternalPortChange",
       "description": "`spec.external.port` 변경 시 거부"
     },
     {
       "tc_id": "E19.3.6",
       "group_id": "E19.3",
       "top_section": "E19",
-      "category": "E19: PillarTarget CRD 라이프사이클",
+      "category": "E19: PillarAgent CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarTargetWebhook_MutableUpdate_AddressTypeChange",
+      "test_func": "TestPillarAgentWebhook_MutableUpdate_AddressTypeChange",
       "description": "`spec.nodeRef.addressType` 변경은 허용 (식별 필드 아님; 접속 방법만 변경)"
     },
     {
       "tc_id": "E19.4.1",
       "group_id": "E19.4",
       "top_section": "E19",
-      "category": "E19: PillarTarget CRD 라이프사이클",
+      "category": "E19: PillarAgent CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarTargetController_NodeExists_Unknown_ExternalMode",
-      "description": "external 모드 PillarTarget에서 `NodeExists=Unknown/ExternalMode` 설정 — external 모드는 K8s Node를 참조하지 않음"
+      "test_func": "TestPillarAgentController_NodeExists_Unknown_ExternalMode",
+      "description": "external 모드 PillarAgent에서 `NodeExists=Unknown/ExternalMode` 설정 — external 모드는 K8s Node를 참조하지 않음"
     },
     {
       "tc_id": "E19.4.2",
       "group_id": "E19.4",
       "top_section": "E19",
-      "category": "E19: PillarTarget CRD 라이프사이클",
+      "category": "E19: PillarAgent CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarTargetController_NodeExists_True_NodePresent",
+      "test_func": "TestPillarAgentController_NodeExists_True_NodePresent",
       "description": "nodeRef 모드에서 참조된 K8s Node가 존재하면 `NodeExists=True/NodeFound`"
     },
     {
       "tc_id": "E19.4.3",
       "group_id": "E19.4",
       "top_section": "E19",
-      "category": "E19: PillarTarget CRD 라이프사이클",
+      "category": "E19: PillarAgent CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarTargetController_NodeExists_False_NodeMissing",
+      "test_func": "TestPillarAgentController_NodeExists_False_NodeMissing",
       "description": "nodeRef 모드에서 참조된 K8s Node가 없으면 `NodeExists=False/NodeNotFound`"
     },
     {
       "tc_id": "E19.5.1",
       "group_id": "E19.5",
       "top_section": "E19",
-      "category": "E19: PillarTarget CRD 라이프사이클",
+      "category": "E19: PillarAgent CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarTargetController_AgentConnected_False_DialerNil",
+      "test_func": "TestPillarAgentController_AgentConnected_False_DialerNil",
       "description": "`reconciler.Dialer=nil`이면 `AgentConnected=False/DialerNotConfigured` — 개발/테스트 환경"
     },
     {
       "tc_id": "E19.5.2",
       "group_id": "E19.5",
       "top_section": "E19",
-      "category": "E19: PillarTarget CRD 라이프사이클",
+      "category": "E19: PillarAgent CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarTargetController_AgentConnected_True_PlainTCP",
+      "test_func": "TestPillarAgentController_AgentConnected_True_PlainTCP",
       "description": "`mockDialer{healthy:true, mtls:false}` → `AgentConnected=True/Dialed` — 평문 TCP 연결 시뮬레이션"
     },
     {
       "tc_id": "E19.5.3",
       "group_id": "E19.5",
       "top_section": "E19",
-      "category": "E19: PillarTarget CRD 라이프사이클",
+      "category": "E19: PillarAgent CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarTargetController_AgentConnected_True_MTLS",
+      "test_func": "TestPillarAgentController_AgentConnected_True_MTLS",
       "description": "`mockDialer{healthy:true, mtls:true}` → `AgentConnected=True/Authenticated` — mTLS 연결 시뮬레이션"
     },
     {
       "tc_id": "E19.5.4",
       "group_id": "E19.5",
       "top_section": "E19",
-      "category": "E19: PillarTarget CRD 라이프사이클",
+      "category": "E19: PillarAgent CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarTargetController_AgentConnected_False_HealthCheckError",
+      "test_func": "TestPillarAgentController_AgentConnected_False_HealthCheckError",
       "description": "`mockDialer.err != nil` → `AgentConnected=False/HealthCheckFailed` — 네트워크 오류 시뮬레이션"
     },
     {
       "tc_id": "E19.5.5",
       "group_id": "E19.5",
       "top_section": "E19",
-      "category": "E19: PillarTarget CRD 라이프사이클",
+      "category": "E19: PillarAgent CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarTargetController_AgentConnected_False_AgentUnhealthy",
+      "test_func": "TestPillarAgentController_AgentConnected_False_AgentUnhealthy",
       "description": "`mockDialer{healthy:false}` → `AgentConnected=False/AgentUnhealthy` — 에이전트 자가 보고 비정상 상태"
     },
     {
       "tc_id": "E19.6.1",
       "group_id": "E19.6",
       "top_section": "E19",
-      "category": "E19: PillarTarget CRD 라이프사이클",
+      "category": "E19: PillarAgent CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarTargetController_Ready_True_AllConditionsMet",
+      "test_func": "TestPillarAgentController_Ready_True_AllConditionsMet",
       "description": "NodeExists=True` + `AgentConnected=True` → `Ready=True/AllConditionsMet"
     },
     {
       "tc_id": "E19.6.2",
       "group_id": "E19.6",
       "top_section": "E19",
-      "category": "E19: PillarTarget CRD 라이프사이클",
+      "category": "E19: PillarAgent CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarTargetController_Ready_False_NodeMissing",
+      "test_func": "TestPillarAgentController_Ready_False_NodeMissing",
       "description": "`NodeExists=False` → `Ready=False` — 노드 없음 시 전체 준비 불가"
     },
     {
       "tc_id": "E19.6.3",
       "group_id": "E19.6",
       "top_section": "E19",
-      "category": "E19: PillarTarget CRD 라이프사이클",
+      "category": "E19: PillarAgent CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarTargetController_Ready_False_AgentUnreachable",
+      "test_func": "TestPillarAgentController_Ready_False_AgentUnreachable",
       "description": "`AgentConnected=False` → `Ready=False` — 에이전트 미도달 시 전체 준비 불가"
     },
     {
       "tc_id": "E19.7.1",
       "group_id": "E19.7",
       "top_section": "E19",
-      "category": "E19: PillarTarget CRD 라이프사이클",
+      "category": "E19: PillarAgent CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarTargetController_DeletionBlocked_ReferencingPoolExists",
-      "description": "참조 PillarPool이 존재하는 동안 삭제 차단; `result.RequeueAfter=10s`"
+      "test_func": "TestPillarAgentController_DeletionBlocked_ReferencingPoolExists",
+      "description": "참조 PillarStore이 존재하는 동안 삭제 차단; `result.RequeueAfter=10s`"
     },
     {
       "tc_id": "E19.7.2",
       "group_id": "E19.7",
       "top_section": "E19",
-      "category": "E19: PillarTarget CRD 라이프사이클",
+      "category": "E19: PillarAgent CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarTargetController_DeletionAllowed_NoReferencingPools",
-      "description": "참조 PillarPool 없을 때 즉시 파이널라이저 제거 및 삭제 진행"
+      "test_func": "TestPillarAgentController_DeletionAllowed_NoReferencingPools",
+      "description": "참조 PillarStore 없을 때 즉시 파이널라이저 제거 및 삭제 진행"
     },
     {
       "tc_id": "E19.7.3",
       "group_id": "E19.7",
       "top_section": "E19",
-      "category": "E19: PillarTarget CRD 라이프사이클",
+      "category": "E19: PillarAgent CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarTargetController_DeletionAllowed_AfterPoolRemoval",
-      "description": "참조 PillarPool 제거 후 다음 조정에서 파이널라이저 제거 및 삭제 완료"
+      "test_func": "TestPillarAgentController_DeletionAllowed_AfterPoolRemoval",
+      "description": "참조 PillarStore 제거 후 다음 조정에서 파이널라이저 제거 및 삭제 완료"
     },
     {
       "tc_id": "E19.7.4",
       "group_id": "E19.7",
       "top_section": "E19",
-      "category": "E19: PillarTarget CRD 라이프사이클",
+      "category": "E19: PillarAgent CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarTargetController_DeletionBlocked_MultiplePoolsRequireAllRemoved",
-      "description": "여러 PillarPool이 동일 PillarTarget을 참조할 때, 하나라도 남아 있으면 차단 지속"
+      "test_func": "TestPillarAgentController_DeletionBlocked_MultiplePoolsRequireAllRemoved",
+      "description": "여러 PillarStore이 동일 PillarAgent을 참조할 때, 하나라도 남아 있으면 차단 지속"
     },
     {
       "tc_id": "E20",
@@ -1044,331 +1044,331 @@
       "tc_id": "E20.1.1",
       "group_id": "E20.1",
       "top_section": "E20",
-      "category": "E20: PillarPool CRD 라이프사이클",
+      "category": "E20: PillarStore CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarPoolWebhook_ValidCreate_ZFSZvol",
+      "test_func": "TestPillarStoreWebhook_ValidCreate_ZFSZvol",
       "description": "`backend.type=\"zfs-zvol\"` + ZFS 설정으로 ValidateCreate 통과"
     },
     {
       "tc_id": "E20.1.2",
       "group_id": "E20.1",
       "top_section": "E20",
-      "category": "E20: PillarPool CRD 라이프사이클",
+      "category": "E20: PillarStore CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarPoolWebhook_ValidCreate_Dir",
+      "test_func": "TestPillarStoreWebhook_ValidCreate_Dir",
       "description": "`backend.type=\"dir\"`로 ValidateCreate 통과 (ZFS 설정 불필요)"
     },
     {
       "tc_id": "E20.1.3",
       "group_id": "E20.1",
       "top_section": "E20",
-      "category": "E20: PillarPool CRD 라이프사이클",
+      "category": "E20: PillarStore CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarPoolController_FinalizerAddedOnFirstReconcile",
-      "description": "PillarPool 생성 후 첫 번째 `Reconcile` 호출에서 `pool-protection` 파이널라이저 자동 추가"
+      "test_func": "TestPillarStoreController_FinalizerAddedOnFirstReconcile",
+      "description": "PillarStore 생성 후 첫 번째 `Reconcile` 호출에서 `pool-protection` 파이널라이저 자동 추가"
     },
     {
       "tc_id": "E20.1.4",
       "group_id": "E20.1",
       "top_section": "E20",
-      "category": "E20: PillarPool CRD 라이프사이클",
+      "category": "E20: PillarStore CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarPoolController_FinalizerNotDuplicated",
-      "description": "동일 PillarPool을 두 번 조정해도 파이널라이저 중복 없음"
+      "test_func": "TestPillarStoreController_FinalizerNotDuplicated",
+      "description": "동일 PillarStore을 두 번 조정해도 파이널라이저 중복 없음"
     },
     {
       "tc_id": "E20.2.1",
       "group_id": "E20.2",
       "top_section": "E20",
-      "category": "E20: PillarPool CRD 라이프사이클",
+      "category": "E20: PillarStore CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarPoolCRD_InvalidCreate_EmptyTargetRef",
-      "description": "`spec.targetRef`가 빈 문자열인 경우 API 서버가 거부"
+      "test_func": "TestPillarStoreCRD_InvalidCreate_EmptyAgentRef",
+      "description": "`spec.agentRef`가 빈 문자열인 경우 API 서버가 거부"
     },
     {
       "tc_id": "E20.2.2",
       "group_id": "E20.2",
       "top_section": "E20",
-      "category": "E20: PillarPool CRD 라이프사이클",
+      "category": "E20: PillarStore CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarPoolCRD_InvalidCreate_InvalidBackendType",
+      "test_func": "TestPillarStoreCRD_InvalidCreate_InvalidBackendType",
       "description": "`spec.backend.type`에 열거형 외 값 설정 시 거부"
     },
     {
       "tc_id": "E20.2.3",
       "group_id": "E20.2",
       "top_section": "E20",
-      "category": "E20: PillarPool CRD 라이프사이클",
+      "category": "E20: PillarStore CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarPoolCRD_InvalidCreate_EmptyBackendType",
+      "test_func": "TestPillarStoreCRD_InvalidCreate_EmptyBackendType",
       "description": "`spec.backend.type`이 빈 문자열인 경우 거부"
     },
     {
       "tc_id": "E20.3.1",
       "group_id": "E20.3",
       "top_section": "E20",
-      "category": "E20: PillarPool CRD 라이프사이클",
+      "category": "E20: PillarStore CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarPoolWebhook_ImmutableUpdate_TargetRefChange",
-      "description": "`spec.targetRef` 변경 시 거부 — 풀이 묶인 스토리지 노드 변경 방지"
+      "test_func": "TestPillarStoreWebhook_ImmutableUpdate_AgentRefChange",
+      "description": "`spec.agentRef` 변경 시 거부 — 풀이 묶인 스토리지 노드 변경 방지"
     },
     {
       "tc_id": "E20.3.2",
       "group_id": "E20.3",
       "top_section": "E20",
-      "category": "E20: PillarPool CRD 라이프사이클",
+      "category": "E20: PillarStore CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarPoolWebhook_ImmutableUpdate_BackendTypeChange",
+      "test_func": "TestPillarStoreWebhook_ImmutableUpdate_BackendTypeChange",
       "description": "`spec.backend.type` 변경 시 거부 — 기존 볼륨의 드라이버 변경 방지"
     },
     {
       "tc_id": "E20.3.3",
       "group_id": "E20.3",
       "top_section": "E20",
-      "category": "E20: PillarPool CRD 라이프사이클",
+      "category": "E20: PillarStore CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarPoolWebhook_ImmutableUpdate_BothFieldsChange",
-      "description": "`spec.targetRef`와 `spec.backend.type` 동시 변경 시 두 오류 모두 반환"
+      "test_func": "TestPillarStoreWebhook_ImmutableUpdate_BothFieldsChange",
+      "description": "`spec.agentRef`와 `spec.backend.type` 동시 변경 시 두 오류 모두 반환"
     },
     {
       "tc_id": "E20.3.4",
       "group_id": "E20.3",
       "top_section": "E20",
-      "category": "E20: PillarPool CRD 라이프사이클",
+      "category": "E20: PillarStore CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarPoolWebhook_MutableUpdate_ZFSPropertiesChange",
+      "test_func": "TestPillarStoreWebhook_MutableUpdate_ZFSPropertiesChange",
       "description": "`spec.backend.zfs.properties` 변경은 허용 (불변 필드 아님)"
     },
     {
       "tc_id": "E20.4.1",
       "group_id": "E20.4",
       "top_section": "E20",
-      "category": "E20: PillarPool CRD 라이프사이클",
+      "category": "E20: PillarStore CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarPoolController_TargetReady_False_TargetAbsent",
-      "description": "참조 PillarTarget이 없으면 `TargetReady=False/TargetNotFound`; 하위 조건도 모두 False"
+      "test_func": "TestPillarStoreController_TargetReady_False_TargetAbsent",
+      "description": "참조 PillarAgent이 없으면 `TargetReady=False/TargetNotFound`; 하위 조건도 모두 False"
     },
     {
       "tc_id": "E20.4.2",
       "group_id": "E20.4",
       "top_section": "E20",
-      "category": "E20: PillarPool CRD 라이프사이클",
+      "category": "E20: PillarStore CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarPoolController_TargetReady_False_TargetNotReady",
-      "description": "참조 PillarTarget이 존재하지만 `Ready=False`이면 `TargetReady=False/TargetNotReady`; 하위 조건 Unknown"
+      "test_func": "TestPillarStoreController_TargetReady_False_TargetNotReady",
+      "description": "참조 PillarAgent이 존재하지만 `Ready=False`이면 `TargetReady=False/TargetNotReady`; 하위 조건 Unknown"
     },
     {
       "tc_id": "E20.4.3",
       "group_id": "E20.4",
       "top_section": "E20",
-      "category": "E20: PillarPool CRD 라이프사이클",
+      "category": "E20: PillarStore CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarPoolController_TargetReady_True_TargetReady",
-      "description": "참조 PillarTarget이 `Ready=True`이면 `TargetReady=True`"
+      "test_func": "TestPillarStoreController_TargetReady_True_TargetReady",
+      "description": "참조 PillarAgent이 `Ready=True`이면 `TargetReady=True`"
     },
     {
       "tc_id": "E20.5.1",
       "group_id": "E20.5",
       "top_section": "E20",
-      "category": "E20: PillarPool CRD 라이프사이클",
+      "category": "E20: PillarStore CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarPoolController_PoolDiscovered_Unknown_EmptyDiscoveredPools",
-      "description": "PillarTarget `Ready=True`이지만 `discoveredPools=[]`이면 `PoolDiscovered=Unknown/WaitingForAgentData`"
+      "test_func": "TestPillarStoreController_PoolDiscovered_Unknown_EmptyDiscoveredPools",
+      "description": "PillarAgent `Ready=True`이지만 `discoveredPools=[]`이면 `PoolDiscovered=Unknown/WaitingForAgentData`"
     },
     {
       "tc_id": "E20.5.2",
       "group_id": "E20.5",
       "top_section": "E20",
-      "category": "E20: PillarPool CRD 라이프사이클",
+      "category": "E20: PillarStore CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarPoolController_PoolDiscovered_True_ZFSPoolNameMatch",
+      "test_func": "TestPillarStoreController_PoolDiscovered_True_ZFSPoolNameMatch",
       "description": "discoveredPools`에 ZFS 풀 이름이 일치하는 항목이 있으면 `PoolDiscovered=True"
     },
     {
       "tc_id": "E20.5.3",
       "group_id": "E20.5",
       "top_section": "E20",
-      "category": "E20: PillarPool CRD 라이프사이클",
+      "category": "E20: PillarStore CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarPoolController_PoolDiscovered_False_ZFSPoolNameMismatch",
+      "test_func": "TestPillarStoreController_PoolDiscovered_False_ZFSPoolNameMismatch",
       "description": "discoveredPools`에 ZFS 풀 이름이 없으면 `PoolDiscovered=False/PoolNotFound"
     },
     {
       "tc_id": "E20.5.4",
       "group_id": "E20.5",
       "top_section": "E20",
-      "category": "E20: PillarPool CRD 라이프사이클",
+      "category": "E20: PillarStore CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarPoolController_PoolDiscovered_True_DirBackend_NoNameRequired",
+      "test_func": "TestPillarStoreController_PoolDiscovered_True_DirBackend_NoNameRequired",
       "description": "backend.type=\"dir\"` 백엔드는 명시적 풀 이름 없이 `discoveredPools`에 항목만 있으면 `PoolDiscovered=True"
     },
     {
       "tc_id": "E20.6.1",
       "group_id": "E20.6",
       "top_section": "E20",
-      "category": "E20: PillarPool CRD 라이프사이클",
+      "category": "E20: PillarStore CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarPoolController_BackendSupported_Unknown_NoCapabilities",
-      "description": "PillarTarget `Ready=True`이지만 `capabilities=nil`이면 `BackendSupported=Unknown/WaitingForAgentData`"
+      "test_func": "TestPillarStoreController_BackendSupported_Unknown_NoCapabilities",
+      "description": "PillarAgent `Ready=True`이지만 `capabilities=nil`이면 `BackendSupported=Unknown/WaitingForAgentData`"
     },
     {
       "tc_id": "E20.6.2",
       "group_id": "E20.6",
       "top_section": "E20",
-      "category": "E20: PillarPool CRD 라이프사이클",
+      "category": "E20: PillarStore CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarPoolController_BackendSupported_True_BackendInCapabilities",
+      "test_func": "TestPillarStoreController_BackendSupported_True_BackendInCapabilities",
       "description": "capabilities.backends`에 해당 `backend.type`이 있으면 `BackendSupported=True"
     },
     {
       "tc_id": "E20.6.3",
       "group_id": "E20.6",
       "top_section": "E20",
-      "category": "E20: PillarPool CRD 라이프사이클",
+      "category": "E20: PillarStore CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarPoolController_BackendSupported_False_BackendNotInCapabilities",
+      "test_func": "TestPillarStoreController_BackendSupported_False_BackendNotInCapabilities",
       "description": "capabilities.backends`에 해당 `backend.type`이 없으면 `BackendSupported=False/BackendNotSupported"
     },
     {
       "tc_id": "E20.7.1",
       "group_id": "E20.7",
       "top_section": "E20",
-      "category": "E20: PillarPool CRD 라이프사이클",
+      "category": "E20: PillarStore CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarPoolController_Ready_True_AllConditionsMet",
+      "test_func": "TestPillarStoreController_Ready_True_AllConditionsMet",
       "description": "모든 조건 True → `Ready=True/AllConditionsMet`"
     },
     {
       "tc_id": "E20.7.2",
       "group_id": "E20.7",
       "top_section": "E20",
-      "category": "E20: PillarPool CRD 라이프사이클",
+      "category": "E20: PillarStore CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarPoolController_Ready_False_PoolNotDiscovered",
+      "test_func": "TestPillarStoreController_Ready_False_PoolNotDiscovered",
       "description": "`PoolDiscovered=False` → `Ready=False/ConditionsNotMet` (`TargetReady=True`, `BackendSupported=True`이어도)"
     },
     {
       "tc_id": "E20.7.3",
       "group_id": "E20.7",
       "top_section": "E20",
-      "category": "E20: PillarPool CRD 라이프사이클",
+      "category": "E20: PillarStore CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarPoolController_Ready_False_BackendUnsupported",
+      "test_func": "TestPillarStoreController_Ready_False_BackendUnsupported",
       "description": "BackendSupported=False` → `Ready=False/ConditionsNotMet"
     },
     {
       "tc_id": "E20.8.1",
       "group_id": "E20.8",
       "top_section": "E20",
-      "category": "E20: PillarPool CRD 라이프사이클",
+      "category": "E20: PillarStore CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarPoolController_CapacitySync_TotalAndAvailableSet",
+      "test_func": "TestPillarStoreController_CapacitySync_TotalAndAvailableSet",
       "description": "`DiscoveredPool`에 Total, Available 있으면 `status.capacity`에 반영; `Used=Total-Available` 자동 계산"
     },
     {
       "tc_id": "E20.8.2",
       "group_id": "E20.8",
       "top_section": "E20",
-      "category": "E20: PillarPool CRD 라이프사이클",
+      "category": "E20: PillarStore CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarPoolController_CapacitySync_UsedClampedAtZero",
+      "test_func": "TestPillarStoreController_CapacitySync_UsedClampedAtZero",
       "description": "`Available > Total` 비정상 데이터에서 `Used=0`으로 클램핑 (음수 방지)"
     },
     {
       "tc_id": "E20.8.3",
       "group_id": "E20.8",
       "top_section": "E20",
-      "category": "E20: PillarPool CRD 라이프사이클",
+      "category": "E20: PillarStore CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarPoolController_CapacitySync_ClearedWhenPoolNotDiscovered",
+      "test_func": "TestPillarStoreController_CapacitySync_ClearedWhenPoolNotDiscovered",
       "description": "`PoolDiscovered=False` 또는 Unknown이면 기존 capacity 제거"
     },
     {
       "tc_id": "E20.9.1",
       "group_id": "E20.9",
       "top_section": "E20",
-      "category": "E20: PillarPool CRD 라이프사이클",
+      "category": "E20: PillarStore CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarPoolController_DeletionBlocked_ReferencingBindingExists",
-      "description": "참조 PillarBinding이 존재하는 동안 삭제 차단; `Ready=False/DeletionBlocked` 설정"
+      "test_func": "TestPillarStoreController_DeletionBlocked_ReferencingBindingExists",
+      "description": "참조 PillarStorageClass이 존재하는 동안 삭제 차단; `Ready=False/DeletionBlocked` 설정"
     },
     {
       "tc_id": "E20.9.2",
       "group_id": "E20.9",
       "top_section": "E20",
-      "category": "E20: PillarPool CRD 라이프사이클",
+      "category": "E20: PillarStore CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarPoolController_DeletionAllowed_NoReferencingBindings",
-      "description": "참조 PillarBinding 없을 때 즉시 파이널라이저 제거 및 삭제 진행"
+      "test_func": "TestPillarStoreController_DeletionAllowed_NoReferencingBindings",
+      "description": "참조 PillarStorageClass 없을 때 즉시 파이널라이저 제거 및 삭제 진행"
     },
     {
       "tc_id": "E20.9.3",
       "group_id": "E20.9",
       "top_section": "E20",
-      "category": "E20: PillarPool CRD 라이프사이클",
+      "category": "E20: PillarStore CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarPoolController_DeletionAllowed_AfterBindingRemoval",
-      "description": "참조 PillarBinding 제거 후 다음 조정에서 파이널라이저 제거 및 삭제 완료"
+      "test_func": "TestPillarStoreController_DeletionAllowed_AfterBindingRemoval",
+      "description": "참조 PillarStorageClass 제거 후 다음 조정에서 파이널라이저 제거 및 삭제 완료"
     },
     {
       "tc_id": "E20.9.4",
       "group_id": "E20.9",
       "top_section": "E20",
-      "category": "E20: PillarPool CRD 라이프사이클",
+      "category": "E20: PillarStore CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarPoolController_DeletionBlocked_StatusMessageContainsAllBindingNames",
-      "description": "여러 PillarBinding이 참조할 때 상태 메시지에 모든 이름이 나열됨"
+      "test_func": "TestPillarStoreController_DeletionBlocked_StatusMessageContainsAllBindingNames",
+      "description": "여러 PillarStorageClass이 참조할 때 상태 메시지에 모든 이름이 나열됨"
     },
     {
       "tc_id": "E20.10.1",
       "group_id": "E20.10",
       "top_section": "E20",
-      "category": "E20: PillarPool CRD 라이프사이클",
+      "category": "E20: PillarStore CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarPoolController_TargetReadyTransition_NotReadyToReady",
-      "description": "PillarTarget이 Not-Ready → Ready로 전이 후 PillarPool 재조정 시 `TargetReady=True`로 갱신"
+      "test_func": "TestPillarStoreController_TargetReadyTransition_NotReadyToReady",
+      "description": "PillarAgent이 Not-Ready → Ready로 전이 후 PillarStore 재조정 시 `TargetReady=True`로 갱신"
     },
     {
       "tc_id": "E20.10.2",
       "group_id": "E20.10",
       "top_section": "E20",
-      "category": "E20: PillarPool CRD 라이프사이클",
+      "category": "E20: PillarStore CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarPoolController_TargetReadyTransition_ReadyToNotReady",
-      "description": "PillarTarget이 Ready → Not-Ready로 전이 후 PillarPool 재조정 시 `TargetReady=False`; 하위 조건 Unknown으로 후퇴"
+      "test_func": "TestPillarStoreController_TargetReadyTransition_ReadyToNotReady",
+      "description": "PillarAgent이 Ready → Not-Ready로 전이 후 PillarStore 재조정 시 `TargetReady=False`; 하위 조건 Unknown으로 후퇴"
     },
     {
       "tc_id": "E21",
@@ -1428,7 +1428,7 @@
       "type": "A",
       "in_437_scope": true,
       "test_func": "TestCSIProtocol_ControllerPublish_ISCSIUnimplemented",
-      "description": "ControllerPublishVolume에서 `protocol-type=\\\"iscsi\\\"` 볼륨 ID를 가진 PillarVolume CRD 존재 시 agent.AllowInitiator가 `codes.Unimplemented` 반환 → ControllerPublishVolume이 오류 전파"
+      "description": "ControllerPublishVolume에서 `protocol-type=\\\"iscsi\\\"` 볼륨 ID를 가진 PillarVolumeState CRD 존재 시 agent.AllowInitiator가 `codes.Unimplemented` 반환 → ControllerPublishVolume이 오류 전파"
     },
     {
       "tc_id": "E22.175",
@@ -1648,7 +1648,7 @@
       "type": "C",
       "in_437_scope": true,
       "test_func": "TestPillarProtocolController_Ready_True_NoBindings",
-      "description": "참조 PillarBinding 없는 정상 조정에서 `Ready=True/ProtocolConfigured`"
+      "description": "참조 PillarStorageClass 없는 정상 조정에서 `Ready=True/ProtocolConfigured`"
     },
     {
       "tc_id": "E23.4.2",
@@ -1658,7 +1658,7 @@
       "type": "C",
       "in_437_scope": true,
       "test_func": "TestPillarProtocolController_Ready_True_WithBindings",
-      "description": "참조 PillarBinding이 존재하는 정상 조정에서도 `Ready=True`"
+      "description": "참조 PillarStorageClass이 존재하는 정상 조정에서도 `Ready=True`"
     },
     {
       "tc_id": "E23.4.3",
@@ -1678,7 +1678,7 @@
       "type": "C",
       "in_437_scope": true,
       "test_func": "TestPillarProtocolController_Ready_False_DeletionBlocked",
-      "description": "삭제 요청 중 참조 PillarBinding 존재 시 `Ready=False/DeletionBlocked`"
+      "description": "삭제 요청 중 참조 PillarStorageClass 존재 시 `Ready=False/DeletionBlocked`"
     },
     {
       "tc_id": "E23.4.5",
@@ -1697,8 +1697,8 @@
       "category": "E23: PillarProtocol CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarProtocolController_BindingCount_Zero_NoBindings",
-      "description": "참조 PillarBinding 없을 때 `BindingCount=0`, `ActiveTargets=[]`"
+      "test_func": "TestPillarProtocolController_StorageClassCount_Zero_NoBindings",
+      "description": "참조 PillarStorageClass 없을 때 `StorageClassCount=0`, `ActiveAgents=[]`"
     },
     {
       "tc_id": "E23.5.2",
@@ -1707,8 +1707,8 @@
       "category": "E23: PillarProtocol CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarProtocolController_BindingCount_One_SingleBinding",
-      "description": "참조 PillarBinding 1개 시 `BindingCount=1`"
+      "test_func": "TestPillarProtocolController_StorageClassCount_One_SingleBinding",
+      "description": "참조 PillarStorageClass 1개 시 `StorageClassCount=1`"
     },
     {
       "tc_id": "E23.5.3",
@@ -1717,8 +1717,8 @@
       "category": "E23: PillarProtocol CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarProtocolController_ActiveTargets_PopulatedFromPool",
-      "description": "PillarBinding → PillarPool → `spec.targetRef` 체인으로 `ActiveTargets` 자동 계산"
+      "test_func": "TestPillarProtocolController_ActiveAgents_PopulatedFromPool",
+      "description": "PillarStorageClass → PillarStore → `spec.agentRef` 체인으로 `ActiveAgents` 자동 계산"
     },
     {
       "tc_id": "E23.5.4",
@@ -1727,8 +1727,8 @@
       "category": "E23: PillarProtocol CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarProtocolController_ActiveTargets_DeduplicatedSorted",
-      "description": "여러 PillarBinding이 동일 풀 참조해도 `ActiveTargets`에 중복 없이 정렬된 목록"
+      "test_func": "TestPillarProtocolController_ActiveAgents_DeduplicatedSorted",
+      "description": "여러 PillarStorageClass이 동일 풀 참조해도 `ActiveAgents`에 중복 없이 정렬된 목록"
     },
     {
       "tc_id": "E23.5.5",
@@ -1737,8 +1737,8 @@
       "category": "E23: PillarProtocol CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarProtocolController_ActiveTargets_EmptyWhenPoolNotFound",
-      "description": "참조 PillarPool이 없을 때 `BindingCount`는 정확히 집계되나 `ActiveTargets=[]` (우아한 저하)"
+      "test_func": "TestPillarProtocolController_ActiveAgents_EmptyWhenPoolNotFound",
+      "description": "참조 PillarStore이 없을 때 `StorageClassCount`는 정확히 집계되나 `ActiveAgents=[]` (우아한 저하)"
     },
     {
       "tc_id": "E23.5.6",
@@ -1747,8 +1747,8 @@
       "category": "E23: PillarProtocol CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarProtocolController_BindingCount_Decremented_AfterBindingRemoval",
-      "description": "PillarBinding 삭제 후 조정 시 `BindingCount` 감소"
+      "test_func": "TestPillarProtocolController_StorageClassCount_Decremented_AfterBindingRemoval",
+      "description": "PillarStorageClass 삭제 후 조정 시 `StorageClassCount` 감소"
     },
     {
       "tc_id": "E23.6.1",
@@ -1758,7 +1758,7 @@
       "type": "C",
       "in_437_scope": true,
       "test_func": "TestPillarProtocolController_DeletionBlocked_ReferencingBindingExists",
-      "description": "참조 PillarBinding이 존재하는 동안 삭제 차단; `result.RequeueAfter=10s`"
+      "description": "참조 PillarStorageClass이 존재하는 동안 삭제 차단; `result.RequeueAfter=10s`"
     },
     {
       "tc_id": "E23.6.2",
@@ -1768,7 +1768,7 @@
       "type": "C",
       "in_437_scope": true,
       "test_func": "TestPillarProtocolController_DeletionBlocked_StatusUpdated",
-      "description": "삭제 차단 시 `Ready=False/DeletionBlocked` 설정; `BindingCount`에 차단 바인딩 수 반영"
+      "description": "삭제 차단 시 `Ready=False/DeletionBlocked` 설정; `StorageClassCount`에 차단 바인딩 수 반영"
     },
     {
       "tc_id": "E23.6.3",
@@ -1788,7 +1788,7 @@
       "type": "C",
       "in_437_scope": true,
       "test_func": "TestPillarProtocolController_DeletionAllowed_NoReferencingBindings",
-      "description": "참조 PillarBinding 없을 때 즉시 파이널라이저 제거 및 삭제 진행"
+      "description": "참조 PillarStorageClass 없을 때 즉시 파이널라이저 제거 및 삭제 진행"
     },
     {
       "tc_id": "E23.6.5",
@@ -1798,7 +1798,7 @@
       "type": "C",
       "in_437_scope": true,
       "test_func": "TestPillarProtocolController_DeletionAllowed_AfterBindingRemoval",
-      "description": "참조 PillarBinding 제거 후 다음 조정에서 파이널라이저 제거 및 삭제 완료"
+      "description": "참조 PillarStorageClass 제거 후 다음 조정에서 파이널라이저 제거 및 삭제 완료"
     },
     {
       "tc_id": "E23.6.6",
@@ -1808,7 +1808,7 @@
       "type": "C",
       "in_437_scope": true,
       "test_func": "TestPillarProtocolController_DeletionBlocked_MultipleBindingsAllNamed",
-      "description": "여러 PillarBinding이 참조할 때 상태 메시지에 모든 이름이 나열됨"
+      "description": "여러 PillarStorageClass이 참조할 때 상태 메시지에 모든 이름이 나열됨"
     },
     {
       "tc_id": "E24",
@@ -1868,7 +1868,7 @@
       "type": "A",
       "in_437_scope": true,
       "test_func": "TestCSIController_PartialFailure_CRDCreatedOnExportFailure",
-      "description": "agent.CreateVolume 성공 + agent.ExportVolume 실패 시 PillarVolume CRD Phase=CreatePartial"
+      "description": "agent.CreateVolume 성공 + agent.ExportVolume 실패 시 PillarVolumeState CRD Phase=CreatePartial"
     },
     {
       "tc_id": "E24.2-2",
@@ -2058,7 +2058,7 @@
       "type": "A",
       "in_437_scope": true,
       "test_func": "TestCSIController_DeleteVolume_CleansUpCRD",
-      "description": "성공적인 DeleteVolume이 PillarVolume CRD를 제거 (E6.2 상위 통합 뷰)"
+      "description": "성공적인 DeleteVolume이 PillarVolumeState CRD를 제거 (E6.2 상위 통합 뷰)"
     },
     {
       "tc_id": "E24.9-3",
@@ -2114,470 +2114,470 @@
       "tc_id": "E25.1.1",
       "group_id": "E25.1",
       "top_section": "E25",
-      "category": "E25: PillarBinding CRD 라이프사이클",
+      "category": "E25: PillarStorageClass CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarBindingWebhook_ValidCreate_BasicSpec",
-      "description": "`poolRef`와 `protocolRef`가 설정된 유효한 스펙으로 ValidateCreate 통과"
+      "test_func": "TestPillarStorageClassWebhook_ValidCreate_BasicSpec",
+      "description": "`storeRef`와 `protocolRef`가 설정된 유효한 스펙으로 ValidateCreate 통과"
     },
     {
       "tc_id": "E25.1.2",
       "group_id": "E25.1",
       "top_section": "E25",
-      "category": "E25: PillarBinding CRD 라이프사이클",
+      "category": "E25: PillarStorageClass CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarBindingController_FinalizerAddedOnFirstReconcile",
-      "description": "PillarBinding 생성 후 첫 번째 `Reconcile` 호출에서 `binding-protection` 파이널라이저 자동 추가"
+      "test_func": "TestPillarStorageClassController_FinalizerAddedOnFirstReconcile",
+      "description": "PillarStorageClass 생성 후 첫 번째 `Reconcile` 호출에서 `binding-protection` 파이널라이저 자동 추가"
     },
     {
       "tc_id": "E25.1.3",
       "group_id": "E25.1",
       "top_section": "E25",
-      "category": "E25: PillarBinding CRD 라이프사이클",
+      "category": "E25: PillarStorageClass CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarBindingController_FinalizerNotDuplicated",
-      "description": "동일 PillarBinding을 두 번 조정해도 파이널라이저 중복 없음"
+      "test_func": "TestPillarStorageClassController_FinalizerNotDuplicated",
+      "description": "동일 PillarStorageClass을 두 번 조정해도 파이널라이저 중복 없음"
     },
     {
       "tc_id": "E25.2.1",
       "group_id": "E25.2",
       "top_section": "E25",
-      "category": "E25: PillarBinding CRD 라이프사이클",
+      "category": "E25: PillarStorageClass CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarBindingCRD_InvalidCreate_EmptyPoolRef",
-      "description": "`spec.poolRef`가 빈 문자열인 경우 API 서버가 HTTP 422로 거부"
+      "test_func": "TestPillarStorageClassCRD_InvalidCreate_EmptyStoreRef",
+      "description": "`spec.storeRef`가 빈 문자열인 경우 API 서버가 HTTP 422로 거부"
     },
     {
       "tc_id": "E25.2.2",
       "group_id": "E25.2",
       "top_section": "E25",
-      "category": "E25: PillarBinding CRD 라이프사이클",
+      "category": "E25: PillarStorageClass CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarBindingCRD_InvalidCreate_EmptyProtocolRef",
+      "test_func": "TestPillarStorageClassCRD_InvalidCreate_EmptyProtocolRef",
       "description": "`spec.protocolRef`가 빈 문자열인 경우 API 서버가 거부"
     },
     {
       "tc_id": "E25.2.3",
       "group_id": "E25.2",
       "top_section": "E25",
-      "category": "E25: PillarBinding CRD 라이프사이클",
+      "category": "E25: PillarStorageClass CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarBindingCRD_InvalidCreate_InvalidReclaimPolicy",
+      "test_func": "TestPillarStorageClassCRD_InvalidCreate_InvalidReclaimPolicy",
       "description": "`spec.storageClass.reclaimPolicy`에 허용 외 값 설정 시 거부"
     },
     {
       "tc_id": "E25.3.1",
       "group_id": "E25.3",
       "top_section": "E25",
-      "category": "E25: PillarBinding CRD 라이프사이클",
+      "category": "E25: PillarStorageClass CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarBindingWebhook_ImmutableUpdate_PoolRefChange",
-      "description": "`spec.poolRef` 변경 시 `field.Forbidden` 오류 반환"
+      "test_func": "TestPillarStorageClassWebhook_ImmutableUpdate_StoreRefChange",
+      "description": "`spec.storeRef` 변경 시 `field.Forbidden` 오류 반환"
     },
     {
       "tc_id": "E25.3.2",
       "group_id": "E25.3",
       "top_section": "E25",
-      "category": "E25: PillarBinding CRD 라이프사이클",
+      "category": "E25: PillarStorageClass CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarBindingWebhook_ImmutableUpdate_ProtocolRefChange",
+      "test_func": "TestPillarStorageClassWebhook_ImmutableUpdate_ProtocolRefChange",
       "description": "`spec.protocolRef` 변경 시 `field.Forbidden` 오류 반환"
     },
     {
       "tc_id": "E25.3.3",
       "group_id": "E25.3",
       "top_section": "E25",
-      "category": "E25: PillarBinding CRD 라이프사이클",
+      "category": "E25: PillarStorageClass CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarBindingWebhook_MutableUpdate_StorageClassFieldsChange",
+      "test_func": "TestPillarStorageClassWebhook_MutableUpdate_StorageClassFieldsChange",
       "description": "`spec.storageClass.reclaimPolicy` 변경은 허용 (비식별 필드)"
     },
     {
       "tc_id": "E25.4.1",
       "group_id": "E25.4",
       "top_section": "E25",
-      "category": "E25: PillarBinding CRD 라이프사이클",
+      "category": "E25: PillarStorageClass CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarBindingDefaulter_AllowVolumeExpansion_True_ZFSZvol",
+      "test_func": "TestPillarStorageClassDefaulter_AllowVolumeExpansion_True_ZFSZvol",
       "description": "`backend.type=\"zfs-zvol\"` 풀 참조 시 `allowVolumeExpansion=true` 자동 설정"
     },
     {
       "tc_id": "E25.4.2",
       "group_id": "E25.4",
       "top_section": "E25",
-      "category": "E25: PillarBinding CRD 라이프사이클",
+      "category": "E25: PillarStorageClass CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarBindingDefaulter_AllowVolumeExpansion_True_LVMLV",
+      "test_func": "TestPillarStorageClassDefaulter_AllowVolumeExpansion_True_LVMLV",
       "description": "`backend.type=\"lvm-lv\"` 풀 참조 시 `allowVolumeExpansion=true` 자동 설정"
     },
     {
       "tc_id": "E25.4.3",
       "group_id": "E25.4",
       "top_section": "E25",
-      "category": "E25: PillarBinding CRD 라이프사이클",
+      "category": "E25: PillarStorageClass CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarBindingDefaulter_AllowVolumeExpansion_False_ZFSDataset",
+      "test_func": "TestPillarStorageClassDefaulter_AllowVolumeExpansion_False_ZFSDataset",
       "description": "`backend.type=\"zfs-dataset\"` 풀 참조 시 `allowVolumeExpansion=false` 자동 설정"
     },
     {
       "tc_id": "E25.4.4",
       "group_id": "E25.4",
       "top_section": "E25",
-      "category": "E25: PillarBinding CRD 라이프사이클",
+      "category": "E25: PillarStorageClass CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarBindingDefaulter_AllowVolumeExpansion_False_Dir",
+      "test_func": "TestPillarStorageClassDefaulter_AllowVolumeExpansion_False_Dir",
       "description": "`backend.type=\"dir\"` 풀 참조 시 `allowVolumeExpansion=false` 자동 설정"
     },
     {
       "tc_id": "E25.4.5",
       "group_id": "E25.4",
       "top_section": "E25",
-      "category": "E25: PillarBinding CRD 라이프사이클",
+      "category": "E25: PillarStorageClass CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarBindingDefaulter_AllowVolumeExpansion_NotOverridden_Explicit",
+      "test_func": "TestPillarStorageClassDefaulter_AllowVolumeExpansion_NotOverridden_Explicit",
       "description": "`allowVolumeExpansion`이 명시적으로 설정된 경우 Defaulter가 덮어쓰지 않음"
     },
     {
       "tc_id": "E25.4.6",
       "group_id": "E25.4",
       "top_section": "E25",
-      "category": "E25: PillarBinding CRD 라이프사이클",
+      "category": "E25: PillarStorageClass CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarBindingDefaulter_AllowVolumeExpansion_NilWhenPoolNotFound",
-      "description": "참조 PillarPool이 없을 때 `allowVolumeExpansion` 설정 건너뜀 (nil 유지, 오류 없음)"
+      "test_func": "TestPillarStorageClassDefaulter_AllowVolumeExpansion_NilWhenPoolNotFound",
+      "description": "참조 PillarStore이 없을 때 `allowVolumeExpansion` 설정 건너뜀 (nil 유지, 오류 없음)"
     },
     {
       "tc_id": "E25.5.1",
       "group_id": "E25.5",
       "top_section": "E25",
-      "category": "E25: PillarBinding CRD 라이프사이클",
+      "category": "E25: PillarStorageClass CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarBindingWebhook_Compatible_ZFSZvol_NVMeOFTCP",
+      "test_func": "TestPillarStorageClassWebhook_Compatible_ZFSZvol_NVMeOFTCP",
       "description": "블록 백엔드(zfs-zvol) + 블록 프로토콜(nvmeof-tcp) → 허용"
     },
     {
       "tc_id": "E25.5.2",
       "group_id": "E25.5",
       "top_section": "E25",
-      "category": "E25: PillarBinding CRD 라이프사이클",
+      "category": "E25: PillarStorageClass CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarBindingWebhook_Compatible_LVMLV_ISCSI",
+      "test_func": "TestPillarStorageClassWebhook_Compatible_LVMLV_ISCSI",
       "description": "블록 백엔드(lvm-lv) + 블록 프로토콜(iscsi) → 허용"
     },
     {
       "tc_id": "E25.5.3",
       "group_id": "E25.5",
       "top_section": "E25",
-      "category": "E25: PillarBinding CRD 라이프사이클",
+      "category": "E25: PillarStorageClass CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarBindingWebhook_Compatible_ZFSDataset_NFS",
+      "test_func": "TestPillarStorageClassWebhook_Compatible_ZFSDataset_NFS",
       "description": "파일 백엔드(zfs-dataset) + 파일 프로토콜(nfs) → 허용"
     },
     {
       "tc_id": "E25.5.4",
       "group_id": "E25.5",
       "top_section": "E25",
-      "category": "E25: PillarBinding CRD 라이프사이클",
+      "category": "E25: PillarStorageClass CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarBindingWebhook_Compatible_Dir_NFS",
+      "test_func": "TestPillarStorageClassWebhook_Compatible_Dir_NFS",
       "description": "파일 백엔드(dir) + 파일 프로토콜(nfs) → 허용"
     },
     {
       "tc_id": "E25.5.5",
       "group_id": "E25.5",
       "top_section": "E25",
-      "category": "E25: PillarBinding CRD 라이프사이클",
+      "category": "E25: PillarStorageClass CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarBindingWebhook_Incompatible_ZFSZvol_NFS",
+      "test_func": "TestPillarStorageClassWebhook_Incompatible_ZFSZvol_NFS",
       "description": "블록 백엔드(zfs-zvol) + 파일 프로토콜(nfs) → 거부; `spec.protocolRef` 경로 오류"
     },
     {
       "tc_id": "E25.5.6",
       "group_id": "E25.5",
       "top_section": "E25",
-      "category": "E25: PillarBinding CRD 라이프사이클",
+      "category": "E25: PillarStorageClass CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarBindingWebhook_Incompatible_LVMLV_NFS",
+      "test_func": "TestPillarStorageClassWebhook_Incompatible_LVMLV_NFS",
       "description": "블록 백엔드(lvm-lv) + 파일 프로토콜(nfs) → 거부"
     },
     {
       "tc_id": "E25.5.7",
       "group_id": "E25.5",
       "top_section": "E25",
-      "category": "E25: PillarBinding CRD 라이프사이클",
+      "category": "E25: PillarStorageClass CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarBindingWebhook_Incompatible_ZFSDataset_NVMeOFTCP",
+      "test_func": "TestPillarStorageClassWebhook_Incompatible_ZFSDataset_NVMeOFTCP",
       "description": "파일 백엔드(zfs-dataset) + 블록 프로토콜(nvmeof-tcp) → 거부"
     },
     {
       "tc_id": "E25.5.8",
       "group_id": "E25.5",
       "top_section": "E25",
-      "category": "E25: PillarBinding CRD 라이프사이클",
+      "category": "E25: PillarStorageClass CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarBindingWebhook_Incompatible_Dir_ISCSI",
+      "test_func": "TestPillarStorageClassWebhook_Incompatible_Dir_ISCSI",
       "description": "파일 백엔드(dir) + 블록 프로토콜(iscsi) → 거부"
     },
     {
       "tc_id": "E25.5.9",
       "group_id": "E25.5",
       "top_section": "E25",
-      "category": "E25: PillarBinding CRD 라이프사이클",
+      "category": "E25: PillarStorageClass CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarBindingWebhook_CompatibilitySkipped_PoolNotFound",
+      "test_func": "TestPillarStorageClassWebhook_CompatibilitySkipped_PoolNotFound",
       "description": "pool 미존재 시 호환성 검사 건너뜀 — 컨트롤러 `Compatible` 조건으로 위임"
     },
     {
       "tc_id": "E25.5.10",
       "group_id": "E25.5",
       "top_section": "E25",
-      "category": "E25: PillarBinding CRD 라이프사이클",
+      "category": "E25: PillarStorageClass CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarBindingWebhook_CompatibilitySkipped_ProtocolNotFound",
+      "test_func": "TestPillarStorageClassWebhook_CompatibilitySkipped_ProtocolNotFound",
       "description": "protocol 미존재 시 호환성 검사 건너뜀 — 컨트롤러 `Compatible` 조건으로 위임"
     },
     {
       "tc_id": "E25.6.1",
       "group_id": "E25.6",
       "top_section": "E25",
-      "category": "E25: PillarBinding CRD 라이프사이클",
+      "category": "E25: PillarStorageClass CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarBindingController_PoolReady_False_PoolNotFound",
-      "description": "참조 PillarPool 미존재 시 `PoolReady=False/PoolNotFound`; `RequeueAfter=15s`; `Ready.Reason=\"PoolNotFound\"`"
+      "test_func": "TestPillarStorageClassController_PoolReady_False_PoolNotFound",
+      "description": "참조 PillarStore 미존재 시 `PoolReady=False/PoolNotFound`; `RequeueAfter=15s`; `Ready.Reason=\"PoolNotFound\"`"
     },
     {
       "tc_id": "E25.6.2",
       "group_id": "E25.6",
       "top_section": "E25",
-      "category": "E25: PillarBinding CRD 라이프사이클",
+      "category": "E25: PillarStorageClass CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarBindingController_PoolReady_False_PoolNotReady",
-      "description": "참조 PillarPool의 Ready 조건이 False일 때 `PoolReady=False/PoolNotReady`; pool의 오류 메시지 전파"
+      "test_func": "TestPillarStorageClassController_PoolReady_False_PoolNotReady",
+      "description": "참조 PillarStore의 Ready 조건이 False일 때 `PoolReady=False/PoolNotReady`; pool의 오류 메시지 전파"
     },
     {
       "tc_id": "E25.6.3",
       "group_id": "E25.6",
       "top_section": "E25",
-      "category": "E25: PillarBinding CRD 라이프사이클",
+      "category": "E25: PillarStorageClass CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarBindingController_PoolReady_False_PoolNoCondition",
-      "description": "PillarPool에 Ready 조건이 아직 없을 때 `PoolReady=False/PoolNotReady`"
+      "test_func": "TestPillarStorageClassController_PoolReady_False_PoolNoCondition",
+      "description": "PillarStore에 Ready 조건이 아직 없을 때 `PoolReady=False/PoolNotReady`"
     },
     {
       "tc_id": "E25.7.1",
       "group_id": "E25.7",
       "top_section": "E25",
-      "category": "E25: PillarBinding CRD 라이프사이클",
+      "category": "E25: PillarStorageClass CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarBindingController_ProtocolValid_False_ProtocolNotFound",
-      "description": "PillarPool Ready + PillarProtocol 미존재 시 `ProtocolValid=False/ProtocolNotFound`; `PoolReady=True` 유지"
+      "test_func": "TestPillarStorageClassController_ProtocolValid_False_ProtocolNotFound",
+      "description": "PillarStore Ready + PillarProtocol 미존재 시 `ProtocolValid=False/ProtocolNotFound`; `PoolReady=True` 유지"
     },
     {
       "tc_id": "E25.7.2",
       "group_id": "E25.7",
       "top_section": "E25",
-      "category": "E25: PillarBinding CRD 라이프사이클",
+      "category": "E25: PillarStorageClass CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarBindingController_ProtocolValid_False_ProtocolNotReady",
+      "test_func": "TestPillarStorageClassController_ProtocolValid_False_ProtocolNotReady",
       "description": "PillarProtocol Ready 조건이 False일 때 `ProtocolValid=False/ProtocolNotReady`; protocol 오류 메시지 전파"
     },
     {
       "tc_id": "E25.7.3",
       "group_id": "E25.7",
       "top_section": "E25",
-      "category": "E25: PillarBinding CRD 라이프사이클",
+      "category": "E25: PillarStorageClass CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarBindingController_ProtocolValid_False_ProtocolNoCondition",
+      "test_func": "TestPillarStorageClassController_ProtocolValid_False_ProtocolNoCondition",
       "description": "PillarProtocol에 Ready 조건이 없을 때 `ProtocolValid=False/ProtocolNotReady`"
     },
     {
       "tc_id": "E25.8.1",
       "group_id": "E25.8",
       "top_section": "E25",
-      "category": "E25: PillarBinding CRD 라이프사이클",
+      "category": "E25: PillarStorageClass CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarBindingController_Compatible_True_AllConditionsMet",
+      "test_func": "TestPillarStorageClassController_Compatible_True_AllConditionsMet",
       "description": "zfs-zvol + nvmeof-tcp 조합 → `Compatible=True`; `Ready=True/AllConditionsMet`; StorageClass 생성"
     },
     {
       "tc_id": "E25.8.2",
       "group_id": "E25.8",
       "top_section": "E25",
-      "category": "E25: PillarBinding CRD 라이프사이클",
+      "category": "E25: PillarStorageClass CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarBindingController_Compatible_False_BlockBackend_FileProtocol",
+      "test_func": "TestPillarStorageClassController_Compatible_False_BlockBackend_FileProtocol",
       "description": "zfs-zvol + nfs 비호환 → `Compatible=False/Incompatible`; `Ready=False`; StorageClass 미생성"
     },
     {
       "tc_id": "E25.8.3",
       "group_id": "E25.8",
       "top_section": "E25",
-      "category": "E25: PillarBinding CRD 라이프사이클",
+      "category": "E25: PillarStorageClass CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarBindingController_NoRequeue_WhenReady",
+      "test_func": "TestPillarStorageClassController_NoRequeue_WhenReady",
       "description": "모든 조건 충족 시 `result.RequeueAfter==0` — 불필요한 재조정 없음"
     },
     {
       "tc_id": "E25.9.1",
       "group_id": "E25.9",
       "top_section": "E25",
-      "category": "E25: PillarBinding CRD 라이프사이클",
+      "category": "E25: PillarStorageClass CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarBindingController_StorageClass_OwnerReference",
-      "description": "생성된 StorageClass에 PillarBinding을 가리키는 ownerReference(`Kind=PillarBinding`, `controller=true`) 설정"
+      "test_func": "TestPillarStorageClassController_StorageClass_OwnerReference",
+      "description": "생성된 StorageClass에 PillarStorageClass을 가리키는 ownerReference(`Kind=PillarStorageClass`, `controller=true`) 설정"
     },
     {
       "tc_id": "E25.9.2",
       "group_id": "E25.9",
       "top_section": "E25",
-      "category": "E25: PillarBinding CRD 라이프사이클",
+      "category": "E25: PillarStorageClass CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarBindingController_StorageClass_Provisioner",
+      "test_func": "TestPillarStorageClassController_StorageClass_Provisioner",
       "description": "생성된 StorageClass의 provisioner가 `\"pillar-csi.bhyoo.com\"`"
     },
     {
       "tc_id": "E25.9.3",
       "group_id": "E25.9",
       "top_section": "E25",
-      "category": "E25: PillarBinding CRD 라이프사이클",
+      "category": "E25: PillarStorageClass CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarBindingController_StorageClass_Parameters",
+      "test_func": "TestPillarStorageClassController_StorageClass_Parameters",
       "description": "생성된 StorageClass의 parameters에 pool, protocol, backend-type, protocol-type 파라미터 포함"
     },
     {
       "tc_id": "E25.9.4",
       "group_id": "E25.9",
       "top_section": "E25",
-      "category": "E25: PillarBinding CRD 라이프사이클",
+      "category": "E25: PillarStorageClass CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarBindingController_StorageClass_DefaultReclaimPolicy",
+      "test_func": "TestPillarStorageClassController_StorageClass_DefaultReclaimPolicy",
       "description": "StorageClass ReclaimPolicy 기본값 `Delete`"
     },
     {
       "tc_id": "E25.9.5",
       "group_id": "E25.9",
       "top_section": "E25",
-      "category": "E25: PillarBinding CRD 라이프사이클",
+      "category": "E25: PillarStorageClass CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarBindingController_StorageClass_DefaultVolumeBindingMode",
+      "test_func": "TestPillarStorageClassController_StorageClass_DefaultVolumeBindingMode",
       "description": "StorageClass VolumeBindingMode 기본값 `Immediate`"
     },
     {
       "tc_id": "E25.9.6",
       "group_id": "E25.9",
       "top_section": "E25",
-      "category": "E25: PillarBinding CRD 라이프사이클",
+      "category": "E25: PillarStorageClass CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarBindingController_StorageClass_StatusStorageClassName",
+      "test_func": "TestPillarStorageClassController_StorageClass_StatusStorageClassName",
       "description": "StorageClass 생성 후 `status.storageClassName`에 이름 반영"
     },
     {
       "tc_id": "E25.9.7",
       "group_id": "E25.9",
       "top_section": "E25",
-      "category": "E25: PillarBinding CRD 라이프사이클",
+      "category": "E25: PillarStorageClass CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarBindingController_StorageClass_CustomName",
+      "test_func": "TestPillarStorageClassController_StorageClass_CustomName",
       "description": "`spec.storageClass.name` 설정 시 해당 이름으로 StorageClass 생성; 바인딩 이름으로는 미생성; `status.storageClassName` 업데이트"
     },
     {
       "tc_id": "E25.10.1",
       "group_id": "E25.10",
       "top_section": "E25",
-      "category": "E25: PillarBinding CRD 라이프사이클",
+      "category": "E25: PillarStorageClass CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarBindingController_StorageClass_ReclaimPolicy_Retain",
+      "test_func": "TestPillarStorageClassController_StorageClass_ReclaimPolicy_Retain",
       "description": "`spec.storageClass.reclaimPolicy=\"Retain\"` 설정 시 StorageClass에 반영"
     },
     {
       "tc_id": "E25.10.2",
       "group_id": "E25.10",
       "top_section": "E25",
-      "category": "E25: PillarBinding CRD 라이프사이클",
+      "category": "E25: PillarStorageClass CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarBindingController_StorageClass_VolumeBindingMode_WaitForFirstConsumer",
+      "test_func": "TestPillarStorageClassController_StorageClass_VolumeBindingMode_WaitForFirstConsumer",
       "description": "`spec.storageClass.volumeBindingMode=\"WaitForFirstConsumer\"` 설정 시 StorageClass에 반영"
     },
     {
       "tc_id": "E25.11.1",
       "group_id": "E25.11",
       "top_section": "E25",
-      "category": "E25: PillarBinding CRD 라이프사이클",
+      "category": "E25: PillarStorageClass CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarBindingController_DeletionBlocked_PVCExists",
+      "test_func": "TestPillarStorageClassController_DeletionBlocked_PVCExists",
       "description": "StorageClass를 참조하는 PVC 존재 시 삭제 차단; `result.RequeueAfter=10s`; `Ready=False/DeletionBlocked`"
     },
     {
       "tc_id": "E25.11.2",
       "group_id": "E25.11",
       "top_section": "E25",
-      "category": "E25: PillarBinding CRD 라이프사이클",
+      "category": "E25: PillarStorageClass CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarBindingController_DeletionBlocked_FinalizerKept",
+      "test_func": "TestPillarStorageClassController_DeletionBlocked_FinalizerKept",
       "description": "삭제 차단 중 파이널라이저 제거되지 않음"
     },
     {
       "tc_id": "E25.11.3",
       "group_id": "E25.11",
       "top_section": "E25",
-      "category": "E25: PillarBinding CRD 라이프사이클",
+      "category": "E25: PillarStorageClass CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarBindingController_DeletionAllowed_NoPVCs",
+      "test_func": "TestPillarStorageClassController_DeletionAllowed_NoPVCs",
       "description": "참조 PVC 없을 때 StorageClass 삭제 후 파이널라이저 제거; `result.RequeueAfter==0`"
     },
     {
       "tc_id": "E25.11.4",
       "group_id": "E25.11",
       "top_section": "E25",
-      "category": "E25: PillarBinding CRD 라이프사이클",
+      "category": "E25: PillarStorageClass CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarBindingController_DeletionAllowed_AfterPVCRemoval",
+      "test_func": "TestPillarStorageClassController_DeletionAllowed_AfterPVCRemoval",
       "description": "PVC 제거 후 다음 조정에서 파이널라이저 제거 및 StorageClass 삭제 완료"
     },
     {
@@ -2598,7 +2598,7 @@
       "type": "C",
       "in_437_scope": true,
       "test_func": "TestCrossLifecycle_Pool_TargetMissing_TargetReadyFalse",
-      "description": "PillarPool 생성 시 참조 PillarTarget이 없으면 `TargetReady=False` 조건 설정"
+      "description": "PillarStore 생성 시 참조 PillarAgent이 없으면 `TargetReady=False` 조건 설정"
     },
     {
       "tc_id": "E26.1.2",
@@ -2608,7 +2608,7 @@
       "type": "C",
       "in_437_scope": true,
       "test_func": "TestCrossLifecycle_Pool_TargetNotReady_TargetReadyFalse",
-      "description": "참조 PillarTarget이 존재하지만 `Ready=False`이면 `TargetReady=False` 조건 설정"
+      "description": "참조 PillarAgent이 존재하지만 `Ready=False`이면 `TargetReady=False` 조건 설정"
     },
     {
       "tc_id": "E26.1.3",
@@ -2618,7 +2618,7 @@
       "type": "C",
       "in_437_scope": true,
       "test_func": "TestCrossLifecycle_Pool_TargetReady_TargetReadyTrue",
-      "description": "참조 PillarTarget이 `Ready=True`이면 `TargetReady=True` 조건 설정"
+      "description": "참조 PillarAgent이 `Ready=True`이면 `TargetReady=True` 조건 설정"
     },
     {
       "tc_id": "E26.1.4",
@@ -2628,7 +2628,7 @@
       "type": "C",
       "in_437_scope": true,
       "test_func": "TestCrossLifecycle_Binding_PoolMissing_PoolReadyFalse",
-      "description": "PillarBinding 생성 시 참조 PillarPool이 없으면 `PoolReady=False` 조건 설정"
+      "description": "PillarStorageClass 생성 시 참조 PillarStore이 없으면 `PoolReady=False` 조건 설정"
     },
     {
       "tc_id": "E26.1.5",
@@ -2638,7 +2638,7 @@
       "type": "C",
       "in_437_scope": true,
       "test_func": "TestCrossLifecycle_Binding_PoolNotReady_PoolReadyFalse",
-      "description": "참조 PillarPool이 존재하지만 `Ready=False`이면 `PoolReady=False` 조건 설정"
+      "description": "참조 PillarStore이 존재하지만 `Ready=False`이면 `PoolReady=False` 조건 설정"
     },
     {
       "tc_id": "E26.1.6",
@@ -2648,7 +2648,7 @@
       "type": "C",
       "in_437_scope": true,
       "test_func": "TestCrossLifecycle_Binding_ProtocolMissing_ProtocolValidFalse",
-      "description": "PillarBinding 생성 시 참조 PillarProtocol이 없으면 `ProtocolValid=False` 조건 설정"
+      "description": "PillarStorageClass 생성 시 참조 PillarProtocol이 없으면 `ProtocolValid=False` 조건 설정"
     },
     {
       "tc_id": "E26.1.7",
@@ -2658,7 +2658,7 @@
       "type": "C",
       "in_437_scope": true,
       "test_func": "TestCrossLifecycle_Binding_BothMissing_BothConditionsFalse",
-      "description": "PillarPool과 PillarProtocol 둘 다 없을 때 두 조건 모두 `False`"
+      "description": "PillarStore과 PillarProtocol 둘 다 없을 때 두 조건 모두 `False`"
     },
     {
       "tc_id": "E26.1.8",
@@ -2678,7 +2678,7 @@
       "type": "C",
       "in_437_scope": true,
       "test_func": "TestCrossLifecycle_Cascade_TargetLosesReady_PoolConditionUpdates",
-      "description": "PillarTarget이 `Ready=True→False`로 전환 시 PillarPool의 `TargetReady` 조건이 `False`로 전이"
+      "description": "PillarAgent이 `Ready=True→False`로 전환 시 PillarStore의 `TargetReady` 조건이 `False`로 전이"
     },
     {
       "tc_id": "E26.2.2",
@@ -2688,7 +2688,7 @@
       "type": "C",
       "in_437_scope": true,
       "test_func": "TestCrossLifecycle_Cascade_TargetRecovery_PoolConditionRestores",
-      "description": "PillarTarget이 `Ready=False→True`로 회복 시 PillarPool `TargetReady=True` 복원"
+      "description": "PillarAgent이 `Ready=False→True`로 회복 시 PillarStore `TargetReady=True` 복원"
     },
     {
       "tc_id": "E26.2.3",
@@ -2698,7 +2698,7 @@
       "type": "C",
       "in_437_scope": true,
       "test_func": "TestCrossLifecycle_Cascade_PoolLosesReady_BindingConditionUpdates",
-      "description": "PillarPool이 `Ready=True→False`로 전환 시 PillarBinding의 `PoolReady` 조건이 `False`로 전이"
+      "description": "PillarStore이 `Ready=True→False`로 전환 시 PillarStorageClass의 `PoolReady` 조건이 `False`로 전이"
     },
     {
       "tc_id": "E26.2.4",
@@ -2708,7 +2708,7 @@
       "type": "C",
       "in_437_scope": true,
       "test_func": "TestCrossLifecycle_Cascade_ProtocolBecomesInvalid_BindingNotReady",
-      "description": "PillarProtocol이 `Ready=True→False`로 전환 시 PillarBinding `ProtocolValid=False` 전이"
+      "description": "PillarProtocol이 `Ready=True→False`로 전환 시 PillarStorageClass `ProtocolValid=False` 전이"
     },
     {
       "tc_id": "E26.2.5",
@@ -2718,7 +2718,7 @@
       "type": "C",
       "in_437_scope": true,
       "test_func": "TestCrossLifecycle_Cascade_FullChainRecovery",
-      "description": "PillarTarget 회복 시 Pool→Binding 전체 체인 Ready 복원"
+      "description": "PillarAgent 회복 시 Pool→Binding 전체 체인 Ready 복원"
     },
     {
       "tc_id": "E26.2.6",
@@ -2737,8 +2737,8 @@
       "category": "E26: 교차-CRD 라이프사이클 상호작용",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestCrossLifecycle_Cascade_ProtocolBindingCount_IncrementOnCreate",
-      "description": "PillarBinding 조정 완료 시 PillarProtocol `status.bindingCount` 증가"
+      "test_func": "TestCrossLifecycle_Cascade_ProtocolStorageClassCount_IncrementOnCreate",
+      "description": "PillarStorageClass 조정 완료 시 PillarProtocol `status.storageClassCount` 증가"
     },
     {
       "tc_id": "E26.3.1",
@@ -2748,7 +2748,7 @@
       "type": "C",
       "in_437_scope": true,
       "test_func": "TestCrossLifecycle_DeleteProtection_Target_BlockedByPool",
-      "description": "PillarPool이 `targetRef`로 참조하는 PillarTarget 삭제 시 파이널라이저로 차단"
+      "description": "PillarStore이 `agentRef`로 참조하는 PillarAgent 삭제 시 파이널라이저로 차단"
     },
     {
       "tc_id": "E26.3.2",
@@ -2758,7 +2758,7 @@
       "type": "C",
       "in_437_scope": true,
       "test_func": "TestCrossLifecycle_DeleteProtection_Target_AllowedAfterPoolRemoved",
-      "description": "참조 PillarPool 삭제 후 PillarTarget 삭제 완료"
+      "description": "참조 PillarStore 삭제 후 PillarAgent 삭제 완료"
     },
     {
       "tc_id": "E26.3.3",
@@ -2768,7 +2768,7 @@
       "type": "C",
       "in_437_scope": true,
       "test_func": "TestCrossLifecycle_DeleteProtection_Pool_BlockedByBinding",
-      "description": "PillarBinding이 `poolRef`로 참조하는 PillarPool 삭제 시 파이널라이저로 차단"
+      "description": "PillarStorageClass이 `storeRef`로 참조하는 PillarStore 삭제 시 파이널라이저로 차단"
     },
     {
       "tc_id": "E26.3.4",
@@ -2778,7 +2778,7 @@
       "type": "C",
       "in_437_scope": true,
       "test_func": "TestCrossLifecycle_DeleteProtection_Pool_AllowedAfterBindingRemoved",
-      "description": "참조 PillarBinding 삭제 후 PillarPool 삭제 완료"
+      "description": "참조 PillarStorageClass 삭제 후 PillarStore 삭제 완료"
     },
     {
       "tc_id": "E26.3.5",
@@ -2788,7 +2788,7 @@
       "type": "C",
       "in_437_scope": true,
       "test_func": "TestCrossLifecycle_DeleteProtection_Protocol_BlockedByBinding",
-      "description": "PillarBinding이 `protocolRef`로 참조하는 PillarProtocol 삭제 시 파이널라이저로 차단"
+      "description": "PillarStorageClass이 `protocolRef`로 참조하는 PillarProtocol 삭제 시 파이널라이저로 차단"
     },
     {
       "tc_id": "E26.3.6",
@@ -2798,7 +2798,7 @@
       "type": "C",
       "in_437_scope": true,
       "test_func": "TestCrossLifecycle_DeleteProtection_Protocol_AllowedAfterBindingRemoved",
-      "description": "참조 PillarBinding 삭제 후 PillarProtocol 삭제 완료"
+      "description": "참조 PillarStorageClass 삭제 후 PillarProtocol 삭제 완료"
     },
     {
       "tc_id": "E26.3.7",
@@ -3048,7 +3048,7 @@
       "type": "A",
       "in_437_scope": true,
       "test_func": "TestCSIController_PartialFailure_CRDCreatedOnExportFailure",
-      "description": "agent.CreateVolume 성공 + agent.ExportVolume 실패 시 PillarVolume CRD가 Phase=CreatePartial, BackendCreated=true로 생성됨"
+      "description": "agent.CreateVolume 성공 + agent.ExportVolume 실패 시 PillarVolumeState CRD가 Phase=CreatePartial, BackendCreated=true로 생성됨"
     },
     {
       "tc_id": "E50",
@@ -3078,7 +3078,7 @@
       "type": "A",
       "in_437_scope": true,
       "test_func": "TestCSIController_DeleteVolume_CleansUpCRD",
-      "description": "성공적인 DeleteVolume이 PillarVolume CRD를 삭제"
+      "description": "성공적인 DeleteVolume이 PillarVolumeState CRD를 삭제"
     },
     {
       "tc_id": "E53",
@@ -3148,7 +3148,7 @@
       "type": "A",
       "in_437_scope": true,
       "test_func": "TestMTLSController_AgentConnectedAuthenticated",
-      "description": "올바른 mTLS 자격증명으로 연결 시 PillarTarget 상태 AgentConnected=True/Authenticated"
+      "description": "올바른 mTLS 자격증명으로 연결 시 PillarAgent 상태 AgentConnected=True/Authenticated"
     },
     {
       "tc_id": "E60",
@@ -3727,7 +3727,7 @@
       "category": "E15: 리소스 고갈 (Resource Exhaustion)",
       "type": "A",
       "in_437_scope": true,
-      "test_func": "TestCSIExhaustion_ExpandVolume_ExceedsPoolCapacity",
+      "test_func": "TestCSIExhaustion_ExpandVolume_ExceedsStoreCapacity",
       "description": "ControllerExpandVolume이 풀 용량 초과 시도 — 오류 전파 검증"
     },
     {
@@ -3878,7 +3878,7 @@
       "type": "A",
       "in_437_scope": true,
       "test_func": "TestCSICleanup_DeleteVolume_RemovesAllCRD",
-      "description": "성공적 DeleteVolume 후 PillarVolume CRD가 fake k8s 클라이언트에서 완전히 삭제됨"
+      "description": "성공적 DeleteVolume 후 PillarVolumeState CRD가 fake k8s 클라이언트에서 완전히 삭제됨"
     },
     {
       "tc_id": "E134",
@@ -3998,7 +3998,7 @@
       "type": "A",
       "in_437_scope": true,
       "test_func": "TestCSIInvalidCR_CreateVolume_TargetResolvedAddressEmpty",
-      "description": "PillarTarget이 존재하나 `Status.ResolvedAddress`가 빈 문자열 — 에이전트 주소 미확정 상태"
+      "description": "PillarAgent이 존재하나 `Status.ResolvedAddress`가 빈 문자열 — 에이전트 주소 미확정 상태"
     },
     {
       "tc_id": "E146",
@@ -4008,7 +4008,7 @@
       "type": "A",
       "in_437_scope": true,
       "test_func": "TestCSIInvalidCR_CreateVolume_TargetSpecBothNil",
-      "description": "PillarTarget의 `spec.nodeRef`와 `spec.external`이 모두 nil — 연결 정보 없음 (fake client에서만 가능; 웹훅 미실행)"
+      "description": "PillarAgent의 `spec.nodeRef`와 `spec.external`이 모두 nil — 연결 정보 없음 (fake client에서만 가능; 웹훅 미실행)"
     },
     {
       "tc_id": "E147",
@@ -4018,7 +4018,7 @@
       "type": "A",
       "in_437_scope": true,
       "test_func": "TestCSIInvalidCR_ControllerPublish_TargetNoAddress",
-      "description": "ControllerPublishVolume 시 PillarTarget의 `Status.ResolvedAddress`가 빈 문자열"
+      "description": "ControllerPublishVolume 시 PillarAgent의 `Status.ResolvedAddress`가 빈 문자열"
     },
     {
       "tc_id": "E148",
@@ -4028,7 +4028,7 @@
       "type": "A",
       "in_437_scope": true,
       "test_func": "TestCSIInvalidCR_LoadState_UnknownPhase",
-      "description": "PillarVolume CRD가 정의되지 않은 Phase 값을 가질 때 `LoadStateFromPillarVolumes`가 `StateNonExistent`로 처리하고 패닉 없음"
+      "description": "PillarVolumeState CRD가 정의되지 않은 Phase 값을 가질 때 `LoadStateFromPillarVolumeStates`가 `StateNonExistent`로 처리하고 패닉 없음"
     },
     {
       "tc_id": "E149",
@@ -4038,7 +4038,7 @@
       "type": "A",
       "in_437_scope": true,
       "test_func": "TestCSIInvalidCR_LoadState_ListFailure",
-      "description": "`k8sClient.List(PillarVolumeList)` 실패 시 `LoadStateFromPillarVolumes`가 오류를 반환하고 SM 상태를 오염시키지 않음"
+      "description": "`k8sClient.List(PillarVolumeStateList)` 실패 시 `LoadStateFromPillarVolumeStates`가 오류를 반환하고 SM 상태를 오염시키지 않음"
     },
     {
       "tc_id": "E150",
@@ -4048,7 +4048,7 @@
       "type": "A",
       "in_437_scope": true,
       "test_func": "TestCSIInvalidCR_ControllerExpand_TargetNoAddress",
-      "description": "ControllerExpandVolume 시 PillarTarget `Status.ResolvedAddress`가 빈 문자열"
+      "description": "ControllerExpandVolume 시 PillarAgent `Status.ResolvedAddress`가 빈 문자열"
     },
     {
       "tc_id": "E151",
@@ -4057,7 +4057,7 @@
       "category": "E21: 잘못된 CR 오류 시나리오 (Invalid CR Error Scenarios)",
       "type": "A",
       "in_437_scope": true,
-      "test_func": "TestPillarTargetWebhook_Update_DiscriminantSwitch_NodeToExternal",
+      "test_func": "TestPillarAgentWebhook_Update_DiscriminantSwitch_NodeToExternal",
       "description": "`spec.nodeRef` → `spec.external` 전환 시도 거부"
     },
     {
@@ -4067,7 +4067,7 @@
       "category": "E21: 잘못된 CR 오류 시나리오 (Invalid CR Error Scenarios)",
       "type": "A",
       "in_437_scope": true,
-      "test_func": "TestPillarTargetWebhook_Update_DiscriminantSwitch_ExternalToNode",
+      "test_func": "TestPillarAgentWebhook_Update_DiscriminantSwitch_ExternalToNode",
       "description": "`spec.external` → `spec.nodeRef` 전환 시도 거부"
     },
     {
@@ -4077,7 +4077,7 @@
       "category": "E21: 잘못된 CR 오류 시나리오 (Invalid CR Error Scenarios)",
       "type": "A",
       "in_437_scope": true,
-      "test_func": "TestPillarTargetWebhook_Update_NodeRefNameImmutable",
+      "test_func": "TestPillarAgentWebhook_Update_NodeRefNameImmutable",
       "description": "`spec.nodeRef.name` 변경 시도 거부"
     },
     {
@@ -4087,7 +4087,7 @@
       "category": "E21: 잘못된 CR 오류 시나리오 (Invalid CR Error Scenarios)",
       "type": "A",
       "in_437_scope": true,
-      "test_func": "TestPillarTargetWebhook_Update_ExternalAddressImmutable",
+      "test_func": "TestPillarAgentWebhook_Update_ExternalAddressImmutable",
       "description": "`spec.external.address` 변경 시도 거부"
     },
     {
@@ -4097,7 +4097,7 @@
       "category": "E21: 잘못된 CR 오류 시나리오 (Invalid CR Error Scenarios)",
       "type": "A",
       "in_437_scope": true,
-      "test_func": "TestPillarTargetWebhook_Update_ExternalPortImmutable",
+      "test_func": "TestPillarAgentWebhook_Update_ExternalPortImmutable",
       "description": "`spec.external.port` 변경 시도 거부"
     },
     {
@@ -4107,7 +4107,7 @@
       "category": "E21: 잘못된 CR 오류 시나리오 (Invalid CR Error Scenarios)",
       "type": "A",
       "in_437_scope": true,
-      "test_func": "TestPillarTargetWebhook_Update_NodeRefNonIdentityFieldChange_OK",
+      "test_func": "TestPillarAgentWebhook_Update_NodeRefNonIdentityFieldChange_OK",
       "description": "`spec.nodeRef.name`이 변경되지 않고 비식별 필드(`addressType`)만 변경된 업데이트는 허용됨"
     },
     {
@@ -4117,8 +4117,8 @@
       "category": "E21: 잘못된 CR 오류 시나리오 (Invalid CR Error Scenarios)",
       "type": "A",
       "in_437_scope": true,
-      "test_func": "TestPillarTargetWebhook_Create_Valid",
-      "description": "유효한 PillarTarget 생성 시 웹훅이 허용 (현재 ValidateCreate는 no-op 스캐폴딩)"
+      "test_func": "TestPillarAgentWebhook_Create_Valid",
+      "description": "유효한 PillarAgent 생성 시 웹훅이 허용 (현재 ValidateCreate는 no-op 스캐폴딩)"
     },
     {
       "tc_id": "E158",
@@ -4127,8 +4127,8 @@
       "category": "E21: 잘못된 CR 오류 시나리오 (Invalid CR Error Scenarios)",
       "type": "A",
       "in_437_scope": true,
-      "test_func": "TestPillarPoolWebhook_Update_TargetRefImmutable",
-      "description": "`spec.targetRef` 변경 시도 거부"
+      "test_func": "TestPillarStoreWebhook_Update_AgentRefImmutable",
+      "description": "`spec.agentRef` 변경 시도 거부"
     },
     {
       "tc_id": "E159",
@@ -4137,7 +4137,7 @@
       "category": "E21: 잘못된 CR 오류 시나리오 (Invalid CR Error Scenarios)",
       "type": "A",
       "in_437_scope": true,
-      "test_func": "TestPillarPoolWebhook_Update_BackendTypeImmutable",
+      "test_func": "TestPillarStoreWebhook_Update_BackendTypeImmutable",
       "description": "`spec.backend.type` 변경 시도 거부"
     },
     {
@@ -4147,7 +4147,7 @@
       "category": "E21: 잘못된 CR 오류 시나리오 (Invalid CR Error Scenarios)",
       "type": "A",
       "in_437_scope": true,
-      "test_func": "TestPillarPoolWebhook_Update_ZFSPoolChange_OK",
+      "test_func": "TestPillarStoreWebhook_Update_ZFSPoolChange_OK",
       "description": "`spec.backend.type` 변경 없이 ZFS 풀 이름만 변경된 업데이트는 허용됨"
     },
     {
@@ -4157,8 +4157,8 @@
       "category": "E21: 잘못된 CR 오류 시나리오 (Invalid CR Error Scenarios)",
       "type": "A",
       "in_437_scope": true,
-      "test_func": "TestPillarPoolWebhook_Update_BothFieldsChanged_MultipleErrors",
-      "description": "`spec.targetRef`와 `spec.backend.type` 모두 변경 시도 → 두 필드 모두 Forbidden 오류 포함"
+      "test_func": "TestPillarStoreWebhook_Update_BothFieldsChanged_MultipleErrors",
+      "description": "`spec.agentRef`와 `spec.backend.type` 모두 변경 시도 → 두 필드 모두 Forbidden 오류 포함"
     },
     {
       "tc_id": "E162",
@@ -4167,8 +4167,8 @@
       "category": "E21: 잘못된 CR 오류 시나리오 (Invalid CR Error Scenarios)",
       "type": "A",
       "in_437_scope": true,
-      "test_func": "TestPillarPoolWebhook_Create_Valid",
-      "description": "유효한 PillarPool 생성 시 웹훅이 허용 (현재 ValidateCreate는 no-op 스캐폴딩)"
+      "test_func": "TestPillarStoreWebhook_Create_Valid",
+      "description": "유효한 PillarStore 생성 시 웹훅이 허용 (현재 ValidateCreate는 no-op 스캐폴딩)"
     },
     {
       "tc_id": "E163",
@@ -4177,8 +4177,8 @@
       "category": "E21: 잘못된 CR 오류 시나리오 (Invalid CR Error Scenarios)",
       "type": "A",
       "in_437_scope": true,
-      "test_func": "TestCRDSchema_PillarTarget_NodeRefName_Empty",
-      "description": "`spec.nodeRef.name=\"\"`인 PillarTarget 생성 시도 → `+kubebuilder:validation:MinLength=1` 위반"
+      "test_func": "TestCRDSchema_PillarAgent_NodeRefName_Empty",
+      "description": "`spec.nodeRef.name=\"\"`인 PillarAgent 생성 시도 → `+kubebuilder:validation:MinLength=1` 위반"
     },
     {
       "tc_id": "E164",
@@ -4187,7 +4187,7 @@
       "category": "E21: 잘못된 CR 오류 시나리오 (Invalid CR Error Scenarios)",
       "type": "A",
       "in_437_scope": true,
-      "test_func": "TestCRDSchema_PillarTarget_ExternalPort_Zero",
+      "test_func": "TestCRDSchema_PillarAgent_ExternalPort_Zero",
       "description": "`spec.external.port=0` → `+kubebuilder:validation:Minimum=1` 위반"
     },
     {
@@ -4197,7 +4197,7 @@
       "category": "E21: 잘못된 CR 오류 시나리오 (Invalid CR Error Scenarios)",
       "type": "A",
       "in_437_scope": true,
-      "test_func": "TestCRDSchema_PillarTarget_ExternalAddress_Empty",
+      "test_func": "TestCRDSchema_PillarAgent_ExternalAddress_Empty",
       "description": "`spec.external.address=\"\"` → `+kubebuilder:validation:MinLength=1` 위반"
     },
     {
@@ -4207,7 +4207,7 @@
       "category": "E21: 잘못된 CR 오류 시나리오 (Invalid CR Error Scenarios)",
       "type": "A",
       "in_437_scope": true,
-      "test_func": "TestCRDSchema_PillarTarget_NodeRefAddressType_Invalid",
+      "test_func": "TestCRDSchema_PillarAgent_NodeRefAddressType_Invalid",
       "description": "`spec.nodeRef.addressType=\"FooType\"` → `+kubebuilder:validation:Enum=InternalIP;ExternalIP` 위반"
     },
     {
@@ -4217,8 +4217,8 @@
       "category": "E21: 잘못된 CR 오류 시나리오 (Invalid CR Error Scenarios)",
       "type": "A",
       "in_437_scope": true,
-      "test_func": "TestCRDSchema_PillarPool_TargetRef_Empty",
-      "description": "`spec.targetRef=\"\"`인 PillarPool 생성 → `+kubebuilder:validation:MinLength=1` 위반"
+      "test_func": "TestCRDSchema_PillarStore_AgentRef_Empty",
+      "description": "`spec.agentRef=\"\"`인 PillarStore 생성 → `+kubebuilder:validation:MinLength=1` 위반"
     },
     {
       "tc_id": "E168",
@@ -4227,7 +4227,7 @@
       "category": "E21: 잘못된 CR 오류 시나리오 (Invalid CR Error Scenarios)",
       "type": "A",
       "in_437_scope": true,
-      "test_func": "TestCRDSchema_PillarPool_BackendType_Invalid",
+      "test_func": "TestCRDSchema_PillarStore_BackendType_Invalid",
       "description": "`spec.backend.type=\"not-supported\"` → `+kubebuilder:validation:Enum=zfs-zvol;zfs-dataset;lvm-lv;dir` 위반"
     },
     {
@@ -4237,7 +4237,7 @@
       "category": "E21: 잘못된 CR 오류 시나리오 (Invalid CR Error Scenarios)",
       "type": "A",
       "in_437_scope": true,
-      "test_func": "TestCRDSchema_PillarVolume_Phase_Invalid",
+      "test_func": "TestCRDSchema_PillarVolumeState_Phase_Invalid",
       "description": "`status.phase=\"GarbagePhase\"` — `+kubebuilder:validation:Enum=Provisioning;CreatePartial;Ready;...` 위반"
     },
     {
@@ -4247,7 +4247,7 @@
       "category": "E21: 잘못된 CR 오류 시나리오 (Invalid CR Error Scenarios)",
       "type": "A",
       "in_437_scope": true,
-      "test_func": "TestCRDSchema_PillarVolume_CapacityBytes_Negative",
+      "test_func": "TestCRDSchema_PillarVolumeState_CapacityBytes_Negative",
       "description": "`spec.capacityBytes=-1` → `+kubebuilder:validation:Minimum=0` 위반"
     },
     {
@@ -4828,7 +4828,7 @@
       "type": "B",
       "in_437_scope": true,
       "test_func": "TestHelm/에이전트_DaemonSet_스토리지_레이블_없는_환경에서_파드_미스케줄_검증",
-      "description": "스토리지 레이블(`pillar-csi.bhyoo.com/storage-node=true`)이 없는 Kind 기본 환경에서 agent 파드가 0개임을 검증한다"
+      "description": "스토리지 레이블(`pillar-csi.bhyoo.com/agent-node=true`)이 없는 Kind 기본 환경에서 agent 파드가 0개임을 검증한다"
     },
     {
       "tc_id": "E229",
@@ -5217,7 +5217,7 @@
       "category": "E29: CSI Controller LVM 파라미터 전파 및 프로비저닝 모드 오버라이드",
       "type": "A",
       "in_437_scope": true,
-      "test_func": "TestCSIController_LVM_ModeOverride_BindingOverridesPool",
+      "test_func": "TestCSIController_LVM_ModeOverride_StorageClassOverridesPool",
       "description": "Binding 레벨이 Pool 기본값 오버라이드"
     },
     {
@@ -5304,90 +5304,90 @@
       "tc_id": "E276",
       "group_id": "E32.1",
       "top_section": "E32",
-      "category": "E32: PillarPool/PillarBinding LVM CRD 라이프사이클",
+      "category": "E32: PillarStore/PillarStorageClass LVM CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarPool_LVM_ValidLinearConfig",
+      "test_func": "TestPillarStore_LVM_ValidLinearConfig",
       "description": "type=lvm-lv, volumeGroup 지정, provisioningMode=linear 설정이 유효"
     },
     {
       "tc_id": "E277",
       "group_id": "E32.1",
       "top_section": "E32",
-      "category": "E32: PillarPool/PillarBinding LVM CRD 라이프사이클",
+      "category": "E32: PillarStore/PillarStorageClass LVM CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarPool_LVM_ValidThinConfig",
+      "test_func": "TestPillarStore_LVM_ValidThinConfig",
       "description": "type=lvm-lv, volumeGroup + thinPool, provisioningMode=thin 유효"
     },
     {
       "tc_id": "E278",
       "group_id": "E32.1",
       "top_section": "E32",
-      "category": "E32: PillarPool/PillarBinding LVM CRD 라이프사이클",
+      "category": "E32: PillarStore/PillarStorageClass LVM CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarPool_LVM_MissingVolumeGroup_Rejected",
+      "test_func": "TestPillarStore_LVM_MissingVolumeGroup_Rejected",
       "description": "type=lvm-lv이나 lvm.volumeGroup 미지정 시 검증 실패"
     },
     {
       "tc_id": "E279",
       "group_id": "E32.1",
       "top_section": "E32",
-      "category": "E32: PillarPool/PillarBinding LVM CRD 라이프사이클",
+      "category": "E32: PillarStore/PillarStorageClass LVM CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarPool_LVM_InvalidProvisioningMode_Rejected",
+      "test_func": "TestPillarStore_LVM_InvalidProvisioningMode_Rejected",
       "description": "provisioningMode에 \"linear\"/\"thin\" 외 값 지정 시 거부"
     },
     {
       "tc_id": "E280",
       "group_id": "E32.1",
       "top_section": "E32",
-      "category": "E32: PillarPool/PillarBinding LVM CRD 라이프사이클",
+      "category": "E32: PillarStore/PillarStorageClass LVM CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarPool_LVM_MissingLVMConfig_Rejected",
+      "test_func": "TestPillarStore_LVM_MissingLVMConfig_Rejected",
       "description": "type=lvm-lv이나 backend.lvm 섹션 자체 누락 시 웹훅 거부"
     },
     {
       "tc_id": "E281",
       "group_id": "E32.2",
       "top_section": "E32",
-      "category": "E32: PillarPool/PillarBinding LVM CRD 라이프사이클",
+      "category": "E32: PillarStore/PillarStorageClass LVM CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarBinding_LVM_ValidOverride",
+      "test_func": "TestPillarStorageClass_LVM_ValidOverride",
       "description": "LVM provisioningMode 오버라이드 설정 유효"
     },
     {
       "tc_id": "E282",
       "group_id": "E32.2",
       "top_section": "E32",
-      "category": "E32: PillarPool/PillarBinding LVM CRD 라이프사이클",
+      "category": "E32: PillarStore/PillarStorageClass LVM CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarBinding_LVM_InvalidOverride_Rejected",
+      "test_func": "TestPillarStorageClass_LVM_InvalidOverride_Rejected",
       "description": "provisioningMode에 잘못된 Enum 값 시 거부"
     },
     {
       "tc_id": "E283",
       "group_id": "E32.2",
       "top_section": "E32",
-      "category": "E32: PillarPool/PillarBinding LVM CRD 라이프사이클",
+      "category": "E32: PillarStore/PillarStorageClass LVM CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarBinding_LVM_NVMeOFTCP_Compatible",
+      "test_func": "TestPillarStorageClass_LVM_NVMeOFTCP_Compatible",
       "description": "lvm-lv(Block) + nvmeof-tcp(Block) 조합이 Compatible=True"
     },
     {
       "tc_id": "E284",
       "group_id": "E32.2",
       "top_section": "E32",
-      "category": "E32: PillarPool/PillarBinding LVM CRD 라이프사이클",
+      "category": "E32: PillarStore/PillarStorageClass LVM CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarBinding_LVM_NFS_Incompatible",
+      "test_func": "TestPillarStorageClass_LVM_NFS_Incompatible",
       "description": "lvm-lv(Block) + nfs(Filesystem) 조합이 비호환 거부"
     },
     {
@@ -5487,7 +5487,7 @@
       "category": "E33: LVM Kind 클러스터 E2E — 실제 LVM VG + NVMe-oF TCP",
       "type": "B",
       "in_437_scope": true,
-      "test_func": "It(\"PillarPool BackendSupported condition becomes True (agent advertises lvm-lv)\")",
+      "test_func": "It(\"PillarStore BackendSupported condition becomes True (agent advertises lvm-lv)\")",
       "description": "agent가 lvm-lv 백엔드 지원 보고"
     },
     {
@@ -5497,7 +5497,7 @@
       "category": "E33: LVM Kind 클러스터 E2E — 실제 LVM VG + NVMe-oF TCP",
       "type": "B",
       "in_437_scope": true,
-      "test_func": "It(\"PillarPool PoolDiscovered condition becomes True (VG is visible to agent)\")",
+      "test_func": "It(\"PillarStore PoolDiscovered condition becomes True (VG is visible to agent)\")",
       "description": "agent가 LVM VG 발견"
     },
     {
@@ -5507,8 +5507,8 @@
       "category": "E33: LVM Kind 클러스터 E2E — 실제 LVM VG + NVMe-oF TCP",
       "type": "B",
       "in_437_scope": true,
-      "test_func": "It(\"PillarPool reaches Ready=True and reports capacity\")",
-      "description": "PillarPool Ready + VG 용량 보고"
+      "test_func": "It(\"PillarStore reaches Ready=True and reports capacity\")",
+      "description": "PillarStore Ready + VG 용량 보고"
     },
     {
       "tc_id": "E297",
@@ -5517,7 +5517,7 @@
       "category": "E33: LVM Kind 클러스터 E2E — 실제 LVM VG + NVMe-oF TCP",
       "type": "B",
       "in_437_scope": true,
-      "test_func": "It(\"PillarBinding generates a Kubernetes StorageClass with the pillar-csi provisioner\")",
+      "test_func": "It(\"PillarStorageClass generates a Kubernetes StorageClass with the pillar-csi provisioner\")",
       "description": "StorageClass 자동 생성"
     },
     {
@@ -5727,7 +5727,7 @@
       "category": "E34: LVM Kind 클러스터 E2E — 실제 LVM VG + iSCSI",
       "type": "B",
       "in_437_scope": true,
-      "test_func": "It(\"PillarBinding generates an iSCSI StorageClass with protocol-type=iscsi and timer parameters\")",
+      "test_func": "It(\"PillarStorageClass generates an iSCSI StorageClass with protocol-type=iscsi and timer parameters\")",
       "description": "generated StorageClass가 `protocol-type=iscsi`, `iscsi-port`, iSCSI timeout 파라미터를 포함"
     },
     {
@@ -5857,7 +5857,7 @@
       "category": "E35: ZFS Kind 클러스터 E2E — 실제 ZFS zvol + iSCSI",
       "type": "B",
       "in_437_scope": true,
-      "test_func": "It(\"PillarBinding generates an iSCSI StorageClass for zfs-zvol pools without losing zvol parameters\")",
+      "test_func": "It(\"PillarStorageClass generates an iSCSI StorageClass for zfs-zvol pools without losing zvol parameters\")",
       "description": "generated StorageClass가 `backend-type=zfs-zvol`, pool/zvol 파라미터, `protocol-type=iscsi`, iSCSI timer 파라미터를 함께 포함"
     },
     {
@@ -7127,8 +7127,8 @@
       "category": "M9: 다중 테넌트 격리 검증",
       "type": "M",
       "in_437_scope": false,
-      "test_func": "**PillarTarget 접근 제어 — 테넌트별 스토리지 노드 격리**",
-      "description": "PillarTarget A: 테넌트 A 전용 스토리지 노드; RBAC로 타 테넌트가 해당 Target 참조 불가"
+      "test_func": "**PillarAgent 접근 제어 — 테넌트별 스토리지 노드 격리**",
+      "description": "PillarAgent A: 테넌트 A 전용 스토리지 노드; RBAC로 타 테넌트가 해당 Target 참조 불가"
     },
     {
       "tc_id": "M10.1",

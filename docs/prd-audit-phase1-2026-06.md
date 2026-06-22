@@ -31,7 +31,7 @@ backends) features remain out of scope for current deployments.
 | `NodeGetVolumeStats` not implemented | ✅ Resolved | [`internal/csi/node_stats.go`](../internal/csi/node_stats.go) — `BLKGETSIZE64` for block, `statfs` for filesystem |
 | CSI `GetCapacity` not implemented | ✅ Resolved | [`internal/csi/controller.go`](../internal/csi/controller.go) `GetCapacity` calls agent `GetCapacity` |
 | `AclEnabled: true` hardcoded | ✅ Resolved | `parseACLEnabled(params[paramACLEnabled])` reads `PillarProtocol.spec.nvmeofTcp.acl` |
-| `AgentVersion` / `Capabilities` / `DiscoveredPools` not populated | ✅ Resolved | [`internal/controller/pillartarget_controller.go`](../internal/controller/pillartarget_controller.go) calls `GetCapabilities` RPC and writes status fields |
+| `AgentVersion` / `Capabilities` / `DiscoveredPools` not populated | ✅ Resolved | [`internal/controller/pillaragent_controller.go`](../internal/controller/pillaragent_controller.go) calls `GetCapabilities` RPC and writes status fields |
 | PVC annotation overrides not implemented | ✅ Resolved | [`internal/csi/pvc_annotations.go`](../internal/csi/pvc_annotations.go) + 4-layer merge in `controller.go` |
 | Helm chart missing | ✅ Resolved | [`charts/pillar-csi/`](../charts/pillar-csi/) with all templates + `values.yaml` + `test_render.sh` |
 
@@ -41,10 +41,10 @@ backends) features remain out of scope for current deployments.
 
 | PRD §6 requirement | Status | Key file |
 |---|---|---|
-| 4 CRDs cluster-scoped + `PillarVolume` durable state | ✅ | `api/v1alpha1/` |
+| 4 CRDs cluster-scoped + `PillarVolumeState` durable state | ✅ | `api/v1alpha1/` |
 | 4 reconcilers + finalizer-based deletion protection | ✅ | `internal/controller/` |
 | Validation webhooks (immutability) | ✅ | `internal/webhook/v1alpha1/` (incl. `backend.zfs.pool` immutability landed 2026-06) |
-| `PillarBinding` defaulter for `allowVolumeExpansion` | ✅ | `pillarbinding_webhook.go` |
+| `PillarStorageClass` defaulter for `allowVolumeExpansion` | ✅ | `pillarstorageclass_webhook.go` |
 | Agent gRPC: all Phase 1 RPCs (`GetCapabilities`, `GetCapacity`, `ListVolumes`, `ListExports`, `HealthCheck`, `CreateVolume`, `DeleteVolume`, `ExpandVolume`, `ExportVolume`, `UnexportVolume`, `AllowInitiator`, `DenyInitiator`, `ReconcileState`, `Drain`) | ✅ | `internal/agent/server_*.go` (`Drain` landed 2026-06) |
 | ZFS zvol backend | ✅ | `internal/agent/backend/zfs/zfs.go` |
 | NVMe-oF/TCP via direct configfs (no `nvmetcli`) + read-back verification | ✅ | `internal/agent/nvmeof/configfs.go` |
@@ -58,8 +58,8 @@ backends) features remain out of scope for current deployments.
 | Volume mode: Block | ✅ | `internal/csi/node.go` (bind-mounts raw device) |
 | AccessMode `RWO` / `RWOP` / `ROX` | ✅ | `controller.go` validation |
 | 4-layer override (Pool → Protocol → Binding → PVC annotation) | ✅ | `mergeParamsFromCRDs` + `applyPVCAnnotationOverrides` |
-| `StorageClass` auto-create + ownerReference + manual-edit revert + drift Event | ✅ | `pillarbinding_controller.go` (drift Event landed 2026-06) |
-| `pillartarget` storage-node label auto-management | ✅ | `pillartarget_controller.go` |
+| `StorageClass` auto-create + ownerReference + manual-edit revert + drift Event | ✅ | `pillarstorageclass_controller.go` (drift Event landed 2026-06) |
+| `pillaragent` storage-node label auto-management | ✅ | `pillaragent_controller.go` |
 | Helm chart + CSI sidecars (`provisioner` / `attacher` / `resizer` / `livenessprobe` / `node-driver-registrar`) | ✅ | `charts/pillar-csi/templates/` |
 | Native gRPC liveness/readiness probes (k8s ≥ 1.24) | ✅ | `agent-daemonset.yaml` + `node-daemonset.yaml` (landed 2026-06) |
 | Graceful shutdown — `preStop` + `Drain` RPC + state-flush marker | ✅ | `cmd/agent/main.go` SIGTERM handler + Helm `preStop` (landed 2026-06) |
@@ -75,7 +75,7 @@ backends) features remain out of scope for current deployments.
 
 Landed in this batch (one commit per item):
 
-1. **`chore(webhook)`**: `PillarPool.spec.backend.zfs.pool` immutability — closes silent volume-dangle risk on pool rename.
+1. **`chore(webhook)`**: `PillarStore.spec.backend.zfs.pool` immutability — closes silent volume-dangle risk on pool rename.
 2. **`feat(agent)`**: `ListExports` wired to real configfs scan — drift detection no longer silent no-op.
 3. **`feat(nvmeof)`**: IPv6 `BindAddress` detection in `createPort` — `addr_adrfam` and listen wildcard now derived from parsed IP family.
 4. **`chore`**: stale `TODO(user)` scaffolding comments removed across 6 files.
@@ -102,7 +102,7 @@ These are explicitly deferred:
   publisher and the node-image `open-iscsi` bundle are not yet implemented.
 - **NFS / SMB** (Phase 3 / 6): CRD scaffolding only.
 - **Snapshot / Clone** (Phase 4): not started.
-- **External (non-K8s) agent nodes** (Phase 7): `PillarTarget.spec.external`
+- **External (non-K8s) agent nodes** (Phase 7): `PillarAgent.spec.external`
   type exists, controller `external` branch + agent packaging are not yet
   implemented.
 - **`volumeMode: Block` for snapshot/clone**: pending Phase 4.

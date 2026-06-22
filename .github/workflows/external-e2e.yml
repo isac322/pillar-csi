@@ -135,8 +135,8 @@ jobs:
           echo "==== kubelet log: NodeUnstage / NodeUnpublish / Unmount activity ===="
           docker exec "${KIND_NODE}" sh -c \
             "journalctl -u kubelet --no-pager 2>/dev/null | grep -iE 'pillar|nvme|unstag|unpublish|unmount|terminating' | tail -200" || true
-          echo "==== PillarTarget / PillarPool / PillarProtocol ===="
-          kubectl get pillartargets,pillarpools,pillarprotocols -o yaml 2>/dev/null || true
+          echo "==== PillarAgent / PillarStore / PillarProtocol ===="
+          kubectl get pillaragents,pillarstores,pillarprotocols -o yaml 2>/dev/null || true
           echo
           echo "==== PVC / PV / VolumeAttachment ===="
           kubectl get pvc,pv,volumeattachment -A 2>/dev/null || true

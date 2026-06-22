@@ -77,8 +77,8 @@ func assertE15_GetCapacity_AgentErr(tc documentedCase) {
 
 	_, err := env.controller.GetCapacity(env.ctx, &csiapi.GetCapacityRequest{
 		Parameters: map[string]string{
-			"pillar-csi.bhyoo.com/target":       env.target.Name,
-			"pillar-csi.bhyoo.com/pool":         "tank",
+			"pillar-csi.bhyoo.com/agent":        env.target.Name,
+			"pillar-csi.bhyoo.com/store":        "tank",
 			"pillar-csi.bhyoo.com/backend-type": "zfs-zvol",
 		},
 	})

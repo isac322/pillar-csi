@@ -29,7 +29,7 @@
 - [E1: 볼륨 라이프사이클 — CreateVolume / DeleteVolume](#e1-볼륨-라이프사이클--createvolume--deletevolume)
   - [E1.6: 접근 모드 유효성 검증](#e16-접근-모드-유효성-검증-access-mode-validation)
   - [E1.7: 용량 범위 검증](#e17-용량-범위-검증-capacity-range-validation)
-  - [E1.8: PillarTarget 상태 및 agent 연결 검증](#e18-pillartarget-상태-및-agent-연결-검증)
+  - [E1.8: PillarAgent 상태 및 agent 연결 검증](#e18-pillaragent-상태-및-agent-연결-검증)
   - [E1.9: 부분 실패 복구](#e19-부분-실패-복구-partial-failure-recovery)
   - [E1.10: PVC 어노테이션 오버라이드](#e110-pvc-어노테이션-오버라이드-pvc-annotation-override)
   - [E1.11: VolumeId 형식 및 파라미터 검증 심화](#e111-volumeid-형식-및-파라미터-검증-심화)
@@ -78,8 +78,8 @@
   - [E24.9: DeleteVolume 단계 실패/복구](#e249-deletevolume-단계-실패복구)
   - [E24.10: 중단된 라이프사이클 정리 경로](#e2410-중단된-라이프사이클-정리-경로)
   - [E21.1: 컨트롤러 런타임 잘못된 CR 처리 (Type A — in-process)](#e211-컨트롤러-런타임-잘못된-cr-처리-type-a--in-process-)
-  - [E21.2: PillarTarget 웹훅 — 불변 필드 수정 거부 (Type C — envtest)](#e212-pillartarget-웹훅--불변-필드-수정-거부-type-c--envtest-)
-  - [E21.3: PillarPool 웹훅 — 불변 필드 수정 거부 (Type C — envtest)](#e213-pillarpool-웹훅--불변-필드-수정-거부-type-c--envtest-)
+  - [E21.2: PillarAgent 웹훅 — 불변 필드 수정 거부 (Type C — envtest)](#e212-pillaragent-웹훅--불변-필드-수정-거부-type-c--envtest-)
+  - [E21.3: PillarStore 웹훅 — 불변 필드 수정 거부 (Type C — envtest)](#e213-pillarstore-웹훅--불변-필드-수정-거부-type-c--envtest-)
   - [E21.4: CRD OpenAPI 스키마 검증 — 필드 범위/형식 위반 (Type C — envtest)](#e214-crd-openapi-스키마-검증--필드-범위형식-위반-type-c--envtest-)
 - [E28: LVM Agent gRPC E2E 테스트](#e28-lvm-agent-grpc-e2e-테스트)
 - [E29: CSI Controller LVM 파라미터 전파 및 프로비저닝 모드 오버라이드](#e29-csi-controller-lvm-파라미터-전파-및-프로비저닝-모드-오버라이드)
@@ -88,13 +88,13 @@
 ### 카테고리 1.5 — Envtest 통합 테스트 (유형 C: envtest 필요) ⚠️
 > 빌드 태그: `//go:build integration` | `make setup-envtest && go test -tags=integration ./internal/...` | envtest API 서버 · Docker/Kind 불필요 · CI 실행 가능
 
-- [E19: PillarTarget CRD 라이프사이클](#e19-pillartarget-crd-라이프사이클)
-- [E20: PillarPool CRD 라이프사이클](#e20-pillarpool-crd-라이프사이클)
+- [E19: PillarAgent CRD 라이프사이클](#e19-pillaragent-crd-라이프사이클)
+- [E20: PillarStore CRD 라이프사이클](#e20-pillarstore-crd-라이프사이클)
 - [E23: PillarProtocol CRD 라이프사이클](#e23-pillarprotocol-crd-라이프사이클)
-- [E25: PillarBinding CRD 라이프사이클](#e25-pillarbinding-crd-라이프사이클)
+- [E25: PillarStorageClass CRD 라이프사이클](#e25-pillarstorageclass-crd-라이프사이클)
 - [E26: 교차-CRD 라이프사이클 상호작용](#e26-교차-crd-라이프사이클-상호작용)
-- [E32: PillarPool/PillarBinding LVM CRD 라이프사이클](#e32-pillarpoolpillarbinding-lvm-crd-라이프사이클)
-- [E21.2–E21.4: 잘못된 CR 웹훅·스키마 검증](#e212-pillartarget-웹훅--불변-필드-수정-거부-type-c--envtest-) _(E21 중 envtest 소섹션)_
+- [E32: PillarStore/PillarStorageClass LVM CRD 라이프사이클](#e32-pillarstorepillarstorageclass-lvm-crd-라이프사이클)
+- [E21.2–E21.4: 잘못된 CR 웹훅·스키마 검증](#e212-pillaragent-웹훅--불변-필드-수정-거부-type-c--envtest-) _(E21 중 envtest 소섹션)_
 
 ### 카테고리 2 — 클러스터 레벨 E2E 테스트 (유형 B: Kind 클러스터 필요) ⚠️
 > 빌드 태그: `//go:build e2e` | `go test ./test/e2e/ -tags=e2e -v` | 총 3개 테스트 (E10); Helm 설치 검증 29개 테스트 (E27.1–E27.12, ID 207–243) 포함
@@ -200,8 +200,8 @@ M 섹션은 자동화가 불가능한 수동 시나리오를 다루므로 열 �
 | `NVMeF` | `internal/nvmeof.NvmetTarget` |
 | `Conn` | `internal/connector.Connector` (또는 mockCSIConnector) |
 | `Mnt` | `internal/mounter.Mounter` (또는 mockCSIMounter) |
-| `VolCRD` | `api/v1alpha1.PillarVolume` CRD 상태 관리 |
-| `TgtCRD` | `api/v1alpha1.PillarTarget` CRD 조회 |
+| `VolCRD` | `api/v1alpha1.PillarVolumeState` CRD 상태 관리 |
+| `TgtCRD` | `api/v1alpha1.PillarAgent` CRD 조회 |
 | `mTLS` | `internal/controller.MTLSController` |
 | `SM` | VolumeStateMachine (볼륨 순서 상태 머신) |
 | `State` | 노드 스테이징 상태 파일 (`StateDir/*.json`) |
@@ -305,8 +305,8 @@ Docker-in-Docker(DinD) 또는 Kind 지원 러너가 없으면 실행 불가.
 
 | # | 이름 | 테스트 수 | 테스트 함수 패턴 |
 |---|------|----------|----------------|
-| E21.2 | PillarTarget 웹훅 검증 | 7 | `TestPillarTargetWebhook_*` |
-| E21.3 | PillarPool 웹훅 검증 | 5 | `TestPillarPoolWebhook_*` |
+| E21.2 | PillarAgent 웹훅 검증 | 7 | `TestPillarAgentWebhook_*` |
+| E21.3 | PillarStore 웹훅 검증 | 5 | `TestPillarStoreWebhook_*` |
 | E21.4 | CRD OpenAPI 스키마 검증 | 8 | `TestCRDSchema_*` |
 | E26 | 교차-CRD 라이프사이클 상호작용 | 23 | `TestCrossLifecycle_*` |
 
@@ -425,14 +425,14 @@ Kubernetes API 서버와 etcd의 실제 동작(CRD 검증 웹훅, RBAC, 어드�
 
 | # | 테스트 이름 (계획) | 검증 항목 | 필요 구성 요소 |
 |---|----------------|----------|---------------|
-| K1 | `TestKindMock_CRD_PillarTarget_Validation` | PillarTarget CRD 스키마 검증 웹훅이 잘못된 필드를 거부 | Kind + CRD + 웹훅 서버 |
-| K2 | `TestKindMock_CRD_PillarVolume_Lifecycle` | PillarVolume CRD Create/Update/Delete 전체 생명주기 | Kind + CRD |
-| K3 | `TestKindMock_RBAC_ControllerManager` | controller-manager ServiceAccount가 PillarTarget/PillarVolume에 대한 RBAC 권한만 가짐 | Kind + RBAC 설정 |
+| K1 | `TestKindMock_CRD_PillarAgent_Validation` | PillarAgent CRD 스키마 검증 웹훅이 잘못된 필드를 거부 | Kind + CRD + 웹훅 서버 |
+| K2 | `TestKindMock_CRD_PillarVolumeState_Lifecycle` | PillarVolumeState CRD Create/Update/Delete 전체 생명주기 | Kind + CRD |
+| K3 | `TestKindMock_RBAC_ControllerManager` | controller-manager ServiceAccount가 PillarAgent/PillarVolumeState에 대한 RBAC 권한만 가짐 | Kind + RBAC 설정 |
 | K4 | `TestKindMock_ControllerManager_Startup` | pillar-csi controller-manager 파드가 정상 기동 및 헬스체크 응답 | Kind + 컨테이너 이미지 |
 | K5 | `TestKindMock_Metrics_Endpoint` | `/metrics` 엔드포인트가 RBAC 토큰으로 접근 가능; Go 런타임 메트릭 포함 | Kind + 컨테이너 이미지 |
 | K6 | `TestKindMock_Webhook_CertManager` | cert-manager가 webhook-server-cert Secret을 발급하고 웹훅 caBundle에 주입 | Kind + cert-manager + 컨테이너 이미지 |
-| K7 | `TestKindMock_PillarTarget_AgentConnected_False` | PillarTarget 생성 시 pillar-agent 미도달 상태에서 AgentConnected=False 조건 설정 | Kind + 컨테이너 이미지 (mock agent endpoint) |
-| K8 | `TestKindMock_PillarTarget_AgentConnected_True` | mock pillar-agent gRPC 서버(out-of-cluster)를 지정한 PillarTarget에서 AgentConnected=True 조건 설정 | Kind + 컨테이너 이미지 + mock agent |
+| K7 | `TestKindMock_PillarAgent_AgentConnected_False` | PillarAgent 생성 시 pillar-agent 미도달 상태에서 AgentConnected=False 조건 설정 | Kind + 컨테이너 이미지 (mock agent endpoint) |
+| K8 | `TestKindMock_PillarAgent_AgentConnected_True` | mock pillar-agent gRPC 서버(out-of-cluster)를 지정한 PillarAgent에서 AgentConnected=True 조건 설정 | Kind + 컨테이너 이미지 + mock agent |
 
 #### 유형 A-Kind CI 설정 요구사항
 
@@ -604,11 +604,11 @@ in-process 테스트 더블(mockAgentServer, mockCSIConnector, mockCSIMounter, f
 ```
 CSI ControllerServer → (실제 gRPC, localhost:0) → mockAgentServer
                     ↓
-             fake k8s client (PillarTarget 사전 등록)
+             fake k8s client (PillarAgent 사전 등록)
 ```
 
 **서브시스템 경계 설정:** `newCSIControllerE2EEnv(t, "storage-1")` 호출로
-구성. PillarTarget CRD를 fake 클라이언트에 사전 등록하고, mockAgentServer를
+구성. PillarAgent CRD를 fake 클라이언트에 사전 등록하고, mockAgentServer를
 실제 gRPC 리스너에 바인딩한다.
 
 ---
@@ -617,7 +617,7 @@ CSI ControllerServer → (실제 gRPC, localhost:0) → mockAgentServer
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| 1 | `TestCSIController_CreateVolume` | CreateVolume이 agent.CreateVolume → agent.ExportVolume을 순서대로 호출하고 올바른 VolumeId/VolumeContext를 반환 | PillarTarget="storage-1" fake 클라이언트에 등록; mockAgentServer 정상 동작; pool="tank"(PillarPool CRD); 프로토콜=nvmeof-tcp; 용량=1GiB | 1) CreateVolumeRequest 전송 | VolumeId="storage-1/nvmeof-tcp/zfs-zvol/tank/pvc-create-test"; VolumeContext에 target_id/address/port/volume-ref/protocol-type 포함 | `CSI-C`, `Agent`, `TgtCRD`, `VolCRD`, `gRPC` |
+| 1 | `TestCSIController_CreateVolume` | CreateVolume이 agent.CreateVolume → agent.ExportVolume을 순서대로 호출하고 올바른 VolumeId/VolumeContext를 반환 | PillarAgent="storage-1" fake 클라이언트에 등록; mockAgentServer 정상 동작; pool="tank"(PillarStore CRD); 프로토콜=nvmeof-tcp; 용량=1GiB | 1) CreateVolumeRequest 전송 | VolumeId="storage-1/nvmeof-tcp/zfs-zvol/tank/pvc-create-test"; VolumeContext에 target_id/address/port/volume-ref/protocol-type 포함 | `CSI-C`, `Agent`, `TgtCRD`, `VolCRD`, `gRPC` |
 | 2 | `TestCSIController_CreateVolume_Idempotency` | 동일한 볼륨 이름으로 CreateVolume을 두 번 호출하면 두 번째 호출은 agent.CreateVolume/ExportVolume을 재호출하지 않고 동일한 응답 반환 | 위와 동일; mockAgentServer 정상 동작 | 1) CreateVolumeRequest 전송; 2) 동일 파라미터로 CreateVolumeRequest 재전송 | 두 번째 호출 성공; 동일한 VolumeId 반환; agent CreateVolume은 1회, ExportVolume은 1회만 호출 | `CSI-C`, `Agent`, `TgtCRD`, `VolCRD`, `gRPC` |
 
 ---
@@ -627,9 +627,9 @@ CSI ControllerServer → (실제 gRPC, localhost:0) → mockAgentServer
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
 | 3 | `TestCSIController_CreateVolume_MissingParams` | StorageClass 파라미터 누락 시 InvalidArgument 반환 | ControllerServer 초기화; StorageClass Parameters에서 필수 키(target/backend-type/protocol-type/pool) 일부 또는 전부 제거 | 1) 파라미터 일부 누락한 CreateVolumeRequest 전송 | gRPC InvalidArgument; agent 호출 없음 | `CSI-C` |
-| 4 | `TestCSIController_CreateVolume_PillarTargetNotFound` | 참조된 PillarTarget이 존재하지 않으면 NotFound 반환 | fake 클라이언트에 PillarTarget 미등록; Parameters["target"]="nonexistent" | 1) CreateVolumeRequest 전송 | gRPC NotFound 또는 Internal; agent 호출 없음 | `CSI-C`, `TgtCRD` |
-| 5 | `TestCSIController_CreateVolume_AgentCreateError` | agent.CreateVolume 실패 시 오류 전파 | mockAgentServer.CreateVolumeErr 설정; PillarTarget 정상 등록 | 1) CreateVolumeRequest 전송 | 비-OK gRPC 상태 반환; ExportVolume 미호출 | `CSI-C`, `Agent`, `TgtCRD`, `gRPC` |
-| 6 | `TestCSIController_CreateVolume_AgentExportError` | agent.CreateVolume 성공 후 agent.ExportVolume 실패 시 오류 전파 | mockAgentServer.ExportVolumeErr 설정; CreateVolume은 성공 | 1) CreateVolumeRequest 전송 | 비-OK gRPC 상태 반환; PillarVolume CRD에 PartialFailure 기록 | `CSI-C`, `Agent`, `TgtCRD`, `VolCRD`, `gRPC` |
+| 4 | `TestCSIController_CreateVolume_PillarAgentNotFound` | 참조된 PillarAgent이 존재하지 않으면 NotFound 반환 | fake 클라이언트에 PillarAgent 미등록; Parameters["target"]="nonexistent" | 1) CreateVolumeRequest 전송 | gRPC NotFound 또는 Internal; agent 호출 없음 | `CSI-C`, `TgtCRD` |
+| 5 | `TestCSIController_CreateVolume_AgentCreateError` | agent.CreateVolume 실패 시 오류 전파 | mockAgentServer.CreateVolumeErr 설정; PillarAgent 정상 등록 | 1) CreateVolumeRequest 전송 | 비-OK gRPC 상태 반환; ExportVolume 미호출 | `CSI-C`, `Agent`, `TgtCRD`, `gRPC` |
+| 6 | `TestCSIController_CreateVolume_AgentExportError` | agent.CreateVolume 성공 후 agent.ExportVolume 실패 시 오류 전파 | mockAgentServer.ExportVolumeErr 설정; CreateVolume은 성공 | 1) CreateVolumeRequest 전송 | 비-OK gRPC 상태 반환; PillarVolumeState CRD에 PartialFailure 기록 | `CSI-C`, `Agent`, `TgtCRD`, `VolCRD`, `gRPC` |
 
 ---
 
@@ -637,9 +637,9 @@ CSI ControllerServer → (실제 gRPC, localhost:0) → mockAgentServer
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| 7 | `TestCSIController_DeleteVolume` | DeleteVolume이 agent.UnexportVolume → agent.DeleteVolume을 순서대로 호출 | CreateVolume으로 볼륨 사전 생성 (PillarVolume CRD 존재); mockAgentServer 정상 동작 | 1) CreateVolumeRequest 전송; 2) DeleteVolumeRequest 전송 | 성공; UnexportVolume 1회, DeleteVolume 1회 호출 | `CSI-C`, `Agent`, `VolCRD`, `gRPC` |
+| 7 | `TestCSIController_DeleteVolume` | DeleteVolume이 agent.UnexportVolume → agent.DeleteVolume을 순서대로 호출 | CreateVolume으로 볼륨 사전 생성 (PillarVolumeState CRD 존재); mockAgentServer 정상 동작 | 1) CreateVolumeRequest 전송; 2) DeleteVolumeRequest 전송 | 성공; UnexportVolume 1회, DeleteVolume 1회 호출 | `CSI-C`, `Agent`, `VolCRD`, `gRPC` |
 | 8 | `TestCSIController_DeleteVolume_Idempotency` | 이미 삭제된 볼륨을 다시 DeleteVolume해도 성공 (멱등성) | 볼륨 생성 후 첫 DeleteVolume 완료 | 1) DeleteVolumeRequest 전송; 2) 동일 VolumeId로 DeleteVolumeRequest 재전송 | 두 번째 호출도 성공; 오류 없음 | `CSI-C`, `Agent`, `VolCRD`, `gRPC` |
-| 9 | `TestCSIController_DeleteVolume_NotFoundIsIdempotent` | agent가 NotFound를 반환해도 DeleteVolume은 성공 처리 | mockAgentServer.UnexportVolumeErr = gRPC NotFound; PillarVolume CRD 없음 | 1) DeleteVolumeRequest 전송 | DeleteVolume 성공; CSI 명세상 Not-Found는 이미 삭제된 것으로 처리 | `CSI-C`, `Agent`, `gRPC` |
+| 9 | `TestCSIController_DeleteVolume_NotFoundIsIdempotent` | agent가 NotFound를 반환해도 DeleteVolume은 성공 처리 | mockAgentServer.UnexportVolumeErr = gRPC NotFound; PillarVolumeState CRD 없음 | 1) DeleteVolumeRequest 전송 | DeleteVolume 성공; CSI 명세상 Not-Found는 이미 삭제된 것으로 처리 | `CSI-C`, `Agent`, `gRPC` |
 
 ---
 
@@ -648,7 +648,7 @@ CSI ControllerServer → (실제 gRPC, localhost:0) → mockAgentServer
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
 | 10 | `TestCSIController_DeleteVolume_MalformedID` | 잘못된 형식의 VolumeId는 InvalidArgument 반환 | ControllerServer 초기화 | 1) VolumeId="noslash"로 DeleteVolumeRequest 전송 | gRPC InvalidArgument; agent 호출 없음 | `CSI-C` |
-| 11 | `TestCSIController_DeleteVolume_AgentError` | agent.UnexportVolume 또는 agent.DeleteVolume 실패 시 오류 전파 | mockAgentServer.DeleteVolumeErr 설정; PillarVolume CRD 존재 | 1) DeleteVolumeRequest 전송 | 비-OK gRPC 상태 반환 | `CSI-C`, `Agent`, `VolCRD`, `gRPC` |
+| 11 | `TestCSIController_DeleteVolume_AgentError` | agent.UnexportVolume 또는 agent.DeleteVolume 실패 시 오류 전파 | mockAgentServer.DeleteVolumeErr 설정; PillarVolumeState CRD 존재 | 1) DeleteVolumeRequest 전송 | 비-OK gRPC 상태 반환 | `CSI-C`, `Agent`, `VolCRD`, `gRPC` |
 
 ---
 
@@ -656,8 +656,8 @@ CSI ControllerServer → (실제 gRPC, localhost:0) → mockAgentServer
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| 12 | `TestCSIController_FullRoundTrip` | CreateVolume → ControllerPublishVolume → ControllerUnpublishVolume → DeleteVolume 전체 CSI Controller 왕복 테스트 | 단일 mockAgentServer; fake k8s 클라이언트; PillarTarget 등록; 정상 경로 설정 | 1) CreateVolume; 2) ControllerPublishVolume; 3) ControllerUnpublishVolume; 4) DeleteVolume | 모든 단계 성공; agent 호출 순서 검증; VolumeContext 키 검증 | `CSI-C`, `Agent`, `TgtCRD`, `VolCRD`, `gRPC` |
-| 13 | `TestCSIController_VolumeIDFormatPreservation` | VolumeId 포맷("target/protocol/backend/pool/name")이 생성-게시-삭제 전 주기에서 보존됨 | CreateVolume 성공; PillarTarget 등록 | 1) CreateVolume; 2) ControllerPublishVolume; 3) ControllerUnpublishVolume; 4) DeleteVolume | 각 단계에서 동일한 VolumeId 포맷 사용; 파싱 오류 없음 | `CSI-C`, `Agent`, `TgtCRD`, `VolCRD`, `gRPC` |
+| 12 | `TestCSIController_FullRoundTrip` | CreateVolume → ControllerPublishVolume → ControllerUnpublishVolume → DeleteVolume 전체 CSI Controller 왕복 테스트 | 단일 mockAgentServer; fake k8s 클라이언트; PillarAgent 등록; 정상 경로 설정 | 1) CreateVolume; 2) ControllerPublishVolume; 3) ControllerUnpublishVolume; 4) DeleteVolume | 모든 단계 성공; agent 호출 순서 검증; VolumeContext 키 검증 | `CSI-C`, `Agent`, `TgtCRD`, `VolCRD`, `gRPC` |
+| 13 | `TestCSIController_VolumeIDFormatPreservation` | VolumeId 포맷("target/protocol/backend/pool/name")이 생성-게시-삭제 전 주기에서 보존됨 | CreateVolume 성공; PillarAgent 등록 | 1) CreateVolume; 2) ControllerPublishVolume; 3) ControllerUnpublishVolume; 4) DeleteVolume | 각 단계에서 동일한 VolumeId 포맷 사용; 파싱 오류 없음 | `CSI-C`, `Agent`, `TgtCRD`, `VolCRD`, `gRPC` |
 
 ---
 
@@ -681,10 +681,10 @@ CSI ControllerServer → (실제 gRPC, localhost:0) → mockAgentServer
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| E1.6-1 | `TestCSIController_CreateVolume_AccessMode_RWO` | SINGLE_NODE_WRITER(RWO) 접근 모드로 CreateVolume 성공 | PillarTarget="storage-1" fake 클라이언트에 등록; mockAgentServer 정상; pool="tank"(PillarPool CRD) | 1) AccessMode=SINGLE_NODE_WRITER, VolumeCapabilities 포함 CreateVolumeRequest 전송 | 성공 (gRPC OK); VolumeId/VolumeContext 반환; agent.CreateVolume 1회, agent.ExportVolume 1회 호출 | `CSI-C`, `Agent`, `TgtCRD`, `VolCRD`, `gRPC` |
+| E1.6-1 | `TestCSIController_CreateVolume_AccessMode_RWO` | SINGLE_NODE_WRITER(RWO) 접근 모드로 CreateVolume 성공 | PillarAgent="storage-1" fake 클라이언트에 등록; mockAgentServer 정상; pool="tank"(PillarStore CRD) | 1) AccessMode=SINGLE_NODE_WRITER, VolumeCapabilities 포함 CreateVolumeRequest 전송 | 성공 (gRPC OK); VolumeId/VolumeContext 반환; agent.CreateVolume 1회, agent.ExportVolume 1회 호출 | `CSI-C`, `Agent`, `TgtCRD`, `VolCRD`, `gRPC` |
 | E1.6-2 | `TestCSIController_CreateVolume_AccessMode_RWOP` | SINGLE_NODE_SINGLE_WRITER(RWOP) 접근 모드로 CreateVolume 성공 | 위와 동일 | 1) AccessMode=SINGLE_NODE_SINGLE_WRITER로 CreateVolumeRequest 전송 | 성공; VolumeId/VolumeContext 반환; agent 호출 정상 | `CSI-C`, `Agent`, `TgtCRD`, `VolCRD`, `gRPC` |
 | E1.6-3 | `TestCSIController_CreateVolume_AccessMode_ROX` | MULTI_NODE_READER_ONLY(ROX) 접근 모드로 CreateVolume 성공 | 위와 동일 | 1) AccessMode=MULTI_NODE_READER_ONLY로 CreateVolumeRequest 전송 | 성공; VolumeId/VolumeContext 반환; agent 호출 정상 | `CSI-C`, `Agent`, `TgtCRD`, `VolCRD`, `gRPC` |
-| E1.6-4 | `TestCSIController_CreateVolume_AccessMode_RWX_Rejected` | MULTI_NODE_MULTI_WRITER(RWX) 접근 모드는 드라이버 수준에서 거부 | ControllerServer 초기화만 필요; PillarTarget/agent 연결 불필요 | 1) AccessMode=MULTI_NODE_MULTI_WRITER로 CreateVolumeRequest 전송 | gRPC InvalidArgument; "unsupported access mode" 메시지 포함; agent.CreateVolume 호출 없음 | `CSI-C` |
+| E1.6-4 | `TestCSIController_CreateVolume_AccessMode_RWX_Rejected` | MULTI_NODE_MULTI_WRITER(RWX) 접근 모드는 드라이버 수준에서 거부 | ControllerServer 초기화만 필요; PillarAgent/agent 연결 불필요 | 1) AccessMode=MULTI_NODE_MULTI_WRITER로 CreateVolumeRequest 전송 | gRPC InvalidArgument; "unsupported access mode" 메시지 포함; agent.CreateVolume 호출 없음 | `CSI-C` |
 | E1.6-5 | `TestCSIController_CreateVolume_AccessMode_Unknown_Rejected` | 정의되지 않은(UNKNOWN=0) 접근 모드는 거부 | ControllerServer 초기화만 필요 | 1) AccessMode=UNKNOWN(0)으로 CreateVolumeRequest 전송 | gRPC InvalidArgument; agent 호출 없음 | `CSI-C` |
 | E1.6-6 | `TestCSIController_CreateVolume_AccessMode_Missing_InCapability` | VolumeCapability에 AccessMode 필드 자체가 없으면 InvalidArgument | ControllerServer 초기화만 필요 | 1) VolumeCapability{AccessMode: nil}로 CreateVolumeRequest 전송 | gRPC InvalidArgument; "must specify an access_mode" 메시지; agent 호출 없음 | `CSI-C` |
 | E1.6-7 | `TestCSIController_CreateVolume_VolumeCapabilities_Empty` | VolumeCapabilities가 빈 슬라이스이면 InvalidArgument | ControllerServer 초기화만 필요 | 1) VolumeCapabilities=[]로 CreateVolumeRequest 전송 | gRPC InvalidArgument; "volume_capabilities must not be empty" 메시지; agent 호출 없음 | `CSI-C` |
@@ -696,41 +696,41 @@ CSI ControllerServer → (실제 gRPC, localhost:0) → mockAgentServer
 
 `CapacityRange.RequiredBytes`와 `LimitBytes`는 CSI 명세상 선택 사항이다.
 두 값이 모두 제공되면 `RequiredBytes ≤ LimitBytes`를 만족해야 한다.
-기존 볼륨(PillarVolume CRD Ready 상태)과 용량 충돌 시 `AlreadyExists`를 반환한다.
+기존 볼륨(PillarVolumeState CRD Ready 상태)과 용량 충돌 시 `AlreadyExists`를 반환한다.
 
 > **CI 실행 가능 여부:** ✅ 인프로세스 E2E — 별도 인프라 불필요
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| E1.7-1 | `TestCSIController_CreateVolume_Capacity_NoRange` | CapacityRange 미지정 시 드라이버가 기본 크기 선택 | PillarTarget 등록; mockAgentServer 정상 (CapacityBytes=1GiB 에코) | 1) CapacityRange=nil로 CreateVolumeRequest 전송 | 성공; CapacityBytes ≥ 0 반환; agent.CreateVolume의 CapacityBytes=0 전달 | `CSI-C`, `Agent`, `gRPC` |
-| E1.7-2 | `TestCSIController_CreateVolume_Capacity_RequiredOnly` | RequiredBytes만 지정, LimitBytes 미지정 | PillarTarget 등록; mockAgentServer가 요청된 용량을 그대로 반환 | 1) CapacityRange{RequiredBytes: 1GiB}로 CreateVolumeRequest 전송 | 성공; CapacityBytes = 1GiB | `CSI-C`, `Agent`, `gRPC` |
-| E1.7-3 | `TestCSIController_CreateVolume_Capacity_LimitOnly` | LimitBytes만 지정, RequiredBytes 미지정 | PillarTarget 등록; mockAgentServer가 LimitBytes 이하 용량 반환 | 1) CapacityRange{LimitBytes: 2GiB}로 CreateVolumeRequest 전송 | 성공; CapacityBytes ≤ 2GiB | `CSI-C`, `Agent`, `gRPC` |
-| E1.7-4 | `TestCSIController_CreateVolume_Capacity_ValidRange` | RequiredBytes=1GiB, LimitBytes=2GiB 동시 지정 (유효 범위) | PillarTarget 등록; mockAgentServer 정상 | 1) CapacityRange{RequiredBytes: 1GiB, LimitBytes: 2GiB}로 CreateVolumeRequest 전송 | 성공; 1GiB ≤ CapacityBytes ≤ 2GiB | `CSI-C`, `Agent`, `gRPC` |
-| E1.7-5 | `TestCSIController_CreateVolume_Capacity_ExistingTooSmall` | 기존 볼륨(1GiB)이 새 RequiredBytes(2GiB)보다 작으면 AlreadyExists | PillarVolume CRD Ready 상태; CapacityBytes=1GiB; ExportInfo 존재 | 1) 동일 볼륨 이름으로 RequiredBytes=2GiB CreateVolumeRequest 전송 | gRPC AlreadyExists; "already exists with capacity … less than …" 메시지; agent 재호출 없음 | `CSI-C`, `VolCRD` |
-| E1.7-6 | `TestCSIController_CreateVolume_Capacity_ExistingTooLarge` | 기존 볼륨(4GiB)이 새 LimitBytes(2GiB)보다 크면 AlreadyExists | PillarVolume CRD Ready 상태; CapacityBytes=4GiB; ExportInfo 존재 | 1) 동일 볼륨 이름으로 LimitBytes=2GiB CreateVolumeRequest 전송 | gRPC AlreadyExists; "already exists with capacity … exceeds …" 메시지; agent 재호출 없음 | `CSI-C`, `VolCRD` |
-| E1.7-7 | `TestCSIController_CreateVolume_Capacity_ExistingWithinRange` | 기존 볼륨(2GiB)이 RequiredBytes=1GiB, LimitBytes=3GiB 범위 내이면 캐시 반환 | PillarVolume CRD Ready 상태; CapacityBytes=2GiB; ExportInfo 존재 | 1) 동일 볼륨 이름으로 CapacityRange{1GiB, 3GiB} CreateVolumeRequest 전송 | 성공; CapacityBytes=2GiB 반환 (캐시); agent 재호출 없음 | `CSI-C`, `VolCRD` |
+| E1.7-1 | `TestCSIController_CreateVolume_Capacity_NoRange` | CapacityRange 미지정 시 드라이버가 기본 크기 선택 | PillarAgent 등록; mockAgentServer 정상 (CapacityBytes=1GiB 에코) | 1) CapacityRange=nil로 CreateVolumeRequest 전송 | 성공; CapacityBytes ≥ 0 반환; agent.CreateVolume의 CapacityBytes=0 전달 | `CSI-C`, `Agent`, `gRPC` |
+| E1.7-2 | `TestCSIController_CreateVolume_Capacity_RequiredOnly` | RequiredBytes만 지정, LimitBytes 미지정 | PillarAgent 등록; mockAgentServer가 요청된 용량을 그대로 반환 | 1) CapacityRange{RequiredBytes: 1GiB}로 CreateVolumeRequest 전송 | 성공; CapacityBytes = 1GiB | `CSI-C`, `Agent`, `gRPC` |
+| E1.7-3 | `TestCSIController_CreateVolume_Capacity_LimitOnly` | LimitBytes만 지정, RequiredBytes 미지정 | PillarAgent 등록; mockAgentServer가 LimitBytes 이하 용량 반환 | 1) CapacityRange{LimitBytes: 2GiB}로 CreateVolumeRequest 전송 | 성공; CapacityBytes ≤ 2GiB | `CSI-C`, `Agent`, `gRPC` |
+| E1.7-4 | `TestCSIController_CreateVolume_Capacity_ValidRange` | RequiredBytes=1GiB, LimitBytes=2GiB 동시 지정 (유효 범위) | PillarAgent 등록; mockAgentServer 정상 | 1) CapacityRange{RequiredBytes: 1GiB, LimitBytes: 2GiB}로 CreateVolumeRequest 전송 | 성공; 1GiB ≤ CapacityBytes ≤ 2GiB | `CSI-C`, `Agent`, `gRPC` |
+| E1.7-5 | `TestCSIController_CreateVolume_Capacity_ExistingTooSmall` | 기존 볼륨(1GiB)이 새 RequiredBytes(2GiB)보다 작으면 AlreadyExists | PillarVolumeState CRD Ready 상태; CapacityBytes=1GiB; ExportInfo 존재 | 1) 동일 볼륨 이름으로 RequiredBytes=2GiB CreateVolumeRequest 전송 | gRPC AlreadyExists; "already exists with capacity … less than …" 메시지; agent 재호출 없음 | `CSI-C`, `VolCRD` |
+| E1.7-6 | `TestCSIController_CreateVolume_Capacity_ExistingTooLarge` | 기존 볼륨(4GiB)이 새 LimitBytes(2GiB)보다 크면 AlreadyExists | PillarVolumeState CRD Ready 상태; CapacityBytes=4GiB; ExportInfo 존재 | 1) 동일 볼륨 이름으로 LimitBytes=2GiB CreateVolumeRequest 전송 | gRPC AlreadyExists; "already exists with capacity … exceeds …" 메시지; agent 재호출 없음 | `CSI-C`, `VolCRD` |
+| E1.7-7 | `TestCSIController_CreateVolume_Capacity_ExistingWithinRange` | 기존 볼륨(2GiB)이 RequiredBytes=1GiB, LimitBytes=3GiB 범위 내이면 캐시 반환 | PillarVolumeState CRD Ready 상태; CapacityBytes=2GiB; ExportInfo 존재 | 1) 동일 볼륨 이름으로 CapacityRange{1GiB, 3GiB} CreateVolumeRequest 전송 | 성공; CapacityBytes=2GiB 반환 (캐시); agent 재호출 없음 | `CSI-C`, `VolCRD` |
 
 ---
 
-### E1.8 PillarTarget 상태 및 agent 연결 검증
+### E1.8 PillarAgent 상태 및 agent 연결 검증
 
-`CreateVolume`은 `PillarTarget`을 조회하여 agent 주소를 얻는다.
+`CreateVolume`은 `PillarAgent`을 조회하여 agent 주소를 얻는다.
 대상이 없거나 주소가 비어 있으면 요청이 즉시 실패한다.
 
 > **CI 실행 가능 여부:** ✅ 인프로세스 E2E — 별도 인프라 불필요
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| E1.8-1 | `TestCSIController_CreateVolume_PillarTargetEmptyAddress` | PillarTarget이 존재하지만 ResolvedAddress=""이면 Unavailable 반환 | fake 클라이언트에 PillarTarget 등록; Status.ResolvedAddress="" | 1) 해당 target을 참조하는 CreateVolumeRequest 전송 | gRPC Unavailable; "has no resolved address; agent may not be ready" 메시지; agent 다이얼 시도 없음 | `CSI-C`, `TgtCRD` |
-| E1.8-2 | `TestCSIController_CreateVolume_PillarTargetNotFound` | Parameters["target"]이 존재하지 않는 PillarTarget을 참조하면 NotFound 반환 | fake 클라이언트에 PillarTarget 미등록; Parameters["pillar-csi.bhyoo.com/target"]="ghost-node" | 1) CreateVolumeRequest 전송 | gRPC NotFound; "PillarTarget … not found" 메시지; agent 호출 없음 | `CSI-C`, `TgtCRD` |
-| E1.8-3 | `TestCSIController_CreateVolume_AgentDialFails` | agent 다이얼 자체가 실패하면 Unavailable 반환 | PillarTarget 등록 (ResolvedAddress=유효); dialAgent 함수에 연결 실패 에러 주입 | 1) CreateVolumeRequest 전송 | gRPC Unavailable; "failed to dial agent" 메시지; agent.CreateVolume 호출 없음 | `CSI-C`, `TgtCRD`, `gRPC` |
+| E1.8-1 | `TestCSIController_CreateVolume_PillarAgentEmptyAddress` | PillarAgent이 존재하지만 ResolvedAddress=""이면 Unavailable 반환 | fake 클라이언트에 PillarAgent 등록; Status.ResolvedAddress="" | 1) 해당 target을 참조하는 CreateVolumeRequest 전송 | gRPC Unavailable; "has no resolved address; agent may not be ready" 메시지; agent 다이얼 시도 없음 | `CSI-C`, `TgtCRD` |
+| E1.8-2 | `TestCSIController_CreateVolume_PillarAgentNotFound` | Parameters["target"]이 존재하지 않는 PillarAgent을 참조하면 NotFound 반환 | fake 클라이언트에 PillarAgent 미등록; Parameters["pillar-csi.bhyoo.com/agent"]="ghost-node" | 1) CreateVolumeRequest 전송 | gRPC NotFound; "PillarAgent … not found" 메시지; agent 호출 없음 | `CSI-C`, `TgtCRD` |
+| E1.8-3 | `TestCSIController_CreateVolume_AgentDialFails` | agent 다이얼 자체가 실패하면 Unavailable 반환 | PillarAgent 등록 (ResolvedAddress=유효); dialAgent 함수에 연결 실패 에러 주입 | 1) CreateVolumeRequest 전송 | gRPC Unavailable; "failed to dial agent" 메시지; agent.CreateVolume 호출 없음 | `CSI-C`, `TgtCRD`, `gRPC` |
 
 ---
 
 ### E1.9 부분 실패 복구 (Partial Failure Recovery)
 
 `CreateVolume`은 `agent.CreateVolume` 성공 후 `agent.ExportVolume` 호출 직전에
-`PillarVolume CRD`를 `CreatePartial` 단계로 기록한다.
+`PillarVolumeState CRD`를 `CreatePartial` 단계로 기록한다.
 컨트롤러 재시작 또는 일시적 오류 후 CO가 동일 요청을 재시도하면:
 
 1. 상태 머신에 `StateCreatePartial`가 로드된다.
@@ -740,11 +740,11 @@ CSI ControllerServer → (실제 gRPC, localhost:0) → mockAgentServer
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| E1.9-1 | `TestCSIController_PartialFailure_CreateThenExportFail` | agent.CreateVolume 성공 후 agent.ExportVolume 실패 시 PillarVolume CRD에 CreatePartial 기록 | mockAgentServer: ExportVolumeErr=gRPC Internal; PillarTarget 정상 | 1) CreateVolumeRequest 전송 | gRPC Internal 반환; PillarVolume CRD에 phase=CreatePartial, BackendDevicePath 기록됨 | `CSI-C`, `Agent`, `VolCRD`, `gRPC` |
-| E1.9-2 | `TestCSIController_PartialFailure_ExportRetrySkipsBackend` | CreatePartial 상태에서 재시도 시 agent.CreateVolume 생략, agent.ExportVolume만 재호출 | PillarVolume CRD phase=CreatePartial; BackendDevicePath="/dev/zvol0" 사전 기록; 두 번째 호출에서 ExportVolumeErr 제거 | 1) CreateVolumeRequest 전송 (재시도) | 성공; agent.CreateVolume 호출 0회; agent.ExportVolume 호출 1회; 완성된 VolumeId/VolumeContext 반환 | `CSI-C`, `Agent`, `VolCRD`, `SM`, `gRPC` |
+| E1.9-1 | `TestCSIController_PartialFailure_CreateThenExportFail` | agent.CreateVolume 성공 후 agent.ExportVolume 실패 시 PillarVolumeState CRD에 CreatePartial 기록 | mockAgentServer: ExportVolumeErr=gRPC Internal; PillarAgent 정상 | 1) CreateVolumeRequest 전송 | gRPC Internal 반환; PillarVolumeState CRD에 phase=CreatePartial, BackendDevicePath 기록됨 | `CSI-C`, `Agent`, `VolCRD`, `gRPC` |
+| E1.9-2 | `TestCSIController_PartialFailure_ExportRetrySkipsBackend` | CreatePartial 상태에서 재시도 시 agent.CreateVolume 생략, agent.ExportVolume만 재호출 | PillarVolumeState CRD phase=CreatePartial; BackendDevicePath="/dev/zvol0" 사전 기록; 두 번째 호출에서 ExportVolumeErr 제거 | 1) CreateVolumeRequest 전송 (재시도) | 성공; agent.CreateVolume 호출 0회; agent.ExportVolume 호출 1회; 완성된 VolumeId/VolumeContext 반환 | `CSI-C`, `Agent`, `VolCRD`, `SM`, `gRPC` |
 | E1.9-3 | `TestCSIController_PartialFailure_SelfHealing_TwoAttempts` | 첫 번째 호출(export 실패) → 두 번째 호출(정상) 연속 시나리오 | ExportVolumeErr를 첫 번째 호출에만 설정; 두 번째 호출 전 제거 | 1) 첫 CreateVolumeRequest 전송 (export 실패 예상); 2) 두 번째 CreateVolumeRequest 전송 | 1단계: gRPC Internal; 2단계: 성공; agent.CreateVolume 누적 1회; agent.ExportVolume 누적 2회 | `CSI-C`, `Agent`, `VolCRD`, `SM`, `gRPC` |
 | E1.9-4 | `TestCSIController_PartialFailure_PersistPartialFails` | persistCreatePartial CRD 저장 실패 시 Internal 반환 (zvol은 생성됐으나 상태 기록 불가) | fake 클라이언트에 Create 오류 주입 (status.WriteFailure); agent.CreateVolume 성공 | 1) CreateVolumeRequest 전송 | gRPC Internal; "failed to persist partial-failure state" 메시지 | `CSI-C`, `Agent`, `VolCRD` |
-| E1.9-5 | `TestCSIController_PartialFailure_LoadStateFromCRD` | 컨트롤러 재기동 시 기존 PillarVolume CRD에서 상태 복원 | PillarVolume CRD phase=CreatePartial를 직접 fake 클라이언트에 삽입; `LoadStateFromPillarVolumes` 호출 | 1) `LoadStateFromPillarVolumes` 호출; 2) CreateVolumeRequest 전송 | LoadStateFromPillarVolumes 성공; 이후 CreateVolumeRequest는 StateCreatePartial 인식하여 backend 건너뜀 | `CSI-C`, `VolCRD`, `SM` |
+| E1.9-5 | `TestCSIController_PartialFailure_LoadStateFromCRD` | 컨트롤러 재기동 시 기존 PillarVolumeState CRD에서 상태 복원 | PillarVolumeState CRD phase=CreatePartial를 직접 fake 클라이언트에 삽입; `LoadStateFromPillarVolumeStates` 호출 | 1) `LoadStateFromPillarVolumeStates` 호출; 2) CreateVolumeRequest 전송 | LoadStateFromPillarVolumeStates 성공; 이후 CreateVolumeRequest는 StateCreatePartial 인식하여 backend 건너뜀 | `CSI-C`, `VolCRD`, `SM` |
 
 ---
 
@@ -777,17 +777,17 @@ StorageClass 파라미터와 별도로, `external-provisioner`의 `--extra-creat
 
 **VolumeId 형식:** `<target-name>/<protocol-type>/<backend-type>/<agent-vol-id>`
 
-ZFS zvol의 `agent-vol-id`는 `<pool>/<volume-name>` 형식(PillarPool CRD의 pool 이름)이므로 전체 VolumeId에
+ZFS zvol의 `agent-vol-id`는 `<pool>/<volume-name>` 형식(PillarStore CRD의 pool 이름)이므로 전체 VolumeId에
 슬래시가 5개 포함될 수 있다. `strings.SplitN(id, "/", 4)` 로 정확히 4 파트로 분리한다.
 
 > **CI 실행 가능 여부:** ✅ 인프로세스 E2E — 별도 인프라 불필요
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| E1.11-1 | `TestCSIController_CreateVolume_VolumeID_ZFSPoolWithSlash` | ZFS pool 이름에 슬래시 포함 시 agent-vol-id 파싱 정확성 | pool="tank"(PillarPool CRD); volume-name="pvc-abc" | 1) CreateVolumeRequest 전송; 2) 반환된 VolumeId로 DeleteVolumeRequest 전송 | CreateVolume: VolumeId="storage-1/nvmeof-tcp/zfs-zvol/tank/pvc-abc"; DeleteVolume: agent-vol-id="tank/pvc-abc" 정확 파싱 | `CSI-C`, `Agent`, `gRPC` |
-| E1.11-2 | `TestCSIController_CreateVolume_VolumeID_ZFSParentDataset` | ZFS parent dataset 파라미터 설정 시 agent-vol-id에 반영 | pool="tank"(PillarPool CRD); zfs-parent-dataset="volumes"; volume-name="pvc-abc" | 1) CreateVolumeRequest 전송 | agent-vol-id="tank/volumes/pvc-abc"; VolumeId="storage-1/nvmeof-tcp/zfs-zvol/tank/volumes/pvc-abc" | `CSI-C`, `Agent`, `gRPC` |
+| E1.11-1 | `TestCSIController_CreateVolume_VolumeID_ZFSPoolWithSlash` | ZFS pool 이름에 슬래시 포함 시 agent-vol-id 파싱 정확성 | pool="tank"(PillarStore CRD); volume-name="pvc-abc" | 1) CreateVolumeRequest 전송; 2) 반환된 VolumeId로 DeleteVolumeRequest 전송 | CreateVolume: VolumeId="storage-1/nvmeof-tcp/zfs-zvol/tank/pvc-abc"; DeleteVolume: agent-vol-id="tank/pvc-abc" 정확 파싱 | `CSI-C`, `Agent`, `gRPC` |
+| E1.11-2 | `TestCSIController_CreateVolume_VolumeID_ZFSParentDataset` | ZFS parent dataset 파라미터 설정 시 agent-vol-id에 반영 | pool="tank"(PillarStore CRD); zfs-parent-dataset="volumes"; volume-name="pvc-abc" | 1) CreateVolumeRequest 전송 | agent-vol-id="tank/volumes/pvc-abc"; VolumeId="storage-1/nvmeof-tcp/zfs-zvol/tank/volumes/pvc-abc" | `CSI-C`, `Agent`, `gRPC` |
 | E1.11-3 | `TestCSIController_CreateVolume_MissingVolumeName` | 볼륨 이름이 빈 문자열이면 InvalidArgument | ControllerServer 초기화만 필요 | 1) Name=""로 CreateVolumeRequest 전송 | gRPC InvalidArgument; "volume name is required" 메시지; agent 호출 없음 | `CSI-C` |
-| E1.11-4 | `TestCSIController_CreateVolume_MissingTargetParam` | StorageClass parameter에 target 키 없으면 InvalidArgument | ControllerServer 초기화; Parameters에서 `pillar-csi.bhyoo.com/target` 제거 | 1) target 파라미터 없는 CreateVolumeRequest 전송 | gRPC InvalidArgument; "parameter … is required" 메시지 | `CSI-C` |
+| E1.11-4 | `TestCSIController_CreateVolume_MissingTargetParam` | StorageClass parameter에 target 키 없으면 InvalidArgument | ControllerServer 초기화; Parameters에서 `pillar-csi.bhyoo.com/agent` 제거 | 1) target 파라미터 없는 CreateVolumeRequest 전송 | gRPC InvalidArgument; "parameter … is required" 메시지 | `CSI-C` |
 | E1.11-5 | `TestCSIController_CreateVolume_MissingBackendTypeParam` | StorageClass parameter에 backend-type 키 없으면 InvalidArgument | ControllerServer 초기화; Parameters에서 `pillar-csi.bhyoo.com/backend-type` 제거 | 1) backend-type 파라미터 없는 CreateVolumeRequest 전송 | gRPC InvalidArgument | `CSI-C` |
 | E1.11-6 | `TestCSIController_CreateVolume_MissingProtocolTypeParam` | StorageClass parameter에 protocol-type 키 없으면 InvalidArgument | ControllerServer 초기화; Parameters에서 `pillar-csi.bhyoo.com/protocol-type` 제거 | 1) protocol-type 파라미터 없는 CreateVolumeRequest 전송 | gRPC InvalidArgument | `CSI-C` |
 
@@ -810,8 +810,8 @@ CO (external-attacher)
     │
 CSI ControllerServer
     │  1. VolumeId에서 legacy target/backend/agent-vol-id 파싱
-    │  2. protocol type은 PillarVolume 또는 VolumeContext에서 해석
-    │  3. PillarTarget CRD에서 agent 주소(ResolvedAddress) 조회
+    │  2. protocol type은 PillarVolumeState 또는 VolumeContext에서 해석
+    │  3. PillarAgent CRD에서 agent 주소(ResolvedAddress) 조회
     │  4. NodeId를 stable node handle로 사용
     │  5. CSINode annotation에서 protocol-specific identity 조회
     ▼
@@ -837,8 +837,8 @@ ACL에서 동일 identity 항목 제거
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| 14 | `TestCSIController_ControllerPublishVolume` | ControllerPublishVolume이 `CSINode` annotation에서 NVMe host NQN을 해석해 agent.AllowInitiator를 호출 | PillarTarget="storage-1" fake 클라이언트에 등록; fake `CSINode` `worker-1`에 `pillar-csi.bhyoo.com/nvmeof-host-nqn=nqn.2014-08.org.nvmexpress:uuid:worker-1` annotation 설정; mockAgentServer(실제 gRPC 리스너) 정상; VolumeId=`storage-1/nvmeof-tcp/zfs-zvol/tank/pvc-publish-test`; NodeId=`worker-1` | 1) ControllerPublishVolumeRequest 전송 | 성공; non-nil PublishContext 반환; AllowInitiator 1회; AllowInitiator.VolumeID=`tank/pvc-publish-test`; AllowInitiator.InitiatorID=`nqn.2014-08.org.nvmexpress:uuid:worker-1`; AllowInitiator.ProtocolType=NVMEOF_TCP | `CSI-C`, `Agent`, `TgtCRD`, `gRPC` |
-| E2.1-2 | `TestCSIController_ControllerPublishVolume_ISCSIInitiatorFromCSINodeAnnotations` | iSCSI 볼륨 publish 시 controller가 `CSINode` annotation에서 initiator IQN을 해석해 AllowInitiator 호출 | `test/component/csi_controller_test.go`; `csiMockAgent`(in-process); PillarTarget fake 등록; fake `CSINode` `worker-2`에 `pillar-csi.bhyoo.com/iscsi-initiator-iqn=iqn.1993-08.org.debian:worker-2` annotation 설정; VolumeId=`pool/iscsi/zfs-zvol/tank/vol`; NodeId=`worker-2` | 1) ControllerPublishVolumeRequest 전송 | 성공; allowInitiatorCalls==1; agent.AllowInitiator.InitiatorID=`iqn.1993-08.org.debian:worker-2`; PublishContext 반환 | `CSI-C`, `Agent`, `TgtCRD` |
+| 14 | `TestCSIController_ControllerPublishVolume` | ControllerPublishVolume이 `CSINode` annotation에서 NVMe host NQN을 해석해 agent.AllowInitiator를 호출 | PillarAgent="storage-1" fake 클라이언트에 등록; fake `CSINode` `worker-1`에 `pillar-csi.bhyoo.com/nvmeof-host-nqn=nqn.2014-08.org.nvmexpress:uuid:worker-1` annotation 설정; mockAgentServer(실제 gRPC 리스너) 정상; VolumeId=`storage-1/nvmeof-tcp/zfs-zvol/tank/pvc-publish-test`; NodeId=`worker-1` | 1) ControllerPublishVolumeRequest 전송 | 성공; non-nil PublishContext 반환; AllowInitiator 1회; AllowInitiator.VolumeID=`tank/pvc-publish-test`; AllowInitiator.InitiatorID=`nqn.2014-08.org.nvmexpress:uuid:worker-1`; AllowInitiator.ProtocolType=NVMEOF_TCP | `CSI-C`, `Agent`, `TgtCRD`, `gRPC` |
+| E2.1-2 | `TestCSIController_ControllerPublishVolume_ISCSIInitiatorFromCSINodeAnnotations` | iSCSI 볼륨 publish 시 controller가 `CSINode` annotation에서 initiator IQN을 해석해 AllowInitiator 호출 | `test/component/csi_controller_test.go`; `csiMockAgent`(in-process); PillarAgent fake 등록; fake `CSINode` `worker-2`에 `pillar-csi.bhyoo.com/iscsi-initiator-iqn=iqn.1993-08.org.debian:worker-2` annotation 설정; VolumeId=`pool/iscsi/zfs-zvol/tank/vol`; NodeId=`worker-2` | 1) ControllerPublishVolumeRequest 전송 | 성공; allowInitiatorCalls==1; agent.AllowInitiator.InitiatorID=`iqn.1993-08.org.debian:worker-2`; PublishContext 반환 | `CSI-C`, `Agent`, `TgtCRD` |
 | 15 | `TestCSIController_ControllerPublishVolume_Idempotency` | 동일 node handle과 동일 `CSINode` annotation으로 두 번 호출해도 CSI 계층은 agent 중복 억제 없이 각 호출을 전달 | 유효한 VolumeId/NodeId; 대응 `CSINode` annotation 존재; mockAgentServer 정상 | 1) ControllerPublishVolumeRequest 전송; 2) 동일 인수로 재전송 | 두 호출 모두 성공; PublishContext 동일; AllowInitiator 각 1회씩 총 2회 | `CSI-C`, `Agent`, `gRPC` |
 | E2.1-4 | `TestCSIController_ControllerPublishVolume_AlreadyPublished` | 이미 Publish된 볼륨·노드 조합으로 재호출 성공 (컴포넌트 테스트) | `test/component/csi_controller_test.go`; allowInitiatorFn=nil(항상 성공); `CSINode` annotation 준비 | 1) ControllerPublishVolume 1회; 2) 동일 인수로 재호출 | 두 호출 모두 성공; agent.AllowInitiator 총 2회 (CSI 계층은 억제 없음; 멱등성은 agent 책임) | `CSI-C`, `Agent` |
 
@@ -917,8 +917,8 @@ pillar-agent → configfs/LIO ACL 추가
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| E2.5-1 | `TestCSIController_ControllerPublishVolume` | NVMe-oF publish에서 `NodeId=worker-1`이 `CSINode` annotation의 host NQN으로 해석되어 AllowInitiator에 전달됨 | VolumeId=`storage-1/nvmeof-tcp/zfs-zvol/tank/pvc-publish-test`; NodeId=`worker-1`; fake `CSINode` `worker-1`에 `pillar-csi.bhyoo.com/nvmeof-host-nqn` annotation 설정; PillarTarget 등록; mockAgentServer | 1) ControllerPublishVolumeRequest 전송; 2) AllowInitiator 호출 내용 검사 | AllowInitiator.InitiatorID == `CSINode` annotation의 host NQN; AllowInitiator.VolumeID==`tank/pvc-publish-test`; AllowInitiator.ProtocolType==NVMEOF_TCP | `CSI-C`, `Agent`, `TgtCRD`, `gRPC` |
-| E2.5-2 | `TestCSIController_ControllerPublishVolume_ISCSIInitiatorFromCSINodeAnnotations` | iSCSI publish에서 `NodeId=worker-2`가 `CSINode` annotation의 initiator IQN으로 해석되어 AllowInitiator에 전달됨 | VolumeId=`storage-1/iscsi/zfs-zvol/tank/pvc-publish-test`; NodeId=`worker-2`; fake `CSINode` `worker-2`에 `pillar-csi.bhyoo.com/iscsi-initiator-iqn=iqn.1993-08.org.debian:worker-2` annotation 설정; PillarTarget 등록; mockAgentServer | 1) ControllerPublishVolumeRequest 전송; 2) AllowInitiator 호출 내용 검사 | AllowInitiator.InitiatorID == `CSINode` annotation의 initiator IQN; AllowInitiator.VolumeID==`tank/pvc-publish-test`; AllowInitiator.ProtocolType==ISCSI | `CSI-C`, `Agent`, `TgtCRD`, `gRPC` |
+| E2.5-1 | `TestCSIController_ControllerPublishVolume` | NVMe-oF publish에서 `NodeId=worker-1`이 `CSINode` annotation의 host NQN으로 해석되어 AllowInitiator에 전달됨 | VolumeId=`storage-1/nvmeof-tcp/zfs-zvol/tank/pvc-publish-test`; NodeId=`worker-1`; fake `CSINode` `worker-1`에 `pillar-csi.bhyoo.com/nvmeof-host-nqn` annotation 설정; PillarAgent 등록; mockAgentServer | 1) ControllerPublishVolumeRequest 전송; 2) AllowInitiator 호출 내용 검사 | AllowInitiator.InitiatorID == `CSINode` annotation의 host NQN; AllowInitiator.VolumeID==`tank/pvc-publish-test`; AllowInitiator.ProtocolType==NVMEOF_TCP | `CSI-C`, `Agent`, `TgtCRD`, `gRPC` |
+| E2.5-2 | `TestCSIController_ControllerPublishVolume_ISCSIInitiatorFromCSINodeAnnotations` | iSCSI publish에서 `NodeId=worker-2`가 `CSINode` annotation의 initiator IQN으로 해석되어 AllowInitiator에 전달됨 | VolumeId=`storage-1/iscsi/zfs-zvol/tank/pvc-publish-test`; NodeId=`worker-2`; fake `CSINode` `worker-2`에 `pillar-csi.bhyoo.com/iscsi-initiator-iqn=iqn.1993-08.org.debian:worker-2` annotation 설정; PillarAgent 등록; mockAgentServer | 1) ControllerPublishVolumeRequest 전송; 2) AllowInitiator 호출 내용 검사 | AllowInitiator.InitiatorID == `CSINode` annotation의 initiator IQN; AllowInitiator.VolumeID==`tank/pvc-publish-test`; AllowInitiator.ProtocolType==ISCSI | `CSI-C`, `Agent`, `TgtCRD`, `gRPC` |
 | E2.5-3 | `TestCSIPublishIdempotency_ControllerPublishVolume_DifferentNodes` | 동일 볼륨에 대해 2개의 서로 다른 node handle(worker-a, worker-b)이 각각 다른 `CSINode` annotation을 통해 독립 AllowInitiator 항목을 생성 | VolumeId 동일; NodeId1=`worker-node-a`; NodeId2=`worker-node-b`; 두 `CSINode`에 서로 다른 protocol-specific annotation 설정; mockAgentServer | 1) ControllerPublishVolume(NodeId1); 2) ControllerPublishVolume(NodeId2) | AllowInitiator 총 2회; AllowInitiator[0].InitiatorID ≠ AllowInitiator[1].InitiatorID; 두 호출 모두 성공 | `CSI-C`, `Agent`, `TgtCRD`, `gRPC` |
 
 > ℹ️ E2.5-2, E2.5-3은 [E7: 게시 멱등성](#e7-게시-멱등성-publish-idempotency) 섹션과 동일한 테스트 함수를 다른 관점에서 서술한다.
@@ -946,8 +946,8 @@ CSI 명세에 따라:
 | E2.6-4 | `TestCSIController_ControllerPublishVolume_EmptyNodeID` | NodeId="" — agent 호출 전 입력 검증 실패 → InvalidArgument | `test/component/csi_controller_extended_test.go`; 유효한 VolumeId; NodeId="" | 1) NodeId=""로 ControllerPublishVolumeRequest 전송 | gRPC InvalidArgument; AllowInitiator 0회 | `CSI-C` |
 | E2.6-5 | `TestCSIController_ControllerPublishVolume_NilVolumeCapability` | VolumeCapability=nil — 입력 검증 실패 → InvalidArgument | `test/component/csi_controller_extended_test.go`; VolumeCapability=nil | 1) VolumeCapability=nil로 ControllerPublishVolumeRequest 전송 | gRPC InvalidArgument | `CSI-C` |
 | E2.6-6 | `TestCSIController_ControllerPublishVolume_MalformedVolumeID` | VolumeId="badformat"(슬래시 없음) — VolumeId 파싱 실패 → InvalidArgument | `test/component/csi_controller_extended_test.go`; VolumeId="badformat" | 1) VolumeId="badformat"로 ControllerPublishVolumeRequest 전송 | gRPC InvalidArgument | `CSI-C` |
-| E2.6-7 | `TestCSIController_ControllerPublishVolume_TargetNotFound` | VolumeId의 target 이름이 PillarTarget CRD에 없음 → NotFound; agent 호출 전 실패 | `test/component/csi_controller_extended_test.go`; fake 클라이언트에 PillarTarget 미등록; VolumeId=`nonexistent-node/nvmeof-tcp/zfs-zvol/tank/pvc-test` | 1) ControllerPublishVolumeRequest 전송 | gRPC NotFound; AllowInitiator 0회 | `CSI-C`, `TgtCRD` |
-| E2.6-8 | `TestCSIController_ControllerPublishVolume_TargetNoResolvedAddress` | PillarTarget.Status.ResolvedAddress=""이면 Unavailable 반환; agent 다이얼 미시도 | `test/component/csi_controller_extended_test.go`; PillarTarget 등록; Status.ResolvedAddress="" | 1) ControllerPublishVolumeRequest 전송 | gRPC Unavailable; AllowInitiator 0회; "no resolved address" 메시지 | `CSI-C`, `TgtCRD` |
+| E2.6-7 | `TestCSIController_ControllerPublishVolume_TargetNotFound` | VolumeId의 target 이름이 PillarAgent CRD에 없음 → NotFound; agent 호출 전 실패 | `test/component/csi_controller_extended_test.go`; fake 클라이언트에 PillarAgent 미등록; VolumeId=`nonexistent-node/nvmeof-tcp/zfs-zvol/tank/pvc-test` | 1) ControllerPublishVolumeRequest 전송 | gRPC NotFound; AllowInitiator 0회 | `CSI-C`, `TgtCRD` |
+| E2.6-8 | `TestCSIController_ControllerPublishVolume_TargetNoResolvedAddress` | PillarAgent.Status.ResolvedAddress=""이면 Unavailable 반환; agent 다이얼 미시도 | `test/component/csi_controller_extended_test.go`; PillarAgent 등록; Status.ResolvedAddress="" | 1) ControllerPublishVolumeRequest 전송 | gRPC Unavailable; AllowInitiator 0회; "no resolved address" 메시지 | `CSI-C`, `TgtCRD` |
 
 ---
 
@@ -1306,7 +1306,7 @@ CSI NodeServer ────► mockCSIConnector
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| 39 | `TestCSILifecycle_FullCycle` | Controller→Node 전체 경로: CreateVolume → ControllerPublish → NodeStage → NodePublish → NodeUnpublish → NodeUnstage → ControllerUnpublish → DeleteVolume | 단일 mockAgentServer; mockConnector/mockMounter 초기화; PillarTarget 등록 | 1) CreateVolume; 2) ControllerPublish; 3) NodeStage; 4) NodePublish; 5) NodeUnpublish; 6) NodeUnstage; 7) ControllerUnpublish; 8) DeleteVolume | 모든 단계 성공; agent 호출 순서 검증; VolumeContext 키가 NodeStage에 올바르게 전달됨 | `CSI-C`, `CSI-N`, `Agent`, `Conn`, `Mnt`, `TgtCRD`, `VolCRD`, `State`, `gRPC` |
+| 39 | `TestCSILifecycle_FullCycle` | Controller→Node 전체 경로: CreateVolume → ControllerPublish → NodeStage → NodePublish → NodeUnpublish → NodeUnstage → ControllerUnpublish → DeleteVolume | 단일 mockAgentServer; mockConnector/mockMounter 초기화; PillarAgent 등록 | 1) CreateVolume; 2) ControllerPublish; 3) NodeStage; 4) NodePublish; 5) NodeUnpublish; 6) NodeUnstage; 7) ControllerUnpublish; 8) DeleteVolume | 모든 단계 성공; agent 호출 순서 검증; VolumeContext 키가 NodeStage에 올바르게 전달됨 | `CSI-C`, `CSI-N`, `Agent`, `Conn`, `Mnt`, `TgtCRD`, `VolCRD`, `State`, `gRPC` |
 
 ---
 
@@ -1366,7 +1366,7 @@ CSI NodeServer ────► mockCSIConnector
 
 **테스트 유형:** A (인프로세스 E2E) ✅ CI 실행 가능
 
-PillarVolume CRD를 통한 부분 실패 상태 추적을 검증한다.
+PillarVolumeState CRD를 통한 부분 실패 상태 추적을 검증한다.
 
 ---
 
@@ -1374,7 +1374,7 @@ PillarVolume CRD를 통한 부분 실패 상태 추적을 검증한다.
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| 49 | `TestCSIController_PartialFailure_CRDCreatedOnExportFailure` | agent.CreateVolume 성공 + agent.ExportVolume 실패 시 PillarVolume CRD가 Phase=CreatePartial, BackendCreated=true로 생성됨 | mockAgentServer: CreateVolume 성공; ExportVolumeErr 설정; PillarTarget 등록 | 1) CreateVolumeRequest 전송 | CreateVolume gRPC 실패; PillarVolume CRD 존재; Phase=CreatePartial; BackendCreated=true | `CSI-C`, `Agent`, `TgtCRD`, `VolCRD`, `gRPC` |
+| 49 | `TestCSIController_PartialFailure_CRDCreatedOnExportFailure` | agent.CreateVolume 성공 + agent.ExportVolume 실패 시 PillarVolumeState CRD가 Phase=CreatePartial, BackendCreated=true로 생성됨 | mockAgentServer: CreateVolume 성공; ExportVolumeErr 설정; PillarAgent 등록 | 1) CreateVolumeRequest 전송 | CreateVolume gRPC 실패; PillarVolumeState CRD 존재; Phase=CreatePartial; BackendCreated=true | `CSI-C`, `Agent`, `TgtCRD`, `VolCRD`, `gRPC` |
 | 50 | `TestCSIController_PartialFailure_RetryAdvancesToReady` | 부분 실패 후 재시도 시 CRD가 Phase=Ready로 전환되고 ExportInfo 채워짐 | Phase=CreatePartial CRD 존재; ExportVolume 이번엔 성공 | 1) 동일 파라미터로 CreateVolumeRequest 재전송 | 성공; CRD Phase=Ready; ExportInfo 채워짐; PartialFailure 초기화 | `CSI-C`, `Agent`, `TgtCRD`, `VolCRD`, `gRPC` |
 | 51 | `TestCSIController_PartialFailure_AgentCreateVolumeCalledOnceOnRetry` | 재시도 시 skipBackend 최적화로 agent.CreateVolume 재호출 없음 | Phase=CreatePartial CRD 존재; ExportVolume 이번엔 성공 | 1) CreateVolumeRequest 재전송; 2) mockAgentServer.CreateVolumeCalls 횟수 확인 | agent.CreateVolume 총 1회만 호출 (재시도 포함) | `CSI-C`, `Agent`, `VolCRD`, `gRPC` |
 
@@ -1384,8 +1384,8 @@ PillarVolume CRD를 통한 부분 실패 상태 추적을 검증한다.
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| 52 | `TestCSIController_DeleteVolume_CleansUpCRD` | 성공적인 DeleteVolume이 PillarVolume CRD를 삭제 | CreateVolume 성공 후 PillarVolume CRD 존재 | 1) DeleteVolumeRequest 전송; 2) fake 클라이언트에서 CRD 조회 | PillarVolume CRD가 클러스터에서 제거됨 | `CSI-C`, `Agent`, `VolCRD`, `gRPC` |
-| 53 | `TestCSIController_PartialFailure_DeleteVolumeOnPartialCreates` | 부분 생성 상태의 볼륨도 DeleteVolume으로 올바르게 정리됨 | Phase=CreatePartial인 PillarVolume CRD 존재; mockAgentServer 정상 동작 | 1) DeleteVolumeRequest 전송; 2) fake 클라이언트에서 CRD 재조회 | 성공; CRD 제거; BackendCreated=true면 agent.DeleteVolume 호출됨 | `CSI-C`, `Agent`, `VolCRD`, `gRPC` |
+| 52 | `TestCSIController_DeleteVolume_CleansUpCRD` | 성공적인 DeleteVolume이 PillarVolumeState CRD를 삭제 | CreateVolume 성공 후 PillarVolumeState CRD 존재 | 1) DeleteVolumeRequest 전송; 2) fake 클라이언트에서 CRD 조회 | PillarVolumeState CRD가 클러스터에서 제거됨 | `CSI-C`, `Agent`, `VolCRD`, `gRPC` |
+| 53 | `TestCSIController_PartialFailure_DeleteVolumeOnPartialCreates` | 부분 생성 상태의 볼륨도 DeleteVolume으로 올바르게 정리됨 | Phase=CreatePartial인 PillarVolumeState CRD 존재; mockAgentServer 정상 동작 | 1) DeleteVolumeRequest 전송; 2) fake 클라이언트에서 CRD 재조회 | 성공; CRD 제거; BackendCreated=true면 agent.DeleteVolume 호출됨 | `CSI-C`, `Agent`, `VolCRD`, `gRPC` |
 
 ---
 
@@ -1408,7 +1408,7 @@ go test ./test/e2e/ -v -run TestCSIZvolNoDup
 이를 통해 "정확히 1개의 zvol만 존재함"을 RPC 호출 횟수만이 아니라 레지스트리 크기로도 직접 검증한다.
 
 **핵심 동작 — `skipBackend` 최적화:**
-컨트롤러는 `PillarVolume CRD`에서 `Phase=CreatePartial`과 `BackendDevicePath`가 이미 기록되어
+컨트롤러는 `PillarVolumeState CRD`에서 `Phase=CreatePartial`과 `BackendDevicePath`가 이미 기록되어
 있으면 `agent.CreateVolume`을 **재호출하지 않고** `agent.ExportVolume`만 재시도한다.
 재시도마다 `agent.CreateVolume`을 호출하면 동일한 zvol이 중복 생성되어 데이터 손상이 발생한다.
 
@@ -1417,7 +1417,7 @@ go test ./test/e2e/ -v -run TestCSIZvolNoDup
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
 | E6.3-1 | `TestCSIZvolNoDup_ExactlyOneZvolAfterExportFailureRetry` | export 실패 후 재시도 시 zvol이 정확히 1개만 존재 — skipBackend 최적화 동작 확인 | `statefulZvolAgentServer` 초기화; `ExportVolumeErr` 주입 후 재시도 전 제거; `newZvolTestEnv("storage-1")` | 1) CreateVolume(ExportVolume 실패) → 오류 확인; 2) zvol 수=1, agent.CreateVolume 호출=1, CRD Phase=CreatePartial, BackendDevicePath 비어 있지 않음 확인; 3) CreateVolume 재시도(ExportVolume 성공); 4) zvol 수=1, agent.CreateVolume 호출=1 유지, CRD Phase=Ready, PartialFailure=nil, ExportInfo 채워짐 확인 | 재시도 후 zvol 총 1개; agent.CreateVolume 총 1회 (skipBackend 발동); agent.ExportVolume 총 2회 (실패1+성공1); CRD Phase=Ready; BackendDevicePath="" (Ready 단계에서 소거) | `CSI-C`, `Agent`, `VolCRD`, `gRPC`, `SM` |
-| E6.3-2 | `TestCSIZvolNoDup_ZvolRegistryReflectsDeleteAfterPartialCreate` | 부분 생성 상태에서 DeleteVolume 시 zvol 레지스트리가 1→0으로 정확히 감소 | 부분 실패(CreatePartial) 이후 PillarVolume CRD에서 `Spec.VolumeID` 추출; `ExportVolumeErr` 주입; `statefulZvolAgentServer` | 1) CreateVolume(ExportVolume 실패)로 zvol 1개 생성; 2) CRD에서 VolumeID 읽기; 3) DeleteVolume 호출; 4) zvol 수=0, CRD NotFound 확인 | DeleteVolume 성공; zvol 레지스트리 크기 0; PillarVolume CRD 제거됨 (`k8serrors.IsNotFound` 확인) | `CSI-C`, `Agent`, `VolCRD`, `gRPC` |
+| E6.3-2 | `TestCSIZvolNoDup_ZvolRegistryReflectsDeleteAfterPartialCreate` | 부분 생성 상태에서 DeleteVolume 시 zvol 레지스트리가 1→0으로 정확히 감소 | 부분 실패(CreatePartial) 이후 PillarVolumeState CRD에서 `Spec.VolumeID` 추출; `ExportVolumeErr` 주입; `statefulZvolAgentServer` | 1) CreateVolume(ExportVolume 실패)로 zvol 1개 생성; 2) CRD에서 VolumeID 읽기; 3) DeleteVolume 호출; 4) zvol 수=0, CRD NotFound 확인 | DeleteVolume 성공; zvol 레지스트리 크기 0; PillarVolumeState CRD 제거됨 (`k8serrors.IsNotFound` 확인) | `CSI-C`, `Agent`, `VolCRD`, `gRPC` |
 | E6.3-3 | `TestCSIZvolNoDup_MultipleRetriesNeverDuplicate` | 연속 3회 export 실패 후 최종 성공 — 매 재시도마다 zvol 수 1 유지 | `retryFails=3`; `statefulZvolAgentServer`; 3회 실패 후 `ExportVolumeErr=nil` 설정 | 1) 3회 연속 CreateVolume(ExportVolume 실패); 2) 각 실패 후 zvol 수=1, agent.CreateVolume 호출=1, agent.ExportVolume 호출 증가 확인; 3) 4번째 CreateVolume(ExportVolume 성공) | 모든 재시도에서 zvol 수 1 유지 (중복 없음); agent.CreateVolume 총 1회; agent.ExportVolume 총 `retryFails+1`=4회; 최종 CRD Phase=Ready; PartialFailure=nil; ExportInfo 채워짐 | `CSI-C`, `Agent`, `VolCRD`, `gRPC`, `SM` |
 
 ---
@@ -1438,7 +1438,7 @@ go test ./test/e2e/ -v -run TestCSIZvolNoDup
 | 실제 ZFS zvol 중복 생성 방지 | 실제 ZFS 커널 모듈 + root 권한 필요 | 유형 F 완전 E2E 또는 수동 스테이징 |
 | CreatePartial 상태의 컨트롤러 재시작 복원 | 실제 프로세스 재시작 + Kubernetes API 서버 필요 | envtest 또는 수동 스테이징 |
 | agent.ExportVolume 타임아웃 후 부분 실패 | 실제 네트워크 지연 + 타임아웃 필요 | 수동 스테이징 |
-| PillarVolume CRD 저장 실패 시 데이터 일관성 | 실제 etcd 장애 또는 API 서버 불안정 필요 | 카오스 엔지니어링 도구 (예: Litmus) |
+| PillarVolumeState CRD 저장 실패 시 데이터 일관성 | 실제 etcd 장애 또는 API 서버 불안정 필요 | 카오스 엔지니어링 도구 (예: Litmus) |
 
 ---
 
@@ -1471,7 +1471,7 @@ go test ./test/e2e/ -v -run TestCSIZvolNoDup
 
 **테스트 유형:** A (인프로세스 E2E) ✅ CI 실행 가능
 
-PillarTarget 컨트롤러 ↔ pillar-agent mTLS 신뢰 경계를 실제 gRPC 리스너와
+PillarAgent 컨트롤러 ↔ pillar-agent mTLS 신뢰 경계를 실제 gRPC 리스너와
 인메모리 인증서로 검증한다. 실제 Kubernetes 클러스터 불필요.
 
 ---
@@ -1480,9 +1480,9 @@ PillarTarget 컨트롤러 ↔ pillar-agent mTLS 신뢰 경계를 실제 gRPC 리
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| 59 | `TestMTLSController_AgentConnectedAuthenticated` | 올바른 mTLS 자격증명으로 연결 시 PillarTarget 상태 AgentConnected=True/Authenticated | testcerts.New()로 동일 CA의 서버/클라이언트 인증서 생성; mTLS 서버 + 컨트롤러 설정 | 1) mTLS 서버 기동; 2) 컨트롤러 PillarTarget 조정 실행; 3) PillarTarget 조건 검사 | AgentConnected 조건 True; Reason=Authenticated | `mTLS`, `TgtCRD`, `gRPC` |
-| 60 | `TestMTLSController_PlaintextDialRejected` | 평문 클라이언트가 mTLS 서버에 거부됨 | 서버: mTLS 설정; 클라이언트: insecure.NewCredentials() 사용 | 1) 평문 dial 시도; 2) 컨트롤러 조정 실행; 3) PillarTarget 조건 검사 | AgentConnected 조건 False; Reason=HealthCheckFailed 또는 TLSHandshakeFailed | `mTLS`, `TgtCRD`, `gRPC` |
-| 61 | `TestMTLSController_WrongCAClientRejected` | 다른 CA가 서명한 클라이언트 인증서는 거부됨 | 서버: CA1 서명 인증서; 클라이언트: CA2 서명 인증서 생성 | 1) 잘못된 CA의 인증서로 dial 시도; 2) 컨트롤러 조정 실행; 3) PillarTarget 조건 검사 | AgentConnected 조건 False | `mTLS`, `TgtCRD`, `gRPC` |
+| 59 | `TestMTLSController_AgentConnectedAuthenticated` | 올바른 mTLS 자격증명으로 연결 시 PillarAgent 상태 AgentConnected=True/Authenticated | testcerts.New()로 동일 CA의 서버/클라이언트 인증서 생성; mTLS 서버 + 컨트롤러 설정 | 1) mTLS 서버 기동; 2) 컨트롤러 PillarAgent 조정 실행; 3) PillarAgent 조건 검사 | AgentConnected 조건 True; Reason=Authenticated | `mTLS`, `TgtCRD`, `gRPC` |
+| 60 | `TestMTLSController_PlaintextDialRejected` | 평문 클라이언트가 mTLS 서버에 거부됨 | 서버: mTLS 설정; 클라이언트: insecure.NewCredentials() 사용 | 1) 평문 dial 시도; 2) 컨트롤러 조정 실행; 3) PillarAgent 조건 검사 | AgentConnected 조건 False; Reason=HealthCheckFailed 또는 TLSHandshakeFailed | `mTLS`, `TgtCRD`, `gRPC` |
+| 61 | `TestMTLSController_WrongCAClientRejected` | 다른 CA가 서명한 클라이언트 인증서는 거부됨 | 서버: CA1 서명 인증서; 클라이언트: CA2 서명 인증서 생성 | 1) 잘못된 CA의 인증서로 dial 시도; 2) 컨트롤러 조정 실행; 3) PillarAgent 조건 검사 | AgentConnected 조건 False | `mTLS`, `TgtCRD`, `gRPC` |
 
 ---
 
@@ -1700,8 +1700,8 @@ CreateVolume(VolumeContentSource: {Snapshot: "snap-A"})
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| 100 | `TestCSIClone_CreateVolume_SnapshotSourceIgnored` | VolumeContentSource.Snapshot이 포함된 CreateVolume 호출 시 스냅샷 소스를 무시하고 빈 볼륨을 생성 (현재 동작 고정 테스트) | PillarTarget 등록; mockAgentServer 정상 동작 | 1) VolumeContentSource.Snapshot="snap-A" 를 포함한 CreateVolumeRequest 전송 | CreateVolume 성공; agent.CreateVolume 1회 (VolumeContentSource 없이); 빈 볼륨 생성 | `CSI-C`, `Agent`, `TgtCRD`, `VolCRD`, `gRPC` |
-| 101 | `TestCSIClone_CreateVolume_VolumeSourceIgnored` | VolumeContentSource.Volume이 포함된 CreateVolume 호출 시 소스 볼륨을 무시하고 빈 볼륨을 생성 (현재 동작 고정 테스트) | PillarTarget 등록; mockAgentServer 정상 동작 | 1) VolumeContentSource.Volume="src-pvc-id" 를 포함한 CreateVolumeRequest 전송 | CreateVolume 성공; 소스 데이터 복사 없이 빈 볼륨; agent.CreateVolume 1회 | `CSI-C`, `Agent`, `TgtCRD`, `VolCRD`, `gRPC` |
+| 100 | `TestCSIClone_CreateVolume_SnapshotSourceIgnored` | VolumeContentSource.Snapshot이 포함된 CreateVolume 호출 시 스냅샷 소스를 무시하고 빈 볼륨을 생성 (현재 동작 고정 테스트) | PillarAgent 등록; mockAgentServer 정상 동작 | 1) VolumeContentSource.Snapshot="snap-A" 를 포함한 CreateVolumeRequest 전송 | CreateVolume 성공; agent.CreateVolume 1회 (VolumeContentSource 없이); 빈 볼륨 생성 | `CSI-C`, `Agent`, `TgtCRD`, `VolCRD`, `gRPC` |
+| 101 | `TestCSIClone_CreateVolume_VolumeSourceIgnored` | VolumeContentSource.Volume이 포함된 CreateVolume 호출 시 소스 볼륨을 무시하고 빈 볼륨을 생성 (현재 동작 고정 테스트) | PillarAgent 등록; mockAgentServer 정상 동작 | 1) VolumeContentSource.Volume="src-pvc-id" 를 포함한 CreateVolumeRequest 전송 | CreateVolume 성공; 소스 데이터 복사 없이 빈 볼륨; agent.CreateVolume 1회 | `CSI-C`, `Agent`, `TgtCRD`, `VolCRD`, `gRPC` |
 
 ---
 
@@ -1746,8 +1746,8 @@ CreateVolume(VolumeContentSource: {Snapshot: "snap-A"})
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| 102 | `TestCSIEdge_CreateVolume_ExtremelyLongVolumeName` | 극도로 긴 볼륨 이름(2048자)으로 CreateVolume 호출 | ControllerServer 초기화; PillarTarget 등록 | 1) name="pvc-"+2000자 문자열 로 CreateVolumeRequest 전송 | gRPC InvalidArgument 또는 성공; 패닉 없음 | `CSI-C` |
-| 103 | `TestCSIEdge_CreateVolume_SpecialCharactersInName` | 볼륨 이름에 슬래시("/") 포함 — VolumeId 파싱 혼동 유발 시도 | ControllerServer 초기화; PillarTarget 등록 | 1) name="pvc/with/slashes" 로 CreateVolumeRequest 전송 | gRPC InvalidArgument; agent 호출 없음; VolumeId 파싱 혼동 없음 | `CSI-C` |
+| 102 | `TestCSIEdge_CreateVolume_ExtremelyLongVolumeName` | 극도로 긴 볼륨 이름(2048자)으로 CreateVolume 호출 | ControllerServer 초기화; PillarAgent 등록 | 1) name="pvc-"+2000자 문자열 로 CreateVolumeRequest 전송 | gRPC InvalidArgument 또는 성공; 패닉 없음 | `CSI-C` |
+| 103 | `TestCSIEdge_CreateVolume_SpecialCharactersInName` | 볼륨 이름에 슬래시("/") 포함 — VolumeId 파싱 혼동 유발 시도 | ControllerServer 초기화; PillarAgent 등록 | 1) name="pvc/with/slashes" 로 CreateVolumeRequest 전송 | gRPC InvalidArgument; agent 호출 없음; VolumeId 파싱 혼동 없음 | `CSI-C` |
 | 104 | `TestCSIEdge_DeleteVolume_EmptyVolumeId` | 빈 VolumeId로 DeleteVolume 호출 | ControllerServer 초기화 | 1) VolumeId="" 로 DeleteVolumeRequest 전송 | gRPC InvalidArgument; agent 호출 없음 | `CSI-C` |
 | 105 | `TestCSIEdge_ControllerPublish_EmptyNodeId` | NodeId가 빈 문자열인 ControllerPublishVolume | ControllerServer 초기화; 유효한 VolumeId/VolumeContext | 1) NodeId="" 로 ControllerPublishVolumeRequest 전송 | gRPC InvalidArgument; agent.AllowInitiator 호출 없음 | `CSI-C` |
 
@@ -1757,10 +1757,10 @@ CreateVolume(VolumeContentSource: {Snapshot: "snap-A"})
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| 106 | `TestCSIEdge_CreateVolume_LimitLessThanRequired` | LimitBytes < RequiredBytes로 CreateVolume | ControllerServer 초기화; PillarTarget 등록 | 1) CapacityRange(RequiredBytes=2GiB, LimitBytes=1GiB) 로 CreateVolumeRequest 전송 | gRPC InvalidArgument; agent 호출 없음 | `CSI-C` |
+| 106 | `TestCSIEdge_CreateVolume_LimitLessThanRequired` | LimitBytes < RequiredBytes로 CreateVolume | ControllerServer 초기화; PillarAgent 등록 | 1) CapacityRange(RequiredBytes=2GiB, LimitBytes=1GiB) 로 CreateVolumeRequest 전송 | gRPC InvalidArgument; agent 호출 없음 | `CSI-C` |
 | 107 | `TestCSIEdge_ControllerExpand_ZeroRequiredBytes` | ControllerExpandVolume에서 RequiredBytes=0 | ControllerServer 초기화; 유효한 VolumeId | 1) CapacityRange(RequiredBytes=0, LimitBytes=0) 로 ControllerExpandVolumeRequest 전송 | gRPC InvalidArgument; agent.ExpandVolume 호출 없음 | `CSI-C` |
 | 108 | `TestCSIEdge_ControllerExpand_ShrinkRequest` | 현재 크기보다 작은 RequiredBytes로 ControllerExpandVolume | mockAgentServer.ExpandVolumeErr에 "volsize cannot be decreased" 설정 | 1) ControllerExpandVolumeRequest 전송 | 비-OK gRPC 상태 (Internal) | `CSI-C`, `Agent`, `gRPC` |
-| 109 | `TestCSIEdge_CreateVolume_ExactLimitEqualsRequired` | RequiredBytes == LimitBytes (경계값) 로 CreateVolume | PillarTarget 등록; mockAgentServer 정상 | 1) CapacityRange(RequiredBytes=LimitBytes=1GiB) 로 CreateVolumeRequest 전송 | 성공; agent.CreateVolume이 1GiB로 호출됨 | `CSI-C`, `Agent`, `TgtCRD`, `gRPC` |
+| 109 | `TestCSIEdge_CreateVolume_ExactLimitEqualsRequired` | RequiredBytes == LimitBytes (경계값) 로 CreateVolume | PillarAgent 등록; mockAgentServer 정상 | 1) CapacityRange(RequiredBytes=LimitBytes=1GiB) 로 CreateVolumeRequest 전송 | 성공; agent.CreateVolume이 1GiB로 호출됨 | `CSI-C`, `Agent`, `TgtCRD`, `gRPC` |
 
 ---
 
@@ -1778,8 +1778,8 @@ CreateVolume(VolumeContentSource: {Snapshot: "snap-A"})
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| 113 | `TestCSIEdge_CreateVolume_UnsupportedBackendType` | 알 수 없는 backend-type 파라미터로 CreateVolume | ControllerServer 초기화; PillarTarget 등록 | 1) parameters["backend-type"]="lvm" 로 CreateVolumeRequest 전송 | gRPC InvalidArgument; agent 호출 없음 | `CSI-C` |
-| 114 | `TestCSIEdge_CreateVolume_EmptyProtocolType` | protocol-type 파라미터 값이 빈 문자열 | ControllerServer 초기화; PillarTarget 등록 | 1) parameters["protocol-type"]="" 로 CreateVolumeRequest 전송 | gRPC InvalidArgument; agent 호출 없음 | `CSI-C` |
+| 113 | `TestCSIEdge_CreateVolume_UnsupportedBackendType` | 알 수 없는 backend-type 파라미터로 CreateVolume | ControllerServer 초기화; PillarAgent 등록 | 1) parameters["backend-type"]="lvm" 로 CreateVolumeRequest 전송 | gRPC InvalidArgument; agent 호출 없음 | `CSI-C` |
+| 114 | `TestCSIEdge_CreateVolume_EmptyProtocolType` | protocol-type 파라미터 값이 빈 문자열 | ControllerServer 초기화; PillarAgent 등록 | 1) parameters["protocol-type"]="" 로 CreateVolumeRequest 전송 | gRPC InvalidArgument; agent 호출 없음 | `CSI-C` |
 
 ---
 
@@ -1808,9 +1808,9 @@ CreateVolume(VolumeContentSource: {Snapshot: "snap-A"})
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| 117 | `TestCSIExhaustion_CreateVolume_PoolFull` | 스토리지 풀 가득 참 시 CreateVolume 실패 — gRPC 오류 코드 전파 검증 | mockAgentServer.CreateVolumeErr=gRPC ResourceExhausted; PillarTarget 등록 | 1) CreateVolumeRequest 전송 | gRPC ResourceExhausted 또는 Internal 반환; PillarVolume CRD 미생성; ExportVolume 미호출 | `CSI-C`, `Agent`, `TgtCRD`, `gRPC` |
-| 118 | `TestCSIExhaustion_ExpandVolume_ExceedsPoolCapacity` | ControllerExpandVolume이 풀 용량 초과 시도 — 오류 전파 검증 | mockAgentServer.ExpandVolumeErr=gRPC ResourceExhausted; 유효한 VolumeId | 1) ControllerExpandVolumeRequest 전송 | gRPC ResourceExhausted 반환; NodeExpansionRequired 없음 | `CSI-C`, `Agent`, `gRPC` |
-| 119 | `TestCSIExhaustion_CreateVolume_InsufficientStorage` | 요청 용량이 사용 가능 용량보다 큰 경우 | mockAgentServer.CreateVolumeErr=gRPC OutOfRange; PillarTarget 등록 | 1) CreateVolumeRequest 전송 | 비-OK gRPC 상태; 볼륨 미생성; 패닉 없음 | `CSI-C`, `Agent`, `TgtCRD`, `gRPC` |
+| 117 | `TestCSIExhaustion_CreateVolume_PoolFull` | 스토리지 풀 가득 참 시 CreateVolume 실패 — gRPC 오류 코드 전파 검증 | mockAgentServer.CreateVolumeErr=gRPC ResourceExhausted; PillarAgent 등록 | 1) CreateVolumeRequest 전송 | gRPC ResourceExhausted 또는 Internal 반환; PillarVolumeState CRD 미생성; ExportVolume 미호출 | `CSI-C`, `Agent`, `TgtCRD`, `gRPC` |
+| 118 | `TestCSIExhaustion_ExpandVolume_ExceedsStoreCapacity` | ControllerExpandVolume이 풀 용량 초과 시도 — 오류 전파 검증 | mockAgentServer.ExpandVolumeErr=gRPC ResourceExhausted; 유효한 VolumeId | 1) ControllerExpandVolumeRequest 전송 | gRPC ResourceExhausted 반환; NodeExpansionRequired 없음 | `CSI-C`, `Agent`, `gRPC` |
+| 119 | `TestCSIExhaustion_CreateVolume_InsufficientStorage` | 요청 용량이 사용 가능 용량보다 큰 경우 | mockAgentServer.CreateVolumeErr=gRPC OutOfRange; PillarAgent 등록 | 1) CreateVolumeRequest 전송 | 비-OK gRPC 상태; 볼륨 미생성; 패닉 없음 | `CSI-C`, `Agent`, `TgtCRD`, `gRPC` |
 
 ---
 
@@ -1818,7 +1818,7 @@ CreateVolume(VolumeContentSource: {Snapshot: "snap-A"})
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| 120 | `TestCSIExhaustion_CreateVolume_ConsecutiveFailures` | agent.CreateVolume이 연속 5회 실패해도 상태 오염 없음 | mockAgentServer.CreateVolumeErr 항상 반환; PillarTarget 등록 | 1) CreateVolumeRequest 5회 반복 전송 | 5회 모두 비-OK gRPC 상태; PillarVolume CRD 0개; fake k8s 클라이언트 상태 오염 없음; 패닉 없음 | `CSI-C`, `Agent`, `TgtCRD`, `VolCRD`, `gRPC` |
+| 120 | `TestCSIExhaustion_CreateVolume_ConsecutiveFailures` | agent.CreateVolume이 연속 5회 실패해도 상태 오염 없음 | mockAgentServer.CreateVolumeErr 항상 반환; PillarAgent 등록 | 1) CreateVolumeRequest 5회 반복 전송 | 5회 모두 비-OK gRPC 상태; PillarVolumeState CRD 0개; fake k8s 클라이언트 상태 오염 없음; 패닉 없음 | `CSI-C`, `Agent`, `TgtCRD`, `VolCRD`, `gRPC` |
 | 121 | `TestCSIExhaustion_NodeStage_ConnectTimeout` | NVMe-oF 연결 타임아웃 시 NodeStage 실패 — 상태 파일 미생성 검증 | mockConnector.ConnectErr=errors.New("connection timed out") | 1) NodeStageVolumeRequest 전송 | 비-OK gRPC 상태; StateDir에 상태 파일 0개; FormatAndMount 미호출 | `CSI-N`, `Conn`, `State` |
 | 122 | `TestCSIExhaustion_NodeStage_DeviceNeverAppears` | NVMe-oF 연결 성공 후 디바이스가 폴링 타임아웃 내에 나타나지 않음 | mockConnector.Connect 성공; DevicePath="" (항상 빈 경로); 폴링 타임아웃=50ms | 1) NodeStageVolumeRequest 전송 (short timeout context 사용) | 비-OK gRPC 상태; 상태 파일 미생성 | `CSI-N`, `Conn`, `State` |
 
@@ -1847,9 +1847,9 @@ CreateVolume(VolumeContentSource: {Snapshot: "snap-A"})
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| 123 | `TestCSIConcurrent_CreateVolume_SameNameNoPanic` | 동일 이름으로 5개 고루틴이 동시에 CreateVolume 호출해도 패닉/데드락 없음 | mockAgentServer 정상 동작; PillarTarget 등록; 5초 타임아웃 | 1) 5개 goroutine을 동시에 시작; 각각 동일 볼륨 이름으로 CreateVolumeRequest 전송; 2) WaitGroup 완료 대기 | 5개 고루틴 모두 5초 내 완료; 패닉 없음; 일부 성공/나머지 AlreadyExists 가능 | `CSI-C`, `Agent`, `TgtCRD`, `VolCRD`, `gRPC` |
-| 124 | `TestCSIConcurrent_CreateVolume_DifferentNames` | 5개 고루틴이 각각 다른 이름의 볼륨을 동시에 생성 | mockAgentServer 정상 동작; PillarTarget 등록 | 1) 5개 goroutine을 동시에 시작; 각각 고유한 볼륨 이름으로 CreateVolumeRequest 전송; 2) WaitGroup 완료 대기 | 5개 볼륨 모두 성공; PillarVolume CRD 5개; 데이터 손상 없음 | `CSI-C`, `Agent`, `TgtCRD`, `VolCRD`, `gRPC` |
-| 125 | `TestCSIConcurrent_CreateDelete_Interleaved` | 볼륨 생성과 삭제를 동시에 수행 — 최종 상태 일관성 검증 | mockAgentServer 정상 동작; PillarTarget 등록 | 1) goroutine A: CreateVolumeRequest 전송; 2) goroutine B: 동시에 동일 VolumeId로 DeleteVolumeRequest 전송; 3) 양측 완료 대기 | 두 연산 모두 완료; 최종 상태는 생성 또는 삭제 중 하나; CRD 상태 일관성; 패닉 없음 | `CSI-C`, `Agent`, `TgtCRD`, `VolCRD`, `gRPC` |
+| 123 | `TestCSIConcurrent_CreateVolume_SameNameNoPanic` | 동일 이름으로 5개 고루틴이 동시에 CreateVolume 호출해도 패닉/데드락 없음 | mockAgentServer 정상 동작; PillarAgent 등록; 5초 타임아웃 | 1) 5개 goroutine을 동시에 시작; 각각 동일 볼륨 이름으로 CreateVolumeRequest 전송; 2) WaitGroup 완료 대기 | 5개 고루틴 모두 5초 내 완료; 패닉 없음; 일부 성공/나머지 AlreadyExists 가능 | `CSI-C`, `Agent`, `TgtCRD`, `VolCRD`, `gRPC` |
+| 124 | `TestCSIConcurrent_CreateVolume_DifferentNames` | 5개 고루틴이 각각 다른 이름의 볼륨을 동시에 생성 | mockAgentServer 정상 동작; PillarAgent 등록 | 1) 5개 goroutine을 동시에 시작; 각각 고유한 볼륨 이름으로 CreateVolumeRequest 전송; 2) WaitGroup 완료 대기 | 5개 볼륨 모두 성공; PillarVolumeState CRD 5개; 데이터 손상 없음 | `CSI-C`, `Agent`, `TgtCRD`, `VolCRD`, `gRPC` |
+| 125 | `TestCSIConcurrent_CreateDelete_Interleaved` | 볼륨 생성과 삭제를 동시에 수행 — 최종 상태 일관성 검증 | mockAgentServer 정상 동작; PillarAgent 등록 | 1) goroutine A: CreateVolumeRequest 전송; 2) goroutine B: 동시에 동일 VolumeId로 DeleteVolumeRequest 전송; 3) 양측 완료 대기 | 두 연산 모두 완료; 최종 상태는 생성 또는 삭제 중 하나; CRD 상태 일관성; 패닉 없음 | `CSI-C`, `Agent`, `TgtCRD`, `VolCRD`, `gRPC` |
 
 ---
 
@@ -1866,8 +1866,8 @@ CreateVolume(VolumeContentSource: {Snapshot: "snap-A"})
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| 128 | `TestCSIConcurrent_AllowInitiator_MultipleNodes` | 다른 NodeId에 대해 동시에 ControllerPublishVolume 3회 호출해도 각 `CSINode` annotation에서 독립 identity를 해석 | mockAgentServer.AllowInitiator 정상; PillarVolume CRD 존재; 동일 VolumeId; 3개 `CSINode` annotation 준비 | 1) 3개 goroutine 동시 시작; 각각 다른 NodeId로 ControllerPublishVolumeRequest 전송; 2) WaitGroup 완료 대기 | 3개 모두 완료; 데드락 없음; AllowInitiator 3회 호출; 각각 다른 resolved identity 사용 | `CSI-C`, `Agent`, `TgtCRD`, `VolCRD`, `gRPC` |
-| 129 | `TestCSIConcurrent_UnpublishVolume_Race` | 3개 노드에서 동시에 ControllerUnpublishVolume 호출 | mockAgentServer.DenyInitiator 정상; PillarVolume CRD 존재; 3개 NodeId 각각 publish 완료 상태 | 1) 3개 goroutine 동시 시작; 각기 다른 NodeId로 ControllerUnpublishVolumeRequest 전송; 2) WaitGroup 완료 대기 | 3개 모두 완료; 패닉 없음; DenyInitiator 3회 호출 (각 goroutine별 1회) | `CSI-C`, `Agent`, `VolCRD`, `gRPC` |
+| 128 | `TestCSIConcurrent_AllowInitiator_MultipleNodes` | 다른 NodeId에 대해 동시에 ControllerPublishVolume 3회 호출해도 각 `CSINode` annotation에서 독립 identity를 해석 | mockAgentServer.AllowInitiator 정상; PillarVolumeState CRD 존재; 동일 VolumeId; 3개 `CSINode` annotation 준비 | 1) 3개 goroutine 동시 시작; 각각 다른 NodeId로 ControllerPublishVolumeRequest 전송; 2) WaitGroup 완료 대기 | 3개 모두 완료; 데드락 없음; AllowInitiator 3회 호출; 각각 다른 resolved identity 사용 | `CSI-C`, `Agent`, `TgtCRD`, `VolCRD`, `gRPC` |
+| 129 | `TestCSIConcurrent_UnpublishVolume_Race` | 3개 노드에서 동시에 ControllerUnpublishVolume 호출 | mockAgentServer.DenyInitiator 정상; PillarVolumeState CRD 존재; 3개 NodeId 각각 publish 완료 상태 | 1) 3개 goroutine 동시 시작; 각기 다른 NodeId로 ControllerUnpublishVolumeRequest 전송; 2) WaitGroup 완료 대기 | 3개 모두 완료; 패닉 없음; DenyInitiator 3회 호출 (각 goroutine별 1회) | `CSI-C`, `Agent`, `VolCRD`, `gRPC` |
 
 ---
 
@@ -1875,7 +1875,7 @@ CreateVolume(VolumeContentSource: {Snapshot: "snap-A"})
 
 **테스트 유형:** A (인프로세스 E2E) ✅ CI 실행 가능
 
-CSI 연산 실패 또는 성공 후 부가 상태(상태 파일, PillarVolume CRD,
+CSI 연산 실패 또는 성공 후 부가 상태(상태 파일, PillarVolumeState CRD,
 마운트 테이블, NVMe-oF 연결)가 올바르게 정리되는지 검증한다.
 리소스 누수가 없음을 확인하는 것이 이 섹션의 핵심 목표이다.
 
@@ -1891,13 +1891,13 @@ CSI 연산 실패 또는 성공 후 부가 상태(상태 파일, PillarVolume CR
 
 ---
 
-### E17.2 PillarVolume CRD 정리 검증
+### E17.2 PillarVolumeState CRD 정리 검증
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| 133 | `TestCSICleanup_DeleteVolume_RemovesAllCRD` | 성공적 DeleteVolume 후 PillarVolume CRD가 fake k8s 클라이언트에서 완전히 삭제됨 | CreateVolume 성공; PillarVolume CRD 존재 확인; mockAgentServer.DeleteVolume 정상 | 1) CreateVolumeRequest 전송; 2) CRD 존재 확인; 3) DeleteVolumeRequest 전송; 4) fake 클라이언트로 CRD 재조회 | DeleteVolume 성공; CRD 조회 시 NotFound; agent.DeleteVolume 1회 호출 | `CSI-C`, `Agent`, `TgtCRD`, `VolCRD`, `gRPC` |
+| 133 | `TestCSICleanup_DeleteVolume_RemovesAllCRD` | 성공적 DeleteVolume 후 PillarVolumeState CRD가 fake k8s 클라이언트에서 완전히 삭제됨 | CreateVolume 성공; PillarVolumeState CRD 존재 확인; mockAgentServer.DeleteVolume 정상 | 1) CreateVolumeRequest 전송; 2) CRD 존재 확인; 3) DeleteVolumeRequest 전송; 4) fake 클라이언트로 CRD 재조회 | DeleteVolume 성공; CRD 조회 시 NotFound; agent.DeleteVolume 1회 호출 | `CSI-C`, `Agent`, `TgtCRD`, `VolCRD`, `gRPC` |
 | 134 | `TestCSICleanup_CreatePartial_DeleteVolumeCleansCRD` | 부분 생성 상태(Phase=CreatePartial) CRD도 DeleteVolume으로 정리됨 | mockAgentServer.ExportVolumeErr 설정으로 CreateVolume 실패(Phase=CreatePartial CRD 생성됨); DeleteVolume용 mockAgentServer.DeleteVolume 정상 | 1) CreateVolumeRequest 전송(ExportVolume 단계에서 실패); 2) Phase=CreatePartial CRD 존재 확인; 3) DeleteVolumeRequest 전송 | DeleteVolume 성공; CRD 제거; BackendCreated=true이면 agent.DeleteVolume 호출 | `CSI-C`, `Agent`, `TgtCRD`, `VolCRD`, `SM`, `gRPC` |
-| 135 | `TestCSICleanup_FullLifecycle_NoResourceLeak` | 전체 라이프사이클 완료 후 모든 상태가 완전히 정리됨 | mockAgentServer 정상; mockConnector 정상; mockMounter 정상; PillarTarget 등록; 임시 StateDir | 1) CreateVolume; 2) ControllerPublish; 3) NodeStage; 4) NodePublish; 5) NodeUnpublish; 6) NodeUnstage; 7) ControllerUnpublish; 8) DeleteVolume | StateDir 상태 파일 0개; PillarVolume CRD 0개; mockMounter 마운트 테이블 빈 상태; Connector.DisconnectCalls=1 | `CSI-C`, `CSI-N`, `Agent`, `Conn`, `Mnt`, `TgtCRD`, `VolCRD`, `State`, `gRPC` |
+| 135 | `TestCSICleanup_FullLifecycle_NoResourceLeak` | 전체 라이프사이클 완료 후 모든 상태가 완전히 정리됨 | mockAgentServer 정상; mockConnector 정상; mockMounter 정상; PillarAgent 등록; 임시 StateDir | 1) CreateVolume; 2) ControllerPublish; 3) NodeStage; 4) NodePublish; 5) NodeUnpublish; 6) NodeUnstage; 7) ControllerUnpublish; 8) DeleteVolume | StateDir 상태 파일 0개; PillarVolumeState CRD 0개; mockMounter 마운트 테이블 빈 상태; Connector.DisconnectCalls=1 | `CSI-C`, `CSI-N`, `Agent`, `Conn`, `Mnt`, `TgtCRD`, `VolCRD`, `State`, `gRPC` |
 
 ---
 
@@ -1905,7 +1905,7 @@ CSI 연산 실패 또는 성공 후 부가 상태(상태 파일, PillarVolume CR
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| 136 | `TestCSICleanup_RepeatedCreateDelete` | 동일 이름의 볼륨을 10회 반복 생성/삭제해도 상태 오염 없음 | mockAgentServer 정상; PillarTarget 등록; 동일 볼륨 이름 재사용 | 1) 루프 10회: CreateVolumeRequest → 성공 확인 → CRD 존재 확인 → DeleteVolumeRequest → CRD 삭제 확인 | 모든 10회 성공; 매 반복 후 PillarVolume CRD 0개; 누적 오류 없음; 패닉 없음 | `CSI-C`, `Agent`, `TgtCRD`, `VolCRD`, `gRPC` |
+| 136 | `TestCSICleanup_RepeatedCreateDelete` | 동일 이름의 볼륨을 10회 반복 생성/삭제해도 상태 오염 없음 | mockAgentServer 정상; PillarAgent 등록; 동일 볼륨 이름 재사용 | 1) 루프 10회: CreateVolumeRequest → 성공 확인 → CRD 존재 확인 → DeleteVolumeRequest → CRD 삭제 확인 | 모든 10회 성공; 매 반복 후 PillarVolumeState CRD 0개; 누적 오류 없음; 패닉 없음 | `CSI-C`, `Agent`, `TgtCRD`, `VolCRD`, `gRPC` |
 | 137 | `TestCSICleanup_RepeatedStageUnstage` | 동일 볼륨을 5회 반복 NodeStage/NodeUnstage해도 상태 파일 누적 없음 | mockConnector 정상; mockMounter 정상; 임시 StateDir; 동일 VolumeId 및 StagingTargetPath | 1) 루프 5회: NodeStageVolumeRequest → 상태 파일 존재 확인 → NodeUnstageVolumeRequest → StateDir 빈 상태 확인 | 모든 5회 성공; 매 반복 후 StateDir 빈 상태; Connect/Disconnect 각 5회씩 호출 | `CSI-N`, `Conn`, `Mnt`, `State` |
 
 ---
@@ -1948,8 +1948,8 @@ CSI 컨트롤러가 에이전트 gRPC 다이얼 실패를 감지하고 적절한
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| 138 | `TestCSIController_CreateVolume_AgentUnreachable` | `AgentDialer`가 `codes.Unavailable("connection refused")` 반환 시 `CreateVolume`이 `Unavailable`을 그대로 전파 — 에이전트 프로세스가 완전히 다운된 경우 시뮬레이션 | `newCSIControllerTestEnvWithDialErr(t, status.Error(codes.Unavailable, "connection refused"))` 주입; 실제 에이전트 없이 다이얼 오류만 주입; PillarTarget CRD 등록 | 1) `CreateVolumeRequest` 전송; 2) 반환 오류의 gRPC 코드 확인 | `codes.Unavailable` 반환; PillarVolume CRD 미생성; `agent.CreateVolume` 미호출 | `CSI-C`, `gRPC` |
-| 139 | `TestCSIErrors_CreateVolume_AgentUnreachable_PlainError` | `AgentDialer`가 평문 Go error 반환 시(DNS 실패, 즉각적 연결 거부) 오류가 CO에 전파됨 — gRPC 상태 코드가 아닌 네트워크 레이어 오류 시뮬레이션 | `newCSIControllerTestEnvWithDialErr(t, errors.New("dial tcp 192.168.1.10:9500: connect: connection refused"))` 주입; PillarTarget CRD 등록 | 1) `CreateVolumeRequest` 전송; 2) 오류 유무 확인; 3) gRPC 상태 코드 확인 | 비-OK gRPC 상태(`codes.OK` 불가); 에이전트 호출 없음; 패닉 없음 | `CSI-C`, `gRPC` |
+| 138 | `TestCSIController_CreateVolume_AgentUnreachable` | `AgentDialer`가 `codes.Unavailable("connection refused")` 반환 시 `CreateVolume`이 `Unavailable`을 그대로 전파 — 에이전트 프로세스가 완전히 다운된 경우 시뮬레이션 | `newCSIControllerTestEnvWithDialErr(t, status.Error(codes.Unavailable, "connection refused"))` 주입; 실제 에이전트 없이 다이얼 오류만 주입; PillarAgent CRD 등록 | 1) `CreateVolumeRequest` 전송; 2) 반환 오류의 gRPC 코드 확인 | `codes.Unavailable` 반환; PillarVolumeState CRD 미생성; `agent.CreateVolume` 미호출 | `CSI-C`, `gRPC` |
+| 139 | `TestCSIErrors_CreateVolume_AgentUnreachable_PlainError` | `AgentDialer`가 평문 Go error 반환 시(DNS 실패, 즉각적 연결 거부) 오류가 CO에 전파됨 — gRPC 상태 코드가 아닌 네트워크 레이어 오류 시뮬레이션 | `newCSIControllerTestEnvWithDialErr(t, errors.New("dial tcp 192.168.1.10:9500: connect: connection refused"))` 주입; PillarAgent CRD 등록 | 1) `CreateVolumeRequest` 전송; 2) 오류 유무 확인; 3) gRPC 상태 코드 확인 | 비-OK gRPC 상태(`codes.OK` 불가); 에이전트 호출 없음; 패닉 없음 | `CSI-C`, `gRPC` |
 
 ---
 
@@ -1960,7 +1960,7 @@ CSI 컨트롤러가 에이전트 gRPC 다이얼 실패를 감지하고 적절한
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| 140 | `TestCSIErrors_CreateVolume_AgentDeadlineExceeded` | `agent.CreateVolume`이 `codes.DeadlineExceeded`("agent: ZFS command timed out") 반환 시 `ControllerServer`가 CO에 비-OK 상태 전파 — 에이전트 내부 ZFS 작업 타임아웃(스토리지 노드 과부하) 시뮬레이션 | `csiMockAgent.createVolumeFn`이 `status.Error(codes.DeadlineExceeded, "agent: ZFS command timed out")` 반환; PillarTarget CRD 등록 | 1) `CreateVolumeRequest` 전송 | 비-OK gRPC 상태(`codes.OK` 불가); PillarVolume CRD 미생성; 오류 메시지에 타임아웃 문맥 포함 가능 | `CSI-C`, `Agent`, `gRPC` |
+| 140 | `TestCSIErrors_CreateVolume_AgentDeadlineExceeded` | `agent.CreateVolume`이 `codes.DeadlineExceeded`("agent: ZFS command timed out") 반환 시 `ControllerServer`가 CO에 비-OK 상태 전파 — 에이전트 내부 ZFS 작업 타임아웃(스토리지 노드 과부하) 시뮬레이션 | `csiMockAgent.createVolumeFn`이 `status.Error(codes.DeadlineExceeded, "agent: ZFS command timed out")` 반환; PillarAgent CRD 등록 | 1) `CreateVolumeRequest` 전송 | 비-OK gRPC 상태(`codes.OK` 불가); PillarVolumeState CRD 미생성; 오류 메시지에 타임아웃 문맥 포함 가능 | `CSI-C`, `Agent`, `gRPC` |
 | 141 | `TestCSIErrors_ControllerExpand_AgentDeadlineExceeded` | `agent.ExpandVolume`이 `codes.DeadlineExceeded`("agent: ZFS expand timed out") 반환 시 `ControllerExpandVolume`이 비-OK 전파 — 확장 작업 중 에이전트 타임아웃 | `csiMockAgent.expandVolumeFn`이 `status.Error(codes.DeadlineExceeded, "agent: ZFS expand timed out")` 반환 | 1) `ControllerExpandVolumeRequest`(RequiredBytes=20GiB) 전송 | 비-OK gRPC 상태; `NodeExpansionRequired` 없음 | `CSI-C`, `Agent`, `gRPC` |
 | 142 | `TestCSIErrors_DeleteVolume_AgentDeadlineExceeded` | `agent.UnexportVolume`이 `codes.DeadlineExceeded`("agent: unexport timed out") 반환 시 `DeleteVolume`이 비-OK 전파 — 정리 작업 중 에이전트 타임아웃 | `csiMockAgent.unexportVolumeFn`이 `status.Error(codes.DeadlineExceeded, "agent: unexport timed out")` 반환 | 1) `DeleteVolumeRequest` 전송 | 비-OK gRPC 상태; 삭제 작업 중단; CRD 정리 롤백 여부는 구현 의존 | `CSI-C`, `Agent`, `gRPC` |
 | 143 | `TestCSIErrors_ControllerPublish_AllowInitiatorFails` | `agent.AllowInitiator`가 configfs 쓰기 실패(`codes.Internal`) 반환 시 `ControllerPublishVolume`이 오류 전파 — `CSINode` identity 해석 이후의 ACL 적용 실패를 시뮬레이션 | `csiMockAgent.allowInitiatorFn`이 `status.Error(codes.Internal, "AllowInitiator: configfs write failed: permission denied")` 반환; 유효한 `CSINode` annotation 존재 | 1) `ControllerPublishVolumeRequest` 전송 | 비-OK gRPC 상태; `ControllerPublishVolume` 오류 전파; 오류 삼킴 없음 | `CSI-C`, `Agent`, `TgtCRD`, `gRPC` |
@@ -1998,7 +1998,7 @@ CSI 컨트롤러가 에이전트 gRPC 다이얼 실패를 감지하고 적절한
 | ID | 시나리오 | 사전 조건 | 수동 실행 절차 | 허용 기준 | 커버리지 |
 |----|---------|----------|--------------|---------|---------|
 | AD-1 | **에이전트 프로세스 강제 종료 후 재시작 — NVMe-oF 수출 지속성 검증** | 실제 NVMe-oF 수출 설정이 완료된 스토리지 노드; 실제 `/sys/kernel/config` 마운트; 진행 중인 클라이언트 NVMe 연결 | 1) `kill -9 <agent-pid>` 실행; 2) `/sys/kernel/config/nvmet/subsystems/` 아래 엔트리 유지 확인(`ls`); 3) 클라이언트 노드에서 NVMe 연결 지속성 확인(`nvme list`); 4) 에이전트 재시작(`systemctl start pillar-agent`); 5) CSI 컨트롤러의 `ReconcileState` 호출 확인(에이전트 로그); 6) 볼륨 I/O 정상 확인 | 에이전트 종료 중에도 커널 NVMe-oF 상태 유지; 재시작 후 `ReconcileState`로 상태 동기화 완료; 클라이언트 I/O 무중단(또는 짧은 중단 후 자동 재연결) | `Agent`, `NVMeF`, `실제 커널` |
-| AD-2 | **CSI 컨트롤러가 에이전트 다운 감지 후 PillarTarget 상태 갱신** | 실제 Kubernetes 클러스터; cert-manager; mTLS 설정 완료; `PillarTarget` CRD 존재; 에이전트 정상 실행 중 | 1) `kubectl get pillartarget -o yaml`로 초기 `AgentConnected=True` 확인; 2) 에이전트 중지(`systemctl stop` 또는 `kill -STOP`); 3) CSI 컨트롤러 `HealthCheck` 폴링 주기(~30초) 대기; 4) `kubectl get pillartarget -o yaml` 재확인; 5) 에이전트 재시작 후 상태 복원 확인 | 에이전트 중지 후: `PillarTarget.Status.Conditions[AgentConnected].Status=False`, `Reason=HealthCheckFailed` 또는 `ConnectionLost`; 에이전트 재시작 후: `AgentConnected=True` 복원 | `mTLS`, `TgtCRD`, `Agent` |
+| AD-2 | **CSI 컨트롤러가 에이전트 다운 감지 후 PillarAgent 상태 갱신** | 실제 Kubernetes 클러스터; cert-manager; mTLS 설정 완료; `PillarAgent` CRD 존재; 에이전트 정상 실행 중 | 1) `kubectl get pillaragent -o yaml`로 초기 `AgentConnected=True` 확인; 2) 에이전트 중지(`systemctl stop` 또는 `kill -STOP`); 3) CSI 컨트롤러 `HealthCheck` 폴링 주기(~30초) 대기; 4) `kubectl get pillaragent -o yaml` 재확인; 5) 에이전트 재시작 후 상태 복원 확인 | 에이전트 중지 후: `PillarAgent.Status.Conditions[AgentConnected].Status=False`, `Reason=HealthCheckFailed` 또는 `ConnectionLost`; 에이전트 재시작 후: `AgentConnected=True` 복원 | `mTLS`, `TgtCRD`, `Agent` |
 | AD-3 | **에이전트 OOM Kill 후 Kubernetes 자동 복구** | Kubernetes 스토리지 노드에 배포된 에이전트 DaemonSet; `restartPolicy: Always`; 진행 중인 PVC 사용 파드 | 1) `kubectl exec -n pillar-csi <agent-pod> -- kill -9 1`(PID 1 강제 종료); 2) `kubectl get pod -n pillar-csi -w`로 재시작 관찰; 3) 재시작 후 `kubectl describe pod`에서 Restart Count 확인; 4) 기존 PVC를 사용하는 파드의 I/O 정상 확인 | Kubernetes가 에이전트 파드를 자동 재시작; 재시작 후 `ReconcileState`로 상태 복원; 기존 PVC 마운트는 커널 NVMe 레이어에서 지속됨(I/O 무중단 또는 짧은 중단 후 자동 복구) | `Agent`, `NVMeF`, `실제 커널`, `Kubernetes클러스터` |
 
 ---
@@ -2013,9 +2013,9 @@ E14(CSI 요청 파라미터 오류)와 달리 이 섹션은 **Kubernetes 객체(
 자체의 유효성 문제**에 집중한다.
 
 **영향 범위:**
-- `PillarTarget` — 에이전트 주소 및 연결 정보를 담는 CR
-- `PillarPool` — 스토리지 풀을 나타내는 CR
-- `PillarVolume` — CSI 볼륨 생명주기 상태를 추적하는 CR
+- `PillarAgent` — 에이전트 주소 및 연결 정보를 담는 CR
+- `PillarStore` — 스토리지 풀을 나타내는 CR
+- `PillarVolumeState` — CSI 볼륨 생명주기 상태를 추적하는 CR
 
 ---
 
@@ -2052,16 +2052,16 @@ fake k8s 클라이언트는 웹훅/스키마 검증을 실행하지 않으므로
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| 145 | `TestCSIInvalidCR_CreateVolume_TargetResolvedAddressEmpty` | PillarTarget이 존재하나 `Status.ResolvedAddress`가 빈 문자열 — 에이전트 주소 미확정 상태 | fake k8s 클라이언트에 `PillarTarget{spec:{nodeRef:{name:"storage-node"}}, status:{resolvedAddress:""}}` 등록; ControllerServer 초기화; 유효한 StorageClass 파라미터(target="storage-node") | 1) `CreateVolumeRequest` 전송 | `codes.Unavailable`; 오류 메시지에 "no resolved address" 포함; `dialAgent` 미호출; agent 호출 없음 | `CSI-C`, `TgtCRD` |
-| 146 | `TestCSIInvalidCR_CreateVolume_TargetSpecBothNil` | PillarTarget의 `spec.nodeRef`와 `spec.external`이 모두 nil — 연결 정보 없음 (fake client에서만 가능; 웹훅 미실행) | fake k8s 클라이언트에 `PillarTarget{spec:{}, status:{resolvedAddress:""}}` 등록; 유효한 StorageClass 파라미터 | 1) `CreateVolumeRequest` 전송 | `codes.Unavailable`; "no resolved address" 오류; agent 호출 없음 | `CSI-C`, `TgtCRD` |
-| 147 | `TestCSIInvalidCR_ControllerPublish_TargetNoAddress` | ControllerPublishVolume 시 PillarTarget의 `Status.ResolvedAddress`가 빈 문자열 | PillarVolume CRD 존재(Phase=Ready, ExportInfo 채워짐); PillarTarget 등록 but `status.resolvedAddress=""`; 유효한 VolumeId와 `CSINode` annotation 준비 | 1) `ControllerPublishVolumeRequest` 전송 | `codes.Unavailable`; `agent.AllowInitiator` 미호출 | `CSI-C`, `TgtCRD`, `VolCRD` |
-| 148 | `TestCSIInvalidCR_LoadState_UnknownPhase` | PillarVolume CRD가 정의되지 않은 Phase 값을 가질 때 `LoadStateFromPillarVolumes`가 `StateNonExistent`로 처리하고 패닉 없음 | fake k8s 클라이언트에 `PillarVolume{spec:{volumeID:"t1/nvmeof-tcp/zfs-zvol/pool/pvc-abc"}, status:{phase:"GarbagePhase"}}` 등록; ControllerServer 초기화 | 1) `LoadStateFromPillarVolumes` 호출; 2) 해당 VolumeId의 SM 상태 조회 | 오류 반환 없음(nil); 해당 볼륨 SM 상태 = `StateNonExistent`; 패닉 없음; 다른 볼륨 상태 영향 없음 | `CSI-C`, `VolCRD` |
-| 149 | `TestCSIInvalidCR_LoadState_ListFailure` | `k8sClient.List(PillarVolumeList)` 실패 시 `LoadStateFromPillarVolumes`가 오류를 반환하고 SM 상태를 오염시키지 않음 | fake k8s 클라이언트를 List 실패를 반환하는 mock으로 교체 | 1) `LoadStateFromPillarVolumes` 호출 | 오류 반환(non-nil); SM 상태 변경 없음; 패닉 없음 | `CSI-C`, `VolCRD` |
-| 150 | `TestCSIInvalidCR_ControllerExpand_TargetNoAddress` | ControllerExpandVolume 시 PillarTarget `Status.ResolvedAddress`가 빈 문자열 | 유효한 PillarVolume CRD(Phase=Ready); PillarTarget `status.resolvedAddress=""`; StorageClass 파라미터 유효 | 1) `ControllerExpandVolumeRequest`(RequiredBytes=20GiB) 전송 | `codes.Unavailable`; `agent.ExpandVolume` 미호출 | `CSI-C`, `TgtCRD` |
+| 145 | `TestCSIInvalidCR_CreateVolume_TargetResolvedAddressEmpty` | PillarAgent이 존재하나 `Status.ResolvedAddress`가 빈 문자열 — 에이전트 주소 미확정 상태 | fake k8s 클라이언트에 `PillarAgent{spec:{nodeRef:{name:"storage-node"}}, status:{resolvedAddress:""}}` 등록; ControllerServer 초기화; 유효한 StorageClass 파라미터(target="storage-node") | 1) `CreateVolumeRequest` 전송 | `codes.Unavailable`; 오류 메시지에 "no resolved address" 포함; `dialAgent` 미호출; agent 호출 없음 | `CSI-C`, `TgtCRD` |
+| 146 | `TestCSIInvalidCR_CreateVolume_TargetSpecBothNil` | PillarAgent의 `spec.nodeRef`와 `spec.external`이 모두 nil — 연결 정보 없음 (fake client에서만 가능; 웹훅 미실행) | fake k8s 클라이언트에 `PillarAgent{spec:{}, status:{resolvedAddress:""}}` 등록; 유효한 StorageClass 파라미터 | 1) `CreateVolumeRequest` 전송 | `codes.Unavailable`; "no resolved address" 오류; agent 호출 없음 | `CSI-C`, `TgtCRD` |
+| 147 | `TestCSIInvalidCR_ControllerPublish_TargetNoAddress` | ControllerPublishVolume 시 PillarAgent의 `Status.ResolvedAddress`가 빈 문자열 | PillarVolumeState CRD 존재(Phase=Ready, ExportInfo 채워짐); PillarAgent 등록 but `status.resolvedAddress=""`; 유효한 VolumeId와 `CSINode` annotation 준비 | 1) `ControllerPublishVolumeRequest` 전송 | `codes.Unavailable`; `agent.AllowInitiator` 미호출 | `CSI-C`, `TgtCRD`, `VolCRD` |
+| 148 | `TestCSIInvalidCR_LoadState_UnknownPhase` | PillarVolumeState CRD가 정의되지 않은 Phase 값을 가질 때 `LoadStateFromPillarVolumeStates`가 `StateNonExistent`로 처리하고 패닉 없음 | fake k8s 클라이언트에 `PillarVolumeState{spec:{volumeID:"t1/nvmeof-tcp/zfs-zvol/pool/pvc-abc"}, status:{phase:"GarbagePhase"}}` 등록; ControllerServer 초기화 | 1) `LoadStateFromPillarVolumeStates` 호출; 2) 해당 VolumeId의 SM 상태 조회 | 오류 반환 없음(nil); 해당 볼륨 SM 상태 = `StateNonExistent`; 패닉 없음; 다른 볼륨 상태 영향 없음 | `CSI-C`, `VolCRD` |
+| 149 | `TestCSIInvalidCR_LoadState_ListFailure` | `k8sClient.List(PillarVolumeStateList)` 실패 시 `LoadStateFromPillarVolumeStates`가 오류를 반환하고 SM 상태를 오염시키지 않음 | fake k8s 클라이언트를 List 실패를 반환하는 mock으로 교체 | 1) `LoadStateFromPillarVolumeStates` 호출 | 오류 반환(non-nil); SM 상태 변경 없음; 패닉 없음 | `CSI-C`, `VolCRD` |
+| 150 | `TestCSIInvalidCR_ControllerExpand_TargetNoAddress` | ControllerExpandVolume 시 PillarAgent `Status.ResolvedAddress`가 빈 문자열 | 유효한 PillarVolumeState CRD(Phase=Ready); PillarAgent `status.resolvedAddress=""`; StorageClass 파라미터 유효 | 1) `ControllerExpandVolumeRequest`(RequiredBytes=20GiB) 전송 | `codes.Unavailable`; `agent.ExpandVolume` 미호출 | `CSI-C`, `TgtCRD` |
 
 ---
 
-### E21.2 PillarTarget 웹훅 — 불변 필드 수정 거부 (Type C — envtest) ⚠️
+### E21.2 PillarAgent 웹훅 — 불변 필드 수정 거부 (Type C — envtest) ⚠️
 
 **테스트 유형:** C (envtest 통합 테스트)
 
@@ -2070,38 +2070,38 @@ fake k8s 클라이언트는 웹훅/스키마 검증을 실행하지 않으므로
 **실행 명령:**
 ```bash
 make setup-envtest
-go test -tags=integration ./internal/webhook/v1alpha1/ -v -run PillarTarget
+go test -tags=integration ./internal/webhook/v1alpha1/ -v -run PillarAgent
 ```
 
-**위치:** `internal/webhook/v1alpha1/pillartarget_webhook_test.go`
+**위치:** `internal/webhook/v1alpha1/pillaragent_webhook_test.go`
 
 **자동화 가능 여부:** ✅ CI 실행 가능 — envtest 바이너리(`kube-apiserver`, `etcd`)만 필요. Docker/Kind 불필요.
 
-`PillarTargetSpec`은 **판별 유니온(discriminated union)** 구조이다:
+`PillarAgentSpec`은 **판별 유니온(discriminated union)** 구조이다:
 `spec.nodeRef` 또는 `spec.external` 중 정확히 하나만 지정해야 한다.
-생성 후 이 필드를 변경하면 연결된 모든 PillarPool/PillarBinding이 다른 물리 서버를
+생성 후 이 필드를 변경하면 연결된 모든 PillarStore/PillarStorageClass이 다른 물리 서버를
 가리키게 되어 데이터 손실 위험이 있다.
-`PillarTargetCustomValidator.ValidateUpdate()`가 이를 방지한다.
+`PillarAgentCustomValidator.ValidateUpdate()`가 이를 방지한다.
 
 > **⚠️ CI에서 테스트 가능 여부:** `ValidateUpdate`는 직접 메서드 호출로 검증 가능하나,
 > 전체 admission webhook 플로우(API 서버 → webhook 서버 → 실제 k8s.Update)는
-> `envtest` 환경에서만 확인된다. 이 섹션의 테스트들은 `PillarTargetCustomValidator`를
+> `envtest` 환경에서만 확인된다. 이 섹션의 테스트들은 `PillarAgentCustomValidator`를
 > 직접 호출하므로 envtest 바이너리 없이도 단독으로 실행 가능하다.
 > 단, 빌드 태그 `integration` 하에서만 컴파일된다.
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| 151 | `TestPillarTargetWebhook_Update_DiscriminantSwitch_NodeToExternal` | `spec.nodeRef` → `spec.external` 전환 시도 거부 | `validator = PillarTargetCustomValidator{}`; `oldObj.spec.nodeRef={name:"node1"}`; `newObj.spec.external={address:"1.2.3.4", port:9500}` (nodeRef=nil) | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | 오류 반환(non-nil); `field.Forbidden` 포함; 메시지에 "cannot switch between nodeRef and external" 포함 | `Webhook`, `TgtCRD` |
-| 152 | `TestPillarTargetWebhook_Update_DiscriminantSwitch_ExternalToNode` | `spec.external` → `spec.nodeRef` 전환 시도 거부 | `oldObj.spec.external={address:"1.2.3.4", port:9500}`; `newObj.spec.nodeRef={name:"node1"}` (external=nil) | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | 오류 반환; `spec` 경로에 `Forbidden` 포함 | `Webhook`, `TgtCRD` |
-| 153 | `TestPillarTargetWebhook_Update_NodeRefNameImmutable` | `spec.nodeRef.name` 변경 시도 거부 | `oldObj.spec.nodeRef={name:"node-a"}`; `newObj.spec.nodeRef={name:"node-b"}` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | 오류 반환; `field.Forbidden(spec.nodeRef.name, ...)` 포함; 이전값 "node-a", 신값 "node-b" 언급 | `Webhook`, `TgtCRD` |
-| 154 | `TestPillarTargetWebhook_Update_ExternalAddressImmutable` | `spec.external.address` 변경 시도 거부 | `oldObj.spec.external={address:"1.2.3.4", port:9500}`; `newObj.spec.external={address:"5.6.7.8", port:9500}` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | 오류 반환; `field.Forbidden(spec.external.address, ...)` 포함; 이전값 "1.2.3.4", 신값 "5.6.7.8" 언급 | `Webhook`, `TgtCRD` |
-| 155 | `TestPillarTargetWebhook_Update_ExternalPortImmutable` | `spec.external.port` 변경 시도 거부 | `oldObj.spec.external={address:"1.2.3.4", port:9500}`; `newObj.spec.external={address:"1.2.3.4", port:9600}` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | 오류 반환; `field.Forbidden(spec.external.port, ...)` 포함; 이전값 9500, 신값 9600 언급 | `Webhook`, `TgtCRD` |
-| 156 | `TestPillarTargetWebhook_Update_NodeRefNonIdentityFieldChange_OK` | `spec.nodeRef.name`이 변경되지 않고 비식별 필드(`addressType`)만 변경된 업데이트는 허용됨 | `oldObj.spec.nodeRef={name:"node-a", addressType:"InternalIP"}`; `newObj.spec.nodeRef={name:"node-a", addressType:"ExternalIP"}` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | 오류 없음(nil 반환); 업데이트 허용됨 | `Webhook`, `TgtCRD` |
-| 157 | `TestPillarTargetWebhook_Create_Valid` | 유효한 PillarTarget 생성 시 웹훅이 허용 (현재 ValidateCreate는 no-op 스캐폴딩) | `obj.spec.nodeRef={name:"storage-node-1"}`; 유효한 PillarTarget 객체 | 1) `validator.ValidateCreate(ctx, obj)` 호출 | 오류 없음(nil 반환) — 현재 구현은 스캐폴딩(TODO); 향후 검증 추가 시 갱신 필요 | `Webhook`, `TgtCRD` |
+| 151 | `TestPillarAgentWebhook_Update_DiscriminantSwitch_NodeToExternal` | `spec.nodeRef` → `spec.external` 전환 시도 거부 | `validator = PillarAgentCustomValidator{}`; `oldObj.spec.nodeRef={name:"node1"}`; `newObj.spec.external={address:"1.2.3.4", port:9500}` (nodeRef=nil) | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | 오류 반환(non-nil); `field.Forbidden` 포함; 메시지에 "cannot switch between nodeRef and external" 포함 | `Webhook`, `TgtCRD` |
+| 152 | `TestPillarAgentWebhook_Update_DiscriminantSwitch_ExternalToNode` | `spec.external` → `spec.nodeRef` 전환 시도 거부 | `oldObj.spec.external={address:"1.2.3.4", port:9500}`; `newObj.spec.nodeRef={name:"node1"}` (external=nil) | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | 오류 반환; `spec` 경로에 `Forbidden` 포함 | `Webhook`, `TgtCRD` |
+| 153 | `TestPillarAgentWebhook_Update_NodeRefNameImmutable` | `spec.nodeRef.name` 변경 시도 거부 | `oldObj.spec.nodeRef={name:"node-a"}`; `newObj.spec.nodeRef={name:"node-b"}` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | 오류 반환; `field.Forbidden(spec.nodeRef.name, ...)` 포함; 이전값 "node-a", 신값 "node-b" 언급 | `Webhook`, `TgtCRD` |
+| 154 | `TestPillarAgentWebhook_Update_ExternalAddressImmutable` | `spec.external.address` 변경 시도 거부 | `oldObj.spec.external={address:"1.2.3.4", port:9500}`; `newObj.spec.external={address:"5.6.7.8", port:9500}` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | 오류 반환; `field.Forbidden(spec.external.address, ...)` 포함; 이전값 "1.2.3.4", 신값 "5.6.7.8" 언급 | `Webhook`, `TgtCRD` |
+| 155 | `TestPillarAgentWebhook_Update_ExternalPortImmutable` | `spec.external.port` 변경 시도 거부 | `oldObj.spec.external={address:"1.2.3.4", port:9500}`; `newObj.spec.external={address:"1.2.3.4", port:9600}` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | 오류 반환; `field.Forbidden(spec.external.port, ...)` 포함; 이전값 9500, 신값 9600 언급 | `Webhook`, `TgtCRD` |
+| 156 | `TestPillarAgentWebhook_Update_NodeRefNonIdentityFieldChange_OK` | `spec.nodeRef.name`이 변경되지 않고 비식별 필드(`addressType`)만 변경된 업데이트는 허용됨 | `oldObj.spec.nodeRef={name:"node-a", addressType:"InternalIP"}`; `newObj.spec.nodeRef={name:"node-a", addressType:"ExternalIP"}` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | 오류 없음(nil 반환); 업데이트 허용됨 | `Webhook`, `TgtCRD` |
+| 157 | `TestPillarAgentWebhook_Create_Valid` | 유효한 PillarAgent 생성 시 웹훅이 허용 (현재 ValidateCreate는 no-op 스캐폴딩) | `obj.spec.nodeRef={name:"storage-node-1"}`; 유효한 PillarAgent 객체 | 1) `validator.ValidateCreate(ctx, obj)` 호출 | 오류 없음(nil 반환) — 현재 구현은 스캐폴딩(TODO); 향후 검증 추가 시 갱신 필요 | `Webhook`, `TgtCRD` |
 
 ---
 
-### E21.3 PillarPool 웹훅 — 불변 필드 수정 거부 (Type C — envtest) ⚠️
+### E21.3 PillarStore 웹훅 — 불변 필드 수정 거부 (Type C — envtest) ⚠️
 
 **테스트 유형:** C (envtest 통합 테스트)
 
@@ -2110,24 +2110,24 @@ go test -tags=integration ./internal/webhook/v1alpha1/ -v -run PillarTarget
 **실행 명령:**
 ```bash
 make setup-envtest
-go test -tags=integration ./internal/webhook/v1alpha1/ -v -run PillarPool
+go test -tags=integration ./internal/webhook/v1alpha1/ -v -run PillarStore
 ```
 
-**위치:** `internal/webhook/v1alpha1/pillarpool_webhook_test.go`
+**위치:** `internal/webhook/v1alpha1/pillarstore_webhook_test.go`
 
 **자동화 가능 여부:** ✅ CI 실행 가능
 
-`PillarPool`의 `spec.targetRef`와 `spec.backend.type`은 생성 시 고정된다.
+`PillarStore`의 `spec.agentRef`와 `spec.backend.type`은 생성 시 고정된다.
 이 필드들을 변경하면 해당 풀에서 이미 프로비저닝된 모든 볼륨이 잘못된 백엔드/타깃을
-가리키게 된다. `PillarPoolCustomValidator.ValidateUpdate()`가 이를 방지한다.
+가리키게 된다. `PillarStoreCustomValidator.ValidateUpdate()`가 이를 방지한다.
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| 158 | `TestPillarPoolWebhook_Update_TargetRefImmutable` | `spec.targetRef` 변경 시도 거부 | `validator = PillarPoolCustomValidator{}`; `oldObj.spec={targetRef:"target-a", backend:{type:"zfs-zvol"}}`; `newObj.spec={targetRef:"target-b", backend:{type:"zfs-zvol"}}` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | 오류 반환; `field.Forbidden(spec.targetRef, ...)` 포함; 이전값 "target-a", 신값 "target-b" 언급 | `Webhook`, `TgtCRD`, `VolCRD` |
-| 159 | `TestPillarPoolWebhook_Update_BackendTypeImmutable` | `spec.backend.type` 변경 시도 거부 | `oldObj.spec={targetRef:"t1", backend:{type:"zfs-zvol"}}`; `newObj.spec={targetRef:"t1", backend:{type:"lvm-lv"}}` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | 오류 반환; `field.Forbidden(spec.backend.type, ...)` 포함; 이전값 "zfs-zvol", 신값 "lvm-lv" 언급 | `Webhook`, `TgtCRD`, `VolCRD` |
-| 160 | `TestPillarPoolWebhook_Update_ZFSPoolChange_OK` | `spec.backend.type` 변경 없이 ZFS 풀 이름만 변경된 업데이트는 허용됨 | `oldObj.spec={targetRef:"t1", backend:{type:"zfs-zvol", zfs:{pool:"tank"}}}`; `newObj.spec={targetRef:"t1", backend:{type:"zfs-zvol", zfs:{pool:"new-tank"}}}` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | 오류 없음(nil 반환); 업데이트 허용됨 | `Webhook`, `TgtCRD`, `VolCRD` |
-| 161 | `TestPillarPoolWebhook_Update_BothFieldsChanged_MultipleErrors` | `spec.targetRef`와 `spec.backend.type` 모두 변경 시도 → 두 필드 모두 Forbidden 오류 포함 | `oldObj.spec={targetRef:"t1", backend:{type:"zfs-zvol"}}`; `newObj.spec={targetRef:"t2", backend:{type:"lvm-lv"}}` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | 오류 반환; `field.ErrorList` 길이 = 2; `spec.targetRef`와 `spec.backend.type` 모두 Forbidden | `Webhook`, `TgtCRD`, `VolCRD` |
-| 162 | `TestPillarPoolWebhook_Create_Valid` | 유효한 PillarPool 생성 시 웹훅이 허용 (현재 ValidateCreate는 no-op 스캐폴딩) | `obj.spec={targetRef:"target-1", backend:{type:"zfs-zvol", zfs:{pool:"tank"}}}` | 1) `validator.ValidateCreate(ctx, obj)` 호출 | 오류 없음(nil 반환) — 현재 구현은 스캐폴딩(TODO); 향후 검증 추가 시 갱신 필요 | `Webhook`, `TgtCRD`, `VolCRD` |
+| 158 | `TestPillarStoreWebhook_Update_AgentRefImmutable` | `spec.agentRef` 변경 시도 거부 | `validator = PillarStoreCustomValidator{}`; `oldObj.spec={agentRef:"target-a", backend:{type:"zfs-zvol"}}`; `newObj.spec={agentRef:"target-b", backend:{type:"zfs-zvol"}}` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | 오류 반환; `field.Forbidden(spec.agentRef, ...)` 포함; 이전값 "target-a", 신값 "target-b" 언급 | `Webhook`, `TgtCRD`, `VolCRD` |
+| 159 | `TestPillarStoreWebhook_Update_BackendTypeImmutable` | `spec.backend.type` 변경 시도 거부 | `oldObj.spec={agentRef:"t1", backend:{type:"zfs-zvol"}}`; `newObj.spec={agentRef:"t1", backend:{type:"lvm-lv"}}` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | 오류 반환; `field.Forbidden(spec.backend.type, ...)` 포함; 이전값 "zfs-zvol", 신값 "lvm-lv" 언급 | `Webhook`, `TgtCRD`, `VolCRD` |
+| 160 | `TestPillarStoreWebhook_Update_ZFSPoolChange_OK` | `spec.backend.type` 변경 없이 ZFS 풀 이름만 변경된 업데이트는 허용됨 | `oldObj.spec={agentRef:"t1", backend:{type:"zfs-zvol", zfs:{pool:"tank"}}}`; `newObj.spec={agentRef:"t1", backend:{type:"zfs-zvol", zfs:{pool:"new-tank"}}}` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | 오류 없음(nil 반환); 업데이트 허용됨 | `Webhook`, `TgtCRD`, `VolCRD` |
+| 161 | `TestPillarStoreWebhook_Update_BothFieldsChanged_MultipleErrors` | `spec.agentRef`와 `spec.backend.type` 모두 변경 시도 → 두 필드 모두 Forbidden 오류 포함 | `oldObj.spec={agentRef:"t1", backend:{type:"zfs-zvol"}}`; `newObj.spec={agentRef:"t2", backend:{type:"lvm-lv"}}` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | 오류 반환; `field.ErrorList` 길이 = 2; `spec.agentRef`와 `spec.backend.type` 모두 Forbidden | `Webhook`, `TgtCRD`, `VolCRD` |
+| 162 | `TestPillarStoreWebhook_Create_Valid` | 유효한 PillarStore 생성 시 웹훅이 허용 (현재 ValidateCreate는 no-op 스캐폴딩) | `obj.spec={agentRef:"target-1", backend:{type:"zfs-zvol", zfs:{pool:"tank"}}}` | 1) `validator.ValidateCreate(ctx, obj)` 호출 | 오류 없음(nil 반환) — 현재 구현은 스캐폴딩(TODO); 향후 검증 추가 시 갱신 필요 | `Webhook`, `TgtCRD`, `VolCRD` |
 
 ---
 
@@ -2143,7 +2143,7 @@ make setup-envtest
 go test -tags=integration ./internal/controller/ -v -run TestCRDSchema
 ```
 
-**위치:** `internal/controller/pillartarget_controller_test.go` 또는 `internal/controller/pillarpool_controller_test.go`
+**위치:** `internal/controller/pillaragent_controller_test.go` 또는 `internal/controller/pillarstore_controller_test.go`
 
 **자동화 가능 여부:** ✅ CI 실행 가능 (`make setup-envtest` 후)
 
@@ -2160,14 +2160,14 @@ fake client와 달리 envtest API 서버는 CRD 스키마 검증을 실제로 �
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| 163 | `TestCRDSchema_PillarTarget_NodeRefName_Empty` | `spec.nodeRef.name=""`인 PillarTarget 생성 시도 → `+kubebuilder:validation:MinLength=1` 위반 | envtest API 서버 실행 중; CRD 설치 완료 (`config/crd/bases/`); `PillarTarget{spec:{nodeRef:{name:""}}}` 준비 | 1) `k8sClient.Create(ctx, target)` 호출 | 422 Unprocessable Entity 반환; 오류에 `spec.nodeRef.name` 언급; 리소스 미생성 | `TgtCRD`, `API서버스키마` |
-| 164 | `TestCRDSchema_PillarTarget_ExternalPort_Zero` | `spec.external.port=0` → `+kubebuilder:validation:Minimum=1` 위반 | envtest API 서버; `PillarTarget{spec:{external:{address:"1.2.3.4", port:0}}}` | 1) `k8sClient.Create(ctx, target)` 호출 | 422 반환; `spec.external.port` 최솟값(1) 미만 오류; 리소스 미생성 | `TgtCRD`, `API서버스키마` |
-| 165 | `TestCRDSchema_PillarTarget_ExternalAddress_Empty` | `spec.external.address=""` → `+kubebuilder:validation:MinLength=1` 위반 | envtest API 서버; `PillarTarget{spec:{external:{address:"", port:9500}}}` | 1) `k8sClient.Create(ctx, target)` 호출 | 422 반환; `spec.external.address` 길이 오류; 리소스 미생성 | `TgtCRD`, `API서버스키마` |
-| 166 | `TestCRDSchema_PillarTarget_NodeRefAddressType_Invalid` | `spec.nodeRef.addressType="FooType"` → `+kubebuilder:validation:Enum=InternalIP;ExternalIP` 위반 | envtest API 서버; `PillarTarget{spec:{nodeRef:{name:"n1", addressType:"FooType"}}}` | 1) `k8sClient.Create(ctx, target)` 호출 | 422 반환; `spec.nodeRef.addressType` Enum 위반 오류; "FooType" 불허, 허용값("InternalIP", "ExternalIP") 표시 | `TgtCRD`, `API서버스키마` |
-| 167 | `TestCRDSchema_PillarPool_TargetRef_Empty` | `spec.targetRef=""`인 PillarPool 생성 → `+kubebuilder:validation:MinLength=1` 위반 | envtest API 서버; `PillarPool{spec:{targetRef:"", backend:{type:"zfs-zvol"}}}` | 1) `k8sClient.Create(ctx, pool)` 호출 | 422 반환; `spec.targetRef` 길이 오류; 리소스 미생성 | `TgtCRD`, `VolCRD`, `API서버스키마` |
-| 168 | `TestCRDSchema_PillarPool_BackendType_Invalid` | `spec.backend.type="not-supported"` → `+kubebuilder:validation:Enum=zfs-zvol;zfs-dataset;lvm-lv;dir` 위반 | envtest API 서버; `PillarPool{spec:{targetRef:"t1", backend:{type:"not-supported"}}}` | 1) `k8sClient.Create(ctx, pool)` 호출 | 422 반환; `spec.backend.type` Enum 위반; 허용값(zfs-zvol, zfs-dataset, lvm-lv, dir) 표시 | `TgtCRD`, `VolCRD`, `API서버스키마` |
-| 169 | `TestCRDSchema_PillarVolume_Phase_Invalid` | `status.phase="GarbagePhase"` — `+kubebuilder:validation:Enum=Provisioning;CreatePartial;Ready;...` 위반 | envtest API 서버; 유효한 PillarVolume 생성 완료; `status.phase="GarbagePhase"` 패치 시도 | 1) `k8sClient.Status().Patch(ctx, pv, client.MergeFrom(original))` 호출; phase를 "GarbagePhase"로 변경 | 422 반환; `status.phase` Enum 위반 오류; 기존 상태 유지됨 | `VolCRD`, `API서버스키마` |
-| 170 | `TestCRDSchema_PillarVolume_CapacityBytes_Negative` | `spec.capacityBytes=-1` → `+kubebuilder:validation:Minimum=0` 위반 | envtest API 서버; `PillarVolume{spec:{volumeID:"t/p/b/v", agentVolumeID:"p/v", targetRef:"t1", backendType:"zfs-zvol", protocolType:"nvmeof-tcp", capacityBytes:-1}}` | 1) `k8sClient.Create(ctx, pv)` 호출 | 422 반환; `spec.capacityBytes` Minimum(0) 위반 오류; 리소스 미생성 | `VolCRD`, `API서버스키마` |
+| 163 | `TestCRDSchema_PillarAgent_NodeRefName_Empty` | `spec.nodeRef.name=""`인 PillarAgent 생성 시도 → `+kubebuilder:validation:MinLength=1` 위반 | envtest API 서버 실행 중; CRD 설치 완료 (`config/crd/bases/`); `PillarAgent{spec:{nodeRef:{name:""}}}` 준비 | 1) `k8sClient.Create(ctx, target)` 호출 | 422 Unprocessable Entity 반환; 오류에 `spec.nodeRef.name` 언급; 리소스 미생성 | `TgtCRD`, `API서버스키마` |
+| 164 | `TestCRDSchema_PillarAgent_ExternalPort_Zero` | `spec.external.port=0` → `+kubebuilder:validation:Minimum=1` 위반 | envtest API 서버; `PillarAgent{spec:{external:{address:"1.2.3.4", port:0}}}` | 1) `k8sClient.Create(ctx, target)` 호출 | 422 반환; `spec.external.port` 최솟값(1) 미만 오류; 리소스 미생성 | `TgtCRD`, `API서버스키마` |
+| 165 | `TestCRDSchema_PillarAgent_ExternalAddress_Empty` | `spec.external.address=""` → `+kubebuilder:validation:MinLength=1` 위반 | envtest API 서버; `PillarAgent{spec:{external:{address:"", port:9500}}}` | 1) `k8sClient.Create(ctx, target)` 호출 | 422 반환; `spec.external.address` 길이 오류; 리소스 미생성 | `TgtCRD`, `API서버스키마` |
+| 166 | `TestCRDSchema_PillarAgent_NodeRefAddressType_Invalid` | `spec.nodeRef.addressType="FooType"` → `+kubebuilder:validation:Enum=InternalIP;ExternalIP` 위반 | envtest API 서버; `PillarAgent{spec:{nodeRef:{name:"n1", addressType:"FooType"}}}` | 1) `k8sClient.Create(ctx, target)` 호출 | 422 반환; `spec.nodeRef.addressType` Enum 위반 오류; "FooType" 불허, 허용값("InternalIP", "ExternalIP") 표시 | `TgtCRD`, `API서버스키마` |
+| 167 | `TestCRDSchema_PillarStore_AgentRef_Empty` | `spec.agentRef=""`인 PillarStore 생성 → `+kubebuilder:validation:MinLength=1` 위반 | envtest API 서버; `PillarStore{spec:{agentRef:"", backend:{type:"zfs-zvol"}}}` | 1) `k8sClient.Create(ctx, pool)` 호출 | 422 반환; `spec.agentRef` 길이 오류; 리소스 미생성 | `TgtCRD`, `VolCRD`, `API서버스키마` |
+| 168 | `TestCRDSchema_PillarStore_BackendType_Invalid` | `spec.backend.type="not-supported"` → `+kubebuilder:validation:Enum=zfs-zvol;zfs-dataset;lvm-lv;dir` 위반 | envtest API 서버; `PillarStore{spec:{agentRef:"t1", backend:{type:"not-supported"}}}` | 1) `k8sClient.Create(ctx, pool)` 호출 | 422 반환; `spec.backend.type` Enum 위반; 허용값(zfs-zvol, zfs-dataset, lvm-lv, dir) 표시 | `TgtCRD`, `VolCRD`, `API서버스키마` |
+| 169 | `TestCRDSchema_PillarVolumeState_Phase_Invalid` | `status.phase="GarbagePhase"` — `+kubebuilder:validation:Enum=Provisioning;CreatePartial;Ready;...` 위반 | envtest API 서버; 유효한 PillarVolumeState 생성 완료; `status.phase="GarbagePhase"` 패치 시도 | 1) `k8sClient.Status().Patch(ctx, pv, client.MergeFrom(original))` 호출; phase를 "GarbagePhase"로 변경 | 422 반환; `status.phase` Enum 위반 오류; 기존 상태 유지됨 | `VolCRD`, `API서버스키마` |
+| 170 | `TestCRDSchema_PillarVolumeState_CapacityBytes_Negative` | `spec.capacityBytes=-1` → `+kubebuilder:validation:Minimum=0` 위반 | envtest API 서버; `PillarVolumeState{spec:{volumeID:"t/p/b/v", agentVolumeID:"p/v", agentRef:"t1", backendType:"zfs-zvol", protocolType:"nvmeof-tcp", capacityBytes:-1}}` | 1) `k8sClient.Create(ctx, pv)` 호출 | 422 반환; `spec.capacityBytes` Minimum(0) 위반 오류; 리소스 미생성 | `VolCRD`, `API서버스키마` |
 
 ---
 
@@ -2178,8 +2178,8 @@ fake client와 달리 envtest API 서버는 CRD 스키마 검증을 실제로 �
 | 검증 레이어 | 담당 소섹션 | 테스트 수 | CI 실행 |
 |-----------|-----------|----------|--------|
 | 컨트롤러 런타임 CR 상태 검증 | E21.1 | 6개 | ✅ 표준 CI |
-| 웹훅 어드미션 — PillarTarget 불변 필드 | E21.2 | 7개 | ✅ envtest |
-| 웹훅 어드미션 — PillarPool 불변 필드 | E21.3 | 5개 | ✅ envtest |
+| 웹훅 어드미션 — PillarAgent 불변 필드 | E21.2 | 7개 | ✅ envtest |
+| 웹훅 어드미션 — PillarStore 불변 필드 | E21.3 | 5개 | ✅ envtest |
 | OpenAPI CRD 스키마 — 필드 범위/형식 | E21.4 | 8개 | ✅ envtest |
 | **합계** | | **26개** | ✅ 모두 CI 가능 |
 
@@ -2187,9 +2187,9 @@ fake client와 달리 envtest API 서버는 CRD 스키마 검증을 실제로 �
 
 | 검증 항목 | 이유 | 대안 |
 |---------|------|------|
-| PillarTarget `spec.nodeRef`와 `spec.external` 동시 설정 거부 | `ValidateCreate` 미구현(TODO 스캐폴딩); 현재 Create는 항상 허용 | Create 웹훅 구현 후 E21.2에 추가 |
-| PillarTarget 삭제 시 참조 PillarPool/PillarBinding 보호 | `ValidateDelete` 미구현(TODO 스캐폴딩) | Delete 웹훅 구현 후 추가 |
-| PillarPool 삭제 시 참조 PillarVolume 존재 여부 확인 | `ValidateDelete` 미구현 | Delete 웹훅 구현 후 추가 |
+| PillarAgent `spec.nodeRef`와 `spec.external` 동시 설정 거부 | `ValidateCreate` 미구현(TODO 스캐폴딩); 현재 Create는 항상 허용 | Create 웹훅 구현 후 E21.2에 추가 |
+| PillarAgent 삭제 시 참조 PillarStore/PillarStorageClass 보호 | `ValidateDelete` 미구현(TODO 스캐폴딩) | Delete 웹훅 구현 후 추가 |
+| PillarStore 삭제 시 참조 PillarVolumeState 존재 여부 확인 | `ValidateDelete` 미구현 | Delete 웹훅 구현 후 추가 |
 | 실제 Kubernetes admission controller 전체 플로우 | fake client/직접 호출 한계; webhook 서버와 kube-apiserver 간 HTTP 통신 미실행 | Kind 클러스터 테스트(K1) |
 
 ---
@@ -2258,10 +2258,10 @@ agent protobuf 열거형으로 변환한다. 인식되지 않는 문자열은 `P
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| 171 | `TestCSIProtocol_CreateVolume_ISCSIUnimplemented` | `protocol-type="iscsi"`로 CreateVolume 호출 시 agent.ExportVolume이 `codes.Unimplemented`("only NVMe-oF TCP is supported") 반환 → CSI 컨트롤러가 비-OK 상태 전파 | `mockAgentServer.ExportVolumeErr = status.Errorf(codes.Unimplemented, "only NVMe-oF TCP is supported")`; StorageClass params에 `protocol-type: "iscsi"` 설정; PillarTarget CRD 등록; `agent.CreateVolume` 성공(백엔드 zvol 생성 후 export 단계에서 실패) | 1) `CreateVolumeRequest` 전송; 2) 반환 오류 gRPC 코드 확인 | 비-OK gRPC 상태(`codes.OK` 불가); agent의 `Unimplemented` 오류 전파; CreateVolume 실패 시 부분 생성된 zvol 정리 여부는 구현 의존 | `CSI-C`, `Agent`, `gRPC` |
-| 172 | `TestCSIProtocol_CreateVolume_NFSUnimplemented` | `protocol-type="nfs"`로 CreateVolume 호출 시 agent.ExportVolume이 `codes.Unimplemented` 반환 | `mockAgentServer.ExportVolumeErr = status.Errorf(codes.Unimplemented, "only NVMe-oF TCP is supported")`; StorageClass params에 `protocol-type: "nfs"` 설정; PillarTarget CRD 등록 | 1) `CreateVolumeRequest` 전송 | 비-OK gRPC 상태; NFS export 미지원으로 인한 오류 전파 | `CSI-C`, `Agent`, `gRPC` |
+| 171 | `TestCSIProtocol_CreateVolume_ISCSIUnimplemented` | `protocol-type="iscsi"`로 CreateVolume 호출 시 agent.ExportVolume이 `codes.Unimplemented`("only NVMe-oF TCP is supported") 반환 → CSI 컨트롤러가 비-OK 상태 전파 | `mockAgentServer.ExportVolumeErr = status.Errorf(codes.Unimplemented, "only NVMe-oF TCP is supported")`; StorageClass params에 `protocol-type: "iscsi"` 설정; PillarAgent CRD 등록; `agent.CreateVolume` 성공(백엔드 zvol 생성 후 export 단계에서 실패) | 1) `CreateVolumeRequest` 전송; 2) 반환 오류 gRPC 코드 확인 | 비-OK gRPC 상태(`codes.OK` 불가); agent의 `Unimplemented` 오류 전파; CreateVolume 실패 시 부분 생성된 zvol 정리 여부는 구현 의존 | `CSI-C`, `Agent`, `gRPC` |
+| 172 | `TestCSIProtocol_CreateVolume_NFSUnimplemented` | `protocol-type="nfs"`로 CreateVolume 호출 시 agent.ExportVolume이 `codes.Unimplemented` 반환 | `mockAgentServer.ExportVolumeErr = status.Errorf(codes.Unimplemented, "only NVMe-oF TCP is supported")`; StorageClass params에 `protocol-type: "nfs"` 설정; PillarAgent CRD 등록 | 1) `CreateVolumeRequest` 전송 | 비-OK gRPC 상태; NFS export 미지원으로 인한 오류 전파 | `CSI-C`, `Agent`, `gRPC` |
 | 173 | `TestCSIProtocol_CreateVolume_UnknownProtocol_MapsToUnspecified` | `protocol-type="smb-v3-unknown"` — 알 수 없는 프로토콜 문자열이 `PROTOCOL_TYPE_UNSPECIFIED(0)`으로 매핑되어 agent에 전달됨 → agent가 Unimplemented 반환 | `mockAgentServer.ExportVolumeErr = status.Errorf(codes.Unimplemented, "only NVMe-oF TCP is supported")`; StorageClass params에 `protocol-type: "smb-v3-unknown"` 설정 | 1) `CreateVolumeRequest` 전송; 2) `env.AgentMock.ExportVolumeCalls[0].ProtocolType` 값 확인 | 비-OK gRPC 상태; `ExportVolumeCalls[0].ProtocolType == PROTOCOL_TYPE_UNSPECIFIED` (UNSPECIFIED로 매핑 확인); agent Unimplemented 전파 | `CSI-C`, `Agent`, `gRPC` |
-| 174 | `TestCSIProtocol_ControllerPublish_ISCSIUnimplemented` | ControllerPublishVolume에서 `protocol-type=\"iscsi\"` 볼륨 ID를 가진 PillarVolume CRD 존재 시 agent.AllowInitiator가 `codes.Unimplemented` 반환 → ControllerPublishVolume이 오류 전파 | `mockAgentServer.AllowInitiatorErr = status.Errorf(codes.Unimplemented, "only NVMe-oF TCP is supported")`; PillarVolume CRD 존재(Phase=Ready, VolumeId에 `iscsi` 포함); PillarTarget CRD 등록; fake Node에 `pillar-csi.bhyoo.com/iscsi-initiator-iqn` annotation 설정 | 1) `ControllerPublishVolumeRequest`(NodeId=`worker-1`) 전송 | 비-OK gRPC 상태; agent AllowInitiator Unimplemented 전파; 오류 은폐 없음 | `CSI-C`, `Agent`, `TgtCRD`, `gRPC` |
+| 174 | `TestCSIProtocol_ControllerPublish_ISCSIUnimplemented` | ControllerPublishVolume에서 `protocol-type=\"iscsi\"` 볼륨 ID를 가진 PillarVolumeState CRD 존재 시 agent.AllowInitiator가 `codes.Unimplemented` 반환 → ControllerPublishVolume이 오류 전파 | `mockAgentServer.AllowInitiatorErr = status.Errorf(codes.Unimplemented, "only NVMe-oF TCP is supported")`; PillarVolumeState CRD 존재(Phase=Ready, VolumeId에 `iscsi` 포함); PillarAgent CRD 등록; fake Node에 `pillar-csi.bhyoo.com/iscsi-initiator-iqn` annotation 설정 | 1) `ControllerPublishVolumeRequest`(NodeId=`worker-1`) 전송 | 비-OK gRPC 상태; agent AllowInitiator Unimplemented 전파; 오류 은폐 없음 | `CSI-C`, `Agent`, `TgtCRD`, `gRPC` |
 
 ---
 
@@ -2326,8 +2326,8 @@ agent protobuf 열거형으로 변환한다. 인식되지 않는 문자열(예: 
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| 181 | `TestCSIProtocol_CreateVolume_UnknownBackendType_MapsToUnspecified` | `backend-type="fuse-experimental"` — 알 수 없는 백엔드 타입 문자열이 `BACKEND_TYPE_UNSPECIFIED(0)`으로 매핑되어 `agent.CreateVolume` 요청에 전달됨 | `mockAgentServer` 기본 설정(CreateVolume 성공 반환); StorageClass params에 `backend-type: "fuse-experimental"` 설정; PillarTarget CRD 등록; `protocol-type: "nvmeof-tcp"` | 1) `CreateVolumeRequest` 전송; 2) `env.AgentMock.CreateVolumeCalls[0].BackendType` 값 확인 | `CreateVolumeCalls[0].BackendType == BACKEND_TYPE_UNSPECIFIED` (UNSPECIFIED로 매핑 확인); CreateVolume 자체는 mock 기준 성공 반환; 감사 목적 — UNSPECIFIED 백엔드 타입이 agent에 도달함을 문서화 | `CSI-C`, `Agent` |
-| 182 | `TestCSIProtocol_CreateVolume_LVMBackendUnimplemented` | `backend-type="lvm"`으로 CreateVolume 호출 시 agent.CreateVolume이 `codes.Unimplemented` 반환 — 현재 단일 ZFS 스토리지 노드에서 LVM 백엔드를 지원하지 않는 시나리오 | `mockAgentServer.CreateVolumeErr = status.Errorf(codes.Unimplemented, "LVM backend not supported in this deployment")`; StorageClass params에 `backend-type: "lvm"` 설정; PillarTarget CRD 등록 | 1) `CreateVolumeRequest` 전송 | 비-OK gRPC 상태; agent의 `Unimplemented` 전파; PillarVolume CRD 미생성 | `CSI-C`, `Agent`, `gRPC` |
+| 181 | `TestCSIProtocol_CreateVolume_UnknownBackendType_MapsToUnspecified` | `backend-type="fuse-experimental"` — 알 수 없는 백엔드 타입 문자열이 `BACKEND_TYPE_UNSPECIFIED(0)`으로 매핑되어 `agent.CreateVolume` 요청에 전달됨 | `mockAgentServer` 기본 설정(CreateVolume 성공 반환); StorageClass params에 `backend-type: "fuse-experimental"` 설정; PillarAgent CRD 등록; `protocol-type: "nvmeof-tcp"` | 1) `CreateVolumeRequest` 전송; 2) `env.AgentMock.CreateVolumeCalls[0].BackendType` 값 확인 | `CreateVolumeCalls[0].BackendType == BACKEND_TYPE_UNSPECIFIED` (UNSPECIFIED로 매핑 확인); CreateVolume 자체는 mock 기준 성공 반환; 감사 목적 — UNSPECIFIED 백엔드 타입이 agent에 도달함을 문서화 | `CSI-C`, `Agent` |
+| 182 | `TestCSIProtocol_CreateVolume_LVMBackendUnimplemented` | `backend-type="lvm"`으로 CreateVolume 호출 시 agent.CreateVolume이 `codes.Unimplemented` 반환 — 현재 단일 ZFS 스토리지 노드에서 LVM 백엔드를 지원하지 않는 시나리오 | `mockAgentServer.CreateVolumeErr = status.Errorf(codes.Unimplemented, "LVM backend not supported in this deployment")`; StorageClass params에 `backend-type: "lvm"` 설정; PillarAgent CRD 등록 | 1) `CreateVolumeRequest` 전송 | 비-OK gRPC 상태; agent의 `Unimplemented` 전파; PillarVolumeState CRD 미생성 | `CSI-C`, `Agent`, `gRPC` |
 
 ---
 
@@ -2345,9 +2345,9 @@ agent protobuf 열거형으로 변환한다. 인식되지 않는 문자열(예: 
 
 | ID | 시나리오 | 사전 조건 | 수동 실행 절차 | 허용 기준 | 커버리지 |
 |----|---------|----------|--------------|---------|---------|
-| BP-1 | **Controller-Agent 에이전트 버전 확인 — `GetCapabilitiesResponse.agent_version` 필드 기록 여부** | 실제 Kubernetes 클러스터; pillar-csi-controller 배포; pillar-agent 배포 (`agent_version="0.1.0"` 내장, `internal/agent/server.go:36` 상수) | 1) PillarTarget CRD 등록 후 컨트롤러 재조정 대기; 2) `kubectl get pillartarget <name> -o yaml`로 `status.agentVersion` 또는 관련 조건 메시지 확인; 3) 에이전트 바이너리를 이전 버전으로 교체 후 컨트롤러 반응 확인 | `PillarTarget.status` 또는 이벤트에 에이전트 버전 정보 기록됨; 버전 불일치 경고는 현재 미구현(향후 구현 예정); 버전 불일치 시에도 볼륨 생성 시도 가능 — 미지원 RPC 호출 시 `Unimplemented` 반환으로 오류 감지 | `Agent`, `TgtCRD`, `gRPC` |
+| BP-1 | **Controller-Agent 에이전트 버전 확인 — `GetCapabilitiesResponse.agent_version` 필드 기록 여부** | 실제 Kubernetes 클러스터; pillar-csi-controller 배포; pillar-agent 배포 (`agent_version="0.1.0"` 내장, `internal/agent/server.go:36` 상수) | 1) PillarAgent CRD 등록 후 컨트롤러 재조정 대기; 2) `kubectl get pillaragent <name> -o yaml`로 `status.agentVersion` 또는 관련 조건 메시지 확인; 3) 에이전트 바이너리를 이전 버전으로 교체 후 컨트롤러 반응 확인 | `PillarAgent.status` 또는 이벤트에 에이전트 버전 정보 기록됨; 버전 불일치 경고는 현재 미구현(향후 구현 예정); 버전 불일치 시에도 볼륨 생성 시도 가능 — 미지원 RPC 호출 시 `Unimplemented` 반환으로 오류 감지 | `Agent`, `TgtCRD`, `gRPC` |
 | BP-2 | **스토리지 노드에서 nvmet 커널 모듈 미로드 — HealthCheck 경고 및 ExportVolume 실패** | 실제 스토리지 노드; ZFS 커널 모듈 로드됨; nvmet/nvme-fabrics 모듈 **미로드** (`modprobe -r nvmet nvme-fabrics`) | 1) pillar-agent 프로세스 시작; 2) `agent.HealthCheck()` 응답의 `subsystems` 배열 확인 — `nvmet-configfs` 서브시스템 `healthy` 필드 값 확인; 3) PVC 생성 시도(CSI CreateVolume → `agent.CreateVolume` 성공 → `agent.ExportVolume` 실패 예상); 4) `kubectl describe pvc`에서 오류 이벤트 확인 | `HealthCheck` 응답에 `nvmet-configfs.healthy=false` 표시; `ExportVolume` 호출 시 configfs 디렉터리 생성 실패로 `codes.Internal` 또는 `codes.FailedPrecondition` 반환; PVC가 `Pending` 상태 유지; 오류 메시지에 configfs 관련 진단 정보 포함 | `Agent`, `NVMeF`, `TgtCRD` |
-| BP-3 | **프로토콜 협상 실패 엔드투엔드 — StorageClass `protocol-type: iscsi`로 PVC 생성 시 오류 전파** | 실제 Kubernetes 클러스터; StorageClass `protocol-type: iscsi`로 구성; 실제 pillar-agent 배포 (NVMe-oF TCP 전용) | 1) `kubectl apply -f storageclass-iscsi.yaml`; 2) `kubectl apply -f pvc-iscsi.yaml`; 3) PVC 이벤트 확인 (`kubectl describe pvc <name>`); 4) CSI 컨트롤러 로그에서 `Unimplemented` 오류 확인 | PVC가 `Pending` 상태 유지; CSI CreateVolume 오류 이벤트에 `Unimplemented: only NVMe-oF TCP is supported` 메시지; 지속적인 재시도 없이 명확한 오류 보고; PillarVolume CRD 미생성 | `CSI-C`, `Agent`, `gRPC`, `실제 Kubernetes클러스터` |
+| BP-3 | **프로토콜 협상 실패 엔드투엔드 — StorageClass `protocol-type: iscsi`로 PVC 생성 시 오류 전파** | 실제 Kubernetes 클러스터; StorageClass `protocol-type: iscsi`로 구성; 실제 pillar-agent 배포 (NVMe-oF TCP 전용) | 1) `kubectl apply -f storageclass-iscsi.yaml`; 2) `kubectl apply -f pvc-iscsi.yaml`; 3) PVC 이벤트 확인 (`kubectl describe pvc <name>`); 4) CSI 컨트롤러 로그에서 `Unimplemented` 오류 확인 | PVC가 `Pending` 상태 유지; CSI CreateVolume 오류 이벤트에 `Unimplemented: only NVMe-oF TCP is supported` 메시지; 지속적인 재시도 없이 명확한 오류 보고; PillarVolumeState CRD 미생성 | `CSI-C`, `Agent`, `gRPC`, `실제 Kubernetes클러스터` |
 | BP-4 | **향후 iSCSI 지원 추가 시 회귀 검증 체크리스트** | iSCSI 지원 버전의 pillar-agent 배포 후; LIO 커널 모듈 로드됨 (`iscsi_target_mod`, `target_core_mod`, `configfs`) | 1) StorageClass에 `protocol-type: "iscsi"` 설정; 2) PVC 생성; 3) `kubectl describe pvc`로 `Bound` 확인; 4) 스토리지 노드에서 `targetcli ls` 실행하여 iSCSI 타깃 생성 확인 | PVC `Bound` 상태; iSCSI LIO 타깃 생성 확인; **현재 E22.1 테스트(171-172)가 `Unimplemented` 예상에서 `OK` 예상으로 갱신 필요**; `TestAgentErrors_*_InvalidProtocol` 시리즈 삭제 또는 프로토콜 목록 업데이트 필요 | `Agent`, `CSI-C`, `실제 커널`, `실제 Kubernetes클러스터` |
 
 ---
@@ -2408,7 +2408,7 @@ NodeUnpublish → NodeUnstage → ControllerUnpublish → DeleteVolume
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| E24.1-1 | `TestCSILifecycle_FullCycle` _(기존 구현)_ | 8단계 전체 라이프사이클 정상 경로 완전 검증. `csiLifecycleEnv`를 통해 ControllerServer와 NodeServer가 단일 mockAgentServer를 공유하며 전체 체인을 인프로세스로 실행 | `csiLifecycleEnv` 초기화: `mockAgentServer`(ExportVolumeInfo 사전 설정), `mockCSIConnector`(DevicePath=`/dev/nvme0n1`), `mockCSIMounter`, `t.TempDir()` StateDir; PillarTarget CRD 등록 | 1) `CreateVolumeRequest{Name="pvc-lifecycle-full", CapacityRange=1GiB, Parameters{target, backend-type=zfs-zvol, protocol-type=nvmeof-tcp, pool}}` 전송; 2) `ControllerPublishVolumeRequest{VolumeId, NodeId="worker-1"}` 전송; 3) `NodeStageVolumeRequest{VolumeId, StagingTargetPath, VolumeContext}` 전송; 4) `NodePublishVolumeRequest{VolumeId, StagingTargetPath, TargetPath}` 전송; 5) `NodeUnpublishVolumeRequest{VolumeId, TargetPath}` 전송; 6) `NodeUnstageVolumeRequest{VolumeId, StagingTargetPath}` 전송; 7) `ControllerUnpublishVolumeRequest{VolumeId, NodeId}` 전송; 8) `DeleteVolumeRequest{VolumeId}` 전송 | 모든 단계 성공; `VolumeContext`(NQN, address, port)가 CreateVolume → NodeStageVolume으로 키 변환 없이 전달; `agent.CreateVolume` 1회 · `agent.ExportVolume` 1회 · `agent.AllowInitiator` 1회 · `agent.DenyInitiator` 1회 · `agent.UnexportVolume` 1회 · `agent.DeleteVolume` 1회; `mockConnector.Connect` 1회 · `mockConnector.Disconnect` 1회; PillarVolume CRD 삭제됨(NotFound) | `CSI-C`, `CSI-N`, `Agent`, `Conn`, `Mnt`, `TgtCRD`, `VolCRD`, `State`, `gRPC` |
+| E24.1-1 | `TestCSILifecycle_FullCycle` _(기존 구현)_ | 8단계 전체 라이프사이클 정상 경로 완전 검증. `csiLifecycleEnv`를 통해 ControllerServer와 NodeServer가 단일 mockAgentServer를 공유하며 전체 체인을 인프로세스로 실행 | `csiLifecycleEnv` 초기화: `mockAgentServer`(ExportVolumeInfo 사전 설정), `mockCSIConnector`(DevicePath=`/dev/nvme0n1`), `mockCSIMounter`, `t.TempDir()` StateDir; PillarAgent CRD 등록 | 1) `CreateVolumeRequest{Name="pvc-lifecycle-full", CapacityRange=1GiB, Parameters{target, backend-type=zfs-zvol, protocol-type=nvmeof-tcp, pool}}` 전송; 2) `ControllerPublishVolumeRequest{VolumeId, NodeId="worker-1"}` 전송; 3) `NodeStageVolumeRequest{VolumeId, StagingTargetPath, VolumeContext}` 전송; 4) `NodePublishVolumeRequest{VolumeId, StagingTargetPath, TargetPath}` 전송; 5) `NodeUnpublishVolumeRequest{VolumeId, TargetPath}` 전송; 6) `NodeUnstageVolumeRequest{VolumeId, StagingTargetPath}` 전송; 7) `ControllerUnpublishVolumeRequest{VolumeId, NodeId}` 전송; 8) `DeleteVolumeRequest{VolumeId}` 전송 | 모든 단계 성공; `VolumeContext`(NQN, address, port)가 CreateVolume → NodeStageVolume으로 키 변환 없이 전달; `agent.CreateVolume` 1회 · `agent.ExportVolume` 1회 · `agent.AllowInitiator` 1회 · `agent.DenyInitiator` 1회 · `agent.UnexportVolume` 1회 · `agent.DeleteVolume` 1회; `mockConnector.Connect` 1회 · `mockConnector.Disconnect` 1회; PillarVolumeState CRD 삭제됨(NotFound) | `CSI-C`, `CSI-N`, `Agent`, `Conn`, `Mnt`, `TgtCRD`, `VolCRD`, `State`, `gRPC` |
 | E24.1-2 | `TestCSILifecycle_VolumeContextFlowThrough` _(기존 구현)_ | CreateVolume의 VolumeContext(NQN/address/port)가 키 변환 없이 NodeStageVolume의 `mockConnector.Connect` 인수로 전달됨을 검증. 컨트롤러와 노드 서버가 VolumeContext 키 이름에 합의(no translation)되어 있어야 함 | `csiLifecycleEnv`; `mockAgentServer.ExportVolumeInfo`: `TargetId=lifecycleTestNQN`, `Address=127.0.0.1`, `Port=4420` | 1) `CreateVolumeRequest` 전송; 2) `VolumeContext` 추출; 3) `NodeStageVolumeRequest{VolumeContext: 그대로 전달}` 전송; 4) `mockConnector.ConnectCalls[0]` 검증 | `mockConnector.Connect.SubsysNQN == VolumeContext["target_id"]`; `TrAddr == VolumeContext["address"]`; `TrSvcID == VolumeContext["port"]`; 키 변환 없음 확인 | `CSI-C`, `CSI-N`, `Agent`, `Conn`, `gRPC` |
 | E24.1-3 | `TestCSILifecycle_OrderingConstraints` _(기존 구현)_ | 8단계 체인에서 올바른 순서 준수: 각 단계 완료 후 다음 단계 진행 시 모든 agent RPC가 정확히 1회씩 호출됨 | 동일한 `csiLifecycleEnv`; 각 단계를 Phase 1~8로 명시 | Phase 1: CreateVolume; Phase 2: ControllerPublish; Phase 3: NodeStage; Phase 4: NodePublish; Phase 5: NodeUnpublish; Phase 6: NodeUnstage; Phase 7: ControllerUnpublish; Phase 8: DeleteVolume — 각 Phase 후 중간 상태 검증 | Phase 3 후: `mockConnector.ConnectCalls` 1개; Phase 4 후: `targetPath` 마운트됨; Phase 5 후: `targetPath` 언마운트됨 · `stagingPath` 유지; Phase 6 후: `stagingPath` 언마운트됨 · `mockConnector.DisconnectCalls` 1개; 최종: 6개 agent RPC 각 1회 | `CSI-C`, `CSI-N`, `Agent`, `Conn`, `Mnt`, `gRPC` |
 | E24.1-4 | `TestCSILifecycle_IdempotentSteps` _(기존 구현)_ | 8단계 각 단계를 두 번씩 동일 인수로 호출해도 오류 없이 최종 상태 동일 — CSI 명세의 멱등성 요구 통합 검증 | `csiLifecycleEnv` 초기화; `callTwice` 헬퍼 함수 사용 | 각 단계 `callTwice(step, fn)` — CreateVolume 2회 · ControllerPublish 2회 · NodeStage 2회 · NodePublish 2회 · NodeUnpublish 2회 · NodeUnstage 2회 · ControllerUnpublish 2회 · DeleteVolume 2회 | 모든 재호출 성공; 오류 없음; 두 번째 호출은 no-op 처리 | `CSI-C`, `CSI-N`, `Agent`, `Conn`, `Mnt`, `SM`, `gRPC` |
@@ -2421,7 +2421,7 @@ NodeUnpublish → NodeUnstage → ControllerUnpublish → DeleteVolume
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| E24.2-1 | `TestCSIController_PartialFailure_CRDCreatedOnExportFailure` | agent.CreateVolume 성공 + agent.ExportVolume 실패 시 PillarVolume CRD Phase=CreatePartial | mockAgentServer: ExportVolumeErr 설정; PillarTarget 등록 | 1) CreateVolumeRequest 전송 | 오류 반환 (CO 재시도 트리거); CRD Phase=CreatePartial; BackendCreated=true; FailedOperation="ExportVolume"; ExportInfo=nil | `CSI-C`, `Agent`, `VolCRD`, `gRPC` |
+| E24.2-1 | `TestCSIController_PartialFailure_CRDCreatedOnExportFailure` | agent.CreateVolume 성공 + agent.ExportVolume 실패 시 PillarVolumeState CRD Phase=CreatePartial | mockAgentServer: ExportVolumeErr 설정; PillarAgent 등록 | 1) CreateVolumeRequest 전송 | 오류 반환 (CO 재시도 트리거); CRD Phase=CreatePartial; BackendCreated=true; FailedOperation="ExportVolume"; ExportInfo=nil | `CSI-C`, `Agent`, `VolCRD`, `gRPC` |
 | E24.2-2 | `TestCSIController_PartialFailure_RetryAdvancesToReady` | 부분 실패 후 재시도 시 CRD Phase=Ready 전환 및 ExportInfo 채워짐 | Phase=CreatePartial CRD 존재; ExportVolume 이번엔 성공 | 1) 동일 인수로 CreateVolumeRequest 재전송 | 성공; CRD Phase=Ready; ExportInfo(TargetID, Address) 채워짐; PartialFailure=nil | `CSI-C`, `Agent`, `VolCRD`, `gRPC` |
 | E24.2-3 | `TestCSIController_PartialFailure_AgentCreateVolumeCalledOnceOnRetry` | skipBackend 최적화 — 재시도 시 agent.CreateVolume 재호출 없음 | Phase=CreatePartial CRD 존재; skipBackend 활성화 조건 충족 | 1) CreateVolumeRequest 재전송; 2) agent 호출 횟수 검증 | agent.CreateVolume 총 1회 (재시도 포함); agent.ExportVolume 총 2회 | `CSI-C`, `Agent`, `VolCRD`, `gRPC`, `SM` |
 | E24.2-4 | `TestCSIZvolNoDup_ExactlyOneZvolAfterExportFailureRetry` | export 실패 후 재시도 시 zvol 중복 생성 없음 (E6.3-1 상위 통합 뷰) | `statefulZvolAgentServer`; ExportVolumeErr 주입/제거 | 1) CreateVolume(실패); 2) zvol 수=1 확인; 3) CreateVolume(성공); 4) zvol 수=1 유지 확인 | zvol 총 1개; skipBackend 발동; CRD Phase=Ready | `CSI-C`, `Agent`, `VolCRD`, `gRPC`, `SM` |
@@ -2502,9 +2502,9 @@ NodeUnpublish → NodeUnstage → ControllerUnpublish → DeleteVolume
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| E24.9-1 | `TestCSIController_DeleteVolume_AgentDeleteVolumeFailsTransient` | agent.DeleteVolume 일시적 실패 시 DeleteVolume이 오류 반환 (CO 재시도 허용) | CreateVolume 성공; mockAgentServer: DeleteVolumeErr=gRPC Internal | 1) DeleteVolumeRequest 전송 | 비-OK gRPC 상태; PillarVolume CRD 미제거 (롤백 없음, 재시도 대기) | `CSI-C`, `Agent`, `VolCRD`, `gRPC` |
-| E24.9-2 | `TestCSIController_DeleteVolume_CleansUpCRD` | 성공적인 DeleteVolume이 PillarVolume CRD를 제거 (E6.2 상위 통합 뷰) | CreateVolume 성공; PillarVolume CRD Phase=Ready | 1) DeleteVolumeRequest 전송; 2) CRD 조회 | 성공; CRD NotFound | `CSI-C`, `Agent`, `VolCRD`, `gRPC` |
-| E24.9-3 | `TestCSIController_PartialFailure_DeleteVolumeOnPartialCreates` | CreatePartial 상태 볼륨의 DeleteVolume 성공 및 CRD 정리 (E6.2 상위 통합 뷰) | PillarVolume CRD Phase=CreatePartial; BackendCreated=true | 1) DeleteVolumeRequest 전송; 2) CRD 조회 | 성공; agent.DeleteVolume 호출 (BackendCreated=true이므로); CRD NotFound | `CSI-C`, `Agent`, `VolCRD`, `gRPC` |
+| E24.9-1 | `TestCSIController_DeleteVolume_AgentDeleteVolumeFailsTransient` | agent.DeleteVolume 일시적 실패 시 DeleteVolume이 오류 반환 (CO 재시도 허용) | CreateVolume 성공; mockAgentServer: DeleteVolumeErr=gRPC Internal | 1) DeleteVolumeRequest 전송 | 비-OK gRPC 상태; PillarVolumeState CRD 미제거 (롤백 없음, 재시도 대기) | `CSI-C`, `Agent`, `VolCRD`, `gRPC` |
+| E24.9-2 | `TestCSIController_DeleteVolume_CleansUpCRD` | 성공적인 DeleteVolume이 PillarVolumeState CRD를 제거 (E6.2 상위 통합 뷰) | CreateVolume 성공; PillarVolumeState CRD Phase=Ready | 1) DeleteVolumeRequest 전송; 2) CRD 조회 | 성공; CRD NotFound | `CSI-C`, `Agent`, `VolCRD`, `gRPC` |
+| E24.9-3 | `TestCSIController_PartialFailure_DeleteVolumeOnPartialCreates` | CreatePartial 상태 볼륨의 DeleteVolume 성공 및 CRD 정리 (E6.2 상위 통합 뷰) | PillarVolumeState CRD Phase=CreatePartial; BackendCreated=true | 1) DeleteVolumeRequest 전송; 2) CRD 조회 | 성공; agent.DeleteVolume 호출 (BackendCreated=true이므로); CRD NotFound | `CSI-C`, `Agent`, `VolCRD`, `gRPC` |
 | E24.9-4 | `TestCSIZvolNoDup_ZvolRegistryReflectsDeleteAfterPartialCreate` | 부분 생성 상태 DeleteVolume 후 zvol 레지스트리 정확한 1→0 감소 (E6.3 상위 통합 뷰) | `statefulZvolAgentServer`; CreatePartial 상태 | 1) DeleteVolume; 2) zvol 수 확인; 3) CRD 확인 | zvol 0개; CRD NotFound | `CSI-C`, `Agent`, `VolCRD`, `gRPC` |
 
 ---
@@ -2756,8 +2756,8 @@ CSI ControllerServer
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| 263 | `TestCSIController_CreateVolume_LVM_Linear` | LVM linear 모드 CreateVolume 시 agent에 BackendType=LVM, LvmVolumeParams{VolumeGroup, ProvisionMode="linear"} 전달 | PillarTarget 등록; PillarPool(type=lvm-lv, lvm.volumeGroup="data-vg", lvm.provisioningMode=linear); PillarProtocol(nvmeof-tcp); PillarBinding; mockAgentServer 정상 | 1) CreateVolumeRequest 전송 | 성공; agent.CreateVolume에 BackendType=BACKEND_TYPE_LVM; LvmVolumeParams.VolumeGroup="data-vg"; ProvisionMode="linear"; VolumeId에 "lvm-lv" 포함 | `CSI-C`, `Agent`, `LVM`, `TgtCRD`, `VolCRD`, `gRPC` |
-| 264 | `TestCSIController_CreateVolume_LVM_Thin` | LVM thin 모드 CreateVolume 시 agent에 ProvisionMode="thin" 전달 | PillarPool(lvm.thinPool="thin-pool-0", lvm.provisioningMode=thin) | 1) CreateVolumeRequest 전송 | 성공; ProvisionMode="thin"; VolumeGroup="data-vg" | `CSI-C`, `Agent`, `LVM`, `TgtCRD`, `VolCRD`, `gRPC` |
+| 263 | `TestCSIController_CreateVolume_LVM_Linear` | LVM linear 모드 CreateVolume 시 agent에 BackendType=LVM, LvmVolumeParams{VolumeGroup, ProvisionMode="linear"} 전달 | PillarAgent 등록; PillarStore(type=lvm-lv, lvm.volumeGroup="data-vg", lvm.provisioningMode=linear); PillarProtocol(nvmeof-tcp); PillarStorageClass; mockAgentServer 정상 | 1) CreateVolumeRequest 전송 | 성공; agent.CreateVolume에 BackendType=BACKEND_TYPE_LVM; LvmVolumeParams.VolumeGroup="data-vg"; ProvisionMode="linear"; VolumeId에 "lvm-lv" 포함 | `CSI-C`, `Agent`, `LVM`, `TgtCRD`, `VolCRD`, `gRPC` |
+| 264 | `TestCSIController_CreateVolume_LVM_Thin` | LVM thin 모드 CreateVolume 시 agent에 ProvisionMode="thin" 전달 | PillarStore(lvm.thinPool="thin-pool-0", lvm.provisioningMode=thin) | 1) CreateVolumeRequest 전송 | 성공; ProvisionMode="thin"; VolumeGroup="data-vg" | `CSI-C`, `Agent`, `LVM`, `TgtCRD`, `VolCRD`, `gRPC` |
 | 265 | `TestCSIController_CreateVolume_LVM_VolumeIdFormat` | LVM VolumeId가 "target/nvmeof-tcp/lvm-lv/data-vg/pvc-xxx" 5세그먼트 형식 | 동일 | 1) CreateVolumeRequest 전송; 2) VolumeId 세그먼트 파싱 | VolumeId에 5개 슬래시 구분 세그먼트; 3번째="lvm-lv"; 4번째="data-vg" | `CSI-C`, `VolCRD` |
 
 ---
@@ -2766,8 +2766,8 @@ CSI ControllerServer
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| 266 | `TestCSIController_LVM_ModeOverride_PoolDefault` | Pool 레벨 provisioningMode가 기본값으로 agent에 전달 | PillarPool.lvm.provisioningMode="thin"; PillarBinding에 LVM 오버라이드 없음; PVC annotation 없음 | 1) CreateVolumeRequest 전송; 2) agent.CreateVolumeCalls[0] 확인 | LvmVolumeParams.ProvisionMode="thin" | `CSI-C`, `Agent`, `LVM` |
-| 267 | `TestCSIController_LVM_ModeOverride_BindingOverridesPool` | Binding 레벨이 Pool 기본값 오버라이드 | Pool.lvm.provisioningMode="thin"; Binding.overrides.backend.lvm.provisioningMode="linear" | 1) CreateVolumeRequest 전송 | ProvisionMode="linear" (Pool의 "thin" 오버라이드됨) | `CSI-C`, `Agent`, `LVM` |
+| 266 | `TestCSIController_LVM_ModeOverride_PoolDefault` | Pool 레벨 provisioningMode가 기본값으로 agent에 전달 | PillarStore.lvm.provisioningMode="thin"; PillarStorageClass에 LVM 오버라이드 없음; PVC annotation 없음 | 1) CreateVolumeRequest 전송; 2) agent.CreateVolumeCalls[0] 확인 | LvmVolumeParams.ProvisionMode="thin" | `CSI-C`, `Agent`, `LVM` |
+| 267 | `TestCSIController_LVM_ModeOverride_StorageClassOverridesPool` | Binding 레벨이 Pool 기본값 오버라이드 | Pool.lvm.provisioningMode="thin"; Binding.overrides.backend.lvm.provisioningMode="linear" | 1) CreateVolumeRequest 전송 | ProvisionMode="linear" (Pool의 "thin" 오버라이드됨) | `CSI-C`, `Agent`, `LVM` |
 | 268 | `TestCSIController_LVM_ModeOverride_PVCAnnotationOverridesBinding` | PVC annotation이 Binding 레벨 오버라이드 | Binding.overrides.backend.lvm.provisioningMode="linear"; PVC annotation "pillar-csi.bhyoo.com/lvm-mode"="thin" | 1) CreateVolumeRequest(PVC annotation 포함) 전송 | ProvisionMode="thin" (Binding의 "linear" 오버라이드됨) | `CSI-C`, `Agent`, `LVM` |
 | 269 | `TestCSIController_LVM_ModeOverride_AbsentUsesBackendDefault` | 모든 레이어 미지정 시 빈 문자열 → agent backend 컴파일 시점 기본값 | Pool.lvm.provisioningMode=""; Binding 오버라이드 없음 | 1) CreateVolumeRequest 전송 | ProvisionMode="" (빈 문자열); agent backend가 자체 기본값 적용 | `CSI-C`, `Agent`, `LVM` |
 | 269a | `TestCSIController_LVM_ModeOverride_InvalidPVCAnnotation` | PVC annotation에 잘못된 lvm-mode 값("striped") 시 agent가 거부 | PVC annotation "pillar-csi.bhyoo.com/lvm-mode"="striped" | 1) CreateVolumeRequest(annotation 포함) 전송 | gRPC InvalidArgument; agent가 알 수 없는 provisioning mode 거부 | `CSI-C`, `Agent`, `LVM` |
@@ -2779,8 +2779,8 @@ CSI ControllerServer
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| 270 | `TestCSIController_DeleteVolume_LVM` | LVM VolumeId로 DeleteVolume 시 agent.UnexportVolume → agent.DeleteVolume 순서 호출 | LVM CreateVolume 성공; PillarVolume CRD 존재 | 1) DeleteVolumeRequest 전송 | 성공; UnexportVolume 1회, DeleteVolume 1회; CRD 제거 | `CSI-C`, `Agent`, `LVM`, `VolCRD`, `gRPC` |
-| 271 | `TestCSIController_ControllerExpandVolume_LVM` | LVM 볼륨의 ControllerExpandVolume이 agent.ExpandVolume(BACKEND_TYPE_LVM) 호출 | LVM CreateVolume 성공; PillarVolume Phase=Ready | 1) ControllerExpandVolumeRequest(2GiB) 전송 | 성공; BackendType=BACKEND_TYPE_LVM 전달; capacity_bytes≥2GiB; node_expansion_required=true | `CSI-C`, `Agent`, `LVM`, `gRPC` |
+| 270 | `TestCSIController_DeleteVolume_LVM` | LVM VolumeId로 DeleteVolume 시 agent.UnexportVolume → agent.DeleteVolume 순서 호출 | LVM CreateVolume 성공; PillarVolumeState CRD 존재 | 1) DeleteVolumeRequest 전송 | 성공; UnexportVolume 1회, DeleteVolume 1회; CRD 제거 | `CSI-C`, `Agent`, `LVM`, `VolCRD`, `gRPC` |
+| 271 | `TestCSIController_ControllerExpandVolume_LVM` | LVM 볼륨의 ControllerExpandVolume이 agent.ExpandVolume(BACKEND_TYPE_LVM) 호출 | LVM CreateVolume 성공; PillarVolumeState Phase=Ready | 1) ControllerExpandVolumeRequest(2GiB) 전송 | 성공; BackendType=BACKEND_TYPE_LVM 전달; capacity_bytes≥2GiB; node_expansion_required=true | `CSI-C`, `Agent`, `LVM`, `gRPC` |
 
 ---
 
@@ -2788,7 +2788,7 @@ CSI ControllerServer
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| 272 | `TestCSIController_LVM_FullRoundTrip` | LVM 백엔드로 CreateVolume → ControllerPublishVolume → ControllerUnpublishVolume → DeleteVolume 전체 왕복 | PillarTarget/Pool(lvm-lv)/Protocol(nvmeof-tcp)/Binding 등록; mockAgentServer 정상 | 1) CreateVolume; 2) ControllerPublishVolume; 3) ControllerUnpublishVolume; 4) DeleteVolume | 모든 단계 성공; agent 호출 순서·BackendType·LvmVolumeParams 검증 | `CSI-C`, `Agent`, `LVM`, `TgtCRD`, `VolCRD`, `gRPC` |
+| 272 | `TestCSIController_LVM_FullRoundTrip` | LVM 백엔드로 CreateVolume → ControllerPublishVolume → ControllerUnpublishVolume → DeleteVolume 전체 왕복 | PillarAgent/Pool(lvm-lv)/Protocol(nvmeof-tcp)/Binding 등록; mockAgentServer 정상 | 1) CreateVolume; 2) ControllerPublishVolume; 3) ControllerUnpublishVolume; 4) DeleteVolume | 모든 단계 성공; agent 호출 순서·BackendType·LvmVolumeParams 검증 | `CSI-C`, `Agent`, `LVM`, `TgtCRD`, `VolCRD`, `gRPC` |
 
 ---
 
@@ -2813,7 +2813,7 @@ CSI ControllerServer
 **E6.3(zvol 중복 방지)와의 관계:**
 > E6.3은 ZFS zvol에 대한 skipBackend 최적화를 검증한다.
 > E30은 **동일한 최적화가 LVM LV에도 적용됨**을 검증한다.
-> PillarVolume CRD의 `Phase=CreatePartial` + `BackendDevicePath` 존재 시
+> PillarVolumeState CRD의 `Phase=CreatePartial` + `BackendDevicePath` 존재 시
 > 재시도에서 `agent.CreateVolume`을 건너뛰고 `agent.ExportVolume`만 재호출한다.
 
 **LVM에서의 skipBackend 필요성:**
@@ -2831,7 +2831,7 @@ LV 존재 여부 추적.
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
 | 273 | `TestCSILVMNoDup_ExactlyOneLVAfterExportFailureRetry` | export 실패 후 재시도 시 LV가 정확히 1개만 존재 — skipBackend 동작 확인 | `statefulLVAgentServer` 초기화; `ExportVolumeErr` 주입 후 재시도 전 제거; LVM 백엔드 파라미터(backend-type=lvm-lv, lvm-vg=data-vg) | 1) CreateVolume(ExportVolume 실패) → 오류; 2) LV 수=1, agent.CreateVolume 호출=1, CRD Phase=CreatePartial, BackendDevicePath 비어 있지 않음; 3) CreateVolume 재시도(성공); 4) LV 수=1, CreateVolume 호출=1 유지, CRD Phase=Ready | 재시도 후 LV 총 1개; agent.CreateVolume 총 1회 (skipBackend); agent.ExportVolume 총 2회; CRD Phase=Ready | `CSI-C`, `Agent`, `LVM`, `VolCRD`, `gRPC`, `SM` |
-| 274 | `TestCSILVMNoDup_LVRegistryReflectsDeleteAfterPartialCreate` | 부분 생성 후 DeleteVolume 시 LV 레지스트리 1→0 감소 | 부분 실패 후 PillarVolume CRD 존재; `statefulLVAgentServer` | 1) CreateVolume(ExportVolume 실패) → LV 1개; 2) CRD에서 VolumeID 읽기; 3) DeleteVolume; 4) LV 수=0, CRD NotFound | DeleteVolume 성공; LV 레지스트리 0; CRD 제거 | `CSI-C`, `Agent`, `LVM`, `VolCRD`, `gRPC` |
+| 274 | `TestCSILVMNoDup_LVRegistryReflectsDeleteAfterPartialCreate` | 부분 생성 후 DeleteVolume 시 LV 레지스트리 1→0 감소 | 부분 실패 후 PillarVolumeState CRD 존재; `statefulLVAgentServer` | 1) CreateVolume(ExportVolume 실패) → LV 1개; 2) CRD에서 VolumeID 읽기; 3) DeleteVolume; 4) LV 수=0, CRD NotFound | DeleteVolume 성공; LV 레지스트리 0; CRD 제거 | `CSI-C`, `Agent`, `LVM`, `VolCRD`, `gRPC` |
 | 275 | `TestCSILVMNoDup_MultipleRetriesNeverDuplicate` | 연속 3회 export 실패 후 최종 성공 — 매 재시도마다 LV 수 1 유지 | `retryFails=3`; `statefulLVAgentServer`; 3회 실패 후 `ExportVolumeErr=nil` | 1) 3회 연속 CreateVolume(실패); 2) 각 실패 후 LV 수=1, CreateVolume 호출=1; 3) 4번째 성공 | 모든 재시도에서 LV 수 1; agent.CreateVolume 총 1회; agent.ExportVolume 총 4회; 최종 Ready | `CSI-C`, `Agent`, `LVM`, `VolCRD`, `gRPC`, `SM` |
 
 ---
@@ -2880,7 +2880,7 @@ go test -tags=integration ./internal/webhook/... -v
 
 ---
 
-## E19: PillarTarget CRD 라이프사이클
+## E19: PillarAgent CRD 라이프사이클
 
 **테스트 유형:** C (Envtest 통합) ⚠️ envtest 필요
 
@@ -2889,39 +2889,39 @@ go test -tags=integration ./internal/webhook/... -v
 **실행 방법:**
 ```bash
 make setup-envtest
-go test -tags=integration ./internal/controller/... -v -run 'TestControllers/PillarTarget'
-go test -tags=integration ./internal/webhook/... -v -run 'TestWebhooks/PillarTarget'
+go test -tags=integration ./internal/controller/... -v -run 'TestControllers/PillarAgent'
+go test -tags=integration ./internal/webhook/... -v -run 'TestWebhooks/PillarAgent'
 ```
 
 **목적:**
-PillarTarget CRD의 전체 라이프사이클을 검증한다. 이 CRD는 스토리지 에이전트(pillar-agent)가
+PillarAgent CRD의 전체 라이프사이클을 검증한다. 이 CRD는 스토리지 에이전트(pillar-agent)가
 실행 중인 노드 또는 외부 주소를 식별하는 클러스터-스코프 리소스이다. 다음 동작을 검증한다:
 
 1. **유효/무효 스펙 생성** — `spec.nodeRef` / `spec.external` 판별 유니온(discriminated union) 검증
 2. **상태 조건 전이** — `NodeExists`, `AgentConnected`, `Ready` 조건의 정확한 설정
-3. **삭제 보호 동작** — PillarPool이 참조하는 동안 파이널라이저가 삭제를 차단
+3. **삭제 보호 동작** — PillarStore이 참조하는 동안 파이널라이저가 삭제를 차단
 
 **컴포넌트 약어 참조:**
 
 | 약어 | 의미 |
 |------|------|
-| `TgtCRD` | `api/v1alpha1.PillarTarget` CRD 및 상태 |
-| `TgtCtrl` | `internal/controller.PillarTargetReconciler` |
-| `TgtWH` | `internal/webhook/v1alpha1.PillarTargetCustomValidator` |
-| `PoolCRD` | `api/v1alpha1.PillarPool` CRD |
+| `TgtCRD` | `api/v1alpha1.PillarAgent` CRD 및 상태 |
+| `TgtCtrl` | `internal/controller.PillarAgentReconciler` |
+| `TgtWH` | `internal/webhook/v1alpha1.PillarAgentCustomValidator` |
+| `PoolCRD` | `api/v1alpha1.PillarStore` CRD |
 | `MockDialer` | `internal/controller.mockDialer` (테스트 더블) |
 
 ---
 
 ### E19.1 유효한 스펙으로 생성
 
-**목적:** 다양한 유효한 스펙으로 PillarTarget을 생성하거나 검증기를 통과할 수 있음을 확인한다.
+**목적:** 다양한 유효한 스펙으로 PillarAgent을 생성하거나 검증기를 통과할 수 있음을 확인한다.
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| E19.1.1 | `TestPillarTargetWebhook_ValidCreate_External` | `spec.external.address` + `spec.external.port`가 모두 설정된 external 스펙으로 ValidateCreate 통과 | envtest API 서버; PillarTarget CRD 설치; `PillarTargetCustomValidator` 인스턴스 생성 | 1) `spec.external.address="10.0.0.1"`, `spec.external.port=9500`으로 `validator.ValidateCreate(ctx, obj)` 호출 | `warnings=nil`; `err=nil`; 허용 | `TgtWH` |
-| E19.1.2 | `TestPillarTargetWebhook_ValidCreate_NodeRef` | `spec.nodeRef.name`만 설정된 nodeRef 스펙으로 ValidateCreate 통과 | envtest API 서버; PillarTarget CRD 설치; `PillarTargetCustomValidator` 인스턴스 생성 | 1) `spec.nodeRef.name="worker-1"`으로 `validator.ValidateCreate(ctx, obj)` 호출 | `warnings=nil`; `err=nil`; 허용 | `TgtWH` |
-| E19.1.3 | `TestPillarTargetController_FinalizerAddedOnFirstReconcile` | PillarTarget 생성 후 첫 번째 `Reconcile` 호출에서 `pillar-target-protection` 파이널라이저 자동 추가 | envtest API 서버; `PillarTargetReconciler` 초기화 (`Dialer=nil`); `spec.external` PillarTarget 생성 | 1) `k8sClient.Create(ctx, target)` 실행; 2) `reconciler.Reconcile(ctx, req)` 1회 호출 | PillarTarget에 `pillar-csi.bhyoo.com/pillar-target-protection` 파이널라이저 존재; `result.RequeueAfter==0` | `TgtCRD`, `TgtCtrl` |
+| E19.1.1 | `TestPillarAgentWebhook_ValidCreate_External` | `spec.external.address` + `spec.external.port`가 모두 설정된 external 스펙으로 ValidateCreate 통과 | envtest API 서버; PillarAgent CRD 설치; `PillarAgentCustomValidator` 인스턴스 생성 | 1) `spec.external.address="10.0.0.1"`, `spec.external.port=9500`으로 `validator.ValidateCreate(ctx, obj)` 호출 | `warnings=nil`; `err=nil`; 허용 | `TgtWH` |
+| E19.1.2 | `TestPillarAgentWebhook_ValidCreate_NodeRef` | `spec.nodeRef.name`만 설정된 nodeRef 스펙으로 ValidateCreate 통과 | envtest API 서버; PillarAgent CRD 설치; `PillarAgentCustomValidator` 인스턴스 생성 | 1) `spec.nodeRef.name="worker-1"`으로 `validator.ValidateCreate(ctx, obj)` 호출 | `warnings=nil`; `err=nil`; 허용 | `TgtWH` |
+| E19.1.3 | `TestPillarAgentController_FinalizerAddedOnFirstReconcile` | PillarAgent 생성 후 첫 번째 `Reconcile` 호출에서 `pillar-agent-protection` 파이널라이저 자동 추가 | envtest API 서버; `PillarAgentReconciler` 초기화 (`Dialer=nil`); `spec.external` PillarAgent 생성 | 1) `k8sClient.Create(ctx, target)` 실행; 2) `reconciler.Reconcile(ctx, req)` 1회 호출 | PillarAgent에 `pillar-csi.bhyoo.com/pillar-agent-protection` 파이널라이저 존재; `result.RequeueAfter==0` | `TgtCRD`, `TgtCtrl` |
 
 ---
 
@@ -2932,40 +2932,40 @@ Kubernetes API 서버 수준에서 거부됨을 확인한다. 웹훅이 아닌 C
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| E19.2.1 | `TestPillarTargetCRD_InvalidCreate_EmptyNodeRefName` | `spec.nodeRef.name`이 빈 문자열인 경우 API 서버가 HTTP 422로 거부 | envtest API 서버; PillarTarget CRD 설치 (`MinLength=1` 마커 포함) | 1) `spec.nodeRef.name=""`으로 `k8sClient.Create(ctx, target)` 호출 | `k8sClient.Create` 오류 반환; HTTP 422 UnprocessableEntity; `spec.nodeRef.name` 필드 검증 실패 메시지 포함 | `TgtCRD` |
-| E19.2.2 | `TestPillarTargetCRD_InvalidCreate_ExternalPortTooLow` | `spec.external.port=0` (최솟값 미달) 시 API 서버가 거부 | envtest API 서버; PillarTarget CRD 설치 (`Minimum=1` 마커 포함) | 1) `spec.external.address="10.0.0.1"`, `spec.external.port=0`으로 Create 호출 | 오류 반환; `spec.external.port` 값 범위 검증 실패 | `TgtCRD` |
-| E19.2.3 | `TestPillarTargetCRD_InvalidCreate_ExternalPortTooHigh` | `spec.external.port=65536` (최댓값 초과) 시 API 서버가 거부 | envtest API 서버; PillarTarget CRD 설치 (`Maximum=65535` 마커 포함) | 1) `spec.external.port=65536`으로 Create 호출 | 오류 반환; `spec.external.port` 값 범위 검증 실패 | `TgtCRD` |
-| E19.2.4 | `TestPillarTargetCRD_InvalidCreate_EmptyExternalAddress` | `spec.external.address`가 빈 문자열인 경우 거부 | envtest API 서버; PillarTarget CRD 설치 (`MinLength=1` 마커 포함) | 1) `spec.external.address=""`으로 Create 호출 | 오류 반환; `spec.external.address` 필드 검증 실패 | `TgtCRD` |
+| E19.2.1 | `TestPillarAgentCRD_InvalidCreate_EmptyNodeRefName` | `spec.nodeRef.name`이 빈 문자열인 경우 API 서버가 HTTP 422로 거부 | envtest API 서버; PillarAgent CRD 설치 (`MinLength=1` 마커 포함) | 1) `spec.nodeRef.name=""`으로 `k8sClient.Create(ctx, target)` 호출 | `k8sClient.Create` 오류 반환; HTTP 422 UnprocessableEntity; `spec.nodeRef.name` 필드 검증 실패 메시지 포함 | `TgtCRD` |
+| E19.2.2 | `TestPillarAgentCRD_InvalidCreate_ExternalPortTooLow` | `spec.external.port=0` (최솟값 미달) 시 API 서버가 거부 | envtest API 서버; PillarAgent CRD 설치 (`Minimum=1` 마커 포함) | 1) `spec.external.address="10.0.0.1"`, `spec.external.port=0`으로 Create 호출 | 오류 반환; `spec.external.port` 값 범위 검증 실패 | `TgtCRD` |
+| E19.2.3 | `TestPillarAgentCRD_InvalidCreate_ExternalPortTooHigh` | `spec.external.port=65536` (최댓값 초과) 시 API 서버가 거부 | envtest API 서버; PillarAgent CRD 설치 (`Maximum=65535` 마커 포함) | 1) `spec.external.port=65536`으로 Create 호출 | 오류 반환; `spec.external.port` 값 범위 검증 실패 | `TgtCRD` |
+| E19.2.4 | `TestPillarAgentCRD_InvalidCreate_EmptyExternalAddress` | `spec.external.address`가 빈 문자열인 경우 거부 | envtest API 서버; PillarAgent CRD 설치 (`MinLength=1` 마커 포함) | 1) `spec.external.address=""`으로 Create 호출 | 오류 반환; `spec.external.address` 필드 검증 실패 | `TgtCRD` |
 
 ---
 
 ### E19.3 불변 필드 업데이트 거부 — 웹훅 검증
 
-**목적:** PillarTarget의 핵심 식별 필드(에이전트 호스트를 바꾸는 변경)는
+**목적:** PillarAgent의 핵심 식별 필드(에이전트 호스트를 바꾸는 변경)는
 `ValidateUpdate`에서 `field.Forbidden` 오류로 거부됨을 확인한다.
-이 검증은 `internal/webhook/v1alpha1.PillarTargetCustomValidator.ValidateUpdate`에서 수행된다.
+이 검증은 `internal/webhook/v1alpha1.PillarAgentCustomValidator.ValidateUpdate`에서 수행된다.
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| E19.3.1 | `TestPillarTargetWebhook_ImmutableUpdate_NodeRefToExternal` | `spec.nodeRef` → `spec.external`로 판별자(discriminant) 전환 시 거부 | `oldObj.spec.nodeRef.name="node-1"`; `newObj.spec.external.address="10.0.0.1"` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | `err != nil`; 오류 메시지에 `"cannot switch between nodeRef and external"` 포함; `field.Forbidden` 타입; `spec` 경로 | `TgtWH` |
-| E19.3.2 | `TestPillarTargetWebhook_ImmutableUpdate_ExternalToNodeRef` | `spec.external` → `spec.nodeRef`로 역전환 시 거부 | `oldObj.spec.external.address="10.0.0.1"`; `newObj.spec.nodeRef.name="node-1"` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | `err != nil`; `field.Forbidden`; `spec` 경로 | `TgtWH` |
-| E19.3.3 | `TestPillarTargetWebhook_ImmutableUpdate_NodeRefNameChange` | `spec.nodeRef.name` 변경 시 거부 — 에이전트 호스트 변경 방지 | `oldObj.spec.nodeRef.name="node-1"`; `newObj.spec.nodeRef.name="node-2"` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | `err != nil`; `field.Forbidden`; `spec.nodeRef.name` 경로; 오류 메시지에 이전값 `"node-1"`과 신규값 `"node-2"` 모두 포함 | `TgtWH` |
-| E19.3.4 | `TestPillarTargetWebhook_ImmutableUpdate_ExternalAddressChange` | `spec.external.address` 변경 시 거부 | `oldObj.spec.external.address="10.0.0.1"`; `newObj.spec.external.address="10.0.0.2"` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | `err != nil`; `field.Forbidden`; `spec.external.address` 경로 | `TgtWH` |
-| E19.3.5 | `TestPillarTargetWebhook_ImmutableUpdate_ExternalPortChange` | `spec.external.port` 변경 시 거부 | `oldObj.spec.external.port=9500`; `newObj.spec.external.port=9501` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | `err != nil`; `field.Forbidden`; `spec.external.port` 경로 | `TgtWH` |
-| E19.3.6 | `TestPillarTargetWebhook_MutableUpdate_AddressTypeChange` | `spec.nodeRef.addressType` 변경은 허용 (식별 필드 아님; 접속 방법만 변경) | `oldObj.spec.nodeRef.name="node-1"`, `addressType="InternalIP"`; `newObj.spec.nodeRef.name="node-1"`, `addressType="ExternalIP"` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | `err=nil`; `warnings=nil`; 허용 | `TgtWH` |
+| E19.3.1 | `TestPillarAgentWebhook_ImmutableUpdate_NodeRefToExternal` | `spec.nodeRef` → `spec.external`로 판별자(discriminant) 전환 시 거부 | `oldObj.spec.nodeRef.name="node-1"`; `newObj.spec.external.address="10.0.0.1"` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | `err != nil`; 오류 메시지에 `"cannot switch between nodeRef and external"` 포함; `field.Forbidden` 타입; `spec` 경로 | `TgtWH` |
+| E19.3.2 | `TestPillarAgentWebhook_ImmutableUpdate_ExternalToNodeRef` | `spec.external` → `spec.nodeRef`로 역전환 시 거부 | `oldObj.spec.external.address="10.0.0.1"`; `newObj.spec.nodeRef.name="node-1"` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | `err != nil`; `field.Forbidden`; `spec` 경로 | `TgtWH` |
+| E19.3.3 | `TestPillarAgentWebhook_ImmutableUpdate_NodeRefNameChange` | `spec.nodeRef.name` 변경 시 거부 — 에이전트 호스트 변경 방지 | `oldObj.spec.nodeRef.name="node-1"`; `newObj.spec.nodeRef.name="node-2"` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | `err != nil`; `field.Forbidden`; `spec.nodeRef.name` 경로; 오류 메시지에 이전값 `"node-1"`과 신규값 `"node-2"` 모두 포함 | `TgtWH` |
+| E19.3.4 | `TestPillarAgentWebhook_ImmutableUpdate_ExternalAddressChange` | `spec.external.address` 변경 시 거부 | `oldObj.spec.external.address="10.0.0.1"`; `newObj.spec.external.address="10.0.0.2"` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | `err != nil`; `field.Forbidden`; `spec.external.address` 경로 | `TgtWH` |
+| E19.3.5 | `TestPillarAgentWebhook_ImmutableUpdate_ExternalPortChange` | `spec.external.port` 변경 시 거부 | `oldObj.spec.external.port=9500`; `newObj.spec.external.port=9501` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | `err != nil`; `field.Forbidden`; `spec.external.port` 경로 | `TgtWH` |
+| E19.3.6 | `TestPillarAgentWebhook_MutableUpdate_AddressTypeChange` | `spec.nodeRef.addressType` 변경은 허용 (식별 필드 아님; 접속 방법만 변경) | `oldObj.spec.nodeRef.name="node-1"`, `addressType="InternalIP"`; `newObj.spec.nodeRef.name="node-1"`, `addressType="ExternalIP"` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | `err=nil`; `warnings=nil`; 허용 | `TgtWH` |
 
 ---
 
 ### E19.4 상태 조건 전이 — NodeExists
 
-**목적:** `NodeExists` 조건이 PillarTarget 모드(external vs nodeRef)와 K8s Node 존재 여부에 따라
+**목적:** `NodeExists` 조건이 PillarAgent 모드(external vs nodeRef)와 K8s Node 존재 여부에 따라
 올바르게 설정됨을 확인한다.
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| E19.4.1 | `TestPillarTargetController_NodeExists_Unknown_ExternalMode` | external 모드 PillarTarget에서 `NodeExists=Unknown/ExternalMode` 설정 — external 모드는 K8s Node를 참조하지 않음 | envtest; external PillarTarget 생성; 파이널라이저 추가 조정 1회 완료 | 1) 두 번째 `reconciler.Reconcile(ctx, req)` 호출 | `NodeExists.Status=Unknown`; `Reason="ExternalMode"` | `TgtCRD`, `TgtCtrl` |
-| E19.4.2 | `TestPillarTargetController_NodeExists_True_NodePresent` | nodeRef 모드에서 참조된 K8s Node가 존재하면 `NodeExists=True/NodeFound` | envtest; `spec.nodeRef.name="worker-1"` PillarTarget; `worker-1` Node 오브젝트 사전 생성 | 1) 파이널라이저 조정; 2) 일반 조정 실행 | `NodeExists.Status=True`; `Reason="NodeFound"` | `TgtCRD`, `TgtCtrl` |
-| E19.4.3 | `TestPillarTargetController_NodeExists_False_NodeMissing` | nodeRef 모드에서 참조된 K8s Node가 없으면 `NodeExists=False/NodeNotFound` | envtest; `spec.nodeRef.name="missing-node"` PillarTarget; `missing-node` Node 오브젝트 없음 | 1) 파이널라이저 조정; 2) 일반 조정 실행 | `NodeExists.Status=False`; `Reason="NodeNotFound"`; `Message`에 `"missing-node"` 포함 | `TgtCRD`, `TgtCtrl` |
+| E19.4.1 | `TestPillarAgentController_NodeExists_Unknown_ExternalMode` | external 모드 PillarAgent에서 `NodeExists=Unknown/ExternalMode` 설정 — external 모드는 K8s Node를 참조하지 않음 | envtest; external PillarAgent 생성; 파이널라이저 추가 조정 1회 완료 | 1) 두 번째 `reconciler.Reconcile(ctx, req)` 호출 | `NodeExists.Status=Unknown`; `Reason="ExternalMode"` | `TgtCRD`, `TgtCtrl` |
+| E19.4.2 | `TestPillarAgentController_NodeExists_True_NodePresent` | nodeRef 모드에서 참조된 K8s Node가 존재하면 `NodeExists=True/NodeFound` | envtest; `spec.nodeRef.name="worker-1"` PillarAgent; `worker-1` Node 오브젝트 사전 생성 | 1) 파이널라이저 조정; 2) 일반 조정 실행 | `NodeExists.Status=True`; `Reason="NodeFound"` | `TgtCRD`, `TgtCtrl` |
+| E19.4.3 | `TestPillarAgentController_NodeExists_False_NodeMissing` | nodeRef 모드에서 참조된 K8s Node가 없으면 `NodeExists=False/NodeNotFound` | envtest; `spec.nodeRef.name="missing-node"` PillarAgent; `missing-node` Node 오브젝트 없음 | 1) 파이널라이저 조정; 2) 일반 조정 실행 | `NodeExists.Status=False`; `Reason="NodeNotFound"`; `Message`에 `"missing-node"` 포함 | `TgtCRD`, `TgtCtrl` |
 
 ---
 
@@ -2976,11 +2976,11 @@ Kubernetes API 서버 수준에서 거부됨을 확인한다. 웹훅이 아닌 C
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| E19.5.1 | `TestPillarTargetController_AgentConnected_False_DialerNil` | `reconciler.Dialer=nil`이면 `AgentConnected=False/DialerNotConfigured` — 개발/테스트 환경 | envtest; external PillarTarget; `reconciler.Dialer=nil` (기본값) | 1) 파이널라이저 조정; 2) 일반 조정 실행 | `AgentConnected.Status=False`; `Reason="DialerNotConfigured"` | `TgtCRD`, `TgtCtrl` |
-| E19.5.2 | `TestPillarTargetController_AgentConnected_True_PlainTCP` | `mockDialer{healthy:true, mtls:false}` → `AgentConnected=True/Dialed` — 평문 TCP 연결 시뮬레이션 | envtest; external PillarTarget; `reconciler.Dialer = &mockDialer{healthy:true, mtls:false}` | 1) 파이널라이저 조정; 2) mockDialer 설정 후 일반 조정 실행 | `AgentConnected.Status=True`; `Reason="Dialed"` | `TgtCRD`, `TgtCtrl`, `MockDialer` |
-| E19.5.3 | `TestPillarTargetController_AgentConnected_True_MTLS` | `mockDialer{healthy:true, mtls:true}` → `AgentConnected=True/Authenticated` — mTLS 연결 시뮬레이션 | envtest; external PillarTarget; `reconciler.Dialer = &mockDialer{healthy:true, mtls:true}` | 1) 파이널라이저 조정; 2) mTLS mockDialer 설정 후 일반 조정 실행 | `AgentConnected.Status=True`; `Reason="Authenticated"` | `TgtCRD`, `TgtCtrl`, `MockDialer` |
-| E19.5.4 | `TestPillarTargetController_AgentConnected_False_HealthCheckError` | `mockDialer.err != nil` → `AgentConnected=False/HealthCheckFailed` — 네트워크 오류 시뮬레이션 | envtest; external PillarTarget; `reconciler.Dialer = &mockDialer{err:errors.New("connection refused")}` | 1) 파이널라이저 조정; 2) 오류 반환 mockDialer 설정 후 일반 조정 실행 | `AgentConnected.Status=False`; `Reason="HealthCheckFailed"` | `TgtCRD`, `TgtCtrl`, `MockDialer` |
-| E19.5.5 | `TestPillarTargetController_AgentConnected_False_AgentUnhealthy` | `mockDialer{healthy:false}` → `AgentConnected=False/AgentUnhealthy` — 에이전트 자가 보고 비정상 상태 | envtest; external PillarTarget; `reconciler.Dialer = &mockDialer{healthy:false}` | 1) 파이널라이저 조정; 2) 비정상 응답 mockDialer 설정 후 일반 조정 실행 | `AgentConnected.Status=False`; `Reason="AgentUnhealthy"` | `TgtCRD`, `TgtCtrl`, `MockDialer` |
+| E19.5.1 | `TestPillarAgentController_AgentConnected_False_DialerNil` | `reconciler.Dialer=nil`이면 `AgentConnected=False/DialerNotConfigured` — 개발/테스트 환경 | envtest; external PillarAgent; `reconciler.Dialer=nil` (기본값) | 1) 파이널라이저 조정; 2) 일반 조정 실행 | `AgentConnected.Status=False`; `Reason="DialerNotConfigured"` | `TgtCRD`, `TgtCtrl` |
+| E19.5.2 | `TestPillarAgentController_AgentConnected_True_PlainTCP` | `mockDialer{healthy:true, mtls:false}` → `AgentConnected=True/Dialed` — 평문 TCP 연결 시뮬레이션 | envtest; external PillarAgent; `reconciler.Dialer = &mockDialer{healthy:true, mtls:false}` | 1) 파이널라이저 조정; 2) mockDialer 설정 후 일반 조정 실행 | `AgentConnected.Status=True`; `Reason="Dialed"` | `TgtCRD`, `TgtCtrl`, `MockDialer` |
+| E19.5.3 | `TestPillarAgentController_AgentConnected_True_MTLS` | `mockDialer{healthy:true, mtls:true}` → `AgentConnected=True/Authenticated` — mTLS 연결 시뮬레이션 | envtest; external PillarAgent; `reconciler.Dialer = &mockDialer{healthy:true, mtls:true}` | 1) 파이널라이저 조정; 2) mTLS mockDialer 설정 후 일반 조정 실행 | `AgentConnected.Status=True`; `Reason="Authenticated"` | `TgtCRD`, `TgtCtrl`, `MockDialer` |
+| E19.5.4 | `TestPillarAgentController_AgentConnected_False_HealthCheckError` | `mockDialer.err != nil` → `AgentConnected=False/HealthCheckFailed` — 네트워크 오류 시뮬레이션 | envtest; external PillarAgent; `reconciler.Dialer = &mockDialer{err:errors.New("connection refused")}` | 1) 파이널라이저 조정; 2) 오류 반환 mockDialer 설정 후 일반 조정 실행 | `AgentConnected.Status=False`; `Reason="HealthCheckFailed"` | `TgtCRD`, `TgtCtrl`, `MockDialer` |
+| E19.5.5 | `TestPillarAgentController_AgentConnected_False_AgentUnhealthy` | `mockDialer{healthy:false}` → `AgentConnected=False/AgentUnhealthy` — 에이전트 자가 보고 비정상 상태 | envtest; external PillarAgent; `reconciler.Dialer = &mockDialer{healthy:false}` | 1) 파이널라이저 조정; 2) 비정상 응답 mockDialer 설정 후 일반 조정 실행 | `AgentConnected.Status=False`; `Reason="AgentUnhealthy"` | `TgtCRD`, `TgtCtrl`, `MockDialer` |
 
 ---
 
@@ -2991,27 +2991,27 @@ Kubernetes API 서버 수준에서 거부됨을 확인한다. 웹훅이 아닌 C
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| E19.6.1 | `TestPillarTargetController_Ready_True_AllConditionsMet` | `NodeExists=True` + `AgentConnected=True` → `Ready=True/AllConditionsMet` | envtest; nodeRef PillarTarget; 해당 Node 오브젝트 존재; `mockDialer{healthy:true}` 설정 | 1) 파이널라이저 조정; 2) 일반 조정 실행 | `Ready.Status=True`; `Reason="AllConditionsMet"` | `TgtCRD`, `TgtCtrl`, `MockDialer` |
-| E19.6.2 | `TestPillarTargetController_Ready_False_NodeMissing` | `NodeExists=False` → `Ready=False` — 노드 없음 시 전체 준비 불가 | envtest; nodeRef PillarTarget; 해당 Node 없음 | 1) 파이널라이저 조정; 2) 일반 조정 실행 | `Ready.Status=False`; `NodeExists.Status=False` | `TgtCRD`, `TgtCtrl` |
-| E19.6.3 | `TestPillarTargetController_Ready_False_AgentUnreachable` | `AgentConnected=False` → `Ready=False` — 에이전트 미도달 시 전체 준비 불가 | envtest; external PillarTarget; `mockDialer{err:errors.New("timeout")}` | 1) 파이널라이저 조정; 2) 오류 반환 mockDialer 설정 후 일반 조정 실행 | `Ready.Status=False`; `AgentConnected.Status=False`도 설정됨 | `TgtCRD`, `TgtCtrl`, `MockDialer` |
+| E19.6.1 | `TestPillarAgentController_Ready_True_AllConditionsMet` | `NodeExists=True` + `AgentConnected=True` → `Ready=True/AllConditionsMet` | envtest; nodeRef PillarAgent; 해당 Node 오브젝트 존재; `mockDialer{healthy:true}` 설정 | 1) 파이널라이저 조정; 2) 일반 조정 실행 | `Ready.Status=True`; `Reason="AllConditionsMet"` | `TgtCRD`, `TgtCtrl`, `MockDialer` |
+| E19.6.2 | `TestPillarAgentController_Ready_False_NodeMissing` | `NodeExists=False` → `Ready=False` — 노드 없음 시 전체 준비 불가 | envtest; nodeRef PillarAgent; 해당 Node 없음 | 1) 파이널라이저 조정; 2) 일반 조정 실행 | `Ready.Status=False`; `NodeExists.Status=False` | `TgtCRD`, `TgtCtrl` |
+| E19.6.3 | `TestPillarAgentController_Ready_False_AgentUnreachable` | `AgentConnected=False` → `Ready=False` — 에이전트 미도달 시 전체 준비 불가 | envtest; external PillarAgent; `mockDialer{err:errors.New("timeout")}` | 1) 파이널라이저 조정; 2) 오류 반환 mockDialer 설정 후 일반 조정 실행 | `Ready.Status=False`; `AgentConnected.Status=False`도 설정됨 | `TgtCRD`, `TgtCtrl`, `MockDialer` |
 
 ---
 
 ### E19.7 삭제 보호 동작
 
-**목적:** `pillar-target-protection` 파이널라이저가 PillarPool이 참조하는 동안 PillarTarget
+**목적:** `pillar-agent-protection` 파이널라이저가 PillarStore이 참조하는 동안 PillarAgent
 삭제를 차단하고, 모든 참조가 제거된 후에야 파이널라이저가 제거되어 오브젝트가 GC됨을 확인한다.
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| E19.7.1 | `TestPillarTargetController_DeletionBlocked_ReferencingPoolExists` | 참조 PillarPool이 존재하는 동안 삭제 차단; `result.RequeueAfter=10s` | envtest; PillarTarget + 파이널라이저; `spec.targetRef=<target>` PillarPool 존재 | 1) `k8sClient.Delete(ctx, target)` 호출; 2) `reconciler.Reconcile(ctx, req)` 호출 | `result.RequeueAfter=10s`; 파이널라이저 여전히 존재; `k8sClient.Get` 성공 (오브젝트 미삭제) | `TgtCRD`, `TgtCtrl`, `PoolCRD` |
-| E19.7.2 | `TestPillarTargetController_DeletionAllowed_NoReferencingPools` | 참조 PillarPool 없을 때 즉시 파이널라이저 제거 및 삭제 진행 | envtest; PillarTarget + 파이널라이저; 참조 PillarPool 없음; 삭제 요청 완료 | 1) `reconciler.Reconcile(ctx, req)` 호출 | `result.RequeueAfter=0`; 파이널라이저 제거; `k8sClient.Get` → NotFound | `TgtCRD`, `TgtCtrl` |
-| E19.7.3 | `TestPillarTargetController_DeletionAllowed_AfterPoolRemoval` | 참조 PillarPool 제거 후 다음 조정에서 파이널라이저 제거 및 삭제 완료 | envtest; PillarTarget + 파이널라이저; 삭제 요청 후 첫 조정에서 차단 확인; 이후 참조 PillarPool 삭제 | 1) 첫 조정: `RequeueAfter=10s` 확인; 2) 참조 PillarPool 삭제; 3) 두 번째 조정 실행 | 두 번째 조정 후 파이널라이저 제거; `k8sClient.Get` → NotFound | `TgtCRD`, `TgtCtrl`, `PoolCRD` |
-| E19.7.4 | `TestPillarTargetController_DeletionBlocked_MultiplePoolsRequireAllRemoved` | 여러 PillarPool이 동일 PillarTarget을 참조할 때, 하나라도 남아 있으면 차단 지속 | envtest; PillarTarget; PillarPool A, B 모두 `targetRef=<target>`; 삭제 요청 | 1) 첫 조정: 차단 (pool A, B 존재); 2) PillarPool A 삭제; 3) 두 번째 조정: 여전히 차단 (pool B 존재); 4) PillarPool B 삭제; 5) 세 번째 조정 | 첫 두 조정에서 `RequeueAfter=10s`; 세 번째 조정 후 파이널라이저 제거; 오브젝트 삭제 | `TgtCRD`, `TgtCtrl`, `PoolCRD` |
+| E19.7.1 | `TestPillarAgentController_DeletionBlocked_ReferencingPoolExists` | 참조 PillarStore이 존재하는 동안 삭제 차단; `result.RequeueAfter=10s` | envtest; PillarAgent + 파이널라이저; `spec.agentRef=<target>` PillarStore 존재 | 1) `k8sClient.Delete(ctx, target)` 호출; 2) `reconciler.Reconcile(ctx, req)` 호출 | `result.RequeueAfter=10s`; 파이널라이저 여전히 존재; `k8sClient.Get` 성공 (오브젝트 미삭제) | `TgtCRD`, `TgtCtrl`, `PoolCRD` |
+| E19.7.2 | `TestPillarAgentController_DeletionAllowed_NoReferencingPools` | 참조 PillarStore 없을 때 즉시 파이널라이저 제거 및 삭제 진행 | envtest; PillarAgent + 파이널라이저; 참조 PillarStore 없음; 삭제 요청 완료 | 1) `reconciler.Reconcile(ctx, req)` 호출 | `result.RequeueAfter=0`; 파이널라이저 제거; `k8sClient.Get` → NotFound | `TgtCRD`, `TgtCtrl` |
+| E19.7.3 | `TestPillarAgentController_DeletionAllowed_AfterPoolRemoval` | 참조 PillarStore 제거 후 다음 조정에서 파이널라이저 제거 및 삭제 완료 | envtest; PillarAgent + 파이널라이저; 삭제 요청 후 첫 조정에서 차단 확인; 이후 참조 PillarStore 삭제 | 1) 첫 조정: `RequeueAfter=10s` 확인; 2) 참조 PillarStore 삭제; 3) 두 번째 조정 실행 | 두 번째 조정 후 파이널라이저 제거; `k8sClient.Get` → NotFound | `TgtCRD`, `TgtCtrl`, `PoolCRD` |
+| E19.7.4 | `TestPillarAgentController_DeletionBlocked_MultiplePoolsRequireAllRemoved` | 여러 PillarStore이 동일 PillarAgent을 참조할 때, 하나라도 남아 있으면 차단 지속 | envtest; PillarAgent; PillarStore A, B 모두 `agentRef=<target>`; 삭제 요청 | 1) 첫 조정: 차단 (pool A, B 존재); 2) PillarStore A 삭제; 3) 두 번째 조정: 여전히 차단 (pool B 존재); 4) PillarStore B 삭제; 5) 세 번째 조정 | 첫 두 조정에서 `RequeueAfter=10s`; 세 번째 조정 후 파이널라이저 제거; 오브젝트 삭제 | `TgtCRD`, `TgtCtrl`, `PoolCRD` |
 
 ---
 
-## E20: PillarPool CRD 라이프사이클
+## E20: PillarStore CRD 라이프사이클
 
 **테스트 유형:** C (Envtest 통합) ⚠️ envtest 필요
 
@@ -3020,42 +3020,42 @@ Kubernetes API 서버 수준에서 거부됨을 확인한다. 웹훅이 아닌 C
 **실행 방법:**
 ```bash
 make setup-envtest
-go test -tags=integration ./internal/controller/... -v -run 'TestControllers/PillarPool'
-go test -tags=integration ./internal/webhook/... -v -run 'TestWebhooks/PillarPool'
+go test -tags=integration ./internal/controller/... -v -run 'TestControllers/PillarStore'
+go test -tags=integration ./internal/webhook/... -v -run 'TestWebhooks/PillarStore'
 ```
 
 **목적:**
-PillarPool CRD의 전체 라이프사이클을 검증한다. 이 CRD는 특정 스토리지 에이전트의
+PillarStore CRD의 전체 라이프사이클을 검증한다. 이 CRD는 특정 스토리지 에이전트의
 특정 스토리지 풀(ZFS pool, LVM volume group 등)을 나타내는 클러스터-스코프 리소스이다.
 다음 동작을 검증한다:
 
-1. **유효/무효 스펙 생성** — `spec.targetRef`, `spec.backend.type` 필드 검증
+1. **유효/무효 스펙 생성** — `spec.agentRef`, `spec.backend.type` 필드 검증
 2. **상태 조건 전이** — `TargetReady`, `PoolDiscovered`, `BackendSupported`, `Ready` 조건의 정확한 전이
-3. **용량 동기화** — PillarTarget의 `DiscoveredPools`에서 `status.capacity`로의 자동 동기화
-4. **삭제 보호 동작** — PillarBinding이 참조하는 동안 파이널라이저가 삭제를 차단
+3. **용량 동기화** — PillarAgent의 `DiscoveredPools`에서 `status.capacity`로의 자동 동기화
+4. **삭제 보호 동작** — PillarStorageClass이 참조하는 동안 파이널라이저가 삭제를 차단
 
 **컴포넌트 약어 참조:**
 
 | 약어 | 의미 |
 |------|------|
-| `PoolCRD` | `api/v1alpha1.PillarPool` CRD 및 상태 |
-| `PoolCtrl` | `internal/controller.PillarPoolReconciler` |
-| `PoolWH` | `internal/webhook/v1alpha1.PillarPoolCustomValidator` |
-| `TgtCRD` | `api/v1alpha1.PillarTarget` CRD 및 상태 |
-| `BindCRD` | `api/v1alpha1.PillarBinding` CRD |
+| `PoolCRD` | `api/v1alpha1.PillarStore` CRD 및 상태 |
+| `PoolCtrl` | `internal/controller.PillarStoreReconciler` |
+| `PoolWH` | `internal/webhook/v1alpha1.PillarStoreCustomValidator` |
+| `TgtCRD` | `api/v1alpha1.PillarAgent` CRD 및 상태 |
+| `BindCRD` | `api/v1alpha1.PillarStorageClass` CRD |
 
 ---
 
 ### E20.1 유효한 스펙으로 생성
 
-**목적:** 다양한 `backend.type`으로 유효한 PillarPool을 생성하거나 검증기를 통과할 수 있음을 확인한다.
+**목적:** 다양한 `backend.type`으로 유효한 PillarStore을 생성하거나 검증기를 통과할 수 있음을 확인한다.
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| E20.1.1 | `TestPillarPoolWebhook_ValidCreate_ZFSZvol` | `backend.type="zfs-zvol"` + ZFS 설정으로 ValidateCreate 통과 | envtest; PillarPool CRD 설치; `PillarPoolCustomValidator` 인스턴스 생성 | 1) `spec.targetRef="target-a"`, `spec.backend.type="zfs-zvol"`, `spec.backend.zfs.pool="hot-data"`로 `validator.ValidateCreate(ctx, obj)` 호출 | `err=nil`; 허용 | `PoolWH` |
-| E20.1.2 | `TestPillarPoolWebhook_ValidCreate_Dir` | `backend.type="dir"`로 ValidateCreate 통과 (ZFS 설정 불필요) | envtest; PillarPool CRD 설치; `PillarPoolCustomValidator` 인스턴스 생성 | 1) `spec.targetRef="target-a"`, `spec.backend.type="dir"`로 `validator.ValidateCreate(ctx, obj)` 호출 | `err=nil`; 허용 | `PoolWH` |
-| E20.1.3 | `TestPillarPoolController_FinalizerAddedOnFirstReconcile` | PillarPool 생성 후 첫 번째 `Reconcile` 호출에서 `pool-protection` 파이널라이저 자동 추가 | envtest; `PillarPoolReconciler` 초기화; zfs-zvol 스펙으로 PillarPool 생성 | 1) `k8sClient.Create(ctx, pool)` 실행; 2) `reconciler.Reconcile(ctx, req)` 1회 호출 | PillarPool에 `pillar-csi.bhyoo.com/pool-protection` 파이널라이저 존재; `result.RequeueAfter==0` | `PoolCRD`, `PoolCtrl` |
-| E20.1.4 | `TestPillarPoolController_FinalizerNotDuplicated` | 동일 PillarPool을 두 번 조정해도 파이널라이저 중복 없음 | envtest; PillarPool 생성; 첫 조정으로 파이널라이저 추가 완료 | 1) 두 번째 `reconciler.Reconcile(ctx, req)` 호출 | 파이널라이저 개수 정확히 1개; 중복 없음 | `PoolCRD`, `PoolCtrl` |
+| E20.1.1 | `TestPillarStoreWebhook_ValidCreate_ZFSZvol` | `backend.type="zfs-zvol"` + ZFS 설정으로 ValidateCreate 통과 | envtest; PillarStore CRD 설치; `PillarStoreCustomValidator` 인스턴스 생성 | 1) `spec.agentRef="target-a"`, `spec.backend.type="zfs-zvol"`, `spec.backend.zfs.pool="hot-data"`로 `validator.ValidateCreate(ctx, obj)` 호출 | `err=nil`; 허용 | `PoolWH` |
+| E20.1.2 | `TestPillarStoreWebhook_ValidCreate_Dir` | `backend.type="dir"`로 ValidateCreate 통과 (ZFS 설정 불필요) | envtest; PillarStore CRD 설치; `PillarStoreCustomValidator` 인스턴스 생성 | 1) `spec.agentRef="target-a"`, `spec.backend.type="dir"`로 `validator.ValidateCreate(ctx, obj)` 호출 | `err=nil`; 허용 | `PoolWH` |
+| E20.1.3 | `TestPillarStoreController_FinalizerAddedOnFirstReconcile` | PillarStore 생성 후 첫 번째 `Reconcile` 호출에서 `pool-protection` 파이널라이저 자동 추가 | envtest; `PillarStoreReconciler` 초기화; zfs-zvol 스펙으로 PillarStore 생성 | 1) `k8sClient.Create(ctx, pool)` 실행; 2) `reconciler.Reconcile(ctx, req)` 1회 호출 | PillarStore에 `pillar-csi.bhyoo.com/store-protection` 파이널라이저 존재; `result.RequeueAfter==0` | `PoolCRD`, `PoolCtrl` |
+| E20.1.4 | `TestPillarStoreController_FinalizerNotDuplicated` | 동일 PillarStore을 두 번 조정해도 파이널라이저 중복 없음 | envtest; PillarStore 생성; 첫 조정으로 파이널라이저 추가 완료 | 1) 두 번째 `reconciler.Reconcile(ctx, req)` 호출 | 파이널라이저 개수 정확히 1개; 중복 없음 | `PoolCRD`, `PoolCtrl` |
 
 ---
 
@@ -3065,64 +3065,64 @@ PillarPool CRD의 전체 라이프사이클을 검증한다. 이 CRD는 특정 �
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| E20.2.1 | `TestPillarPoolCRD_InvalidCreate_EmptyTargetRef` | `spec.targetRef`가 빈 문자열인 경우 API 서버가 거부 | envtest; PillarPool CRD 설치 (`MinLength=1` 마커 포함) | 1) `spec.targetRef=""`로 `k8sClient.Create(ctx, pool)` 호출 | 오류 반환; HTTP 422; `spec.targetRef` 필드 검증 실패 | `PoolCRD` |
-| E20.2.2 | `TestPillarPoolCRD_InvalidCreate_InvalidBackendType` | `spec.backend.type`에 열거형 외 값 설정 시 거부 | envtest; PillarPool CRD 설치 (`Enum=zfs-zvol;zfs-dataset;lvm-lv;dir` 마커 포함) | 1) `spec.backend.type="unknown-backend"`로 Create 호출 | 오류 반환; HTTP 422; `spec.backend.type` 열거형 검증 실패 | `PoolCRD` |
-| E20.2.3 | `TestPillarPoolCRD_InvalidCreate_EmptyBackendType` | `spec.backend.type`이 빈 문자열인 경우 거부 | envtest; PillarPool CRD 설치 | 1) `spec.backend.type=""`로 Create 호출 | 오류 반환; `spec.backend.type` 필수 필드 오류 | `PoolCRD` |
+| E20.2.1 | `TestPillarStoreCRD_InvalidCreate_EmptyAgentRef` | `spec.agentRef`가 빈 문자열인 경우 API 서버가 거부 | envtest; PillarStore CRD 설치 (`MinLength=1` 마커 포함) | 1) `spec.agentRef=""`로 `k8sClient.Create(ctx, pool)` 호출 | 오류 반환; HTTP 422; `spec.agentRef` 필드 검증 실패 | `PoolCRD` |
+| E20.2.2 | `TestPillarStoreCRD_InvalidCreate_InvalidBackendType` | `spec.backend.type`에 열거형 외 값 설정 시 거부 | envtest; PillarStore CRD 설치 (`Enum=zfs-zvol;zfs-dataset;lvm-lv;dir` 마커 포함) | 1) `spec.backend.type="unknown-backend"`로 Create 호출 | 오류 반환; HTTP 422; `spec.backend.type` 열거형 검증 실패 | `PoolCRD` |
+| E20.2.3 | `TestPillarStoreCRD_InvalidCreate_EmptyBackendType` | `spec.backend.type`이 빈 문자열인 경우 거부 | envtest; PillarStore CRD 설치 | 1) `spec.backend.type=""`로 Create 호출 | 오류 반환; `spec.backend.type` 필수 필드 오류 | `PoolCRD` |
 
 ---
 
 ### E20.3 불변 필드 업데이트 거부 — 웹훅 검증
 
-**목적:** `spec.targetRef`와 `spec.backend.type`은 생성 후 변경할 수 없음을 확인한다.
+**목적:** `spec.agentRef`와 `spec.backend.type`은 생성 후 변경할 수 없음을 확인한다.
 기존 볼륨이 원래 backend 드라이버와 target에 묶여 있기 때문이다.
-이 검증은 `internal/webhook/v1alpha1.PillarPoolCustomValidator.ValidateUpdate`에서 수행된다.
+이 검증은 `internal/webhook/v1alpha1.PillarStoreCustomValidator.ValidateUpdate`에서 수행된다.
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| E20.3.1 | `TestPillarPoolWebhook_ImmutableUpdate_TargetRefChange` | `spec.targetRef` 변경 시 거부 — 풀이 묶인 스토리지 노드 변경 방지 | `oldObj.spec.targetRef="target-a"`; `newObj.spec.targetRef="target-b"` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | `err != nil`; `field.Forbidden`; `spec.targetRef` 경로; 오류 메시지에 이전값 `"target-a"`과 신규값 `"target-b"` 모두 포함 | `PoolWH` |
-| E20.3.2 | `TestPillarPoolWebhook_ImmutableUpdate_BackendTypeChange` | `spec.backend.type` 변경 시 거부 — 기존 볼륨의 드라이버 변경 방지 | `oldObj.spec.backend.type="zfs-zvol"`; `newObj.spec.backend.type="lvm-lv"` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | `err != nil`; `field.Forbidden`; `spec.backend.type` 경로 | `PoolWH` |
-| E20.3.3 | `TestPillarPoolWebhook_ImmutableUpdate_BothFieldsChange` | `spec.targetRef`와 `spec.backend.type` 동시 변경 시 두 오류 모두 반환 | `oldObj.spec.targetRef="target-a"`, `backend.type="zfs-zvol"`; `newObj.spec.targetRef="target-b"`, `backend.type="lvm-lv"` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | `err != nil`; 오류 집계(Aggregate)에 2개 오류; `spec.targetRef`와 `spec.backend.type` 모두 Forbidden | `PoolWH` |
-| E20.3.4 | `TestPillarPoolWebhook_MutableUpdate_ZFSPropertiesChange` | `spec.backend.zfs.properties` 변경은 허용 (불변 필드 아님) | `oldObj.spec.backend.type="zfs-zvol"`, `zfs.pool="hot-data"`, `properties={"compression":"off"}`; `newObj.properties={"compression":"lz4"}` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | `err=nil`; 허용; `backend.type`과 `targetRef`는 동일 | `PoolWH` |
+| E20.3.1 | `TestPillarStoreWebhook_ImmutableUpdate_AgentRefChange` | `spec.agentRef` 변경 시 거부 — 풀이 묶인 스토리지 노드 변경 방지 | `oldObj.spec.agentRef="target-a"`; `newObj.spec.agentRef="target-b"` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | `err != nil`; `field.Forbidden`; `spec.agentRef` 경로; 오류 메시지에 이전값 `"target-a"`과 신규값 `"target-b"` 모두 포함 | `PoolWH` |
+| E20.3.2 | `TestPillarStoreWebhook_ImmutableUpdate_BackendTypeChange` | `spec.backend.type` 변경 시 거부 — 기존 볼륨의 드라이버 변경 방지 | `oldObj.spec.backend.type="zfs-zvol"`; `newObj.spec.backend.type="lvm-lv"` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | `err != nil`; `field.Forbidden`; `spec.backend.type` 경로 | `PoolWH` |
+| E20.3.3 | `TestPillarStoreWebhook_ImmutableUpdate_BothFieldsChange` | `spec.agentRef`와 `spec.backend.type` 동시 변경 시 두 오류 모두 반환 | `oldObj.spec.agentRef="target-a"`, `backend.type="zfs-zvol"`; `newObj.spec.agentRef="target-b"`, `backend.type="lvm-lv"` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | `err != nil`; 오류 집계(Aggregate)에 2개 오류; `spec.agentRef`와 `spec.backend.type` 모두 Forbidden | `PoolWH` |
+| E20.3.4 | `TestPillarStoreWebhook_MutableUpdate_ZFSPropertiesChange` | `spec.backend.zfs.properties` 변경은 허용 (불변 필드 아님) | `oldObj.spec.backend.type="zfs-zvol"`, `zfs.pool="hot-data"`, `properties={"compression":"off"}`; `newObj.properties={"compression":"lz4"}` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | `err=nil`; 허용; `backend.type`과 `agentRef`는 동일 | `PoolWH` |
 
 ---
 
 ### E20.4 상태 조건 전이 — TargetReady
 
-**목적:** `TargetReady` 조건이 PillarTarget 존재 여부 및 Ready 상태에 따라 올바르게 설정됨을 확인한다.
-PillarTarget이 없거나 Not-Ready이면 하위 조건(`PoolDiscovered`, `BackendSupported`)도 영향을 받는다.
+**목적:** `TargetReady` 조건이 PillarAgent 존재 여부 및 Ready 상태에 따라 올바르게 설정됨을 확인한다.
+PillarAgent이 없거나 Not-Ready이면 하위 조건(`PoolDiscovered`, `BackendSupported`)도 영향을 받는다.
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| E20.4.1 | `TestPillarPoolController_TargetReady_False_TargetAbsent` | 참조 PillarTarget이 없으면 `TargetReady=False/TargetNotFound`; 하위 조건도 모두 False | envtest; PillarPool 생성 (`targetRef="nonexistent"`); 해당 PillarTarget 없음 | 1) 파이널라이저 조정; 2) 일반 조정 실행 | `TargetReady.Status=False`; `Reason="TargetNotFound"`; `PoolDiscovered.Status=False`; `BackendSupported.Status=False`; `Ready.Status=False` (모두 `Reason="TargetNotFound"`) | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
-| E20.4.2 | `TestPillarPoolController_TargetReady_False_TargetNotReady` | 참조 PillarTarget이 존재하지만 `Ready=False`이면 `TargetReady=False/TargetNotReady`; 하위 조건 Unknown | envtest; PillarPool 생성; PillarTarget 존재하되 `Ready.Status=False`로 상태 패치 | 1) 파이널라이저 조정; 2) 일반 조정 실행 | `TargetReady.Status=False`; `Reason="TargetNotReady"`; `PoolDiscovered.Status=Unknown`; `BackendSupported.Status=Unknown`; `Ready.Status=False` | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
-| E20.4.3 | `TestPillarPoolController_TargetReady_True_TargetReady` | 참조 PillarTarget이 `Ready=True`이면 `TargetReady=True` | envtest; PillarPool 생성; PillarTarget `Ready.Status=True`, `resolvedAddress="192.0.2.10:9500"`으로 상태 패치 | 1) 파이널라이저 조정; 2) 일반 조정 실행 | `TargetReady.Status=True`; `Reason="TargetReady"`; `Message`에 resolvedAddress 포함 | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
+| E20.4.1 | `TestPillarStoreController_TargetReady_False_TargetAbsent` | 참조 PillarAgent이 없으면 `TargetReady=False/TargetNotFound`; 하위 조건도 모두 False | envtest; PillarStore 생성 (`agentRef="nonexistent"`); 해당 PillarAgent 없음 | 1) 파이널라이저 조정; 2) 일반 조정 실행 | `TargetReady.Status=False`; `Reason="TargetNotFound"`; `PoolDiscovered.Status=False`; `BackendSupported.Status=False`; `Ready.Status=False` (모두 `Reason="TargetNotFound"`) | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
+| E20.4.2 | `TestPillarStoreController_TargetReady_False_TargetNotReady` | 참조 PillarAgent이 존재하지만 `Ready=False`이면 `TargetReady=False/TargetNotReady`; 하위 조건 Unknown | envtest; PillarStore 생성; PillarAgent 존재하되 `Ready.Status=False`로 상태 패치 | 1) 파이널라이저 조정; 2) 일반 조정 실행 | `TargetReady.Status=False`; `Reason="TargetNotReady"`; `PoolDiscovered.Status=Unknown`; `BackendSupported.Status=Unknown`; `Ready.Status=False` | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
+| E20.4.3 | `TestPillarStoreController_TargetReady_True_TargetReady` | 참조 PillarAgent이 `Ready=True`이면 `TargetReady=True` | envtest; PillarStore 생성; PillarAgent `Ready.Status=True`, `resolvedAddress="192.0.2.10:9500"`으로 상태 패치 | 1) 파이널라이저 조정; 2) 일반 조정 실행 | `TargetReady.Status=True`; `Reason="AgentReady"`; `Message`에 resolvedAddress 포함 | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
 
 ---
 
 ### E20.5 상태 조건 전이 — PoolDiscovered
 
-**목적:** `PoolDiscovered` 조건이 PillarTarget의 `status.discoveredPools` 목록에 따라
+**목적:** `PoolDiscovered` 조건이 PillarAgent의 `status.discoveredPools` 목록에 따라
 올바르게 설정됨을 확인한다. ZFS 백엔드는 이름 매칭이 필요하고, 다른 백엔드(dir, lvm-lv)는 다른 규칙을 따른다.
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| E20.5.1 | `TestPillarPoolController_PoolDiscovered_Unknown_EmptyDiscoveredPools` | PillarTarget `Ready=True`이지만 `discoveredPools=[]`이면 `PoolDiscovered=Unknown/WaitingForAgentData` | envtest; PillarPool(zfs-zvol, `zfs.pool="hot-data"`); PillarTarget Ready=True이나 `discoveredPools=[]` | 1) 일반 조정 실행 | `PoolDiscovered.Status=Unknown`; `Reason="WaitingForAgentData"` | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
-| E20.5.2 | `TestPillarPoolController_PoolDiscovered_True_ZFSPoolNameMatch` | `discoveredPools`에 ZFS 풀 이름이 일치하는 항목이 있으면 `PoolDiscovered=True` | envtest; PillarPool(zfs-zvol, `zfs.pool="hot-data"`); PillarTarget `discoveredPools=[{name:"hot-data", type:"zfs"}]` | 1) 일반 조정 실행 | `PoolDiscovered.Status=True`; `Reason="PoolDiscovered"`; `Message`에 `"hot-data"` 포함 | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
-| E20.5.3 | `TestPillarPoolController_PoolDiscovered_False_ZFSPoolNameMismatch` | `discoveredPools`에 ZFS 풀 이름이 없으면 `PoolDiscovered=False/PoolNotFound` | envtest; PillarPool(zfs-zvol, `zfs.pool="hot-data"`); PillarTarget `discoveredPools=[{name:"cold-data", type:"zfs"}]` | 1) 일반 조정 실행 | `PoolDiscovered.Status=False`; `Reason="PoolNotFound"`; `Message`에 `"hot-data"`와 발견된 풀 이름 목록(`["cold-data"]`) 포함 | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
-| E20.5.4 | `TestPillarPoolController_PoolDiscovered_True_DirBackend_NoNameRequired` | `backend.type="dir"` 백엔드는 명시적 풀 이름 없이 `discoveredPools`에 항목만 있으면 `PoolDiscovered=True` | envtest; PillarPool(dir); PillarTarget `discoveredPools=[{name:"any-entry", type:"dir"}]` | 1) 일반 조정 실행 | `PoolDiscovered.Status=True`; `Reason="PoolDiscovered"` | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
+| E20.5.1 | `TestPillarStoreController_PoolDiscovered_Unknown_EmptyDiscoveredPools` | PillarAgent `Ready=True`이지만 `discoveredPools=[]`이면 `PoolDiscovered=Unknown/WaitingForAgentData` | envtest; PillarStore(zfs-zvol, `zfs.pool="hot-data"`); PillarAgent Ready=True이나 `discoveredPools=[]` | 1) 일반 조정 실행 | `PoolDiscovered.Status=Unknown`; `Reason="WaitingForAgentData"` | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
+| E20.5.2 | `TestPillarStoreController_PoolDiscovered_True_ZFSPoolNameMatch` | `discoveredPools`에 ZFS 풀 이름이 일치하는 항목이 있으면 `PoolDiscovered=True` | envtest; PillarStore(zfs-zvol, `zfs.pool="hot-data"`); PillarAgent `discoveredPools=[{name:"hot-data", type:"zfs"}]` | 1) 일반 조정 실행 | `PoolDiscovered.Status=True`; `Reason="PoolDiscovered"`; `Message`에 `"hot-data"` 포함 | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
+| E20.5.3 | `TestPillarStoreController_PoolDiscovered_False_ZFSPoolNameMismatch` | `discoveredPools`에 ZFS 풀 이름이 없으면 `PoolDiscovered=False/PoolNotFound` | envtest; PillarStore(zfs-zvol, `zfs.pool="hot-data"`); PillarAgent `discoveredPools=[{name:"cold-data", type:"zfs"}]` | 1) 일반 조정 실행 | `PoolDiscovered.Status=False`; `Reason="PoolNotFound"`; `Message`에 `"hot-data"`와 발견된 풀 이름 목록(`["cold-data"]`) 포함 | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
+| E20.5.4 | `TestPillarStoreController_PoolDiscovered_True_DirBackend_NoNameRequired` | `backend.type="dir"` 백엔드는 명시적 풀 이름 없이 `discoveredPools`에 항목만 있으면 `PoolDiscovered=True` | envtest; PillarStore(dir); PillarAgent `discoveredPools=[{name:"any-entry", type:"dir"}]` | 1) 일반 조정 실행 | `PoolDiscovered.Status=True`; `Reason="PoolDiscovered"` | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
 
 ---
 
 ### E20.6 상태 조건 전이 — BackendSupported
 
-**목적:** `BackendSupported` 조건이 PillarTarget의 `status.capabilities.backends` 목록에 따라
+**목적:** `BackendSupported` 조건이 PillarAgent의 `status.capabilities.backends` 목록에 따라
 올바르게 설정됨을 확인한다.
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| E20.6.1 | `TestPillarPoolController_BackendSupported_Unknown_NoCapabilities` | PillarTarget `Ready=True`이지만 `capabilities=nil`이면 `BackendSupported=Unknown/WaitingForAgentData` | envtest; PillarPool(zfs-zvol); PillarTarget Ready=True이나 `capabilities=nil` | 1) 일반 조정 실행 | `BackendSupported.Status=Unknown`; `Reason="WaitingForAgentData"` | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
-| E20.6.2 | `TestPillarPoolController_BackendSupported_True_BackendInCapabilities` | `capabilities.backends`에 해당 `backend.type`이 있으면 `BackendSupported=True` | envtest; PillarPool(zfs-zvol); PillarTarget `capabilities.backends=["zfs-zvol","zfs-dataset"]` | 1) 일반 조정 실행 | `BackendSupported.Status=True`; `Reason="BackendSupported"` | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
-| E20.6.3 | `TestPillarPoolController_BackendSupported_False_BackendNotInCapabilities` | `capabilities.backends`에 해당 `backend.type`이 없으면 `BackendSupported=False/BackendNotSupported` | envtest; PillarPool(lvm-lv); PillarTarget `capabilities.backends=["zfs-zvol","zfs-dataset"]` | 1) 일반 조정 실행 | `BackendSupported.Status=False`; `Reason="BackendNotSupported"`; `Message`에 `"lvm-lv"`와 지원 목록(`["zfs-zvol","zfs-dataset"]`) 포함 | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
+| E20.6.1 | `TestPillarStoreController_BackendSupported_Unknown_NoCapabilities` | PillarAgent `Ready=True`이지만 `capabilities=nil`이면 `BackendSupported=Unknown/WaitingForAgentData` | envtest; PillarStore(zfs-zvol); PillarAgent Ready=True이나 `capabilities=nil` | 1) 일반 조정 실행 | `BackendSupported.Status=Unknown`; `Reason="WaitingForAgentData"` | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
+| E20.6.2 | `TestPillarStoreController_BackendSupported_True_BackendInCapabilities` | `capabilities.backends`에 해당 `backend.type`이 있으면 `BackendSupported=True` | envtest; PillarStore(zfs-zvol); PillarAgent `capabilities.backends=["zfs-zvol","zfs-dataset"]` | 1) 일반 조정 실행 | `BackendSupported.Status=True`; `Reason="BackendSupported"` | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
+| E20.6.3 | `TestPillarStoreController_BackendSupported_False_BackendNotInCapabilities` | `capabilities.backends`에 해당 `backend.type`이 없으면 `BackendSupported=False/BackendNotSupported` | envtest; PillarStore(lvm-lv); PillarAgent `capabilities.backends=["zfs-zvol","zfs-dataset"]` | 1) 일반 조정 실행 | `BackendSupported.Status=False`; `Reason="BackendNotSupported"`; `Message`에 `"lvm-lv"`와 지원 목록(`["zfs-zvol","zfs-dataset"]`) 포함 | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
 
 ---
 
@@ -3133,50 +3133,50 @@ PillarTarget이 없거나 Not-Ready이면 하위 조건(`PoolDiscovered`, `Backe
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| E20.7.1 | `TestPillarPoolController_Ready_True_AllConditionsMet` | 모든 조건 True → `Ready=True/AllConditionsMet` | envtest; PillarPool(zfs-zvol, `pool="hot-data"`); PillarTarget Ready=True; `discoveredPools=[{name:"hot-data"}]`; `capabilities.backends=["zfs-zvol"]` | 1) 파이널라이저 조정; 2) 일반 조정 실행 | `Ready.Status=True`; `Reason="AllConditionsMet"` | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
-| E20.7.2 | `TestPillarPoolController_Ready_False_PoolNotDiscovered` | `PoolDiscovered=False` → `Ready=False/ConditionsNotMet` (`TargetReady=True`, `BackendSupported=True`이어도) | envtest; PillarPool(zfs-zvol, `pool="missing-pool"`); PillarTarget Ready=True; `discoveredPools=[{name:"other-pool"}]`; `capabilities.backends=["zfs-zvol"]` | 1) 일반 조정 실행 | `Ready.Status=False`; `Reason="ConditionsNotMet"`; `Message`에 `PoolDiscovered` 실패 이유 포함 | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
-| E20.7.3 | `TestPillarPoolController_Ready_False_BackendUnsupported` | `BackendSupported=False` → `Ready=False/ConditionsNotMet` | envtest; PillarPool(lvm-lv); PillarTarget Ready=True; discoveredPools 존재; `capabilities.backends=["zfs-zvol"]` | 1) 일반 조정 실행 | `Ready.Status=False`; `Reason="ConditionsNotMet"`; `Message`에 `BackendSupported` 실패 이유 포함 | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
+| E20.7.1 | `TestPillarStoreController_Ready_True_AllConditionsMet` | 모든 조건 True → `Ready=True/AllConditionsMet` | envtest; PillarStore(zfs-zvol, `pool="hot-data"`); PillarAgent Ready=True; `discoveredPools=[{name:"hot-data"}]`; `capabilities.backends=["zfs-zvol"]` | 1) 파이널라이저 조정; 2) 일반 조정 실행 | `Ready.Status=True`; `Reason="AllConditionsMet"` | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
+| E20.7.2 | `TestPillarStoreController_Ready_False_PoolNotDiscovered` | `PoolDiscovered=False` → `Ready=False/ConditionsNotMet` (`TargetReady=True`, `BackendSupported=True`이어도) | envtest; PillarStore(zfs-zvol, `pool="missing-pool"`); PillarAgent Ready=True; `discoveredPools=[{name:"other-pool"}]`; `capabilities.backends=["zfs-zvol"]` | 1) 일반 조정 실행 | `Ready.Status=False`; `Reason="ConditionsNotMet"`; `Message`에 `PoolDiscovered` 실패 이유 포함 | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
+| E20.7.3 | `TestPillarStoreController_Ready_False_BackendUnsupported` | `BackendSupported=False` → `Ready=False/ConditionsNotMet` | envtest; PillarStore(lvm-lv); PillarAgent Ready=True; discoveredPools 존재; `capabilities.backends=["zfs-zvol"]` | 1) 일반 조정 실행 | `Ready.Status=False`; `Reason="ConditionsNotMet"`; `Message`에 `BackendSupported` 실패 이유 포함 | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
 
 ---
 
 ### E20.8 용량 동기화 (DiscoveredPool → status.capacity)
 
-**목적:** PillarTarget의 `status.discoveredPools`에서 용량 정보가 PillarPool의
+**목적:** PillarAgent의 `status.discoveredPools`에서 용량 정보가 PillarStore의
 `status.capacity`로 자동 동기화됨을 확인한다. `Used = Total - Available` 계산과
 음수 방지 클램핑 동작을 포함한다.
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| E20.8.1 | `TestPillarPoolController_CapacitySync_TotalAndAvailableSet` | `DiscoveredPool`에 Total, Available 있으면 `status.capacity`에 반영; `Used=Total-Available` 자동 계산 | envtest; PillarPool(zfs-zvol, `pool="hot-data"`); PillarTarget Ready=True; `discoveredPools=[{name:"hot-data", total:"100Gi", available:"60Gi"}]` | 1) 일반 조정 실행 | `status.capacity.total="100Gi"`; `status.capacity.available="60Gi"`; `status.capacity.used="40Gi"` | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
-| E20.8.2 | `TestPillarPoolController_CapacitySync_UsedClampedAtZero` | `Available > Total` 비정상 데이터에서 `Used=0`으로 클램핑 (음수 방지) | envtest; `discoveredPools=[{name:"hot-data", total:"50Gi", available:"80Gi"}]` (Available > Total) | 1) 일반 조정 실행 | `status.capacity.used="0"` (클램핑); `total="50Gi"`; `available="80Gi"` 그대로 | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
-| E20.8.3 | `TestPillarPoolController_CapacitySync_ClearedWhenPoolNotDiscovered` | `PoolDiscovered=False` 또는 Unknown이면 기존 capacity 제거 | envtest; PillarPool(zfs-zvol, `pool="hot-data"`); PillarTarget `discoveredPools=[{name:"other-pool"}]` (이름 불일치) | 1) 일반 조정 실행 | `status.capacity=nil`; 이전에 설정된 capacity 값 제거됨 | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
+| E20.8.1 | `TestPillarStoreController_CapacitySync_TotalAndAvailableSet` | `DiscoveredPool`에 Total, Available 있으면 `status.capacity`에 반영; `Used=Total-Available` 자동 계산 | envtest; PillarStore(zfs-zvol, `pool="hot-data"`); PillarAgent Ready=True; `discoveredPools=[{name:"hot-data", total:"100Gi", available:"60Gi"}]` | 1) 일반 조정 실행 | `status.capacity.total="100Gi"`; `status.capacity.available="60Gi"`; `status.capacity.used="40Gi"` | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
+| E20.8.2 | `TestPillarStoreController_CapacitySync_UsedClampedAtZero` | `Available > Total` 비정상 데이터에서 `Used=0`으로 클램핑 (음수 방지) | envtest; `discoveredPools=[{name:"hot-data", total:"50Gi", available:"80Gi"}]` (Available > Total) | 1) 일반 조정 실행 | `status.capacity.used="0"` (클램핑); `total="50Gi"`; `available="80Gi"` 그대로 | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
+| E20.8.3 | `TestPillarStoreController_CapacitySync_ClearedWhenPoolNotDiscovered` | `PoolDiscovered=False` 또는 Unknown이면 기존 capacity 제거 | envtest; PillarStore(zfs-zvol, `pool="hot-data"`); PillarAgent `discoveredPools=[{name:"other-pool"}]` (이름 불일치) | 1) 일반 조정 실행 | `status.capacity=nil`; 이전에 설정된 capacity 값 제거됨 | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
 
 ---
 
 ### E20.9 삭제 보호 동작
 
-**목적:** `pool-protection` 파이널라이저가 PillarBinding이 참조하는 동안 PillarPool
+**목적:** `pool-protection` 파이널라이저가 PillarStorageClass이 참조하는 동안 PillarStore
 삭제를 차단하고, 모든 참조가 제거된 후에야 파이널라이저가 제거되어 오브젝트가 GC됨을 확인한다.
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| E20.9.1 | `TestPillarPoolController_DeletionBlocked_ReferencingBindingExists` | 참조 PillarBinding이 존재하는 동안 삭제 차단; `Ready=False/DeletionBlocked` 설정 | envtest; PillarPool + 파이널라이저; `spec.poolRef=<pool>` PillarBinding 존재; 삭제 요청 | 1) `k8sClient.Delete(ctx, pool)` 호출; 2) `reconciler.Reconcile(ctx, req)` 호출 | `result.RequeueAfter=10s`; 파이널라이저 존재; `Ready.Reason="DeletionBlocked"`; `Message`에 PillarBinding 이름 포함 | `PoolCRD`, `PoolCtrl`, `BindCRD` |
-| E20.9.2 | `TestPillarPoolController_DeletionAllowed_NoReferencingBindings` | 참조 PillarBinding 없을 때 즉시 파이널라이저 제거 및 삭제 진행 | envtest; PillarPool + 파이널라이저; 참조 PillarBinding 없음; 삭제 요청 완료 | 1) `reconciler.Reconcile(ctx, req)` 호출 | `result.RequeueAfter=0`; 파이널라이저 제거; `k8sClient.Get` → NotFound | `PoolCRD`, `PoolCtrl` |
-| E20.9.3 | `TestPillarPoolController_DeletionAllowed_AfterBindingRemoval` | 참조 PillarBinding 제거 후 다음 조정에서 파이널라이저 제거 및 삭제 완료 | envtest; PillarPool + 파이널라이저; 첫 조정에서 차단 확인; 이후 참조 PillarBinding 삭제 | 1) 첫 조정: 차단; 2) 참조 PillarBinding 삭제; 3) 두 번째 조정 실행 | 두 번째 조정 후 파이널라이저 제거; `k8sClient.Get` → NotFound | `PoolCRD`, `PoolCtrl`, `BindCRD` |
-| E20.9.4 | `TestPillarPoolController_DeletionBlocked_StatusMessageContainsAllBindingNames` | 여러 PillarBinding이 참조할 때 상태 메시지에 모든 이름이 나열됨 | envtest; PillarPool + 파이널라이저; PillarBinding `binding-a`, `binding-b` 모두 `poolRef=<pool>`; 삭제 요청 | 1) `reconciler.Reconcile(ctx, req)` 호출 | `Ready.Message`에 `"binding-a"`, `"binding-b"` 모두 포함; `result.RequeueAfter=10s` | `PoolCRD`, `PoolCtrl`, `BindCRD` |
+| E20.9.1 | `TestPillarStoreController_DeletionBlocked_ReferencingBindingExists` | 참조 PillarStorageClass이 존재하는 동안 삭제 차단; `Ready=False/DeletionBlocked` 설정 | envtest; PillarStore + 파이널라이저; `spec.storeRef=<pool>` PillarStorageClass 존재; 삭제 요청 | 1) `k8sClient.Delete(ctx, pool)` 호출; 2) `reconciler.Reconcile(ctx, req)` 호출 | `result.RequeueAfter=10s`; 파이널라이저 존재; `Ready.Reason="DeletionBlocked"`; `Message`에 PillarStorageClass 이름 포함 | `PoolCRD`, `PoolCtrl`, `BindCRD` |
+| E20.9.2 | `TestPillarStoreController_DeletionAllowed_NoReferencingBindings` | 참조 PillarStorageClass 없을 때 즉시 파이널라이저 제거 및 삭제 진행 | envtest; PillarStore + 파이널라이저; 참조 PillarStorageClass 없음; 삭제 요청 완료 | 1) `reconciler.Reconcile(ctx, req)` 호출 | `result.RequeueAfter=0`; 파이널라이저 제거; `k8sClient.Get` → NotFound | `PoolCRD`, `PoolCtrl` |
+| E20.9.3 | `TestPillarStoreController_DeletionAllowed_AfterBindingRemoval` | 참조 PillarStorageClass 제거 후 다음 조정에서 파이널라이저 제거 및 삭제 완료 | envtest; PillarStore + 파이널라이저; 첫 조정에서 차단 확인; 이후 참조 PillarStorageClass 삭제 | 1) 첫 조정: 차단; 2) 참조 PillarStorageClass 삭제; 3) 두 번째 조정 실행 | 두 번째 조정 후 파이널라이저 제거; `k8sClient.Get` → NotFound | `PoolCRD`, `PoolCtrl`, `BindCRD` |
+| E20.9.4 | `TestPillarStoreController_DeletionBlocked_StatusMessageContainsAllBindingNames` | 여러 PillarStorageClass이 참조할 때 상태 메시지에 모든 이름이 나열됨 | envtest; PillarStore + 파이널라이저; PillarStorageClass `binding-a`, `binding-b` 모두 `storeRef=<pool>`; 삭제 요청 | 1) `reconciler.Reconcile(ctx, req)` 호출 | `Ready.Message`에 `"binding-a"`, `"binding-b"` 모두 포함; `result.RequeueAfter=10s` | `PoolCRD`, `PoolCtrl`, `BindCRD` |
 
 ---
 
-### E20.10 PillarTarget 상태 변경 시 PillarPool 재조정
+### E20.10 PillarAgent 상태 변경 시 PillarStore 재조정
 
-**목적:** PillarTarget의 상태가 변경될 때 해당 target을 참조하는 PillarPool이
+**목적:** PillarAgent의 상태가 변경될 때 해당 target을 참조하는 PillarStore이
 자동으로 재조정되어 `TargetReady` 조건이 최신 상태로 유지됨을 확인한다.
-이 동작은 `SetupWithManager`에서 PillarTarget 변경에 대한 Watch를 등록하여 구현된다.
+이 동작은 `SetupWithManager`에서 PillarAgent 변경에 대한 Watch를 등록하여 구현된다.
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| E20.10.1 | `TestPillarPoolController_TargetReadyTransition_NotReadyToReady` | PillarTarget이 Not-Ready → Ready로 전이 후 PillarPool 재조정 시 `TargetReady=True`로 갱신 | envtest; PillarPool + PillarTarget(Ready=False); PillarPool 조정 후 `TargetReady=False` 확인 | 1) PillarTarget `Ready=True`로 상태 패치; 2) PillarPool 재조정 실행 | PillarPool `TargetReady.Status=True`로 업데이트됨 | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
-| E20.10.2 | `TestPillarPoolController_TargetReadyTransition_ReadyToNotReady` | PillarTarget이 Ready → Not-Ready로 전이 후 PillarPool 재조정 시 `TargetReady=False`; 하위 조건 Unknown으로 후퇴 | envtest; PillarPool + PillarTarget(Ready=True); PillarPool 조정 후 `TargetReady=True` 확인 | 1) PillarTarget `Ready=False`로 상태 패치; 2) PillarPool 재조정 실행 | PillarPool `TargetReady.Status=False`; `PoolDiscovered.Status=Unknown`; `BackendSupported.Status=Unknown` | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
+| E20.10.1 | `TestPillarStoreController_TargetReadyTransition_NotReadyToReady` | PillarAgent이 Not-Ready → Ready로 전이 후 PillarStore 재조정 시 `TargetReady=True`로 갱신 | envtest; PillarStore + PillarAgent(Ready=False); PillarStore 조정 후 `TargetReady=False` 확인 | 1) PillarAgent `Ready=True`로 상태 패치; 2) PillarStore 재조정 실행 | PillarStore `TargetReady.Status=True`로 업데이트됨 | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
+| E20.10.2 | `TestPillarStoreController_TargetReadyTransition_ReadyToNotReady` | PillarAgent이 Ready → Not-Ready로 전이 후 PillarStore 재조정 시 `TargetReady=False`; 하위 조건 Unknown으로 후퇴 | envtest; PillarStore + PillarAgent(Ready=True); PillarStore 조정 후 `TargetReady=True` 확인 | 1) PillarAgent `Ready=False`로 상태 패치; 2) PillarStore 재조정 실행 | PillarStore `TargetReady.Status=False`; `PoolDiscovered.Status=Unknown`; `BackendSupported.Status=Unknown` | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
 
 ---
 
@@ -3196,12 +3196,12 @@ go test -tags=integration ./internal/webhook/... -v -run 'TestWebhooks/PillarPro
 **목적:**
 PillarProtocol CRD의 전체 라이프사이클을 검증한다. 이 CRD는 스토리지 볼륨을 노출할 때
 사용할 네트워크 프로토콜 구성(NVMe-oF/TCP, iSCSI, NFS)을 정의하는 클러스터-스코프 리소스이다.
-동일한 PillarProtocol을 여러 PillarBinding이 참조할 수 있으며, 다음 동작을 검증한다:
+동일한 PillarProtocol을 여러 PillarStorageClass이 참조할 수 있으며, 다음 동작을 검증한다:
 
 1. **유효/무효 스펙 생성** — `spec.type` 열거형 검증 및 프로토콜별 포트 범위 검증
 2. **불변 필드 업데이트 거부** — `spec.type`은 생성 후 변경 불가 (웹훅 검증)
-3. **상태 조건 전이** — `Ready` 조건, `BindingCount`, `ActiveTargets` 상태 필드의 정확한 전이
-4. **삭제 보호 동작** — PillarBinding이 참조하는 동안 파이널라이저가 삭제를 차단
+3. **상태 조건 전이** — `Ready` 조건, `StorageClassCount`, `ActiveAgents` 상태 필드의 정확한 전이
+4. **삭제 보호 동작** — PillarStorageClass이 참조하는 동안 파이널라이저가 삭제를 차단
 
 > **CI 실행 가능 여부:** ✅ CI에서 실행 가능 — envtest는 실제 K8s 클러스터 없이
 > 인메모리 API 서버만 구동하므로 도커/Kind 불필요.
@@ -3216,8 +3216,8 @@ PillarProtocol CRD의 전체 라이프사이클을 검증한다. 이 CRD는 스�
 | `PProtCRD` | `api/v1alpha1.PillarProtocol` CRD 및 상태 |
 | `PProtCtrl` | `internal/controller.PillarProtocolReconciler` |
 | `PProtWH` | `internal/webhook/v1alpha1.PillarProtocolCustomValidator` |
-| `BindCRD` | `api/v1alpha1.PillarBinding` CRD |
-| `PoolCRD` | `api/v1alpha1.PillarPool` CRD |
+| `BindCRD` | `api/v1alpha1.PillarStorageClass` CRD |
+| `PoolCRD` | `api/v1alpha1.PillarStore` CRD |
 
 ---
 
@@ -3270,44 +3270,44 @@ orphan 상태로 만드는 치명적 변경이다.
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| E23.4.1 | `TestPillarProtocolController_Ready_True_NoBindings` | 참조 PillarBinding 없는 정상 조정에서 `Ready=True/ProtocolConfigured` | envtest; PillarProtocol 생성; 파이널라이저 추가 조정 완료 | 1) 두 번째 `reconciler.Reconcile(ctx, req)` 호출 | `Ready.Status=True`; `Ready.Reason="ProtocolConfigured"` | `PProtCRD`, `PProtCtrl` |
-| E23.4.2 | `TestPillarProtocolController_Ready_True_WithBindings` | 참조 PillarBinding이 존재하는 정상 조정에서도 `Ready=True` | envtest; PillarProtocol + PillarBinding(참조) 생성; 파이널라이저 추가 완료 | 1) `reconciler.Reconcile(ctx, req)` 호출 | `Ready.Status=True`; `Ready.Reason="ProtocolConfigured"` | `PProtCRD`, `PProtCtrl`, `BindCRD` |
+| E23.4.1 | `TestPillarProtocolController_Ready_True_NoBindings` | 참조 PillarStorageClass 없는 정상 조정에서 `Ready=True/ProtocolConfigured` | envtest; PillarProtocol 생성; 파이널라이저 추가 조정 완료 | 1) 두 번째 `reconciler.Reconcile(ctx, req)` 호출 | `Ready.Status=True`; `Ready.Reason="ProtocolConfigured"` | `PProtCRD`, `PProtCtrl` |
+| E23.4.2 | `TestPillarProtocolController_Ready_True_WithBindings` | 참조 PillarStorageClass이 존재하는 정상 조정에서도 `Ready=True` | envtest; PillarProtocol + PillarStorageClass(참조) 생성; 파이널라이저 추가 완료 | 1) `reconciler.Reconcile(ctx, req)` 호출 | `Ready.Status=True`; `Ready.Reason="ProtocolConfigured"` | `PProtCRD`, `PProtCtrl`, `BindCRD` |
 | E23.4.3 | `TestPillarProtocolController_Ready_Message_ContainsType` | `Ready` 조건 메시지에 `spec.type` 값이 포함됨 | envtest; `spec.type="nvmeof-tcp"` PillarProtocol; 파이널라이저 추가 완료 | 1) `reconciler.Reconcile(ctx, req)` 호출 | `Ready.Message`에 `"nvmeof-tcp"` 포함 | `PProtCRD`, `PProtCtrl` |
-| E23.4.4 | `TestPillarProtocolController_Ready_False_DeletionBlocked` | 삭제 요청 중 참조 PillarBinding 존재 시 `Ready=False/DeletionBlocked` | envtest; PillarProtocol + 파이널라이저; 참조 PillarBinding 존재; 삭제 요청 | 1) `k8sClient.Delete(ctx, protocol)` 호출; 2) `reconciler.Reconcile(ctx, req)` 호출 | `Ready.Status=False`; `Ready.Reason="DeletionBlocked"`; `Ready.Message`에 참조 PillarBinding 이름 포함 | `PProtCRD`, `PProtCtrl`, `BindCRD` |
+| E23.4.4 | `TestPillarProtocolController_Ready_False_DeletionBlocked` | 삭제 요청 중 참조 PillarStorageClass 존재 시 `Ready=False/DeletionBlocked` | envtest; PillarProtocol + 파이널라이저; 참조 PillarStorageClass 존재; 삭제 요청 | 1) `k8sClient.Delete(ctx, protocol)` 호출; 2) `reconciler.Reconcile(ctx, req)` 호출 | `Ready.Status=False`; `Ready.Reason="DeletionBlocked"`; `Ready.Message`에 참조 PillarStorageClass 이름 포함 | `PProtCRD`, `PProtCtrl`, `BindCRD` |
 | E23.4.5 | `TestPillarProtocolController_NoRequeue_WhenReady` | 정상 상태에서 `result.RequeueAfter==0` — 불필요한 재조정 없음 | envtest; PillarProtocol; 파이널라이저 추가 완료 | 1) `reconciler.Reconcile(ctx, req)` 호출 | `result.RequeueAfter==0` | `PProtCRD`, `PProtCtrl` |
 
 ---
 
-### E23.5 상태 필드 — BindingCount 및 ActiveTargets
+### E23.5 상태 필드 — StorageClassCount 및 ActiveAgents
 
-**목적:** `status.bindingCount`와 `status.activeTargets`가 참조 PillarBinding 및
-연결된 PillarPool의 `targetRef`로부터 올바르게 계산됨을 확인한다.
+**목적:** `status.storageClassCount`와 `status.activeAgents`가 참조 PillarStorageClass 및
+연결된 PillarStore의 `agentRef`로부터 올바르게 계산됨을 확인한다.
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| E23.5.1 | `TestPillarProtocolController_BindingCount_Zero_NoBindings` | 참조 PillarBinding 없을 때 `BindingCount=0`, `ActiveTargets=[]` | envtest; PillarProtocol; 파이널라이저 추가 완료; 참조 PillarBinding 없음 | 1) `reconciler.Reconcile(ctx, req)` 호출 | `status.bindingCount=0`; `status.activeTargets=[]` | `PProtCRD`, `PProtCtrl` |
-| E23.5.2 | `TestPillarProtocolController_BindingCount_One_SingleBinding` | 참조 PillarBinding 1개 시 `BindingCount=1` | envtest; PillarProtocol + PillarPool + PillarBinding(참조); 파이널라이저 추가 완료 | 1) `reconciler.Reconcile(ctx, req)` 호출 | `status.bindingCount=1` | `PProtCRD`, `PProtCtrl`, `BindCRD` |
-| E23.5.3 | `TestPillarProtocolController_ActiveTargets_PopulatedFromPool` | PillarBinding → PillarPool → `spec.targetRef` 체인으로 `ActiveTargets` 자동 계산 | envtest; PillarProtocol; PillarPool(`spec.targetRef="node-1"`); PillarBinding(poolRef=pool, protocolRef=protocol) | 1) `reconciler.Reconcile(ctx, req)` 호출 | `status.activeTargets=["node-1"]` | `PProtCRD`, `PProtCtrl`, `BindCRD`, `PoolCRD` |
-| E23.5.4 | `TestPillarProtocolController_ActiveTargets_DeduplicatedSorted` | 여러 PillarBinding이 동일 풀 참조해도 `ActiveTargets`에 중복 없이 정렬된 목록 | envtest; PillarProtocol; PillarPool(`targetRef="node-1"`); PillarBinding A, B 모두 동일 풀 참조 | 1) `reconciler.Reconcile(ctx, req)` 호출 | `status.activeTargets=["node-1"]` (중복 없음) | `PProtCRD`, `PProtCtrl`, `BindCRD`, `PoolCRD` |
-| E23.5.5 | `TestPillarProtocolController_ActiveTargets_EmptyWhenPoolNotFound` | 참조 PillarPool이 없을 때 `BindingCount`는 정확히 집계되나 `ActiveTargets=[]` (우아한 저하) | envtest; PillarProtocol; PillarBinding(참조); PillarPool 없음 | 1) `reconciler.Reconcile(ctx, req)` 호출 | `status.bindingCount=1`; `status.activeTargets=[]`; `Ready=True` (저하 상태지만 오류 아님) | `PProtCRD`, `PProtCtrl`, `BindCRD` |
-| E23.5.6 | `TestPillarProtocolController_BindingCount_Decremented_AfterBindingRemoval` | PillarBinding 삭제 후 조정 시 `BindingCount` 감소 | envtest; PillarProtocol + PillarBinding; 초기 `BindingCount=1` 확인 후 PillarBinding 삭제 | 1) PillarBinding 삭제; 2) `reconciler.Reconcile(ctx, req)` 호출 | `status.bindingCount=0`; `status.activeTargets=[]` | `PProtCRD`, `PProtCtrl`, `BindCRD` |
+| E23.5.1 | `TestPillarProtocolController_StorageClassCount_Zero_NoBindings` | 참조 PillarStorageClass 없을 때 `StorageClassCount=0`, `ActiveAgents=[]` | envtest; PillarProtocol; 파이널라이저 추가 완료; 참조 PillarStorageClass 없음 | 1) `reconciler.Reconcile(ctx, req)` 호출 | `status.storageClassCount=0`; `status.activeAgents=[]` | `PProtCRD`, `PProtCtrl` |
+| E23.5.2 | `TestPillarProtocolController_StorageClassCount_One_SingleBinding` | 참조 PillarStorageClass 1개 시 `StorageClassCount=1` | envtest; PillarProtocol + PillarStore + PillarStorageClass(참조); 파이널라이저 추가 완료 | 1) `reconciler.Reconcile(ctx, req)` 호출 | `status.storageClassCount=1` | `PProtCRD`, `PProtCtrl`, `BindCRD` |
+| E23.5.3 | `TestPillarProtocolController_ActiveAgents_PopulatedFromPool` | PillarStorageClass → PillarStore → `spec.agentRef` 체인으로 `ActiveAgents` 자동 계산 | envtest; PillarProtocol; PillarStore(`spec.agentRef="node-1"`); PillarStorageClass(storeRef=pool, protocolRef=protocol) | 1) `reconciler.Reconcile(ctx, req)` 호출 | `status.activeAgents=["node-1"]` | `PProtCRD`, `PProtCtrl`, `BindCRD`, `PoolCRD` |
+| E23.5.4 | `TestPillarProtocolController_ActiveAgents_DeduplicatedSorted` | 여러 PillarStorageClass이 동일 풀 참조해도 `ActiveAgents`에 중복 없이 정렬된 목록 | envtest; PillarProtocol; PillarStore(`agentRef="node-1"`); PillarStorageClass A, B 모두 동일 풀 참조 | 1) `reconciler.Reconcile(ctx, req)` 호출 | `status.activeAgents=["node-1"]` (중복 없음) | `PProtCRD`, `PProtCtrl`, `BindCRD`, `PoolCRD` |
+| E23.5.5 | `TestPillarProtocolController_ActiveAgents_EmptyWhenPoolNotFound` | 참조 PillarStore이 없을 때 `StorageClassCount`는 정확히 집계되나 `ActiveAgents=[]` (우아한 저하) | envtest; PillarProtocol; PillarStorageClass(참조); PillarStore 없음 | 1) `reconciler.Reconcile(ctx, req)` 호출 | `status.storageClassCount=1`; `status.activeAgents=[]`; `Ready=True` (저하 상태지만 오류 아님) | `PProtCRD`, `PProtCtrl`, `BindCRD` |
+| E23.5.6 | `TestPillarProtocolController_StorageClassCount_Decremented_AfterBindingRemoval` | PillarStorageClass 삭제 후 조정 시 `StorageClassCount` 감소 | envtest; PillarProtocol + PillarStorageClass; 초기 `StorageClassCount=1` 확인 후 PillarStorageClass 삭제 | 1) PillarStorageClass 삭제; 2) `reconciler.Reconcile(ctx, req)` 호출 | `status.storageClassCount=0`; `status.activeAgents=[]` | `PProtCRD`, `PProtCtrl`, `BindCRD` |
 
 ---
 
 ### E23.6 삭제 보호 동작
 
-**목적:** `pillar-csi.bhyoo.com/protocol-protection` 파이널라이저가 PillarBinding이
+**목적:** `pillar-csi.bhyoo.com/protocol-protection` 파이널라이저가 PillarStorageClass이
 참조하는 동안 PillarProtocol 삭제를 차단하고, 모든 참조가 제거된 후에야
 파이널라이저가 제거되어 오브젝트가 GC됨을 확인한다.
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| E23.6.1 | `TestPillarProtocolController_DeletionBlocked_ReferencingBindingExists` | 참조 PillarBinding이 존재하는 동안 삭제 차단; `result.RequeueAfter=10s` | envtest; PillarProtocol + 파이널라이저; `spec.protocolRef=<protocol>` PillarBinding 존재; 삭제 요청 | 1) `k8sClient.Delete(ctx, protocol)` 호출; 2) `reconciler.Reconcile(ctx, req)` 호출 | `result.RequeueAfter=10s`; 파이널라이저 존재; `k8sClient.Get` 성공 (오브젝트 미삭제) | `PProtCRD`, `PProtCtrl`, `BindCRD` |
-| E23.6.2 | `TestPillarProtocolController_DeletionBlocked_StatusUpdated` | 삭제 차단 시 `Ready=False/DeletionBlocked` 설정; `BindingCount`에 차단 바인딩 수 반영 | envtest; PillarProtocol + 파이널라이저; PillarBinding `binding-x` 참조; 삭제 요청 | 1) `reconciler.Reconcile(ctx, req)` 호출 | `Ready.Status=False`; `Ready.Reason="DeletionBlocked"`; `Ready.Message`에 `"binding-x"` 포함; `status.bindingCount=1` | `PProtCRD`, `PProtCtrl`, `BindCRD` |
+| E23.6.1 | `TestPillarProtocolController_DeletionBlocked_ReferencingBindingExists` | 참조 PillarStorageClass이 존재하는 동안 삭제 차단; `result.RequeueAfter=10s` | envtest; PillarProtocol + 파이널라이저; `spec.protocolRef=<protocol>` PillarStorageClass 존재; 삭제 요청 | 1) `k8sClient.Delete(ctx, protocol)` 호출; 2) `reconciler.Reconcile(ctx, req)` 호출 | `result.RequeueAfter=10s`; 파이널라이저 존재; `k8sClient.Get` 성공 (오브젝트 미삭제) | `PProtCRD`, `PProtCtrl`, `BindCRD` |
+| E23.6.2 | `TestPillarProtocolController_DeletionBlocked_StatusUpdated` | 삭제 차단 시 `Ready=False/DeletionBlocked` 설정; `StorageClassCount`에 차단 바인딩 수 반영 | envtest; PillarProtocol + 파이널라이저; PillarStorageClass `binding-x` 참조; 삭제 요청 | 1) `reconciler.Reconcile(ctx, req)` 호출 | `Ready.Status=False`; `Ready.Reason="DeletionBlocked"`; `Ready.Message`에 `"binding-x"` 포함; `status.storageClassCount=1` | `PProtCRD`, `PProtCtrl`, `BindCRD` |
 | E23.6.3 | `TestPillarProtocolController_DeletionBlocked_FinalizerKept` | 삭제 차단 중 파이널라이저 제거되지 않음 | envtest; 동일 사전 조건 | 1) `reconciler.Reconcile(ctx, req)` 호출 | `controllerutil.ContainsFinalizer(fetched, pillarProtocolFinalizer)=true` | `PProtCRD`, `PProtCtrl` |
-| E23.6.4 | `TestPillarProtocolController_DeletionAllowed_NoReferencingBindings` | 참조 PillarBinding 없을 때 즉시 파이널라이저 제거 및 삭제 진행 | envtest; PillarProtocol + 파이널라이저; 참조 PillarBinding 없음; 삭제 요청 완료 | 1) `reconciler.Reconcile(ctx, req)` 호출 | `result.RequeueAfter=0`; 파이널라이저 제거; `k8sClient.Get` → NotFound | `PProtCRD`, `PProtCtrl` |
-| E23.6.5 | `TestPillarProtocolController_DeletionAllowed_AfterBindingRemoval` | 참조 PillarBinding 제거 후 다음 조정에서 파이널라이저 제거 및 삭제 완료 | envtest; PillarProtocol + 파이널라이저; 첫 조정에서 차단 확인; 이후 참조 PillarBinding 삭제 | 1) 첫 조정: `RequeueAfter=10s` 확인; 2) 참조 PillarBinding 삭제; 3) 두 번째 조정 실행 | 두 번째 조정 후 파이널라이저 제거; `k8sClient.Get` → NotFound | `PProtCRD`, `PProtCtrl`, `BindCRD` |
-| E23.6.6 | `TestPillarProtocolController_DeletionBlocked_MultipleBindingsAllNamed` | 여러 PillarBinding이 참조할 때 상태 메시지에 모든 이름이 나열됨 | envtest; PillarProtocol; PillarBinding `binding-a`, `binding-b` 모두 참조; 삭제 요청 | 1) `reconciler.Reconcile(ctx, req)` 호출 | `Ready.Message`에 `"binding-a"`, `"binding-b"` 모두 포함; `result.RequeueAfter=10s` | `PProtCRD`, `PProtCtrl`, `BindCRD` |
+| E23.6.4 | `TestPillarProtocolController_DeletionAllowed_NoReferencingBindings` | 참조 PillarStorageClass 없을 때 즉시 파이널라이저 제거 및 삭제 진행 | envtest; PillarProtocol + 파이널라이저; 참조 PillarStorageClass 없음; 삭제 요청 완료 | 1) `reconciler.Reconcile(ctx, req)` 호출 | `result.RequeueAfter=0`; 파이널라이저 제거; `k8sClient.Get` → NotFound | `PProtCRD`, `PProtCtrl` |
+| E23.6.5 | `TestPillarProtocolController_DeletionAllowed_AfterBindingRemoval` | 참조 PillarStorageClass 제거 후 다음 조정에서 파이널라이저 제거 및 삭제 완료 | envtest; PillarProtocol + 파이널라이저; 첫 조정에서 차단 확인; 이후 참조 PillarStorageClass 삭제 | 1) 첫 조정: `RequeueAfter=10s` 확인; 2) 참조 PillarStorageClass 삭제; 3) 두 번째 조정 실행 | 두 번째 조정 후 파이널라이저 제거; `k8sClient.Get` → NotFound | `PProtCRD`, `PProtCtrl`, `BindCRD` |
+| E23.6.6 | `TestPillarProtocolController_DeletionBlocked_MultipleBindingsAllNamed` | 여러 PillarStorageClass이 참조할 때 상태 메시지에 모든 이름이 나열됨 | envtest; PillarProtocol; PillarStorageClass `binding-a`, `binding-b` 모두 참조; 삭제 요청 | 1) `reconciler.Reconcile(ctx, req)` 호출 | `Ready.Message`에 `"binding-a"`, `"binding-b"` 모두 포함; `result.RequeueAfter=10s` | `PProtCRD`, `PProtCtrl`, `BindCRD` |
 
 ---
 
@@ -3315,7 +3315,7 @@ orphan 상태로 만드는 치명적 변경이다.
 
 ---
 
-## E25: PillarBinding CRD 라이프사이클
+## E25: PillarStorageClass CRD 라이프사이클
 
 **테스트 유형:** C (Envtest 통합) ⚠️ envtest 필요
 
@@ -3324,17 +3324,17 @@ orphan 상태로 만드는 치명적 변경이다.
 **실행 방법:**
 ```bash
 make setup-envtest
-go test -tags=integration ./internal/controller/... -v -run 'TestControllers/PillarBinding'
-go test -tags=integration ./internal/webhook/... -v -run 'TestWebhooks/PillarBinding'
+go test -tags=integration ./internal/controller/... -v -run 'TestControllers/PillarStorageClass'
+go test -tags=integration ./internal/webhook/... -v -run 'TestWebhooks/PillarStorageClass'
 ```
 
 **목적:**
-PillarBinding CRD의 전체 라이프사이클을 검증한다. 이 CRD는 PillarPool(스토리지 백엔드)과
+PillarStorageClass CRD의 전체 라이프사이클을 검증한다. 이 CRD는 PillarStore(스토리지 백엔드)과
 PillarProtocol(네트워크 프로토콜)을 결합하여 Kubernetes StorageClass를 자동으로 생성한다.
 다음 동작을 검증한다:
 
-1. **유효/무효 스펙 생성** — `spec.poolRef`, `spec.protocolRef` 필수 필드 검증
-2. **불변 필드 업데이트 거부** — `spec.poolRef`, `spec.protocolRef`는 생성 후 변경 불가 (웹훅)
+1. **유효/무효 스펙 생성** — `spec.storeRef`, `spec.protocolRef` 필수 필드 검증
+2. **불변 필드 업데이트 거부** — `spec.storeRef`, `spec.protocolRef`는 생성 후 변경 불가 (웹훅)
 3. **Defaulting 웹훅** — `allowVolumeExpansion` 자동 설정 (백엔드 타입 기반)
 4. **백엔드-프로토콜 호환성 웹훅** — 블록 백엔드 + 파일 프로토콜 등 비호환 조합 거부
 5. **상태 조건 전이** — `PoolReady`, `ProtocolValid`, `Compatible`, `StorageClassCreated`, `Ready` 조건
@@ -3351,11 +3351,11 @@ PillarProtocol(네트워크 프로토콜)을 결합하여 Kubernetes StorageClas
 
 | 약어 | 의미 |
 |------|------|
-| `BindCRD` | `api/v1alpha1.PillarBinding` CRD 및 상태 |
-| `BindCtrl` | `internal/controller.PillarBindingReconciler` |
-| `BindWH` | `internal/webhook/v1alpha1.PillarBindingCustomValidator` |
-| `BindDef` | `internal/webhook/v1alpha1.PillarBindingCustomDefaulter` |
-| `PoolCRD` | `api/v1alpha1.PillarPool` CRD |
+| `BindCRD` | `api/v1alpha1.PillarStorageClass` CRD 및 상태 |
+| `BindCtrl` | `internal/controller.PillarStorageClassReconciler` |
+| `BindWH` | `internal/webhook/v1alpha1.PillarStorageClassCustomValidator` |
+| `BindDef` | `internal/webhook/v1alpha1.PillarStorageClassCustomDefaulter` |
+| `PoolCRD` | `api/v1alpha1.PillarStore` CRD |
 | `PProtCRD` | `api/v1alpha1.PillarProtocol` CRD |
 | `SC` | `storage.k8s.io/v1.StorageClass` |
 
@@ -3363,13 +3363,13 @@ PillarProtocol(네트워크 프로토콜)을 결합하여 Kubernetes StorageClas
 
 ### E25.1 유효한 스펙으로 생성
 
-**목적:** 유효한 `poolRef`와 `protocolRef`로 PillarBinding을 생성할 수 있음을 확인한다.
+**목적:** 유효한 `storeRef`와 `protocolRef`로 PillarStorageClass을 생성할 수 있음을 확인한다.
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| E25.1.1 | `TestPillarBindingWebhook_ValidCreate_BasicSpec` | `poolRef`와 `protocolRef`가 설정된 유효한 스펙으로 ValidateCreate 통과 | envtest; PillarBinding CRD 설치; `PillarBindingCustomValidator` 인스턴스 생성 | 1) `spec.poolRef="some-pool"`, `spec.protocolRef="some-protocol"`로 `validator.ValidateCreate(ctx, obj)` 호출 | `warnings=nil`; `err=nil`; 허용 | `BindWH` |
-| E25.1.2 | `TestPillarBindingController_FinalizerAddedOnFirstReconcile` | PillarBinding 생성 후 첫 번째 `Reconcile` 호출에서 `binding-protection` 파이널라이저 자동 추가 | envtest; `PillarBindingReconciler` 초기화; PillarBinding 생성 | 1) `k8sClient.Create(ctx, binding)` 실행; 2) `reconciler.Reconcile(ctx, req)` 1회 호출 | PillarBinding에 `pillar-csi.bhyoo.com/binding-protection` 파이널라이저 존재; `result.RequeueAfter==0` | `BindCRD`, `BindCtrl` |
-| E25.1.3 | `TestPillarBindingController_FinalizerNotDuplicated` | 동일 PillarBinding을 두 번 조정해도 파이널라이저 중복 없음 | envtest; PillarBinding 생성; 첫 조정으로 파이널라이저 추가 완료 | 1) 두 번째 `reconciler.Reconcile(ctx, req)` 호출 | 파이널라이저 개수 정확히 1개 | `BindCRD`, `BindCtrl` |
+| E25.1.1 | `TestPillarStorageClassWebhook_ValidCreate_BasicSpec` | `storeRef`와 `protocolRef`가 설정된 유효한 스펙으로 ValidateCreate 통과 | envtest; PillarStorageClass CRD 설치; `PillarStorageClassCustomValidator` 인스턴스 생성 | 1) `spec.storeRef="some-pool"`, `spec.protocolRef="some-protocol"`로 `validator.ValidateCreate(ctx, obj)` 호출 | `warnings=nil`; `err=nil`; 허용 | `BindWH` |
+| E25.1.2 | `TestPillarStorageClassController_FinalizerAddedOnFirstReconcile` | PillarStorageClass 생성 후 첫 번째 `Reconcile` 호출에서 `binding-protection` 파이널라이저 자동 추가 | envtest; `PillarStorageClassReconciler` 초기화; PillarStorageClass 생성 | 1) `k8sClient.Create(ctx, binding)` 실행; 2) `reconciler.Reconcile(ctx, req)` 1회 호출 | PillarStorageClass에 `pillar-csi.bhyoo.com/storage-class-protection` 파이널라이저 존재; `result.RequeueAfter==0` | `BindCRD`, `BindCtrl` |
+| E25.1.3 | `TestPillarStorageClassController_FinalizerNotDuplicated` | 동일 PillarStorageClass을 두 번 조정해도 파이널라이저 중복 없음 | envtest; PillarStorageClass 생성; 첫 조정으로 파이널라이저 추가 완료 | 1) 두 번째 `reconciler.Reconcile(ctx, req)` 호출 | 파이널라이저 개수 정확히 1개 | `BindCRD`, `BindCtrl` |
 
 ---
 
@@ -3380,48 +3380,48 @@ Kubernetes API 서버 수준에서 거부됨을 확인한다.
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| E25.2.1 | `TestPillarBindingCRD_InvalidCreate_EmptyPoolRef` | `spec.poolRef`가 빈 문자열인 경우 API 서버가 HTTP 422로 거부 | envtest; PillarBinding CRD 설치 (`MinLength=1` 마커 포함) | 1) `spec.poolRef=""`, `spec.protocolRef="some-protocol"`로 `k8sClient.Create(ctx, binding)` 호출 | 오류 반환; HTTP 422 UnprocessableEntity; `spec.poolRef` 필드 검증 실패 메시지 포함 | `BindCRD` |
-| E25.2.2 | `TestPillarBindingCRD_InvalidCreate_EmptyProtocolRef` | `spec.protocolRef`가 빈 문자열인 경우 API 서버가 거부 | envtest; PillarBinding CRD 설치 (`MinLength=1` 마커 포함) | 1) `spec.poolRef="some-pool"`, `spec.protocolRef=""`로 Create 호출 | 오류 반환; HTTP 422; `spec.protocolRef` 필드 검증 실패 | `BindCRD` |
-| E25.2.3 | `TestPillarBindingCRD_InvalidCreate_InvalidReclaimPolicy` | `spec.storageClass.reclaimPolicy`에 허용 외 값 설정 시 거부 | envtest; PillarBinding CRD 설치 (`Enum=Delete;Retain` 마커 포함) | 1) `spec.storageClass.reclaimPolicy="Archive"`으로 Create 호출 | 오류 반환; HTTP 422; `spec.storageClass.reclaimPolicy` 열거형 검증 실패 | `BindCRD` |
+| E25.2.1 | `TestPillarStorageClassCRD_InvalidCreate_EmptyStoreRef` | `spec.storeRef`가 빈 문자열인 경우 API 서버가 HTTP 422로 거부 | envtest; PillarStorageClass CRD 설치 (`MinLength=1` 마커 포함) | 1) `spec.storeRef=""`, `spec.protocolRef="some-protocol"`로 `k8sClient.Create(ctx, binding)` 호출 | 오류 반환; HTTP 422 UnprocessableEntity; `spec.storeRef` 필드 검증 실패 메시지 포함 | `BindCRD` |
+| E25.2.2 | `TestPillarStorageClassCRD_InvalidCreate_EmptyProtocolRef` | `spec.protocolRef`가 빈 문자열인 경우 API 서버가 거부 | envtest; PillarStorageClass CRD 설치 (`MinLength=1` 마커 포함) | 1) `spec.storeRef="some-pool"`, `spec.protocolRef=""`로 Create 호출 | 오류 반환; HTTP 422; `spec.protocolRef` 필드 검증 실패 | `BindCRD` |
+| E25.2.3 | `TestPillarStorageClassCRD_InvalidCreate_InvalidReclaimPolicy` | `spec.storageClass.reclaimPolicy`에 허용 외 값 설정 시 거부 | envtest; PillarStorageClass CRD 설치 (`Enum=Delete;Retain` 마커 포함) | 1) `spec.storageClass.reclaimPolicy="Archive"`으로 Create 호출 | 오류 반환; HTTP 422; `spec.storageClass.reclaimPolicy` 열거형 검증 실패 | `BindCRD` |
 
 ---
 
 ### E25.3 불변 필드 업데이트 거부 — 웹훅 검증
 
-**목적:** `spec.poolRef`와 `spec.protocolRef`는 생성 후 변경할 수 없음을 확인한다.
+**목적:** `spec.storeRef`와 `spec.protocolRef`는 생성 후 변경할 수 없음을 확인한다.
 StorageClass는 특정 풀과 프로토콜에 묶여 있어, 변경 시 기존 PVC 프로비저닝이
 침묵 속에 다른 백엔드로 리디렉션될 수 있다.
-이 검증은 `internal/webhook/v1alpha1.PillarBindingCustomValidator.ValidateUpdate`에서 수행된다.
+이 검증은 `internal/webhook/v1alpha1.PillarStorageClassCustomValidator.ValidateUpdate`에서 수행된다.
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| E25.3.1 | `TestPillarBindingWebhook_ImmutableUpdate_PoolRefChange` | `spec.poolRef` 변경 시 `field.Forbidden` 오류 반환 | `oldObj.spec.poolRef="pool-a"`; `newObj.spec.poolRef="pool-b"` (변경); `protocolRef` 동일 | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | `err != nil`; 오류 메시지에 `"poolRef"` 포함; 이전값 `"pool-a"`, 신규값 `"pool-b"` 언급 | `BindWH` |
-| E25.3.2 | `TestPillarBindingWebhook_ImmutableUpdate_ProtocolRefChange` | `spec.protocolRef` 변경 시 `field.Forbidden` 오류 반환 | `oldObj.spec.protocolRef="proto-a"`; `newObj.spec.protocolRef="proto-b"` (변경); `poolRef` 동일 | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | `err != nil`; 오류 메시지에 `"protocolRef"` 포함 | `BindWH` |
-| E25.3.3 | `TestPillarBindingWebhook_MutableUpdate_StorageClassFieldsChange` | `spec.storageClass.reclaimPolicy` 변경은 허용 (비식별 필드) | `oldObj.spec.storageClass.reclaimPolicy="Delete"`; `newObj.spec.storageClass.reclaimPolicy="Retain"`; `poolRef`, `protocolRef` 동일 | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | `err=nil`; `warnings=nil`; 허용 | `BindWH` |
+| E25.3.1 | `TestPillarStorageClassWebhook_ImmutableUpdate_StoreRefChange` | `spec.storeRef` 변경 시 `field.Forbidden` 오류 반환 | `oldObj.spec.storeRef="pool-a"`; `newObj.spec.storeRef="pool-b"` (변경); `protocolRef` 동일 | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | `err != nil`; 오류 메시지에 `"storeRef"` 포함; 이전값 `"pool-a"`, 신규값 `"pool-b"` 언급 | `BindWH` |
+| E25.3.2 | `TestPillarStorageClassWebhook_ImmutableUpdate_ProtocolRefChange` | `spec.protocolRef` 변경 시 `field.Forbidden` 오류 반환 | `oldObj.spec.protocolRef="proto-a"`; `newObj.spec.protocolRef="proto-b"` (변경); `storeRef` 동일 | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | `err != nil`; 오류 메시지에 `"protocolRef"` 포함 | `BindWH` |
+| E25.3.3 | `TestPillarStorageClassWebhook_MutableUpdate_StorageClassFieldsChange` | `spec.storageClass.reclaimPolicy` 변경은 허용 (비식별 필드) | `oldObj.spec.storageClass.reclaimPolicy="Delete"`; `newObj.spec.storageClass.reclaimPolicy="Retain"`; `storeRef`, `protocolRef` 동일 | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | `err=nil`; `warnings=nil`; 허용 | `BindWH` |
 
 ---
 
 ### E25.4 Defaulting 웹훅 — allowVolumeExpansion 자동 설정
 
-**목적:** PillarBinding 생성 시 `spec.storageClass.allowVolumeExpansion`이 명시적으로
-설정되지 않은 경우, Defaulting 웹훅이 참조된 PillarPool의 백엔드 타입을 조회하여
+**목적:** PillarStorageClass 생성 시 `spec.storageClass.allowVolumeExpansion`이 명시적으로
+설정되지 않은 경우, Defaulting 웹훅이 참조된 PillarStore의 백엔드 타입을 조회하여
 자동으로 적절한 값을 설정함을 확인한다.
-이 로직은 `internal/webhook/v1alpha1.PillarBindingCustomDefaulter.Default`에서 수행된다.
+이 로직은 `internal/webhook/v1alpha1.PillarStorageClassCustomDefaulter.Default`에서 수행된다.
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| E25.4.1 | `TestPillarBindingDefaulter_AllowVolumeExpansion_True_ZFSZvol` | `backend.type="zfs-zvol"` 풀 참조 시 `allowVolumeExpansion=true` 자동 설정 | envtest; `backend.type="zfs-zvol"` PillarPool 생성; PillarBinding에 `allowVolumeExpansion` 미설정 | 1) `defaulter.Default(ctx, obj)` 호출 | `spec.storageClass.allowVolumeExpansion=true` | `BindDef`, `PoolCRD` |
-| E25.4.2 | `TestPillarBindingDefaulter_AllowVolumeExpansion_True_LVMLV` | `backend.type="lvm-lv"` 풀 참조 시 `allowVolumeExpansion=true` 자동 설정 | envtest; `backend.type="lvm-lv"` PillarPool 생성; PillarBinding에 `allowVolumeExpansion` 미설정 | 1) `defaulter.Default(ctx, obj)` 호출 | `spec.storageClass.allowVolumeExpansion=true` | `BindDef`, `PoolCRD` |
-| E25.4.3 | `TestPillarBindingDefaulter_AllowVolumeExpansion_False_ZFSDataset` | `backend.type="zfs-dataset"` 풀 참조 시 `allowVolumeExpansion=false` 자동 설정 | envtest; `backend.type="zfs-dataset"` PillarPool 생성; PillarBinding에 `allowVolumeExpansion` 미설정 | 1) `defaulter.Default(ctx, obj)` 호출 | `spec.storageClass.allowVolumeExpansion=false` | `BindDef`, `PoolCRD` |
-| E25.4.4 | `TestPillarBindingDefaulter_AllowVolumeExpansion_False_Dir` | `backend.type="dir"` 풀 참조 시 `allowVolumeExpansion=false` 자동 설정 | envtest; `backend.type="dir"` PillarPool 생성; PillarBinding에 `allowVolumeExpansion` 미설정 | 1) `defaulter.Default(ctx, obj)` 호출 | `spec.storageClass.allowVolumeExpansion=false` | `BindDef`, `PoolCRD` |
-| E25.4.5 | `TestPillarBindingDefaulter_AllowVolumeExpansion_NotOverridden_Explicit` | `allowVolumeExpansion`이 명시적으로 설정된 경우 Defaulter가 덮어쓰지 않음 | envtest; `backend.type="zfs-zvol"` PillarPool(기본값은 true); PillarBinding에 `allowVolumeExpansion=false` 명시 | 1) `defaulter.Default(ctx, obj)` 호출 | `spec.storageClass.allowVolumeExpansion=false` (명시값 유지) | `BindDef`, `PoolCRD` |
-| E25.4.6 | `TestPillarBindingDefaulter_AllowVolumeExpansion_NilWhenPoolNotFound` | 참조 PillarPool이 없을 때 `allowVolumeExpansion` 설정 건너뜀 (nil 유지, 오류 없음) | envtest; `poolRef="nonexistent-pool"` — pool 미존재; PillarBinding에 `allowVolumeExpansion` 미설정 | 1) `defaulter.Default(ctx, obj)` 호출 | `spec.storageClass.allowVolumeExpansion=nil`; 오류 없음 (graceful skip) | `BindDef` |
+| E25.4.1 | `TestPillarStorageClassDefaulter_AllowVolumeExpansion_True_ZFSZvol` | `backend.type="zfs-zvol"` 풀 참조 시 `allowVolumeExpansion=true` 자동 설정 | envtest; `backend.type="zfs-zvol"` PillarStore 생성; PillarStorageClass에 `allowVolumeExpansion` 미설정 | 1) `defaulter.Default(ctx, obj)` 호출 | `spec.storageClass.allowVolumeExpansion=true` | `BindDef`, `PoolCRD` |
+| E25.4.2 | `TestPillarStorageClassDefaulter_AllowVolumeExpansion_True_LVMLV` | `backend.type="lvm-lv"` 풀 참조 시 `allowVolumeExpansion=true` 자동 설정 | envtest; `backend.type="lvm-lv"` PillarStore 생성; PillarStorageClass에 `allowVolumeExpansion` 미설정 | 1) `defaulter.Default(ctx, obj)` 호출 | `spec.storageClass.allowVolumeExpansion=true` | `BindDef`, `PoolCRD` |
+| E25.4.3 | `TestPillarStorageClassDefaulter_AllowVolumeExpansion_False_ZFSDataset` | `backend.type="zfs-dataset"` 풀 참조 시 `allowVolumeExpansion=false` 자동 설정 | envtest; `backend.type="zfs-dataset"` PillarStore 생성; PillarStorageClass에 `allowVolumeExpansion` 미설정 | 1) `defaulter.Default(ctx, obj)` 호출 | `spec.storageClass.allowVolumeExpansion=false` | `BindDef`, `PoolCRD` |
+| E25.4.4 | `TestPillarStorageClassDefaulter_AllowVolumeExpansion_False_Dir` | `backend.type="dir"` 풀 참조 시 `allowVolumeExpansion=false` 자동 설정 | envtest; `backend.type="dir"` PillarStore 생성; PillarStorageClass에 `allowVolumeExpansion` 미설정 | 1) `defaulter.Default(ctx, obj)` 호출 | `spec.storageClass.allowVolumeExpansion=false` | `BindDef`, `PoolCRD` |
+| E25.4.5 | `TestPillarStorageClassDefaulter_AllowVolumeExpansion_NotOverridden_Explicit` | `allowVolumeExpansion`이 명시적으로 설정된 경우 Defaulter가 덮어쓰지 않음 | envtest; `backend.type="zfs-zvol"` PillarStore(기본값은 true); PillarStorageClass에 `allowVolumeExpansion=false` 명시 | 1) `defaulter.Default(ctx, obj)` 호출 | `spec.storageClass.allowVolumeExpansion=false` (명시값 유지) | `BindDef`, `PoolCRD` |
+| E25.4.6 | `TestPillarStorageClassDefaulter_AllowVolumeExpansion_NilWhenPoolNotFound` | 참조 PillarStore이 없을 때 `allowVolumeExpansion` 설정 건너뜀 (nil 유지, 오류 없음) | envtest; `storeRef="nonexistent-pool"` — pool 미존재; PillarStorageClass에 `allowVolumeExpansion` 미설정 | 1) `defaulter.Default(ctx, obj)` 호출 | `spec.storageClass.allowVolumeExpansion=nil`; 오류 없음 (graceful skip) | `BindDef` |
 
 ---
 
 ### E25.5 백엔드-프로토콜 호환성 웹훅 검증
 
-**목적:** Validating 웹훅이 참조된 PillarPool의 백엔드 타입과 PillarProtocol의 프로토콜 타입의
+**목적:** Validating 웹훅이 참조된 PillarStore의 백엔드 타입과 PillarProtocol의 프로토콜 타입의
 호환성을 검증함을 확인한다. 블록 백엔드(zfs-zvol, lvm-lv)는 블록 프로토콜(nvmeof-tcp, iscsi)만
 허용하고, 파일 백엔드(zfs-dataset, dir)는 파일 프로토콜(nfs)만 허용한다.
 
@@ -3436,29 +3436,29 @@ StorageClass는 특정 풀과 프로토콜에 묶여 있어, 변경 시 기존 P
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| E25.5.1 | `TestPillarBindingWebhook_Compatible_ZFSZvol_NVMeOFTCP` | 블록 백엔드(zfs-zvol) + 블록 프로토콜(nvmeof-tcp) → 허용 | envtest; `backend.type="zfs-zvol"` PillarPool; `type="nvmeof-tcp"` PillarProtocol | 1) `validator.ValidateCreate(ctx, obj)` 호출 | `err=nil`; 허용 | `BindWH`, `PoolCRD`, `PProtCRD` |
-| E25.5.2 | `TestPillarBindingWebhook_Compatible_LVMLV_ISCSI` | 블록 백엔드(lvm-lv) + 블록 프로토콜(iscsi) → 허용 | envtest; `backend.type="lvm-lv"` PillarPool; `type="iscsi"` PillarProtocol | 1) `validator.ValidateCreate(ctx, obj)` 호출 | `err=nil`; 허용 | `BindWH`, `PoolCRD`, `PProtCRD` |
-| E25.5.3 | `TestPillarBindingWebhook_Compatible_ZFSDataset_NFS` | 파일 백엔드(zfs-dataset) + 파일 프로토콜(nfs) → 허용 | envtest; `backend.type="zfs-dataset"` PillarPool; `type="nfs"` PillarProtocol | 1) `validator.ValidateCreate(ctx, obj)` 호출 | `err=nil`; 허용 | `BindWH`, `PoolCRD`, `PProtCRD` |
-| E25.5.4 | `TestPillarBindingWebhook_Compatible_Dir_NFS` | 파일 백엔드(dir) + 파일 프로토콜(nfs) → 허용 | envtest; `backend.type="dir"` PillarPool; `type="nfs"` PillarProtocol | 1) `validator.ValidateCreate(ctx, obj)` 호출 | `err=nil`; 허용 | `BindWH`, `PoolCRD`, `PProtCRD` |
-| E25.5.5 | `TestPillarBindingWebhook_Incompatible_ZFSZvol_NFS` | 블록 백엔드(zfs-zvol) + 파일 프로토콜(nfs) → 거부; `spec.protocolRef` 경로 오류 | envtest; `backend.type="zfs-zvol"` PillarPool; `type="nfs"` PillarProtocol | 1) `validator.ValidateCreate(ctx, obj)` 호출 | `err != nil`; 오류 메시지에 `"incompatible"` 포함; `spec.protocolRef` 경로 | `BindWH`, `PoolCRD`, `PProtCRD` |
-| E25.5.6 | `TestPillarBindingWebhook_Incompatible_LVMLV_NFS` | 블록 백엔드(lvm-lv) + 파일 프로토콜(nfs) → 거부 | envtest; `backend.type="lvm-lv"` PillarPool; `type="nfs"` PillarProtocol | 1) `validator.ValidateCreate(ctx, obj)` 호출 | `err != nil`; `"incompatible"` 포함 | `BindWH`, `PoolCRD`, `PProtCRD` |
-| E25.5.7 | `TestPillarBindingWebhook_Incompatible_ZFSDataset_NVMeOFTCP` | 파일 백엔드(zfs-dataset) + 블록 프로토콜(nvmeof-tcp) → 거부 | envtest; `backend.type="zfs-dataset"` PillarPool; `type="nvmeof-tcp"` PillarProtocol | 1) `validator.ValidateCreate(ctx, obj)` 호출 | `err != nil`; `"incompatible"` 포함 | `BindWH`, `PoolCRD`, `PProtCRD` |
-| E25.5.8 | `TestPillarBindingWebhook_Incompatible_Dir_ISCSI` | 파일 백엔드(dir) + 블록 프로토콜(iscsi) → 거부 | envtest; `backend.type="dir"` PillarPool; `type="iscsi"` PillarProtocol | 1) `validator.ValidateCreate(ctx, obj)` 호출 | `err != nil`; `"incompatible"` 포함 | `BindWH`, `PoolCRD`, `PProtCRD` |
-| E25.5.9 | `TestPillarBindingWebhook_CompatibilitySkipped_PoolNotFound` | pool 미존재 시 호환성 검사 건너뜀 — 컨트롤러 `Compatible` 조건으로 위임 | envtest; PillarProtocol 존재; PillarPool 미존재 | 1) `validator.ValidateCreate(ctx, obj)` 호출 | `err=nil`; 허용 (graceful skip) | `BindWH` |
-| E25.5.10 | `TestPillarBindingWebhook_CompatibilitySkipped_ProtocolNotFound` | protocol 미존재 시 호환성 검사 건너뜀 — 컨트롤러 `Compatible` 조건으로 위임 | envtest; PillarPool 존재; PillarProtocol 미존재 | 1) `validator.ValidateCreate(ctx, obj)` 호출 | `err=nil`; 허용 (graceful skip) | `BindWH` |
+| E25.5.1 | `TestPillarStorageClassWebhook_Compatible_ZFSZvol_NVMeOFTCP` | 블록 백엔드(zfs-zvol) + 블록 프로토콜(nvmeof-tcp) → 허용 | envtest; `backend.type="zfs-zvol"` PillarStore; `type="nvmeof-tcp"` PillarProtocol | 1) `validator.ValidateCreate(ctx, obj)` 호출 | `err=nil`; 허용 | `BindWH`, `PoolCRD`, `PProtCRD` |
+| E25.5.2 | `TestPillarStorageClassWebhook_Compatible_LVMLV_ISCSI` | 블록 백엔드(lvm-lv) + 블록 프로토콜(iscsi) → 허용 | envtest; `backend.type="lvm-lv"` PillarStore; `type="iscsi"` PillarProtocol | 1) `validator.ValidateCreate(ctx, obj)` 호출 | `err=nil`; 허용 | `BindWH`, `PoolCRD`, `PProtCRD` |
+| E25.5.3 | `TestPillarStorageClassWebhook_Compatible_ZFSDataset_NFS` | 파일 백엔드(zfs-dataset) + 파일 프로토콜(nfs) → 허용 | envtest; `backend.type="zfs-dataset"` PillarStore; `type="nfs"` PillarProtocol | 1) `validator.ValidateCreate(ctx, obj)` 호출 | `err=nil`; 허용 | `BindWH`, `PoolCRD`, `PProtCRD` |
+| E25.5.4 | `TestPillarStorageClassWebhook_Compatible_Dir_NFS` | 파일 백엔드(dir) + 파일 프로토콜(nfs) → 허용 | envtest; `backend.type="dir"` PillarStore; `type="nfs"` PillarProtocol | 1) `validator.ValidateCreate(ctx, obj)` 호출 | `err=nil`; 허용 | `BindWH`, `PoolCRD`, `PProtCRD` |
+| E25.5.5 | `TestPillarStorageClassWebhook_Incompatible_ZFSZvol_NFS` | 블록 백엔드(zfs-zvol) + 파일 프로토콜(nfs) → 거부; `spec.protocolRef` 경로 오류 | envtest; `backend.type="zfs-zvol"` PillarStore; `type="nfs"` PillarProtocol | 1) `validator.ValidateCreate(ctx, obj)` 호출 | `err != nil`; 오류 메시지에 `"incompatible"` 포함; `spec.protocolRef` 경로 | `BindWH`, `PoolCRD`, `PProtCRD` |
+| E25.5.6 | `TestPillarStorageClassWebhook_Incompatible_LVMLV_NFS` | 블록 백엔드(lvm-lv) + 파일 프로토콜(nfs) → 거부 | envtest; `backend.type="lvm-lv"` PillarStore; `type="nfs"` PillarProtocol | 1) `validator.ValidateCreate(ctx, obj)` 호출 | `err != nil`; `"incompatible"` 포함 | `BindWH`, `PoolCRD`, `PProtCRD` |
+| E25.5.7 | `TestPillarStorageClassWebhook_Incompatible_ZFSDataset_NVMeOFTCP` | 파일 백엔드(zfs-dataset) + 블록 프로토콜(nvmeof-tcp) → 거부 | envtest; `backend.type="zfs-dataset"` PillarStore; `type="nvmeof-tcp"` PillarProtocol | 1) `validator.ValidateCreate(ctx, obj)` 호출 | `err != nil`; `"incompatible"` 포함 | `BindWH`, `PoolCRD`, `PProtCRD` |
+| E25.5.8 | `TestPillarStorageClassWebhook_Incompatible_Dir_ISCSI` | 파일 백엔드(dir) + 블록 프로토콜(iscsi) → 거부 | envtest; `backend.type="dir"` PillarStore; `type="iscsi"` PillarProtocol | 1) `validator.ValidateCreate(ctx, obj)` 호출 | `err != nil`; `"incompatible"` 포함 | `BindWH`, `PoolCRD`, `PProtCRD` |
+| E25.5.9 | `TestPillarStorageClassWebhook_CompatibilitySkipped_PoolNotFound` | pool 미존재 시 호환성 검사 건너뜀 — 컨트롤러 `Compatible` 조건으로 위임 | envtest; PillarProtocol 존재; PillarStore 미존재 | 1) `validator.ValidateCreate(ctx, obj)` 호출 | `err=nil`; 허용 (graceful skip) | `BindWH` |
+| E25.5.10 | `TestPillarStorageClassWebhook_CompatibilitySkipped_ProtocolNotFound` | protocol 미존재 시 호환성 검사 건너뜀 — 컨트롤러 `Compatible` 조건으로 위임 | envtest; PillarStore 존재; PillarProtocol 미존재 | 1) `validator.ValidateCreate(ctx, obj)` 호출 | `err=nil`; 허용 (graceful skip) | `BindWH` |
 
 ---
 
 ### E25.6 상태 조건 전이 — PoolReady
 
-**목적:** `PoolReady` 조건이 참조된 PillarPool의 존재 여부와 Ready 상태에 따라
+**목적:** `PoolReady` 조건이 참조된 PillarStore의 존재 여부와 Ready 상태에 따라
 올바르게 설정됨을 확인한다.
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| E25.6.1 | `TestPillarBindingController_PoolReady_False_PoolNotFound` | 참조 PillarPool 미존재 시 `PoolReady=False/PoolNotFound`; `RequeueAfter=15s`; `Ready.Reason="PoolNotFound"` | envtest; PillarBinding + 파이널라이저; PillarPool 미존재 | 1) `reconciler.Reconcile(ctx, req)` 호출 | `PoolReady.Status=False`; `PoolReady.Reason="PoolNotFound"`; `PoolReady.Message`에 pool 이름 포함; `result.RequeueAfter=15s` | `BindCRD`, `BindCtrl`, `PoolCRD` |
-| E25.6.2 | `TestPillarBindingController_PoolReady_False_PoolNotReady` | 참조 PillarPool의 Ready 조건이 False일 때 `PoolReady=False/PoolNotReady`; pool의 오류 메시지 전파 | envtest; PillarBinding + 파이널라이저; PillarPool(Ready=False, message="target not found") | 1) `reconciler.Reconcile(ctx, req)` 호출 | `PoolReady.Status=False`; `PoolReady.Reason="PoolNotReady"`; `PoolReady.Message`에 `"target not found"` 포함; `result.RequeueAfter=15s` | `BindCRD`, `BindCtrl`, `PoolCRD` |
-| E25.6.3 | `TestPillarBindingController_PoolReady_False_PoolNoCondition` | PillarPool에 Ready 조건이 아직 없을 때 `PoolReady=False/PoolNotReady` | envtest; PillarBinding + 파이널라이저; PillarPool(조건 없음) | 1) `reconciler.Reconcile(ctx, req)` 호출 | `PoolReady.Status=False`; `PoolReady.Reason="PoolNotReady"`; `result.RequeueAfter=15s` | `BindCRD`, `BindCtrl`, `PoolCRD` |
+| E25.6.1 | `TestPillarStorageClassController_PoolReady_False_PoolNotFound` | 참조 PillarStore 미존재 시 `PoolReady=False/PoolNotFound`; `RequeueAfter=15s`; `Ready.Reason="PoolNotFound"` | envtest; PillarStorageClass + 파이널라이저; PillarStore 미존재 | 1) `reconciler.Reconcile(ctx, req)` 호출 | `PoolReady.Status=False`; `PoolReady.Reason="PoolNotFound"`; `PoolReady.Message`에 pool 이름 포함; `result.RequeueAfter=15s` | `BindCRD`, `BindCtrl`, `PoolCRD` |
+| E25.6.2 | `TestPillarStorageClassController_PoolReady_False_PoolNotReady` | 참조 PillarStore의 Ready 조건이 False일 때 `PoolReady=False/PoolNotReady`; pool의 오류 메시지 전파 | envtest; PillarStorageClass + 파이널라이저; PillarStore(Ready=False, message="target not found") | 1) `reconciler.Reconcile(ctx, req)` 호출 | `PoolReady.Status=False`; `PoolReady.Reason="PoolNotReady"`; `PoolReady.Message`에 `"target not found"` 포함; `result.RequeueAfter=15s` | `BindCRD`, `BindCtrl`, `PoolCRD` |
+| E25.6.3 | `TestPillarStorageClassController_PoolReady_False_PoolNoCondition` | PillarStore에 Ready 조건이 아직 없을 때 `PoolReady=False/PoolNotReady` | envtest; PillarStorageClass + 파이널라이저; PillarStore(조건 없음) | 1) `reconciler.Reconcile(ctx, req)` 호출 | `PoolReady.Status=False`; `PoolReady.Reason="PoolNotReady"`; `result.RequeueAfter=15s` | `BindCRD`, `BindCtrl`, `PoolCRD` |
 
 ---
 
@@ -3469,9 +3469,9 @@ StorageClass는 특정 풀과 프로토콜에 묶여 있어, 변경 시 기존 P
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| E25.7.1 | `TestPillarBindingController_ProtocolValid_False_ProtocolNotFound` | PillarPool Ready + PillarProtocol 미존재 시 `ProtocolValid=False/ProtocolNotFound`; `PoolReady=True` 유지 | envtest; PillarBinding + 파이널라이저; PillarPool(Ready=True); PillarProtocol 미존재 | 1) `reconciler.Reconcile(ctx, req)` 호출 | `ProtocolValid.Status=False`; `Reason="ProtocolNotFound"`; `ProtocolValid.Message`에 protocol 이름 포함; `PoolReady.Status=True`; `result.RequeueAfter=15s` | `BindCRD`, `BindCtrl`, `PProtCRD` |
-| E25.7.2 | `TestPillarBindingController_ProtocolValid_False_ProtocolNotReady` | PillarProtocol Ready 조건이 False일 때 `ProtocolValid=False/ProtocolNotReady`; protocol 오류 메시지 전파 | envtest; PillarBinding + 파이널라이저; PillarPool(Ready=True); PillarProtocol(Ready=False, message="initialization failed") | 1) `reconciler.Reconcile(ctx, req)` 호출 | `ProtocolValid.Status=False`; `Reason="ProtocolNotReady"`; `ProtocolValid.Message`에 `"initialization failed"` 포함 | `BindCRD`, `BindCtrl`, `PProtCRD` |
-| E25.7.3 | `TestPillarBindingController_ProtocolValid_False_ProtocolNoCondition` | PillarProtocol에 Ready 조건이 없을 때 `ProtocolValid=False/ProtocolNotReady` | envtest; PillarBinding + 파이널라이저; PillarPool(Ready=True); PillarProtocol(조건 없음) | 1) `reconciler.Reconcile(ctx, req)` 호출 | `ProtocolValid.Status=False`; `Reason="ProtocolNotReady"`; `result.RequeueAfter=15s` | `BindCRD`, `BindCtrl`, `PProtCRD` |
+| E25.7.1 | `TestPillarStorageClassController_ProtocolValid_False_ProtocolNotFound` | PillarStore Ready + PillarProtocol 미존재 시 `ProtocolValid=False/ProtocolNotFound`; `PoolReady=True` 유지 | envtest; PillarStorageClass + 파이널라이저; PillarStore(Ready=True); PillarProtocol 미존재 | 1) `reconciler.Reconcile(ctx, req)` 호출 | `ProtocolValid.Status=False`; `Reason="ProtocolNotFound"`; `ProtocolValid.Message`에 protocol 이름 포함; `PoolReady.Status=True`; `result.RequeueAfter=15s` | `BindCRD`, `BindCtrl`, `PProtCRD` |
+| E25.7.2 | `TestPillarStorageClassController_ProtocolValid_False_ProtocolNotReady` | PillarProtocol Ready 조건이 False일 때 `ProtocolValid=False/ProtocolNotReady`; protocol 오류 메시지 전파 | envtest; PillarStorageClass + 파이널라이저; PillarStore(Ready=True); PillarProtocol(Ready=False, message="initialization failed") | 1) `reconciler.Reconcile(ctx, req)` 호출 | `ProtocolValid.Status=False`; `Reason="ProtocolNotReady"`; `ProtocolValid.Message`에 `"initialization failed"` 포함 | `BindCRD`, `BindCtrl`, `PProtCRD` |
+| E25.7.3 | `TestPillarStorageClassController_ProtocolValid_False_ProtocolNoCondition` | PillarProtocol에 Ready 조건이 없을 때 `ProtocolValid=False/ProtocolNotReady` | envtest; PillarStorageClass + 파이널라이저; PillarStore(Ready=True); PillarProtocol(조건 없음) | 1) `reconciler.Reconcile(ctx, req)` 호출 | `ProtocolValid.Status=False`; `Reason="ProtocolNotReady"`; `result.RequeueAfter=15s` | `BindCRD`, `BindCtrl`, `PProtCRD` |
 
 ---
 
@@ -3482,26 +3482,26 @@ StorageClass는 특정 풀과 프로토콜에 묶여 있어, 변경 시 기존 P
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| E25.8.1 | `TestPillarBindingController_Compatible_True_AllConditionsMet` | zfs-zvol + nvmeof-tcp 조합 → `Compatible=True`; `Ready=True/AllConditionsMet`; StorageClass 생성 | envtest; PillarBinding + 파이널라이저; PillarPool(zfs-zvol, Ready=True); PillarProtocol(nvmeof-tcp, Ready=True) | 1) `reconciler.Reconcile(ctx, req)` 호출 | `PoolReady=True`; `ProtocolValid=True`; `Compatible=True`; `StorageClassCreated=True`; `Ready=True`; `Ready.Reason="AllConditionsMet"` | `BindCRD`, `BindCtrl`, `PoolCRD`, `PProtCRD`, `SC` |
-| E25.8.2 | `TestPillarBindingController_Compatible_False_BlockBackend_FileProtocol` | zfs-zvol + nfs 비호환 → `Compatible=False/Incompatible`; `Ready=False`; StorageClass 미생성 | envtest; PillarBinding + 파이널라이저; PillarPool(zfs-zvol, Ready=True); PillarProtocol(nfs, Ready=True) | 1) `reconciler.Reconcile(ctx, req)` 호출 | `Compatible.Status=False`; `Compatible.Reason="Incompatible"`; `Compatible.Message`에 `"zfs-zvol"` 포함; `Ready.Status=False`; StorageClass 미생성 | `BindCRD`, `BindCtrl`, `PoolCRD`, `PProtCRD` |
-| E25.8.3 | `TestPillarBindingController_NoRequeue_WhenReady` | 모든 조건 충족 시 `result.RequeueAfter==0` — 불필요한 재조정 없음 | envtest; 모든 조건 충족 (PillarPool/Protocol Ready, 호환 가능) | 1) `reconciler.Reconcile(ctx, req)` 호출 | `result.RequeueAfter==0` | `BindCRD`, `BindCtrl` |
+| E25.8.1 | `TestPillarStorageClassController_Compatible_True_AllConditionsMet` | zfs-zvol + nvmeof-tcp 조합 → `Compatible=True`; `Ready=True/AllConditionsMet`; StorageClass 생성 | envtest; PillarStorageClass + 파이널라이저; PillarStore(zfs-zvol, Ready=True); PillarProtocol(nvmeof-tcp, Ready=True) | 1) `reconciler.Reconcile(ctx, req)` 호출 | `PoolReady=True`; `ProtocolValid=True`; `Compatible=True`; `StorageClassCreated=True`; `Ready=True`; `Ready.Reason="AllConditionsMet"` | `BindCRD`, `BindCtrl`, `PoolCRD`, `PProtCRD`, `SC` |
+| E25.8.2 | `TestPillarStorageClassController_Compatible_False_BlockBackend_FileProtocol` | zfs-zvol + nfs 비호환 → `Compatible=False/Incompatible`; `Ready=False`; StorageClass 미생성 | envtest; PillarStorageClass + 파이널라이저; PillarStore(zfs-zvol, Ready=True); PillarProtocol(nfs, Ready=True) | 1) `reconciler.Reconcile(ctx, req)` 호출 | `Compatible.Status=False`; `Compatible.Reason="Incompatible"`; `Compatible.Message`에 `"zfs-zvol"` 포함; `Ready.Status=False`; StorageClass 미생성 | `BindCRD`, `BindCtrl`, `PoolCRD`, `PProtCRD` |
+| E25.8.3 | `TestPillarStorageClassController_NoRequeue_WhenReady` | 모든 조건 충족 시 `result.RequeueAfter==0` — 불필요한 재조정 없음 | envtest; 모든 조건 충족 (PillarStore/Protocol Ready, 호환 가능) | 1) `reconciler.Reconcile(ctx, req)` 호출 | `result.RequeueAfter==0` | `BindCRD`, `BindCtrl` |
 
 ---
 
 ### E25.9 StorageClass 생성 및 소유권
 
-**목적:** PillarBinding이 Ready 상태가 되면 자동으로 StorageClass를 생성하고,
+**목적:** PillarStorageClass이 Ready 상태가 되면 자동으로 StorageClass를 생성하고,
 해당 StorageClass에 올바른 ownerReference, provisioner, 파라미터가 설정됨을 확인한다.
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| E25.9.1 | `TestPillarBindingController_StorageClass_OwnerReference` | 생성된 StorageClass에 PillarBinding을 가리키는 ownerReference(`Kind=PillarBinding`, `controller=true`) 설정 | envtest; PillarBinding + 파이널라이저; PillarPool(Ready=True); PillarProtocol(Ready=True) | 1) `reconciler.Reconcile(ctx, req)` 호출; 2) StorageClass 조회 | `len(sc.OwnerReferences)==1`; `sc.OwnerReferences[0].Kind="PillarBinding"`; `*sc.OwnerReferences[0].Controller=true` | `BindCRD`, `BindCtrl`, `SC` |
-| E25.9.2 | `TestPillarBindingController_StorageClass_Provisioner` | 생성된 StorageClass의 provisioner가 `"pillar-csi.bhyoo.com"` | envtest; 동일 사전 조건 | 1) `reconciler.Reconcile(ctx, req)` 호출; 2) StorageClass 조회 | `sc.Provisioner="pillar-csi.bhyoo.com"` | `BindCRD`, `BindCtrl`, `SC` |
-| E25.9.3 | `TestPillarBindingController_StorageClass_Parameters` | 생성된 StorageClass의 parameters에 pool, protocol, backend-type, protocol-type 파라미터 포함 | envtest; PillarPool(zfs-zvol, Ready=True); PillarProtocol(nvmeof-tcp, Ready=True) | 1) `reconciler.Reconcile(ctx, req)` 호출; 2) `sc.Parameters` 검사 | `sc.Parameters["pillar-csi.bhyoo.com/pool"]=poolName`; `"pillar-csi.bhyoo.com/protocol"=protocolName`; `"pillar-csi.bhyoo.com/backend-type"="zfs-zvol"`; `"pillar-csi.bhyoo.com/protocol-type"="nvmeof-tcp"` | `BindCRD`, `BindCtrl`, `SC` |
-| E25.9.4 | `TestPillarBindingController_StorageClass_DefaultReclaimPolicy` | StorageClass ReclaimPolicy 기본값 `Delete` | envtest; 기본 PillarBinding (reclaimPolicy 미설정); PillarPool/Protocol Ready | 1) `reconciler.Reconcile(ctx, req)` 호출; 2) `sc.ReclaimPolicy` 검사 | `*sc.ReclaimPolicy=PersistentVolumeReclaimDelete` | `BindCRD`, `BindCtrl`, `SC` |
-| E25.9.5 | `TestPillarBindingController_StorageClass_DefaultVolumeBindingMode` | StorageClass VolumeBindingMode 기본값 `Immediate` | envtest; 기본 PillarBinding (volumeBindingMode 미설정); PillarPool/Protocol Ready | 1) `reconciler.Reconcile(ctx, req)` 호출; 2) `sc.VolumeBindingMode` 검사 | `*sc.VolumeBindingMode=VolumeBindingImmediate` | `BindCRD`, `BindCtrl`, `SC` |
-| E25.9.6 | `TestPillarBindingController_StorageClass_StatusStorageClassName` | StorageClass 생성 후 `status.storageClassName`에 이름 반영 | envtest; 기본 PillarBinding; PillarPool/Protocol Ready | 1) `reconciler.Reconcile(ctx, req)` 호출; 2) PillarBinding 상태 조회 | `binding.status.storageClassName=bindingName` | `BindCRD`, `BindCtrl`, `SC` |
-| E25.9.7 | `TestPillarBindingController_StorageClass_CustomName` | `spec.storageClass.name` 설정 시 해당 이름으로 StorageClass 생성; 바인딩 이름으로는 미생성; `status.storageClassName` 업데이트 | envtest; PillarBinding(`spec.storageClass.name="my-custom-sc"`); PillarPool/Protocol Ready | 1) `reconciler.Reconcile(ctx, req)` 호출; 2) `"my-custom-sc"` StorageClass 조회; 3) bindingName StorageClass 조회 | `"my-custom-sc"` StorageClass 존재; bindingName StorageClass 미존재(NotFound); `status.storageClassName="my-custom-sc"` | `BindCRD`, `BindCtrl`, `SC` |
+| E25.9.1 | `TestPillarStorageClassController_StorageClass_OwnerReference` | 생성된 StorageClass에 PillarStorageClass을 가리키는 ownerReference(`Kind=PillarStorageClass`, `controller=true`) 설정 | envtest; PillarStorageClass + 파이널라이저; PillarStore(Ready=True); PillarProtocol(Ready=True) | 1) `reconciler.Reconcile(ctx, req)` 호출; 2) StorageClass 조회 | `len(sc.OwnerReferences)==1`; `sc.OwnerReferences[0].Kind="PillarStorageClass"`; `*sc.OwnerReferences[0].Controller=true` | `BindCRD`, `BindCtrl`, `SC` |
+| E25.9.2 | `TestPillarStorageClassController_StorageClass_Provisioner` | 생성된 StorageClass의 provisioner가 `"pillar-csi.bhyoo.com"` | envtest; 동일 사전 조건 | 1) `reconciler.Reconcile(ctx, req)` 호출; 2) StorageClass 조회 | `sc.Provisioner="pillar-csi.bhyoo.com"` | `BindCRD`, `BindCtrl`, `SC` |
+| E25.9.3 | `TestPillarStorageClassController_StorageClass_Parameters` | 생성된 StorageClass의 parameters에 pool, protocol, backend-type, protocol-type 파라미터 포함 | envtest; PillarStore(zfs-zvol, Ready=True); PillarProtocol(nvmeof-tcp, Ready=True) | 1) `reconciler.Reconcile(ctx, req)` 호출; 2) `sc.Parameters` 검사 | `sc.Parameters["pillar-csi.bhyoo.com/store"]=poolName`; `"pillar-csi.bhyoo.com/protocol"=protocolName`; `"pillar-csi.bhyoo.com/backend-type"="zfs-zvol"`; `"pillar-csi.bhyoo.com/protocol-type"="nvmeof-tcp"` | `BindCRD`, `BindCtrl`, `SC` |
+| E25.9.4 | `TestPillarStorageClassController_StorageClass_DefaultReclaimPolicy` | StorageClass ReclaimPolicy 기본값 `Delete` | envtest; 기본 PillarStorageClass (reclaimPolicy 미설정); PillarStore/Protocol Ready | 1) `reconciler.Reconcile(ctx, req)` 호출; 2) `sc.ReclaimPolicy` 검사 | `*sc.ReclaimPolicy=PersistentVolumeReclaimDelete` | `BindCRD`, `BindCtrl`, `SC` |
+| E25.9.5 | `TestPillarStorageClassController_StorageClass_DefaultVolumeBindingMode` | StorageClass VolumeBindingMode 기본값 `Immediate` | envtest; 기본 PillarStorageClass (volumeBindingMode 미설정); PillarStore/Protocol Ready | 1) `reconciler.Reconcile(ctx, req)` 호출; 2) `sc.VolumeBindingMode` 검사 | `*sc.VolumeBindingMode=VolumeBindingImmediate` | `BindCRD`, `BindCtrl`, `SC` |
+| E25.9.6 | `TestPillarStorageClassController_StorageClass_StatusStorageClassName` | StorageClass 생성 후 `status.storageClassName`에 이름 반영 | envtest; 기본 PillarStorageClass; PillarStore/Protocol Ready | 1) `reconciler.Reconcile(ctx, req)` 호출; 2) PillarStorageClass 상태 조회 | `binding.status.storageClassName=bindingName` | `BindCRD`, `BindCtrl`, `SC` |
+| E25.9.7 | `TestPillarStorageClassController_StorageClass_CustomName` | `spec.storageClass.name` 설정 시 해당 이름으로 StorageClass 생성; 바인딩 이름으로는 미생성; `status.storageClassName` 업데이트 | envtest; PillarStorageClass(`spec.storageClass.name="my-custom-sc"`); PillarStore/Protocol Ready | 1) `reconciler.Reconcile(ctx, req)` 호출; 2) `"my-custom-sc"` StorageClass 조회; 3) bindingName StorageClass 조회 | `"my-custom-sc"` StorageClass 존재; bindingName StorageClass 미존재(NotFound); `status.storageClassName="my-custom-sc"` | `BindCRD`, `BindCtrl`, `SC` |
 
 ---
 
@@ -3511,23 +3511,23 @@ StorageClass는 특정 풀과 프로토콜에 묶여 있어, 변경 시 기존 P
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| E25.10.1 | `TestPillarBindingController_StorageClass_ReclaimPolicy_Retain` | `spec.storageClass.reclaimPolicy="Retain"` 설정 시 StorageClass에 반영 | envtest; PillarBinding(`reclaimPolicy=Retain`); PillarPool/Protocol Ready | 1) `reconciler.Reconcile(ctx, req)` 호출; 2) StorageClass 조회 | `*sc.ReclaimPolicy=PersistentVolumeReclaimRetain` | `BindCRD`, `BindCtrl`, `SC` |
-| E25.10.2 | `TestPillarBindingController_StorageClass_VolumeBindingMode_WaitForFirstConsumer` | `spec.storageClass.volumeBindingMode="WaitForFirstConsumer"` 설정 시 StorageClass에 반영 | envtest; PillarBinding(`volumeBindingMode=WaitForFirstConsumer`); PillarPool/Protocol Ready | 1) `reconciler.Reconcile(ctx, req)` 호출; 2) StorageClass 조회 | `*sc.VolumeBindingMode=VolumeBindingWaitForFirstConsumer` | `BindCRD`, `BindCtrl`, `SC` |
+| E25.10.1 | `TestPillarStorageClassController_StorageClass_ReclaimPolicy_Retain` | `spec.storageClass.reclaimPolicy="Retain"` 설정 시 StorageClass에 반영 | envtest; PillarStorageClass(`reclaimPolicy=Retain`); PillarStore/Protocol Ready | 1) `reconciler.Reconcile(ctx, req)` 호출; 2) StorageClass 조회 | `*sc.ReclaimPolicy=PersistentVolumeReclaimRetain` | `BindCRD`, `BindCtrl`, `SC` |
+| E25.10.2 | `TestPillarStorageClassController_StorageClass_VolumeBindingMode_WaitForFirstConsumer` | `spec.storageClass.volumeBindingMode="WaitForFirstConsumer"` 설정 시 StorageClass에 반영 | envtest; PillarStorageClass(`volumeBindingMode=WaitForFirstConsumer`); PillarStore/Protocol Ready | 1) `reconciler.Reconcile(ctx, req)` 호출; 2) StorageClass 조회 | `*sc.VolumeBindingMode=VolumeBindingWaitForFirstConsumer` | `BindCRD`, `BindCtrl`, `SC` |
 
 ---
 
 ### E25.11 삭제 보호 동작
 
-**목적:** `pillar-csi.bhyoo.com/binding-protection` 파이널라이저가 StorageClass를
-참조하는 PVC가 존재하는 동안 PillarBinding 삭제를 차단하고, PVC 삭제 후에야
+**목적:** `pillar-csi.bhyoo.com/storage-class-protection` 파이널라이저가 StorageClass를
+참조하는 PVC가 존재하는 동안 PillarStorageClass 삭제를 차단하고, PVC 삭제 후에야
 파이널라이저가 제거되어 StorageClass도 함께 삭제됨을 확인한다.
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| E25.11.1 | `TestPillarBindingController_DeletionBlocked_PVCExists` | StorageClass를 참조하는 PVC 존재 시 삭제 차단; `result.RequeueAfter=10s`; `Ready=False/DeletionBlocked` | envtest; PillarBinding(StorageClass 생성 완료); PVC가 해당 StorageClass 참조; 삭제 요청 | 1) `k8sClient.Delete(ctx, binding)` 호출; 2) `reconciler.Reconcile(ctx, req)` 호출 | `result.RequeueAfter=10s`; `Ready.Reason="DeletionBlocked"`; `Ready.Message`에 PVC 이름 포함 | `BindCRD`, `BindCtrl`, `SC` |
-| E25.11.2 | `TestPillarBindingController_DeletionBlocked_FinalizerKept` | 삭제 차단 중 파이널라이저 제거되지 않음 | envtest; 동일 사전 조건 | 1) `reconciler.Reconcile(ctx, req)` 호출 | `controllerutil.ContainsFinalizer(fetched, pillarBindingFinalizer)=true` | `BindCRD`, `BindCtrl` |
-| E25.11.3 | `TestPillarBindingController_DeletionAllowed_NoPVCs` | 참조 PVC 없을 때 StorageClass 삭제 후 파이널라이저 제거; `result.RequeueAfter==0` | envtest; PillarBinding(StorageClass 생성 완료); PVC 없음; 삭제 요청 | 1) `reconciler.Reconcile(ctx, req)` 호출 | `result.RequeueAfter==0`; StorageClass 삭제(NotFound); 파이널라이저 제거 | `BindCRD`, `BindCtrl`, `SC` |
-| E25.11.4 | `TestPillarBindingController_DeletionAllowed_AfterPVCRemoval` | PVC 제거 후 다음 조정에서 파이널라이저 제거 및 StorageClass 삭제 완료 | envtest; 첫 조정에서 PVC로 차단 확인; 이후 PVC 삭제 | 1) 첫 조정: 차단; 2) PVC 삭제; 3) 두 번째 조정 실행 | 두 번째 조정 후 파이널라이저 제거; StorageClass 삭제; `k8sClient.Get(binding)` → NotFound | `BindCRD`, `BindCtrl`, `SC` |
+| E25.11.1 | `TestPillarStorageClassController_DeletionBlocked_PVCExists` | StorageClass를 참조하는 PVC 존재 시 삭제 차단; `result.RequeueAfter=10s`; `Ready=False/DeletionBlocked` | envtest; PillarStorageClass(StorageClass 생성 완료); PVC가 해당 StorageClass 참조; 삭제 요청 | 1) `k8sClient.Delete(ctx, binding)` 호출; 2) `reconciler.Reconcile(ctx, req)` 호출 | `result.RequeueAfter=10s`; `Ready.Reason="DeletionBlocked"`; `Ready.Message`에 PVC 이름 포함 | `BindCRD`, `BindCtrl`, `SC` |
+| E25.11.2 | `TestPillarStorageClassController_DeletionBlocked_FinalizerKept` | 삭제 차단 중 파이널라이저 제거되지 않음 | envtest; 동일 사전 조건 | 1) `reconciler.Reconcile(ctx, req)` 호출 | `controllerutil.ContainsFinalizer(fetched, pillarStorageClassFinalizer)=true` | `BindCRD`, `BindCtrl` |
+| E25.11.3 | `TestPillarStorageClassController_DeletionAllowed_NoPVCs` | 참조 PVC 없을 때 StorageClass 삭제 후 파이널라이저 제거; `result.RequeueAfter==0` | envtest; PillarStorageClass(StorageClass 생성 완료); PVC 없음; 삭제 요청 | 1) `reconciler.Reconcile(ctx, req)` 호출 | `result.RequeueAfter==0`; StorageClass 삭제(NotFound); 파이널라이저 제거 | `BindCRD`, `BindCtrl`, `SC` |
+| E25.11.4 | `TestPillarStorageClassController_DeletionAllowed_AfterPVCRemoval` | PVC 제거 후 다음 조정에서 파이널라이저 제거 및 StorageClass 삭제 완료 | envtest; 첫 조정에서 PVC로 차단 확인; 이후 PVC 삭제 | 1) 첫 조정: 차단; 2) PVC 삭제; 3) 두 번째 조정 실행 | 두 번째 조정 후 파이널라이저 제거; StorageClass 삭제; `k8sClient.Get(binding)` → NotFound | `BindCRD`, `BindCtrl`, `SC` |
 
 ---
 
@@ -3553,7 +3553,7 @@ go test -tags=integration ./internal/webhook/... -v -run 'TestWebhooks/CrossCRD'
 ```
 
 **목적:**
-여러 CRD(PillarTarget → PillarPool → PillarBinding ← PillarProtocol)의
+여러 CRD(PillarAgent → PillarStore → PillarStorageClass ← PillarProtocol)의
 **교차-CRD 라이프사이클 상호작용**을 검증한다.
 단일 CRD의 생성·삭제를 검증하는 E19/E20/E23/E25와 달리, 이 섹션은 아래
 세 가지 측면을 집중 검증한다:
@@ -3579,25 +3579,25 @@ go test -tags=integration ./internal/webhook/... -v -run 'TestWebhooks/CrossCRD'
 **컴포넌트 의존성 그래프:**
 
 ```
-PillarTarget (pt)
-  └─(targetRef)──► PillarPool (pp)
-                     └─(poolRef)────► PillarBinding (pb) ──► StorageClass ──► PVC
+PillarAgent (pt)
+  └─(agentRef)──► PillarStore (pp)
+                     └─(storeRef)────► PillarStorageClass (pb) ──► StorageClass ──► PVC
 PillarProtocol (ppr)
-  └─(protocolRef)──► PillarBinding (pb)
+  └─(protocolRef)──► PillarStorageClass (pb)
 ```
 
 **컴포넌트 약어 참조:**
 
 | 약어 | 의미 |
 |------|------|
-| `TgtCRD` | `api/v1alpha1.PillarTarget` CRD 및 상태 |
-| `TgtCtrl` | `internal/controller.PillarTargetReconciler` |
-| `PoolCRD` | `api/v1alpha1.PillarPool` CRD 및 상태 |
-| `PoolCtrl` | `internal/controller.PillarPoolReconciler` |
+| `TgtCRD` | `api/v1alpha1.PillarAgent` CRD 및 상태 |
+| `TgtCtrl` | `internal/controller.PillarAgentReconciler` |
+| `PoolCRD` | `api/v1alpha1.PillarStore` CRD 및 상태 |
+| `PoolCtrl` | `internal/controller.PillarStoreReconciler` |
 | `PProtCRD` | `api/v1alpha1.PillarProtocol` CRD 및 상태 |
 | `PProtCtrl` | `internal/controller.PillarProtocolReconciler` |
-| `BindCRD` | `api/v1alpha1.PillarBinding` CRD 및 상태 |
-| `BindCtrl` | `internal/controller.PillarBindingReconciler` |
+| `BindCRD` | `api/v1alpha1.PillarStorageClass` CRD 및 상태 |
+| `BindCtrl` | `internal/controller.PillarStorageClassReconciler` |
 | `SC` | `storage.k8s.io/v1.StorageClass` |
 
 ---
@@ -3607,23 +3607,23 @@ PillarProtocol (ppr)
 **목적:** 상위 CRD가 존재하지 않거나 Not-Ready 상태일 때 하위 CRD의 상태 조건이
 올바르게 `False`로 설정되고 `Ready` 조건도 `False`로 유지됨을 확인한다.
 
-**PillarPool 상태 조건 검증 (targetRef 의존성):**
+**PillarStore 상태 조건 검증 (agentRef 의존성):**
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| E26.1.1 | `TestCrossLifecycle_Pool_TargetMissing_TargetReadyFalse` | PillarPool 생성 시 참조 PillarTarget이 없으면 `TargetReady=False` 조건 설정 | envtest; PillarPool(`targetRef="nonexistent-target"`) 생성; PillarTarget 미등록 | 1) PillarPool 생성; 2) `poolReconciler.Reconcile(ctx, req)` 호출; 3) PillarPool 상태 조회 | `TargetReady.Status=False`; `TargetReady.Reason="TargetNotFound"`; `Ready.Status=False` | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
-| E26.1.2 | `TestCrossLifecycle_Pool_TargetNotReady_TargetReadyFalse` | 참조 PillarTarget이 존재하지만 `Ready=False`이면 `TargetReady=False` 조건 설정 | envtest; PillarTarget(`Ready=False, reason="AgentUnhealthy"`) 등록; PillarPool(`targetRef=target`) 생성 | 1) PillarPool 생성; 2) `poolReconciler.Reconcile(ctx, req)` 호출; 3) PillarPool 상태 조회 | `TargetReady.Status=False`; `TargetReady.Reason="TargetNotReady"`; `Ready.Status=False` | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
-| E26.1.3 | `TestCrossLifecycle_Pool_TargetReady_TargetReadyTrue` | 참조 PillarTarget이 `Ready=True`이면 `TargetReady=True` 조건 설정 | envtest; PillarTarget(`Ready=True, reason="Authenticated"`) 등록; PillarPool(`targetRef=target`) 생성 | 1) PillarPool 생성; 2) `poolReconciler.Reconcile(ctx, req)` 호출; 3) PillarPool 상태 조회 | `TargetReady.Status=True`; `TargetReady.Reason="TargetReady"` | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
+| E26.1.1 | `TestCrossLifecycle_Pool_TargetMissing_TargetReadyFalse` | PillarStore 생성 시 참조 PillarAgent이 없으면 `TargetReady=False` 조건 설정 | envtest; PillarStore(`agentRef="nonexistent-target"`) 생성; PillarAgent 미등록 | 1) PillarStore 생성; 2) `poolReconciler.Reconcile(ctx, req)` 호출; 3) PillarStore 상태 조회 | `TargetReady.Status=False`; `TargetReady.Reason="TargetNotFound"`; `Ready.Status=False` | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
+| E26.1.2 | `TestCrossLifecycle_Pool_TargetNotReady_TargetReadyFalse` | 참조 PillarAgent이 존재하지만 `Ready=False`이면 `TargetReady=False` 조건 설정 | envtest; PillarAgent(`Ready=False, reason="AgentUnhealthy"`) 등록; PillarStore(`agentRef=target`) 생성 | 1) PillarStore 생성; 2) `poolReconciler.Reconcile(ctx, req)` 호출; 3) PillarStore 상태 조회 | `TargetReady.Status=False`; `TargetReady.Reason="TargetNotReady"`; `Ready.Status=False` | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
+| E26.1.3 | `TestCrossLifecycle_Pool_TargetReady_TargetReadyTrue` | 참조 PillarAgent이 `Ready=True`이면 `TargetReady=True` 조건 설정 | envtest; PillarAgent(`Ready=True, reason="Authenticated"`) 등록; PillarStore(`agentRef=target`) 생성 | 1) PillarStore 생성; 2) `poolReconciler.Reconcile(ctx, req)` 호출; 3) PillarStore 상태 조회 | `TargetReady.Status=True`; `TargetReady.Reason="AgentReady"` | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
 
-**PillarBinding 상태 조건 검증 (poolRef / protocolRef 의존성):**
+**PillarStorageClass 상태 조건 검증 (storeRef / protocolRef 의존성):**
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| E26.1.4 | `TestCrossLifecycle_Binding_PoolMissing_PoolReadyFalse` | PillarBinding 생성 시 참조 PillarPool이 없으면 `PoolReady=False` 조건 설정 | envtest; PillarBinding(`poolRef="nonexistent-pool"`, `protocolRef="valid-proto"`) 생성; PillarPool 미등록; PillarProtocol 등록 | 1) PillarBinding 생성; 2) `bindingReconciler.Reconcile(ctx, req)` 호출; 3) PillarBinding 상태 조회 | `PoolReady.Status=False`; `PoolReady.Reason="PoolNotFound"`; `Ready.Status=False`; StorageClass 미생성 | `BindCRD`, `BindCtrl`, `PoolCRD` |
-| E26.1.5 | `TestCrossLifecycle_Binding_PoolNotReady_PoolReadyFalse` | 참조 PillarPool이 존재하지만 `Ready=False`이면 `PoolReady=False` 조건 설정 | envtest; PillarPool(`Ready=False`) 등록; PillarBinding(`poolRef=pool`) 생성 | 1) PillarBinding 생성; 2) `bindingReconciler.Reconcile(ctx, req)` 호출; 3) PillarBinding 상태 조회 | `PoolReady.Status=False`; `PoolReady.Reason="PoolNotReady"`; `Ready.Status=False` | `BindCRD`, `BindCtrl`, `PoolCRD` |
-| E26.1.6 | `TestCrossLifecycle_Binding_ProtocolMissing_ProtocolValidFalse` | PillarBinding 생성 시 참조 PillarProtocol이 없으면 `ProtocolValid=False` 조건 설정 | envtest; PillarBinding(`poolRef="valid-pool"`, `protocolRef="nonexistent-protocol"`) 생성; PillarProtocol 미등록; PillarPool 등록 | 1) PillarBinding 생성; 2) `bindingReconciler.Reconcile(ctx, req)` 호출; 3) PillarBinding 상태 조회 | `ProtocolValid.Status=False`; `ProtocolValid.Reason="ProtocolNotFound"`; `Ready.Status=False` | `BindCRD`, `BindCtrl`, `PProtCRD` |
-| E26.1.7 | `TestCrossLifecycle_Binding_BothMissing_BothConditionsFalse` | PillarPool과 PillarProtocol 둘 다 없을 때 두 조건 모두 `False` | envtest; PillarBinding(`poolRef="missing-pool"`, `protocolRef="missing-proto"`) 생성; 둘 다 미등록 | 1) PillarBinding 생성; 2) `bindingReconciler.Reconcile(ctx, req)` 호출; 3) PillarBinding 상태 조회 | `PoolReady.Status=False`; `ProtocolValid.Status=False`; `Ready.Status=False`; StorageClass 미생성 | `BindCRD`, `BindCtrl`, `PoolCRD`, `PProtCRD` |
-| E26.1.8 | `TestCrossLifecycle_Binding_PoolReadyProtocolReady_BecomeReady` | Pool `Ready=True` + Protocol `Ready=True` → Binding `Ready=True`, StorageClass 생성 | envtest; PillarPool(`Ready=True`, `backend.type="zfs-zvol"`) 등록; PillarProtocol(`Ready=True`, `type="nvmeof-tcp"`) 등록; PillarBinding 생성 | 1) PillarBinding 생성; 2) `bindingReconciler.Reconcile(ctx, req)` 호출; 3) PillarBinding 상태 및 StorageClass 조회 | `PoolReady.Status=True`; `ProtocolValid.Status=True`; `Compatible.Status=True`; `StorageClassCreated.Status=True`; `Ready.Status=True`; StorageClass 존재 | `BindCRD`, `BindCtrl`, `PoolCRD`, `PProtCRD`, `SC` |
+| E26.1.4 | `TestCrossLifecycle_Binding_PoolMissing_PoolReadyFalse` | PillarStorageClass 생성 시 참조 PillarStore이 없으면 `PoolReady=False` 조건 설정 | envtest; PillarStorageClass(`storeRef="nonexistent-pool"`, `protocolRef="valid-proto"`) 생성; PillarStore 미등록; PillarProtocol 등록 | 1) PillarStorageClass 생성; 2) `bindingReconciler.Reconcile(ctx, req)` 호출; 3) PillarStorageClass 상태 조회 | `PoolReady.Status=False`; `PoolReady.Reason="PoolNotFound"`; `Ready.Status=False`; StorageClass 미생성 | `BindCRD`, `BindCtrl`, `PoolCRD` |
+| E26.1.5 | `TestCrossLifecycle_Binding_PoolNotReady_PoolReadyFalse` | 참조 PillarStore이 존재하지만 `Ready=False`이면 `PoolReady=False` 조건 설정 | envtest; PillarStore(`Ready=False`) 등록; PillarStorageClass(`storeRef=pool`) 생성 | 1) PillarStorageClass 생성; 2) `bindingReconciler.Reconcile(ctx, req)` 호출; 3) PillarStorageClass 상태 조회 | `PoolReady.Status=False`; `PoolReady.Reason="PoolNotReady"`; `Ready.Status=False` | `BindCRD`, `BindCtrl`, `PoolCRD` |
+| E26.1.6 | `TestCrossLifecycle_Binding_ProtocolMissing_ProtocolValidFalse` | PillarStorageClass 생성 시 참조 PillarProtocol이 없으면 `ProtocolValid=False` 조건 설정 | envtest; PillarStorageClass(`storeRef="valid-pool"`, `protocolRef="nonexistent-protocol"`) 생성; PillarProtocol 미등록; PillarStore 등록 | 1) PillarStorageClass 생성; 2) `bindingReconciler.Reconcile(ctx, req)` 호출; 3) PillarStorageClass 상태 조회 | `ProtocolValid.Status=False`; `ProtocolValid.Reason="ProtocolNotFound"`; `Ready.Status=False` | `BindCRD`, `BindCtrl`, `PProtCRD` |
+| E26.1.7 | `TestCrossLifecycle_Binding_BothMissing_BothConditionsFalse` | PillarStore과 PillarProtocol 둘 다 없을 때 두 조건 모두 `False` | envtest; PillarStorageClass(`storeRef="missing-pool"`, `protocolRef="missing-proto"`) 생성; 둘 다 미등록 | 1) PillarStorageClass 생성; 2) `bindingReconciler.Reconcile(ctx, req)` 호출; 3) PillarStorageClass 상태 조회 | `PoolReady.Status=False`; `ProtocolValid.Status=False`; `Ready.Status=False`; StorageClass 미생성 | `BindCRD`, `BindCtrl`, `PoolCRD`, `PProtCRD` |
+| E26.1.8 | `TestCrossLifecycle_Binding_PoolReadyProtocolReady_BecomeReady` | Pool `Ready=True` + Protocol `Ready=True` → Binding `Ready=True`, StorageClass 생성 | envtest; PillarStore(`Ready=True`, `backend.type="zfs-zvol"`) 등록; PillarProtocol(`Ready=True`, `type="nvmeof-tcp"`) 등록; PillarStorageClass 생성 | 1) PillarStorageClass 생성; 2) `bindingReconciler.Reconcile(ctx, req)` 호출; 3) PillarStorageClass 상태 및 StorageClass 조회 | `PoolReady.Status=True`; `ProtocolValid.Status=True`; `Compatible.Status=True`; `StorageClassCreated.Status=True`; `Ready.Status=True`; StorageClass 존재 | `BindCRD`, `BindCtrl`, `PoolCRD`, `PProtCRD`, `SC` |
 
 ---
 
@@ -3637,32 +3637,32 @@ PillarProtocol (ppr)
 > **한계:** 실제 운영 환경에서는 Watch 이벤트로 자동 전파되나, envtest에서는
 > 각 Reconcile을 명시적으로 호출하여 단계별로 검증한다.
 
-**PillarTarget → PillarPool 연쇄 상태 업데이트:**
+**PillarAgent → PillarStore 연쇄 상태 업데이트:**
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| E26.2.1 | `TestCrossLifecycle_Cascade_TargetLosesReady_PoolConditionUpdates` | PillarTarget이 `Ready=True→False`로 전환 시 PillarPool의 `TargetReady` 조건이 `False`로 전이 | envtest; PillarTarget(`Ready=True`) + PillarPool(`TargetReady=True`, `Ready=True`) 초기 상태 | 1) PillarTarget 상태를 `Ready=False`로 갱신; 2) `poolReconciler.Reconcile(ctx, req)` 호출; 3) PillarPool 상태 조회 | `PoolCRD.TargetReady.Status=False`; `PoolCRD.Ready.Status=False` | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
-| E26.2.2 | `TestCrossLifecycle_Cascade_TargetRecovery_PoolConditionRestores` | PillarTarget이 `Ready=False→True`로 회복 시 PillarPool `TargetReady=True` 복원 | envtest; PillarTarget(`Ready=False`) + PillarPool(`TargetReady=False`) 초기 상태 | 1) PillarTarget 상태를 `Ready=True`로 갱신; 2) `poolReconciler.Reconcile(ctx, req)` 호출; 3) PillarPool 상태 조회 | `PoolCRD.TargetReady.Status=True`; `PoolCRD.Ready.Status=True` | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
+| E26.2.1 | `TestCrossLifecycle_Cascade_TargetLosesReady_PoolConditionUpdates` | PillarAgent이 `Ready=True→False`로 전환 시 PillarStore의 `TargetReady` 조건이 `False`로 전이 | envtest; PillarAgent(`Ready=True`) + PillarStore(`TargetReady=True`, `Ready=True`) 초기 상태 | 1) PillarAgent 상태를 `Ready=False`로 갱신; 2) `poolReconciler.Reconcile(ctx, req)` 호출; 3) PillarStore 상태 조회 | `PoolCRD.TargetReady.Status=False`; `PoolCRD.Ready.Status=False` | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
+| E26.2.2 | `TestCrossLifecycle_Cascade_TargetRecovery_PoolConditionRestores` | PillarAgent이 `Ready=False→True`로 회복 시 PillarStore `TargetReady=True` 복원 | envtest; PillarAgent(`Ready=False`) + PillarStore(`TargetReady=False`) 초기 상태 | 1) PillarAgent 상태를 `Ready=True`로 갱신; 2) `poolReconciler.Reconcile(ctx, req)` 호출; 3) PillarStore 상태 조회 | `PoolCRD.TargetReady.Status=True`; `PoolCRD.Ready.Status=True` | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
 
-**PillarPool → PillarBinding 연쇄 상태 업데이트:**
+**PillarStore → PillarStorageClass 연쇄 상태 업데이트:**
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| E26.2.3 | `TestCrossLifecycle_Cascade_PoolLosesReady_BindingConditionUpdates` | PillarPool이 `Ready=True→False`로 전환 시 PillarBinding의 `PoolReady` 조건이 `False`로 전이 | envtest; PillarPool(`Ready=True`) + PillarBinding(`PoolReady=True`, `Ready=True`) 초기 상태; StorageClass 이미 생성됨 | 1) PillarPool 상태를 `Ready=False`로 갱신; 2) `bindingReconciler.Reconcile(ctx, req)` 호출; 3) PillarBinding 상태 조회; 4) StorageClass 조회 | `BindCRD.PoolReady.Status=False`; `BindCRD.Ready.Status=False`; StorageClass는 기존 PVC 보호를 위해 유지(삭제 안 됨) | `BindCRD`, `BindCtrl`, `PoolCRD`, `SC` |
-| E26.2.4 | `TestCrossLifecycle_Cascade_ProtocolBecomesInvalid_BindingNotReady` | PillarProtocol이 `Ready=True→False`로 전환 시 PillarBinding `ProtocolValid=False` 전이 | envtest; PillarProtocol(`Ready=True`) + PillarBinding(`ProtocolValid=True`, `Ready=True`) 초기 상태 | 1) PillarProtocol 상태를 `Ready=False`로 갱신; 2) `bindingReconciler.Reconcile(ctx, req)` 호출; 3) PillarBinding 상태 조회 | `BindCRD.ProtocolValid.Status=False`; `BindCRD.Ready.Status=False` | `BindCRD`, `BindCtrl`, `PProtCRD` |
+| E26.2.3 | `TestCrossLifecycle_Cascade_PoolLosesReady_BindingConditionUpdates` | PillarStore이 `Ready=True→False`로 전환 시 PillarStorageClass의 `PoolReady` 조건이 `False`로 전이 | envtest; PillarStore(`Ready=True`) + PillarStorageClass(`PoolReady=True`, `Ready=True`) 초기 상태; StorageClass 이미 생성됨 | 1) PillarStore 상태를 `Ready=False`로 갱신; 2) `bindingReconciler.Reconcile(ctx, req)` 호출; 3) PillarStorageClass 상태 조회; 4) StorageClass 조회 | `BindCRD.PoolReady.Status=False`; `BindCRD.Ready.Status=False`; StorageClass는 기존 PVC 보호를 위해 유지(삭제 안 됨) | `BindCRD`, `BindCtrl`, `PoolCRD`, `SC` |
+| E26.2.4 | `TestCrossLifecycle_Cascade_ProtocolBecomesInvalid_BindingNotReady` | PillarProtocol이 `Ready=True→False`로 전환 시 PillarStorageClass `ProtocolValid=False` 전이 | envtest; PillarProtocol(`Ready=True`) + PillarStorageClass(`ProtocolValid=True`, `Ready=True`) 초기 상태 | 1) PillarProtocol 상태를 `Ready=False`로 갱신; 2) `bindingReconciler.Reconcile(ctx, req)` 호출; 3) PillarStorageClass 상태 조회 | `BindCRD.ProtocolValid.Status=False`; `BindCRD.Ready.Status=False` | `BindCRD`, `BindCtrl`, `PProtCRD` |
 
 **전체 체인 연쇄 복원:**
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| E26.2.5 | `TestCrossLifecycle_Cascade_FullChainRecovery` | PillarTarget 회복 시 Pool→Binding 전체 체인 Ready 복원 | envtest; Target(`Ready=False`) → Pool(`TargetReady=False`, `Ready=False`) → Binding(`PoolReady=False`, `Ready=False`) 초기 상태 | 1) PillarTarget `Ready=True`로 갱신; 2) `poolReconciler.Reconcile(ctx, req)` 호출; 3) `bindingReconciler.Reconcile(ctx, req)` 호출; 4) 두 CRD 상태 조회 | `PoolCRD.TargetReady.Status=True`; `PoolCRD.Ready.Status=True`; `BindCRD.PoolReady.Status=True`; `BindCRD.Ready.Status=True` | `PoolCRD`, `PoolCtrl`, `BindCRD`, `BindCtrl`, `TgtCRD` |
-| E26.2.6 | `TestCrossLifecycle_Cascade_BindingBecomesReady_StorageClassCreated` | 모든 상위 의존성 Ready 후 Binding Ready 전이 시 StorageClass 생성 | envtest; PillarPool(`Ready=False`) + PillarProtocol(`Ready=True`) + PillarBinding(`Ready=False`, StorageClass 미존재) 초기 상태 | 1) PillarPool `Ready=True`로 갱신; 2) `bindingReconciler.Reconcile(ctx, req)` 호출; 3) StorageClass 조회 | StorageClass 생성 확인; `BindCRD.StorageClassCreated.Status=True`; `BindCRD.Ready.Status=True` | `BindCRD`, `BindCtrl`, `PoolCRD`, `PProtCRD`, `SC` |
+| E26.2.5 | `TestCrossLifecycle_Cascade_FullChainRecovery` | PillarAgent 회복 시 Pool→Binding 전체 체인 Ready 복원 | envtest; Target(`Ready=False`) → Pool(`TargetReady=False`, `Ready=False`) → Binding(`PoolReady=False`, `Ready=False`) 초기 상태 | 1) PillarAgent `Ready=True`로 갱신; 2) `poolReconciler.Reconcile(ctx, req)` 호출; 3) `bindingReconciler.Reconcile(ctx, req)` 호출; 4) 두 CRD 상태 조회 | `PoolCRD.TargetReady.Status=True`; `PoolCRD.Ready.Status=True`; `BindCRD.PoolReady.Status=True`; `BindCRD.Ready.Status=True` | `PoolCRD`, `PoolCtrl`, `BindCRD`, `BindCtrl`, `TgtCRD` |
+| E26.2.6 | `TestCrossLifecycle_Cascade_BindingBecomesReady_StorageClassCreated` | 모든 상위 의존성 Ready 후 Binding Ready 전이 시 StorageClass 생성 | envtest; PillarStore(`Ready=False`) + PillarProtocol(`Ready=True`) + PillarStorageClass(`Ready=False`, StorageClass 미존재) 초기 상태 | 1) PillarStore `Ready=True`로 갱신; 2) `bindingReconciler.Reconcile(ctx, req)` 호출; 3) StorageClass 조회 | StorageClass 생성 확인; `BindCRD.StorageClassCreated.Status=True`; `BindCRD.Ready.Status=True` | `BindCRD`, `BindCtrl`, `PoolCRD`, `PProtCRD`, `SC` |
 
-**PillarProtocol bindingCount 연쇄 업데이트:**
+**PillarProtocol storageClassCount 연쇄 업데이트:**
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| E26.2.7 | `TestCrossLifecycle_Cascade_ProtocolBindingCount_IncrementOnCreate` | PillarBinding 조정 완료 시 PillarProtocol `status.bindingCount` 증가 | envtest; PillarProtocol(`bindingCount=0`) 등록; PillarBinding Ready 전이 완료 | 1) `protocolReconciler.Reconcile(ctx, req)` 호출; 2) PillarProtocol 상태 조회 | `PProtCRD.Status.BindingCount=1` | `PProtCRD`, `PProtCtrl`, `BindCRD` |
+| E26.2.7 | `TestCrossLifecycle_Cascade_ProtocolStorageClassCount_IncrementOnCreate` | PillarStorageClass 조정 완료 시 PillarProtocol `status.storageClassCount` 증가 | envtest; PillarProtocol(`storageClassCount=0`) 등록; PillarStorageClass Ready 전이 완료 | 1) `protocolReconciler.Reconcile(ctx, req)` 호출; 2) PillarProtocol 상태 조회 | `PProtCRD.Status.StorageClassCount=1` | `PProtCRD`, `PProtCtrl`, `BindCRD` |
 
 ---
 
@@ -3673,7 +3673,7 @@ PillarProtocol (ppr)
 
 > **CI 실행 가능 여부:** ✅ envtest 사용.
 >
-> **미구현 기능 문서화:** 파이널라이저 기반 삭제 보호(PillarTarget/PillarPool/PillarProtocol)는
+> **미구현 기능 문서화:** 파이널라이저 기반 삭제 보호(PillarAgent/PillarStore/PillarProtocol)는
 > 현재 컨트롤러가 구현하지 않은 경우 E26.3.1~E26.3.7 테스트가 실패한다.
 > 이 실패는 **의도된 동작**으로, 구현 누락을 명시적으로 드러낸다.
 > E26.3.8(의존 없는 즉시 삭제)은 파이널라이저 미구현 환경에서도 통과해야 한다.
@@ -3681,37 +3681,37 @@ PillarProtocol (ppr)
 **삭제 보호 의존 그래프:**
 
 ```
-PillarTarget ◄─────(참조) PillarPool ◄────(참조) PillarBinding ◄── PVC
+PillarAgent ◄─────(참조) PillarStore ◄────(참조) PillarStorageClass ◄── PVC
      ↑ 차단                  ↑ 차단                   ↑ 차단
 ```
 
-**PillarTarget 삭제 보호 (PillarPool이 참조 중):**
+**PillarAgent 삭제 보호 (PillarStore이 참조 중):**
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| E26.3.1 | `TestCrossLifecycle_DeleteProtection_Target_BlockedByPool` | PillarPool이 `targetRef`로 참조하는 PillarTarget 삭제 시 파이널라이저로 차단 | envtest; PillarTarget(`target-1`) + PillarPool(`targetRef="target-1"`) 생성 완료; PillarTarget에 `pillar-csi.bhyoo.com/target-protection` 파이널라이저 존재 | 1) `k8sClient.Delete(ctx, target)` 호출; 2) `targetReconciler.Reconcile(ctx, req)` 호출; 3) PillarTarget 조회 | PillarTarget에 `DeletionTimestamp` 설정됨; 파이널라이저 유지; PillarTarget 여전히 존재(NotFound 아님) | `TgtCRD`, `TgtCtrl`, `PoolCRD` |
-| E26.3.2 | `TestCrossLifecycle_DeleteProtection_Target_AllowedAfterPoolRemoved` | 참조 PillarPool 삭제 후 PillarTarget 삭제 완료 | envtest; E26.3.1 상태에서 시작; PillarPool 삭제 완료(finalizer 제거 포함) | 1) PillarPool 삭제 완료; 2) `targetReconciler.Reconcile(ctx, req)` 재호출; 3) PillarTarget 조회 | PillarTarget 삭제 완료(NotFound); 파이널라이저 제거 확인 | `TgtCRD`, `TgtCtrl`, `PoolCRD` |
+| E26.3.1 | `TestCrossLifecycle_DeleteProtection_Target_BlockedByPool` | PillarStore이 `agentRef`로 참조하는 PillarAgent 삭제 시 파이널라이저로 차단 | envtest; PillarAgent(`target-1`) + PillarStore(`agentRef="target-1"`) 생성 완료; PillarAgent에 `pillar-csi.bhyoo.com/agent-protection` 파이널라이저 존재 | 1) `k8sClient.Delete(ctx, target)` 호출; 2) `targetReconciler.Reconcile(ctx, req)` 호출; 3) PillarAgent 조회 | PillarAgent에 `DeletionTimestamp` 설정됨; 파이널라이저 유지; PillarAgent 여전히 존재(NotFound 아님) | `TgtCRD`, `TgtCtrl`, `PoolCRD` |
+| E26.3.2 | `TestCrossLifecycle_DeleteProtection_Target_AllowedAfterPoolRemoved` | 참조 PillarStore 삭제 후 PillarAgent 삭제 완료 | envtest; E26.3.1 상태에서 시작; PillarStore 삭제 완료(finalizer 제거 포함) | 1) PillarStore 삭제 완료; 2) `targetReconciler.Reconcile(ctx, req)` 재호출; 3) PillarAgent 조회 | PillarAgent 삭제 완료(NotFound); 파이널라이저 제거 확인 | `TgtCRD`, `TgtCtrl`, `PoolCRD` |
 
-**PillarPool 삭제 보호 (PillarBinding이 참조 중):**
-
-| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
-|----|------------|------|----------|------|----------|---------|
-| E26.3.3 | `TestCrossLifecycle_DeleteProtection_Pool_BlockedByBinding` | PillarBinding이 `poolRef`로 참조하는 PillarPool 삭제 시 파이널라이저로 차단 | envtest; PillarPool(`pool-1`) + PillarBinding(`poolRef="pool-1"`) 생성 완료; PillarPool에 `pillar-csi.bhyoo.com/pool-protection` 파이널라이저 존재 | 1) `k8sClient.Delete(ctx, pool)` 호출; 2) `poolReconciler.Reconcile(ctx, req)` 호출; 3) PillarPool 조회 | PillarPool에 `DeletionTimestamp` 설정됨; 파이널라이저 유지; PillarPool 여전히 존재 | `PoolCRD`, `PoolCtrl`, `BindCRD` |
-| E26.3.4 | `TestCrossLifecycle_DeleteProtection_Pool_AllowedAfterBindingRemoved` | 참조 PillarBinding 삭제 후 PillarPool 삭제 완료 | envtest; E26.3.3 상태에서 시작; PillarBinding 삭제 완료 | 1) PillarBinding 삭제 완료; 2) `poolReconciler.Reconcile(ctx, req)` 재호출; 3) PillarPool 조회 | PillarPool 삭제 완료(NotFound); 파이널라이저 제거 확인 | `PoolCRD`, `PoolCtrl`, `BindCRD` |
-
-**PillarProtocol 삭제 보호 (PillarBinding이 참조 중):**
+**PillarStore 삭제 보호 (PillarStorageClass이 참조 중):**
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| E26.3.5 | `TestCrossLifecycle_DeleteProtection_Protocol_BlockedByBinding` | PillarBinding이 `protocolRef`로 참조하는 PillarProtocol 삭제 시 파이널라이저로 차단 | envtest; PillarProtocol(`proto-1`) + PillarBinding(`protocolRef="proto-1"`) 생성 완료; PillarProtocol에 `pillar-csi.bhyoo.com/protocol-protection` 파이널라이저 존재 | 1) `k8sClient.Delete(ctx, protocol)` 호출; 2) `protocolReconciler.Reconcile(ctx, req)` 호출; 3) PillarProtocol 조회 | PillarProtocol에 `DeletionTimestamp` 설정됨; 파이널라이저 유지; PillarProtocol 여전히 존재 | `PProtCRD`, `PProtCtrl`, `BindCRD` |
-| E26.3.6 | `TestCrossLifecycle_DeleteProtection_Protocol_AllowedAfterBindingRemoved` | 참조 PillarBinding 삭제 후 PillarProtocol 삭제 완료 | envtest; E26.3.5 상태에서 시작; PillarBinding 삭제 완료 | 1) PillarBinding 삭제 완료; 2) `protocolReconciler.Reconcile(ctx, req)` 재호출; 3) PillarProtocol 조회 | PillarProtocol 삭제 완료(NotFound); 파이널라이저 제거 확인 | `PProtCRD`, `PProtCtrl`, `BindCRD` |
+| E26.3.3 | `TestCrossLifecycle_DeleteProtection_Pool_BlockedByBinding` | PillarStorageClass이 `storeRef`로 참조하는 PillarStore 삭제 시 파이널라이저로 차단 | envtest; PillarStore(`pool-1`) + PillarStorageClass(`storeRef="pool-1"`) 생성 완료; PillarStore에 `pillar-csi.bhyoo.com/store-protection` 파이널라이저 존재 | 1) `k8sClient.Delete(ctx, pool)` 호출; 2) `poolReconciler.Reconcile(ctx, req)` 호출; 3) PillarStore 조회 | PillarStore에 `DeletionTimestamp` 설정됨; 파이널라이저 유지; PillarStore 여전히 존재 | `PoolCRD`, `PoolCtrl`, `BindCRD` |
+| E26.3.4 | `TestCrossLifecycle_DeleteProtection_Pool_AllowedAfterBindingRemoved` | 참조 PillarStorageClass 삭제 후 PillarStore 삭제 완료 | envtest; E26.3.3 상태에서 시작; PillarStorageClass 삭제 완료 | 1) PillarStorageClass 삭제 완료; 2) `poolReconciler.Reconcile(ctx, req)` 재호출; 3) PillarStore 조회 | PillarStore 삭제 완료(NotFound); 파이널라이저 제거 확인 | `PoolCRD`, `PoolCtrl`, `BindCRD` |
+
+**PillarProtocol 삭제 보호 (PillarStorageClass이 참조 중):**
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| E26.3.5 | `TestCrossLifecycle_DeleteProtection_Protocol_BlockedByBinding` | PillarStorageClass이 `protocolRef`로 참조하는 PillarProtocol 삭제 시 파이널라이저로 차단 | envtest; PillarProtocol(`proto-1`) + PillarStorageClass(`protocolRef="proto-1"`) 생성 완료; PillarProtocol에 `pillar-csi.bhyoo.com/protocol-protection` 파이널라이저 존재 | 1) `k8sClient.Delete(ctx, protocol)` 호출; 2) `protocolReconciler.Reconcile(ctx, req)` 호출; 3) PillarProtocol 조회 | PillarProtocol에 `DeletionTimestamp` 설정됨; 파이널라이저 유지; PillarProtocol 여전히 존재 | `PProtCRD`, `PProtCtrl`, `BindCRD` |
+| E26.3.6 | `TestCrossLifecycle_DeleteProtection_Protocol_AllowedAfterBindingRemoved` | 참조 PillarStorageClass 삭제 후 PillarProtocol 삭제 완료 | envtest; E26.3.5 상태에서 시작; PillarStorageClass 삭제 완료 | 1) PillarStorageClass 삭제 완료; 2) `protocolReconciler.Reconcile(ctx, req)` 재호출; 3) PillarProtocol 조회 | PillarProtocol 삭제 완료(NotFound); 파이널라이저 제거 확인 | `PProtCRD`, `PProtCtrl`, `BindCRD` |
 
 **전체 체인 역순 삭제 (Binding → Pool → Target):**
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| E26.3.7 | `TestCrossLifecycle_DeleteProtection_FullChain_ReverseOrderDeletion` | 의존 역순(Binding→Pool→Target) 삭제 시 전체 체인 정상 삭제 완료 | envtest; PillarTarget + PillarPool + PillarBinding 모두 생성 완료; 각 CRD에 파이널라이저 존재 | 1) PillarBinding 삭제 및 조정 완료; 2) PillarPool 조정 → 파이널라이저 해제; 3) PillarPool 삭제 완료; 4) PillarTarget 조정 → 파이널라이저 해제; 5) PillarTarget 삭제 완료 | 역순 삭제로 모든 파이널라이저 순차 해제; 최종적으로 세 CRD 모두 삭제(NotFound) | `TgtCRD`, `TgtCtrl`, `PoolCRD`, `PoolCtrl`, `BindCRD`, `BindCtrl` |
-| E26.3.8 | `TestCrossLifecycle_DeleteProtection_NoDependent_ImmediateDeletion` | 참조 하위 CRD가 없는 CRD는 파이널라이저 즉시 제거 후 삭제 완료 | envtest; PillarTarget 단독 생성(참조 PillarPool 없음) | 1) `k8sClient.Delete(ctx, target)` 호출; 2) `targetReconciler.Reconcile(ctx, req)` 호출; 3) PillarTarget 조회 | PillarTarget 즉시 삭제(NotFound); 파이널라이저 제거 확인 | `TgtCRD`, `TgtCtrl` |
+| E26.3.7 | `TestCrossLifecycle_DeleteProtection_FullChain_ReverseOrderDeletion` | 의존 역순(Binding→Pool→Target) 삭제 시 전체 체인 정상 삭제 완료 | envtest; PillarAgent + PillarStore + PillarStorageClass 모두 생성 완료; 각 CRD에 파이널라이저 존재 | 1) PillarStorageClass 삭제 및 조정 완료; 2) PillarStore 조정 → 파이널라이저 해제; 3) PillarStore 삭제 완료; 4) PillarAgent 조정 → 파이널라이저 해제; 5) PillarAgent 삭제 완료 | 역순 삭제로 모든 파이널라이저 순차 해제; 최종적으로 세 CRD 모두 삭제(NotFound) | `TgtCRD`, `TgtCtrl`, `PoolCRD`, `PoolCtrl`, `BindCRD`, `BindCtrl` |
+| E26.3.8 | `TestCrossLifecycle_DeleteProtection_NoDependent_ImmediateDeletion` | 참조 하위 CRD가 없는 CRD는 파이널라이저 즉시 제거 후 삭제 완료 | envtest; PillarAgent 단독 생성(참조 PillarStore 없음) | 1) `k8sClient.Delete(ctx, target)` 호출; 2) `targetReconciler.Reconcile(ctx, req)` 호출; 3) PillarAgent 조회 | PillarAgent 즉시 삭제(NotFound); 파이널라이저 제거 확인 | `TgtCRD`, `TgtCtrl` |
 
 ---
 
@@ -3732,46 +3732,46 @@ PillarTarget ◄─────(참조) PillarPool ◄────(참조) Pilla
 |--------------|------|------------|
 | Watch 이벤트 자동 전파 지연 측정 | envtest에서는 명시적 Reconcile 호출 필요 | Kind 클러스터 E2E (유형 B) |
 | 실제 StorageClass → PVC → PV 프로비저닝 흐름 | external-provisioner 미사용; envtest 범위 밖 | Kind 클러스터 E2E (유형 B) |
-| 동시 다수 바인딩 bindingCount 경쟁 조건 | envtest 단일 스레드 순차 실행 | F25 확장 (`TestScalability_MultipleBindings`) |
-| 노드 장애 시 PillarTarget 자동 Not-Ready 전환 | 실제 노드 제거 필요; Kubernetes 노드 컨트롤러 동작 | 수동 스테이징 (M2 확장) |
-| cert-manager 인증서 만료 → PillarTarget AgentConnected 조건 갱신 | 실제 TLS 핸드셰이크 + 인증서 TTL 필요 | M10 확장 |
+| 동시 다수 바인딩 storageClassCount 경쟁 조건 | envtest 단일 스레드 순차 실행 | F25 확장 (`TestScalability_MultipleBindings`) |
+| 노드 장애 시 PillarAgent 자동 Not-Ready 전환 | 실제 노드 제거 필요; Kubernetes 노드 컨트롤러 동작 | 수동 스테이징 (M2 확장) |
+| cert-manager 인증서 만료 → PillarAgent AgentConnected 조건 갱신 | 실제 TLS 핸드셰이크 + 인증서 TTL 필요 | M10 확장 |
 
 ---
 
-## E32: PillarPool/PillarBinding LVM CRD 라이프사이클
+## E32: PillarStore/PillarStorageClass LVM CRD 라이프사이클
 
 **테스트 유형:** C (Envtest 통합) ⚠️ envtest 필요
 
-PillarPool과 PillarBinding CRD에서 LVM 고유 필드의 OpenAPI 스키마 검증,
+PillarStore과 PillarStorageClass CRD에서 LVM 고유 필드의 OpenAPI 스키마 검증,
 웹훅 유효성 검사, 그리고 Backend-Protocol 호환성 매트릭스 적용을 검증한다.
 
-**E20(PillarPool)·E25(PillarBinding)와의 차이점:**
+**E20(PillarStore)·E25(PillarStorageClass)와의 차이점:**
 > E20·E25는 ZFS 백엔드 설정을 대상으로 CRD 라이프사이클을 검증한다.
 > E32는 LVM 고유 필드(`lvm.volumeGroup`, `lvm.thinPool`, `lvm.provisioningMode`)와
 > LVM 오버라이드(`overrides.backend.lvm.provisioningMode`)의 유효성 검사 경로를 검증한다.
 
 ---
 
-### E32.1 PillarPool LVM 설정 검증
+### E32.1 PillarStore LVM 설정 검증
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| 276 | `TestPillarPool_LVM_ValidLinearConfig` | type=lvm-lv, volumeGroup 지정, provisioningMode=linear 설정이 유효 | envtest; PillarTarget Ready | 1) PillarPool(type=lvm-lv, lvm.volumeGroup="data-vg", lvm.provisioningMode=linear) 생성 | 생성 성공; OpenAPI 스키마 검증 통과 | `PoolCRD` |
-| 277 | `TestPillarPool_LVM_ValidThinConfig` | type=lvm-lv, volumeGroup + thinPool, provisioningMode=thin 유효 | envtest; PillarTarget Ready | 1) PillarPool(lvm.volumeGroup="data-vg", lvm.thinPool="thin-pool-0", lvm.provisioningMode=thin) 생성 | 생성 성공 | `PoolCRD` |
-| 278 | `TestPillarPool_LVM_MissingVolumeGroup_Rejected` | type=lvm-lv이나 lvm.volumeGroup 미지정 시 검증 실패 | envtest | 1) PillarPool(type=lvm-lv, lvm.volumeGroup="") 생성 시도 | 생성 실패; OpenAPI minLength=1 위반 | `PoolCRD` |
-| 279 | `TestPillarPool_LVM_InvalidProvisioningMode_Rejected` | provisioningMode에 "linear"/"thin" 외 값 지정 시 거부 | envtest | 1) PillarPool(lvm.provisioningMode="striped") 생성 시도 | 생성 실패; Enum 검증 오류 | `PoolCRD` |
-| 280 | `TestPillarPool_LVM_MissingLVMConfig_Rejected` | type=lvm-lv이나 backend.lvm 섹션 자체 누락 시 웹훅 거부 | envtest | 1) PillarPool(type=lvm-lv, lvm=nil) 생성 시도 | 웹훅 ValidationFailed; backend.lvm required when type=lvm-lv | `PoolCRD` |
+| 276 | `TestPillarStore_LVM_ValidLinearConfig` | type=lvm-lv, volumeGroup 지정, provisioningMode=linear 설정이 유효 | envtest; PillarAgent Ready | 1) PillarStore(type=lvm-lv, lvm.volumeGroup="data-vg", lvm.provisioningMode=linear) 생성 | 생성 성공; OpenAPI 스키마 검증 통과 | `PoolCRD` |
+| 277 | `TestPillarStore_LVM_ValidThinConfig` | type=lvm-lv, volumeGroup + thinPool, provisioningMode=thin 유효 | envtest; PillarAgent Ready | 1) PillarStore(lvm.volumeGroup="data-vg", lvm.thinPool="thin-pool-0", lvm.provisioningMode=thin) 생성 | 생성 성공 | `PoolCRD` |
+| 278 | `TestPillarStore_LVM_MissingVolumeGroup_Rejected` | type=lvm-lv이나 lvm.volumeGroup 미지정 시 검증 실패 | envtest | 1) PillarStore(type=lvm-lv, lvm.volumeGroup="") 생성 시도 | 생성 실패; OpenAPI minLength=1 위반 | `PoolCRD` |
+| 279 | `TestPillarStore_LVM_InvalidProvisioningMode_Rejected` | provisioningMode에 "linear"/"thin" 외 값 지정 시 거부 | envtest | 1) PillarStore(lvm.provisioningMode="striped") 생성 시도 | 생성 실패; Enum 검증 오류 | `PoolCRD` |
+| 280 | `TestPillarStore_LVM_MissingLVMConfig_Rejected` | type=lvm-lv이나 backend.lvm 섹션 자체 누락 시 웹훅 거부 | envtest | 1) PillarStore(type=lvm-lv, lvm=nil) 생성 시도 | 웹훅 ValidationFailed; backend.lvm required when type=lvm-lv | `PoolCRD` |
 
 ---
 
-### E32.2 PillarBinding LVM 오버라이드 및 호환성 검증
+### E32.2 PillarStorageClass LVM 오버라이드 및 호환성 검증
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| 281 | `TestPillarBinding_LVM_ValidOverride` | LVM provisioningMode 오버라이드 설정 유효 | envtest; PillarPool(lvm-lv) Ready; PillarProtocol(nvmeof-tcp) 존재 | 1) PillarBinding(overrides.backend.lvm.provisioningMode="linear") 생성 | 생성 성공; StorageClass 자동 생성 | `BindCRD`, `SC` |
-| 282 | `TestPillarBinding_LVM_InvalidOverride_Rejected` | provisioningMode에 잘못된 Enum 값 시 거부 | envtest | 1) PillarBinding(overrides.backend.lvm.provisioningMode="raid5") 생성 시도 | Enum 검증 오류 | `BindCRD` |
-| 283 | `TestPillarBinding_LVM_NVMeOFTCP_Compatible` | lvm-lv(Block) + nvmeof-tcp(Block) 조합이 Compatible=True | envtest; PillarPool(lvm-lv) Ready; PillarProtocol(nvmeof-tcp) | 1) PillarBinding 생성; 2) Reconcile | Compatible=True; Ready=True | `BindCRD`, `BindCtrl` |
-| 284 | `TestPillarBinding_LVM_NFS_Incompatible` | lvm-lv(Block) + nfs(Filesystem) 조합이 비호환 거부 | envtest; PillarPool(lvm-lv); PillarProtocol(nfs) | 1) PillarBinding 생성 시도 | 웹훅 거부 또는 Compatible=False; Block backend + File protocol 비호환 | `BindCRD`, `BindCtrl` |
+| 281 | `TestPillarStorageClass_LVM_ValidOverride` | LVM provisioningMode 오버라이드 설정 유효 | envtest; PillarStore(lvm-lv) Ready; PillarProtocol(nvmeof-tcp) 존재 | 1) PillarStorageClass(overrides.backend.lvm.provisioningMode="linear") 생성 | 생성 성공; StorageClass 자동 생성 | `BindCRD`, `SC` |
+| 282 | `TestPillarStorageClass_LVM_InvalidOverride_Rejected` | provisioningMode에 잘못된 Enum 값 시 거부 | envtest | 1) PillarStorageClass(overrides.backend.lvm.provisioningMode="raid5") 생성 시도 | Enum 검증 오류 | `BindCRD` |
+| 283 | `TestPillarStorageClass_LVM_NVMeOFTCP_Compatible` | lvm-lv(Block) + nvmeof-tcp(Block) 조합이 Compatible=True | envtest; PillarStore(lvm-lv) Ready; PillarProtocol(nvmeof-tcp) | 1) PillarStorageClass 생성; 2) Reconcile | Compatible=True; Ready=True | `BindCRD`, `BindCtrl` |
+| 284 | `TestPillarStorageClass_LVM_NFS_Incompatible` | lvm-lv(Block) + nfs(Filesystem) 조합이 비호환 거부 | envtest; PillarStore(lvm-lv); PillarProtocol(nfs) | 1) PillarStorageClass 생성 시도 | 웹훅 거부 또는 Compatible=False; Block backend + File protocol 비호환 | `BindCRD`, `BindCtrl` |
 
 ---
 
@@ -3779,8 +3779,8 @@ PillarPool과 PillarBinding CRD에서 LVM 고유 필드의 OpenAPI 스키마 검
 
 | 소섹션 | 검증 내용 | 테스트 수 | CI 실행 |
 |--------|---------|----------|--------|
-| E32.1 | PillarPool LVM 설정 — 정상(linear/thin), VG 누락, 잘못된 모드, LVM config 누락 | 5개 | ⚠️ envtest |
-| E32.2 | PillarBinding LVM — 정상 오버라이드, 잘못된 값, nvmeof-tcp 호환, nfs 비호환 | 4개 | ⚠️ envtest |
+| E32.1 | PillarStore LVM 설정 — 정상(linear/thin), VG 누락, 잘못된 모드, LVM config 누락 | 5개 | ⚠️ envtest |
+| E32.2 | PillarStorageClass LVM — 정상 오버라이드, 잘못된 값, nvmeof-tcp 호환, nfs 비호환 | 4개 | ⚠️ envtest |
 | **합계** | | **9개** | ⚠️ |
 
 ---
@@ -3854,7 +3854,7 @@ go test ./test/e2e/ -tags=e2e -v -run TestHelm
 | `ClusterRole` | `<release>` | provisioner/attacher/resizer/controller 권한 통합 ClusterRole |
 | `ClusterRoleBinding` | `<release>` | ClusterRole 바인딩 |
 | `CSIDriver` | `pillar-csi.bhyoo.com` | CSI 드라이버 등록 객체 |
-| `CustomResourceDefinition` | `pillarbindings.pillar-csi.bhyoo.com` 외 4종 | pillar-csi CRD 5종 |
+| `CustomResourceDefinition` | `pillarstorageclasses.pillar-csi.bhyoo.com` 외 4종 | pillar-csi CRD 5종 |
 
 ---
 
@@ -3937,7 +3937,7 @@ helm list --namespace pillar-csi-system --output json \
 |----|------------|------|----------|------|----------|---------|
 | 212 | `TestHelm/컨트롤러_Deployment_Running_검증` | Helm 설치 후 controller Deployment가 Available 상태이고 파드가 Running이다 | E27.1 완료; `--wait` 플래그로 설치하여 파드 Ready 대기 완료 | 1) `kubectl get deployment -n pillar-csi-system -l app.kubernetes.io/component=controller -o json`; 2) `.status.availableReplicas` 확인; 3) 파드 상태 확인 | Deployment `availableReplicas == 1`; 컨트롤러 파드 `status.phase == Running`; 컨테이너 재시작 횟수 == 0 | `CSI-C`, `Kubernetes클러스터` |
 | 213 | `TestHelm/노드_DaemonSet_배포_검증` | Helm 설치 후 node DaemonSet이 존재하고 스케줄 가능한 노드 수만큼 파드가 Running이다 | E27.1 완료; Kind 클러스터 워커 노드 수 확인 | 1) `kubectl get daemonset -n pillar-csi-system -l app.kubernetes.io/component=node -o json`; 2) `.status.numberReady` 확인 | `numberReady == numberDesired`; 각 파드 `status.phase == Running`; node-driver-registrar 및 livenessprobe 사이드카 포함 | `CSI-N`, `Kubernetes클러스터` |
-| 214 | `TestHelm/에이전트_DaemonSet_배포_검증` | Helm 설치 후 agent DaemonSet이 존재하고 스토리지 레이블 노드에만 파드가 스케줄된다 | E27.1 완료; 스토리지 레이블 노드 없는 상태(기본값) | 1) `kubectl get daemonset -n pillar-csi-system -l app.kubernetes.io/component=agent -o json`; 2) `.status.desiredNumberScheduled` 확인 | DaemonSet 존재; 스토리지 레이블(`pillar-csi.bhyoo.com/storage-node=true`) 없는 환경에서 `desiredNumberScheduled == 0`(파드 없음이 정상); DaemonSet 자체는 `Running` 상태 아님 — `desiredNumberScheduled == 0`이어야 함 | `Agent`, `Kubernetes클러스터` |
+| 214 | `TestHelm/에이전트_DaemonSet_배포_검증` | Helm 설치 후 agent DaemonSet이 존재하고 스토리지 레이블 노드에만 파드가 스케줄된다 | E27.1 완료; 스토리지 레이블 노드 없는 상태(기본값) | 1) `kubectl get daemonset -n pillar-csi-system -l app.kubernetes.io/component=agent -o json`; 2) `.status.desiredNumberScheduled` 확인 | DaemonSet 존재; 스토리지 레이블(`pillar-csi.bhyoo.com/agent-node=true`) 없는 환경에서 `desiredNumberScheduled == 0`(파드 없음이 정상); DaemonSet 자체는 `Running` 상태 아님 — `desiredNumberScheduled == 0`이어야 함 | `Agent`, `Kubernetes클러스터` |
 | 215 | `TestHelm/ServiceAccount_3종_존재_검증` | 컨트롤러·노드·에이전트 ServiceAccount 3개가 생성된다 | E27.1 완료 | 1) `kubectl get serviceaccount -n pillar-csi-system -o name`; 2) 이름 목록에서 3개 ServiceAccount 존재 여부 확인 | `pillar-csi-controller`(또는 fullname 패턴) SA 존재; `pillar-csi-node` SA 존재; `pillar-csi-agent` SA 존재 | `전체시스템`, `Kubernetes클러스터` |
 | 216 | `TestHelm/CSIDriver_등록_검증` | CSIDriver 객체 `pillar-csi.bhyoo.com`이 올바른 스펙으로 등록된다 | E27.1 완료 | 1) `kubectl get csidriver pillar-csi.bhyoo.com -o json`; 2) `.spec` 필드 검증 | CSIDriver 존재; `.spec.attachRequired == true`; `.spec.podInfoOnMount == true`; `.spec.fsGroupPolicy == "File"`; `.spec.volumeLifecycleModes` 에 `"Persistent"` 포함 | `전체시스템`, `Kubernetes클러스터` |
 
@@ -3947,52 +3947,52 @@ helm list --namespace pillar-csi-system --output json \
 
 > **범위:** Helm 설치 후(`installCRDs: true` 기본값) API 서버에 등록된 pillar-csi CRD의 **존재·상태·메타데이터·API 가용성**을 포괄 검증한다.
 >
-> **실제 배포 CRD 목록 (4종):** Helm 차트(`charts/pillar-csi/templates/crds.yaml`)는 아래 4개 CRD를 배포한다. CRD 이름의 그룹 부분은 `pillar-csi.pillar-csi.bhyoo.com`이다.
+> **실제 배포 CRD 목록 (4종):** Helm 차트(`charts/pillar-csi/templates/crds.yaml`)는 아래 4개 CRD를 배포한다. CRD 이름의 그룹 부분은 `pillar-csi.bhyoo.com`이다.
 >
 > | 순번 | CRD 이름 | kind | 짧은 이름 | 범위 |
 > |------|---------|------|---------|------|
-> | 1 | `pillartargets.pillar-csi.pillar-csi.bhyoo.com` | `PillarTarget` | `pt` | Cluster |
-> | 2 | `pillarpools.pillar-csi.pillar-csi.bhyoo.com` | `PillarPool` | `pp` | Cluster |
-> | 3 | `pillarprotocols.pillar-csi.pillar-csi.bhyoo.com` | `PillarProtocol` | `ppr` | Cluster |
-> | 4 | `pillarbindings.pillar-csi.pillar-csi.bhyoo.com` | `PillarBinding` | `pb` | Cluster |
+> | 1 | `pillaragents.pillar-csi.bhyoo.com` | `PillarAgent` | `pt` | Cluster |
+> | 2 | `pillarstores.pillar-csi.bhyoo.com` | `PillarStore` | `pp` | Cluster |
+> | 3 | `pillarprotocols.pillar-csi.bhyoo.com` | `PillarProtocol` | `ppr` | Cluster |
+> | 4 | `pillarstorageclasses.pillar-csi.bhyoo.com` | `PillarStorageClass` | `pb` | Cluster |
 >
-> **주의:** `PillarVolume`은 Go 타입 및 내부 스키마 등록(`SchemeBuilder.Register`)에는 포함되지만, 현재 Helm 차트에는 CRD YAML로 배포되지 않는다(`config/crd/bases/` 및 `charts/pillar-csi/templates/crds.yaml` 에 미포함). 따라서 클러스터에서 `kubectl get crd pillarvolumes.*`를 실행하면 NotFound 응답을 받는 것이 정상이다.
+> **주의:** `PillarVolumeState`은 Go 타입 및 내부 스키마 등록(`SchemeBuilder.Register`)에는 포함되지만, 현재 Helm 차트에는 CRD YAML로 배포되지 않는다(`config/crd/bases/` 및 `charts/pillar-csi/templates/crds.yaml` 에 미포함). 따라서 클러스터에서 `kubectl get crd pillarvolumestatestates.*`를 실행하면 NotFound 응답을 받는 것이 정상이다.
 
 #### E27.5.1 CRD 4종 일괄 존재 및 Established 상태 검증
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| 217 | `TestHelm/CRD_4종_설치_검증` | Helm 설치 후 pillar-csi CRD 4종이 모두 등록되고 Established=True 이다 | E27.1 완료 (`installCRDs: true` 기본값); `kubectl` 설정된 Kind 클러스터 컨텍스트 | 1) `kubectl get crd -o json \| jq '[.items[].metadata.name] \| map(select(contains("pillar-csi.pillar-csi.bhyoo.com")))'`; 2) 반환 배열 길이 == 4 확인; 3) 각 CRD에 대해 `.status.conditions[?(@.type=="Established")].status == "True"` 검증 | 배열에 `pillartargets.pillar-csi.pillar-csi.bhyoo.com`, `pillarpools.pillar-csi.pillar-csi.bhyoo.com`, `pillarprotocols.pillar-csi.pillar-csi.bhyoo.com`, `pillarbindings.pillar-csi.pillar-csi.bhyoo.com` 4개 항목 모두 포함; 각 CRD `Established=True`; `NamesAccepted=True` | `VolCRD`, `TgtCRD`, `Kubernetes클러스터` |
-| 217a | `TestHelm/CRD_Established_PillarTarget` | PillarTarget CRD가 `Established=True`이고 `NamesAccepted=True`이다 | E27.1 완료 | 1) `kubectl get crd pillartargets.pillar-csi.pillar-csi.bhyoo.com -o json`; 2) `.status.conditions` 배열 검증 | `conditions` 중 `type=="Established"` 항목의 `status=="True"`; `type=="NamesAccepted"` 항목의 `status=="True"`; `.status.acceptedNames.kind == "PillarTarget"` | `TgtCRD`, `Kubernetes클러스터` |
-| 217b | `TestHelm/CRD_Established_PillarPool` | PillarPool CRD가 `Established=True`이고 `NamesAccepted=True`이다 | E27.1 완료 | 1) `kubectl get crd pillarpools.pillar-csi.pillar-csi.bhyoo.com -o json`; 2) `.status.conditions` 배열 검증 | `Established=True`; `NamesAccepted=True`; `.status.acceptedNames.kind == "PillarPool"` | `VolCRD`, `Kubernetes클러스터` |
-| 217c | `TestHelm/CRD_Established_PillarProtocol` | PillarProtocol CRD가 `Established=True`이고 `NamesAccepted=True`이다 | E27.1 완료 | 1) `kubectl get crd pillarprotocols.pillar-csi.pillar-csi.bhyoo.com -o json`; 2) `.status.conditions` 배열 검증 | `Established=True`; `NamesAccepted=True`; `.status.acceptedNames.kind == "PillarProtocol"` | `VolCRD`, `Kubernetes클러스터` |
-| 217d | `TestHelm/CRD_Established_PillarBinding` | PillarBinding CRD가 `Established=True`이고 `NamesAccepted=True`이다 | E27.1 완료 | 1) `kubectl get crd pillarbindings.pillar-csi.pillar-csi.bhyoo.com -o json`; 2) `.status.conditions` 배열 검증 | `Established=True`; `NamesAccepted=True`; `.status.acceptedNames.kind == "PillarBinding"` | `VolCRD`, `Kubernetes클러스터` |
+| 217 | `TestHelm/CRD_4종_설치_검증` | Helm 설치 후 pillar-csi CRD 4종이 모두 등록되고 Established=True 이다 | E27.1 완료 (`installCRDs: true` 기본값); `kubectl` 설정된 Kind 클러스터 컨텍스트 | 1) `kubectl get crd -o json \| jq '[.items[].metadata.name] \| map(select(contains("pillar-csi.bhyoo.com")))'`; 2) 반환 배열 길이 == 4 확인; 3) 각 CRD에 대해 `.status.conditions[?(@.type=="Established")].status == "True"` 검증 | 배열에 `pillaragents.pillar-csi.bhyoo.com`, `pillarstores.pillar-csi.bhyoo.com`, `pillarprotocols.pillar-csi.bhyoo.com`, `pillarstorageclasses.pillar-csi.bhyoo.com` 4개 항목 모두 포함; 각 CRD `Established=True`; `NamesAccepted=True` | `VolCRD`, `TgtCRD`, `Kubernetes클러스터` |
+| 217a | `TestHelm/CRD_Established_PillarAgent` | PillarAgent CRD가 `Established=True`이고 `NamesAccepted=True`이다 | E27.1 완료 | 1) `kubectl get crd pillaragents.pillar-csi.bhyoo.com -o json`; 2) `.status.conditions` 배열 검증 | `conditions` 중 `type=="Established"` 항목의 `status=="True"`; `type=="NamesAccepted"` 항목의 `status=="True"`; `.status.acceptedNames.kind == "PillarAgent"` | `TgtCRD`, `Kubernetes클러스터` |
+| 217b | `TestHelm/CRD_Established_PillarStore` | PillarStore CRD가 `Established=True`이고 `NamesAccepted=True`이다 | E27.1 완료 | 1) `kubectl get crd pillarstores.pillar-csi.bhyoo.com -o json`; 2) `.status.conditions` 배열 검증 | `Established=True`; `NamesAccepted=True`; `.status.acceptedNames.kind == "PillarStore"` | `VolCRD`, `Kubernetes클러스터` |
+| 217c | `TestHelm/CRD_Established_PillarProtocol` | PillarProtocol CRD가 `Established=True`이고 `NamesAccepted=True`이다 | E27.1 완료 | 1) `kubectl get crd pillarprotocols.pillar-csi.bhyoo.com -o json`; 2) `.status.conditions` 배열 검증 | `Established=True`; `NamesAccepted=True`; `.status.acceptedNames.kind == "PillarProtocol"` | `VolCRD`, `Kubernetes클러스터` |
+| 217d | `TestHelm/CRD_Established_PillarStorageClass` | PillarStorageClass CRD가 `Established=True`이고 `NamesAccepted=True`이다 | E27.1 완료 | 1) `kubectl get crd pillarstorageclasses.pillar-csi.bhyoo.com -o json`; 2) `.status.conditions` 배열 검증 | `Established=True`; `NamesAccepted=True`; `.status.acceptedNames.kind == "PillarStorageClass"` | `VolCRD`, `Kubernetes클러스터` |
 
 **검증 명령 예시:**
 ```bash
-# CRD 4종 존재 확인 (올바른 그룹 이름: pillar-csi.pillar-csi.bhyoo.com)
+# CRD 4종 존재 확인 (올바른 그룹 이름: pillar-csi.bhyoo.com)
 kubectl get crd | grep 'pillar-csi\.pillar-csi\.bhyoo\.com'
 # 기대 출력:
-# pillarbindings.pillar-csi.pillar-csi.bhyoo.com    2026-03-25T12:00:00Z
-# pillarpools.pillar-csi.pillar-csi.bhyoo.com       2026-03-25T12:00:00Z
-# pillarprotocols.pillar-csi.pillar-csi.bhyoo.com   2026-03-25T12:00:00Z
-# pillartargets.pillar-csi.pillar-csi.bhyoo.com     2026-03-25T12:00:00Z
+# pillarstorageclasses.pillar-csi.bhyoo.com    2026-03-25T12:00:00Z
+# pillarstores.pillar-csi.bhyoo.com       2026-03-25T12:00:00Z
+# pillarprotocols.pillar-csi.bhyoo.com   2026-03-25T12:00:00Z
+# pillaragents.pillar-csi.bhyoo.com     2026-03-25T12:00:00Z
 
-# PillarVolume CRD는 존재하지 않음을 확인 (정상)
-kubectl get crd pillarvolumes.pillar-csi.pillar-csi.bhyoo.com 2>&1 | grep -i "not found"
+# PillarVolumeState CRD는 존재하지 않음을 확인 (정상)
+kubectl get crd pillarvolumestatestates.pillar-csi.bhyoo.com 2>&1 | grep -i "not found"
 # 기대 출력: Error from server (NotFound): ...
 
 # 각 CRD Established 상태 확인 (4종 일괄)
-for crd in pillartargets pillarpools pillarprotocols pillarbindings; do
-  STATUS=$(kubectl get crd ${crd}.pillar-csi.pillar-csi.bhyoo.com \
+for crd in pillaragents pillarstores pillarprotocols pillarstorageclasses; do
+  STATUS=$(kubectl get crd ${crd}.pillar-csi.bhyoo.com \
     -o jsonpath='{.status.conditions[?(@.type=="Established")].status}')
   echo "${crd}: Established=${STATUS}"
 done
 # 기대 출력:
-# pillartargets: Established=True
-# pillarpools: Established=True
+# pillaragents: Established=True
+# pillarstores: Established=True
 # pillarprotocols: Established=True
-# pillarbindings: Established=True
+# pillarstorageclasses: Established=True
 ```
 
 ---
@@ -4001,15 +4001,15 @@ done
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| 217e | `TestHelm/CRD_Metadata_PillarTarget` | PillarTarget CRD 스펙의 그룹·버전·범위·shortName이 올바르다 | E27.1 완료 | 1) `kubectl get crd pillartargets.pillar-csi.pillar-csi.bhyoo.com -o json`; 2) `.spec` 필드 전체 검증 | `.spec.group == "pillar-csi.pillar-csi.bhyoo.com"`; `.spec.names.kind == "PillarTarget"`; `.spec.names.plural == "pillartargets"`; `.spec.names.singular == "pillartarget"`; `.spec.names.shortNames` 에 `"pt"` 포함; `.spec.scope == "Cluster"`; `.spec.versions[0].name == "v1alpha1"` | `TgtCRD`, `Kubernetes클러스터` |
-| 217f | `TestHelm/CRD_Metadata_PillarPool` | PillarPool CRD 스펙의 그룹·버전·범위·shortName이 올바르다 | E27.1 완료 | 1) `kubectl get crd pillarpools.pillar-csi.pillar-csi.bhyoo.com -o json`; 2) `.spec` 필드 전체 검증 | `.spec.group == "pillar-csi.pillar-csi.bhyoo.com"`; `.spec.names.kind == "PillarPool"`; `.spec.names.plural == "pillarpools"`; `.spec.names.singular == "pillarpool"`; `.spec.names.shortNames` 에 `"pp"` 포함; `.spec.scope == "Cluster"`; `.spec.versions[0].name == "v1alpha1"` | `VolCRD`, `Kubernetes클러스터` |
-| 217g | `TestHelm/CRD_Metadata_PillarProtocol` | PillarProtocol CRD 스펙의 그룹·버전·범위·shortName이 올바르다 | E27.1 완료 | 1) `kubectl get crd pillarprotocols.pillar-csi.pillar-csi.bhyoo.com -o json`; 2) `.spec` 필드 전체 검증 | `.spec.group == "pillar-csi.pillar-csi.bhyoo.com"`; `.spec.names.kind == "PillarProtocol"`; `.spec.names.plural == "pillarprotocols"`; `.spec.names.singular == "pillarprotocol"`; `.spec.names.shortNames` 에 `"ppr"` 포함; `.spec.scope == "Cluster"`; `.spec.versions[0].name == "v1alpha1"` | `VolCRD`, `Kubernetes클러스터` |
-| 217h | `TestHelm/CRD_Metadata_PillarBinding` | PillarBinding CRD 스펙의 그룹·버전·범위·shortName이 올바르다 | E27.1 완료 | 1) `kubectl get crd pillarbindings.pillar-csi.pillar-csi.bhyoo.com -o json`; 2) `.spec` 필드 전체 검증 | `.spec.group == "pillar-csi.pillar-csi.bhyoo.com"`; `.spec.names.kind == "PillarBinding"`; `.spec.names.plural == "pillarbindings"`; `.spec.names.singular == "pillarbinding"`; `.spec.names.shortNames` 에 `"pb"` 포함; `.spec.scope == "Cluster"`; `.spec.versions[0].name == "v1alpha1"` | `VolCRD`, `Kubernetes클러스터` |
+| 217e | `TestHelm/CRD_Metadata_PillarAgent` | PillarAgent CRD 스펙의 그룹·버전·범위·shortName이 올바르다 | E27.1 완료 | 1) `kubectl get crd pillaragents.pillar-csi.bhyoo.com -o json`; 2) `.spec` 필드 전체 검증 | `.spec.group == "pillar-csi.bhyoo.com"`; `.spec.names.kind == "PillarAgent"`; `.spec.names.plural == "pillaragents"`; `.spec.names.singular == "pillaragent"`; `.spec.names.shortNames` 에 `"pt"` 포함; `.spec.scope == "Cluster"`; `.spec.versions[0].name == "v1alpha1"` | `TgtCRD`, `Kubernetes클러스터` |
+| 217f | `TestHelm/CRD_Metadata_PillarStore` | PillarStore CRD 스펙의 그룹·버전·범위·shortName이 올바르다 | E27.1 완료 | 1) `kubectl get crd pillarstores.pillar-csi.bhyoo.com -o json`; 2) `.spec` 필드 전체 검증 | `.spec.group == "pillar-csi.bhyoo.com"`; `.spec.names.kind == "PillarStore"`; `.spec.names.plural == "pillarstores"`; `.spec.names.singular == "pillarstore"`; `.spec.names.shortNames` 에 `"pp"` 포함; `.spec.scope == "Cluster"`; `.spec.versions[0].name == "v1alpha1"` | `VolCRD`, `Kubernetes클러스터` |
+| 217g | `TestHelm/CRD_Metadata_PillarProtocol` | PillarProtocol CRD 스펙의 그룹·버전·범위·shortName이 올바르다 | E27.1 완료 | 1) `kubectl get crd pillarprotocols.pillar-csi.bhyoo.com -o json`; 2) `.spec` 필드 전체 검증 | `.spec.group == "pillar-csi.bhyoo.com"`; `.spec.names.kind == "PillarProtocol"`; `.spec.names.plural == "pillarprotocols"`; `.spec.names.singular == "pillarprotocol"`; `.spec.names.shortNames` 에 `"ppr"` 포함; `.spec.scope == "Cluster"`; `.spec.versions[0].name == "v1alpha1"` | `VolCRD`, `Kubernetes클러스터` |
+| 217h | `TestHelm/CRD_Metadata_PillarStorageClass` | PillarStorageClass CRD 스펙의 그룹·버전·범위·shortName이 올바르다 | E27.1 완료 | 1) `kubectl get crd pillarstorageclasses.pillar-csi.bhyoo.com -o json`; 2) `.spec` 필드 전체 검증 | `.spec.group == "pillar-csi.bhyoo.com"`; `.spec.names.kind == "PillarStorageClass"`; `.spec.names.plural == "pillarstorageclasses"`; `.spec.names.singular == "pillarstorageclass"`; `.spec.names.shortNames` 에 `"pb"` 포함; `.spec.scope == "Cluster"`; `.spec.versions[0].name == "v1alpha1"` | `VolCRD`, `Kubernetes클러스터` |
 
 **검증 명령 예시:**
 ```bash
-# PillarTarget 메타데이터 일괄 검증
-kubectl get crd pillartargets.pillar-csi.pillar-csi.bhyoo.com -o jsonpath='{
+# PillarAgent 메타데이터 일괄 검증
+kubectl get crd pillaragents.pillar-csi.bhyoo.com -o jsonpath='{
   "group": "{.spec.group}",
   "kind": "{.spec.names.kind}",
   "plural": "{.spec.names.plural}",
@@ -4018,9 +4018,9 @@ kubectl get crd pillartargets.pillar-csi.pillar-csi.bhyoo.com -o jsonpath='{
   "version": "{.spec.versions[0].name}"
 }'
 # 기대 출력 요약:
-# group: pillar-csi.pillar-csi.bhyoo.com
-# kind: PillarTarget
-# plural: pillartargets
+# group: pillar-csi.bhyoo.com
+# kind: PillarAgent
+# plural: pillaragents
 # shortNames: [pt]
 # scope: Cluster
 # version: v1alpha1
@@ -4032,22 +4032,22 @@ kubectl get crd pillartargets.pillar-csi.pillar-csi.bhyoo.com -o jsonpath='{
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| 217i | `TestHelm/API_Resources_그룹_등록_검증` | `kubectl api-resources` 출력에서 pillar-csi 그룹의 4종 리소스가 모두 노출된다 | E27.1 완료 | 1) `kubectl api-resources --api-group=pillar-csi.pillar-csi.bhyoo.com -o wide`; 2) 출력 파싱하여 리소스 이름·kind·shortNames 검증 | 4개 리소스 행 반환: `pillartargets`(pt), `pillarpools`(pp), `pillarprotocols`(ppr), `pillarbindings`(pb); 모든 행의 `APIVERSION` 열이 `pillar-csi.pillar-csi.bhyoo.com/v1alpha1`; `NAMESPACED` 열이 `false` (Cluster 범위) | `TgtCRD`, `VolCRD`, `Kubernetes클러스터` |
-| 217j | `TestHelm/API_Resources_shortName_pt_검증` | `kubectl get pt`가 API 서버에서 PillarTarget 리소스를 조회한다 | E27.1 완료; 클러스터에 PillarTarget 오브젝트 없어도 무방 | 1) `kubectl get pt`; 2) 종료 코드 및 출력 확인 | 종료 코드 0; 오류 없이 빈 목록(`No resources found.`) 또는 헤더만 반환; `NotFound` 또는 `Unknown resource type` 오류 없음 | `TgtCRD`, `Kubernetes클러스터` |
-| 217k | `TestHelm/API_Resources_shortName_pp_검증` | `kubectl get pp`가 API 서버에서 PillarPool 리소스를 조회한다 | E27.1 완료 | 1) `kubectl get pp`; 2) 종료 코드 확인 | 종료 코드 0; 오류 없이 빈 목록 반환 | `VolCRD`, `Kubernetes클러스터` |
+| 217i | `TestHelm/API_Resources_그룹_등록_검증` | `kubectl api-resources` 출력에서 pillar-csi 그룹의 4종 리소스가 모두 노출된다 | E27.1 완료 | 1) `kubectl api-resources --api-group=pillar-csi.bhyoo.com -o wide`; 2) 출력 파싱하여 리소스 이름·kind·shortNames 검증 | 4개 리소스 행 반환: `pillaragents`(pt), `pillarstores`(pp), `pillarprotocols`(ppr), `pillarstorageclasses`(pb); 모든 행의 `APIVERSION` 열이 `pillar-csi.bhyoo.com/v1alpha1`; `NAMESPACED` 열이 `false` (Cluster 범위) | `TgtCRD`, `VolCRD`, `Kubernetes클러스터` |
+| 217j | `TestHelm/API_Resources_shortName_pt_검증` | `kubectl get pt`가 API 서버에서 PillarAgent 리소스를 조회한다 | E27.1 완료; 클러스터에 PillarAgent 오브젝트 없어도 무방 | 1) `kubectl get pt`; 2) 종료 코드 및 출력 확인 | 종료 코드 0; 오류 없이 빈 목록(`No resources found.`) 또는 헤더만 반환; `NotFound` 또는 `Unknown resource type` 오류 없음 | `TgtCRD`, `Kubernetes클러스터` |
+| 217k | `TestHelm/API_Resources_shortName_pp_검증` | `kubectl get pp`가 API 서버에서 PillarStore 리소스를 조회한다 | E27.1 완료 | 1) `kubectl get pp`; 2) 종료 코드 확인 | 종료 코드 0; 오류 없이 빈 목록 반환 | `VolCRD`, `Kubernetes클러스터` |
 | 217l | `TestHelm/API_Resources_shortName_ppr_검증` | `kubectl get ppr`가 API 서버에서 PillarProtocol 리소스를 조회한다 | E27.1 완료 | 1) `kubectl get ppr`; 2) 종료 코드 확인 | 종료 코드 0; 오류 없이 빈 목록 반환 | `VolCRD`, `Kubernetes클러스터` |
-| 217m | `TestHelm/API_Resources_shortName_pb_검증` | `kubectl get pb`가 API 서버에서 PillarBinding 리소스를 조회한다 | E27.1 완료 | 1) `kubectl get pb`; 2) 종료 코드 확인 | 종료 코드 0; 오류 없이 빈 목록 반환 | `VolCRD`, `Kubernetes클러스터` |
+| 217m | `TestHelm/API_Resources_shortName_pb_검증` | `kubectl get pb`가 API 서버에서 PillarStorageClass 리소스를 조회한다 | E27.1 완료 | 1) `kubectl get pb`; 2) 종료 코드 확인 | 종료 코드 0; 오류 없이 빈 목록 반환 | `VolCRD`, `Kubernetes클러스터` |
 
 **검증 명령 예시:**
 ```bash
 # pillar-csi 그룹 API 리소스 전체 목록
-kubectl api-resources --api-group=pillar-csi.pillar-csi.bhyoo.com -o wide
+kubectl api-resources --api-group=pillar-csi.bhyoo.com -o wide
 # 기대 출력 (열 순서는 k8s 버전에 따라 다를 수 있음):
 # NAME              SHORTNAMES   APIVERSION                                    NAMESPACED   KIND
-# pillarbindings    pb           pillar-csi.pillar-csi.bhyoo.com/v1alpha1      false        PillarBinding
-# pillarpools       pp           pillar-csi.pillar-csi.bhyoo.com/v1alpha1      false        PillarPool
-# pillarprotocols   ppr          pillar-csi.pillar-csi.bhyoo.com/v1alpha1      false        PillarProtocol
-# pillartargets     pt           pillar-csi.pillar-csi.bhyoo.com/v1alpha1      false        PillarTarget
+# pillarstorageclasses    pb           pillar-csi.bhyoo.com/v1alpha1      false        PillarStorageClass
+# pillarstores       pp           pillar-csi.bhyoo.com/v1alpha1      false        PillarStore
+# pillarprotocols   ppr          pillar-csi.bhyoo.com/v1alpha1      false        PillarProtocol
+# pillaragents     pt           pillar-csi.bhyoo.com/v1alpha1      false        PillarAgent
 
 # shortName으로 조회 (각각 오류 없이 빈 목록 반환)
 kubectl get pt && kubectl get pp && kubectl get ppr && kubectl get pb
@@ -4060,26 +4060,26 @@ kubectl get pt && kubectl get pp && kubectl get ppr && kubectl get pb
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| 217n | `TestHelm/CRD_Schema_PillarTarget` | PillarTarget CRD `v1alpha1` 버전에 OpenAPI v3 스키마가 정의되어 있다 | E27.1 완료 | 1) `kubectl get crd pillartargets.pillar-csi.pillar-csi.bhyoo.com -o json`; 2) `.spec.versions[0].schema.openAPIV3Schema` 필드 존재 여부 확인; 3) 핵심 spec 필드(`spec.external`, `spec.nodeRef`) 존재 확인 | `.spec.versions[0].schema.openAPIV3Schema` 필드가 null이 아님; `.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties` 에 `external` 및 `nodeRef` 키 존재; `.spec.versions[0].served == true`; `.spec.versions[0].storage == true` | `TgtCRD`, `Kubernetes클러스터` |
-| 217o | `TestHelm/CRD_Schema_PillarPool` | PillarPool CRD `v1alpha1` 버전에 OpenAPI v3 스키마가 정의되어 있다 | E27.1 완료 | 1) `kubectl get crd pillarpools.pillar-csi.pillar-csi.bhyoo.com -o json`; 2) `.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties` 에서 `backend` 및 `targetRef` 키 확인 | `openAPIV3Schema` 존재; `spec.properties.backend` 및 `spec.properties.targetRef` 키 존재; `.spec.versions[0].served == true`; `.spec.versions[0].storage == true` | `VolCRD`, `Kubernetes클러스터` |
-| 217p | `TestHelm/CRD_Schema_PillarProtocol` | PillarProtocol CRD `v1alpha1` 버전에 OpenAPI v3 스키마가 정의되어 있다 | E27.1 완료 | 1) `kubectl get crd pillarprotocols.pillar-csi.pillar-csi.bhyoo.com -o json`; 2) `.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties` 에서 `type` 키 확인 | `openAPIV3Schema` 존재; `spec.properties.type` 존재 (enum: NVMeoF-TCP 등); `.spec.versions[0].served == true`; `.spec.versions[0].storage == true` | `VolCRD`, `Kubernetes클러스터` |
-| 217q | `TestHelm/CRD_Schema_PillarBinding` | PillarBinding CRD `v1alpha1` 버전에 OpenAPI v3 스키마가 정의되어 있다 | E27.1 완료 | 1) `kubectl get crd pillarbindings.pillar-csi.pillar-csi.bhyoo.com -o json`; 2) `.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties` 에서 `poolRef` 및 `protocolRef` 키 확인 | `openAPIV3Schema` 존재; `spec.properties.poolRef` 및 `spec.properties.protocolRef` 존재; `.spec.versions[0].served == true`; `.spec.versions[0].storage == true` | `VolCRD`, `Kubernetes클러스터` |
+| 217n | `TestHelm/CRD_Schema_PillarAgent` | PillarAgent CRD `v1alpha1` 버전에 OpenAPI v3 스키마가 정의되어 있다 | E27.1 완료 | 1) `kubectl get crd pillaragents.pillar-csi.bhyoo.com -o json`; 2) `.spec.versions[0].schema.openAPIV3Schema` 필드 존재 여부 확인; 3) 핵심 spec 필드(`spec.external`, `spec.nodeRef`) 존재 확인 | `.spec.versions[0].schema.openAPIV3Schema` 필드가 null이 아님; `.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties` 에 `external` 및 `nodeRef` 키 존재; `.spec.versions[0].served == true`; `.spec.versions[0].storage == true` | `TgtCRD`, `Kubernetes클러스터` |
+| 217o | `TestHelm/CRD_Schema_PillarStore` | PillarStore CRD `v1alpha1` 버전에 OpenAPI v3 스키마가 정의되어 있다 | E27.1 완료 | 1) `kubectl get crd pillarstores.pillar-csi.bhyoo.com -o json`; 2) `.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties` 에서 `backend` 및 `agentRef` 키 확인 | `openAPIV3Schema` 존재; `spec.properties.backend` 및 `spec.properties.agentRef` 키 존재; `.spec.versions[0].served == true`; `.spec.versions[0].storage == true` | `VolCRD`, `Kubernetes클러스터` |
+| 217p | `TestHelm/CRD_Schema_PillarProtocol` | PillarProtocol CRD `v1alpha1` 버전에 OpenAPI v3 스키마가 정의되어 있다 | E27.1 완료 | 1) `kubectl get crd pillarprotocols.pillar-csi.bhyoo.com -o json`; 2) `.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties` 에서 `type` 키 확인 | `openAPIV3Schema` 존재; `spec.properties.type` 존재 (enum: NVMeoF-TCP 등); `.spec.versions[0].served == true`; `.spec.versions[0].storage == true` | `VolCRD`, `Kubernetes클러스터` |
+| 217q | `TestHelm/CRD_Schema_PillarStorageClass` | PillarStorageClass CRD `v1alpha1` 버전에 OpenAPI v3 스키마가 정의되어 있다 | E27.1 완료 | 1) `kubectl get crd pillarstorageclasses.pillar-csi.bhyoo.com -o json`; 2) `.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties` 에서 `storeRef` 및 `protocolRef` 키 확인 | `openAPIV3Schema` 존재; `spec.properties.storeRef` 및 `spec.properties.protocolRef` 존재; `.spec.versions[0].served == true`; `.spec.versions[0].storage == true` | `VolCRD`, `Kubernetes클러스터` |
 
 **검증 명령 예시:**
 ```bash
-# PillarTarget 스키마 존재 확인
-kubectl get crd pillartargets.pillar-csi.pillar-csi.bhyoo.com \
+# PillarAgent 스키마 존재 확인
+kubectl get crd pillaragents.pillar-csi.bhyoo.com \
   -o jsonpath='{.spec.versions[0].schema.openAPIV3Schema.type}'
 # 기대 출력: object
 
-# PillarTarget spec 내 핵심 필드 확인
-kubectl get crd pillartargets.pillar-csi.pillar-csi.bhyoo.com \
+# PillarAgent spec 내 핵심 필드 확인
+kubectl get crd pillaragents.pillar-csi.bhyoo.com \
   -o jsonpath='{.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties}' \
   | jq 'keys'
 # 기대 출력: ["external", "nodeRef"] (또는 추가 필드 포함)
 
 # served/storage 플래그 확인
-kubectl get crd pillartargets.pillar-csi.pillar-csi.bhyoo.com \
+kubectl get crd pillaragents.pillar-csi.bhyoo.com \
   -o jsonpath='{range .spec.versions[*]}{.name}:{.served}/{.storage} {end}'
 # 기대 출력: v1alpha1:true/true
 ```
@@ -4090,10 +4090,10 @@ kubectl get crd pillartargets.pillar-csi.pillar-csi.bhyoo.com \
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| 217r | `TestHelm/CRD_PrinterColumns_PillarTarget` | PillarTarget CRD에 `Address`, `Agent`, `Ready`, `Age` 프린터 컬럼이 정의되어 있다 | E27.1 완료 | 1) `kubectl get crd pillartargets.pillar-csi.pillar-csi.bhyoo.com -o json`; 2) `.spec.versions[0].additionalPrinterColumns` 배열 검증 | 배열에 `name: "Address"`, `name: "Agent"`, `name: "Ready"`, `name: "Age"` 항목 포함; `Address` jsonPath: `.status.resolvedAddress`; `Ready` jsonPath: `.status.conditions[?(@.type=="Ready")].status` | `TgtCRD`, `Kubernetes클러스터` |
-| 217s | `TestHelm/CRD_PrinterColumns_PillarPool` | PillarPool CRD에 `Target`, `Backend`, `Available`, `Ready`, `Age` 프린터 컬럼이 정의되어 있다 | E27.1 완료 | 1) `kubectl get crd pillarpools.pillar-csi.pillar-csi.bhyoo.com -o json`; 2) `.spec.versions[0].additionalPrinterColumns` 배열 검증 | `name: "Target"` (jsonPath: `.spec.targetRef`); `name: "Backend"` (jsonPath: `.spec.backend.type`); `name: "Available"` (jsonPath: `.status.capacity.available`); `name: "Ready"` 항목 포함 | `VolCRD`, `Kubernetes클러스터` |
-| 217t | `TestHelm/CRD_PrinterColumns_PillarProtocol` | PillarProtocol CRD에 `Type`, `Bindings`, `Ready`, `Age` 프린터 컬럼이 정의되어 있다 | E27.1 완료 | 1) `kubectl get crd pillarprotocols.pillar-csi.pillar-csi.bhyoo.com -o json`; 2) `.spec.versions[0].additionalPrinterColumns` 배열 검증 | `name: "Type"` (jsonPath: `.spec.type`); `name: "Bindings"` (jsonPath: `.status.bindingCount`); `name: "Ready"` 항목 포함 | `VolCRD`, `Kubernetes클러스터` |
-| 217u | `TestHelm/CRD_PrinterColumns_PillarBinding` | PillarBinding CRD에 `Pool`, `Protocol`, `StorageClass`, `Ready`, `Age` 프린터 컬럼이 정의되어 있다 | E27.1 완료 | 1) `kubectl get crd pillarbindings.pillar-csi.pillar-csi.bhyoo.com -o json`; 2) `.spec.versions[0].additionalPrinterColumns` 배열 검증 | `name: "Pool"` (jsonPath: `.spec.poolRef`); `name: "Protocol"` (jsonPath: `.spec.protocolRef`); `name: "StorageClass"` (jsonPath: `.status.storageClassName`); `name: "Ready"` 항목 포함 | `VolCRD`, `Kubernetes클러스터` |
+| 217r | `TestHelm/CRD_PrinterColumns_PillarAgent` | PillarAgent CRD에 `Address`, `Agent`, `Ready`, `Age` 프린터 컬럼이 정의되어 있다 | E27.1 완료 | 1) `kubectl get crd pillaragents.pillar-csi.bhyoo.com -o json`; 2) `.spec.versions[0].additionalPrinterColumns` 배열 검증 | 배열에 `name: "Address"`, `name: "Agent"`, `name: "Ready"`, `name: "Age"` 항목 포함; `Address` jsonPath: `.status.resolvedAddress`; `Ready` jsonPath: `.status.conditions[?(@.type=="Ready")].status` | `TgtCRD`, `Kubernetes클러스터` |
+| 217s | `TestHelm/CRD_PrinterColumns_PillarStore` | PillarStore CRD에 `Target`, `Backend`, `Available`, `Ready`, `Age` 프린터 컬럼이 정의되어 있다 | E27.1 완료 | 1) `kubectl get crd pillarstores.pillar-csi.bhyoo.com -o json`; 2) `.spec.versions[0].additionalPrinterColumns` 배열 검증 | `name: "Target"` (jsonPath: `.spec.agentRef`); `name: "Backend"` (jsonPath: `.spec.backend.type`); `name: "Available"` (jsonPath: `.status.capacity.available`); `name: "Ready"` 항목 포함 | `VolCRD`, `Kubernetes클러스터` |
+| 217t | `TestHelm/CRD_PrinterColumns_PillarProtocol` | PillarProtocol CRD에 `Type`, `Bindings`, `Ready`, `Age` 프린터 컬럼이 정의되어 있다 | E27.1 완료 | 1) `kubectl get crd pillarprotocols.pillar-csi.bhyoo.com -o json`; 2) `.spec.versions[0].additionalPrinterColumns` 배열 검증 | `name: "Type"` (jsonPath: `.spec.type`); `name: "Bindings"` (jsonPath: `.status.storageClassCount`); `name: "Ready"` 항목 포함 | `VolCRD`, `Kubernetes클러스터` |
+| 217u | `TestHelm/CRD_PrinterColumns_PillarStorageClass` | PillarStorageClass CRD에 `Pool`, `Protocol`, `StorageClass`, `Ready`, `Age` 프린터 컬럼이 정의되어 있다 | E27.1 완료 | 1) `kubectl get crd pillarstorageclasses.pillar-csi.bhyoo.com -o json`; 2) `.spec.versions[0].additionalPrinterColumns` 배열 검증 | `name: "Pool"` (jsonPath: `.spec.storeRef`); `name: "Protocol"` (jsonPath: `.spec.protocolRef`); `name: "StorageClass"` (jsonPath: `.status.storageClassName`); `name: "Ready"` 항목 포함 | `VolCRD`, `Kubernetes클러스터` |
 
 ---
 
@@ -4106,16 +4106,16 @@ kubectl get crd pillartargets.pillar-csi.pillar-csi.bhyoo.com \
 **검증 명령 예시:**
 ```bash
 # 4종 CRD resource-policy 일괄 확인
-for crd in pillartargets pillarpools pillarprotocols pillarbindings; do
-  POLICY=$(kubectl get crd ${crd}.pillar-csi.pillar-csi.bhyoo.com \
+for crd in pillaragents pillarstores pillarprotocols pillarstorageclasses; do
+  POLICY=$(kubectl get crd ${crd}.pillar-csi.bhyoo.com \
     -o jsonpath='{.metadata.annotations.helm\.sh/resource-policy}')
   echo "${crd}: resource-policy=${POLICY}"
 done
 # 기대 출력:
-# pillartargets: resource-policy=keep
-# pillarpools: resource-policy=keep
+# pillaragents: resource-policy=keep
+# pillarstores: resource-policy=keep
 # pillarprotocols: resource-policy=keep
-# pillarbindings: resource-policy=keep
+# pillarstorageclasses: resource-policy=keep
 ```
 
 ---
@@ -4124,10 +4124,10 @@ done
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| 217w | `TestHelm/CRD_CRUD_PillarTarget_생성조회삭제` | Helm 설치 후 PillarTarget 오브젝트를 생성·조회·삭제할 수 있다 | E27.1 완료; `config/samples/pillar-csi_v1alpha1_pillartarget.yaml` 샘플 파일 존재 | 1) `kubectl apply -f config/samples/pillar-csi_v1alpha1_pillartarget.yaml`; 2) `kubectl get pt` 로 조회; 3) `kubectl delete -f config/samples/pillar-csi_v1alpha1_pillartarget.yaml` | apply 종료 코드 0; `kubectl get pt`에 생성된 오브젝트 1개 이상 표시; delete 종료 코드 0; 삭제 후 `kubectl get pt`에서 해당 이름 미존재 | `TgtCRD`, `Kubernetes클러스터` |
-| 217x | `TestHelm/CRD_CRUD_PillarPool_생성조회삭제` | Helm 설치 후 PillarPool 오브젝트를 생성·조회·삭제할 수 있다 | E27.1 완료; PillarTarget 오브젝트 사전 존재 (poolRef 의존); `config/samples/pillar-csi_v1alpha1_pillarpool.yaml` 존재 | 1) `kubectl apply -f config/samples/pillar-csi_v1alpha1_pillarpool.yaml`; 2) `kubectl get pp`; 3) `kubectl delete -f config/samples/pillar-csi_v1alpha1_pillarpool.yaml` | apply 종료 코드 0; 조회 성공; 삭제 성공 | `VolCRD`, `Kubernetes클러스터` |
+| 217w | `TestHelm/CRD_CRUD_PillarAgent_생성조회삭제` | Helm 설치 후 PillarAgent 오브젝트를 생성·조회·삭제할 수 있다 | E27.1 완료; `config/samples/pillar-csi_v1alpha1_pillaragent.yaml` 샘플 파일 존재 | 1) `kubectl apply -f config/samples/pillar-csi_v1alpha1_pillaragent.yaml`; 2) `kubectl get pt` 로 조회; 3) `kubectl delete -f config/samples/pillar-csi_v1alpha1_pillaragent.yaml` | apply 종료 코드 0; `kubectl get pt`에 생성된 오브젝트 1개 이상 표시; delete 종료 코드 0; 삭제 후 `kubectl get pt`에서 해당 이름 미존재 | `TgtCRD`, `Kubernetes클러스터` |
+| 217x | `TestHelm/CRD_CRUD_PillarStore_생성조회삭제` | Helm 설치 후 PillarStore 오브젝트를 생성·조회·삭제할 수 있다 | E27.1 완료; PillarAgent 오브젝트 사전 존재 (storeRef 의존); `config/samples/pillar-csi_v1alpha1_pillarstore.yaml` 존재 | 1) `kubectl apply -f config/samples/pillar-csi_v1alpha1_pillarstore.yaml`; 2) `kubectl get pp`; 3) `kubectl delete -f config/samples/pillar-csi_v1alpha1_pillarstore.yaml` | apply 종료 코드 0; 조회 성공; 삭제 성공 | `VolCRD`, `Kubernetes클러스터` |
 | 217y | `TestHelm/CRD_CRUD_PillarProtocol_생성조회삭제` | Helm 설치 후 PillarProtocol 오브젝트를 생성·조회·삭제할 수 있다 | E27.1 완료; `config/samples/pillar-csi_v1alpha1_pillarprotocol.yaml` 존재 | 1) `kubectl apply -f config/samples/pillar-csi_v1alpha1_pillarprotocol.yaml`; 2) `kubectl get ppr`; 3) `kubectl delete -f config/samples/pillar-csi_v1alpha1_pillarprotocol.yaml` | apply 종료 코드 0; 조회 성공; 삭제 성공 | `VolCRD`, `Kubernetes클러스터` |
-| 217z | `TestHelm/CRD_CRUD_PillarBinding_생성조회삭제` | Helm 설치 후 PillarBinding 오브젝트를 생성·조회·삭제할 수 있다 | E27.1 완료; PillarPool 및 PillarProtocol 오브젝트 사전 존재; `config/samples/pillar-csi_v1alpha1_pillarbinding.yaml` 존재 | 1) `kubectl apply -f config/samples/pillar-csi_v1alpha1_pillarbinding.yaml`; 2) `kubectl get pb`; 3) `kubectl delete -f config/samples/pillar-csi_v1alpha1_pillarbinding.yaml` | apply 종료 코드 0; 조회 성공; 삭제 성공 | `VolCRD`, `Kubernetes클러스터` |
+| 217z | `TestHelm/CRD_CRUD_PillarStorageClass_생성조회삭제` | Helm 설치 후 PillarStorageClass 오브젝트를 생성·조회·삭제할 수 있다 | E27.1 완료; PillarStore 및 PillarProtocol 오브젝트 사전 존재; `config/samples/pillar-csi_v1alpha1_pillarstorageclass.yaml` 존재 | 1) `kubectl apply -f config/samples/pillar-csi_v1alpha1_pillarstorageclass.yaml`; 2) `kubectl get pb`; 3) `kubectl delete -f config/samples/pillar-csi_v1alpha1_pillarstorageclass.yaml` | apply 종료 코드 0; 조회 성공; 삭제 성공 | `VolCRD`, `Kubernetes클러스터` |
 
 > **참고 (CI 실행 가능성):** E27.5.7 테스트는 Kind 클러스터에서 실행 가능하다. 그러나 컨트롤러가 Running 상태여야 웹훅 검증이 통과하므로, E27.1에서 `--wait` 플래그로 설치 완료가 확인된 이후에 실행해야 한다.
 
@@ -4144,7 +4144,7 @@ done
 | additionalPrinterColumns 정의 확인 | 217r–u | ✅ | Kind 클러스터 |
 | helm.sh/resource-policy: keep 어노테이션 | 217v | ✅ | Kind 클러스터 |
 | 샘플 오브젝트 CRUD (생성·조회·삭제) | 217w–z | ✅ | Kind 클러스터; 컨트롤러 Running 필요 |
-| PillarVolume CRD 미배포 확인 | 217 내 명시 | ✅ | NotFound 응답 기대 |
+| PillarVolumeState CRD 미배포 확인 | 217 내 명시 | ✅ | NotFound 응답 기대 |
 
 ---
 
@@ -4177,7 +4177,7 @@ kubectl get deployment -n pillar-csi-custom \
 |----|------------|------|----------|------|----------|---------|
 | 219 | `TestHelm/installCRDs_false_설치_검증` | `installCRDs=false`로 설치하면 CRD가 생성되지 않고 다른 리소스는 정상 생성된다 | Kind 클러스터; CRD가 사전 설치되어 있지 않은 클린 상태; Helm v3.12+ | 1) `helm install pillar-csi-nocrd ./charts/pillar-csi --namespace pillar-csi-nocrd --create-namespace --set installCRDs=false --wait --timeout 5m`; 2) CRD 존재 여부 확인; 3) Deployment/DaemonSet 존재 여부 확인 | 종료 코드 0; `STATUS: deployed`; `kubectl get crd | grep pillar-csi.bhyoo.com` 출력이 비어 있음(CRD 없음); controller Deployment 존재 | `VolCRD`, `TgtCRD`, `Kubernetes클러스터` |
 
-> **참고:** `installCRDs=false` 모드는 CRD를 별도의 GitOps 파이프라인 또는 전용 CRD 차트로 관리하는 경우에 사용한다. 이 모드에서 컨트롤러는 시작은 되지만, CRD가 등록되지 않아 CRD 기반 기능(PillarTarget 조회 등)은 동작하지 않는다.
+> **참고:** `installCRDs=false` 모드는 CRD를 별도의 GitOps 파이프라인 또는 전용 CRD 차트로 관리하는 경우에 사용한다. 이 모드에서 컨트롤러는 시작은 되지만, CRD가 등록되지 않아 CRD 기반 기능(PillarAgent 조회 등)은 동작하지 않는다.
 
 ---
 
@@ -4269,19 +4269,19 @@ kubectl get crd | grep pillar-csi.bhyoo.com
 > |---------|------------|------------|------------------------|------|
 > | `controller` | Deployment | 1 | 5개: `controller`, `csi-provisioner`, `csi-attacher`, `csi-resizer`, `liveness-probe` | `replicaCount: 1` 기본값 |
 > | `node` | DaemonSet | 노드 수 × 1 | 3개: `node`, `node-driver-registrar`, `liveness-probe` | init: `modprobe` (항상 Succeeded) |
-> | `agent` | DaemonSet | 스토리지 레이블 노드 수 | 1개: `agent` | `pillar-csi.bhyoo.com/storage-node=true` 레이블 노드에만 스케줄; 기본 Kind 환경에서 0개가 정상 |
+> | `agent` | DaemonSet | 스토리지 레이블 노드 수 | 1개: `agent` | `pillar-csi.bhyoo.com/agent-node=true` 레이블 노드에만 스케줄; 기본 Kind 환경에서 0개가 정상 |
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
 | 225 | `TestHelm/전체_파드_Running_상태_종합_검증` | Helm 배포 후 `pillar-csi-system` 네임스페이스의 모든 파드가 `Running` 상태이고 재시작 없음을 종합 검증한다 | Kind 클러스터 실행 중; E27.1(`helm install --wait`) 완료; `kubectl` CLI 접근 가능 | 1) `kubectl get pods -n pillar-csi-system -o json` 실행; 2) 각 파드 `status.phase` 확인; 3) 각 파드의 모든 컨테이너 `ready` 상태 확인; 4) 각 컨테이너 `restartCount` 확인; 5) `status.conditions[type=Ready].status` 확인 | 모든 파드 `status.phase == "Running"`; 모든 컨테이너 `ready == true`; 모든 컨테이너 `restartCount == 0`; 모든 파드 `conditions[Ready].status == "True"` | `CSI-C`, `CSI-N`, `Kubernetes클러스터` |
 | 226 | `TestHelm/컨트롤러_파드_컨테이너_5종_Ready_검증` | controller 파드에 5개 컨테이너(`controller`, `csi-provisioner`, `csi-attacher`, `csi-resizer`, `liveness-probe`)가 모두 `ready`임을 검증한다 | E27.1 완료; controller Deployment `availableReplicas ≥ 1` | 1) `kubectl get pods -n pillar-csi-system -l app.kubernetes.io/component=controller -o json`; 2) 파드 목록에서 첫 번째 파드 선택; 3) `.status.containerStatuses[]` 순회하여 각 `name`, `ready`, `restartCount` 확인 | 컨테이너 수 == 5; 각 컨테이너 이름: `controller`, `csi-provisioner`, `csi-attacher`, `csi-resizer`, `liveness-probe`; 모든 `ready == true`; 모든 `restartCount == 0`; `state.running` 존재 (startedAt 비어 있지 않음) | `CSI-C`, `Kubernetes클러스터` |
 | 227 | `TestHelm/노드_파드_컨테이너_3종_Ready_및_initContainer_Succeeded_검증` | node DaemonSet 파드에 메인 컨테이너 3개와 init 컨테이너 1개(`modprobe`)가 올바른 상태임을 검증한다 | E27.1 완료; node DaemonSet `numberReady ≥ 1`; Kind 클러스터 워커 노드 ≥ 1 | 1) `kubectl get pods -n pillar-csi-system -l app.kubernetes.io/component=node -o json`; 2) 각 파드에 대해: `.status.initContainerStatuses[0]` (modprobe) 상태 확인; 3) `.status.containerStatuses[]` 순회하여 메인 컨테이너 3종 확인 | 파드 수 ≥ 1; 각 파드의 init 컨테이너 `modprobe`: `state.terminated.exitCode == 0` (Succeeded); 메인 컨테이너 수 == 3; 컨테이너 이름: `node`, `node-driver-registrar`, `liveness-probe`; 모든 `ready == true`; 모든 `restartCount == 0` | `CSI-N`, `Kubernetes클러스터` |
-| 228 | `TestHelm/에이전트_DaemonSet_스토리지_레이블_없는_환경에서_파드_미스케줄_검증` | 스토리지 레이블(`pillar-csi.bhyoo.com/storage-node=true`)이 없는 Kind 기본 환경에서 agent 파드가 0개임을 검증한다 | E27.1 완료; Kind 클러스터 노드에 스토리지 레이블 없음 | 1) `kubectl get pods -n pillar-csi-system -l app.kubernetes.io/component=agent -o json`; 2) `.items` 배열 크기 확인; 3) `kubectl get daemonset -n pillar-csi-system -l app.kubernetes.io/component=agent -o jsonpath='{.items[0].status.desiredNumberScheduled}'` 확인 | `items` 배열 길이 == 0 (파드 없음); DaemonSet `.status.desiredNumberScheduled == 0`; DaemonSet 자체는 존재하고 `.status` 필드 유효함 | `Agent`, `Kubernetes클러스터` |
-| 229 | `TestHelm/에이전트_파드_스토리지_레이블_노드에서_Running_검증` | 스토리지 레이블을 부여한 노드에 agent 파드가 스케줄되어 `Running` 상태임을 검증한다 | E27.1 완료; Kind 클러스터 워커 노드 ≥ 1; 해당 노드에 `kubectl label node <node> pillar-csi.bhyoo.com/storage-node=true` 적용됨 | 1) 워커 노드에 스토리지 레이블 적용; 2) `kubectl rollout status daemonset -n pillar-csi-system -l app.kubernetes.io/component=agent --timeout=3m` 대기; 3) `kubectl get pods -n pillar-csi-system -l app.kubernetes.io/component=agent -o json`; 4) 파드 상태 확인 | DaemonSet `desiredNumberScheduled ≥ 1`; agent 파드 수 ≥ 1; 각 파드 `status.phase == "Running"`; init 컨테이너 `modprobe`: `exitCode == 0`; 메인 컨테이너 `agent`: `ready == true`, `restartCount == 0` | `Agent`, `Kubernetes클러스터` |
+| 228 | `TestHelm/에이전트_DaemonSet_스토리지_레이블_없는_환경에서_파드_미스케줄_검증` | 스토리지 레이블(`pillar-csi.bhyoo.com/agent-node=true`)이 없는 Kind 기본 환경에서 agent 파드가 0개임을 검증한다 | E27.1 완료; Kind 클러스터 노드에 스토리지 레이블 없음 | 1) `kubectl get pods -n pillar-csi-system -l app.kubernetes.io/component=agent -o json`; 2) `.items` 배열 크기 확인; 3) `kubectl get daemonset -n pillar-csi-system -l app.kubernetes.io/component=agent -o jsonpath='{.items[0].status.desiredNumberScheduled}'` 확인 | `items` 배열 길이 == 0 (파드 없음); DaemonSet `.status.desiredNumberScheduled == 0`; DaemonSet 자체는 존재하고 `.status` 필드 유효함 | `Agent`, `Kubernetes클러스터` |
+| 229 | `TestHelm/에이전트_파드_스토리지_레이블_노드에서_Running_검증` | 스토리지 레이블을 부여한 노드에 agent 파드가 스케줄되어 `Running` 상태임을 검증한다 | E27.1 완료; Kind 클러스터 워커 노드 ≥ 1; 해당 노드에 `kubectl label node <node> pillar-csi.bhyoo.com/agent-node=true` 적용됨 | 1) 워커 노드에 스토리지 레이블 적용; 2) `kubectl rollout status daemonset -n pillar-csi-system -l app.kubernetes.io/component=agent --timeout=3m` 대기; 3) `kubectl get pods -n pillar-csi-system -l app.kubernetes.io/component=agent -o json`; 4) 파드 상태 확인 | DaemonSet `desiredNumberScheduled ≥ 1`; agent 파드 수 ≥ 1; 각 파드 `status.phase == "Running"`; init 컨테이너 `modprobe`: `exitCode == 0`; 메인 컨테이너 `agent`: `ready == true`, `restartCount == 0` | `Agent`, `Kubernetes클러스터` |
 | 230 | `TestHelm/파드_Ready_Condition_Timeout_검증` | Helm `--wait --timeout 5m` 완료 후 모든 파드의 `Ready` 조건이 `True`이고, `LastTransitionTime`이 5분 이내임을 검증한다 | E27.1 완료 (`--wait --timeout 5m` 사용) | 1) `kubectl get pods -n pillar-csi-system -o json`; 2) 각 파드의 `.status.conditions[]` 순회하여 `type == "Ready"` 조건 검색; 3) `status`, `lastTransitionTime` 확인 | 모든 파드의 `conditions[Ready].status == "True"`; `lastTransitionTime`이 현재 시각 기준 5분 이내; `ContainersReady` 조건도 `True` | `CSI-C`, `CSI-N`, `Kubernetes클러스터` |
 | 231 | `TestHelm/파드_재시작_없음_5분_관찰_검증` | 모든 파드가 Running 전환 후 5분 동안 재시작 없이 안정적임을 검증한다 | E27.1 완료; 파드 Running 전환 후 5분 경과 | 1) 초기 재시작 횟수 기록: `kubectl get pods -n pillar-csi-system -o jsonpath='{range .items[*]}{.metadata.name}{" "}{range .status.containerStatuses[*]}{.restartCount}{" "}{end}{"\n"}{end}'`; 2) 5분 대기; 3) 재시작 횟수 재확인; 4) 초기 값과 비교 | 5분 후 재시작 횟수 변화 없음 (모든 컨테이너 `ΔrestartCount == 0`); 파드 수 변화 없음 (파드가 새로 생성되거나 종료되지 않음) | `CSI-C`, `CSI-N`, `Kubernetes클러스터` |
 
-> **⚠️ CI 제약 (agent DaemonSet):** Kind 기본 환경에서는 노드에 스토리지 레이블(`pillar-csi.bhyoo.com/storage-node=true`)이 없으므로 agent 파드가 0개 스케줄된다. E228(레이블 없음 검증)은 CI에서 자동 실행 가능하지만, E229(레이블 부여 후 Running 검증)는 Kind 노드에 레이블을 직접 부여하는 추가 셋업이 필요하다.
+> **⚠️ CI 제약 (agent DaemonSet):** Kind 기본 환경에서는 노드에 스토리지 레이블(`pillar-csi.bhyoo.com/agent-node=true`)이 없으므로 agent 파드가 0개 스케줄된다. E228(레이블 없음 검증)은 CI에서 자동 실행 가능하지만, E229(레이블 부여 후 Running 검증)는 Kind 노드에 레이블을 직접 부여하는 추가 셋업이 필요하다.
 
 **종합 검증 스크립트 예시 (kubectl JSON 기반):**
 
@@ -4962,17 +4962,17 @@ kubectl port-forward로 agent gRPC 포트(9500)에 접근하여 `LvmVolumeParams
 
 **위치:** `test/e2e/lvm_pvc_pod_mount_e2e_test.go`
 
-LVM 백엔드로 PillarTarget → PillarPool(lvm-lv) → PillarProtocol(nvmeof-tcp) →
-PillarBinding CR 스택을 생성하고, 실제 PVC 프로비저닝 및 Pod 마운트/언마운트
+LVM 백엔드로 PillarAgent → PillarStore(lvm-lv) → PillarProtocol(nvmeof-tcp) →
+PillarStorageClass CR 스택을 생성하고, 실제 PVC 프로비저닝 및 Pod 마운트/언마운트
 전체 라이프사이클을 검증한다. 이 테스트는 CSI Controller → Agent → LVM 백엔드 →
 NVMe-oF TCP → 워커 노드 마운트의 **전체 데이터 경로**를 관통한다.
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| 294 | `It("PillarPool BackendSupported condition becomes True (agent advertises lvm-lv)")` | agent가 lvm-lv 백엔드 지원 보고 | PillarTarget Ready; PillarPool(type=lvm-lv) 생성 | 1) PillarPool 조건 폴링 | BackendSupported=True | `Agent`, `LVM`, `PoolCRD` |
-| 295 | `It("PillarPool PoolDiscovered condition becomes True (VG is visible to agent)")` | agent가 LVM VG 발견 | PillarTarget Ready; PillarPool 생성 | 1) PillarPool 조건 폴링 | PoolDiscovered=True | `Agent`, `LVM`, `PoolCRD` |
-| 296 | `It("PillarPool reaches Ready=True and reports capacity")` | PillarPool Ready + VG 용량 보고 | 위 조건 True | 1) PillarPool 상태 확인 | Ready=True; capacity.total > 0; capacity.available > 0 | `Agent`, `LVM`, `PoolCRD` |
-| 297 | `It("PillarBinding generates a Kubernetes StorageClass with the pillar-csi provisioner")` | StorageClass 자동 생성 | PillarPool Ready; PillarProtocol·PillarBinding 생성 | 1) StorageClass 확인 | provisioner=pillar-csi.bhyoo.com; parameters에 backend-type=lvm-lv | `BindCRD`, `SC` |
+| 294 | `It("PillarStore BackendSupported condition becomes True (agent advertises lvm-lv)")` | agent가 lvm-lv 백엔드 지원 보고 | PillarAgent Ready; PillarStore(type=lvm-lv) 생성 | 1) PillarStore 조건 폴링 | BackendSupported=True | `Agent`, `LVM`, `PoolCRD` |
+| 295 | `It("PillarStore PoolDiscovered condition becomes True (VG is visible to agent)")` | agent가 LVM VG 발견 | PillarAgent Ready; PillarStore 생성 | 1) PillarStore 조건 폴링 | PoolDiscovered=True | `Agent`, `LVM`, `PoolCRD` |
+| 296 | `It("PillarStore reaches Ready=True and reports capacity")` | PillarStore Ready + VG 용량 보고 | 위 조건 True | 1) PillarStore 상태 확인 | Ready=True; capacity.total > 0; capacity.available > 0 | `Agent`, `LVM`, `PoolCRD` |
+| 297 | `It("PillarStorageClass generates a Kubernetes StorageClass with the pillar-csi provisioner")` | StorageClass 자동 생성 | PillarStore Ready; PillarProtocol·PillarStorageClass 생성 | 1) StorageClass 확인 | provisioner=pillar-csi.bhyoo.com; parameters에 backend-type=lvm-lv | `BindCRD`, `SC` |
 | 298 | `It("first PVC (1Gi) becomes Bound via LVM CreateVolume")` | 1GiB PVC → LVM LV 프로비저닝 → Bound | StorageClass 존재; VG 여유 | 1) PVC(1Gi) 생성; 2) Bound 대기 | PVC Phase=Bound | `CSI-C`, `Agent`, `LVM`, `VolCRD` |
 | 299 | `It("bound PV (first PVC) has capacity >= 1Gi")` | PV capacity ≥ 1Gi — LVM PE 반올림 가능 | PVC Bound | 1) PV capacity 확인 | storage ≥ 1Gi | `CSI-C`, `LVM` |
 | 300 | `It("bound PV (first PVC) references the correct StorageClass")` | PV StorageClass 참조 정확 | PVC Bound | 1) PV.spec.storageClassName 확인 | 이름 일치 | `CSI-C` |
@@ -5092,7 +5092,7 @@ publish/unpublish는 `CSINode` annotation에 publish된 initiator IQN을 기준�
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| 318 | `It("PillarBinding generates an iSCSI StorageClass with protocol-type=iscsi and timer parameters")` | generated StorageClass가 `protocol-type=iscsi`, `iscsi-port`, iSCSI timeout 파라미터를 포함 | Kind; PillarTarget Ready; PillarPool(type=lvm-lv); PillarProtocol(type=iscsi) 생성 | 1) PillarBinding 생성; 2) StorageClass 조회 | StorageClass 존재; `parameters["pillar-csi.bhyoo.com/protocol-type"]=="iscsi"`; `iscsi-port` 및 iSCSI timer 파라미터 존재 | `CSI-C`, `TgtCRD`, `gRPC` |
+| 318 | `It("PillarStorageClass generates an iSCSI StorageClass with protocol-type=iscsi and timer parameters")` | generated StorageClass가 `protocol-type=iscsi`, `iscsi-port`, iSCSI timeout 파라미터를 포함 | Kind; PillarAgent Ready; PillarStore(type=lvm-lv); PillarProtocol(type=iscsi) 생성 | 1) PillarStorageClass 생성; 2) StorageClass 조회 | StorageClass 존재; `parameters["pillar-csi.bhyoo.com/protocol-type"]=="iscsi"`; `iscsi-port` 및 iSCSI timer 파라미터 존재 | `CSI-C`, `TgtCRD`, `gRPC` |
 | 319 | `It("CreateVolume returns target IQN, portal, port and LUN in VolumeContext")` | iSCSI CreateVolume이 PV `VolumeContext`에 target IQN, portal IP, port, LUN을 기록 | StorageClass Ready; agent가 iSCSI export 가능 | 1) PVC 생성; 2) PV 생성 대기; 3) PV `spec.csi.volumeAttributes` 조회 | `target_id`는 IQN 형식; `address`는 storage-worker IP; `port==3260`(또는 override 값); `volume_ref`는 LUN 문자열 | `CSI-C`, `Agent`, `LVM`, `VolCRD`, `gRPC` |
 | 320 | `It("pillar-node publishes the initiator IQN to CSINode annotations and ControllerPublishVolume uses it for ACLs")` | node-side publisher가 compute-worker의 initiator IQN을 `CSINode` annotation에 반영하고, `ControllerPublishVolume`이 그 값을 사용해 ACL을 추가 | PVC Bound; Pod 미생성; compute-worker node image에 initiator IQN 설정 | 1) compute-worker `CSINode` annotation `pillar-csi.bhyoo.com/iscsi-initiator-iqn` 대기; 2) Pod 생성; 3) ControllerPublish 발생; 4) storage-worker의 LIO ACL 조회 | `CSINode` annotation 존재; Pod Running; 해당 target ACL에 annotation과 같은 compute-worker IQN 존재 | `CSI-C`, `CSI-N`, `Agent`, `LVM`, `gRPC` |
 | 321 | `It("ControllerUnpublishVolume revokes the same CSINode-derived initiator IQN ACL")` | Pod 삭제 시 `CSINode` annotation에서 해석된 동일 IQN ACL이 제거 | 320 성공 후 Pod Running | 1) Pod 삭제; 2) ControllerUnpublish 완료 대기; 3) LIO ACL 조회 | target ACL에서 해당 IQN 제거; 다른 volume/session 영향 없음 | `CSI-C`, `Agent`, `LVM`, `gRPC` |
@@ -5202,7 +5202,7 @@ compute-worker 측 `open-iscsi` 런타임이 필요하므로, 표준 GitHub Acti
 
 ### E35.1 zvol 백엔드 제어면 및 export 계약
 
-`PillarPool(type=zfs-zvol)`과 `PillarProtocol(type=iscsi)` 조합이 만들어내는
+`PillarStore(type=zfs-zvol)`과 `PillarProtocol(type=iscsi)` 조합이 만들어내는
 generated `StorageClass`, `CreateVolume`, `ControllerPublish`, `ControllerUnpublish`
 계약을 검증한다. 핵심은 ZFS 고유 파라미터가 유지된 채 iSCSI 연결 정보가
 런타임 `VolumeContext`로 노출되고, publish/unpublish ACL이 `CSINode` annotation에서
@@ -5210,8 +5210,8 @@ generated `StorageClass`, `CreateVolume`, `ControllerPublish`, `ControllerUnpubl
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| 331 | `It("PillarBinding generates an iSCSI StorageClass for zfs-zvol pools without losing zvol parameters")` | generated StorageClass가 `backend-type=zfs-zvol`, pool/zvol 파라미터, `protocol-type=iscsi`, iSCSI timer 파라미터를 함께 포함 | Kind; PillarTarget Ready; PillarPool(type=zfs-zvol); PillarProtocol(type=iscsi) 생성 | 1) PillarBinding 생성; 2) StorageClass 조회 | StorageClass 존재; `parameters["pillar-csi.bhyoo.com/backend-type"]=="zfs-zvol"`; `protocol-type=iscsi`; pool/zvol 파라미터와 iSCSI 파라미터가 모두 유지 | `CSI-C`, `TgtCRD`, `gRPC`, `ZFS` |
-| 332 | `It("CreateVolume provisions a zvol-backed volume and returns target IQN, portal, port and LUN in VolumeContext")` | zvol-backed iSCSI CreateVolume이 PV `VolumeContext`에 target IQN, portal IP, port, LUN을 기록하고 backend zvol을 준비 | StorageClass Ready; agent가 ZFS zvol 생성 및 iSCSI export 가능 | 1) PVC 생성; 2) PV/PillarVolume 생성 대기; 3) PV `spec.csi.volumeAttributes`와 PillarVolume 상태 조회 | `target_id`는 IQN 형식; `address`는 storage-worker IP; `port==3260`(또는 override 값); `volume_ref`는 LUN 문자열; backend path가 `/dev/zvol/` 아래에 존재 | `CSI-C`, `Agent`, `ZFS`, `VolCRD`, `gRPC` |
+| 331 | `It("PillarStorageClass generates an iSCSI StorageClass for zfs-zvol pools without losing zvol parameters")` | generated StorageClass가 `backend-type=zfs-zvol`, pool/zvol 파라미터, `protocol-type=iscsi`, iSCSI timer 파라미터를 함께 포함 | Kind; PillarAgent Ready; PillarStore(type=zfs-zvol); PillarProtocol(type=iscsi) 생성 | 1) PillarStorageClass 생성; 2) StorageClass 조회 | StorageClass 존재; `parameters["pillar-csi.bhyoo.com/backend-type"]=="zfs-zvol"`; `protocol-type=iscsi`; pool/zvol 파라미터와 iSCSI 파라미터가 모두 유지 | `CSI-C`, `TgtCRD`, `gRPC`, `ZFS` |
+| 332 | `It("CreateVolume provisions a zvol-backed volume and returns target IQN, portal, port and LUN in VolumeContext")` | zvol-backed iSCSI CreateVolume이 PV `VolumeContext`에 target IQN, portal IP, port, LUN을 기록하고 backend zvol을 준비 | StorageClass Ready; agent가 ZFS zvol 생성 및 iSCSI export 가능 | 1) PVC 생성; 2) PV/PillarVolumeState 생성 대기; 3) PV `spec.csi.volumeAttributes`와 PillarVolumeState 상태 조회 | `target_id`는 IQN 형식; `address`는 storage-worker IP; `port==3260`(또는 override 값); `volume_ref`는 LUN 문자열; backend path가 `/dev/zvol/` 아래에 존재 | `CSI-C`, `Agent`, `ZFS`, `VolCRD`, `gRPC` |
 | 333 | `It("ControllerPublishVolume resolves the compute-worker initiator IQN from CSINode annotations for a zvol-backed target")` | `ControllerPublishVolume`이 `CSINode` annotation의 compute-worker initiator IQN을 사용해 zvol-backed target ACL을 추가 | PVC Bound; Pod 미생성; compute-worker node image에 initiator IQN 설정; `CSINode` annotation publish 완료 | 1) Pod 생성; 2) ControllerPublish 발생; 3) storage-worker의 LIO ACL 조회 | Pod Running; 해당 target ACL에 `CSINode` annotation과 같은 compute-worker IQN 존재 | `CSI-C`, `Agent`, `ZFS`, `gRPC` |
 | 334 | `It("ControllerUnpublishVolume revokes the CSINode-derived initiator IQN ACL without deleting the zvol-backed target before PVC cleanup")` | Pod 삭제 시 동일 IQN ACL만 제거되고 export 삭제는 PVC 삭제 단계까지 보류 | 333 성공 후 Pod Running | 1) Pod 삭제; 2) ControllerUnpublish 완료 대기; 3) LIO ACL/target 조회 | target ACL에서 해당 IQN 제거; target export는 PVC 삭제 전까지 유지; 다른 volume/session 영향 없음 | `CSI-C`, `Agent`, `ZFS`, `gRPC` |
 
@@ -5530,8 +5530,8 @@ pillar-csi NodeServer (실제 DaemonSet, 워커 노드)
 
 | # | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |---|------------|------|----------|------|----------|---------|
-| F6.1 | `TestKubernetes_NodeFailover` | 스토리지 노드 재시작 후 pillar-agent가 configfs 상태를 자동으로 복원하고 기존 PVC 연결이 재개됨 | F4.1 완료; PVC + Pod 실행 중; 스토리지 노드 SSH 접근 가능 | 1) PVC/Pod 정상 동작 확인; 2) 스토리지 노드 재시작 (`sudo reboot`); 3) 노드 재기동 대기(최대 120s); 4) pillar-agent Pod 재기동 확인; 5) PillarTarget AgentConnected 조건 확인; 6) configfs 항목 재생성 검증; 7) Pod I/O 재개 확인 | 재시작 후 pillar-agent가 `ReconcileState` 호출; configfs 항목 재생성; Pod가 일시적 I/O 오류 후 자동 재연결; 데이터 손상 없음 | `Agent`, `NVMeF`, `TgtCRD`, `gRPC` |
-| F6.2 | `TestKubernetes_AgentReconnect_MTLSCert` | pillar-agent 재시작 후 mTLS 인증서로 CSI 컨트롤러에 재연결 성공 | cert-manager 설치; 유효한 mTLS 인증서 발급; pillar-agent 실행 중 | 1) pillar-agent 프로세스 재시작 (`kubectl delete pod`); 2) agent Pod 재기동 대기; 3) PillarTarget 상태 조건 확인; 4) gRPC 호출 가능 여부 검증 | 재시작 후 AgentConnected=True 조건 복원; gRPC 연결 재수립; 기존 볼륨 연산 재개 | `mTLS`, `Agent`, `TgtCRD`, `gRPC` |
+| F6.1 | `TestKubernetes_NodeFailover` | 스토리지 노드 재시작 후 pillar-agent가 configfs 상태를 자동으로 복원하고 기존 PVC 연결이 재개됨 | F4.1 완료; PVC + Pod 실행 중; 스토리지 노드 SSH 접근 가능 | 1) PVC/Pod 정상 동작 확인; 2) 스토리지 노드 재시작 (`sudo reboot`); 3) 노드 재기동 대기(최대 120s); 4) pillar-agent Pod 재기동 확인; 5) PillarAgent AgentConnected 조건 확인; 6) configfs 항목 재생성 검증; 7) Pod I/O 재개 확인 | 재시작 후 pillar-agent가 `ReconcileState` 호출; configfs 항목 재생성; Pod가 일시적 I/O 오류 후 자동 재연결; 데이터 손상 없음 | `Agent`, `NVMeF`, `TgtCRD`, `gRPC` |
+| F6.2 | `TestKubernetes_AgentReconnect_MTLSCert` | pillar-agent 재시작 후 mTLS 인증서로 CSI 컨트롤러에 재연결 성공 | cert-manager 설치; 유효한 mTLS 인증서 발급; pillar-agent 실행 중 | 1) pillar-agent 프로세스 재시작 (`kubectl delete pod`); 2) agent Pod 재기동 대기; 3) PillarAgent 상태 조건 확인; 4) gRPC 호출 가능 여부 검증 | 재시작 후 AgentConnected=True 조건 복원; gRPC 연결 재수립; 기존 볼륨 연산 재개 | `mTLS`, `Agent`, `TgtCRD`, `gRPC` |
 
 ---
 
@@ -6132,7 +6132,7 @@ NVMe-oF 커널 모듈이 올바르게 동작하는지 검증한다.
 | M5.2 | **지속 I/O 부하 — 4시간 안정성(Soak) 테스트** | 20개 PVC; 각 PVC에 `fio --rw=randrw --bs=4k --iodepth=16 --runtime=14400` | 4시간 동안 I/O 오류 없음; 에이전트 메모리 누수 없음; 파일 디스크립터 증가 없음 | I/O 오류 0; 메모리 증가 ≤ 50 MiB/4h; FD 증가 없음 | 1) 20개 PVC 생성 및 Pod 배포; 2) `fio` 백그라운드 실행 (4시간); 3) 1시간마다 `kubectl top pod`, `lsof -p <agent-pid>` 기록; 4) 완료 후 `fio` 결과 집계 | `CSI-C`, `Agent`, `ZFS`, `NVMeF`, `Conn`, `Mnt`, `gRPC` |
 | M5.3 | **500 GiB 대용량 볼륨 생성/삭제 사이클** | ZFS 풀 1 TiB 이상; PVC 용량 500 GiB | 500 GiB zvol 생성 시간; `zfs create` 출력; 삭제 완료 시간 | 생성 ≤ 30s; 삭제 ≤ 60s; ZFS 용량 즉시 반환 확인 | 1) 500 GiB PVC 생성 및 시간 기록; 2) `zfs list` 로 실제 할당 확인; 3) PVC 삭제 및 시간 기록; 4) `zfs list` 로 용량 반환 확인 | `CSI-C`, `Agent`, `ZFS`, `NVMeF`, `Conn`, `Mnt`, `gRPC` |
 | M5.4 | **볼륨 확장 중 I/O 유지 — 대용량 파일시스템** | `ext4` 포맷된 200 GiB PVC; DB 유사 I/O 패턴 실행 중 | 볼륨 확장(`resize2fs`) 중 I/O 오류 없음; 확장 후 파일시스템 크기 정확성 | I/O 오류 없음; `df -h` 크기 일치 ≤ 1 GiB 오차 | 1) 200 GiB PVC 생성 및 `ext4` 포맷; 2) `fio` I/O 실행; 3) PVC 확장 요청 (`kubectl patch pvc`); 4) `resize2fs` 완료 후 `df -h` 검증 | `CSI-C`, `Agent`, `ZFS`, `NVMeF`, `Conn`, `Mnt`, `gRPC` |
-| M5.5 | **다수 스토리지 노드 동시 에이전트 gRPC 호출 스트레스** | 스토리지 노드 4개; 각 노드에서 동시에 10개 볼륨 생성 요청 | 에이전트 gRPC 큐 처리; 컨트롤러 동시성 처리; 중복 CRD 생성 없음 | 40개 볼륨 모두 성공; 중복 PillarVolume CRD 없음; 데드락 없음 | 1) 4개 노드 × 10개 PVC 동시 생성 스크립트; 2) `kubectl get pillarvolume --all-namespaces` 40개 확인; 3) 에이전트 로그에서 뮤텍스 타임아웃 경고 확인 | `CSI-C`, `Agent`, `ZFS`, `NVMeF`, `Conn`, `Mnt`, `gRPC` |
+| M5.5 | **다수 스토리지 노드 동시 에이전트 gRPC 호출 스트레스** | 스토리지 노드 4개; 각 노드에서 동시에 10개 볼륨 생성 요청 | 에이전트 gRPC 큐 처리; 컨트롤러 동시성 처리; 중복 CRD 생성 없음 | 40개 볼륨 모두 성공; 중복 PillarVolumeState CRD 없음; 데드락 없음 | 1) 4개 노드 × 10개 PVC 동시 생성 스크립트; 2) `kubectl get pillarvolumestate --all-namespaces` 40개 확인; 3) 에이전트 로그에서 뮤텍스 타임아웃 경고 확인 | `CSI-C`, `Agent`, `ZFS`, `NVMeF`, `Conn`, `Mnt`, `gRPC` |
 
 ---
 
@@ -6198,8 +6198,8 @@ NVMe-oF 커널 모듈이 올바르게 동작하는지 검증한다.
 
 | ID | 시나리오 | 사전 조건 | 검증 항목 | 허용 기준 | 수동 실행 절차 | 커버리지 |
 |----|--------|---------|---------|---------|-------------|---------|
-| M8.1 | **Helm 차트 마이너 업그레이드 (v0.x → v0.x+1)** | v_old Helm 릴리스 배포; 기존 PVC 4개 Bound; `fio` I/O 활성 | 업그레이드 중 PVC I/O 중단 시간; webhook 재시작 후 신규 PVC 프로비저닝 정상화 시간; 기존 CRD 데이터 보존 | I/O 중단 ≤ 30s; 신규 PVC 프로비저닝 ≤ 60s; PillarVolume CRD 데이터 손실 없음 | 1) `helm upgrade pillar-csi ./charts/pillar-csi --set image.tag=v_new`; 2) 업그레이드 중 `fio` I/O 로그 기록; 3) 업그레이드 완료 후 `kubectl get pv,pvc` 상태 검증 | `CSI-C`, `CSI-N`, `Agent`, `gRPC` |
-| M8.2 | **CRD 스키마 변경이 포함된 업그레이드** | v_old CRD에 새 선택적 필드 추가된 v_new | 기존 PillarVolume CRD 인스턴스에 새 필드 기본값 적용 여부; 기존 Controller 코드와 신규 CRD 스키마 호환성 | 기존 CRD 인스턴스 유지; 새 필드 기본값(`nil`/0) 올바름; get/list 오류 없음 | 1) v_new CRD YAML 적용 (`kubectl apply -f crds/`); 2) 기존 PillarVolume 인스턴스 `kubectl get` 확인; 3) 신규 필드 기본값 확인; 4) controller-manager 로그에서 스키마 오류 없음 확인 | `CSI-C`, `CSI-N`, `Agent`, `gRPC` |
+| M8.1 | **Helm 차트 마이너 업그레이드 (v0.x → v0.x+1)** | v_old Helm 릴리스 배포; 기존 PVC 4개 Bound; `fio` I/O 활성 | 업그레이드 중 PVC I/O 중단 시간; webhook 재시작 후 신규 PVC 프로비저닝 정상화 시간; 기존 CRD 데이터 보존 | I/O 중단 ≤ 30s; 신규 PVC 프로비저닝 ≤ 60s; PillarVolumeState CRD 데이터 손실 없음 | 1) `helm upgrade pillar-csi ./charts/pillar-csi --set image.tag=v_new`; 2) 업그레이드 중 `fio` I/O 로그 기록; 3) 업그레이드 완료 후 `kubectl get pv,pvc` 상태 검증 | `CSI-C`, `CSI-N`, `Agent`, `gRPC` |
+| M8.2 | **CRD 스키마 변경이 포함된 업그레이드** | v_old CRD에 새 선택적 필드 추가된 v_new | 기존 PillarVolumeState CRD 인스턴스에 새 필드 기본값 적용 여부; 기존 Controller 코드와 신규 CRD 스키마 호환성 | 기존 CRD 인스턴스 유지; 새 필드 기본값(`nil`/0) 올바름; get/list 오류 없음 | 1) v_new CRD YAML 적용 (`kubectl apply -f crds/`); 2) 기존 PillarVolumeState 인스턴스 `kubectl get` 확인; 3) 신규 필드 기본값 확인; 4) controller-manager 로그에서 스키마 오류 없음 확인 | `CSI-C`, `CSI-N`, `Agent`, `gRPC` |
 | M8.3 | **다운그레이드 절차 — 긴급 롤백** | v_new 배포 상태에서 문제 발견 후 v_old 로 롤백 | `helm rollback` 후 PVC I/O 복구; 다운그레이드된 컨트롤러가 v_new CRD 인스턴스 처리 가능 여부 | PVC I/O 복구 ≤ 60s; CRD 호환성 오류 없음 | 1) `helm rollback pillar-csi`; 2) `kubectl rollout status`; 3) 기존 PVC I/O 재개 확인; 4) 컨트롤러 로그에서 `unknown field` 오류 없음 확인 | `CSI-C`, `CSI-N`, `Agent`, `gRPC` |
 | M8.4 | **업그레이드 후 전체 E2E 회귀 테스트 (Smoke Test)** | M8.1 업그레이드 완료 후 | CreateVolume, DeleteVolume, NodeStage, NodePublish, NodeUnstage, NodeUnpublish 기본 흐름 | 모든 기본 오퍼레이션 성공; 에러 없음 | 1) 임시 PVC 생성/삭제 수동 실행; 2) 노드 스테이징/마운트/언마운트/언스테이징 수동 확인; 3) `kubectl get events` 에서 Warning 없음 확인 | `CSI-C`, `CSI-N`, `Agent`, `gRPC` |
 
@@ -6223,7 +6223,7 @@ NVMe-oF 커널 모듈이 올바르게 동작하는지 검증한다.
 | M9.1 | **테넌트 A의 PVC에 테넌트 B 접근 불가 (RBAC)** | 네임스페이스 `tenant-a`, `tenant-b` 각각 생성; RBAC PVC 네임스페이스 격리 정책 | `tenant-b` ServiceAccount 토큰으로 `tenant-a` PVC에 대한 `kubectl get/delete pvc` 시도 거부 | 403 Forbidden 반환; 접근 차단 | 1) `kubectl auth can-i get pvc -n tenant-a --as=system:serviceaccount:tenant-b:default`; 2) `No` 응답 확인 | `CSI-C`, `TgtCRD`, `VolCRD`, `gRPC` |
 | M9.2 | **NVMe-oF NQN 수준 호스트 격리 — 다른 NQN으로 볼륨 접근 불가** | 볼륨 A: AllowInitiator NQN = `nqn.node-a`; 볼륨 B: AllowInitiator NQN = `nqn.node-b` | node-b NQN으로 볼륨 A에 `nvme connect` 시도; 연결 거부 확인 | `nvme connect` 실패; `dmesg` 에서 거부 로그 확인 | 1) node-b에서 `nvme connect -t tcp -n nqn.node-a-volume-A ...`; 2) 연결 실패 확인; 3) dmesg에서 거부 로그 확인 | `CSI-C`, `TgtCRD`, `VolCRD`, `gRPC` |
 | M9.3 | **StorageClass 테넌트 격리 — 잘못된 StorageClass 사용 거부** | 각 테넌트별 StorageClass (네임스페이스 범위); RBAC로 타 네임스페이스 StorageClass 사용 차단 | 테넌트 A가 테넌트 B의 StorageClass를 사용한 PVC 생성 거부 확인 | PVC Pending 또는 403 오류 반환 | 1) `kubectl apply -f pvc-with-wrong-storageclass.yaml -n tenant-a`; 2) PVC 상태 확인 (`Pending` 및 오류 이벤트) | `CSI-C`, `TgtCRD`, `VolCRD`, `gRPC` |
-| M9.4 | **PillarTarget 접근 제어 — 테넌트별 스토리지 노드 격리** | PillarTarget A: 테넌트 A 전용 스토리지 노드; RBAC로 타 테넌트가 해당 Target 참조 불가 | 테넌트 B의 PVC 생성 요청이 테넌트 A의 PillarTarget을 참조할 수 없음 | PVC 생성 실패; `NotFound` 또는 `Forbidden` 오류 | 1) 테넌트 B로 테넌트 A의 `PillarTarget`을 target 파라미터로 PVC 생성 시도; 2) 오류 메시지 확인 | `CSI-C`, `TgtCRD`, `VolCRD`, `gRPC` |
+| M9.4 | **PillarAgent 접근 제어 — 테넌트별 스토리지 노드 격리** | PillarAgent A: 테넌트 A 전용 스토리지 노드; RBAC로 타 테넌트가 해당 Target 참조 불가 | 테넌트 B의 PVC 생성 요청이 테넌트 A의 PillarAgent을 참조할 수 없음 | PVC 생성 실패; `NotFound` 또는 `Forbidden` 오류 | 1) 테넌트 B로 테넌트 A의 `PillarAgent`을 target 파라미터로 PVC 생성 시도; 2) 오류 메시지 확인 | `CSI-C`, `TgtCRD`, `VolCRD`, `gRPC` |
 
 ---
 
@@ -6405,11 +6405,11 @@ go test ./test/e2e/ -v -run TestCSIInvalidCR
 # 사전 준비: envtest 바이너리 설치
 make setup-envtest
 
-# E21.2: PillarTarget 웹훅 — 불변 필드 수정 거부
-go test -tags=integration ./internal/webhook/v1alpha1/ -v -run PillarTarget
+# E21.2: PillarAgent 웹훅 — 불변 필드 수정 거부
+go test -tags=integration ./internal/webhook/v1alpha1/ -v -run PillarAgent
 
-# E21.3: PillarPool 웹훅 — 불변 필드 수정 거부
-go test -tags=integration ./internal/webhook/v1alpha1/ -v -run PillarPool
+# E21.3: PillarStore 웹훅 — 불변 필드 수정 거부
+go test -tags=integration ./internal/webhook/v1alpha1/ -v -run PillarStore
 
 # E21.2 + E21.3 전체 웹훅 테스트
 go test -tags=integration ./internal/webhook/v1alpha1/ -v
@@ -6418,7 +6418,7 @@ go test -tags=integration ./internal/webhook/v1alpha1/ -v
 go test -tags=integration ./internal/controller/ -v -run TestCRDSchema
 
 # E21 전체 (E21.2–E21.4) — integration 빌드
-go test -tags=integration ./internal/... -v -run "PillarTarget|PillarPool|TestCRDSchema"
+go test -tags=integration ./internal/... -v -run "PillarAgent|PillarStore|TestCRDSchema"
 ```
 
 ### 클러스터 E2E 테스트 실행 (Kind 필요)
@@ -7781,7 +7781,7 @@ go test ./test/e2e/ -v -run "TestAgent_ErrorHandling"
 | agent 오류 코드가 CSI 상태 코드로 정확히 매핑됨 | mockAgentServer | `*Err` 필드 주입 |
 | ExportVolumeInfo의 NQN/Address/Port가 VolumeContext로 전달됨 | mockAgentServer | `ExportVolumeInfo` 설정 |
 | VolumeContext가 NodeStageVolume에 올바르게 전달됨 | mockAgentServer + mockConnector | 공유 VolumeStateMachine |
-| PillarVolume CRD가 정확한 Phase/PartialFailure로 생성됨 | mockAgentServer | fake k8s client |
+| PillarVolumeState CRD가 정확한 Phase/PartialFailure로 생성됨 | mockAgentServer | fake k8s client |
 | agent.Server의 NQN 생성 로직 (`nqn.2026-01.com.bhyoo.pillar-csi:<pool>.<id>`) | agentE2EMockBackend | 실제 agent.Server 코드 실행 |
 | ExportVolume 후 configfs 디렉터리/파일/심볼릭 링크 구조 | agentE2EMockBackend | `t.TempDir()` fake configfs |
 | ReconcileState가 빈 configfs에서 볼륨 상태를 재구성 | agentE2EMockBackend | 재시작 시뮬레이션 |
@@ -8062,8 +8062,8 @@ mock으로 검증할 수 없다.
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| F5.1 | `TestK8sPVC_ProvisionAndAttach` | PVC 생성 → PV 동적 프로비저닝 → Pod에 마운트 → 데이터 쓰기/읽기 전체 흐름 | Kind 클러스터; pillar-csi 설치; PillarTarget CRD 등록; ZFS+NVMe-oF 백엔드; StorageClass `pillar-csi.bhyoo.com` | 1) `kubectl apply -f pvc.yaml` (1 GiB); 2) PVC Bound 대기 (Eventually 2분); 3) `kubectl apply -f pod-with-pvc.yaml`; 4) Pod Running 대기; 5) Pod 내에서 `echo test > /data/test.txt`; 6) Pod 재시작 후 파일 존재 확인 | PVC Bound; Pod Running; 파일 지속성; PillarVolume CRD 생성 확인 | `CSI-C`, `CSI-N`, `Agent`, `ZFS`, `NVMeF`, `Conn`, `Mnt`, `VolCRD`, `TgtCRD` |
-| F5.2 | `TestK8sPVC_DeleteAndUnprovision` | PVC 삭제 → PV 삭제 → ZFS zvol 삭제 → NVMe-oF 타겟 해제 전체 정리 흐름 | F5.1 성공 후 PVC/Pod 존재 | 1) `kubectl delete pod`; 2) `kubectl delete pvc`; 3) PV 삭제 대기; 4) `zfs list` 에서 zvol 없음 확인; 5) configfs에서 타겟 없음 확인 | 모든 리소스 삭제; PillarVolume CRD 삭제; 스토리지 누수 없음 | `CSI-C`, `CSI-N`, `Agent`, `ZFS`, `NVMeF`, `VolCRD` |
+| F5.1 | `TestK8sPVC_ProvisionAndAttach` | PVC 생성 → PV 동적 프로비저닝 → Pod에 마운트 → 데이터 쓰기/읽기 전체 흐름 | Kind 클러스터; pillar-csi 설치; PillarAgent CRD 등록; ZFS+NVMe-oF 백엔드; StorageClass `pillar-csi.bhyoo.com` | 1) `kubectl apply -f pvc.yaml` (1 GiB); 2) PVC Bound 대기 (Eventually 2분); 3) `kubectl apply -f pod-with-pvc.yaml`; 4) Pod Running 대기; 5) Pod 내에서 `echo test > /data/test.txt`; 6) Pod 재시작 후 파일 존재 확인 | PVC Bound; Pod Running; 파일 지속성; PillarVolumeState CRD 생성 확인 | `CSI-C`, `CSI-N`, `Agent`, `ZFS`, `NVMeF`, `Conn`, `Mnt`, `VolCRD`, `TgtCRD` |
+| F5.2 | `TestK8sPVC_DeleteAndUnprovision` | PVC 삭제 → PV 삭제 → ZFS zvol 삭제 → NVMe-oF 타겟 해제 전체 정리 흐름 | F5.1 성공 후 PVC/Pod 존재 | 1) `kubectl delete pod`; 2) `kubectl delete pvc`; 3) PV 삭제 대기; 4) `zfs list` 에서 zvol 없음 확인; 5) configfs에서 타겟 없음 확인 | 모든 리소스 삭제; PillarVolumeState CRD 삭제; 스토리지 누수 없음 | `CSI-C`, `CSI-N`, `Agent`, `ZFS`, `NVMeF`, `VolCRD` |
 | F5.3 | `TestK8sPVC_Resize` | PVC 크기 확장 요청 → `external-resizer`가 `ControllerExpandVolume` + `NodeExpandVolume` 호출 → 마운트된 파일시스템 온라인 확장 | F5.1 성공 후 PVC Bound; StorageClass `allowVolumeExpansion: true` | 1) `kubectl patch pvc` (1 GiB → 2 GiB); 2) PVC `status.capacity.storage=2Gi` 대기; 3) Pod 내에서 `df -h /data` 확인 | 파일시스템 크기 2 GiB; 데이터 손실 없음 | `CSI-C`, `CSI-N`, `Agent`, `ZFS`, `Mnt` |
 
 **자동화 대체 범위:**

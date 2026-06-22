@@ -638,17 +638,17 @@ AlreadyExists) are tested within this component.
 
 ---
 
-### 4.8 PillarTarget State Errors (cross-cutting within CSI Controller)
+### 4.8 PillarAgent State Errors (cross-cutting within CSI Controller)
 
 | # | Test Function | Description | Setup | Expected Outcome |
 |---|--------------|-------------|-------|-----------------|
-| 41 | `TestCSIController_CreateVolume_TargetNoResolvedAddress` | PillarTarget exists but has empty ResolvedAddress returns Unavailable | PillarTarget seeded with empty Status.ResolvedAddress | Returns gRPC Unavailable |
-| 42 | `TestCSIController_DeleteVolume_TargetNotFound` | PillarTarget missing during DeleteVolume returns success (decommissioned node) | Well-formed volume ID encoding a target name not in k8s store | Returns empty DeleteVolumeResponse; no error |
-| 43 | `TestCSIController_DeleteVolume_TargetNoResolvedAddress` | PillarTarget found but no ResolvedAddress on DeleteVolume returns Unavailable | PillarTarget with empty ResolvedAddress; well-formed volume ID | Returns gRPC Unavailable |
-| 44 | `TestCSIController_ControllerPublishVolume_TargetNotFound` | PillarTarget missing on ControllerPublishVolume returns NotFound | Valid VolumeID encoding target name not in k8s store | Returns gRPC NotFound |
-| 45 | `TestCSIController_ControllerPublishVolume_TargetNoResolvedAddress` | PillarTarget exists but no ResolvedAddress on ControllerPublishVolume returns Unavailable | PillarTarget with empty ResolvedAddress; valid VolumeID and NodeID | Returns gRPC Unavailable |
-| 46 | `TestCSIController_ExpandVolume_TargetNotFound` | PillarTarget missing on ControllerExpandVolume returns NotFound | Valid VolumeID encoding non-existent target | Returns gRPC NotFound |
-| 47 | `TestCSIController_ExpandVolume_TargetNoResolvedAddress` | PillarTarget exists but no ResolvedAddress on ControllerExpandVolume returns Unavailable | PillarTarget with empty ResolvedAddress; valid VolumeID | Returns gRPC Unavailable |
+| 41 | `TestCSIController_CreateVolume_TargetNoResolvedAddress` | PillarAgent exists but has empty ResolvedAddress returns Unavailable | PillarAgent seeded with empty Status.ResolvedAddress | Returns gRPC Unavailable |
+| 42 | `TestCSIController_DeleteVolume_TargetNotFound` | PillarAgent missing during DeleteVolume returns success (decommissioned node) | Well-formed volume ID encoding a target name not in k8s store | Returns empty DeleteVolumeResponse; no error |
+| 43 | `TestCSIController_DeleteVolume_TargetNoResolvedAddress` | PillarAgent found but no ResolvedAddress on DeleteVolume returns Unavailable | PillarAgent with empty ResolvedAddress; well-formed volume ID | Returns gRPC Unavailable |
+| 44 | `TestCSIController_ControllerPublishVolume_TargetNotFound` | PillarAgent missing on ControllerPublishVolume returns NotFound | Valid VolumeID encoding target name not in k8s store | Returns gRPC NotFound |
+| 45 | `TestCSIController_ControllerPublishVolume_TargetNoResolvedAddress` | PillarAgent exists but no ResolvedAddress on ControllerPublishVolume returns Unavailable | PillarAgent with empty ResolvedAddress; valid VolumeID and NodeID | Returns gRPC Unavailable |
+| 46 | `TestCSIController_ExpandVolume_TargetNotFound` | PillarAgent missing on ControllerExpandVolume returns NotFound | Valid VolumeID encoding non-existent target | Returns gRPC NotFound |
+| 47 | `TestCSIController_ExpandVolume_TargetNoResolvedAddress` | PillarAgent exists but no ResolvedAddress on ControllerExpandVolume returns Unavailable | PillarAgent with empty ResolvedAddress; valid VolumeID | Returns gRPC Unavailable |
 
 ---
 
@@ -656,7 +656,7 @@ AlreadyExists) are tested within this component.
 
 | # | Test Function | Description | Setup | Expected Outcome |
 |---|--------------|-------------|-------|-----------------|
-| 48 | `TestCSIController_CreateVolume_ExportFails_RecordsCreatePartial` | ExportVolume failure after backend creation causes error and partial CRD state | Mock agent: CreateVolume→OK; ExportVolume→gRPC Internal | Returns gRPC Internal; PillarVolume CRD persisted in k8s with CreatePartial phase |
+| 48 | `TestCSIController_CreateVolume_ExportFails_RecordsCreatePartial` | ExportVolume failure after backend creation causes error and partial CRD state | Mock agent: CreateVolume→OK; ExportVolume→gRPC Internal | Returns gRPC Internal; PillarVolumeState CRD persisted in k8s with CreatePartial phase |
 | 49 | `TestCSIController_ExpandVolume_AgentReturnsZeroBytes` | Agent ExpandVolume returning CapacityBytes=0 causes response to use requested_bytes as fallback | Mock agent: ExpandVolume→{CapacityBytes:0}; request required_bytes=20 GiB | Returns ControllerExpandVolumeResponse.CapacityBytes=20 GiB |
 | 50 | `TestCSIErrors_ControllerUnpublish_DenyInitiatorNonNotFound` | DenyInitiator returning a non-NotFound error propagates to caller | Mock agent: DenyInitiator→gRPC Internal | Returns non-OK gRPC status (Internal); no success masking |
 
@@ -1099,9 +1099,9 @@ Requests referencing a resource that does not exist.
 | 1 – Agent | `TestAgentServer_DeleteVolume_InvalidPool` | Pool name not registered |
 | 1 – Agent | `TestAgentServer_ExpandVolume_InvalidPool` | Pool name not registered |
 | 1 – Agent | `TestAgentServer_GetCapacity_UnknownPool` | Pool not in backend registry |
-| 4 – CSI Controller | `TestCSIController_CreateVolume_TargetNotFound` | PillarTarget CR missing |
-| 4 – CSI Controller | `TestCSIController_ControllerPublishVolume_TargetNotFound` | PillarTarget CR missing |
-| 4 – CSI Controller | `TestCSIController_ExpandVolume_TargetNotFound` | PillarTarget CR missing |
+| 4 – CSI Controller | `TestCSIController_CreateVolume_TargetNotFound` | PillarAgent CR missing |
+| 4 – CSI Controller | `TestCSIController_ControllerPublishVolume_TargetNotFound` | PillarAgent CR missing |
+| 4 – CSI Controller | `TestCSIController_ExpandVolume_TargetNotFound` | PillarAgent CR missing |
 
 **Count: 7 error paths across 2 components** ✓
 

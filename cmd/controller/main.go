@@ -69,23 +69,23 @@ func init() {
 // Extracted from main to keep the entry point under the funlen statement limit.
 //
 // AgentDialer is the gRPC connection manager injected into the
-// PillarTargetReconciler so that it can perform live HealthCheck calls against
+// PillarAgentReconciler so that it can perform live HealthCheck calls against
 // pillar-agent instances and reflect the results in AgentConnected conditions.
 func setupControllers(mgr ctrl.Manager, agentDialer agentclient.Dialer) error {
-	err := (&controller.PillarTargetReconciler{
+	err := (&controller.PillarAgentReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 		Dialer: agentDialer,
 	}).SetupWithManager(mgr)
 	if err != nil {
-		return fmt.Errorf("PillarTarget controller: %w", err)
+		return fmt.Errorf("PillarAgent controller: %w", err)
 	}
-	err = (&controller.PillarPoolReconciler{
+	err = (&controller.PillarStoreReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr)
 	if err != nil {
-		return fmt.Errorf("PillarPool controller: %w", err)
+		return fmt.Errorf("PillarStore controller: %w", err)
 	}
 	err = (&controller.PillarProtocolReconciler{
 		Client: mgr.GetClient(),
@@ -94,23 +94,23 @@ func setupControllers(mgr ctrl.Manager, agentDialer agentclient.Dialer) error {
 	if err != nil {
 		return fmt.Errorf("PillarProtocol controller: %w", err)
 	}
-	err = (&controller.PillarBindingReconciler{
+	err = (&controller.PillarStorageClassReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorderFor("pillarbinding-controller"),
+		Recorder: mgr.GetEventRecorderFor("pillarstorageclass-controller"),
 	}).SetupWithManager(mgr)
 	if err != nil {
-		return fmt.Errorf("PillarBinding controller: %w", err)
+		return fmt.Errorf("PillarStorageClass controller: %w", err)
 	}
 	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
-		err = webhookv1alpha1.SetupPillarTargetWebhookWithManager(mgr)
+		err = webhookv1alpha1.SetupPillarAgentWebhookWithManager(mgr)
 		if err != nil {
-			setupLog.Error(err, "unable to create webhook", "webhook", "PillarTarget")
+			setupLog.Error(err, "unable to create webhook", "webhook", "PillarAgent")
 			os.Exit(1)
 		}
-		err = webhookv1alpha1.SetupPillarPoolWebhookWithManager(mgr)
+		err = webhookv1alpha1.SetupPillarStoreWebhookWithManager(mgr)
 		if err != nil {
-			setupLog.Error(err, "unable to create webhook", "webhook", "PillarPool")
+			setupLog.Error(err, "unable to create webhook", "webhook", "PillarStore")
 			os.Exit(1)
 		}
 		err = webhookv1alpha1.SetupPillarProtocolWebhookWithManager(mgr)
@@ -118,9 +118,9 @@ func setupControllers(mgr ctrl.Manager, agentDialer agentclient.Dialer) error {
 			setupLog.Error(err, "unable to create webhook", "webhook", "PillarProtocol")
 			os.Exit(1)
 		}
-		err = webhookv1alpha1.SetupPillarBindingWebhookWithManager(mgr)
+		err = webhookv1alpha1.SetupPillarStorageClassWebhookWithManager(mgr)
 		if err != nil {
-			setupLog.Error(err, "unable to create webhook", "webhook", "PillarBinding")
+			setupLog.Error(err, "unable to create webhook", "webhook", "PillarStorageClass")
 			os.Exit(1)
 		}
 	}
@@ -174,10 +174,10 @@ type csiGRPCServer struct {
 func (s *csiGRPCServer) Start(ctx context.Context) error {
 	log := ctrl.Log.WithName("csi-grpc")
 
-	// Restore any PillarVolume state that survived a controller restart.
-	err := s.ctrlSrv.LoadStateFromPillarVolumes(ctx)
+	// Restore any PillarVolumeState state that survived a controller restart.
+	err := s.ctrlSrv.LoadStateFromPillarVolumeStates(ctx)
 	if err != nil {
-		return fmt.Errorf("CSI gRPC server: load PillarVolume state: %w", err)
+		return fmt.Errorf("CSI gRPC server: load PillarVolumeState state: %w", err)
 	}
 
 	scheme, addr, err := parseCSIEndpoint(s.endpoint)
