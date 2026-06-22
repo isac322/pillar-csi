@@ -23,6 +23,10 @@
 FROM --platform=$BUILDPLATFORM golang:1.26-alpine3.24 AS builder
 ARG TARGETOS
 ARG TARGETARCH
+# TARGETVARIANT is set by buildx for sub-architecture levels (e.g. "v3" for
+# linux/amd64/v3, "v7" for linux/arm/v7, "v8.2" for linux/arm64/v8.2).  Empty
+# for the architecture default (linux/amd64, linux/arm64).
+ARG TARGETVARIANT
 
 WORKDIR /workspace
 
@@ -36,8 +40,22 @@ COPY . .
 # directory target writes each binary (named after its package directory)
 # into that directory.  This works with cross-compilation unlike go install
 # which rejects GOBIN when GOOS/GOARCH differ from the host.
-RUN --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
+#
+# Map the BuildKit TARGETVARIANT to the matching Go toolchain env var so each
+# manifest in the multi-platform image carries a binary tuned for that
+# instruction-set level:
+#   amd64/v1..v4 → GOAMD64 (Go 1.21+; default v1)
+#   arm/v6,v7    → GOARM   (strip the leading 'v')
+#   arm64/v8.0..v9.5 → GOARM64 (Go 1.23+; default v8.0)
+RUN --mount=type=cache,target=/root/.cache/go-build set -eu; \
+    GOAMD64=""; GOARM=""; GOARM64=""; \
+    case "$TARGETARCH" in \
+      amd64) GOAMD64="${TARGETVARIANT:-v1}" ;; \
+      arm)   GOARM="${TARGETVARIANT#v}" ;; \
+      arm64) GOARM64="${TARGETVARIANT:-v8.0}" ;; \
+    esac; \
+    CGO_ENABLED=0 GOOS="${TARGETOS:-linux}" GOARCH="${TARGETARCH}" \
+    GOAMD64="$GOAMD64" GOARM="$GOARM" GOARM64="$GOARM64" \
     go build \
       -trimpath \
       -pgo=auto \
