@@ -1,17 +1,84 @@
 name: Release
 
+# Versions in charts/pillar-csi/Chart.yaml are the single source of truth.
+#   - .appVersion drives the container image release (tag: v<appVersion>)
+#   - .version    drives the Helm chart release    (tag: chart-v<version>)
+#
+# A push to master that modifies Chart.yaml — or a manual workflow_dispatch —
+# checks whether the corresponding GitHub Releases already exist and skips
+# anything that is already published. Image and chart releases are independent.
+
 on:
-  release:
-    types: [published]
+  push:
+    branches: [master]
+    paths:
+      - charts/pillar-csi/Chart.yaml
+  workflow_dispatch:
+    inputs:
+      release_image:
+        description: Force build+release image (uses Chart.yaml appVersion)
+        type: boolean
+        default: false
+      release_chart:
+        description: Force build+release chart (uses Chart.yaml version)
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  packages: write
 
 jobs:
-  image:
-    name: Push image
-    if: startsWith(github.event.release.tag_name, 'v')
+  detect:
+    name: Detect required releases
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
+    outputs:
+      do_image: ${{ steps.check.outputs.do_image }}
+      do_chart: ${{ steps.check.outputs.do_chart }}
+      app_version: ${{ steps.ver.outputs.app }}
+      chart_version: ${{ steps.ver.outputs.chart }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Read versions from Chart.yaml
+        id: ver
+        run: |
+          set -euo pipefail
+          app=$(yq '.appVersion' charts/pillar-csi/Chart.yaml)
+          chart=$(yq '.version' charts/pillar-csi/Chart.yaml)
+          echo "app=${app}" >> "$GITHUB_OUTPUT"
+          echo "chart=${chart}" >> "$GITHUB_OUTPUT"
+          echo "appVersion=${app}, chartVersion=${chart}"
+
+      - name: Decide which releases to run
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          do_image=false
+          do_chart=false
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            do_image='${{ inputs.release_image }}'
+            do_chart='${{ inputs.release_chart }}'
+          else
+            if ! gh release view "v${{ steps.ver.outputs.app }}" >/dev/null 2>&1; then
+              do_image=true
+            fi
+            if ! gh release view "chart-v${{ steps.ver.outputs.chart }}" >/dev/null 2>&1; then
+              do_chart=true
+            fi
+          fi
+          echo "do_image=${do_image}" >> "$GITHUB_OUTPUT"
+          echo "do_chart=${do_chart}" >> "$GITHUB_OUTPUT"
+          echo "Decision: do_image=${do_image} do_chart=${do_chart}"
+
+  image:
+    name: Build, push, release image
+    needs: detect
+    if: needs.detect.outputs.do_image == 'true'
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -43,28 +110,37 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract version tag
-        id: version
-        run: echo "tag=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-
-      - name: Build and push all images
+      - name: Build and push images
         uses: docker/bake-action@v7
         with:
           files: docker-bake.hcl
           push: true
           set: |
             *.platform=linux/amd64,linux/arm64,linux/arm/v7,linux/s390x,linux/ppc64le,linux/riscv64
-            controller.tags=ghcr.io/${{ github.repository }}/controller:${{ steps.version.outputs.tag }}
-            agent.tags=ghcr.io/${{ github.repository }}/agent:${{ steps.version.outputs.tag }}
-            node.tags=ghcr.io/${{ github.repository }}/node:${{ steps.version.outputs.tag }}
+            controller.tags=ghcr.io/${{ github.repository }}/controller:${{ needs.detect.outputs.app_version }}
+            agent.tags=ghcr.io/${{ github.repository }}/agent:${{ needs.detect.outputs.app_version }}
+            node.tags=ghcr.io/${{ github.repository }}/node:${{ needs.detect.outputs.app_version }}
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="v${{ needs.detect.outputs.app_version }}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists, skipping creation."
+            exit 0
+          fi
+          gh release create "$tag" \
+            --target "${{ github.sha }}" \
+            --title "$tag" \
+            --generate-notes
 
   chart:
-    name: Push chart
-    if: startsWith(github.event.release.tag_name, 'chart-v')
+    name: Package, push, release chart
+    needs: detect
+    if: needs.detect.outputs.do_chart == 'true'
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -75,12 +151,31 @@ jobs:
       - name: Login to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u ${{ github.actor }} --password-stdin
 
-      - name: Extract chart version
-        id: version
-        run: echo "version=${GITHUB_REF_NAME#chart-v}" >> "$GITHUB_OUTPUT"
-
       - name: Package chart
-        run: helm package charts/pillar-csi --version "${{ steps.version.outputs.version }}"
+        run: |
+          helm package charts/pillar-csi \
+            --version "${{ needs.detect.outputs.chart_version }}" \
+            --app-version "${{ needs.detect.outputs.app_version }}"
 
       - name: Push chart to GHCR
-        run: helm push pillar-csi-${{ steps.version.outputs.version }}.tgz oci://ghcr.io/${{ github.repository_owner }}/charts
+        run: |
+          helm push "pillar-csi-${{ needs.detect.outputs.chart_version }}.tgz" \
+            "oci://ghcr.io/${{ github.repository_owner }}/charts"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="chart-v${{ needs.detect.outputs.chart_version }}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists, skipping creation."
+            exit 0
+          fi
+          gh release create "$tag" \
+            --target "${{ github.sha }}" \
+            --title "$tag" \
+            --notes "Helm chart ${{ needs.detect.outputs.chart_version }} packaged for appVersion ${{ needs.detect.outputs.app_version }}.
+
+Install:
+    helm install pillar-csi oci://ghcr.io/${{ github.repository_owner }}/charts/pillar-csi --version ${{ needs.detect.outputs.chart_version }}"
