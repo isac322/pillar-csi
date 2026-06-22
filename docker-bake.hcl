@@ -17,7 +17,7 @@ variable "TAG" {
 }
 
 variable "REGISTRY" {
-  default = "ghcr.io/bhyoo/pillar-csi"
+  default = "ghcr.io/isac322/pillar-csi"
 }
 
 // All platforms supported for release builds.

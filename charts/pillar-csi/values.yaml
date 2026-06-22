@@ -32,7 +32,7 @@ controller:
 
   image:
     # -- Container image repository for the controller (manager) binary.
-    repository: ghcr.io/bhyoo/pillar-csi/controller
+    repository: ghcr.io/isac322/pillar-csi/controller
     # -- Image tag. Defaults to the chart's appVersion when empty.
     tag: ""
     # -- Per-container image pull policy override.
@@ -165,7 +165,7 @@ controller:
 node:
   image:
     # -- Container image repository for the pillar-node binary.
-    repository: ghcr.io/bhyoo/pillar-csi/node
+    repository: ghcr.io/isac322/pillar-csi/node
     # -- Image tag. Defaults to the chart's appVersion when empty.
     tag: ""
     # -- Per-container image pull policy override.
@@ -294,7 +294,7 @@ node:
 agent:
   image:
     # -- Container image repository for the pillar-agent binary.
-    repository: ghcr.io/bhyoo/pillar-csi/agent
+    repository: ghcr.io/isac322/pillar-csi/agent
     # -- Image tag. Defaults to the chart's appVersion when empty.
     tag: ""
     # -- Per-container image pull policy override.

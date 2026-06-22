@@ -224,6 +224,16 @@ func (*execResizer) ResizeFS(mountPath, fsType string) error {
 	// kernel block layer picks up size changes from the remote target.
 	rescanNVMeDevice(device)
 
+	// After the rescan, the kernel may have re-registered the namespace
+	// with a fresh dev_t (same name, new major:minor) — common when the
+	// target re-publishes the namespace as part of the size update.  In
+	// that case the existing /dev/<dev> node still carries the *old*
+	// major:minor and open(2) returns ENXIO ("No such device or address").
+	// Re-mknod the node from the current sysfs dev so resize2fs can open
+	// the live kernel block device.  Best-effort: errors fall through to
+	// resize2fs which will surface the real problem.
+	refreshNVMeBlockDeviceNode(device)
+
 	switch fsType {
 	case defaultFsType, "ext3", "ext2":
 		resize2fs := findExecutable("resize2fs", "/usr/sbin/resize2fs", "/sbin/resize2fs")
@@ -341,6 +351,60 @@ func rescanNVMeDevice(device string) {
 			return
 		}
 	}
+}
+
+// refreshNVMeBlockDeviceNode rebuilds /dev/<base> from /sys/block/<base>/dev
+// when the existing node's major:minor no longer matches the kernel's current
+// dev_t for the namespace.  This is the block-device counterpart of
+// mknodFromSysfsDev in cmd/node/main.go, but invoked from NodeExpandVolume so
+// that an online expand can survive a kernel-side namespace re-registration
+// (which keeps the name nvmeXnY but assigns a new minor) without resize2fs
+// receiving ENXIO on open(2).
+//
+// This is a no-op for non-NVMe devices.  All errors are intentionally
+// swallowed: the caller (ResizeFS) will surface the real failure from the
+// subsequent resize2fs invocation if refreshing the node could not help.
+func refreshNVMeBlockDeviceNode(device string) {
+	base := filepath.Base(device)
+	if !strings.HasPrefix(base, "nvme") {
+		return
+	}
+
+	devFile := "/sys/block/" + base + "/dev"
+	devBytes, readErr := os.ReadFile(devFile) //nolint:gosec // sysfs path derived from device basename
+	if readErr != nil {
+		return
+	}
+	parts := strings.SplitN(strings.TrimSpace(string(devBytes)), ":", 2)
+	if len(parts) != 2 {
+		return
+	}
+	major, majErr := strconv.ParseUint(parts[0], 10, 32)
+	if majErr != nil {
+		return
+	}
+	minor, minErr := strconv.ParseUint(parts[1], 10, 32)
+	if minErr != nil {
+		return
+	}
+
+	// Linux makedev bit-packing — same as mknodFromSysfsDev in cmd/node/main.go.
+	expectedDev := int((minor & 0xff) | ((major & 0xfff) << 8) | //nolint:gosec // G115: makedev bit-packing
+		((minor &^ 0xff) << 12) | ((major &^ 0xfff) << 32))
+
+	st, statErr := os.Stat(device)
+	if statErr == nil {
+		sysSt, ok := st.Sys().(*syscall.Stat_t)
+		if ok && int(sysSt.Rdev) == expectedDev { //nolint:gosec // G115: dev_t fits in int on Linux
+			return // node already matches the live kernel dev_t
+		}
+		rmErr := os.Remove(device)
+		if rmErr != nil && !os.IsNotExist(rmErr) {
+			return
+		}
+	}
+
+	_ = syscall.Mknod(device, syscall.S_IFBLK|0o600, expectedDev) //nolint:errcheck // best-effort
 }
 
 // ensureNVMeCtrlDev returns the path to the NVMe controller character device
