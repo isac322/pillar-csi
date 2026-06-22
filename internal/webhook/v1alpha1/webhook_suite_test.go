@@ -111,16 +111,16 @@ var _ = BeforeSuite(func() {
 	})
 	Expect(err).NotTo(HaveOccurred())
 
-	err = SetupPillarTargetWebhookWithManager(mgr)
+	err = SetupPillarAgentWebhookWithManager(mgr)
 	Expect(err).NotTo(HaveOccurred())
 
-	err = SetupPillarPoolWebhookWithManager(mgr)
+	err = SetupPillarStoreWebhookWithManager(mgr)
 	Expect(err).NotTo(HaveOccurred())
 
 	err = SetupPillarProtocolWebhookWithManager(mgr)
 	Expect(err).NotTo(HaveOccurred())
 
-	err = SetupPillarBindingWebhookWithManager(mgr)
+	err = SetupPillarStorageClassWebhookWithManager(mgr)
 	Expect(err).NotTo(HaveOccurred())
 
 	// +kubebuilder:scaffold:webhook

@@ -63,7 +63,7 @@ var _ = Describe("PillarProtocol CRD Schema Validation", func() {
 		// We submit raw JSON so we can bypass Go type safety and reach the CRD
 		// schema validator with an invalid enum value.
 		rawJSON := []byte(`{
-			"apiVersion": "pillar-csi.pillar-csi.bhyoo.com/v1alpha1",
+			"apiVersion": "pillar-csi.bhyoo.com/v1alpha1",
 			"kind": "PillarProtocol",
 			"metadata": {"name": "crd-test-unknown-type"},
 			"spec": {"type": "unknown-protocol"}
@@ -94,7 +94,7 @@ var _ = Describe("PillarProtocol CRD Schema Validation", func() {
 	It("Should reject creation when spec.nvmeofTcp.port is below the minimum (0 < minimum=1)", func() {
 		By("attempting to create a PillarProtocol with spec.nvmeofTcp.port=0")
 		rawJSON := []byte(`{
-			"apiVersion": "pillar-csi.pillar-csi.bhyoo.com/v1alpha1",
+			"apiVersion": "pillar-csi.bhyoo.com/v1alpha1",
 			"kind": "PillarProtocol",
 			"metadata": {"name": "crd-test-port-low"},
 			"spec": {
@@ -128,7 +128,7 @@ var _ = Describe("PillarProtocol CRD Schema Validation", func() {
 	It("Should reject creation when spec.nvmeofTcp.port exceeds the maximum (65536 > maximum=65535)", func() {
 		By("attempting to create a PillarProtocol with spec.nvmeofTcp.port=65536")
 		rawJSON := []byte(`{
-			"apiVersion": "pillar-csi.pillar-csi.bhyoo.com/v1alpha1",
+			"apiVersion": "pillar-csi.bhyoo.com/v1alpha1",
 			"kind": "PillarProtocol",
 			"metadata": {"name": "crd-test-port-high"},
 			"spec": {
@@ -162,7 +162,7 @@ var _ = Describe("PillarProtocol CRD Schema Validation", func() {
 	It("Should reject creation when spec.fsType is not an allowed enum value (btrfs is not in enum)", func() {
 		By("attempting to create a PillarProtocol with spec.fsType=btrfs")
 		rawJSON := []byte(`{
-			"apiVersion": "pillar-csi.pillar-csi.bhyoo.com/v1alpha1",
+			"apiVersion": "pillar-csi.bhyoo.com/v1alpha1",
 			"kind": "PillarProtocol",
 			"metadata": {"name": "crd-test-fstype"},
 			"spec": {

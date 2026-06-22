@@ -372,7 +372,7 @@ func isAlreadyExistsOutput(out []byte) bool {
 // Backend implements backend.VolumeBackend using LVM logical volumes.
 //
 // A single Backend instance is scoped to one LVM Volume Group and one optional
-// thin pool within that VG.  This mirrors the PillarPool CRD concept where each
+// thin pool within that VG.  This mirrors the PillarStore CRD concept where each
 // pool maps to exactly one backend instance on an agent.
 //
 // When thinpool is empty, the backend operates in linear mode (standard LVs).
@@ -600,7 +600,7 @@ func (b *Backend) createThinLV(
 //
 // Effective provisioning mode selection (highest-priority wins):
 //  1. params.GetLvm().GetProvisionMode() — per-volume override from StorageClass
-//     or PillarBinding.  "linear" forces a linear LV (ignores backend thinpool);
+//     or PillarStorageClass.  "linear" forces a linear LV (ignores backend thinpool);
 //     "thin" forces a thin LV (requires backend thinpool to be configured).
 //  2. Backend default — thin when the backend was started with thinpool=<name>,
 //     linear otherwise.

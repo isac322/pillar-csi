@@ -58,7 +58,7 @@ func expandRequest(volumeID string, requiredBytes int64) *csi.ControllerExpandVo
 // Because strings.SplitN is called with limit 4, the agentVolID may itself
 // contain slashes (e.g. "tank/pvc-abc123").
 //
-// Target is the PillarTarget name; all tests use "storage-node-1".
+// Target is the PillarAgent name; all tests use "storage-node-1".
 func expandVolumeID(protocol, backend, agentVolID string) string {
 	return "storage-node-1/" + protocol + "/" + backend + "/" + agentVolID
 }

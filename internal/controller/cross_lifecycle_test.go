@@ -22,11 +22,11 @@ limitations under the License.
 // mechanism correctly prevents deletion of a CRD while dependent CRDs still
 // reference it:
 //
-//   - PillarTarget cannot be deleted while a PillarPool references it via
-//     spec.targetRef (E26.3.1, E26.3.2).
-//   - PillarPool cannot be deleted while a PillarBinding references it via
-//     spec.poolRef (E26.3.3, E26.3.4).
-//   - PillarProtocol cannot be deleted while a PillarBinding references it via
+//   - PillarAgent cannot be deleted while a PillarStore references it via
+//     spec.agentRef (E26.3.1, E26.3.2).
+//   - PillarStore cannot be deleted while a PillarStorageClass references it via
+//     spec.storeRef (E26.3.3, E26.3.4).
+//   - PillarProtocol cannot be deleted while a PillarStorageClass references it via
 //     spec.protocolRef (E26.3.5, E26.3.6).
 //   - Full reverse-order deletion (Binding→Pool→Target) completes cleanly
 //     (E26.3.7).
@@ -65,7 +65,7 @@ var _ = Describe("E26: Cross-CRD Deletion Protection", func() {
 	})
 
 	// ─────────────────────────────────────────────────────────────────────
-	// E26.3.1 / E26.3.2 — PillarTarget blocked/unblocked by PillarPool
+	// E26.3.1 / E26.3.2 — PillarAgent blocked/unblocked by PillarStore
 	// ─────────────────────────────────────────────────────────────────────
 	Describe("E26.3.1–E26.3.2: Target deletion protection — blocked by Pool", Ordered, func() {
 		const (
@@ -75,23 +75,23 @@ var _ = Describe("E26: Cross-CRD Deletion Protection", func() {
 		tgtNN := types.NamespacedName{Name: tgtName}
 		poolNN := types.NamespacedName{Name: poolName}
 
-		var targetReconciler *PillarTargetReconciler
-		var poolReconciler *PillarPoolReconciler
+		var targetReconciler *PillarAgentReconciler
+		var poolReconciler *PillarStoreReconciler
 
 		BeforeAll(func() {
-			targetReconciler = &PillarTargetReconciler{
+			targetReconciler = &PillarAgentReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
 			}
-			poolReconciler = &PillarPoolReconciler{
+			poolReconciler = &PillarStoreReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
 			}
 
-			// Create PillarTarget.
-			target := &pillarcsiv1alpha1.PillarTarget{
+			// Create PillarAgent.
+			target := &pillarcsiv1alpha1.PillarAgent{
 				ObjectMeta: metav1.ObjectMeta{Name: tgtName},
-				Spec: pillarcsiv1alpha1.PillarTargetSpec{
+				Spec: pillarcsiv1alpha1.PillarAgentSpec{
 					External: &pillarcsiv1alpha1.ExternalSpec{
 						Address: "192.0.2.10",
 						Port:    9500,
@@ -104,11 +104,11 @@ var _ = Describe("E26: Cross-CRD Deletion Protection", func() {
 			_, err := targetReconciler.Reconcile(bctx, reconcile.Request{NamespacedName: tgtNN})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Create a PillarPool that references this target.
-			pool := &pillarcsiv1alpha1.PillarPool{
+			// Create a PillarStore that references this target.
+			pool := &pillarcsiv1alpha1.PillarStore{
 				ObjectMeta: metav1.ObjectMeta{Name: poolName},
-				Spec: pillarcsiv1alpha1.PillarPoolSpec{
-					TargetRef: tgtName,
+				Spec: pillarcsiv1alpha1.PillarStoreSpec{
+					AgentRef: tgtName,
 					Backend: pillarcsiv1alpha1.BackendSpec{
 						Type: pillarcsiv1alpha1.BackendTypeDir,
 					},
@@ -123,15 +123,15 @@ var _ = Describe("E26: Cross-CRD Deletion Protection", func() {
 
 		AfterAll(func() {
 			// Best-effort cleanup: force-remove finalizers so the objects can be GC'd.
-			tgt := &pillarcsiv1alpha1.PillarTarget{}
+			tgt := &pillarcsiv1alpha1.PillarAgent{}
 			if err := k8sClient.Get(bctx, tgtNN, tgt); err == nil {
-				controllerutil.RemoveFinalizer(tgt, pillarTargetFinalizer)
+				controllerutil.RemoveFinalizer(tgt, pillarAgentFinalizer)
 				_ = k8sClient.Update(bctx, tgt)
 				_ = k8sClient.Delete(bctx, tgt)
 			}
-			pool := &pillarcsiv1alpha1.PillarPool{}
+			pool := &pillarcsiv1alpha1.PillarStore{}
 			if err := k8sClient.Get(bctx, poolNN, pool); err == nil {
-				controllerutil.RemoveFinalizer(pool, pillarPoolFinalizer)
+				controllerutil.RemoveFinalizer(pool, pillarStoreFinalizer)
 				_ = k8sClient.Update(bctx, pool)
 				_ = k8sClient.Delete(bctx, pool)
 			}
@@ -139,7 +139,7 @@ var _ = Describe("E26: Cross-CRD Deletion Protection", func() {
 
 		It("E26.3.1: marks DeletionTimestamp and retains finalizer while pool references target", func() {
 			// Issue delete.
-			tgt := &pillarcsiv1alpha1.PillarTarget{}
+			tgt := &pillarcsiv1alpha1.PillarAgent{}
 			Expect(k8sClient.Get(bctx, tgtNN, tgt)).To(Succeed())
 			Expect(k8sClient.Delete(bctx, tgt)).To(Succeed())
 
@@ -152,13 +152,13 @@ var _ = Describe("E26: Cross-CRD Deletion Protection", func() {
 				"reconciler must requeue while pool still references the target")
 
 			// The object must still exist (finalizer blocks GC).
-			fetched := &pillarcsiv1alpha1.PillarTarget{}
+			fetched := &pillarcsiv1alpha1.PillarAgent{}
 			Expect(k8sClient.Get(bctx, tgtNN, fetched)).To(Succeed(),
-				"PillarTarget must still exist while referenced by PillarPool")
+				"PillarAgent must still exist while referenced by PillarStore")
 
 			// Finalizer must still be present.
-			Expect(controllerutil.ContainsFinalizer(fetched, pillarTargetFinalizer)).To(BeTrue(),
-				"finalizer must not be removed while PillarPool references the target")
+			Expect(controllerutil.ContainsFinalizer(fetched, pillarAgentFinalizer)).To(BeTrue(),
+				"finalizer must not be removed while PillarStore references the target")
 
 			// DeletionTimestamp must be set (API server acknowledged the delete request).
 			Expect(fetched.DeletionTimestamp).NotTo(BeNil(),
@@ -166,18 +166,18 @@ var _ = Describe("E26: Cross-CRD Deletion Protection", func() {
 		})
 
 		It("E26.3.2: finalizer is removed and target is deleted after pool is removed", func() {
-			// Remove the blocking PillarPool (force-remove its finalizer first).
-			pool := &pillarcsiv1alpha1.PillarPool{}
+			// Remove the blocking PillarStore (force-remove its finalizer first).
+			pool := &pillarcsiv1alpha1.PillarStore{}
 			Expect(k8sClient.Get(bctx, poolNN, pool)).To(Succeed())
-			controllerutil.RemoveFinalizer(pool, pillarPoolFinalizer)
+			controllerutil.RemoveFinalizer(pool, pillarStoreFinalizer)
 			Expect(k8sClient.Update(bctx, pool)).To(Succeed())
 			Expect(k8sClient.Delete(bctx, pool)).To(Succeed())
 
 			// Confirm pool is gone.
 			Eventually(func() bool {
-				err := k8sClient.Get(bctx, poolNN, &pillarcsiv1alpha1.PillarPool{})
+				err := k8sClient.Get(bctx, poolNN, &pillarcsiv1alpha1.PillarStore{})
 				return errors.IsNotFound(err)
-			}).Should(BeTrue(), "PillarPool must be deleted before proceeding")
+			}).Should(BeTrue(), "PillarStore must be deleted before proceeding")
 
 			// Reconcile target again — no pools remain, finalizer should be removed.
 			result, err := targetReconciler.Reconcile(bctx, reconcile.Request{NamespacedName: tgtNN})
@@ -187,14 +187,14 @@ var _ = Describe("E26: Cross-CRD Deletion Protection", func() {
 
 			// The target should now be gone (no finalizer → GC completes immediately).
 			Eventually(func() bool {
-				err := k8sClient.Get(bctx, tgtNN, &pillarcsiv1alpha1.PillarTarget{})
+				err := k8sClient.Get(bctx, tgtNN, &pillarcsiv1alpha1.PillarAgent{})
 				return errors.IsNotFound(err)
-			}).Should(BeTrue(), "PillarTarget must be deleted once no pools reference it")
+			}).Should(BeTrue(), "PillarAgent must be deleted once no pools reference it")
 		})
 	})
 
 	// ─────────────────────────────────────────────────────────────────────
-	// E26.3.3 / E26.3.4 — PillarPool blocked/unblocked by PillarBinding
+	// E26.3.3 / E26.3.4 — PillarStore blocked/unblocked by PillarStorageClass
 	// ─────────────────────────────────────────────────────────────────────
 	Describe("E26.3.3–E26.3.4: Pool deletion protection — blocked by Binding", Ordered, func() {
 		const (
@@ -206,16 +206,16 @@ var _ = Describe("E26: Cross-CRD Deletion Protection", func() {
 		bindingNN := types.NamespacedName{Name: bindingName}
 		protoNN := types.NamespacedName{Name: protoName}
 
-		var poolReconciler *PillarPoolReconciler
-		var bindingReconciler *PillarBindingReconciler
+		var poolReconciler *PillarStoreReconciler
+		var bindingReconciler *PillarStorageClassReconciler
 		var protocolReconciler *PillarProtocolReconciler
 
 		BeforeAll(func() {
-			poolReconciler = &PillarPoolReconciler{
+			poolReconciler = &PillarStoreReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
 			}
-			bindingReconciler = &PillarBindingReconciler{
+			bindingReconciler = &PillarStorageClassReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
 			}
@@ -224,11 +224,11 @@ var _ = Describe("E26: Cross-CRD Deletion Protection", func() {
 				Scheme: k8sClient.Scheme(),
 			}
 
-			// Create PillarPool.
-			pool := &pillarcsiv1alpha1.PillarPool{
+			// Create PillarStore.
+			pool := &pillarcsiv1alpha1.PillarStore{
 				ObjectMeta: metav1.ObjectMeta{Name: poolName},
-				Spec: pillarcsiv1alpha1.PillarPoolSpec{
-					TargetRef: "nonexistent-target",
+				Spec: pillarcsiv1alpha1.PillarStoreSpec{
+					AgentRef: "nonexistent-target",
 					Backend: pillarcsiv1alpha1.BackendSpec{
 						Type: pillarcsiv1alpha1.BackendTypeDir,
 					},
@@ -240,7 +240,7 @@ var _ = Describe("E26: Cross-CRD Deletion Protection", func() {
 			_, err := poolReconciler.Reconcile(bctx, reconcile.Request{NamespacedName: poolNN})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Create PillarProtocol (needed for PillarBinding's protocolRef).
+			// Create PillarProtocol (needed for PillarStorageClass's protocolRef).
 			proto := &pillarcsiv1alpha1.PillarProtocol{
 				ObjectMeta: metav1.ObjectMeta{Name: protoName},
 				Spec: pillarcsiv1alpha1.PillarProtocolSpec{
@@ -256,11 +256,11 @@ var _ = Describe("E26: Cross-CRD Deletion Protection", func() {
 			_, err = protocolReconciler.Reconcile(bctx, reconcile.Request{NamespacedName: protoNN})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Create PillarBinding that references the pool.
-			binding := &pillarcsiv1alpha1.PillarBinding{
+			// Create PillarStorageClass that references the pool.
+			binding := &pillarcsiv1alpha1.PillarStorageClass{
 				ObjectMeta: metav1.ObjectMeta{Name: bindingName},
-				Spec: pillarcsiv1alpha1.PillarBindingSpec{
-					PoolRef:     poolName,
+				Spec: pillarcsiv1alpha1.PillarStorageClassSpec{
+					StoreRef:    poolName,
 					ProtocolRef: protoName,
 				},
 			}
@@ -273,15 +273,15 @@ var _ = Describe("E26: Cross-CRD Deletion Protection", func() {
 
 		AfterAll(func() {
 			// Best-effort cleanup.
-			binding := &pillarcsiv1alpha1.PillarBinding{}
+			binding := &pillarcsiv1alpha1.PillarStorageClass{}
 			if err := k8sClient.Get(bctx, bindingNN, binding); err == nil {
-				controllerutil.RemoveFinalizer(binding, pillarBindingFinalizer)
+				controllerutil.RemoveFinalizer(binding, pillarStorageClassFinalizer)
 				_ = k8sClient.Update(bctx, binding)
 				_ = k8sClient.Delete(bctx, binding)
 			}
-			pool := &pillarcsiv1alpha1.PillarPool{}
+			pool := &pillarcsiv1alpha1.PillarStore{}
 			if err := k8sClient.Get(bctx, poolNN, pool); err == nil {
-				controllerutil.RemoveFinalizer(pool, pillarPoolFinalizer)
+				controllerutil.RemoveFinalizer(pool, pillarStoreFinalizer)
 				_ = k8sClient.Update(bctx, pool)
 				_ = k8sClient.Delete(bctx, pool)
 			}
@@ -295,7 +295,7 @@ var _ = Describe("E26: Cross-CRD Deletion Protection", func() {
 
 		It("E26.3.3: marks DeletionTimestamp and retains finalizer while binding references pool", func() {
 			// Issue delete on the pool.
-			pool := &pillarcsiv1alpha1.PillarPool{}
+			pool := &pillarcsiv1alpha1.PillarStore{}
 			Expect(k8sClient.Get(bctx, poolNN, pool)).To(Succeed())
 			Expect(k8sClient.Delete(bctx, pool)).To(Succeed())
 
@@ -307,13 +307,13 @@ var _ = Describe("E26: Cross-CRD Deletion Protection", func() {
 				"reconciler must requeue while binding still references the pool")
 
 			// Pool must still exist.
-			fetched := &pillarcsiv1alpha1.PillarPool{}
+			fetched := &pillarcsiv1alpha1.PillarStore{}
 			Expect(k8sClient.Get(bctx, poolNN, fetched)).To(Succeed(),
-				"PillarPool must still exist while referenced by PillarBinding")
+				"PillarStore must still exist while referenced by PillarStorageClass")
 
 			// Finalizer must still be present.
-			Expect(controllerutil.ContainsFinalizer(fetched, pillarPoolFinalizer)).To(BeTrue(),
-				"pool finalizer must not be removed while PillarBinding references it")
+			Expect(controllerutil.ContainsFinalizer(fetched, pillarStoreFinalizer)).To(BeTrue(),
+				"pool finalizer must not be removed while PillarStorageClass references it")
 
 			// DeletionTimestamp must be set.
 			Expect(fetched.DeletionTimestamp).NotTo(BeNil(),
@@ -322,17 +322,17 @@ var _ = Describe("E26: Cross-CRD Deletion Protection", func() {
 
 		It("E26.3.4: finalizer is removed and pool is deleted after binding is removed", func() {
 			// Remove the blocking binding (force-remove its finalizer first).
-			binding := &pillarcsiv1alpha1.PillarBinding{}
+			binding := &pillarcsiv1alpha1.PillarStorageClass{}
 			Expect(k8sClient.Get(bctx, bindingNN, binding)).To(Succeed())
-			controllerutil.RemoveFinalizer(binding, pillarBindingFinalizer)
+			controllerutil.RemoveFinalizer(binding, pillarStorageClassFinalizer)
 			Expect(k8sClient.Update(bctx, binding)).To(Succeed())
 			Expect(k8sClient.Delete(bctx, binding)).To(Succeed())
 
 			// Confirm binding is gone.
 			Eventually(func() bool {
-				err := k8sClient.Get(bctx, bindingNN, &pillarcsiv1alpha1.PillarBinding{})
+				err := k8sClient.Get(bctx, bindingNN, &pillarcsiv1alpha1.PillarStorageClass{})
 				return errors.IsNotFound(err)
-			}).Should(BeTrue(), "PillarBinding must be deleted before proceeding")
+			}).Should(BeTrue(), "PillarStorageClass must be deleted before proceeding")
 
 			// Reconcile pool again — no bindings remain, finalizer should be removed.
 			result, err := poolReconciler.Reconcile(bctx, reconcile.Request{NamespacedName: poolNN})
@@ -342,14 +342,14 @@ var _ = Describe("E26: Cross-CRD Deletion Protection", func() {
 
 			// Pool should now be gone.
 			Eventually(func() bool {
-				err := k8sClient.Get(bctx, poolNN, &pillarcsiv1alpha1.PillarPool{})
+				err := k8sClient.Get(bctx, poolNN, &pillarcsiv1alpha1.PillarStore{})
 				return errors.IsNotFound(err)
-			}).Should(BeTrue(), "PillarPool must be deleted once no bindings reference it")
+			}).Should(BeTrue(), "PillarStore must be deleted once no bindings reference it")
 		})
 	})
 
 	// ─────────────────────────────────────────────────────────────────────
-	// E26.3.5 / E26.3.6 — PillarProtocol blocked/unblocked by PillarBinding
+	// E26.3.5 / E26.3.6 — PillarProtocol blocked/unblocked by PillarStorageClass
 	// ─────────────────────────────────────────────────────────────────────
 	Describe("E26.3.5–E26.3.6: Protocol deletion protection — blocked by Binding", Ordered, func() {
 		const (
@@ -362,19 +362,19 @@ var _ = Describe("E26: Cross-CRD Deletion Protection", func() {
 		bindingNN := types.NamespacedName{Name: bindingName}
 
 		var protocolReconciler *PillarProtocolReconciler
-		var poolReconciler *PillarPoolReconciler
-		var bindingReconciler *PillarBindingReconciler
+		var poolReconciler *PillarStoreReconciler
+		var bindingReconciler *PillarStorageClassReconciler
 
 		BeforeAll(func() {
 			protocolReconciler = &PillarProtocolReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
 			}
-			poolReconciler = &PillarPoolReconciler{
+			poolReconciler = &PillarStoreReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
 			}
-			bindingReconciler = &PillarBindingReconciler{
+			bindingReconciler = &PillarStorageClassReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
 			}
@@ -395,11 +395,11 @@ var _ = Describe("E26: Cross-CRD Deletion Protection", func() {
 			_, err := protocolReconciler.Reconcile(bctx, reconcile.Request{NamespacedName: protoNN})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Create PillarPool (needed for PillarBinding's poolRef).
-			pool := &pillarcsiv1alpha1.PillarPool{
+			// Create PillarStore (needed for PillarStorageClass's storeRef).
+			pool := &pillarcsiv1alpha1.PillarStore{
 				ObjectMeta: metav1.ObjectMeta{Name: poolName},
-				Spec: pillarcsiv1alpha1.PillarPoolSpec{
-					TargetRef: "nonexistent-target",
+				Spec: pillarcsiv1alpha1.PillarStoreSpec{
+					AgentRef: "nonexistent-target",
 					Backend: pillarcsiv1alpha1.BackendSpec{
 						Type: pillarcsiv1alpha1.BackendTypeDir,
 					},
@@ -411,11 +411,11 @@ var _ = Describe("E26: Cross-CRD Deletion Protection", func() {
 			_, err = poolReconciler.Reconcile(bctx, reconcile.Request{NamespacedName: poolNN})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Create PillarBinding that references the protocol.
-			binding := &pillarcsiv1alpha1.PillarBinding{
+			// Create PillarStorageClass that references the protocol.
+			binding := &pillarcsiv1alpha1.PillarStorageClass{
 				ObjectMeta: metav1.ObjectMeta{Name: bindingName},
-				Spec: pillarcsiv1alpha1.PillarBindingSpec{
-					PoolRef:     poolName,
+				Spec: pillarcsiv1alpha1.PillarStorageClassSpec{
+					StoreRef:    poolName,
 					ProtocolRef: protoName,
 				},
 			}
@@ -428,9 +428,9 @@ var _ = Describe("E26: Cross-CRD Deletion Protection", func() {
 
 		AfterAll(func() {
 			// Best-effort cleanup.
-			binding := &pillarcsiv1alpha1.PillarBinding{}
+			binding := &pillarcsiv1alpha1.PillarStorageClass{}
 			if err := k8sClient.Get(bctx, bindingNN, binding); err == nil {
-				controllerutil.RemoveFinalizer(binding, pillarBindingFinalizer)
+				controllerutil.RemoveFinalizer(binding, pillarStorageClassFinalizer)
 				_ = k8sClient.Update(bctx, binding)
 				_ = k8sClient.Delete(bctx, binding)
 			}
@@ -440,9 +440,9 @@ var _ = Describe("E26: Cross-CRD Deletion Protection", func() {
 				_ = k8sClient.Update(bctx, proto)
 				_ = k8sClient.Delete(bctx, proto)
 			}
-			pool := &pillarcsiv1alpha1.PillarPool{}
+			pool := &pillarcsiv1alpha1.PillarStore{}
 			if err := k8sClient.Get(bctx, poolNN, pool); err == nil {
-				controllerutil.RemoveFinalizer(pool, pillarPoolFinalizer)
+				controllerutil.RemoveFinalizer(pool, pillarStoreFinalizer)
 				_ = k8sClient.Update(bctx, pool)
 				_ = k8sClient.Delete(bctx, pool)
 			}
@@ -464,11 +464,11 @@ var _ = Describe("E26: Cross-CRD Deletion Protection", func() {
 			// Protocol must still exist.
 			fetched := &pillarcsiv1alpha1.PillarProtocol{}
 			Expect(k8sClient.Get(bctx, protoNN, fetched)).To(Succeed(),
-				"PillarProtocol must still exist while referenced by PillarBinding")
+				"PillarProtocol must still exist while referenced by PillarStorageClass")
 
 			// Finalizer must still be present.
 			Expect(controllerutil.ContainsFinalizer(fetched, pillarProtocolFinalizer)).To(BeTrue(),
-				"protocol finalizer must not be removed while PillarBinding references it")
+				"protocol finalizer must not be removed while PillarStorageClass references it")
 
 			// DeletionTimestamp must be set.
 			Expect(fetched.DeletionTimestamp).NotTo(BeNil(),
@@ -477,17 +477,17 @@ var _ = Describe("E26: Cross-CRD Deletion Protection", func() {
 
 		It("E26.3.6: finalizer is removed and protocol is deleted after binding is removed", func() {
 			// Remove the blocking binding.
-			binding := &pillarcsiv1alpha1.PillarBinding{}
+			binding := &pillarcsiv1alpha1.PillarStorageClass{}
 			Expect(k8sClient.Get(bctx, bindingNN, binding)).To(Succeed())
-			controllerutil.RemoveFinalizer(binding, pillarBindingFinalizer)
+			controllerutil.RemoveFinalizer(binding, pillarStorageClassFinalizer)
 			Expect(k8sClient.Update(bctx, binding)).To(Succeed())
 			Expect(k8sClient.Delete(bctx, binding)).To(Succeed())
 
 			// Confirm binding is gone.
 			Eventually(func() bool {
-				err := k8sClient.Get(bctx, bindingNN, &pillarcsiv1alpha1.PillarBinding{})
+				err := k8sClient.Get(bctx, bindingNN, &pillarcsiv1alpha1.PillarStorageClass{})
 				return errors.IsNotFound(err)
-			}).Should(BeTrue(), "PillarBinding must be deleted before proceeding")
+			}).Should(BeTrue(), "PillarStorageClass must be deleted before proceeding")
 
 			// Reconcile protocol again — no bindings remain, finalizer should be removed.
 			result, err := protocolReconciler.Reconcile(bctx, reconcile.Request{NamespacedName: protoNN})
@@ -518,17 +518,17 @@ var _ = Describe("E26: Cross-CRD Deletion Protection", func() {
 		protoNN := types.NamespacedName{Name: protoName}
 		bindingNN := types.NamespacedName{Name: bindingName}
 
-		var targetReconciler *PillarTargetReconciler
-		var poolReconciler *PillarPoolReconciler
+		var targetReconciler *PillarAgentReconciler
+		var poolReconciler *PillarStoreReconciler
 		var protocolReconciler *PillarProtocolReconciler
-		var bindingReconciler *PillarBindingReconciler
+		var bindingReconciler *PillarStorageClassReconciler
 
 		BeforeAll(func() {
-			targetReconciler = &PillarTargetReconciler{
+			targetReconciler = &PillarAgentReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
 			}
-			poolReconciler = &PillarPoolReconciler{
+			poolReconciler = &PillarStoreReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
 			}
@@ -536,15 +536,15 @@ var _ = Describe("E26: Cross-CRD Deletion Protection", func() {
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
 			}
-			bindingReconciler = &PillarBindingReconciler{
+			bindingReconciler = &PillarStorageClassReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
 			}
 
 			// Create all four CRDs in dependency order.
-			target := &pillarcsiv1alpha1.PillarTarget{
+			target := &pillarcsiv1alpha1.PillarAgent{
 				ObjectMeta: metav1.ObjectMeta{Name: tgtName},
-				Spec: pillarcsiv1alpha1.PillarTargetSpec{
+				Spec: pillarcsiv1alpha1.PillarAgentSpec{
 					External: &pillarcsiv1alpha1.ExternalSpec{
 						Address: "192.0.2.20",
 						Port:    9500,
@@ -555,10 +555,10 @@ var _ = Describe("E26: Cross-CRD Deletion Protection", func() {
 			_, err := targetReconciler.Reconcile(bctx, reconcile.Request{NamespacedName: tgtNN})
 			Expect(err).NotTo(HaveOccurred())
 
-			pool := &pillarcsiv1alpha1.PillarPool{
+			pool := &pillarcsiv1alpha1.PillarStore{
 				ObjectMeta: metav1.ObjectMeta{Name: poolName},
-				Spec: pillarcsiv1alpha1.PillarPoolSpec{
-					TargetRef: tgtName,
+				Spec: pillarcsiv1alpha1.PillarStoreSpec{
+					AgentRef: tgtName,
 					Backend: pillarcsiv1alpha1.BackendSpec{
 						Type: pillarcsiv1alpha1.BackendTypeDir,
 					},
@@ -581,10 +581,10 @@ var _ = Describe("E26: Cross-CRD Deletion Protection", func() {
 			_, err = protocolReconciler.Reconcile(bctx, reconcile.Request{NamespacedName: protoNN})
 			Expect(err).NotTo(HaveOccurred())
 
-			binding := &pillarcsiv1alpha1.PillarBinding{
+			binding := &pillarcsiv1alpha1.PillarStorageClass{
 				ObjectMeta: metav1.ObjectMeta{Name: bindingName},
-				Spec: pillarcsiv1alpha1.PillarBindingSpec{
-					PoolRef:     poolName,
+				Spec: pillarcsiv1alpha1.PillarStorageClassSpec{
+					StoreRef:    poolName,
 					ProtocolRef: protoName,
 				},
 			}
@@ -598,16 +598,16 @@ var _ = Describe("E26: Cross-CRD Deletion Protection", func() {
 			for _, nn := range []types.NamespacedName{bindingNN, poolNN, protoNN, tgtNN} {
 				switch nn.Name {
 				case bindingName:
-					obj := &pillarcsiv1alpha1.PillarBinding{}
+					obj := &pillarcsiv1alpha1.PillarStorageClass{}
 					if err := k8sClient.Get(bctx, nn, obj); err == nil {
-						controllerutil.RemoveFinalizer(obj, pillarBindingFinalizer)
+						controllerutil.RemoveFinalizer(obj, pillarStorageClassFinalizer)
 						_ = k8sClient.Update(bctx, obj)
 						_ = k8sClient.Delete(bctx, obj)
 					}
 				case poolName:
-					obj := &pillarcsiv1alpha1.PillarPool{}
+					obj := &pillarcsiv1alpha1.PillarStore{}
 					if err := k8sClient.Get(bctx, nn, obj); err == nil {
-						controllerutil.RemoveFinalizer(obj, pillarPoolFinalizer)
+						controllerutil.RemoveFinalizer(obj, pillarStoreFinalizer)
 						_ = k8sClient.Update(bctx, obj)
 						_ = k8sClient.Delete(bctx, obj)
 					}
@@ -619,9 +619,9 @@ var _ = Describe("E26: Cross-CRD Deletion Protection", func() {
 						_ = k8sClient.Delete(bctx, obj)
 					}
 				case tgtName:
-					obj := &pillarcsiv1alpha1.PillarTarget{}
+					obj := &pillarcsiv1alpha1.PillarAgent{}
 					if err := k8sClient.Get(bctx, nn, obj); err == nil {
-						controllerutil.RemoveFinalizer(obj, pillarTargetFinalizer)
+						controllerutil.RemoveFinalizer(obj, pillarAgentFinalizer)
 						_ = k8sClient.Update(bctx, obj)
 						_ = k8sClient.Delete(bctx, obj)
 					}
@@ -629,9 +629,9 @@ var _ = Describe("E26: Cross-CRD Deletion Protection", func() {
 			}
 		})
 
-		It("Step 1: deletes PillarBinding successfully (leaf node, no dependents)", func() {
+		It("Step 1: deletes PillarStorageClass successfully (leaf node, no dependents)", func() {
 			// Delete binding — it has no dependents so reconcile should remove finalizer.
-			binding := &pillarcsiv1alpha1.PillarBinding{}
+			binding := &pillarcsiv1alpha1.PillarStorageClass{}
 			Expect(k8sClient.Get(bctx, bindingNN, binding)).To(Succeed())
 			Expect(k8sClient.Delete(bctx, binding)).To(Succeed())
 
@@ -640,15 +640,15 @@ var _ = Describe("E26: Cross-CRD Deletion Protection", func() {
 			Expect(result.RequeueAfter).To(BeZero())
 
 			Eventually(func() bool {
-				err := k8sClient.Get(bctx, bindingNN, &pillarcsiv1alpha1.PillarBinding{})
+				err := k8sClient.Get(bctx, bindingNN, &pillarcsiv1alpha1.PillarStorageClass{})
 				return errors.IsNotFound(err)
-			}).Should(BeTrue(), "PillarBinding must be deleted (no dependents)")
+			}).Should(BeTrue(), "PillarStorageClass must be deleted (no dependents)")
 		})
 
-		It("Step 2: PillarPool reconcile unblocks and removes finalizer after binding is gone", func() {
+		It("Step 2: PillarStore reconcile unblocks and removes finalizer after binding is gone", func() {
 			// Pool was previously blocked; now binding is gone so it can be unblocked.
 			// First, mark pool for deletion.
-			pool := &pillarcsiv1alpha1.PillarPool{}
+			pool := &pillarcsiv1alpha1.PillarStore{}
 			Expect(k8sClient.Get(bctx, poolNN, pool)).To(Succeed())
 			Expect(k8sClient.Delete(bctx, pool)).To(Succeed())
 
@@ -658,9 +658,9 @@ var _ = Describe("E26: Cross-CRD Deletion Protection", func() {
 				"pool reconciler must remove finalizer when no bindings remain")
 
 			Eventually(func() bool {
-				err := k8sClient.Get(bctx, poolNN, &pillarcsiv1alpha1.PillarPool{})
+				err := k8sClient.Get(bctx, poolNN, &pillarcsiv1alpha1.PillarStore{})
 				return errors.IsNotFound(err)
-			}).Should(BeTrue(), "PillarPool must be deleted after binding is removed")
+			}).Should(BeTrue(), "PillarStore must be deleted after binding is removed")
 		})
 
 		It("Step 3: PillarProtocol reconcile removes finalizer (no bindings)", func() {
@@ -678,8 +678,8 @@ var _ = Describe("E26: Cross-CRD Deletion Protection", func() {
 			}).Should(BeTrue(), "PillarProtocol must be deleted after all bindings are gone")
 		})
 
-		It("Step 4: PillarTarget reconcile removes finalizer (no pools)", func() {
-			target := &pillarcsiv1alpha1.PillarTarget{}
+		It("Step 4: PillarAgent reconcile removes finalizer (no pools)", func() {
+			target := &pillarcsiv1alpha1.PillarAgent{}
 			Expect(k8sClient.Get(bctx, tgtNN, target)).To(Succeed())
 			Expect(k8sClient.Delete(bctx, target)).To(Succeed())
 
@@ -689,9 +689,9 @@ var _ = Describe("E26: Cross-CRD Deletion Protection", func() {
 				"target reconciler must remove finalizer when no pools remain")
 
 			Eventually(func() bool {
-				err := k8sClient.Get(bctx, tgtNN, &pillarcsiv1alpha1.PillarTarget{})
+				err := k8sClient.Get(bctx, tgtNN, &pillarcsiv1alpha1.PillarAgent{})
 				return errors.IsNotFound(err)
-			}).Should(BeTrue(), "PillarTarget must be deleted after all pools are removed")
+			}).Should(BeTrue(), "PillarAgent must be deleted after all pools are removed")
 		})
 	})
 
@@ -702,18 +702,18 @@ var _ = Describe("E26: Cross-CRD Deletion Protection", func() {
 		const tgtName = "e26-target-no-deps"
 		tgtNN := types.NamespacedName{Name: tgtName}
 
-		var targetReconciler *PillarTargetReconciler
+		var targetReconciler *PillarAgentReconciler
 
 		BeforeEach(func() {
-			targetReconciler = &PillarTargetReconciler{
+			targetReconciler = &PillarAgentReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
 			}
 
-			// Create a standalone PillarTarget with no referencing pools.
-			target := &pillarcsiv1alpha1.PillarTarget{
+			// Create a standalone PillarAgent with no referencing pools.
+			target := &pillarcsiv1alpha1.PillarAgent{
 				ObjectMeta: metav1.ObjectMeta{Name: tgtName},
-				Spec: pillarcsiv1alpha1.PillarTargetSpec{
+				Spec: pillarcsiv1alpha1.PillarAgentSpec{
 					External: &pillarcsiv1alpha1.ExternalSpec{
 						Address: "192.0.2.30",
 						Port:    9500,
@@ -729,9 +729,9 @@ var _ = Describe("E26: Cross-CRD Deletion Protection", func() {
 
 		AfterEach(func() {
 			// Best-effort cleanup if the test failed before deletion.
-			tgt := &pillarcsiv1alpha1.PillarTarget{}
+			tgt := &pillarcsiv1alpha1.PillarAgent{}
 			if err := k8sClient.Get(bctx, tgtNN, tgt); err == nil {
-				controllerutil.RemoveFinalizer(tgt, pillarTargetFinalizer)
+				controllerutil.RemoveFinalizer(tgt, pillarAgentFinalizer)
 				_ = k8sClient.Update(bctx, tgt)
 				_ = k8sClient.Delete(bctx, tgt)
 			}
@@ -739,7 +739,7 @@ var _ = Describe("E26: Cross-CRD Deletion Protection", func() {
 
 		It("should remove the finalizer and allow deletion when no pools reference the target", func() {
 			// Delete the target.
-			tgt := &pillarcsiv1alpha1.PillarTarget{}
+			tgt := &pillarcsiv1alpha1.PillarAgent{}
 			Expect(k8sClient.Get(bctx, tgtNN, tgt)).To(Succeed())
 			Expect(k8sClient.Delete(bctx, tgt)).To(Succeed())
 
@@ -751,9 +751,9 @@ var _ = Describe("E26: Cross-CRD Deletion Protection", func() {
 
 			// Target should be gone.
 			Eventually(func() bool {
-				err := k8sClient.Get(bctx, tgtNN, &pillarcsiv1alpha1.PillarTarget{})
+				err := k8sClient.Get(bctx, tgtNN, &pillarcsiv1alpha1.PillarAgent{})
 				return errors.IsNotFound(err)
-			}).Should(BeTrue(), "PillarTarget must be deleted immediately when no pools reference it")
+			}).Should(BeTrue(), "PillarAgent must be deleted immediately when no pools reference it")
 		})
 	})
 })

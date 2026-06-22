@@ -21,17 +21,17 @@ package v1alpha1
 //
 // Override hierarchy (lowest wins):
 //
-//	PillarPool (pool-level defaults)
+//	PillarStore (pool-level defaults)
 //	  ↓ override
 //	PillarProtocol (protocol defaults)
 //	  ↓ override
-//	PillarBinding (binding-level overrides — CRD typed schema)
+//	PillarStorageClass (binding-level overrides — CRD typed schema)
 //	  ↓ override
 //	PVC annotation (volume-level overrides — only tuning parameters)
 //
 // Restriction: only tuning parameters may be overridden via PVC annotations.
 // Structural reference fields (pool name, parentDataset, protocol type, port,
-// ACL toggle, poolRef, protocolRef, targetRef) are rejected by the controller
+// ACL toggle, storeRef, protocolRef, agentRef) are rejected by the controller
 // at CreateVolume time.  See [ForbiddenZFSAnnotationKeys],
 // [ForbiddenNVMeOFTCPAnnotationKeys], and [ForbiddenISCSIAnnotationKeys].
 const (

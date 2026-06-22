@@ -282,7 +282,7 @@ type csiControllerTestEnv struct {
 }
 
 // newCSIControllerTestEnv builds a ControllerServer backed by:
-//   - a controller-runtime fake k8s client seeded with one PillarTarget
+//   - a controller-runtime fake k8s client seeded with one PillarAgent
 //     whose ResolvedAddress is "192.168.1.10:9500"
 //   - a csiMockAgent injected via the AgentDialer
 func newCSIControllerTestEnv(t *testing.T) *csiControllerTestEnv {
@@ -296,17 +296,17 @@ func newCSIControllerTestEnv(t *testing.T) *csiControllerTestEnv {
 		t.Fatalf("storagev1.AddToScheme: %v", err)
 	}
 
-	target := &v1alpha1.PillarTarget{
+	target := &v1alpha1.PillarAgent{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "storage-node-1",
 		},
-		Spec: v1alpha1.PillarTargetSpec{
+		Spec: v1alpha1.PillarAgentSpec{
 			External: &v1alpha1.ExternalSpec{
 				Address: "192.168.1.10",
 				Port:    9500,
 			},
 		},
-		Status: v1alpha1.PillarTargetStatus{
+		Status: v1alpha1.PillarAgentStatus{
 			ResolvedAddress: "192.168.1.10:9500",
 		},
 	}
@@ -314,7 +314,7 @@ func newCSIControllerTestEnv(t *testing.T) *csiControllerTestEnv {
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(target).
-		WithStatusSubresource(&v1alpha1.PillarVolume{}, &v1alpha1.PillarTarget{}).
+		WithStatusSubresource(&v1alpha1.PillarVolumeState{}, &v1alpha1.PillarAgent{}).
 		Build()
 
 	agent := &csiMockAgent{}
@@ -332,17 +332,17 @@ func newCSIControllerTestEnv(t *testing.T) *csiControllerTestEnv {
 	}
 }
 
-// seedComponentPillarVolume creates a stub PillarVolume CRD so that lookups
+// seedComponentPillarVolumeState creates a stub PillarVolumeState CRD so that lookups
 // gating on volume existence treat the named volume as a driver-issued
 // volume — used by tests like ValidateVolumeCapabilities that operate on a
 // pre-existing volume rather than provisioning a new one.
-func seedComponentPillarVolume(t *testing.T, env *csiControllerTestEnv, name string) {
+func seedComponentPillarVolumeState(t *testing.T, env *csiControllerTestEnv, name string) {
 	t.Helper()
-	pv := &v1alpha1.PillarVolume{
+	pv := &v1alpha1.PillarVolumeState{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
 	}
 	if err := env.k8sClient.Create(context.Background(), pv); err != nil {
-		t.Fatalf("seed PillarVolume %q: %v", name, err)
+		t.Fatalf("seed PillarVolumeState %q: %v", name, err)
 	}
 }
 
@@ -359,15 +359,15 @@ func newCSIControllerTestEnvWithDialErr(t *testing.T, dialErr error) *csiControl
 		t.Fatalf("storagev1.AddToScheme: %v", err)
 	}
 
-	target := &v1alpha1.PillarTarget{
+	target := &v1alpha1.PillarAgent{
 		ObjectMeta: metav1.ObjectMeta{Name: "storage-node-1"},
-		Status:     v1alpha1.PillarTargetStatus{ResolvedAddress: "192.168.1.10:9500"},
+		Status:     v1alpha1.PillarAgentStatus{ResolvedAddress: "192.168.1.10:9500"},
 	}
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(target).
-		WithStatusSubresource(&v1alpha1.PillarVolume{}, &v1alpha1.PillarTarget{}).
+		WithStatusSubresource(&v1alpha1.PillarVolumeState{}, &v1alpha1.PillarAgent{}).
 		Build()
 
 	dialer := pillarcsi.AgentDialer(func(_ context.Context, _ string) (agentv1.AgentServiceClient, io.Closer, error) {
@@ -401,7 +401,7 @@ func seedCSINodeForNVMeOF(ctx context.Context, t *testing.T, k8sClient client.Cl
 }
 
 // baseCSICreateVolumeRequest returns a valid CreateVolumeRequest for
-// "storage-node-1" (the seeded PillarTarget) with a 1 GiB capacity.
+// "storage-node-1" (the seeded PillarAgent) with a 1 GiB capacity.
 func baseCSICreateVolumeRequest() *csipb.CreateVolumeRequest {
 	return &csipb.CreateVolumeRequest{
 		Name: "pvc-component-test",
@@ -419,10 +419,10 @@ func baseCSICreateVolumeRequest() *csipb.CreateVolumeRequest {
 			RequiredBytes: 1 << 30, // 1 GiB
 		},
 		Parameters: map[string]string{
-			"pillar-csi.bhyoo.com/target":        "storage-node-1",
+			"pillar-csi.bhyoo.com/agent":         "storage-node-1",
 			"pillar-csi.bhyoo.com/backend-type":  "zfs-zvol",
 			"pillar-csi.bhyoo.com/protocol-type": "nvmeof-tcp",
-			"pillar-csi.bhyoo.com/pool":          "tank",
+			"pillar-csi.bhyoo.com/store":         "tank",
 		},
 	}
 }
@@ -639,14 +639,14 @@ func TestCSIController_CreateVolume_MissingName(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIController_CreateVolume_TargetNotFound verifies that referencing a
-// non-existent PillarTarget returns NotFound.
+// non-existent PillarAgent returns NotFound.
 func TestCSIController_CreateVolume_TargetNotFound(t *testing.T) {
 	t.Parallel()
 	env := newCSIControllerTestEnv(t)
 	ctx := context.Background()
 
 	req := baseCSICreateVolumeRequest()
-	req.Parameters["pillar-csi.bhyoo.com/target"] = "does-not-exist"
+	req.Parameters["pillar-csi.bhyoo.com/agent"] = "does-not-exist"
 
 	_, err := env.srv.CreateVolume(ctx, req)
 	if err == nil {
@@ -672,7 +672,7 @@ func TestCSIController_CreateVolume_MissingParams(t *testing.T) {
 		name        string
 		removeParam string
 	}{
-		{"missing target", "pillar-csi.bhyoo.com/target"},
+		{"missing target", "pillar-csi.bhyoo.com/agent"},
 		{"missing backend-type", "pillar-csi.bhyoo.com/backend-type"},
 		{"missing protocol-type", "pillar-csi.bhyoo.com/protocol-type"},
 	}
@@ -1060,7 +1060,7 @@ func TestCSIController_ExpandVolume_AgentError(t *testing.T) {
 func TestCSIController_ValidateVolumeCapabilities_Supported(t *testing.T) {
 	t.Parallel()
 	env := newCSIControllerTestEnv(t)
-	seedComponentPillarVolume(t, env, "pvc-component-test")
+	seedComponentPillarVolumeState(t, env, "pvc-component-test")
 	ctx := context.Background()
 
 	supported := []csipb.VolumeCapability_AccessMode_Mode{
@@ -1106,7 +1106,7 @@ func TestCSIController_ValidateVolumeCapabilities_Supported(t *testing.T) {
 func TestCSIController_ValidateVolumeCapabilities_Unsupported(t *testing.T) {
 	t.Parallel()
 	env := newCSIControllerTestEnv(t)
-	seedComponentPillarVolume(t, env, "pvc-component-test")
+	seedComponentPillarVolumeState(t, env, "pvc-component-test")
 	ctx := context.Background()
 
 	unsupported := []csipb.VolumeCapability_AccessMode_Mode{

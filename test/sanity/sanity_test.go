@@ -14,7 +14,7 @@ package sanity
 //	  that csi-sanity drives over its CSI client.
 //
 // Shared in-memory state — pillarcsi VolumeStateMachine, fake K8s client
-// containing the PillarTarget — is plumbed so the state transitions between
+// containing the PillarAgent — is plumbed so the state transitions between
 // ControllerPublishVolume and NodeStageVolume succeed.
 
 import (
@@ -54,8 +54,8 @@ const (
 // in-cluster external-provisioner forwards to CreateVolume.  The controller
 // requires every key.
 var storageClassParams = map[string]string{
-	"pillar-csi.bhyoo.com/target":        targetName,
-	"pillar-csi.bhyoo.com/pool":          "tank",
+	"pillar-csi.bhyoo.com/agent":         targetName,
+	"pillar-csi.bhyoo.com/store":         "tank",
 	"pillar-csi.bhyoo.com/backend-type":  "zfs-zvol",
 	"pillar-csi.bhyoo.com/protocol-type": "nvmeof-tcp",
 }
@@ -137,7 +137,7 @@ func startFakeAgentBufconn(t *testing.T) (*grpc.Server, agentv1.AgentServiceClie
 }
 
 // buildDriver constructs Identity, Controller and Node servers that share an
-// in-memory PillarTarget and VolumeStateMachine.
+// in-memory PillarAgent and VolumeStateMachine.
 func buildDriver(
 	t *testing.T,
 	agentClient agentv1.AgentServiceClient,
@@ -155,9 +155,9 @@ func buildDriver(
 		t.Fatalf("register storagev1 scheme: %v", err)
 	}
 
-	target := &pillarv1.PillarTarget{
+	target := &pillarv1.PillarAgent{
 		ObjectMeta: metav1.ObjectMeta{Name: targetName},
-		Status: pillarv1.PillarTargetStatus{
+		Status: pillarv1.PillarAgentStatus{
 			ResolvedAddress: "passthrough:///bufnet",
 		},
 	}
@@ -178,7 +178,7 @@ func buildDriver(
 	}
 	k8sClient := clientfake.NewClientBuilder().
 		WithScheme(scheme).
-		WithStatusSubresource(&pillarv1.PillarTarget{}, &pillarv1.PillarVolume{}).
+		WithStatusSubresource(&pillarv1.PillarAgent{}, &pillarv1.PillarVolumeState{}).
 		WithObjects(target, csiNode).
 		Build()
 

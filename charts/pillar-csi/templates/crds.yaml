@@ -6,20 +6,20 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.21.0
-  name: pillarbindings.pillar-csi.pillar-csi.bhyoo.com
+  name: pillarstorageclasses.pillar-csi.bhyoo.com
 spec:
-  group: pillar-csi.pillar-csi.bhyoo.com
+  group: pillar-csi.bhyoo.com
   names:
-    kind: PillarBinding
-    listKind: PillarBindingList
-    plural: pillarbindings
+    kind: PillarStorageClass
+    listKind: PillarStorageClassList
+    plural: pillarstorageclasses
     shortNames:
     - pb
-    singular: pillarbinding
+    singular: pillarstorageclass
   scope: Cluster
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.poolRef
+    - jsonPath: .spec.storeRef
       name: Pool
       type: string
     - jsonPath: .spec.protocolRef
@@ -38,7 +38,7 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          PillarBinding combines a PillarPool and a PillarProtocol to create a
+          PillarStorageClass combines a PillarStore and a PillarProtocol to create a
           Kubernetes StorageClass.  A validation webhook rejects incompatible
           backend/protocol combinations (e.g. block backend with NFS).
           Parameter overrides allow fine-tuning per binding without changing the
@@ -62,7 +62,7 @@ spec:
           metadata:
             type: object
           spec:
-            description: spec defines the desired state of PillarBinding.
+            description: spec defines the desired state of PillarStorageClass.
             properties:
               overrides:
                 description: |-
@@ -81,7 +81,7 @@ spec:
                               provisioningMode overrides the LVM provisioning mode for this binding.
                               Accepted values: "linear" (fully-allocated LV) or "thin"
                               (thin-provisioned LV inside the backend's thin pool).
-                              When omitted, the PillarPool-level default is used.
+                              When omitted, the PillarStore-level default is used.
                             enum:
                             - linear
                             - thin
@@ -162,8 +162,8 @@ spec:
                         type: object
                     type: object
                 type: object
-              poolRef:
-                description: poolRef is the name of the PillarPool to use for provisioning.
+              storeRef:
+                description: storeRef is the name of the PillarStore to use for provisioning.
                 minLength: 1
                 type: string
               protocolRef:
@@ -175,7 +175,7 @@ spec:
                 description: |-
                   storageClass configures the Kubernetes StorageClass that this binding
                   generates.  The controller creates and owns the StorageClass; deleting
-                  the PillarBinding also deletes the StorageClass.
+                  the PillarStorageClass also deletes the StorageClass.
                 properties:
                   allowVolumeExpansion:
                     description: |-
@@ -185,7 +185,7 @@ spec:
                   name:
                     description: |-
                       name is the name of the generated StorageClass.
-                      Defaults to the PillarBinding's own name when omitted.
+                      Defaults to the PillarStorageClass's own name when omitted.
                     minLength: 1
                     type: string
                   reclaimPolicy:
@@ -207,7 +207,7 @@ spec:
                     type: string
                 type: object
             required:
-            - poolRef
+            - storeRef
             - protocolRef
             type: object
           status:
@@ -215,10 +215,10 @@ spec:
             properties:
               conditions:
                 description: |-
-                  conditions represent the current state of the PillarBinding resource.
+                  conditions represent the current state of the PillarStorageClass resource.
 
                   Known condition types:
-                  - "PoolReady"           – the referenced PillarPool is in Ready state.
+                  - "StoreReady"           – the referenced PillarStore is in Ready state.
                   - "ProtocolValid"       – the referenced PillarProtocol exists and is valid.
                   - "Compatible"          – the pool backend and protocol are compatible
                                             (e.g. block backend cannot be combined with NFS).
@@ -299,20 +299,20 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.21.0
-  name: pillarpools.pillar-csi.pillar-csi.bhyoo.com
+  name: pillarstores.pillar-csi.bhyoo.com
 spec:
-  group: pillar-csi.pillar-csi.bhyoo.com
+  group: pillar-csi.bhyoo.com
   names:
-    kind: PillarPool
-    listKind: PillarPoolList
-    plural: pillarpools
+    kind: PillarStore
+    listKind: PillarStoreList
+    plural: pillarstores
     shortNames:
     - pp
-    singular: pillarpool
+    singular: pillarstore
   scope: Cluster
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.targetRef
+    - jsonPath: .spec.agentRef
       name: Target
       type: string
     - jsonPath: .spec.backend.type
@@ -331,8 +331,8 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          PillarPool represents a specific storage pool on a PillarTarget.  Users
-          create PillarPool resources to declare that a pool is available for CSI
+          PillarStore represents a specific storage pool on a PillarAgent.  Users
+          create PillarStore resources to declare that a pool is available for CSI
           volume provisioning; the controller validates availability and updates status.
         properties:
           apiVersion:
@@ -353,7 +353,7 @@ spec:
           metadata:
             type: object
           spec:
-            description: spec defines the desired state of PillarPool.
+            description: spec defines the desired state of PillarStore.
             properties:
               backend:
                 description: backend describes the storage technology and pool to
@@ -425,17 +425,17 @@ spec:
                 required:
                 - type
                 type: object
-              targetRef:
-                description: targetRef is the name of the PillarTarget this pool lives
+              agentRef:
+                description: agentRef is the name of the PillarAgent this pool lives
                   on.
                 minLength: 1
                 type: string
             required:
             - backend
-            - targetRef
+            - agentRef
             type: object
           status:
-            description: status defines the observed state of PillarPool.
+            description: status defines the observed state of PillarStore.
             properties:
               capacity:
                 description: capacity reflects the latest capacity reading for this
@@ -466,10 +466,10 @@ spec:
                 type: object
               conditions:
                 description: |-
-                  conditions represent the current state of the PillarPool resource.
+                  conditions represent the current state of the PillarStore resource.
 
                   Known condition types:
-                  - "TargetReady"       – the referenced PillarTarget is in Ready state.
+                  - "AgentReady"       – the referenced PillarAgent is in Ready state.
                   - "PoolDiscovered"    – the pool named in spec.backend has been found on the agent.
                   - "BackendSupported"  – the backend type is listed in the agent's capabilities.
                   - "Ready"             – all checks pass; the pool can provision volumes.
@@ -545,9 +545,9 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.21.0
-  name: pillarprotocols.pillar-csi.pillar-csi.bhyoo.com
+  name: pillarprotocols.pillar-csi.bhyoo.com
 spec:
-  group: pillar-csi.pillar-csi.bhyoo.com
+  group: pillar-csi.bhyoo.com
   names:
     kind: PillarProtocol
     listKind: PillarProtocolList
@@ -561,7 +561,7 @@ spec:
     - jsonPath: .spec.type
       name: Type
       type: string
-    - jsonPath: .status.bindingCount
+    - jsonPath: .status.storageClassCount
       name: Bindings
       type: integer
     - jsonPath: .status.conditions[?(@.type=="Ready")].status
@@ -576,8 +576,8 @@ spec:
         description: |-
           PillarProtocol describes a reusable network-storage protocol configuration.
           It is node-independent: the same PillarProtocol can be referenced by multiple
-          PillarBinding resources across different pools and targets.  The controller
-          resolves the target bind address at runtime from the relevant PillarTarget.
+          PillarStorageClass resources across different pools and targets.  The controller
+          resolves the target bind address at runtime from the relevant PillarAgent.
         properties:
           apiVersion:
             description: |-
@@ -743,16 +743,16 @@ spec:
           status:
             description: status reflects the reconciler-observed state of this protocol.
             properties:
-              activeTargets:
+              activeAgents:
                 description: |-
-                  activeTargets lists the names of PillarTargets currently serving
+                  activeAgents lists the names of PillarAgents currently serving
                   volumes via this protocol.  Maintained automatically by the reconciler.
                 items:
                   type: string
                 type: array
-              bindingCount:
+              storageClassCount:
                 description: |-
-                  bindingCount is the number of PillarBinding resources that reference
+                  storageClassCount is the number of PillarStorageClass resources that reference
                   this protocol.  Maintained automatically by the reconciler.
                 format: int32
                 type: integer
@@ -834,16 +834,16 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.21.0
-  name: pillartargets.pillar-csi.pillar-csi.bhyoo.com
+  name: pillaragents.pillar-csi.bhyoo.com
 spec:
-  group: pillar-csi.pillar-csi.bhyoo.com
+  group: pillar-csi.bhyoo.com
   names:
-    kind: PillarTarget
-    listKind: PillarTargetList
-    plural: pillartargets
+    kind: PillarAgent
+    listKind: PillarAgentList
+    plural: pillaragents
     shortNames:
     - pt
-    singular: pillartarget
+    singular: pillaragent
   scope: Cluster
   versions:
   - additionalPrinterColumns:
@@ -863,8 +863,8 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          PillarTarget represents a storage agent instance that pillar-csi controller
-          manages.  Users create PillarTarget resources; the controller reconciles gRPC
+          PillarAgent represents a storage agent instance that pillar-csi controller
+          manages.  Users create PillarAgent resources; the controller reconciles gRPC
           connectivity and populates status fields.
         properties:
           apiVersion:
@@ -885,7 +885,7 @@ spec:
           metadata:
             type: object
           spec:
-            description: spec defines the desired state of PillarTarget.
+            description: spec defines the desired state of PillarAgent.
             properties:
               external:
                 description: |-
@@ -940,7 +940,7 @@ spec:
                 type: object
             type: object
           status:
-            description: status defines the observed state of PillarTarget.
+            description: status defines the observed state of PillarAgent.
             properties:
               agentVersion:
                 description: agentVersion is the version string reported by the connected
@@ -967,7 +967,7 @@ spec:
                 type: object
               conditions:
                 description: |-
-                  conditions represent the current state of the PillarTarget resource.
+                  conditions represent the current state of the PillarAgent resource.
 
                   Known condition types:
                   - "NodeExists"     – the referenced K8s Node is present in the cluster.
@@ -1089,23 +1089,23 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.21.0
-  name: pillarvolumes.pillar-csi.pillar-csi.bhyoo.com
+  name: pillarvolumestatestates.pillar-csi.bhyoo.com
 spec:
-  group: pillar-csi.pillar-csi.bhyoo.com
+  group: pillar-csi.bhyoo.com
   names:
-    kind: PillarVolume
-    listKind: PillarVolumeList
-    plural: pillarvolumes
+    kind: PillarVolumeState
+    listKind: PillarVolumeStateList
+    plural: pillarvolumestatestates
     shortNames:
     - pv
-    singular: pillarvolume
+    singular: pillarvolumestate
   scope: Cluster
   versions:
   - additionalPrinterColumns:
     - jsonPath: .status.phase
       name: Phase
       type: string
-    - jsonPath: .spec.targetRef
+    - jsonPath: .spec.agentRef
       name: Target
       type: string
     - jsonPath: .spec.backendType
@@ -1121,13 +1121,13 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          PillarVolume tracks the lifecycle state of a single CSI volume provisioned
-          by pillar-csi.  The controller creates a PillarVolume during CreateVolume,
+          PillarVolumeState tracks the lifecycle state of a single CSI volume provisioned
+          by pillar-csi.  The controller creates a PillarVolumeState during CreateVolume,
           updates it at each lifecycle stage, and deletes it during DeleteVolume.
 
-          The primary purpose of PillarVolume is to provide durable partial-failure
+          The primary purpose of PillarVolumeState is to provide durable partial-failure
           state tracking: if CreateVolume creates the backend zvol but then crashes
-          before ExportVolume returns, the PillarVolumePhaseCreatePartial phase is
+          before ExportVolume returns, the PillarVolumeStatePhaseCreatePartial phase is
           already written to etcd, allowing the next CreateVolume call (or an
           automated recovery controller) to skip the backend-creation step and retry
           only the export.
@@ -1176,8 +1176,8 @@ spec:
                   "iscsi").  Mirrors the pillar-csi.bhyoo.com/protocol-type StorageClass
                   parameter.
                 type: string
-              targetRef:
-                description: targetRef is the name of the PillarTarget that hosts
+              agentRef:
+                description: agentRef is the name of the PillarAgent that hosts
                   this volume.
                 minLength: 1
                 type: string
@@ -1191,7 +1191,7 @@ spec:
             - agentVolumeID
             - backendType
             - protocolType
-            - targetRef
+            - agentRef
             - volumeID
             type: object
           status:
@@ -1208,7 +1208,7 @@ spec:
                 type: string
               conditions:
                 description: |-
-                  conditions represent the current observed state of the PillarVolume.
+                  conditions represent the current observed state of the PillarVolumeState.
 
                   Known condition types:
                   - "BackendCreated"  – the backend storage resource exists on the agent.
@@ -1282,7 +1282,7 @@ spec:
                   address:
                     description: |-
                       address is the IP address of the storage node (same as
-                      PillarTarget.Status.ResolvedAddress with the port stripped).
+                      PillarAgent.Status.ResolvedAddress with the port stripped).
                     type: string
                   port:
                     description: port is the TCP port on which the NVMe-oF or iSCSI
@@ -1348,7 +1348,7 @@ spec:
               phase:
                 description: |-
                   phase is the current lifecycle phase of the volume.
-                  See PillarVolumePhase for the full state diagram.
+                  See PillarVolumeStatePhase for the full state diagram.
                 enum:
                 - Provisioning
                 - CreatePartial

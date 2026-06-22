@@ -23,12 +23,12 @@ rules:
   - list
   - watch
 - apiGroups:
-  - pillar-csi.pillar-csi.bhyoo.com
+  - pillar-csi.bhyoo.com
   resources:
-  - pillarbindings
-  - pillarpools
+  - pillaragents
   - pillarprotocols
-  - pillartargets
+  - pillarstorageclasses
+  - pillarstores
   verbs:
   - create
   - delete
@@ -38,21 +38,21 @@ rules:
   - update
   - watch
 - apiGroups:
-  - pillar-csi.pillar-csi.bhyoo.com
+  - pillar-csi.bhyoo.com
   resources:
-  - pillarbindings/finalizers
-  - pillarpools/finalizers
+  - pillaragents/finalizers
   - pillarprotocols/finalizers
-  - pillartargets/finalizers
+  - pillarstorageclasses/finalizers
+  - pillarstores/finalizers
   verbs:
   - update
 - apiGroups:
-  - pillar-csi.pillar-csi.bhyoo.com
+  - pillar-csi.bhyoo.com
   resources:
-  - pillarbindings/status
-  - pillarpools/status
+  - pillaragents/status
   - pillarprotocols/status
-  - pillartargets/status
+  - pillarstorageclasses/status
+  - pillarstores/status
   verbs:
   - get
   - patch

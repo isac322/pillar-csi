@@ -4,8 +4,8 @@ package e2e
 
 // lvm_pvc_pod_mount_e2e_test.go — E33.2: LVM PVC provisioning and Pod mount tests.
 //
-// Tests the full LVM PVC lifecycle: PillarTarget → PillarPool(lvm-lv) →
-// PillarProtocol(nvmeof-tcp) → PillarBinding CR stack, PVC provisioning,
+// Tests the full LVM PVC lifecycle: PillarAgent → PillarStore(lvm-lv) →
+// PillarProtocol(nvmeof-tcp) → PillarStorageClass CR stack, PVC provisioning,
 // Pod mounting and unmounting.
 //
 // Prerequisites:
@@ -47,7 +47,7 @@ func e33FailIfNoNVMeoF() {
 // E33.2: LVM PVC 프로비저닝 및 Pod 마운트
 // ─────────────────────────────────────────────────────────────────────────────
 
-// E33.2 requires a Helm-deployed pillar-csi agent pod with CRDs and PillarPool CRD.
+// E33.2 requires a Helm-deployed pillar-csi agent pod with CRDs and PillarStore CRD.
 // Excluded from default-profile. Run with --label-filter=mount after
 // Helm deployment (E2E_HELM_BOOTSTRAP=true).
 var _ = Describe("E33: LVM Kind 클러스터 E2E — 실제 LVM VG + NVMe-oF TCP",
@@ -109,21 +109,21 @@ var _ = Describe("E33: LVM Kind 클러스터 E2E — 실제 LVM VG + NVMe-oF TCP
 			})
 
 			// ── TC-E33.294 ────────────────────────────────────────────────────
-			It("[TC-E33.294] PillarPool BackendSupported condition becomes True (agent advertises lvm-lv)", func() {
+			It("[TC-E33.294] PillarStore BackendSupported condition becomes True (agent advertises lvm-lv)", func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 				defer cancel()
 
 				poolName := fmt.Sprintf("pool-lvm-e33-%d", GinkgoParallelProcess())
 				lvmVG := e33LvmVG()
 
-				By("creating PillarPool with lvm-lv backend")
+				By("creating PillarStore with lvm-lv backend")
 				poolYAML := fmt.Sprintf(`
-apiVersion: pillar-csi.pillar-csi.bhyoo.com/v1alpha1
-kind: PillarPool
+apiVersion: pillar-csi.bhyoo.com/v1alpha1
+kind: PillarStore
 metadata:
   name: %s
 spec:
-  targetRef: "%s"
+  agentRef: "%s"
   backend:
     type: lvm-lv
     lvm:
@@ -137,27 +137,27 @@ spec:
 				cmd.Stdout = &out
 				cmd.Stderr = &errOut
 
-				// For this test we primarily verify that the PillarPool API is
+				// For this test we primarily verify that the PillarStore API is
 				// accessible and the LVM backend type is supported.
 				// The full BackendSupported=True check requires a running agent;
 				// we verify the API round-trip and pool creation.
 				err := cmd.Run()
 				if err != nil {
-					Fail(fmt.Sprintf("[TC-E33.294] MISSING PREREQUISITE: PillarPool creation requires pillar-csi CRDs to be installed: %v", err))
+					Fail(fmt.Sprintf("[TC-E33.294] MISSING PREREQUISITE: PillarStore creation requires pillar-csi CRDs to be installed: %v", err))
 				}
 
 				DeferCleanup(func() {
 					cleanCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 					defer cancel()
-					_, _ = e33KubectlOutput(cleanCtx, "delete", "pillarpool", poolName, "--ignore-not-found=true")
+					_, _ = e33KubectlOutput(cleanCtx, "delete", "pillarstore", poolName, "--ignore-not-found=true")
 				})
 
 				// Poll for BackendSupported condition.
 				Eventually(func(g Gomega) {
-					out, err := e33KubectlOutput(ctx, "get", "pillarpool", poolName,
+					out, err := e33KubectlOutput(ctx, "get", "pillarstore", poolName,
 						"-o", "jsonpath={.status.conditions[?(@.type=='BackendSupported')].status}",
 					)
-					g.Expect(err).NotTo(HaveOccurred(), "[TC-E33.294] get PillarPool condition")
+					g.Expect(err).NotTo(HaveOccurred(), "[TC-E33.294] get PillarStore condition")
 					g.Expect(out).To(Equal("True"),
 						"[TC-E33.294] BackendSupported must become True")
 				}).WithContext(ctx).
@@ -168,7 +168,7 @@ spec:
 			})
 
 			// ── TC-E33.295 ────────────────────────────────────────────────────
-			It("[TC-E33.295] PillarPool PoolDiscovered condition becomes True (VG is visible to agent)", func() {
+			It("[TC-E33.295] PillarStore PoolDiscovered condition becomes True (VG is visible to agent)", func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 				defer cancel()
 
@@ -176,12 +176,12 @@ spec:
 				lvmVG := e33LvmVG()
 
 				poolYAML := fmt.Sprintf(`
-apiVersion: pillar-csi.pillar-csi.bhyoo.com/v1alpha1
-kind: PillarPool
+apiVersion: pillar-csi.bhyoo.com/v1alpha1
+kind: PillarStore
 metadata:
   name: %s
 spec:
-  targetRef: "%s"
+  agentRef: "%s"
   backend:
     type: lvm-lv
     lvm:
@@ -195,17 +195,17 @@ spec:
 				cmd.Stderr = &errOut
 				err := cmd.Run()
 				if err != nil {
-					Fail(fmt.Sprintf("[TC-E33.295] MISSING PREREQUISITE: PillarPool CRDs not installed: %v", err))
+					Fail(fmt.Sprintf("[TC-E33.295] MISSING PREREQUISITE: PillarStore CRDs not installed: %v", err))
 				}
 
 				DeferCleanup(func() {
 					cleanCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 					defer cancel()
-					_, _ = e33KubectlOutput(cleanCtx, "delete", "pillarpool", poolName, "--ignore-not-found=true")
+					_, _ = e33KubectlOutput(cleanCtx, "delete", "pillarstore", poolName, "--ignore-not-found=true")
 				})
 
 				Eventually(func(g Gomega) {
-					out, err := e33KubectlOutput(ctx, "get", "pillarpool", poolName,
+					out, err := e33KubectlOutput(ctx, "get", "pillarstore", poolName,
 						"-o", "jsonpath={.status.conditions[?(@.type=='PoolDiscovered')].status}",
 					)
 					g.Expect(err).NotTo(HaveOccurred(), "[TC-E33.295] get PoolDiscovered condition")
@@ -219,7 +219,7 @@ spec:
 			})
 
 			// ── TC-E33.296 ────────────────────────────────────────────────────
-			It("[TC-E33.296] PillarPool reaches Ready=True and reports capacity", func() {
+			It("[TC-E33.296] PillarStore reaches Ready=True and reports capacity", func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 				defer cancel()
 
@@ -227,12 +227,12 @@ spec:
 				lvmVG := e33LvmVG()
 
 				poolYAML := fmt.Sprintf(`
-apiVersion: pillar-csi.pillar-csi.bhyoo.com/v1alpha1
-kind: PillarPool
+apiVersion: pillar-csi.bhyoo.com/v1alpha1
+kind: PillarStore
 metadata:
   name: %s
 spec:
-  targetRef: "%s"
+  agentRef: "%s"
   backend:
     type: lvm-lv
     lvm:
@@ -245,18 +245,18 @@ spec:
 				var errOut bytes.Buffer
 				cmd.Stderr = &errOut
 				if err := cmd.Run(); err != nil {
-					Fail(fmt.Sprintf("[TC-E33.296] MISSING PREREQUISITE: PillarPool CRDs not installed: %v", err))
+					Fail(fmt.Sprintf("[TC-E33.296] MISSING PREREQUISITE: PillarStore CRDs not installed: %v", err))
 				}
 
 				DeferCleanup(func() {
 					cleanCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 					defer cancel()
-					_, _ = e33KubectlOutput(cleanCtx, "delete", "pillarpool", poolName, "--ignore-not-found=true")
+					_, _ = e33KubectlOutput(cleanCtx, "delete", "pillarstore", poolName, "--ignore-not-found=true")
 				})
 
 				Eventually(func(g Gomega) {
-					out, err := e33KubectlOutput(ctx, "get", "pillarpool", poolName, "-o", "json")
-					g.Expect(err).NotTo(HaveOccurred(), "[TC-E33.296] get PillarPool JSON")
+					out, err := e33KubectlOutput(ctx, "get", "pillarstore", poolName, "-o", "json")
+					g.Expect(err).NotTo(HaveOccurred(), "[TC-E33.296] get PillarStore JSON")
 
 					var pool struct {
 						Status struct {
@@ -287,11 +287,11 @@ spec:
 					WithTimeout(60*time.Second).
 					WithPolling(5*time.Second).
 					Should(Succeed(),
-						"[TC-E33.296] PillarPool must reach Ready with capacity within 60s")
+						"[TC-E33.296] PillarStore must reach Ready with capacity within 60s")
 			})
 
 			// ── TC-E33.297 ────────────────────────────────────────────────────
-			It("[TC-E33.297] PillarBinding generates a Kubernetes StorageClass with the pillar-csi provisioner", func() {
+			It("[TC-E33.297] PillarStorageClass generates a Kubernetes StorageClass with the pillar-csi provisioner", func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 				defer cancel()
 

@@ -17,7 +17,7 @@ multi-pod attach, etc.) works in a real cluster.
    `KUBECONFIG` exported.
 2. pillar-csi deployed into that cluster (e.g. via the
    [Helm chart](../../charts/pillar-csi/)).
-3. A `PillarTarget` matching the StorageClass `parameters` block in
+3. A `PillarAgent` matching the StorageClass `parameters` block in
    [`storage-class.yaml`](./storage-class.yaml) — by default
    `pillar-target-default` with LVM volume group `pillar-vg`, `lvm-lv`
    backend, and NVMe-oF TCP protocol.
@@ -54,7 +54,7 @@ make test-external-e2e
 | File | Purpose |
 | --- | --- |
 | `external-driver.yaml` | Capability declaration consumed by `e2e.test -storage.testdriver=`. Toggle capability flags as the driver implements them. |
-| `storage-class.yaml` | StorageClass that the suite uses to provision dynamic PVCs. Edit `parameters` to match your `PillarTarget` / pool / backend / protocol. |
+| `storage-class.yaml` | StorageClass that the suite uses to provision dynamic PVCs. Edit `parameters` to match your `PillarAgent` / pool / backend / protocol. |
 | `run.sh` | Downloads `e2e.test`, applies the StorageClass, runs the suite. |
 
 ## Scope
@@ -80,7 +80,7 @@ on-demand runs. The workflow:
 2. Invokes [`bootstrap.sh`](./bootstrap.sh) — creates a Kind cluster,
    provisions an LVM Volume Group inside the control-plane node container,
    builds and `kind load`s the controller / agent / node images,
-   `helm install`s pillar-csi, and applies the PillarTarget / PillarPool /
+   `helm install`s pillar-csi, and applies the PillarAgent / PillarStore /
    PillarProtocol triple that the StorageClass references.
 3. Runs `make test-external-e2e` against the prepared cluster.
 4. Deletes the Kind cluster on completion (success or failure).

@@ -458,7 +458,7 @@ func (*BackendParams_Lvm) isBackendParams_Params() {}
 type NvmeofTcpExportParams struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// IP address the NVMe-oF target will listen on.
-	// Resolved by the controller from PillarTarget.spec.nodeRef at runtime.
+	// Resolved by the controller from PillarAgent.spec.nodeRef at runtime.
 	BindAddress string `protobuf:"bytes,1,opt,name=bind_address,json=bindAddress,proto3" json:"bind_address,omitempty"`
 	// TCP port (default: 4420).
 	Port int32 `protobuf:"varint,2,opt,name=port,proto3" json:"port,omitempty"`
@@ -802,7 +802,7 @@ type ExportInfo struct {
 	//	NFS         → exported path
 	//	SMB         → UNC path (\\server\share)
 	TargetId string `protobuf:"bytes,1,opt,name=target_id,json=targetId,proto3" json:"target_id,omitempty"`
-	// IP address of the storage node (resolved from PillarTarget).
+	// IP address of the storage node (resolved from PillarAgent).
 	Address string `protobuf:"bytes,2,opt,name=address,proto3" json:"address,omitempty"`
 	// Port the protocol target is listening on.
 	Port int32 `protobuf:"varint,3,opt,name=port,proto3" json:"port,omitempty"`

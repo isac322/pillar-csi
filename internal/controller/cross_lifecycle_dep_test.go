@@ -21,25 +21,25 @@ limitations under the License.
 // E26.1: Dependency Ordering — when an upstream CRD is missing or Not-Ready,
 // the downstream CRD's reconciler sets the dependent condition to False.
 //
-//   - E26.1.1: PillarPool with a missing PillarTarget → TargetReady=False, Reason=TargetNotFound.
-//   - E26.1.2: PillarPool with a Not-Ready PillarTarget → TargetReady=False, Reason=TargetNotReady.
-//   - E26.1.3: PillarPool with a Ready PillarTarget → TargetReady=True.
-//   - E26.1.4: PillarBinding with a missing PillarPool → PoolReady=False, Reason=PoolNotFound.
-//   - E26.1.5: PillarBinding with a Not-Ready PillarPool → PoolReady=False, Reason=PoolNotReady.
-//   - E26.1.6: PillarBinding with a missing PillarProtocol → ProtocolValid=False, Reason=ProtocolNotFound.
-//   - E26.1.7: PillarBinding with both Pool and Protocol missing → PoolReady=False + Ready=False.
-//   - E26.1.8: PillarBinding with both Pool Ready and Protocol Ready → Ready=True + StorageClass created.
+//   - E26.1.1: PillarStore with a missing PillarAgent → TargetReady=False, Reason=TargetNotFound.
+//   - E26.1.2: PillarStore with a Not-Ready PillarAgent → TargetReady=False, Reason=TargetNotReady.
+//   - E26.1.3: PillarStore with a Ready PillarAgent → TargetReady=True.
+//   - E26.1.4: PillarStorageClass with a missing PillarStore → PoolReady=False, Reason=PoolNotFound.
+//   - E26.1.5: PillarStorageClass with a Not-Ready PillarStore → PoolReady=False, Reason=PoolNotReady.
+//   - E26.1.6: PillarStorageClass with a missing PillarProtocol → ProtocolValid=False, Reason=ProtocolNotFound.
+//   - E26.1.7: PillarStorageClass with both Pool and Protocol missing → PoolReady=False + Ready=False.
+//   - E26.1.8: PillarStorageClass with both Pool Ready and Protocol Ready → Ready=True + StorageClass created.
 //
 // E26.2: Cascading Status Updates — when an upstream CRD's status changes,
 // re-reconciling the downstream CRD propagates the change to its conditions.
 //
-//   - E26.2.1: PillarTarget Ready→False → Pool reconcile sets TargetReady=False.
-//   - E26.2.2: PillarTarget Ready→True (recovery) → Pool reconcile restores TargetReady=True.
-//   - E26.2.3: PillarPool Ready→False → Binding reconcile sets PoolReady=False.
+//   - E26.2.1: PillarAgent Ready→False → Pool reconcile sets TargetReady=False.
+//   - E26.2.2: PillarAgent Ready→True (recovery) → Pool reconcile restores TargetReady=True.
+//   - E26.2.3: PillarStore Ready→False → Binding reconcile sets PoolReady=False.
 //   - E26.2.4: PillarProtocol Ready→False → Binding reconcile sets ProtocolValid=False.
 //   - E26.2.5: Full chain recovery: Target→True cascades through Pool→Binding.
 //   - E26.2.6: Pool becomes Ready → Binding reconcile creates StorageClass.
-//   - E26.2.7: Binding references Protocol → Protocol reconcile increments BindingCount.
+//   - E26.2.7: Binding references Protocol → Protocol reconcile increments StorageClassCount.
 //
 // All tests use the shared envtest environment (k8sClient) set up in suite_test.go.
 // Reconcilers are instantiated directly without a live controller manager so that
@@ -75,9 +75,9 @@ var _ = Describe("E26.1: Cross-CRD Dependency Ordering", func() {
 
 	// ── helper utilities ────────────────────────────────────────────────────
 
-	// setTargetReady sets or clears a Ready condition on a PillarTarget by name.
+	// setTargetReady sets or clears a Ready condition on a PillarAgent by name.
 	setTargetReady := func(name string, ready metav1.ConditionStatus, reason, msg string) {
-		tgt := &pillarcsiv1alpha1.PillarTarget{}
+		tgt := &pillarcsiv1alpha1.PillarAgent{}
 		Expect(k8sClient.Get(bctx, types.NamespacedName{Name: name}, tgt)).To(Succeed())
 		tgt.Status.Conditions = []metav1.Condition{
 			{
@@ -91,9 +91,9 @@ var _ = Describe("E26.1: Cross-CRD Dependency Ordering", func() {
 		Expect(k8sClient.Status().Update(bctx, tgt)).To(Succeed())
 	}
 
-	// setPoolReady sets a Ready condition on a PillarPool by name.
+	// setPoolReady sets a Ready condition on a PillarStore by name.
 	setPoolReady := func(name string, ready metav1.ConditionStatus, reason, msg string) {
-		pool := &pillarcsiv1alpha1.PillarPool{}
+		pool := &pillarcsiv1alpha1.PillarStore{}
 		Expect(k8sClient.Get(bctx, types.NamespacedName{Name: name}, pool)).To(Succeed())
 		pool.Status.Conditions = []metav1.Condition{
 			{
@@ -123,21 +123,21 @@ var _ = Describe("E26.1: Cross-CRD Dependency Ordering", func() {
 		Expect(k8sClient.Status().Update(bctx, proto)).To(Succeed())
 	}
 
-	// cleanupTarget removes a PillarTarget by name (strips finalizer first).
+	// cleanupTarget removes a PillarAgent by name (strips finalizer first).
 	cleanupTarget := func(name string) {
-		tgt := &pillarcsiv1alpha1.PillarTarget{}
+		tgt := &pillarcsiv1alpha1.PillarAgent{}
 		if err := k8sClient.Get(bctx, types.NamespacedName{Name: name}, tgt); err == nil {
-			controllerutil.RemoveFinalizer(tgt, pillarTargetFinalizer)
+			controllerutil.RemoveFinalizer(tgt, pillarAgentFinalizer)
 			_ = k8sClient.Update(bctx, tgt)
 			_ = k8sClient.Delete(bctx, tgt)
 		}
 	}
 
-	// cleanupPool removes a PillarPool by name (strips finalizer first).
+	// cleanupPool removes a PillarStore by name (strips finalizer first).
 	cleanupPool := func(name string) {
-		pool := &pillarcsiv1alpha1.PillarPool{}
+		pool := &pillarcsiv1alpha1.PillarStore{}
 		if err := k8sClient.Get(bctx, types.NamespacedName{Name: name}, pool); err == nil {
-			controllerutil.RemoveFinalizer(pool, pillarPoolFinalizer)
+			controllerutil.RemoveFinalizer(pool, pillarStoreFinalizer)
 			_ = k8sClient.Update(bctx, pool)
 			_ = k8sClient.Delete(bctx, pool)
 		}
@@ -153,11 +153,11 @@ var _ = Describe("E26.1: Cross-CRD Dependency Ordering", func() {
 		}
 	}
 
-	// cleanupBinding removes a PillarBinding by name (strips finalizer first).
+	// cleanupBinding removes a PillarStorageClass by name (strips finalizer first).
 	cleanupBinding := func(name string) {
-		b := &pillarcsiv1alpha1.PillarBinding{}
+		b := &pillarcsiv1alpha1.PillarStorageClass{}
 		if err := k8sClient.Get(bctx, types.NamespacedName{Name: name}, b); err == nil {
-			controllerutil.RemoveFinalizer(b, pillarBindingFinalizer)
+			controllerutil.RemoveFinalizer(b, pillarStorageClassFinalizer)
 			_ = k8sClient.Update(bctx, b)
 			_ = k8sClient.Delete(bctx, b)
 		}
@@ -171,22 +171,22 @@ var _ = Describe("E26.1: Cross-CRD Dependency Ordering", func() {
 		}
 	}
 
-	// reconcilePool runs the PillarPoolReconciler for the named pool.
+	// reconcilePool runs the PillarStoreReconciler for the named pool.
 	reconcilePool := func(poolName string) {
-		r := &PillarPoolReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		r := &PillarStoreReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 		_, err := r.Reconcile(bctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: poolName}})
 		Expect(err).NotTo(HaveOccurred())
 	}
 
-	// reconcileBinding runs the PillarBindingReconciler for the named binding.
+	// reconcileBinding runs the PillarStorageClassReconciler for the named binding.
 	reconcileBinding := func(bindingName string) {
-		r := &PillarBindingReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		r := &PillarStorageClassReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 		_, err := r.Reconcile(bctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: bindingName}})
 		Expect(err).NotTo(HaveOccurred())
 	}
 
 	// ── E26.1.1 ─────────────────────────────────────────────────────────────
-	// PillarPool references a PillarTarget that does not exist in the cluster.
+	// PillarStore references a PillarAgent that does not exist in the cluster.
 	// After reconcile, TargetReady=False with reason TargetNotFound.
 	It("E26.1.1: TestCrossLifecycle_Pool_TargetMissing_TargetReadyFalse — pool with missing target gets TargetReady=False", func() {
 		const (
@@ -194,12 +194,12 @@ var _ = Describe("E26.1: Cross-CRD Dependency Ordering", func() {
 			targetName = "e261-nonexistent-target"
 		)
 
-		By("creating a PillarPool referencing a non-existent PillarTarget")
-		pool := &pillarcsiv1alpha1.PillarPool{
+		By("creating a PillarStore referencing a non-existent PillarAgent")
+		pool := &pillarcsiv1alpha1.PillarStore{
 			ObjectMeta: metav1.ObjectMeta{Name: poolName},
-			Spec: pillarcsiv1alpha1.PillarPoolSpec{
-				TargetRef: targetName,
-				Backend:   pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeZFSZvol},
+			Spec: pillarcsiv1alpha1.PillarStoreSpec{
+				AgentRef: targetName,
+				Backend:  pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeZFSZvol},
 			},
 		}
 		Expect(k8sClient.Create(bctx, pool)).To(Succeed())
@@ -210,10 +210,10 @@ var _ = Describe("E26.1: Cross-CRD Dependency Ordering", func() {
 		reconcilePool(poolName)
 
 		By("verifying TargetReady=False with reason TargetNotFound")
-		fetched := &pillarcsiv1alpha1.PillarPool{}
+		fetched := &pillarcsiv1alpha1.PillarStore{}
 		Expect(k8sClient.Get(bctx, types.NamespacedName{Name: poolName}, fetched)).To(Succeed())
 
-		cond := apimeta.FindStatusCondition(fetched.Status.Conditions, "TargetReady")
+		cond := apimeta.FindStatusCondition(fetched.Status.Conditions, "AgentReady")
 		Expect(cond).NotTo(BeNil(), "TargetReady condition must be set")
 		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 		Expect(cond.Reason).To(Equal("TargetNotFound"))
@@ -225,7 +225,7 @@ var _ = Describe("E26.1: Cross-CRD Dependency Ordering", func() {
 	})
 
 	// ── E26.1.2 ─────────────────────────────────────────────────────────────
-	// PillarPool references a PillarTarget that exists but has Ready=False.
+	// PillarStore references a PillarAgent that exists but has Ready=False.
 	// After reconcile, TargetReady=False with reason TargetNotReady.
 	It("E26.1.2: TestCrossLifecycle_Pool_TargetNotReady_TargetReadyFalse — pool with not-ready target gets TargetReady=False", func() {
 		const (
@@ -233,25 +233,25 @@ var _ = Describe("E26.1: Cross-CRD Dependency Ordering", func() {
 			targetName = "e261-target-notready"
 		)
 
-		By("creating a PillarTarget with Ready=False")
-		tgt := &pillarcsiv1alpha1.PillarTarget{
+		By("creating a PillarAgent with Ready=False")
+		tgt := &pillarcsiv1alpha1.PillarAgent{
 			ObjectMeta: metav1.ObjectMeta{Name: targetName},
-			Spec: pillarcsiv1alpha1.PillarTargetSpec{
+			Spec: pillarcsiv1alpha1.PillarAgentSpec{
 				External: &pillarcsiv1alpha1.ExternalSpec{Address: "192.0.2.100", Port: 9500},
 			},
 		}
 		Expect(k8sClient.Create(bctx, tgt)).To(Succeed())
 		DeferCleanup(func() { cleanupTarget(targetName) })
 
-		By("setting Ready=False on the PillarTarget")
+		By("setting Ready=False on the PillarAgent")
 		setTargetReady(targetName, metav1.ConditionFalse, "AgentUnhealthy", "agent health check failed")
 
-		By("creating a PillarPool referencing this not-ready target")
-		pool := &pillarcsiv1alpha1.PillarPool{
+		By("creating a PillarStore referencing this not-ready target")
+		pool := &pillarcsiv1alpha1.PillarStore{
 			ObjectMeta: metav1.ObjectMeta{Name: poolName},
-			Spec: pillarcsiv1alpha1.PillarPoolSpec{
-				TargetRef: targetName,
-				Backend:   pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeZFSZvol},
+			Spec: pillarcsiv1alpha1.PillarStoreSpec{
+				AgentRef: targetName,
+				Backend:  pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeZFSZvol},
 			},
 		}
 		Expect(k8sClient.Create(bctx, pool)).To(Succeed())
@@ -262,10 +262,10 @@ var _ = Describe("E26.1: Cross-CRD Dependency Ordering", func() {
 		reconcilePool(poolName)
 
 		By("verifying TargetReady=False with reason TargetNotReady")
-		fetched := &pillarcsiv1alpha1.PillarPool{}
+		fetched := &pillarcsiv1alpha1.PillarStore{}
 		Expect(k8sClient.Get(bctx, types.NamespacedName{Name: poolName}, fetched)).To(Succeed())
 
-		cond := apimeta.FindStatusCondition(fetched.Status.Conditions, "TargetReady")
+		cond := apimeta.FindStatusCondition(fetched.Status.Conditions, "AgentReady")
 		Expect(cond).NotTo(BeNil(), "TargetReady condition must be set")
 		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 		Expect(cond.Reason).To(Equal("TargetNotReady"))
@@ -276,7 +276,7 @@ var _ = Describe("E26.1: Cross-CRD Dependency Ordering", func() {
 	})
 
 	// ── E26.1.3 ─────────────────────────────────────────────────────────────
-	// PillarPool references a PillarTarget that exists and has Ready=True.
+	// PillarStore references a PillarAgent that exists and has Ready=True.
 	// After reconcile, TargetReady=True.
 	It("E26.1.3: TestCrossLifecycle_Pool_TargetReady_TargetReadyTrue — pool with ready target gets TargetReady=True", func() {
 		const (
@@ -284,10 +284,10 @@ var _ = Describe("E26.1: Cross-CRD Dependency Ordering", func() {
 			targetName = "e261-target-ready"
 		)
 
-		By("creating a PillarTarget and marking it Ready=True")
-		tgt := &pillarcsiv1alpha1.PillarTarget{
+		By("creating a PillarAgent and marking it Ready=True")
+		tgt := &pillarcsiv1alpha1.PillarAgent{
 			ObjectMeta: metav1.ObjectMeta{Name: targetName},
-			Spec: pillarcsiv1alpha1.PillarTargetSpec{
+			Spec: pillarcsiv1alpha1.PillarAgentSpec{
 				External: &pillarcsiv1alpha1.ExternalSpec{Address: "192.0.2.101", Port: 9500},
 			},
 		}
@@ -296,12 +296,12 @@ var _ = Describe("E26.1: Cross-CRD Dependency Ordering", func() {
 
 		setTargetReady(targetName, metav1.ConditionTrue, "Authenticated", "agent is healthy and mTLS authenticated")
 
-		By("creating a PillarPool referencing this ready target")
-		pool := &pillarcsiv1alpha1.PillarPool{
+		By("creating a PillarStore referencing this ready target")
+		pool := &pillarcsiv1alpha1.PillarStore{
 			ObjectMeta: metav1.ObjectMeta{Name: poolName},
-			Spec: pillarcsiv1alpha1.PillarPoolSpec{
-				TargetRef: targetName,
-				Backend:   pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeZFSZvol},
+			Spec: pillarcsiv1alpha1.PillarStoreSpec{
+				AgentRef: targetName,
+				Backend:  pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeZFSZvol},
 			},
 		}
 		Expect(k8sClient.Create(bctx, pool)).To(Succeed())
@@ -312,16 +312,16 @@ var _ = Describe("E26.1: Cross-CRD Dependency Ordering", func() {
 		reconcilePool(poolName)
 
 		By("verifying TargetReady=True")
-		fetched := &pillarcsiv1alpha1.PillarPool{}
+		fetched := &pillarcsiv1alpha1.PillarStore{}
 		Expect(k8sClient.Get(bctx, types.NamespacedName{Name: poolName}, fetched)).To(Succeed())
 
-		cond := apimeta.FindStatusCondition(fetched.Status.Conditions, "TargetReady")
+		cond := apimeta.FindStatusCondition(fetched.Status.Conditions, "AgentReady")
 		Expect(cond).NotTo(BeNil(), "TargetReady condition must be set")
 		Expect(cond.Status).To(Equal(metav1.ConditionTrue))
 	})
 
 	// ── E26.1.4 ─────────────────────────────────────────────────────────────
-	// PillarBinding references a PillarPool that does not exist.
+	// PillarStorageClass references a PillarStore that does not exist.
 	// After reconcile, PoolReady=False with reason PoolNotFound.
 	It("E26.1.4: TestCrossLifecycle_Binding_PoolMissing_PoolReadyFalse — binding with missing pool gets PoolReady=False", func() {
 		const (
@@ -330,11 +330,11 @@ var _ = Describe("E26.1: Cross-CRD Dependency Ordering", func() {
 			protocolName = "e261-proto-for-pm"
 		)
 
-		By("creating a PillarBinding with a missing poolRef")
-		binding := &pillarcsiv1alpha1.PillarBinding{
+		By("creating a PillarStorageClass with a missing storeRef")
+		binding := &pillarcsiv1alpha1.PillarStorageClass{
 			ObjectMeta: metav1.ObjectMeta{Name: bindingName},
-			Spec: pillarcsiv1alpha1.PillarBindingSpec{
-				PoolRef:     poolName,
+			Spec: pillarcsiv1alpha1.PillarStorageClassSpec{
+				StoreRef:    poolName,
 				ProtocolRef: protocolName,
 			},
 		}
@@ -346,7 +346,7 @@ var _ = Describe("E26.1: Cross-CRD Dependency Ordering", func() {
 		reconcileBinding(bindingName)
 
 		By("verifying PoolReady=False with reason PoolNotFound")
-		fetched := &pillarcsiv1alpha1.PillarBinding{}
+		fetched := &pillarcsiv1alpha1.PillarStorageClass{}
 		Expect(k8sClient.Get(bctx, types.NamespacedName{Name: bindingName}, fetched)).To(Succeed())
 
 		cond := apimeta.FindStatusCondition(fetched.Status.Conditions, conditionPoolReady)
@@ -365,7 +365,7 @@ var _ = Describe("E26.1: Cross-CRD Dependency Ordering", func() {
 	})
 
 	// ── E26.1.5 ─────────────────────────────────────────────────────────────
-	// PillarBinding references a PillarPool that exists but has Ready=False.
+	// PillarStorageClass references a PillarStore that exists but has Ready=False.
 	// After reconcile, PoolReady=False with reason PoolNotReady.
 	It("E26.1.5: TestCrossLifecycle_Binding_PoolNotReady_PoolReadyFalse — binding with not-ready pool gets PoolReady=False", func() {
 		const (
@@ -374,23 +374,23 @@ var _ = Describe("E26.1: Cross-CRD Dependency Ordering", func() {
 			protocolName = "e261-proto-for-pnr"
 		)
 
-		By("creating a PillarPool with Ready=False")
-		pool := &pillarcsiv1alpha1.PillarPool{
+		By("creating a PillarStore with Ready=False")
+		pool := &pillarcsiv1alpha1.PillarStore{
 			ObjectMeta: metav1.ObjectMeta{Name: poolName},
-			Spec: pillarcsiv1alpha1.PillarPoolSpec{
-				TargetRef: "some-target",
-				Backend:   pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeZFSZvol},
+			Spec: pillarcsiv1alpha1.PillarStoreSpec{
+				AgentRef: "some-target",
+				Backend:  pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeZFSZvol},
 			},
 		}
 		Expect(k8sClient.Create(bctx, pool)).To(Succeed())
 		DeferCleanup(func() { cleanupPool(poolName) })
 		setPoolReady(poolName, metav1.ConditionFalse, "TargetNotFound", "target not found")
 
-		By("creating a PillarBinding referencing the not-ready pool")
-		binding := &pillarcsiv1alpha1.PillarBinding{
+		By("creating a PillarStorageClass referencing the not-ready pool")
+		binding := &pillarcsiv1alpha1.PillarStorageClass{
 			ObjectMeta: metav1.ObjectMeta{Name: bindingName},
-			Spec: pillarcsiv1alpha1.PillarBindingSpec{
-				PoolRef:     poolName,
+			Spec: pillarcsiv1alpha1.PillarStorageClassSpec{
+				StoreRef:    poolName,
 				ProtocolRef: protocolName,
 			},
 		}
@@ -402,7 +402,7 @@ var _ = Describe("E26.1: Cross-CRD Dependency Ordering", func() {
 		reconcileBinding(bindingName)
 
 		By("verifying PoolReady=False with reason PoolNotReady")
-		fetched := &pillarcsiv1alpha1.PillarBinding{}
+		fetched := &pillarcsiv1alpha1.PillarStorageClass{}
 		Expect(k8sClient.Get(bctx, types.NamespacedName{Name: bindingName}, fetched)).To(Succeed())
 
 		cond := apimeta.FindStatusCondition(fetched.Status.Conditions, conditionPoolReady)
@@ -413,7 +413,7 @@ var _ = Describe("E26.1: Cross-CRD Dependency Ordering", func() {
 	})
 
 	// ── E26.1.6 ─────────────────────────────────────────────────────────────
-	// PillarBinding references a valid PillarPool but a missing PillarProtocol.
+	// PillarStorageClass references a valid PillarStore but a missing PillarProtocol.
 	// After reconcile, ProtocolValid=False with reason ProtocolNotFound.
 	It("E26.1.6: TestCrossLifecycle_Binding_ProtocolMissing_ProtocolValidFalse — binding with missing protocol gets ProtocolValid=False", func() {
 		const (
@@ -422,23 +422,23 @@ var _ = Describe("E26.1: Cross-CRD Dependency Ordering", func() {
 			protocolName = "e261-nonexistent-protocol"
 		)
 
-		By("creating a Ready PillarPool")
-		pool := &pillarcsiv1alpha1.PillarPool{
+		By("creating a Ready PillarStore")
+		pool := &pillarcsiv1alpha1.PillarStore{
 			ObjectMeta: metav1.ObjectMeta{Name: poolName},
-			Spec: pillarcsiv1alpha1.PillarPoolSpec{
-				TargetRef: "some-target",
-				Backend:   pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeZFSZvol},
+			Spec: pillarcsiv1alpha1.PillarStoreSpec{
+				AgentRef: "some-target",
+				Backend:  pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeZFSZvol},
 			},
 		}
 		Expect(k8sClient.Create(bctx, pool)).To(Succeed())
 		DeferCleanup(func() { cleanupPool(poolName) })
-		setPoolReady(poolName, metav1.ConditionTrue, "PoolReady", "pool ready")
+		setPoolReady(poolName, metav1.ConditionTrue, "StoreReady", "pool ready")
 
-		By("creating a PillarBinding referencing the ready pool but a non-existent protocol")
-		binding := &pillarcsiv1alpha1.PillarBinding{
+		By("creating a PillarStorageClass referencing the ready pool but a non-existent protocol")
+		binding := &pillarcsiv1alpha1.PillarStorageClass{
 			ObjectMeta: metav1.ObjectMeta{Name: bindingName},
-			Spec: pillarcsiv1alpha1.PillarBindingSpec{
-				PoolRef:     poolName,
+			Spec: pillarcsiv1alpha1.PillarStorageClassSpec{
+				StoreRef:    poolName,
 				ProtocolRef: protocolName,
 			},
 		}
@@ -450,7 +450,7 @@ var _ = Describe("E26.1: Cross-CRD Dependency Ordering", func() {
 		reconcileBinding(bindingName)
 
 		By("verifying ProtocolValid=False with reason ProtocolNotFound")
-		fetched := &pillarcsiv1alpha1.PillarBinding{}
+		fetched := &pillarcsiv1alpha1.PillarStorageClass{}
 		Expect(k8sClient.Get(bctx, types.NamespacedName{Name: bindingName}, fetched)).To(Succeed())
 
 		cond := apimeta.FindStatusCondition(fetched.Status.Conditions, conditionProtocolValid)
@@ -464,7 +464,7 @@ var _ = Describe("E26.1: Cross-CRD Dependency Ordering", func() {
 	})
 
 	// ── E26.1.7 ─────────────────────────────────────────────────────────────
-	// PillarBinding references both a missing PillarPool and a missing PillarProtocol.
+	// PillarStorageClass references both a missing PillarStore and a missing PillarProtocol.
 	// After reconcile, PoolReady=False and Ready=False (pool is checked first).
 	It("E26.1.7: TestCrossLifecycle_Binding_BothMissing_BothConditionsFalse — binding with both missing refs gets PoolReady=False+Ready=False", func() {
 		const (
@@ -473,11 +473,11 @@ var _ = Describe("E26.1: Cross-CRD Dependency Ordering", func() {
 			protocolName = "e261-nonexistent-proto-bm"
 		)
 
-		By("creating a PillarBinding referencing two non-existent resources")
-		binding := &pillarcsiv1alpha1.PillarBinding{
+		By("creating a PillarStorageClass referencing two non-existent resources")
+		binding := &pillarcsiv1alpha1.PillarStorageClass{
 			ObjectMeta: metav1.ObjectMeta{Name: bindingName},
-			Spec: pillarcsiv1alpha1.PillarBindingSpec{
-				PoolRef:     poolName,
+			Spec: pillarcsiv1alpha1.PillarStorageClassSpec{
+				StoreRef:    poolName,
 				ProtocolRef: protocolName,
 			},
 		}
@@ -489,7 +489,7 @@ var _ = Describe("E26.1: Cross-CRD Dependency Ordering", func() {
 		reconcileBinding(bindingName)
 
 		By("verifying PoolReady=False and Ready=False")
-		fetched := &pillarcsiv1alpha1.PillarBinding{}
+		fetched := &pillarcsiv1alpha1.PillarStorageClass{}
 		Expect(k8sClient.Get(bctx, types.NamespacedName{Name: bindingName}, fetched)).To(Succeed())
 
 		poolCond := apimeta.FindStatusCondition(fetched.Status.Conditions, conditionPoolReady)
@@ -508,7 +508,7 @@ var _ = Describe("E26.1: Cross-CRD Dependency Ordering", func() {
 	})
 
 	// ── E26.1.8 ─────────────────────────────────────────────────────────────
-	// PillarBinding references a Ready PillarPool (zfs-zvol) and a Ready PillarProtocol (nvmeof-tcp).
+	// PillarStorageClass references a Ready PillarStore (zfs-zvol) and a Ready PillarProtocol (nvmeof-tcp).
 	// After reconcile, Binding is Ready=True and a StorageClass is created.
 	It("E26.1.8: TestCrossLifecycle_Binding_PoolReadyProtocolReady_BecomeReady — both ready → binding Ready=True + StorageClass created", func() {
 		const (
@@ -517,11 +517,11 @@ var _ = Describe("E26.1: Cross-CRD Dependency Ordering", func() {
 			protocolName = "e261-proto-both-ready"
 		)
 
-		By("creating a Ready PillarPool with zfs-zvol backend")
-		pool := &pillarcsiv1alpha1.PillarPool{
+		By("creating a Ready PillarStore with zfs-zvol backend")
+		pool := &pillarcsiv1alpha1.PillarStore{
 			ObjectMeta: metav1.ObjectMeta{Name: poolName},
-			Spec: pillarcsiv1alpha1.PillarPoolSpec{
-				TargetRef: "some-target",
+			Spec: pillarcsiv1alpha1.PillarStoreSpec{
+				AgentRef: "some-target",
 				Backend: pillarcsiv1alpha1.BackendSpec{
 					Type: pillarcsiv1alpha1.BackendTypeZFSZvol,
 					ZFS:  &pillarcsiv1alpha1.ZFSBackendConfig{Pool: "tank"},
@@ -530,7 +530,7 @@ var _ = Describe("E26.1: Cross-CRD Dependency Ordering", func() {
 		}
 		Expect(k8sClient.Create(bctx, pool)).To(Succeed())
 		DeferCleanup(func() { cleanupPool(poolName) })
-		setPoolReady(poolName, metav1.ConditionTrue, "PoolReady", "all conditions satisfied")
+		setPoolReady(poolName, metav1.ConditionTrue, "StoreReady", "all conditions satisfied")
 
 		By("creating a Ready PillarProtocol with nvmeof-tcp type")
 		proto := &pillarcsiv1alpha1.PillarProtocol{
@@ -541,11 +541,11 @@ var _ = Describe("E26.1: Cross-CRD Dependency Ordering", func() {
 		DeferCleanup(func() { cleanupProtocol(protocolName) })
 		setProtocolReady(protocolName, metav1.ConditionTrue, "ProtocolReady", "protocol ready")
 
-		By("creating the PillarBinding")
-		binding := &pillarcsiv1alpha1.PillarBinding{
+		By("creating the PillarStorageClass")
+		binding := &pillarcsiv1alpha1.PillarStorageClass{
 			ObjectMeta: metav1.ObjectMeta{Name: bindingName},
-			Spec: pillarcsiv1alpha1.PillarBindingSpec{
-				PoolRef:     poolName,
+			Spec: pillarcsiv1alpha1.PillarStorageClassSpec{
+				StoreRef:    poolName,
 				ProtocolRef: protocolName,
 			},
 		}
@@ -560,7 +560,7 @@ var _ = Describe("E26.1: Cross-CRD Dependency Ordering", func() {
 		reconcileBinding(bindingName)
 
 		By("verifying PoolReady=True, ProtocolValid=True, Compatible=True, Ready=True")
-		fetched := &pillarcsiv1alpha1.PillarBinding{}
+		fetched := &pillarcsiv1alpha1.PillarStorageClass{}
 		Expect(k8sClient.Get(bctx, types.NamespacedName{Name: bindingName}, fetched)).To(Succeed())
 
 		poolCond := apimeta.FindStatusCondition(fetched.Status.Conditions, conditionPoolReady)
@@ -600,7 +600,7 @@ var _ = Describe("E26.2: Cross-CRD Cascading Status Updates", func() {
 	// ── shared helpers ───────────────────────────────────────────────────────
 
 	setTargetReadyE262 := func(name string, ready metav1.ConditionStatus, reason, msg string) {
-		tgt := &pillarcsiv1alpha1.PillarTarget{}
+		tgt := &pillarcsiv1alpha1.PillarAgent{}
 		Expect(k8sClient.Get(bctx, types.NamespacedName{Name: name}, tgt)).To(Succeed())
 		tgt.Status.Conditions = []metav1.Condition{
 			{
@@ -615,7 +615,7 @@ var _ = Describe("E26.2: Cross-CRD Cascading Status Updates", func() {
 	}
 
 	setPoolReadyE262 := func(name string, ready metav1.ConditionStatus, reason, msg string) {
-		pool := &pillarcsiv1alpha1.PillarPool{}
+		pool := &pillarcsiv1alpha1.PillarStore{}
 		Expect(k8sClient.Get(bctx, types.NamespacedName{Name: name}, pool)).To(Succeed())
 		pool.Status.Conditions = []metav1.Condition{
 			{
@@ -645,18 +645,18 @@ var _ = Describe("E26.2: Cross-CRD Cascading Status Updates", func() {
 	}
 
 	cleanupTargetE262 := func(name string) {
-		tgt := &pillarcsiv1alpha1.PillarTarget{}
+		tgt := &pillarcsiv1alpha1.PillarAgent{}
 		if err := k8sClient.Get(bctx, types.NamespacedName{Name: name}, tgt); err == nil {
-			controllerutil.RemoveFinalizer(tgt, pillarTargetFinalizer)
+			controllerutil.RemoveFinalizer(tgt, pillarAgentFinalizer)
 			_ = k8sClient.Update(bctx, tgt)
 			_ = k8sClient.Delete(bctx, tgt)
 		}
 	}
 
 	cleanupPoolE262 := func(name string) {
-		pool := &pillarcsiv1alpha1.PillarPool{}
+		pool := &pillarcsiv1alpha1.PillarStore{}
 		if err := k8sClient.Get(bctx, types.NamespacedName{Name: name}, pool); err == nil {
-			controllerutil.RemoveFinalizer(pool, pillarPoolFinalizer)
+			controllerutil.RemoveFinalizer(pool, pillarStoreFinalizer)
 			_ = k8sClient.Update(bctx, pool)
 			_ = k8sClient.Delete(bctx, pool)
 		}
@@ -672,9 +672,9 @@ var _ = Describe("E26.2: Cross-CRD Cascading Status Updates", func() {
 	}
 
 	cleanupBindingE262 := func(name string) {
-		b := &pillarcsiv1alpha1.PillarBinding{}
+		b := &pillarcsiv1alpha1.PillarStorageClass{}
 		if err := k8sClient.Get(bctx, types.NamespacedName{Name: name}, b); err == nil {
-			controllerutil.RemoveFinalizer(b, pillarBindingFinalizer)
+			controllerutil.RemoveFinalizer(b, pillarStorageClassFinalizer)
 			_ = k8sClient.Update(bctx, b)
 			_ = k8sClient.Delete(bctx, b)
 		}
@@ -688,13 +688,13 @@ var _ = Describe("E26.2: Cross-CRD Cascading Status Updates", func() {
 	}
 
 	reconcilePoolE262 := func(poolName string) {
-		r := &PillarPoolReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		r := &PillarStoreReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 		_, err := r.Reconcile(bctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: poolName}})
 		Expect(err).NotTo(HaveOccurred())
 	}
 
 	reconcileBindingE262 := func(bindingName string) {
-		r := &PillarBindingReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		r := &PillarStorageClassReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 		_, err := r.Reconcile(bctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: bindingName}})
 		Expect(err).NotTo(HaveOccurred())
 	}
@@ -706,18 +706,18 @@ var _ = Describe("E26.2: Cross-CRD Cascading Status Updates", func() {
 	}
 
 	// ── E26.2.1 ─────────────────────────────────────────────────────────────
-	// PillarTarget transitions from Ready=True to Ready=False.
-	// Re-reconciling the dependent PillarPool propagates TargetReady=False.
+	// PillarAgent transitions from Ready=True to Ready=False.
+	// Re-reconciling the dependent PillarStore propagates TargetReady=False.
 	It("E26.2.1: TestCrossLifecycle_Cascade_TargetLosesReady_PoolConditionUpdates — target→False → pool TargetReady=False", func() {
 		const (
 			targetName = "e262-target-loses-ready"
 			poolName   = "e262-pool-target-cascade"
 		)
 
-		By("creating a Ready PillarTarget")
-		tgt := &pillarcsiv1alpha1.PillarTarget{
+		By("creating a Ready PillarAgent")
+		tgt := &pillarcsiv1alpha1.PillarAgent{
 			ObjectMeta: metav1.ObjectMeta{Name: targetName},
-			Spec: pillarcsiv1alpha1.PillarTargetSpec{
+			Spec: pillarcsiv1alpha1.PillarAgentSpec{
 				External: &pillarcsiv1alpha1.ExternalSpec{Address: "192.0.2.110", Port: 9500},
 			},
 		}
@@ -725,12 +725,12 @@ var _ = Describe("E26.2: Cross-CRD Cascading Status Updates", func() {
 		DeferCleanup(func() { cleanupTargetE262(targetName) })
 		setTargetReadyE262(targetName, metav1.ConditionTrue, "Authenticated", "healthy")
 
-		By("creating a PillarPool that depends on this target")
-		pool := &pillarcsiv1alpha1.PillarPool{
+		By("creating a PillarStore that depends on this target")
+		pool := &pillarcsiv1alpha1.PillarStore{
 			ObjectMeta: metav1.ObjectMeta{Name: poolName},
-			Spec: pillarcsiv1alpha1.PillarPoolSpec{
-				TargetRef: targetName,
-				Backend:   pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeZFSZvol},
+			Spec: pillarcsiv1alpha1.PillarStoreSpec{
+				AgentRef: targetName,
+				Backend:  pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeZFSZvol},
 			},
 		}
 		Expect(k8sClient.Create(bctx, pool)).To(Succeed())
@@ -741,21 +741,21 @@ var _ = Describe("E26.2: Cross-CRD Cascading Status Updates", func() {
 		reconcilePoolE262(poolName)
 
 		By("verifying TargetReady=True initially")
-		fetched := &pillarcsiv1alpha1.PillarPool{}
+		fetched := &pillarcsiv1alpha1.PillarStore{}
 		Expect(k8sClient.Get(bctx, types.NamespacedName{Name: poolName}, fetched)).To(Succeed())
-		initialCond := apimeta.FindStatusCondition(fetched.Status.Conditions, "TargetReady")
+		initialCond := apimeta.FindStatusCondition(fetched.Status.Conditions, "AgentReady")
 		Expect(initialCond).NotTo(BeNil())
 		Expect(initialCond.Status).To(Equal(metav1.ConditionTrue))
 
-		By("transitioning the PillarTarget to Ready=False")
+		By("transitioning the PillarAgent to Ready=False")
 		setTargetReadyE262(targetName, metav1.ConditionFalse, "AgentUnhealthy", "gRPC health check failed")
 
 		By("re-reconciling the pool")
 		reconcilePoolE262(poolName)
 
-		By("verifying TargetReady=False propagated to PillarPool")
+		By("verifying TargetReady=False propagated to PillarStore")
 		Expect(k8sClient.Get(bctx, types.NamespacedName{Name: poolName}, fetched)).To(Succeed())
-		cond := apimeta.FindStatusCondition(fetched.Status.Conditions, "TargetReady")
+		cond := apimeta.FindStatusCondition(fetched.Status.Conditions, "AgentReady")
 		Expect(cond).NotTo(BeNil())
 		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 
@@ -765,18 +765,18 @@ var _ = Describe("E26.2: Cross-CRD Cascading Status Updates", func() {
 	})
 
 	// ── E26.2.2 ─────────────────────────────────────────────────────────────
-	// PillarTarget recovers from Ready=False to Ready=True.
-	// Re-reconciling the dependent PillarPool restores TargetReady=True.
+	// PillarAgent recovers from Ready=False to Ready=True.
+	// Re-reconciling the dependent PillarStore restores TargetReady=True.
 	It("E26.2.2: TestCrossLifecycle_Cascade_TargetRecovery_PoolConditionRestores — target recovery → pool TargetReady=True", func() {
 		const (
 			targetName = "e262-target-recovers"
 			poolName   = "e262-pool-recovery"
 		)
 
-		By("creating a not-ready PillarTarget")
-		tgt := &pillarcsiv1alpha1.PillarTarget{
+		By("creating a not-ready PillarAgent")
+		tgt := &pillarcsiv1alpha1.PillarAgent{
 			ObjectMeta: metav1.ObjectMeta{Name: targetName},
-			Spec: pillarcsiv1alpha1.PillarTargetSpec{
+			Spec: pillarcsiv1alpha1.PillarAgentSpec{
 				External: &pillarcsiv1alpha1.ExternalSpec{Address: "192.0.2.111", Port: 9500},
 			},
 		}
@@ -784,12 +784,12 @@ var _ = Describe("E26.2: Cross-CRD Cascading Status Updates", func() {
 		DeferCleanup(func() { cleanupTargetE262(targetName) })
 		setTargetReadyE262(targetName, metav1.ConditionFalse, "AgentUnhealthy", "unhealthy")
 
-		By("creating a PillarPool referencing this not-ready target")
-		pool := &pillarcsiv1alpha1.PillarPool{
+		By("creating a PillarStore referencing this not-ready target")
+		pool := &pillarcsiv1alpha1.PillarStore{
 			ObjectMeta: metav1.ObjectMeta{Name: poolName},
-			Spec: pillarcsiv1alpha1.PillarPoolSpec{
-				TargetRef: targetName,
-				Backend:   pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeZFSZvol},
+			Spec: pillarcsiv1alpha1.PillarStoreSpec{
+				AgentRef: targetName,
+				Backend:  pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeZFSZvol},
 			},
 		}
 		Expect(k8sClient.Create(bctx, pool)).To(Succeed())
@@ -799,28 +799,28 @@ var _ = Describe("E26.2: Cross-CRD Cascading Status Updates", func() {
 		reconcilePoolE262(poolName)
 		reconcilePoolE262(poolName)
 
-		fetched := &pillarcsiv1alpha1.PillarPool{}
+		fetched := &pillarcsiv1alpha1.PillarStore{}
 		Expect(k8sClient.Get(bctx, types.NamespacedName{Name: poolName}, fetched)).To(Succeed())
-		baselineCond := apimeta.FindStatusCondition(fetched.Status.Conditions, "TargetReady")
+		baselineCond := apimeta.FindStatusCondition(fetched.Status.Conditions, "AgentReady")
 		Expect(baselineCond).NotTo(BeNil())
 		Expect(baselineCond.Status).To(Equal(metav1.ConditionFalse), "baseline should be TargetReady=False")
 
-		By("recovering the PillarTarget to Ready=True")
+		By("recovering the PillarAgent to Ready=True")
 		setTargetReadyE262(targetName, metav1.ConditionTrue, "Authenticated", "healthy again")
 
 		By("re-reconciling the pool after target recovery")
 		reconcilePoolE262(poolName)
 
-		By("verifying TargetReady=True restored on PillarPool")
+		By("verifying TargetReady=True restored on PillarStore")
 		Expect(k8sClient.Get(bctx, types.NamespacedName{Name: poolName}, fetched)).To(Succeed())
-		cond := apimeta.FindStatusCondition(fetched.Status.Conditions, "TargetReady")
+		cond := apimeta.FindStatusCondition(fetched.Status.Conditions, "AgentReady")
 		Expect(cond).NotTo(BeNil())
 		Expect(cond.Status).To(Equal(metav1.ConditionTrue), "TargetReady should recover to True")
 	})
 
 	// ── E26.2.3 ─────────────────────────────────────────────────────────────
-	// PillarPool transitions from Ready=True to Ready=False.
-	// Re-reconciling the dependent PillarBinding propagates PoolReady=False.
+	// PillarStore transitions from Ready=True to Ready=False.
+	// Re-reconciling the dependent PillarStorageClass propagates PoolReady=False.
 	It("E26.2.3: TestCrossLifecycle_Cascade_PoolLosesReady_BindingConditionUpdates — pool→False → binding PoolReady=False", func() {
 		const (
 			poolName     = "e262-pool-loses-ready"
@@ -828,17 +828,17 @@ var _ = Describe("E26.2: Cross-CRD Cascading Status Updates", func() {
 			bindingName  = "e262-binding-pool-cascade"
 		)
 
-		By("creating a Ready PillarPool")
-		pool := &pillarcsiv1alpha1.PillarPool{
+		By("creating a Ready PillarStore")
+		pool := &pillarcsiv1alpha1.PillarStore{
 			ObjectMeta: metav1.ObjectMeta{Name: poolName},
-			Spec: pillarcsiv1alpha1.PillarPoolSpec{
-				TargetRef: "some-target",
-				Backend:   pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeZFSZvol},
+			Spec: pillarcsiv1alpha1.PillarStoreSpec{
+				AgentRef: "some-target",
+				Backend:  pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeZFSZvol},
 			},
 		}
 		Expect(k8sClient.Create(bctx, pool)).To(Succeed())
 		DeferCleanup(func() { cleanupPoolE262(poolName) })
-		setPoolReadyE262(poolName, metav1.ConditionTrue, "PoolReady", "all ready")
+		setPoolReadyE262(poolName, metav1.ConditionTrue, "StoreReady", "all ready")
 
 		By("creating a Ready PillarProtocol")
 		proto := &pillarcsiv1alpha1.PillarProtocol{
@@ -849,11 +849,11 @@ var _ = Describe("E26.2: Cross-CRD Cascading Status Updates", func() {
 		DeferCleanup(func() { cleanupProtocolE262(protocolName) })
 		setProtocolReadyE262(protocolName, metav1.ConditionTrue, "ProtocolReady", "ready")
 
-		By("creating a PillarBinding referencing both")
-		binding := &pillarcsiv1alpha1.PillarBinding{
+		By("creating a PillarStorageClass referencing both")
+		binding := &pillarcsiv1alpha1.PillarStorageClass{
 			ObjectMeta: metav1.ObjectMeta{Name: bindingName},
-			Spec: pillarcsiv1alpha1.PillarBindingSpec{
-				PoolRef:     poolName,
+			Spec: pillarcsiv1alpha1.PillarStorageClassSpec{
+				StoreRef:    poolName,
 				ProtocolRef: protocolName,
 			},
 		}
@@ -867,19 +867,19 @@ var _ = Describe("E26.2: Cross-CRD Cascading Status Updates", func() {
 		reconcileBindingE262(bindingName)
 		reconcileBindingE262(bindingName)
 
-		fetched := &pillarcsiv1alpha1.PillarBinding{}
+		fetched := &pillarcsiv1alpha1.PillarStorageClass{}
 		Expect(k8sClient.Get(bctx, types.NamespacedName{Name: bindingName}, fetched)).To(Succeed())
 		poolCond := apimeta.FindStatusCondition(fetched.Status.Conditions, conditionPoolReady)
 		Expect(poolCond).NotTo(BeNil())
 		Expect(poolCond.Status).To(Equal(metav1.ConditionTrue), "baseline should be PoolReady=True")
 
-		By("transitioning the PillarPool to Ready=False")
+		By("transitioning the PillarStore to Ready=False")
 		setPoolReadyE262(poolName, metav1.ConditionFalse, "TargetNotFound", "target gone")
 
 		By("re-reconciling the binding")
 		reconcileBindingE262(bindingName)
 
-		By("verifying PoolReady=False propagated to PillarBinding")
+		By("verifying PoolReady=False propagated to PillarStorageClass")
 		Expect(k8sClient.Get(bctx, types.NamespacedName{Name: bindingName}, fetched)).To(Succeed())
 		cond := apimeta.FindStatusCondition(fetched.Status.Conditions, conditionPoolReady)
 		Expect(cond).NotTo(BeNil())
@@ -892,7 +892,7 @@ var _ = Describe("E26.2: Cross-CRD Cascading Status Updates", func() {
 
 	// ── E26.2.4 ─────────────────────────────────────────────────────────────
 	// PillarProtocol transitions from Ready=True to Ready=False.
-	// Re-reconciling the dependent PillarBinding propagates ProtocolValid=False.
+	// Re-reconciling the dependent PillarStorageClass propagates ProtocolValid=False.
 	It("E26.2.4: TestCrossLifecycle_Cascade_ProtocolBecomesInvalid_BindingNotReady — protocol→False → binding ProtocolValid=False", func() {
 		const (
 			poolName     = "e262-pool-for-proto-cascade"
@@ -900,17 +900,17 @@ var _ = Describe("E26.2: Cross-CRD Cascading Status Updates", func() {
 			bindingName  = "e262-binding-proto-cascade"
 		)
 
-		By("creating a Ready PillarPool")
-		pool := &pillarcsiv1alpha1.PillarPool{
+		By("creating a Ready PillarStore")
+		pool := &pillarcsiv1alpha1.PillarStore{
 			ObjectMeta: metav1.ObjectMeta{Name: poolName},
-			Spec: pillarcsiv1alpha1.PillarPoolSpec{
-				TargetRef: "some-target",
-				Backend:   pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeZFSZvol},
+			Spec: pillarcsiv1alpha1.PillarStoreSpec{
+				AgentRef: "some-target",
+				Backend:  pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeZFSZvol},
 			},
 		}
 		Expect(k8sClient.Create(bctx, pool)).To(Succeed())
 		DeferCleanup(func() { cleanupPoolE262(poolName) })
-		setPoolReadyE262(poolName, metav1.ConditionTrue, "PoolReady", "ready")
+		setPoolReadyE262(poolName, metav1.ConditionTrue, "StoreReady", "ready")
 
 		By("creating a Ready PillarProtocol")
 		proto := &pillarcsiv1alpha1.PillarProtocol{
@@ -921,11 +921,11 @@ var _ = Describe("E26.2: Cross-CRD Cascading Status Updates", func() {
 		DeferCleanup(func() { cleanupProtocolE262(protocolName) })
 		setProtocolReadyE262(protocolName, metav1.ConditionTrue, "ProtocolReady", "ready")
 
-		By("creating a PillarBinding")
-		binding := &pillarcsiv1alpha1.PillarBinding{
+		By("creating a PillarStorageClass")
+		binding := &pillarcsiv1alpha1.PillarStorageClass{
 			ObjectMeta: metav1.ObjectMeta{Name: bindingName},
-			Spec: pillarcsiv1alpha1.PillarBindingSpec{
-				PoolRef:     poolName,
+			Spec: pillarcsiv1alpha1.PillarStorageClassSpec{
+				StoreRef:    poolName,
 				ProtocolRef: protocolName,
 			},
 		}
@@ -939,7 +939,7 @@ var _ = Describe("E26.2: Cross-CRD Cascading Status Updates", func() {
 		reconcileBindingE262(bindingName)
 		reconcileBindingE262(bindingName)
 
-		fetched := &pillarcsiv1alpha1.PillarBinding{}
+		fetched := &pillarcsiv1alpha1.PillarStorageClass{}
 		Expect(k8sClient.Get(bctx, types.NamespacedName{Name: bindingName}, fetched)).To(Succeed())
 		protoCond := apimeta.FindStatusCondition(fetched.Status.Conditions, conditionProtocolValid)
 		Expect(protoCond).NotTo(BeNil())
@@ -951,7 +951,7 @@ var _ = Describe("E26.2: Cross-CRD Cascading Status Updates", func() {
 		By("re-reconciling the binding")
 		reconcileBindingE262(bindingName)
 
-		By("verifying ProtocolValid=False propagated to PillarBinding")
+		By("verifying ProtocolValid=False propagated to PillarStorageClass")
 		Expect(k8sClient.Get(bctx, types.NamespacedName{Name: bindingName}, fetched)).To(Succeed())
 		cond := apimeta.FindStatusCondition(fetched.Status.Conditions, conditionProtocolValid)
 		Expect(cond).NotTo(BeNil())
@@ -959,7 +959,7 @@ var _ = Describe("E26.2: Cross-CRD Cascading Status Updates", func() {
 	})
 
 	// ── E26.2.5 ─────────────────────────────────────────────────────────────
-	// Full chain recovery: PillarTarget recovers → Pool reconcile restores
+	// Full chain recovery: PillarAgent recovers → Pool reconcile restores
 	// TargetReady=True → Pool becomes Ready → Binding reconcile restores PoolReady=True.
 	It("E26.2.5: TestCrossLifecycle_Cascade_FullChainRecovery — target recovery propagates through Pool→Binding", func() {
 		const (
@@ -969,10 +969,10 @@ var _ = Describe("E26.2: Cross-CRD Cascading Status Updates", func() {
 			bindingName  = "e262-binding-chain-recovery"
 		)
 
-		By("creating a not-ready PillarTarget")
-		tgt := &pillarcsiv1alpha1.PillarTarget{
+		By("creating a not-ready PillarAgent")
+		tgt := &pillarcsiv1alpha1.PillarAgent{
 			ObjectMeta: metav1.ObjectMeta{Name: targetName},
-			Spec: pillarcsiv1alpha1.PillarTargetSpec{
+			Spec: pillarcsiv1alpha1.PillarAgentSpec{
 				External: &pillarcsiv1alpha1.ExternalSpec{Address: "192.0.2.112", Port: 9500},
 			},
 		}
@@ -980,12 +980,12 @@ var _ = Describe("E26.2: Cross-CRD Cascading Status Updates", func() {
 		DeferCleanup(func() { cleanupTargetE262(targetName) })
 		setTargetReadyE262(targetName, metav1.ConditionFalse, "AgentUnhealthy", "unhealthy")
 
-		By("creating a PillarPool with not-ready status (no Ready condition initially)")
-		pool := &pillarcsiv1alpha1.PillarPool{
+		By("creating a PillarStore with not-ready status (no Ready condition initially)")
+		pool := &pillarcsiv1alpha1.PillarStore{
 			ObjectMeta: metav1.ObjectMeta{Name: poolName},
-			Spec: pillarcsiv1alpha1.PillarPoolSpec{
-				TargetRef: targetName,
-				Backend:   pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeZFSZvol},
+			Spec: pillarcsiv1alpha1.PillarStoreSpec{
+				AgentRef: targetName,
+				Backend:  pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeZFSZvol},
 			},
 		}
 		Expect(k8sClient.Create(bctx, pool)).To(Succeed())
@@ -1002,11 +1002,11 @@ var _ = Describe("E26.2: Cross-CRD Cascading Status Updates", func() {
 		DeferCleanup(func() { cleanupProtocolE262(protocolName) })
 		setProtocolReadyE262(protocolName, metav1.ConditionTrue, "ProtocolReady", "ready")
 
-		By("creating a PillarBinding")
-		binding := &pillarcsiv1alpha1.PillarBinding{
+		By("creating a PillarStorageClass")
+		binding := &pillarcsiv1alpha1.PillarStorageClass{
 			ObjectMeta: metav1.ObjectMeta{Name: bindingName},
-			Spec: pillarcsiv1alpha1.PillarBindingSpec{
-				PoolRef:     poolName,
+			Spec: pillarcsiv1alpha1.PillarStorageClassSpec{
+				StoreRef:    poolName,
 				ProtocolRef: protocolName,
 			},
 		}
@@ -1020,27 +1020,27 @@ var _ = Describe("E26.2: Cross-CRD Cascading Status Updates", func() {
 		reconcileBindingE262(bindingName)
 		reconcileBindingE262(bindingName)
 
-		fetched := &pillarcsiv1alpha1.PillarBinding{}
+		fetched := &pillarcsiv1alpha1.PillarStorageClass{}
 		Expect(k8sClient.Get(bctx, types.NamespacedName{Name: bindingName}, fetched)).To(Succeed())
 		poolCond := apimeta.FindStatusCondition(fetched.Status.Conditions, conditionPoolReady)
 		Expect(poolCond).NotTo(BeNil())
 		Expect(poolCond.Status).To(Equal(metav1.ConditionFalse), "baseline PoolReady should be False")
 
-		By("recovering the PillarTarget to Ready=True")
+		By("recovering the PillarAgent to Ready=True")
 		setTargetReadyE262(targetName, metav1.ConditionTrue, "Authenticated", "healthy again")
 
 		By("reconciling pool — it should now see target as Ready and become Ready itself")
 		reconcilePoolE262(poolName)
 		reconcilePoolE262(poolName)
 
-		poolFetched := &pillarcsiv1alpha1.PillarPool{}
+		poolFetched := &pillarcsiv1alpha1.PillarStore{}
 		Expect(k8sClient.Get(bctx, types.NamespacedName{Name: poolName}, poolFetched)).To(Succeed())
-		targetReadyCond := apimeta.FindStatusCondition(poolFetched.Status.Conditions, "TargetReady")
+		targetReadyCond := apimeta.FindStatusCondition(poolFetched.Status.Conditions, "AgentReady")
 		Expect(targetReadyCond).NotTo(BeNil())
 		Expect(targetReadyCond.Status).To(Equal(metav1.ConditionTrue), "pool TargetReady should propagate from target recovery")
 
 		By("simulating pool becoming Ready after target recovery")
-		setPoolReadyE262(poolName, metav1.ConditionTrue, "PoolReady", "target recovered")
+		setPoolReadyE262(poolName, metav1.ConditionTrue, "StoreReady", "target recovered")
 
 		By("reconciling binding — it should now see pool as Ready")
 		reconcileBindingE262(bindingName)
@@ -1052,8 +1052,8 @@ var _ = Describe("E26.2: Cross-CRD Cascading Status Updates", func() {
 	})
 
 	// ── E26.2.6 ─────────────────────────────────────────────────────────────
-	// PillarPool transitions from Ready=False to Ready=True.
-	// Re-reconciling the dependent PillarBinding creates a StorageClass.
+	// PillarStore transitions from Ready=False to Ready=True.
+	// Re-reconciling the dependent PillarStorageClass creates a StorageClass.
 	It("E26.2.6: TestCrossLifecycle_Cascade_BindingBecomesReady_StorageClassCreated — pool→Ready → binding creates StorageClass", func() {
 		const (
 			poolName     = "e262-pool-becomes-ready"
@@ -1061,12 +1061,12 @@ var _ = Describe("E26.2: Cross-CRD Cascading Status Updates", func() {
 			bindingName  = "e262-binding-sc-created"
 		)
 
-		By("creating a not-ready PillarPool")
-		pool := &pillarcsiv1alpha1.PillarPool{
+		By("creating a not-ready PillarStore")
+		pool := &pillarcsiv1alpha1.PillarStore{
 			ObjectMeta: metav1.ObjectMeta{Name: poolName},
-			Spec: pillarcsiv1alpha1.PillarPoolSpec{
-				TargetRef: "some-target",
-				Backend:   pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeZFSZvol},
+			Spec: pillarcsiv1alpha1.PillarStoreSpec{
+				AgentRef: "some-target",
+				Backend:  pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeZFSZvol},
 			},
 		}
 		Expect(k8sClient.Create(bctx, pool)).To(Succeed())
@@ -1082,11 +1082,11 @@ var _ = Describe("E26.2: Cross-CRD Cascading Status Updates", func() {
 		DeferCleanup(func() { cleanupProtocolE262(protocolName) })
 		setProtocolReadyE262(protocolName, metav1.ConditionTrue, "ProtocolReady", "ready")
 
-		By("creating a PillarBinding")
-		binding := &pillarcsiv1alpha1.PillarBinding{
+		By("creating a PillarStorageClass")
+		binding := &pillarcsiv1alpha1.PillarStorageClass{
 			ObjectMeta: metav1.ObjectMeta{Name: bindingName},
-			Spec: pillarcsiv1alpha1.PillarBindingSpec{
-				PoolRef:     poolName,
+			Spec: pillarcsiv1alpha1.PillarStorageClassSpec{
+				StoreRef:    poolName,
 				ProtocolRef: protocolName,
 			},
 		}
@@ -1104,8 +1104,8 @@ var _ = Describe("E26.2: Cross-CRD Cascading Status Updates", func() {
 		err := k8sClient.Get(bctx, types.NamespacedName{Name: bindingName}, sc)
 		Expect(err).To(HaveOccurred(), "StorageClass should not exist when pool is not ready")
 
-		By("transitioning the PillarPool to Ready=True")
-		setPoolReadyE262(poolName, metav1.ConditionTrue, "PoolReady", "pool now ready")
+		By("transitioning the PillarStore to Ready=True")
+		setPoolReadyE262(poolName, metav1.ConditionTrue, "StoreReady", "pool now ready")
 
 		By("re-reconciling the binding")
 		reconcileBindingE262(bindingName)
@@ -1114,7 +1114,7 @@ var _ = Describe("E26.2: Cross-CRD Cascading Status Updates", func() {
 		Expect(k8sClient.Get(bctx, types.NamespacedName{Name: bindingName}, sc)).To(Succeed(),
 			"StorageClass %q should be created after pool becomes Ready", bindingName)
 
-		fetched := &pillarcsiv1alpha1.PillarBinding{}
+		fetched := &pillarcsiv1alpha1.PillarStorageClass{}
 		Expect(k8sClient.Get(bctx, types.NamespacedName{Name: bindingName}, fetched)).To(Succeed())
 		scCond := apimeta.FindStatusCondition(fetched.Status.Conditions, conditionStorageClassCreated)
 		Expect(scCond).NotTo(BeNil())
@@ -1126,9 +1126,9 @@ var _ = Describe("E26.2: Cross-CRD Cascading Status Updates", func() {
 	})
 
 	// ── E26.2.7 ─────────────────────────────────────────────────────────────
-	// A PillarBinding references a PillarProtocol.
-	// After reconciling the PillarProtocol, status.bindingCount reflects the binding.
-	It("E26.2.7: TestCrossLifecycle_Cascade_ProtocolBindingCount_IncrementOnCreate — binding reference increments protocol BindingCount", func() {
+	// A PillarStorageClass references a PillarProtocol.
+	// After reconciling the PillarProtocol, status.storageClassCount reflects the binding.
+	It("E26.2.7: TestCrossLifecycle_Cascade_ProtocolStorageClassCount_IncrementOnCreate — binding reference increments protocol StorageClassCount", func() {
 		const (
 			poolName     = "e262-pool-for-bindcount"
 			protocolName = "e262-proto-for-bindcount"
@@ -1143,31 +1143,31 @@ var _ = Describe("E26.2: Cross-CRD Cascading Status Updates", func() {
 		Expect(k8sClient.Create(bctx, proto)).To(Succeed())
 		DeferCleanup(func() { cleanupProtocolE262(protocolName) })
 
-		By("reconciling the protocol with no bindings — BindingCount should be 0")
+		By("reconciling the protocol with no bindings — StorageClassCount should be 0")
 		reconcileProtocolE262(protocolName)
 		reconcileProtocolE262(protocolName)
 
 		fetchedProto := &pillarcsiv1alpha1.PillarProtocol{}
 		Expect(k8sClient.Get(bctx, types.NamespacedName{Name: protocolName}, fetchedProto)).To(Succeed())
-		Expect(fetchedProto.Status.BindingCount).To(Equal(int32(0)),
-			"BindingCount should be 0 before any bindings are created")
+		Expect(fetchedProto.Status.StorageClassCount).To(Equal(int32(0)),
+			"StorageClassCount should be 0 before any bindings are created")
 
-		By("creating a PillarPool (needed as binding's poolRef)")
-		pool := &pillarcsiv1alpha1.PillarPool{
+		By("creating a PillarStore (needed as binding's storeRef)")
+		pool := &pillarcsiv1alpha1.PillarStore{
 			ObjectMeta: metav1.ObjectMeta{Name: poolName},
-			Spec: pillarcsiv1alpha1.PillarPoolSpec{
-				TargetRef: "some-target",
-				Backend:   pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeZFSZvol},
+			Spec: pillarcsiv1alpha1.PillarStoreSpec{
+				AgentRef: "some-target",
+				Backend:  pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeZFSZvol},
 			},
 		}
 		Expect(k8sClient.Create(bctx, pool)).To(Succeed())
 		DeferCleanup(func() { cleanupPoolE262(poolName) })
 
-		By("creating a PillarBinding that references the protocol")
-		binding := &pillarcsiv1alpha1.PillarBinding{
+		By("creating a PillarStorageClass that references the protocol")
+		binding := &pillarcsiv1alpha1.PillarStorageClass{
 			ObjectMeta: metav1.ObjectMeta{Name: bindingName},
-			Spec: pillarcsiv1alpha1.PillarBindingSpec{
-				PoolRef:     poolName,
+			Spec: pillarcsiv1alpha1.PillarStorageClassSpec{
+				StoreRef:    poolName,
 				ProtocolRef: protocolName,
 			},
 		}
@@ -1181,7 +1181,7 @@ var _ = Describe("E26.2: Cross-CRD Cascading Status Updates", func() {
 		reconcileProtocolE262(protocolName)
 
 		Expect(k8sClient.Get(bctx, types.NamespacedName{Name: protocolName}, fetchedProto)).To(Succeed())
-		Expect(fetchedProto.Status.BindingCount).To(Equal(int32(1)),
-			"BindingCount should be 1 after a PillarBinding references this protocol")
+		Expect(fetchedProto.Status.StorageClassCount).To(Equal(int32(1)),
+			"StorageClassCount should be 1 after a PillarStorageClass references this protocol")
 	})
 })

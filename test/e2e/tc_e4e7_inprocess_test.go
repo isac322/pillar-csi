@@ -294,11 +294,11 @@ func assertE5_ValidTransitionAfterRecovery(tc documentedCase) {
 	// Simulate recovery by restoring state from CRD
 	pvcName := "pvc-e5-recover"
 	volumeID := "storage-1/nvmeof-tcp/zfs-zvol/tank/" + pvcName
-	pv := &pillarv1.PillarVolume{
+	pv := &pillarv1.PillarVolumeState{
 		ObjectMeta: metav1.ObjectMeta{Name: pvcName},
-		Spec:       pillarv1.PillarVolumeSpec{VolumeID: volumeID},
-		Status: pillarv1.PillarVolumeStatus{
-			Phase: pillarv1.PillarVolumePhaseReady,
+		Spec:       pillarv1.PillarVolumeStateSpec{VolumeID: volumeID},
+		Status: pillarv1.PillarVolumeStateStatus{
+			Phase: pillarv1.PillarVolumeStatePhaseReady,
 			ExportInfo: &pillarv1.VolumeExportInfo{
 				TargetID:  "nqn.test",
 				Address:   "127.0.0.1",
@@ -310,7 +310,7 @@ func assertE5_ValidTransitionAfterRecovery(tc documentedCase) {
 	Expect(env.k8sClient.Create(env.ctx, pv)).To(Succeed())
 	Expect(env.k8sClient.Status().Update(env.ctx, pv)).To(Succeed())
 
-	Expect(env.controller.LoadStateFromPillarVolumes(env.ctx)).To(Succeed())
+	Expect(env.controller.LoadStateFromPillarVolumeStates(env.ctx)).To(Succeed())
 
 	// After recovery, delete should work
 	_, err := env.controller.DeleteVolume(env.ctx, &csiapi.DeleteVolumeRequest{VolumeId: volumeID})
@@ -341,8 +341,8 @@ func assertE6_DeleteVolume_CleansUpCRD(tc documentedCase) {
 	Expect(err).NotTo(HaveOccurred(), "%s: DeleteVolume", tc.tcNodeLabel())
 
 	// CRD should be gone
-	pv := lookupPillarVolume(env, "pvc-e6-cleanup")
-	Expect(pv).To(BeNil(), "%s: PillarVolume CRD should be deleted", tc.tcNodeLabel())
+	pv := lookupPillarVolumeState(env, "pvc-e6-cleanup")
+	Expect(pv).To(BeNil(), "%s: PillarVolumeState CRD should be deleted", tc.tcNodeLabel())
 }
 
 func assertE6_DeleteVolumeOnPartialCreates(tc documentedCase) {
@@ -351,11 +351,11 @@ func assertE6_DeleteVolumeOnPartialCreates(tc documentedCase) {
 
 	pvcName := "pvc-e6-partial-del"
 	volumeID := "storage-1/nvmeof-tcp/zfs-zvol/tank/" + pvcName
-	pv := &pillarv1.PillarVolume{
+	pv := &pillarv1.PillarVolumeState{
 		ObjectMeta: metav1.ObjectMeta{Name: pvcName},
-		Spec:       pillarv1.PillarVolumeSpec{VolumeID: volumeID},
-		Status: pillarv1.PillarVolumeStatus{
-			Phase: pillarv1.PillarVolumePhaseCreatePartial,
+		Spec:       pillarv1.PillarVolumeStateSpec{VolumeID: volumeID},
+		Status: pillarv1.PillarVolumeStateStatus{
+			Phase: pillarv1.PillarVolumeStatePhaseCreatePartial,
 			PartialFailure: &pillarv1.PartialFailureInfo{
 				FailedOperation: "ExportVolume",
 				BackendCreated:  true,
@@ -369,7 +369,7 @@ func assertE6_DeleteVolumeOnPartialCreates(tc documentedCase) {
 	_, err := env.controller.DeleteVolume(env.ctx, &csiapi.DeleteVolumeRequest{VolumeId: volumeID})
 	Expect(err).NotTo(HaveOccurred(), "%s: delete partial-create volume", tc.tcNodeLabel())
 
-	pv2 := &pillarv1.PillarVolume{}
+	pv2 := &pillarv1.PillarVolumeState{}
 	err = env.k8sClient.Get(env.ctx, types.NamespacedName{Name: pvcName}, pv2)
 	Expect(err).To(HaveOccurred(), "%s: CRD should be deleted", tc.tcNodeLabel())
 }
@@ -429,7 +429,7 @@ func assertE6_ZvolNoDup_DeleteRegistry(tc documentedCase) {
 	Expect(err).To(HaveOccurred())
 
 	// Get the volume ID from the CRD
-	pv := &pillarv1.PillarVolume{}
+	pv := &pillarv1.PillarVolumeState{}
 	err = env.k8sClient.Get(env.ctx, types.NamespacedName{Name: "pvc-nodup-del"}, pv)
 	Expect(err).NotTo(HaveOccurred(), "%s: CRD should exist after partial create", tc.tcNodeLabel())
 	volumeID := pv.Spec.VolumeID
@@ -438,7 +438,7 @@ func assertE6_ZvolNoDup_DeleteRegistry(tc documentedCase) {
 	_, err = env.controller.DeleteVolume(env.ctx, &csiapi.DeleteVolumeRequest{VolumeId: volumeID})
 	Expect(err).NotTo(HaveOccurred(), "%s: delete partial volume", tc.tcNodeLabel())
 
-	pv2 := &pillarv1.PillarVolume{}
+	pv2 := &pillarv1.PillarVolumeState{}
 	err = env.k8sClient.Get(env.ctx, types.NamespacedName{Name: "pvc-nodup-del"}, pv2)
 	Expect(err).To(HaveOccurred(), "%s: CRD should be deleted", tc.tcNodeLabel())
 }

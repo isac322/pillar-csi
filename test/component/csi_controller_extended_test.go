@@ -19,11 +19,11 @@ limitations under the License.
 // This file covers sections 4.7 – 4.9 of TESTCASES.md:
 //
 //	4.7 Input Validation Edge Cases
-//	4.8 PillarTarget State Errors
+//	4.8 PillarAgent State Errors
 //	4.9 Partial Failure Recovery and Agent Response Handling
 //
 // Mock fidelity: same as csi_controller_test.go — csiMockAgent with function
-// fields; no network I/O; fake k8s client for PillarTarget/PillarVolume CRDs.
+// fields; no network I/O; fake k8s client for PillarAgent/PillarVolumeState CRDs.
 package component_test
 
 import (
@@ -49,7 +49,7 @@ import (
 // ─────────────────────────────────────────────────────────────────────────────.
 
 // newCSIControllerTestEnvNoResolvedAddr creates a ControllerServer backed by a
-// PillarTarget with an empty ResolvedAddress — simulating a target whose agent
+// PillarAgent with an empty ResolvedAddress — simulating a target whose agent
 // pod has not yet registered a reachable address.
 func newCSIControllerTestEnvNoResolvedAddr(t *testing.T) *csiControllerTestEnv {
 	t.Helper()
@@ -59,15 +59,15 @@ func newCSIControllerTestEnvNoResolvedAddr(t *testing.T) *csiControllerTestEnv {
 		t.Fatalf("AddToScheme: %v", err)
 	}
 
-	target := &v1alpha1.PillarTarget{
+	target := &v1alpha1.PillarAgent{
 		ObjectMeta: metav1.ObjectMeta{Name: "storage-node-1"},
-		Status:     v1alpha1.PillarTargetStatus{ResolvedAddress: ""}, // no address
+		Status:     v1alpha1.PillarAgentStatus{ResolvedAddress: ""}, // no address
 	}
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(target).
-		WithStatusSubresource(&v1alpha1.PillarVolume{}, &v1alpha1.PillarTarget{}).
+		WithStatusSubresource(&v1alpha1.PillarVolumeState{}, &v1alpha1.PillarAgent{}).
 		Build()
 
 	agent := &csiMockAgent{}
@@ -80,7 +80,7 @@ func newCSIControllerTestEnvNoResolvedAddr(t *testing.T) *csiControllerTestEnv {
 }
 
 // newCSIControllerTestEnvNoTarget creates a ControllerServer backed by a fake
-// k8s client with no PillarTarget objects — simulating a decommissioned or
+// k8s client with no PillarAgent objects — simulating a decommissioned or
 // misconfigured storage node.
 func newCSIControllerTestEnvNoTarget(t *testing.T) *csiControllerTestEnv {
 	t.Helper()
@@ -92,7 +92,7 @@ func newCSIControllerTestEnvNoTarget(t *testing.T) *csiControllerTestEnv {
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
-		WithStatusSubresource(&v1alpha1.PillarVolume{}, &v1alpha1.PillarTarget{}).
+		WithStatusSubresource(&v1alpha1.PillarVolumeState{}, &v1alpha1.PillarAgent{}).
 		Build()
 
 	agent := &csiMockAgent{}
@@ -342,14 +342,14 @@ func TestCSIController_ExpandVolume_MalformedVolumeID(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Section 4.8 — PillarTarget State Errors
+// Section 4.8 — PillarAgent State Errors
 // ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIController_CreateVolume_TargetNoResolvedAddress verifies that a
-// PillarTarget with an empty ResolvedAddress causes CreateVolume to return
+// PillarAgent with an empty ResolvedAddress causes CreateVolume to return
 // Unavailable (the agent pod has not yet registered its address).
 //
-//	Setup:   PillarTarget seeded with empty Status.ResolvedAddress
+//	Setup:   PillarAgent seeded with empty Status.ResolvedAddress
 //	Expect:  Returns gRPC Unavailable
 func TestCSIController_CreateVolume_TargetNoResolvedAddress(t *testing.T) {
 	t.Parallel()
@@ -361,7 +361,7 @@ func TestCSIController_CreateVolume_TargetNoResolvedAddress(t *testing.T) {
 }
 
 // TestCSIController_DeleteVolume_TargetNotFound verifies that if the
-// PillarTarget cannot be found during DeleteVolume, the controller returns
+// PillarAgent cannot be found during DeleteVolume, the controller returns
 // success — the node has been decommissioned so the volume cannot exist.
 //
 //	Setup:   VolumeID encodes a target name not present in the k8s store
@@ -371,7 +371,7 @@ func TestCSIController_DeleteVolume_TargetNotFound(t *testing.T) {
 	env := newCSIControllerTestEnvNoTarget(t)
 	ctx := context.Background()
 
-	// VolumeID encodes "nonexistent-node" which has no PillarTarget.
+	// VolumeID encodes "nonexistent-node" which has no PillarAgent.
 	volumeID := "nonexistent-node/nvmeof-tcp/zfs-zvol/tank/pvc-test"
 	_, err := env.srv.DeleteVolume(ctx, &csipb.DeleteVolumeRequest{VolumeId: volumeID})
 	if err != nil {
@@ -383,10 +383,10 @@ func TestCSIController_DeleteVolume_TargetNotFound(t *testing.T) {
 }
 
 // TestCSIController_DeleteVolume_TargetNoResolvedAddress verifies that a
-// PillarTarget with an empty ResolvedAddress causes DeleteVolume to return
+// PillarAgent with an empty ResolvedAddress causes DeleteVolume to return
 // Unavailable (transient state; CO should retry).
 //
-//	Setup:   PillarTarget with empty ResolvedAddress; well-formed volume ID
+//	Setup:   PillarAgent with empty ResolvedAddress; well-formed volume ID
 //	Expect:  Returns gRPC Unavailable
 func TestCSIController_DeleteVolume_TargetNoResolvedAddress(t *testing.T) {
 	t.Parallel()
@@ -400,7 +400,7 @@ func TestCSIController_DeleteVolume_TargetNoResolvedAddress(t *testing.T) {
 }
 
 // TestCSIController_ControllerPublishVolume_TargetNotFound verifies that a
-// missing PillarTarget on ControllerPublishVolume returns NotFound.
+// missing PillarAgent on ControllerPublishVolume returns NotFound.
 //
 //	Setup:   VolumeID encoding a target name not in the k8s store
 //	Expect:  Returns gRPC NotFound
@@ -417,10 +417,10 @@ func TestCSIController_ControllerPublishVolume_TargetNotFound(t *testing.T) {
 }
 
 // TestCSIController_ControllerPublishVolume_TargetNoResolvedAddress verifies
-// that a PillarTarget with empty ResolvedAddress on ControllerPublishVolume
+// that a PillarAgent with empty ResolvedAddress on ControllerPublishVolume
 // returns Unavailable.
 //
-//	Setup:   PillarTarget with empty ResolvedAddress; valid VolumeID and NodeID
+//	Setup:   PillarAgent with empty ResolvedAddress; valid VolumeID and NodeID
 //	Expect:  Returns gRPC Unavailable
 func TestCSIController_ControllerPublishVolume_TargetNoResolvedAddress(t *testing.T) {
 	t.Parallel()
@@ -432,7 +432,7 @@ func TestCSIController_ControllerPublishVolume_TargetNoResolvedAddress(t *testin
 }
 
 // TestCSIController_ExpandVolume_TargetNotFound verifies that a missing
-// PillarTarget on ControllerExpandVolume returns NotFound.
+// PillarAgent on ControllerExpandVolume returns NotFound.
 //
 //	Setup:   VolumeID encoding non-existent target
 //	Expect:  Returns gRPC NotFound
@@ -449,10 +449,10 @@ func TestCSIController_ExpandVolume_TargetNotFound(t *testing.T) {
 }
 
 // TestCSIController_ExpandVolume_TargetNoResolvedAddress verifies that a
-// PillarTarget with empty ResolvedAddress on ControllerExpandVolume returns
+// PillarAgent with empty ResolvedAddress on ControllerExpandVolume returns
 // Unavailable.
 //
-//	Setup:   PillarTarget with empty ResolvedAddress; valid VolumeID
+//	Setup:   PillarAgent with empty ResolvedAddress; valid VolumeID
 //	Expect:  Returns gRPC Unavailable
 func TestCSIController_ExpandVolume_TargetNoResolvedAddress(t *testing.T) {
 	t.Parallel()
@@ -472,11 +472,11 @@ func TestCSIController_ExpandVolume_TargetNoResolvedAddress(t *testing.T) {
 
 // TestCSIController_CreateVolume_ExportFails_RecordsCreatePartial verifies
 // that when the backend CreateVolume succeeds but ExportVolume fails, the
-// controller returns an error AND persists the PillarVolume CRD in
+// controller returns an error AND persists the PillarVolumeState CRD in
 // CreatePartial phase for subsequent retry recovery.
 //
 //	Setup:   Mock agent: CreateVolume→OK; ExportVolume→gRPC Internal
-//	Expect:  Returns gRPC Internal; PillarVolume CRD found in k8s with
+//	Expect:  Returns gRPC Internal; PillarVolumeState CRD found in k8s with
 //	         CreatePartial phase
 func TestCSIController_CreateVolume_ExportFails_RecordsCreatePartial(t *testing.T) {
 	t.Parallel()
@@ -486,14 +486,14 @@ func TestCSIController_CreateVolume_ExportFails_RecordsCreatePartial(t *testing.
 		t.Fatalf("AddToScheme: %v", err)
 	}
 
-	target := &v1alpha1.PillarTarget{
+	target := &v1alpha1.PillarAgent{
 		ObjectMeta: metav1.ObjectMeta{Name: "storage-node-1"},
-		Status:     v1alpha1.PillarTargetStatus{ResolvedAddress: "192.168.1.10:9500"},
+		Status:     v1alpha1.PillarAgentStatus{ResolvedAddress: "192.168.1.10:9500"},
 	}
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(target).
-		WithStatusSubresource(&v1alpha1.PillarVolume{}, &v1alpha1.PillarTarget{}).
+		WithStatusSubresource(&v1alpha1.PillarVolumeState{}, &v1alpha1.PillarAgent{}).
 		Build()
 
 	agent := &csiMockAgent{
@@ -512,16 +512,16 @@ func TestCSIController_CreateVolume_ExportFails_RecordsCreatePartial(t *testing.
 	}
 	requireNonOKGRPC(t, err)
 
-	// Verify the PillarVolume CRD was persisted in the k8s store.
-	pv := &v1alpha1.PillarVolume{}
+	// Verify the PillarVolumeState CRD was persisted in the k8s store.
+	pv := &v1alpha1.PillarVolumeState{}
 	if getErr := fakeClient.Get(context.Background(),
 		types.NamespacedName{Name: "pvc-component-test"}, pv); getErr != nil {
-		t.Fatalf("PillarVolume not found in k8s store: %v (expected CreatePartial CRD to be persisted)", getErr)
+		t.Fatalf("PillarVolumeState not found in k8s store: %v (expected CreatePartial CRD to be persisted)", getErr)
 	}
 	// The CRD must reflect the CreatePartial phase.
-	if pv.Status.Phase != v1alpha1.PillarVolumePhaseCreatePartial {
-		t.Errorf("PillarVolume.Status.Phase = %q, want %q",
-			pv.Status.Phase, v1alpha1.PillarVolumePhaseCreatePartial)
+	if pv.Status.Phase != v1alpha1.PillarVolumeStatePhaseCreatePartial {
+		t.Errorf("PillarVolumeState.Status.Phase = %q, want %q",
+			pv.Status.Phase, v1alpha1.PillarVolumeStatePhaseCreatePartial)
 	}
 }
 

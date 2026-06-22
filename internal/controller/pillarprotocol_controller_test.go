@@ -110,17 +110,17 @@ var _ = Describe("PillarProtocol Controller", func() {
 		return apimeta.FindStatusCondition(protocol.Status.Conditions, condType)
 	}
 
-	// createPool creates a PillarPool that references pprTargetName.
+	// createPool creates a PillarStore that references pprTargetName.
 	createPool := func() {
-		pool := &pillarcsiv1alpha1.PillarPool{}
+		pool := &pillarcsiv1alpha1.PillarStore{}
 		err := k8sClient.Get(pctx, types.NamespacedName{Name: pprPoolName}, pool)
 		if err != nil && errors.IsNotFound(err) {
-			obj := &pillarcsiv1alpha1.PillarPool{
+			obj := &pillarcsiv1alpha1.PillarStore{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: pprPoolName,
 				},
-				Spec: pillarcsiv1alpha1.PillarPoolSpec{
-					TargetRef: pprTargetName,
+				Spec: pillarcsiv1alpha1.PillarStoreSpec{
+					AgentRef: pprTargetName,
 					Backend: pillarcsiv1alpha1.BackendSpec{
 						Type: pillarcsiv1alpha1.BackendTypeZFSZvol,
 					},
@@ -130,27 +130,27 @@ var _ = Describe("PillarProtocol Controller", func() {
 		}
 	}
 
-	// deletePool removes any finalizer and deletes the PillarPool.
+	// deletePool removes any finalizer and deletes the PillarStore.
 	deletePool := func() {
-		resource := &pillarcsiv1alpha1.PillarPool{}
+		resource := &pillarcsiv1alpha1.PillarStore{}
 		if err := k8sClient.Get(pctx, types.NamespacedName{Name: pprPoolName}, resource); err == nil {
-			controllerutil.RemoveFinalizer(resource, pillarPoolFinalizer)
+			controllerutil.RemoveFinalizer(resource, pillarStoreFinalizer)
 			Expect(k8sClient.Update(pctx, resource)).To(Succeed())
 			Expect(k8sClient.Delete(pctx, resource)).To(Succeed())
 		}
 	}
 
-	// createBinding creates a PillarBinding with PoolRef=pprPoolName and ProtocolRef=pprProtocolName.
+	// createBinding creates a PillarStorageClass with StoreRef=pprPoolName and ProtocolRef=pprProtocolName.
 	createBinding := func() {
-		binding := &pillarcsiv1alpha1.PillarBinding{}
+		binding := &pillarcsiv1alpha1.PillarStorageClass{}
 		err := k8sClient.Get(pctx, types.NamespacedName{Name: pprBindingName}, binding)
 		if err != nil && errors.IsNotFound(err) {
-			obj := &pillarcsiv1alpha1.PillarBinding{
+			obj := &pillarcsiv1alpha1.PillarStorageClass{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: pprBindingName,
 				},
-				Spec: pillarcsiv1alpha1.PillarBindingSpec{
-					PoolRef:     pprPoolName,
+				Spec: pillarcsiv1alpha1.PillarStorageClassSpec{
+					StoreRef:    pprPoolName,
 					ProtocolRef: pprProtocolName,
 				},
 			}
@@ -158,11 +158,11 @@ var _ = Describe("PillarProtocol Controller", func() {
 		}
 	}
 
-	// deleteBinding removes any finalizer and deletes the PillarBinding.
+	// deleteBinding removes any finalizer and deletes the PillarStorageClass.
 	deleteBinding := func() {
-		resource := &pillarcsiv1alpha1.PillarBinding{}
+		resource := &pillarcsiv1alpha1.PillarStorageClass{}
 		if err := k8sClient.Get(pctx, types.NamespacedName{Name: pprBindingName}, resource); err == nil {
-			controllerutil.RemoveFinalizer(resource, pillarBindingFinalizer)
+			controllerutil.RemoveFinalizer(resource, pillarStorageClassFinalizer)
 			Expect(k8sClient.Update(pctx, resource)).To(Succeed())
 			Expect(k8sClient.Delete(pctx, resource)).To(Succeed())
 		}
@@ -244,20 +244,20 @@ var _ = Describe("PillarProtocol Controller", func() {
 			Expect(cond.Reason).To(Equal("ProtocolConfigured"))
 		})
 
-		It("should set BindingCount=0 when no bindings reference this protocol", func() {
+		It("should set StorageClassCount=0 when no bindings reference this protocol", func() {
 			_, err := doReconcile()
 			Expect(err).NotTo(HaveOccurred())
 
 			fetched := fetchProtocol()
-			Expect(fetched.Status.BindingCount).To(Equal(int32(0)))
+			Expect(fetched.Status.StorageClassCount).To(Equal(int32(0)))
 		})
 
-		It("should set ActiveTargets to empty when no bindings reference this protocol", func() {
+		It("should set ActiveAgents to empty when no bindings reference this protocol", func() {
 			_, err := doReconcile()
 			Expect(err).NotTo(HaveOccurred())
 
 			fetched := fetchProtocol()
-			Expect(fetched.Status.ActiveTargets).To(BeEmpty())
+			Expect(fetched.Status.ActiveAgents).To(BeEmpty())
 		})
 
 		It("should not requeue when the protocol is correctly configured", func() {
@@ -278,7 +278,7 @@ var _ = Describe("PillarProtocol Controller", func() {
 	})
 
 	// =========================================================================
-	Context("Normal reconciliation — with a referencing PillarBinding and PillarPool", func() {
+	Context("Normal reconciliation — with a referencing PillarStorageClass and PillarStore", func() {
 		BeforeEach(func() {
 			createProtocol()
 			// First reconcile adds finalizer.
@@ -295,20 +295,20 @@ var _ = Describe("PillarProtocol Controller", func() {
 			deleteProtocol()
 		})
 
-		It("should set BindingCount=1 when one binding references this protocol", func() {
+		It("should set StorageClassCount=1 when one binding references this protocol", func() {
 			_, err := doReconcile()
 			Expect(err).NotTo(HaveOccurred())
 
 			fetched := fetchProtocol()
-			Expect(fetched.Status.BindingCount).To(Equal(int32(1)))
+			Expect(fetched.Status.StorageClassCount).To(Equal(int32(1)))
 		})
 
-		It("should populate ActiveTargets from the pool's targetRef", func() {
+		It("should populate ActiveAgents from the pool's agentRef", func() {
 			_, err := doReconcile()
 			Expect(err).NotTo(HaveOccurred())
 
 			fetched := fetchProtocol()
-			Expect(fetched.Status.ActiveTargets).To(ContainElement(pprTargetName))
+			Expect(fetched.Status.ActiveAgents).To(ContainElement(pprTargetName))
 		})
 
 		It("should set Ready=True even when bindings exist", func() {
@@ -351,7 +351,7 @@ var _ = Describe("PillarProtocol Controller", func() {
 	})
 
 	// =========================================================================
-	Context("ActiveTargets — pool referenced by binding does not exist (graceful skip)", func() {
+	Context("ActiveAgents — pool referenced by binding does not exist (graceful skip)", func() {
 		BeforeEach(func() {
 			createProtocol()
 			_, err := doReconcile()
@@ -371,15 +371,15 @@ var _ = Describe("PillarProtocol Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			fetched := fetchProtocol()
-			Expect(fetched.Status.BindingCount).To(Equal(int32(1)))
+			Expect(fetched.Status.StorageClassCount).To(Equal(int32(1)))
 		})
 
-		It("should leave ActiveTargets empty when the referenced pool does not exist", func() {
+		It("should leave ActiveAgents empty when the referenced pool does not exist", func() {
 			_, err := doReconcile()
 			Expect(err).NotTo(HaveOccurred())
 
 			fetched := fetchProtocol()
-			Expect(fetched.Status.ActiveTargets).To(BeEmpty())
+			Expect(fetched.Status.ActiveAgents).To(BeEmpty())
 		})
 
 		It("should still set Ready=True when pool is not found (graceful degradation)", func() {
@@ -394,7 +394,7 @@ var _ = Describe("PillarProtocol Controller", func() {
 	})
 
 	// =========================================================================
-	Context("BindingCount decrements when a binding is removed", func() {
+	Context("StorageClassCount decrements when a binding is removed", func() {
 		BeforeEach(func() {
 			createProtocol()
 			_, err := doReconcile()
@@ -413,29 +413,29 @@ var _ = Describe("PillarProtocol Controller", func() {
 			deleteProtocol()
 		})
 
-		It("should decrement BindingCount to 0 after the binding is deleted", func() {
+		It("should decrement StorageClassCount to 0 after the binding is deleted", func() {
 			deleteBinding()
 
 			_, err := doReconcile()
 			Expect(err).NotTo(HaveOccurred())
 
 			fetched := fetchProtocol()
-			Expect(fetched.Status.BindingCount).To(Equal(int32(0)))
+			Expect(fetched.Status.StorageClassCount).To(Equal(int32(0)))
 		})
 
-		It("should clear ActiveTargets after the binding is deleted", func() {
+		It("should clear ActiveAgents after the binding is deleted", func() {
 			deleteBinding()
 
 			_, err := doReconcile()
 			Expect(err).NotTo(HaveOccurred())
 
 			fetched := fetchProtocol()
-			Expect(fetched.Status.ActiveTargets).To(BeEmpty())
+			Expect(fetched.Status.ActiveAgents).To(BeEmpty())
 		})
 	})
 
 	// =========================================================================
-	Context("Deletion — no blocking PillarBindings", func() {
+	Context("Deletion — no blocking PillarStorageClasss", func() {
 		BeforeEach(func() {
 			createProtocol()
 			// First reconcile adds finalizer.
@@ -469,7 +469,7 @@ var _ = Describe("PillarProtocol Controller", func() {
 	})
 
 	// =========================================================================
-	Context("Deletion — blocked by a referencing PillarBinding", func() {
+	Context("Deletion — blocked by a referencing PillarStorageClass", func() {
 		BeforeEach(func() {
 			createProtocol()
 			// First reconcile adds finalizer.
@@ -526,13 +526,13 @@ var _ = Describe("PillarProtocol Controller", func() {
 				"finalizer should remain while bindings are blocking")
 		})
 
-		It("should update BindingCount to reflect the number of blocking bindings", func() {
+		It("should update StorageClassCount to reflect the number of blocking bindings", func() {
 			_, err := doReconcile()
 			Expect(err).NotTo(HaveOccurred())
 
 			fetched := fetchProtocol()
-			Expect(fetched.Status.BindingCount).To(Equal(int32(1)),
-				"BindingCount should equal the number of blocking bindings")
+			Expect(fetched.Status.StorageClassCount).To(Equal(int32(1)),
+				"StorageClassCount should equal the number of blocking bindings")
 		})
 
 		It("should remove the finalizer once the blocking binding is deleted", func() {
@@ -560,23 +560,23 @@ var _ = Describe("PillarProtocol Controller", func() {
 
 	// =========================================================================
 	// E23.6.6 — TestPillarProtocolController_DeletionBlocked_MultipleBindingsAllNamed
-	Context("Deletion — blocked by multiple referencing PillarBindings", func() {
+	Context("Deletion — blocked by multiple referencing PillarStorageClasss", func() {
 		const (
 			pprBindingNameA = "ppr-binding-a"
 			pprBindingNameB = "ppr-binding-b"
 		)
 
-		// createBindingNamed creates a PillarBinding with an explicit name.
+		// createBindingNamed creates a PillarStorageClass with an explicit name.
 		createBindingNamed := func(name string) {
-			binding := &pillarcsiv1alpha1.PillarBinding{}
+			binding := &pillarcsiv1alpha1.PillarStorageClass{}
 			err := k8sClient.Get(pctx, types.NamespacedName{Name: name}, binding)
 			if err != nil && errors.IsNotFound(err) {
-				obj := &pillarcsiv1alpha1.PillarBinding{
+				obj := &pillarcsiv1alpha1.PillarStorageClass{
 					ObjectMeta: metav1.ObjectMeta{
 						Name: name,
 					},
-					Spec: pillarcsiv1alpha1.PillarBindingSpec{
-						PoolRef:     pprPoolName,
+					Spec: pillarcsiv1alpha1.PillarStorageClassSpec{
+						StoreRef:    pprPoolName,
 						ProtocolRef: pprProtocolName,
 					},
 				}
@@ -584,11 +584,11 @@ var _ = Describe("PillarProtocol Controller", func() {
 			}
 		}
 
-		// deleteBindingNamed removes any finalizer and deletes a named PillarBinding.
+		// deleteBindingNamed removes any finalizer and deletes a named PillarStorageClass.
 		deleteBindingNamed := func(name string) {
-			resource := &pillarcsiv1alpha1.PillarBinding{}
+			resource := &pillarcsiv1alpha1.PillarStorageClass{}
 			if err := k8sClient.Get(pctx, types.NamespacedName{Name: name}, resource); err == nil {
-				controllerutil.RemoveFinalizer(resource, pillarBindingFinalizer)
+				controllerutil.RemoveFinalizer(resource, pillarStorageClassFinalizer)
 				Expect(k8sClient.Update(pctx, resource)).To(Succeed())
 				Expect(k8sClient.Delete(pctx, resource)).To(Succeed())
 			}
@@ -633,35 +633,35 @@ var _ = Describe("PillarProtocol Controller", func() {
 				"DeletionBlocked message should name binding-b")
 		})
 
-		It("should set BindingCount to the total number of blocking bindings", func() {
+		It("should set StorageClassCount to the total number of blocking bindings", func() {
 			_, err := doReconcile()
 			Expect(err).NotTo(HaveOccurred())
 
 			fetched := fetchProtocol()
-			Expect(fetched.Status.BindingCount).To(Equal(int32(2)),
-				"BindingCount should reflect all blocking bindings")
+			Expect(fetched.Status.StorageClassCount).To(Equal(int32(2)),
+				"StorageClassCount should reflect all blocking bindings")
 		})
 	})
 
 	// =========================================================================
-	// E23.5.4 — TestPillarProtocolController_ActiveTargets_DeduplicatedSorted
-	Context("ActiveTargets — deduplicated when multiple bindings share the same pool", func() {
+	// E23.5.4 — TestPillarProtocolController_ActiveAgents_DeduplicatedSorted
+	Context("ActiveAgents — deduplicated when multiple bindings share the same pool", func() {
 		const (
 			pprBindingNameC = "ppr-binding-c"
 			pprBindingNameD = "ppr-binding-d"
 		)
 
-		// createBindingWithPool creates a PillarBinding referencing pprPoolName and pprProtocolName.
+		// createBindingWithPool creates a PillarStorageClass referencing pprPoolName and pprProtocolName.
 		createBindingWithPool := func(name string) {
-			binding := &pillarcsiv1alpha1.PillarBinding{}
+			binding := &pillarcsiv1alpha1.PillarStorageClass{}
 			err := k8sClient.Get(pctx, types.NamespacedName{Name: name}, binding)
 			if err != nil && errors.IsNotFound(err) {
-				obj := &pillarcsiv1alpha1.PillarBinding{
+				obj := &pillarcsiv1alpha1.PillarStorageClass{
 					ObjectMeta: metav1.ObjectMeta{
 						Name: name,
 					},
-					Spec: pillarcsiv1alpha1.PillarBindingSpec{
-						PoolRef:     pprPoolName,
+					Spec: pillarcsiv1alpha1.PillarStorageClassSpec{
+						StoreRef:    pprPoolName,
 						ProtocolRef: pprProtocolName,
 					},
 				}
@@ -670,9 +670,9 @@ var _ = Describe("PillarProtocol Controller", func() {
 		}
 
 		deleteBindingByName := func(name string) {
-			resource := &pillarcsiv1alpha1.PillarBinding{}
+			resource := &pillarcsiv1alpha1.PillarStorageClass{}
 			if err := k8sClient.Get(pctx, types.NamespacedName{Name: name}, resource); err == nil {
-				controllerutil.RemoveFinalizer(resource, pillarBindingFinalizer)
+				controllerutil.RemoveFinalizer(resource, pillarStorageClassFinalizer)
 				Expect(k8sClient.Update(pctx, resource)).To(Succeed())
 				Expect(k8sClient.Delete(pctx, resource)).To(Succeed())
 			}
@@ -696,19 +696,19 @@ var _ = Describe("PillarProtocol Controller", func() {
 			deleteProtocol()
 		})
 
-		It("should deduplicate ActiveTargets when two bindings point to the same pool", func() {
+		It("should deduplicate ActiveAgents when two bindings point to the same pool", func() {
 			_, err := doReconcile()
 			Expect(err).NotTo(HaveOccurred())
 
 			fetched := fetchProtocol()
-			Expect(fetched.Status.BindingCount).To(Equal(int32(2)),
-				"BindingCount should count both bindings")
-			// Even though two bindings reference the same pool (same targetRef="ppr-target"),
-			// ActiveTargets should contain only one entry (deduplicated).
-			Expect(fetched.Status.ActiveTargets).To(HaveLen(1),
-				"ActiveTargets should be deduplicated — one target even with two bindings")
-			Expect(fetched.Status.ActiveTargets[0]).To(Equal(pprTargetName),
-				"ActiveTargets should contain the pool's targetRef value")
+			Expect(fetched.Status.StorageClassCount).To(Equal(int32(2)),
+				"StorageClassCount should count both bindings")
+			// Even though two bindings reference the same pool (same agentRef="ppr-target"),
+			// ActiveAgents should contain only one entry (deduplicated).
+			Expect(fetched.Status.ActiveAgents).To(HaveLen(1),
+				"ActiveAgents should be deduplicated — one target even with two bindings")
+			Expect(fetched.Status.ActiveAgents[0]).To(Equal(pprTargetName),
+				"ActiveAgents should contain the pool's agentRef value")
 		})
 	})
 })

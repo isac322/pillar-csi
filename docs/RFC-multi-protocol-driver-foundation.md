@@ -32,7 +32,7 @@
 
 - **Agent proto 정의** (`agent.proto`): `ProtocolType` enum, `ExportParams` oneof,
   `AllowInitiator`/`DenyInitiator` RPC가 protocol-agnostic하게 설계됨.
-- **CRD 정의** (`PillarProtocol`, `PillarBinding`): discriminated union 패턴
+- **CRD 정의** (`PillarProtocol`, `PillarStorageClass`): discriminated union 패턴
   (`nvmeofTcp`/`iscsi`/`nfs`)으로 protocol별 config를 분리.
 - **Volume ID 라우팅**: `<target>/<protocol>/<backend>/<vol-id>` 포맷이
   모든 CSI 호출에서 protocol type과 backend type을 모두 포함.
@@ -183,7 +183,7 @@ NFS identity 특수성:
 - IP는 노드 재시작이나 네트워크 재구성 시 변경될 수 있다.
 - `CSINode` annotation에 IP를 정적 저장하는 대신, controller가 `ControllerPublishVolume`
   시점에 `Node.status.addresses`에서 직접 읽는 것이 더 정확할 수 있다.
-- 또는 `PillarTarget.status.resolvedAddress`와 동일한 패턴으로 노드 IP를 resolve.
+- 또는 `PillarAgent.status.resolvedAddress`와 동일한 패턴으로 노드 IP를 resolve.
 - 이 결정은 NFS PRD 시점에 확정하되, CSINode annotation 스키마에 NFS IP key를
   **예약만** 해둔다.
 
@@ -228,7 +228,7 @@ Annotation write race:
 
 - controller는 protocol type을 `VolumeId` 포맷에만 의존해 해석하지 않는다.
 - protocol type의 authoritative source는 volume control-plane state
-  (`PillarVolume` 또는 `volume_context`)여야 한다.
+  (`PillarVolumeState` 또는 `volume_context`)여야 한다.
 - `node_id`로 `CSINode`를 찾는다.
 - protocol type에 맞는 identity key를 `CSINode` annotation에서 읽는다.
 - 읽은 값을 `AllowInitiator` / `DenyInitiator`에 넘긴다.
@@ -650,7 +650,7 @@ CRD의 `ProtocolType` enum(`pillarprotocol_types.go:25`)에 `smb`가 누락되�
 Phase 3c에서 다음을 추가한다:
 - `ProtocolType`에 `smb` 추가.
 - `SMBConfig` struct 추가 (share naming convention, authentication mode 등).
-- `PillarBinding.Overrides.Protocol`에 `SMB *SMBOverrides` 추가.
+- `PillarStorageClass.Overrides.Protocol`에 `SMB *SMBOverrides` 추가.
 
 ### 5.10 backend↔protocol 경계와 VolumeMode
 
@@ -699,8 +699,8 @@ agent에 올바른 access type을 전달한다.
 
 현재 backend↔protocol 호환성 검증이 두 곳에 중복된다:
 
-1. `pillarbinding_webhook.go:265-268` — admission webhook
-2. `pillarbinding_controller.go:440-473` — reconciler
+1. `pillarstorageclass_webhook.go:265-268` — admission webhook
+2. `pillarstorageclass_controller.go:440-473` — reconciler
 
 호환성 매트릭스를 한 곳에 정의하고 양쪽이 참조해야 한다:
 

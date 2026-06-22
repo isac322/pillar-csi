@@ -31,7 +31,7 @@ rules:
       - get
       - list
       - watch
-  # Core: PVC access (controller watches PVCs to reconcile PillarBinding lifecycle)
+  # Core: PVC access (controller watches PVCs to reconcile PillarStorageClass lifecycle)
   - apiGroups:
       - ""
     resources:
@@ -42,12 +42,12 @@ rules:
       - watch
   # pillar-csi CRDs: full management of pillar resources
   - apiGroups:
-      - pillar-csi.pillar-csi.bhyoo.com
+      - pillar-csi.bhyoo.com
     resources:
-      - pillarbindings
-      - pillarpools
+      - pillarstorageclasses
+      - pillarstores
       - pillarprotocols
-      - pillartargets
+      - pillaragents
     verbs:
       - create
       - delete
@@ -58,22 +58,22 @@ rules:
       - watch
   # pillar-csi CRDs: finalizer management
   - apiGroups:
-      - pillar-csi.pillar-csi.bhyoo.com
+      - pillar-csi.bhyoo.com
     resources:
-      - pillarbindings/finalizers
-      - pillarpools/finalizers
+      - pillarstorageclasses/finalizers
+      - pillarstores/finalizers
       - pillarprotocols/finalizers
-      - pillartargets/finalizers
+      - pillaragents/finalizers
     verbs:
       - update
   # pillar-csi CRDs: status subresource management
   - apiGroups:
-      - pillar-csi.pillar-csi.bhyoo.com
+      - pillar-csi.bhyoo.com
     resources:
-      - pillarbindings/status
-      - pillarpools/status
+      - pillarstorageclasses/status
+      - pillarstores/status
       - pillarprotocols/status
-      - pillartargets/status
+      - pillaragents/status
     verbs:
       - get
       - patch
@@ -173,11 +173,11 @@ rules:
       - get
       - list
       - watch
-  # PillarVolume CRD for durable CSI state tracking
+  # PillarVolumeState CRD for durable CSI state tracking
   - apiGroups:
-      - pillar-csi.pillar-csi.bhyoo.com
+      - pillar-csi.bhyoo.com
     resources:
-      - pillarvolumes
+      - pillarvolumestatestates
     verbs:
       - create
       - delete
@@ -187,10 +187,10 @@ rules:
       - update
       - watch
   - apiGroups:
-      - pillar-csi.pillar-csi.bhyoo.com
+      - pillar-csi.bhyoo.com
     resources:
-      - pillarvolumes/status
-      - pillarvolumes/finalizers
+      - pillarvolumestatestates/status
+      - pillarvolumestatestates/finalizers
     verbs:
       - get
       - patch

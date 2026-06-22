@@ -284,8 +284,8 @@ node:
 
 # ─── pillar-agent ────────────────────────────────────────────────────────────
 # Kubernetes DaemonSet: gRPC agent on storage nodes.
-# Scheduled only on nodes labelled pillar-csi.bhyoo.com/storage-node=true
-# (the controller manages this label automatically via PillarTarget CRs).
+# Scheduled only on nodes labelled pillar-csi.bhyoo.com/agent-node=true
+# (the controller manages this label automatically via PillarAgent CRs).
 # hostNetwork defaults to true so that nvmet_tcp listeners and `nvme connect`
 # TCP sockets are created in the host network namespace.  Disabling this
 # breaks the NVMe-oF/iSCSI data plane in every clustered deployment; see
@@ -344,11 +344,11 @@ agent:
       memory: 64Mi
 
   # -- Node selector applied to agent DaemonSet Pods.
-  # The controller automatically adds pillar-csi.bhyoo.com/storage-node=true
-  # to nodes referenced by PillarTarget CRs; this selector ensures the agent
+  # The controller automatically adds pillar-csi.bhyoo.com/agent-node=true
+  # to nodes referenced by PillarAgent CRs; this selector ensures the agent
   # runs only on those nodes.
   nodeSelector:
-    pillar-csi.bhyoo.com/storage-node: "true"
+    pillar-csi.bhyoo.com/agent-node: "true"
 
   # -- Tolerations applied to agent DaemonSet Pods.
   tolerations: []
@@ -378,7 +378,7 @@ agent:
 
   # Init container that runs modprobe for target kernel modules (best-effort).
   # Pod startup is NOT blocked if modprobe fails — failed modules are excluded
-  # from agent capabilities and reflected in PillarTarget status conditions.
+  # from agent capabilities and reflected in PillarAgent status conditions.
   initModprobe:
     image:
       # -- Image used for the modprobe init container (needs kmod/modprobe binary).

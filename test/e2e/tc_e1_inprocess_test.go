@@ -78,13 +78,13 @@ func assertE1_CreateVolume_MissingParams(tc documentedCase) {
 		"%s: expected InvalidArgument, got %v", tc.tcNodeLabel(), status.Code(err))
 }
 
-func assertE1_CreateVolume_PillarTargetNotFound(tc documentedCase) {
+func assertE1_CreateVolume_PillarAgentNotFound(tc documentedCase) {
 	env := newControllerTestEnv()
 	defer env.close()
 
 	params := map[string]string{
-		"pillar-csi.bhyoo.com/target":        "ghost-node",
-		"pillar-csi.bhyoo.com/pool":          "tank",
+		"pillar-csi.bhyoo.com/agent":         "ghost-node",
+		"pillar-csi.bhyoo.com/store":         "tank",
 		"pillar-csi.bhyoo.com/backend-type":  "zfs-zvol",
 		"pillar-csi.bhyoo.com/protocol-type": "nvmeof-tcp",
 	}
@@ -479,17 +479,17 @@ func assertE1_Capacity_ExistingTooSmall(tc documentedCase) {
 	env := newControllerTestEnv()
 	defer env.close()
 
-	// Pre-create a PillarVolume CRD with capacity=10MiB and phase=Ready
+	// Pre-create a PillarVolumeState CRD with capacity=10MiB and phase=Ready
 	pvcName := "pvc-cap-toosmall"
 	volumeID := "storage-1/nvmeof-tcp/zfs-zvol/tank/" + pvcName
-	pv := &pillarv1.PillarVolume{
+	pv := &pillarv1.PillarVolumeState{
 		ObjectMeta: metav1.ObjectMeta{Name: pvcName},
-		Spec: pillarv1.PillarVolumeSpec{
+		Spec: pillarv1.PillarVolumeStateSpec{
 			VolumeID:      volumeID,
 			CapacityBytes: 10 << 20,
 		},
-		Status: pillarv1.PillarVolumeStatus{
-			Phase: pillarv1.PillarVolumePhaseReady,
+		Status: pillarv1.PillarVolumeStateStatus{
+			Phase: pillarv1.PillarVolumeStatePhaseReady,
 			ExportInfo: &pillarv1.VolumeExportInfo{
 				TargetID:  "nqn.test",
 				Address:   "127.0.0.1",
@@ -518,14 +518,14 @@ func assertE1_Capacity_ExistingTooLarge(tc documentedCase) {
 
 	pvcName := "pvc-cap-toolarge"
 	volumeID := "storage-1/nvmeof-tcp/zfs-zvol/tank/" + pvcName
-	pv := &pillarv1.PillarVolume{
+	pv := &pillarv1.PillarVolumeState{
 		ObjectMeta: metav1.ObjectMeta{Name: pvcName},
-		Spec: pillarv1.PillarVolumeSpec{
+		Spec: pillarv1.PillarVolumeStateSpec{
 			VolumeID:      volumeID,
 			CapacityBytes: 40 << 20,
 		},
-		Status: pillarv1.PillarVolumeStatus{
-			Phase: pillarv1.PillarVolumePhaseReady,
+		Status: pillarv1.PillarVolumeStateStatus{
+			Phase: pillarv1.PillarVolumeStatePhaseReady,
 			ExportInfo: &pillarv1.VolumeExportInfo{
 				TargetID:  "nqn.test",
 				Address:   "127.0.0.1",
@@ -554,14 +554,14 @@ func assertE1_Capacity_ExistingWithinRange(tc documentedCase) {
 
 	pvcName := "pvc-cap-withinrange"
 	volumeID := "storage-1/nvmeof-tcp/zfs-zvol/tank/" + pvcName
-	pv := &pillarv1.PillarVolume{
+	pv := &pillarv1.PillarVolumeState{
 		ObjectMeta: metav1.ObjectMeta{Name: pvcName},
-		Spec: pillarv1.PillarVolumeSpec{
+		Spec: pillarv1.PillarVolumeStateSpec{
 			VolumeID:      volumeID,
 			CapacityBytes: 20 << 20,
 		},
-		Status: pillarv1.PillarVolumeStatus{
-			Phase: pillarv1.PillarVolumePhaseReady,
+		Status: pillarv1.PillarVolumeStateStatus{
+			Phase: pillarv1.PillarVolumeStatePhaseReady,
 			ExportInfo: &pillarv1.VolumeExportInfo{
 				TargetID:  "nqn.test",
 				Address:   "127.0.0.1",
@@ -585,23 +585,23 @@ func assertE1_Capacity_ExistingWithinRange(tc documentedCase) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// E1.8: PillarTarget state and agent connectivity
+// E1.8: PillarAgent state and agent connectivity
 // ─────────────────────────────────────────────────────────────────────────────
 
-func assertE1_CreateVolume_PillarTargetEmptyAddress(tc documentedCase) {
+func assertE1_CreateVolume_PillarAgentEmptyAddress(tc documentedCase) {
 	// Build fresh env with empty address target
 	scheme := runtime.NewScheme()
 	Expect(pillarv1.AddToScheme(scheme)).To(Succeed())
 	Expect(corev1.AddToScheme(scheme)).To(Succeed())
 	Expect(storagev1.AddToScheme(scheme)).To(Succeed())
 
-	target := &pillarv1.PillarTarget{
+	target := &pillarv1.PillarAgent{
 		ObjectMeta: metav1.ObjectMeta{Name: "storage-empty-addr"},
-		Status:     pillarv1.PillarTargetStatus{ResolvedAddress: ""},
+		Status:     pillarv1.PillarAgentStatus{ResolvedAddress: ""},
 	}
 	k8sClient := clientfake.NewClientBuilder().
 		WithScheme(scheme).
-		WithStatusSubresource(&pillarv1.PillarTarget{}, &pillarv1.PillarVolume{}).
+		WithStatusSubresource(&pillarv1.PillarAgent{}, &pillarv1.PillarVolumeState{}).
 		WithObjects(target).
 		Build()
 
@@ -614,8 +614,8 @@ func assertE1_CreateVolume_PillarTargetEmptyAddress(tc documentedCase) {
 	)
 
 	params := map[string]string{
-		"pillar-csi.bhyoo.com/target":        "storage-empty-addr",
-		"pillar-csi.bhyoo.com/pool":          "tank",
+		"pillar-csi.bhyoo.com/agent":         "storage-empty-addr",
+		"pillar-csi.bhyoo.com/store":         "tank",
 		"pillar-csi.bhyoo.com/backend-type":  "zfs-zvol",
 		"pillar-csi.bhyoo.com/protocol-type": "nvmeof-tcp",
 	}
@@ -634,13 +634,13 @@ func assertE1_CreateVolume_AgentDialFails(tc documentedCase) {
 	Expect(corev1.AddToScheme(scheme)).To(Succeed())
 	Expect(storagev1.AddToScheme(scheme)).To(Succeed())
 
-	target := &pillarv1.PillarTarget{
+	target := &pillarv1.PillarAgent{
 		ObjectMeta: metav1.ObjectMeta{Name: "storage-dial-fail"},
-		Status:     pillarv1.PillarTargetStatus{ResolvedAddress: "127.0.0.1:19999"},
+		Status:     pillarv1.PillarAgentStatus{ResolvedAddress: "127.0.0.1:19999"},
 	}
 	k8sClient := clientfake.NewClientBuilder().
 		WithScheme(scheme).
-		WithStatusSubresource(&pillarv1.PillarTarget{}, &pillarv1.PillarVolume{}).
+		WithStatusSubresource(&pillarv1.PillarAgent{}, &pillarv1.PillarVolumeState{}).
 		WithObjects(target).
 		Build()
 
@@ -653,8 +653,8 @@ func assertE1_CreateVolume_AgentDialFails(tc documentedCase) {
 	)
 
 	params := map[string]string{
-		"pillar-csi.bhyoo.com/target":        "storage-dial-fail",
-		"pillar-csi.bhyoo.com/pool":          "tank",
+		"pillar-csi.bhyoo.com/agent":         "storage-dial-fail",
+		"pillar-csi.bhyoo.com/store":         "tank",
 		"pillar-csi.bhyoo.com/backend-type":  "zfs-zvol",
 		"pillar-csi.bhyoo.com/protocol-type": "nvmeof-tcp",
 	}
@@ -699,13 +699,13 @@ func assertE1_PartialFailure_ExportRetrySkipsBackend(tc documentedCase) {
 	devicePath := "/dev/zvol/tank/" + pvcName
 
 	// Pre-create CRD in CreatePartial state
-	pv := &pillarv1.PillarVolume{
+	pv := &pillarv1.PillarVolumeState{
 		ObjectMeta: metav1.ObjectMeta{Name: pvcName},
-		Spec: pillarv1.PillarVolumeSpec{
+		Spec: pillarv1.PillarVolumeStateSpec{
 			VolumeID: volumeID,
 		},
-		Status: pillarv1.PillarVolumeStatus{
-			Phase:             pillarv1.PillarVolumePhaseCreatePartial,
+		Status: pillarv1.PillarVolumeStateStatus{
+			Phase:             pillarv1.PillarVolumeStatePhaseCreatePartial,
 			BackendDevicePath: devicePath,
 			PartialFailure: &pillarv1.PartialFailureInfo{
 				FailedOperation: "ExportVolume",
@@ -796,13 +796,13 @@ func assertE1_PartialFailure_LoadStateFromCRD(tc documentedCase) {
 	pvcName := "pvc-load-state"
 	volumeID := "storage-1/nvmeof-tcp/zfs-zvol/tank/" + pvcName
 
-	pv := &pillarv1.PillarVolume{
+	pv := &pillarv1.PillarVolumeState{
 		ObjectMeta: metav1.ObjectMeta{Name: pvcName},
-		Spec: pillarv1.PillarVolumeSpec{
+		Spec: pillarv1.PillarVolumeStateSpec{
 			VolumeID: volumeID,
 		},
-		Status: pillarv1.PillarVolumeStatus{
-			Phase:             pillarv1.PillarVolumePhaseCreatePartial,
+		Status: pillarv1.PillarVolumeStateStatus{
+			Phase:             pillarv1.PillarVolumeStatePhaseCreatePartial,
 			BackendDevicePath: "/dev/zvol/tank/" + pvcName,
 			PartialFailure: &pillarv1.PartialFailureInfo{
 				FailedOperation: "ExportVolume",
@@ -813,8 +813,8 @@ func assertE1_PartialFailure_LoadStateFromCRD(tc documentedCase) {
 	Expect(env.k8sClient.Create(env.ctx, pv)).To(Succeed())
 	Expect(env.k8sClient.Status().Update(env.ctx, pv)).To(Succeed())
 
-	err := env.controller.LoadStateFromPillarVolumes(env.ctx)
-	Expect(err).NotTo(HaveOccurred(), "%s: LoadStateFromPillarVolumes", tc.tcNodeLabel())
+	err := env.controller.LoadStateFromPillarVolumeStates(env.ctx)
+	Expect(err).NotTo(HaveOccurred(), "%s: LoadStateFromPillarVolumeStates", tc.tcNodeLabel())
 
 	// After load, SM should be in CreatePartial — CreateVolume retry skips backend
 	resp, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
@@ -880,7 +880,7 @@ func assertE1_PVCAnnotation_StructuralFieldBlocked(tc documentedCase) {
 			Name:      "pvc-annot-blocked",
 			Namespace: "default",
 			Annotations: map[string]string{
-				"pillar-csi.bhyoo.com/backend-override": `{"pillar-csi.bhyoo.com/pool":"overridden-pool"}`,
+				"pillar-csi.bhyoo.com/backend-override": `{"pillar-csi.bhyoo.com/store":"overridden-pool"}`,
 			},
 		},
 		Spec: corev1.PersistentVolumeClaimSpec{},
@@ -1004,7 +1004,7 @@ func assertE1_CreateVolume_MissingTargetParam(tc documentedCase) {
 	env := newControllerTestEnv()
 	defer env.close()
 	params := copyParams(env.params)
-	delete(params, "pillar-csi.bhyoo.com/target")
+	delete(params, "pillar-csi.bhyoo.com/agent")
 	_, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
 		Name:               "pvc-missing-target",
 		Parameters:         params,
@@ -1056,9 +1056,9 @@ func copyParams(m map[string]string) map[string]string {
 
 func strPtr(s string) *string { return &s }
 
-// lookupPillarVolume returns the PillarVolume CRD by name, or nil if not found.
-func lookupPillarVolume(env *controllerTestEnv, name string) *pillarv1.PillarVolume {
-	pv := &pillarv1.PillarVolume{}
+// lookupPillarVolumeState returns the PillarVolumeState CRD by name, or nil if not found.
+func lookupPillarVolumeState(env *controllerTestEnv, name string) *pillarv1.PillarVolumeState {
+	pv := &pillarv1.PillarVolumeState{}
 	err := env.k8sClient.Get(env.ctx, types.NamespacedName{Name: name}, pv)
 	if err != nil {
 		return nil

@@ -29,7 +29,7 @@ First-time configuration (cluster-scoped CRs)
 1. Declare a storage target on each storage node:
 
    apiVersion: pillar-csi.bhyoo.com/v1alpha1
-   kind: PillarTarget
+   kind: PillarAgent
    metadata:
      name: <storage-node-name>
    spec:
@@ -43,8 +43,8 @@ First-time configuration (cluster-scoped CRs)
 
 3. Watch readiness:
 
-   kubectl get pillartarget,pillarpool,pillarprotocol,pillarbinding
-   kubectl describe pillartarget <name>   # AgentConnected + Ready conditions
+   kubectl get pillaragent,pillarstore,pillarprotocol,pillarstorageclass
+   kubectl describe pillaragent <name>   # AgentConnected + Ready conditions
 
 {{- $mtls := default (dict) .Values.mtls }}
 {{- if $mtls.enabled }}

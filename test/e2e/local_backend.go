@@ -277,9 +277,9 @@ func verifyControllerLocalBackend() error {
 		return fmt.Errorf("register storagev1 scheme: %w", err)
 	}
 
-	target := &pillarv1.PillarTarget{
+	target := &pillarv1.PillarAgent{
 		ObjectMeta: metav1.ObjectMeta{Name: "target-local"},
-		Status: pillarv1.PillarTargetStatus{
+		Status: pillarv1.PillarAgentStatus{
 			ResolvedAddress: "passthrough:///bufnet",
 		},
 	}
@@ -296,7 +296,7 @@ func verifyControllerLocalBackend() error {
 
 	k8sClient := clientfake.NewClientBuilder().
 		WithScheme(scheme).
-		WithStatusSubresource(&pillarv1.PillarTarget{}, &pillarv1.PillarVolume{}).
+		WithStatusSubresource(&pillarv1.PillarAgent{}, &pillarv1.PillarVolumeState{}).
 		WithObjects(target, csiNode).
 		Build()
 
@@ -354,8 +354,8 @@ func verifyControllerLocalBackend() error {
 	)
 
 	params := map[string]string{
-		"pillar-csi.bhyoo.com/target":        target.Name,
-		"pillar-csi.bhyoo.com/pool":          "tank",
+		"pillar-csi.bhyoo.com/agent":         target.Name,
+		"pillar-csi.bhyoo.com/store":         "tank",
 		"pillar-csi.bhyoo.com/backend-type":  "zfs-zvol",
 		"pillar-csi.bhyoo.com/protocol-type": "nvmeof-tcp",
 	}
@@ -402,8 +402,8 @@ func verifyControllerLocalBackend() error {
 
 	capResp, err := controller.GetCapacity(ctx, &csiapi.GetCapacityRequest{
 		Parameters: map[string]string{
-			"pillar-csi.bhyoo.com/target":       target.Name,
-			"pillar-csi.bhyoo.com/pool":         "tank",
+			"pillar-csi.bhyoo.com/agent":        target.Name,
+			"pillar-csi.bhyoo.com/store":        "tank",
 			"pillar-csi.bhyoo.com/backend-type": "zfs-zvol",
 		},
 	})
@@ -743,10 +743,10 @@ func verifyMTLSLocalBackend() error {
 func verifyCRDLocalContracts() error {
 	repoRoot := filepath.Dir(filepath.Dir(docCatalogPath()))
 	requiredCRDs := []string{
-		filepath.Join(repoRoot, "config", "crd", "bases", "pillar-csi.pillar-csi.bhyoo.com_pillartargets.yaml"),
-		filepath.Join(repoRoot, "config", "crd", "bases", "pillar-csi.pillar-csi.bhyoo.com_pillarpools.yaml"),
-		filepath.Join(repoRoot, "config", "crd", "bases", "pillar-csi.pillar-csi.bhyoo.com_pillarprotocols.yaml"),
-		filepath.Join(repoRoot, "config", "crd", "bases", "pillar-csi.pillar-csi.bhyoo.com_pillarbindings.yaml"),
+		filepath.Join(repoRoot, "config", "crd", "bases", "pillar-csi.bhyoo.com_pillaragents.yaml"),
+		filepath.Join(repoRoot, "config", "crd", "bases", "pillar-csi.bhyoo.com_pillarstores.yaml"),
+		filepath.Join(repoRoot, "config", "crd", "bases", "pillar-csi.bhyoo.com_pillarprotocols.yaml"),
+		filepath.Join(repoRoot, "config", "crd", "bases", "pillar-csi.bhyoo.com_pillarstorageclasses.yaml"),
 	}
 	for _, path := range requiredCRDs {
 		content, err := os.ReadFile(path)
@@ -754,22 +754,22 @@ func verifyCRDLocalContracts() error {
 			return fmt.Errorf("read CRD %s: %w", path, err)
 		}
 		text := string(content)
-		for _, needle := range []string{"openAPIV3Schema", "shortNames", "pillar-csi.pillar-csi.bhyoo.com"} {
+		for _, needle := range []string{"openAPIV3Schema", "shortNames", "pillar-csi.bhyoo.com"} {
 			if !strings.Contains(text, needle) {
 				return fmt.Errorf("CRD %s missing %q", path, needle)
 			}
 		}
 	}
 
-	targetValidator := &webhookv1alpha1.PillarTargetCustomValidator{}
+	targetValidator := &webhookv1alpha1.PillarAgentCustomValidator{}
 	_, err := targetValidator.ValidateUpdate(context.Background(),
-		&pillarv1.PillarTarget{
-			Spec: pillarv1.PillarTargetSpec{
+		&pillarv1.PillarAgent{
+			Spec: pillarv1.PillarAgentSpec{
 				NodeRef: &pillarv1.NodeRefSpec{Name: "node-a"},
 			},
 		},
-		&pillarv1.PillarTarget{
-			Spec: pillarv1.PillarTargetSpec{
+		&pillarv1.PillarAgent{
+			Spec: pillarv1.PillarAgentSpec{
 				NodeRef: &pillarv1.NodeRefSpec{Name: "node-b"},
 			},
 		},
@@ -778,18 +778,18 @@ func verifyCRDLocalContracts() error {
 		return errors.New("pillar target validator accepted immutable nodeRef change")
 	}
 
-	poolValidator := &webhookv1alpha1.PillarPoolCustomValidator{}
+	poolValidator := &webhookv1alpha1.PillarStoreCustomValidator{}
 	_, err = poolValidator.ValidateUpdate(context.Background(),
-		&pillarv1.PillarPool{
-			Spec: pillarv1.PillarPoolSpec{
-				TargetRef: "target-a",
-				Backend:   pillarv1.BackendSpec{Type: pillarv1.BackendTypeZFSZvol},
+		&pillarv1.PillarStore{
+			Spec: pillarv1.PillarStoreSpec{
+				AgentRef: "target-a",
+				Backend:  pillarv1.BackendSpec{Type: pillarv1.BackendTypeZFSZvol},
 			},
 		},
-		&pillarv1.PillarPool{
-			Spec: pillarv1.PillarPoolSpec{
-				TargetRef: "target-a",
-				Backend:   pillarv1.BackendSpec{Type: pillarv1.BackendTypeLVMLV},
+		&pillarv1.PillarStore{
+			Spec: pillarv1.PillarStoreSpec{
+				AgentRef: "target-a",
+				Backend:  pillarv1.BackendSpec{Type: pillarv1.BackendTypeLVMLV},
 			},
 		},
 	)
@@ -817,10 +817,10 @@ func verifyCRDLocalContracts() error {
 		return fmt.Errorf("register storagev1 scheme for CRD verifier: %w", err)
 	}
 
-	lvmPool := &pillarv1.PillarPool{
+	lvmPool := &pillarv1.PillarStore{
 		ObjectMeta: metav1.ObjectMeta{Name: "pool-lvm"},
-		Spec: pillarv1.PillarPoolSpec{
-			TargetRef: "target-a",
+		Spec: pillarv1.PillarStoreSpec{
+			AgentRef: "target-a",
 			Backend: pillarv1.BackendSpec{
 				Type: pillarv1.BackendTypeLVMLV,
 				LVM: &pillarv1.LVMBackendConfig{
@@ -843,11 +843,11 @@ func verifyCRDLocalContracts() error {
 		WithObjects(lvmPool, nfsProtocol).
 		Build()
 
-	defaulter := &webhookv1alpha1.PillarBindingCustomDefaulter{Client: fakeClient}
-	binding := &pillarv1.PillarBinding{
+	defaulter := &webhookv1alpha1.PillarStorageClassCustomDefaulter{Client: fakeClient}
+	binding := &pillarv1.PillarStorageClass{
 		ObjectMeta: metav1.ObjectMeta{Name: "binding-local"},
-		Spec: pillarv1.PillarBindingSpec{
-			PoolRef:     lvmPool.Name,
+		Spec: pillarv1.PillarStorageClassSpec{
+			StoreRef:    lvmPool.Name,
 			ProtocolRef: nfsProtocol.Name,
 		},
 	}
@@ -858,7 +858,7 @@ func verifyCRDLocalContracts() error {
 		return errors.New("pillar binding defaulter did not derive allowVolumeExpansion=true for lvm pool")
 	}
 
-	bindingValidator := &webhookv1alpha1.PillarBindingCustomValidator{Client: fakeClient}
+	bindingValidator := &webhookv1alpha1.PillarStorageClassCustomValidator{Client: fakeClient}
 	_, err = bindingValidator.ValidateCreate(context.Background(), binding)
 	if err == nil {
 		return errors.New("pillar binding validator accepted incompatible lvm+nfs combination")

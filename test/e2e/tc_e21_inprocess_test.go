@@ -14,7 +14,7 @@ func assertE21_MissingPool(tc documentedCase) {
 	defer env.close()
 
 	params := map[string]string{
-		"pillar-csi.bhyoo.com/target": env.target.Name,
+		"pillar-csi.bhyoo.com/agent": env.target.Name,
 		// pool intentionally omitted
 		"pillar-csi.bhyoo.com/backend-type":  "zfs-zvol",
 		"pillar-csi.bhyoo.com/protocol-type": "nvmeof-tcp",
@@ -35,7 +35,7 @@ func assertE21_MissingTarget(tc documentedCase) {
 
 	params := map[string]string{
 		// target intentionally omitted
-		"pillar-csi.bhyoo.com/pool":          "tank",
+		"pillar-csi.bhyoo.com/store":         "tank",
 		"pillar-csi.bhyoo.com/backend-type":  "zfs-zvol",
 		"pillar-csi.bhyoo.com/protocol-type": "nvmeof-tcp",
 	}
@@ -54,8 +54,8 @@ func assertE21_MissingProtocol(tc documentedCase) {
 	defer env.close()
 
 	params := map[string]string{
-		"pillar-csi.bhyoo.com/target":       env.target.Name,
-		"pillar-csi.bhyoo.com/pool":         "tank",
+		"pillar-csi.bhyoo.com/agent":        env.target.Name,
+		"pillar-csi.bhyoo.com/store":        "tank",
 		"pillar-csi.bhyoo.com/backend-type": "zfs-zvol",
 		// protocol-type intentionally omitted
 	}
@@ -74,8 +74,8 @@ func assertE21_InvalidBackendType(tc documentedCase) {
 	defer env.close()
 
 	params := map[string]string{
-		"pillar-csi.bhyoo.com/target":        env.target.Name,
-		"pillar-csi.bhyoo.com/pool":          "tank",
+		"pillar-csi.bhyoo.com/agent":         env.target.Name,
+		"pillar-csi.bhyoo.com/store":         "tank",
 		"pillar-csi.bhyoo.com/backend-type":  "invalid-backend-xyz",
 		"pillar-csi.bhyoo.com/protocol-type": "nvmeof-tcp",
 	}

@@ -166,11 +166,11 @@ func TestHealthCheck_Structured_NvmetConfigfsAbsent(t *testing.T) {
 	}
 }
 
-// TestHealthCheck_Structured_PoolCapacityFailure verifies the structured field
+// TestHealthCheck_Structured_StoreCapacityFailure verifies the structured field
 // values when at least one pool's backend.Capacity() call returns an error:
 //   - pool/tank: Healthy=false, Name="pool/tank", Message non-empty
 //   - top-level Healthy flag: false
-func TestHealthCheck_Structured_PoolCapacityFailure(t *testing.T) {
+func TestHealthCheck_Structured_StoreCapacityFailure(t *testing.T) {
 	t.Parallel()
 
 	mb := &mockBackend{

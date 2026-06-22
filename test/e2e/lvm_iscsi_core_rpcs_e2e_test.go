@@ -115,9 +115,9 @@ var _ = Describe("E34: LVM Kind 클러스터 E2E — 실제 LVM VG + iSCSI",
 			})
 
 			// ── TC-E34.318 ────────────────────────────────────────────────────
-			It("[TC-E34.318] PillarBinding generates an iSCSI StorageClass with protocol-type=iscsi and timer parameters", func() {
+			It("[TC-E34.318] PillarStorageClass generates an iSCSI StorageClass with protocol-type=iscsi and timer parameters", func() {
 				if iscsiSCName == "" {
-					Fail("[TC-E34.318] MISSING PREREQUISITE: no iSCSI StorageClass found — PillarBinding with iSCSI protocol not configured")
+					Fail("[TC-E34.318] MISSING PREREQUISITE: no iSCSI StorageClass found — PillarStorageClass with iSCSI protocol not configured")
 				}
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer cancel()

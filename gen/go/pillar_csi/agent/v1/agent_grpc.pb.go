@@ -87,11 +87,11 @@ const (
 // error.
 type AgentServiceClient interface {
 	// GetCapabilities returns the backend types and network protocols that this
-	// agent supports.  Called during PillarTarget reconciliation to populate
+	// agent supports.  Called during PillarAgent reconciliation to populate
 	// status.capabilities and status.discoveredPools.
 	GetCapabilities(ctx context.Context, in *GetCapabilitiesRequest, opts ...grpc.CallOption) (*GetCapabilitiesResponse, error)
 	// GetCapacity returns the current storage capacity of a specific pool.
-	// Used to populate PillarPool.status.capacity.
+	// Used to populate PillarStore.status.capacity.
 	GetCapacity(ctx context.Context, in *GetCapacityRequest, opts ...grpc.CallOption) (*GetCapacityResponse, error)
 	// ListVolumes returns all volumes (backend resources) currently known by the
 	// agent for a given pool.  Used for drift detection and recovery push.
@@ -102,7 +102,7 @@ type AgentServiceClient interface {
 	// HealthCheck returns the liveness and readiness status of the agent process
 	// and its subsystems (ZFS kernel module, NVMe-oF configfs, etc.).
 	// The controller uses this RPC to gate reconciliation and update
-	// PillarTarget.status.conditions.
+	// PillarAgent.status.conditions.
 	HealthCheck(ctx context.Context, in *HealthCheckRequest, opts ...grpc.CallOption) (*HealthCheckResponse, error)
 	// CreateVolume creates the backend storage resource (e.g. ZFS zvol, LVM LV)
 	// on the storage node.  This is the first step in the CreateVolume flow.
@@ -386,11 +386,11 @@ func (c *agentServiceClient) Drain(ctx context.Context, in *DrainRequest, opts .
 // error.
 type AgentServiceServer interface {
 	// GetCapabilities returns the backend types and network protocols that this
-	// agent supports.  Called during PillarTarget reconciliation to populate
+	// agent supports.  Called during PillarAgent reconciliation to populate
 	// status.capabilities and status.discoveredPools.
 	GetCapabilities(context.Context, *GetCapabilitiesRequest) (*GetCapabilitiesResponse, error)
 	// GetCapacity returns the current storage capacity of a specific pool.
-	// Used to populate PillarPool.status.capacity.
+	// Used to populate PillarStore.status.capacity.
 	GetCapacity(context.Context, *GetCapacityRequest) (*GetCapacityResponse, error)
 	// ListVolumes returns all volumes (backend resources) currently known by the
 	// agent for a given pool.  Used for drift detection and recovery push.
@@ -401,7 +401,7 @@ type AgentServiceServer interface {
 	// HealthCheck returns the liveness and readiness status of the agent process
 	// and its subsystems (ZFS kernel module, NVMe-oF configfs, etc.).
 	// The controller uses this RPC to gate reconciliation and update
-	// PillarTarget.status.conditions.
+	// PillarAgent.status.conditions.
 	HealthCheck(context.Context, *HealthCheckRequest) (*HealthCheckResponse, error)
 	// CreateVolume creates the backend storage resource (e.g. ZFS zvol, LVM LV)
 	// on the storage node.  This is the first step in the CreateVolume flow.

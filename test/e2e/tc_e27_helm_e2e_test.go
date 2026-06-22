@@ -91,7 +91,7 @@ const (
 	// csiDriverName is the expected CSI driver provisioner name.
 	csiDriverName = "pillar-csi.bhyoo.com"
 	// crdGroup is the CRD API group prefix used in CRD FQDNs.
-	crdGroup = "pillar-csi.pillar-csi.bhyoo.com"
+	crdGroup = "pillar-csi.bhyoo.com"
 )
 
 // e27KubectlOutput runs kubectl with the suite kubeconfig and returns trimmed stdout.
@@ -491,10 +491,10 @@ var _ = Describe("E27: Helm 차트 설치 및 릴리스 검증", Label("helm", "
 	Describe("E27.5 CRD 등록 및 가용성 검증", func() {
 
 		crdNames := []string{
-			"pillartargets." + crdGroup,
-			"pillarpools." + crdGroup,
+			"pillaragents." + crdGroup,
+			"pillarstores." + crdGroup,
 			"pillarprotocols." + crdGroup,
-			"pillarbindings." + crdGroup,
+			"pillarstorageclasses." + crdGroup,
 		}
 
 		// E27.5.1 — CRD 4종 일괄
@@ -523,26 +523,26 @@ var _ = Describe("E27: Helm 차트 설치 및 릴리스 검증", Label("helm", "
 					"[TC-E27.217] all CRDs must be Established within 50s")
 		})
 
-		It("[TC-E27.217a] CRD Established PillarTarget", func() {
+		It("[TC-E27.217a] CRD Established PillarAgent", func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			out, err := e27KubectlOutput(ctx,
-				"get", "crd", "pillartargets."+crdGroup,
+				"get", "crd", "pillaragents."+crdGroup,
 				"-o", "jsonpath={.status.conditions[?(@.type==\"Established\")].status}",
 			)
-			Expect(err).NotTo(HaveOccurred(), "[TC-E27.217a] PillarTarget CRD must exist")
-			Expect(out).To(Equal("True"), "[TC-E27.217a] PillarTarget CRD must be Established")
+			Expect(err).NotTo(HaveOccurred(), "[TC-E27.217a] PillarAgent CRD must exist")
+			Expect(out).To(Equal("True"), "[TC-E27.217a] PillarAgent CRD must be Established")
 		})
 
-		It("[TC-E27.217b] CRD Established PillarPool", func() {
+		It("[TC-E27.217b] CRD Established PillarStore", func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			out, err := e27KubectlOutput(ctx,
-				"get", "crd", "pillarpools."+crdGroup,
+				"get", "crd", "pillarstores."+crdGroup,
 				"-o", "jsonpath={.status.conditions[?(@.type==\"Established\")].status}",
 			)
-			Expect(err).NotTo(HaveOccurred(), "[TC-E27.217b] PillarPool CRD must exist")
-			Expect(out).To(Equal("True"), "[TC-E27.217b] PillarPool CRD must be Established")
+			Expect(err).NotTo(HaveOccurred(), "[TC-E27.217b] PillarStore CRD must exist")
+			Expect(out).To(Equal("True"), "[TC-E27.217b] PillarStore CRD must be Established")
 		})
 
 		It("[TC-E27.217c] CRD Established PillarProtocol", func() {
@@ -556,15 +556,15 @@ var _ = Describe("E27: Helm 차트 설치 및 릴리스 검증", Label("helm", "
 			Expect(out).To(Equal("True"), "[TC-E27.217c] PillarProtocol CRD must be Established")
 		})
 
-		It("[TC-E27.217d] CRD Established PillarBinding", func() {
+		It("[TC-E27.217d] CRD Established PillarStorageClass", func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			out, err := e27KubectlOutput(ctx,
-				"get", "crd", "pillarbindings."+crdGroup,
+				"get", "crd", "pillarstorageclasses."+crdGroup,
 				"-o", "jsonpath={.status.conditions[?(@.type==\"Established\")].status}",
 			)
-			Expect(err).NotTo(HaveOccurred(), "[TC-E27.217d] PillarBinding CRD must exist")
-			Expect(out).To(Equal("True"), "[TC-E27.217d] PillarBinding CRD must be Established")
+			Expect(err).NotTo(HaveOccurred(), "[TC-E27.217d] PillarStorageClass CRD must exist")
+			Expect(out).To(Equal("True"), "[TC-E27.217d] PillarStorageClass CRD must be Established")
 		})
 
 		// E27.5.2 — CRD metadata
@@ -578,10 +578,10 @@ var _ = Describe("E27: Helm 차트 설치 및 릴리스 검증", Label("helm", "
 			scope    string
 		}
 		crdMetas := []crdMeta{
-			{"E27.217e", "pillartargets." + crdGroup, "PillarTarget", "pillartargets", "pillartarget", "pt", "Cluster"},
-			{"E27.217f", "pillarpools." + crdGroup, "PillarPool", "pillarpools", "pillarpool", "pp", "Cluster"},
+			{"E27.217e", "pillaragents." + crdGroup, "PillarAgent", "pillaragents", "pillaragent", "pt", "Cluster"},
+			{"E27.217f", "pillarstores." + crdGroup, "PillarStore", "pillarstores", "pillarstore", "pp", "Cluster"},
 			{"E27.217g", "pillarprotocols." + crdGroup, "PillarProtocol", "pillarprotocols", "pillarprotocol", "ppr", "Cluster"},
-			{"E27.217h", "pillarbindings." + crdGroup, "PillarBinding", "pillarbindings", "pillarbinding", "pb", "Cluster"},
+			{"E27.217h", "pillarstorageclasses." + crdGroup, "PillarStorageClass", "pillarstorageclasses", "pillarstorageclass", "pb", "Cluster"},
 		}
 
 		for _, cm := range crdMetas {
@@ -640,7 +640,7 @@ var _ = Describe("E27: Helm 차트 설치 및 릴리스 검증", Label("helm", "
 			)
 			Expect(err).NotTo(HaveOccurred(),
 				"[TC-E27.217i] kubectl api-resources must succeed")
-			for _, name := range []string{"pillartargets", "pillarpools", "pillarprotocols", "pillarbindings"} {
+			for _, name := range []string{"pillaragents", "pillarstores", "pillarprotocols", "pillarstorageclasses"} {
 				Expect(out).To(ContainSubstring(name),
 					"[TC-E27.217i] api-resources must list %s", name)
 			}
@@ -653,10 +653,10 @@ var _ = Describe("E27: Helm 차트 설치 및 릴리스 검증", Label("helm", "
 			short string
 			kind  string
 		}{
-			{"E27.217j", "pt", "PillarTarget"},
-			{"E27.217k", "pp", "PillarPool"},
+			{"E27.217j", "pt", "PillarAgent"},
+			{"E27.217k", "pp", "PillarStore"},
 			{"E27.217l", "ppr", "PillarProtocol"},
-			{"E27.217m", "pb", "PillarBinding"},
+			{"E27.217m", "pb", "PillarStorageClass"},
 		}
 		for _, sc := range shortNameCases {
 			sc := sc
@@ -679,10 +679,10 @@ var _ = Describe("E27: Helm 차트 설치 및 릴리스 검증", Label("helm", "
 			kind   string
 			fields []string
 		}{
-			{"E27.217n", "pillartargets." + crdGroup, "PillarTarget", []string{"external", "nodeRef"}},
-			{"E27.217o", "pillarpools." + crdGroup, "PillarPool", []string{"backend", "targetRef"}},
+			{"E27.217n", "pillaragents." + crdGroup, "PillarAgent", []string{"external", "nodeRef"}},
+			{"E27.217o", "pillarstores." + crdGroup, "PillarStore", []string{"backend", "agentRef"}},
 			{"E27.217p", "pillarprotocols." + crdGroup, "PillarProtocol", []string{"type"}},
-			{"E27.217q", "pillarbindings." + crdGroup, "PillarBinding", []string{"poolRef", "protocolRef"}},
+			{"E27.217q", "pillarstorageclasses." + crdGroup, "PillarStorageClass", []string{"storeRef", "protocolRef"}},
 		}
 
 		for _, st := range schemaTests {
@@ -733,10 +733,10 @@ var _ = Describe("E27: Helm 차트 설치 및 릴리스 검증", Label("helm", "
 			kind    string
 			columns []string
 		}{
-			{"E27.217r", "pillartargets." + crdGroup, "PillarTarget", []string{"Address", "Agent", "Ready", "Age"}},
-			{"E27.217s", "pillarpools." + crdGroup, "PillarPool", []string{"Target", "Backend", "Available", "Ready"}},
+			{"E27.217r", "pillaragents." + crdGroup, "PillarAgent", []string{"Address", "Agent", "Ready", "Age"}},
+			{"E27.217s", "pillarstores." + crdGroup, "PillarStore", []string{"Target", "Backend", "Available", "Ready"}},
 			{"E27.217t", "pillarprotocols." + crdGroup, "PillarProtocol", []string{"Type", "Bindings", "Ready"}},
-			{"E27.217u", "pillarbindings." + crdGroup, "PillarBinding", []string{"Pool", "Protocol", "StorageClass", "Ready"}},
+			{"E27.217u", "pillarstorageclasses." + crdGroup, "PillarStorageClass", []string{"Pool", "Protocol", "StorageClass", "Ready"}},
 		}
 
 		for _, pt := range printerColTests {
@@ -793,14 +793,14 @@ var _ = Describe("E27: Helm 차트 설치 및 릴리스 검증", Label("helm", "
 		Describe("E27.5.7 CRD CRUD 기본 동작", Ordered, func() {
 			samplesDir := e27SamplesDir()
 
-			It("[TC-E27.217w] CRD CRUD PillarTarget 생성조회삭제", func() {
+			It("[TC-E27.217w] CRD CRUD PillarAgent 생성조회삭제", func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 				defer cancel()
 
-				sampleFile := filepath.Join(samplesDir, "pillar-csi_v1alpha1_pillartarget.yaml")
+				sampleFile := filepath.Join(samplesDir, "pillar-csi_v1alpha1_pillaragent.yaml")
 				_, err := e27KubectlOutput(ctx, "apply", "-f", sampleFile)
 				Expect(err).NotTo(HaveOccurred(),
-					"[TC-E27.217w] kubectl apply pillartarget must succeed")
+					"[TC-E27.217w] kubectl apply pillaragent must succeed")
 				// Ensure cleanup even if assertions below fail.
 				DeferCleanup(func() {
 					cleanCtx, cleanCancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -816,17 +816,17 @@ var _ = Describe("E27: Helm 차트 설치 및 릴리스 검증", Label("helm", "
 
 				_, err = e27KubectlOutput(ctx, "delete", "-f", sampleFile)
 				Expect(err).NotTo(HaveOccurred(),
-					"[TC-E27.217w] kubectl delete pillartarget must succeed")
+					"[TC-E27.217w] kubectl delete pillaragent must succeed")
 			})
 
-			It("[TC-E27.217x] CRD CRUD PillarPool 생성조회삭제", func() {
+			It("[TC-E27.217x] CRD CRUD PillarStore 생성조회삭제", func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 				defer cancel()
 
-				sampleFile := filepath.Join(samplesDir, "pillar-csi_v1alpha1_pillarpool.yaml")
+				sampleFile := filepath.Join(samplesDir, "pillar-csi_v1alpha1_pillarstore.yaml")
 				_, err := e27KubectlOutput(ctx, "apply", "-f", sampleFile)
 				Expect(err).NotTo(HaveOccurred(),
-					"[TC-E27.217x] kubectl apply pillarpool must succeed")
+					"[TC-E27.217x] kubectl apply pillarstore must succeed")
 				// Ensure cleanup even if assertions below fail.
 				DeferCleanup(func() {
 					cleanCtx, cleanCancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -842,7 +842,7 @@ var _ = Describe("E27: Helm 차트 설치 및 릴리스 검증", Label("helm", "
 
 				_, err = e27KubectlOutput(ctx, "delete", "-f", sampleFile)
 				Expect(err).NotTo(HaveOccurred(),
-					"[TC-E27.217x] kubectl delete pillarpool must succeed")
+					"[TC-E27.217x] kubectl delete pillarstore must succeed")
 			})
 
 			It("[TC-E27.217y] CRD CRUD PillarProtocol 생성조회삭제", func() {
@@ -871,14 +871,14 @@ var _ = Describe("E27: Helm 차트 설치 및 릴리스 검증", Label("helm", "
 					"[TC-E27.217y] kubectl delete pillarprotocol must succeed")
 			})
 
-			It("[TC-E27.217z] CRD CRUD PillarBinding 생성조회삭제", func() {
+			It("[TC-E27.217z] CRD CRUD PillarStorageClass 생성조회삭제", func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 				defer cancel()
 
-				sampleFile := filepath.Join(samplesDir, "pillar-csi_v1alpha1_pillarbinding.yaml")
+				sampleFile := filepath.Join(samplesDir, "pillar-csi_v1alpha1_pillarstorageclass.yaml")
 				_, err := e27KubectlOutput(ctx, "apply", "-f", sampleFile)
 				Expect(err).NotTo(HaveOccurred(),
-					"[TC-E27.217z] kubectl apply pillarbinding must succeed")
+					"[TC-E27.217z] kubectl apply pillarstorageclass must succeed")
 				// Ensure cleanup even if assertions below fail.
 				DeferCleanup(func() {
 					cleanCtx, cleanCancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -894,7 +894,7 @@ var _ = Describe("E27: Helm 차트 설치 및 릴리스 검증", Label("helm", "
 
 				_, err = e27KubectlOutput(ctx, "delete", "-f", sampleFile)
 				Expect(err).NotTo(HaveOccurred(),
-					"[TC-E27.217z] kubectl delete pillarbinding must succeed")
+					"[TC-E27.217z] kubectl delete pillarstorageclass must succeed")
 			})
 		})
 	})
@@ -1106,7 +1106,7 @@ var _ = Describe("E27: Helm 차트 설치 및 릴리스 검증", Label("helm", "
 			// Apply storage label.
 			_, err = e27KubectlOutput(ctx,
 				"label", "node", nodeName,
-				"pillar-csi.bhyoo.com/storage-node=true",
+				"pillar-csi.bhyoo.com/agent-node=true",
 				"--overwrite",
 			)
 			Expect(err).NotTo(HaveOccurred(), "[TC-E27.229] labeling node must succeed")
@@ -1117,7 +1117,7 @@ var _ = Describe("E27: Helm 차트 설치 및 릴리스 검증", Label("helm", "
 				defer cancel()
 				_, _ = e27KubectlOutput(cleanCtx,
 					"label", "node", nodeName,
-					"pillar-csi.bhyoo.com/storage-node-",
+					"pillar-csi.bhyoo.com/agent-node-",
 				)
 			})
 
@@ -1575,10 +1575,10 @@ var _ = Describe("E27: Helm 차트 설치 및 릴리스 검증", Label("helm", "
 			defer cancel()
 
 			for _, crd := range []string{
-				"pillartargets." + crdGroup,
-				"pillarpools." + crdGroup,
+				"pillaragents." + crdGroup,
+				"pillarstores." + crdGroup,
 				"pillarprotocols." + crdGroup,
-				"pillarbindings." + crdGroup,
+				"pillarstorageclasses." + crdGroup,
 			} {
 				out, err := e27KubectlOutput(ctx,
 					"get", "crd", crd,
@@ -1669,11 +1669,11 @@ var _ = Describe("E27: Helm installCRDs=false 설치 모드", Label("helm", "E27
 		// pre-existing cluster state) so that installCRDs=false doesn't break the chart.
 		// If CRDs are absent, this test suite skips gracefully.
 		_, err := e27KubectlOutput(ctx,
-			"get", "crd", "pillartargets."+crdGroup, "--ignore-not-found",
+			"get", "crd", "pillaragents."+crdGroup, "--ignore-not-found",
 		)
 		if err != nil {
 			Fail("[TC-E27.219] CRDs must be pre-installed for installCRDs=false test: " +
-				"kubectl get crd pillartargets." + crdGroup + " failed: " + err.Error())
+				"kubectl get crd pillaragents." + crdGroup + " failed: " + err.Error())
 		}
 
 		installErr := e27HelmInstall(ctx, noCRDRelease, noCRDNamespace, e27ChartPath(),

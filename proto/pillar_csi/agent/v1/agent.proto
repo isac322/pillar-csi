@@ -58,12 +58,12 @@ service AgentService {
   // ── Discovery ─────────────────────────────────────────────────────────────
 
   // GetCapabilities returns the backend types and network protocols that this
-  // agent supports.  Called during PillarTarget reconciliation to populate
+  // agent supports.  Called during PillarAgent reconciliation to populate
   // status.capabilities and status.discoveredPools.
   rpc GetCapabilities(GetCapabilitiesRequest) returns (GetCapabilitiesResponse);
 
   // GetCapacity returns the current storage capacity of a specific pool.
-  // Used to populate PillarPool.status.capacity.
+  // Used to populate PillarStore.status.capacity.
   rpc GetCapacity(GetCapacityRequest) returns (GetCapacityResponse);
 
   // ListVolumes returns all volumes (backend resources) currently known by the
@@ -77,7 +77,7 @@ service AgentService {
   // HealthCheck returns the liveness and readiness status of the agent process
   // and its subsystems (ZFS kernel module, NVMe-oF configfs, etc.).
   // The controller uses this RPC to gate reconciliation and update
-  // PillarTarget.status.conditions.
+  // PillarAgent.status.conditions.
   rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
 
   // ── Volume backend lifecycle ───────────────────────────────────────────────
@@ -270,7 +270,7 @@ message BackendParams {
 // NvmeofTcpExportParams holds NVMe-oF TCP target configuration.
 message NvmeofTcpExportParams {
   // IP address the NVMe-oF target will listen on.
-  // Resolved by the controller from PillarTarget.spec.nodeRef at runtime.
+  // Resolved by the controller from PillarAgent.spec.nodeRef at runtime.
   string bind_address = 1;
   // TCP port (default: 4420).
   int32 port = 2;
@@ -320,7 +320,7 @@ message ExportInfo {
   //   NFS         → exported path
   //   SMB         → UNC path (\\server\share)
   string target_id = 1;
-  // IP address of the storage node (resolved from PillarTarget).
+  // IP address of the storage node (resolved from PillarAgent).
   string address = 2;
   // Port the protocol target is listening on.
   int32 port = 3;

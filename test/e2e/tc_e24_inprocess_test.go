@@ -420,9 +420,9 @@ func assertE24_PartialFailure_CRDCreatedOnExportFailure(tc documentedCase) {
 	Expect(err).To(HaveOccurred(), "%s: CreateVolume must fail on export error", tc.tcNodeLabel())
 
 	// CRD must be created with Phase=CreatePartial
-	pv := lookupPillarVolume(env, pvcName)
-	Expect(pv).NotTo(BeNil(), "%s: PillarVolume CRD must exist after partial failure", tc.tcNodeLabel())
-	Expect(pv.Status.Phase).To(Equal(pillarv1.PillarVolumePhaseCreatePartial),
+	pv := lookupPillarVolumeState(env, pvcName)
+	Expect(pv).NotTo(BeNil(), "%s: PillarVolumeState CRD must exist after partial failure", tc.tcNodeLabel())
+	Expect(pv.Status.Phase).To(Equal(pillarv1.PillarVolumeStatePhaseCreatePartial),
 		"%s: Phase must be CreatePartial", tc.tcNodeLabel())
 	Expect(pv.Status.PartialFailure).NotTo(BeNil(),
 		"%s: PartialFailure must be set", tc.tcNodeLabel())
@@ -466,9 +466,9 @@ func assertE24_PartialFailure_RetryAdvancesToReady(tc documentedCase) {
 	Expect(err).NotTo(HaveOccurred(), "%s: retry must succeed", tc.tcNodeLabel())
 	Expect(resp.GetVolume().GetVolumeId()).NotTo(BeEmpty(), "%s: VolumeId on retry", tc.tcNodeLabel())
 
-	pv := lookupPillarVolume(env, pvcName)
-	Expect(pv).NotTo(BeNil(), "%s: PillarVolume CRD must exist", tc.tcNodeLabel())
-	Expect(pv.Status.Phase).To(Equal(pillarv1.PillarVolumePhaseReady),
+	pv := lookupPillarVolumeState(env, pvcName)
+	Expect(pv).NotTo(BeNil(), "%s: PillarVolumeState CRD must exist", tc.tcNodeLabel())
+	Expect(pv.Status.Phase).To(Equal(pillarv1.PillarVolumeStatePhaseReady),
 		"%s: Phase must advance to Ready on retry", tc.tcNodeLabel())
 	Expect(pv.Status.ExportInfo).NotTo(BeNil(),
 		"%s: ExportInfo must be filled on success", tc.tcNodeLabel())
@@ -923,9 +923,9 @@ func assertE24_DeleteVolume_AgentDeleteVolumeFailsTransient(tc documentedCase) {
 	_, err = env.controller.DeleteVolume(env.ctx, &csiapi.DeleteVolumeRequest{VolumeId: volumeID})
 	Expect(err).To(HaveOccurred(), "%s: DeleteVolume must fail on transient agent error", tc.tcNodeLabel())
 
-	// PillarVolume CRD should still exist (not cleaned up on failure)
-	pv := lookupPillarVolume(env, "pvc-e24-delete-transient")
-	Expect(pv).NotTo(BeNil(), "%s: PillarVolume CRD must remain after failed delete", tc.tcNodeLabel())
+	// PillarVolumeState CRD should still exist (not cleaned up on failure)
+	pv := lookupPillarVolumeState(env, "pvc-e24-delete-transient")
+	Expect(pv).NotTo(BeNil(), "%s: PillarVolumeState CRD must remain after failed delete", tc.tcNodeLabel())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -977,10 +977,10 @@ func assertE24_DeleteVolume_NonExistentVolume(tc documentedCase) {
 // Helpers used only in E24 assertions
 // ─────────────────────────────────────────────────────────────────────────────
 
-// lookupPillarVolumeByVolumeID finds a PillarVolume CRD by iterating
+// lookupPillarVolumeStateByVolumeID finds a PillarVolumeState CRD by iterating
 // through volumes where the Spec.VolumeID matches.
-func lookupPillarVolumeByVolumeID(env *controllerTestEnv, volumeID string) *pillarv1.PillarVolume {
-	pvList := &pillarv1.PillarVolumeList{}
+func lookupPillarVolumeStateByVolumeID(env *controllerTestEnv, volumeID string) *pillarv1.PillarVolumeState {
+	pvList := &pillarv1.PillarVolumeStateList{}
 	if err := env.k8sClient.List(env.ctx, pvList); err != nil {
 		return nil
 	}
@@ -992,9 +992,9 @@ func lookupPillarVolumeByVolumeID(env *controllerTestEnv, volumeID string) *pill
 	return nil
 }
 
-// pillarVolumeExists returns true if the named PillarVolume CRD exists.
-func pillarVolumeExists(env *controllerTestEnv, name string) bool {
-	pv := &pillarv1.PillarVolume{}
+// pillarVolumeStateExists returns true if the named PillarVolumeState CRD exists.
+func pillarVolumeStateExists(env *controllerTestEnv, name string) bool {
+	pv := &pillarv1.PillarVolumeState{}
 	err := env.k8sClient.Get(env.ctx, types.NamespacedName{Name: name}, pv)
 	return err == nil
 }

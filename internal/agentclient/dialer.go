@@ -17,7 +17,7 @@ limitations under the License.
 // Package agentclient provides a gRPC connection manager for pillar-agent
 // instances.  Controllers use this package to obtain an AgentServiceClient
 // bound to a specific storage node, identified by its resolved address
-// (e.g. "192.168.1.10:9500" from PillarTarget.status.resolvedAddress).
+// (e.g. "192.168.1.10:9500" from PillarAgent.status.resolvedAddress).
 //
 // # Trust boundary
 //
@@ -71,7 +71,7 @@ type Dialer interface {
 	// HealthCheck dials address, calls the agent's HealthCheck RPC, and
 	// returns the response.  It is a convenience wrapper around Dial that
 	// allows callers to verify connectivity and populate
-	// PillarTarget.status.conditions without importing agentv1 directly.
+	// PillarAgent.status.conditions without importing agentv1 directly.
 	HealthCheck(ctx context.Context, address string) (*agentv1.HealthCheckResponse, error)
 
 	// Close releases all cached gRPC connections managed by this Dialer.
@@ -82,12 +82,12 @@ type Dialer interface {
 	// GetCapabilities dials address, calls the agent's GetCapabilities RPC,
 	// and returns the response.  It is a convenience wrapper around Dial that
 	// allows callers to query agent capabilities and populate
-	// PillarTarget.status.capabilities / discoveredPools without importing
+	// PillarAgent.status.capabilities / discoveredPools without importing
 	// agentv1 or the gRPC client directly.
 	GetCapabilities(ctx context.Context, address string) (*agentv1.GetCapabilitiesResponse, error)
 
 	// IsMTLS reports whether connections produced by this Dialer use mutual
-	// TLS authentication.  The PillarTarget controller uses this to populate
+	// TLS authentication.  The PillarAgent controller uses this to populate
 	// the AgentConnected condition reason:
 	//   - true  → reason "Authenticated" (mTLS handshake verified both sides)
 	//   - false → reason "Dialed"        (TCP reachable, no TLS)
@@ -114,7 +114,7 @@ type Manager struct {
 	dialOpts []grpc.DialOption
 	closed   bool
 	// mtls is true when the Manager was constructed with mTLS credentials.
-	// It is reported via IsMTLS() so callers (e.g. the PillarTarget controller)
+	// It is reported via IsMTLS() so callers (e.g. the PillarAgent controller)
 	// can distinguish "Dialed" (plaintext) from "Authenticated" (mTLS) in the
 	// AgentConnected status condition.
 	mtls bool
@@ -145,7 +145,7 @@ func NewManager() *Manager {
 // certificate (PEM).
 // ServerName overrides the TLS server-name used for SAN verification; pass
 // an empty string to derive the server name from the dial target address
-// (typically the agent IP or hostname from PillarTarget.status.resolvedAddress).
+// (typically the agent IP or hostname from PillarAgent.status.resolvedAddress).
 //
 // Returns an error if any file cannot be read or the certificate material
 // cannot be parsed.  On success the returned Manager enforces mutual TLS for
@@ -153,7 +153,7 @@ func NewManager() *Manager {
 // by the same CA will be rejected.
 //
 // The returned Manager reports IsMTLS() == true, which causes the
-// PillarTarget controller to surface reason "Authenticated" in the
+// PillarAgent controller to surface reason "Authenticated" in the
 // AgentConnected status condition on a successful health-check.
 func NewManagerFromFiles(certFile, keyFile, caFile, serverName string) (*Manager, error) {
 	creds, err := tlscreds.LoadClientCredentials(certFile, keyFile, caFile, serverName)
@@ -175,7 +175,7 @@ func NewManagerFromFiles(certFile, keyFile, caFile, serverName string) (*Manager
 // mutual TLS.
 //
 // The returned Manager reports IsMTLS() == true, which causes the
-// PillarTarget controller to surface reason "Authenticated" in the
+// PillarAgent controller to surface reason "Authenticated" in the
 // AgentConnected status condition on a successful health-check.
 func NewManagerWithTLSCredentials(creds credentials.TransportCredentials) *Manager {
 	m := NewManagerWithOptions(grpc.WithTransportCredentials(creds))
@@ -245,7 +245,7 @@ func (m *Manager) Dial(_ context.Context, address string) (agentv1.AgentServiceC
 // HealthCheck dials address, issues a HealthCheck RPC, and returns the
 // response.  On success the caller may inspect the Healthy field and the
 // per-subsystem status list to determine whether the agent is ready to serve
-// requests and to populate PillarTarget.status conditions.
+// requests and to populate PillarAgent.status conditions.
 //
 // Any gRPC transport error (connection refused, timeout, etc.) is returned
 // as-is and can be treated as AgentConnected=False by the caller.
@@ -267,7 +267,7 @@ func (m *Manager) HealthCheck(
 
 // GetCapabilities dials address, issues a GetCapabilities RPC, and returns
 // the response.  The caller may use the result to populate
-// PillarTarget.status.capabilities and .discoveredPools.
+// PillarAgent.status.capabilities and .discoveredPools.
 //
 // Any gRPC transport error (connection refused, timeout, etc.) is returned
 // as-is.  The caller should treat such errors as a non-fatal best-effort
@@ -316,7 +316,7 @@ func (m *Manager) Close() error {
 // or [NewManagerWithTLSCredentials], and false for those created by [NewManager]
 // or [NewManagerWithOptions].
 //
-// The PillarTarget controller uses this to set the AgentConnected condition
+// The PillarAgent controller uses this to set the AgentConnected condition
 // reason: "Authenticated" when mTLS is active, "Dialed" when using plain TCP.
 func (m *Manager) IsMTLS() bool {
 	return m.mtls

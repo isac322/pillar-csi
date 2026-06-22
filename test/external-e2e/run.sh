@@ -4,7 +4,7 @@
 # install.  Prerequisites:
 #
 #   * KUBECONFIG points at a cluster where pillar-csi is already deployed.
-#   * A PillarTarget named in storage-class.yaml exists and its node is healthy.
+#   * A PillarAgent named in storage-class.yaml exists and its node is healthy.
 #   * curl, tar and kubectl are on PATH.
 #
 # Environment overrides:

@@ -18,35 +18,35 @@ limitations under the License.
 
 package controller
 
-// E32: PillarPool/PillarBinding LVM CRD 라이프사이클
+// E32: PillarStore/PillarStorageClass LVM CRD 라이프사이클
 //
 // This file implements envtest integration tests that verify the CRD schema
 // validation, webhook validation, and controller reconcile behavior for the
-// LVM-specific fields of PillarPool and PillarBinding.
+// LVM-specific fields of PillarStore and PillarStorageClass.
 //
-// E32.1 — PillarPool LVM configuration validation (TC IDs 276–280)
+// E32.1 — PillarStore LVM configuration validation (TC IDs 276–280)
 //
-//   - TC-276 TestPillarPool_LVM_ValidLinearConfig:
+//   - TC-276 TestPillarStore_LVM_ValidLinearConfig:
 //     type=lvm-lv + lvm.volumeGroup + lvm.provisioningMode=linear is accepted.
-//   - TC-277 TestPillarPool_LVM_ValidThinConfig:
+//   - TC-277 TestPillarStore_LVM_ValidThinConfig:
 //     type=lvm-lv + lvm.volumeGroup + lvm.thinPool + lvm.provisioningMode=thin is accepted.
-//   - TC-278 TestPillarPool_LVM_MissingVolumeGroup_Rejected:
+//   - TC-278 TestPillarStore_LVM_MissingVolumeGroup_Rejected:
 //     type=lvm-lv with lvm.volumeGroup="" → CRD MinLength=1 violation → HTTP 422.
-//   - TC-279 TestPillarPool_LVM_InvalidProvisioningMode_Rejected:
+//   - TC-279 TestPillarStore_LVM_InvalidProvisioningMode_Rejected:
 //     lvm.provisioningMode="striped" → CRD Enum violation → HTTP 422.
-//   - TC-280 TestPillarPool_LVM_MissingLVMConfig_Rejected:
+//   - TC-280 TestPillarStore_LVM_MissingLVMConfig_Rejected:
 //     type=lvm-lv with backend.lvm=nil → webhook Required field error.
 //
-// E32.2 — PillarBinding LVM override and compatibility (TC IDs 281–284)
+// E32.2 — PillarStorageClass LVM override and compatibility (TC IDs 281–284)
 //
-//   - TC-281 TestPillarBinding_LVM_ValidOverride:
-//     PillarBinding with overrides.backend.lvm.provisioningMode=linear reconciles
+//   - TC-281 TestPillarStorageClass_LVM_ValidOverride:
+//     PillarStorageClass with overrides.backend.lvm.provisioningMode=linear reconciles
 //     to Ready=True and creates a StorageClass with lvm-vg parameter.
-//   - TC-282 TestPillarBinding_LVM_InvalidOverride_Rejected:
+//   - TC-282 TestPillarStorageClass_LVM_InvalidOverride_Rejected:
 //     overrides.backend.lvm.provisioningMode="raid5" → CRD Enum violation → HTTP 422.
-//   - TC-283 TestPillarBinding_LVM_NVMeOFTCP_Compatible:
+//   - TC-283 TestPillarStorageClass_LVM_NVMeOFTCP_Compatible:
 //     lvm-lv backend + nvmeof-tcp protocol → Compatible=True after reconcile.
-//   - TC-284 TestPillarBinding_LVM_NFS_Incompatible:
+//   - TC-284 TestPillarStorageClass_LVM_NFS_Incompatible:
 //     lvm-lv backend + nfs protocol → webhook rejects (incompatible).
 
 import (
@@ -68,38 +68,38 @@ import (
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
-// E32.1 — PillarPool LVM CRD schema and webhook validation
+// E32.1 — PillarStore LVM CRD schema and webhook validation
 // ─────────────────────────────────────────────────────────────────────────────
 
-var _ = Describe("E32.1: PillarPool LVM Configuration Validation", func() {
+var _ = Describe("E32.1: PillarStore LVM Configuration Validation", func() {
 	var e32Ctx context.Context
 
 	BeforeEach(func() {
 		e32Ctx = context.Background()
 	})
 
-	// deletePoolIfExists removes a PillarPool by name, stripping finalizers first.
+	// deletePoolIfExists removes a PillarStore by name, stripping finalizers first.
 	deletePoolIfExists := func(name string) {
-		p := &pillarcsiv1alpha1.PillarPool{}
+		p := &pillarcsiv1alpha1.PillarStore{}
 		if err := k8sClient.Get(e32Ctx, types.NamespacedName{Name: name}, p); err == nil {
-			controllerutil.RemoveFinalizer(p, pillarPoolFinalizer)
+			controllerutil.RemoveFinalizer(p, pillarStoreFinalizer)
 			_ = k8sClient.Update(e32Ctx, p)
 			_ = k8sClient.Delete(e32Ctx, p)
 		}
 	}
 
 	// ── TC-276 ────────────────────────────────────────────────────────────────
-	// A PillarPool with type=lvm-lv, a non-empty volumeGroup, and
+	// A PillarStore with type=lvm-lv, a non-empty volumeGroup, and
 	// provisioningMode=linear satisfies both the CRD schema and the webhook
 	// cross-field constraint.
-	It("TC-276: TestPillarPool_LVM_ValidLinearConfig — lvm-lv with linear config is accepted", func() {
+	It("TC-276: TestPillarStore_LVM_ValidLinearConfig — lvm-lv with linear config is accepted", func() {
 		const poolName = "e32-lvm-valid-linear"
-		By("creating a PillarPool with type=lvm-lv, volumeGroup=data-vg, provisioningMode=linear")
+		By("creating a PillarStore with type=lvm-lv, volumeGroup=data-vg, provisioningMode=linear")
 
-		pool := &pillarcsiv1alpha1.PillarPool{
+		pool := &pillarcsiv1alpha1.PillarStore{
 			ObjectMeta: metav1.ObjectMeta{Name: poolName},
-			Spec: pillarcsiv1alpha1.PillarPoolSpec{
-				TargetRef: "some-target",
+			Spec: pillarcsiv1alpha1.PillarStoreSpec{
+				AgentRef: "some-target",
 				Backend: pillarcsiv1alpha1.BackendSpec{
 					Type: pillarcsiv1alpha1.BackendTypeLVMLV,
 					LVM: &pillarcsiv1alpha1.LVMBackendConfig{
@@ -110,22 +110,22 @@ var _ = Describe("E32.1: PillarPool LVM Configuration Validation", func() {
 			},
 		}
 		Expect(k8sClient.Create(e32Ctx, pool)).To(Succeed(),
-			"PillarPool with lvm-lv + linear config should be accepted by the API server")
+			"PillarStore with lvm-lv + linear config should be accepted by the API server")
 
 		DeferCleanup(func() { deletePoolIfExists(poolName) })
 	})
 
 	// ── TC-277 ────────────────────────────────────────────────────────────────
-	// A PillarPool with type=lvm-lv, volumeGroup, thinPool, and
+	// A PillarStore with type=lvm-lv, volumeGroup, thinPool, and
 	// provisioningMode=thin satisfies both the CRD schema and the webhook.
-	It("TC-277: TestPillarPool_LVM_ValidThinConfig — lvm-lv with thin config is accepted", func() {
+	It("TC-277: TestPillarStore_LVM_ValidThinConfig — lvm-lv with thin config is accepted", func() {
 		const poolName = "e32-lvm-valid-thin"
-		By("creating a PillarPool with type=lvm-lv, volumeGroup=data-vg, thinPool=thin-pool-0, provisioningMode=thin")
+		By("creating a PillarStore with type=lvm-lv, volumeGroup=data-vg, thinPool=thin-pool-0, provisioningMode=thin")
 
-		pool := &pillarcsiv1alpha1.PillarPool{
+		pool := &pillarcsiv1alpha1.PillarStore{
 			ObjectMeta: metav1.ObjectMeta{Name: poolName},
-			Spec: pillarcsiv1alpha1.PillarPoolSpec{
-				TargetRef: "some-target",
+			Spec: pillarcsiv1alpha1.PillarStoreSpec{
+				AgentRef: "some-target",
 				Backend: pillarcsiv1alpha1.BackendSpec{
 					Type: pillarcsiv1alpha1.BackendTypeLVMLV,
 					LVM: &pillarcsiv1alpha1.LVMBackendConfig{
@@ -137,7 +137,7 @@ var _ = Describe("E32.1: PillarPool LVM Configuration Validation", func() {
 			},
 		}
 		Expect(k8sClient.Create(e32Ctx, pool)).To(Succeed(),
-			"PillarPool with lvm-lv + thin config should be accepted by the API server")
+			"PillarStore with lvm-lv + thin config should be accepted by the API server")
 
 		DeferCleanup(func() { deletePoolIfExists(poolName) })
 	})
@@ -145,17 +145,17 @@ var _ = Describe("E32.1: PillarPool LVM Configuration Validation", func() {
 	// ── TC-278 ────────────────────────────────────────────────────────────────
 	// spec.backend.lvm.volumeGroup has +kubebuilder:validation:MinLength=1.
 	// Submitting an empty volumeGroup should trigger HTTP 422.
-	It("TC-278: TestPillarPool_LVM_MissingVolumeGroup_Rejected — empty lvm.volumeGroup is rejected", func() {
+	It("TC-278: TestPillarStore_LVM_MissingVolumeGroup_Rejected — empty lvm.volumeGroup is rejected", func() {
 		const poolName = "e32-lvm-empty-vg"
-		By("submitting a PillarPool with type=lvm-lv and lvm.volumeGroup=\"\"")
+		By("submitting a PillarStore with type=lvm-lv and lvm.volumeGroup=\"\"")
 
 		// Use Server-Side Apply so the empty string is sent on the wire.
 		rawJSON := []byte(fmt.Sprintf(`{
-			"apiVersion": "pillar-csi.pillar-csi.bhyoo.com/v1alpha1",
-			"kind": "PillarPool",
+			"apiVersion": "pillar-csi.bhyoo.com/v1alpha1",
+			"kind": "PillarStore",
 			"metadata": {"name": %q},
 			"spec": {
-				"targetRef": "some-target",
+				"agentRef": "some-target",
 				"backend": {
 					"type": "lvm-lv",
 					"lvm": {"volumeGroup": ""}
@@ -165,14 +165,14 @@ var _ = Describe("E32.1: PillarPool LVM Configuration Validation", func() {
 
 		err := k8sClient.Patch(
 			e32Ctx,
-			&pillarcsiv1alpha1.PillarPool{ObjectMeta: metav1.ObjectMeta{Name: poolName}},
+			&pillarcsiv1alpha1.PillarStore{ObjectMeta: metav1.ObjectMeta{Name: poolName}},
 			client.RawPatch(types.ApplyPatchType, rawJSON),
 			client.ForceOwnership,
 			client.FieldOwner("e2e-test"),
 		)
 
 		Expect(err).To(HaveOccurred(),
-			"API server should reject PillarPool with empty lvm.volumeGroup")
+			"API server should reject PillarStore with empty lvm.volumeGroup")
 		Expect(errors.IsInvalid(err)).To(BeTrue(),
 			"error should be HTTP 422 for MinLength=1 violation on lvm.volumeGroup")
 
@@ -182,16 +182,16 @@ var _ = Describe("E32.1: PillarPool LVM Configuration Validation", func() {
 	// ── TC-279 ────────────────────────────────────────────────────────────────
 	// LVMProvisioningMode has +kubebuilder:validation:Enum=linear;thin.
 	// A value outside this enum should be rejected.
-	It("TC-279: TestPillarPool_LVM_InvalidProvisioningMode_Rejected — invalid provisioningMode is rejected", func() {
+	It("TC-279: TestPillarStore_LVM_InvalidProvisioningMode_Rejected — invalid provisioningMode is rejected", func() {
 		const poolName = "e32-lvm-bad-mode"
-		By("submitting a PillarPool with lvm.provisioningMode=\"striped\" (not in enum)")
+		By("submitting a PillarStore with lvm.provisioningMode=\"striped\" (not in enum)")
 
 		rawJSON := []byte(fmt.Sprintf(`{
-			"apiVersion": "pillar-csi.pillar-csi.bhyoo.com/v1alpha1",
-			"kind": "PillarPool",
+			"apiVersion": "pillar-csi.bhyoo.com/v1alpha1",
+			"kind": "PillarStore",
 			"metadata": {"name": %q},
 			"spec": {
-				"targetRef": "some-target",
+				"agentRef": "some-target",
 				"backend": {
 					"type": "lvm-lv",
 					"lvm": {"volumeGroup": "data-vg", "provisioningMode": "striped"}
@@ -201,51 +201,51 @@ var _ = Describe("E32.1: PillarPool LVM Configuration Validation", func() {
 
 		err := k8sClient.Patch(
 			e32Ctx,
-			&pillarcsiv1alpha1.PillarPool{ObjectMeta: metav1.ObjectMeta{Name: poolName}},
+			&pillarcsiv1alpha1.PillarStore{ObjectMeta: metav1.ObjectMeta{Name: poolName}},
 			client.RawPatch(types.ApplyPatchType, rawJSON),
 			client.ForceOwnership,
 			client.FieldOwner("e2e-test"),
 		)
 
 		Expect(err).To(HaveOccurred(),
-			"API server should reject PillarPool with provisioningMode=striped")
+			"API server should reject PillarStore with provisioningMode=striped")
 		Expect(errors.IsInvalid(err)).To(BeTrue(),
 			"error should be HTTP 422 for Enum violation on lvm.provisioningMode")
 
 		DeferCleanup(func() { deletePoolIfExists(poolName) })
 	})
 
-	// TC-280 is tested in internal/webhook/v1alpha1/pillarpool_webhook_test.go
+	// TC-280 is tested in internal/webhook/v1alpha1/pillarstore_webhook_test.go
 	// as a direct validator call because the controller suite does not run
 	// admission webhooks.  Testing it there exercises the same real code path
-	// (validatePillarPoolSpec) without requiring a live webhook server.
+	// (validatePillarStoreSpec) without requiring a live webhook server.
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
-// E32.2 — PillarBinding LVM override and compatibility
+// E32.2 — PillarStorageClass LVM override and compatibility
 // ─────────────────────────────────────────────────────────────────────────────
 
-var _ = Describe("E32.2: PillarBinding LVM Override and Compatibility", func() {
+var _ = Describe("E32.2: PillarStorageClass LVM Override and Compatibility", func() {
 	var e32bCtx context.Context
 
 	BeforeEach(func() {
 		e32bCtx = context.Background()
 	})
 
-	// deleteBindingIfExists removes a PillarBinding by name.
+	// deleteBindingIfExists removes a PillarStorageClass by name.
 	deleteBindingIfExists := func(name string) {
-		b := &pillarcsiv1alpha1.PillarBinding{}
+		b := &pillarcsiv1alpha1.PillarStorageClass{}
 		if err := k8sClient.Get(e32bCtx, types.NamespacedName{Name: name}, b); err == nil {
-			controllerutil.RemoveFinalizer(b, pillarBindingFinalizer)
+			controllerutil.RemoveFinalizer(b, pillarStorageClassFinalizer)
 			_ = k8sClient.Update(e32bCtx, b)
 			_ = k8sClient.Delete(e32bCtx, b)
 		}
 	}
 
 	deletePoolIfExistsE32b := func(name string) {
-		p := &pillarcsiv1alpha1.PillarPool{}
+		p := &pillarcsiv1alpha1.PillarStore{}
 		if err := k8sClient.Get(e32bCtx, types.NamespacedName{Name: name}, p); err == nil {
-			controllerutil.RemoveFinalizer(p, pillarPoolFinalizer)
+			controllerutil.RemoveFinalizer(p, pillarStoreFinalizer)
 			_ = k8sClient.Update(e32bCtx, p)
 			_ = k8sClient.Delete(e32bCtx, p)
 		}
@@ -268,22 +268,22 @@ var _ = Describe("E32.2: PillarBinding LVM Override and Compatibility", func() {
 	}
 
 	// ── TC-281 ────────────────────────────────────────────────────────────────
-	// A PillarBinding with overrides.backend.lvm.provisioningMode=linear that
-	// references a Ready lvm-lv PillarPool and a Ready nvmeof-tcp PillarProtocol
+	// A PillarStorageClass with overrides.backend.lvm.provisioningMode=linear that
+	// references a Ready lvm-lv PillarStore and a Ready nvmeof-tcp PillarProtocol
 	// should reconcile to Compatible=True, Ready=True, and produce a StorageClass
 	// that includes the lvm-vg parameter.
-	It("TC-281: TestPillarBinding_LVM_ValidOverride — LVM override reconciles to Ready with StorageClass", func() {
+	It("TC-281: TestPillarStorageClass_LVM_ValidOverride — LVM override reconciles to Ready with StorageClass", func() {
 		const (
 			poolName     = "e32-lvm-override-pool"
 			protocolName = "e32-lvm-override-proto"
 			bindingName  = "e32-lvm-valid-override"
 		)
 
-		By("creating a Ready lvm-lv PillarPool")
-		pool := &pillarcsiv1alpha1.PillarPool{
+		By("creating a Ready lvm-lv PillarStore")
+		pool := &pillarcsiv1alpha1.PillarStore{
 			ObjectMeta: metav1.ObjectMeta{Name: poolName},
-			Spec: pillarcsiv1alpha1.PillarPoolSpec{
-				TargetRef: "some-target",
+			Spec: pillarcsiv1alpha1.PillarStoreSpec{
+				AgentRef: "some-target",
 				Backend: pillarcsiv1alpha1.BackendSpec{
 					Type: pillarcsiv1alpha1.BackendTypeLVMLV,
 					LVM: &pillarcsiv1alpha1.LVMBackendConfig{
@@ -334,13 +334,13 @@ var _ = Describe("E32.2: PillarBinding LVM Override and Compatibility", func() {
 		}
 		Expect(k8sClient.Status().Update(e32bCtx, protocol)).To(Succeed())
 
-		By("creating a PillarBinding with LVM provisioningMode override=linear")
-		binding := &pillarcsiv1alpha1.PillarBinding{
+		By("creating a PillarStorageClass with LVM provisioningMode override=linear")
+		binding := &pillarcsiv1alpha1.PillarStorageClass{
 			ObjectMeta: metav1.ObjectMeta{Name: bindingName},
-			Spec: pillarcsiv1alpha1.PillarBindingSpec{
-				PoolRef:     poolName,
+			Spec: pillarcsiv1alpha1.PillarStorageClassSpec{
+				StoreRef:    poolName,
 				ProtocolRef: protocolName,
-				Overrides: &pillarcsiv1alpha1.BindingOverrides{
+				Overrides: &pillarcsiv1alpha1.StorageClassOverrides{
 					Backend: &pillarcsiv1alpha1.BackendOverrides{
 						LVM: &pillarcsiv1alpha1.LVMOverrides{
 							ProvisioningMode: pillarcsiv1alpha1.LVMProvisioningModeLinear,
@@ -351,8 +351,8 @@ var _ = Describe("E32.2: PillarBinding LVM Override and Compatibility", func() {
 		}
 		Expect(k8sClient.Create(e32bCtx, binding)).To(Succeed())
 
-		By("reconciling the PillarBinding (finalizer pass)")
-		reconciler := &PillarBindingReconciler{
+		By("reconciling the PillarStorageClass (finalizer pass)")
+		reconciler := &PillarStorageClassReconciler{
 			Client: k8sClient,
 			Scheme: k8sClient.Scheme(),
 		}
@@ -361,12 +361,12 @@ var _ = Describe("E32.2: PillarBinding LVM Override and Compatibility", func() {
 		_, err := reconciler.Reconcile(e32bCtx, reconcile.Request{NamespacedName: bindingNN})
 		Expect(err).NotTo(HaveOccurred())
 
-		By("reconciling the PillarBinding (main reconcile with pool+protocol ready)")
+		By("reconciling the PillarStorageClass (main reconcile with pool+protocol ready)")
 		_, err = reconciler.Reconcile(e32bCtx, reconcile.Request{NamespacedName: bindingNN})
 		Expect(err).NotTo(HaveOccurred())
 
 		By("verifying Compatible=True condition")
-		fetched := &pillarcsiv1alpha1.PillarBinding{}
+		fetched := &pillarcsiv1alpha1.PillarStorageClass{}
 		Expect(k8sClient.Get(e32bCtx, bindingNN, fetched)).To(Succeed())
 
 		compatCond := apimeta.FindStatusCondition(fetched.Status.Conditions, conditionCompatible)
@@ -391,16 +391,16 @@ var _ = Describe("E32.2: PillarBinding LVM Override and Compatibility", func() {
 	// ── TC-282 ────────────────────────────────────────────────────────────────
 	// LVMOverrides.ProvisioningMode has +kubebuilder:validation:Enum=linear;thin.
 	// An invalid value ("raid5") should be rejected by the API server with HTTP 422.
-	It("TC-282: TestPillarBinding_LVM_InvalidOverride_Rejected — invalid LVM provisioningMode override is rejected", func() {
+	It("TC-282: TestPillarStorageClass_LVM_InvalidOverride_Rejected — invalid LVM provisioningMode override is rejected", func() {
 		const bindingName = "e32-lvm-invalid-override"
-		By("submitting a PillarBinding with overrides.backend.lvm.provisioningMode=\"raid5\"")
+		By("submitting a PillarStorageClass with overrides.backend.lvm.provisioningMode=\"raid5\"")
 
 		rawJSON := []byte(fmt.Sprintf(`{
-			"apiVersion": "pillar-csi.pillar-csi.bhyoo.com/v1alpha1",
-			"kind": "PillarBinding",
+			"apiVersion": "pillar-csi.bhyoo.com/v1alpha1",
+			"kind": "PillarStorageClass",
 			"metadata": {"name": %q},
 			"spec": {
-				"poolRef": "some-pool",
+				"storeRef": "some-pool",
 				"protocolRef": "some-protocol",
 				"overrides": {
 					"backend": {
@@ -412,14 +412,14 @@ var _ = Describe("E32.2: PillarBinding LVM Override and Compatibility", func() {
 
 		err := k8sClient.Patch(
 			e32bCtx,
-			&pillarcsiv1alpha1.PillarBinding{ObjectMeta: metav1.ObjectMeta{Name: bindingName}},
+			&pillarcsiv1alpha1.PillarStorageClass{ObjectMeta: metav1.ObjectMeta{Name: bindingName}},
 			client.RawPatch(types.ApplyPatchType, rawJSON),
 			client.ForceOwnership,
 			client.FieldOwner("e2e-test"),
 		)
 
 		Expect(err).To(HaveOccurred(),
-			"API server should reject PillarBinding with overrides.lvm.provisioningMode=raid5")
+			"API server should reject PillarStorageClass with overrides.lvm.provisioningMode=raid5")
 		Expect(errors.IsInvalid(err)).To(BeTrue(),
 			"error should be HTTP 422 for Enum violation on overrides.lvm.provisioningMode")
 
@@ -429,18 +429,18 @@ var _ = Describe("E32.2: PillarBinding LVM Override and Compatibility", func() {
 	// ── TC-283 ────────────────────────────────────────────────────────────────
 	// lvm-lv (block backend) + nvmeof-tcp (block protocol) → Compatible=True.
 	// This test drives the full controller reconcile path with real CRDs.
-	It("TC-283: TestPillarBinding_LVM_NVMeOFTCP_Compatible — lvm-lv + nvmeof-tcp reconciles Compatible=True", func() {
+	It("TC-283: TestPillarStorageClass_LVM_NVMeOFTCP_Compatible — lvm-lv + nvmeof-tcp reconciles Compatible=True", func() {
 		const (
 			poolName     = "e32-lvm-nvme-pool"
 			protocolName = "e32-lvm-nvme-proto"
 			bindingName  = "e32-lvm-nvme-binding"
 		)
 
-		By("creating a Ready lvm-lv PillarPool")
-		pool := &pillarcsiv1alpha1.PillarPool{
+		By("creating a Ready lvm-lv PillarStore")
+		pool := &pillarcsiv1alpha1.PillarStore{
 			ObjectMeta: metav1.ObjectMeta{Name: poolName},
-			Spec: pillarcsiv1alpha1.PillarPoolSpec{
-				TargetRef: "some-target",
+			Spec: pillarcsiv1alpha1.PillarStoreSpec{
+				AgentRef: "some-target",
 				Backend: pillarcsiv1alpha1.BackendSpec{
 					Type: pillarcsiv1alpha1.BackendTypeLVMLV,
 					LVM: &pillarcsiv1alpha1.LVMBackendConfig{
@@ -480,17 +480,17 @@ var _ = Describe("E32.2: PillarBinding LVM Override and Compatibility", func() {
 		}
 		Expect(k8sClient.Status().Update(e32bCtx, protocol)).To(Succeed())
 
-		By("creating a PillarBinding for lvm-lv pool + nvmeof-tcp protocol")
-		binding := &pillarcsiv1alpha1.PillarBinding{
+		By("creating a PillarStorageClass for lvm-lv pool + nvmeof-tcp protocol")
+		binding := &pillarcsiv1alpha1.PillarStorageClass{
 			ObjectMeta: metav1.ObjectMeta{Name: bindingName},
-			Spec: pillarcsiv1alpha1.PillarBindingSpec{
-				PoolRef:     poolName,
+			Spec: pillarcsiv1alpha1.PillarStorageClassSpec{
+				StoreRef:    poolName,
 				ProtocolRef: protocolName,
 			},
 		}
 		Expect(k8sClient.Create(e32bCtx, binding)).To(Succeed())
 
-		reconciler := &PillarBindingReconciler{
+		reconciler := &PillarStorageClassReconciler{
 			Client: k8sClient,
 			Scheme: k8sClient.Scheme(),
 		}
@@ -503,7 +503,7 @@ var _ = Describe("E32.2: PillarBinding LVM Override and Compatibility", func() {
 		}
 
 		By("verifying Compatible=True")
-		fetched := &pillarcsiv1alpha1.PillarBinding{}
+		fetched := &pillarcsiv1alpha1.PillarStorageClass{}
 		Expect(k8sClient.Get(e32bCtx, bindingNN, fetched)).To(Succeed())
 		compatCond := apimeta.FindStatusCondition(fetched.Status.Conditions, conditionCompatible)
 		Expect(compatCond).NotTo(BeNil())
@@ -511,8 +511,8 @@ var _ = Describe("E32.2: PillarBinding LVM Override and Compatibility", func() {
 			"lvm-lv + nvmeof-tcp is a valid block+block pairing → Compatible=True")
 	})
 
-	// TC-284 is tested in internal/webhook/v1alpha1/pillarbinding_webhook_test.go
-	// via the full envtest webhook server.  That suite registers PillarBinding
+	// TC-284 is tested in internal/webhook/v1alpha1/pillarstorageclass_webhook_test.go
+	// via the full envtest webhook server.  That suite registers PillarStorageClass
 	// ValidateCreate which fetches the referenced pool and protocol and rejects
 	// incompatible pairings.  The controller suite does not run admission webhooks
 	// so the rejection cannot be observed here.

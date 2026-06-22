@@ -5,8 +5,8 @@ package e2e
 //
 // Envtest TCs cover the following spec groups:
 //
-//	E19 — CRD validation: PillarTarget
-//	E20 — CRD validation: PillarPool
+//	E19 — CRD validation: PillarAgent
+//	E20 — CRD validation: PillarStore
 //	E23 — CRD validation: PillarProtocol
 //	E25 — Webhook validation
 //	E26 — Compatibility: schema evolution
