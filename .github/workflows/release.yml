@@ -175,7 +175,4 @@ jobs:
           gh release create "$tag" \
             --target "${{ github.sha }}" \
             --title "$tag" \
-            --notes "Helm chart ${{ needs.detect.outputs.chart_version }} packaged for appVersion ${{ needs.detect.outputs.app_version }}.
-
-Install:
-    helm install pillar-csi oci://ghcr.io/${{ github.repository_owner }}/charts/pillar-csi --version ${{ needs.detect.outputs.chart_version }}"
+            --notes "Helm chart ${{ needs.detect.outputs.chart_version }} packaged for appVersion ${{ needs.detect.outputs.app_version }}. Install: helm install pillar-csi oci://ghcr.io/${{ github.repository_owner }}/charts/pillar-csi --version ${{ needs.detect.outputs.chart_version }}"
