@@ -5,11 +5,11 @@ go 1.26.0
 require (
 	github.com/container-storage-interface/spec v1.12.0
 	github.com/google/uuid v1.6.0
-	github.com/kubernetes-csi/csi-test/v5 v5.4.0
-	github.com/onsi/ginkgo/v2 v2.31.0
-	github.com/onsi/gomega v1.42.0
+	github.com/kubernetes-csi/csi-test/v5 v5.5.0
+	github.com/onsi/ginkgo/v2 v2.32.0
+	github.com/onsi/gomega v1.42.1
 	golang.org/x/sync v0.21.0
-	google.golang.org/grpc v1.81.1
+	google.golang.org/grpc v1.82.0
 	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af
 	gopkg.in/yaml.v3 v3.0.1
 	k8s.io/api v0.36.2
@@ -54,7 +54,6 @@ require (
 	github.com/go-openapi/swag/typeutils v0.26.1 // indirect
 	github.com/go-openapi/swag/yamlutils v0.26.1 // indirect
 	github.com/go-task/slim-sprig/v3 v3.0.0 // indirect
-	github.com/golang/mock v1.6.0 // indirect
 	github.com/google/cel-go v0.28.1 // indirect
 	github.com/google/gnostic-models v0.7.1 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
@@ -85,6 +84,7 @@ require (
 	go.opentelemetry.io/otel/sdk v1.44.0 // indirect
 	go.opentelemetry.io/otel/trace v1.44.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.10.0 // indirect
+	go.uber.org/mock v0.5.2 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.28.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
