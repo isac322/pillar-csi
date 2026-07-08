@@ -8,7 +8,7 @@ require (
 	github.com/kubernetes-csi/csi-test/v5 v5.4.0
 	github.com/onsi/ginkgo/v2 v2.31.0
 	github.com/onsi/gomega v1.42.0
-	golang.org/x/sync v0.21.0
+	golang.org/x/sync v0.22.0
 	google.golang.org/grpc v1.81.1
 	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af
 	gopkg.in/yaml.v3 v3.0.1
