@@ -550,7 +550,7 @@ func mknodFromSysfsDev(devPath, devFile string) (string, error) {
 	st, statErr := os.Stat(devPath)
 	if statErr == nil {
 		sysSt, ok := st.Sys().(*syscall.Stat_t)
-		//nolint:gosec // G115: Linux dev_t fits in uint32 bounds well within int64.
+		//nolint:gosec,nolintlint // G115 only applies on Linux, where dev_t safely fits int.
 		if ok && int(sysSt.Rdev) != dev {
 			rmErr := os.Remove(devPath)
 			if rmErr != nil && !os.IsNotExist(rmErr) {

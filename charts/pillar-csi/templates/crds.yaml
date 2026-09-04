@@ -5,7 +5,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.21.0
+    controller-gen.kubebuilder.io/version: v0.22.0
   name: pillarstorageclasses.pillar-csi.bhyoo.com
 spec:
   group: pillar-csi.bhyoo.com
@@ -298,7 +298,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.21.0
+    controller-gen.kubebuilder.io/version: v0.22.0
   name: pillarstores.pillar-csi.bhyoo.com
 spec:
   group: pillar-csi.bhyoo.com
@@ -544,7 +544,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.21.0
+    controller-gen.kubebuilder.io/version: v0.22.0
   name: pillarprotocols.pillar-csi.bhyoo.com
 spec:
   group: pillar-csi.bhyoo.com
@@ -833,7 +833,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.21.0
+    controller-gen.kubebuilder.io/version: v0.22.0
   name: pillaragents.pillar-csi.bhyoo.com
 spec:
   group: pillar-csi.bhyoo.com
@@ -1088,7 +1088,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.21.0
+    controller-gen.kubebuilder.io/version: v0.22.0
   name: pillarvolumestatestates.pillar-csi.bhyoo.com
 spec:
   group: pillar-csi.bhyoo.com

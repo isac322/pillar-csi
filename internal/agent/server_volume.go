@@ -47,8 +47,7 @@ func (s *Server) CreateVolume(
 		req.GetBackendParams(),
 	)
 	if err != nil {
-		var conflictErr *backend.ConflictError
-		if errors.As(err, &conflictErr) {
+		if conflictErr, ok := errors.AsType[*backend.ConflictError](err); ok {
 			return nil, status.Errorf(codes.AlreadyExists, "CreateVolume: %v", conflictErr)
 		}
 		// Preserve gRPC status codes returned by the backend (e.g. InvalidArgument

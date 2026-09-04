@@ -395,7 +395,8 @@ func refreshNVMeBlockDeviceNode(device string) {
 	st, statErr := os.Stat(device)
 	if statErr == nil {
 		sysSt, ok := st.Sys().(*syscall.Stat_t)
-		if ok && int(sysSt.Rdev) == expectedDev { //nolint:gosec // G115: dev_t fits in int on Linux
+		//nolint:gosec,nolintlint // G115 only applies on Linux; dev_t safely fits int.
+		if ok && int(sysSt.Rdev) == expectedDev {
 			return // node already matches the live kernel dev_t
 		}
 		rmErr := os.Remove(device)

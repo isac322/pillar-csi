@@ -14,14 +14,14 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
 
       - name: Run linter
         uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.12.2
+          version: v2.13.2
 
   verify-tc-coverage:
     name: TC Coverage Verification
@@ -35,7 +35,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
@@ -89,7 +89,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
 
@@ -106,7 +106,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
 
@@ -118,7 +118,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install Helm
         uses: azure/setup-helm@v5
@@ -144,7 +144,7 @@ jobs:
       # ── Kind tooling ──────────────────────────────────────────────────────
       # kind tool release to install.  Bump together with KIND_NODE_IMAGE when
       # upgrading the Kubernetes version used in the e2e cluster.
-      KIND_VERSION: "v0.32.0"
+      KIND_VERSION: "v0.33.0"
 
       # ── Cluster & image names ─────────────────────────────────────────────
       KIND_CLUSTER: "pillar-csi-e2e"
@@ -166,7 +166,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
@@ -245,7 +245,7 @@ jobs:
       # the local Docker daemon cache BEFORE any docker build or Kind cluster
       # creation.  Two categories:
       #
-      # 1. Dockerfile base images — alpine:3.24 and golang:1.26-alpine3.24 are
+      # 1. Dockerfile base images — alpine:3.24 and golang:1.27-alpine3.24 are
       #    the FROM stages in the unified multi-target Dockerfile.
       #    Pre-pulling them here means "docker build" finds them in the local
       #    cache and never contacts Docker Hub, avoiding HTTP 429 rate-limit
@@ -259,14 +259,14 @@ jobs:
           # Runtime base used by agent and node targets in the unified Dockerfile.
           docker pull alpine:3.24
           # Shared builder stage used by all three targets.
-          docker pull golang:1.26-alpine3.24
+          docker pull golang:1.27-alpine3.24
 
       - name: Pre-pull third-party images
         run: |
           docker pull busybox:1.38.0
           docker pull registry.k8s.io/sig-storage/csi-provisioner:v6.3.0
           docker pull registry.k8s.io/sig-storage/csi-attacher:v4.12.0
-          docker pull registry.k8s.io/sig-storage/csi-resizer:v2.2.0
+          docker pull registry.k8s.io/sig-storage/csi-resizer:v2.2.1
           docker pull registry.k8s.io/sig-storage/livenessprobe:v2.19.0
           docker pull registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.17.0
 
@@ -352,7 +352,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true

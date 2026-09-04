@@ -565,10 +565,9 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 		// content); surface them as InvalidArgument so the CO can surface
 		// a useful message to the user.  Infrastructure errors (CRD fetch
 		// failures, etc.) are surfaced as Internal.
-		var annotErr *pvcAnnotationValidationError
-		if errors.As(err, &annotErr) {
+		if annotErr, ok := errors.AsType[*pvcAnnotationValidationError](err); ok {
 			return nil, status.Errorf(codes.InvalidArgument,
-				"PVC annotation validation failed: %v", err)
+				"PVC annotation validation failed: %v", annotErr)
 		}
 		return nil, status.Errorf(codes.Internal, "parameter merge failed: %v", err)
 	}

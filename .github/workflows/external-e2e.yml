@@ -31,20 +31,20 @@ jobs:
     # job before the dump step runs).
     timeout-minutes: 45
     env:
-      KIND_VERSION: "v0.32.0"
+      KIND_VERSION: "v0.33.0"
       KIND_CLUSTER: "pillar-csi-ext-e2e"
       E2E_HELM_NAMESPACE: "pillar-csi-system"
       DOCKER_HOST: "unix:///var/run/docker.sock"
       # K8S_VERSION pin lets run.sh skip the dl.k8s.io stable.txt lookup so
       # the cached e2e.test bundle is shared across runs.
-      K8S_VERSION: "v1.36.2"
+      K8S_VERSION: "v1.37.0"
 
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
@@ -75,11 +75,11 @@ jobs:
       - name: Pre-pull base + sidecar images
         run: |
           docker pull alpine:3.24
-          docker pull golang:1.26-alpine3.24
+          docker pull golang:1.27-alpine3.24
           docker pull busybox:1.38.0
           docker pull registry.k8s.io/sig-storage/csi-provisioner:v6.3.0
           docker pull registry.k8s.io/sig-storage/csi-attacher:v4.12.0
-          docker pull registry.k8s.io/sig-storage/csi-resizer:v2.2.0
+          docker pull registry.k8s.io/sig-storage/csi-resizer:v2.2.1
           docker pull registry.k8s.io/sig-storage/livenessprobe:v2.19.0
           docker pull registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.17.0
 

@@ -97,7 +97,7 @@ func setupControllers(mgr ctrl.Manager, agentDialer agentclient.Dialer) error {
 	err = (&controller.PillarStorageClassReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorderFor("pillarstorageclass-controller"),
+		Recorder: mgr.GetEventRecorder("pillarstorageclass-controller"),
 	}).SetupWithManager(mgr)
 	if err != nil {
 		return fmt.Errorf("PillarStorageClass controller: %w", err)
