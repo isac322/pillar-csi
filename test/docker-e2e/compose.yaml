@@ -1,0 +1,14 @@
+services:
+  e2e:
+    build:
+      context: ../..
+      dockerfile: test/docker-e2e/Dockerfile
+    privileged: true
+    environment:
+      DOCKER_TLS_CERTDIR: ""
+    volumes:
+      - ../..:/workspace:ro
+      - /lib/modules:/lib/modules:ro
+    tmpfs:
+      - /run
+      - /tmp

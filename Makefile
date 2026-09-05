@@ -232,6 +232,14 @@ test-csi-sanity: fmt vet ## Run the upstream kubernetes-csi/csi-test sanity suit
 test-external-e2e: ## Run the SIG-Storage External Storage e2e suite against a running Kind cluster. Requires KUBECONFIG.
 	@./test/external-e2e/run.sh
 
+# test-docker-e2e is the self-contained Linux VM path for validating the real
+# NVMe-oF/TCP data plane across isolated storage and workload nodes.  It runs
+# both an in-cluster agent topology and an out-of-cluster Docker agent topology.
+.PHONY: test-docker-e2e
+test-docker-e2e: ## Run multi-node real-data-path E2E in privileged Docker-in-Docker. Requires Linux Docker.
+	@trap '$(CONTAINER_TOOL) compose -f test/docker-e2e/compose.yaml down --remove-orphans >/dev/null' EXIT; \
+		$(CONTAINER_TOOL) compose -f test/docker-e2e/compose.yaml run --rm --build e2e
+
 .PHONY: test-chart
 test-chart: ## Helm chart render regression: assert hostNetwork:true + kubelet-csi-dir Bidirectional + dnsPolicy invariants survive future template edits.
 	@./charts/pillar-csi/test_render.sh

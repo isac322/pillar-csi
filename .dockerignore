@@ -12,3 +12,10 @@
 
 # Re-include .git for VCS version stamping (Go 1.24+)
 !.git
+
+# Self-contained Docker E2E harness inputs.
+!Dockerfile
+!docker-bake.hcl
+!test/
+!test/docker-e2e/
+!test/docker-e2e/**
