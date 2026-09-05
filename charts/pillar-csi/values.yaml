@@ -117,7 +117,7 @@ controller:
         # -- csi-resizer image repository.
         repository: registry.k8s.io/sig-storage/csi-resizer
         # -- csi-resizer image tag.
-        tag: "v2.2.0"
+        tag: "v2.2.1"
         pullPolicy: ""
       # -- Resource requests/limits for the resizer sidecar.
       resources:

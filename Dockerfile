@@ -20,7 +20,7 @@
 # See docker-bake.hcl for the build matrix and CI integration.
 
 # ── Builder stage ─────────────────────────────────────────────────────────────
-FROM --platform=$BUILDPLATFORM golang:1.26-alpine3.24 AS builder
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine3.24 AS builder
 ARG TARGETOS
 ARG TARGETARCH
 # TARGETVARIANT is set by buildx for sub-architecture levels (e.g. "v3" for

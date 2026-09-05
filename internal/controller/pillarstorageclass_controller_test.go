@@ -33,7 +33,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -53,7 +53,7 @@ func TestPillarStorageClass_StorageClassDrift_EmitsEvent(t *testing.T) {
 		t.Fatalf("add pillar-csi scheme: %v", err)
 	}
 
-	orderRecorder := record.NewFakeRecorder(1)
+	orderRecorder := events.NewFakeRecorder(1)
 	reconciler := &PillarStorageClassReconciler{
 		Client:   fake.NewClientBuilder().WithScheme(testScheme).Build(),
 		Scheme:   testScheme,

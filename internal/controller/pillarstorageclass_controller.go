@@ -30,13 +30,13 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/controller-runtime/pkg/recorder"
 
 	pillarcsiv1alpha1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
 )
@@ -84,7 +84,7 @@ const (
 type PillarStorageClassReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
-	Recorder record.EventRecorder
+	Recorder recorder.EventRecorder
 }
 
 type desiredStorageClass struct {
@@ -101,6 +101,7 @@ type desiredStorageClass struct {
 // +kubebuilder:rbac:groups=pillar-csi.bhyoo.com,resources=pillarprotocols,verbs=get;list;watch
 // +kubebuilder:rbac:groups=storage.k8s.io,resources=storageclasses,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -595,8 +596,10 @@ func (r *PillarStorageClassReconciler) reconcileStorageClass(
 		if r.Recorder != nil && sc.ResourceVersion != "" && storageClassDrifted(sc, desired) {
 			r.Recorder.Eventf(
 				binding,
+				nil,
 				corev1.EventTypeNormal,
 				"StorageClassReverted",
+				"Reconcile",
 				"StorageClass %q drifted, reverting to PillarStorageClass spec",
 				scName,
 			)

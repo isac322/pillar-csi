@@ -163,10 +163,11 @@ func (n *NodeServer) NodeGetVolumeStats(
 	// Convert block counts to bytes using the fundamental block size (Bsize).
 	// Statfs_t field widths vary by architecture (int64 on amd64, int32 on
 	// arm/v7 and ppc64le), so every field is cast to int64 for portability.
-	blockSize := int64(statfs.Bsize) //nolint:unconvert // Bsize is int64 on amd64 but int32 on arm/ppc64le
-	blocks := int64(statfs.Blocks)   //nolint:gosec // G115: fits in int64
-	bavail := int64(statfs.Bavail)   //nolint:gosec // G115: fits in int64
-	bfree := int64(statfs.Bfree)     //nolint:gosec // G115: fits in int64
+	//nolint:unconvert,nolintlint // Statfs_t.Bsize width differs by target.
+	blockSize := int64(statfs.Bsize)
+	blocks := int64(statfs.Blocks) //nolint:gosec // G115: fits in int64
+	bavail := int64(statfs.Bavail) //nolint:gosec // G115: fits in int64
+	bfree := int64(statfs.Bfree)   //nolint:gosec // G115: fits in int64
 	totalBytes := blocks * blockSize
 	availableBytes := bavail * blockSize
 	usedBytes := (blocks - bfree) * blockSize
