@@ -94,6 +94,8 @@ if [[ -z "${NODE_DS}" ]]; then
   mark_fail "default render: node-daemonset.yaml not found in helm template output"
   exit 1
 fi
+CTL_DEP_DEFAULT="$(extract_doc "${DEFAULT_OUT}" "controller-deployment.yaml")"
+WEBHOOK_DEFAULT="$(extract_doc "${DEFAULT_OUT}" "webhook.yaml")"
 
 # Existing kernel-data-plane invariants on node DaemonSet.
 assert_contains "${NODE_DS}" "hostNetwork: true" \
@@ -106,6 +108,8 @@ assert_contains "${NODE_DS}" "name: kubelet-csi-dir" \
   "default node container must reference the kubelet-csi-dir hostPath volume"
 assert_min_count "${NODE_DS}" "mountPropagation: Bidirectional" 2 \
   "default node DaemonSet must have ≥2 Bidirectional propagation mounts"
+assert_contains "${NODE_DS}" "mountPropagation: HostToContainer" \
+  "default node DaemonSet must propagate host NVMe sysfs submounts into the node container"
 
 # Cooperative shutdown contract — both the node and agent pods need preStop +
 # termGrace so the SIGTERM handler has the budget to Drain + GracefulStop.
@@ -125,6 +129,37 @@ assert_contains "${NODE_DS}" "terminationGracePeriodSeconds: 60" \
 assert_contains "${NODE_DS}" "command: [\"/bin/busybox\", \"sleep\", \"5\"]" \
   "default node DaemonSet must emit preStop busybox sleep 5 on the node container"
 
+
+# Admission webhook deployment contract. The controller must receive a serving
+# certificate and the API server must have both mutating and validating routes.
+assert_contains "${CTL_DEP_DEFAULT}" "--webhook-cert-path=/tmp/k8s-webhook-server/serving-certs" \
+  "default controller must use the chart-managed webhook serving certificate"
+assert_contains "${CTL_DEP_DEFAULT}" "--webhook-port=9443" \
+  "default controller must bind the configured webhook HTTPS port"
+assert_contains "${CTL_DEP_DEFAULT}" "secretName: pillar-csi-test-webhook-cert" \
+  "default controller must mount the release-scoped webhook certificate Secret"
+assert_contains "${CTL_DEP_DEFAULT}" "containerPort: 9443" \
+  "default controller must expose the webhook HTTPS port"
+assert_contains "${WEBHOOK_DEFAULT}" "kind: Secret" \
+  "default render must create the webhook TLS Secret"
+assert_contains "${WEBHOOK_DEFAULT}" "kind: Service" \
+  "default render must create the webhook Service"
+assert_contains "${WEBHOOK_DEFAULT}" "kind: MutatingWebhookConfiguration" \
+  "default render must register the PillarStorageClass defaulting webhook"
+assert_contains "${WEBHOOK_DEFAULT}" "kind: ValidatingWebhookConfiguration" \
+  "default render must register CRD validation webhooks"
+assert_contains "${WEBHOOK_DEFAULT}" "caBundle:" \
+  "default webhook configurations must trust the generated serving certificate"
+
+WEBHOOK_PORT_OUT="$(render --set webhook.port=10443)"
+WEBHOOK_PORT_CTL="$(extract_doc "${WEBHOOK_PORT_OUT}" "controller-deployment.yaml")"
+WEBHOOK_PORT_RESOURCES="$(extract_doc "${WEBHOOK_PORT_OUT}" "webhook.yaml")"
+assert_contains "${WEBHOOK_PORT_CTL}" "--webhook-port=10443" \
+  "webhook.port override must reach the controller manager"
+assert_contains "${WEBHOOK_PORT_CTL}" "containerPort: 10443" \
+  "webhook.port override must reach the controller container port"
+assert_contains "${WEBHOOK_PORT_RESOURCES}" "targetPort: webhook-server" \
+  "webhook Service must continue routing through the named controller port"
 # No mTLS plumbing in the default render.
 assert_not_contains "${DEFAULT_OUT}" "name: mtls-certs" \
   "default render must NOT include mtls-certs volume (mtls.enabled=false)"

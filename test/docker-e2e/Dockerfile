@@ -2,12 +2,29 @@
 
 ARG GO_VERSION=1.26
 ARG ALPINE_VERSION=3.24
+ARG KIND_VERSION=v0.32.0
+
+FROM golang:${GO_VERSION}-alpine${ALPINE_VERSION} AS kind
+
+ARG KIND_VERSION
+# kind v0.32.0 waits only 30 seconds for each node container's systemd boot.
+# Nested Docker under an emulated Linux VM can legitimately exceed that while
+# still making progress, so build the pinned release with a bounded 5-minute
+# provider wait.
+RUN apk add --no-cache git \
+    && git clone --quiet --depth 1 --branch "${KIND_VERSION}" https://github.com/kubernetes-sigs/kind.git /src/kind \
+    && sed -i \
+      's/context.WithTimeout(context.Background(), 30\*time.Second)/context.WithTimeout(context.Background(), 5*time.Minute)/' \
+      /src/kind/pkg/cluster/internal/providers/docker/provision.go \
+    && grep -q 'context.WithTimeout(context.Background(), 5\*time.Minute)' \
+      /src/kind/pkg/cluster/internal/providers/docker/provision.go
+WORKDIR /src/kind
+RUN go build -trimpath -o /kind ./cmd/kind
 
 FROM golang:${GO_VERSION}-alpine${ALPINE_VERSION} AS go
 
 FROM docker:29-dind
 
-ARG KIND_VERSION=v0.32.0
 ARG KUBERNETES_VERSION=v1.36.2
 ARG HELM_VERSION=v3.18.4
 ARG TARGETARCH
@@ -29,8 +46,6 @@ RUN set -eux; \
       amd64|arm64) tool_arch="${TARGETARCH}" ;; \
       *) echo "unsupported architecture: ${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
-    curl -fsSL -o /usr/local/bin/kind \
-      "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-${tool_arch}"; \
     curl -fsSL -o /usr/local/bin/kubectl \
       "https://dl.k8s.io/release/${KUBERNETES_VERSION}/bin/linux/${tool_arch}/kubectl"; \
     curl -fsSL \
@@ -38,8 +53,9 @@ RUN set -eux; \
       | tar -xz -C /tmp; \
     mv "/tmp/linux-${tool_arch}/helm" /usr/local/bin/helm; \
     rm -rf "/tmp/linux-${tool_arch}"; \
-    chmod 0555 /usr/local/bin/kind /usr/local/bin/kubectl /usr/local/bin/helm
+    chmod 0555 /usr/local/bin/kubectl /usr/local/bin/helm
 
+COPY --from=kind /kind /usr/local/bin/kind
 COPY --from=go /usr/local/go /usr/local/go
 ENV PATH=/usr/local/go/bin:$PATH \
     DOCKER_TLS_CERTDIR= \

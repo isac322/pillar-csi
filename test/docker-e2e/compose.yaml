@@ -4,11 +4,17 @@ services:
       context: ../..
       dockerfile: test/docker-e2e/Dockerfile
     privileged: true
+    cgroup: host
     environment:
       DOCKER_TLS_CERTDIR: ""
     volumes:
       - ../..:/workspace:ro
+      - docker-data:/var/lib/docker
+      - /sys/kernel/config:/sys/kernel/config:rshared
       - /lib/modules:/lib/modules:ro
     tmpfs:
       - /run
       - /tmp
+
+volumes:
+  docker-data:

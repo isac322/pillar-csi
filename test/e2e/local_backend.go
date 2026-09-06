@@ -918,7 +918,7 @@ func verifyKindBootstrapLocalContracts() error {
 //  3. values.yaml is present and contains key top-level sections.
 //  4. The templates/ directory exists.
 //  5. Required template files are present (csidriver.yaml, agent-daemonset.yaml,
-//     node-daemonset.yaml, controller-deployment.yaml).
+//     node-daemonset.yaml, controller-deployment.yaml, webhook.yaml).
 //
 // This is a fast in-process validation used by the E27 cases in the default
 // profile.  Real cluster deployment/validation lives in tc_e27_helm_e2e_test.go.
@@ -977,6 +977,7 @@ func verifyHelmChartLocalContracts() error {
 		"agent-daemonset.yaml",
 		"node-daemonset.yaml",
 		"controller-deployment.yaml",
+		"webhook.yaml",
 	}
 	for _, tmpl := range requiredTemplates {
 		tmplPath := filepath.Join(templatesDir, tmpl)

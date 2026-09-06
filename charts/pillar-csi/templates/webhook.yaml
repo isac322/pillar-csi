@@ -1,0 +1,186 @@
+{{- if .Values.webhook.enabled }}
+{{- $fullname := include "pillar-csi.fullname" . }}
+{{- $namespace := include "pillar-csi.namespace" . }}
+{{- $serviceName := printf "%s-webhook" $fullname }}
+{{- $secretName := printf "%s-webhook-cert" $fullname }}
+{{- $existing := lookup "v1" "Secret" $namespace $secretName }}
+{{- $ca := genCA (printf "%s webhook CA" $fullname) 3650 }}
+{{- $cert := genSignedCert (printf "%s.%s.svc" $serviceName $namespace) nil (list $serviceName (printf "%s.%s" $serviceName $namespace) (printf "%s.%s.svc" $serviceName $namespace) (printf "%s.%s.svc.cluster.local" $serviceName $namespace)) 3650 $ca }}
+{{- $tlsCrt := $cert.Cert | b64enc }}
+{{- $tlsKey := $cert.Key | b64enc }}
+{{- $caCrt := $ca.Cert | b64enc }}
+{{- if $existing }}
+{{- $tlsCrt = index $existing.data "tls.crt" }}
+{{- $tlsKey = index $existing.data "tls.key" }}
+{{- $caCrt = index $existing.data "ca.crt" }}
+{{- end }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $secretName }}
+  namespace: {{ $namespace }}
+  labels:
+    {{- include "pillar-csi.componentLabels" (dict "root" . "component" "controller") | nindent 4 }}
+type: kubernetes.io/tls
+data:
+  tls.crt: {{ $tlsCrt }}
+  tls.key: {{ $tlsKey }}
+  ca.crt: {{ $caCrt }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $serviceName }}
+  namespace: {{ $namespace }}
+  labels:
+    {{- include "pillar-csi.componentLabels" (dict "root" . "component" "controller") | nindent 4 }}
+spec:
+  ports:
+    - name: https
+      port: 443
+      protocol: TCP
+      targetPort: webhook-server
+  selector:
+    {{- include "pillar-csi.controllerSelectorLabels" . | nindent 4 }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: {{ $fullname }}-mutating-webhook
+  labels:
+    {{- include "pillar-csi.labels" . | nindent 4 }}
+webhooks:
+  - name: mpillarstorageclass-v1alpha1.kb.io
+    admissionReviewVersions:
+      - v1
+    clientConfig:
+      caBundle: {{ $caCrt }}
+      service:
+        name: {{ $serviceName }}
+        namespace: {{ $namespace }}
+        path: /mutate-pillar-csi-bhyoo-com-v1alpha1-pillarstorageclass
+        port: 443
+    failurePolicy: Fail
+    matchPolicy: Equivalent
+    rules:
+      - apiGroups:
+          - pillar-csi.bhyoo.com
+        apiVersions:
+          - v1alpha1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - pillarstorageclasses
+        scope: Cluster
+    sideEffects: None
+    timeoutSeconds: 10
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: {{ $fullname }}-validating-webhook
+  labels:
+    {{- include "pillar-csi.labels" . | nindent 4 }}
+webhooks:
+  - name: vpillaragent-v1alpha1.kb.io
+    admissionReviewVersions:
+      - v1
+    clientConfig:
+      caBundle: {{ $caCrt }}
+      service:
+        name: {{ $serviceName }}
+        namespace: {{ $namespace }}
+        path: /validate-pillar-csi-bhyoo-com-v1alpha1-pillaragent
+        port: 443
+    failurePolicy: Fail
+    matchPolicy: Equivalent
+    rules:
+      - apiGroups:
+          - pillar-csi.bhyoo.com
+        apiVersions:
+          - v1alpha1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - pillaragents
+        scope: Cluster
+    sideEffects: None
+    timeoutSeconds: 10
+  - name: vpillarprotocol-v1alpha1.kb.io
+    admissionReviewVersions:
+      - v1
+    clientConfig:
+      caBundle: {{ $caCrt }}
+      service:
+        name: {{ $serviceName }}
+        namespace: {{ $namespace }}
+        path: /validate-pillar-csi-bhyoo-com-v1alpha1-pillarprotocol
+        port: 443
+    failurePolicy: Fail
+    matchPolicy: Equivalent
+    rules:
+      - apiGroups:
+          - pillar-csi.bhyoo.com
+        apiVersions:
+          - v1alpha1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - pillarprotocols
+        scope: Cluster
+    sideEffects: None
+    timeoutSeconds: 10
+  - name: vpillarstorageclass-v1alpha1.kb.io
+    admissionReviewVersions:
+      - v1
+    clientConfig:
+      caBundle: {{ $caCrt }}
+      service:
+        name: {{ $serviceName }}
+        namespace: {{ $namespace }}
+        path: /validate-pillar-csi-bhyoo-com-v1alpha1-pillarstorageclass
+        port: 443
+    failurePolicy: Fail
+    matchPolicy: Equivalent
+    rules:
+      - apiGroups:
+          - pillar-csi.bhyoo.com
+        apiVersions:
+          - v1alpha1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - pillarstorageclasses
+        scope: Cluster
+    sideEffects: None
+    timeoutSeconds: 10
+  - name: vpillarstore-v1alpha1.kb.io
+    admissionReviewVersions:
+      - v1
+    clientConfig:
+      caBundle: {{ $caCrt }}
+      service:
+        name: {{ $serviceName }}
+        namespace: {{ $namespace }}
+        path: /validate-pillar-csi-bhyoo-com-v1alpha1-pillarstore
+        port: 443
+    failurePolicy: Fail
+    matchPolicy: Equivalent
+    rules:
+      - apiGroups:
+          - pillar-csi.bhyoo.com
+        apiVersions:
+          - v1alpha1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - pillarstores
+        scope: Cluster
+    sideEffects: None
+    timeoutSeconds: 10
+{{- end }}
