@@ -3,18 +3,18 @@ services:
     build:
       context: ../..
       dockerfile: test/docker-e2e/Dockerfile
+      network: host
     privileged: true
     cgroup: host
     environment:
       DOCKER_TLS_CERTDIR: ""
+      PILLAR_E2E_DNS: "${PILLAR_E2E_DNS:-1.1.1.1}"
+    dns:
+      - "${PILLAR_E2E_DNS:-1.1.1.1}"
+    stop_grace_period: 5m
     volumes:
       - ../..:/workspace:ro
-      - docker-data:/var/lib/docker
       - /sys/kernel/config:/sys/kernel/config:rshared
       - /lib/modules:/lib/modules:ro
     tmpfs:
       - /run
-      - /tmp
-
-volumes:
-  docker-data:

@@ -9,6 +9,18 @@ readonly node_image="pillar-csi/node:${image_tag}"
 readonly external_agent_image="pillar-csi/external-agent:${image_tag}"
 readonly workload_base_image="busybox:1.38.0"
 readonly kind_node_image="kindest/node:v1.36.1"
+readonly -a sidecar_images=(
+  "registry.k8s.io/sig-storage/csi-provisioner:v6.3.0"
+  "registry.k8s.io/sig-storage/csi-attacher:v4.12.0"
+  "registry.k8s.io/sig-storage/csi-resizer:v2.2.0"
+  "registry.k8s.io/sig-storage/livenessprobe:v2.19.0"
+  "registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.17.0"
+)
+readonly -a build_base_images=(
+  "golang:1.26-alpine3.24"
+  "alpine:3.24"
+  "gcr.io/distroless/static:nonroot"
+)
 readonly vg_name="pillar-e2e-vg"
 readonly helm_namespace="pillar-csi-system"
 readonly helm_release="pillar-csi"
@@ -40,6 +52,20 @@ ensure_image() {
   return 1
 }
 
+run_with_retry() {
+  for attempt in 1 2 3; do
+    if "$@"; then
+      return
+    fi
+    if [[ "${attempt}" != 3 ]]; then
+      log "Command failed; retrying: $*"
+      sleep "$((attempt * 5))"
+    fi
+  done
+  return 1
+}
+
+
 cleanup_lvm_backend() {
   container=$1
   if [[ "$(docker inspect -f '{{.State.Running}}' "${container}" 2>/dev/null)" != true ]]; then
@@ -47,7 +73,7 @@ cleanup_lvm_backend() {
   fi
   docker exec "${container}" sh -cu '
     vg=${PILLAR_E2E_LVM_VG:-pillar-e2e-vg}
-    backing_file=/var/lib/pillar-e2e-lvm.img
+    backing_files="/var/lib/pillar-e2e-lvm.img /var/lib/pillar-csi/${vg}.img"
     devices=
     rc=0
 
@@ -59,8 +85,10 @@ cleanup_lvm_backend() {
       fi
     fi
 
-    backing_devices=$(losetup -j "${backing_file}" -O NAME --noheadings 2>/dev/null)
-    devices="${devices} ${backing_devices}"
+    for backing_file in ${backing_files}; do
+      backing_devices=$(losetup -j "${backing_file}" -O NAME --noheadings 2>/dev/null)
+      devices="${devices} ${backing_devices}"
+    done
     seen=
     for device in ${devices}; do
       case " ${seen} " in
@@ -76,8 +104,21 @@ cleanup_lvm_backend() {
   '
 }
 
+cleanup_test_namespaces() {
+  if [[ -z "${active_cluster}" ]]; then
+    return
+  fi
+  if ! kubectl delete namespace \
+    -l pillar-csi.bhyoo.com/docker-e2e=true \
+    --wait=true \
+    --timeout=4m >/dev/null 2>&1; then
+    log "Failed to delete Docker E2E workload namespaces before storage cleanup"
+  fi
+}
+
 cleanup_topology() {
   set +e
+  cleanup_test_namespaces
   if [[ -n "${active_storage_node}" ]]; then
     cleanup_lvm_backend "${active_storage_node}"
     active_storage_node=""
@@ -153,14 +194,32 @@ require_linux_storage_stack() {
   if ! mountpoint -q /sys/kernel/config; then
     mount -t configfs none /sys/kernel/config
   fi
+  if [[ ! -c /dev/nvme-fabrics ]]; then
+    if [[ ! -r /sys/class/misc/nvme-fabrics/dev ]]; then
+      printf 'nvme_fabrics loaded but /sys/class/misc/nvme-fabrics/dev is unavailable\n' >&2
+      exit 1
+    fi
+    IFS=: read -r nvme_major nvme_minor < /sys/class/misc/nvme-fabrics/dev
+    if ! mknod /dev/nvme-fabrics c "${nvme_major}" "${nvme_minor}"; then
+      printf 'failed to create /dev/nvme-fabrics from kernel device %s:%s\n' "${nvme_major}" "${nvme_minor}" >&2
+      exit 1
+    fi
+  fi
   test -c /dev/nvme-fabrics
   test -d /sys/kernel/config/nvmet
 }
 
 build_images() {
-  log "Building pillar-csi images"
-  BUILDX_NO_DEFAULT_ATTESTATIONS=1 REGISTRY=pillar-csi TAG="${image_tag}" docker buildx bake --load
-  docker build \
+  log "Preparing and building pillar-csi images"
+  for image in "${build_base_images[@]}"; do
+    ensure_image "${image}"
+  done
+  run_with_retry env \
+    BUILDX_NO_DEFAULT_ATTESTATIONS=1 \
+    REGISTRY=pillar-csi \
+    TAG="${image_tag}" \
+    docker buildx bake --load
+  run_with_retry docker build \
     --provenance=false \
     -f "${repo_root}/test/docker-e2e/external-agent.Dockerfile" \
     --build-arg "AGENT_IMAGE=${agent_image}" \
@@ -173,6 +232,9 @@ build_images() {
 FROM busybox:1.38.0
 EOF
   ensure_image "${kind_node_image}"
+  for image in "${sidecar_images[@]}"; do
+    ensure_image "${image}"
+  done
 }
 
 write_kind_config() {
@@ -246,8 +308,15 @@ setup_internal_backend() {
   log "Creating LVM backend inside ${storage_node}"
   docker exec "${storage_node}" bash -ceu '
     export DEBIAN_FRONTEND=noninteractive
-    apt-get update -qq
-    apt-get install -y -qq --no-install-recommends lvm2
+    for attempt in 1 2 3; do
+      if apt-get update -qq && apt-get install -y -qq --no-install-recommends lvm2; then
+        break
+      fi
+      if [[ "${attempt}" == 3 ]]; then
+        exit 1
+      fi
+      sleep "$((attempt * 3))"
+    done
     for setting in udev_sync udev_rules obtain_device_list_from_udev; do
       sed -i "s/${setting} = 1/${setting} = 0/" /etc/lvm/lvm.conf
     done
@@ -302,7 +371,12 @@ install_driver() {
   topology=$1
   cluster=$2
   log "Loading images into ${cluster}"
-  kind load docker-image --name "${cluster}" "${controller_image}" "${agent_image}" "${node_image}" "${workload_base_image}"
+  kind load docker-image --name "${cluster}" \
+    "${controller_image}" \
+    "${agent_image}" \
+    "${node_image}" \
+    "${workload_base_image}" \
+    "${sidecar_images[@]}"
 
   helm_args=(
     upgrade --install "${helm_release}" "${repo_root}/charts/pillar-csi"
@@ -310,6 +384,7 @@ install_driver() {
     --create-namespace
     --wait
     --timeout 15m
+    --set "imagePullPolicy=Never"
     --set "controller.image.repository=pillar-csi/controller"
     --set "controller.image.tag=${image_tag}"
     --set "controller.image.pullPolicy=Never"

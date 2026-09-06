@@ -226,7 +226,7 @@ spec:
 func createNamespace(t *testing.T, purpose string) string {
 	t.Helper()
 	name := fmt.Sprintf("pillar-%s-%d", purpose, time.Now().UnixNano())
-	apply(t, fmt.Sprintf("apiVersion: v1\nkind: Namespace\nmetadata:\n  name: %s\n", name))
+	apply(t, fmt.Sprintf("apiVersion: v1\nkind: Namespace\nmetadata:\n  name: %s\n  labels:\n    pillar-csi.bhyoo.com/docker-e2e: \"true\"\n", name))
 	return name
 }
 

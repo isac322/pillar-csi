@@ -11,12 +11,22 @@ ARG KIND_VERSION
 # Nested Docker under an emulated Linux VM can legitimately exceed that while
 # still making progress, so build the pinned release with a bounded 5-minute
 # provider wait.
-RUN apk add --no-cache git \
-    && git clone --quiet --depth 1 --branch "${KIND_VERSION}" https://github.com/kubernetes-sigs/kind.git /src/kind \
-    && sed -i \
+RUN set -eux; \
+    for attempt in 1 2 3; do \
+      if apk add --no-cache git; then break; fi; \
+      if [ "${attempt}" = 3 ]; then exit 1; fi; \
+      sleep "$((attempt * 3))"; \
+    done; \
+    for attempt in 1 2 3; do \
+      rm -rf /src/kind; \
+      if git clone --quiet --depth 1 --branch "${KIND_VERSION}" https://github.com/kubernetes-sigs/kind.git /src/kind; then break; fi; \
+      if [ "${attempt}" = 3 ]; then exit 1; fi; \
+      sleep "$((attempt * 3))"; \
+    done; \
+    sed -i \
       's/context.WithTimeout(context.Background(), 30\*time.Second)/context.WithTimeout(context.Background(), 5*time.Minute)/' \
-      /src/kind/pkg/cluster/internal/providers/docker/provision.go \
-    && grep -q 'context.WithTimeout(context.Background(), 5\*time.Minute)' \
+      /src/kind/pkg/cluster/internal/providers/docker/provision.go; \
+    grep -q 'context.WithTimeout(context.Background(), 5\*time.Minute)' \
       /src/kind/pkg/cluster/internal/providers/docker/provision.go
 WORKDIR /src/kind
 RUN go build -trimpath -o /kind ./cmd/kind
@@ -30,25 +40,31 @@ ARG HELM_VERSION=v3.18.4
 ARG TARGETARCH
 
 RUN set -eux; \
-    apk add --no-cache \
-      bash \
-      ca-certificates \
-      coreutils \
-      curl \
-      e2fsprogs \
-      git \
-      jq \
-      kmod \
-      lvm2 \
-      make \
-      util-linux; \
+    for attempt in 1 2 3; do \
+      if apk add --no-cache \
+        bash \
+        ca-certificates \
+        coreutils \
+        curl \
+        e2fsprogs \
+        git \
+        jq \
+        kmod \
+        lvm2 \
+        make \
+        util-linux; then \
+        break; \
+      fi; \
+      if [ "${attempt}" = 3 ]; then exit 1; fi; \
+      sleep "$((attempt * 3))"; \
+    done; \
     case "${TARGETARCH}" in \
       amd64|arm64) tool_arch="${TARGETARCH}" ;; \
       *) echo "unsupported architecture: ${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
-    curl -fsSL -o /usr/local/bin/kubectl \
+    curl --retry 3 --retry-all-errors --retry-delay 2 -fsSL -o /usr/local/bin/kubectl \
       "https://dl.k8s.io/release/${KUBERNETES_VERSION}/bin/linux/${tool_arch}/kubectl"; \
-    curl -fsSL \
+    curl --retry 3 --retry-all-errors --retry-delay 2 -fsSL \
       "https://get.helm.sh/helm-${HELM_VERSION}-linux-${tool_arch}.tar.gz" \
       | tar -xz -C /tmp; \
     mv "/tmp/linux-${tool_arch}/helm" /usr/local/bin/helm; \
