@@ -22,7 +22,6 @@ import (
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	ctrl "sigs.k8s.io/controller-runtime"
 
 	agentv1 "github.com/bhyoo/pillar-csi/gen/go/pillar_csi/agent/v1"
 	"github.com/bhyoo/pillar-csi/internal/agent/backend"
@@ -95,11 +94,11 @@ func (s *Server) ExpandVolume(
 		return nil, status.Errorf(codes.Internal, "ExpandVolume: %v", err)
 	}
 
-	// After the backend volume is resized, refresh the NVMe-oF namespace
-	// so initiators see the new block device size without reconnecting.
-	// This is a best-effort operation: if there is no active export for
-	// this volume (e.g. not yet exported or already unexported), we
-	// silently skip the resize.
+	// After the backend volume is resized, ask the enabled NVMe-oF namespace
+	// to revalidate its backing size. The operation is a no-op when this volume
+	// has no active NVMe export. When an export exists, failure must be returned:
+	// otherwise ControllerExpandVolume reports success while connected nodes
+	// keep seeing the old capacity and retry NodeExpandVolume indefinitely.
 	nqn, nqnErr := volumeTargetID(agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP, req.GetVolumeId())
 	if nqnErr != nil {
 		return nil, status.Errorf(codes.Internal, "ExpandVolume: derive target NQN: %v", nqnErr)
@@ -109,14 +108,14 @@ func (s *Server) ExpandVolume(
 		SubsystemNQN: nqn,
 		NamespaceID:  1,
 	}
-	// Best-effort: namespace may not exist if the volume is not exported.
 	resizeErr := target.ResizeNamespace()
 	if resizeErr != nil {
-		ctrl.Log.WithName("agent").WithName("volume").Error(
+		return nil, status.Errorf(
+			codes.Internal,
+			"ExpandVolume: revalidate NVMe namespace for volume %q (nqn=%q): %v",
+			req.GetVolumeId(),
+			nqn,
 			resizeErr,
-			"ExpandVolume namespace resize failed after backend expansion; continuing",
-			"volumeID", req.GetVolumeId(),
-			"nqn", nqn,
 		)
 	}
 

@@ -19,6 +19,8 @@ package agent_test
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -289,6 +291,41 @@ func TestExpandVolume_Success(t *testing.T) {
 	}
 	if resp.GetCapacityBytes() != 2<<30 {
 		t.Errorf("CapacityBytes = %d, want %d", resp.GetCapacityBytes(), 2<<30)
+	}
+}
+func TestExpandVolume_ActiveNVMeNamespaceRevalidationFailure(t *testing.T) {
+	t.Parallel()
+	mb := &mockBackend{expandAllocated: 2 << 30}
+	root := t.TempDir()
+	namespaceDir := filepath.Join(
+		root,
+		"nvmet",
+		"subsystems",
+		"nqn.2026-01.com.bhyoo.pillar-csi:tank.pvc-abc",
+		"namespaces",
+		"1",
+	)
+	if err := os.MkdirAll(namespaceDir, 0o750); err != nil {
+		t.Fatalf("create active namespace: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(namespaceDir, "revalidate_size"), 0o750); err != nil {
+		t.Fatalf("create invalid revalidate_size attribute: %v", err)
+	}
+	srv := agent.NewServer(map[string]backend.VolumeBackend{testPool: mb}, root)
+
+	_, err := srv.ExpandVolume(context.Background(), &agentv1.ExpandVolumeRequest{
+		VolumeId:       testVolumeID,
+		RequestedBytes: 2 << 30,
+	})
+	if err == nil {
+		t.Fatal("expected namespace revalidation error, got nil")
+	}
+	st, _ := status.FromError(err)
+	if st.Code() != codes.Internal {
+		t.Errorf("code = %v, want Internal", st.Code())
+	}
+	if !strings.Contains(st.Message(), "revalidate NVMe namespace") {
+		t.Errorf("error = %q, want revalidation context", st.Message())
 	}
 }
 

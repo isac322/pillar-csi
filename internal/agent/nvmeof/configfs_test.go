@@ -424,6 +424,44 @@ func TestCreateSubsystemAndNamespaceNonDefaultNsid(t *testing.T) {
 	assertFileContent(t, filepath.Join(nsDir, "enable"), "1")
 }
 
+func TestResizeNamespaceRevalidatesWithoutDisabling(t *testing.T) {
+	root := t.TempDir()
+	tgt := &NvmetTarget{
+		ConfigfsRoot: root,
+		SubsystemNQN: "nqn.2026-01.io.pillar-csi:pvc-resize",
+		NamespaceID:  1,
+	}
+	nsDir := tgt.namespaceDir()
+	if err := os.MkdirAll(nsDir, 0o750); err != nil {
+		t.Fatalf("create namespace directory: %v", err)
+	}
+	enablePath := filepath.Join(nsDir, "enable")
+	revalidatePath := filepath.Join(nsDir, "revalidate_size")
+	if err := os.WriteFile(enablePath, []byte("1"), 0o600); err != nil {
+		t.Fatalf("seed enable: %v", err)
+	}
+	if err := os.WriteFile(revalidatePath, nil, 0o600); err != nil {
+		t.Fatalf("seed revalidate_size: %v", err)
+	}
+
+	if err := tgt.ResizeNamespace(); err != nil {
+		t.Fatalf("ResizeNamespace: %v", err)
+	}
+	assertFileContent(t, enablePath, "1")
+	assertFileContent(t, revalidatePath, "1")
+}
+
+func TestResizeNamespaceMissingExportIsNoOp(t *testing.T) {
+	tgt := &NvmetTarget{
+		ConfigfsRoot: t.TempDir(),
+		SubsystemNQN: "nqn.2026-01.io.pillar-csi:pvc-not-exported",
+		NamespaceID:  1,
+	}
+	if err := tgt.ResizeNamespace(); err != nil {
+		t.Fatalf("ResizeNamespace missing export: %v", err)
+	}
+}
+
 // StablePortID tests.
 
 func TestStablePortID(t *testing.T) {

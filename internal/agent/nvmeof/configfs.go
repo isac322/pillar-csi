@@ -210,6 +210,21 @@ func writeFile(path, content string) error {
 	return nil
 }
 
+// triggerFile writes to a write-only configfs action attribute. Unlike
+// writeFile, it cannot read the value back because the kernel exposes no show
+// callback for action files such as revalidate_size.
+func triggerFile(path, content string) error {
+	lock := writeFileLock(path)
+	lock.Lock()
+	defer lock.Unlock()
+
+	err := os.WriteFile(path, []byte(content), 0o600)
+	if err != nil {
+		return fmt.Errorf("configfs trigger %q = %q: %w", path, content, err)
+	}
+	return nil
+}
+
 // readFileTrimmed reads a configfs pseudo-file and returns the trimmed value.
 // A missing file is reported as "" + nil so callers can distinguish "freshly
 // created, no value yet" from a real I/O error.  This is the dual of
@@ -419,19 +434,30 @@ func (t *NvmetTarget) createNamespace() error {
 	return nil
 }
 
-// ResizeNamespace toggles the namespace enable flag (0 → 1) to force the
-// kernel to re-read the backing block device size.  Call this after expanding
-// the backend volume (e.g. lvextend, zfs set volsize) so that NVMe-oF
-// initiators see the new capacity without reconnecting.
+// ResizeNamespace asks the enabled NVMe target namespace to revalidate the
+// backing block-device size and notify connected initiators with a namespace
+// changed asynchronous event. It deliberately does not toggle enable: doing so
+// unregisters the live namespace and leaves mounted clients holding a stale
+// device node that fails with ENXIO during online filesystem expansion.
 func (t *NvmetTarget) ResizeNamespace() error {
-	enablePath := filepath.Join(t.namespaceDir(), "enable")
-	err := writeFile(enablePath, "0")
-	if err != nil {
-		return fmt.Errorf("ResizeNamespace %q ns=%d disable: %w", t.SubsystemNQN, t.NamespaceID, err)
+	nsDir := t.namespaceDir()
+	_, statErr := os.Stat(nsDir)
+	if statErr != nil {
+		if os.IsNotExist(statErr) {
+			return nil // volume is not currently exported
+		}
+		return fmt.Errorf("ResizeNamespace %q ns=%d stat: %w", t.SubsystemNQN, t.NamespaceID, statErr)
 	}
-	err = writeFile(enablePath, "1")
+
+	revalidatePath := filepath.Join(nsDir, "revalidate_size")
+	err := triggerFile(revalidatePath, "1")
 	if err != nil {
-		return fmt.Errorf("ResizeNamespace %q ns=%d re-enable: %w", t.SubsystemNQN, t.NamespaceID, err)
+		return fmt.Errorf(
+			"ResizeNamespace %q ns=%d revalidate backing size: %w",
+			t.SubsystemNQN,
+			t.NamespaceID,
+			err,
+		)
 	}
 	return nil
 }
