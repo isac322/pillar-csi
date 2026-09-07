@@ -17,7 +17,10 @@ limitations under the License.
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -72,5 +75,84 @@ func TestBuildFabricsConnectOpts_NoTrailingNewline(t *testing.T) {
 	got := buildFabricsConnectOpts("a", "1", "n", "h", "i")
 	if strings.ContainsAny(got, "\n\r") {
 		t.Errorf("option string must not include CR/LF; got %q", got)
+	}
+}
+
+func TestMknodFromSysfsDevReplacesStaleDeviceNode(t *testing.T) {
+	dir := t.TempDir()
+	devPath := filepath.Join(dir, "nvme0n1")
+	devFile := filepath.Join(dir, "dev")
+	if err := os.WriteFile(devPath, []byte("stale"), 0o600); err != nil {
+		t.Fatalf("seed stale device node: %v", err)
+	}
+	if err := os.WriteFile(devFile, []byte("259:7\n"), 0o600); err != nil {
+		t.Fatalf("seed sysfs dev: %v", err)
+	}
+
+	var gotPath string
+	var gotMode uint32
+	var gotDev int
+	fakeMknod := func(path string, mode uint32, dev int) error {
+		gotPath = path
+		gotMode = mode
+		gotDev = dev
+		return nil
+	}
+	got, err := mknodFromSysfsDevWith(devPath, devFile, fakeMknod)
+	if err != nil {
+		t.Fatalf("mknodFromSysfsDevWith: %v", err)
+	}
+	if got != devPath {
+		t.Errorf("device path = %q, want %q", got, devPath)
+	}
+	if _, statErr := os.Stat(devPath); !os.IsNotExist(statErr) {
+		t.Errorf("stale device path still exists after replacement: %v", statErr)
+	}
+	wantDev := (7 & 0xff) | ((259 & 0xfff) << 8)
+	if gotPath != devPath || gotMode != syscall.S_IFBLK|0o600 || gotDev != wantDev {
+		t.Errorf(
+			"mknod call = (%q, %#o, %d), want (%q, %#o, %d)",
+			gotPath,
+			gotMode,
+			gotDev,
+			devPath,
+			uint32(syscall.S_IFBLK|0o600),
+			wantDev,
+		)
+	}
+}
+
+func TestMknodFromSysfsDevKeepsMatchingDeviceNode(t *testing.T) {
+	dir := t.TempDir()
+	devPath := filepath.Join(dir, "nvme0n1")
+	devFile := filepath.Join(dir, "dev")
+	if err := os.WriteFile(devPath, []byte("live"), 0o600); err != nil {
+		t.Fatalf("seed matching device node: %v", err)
+	}
+	if err := os.WriteFile(devFile, []byte("0:0\n"), 0o600); err != nil {
+		t.Fatalf("seed matching sysfs dev: %v", err)
+	}
+
+	calls := 0
+	fakeMknod := func(string, uint32, int) error {
+		calls++
+		return os.ErrExist
+	}
+	got, err := mknodFromSysfsDevWith(devPath, devFile, fakeMknod)
+	if err != nil {
+		t.Fatalf("mknodFromSysfsDevWith: %v", err)
+	}
+	if got != devPath {
+		t.Errorf("device path = %q, want %q", got, devPath)
+	}
+	if calls != 1 {
+		t.Errorf("mknod calls = %d, want 1", calls)
+	}
+	data, readErr := os.ReadFile(devPath) //nolint:gosec // temp-dir path controlled by this test.
+	if readErr != nil {
+		t.Fatalf("matching device node was unlinked: %v", readErr)
+	}
+	if string(data) != "live" {
+		t.Errorf("matching device node content = %q, want live", data)
 	}
 }
