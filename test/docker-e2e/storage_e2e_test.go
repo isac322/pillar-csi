@@ -137,45 +137,30 @@ spec:
   resources:
     requests:
       storage: 64Mi
----
-apiVersion: v1
-kind: Pod
-metadata:
-  name: raw-io
-  namespace: %s
-spec:
-  restartPolicy: Never
-  nodeSelector:
-    kubernetes.io/hostname: %s
-  containers:
-    - name: test
-      image: busybox:1.38.0
-      command: ["sh", "-c", "sleep 3600"]
-      volumeDevices:
-        - name: data
-          devicePath: /dev/pillar
-  volumes:
-    - name: data
-      persistentVolumeClaim:
-        claimName: raw
-`, ns, cfg.storageClass, ns, cfg.clientNodeA))
+`, ns, cfg.storageClass))
+	createRawBlockPod(t, ns, "raw-writer", "raw", cfg.clientNodeA)
 
-	waitForPodReady(t, ns, "raw-io")
-	assertPodNode(t, ns, "raw-io", cfg.clientNodeA)
+	waitForPodReady(t, ns, "raw-writer")
+	assertPodNode(t, ns, "raw-writer", cfg.clientNodeA)
 	assertPVTarget(t, ns, "raw", cfg.targetAddress)
-	kubectl(t, "-n", ns, "exec", "raw-io", "--", "sh", "-c", "test -b /dev/pillar")
+	kubectl(t, "-n", ns, "exec", "raw-writer", "--", "sh", "-c", "test -b /dev/pillar")
 
 	const marker = "pillar-csi-raw-block"
 	kubectl(
-		t, "-n", ns, "exec", "raw-io", "--", "sh", "-c",
+		t, "-n", ns, "exec", "raw-writer", "--", "sh", "-c",
 		fmt.Sprintf("printf '%%s' %q | dd of=/dev/pillar bs=1 conv=fsync", marker),
 	)
+	kubectl(t, "-n", ns, "delete", "pod", "raw-writer", "--wait=true", "--timeout=3m")
+
+	createRawBlockPod(t, ns, "raw-reader", "raw", cfg.clientNodeB)
+	waitForPodReady(t, ns, "raw-reader")
+	assertPodNode(t, ns, "raw-reader", cfg.clientNodeB)
 	got := kubectl(
-		t, "-n", ns, "exec", "raw-io", "--", "sh", "-c",
+		t, "-n", ns, "exec", "raw-reader", "--", "sh", "-c",
 		fmt.Sprintf("dd if=/dev/pillar bs=1 count=%d", len(marker)),
 	)
 	if got != marker {
-		t.Fatalf("raw block read %q, want %q", got, marker)
+		t.Fatalf("cross-node raw block read %q, want %q", got, marker)
 	}
 }
 
@@ -280,6 +265,31 @@ spec:
       volumeMounts:
         - name: data
           mountPath: /data
+  volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: %s
+`, name, namespace, node, claim))
+}
+
+func createRawBlockPod(t *testing.T, namespace, name, claim, node string) {
+	t.Helper()
+	apply(t, fmt.Sprintf(`apiVersion: v1
+kind: Pod
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  restartPolicy: Never
+  nodeSelector:
+    kubernetes.io/hostname: %s
+  containers:
+    - name: test
+      image: busybox:1.38.0
+      command: ["sh", "-c", "sleep 3600"]
+      volumeDevices:
+        - name: data
+          devicePath: /dev/pillar
   volumes:
     - name: data
       persistentVolumeClaim:

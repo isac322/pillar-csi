@@ -47,22 +47,48 @@ forward_signal() {
   exit_code=$2
   requested_exit_code=${exit_code}
   if [[ -n "${run_pid}" ]] && kill -0 "${run_pid}" 2>/dev/null; then
-    # Non-interactive shells start background jobs with SIGINT ignored.
-    # Translate both container stop signals to SIGTERM so run.sh can execute
-    # its cleanup trap, while preserving the caller-facing exit status below.
-    kill -s "${signal}" "${run_pid}" 2>/dev/null || true
+    # run.sh owns a separate process group so its shell trap and all active
+    # children receive the stop signal before Compose reaches its kill timeout.
+    kill -s "${signal}" -- "-${run_pid}" 2>/dev/null || true
     return
   fi
   exit "${exit_code}"
 }
 
+cleanup_docker_mounts() {
+  local cleanup_rc=0
+  local target
+  local -a targets=()
+  mapfile -t targets < <(findmnt -Rrno TARGET /var/lib/docker 2>/dev/null | sort -r)
+  for target in "${targets[@]}"; do
+    if [[ "${target}" == /var/lib/docker ]]; then
+      continue
+    fi
+    if ! umount -l "${target}"; then
+      printf 'failed to unmount nested Docker path %s\n' "${target}" >&2
+      cleanup_rc=1
+    fi
+  done
+  return "${cleanup_rc}"
+}
+
 cleanup() {
+  local rc=$?
+  local cleanup_rc=0
+  trap - EXIT
   if [[ -n "${run_pid}" ]] && kill -0 "${run_pid}" 2>/dev/null; then
-    kill -s TERM "${run_pid}" 2>/dev/null || true
+    kill -s TERM -- "-${run_pid}" 2>/dev/null || cleanup_rc=1
     wait "${run_pid}" 2>/dev/null || true
   fi
-  kill "${dockerd_pid}" 2>/dev/null || true
-  wait "${dockerd_pid}" 2>/dev/null || true
+  if kill -0 "${dockerd_pid}" 2>/dev/null; then
+    kill "${dockerd_pid}" 2>/dev/null || cleanup_rc=1
+    wait "${dockerd_pid}" 2>/dev/null || true
+  fi
+  cleanup_docker_mounts || cleanup_rc=1
+  if [[ ${rc} -eq 0 && ${cleanup_rc} -ne 0 ]]; then
+    rc=${cleanup_rc}
+  fi
+  exit "${rc}"
 }
 trap cleanup EXIT
 trap 'forward_signal TERM 130' INT
@@ -71,7 +97,7 @@ trap 'forward_signal TERM 143' TERM
 for _ in $(seq 1 120); do
   if docker info >/dev/null 2>&1; then
     set +e
-    /usr/local/bin/pillar-csi-docker-e2e-run &
+    setsid /usr/local/bin/pillar-csi-docker-e2e-run &
     run_pid=$!
     wait "${run_pid}"
     rc=$?

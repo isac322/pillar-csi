@@ -22,14 +22,16 @@ readonly -a build_base_images=(
   "gcr.io/distroless/static:nonroot"
 )
 readonly vg_name="pillar-e2e-vg"
+readonly storage_class="pillar-e2e"
 readonly helm_namespace="pillar-csi-system"
 readonly helm_release="pillar-csi"
-readonly keep_failed="${PILLAR_E2E_KEEP_FAILED:-false}"
 readonly requested_topologies="${PILLAR_E2E_TOPOLOGIES:-internal external}"
 
 active_cluster=""
 active_external_agent=""
 active_storage_node=""
+topology_cleanup_failed=false
+diagnostics_collected=false
 
 log() {
   printf '\n[%s] %s\n' "$(date -u +%H:%M:%S)" "$*" >&2
@@ -71,7 +73,7 @@ cleanup_lvm_backend() {
   if [[ "$(docker inspect -f '{{.State.Running}}' "${container}" 2>/dev/null)" != true ]]; then
     return
   fi
-  docker exec "${container}" sh -cu '
+  timeout 20s docker exec "${container}" sh -cu '
     vg=${PILLAR_E2E_LVM_VG:-pillar-e2e-vg}
     backing_files="/var/lib/pillar-e2e-lvm.img /var/lib/pillar-csi/${vg}.img"
     devices=
@@ -101,54 +103,108 @@ cleanup_lvm_backend() {
       fi
     done
     exit "${rc}"
-  '
+  ' >&2
 }
 
 cleanup_test_namespaces() {
+  local -a cleanup_pvs=()
+  local -a pv_resources=()
+  local cleanup_rc=0
+  local pv
+  local pv_output
   if [[ -z "${active_cluster}" ]]; then
     return
   fi
-  if ! kubectl delete namespace \
+  if pv_output=$(kubectl --request-timeout=10s get pv -o \
+    "jsonpath={range .items[?(@.spec.storageClassName==\"${storage_class}\")]}{.metadata.name}{\"\\n\"}{end}" 2>/dev/null); then
+    mapfile -t cleanup_pvs <<<"${pv_output}"
+  else
+    log "Failed to list Docker E2E persistent volumes before namespace cleanup"
+    cleanup_rc=1
+  fi
+  if ! kubectl --request-timeout=10s delete namespace \
     -l pillar-csi.bhyoo.com/docker-e2e=true \
     --wait=true \
-    --timeout=4m >/dev/null 2>&1; then
+    --timeout=60s >/dev/null 2>&1; then
     log "Failed to delete Docker E2E workload namespaces before storage cleanup"
+    cleanup_rc=1
   fi
+  for pv in "${cleanup_pvs[@]}"; do
+    if [[ -n "${pv}" ]]; then
+      pv_resources+=("pv/${pv}")
+    fi
+  done
+  if (( ${#pv_resources[@]} > 0 )) && ! kubectl --request-timeout=10s wait \
+    --for=delete \
+    --timeout=60s \
+    "${pv_resources[@]}" >/dev/null 2>&1; then
+    log "Persistent volumes were not deleted before storage cleanup: ${cleanup_pvs[*]}"
+    cleanup_rc=1
+  fi
+  return "${cleanup_rc}"
 }
 
 cleanup_topology() {
   set +e
-  cleanup_test_namespaces
-  if [[ -n "${active_storage_node}" ]]; then
-    cleanup_lvm_backend "${active_storage_node}"
-    active_storage_node=""
+  local cleanup_rc=0
+  if ! cleanup_test_namespaces; then
+    cleanup_rc=1
+    collect_diagnostics
+    set +e
+  fi
+  if [[ -n "${active_storage_node}" ]] && ! cleanup_lvm_backend "${active_storage_node}"; then
+    log "Failed to remove LVM state from storage node ${active_storage_node}"
+    cleanup_rc=1
+    collect_diagnostics
+    set +e
   fi
   if [[ -n "${active_external_agent}" ]]; then
-    cleanup_lvm_backend "${active_external_agent}"
-    docker rm -f "${active_external_agent}" >/dev/null 2>&1
-    active_external_agent=""
+    if ! cleanup_lvm_backend "${active_external_agent}"; then
+      log "Failed to remove LVM state from external agent ${active_external_agent}"
+      cleanup_rc=1
+      collect_diagnostics
+      set +e
+    fi
+    if docker inspect "${active_external_agent}" >/dev/null 2>&1 &&
+      ! timeout 20s docker rm -f "${active_external_agent}" >/dev/null 2>&1; then
+      log "Failed to remove external agent ${active_external_agent}"
+      cleanup_rc=1
+      collect_diagnostics
+      set +e
+    fi
   fi
-  if [[ -n "${active_cluster}" ]]; then
-    kind delete cluster --name "${active_cluster}" >/dev/null 2>&1
-    active_cluster=""
+  if [[ -n "${active_cluster}" ]] &&
+    ! timeout 60s kind delete cluster --name "${active_cluster}" >/dev/null 2>&1; then
+    log "Failed to delete Kind cluster ${active_cluster}"
+    cleanup_rc=1
+    collect_diagnostics
+    set +e
   fi
+  active_storage_node=""
+  active_external_agent=""
+  active_cluster=""
   set -e
+  return "${cleanup_rc}"
 }
 
 collect_diagnostics() {
+  if [[ "${diagnostics_collected}" == true ]]; then
+    return
+  fi
+  diagnostics_collected=true
   set +e
   if [[ -n "${active_cluster}" ]]; then
     log "Diagnostics for ${active_cluster}"
-    kubectl --request-timeout=10s get nodes -o wide
-    kubectl --request-timeout=10s get pillaragents,pillarstores,pillarprotocols,pillarstorageclasses,pillarvolumestates -A
-    kubectl --request-timeout=10s get pods -A -o wide
-    kubectl --request-timeout=10s get events -A --sort-by=.lastTimestamp | tail -100
-    kubectl --request-timeout=10s -n "${helm_namespace}" logs deployment/pillar-csi-controller --all-containers --tail=300
-    kubectl --request-timeout=10s -n "${helm_namespace}" logs daemonset/pillar-csi-node --all-containers --tail=150
-    kubectl --request-timeout=10s -n "${helm_namespace}" logs daemonset/pillar-csi-agent --all-containers --tail=150
+    kubectl --request-timeout=3s get nodes -o wide
+    kubectl --request-timeout=3s get pillaragents,pillarstores,pillarprotocols,pillarstorageclasses,pillarvolumestates -A
+    kubectl --request-timeout=3s get pods -A -o wide
+    kubectl --request-timeout=3s get events -A --sort-by=.lastTimestamp | tail -100
+    kubectl --request-timeout=3s -n "${helm_namespace}" logs deployment/pillar-csi-controller --all-containers --tail=300
+    kubectl --request-timeout=3s -n "${helm_namespace}" logs daemonset/pillar-csi-node --all-containers --tail=150
+    kubectl --request-timeout=3s -n "${helm_namespace}" logs daemonset/pillar-csi-agent --all-containers --tail=150
   fi
   if [[ -n "${active_external_agent}" ]]; then
-    docker logs "${active_external_agent}" 2>&1 | tail -300
+    timeout 5s docker logs "${active_external_agent}" 2>&1 | tail -300
   fi
   set -e
 }
@@ -157,12 +213,15 @@ on_exit() {
   rc=$?
   if [[ ${rc} -ne 0 ]]; then
     collect_diagnostics
-    if [[ "${keep_failed}" == true ]]; then
-      log "Preserving failed topology for inspection: cluster=${active_cluster:-none} external-agent=${active_external_agent:-none}"
-      exit "${rc}"
-    fi
   fi
-  cleanup_topology
+  local cleanup_rc=0
+  cleanup_topology || cleanup_rc=$?
+  if [[ ${rc} -eq 0 && "${topology_cleanup_failed}" == true ]]; then
+    rc=1
+  fi
+  if [[ ${rc} -eq 0 && ${cleanup_rc} -ne 0 ]]; then
+    rc=${cleanup_rc}
+  fi
   exit "${rc}"
 }
 trap on_exit EXIT
@@ -194,6 +253,12 @@ require_linux_storage_stack() {
   if ! mountpoint -q /sys/kernel/config; then
     mount -t configfs none /sys/kernel/config
   fi
+  if [[ ! -d /sys/kernel/config/nvmet ]]; then
+    printf '%s\n' \
+      'NVMe target configfs is unavailable at /sys/kernel/config/nvmet.' \
+      'Mount configfs on the Linux Docker host before running this harness.' >&2
+    exit 1
+  fi
   if [[ ! -c /dev/nvme-fabrics ]]; then
     if [[ ! -r /sys/class/misc/nvme-fabrics/dev ]]; then
       printf 'nvme_fabrics loaded but /sys/class/misc/nvme-fabrics/dev is unavailable\n' >&2
@@ -206,7 +271,6 @@ require_linux_storage_stack() {
     fi
   fi
   test -c /dev/nvme-fabrics
-  test -d /sys/kernel/config/nvmet
 }
 
 build_images() {
@@ -335,6 +399,11 @@ start_external_agent() {
   log "Starting external storage server ${container_name}"
   if docker inspect "${container_name}" >/dev/null 2>&1; then
     log "Removing stale external storage server ${container_name}"
+    if [[ "$(docker inspect -f '{{.State.Running}}' "${container_name}" 2>/dev/null)" == true ]] &&
+      ! cleanup_lvm_backend "${container_name}"; then
+      log "Failed to clean LVM state from stale external storage server ${container_name}"
+      return 1
+    fi
     docker rm -f "${container_name}" >/dev/null
   fi
   docker run -d \
@@ -482,12 +551,12 @@ spec:
 apiVersion: pillar-csi.bhyoo.com/v1alpha1
 kind: PillarStorageClass
 metadata:
-  name: pillar-e2e
+  name: ${storage_class}
 spec:
   storeRef: pillar-e2e-store
   protocolRef: pillar-e2e-nvme
   storageClass:
-    name: pillar-e2e
+    name: ${storage_class}
     reclaimPolicy: Delete
     volumeBindingMode: WaitForFirstConsumer
     allowVolumeExpansion: true
@@ -496,7 +565,7 @@ EOF
   kubectl wait --for=jsonpath='{.status.conditions[?(@.type=="Ready")].status}'=True \
     pillaragent/pillar-e2e-agent --timeout=3m
   kubectl wait --for=jsonpath='{.status.conditions[?(@.type=="Ready")].status}'=True \
-    pillarstorageclass/pillar-e2e --timeout=3m
+    "pillarstorageclass/${storage_class}" --timeout=3m
 }
 
 run_tests() {
@@ -506,11 +575,11 @@ run_tests() {
   target_address=$4
   log "Running CSI lifecycle tests for ${topology} topology"
   PILLAR_E2E_TOPOLOGY="${topology}" \
-  PILLAR_E2E_STORAGE_CLASS=pillar-e2e \
+  PILLAR_E2E_STORAGE_CLASS="${storage_class}" \
   PILLAR_E2E_CLIENT_NODE_A="${client_a}" \
   PILLAR_E2E_CLIENT_NODE_B="${client_b}" \
   PILLAR_E2E_TARGET_ADDRESS="${target_address}" \
-    go test -tags=docker_e2e -count=1 -timeout=30m -v ./test/docker-e2e
+    go test -tags=docker_e2e -count=1 -timeout=90m -v ./test/docker-e2e
 }
 
 create_kind_cluster() {
@@ -552,6 +621,7 @@ run_topology() {
   cluster="pillar-${topology}"
   config_path="/tmp/${cluster}.yaml"
   cleanup_topology
+  diagnostics_collected=false
   active_cluster="${cluster}"
 
   write_kind_config "${topology}" "${config_path}"
@@ -578,7 +648,9 @@ run_topology() {
   run_tests "${topology}" "${client_a}" "${client_b}" "${target_address}"
 
   log "${topology} topology passed"
-  cleanup_topology
+  if ! cleanup_topology; then
+    topology_cleanup_failed=true
+  fi
 }
 
 cd "${repo_root}"
@@ -593,4 +665,8 @@ for topology in ${requested_topologies}; do
       ;;
   esac
 done
+if [[ "${topology_cleanup_failed}" == true ]]; then
+  log "Docker E2E scenarios completed, but topology cleanup failed"
+  exit 1
+fi
 log "Requested Docker multi-node E2E scenarios passed: ${requested_topologies}"

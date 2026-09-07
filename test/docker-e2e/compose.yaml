@@ -9,6 +9,7 @@ services:
     environment:
       DOCKER_TLS_CERTDIR: ""
       PILLAR_E2E_DNS: "${PILLAR_E2E_DNS:-1.1.1.1}"
+      PILLAR_E2E_TOPOLOGIES: "${PILLAR_E2E_TOPOLOGIES:-internal external}"
     dns:
       - "${PILLAR_E2E_DNS:-1.1.1.1}"
     stop_grace_period: 5m
@@ -16,5 +17,9 @@ services:
       - ../..:/workspace:ro
       - /sys/kernel/config:/sys/kernel/config:rshared
       - /lib/modules:/lib/modules:ro
+      - docker-data:/var/lib/docker
     tmpfs:
       - /run
+
+volumes:
+  docker-data:
