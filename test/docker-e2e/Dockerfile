@@ -1,13 +1,13 @@
 # syntax=docker/dockerfile:1.11
 
-ARG GO_VERSION=1.26
+ARG GO_VERSION=1.27
 ARG ALPINE_VERSION=3.24
-ARG KIND_VERSION=v0.32.0
+ARG KIND_VERSION=v0.33.0
 
 FROM golang:${GO_VERSION}-alpine${ALPINE_VERSION} AS kind
 
 ARG KIND_VERSION
-# kind v0.32.0 waits only 30 seconds for each node container's systemd boot.
+# kind v0.33.0 waits only 30 seconds for each node container's systemd boot.
 # Nested Docker under an emulated Linux VM can legitimately exceed that while
 # still making progress, so build the pinned release with a bounded 5-minute
 # provider wait.
@@ -35,7 +35,7 @@ FROM golang:${GO_VERSION}-alpine${ALPINE_VERSION} AS go
 
 FROM docker:29-dind
 
-ARG KUBERNETES_VERSION=v1.36.2
+ARG KUBERNETES_VERSION=v1.37.0
 ARG HELM_VERSION=v3.18.4
 ARG TARGETARCH
 

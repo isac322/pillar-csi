@@ -33,6 +33,22 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 CONTROL_PLANE="${CLUSTER_NAME}-control-plane"
 
 log() { printf "[bootstrap] %s\n" "$*" >&2; }
+wait_for_resource_ready() {
+  local resource=$1
+  local deadline=$((SECONDS + 180))
+  local state=""
+  while ((SECONDS < deadline)); do
+    if state=$(kubectl --request-timeout=5s get "${resource}" \
+      -o 'jsonpath={.status.conditions[?(@.type=="Ready")].status}' 2>&1) &&
+      [[ "${state}" == "True" ]]; then
+      return
+    fi
+    sleep 2
+  done
+  log "Timed out waiting for ${resource} Ready condition; last state: ${state}"
+  return 1
+}
+
 
 # ── 1. Kind cluster ──────────────────────────────────────────────────────────
 log "Ensuring Kind cluster ${CLUSTER_NAME} exists"
@@ -136,8 +152,7 @@ helm upgrade --install "${HELM_RELEASE}" "${REPO_ROOT}/charts/pillar-csi" \
   --set-string "agent.extraArgs[0]=--backend" \
   --set-string "agent.extraArgs[1]=type=lvm-lv\,vg=${VG_NAME}" \
   --set-string "agent.extraArgs[2]=--listen-address=:9500" \
-  --set-string "controller.extraEnv[0].name=ENABLE_WEBHOOKS" \
-  --set-string "controller.extraEnv[0].value=false"
+  --set "webhook.enabled=false"
 
 # ── 5. Apply PillarAgent / PillarStore / PillarProtocol ─────────────────────
 log "Applying PillarAgent / PillarStore / PillarProtocol"
@@ -176,8 +191,7 @@ EOF
 
 # ── 6. Wait for PillarAgent Ready ──────────────────────────────────────────
 log "Waiting for PillarAgent condition=Ready"
-if ! kubectl wait --for=condition=Ready --timeout=3m pillaragent/pillar-target-default; then
-  log "PillarAgent never reached Ready; dumping CR + dependencies"
+if ! wait_for_resource_ready pillaragent/pillar-target-default; then
   kubectl get pillaragent pillar-target-default -o yaml || true
   kubectl get pillarstore ${VG_NAME} -o yaml || true
   kubectl get pillarprotocol nvmeof-tcp -o yaml || true
