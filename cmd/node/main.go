@@ -312,7 +312,7 @@ func (c *fabricsConnector) nvmeDisconnect(_ context.Context, subsysNQN string) e
 // Returns ("", nil) when the device is not yet visible; callers
 // should poll until a non-empty path is returned or a deadline is exceeded.
 //
-//nolint:gocognit,gocyclo // primary scan + fallback paths kept inline for locality
+//nolint:gocognit // primary scan + fallback paths kept inline for locality
 func (c *fabricsConnector) nvmeGetDevicePath(ctx context.Context, subsysNQN string) (string, error) {
 	// ── Primary path: sysfs nvme-subsystem scan ──────────────────────────────
 	subsysDir := filepath.Join(c.sysfsRoot, "class", "nvme-subsystem")
@@ -336,6 +336,7 @@ func (c *fabricsConnector) nvmeGetDevicePath(ctx context.Context, subsysNQN stri
 			if readErr != nil {
 				break // can't enumerate namespace entries; fall through to nvme-cli
 			}
+			namespaceSeen := false
 			for _, nsEntry := range nsEntries {
 				name := nsEntry.Name()
 				// Filter for namespace block-device names (nvmeXnY).
@@ -352,27 +353,20 @@ func (c *fabricsConnector) nvmeGetDevicePath(ctx context.Context, subsysNQN stri
 				if strings.ContainsAny(afterN, "p") {
 					continue // partition entry (nvmeXnYpZ), skip
 				}
-				// Namespace entry nvmeXnY found in sysfs.
+				namespaceSeen = true
+				// Always validate the existing node against the live sysfs
+				// dev_t. A prior disconnect can leave /dev/nvmeXnY behind
+				// while the kernel reuses the name with a new minor.
 				devPath := "/dev/" + name
-				_, statErr := os.Stat(devPath)
-				if statErr == nil {
-					return devPath, nil
-				}
-				// Namespace visible in sysfs but device node not yet in /dev/.
-				// Containerised hosts (Kind, most distroless images) do not run
-				// udev inside the node netns, so nothing else will mknod the
-				// block device.  Read major:minor from the subsystem-class
-				// sysfs "dev" file and create the node ourselves; udev hosts
-				// that already created it will return ENOENT on the stat above
-				// only briefly, and the mknod path is idempotent
-				// (os.IsExist).  See getDevicePathViaController for the same
-				// pattern applied to controller-class sysfs entries.
 				devFile := filepath.Join(subsysPath, name, "dev")
 				dp, mkErr := mknodFromSysfsDev(devPath, devFile)
-				if mkErr == nil && dp != "" {
-					return dp, nil
+				if mkErr != nil {
+					fmt.Fprintf(os.Stderr,
+						"pillar-node: nvmeGetDevicePath: ensure %s from %s: %v\n",
+						devPath, devFile, mkErr)
+					continue
 				}
-				return "", nil
+				return dp, nil
 			}
 			// The NQN was found in sysfs but no namespace entry appeared
 			// directly in the subsystem directory.  This happens on kernel
@@ -384,6 +378,12 @@ func (c *fabricsConnector) nvmeGetDevicePath(ctx context.Context, subsysNQN stri
 			dp, ctrlErr := c.getDevicePathViaController(subsysPath)
 			if ctrlErr == nil && dp != "" {
 				return dp, nil
+			}
+			if namespaceSeen {
+				// A namespace exists in the primary layout, but ensuring its
+				// device node failed and was logged above. Keep polling instead
+				// of misreporting a layout mismatch and scanning stale devices.
+				return "", nil
 			}
 			fmt.Fprintf(os.Stderr,
 				"pillar-node: nvmeGetDevicePath: NQN %q found in sysfs but no "+
@@ -420,7 +420,7 @@ func (c *fabricsConnector) nvmeGetDevicePath(ctx context.Context, subsysNQN stri
 //
 // The subsysPath argument is the absolute path to the nvme-subsystem class directory for
 // the matching NQN, e.g. /sys/class/nvme-subsystem/nvme-subsys2.
-func (c *fabricsConnector) getDevicePathViaController(subsysPath string) (string, error) { //nolint:gocognit,gocyclo
+func (c *fabricsConnector) getDevicePathViaController(subsysPath string) (string, error) {
 	ctrlEntries, err := os.ReadDir(subsysPath)
 	if err != nil {
 		return "", fmt.Errorf("readdir %s: %w", subsysPath, err)
@@ -454,56 +454,24 @@ func (c *fabricsConnector) getDevicePathViaController(subsysPath string) (string
 				continue // empty or partition
 			}
 			devPath := "/dev/" + nsName
-			// Device node already exists → use it.
-			_, statErr := os.Stat(devPath)
-			if statErr == nil {
-				fmt.Fprintf(os.Stderr,
-					"pillar-node: getDevicePathViaController: found existing %s\n", devPath)
-				return devPath, nil
-			}
-			// Device node missing.  Read major:minor from sysfs "dev" file and
-			// create the block device node via mknod(2).
 			devFile := filepath.Join(ctrlSysPath, nsName, "dev")
-			devBytes, readErr := os.ReadFile(devFile) //nolint:gosec
-			if readErr != nil {
+			dp, mkErr := mknodFromSysfsDev(devPath, devFile)
+			if mkErr != nil {
 				fmt.Fprintf(os.Stderr,
-					"pillar-node: getDevicePathViaController: read %s: %v\n", devFile, readErr)
+					"pillar-node: getDevicePathViaController: ensure %s from %s: %v\n",
+					devPath, devFile, mkErr)
 				continue
 			}
-			parts := strings.SplitN(strings.TrimSpace(string(devBytes)), ":", 2)
-			if len(parts) != 2 {
-				continue
-			}
-			major, majErr := strconv.ParseUint(parts[0], 10, 32)
-			minor, minErr := strconv.ParseUint(parts[1], 10, 32)
-			if majErr != nil || minErr != nil {
-				continue
-			}
-			// Compute device number using Linux makedev formula.
-			// minor bits 0-7 → bits 0-7; major bits 0-11 → bits 8-19;
-			// minor bits 8-19 → bits 20-31; major bits 12+ → bits 32+.
-			dev := int((minor & 0xff) | ((major & 0xfff) << 8) | //nolint:gosec // G115: Linux makedev bit-packing
-				((minor &^ 0xff) << 12) | ((major &^ 0xfff) << 32))
-			mknodErr := syscall.Mknod(devPath, syscall.S_IFBLK|0o600, dev)
-			if mknodErr != nil && !os.IsExist(mknodErr) {
-				fmt.Fprintf(os.Stderr,
-					"pillar-node: getDevicePathViaController: mknod %s (%d:%d): %v\n",
-					devPath, major, minor, mknodErr)
-				continue
-			}
-			fmt.Fprintf(os.Stderr,
-				"pillar-node: getDevicePathViaController: created %s (%d:%d)\n",
-				devPath, major, minor)
-			return devPath, nil
+			return dp, nil
 		}
 	}
 	return "", nil
 }
 
-// mknodFromSysfsDev reads "<major>:<minor>" from the sysfs file at devFile and
-// creates a block-device node at devPath using mknod(2).  The returned string
-// is devPath on success and "" if the sysfs file is unreadable or malformed —
-// callers treat the empty string as "device not yet ready, keep polling".
+// mknodFromSysfsDev reads "<major>:<minor>" from the sysfs file at devFile,
+// ensures devPath represents that exact block device, and returns devPath.
+// Unreadable or malformed sysfs data and device-node replacement failures are
+// returned as errors so callers can log the cause and continue polling.
 //
 // Stale-node recovery: when devPath already exists, the existing major:minor
 // is compared against the sysfs value.  If they match, the node is reused
@@ -518,6 +486,13 @@ func (c *fabricsConnector) getDevicePathViaController(subsysPath string) (string
 // (Kind, distroless) would never see /dev/nvmeXnY appear and every
 // NodeStageVolume would hit the 30s attach timeout.
 func mknodFromSysfsDev(devPath, devFile string) (string, error) {
+	return mknodFromSysfsDevWith(devPath, devFile, syscall.Mknod)
+}
+
+func mknodFromSysfsDevWith(
+	devPath, devFile string,
+	mknod func(path string, mode uint32, dev int) error,
+) (string, error) {
 	devBytes, readErr := os.ReadFile(devFile) //nolint:gosec // sysfs path under /sys/class/nvme*
 	if readErr != nil {
 		return "", readErr
@@ -559,7 +534,7 @@ func mknodFromSysfsDev(devPath, devFile string) (string, error) {
 		}
 	}
 
-	mknodErr := syscall.Mknod(devPath, syscall.S_IFBLK|0o600, dev)
+	mknodErr := mknod(devPath, syscall.S_IFBLK|0o600, dev)
 	if mknodErr != nil && !os.IsExist(mknodErr) {
 		return "", fmt.Errorf("mknodFromSysfsDev: mknod %s (%d:%d): %w", devPath, major, minor, mknodErr)
 	}

@@ -158,6 +158,19 @@ controller:
   # -- CSI Unix socket path on the shared emptyDir volume.
   csiSocketPath: /csi/csi.sock
 
+# ─── Admission webhooks ──────────────────────────────────────────────────────
+# The controller registers validation/defaulting handlers for the pillar CRDs.
+# The chart creates a release-scoped Service, self-signed serving certificate,
+# and the corresponding admissionregistration resources by default.
+webhook:
+  # -- Enable admission validation and defaulting webhooks.
+  enabled: true
+  # -- HTTPS port served by controller-runtime inside the controller Pod.
+  port: 9443
+  # -- Directory where the generated serving certificate is mounted.
+  certDir: /tmp/k8s-webhook-server/serving-certs
+
+
 # ─── pillar-node ─────────────────────────────────────────────────────────────
 # Kubernetes DaemonSet: CSI Node service + protocol initiators (NVMe-oF, iSCSI, NFS).
 # Runs CSI sidecars: node-driver-registrar, liveness-probe.

@@ -210,6 +210,21 @@ func writeFile(path, content string) error {
 	return nil
 }
 
+// triggerFile writes to a write-only configfs action attribute. Unlike
+// writeFile, it cannot read the value back because the kernel exposes no show
+// callback for action files such as revalidate_size.
+func triggerFile(path, content string) error {
+	lock := writeFileLock(path)
+	lock.Lock()
+	defer lock.Unlock()
+
+	err := os.WriteFile(path, []byte(content), 0o600)
+	if err != nil {
+		return fmt.Errorf("configfs trigger %q = %q: %w", path, content, err)
+	}
+	return nil
+}
+
 // readFileTrimmed reads a configfs pseudo-file and returns the trimmed value.
 // A missing file is reported as "" + nil so callers can distinguish "freshly
 // created, no value yet" from a real I/O error.  This is the dual of
@@ -244,16 +259,17 @@ func mkdirAll(path string) error {
 //   - attach a subsystem to a port   (ports/<id>/subsystems/<nqn> → ../../subsystems/<nqn>)
 //   - grant a host access to a sub   (subsystems/<nqn>/allowed_hosts/<host> → ../../../hosts/<host>)
 //
-// If newname already exists as a symlink pointing to oldname the function
-// returns nil (idempotent).  Any other pre-existing path at newname is
-// treated as an error to avoid silently overwriting unrelated configfs state.
+// If newname already exists as a symlink that resolves to oldname the function
+// returns nil (idempotent). Configfs may canonicalize an absolute target into
+// a relative path, so comparing the raw readlink value is insufficient. Any
+// other pre-existing path at newname is treated as an error to avoid silently
+// overwriting unrelated configfs state.
 func symlink(oldname, newname string) error {
 	existing, err := os.Readlink(newname)
 	switch {
 	case err == nil:
-		// newname exists and is a symlink.
-		if existing == oldname {
-			return nil // already correct — idempotent success
+		if resolvedLinkTarget(newname, existing) == resolvedLinkTarget(newname, oldname) {
+			return nil
 		}
 		return fmt.Errorf("configfs symlink %q → %q: already points to %q", newname, oldname, existing)
 	case os.IsNotExist(err):
@@ -267,6 +283,13 @@ func symlink(oldname, newname string) error {
 		// Readlink returned a non-ENOENT error (e.g. permission denied).
 		return fmt.Errorf("configfs symlink check %q: %w", newname, err)
 	}
+}
+
+func resolvedLinkTarget(linkPath, target string) string {
+	if filepath.IsAbs(target) {
+		return filepath.Clean(target)
+	}
+	return filepath.Clean(filepath.Join(filepath.Dir(linkPath), target))
 }
 
 // removeSymlink removes the symbolic link at path.  It is a no-op (idempotent)
@@ -411,19 +434,30 @@ func (t *NvmetTarget) createNamespace() error {
 	return nil
 }
 
-// ResizeNamespace toggles the namespace enable flag (0 → 1) to force the
-// kernel to re-read the backing block device size.  Call this after expanding
-// the backend volume (e.g. lvextend, zfs set volsize) so that NVMe-oF
-// initiators see the new capacity without reconnecting.
+// ResizeNamespace asks the enabled NVMe target namespace to revalidate the
+// backing block-device size and notify connected initiators with a namespace
+// changed asynchronous event. It deliberately does not toggle enable: doing so
+// unregisters the live namespace and leaves mounted clients holding a stale
+// device node that fails with ENXIO during online filesystem expansion.
 func (t *NvmetTarget) ResizeNamespace() error {
-	enablePath := filepath.Join(t.namespaceDir(), "enable")
-	err := writeFile(enablePath, "0")
-	if err != nil {
-		return fmt.Errorf("ResizeNamespace %q ns=%d disable: %w", t.SubsystemNQN, t.NamespaceID, err)
+	nsDir := t.namespaceDir()
+	_, statErr := os.Stat(nsDir)
+	if statErr != nil {
+		if os.IsNotExist(statErr) {
+			return nil // volume is not currently exported
+		}
+		return fmt.Errorf("ResizeNamespace %q ns=%d stat: %w", t.SubsystemNQN, t.NamespaceID, statErr)
 	}
-	err = writeFile(enablePath, "1")
+
+	revalidatePath := filepath.Join(nsDir, "revalidate_size")
+	err := triggerFile(revalidatePath, "1")
 	if err != nil {
-		return fmt.Errorf("ResizeNamespace %q ns=%d re-enable: %w", t.SubsystemNQN, t.NamespaceID, err)
+		return fmt.Errorf(
+			"ResizeNamespace %q ns=%d revalidate backing size: %w",
+			t.SubsystemNQN,
+			t.NamespaceID,
+			err,
+		)
 	}
 	return nil
 }
@@ -445,13 +479,14 @@ const listenWildcard = "0.0.0.0"
 // reachable from inside the pod's network namespace.
 const listenWildcardV6 = "::"
 
-// createPort creates the configfs port directory for this target's bind
-// address and TCP port, then configures the transport attributes.
+// createPort creates or converges the configfs port directory for this target's
+// bind address and TCP port.
 //
 // The port ID is derived deterministically from (BindAddress, Port) via
-// stablePortID so the same port directory is reused across calls.
+// stablePortID so all subsystems advertised at the same endpoint share one
+// listener.
 //
-// After the port directory is created the function writes:
+// After the port directory is created the function ensures:
 //   - addr_trtype  = "tcp"
 //   - addr_adrfam  = "ipv4" or "ipv6" — derived from BindAddress
 //   - addr_traddr  = "0.0.0.0" or "::" — kernel-side bind wildcard matching adrfam
@@ -462,8 +497,9 @@ const listenWildcardV6 = "::"
 // produce a port that the kernel will reject when the subsystem symlink is
 // later created.
 //
-// The operation is idempotent: repeated calls with the same parameters
-// overwrite the pseudo-files with the same values.
+// The operation is idempotent. Once any subsystem is linked, Linux makes the
+// listener attributes immutable and rejects even same-value writes. Existing
+// matching values are therefore read and retained rather than rewritten.
 func (t *NvmetTarget) createPort() (uint32, error) {
 	port := t.Port
 	if port == 0 {
@@ -479,6 +515,9 @@ func (t *NvmetTarget) createPort() (uint32, error) {
 	}
 	portID := stablePortID(t.BindAddress, port)
 	pDir := t.portDir(portID)
+	portLock := writeFileLock(pDir)
+	portLock.Lock()
+	defer portLock.Unlock()
 
 	err := mkdirAll(pDir)
 	if err != nil {
@@ -492,7 +531,16 @@ func (t *NvmetTarget) createPort() (uint32, error) {
 		"addr_trsvcid": fmt.Sprintf("%d", port),
 	}
 	for attr, val := range attrs {
-		err = writeFile(filepath.Join(pDir, attr), val)
+		attrPath := filepath.Join(pDir, attr)
+		current, readErr := readFileTrimmed(attrPath)
+		if readErr != nil {
+			return 0, fmt.Errorf("createPort %s:%d attr %s read: %w",
+				t.BindAddress, port, attr, readErr)
+		}
+		if current == val {
+			continue
+		}
+		err = writeFile(attrPath, val)
 		if err != nil {
 			return 0, fmt.Errorf("createPort %s:%d attr %s: %w", t.BindAddress, port, attr, err)
 		}
@@ -677,17 +725,7 @@ func (t *NvmetTarget) AllowHost(hostNQN string) error {
 	linkPath := t.allowedHostLink(hostNQN)
 	err = symlink(hDir, linkPath)
 	if err != nil {
-		if !os.IsExist(err) {
-			return fmt.Errorf("AllowHost %q: %w", hostNQN, err)
-		}
-		// EEXIST is the post-success state: csi-attacher retries
-		// ControllerPublishVolume on the same (volume, node) pair, and the
-		// symlink we created on the previous attempt is still in place.
-		// Treat the existing link as success regardless of where it points
-		// — configfs only permits one allowed_hosts entry per host NQN per
-		// subsystem, and the host directory we just mkdir'd is the unique
-		// canonical target.  Surfacing EEXIST here would re-fail every
-		// retry, leaving the VolumeAttachment permanently Pending.
+		return fmt.Errorf("AllowHost %q: %w", hostNQN, err)
 	}
 	return nil
 }

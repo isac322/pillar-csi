@@ -61,6 +61,12 @@ spec:
       volumes:
         - name: socket-dir
           emptyDir: {}
+        {{- if .Values.webhook.enabled }}
+        - name: webhook-certs
+          secret:
+            secretName: {{ include "pillar-csi.fullname" . }}-webhook-cert
+            defaultMode: 0o440
+        {{- end }}
         {{- if .Values.mtls.enabled }}
         - name: mtls-certs
           secret:
@@ -83,6 +89,10 @@ spec:
             - --health-probe-bind-address=:{{ .Values.controller.healthProbePort }}
             - --metrics-bind-address=:{{ .Values.controller.metricsPort }}
             - --csi-endpoint=unix://{{ .Values.controller.csiSocketPath }}
+            {{- if .Values.webhook.enabled }}
+            - --webhook-cert-path={{ .Values.webhook.certDir }}
+            - --webhook-port={{ .Values.webhook.port }}
+            {{- end }}
             {{- if .Values.mtls.enabled }}
             - --agent-tls-cert={{ include "pillar-csi.mtls.certDir" . }}/tls.crt
             - --agent-tls-key={{ include "pillar-csi.mtls.certDir" . }}/tls.key
@@ -104,6 +114,10 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
+            {{- if not .Values.webhook.enabled }}
+            - name: ENABLE_WEBHOOKS
+              value: "false"
+            {{- end }}
             {{- range .Values.controller.extraEnv }}
             - {{ toYaml . | nindent 14 | trim }}
             {{- end }}
@@ -119,6 +133,11 @@ spec:
             - name: csi-healthz
               containerPort: {{ .Values.controller.livenessPort }}
               protocol: TCP
+            {{- if .Values.webhook.enabled }}
+            - name: webhook-server
+              containerPort: {{ .Values.webhook.port }}
+              protocol: TCP
+            {{- end }}
           # livenessProbe checks the CSI socket health via the liveness-probe sidecar.
           # The sidecar issues a CSI GetPluginInfo RPC and exposes the result on
           # controller.livenessPort; an HTTP 200 means the socket is healthy.
@@ -151,6 +170,11 @@ spec:
           volumeMounts:
             - name: socket-dir
               mountPath: {{ .Values.controller.csiSocketPath | dir }}
+            {{- if .Values.webhook.enabled }}
+            - name: webhook-certs
+              mountPath: {{ .Values.webhook.certDir }}
+              readOnly: true
+            {{- end }}
             {{- if .Values.mtls.enabled }}
             - name: mtls-certs
               mountPath: {{ include "pillar-csi.mtls.certDir" . }}

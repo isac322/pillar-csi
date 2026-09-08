@@ -150,6 +150,21 @@ func TestSymlink(t *testing.T) {
 		t.Fatalf("idempotent symlink: %v", err)
 	}
 
+	// Configfs may expose the same target as a canonical relative path.
+	if err := os.Remove(newname); err != nil {
+		t.Fatalf("remove absolute symlink: %v", err)
+	}
+	relativeTarget, err := filepath.Rel(filepath.Dir(newname), oldname)
+	if err != nil {
+		t.Fatalf("relative target: %v", err)
+	}
+	if err := os.Symlink(relativeTarget, newname); err != nil {
+		t.Fatalf("create relative symlink: %v", err)
+	}
+	if err := symlink(oldname, newname); err != nil {
+		t.Fatalf("equivalent relative symlink: %v", err)
+	}
+
 	// Third call pointing to a different target — must return an error.
 	other := filepath.Join(root, "other")
 	if err := os.WriteFile(other, nil, 0o600); err != nil {
@@ -409,6 +424,44 @@ func TestCreateSubsystemAndNamespaceNonDefaultNsid(t *testing.T) {
 	assertFileContent(t, filepath.Join(nsDir, "enable"), "1")
 }
 
+func TestResizeNamespaceRevalidatesWithoutDisabling(t *testing.T) {
+	root := t.TempDir()
+	tgt := &NvmetTarget{
+		ConfigfsRoot: root,
+		SubsystemNQN: "nqn.2026-01.io.pillar-csi:pvc-resize",
+		NamespaceID:  1,
+	}
+	nsDir := tgt.namespaceDir()
+	if err := os.MkdirAll(nsDir, 0o750); err != nil {
+		t.Fatalf("create namespace directory: %v", err)
+	}
+	enablePath := filepath.Join(nsDir, "enable")
+	revalidatePath := filepath.Join(nsDir, "revalidate_size")
+	if err := os.WriteFile(enablePath, []byte("1"), 0o600); err != nil {
+		t.Fatalf("seed enable: %v", err)
+	}
+	if err := os.WriteFile(revalidatePath, nil, 0o600); err != nil {
+		t.Fatalf("seed revalidate_size: %v", err)
+	}
+
+	if err := tgt.ResizeNamespace(); err != nil {
+		t.Fatalf("ResizeNamespace: %v", err)
+	}
+	assertFileContent(t, enablePath, "1")
+	assertFileContent(t, revalidatePath, "1")
+}
+
+func TestResizeNamespaceMissingExportIsNoOp(t *testing.T) {
+	tgt := &NvmetTarget{
+		ConfigfsRoot: t.TempDir(),
+		SubsystemNQN: "nqn.2026-01.io.pillar-csi:pvc-not-exported",
+		NamespaceID:  1,
+	}
+	if err := tgt.ResizeNamespace(); err != nil {
+		t.Fatalf("ResizeNamespace missing export: %v", err)
+	}
+}
+
 // StablePortID tests.
 
 func TestStablePortID(t *testing.T) {
@@ -463,6 +516,47 @@ func TestCreatePort(t *testing.T) {
 	}
 	if portID2 != portID {
 		t.Errorf("idempotent portID changed: %d vs %d", portID, portID2)
+	}
+}
+
+func TestCreatePortDoesNotRewriteMatchingAttributes(t *testing.T) {
+	root := t.TempDir()
+	tgt := &NvmetTarget{
+		ConfigfsRoot: root,
+		SubsystemNQN: "nqn.test:vol-active-port",
+		NamespaceID:  1,
+		DevicePath:   "/dev/zvol/tank/pvc-active-port",
+		BindAddress:  "192.168.1.10",
+		Port:         4420,
+	}
+
+	portID, err := tgt.createPort()
+	if err != nil {
+		t.Fatalf("initial createPort: %v", err)
+	}
+
+	attrs := []string{"addr_trtype", "addr_adrfam", "addr_traddr", "addr_trsvcid"}
+	frozen := time.Unix(1, 0)
+	for _, attr := range attrs {
+		path := filepath.Join(tgt.portDir(portID), attr)
+		if err := os.Chtimes(path, frozen, frozen); err != nil {
+			t.Fatalf("freeze %s mtime: %v", attr, err)
+		}
+	}
+
+	if _, err := tgt.createPort(); err != nil {
+		t.Fatalf("reuse configured port: %v", err)
+	}
+
+	for _, attr := range attrs {
+		path := filepath.Join(tgt.portDir(portID), attr)
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("stat %s: %v", attr, err)
+		}
+		if !info.ModTime().Equal(frozen) {
+			t.Errorf("%s was rewritten despite already matching", attr)
+		}
 	}
 }
 
