@@ -201,6 +201,7 @@ func TestException_SymlinkWrongDestination(t *testing.T) {
 	// of silently leaving the configfs in an inconsistent state.
 	_, err := srv.AllowInitiator(context.Background(), &agentv1.AllowInitiatorRequest{
 		VolumeId:     volumeID,
+		Fence:        testFence(t),
 		InitiatorId:  hostNQN,
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 	})
@@ -292,6 +293,7 @@ func TestException_GRPCDeadlineExceeded(t *testing.T) {
 	start := time.Now()
 	_, err := srv.ExportVolume(ctx, &agentv1.ExportVolumeRequest{
 		VolumeId:     "tank/pvc-deadline-xc5",
+		Fence:        testFence(t),
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 		ExportParams: nvmeofParams("192.168.1.1", 4420),
 	})
@@ -468,6 +470,7 @@ func TestException_ConcurrentExportUnexport(t *testing.T) {
 		<-ready
 		_, exportErr = srv.ExportVolume(context.Background(), &agentv1.ExportVolumeRequest{
 			VolumeId:     volumeID,
+			Fence:        testFence(t),
 			ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 			ExportParams: nvmeofParams("192.168.1.1", 4420),
 		})
@@ -478,6 +481,7 @@ func TestException_ConcurrentExportUnexport(t *testing.T) {
 		<-ready
 		_, unexportErr = srv.UnexportVolume(context.Background(), &agentv1.UnexportVolumeRequest{
 			VolumeId:     volumeID,
+			Fence:        testFence(t),
 			ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 		})
 	})

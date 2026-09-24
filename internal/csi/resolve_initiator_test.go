@@ -41,6 +41,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	v1alpha1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
+	"github.com/bhyoo/pillar-csi/internal/testutil/fakeuid"
 )
 
 // newMinimalControllerServer builds a ControllerServer backed by a fake
@@ -61,6 +62,7 @@ func newMinimalControllerServer(t *testing.T, objs ...ctrlclient.Object) *Contro
 	}
 
 	fakeClient := fake.NewClientBuilder().
+		WithInterceptorFuncs(fakeuid.Interceptor()).
 		WithScheme(scheme).
 		WithObjects(objs...).
 		Build()

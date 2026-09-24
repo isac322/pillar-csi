@@ -29,16 +29,22 @@ import (
 
 // AgentProtocolHandler abstracts protocol-specific agent export operations.
 //
+// Every method that mutates target state receives the request's fencing
+// token and MUST perform its mutation inside Server.fenced (while holding the
+// protocol target lock), so that a stale controller request is rejected at
+// the resource when it executes.  A protocol without an implementation must
+// fail in handlerForProtocol before any state is touched.
+//
 //nolint:revive // RFC section 5.11 specifies the AgentProtocolHandler name.
 type AgentProtocolHandler interface {
 	// Export creates a network protocol target entry for a volume.
 	Export(ctx context.Context, params ExportParams) (*ExportResult, error)
 	// Unexport removes the protocol target entry.
-	Unexport(ctx context.Context, volumeID string) error
+	Unexport(ctx context.Context, volumeID string, fence *agentv1.FencingToken) error
 	// AllowInitiator grants access to a specific initiator.
-	AllowInitiator(ctx context.Context, volumeID, initiatorID string) error
+	AllowInitiator(ctx context.Context, volumeID, initiatorID string, fence *agentv1.FencingToken) error
 	// DenyInitiator revokes access for a specific initiator.
-	DenyInitiator(ctx context.Context, volumeID, initiatorID string) error
+	DenyInitiator(ctx context.Context, volumeID, initiatorID string, fence *agentv1.FencingToken) error
 	// Reconcile re-creates protocol state after reboot.
 	Reconcile(ctx context.Context, desired []ExportDesiredState) error
 }
@@ -51,6 +57,8 @@ type ExportParams struct {
 	Port           int32
 	ProtocolParams *agentv1.ExportParams
 	ACLEnabled     bool
+	// Fence is the request's fencing token.
+	Fence *agentv1.FencingToken
 }
 
 // ExportResult is the agent-local export result returned by protocol handlers.
@@ -69,6 +77,8 @@ type ExportDesiredState struct {
 	Port              int32
 	ProtocolParams    *agentv1.ExportParams
 	AllowedInitiators []string
+	// Fence is the fencing token of the volume's reconcile entry.
+	Fence *agentv1.FencingToken
 }
 
 // NVMeoFTCPAgentHandler wraps the nvmeof configfs package behind the generic
@@ -142,9 +152,15 @@ func (h *NVMeoFTCPAgentHandler) Export(
 	unlock := h.server.lockTarget(agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP, targetID)
 	defer unlock()
 
-	applyErr := target.Apply()
-	if applyErr != nil {
-		return nil, status.Errorf(codes.Internal, "ExportVolume: %v", applyErr)
+	err = h.server.fenced(params.VolumeID, params.Fence, fenceGrant, func() error {
+		applyErr := target.Apply()
+		if applyErr != nil {
+			return status.Errorf(codes.Internal, "ExportVolume: %v", applyErr)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 
 	if port == 0 {
@@ -160,7 +176,7 @@ func (h *NVMeoFTCPAgentHandler) Export(
 }
 
 // Unexport removes the NVMe-oF TCP configfs target for a volume.
-func (h *NVMeoFTCPAgentHandler) Unexport(_ context.Context, volumeID string) error {
+func (h *NVMeoFTCPAgentHandler) Unexport(_ context.Context, volumeID string, fence *agentv1.FencingToken) error {
 	target, err := h.targetForVolume(volumeID)
 	if err != nil {
 		return err
@@ -169,17 +185,20 @@ func (h *NVMeoFTCPAgentHandler) Unexport(_ context.Context, volumeID string) err
 	unlock := h.server.lockTarget(agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP, target.SubsystemNQN)
 	defer unlock()
 
-	removeErr := target.Remove()
-	if removeErr != nil {
-		return status.Errorf(codes.Internal, "UnexportVolume: %v", removeErr)
-	}
-	return nil
+	return h.server.fenced(volumeID, fence, fenceRevoke, func() error {
+		removeErr := target.Remove()
+		if removeErr != nil {
+			return status.Errorf(codes.Internal, "UnexportVolume: %v", removeErr)
+		}
+		return nil
+	})
 }
 
 // AllowInitiator grants NVMe-oF TCP access to the given initiator NQN.
 func (h *NVMeoFTCPAgentHandler) AllowInitiator(
 	_ context.Context,
 	volumeID, initiatorID string,
+	fence *agentv1.FencingToken,
 ) error {
 	target, err := h.targetForVolume(volumeID)
 	if err != nil {
@@ -189,17 +208,20 @@ func (h *NVMeoFTCPAgentHandler) AllowInitiator(
 	unlock := h.server.lockTarget(agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP, target.SubsystemNQN)
 	defer unlock()
 
-	allowErr := target.AllowHost(initiatorID)
-	if allowErr != nil {
-		return status.Errorf(codes.Internal, "AllowInitiator: %v", allowErr)
-	}
-	return nil
+	return h.server.fenced(volumeID, fence, fenceGrant, func() error {
+		allowErr := target.AllowHost(initiatorID)
+		if allowErr != nil {
+			return status.Errorf(codes.Internal, "AllowInitiator: %v", allowErr)
+		}
+		return nil
+	})
 }
 
 // DenyInitiator revokes NVMe-oF TCP access for the given initiator NQN.
 func (h *NVMeoFTCPAgentHandler) DenyInitiator(
 	_ context.Context,
 	volumeID, initiatorID string,
+	fence *agentv1.FencingToken,
 ) error {
 	target, err := h.targetForVolume(volumeID)
 	if err != nil {
@@ -209,11 +231,13 @@ func (h *NVMeoFTCPAgentHandler) DenyInitiator(
 	unlock := h.server.lockTarget(agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP, target.SubsystemNQN)
 	defer unlock()
 
-	denyErr := target.DenyHost(initiatorID)
-	if denyErr != nil {
-		return status.Errorf(codes.Internal, "DenyInitiator: %v", denyErr)
-	}
-	return nil
+	return h.server.fenced(volumeID, fence, fenceRevoke, func() error {
+		denyErr := target.DenyHost(initiatorID)
+		if denyErr != nil {
+			return status.Errorf(codes.Internal, "DenyInitiator: %v", denyErr)
+		}
+		return nil
+	})
 }
 
 // Reconcile re-applies desired NVMe-oF TCP exports after reboot.
@@ -242,7 +266,7 @@ func (h *NVMeoFTCPAgentHandler) Reconcile(
 		}
 
 		unlock := h.server.lockTarget(agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP, targetID)
-		applyErr := target.Apply()
+		applyErr := h.server.fenced(export.VolumeID, export.Fence, fenceGrant, target.Apply)
 		unlock()
 		if applyErr != nil {
 			return fmt.Errorf("applyExport %q: %w", export.VolumeID, applyErr)

@@ -810,10 +810,16 @@ CO (external-attacher)
     │
 CSI ControllerServer
     │  1. VolumeId에서 legacy target/backend/agent-vol-id 파싱
-    │  2. protocol type은 PillarVolumeState 또는 VolumeContext에서 해석
-    │  3. PillarAgent CRD에서 agent 주소(ResolvedAddress) 조회
-    │  4. NodeId를 stable node handle로 사용
-    │  5. CSINode annotation에서 protocol-specific identity 조회
+    │  2. protocol type별 지원 access mode 검증 (블록 프로토콜: SINGLE_NODE_* / MULTI_NODE_READER_ONLY, 그 외 InvalidArgument)
+    │  3. VolumeId 마지막 경로 요소 이름의 PillarVolumeState 조회 (없으면 NotFound)
+    │  4. PillarAgent CRD에서 agent 주소(ResolvedAddress) 조회
+    │  5. NodeId를 stable node handle로 사용
+    │  6. CSINode annotation에서 protocol-specific identity 조회
+    │  7. PillarVolumeState.status.publishedNodes에 {nodeID, initiatorID, accessMode, readonly} 기록
+    │     - SINGLE_NODE_* 볼륨이 다른 노드에 이미 publish됨 → FailedPrecondition (AllowInitiator 호출 없음)
+    │     - 같은 노드, 다른 access mode/readonly → AlreadyExists
+    │     - 같은 노드, 같은 capability → 성공 (AllowInitiator 재호출, 멱등)
+    │     - MULTI_NODE_READER_ONLY publication은 여러 노드에 공존 가능
     ▼
 agent.AllowInitiator(VolumeID=agent-vol-id, InitiatorID=resolvedInitiatorID, ProtocolType)
     │
@@ -823,8 +829,15 @@ pillar-agent (스토리지 노드)
         → 해당 node의 resolved identity(NVMe host NQN / iSCSI initiator IQN 등)만 볼륨 접근 가능
 ```
 
-**언어태치 흐름:** `ControllerUnpublishVolume` → `agent.DenyInitiator(VolumeID, InitiatorID)` →
-ACL에서 동일 identity 항목 제거
+**언어태치 흐름:** `ControllerUnpublishVolume` → `status.publishedNodes`에 기록된 publication만 대상으로
+기록된 initiatorID로 `agent.DenyInitiator(VolumeID, InitiatorID)` 호출(CSINode 재조회 없음) → 성공 시 해당 기록 제거.
+
+- PillarVolumeState가 없거나 해당 노드 기록이 없으면 agent 호출 없이 성공
+- NodeId=""(CSI: 모든 노드에서 Unpublish)이면 기록된 모든 publication을 revoke하고 기록 제거
+- DenyInitiator가 NotFound 이외 오류를 반환하면 오류를 전파하고 기록은 유지 (CO 재시도 시 다시 revoke)
+
+**DeleteVolume:** `status.publishedNodes`가 비어 있지 않으면 agent 호출 없이 FailedPrecondition 반환
+(CO가 먼저 ControllerUnpublishVolume을 수행해야 함).
 
 **CI 실행 가능성:** 실제 NVMe-oF configfs 없이, mockAgentServer(실제 gRPC 리스너 +
 인메모리 ACL 추적)로 모든 경로 검증 가능.
@@ -855,9 +868,9 @@ ACL에서 동일 identity 항목 제거
 | 18 | `TestCSIController_ControllerUnpublishVolume_NotFoundIsIdempotent` | agent.DenyInitiator가 NotFound 반환 시 Unpublish는 성공으로 처리 (CSI 명세 §4.3.4: NotFound = 이미 접근 제거됨) | mockAgentServer.DenyInitiatorErr = gRPC NotFound | 1) ControllerUnpublishVolumeRequest 전송 | 성공; gRPC OK 반환; CSI 호출자에게 오류 없음 | `CSI-C`, `Agent`, `gRPC` |
 | E2.2-4 | `TestCSIController_ControllerUnpublishVolume_AlreadyUnpublished` | 이미 Unpublish된 볼륨에 재호출 성공 (컴포넌트 테스트) | `test/component/csi_controller_test.go`; denyInitiatorFn=nil | 1) ControllerUnpublishVolume 1회; 2) 동일 인수로 재호출 | 두 호출 모두 성공; DenyInitiator 총 2회 | `CSI-C`, `Agent` |
 | E2.2-5 | `TestCSIController_ControllerUnpublishVolume_EmptyVolumeID` | VolumeId=""이면 InvalidArgument 반환; DenyInitiator 0회 (컴포넌트 테스트) | `test/component/csi_controller_extended_test.go`; VolumeId="" | 1) VolumeId=""로 ControllerUnpublishVolumeRequest 전송 | gRPC InvalidArgument; DenyInitiator 0회 | `CSI-C` |
-| E2.2-6 | `TestCSIController_ControllerUnpublishVolume_EmptyNodeID` | NodeId=""이면 성공 + no-op (CSI 명세 §4.3.4: 빈 NodeId = "모든 노드에서 Unpublish"; pillar-csi는 no-op) | `test/component/csi_controller_extended_test.go`; 유효한 VolumeId; NodeId="" | 1) NodeId=""로 ControllerUnpublishVolumeRequest 전송 | 성공; DenyInitiator 0회 (no-op 처리) | `CSI-C` |
+| E2.2-6 | `TestCSIController_ControllerUnpublishVolume_EmptyNodeID` | NodeId=""이면 기록된 모든 publication에 대해 기록된 initiator로 DenyInitiator 호출 후 기록 제거 + 성공 (CSI 명세: 빈 NodeId = "모든 노드에서 Unpublish") | `test/component/csi_controller_extended_test.go`; PillarVolumeState 존재; 볼륨이 한 노드에 publish되어 `status.publishedNodes`에 기록됨 | 1) ControllerPublishVolume(NodeId); 2) NodeId=""로 ControllerUnpublishVolumeRequest 전송 | 성공; 기록된 initiator로 DenyInitiator 1회; `status.publishedNodes` 비어 있음 | `CSI-C`, `Agent` |
 | E2.2-7 | `TestCSIController_ControllerUnpublishVolume_MalformedVolumeID` | VolumeId="badformat"(슬래시 없음)이면 성공 반환 (컴포넌트 테스트; CSI 명세상 Unpublish malformed ID는 성공 no-op 허용) | `test/component/csi_controller_extended_test.go`; VolumeId="badformat" | 1) VolumeId="badformat"로 전송 | 성공; DenyInitiator 0회 | `CSI-C` |
-| E2.2-8 | `TestCSIErrors_ControllerUnpublish_DenyInitiatorNonNotFound` | agent.DenyInitiator가 Internal 오류 반환 시 ControllerUnpublishVolume이 비-OK gRPC 상태 전파 (NotFound만 성공 처리) | `test/component/csi_controller_extended_test.go`; denyInitiatorFn = gRPC Internal("deny initiator failed") | 1) ControllerUnpublishVolumeRequest 전송 | 비-OK gRPC 상태; 오류 은폐 없음 | `CSI-C`, `Agent` |
+| E2.2-8 | `TestCSIErrors_ControllerUnpublish_DenyInitiatorNonNotFound` | agent.DenyInitiator가 Internal 오류 반환 시 ControllerUnpublishVolume이 비-OK gRPC 상태 전파 (NotFound만 성공 처리) | `test/component/csi_controller_extended_test.go`; 볼륨이 해당 노드에 publish되어 기록됨; denyInitiatorFn = gRPC Internal("deny initiator failed") | 1) ControllerPublishVolume; 2) ControllerUnpublishVolumeRequest 전송 | gRPC Internal; 오류 은폐 없음; publication 기록 유지 | `CSI-C`, `Agent` |
 
 ---
 
@@ -907,8 +920,8 @@ pillar-agent → configfs/LIO ACL 추가
 ```
 
 **CSI 명세와의 정합성:**
-- `SINGLE_NODE_WRITER`: 한 노드에만 Publish → 1개 AllowInitiator 항목
-- `MULTI_NODE_READER_ONLY`: 여러 노드에 각각 Publish 호출 → N개 AllowInitiator 항목 (독립 호출)
+- `SINGLE_NODE_WRITER` 등 `SINGLE_NODE_*`: 한 노드에만 Publish → 1개 AllowInitiator 항목; 다른 노드 Publish는 FailedPrecondition (AllowInitiator 호출 없음)
+- `MULTI_NODE_READER_ONLY`: 여러 노드에 각각 Publish 호출 → N개 AllowInitiator 항목 (독립 호출, publication 공존)
 - `CSINode` annotation 예시:
   - `pillar-csi.bhyoo.com/nvmeof-host-nqn`
   - `pillar-csi.bhyoo.com/iscsi-initiator-iqn`
@@ -919,7 +932,7 @@ pillar-agent → configfs/LIO ACL 추가
 |----|------------|------|----------|------|----------|---------|
 | E2.5-1 | `TestCSIController_ControllerPublishVolume` | NVMe-oF publish에서 `NodeId=worker-1`이 `CSINode` annotation의 host NQN으로 해석되어 AllowInitiator에 전달됨 | VolumeId=`storage-1/nvmeof-tcp/zfs-zvol/tank/pvc-publish-test`; NodeId=`worker-1`; fake `CSINode` `worker-1`에 `pillar-csi.bhyoo.com/nvmeof-host-nqn` annotation 설정; PillarAgent 등록; mockAgentServer | 1) ControllerPublishVolumeRequest 전송; 2) AllowInitiator 호출 내용 검사 | AllowInitiator.InitiatorID == `CSINode` annotation의 host NQN; AllowInitiator.VolumeID==`tank/pvc-publish-test`; AllowInitiator.ProtocolType==NVMEOF_TCP | `CSI-C`, `Agent`, `TgtCRD`, `gRPC` |
 | E2.5-2 | `TestCSIController_ControllerPublishVolume_ISCSIInitiatorFromCSINodeAnnotations` | iSCSI publish에서 `NodeId=worker-2`가 `CSINode` annotation의 initiator IQN으로 해석되어 AllowInitiator에 전달됨 | VolumeId=`storage-1/iscsi/zfs-zvol/tank/pvc-publish-test`; NodeId=`worker-2`; fake `CSINode` `worker-2`에 `pillar-csi.bhyoo.com/iscsi-initiator-iqn=iqn.1993-08.org.debian:worker-2` annotation 설정; PillarAgent 등록; mockAgentServer | 1) ControllerPublishVolumeRequest 전송; 2) AllowInitiator 호출 내용 검사 | AllowInitiator.InitiatorID == `CSINode` annotation의 initiator IQN; AllowInitiator.VolumeID==`tank/pvc-publish-test`; AllowInitiator.ProtocolType==ISCSI | `CSI-C`, `Agent`, `TgtCRD`, `gRPC` |
-| E2.5-3 | `TestCSIPublishIdempotency_ControllerPublishVolume_DifferentNodes` | 동일 볼륨에 대해 2개의 서로 다른 node handle(worker-a, worker-b)이 각각 다른 `CSINode` annotation을 통해 독립 AllowInitiator 항목을 생성 | VolumeId 동일; NodeId1=`worker-node-a`; NodeId2=`worker-node-b`; 두 `CSINode`에 서로 다른 protocol-specific annotation 설정; mockAgentServer | 1) ControllerPublishVolume(NodeId1); 2) ControllerPublishVolume(NodeId2) | AllowInitiator 총 2회; AllowInitiator[0].InitiatorID ≠ AllowInitiator[1].InitiatorID; 두 호출 모두 성공 | `CSI-C`, `Agent`, `TgtCRD`, `gRPC` |
+| E2.5-3 | `TestCSIPublishIdempotency_ControllerPublishVolume_DifferentNodes` | SINGLE_NODE_WRITER 볼륨이 worker-a에 publish된 상태에서 다른 node handle(worker-b)로 ControllerPublishVolume 호출 시 FailedPrecondition 반환; AllowInitiator는 worker-a에 대해 1회만 호출 | VolumeId 동일(SINGLE_NODE_WRITER); NodeId1=`worker-node-a`; NodeId2=`worker-node-b`; 두 `CSINode`에 서로 다른 protocol-specific annotation 설정; mockAgentServer | 1) ControllerPublishVolume(NodeId1); 2) ControllerPublishVolume(NodeId2) | 1) 성공; 2) gRPC FailedPrecondition; AllowInitiator 총 1회; `status.publishedNodes`에는 worker-node-a만 기록 | `CSI-C`, `Agent`, `TgtCRD`, `gRPC` |
 
 > ℹ️ E2.5-2, E2.5-3은 [E7: 게시 멱등성](#e7-게시-멱등성-publish-idempotency) 섹션과 동일한 테스트 함수를 다른 관점에서 서술한다.
 > E7에서는 **멱등성 계약(no-op 보장, 응답 일관성)** 을 검증하고, E2.5에서는 **노드 친화성 매핑(NodeId→InitiatorID)**을 검증한다.
@@ -1453,7 +1466,7 @@ go test ./test/e2e/ -v -run TestCSIZvolNoDup
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
 | 54 | `TestCSIPublishIdempotency_ControllerPublishVolume_DoubleSameArgs` | 동일 인수로 ControllerPublishVolume 2회 호출: 두 호출 모두 성공, AllowInitiator는 총 2회 | 유효한 VolumeId/NodeId/VolumeContext; mockAgentServer 정상 | 1) ControllerPublishVolume 1회; 2) 동일 인수로 재호출 | 두 호출 모두 성공; PublishContext 동일; CreateVolume/ExportVolume 미트리거 | `CSI-C`, `Agent`, `gRPC` |
-| 55 | `TestCSIPublishIdempotency_ControllerPublishVolume_DifferentNodes` | 서로 다른 node handle에 대한 ControllerPublishVolume은 각 `CSINode` annotation에서 해석된 identity로 독립적으로 성공 | 동일 VolumeId; 서로 다른 NodeId와 서로 다른 `CSINode` annotation 준비 | 1) ControllerPublishVolume(NodeId1); 2) ControllerPublishVolume(NodeId2) | 두 호출 모두 성공; AllowInitiator는 서로 다른 resolved identity로 각 1회씩 | `CSI-C`, `Agent`, `TgtCRD`, `gRPC` |
+| 55 | `TestCSIPublishIdempotency_ControllerPublishVolume_DifferentNodes` | SINGLE_NODE_WRITER 볼륨을 이미 publish된 노드와 다른 node handle에 ControllerPublishVolume하면 FailedPrecondition으로 거부; AllowInitiator는 첫 노드에 대해 1회만 호출 | 동일 VolumeId(SINGLE_NODE_WRITER); 서로 다른 NodeId와 서로 다른 `CSINode` annotation 준비 | 1) ControllerPublishVolume(NodeId1); 2) ControllerPublishVolume(NodeId2) | 1) 성공; 2) gRPC FailedPrecondition; AllowInitiator는 NodeId1에 대해 1회 | `CSI-C`, `Agent`, `TgtCRD`, `gRPC` |
 
 ---
 

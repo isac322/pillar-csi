@@ -40,6 +40,7 @@ func TestNVMeoFTCPAgentHandler_Export(t *testing.T) {
 
 	resp, err := handler.Export(context.Background(), agent.ExportParams{
 		VolumeID:       testVolumeID,
+		Fence:          testFence(t),
 		DevicePath:     testDevicePath,
 		ProtocolParams: nvmeofExportParams("192.168.1.10", 4420),
 	})
@@ -72,6 +73,7 @@ func TestNVMeoFTCPAgentHandler_ExportMissingParams(t *testing.T) {
 
 	_, err := handler.Export(context.Background(), agent.ExportParams{
 		VolumeID: testVolumeID,
+		Fence:    testFence(t),
 	})
 	if err == nil {
 		t.Fatal("expected error for missing params, got nil")
@@ -89,6 +91,7 @@ func TestNVMeoFTCPAgentHandler_AllowAndDenyInitiator(t *testing.T) {
 
 	_, err := handler.Export(context.Background(), agent.ExportParams{
 		VolumeID:       testVolumeID,
+		Fence:          testFence(t),
 		DevicePath:     testDevicePath,
 		ProtocolParams: nvmeofExportParams("10.0.0.1", 4420),
 	})
@@ -96,7 +99,7 @@ func TestNVMeoFTCPAgentHandler_AllowAndDenyInitiator(t *testing.T) {
 		t.Fatalf("Export setup unexpected error: %v", err)
 	}
 
-	if err := handler.AllowInitiator(context.Background(), testVolumeID, testHostNQN); err != nil {
+	if err := handler.AllowInitiator(context.Background(), testVolumeID, testHostNQN, testFence(t)); err != nil {
 		t.Fatalf("AllowInitiator unexpected error: %v", err)
 	}
 
@@ -105,7 +108,7 @@ func TestNVMeoFTCPAgentHandler_AllowAndDenyInitiator(t *testing.T) {
 		t.Fatalf("allowed_hosts symlink not created: %v", statErr)
 	}
 
-	if err := handler.DenyInitiator(context.Background(), testVolumeID, testHostNQN); err != nil {
+	if err := handler.DenyInitiator(context.Background(), testVolumeID, testHostNQN, testFence(t)); err != nil {
 		t.Fatalf("DenyInitiator unexpected error: %v", err)
 	}
 	if _, statErr := os.Lstat(linkPath); !os.IsNotExist(statErr) {
@@ -119,6 +122,7 @@ func TestNVMeoFTCPAgentHandler_Unexport(t *testing.T) {
 
 	_, err := handler.Export(context.Background(), agent.ExportParams{
 		VolumeID:       testVolumeID,
+		Fence:          testFence(t),
 		DevicePath:     testDevicePath,
 		ProtocolParams: nvmeofExportParams("10.0.0.1", 4420),
 	})
@@ -126,7 +130,7 @@ func TestNVMeoFTCPAgentHandler_Unexport(t *testing.T) {
 		t.Fatalf("Export setup unexpected error: %v", err)
 	}
 
-	if err := handler.Unexport(context.Background(), testVolumeID); err != nil {
+	if err := handler.Unexport(context.Background(), testVolumeID, testFence(t)); err != nil {
 		t.Fatalf("Unexport unexpected error: %v", err)
 	}
 
@@ -143,6 +147,7 @@ func TestNVMeoFTCPAgentHandler_Reconcile(t *testing.T) {
 	err := handler.Reconcile(context.Background(), []agent.ExportDesiredState{
 		{
 			VolumeID:          testVolumeID,
+			Fence:             testFence(t),
 			DevicePath:        testDevicePath,
 			ProtocolParams:    nvmeofExportParams("10.0.0.1", 4420),
 			AllowedInitiators: []string{testHostNQN},

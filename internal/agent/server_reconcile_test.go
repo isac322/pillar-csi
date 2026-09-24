@@ -66,6 +66,7 @@ func TestReconcileState_NvmeofExportCreatesConfigfs(t *testing.T) {
 		Volumes: []*agentv1.VolumeDesiredState{
 			{
 				VolumeId:   testVolumeID,
+				Fence:      testFence(t),
 				DevicePath: testDevicePath,
 				Exports: []*agentv1.ExportDesiredState{
 					nvmeofExportState("192.168.1.10"),
@@ -102,6 +103,7 @@ func TestReconcileState_UnsupportedProtocolReported(t *testing.T) {
 		Volumes: []*agentv1.VolumeDesiredState{
 			{
 				VolumeId:   testVolumeID,
+				Fence:      testFence(t),
 				DevicePath: testDevicePath,
 				Exports: []*agentv1.ExportDesiredState{
 					{
@@ -137,6 +139,7 @@ func TestReconcileState_Idempotent(t *testing.T) {
 		Volumes: []*agentv1.VolumeDesiredState{
 			{
 				VolumeId:   testVolumeID,
+				Fence:      testFence(t),
 				DevicePath: testDevicePath,
 				Exports: []*agentv1.ExportDesiredState{
 					nvmeofExportState("10.0.0.1"),
@@ -173,6 +176,7 @@ func TestReconcileState_WithAllowedInitiators(t *testing.T) {
 		Volumes: []*agentv1.VolumeDesiredState{
 			{
 				VolumeId:   testVolumeID,
+				Fence:      testFence(t),
 				DevicePath: testDevicePath,
 				Exports: []*agentv1.ExportDesiredState{
 					nvmeofExportState("10.0.0.1", hostNQN),
@@ -208,6 +212,7 @@ func TestReconcileState_MultipleVolumes(t *testing.T) {
 		Volumes: []*agentv1.VolumeDesiredState{
 			{
 				VolumeId:   testVolumeID,
+				Fence:      testFence(t),
 				DevicePath: testDevicePath,
 				Exports: []*agentv1.ExportDesiredState{
 					nvmeofExportState("10.0.0.1"),
@@ -215,6 +220,7 @@ func TestReconcileState_MultipleVolumes(t *testing.T) {
 			},
 			{
 				VolumeId:   secondVolumeID,
+				Fence:      testFence(t),
 				DevicePath: "/dev/zvol/tank/pvc-def",
 				Exports:    []*agentv1.ExportDesiredState{},
 			},

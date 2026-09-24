@@ -123,6 +123,7 @@ func assertE18_ReconcileState_PartialExport(tc documentedCase) {
 	_, _ = env.client.CreateVolume(env.ctx, &agentv1.CreateVolumeRequest{
 		VolumeId:      "tank/pvc-e18-partial",
 		CapacityBytes: 10 << 20,
+		Fence:         agentLifecycleFence("tank/pvc-e18-partial"),
 	})
 
 	// ReconcileState must not panic even with partial export state.

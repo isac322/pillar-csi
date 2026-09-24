@@ -38,6 +38,7 @@ import (
 	zfsb "github.com/bhyoo/pillar-csi/internal/agent/backend/zfs"
 	nvmeof "github.com/bhyoo/pillar-csi/internal/agent/nvmeof"
 	csidrv "github.com/bhyoo/pillar-csi/internal/csi"
+	"github.com/bhyoo/pillar-csi/internal/testutil/fakeuid"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -92,6 +93,7 @@ func newControllerTestEnv() *controllerTestEnv {
 	}
 
 	k8sClient := clientfake.NewClientBuilder().
+		WithInterceptorFuncs(fakeuid.Interceptor()).
 		WithScheme(scheme).
 		WithStatusSubresource(&pillarv1.PillarAgent{}, &pillarv1.PillarVolumeState{}).
 		WithObjects(target).
@@ -301,10 +303,13 @@ func newAgentTestEnvWithBackends(container, zfsPool, lvmVG, lvmThinPool string) 
 		lvmVG:   lvmBackend,
 	}
 
+	// The agent state dir holds the durable fencing marks; keep it inside the
+	// per-env temp tree so tests never share marks or touch /var/lib.
 	server := agentsvc.NewServer(
 		backends,
 		configfsRoot,
 		agentsvc.WithDeviceChecker(nvmeof.AlwaysPresentChecker),
+		agentsvc.WithDrainStateDir(filepath.Join(configfsRoot, ".agent-state")),
 	)
 
 	lis := bufconn.Listen(inprocessBufSize)

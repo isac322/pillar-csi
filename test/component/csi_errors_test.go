@@ -43,6 +43,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	storagev1 "k8s.io/api/storage/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -50,6 +51,7 @@ import (
 	v1alpha1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
 	agentv1 "github.com/bhyoo/pillar-csi/gen/go/pillar_csi/agent/v1"
 	pillarcsi "github.com/bhyoo/pillar-csi/internal/csi"
+	"github.com/bhyoo/pillar-csi/internal/testutil/fakeuid"
 )
 
 // csiTestDevicePath is the fake NVMe device path used across CSI error tests.
@@ -68,6 +70,9 @@ func newCSIControllerErrEnv(t *testing.T, agnt *csiMockAgent) *csiControllerTest
 	if err := v1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatalf("AddToScheme: %v", err)
 	}
+	if err := storagev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("storagev1.AddToScheme: %v", err)
+	}
 
 	target := &v1alpha1.PillarAgent{
 		ObjectMeta: metav1.ObjectMeta{Name: "storage-node-1"},
@@ -78,6 +83,7 @@ func newCSIControllerErrEnv(t *testing.T, agnt *csiMockAgent) *csiControllerTest
 	}
 
 	fakeClient := fake.NewClientBuilder().
+		WithInterceptorFuncs(fakeuid.Interceptor()).
 		WithScheme(scheme).
 		WithObjects(target).
 		WithStatusSubresource(&v1alpha1.PillarVolumeState{}, &v1alpha1.PillarAgent{}).
@@ -88,7 +94,7 @@ func newCSIControllerErrEnv(t *testing.T, agnt *csiMockAgent) *csiControllerTest
 	})
 
 	srv := pillarcsi.NewControllerServerWithDialer(fakeClient, "pillar-csi.bhyoo.com", dialer)
-	return &csiControllerTestEnv{srv: srv, agent: agnt}
+	return &csiControllerTestEnv{srv: srv, agent: agnt, k8sClient: fakeClient}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -172,6 +178,7 @@ func TestCSIErrors_ControllerExpand_ShrinkRejected(t *testing.T) {
 		},
 	}
 	env := newCSIControllerErrEnv(t, mock)
+	seedComponentPillarVolumeState(t, env, "pvc-component-test")
 
 	_, err := env.srv.ControllerExpandVolume(context.Background(), &csipb.ControllerExpandVolumeRequest{
 		VolumeId:      expectedCSIVolumeID,
@@ -203,6 +210,7 @@ func TestCSIErrors_ControllerExpand_AgentDeadlineExceeded(t *testing.T) {
 		},
 	}
 	env := newCSIControllerErrEnv(t, mock)
+	seedComponentPillarVolumeState(t, env, "pvc-component-test")
 
 	_, err := env.srv.ControllerExpandVolume(context.Background(), &csipb.ControllerExpandVolumeRequest{
 		VolumeId:      expectedCSIVolumeID,
@@ -228,6 +236,8 @@ func TestCSIErrors_ControllerExpand_AgentDeadlineExceeded(t *testing.T) {
 //
 // In production this can occur when the NVMe-oF subsystem ACL entry cannot be
 // written because the configfs is read-only or the volume has been unexported.
+// The PillarVolumeState and CSINode are seeded so the publish reaches the
+// agent instead of stopping at the volume/node existence checks.
 func TestCSIErrors_ControllerPublish_AllowInitiatorFails(t *testing.T) {
 	t.Parallel()
 
@@ -237,10 +247,15 @@ func TestCSIErrors_ControllerPublish_AllowInitiatorFails(t *testing.T) {
 		},
 	}
 	env := newCSIControllerErrEnv(t, mock)
+	ctx := context.Background()
 
-	_, err := env.srv.ControllerPublishVolume(context.Background(), &csipb.ControllerPublishVolumeRequest{
+	const nodeID = "nqn.2014-08.org.nvmexpress:uuid:test-node-err"
+	seedComponentPillarVolumeState(t, env, "pvc-component-test")
+	seedCSINodeForNVMeOF(ctx, t, env.k8sClient, nodeID, nodeID)
+
+	_, err := env.srv.ControllerPublishVolume(ctx, &csipb.ControllerPublishVolumeRequest{
 		VolumeId: expectedCSIVolumeID,
-		NodeId:   "nqn.2014-08.org.nvmexpress:uuid:test-node-err",
+		NodeId:   nodeID,
 		VolumeCapability: &csipb.VolumeCapability{
 			AccessMode: &csipb.VolumeCapability_AccessMode{
 				Mode: csipb.VolumeCapability_AccessMode_SINGLE_NODE_WRITER,
@@ -251,11 +266,13 @@ func TestCSIErrors_ControllerPublish_AllowInitiatorFails(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error from AllowInitiator failure, got nil")
 	}
-	st, _ := status.FromError(err)
-	if st.Code() == codes.OK {
-		t.Errorf("expected non-OK gRPC status, got OK")
+	if mock.allowInitiatorCalls != 1 {
+		t.Errorf("agent.AllowInitiator calls = %d, want 1", mock.allowInitiatorCalls)
 	}
-	t.Logf("AllowInitiator failure propagated as gRPC %v: %v", st.Code(), err)
+	st, _ := status.FromError(err)
+	if st.Code() != codes.Internal {
+		t.Errorf("error code = %v, want %v (AllowInitiator error must propagate): %v", st.Code(), codes.Internal, err)
+	}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -273,6 +290,7 @@ func TestCSIErrors_DeleteVolume_AgentDeadlineExceeded(t *testing.T) {
 		},
 	}
 	env := newCSIControllerErrEnv(t, mock)
+	seedComponentPillarVolumeState(t, env, "pvc-component-test")
 
 	_, err := env.srv.DeleteVolume(context.Background(), &csipb.DeleteVolumeRequest{
 		VolumeId: expectedCSIVolumeID,

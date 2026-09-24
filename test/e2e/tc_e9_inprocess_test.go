@@ -14,14 +14,17 @@ func assertE9_CreateAndDeleteVolume(tc documentedCase) {
 	env := newAgentTestEnv()
 	defer env.close()
 
+	fence := agentLifecycleFence("tank/pvc-e9-create")
 	_, err := env.client.CreateVolume(env.ctx, &agentv1.CreateVolumeRequest{
 		VolumeId:      "tank/pvc-e9-create",
 		CapacityBytes: 10 << 20,
+		Fence:         fence,
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: CreateVolume", tc.tcNodeLabel())
 
 	_, err = env.client.DeleteVolume(env.ctx, &agentv1.DeleteVolumeRequest{
 		VolumeId: "tank/pvc-e9-create",
+		Fence:    fence,
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: DeleteVolume", tc.tcNodeLabel())
 }
@@ -30,9 +33,11 @@ func assertE9_ExportAndUnexportVolume(tc documentedCase) {
 	env := newAgentTestEnv()
 	defer env.close()
 
+	fence := agentLifecycleFence("tank/pvc-e9-export")
 	_, err := env.client.CreateVolume(env.ctx, &agentv1.CreateVolumeRequest{
 		VolumeId:      "tank/pvc-e9-export",
 		CapacityBytes: 10 << 20,
+		Fence:         fence,
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: CreateVolume", tc.tcNodeLabel())
 
@@ -40,12 +45,14 @@ func assertE9_ExportAndUnexportVolume(tc documentedCase) {
 		VolumeId:     "tank/pvc-e9-export",
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 		ExportParams: nvmeofTCPExportParams("127.0.0.1", 4420),
+		Fence:        fence,
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: ExportVolume", tc.tcNodeLabel())
 
 	_, err = env.client.UnexportVolume(env.ctx, &agentv1.UnexportVolumeRequest{
 		VolumeId:     "tank/pvc-e9-export",
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
+		Fence:        fence,
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: UnexportVolume", tc.tcNodeLabel())
 }
@@ -54,9 +61,11 @@ func assertE9_AllowAndDenyInitiator(tc documentedCase) {
 	env := newAgentTestEnv()
 	defer env.close()
 
+	fence := agentLifecycleFence("tank/pvc-e9-initiator")
 	_, err := env.client.CreateVolume(env.ctx, &agentv1.CreateVolumeRequest{
 		VolumeId:      "tank/pvc-e9-initiator",
 		CapacityBytes: 10 << 20,
+		Fence:         fence,
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: CreateVolume", tc.tcNodeLabel())
 
@@ -64,6 +73,7 @@ func assertE9_AllowAndDenyInitiator(tc documentedCase) {
 		VolumeId:     "tank/pvc-e9-initiator",
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 		ExportParams: nvmeofTCPExportParams("127.0.0.1", 4420),
+		Fence:        fence,
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: ExportVolume", tc.tcNodeLabel())
 
@@ -71,6 +81,7 @@ func assertE9_AllowAndDenyInitiator(tc documentedCase) {
 		VolumeId:     "tank/pvc-e9-initiator",
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 		InitiatorId:  "nqn.2026-01.io.example:host-e9",
+		Fence:        fence,
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: AllowInitiator", tc.tcNodeLabel())
 
@@ -78,6 +89,7 @@ func assertE9_AllowAndDenyInitiator(tc documentedCase) {
 		VolumeId:     "tank/pvc-e9-initiator",
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 		InitiatorId:  "nqn.2026-01.io.example:host-e9",
+		Fence:        fence,
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: DenyInitiator", tc.tcNodeLabel())
 }
@@ -86,15 +98,18 @@ func assertE9_ExpandVolume(tc documentedCase) {
 	env := newAgentTestEnv()
 	defer env.close()
 
+	fence := agentLifecycleFence("tank/pvc-e9-expand")
 	_, err := env.client.CreateVolume(env.ctx, &agentv1.CreateVolumeRequest{
 		VolumeId:      "tank/pvc-e9-expand",
 		CapacityBytes: 10 << 20,
+		Fence:         fence,
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: CreateVolume", tc.tcNodeLabel())
 
 	resp, err := env.client.ExpandVolume(env.ctx, &agentv1.ExpandVolumeRequest{
 		VolumeId:       "tank/pvc-e9-expand",
 		RequestedBytes: 20 << 20,
+		Fence:          fence,
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: ExpandVolume", tc.tcNodeLabel())
 	Expect(resp.GetCapacityBytes()).To(BeNumerically(">=", 20<<20),

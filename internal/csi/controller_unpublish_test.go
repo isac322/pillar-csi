@@ -16,16 +16,17 @@ limitations under the License.
 
 package csi
 
-// Tests for ControllerUnpublishVolume annotation lookup behavior.
+// Tests for ControllerUnpublishVolume revocation behavior.
 //
-// These tests cover the RFC §5.2 annotation-based initiator resolution path
-// for ControllerUnpublishVolume:
+// ControllerUnpublishVolume revokes exactly the publications recorded in the
+// volume's PillarVolumeState:
 //
-//   - Missing CSINode → success (idempotent: storage node is decommissioned)
-//   - Missing annotation → success (idempotent: identity gone, nothing to revoke)
-//   - NVMe-oF annotation present → DenyInitiator called with resolved NQN
-//   - iSCSI annotation present → DenyInitiator called with resolved IQN
-//   - NFS protocol → nodeID passed directly to DenyInitiator
+//   - no record → success without contacting the agent
+//   - recorded initiator (NQN / IQN / NFS node ID) → DenyInitiator, then the
+//     record is removed, even when the node's CSINode is gone
+//   - empty node_id → every recorded publication is revoked
+//   - DenyInitiator failure → record kept (fail-closed)
+//   - storage node (PillarAgent) gone → records dropped
 //
 // Run with:
 //
@@ -37,6 +38,8 @@ import (
 	"testing"
 
 	csi "github.com/container-storage-interface/spec/lib/go/csi"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -46,11 +49,13 @@ import (
 
 	v1alpha1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
 	agentv1 "github.com/bhyoo/pillar-csi/gen/go/pillar_csi/agent/v1"
+	"github.com/bhyoo/pillar-csi/internal/testutil/fakeuid"
 )
 
 // newUnpublishTestEnv builds a ControllerServer wired to a fake k8s client
-// that has a PillarAgent but no CSINode by default.  Callers can seed CSINode
-// objects as needed for each test case.
+// that has a PillarAgent but no CSINode and no PillarVolumeState by default.
+// Callers seed the volume's PillarVolumeState (see volumeStateFor) with the
+// publication records each test case needs.
 func newUnpublishTestEnv(t *testing.T, objs ...ctrlclient.Object) *controllerTestEnv {
 	t.Helper()
 
@@ -74,9 +79,10 @@ func newUnpublishTestEnv(t *testing.T, objs ...ctrlclient.Object) *controllerTes
 
 	allObjs := append([]ctrlclient.Object{target}, objs...)
 	fakeClient := fake.NewClientBuilder().
+		WithInterceptorFuncs(fakeuid.Interceptor()).
 		WithScheme(scheme).
-		WithObjects(allObjs...).
-		WithStatusSubresource(&v1alpha1.PillarAgent{}).
+		WithObjects(fakeuid.Assign(allObjs...)...).
+		WithStatusSubresource(&v1alpha1.PillarAgent{}, &v1alpha1.PillarVolumeState{}).
 		Build()
 
 	agent := &mockAgentClient{}
@@ -98,188 +104,202 @@ func baseUnpublishRequest() *csi.ControllerUnpublishVolumeRequest {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Idempotency: missing CSINode or annotation
+// Revocation driven by publication records
 // ─────────────────────────────────────────────────────────────────────────────
 
-// TestControllerUnpublishVolume_CSINodeNotFound_Succeeds verifies that
-// ControllerUnpublishVolume returns success when the CSINode does not exist.
-//
-// RFC §5.2: if the node's identity is gone (CSINode absent), there is no
-// ACL entry to revoke, so the operation succeeds idempotently.
-func TestControllerUnpublishVolume_CSINodeNotFound_Succeeds(t *testing.T) {
+// TestControllerUnpublishVolume_NoPublicationRecord_Succeeds verifies that a
+// volume without a matching publication record (or without a
+// PillarVolumeState at all) is already unpublished: success, no agent call.
+func TestControllerUnpublishVolume_NoPublicationRecord_Succeeds(t *testing.T) {
 	t.Parallel()
 
-	// No CSINode seeded — the lookup will return NotFound.
-	env := newUnpublishTestEnv(t)
+	volumeID := baseUnpublishRequest().GetVolumeId()
+	other := exclPub(exclNode2, exclNQN(exclNode2), csi.VolumeCapability_AccessMode_MULTI_NODE_READER_ONLY, true)
+	for name, objs := range map[string][]ctrlclient.Object{
+		"no PillarVolumeState":   nil,
+		"no record for the node": {volumeStateFor(volumeID, other)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 
-	_, err := env.srv.ControllerUnpublishVolume(context.Background(), baseUnpublishRequest())
-	if err != nil {
-		t.Errorf("ControllerUnpublishVolume with missing CSINode: want nil error, got %v", err)
+			env := newUnpublishTestEnv(t, objs...)
+			if _, err := env.srv.ControllerUnpublishVolume(context.Background(), baseUnpublishRequest()); err != nil {
+				t.Fatalf("ControllerUnpublishVolume: %v", err)
+			}
+			if env.agent.denyInitiatorCalls != 0 {
+				t.Errorf("DenyInitiator calls = %d, want 0", env.agent.denyInitiatorCalls)
+			}
+		})
 	}
-	// DenyInitiator must NOT have been called because we returned early.
+}
+
+// TestControllerUnpublishVolume_DeniesRecordedInitiator verifies that the
+// initiator recorded at publish time is revoked for every protocol, without
+// consulting the CSINode (none is seeded: the node may already be deleted),
+// and that the record is removed afterwards.
+func TestControllerUnpublishVolume_DeniesRecordedInitiator(t *testing.T) {
+	t.Parallel()
+
+	mode := csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER
+	testCases := []struct {
+		name      string
+		volumeID  string
+		initiator string
+	}{
+		{"nvmeof host NQN", baseUnpublishRequest().GetVolumeId(), exclNQN(exclNode1)},
+		{"iscsi IQN", "storage-node-1/iscsi/zfs-zvol/tank/pvc-abc123", "iqn.1993-08.org.debian:01:worker-node-1"},
+		{"nfs node ID", exclNFSID, exclNode1},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			env := newUnpublishTestEnv(t, volumeStateFor(tc.volumeID, exclPub(exclNode1, tc.initiator, mode, false)))
+			_, err := env.srv.ControllerUnpublishVolume(context.Background(), &csi.ControllerUnpublishVolumeRequest{
+				VolumeId: tc.volumeID, NodeId: exclNode1,
+			})
+			if err != nil {
+				t.Fatalf("ControllerUnpublishVolume: %v", err)
+			}
+			if env.agent.denyInitiatorCalls != 1 {
+				t.Fatalf("DenyInitiator calls = %d, want 1", env.agent.denyInitiatorCalls)
+			}
+			if got := env.agent.lastDenyInitiator.GetInitiatorId(); got != tc.initiator {
+				t.Errorf("DenyInitiator.InitiatorId = %q, want %q", got, tc.initiator)
+			}
+			if got := exclPublishedNodes(t, env.srv.k8sClient, tc.volumeID); len(got) != 0 {
+				t.Errorf("publishedNodes after unpublish = %+v, want none", got)
+			}
+		})
+	}
+}
+
+// TestControllerUnpublishVolume_EmptyNodeID_RevokesAll verifies CSI §4.5.2:
+// an empty node_id unpublishes the volume from every recorded node.
+func TestControllerUnpublishVolume_EmptyNodeID_RevokesAll(t *testing.T) {
+	t.Parallel()
+
+	volumeID := baseUnpublishRequest().GetVolumeId()
+	mode := csi.VolumeCapability_AccessMode_MULTI_NODE_READER_ONLY
+	env := newUnpublishTestEnv(t, volumeStateFor(volumeID,
+		exclPub(exclNode1, exclNQN(exclNode1), mode, true),
+		exclPub(exclNode2, exclNQN(exclNode2), mode, true)))
+	env.srv.GetStateMachine().ForceState(volumeID, StateControllerPublished)
+
+	if _, err := env.srv.ControllerUnpublishVolume(context.Background(), &csi.ControllerUnpublishVolumeRequest{
+		VolumeId: volumeID,
+	}); err != nil {
+		t.Fatalf("ControllerUnpublishVolume: %v", err)
+	}
+	if env.agent.denyInitiatorCalls != 2 {
+		t.Errorf("DenyInitiator calls = %d, want 2", env.agent.denyInitiatorCalls)
+	}
+	if got := exclPublishedNodes(t, env.srv.k8sClient, volumeID); len(got) != 0 {
+		t.Errorf("publishedNodes = %+v, want none", got)
+	}
+	if got := env.srv.GetStateMachine().GetState(volumeID); got != StateCreated {
+		t.Errorf("state = %v, want Created", got)
+	}
+}
+
+// TestControllerUnpublishVolume_OneOfTwoNodes_StaysPublished verifies that
+// unpublishing one of two reader nodes keeps the other record and leaves the
+// volume in the ControllerPublished state.
+func TestControllerUnpublishVolume_OneOfTwoNodes_StaysPublished(t *testing.T) {
+	t.Parallel()
+
+	volumeID := baseUnpublishRequest().GetVolumeId()
+	mode := csi.VolumeCapability_AccessMode_MULTI_NODE_READER_ONLY
+	env := newUnpublishTestEnv(t, volumeStateFor(volumeID,
+		exclPub(exclNode1, exclNQN(exclNode1), mode, true),
+		exclPub(exclNode2, exclNQN(exclNode2), mode, true)))
+	env.srv.GetStateMachine().ForceState(volumeID, StateControllerPublished)
+
+	if _, err := env.srv.ControllerUnpublishVolume(context.Background(), baseUnpublishRequest()); err != nil {
+		t.Fatalf("ControllerUnpublishVolume: %v", err)
+	}
+	got := exclPublishedNodes(t, env.srv.k8sClient, volumeID)
+	if len(got) != 1 || got[0].NodeID != exclNode2 {
+		t.Fatalf("publishedNodes = %+v, want only %s", got, exclNode2)
+	}
+	if state := env.srv.GetStateMachine().GetState(volumeID); state != StateControllerPublished {
+		t.Errorf("state = %v, want ControllerPublished", state)
+	}
+}
+
+// TestControllerUnpublishVolume_DenyFailureKeepsRecord verifies fail-closed
+// revocation: when DenyInitiator fails the record stays, so another node
+// still cannot publish the SINGLE_NODE_WRITER volume.
+func TestControllerUnpublishVolume_DenyFailureKeepsRecord(t *testing.T) {
+	t.Parallel()
+
+	volumeID := baseUnpublishRequest().GetVolumeId()
+	mode := csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER
+	env := newUnpublishTestEnv(t, append(exclCSINodes(),
+		volumeStateFor(volumeID, exclPub(exclNode1, exclNQN(exclNode1), mode, false)))...)
+	env.agent.denyInitiatorErr = status.Error(codes.Internal, "configfs unlink failed")
+	ctx := context.Background()
+
+	if _, err := env.srv.ControllerUnpublishVolume(ctx, baseUnpublishRequest()); status.Code(err) != codes.Internal {
+		t.Fatalf("ControllerUnpublishVolume code = %v (err=%v), want Internal", status.Code(err), err)
+	}
+	if got := exclPublishedNodes(t, env.srv.k8sClient, volumeID); len(got) != 1 {
+		t.Fatalf("publishedNodes = %+v, want the record kept", got)
+	}
+	_, err := env.srv.ControllerPublishVolume(ctx, exclPublishReq(volumeID, exclNode2, mode, false))
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Errorf("publish to node 2 code = %v (err=%v), want FailedPrecondition", status.Code(err), err)
+	}
+}
+
+// TestControllerUnpublishVolume_AgentGone_KeepsRecords verifies that when the
+// storage node's PillarAgent object no longer exists the unpublish fails
+// closed: the node's ACL may still exist on that storage node, so the record
+// is kept (the volume stays unavailable to other SINGLE_NODE_* publishers) and
+// no agent is contacted.
+func TestControllerUnpublishVolume_AgentGone_KeepsRecords(t *testing.T) {
+	t.Parallel()
+
+	volumeID := "gone-node/nvmeof-tcp/zfs-zvol/tank/pvc-gone"
+	mode := csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER
+	env := newUnpublishTestEnv(t, volumeStateFor(volumeID, exclPub(exclNode1, exclNQN(exclNode1), mode, false)))
+
+	_, err := env.srv.ControllerUnpublishVolume(context.Background(), &csi.ControllerUnpublishVolumeRequest{
+		VolumeId: volumeID, NodeId: exclNode1,
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("ControllerUnpublishVolume: %v, want FailedPrecondition", err)
+	}
 	if env.agent.denyInitiatorCalls != 0 {
-		t.Errorf("DenyInitiator call count = %d, want 0 (no CSINode = nothing to revoke)", env.agent.denyInitiatorCalls)
+		t.Errorf("DenyInitiator calls = %d, want 0", env.agent.denyInitiatorCalls)
+	}
+	if got := exclPublishedNodes(t, env.srv.k8sClient, volumeID); len(got) != 1 || got[0].NodeID != exclNode1 {
+		t.Errorf("publishedNodes = %+v, want the %s record kept", got, exclNode1)
 	}
 }
 
-// TestControllerUnpublishVolume_AnnotationMissing_Succeeds verifies that
-// ControllerUnpublishVolume returns success when the CSINode exists but the
-// nvmeof-host-nqn annotation is absent.
-//
-// RFC §5.2: annotation absence during unpublish means the node's identity
-// was never written (or was cleared), so no ACL entry can exist.
-func TestControllerUnpublishVolume_AnnotationMissing_Succeeds(t *testing.T) {
+// TestControllerUnpublishVolume_HandoverToAnotherNode verifies the normal
+// failover sequence: once node 1 is unpublished, node 2 may publish.
+func TestControllerUnpublishVolume_HandoverToAnotherNode(t *testing.T) {
 	t.Parallel()
 
-	// CSINode exists but has no annotations.
-	csiNode := &storagev1.CSINode{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "worker-node-1",
-			// Annotations deliberately omitted.
-		},
-	}
-	env := newUnpublishTestEnv(t, csiNode)
+	volumeID := baseUnpublishRequest().GetVolumeId()
+	mode := csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER
+	env := newUnpublishTestEnv(t, append(exclCSINodes(), volumeStateFor(volumeID))...)
+	ctx := context.Background()
 
-	_, err := env.srv.ControllerUnpublishVolume(context.Background(), baseUnpublishRequest())
-	if err != nil {
-		t.Errorf("ControllerUnpublishVolume with missing annotation: want nil error, got %v", err)
+	if _, err := env.srv.ControllerPublishVolume(ctx, exclPublishReq(volumeID, exclNode1, mode, false)); err != nil {
+		t.Fatalf("publish node 1: %v", err)
 	}
-	// DenyInitiator must NOT have been called.
-	if env.agent.denyInitiatorCalls != 0 {
-		t.Errorf("DenyInitiator call count = %d, want 0 (missing annotation = nothing to revoke)",
-			env.agent.denyInitiatorCalls)
+	if _, err := env.srv.ControllerUnpublishVolume(ctx, baseUnpublishRequest()); err != nil {
+		t.Fatalf("unpublish node 1: %v", err)
 	}
-}
-
-// TestControllerUnpublishVolume_ISCSIAnnotationMissing_Succeeds verifies the
-// same idempotent behavior for the iSCSI protocol when the annotation is absent.
-func TestControllerUnpublishVolume_ISCSIAnnotationMissing_Succeeds(t *testing.T) {
-	t.Parallel()
-
-	csiNode := &storagev1.CSINode{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "worker-node-1",
-			// No iSCSI annotation.
-		},
+	if _, err := env.srv.ControllerPublishVolume(ctx, exclPublishReq(volumeID, exclNode2, mode, false)); err != nil {
+		t.Fatalf("publish node 2 after handover: %v", err)
 	}
-	env := newUnpublishTestEnv(t, csiNode)
-
-	req := &csi.ControllerUnpublishVolumeRequest{
-		VolumeId: "storage-node-1/iscsi/zfs-zvol/tank/pvc-abc123",
-		NodeId:   "worker-node-1",
-	}
-	_, err := env.srv.ControllerUnpublishVolume(context.Background(), req)
-	if err != nil {
-		t.Errorf("ControllerUnpublishVolume iSCSI with missing annotation: want nil error, got %v", err)
-	}
-	if env.agent.denyInitiatorCalls != 0 {
-		t.Errorf("DenyInitiator call count = %d, want 0", env.agent.denyInitiatorCalls)
-	}
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Success paths: annotation present → DenyInitiator called
-// ─────────────────────────────────────────────────────────────────────────────
-
-// TestControllerUnpublishVolume_NVMeoF_SuccessWithAnnotation verifies that
-// ControllerUnpublishVolume resolves the NQN from the CSINode annotation and
-// passes it as initiator_id to DenyInitiator when the annotation is present.
-func TestControllerUnpublishVolume_NVMeoF_SuccessWithAnnotation(t *testing.T) {
-	t.Parallel()
-
-	const hostNQN = "nqn.2014-08.org.nvmexpress:uuid:worker-node-1-unpublish"
-
-	csiNode := &storagev1.CSINode{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "worker-node-1",
-			Annotations: map[string]string{
-				AnnotationNVMeOFHostNQN: hostNQN,
-			},
-		},
-	}
-	env := newUnpublishTestEnv(t, csiNode)
-
-	_, err := env.srv.ControllerUnpublishVolume(context.Background(), baseUnpublishRequest())
-	if err != nil {
-		t.Fatalf("ControllerUnpublishVolume: unexpected error: %v", err)
-	}
-
-	// DenyInitiator must have been called exactly once with the resolved NQN.
-	if env.agent.denyInitiatorCalls != 1 {
-		t.Errorf("DenyInitiator call count = %d, want 1", env.agent.denyInitiatorCalls)
-	}
-	if env.agent.lastDenyInitiator == nil {
-		t.Fatal("lastDenyInitiator is nil")
-	}
-	if got := env.agent.lastDenyInitiator.InitiatorId; got != hostNQN {
-		t.Errorf("DenyInitiator.InitiatorId = %q, want %q", got, hostNQN)
-	}
-}
-
-// TestControllerUnpublishVolume_ISCSI_SuccessWithAnnotation verifies that
-// ControllerUnpublishVolume passes the IQN to DenyInitiator for iSCSI.
-func TestControllerUnpublishVolume_ISCSI_SuccessWithAnnotation(t *testing.T) {
-	t.Parallel()
-
-	const initiatorIQN = "iqn.1993-08.org.debian:01:worker-node-1-unpublish"
-
-	csiNode := &storagev1.CSINode{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "worker-node-1",
-			Annotations: map[string]string{
-				AnnotationISCSIInitiatorIQN: initiatorIQN,
-			},
-		},
-	}
-	env := newUnpublishTestEnv(t, csiNode)
-
-	req := &csi.ControllerUnpublishVolumeRequest{
-		VolumeId: "storage-node-1/iscsi/zfs-zvol/tank/pvc-abc123",
-		NodeId:   "worker-node-1",
-	}
-	_, err := env.srv.ControllerUnpublishVolume(context.Background(), req)
-	if err != nil {
-		t.Fatalf("ControllerUnpublishVolume iSCSI: unexpected error: %v", err)
-	}
-
-	if env.agent.denyInitiatorCalls != 1 {
-		t.Errorf("DenyInitiator call count = %d, want 1", env.agent.denyInitiatorCalls)
-	}
-	if got := env.agent.lastDenyInitiator.InitiatorId; got != initiatorIQN {
-		t.Errorf("DenyInitiator.InitiatorId = %q, want %q", got, initiatorIQN)
-	}
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Protocol passthrough: NFS uses nodeID directly
-// ─────────────────────────────────────────────────────────────────────────────
-
-// TestControllerUnpublishVolume_NFS_PassthroughNodeID verifies that for the
-// NFS protocol the nodeID is passed directly to DenyInitiator without reading
-// any CSINode annotation.  RFC §5.2: NFS annotation-based resolution is Phase 2.
-func TestControllerUnpublishVolume_NFS_PassthroughNodeID(t *testing.T) {
-	t.Parallel()
-
-	// No CSINode seeded — any CSINode lookup would fail, proving the function
-	// does NOT attempt one for the NFS protocol.
-	env := newUnpublishTestEnv(t)
-
-	const nodeID = "worker-node-1"
-	req := &csi.ControllerUnpublishVolumeRequest{
-		VolumeId: "storage-node-1/nfs/nfs-share/tank/pvc-abc123",
-		NodeId:   nodeID,
-	}
-	_, err := env.srv.ControllerUnpublishVolume(context.Background(), req)
-	if err != nil {
-		t.Fatalf("ControllerUnpublishVolume NFS: unexpected error: %v", err)
-	}
-
-	// DenyInitiator must have been called with the nodeID as-is.
-	if env.agent.denyInitiatorCalls != 1 {
-		t.Errorf("DenyInitiator call count = %d, want 1", env.agent.denyInitiatorCalls)
-	}
-	if got := env.agent.lastDenyInitiator.InitiatorId; got != nodeID {
-		t.Errorf("DenyInitiator.InitiatorId = %q, want nodeID %q", got, nodeID)
+	got := exclPublishedNodes(t, env.srv.k8sClient, volumeID)
+	if len(got) != 1 || got[0].NodeID != exclNode2 || got[0].InitiatorID != exclNQN(exclNode2) {
+		t.Errorf("publishedNodes = %+v, want only %s", got, exclNode2)
 	}
 }
 
@@ -303,7 +323,7 @@ func TestControllerPublishVolume_ISCSI_SuccessWithAnnotation(t *testing.T) {
 			},
 		},
 	}
-	env := newPublishTestEnv(t, csiNode)
+	env := newPublishTestEnv(t, csiNode, volumeStateFor("storage-node-1/iscsi/zfs-zvol/tank/pvc-abc123"))
 
 	req := &csi.ControllerPublishVolumeRequest{
 		VolumeId: "storage-node-1/iscsi/zfs-zvol/tank/pvc-abc123",
@@ -337,7 +357,7 @@ func TestControllerPublishVolume_NFS_PassthroughNodeID(t *testing.T) {
 	t.Parallel()
 
 	// No CSINode seeded.
-	env := newPublishTestEnv(t)
+	env := newPublishTestEnv(t, volumeStateFor(exclNFSID))
 
 	const nodeID = "worker-node-1"
 	req := &csi.ControllerPublishVolumeRequest{

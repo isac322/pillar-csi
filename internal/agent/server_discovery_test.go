@@ -55,7 +55,7 @@ func TestGetCapacity_LVM_LinearVGFreeReturned(t *testing.T) {
 		capacityTotal:     total,
 		capacityAvailable: avail,
 	}
-	srv := newTestServer(mb)
+	srv := newTestServer(t, mb)
 
 	resp, err := srv.GetCapacity(context.Background(), &agentv1.GetCapacityRequest{
 		PoolName: testPool,
@@ -84,7 +84,7 @@ func TestGetCapacity_LVM_ZeroVGFree(t *testing.T) {
 		capacityTotal:     total,
 		capacityAvailable: 0, // VG entirely consumed — vg_free = 0
 	}
-	srv := newTestServer(mb)
+	srv := newTestServer(t, mb)
 
 	resp, err := srv.GetCapacity(context.Background(), &agentv1.GetCapacityRequest{
 		PoolName: testPool,
@@ -109,7 +109,7 @@ func TestGetCapacity_LVM_VGNotFound(t *testing.T) {
 	mb := &mockBackend{
 		capacityErr: errors.New("vgs: volume group \"data-vg\" not found"),
 	}
-	srv := newTestServer(mb)
+	srv := newTestServer(t, mb)
 
 	_, err := srv.GetCapacity(context.Background(), &agentv1.GetCapacityRequest{
 		PoolName: testPool,
@@ -131,7 +131,7 @@ func TestGetCapabilities_SupportedTypes(t *testing.T) {
 		capacityTotal:     10 << 30,
 		capacityAvailable: 7 << 30,
 	}
-	srv := newTestServer(mb)
+	srv := newTestServer(t, mb)
 
 	resp, err := srv.GetCapabilities(context.Background(), &agentv1.GetCapabilitiesRequest{})
 	if err != nil {
@@ -172,7 +172,7 @@ func TestGetCapabilities_IncludesPoolInfo(t *testing.T) {
 		capacityTotal:     100 << 30,
 		capacityAvailable: 60 << 30,
 	}
-	srv := newTestServer(mb)
+	srv := newTestServer(t, mb)
 
 	resp, err := srv.GetCapabilities(context.Background(), &agentv1.GetCapabilitiesRequest{})
 	if err != nil {
@@ -199,7 +199,7 @@ func TestGetCapabilities_CapacityErrorSkipsPool(t *testing.T) {
 	// If the backend returns an error for Capacity, the pool is silently
 	// omitted from DiscoveredPools (best-effort).
 	mb := &mockBackend{capacityErr: errors.New("pool degraded")}
-	srv := newTestServer(mb)
+	srv := newTestServer(t, mb)
 
 	resp, err := srv.GetCapabilities(context.Background(), &agentv1.GetCapabilitiesRequest{})
 	if err != nil {

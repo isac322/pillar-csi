@@ -61,6 +61,7 @@ func exportParamsForRequest(req *agentv1.ExportVolumeRequest) (ExportParams, err
 		DevicePath:     req.GetDevicePath(),
 		ProtocolParams: req.GetExportParams(),
 		ACLEnabled:     req.GetAclEnabled(),
+		Fence:          req.GetFence(),
 	}
 
 	switch req.GetProtocolType() {
@@ -100,7 +101,7 @@ func (s *Server) UnexportVolume(
 	if err != nil {
 		return nil, protocolRPCError(err)
 	}
-	err = handler.Unexport(ctx, req.GetVolumeId())
+	err = handler.Unexport(ctx, req.GetVolumeId(), req.GetFence())
 	if err != nil {
 		return nil, protocolRPCError(err)
 	}
@@ -117,7 +118,7 @@ func (s *Server) AllowInitiator(
 	if err != nil {
 		return nil, protocolRPCError(err)
 	}
-	err = handler.AllowInitiator(ctx, req.GetVolumeId(), req.GetInitiatorId())
+	err = handler.AllowInitiator(ctx, req.GetVolumeId(), req.GetInitiatorId(), req.GetFence())
 	if err != nil {
 		return nil, protocolRPCError(err)
 	}
@@ -134,7 +135,7 @@ func (s *Server) DenyInitiator(
 	if err != nil {
 		return nil, protocolRPCError(err)
 	}
-	err = handler.DenyInitiator(ctx, req.GetVolumeId(), req.GetInitiatorId())
+	err = handler.DenyInitiator(ctx, req.GetVolumeId(), req.GetInitiatorId(), req.GetFence())
 	if err != nil {
 		return nil, protocolRPCError(err)
 	}

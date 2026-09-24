@@ -42,12 +42,13 @@ const testHostNQN = "nqn.2023-01.io.example:host-1"
 // newExportTestServer creates a Server with a mock backend for "tank" pool
 // and a temp directory as the configfs root.  It injects AlwaysPresentChecker
 // so that ExportVolume skips the device-existence polling step — the
-// device-poll logic is tested independently in the nvmeof package.
+// device-poll logic is tested independently in the nvmeof package.  Fencing
+// marks are kept in a per-test state directory.
 func newExportTestServer(t *testing.T, mb *mockBackend) (srv *agent.Server, cfgRoot string) {
 	t.Helper()
 	cfgRoot = t.TempDir()
 	backends := map[string]backend.VolumeBackend{testPool: mb}
-	s := agent.NewServer(backends, cfgRoot)
+	s := agent.NewServer(backends, cfgRoot, agent.WithDrainStateDir(t.TempDir()))
 	agent.SetDeviceChecker(t, s, nvmeof.AlwaysPresentChecker)
 	return s, cfgRoot
 }
@@ -73,6 +74,7 @@ func TestExportVolume_Success(t *testing.T) {
 
 	resp, err := srv.ExportVolume(context.Background(), &agentv1.ExportVolumeRequest{
 		VolumeId:     testVolumeID,
+		Fence:        testFence(t),
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 		ExportParams: nvmeofExportParams("192.168.1.10", 4420),
 	})
@@ -105,6 +107,7 @@ func TestExportVolume_DefaultPort(t *testing.T) {
 
 	resp, err := srv.ExportVolume(context.Background(), &agentv1.ExportVolumeRequest{
 		VolumeId:     testVolumeID,
+		Fence:        testFence(t),
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 		ExportParams: nvmeofExportParams("10.0.0.1", 0), // port 0 → default 4420
 	})
@@ -124,6 +127,7 @@ func TestExportVolume_ExplicitDevicePath(t *testing.T) {
 
 	resp, err := srv.ExportVolume(context.Background(), &agentv1.ExportVolumeRequest{
 		VolumeId:     testVolumeID,
+		Fence:        testFence(t),
 		DevicePath:   "/dev/zvol/tank/pvc-abc",
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 		ExportParams: nvmeofExportParams("10.0.0.1", 4420),
@@ -145,6 +149,7 @@ func TestExportVolume_WrongProtocol(t *testing.T) {
 
 	_, err := srv.ExportVolume(context.Background(), &agentv1.ExportVolumeRequest{
 		VolumeId:     testVolumeID,
+		Fence:        testFence(t),
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI,
 	})
 	if err == nil {
@@ -162,6 +167,7 @@ func TestExportVolume_MissingParams(t *testing.T) {
 
 	_, err := srv.ExportVolume(context.Background(), &agentv1.ExportVolumeRequest{
 		VolumeId:     testVolumeID,
+		Fence:        testFence(t),
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 		// No ExportParams set — GetNvmeofTcp() will return nil.
 	})
@@ -180,6 +186,7 @@ func TestExportVolume_InvalidVolumeID(t *testing.T) {
 
 	_, err := srv.ExportVolume(context.Background(), &agentv1.ExportVolumeRequest{
 		VolumeId:     "no-slash",
+		Fence:        testFence(t),
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 		ExportParams: nvmeofExportParams("10.0.0.1", 4420),
 	})
@@ -216,6 +223,7 @@ func TestExportVolume_DeviceNotReady(t *testing.T) {
 
 	_, err := srv.ExportVolume(context.Background(), &agentv1.ExportVolumeRequest{
 		VolumeId:     testVolumeID,
+		Fence:        testFence(t),
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 		ExportParams: nvmeofExportParams("192.168.1.10", 4420),
 	})
@@ -258,6 +266,7 @@ func TestExportVolume_DeviceAppearsBeforeTimeout(t *testing.T) {
 
 	resp, err := srv.ExportVolume(context.Background(), &agentv1.ExportVolumeRequest{
 		VolumeId:     testVolumeID,
+		Fence:        testFence(t),
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 		ExportParams: nvmeofExportParams("192.168.1.10", 4420),
 	})
@@ -282,6 +291,7 @@ func TestUnexportVolume_Success(t *testing.T) {
 	// First export (creates configfs state).
 	_, err := srv.ExportVolume(context.Background(), &agentv1.ExportVolumeRequest{
 		VolumeId:     testVolumeID,
+		Fence:        testFence(t),
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 		ExportParams: nvmeofExportParams("192.168.1.10", 4420),
 	})
@@ -292,6 +302,7 @@ func TestUnexportVolume_Success(t *testing.T) {
 	// Then unexport.
 	_, err = srv.UnexportVolume(context.Background(), &agentv1.UnexportVolumeRequest{
 		VolumeId:     testVolumeID,
+		Fence:        testFence(t),
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 	})
 	if err != nil {
@@ -306,6 +317,7 @@ func TestUnexportVolume_Idempotent(t *testing.T) {
 	// Remove on a volume that was never exported must succeed (idempotent).
 	_, err := srv.UnexportVolume(context.Background(), &agentv1.UnexportVolumeRequest{
 		VolumeId:     testVolumeID,
+		Fence:        testFence(t),
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 	})
 	if err != nil {
@@ -319,6 +331,7 @@ func TestUnexportVolume_WrongProtocol(t *testing.T) {
 
 	_, err := srv.UnexportVolume(context.Background(), &agentv1.UnexportVolumeRequest{
 		VolumeId:     testVolumeID,
+		Fence:        testFence(t),
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NFS,
 	})
 	if err == nil {
@@ -340,6 +353,7 @@ func TestAllowInitiator_Success(t *testing.T) {
 	// Export first so the subsystem dir exists.
 	_, err := srv.ExportVolume(context.Background(), &agentv1.ExportVolumeRequest{
 		VolumeId:     testVolumeID,
+		Fence:        testFence(t),
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 		ExportParams: nvmeofExportParams("192.168.1.10", 4420),
 	})
@@ -350,6 +364,7 @@ func TestAllowInitiator_Success(t *testing.T) {
 	hostNQN := testHostNQN
 	_, err = srv.AllowInitiator(context.Background(), &agentv1.AllowInitiatorRequest{
 		VolumeId:     testVolumeID,
+		Fence:        testFence(t),
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 		InitiatorId:  hostNQN,
 	})
@@ -375,6 +390,7 @@ func TestAllowInitiator_Idempotent(t *testing.T) {
 
 	_, err := srv.ExportVolume(context.Background(), &agentv1.ExportVolumeRequest{
 		VolumeId:     testVolumeID,
+		Fence:        testFence(t),
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 		ExportParams: nvmeofExportParams("192.168.1.10", 4420),
 	})
@@ -384,6 +400,7 @@ func TestAllowInitiator_Idempotent(t *testing.T) {
 
 	req := &agentv1.AllowInitiatorRequest{
 		VolumeId:     testVolumeID,
+		Fence:        testFence(t),
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 		InitiatorId:  testHostNQN,
 	}
@@ -402,6 +419,7 @@ func TestAllowInitiator_WrongProtocol(t *testing.T) {
 
 	_, err := srv.AllowInitiator(context.Background(), &agentv1.AllowInitiatorRequest{
 		VolumeId:     testVolumeID,
+		Fence:        testFence(t),
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI,
 		InitiatorId:  "iqn.2023-01.io.example:host-1",
 	})
@@ -423,6 +441,7 @@ func TestDenyInitiator_Success(t *testing.T) {
 
 	_, err := srv.ExportVolume(context.Background(), &agentv1.ExportVolumeRequest{
 		VolumeId:     testVolumeID,
+		Fence:        testFence(t),
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 		ExportParams: nvmeofExportParams("192.168.1.10", 4420),
 	})
@@ -434,6 +453,7 @@ func TestDenyInitiator_Success(t *testing.T) {
 	// Allow first.
 	if _, err = srv.AllowInitiator(context.Background(), &agentv1.AllowInitiatorRequest{
 		VolumeId:     testVolumeID,
+		Fence:        testFence(t),
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 		InitiatorId:  hostNQN,
 	}); err != nil {
@@ -443,6 +463,7 @@ func TestDenyInitiator_Success(t *testing.T) {
 	// Then deny.
 	if _, err = srv.DenyInitiator(context.Background(), &agentv1.DenyInitiatorRequest{
 		VolumeId:     testVolumeID,
+		Fence:        testFence(t),
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 		InitiatorId:  hostNQN,
 	}); err != nil {
@@ -463,6 +484,7 @@ func TestDenyInitiator_Idempotent(t *testing.T) {
 	// Deny a host that was never allowed — must return success (idempotent).
 	_, err := srv.DenyInitiator(context.Background(), &agentv1.DenyInitiatorRequest{
 		VolumeId:     testVolumeID,
+		Fence:        testFence(t),
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 		InitiatorId:  testHostNQN,
 	})
@@ -477,6 +499,7 @@ func TestDenyInitiator_WrongProtocol(t *testing.T) {
 
 	_, err := srv.DenyInitiator(context.Background(), &agentv1.DenyInitiatorRequest{
 		VolumeId:     testVolumeID,
+		Fence:        testFence(t),
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_SMB,
 		InitiatorId:  "WORKGROUP\\host1",
 	})

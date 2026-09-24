@@ -42,6 +42,7 @@ import (
 	v1alpha1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
 	agentv1 "github.com/bhyoo/pillar-csi/gen/go/pillar_csi/agent/v1"
 	pillarcsi "github.com/bhyoo/pillar-csi/internal/csi"
+	"github.com/bhyoo/pillar-csi/internal/testutil/fakeuid"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -65,6 +66,7 @@ func newCSIControllerTestEnvNoResolvedAddr(t *testing.T) *csiControllerTestEnv {
 	}
 
 	fakeClient := fake.NewClientBuilder().
+		WithInterceptorFuncs(fakeuid.Interceptor()).
 		WithScheme(scheme).
 		WithObjects(target).
 		WithStatusSubresource(&v1alpha1.PillarVolumeState{}, &v1alpha1.PillarAgent{}).
@@ -76,7 +78,7 @@ func newCSIControllerTestEnvNoResolvedAddr(t *testing.T) *csiControllerTestEnv {
 	})
 
 	srv := pillarcsi.NewControllerServerWithDialer(fakeClient, "pillar-csi.bhyoo.com", dialer)
-	return &csiControllerTestEnv{srv: srv, agent: agent}
+	return &csiControllerTestEnv{srv: srv, agent: agent, k8sClient: fakeClient}
 }
 
 // newCSIControllerTestEnvNoTarget creates a ControllerServer backed by a fake
@@ -91,6 +93,7 @@ func newCSIControllerTestEnvNoTarget(t *testing.T) *csiControllerTestEnv {
 	}
 
 	fakeClient := fake.NewClientBuilder().
+		WithInterceptorFuncs(fakeuid.Interceptor()).
 		WithScheme(scheme).
 		WithStatusSubresource(&v1alpha1.PillarVolumeState{}, &v1alpha1.PillarAgent{}).
 		Build()
@@ -101,7 +104,7 @@ func newCSIControllerTestEnvNoTarget(t *testing.T) *csiControllerTestEnv {
 	})
 
 	srv := pillarcsi.NewControllerServerWithDialer(fakeClient, "pillar-csi.bhyoo.com", dialer)
-	return &csiControllerTestEnv{srv: srv, agent: agent}
+	return &csiControllerTestEnv{srv: srv, agent: agent, k8sClient: fakeClient}
 }
 
 // baseControllerPublishRequest returns a valid ControllerPublishVolumeRequest.
@@ -244,16 +247,31 @@ func TestCSIController_ControllerUnpublishVolume_EmptyVolumeID(t *testing.T) {
 }
 
 // TestCSIController_ControllerUnpublishVolume_EmptyNodeID verifies that an
-// empty NodeID on ControllerUnpublishVolume returns success (no-op per
-// CSI spec §4.3.4: controller must unpublish from all nodes when node_id
-// is empty; pillar-csi treats this as a successful no-op).
+// empty NodeID on ControllerUnpublishVolume unpublishes the volume from every
+// node (CSI spec: "If the node_id is not specified, the SP MUST unpublish the
+// volume from all nodes it is published to"): DenyInitiator is called for
+// each recorded publication and the records are removed.
 //
-//	Setup:   Valid VolumeID; NodeID=""
-//	Expect:  Returns empty ControllerUnpublishVolumeResponse; no agent DenyInitiator call
+//	Setup:   Volume published to one node; unpublish with NodeID=""
+//	Expect:  Returns empty ControllerUnpublishVolumeResponse; DenyInitiator
+//	         called once with the recorded initiator; publishedNodes emptied
 func TestCSIController_ControllerUnpublishVolume_EmptyNodeID(t *testing.T) {
 	t.Parallel()
 	env := newCSIControllerTestEnv(t)
 	ctx := context.Background()
+
+	const nodeID = "nqn.test:node-empty-unpublish"
+	seedComponentPillarVolumeState(t, env, "pvc-component-test")
+	seedCSINodeForNVMeOF(ctx, t, env.k8sClient, nodeID, nodeID)
+	publishComponentTestVolume(ctx, t, env, nodeID)
+
+	var deniedInitiators []string
+	env.agent.denyInitiatorFn = func(
+		_ context.Context, req *agentv1.DenyInitiatorRequest,
+	) (*agentv1.DenyInitiatorResponse, error) {
+		deniedInitiators = append(deniedInitiators, req.GetInitiatorId())
+		return &agentv1.DenyInitiatorResponse{}, nil
+	}
 
 	_, err := env.srv.ControllerUnpublishVolume(ctx, &csipb.ControllerUnpublishVolumeRequest{
 		VolumeId: expectedCSIVolumeID,
@@ -262,8 +280,15 @@ func TestCSIController_ControllerUnpublishVolume_EmptyNodeID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected success for empty NodeID, got: %v", err)
 	}
-	if env.agent.denyInitiatorCalls != 0 {
-		t.Errorf("agent.DenyInitiator called %d times, want 0 (no node to deny)", env.agent.denyInitiatorCalls)
+	if len(deniedInitiators) != 1 || deniedInitiators[0] != nodeID {
+		t.Errorf("DenyInitiator initiators = %v, want [%q] (every recorded publication revoked)", deniedInitiators, nodeID)
+	}
+	pvs := &v1alpha1.PillarVolumeState{}
+	if err := env.k8sClient.Get(ctx, types.NamespacedName{Name: "pvc-component-test"}, pvs); err != nil {
+		t.Fatalf("get PillarVolumeState: %v", err)
+	}
+	if len(pvs.Status.PublishedNodes) != 0 {
+		t.Errorf("status.publishedNodes = %+v, want empty", pvs.Status.PublishedNodes)
 	}
 }
 
@@ -361,37 +386,48 @@ func TestCSIController_CreateVolume_TargetNoResolvedAddress(t *testing.T) {
 }
 
 // TestCSIController_DeleteVolume_TargetNotFound verifies that if the
-// PillarAgent cannot be found during DeleteVolume, the controller returns
-// success — the node has been decommissioned so the volume cannot exist.
+// PillarAgent object cannot be found during DeleteVolume of a provisioned
+// volume, the controller fails closed: a missing PillarAgent object does not
+// prove the storage node's backend and target are gone, so the durable record
+// is kept (marked deleting) and no agent is contacted.
 //
-//	Setup:   VolumeID encodes a target name not present in the k8s store
-//	Expect:  Returns empty DeleteVolumeResponse; no error
+//	Setup:   PillarVolumeState exists; VolumeID encodes a target name not
+//	         present in the k8s store
+//	Expect:  Returns gRPC FailedPrecondition; record kept and marked deleting
 func TestCSIController_DeleteVolume_TargetNotFound(t *testing.T) {
 	t.Parallel()
 	env := newCSIControllerTestEnvNoTarget(t)
 	ctx := context.Background()
+	seedComponentPillarVolumeState(t, env, "pvc-test")
 
 	// VolumeID encodes "nonexistent-node" which has no PillarAgent.
 	volumeID := "nonexistent-node/nvmeof-tcp/zfs-zvol/tank/pvc-test"
 	_, err := env.srv.DeleteVolume(ctx, &csipb.DeleteVolumeRequest{VolumeId: volumeID})
-	if err != nil {
-		t.Fatalf("DeleteVolume: expected success for missing target (decommissioned), got: %v", err)
+	requireGRPCCode(t, err, codes.FailedPrecondition)
+	if env.agent.unexportVolumeCalls != 0 || env.agent.deleteVolumeCalls != 0 {
+		t.Errorf("agent calls unexport=%d delete=%d, want none",
+			env.agent.unexportVolumeCalls, env.agent.deleteVolumeCalls)
 	}
-	if env.agent.deleteVolumeCalls != 0 {
-		t.Errorf("agent.DeleteVolume called %d times, want 0", env.agent.deleteVolumeCalls)
+	pvs := &v1alpha1.PillarVolumeState{}
+	if getErr := env.k8sClient.Get(ctx, types.NamespacedName{Name: "pvc-test"}, pvs); getErr != nil {
+		t.Fatalf("PillarVolumeState: %v, want kept", getErr)
+	}
+	if !pvs.Status.Deleting {
+		t.Error("PillarVolumeState not marked deleting")
 	}
 }
 
 // TestCSIController_DeleteVolume_TargetNoResolvedAddress verifies that a
-// PillarAgent with an empty ResolvedAddress causes DeleteVolume to return
-// Unavailable (transient state; CO should retry).
+// PillarAgent with an empty ResolvedAddress causes DeleteVolume of a
+// provisioned volume to return Unavailable (transient state; CO should retry).
 //
-//	Setup:   PillarAgent with empty ResolvedAddress; well-formed volume ID
+//	Setup:   PillarVolumeState exists; PillarAgent with empty ResolvedAddress
 //	Expect:  Returns gRPC Unavailable
 func TestCSIController_DeleteVolume_TargetNoResolvedAddress(t *testing.T) {
 	t.Parallel()
 	env := newCSIControllerTestEnvNoResolvedAddr(t)
 	ctx := context.Background()
+	seedComponentPillarVolumeState(t, env, "pvc-component-test")
 
 	_, err := env.srv.DeleteVolume(ctx, &csipb.DeleteVolumeRequest{
 		VolumeId: expectedCSIVolumeID,
@@ -402,12 +438,15 @@ func TestCSIController_DeleteVolume_TargetNoResolvedAddress(t *testing.T) {
 // TestCSIController_ControllerPublishVolume_TargetNotFound verifies that a
 // missing PillarAgent on ControllerPublishVolume returns NotFound.
 //
-//	Setup:   VolumeID encoding a target name not in the k8s store
+//	Setup:   PillarVolumeState exists; VolumeID encodes a target name not in
+//	         the k8s store
 //	Expect:  Returns gRPC NotFound
 func TestCSIController_ControllerPublishVolume_TargetNotFound(t *testing.T) {
 	t.Parallel()
 	env := newCSIControllerTestEnvNoTarget(t)
 	ctx := context.Background()
+	// Seed the volume so the PillarAgent lookup (not the volume lookup) fails.
+	seedComponentPillarVolumeState(t, env, "pvc-test")
 
 	req := baseControllerPublishRequest()
 	req.VolumeId = "nonexistent-node/nvmeof-tcp/zfs-zvol/tank/pvc-test"
@@ -420,13 +459,16 @@ func TestCSIController_ControllerPublishVolume_TargetNotFound(t *testing.T) {
 // that a PillarAgent with empty ResolvedAddress on ControllerPublishVolume
 // returns Unavailable.
 //
-//	Setup:   PillarAgent with empty ResolvedAddress; valid VolumeID and NodeID
+//	Setup:   PillarVolumeState exists; PillarAgent with empty ResolvedAddress;
+//	         valid VolumeID and NodeID
 //	Expect:  Returns gRPC Unavailable
 func TestCSIController_ControllerPublishVolume_TargetNoResolvedAddress(t *testing.T) {
 	t.Parallel()
 	env := newCSIControllerTestEnvNoResolvedAddr(t)
 	ctx := context.Background()
-
+	// Seed the volume so the publish passes the existence check and reaches
+	// the PillarAgent address resolution.
+	seedComponentPillarVolumeState(t, env, "pvc-component-test")
 	_, err := env.srv.ControllerPublishVolume(ctx, baseControllerPublishRequest())
 	requireGRPCCode(t, err, codes.Unavailable)
 }
@@ -491,6 +533,7 @@ func TestCSIController_CreateVolume_ExportFails_RecordsCreatePartial(t *testing.
 		Status:     v1alpha1.PillarAgentStatus{ResolvedAddress: "192.168.1.10:9500"},
 	}
 	fakeClient := fake.NewClientBuilder().
+		WithInterceptorFuncs(fakeuid.Interceptor()).
 		WithScheme(scheme).
 		WithObjects(target).
 		WithStatusSubresource(&v1alpha1.PillarVolumeState{}, &v1alpha1.PillarAgent{}).
@@ -535,6 +578,7 @@ func TestCSIController_ExpandVolume_AgentReturnsZeroBytes(t *testing.T) {
 	t.Parallel()
 	env := newCSIControllerTestEnv(t)
 	ctx := context.Background()
+	seedComponentPillarVolumeState(t, env, "pvc-component-test")
 
 	const wantBytes = int64(20 << 30) // 20 GiB
 
@@ -559,20 +603,22 @@ func TestCSIController_ExpandVolume_AgentReturnsZeroBytes(t *testing.T) {
 
 // TestCSIErrors_ControllerUnpublish_DenyInitiatorNonNotFound verifies that
 // when DenyInitiator returns an error other than NotFound, the error is
-// propagated to the caller (not silently swallowed).
+// propagated to the caller (not silently swallowed) and the publication
+// record is kept so the CO retry revokes it again.
 //
-//	Setup:   Mock agent: DenyInitiator→gRPC Internal
-//	Expect:  Returns non-OK gRPC status (Internal); no success masking
+//	Setup:   Volume published to the node; Mock agent: DenyInitiator→gRPC Internal
+//	Expect:  Returns gRPC Internal; publication record still present
 func TestCSIErrors_ControllerUnpublish_DenyInitiatorNonNotFound(t *testing.T) {
 	t.Parallel()
 	env := newCSIControllerTestEnv(t)
 	ctx := context.Background()
 
 	const nodeID = "nqn.test:node-deny-fail"
-	// Seed CSINode so resolveInitiatorID succeeds and DenyInitiator is reached.
-	// Without the CSINode, the controller treats FailedPrecondition as "already
-	// revoked" and returns success before calling the agent.
+	// Unpublish only revokes recorded publications: seed the volume and CSINode,
+	// then publish so DenyInitiator is reached.
+	seedComponentPillarVolumeState(t, env, "pvc-component-test")
 	seedCSINodeForNVMeOF(ctx, t, env.k8sClient, nodeID, nodeID)
+	publishComponentTestVolume(ctx, t, env, nodeID)
 
 	env.agent.denyInitiatorFn = func(
 		_ context.Context, _ *agentv1.DenyInitiatorRequest,
@@ -584,5 +630,17 @@ func TestCSIErrors_ControllerUnpublish_DenyInitiatorNonNotFound(t *testing.T) {
 		VolumeId: expectedCSIVolumeID,
 		NodeId:   nodeID,
 	})
-	requireNonOKGRPC(t, err)
+	requireGRPCCode(t, err, codes.Internal)
+	if env.agent.denyInitiatorCalls != 1 {
+		t.Errorf("agent.DenyInitiator calls = %d, want 1", env.agent.denyInitiatorCalls)
+	}
+
+	pvs := &v1alpha1.PillarVolumeState{}
+	if err := env.k8sClient.Get(ctx, types.NamespacedName{Name: "pvc-component-test"}, pvs); err != nil {
+		t.Fatalf("get PillarVolumeState: %v", err)
+	}
+	if len(pvs.Status.PublishedNodes) != 1 || pvs.Status.PublishedNodes[0].NodeID != nodeID {
+		t.Errorf("status.publishedNodes = %+v, want record for %q kept after failed revoke",
+			pvs.Status.PublishedNodes, nodeID)
+	}
 }

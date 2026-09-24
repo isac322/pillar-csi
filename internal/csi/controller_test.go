@@ -38,6 +38,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strings"
+	"sync"
 	"testing"
 
 	csi "github.com/container-storage-interface/spec/lib/go/csi"
@@ -54,6 +56,7 @@ import (
 
 	v1alpha1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
 	agentv1 "github.com/bhyoo/pillar-csi/gen/go/pillar_csi/agent/v1"
+	"github.com/bhyoo/pillar-csi/internal/testutil/fakeuid"
 )
 
 const testModeThin = "thin"
@@ -344,6 +347,7 @@ func newControllerTestEnv(t *testing.T) *controllerTestEnv {
 	}
 
 	fakeClient := fake.NewClientBuilder().
+		WithInterceptorFuncs(fakeuid.Interceptor()).
 		WithScheme(scheme).
 		WithObjects(target).
 		WithStatusSubresource(&v1alpha1.PillarVolumeState{}, &v1alpha1.PillarAgent{}).
@@ -965,6 +969,7 @@ func TestCreateVolume_AgentUnavailable(t *testing.T) {
 	}
 
 	fakeClient := fake.NewClientBuilder().
+		WithInterceptorFuncs(fakeuid.Interceptor()).
 		WithScheme(scheme).
 		WithObjects(target).
 		WithStatusSubresource(&v1alpha1.PillarVolumeState{}).
@@ -1192,6 +1197,7 @@ func TestGetCapacity_TargetNoAddress(t *testing.T) {
 	}
 
 	fakeClient := fake.NewClientBuilder().
+		WithInterceptorFuncs(fakeuid.Interceptor()).
 		WithScheme(scheme).
 		WithObjects(target).
 		WithStatusSubresource(&v1alpha1.PillarAgent{}).
@@ -1256,6 +1262,7 @@ func newControllerTestEnvWithPVC(
 	}
 
 	fakeClient := fake.NewClientBuilder().
+		WithInterceptorFuncs(fakeuid.Interceptor()).
 		WithScheme(scheme).
 		WithObjects(target, pvc).
 		WithStatusSubresource(&v1alpha1.PillarVolumeState{}, &v1alpha1.PillarAgent{}).
@@ -1532,6 +1539,7 @@ func TestMergeParamsFromCRDs_LVM_PoolDefault(t *testing.T) {
 	}
 
 	fakeClient := fake.NewClientBuilder().
+		WithInterceptorFuncs(fakeuid.Interceptor()).
 		WithScheme(scheme).
 		WithObjects(pool, binding).
 		Build()
@@ -1597,6 +1605,7 @@ func TestMergeParamsFromCRDs_LVM_BindingOverride(t *testing.T) {
 	}
 
 	fakeClient := fake.NewClientBuilder().
+		WithInterceptorFuncs(fakeuid.Interceptor()).
 		WithScheme(scheme).
 		WithObjects(pool, binding).
 		Build()
@@ -1657,6 +1666,7 @@ func TestMergeParamsFromCRDs_LVM_SCOverridePool(t *testing.T) {
 	}
 
 	fakeClient := fake.NewClientBuilder().
+		WithInterceptorFuncs(fakeuid.Interceptor()).
 		WithScheme(scheme).
 		WithObjects(pool, binding).
 		Build()
@@ -1716,6 +1726,7 @@ func TestMergeParamsFromCRDs_LVM_NoModeConfigured(t *testing.T) {
 	}
 
 	fakeClient := fake.NewClientBuilder().
+		WithInterceptorFuncs(fakeuid.Interceptor()).
 		WithScheme(scheme).
 		WithObjects(pool, binding).
 		Build()
@@ -1741,8 +1752,9 @@ func TestMergeParamsFromCRDs_LVM_NoModeConfigured(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // newPublishTestEnv builds a ControllerServer wired to a fake k8s client that
-// has a PillarAgent but no CSINode by default.  Callers can seed CSINode
-// objects as needed for each test case.
+// has a PillarAgent but no CSINode and no PillarVolumeState by default.
+// Callers seed CSINode objects and the volume's PillarVolumeState (see
+// volumeStateFor) as needed for each test case.
 func newPublishTestEnv(t *testing.T, objs ...ctrlclient.Object) *controllerTestEnv {
 	t.Helper()
 
@@ -1766,9 +1778,10 @@ func newPublishTestEnv(t *testing.T, objs ...ctrlclient.Object) *controllerTestE
 
 	allObjs := append([]ctrlclient.Object{target}, objs...)
 	fakeClient := fake.NewClientBuilder().
+		WithInterceptorFuncs(fakeuid.Interceptor()).
 		WithScheme(scheme).
-		WithObjects(allObjs...).
-		WithStatusSubresource(&v1alpha1.PillarAgent{}).
+		WithObjects(fakeuid.Assign(allObjs...)...).
+		WithStatusSubresource(&v1alpha1.PillarAgent{}, &v1alpha1.PillarVolumeState{}).
 		Build()
 
 	agent := &mockAgentClient{}
@@ -1797,6 +1810,25 @@ func basePublishRequest() *csi.ControllerPublishVolumeRequest {
 	}
 }
 
+// volumeStateFor returns the PillarVolumeState CreateVolume would have left
+// for volumeID (phase Ready), carrying the given publication records.
+func volumeStateFor(volumeID string, pubs ...v1alpha1.VolumePublication) *v1alpha1.PillarVolumeState {
+	return &v1alpha1.PillarVolumeState{
+		ObjectMeta: metav1.ObjectMeta{Name: pillarVolumeStateNameFromVolumeID(volumeID)},
+		Spec: v1alpha1.PillarVolumeStateSpec{
+			VolumeID:      volumeID,
+			AgentVolumeID: "tank/" + pillarVolumeStateNameFromVolumeID(volumeID),
+			AgentRef:      "storage-node-1",
+			BackendType:   "zfs-zvol",
+			ProtocolType:  strings.SplitN(volumeID, "/", volumeIDParts)[1],
+		},
+		Status: v1alpha1.PillarVolumeStateStatus{
+			Phase:          v1alpha1.PillarVolumeStatePhaseReady,
+			PublishedNodes: pubs,
+		},
+	}
+}
+
 // TestControllerPublishVolume_FailedPrecondition_CSINodeNotFound verifies that
 // ControllerPublishVolume returns FailedPrecondition when the CSINode object
 // does not exist yet (node plugin has not registered).
@@ -1809,7 +1841,7 @@ func TestControllerPublishVolume_NotFound_CSINodeNotFound(t *testing.T) {
 	// FailedPrecondition→NotFound translation in controller.go.  Other
 	// callers of resolveInitiatorID (e.g. Unpublish) retain the
 	// FailedPrecondition signal for retry-friendly behavior.
-	env := newPublishTestEnv(t)
+	env := newPublishTestEnv(t, volumeStateFor(basePublishRequest().GetVolumeId()))
 	ctx := context.Background()
 
 	_, err := env.srv.ControllerPublishVolume(ctx, basePublishRequest())
@@ -1842,7 +1874,7 @@ func TestControllerPublishVolume_FailedPrecondition_AnnotationMissing(t *testing
 			// Annotations deliberately omitted.
 		},
 	}
-	env := newPublishTestEnv(t, csiNode)
+	env := newPublishTestEnv(t, csiNode, volumeStateFor(basePublishRequest().GetVolumeId()))
 	ctx := context.Background()
 
 	_, err := env.srv.ControllerPublishVolume(ctx, basePublishRequest())
@@ -1875,7 +1907,7 @@ func TestControllerPublishVolume_SuccessWithAnnotation(t *testing.T) {
 			},
 		},
 	}
-	env := newPublishTestEnv(t, csiNode)
+	env := newPublishTestEnv(t, csiNode, volumeStateFor(basePublishRequest().GetVolumeId()))
 	ctx := context.Background()
 
 	_, err := env.srv.ControllerPublishVolume(ctx, basePublishRequest())
@@ -1908,7 +1940,7 @@ func TestControllerPublishVolume_FailedPrecondition_ISCSIAnnotationMissing(t *te
 			// No iscsi-initiator-iqn annotation.
 		},
 	}
-	env := newPublishTestEnv(t, csiNode)
+	env := newPublishTestEnv(t, csiNode, volumeStateFor("storage-node-1/iscsi/zfs-zvol/tank/pvc-abc123"))
 	ctx := context.Background()
 
 	req := &csi.ControllerPublishVolumeRequest{
@@ -2014,5 +2046,337 @@ func TestValidateVolumeCapabilities_AllowsFilesystemVolumeModeForFileProtocol(t 
 	}
 	if resp.GetConfirmed() == nil {
 		t.Fatal("Confirmed is nil")
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ControllerPublishVolume — publish exclusivity (CSI access modes)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const (
+	exclNode1 = "worker-node-1"
+	exclNode2 = "worker-node-2"
+	exclNFSID = "storage-node-1/nfs/nfs-share/tank/pvc-abc123"
+)
+
+// exclNQN returns the NVMe-oF host NQN the fixture CSINode reports for node.
+func exclNQN(node string) string { return "nqn.2014-08.org.nvmexpress:uuid:" + node }
+
+// exclCSINodes returns CSINode objects for both test nodes with distinct NQNs.
+func exclCSINodes() []ctrlclient.Object {
+	objs := make([]ctrlclient.Object, 0, 2)
+	for _, node := range []string{exclNode1, exclNode2} {
+		objs = append(objs, &storagev1.CSINode{ObjectMeta: metav1.ObjectMeta{
+			Name:        node,
+			Annotations: map[string]string{AnnotationNVMeOFHostNQN: exclNQN(node)},
+		}})
+	}
+	return objs
+}
+
+// exclPublishReq builds a publish request for volumeID on node.
+func exclPublishReq(
+	volumeID, node string,
+	mode csi.VolumeCapability_AccessMode_Mode,
+	readonly bool,
+) *csi.ControllerPublishVolumeRequest {
+	req := basePublishRequest()
+	req.VolumeId = volumeID
+	req.NodeId = node
+	req.Readonly = readonly
+	req.VolumeCapability.AccessMode.Mode = mode
+	return req
+}
+
+// exclPub builds the publication record ControllerPublishVolume writes for
+// an NVMe-oF node (or, for file protocols, initiator == nodeID).
+func exclPub(
+	node, initiator string,
+	mode csi.VolumeCapability_AccessMode_Mode,
+	readonly bool,
+) v1alpha1.VolumePublication {
+	return v1alpha1.VolumePublication{
+		NodeID:      node,
+		InitiatorID: initiator,
+		AccessMode:  mode.String(),
+		Readonly:    readonly,
+	}
+}
+
+// exclCountWinners counts successful publishes and reports any failure that
+// is not the expected FailedPrecondition rejection.
+func exclCountWinners(t *testing.T, errs []error) int {
+	t.Helper()
+	wins := 0
+	for _, err := range errs {
+		switch status.Code(err) {
+		case codes.OK:
+			wins++
+		case codes.FailedPrecondition:
+		default:
+			t.Errorf("unexpected loser error: %v", err)
+		}
+	}
+	return wins
+}
+
+// exclPublishedNodes reads the durable publication records of volumeID.
+func exclPublishedNodes(t *testing.T, c ctrlclient.Client, volumeID string) []v1alpha1.VolumePublication {
+	t.Helper()
+	pvs := &v1alpha1.PillarVolumeState{}
+	if err := c.Get(context.Background(),
+		types.NamespacedName{Name: pillarVolumeStateNameFromVolumeID(volumeID)}, pvs); err != nil {
+		t.Fatalf("get PillarVolumeState: %v", err)
+	}
+	return pvs.Status.PublishedNodes
+}
+
+// TestControllerPublishVolume_Exclusivity verifies the CSI ControllerPublishVolume
+// compatibility contract against existing publication records: another node
+// holding the volume incompatibly yields FailedPrecondition, the same node
+// with a different capability yields AlreadyExists, compatible multi-node
+// modes coexist, and a rejected publish never reaches AllowInitiator.
+func TestControllerPublishVolume_Exclusivity(t *testing.T) {
+	t.Parallel()
+
+	blockID := basePublishRequest().GetVolumeId()
+	const (
+		snw  = csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER
+		snmw = csi.VolumeCapability_AccessMode_SINGLE_NODE_MULTI_WRITER
+		snsw = csi.VolumeCapability_AccessMode_SINGLE_NODE_SINGLE_WRITER
+		mnro = csi.VolumeCapability_AccessMode_MULTI_NODE_READER_ONLY
+		mnsw = csi.VolumeCapability_AccessMode_MULTI_NODE_SINGLE_WRITER
+		mnmw = csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER
+	)
+
+	testCases := []struct {
+		name        string
+		volumeID    string
+		existing    []v1alpha1.VolumePublication
+		req         *csi.ControllerPublishVolumeRequest
+		wantCode    codes.Code
+		wantRecords int
+	}{
+		{"first publish records node", blockID, nil,
+			exclPublishReq(blockID, exclNode1, snw, false), codes.OK, 1},
+		{"SINGLE_NODE_WRITER second node rejected", blockID,
+			[]v1alpha1.VolumePublication{exclPub(exclNode1, exclNQN(exclNode1), snw, false)},
+			exclPublishReq(blockID, exclNode2, snw, false), codes.FailedPrecondition, 1},
+		{"SINGLE_NODE_MULTI_WRITER second node rejected", blockID,
+			[]v1alpha1.VolumePublication{exclPub(exclNode1, exclNQN(exclNode1), snmw, false)},
+			exclPublishReq(blockID, exclNode2, snmw, false), codes.FailedPrecondition, 1},
+		{"SINGLE_NODE_SINGLE_WRITER second node rejected", blockID,
+			[]v1alpha1.VolumePublication{exclPub(exclNode1, exclNQN(exclNode1), snsw, false)},
+			exclPublishReq(blockID, exclNode2, snsw, false), codes.FailedPrecondition, 1},
+		{"reader-only request against single-node writer rejected", blockID,
+			[]v1alpha1.VolumePublication{exclPub(exclNode1, exclNQN(exclNode1), snw, false)},
+			exclPublishReq(blockID, exclNode2, mnro, true), codes.FailedPrecondition, 1},
+		{"same node identical retry is idempotent", blockID,
+			[]v1alpha1.VolumePublication{exclPub(exclNode1, exclNQN(exclNode1), snw, false)},
+			exclPublishReq(blockID, exclNode1, snw, false), codes.OK, 1},
+		{"same node different access mode", blockID,
+			[]v1alpha1.VolumePublication{exclPub(exclNode1, exclNQN(exclNode1), snw, false)},
+			exclPublishReq(blockID, exclNode1, snsw, false), codes.AlreadyExists, 1},
+		{"same node different readonly", blockID,
+			[]v1alpha1.VolumePublication{exclPub(exclNode1, exclNQN(exclNode1), snw, false)},
+			exclPublishReq(blockID, exclNode1, snw, true), codes.AlreadyExists, 1},
+		{"same node reports a different initiator", blockID,
+			[]v1alpha1.VolumePublication{exclPub(exclNode1, "nqn.old-host", snw, false)},
+			exclPublishReq(blockID, exclNode1, snw, false), codes.FailedPrecondition, 1},
+		{"MULTI_NODE_READER_ONLY shares across nodes", blockID,
+			[]v1alpha1.VolumePublication{exclPub(exclNode1, exclNQN(exclNode1), mnro, true)},
+			exclPublishReq(blockID, exclNode2, mnro, true), codes.OK, 2},
+		{"block protocol rejects MULTI_NODE_MULTI_WRITER", blockID, nil,
+			exclPublishReq(blockID, exclNode1, mnmw, false), codes.InvalidArgument, 0},
+		{"file protocol MULTI_NODE_MULTI_WRITER shares across nodes", exclNFSID,
+			[]v1alpha1.VolumePublication{exclPub(exclNode1, exclNode1, mnmw, false)},
+			exclPublishReq(exclNFSID, exclNode2, mnmw, false), codes.OK, 2},
+		{"file protocol MULTI_NODE_SINGLE_WRITER rejects second writer", exclNFSID,
+			[]v1alpha1.VolumePublication{exclPub(exclNode1, exclNode1, mnsw, false)},
+			exclPublishReq(exclNFSID, exclNode2, mnsw, false), codes.FailedPrecondition, 1},
+		{"file protocol MULTI_NODE_SINGLE_WRITER admits a reader", exclNFSID,
+			[]v1alpha1.VolumePublication{exclPub(exclNode1, exclNode1, mnsw, false)},
+			exclPublishReq(exclNFSID, exclNode2, mnsw, true), codes.OK, 2},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			objs := append(exclCSINodes(), volumeStateFor(tc.volumeID, tc.existing...))
+			env := newPublishTestEnv(t, objs...)
+
+			_, err := env.srv.ControllerPublishVolume(context.Background(), tc.req)
+			if got := status.Code(err); got != tc.wantCode {
+				t.Fatalf("ControllerPublishVolume code = %v (err=%v), want %v", got, err, tc.wantCode)
+			}
+			wantAllow := 0
+			if tc.wantCode == codes.OK {
+				wantAllow = 1
+			}
+			if env.agent.allowInitiatorCalls != wantAllow {
+				t.Errorf("AllowInitiator calls = %d, want %d", env.agent.allowInitiatorCalls, wantAllow)
+			}
+			if got := exclPublishedNodes(t, env.srv.k8sClient, tc.volumeID); len(got) != tc.wantRecords {
+				t.Errorf("publishedNodes = %+v, want %d records", got, tc.wantRecords)
+			}
+		})
+	}
+}
+
+// TestControllerPublishVolume_UnknownVolume_NotFound verifies that publishing
+// a volume without a PillarVolumeState returns NotFound and grants nothing.
+func TestControllerPublishVolume_UnknownVolume_NotFound(t *testing.T) {
+	t.Parallel()
+
+	env := newPublishTestEnv(t, exclCSINodes()...)
+	_, err := env.srv.ControllerPublishVolume(context.Background(), basePublishRequest())
+	if status.Code(err) != codes.NotFound {
+		t.Fatalf("code = %v (err=%v), want NotFound", status.Code(err), err)
+	}
+	if env.agent.allowInitiatorCalls != 0 {
+		t.Errorf("AllowInitiator calls = %d, want 0", env.agent.allowInitiatorCalls)
+	}
+}
+
+// TestControllerPublishVolume_AllowFailureKeepsReservation verifies the
+// fail-closed ordering: the publication is recorded before AllowInitiator, so
+// a failed grant still blocks a second node while a retry on the same node
+// succeeds once the agent recovers.
+func TestControllerPublishVolume_AllowFailureKeepsReservation(t *testing.T) {
+	t.Parallel()
+
+	volumeID := basePublishRequest().GetVolumeId()
+	env := newPublishTestEnv(t, append(exclCSINodes(), volumeStateFor(volumeID))...)
+	ctx := context.Background()
+	mode := csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER
+
+	env.agent.allowInitiatorErr = status.Error(codes.Internal, "configfs write failed")
+	if _, err := env.srv.ControllerPublishVolume(ctx, exclPublishReq(volumeID, exclNode1, mode, false)); err == nil {
+		t.Fatal("expected AllowInitiator failure to propagate")
+	}
+	if got := exclPublishedNodes(t, env.srv.k8sClient, volumeID); len(got) != 1 || got[0].NodeID != exclNode1 {
+		t.Fatalf("publishedNodes after failed grant = %+v, want reservation for %s", got, exclNode1)
+	}
+
+	env.agent.allowInitiatorErr = nil
+	_, err := env.srv.ControllerPublishVolume(ctx, exclPublishReq(volumeID, exclNode2, mode, false))
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("second node code = %v (err=%v), want FailedPrecondition", status.Code(err), err)
+	}
+	if _, err := env.srv.ControllerPublishVolume(ctx, exclPublishReq(volumeID, exclNode1, mode, false)); err != nil {
+		t.Fatalf("same-node retry after agent recovery: %v", err)
+	}
+}
+
+// TestControllerPublishVolume_ConcurrentNodes_ExactlyOneWins verifies that two
+// concurrent publishes of a SINGLE_NODE_WRITER volume to different nodes
+// grant exactly one node, both within one controller (per-volume lock) and
+// across two controller instances sharing the API server (resourceVersion
+// compare-and-swap).
+func TestControllerPublishVolume_ConcurrentNodes_ExactlyOneWins(t *testing.T) {
+	t.Parallel()
+
+	for _, twoControllers := range []bool{false, true} {
+		name := "single controller"
+		if twoControllers {
+			name = "two controllers"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			volumeID := basePublishRequest().GetVolumeId()
+			env := newPublishTestEnv(t, append(exclCSINodes(), volumeStateFor(volumeID))...)
+			servers := []*ControllerServer{env.srv, env.srv}
+			if twoControllers {
+				second := &mockAgentClient{}
+				servers[1] = NewControllerServerWithDialer(env.srv.k8sClient, "pillar-csi.bhyoo.com",
+					func(_ context.Context, _ string) (agentv1.AgentServiceClient, io.Closer, error) {
+						return second, nopCloser{}, nil
+					})
+			}
+
+			mode := csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER
+			nodes := []string{exclNode1, exclNode2}
+			errs := make([]error, len(nodes))
+			var wg sync.WaitGroup
+			for i, node := range nodes {
+				wg.Go(func() {
+					_, errs[i] = servers[i].ControllerPublishVolume(context.Background(),
+						exclPublishReq(volumeID, node, mode, false))
+				})
+			}
+			wg.Wait()
+
+			wins := exclCountWinners(t, errs)
+			if wins != 1 {
+				t.Fatalf("successful publishes = %d (errs=%v), want exactly 1", wins, errs)
+			}
+			if got := exclPublishedNodes(t, env.srv.k8sClient, volumeID); len(got) != 1 {
+				t.Errorf("publishedNodes = %+v, want exactly one record", got)
+			}
+		})
+	}
+}
+
+// TestControllerPublishVolume_ExclusivitySurvivesRestart verifies that the
+// publication record, not in-memory state, enforces exclusivity: a fresh
+// controller that reloads state from PillarVolumeStates rejects a second node
+// and restores the ControllerPublished state.
+func TestControllerPublishVolume_ExclusivitySurvivesRestart(t *testing.T) {
+	t.Parallel()
+
+	volumeID := basePublishRequest().GetVolumeId()
+	env := newPublishTestEnv(t, append(exclCSINodes(), volumeStateFor(volumeID))...)
+	ctx := context.Background()
+	mode := csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER
+	if _, err := env.srv.ControllerPublishVolume(ctx, exclPublishReq(volumeID, exclNode1, mode, false)); err != nil {
+		t.Fatalf("publish node 1: %v", err)
+	}
+
+	restarted := NewControllerServerWithDialer(env.srv.k8sClient, "pillar-csi.bhyoo.com", env.srv.dialAgent)
+	if err := restarted.LoadStateFromPillarVolumeStates(ctx); err != nil {
+		t.Fatalf("LoadStateFromPillarVolumeStates: %v", err)
+	}
+	if got := restarted.GetStateMachine().GetState(volumeID); got != StateControllerPublished {
+		t.Errorf("restored state = %v, want ControllerPublished", got)
+	}
+	_, err := restarted.ControllerPublishVolume(ctx, exclPublishReq(volumeID, exclNode2, mode, false))
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("publish node 2 after restart code = %v (err=%v), want FailedPrecondition", status.Code(err), err)
+	}
+}
+
+// TestDeleteVolume_PublishedVolume_FailedPrecondition verifies that a volume
+// with a publication record is not deleted and no agent teardown runs, and
+// that deletion proceeds once the node is unpublished.
+func TestDeleteVolume_PublishedVolume_FailedPrecondition(t *testing.T) {
+	t.Parallel()
+
+	volumeID := basePublishRequest().GetVolumeId()
+	mode := csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER
+	env := newPublishTestEnv(t, append(exclCSINodes(),
+		volumeStateFor(volumeID, exclPub(exclNode1, exclNQN(exclNode1), mode, false)))...)
+	ctx := context.Background()
+
+	_, err := env.srv.DeleteVolume(ctx, &csi.DeleteVolumeRequest{VolumeId: volumeID})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("DeleteVolume code = %v (err=%v), want FailedPrecondition", status.Code(err), err)
+	}
+	if env.agent.unexportVolumeCalls != 0 || env.agent.deleteVolumeCalls != 0 {
+		t.Fatalf("agent teardown ran for a published volume: unexport=%d delete=%d",
+			env.agent.unexportVolumeCalls, env.agent.deleteVolumeCalls)
+	}
+
+	if _, err := env.srv.ControllerUnpublishVolume(ctx, &csi.ControllerUnpublishVolumeRequest{
+		VolumeId: volumeID, NodeId: exclNode1,
+	}); err != nil {
+		t.Fatalf("ControllerUnpublishVolume: %v", err)
+	}
+	if _, err := env.srv.DeleteVolume(ctx, &csi.DeleteVolumeRequest{VolumeId: volumeID}); err != nil {
+		t.Fatalf("DeleteVolume after unpublish: %v", err)
+	}
+	if env.agent.deleteVolumeCalls != 1 {
+		t.Errorf("agent DeleteVolume calls = %d, want 1", env.agent.deleteVolumeCalls)
 	}
 }

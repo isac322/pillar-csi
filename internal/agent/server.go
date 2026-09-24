@@ -79,6 +79,12 @@ type Server struct {
 	// Values are *sync.Mutex; LoadOrStore is used to create on first access.
 	targetMu sync.Map
 
+	// fencingMu serializes, per volume ID, every read-check-write and removal
+	// of the durable fencing mark (see fencing.go).  Target locks are keyed by
+	// protocol target, and backend DeleteVolume holds none, so the mark needs
+	// its own per-volume lock.  Values are *sync.Mutex.
+	fencingMu sync.Map
+
 	// drained reports whether Drain has been called; further RPCs are rejected
 	// with codes.Unavailable once true.
 	drained atomic.Bool
