@@ -15,7 +15,7 @@ limitations under the License.
 */
 
 // Package zfs implements the VolumeBackend interface for ZFS zvol volumes.
-// All ZFS operations are executed via os/exec calls to zfs(8) and zpool(8);
+// All ZFS operations are executed via os/exec calls to zfs(8);
 // no ZFS Go library is imported so that the agent binary carries zero CGO
 // dependencies and can be cross-compiled easily.
 //
@@ -34,6 +34,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"os/exec"
 	"path"
 	"strconv"
@@ -144,7 +145,7 @@ func New(pool, parentDataset string) *Backend {
 }
 
 // NewWithExecFn creates a Backend that delegates all ZFS command execution to
-// fn instead of running real zfs(8)/zpool(8) binaries.  This constructor is
+// fn instead of running real zfs(8) binaries.  This constructor is
 // intended for use in component and integration tests that need to simulate
 // ZFS command output without requiring a ZFS-capable host.
 //
@@ -338,39 +339,237 @@ func (z *Backend) Expand(ctx context.Context, volumeID string, requestedBytes in
 	return actual, nil
 }
 
-// Capacity queries the pool for its total and available byte counts.
+// provisioningRoot returns the dataset under which this backend creates
+// zvols: "<pool>/<parentDataset>", or the pool root dataset "<pool>" when
+// parentDataset is empty.
+func (z *Backend) provisioningRoot() string {
+	if z.parentDataset == "" {
+		return z.pool
+	}
+	return path.Join(z.pool, z.parentDataset)
+}
+
+// Capacity reports the space that can still be allocated to new zvols under
+// the provisioning root dataset (see provisioningRoot).
 //
-// It runs `zpool list -Hp -o size,free <pool>` which produces a single
-// tab-separated line of the form:
+// It runs `zfs get -Hp -o name,property,value <props> <root> <ancestors...>`
+// which emits one line per property:
 //
-//	<totalBytes>\t<freeBytes>\n
+//	<dataset>\t<property>\t<value>\n
 //
-// The -H flag suppresses headers and the -p flag requests exact byte values
-// instead of human-readable abbreviations.
+// availableBytes is the space ZFS admits a new child zvol's refreservation
+// against, i.e. dsl_dir_space_available(root_dir) in OpenZFS
+// (module/zfs/dsl_dir.c).  It accounts for ancestor quotas, reservations
+// held elsewhere in the pool, raidz parity, and slop space.  Pool-wide
+// `zpool list` size/free figures do not, and can substantially overstate
+// what is allocatable (zpoolprops(7)).
+//
+// The dataset `available` property equals that bound only when the dataset
+// has no refquota and no refreservation: dsl_get_available
+// (module/zfs/dsl_dataset.c) adds the dataset's own unused refreservation
+// (== usedbyrefreservation) and clamps to refquota - referenced, neither of
+// which bounds descendants.  So:
+//   - refquota unset: bound = available - usedbyrefreservation.
+//   - refquota set: the bound is recomputed from the hierarchical
+//     properties of the dataset and its ancestors (see dirSpaceAvailable).
+//
+// When the pool root dataset itself carries a refquota, the bound cannot be
+// derived from user-visible properties (the pool slop term is not exposed);
+// Capacity returns an explicit error rather than a fabricated number.
+//
+// The returned total is used + availableBytes, so callers deriving
+// used = total - available obtain the dataset's `used` property.
+//
+// A missing provisioning root is reported as an error rather than falling
+// back to pool-wide numbers, because Create would fail under it.
 func (z *Backend) Capacity(ctx context.Context) (totalBytes, availableBytes int64, err error) {
-	out, err := z.exec.run(ctx, "zpool", "list", "-Hp", "-o", "size,free", z.pool)
+	root := z.provisioningRoot()
+
+	// One query covers the root and every ancestor up to the pool root,
+	// so the refquota path needs no extra commands.
+	ancestors := datasetAncestors(root)
+	args := append(
+		[]string{"get", "-Hp", "-o", "name,property,value",
+			"available,used,usedbyrefreservation,refquota,quota,reservation"},
+		ancestors...,
+	)
+	out, err := z.exec.run(ctx, "zfs", args...)
 	if err != nil {
-		return 0, 0, fmt.Errorf("zpool list %s: %w\n%s", z.pool, err, strings.TrimSpace(string(out)))
+		return 0, 0, fmt.Errorf("zfs get capacity properties %s: %w\n%s",
+			root, err, strings.TrimSpace(string(out)))
 	}
 
-	line := strings.TrimSpace(string(out))
-	parts := strings.Split(line, "\t")
-	if len(parts) != 2 {
-		return 0, 0, fmt.Errorf("zfs: unexpected zpool list output for pool %q: %q", z.pool, line)
+	props, err := parseDatasetProps(out)
+	if err != nil {
+		return 0, 0, err
+	}
+	rootProps, ok := props[root]
+	if !ok {
+		return 0, 0, fmt.Errorf("zfs: no properties returned for dataset %q", root)
 	}
 
-	var parseErr error
-	totalBytes, parseErr = strconv.ParseInt(strings.TrimSpace(parts[0]), 10, 64)
-	if parseErr != nil {
-		return 0, 0, fmt.Errorf("zfs: parsing pool size %q: %w", parts[0], parseErr)
+	usedBytes, err := rootProps.uint64("used", root)
+	if err != nil {
+		return 0, 0, err
 	}
 
-	availableBytes, parseErr = strconv.ParseInt(strings.TrimSpace(parts[1]), 10, 64)
-	if parseErr != nil {
-		return 0, 0, fmt.Errorf("zfs: parsing pool free space %q: %w", parts[1], parseErr)
+	availableBytes, err = dirSpaceAvailable(root, props)
+	if err != nil {
+		return 0, 0, err
+	}
+	if usedBytes > math.MaxInt64-availableBytes {
+		return 0, 0, fmt.Errorf("zfs: capacity of dataset %q overflows int64: used=%d available=%d",
+			root, usedBytes, availableBytes)
 	}
 
-	return totalBytes, availableBytes, nil
+	return usedBytes + availableBytes, availableBytes, nil
+}
+
+// datasetAncestors returns ds and every ancestor up to the pool root,
+// e.g. "pool/a/b" → ["pool/a/b", "pool/a", "pool"].
+func datasetAncestors(ds string) []string {
+	out := []string{ds}
+	for i := strings.LastIndex(ds, "/"); i > 0; i = strings.LastIndex(ds, "/") {
+		ds = ds[:i]
+		out = append(out, ds)
+	}
+	return out
+}
+
+// datasetProps holds the ZFS properties Capacity needs for one dataset.
+type datasetProps map[string]string
+
+// uint64 parses a numeric property.  "none" is treated as unset (0).
+func (p datasetProps) uint64(prop, ds string) (int64, error) {
+	v, ok := p[prop]
+	if !ok {
+		return 0, fmt.Errorf("zfs: missing property %q for dataset %q", prop, ds)
+	}
+	v = strings.TrimSpace(v)
+	if v == "none" || v == "-" {
+		return 0, nil
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("zfs: parsing property %q of dataset %q from %q: %w", prop, ds, v, err)
+	}
+	if n < 0 {
+		return 0, fmt.Errorf("zfs: negative property %q of dataset %q: %d", prop, ds, n)
+	}
+	return n, nil
+}
+
+// parseDatasetProps parses `zfs get -Hp -o name,property,value` output into
+// per-dataset property maps.
+func parseDatasetProps(out []byte) (map[string]datasetProps, error) {
+	props := make(map[string]datasetProps)
+	for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "\t", 3)
+		if len(parts) != 3 {
+			return nil, fmt.Errorf("zfs: unexpected zfs get output line: %q", line)
+		}
+		m, ok := props[parts[0]]
+		if !ok {
+			m = datasetProps{}
+			props[parts[0]] = m
+		}
+		m[parts[1]] = parts[2]
+	}
+	if len(props) == 0 {
+		return nil, fmt.Errorf("zfs: empty zfs get output")
+	}
+	return props, nil
+}
+
+// dirSpaceAvailable computes dsl_dir_space_available(ds_dir) — the space ZFS
+// admits a new child zvol's refreservation against — from user-visible
+// properties.  See the Capacity doc comment for the derivation.
+func dirSpaceAvailable(ds string, props map[string]datasetProps) (int64, error) {
+	p, ok := props[ds]
+	if !ok {
+		return 0, fmt.Errorf("zfs: no properties returned for dataset %q", ds)
+	}
+
+	refquota, err := p.uint64("refquota", ds)
+	if err != nil {
+		return 0, err
+	}
+	if refquota == 0 {
+		return dirBoundViaAvailable(ds, p)
+	}
+	return dirBoundViaAncestors(ds, p, props)
+}
+
+// dirBoundViaAvailable derives the dir-level bound from the dataset's
+// `available` property: dsl_get_available adds exactly usedbyrefreservation
+// to it, so subtract that back.  Valid only when refquota is unset.
+func dirBoundViaAvailable(ds string, p datasetProps) (int64, error) {
+	avail, err := p.uint64("available", ds)
+	if err != nil {
+		return 0, err
+	}
+	usedRefreserv, err := p.uint64("usedbyrefreservation", ds)
+	if err != nil {
+		return 0, err
+	}
+	if usedRefreserv > avail {
+		return 0, fmt.Errorf("zfs: usedbyrefreservation %d exceeds available %d for dataset %q",
+			usedRefreserv, avail, ds)
+	}
+	return avail - usedRefreserv, nil
+}
+
+// dirBoundViaAncestors recomputes the dir-level bound for a dataset whose
+// `available` is clamped by refquota - referenced (which does not bound
+// children):
+//
+//	bound = used > quota ? 0 : min(parentBound + max(reservation-used,0), quota-used)
+func dirBoundViaAncestors(ds string, p datasetProps, props map[string]datasetProps) (int64, error) {
+	parent := ds
+	if i := strings.LastIndex(ds, "/"); i > 0 {
+		parent = ds[:i]
+	}
+	if parent == ds {
+		// The pool root dataset carries the refquota.  Its dir-level bound
+		// is dsl_pool_adjustedsize - used, and the pool slop term is not
+		// exposed as a property, so no exact value can be derived.
+		return 0, fmt.Errorf("zfs: cannot compute child-allocatable capacity for dataset %q: "+
+			"pool root has refquota set (property %q)", ds, "refquota")
+	}
+	parentBound, err := dirSpaceAvailable(parent, props)
+	if err != nil {
+		return 0, err
+	}
+	used, err := p.uint64("used", ds)
+	if err != nil {
+		return 0, err
+	}
+	quota, err := p.uint64("quota", ds)
+	if err != nil {
+		return 0, err
+	}
+	reservation, err := p.uint64("reservation", ds)
+	if err != nil {
+		return 0, err
+	}
+
+	space := parentBound
+	if reservation > used {
+		if reservation-used > math.MaxInt64-space {
+			return 0, fmt.Errorf("zfs: capacity of dataset %q overflows int64", ds)
+		}
+		space += reservation - used
+	}
+	if quota == 0 {
+		return space, nil
+	}
+	if used > quota {
+		return 0, nil
+	}
+	return min(space, quota-used), nil
 }
 
 // ListVolumes enumerates all zvols under the pool/parentDataset prefix.
@@ -388,10 +587,7 @@ func (z *Backend) Capacity(ctx context.Context) (totalBytes, availableBytes int6
 // zero volumes rather than failing.
 func (z *Backend) ListVolumes(ctx context.Context) ([]*agentv1.VolumeInfo, error) {
 	// Build the root dataset to list under (pool or pool/parentDataset).
-	listRoot := z.pool
-	if z.parentDataset != "" {
-		listRoot = path.Join(z.pool, z.parentDataset)
-	}
+	listRoot := z.provisioningRoot()
 
 	out, err := z.exec.run(ctx, "zfs", "list", "-Hp", "-t", "volume", "-o", "name,volsize", "-r", listRoot)
 	if err != nil {

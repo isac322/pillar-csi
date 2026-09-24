@@ -286,10 +286,10 @@ invalid properties) are tested here because they exercise the ZFS command logic.
 
 | # | Test Function | Description | Setup | Expected Outcome |
 |---|--------------|-------------|-------|-----------------|
-| 16 | `TestZFSBackend_Capacity_Success` | Parses pool capacity from `zpool list` output | seqExec: `zpool list -H -p -o size,free tank`→"107374182400\t64424509440" | Returns totalBytes=100 GiB, availableBytes=60 GiB; no error |
-| 17 | `TestZFSBackend_Capacity_PoolOffline` | Pool offline returns error | seqExec: `zpool list`→"pool unavailable" | Returns non-nil error |
-| 18 | `TestZFSBackend_Capacity_ParseError` | Empty or malformed output returns error gracefully | seqExec: `zpool list`→"" (empty) | Returns non-nil error; no panic |
-| 19 | `TestZFSBackend_Capacity_ParseErrorNumeric` | Non-numeric capacity output returns parse error | seqExec: `zpool list`→"notanumber\tnotanumber" | Returns non-nil error; no panic |
+| 16 | `TestZFSBackend_Capacity_Success` | Parses provisioning-root dataset capacity from `zfs get` output | seqExec: `zfs get -Hp -o name,property,value <props> tank`→used 40GiB, available 60GiB | Returns totalBytes=100 GiB (used+available), availableBytes=60 GiB; no error |
+| 17 | `TestZFSBackend_Capacity_PoolOffline` | Pool offline returns error | seqExec: `zfs get`→"pool unavailable" | Returns non-nil error |
+| 18 | `TestZFSBackend_Capacity_ParseError` | Empty or malformed output returns error gracefully | seqExec: `zfs get`→"" (empty) | Returns non-nil error; no panic |
+| 19 | `TestZFSBackend_Capacity_ParseErrorNumeric` | Non-numeric capacity output returns parse error | seqExec: `zfs get`→"tank\tused\tDEGRADED" | Returns non-nil error; no panic |
 
 ---
 
@@ -323,7 +323,7 @@ invalid properties) are tested here because they exercise the ZFS command logic.
 | 29 | `TestZFSBackend_Error_ContextCancelled_Expand` | Context cancellation during Expand propagates | Backend with blocking executor; ctx cancelled before response | Returns non-nil error; no hang |
 | 30 | `TestException_ZFSCommandTimeout` | ZFS command times out when context deadline is exceeded | Mock executor blocks until ctx.Done(); request ctx has short deadline | Backend method returns ctx.Err() within deadline |
 | 38 | `TestZFSBackend_Error_ContextCancelled_ListVolumes` | Context cancellation during ListVolumes propagates | Backend with blocking executor; ctx cancelled before 'zfs list' response | Returns non-nil error wrapping context.Canceled; no hang |
-| 39 | `TestZFSBackend_Error_ContextCancelled_Capacity` | Context cancellation during Capacity propagates | Backend with blocking executor; ctx cancelled before 'zpool list' response | Returns non-nil error wrapping context.Canceled; no hang |
+| 39 | `TestZFSBackend_Error_ContextCancelled_Capacity` | Context cancellation during Capacity propagates | Backend with blocking executor; ctx cancelled before 'zfs get' response | Returns non-nil error wrapping context.Canceled; no hang |
 
 ---
 
@@ -349,7 +349,7 @@ invalid properties) are tested here because they exercise the ZFS command logic.
 | # | Test Function | Description | Setup | Expected Outcome |
 |---|--------------|-------------|-------|-----------------|
 | 34 | `TestZFSBackend_Error_PoolOffline_ListVolumes` | Pool offline on ListVolumes propagates | seqExec: `zfs list`→"pool unavailable" | Returns non-nil error |
-| 35 | `TestZFSBackend_Error_PoolFaulted_Capacity` | Faulted pool on Capacity propagates | seqExec: `zpool list`→"pool: FAULTED" error | Returns non-nil error |
+| 35 | `TestZFSBackend_Error_PoolFaulted_Capacity` | Faulted pool on Capacity propagates | seqExec: `zfs get`→"pool: FAULTED" error | Returns non-nil error |
 
 ---
 
@@ -1163,7 +1163,7 @@ Operations cancelled by the caller via `context.Cancel`.
 | 2 – ZFS | `TestZFSBackend_Error_ContextCancelled_Delete` | Context cancelled before `zfs destroy` |
 | 2 – ZFS | `TestZFSBackend_Error_ContextCancelled_Expand` | Context cancelled before `zfs set volsize` |
 | 2 – ZFS | `TestZFSBackend_Error_ContextCancelled_ListVolumes` | Context cancelled before `zfs list` |
-| 2 – ZFS | `TestZFSBackend_Error_ContextCancelled_Capacity` | Context cancelled before `zpool list` |
+| 2 – ZFS | `TestZFSBackend_Error_ContextCancelled_Capacity` | Context cancelled before `zfs get` |
 | 6 – CSI Identity | `TestCSIIdentity_GetPluginCapabilities_ContextCancelled` | Already-cancelled context on GetPluginCapabilities |
 
 **Count: 6 error paths across 3 components** ✓

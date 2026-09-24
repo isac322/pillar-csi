@@ -43,7 +43,7 @@ import (
 // # Mock fidelity
 //
 // Approximates: the production zfs.Backend, which provisions and manages ZFS
-// zvol block volumes by executing zfs(8) and zpool(8) commands on the storage
+// zvol block volumes by executing zfs(8) commands on the storage
 // node and exposing them as /dev/zvol/<pool>/… block devices.
 //
 // Omits / simplifies:
@@ -54,9 +54,10 @@ import (
 //     determine whether a conflicting dataset already exists and returns
 //     *backend.ConflictError accordingly.  The mock returns whatever is
 //     pre-set in its fields on every call, independently of prior calls.
-//   - Capacity accounting: the real Capacity() reads live pool statistics from
-//     zpool-list(8).  The mock returns the fixed capacityTotal /
-//     capacityAvailable values set at construction time.
+//   - Capacity accounting: the real Capacity() reads the provisioning root
+//     dataset's properties via zfs-get(8) and derives the child-allocatable
+//     bound.  The mock returns the fixed capacityTotal / capacityAvailable
+//     values set at construction time.
 //   - Disk-space enforcement: ENOSPC is returned only if the test explicitly
 //     sets createErr/expandErr to a matching error value.
 //   - Dataset naming: the real backend enforces pool/parentDataset/volumeID

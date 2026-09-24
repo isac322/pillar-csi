@@ -48,7 +48,7 @@ func (e *ConflictError) Error() string {
 // All methods MUST be idempotent so that the controller can safely retry.
 //
 // Implementations:
-//   - zfs.ZfsBackend  — ZFS zvol backed by os/exec calls to zfs(8) / zpool(8)
+//   - zfs.ZfsBackend  — ZFS zvol backed by os/exec calls to zfs(8)
 //   - lvm.Backend     — LVM logical volume backed by os/exec calls to lvm(8)
 type VolumeBackend interface {
 	// Create provisions a new block volume (zvol, LV, …) with at least
@@ -80,8 +80,11 @@ type VolumeBackend interface {
 	// It returns the actual size after the operation.
 	Expand(ctx context.Context, volumeID string, requestedBytes int64) (allocatedBytes int64, err error)
 
-	// Capacity returns the total and available byte counts for the pool this
-	// backend instance is bound to.
+	// Capacity returns the total and available byte counts of the storage
+	// boundary in which this backend instance creates new volumes (ZFS: the
+	// parent dataset, or the pool root dataset; LVM: the VG, or the thin pool).
+	// availableBytes is what can still be allocated to new volumes there;
+	// totalBytes - availableBytes is the space already consumed there.
 	Capacity(ctx context.Context) (totalBytes int64, availableBytes int64, err error)
 
 	// ListVolumes returns metadata for all volumes currently present in the pool.

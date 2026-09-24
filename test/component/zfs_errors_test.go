@@ -183,7 +183,7 @@ func TestZFSBackend_Error_PoolOffline_ListVolumes(t *testing.T) {
 // a faulted pool (e.g. a failed drive causing the pool to enter UNAVAIL state)
 // propagates from Capacity as a non-nil error.
 //
-//	Setup:   seqExec: "zpool list" returns an I/O error
+//	Setup:   seqExec: "zfs get" returns an I/O error
 //	Expect:  Capacity returns non-nil error
 func TestZFSBackend_Error_PoolFaulted_Capacity(t *testing.T) {
 	t.Parallel()
@@ -344,9 +344,9 @@ func TestZFSBackend_Error_ContextCancelled_ListVolumes(t *testing.T) {
 
 // TestZFSBackend_Error_ContextCancelled_Capacity validates that Capacity
 // returns promptly when the caller's context is canceled before
-// 'zpool list' completes.
+// 'zfs get' completes.
 //
-// A pool I/O stall can cause 'zpool list' to block indefinitely; the
+// A pool I/O stall can cause 'zfs get' to block indefinitely; the
 // backend must honor context cancellation to avoid agent hangs.
 //
 //	Setup:   executor blocks on ctx.Done(); context pre-canceled
