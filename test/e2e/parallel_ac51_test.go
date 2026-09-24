@@ -14,8 +14,8 @@ package e2e
 //     resource: each TC gets a distinct RootDir, backend fixture, and port lease.
 //  5. TestCaseScope operations are safe for concurrent goroutine access (no data
 //     races when multiple Ginkgo workers call scope operations simultaneously).
-//  6. The parallel speedup invariant: running N TCs in parallel completes in
-//     roughly 1/N of the time compared to running them sequentially.
+//  6. No serialization point in the TC lifecycle: N concurrently started TCs
+//     hold N live scopes at the same moment (structural check, no wall clock).
 
 import (
 	"flag"
@@ -334,78 +334,133 @@ func TestAC51IsolationScopeIsThreadSafe(t *testing.T) {
 	t.Logf("AC51: %d concurrent goroutines accessed the isolation scope without errors", goroutines)
 }
 
-// ── 6. No serialization bottleneck: parallel speedup ─────────────────────────
+// ── 6. No serialization bottleneck: overlapping TC lifetimes ─────────────────
 
-// TestAC51ParallelSpeedupOverSerial verifies the core Sub-AC 5.1 performance
-// invariant: running N TCs in parallel completes significantly faster than
-// running them sequentially.  Without this speedup, the 2-minute suite budget
-// could not be met with 404 TCs.
+// TestAC51ConcurrentTCLifetimesOverlap verifies the core Sub-AC 5.1 parallelism
+// invariant: N workers can hold N live TC scopes at the same time, so the
+// StartTestCase → spec body → Close lifecycle contains no cross-TC
+// serialization point. Without it the 2-minute suite budget could not be met
+// with 404 TCs.
 //
-// AC 5.1 contract: parallel throughput > sequential throughput by ≥ 1.5×.
-func TestAC51ParallelSpeedupOverSerial(t *testing.T) {
+// The check is structural rather than a wall-clock speedup ratio. Each parallel
+// worker opens a real TC scope and keeps it open until all numTCs scopes are
+// live together; a serialization point inside StartTestCase or Close would
+// prevent that, and the bounded wait turns it into a failure. A ratio was used
+// previously and failed under unrelated host load without any defect (#61).
+//
+// AC 5.1 contract: numTCs concurrently started TC scopes are all live at once
+// (peak live scopes == numTCs), each scope root exists while live and is
+// removed by Close, and the serial control never exceeds one live scope.
+func TestAC51ConcurrentTCLifetimesOverlap(t *testing.T) {
 	t.Parallel()
 
-	// Hard-fail on single-core machines: the E2E environment must have ≥2 CPUs
-	// for the parallel speedup invariant to hold.
-	if runtime.NumCPU() < 2 {
-		t.Fatalf("AC51: single-core machine detected (GOMAXPROCS=%d) — E2E environment requires ≥2 CPUs for parallel speedup to be measurable", runtime.NumCPU())
-	}
-
 	const (
-		numTCs   = 4
-		holdTime = 20 * time.Millisecond // simulates per-TC isolation setup overhead
+		numTCs = 4
+		// overlapLimit only bounds a broken run; a healthy run fills the
+		// barrier as soon as the numTCs scopes are created.
+		overlapLimit = 30 * time.Second
 	)
 
-	// runBatch runs numTCs test cases using the given worker count.
-	// Each TC does real work (StartTestCase + hold + Close) to measure the
-	// actual isolation-scope creation overhead, not just goroutine scheduling.
-	runBatch := func(workers int) time.Duration {
-		type job struct{ idx int }
-		jobs := make(chan job, numTCs)
-		start := time.Now()
+	type batchResult struct {
+		peakLive int64
+		started  int
+		errs     []error
+	}
 
-		var wg sync.WaitGroup
+	// runBatch drives numTCs real TC lifecycles through `workers` goroutines.
+	// When waitAllLive is set, every TC keeps its scope open until all numTCs
+	// scopes are live simultaneously or overlapLimit expires.
+	runBatch := func(workers int, waitAllLive bool) batchResult {
+		var (
+			live, peak atomic.Int64
+			mu         sync.Mutex
+			res        batchResult
+			allLive    = make(chan struct{})
+			allLiveSet sync.Once
+			wg         sync.WaitGroup
+		)
+		record := func(err error) {
+			mu.Lock()
+			res.errs = append(res.errs, err)
+			mu.Unlock()
+		}
+
+		jobs := make(chan int, numTCs)
+		for i := range numTCs {
+			jobs <- i
+		}
+		close(jobs)
+
 		for range workers {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				for j := range jobs {
-					tcID := fmt.Sprintf("E%d.1", j.idx+200)
+				for idx := range jobs {
+					tcID := fmt.Sprintf("E%d.1", idx+200)
 					ctx, err := StartTestCase(tcID, nil)
 					if err != nil {
+						record(fmt.Errorf("start %s: %w", tcID, err))
 						continue
 					}
-					time.Sleep(holdTime) // simulate spec body
-					_ = ctx.Close()
+					mu.Lock()
+					res.started++
+					mu.Unlock()
+					rootDir := ctx.Scope.RootDir
+
+					n := live.Add(1)
+					for {
+						p := peak.Load()
+						if n <= p || peak.CompareAndSwap(p, n) {
+							break
+						}
+					}
+					if n == numTCs {
+						allLiveSet.Do(func() { close(allLive) })
+					}
+
+					if _, err := os.Stat(rootDir); err != nil {
+						record(fmt.Errorf("%s: live scope root %q: %w", tcID, rootDir, err))
+					}
+					if waitAllLive {
+						select {
+						case <-allLive:
+						case <-time.After(overlapLimit):
+							record(fmt.Errorf("%s: only %d of %d TC scopes were live together after %v; "+
+								"the TC lifecycle is serialized", tcID, peak.Load(), numTCs, overlapLimit))
+						}
+					}
+
+					if err := ctx.Close(); err != nil {
+						record(fmt.Errorf("close %s: %w", tcID, err))
+					}
+					live.Add(-1)
+					if _, err := os.Stat(rootDir); !os.IsNotExist(err) {
+						record(fmt.Errorf("%s: scope root %q still present after Close (stat err=%v)",
+							tcID, rootDir, err))
+					}
 				}
 			}()
 		}
-
-		for i := range numTCs {
-			jobs <- job{idx: i}
-		}
-		close(jobs)
 		wg.Wait()
 
-		return time.Since(start)
+		res.peakLive = peak.Load()
+		return res
 	}
 
-	serialDuration := runBatch(1)
-	parallelDuration := runBatch(numTCs) // fully concurrent
-
-	// Speedup must be at least 1.5× to demonstrate meaningful parallelism.
-	// We use a conservative threshold to account for scheduling overhead on
-	// loaded CI machines.
-	speedup := float64(serialDuration) / float64(parallelDuration)
-	if speedup < 1.5 {
-		t.Errorf("AC51: parallel speedup = %.2fx (serial=%v, parallel=%v) — "+
-			"want ≥ 1.5x; possible serialization bottleneck",
-			speedup, serialDuration, parallelDuration)
-	} else {
-		t.Logf("AC51: parallel speedup = %.2fx (serial=%v, parallel=%v) — "+
-			"no serialization bottleneck detected",
-			speedup, serialDuration, parallelDuration)
+	check := func(name string, res batchResult, wantPeak int64) {
+		for _, err := range res.errs {
+			t.Errorf("AC51 %s: %v", name, err)
+		}
+		if res.started != numTCs {
+			t.Errorf("AC51 %s: started %d TC scopes, want %d", name, res.started, numTCs)
+		}
+		if res.peakLive != wantPeak {
+			t.Errorf("AC51 %s: peak live TC scopes = %d, want %d", name, res.peakLive, wantPeak)
+		}
 	}
+
+	check("serial", runBatch(1, false), 1)
+	check("parallel", runBatch(numTCs, true), numTCs)
 }
 
 // ── 7. Ginkgo reexec guard is idempotent ─────────────────────────────────────
