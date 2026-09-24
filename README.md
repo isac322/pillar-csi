@@ -69,6 +69,12 @@ Out of scope: `SendVolume` and `ReceiveVolume` are out-of-band data streams the 
 
 **Upgrade (clean cutover):** detach every volume (no `VolumeAttachment` for this driver) before upgrading to this version. Earlier versions recorded no publications, lifecycles, or generations, so the new controller cannot revoke access granted by the old one. No migration shim is provided.
 
+### Node stage state
+
+`NodeStageVolume` records each staged volume in `/var/lib/pillar-csi/node/` on the worker: its access type and the transport session to disconnect. `NodeUnstageVolume` reads that record back, because the CO sends neither a volume capability nor a volume context on unstage. The chart mounts the directory into the node DaemonSet as a `hostPath`, so the records survive node plugin restarts and rollouts.
+
+If a record is missing while the staging path (Filesystem) or its `device` bind target (Block) is still mounted, `NodeUnstageVolume` fails instead of reporting the volume unstaged. Without the record the plugin cannot tell which session to detach, so it leaves the mount and the session alone. To recover, stage the volume again (for example, by starting a pod that uses it on the same node), which rewrites the record. The next unstage then completes normally. A missing record with nothing mounted counts as already unstaged.
+
 ## Supported matrix
 
 | Backend | NVMe-oF/TCP | iSCSI | NFS |
