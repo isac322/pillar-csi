@@ -181,11 +181,13 @@ rules:
       - get
       - list
       - watch
-  # PillarVolumeState CRD for durable CSI state tracking
+  # PillarVolumeState CRD for durable CSI state tracking. Mirrors the
+  # +kubebuilder:rbac markers in internal/csi/controller.go; test_render.sh
+  # rejects any pillar-csi.bhyoo.com resource no generated CRD serves.
   - apiGroups:
       - pillar-csi.bhyoo.com
     resources:
-      - pillarvolumestatestates
+      - pillarvolumestates
     verbs:
       - create
       - delete
@@ -197,8 +199,7 @@ rules:
   - apiGroups:
       - pillar-csi.bhyoo.com
     resources:
-      - pillarvolumestatestates/status
-      - pillarvolumestatestates/finalizers
+      - pillarvolumestates/status
     verbs:
       - get
       - patch
