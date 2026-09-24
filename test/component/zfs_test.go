@@ -59,8 +59,8 @@ func fail(output string) execResponse {
 //
 // # Mock fidelity
 //
-// Approximates: the production osExecutor, which runs actual zfs(8) and
-// zpool(8) child processes via os/exec.CommandContext and returns their
+// Approximates: the production osExecutor, which runs actual zfs(8)
+// child processes via os/exec.CommandContext and returns their
 // combined stdout+stderr output together with the exit status.
 //
 // Omits / simplifies:
@@ -489,8 +489,11 @@ func TestZFSBackend_Capacity_Success(t *testing.T) {
 	t.Parallel()
 
 	b := zfsBackendWith(t,
-		// zpool list returns "totalBytes\tfreeBytes".
-		ok("107374182400\t64424509440\n"),
+		// zfs get -o name,property,value returns one line per property;
+		// total is used + available of the provisioning root dataset.
+		ok("tank\tused\t42949672960\ntank\tavailable\t64424509440\n"+
+			"tank\tusedbyrefreservation\t0\ntank\trefquota\t0\n"+
+			"tank\tquota\t0\ntank\treservation\t0\n"),
 	)
 
 	total, avail, err := b.Capacity(context.Background())
@@ -520,7 +523,7 @@ func TestZFSBackend_Capacity_PoolOffline(t *testing.T) {
 	}
 }
 
-// TestZFSBackend_Capacity_ParseError validates that malformed zpool output
+// TestZFSBackend_Capacity_ParseError validates that malformed zfs get output
 // returns an error without panicking.
 func TestZFSBackend_Capacity_ParseError(t *testing.T) {
 	t.Parallel()
@@ -537,13 +540,13 @@ func TestZFSBackend_Capacity_ParseError(t *testing.T) {
 }
 
 // TestZFSBackend_Capacity_ParseErrorNumeric validates that non-numeric values
-// in the size field return an error.
+// in a property field return an error.
 func TestZFSBackend_Capacity_ParseErrorNumeric(t *testing.T) {
 	t.Parallel()
 
 	b := zfsBackendWith(t,
-		// Two fields but the first is non-numeric.
-		ok("DEGRADED\t64424509440"),
+		// Three fields but the value is non-numeric.
+		ok("tank\tused\tDEGRADED"),
 	)
 
 	_, _, err := b.Capacity(context.Background())
