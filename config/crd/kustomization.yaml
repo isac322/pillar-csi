@@ -6,6 +6,7 @@ resources:
 - bases/pillar-csi.bhyoo.com_pillarstores.yaml
 - bases/pillar-csi.bhyoo.com_pillarprotocols.yaml
 - bases/pillar-csi.bhyoo.com_pillarstorageclasses.yaml
+- bases/pillar-csi.bhyoo.com_pillarvolumestates.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:
