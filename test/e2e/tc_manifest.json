@@ -3547,8 +3547,8 @@
       "category": "E13: 볼륨 클론 및 데이터 마이그레이션 (현재 부분 구현)",
       "type": "A",
       "in_437_scope": true,
-      "test_func": "TestCSIClone_CreateVolume_SnapshotSourceIgnored",
-      "description": "VolumeContentSource.Snapshot이 포함된 CreateVolume 호출 시 스냅샷 소스를 무시하고 빈 볼륨을 생성 (현재 동작 고정 테스트)"
+      "test_func": "TestCSIClone_CreateVolume_SnapshotSourceRejected",
+      "description": "VolumeContentSource.Snapshot이 포함된 CreateVolume 호출 시 미지원 소스로 INVALID_ARGUMENT 거부"
     },
     {
       "tc_id": "E101",
@@ -3557,8 +3557,8 @@
       "category": "E13: 볼륨 클론 및 데이터 마이그레이션 (현재 부분 구현)",
       "type": "A",
       "in_437_scope": true,
-      "test_func": "TestCSIClone_CreateVolume_VolumeSourceIgnored",
-      "description": "VolumeContentSource.Volume이 포함된 CreateVolume 호출 시 소스 볼륨을 무시하고 빈 볼륨을 생성 (현재 동작 고정 테스트)"
+      "test_func": "TestCSIClone_CreateVolume_VolumeSourceRejected",
+      "description": "VolumeContentSource.Volume이 포함된 CreateVolume 호출 시 미지원 소스로 INVALID_ARGUMENT 거부"
     },
     {
       "tc_id": "E102",

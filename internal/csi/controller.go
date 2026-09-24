@@ -552,6 +552,22 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 		}
 	}
 
+	// CSI spec §5.1.1 (CreateVolume Errors): a plugin that cannot create a
+	// volume from the requested volume_content_source MUST return
+	// INVALID_ARGUMENT.  pillar-csi does not advertise CREATE_DELETE_SNAPSHOT
+	// or CLONE_VOLUME, so every content source (snapshot restore, volume
+	// clone, or any future source type) is unsupported.  Rejecting here —
+	// before the parameter merge, the PillarVolumeState lookup, and the
+	// StateCreated cache check — prevents a silent empty-volume success and
+	// prevents a same-name retry carrying a content source from being served
+	// out of the idempotency cache.
+	if req.GetVolumeContentSource() != nil {
+		//nolint:wrapcheck // gRPC status errors must not be double-wrapped
+		return nil, status.Error(codes.InvalidArgument,
+			"volume_content_source is not supported: this driver does not advertise "+
+				"CREATE_DELETE_SNAPSHOT or CLONE_VOLUME")
+	}
+
 	scParams := req.GetParameters()
 
 	// ── 4-level merge hierarchy: Pool → Protocol → Binding → PVC annotation ──

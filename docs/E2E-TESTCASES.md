@@ -1678,13 +1678,14 @@ gRPC가 필요하다.
 
 CSI 명세의 `CreateVolume` 요청은 `VolumeContentSource` 필드를 통해
 **볼륨 클론**(기존 볼륨 복사)이나 **스냅샷 복원**을 요청할 수 있다.
-현재 pillar-csi `ControllerServer.CreateVolume`은 이 필드를 **파싱하지 않으며
-무시**한다 — 항상 빈 볼륨을 생성한다.
+pillar-csi는 `CREATE_DELETE_SNAPSHOT`/`CLONE_VOLUME` capability를 광고하지
+않으므로, `ControllerServer.CreateVolume`은 `VolumeContentSource`가 설정된
+요청을 CSI spec §5.1.1에 따라 `INVALID_ARGUMENT`로 **거부**한다 — 빈 볼륨을
+생성하지 않는다.
 
 ```
 CreateVolume(VolumeContentSource: {Snapshot: "snap-A"})
-    → agent.CreateVolume(empty new volume)   ← 클론/복원 없음
-    → agent.ExportVolume
+    → INVALID_ARGUMENT (agent.CreateVolume 호출 없음)
 ```
 
 에이전트 프로토콜에는 **out-of-band 데이터 마이그레이션** 채널이 존재한다:
@@ -1696,12 +1697,12 @@ CreateVolume(VolumeContentSource: {Snapshot: "snap-A"})
 
 ---
 
-### E13.1 VolumeContentSource 미처리 동작 검증
+### E13.1 VolumeContentSource 거부 동작 검증
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| 100 | `TestCSIClone_CreateVolume_SnapshotSourceIgnored` | VolumeContentSource.Snapshot이 포함된 CreateVolume 호출 시 스냅샷 소스를 무시하고 빈 볼륨을 생성 (현재 동작 고정 테스트) | PillarAgent 등록; mockAgentServer 정상 동작 | 1) VolumeContentSource.Snapshot="snap-A" 를 포함한 CreateVolumeRequest 전송 | CreateVolume 성공; agent.CreateVolume 1회 (VolumeContentSource 없이); 빈 볼륨 생성 | `CSI-C`, `Agent`, `TgtCRD`, `VolCRD`, `gRPC` |
-| 101 | `TestCSIClone_CreateVolume_VolumeSourceIgnored` | VolumeContentSource.Volume이 포함된 CreateVolume 호출 시 소스 볼륨을 무시하고 빈 볼륨을 생성 (현재 동작 고정 테스트) | PillarAgent 등록; mockAgentServer 정상 동작 | 1) VolumeContentSource.Volume="src-pvc-id" 를 포함한 CreateVolumeRequest 전송 | CreateVolume 성공; 소스 데이터 복사 없이 빈 볼륨; agent.CreateVolume 1회 | `CSI-C`, `Agent`, `TgtCRD`, `VolCRD`, `gRPC` |
+| 100 | `TestCSIClone_CreateVolume_SnapshotSourceRejected` | VolumeContentSource.Snapshot이 포함된 CreateVolume 호출 시 미지원 소스로 거부 | PillarAgent 등록; mockAgentServer 정상 동작 | 1) VolumeContentSource.Snapshot="snap-A" 를 포함한 CreateVolumeRequest 전송 | CreateVolume이 codes.InvalidArgument 반환; agent.CreateVolume 0회; 볼륨 미생성 | `CSI-C`, `Agent`, `TgtCRD`, `VolCRD`, `gRPC` |
+| 101 | `TestCSIClone_CreateVolume_VolumeSourceRejected` | VolumeContentSource.Volume이 포함된 CreateVolume 호출 시 미지원 소스로 거부 | PillarAgent 등록; mockAgentServer 정상 동작 | 1) VolumeContentSource.Volume="src-pvc-id" 를 포함한 CreateVolumeRequest 전송 | CreateVolume이 codes.InvalidArgument 반환; agent.CreateVolume 0회; 볼륨 미생성 | `CSI-C`, `Agent`, `TgtCRD`, `VolCRD`, `gRPC` |
 
 ---
 

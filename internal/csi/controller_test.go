@@ -854,6 +854,96 @@ func TestCreateVolume_ValidationErrors(t *testing.T) {
 	}
 }
 
+// TestCreateVolume_RejectsVolumeContentSource verifies the CSI spec §5.1.1
+// contract: a plugin that does not advertise CREATE_DELETE_SNAPSHOT or
+// CLONE_VOLUME must reject any CreateVolume request carrying a
+// volume_content_source with codes.InvalidArgument instead of silently
+// provisioning an empty volume.  The agent must never be contacted.
+func TestCreateVolume_RejectsVolumeContentSource(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		source *csi.VolumeContentSource
+	}{
+		{
+			name: "snapshot source",
+			source: &csi.VolumeContentSource{
+				Type: &csi.VolumeContentSource_Snapshot{
+					Snapshot: &csi.VolumeContentSource_SnapshotSource{
+						SnapshotId: "snap-1",
+					},
+				},
+			},
+		},
+		{
+			name: "clone source",
+			source: &csi.VolumeContentSource{
+				Type: &csi.VolumeContentSource_Volume{
+					Volume: &csi.VolumeContentSource_VolumeSource{
+						VolumeId: "storage-node-1/nvmeof-tcp/zfs-zvol/tank/pvc-src",
+					},
+				},
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newControllerTestEnv(t)
+			req := baseCreateVolumeRequest()
+			req.VolumeContentSource = tc.source
+
+			_, err := env.srv.CreateVolume(context.Background(), req)
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			st, _ := status.FromError(err)
+			if st.Code() != codes.InvalidArgument {
+				t.Errorf("error code = %v, want InvalidArgument", st.Code())
+			}
+			// The rejection must happen before any agent RPC.
+			if env.agent.createVolumeCalls != 0 || env.agent.exportVolumeCalls != 0 {
+				t.Errorf("agent was contacted despite unsupported content source")
+			}
+		})
+	}
+}
+
+// TestCreateVolume_ContentSourceRetryNotServedFromCache verifies that a retry
+// carrying a volume_content_source for a name that already exists as an
+// ordinary volume is rejected rather than served from the StateCreated
+// idempotency cache (CSI spec §5.1.1: the existing volume is incompatible
+// with the requested source).
+func TestCreateVolume_ContentSourceRetryNotServedFromCache(t *testing.T) {
+	t.Parallel()
+	env := newControllerTestEnv(t)
+	ctx := context.Background()
+
+	// First create an ordinary volume so the name lands in StateCreated.
+	if _, err := env.srv.CreateVolume(ctx, baseCreateVolumeRequest()); err != nil {
+		t.Fatalf("initial CreateVolume: %v", err)
+	}
+
+	req := baseCreateVolumeRequest()
+	req.VolumeContentSource = &csi.VolumeContentSource{
+		Type: &csi.VolumeContentSource_Snapshot{
+			Snapshot: &csi.VolumeContentSource_SnapshotSource{SnapshotId: "snap-1"},
+		},
+	}
+	_, err := env.srv.CreateVolume(ctx, req)
+	if err == nil {
+		t.Fatal("expected error for content-source retry, got nil")
+	}
+	st, _ := status.FromError(err)
+	if st.Code() != codes.InvalidArgument {
+		t.Errorf("error code = %v, want InvalidArgument", st.Code())
+	}
+	// Only the initial ordinary create may have reached the agent.
+	if env.agent.createVolumeCalls != 1 {
+		t.Errorf("agent.CreateVolume call count = %d, want 1", env.agent.createVolumeCalls)
+	}
+}
+
 // TestCreateVolume_AgentUnavailable verifies that a failed agent dial returns
 // codes.Unavailable (not Internal or a panic).
 func TestCreateVolume_AgentUnavailable(t *testing.T) {
