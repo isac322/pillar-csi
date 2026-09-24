@@ -176,13 +176,17 @@ type AgentServiceClient interface {
 	// first chunk (sequence == 0) carries volume_id and backend_type; subsequent
 	// chunks carry only data and sequence.  The final chunk sets eof = true.
 	ReceiveVolume(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[ReceiveVolumeChunk, ReceiveVolumeResponse], error)
-	// ReconcileState is called by the controller after an agent restart or node
-	// reboot to push the full desired state (volumes + exports + ACLs).  The
-	// agent applies every entry in order and returns per-item results.
+	// ReconcileState converges the listed volumes to their desired exports and
+	// ACLs.  The controller calls it level-triggered for every provisioned
+	// volume (on volume/agent changes and periodically), so configfs state lost
+	// to an agent restart, node reboot, or nvmet reload is re-created without a
+	// dedicated restart signal.  Each volume carries its fencing token, so a
+	// stale controller's reconcile is rejected per volume.  The agent returns
+	// per-item results.
 	//
-	// Because configfs is lost on reboot, this RPC re-creates all protocol
-	// target entries.  The agent MUST NOT return an error if configfs entries
-	// already exist — it reconciles to the desired state.
+	// The agent MUST NOT return an error if configfs entries already exist — it
+	// reconciles to the desired state.  Targets of volumes that are not listed
+	// are never modified.
 	ReconcileState(ctx context.Context, in *ReconcileStateRequest, opts ...grpc.CallOption) (*ReconcileStateResponse, error)
 	// Drain stops the agent from accepting new mutating RPCs and waits until
 	// all in-flight per-target operations have released their locks.  After
@@ -475,13 +479,17 @@ type AgentServiceServer interface {
 	// first chunk (sequence == 0) carries volume_id and backend_type; subsequent
 	// chunks carry only data and sequence.  The final chunk sets eof = true.
 	ReceiveVolume(grpc.ClientStreamingServer[ReceiveVolumeChunk, ReceiveVolumeResponse]) error
-	// ReconcileState is called by the controller after an agent restart or node
-	// reboot to push the full desired state (volumes + exports + ACLs).  The
-	// agent applies every entry in order and returns per-item results.
+	// ReconcileState converges the listed volumes to their desired exports and
+	// ACLs.  The controller calls it level-triggered for every provisioned
+	// volume (on volume/agent changes and periodically), so configfs state lost
+	// to an agent restart, node reboot, or nvmet reload is re-created without a
+	// dedicated restart signal.  Each volume carries its fencing token, so a
+	// stale controller's reconcile is rejected per volume.  The agent returns
+	// per-item results.
 	//
-	// Because configfs is lost on reboot, this RPC re-creates all protocol
-	// target entries.  The agent MUST NOT return an error if configfs entries
-	// already exist — it reconciles to the desired state.
+	// The agent MUST NOT return an error if configfs entries already exist — it
+	// reconciles to the desired state.  Targets of volumes that are not listed
+	// are never modified.
 	ReconcileState(context.Context, *ReconcileStateRequest) (*ReconcileStateResponse, error)
 	// Drain stops the agent from accepting new mutating RPCs and waits until
 	// all in-flight per-target operations have released their locks.  After

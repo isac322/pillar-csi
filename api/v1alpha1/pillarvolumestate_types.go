@@ -138,6 +138,30 @@ type VolumeExportInfo struct {
 	VolumeRef string `json:"volumeRef,omitempty"`
 }
 
+// VolumeExportSpec is the export configuration requested from the agent at
+// CreateVolume time.  It is the durable desired state from which the
+// controller re-creates the export after the storage node loses its target
+// state (agent restart, node reboot), independent of later StorageClass or
+// PillarProtocol changes.
+type VolumeExportSpec struct {
+	// bindAddress is the storage node address the target listens on.
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	BindAddress string `json:"bindAddress"`
+
+	// port is the TCP port the target listens on; 0 selects the protocol's
+	// default port, exactly as in the original export request.
+	// +required
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=65535
+	Port int32 `json:"port"`
+
+	// aclEnabled is true when the target admits only the initiators of
+	// published nodes; false admits any initiator.
+	// +required
+	ACLEnabled bool `json:"aclEnabled"`
+}
+
 // VolumePublication records one node to which ControllerPublishVolume granted
 // access to this volume.  The list of publications is the durable source of
 // truth for CSI publish exclusivity (a SINGLE_NODE_* volume may be published
@@ -262,6 +286,15 @@ type PillarVolumeStateStatus struct {
 	// +listMapKey=nodeID
 	// +optional
 	PublishedNodes []VolumePublication `json:"publishedNodes,omitempty"`
+
+	// exportSpec is the export configuration the controller requested at
+	// CreateVolume time.  It is the durable desired state the resync
+	// controller uses to re-create the export after the storage node loses
+	// its target state.  Volumes created before this field existed have no
+	// exportSpec and are reported via the ExportReconciled condition instead
+	// of being recovered.
+	// +optional
+	ExportSpec *VolumeExportSpec `json:"exportSpec,omitempty"`
 
 	// publicationGeneration is a monotonically increasing counter bumped by
 	// exactly 1 on every status update that changes publishedNodes or sets

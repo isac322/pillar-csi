@@ -1932,7 +1932,7 @@ CSI 에이전트(`pillar-csi-agent`)가 응답 불가, 연결 거부, 타임아�
 CSI ControllerServer와 NodeServer가 올바르게:
 1. **감지(Detection)**: 에이전트 불가 상태를 탐지한다.
 2. **보고(Reporting)**: 적절한 gRPC 상태 코드와 진단 메시지로 CO(Container Orchestrator)에 보고한다.
-3. **복구(Recovery)**: 에이전트가 재시작되면 `ReconcileState`를 통해 configfs 상태를 복원한다.
+3. **복구(Recovery)**: 스토리지 노드가 target 상태를 잃으면(에이전트 재시작, 노드 재부팅, nvmet 재로드) `PillarVolumeState` 컨트롤러가 `ReconcileState`로 configfs 상태를 복원한다.
 
 > **설계 원칙:** CSI 명세에서 일시적 에이전트 실패는 Kubernetes 재시도 메커니즘(kubelet, CSI sidecar)이
 > 담당한다. CSI 컨트롤러/노드 서버는 에이전트 실패를 **삼키지 않고** CO에 명확히 보고해야 한다.
@@ -1947,10 +1947,16 @@ CSI ControllerServer
         │                        │
         └───────────────────────────────────► CO에 비-OK 상태 보고
 
-에이전트 재시작 복구:
-  agent.NewServer() (인메모리 상태 없음)
+Target 상태 유실 복구 (level-triggered):
+  PillarVolumeState 컨트롤러 (PVS 변경 · PillarAgent 변경 · 30초 주기)
         │
-        └─► ReconcileState() ──► NvmetTarget.Apply() ──► configfs 재구성
+        └─► ControllerServer.ReconcileVolumeExport()   ← ControllerPublish/Unpublish/DeleteVolume과 같은 볼륨 락
+                │  desired = status.exportSpec + status.publishedNodes[].initiatorID (revoking 제외, 정확 집합)
+                │  fence   = FencingToken{PVS UID, status.publicationGeneration}
+                └─► agent ReconcileState() ──► fenced(NvmetTarget.Apply() + RevokeHostsExcept()) ──► configfs 재구성
+                        (해당 볼륨 subsystem만 수정, ACL 활성 시 빈 집합 = 아무도 허용 안 함)
+        결과: PillarVolumeState 조건 ExportReconciled (True / False+reason: ExportSpecMissing,
+              AgentUnavailable, StaleGeneration, ReconcileFailed)
 ```
 
 ---
@@ -1987,8 +1993,8 @@ CSI 컨트롤러가 에이전트 gRPC 다이얼 실패를 감지하고 적절한
 `ReconcileState` RPC를 호출하여 configfs 상태가 복원되는지 검증한다.
 
 > **참고:** `TestAgent_ReconcileStateRestoresExports`는 [E9.3](#e93-재조정-복구)에 이미 기록되어 있다.
-> 여기서는 E18 문맥(**에이전트 다운 복구 시나리오**)에서의 의미를 추가 설명한다: 에이전트가 재시작되면
-> CSI 컨트롤러가 `ReconcileState`를 호출하여 인메모리 상태가 사라진 에이전트에 원하는 상태를 강제 적용한다.
+> 여기서는 E18 문맥(**에이전트 다운 복구 시나리오**)에서의 의미를 추가 설명한다: 스토리지 노드가 target 상태를
+> 잃으면 `PillarVolumeState` 컨트롤러가 볼륨마다 `ReconcileState`를 호출하여 durable 상태(exportSpec, publishedNodes)를 강제 적용한다.
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
@@ -2559,7 +2565,7 @@ NodeUnpublish → NodeUnstage → ControllerUnpublish → DeleteVolume
 |------|------|------|
 | 실제 노드 장애 시 NodeStage/NodePublish 자동 정리 | 실제 Kubernetes 노드 제거 + Volume Attachment 삭제 필요 | Kind 클러스터 E2E (유형 B) 또는 수동 스테이징 |
 | PVC 삭제 → CSI DeleteVolume 전체 플로우 | external-provisioner + 실제 Kubernetes API 서버 필요 | Kind 클러스터 E2E (유형 B: E10) |
-| agent 재시작 후 ExportVolume 상태 자동 복원 | 실제 프로세스 재시작 + ReconcileState 호출 필요 | 수동 스테이징 또는 유형 F 테스트 |
+| 실제 스토리지 노드 재부팅 후 export/ACL 자동 복원 | 실제 호스트 재부팅 필요 (configfs 유실 복구 자체는 `TestPillarVolumeStateReconciler_RestoresLostTargetState`, `TestReconcileVolumeExport_*`, `TestReconcileFencing_*`가 검증) | 수동 스테이징 또는 유형 F 테스트 (F6.1) |
 | etcd 일시적 불가 시 CRD 쓰기 실패 및 일관성 | 실제 etcd 장애 주입 필요 | 카오스 엔지니어링 도구 |
 
 ---

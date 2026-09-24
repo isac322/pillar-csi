@@ -77,6 +77,9 @@ type ExportDesiredState struct {
 	Port              int32
 	ProtocolParams    *agentv1.ExportParams
 	AllowedInitiators []string
+	// ACLEnabled makes AllowedInitiators the exact set of admitted hosts (an
+	// empty set admits none); when false any host may connect.
+	ACLEnabled bool
 	// Fence is the fencing token of the volume's reconcile entry.
 	Fence *agentv1.FencingToken
 }
@@ -240,39 +243,81 @@ func (h *NVMeoFTCPAgentHandler) DenyInitiator(
 	})
 }
 
-// Reconcile re-applies desired NVMe-oF TCP exports after reboot.
+// Reconcile converges NVMe-oF TCP exports to the desired state.  The device
+// check runs inside the fenced mutation so a destroyed backend never gets a
+// configfs subsystem (a stale resync can arrive after the volume's fencing
+// mark ended).  With ACL enabled the subsystem admits exactly
+// AllowedInitiators — an empty set admits nobody and hosts outside the set
+// are revoked.  Only the volume's own subsystem is modified.
 func (h *NVMeoFTCPAgentHandler) Reconcile(
-	_ context.Context,
+	ctx context.Context,
 	desired []ExportDesiredState,
 ) error {
 	for _, export := range desired {
-		bindAddress, port, err := nvmeofEndpoint(export.BindAddress, export.Port, export.ProtocolParams)
-		if err != nil {
-			return fmt.Errorf("Reconcile: volume %q: %w", export.VolumeID, err)
-		}
-
-		targetID, err := volumeTargetID(agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP, export.VolumeID)
+		err := h.reconcileExport(ctx, export)
 		if err != nil {
 			return err
 		}
-		target := &nvmeof.NvmetTarget{
-			ConfigfsRoot: h.server.configfsRoot,
-			SubsystemNQN: targetID,
-			NamespaceID:  1,
-			DevicePath:   export.DevicePath,
-			BindAddress:  bindAddress,
-			Port:         port,
-			AllowedHosts: export.AllowedInitiators,
-		}
+	}
+	return nil
+}
 
-		unlock := h.server.lockTarget(agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP, targetID)
-		applyErr := h.server.fenced(export.VolumeID, export.Fence, fenceGrant, target.Apply)
-		unlock()
+func (h *NVMeoFTCPAgentHandler) reconcileExport(ctx context.Context, export ExportDesiredState) error {
+	bindAddress, port, err := nvmeofEndpoint(export.BindAddress, export.Port, export.ProtocolParams)
+	if err != nil {
+		return fmt.Errorf("Reconcile: volume %q: %w", export.VolumeID, err)
+	}
+
+	devicePath, err := h.server.resolveExportDevicePath(export.VolumeID, export.DevicePath)
+	if err != nil {
+		return fmt.Errorf("Reconcile: volume %q: resolve device path: %w", export.VolumeID, err)
+	}
+
+	targetID, err := volumeTargetID(agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP, export.VolumeID)
+	if err != nil {
+		return err
+	}
+	target := &nvmeof.NvmetTarget{
+		ConfigfsRoot: h.server.configfsRoot,
+		SubsystemNQN: targetID,
+		NamespaceID:  1,
+		DevicePath:   devicePath,
+		BindAddress:  bindAddress,
+		Port:         port,
+		ACLEnabled:   export.ACLEnabled,
+	}
+	// Without ACL enforcement allowed_hosts has no effect, and Apply would
+	// close the subsystem (attr_allow_any_host=0) for a non-empty host list.
+	if export.ACLEnabled {
+		target.AllowedHosts = export.AllowedInitiators
+	}
+
+	unlock := h.server.lockTarget(agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP, targetID)
+	defer unlock()
+
+	// The device check and the configfs mutation run inside the same fenced
+	// critical section: the fencing mark is persisted first, then the device
+	// must exist before any subsystem is written.
+	reconcileErr := h.server.fenced(export.VolumeID, export.Fence, fenceGrant, func() error {
+		waitErr := h.waitForDeviceReady(ctx, devicePath)
+		if waitErr != nil {
+			return fmt.Errorf("Reconcile: volume %q: %w", export.VolumeID, waitErr)
+		}
+		applyErr := target.Apply()
 		if applyErr != nil {
 			return fmt.Errorf("applyExport %q: %w", export.VolumeID, applyErr)
 		}
+		if export.ACLEnabled {
+			revokeErr := target.RevokeHostsExcept(export.AllowedInitiators)
+			if revokeErr != nil {
+				return fmt.Errorf("applyExport %q: %w", export.VolumeID, revokeErr)
+			}
+		}
+		return nil
+	})
+	if reconcileErr != nil {
+		return reconcileErr
 	}
-
 	return nil
 }
 
