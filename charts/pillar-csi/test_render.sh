@@ -28,6 +28,12 @@
 #       two Certificate resources whose secretNames match the deployment
 #       Secret mounts (so the auto-issued chain reaches the pods)
 #
+#   API contract (default and installCRDs=false, via hack/chartcontract;
+#   requires Go):
+#     - rendered CRDs equal config/crd/bases (names, shortNames, schema)
+#     - chart RBAC names only resources those CRDs serve and covers
+#       config/rbac/role.yaml
+#
 # Run with:   bash charts/pillar-csi/test_render.sh
 # Override:   HELM=/tmp/linux-arm64/helm bash charts/pillar-csi/test_render.sh
 # CI invokes: make test-chart
@@ -321,6 +327,22 @@ assert_contains "${CM_AGT_DS}" "secretName: ${RELEASE}-agent-mtls" \
 # verification fails when the controller dials a node IP.
 assert_contains "${CM_CTL_DEP}" "--agent-tls-server-name=${RELEASE}-agent.default.svc" \
   "certManager=on: controller must pass --agent-tls-server-name matching the agent Certificate dnsName"
+
+# ──────────────────────────────────────────────────────────────────────────
+# API contract: rendered CRDs and RBAC vs controller-gen output
+# ──────────────────────────────────────────────────────────────────────────
+# Decodes the rendered objects (not text) and compares them with
+# config/crd/bases and config/rbac/role.yaml. installCRDs=false must still
+# grant RBAC only on resources the separately applied generated CRDs serve.
+REPO_ROOT="$(cd "${CHART_DIR}/../.." && pwd)"
+check_api_contract() {
+  local mode="$1"; shift
+  if ! render "$@" | (cd "${REPO_ROOT}" && go run ./hack/chartcontract -controller-role "${RELEASE}" ${mode:+"${mode}"}); then
+    mark_fail "chart API contract (${*:-default values}) must match controller-gen CRDs and RBAC"
+  fi
+}
+check_api_contract ""
+check_api_contract "-expect-no-crds" --set installCRDs=false
 
 # ──────────────────────────────────────────────────────────────────────────
 # Final verdict

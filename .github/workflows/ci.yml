@@ -98,6 +98,11 @@ jobs:
           go mod tidy
           make test
 
+      # make test regenerates manifests; any diff means a generated file
+      # (CRDs, RBAC, chart CRD template, deepcopy) was hand-edited or stale.
+      - name: Verify generated files are up to date
+        run: git diff --exit-code -- api config charts/pillar-csi/templates/crds.yaml
+
   csi-sanity:
     name: csi-sanity (in-process CSI conformance)
     runs-on: ubuntu-latest
@@ -119,6 +124,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
 
       - name: Install Helm
         uses: azure/setup-helm@v5

@@ -111,6 +111,11 @@ func DefaultAgentDialer(_ context.Context, addr string) (agentv1.AgentServiceCli
 	return agentv1.NewAgentServiceClient(conn), conn, nil
 }
 
+// The CSI controller is the only writer of PillarVolumeState (durable volume
+// lifecycle state); no reconciler owns it, so its RBAC is declared here.
+// +kubebuilder:rbac:groups=pillar-csi.bhyoo.com,resources=pillarvolumestates,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=pillar-csi.bhyoo.com,resources=pillarvolumestates/status,verbs=get;update;patch
+
 // ControllerServer implements the CSI Controller service
 // (csi.ControllerServer).  It translates CSI RPC calls into sequences of
 // pillar-agent RPCs routed to the appropriate storage node.

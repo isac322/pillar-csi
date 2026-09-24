@@ -36,6 +36,7 @@ rules:
   - pillarprotocols
   - pillarstorageclasses
   - pillarstores
+  - pillarvolumestates
   verbs:
   - create
   - delete
@@ -60,6 +61,7 @@ rules:
   - pillarprotocols/status
   - pillarstorageclasses/status
   - pillarstores/status
+  - pillarvolumestates/status
   verbs:
   - get
   - patch

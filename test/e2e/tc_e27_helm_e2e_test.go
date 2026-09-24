@@ -578,10 +578,10 @@ var _ = Describe("E27: Helm 차트 설치 및 릴리스 검증", Label("helm", "
 			scope    string
 		}
 		crdMetas := []crdMeta{
-			{"E27.217e", "pillaragents." + crdGroup, "PillarAgent", "pillaragents", "pillaragent", "pt", "Cluster"},
-			{"E27.217f", "pillarstores." + crdGroup, "PillarStore", "pillarstores", "pillarstore", "pp", "Cluster"},
-			{"E27.217g", "pillarprotocols." + crdGroup, "PillarProtocol", "pillarprotocols", "pillarprotocol", "ppr", "Cluster"},
-			{"E27.217h", "pillarstorageclasses." + crdGroup, "PillarStorageClass", "pillarstorageclasses", "pillarstorageclass", "pb", "Cluster"},
+			{"E27.217e", "pillaragents." + crdGroup, "PillarAgent", "pillaragents", "pillaragent", "pa", "Cluster"},
+			{"E27.217f", "pillarstores." + crdGroup, "PillarStore", "pillarstores", "pillarstore", "pst", "Cluster"},
+			{"E27.217g", "pillarprotocols." + crdGroup, "PillarProtocol", "pillarprotocols", "pillarprotocol", "pstr", "Cluster"},
+			{"E27.217h", "pillarstorageclasses." + crdGroup, "PillarStorageClass", "pillarstorageclasses", "pillarstorageclass", "psc", "Cluster"},
 		}
 
 		for _, cm := range crdMetas {
@@ -653,10 +653,10 @@ var _ = Describe("E27: Helm 차트 설치 및 릴리스 검증", Label("helm", "
 			short string
 			kind  string
 		}{
-			{"E27.217j", "pt", "PillarAgent"},
-			{"E27.217k", "pp", "PillarStore"},
-			{"E27.217l", "ppr", "PillarProtocol"},
-			{"E27.217m", "pb", "PillarStorageClass"},
+			{"E27.217j", "pa", "PillarAgent"},
+			{"E27.217k", "pst", "PillarStore"},
+			{"E27.217l", "pstr", "PillarProtocol"},
+			{"E27.217m", "psc", "PillarStorageClass"},
 		}
 		for _, sc := range shortNameCases {
 			sc := sc
@@ -808,11 +808,11 @@ var _ = Describe("E27: Helm 차트 설치 및 릴리스 검증", Label("helm", "
 					_, _ = e27KubectlOutput(cleanCtx, "delete", "-f", sampleFile, "--ignore-not-found=true")
 				})
 
-				out, err := e27KubectlOutput(ctx, "get", "pt")
+				out, err := e27KubectlOutput(ctx, "get", "pa")
 				Expect(err).NotTo(HaveOccurred(),
-					"[TC-E27.217w] kubectl get pt must succeed")
+					"[TC-E27.217w] kubectl get pa must succeed")
 				Expect(out).NotTo(BeEmpty(),
-					"[TC-E27.217w] kubectl get pt must return at least one row")
+					"[TC-E27.217w] kubectl get pa must return at least one row")
 
 				_, err = e27KubectlOutput(ctx, "delete", "-f", sampleFile)
 				Expect(err).NotTo(HaveOccurred(),
@@ -834,11 +834,11 @@ var _ = Describe("E27: Helm 차트 설치 및 릴리스 검증", Label("helm", "
 					_, _ = e27KubectlOutput(cleanCtx, "delete", "-f", sampleFile, "--ignore-not-found=true")
 				})
 
-				out, err := e27KubectlOutput(ctx, "get", "pp")
+				out, err := e27KubectlOutput(ctx, "get", "pst")
 				Expect(err).NotTo(HaveOccurred(),
-					"[TC-E27.217x] kubectl get pp must succeed")
+					"[TC-E27.217x] kubectl get pst must succeed")
 				Expect(out).NotTo(BeEmpty(),
-					"[TC-E27.217x] kubectl get pp must return at least one row")
+					"[TC-E27.217x] kubectl get pst must return at least one row")
 
 				_, err = e27KubectlOutput(ctx, "delete", "-f", sampleFile)
 				Expect(err).NotTo(HaveOccurred(),
@@ -860,11 +860,11 @@ var _ = Describe("E27: Helm 차트 설치 및 릴리스 검증", Label("helm", "
 					_, _ = e27KubectlOutput(cleanCtx, "delete", "-f", sampleFile, "--ignore-not-found=true")
 				})
 
-				out, err := e27KubectlOutput(ctx, "get", "ppr")
+				out, err := e27KubectlOutput(ctx, "get", "pstr")
 				Expect(err).NotTo(HaveOccurred(),
-					"[TC-E27.217y] kubectl get ppr must succeed")
+					"[TC-E27.217y] kubectl get pstr must succeed")
 				Expect(out).NotTo(BeEmpty(),
-					"[TC-E27.217y] kubectl get ppr must return at least one row")
+					"[TC-E27.217y] kubectl get pstr must return at least one row")
 
 				_, err = e27KubectlOutput(ctx, "delete", "-f", sampleFile)
 				Expect(err).NotTo(HaveOccurred(),
@@ -886,11 +886,11 @@ var _ = Describe("E27: Helm 차트 설치 및 릴리스 검증", Label("helm", "
 					_, _ = e27KubectlOutput(cleanCtx, "delete", "-f", sampleFile, "--ignore-not-found=true")
 				})
 
-				out, err := e27KubectlOutput(ctx, "get", "pb")
+				out, err := e27KubectlOutput(ctx, "get", "psc")
 				Expect(err).NotTo(HaveOccurred(),
-					"[TC-E27.217z] kubectl get pb must succeed")
+					"[TC-E27.217z] kubectl get psc must succeed")
 				Expect(out).NotTo(BeEmpty(),
-					"[TC-E27.217z] kubectl get pb must return at least one row")
+					"[TC-E27.217z] kubectl get psc must return at least one row")
 
 				_, err = e27KubectlOutput(ctx, "delete", "-f", sampleFile)
 				Expect(err).NotTo(HaveOccurred(),
