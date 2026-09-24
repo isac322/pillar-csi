@@ -102,11 +102,17 @@ spec:
             capabilities:
               add:
                 - SYS_ADMIN
-            # privileged is false by default; set agent.privileged=true in values
-            # when the agent must open host character devices (e.g. /dev/zfs) in
-            # nested-container environments (Kind) where cgroup device controllers
-            # block non-privileged access even for root+SYS_ADMIN containers.
-            privileged: {{ .Values.agent.privileged | default false }}
+            # privileged defaults to true (agent.privileged): without it the
+            # container runtime's default device cgroup allowlist rejects open()
+            # on host device nodes (/dev/mapper/control, PV block devices,
+            # /dev/zfs) with EPERM even for root+SYS_ADMIN, so backend discovery
+            # fails. An explicit false is honoured for deployments that authorize
+            # those devices by other means; a non-boolean value fails the render
+            # instead of silently dropping privilege.
+            {{- if not (kindIs "bool" .Values.agent.privileged) }}
+            {{- fail "agent.privileged must be a boolean (true or false)" }}
+            {{- end }}
+            privileged: {{ .Values.agent.privileged }}
             allowPrivilegeEscalation: true
           args:
             - --listen-address=:{{ .Values.agent.grpcPort }}

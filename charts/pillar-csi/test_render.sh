@@ -159,6 +159,20 @@ assert_contains "${AGENT_DS_DEFAULT}" "command: [\"/bin/busybox\", \"sleep\", \"
 assert_min_count "${AGENT_DS_DEFAULT}" "grpc:" 2 \
   "default agent DaemonSet must expose grpc: liveness AND readiness probes (kubelet >=1.24)"
 
+# Agent device access contract — the agent container must be privileged by
+# default: otherwise the runtime's default device cgroup allowlist makes
+# open(/dev/mapper/control, PV block devices, /dev/zfs) fail with EPERM and no
+# pool is ever discovered. The modprobe init container is always privileged,
+# so the only possible "privileged: false" in this document is the agent's.
+assert_not_contains "${AGENT_DS_DEFAULT}" "privileged: false" \
+  "default agent container must be privileged (host device nodes need device-cgroup access)"
+AGENT_UNPRIV_DS="$(extract_doc "$(render --set agent.privileged=false)" "agent-daemonset.yaml")"
+assert_contains "${AGENT_UNPRIV_DS}" "privileged: false" \
+  "explicit agent.privileged=false must be honoured, not overridden by the default"
+if render --set-string agent.privileged=yes >/dev/null 2>&1; then
+  mark_fail "non-boolean agent.privileged must fail the render instead of silently dropping privilege"
+fi
+
 assert_contains "${NODE_DS}" "terminationGracePeriodSeconds: 60" \
   "default node DaemonSet must set terminationGracePeriodSeconds=60"
 # The node DaemonSet also carries the existing node-driver-registrar preStop
