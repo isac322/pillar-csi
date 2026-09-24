@@ -526,7 +526,7 @@ Phase 1에서는 평문 gRPC를 사용한다. TLS 지원은 아키텍처에 포�
 | open-iscsi (iscsiadm, iscsid) | O | 동일 |
 | nfs-common (mount.nfs) | O | 동일 |
 | cifs-utils (mount.cifs) | O | 동일 |
-| mkfs 도구 (e2fsprogs, xfsprogs) | O | 동일 |
+| mkfs/리사이즈 도구 (e2fsprogs, xfsprogs, xfsprogs-extra) | O | 동일 |
 | **커널 모듈 (initiator)** | | |
 | nvme_tcp, nvme_fabrics | X | init container modprobe |
 | iscsi_tcp, libiscsi | X | 동일 |

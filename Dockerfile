@@ -5,7 +5,7 @@
 # Targets:
 #   controller — CSI controller (distroless, no runtime deps)
 #   agent      — pillar-agent gRPC server (alpine + ZFS + LVM2)
-#   node       — CSI node plugin (alpine + mount utils + e2fsprogs)
+#   node       — CSI node plugin (alpine + mount utils + e2fsprogs + xfsprogs)
 #
 # Usage:
 #   docker buildx bake                  # build all 3 images
@@ -99,7 +99,8 @@ EXPOSE 50051
 ENTRYPOINT ["/usr/bin/pillar-agent"]
 
 # ── Runtime: node ─────────────────────────────────────────────────────────────
-# Alpine + mount utilities (util-linux) + ext4 formatting (e2fsprogs).
+# Alpine + mount utilities (util-linux) + ext4/XFS formatting and resize tools
+# (e2fsprogs, xfsprogs).  xfsprogs-extra carries xfs_growfs on Alpine.
 #
 # Runtime security (enforced in the DaemonSet manifest):
 #   --security-opt=no-new-privileges:true
@@ -111,6 +112,8 @@ RUN set -eux \
          'util-linux~=2.42' \
          'e2fsprogs~=1.47' \
          'e2fsprogs-extra~=1.47' \
+         'xfsprogs~=7.0' \
+         'xfsprogs-extra~=7.0' \
     && addgroup -g 65532 nonroot \
     && adduser  -u 65532 -G nonroot -s /sbin/nologin -D nonroot \
     # Strip SUID/SGID bits from every file on the root filesystem.
