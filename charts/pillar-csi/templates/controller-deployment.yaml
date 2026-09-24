@@ -129,7 +129,9 @@ spec:
               containerPort: {{ .Values.controller.metricsPort }}
               protocol: TCP
             # csi-healthz is served by the liveness-probe sidecar over the CSI socket.
-            # Declaring it here allows the probe below to reference it by name.
+            # It is declared only here: kubelet resolves a probe's named port
+            # against the probing container's own ports, and declaring the name
+            # again on the sidecar makes the Pod port definition ambiguous.
             - name: csi-healthz
               containerPort: {{ .Values.controller.livenessPort }}
               protocol: TCP
@@ -259,17 +261,14 @@ spec:
         # ── liveness-probe sidecar ───────────────────────────────────────────
         # Monitors the CSI Unix socket by issuing periodic GetPluginInfo RPCs.
         # Exposes /healthz HTTP endpoint on controller.livenessPort for the
-        # main container's livenessProbe (and for external health monitoring).
+        # main container's livenessProbe. The csi-healthz port is declared on
+        # the controller container; do not redeclare it here.
         - name: liveness-probe
           image: {{ include "pillar-csi.image" (dict "image" .Values.controller.sidecars.livenessProbe.image "defaultTag" .Values.controller.sidecars.livenessProbe.image.tag) }}
           imagePullPolicy: {{ include "pillar-csi.imagePullPolicy" (dict "image" .Values.controller.sidecars.livenessProbe.image "global" .Values.imagePullPolicy) }}
           args:
             - --csi-address={{ .Values.controller.csiSocketPath }}
             - --health-port={{ .Values.controller.livenessPort }}
-          ports:
-            - name: csi-healthz
-              containerPort: {{ .Values.controller.livenessPort }}
-              protocol: TCP
           resources:
             {{- toYaml .Values.controller.sidecars.livenessProbe.resources | nindent 12 }}
           securityContext:

@@ -85,6 +85,44 @@ extract_doc() {
   ' <<< "${body}"
 }
 
+# Kubelet resolves a probe's named port against the probing container's own
+# ports only (pkg/probe ResolveContainerPort), while the API server warns when
+# two containers in one Pod declare the same port name. Fail when a Pod spec
+# rendered from a workload template declares a port name in more than one
+# container, or when a probe names a port its own container does not declare.
+assert_pod_ports_unambiguous() {
+  local body="$1" description="$2" problems
+  problems="$(awk '
+    /^      [a-zA-Z]+:/ { in_containers = ($0 ~ /^      containers:/); container = ""; next }
+    in_containers && /^        - name: / { container = $3; section = ""; next }
+    container != "" && /^          [a-zA-Z]+:/ { section = $1; sub(/:$/, "", section); next }
+    container != "" && section == "ports" && /^            - name: / {
+      name = $3
+      declared[container, name] = 1
+      if ((name in owner) && owner[name] != container) {
+        printf "port name %s declared by containers %s and %s\n", name, owner[name], container
+      }
+      owner[name] = container
+      next
+    }
+    container != "" && section ~ /Probe$/ && /^              port: [^0-9]/ {
+      refs[++n] = container SUBSEP $2 SUBSEP section
+    }
+    END {
+      for (i = 1; i <= n; i++) {
+        split(refs[i], r, SUBSEP)
+        if (!((r[1], r[2]) in declared)) {
+          printf "container %s %s uses port %s that it does not declare\n", r[1], r[3], r[2]
+        }
+      }
+    }
+  ' <<< "${body}")"
+  if [[ -n "${problems}" ]]; then
+    mark_fail "${description}"
+    sed 's/^/      /' <<< "${problems}"
+  fi
+}
+
 # ──────────────────────────────────────────────────────────────────────────
 # Mode 1: default render
 # ──────────────────────────────────────────────────────────────────────────
@@ -171,6 +209,15 @@ assert_not_contains "${DEFAULT_OUT}" "kind: Issuer" \
   "default render must NOT include cert-manager Issuer (certManager.enabled=false)"
 assert_not_contains "${DEFAULT_OUT}" "kind: Certificate" \
   "default render must NOT include cert-manager Certificate"
+
+# Probe named ports must resolve in the probing container, and no Pod may
+# declare one port name twice (issue #60: duplicate csi-healthz warning).
+assert_pod_ports_unambiguous "${CTL_DEP_DEFAULT}" \
+  "default controller Pod ports must be unique and probe-resolvable"
+assert_pod_ports_unambiguous "${NODE_DS}" \
+  "default node Pod ports must be unique and probe-resolvable"
+assert_pod_ports_unambiguous "${AGENT_DS_DEFAULT}" \
+  "default agent Pod ports must be unique and probe-resolvable"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Mode 2: mtls.enabled (secret mode, operator-managed Secrets)
