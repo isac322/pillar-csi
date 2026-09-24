@@ -151,6 +151,7 @@ func TestNVMeoFTCPAgentHandler_Reconcile(t *testing.T) {
 			DevicePath:        testDevicePath,
 			ProtocolParams:    nvmeofExportParams("10.0.0.1", 4420),
 			AllowedInitiators: []string{testHostNQN},
+			ACLEnabled:        true,
 		},
 	})
 	if err != nil {

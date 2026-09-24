@@ -482,16 +482,20 @@ func (s *ControllerServer) recordAllocatedCapacity(
 
 // persistCreatePartial records, on the lifecycle uid, that the backend
 // resource exists at devicePath but ExportVolume has not succeeded yet, so a
-// retry of CreateVolume skips the backend step and only re-exports.
+// retry of CreateVolume skips the backend step and only re-exports.  It also
+// records the requested export configuration as the durable desired state the
+// resync controller restores after the storage node loses its target state.
 func (s *ControllerServer) persistCreatePartial(
 	ctx context.Context,
 	pvName string,
 	uid types.UID,
 	devicePath string,
+	exportSpec *v1alpha1.VolumeExportSpec,
 ) error {
 	_, err := s.updateVolumeState(ctx, pvName, uid, false, func(pvs *v1alpha1.PillarVolumeState) error {
 		pvs.Status.Phase = v1alpha1.PillarVolumeStatePhaseCreatePartial
 		pvs.Status.BackendDevicePath = devicePath
+		pvs.Status.ExportSpec = exportSpec
 		pvs.Status.PartialFailure = &v1alpha1.PartialFailureInfo{
 			FailedOperation: "ExportVolume",
 			FailedAt:        metav1.Now(),

@@ -56,6 +56,7 @@ resources:
     webhookVersion: v1
 - api:
     crdVersion: v1
+  controller: true
   domain: bhyoo.com
   group: pillar-csi
   kind: PillarVolumeState

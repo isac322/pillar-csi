@@ -71,7 +71,11 @@ func init() {
 // AgentDialer is the gRPC connection manager injected into the
 // PillarAgentReconciler so that it can perform live HealthCheck calls against
 // pillar-agent instances and reflect the results in AgentConnected conditions.
-func setupControllers(mgr ctrl.Manager, agentDialer agentclient.Dialer) error {
+func setupControllers(
+	mgr ctrl.Manager,
+	agentDialer agentclient.Dialer,
+	exports controller.VolumeExportReconciler,
+) error {
 	err := (&controller.PillarAgentReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
@@ -102,6 +106,14 @@ func setupControllers(mgr ctrl.Manager, agentDialer agentclient.Dialer) error {
 	if err != nil {
 		return fmt.Errorf("PillarStorageClass controller: %w", err)
 	}
+	err = (&controller.PillarVolumeStateReconciler{
+		Client:  mgr.GetClient(),
+		Exports: exports,
+	}).SetupWithManager(mgr)
+	if err != nil {
+		return fmt.Errorf("PillarVolumeState controller: %w", err)
+	}
+
 	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
 		err = webhookv1alpha1.SetupPillarAgentWebhookWithManager(mgr)
 		if err != nil {
@@ -474,7 +486,11 @@ func initAgentDialer(cert, key, ca, serverName string) (*agentclient.Manager, er
 // then starts the controller-runtime manager.  It returns the first error
 // encountered so that main can log it and allow deferred cleanup to run.
 func runManager(mgr ctrl.Manager, agentDialer agentclient.Dialer, csiEndpoint string) error {
-	err := setupControllers(mgr, agentDialer)
+	// The CSI controller server is built before setupControllers so that the
+	// PillarVolumeState reconciler can drive its per-volume export resync.
+	ctrlSrv := csi.NewControllerServer(mgr.GetClient(), mgr.GetAPIReader(), driverName)
+
+	err := setupControllers(mgr, agentDialer, ctrlSrv)
 	if err != nil {
 		return fmt.Errorf("unable to create controllers: %w", err)
 	}
@@ -489,8 +505,6 @@ func runManager(mgr ctrl.Manager, agentDialer agentclient.Dialer, csiEndpoint st
 
 	var managerStarted atomic.Bool
 	identitySrv := csi.NewIdentityServerWithReadyFn(driverName, driverVersion, managerStartedReadyFn(&managerStarted))
-	ctrlSrv := csi.NewControllerServer(mgr.GetClient(), mgr.GetAPIReader(), driverName)
-
 	csiGRPC := grpc.NewServer()
 	csi.RegisterGRPC(csiGRPC, identitySrv, ctrlSrv)
 

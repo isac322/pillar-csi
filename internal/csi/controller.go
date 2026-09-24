@@ -771,6 +771,13 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 			actualCapacity = pvs.Spec.CapacityBytes
 		}
 	} else {
+		// The durable export spec is recorded with the partial state so the
+		// resync controller can re-create the export after the storage node
+		// loses its target state, independent of later parameter changes.
+		exportSpec := exportSpecFor(
+			buildExportParams(params, agentProtocolType, extractIP(agentAddr)),
+			parseACLEnabled(params[paramACLEnabled]),
+		)
 		devicePath, actualCapacity, err = s.createBackend(ctx, agentClient, pvName, volumeID, pvs.UID,
 			&agentv1.CreateVolumeRequest{
 				VolumeId:      agentVolID,
@@ -778,7 +785,7 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 				BackendType:   agentBackendType,
 				BackendParams: buildBackendParams(params, agentBackendType),
 				AccessType:    accessTypeForBackend(agentBackendType),
-			})
+			}, exportSpec)
 		if err != nil {
 			return nil, err
 		}
@@ -842,13 +849,15 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 // createBackend commits a generation on the lifecycle uid, creates the
 // backend storage resource with that fencing token, and records the
 // CreatePartial state so a retry only re-exports.  It returns the device path
-// and the allocated capacity.
+// and the allocated capacity; exportSpec is the durable export configuration
+// persisted alongside the partial state for later resync.
 func (s *ControllerServer) createBackend(
 	ctx context.Context,
 	agentClient agentv1.AgentServiceClient,
 	pvName, volumeID string,
 	uid types.UID,
 	req *agentv1.CreateVolumeRequest,
+	exportSpec *v1alpha1.VolumeExportSpec,
 ) (devicePath string, capacity int64, err error) {
 	req.Fence, err = s.claimOperation(ctx, pvName, volumeID, uid)
 	if err != nil {
@@ -870,7 +879,7 @@ func (s *ControllerServer) createBackend(
 	if err != nil {
 		return "", 0, err
 	}
-	err = s.persistCreatePartial(ctx, pvName, uid, resp.GetDevicePath())
+	err = s.persistCreatePartial(ctx, pvName, uid, resp.GetDevicePath(), exportSpec)
 	if err != nil {
 		// Cannot durably record the partial state; fail so the CO retries
 		// instead of the backend resource being silently forgotten.

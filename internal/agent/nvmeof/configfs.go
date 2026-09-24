@@ -742,3 +742,34 @@ func (t *NvmetTarget) DenyHost(hostNQN string) error {
 	}
 	return nil
 }
+
+// RevokeHostsExcept removes every allowed_hosts entry of this subsystem whose
+// host NQN is not in keep, making the subsystem ACL exactly keep (together
+// with AllowHost for each member).  Only this subsystem's allowed_hosts links
+// are touched; host directories under <nvmetRoot>/hosts/ and other subsystems
+// are never modified.  A missing allowed_hosts directory means no host is
+// allowed and is not an error.
+func (t *NvmetTarget) RevokeHostsExcept(keep []string) error {
+	ahDir := filepath.Join(t.subsystemDir(), "allowed_hosts")
+	entries, err := os.ReadDir(ahDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("RevokeHostsExcept %q: read allowed_hosts: %w", t.SubsystemNQN, err)
+	}
+	wanted := make(map[string]struct{}, len(keep))
+	for _, host := range keep {
+		wanted[host] = struct{}{}
+	}
+	for _, entry := range entries {
+		if _, ok := wanted[entry.Name()]; ok {
+			continue
+		}
+		err = t.DenyHost(entry.Name())
+		if err != nil {
+			return fmt.Errorf("RevokeHostsExcept %q: %w", t.SubsystemNQN, err)
+		}
+	}
+	return nil
+}

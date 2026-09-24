@@ -2802,7 +2802,8 @@ type VolumeDesiredState struct {
 	BackendType BackendType `protobuf:"varint,2,opt,name=backend_type,json=backendType,proto3,enum=pillar_csi.agent.v1.BackendType" json:"backend_type,omitempty"`
 	// Backend-specific parameters (used to verify / recreate if missing).
 	BackendParams *BackendParams `protobuf:"bytes,3,opt,name=backend_params,json=backendParams,proto3" json:"backend_params,omitempty"`
-	// Path to the backend resource on the storage node.
+	// Path to the backend resource on the storage node.  When empty the agent
+	// derives it from the backend that owns volume_id.
 	DevicePath string `protobuf:"bytes,4,opt,name=device_path,json=devicePath,proto3" json:"device_path,omitempty"`
 	// Protocol exports that must be active for this volume.
 	Exports []*ExportDesiredState `protobuf:"bytes,5,rep,name=exports,proto3" json:"exports,omitempty"`
@@ -2892,10 +2893,16 @@ type ExportDesiredState struct {
 	ProtocolType ProtocolType `protobuf:"varint,1,opt,name=protocol_type,json=protocolType,proto3,enum=pillar_csi.agent.v1.ProtocolType" json:"protocol_type,omitempty"`
 	// Protocol-specific export parameters.
 	ExportParams *ExportParams `protobuf:"bytes,2,opt,name=export_params,json=exportParams,proto3" json:"export_params,omitempty"`
-	// Initiators that currently have access (ACL entries to maintain).
+	// Initiators that currently have access (ACL entries to maintain).  When
+	// acl_enabled is true this is the exact allowed set: the agent revokes any
+	// host not listed here.
 	AllowedInitiators []string `protobuf:"bytes,3,rep,name=allowed_initiators,json=allowedInitiators,proto3" json:"allowed_initiators,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// When true, the target admits only allowed_initiators (an empty list
+	// admits nobody).  When false, any initiator may connect
+	// (attr_allow_any_host=1) and allowed_initiators is ignored.
+	AclEnabled    bool `protobuf:"varint,4,opt,name=acl_enabled,json=aclEnabled,proto3" json:"acl_enabled,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ExportDesiredState) Reset() {
@@ -2949,11 +2956,18 @@ func (x *ExportDesiredState) GetAllowedInitiators() []string {
 	return nil
 }
 
+func (x *ExportDesiredState) GetAclEnabled() bool {
+	if x != nil {
+		return x.AclEnabled
+	}
+	return false
+}
+
 type ReconcileStateRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Complete desired state for all volumes managed by this agent.
-	// The agent MUST NOT delete volumes that are not in this list during a
-	// single ReconcileState call — deletion is performed via DeleteVolume.
+	// Desired state for the volumes to reconcile.  Volumes not in this list are
+	// left untouched — the agent MUST NOT delete or modify them; deletion is
+	// performed via UnexportVolume / DeleteVolume.
 	Volumes       []*VolumeDesiredState `protobuf:"bytes,1,rep,name=volumes,proto3" json:"volumes,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -3384,11 +3398,13 @@ const file_pillar_csi_agent_v1_agent_proto_rawDesc = "" +
 	"\vdevice_path\x18\x04 \x01(\tR\n" +
 	"devicePath\x12A\n" +
 	"\aexports\x18\x05 \x03(\v2'.pillar_csi.agent.v1.ExportDesiredStateR\aexports\x127\n" +
-	"\x05fence\x18\x06 \x01(\v2!.pillar_csi.agent.v1.FencingTokenR\x05fence\"\xd3\x01\n" +
+	"\x05fence\x18\x06 \x01(\v2!.pillar_csi.agent.v1.FencingTokenR\x05fence\"\xf4\x01\n" +
 	"\x12ExportDesiredState\x12F\n" +
 	"\rprotocol_type\x18\x01 \x01(\x0e2!.pillar_csi.agent.v1.ProtocolTypeR\fprotocolType\x12F\n" +
 	"\rexport_params\x18\x02 \x01(\v2!.pillar_csi.agent.v1.ExportParamsR\fexportParams\x12-\n" +
-	"\x12allowed_initiators\x18\x03 \x03(\tR\x11allowedInitiators\"Z\n" +
+	"\x12allowed_initiators\x18\x03 \x03(\tR\x11allowedInitiators\x12\x1f\n" +
+	"\vacl_enabled\x18\x04 \x01(\bR\n" +
+	"aclEnabled\"Z\n" +
 	"\x15ReconcileStateRequest\x12A\n" +
 	"\avolumes\x18\x01 \x03(\v2'.pillar_csi.agent.v1.VolumeDesiredStateR\avolumes\"q\n" +
 	"\x13ReconcileItemResult\x12\x1b\n" +

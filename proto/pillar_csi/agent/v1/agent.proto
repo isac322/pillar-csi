@@ -193,13 +193,17 @@ service AgentService {
 
   // ── State recovery ─────────────────────────────────────────────────────────
 
-  // ReconcileState is called by the controller after an agent restart or node
-  // reboot to push the full desired state (volumes + exports + ACLs).  The
-  // agent applies every entry in order and returns per-item results.
+  // ReconcileState converges the listed volumes to their desired exports and
+  // ACLs.  The controller calls it level-triggered for every provisioned
+  // volume (on volume/agent changes and periodically), so configfs state lost
+  // to an agent restart, node reboot, or nvmet reload is re-created without a
+  // dedicated restart signal.  Each volume carries its fencing token, so a
+  // stale controller's reconcile is rejected per volume.  The agent returns
+  // per-item results.
   //
-  // Because configfs is lost on reboot, this RPC re-creates all protocol
-  // target entries.  The agent MUST NOT return an error if configfs entries
-  // already exist — it reconciles to the desired state.
+  // The agent MUST NOT return an error if configfs entries already exist — it
+  // reconciles to the desired state.  Targets of volumes that are not listed
+  // are never modified.
   rpc ReconcileState(ReconcileStateRequest) returns (ReconcileStateResponse);
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -742,7 +746,8 @@ message VolumeDesiredState {
   // Backend-specific parameters (used to verify / recreate if missing).
   BackendParams backend_params = 3;
 
-  // Path to the backend resource on the storage node.
+  // Path to the backend resource on the storage node.  When empty the agent
+  // derives it from the backend that owns volume_id.
   string device_path = 4;
 
   // Protocol exports that must be active for this volume.
@@ -761,14 +766,21 @@ message ExportDesiredState {
   // Protocol-specific export parameters.
   ExportParams export_params = 2;
 
-  // Initiators that currently have access (ACL entries to maintain).
+  // Initiators that currently have access (ACL entries to maintain).  When
+  // acl_enabled is true this is the exact allowed set: the agent revokes any
+  // host not listed here.
   repeated string allowed_initiators = 3;
+
+  // When true, the target admits only allowed_initiators (an empty list
+  // admits nobody).  When false, any initiator may connect
+  // (attr_allow_any_host=1) and allowed_initiators is ignored.
+  bool acl_enabled = 4;
 }
 
 message ReconcileStateRequest {
-  // Complete desired state for all volumes managed by this agent.
-  // The agent MUST NOT delete volumes that are not in this list during a
-  // single ReconcileState call — deletion is performed via DeleteVolume.
+  // Desired state for the volumes to reconcile.  Volumes not in this list are
+  // left untouched — the agent MUST NOT delete or modify them; deletion is
+  // performed via UnexportVolume / DeleteVolume.
   repeated VolumeDesiredState volumes = 1;
 }
 

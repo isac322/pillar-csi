@@ -62,6 +62,7 @@ func (s *Server) reconcileVolume(
 			DevicePath:        vol.GetDevicePath(),
 			ProtocolParams:    export.GetExportParams(),
 			AllowedInitiators: export.GetAllowedInitiators(),
+			ACLEnabled:        export.GetAclEnabled(),
 			Fence:             vol.GetFence(),
 		})
 	}
