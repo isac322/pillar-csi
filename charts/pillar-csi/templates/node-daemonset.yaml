@@ -184,6 +184,13 @@ spec:
             # issues `nvme connect`.
             - name: etc-nvme
               mountPath: /etc/nvme
+            # Node stage state dir — per-volume JSON files that NodeStageVolume
+            # writes and NodeUnstageVolume reads to find the mount target and
+            # the transport session to detach.  Must survive node pod restarts
+            # (rollouts, crashes), so it is a hostPath on the worker's disk;
+            # without it a restarted pod cannot tear down volumes it staged.
+            - name: node-state
+              mountPath: /var/lib/pillar-csi/node
           resources:
             {{- toYaml .Values.node.resources | nindent 12 }}
 
@@ -286,6 +293,11 @@ spec:
         - name: etc-nvme
           hostPath:
             path: /etc/nvme
+            type: DirectoryOrCreate
+        # Durable node stage state; see the node container's volumeMount.
+        - name: node-state
+          hostPath:
+            path: /var/lib/pillar-csi/node
             type: DirectoryOrCreate
       # ── Scheduling ───────────────────────────────────────────────────────────
       {{- with .Values.node.nodeSelector }}

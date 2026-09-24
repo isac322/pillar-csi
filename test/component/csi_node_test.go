@@ -1187,8 +1187,10 @@ func TestCSINode_NodeStage_StateDirUnwritable(t *testing.T) {
 }
 
 // TestCSINode_NodeUnstage_StateFileMissingIsOK verifies that a missing state
-// file is treated as "not staged" — NodeUnstageVolume becomes a no-op (test
-// case 37).
+// file with nothing mounted at the staging path is treated as "not staged" —
+// NodeUnstageVolume becomes a no-op (test case 37).  A missing state file
+// while a staged surface is still mounted is an error; see
+// TestNodeUnstageVolume_AfterNodeRestart_StateLost in internal/csi.
 //
 // See TESTCASES.md §5.9, row 37.
 func TestCSINode_NodeUnstage_StateFileMissingIsOK(t *testing.T) {

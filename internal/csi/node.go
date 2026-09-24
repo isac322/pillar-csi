@@ -840,14 +840,17 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 //
 // Sequence:
 //  1. Validate required fields.
-//  2. Unmount the staging target path (skipped if not currently mounted).
-//  3. Read the persisted stage state file to recover the protocol-specific
-//     teardown state.  If no state file exists the volume was never staged
-//     (or already unstaged); the call succeeds idempotently.
-//  4. Dispatch to the ProtocolHandler registered for the persisted protocol
+//  2. Read the persisted stage state file to recover the access type and
+//     protocol-specific teardown state.
+//  3. If no state file exists, probe the staging surfaces: a live mount means
+//     the state was lost while the volume is still staged, so the call fails
+//     instead of reporting success over a leaked mount and transport session.
+//     Only when nothing is mounted does the call succeed idempotently.
+//  4. Unmount the staged target (skipped if not currently mounted).
+//  5. Dispatch to the ProtocolHandler registered for the persisted protocol
 //     type and call Detach.  Detach is idempotent: disconnecting an already-
 //     disconnected target is a no-op.
-//  5. Remove the stage state file to mark the volume as fully unstaged.
+//  6. Remove the stage state file to mark the volume as fully unstaged.
 //
 // The operation is idempotent per CSI spec §4.7.
 //
@@ -910,6 +913,14 @@ func (n *NodeServer) NodeUnstageVolume(
 	if state == nil {
 		// CSI spec §4.7: NodeUnstageVolume must succeed if the volume was
 		// never staged (or was already cleanly unstaged on a prior call).
+		// A missing state file alone does not prove that: if the state dir
+		// was lost while the volume stayed staged, returning OK would leave
+		// the mount and the transport session behind with nothing left to
+		// tear them down.  Fail unless no staged surface remains mounted.
+		guardErr := n.checkUnstagedWithoutState(volumeID, stagingPath)
+		if guardErr != nil {
+			return nil, guardErr
+		}
 		return &csi.NodeUnstageVolumeResponse{}, nil
 	}
 
@@ -980,6 +991,36 @@ func (n *NodeServer) NodeUnstageVolume(
 	}
 
 	return &csi.NodeUnstageVolumeResponse{}, nil
+}
+
+// checkUnstagedWithoutState verifies that nothing is still mounted for a
+// volume whose stage state file is missing.  It returns nil only when neither
+// staged surface is mounted; a live mount or a failed probe yields an error.
+//
+// The Filesystem-mode root (stagingPath) is probed first, and the Block-mode
+// child (blockStagingDevicePath) only when the root is not mounted: the child
+// sits inside a mounted Filesystem volume, where probing it can return EIO
+// during post-ControllerExpand NVMe namespace re-identify.
+//
+// Without the state file the transport parameters needed for Detach are
+// unknown, so the mount is not torn down here; the volume must be re-staged
+// (which rewrites the state file) before NodeUnstageVolume can complete.
+func (n *NodeServer) checkUnstagedWithoutState(volumeID, stagingPath string) error {
+	for _, target := range []string{stagingPath, blockStagingDevicePath(stagingPath)} {
+		mounted, err := n.mounter.IsMounted(target)
+		if err != nil {
+			return status.Errorf(codes.Internal,
+				"NodeUnstageVolume: stage state for %q is missing; check if %q is mounted: %v",
+				volumeID, target, err)
+		}
+		if mounted {
+			return status.Errorf(codes.Internal,
+				"NodeUnstageVolume: stage state for %q is missing but %q is still mounted; "+
+					"refusing to report the volume unstaged (re-stage the volume to restore its state)",
+				volumeID, target)
+		}
+	}
+	return nil
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
