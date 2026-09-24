@@ -13,9 +13,13 @@
 // limitations under the License.
 
 // AgentService is the gRPC API that pillar-controller calls on each
-// pillar-agent instance (one per storage node).  The agent is completely
-// stateless; the controller is the sole source of truth and re-drives the
-// agent to the desired state after any restart or crash.
+// pillar-agent instance (one per storage node).  The controller is the sole
+// source of truth and re-drives the agent to the desired state after any
+// restart or crash.  The agent keeps exactly one piece of durable state: a
+// per-volume fencing mark (see FencingToken) persisted on the node's local
+// disk, so that a stale controller cannot create, expand, export, grant,
+// revoke, unexport, or delete anything after a newer controller operation
+// superseded it.
 //
 // Volume lifecycle from the controller's perspective:
 //
@@ -44,6 +48,29 @@ package pillar_csi.agent.v1;
 import "google/protobuf/timestamp.proto";
 
 option go_package = "github.com/bhyoo/pillar-csi/gen/go/pillar_csi/agent/v1;agentv1";
+
+// FencingToken orders every mutation of one volume's resources.
+//
+// volume_uid is the UID of the volume's PillarVolumeState and identifies one
+// lifecycle of the volume ID (a deleted and re-created volume with the same
+// name has a new UID).  generation is the value of
+// PillarVolumeState.status.publicationGeneration committed by the controller
+// for the operation.  Every mutating request must carry a token.  The agent
+// keeps a durable per-volume mark (uid, generation, ended, retired uids) and,
+// under one per-volume lock that also covers the mutation, rejects a request
+// with FAILED_PRECONDITION when:
+//   - the token is missing or its volume_uid is empty;
+//   - the uid is a retired lifecycle of the volume ID;
+//   - the uid equals the mark's and the generation is lower;
+//   - the uid equals the mark's, the lifecycle has ended (backend deleted),
+//     and the request would create or grant anything, or is a revoke or
+//     delete at a different generation;
+//   - the uid differs and the mark's lifecycle has not ended.
+// A different uid whose predecessor has ended starts a new lifecycle.
+message FencingToken {
+  string volume_uid = 1;
+  uint64 generation = 2;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Service
@@ -476,6 +503,10 @@ message CreateVolumeRequest {
   // Filesystem backends (ZFS dataset, directory) must be MOUNT.
   // Block backends (zvol, LVM, block-device) can be either BLOCK or MOUNT.
   VolumeAccessType access_type = 5;
+
+  // Fencing token: the PillarVolumeState UID and the publicationGeneration
+  // the controller committed for this operation.  See FencingToken.
+  FencingToken fence = 6;
 }
 
 message CreateVolumeResponse {
@@ -496,6 +527,10 @@ message DeleteVolumeRequest {
 
   // Backend type (required for routing to the correct backend plugin).
   BackendType backend_type = 2;
+
+  // Fencing token: the PillarVolumeState UID and the publicationGeneration
+  // the controller committed for this operation.  See FencingToken.
+  FencingToken fence = 3;
 }
 
 message DeleteVolumeResponse {}
@@ -513,6 +548,10 @@ message ExpandVolumeRequest {
 
   // Backend type.
   BackendType backend_type = 3;
+
+  // Fencing token: the PillarVolumeState UID and the publicationGeneration
+  // the controller committed for this operation.  See FencingToken.
+  FencingToken fence = 4;
 }
 
 message ExpandVolumeResponse {
@@ -543,6 +582,10 @@ message ExportVolumeRequest {
   // Whether ACL-based access control is enabled.
   // If false, any initiator may connect (allow_any_host / generate_node_acls).
   bool acl_enabled = 5;
+
+  // Fencing token: the PillarVolumeState UID and the publicationGeneration
+  // the controller committed for this operation.  See FencingToken.
+  FencingToken fence = 6;
 }
 
 message ExportVolumeResponse {
@@ -561,6 +604,10 @@ message UnexportVolumeRequest {
 
   // Protocol type of the export to remove.
   ProtocolType protocol_type = 2;
+
+  // Fencing token: the PillarVolumeState UID and the publicationGeneration
+  // the controller committed for this operation.  See FencingToken.
+  FencingToken fence = 3;
 }
 
 message UnexportVolumeResponse {}
@@ -651,6 +698,10 @@ message AllowInitiatorRequest {
   //   iSCSI       → IQN (iqn.…)
   //   NFS/SMB     → client IP address or CIDR
   string initiator_id = 3;
+
+  // Fencing token: the PillarVolumeState UID and the publicationGeneration
+  // the controller committed for this operation.  See FencingToken.
+  FencingToken fence = 4;
 }
 
 message AllowInitiatorResponse {}
@@ -668,6 +719,10 @@ message DenyInitiatorRequest {
 
   // Initiator identifier (same semantics as AllowInitiator).
   string initiator_id = 3;
+
+  // Fencing token: the PillarVolumeState UID and the publicationGeneration
+  // the controller committed for this operation.  See FencingToken.
+  FencingToken fence = 4;
 }
 
 message DenyInitiatorResponse {}
@@ -692,6 +747,10 @@ message VolumeDesiredState {
 
   // Protocol exports that must be active for this volume.
   repeated ExportDesiredState exports = 5;
+
+  // Fencing token: the PillarVolumeState UID and the publicationGeneration
+  // the controller committed for this operation.  See FencingToken.
+  FencingToken fence = 6;
 }
 
 // ExportDesiredState is the desired state for a single export within a volume.

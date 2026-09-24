@@ -109,11 +109,21 @@ func (*mockBackend) Type() agentv1.BackendType {
 var _ backend.VolumeBackend = (*mockBackend)(nil)
 
 // newTestServer creates a Server with a single mock backend for pool "tank".
-func newTestServer(mb *mockBackend) *agent.Server {
+// Fencing marks are kept in a per-test state directory.
+func newTestServer(t *testing.T, mb *mockBackend) *agent.Server {
+	t.Helper()
 	backends := map[string]backend.VolumeBackend{
 		testPool: mb,
 	}
-	return agent.NewServer(backends, "")
+	return agent.NewServer(backends, "", agent.WithDrainStateDir(t.TempDir()))
+}
+
+// testFence returns the fencing token of the test's single volume lifecycle.
+// The agent rejects mutations without a token.  The UID is the test name, so
+// each test's lifecycle is unique and every op in the test reuses it.
+func testFence(t *testing.T) *agentv1.FencingToken {
+	t.Helper()
+	return &agentv1.FencingToken{VolumeUid: t.Name(), Generation: 1}
 }
 
 // CreateVolume tests.
@@ -123,10 +133,11 @@ func TestCreateVolume_Success(t *testing.T) {
 		createDevicePath: "/dev/zvol/tank/pvc-abc",
 		createAllocated:  1 << 30, // 1 GiB
 	}
-	srv := newTestServer(mb)
+	srv := newTestServer(t, mb)
 
 	resp, err := srv.CreateVolume(context.Background(), &agentv1.CreateVolumeRequest{
 		VolumeId:      testVolumeID,
+		Fence:         testFence(t),
 		CapacityBytes: 1 << 30,
 	})
 	if err != nil {
@@ -146,10 +157,11 @@ func TestCreateVolume_Success(t *testing.T) {
 func TestCreateVolume_InvalidVolumeID(t *testing.T) {
 	t.Parallel()
 	mb := &mockBackend{}
-	srv := newTestServer(mb)
+	srv := newTestServer(t, mb)
 
 	_, err := srv.CreateVolume(context.Background(), &agentv1.CreateVolumeRequest{
 		VolumeId: "no-slash",
+		Fence:    testFence(t),
 	})
 	if err == nil {
 		t.Fatal("expected error for invalid volumeID, got nil")
@@ -163,10 +175,11 @@ func TestCreateVolume_InvalidVolumeID(t *testing.T) {
 func TestCreateVolume_UnknownPool(t *testing.T) {
 	t.Parallel()
 	mb := &mockBackend{}
-	srv := newTestServer(mb)
+	srv := newTestServer(t, mb)
 
 	_, err := srv.CreateVolume(context.Background(), &agentv1.CreateVolumeRequest{
 		VolumeId: "other-pool/pvc-xyz",
+		Fence:    testFence(t),
 	})
 	if err == nil {
 		t.Fatal("expected error for unknown pool, got nil")
@@ -180,10 +193,11 @@ func TestCreateVolume_UnknownPool(t *testing.T) {
 func TestCreateVolume_BackendError(t *testing.T) {
 	t.Parallel()
 	mb := &mockBackend{createErr: errors.New("disk full")}
-	srv := newTestServer(mb)
+	srv := newTestServer(t, mb)
 
 	_, err := srv.CreateVolume(context.Background(), &agentv1.CreateVolumeRequest{
 		VolumeId:      testVolumeID,
+		Fence:         testFence(t),
 		CapacityBytes: 1 << 30,
 	})
 	if err == nil {
@@ -205,10 +219,11 @@ func TestCreateVolume_ConflictSize(t *testing.T) {
 			RequestedBytes: 1 << 30,
 		},
 	}
-	srv := newTestServer(mb)
+	srv := newTestServer(t, mb)
 
 	_, err := srv.CreateVolume(context.Background(), &agentv1.CreateVolumeRequest{
 		VolumeId:      testVolumeID,
+		Fence:         testFence(t),
 		CapacityBytes: 1 << 30,
 	})
 	if err == nil {
@@ -227,10 +242,11 @@ func TestCreateVolume_ConflictSize(t *testing.T) {
 func TestDeleteVolume_Success(t *testing.T) {
 	t.Parallel()
 	mb := &mockBackend{}
-	srv := newTestServer(mb)
+	srv := newTestServer(t, mb)
 
 	resp, err := srv.DeleteVolume(context.Background(), &agentv1.DeleteVolumeRequest{
 		VolumeId: testVolumeID,
+		Fence:    testFence(t),
 	})
 	if err != nil {
 		t.Fatalf("DeleteVolume unexpected error: %v", err)
@@ -246,10 +262,11 @@ func TestDeleteVolume_Success(t *testing.T) {
 func TestDeleteVolume_BackendError(t *testing.T) {
 	t.Parallel()
 	mb := &mockBackend{deleteErr: errors.New("device busy")}
-	srv := newTestServer(mb)
+	srv := newTestServer(t, mb)
 
 	_, err := srv.DeleteVolume(context.Background(), &agentv1.DeleteVolumeRequest{
 		VolumeId: testVolumeID,
+		Fence:    testFence(t),
 	})
 	if err == nil {
 		t.Fatal("expected error from backend, got nil")
@@ -262,10 +279,11 @@ func TestDeleteVolume_BackendError(t *testing.T) {
 
 func TestDeleteVolume_InvalidVolumeID(t *testing.T) {
 	t.Parallel()
-	srv := newTestServer(&mockBackend{})
+	srv := newTestServer(t, &mockBackend{})
 
 	_, err := srv.DeleteVolume(context.Background(), &agentv1.DeleteVolumeRequest{
 		VolumeId: "nopool",
+		Fence:    testFence(t),
 	})
 	if err == nil {
 		t.Fatal("expected error for invalid volumeID")
@@ -280,10 +298,11 @@ func TestDeleteVolume_InvalidVolumeID(t *testing.T) {
 func TestExpandVolume_Success(t *testing.T) {
 	t.Parallel()
 	mb := &mockBackend{expandAllocated: 2 << 30}
-	srv := newTestServer(mb)
+	srv := newTestServer(t, mb)
 
 	resp, err := srv.ExpandVolume(context.Background(), &agentv1.ExpandVolumeRequest{
 		VolumeId:       testVolumeID,
+		Fence:          testFence(t),
 		RequestedBytes: 2 << 30,
 	})
 	if err != nil {
@@ -311,10 +330,13 @@ func TestExpandVolume_ActiveNVMeNamespaceRevalidationFailure(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(namespaceDir, "revalidate_size"), 0o750); err != nil {
 		t.Fatalf("create invalid revalidate_size attribute: %v", err)
 	}
-	srv := agent.NewServer(map[string]backend.VolumeBackend{testPool: mb}, root)
+	srv := agent.NewServer(
+		map[string]backend.VolumeBackend{testPool: mb}, root, agent.WithDrainStateDir(t.TempDir()),
+	)
 
 	_, err := srv.ExpandVolume(context.Background(), &agentv1.ExpandVolumeRequest{
 		VolumeId:       testVolumeID,
+		Fence:          testFence(t),
 		RequestedBytes: 2 << 30,
 	})
 	if err == nil {
@@ -332,10 +354,11 @@ func TestExpandVolume_ActiveNVMeNamespaceRevalidationFailure(t *testing.T) {
 func TestExpandVolume_BackendError(t *testing.T) {
 	t.Parallel()
 	mb := &mockBackend{expandErr: errors.New("shrink not allowed")}
-	srv := newTestServer(mb)
+	srv := newTestServer(t, mb)
 
 	_, err := srv.ExpandVolume(context.Background(), &agentv1.ExpandVolumeRequest{
 		VolumeId:       testVolumeID,
+		Fence:          testFence(t),
 		RequestedBytes: 512,
 	})
 	if err == nil {
@@ -354,7 +377,7 @@ func TestGetCapacity_Success(t *testing.T) {
 		capacityTotal:     10 << 30, // 10 GiB
 		capacityAvailable: 7 << 30,  // 7 GiB
 	}
-	srv := newTestServer(mb)
+	srv := newTestServer(t, mb)
 
 	resp, err := srv.GetCapacity(context.Background(), &agentv1.GetCapacityRequest{
 		PoolName: testPool,
@@ -375,7 +398,7 @@ func TestGetCapacity_Success(t *testing.T) {
 
 func TestGetCapacity_UnknownPool(t *testing.T) {
 	t.Parallel()
-	srv := newTestServer(&mockBackend{})
+	srv := newTestServer(t, &mockBackend{})
 
 	_, err := srv.GetCapacity(context.Background(), &agentv1.GetCapacityRequest{
 		PoolName: "nonexistent",
@@ -392,7 +415,7 @@ func TestGetCapacity_UnknownPool(t *testing.T) {
 func TestGetCapacity_BackendError(t *testing.T) {
 	t.Parallel()
 	mb := &mockBackend{capacityErr: errors.New("pool offline")}
-	srv := newTestServer(mb)
+	srv := newTestServer(t, mb)
 
 	_, err := srv.GetCapacity(context.Background(), &agentv1.GetCapacityRequest{
 		PoolName: testPool,
@@ -414,7 +437,7 @@ func TestListVolumes_Success(t *testing.T) {
 		{VolumeId: "tank/pvc-def", CapacityBytes: 2 << 30, DevicePath: "/dev/zvol/tank/pvc-def"},
 	}
 	mb := &mockBackend{listVolumesResult: vols}
-	srv := newTestServer(mb)
+	srv := newTestServer(t, mb)
 
 	resp, err := srv.ListVolumes(context.Background(), &agentv1.ListVolumesRequest{
 		PoolName: testPool,
@@ -434,7 +457,7 @@ func TestListVolumes_Success(t *testing.T) {
 func TestListVolumes_Empty(t *testing.T) {
 	t.Parallel()
 	mb := &mockBackend{listVolumesResult: []*agentv1.VolumeInfo{}}
-	srv := newTestServer(mb)
+	srv := newTestServer(t, mb)
 
 	resp, err := srv.ListVolumes(context.Background(), &agentv1.ListVolumesRequest{
 		PoolName: testPool,
@@ -449,7 +472,7 @@ func TestListVolumes_Empty(t *testing.T) {
 
 func TestListVolumes_UnknownPool(t *testing.T) {
 	t.Parallel()
-	srv := newTestServer(&mockBackend{})
+	srv := newTestServer(t, &mockBackend{})
 
 	_, err := srv.ListVolumes(context.Background(), &agentv1.ListVolumesRequest{
 		PoolName: "no-such-pool",
@@ -466,7 +489,7 @@ func TestListVolumes_UnknownPool(t *testing.T) {
 func TestListVolumes_BackendError(t *testing.T) {
 	t.Parallel()
 	mb := &mockBackend{listVolumesErr: errors.New("zfs gone")}
-	srv := newTestServer(mb)
+	srv := newTestServer(t, mb)
 
 	_, err := srv.ListVolumes(context.Background(), &agentv1.ListVolumesRequest{
 		PoolName: testPool,

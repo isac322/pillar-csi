@@ -41,7 +41,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"time"
+	"sync"
 
 	csi "github.com/container-storage-interface/spec/lib/go/csi"
 	"google.golang.org/grpc"
@@ -51,7 +51,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -149,6 +148,16 @@ type ControllerServer struct {
 	// CRDs at startup (via LoadStateFromPillarVolumeStates) and updated at each
 	// lifecycle step.
 	sm *VolumeStateMachine
+
+	// volumeLocks serializes per-volume publication-record and ACL
+	// read-modify-write sequences within this process; see volumeLockSet.
+	volumeLocks *volumeLockSet
+
+	// apiReader reads PillarVolumeState objects directly from the API server,
+	// bypassing any informer cache.  Publication records must be read fresh:
+	// a stale cached read could let ControllerUnpublishVolume miss a record
+	// written moments earlier and leave the initiator's ACL granted.
+	apiReader client.Reader
 }
 
 // Ensure ControllerServer satisfies the CSI interface at compile time.
@@ -157,24 +166,31 @@ var _ csi.ControllerServer = (*ControllerServer)(nil)
 // NewControllerServer constructs a ControllerServer backed by the
 // DefaultAgentDialer (plain-text gRPC, mTLS deferred to Phase 2).
 //
-// K8sClient must not be nil. DriverName is typically "pillar-csi.bhyoo.com".
-func NewControllerServer(k8sClient client.Client, driverName string) *ControllerServer {
-	return NewControllerServerWithDialer(k8sClient, driverName, DefaultAgentDialer)
+// K8sClient must not be nil. APIReader must read uncached from the API server
+// (controller-runtime Manager.GetAPIReader()). DriverName is typically
+// "pillar-csi.bhyoo.com".
+func NewControllerServer(k8sClient client.Client, apiReader client.Reader, driverName string) *ControllerServer {
+	srv := NewControllerServerWithDialer(k8sClient, driverName, DefaultAgentDialer)
+	srv.apiReader = apiReader
+	return srv
 }
 
 // NewControllerServerWithDialer constructs a ControllerServer using the
 // provided AgentDialer.  This variant is used in tests to inject a mock
-// dialer that serves a real gRPC server backed by a mock agent.
+// dialer that serves a real gRPC server backed by a mock agent.  K8sClient
+// also serves as the uncached reader, so it must not be cache-backed.
 func NewControllerServerWithDialer(
 	k8sClient client.Client,
 	driverName string,
 	dialer AgentDialer,
 ) *ControllerServer {
 	return &ControllerServer{
-		k8sClient:  k8sClient,
-		dialAgent:  dialer,
-		driverName: driverName,
-		sm:         NewVolumeStateMachine(),
+		k8sClient:   k8sClient,
+		dialAgent:   dialer,
+		driverName:  driverName,
+		sm:          NewVolumeStateMachine(),
+		volumeLocks: newVolumeLockSet(),
+		apiReader:   k8sClient,
 	}
 }
 
@@ -205,6 +221,9 @@ func (s *ControllerServer) LoadStateFromPillarVolumeStates(ctx context.Context) 
 	for i := range pvList.Items {
 		pv := &pvList.Items[i]
 		state := pillarVolumeStatePhaseToVolumeState(pv.Status.Phase)
+		if state == StateCreated && len(pv.Status.PublishedNodes) > 0 {
+			state = StateControllerPublished
+		}
 		if state != StateNonExistent {
 			s.sm.ForceState(pv.Spec.VolumeID, state)
 		}
@@ -652,7 +671,7 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 	}
 	// If the volume is already fully provisioned, return the cached response.
 	if s.sm.GetState(volumeID) == StateCreated &&
-		pvExists && existingPV.Status.ExportInfo != nil {
+		pvExists && existingPV.Status.ExportInfo != nil && !existingPV.Status.Deleting {
 		ei := existingPV.Status.ExportInfo
 		existingCap := existingPV.Spec.CapacityBytes
 
@@ -688,6 +707,32 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 		}, nil
 	}
 
+	// ── Requested capacity ────────────────────────────────────────────────────
+	var capacityBytes int64
+	if cr := req.GetCapacityRange(); cr != nil {
+		capacityBytes = cr.GetRequiredBytes()
+	}
+
+	// ── Durable lifecycle before any agent call ──────────────────────────────
+	// The PillarVolumeState is created first, so every backend resource an
+	// agent ever creates belongs to a lifecycle (its UID) that DeleteVolume can
+	// find and fence; a volume without a PillarVolumeState owns nothing.
+	pvs, err := s.ensureVolumeState(ctx, pvName, v1alpha1.PillarVolumeStateSpec{
+		VolumeID:      volumeID,
+		AgentVolumeID: agentVolID,
+		AgentRef:      targetName,
+		BackendType:   backendTypeStr,
+		ProtocolType:  protocolTypeStr,
+		CapacityBytes: capacityBytes,
+	})
+	if err != nil {
+		return nil, err
+	}
+	err = refuseDeleting(pvs, volumeID)
+	if err != nil {
+		return nil, err
+	}
+
 	// ── Resolve the agent address from PillarAgent ───────────────────────────
 	target := &v1alpha1.PillarAgent{}
 	getTargetErr := s.k8sClient.Get(ctx, types.NamespacedName{Name: targetName}, target)
@@ -714,73 +759,28 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 	}
 	defer closer.Close() //nolint:errcheck // best-effort close; dial errors already handled
 
-	// ── Determine requested capacity ──────────────────────────────────────────
-	var capacityBytes int64
-	if cr := req.GetCapacityRange(); cr != nil {
-		capacityBytes = cr.GetRequiredBytes()
-	}
-
-	// ── Idempotency: detect a prior partial backend creation ──────────────────
-	// When the state machine is in StateCreatePartial, the backend storage
-	// resource (zvol, LVM LV, …) was successfully created in a previous
-	// CreateVolume call that failed during ExportVolume.  On retry we skip
-	// Step 1 entirely — the agent would return the existing resource
-	// (idempotent), but skipping the call makes the recovery path explicit,
-	// avoids an unnecessary round-trip, and ensures we never attempt to
-	// re-create a zvol that already holds data.
-	//
-	// The device path required by ExportVolume is read from the PillarVolumeState
-	// CRD that was durably written during the prior partial attempt.
-	var (
-		devicePath     string
-		actualCapacity = capacityBytes
-		skipBackend    bool
-	)
-	if s.sm.GetState(volumeID) == StateCreatePartial && pvExists &&
-		existingPV.Status.BackendDevicePath != "" {
-		devicePath = existingPV.Status.BackendDevicePath
-		if existingPV.Spec.CapacityBytes > 0 {
-			actualCapacity = existingPV.Spec.CapacityBytes
+	// ── Step 1: Create the backend storage resource ──────────────────────────
+	// A lifecycle already in CreatePartial created its backend in an earlier
+	// attempt whose export failed; the device path recorded then is reused and
+	// only the export is retried, so a zvol that may hold data is never
+	// re-created.
+	devicePath := pvs.Status.BackendDevicePath
+	actualCapacity := capacityBytes
+	if pvs.Status.Phase == v1alpha1.PillarVolumeStatePhaseCreatePartial && devicePath != "" {
+		if pvs.Spec.CapacityBytes > 0 {
+			actualCapacity = pvs.Spec.CapacityBytes
 		}
-		skipBackend = true
-	}
-
-	if !skipBackend {
-		// ── Step 1: Create the backend storage resource ──────────────────────
-		createResp, createErr := agentClient.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
-			VolumeId:      agentVolID,
-			CapacityBytes: capacityBytes,
-			BackendType:   agentBackendType,
-			BackendParams: buildBackendParams(params, agentBackendType),
-			AccessType:    accessTypeForBackend(agentBackendType),
-		})
-		if createErr != nil {
-			grpcSt, _ := status.FromError(createErr)
-			return nil, status.Errorf(grpcSt.Code(),
-				"agent CreateVolume(%q) failed: %v", agentVolID, createErr)
-		}
-
-		devicePath = createResp.GetDevicePath()
-		if resp := createResp.GetCapacityBytes(); resp != 0 {
-			actualCapacity = resp
-		}
-
-		// ── Record backend creation (partial-failure guard) ──────────────────
-		// Transition: NonExistent → CreatePartial.  We persist this state to
-		// the PillarVolumeState CRD before calling ExportVolume so that a controller
-		// crash between these two steps is recoverable: the next CreateVolume
-		// call will find the CRD in CreatePartial phase, skip backend creation
-		// (already done, and skipBackend will be set), then retry ExportVolume.
-		//nolint:errcheck // transition errors are non-fatal; state is force-set on success
-		_, _ = s.sm.Transition(volumeID, OpCreateVolumeBackend)
-		persistErr := s.persistCreatePartial(ctx, pvName, volumeID, agentVolID,
-			targetName, backendTypeStr, protocolTypeStr, actualCapacity, devicePath, pvExists)
-		if persistErr != nil {
-			// Cannot durably record the partial state.  Fail the operation so
-			// that the backend resource is not left silently orphaned.
-			return nil, status.Errorf(codes.Internal,
-				"failed to persist partial-failure state for volume %q: %v",
-				pvName, persistErr)
+	} else {
+		devicePath, actualCapacity, err = s.createBackend(ctx, agentClient, pvName, volumeID, pvs.UID,
+			&agentv1.CreateVolumeRequest{
+				VolumeId:      agentVolID,
+				CapacityBytes: capacityBytes,
+				BackendType:   agentBackendType,
+				BackendParams: buildBackendParams(params, agentBackendType),
+				AccessType:    accessTypeForBackend(agentBackendType),
+			})
+		if err != nil {
+			return nil, err
 		}
 	}
 
@@ -788,6 +788,10 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 	// The NVMe-oF / iSCSI bind address is the storage node's IP (no port).
 	// agent.ExportVolume is idempotent: if the export already exists (retry
 	// scenario), it returns the existing ExportInfo without error.
+	exportToken, err := s.claimOperation(ctx, pvName, volumeID, pvs.UID)
+	if err != nil {
+		return nil, err
+	}
 	bindIP := extractIP(agentAddr)
 	exportResp, err := agentClient.ExportVolume(ctx, &agentv1.ExportVolumeRequest{
 		VolumeId:     agentVolID,
@@ -795,11 +799,11 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 		ExportParams: buildExportParams(params, agentProtocolType, bindIP),
 		DevicePath:   devicePath,
 		AclEnabled:   parseACLEnabled(params[paramACLEnabled]),
+		Fence:        exportToken,
 	})
 	if err != nil {
-		// ExportVolume failed.  The PillarVolumeState CRD already records the
-		// CreatePartial state durably; the CO may retry safely.  The next
-		// CreateVolume call will skip Step 1 (idempotent) and retry Step 2.
+		// The PillarVolumeState records CreatePartial durably; the CO may
+		// retry safely and the next attempt only re-exports.
 		grpcSt, _ := status.FromError(err)
 		return nil, status.Errorf(grpcSt.Code(),
 			"agent ExportVolume(%q) failed: %v", agentVolID, err)
@@ -808,13 +812,12 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 	// ── Advance to fully-created state ────────────────────────────────────────
 	s.sm.ForceState(volumeID, StateCreated)
 
-	// Best-effort: update the PillarVolumeState CRD to the Ready phase and cache
-	// the export parameters for idempotent re-use on subsequent CreateVolume
-	// calls.  A failure here is not fatal — the volume is already provisioned
-	// and the CO will not retry a successful CreateVolume.
+	// Best-effort: mark the lifecycle Ready and cache the export parameters
+	// for idempotent CreateVolume retries.  A failure here is not fatal — the
+	// volume is provisioned and a retry re-exports idempotently.
 	info := exportResp.GetExportInfo()
-	//nolint:errcheck // best-effort CRD update; volume is already provisioned and CO will not retry
-	_ = s.persistVolumeReady(ctx, pvName, info, actualCapacity)
+	//nolint:errcheck // best-effort CRD update; volume is already provisioned
+	_ = s.persistVolumeReady(ctx, pvName, pvs.UID, info)
 
 	// ── Build VolumeContext from ExportInfo ───────────────────────────────────
 	// These key/value pairs are stored in the PersistentVolume and forwarded to
@@ -836,6 +839,46 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 	}, nil
 }
 
+// createBackend commits a generation on the lifecycle uid, creates the
+// backend storage resource with that fencing token, and records the
+// CreatePartial state so a retry only re-exports.  It returns the device path
+// and the allocated capacity.
+func (s *ControllerServer) createBackend(
+	ctx context.Context,
+	agentClient agentv1.AgentServiceClient,
+	pvName, volumeID string,
+	uid types.UID,
+	req *agentv1.CreateVolumeRequest,
+) (devicePath string, capacity int64, err error) {
+	req.Fence, err = s.claimOperation(ctx, pvName, volumeID, uid)
+	if err != nil {
+		return "", 0, err
+	}
+	resp, err := agentClient.CreateVolume(ctx, req)
+	if err != nil {
+		grpcSt, _ := status.FromError(err)
+		return "", 0, status.Errorf(grpcSt.Code(),
+			"agent CreateVolume(%q) failed: %v", req.GetVolumeId(), err)
+	}
+	capacity = req.GetCapacityBytes()
+	if allocated := resp.GetCapacityBytes(); allocated != 0 {
+		capacity = allocated
+	}
+	//nolint:errcheck // transition errors are non-fatal; state is force-set on success
+	_, _ = s.sm.Transition(volumeID, OpCreateVolumeBackend)
+	err = s.recordAllocatedCapacity(ctx, pvName, uid, capacity)
+	if err != nil {
+		return "", 0, err
+	}
+	err = s.persistCreatePartial(ctx, pvName, uid, resp.GetDevicePath())
+	if err != nil {
+		// Cannot durably record the partial state; fail so the CO retries
+		// instead of the backend resource being silently forgotten.
+		return "", 0, err
+	}
+	return resp.GetDevicePath(), capacity, nil
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // DeleteVolume
 // ─────────────────────────────────────────────────────────────────────────────.
@@ -843,15 +886,24 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 // DeleteVolume deprovisions a volume by orchestrating two agent RPCs.
 //
 // Lifecycle (CSI spec §4.3.2):
+//  0. Commit status.deleting (with a fresh fencing generation) on the
+//     volume's PillarVolumeState; this succeeds only while no publication is
+//     recorded, and blocks every later publish, create, or export.
 //  1. Call agent.UnexportVolume — removes the network-protocol export entry.
-//  2. Call agent.DeleteVolume — destroys the backend storage resource.
+//  2. Call agent.DeleteVolume — destroys the backend storage resource and
+//     ends the lifecycle at the agent.
+//  3. Delete the PillarVolumeState (UID-preconditioned).
 //
-// Both agent RPCs are idempotent:
-//   - UnexportVolume on a non-existent export returns success.
-//   - DeleteVolume on a non-existent volume returns success.
+// Both agent RPCs carry the deletion's fencing token, so a delayed delete
+// from a former controller cannot touch a volume that a newer operation or a
+// re-created lifecycle owns.  A volume without a PillarVolumeState owns
+// nothing (CreateVolume creates the record before any backend resource), so
+// it is deleted without any agent call.  A missing PillarAgent object does not
+// prove the node's resources are gone, so the delete fails closed
+// (FailedPrecondition, record kept) until the agent is reachable.
 //
-// If the PillarAgent has been decommissioned (not found in the API server)
-// we treat that as the volume already being gone and return success.
+// A volume whose PillarVolumeState still records a publication is not
+// deleted; FailedPrecondition is returned until every node is unpublished.
 func (s *ControllerServer) DeleteVolume(
 	ctx context.Context,
 	req *csi.DeleteVolumeRequest,
@@ -878,16 +930,37 @@ func (s *ControllerServer) DeleteVolume(
 	agentProtocolType := mapProtocolType(protocolTypeStr)
 	agentBackendType := mapBackendType(backendTypeStr)
 
+	pvName := pillarVolumeStateNameFromVolumeID(volumeID)
+	unlock := s.volumeLocks.lock(volumeID)
+	defer unlock()
+
+	// CSI: a volume still published to a node must not be deleted.  The
+	// deleting flag is committed by compare-and-swap only while no
+	// publication is recorded, so a concurrent publish on another controller
+	// is rejected instead of racing the deletion.
+	pvs, fence, err := s.markVolumeDeleting(ctx, pvName, volumeID)
+	if err != nil {
+		return nil, err
+	}
+	if pvs == nil {
+		return &csi.DeleteVolumeResponse{}, nil
+	}
+
 	// ── Resolve the agent address from PillarAgent ───────────────────────────
 	target := &v1alpha1.PillarAgent{}
 	getTargetErrDV := s.k8sClient.Get(ctx, types.NamespacedName{Name: targetName}, target)
 	if getTargetErrDV != nil {
-		if k8serrors.IsNotFound(getTargetErrDV) {
-			// Storage node decommissioned; the volume cannot exist any more.
-			return &csi.DeleteVolumeResponse{}, nil
+		if !k8serrors.IsNotFound(getTargetErrDV) {
+			return nil, status.Errorf(codes.Internal,
+				"failed to get PillarAgent %q: %v", targetName, getTargetErrDV)
 		}
-		return nil, status.Errorf(codes.Internal,
-			"failed to get PillarAgent %q: %v", targetName, getTargetErrDV)
+		// A missing PillarAgent object does not prove the node's backend and
+		// target are gone, and without the agent the lifecycle cannot be
+		// ended durably.  Keep the record (marked deleting) and fail closed;
+		// the CO retries until the agent is reachable again.
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"PillarAgent %q not found; cannot confirm deletion of volume %q on its storage node",
+			targetName, volumeID)
 	}
 
 	agentAddr := target.Status.ResolvedAddress
@@ -907,48 +980,47 @@ func (s *ControllerServer) DeleteVolume(
 	defer closer.Close() //nolint:errcheck // best-effort close; dial errors already handled
 
 	// ── Step 1: Remove the network export (idempotent) ────────────────────────
-	unexportResp, unexportErr := agentClient.UnexportVolume(ctx, &agentv1.UnexportVolumeRequest{
+	_, unexportErr := agentClient.UnexportVolume(ctx, &agentv1.UnexportVolumeRequest{
 		VolumeId:     agentVolID,
 		ProtocolType: agentProtocolType,
+		Fence:        fence,
 	})
-	_ = unexportResp
-	if unexportErr != nil {
-		st, _ := status.FromError(unexportErr)
-		if st.Code() != codes.NotFound {
-			return nil, status.Errorf(st.Code(),
-				"agent UnexportVolume(%q) failed: %v", agentVolID, unexportErr)
-		}
-		// NotFound → already unexported; continue to backend deletion.
+	unexportCode := status.Code(unexportErr)
+	if unexportErr != nil && unexportCode != codes.NotFound {
+		return nil, status.Errorf(unexportCode,
+			"agent UnexportVolume(%q) failed: %v", agentVolID, unexportErr)
 	}
 
 	// ── Step 2: Destroy the backend storage resource (idempotent) ─────────────
-	deleteResp, deleteErr := agentClient.DeleteVolume(ctx, &agentv1.DeleteVolumeRequest{
+	// Only a successful deletion ends the lifecycle at the agent; the record
+	// is kept on any failure so the CO retries with the same token.
+	_, deleteErr := agentClient.DeleteVolume(ctx, &agentv1.DeleteVolumeRequest{
 		VolumeId:    agentVolID,
 		BackendType: agentBackendType,
+		Fence:       fence,
 	})
-	_ = deleteResp
 	if deleteErr != nil {
 		st, _ := status.FromError(deleteErr)
-		if st.Code() != codes.NotFound {
-			return nil, status.Errorf(st.Code(),
-				"agent DeleteVolume(%q) failed: %v", agentVolID, deleteErr)
-		}
-		// NotFound → already deleted; success.
+		return nil, status.Errorf(st.Code(),
+			"agent DeleteVolume(%q) failed: %v", agentVolID, deleteErr)
 	}
 
-	// ── Update the in-memory state machine ────────────────────────────────────
+	return s.finishDelete(ctx, volumeID, pvName, pvs.UID)
+}
+
+// finishDelete forgets the volume in memory and removes the lifecycle's
+// PillarVolumeState.  A failure is returned so the CO retries: the retry
+// finds the record still marked deleting and repeats the idempotent steps.
+func (s *ControllerServer) finishDelete(
+	ctx context.Context,
+	volumeID, pvName string,
+	uid types.UID,
+) (*csi.DeleteVolumeResponse, error) {
+	err := s.deleteVolumeState(ctx, pvName, uid)
+	if err != nil {
+		return nil, err
+	}
 	s.sm.ForceState(volumeID, StateNonExistent)
-
-	// ── Clean up the PillarVolumeState CRD (best-effort) ───────────────────────────
-	// Extract the CSI volume name from the agentVolID (last path component).
-	// This recovers the PillarVolumeState resource name that CreateVolume used.
-	pvName := agentVolID
-	if idx := strings.LastIndex(agentVolID, "/"); idx >= 0 {
-		pvName = agentVolID[idx+1:]
-	}
-	//nolint:errcheck // best-effort CRD cleanup; volume is already deleted from storage
-	_ = s.deletePillarVolumeState(ctx, pvName)
-
 	return &csi.DeleteVolumeResponse{}, nil
 }
 
@@ -975,48 +1047,6 @@ func (s *ControllerServer) loadPillarVolumeState(
 		return nil, false, fmt.Errorf("get PillarVolumeState %q: %w", pvName, err)
 	}
 	return pv, true, nil
-}
-
-// getPillarVolumeStateWithCacheSettle issues client.Get and retries when the
-// object is reported NotFound, accommodating the brief window after a
-// successful client.Create during which the controller-runtime cache has not
-// yet observed the new resource.  The total wait is bounded so that a
-// permanently missing object still surfaces as an error to the caller (which
-// then propagates a clear ProvisioningFailed event to the CO).
-//
-// The poll interval grows exponentially from 50 ms up to 400 ms with a
-// total budget of cachePollBudget (2 s).  All other errors (e.g. genuine
-// API failures) are returned immediately without retry.
-func getPillarVolumeStateWithCacheSettle(
-	ctx context.Context,
-	c client.Client,
-	pvName string,
-	out *v1alpha1.PillarVolumeState,
-) error {
-	const cachePollBudget = 2 * time.Second
-	delay := 50 * time.Millisecond
-	deadline := time.Now().Add(cachePollBudget)
-	var lastErr error
-	for {
-		lastErr = c.Get(ctx, types.NamespacedName{Name: pvName}, out)
-		if lastErr == nil {
-			return nil
-		}
-		if !k8serrors.IsNotFound(lastErr) {
-			return lastErr //nolint:wrapcheck // caller wraps with operation context
-		}
-		if !time.Now().Before(deadline) {
-			return lastErr //nolint:wrapcheck // caller wraps with operation context
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err() //nolint:wrapcheck // caller wraps with operation context
-		case <-time.After(delay):
-		}
-		if delay < 400*time.Millisecond {
-			delay *= 2
-		}
-	}
 }
 
 // pillarVolumeStateNameFromVolumeID extracts the PillarVolumeState object name from an
@@ -1057,165 +1087,6 @@ func (s *ControllerServer) assertVolumeExists(ctx context.Context, volumeID stri
 	}
 	if !exists {
 		return status.Errorf(codes.NotFound, "volume %q not found", volumeID)
-	}
-	return nil
-}
-
-// persistCreatePartial creates or updates a PillarVolumeState CRD with
-// PillarVolumeStatePhaseCreatePartial, recording that the backend storage resource
-// has been created but ExportVolume has not yet succeeded.
-//
-// DevicePath is the path returned by agent.CreateVolume (e.g.
-// "/dev/zvol/pool/pvc-abc123").  It is stored in Status.BackendDevicePath so
-// that a retry of CreateVolume can skip the backend-creation step and call
-// ExportVolume directly.
-//
-// PvExists must be true when a PillarVolumeState with pvName already exists in the
-// cluster; the function then updates via Status().Update() instead of Create().
-func (s *ControllerServer) persistCreatePartial(
-	ctx context.Context,
-	pvName, volumeID, agentVolID, targetName,
-	backendType, protocolType string,
-	capacity int64,
-	devicePath string,
-	pvExists bool,
-) error {
-	if s.k8sClient == nil {
-		return nil
-	}
-	now := metav1.Now()
-	partialStatus := v1alpha1.PillarVolumeStateStatus{
-		Phase:             v1alpha1.PillarVolumeStatePhaseCreatePartial,
-		BackendDevicePath: devicePath,
-		PartialFailure: &v1alpha1.PartialFailureInfo{
-			FailedOperation: "ExportVolume",
-			FailedAt:        now,
-			Reason:          "ExportPending",
-			Message: "Backend storage resource created successfully; " +
-				"ExportVolume has not yet succeeded.  " +
-				"Retry CreateVolume to re-attempt the export step.",
-			BackendCreated: true,
-		},
-	}
-
-	if !pvExists {
-		pv := &v1alpha1.PillarVolumeState{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: pvName,
-			},
-			Spec: v1alpha1.PillarVolumeStateSpec{
-				VolumeID:      volumeID,
-				AgentVolumeID: agentVolID,
-				AgentRef:      targetName,
-				BackendType:   backendType,
-				ProtocolType:  protocolType,
-				CapacityBytes: capacity,
-			},
-		}
-		err := s.k8sClient.Create(ctx, pv)
-		if err != nil {
-			if !k8serrors.IsAlreadyExists(err) {
-				return fmt.Errorf("create PillarVolumeState %q: %w", pvName, err)
-			}
-			// Race: another instance created it; fall through to update below.
-		}
-		// controller-runtime's manager-backed client reads from a watch-fed
-		// cache, so a Get issued immediately after a successful Create can
-		// observe the object's absence for a few hundred milliseconds until
-		// the informer fires.  external-provisioner retries CreateVolume
-		// while the cache catches up, but the persistCreatePartial → Get
-		// chain races that retry and the resulting "not found" surfaces as
-		// a provisioning failure event.  Poll for cache convergence with a
-		// short, bounded backoff before giving up.
-		err = getPillarVolumeStateWithCacheSettle(ctx, s.k8sClient, pvName, pv)
-		if err != nil {
-			return fmt.Errorf("get PillarVolumeState %q after create: %w", pvName, err)
-		}
-		pv.Status = partialStatus
-		updateErr := s.k8sClient.Status().Update(ctx, pv)
-		if updateErr != nil {
-			return fmt.Errorf("update PillarVolumeState %q status: %w", pvName, updateErr)
-		}
-		return nil
-	}
-
-	// pvExists == true: fetch the current object and update its status.
-	existing := &v1alpha1.PillarVolumeState{}
-	err := s.k8sClient.Get(ctx, types.NamespacedName{Name: pvName}, existing)
-	if err != nil {
-		return fmt.Errorf("get PillarVolumeState %q: %w", pvName, err)
-	}
-	existing.Status = partialStatus
-	updateErr := s.k8sClient.Status().Update(ctx, existing)
-	if updateErr != nil {
-		return fmt.Errorf("update PillarVolumeState %q status: %w", pvName, updateErr)
-	}
-	return nil
-}
-
-// exportInfoGetter is the minimal interface of agentv1.ExportInfo used by
-// persistVolumeReady.  It allows passing a nil-safe pointer without importing
-// the proto package in the interface definition.
-type exportInfoGetter interface {
-	GetTargetId() string
-	GetAddress() string
-	GetPort() int32
-	GetVolumeRef() string
-}
-
-// persistVolumeReady updates the PillarVolumeState CRD to PillarVolumeStatePhaseReady
-// and stores the export info returned by agent.ExportVolume for idempotent
-// re-use.  A NotFound error is treated as a no-op (CRD was never created).
-func (s *ControllerServer) persistVolumeReady(
-	ctx context.Context,
-	pvName string,
-	info exportInfoGetter,
-	capacity int64,
-) error {
-	if s.k8sClient == nil || info == nil {
-		return nil
-	}
-	pv := &v1alpha1.PillarVolumeState{}
-	err := s.k8sClient.Get(ctx, types.NamespacedName{Name: pvName}, pv)
-	if err != nil {
-		if k8serrors.IsNotFound(err) {
-			return nil
-		}
-		return fmt.Errorf("get PillarVolumeState %q: %w", pvName, err)
-	}
-	pv.Status.Phase = v1alpha1.PillarVolumeStatePhaseReady
-	pv.Status.PartialFailure = nil
-	pv.Status.BackendDevicePath = "" // no longer needed once export is live
-	pv.Status.ExportInfo = &v1alpha1.VolumeExportInfo{
-		TargetID:  info.GetTargetId(),
-		Address:   info.GetAddress(),
-		Port:      info.GetPort(),
-		VolumeRef: info.GetVolumeRef(),
-	}
-	if capacity > 0 && pv.Spec.CapacityBytes == 0 {
-		pv.Spec.CapacityBytes = capacity
-	}
-	updateErr := s.k8sClient.Status().Update(ctx, pv)
-	if updateErr != nil {
-		return fmt.Errorf("update PillarVolumeState %q status to ready: %w", pvName, updateErr)
-	}
-	return nil
-}
-
-// deletePillarVolumeState removes the PillarVolumeState CRD for the given CSI volume
-// name.  NotFound is treated as success (idempotent).
-func (s *ControllerServer) deletePillarVolumeState(ctx context.Context, pvName string) error {
-	if s.k8sClient == nil {
-		return nil
-	}
-	pv := &v1alpha1.PillarVolumeState{}
-	pv.Name = pvName
-	err := s.k8sClient.Delete(ctx, pv)
-	if err != nil {
-		if k8serrors.IsNotFound(err) {
-			return nil
-		}
-		return fmt.Errorf("delete PillarVolumeState %q: %w", pvName, err)
 	}
 	return nil
 }
@@ -1641,8 +1512,138 @@ func parseACLEnabled(val string) bool {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Publication records (CSI publish exclusivity)
+// ─────────────────────────────────────────────────────────────────────────────.
+
+// volumeLockSet serializes, per volume ID, the controller operations that
+// read-modify-write a volume's durable publication record
+// (PillarVolumeState.status.publishedNodes) together with the storage-target
+// ACL derived from it: ControllerPublishVolume, ControllerUnpublishVolume and
+// DeleteVolume.  Any other in-process writer of the target ACL for a volume
+// must hold the same lock.  The lock only removes in-process interleavings.
+// Across controller processes (a former leader whose RPC is still in flight)
+// the resourceVersion compare-and-swap orders the durable record, and the
+// publicationGeneration fencing token it commits orders the agent RPCs: the
+// agent rejects any request older than the last one it applied.
+type volumeLockSet struct {
+	mu    sync.Mutex
+	locks map[string]*volumeLock
+}
+
+// volumeLock is one reference-counted per-volume mutex.
+type volumeLock struct {
+	mu   sync.Mutex
+	refs int
+}
+
+func newVolumeLockSet() *volumeLockSet {
+	return &volumeLockSet{locks: make(map[string]*volumeLock)}
+}
+
+// lock blocks until the caller holds the lock for volumeID and returns the
+// function that releases it.  Idle entries are removed so the set does not
+// grow with the number of volumes ever seen.
+func (l *volumeLockSet) lock(volumeID string) (unlock func()) {
+	l.mu.Lock()
+	vl, ok := l.locks[volumeID]
+	if !ok {
+		vl = &volumeLock{}
+		l.locks[volumeID] = vl
+	}
+	vl.refs++
+	l.mu.Unlock()
+
+	vl.mu.Lock()
+	return func() {
+		vl.mu.Unlock()
+		l.mu.Lock()
+		vl.refs--
+		if vl.refs == 0 {
+			delete(l.locks, volumeID)
+		}
+		l.mu.Unlock()
+	}
+}
+
+// readVolumeState returns the PillarVolumeState for pvName read uncached
+// through apiReader, and whether it exists.  Publication records are
+// authoritative for publish exclusivity and ACL revocation and must never be
+// decided on a stale informer-cache copy.
+func (s *ControllerServer) readVolumeState(
+	ctx context.Context,
+	pvName string,
+) (*v1alpha1.PillarVolumeState, bool, error) {
+	pvs := &v1alpha1.PillarVolumeState{}
+	err := s.apiReader.Get(ctx, types.NamespacedName{Name: pvName}, pvs)
+	if err != nil {
+		if k8serrors.IsNotFound(err) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("get PillarVolumeState %q: %w", pvName, err)
+	}
+	return pvs, true, nil
+}
+
+// canSharePublication reports whether two publications of the same volume on
+// different nodes are compatible under CSI access-mode semantics:
+//   - SINGLE_NODE_* modes never share a volume with another node;
+//   - MULTI_NODE_READER_ONLY and MULTI_NODE_MULTI_WRITER share with the same mode;
+//   - MULTI_NODE_SINGLE_WRITER shares with the same mode when at most one of
+//     the two publications is writable.
+//
+// Publications with different access modes are never compatible.
+func canSharePublication(a, b v1alpha1.VolumePublication) bool {
+	if a.AccessMode != b.AccessMode {
+		return false
+	}
+	switch a.AccessMode {
+	case csi.VolumeCapability_AccessMode_MULTI_NODE_READER_ONLY.String(),
+		csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER.String():
+		return true
+	case csi.VolumeCapability_AccessMode_MULTI_NODE_SINGLE_WRITER.String():
+		return a.Readonly || b.Readonly
+	default:
+		return false
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // ControllerPublishVolume
 // ─────────────────────────────────────────────────────────────────────────────.
+
+// validatePublishAccessMode rejects an access mode the volume's protocol
+// cannot serve (for example a multi-node writer mode on a block protocol).
+func validatePublishAccessMode(protocolTypeStr string, mode csi.VolumeCapability_AccessMode_Mode) error {
+	protocolType := v1alpha1.ProtocolType(protocolTypeStr)
+	if isSupportedAccessMode(protocolType, mode) {
+		return nil
+	}
+	return status.Errorf(codes.InvalidArgument,
+		"access mode %s is not supported for protocol %q; supported modes: %s",
+		mode, protocolType, describeSupportedModes(protocolType))
+}
+
+// resolvePublishInitiator resolves the node's protocol initiator identity for
+// ControllerPublishVolume.  CSI spec §4.5.1: an unknown node_id must return
+// NotFound.  The resolveInitiatorID helper returns FailedPrecondition when the CSINode
+// object is missing (used elsewhere to signal "retry later, the node plugin
+// is still registering"); for publish that one signal is promoted to NotFound
+// while other failure modes (annotation present but blank) stay
+// FailedPrecondition.
+func (s *ControllerServer) resolvePublishInitiator(
+	ctx context.Context,
+	nodeID, protocolTypeStr string,
+) (string, error) {
+	initiatorID, err := s.resolveInitiatorID(ctx, nodeID, protocolTypeStr)
+	if err == nil {
+		return initiatorID, nil
+	}
+	if st, ok := status.FromError(err); ok && st.Code() == codes.FailedPrecondition &&
+		strings.Contains(st.Message(), "node plugin may not have registered yet") {
+		return "", status.Errorf(codes.NotFound, "node %q not found", nodeID)
+	}
+	return "", err
+}
 
 // ControllerPublishVolume grants a specific node access to a volume by
 // calling agent.AllowInitiator on the storage node.
@@ -1660,8 +1661,16 @@ func parseACLEnabled(val string) bool {
 // and the CO (external-attacher) retries with exponential backoff, giving the
 // node plugin time to publish its identity after a fresh node bootstrap.
 //
-// Idempotency: AllowInitiator is idempotent on the agent side; calling it
-// twice for the same volume / initiator pair is safe.
+// Exclusivity (CSI spec ControllerPublishVolume errors): the publication is
+// recorded in PillarVolumeState.status.publishedNodes before the agent grants
+// access.  A publish that is incompatible with a publication on another node
+// (any SINGLE_NODE_* mode, differing modes, or a second writer for
+// MULTI_NODE_SINGLE_WRITER) returns FailedPrecondition; the same node with a
+// different capability returns AlreadyExists.  If AllowInitiator fails the
+// record is kept (fail-closed) until the CO retries or unpublishes.
+//
+// Idempotency: an identical publish for an already recorded node succeeds and
+// re-applies AllowInitiator, which is idempotent on the agent side.
 func (s *ControllerServer) ControllerPublishVolume(
 	ctx context.Context,
 	req *csi.ControllerPublishVolumeRequest,
@@ -1697,73 +1706,63 @@ func (s *ControllerServer) ControllerPublishVolume(
 	protocolTypeStr := parts[1]
 	agentVolID := parts[3]
 
-	agentProtocolType := mapProtocolType(protocolTypeStr)
-
-	// ── Resolve the agent address from PillarAgent ───────────────────────────
-	target := &v1alpha1.PillarAgent{}
-	getTargetErrCPV := s.k8sClient.Get(ctx, types.NamespacedName{Name: targetName}, target)
-	if getTargetErrCPV != nil {
-		if k8serrors.IsNotFound(getTargetErrCPV) {
-			return nil, status.Errorf(codes.NotFound,
-				"PillarAgent %q not found", targetName)
-		}
-		return nil, status.Errorf(codes.Internal,
-			"failed to get PillarAgent %q: %v", targetName, getTargetErrCPV)
+	mode := req.GetVolumeCapability().GetAccessMode().GetMode()
+	modeErr := validatePublishAccessMode(protocolTypeStr, mode)
+	if modeErr != nil {
+		return nil, modeErr
 	}
 
-	agentAddr := target.Status.ResolvedAddress
-	if agentAddr == "" {
-		return nil, status.Errorf(codes.Unavailable,
-			"PillarAgent %q has no resolved address; agent may not be ready", targetName)
+	agentProtocolType := mapProtocolType(protocolTypeStr)
+
+	unlock := s.volumeLocks.lock(volumeID)
+	defer unlock()
+
+	// ── The volume must exist (CSI: NotFound for an unknown volume) ──────────
+	pvName := pillarVolumeStateNameFromVolumeID(volumeID)
+	pvs, pvExists, pvErr := s.readVolumeState(ctx, pvName)
+	if pvErr != nil {
+		return nil, status.Errorf(codes.Internal, "%v", pvErr)
+	}
+	if !pvExists {
+		return nil, status.Errorf(codes.NotFound, "volume %q not found", volumeID)
+	}
+
+	// ── Resolve the agent address from PillarAgent ───────────────────────────
+	agentAddr, addrErr := s.resolveAgentAddress(ctx, targetName)
+	if addrErr != nil {
+		return nil, addrErr
 	}
 
 	// ── Resolve initiator identity from CSINode annotation ───────────────────
-	// CSI spec §4.5.1: an unknown node_id must return NotFound.  resolveInitiatorID
-	// returns FailedPrecondition when the CSINode object is missing (used in
-	// production to signal "retry later, the node plugin is still registering").
-	// For ControllerPublishVolume specifically the spec is explicit, so we
-	// promote that one signal to NotFound while leaving other failure modes
-	// (annotation present but blank) at FailedPrecondition.
-	initiatorID, resolveErr := s.resolveInitiatorID(ctx, nodeID, protocolTypeStr)
+	initiatorID, resolveErr := s.resolvePublishInitiator(ctx, nodeID, protocolTypeStr)
 	if resolveErr != nil {
-		if st, ok := status.FromError(resolveErr); ok && st.Code() == codes.FailedPrecondition &&
-			strings.Contains(st.Message(), "node plugin may not have registered yet") {
-			return nil, status.Errorf(codes.NotFound, "node %q not found", nodeID)
-		}
 		return nil, resolveErr
 	}
 
-	// ── Dial the agent ────────────────────────────────────────────────────────
-	agentClient, closer, err := s.dialAgent(ctx, agentAddr)
-	if err != nil {
-		return nil, status.Errorf(codes.Unavailable,
-			"failed to dial agent at %q: %v", agentAddr, err)
-	}
-	defer closer.Close() //nolint:errcheck // best-effort close; dial errors already handled
-
-	// ── Grant initiator access ────────────────────────────────────────────────
-	// initiatorID is the protocol-specific identity resolved from CSINode:
-	//   NVMe-oF TCP → host NQN, iSCSI → IQN, NFS/SMB → nodeID (Phase 2).
-	allowResp, allowErr := agentClient.AllowInitiator(ctx, &agentv1.AllowInitiatorRequest{
-		VolumeId:     agentVolID,
-		ProtocolType: agentProtocolType,
-		InitiatorId:  initiatorID,
+	// ── Record the publication before granting access ────────────────────────
+	// The committed token orders the grant: a stale controller whose
+	// reservation was superseded (or whose lifecycle was replaced) is rejected
+	// by the agent even if its AllowInitiator lands late.
+	fence, reserveErr := s.reservePublication(ctx, pvName, volumeID, pvs.UID, v1alpha1.VolumePublication{
+		NodeID:      nodeID,
+		InitiatorID: initiatorID,
+		AccessMode:  mode.String(),
+		Readonly:    req.GetReadonly(),
 	})
-	_ = allowResp
-	if allowErr != nil {
-		grpcSt, _ := status.FromError(allowErr)
-		return nil, status.Errorf(grpcSt.Code(),
-			"agent AllowInitiator(%q, initiator=%q) failed: %v",
-			agentVolID, initiatorID, allowErr)
+	if reserveErr != nil {
+		return nil, reserveErr
+	}
+
+	grantErr := s.grantPublication(ctx, agentAddr, agentVolID, agentProtocolType, initiatorID, fence)
+	if grantErr != nil {
+		return nil, grantErr
 	}
 
 	// ── Advance state machine to ControllerPublished ─────────────────────────
-	// Record that this node now has ACL access to the volume.  We use
-	// ForceState rather than Transition so that the call succeeds even when
-	// the volume was not previously tracked in the SM (e.g. when
-	// ControllerPublishVolume is invoked independently of CreateVolume in
-	// tests, or after a controller restart where the SM was rebuilt from CRDs
-	// and a transition-table gap would otherwise block the update).
+	// The durable publication record above is authoritative for exclusivity;
+	// the in-memory state machine only mirrors that at least one node is
+	// published.  ForceState is used because CreateVolume may have run in a
+	// previous controller process.
 	s.sm.ForceState(volumeID, StateControllerPublished)
 
 	// PublishContext is forwarded to NodeStageVolume.  No additional keys are
@@ -1774,18 +1773,78 @@ func (s *ControllerServer) ControllerPublishVolume(
 	}, nil
 }
 
+// Grant access using the protocol-specific identity resolved from CSINode.
+func (s *ControllerServer) grantPublication(
+	ctx context.Context,
+	agentAddr string,
+	agentVolID string,
+	agentProtocolType agentv1.ProtocolType,
+	initiatorID string,
+	fence *agentv1.FencingToken,
+) error {
+	agentClient, closer, err := s.dialAgent(ctx, agentAddr)
+	if err != nil {
+		return status.Errorf(codes.Unavailable,
+			"failed to dial agent at %q: %v", agentAddr, err)
+	}
+	defer closer.Close() //nolint:errcheck // best-effort close; dial errors already handled
+
+	allowResp, allowErr := agentClient.AllowInitiator(ctx, &agentv1.AllowInitiatorRequest{
+		VolumeId:     agentVolID,
+		ProtocolType: agentProtocolType,
+		InitiatorId:  initiatorID,
+		Fence:        fence,
+	})
+	_ = allowResp
+	if allowErr != nil {
+		grpcSt, _ := status.FromError(allowErr)
+		return status.Errorf(grpcSt.Code(),
+			"agent AllowInitiator(%q, initiator=%q) failed: %v",
+			agentVolID, initiatorID, allowErr)
+	}
+	return nil
+}
+
+// resolveAgentAddress returns the resolved address of the PillarAgent
+// targetName: NotFound when the object does not exist, Unavailable while it
+// has no address yet, Internal on any other API error.
+func (s *ControllerServer) resolveAgentAddress(ctx context.Context, targetName string) (string, error) {
+	target := &v1alpha1.PillarAgent{}
+	err := s.k8sClient.Get(ctx, types.NamespacedName{Name: targetName}, target)
+	if err != nil {
+		if k8serrors.IsNotFound(err) {
+			return "", status.Errorf(codes.NotFound, "PillarAgent %q not found", targetName)
+		}
+		return "", status.Errorf(codes.Internal, "failed to get PillarAgent %q: %v", targetName, err)
+	}
+	if target.Status.ResolvedAddress == "" {
+		return "", status.Errorf(codes.Unavailable,
+			"PillarAgent %q has no resolved address; agent may not be ready", targetName)
+	}
+	return target.Status.ResolvedAddress, nil
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // ControllerUnpublishVolume
 // ─────────────────────────────────────────────────────────────────────────────.
 
-// ControllerUnpublishVolume revokes a node's access to a volume by calling
-// agent.DenyInitiator.
+// ControllerUnpublishVolume revokes node access to a volume by calling
+// agent.DenyInitiator for every matching publication recorded in the volume's
+// PillarVolumeState, then removing those records.
+//
+// The initiator identity is taken from the publication record, not from the
+// CSINode object, so a node that has been deleted is still revoked.  An empty
+// node_id revokes every recorded publication (CSI spec §4.5.2).  A record is
+// removed only after DenyInitiator succeeded, so a failed revocation keeps
+// the volume unavailable to other SINGLE_NODE_* publishers (fail-closed).
 //
 // Idempotency:
-//   - If the PillarAgent no longer exists (node decommissioned), return
-//     success — the volume and its ACL entries cannot exist either.
-//   - If the agent returns NotFound for DenyInitiator, return success — the
-//     ACL entry was already absent.
+//   - If the volume has no PillarVolumeState or no matching publication,
+//     there is nothing to revoke; return success.
+//   - If the PillarAgent object is missing, the node's ACL entries may still
+//     exist; the records are kept and FailedPrecondition is returned.
+//   - If the agent returns NotFound for DenyInitiator, the ACL entry was
+//     already absent.
 func (s *ControllerServer) ControllerUnpublishVolume(
 	ctx context.Context,
 	req *csi.ControllerUnpublishVolumeRequest,
@@ -1797,12 +1856,6 @@ func (s *ControllerServer) ControllerUnpublishVolume(
 		//nolint:wrapcheck // gRPC status errors must not be double-wrapped
 		return nil, status.Error(codes.InvalidArgument, "volume_id is required")
 	}
-	// node_id may be empty per CSI spec §4.5.2 (controller must unpublish
-	// from all nodes).  We treat an empty node_id as a no-op because
-	// pillar-csi manages per-initiator ACL entries and cannot remove all of
-	// them without knowing which initiators were granted access.
-	// A more complete implementation would call DenyInitiator for each
-	// known initiator; that is tracked as a Phase 2 item.
 
 	// ── Parse the encoded volume ID ───────────────────────────────────────────
 	parts := strings.SplitN(volumeID, "/", volumeIDParts)
@@ -1816,16 +1869,37 @@ func (s *ControllerServer) ControllerUnpublishVolume(
 
 	agentProtocolType := mapProtocolType(protocolTypeStr)
 
+	unlock := s.volumeLocks.lock(volumeID)
+	defer unlock()
+
+	// ── Select the publications to revoke ────────────────────────────────────
+	pvName := pillarVolumeStateNameFromVolumeID(volumeID)
+	existingPV, pvExists, pvErr := s.readVolumeState(ctx, pvName)
+	if pvErr != nil {
+		return nil, status.Errorf(codes.Internal, "%v", pvErr)
+	}
+	if !pvExists {
+		// The volume does not exist; no access can have been granted.
+		return &csi.ControllerUnpublishVolumeResponse{}, nil
+	}
+	if !hasPublicationFor(existingPV.Status.PublishedNodes, nodeID) {
+		return &csi.ControllerUnpublishVolumeResponse{}, nil
+	}
+
 	// ── Resolve the agent address from PillarAgent ───────────────────────────
 	target := &v1alpha1.PillarAgent{}
 	getTargetErrCUV := s.k8sClient.Get(ctx, types.NamespacedName{Name: targetName}, target)
 	if getTargetErrCUV != nil {
-		if k8serrors.IsNotFound(getTargetErrCUV) {
-			// Storage node decommissioned; ACL entries cannot exist.
-			return &csi.ControllerUnpublishVolumeResponse{}, nil
+		if !k8serrors.IsNotFound(getTargetErrCUV) {
+			return nil, status.Errorf(codes.Internal,
+				"failed to get PillarAgent %q: %v", targetName, getTargetErrCUV)
 		}
-		return nil, status.Errorf(codes.Internal,
-			"failed to get PillarAgent %q: %v", targetName, getTargetErrCUV)
+		// A missing PillarAgent object does not prove the node's ACL entries
+		// are gone; dropping the records would let another node be granted
+		// while the old grant may still exist.  Keep them and fail closed.
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"PillarAgent %q not found; cannot revoke volume %q on its storage node",
+			targetName, volumeID)
 	}
 
 	agentAddr := target.Status.ResolvedAddress
@@ -1833,28 +1907,6 @@ func (s *ControllerServer) ControllerUnpublishVolume(
 		// Transient; CO will retry.
 		return nil, status.Errorf(codes.Unavailable,
 			"PillarAgent %q has no resolved address", targetName)
-	}
-
-	// If node_id is empty we cannot identify which initiator to deny.
-	// Return success without contacting the agent (Phase 2: deny all).
-	if nodeID == "" {
-		return &csi.ControllerUnpublishVolumeResponse{}, nil
-	}
-
-	// ── Resolve initiator identity from CSINode annotation ───────────────────
-	// node_id is the Kubernetes node name (stable handle).  The protocol-specific
-	// initiator identity (NQN for NVMe-oF, IQN for iSCSI) is stored in the
-	// CSINode annotation by the node plugin at startup.
-	// If the CSINode annotation is missing during unpublish (e.g. the node was
-	// decommissioned), treat it as already revoked and return success.
-	initiatorID, resolveErr := s.resolveInitiatorID(ctx, nodeID, protocolTypeStr)
-	if resolveErr != nil {
-		if st, _ := status.FromError(resolveErr); st.Code() == codes.FailedPrecondition {
-			// Annotation absent during unpublish — the node's identity is gone,
-			// so there is no ACL entry to revoke.  Return success idempotently.
-			return &csi.ControllerUnpublishVolumeResponse{}, nil
-		}
-		return nil, resolveErr
 	}
 
 	// ── Dial the agent ────────────────────────────────────────────────────────
@@ -1865,38 +1917,86 @@ func (s *ControllerServer) ControllerUnpublishVolume(
 	}
 	defer closer.Close() //nolint:errcheck // best-effort close; dial errors already handled
 
-	// ── Revoke initiator access (idempotent) ──────────────────────────────────
-	denyResp, denyErr := agentClient.DenyInitiator(ctx, &agentv1.DenyInitiatorRequest{
-		VolumeId:     agentVolID,
-		ProtocolType: agentProtocolType,
-		InitiatorId:  initiatorID,
-	})
-	_ = denyResp
-	if denyErr != nil {
-		st, _ := status.FromError(denyErr)
-		if st.Code() != codes.NotFound {
-			return nil, status.Errorf(st.Code(),
-				"agent DenyInitiator(%q, initiator=%q) failed: %v",
-				agentVolID, initiatorID, denyErr)
-		}
-		// NotFound → ACL entry already absent; success.
+	// ── Revoke initiator access (idempotent), then drop the records ──────────
+	remaining, revokeErr := s.revokePublications(ctx, agentClient, agentVolID,
+		agentProtocolType, pvName, existingPV.UID, nodeID)
+	if revokeErr != nil {
+		return nil, revokeErr
 	}
 
-	// ── Revert state machine to Created ──────────────────────────────────────
-	// The node's initiator ACL entry has been revoked.  If the SM currently
-	// tracks the volume as ControllerPublished (or any node-side state that
-	// implies the controller had previously published it), revert to Created
-	// so that subsequent operations require ControllerPublishVolume again.
-	// We do not revert from StateNonExistent, StateCreated, or partial-create
-	// states to avoid corrupting SM entries that were set up independently of
-	// this ControllerUnpublishVolume call (e.g. stand-alone controller tests).
+	s.syncUnpublishedState(volumeID, remaining)
+	return &csi.ControllerUnpublishVolumeResponse{}, nil
+}
+
+// hasPublicationFor reports whether ControllerUnpublishVolume has anything to
+// revoke: a publication for nodeID, or any publication when nodeID is empty
+// (CSI §4.5.2).
+func hasPublicationFor(pubs []v1alpha1.VolumePublication, nodeID string) bool {
+	return slices.ContainsFunc(pubs, func(pub v1alpha1.VolumePublication) bool {
+		return nodeID == "" || pub.NodeID == nodeID
+	})
+}
+
+// revokePublications revokes the publications of nodeID (every publication
+// when nodeID is empty) on the lifecycle uid and returns how many remain.
+//
+// Ordering is load-bearing:
+//  1. fencePublications selects the records, marks them revoking, and
+//     commits the fencing token in one compare-and-swap, so the selection is
+//     exactly the state the token was committed for.
+//  2. DenyInitiator runs with that token; the agent applies the revoke and
+//     rejects any grant still in flight from an earlier generation.
+//  3. releasePublication drops the records only while the generation is
+//     still the fence's and only after every revoke succeeded, so neither a
+//     newer re-publish nor a crash can leave an unrecorded grant (fail-closed).
+func (s *ControllerServer) revokePublications(
+	ctx context.Context,
+	agentClient agentv1.AgentServiceClient,
+	agentVolID string,
+	protocolType agentv1.ProtocolType,
+	pvName string,
+	uid types.UID,
+	nodeID string,
+) (remaining int, err error) {
+	fence, revoke, err := s.fencePublications(ctx, pvName, uid, nodeID)
+	if err != nil {
+		return 0, err
+	}
+	revokedNodes := make([]string, 0, len(revoke))
+	for _, pub := range revoke {
+		_, denyErr := agentClient.DenyInitiator(ctx, &agentv1.DenyInitiatorRequest{
+			VolumeId:     agentVolID,
+			ProtocolType: protocolType,
+			InitiatorId:  pub.InitiatorID,
+			Fence:        fence,
+		})
+		// NotFound → ACL entry already absent; success.
+		denyCode := status.Code(denyErr)
+		if denyErr != nil && denyCode != codes.NotFound {
+			return 0, status.Errorf(denyCode,
+				"agent DenyInitiator(%q, node=%q, initiator=%q) failed: %v",
+				agentVolID, pub.NodeID, pub.InitiatorID, denyErr)
+		}
+		revokedNodes = append(revokedNodes, pub.NodeID)
+	}
+	// With nothing selected, releasePublication commits nothing and only
+	// reports the current count.
+	return s.releasePublication(ctx, pvName, uid, revokedNodes, fence)
+}
+
+// syncUnpublishedState reverts the in-memory state machine to Created once no
+// publication remains, so that node operations require ControllerPublishVolume
+// again.  While other nodes still hold the volume it stays published.  States
+// that were not reached through ControllerPublishVolume are left untouched.
+func (s *ControllerServer) syncUnpublishedState(volumeID string, remaining int) {
+	if remaining > 0 {
+		return
+	}
 	switch s.sm.GetState(volumeID) {
 	case StateControllerPublished,
 		StateNodeStaged, StateNodePublished, StateNodeStagePartial:
 		s.sm.ForceState(volumeID, StateCreated)
 	}
-
-	return &csi.ControllerUnpublishVolumeResponse{}, nil
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1975,10 +2075,17 @@ func (s *ControllerServer) ControllerExpandVolume(
 	defer closer.Close() //nolint:errcheck // best-effort close; dial errors already handled
 
 	// ── Expand the backend storage resource ───────────────────────────────────
+	// The request carries the lifecycle's current token: an expand of a
+	// deleted, deleting, or re-created volume is refused here or by the agent.
+	fence, err := s.currentToken(ctx, pillarVolumeStateNameFromVolumeID(volumeID), volumeID)
+	if err != nil {
+		return nil, err
+	}
 	expandResp, expandErr := agentClient.ExpandVolume(ctx, &agentv1.ExpandVolumeRequest{
 		VolumeId:       agentVolID,
 		RequestedBytes: requiredBytes,
 		BackendType:    agentBackendType,
+		Fence:          fence,
 	})
 	if expandErr != nil {
 		grpcSt, _ := status.FromError(expandErr)

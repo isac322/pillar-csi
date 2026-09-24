@@ -489,7 +489,7 @@ func runManager(mgr ctrl.Manager, agentDialer agentclient.Dialer, csiEndpoint st
 
 	var managerStarted atomic.Bool
 	identitySrv := csi.NewIdentityServerWithReadyFn(driverName, driverVersion, managerStartedReadyFn(&managerStarted))
-	ctrlSrv := csi.NewControllerServer(mgr.GetClient(), driverName)
+	ctrlSrv := csi.NewControllerServer(mgr.GetClient(), mgr.GetAPIReader(), driverName)
 
 	csiGRPC := grpc.NewServer()
 	csi.RegisterGRPC(csiGRPC, identitySrv, ctrlSrv)

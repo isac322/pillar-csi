@@ -60,7 +60,10 @@ func newAgentServerWithCfgRoot(
 	t.Helper()
 	backends := map[string]backend.VolumeBackend{compTestPool: mb}
 	allOpts := append(
-		[]agent.ServerOption{agent.WithDeviceChecker(nvmeof.AlwaysPresentChecker)},
+		[]agent.ServerOption{
+			agent.WithDeviceChecker(nvmeof.AlwaysPresentChecker),
+			agent.WithDrainStateDir(t.TempDir()),
+		},
 		opts...,
 	)
 	return agent.NewServer(backends, cfgRoot, allOpts...)
@@ -99,6 +102,7 @@ func TestAgentErrors_ExportVolume_ContextCancelledDuringPoll(t *testing.T) {
 	start := time.Now()
 	_, err := srv.ExportVolume(ctx, &agentv1.ExportVolumeRequest{
 		VolumeId:     "tank/pvc-ctx-poll",
+		Fence:        testFence(t),
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 		ExportParams: nvmeofParams("192.168.99.1", 4420),
 	})
@@ -164,6 +168,7 @@ func TestAgentErrors_ExportVolume_ConfigfsBrokenAfterDeviceCheck_TOCTOU(t *testi
 
 	_, err := srv.ExportVolume(context.Background(), &agentv1.ExportVolumeRequest{
 		VolumeId:     "tank/pvc-toctou-cfgfs",
+		Fence:        testFence(t),
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 		ExportParams: nvmeofParams("192.168.99.2", 4420),
 	})
@@ -197,6 +202,7 @@ func TestAgentErrors_CreateVolume_EmptyVolumeID(t *testing.T) {
 
 	_, err := srv.CreateVolume(context.Background(), &agentv1.CreateVolumeRequest{
 		VolumeId:      "",
+		Fence:         testFence(t),
 		CapacityBytes: 1 << 30,
 	})
 	if err == nil {
@@ -221,6 +227,7 @@ func TestAgentErrors_DeleteVolume_EmptyVolumeID(t *testing.T) {
 
 	_, err := srv.DeleteVolume(context.Background(), &agentv1.DeleteVolumeRequest{
 		VolumeId: "",
+		Fence:    testFence(t),
 	})
 	if err == nil {
 		t.Fatal("expected InvalidArgument for empty VolumeId, got nil")
@@ -244,6 +251,7 @@ func TestAgentErrors_ExpandVolume_EmptyVolumeID(t *testing.T) {
 
 	_, err := srv.ExpandVolume(context.Background(), &agentv1.ExpandVolumeRequest{
 		VolumeId:       "",
+		Fence:          testFence(t),
 		RequestedBytes: 2 << 30,
 	})
 	if err == nil {
@@ -276,6 +284,7 @@ func TestAgentErrors_ExpandVolume_ShrinkRejected_PropagatesAsInternal(t *testing
 
 	_, err := srv.ExpandVolume(context.Background(), &agentv1.ExpandVolumeRequest{
 		VolumeId:       compTestVolumeID,
+		Fence:          testFence(t),
 		RequestedBytes: 512 << 20, // 512 MiB — well below the assumed current size
 	})
 
@@ -313,6 +322,7 @@ func TestAgentErrors_CreateVolume_BackendContextError(t *testing.T) {
 
 	_, err := srv.CreateVolume(context.Background(), &agentv1.CreateVolumeRequest{
 		VolumeId:      compTestVolumeID,
+		Fence:         testFence(t),
 		CapacityBytes: 1 << 30,
 	})
 
@@ -344,6 +354,7 @@ func TestAgentErrors_ExportVolume_InvalidProtocol_NoConfigfsSideEffects(t *testi
 
 	_, err := srv.ExportVolume(context.Background(), &agentv1.ExportVolumeRequest{
 		VolumeId:     compTestVolumeID,
+		Fence:        testFence(t),
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI,
 	})
 
@@ -376,6 +387,7 @@ func TestAgentErrors_AllowInitiator_InvalidProtocol(t *testing.T) {
 
 	_, err := srv.AllowInitiator(context.Background(), &agentv1.AllowInitiatorRequest{
 		VolumeId:     compTestVolumeID,
+		Fence:        testFence(t),
 		InitiatorId:  compTestHostNQN,
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI,
 	})
@@ -408,6 +420,7 @@ func TestAgentErrors_DenyInitiator_InvalidProtocol(t *testing.T) {
 
 	_, err := srv.DenyInitiator(context.Background(), &agentv1.DenyInitiatorRequest{
 		VolumeId:     compTestVolumeID,
+		Fence:        testFence(t),
 		InitiatorId:  compTestHostNQN,
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI,
 	})
@@ -434,6 +447,7 @@ func TestAgentErrors_UnexportVolume_InvalidProtocol(t *testing.T) {
 
 	_, err := srv.UnexportVolume(context.Background(), &agentv1.UnexportVolumeRequest{
 		VolumeId:     compTestVolumeID,
+		Fence:        testFence(t),
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI,
 	})
 
@@ -465,6 +479,7 @@ func TestAgentErrors_CreateVolume_DiskFullPropagation(t *testing.T) {
 
 	_, err := srv.CreateVolume(context.Background(), &agentv1.CreateVolumeRequest{
 		VolumeId:      compTestVolumeID,
+		Fence:         testFence(t),
 		CapacityBytes: 1 << 30,
 	})
 
@@ -504,6 +519,7 @@ func TestAgentProtocol_ExportVolume_UNSPECIFIED_InvalidArgument(t *testing.T) {
 
 	_, err := srv.ExportVolume(context.Background(), &agentv1.ExportVolumeRequest{
 		VolumeId:     compTestVolumeID,
+		Fence:        testFence(t),
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_UNSPECIFIED, // 0
 	})
 
@@ -556,6 +572,7 @@ func TestAgentProtocol_ReconcileState_UnsupportedProtocol_ReportedPerVolume(t *t
 			{
 				// v1: NVMe-oF TCP — should be fully reconciled.
 				VolumeId:   v1VolumeID,
+				Fence:      testFence(t),
 				DevicePath: "/dev/zvol/tank/pvc-nvme-v1",
 				Exports: []*agentv1.ExportDesiredState{
 					{
@@ -568,6 +585,7 @@ func TestAgentProtocol_ReconcileState_UnsupportedProtocol_ReportedPerVolume(t *t
 			{
 				// v2: iSCSI — unsupported by the current agent handler set.
 				VolumeId:   v2VolumeID,
+				Fence:      testFence(t),
 				DevicePath: "/dev/zvol/tank/pvc-iscsi-v2",
 				Exports: []*agentv1.ExportDesiredState{
 					{
@@ -647,6 +665,7 @@ func TestAgentErrors_ExportVolume_MissingNvmeofTcpParams(t *testing.T) {
 
 	_, err := srv.ExportVolume(context.Background(), &agentv1.ExportVolumeRequest{
 		VolumeId:     compTestVolumeID,
+		Fence:        testFence(t),
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 		// ExportParams is nil — same as "no params".
 		ExportParams: nil,

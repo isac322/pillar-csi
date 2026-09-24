@@ -103,9 +103,11 @@ func assertE22_AgentErrors_Export_InvalidProtocol(tc documentedCase) {
 	env := newAgentTestEnv()
 	defer env.close()
 
+	fence := agentLifecycleFence("tank/pvc-e22-export-proto")
 	_, _ = env.client.CreateVolume(env.ctx, &agentv1.CreateVolumeRequest{
 		VolumeId:      "tank/pvc-e22-export-proto",
 		CapacityBytes: 10 << 20,
+		Fence:         fence,
 	})
 
 	// Use an invalid protocol type
@@ -113,6 +115,7 @@ func assertE22_AgentErrors_Export_InvalidProtocol(tc documentedCase) {
 		VolumeId:     "tank/pvc-e22-export-proto",
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_UNSPECIFIED,
 		ExportParams: nil,
+		Fence:        fence,
 	})
 	Expect(err).To(HaveOccurred(), "%s: expected error for invalid protocol in ExportVolume", tc.tcNodeLabel())
 }
@@ -124,6 +127,7 @@ func assertE22_AgentErrors_Unexport_InvalidProtocol(tc documentedCase) {
 	_, err := env.client.UnexportVolume(env.ctx, &agentv1.UnexportVolumeRequest{
 		VolumeId:     "tank/pvc-e22-unexport-proto",
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_UNSPECIFIED,
+		Fence:        agentLifecycleFence("tank/pvc-e22-unexport-proto"),
 	})
 	Expect(err).To(HaveOccurred(), "%s: expected error for invalid protocol in UnexportVolume", tc.tcNodeLabel())
 }
@@ -136,6 +140,7 @@ func assertE22_AgentProtocol_AllowInitiator_InvalidProtocol(tc documentedCase) {
 		VolumeId:     "tank/pvc-e22-allow-proto",
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_UNSPECIFIED,
 		InitiatorId:  "nqn.2026-01.io.example:host",
+		Fence:        agentLifecycleFence("tank/pvc-e22-allow-proto"),
 	})
 	Expect(err).To(HaveOccurred(), "%s: expected error for invalid protocol in AllowInitiator", tc.tcNodeLabel())
 }
@@ -148,6 +153,7 @@ func assertE22_AgentProtocol_DenyInitiator_InvalidProtocol(tc documentedCase) {
 		VolumeId:     "tank/pvc-e22-deny-proto",
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_UNSPECIFIED,
 		InitiatorId:  "nqn.2026-01.io.example:host",
+		Fence:        agentLifecycleFence("tank/pvc-e22-deny-proto"),
 	})
 	Expect(err).To(HaveOccurred(), "%s: expected error for invalid protocol in DenyInitiator", tc.tcNodeLabel())
 }

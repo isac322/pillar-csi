@@ -160,7 +160,8 @@ const (
 
 // newAgentServer creates a Server with a single mockVolumeBackend for "tank"
 // pool and a temp directory as configfs root.  AlwaysPresentChecker is
-// injected so ExportVolume does not require real block devices.
+// injected so ExportVolume does not require real block devices, and the
+// fencing marks live in a per-test state dir instead of /var/lib.
 func newAgentServer(
 	t *testing.T, mb *mockVolumeBackend, extra ...agent.ServerOption,
 ) (srv *agent.Server, cfgRootDir string) {
@@ -168,10 +169,21 @@ func newAgentServer(
 	cfgRoot := t.TempDir()
 	backends := map[string]backend.VolumeBackend{compTestPool: mb}
 	opts := append(
-		[]agent.ServerOption{agent.WithDeviceChecker(nvmeof.AlwaysPresentChecker)},
+		[]agent.ServerOption{
+			agent.WithDeviceChecker(nvmeof.AlwaysPresentChecker),
+			agent.WithDrainStateDir(t.TempDir()),
+		},
 		extra...,
 	)
 	return agent.NewServer(backends, cfgRoot, opts...), cfgRoot
+}
+
+// testFence returns the fencing token for the single volume lifecycle a
+// component test drives.  The UID is unique per test and every operation in
+// the test reuses it; no test re-creates a volume after deleting it.
+func testFence(t *testing.T) *agentv1.FencingToken {
+	t.Helper()
+	return &agentv1.FencingToken{VolumeUid: "component-" + t.Name(), Generation: 1}
 }
 
 // nvmeofParams builds ExportParams for NVMe-oF TCP.
@@ -193,6 +205,7 @@ func exportVolume(
 	t.Helper()
 	_, err := srv.ExportVolume(context.Background(), &agentv1.ExportVolumeRequest{
 		VolumeId:     volumeID,
+		Fence:        testFence(t),
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 		ExportParams: nvmeofParams(addr, port),
 	})
@@ -216,6 +229,7 @@ func TestAgentServer_CreateVolume_Success(t *testing.T) {
 
 	resp, err := srv.CreateVolume(context.Background(), &agentv1.CreateVolumeRequest{
 		VolumeId:      compTestVolumeID,
+		Fence:         testFence(t),
 		CapacityBytes: 10 * 1024 * 1024 * 1024,
 	})
 	if err != nil {
@@ -241,6 +255,7 @@ func TestAgentServer_CreateVolume_Idempotent(t *testing.T) {
 
 	req := &agentv1.CreateVolumeRequest{
 		VolumeId:      compTestVolumeID,
+		Fence:         testFence(t),
 		CapacityBytes: 10 * 1024 * 1024 * 1024,
 	}
 	for range 2 {
@@ -261,6 +276,7 @@ func TestAgentServer_CreateVolume_DiskFull(t *testing.T) {
 
 	_, err := srv.CreateVolume(context.Background(), &agentv1.CreateVolumeRequest{
 		VolumeId:      compTestVolumeID,
+		Fence:         testFence(t),
 		CapacityBytes: 10 * 1024 * 1024 * 1024,
 	})
 	if err == nil {
@@ -281,6 +297,7 @@ func TestAgentServer_CreateVolume_InvalidPool(t *testing.T) {
 
 	_, err := srv.CreateVolume(context.Background(), &agentv1.CreateVolumeRequest{
 		VolumeId:      "missing-pool/pvc-xyz",
+		Fence:         testFence(t),
 		CapacityBytes: 10 * 1024 * 1024 * 1024,
 	})
 	if err == nil {
@@ -300,6 +317,7 @@ func TestAgentServer_CreateVolume_InvalidVolumeID(t *testing.T) {
 
 	_, err := srv.CreateVolume(context.Background(), &agentv1.CreateVolumeRequest{
 		VolumeId:      "noslash",
+		Fence:         testFence(t),
 		CapacityBytes: 10 * 1024 * 1024 * 1024,
 	})
 	if err == nil {
@@ -322,6 +340,7 @@ func TestAgentServer_CreateVolume_BackendError(t *testing.T) {
 
 	_, err := srv.CreateVolume(context.Background(), &agentv1.CreateVolumeRequest{
 		VolumeId:      compTestVolumeID,
+		Fence:         testFence(t),
 		CapacityBytes: 10 * 1024 * 1024 * 1024,
 	})
 	if err == nil {
@@ -348,6 +367,7 @@ func TestAgentServer_CreateVolume_ConflictSize(t *testing.T) {
 
 	_, err := srv.CreateVolume(context.Background(), &agentv1.CreateVolumeRequest{
 		VolumeId:      compTestVolumeID,
+		Fence:         testFence(t),
 		CapacityBytes: 20 * 1024 * 1024 * 1024,
 	})
 	if err == nil {
@@ -370,6 +390,7 @@ func TestAgentServer_DeleteVolume_Success(t *testing.T) {
 
 	resp, err := srv.DeleteVolume(context.Background(), &agentv1.DeleteVolumeRequest{
 		VolumeId: compTestVolumeID,
+		Fence:    testFence(t),
 	})
 	if err != nil {
 		t.Fatalf("DeleteVolume unexpected error: %v", err)
@@ -388,6 +409,7 @@ func TestAgentServer_DeleteVolume_Idempotent(t *testing.T) {
 
 	_, err := srv.DeleteVolume(context.Background(), &agentv1.DeleteVolumeRequest{
 		VolumeId: compTestVolumeID,
+		Fence:    testFence(t),
 	})
 	if err != nil {
 		t.Fatalf("DeleteVolume idempotent unexpected error: %v", err)
@@ -402,6 +424,7 @@ func TestAgentServer_DeleteVolume_InvalidPool(t *testing.T) {
 
 	_, err := srv.DeleteVolume(context.Background(), &agentv1.DeleteVolumeRequest{
 		VolumeId: "other-pool/pvc-abc",
+		Fence:    testFence(t),
 	})
 	if err == nil {
 		t.Fatal("expected NotFound, got nil")
@@ -423,6 +446,7 @@ func TestAgentServer_DeleteVolume_DeviceBusy(t *testing.T) {
 
 	_, err := srv.DeleteVolume(context.Background(), &agentv1.DeleteVolumeRequest{
 		VolumeId: compTestVolumeID,
+		Fence:    testFence(t),
 	})
 	if err == nil {
 		t.Fatal("expected Internal error, got nil")
@@ -444,6 +468,7 @@ func TestAgentServer_DeleteVolume_BackendError(t *testing.T) {
 
 	_, err := srv.DeleteVolume(context.Background(), &agentv1.DeleteVolumeRequest{
 		VolumeId: compTestVolumeID,
+		Fence:    testFence(t),
 	})
 	if err == nil {
 		t.Fatal("expected Internal error, got nil")
@@ -466,6 +491,7 @@ func TestAgentServer_ExpandVolume_Success(t *testing.T) {
 
 	resp, err := srv.ExpandVolume(context.Background(), &agentv1.ExpandVolumeRequest{
 		VolumeId:       compTestVolumeID,
+		Fence:          testFence(t),
 		RequestedBytes: 20 * 1024 * 1024 * 1024,
 	})
 	if err != nil {
@@ -487,6 +513,7 @@ func TestAgentServer_ExpandVolume_ShrinkRejected(t *testing.T) {
 
 	_, err := srv.ExpandVolume(context.Background(), &agentv1.ExpandVolumeRequest{
 		VolumeId:       compTestVolumeID,
+		Fence:          testFence(t),
 		RequestedBytes: 1 * 1024 * 1024 * 1024,
 	})
 	if err == nil {
@@ -509,6 +536,7 @@ func TestAgentServer_ExpandVolume_NotFound(t *testing.T) {
 
 	_, err := srv.ExpandVolume(context.Background(), &agentv1.ExpandVolumeRequest{
 		VolumeId:       compTestVolumeID,
+		Fence:          testFence(t),
 		RequestedBytes: 20 * 1024 * 1024 * 1024,
 	})
 	if err == nil {
@@ -523,6 +551,7 @@ func TestAgentServer_ExpandVolume_InvalidPool(t *testing.T) {
 
 	_, err := srv.ExpandVolume(context.Background(), &agentv1.ExpandVolumeRequest{
 		VolumeId:       "other-pool/pvc-abc",
+		Fence:          testFence(t),
 		RequestedBytes: 20 * 1024 * 1024 * 1024,
 	})
 	if err == nil {
@@ -547,6 +576,7 @@ func TestAgentServer_ExportVolume_Success(t *testing.T) {
 
 	resp, err := srv.ExportVolume(context.Background(), &agentv1.ExportVolumeRequest{
 		VolumeId:     compTestVolumeID,
+		Fence:        testFence(t),
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 		ExportParams: nvmeofParams("192.168.1.10", 4420),
 	})
@@ -580,6 +610,7 @@ func TestAgentServer_ExportVolume_Idempotent(t *testing.T) {
 
 	req := &agentv1.ExportVolumeRequest{
 		VolumeId:     compTestVolumeID,
+		Fence:        testFence(t),
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 		ExportParams: nvmeofParams("192.168.1.10", 4420),
 	}
@@ -598,6 +629,7 @@ func TestAgentServer_ExportVolume_InvalidProtocol(t *testing.T) {
 
 	_, err := srv.ExportVolume(context.Background(), &agentv1.ExportVolumeRequest{
 		VolumeId:     compTestVolumeID,
+		Fence:        testFence(t),
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI,
 	})
 	if err == nil {
@@ -617,6 +649,7 @@ func TestAgentServer_ExportVolume_MissingParams(t *testing.T) {
 
 	_, err := srv.ExportVolume(context.Background(), &agentv1.ExportVolumeRequest{
 		VolumeId:     compTestVolumeID,
+		Fence:        testFence(t),
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 		// No ExportParams.
 	})
@@ -644,6 +677,7 @@ func TestAgentServer_ExportVolume_DeviceNotReady(t *testing.T) {
 
 	_, err := srv.ExportVolume(context.Background(), &agentv1.ExportVolumeRequest{
 		VolumeId:     compTestVolumeID,
+		Fence:        testFence(t),
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 		ExportParams: nvmeofParams("192.168.1.10", 4420),
 	})
@@ -678,6 +712,7 @@ func TestAgentServer_ExportVolume_DeviceAppearsAfterDelay(t *testing.T) {
 
 	_, err := srv.ExportVolume(context.Background(), &agentv1.ExportVolumeRequest{
 		VolumeId:     compTestVolumeID,
+		Fence:        testFence(t),
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 		ExportParams: nvmeofParams("192.168.1.10", 4420),
 	})
@@ -705,6 +740,7 @@ func TestAgentServer_ExportVolume_PermissionError(t *testing.T) {
 
 	_, err := srv.ExportVolume(context.Background(), &agentv1.ExportVolumeRequest{
 		VolumeId:     compTestVolumeID,
+		Fence:        testFence(t),
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 		ExportParams: nvmeofParams("192.168.1.10", 4420),
 	})
@@ -728,6 +764,7 @@ func TestAgentServer_UnexportVolume_Success(t *testing.T) {
 
 	_, err := srv.UnexportVolume(context.Background(), &agentv1.UnexportVolumeRequest{
 		VolumeId:     compTestVolumeID,
+		Fence:        testFence(t),
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 	})
 	if err != nil {
@@ -749,6 +786,7 @@ func TestAgentServer_UnexportVolume_Idempotent(t *testing.T) {
 
 	_, err := srv.UnexportVolume(context.Background(), &agentv1.UnexportVolumeRequest{
 		VolumeId:     compTestVolumeID,
+		Fence:        testFence(t),
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 	})
 	if err != nil {
@@ -764,6 +802,7 @@ func TestAgentServer_UnexportVolume_InvalidProtocol(t *testing.T) {
 
 	_, err := srv.UnexportVolume(context.Background(), &agentv1.UnexportVolumeRequest{
 		VolumeId:     compTestVolumeID,
+		Fence:        testFence(t),
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NFS,
 	})
 	if err == nil {
@@ -790,6 +829,7 @@ func TestAgentServer_AllowInitiator_Success(t *testing.T) {
 
 	_, err := srv.AllowInitiator(context.Background(), &agentv1.AllowInitiatorRequest{
 		VolumeId:     compTestVolumeID,
+		Fence:        testFence(t),
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 		InitiatorId:  compTestHostNQN,
 	})
@@ -820,6 +860,7 @@ func TestAgentServer_AllowInitiator_Idempotent(t *testing.T) {
 
 	req := &agentv1.AllowInitiatorRequest{
 		VolumeId:     compTestVolumeID,
+		Fence:        testFence(t),
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 		InitiatorId:  compTestHostNQN,
 	}
@@ -838,6 +879,7 @@ func TestAgentServer_AllowInitiator_InvalidProtocol(t *testing.T) {
 
 	_, err := srv.AllowInitiator(context.Background(), &agentv1.AllowInitiatorRequest{
 		VolumeId:     compTestVolumeID,
+		Fence:        testFence(t),
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI,
 		InitiatorId:  "iqn.example",
 	})
@@ -862,6 +904,7 @@ func TestAgentServer_DenyInitiator_Success(t *testing.T) {
 	// Allow first.
 	if _, err := srv.AllowInitiator(context.Background(), &agentv1.AllowInitiatorRequest{
 		VolumeId:     compTestVolumeID,
+		Fence:        testFence(t),
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 		InitiatorId:  compTestHostNQN,
 	}); err != nil {
@@ -871,6 +914,7 @@ func TestAgentServer_DenyInitiator_Success(t *testing.T) {
 	// Then deny.
 	if _, err := srv.DenyInitiator(context.Background(), &agentv1.DenyInitiatorRequest{
 		VolumeId:     compTestVolumeID,
+		Fence:        testFence(t),
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 		InitiatorId:  compTestHostNQN,
 	}); err != nil {
@@ -892,6 +936,7 @@ func TestAgentServer_DenyInitiator_Idempotent(t *testing.T) {
 
 	_, err := srv.DenyInitiator(context.Background(), &agentv1.DenyInitiatorRequest{
 		VolumeId:     compTestVolumeID,
+		Fence:        testFence(t),
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 		InitiatorId:  compTestHostNQN,
 	})
@@ -908,6 +953,7 @@ func TestAgentServer_DenyInitiator_InvalidProtocol(t *testing.T) {
 
 	_, err := srv.DenyInitiator(context.Background(), &agentv1.DenyInitiatorRequest{
 		VolumeId:     compTestVolumeID,
+		Fence:        testFence(t),
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_SMB,
 		InitiatorId:  "WORKGROUP\\host1",
 	})
@@ -1128,6 +1174,7 @@ func TestAgentServer_HealthCheck_AllHealthy(t *testing.T) {
 	srv := agent.NewServer(backends,
 		filepath.Join(tmpDir, "configfs"),
 		agent.WithDeviceChecker(nvmeof.AlwaysPresentChecker),
+		agent.WithDrainStateDir(filepath.Join(tmpDir, "state")),
 	)
 
 	resp, err := srv.HealthCheck(context.Background(), &agentv1.HealthCheckRequest{})
@@ -1162,6 +1209,7 @@ func TestAgentServer_HealthCheck_NvmetConfigfsHealthy(t *testing.T) {
 	srv := agent.NewServer(backends,
 		filepath.Join(tmpDir, "configfs"),
 		agent.WithDeviceChecker(nvmeof.AlwaysPresentChecker),
+		agent.WithDrainStateDir(filepath.Join(tmpDir, "state")),
 	)
 
 	resp, err := srv.HealthCheck(context.Background(), &agentv1.HealthCheckRequest{})
@@ -1201,6 +1249,7 @@ func TestAgentServer_HealthCheck_ConfigfsMissing(t *testing.T) {
 	srv := agent.NewServer(backends,
 		filepath.Join(tmpDir, "configfs-missing"), // no nvmet dir here
 		agent.WithDeviceChecker(nvmeof.AlwaysPresentChecker),
+		agent.WithDrainStateDir(filepath.Join(tmpDir, "state")),
 	)
 
 	resp, err := srv.HealthCheck(context.Background(), &agentv1.HealthCheckRequest{})
@@ -1231,6 +1280,7 @@ func TestAgentServer_HealthCheck_PoolDegraded(t *testing.T) {
 	srv := agent.NewServer(backends,
 		filepath.Join(tmpDir, "configfs"),
 		agent.WithDeviceChecker(nvmeof.AlwaysPresentChecker),
+		agent.WithDrainStateDir(filepath.Join(tmpDir, "state")),
 	)
 
 	resp, err := srv.HealthCheck(context.Background(), &agentv1.HealthCheckRequest{})
@@ -1256,6 +1306,7 @@ func TestAgentServer_ReconcileState_ReExportsAfterRestart(t *testing.T) {
 		Volumes: []*agentv1.VolumeDesiredState{
 			{
 				VolumeId:   compTestVolumeID,
+				Fence:      testFence(t),
 				DevicePath: "/dev/zvol/tank/pvc-abc",
 				Exports: []*agentv1.ExportDesiredState{
 					{
@@ -1293,6 +1344,7 @@ func TestAgentServer_ReconcileState_Idempotent(t *testing.T) {
 		Volumes: []*agentv1.VolumeDesiredState{
 			{
 				VolumeId:   compTestVolumeID,
+				Fence:      testFence(t),
 				DevicePath: "/dev/zvol/tank/pvc-abc",
 				Exports: []*agentv1.ExportDesiredState{
 					{
@@ -1329,6 +1381,7 @@ func TestAgentServer_ReconcileState_MultipleVolumes(t *testing.T) {
 		Volumes: []*agentv1.VolumeDesiredState{
 			{
 				VolumeId:   compTestVolumeID,
+				Fence:      testFence(t),
 				DevicePath: "/dev/zvol/tank/pvc-abc",
 				Exports: []*agentv1.ExportDesiredState{
 					{
@@ -1339,6 +1392,7 @@ func TestAgentServer_ReconcileState_MultipleVolumes(t *testing.T) {
 			},
 			{
 				VolumeId:   secondVolumeID,
+				Fence:      testFence(t),
 				DevicePath: "/dev/zvol/tank/pvc-def",
 				Exports: []*agentv1.ExportDesiredState{
 					{
@@ -1413,6 +1467,7 @@ func TestAgentServer_ConcurrentExportUnexport(t *testing.T) {
 			//nolint:errcheck // concurrent errors are non-actionable
 			_, _ = srv.ExportVolume(context.Background(), &agentv1.ExportVolumeRequest{
 				VolumeId:     compTestVolumeID,
+				Fence:        testFence(t),
 				ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 				ExportParams: nvmeofParams("10.0.0.1", 4420),
 			})
@@ -1423,6 +1478,7 @@ func TestAgentServer_ConcurrentExportUnexport(t *testing.T) {
 			//nolint:errcheck // concurrent errors are non-actionable
 			_, _ = srv.UnexportVolume(context.Background(), &agentv1.UnexportVolumeRequest{
 				VolumeId:     compTestVolumeID,
+				Fence:        testFence(t),
 				ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 			})
 		}()

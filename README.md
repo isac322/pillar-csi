@@ -53,7 +53,21 @@ The control plane (`pillar-controller`) runs as a `Deployment` and reconciles th
 | `PillarProtocol` | Network protocol configuration (NVMe-oF/TCP, iSCSI, NFS, SMB) |
 | `PillarStorageClass` | Pool × Protocol → auto-generated `StorageClass` |
 
-`PillarVolumeState` is an internal durable-state CRD used to recover from partial provisioning failures; users do not author it.
+`PillarVolumeState` is an internal durable-state CRD used to recover from partial provisioning failures and to record which nodes a volume is published to; users do not author it. The controller enforces CSI access-mode exclusivity from that record: a `SINGLE_NODE_*` (RWO/RWOP) volume published to one node is rejected on any other node with `FAILED_PRECONDITION` until it is unpublished, and a published volume cannot be deleted.
+
+### Stale-operation fencing
+
+Every agent call that changes a volume's resources carries a fencing token: backend create, expand, and delete; export and unexport; initiator grant and revoke; and state resync. The token has two parts. The first is the UID of the volume's `PillarVolumeState`, which identifies one lifecycle of the volume name; deleting and re-creating a volume with the same name produces a new UID. The second is `status.publicationGeneration`, which the controller bumps with a compare-and-swap for each operation. Every compare-and-swap is pinned to the UID the operation started with.
+
+The agent keeps a durable mark per volume: the owning lifecycle, the highest generation applied, whether that lifecycle has ended, and the lifecycles that came before it. It checks each request against the mark in the same critical section that performs the change. It rejects with `FAILED_PRECONDITION` a request that is older than the mark, that comes from a lifecycle that ended or was replaced, or that carries no token at all. The effect: an RPC still in flight from a former controller leader (a paused process, or a request delayed on the network) cannot grant, revoke, export, create, expand, or destroy anything a newer operation or a newer lifecycle owns. `DeleteVolume` first sets `status.deleting`, which only succeeds while the volume is not published. After that, publishing, creating, or exporting the volume fails. A backend delete ends the lifecycle only once it has succeeded. An unpublish marks its records `revoking` in the same write that allocates its token, so a state resync at that generation does not re-grant the node being revoked. A publish of that node fails with `ABORTED` until the unpublish finishes.
+
+`CreateVolume` creates the `PillarVolumeState` before any agent call, so a volume without one owns nothing on any agent, and deleting it needs no agent call.
+
+The agent stores these marks on the storage node's local disk under `/var/lib/pillar-csi/agent/generations/`. The chart mounts that path into the agent DaemonSet as a `hostPath`, never a PVC, so the storage node does not depend on its own volumes, and the marks survive agent restarts and node reboots. Marks are never removed. If the state directory itself is lost (for example the host path is wiped), the fencing history is lost with it.
+
+Out of scope: `SendVolume` and `ReceiveVolume` are out-of-band data streams the controller does not call, and they carry no token.
+
+**Upgrade (clean cutover):** detach every volume (no `VolumeAttachment` for this driver) before upgrading to this version. Earlier versions recorded no publications, lifecycles, or generations, so the new controller cannot revoke access granted by the old one. No migration shim is provided.
 
 ## Supported matrix
 

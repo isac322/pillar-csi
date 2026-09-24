@@ -41,6 +41,7 @@ import (
 	pillarv1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
 	agentv1 "github.com/bhyoo/pillar-csi/gen/go/pillar_csi/agent/v1"
 	csidrv "github.com/bhyoo/pillar-csi/internal/csi"
+	"github.com/bhyoo/pillar-csi/internal/testutil/fakeuid"
 )
 
 const (
@@ -177,6 +178,7 @@ func buildDriver(
 		},
 	}
 	k8sClient := clientfake.NewClientBuilder().
+		WithInterceptorFuncs(fakeuid.Interceptor()).
 		WithScheme(scheme).
 		WithStatusSubresource(&pillarv1.PillarAgent{}, &pillarv1.PillarVolumeState{}).
 		WithObjects(target, csiNode).

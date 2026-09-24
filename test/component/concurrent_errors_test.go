@@ -97,6 +97,7 @@ func TestConcurrentError_AllowDenyInitiator_SameHost_Race(t *testing.T) {
 	// DenyInitiator something to remove.
 	if _, err := srv.AllowInitiator(context.Background(), &agentv1.AllowInitiatorRequest{
 		VolumeId:     volumeID,
+		Fence:        testFence(t),
 		InitiatorId:  hostNQN,
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 	}); err != nil {
@@ -115,6 +116,7 @@ func TestConcurrentError_AllowDenyInitiator_SameHost_Race(t *testing.T) {
 		<-ready
 		_, allowErr = srv.AllowInitiator(context.Background(), &agentv1.AllowInitiatorRequest{
 			VolumeId:     volumeID,
+			Fence:        testFence(t),
 			InitiatorId:  hostNQN,
 			ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 		})
@@ -125,6 +127,7 @@ func TestConcurrentError_AllowDenyInitiator_SameHost_Race(t *testing.T) {
 		<-ready
 		_, denyErr = srv.DenyInitiator(context.Background(), &agentv1.DenyInitiatorRequest{
 			VolumeId:     volumeID,
+			Fence:        testFence(t),
 			InitiatorId:  hostNQN,
 			ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 		})
@@ -372,6 +375,7 @@ func TestConcurrentError_CreateVolume_SameID_NoDeadlock(t *testing.T) {
 			<-start
 			_, errs[i] = srv.CreateVolume(context.Background(), &agentv1.CreateVolumeRequest{
 				VolumeId:      "tank/pvc-cc5-concurrent-create",
+				Fence:         testFence(t),
 				CapacityBytes: 5 * 1024 * 1024 * 1024,
 			})
 		}()

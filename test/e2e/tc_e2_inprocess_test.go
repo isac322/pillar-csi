@@ -9,7 +9,9 @@ import (
 	"google.golang.org/grpc/status"
 	storagev1 "k8s.io/api/storage/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 
+	pillarv1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
 	csidrv "github.com/bhyoo/pillar-csi/internal/csi"
 )
 
@@ -41,6 +43,29 @@ func makeCSINodeWithIQN(env *controllerTestEnv, nodeName, iqn string) {
 		},
 	}
 	_ = env.k8sClient.Create(env.ctx, csiNode)
+}
+
+// seedE2VolumeState creates a PillarVolumeState for volumeID named after the
+// PVC (the last volume_id path component), so ControllerPublishVolume passes
+// its volume-existence check for volumes not provisioned via CreateVolume.
+func seedE2VolumeState(env *controllerTestEnv, pvcName, volumeID string) {
+	pv := &pillarv1.PillarVolumeState{
+		ObjectMeta: metav1.ObjectMeta{Name: pvcName},
+		Spec:       pillarv1.PillarVolumeStateSpec{VolumeID: volumeID},
+	}
+	Expect(env.k8sClient.Create(env.ctx, pv)).To(Succeed())
+}
+
+// publishedNodeIDs returns the node IDs recorded in the PillarVolumeState's
+// status.publishedNodes.
+func publishedNodeIDs(env *controllerTestEnv, pvcName string) []string {
+	pv := &pillarv1.PillarVolumeState{}
+	Expect(env.k8sClient.Get(env.ctx, types.NamespacedName{Name: pvcName}, pv)).To(Succeed())
+	nodes := make([]string, 0, len(pv.Status.PublishedNodes))
+	for _, pub := range pv.Status.PublishedNodes {
+		nodes = append(nodes, pub.NodeID)
+	}
+	return nodes
 }
 
 func assertE2_ControllerPublishVolume(tc documentedCase) {
@@ -78,6 +103,7 @@ func assertE2_ControllerPublishVolume_ISCSI(tc documentedCase) {
 
 	// Use iSCSI volume ID format
 	volumeID := "storage-1/iscsi/zfs-zvol/tank/pvc-iscsi-publish"
+	seedE2VolumeState(env, "pvc-iscsi-publish", volumeID)
 	env.controller.GetStateMachine().ForceState(volumeID, csidrv.StateCreated)
 
 	_, err := env.controller.ControllerPublishVolume(env.ctx, &csiapi.ControllerPublishVolumeRequest{
@@ -196,19 +222,41 @@ func assertE2_ControllerUnpublishVolume_EmptyNodeID(tc documentedCase) {
 	env := newControllerTestEnv()
 	defer env.close()
 
-	// CSI spec §4.3.4: empty NodeId = "all nodes" = no-op
+	// CSI spec ControllerUnpublishVolume: an empty node_id means "unpublish
+	// from all nodes" — every recorded publication must be revoked.
+	makeCSINodeWithNQN(env, "worker-1", "nqn.2026-01.io.example:worker-1")
 	resp, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
 		Name:               "pvc-e2-empty-node",
 		Parameters:         env.params,
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
 	})
 	Expect(err).NotTo(HaveOccurred())
+	volumeID := resp.GetVolume().GetVolumeId()
+
+	_, err = env.controller.ControllerPublishVolume(env.ctx, &csiapi.ControllerPublishVolumeRequest{
+		VolumeId:         volumeID,
+		NodeId:           "worker-1",
+		VolumeCapability: mountCapability("ext4"),
+	})
+	Expect(err).NotTo(HaveOccurred(), "%s: publish to worker-1", tc.tcNodeLabel())
 
 	_, err = env.controller.ControllerUnpublishVolume(env.ctx, &csiapi.ControllerUnpublishVolumeRequest{
-		VolumeId: resp.GetVolume().GetVolumeId(),
+		VolumeId: volumeID,
 		NodeId:   "",
 	})
-	Expect(err).NotTo(HaveOccurred(), "%s: empty NodeId should succeed (no-op)", tc.tcNodeLabel())
+	Expect(err).NotTo(HaveOccurred(), "%s: empty NodeId should succeed", tc.tcNodeLabel())
+
+	c := env.agentSrv.counts()
+	Expect(c.DenyInitiator).To(Equal(1), "%s: DenyInitiator for the recorded node", tc.tcNodeLabel())
+	env.agentSrv.mu.Lock()
+	denyReqs := env.agentSrv.denyInitiatorReqs
+	env.agentSrv.mu.Unlock()
+	if len(denyReqs) == 1 {
+		Expect(denyReqs[0].GetInitiatorId()).To(Equal("nqn.2026-01.io.example:worker-1"),
+			"%s: recorded initiator revoked", tc.tcNodeLabel())
+	}
+	Expect(publishedNodeIDs(env, "pvc-e2-empty-node")).To(BeEmpty(),
+		"%s: publication records removed", tc.tcNodeLabel())
 }
 
 func assertE2_ControllerUnpublishVolume_MalformedVolumeID(_ documentedCase) {
@@ -231,18 +279,31 @@ func assertE2_DenyInitiatorNonNotFound(tc documentedCase) {
 	env.agentSrv.denyInitiatorErr = status.Error(codes.Internal, "deny initiator failed")
 	env.agentSrv.mu.Unlock()
 
+	makeCSINodeWithNQN(env, "worker-1", "nqn.2026-01.io.example:worker-1")
 	resp, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
 		Name:               "pvc-e2-deny-err",
 		Parameters:         env.params,
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
 	})
 	Expect(err).NotTo(HaveOccurred())
+	volumeID := resp.GetVolume().GetVolumeId()
+
+	// Unpublish only revokes recorded publications, so publish first.
+	_, err = env.controller.ControllerPublishVolume(env.ctx, &csiapi.ControllerPublishVolumeRequest{
+		VolumeId:         volumeID,
+		NodeId:           "worker-1",
+		VolumeCapability: mountCapability("ext4"),
+	})
+	Expect(err).NotTo(HaveOccurred(), "%s: publish to worker-1", tc.tcNodeLabel())
 
 	_, err = env.controller.ControllerUnpublishVolume(env.ctx, &csiapi.ControllerUnpublishVolumeRequest{
-		VolumeId: resp.GetVolume().GetVolumeId(),
+		VolumeId: volumeID,
 		NodeId:   "worker-1",
 	})
 	Expect(err).To(HaveOccurred(), "%s: Internal deny error should propagate", tc.tcNodeLabel())
+	Expect(status.Code(err)).To(Equal(codes.Internal))
+	Expect(publishedNodeIDs(env, "pvc-e2-deny-err")).To(ConsistOf("worker-1"),
+		"%s: record kept after failed revoke", tc.tcNodeLabel())
 }
 
 func assertE2_ControllerPublish_DifferentNodes(tc documentedCase) {
@@ -267,23 +328,21 @@ func assertE2_ControllerPublish_DifferentNodes(tc documentedCase) {
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: publish to node-a", tc.tcNodeLabel())
 
+	// SINGLE_NODE_WRITER: a second node must be rejected before the agent
+	// grants it access.
 	_, err = env.controller.ControllerPublishVolume(env.ctx, &csiapi.ControllerPublishVolumeRequest{
 		VolumeId:         volumeID,
 		NodeId:           "worker-node-b",
 		VolumeCapability: mountCapability("ext4"),
 	})
-	Expect(err).NotTo(HaveOccurred(), "%s: publish to node-b", tc.tcNodeLabel())
+	Expect(err).To(HaveOccurred(), "%s: publish to node-b must be rejected", tc.tcNodeLabel())
+	Expect(status.Code(err)).To(Equal(codes.FailedPrecondition),
+		"%s: second node for SINGLE_NODE_WRITER", tc.tcNodeLabel())
 
 	c := env.agentSrv.counts()
-	Expect(c.AllowInitiator).To(Equal(2), "%s: allowInitiator called for each node", tc.tcNodeLabel())
-
-	env.agentSrv.mu.Lock()
-	reqs := env.agentSrv.allowInitiatorReqs
-	env.agentSrv.mu.Unlock()
-	if len(reqs) == 2 {
-		Expect(reqs[0].GetInitiatorId()).NotTo(Equal(reqs[1].GetInitiatorId()),
-			"%s: different nodes must have different initiator IDs", tc.tcNodeLabel())
-	}
+	Expect(c.AllowInitiator).To(Equal(1), "%s: allowInitiator only for node-a", tc.tcNodeLabel())
+	Expect(publishedNodeIDs(env, "pvc-e2-diff-nodes")).To(ConsistOf("worker-node-a"),
+		"%s: only node-a recorded", tc.tcNodeLabel())
 }
 
 func assertE2_AllowInitiatorFails(tc documentedCase) {
@@ -387,6 +446,8 @@ func assertE2_ControllerPublish_MalformedVolumeID(tc documentedCase) {
 func assertE2_ControllerPublish_TargetNotFound(tc documentedCase) {
 	env := newControllerTestEnv()
 	defer env.close()
+	// Seed the volume so the PillarAgent lookup (not the volume lookup) fails.
+	seedE2VolumeState(env, "pvc-test", "nonexistent-node/nvmeof-tcp/zfs-zvol/tank/pvc-test")
 	_, err := env.controller.ControllerPublishVolume(env.ctx, &csiapi.ControllerPublishVolumeRequest{
 		VolumeId:         "nonexistent-node/nvmeof-tcp/zfs-zvol/tank/pvc-test",
 		NodeId:           "worker-1",
@@ -399,6 +460,9 @@ func assertE2_ControllerPublish_TargetNotFound(tc documentedCase) {
 func assertE2_ControllerPublish_TargetNoResolvedAddress(tc documentedCase) {
 	env := newControllerTestEnv()
 	defer env.close()
+
+	// The volume must exist so publish reaches the PillarAgent address check.
+	seedE2VolumeState(env, "pvc-test", "storage-1/nvmeof-tcp/zfs-zvol/tank/pvc-test")
 
 	// Update the target to have no resolved address
 	env.target.Status.ResolvedAddress = ""

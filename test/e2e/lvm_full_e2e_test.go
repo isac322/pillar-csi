@@ -96,16 +96,22 @@ func fFailIfNoNVMeCLI() {
 }
 
 // startLocalAgentServer starts an in-process agent.Server backed by the given
-// LVM VG. Returns a gRPC client and a cleanup function.
+// LVM VG. Returns a gRPC client and a cleanup function.  The agent keeps its
+// fencing marks in a private temp state dir that cleanup removes.
 func startLocalAgentServer(vg, _ /*unused thinPool*/, configfsRoot string) (agentv1.AgentServiceClient, func()) {
 	lvmBackend := lvmb.New(vg, "")
 	backends := map[string]agentbackend.VolumeBackend{
 		vg: lvmBackend,
 	}
-	srv := agentsrv.NewServer(backends, configfsRoot)
+	stateDir, err := os.MkdirTemp(tcTempRoot, "pillar-agent-state-*")
+	if err != nil {
+		panic(fmt.Sprintf("failed to create agent state dir: %v", err))
+	}
+	srv := agentsrv.NewServer(backends, configfsRoot, agentsrv.WithDrainStateDir(stateDir))
 
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
+		_ = os.RemoveAll(stateDir)
 		panic(fmt.Sprintf("failed to listen: %v", err))
 	}
 	grpcSrv := grpc.NewServer()
@@ -118,6 +124,7 @@ func startLocalAgentServer(vg, _ /*unused thinPool*/, configfsRoot string) (agen
 	if err != nil {
 		grpcSrv.Stop()
 		_ = lis.Close()
+		_ = os.RemoveAll(stateDir)
 		panic(fmt.Sprintf("failed to connect to local agent: %v", err))
 	}
 
@@ -125,6 +132,7 @@ func startLocalAgentServer(vg, _ /*unused thinPool*/, configfsRoot string) (agen
 	cleanup := func() {
 		_ = conn.Close()
 		grpcSrv.GracefulStop()
+		_ = os.RemoveAll(stateDir)
 	}
 	return client, cleanup
 }
@@ -231,11 +239,15 @@ var _ = Describe("F27: 실제 LVM LV 생성/삭제/확장/용량",
 			DeferCleanup(func() {
 				dctx, dcancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer dcancel()
-				_, _ = agentClient.DeleteVolume(dctx, &agentv1.DeleteVolumeRequest{VolumeId: volID})
+				_, _ = agentClient.DeleteVolume(dctx, &agentv1.DeleteVolumeRequest{
+					VolumeId: volID,
+					Fence:    agentLifecycleFence(volID),
+				})
 			})
 
 			resp, err := agentClient.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
 				VolumeId:      volID,
+				Fence:         agentLifecycleFence(volID),
 				CapacityBytes: 10 << 20, // 10 MiB
 			})
 			Expect(err).NotTo(HaveOccurred(), "[TC-F27.1] CreateVolume must succeed")
@@ -271,11 +283,15 @@ var _ = Describe("F27: 실제 LVM LV 생성/삭제/확장/용량",
 			DeferCleanup(func() {
 				dctx, dcancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer dcancel()
-				_, _ = agentClient.DeleteVolume(dctx, &agentv1.DeleteVolumeRequest{VolumeId: volID})
+				_, _ = agentClient.DeleteVolume(dctx, &agentv1.DeleteVolumeRequest{
+					VolumeId: volID,
+					Fence:    agentLifecycleFence(volID),
+				})
 			})
 
 			resp, err := agentClient.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
 				VolumeId:      volID,
+				Fence:         agentLifecycleFence(volID),
 				CapacityBytes: 10 << 20,
 				BackendParams: &agentv1.BackendParams{
 					Params: &agentv1.BackendParams_Lvm{
@@ -306,11 +322,15 @@ var _ = Describe("F27: 실제 LVM LV 생성/삭제/확장/용량",
 			DeferCleanup(func() {
 				dctx, dcancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer dcancel()
-				_, _ = agentClient.DeleteVolume(dctx, &agentv1.DeleteVolumeRequest{VolumeId: volID})
+				_, _ = agentClient.DeleteVolume(dctx, &agentv1.DeleteVolumeRequest{
+					VolumeId: volID,
+					Fence:    agentLifecycleFence(volID),
+				})
 			})
 
 			req := &agentv1.CreateVolumeRequest{
 				VolumeId:      volID,
+				Fence:         agentLifecycleFence(volID),
 				CapacityBytes: 10 << 20,
 			}
 
@@ -338,13 +358,17 @@ var _ = Describe("F27: 실제 LVM LV 생성/삭제/확장/용량",
 			volID := vg + "/" + volName
 			createResp, err := agentClient.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
 				VolumeId:      volID,
+				Fence:         agentLifecycleFence(volID),
 				CapacityBytes: 10 << 20,
 			})
 			Expect(err).NotTo(HaveOccurred(), "[TC-F27.4] CreateVolume must succeed")
 			devPath := createResp.DevicePath
 
 			By("deleting the LV")
-			_, err = agentClient.DeleteVolume(ctx, &agentv1.DeleteVolumeRequest{VolumeId: volID})
+			_, err = agentClient.DeleteVolume(ctx, &agentv1.DeleteVolumeRequest{
+				VolumeId: volID,
+				Fence:    agentLifecycleFence(volID),
+			})
 			Expect(err).NotTo(HaveOccurred(), "[TC-F27.4] DeleteVolume must succeed")
 
 			By("verifying block device disappears")
@@ -370,18 +394,23 @@ var _ = Describe("F27: 실제 LVM LV 생성/삭제/확장/용량",
 			volID := vg + "/" + volName
 			createResp, err := agentClient.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
 				VolumeId:      volID,
+				Fence:         agentLifecycleFence(volID),
 				CapacityBytes: 10 << 20,
 			})
 			Expect(err).NotTo(HaveOccurred(), "[TC-F27.5] CreateVolume must succeed")
 			DeferCleanup(func() {
 				dctx, dcancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer dcancel()
-				_, _ = agentClient.DeleteVolume(dctx, &agentv1.DeleteVolumeRequest{VolumeId: volID})
+				_, _ = agentClient.DeleteVolume(dctx, &agentv1.DeleteVolumeRequest{
+					VolumeId: volID,
+					Fence:    agentLifecycleFence(volID),
+				})
 			})
 
 			By("expanding LV from 10 MiB to 20 MiB")
 			_, err = agentClient.ExpandVolume(ctx, &agentv1.ExpandVolumeRequest{
 				VolumeId:       volID,
+				Fence:          agentLifecycleFence(volID),
 				RequestedBytes: 20 << 20,
 			})
 			Expect(err).NotTo(HaveOccurred(), "[TC-F27.5] ExpandVolume must succeed")
@@ -443,6 +472,7 @@ var _ = Describe("F27: 실제 LVM LV 생성/삭제/확장/용량",
 
 			_, err = agentClient.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
 				VolumeId:      volID,
+				Fence:         agentLifecycleFence(volID),
 				CapacityBytes: oversized,
 			})
 			Expect(err).To(HaveOccurred(), "[TC-F27.8] CreateVolume must fail when VG is too full")
@@ -460,11 +490,15 @@ var _ = Describe("F27: 실제 LVM LV 생성/삭제/확장/용량",
 			DeferCleanup(func() {
 				dctx, dcancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer dcancel()
-				_, _ = agentClient.DeleteVolume(dctx, &agentv1.DeleteVolumeRequest{VolumeId: volID})
+				_, _ = agentClient.DeleteVolume(dctx, &agentv1.DeleteVolumeRequest{
+					VolumeId: volID,
+					Fence:    agentLifecycleFence(volID),
+				})
 			})
 
 			resp, err := agentClient.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
 				VolumeId:      volID,
+				Fence:         agentLifecycleFence(volID),
 				CapacityBytes: requestedBytes,
 			})
 			Expect(err).NotTo(HaveOccurred(), "[TC-F27.9] CreateVolume must succeed")
@@ -509,6 +543,7 @@ var _ = Describe("F28: 실제 LVM + NVMe-oF configfs 내보내기",
 
 			resp, err := agentClient.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
 				VolumeId:      volID,
+				Fence:         agentLifecycleFence(volID),
 				CapacityBytes: 32 << 20,
 			})
 			if err != nil {
@@ -523,9 +558,13 @@ var _ = Describe("F28: 실제 LVM + NVMe-oF configfs 내보내기",
 				defer cancel()
 				_, _ = agentClient.UnexportVolume(ctx, &agentv1.UnexportVolumeRequest{
 					VolumeId:     volID,
+					Fence:        agentLifecycleFence(volID),
 					ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 				})
-				_, _ = agentClient.DeleteVolume(ctx, &agentv1.DeleteVolumeRequest{VolumeId: volID})
+				_, _ = agentClient.DeleteVolume(ctx, &agentv1.DeleteVolumeRequest{
+					VolumeId: volID,
+					Fence:    agentLifecycleFence(volID),
+				})
 				cleanup()
 			}
 		})
@@ -540,6 +579,7 @@ var _ = Describe("F28: 실제 LVM + NVMe-oF configfs 내보내기",
 			By("exporting the LV as NVMe-oF subsystem")
 			_, err := agentClient.ExportVolume(ctx, &agentv1.ExportVolumeRequest{
 				VolumeId:     volID,
+				Fence:        agentLifecycleFence(volID),
 				ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 				DevicePath:   devPath,
 				ExportParams: fNvmeofExportParams("127.0.0.1", 4420),
@@ -564,6 +604,7 @@ var _ = Describe("F28: 실제 LVM + NVMe-oF configfs 내보내기",
 			By("unexporting the NVMe-oF subsystem")
 			_, err := agentClient.UnexportVolume(ctx, &agentv1.UnexportVolumeRequest{
 				VolumeId:     volID,
+				Fence:        agentLifecycleFence(volID),
 				ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 			})
 			Expect(err).NotTo(HaveOccurred(), "[TC-F28.2] UnexportVolume must succeed")
@@ -613,6 +654,7 @@ var _ = Describe("F29: 실제 LVM + NVMe-oF TCP 연결",
 
 			resp, err := agentClient.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
 				VolumeId:      volID,
+				Fence:         agentLifecycleFence(volID),
 				CapacityBytes: 32 << 20,
 			})
 			if err != nil {
@@ -621,6 +663,7 @@ var _ = Describe("F29: 실제 LVM + NVMe-oF TCP 연결",
 
 			_, err = agentClient.ExportVolume(ctx, &agentv1.ExportVolumeRequest{
 				VolumeId:     volID,
+				Fence:        agentLifecycleFence(volID),
 				ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 				DevicePath:   resp.DevicePath,
 				ExportParams: fNvmeofExportParams("127.0.0.1", 4420),
@@ -637,9 +680,13 @@ var _ = Describe("F29: 실제 LVM + NVMe-oF TCP 연결",
 				_, _ = fShell(ctx, "nvme", "disconnect", "-n", nqn)
 				_, _ = agentClient.UnexportVolume(ctx, &agentv1.UnexportVolumeRequest{
 					VolumeId:     volID,
+					Fence:        agentLifecycleFence(volID),
 					ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 				})
-				_, _ = agentClient.DeleteVolume(ctx, &agentv1.DeleteVolumeRequest{VolumeId: volID})
+				_, _ = agentClient.DeleteVolume(ctx, &agentv1.DeleteVolumeRequest{
+					VolumeId: volID,
+					Fence:    agentLifecycleFence(volID),
+				})
 				cleanup()
 			}
 		})
@@ -701,6 +748,7 @@ var _ = Describe("F29: 실제 LVM + NVMe-oF TCP 연결",
 			By("creating LV")
 			createResp, err := agentClient.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
 				VolumeId:      fullVolID,
+				Fence:         agentLifecycleFence(fullVolID),
 				CapacityBytes: 32 << 20,
 			})
 			Expect(err).NotTo(HaveOccurred(), "[TC-F29.3] CreateVolume must succeed")
@@ -708,6 +756,7 @@ var _ = Describe("F29: 실제 LVM + NVMe-oF TCP 연결",
 			By("exporting as NVMe-oF")
 			_, err = agentClient.ExportVolume(ctx, &agentv1.ExportVolumeRequest{
 				VolumeId:     fullVolID,
+				Fence:        agentLifecycleFence(fullVolID),
 				ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 				DevicePath:   createResp.DevicePath,
 				ExportParams: fNvmeofExportParams("127.0.0.1", 4421),
@@ -774,12 +823,16 @@ var _ = Describe("F29: 실제 LVM + NVMe-oF TCP 연결",
 			By("unexporting NVMe-oF subsystem")
 			_, err = agentClient.UnexportVolume(ctx, &agentv1.UnexportVolumeRequest{
 				VolumeId:     fullVolID,
+				Fence:        agentLifecycleFence(fullVolID),
 				ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 			})
 			Expect(err).NotTo(HaveOccurred(), "[TC-F29.3] UnexportVolume must succeed")
 
 			By("deleting LV")
-			_, err = agentClient.DeleteVolume(ctx, &agentv1.DeleteVolumeRequest{VolumeId: fullVolID})
+			_, err = agentClient.DeleteVolume(ctx, &agentv1.DeleteVolumeRequest{
+				VolumeId: fullVolID,
+				Fence:    agentLifecycleFence(fullVolID),
+			})
 			Expect(err).NotTo(HaveOccurred(), "[TC-F29.3] DeleteVolume must succeed")
 
 			By("verifying LV is removed")

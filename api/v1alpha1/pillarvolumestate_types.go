@@ -138,6 +138,48 @@ type VolumeExportInfo struct {
 	VolumeRef string `json:"volumeRef,omitempty"`
 }
 
+// VolumePublication records one node to which ControllerPublishVolume granted
+// access to this volume.  The list of publications is the durable source of
+// truth for CSI publish exclusivity (a SINGLE_NODE_* volume may be published
+// to at most one node) and for the initiator ACL set the storage target must
+// hold.  An entry is written before the agent grants access and removed only
+// after the agent revoked it, so a crash between the two steps leaves the
+// record fail-closed.
+type VolumePublication struct {
+	// nodeID is the CSI node_id (Kubernetes node name) the volume is
+	// published to.
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	NodeID string `json:"nodeID"`
+
+	// initiatorID is the protocol-specific initiator identity granted access
+	// (NVMe-oF host NQN, iSCSI IQN, or the node ID for file protocols).  It is
+	// recorded so the grant can be revoked even after the node's CSINode
+	// object is gone.
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	InitiatorID string `json:"initiatorID"`
+
+	// accessMode is the CSI VolumeCapability access mode name requested by
+	// the publish (e.g. "SINGLE_NODE_WRITER", "MULTI_NODE_READER_ONLY").
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	AccessMode string `json:"accessMode"`
+
+	// readonly mirrors ControllerPublishVolumeRequest.readonly.
+	// +optional
+	Readonly bool `json:"readonly,omitempty"`
+
+	// revoking is set by ControllerUnpublishVolume in the same update that
+	// allocates the fencing generation for the revoke, and the record is
+	// removed once the agent revoked the initiator.  A revoking record still
+	// occupies the volume for exclusivity (fail-closed) but is not part of the
+	// initiator set the target should grant: state recovery must exclude it,
+	// and a publish to the same node is rejected until the unpublish finishes.
+	// +optional
+	Revoking bool `json:"revoking,omitempty"`
+}
+
 // PillarVolumeStateSpec defines the immutable identity and routing information for
 // a CSI volume.  Fields are populated by the controller at CreateVolume time
 // and never changed thereafter.
@@ -208,6 +250,38 @@ type PillarVolumeStateStatus struct {
 	// agent.
 	// +optional
 	ExportInfo *VolumeExportInfo `json:"exportInfo,omitempty"`
+
+	// publishedNodes lists every node the volume is currently published to
+	// by ControllerPublishVolume.  ControllerPublishVolume rejects a publish
+	// that is incompatible with an existing entry (for example a second node
+	// for a SINGLE_NODE_* access mode); ControllerUnpublishVolume removes the
+	// entry after the agent revoked the node's access; DeleteVolume refuses
+	// to delete a volume while this list is non-empty.  Entries are also the
+	// exact initiator set the storage target's ACL must contain.
+	// +listType=map
+	// +listMapKey=nodeID
+	// +optional
+	PublishedNodes []VolumePublication `json:"publishedNodes,omitempty"`
+
+	// publicationGeneration is a monotonically increasing counter bumped by
+	// exactly 1 on every status update that changes publishedNodes or sets
+	// deleting.  The value committed by that update is sent to the agent as
+	// the fencing generation on AllowInitiator, DenyInitiator, UnexportVolume
+	// and ReconcileState; the agent rejects any request carrying a lower
+	// generation than the one it last applied.  This closes the window where
+	// a stale (former leader) controller's in-flight RPC lands after a new
+	// leader already changed the publication set.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	PublicationGeneration int64 `json:"publicationGeneration,omitempty"`
+
+	// deleting is set by DeleteVolume before it removes the export and the
+	// backend resource.  It is written by a resourceVersion compare-and-swap
+	// that only succeeds while publishedNodes is empty, so a volume can never
+	// be concurrently published and deleted.  ControllerPublishVolume rejects
+	// reservations while deleting is true, and state resync skips the volume.
+	// +optional
+	Deleting bool `json:"deleting,omitempty"`
 
 	// conditions represent the current observed state of the PillarVolumeState.
 	//

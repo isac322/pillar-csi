@@ -37,6 +37,12 @@ package csi
 //	                                                      NodeUnstage▼
 //	                                              ControllerPublished ──ControllerUnpublish──► Created
 //
+// The volume-level ControllerPublished state only mirrors that at least one
+// node is published.  Which nodes hold the volume, CSI access-mode
+// exclusivity, and the DeleteVolume-while-published guard are enforced from
+// the durable PillarVolumeState.status.publishedNodes record (see
+// ControllerServer.reservePublication), never from this in-memory machine.
+//
 // # Partial-failure states
 //
 //	NodeStagePartial: Protocol attach succeeded but the mount step failed.

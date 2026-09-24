@@ -86,14 +86,14 @@ func (h *recordingProtocolHandler) Export(
 	return h.exportResult, nil
 }
 
-func (h *recordingProtocolHandler) Unexport(_ context.Context, volumeID string) error {
+func (h *recordingProtocolHandler) Unexport(_ context.Context, volumeID string, _ *agentv1.FencingToken) error {
 	h.unexportCalls = append(h.unexportCalls, volumeID)
 	return h.unexportErr
 }
 
 func (h *recordingProtocolHandler) AllowInitiator(
 	_ context.Context,
-	volumeID, initiatorID string,
+	volumeID, initiatorID string, _ *agentv1.FencingToken,
 ) error {
 	h.allowCalls = append(h.allowCalls, initiatorDispatchCall{
 		volumeID:    volumeID,
@@ -104,7 +104,7 @@ func (h *recordingProtocolHandler) AllowInitiator(
 
 func (h *recordingProtocolHandler) DenyInitiator(
 	_ context.Context,
-	volumeID, initiatorID string,
+	volumeID, initiatorID string, _ *agentv1.FencingToken,
 ) error {
 	h.denyCalls = append(h.denyCalls, initiatorDispatchCall{
 		volumeID:    volumeID,
@@ -180,7 +180,7 @@ func TestExportVolume_DispatchesToResolvedHandler(t *testing.T) {
 		},
 	}
 
-	srv := NewServer(nil, "")
+	srv := NewServer(nil, "", WithDrainStateDir(t.TempDir()))
 	srv.protocolHandlerResolver = resolver.Resolve
 
 	req := &agentv1.ExportVolumeRequest{
@@ -319,7 +319,7 @@ func TestExportLifecycleRPCs_DispatchToResolvedHandler(t *testing.T) {
 				},
 			}
 
-			srv := NewServer(nil, "")
+			srv := NewServer(nil, "", WithDrainStateDir(t.TempDir()))
 			srv.protocolHandlerResolver = resolver.Resolve
 
 			if err := tt.call(context.Background(), srv); err != nil {
@@ -346,7 +346,7 @@ func TestReconcileState_DispatchesDesiredStateByProtocol(t *testing.T) {
 		},
 	}
 
-	srv := NewServer(nil, "")
+	srv := NewServer(nil, "", WithDrainStateDir(t.TempDir()))
 	srv.protocolHandlerResolver = resolver.Resolve
 
 	req := &agentv1.ReconcileStateRequest{
@@ -422,7 +422,7 @@ func TestAllowInitiator_UnsupportedProtocolDoesNotInvokeHandler(t *testing.T) {
 		},
 	}
 
-	srv := NewServer(nil, "")
+	srv := NewServer(nil, "", WithDrainStateDir(t.TempDir()))
 	srv.protocolHandlerResolver = resolver.Resolve
 
 	_, err := srv.AllowInitiator(context.Background(), &agentv1.AllowInitiatorRequest{

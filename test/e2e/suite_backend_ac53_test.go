@@ -45,6 +45,7 @@ import (
 	clientfake "sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	pillarv1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
+	"github.com/bhyoo/pillar-csi/internal/testutil/fakeuid"
 	"github.com/bhyoo/pillar-csi/test/e2e/framework/names"
 )
 
@@ -67,6 +68,7 @@ func newAC53FakeClient(targetName string) client.Client {
 	}
 
 	return clientfake.NewClientBuilder().
+		WithInterceptorFuncs(fakeuid.Interceptor()).
 		WithScheme(scheme).
 		WithObjects(target).
 		Build()

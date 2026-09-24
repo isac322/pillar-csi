@@ -24,6 +24,7 @@ import (
 	pillarv1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
 	agentv1 "github.com/bhyoo/pillar-csi/gen/go/pillar_csi/agent/v1"
 	csidrv "github.com/bhyoo/pillar-csi/internal/csi"
+	"github.com/bhyoo/pillar-csi/internal/testutil/fakeuid"
 )
 
 func assertE1_CreateVolume(tc documentedCase) {
@@ -600,6 +601,7 @@ func assertE1_CreateVolume_PillarAgentEmptyAddress(tc documentedCase) {
 		Status:     pillarv1.PillarAgentStatus{ResolvedAddress: ""},
 	}
 	k8sClient := clientfake.NewClientBuilder().
+		WithInterceptorFuncs(fakeuid.Interceptor()).
 		WithScheme(scheme).
 		WithStatusSubresource(&pillarv1.PillarAgent{}, &pillarv1.PillarVolumeState{}).
 		WithObjects(target).
@@ -639,6 +641,7 @@ func assertE1_CreateVolume_AgentDialFails(tc documentedCase) {
 		Status:     pillarv1.PillarAgentStatus{ResolvedAddress: "127.0.0.1:19999"},
 	}
 	k8sClient := clientfake.NewClientBuilder().
+		WithInterceptorFuncs(fakeuid.Interceptor()).
 		WithScheme(scheme).
 		WithStatusSubresource(&pillarv1.PillarAgent{}, &pillarv1.PillarVolumeState{}).
 		WithObjects(target).

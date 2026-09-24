@@ -31,14 +31,17 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	storagev1 "k8s.io/api/storage/v1"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	v1alpha1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
 	agentv1 "github.com/bhyoo/pillar-csi/gen/go/pillar_csi/agent/v1"
 	pillarcsi "github.com/bhyoo/pillar-csi/internal/csi"
+	"github.com/bhyoo/pillar-csi/internal/testutil/fakeuid"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -312,6 +315,7 @@ func newCSIControllerTestEnv(t *testing.T) *csiControllerTestEnv {
 	}
 
 	fakeClient := fake.NewClientBuilder().
+		WithInterceptorFuncs(fakeuid.Interceptor()).
 		WithScheme(scheme).
 		WithObjects(target).
 		WithStatusSubresource(&v1alpha1.PillarVolumeState{}, &v1alpha1.PillarAgent{}).
@@ -365,6 +369,7 @@ func newCSIControllerTestEnvWithDialErr(t *testing.T, dialErr error) *csiControl
 	}
 
 	fakeClient := fake.NewClientBuilder().
+		WithInterceptorFuncs(fakeuid.Interceptor()).
 		WithScheme(scheme).
 		WithObjects(target).
 		WithStatusSubresource(&v1alpha1.PillarVolumeState{}, &v1alpha1.PillarAgent{}).
@@ -779,30 +784,35 @@ func TestCSIController_DeleteVolume_Success(t *testing.T) {
 // TestCSIController_DeleteVolume_Idempotent
 // ─────────────────────────────────────────────────────────────────────────────.
 
-// TestCSIController_DeleteVolume_Idempotent verifies that if the agent returns
-// NotFound for both Unexport and Delete, the controller still returns success
-// (idempotent behavior per CSI spec §4.3.2).
+// TestCSIController_DeleteVolume_Idempotent verifies CSI §4.3.2 idempotency:
+// an export that is already gone (NotFound) does not fail the delete, and a
+// repeated delete of a deleted volume succeeds without any agent call (the
+// volume's PillarVolumeState is gone, so it owns nothing).
 func TestCSIController_DeleteVolume_Idempotent(t *testing.T) {
 	t.Parallel()
 	env := newCSIControllerTestEnv(t)
 	ctx := context.Background()
 
+	if _, err := env.srv.CreateVolume(ctx, baseCSICreateVolumeRequest()); err != nil {
+		t.Fatalf("setup CreateVolume: %v", err)
+	}
 	env.agent.unexportVolumeFn = func(
 		_ context.Context, _ *agentv1.UnexportVolumeRequest,
 	) (*agentv1.UnexportVolumeResponse, error) {
 		return nil, status.Error(codes.NotFound, "not found")
 	}
-	env.agent.deleteVolumeFn = func(
-		_ context.Context, _ *agentv1.DeleteVolumeRequest,
-	) (*agentv1.DeleteVolumeResponse, error) {
-		return nil, status.Error(codes.NotFound, "not found")
-	}
 
-	_, err := env.srv.DeleteVolume(ctx, &csipb.DeleteVolumeRequest{
-		VolumeId: expectedCSIVolumeID,
-	})
-	if err != nil {
-		t.Fatalf("DeleteVolume: expected success for NotFound, got: %v", err)
+	for attempt := range 2 {
+		_, err := env.srv.DeleteVolume(ctx, &csipb.DeleteVolumeRequest{
+			VolumeId: expectedCSIVolumeID,
+		})
+		if err != nil {
+			t.Fatalf("DeleteVolume attempt %d: %v", attempt, err)
+		}
+	}
+	if env.agent.unexportVolumeCalls != 1 || env.agent.deleteVolumeCalls != 1 {
+		t.Errorf("agent calls unexport=%d delete=%d, want 1 and 1 (second delete makes no call)",
+			env.agent.unexportVolumeCalls, env.agent.deleteVolumeCalls)
 	}
 }
 
@@ -810,13 +820,18 @@ func TestCSIController_DeleteVolume_Idempotent(t *testing.T) {
 // TestCSIController_DeleteVolume_AgentError
 // ─────────────────────────────────────────────────────────────────────────────.
 
-// TestCSIController_DeleteVolume_AgentError verifies that a non-NotFound error
-// from agent.DeleteVolume is propagated to the CO.
+// TestCSIController_DeleteVolume_AgentError verifies that an error from
+// agent.DeleteVolume is propagated to the CO, that the volume's durable record
+// is kept (still marked deleting) so nothing is forgotten, and that a retry
+// after the agent recovers completes the deletion.
 func TestCSIController_DeleteVolume_AgentError(t *testing.T) {
 	t.Parallel()
 	env := newCSIControllerTestEnv(t)
 	ctx := context.Background()
 
+	if _, err := env.srv.CreateVolume(ctx, baseCSICreateVolumeRequest()); err != nil {
+		t.Fatalf("setup CreateVolume: %v", err)
+	}
 	env.agent.deleteVolumeFn = func(
 		_ context.Context, _ *agentv1.DeleteVolumeRequest,
 	) (*agentv1.DeleteVolumeResponse, error) {
@@ -826,12 +841,24 @@ func TestCSIController_DeleteVolume_AgentError(t *testing.T) {
 	_, err := env.srv.DeleteVolume(ctx, &csipb.DeleteVolumeRequest{
 		VolumeId: expectedCSIVolumeID,
 	})
-	if err == nil {
-		t.Fatal("expected error, got nil")
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("DeleteVolume: %v, want FailedPrecondition", err)
 	}
-	st, _ := status.FromError(err)
-	if st.Code() != codes.FailedPrecondition {
-		t.Errorf("error code = %v, want %v", st.Code(), codes.FailedPrecondition)
+	pvs := &v1alpha1.PillarVolumeState{}
+	if getErr := env.k8sClient.Get(ctx, types.NamespacedName{Name: "pvc-component-test"}, pvs); getErr != nil {
+		t.Fatalf("PillarVolumeState after failed delete: %v, want kept", getErr)
+	}
+	if !pvs.Status.Deleting {
+		t.Error("PillarVolumeState after failed delete is not marked deleting")
+	}
+
+	env.agent.deleteVolumeFn = nil
+	if _, err := env.srv.DeleteVolume(ctx, &csipb.DeleteVolumeRequest{VolumeId: expectedCSIVolumeID}); err != nil {
+		t.Fatalf("DeleteVolume retry: %v", err)
+	}
+	getErr := env.k8sClient.Get(ctx, types.NamespacedName{Name: "pvc-component-test"}, pvs)
+	if !k8serrors.IsNotFound(getErr) {
+		t.Errorf("PillarVolumeState after retry: %v, want NotFound", getErr)
 	}
 }
 
@@ -840,7 +867,8 @@ func TestCSIController_DeleteVolume_AgentError(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIController_ControllerPublishVolume_Success verifies that
-// ControllerPublishVolume calls agent.AllowInitiator with the node's NQN and
+// ControllerPublishVolume calls agent.AllowInitiator with the node's NQN,
+// records the publication in PillarVolumeState.status.publishedNodes, and
 // returns an empty PublishContext.
 func TestCSIController_ControllerPublishVolume_Success(t *testing.T) {
 	t.Parallel()
@@ -848,7 +876,9 @@ func TestCSIController_ControllerPublishVolume_Success(t *testing.T) {
 	ctx := context.Background()
 
 	const nodeNQN = "nqn.2014-08.org.nvmexpress:uuid:test-node-001"
-	// Seed CSINode so the controller can resolve the NVMe-oF initiator identity.
+	// The volume must exist (PillarVolumeState) and the CSINode must carry the
+	// NVMe-oF host NQN so the controller can resolve the initiator identity.
+	seedComponentPillarVolumeState(t, env, "pvc-component-test")
 	seedCSINodeForNVMeOF(ctx, t, env.k8sClient, nodeNQN, nodeNQN)
 
 	var capturedInitiatorID string
@@ -880,6 +910,19 @@ func TestCSIController_ControllerPublishVolume_Success(t *testing.T) {
 	if env.agent.allowInitiatorCalls != 1 {
 		t.Errorf("agent.AllowInitiator calls = %d, want 1", env.agent.allowInitiatorCalls)
 	}
+
+	pvs := &v1alpha1.PillarVolumeState{}
+	if err := env.k8sClient.Get(ctx, client.ObjectKey{Name: "pvc-component-test"}, pvs); err != nil {
+		t.Fatalf("get PillarVolumeState: %v", err)
+	}
+	want := v1alpha1.VolumePublication{
+		NodeID:      nodeNQN,
+		InitiatorID: nodeNQN,
+		AccessMode:  csipb.VolumeCapability_AccessMode_SINGLE_NODE_WRITER.String(),
+	}
+	if len(pvs.Status.PublishedNodes) != 1 || pvs.Status.PublishedNodes[0] != want {
+		t.Errorf("status.publishedNodes = %+v, want [%+v]", pvs.Status.PublishedNodes, want)
+	}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -895,6 +938,7 @@ func TestCSIController_ControllerPublishVolume_AlreadyPublished(t *testing.T) {
 	ctx := context.Background()
 
 	const nodeID = "nqn.2014-08.org.nvmexpress:uuid:node-abc"
+	seedComponentPillarVolumeState(t, env, "pvc-component-test")
 	// Seed CSINode so the controller can resolve the NVMe-oF initiator identity.
 	seedCSINodeForNVMeOF(ctx, t, env.k8sClient, nodeID, nodeID)
 
@@ -924,15 +968,18 @@ func TestCSIController_ControllerPublishVolume_AlreadyPublished(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIController_ControllerUnpublishVolume_Success verifies that
-// ControllerUnpublishVolume calls agent.DenyInitiator.
+// ControllerUnpublishVolume calls agent.DenyInitiator with the initiator
+// recorded at publish time and removes the publication record.
 func TestCSIController_ControllerUnpublishVolume_Success(t *testing.T) {
 	t.Parallel()
 	env := newCSIControllerTestEnv(t)
 	ctx := context.Background()
 
 	const nodeNQN = "nqn.2014-08.org.nvmexpress:uuid:test-node-001"
-	// Seed CSINode so the controller can resolve the NVMe-oF initiator identity.
+	seedComponentPillarVolumeState(t, env, "pvc-component-test")
 	seedCSINodeForNVMeOF(ctx, t, env.k8sClient, nodeNQN, nodeNQN)
+	// Unpublish only revokes recorded publications, so publish first.
+	publishComponentTestVolume(ctx, t, env, nodeNQN)
 
 	var capturedInitiatorID string
 	env.agent.denyInitiatorFn = func(
@@ -955,6 +1002,33 @@ func TestCSIController_ControllerUnpublishVolume_Success(t *testing.T) {
 	if env.agent.denyInitiatorCalls != 1 {
 		t.Errorf("agent.DenyInitiator calls = %d, want 1", env.agent.denyInitiatorCalls)
 	}
+
+	pvs := &v1alpha1.PillarVolumeState{}
+	if err := env.k8sClient.Get(ctx, client.ObjectKey{Name: "pvc-component-test"}, pvs); err != nil {
+		t.Fatalf("get PillarVolumeState: %v", err)
+	}
+	if len(pvs.Status.PublishedNodes) != 0 {
+		t.Errorf("status.publishedNodes = %+v, want empty after unpublish", pvs.Status.PublishedNodes)
+	}
+}
+
+// publishComponentTestVolume publishes expectedCSIVolumeID to nodeID with
+// SINGLE_NODE_WRITER so the publication is recorded in PillarVolumeState.
+// The PillarVolumeState and the node's CSINode must already be seeded.
+func publishComponentTestVolume(ctx context.Context, t *testing.T, env *csiControllerTestEnv, nodeID string) {
+	t.Helper()
+	_, err := env.srv.ControllerPublishVolume(ctx, &csipb.ControllerPublishVolumeRequest{
+		VolumeId: expectedCSIVolumeID,
+		NodeId:   nodeID,
+		VolumeCapability: &csipb.VolumeCapability{
+			AccessMode: &csipb.VolumeCapability_AccessMode{
+				Mode: csipb.VolumeCapability_AccessMode_SINGLE_NODE_WRITER,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ControllerPublishVolume(%q): %v", nodeID, err)
+	}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -962,12 +1036,17 @@ func TestCSIController_ControllerUnpublishVolume_Success(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────.
 
 // TestCSIController_ControllerUnpublishVolume_AlreadyUnpublished verifies that
-// if the agent returns NotFound for DenyInitiator, ControllerUnpublishVolume
-// returns success (idempotent per CSI spec §4.3.4).
+// if the agent returns NotFound for DenyInitiator on a recorded publication,
+// ControllerUnpublishVolume returns success (idempotent per CSI spec §4.3.4).
 func TestCSIController_ControllerUnpublishVolume_AlreadyUnpublished(t *testing.T) {
 	t.Parallel()
 	env := newCSIControllerTestEnv(t)
 	ctx := context.Background()
+
+	const nodeID = "nqn.2014-08.org.nvmexpress:uuid:node-abc"
+	seedComponentPillarVolumeState(t, env, "pvc-component-test")
+	seedCSINodeForNVMeOF(ctx, t, env.k8sClient, nodeID, nodeID)
+	publishComponentTestVolume(ctx, t, env, nodeID)
 
 	env.agent.denyInitiatorFn = func(
 		_ context.Context, _ *agentv1.DenyInitiatorRequest,
@@ -977,10 +1056,13 @@ func TestCSIController_ControllerUnpublishVolume_AlreadyUnpublished(t *testing.T
 
 	_, err := env.srv.ControllerUnpublishVolume(ctx, &csipb.ControllerUnpublishVolumeRequest{
 		VolumeId: expectedCSIVolumeID,
-		NodeId:   "nqn.2014-08.org.nvmexpress:uuid:node-abc",
+		NodeId:   nodeID,
 	})
 	if err != nil {
 		t.Fatalf("ControllerUnpublishVolume: expected success for NotFound, got: %v", err)
+	}
+	if env.agent.denyInitiatorCalls != 1 {
+		t.Errorf("agent.DenyInitiator calls = %d, want 1", env.agent.denyInitiatorCalls)
 	}
 }
 
@@ -995,6 +1077,7 @@ func TestCSIController_ExpandVolume_Success(t *testing.T) {
 	t.Parallel()
 	env := newCSIControllerTestEnv(t)
 	ctx := context.Background()
+	seedComponentPillarVolumeState(t, env, "pvc-component-test")
 
 	const newBytes = int64(20 << 30) // 20 GiB
 	env.agent.expandVolumeFn = func(
@@ -1031,6 +1114,7 @@ func TestCSIController_ExpandVolume_AgentError(t *testing.T) {
 	t.Parallel()
 	env := newCSIControllerTestEnv(t)
 	ctx := context.Background()
+	seedComponentPillarVolumeState(t, env, "pvc-component-test")
 
 	env.agent.expandVolumeFn = func(
 		_ context.Context, _ *agentv1.ExpandVolumeRequest,

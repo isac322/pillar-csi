@@ -17,7 +17,7 @@ func TestListExports_ReturnsConfigfsExports(t *testing.T) {
 	root := t.TempDir()
 	stageListExportConfigfs(t, root)
 
-	srv := agent.NewServer(nil, root)
+	srv := agent.NewServer(nil, root, agent.WithDrainStateDir(t.TempDir()))
 	resp, err := srv.ListExports(context.Background(), &agentv1.ListExportsRequest{})
 	if err != nil {
 		t.Fatalf("ListExports unexpected error: %v", err)
@@ -87,7 +87,7 @@ func mustSymlink(t *testing.T, oldname, newname string) {
 func TestListExports_EmptyConfigfs(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	srv := agent.NewServer(nil, root)
+	srv := agent.NewServer(nil, root, agent.WithDrainStateDir(t.TempDir()))
 
 	resp, err := srv.ListExports(context.Background(), &agentv1.ListExportsRequest{})
 	if err != nil {

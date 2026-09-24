@@ -187,6 +187,12 @@ spec:
             # /dev — required for block device operations (target backstores).
             - name: dev
               mountPath: /dev
+            # Agent state dir — durable per-volume fencing generations and the
+            # Drain marker.  Must survive pod restarts and node reboots, so it
+            # is a hostPath on the storage node's own disk (never a PVC: the
+            # agent must not depend on volumes it serves).
+            - name: agent-state
+              mountPath: /var/lib/pillar-csi/agent
             {{- if .Values.mtls.enabled }}
             - name: mtls-certs
               mountPath: {{ include "pillar-csi.mtls.certDir" . }}
@@ -206,6 +212,11 @@ spec:
           hostPath:
             path: /dev
             type: Directory
+        # Durable agent state (fencing generations); see the volumeMount.
+        - name: agent-state
+          hostPath:
+            path: /var/lib/pillar-csi/agent
+            type: DirectoryOrCreate
         # /lib/modules — read-only access for the modprobe init container.
         - name: lib-modules
           hostPath:

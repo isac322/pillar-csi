@@ -28,7 +28,7 @@ import (
 func TestHandlerForProtocol_NVMeoFTCP(t *testing.T) {
 	t.Parallel()
 
-	srv := NewServer(nil, "")
+	srv := NewServer(nil, "", WithDrainStateDir(t.TempDir()))
 	handler, err := srv.handlerForProtocol(agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP)
 	if err != nil {
 		t.Fatalf("handlerForProtocol unexpected error: %v", err)
@@ -41,7 +41,7 @@ func TestHandlerForProtocol_NVMeoFTCP(t *testing.T) {
 func TestHandlerForProtocol_Unspecified(t *testing.T) {
 	t.Parallel()
 
-	srv := NewServer(nil, "")
+	srv := NewServer(nil, "", WithDrainStateDir(t.TempDir()))
 	_, err := srv.handlerForProtocol(agentv1.ProtocolType_PROTOCOL_TYPE_UNSPECIFIED)
 	if err == nil {
 		t.Fatal("expected error for unspecified protocol, got nil")
@@ -55,7 +55,7 @@ func TestHandlerForProtocol_Unspecified(t *testing.T) {
 func TestHandlerForProtocol_Unsupported(t *testing.T) {
 	t.Parallel()
 
-	srv := NewServer(nil, "")
+	srv := NewServer(nil, "", WithDrainStateDir(t.TempDir()))
 	_, err := srv.handlerForProtocol(agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI)
 	if err == nil {
 		t.Fatal("expected error for unsupported protocol, got nil")

@@ -1131,7 +1131,7 @@
     "id": "E2.2-6",
     "category": "E2",
     "type": "A",
-    "description": "NodeId=\"\"이면 성공 + no-op (CSI 명세 §4.3.4: 빈 NodeId = \"모든 노드에서 Unpublish\"; pillar-csi는 no-op)",
+    "description": "NodeId=\"\"이면 기록된 모든 publication에 대해 기록된 initiator로 DenyInitiator 호출 후 기록 제거 + 성공 (CSI 명세: 빈 NodeId = \"모든 노드에서 Unpublish\")",
     "subsection": "E2.2",
     "in_437": true
   },
@@ -1195,7 +1195,7 @@
     "id": "E2.5-3",
     "category": "E2",
     "type": "A",
-    "description": "동일 볼륨에 대해 2개의 서로 다른 node handle(worker-a, worker-b)이 각각 다른 annotation을 통해 독립 AllowInitiator 항목을 생성",
+    "description": "SINGLE_NODE_WRITER 볼륨이 worker-a에 publish된 상태에서 다른 node handle(worker-b)로 ControllerPublishVolume 호출 시 FailedPrecondition 반환; AllowInitiator는 worker-a에 대해 1회만 호출",
     "subsection": "E2.5",
     "in_437": true
   },
@@ -5371,7 +5371,7 @@
     "id": "E7.1-2",
     "category": "E7",
     "type": "A",
-    "description": "서로 다른 node handle에 대한 ControllerPublishVolume은 각 annotation에서 해석된 identity로 독립적으로 성공",
+    "description": "SINGLE_NODE_WRITER 볼륨을 이미 publish된 노드와 다른 node handle에 ControllerPublishVolume하면 FailedPrecondition으로 거부; AllowInitiator는 첫 노드에 대해 1회만 호출",
     "subsection": "E7.1",
     "in_437": true
   },

@@ -13,9 +13,13 @@
 // limitations under the License.
 
 // AgentService is the gRPC API that pillar-controller calls on each
-// pillar-agent instance (one per storage node).  The agent is completely
-// stateless; the controller is the sole source of truth and re-drives the
-// agent to the desired state after any restart or crash.
+// pillar-agent instance (one per storage node).  The controller is the sole
+// source of truth and re-drives the agent to the desired state after any
+// restart or crash.  The agent keeps exactly one piece of durable state: a
+// per-volume fencing mark (see FencingToken) persisted on the node's local
+// disk, so that a stale controller cannot create, expand, export, grant,
+// revoke, unexport, or delete anything after a newer controller operation
+// superseded it.
 //
 // Volume lifecycle from the controller's perspective:
 //

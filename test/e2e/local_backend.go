@@ -35,6 +35,7 @@ import (
 	nvmeof "github.com/bhyoo/pillar-csi/internal/agent/nvmeof"
 	agentclientpkg "github.com/bhyoo/pillar-csi/internal/agentclient"
 	csidrv "github.com/bhyoo/pillar-csi/internal/csi"
+	"github.com/bhyoo/pillar-csi/internal/testutil/fakeuid"
 	"github.com/bhyoo/pillar-csi/internal/testutil/testcerts"
 	"github.com/bhyoo/pillar-csi/internal/tlscreds"
 	webhookv1alpha1 "github.com/bhyoo/pillar-csi/internal/webhook/v1alpha1"
@@ -295,6 +296,7 @@ func verifyControllerLocalBackend() error {
 	}
 
 	k8sClient := clientfake.NewClientBuilder().
+		WithInterceptorFuncs(fakeuid.Interceptor()).
 		WithScheme(scheme).
 		WithStatusSubresource(&pillarv1.PillarAgent{}, &pillarv1.PillarVolumeState{}).
 		WithObjects(target, csiNode).
@@ -581,21 +583,33 @@ func verifyAgentLocalBackendForProcess(processNum int) error {
 
 	backend := zfsb.NewWithExecFn(zfsPool, "k8s", execFn)
 
+	stateDir, err := scope.TempDir("agent-state")
+	if err != nil {
+		return err
+	}
+
 	server := agentsvc.NewServer(
 		map[string]agentbackend.VolumeBackend{zfsPool: backend},
 		configfsRoot,
 		agentsvc.WithDeviceChecker(nvmeof.AlwaysPresentChecker),
+		agentsvc.WithDrainStateDir(stateDir),
 	)
 
 	volID := zfsPool + "/" + volName
+	fence := agentLifecycleFence(volID)
 
 	// Pre-cleanup: idempotently destroy any leftover zvol from a previous run
-	// that may have exited before the DeleteVolume step completed.
-	_, _ = server.DeleteVolume(ctx, &agentv1.DeleteVolumeRequest{VolumeId: volID})
+	// that may have exited before the DeleteVolume step completed.  The delete
+	// ends its own lifecycle, so the create below needs a different one.
+	_, _ = server.DeleteVolume(ctx, &agentv1.DeleteVolumeRequest{
+		VolumeId: volID,
+		Fence:    agentLifecycleFence(volID + "#pre-cleanup"),
+	})
 
 	if _, err := server.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
 		VolumeId:      volID,
 		CapacityBytes: 10 << 20, // 10 MiB — pool is 128 MiB, keep volumes small
+		Fence:         fence,
 	}); err != nil {
 		return fmt.Errorf("agent create volume: %w", err)
 	}
@@ -607,6 +621,7 @@ func verifyAgentLocalBackendForProcess(processNum int) error {
 		DevicePath:   devicePath,
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 		ExportParams: nvmeofTCPExportParams("127.0.0.1", 4420),
+		Fence:        fence,
 	})
 	if err != nil {
 		return fmt.Errorf("agent export volume: %w", err)
@@ -620,6 +635,7 @@ func verifyAgentLocalBackendForProcess(processNum int) error {
 		VolumeId:     volID,
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 		InitiatorId:  "nqn.2026-01.io.example:host-local",
+		Fence:        fence,
 	}); err != nil {
 		return fmt.Errorf("agent allow initiator: %w", err)
 	}
@@ -640,6 +656,7 @@ func verifyAgentLocalBackendForProcess(processNum int) error {
 		VolumeId:     volID,
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 		InitiatorId:  "nqn.2026-01.io.example:host-local",
+		Fence:        fence,
 	}); err != nil {
 		return fmt.Errorf("agent deny initiator: %w", err)
 	}
@@ -650,12 +667,14 @@ func verifyAgentLocalBackendForProcess(processNum int) error {
 	if _, err := server.UnexportVolume(ctx, &agentv1.UnexportVolumeRequest{
 		VolumeId:     volID,
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
+		Fence:        fence,
 	}); err != nil {
 		return fmt.Errorf("agent unexport volume: %w", err)
 	}
 
 	if _, err := server.DeleteVolume(ctx, &agentv1.DeleteVolumeRequest{
 		VolumeId: volID,
+		Fence:    fence,
 	}); err != nil {
 		return fmt.Errorf("agent delete volume: %w", err)
 	}
@@ -839,6 +858,7 @@ func verifyCRDLocalContracts() error {
 	}
 
 	fakeClient := clientfake.NewClientBuilder().
+		WithInterceptorFuncs(fakeuid.Interceptor()).
 		WithScheme(scheme).
 		WithObjects(lvmPool, nfsProtocol).
 		Build()

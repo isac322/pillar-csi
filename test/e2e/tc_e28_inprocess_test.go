@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -125,10 +126,12 @@ func newValidatingAgentTestEnv() *agentTestEnv {
 		lvmVG:   validatingLVM,
 	}
 
+	// Keep the durable fencing marks inside the per-env temp tree.
 	server := agentsvc.NewServer(
 		backends,
 		configfsRoot,
 		agentsvc.WithDeviceChecker(nvmeof.AlwaysPresentChecker),
+		agentsvc.WithDrainStateDir(filepath.Join(configfsRoot, ".agent-state")),
 	)
 
 	lis := bufconn.Listen(inprocessBufSize)
@@ -168,11 +171,16 @@ func newValidatingAgentTestEnv() *agentTestEnv {
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
-// lvmCreateVolumeE28 creates an LVM volume via the agentTestEnv.
+// lvmCreateVolumeE28 creates an LVM volume via the agentTestEnv.  Every e28
+// helper fences with the lifecycle keyed by the volume ID, so the create, the
+// round trip and the deferred cleanup act on one lifecycle; no e28 test
+// re-creates a volume ID it already deleted.
 func lvmCreateVolumeE28(env *agentTestEnv, lvName string, capacityBytes int64) error {
+	volumeID := env.lvmVG + "/" + lvName
 	_, err := env.client.CreateVolume(env.ctx, &agentv1.CreateVolumeRequest{
-		VolumeId:      env.lvmVG + "/" + lvName,
+		VolumeId:      volumeID,
 		CapacityBytes: capacityBytes,
+		Fence:         agentLifecycleFence(volumeID),
 	})
 	return err
 }
@@ -183,14 +191,17 @@ func lvmCreateVolumeE28(env *agentTestEnv, lvName string, capacityBytes int64) e
 // Must be called BEFORE env.close() — achieved by registering this defer AFTER
 // defer env.close() (Go defer is LIFO: last registered runs first).
 func lvmDeleteVolumeE28NoFail(env *agentTestEnv, lvName string) {
+	volumeID := env.lvmVG + "/" + lvName
 	_, _ = env.client.DeleteVolume(env.ctx, &agentv1.DeleteVolumeRequest{
-		VolumeId: env.lvmVG + "/" + lvName,
+		VolumeId: volumeID,
+		Fence:    agentLifecycleFence(volumeID),
 	})
 }
 
 // e28FullRoundTrip runs the six-step agent lifecycle for a given LV name and params.
 func e28FullRoundTrip(env *agentTestEnv, lvName string, params *agentv1.LvmVolumeParams, tc documentedCase) {
 	volumeID := env.lvmVG + "/" + lvName
+	fence := agentLifecycleFence(volumeID)
 	var bp *agentv1.BackendParams
 	if params != nil {
 		bp = &agentv1.BackendParams{Params: &agentv1.BackendParams_Lvm{Lvm: params}}
@@ -200,6 +211,7 @@ func e28FullRoundTrip(env *agentTestEnv, lvName string, params *agentv1.LvmVolum
 		VolumeId:      volumeID,
 		CapacityBytes: 10 << 20,
 		BackendParams: bp,
+		Fence:         fence,
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: CreateVolume", tc.tcNodeLabel())
 
@@ -207,6 +219,7 @@ func e28FullRoundTrip(env *agentTestEnv, lvName string, params *agentv1.LvmVolum
 		VolumeId:     volumeID,
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 		ExportParams: nvmeofTCPExportParams("127.0.0.1", 4420),
+		Fence:        fence,
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: ExportVolume", tc.tcNodeLabel())
 
@@ -214,6 +227,7 @@ func e28FullRoundTrip(env *agentTestEnv, lvName string, params *agentv1.LvmVolum
 		VolumeId:     volumeID,
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 		InitiatorId:  "nqn.2026-01.io.example:host-" + lvName,
+		Fence:        fence,
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: AllowInitiator", tc.tcNodeLabel())
 
@@ -221,16 +235,18 @@ func e28FullRoundTrip(env *agentTestEnv, lvName string, params *agentv1.LvmVolum
 		VolumeId:     volumeID,
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 		InitiatorId:  "nqn.2026-01.io.example:host-" + lvName,
+		Fence:        fence,
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: DenyInitiator", tc.tcNodeLabel())
 
 	_, err = env.client.UnexportVolume(env.ctx, &agentv1.UnexportVolumeRequest{
 		VolumeId:     volumeID,
 		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
+		Fence:        fence,
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: UnexportVolume", tc.tcNodeLabel())
 
-	_, err = env.client.DeleteVolume(env.ctx, &agentv1.DeleteVolumeRequest{VolumeId: volumeID})
+	_, err = env.client.DeleteVolume(env.ctx, &agentv1.DeleteVolumeRequest{VolumeId: volumeID, Fence: fence})
 	Expect(err).NotTo(HaveOccurred(), "%s: DeleteVolume", tc.tcNodeLabel())
 }
 
@@ -497,6 +513,7 @@ func assertE28_LVM_CreateVolume_LinearModeParam(tc documentedCase) {
 
 	_, err := env.client.CreateVolume(env.ctx, &agentv1.CreateVolumeRequest{
 		VolumeId:      env.lvmVG + "/pvc-e28-linear-param",
+		Fence:         agentLifecycleFence(env.lvmVG + "/pvc-e28-linear-param"),
 		CapacityBytes: 10 << 20,
 		BackendParams: &agentv1.BackendParams{
 			Params: &agentv1.BackendParams_Lvm{
@@ -523,6 +540,7 @@ func assertE28_LVM_CreateVolume_ThinModeParam(tc documentedCase) {
 
 	_, err := env.client.CreateVolume(env.ctx, &agentv1.CreateVolumeRequest{
 		VolumeId:      env.lvmVG + "/pvc-e28-thin-param",
+		Fence:         agentLifecycleFence(env.lvmVG + "/pvc-e28-thin-param"),
 		CapacityBytes: 10 << 20,
 		BackendParams: &agentv1.BackendParams{
 			Params: &agentv1.BackendParams_Lvm{
@@ -549,6 +567,7 @@ func assertE28_LVM_CreateVolume_EmptyMode_DefaultsToBackend(tc documentedCase) {
 
 	_, err := env.client.CreateVolume(env.ctx, &agentv1.CreateVolumeRequest{
 		VolumeId:      env.lvmVG + "/pvc-e28-empty-mode",
+		Fence:         agentLifecycleFence(env.lvmVG + "/pvc-e28-empty-mode"),
 		CapacityBytes: 10 << 20,
 		BackendParams: &agentv1.BackendParams{
 			Params: &agentv1.BackendParams_Lvm{
@@ -571,6 +590,7 @@ func assertE28_LVM_CreateVolume_VGNotFound(tc documentedCase) {
 
 	_, err := env.client.CreateVolume(env.ctx, &agentv1.CreateVolumeRequest{
 		VolumeId:      "nonexistent-vg/pvc-e28-vg-notfound",
+		Fence:         agentLifecycleFence("nonexistent-vg/pvc-e28-vg-notfound"),
 		CapacityBytes: 10 << 20,
 	})
 	Expect(err).To(HaveOccurred(), "%s: expected NotFound for unregistered VG", tc.tcNodeLabel())
@@ -593,6 +613,7 @@ func assertE28_LVM_ExpandVolume_ShrinkRejected(tc documentedCase) {
 	// Real LVM rejects shrink requests natively.
 	_, err := env.client.ExpandVolume(env.ctx, &agentv1.ExpandVolumeRequest{
 		VolumeId:       env.lvmVG + "/pvc-e28-shrink",
+		Fence:          agentLifecycleFence(env.lvmVG + "/pvc-e28-shrink"),
 		RequestedBytes: 10 << 20, // smaller than 20MiB — shrink attempt
 	})
 	Expect(err).To(HaveOccurred(), "%s: shrink should be rejected by real LVM", tc.tcNodeLabel())
@@ -614,6 +635,7 @@ func assertE28_LVM_CreateVolume_ThinWithoutPool(tc documentedCase) {
 	// ValidateParams returns an error before any lvcreate is invoked.
 	_, err := env.client.CreateVolume(env.ctx, &agentv1.CreateVolumeRequest{
 		VolumeId:      env.lvmVG + "/pvc-e28-thin-nopool",
+		Fence:         agentLifecycleFence(env.lvmVG + "/pvc-e28-thin-nopool"),
 		CapacityBytes: 10 << 20,
 		BackendParams: &agentv1.BackendParams{
 			Params: &agentv1.BackendParams_Lvm{
@@ -634,6 +656,7 @@ func assertE28_LVM_CreateVolume_Idempotent(tc documentedCase) {
 
 	req := &agentv1.CreateVolumeRequest{
 		VolumeId:      env.lvmVG + "/pvc-e28-idempotent",
+		Fence:         agentLifecycleFence(env.lvmVG + "/pvc-e28-idempotent"),
 		CapacityBytes: 10 << 20,
 	}
 	_, err := env.client.CreateVolume(env.ctx, req)
@@ -652,6 +675,7 @@ func assertE28_LVM_DeleteVolume_NonExistent_Idempotent(tc documentedCase) {
 
 	_, err := env.client.DeleteVolume(env.ctx, &agentv1.DeleteVolumeRequest{
 		VolumeId: env.lvmVG + "/pvc-e28-nonexistent-del",
+		Fence:    agentLifecycleFence(env.lvmVG + "/pvc-e28-nonexistent-del"),
 	})
 	// Idempotent: non-existent volume must not error.
 	if err != nil {
@@ -679,6 +703,7 @@ func assertE28_LVM_ReconcileState_RestoresExports(tc documentedCase) {
 		Volumes: []*agentv1.VolumeDesiredState{
 			{
 				VolumeId: env.lvmVG + "/pvc-e28-reconcile-a",
+				Fence:    agentLifecycleFence(env.lvmVG + "/pvc-e28-reconcile-a"),
 				Exports: []*agentv1.ExportDesiredState{
 					{
 						ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
@@ -688,6 +713,7 @@ func assertE28_LVM_ReconcileState_RestoresExports(tc documentedCase) {
 			},
 			{
 				VolumeId: env.lvmVG + "/pvc-e28-reconcile-b",
+				Fence:    agentLifecycleFence(env.lvmVG + "/pvc-e28-reconcile-b"),
 				Exports: []*agentv1.ExportDesiredState{
 					{
 						ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
@@ -712,6 +738,7 @@ func assertE28_LVM_CreateVolume_ReservedPrefix_Snapshot(tc documentedCase) {
 
 	_, err := env.client.CreateVolume(env.ctx, &agentv1.CreateVolumeRequest{
 		VolumeId:      env.lvmVG + "/snapshot-pvc-1",
+		Fence:         agentLifecycleFence(env.lvmVG + "/snapshot-pvc-1"),
 		CapacityBytes: 10 << 20,
 	})
 	Expect(err).To(HaveOccurred(),
@@ -729,6 +756,7 @@ func assertE28_LVM_CreateVolume_ReservedPrefix_Pvmove(tc documentedCase) {
 
 	_, err := env.client.CreateVolume(env.ctx, &agentv1.CreateVolumeRequest{
 		VolumeId:      env.lvmVG + "/pvmove-temp",
+		Fence:         agentLifecycleFence(env.lvmVG + "/pvmove-temp"),
 		CapacityBytes: 10 << 20,
 	})
 	Expect(err).To(HaveOccurred(),
@@ -746,6 +774,7 @@ func assertE28_LVM_CreateVolume_InvalidFirstChar_Hyphen(tc documentedCase) {
 
 	_, err := env.client.CreateVolume(env.ctx, &agentv1.CreateVolumeRequest{
 		VolumeId:      env.lvmVG + "/-invalid-name",
+		Fence:         agentLifecycleFence(env.lvmVG + "/-invalid-name"),
 		CapacityBytes: 10 << 20,
 	})
 	Expect(err).To(HaveOccurred(),
@@ -772,6 +801,7 @@ func assertE28_LVM_CreateVolume_MaxLength_64(tc documentedCase) {
 
 	_, err := env.client.CreateVolume(env.ctx, &agentv1.CreateVolumeRequest{
 		VolumeId:      env.lvmVG + "/" + name64,
+		Fence:         agentLifecycleFence(env.lvmVG + "/" + name64),
 		CapacityBytes: 10 << 20,
 	})
 	Expect(err).NotTo(HaveOccurred(),
@@ -790,6 +820,7 @@ func assertE28_LVM_CreateVolume_OverMaxLength_65(tc documentedCase) {
 
 	_, err := env.client.CreateVolume(env.ctx, &agentv1.CreateVolumeRequest{
 		VolumeId:      env.lvmVG + "/" + name65,
+		Fence:         agentLifecycleFence(env.lvmVG + "/" + name65),
 		CapacityBytes: 10 << 20,
 	})
 	Expect(err).To(HaveOccurred(),
@@ -810,6 +841,7 @@ func assertE28_LVM_CreateVolume_ExtraFlags_Forwarded(tc documentedCase) {
 
 	_, err := env.client.CreateVolume(env.ctx, &agentv1.CreateVolumeRequest{
 		VolumeId:      env.lvmVG + "/pvc-e28-extraflags",
+		Fence:         agentLifecycleFence(env.lvmVG + "/pvc-e28-extraflags"),
 		CapacityBytes: 10 << 20,
 		BackendParams: &agentv1.BackendParams{
 			Params: &agentv1.BackendParams_Lvm{
@@ -839,6 +871,7 @@ func assertE28_LVM_CreateVolume_ExtraFlags_Empty_NoEffect(tc documentedCase) {
 
 	_, err := env.client.CreateVolume(env.ctx, &agentv1.CreateVolumeRequest{
 		VolumeId:      env.lvmVG + "/pvc-e28-extraflags-empty",
+		Fence:         agentLifecycleFence(env.lvmVG + "/pvc-e28-extraflags-empty"),
 		CapacityBytes: 10 << 20,
 		BackendParams: &agentv1.BackendParams{
 			Params: &agentv1.BackendParams_Lvm{
@@ -860,6 +893,7 @@ func assertE28_LVM_CreateVolume_VGOverride_Mismatch_Rejected(tc documentedCase) 
 
 	_, err := env.client.CreateVolume(env.ctx, &agentv1.CreateVolumeRequest{
 		VolumeId:      env.lvmVG + "/pvc-e28-vg-mismatch",
+		Fence:         agentLifecycleFence(env.lvmVG + "/pvc-e28-vg-mismatch"),
 		CapacityBytes: 10 << 20,
 		BackendParams: &agentv1.BackendParams{
 			Params: &agentv1.BackendParams_Lvm{
@@ -897,6 +931,7 @@ func assertE28_LVM_CreateVolume_ThinPool_NearFull(tc documentedCase) {
 
 	_, err = env.client.CreateVolume(env.ctx, &agentv1.CreateVolumeRequest{
 		VolumeId:      env.lvmVG + "/pvc-e28-nearfull",
+		Fence:         agentLifecycleFence(env.lvmVG + "/pvc-e28-nearfull"),
 		CapacityBytes: oversized,
 	})
 	Expect(err).To(HaveOccurred(),
@@ -923,6 +958,7 @@ func assertE28_LVM_CreateVolume_ThinPool_Full(tc documentedCase) {
 
 	_, err = env.client.CreateVolume(env.ctx, &agentv1.CreateVolumeRequest{
 		VolumeId:      env.lvmVG + "/pvc-e28-full",
+		Fence:         agentLifecycleFence(env.lvmVG + "/pvc-e28-full"),
 		CapacityBytes: oversized,
 	})
 	Expect(err).To(HaveOccurred(),
@@ -969,8 +1005,10 @@ func assertE28_LVM_Concurrent_CreateVolume(tc documentedCase) {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
+			volumeID := env.lvmVG + "/pvc-e28-concurrent-" + string(rune('a'+idx))
 			_, errs[idx] = env.client.CreateVolume(env.ctx, &agentv1.CreateVolumeRequest{
-				VolumeId:      env.lvmVG + "/pvc-e28-concurrent-" + string(rune('a'+idx)),
+				VolumeId:      volumeID,
+				Fence:         agentLifecycleFence(volumeID),
 				CapacityBytes: 10 << 20,
 			})
 		}(i)

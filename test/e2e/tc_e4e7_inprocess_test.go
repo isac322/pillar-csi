@@ -256,7 +256,7 @@ func assertE5_ControllerUnpublishBeforeNodeStage(tc documentedCase) {
 	Expect(err).NotTo(HaveOccurred(), "%s: controller unpublish on non-published OK", tc.tcNodeLabel())
 }
 
-func assertE5_DeleteBeforeControllerUnpublish(_ documentedCase) {
+func assertE5_DeleteBeforeControllerUnpublish(tc documentedCase) {
 	env := newControllerTestEnv()
 	defer env.close()
 
@@ -282,9 +282,24 @@ func assertE5_DeleteBeforeControllerUnpublish(_ documentedCase) {
 	})
 	Expect(err).NotTo(HaveOccurred())
 
-	// Attempt to delete while still published — may succeed (no-op) or fail
-	// depending on implementation. Both are acceptable.
-	_, _ = env.controller.DeleteVolume(env.ctx, &csiapi.DeleteVolumeRequest{VolumeId: volumeID})
+	// DeleteVolume while a node publication is still recorded must be refused
+	// with FailedPrecondition without touching the agent; the CO has to
+	// ControllerUnpublishVolume first.
+	before := env.agentSrv.counts()
+	_, err = env.controller.DeleteVolume(env.ctx, &csiapi.DeleteVolumeRequest{VolumeId: volumeID})
+	Expect(err).To(HaveOccurred(), "%s: delete while published must fail", tc.tcNodeLabel())
+	Expect(status.Code(err)).To(Equal(codes.FailedPrecondition), "%s: delete while published", tc.tcNodeLabel())
+	after := env.agentSrv.counts()
+	Expect(after.UnexportVolume).To(Equal(before.UnexportVolume), "%s: no UnexportVolume while published", tc.tcNodeLabel())
+	Expect(after.DeleteVolume).To(Equal(before.DeleteVolume), "%s: no agent DeleteVolume while published", tc.tcNodeLabel())
+
+	// After unpublishing, the delete proceeds.
+	_, err = env.controller.ControllerUnpublishVolume(env.ctx, &csiapi.ControllerUnpublishVolumeRequest{
+		VolumeId: volumeID, NodeId: "worker-e5-del",
+	})
+	Expect(err).NotTo(HaveOccurred(), "%s: ControllerUnpublishVolume", tc.tcNodeLabel())
+	_, err = env.controller.DeleteVolume(env.ctx, &csiapi.DeleteVolumeRequest{VolumeId: volumeID})
+	Expect(err).NotTo(HaveOccurred(), "%s: delete after unpublish", tc.tcNodeLabel())
 }
 
 func assertE5_ValidTransitionAfterRecovery(tc documentedCase) {

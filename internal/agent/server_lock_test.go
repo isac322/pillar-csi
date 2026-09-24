@@ -26,7 +26,7 @@ import (
 func TestLockTarget_SerializesSameProtocolAndTarget(t *testing.T) {
 	t.Parallel()
 
-	srv := NewServer(nil, "")
+	srv := NewServer(nil, "", WithDrainStateDir(t.TempDir()))
 	unlockFirst := srv.lockTarget(agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP, "shared-target")
 
 	acquired := make(chan struct{})
@@ -62,7 +62,7 @@ func TestLockTarget_SerializesSameProtocolAndTarget(t *testing.T) {
 func TestLockTarget_DistinguishesProtocolsForSameTargetID(t *testing.T) {
 	t.Parallel()
 
-	srv := NewServer(nil, "")
+	srv := NewServer(nil, "", WithDrainStateDir(t.TempDir()))
 	unlockFirst := srv.lockTarget(agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP, "shared-target")
 	defer unlockFirst()
 
@@ -96,7 +96,7 @@ func TestLockTarget_SerializesDerivedISCSITargetID(t *testing.T) {
 		t.Fatalf("volumeTargetID unexpected error: %v", err)
 	}
 
-	srv := NewServer(nil, "")
+	srv := NewServer(nil, "", WithDrainStateDir(t.TempDir()))
 	unlockFirst := srv.lockTarget(agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI, targetID)
 
 	acquired := make(chan struct{})
