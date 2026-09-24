@@ -491,7 +491,7 @@
     "id": "E13.1-1",
     "category": "E13",
     "type": "A",
-    "description": "VolumeContentSource.Snapshot이 포함된 CreateVolume 호출 시 스냅샷 소스를 무시하고 빈 볼륨을 생성 (현재 동작 고정 테스트)",
+    "description": "VolumeContentSource.Snapshot이 포함된 CreateVolume 호출 시 미지원 소스로 INVALID_ARGUMENT 거부",
     "subsection": "E13.1",
     "in_437": true
   },
@@ -499,7 +499,7 @@
     "id": "E13.1-2",
     "category": "E13",
     "type": "A",
-    "description": "VolumeContentSource.Volume이 포함된 CreateVolume 호출 시 소스 볼륨을 무시하고 빈 볼륨을 생성 (현재 동작 고정 테스트)",
+    "description": "VolumeContentSource.Volume이 포함된 CreateVolume 호출 시 미지원 소스로 INVALID_ARGUMENT 거부",
     "subsection": "E13.1",
     "in_437": true
   },

@@ -184,8 +184,8 @@ var inProcessAssertions = map[string]func(documentedCase){
 	"TestCSISnapshot_DeleteReturnsUnimplemented": assertE12_DeleteReturnsUnimplemented,
 	"TestCSISnapshot_ListReturnsUnimplemented":   assertE12_ListReturnsUnimplemented,
 	// ── E13: Volume content source / clone ────────────────────────────────────
-	"TestCSIClone_CreateVolume_ContentSource": assertE13_CreateVolume_ContentSource,
-	"TestCSIClone_DeleteVolume_CloneSource":   assertE13_DeleteVolume_CloneSource,
+	"TestCSIClone_CreateVolume_SnapshotSourceRejected": assertE13_CreateVolume_SnapshotSourceRejected,
+	"TestCSIClone_CreateVolume_VolumeSourceRejected":   assertE13_CreateVolume_VolumeSourceRejected,
 	// ── E14: Invalid inputs / edge cases ──────────────────────────────────────
 	"TestCSIEdge_CreateVolume_EmptyName":            assertE14_CreateVolume_EmptyName,
 	"TestCSIEdge_CreateVolume_NilCapabilities":      assertE14_CreateVolume_NilCapabilities,
