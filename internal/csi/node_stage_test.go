@@ -70,7 +70,9 @@ type connectCall struct {
 	trSvcID   string
 }
 
-func (m *mockConnector) Connect(_ context.Context, subsysNQN, trAddr, trSvcID string) error {
+func (m *mockConnector) Connect(
+	_ context.Context, subsysNQN, trAddr, trSvcID string, _ NVMeoFConnectOptions,
+) error {
 	m.connectCalls = append(m.connectCalls, connectCall{subsysNQN, trAddr, trSvcID})
 	return m.connectErr
 }
@@ -320,6 +322,33 @@ func TestNodeStageVolume_MountAccess(t *testing.T) { //nolint:gocyclo // multipl
 	}
 	if state.NVMeoF.SubsysNQN != nqn {
 		t.Errorf("state.NVMeoF.SubsysNQN = %q, want %q", state.NVMeoF.SubsysNQN, nqn)
+	}
+}
+
+// TestNodeStageVolume_MalformedNVMeoFTuning_NoConnect verifies that a
+// malformed ctrl-loss-tmo in the VolumeContext fails staging before any
+// connect or mount, instead of silently connecting with kernel defaults.
+func TestNodeStageVolume_MalformedNVMeoFTuning_NoConnect(t *testing.T) {
+	t.Parallel()
+	env := newNodeTestEnv(t)
+	stagingPath := t.TempDir()
+	volCtx := mountVolumeContext("nqn.2026-01.com.bhyoo.pillar-csi:tank.pvc-tuned", "192.0.2.1")
+	volCtx[paramNVMeOFCtrlLossTmo] = "ten minutes"
+
+	_, err := env.srv.NodeStageVolume(context.Background(), &csi.NodeStageVolumeRequest{
+		VolumeId:          "tank/pvc-tuned",
+		StagingTargetPath: stagingPath,
+		VolumeCapability:  mountCap("ext4"),
+		VolumeContext:     volCtx,
+	})
+	if err == nil {
+		t.Fatal("expected NodeStageVolume to fail for malformed ctrl-loss-tmo")
+	}
+	if len(env.connector.connectCalls) != 0 {
+		t.Fatalf("Connect must not be called for malformed tuning, got %d calls", len(env.connector.connectCalls))
+	}
+	if mounted, _ := env.mounter.IsMounted(stagingPath); mounted { //nolint:errcheck // mock never errors
+		t.Fatal("staging path must not be mounted after rejected NodeStageVolume")
 	}
 }
 

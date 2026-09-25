@@ -15,6 +15,8 @@ import (
 	"context"
 	"os"
 	"sync"
+
+	csidrv "github.com/bhyoo/pillar-csi/internal/csi"
 )
 
 // fakeConnector pretends every NVMe-oF subsystem is reachable and reports a
@@ -23,8 +25,10 @@ type fakeConnector struct {
 	devicePath string
 }
 
-func (c *fakeConnector) Connect(_ context.Context, _, _, _ string) error { return nil }
-func (c *fakeConnector) Disconnect(_ context.Context, _ string) error    { return nil }
+func (c *fakeConnector) Connect(_ context.Context, _, _, _ string, _ csidrv.NVMeoFConnectOptions) error {
+	return nil
+}
+func (c *fakeConnector) Disconnect(_ context.Context, _ string) error { return nil }
 
 func (c *fakeConnector) GetDevicePath(_ context.Context, _ string) (string, error) {
 	return c.devicePath, nil

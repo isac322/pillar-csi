@@ -22,8 +22,58 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
+
+// NVMeoFConnectOptions carries optional kernel fabrics tuning for a connect.
+// A nil field is omitted from the connect string so the kernel default
+// applies (ctrl_loss_tmo=600, reconnect_delay=10 on Linux).  Explicit values,
+// including 0 and -1, are passed through verbatim.
+type NVMeoFConnectOptions struct {
+	// CtrlLossTmo maps to the ctrl_loss_tmo fabrics option (seconds).
+	CtrlLossTmo *int32
+	// ReconnectDelay maps to the reconnect_delay fabrics option (seconds).
+	ReconnectDelay *int32
+}
+
+// ParseNVMeoFConnectOptions extracts the NVMe-oF fabrics tuning parameters
+// that CreateVolume copied into the VolumeContext.  Absent or empty keys leave
+// the option unset; a present value that is not a base-10 int32 is an error
+// so a misconfigured timeout is never silently replaced by the kernel default.
+func ParseNVMeoFConnectOptions(volCtx map[string]string) (NVMeoFConnectOptions, error) {
+	var opts NVMeoFConnectOptions
+	for _, f := range []struct {
+		key string
+		dst **int32
+	}{
+		{paramNVMeOFCtrlLossTmo, &opts.CtrlLossTmo},
+		{paramNVMeOFReconnectDelay, &opts.ReconnectDelay},
+	} {
+		raw := volCtx[f.key]
+		if raw == "" {
+			continue
+		}
+		v, err := strconv.ParseInt(raw, 10, 32)
+		if err != nil {
+			return NVMeoFConnectOptions{}, fmt.Errorf("parse %s=%q: %w", f.key, raw, err)
+		}
+		v32 := int32(v)
+		*f.dst = &v32
+	}
+	return opts, nil
+}
+
+// AppendTo appends the set options to a fabrics connect string.
+func (o NVMeoFConnectOptions) AppendTo(connectOpts string) string {
+	if o.CtrlLossTmo != nil {
+		connectOpts += ",ctrl_loss_tmo=" + strconv.Itoa(int(*o.CtrlLossTmo))
+	}
+	if o.ReconnectDelay != nil {
+		connectOpts += ",reconnect_delay=" + strconv.Itoa(int(*o.ReconnectDelay))
+	}
+	return connectOpts
+}
 
 // NVMeoFConnector is the production Connector implementation that uses the
 // Linux /dev/nvme-fabrics kernel character device to manage NVMe-oF TCP
@@ -66,13 +116,21 @@ var _ Connector = (*NVMeoFConnector)(nil)
 // Connect establishes an NVMe-oF TCP connection to the given subsystem NQN
 // at the given transport address (trAddr) and service ID (TCP port, trSvcID).
 //
-// It is idempotent: if the subsystem NQN is already connected (detected by
-// scanning /sys/class/nvme-subsystem/) the method returns nil immediately.
+// It is idempotent: if the subsystem NQN already has a live or reconnecting
+// controller (see SubsystemHasActiveController) the method returns nil
+// immediately.
 //
 // On a new connection it opens /dev/nvme-fabrics and writes:
 //
-//	transport=tcp,traddr=<trAddr>,trsvcid=<trSvcID>,nqn=<subsysNQN>
-func (c *NVMeoFConnector) Connect(_ context.Context, subsysNQN, trAddr, trSvcID string) error {
+//	transport=tcp,traddr=<trAddr>,trsvcid=<trSvcID>,nqn=<subsysNQN>[,ctrl_loss_tmo=N][,reconnect_delay=N]
+//
+// connectOpts only affect a new connection; an existing controller keeps the
+// options it was created with.
+func (c *NVMeoFConnector) Connect(
+	_ context.Context,
+	subsysNQN, trAddr, trSvcID string,
+	connectOpts NVMeoFConnectOptions,
+) error {
 	already, err := c.isConnected(subsysNQN)
 	if err != nil {
 		return fmt.Errorf("nvmeof Connect: check existing connection for %q: %w", subsysNQN, err)
@@ -87,7 +145,8 @@ func (c *NVMeoFConnector) Connect(_ context.Context, subsysNQN, trAddr, trSvcID 
 	}
 	defer f.Close() //nolint:errcheck
 
-	opts := fmt.Sprintf("transport=tcp,traddr=%s,trsvcid=%s,nqn=%s", trAddr, trSvcID, subsysNQN)
+	opts := connectOpts.AppendTo(
+		fmt.Sprintf("transport=tcp,traddr=%s,trsvcid=%s,nqn=%s", trAddr, trSvcID, subsysNQN))
 	_, err = fmt.Fprintf(f, "%s\n", opts)
 	if err != nil {
 		return fmt.Errorf("nvmeof Connect: write to %s (nqn=%s): %w",
@@ -152,6 +211,58 @@ func IsNVMeControllerEntry(name string) bool {
 		return false
 	}
 	return !strings.ContainsRune(strings.TrimPrefix(name, "nvme"), 'n')
+}
+
+// SubsystemHasActiveController reports whether the subsystem directory
+// subsysPath (/sys/class/nvme-subsystem/<name>) holds at least one NVMe
+// controller that still owns or is re-establishing the session.
+//
+// After ctrl_loss_tmo expires the kernel removes every controller, but the
+// subsystem entry (with its subsysnqn) can linger; that subsystem must count
+// as disconnected so a fresh fabrics connect is issued.  Controllers in
+// "live", "connecting", "resetting", or "new" state count as active so a
+// reconnecting session is never duplicated.  Controllers reporting "dead",
+// "deleting", or "deleting (no IO)" are ignored.  A controller that vanishes
+// between the directory scan and the state read (its sysfs link now dangles)
+// is ignored too.  A controller that still exists but has no state attribute
+// (absent on some kernels) counts as active.
+func SubsystemHasActiveController(subsysPath string) (bool, error) {
+	entries, err := os.ReadDir(subsysPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("read subsystem dir %s: %w", subsysPath, err)
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if !IsNVMeControllerEntry(name) {
+			continue
+		}
+		ctrlPath := filepath.Join(subsysPath, name)
+		statePath := filepath.Join(ctrlPath, "state")
+		state, readErr := os.ReadFile(statePath) //nolint:gosec // G304: sysfs path under connector-controlled root.
+		if readErr != nil {
+			if !os.IsNotExist(readErr) {
+				return false, fmt.Errorf("read controller state %s: %w", statePath, readErr)
+			}
+			_, statErr := os.Stat(ctrlPath)
+			if os.IsNotExist(statErr) {
+				continue // removed while scanning (ctrl_loss_tmo teardown)
+			}
+			if statErr != nil {
+				return false, fmt.Errorf("stat controller %s: %w", ctrlPath, statErr)
+			}
+			return true, nil
+		}
+		switch strings.TrimSpace(string(state)) {
+		case "dead", "deleting", "deleting (no IO)":
+			continue
+		default:
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // DeleteSubsystemControllers writes "1" to each controller's delete_controller
@@ -238,8 +349,8 @@ func (c *NVMeoFConnector) GetDevicePath(_ context.Context, subsysNQN string) (st
 // isConnected helper
 // ─────────────────────────────────────────────────────────────────────────────
 
-// isConnected returns true when the given NQN already has an entry in
-// /sys/class/nvme-subsystem/.
+// isConnected returns true when a subsystem with the given NQN exists in
+// /sys/class/nvme-subsystem/ and has an active controller.
 func (c *NVMeoFConnector) isConnected(subsysNQN string) (bool, error) {
 	subsysDir := filepath.Join(c.sysfsRoot, "class", "nvme-subsystem")
 
@@ -257,7 +368,14 @@ func (c *NVMeoFConnector) isConnected(subsysNQN string) (bool, error) {
 		if readErr != nil {
 			continue
 		}
-		if strings.TrimSpace(string(nqnBytes)) == subsysNQN {
+		if strings.TrimSpace(string(nqnBytes)) != subsysNQN {
+			continue
+		}
+		active, activeErr := SubsystemHasActiveController(filepath.Join(subsysDir, entry.Name()))
+		if activeErr != nil {
+			return false, activeErr
+		}
+		if active {
 			return true, nil
 		}
 	}

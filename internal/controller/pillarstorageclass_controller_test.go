@@ -1639,6 +1639,30 @@ var _ = Describe("buildStorageClassParams", func() {
 		Expect(params["pillar-csi.bhyoo.com/nvmeof-port"]).To(Equal("4420"))
 	})
 
+	It("should propagate configured NVMe-oF reconnect tuning, preserving explicit zero", func() {
+		binding := makeBinding("pool", "proto", nil)
+		pool := makeZFSPool("t", "tank", "", pillarcsiv1alpha1.BackendTypeZFSZvol)
+		protocol := makeProtocolNVMeOF(4420)
+		ctrlLossTmo, reconnectDelay := int32(0), int32(5)
+		protocol.Spec.NVMeOFTCP.CtrlLossTmo = &ctrlLossTmo
+		protocol.Spec.NVMeOFTCP.ReconnectDelay = &reconnectDelay
+
+		params := buildStorageClassParams(binding, pool, protocol)
+
+		Expect(params).To(HaveKeyWithValue("pillar-csi.bhyoo.com/nvmeof-ctrl-loss-tmo", "0"))
+		Expect(params).To(HaveKeyWithValue("pillar-csi.bhyoo.com/nvmeof-reconnect-delay", "5"))
+	})
+
+	It("should omit NVMe-oF reconnect tuning when unset so kernel defaults apply", func() {
+		binding := makeBinding("pool", "proto", nil)
+		pool := makeZFSPool("t", "tank", "", pillarcsiv1alpha1.BackendTypeZFSZvol)
+
+		params := buildStorageClassParams(binding, pool, makeProtocolNVMeOF(4420))
+
+		Expect(params).NotTo(HaveKey("pillar-csi.bhyoo.com/nvmeof-ctrl-loss-tmo"))
+		Expect(params).NotTo(HaveKey("pillar-csi.bhyoo.com/nvmeof-reconnect-delay"))
+	})
+
 	It("should include iscsi-port for iSCSI protocol", func() {
 		binding := makeBinding("pool", "proto", nil)
 		pool := &pillarcsiv1alpha1.PillarStore{

@@ -142,10 +142,11 @@ func stageBindTarget(stagingTargetPath string, volCap *csi.VolumeCapability) str
 // A test implementation returns pre-programmed responses without touching the kernel.
 type Connector interface {
 	// Connect establishes an NVMe-oF TCP connection to the given subsystem NQN
-	// at the given transport address and service ID (port).
+	// at the given transport address and service ID (port), applying the
+	// optional fabrics tuning in opts (nil fields keep the kernel defaults).
 	// Implementations must be idempotent: connecting to an already-connected
 	// subsystem must succeed without error.
-	Connect(ctx context.Context, subsysNQN, trAddr, trSvcID string) error
+	Connect(ctx context.Context, subsysNQN, trAddr, trSvcID string, opts NVMeoFConnectOptions) error
 
 	// Disconnect tears down the NVMe-oF connection to the given subsystem NQN.
 	// Implementations must be idempotent: disconnecting an NQN that is not
@@ -187,7 +188,11 @@ var _ ProtocolHandler = (*connectorProtocolHandlerAdapter)(nil)
 // It calls conn.Connect then polls conn.GetDevicePath until the device appears
 // or the deadline is exceeded.
 func (a *connectorProtocolHandlerAdapter) Attach(ctx context.Context, params AttachParams) (*AttachResult, error) {
-	connErr := a.conn.Connect(ctx, params.ConnectionID, params.Address, params.Port)
+	connectOpts, optsErr := ParseNVMeoFConnectOptions(params.Extra)
+	if optsErr != nil {
+		return nil, fmt.Errorf("connect: %w", optsErr)
+	}
+	connErr := a.conn.Connect(ctx, params.ConnectionID, params.Address, params.Port, connectOpts)
 	if connErr != nil {
 		return nil, fmt.Errorf("connect: %w", connErr)
 	}

@@ -123,6 +123,8 @@ func newNVMeoFTCPHandlerWithConnector(c *NVMeoFConnector) *NVMeoFTCPHandler {
 //   - ConnectionID — the subsystem NQN (e.g. "nqn.2024-01.com.example:vol1")
 //   - Address      — the NVMe-oF TCP target IP address
 //   - Port         — the NVMe-oF TCP target port (e.g. "4420")
+//   - Extra        — optional ctrl_loss_tmo / reconnect_delay tuning (see
+//     ParseNVMeoFConnectOptions); absent keys keep the kernel defaults
 func (h *NVMeoFTCPHandler) Attach(ctx context.Context, params AttachParams) (*AttachResult, error) {
 	subsysNQN := params.ConnectionID
 	trAddr := params.Address
@@ -138,8 +140,13 @@ func (h *NVMeoFTCPHandler) Attach(ctx context.Context, params AttachParams) (*At
 		return nil, fmt.Errorf("nvmeof-tcp Attach: Port is required")
 	}
 
+	connectOpts, err := ParseNVMeoFConnectOptions(params.Extra)
+	if err != nil {
+		return nil, fmt.Errorf("nvmeof-tcp Attach: %w", err)
+	}
+
 	// Step 1: Connect to the NVMe-oF TCP target.
-	err := h.connector.Connect(ctx, subsysNQN, trAddr, trSvcID)
+	err = h.connector.Connect(ctx, subsysNQN, trAddr, trSvcID, connectOpts)
 	if err != nil {
 		return nil, fmt.Errorf("nvmeof-tcp Attach: connect to %q at %s:%s: %w",
 			subsysNQN, trAddr, trSvcID, err)

@@ -203,6 +203,11 @@ spec:
     maxQueueSize: 128
     inCapsuleDataSize: 16384
     # initiator 타임아웃/재연결 파라미터 (pillar-node가 nvme connect 시 적용)
+    # 생략 시 connect 문자열에서 빠지고 커널 기본값(600/10)이 적용된다.
+    # 신규 볼륨의 VolumeContext에만 기록되므로 기존 PV에는 소급 적용되지 않는다.
+    # 커널 의미(Linux fabrics.c): ctrlLossTmo=0 → 재연결 시도 없음, 음수(PVC override로만 가능) → 무한 재연결.
+    # reconnectDelay=0은 CRD상 허용되지만 커널이 EINVAL로 거부하므로 NodeStage connect가 명시적으로 실패한다.
+    # StorageClass parameters는 불변이므로 기존 바인딩에 이 값을 새로 설정하면 StorageClass 재생성이 필요하다.
     ctrlLossTmo: 600                   # 초. target 유실 시 최대 대기 시간
     reconnectDelay: 10                 # 초. 재연결 시도 간격
   # 블록 프로토콜에서 volumeMode: Filesystem일 때 적용

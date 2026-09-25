@@ -174,7 +174,11 @@ func stateDirWritable(stateDir string) bool {
 //
 // On a new connection it opens /dev/nvme-fabrics and writes:
 //
-//	transport=tcp,traddr=<trAddr>,trsvcid=<trSvcID>,nqn=<subsysNQN>,hostnqn=<c.hostNQN>,hostid=<c.hostID>
+//	transport=tcp,traddr=<trAddr>,trsvcid=<trSvcID>,nqn=<subsysNQN>,
+//	    hostnqn=<c.hostNQN>,hostid=<c.hostID>[,ctrl_loss_tmo=N][,reconnect_delay=N]
+//
+// ctrl_loss_tmo / reconnect_delay are appended only when the VolumeContext
+// carries them; otherwise the kernel defaults apply.
 //
 // Both identity fields are mandatory:
 //
@@ -196,12 +200,20 @@ func stateDirWritable(stateDir string) bool {
 // recent Linux kernels reject a hostnqn without a matching hostid UUID
 // with EINVAL at parse time. Kept as a standalone function so the format
 // can be regression-tested without opening the kernel device.
-func buildFabricsConnectOpts(trAddr, trSvcID, subsysNQN, hostNQN, hostID string) string {
-	return fmt.Sprintf("transport=tcp,traddr=%s,trsvcid=%s,nqn=%s,hostnqn=%s,hostid=%s",
-		trAddr, trSvcID, subsysNQN, hostNQN, hostID)
+func buildFabricsConnectOpts(
+	trAddr, trSvcID, subsysNQN, hostNQN, hostID string,
+	connectOpts csisvc.NVMeoFConnectOptions,
+) string {
+	return connectOpts.AppendTo(fmt.Sprintf(
+		"transport=tcp,traddr=%s,trsvcid=%s,nqn=%s,hostnqn=%s,hostid=%s",
+		trAddr, trSvcID, subsysNQN, hostNQN, hostID))
 }
 
-func (c *fabricsConnector) nvmeConnect(ctx context.Context, subsysNQN, trAddr, trSvcID string) error {
+func (c *fabricsConnector) nvmeConnect(
+	ctx context.Context,
+	subsysNQN, trAddr, trSvcID string,
+	connectOpts csisvc.NVMeoFConnectOptions,
+) error {
 	already, err := c.isConnected(ctx, subsysNQN)
 	if err != nil {
 		return fmt.Errorf("fabricsConnector nvmeConnect: check existing connection for %q: %w", subsysNQN, err)
@@ -221,7 +233,7 @@ func (c *fabricsConnector) nvmeConnect(ctx context.Context, subsysNQN, trAddr, t
 	// initiates the TCP connection via nvmf_create_ctrl().  Build the
 	// string through buildFabricsConnectOpts so the format is unit-testable
 	// without opening /dev/nvme-fabrics.
-	opts := buildFabricsConnectOpts(trAddr, trSvcID, subsysNQN, c.hostNQN, c.hostID)
+	opts := buildFabricsConnectOpts(trAddr, trSvcID, subsysNQN, c.hostNQN, c.hostID, connectOpts)
 	_, err = fmt.Fprintf(f, "%s\n", opts)
 	if err != nil {
 		return fmt.Errorf("fabricsConnector nvmeConnect: write to %s (nqn=%s): %w",
@@ -615,7 +627,10 @@ func (*fabricsConnector) nvmeIDCtrlSubNQN(ctx context.Context, devPath string) (
 // It tries /sys/class/nvme-subsystem/ first (fast path), then falls back to
 // scanning /dev/nvme*n* with nvme id-ctrl (for containerized environments
 // where the sysfs nvme-subsystem class is restricted by network namespace).
-func (c *fabricsConnector) isConnected(ctx context.Context, subsysNQN string) (bool, error) { //nolint:unparam
+// A matching subsystem only counts when csisvc.SubsystemHasActiveController
+// reports a live or reconnecting controller; the empty subsystem left behind
+// after ctrl_loss_tmo removes every controller is treated as disconnected.
+func (c *fabricsConnector) isConnected(ctx context.Context, subsysNQN string) (bool, error) {
 	// ── Primary: sysfs scan ──────────────────────────────────────────────────
 	subsysDir := filepath.Join(c.sysfsRoot, "class", "nvme-subsystem")
 	entries, err := os.ReadDir(subsysDir)
@@ -626,11 +641,18 @@ func (c *fabricsConnector) isConnected(ctx context.Context, subsysNQN string) (b
 			if readErr != nil {
 				continue
 			}
-			if strings.TrimSpace(string(nqnBytes)) == subsysNQN {
+			if strings.TrimSpace(string(nqnBytes)) != subsysNQN {
+				continue
+			}
+			active, activeErr := csisvc.SubsystemHasActiveController(filepath.Join(subsysDir, entry.Name()))
+			if activeErr != nil {
+				return false, fmt.Errorf("fabricsConnector isConnected: %w", activeErr)
+			}
+			if active {
 				return true, nil
 			}
 		}
-		// Sysfs is readable; subsystem not found → not connected.
+		// Sysfs is readable; no active controller for the NQN → not connected.
 		return false, nil
 	}
 
@@ -668,8 +690,13 @@ func (c *fabricsConnector) Attach(ctx context.Context, params csisvc.AttachParam
 	trAddr := params.Address
 	trSvcID := params.Port
 
+	connectOpts, optsErr := csisvc.ParseNVMeoFConnectOptions(params.Extra)
+	if optsErr != nil {
+		return nil, fmt.Errorf("fabricsConnector Attach: %w", optsErr)
+	}
+
 	// Step 1: establish the NVMe-oF TCP connection (idempotent).
-	connectErr := c.nvmeConnect(ctx, subsysNQN, trAddr, trSvcID)
+	connectErr := c.nvmeConnect(ctx, subsysNQN, trAddr, trSvcID, connectOpts)
 	if connectErr != nil {
 		return nil, fmt.Errorf("fabricsConnector Attach: connect to %q at %s:%s: %w",
 			subsysNQN, trAddr, trSvcID, connectErr)

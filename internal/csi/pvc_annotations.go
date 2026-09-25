@@ -114,12 +114,14 @@ const (
 
 	// ParamNVMeOFCtrlLossTmo is the controller loss timeout in seconds.
 	// Corresponds to PillarProtocol.spec.nvmeofTcp.ctrlLossTmo.
-	// Passed to "nvme connect --ctrl-loss-tmo".
+	// Copied into the VolumeContext by CreateVolume and written as the
+	// ctrl_loss_tmo /dev/nvme-fabrics option at NodeStageVolume.
 	paramNVMeOFCtrlLossTmo = "pillar-csi.bhyoo.com/nvmeof-ctrl-loss-tmo"
 
 	// ParamNVMeOFReconnectDelay is the reconnect attempt interval in seconds.
 	// Corresponds to PillarProtocol.spec.nvmeofTcp.reconnectDelay.
-	// Passed to "nvme connect --reconnect-delay".
+	// Copied into the VolumeContext by CreateVolume and written as the
+	// reconnect_delay /dev/nvme-fabrics option at NodeStageVolume.
 	paramNVMeOFReconnectDelay = "pillar-csi.bhyoo.com/nvmeof-reconnect-delay"
 
 	// ISCSI tuning parameters.

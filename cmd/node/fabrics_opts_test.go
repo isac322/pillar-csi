@@ -17,11 +17,14 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
+
+	csisvc "github.com/bhyoo/pillar-csi/internal/csi"
 )
 
 // TestBuildFabricsConnectOpts_IncludesHostNQNAndHostID locks down the option
@@ -49,7 +52,7 @@ func TestBuildFabricsConnectOpts_IncludesHostNQNAndHostID(t *testing.T) {
 		hostNQN   = "nqn.2014-08.org.nvmexpress:uuid:abc-host"
 		hostID    = "11111111-2222-3333-4444-555555555555"
 	)
-	got := buildFabricsConnectOpts(trAddr, trSvcID, subsysNQN, hostNQN, hostID)
+	got := buildFabricsConnectOpts(trAddr, trSvcID, subsysNQN, hostNQN, hostID, csisvc.NVMeoFConnectOptions{})
 
 	for _, want := range []string{
 		"transport=tcp",
@@ -72,9 +75,133 @@ func TestBuildFabricsConnectOpts_IncludesHostNQNAndHostID(t *testing.T) {
 // builder emits one on its own, producing hostid=<uuid>\n which the UUID
 // parser then rejects.
 func TestBuildFabricsConnectOpts_NoTrailingNewline(t *testing.T) {
-	got := buildFabricsConnectOpts("a", "1", "n", "h", "i")
+	got := buildFabricsConnectOpts("a", "1", "n", "h", "i", csisvc.NVMeoFConnectOptions{})
 	if strings.ContainsAny(got, "\n\r") {
 		t.Errorf("option string must not include CR/LF; got %q", got)
+	}
+}
+
+// newTestFabricsConnector builds a fabricsConnector over a fake sysfs tree
+// containing one subsystem for nqn with the given controllers (name → state;
+// "" writes no state attribute) and a regular file standing in for
+// /dev/nvme-fabrics.
+func newTestFabricsConnector(
+	t *testing.T, nqn string, controllers map[string]string,
+) (conn *fabricsConnector, fabricsDev string) {
+	t.Helper()
+	root := t.TempDir()
+	subsys := filepath.Join(root, "class", "nvme-subsystem", "nvme-subsys0")
+	if err := os.MkdirAll(filepath.Join(subsys, "nvme0n1"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(subsys, "subsysnqn"), []byte(nqn+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for name, state := range controllers {
+		if err := os.MkdirAll(filepath.Join(subsys, name), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if state != "" {
+			if err := os.WriteFile(filepath.Join(subsys, name, "state"), []byte(state+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	fabricsDev = filepath.Join(t.TempDir(), "nvme-fabrics")
+	if err := os.WriteFile(fabricsDev, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	conn = &fabricsConnector{sysfsRoot: root, fabricsDev: fabricsDev, hostNQN: "h", hostID: "i"}
+	return conn, fabricsDev
+}
+
+// TestFabricsConnectorNvmeConnect_ControllerStates is the production-path
+// regression for issue #85: once ctrl_loss_tmo removed every controller the
+// lingering subsystem made nvmeConnect skip the connect, so restage waited
+// 30 s for a namespace that never appeared.  A dead-only subsystem must
+// reconnect; a live or reconnecting controller must not be duplicated.
+func TestFabricsConnectorNvmeConnect_ControllerStates(t *testing.T) {
+	const nqn = "nqn.2026-01.io.pillar-csi:pvc-test"
+	cases := []struct {
+		name        string
+		controllers map[string]string
+		wantConnect bool
+	}{
+		{name: "empty lingering subsystem", wantConnect: true},
+		{name: "dead controller", controllers: map[string]string{"nvme0": "dead"}, wantConnect: true},
+		{name: "live controller", controllers: map[string]string{"nvme0": "live"}, wantConnect: false},
+		{name: "connecting controller", controllers: map[string]string{"nvme0": "connecting"}, wantConnect: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c, fabricsDev := newTestFabricsConnector(t, nqn, tc.controllers)
+			err := c.nvmeConnect(context.Background(), nqn, "10.0.0.7", "4420", csisvc.NVMeoFConnectOptions{})
+			if err != nil {
+				t.Fatalf("nvmeConnect: %v", err)
+			}
+			content, err := os.ReadFile(fabricsDev) //nolint:gosec
+			if err != nil {
+				t.Fatal(err)
+			}
+			if gotConnect := len(content) != 0; gotConnect != tc.wantConnect {
+				t.Fatalf("fabrics connect issued = %v, want %v (written %q)", gotConnect, tc.wantConnect, content)
+			}
+		})
+	}
+}
+
+// TestFabricsConnectorAttach_ForwardsReconnectTuning verifies the production
+// node appends VolumeContext ctrl_loss_tmo / reconnect_delay to the connect
+// string, and omits them when absent so kernel defaults stay in force.
+func TestFabricsConnectorAttach_ForwardsReconnectTuning(t *testing.T) {
+	const nqn = "nqn.2026-01.io.pillar-csi:pvc-test"
+	base := "transport=tcp,traddr=10.0.0.7,trsvcid=4420,nqn=" + nqn + ",hostnqn=h,hostid=i"
+	cases := []struct {
+		name  string
+		extra map[string]string
+		want  string
+	}{
+		{name: "absent keeps kernel defaults", extra: map[string]string{}, want: base},
+		{
+			name: "configured values",
+			extra: map[string]string{
+				"pillar-csi.bhyoo.com/nvmeof-ctrl-loss-tmo":   "0",
+				"pillar-csi.bhyoo.com/nvmeof-reconnect-delay": "5",
+			},
+			want: base + ",ctrl_loss_tmo=0,reconnect_delay=5",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Empty nvme-subsystem class: Connect is issued, and the device
+			// poll only sees "NQN not in sysfs" (no /dev mknod, no nvme-cli).
+			// The canceled context ends the poll after the first scan.
+			root := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(root, "class", "nvme-subsystem"), 0o750); err != nil {
+				t.Fatal(err)
+			}
+			fabricsDev := filepath.Join(t.TempDir(), "nvme-fabrics")
+			if err := os.WriteFile(fabricsDev, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			c := &fabricsConnector{sysfsRoot: root, fabricsDev: fabricsDev, hostNQN: "h", hostID: "i"}
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			_, _ = c.Attach(ctx, csisvc.AttachParams{ //nolint:errcheck // device never appears; only the write matters
+				ProtocolType: csisvc.ProtocolNVMeoFTCP,
+				ConnectionID: nqn,
+				Address:      "10.0.0.7",
+				Port:         "4420",
+				Extra:        tc.extra,
+			})
+			content, err := os.ReadFile(fabricsDev) //nolint:gosec
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := strings.TrimRight(string(content), "\n"); got != tc.want {
+				t.Fatalf("connect string\n  want: %q\n  got:  %q", tc.want, got)
+			}
+		})
 	}
 }
 

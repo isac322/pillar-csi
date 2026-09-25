@@ -93,9 +93,10 @@ func TestNVMeoFTCPHandler_Attach_Success(t *testing.T) {
 		port = "4420"
 	)
 
-	// Prepare sysfs with subsystem + namespace entries (device already visible).
-	// NQN already exists in sysfs so Connect is a no-op (idempotent).
+	// Prepare sysfs with subsystem + live controller + namespace entries
+	// (device already visible), so Connect is a no-op (idempotent).
 	sysfsRoot := fakeSysfs(t, nqn, true /* addNamespace */)
+	addSubsysController(t, sysfsRoot, "nvme0", "live")
 	fabricsDev := fakeFabricsDev(t)
 
 	h := newTestHandler(sysfsRoot, fabricsDev)
@@ -233,6 +234,68 @@ func TestNVMeoFTCPHandler_Attach_MissingPort(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected error for empty Port, got nil")
+	}
+}
+
+// TestNVMeoFTCPHandler_Attach_ForwardsReconnectTuning verifies that the
+// ctrl_loss_tmo / reconnect_delay VolumeContext keys CreateVolume propagates
+// reach the fabrics connect string at NodeStageVolume.
+func TestNVMeoFTCPHandler_Attach_ForwardsReconnectTuning(t *testing.T) {
+	const nqn = "nqn.2024-01.com.example:vol1"
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "class", "nvme-subsystem"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	fabricsDev := fakeFabricsDev(t)
+	h := newTestHandler(root, fabricsDev)
+	h.pollTimeout = 20 * time.Millisecond
+
+	_, _ = h.Attach(context.Background(), AttachParams{ //nolint:errcheck // device never appears; only the write matters
+		ProtocolType: ProtocolNVMeoFTCP,
+		ConnectionID: nqn,
+		Address:      "192.168.1.10",
+		Port:         "4420",
+		Extra: map[string]string{
+			VolumeContextKeyTargetID:  nqn,
+			paramNVMeOFCtrlLossTmo:    "1800",
+			paramNVMeOFReconnectDelay: "5",
+		},
+	})
+
+	content, err := os.ReadFile(fabricsDev) //nolint:gosec
+	if err != nil {
+		t.Fatalf("read fabricsDev: %v", err)
+	}
+	want := "transport=tcp,traddr=192.168.1.10,trsvcid=4420,nqn=" + nqn + ",ctrl_loss_tmo=1800,reconnect_delay=5"
+	if got := strings.TrimRight(string(content), "\n"); got != want {
+		t.Fatalf("connect string\n  want: %q\n  got:  %q", want, got)
+	}
+}
+
+// TestNVMeoFTCPHandler_Attach_MalformedTuning_NoConnect verifies that a
+// malformed tuning value fails Attach before any fabrics connect, instead of
+// silently connecting with kernel defaults.
+func TestNVMeoFTCPHandler_Attach_MalformedTuning_NoConnect(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "class", "nvme-subsystem"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	fabricsDev := fakeFabricsDev(t)
+	h := newTestHandler(root, fabricsDev)
+
+	_, err := h.Attach(context.Background(), AttachParams{
+		ProtocolType: ProtocolNVMeoFTCP,
+		ConnectionID: "nqn.2024-01.com.example:vol1",
+		Address:      "192.168.1.10",
+		Port:         "4420",
+		Extra:        map[string]string{paramNVMeOFCtrlLossTmo: "forever"},
+	})
+	if err == nil || !strings.Contains(err.Error(), paramNVMeOFCtrlLossTmo) {
+		t.Fatalf("expected error naming %s, got %v", paramNVMeOFCtrlLossTmo, err)
+	}
+	content, _ := os.ReadFile(fabricsDev) //nolint:gosec,errcheck
+	if len(content) != 0 {
+		t.Fatalf("no connect must be issued, got %q", content)
 	}
 }
 

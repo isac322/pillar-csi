@@ -500,6 +500,15 @@ func buildStorageClassParams(
 			} else {
 				params["pillar-csi.bhyoo.com/acl-enabled"] = "false"
 			}
+			// Initiator reconnect tuning, applied by the node at fabrics
+			// connect.  Emitted only when set (0 included) so an unset field
+			// keeps the kernel defaults.
+			if v := protocol.Spec.NVMeOFTCP.CtrlLossTmo; v != nil {
+				params["pillar-csi.bhyoo.com/nvmeof-ctrl-loss-tmo"] = fmt.Sprintf("%d", *v)
+			}
+			if v := protocol.Spec.NVMeOFTCP.ReconnectDelay; v != nil {
+				params["pillar-csi.bhyoo.com/nvmeof-reconnect-delay"] = fmt.Sprintf("%d", *v)
+			}
 		}
 	case pillarcsiv1alpha1.ProtocolTypeISCSI:
 		if protocol.Spec.ISCSI != nil {

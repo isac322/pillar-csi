@@ -87,7 +87,9 @@ type csiMockConnector struct {
 // Verify csiMockConnector implements the full Connector interface.
 var _ pillarcsi.Connector = (*csiMockConnector)(nil)
 
-func (m *csiMockConnector) Connect(ctx context.Context, subsysNQN, trAddr, trSvcID string) error {
+func (m *csiMockConnector) Connect(
+	ctx context.Context, subsysNQN, trAddr, trSvcID string, _ pillarcsi.NVMeoFConnectOptions,
+) error {
 	m.mu.Lock()
 	m.connectCalls++
 	fn := m.connectFn

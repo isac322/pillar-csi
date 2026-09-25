@@ -454,6 +454,65 @@ func TestCreateVolume_FirstCall(t *testing.T) {
 	}
 }
 
+// TestCreateVolume_VolumeContextCarriesNVMeoFReconnectTuning verifies that
+// the merged ctrl_loss_tmo / reconnect_delay parameters reach the node via the
+// VolumeContext (explicit ctrl_loss_tmo=0 preserved), that an idempotent retry
+// returns the same keys, and that unset parameters stay absent so kernel
+// defaults apply.
+func TestCreateVolume_VolumeContextCarriesNVMeoFReconnectTuning(t *testing.T) {
+	t.Parallel()
+	env := newControllerTestEnv(t)
+	ctx := context.Background()
+
+	req := baseCreateVolumeRequest()
+	req.Parameters[paramNVMeOFCtrlLossTmo] = "0"
+	req.Parameters[paramNVMeOFReconnectDelay] = "5"
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		resp, err := env.srv.CreateVolume(ctx, req)
+		if err != nil {
+			t.Fatalf("attempt %d: CreateVolume: %v", attempt, err)
+		}
+		vc := resp.GetVolume().GetVolumeContext()
+		if vc[paramNVMeOFCtrlLossTmo] != "0" || vc[paramNVMeOFReconnectDelay] != "5" {
+			t.Fatalf("attempt %d: VolumeContext tuning = (%q, %q), want (\"0\", \"5\")",
+				attempt, vc[paramNVMeOFCtrlLossTmo], vc[paramNVMeOFReconnectDelay])
+		}
+	}
+
+	unsetEnv := newControllerTestEnv(t)
+	resp, err := unsetEnv.srv.CreateVolume(ctx, baseCreateVolumeRequest())
+	if err != nil {
+		t.Fatalf("CreateVolume without tuning: %v", err)
+	}
+	vc := resp.GetVolume().GetVolumeContext()
+	for _, k := range []string{paramNVMeOFCtrlLossTmo, paramNVMeOFReconnectDelay} {
+		if _, ok := vc[k]; ok {
+			t.Errorf("VolumeContext must not carry %q when unset", k)
+		}
+	}
+}
+
+// TestCreateVolume_MalformedNVMeoFTuning_RejectedBeforeProvisioning verifies
+// that a non-integer reconnect tuning value fails CreateVolume with
+// InvalidArgument before any agent call, instead of provisioning a PV whose
+// immutable VolumeContext could never be staged.
+func TestCreateVolume_MalformedNVMeoFTuning_RejectedBeforeProvisioning(t *testing.T) {
+	t.Parallel()
+	env := newControllerTestEnv(t)
+	req := baseCreateVolumeRequest()
+	req.Parameters[paramNVMeOFCtrlLossTmo] = "10m"
+
+	_, err := env.srv.CreateVolume(context.Background(), req)
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("CreateVolume code = %v (err %v), want InvalidArgument", status.Code(err), err)
+	}
+	if env.agent.createVolumeCalls != 0 || env.agent.exportVolumeCalls != 0 {
+		t.Fatalf("agent must not be called: create=%d export=%d",
+			env.agent.createVolumeCalls, env.agent.exportVolumeCalls)
+	}
+}
+
 // TestCreateVolume_UsesBackendTypeForAccessType verifies that the controller
 // derives agent access type from the backend type, not the network protocol.
 func TestCreateVolume_UsesBackendTypeForAccessType(t *testing.T) {
@@ -1281,6 +1340,30 @@ func newControllerTestEnvWithPVC(
 	req.Parameters["csi.storage.k8s.io/pvc-namespace"] = pvcNamespace
 
 	return &controllerTestEnv{srv: srv, agent: agent, scheme: scheme}, req
+}
+
+// TestCreateVolume_PVCOverrideWinsForNVMeoFReconnectTuning verifies the
+// existing precedence (PVC annotation over StorageClass/protocol) carries
+// through to the VolumeContext the node connects with.
+func TestCreateVolume_PVCOverrideWinsForNVMeoFReconnectTuning(t *testing.T) {
+	t.Parallel()
+	env, req := newControllerTestEnvWithPVC(t, "tenant-a", "pvc-tuned", map[string]string{
+		AnnotationProtocolOverride: "nvmeofTcp:\n  ctrlLossTmo: 900\n",
+	})
+	req.Parameters[paramNVMeOFCtrlLossTmo] = "1800"
+	req.Parameters[paramNVMeOFReconnectDelay] = "5"
+
+	resp, err := env.srv.CreateVolume(context.Background(), req)
+	if err != nil {
+		t.Fatalf("CreateVolume: %v", err)
+	}
+	vc := resp.GetVolume().GetVolumeContext()
+	if got := vc[paramNVMeOFCtrlLossTmo]; got != "900" {
+		t.Errorf("ctrl-loss-tmo = %q, want PVC override \"900\"", got)
+	}
+	if got := vc[paramNVMeOFReconnectDelay]; got != "5" {
+		t.Errorf("reconnect-delay = %q, want StorageClass value \"5\"", got)
+	}
 }
 
 // TestCreateVolume_PVCAnnotationOverride_ZFSProperty verifies the end-to-end
