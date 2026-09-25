@@ -1167,12 +1167,24 @@ func TestStageStateFailedWriteHelper(t *testing.T) {
 
 	signal.Ignore(syscall.SIGXFSZ)
 	var prev syscall.Rlimit
-	if err := syscall.Getrlimit(syscall.RLIMIT_FSIZE, &prev); err != nil {
-		t.Fatalf("getrlimit RLIMIT_FSIZE: %v", err)
+	getErr := syscall.Getrlimit(syscall.RLIMIT_FSIZE, &prev)
+	if getErr != nil {
+		t.Fatalf("getrlimit RLIMIT_FSIZE: %v", getErr)
 	}
-	if err := syscall.Setrlimit(syscall.RLIMIT_FSIZE, &syscall.Rlimit{Cur: 0, Max: prev.Max}); err != nil {
-		t.Fatalf("setrlimit RLIMIT_FSIZE: %v", err)
+	rlimErr := syscall.Setrlimit(syscall.RLIMIT_FSIZE, &syscall.Rlimit{Cur: 0, Max: prev.Max})
+	if rlimErr != nil {
+		t.Fatalf("setrlimit RLIMIT_FSIZE: %v", rlimErr)
 	}
+	// The limit must be lifted before this test returns: the test binary
+	// writes its coverage profile on exit and any file write still capped at
+	// RLIMIT_FSIZE=0 fails with EFBIG.  The deferred restore covers panic and
+	// Goexit paths; the explicit restore below runs before assertions.
+	defer func() {
+		deferredErr := syscall.Setrlimit(syscall.RLIMIT_FSIZE, &prev)
+		if deferredErr != nil {
+			t.Errorf("deferred RLIMIT_FSIZE restore failed: %v", deferredErr)
+		}
+	}()
 
 	mnt := newMockMounter()
 	if os.Getenv("PILLAR_TEST_HELPER_MOUNTED") != "" {
@@ -1190,6 +1202,12 @@ func TestStageStateFailedWriteHelper(t *testing.T) {
 		VolumeCapability:  mountCap("ext4"),
 		VolumeContext:     mountVolumeContext(nqn, "192.0.2.1"),
 	})
+	// Lift the cap before evaluating the result so assertion output and the
+	// coverage profile written at process exit are not capped by the limit.
+	restoreErr := syscall.Setrlimit(syscall.RLIMIT_FSIZE, &prev)
+	if restoreErr != nil {
+		t.Fatalf("restore RLIMIT_FSIZE: %v", restoreErr)
+	}
 	if err == nil {
 		t.Fatal("NodeStageVolume succeeded despite RLIMIT_FSIZE=0; want persist-stage-state failure")
 	}

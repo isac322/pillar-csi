@@ -1267,7 +1267,7 @@ func (n *NodeServer) writeStageState(volumeID string, state *nodeStageState) err
 		return fmt.Errorf("marshal stage state: %w", marshalErr)
 	}
 
-	mkdirErr := os.MkdirAll(n.stateDir, 0o700) //nolint:gosec // G703: driver-configured stateDir, not per-request input
+	mkdirErr := os.MkdirAll(n.stateDir, 0o700) // #nosec G703 -- driver-configured stateDir, not per-request input
 	if mkdirErr != nil {
 		return fmt.Errorf("create state directory %q: %w", n.stateDir, mkdirErr)
 	}
@@ -1286,16 +1286,16 @@ func (n *NodeServer) writeStageState(volumeID string, state *nodeStageState) err
 	closeErr := f.Close()
 	joined := errors.Join(writeErr, syncErr, closeErr)
 	if joined != nil {
-		removeErr := os.Remove(tmpFile) //nolint:gosec // G703: CreateTemp path under controlled stateDir
+		removeErr := os.Remove(tmpFile) // #nosec G703 -- CreateTemp path under controlled stateDir
 		if removeErr != nil {
 			joined = errors.Join(joined, fmt.Errorf("remove temp state file %q: %w", tmpFile, removeErr))
 		}
 		return fmt.Errorf("write/sync/close temp state file %q: %w", tmpFile, joined)
 	}
 
-	renameErr := os.Rename(tmpFile, stateFile) //nolint:gosec // G703: paths derived from controlled stateDir
+	renameErr := os.Rename(tmpFile, stateFile) // #nosec G703 -- paths derived from controlled stateDir
 	if renameErr != nil {
-		removeErr := os.Remove(tmpFile) //nolint:gosec // G703: CreateTemp path under controlled stateDir
+		removeErr := os.Remove(tmpFile) // #nosec G703 -- CreateTemp path under controlled stateDir
 		if removeErr != nil {
 			renameErr = errors.Join(renameErr, fmt.Errorf("remove temp state file %q: %w", tmpFile, removeErr))
 		}
