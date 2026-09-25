@@ -70,13 +70,35 @@ func (m *KubeMounter) Mount(source, target, fsType string, options []string) err
 }
 
 // Unmount unmounts the filesystem mounted at target.  The call is
-// idempotent: if target is not currently mounted the function returns nil.
+// idempotent: if target is not currently mounted (or no longer exists)
+// the function returns nil.
+//
+// A probe error that identifies a corrupted mount point — e.g. EIO from
+// stat(2) on a filesystem that entered kernel shutdown after its block
+// device disappeared — is treated as "still mounted" rather than as a
+// fatal failure, matching k8s.io/utils/mount.CleanupMountPoint.  The
+// unmount is attempted directly; a genuine umount(8) failure (permission
+// denied, target busy, transport gone) is still reported to the caller.
 func (m *KubeMounter) Unmount(target string) error {
 	// IsLikelyNotMountPoint returns true when the path is NOT a mount point.
 	notMnt, err := m.inner.IsLikelyNotMountPoint(target)
 	if err != nil {
 		if isNotExistError(err) {
 			// Path does not exist — nothing to unmount.
+			return nil
+		}
+		if mount.IsCorruptedMnt(err) {
+			// The mount table may be unreadable because the filesystem is
+			// corrupted (aborted XFS/EXT4 after NVMe device loss, dead FUSE
+			// server).  The mount object itself is still attached and must
+			// be torn down; attempt the unmount instead of failing on the
+			// probe.  IsCorruptedMnt matches EACCES too, which is
+			// proportionate — the probe error is never swallowed, it merely
+			// escalates to a real umount whose own failure is returned.
+			unmountErr := m.inner.Unmount(target)
+			if unmountErr != nil {
+				return fmt.Errorf("unmount corrupted mountpoint %s: %w", target, unmountErr)
+			}
 			return nil
 		}
 		return fmt.Errorf("IsLikelyNotMountPoint %s: %w", target, err)
@@ -93,6 +115,13 @@ func (m *KubeMounter) Unmount(target string) error {
 }
 
 // IsMounted returns true if target currently has an active mount.
+//
+// Unlike Unmount this probe stays strict: a corrupted mount (EIO on stat)
+// is reported as an error rather than "mounted".  Reporting true would let
+// NodeStageVolume/NodePublishVolume treat a dead filesystem as healthy;
+// reporting false would let teardown paths skip the unmount and leak the
+// mount.  Callers that only want to remove a mount must call the
+// idempotent Unmount directly instead of gating on IsMounted.
 func (m *KubeMounter) IsMounted(target string) (bool, error) {
 	notMnt, err := m.inner.IsLikelyNotMountPoint(target)
 	if err != nil {

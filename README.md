@@ -75,6 +75,8 @@ Out of scope: `SendVolume` and `ReceiveVolume` are out-of-band data streams the 
 
 If a record is missing while the staging path (Filesystem) or its `device` bind target (Block) is still mounted, `NodeUnstageVolume` fails instead of reporting the volume unstaged. Without the record the plugin cannot tell which session to detach, so it leaves the mount and the session alone. To recover, stage the volume again (for example, by starting a pod that uses it on the same node), which rewrites the record. The next unstage then completes normally. A missing record with nothing mounted counts as already unstaged.
 
+`NodeUnpublishVolume` and `NodeUnstageVolume` delegate the unmount decision to the mounter's idempotent `Unmount` instead of pre-probing the mount table. That call treats a probe error that identifies a corrupted mount — `EIO`, `ENOTCONN`, `ESTALE`, or `EACCES` from `stat(2)` on the target — as "still mounted" and attempts the unmount anyway, matching `k8s.io/utils/mount.CleanupMountPoint`. This is what lets kubelet reap pods whose filesystem entered kernel shutdown after its NVMe device disappeared: `stat` on the target returns `EIO`, and a pre-probe would have wedged teardown forever. A probe error that is not a corrupted-mount signature still fails the call, and a real `umount(8)` failure keeps the stage record and transport session intact so a retry can finish teardown. `NodeStageVolume`/`NodePublishVolume` mount probes deliberately stay strict: an `EIO` answer there must never read as a healthy mount.
+
 ## Supported matrix
 
 | Backend | NVMe-oF/TCP | iSCSI | NFS |
