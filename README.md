@@ -67,7 +67,7 @@ The agent stores these marks on the storage node's local disk under `/var/lib/pi
 
 Out of scope: `SendVolume` and `ReceiveVolume` are out-of-band data streams the controller does not call, and they carry no token.
 
-**Upgrade (clean cutover):** detach every volume (no `VolumeAttachment` for this driver) before upgrading to this version. Earlier versions recorded no publications, lifecycles, or generations, so the new controller cannot revoke access granted by the old one. No migration shim is provided.
+**Upgrade (clean cutover):** detach every volume (no `VolumeAttachment` for this driver) before upgrading to this version. Earlier versions recorded no publications, lifecycles, or generations, so the new controller cannot revoke access granted by the old one. No migration shim is provided. Upgrade the controller and every agent together in the same rollout: the fenced agent rejects mutation RPCs that carry no token with `FAILED_PRECONDITION`, so an old controller paired with a new agent cannot create, export, grant, or delete anything.
 
 ### Node stage state
 
