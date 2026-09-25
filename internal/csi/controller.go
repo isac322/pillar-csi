@@ -641,6 +641,17 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 		}
 	}
 
+	// The NVMe-oF reconnect tuning is frozen into the PV VolumeContext and
+	// only parsed again at NodeStageVolume; reject a malformed value now,
+	// before any durable state exists, instead of provisioning a volume that
+	// can never be staged.
+	if protocolType == v1alpha1.ProtocolTypeNVMeOFTCP {
+		_, optsErr := ParseNVMeoFConnectOptions(params)
+		if optsErr != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "invalid NVMe-oF connect parameter: %v", optsErr)
+		}
+	}
+
 	agentBackendType := mapBackendType(backendTypeStr)
 	agentProtocolType := mapProtocolType(protocolTypeStr)
 
@@ -692,17 +703,19 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 			}
 		}
 
+		volumeContext := map[string]string{
+			vcTargetID:     ei.TargetID,
+			vcAddress:      ei.Address,
+			vcPort:         strconv.Itoa(int(ei.Port)),
+			vcVolumeRef:    ei.VolumeRef,
+			vcProtocolType: existingPV.Spec.ProtocolType,
+		}
+		copyNodeConnectParams(volumeContext, params)
 		return &csi.CreateVolumeResponse{
 			Volume: &csi.Volume{
 				VolumeId:      volumeID,
 				CapacityBytes: existingCap,
-				VolumeContext: map[string]string{
-					vcTargetID:     ei.TargetID,
-					vcAddress:      ei.Address,
-					vcPort:         strconv.Itoa(int(ei.Port)),
-					vcVolumeRef:    ei.VolumeRef,
-					vcProtocolType: existingPV.Spec.ProtocolType,
-				},
+				VolumeContext: volumeContext,
 			},
 		}, nil
 	}
@@ -836,6 +849,7 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 		vcVolumeRef:    info.GetVolumeRef(),
 		vcProtocolType: protocolTypeStr,
 	}
+	copyNodeConnectParams(volumeContext, params)
 
 	return &csi.CreateVolumeResponse{
 		Volume: &csi.Volume{
@@ -1267,6 +1281,25 @@ func (s *ControllerServer) applyPVCAnnotationOverrides(
 
 	maps.Copy(merged, overrides)
 	return nil
+}
+
+// nodeConnectParamKeys are the merged CreateVolume parameters the node needs
+// at attach time.  They travel in the VolumeContext because NodeStageVolume
+// receives no StorageClass parameters.
+var nodeConnectParamKeys = []string{
+	paramNVMeOFCtrlLossTmo,
+	paramNVMeOFReconnectDelay,
+}
+
+// copyNodeConnectParams copies every non-empty nodeConnectParamKeys entry
+// from the merged parameters into volumeContext.  Absent keys stay absent so
+// the node keeps the kernel defaults.
+func copyNodeConnectParams(volumeContext, params map[string]string) {
+	for _, k := range nodeConnectParamKeys {
+		if v := params[k]; v != "" {
+			volumeContext[k] = v
+		}
+	}
 }
 
 // buildAgentVolumeID constructs the volume identifier used in all agent RPCs.

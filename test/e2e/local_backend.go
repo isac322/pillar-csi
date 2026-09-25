@@ -1275,7 +1275,9 @@ type localConnectCall struct {
 
 var _ csidrv.Connector = (*localMockConnector)(nil)
 
-func (m *localMockConnector) Connect(_ context.Context, subsysNQN, trAddr, trSvcID string) error {
+func (m *localMockConnector) Connect(
+	_ context.Context, subsysNQN, trAddr, trSvcID string, _ csidrv.NVMeoFConnectOptions,
+) error {
 	m.connectCalls = append(m.connectCalls, localConnectCall{subsysNQN: subsysNQN, trAddr: trAddr, trSvcID: trSvcID})
 	return m.connectErr
 }
