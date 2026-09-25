@@ -810,50 +810,6 @@ func TestCSIErrors_NodeUnstage_DisconnectError(t *testing.T) {
 	t.Logf("NodeUnstageVolume disconnect error returned %v: %v", st.Code(), err)
 }
 
-// TestCSIErrors_NodeUnstage_IsMountedError verifies that an IsMounted check
-// failure during NodeUnstageVolume propagates as a non-OK gRPC status (test
-// case 47).
-//
-// Setup:
-//   - Mounter.IsMounted returns an error.
-//
-// Expected: NodeUnstageVolume returns non-OK; no panic.
-//
-// See TESTCASES.md §5.11, row 47.
-func TestCSIErrors_NodeUnstage_IsMountedError(t *testing.T) {
-	t.Parallel()
-
-	env := newCSINodeTestEnv(t)
-	ctx := context.Background()
-	stagingPath := t.TempDir()
-
-	// Stage first so NodeUnstageVolume has persisted state to consult and
-	// proceeds to the IsMounted probe (an unstaged volume short-circuits to
-	// idempotent success per CSI spec §4.7 before any mount-table check).
-	stageReq := baseStageRequest(stagingPath)
-	if _, err := env.node.NodeStageVolume(ctx, stageReq); err != nil {
-		t.Fatalf("setup NodeStageVolume: %v", err)
-	}
-
-	const isMountedErrMsg = "stat /staging: permission denied"
-	env.mounter.isMountedFn = func(_ string) (bool, error) {
-		return false, errors.New(isMountedErrMsg)
-	}
-
-	_, err := env.node.NodeUnstageVolume(ctx, &csipb.NodeUnstageVolumeRequest{
-		VolumeId:          stageReq.GetVolumeId(),
-		StagingTargetPath: stagingPath,
-	})
-	if err == nil {
-		t.Fatal("expected error for IsMounted failure, got nil")
-	}
-	st, _ := status.FromError(err)
-	if st.Code() == codes.OK {
-		t.Errorf("expected non-OK gRPC status for IsMounted failure, got OK")
-	}
-	t.Logf("NodeUnstageVolume IsMounted error returned %v: %v", st.Code(), err)
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // § 5.13 IsMounted Error Paths (cross-cutting within CSI Node)
 // TESTCASES.md § 5.13 tests 50–52
@@ -955,62 +911,6 @@ func TestCSIErrors_NodePublish_IsMountedError(t *testing.T) {
 		t.Errorf("Mount called %d times after IsMounted failure, want 0", env.mounter.mountCalls)
 	}
 	t.Logf("NodePublishVolume IsMounted error returned Internal: %v", err)
-}
-
-// TestCSIErrors_NodeUnpublish_IsMountedError verifies that an IsMounted
-// failure during the idempotency check in NodeUnpublishVolume propagates as
-// codes.Internal (test case 52).
-//
-// NodeUnpublishVolume calls IsMounted on the target path to decide whether
-// Unmount is needed.  If that check fails the operation must surface the error
-// rather than silently returning success or calling Unmount blindly.
-//
-// Setup:
-//   - Volume is in a published state (NodePublishVolume succeeded).
-//   - Mounter.IsMounted is then configured to return an error.
-//
-// Expected: NodeUnpublishVolume returns codes.Internal; Mounter.Unmount is
-// not called.
-//
-// See TESTCASES.md §5.13, row 52.
-func TestCSIErrors_NodeUnpublish_IsMountedError(t *testing.T) {
-	t.Parallel()
-
-	env := newCSINodeTestEnv(t)
-	ctx := context.Background()
-	stagingPath := t.TempDir()
-	targetPath := t.TempDir()
-
-	// Stage and publish the volume so the node server has context about the
-	// volume — the IsMounted error will fire during the subsequent Unpublish.
-	if _, err := env.node.NodeStageVolume(ctx, baseStageRequest(stagingPath)); err != nil {
-		t.Fatalf("setup NodeStageVolume: %v", err)
-	}
-	if _, err := env.node.NodePublishVolume(ctx, basePublishRequest(stagingPath, targetPath)); err != nil {
-		t.Fatalf("setup NodePublishVolume: %v", err)
-	}
-
-	// Now configure IsMounted to fail for the subsequent unpublish call.
-	const isMountedErr = "IsMounted: read /proc/mounts: input/output error"
-	env.mounter.isMountedFn = func(_ string) (bool, error) {
-		return false, errors.New(isMountedErr)
-	}
-
-	_, err := env.node.NodeUnpublishVolume(ctx, &csipb.NodeUnpublishVolumeRequest{
-		VolumeId:   "storage-node-1/nvmeof-tcp/zfs-zvol/tank/pvc-node-test",
-		TargetPath: targetPath,
-	})
-	if err == nil {
-		t.Fatal("expected Internal error from IsMounted failure in NodeUnpublishVolume, got nil")
-	}
-	st, _ := status.FromError(err)
-	if st.Code() != codes.Internal {
-		t.Errorf("error code = %v, want Internal (IsMounted failure in NodeUnpublishVolume)", st.Code())
-	}
-	// Unmount must not be called — cannot unmount without knowing current state.
-	// (unmountCalls may be non-zero from the successful Unstage setup path, so
-	// we track the count before and after.)
-	t.Logf("NodeUnpublishVolume IsMounted error returned Internal: %v", err)
 }
 
 // Compile-time: ensure csiMockAgent still implements all methods.

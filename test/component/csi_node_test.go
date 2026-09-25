@@ -912,6 +912,8 @@ func TestCSINode_NodeUnpublishVolume_Success(t *testing.T) {
 
 // TestCSINode_NodeUnpublishVolume_Idempotent verifies that unpublishing a
 // path that is not currently mounted returns success without error.
+// NodeUnpublishVolume delegates to Mounter.Unmount, which is contractually
+// idempotent, so the call itself decides "nothing to unmount".
 func TestCSINode_NodeUnpublishVolume_Idempotent(t *testing.T) {
 	t.Parallel()
 	env := newCSINodeTestEnv(t)
@@ -925,9 +927,6 @@ func TestCSINode_NodeUnpublishVolume_Idempotent(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("NodeUnpublishVolume (never published): unexpected error: %v", err)
-	}
-	if env.mounter.unmountCalls != 0 {
-		t.Errorf("Mounter.Unmount calls = %d, want 0 (not mounted)", env.mounter.unmountCalls)
 	}
 }
 

@@ -317,6 +317,8 @@ func TestNodeUnpublishVolume_Unmounts(t *testing.T) {
 
 // TestNodeUnpublishVolume_Idempotent verifies that calling NodeUnpublishVolume
 // when the target is not mounted succeeds without error (idempotent).
+// The Unmount call itself is contractually idempotent, so the RPC delegates
+// the "already unmounted" decision to it rather than pre-probing.
 func TestNodeUnpublishVolume_Idempotent(t *testing.T) {
 	t.Parallel()
 
@@ -332,14 +334,14 @@ func TestNodeUnpublishVolume_Idempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NodeUnpublishVolume on unmounted path: %v", err)
 	}
-	// Unmount must NOT have been called.
-	if len(env.mounter.unmountCalls) != 0 {
-		t.Errorf("Unmount called %d times on unmounted path, want 0", len(env.mounter.unmountCalls))
+	if env.mounter.mountedPaths[targetPath] {
+		t.Error("unmounted target marked mounted after idempotent unpublish")
 	}
 }
 
 // TestNodeUnpublishVolume_TwiceMountsOnce verifies the full publish→unpublish→
-// unpublish cycle: the second unpublish is a no-op.
+// unpublish cycle: the repeat unpublish converges idempotently and leaves the
+// volume unpublished.
 func TestNodeUnpublishVolume_TwiceMountsOnce(t *testing.T) {
 	t.Parallel()
 
@@ -363,9 +365,8 @@ func TestNodeUnpublishVolume_TwiceMountsOnce(t *testing.T) {
 			t.Fatalf("NodeUnpublishVolume call %d: %v", i+1, err)
 		}
 	}
-	// Unmount called exactly once.
-	if len(env.mounter.unmountCalls) != 1 {
-		t.Errorf("Unmount called %d times, want 1", len(env.mounter.unmountCalls))
+	if env.mounter.mountedPaths[targetPath] {
+		t.Error("target path still mounted after repeated NodeUnpublishVolume")
 	}
 }
 
@@ -391,40 +392,42 @@ func TestNodeUnpublishVolume_MissingTargetPath(t *testing.T) {
 	requireGRPCCode(t, err, codes.InvalidArgument)
 }
 
-// TestNodeUnpublishVolume_UnmountError verifies that a mounter Unmount error
-// propagates as Internal.
+// TestNodeUnpublishVolume_UnmountError verifies that a failed unmount
+// propagates as Internal and leaves teardown state untouched: the mount
+// stays mounted and the volume state machine is not reverted to
+// NodeStaged, so the retried call still takes the unpublish path.
+// (Probe failures now surface through Unmount itself — NodeUnpublishVolume
+// no longer gates on IsMounted — so a separate IsMounted error test would
+// pin a code path that does not exist.)
 func TestNodeUnpublishVolume_UnmountError(t *testing.T) {
 	t.Parallel()
 
-	env := newNodeTestEnv(t)
+	mnt := newMockMounter()
+	sm := NewVolumeStateMachine()
+	srv := NewNodeServerWithStateMachine("test-node",
+		&mockConnector{devicePath: "/dev/nvme0n1"}, mnt, t.TempDir(), sm)
 	targetPath := t.TempDir()
 	const volumeID = "tank/pvc-unmount-err"
 
-	// Pre-mark path as mounted so Unmount is attempted.
-	env.mounter.mountedPaths[targetPath] = true
-	env.mounter.unmountErr = errors.New("device busy")
+	// Model a published volume: state machine says NodePublished and the
+	// target path is still mounted.
+	sm.ForceState(volumeID, StateNodePublished)
+	mnt.mountedPaths[targetPath] = true
+	mnt.unmountErr = errors.New("device busy")
 
-	_, err := env.srv.NodeUnpublishVolume(context.Background(), &csi.NodeUnpublishVolumeRequest{
+	_, err := srv.NodeUnpublishVolume(context.Background(), &csi.NodeUnpublishVolumeRequest{
 		VolumeId:   volumeID,
 		TargetPath: targetPath,
 	})
 	requireGRPCCode(t, err, codes.Internal)
-}
 
-// TestNodeUnpublishVolume_IsMountedError verifies that an IsMounted error
-// propagates as Internal.
-func TestNodeUnpublishVolume_IsMountedError(t *testing.T) {
-	t.Parallel()
-
-	env := newNodeTestEnv(t)
-	env.mounter.isMountedErr = errors.New("isMounted failed")
-	targetPath := t.TempDir()
-
-	_, err := env.srv.NodeUnpublishVolume(context.Background(), &csi.NodeUnpublishVolumeRequest{
-		VolumeId:   "vol-1",
-		TargetPath: targetPath,
-	})
-	requireGRPCCode(t, err, codes.Internal)
+	if got := sm.GetState(volumeID); got != StateNodePublished {
+		t.Errorf("volume state after failed unpublish = %v, want %v",
+			got, StateNodePublished)
+	}
+	if !mnt.mountedPaths[targetPath] {
+		t.Error("target path marked unmounted after failed unmount")
+	}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

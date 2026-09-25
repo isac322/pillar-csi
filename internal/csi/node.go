@@ -327,7 +327,12 @@ type Mounter interface {
 
 	// Unmount unmounts the path at target.
 	// Implementations must be idempotent: unmounting a path that is not
-	// currently mounted must succeed without error.
+	// currently mounted must succeed without error, and a target whose
+	// mount probe reports a corrupted mount (e.g. stat EIO on an aborted
+	// filesystem after its backing device disappeared) must still be
+	// unmounted.  Any other probe or unmount failure must be returned to
+	// the caller — cleanup callers must never treat a failed probe as
+	// "not mounted".
 	Unmount(target string) error
 
 	// IsMounted returns true if target currently has an active mount.
@@ -863,7 +868,9 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 //     the state was lost while the volume is still staged, so the call fails
 //     instead of reporting success over a leaked mount and transport session.
 //     Only when nothing is mounted does the call succeed idempotently.
-//  4. Unmount the staged target (skipped if not currently mounted).
+//  4. Unmount the staged target via the idempotent Mounter.Unmount, which
+//     also tears down corrupted mounts whose probe returns EIO.  A failed
+//     unmount aborts here, before transport detach and state cleanup.
 //  5. Dispatch to the ProtocolHandler registered for the persisted protocol
 //     type and call Detach.  Detach is idempotent: disconnecting an already-
 //     disconnected target is a no-op.
@@ -946,22 +953,24 @@ func (n *NodeServer) NodeUnstageVolume(
 	// Block-mode binds /dev/nvmeXnY onto blockStagingDevicePath(stagingPath)
 	// (a regular file inside the kubelet-created staging directory).  The
 	// AccessType discriminator selects which surface to unmount.
+	//
+	// Mounter.Unmount is contractually idempotent and handles corrupted
+	// mounts (e.g. stat EIO on an aborted XFS after NVMe device loss):
+	// no mount → no-op; corrupted mount → unmount attempted anyway;
+	// any other failure → error.  A separate IsMounted gate cannot express
+	// that third case, so unmount unconditionally and let the mounter
+	// discriminate.  Any error aborts before Detach and before the stage
+	// state file is removed, keeping the transport session and its
+	// teardown parameters intact for the retry.
 	unmountTarget := stagingPath
 	isBlock := state.AccessType == AccessTypeBlock
 	if isBlock {
 		unmountTarget = blockStagingDevicePath(stagingPath)
 	}
-	mounted, mountCheckErr := n.mounter.IsMounted(unmountTarget)
-	if mountCheckErr != nil {
+	unmountErr := n.mounter.Unmount(unmountTarget)
+	if unmountErr != nil {
 		return nil, status.Errorf(codes.Internal,
-			"NodeUnstageVolume: check if %q is mounted: %v", unmountTarget, mountCheckErr)
-	}
-	if mounted {
-		unmountErr := n.mounter.Unmount(unmountTarget)
-		if unmountErr != nil {
-			return nil, status.Errorf(codes.Internal,
-				"NodeUnstageVolume: unmount %q: %v", unmountTarget, unmountErr)
-		}
+			"NodeUnstageVolume: unmount %q: %v", unmountTarget, unmountErr)
 	}
 	if isBlock {
 		// Block-mode leaves a regular-file sentinel that kubelet's
@@ -1180,8 +1189,10 @@ func (n *NodeServer) NodePublishVolume( //nolint:gocyclo // SM guard + capabilit
 //
 // Sequence:
 //  1. Validate required fields (volume_id, target_path).
-//  2. Check whether target_path is currently mounted.
-//  3. If mounted, call Unmount; if not mounted, return success immediately.
+//  2. Call the idempotent Mounter.Unmount on target_path.  It no-ops on an
+//     unmounted or missing path and still removes a corrupted mount whose
+//     stat fails (e.g. EIO on an aborted filesystem); a real unmount
+//     failure is returned as Internal so the CO retries.
 func (n *NodeServer) NodeUnpublishVolume(
 	_ context.Context,
 	req *csi.NodeUnpublishVolumeRequest,
@@ -1217,19 +1228,15 @@ func (n *NodeServer) NodeUnpublishVolume(
 		}
 	}
 
-	// ── Idempotency: check if already unmounted ─────────────────────────────
-	mounted, mountCheckErr := n.mounter.IsMounted(targetPath)
-	if mountCheckErr != nil {
-		return nil, status.Errorf(codes.Internal,
-			"NodeUnpublishVolume: check if %q is mounted: %v", targetPath, mountCheckErr)
-	}
-	if !mounted {
-		// Target path is not mounted — already unpublished or never published.
-		// Succeed idempotently.
-		return &csi.NodeUnpublishVolumeResponse{}, nil
-	}
-
 	// ── Unmount the bind mount ──────────────────────────────────────────────
+	// Mounter.Unmount is contractually idempotent: an unmounted or missing
+	// target is a no-op success, so repeat NodeUnpublishVolume calls converge
+	// without a separate probe.  Corrupted mounts (e.g. stat EIO on an
+	// aborted filesystem after NVMe device loss) are unmounted rather than
+	// reported as an unrecoverable probe error — gating on IsMounted here
+	// would trap kubelet in a teardown loop.  An actual unmount failure
+	// propagates as Internal so kubelet retries, and the state machine is
+	// not reverted until the unmount has genuinely succeeded.
 	unmountErr := n.mounter.Unmount(targetPath)
 	if unmountErr != nil {
 		return nil, status.Errorf(codes.Internal,

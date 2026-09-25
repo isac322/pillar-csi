@@ -701,7 +701,7 @@ are tested here.
 | # | Test Function | Description | Setup | Expected Outcome |
 |---|--------------|-------------|-------|-----------------|
 | 12 | `TestCSINode_NodeUnstageVolume_Success` | Unmounts and disconnects NVMe-oF volume | Mock mounter: Unmount→OK; mock connector: Disconnect→OK | Returns empty NodeUnstageVolumeResponse |
-| 13 | `TestCSINode_NodeUnstageVolume_AlreadyUnstaged` | Unstaging already-unstaged volume is a no-op | Mock mounter: IsMounted→false | Returns empty response; no error |
+| 13 | `TestCSINode_NodeUnstageVolume_AlreadyUnstaged` | Unstaging already-unstaged volume is a no-op | No stage state file (volume never staged) | Returns empty response; no error |
 
 ---
 
@@ -714,7 +714,7 @@ are tested here.
 | 16 | `TestCSINode_NodePublishVolume_Idempotent` | Already-published volume is a no-op | Mock mounter: IsMounted→true | Returns empty response; no error |
 | 17 | `TestCSINode_NodePublishVolume_MountFails` | Mount failure returns Internal | Mock mounter: Mount→error | Returns gRPC Internal |
 | 18 | `TestCSINode_NodeUnpublishVolume_Success` | Unmounts target path | Mock mounter: Unmount→OK | Returns empty NodeUnpublishVolumeResponse |
-| 19 | `TestCSINode_NodeUnpublishVolume_Idempotent` | Unpublishing not-published volume is a no-op | Mock mounter: IsMounted→false | Returns empty response; no error |
+| 19 | `TestCSINode_NodeUnpublishVolume_Idempotent` | Unpublishing not-published volume is a no-op | Target path not mounted | Returns empty response; no error |
 
 ---
 
@@ -815,7 +815,7 @@ Error paths that occur during the NVMe-oF disconnect phase of
 | # | Test Function | Description | Setup | Expected Outcome |
 |---|--------------|-------------|-------|-----------------|
 | 46 | `TestCSIErrors_NodeUnstage_DisconnectError` | NVMe-oF Disconnect failure during NodeUnstageVolume propagates | Stage volume; mock connector: Disconnect→"nvme disconnect failed"; call NodeUnstageVolume | Returns non-OK gRPC status; error message preserved |
-| 47 | `TestCSIErrors_NodeUnstage_IsMountedError` | IsMounted check failure during NodeUnstageVolume propagates | Mock mounter: IsMounted→error; call NodeUnstageVolume | Returns non-OK gRPC status; no panic |
+| 47 | (removed — `NodeUnstageVolume` no longer pre-probes with `IsMounted`; the idempotent `Mounter.Unmount` owns the mounted/corrupted/not-mounted decision, so probe errors surface as unmount errors covered by case 24) | — | — | — |
 
 ---
 
@@ -835,16 +835,19 @@ interactions needed.
 ### 5.13 IsMounted Error Paths (cross-cutting within CSI Node)
 
 `Mounter.IsMounted` is called as an idempotency guard in `NodeStageVolume`
-(before `FormatAndMount`), `NodePublishVolume` (before bind-mount), and
-`NodeUnpublishVolume` (before `Unmount`).  These tests verify that a failure
-of that check propagates correctly rather than leaving the node in an
-indeterminate mount state.
+(before `FormatAndMount`) and `NodePublishVolume` (before bind-mount).
+`NodeUnpublishVolume` and `NodeUnstageVolume` no longer gate on `IsMounted`:
+they delegate to the idempotent `Mounter.Unmount`, which owns the
+not-mounted/corrupted-mount decision (corrupted probes such as stat `EIO`
+still result in an unmount attempt — see `internal/csi/mounter_test.go`).
+These tests verify that a failure of the remaining probes propagates
+correctly rather than leaving the node in an indeterminate mount state.
 
 | # | Test Function | Description | Setup | Expected Outcome |
 |---|--------------|-------------|-------|-----------------|
 | 50 | `TestCSIErrors_NodeStage_IsMountedError_MountAccess` | IsMounted failure during NodeStageVolume (mount access, after connect) returns Internal | Mock connector: Connect→OK, GetDevicePath→"/dev/nvme0n1"; mock mounter: IsMounted→error | Returns gRPC Internal; FormatAndMount not called |
 | 51 | `TestCSIErrors_NodePublish_IsMountedError` | IsMounted failure during NodePublishVolume returns Internal | Mock mounter: IsMounted→error | Returns gRPC Internal; Mount not called |
-| 52 | `TestCSIErrors_NodeUnpublish_IsMountedError` | IsMounted failure during NodeUnpublishVolume returns Internal | Volume published (setup); mock mounter: IsMounted→error on unpublish call | Returns gRPC Internal; Unmount not called |
+| 52 | (removed — `NodeUnpublishVolume` calls `Mounter.Unmount` directly; unmount/probe failures are covered by case 25 and the `TestKubeMounter_Unmount_*` matrix) | — | — | — |
 
 ---
 

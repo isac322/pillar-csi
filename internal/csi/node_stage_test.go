@@ -671,6 +671,34 @@ func TestNodeStageVolume_FormatAndMountError(t *testing.T) {
 	requireGRPCCode(t, err, codes.Internal)
 }
 
+// TestNodeStageVolume_MountProbeError pins the strict-probe contract:
+// NodeStageVolume must keep failing when the staging-path mount probe
+// errors (e.g. EIO from stat on a filesystem in kernel shutdown).  A
+// corrupted mount must never look like a healthy staged volume
+// (false-healthy) — the fix for teardown lives in Mounter.Unmount, not in
+// weakening the probes that guard staging.
+func TestNodeStageVolume_MountProbeError(t *testing.T) {
+	t.Parallel()
+	env := newNodeTestEnv(t)
+	env.mounter.isMountedErr = errors.New("stat: input/output error")
+
+	stagingPath := t.TempDir()
+	_, err := env.srv.NodeStageVolume(context.Background(), &csi.NodeStageVolumeRequest{
+		VolumeId:          "tank/pvc-probe-err",
+		StagingTargetPath: stagingPath,
+		VolumeCapability:  mountCap("ext4"),
+		VolumeContext:     mountVolumeContext("nqn.test:probe-err", testStorageAddr),
+	})
+	requireGRPCCode(t, err, codes.Internal)
+
+	// The failed probe must not be mistaken for "already mounted": nothing
+	// may be formatted or mounted on top of an unverifiable target.
+	if len(env.mounter.formatAndMountCalls) != 0 || len(env.mounter.mountCalls) != 0 {
+		t.Errorf("mount calls after probe failure: formatAndMount=%v mount=%v, want none",
+			env.mounter.formatAndMountCalls, env.mounter.mountCalls)
+	}
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // TestNodeUnstageVolume_* – happy-path and validation tests
 // ─────────────────────────────────────────────────────────────────────────────.
@@ -730,15 +758,15 @@ func TestNodeUnstageVolume_RoundTrip(t *testing.T) {
 	}
 }
 
-// TestNodeUnstageVolume_FilesystemMode_DoesNotProbeBlockSentinel guards the
+// TestNodeUnstageVolume_FilesystemMode_SingleUnmountTarget guards the
 // AccessType-driven single-path dispatch: when state.AccessType is
-// Filesystem, the unmount probe must touch ONLY stagingPath and never
+// Filesystem, the unmount must touch ONLY stagingPath and never
 // blockStagingDevicePath(stagingPath) (which lives inside the Filesystem
 // mount and can return EIO during post-ControllerExpand NVMe namespace
-// re-identify).  A regression that re-introduces the dual-probe would
-// surface that EIO as a gRPC Internal and trap kubelet in infinite
-// UnmountDevice retries.
-func TestNodeUnstageVolume_FilesystemMode_DoesNotProbeBlockSentinel(t *testing.T) {
+// re-identify).  A regression that re-introduces the dual-path probe or
+// unmount would surface that EIO as a gRPC Internal and trap kubelet in
+// infinite UnmountDevice retries.
+func TestNodeUnstageVolume_FilesystemMode_SingleUnmountTarget(t *testing.T) {
 	t.Parallel()
 
 	env := newNodeTestEnv(t)
@@ -758,8 +786,9 @@ func TestNodeUnstageVolume_FilesystemMode_DoesNotProbeBlockSentinel(t *testing.T
 		t.Fatalf("NodeStageVolume: %v", err)
 	}
 
-	// Reset the probe log so we only count NodeUnstageVolume's probes.
+	// Reset the call logs so we only count NodeUnstageVolume's operations.
 	env.mounter.isMountedCalls = nil
+	env.mounter.unmountCalls = nil
 
 	_, err = env.srv.NodeUnstageVolume(context.Background(), &csi.NodeUnstageVolumeRequest{
 		VolumeId:          volumeID,
@@ -776,9 +805,12 @@ func TestNodeUnstageVolume_FilesystemMode_DoesNotProbeBlockSentinel(t *testing.T
 				blockSentinel, env.mounter.isMountedCalls)
 		}
 	}
-	if len(env.mounter.isMountedCalls) != 1 || env.mounter.isMountedCalls[0] != stagingPath {
-		t.Errorf("expected exactly one IsMounted probe on %q; calls=%v",
-			stagingPath, env.mounter.isMountedCalls)
+	// Unmount is invoked unconditionally (the mounter owns idempotency and
+	// corrupted-mount handling); the AccessType discriminator must route it
+	// at the Filesystem staging root and nothing else.
+	if len(env.mounter.unmountCalls) != 1 || env.mounter.unmountCalls[0] != stagingPath {
+		t.Errorf("expected exactly one Unmount on %q; calls=%v",
+			stagingPath, env.mounter.unmountCalls)
 	}
 }
 
@@ -909,15 +941,21 @@ func TestNodeUnstageVolume_MissingStagingPath(t *testing.T) {
 	requireGRPCCode(t, err, codes.InvalidArgument)
 }
 
+// TestNodeUnstageVolume_UnmountError verifies that a failed unmount aborts
+// teardown at step 2: the RPC returns Internal, the transport session is
+// NOT detached, and the stage state file is retained so the retried
+// NodeUnstageVolume still has the parameters needed to finish teardown.
+// Detaching first would strand the volume with no recoverable state.
 func TestNodeUnstageVolume_UnmountError(t *testing.T) {
 	t.Parallel()
 	env := newNodeTestEnv(t)
 	env.mounter.unmountErr = errors.New("device busy")
 	stagingPath := t.TempDir()
+	const volumeID = "tank/pvc-umerr"
 
 	// Stage first so the path ends up in the mounted set.
 	_, err := env.srv.NodeStageVolume(context.Background(), &csi.NodeStageVolumeRequest{
-		VolumeId:          "tank/pvc-umerr",
+		VolumeId:          volumeID,
 		StagingTargetPath: stagingPath,
 		VolumeCapability:  mountCap("ext4"),
 		VolumeContext:     mountVolumeContext("nqn.test:umerr", testStorageAddr),
@@ -927,10 +965,28 @@ func TestNodeUnstageVolume_UnmountError(t *testing.T) {
 	}
 
 	_, err = env.srv.NodeUnstageVolume(context.Background(), &csi.NodeUnstageVolumeRequest{
-		VolumeId:          "tank/pvc-umerr",
+		VolumeId:          volumeID,
 		StagingTargetPath: stagingPath,
 	})
 	requireGRPCCode(t, err, codes.Internal)
+
+	// The transport must stay connected: no Detach may run before the mount
+	// is actually torn down.
+	if len(env.connector.disconnectCalls) != 0 {
+		t.Errorf("Disconnect called %d times despite unmount failure, want 0",
+			len(env.connector.disconnectCalls))
+	}
+	// The stage state file must survive so a retried NodeUnstageVolume can
+	// still resolve the access type and the transport parameters.
+	if remaining, err := env.srv.readStageState(volumeID); err != nil || remaining == nil {
+		t.Errorf("stage state after failed unstage = %+v (err %v), want retained",
+			remaining, err)
+	}
+	// The mount must still be present — the failed unmount must not be
+	// reported as teardown progress.
+	if !env.mounter.mountedPaths[stagingPath] {
+		t.Error("staging path marked unmounted after failed unmount")
+	}
 }
 
 func TestNodeUnstageVolume_DisconnectError(t *testing.T) {
