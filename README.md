@@ -198,6 +198,157 @@ kubectl logs -n pillar-csi ds/pillar-csi-node          -c node
 kubectl logs -n pillar-csi ds/pillar-csi-agent         -c agent
 ```
 
+### Legacy volumes stuck at `ExportSpecMissing` (issue #83)
+
+The `ExportReconciled` condition on every `PillarVolumeState` reports whether the storage node's kernel export still matches durable desired state. `False` with reason `ExportSpecMissing` means the volume was provisioned before `status.exportSpec` was recorded, so after the storage node lost its ephemeral target state (agent restart, node reboot, nvmet reload) the resync controller had no durable spec to rebuild from and failed closed. Volumes created after the change record `exportSpec` at `CreateVolume` and recover automatically; legacy volumes need a one-time manual repair, after which they self-heal like new ones.
+
+There is no automatic inference of the missing spec, and this procedure deliberately keeps it that way. `status.exportInfo` is a runtime observation (`targetID`, `address`, `port`, `volumeRef`) — it does not record `aclEnabled`, and its `address`/`port` describe the last live endpoint, which may not equal the original provisioning inputs (renumbered storage network, replaced PillarProtocol, port moved since). Do not copy from `exportInfo` or from the *current* PillarProtocol/PillarStorageClass/PillarAgent CRs. Guessing the security fields is dangerous in both directions: enabling ACL on a volume that ran open breaks every consumer; disabling it on a volume that required ACL enforcement silently exposes the LUN to the whole network. Use the original provisioning inputs — or make an explicit, recorded operator decision — as described in step 3.
+
+**Scope and prerequisites**
+- Applies only when `status.exportSpec` is absent *and* the condition reports `reason: ExportSpecMissing`. Other reasons (`AgentUnavailable`, `StaleGeneration`, `ReconcileFailed`) mean a spec exists or another fault must be fixed first — do not patch. Protocols whose export carries no bind address/port never get an `exportSpec` by design, so this procedure currently applies to `nvmeof-tcp` volumes (and `iscsi` when it ships).
+- You need `patch` on `pillarvolumestates/status` (cluster-scoped; e.g. cluster-admin).
+- The volume's `PillarAgent` must be reachable (`AgentConnected` condition `True` on `kubectl describe pillaragent <spec.agentRef>`).
+- Treat every volume independently; repair one at a time and verify before the next.
+- If at any step a check fails, the object changed under you, or you cannot establish a value with confidence: **stop**. Leave the volume in `ExportSpecMissing`; an offline volume is recoverable, a wrongly exported one may not be.
+
+1. **Identify affected volumes and pin the context.** Pick the cluster context once and pin every command below to it — a context switch mid-procedure would redirect your reads and writes:
+
+   ```sh
+   kubectl config get-contexts          # choose deliberately
+   CTX=<cluster-context>
+   ```
+
+   Both `status.exportSpec == null` and the `ExportSpecMissing` reason must hold:
+
+   ```sh
+   kubectl --context "$CTX" get pvst -o json | jq -r '
+     .items[]
+     | select(.status.exportSpec == null)
+     | select([.status.conditions[]? | select(.type=="ExportReconciled" and .reason=="ExportSpecMissing")] | length > 0)
+     | .metadata.name'
+   ```
+
+   Take **one** snapshot of the chosen `PillarVolumeState` and derive every identity from it — this single read is what step 2 verifies and what step 4's patch is pinned to. Never re-resolve identity from a second read:
+
+   ```sh
+   PVST=<pvst-name>
+   PVS_JSON=$(kubectl --context "$CTX" get pvst "$PVST" -o json)
+   PVS_UID=$(jq -r '.metadata.uid' <<<"$PVS_JSON")             # lifecycle identity
+   PVS_RV=$(jq -r '.metadata.resourceVersion' <<<"$PVS_JSON") # snapshot for the CAS guard
+   VID=$(jq -r '.spec.volumeID' <<<"$PVS_JSON")               # CSI volume ID == PV volumeHandle
+   ```
+
+   Resolve the PV and its claim from one PV read. Exactly one PV must match the volume handle — zero or many abort inside jq; stop there:
+
+   ```sh
+   PV_JSON=$(kubectl --context "$CTX" get pv -o json)
+   PV=$(jq -r --arg vid "$VID" '[.items[]
+        | select(.spec.csi.driver=="pillar-csi.bhyoo.com" and .spec.csi.volumeHandle==$vid)]
+        | if length == 1 then .[0].metadata.name
+          else error("PV identity ambiguous: " + (length|tostring) + " matches") end' <<<"$PV_JSON")
+   read -r CLAIM_NS CLAIM_NAME CLAIM_UID < <(jq -r --arg pv "$PV" '
+        .items[] | select(.metadata.name==$pv)
+        | "\(.spec.claimRef.namespace) \(.spec.claimRef.name) \(.spec.claimRef.uid)"' <<<"$PV_JSON")
+   PVC_JSON=$(kubectl --context "$CTX" get pvc "$CLAIM_NAME" -n "$CLAIM_NS" -o json)
+   ```
+
+2. **Back up the captured snapshots and verify the full identity chain** before touching anything:
+
+   ```sh
+   mkdir -p pvs-recovery-"$PVST" && cd pvs-recovery-"$PVST"
+   jq . <<<"$PVS_JSON" > pvst-backup.json
+   jq --arg pv "$PV" '.items[] | select(.metadata.name==$pv)' <<<"$PV_JSON" > pv-backup.json
+   jq . <<<"$PVC_JSON" > pvc-backup.json
+   ```
+
+   Verify every link binds in both directions — all assertions run against the snapshots just saved:
+
+   ```sh
+   # PVS: same lifecycle UID and volumeID, still spec-less, not being deleted
+   jq -e --arg uid "$PVS_UID" --arg vid "$VID" 'select(
+       .metadata.uid == $uid and .spec.volumeID == $vid
+       and .status.exportSpec == null
+       and .metadata.deletionTimestamp == null and .status.deleting != true)' pvst-backup.json
+   # PV: same name, this driver, this volumeHandle, claimRef UID is the captured claim
+   jq -e --arg pv "$PV" --arg vid "$VID" --arg claim "$CLAIM_UID" 'select(
+       .metadata.name == $pv and .spec.csi.driver=="pillar-csi.bhyoo.com"
+       and .spec.csi.volumeHandle == $vid and .spec.claimRef.uid == $claim)' pv-backup.json
+   # PVC: the claimed UID is a live PVC Bound to this PV
+   jq -e --arg pv "$PV" --arg uid "$CLAIM_UID" 'select(
+       .metadata.uid == $uid and .status.phase == "Bound" and .spec.volumeName == $pv)' pvc-backup.json
+   # Backend volume exists on the storage node (resync never re-creates it):
+   #   spec.agentVolumeID is "<pool>/<vol>" or "<vg>/<vol>" —
+   #   zfs list <agentVolumeID>  (zfs-zvol)   |   lvs <pool>/<vol>  (lvm-lv)
+   jq -r '.spec.agentVolumeID, .spec.agentRef' pvst-backup.json
+   ```
+
+   Non-empty `status.publishedNodes` is expected when consumers were still attached at the loss — those records are the ACL source the resync will re-apply; do not edit them.
+
+3. **Decide the export intent explicitly — there are no defaults.** Three fields, all required by the schema (`bindAddress` non-empty, `port` 0–65535, `aclEnabled` boolean). You must supply explicit, validated values in the block below; step 4 refuses to run with them unset. Decide each from *provision-time* evidence — never from `status.exportInfo` alone and never from the current values of `PillarProtocol`/`PillarStorageClass`/`PillarAgent`, which may have changed since:
+
+   | Field | Authoritative inputs | Evidence, not truth |
+   |---|---|---|
+   | `bindAddress` | **Explicit operator decision.** No durable record of the *requested* bind exists for legacy volumes — `pv.spec.csi.volumeAttributes["address"]` and `status.exportInfo.address` record only the endpoint the agent actually exported at provision time, so they corroborate but do not authorize. Normally choose that same address. ⚠️ The PV endpoint is *not* updated by this patch — consumers keep dialing `volumeAttributes.address`/`port`, so a changed bind can converge to `ExportReconciled=True` while consumers still connect to the old endpoint; a changed endpoint needs a separate consumer-connectivity plan, not this procedure | `exportInfo.address` on its own |
+   | `port` | Explicit value; `volumeAttributes["port"]` and `exportInfo.port` record what the export used, and a flat PVC annotation `pillar-csi.bhyoo.com/param.nvmeof-port` (or `param.iscsi-port`) could have overridden the class default (`4420` / `3260`) — cross-check before reusing any of them | current StorageClass/`PillarProtocol.spec.nvmeofTcp.port` — may be regenerated |
+   | `aclEnabled` | **No durable provision-time record exists** — this is why the controller refuses to guess. Reconstruct it from the flat PVC annotation `pillar-csi.bhyoo.com/param.acl-enabled` (the only per-volume override of the class value), the provision-time `acl-enabled` StorageClass parameter (generated from `PillarProtocol.spec.nvmeofTcp.acl`; usable only if the protocol/binding CRs provably have not changed — GitOps history, snapshot, audit), or an explicit recorded operator decision. **If evidence cannot justify `true` or `false`, stop — do not patch.** `true` admits only `publishedNodes` initiators (`revoking` excluded; empty set = nobody, and the resync can still report `Reconciled` while unrecorded consumers stay locked out). `false` writes `attr_allow_any_host=1`, exposing the volume network-wide. Deliberately changing the historical intent is allowed only after recording the choice and its connectivity/security consequences | `exportInfo` has no ACL field; today's `PillarProtocol` value proves nothing about the original |
+
+   Inspect the evidence:
+
+   ```sh
+   kubectl --context "$CTX" get pv "$PV" -o jsonpath='{.spec.csi.volumeAttributes}'
+   kubectl --context "$CTX" get pvc "$CLAIM_NAME" -n "$CLAIM_NS" -o jsonpath='{.metadata.annotations}'
+   ```
+
+   Then set explicit values — unset or malformed values abort the procedure:
+
+   ```sh
+   BIND_ADDRESS=   PORT=   ACL_ENABLED=   # REQUIRED — explicit decision, no defaults
+   : "${BIND_ADDRESS:?set from step 3 evidence}" \
+     "${PORT:?set from step 3 evidence}" \
+     "${ACL_ENABLED:?set to true or false explicitly}"
+   case "$ACL_ENABLED" in true|false) ;; *) echo "ACL_ENABLED must be 'true' or 'false'"; exit 1;; esac
+   case "$PORT" in ''|*[!0-9]*) echo "PORT must be a non-negative integer"; exit 1;; esac
+   ```
+
+4. **Patch `/status` with a JSON patch pinned to the verified snapshot.** The `test` ops compare-and-swap against the UID and resourceVersion of the exact snapshot verified in step 2 — the write can never land on a different lifecycle or a changed object, and can never be a blind overwrite:
+
+   ```sh
+   kubectl --context "$CTX" patch pvst "$PVST" --subresource=status --type=json -p "$(jq -cn \
+     --arg uid "$PVS_UID" --arg rv "$PVS_RV" \
+     --arg bind "$BIND_ADDRESS" --argjson port "$PORT" --argjson acl "$ACL_ENABLED" '[
+       {op:"test", path:"/metadata/uid",            value:$uid},
+       {op:"test", path:"/metadata/resourceVersion", value:$rv},
+       {op:"add",  path:"/status/exportSpec",
+        value:{bindAddress:$bind, port:$port, aclEnabled:$acl}}
+     ]')"
+   ```
+
+   If the patch fails (a failed `test` returns `the server rejected our request`, or a conflict error), the object changed between your verified snapshot and the write — **stop, re-read, and restart from step 2. Never refresh the resourceVersion merely to make a retry succeed**: a changed object invalidates the identity and intent you verified.
+
+   The patch touches only `/status/exportSpec`. Do not edit `status.publishedNodes`, `status.publicationGeneration`, `status.deleting`, conditions, or `spec.*`; do not touch the agent's fencing marks under `/var/lib/pillar-csi/agent/generations/` on the storage host; and do not touch the backend volume — the resync only re-creates the kernel export and ACL via the agent (fenced by PVS UID + `publicationGeneration`); it never creates, formats, or deletes backend storage.
+
+5. **Wait for convergence, then verify data through the consumer that already exists.** The PillarVolumeState watch fires on the status update (a 30 s periodic resync is the fallback), so no controller restart is needed:
+
+   ```sh
+   kubectl --context "$CTX" wait pvst/"$PVST" \
+     --for=jsonpath='{.status.conditions[?(@.type=="ExportReconciled")].status}'=True --timeout=60s
+   kubectl --context "$CTX" get pvst "$PVST" \
+     -o jsonpath='{.status.conditions[?(@.type=="ExportReconciled")].reason}'
+   # must print: Reconciled
+   ```
+
+   A still-`False` condition carries the next blocker in its `reason`/`message` (`AgentUnavailable`, `StaleGeneration`, `ReconcileFailed`) — fix that cause; the durable `exportSpec` makes the controller retry on its own, so do not re-patch.
+
+   `ExportReconciled=True` proves the kernel export and ACL exist again — it does not prove bytes are reachable or intact. Check the data through the **existing** consumer first; if the node kept its session and mount, this can already pass and nothing else is needed:
+
+   ```sh
+   kubectl --context "$CTX" -n "$CLAIM_NS" exec <consumer-pod> -- sha256sum <known-file-or-device-offset>
+   ```
+
+   Only if connectivity really is lost, restart the consumer **stop-before-start**, using whatever operator-approved action fits that workload: fully stop the old consumer, wait until the pod is terminated and the volume is released (pod gone, `VolumeAttachment` removed), and only then start the replacement. Never let two consumers run at once — `ReadWriteOnce` is not a single-pod guarantee (same-node mounts can coexist; a second node cannot publish while the volume is already published elsewhere), so rolling restarts and unpinned pod deletes are unsafe here. A pod restart only re-stages/reconnects when the stage record or session is actually gone; a surviving staged mount is reused by the replacement pod. Re-run the hash check on the replacement before declaring the volume recovered.
+
+**Caveat — one repair, validated once.** The four QA volumes of issue #83 that were repaired with this procedure are historical evidence for those volumes only — not proof that any future legacy volume's recorded intent is correct. Each repaired volume becomes durable (its `exportSpec` persists in etcd, so later target-state losses self-heal), but each remaining `ExportSpecMissing` volume needs this same explicit procedure with its own verified inputs. No automatic guessing is added to the controller: that fail-closed behavior is intentional.
+
 ## Documentation
 
 - [`docs/PRD.md`](docs/PRD.md) — product requirements: architecture, CRDs, lifecycle
