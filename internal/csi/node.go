@@ -26,6 +26,7 @@ package csi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -699,7 +700,11 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 
 	// ── Idempotency check ───────────────────────────────────────────────────
 	// If the volume was already fully staged (state file exists + path mounted),
-	// return success immediately per CSI spec §4.7.
+	// return success per CSI spec §4.7 — but only after re-acknowledging the
+	// record's durability.  A previous writeStageState may have completed the
+	// rename yet failed the directory sync (e.g. crash or fsync error): the
+	// record is on disk but was never acknowledged durable, so success must not
+	// be reported without retrying the durable write.
 	existingState, stateErr := n.readStageState(volumeID)
 	if stateErr != nil {
 		return nil, status.Errorf(codes.Internal,
@@ -713,6 +718,13 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 				"NodeStageVolume: check if %q is mounted: %v", bindTarget, mountCheckErr)
 		}
 		if mounted {
+			// Re-persist the committed record so this success is acknowledged
+			// only after the file and directory syncs complete.
+			rewriteErr := n.writeStageState(volumeID, existingState)
+			if rewriteErr != nil {
+				return nil, status.Errorf(codes.Internal,
+					"NodeStageVolume: re-persist stage state for %q: %v", volumeID, rewriteErr)
+			}
 			// Already fully staged — idempotent success.
 			return &csi.NodeStageVolumeResponse{}, nil
 		}
@@ -1241,19 +1253,86 @@ func (n *NodeServer) stateFilePath(volumeID string) string {
 
 // writeStageState serializes state to the JSON file for volumeID under
 // stateDir.  The directory is created if it does not yet exist.
+//
+// The write is atomic and durable: the payload is written to a sibling
+// temporary file, fsynced, then renamed over the target, and every directory
+// on the stateDir path is fsynced so the rename and any newly created
+// directories survive a host crash.  Success is acknowledged only after the
+// file contents and the directory entries have been synced; a failed
+// replacement before the rename preserves the previous record.  This mirrors
+// the fencing-mark write in internal/agent/fencing.go.
 func (n *NodeServer) writeStageState(volumeID string, state *nodeStageState) error {
-	mkdirErr := os.MkdirAll(n.stateDir, 0o700)
-	if mkdirErr != nil {
-		return fmt.Errorf("create state directory %q: %w", n.stateDir, mkdirErr)
-	}
 	data, marshalErr := json.Marshal(state)
 	if marshalErr != nil {
 		return fmt.Errorf("marshal stage state: %w", marshalErr)
 	}
+
+	mkdirErr := os.MkdirAll(n.stateDir, 0o700) // #nosec G703 -- driver-configured stateDir, not per-request input
+	if mkdirErr != nil {
+		return fmt.Errorf("create state directory %q: %w", n.stateDir, mkdirErr)
+	}
+
 	stateFile := n.stateFilePath(volumeID)
-	writeErr := os.WriteFile(stateFile, data, 0o600)
-	if writeErr != nil {
-		return fmt.Errorf("write state file %q: %w", stateFile, writeErr)
+	// A unique temp file per attempt: concurrent NodeStageVolume calls for the
+	// same volumeID must not share a temp path, and a stale temp file left by
+	// a crash must never be reused.  CreateTemp applies mode 0600.
+	f, openErr := os.CreateTemp(n.stateDir, filepath.Base(stateFile)+".*.tmp")
+	if openErr != nil {
+		return fmt.Errorf("create temp state file in %q: %w", n.stateDir, openErr)
+	}
+	tmpFile := f.Name()
+	_, writeErr := f.Write(data)
+	syncErr := f.Sync()
+	closeErr := f.Close()
+	joined := errors.Join(writeErr, syncErr, closeErr)
+	if joined != nil {
+		removeErr := os.Remove(tmpFile) // #nosec G703 -- CreateTemp path under controlled stateDir
+		if removeErr != nil {
+			joined = errors.Join(joined, fmt.Errorf("remove temp state file %q: %w", tmpFile, removeErr))
+		}
+		return fmt.Errorf("write/sync/close temp state file %q: %w", tmpFile, joined)
+	}
+
+	renameErr := os.Rename(tmpFile, stateFile) // #nosec G703 -- paths derived from controlled stateDir
+	if renameErr != nil {
+		removeErr := os.Remove(tmpFile) // #nosec G703 -- CreateTemp path under controlled stateDir
+		if removeErr != nil {
+			renameErr = errors.Join(renameErr, fmt.Errorf("remove temp state file %q: %w", tmpFile, removeErr))
+		}
+		return fmt.Errorf("rename temp state file %q to %q: %w", tmpFile, stateFile, renameErr)
+	}
+
+	// fsync every directory on the stateDir path, from stateDir up to the
+	// filesystem root: stateDir holds the renamed state file, and each parent
+	// holds the entry of the directory below it.  Directory existence does not
+	// prove durability — a directory created by MkdirAll above, by the
+	// readiness probe, or by a crashed earlier attempt may not yet be synced —
+	// so the chain is synced unconditionally.  Staging is infrequent and the
+	// chain is short, so the extra fsyncs are cheap.
+	for dir := n.stateDir; ; dir = filepath.Dir(dir) {
+		dirErr := syncDir(dir)
+		if dirErr != nil {
+			return fmt.Errorf("sync state directory %q: %w", dir, dirErr)
+		}
+		if filepath.Dir(dir) == dir {
+			break // filesystem root reached
+		}
+	}
+	return nil
+}
+
+// syncDir fsyncs a directory so that file and subdirectory entries created or
+// renamed inside it are committed to durable storage.
+func syncDir(dir string) error {
+	d, openErr := os.Open(dir) //nolint:gosec // G304: directory path derived from controlled stateDir
+	if openErr != nil {
+		return fmt.Errorf("open: %w", openErr)
+	}
+	syncErr := d.Sync()
+	closeErr := d.Close()
+	joined := errors.Join(syncErr, closeErr)
+	if joined != nil {
+		return fmt.Errorf("sync/close: %w", joined)
 	}
 	return nil
 }

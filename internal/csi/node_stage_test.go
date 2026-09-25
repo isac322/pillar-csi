@@ -26,10 +26,16 @@ package csi
 //	go test ./internal/csi/ -v -run TestNodeStage
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
+	"os/exec"
+	"os/signal"
+	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	csi "github.com/container-storage-interface/spec/lib/go/csi"
 	"google.golang.org/grpc/codes"
@@ -1004,6 +1010,209 @@ func TestStageState_VolumeIDSanitization(t *testing.T) {
 		if st == nil {
 			t.Errorf("readStageState(%q) = nil", id)
 		}
+	}
+}
+
+// TestStageState_FailedWritePreservesPriorRecord verifies the issue #81
+// invariant through the public NodeStageVolume RPC: when the state-file
+// replacement fails mid-write, the previously committed record is preserved
+// byte-for-byte.  The rewrite is forced to fail deterministically by running
+// the re-stage in a subprocess whose RLIMIT_FSIZE is 0, so write(2) returns
+// EFBIG — a controlled stand-in for the crash-window interruption that left a
+// 0-byte record on the worker.  The limit is confined to the child process so
+// the parent test's own file writes are unaffected.
+func TestStageState_FailedWritePreservesPriorRecord(t *testing.T) {
+	t.Parallel()
+
+	env := newNodeTestEnv(t)
+	stagingPath := t.TempDir()
+	const volumeID = "tank/pvc-failed-write"
+	nqn := "nqn.2026-01.com.bhyoo.pillar-csi:" + strings.ReplaceAll(volumeID, "/", ".")
+	req := &csi.NodeStageVolumeRequest{
+		VolumeId:          volumeID,
+		StagingTargetPath: stagingPath,
+		VolumeCapability:  mountCap("ext4"),
+		VolumeContext:     mountVolumeContext(nqn, "192.0.2.1"),
+	}
+
+	if _, err := env.srv.NodeStageVolume(context.Background(), req); err != nil {
+		t.Fatalf("initial NodeStageVolume: %v", err)
+	}
+	stateFile := env.srv.stateFilePath(volumeID)
+	before, err := os.ReadFile(stateFile) //nolint:gosec // G304: test reads state file under t.TempDir()
+	if err != nil {
+		t.Fatalf("read committed state file: %v", err)
+	}
+	if len(before) == 0 {
+		t.Fatal("state file is empty after successful NodeStageVolume")
+	}
+
+	// Simulate a node reboot: the mount table is empty but the committed
+	// record survives, so the next NodeStageVolume re-attaches, re-mounts, and
+	// rewrites the record.
+	env.mounter.mountedPaths = map[string]bool{}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], //nolint:gosec // G204: re-executes own test binary as a helper
+		"-test.run=^TestStageStateFailedWriteHelper$")
+	cmd.Env = append(os.Environ(),
+		"PILLAR_TEST_RLIMIT_FSIZE_HELPER=1",
+		"PILLAR_TEST_STATE_DIR="+env.stateDir,
+		"PILLAR_TEST_STAGING_PATH="+stagingPath,
+		"PILLAR_TEST_VOLUME_ID="+volumeID,
+	)
+	out, runErr := cmd.CombinedOutput()
+	if runErr != nil {
+		t.Fatalf("helper subprocess failed: %v\n%s", runErr, out)
+	}
+
+	after, err := os.ReadFile(stateFile) //nolint:gosec // G304: test reads state file under t.TempDir()
+	if err != nil {
+		t.Fatalf("read state file after failed re-stage: %v", err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Errorf("committed record changed by failed write: got %q, want %q", after, before)
+	}
+}
+
+// TestStageState_FailedRewriteWhenMountedPreservesRecord verifies the retry
+// side of the issue #81 ack contract through the public NodeStageVolume RPC:
+// when a state file exists and the staging path is still mounted, a failed
+// record rewrite surfaces an Internal error instead of acknowledging success
+// on an unverified record, the committed record is preserved, and a later
+// retry without the fault succeeds.
+func TestStageState_FailedRewriteWhenMountedPreservesRecord(t *testing.T) {
+	t.Parallel()
+
+	env := newNodeTestEnv(t)
+	stagingPath := t.TempDir()
+	const volumeID = "tank/pvc-mounted-rewrite"
+	nqn := "nqn.2026-01.com.bhyoo.pillar-csi:" + strings.ReplaceAll(volumeID, "/", ".")
+	req := &csi.NodeStageVolumeRequest{
+		VolumeId:          volumeID,
+		StagingTargetPath: stagingPath,
+		VolumeCapability:  mountCap("ext4"),
+		VolumeContext:     mountVolumeContext(nqn, "192.0.2.1"),
+	}
+
+	if _, err := env.srv.NodeStageVolume(context.Background(), req); err != nil {
+		t.Fatalf("initial NodeStageVolume: %v", err)
+	}
+	stateFile := env.srv.stateFilePath(volumeID)
+	before, err := os.ReadFile(stateFile) //nolint:gosec // G304: test reads state file under t.TempDir()
+	if err != nil {
+		t.Fatalf("read committed state file: %v", err)
+	}
+	if len(before) == 0 {
+		t.Fatal("state file is empty after successful NodeStageVolume")
+	}
+
+	// The mount survived (env.mounter still reports stagingPath mounted), so
+	// the helper hits the already-staged fast path, which must re-acknowledge
+	// the record's durability.  The helper subprocess fails the rewrite with
+	// RLIMIT_FSIZE=0, confined to the child process.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], //nolint:gosec // G204: re-executes own test binary as a helper
+		"-test.run=^TestStageStateFailedWriteHelper$")
+	cmd.Env = append(os.Environ(),
+		"PILLAR_TEST_RLIMIT_FSIZE_HELPER=1",
+		"PILLAR_TEST_HELPER_MOUNTED=1",
+		"PILLAR_TEST_STATE_DIR="+env.stateDir,
+		"PILLAR_TEST_STAGING_PATH="+stagingPath,
+		"PILLAR_TEST_VOLUME_ID="+volumeID,
+	)
+	out, runErr := cmd.CombinedOutput()
+	if runErr != nil {
+		t.Fatalf("helper subprocess failed: %v\n%s", runErr, out)
+	}
+
+	after, err := os.ReadFile(stateFile) //nolint:gosec // G304: test reads state file under t.TempDir()
+	if err != nil {
+		t.Fatalf("read state file after failed re-stage: %v", err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Errorf("committed record changed by failed write: got %q, want %q", after, before)
+	}
+
+	// With the limit confined to the subprocess, the retry in this process
+	// succeeds and re-acknowledges the durable record.
+	_, retryErr := env.srv.NodeStageVolume(context.Background(), req)
+	if retryErr != nil {
+		t.Fatalf("NodeStageVolume retry after restored limit: %v", retryErr)
+	}
+	final, err := os.ReadFile(stateFile) //nolint:gosec // G304: test reads state file under t.TempDir()
+	if err != nil {
+		t.Fatalf("read state file after retry: %v", err)
+	}
+	if !bytes.Equal(final, before) {
+		t.Errorf("record after retry = %q, want unchanged %q", final, before)
+	}
+}
+
+// TestStageStateFailedWriteHelper runs in a re-executed subprocess for the
+// failed-write regression tests above.  It sets RLIMIT_FSIZE to 0 (with
+// SIGXFSZ ignored so write(2) returns EFBIG instead of terminating the
+// process) and re-issues NodeStageVolume, which must fail while persisting
+// the stage state.  When PILLAR_TEST_HELPER_MOUNTED is set the mock mounter
+// reports the staging path still mounted, driving the already-staged fast
+// path; otherwise the full re-stage path runs.  Without the marker
+// environment variable it returns immediately so a normal test run is a
+// no-op.
+func TestStageStateFailedWriteHelper(t *testing.T) {
+	if os.Getenv("PILLAR_TEST_RLIMIT_FSIZE_HELPER") == "" {
+		return
+	}
+
+	signal.Ignore(syscall.SIGXFSZ)
+	var prev syscall.Rlimit
+	getErr := syscall.Getrlimit(syscall.RLIMIT_FSIZE, &prev)
+	if getErr != nil {
+		t.Fatalf("getrlimit RLIMIT_FSIZE: %v", getErr)
+	}
+	rlimErr := syscall.Setrlimit(syscall.RLIMIT_FSIZE, &syscall.Rlimit{Cur: 0, Max: prev.Max})
+	if rlimErr != nil {
+		t.Fatalf("setrlimit RLIMIT_FSIZE: %v", rlimErr)
+	}
+	// The limit must be lifted before this test returns: the test binary
+	// writes its coverage profile on exit and any file write still capped at
+	// RLIMIT_FSIZE=0 fails with EFBIG.  The deferred restore covers panic and
+	// Goexit paths; the explicit restore below runs before assertions.
+	defer func() {
+		deferredErr := syscall.Setrlimit(syscall.RLIMIT_FSIZE, &prev)
+		if deferredErr != nil {
+			t.Errorf("deferred RLIMIT_FSIZE restore failed: %v", deferredErr)
+		}
+	}()
+
+	mnt := newMockMounter()
+	if os.Getenv("PILLAR_TEST_HELPER_MOUNTED") != "" {
+		mnt.mountedPaths[os.Getenv("PILLAR_TEST_STAGING_PATH")] = true
+	}
+	srv := NewNodeServerWithStateDir("test-node",
+		&mockConnector{devicePath: "/dev/nvme0n1"},
+		mnt,
+		os.Getenv("PILLAR_TEST_STATE_DIR"))
+	volumeID := os.Getenv("PILLAR_TEST_VOLUME_ID")
+	nqn := "nqn.2026-01.com.bhyoo.pillar-csi:" + strings.ReplaceAll(volumeID, "/", ".")
+	_, err := srv.NodeStageVolume(context.Background(), &csi.NodeStageVolumeRequest{
+		VolumeId:          volumeID,
+		StagingTargetPath: os.Getenv("PILLAR_TEST_STAGING_PATH"),
+		VolumeCapability:  mountCap("ext4"),
+		VolumeContext:     mountVolumeContext(nqn, "192.0.2.1"),
+	})
+	// Lift the cap before evaluating the result so assertion output and the
+	// coverage profile written at process exit are not capped by the limit.
+	restoreErr := syscall.Setrlimit(syscall.RLIMIT_FSIZE, &prev)
+	if restoreErr != nil {
+		t.Fatalf("restore RLIMIT_FSIZE: %v", restoreErr)
+	}
+	if err == nil {
+		t.Fatal("NodeStageVolume succeeded despite RLIMIT_FSIZE=0; want persist-stage-state failure")
+	}
+	if status.Code(err) != codes.Internal || !strings.Contains(err.Error(), "persist stage state") {
+		t.Fatalf("NodeStageVolume failed at an unexpected step: %v", err)
 	}
 }
 
