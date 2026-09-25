@@ -1959,6 +1959,11 @@ Target 상태 유실 복구 (level-triggered):
               AgentUnavailable, StaleGeneration, ReconcileFailed)
 ```
 
+> **`ExportSpecMissing` 운영 복구 (issue #83):** `status.exportSpec`이 없는 레거시 볼륨은 자동 복구가
+> 의도적으로 비활성화되어 있다(fail-closed — 런타임 `exportInfo`나 현재 CR에서 ACL·bind address를 추측하지
+> 않는다). PV/PVC/PVS 백업과 UID+resourceVersion 가드 JSON patch로 `status.exportSpec`을 명시적으로 기록하는
+> 운영자 복구 절차는 `README.md` Troubleshooting의 "Legacy volumes stuck at `ExportSpecMissing`"을 따른다.
+
 ---
 
 ### E18.1 에이전트 연결 불가 감지
