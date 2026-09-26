@@ -211,6 +211,12 @@ func (s *Server) persistFencingMark(volumeID string, next fencingMark, changed b
 // openFencingRoot opens the agent state directory as an os.Root so every mark
 // path is confined to it, creating the directories on first use.
 func (s *Server) openFencingRoot() (*os.Root, error) {
+	return s.openStateRoot(fencingDirName)
+}
+
+// openStateRoot opens the agent state directory as an os.Root and creates its
+// subdirectory subdir on first use.
+func (s *Server) openStateRoot(subdir string) (*os.Root, error) {
 	stateDir := s.resolvedDrainStateDir()
 	err := os.MkdirAll(stateDir, fencingDirPerm)
 	if err != nil {
@@ -220,10 +226,10 @@ func (s *Server) openFencingRoot() (*os.Root, error) {
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "open agent state dir %q: %v", stateDir, err)
 	}
-	err = root.MkdirAll(fencingDirName, fencingDirPerm)
+	err = root.MkdirAll(subdir, fencingDirPerm)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "create fencing dir in %q: %v",
-			stateDir, errors.Join(err, root.Close()))
+		return nil, status.Errorf(codes.Internal, "create %s dir in %q: %v",
+			subdir, stateDir, errors.Join(err, root.Close()))
 	}
 	return root, nil
 }
@@ -304,7 +310,13 @@ func writeFileSynced(root *os.Root, name string, data []byte) error {
 // syncFencingDirs fsyncs the generations directory and the state directory,
 // making a rename inside the former and the former's own entry durable.
 func syncFencingDirs(root *os.Root) error {
-	for _, dir := range []string{fencingDirName, "."} {
+	return syncStateDirs(root, fencingDirName)
+}
+
+// syncStateDirs fsyncs subdir and the state directory, making a rename or
+// removal inside the former and the former's own entry durable.
+func syncStateDirs(root *os.Root, subdir string) error {
+	for _, dir := range []string{subdir, "."} {
 		d, err := root.Open(dir)
 		if err != nil {
 			return status.Errorf(codes.Internal, "open %q for fsync: %v", dir, err)

@@ -23,8 +23,11 @@ limitations under the License.
 //	<root>/nvmet/
 //	  subsystems/<nqn>/
 //	    attr_allow_any_host        "0" or "1"
+//	    attr_serial                stable serial (see Identity)
 //	    namespaces/<nsid>/
 //	      device_path              path to the block device
+//	      device_uuid              stable namespace UUID (see Identity)
+//	      device_nguid             stable namespace NGUID (see Identity)
 //	      enable                   "1" to activate
 //	    allowed_hosts/<host-nqn>/  → symlink to hosts/<host-nqn>
 //	  hosts/<host-nqn>/
@@ -104,6 +107,11 @@ type NvmetTarget struct {
 	// When false (the default) attr_allow_any_host = 1 is written, permitting
 	// any initiator to connect without an ACL entry.
 	ACLEnabled bool
+
+	// Identity is the host-visible namespace and subsystem identity written
+	// before the namespace is enabled.  The zero value selects
+	// DeriveIdentity(SubsystemNQN, NamespaceID).
+	Identity Identity
 }
 
 // nvmetRoot returns the path to the nvmet subtree within configfs, e.g.
@@ -363,12 +371,19 @@ func stablePortID(addr string, port int32) uint32 {
 //  2. Writes "0" or "1" to attr_allow_any_host depending on ACLEnabled:
 //     - ACLEnabled == false → "1" (any initiator may connect; no ACL check)
 //     - ACLEnabled == true  → "0" (only explicitly allowed initiators)
+//  3. Writes the identity serial to attr_serial (skipped when it already
+//     holds that value, because nvmet locks it once a host discovered the
+//     subsystem).
 //
 // The operation is idempotent: if the directory already exists the mkdir is a
 // no-op; configfs pseudo-files accept repeated identical writes.
 func (t *NvmetTarget) createSubsystem() error {
+	id, err := t.desiredIdentity()
+	if err != nil {
+		return fmt.Errorf("createSubsystem: %w", err)
+	}
 	subDir := t.subsystemDir()
-	err := mkdirAll(subDir)
+	err = mkdirAll(subDir)
 	if err != nil {
 		return fmt.Errorf("createSubsystem %q: %w", t.SubsystemNQN, err)
 	}
@@ -381,6 +396,10 @@ func (t *NvmetTarget) createSubsystem() error {
 	if err != nil {
 		return fmt.Errorf("createSubsystem %q: %w", t.SubsystemNQN, err)
 	}
+	err = ensureAttr(filepath.Join(subDir, "attr_serial"), id.Serial)
+	if err != nil {
+		return fmt.Errorf("createSubsystem %q serial: %w", t.SubsystemNQN, err)
+	}
 	return nil
 }
 
@@ -391,17 +410,29 @@ func (t *NvmetTarget) createSubsystem() error {
 //     namespace object when the directory appears).
 //  2. Writes t.DevicePath to the device_path pseudo-file so the kernel knows
 //     which block device backs this namespace.
-//  3. Writes "1" to enable to activate the namespace; the kernel will begin
+//  3. Writes the identity to device_uuid and device_nguid.  nvmet otherwise
+//     assigns a random UUID on every (re)creation, and a reconnecting host
+//     that sees a different UUID drops the namespace.
+//  4. Writes "1" to enable to activate the namespace; the kernel will begin
 //     accepting I/O after this write.
 //
-// createNamespace must be called after createSubsystem because the namespace
-// directory lives inside the subsystem directory.
+// Call createNamespace after createSubsystem because the namespace directory
+// lives inside the subsystem directory.
+//
+// An already-enabled namespace cannot change its identity (nvmet returns
+// EBUSY) and must not be disabled, because connected hosts would lose it.  If
+// its identity differs from the desired one, createNamespace returns an error
+// instead of touching it; callers keep a live identity via LiveIdentity.
 //
 // The operation is idempotent: repeated calls with the same parameters produce
 // the same configfs state.
 func (t *NvmetTarget) createNamespace() error {
+	id, err := t.desiredIdentity()
+	if err != nil {
+		return fmt.Errorf("createNamespace: %w", err)
+	}
 	nsDir := t.namespaceDir()
-	err := mkdirAll(nsDir)
+	err = mkdirAll(nsDir)
 	if err != nil {
 		return fmt.Errorf("createNamespace %q ns=%d: %w", t.SubsystemNQN, t.NamespaceID, err)
 	}
@@ -427,9 +458,48 @@ func (t *NvmetTarget) createNamespace() error {
 	}
 
 	enablePath := filepath.Join(nsDir, "enable")
+	err = t.ensureNamespaceIdentity(nsDir, enablePath, id)
+	if err != nil {
+		return err
+	}
+
 	err = writeFile(enablePath, "1")
 	if err != nil {
 		return fmt.Errorf("createNamespace %q ns=%d: %w", t.SubsystemNQN, t.NamespaceID, err)
+	}
+	return nil
+}
+
+// ensureNamespaceIdentity writes id to a disabled namespace, or verifies that
+// an enabled namespace already carries it.
+func (t *NvmetTarget) ensureNamespaceIdentity(nsDir, enablePath string, id Identity) error {
+	enabled, err := readAttr(enablePath)
+	if err != nil {
+		return fmt.Errorf("createNamespace %q ns=%d read enable: %w", t.SubsystemNQN, t.NamespaceID, err)
+	}
+	attrs := []struct{ name, want string }{
+		{"device_uuid", id.UUID},
+		{"device_nguid", id.NGUID},
+	}
+	for _, attr := range attrs {
+		path := filepath.Join(nsDir, attr.name)
+		if enabled != "1" {
+			err = ensureAttr(path, attr.want)
+			if err != nil {
+				return fmt.Errorf("createNamespace %q ns=%d identity: %w", t.SubsystemNQN, t.NamespaceID, err)
+			}
+			continue
+		}
+		current, readErr := readAttr(path)
+		if readErr != nil {
+			return fmt.Errorf("createNamespace %q ns=%d identity: %w", t.SubsystemNQN, t.NamespaceID, readErr)
+		}
+		if current != attr.want {
+			return fmt.Errorf(
+				"createNamespace %q ns=%d: enabled namespace has %s %q, want %q; "+
+					"refusing to disable a live namespace to change its identity",
+				t.SubsystemNQN, t.NamespaceID, attr.name, current, attr.want)
+		}
 	}
 	return nil
 }
@@ -670,6 +740,8 @@ func (t *NvmetTarget) Remove() error {
 	// On real configfs the kernel removes pseudo-files when the directory is
 	// removed; on a regular filesystem (tests) we must clean them up manually.
 	bestEffort(os.Remove(filepath.Join(nsDir, "device_path")))
+	bestEffort(os.Remove(filepath.Join(nsDir, "device_uuid")))
+	bestEffort(os.Remove(filepath.Join(nsDir, "device_nguid")))
 	bestEffort(os.Remove(enablePath))
 	err = removeDir(nsDir)
 	if err != nil {
@@ -691,6 +763,7 @@ func (t *NvmetTarget) Remove() error {
 	bestEffort(removeDir(filepath.Join(t.subsystemDir(), "allowed_hosts")))
 	bestEffort(removeDir(filepath.Join(t.subsystemDir(), "namespaces")))
 	bestEffort(os.Remove(filepath.Join(t.subsystemDir(), "attr_allow_any_host")))
+	bestEffort(os.Remove(filepath.Join(t.subsystemDir(), "attr_serial")))
 	err = removeDir(t.subsystemDir())
 	if err != nil {
 		return fmt.Errorf("Remove: subsystem dir: %w", err)
