@@ -40,6 +40,7 @@ limitations under the License.
 package nvmeof
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -368,9 +369,9 @@ func stablePortID(addr string, port int32) uint32 {
 //
 //  1. Creates <nvmetRoot>/subsystems/<nqn>/ (the kernel instantiates the
 //     NVMe subsystem object when the directory appears).
-//  2. Writes "0" or "1" to attr_allow_any_host depending on ACLEnabled:
-//     - ACLEnabled == false → "1" (any initiator may connect; no ACL check)
-//     - ACLEnabled == true  → "0" (only explicitly allowed initiators)
+//  2. Writes the final attr_allow_any_host value: "0" when ACLEnabled is set
+//     or AllowedHosts is non-empty (only explicitly allowed initiators), "1"
+//     otherwise (any initiator may connect).
 //  3. Writes the identity serial to attr_serial (skipped when it already
 //     holds that value, because nvmet locks it once a host discovered the
 //     subsystem).
@@ -387,8 +388,10 @@ func (t *NvmetTarget) createSubsystem() error {
 	if err != nil {
 		return fmt.Errorf("createSubsystem %q: %w", t.SubsystemNQN, err)
 	}
+	// nvmet refuses allowed_hosts links while attr_allow_any_host is 1, so
+	// the final value is written before any host is added.
 	allowAnyHost := "1"
-	if t.ACLEnabled {
+	if t.ACLEnabled || len(t.AllowedHosts) > 0 {
 		allowAnyHost = "0"
 	}
 	attrPath := filepath.Join(subDir, "attr_allow_any_host")
@@ -620,8 +623,10 @@ func (t *NvmetTarget) createPort() (uint32, error) {
 
 // linkSubsystemToPort creates a symlink in the port's subsystems/ directory
 // that points to the subsystem directory, activating the subsystem on that
-// port.  This is the last step in Apply — once the symlink exists, the kernel
-// starts accepting NVMe-oF TCP connections.
+// port.  When it is the port's first subsystem the kernel starts listening
+// (nvmet_port_subsys_allow_link → nvmet_enable_port), so from this moment
+// hosts reach the subsystem, and every other subsystem sharing the port that
+// is not linked yet answers connects with a do-not-retry rejection.
 func (t *NvmetTarget) linkSubsystemToPort(portID uint32) error {
 	linkPath := t.portSubsystemLink(portID)
 	target := t.subsystemDir()
@@ -635,60 +640,141 @@ func (t *NvmetTarget) linkSubsystemToPort(portID uint32) error {
 	return symlink(target, linkPath)
 }
 
-// Apply and Remove implement the full target lifecycle.
+// Apply, Prepare, Link and Remove implement the full target lifecycle.
+//
+// Port ordering contract.  A reconnecting host must see either a refused TCP
+// connection (retried until ctrl_loss_tmo) or a fully configured subsystem.
+// The kernel target rejects the connect with the do-not-retry bit, and Linux
+// hosts then delete the controller, when the subsystem is not linked to the
+// listening port (Connect Invalid Data Parameter) or the host is not allowed
+// (Connect Invalid Host); a namespace that is disabled or carries another
+// identity is dropped by the host.  Therefore:
+//
+//   - a subsystem is linked to a port only after its ACL, namespace identity,
+//     device and enable are in place (Prepare, then Link);
+//   - a port starts listening only when every export that shares it is
+//     prepared: a caller restoring several exports calls Prepare for all of
+//     them first and Link for each only afterwards, with nothing slow
+//     (device waits, durable writes) between the links;
+//   - Remove unlinks the subsystem from its ports before tearing it down.
 
-// Apply creates the complete NVMe-oF TCP target entry in configfs.  The steps
-// are executed in dependency order:
+// PreparedTarget is a target whose subsystem, ACL, namespace and port are
+// configured but which is not yet linked to its port, so no host can reach it.
+type PreparedTarget struct {
+	target   *NvmetTarget
+	identity Identity
+	portID   uint32
+}
+
+// Prepare configures everything a host needs before the subsystem becomes
+// reachable, in dependency order:
 //
-//  1. Create subsystem (sets allow_any_host based on AllowedHosts)
-//  2. Create namespace (device_path + enable)
-//  3. Create port (transport attributes)
-//  4. Link subsystem to port (activates the target)
-//  5. If AllowedHosts is non-empty: create host entries and ACL symlinks,
-//     then set attr_allow_any_host = 0
+//  1. Subsystem with its final attr_allow_any_host and serial.
+//  2. Allowed hosts (nvmet accepts them only while attr_allow_any_host is 0).
+//  3. Namespace: identity, device_path, then enable.
+//  4. Port transport attributes (the port does not listen until a subsystem
+//     is linked to it).
 //
-// Every step is idempotent, so Apply can be called repeatedly to converge to
-// the desired state (useful for ReconcileState after reboot).
-func (t *NvmetTarget) Apply() error {
-	// 1. Subsystem — initially allow any host; tightened in step 5 if ACL needed.
-	err := t.createSubsystem()
+// It never links the subsystem to the port.  Every step is idempotent, and
+// an already linked subsystem stays linked.
+func (t *NvmetTarget) Prepare() (PreparedTarget, error) {
+	id, err := t.desiredIdentity()
 	if err != nil {
-		return fmt.Errorf("Apply: %w", err)
+		return PreparedTarget{}, fmt.Errorf("Prepare: %w", err)
 	}
-
-	// 2. Namespace
+	err = t.createSubsystem()
+	if err != nil {
+		return PreparedTarget{}, fmt.Errorf("Prepare: %w", err)
+	}
+	for _, host := range t.AllowedHosts {
+		err = t.AllowHost(host)
+		if err != nil {
+			return PreparedTarget{}, fmt.Errorf("Prepare: %w", err)
+		}
+	}
 	err = t.createNamespace()
 	if err != nil {
-		return fmt.Errorf("Apply: %w", err)
+		return PreparedTarget{}, fmt.Errorf("Prepare: %w", err)
 	}
-
-	// 3. Port
 	portID, err := t.createPort()
 	if err != nil {
-		return fmt.Errorf("Apply: %w", err)
+		return PreparedTarget{}, fmt.Errorf("Prepare: %w", err)
 	}
+	return PreparedTarget{target: t, identity: id, portID: portID}, nil
+}
 
-	// 4. Link subsystem → port
-	err = t.linkSubsystemToPort(portID)
+// Link makes the prepared subsystem reachable on its port.  It first reads
+// back the state Prepare established and refuses to link a subsystem that a
+// host could not use: disabled namespace, other device or identity, or a
+// missing ACL entry.
+func (p PreparedTarget) Link() error {
+	t := p.target
+	if t == nil {
+		return errors.New("Link: target was not prepared")
+	}
+	err := t.verifyPrepared(p.identity)
+	if err != nil {
+		return fmt.Errorf("Link %q: %w", t.SubsystemNQN, err)
+	}
+	err = t.linkSubsystemToPort(p.portID)
+	if err != nil {
+		return fmt.Errorf("Link %q: %w", t.SubsystemNQN, err)
+	}
+	return nil
+}
+
+// verifyPrepared checks the live configfs state against everything Prepare
+// writes before the subsystem may be linked.
+func (t *NvmetTarget) verifyPrepared(id Identity) error {
+	nsDir := t.namespaceDir()
+	allowAnyHost := "1"
+	if t.ACLEnabled || len(t.AllowedHosts) > 0 {
+		allowAnyHost = "0"
+	}
+	checks := []struct{ path, want string }{
+		{filepath.Join(t.subsystemDir(), "attr_allow_any_host"), allowAnyHost},
+		{filepath.Join(t.subsystemDir(), "attr_serial"), id.Serial},
+		{filepath.Join(nsDir, "device_path"), t.DevicePath},
+		{filepath.Join(nsDir, "device_uuid"), id.UUID},
+		{filepath.Join(nsDir, "device_nguid"), id.NGUID},
+		{filepath.Join(nsDir, "enable"), "1"},
+	}
+	for _, c := range checks {
+		got, err := readAttr(c.path)
+		if err != nil {
+			return fmt.Errorf("verify prepared: %w", err)
+		}
+		if got != c.want {
+			return fmt.Errorf("verify prepared: %s is %q, want %q", c.path, got, c.want)
+		}
+	}
+	for _, host := range t.AllowedHosts {
+		link := t.allowedHostLink(host)
+		fi, err := os.Lstat(link)
+		if err != nil {
+			return fmt.Errorf("verify prepared: allowed host %q: %w", host, err)
+		}
+		if fi.Mode()&os.ModeSymlink == 0 {
+			return fmt.Errorf("verify prepared: allowed host %q: %s is not a symlink", host, link)
+		}
+	}
+	return nil
+}
+
+// Apply creates the complete NVMe-oF TCP target entry in configfs: Prepare,
+// then Link.  Every step is idempotent, so Apply can be called repeatedly to
+// converge to the desired state.  Apply alone is safe only when no other
+// export sharing the port still waits to be applied; restoring several
+// exports must Prepare all of them before Linking any.
+func (t *NvmetTarget) Apply() error {
+	prepared, err := t.Prepare()
 	if err != nil {
 		return fmt.Errorf("Apply: %w", err)
 	}
-
-	// 5. ACL: if AllowedHosts is set, add each host and disable allow_any_host.
-	if len(t.AllowedHosts) > 0 {
-		for _, host := range t.AllowedHosts {
-			err = t.AllowHost(host)
-			if err != nil {
-				return fmt.Errorf("Apply: %w", err)
-			}
-		}
-		attrPath := filepath.Join(t.subsystemDir(), "attr_allow_any_host")
-		err = writeFile(attrPath, "0")
-		if err != nil {
-			return fmt.Errorf("Apply: disable allow_any_host: %w", err)
-		}
+	err = prepared.Link()
+	if err != nil {
+		return fmt.Errorf("Apply: %w", err)
 	}
-
 	return nil
 }
 

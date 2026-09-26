@@ -116,7 +116,7 @@ func (h *recordingProtocolHandler) DenyInitiator(
 func (h *recordingProtocolHandler) Reconcile(
 	_ context.Context,
 	desired []ExportDesiredState,
-) error {
+) []error {
 	copied := make([]ExportDesiredState, 0, len(desired))
 	for _, entry := range desired {
 		entryCopy := entry
@@ -124,7 +124,11 @@ func (h *recordingProtocolHandler) Reconcile(
 		copied = append(copied, entryCopy)
 	}
 	h.reconcileCalls = append(h.reconcileCalls, copied)
-	return h.reconcileErr
+	errs := make([]error, len(desired))
+	for i := range errs {
+		errs[i] = h.reconcileErr
+	}
+	return errs
 }
 
 var _ AgentProtocolHandler = (*recordingProtocolHandler)(nil)

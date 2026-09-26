@@ -25,17 +25,69 @@ import (
 	agentv1 "github.com/bhyoo/pillar-csi/gen/go/pillar_csi/agent/v1"
 )
 
-// ReconcileState applies the full desired state for all volumes managed by
-// this agent.  It is called after an agent restart or node reboot to
-// re-create configfs entries that are lost on reboot.
+// ReconcileState applies the full desired state for the listed volumes.  It
+// is called after an agent restart or node reboot to re-create configfs
+// entries that are lost on reboot, and periodically.
+//
+// All exports of one protocol, across every listed volume, go to the protocol
+// handler in one call, so the handler can prepare all of them before making
+// any reachable (see nvmeof's port ordering contract).  A request without
+// Complete is rejected while the export restore is pending; a Complete
+// request ends it.
 func (s *Server) ReconcileState(
 	ctx context.Context,
 	req *agentv1.ReconcileStateRequest,
 ) (*agentv1.ReconcileStateResponse, error) {
+	if !req.GetComplete() {
+		err := s.checkExportRestoreDone("ReconcileState")
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	vols := req.GetVolumes()
+	failures := make([]error, len(vols))
+	desiredByProtocol := make(map[agentv1.ProtocolType][]ExportDesiredState)
+	// volumeByProtocol[p][j] is the index in vols of desiredByProtocol[p][j].
+	volumeByProtocol := make(map[agentv1.ProtocolType][]int)
+	handlers := make(map[agentv1.ProtocolType]AgentProtocolHandler)
+	var protocolOrder []agentv1.ProtocolType
+
+	for i, vol := range vols {
+		failures[i] = s.resolveVolumeHandlers(vol, handlers, &protocolOrder)
+	}
+	for i, vol := range vols {
+		if failures[i] != nil {
+			continue
+		}
+		for _, export := range vol.GetExports() {
+			protocolType := export.GetProtocolType()
+			desiredByProtocol[protocolType] = append(desiredByProtocol[protocolType],
+				exportDesiredState(vol, export))
+			volumeByProtocol[protocolType] = append(volumeByProtocol[protocolType], i)
+		}
+	}
+
+	for _, protocolType := range protocolOrder {
+		desired := desiredByProtocol[protocolType]
+		if len(desired) == 0 {
+			continue
+		}
+		errs := handlers[protocolType].Reconcile(ctx, desired)
+		for j, volume := range volumeByProtocol[protocolType] {
+			if errs[j] != nil && failures[volume] == nil {
+				failures[volume] = errs[j]
+			}
+		}
+	}
+
+	if req.GetComplete() {
+		s.exportRestorePending.Store(false)
+	}
+
 	results := make([]*agentv1.ReconcileItemResult, 0, len(vols))
-	for _, vol := range vols {
-		results = append(results, s.reconcileVolume(ctx, vol))
+	for i, vol := range vols {
+		results = append(results, reconcileResult(vol.GetVolumeId(), failures[i]))
 	}
 	return &agentv1.ReconcileStateResponse{
 		Results:      results,
@@ -43,48 +95,44 @@ func (s *Server) ReconcileState(
 	}, nil
 }
 
-// reconcileVolume applies all desired exports for one volume and returns a
-// per-volume result.
-func (s *Server) reconcileVolume(
-	ctx context.Context,
+// resolveVolumeHandlers resolves the handler of every protocol vol exports,
+// recording new protocols in first-seen order.  A volume with an unsupported
+// protocol fails as a whole: none of its exports is applied.
+func (s *Server) resolveVolumeHandlers(
 	vol *agentv1.VolumeDesiredState,
-) *agentv1.ReconcileItemResult {
-	desiredByProtocol := make(map[agentv1.ProtocolType][]ExportDesiredState, len(vol.GetExports()))
-	protocolOrder := make([]agentv1.ProtocolType, 0, len(vol.GetExports()))
-
+	handlers map[agentv1.ProtocolType]AgentProtocolHandler,
+	protocolOrder *[]agentv1.ProtocolType,
+) error {
 	for _, export := range vol.GetExports() {
 		protocolType := export.GetProtocolType()
-		if _, ok := desiredByProtocol[protocolType]; !ok {
-			protocolOrder = append(protocolOrder, protocolType)
+		if _, ok := handlers[protocolType]; ok {
+			continue
 		}
-		desiredByProtocol[protocolType] = append(desiredByProtocol[protocolType], ExportDesiredState{
-			VolumeID:          vol.GetVolumeId(),
-			DevicePath:        vol.GetDevicePath(),
-			ProtocolParams:    export.GetExportParams(),
-			AllowedInitiators: export.GetAllowedInitiators(),
-			ACLEnabled:        export.GetAclEnabled(),
-			Fence:             vol.GetFence(),
-		})
-	}
-
-	for _, protocolType := range protocolOrder {
 		handler, err := s.handlerForProtocol(protocolType)
 		if err != nil {
-			return reconcileFailure(vol.GetVolumeId(), err)
+			return err
 		}
-		err = handler.Reconcile(ctx, desiredByProtocol[protocolType])
-		if err != nil {
-			return reconcileFailure(vol.GetVolumeId(), err)
-		}
+		handlers[protocolType] = handler
+		*protocolOrder = append(*protocolOrder, protocolType)
 	}
+	return nil
+}
 
-	return &agentv1.ReconcileItemResult{
-		VolumeId: vol.GetVolumeId(),
-		Success:  true,
+func exportDesiredState(vol *agentv1.VolumeDesiredState, export *agentv1.ExportDesiredState) ExportDesiredState {
+	return ExportDesiredState{
+		VolumeID:          vol.GetVolumeId(),
+		DevicePath:        vol.GetDevicePath(),
+		ProtocolParams:    export.GetExportParams(),
+		AllowedInitiators: export.GetAllowedInitiators(),
+		ACLEnabled:        export.GetAclEnabled(),
+		Fence:             vol.GetFence(),
 	}
 }
 
-func reconcileFailure(volumeID string, err error) *agentv1.ReconcileItemResult {
+func reconcileResult(volumeID string, err error) *agentv1.ReconcileItemResult {
+	if err == nil {
+		return &agentv1.ReconcileItemResult{VolumeId: volumeID, Success: true}
+	}
 	msg := err.Error()
 	if st, ok := status.FromError(err); ok {
 		msg = st.Message()

@@ -36,6 +36,10 @@ func (s *Server) ExportVolume(
 	if err != nil {
 		return nil, protocolRPCError(err)
 	}
+	err = s.checkExportRestoreDone("ExportVolume")
+	if err != nil {
+		return nil, err
+	}
 	params, err := exportParamsForRequest(req)
 	if err != nil {
 		return nil, protocolRPCError(err)
@@ -117,6 +121,10 @@ func (s *Server) AllowInitiator(
 	handler, err := s.handlerForProtocol(req.GetProtocolType())
 	if err != nil {
 		return nil, protocolRPCError(err)
+	}
+	err = s.checkExportRestoreDone("AllowInitiator")
+	if err != nil {
+		return nil, err
 	}
 	err = handler.AllowInitiator(ctx, req.GetVolumeId(), req.GetInitiatorId(), req.GetFence())
 	if err != nil {

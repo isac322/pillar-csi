@@ -144,7 +144,7 @@ func TestNVMeoFTCPAgentHandler_Reconcile(t *testing.T) {
 	t.Parallel()
 	handler, cfgRoot := newNVMeoFTCPHandler(t)
 
-	err := handler.Reconcile(context.Background(), []agent.ExportDesiredState{
+	errs := handler.Reconcile(context.Background(), []agent.ExportDesiredState{
 		{
 			VolumeID:          testVolumeID,
 			Fence:             testFence(t),
@@ -154,8 +154,8 @@ func TestNVMeoFTCPAgentHandler_Reconcile(t *testing.T) {
 			ACLEnabled:        true,
 		},
 	})
-	if err != nil {
-		t.Fatalf("Reconcile unexpected error: %v", err)
+	if len(errs) != 1 || errs[0] != nil {
+		t.Fatalf("Reconcile errors = %v, want [<nil>]", errs)
 	}
 
 	subDir := filepath.Join(cfgRoot, "nvmet", "subsystems", testVolumeNQN)

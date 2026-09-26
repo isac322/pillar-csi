@@ -71,15 +71,19 @@ func init() {
 // AgentDialer is the gRPC connection manager injected into the
 // PillarAgentReconciler so that it can perform live HealthCheck calls against
 // pillar-agent instances and reflect the results in AgentConnected conditions.
+// AgentExports restores an agent's exports when it reports its export restore
+// pending; exports resyncs single volumes.
 func setupControllers(
 	mgr ctrl.Manager,
 	agentDialer agentclient.Dialer,
+	agentExports controller.AgentExportRestorer,
 	exports controller.VolumeExportReconciler,
 ) error {
 	err := (&controller.PillarAgentReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-		Dialer: agentDialer,
+		Client:  mgr.GetClient(),
+		Scheme:  mgr.GetScheme(),
+		Dialer:  agentDialer,
+		Exports: agentExports,
 	}).SetupWithManager(mgr)
 	if err != nil {
 		return fmt.Errorf("PillarAgent controller: %w", err)
@@ -487,10 +491,11 @@ func initAgentDialer(cert, key, ca, serverName string) (*agentclient.Manager, er
 // encountered so that main can log it and allow deferred cleanup to run.
 func runManager(mgr ctrl.Manager, agentDialer agentclient.Dialer, csiEndpoint string) error {
 	// The CSI controller server is built before setupControllers so that the
-	// PillarVolumeState reconciler can drive its per-volume export resync.
+	// PillarAgent reconciler can drive the batch export restore of a restarted
+	// agent and the PillarVolumeState reconciler its per-volume export resync.
 	ctrlSrv := csi.NewControllerServer(mgr.GetClient(), mgr.GetAPIReader(), driverName)
 
-	err := setupControllers(mgr, agentDialer, ctrlSrv)
+	err := setupControllers(mgr, agentDialer, ctrlSrv, ctrlSrv)
 	if err != nil {
 		return fmt.Errorf("unable to create controllers: %w", err)
 	}
