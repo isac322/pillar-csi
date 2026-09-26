@@ -156,6 +156,11 @@ func (h *NVMeoFTCPAgentHandler) Export(
 	defer unlock()
 
 	err = h.server.fenced(params.VolumeID, params.Fence, fenceGrant, func() error {
+		identity, identityErr := h.server.resolveNVMeIdentity(params.VolumeID, params.Fence, target)
+		if identityErr != nil {
+			return identityErr
+		}
+		target.Identity = identity
 		applyErr := target.Apply()
 		if applyErr != nil {
 			return status.Errorf(codes.Internal, "ExportVolume: %v", applyErr)
@@ -193,7 +198,9 @@ func (h *NVMeoFTCPAgentHandler) Unexport(_ context.Context, volumeID string, fen
 		if removeErr != nil {
 			return status.Errorf(codes.Internal, "UnexportVolume: %v", removeErr)
 		}
-		return nil
+		// The namespace is gone, so no host holds its identity any more; a
+		// later export of this volume uses the derived identity.
+		return h.server.removeIdentityRecord(volumeID)
 	})
 }
 
@@ -303,6 +310,11 @@ func (h *NVMeoFTCPAgentHandler) reconcileExport(ctx context.Context, export Expo
 		if waitErr != nil {
 			return fmt.Errorf("Reconcile: volume %q: %w", export.VolumeID, waitErr)
 		}
+		identity, identityErr := h.server.resolveNVMeIdentity(export.VolumeID, export.Fence, target)
+		if identityErr != nil {
+			return fmt.Errorf("applyExport %q: %w", export.VolumeID, identityErr)
+		}
+		target.Identity = identity
 		applyErr := target.Apply()
 		if applyErr != nil {
 			return fmt.Errorf("applyExport %q: %w", export.VolumeID, applyErr)
