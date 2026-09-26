@@ -34,6 +34,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	v1alpha1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
@@ -92,6 +93,18 @@ func newResyncEnv(t *testing.T, pvs *v1alpha1.PillarVolumeState) *resyncEnv {
 // test can restart the agent (new Server, same stateDir) and verify that the
 // fencing generation mark survives.
 func newResyncEnvState(t *testing.T, pvs *v1alpha1.PillarVolumeState, stateDir string) *resyncEnv {
+	var objs []client.Object
+	if pvs != nil {
+		objs = append(objs, pvs)
+	}
+	return newResyncEnvObjects(t, stateDir, objs)
+}
+
+// newResyncEnvObjects builds the env with extra Kubernetes objects (besides
+// the resyncAgentName PillarAgent) and extra agent server options.
+func newResyncEnvObjects(
+	t *testing.T, stateDir string, objs []client.Object, opts ...agent.ServerOption,
+) *resyncEnv {
 	cfgRoot := t.TempDir()
 	calls := &atomic.Int32{}
 	lis := bufconn.Listen(1 << 20)
@@ -105,7 +118,7 @@ func newResyncEnvState(t *testing.T, pvs *v1alpha1.PillarVolumeState, stateDir s
 	}))
 	agentv1.RegisterAgentServiceServer(gs,
 		agent.NewServer(map[string]backend.VolumeBackend{"tank": resyncBackend{}}, cfgRoot,
-			agent.WithDrainStateDir(stateDir)))
+			append([]agent.ServerOption{agent.WithDrainStateDir(stateDir)}, opts...)...))
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- gs.Serve(lis) }()
 	t.Cleanup(func() {
@@ -136,12 +149,9 @@ func newResyncEnvState(t *testing.T, pvs *v1alpha1.PillarVolumeState, stateDir s
 		ObjectMeta: metav1.ObjectMeta{Name: resyncAgentName},
 		Status:     v1alpha1.PillarAgentStatus{ResolvedAddress: "127.0.0.1:9500"},
 	}
-	builder := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pa).
+	builder := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pa).WithObjects(objs...).
 		WithStatusSubresource(&v1alpha1.PillarAgent{}, &v1alpha1.PillarVolumeState{}).
 		WithInterceptorFuncs(fakeuid.Interceptor())
-	if pvs != nil {
-		builder = builder.WithObjects(pvs)
-	}
 	dialer := func(context.Context, string) (agentv1.AgentServiceClient, io.Closer, error) {
 		return agentClient, nopCloser{}, nil
 	}

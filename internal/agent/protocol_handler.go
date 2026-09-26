@@ -19,6 +19,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -45,8 +46,11 @@ type AgentProtocolHandler interface {
 	AllowInitiator(ctx context.Context, volumeID, initiatorID string, fence *agentv1.FencingToken) error
 	// DenyInitiator revokes access for a specific initiator.
 	DenyInitiator(ctx context.Context, volumeID, initiatorID string, fence *agentv1.FencingToken) error
-	// Reconcile re-creates protocol state after reboot.
-	Reconcile(ctx context.Context, desired []ExportDesiredState) error
+	// Reconcile converges the given exports, which may belong to many
+	// volumes, to their desired state and returns one error (nil on
+	// success) per desired entry, in order.  It must make no export
+	// reachable before every entry is prepared.
+	Reconcile(ctx context.Context, desired []ExportDesiredState) []error
 }
 
 // ExportParams is the agent-local input passed to a protocol handler export.
@@ -250,39 +254,63 @@ func (h *NVMeoFTCPAgentHandler) DenyInitiator(
 	})
 }
 
-// Reconcile converges NVMe-oF TCP exports to the desired state.  The device
+// Reconcile converges NVMe-oF TCP exports to the desired state in two phases,
+// so that a port shared by several exports starts listening only once all of
+// them are ready (see nvmeof's port ordering contract):
+//
+//  1. prepare: for every export, inside its fenced section, wait for the
+//     device, pin the identity and nvmeof.Prepare the target (subsystem, ACL,
+//     namespace, port attributes) without linking it;
+//  2. link: link every prepared export in one tight loop.
+//
+// The target locks of all entries are held across both phases.  The device
 // check runs inside the fenced mutation so a destroyed backend never gets a
 // configfs subsystem (a stale resync can arrive after the volume's fencing
 // mark ended).  With ACL enabled the subsystem admits exactly
 // AllowedInitiators — an empty set admits nobody and hosts outside the set
-// are revoked.  Only the volume's own subsystem is modified.
+// are revoked.  Only the listed volumes' own subsystems are modified.
 func (h *NVMeoFTCPAgentHandler) Reconcile(
 	ctx context.Context,
 	desired []ExportDesiredState,
-) error {
-	for _, export := range desired {
-		err := h.reconcileExport(ctx, export)
-		if err != nil {
-			return err
+) []error {
+	errs := make([]error, len(desired))
+	targets := make([]*nvmeof.NvmetTarget, len(desired))
+	for i, export := range desired {
+		targets[i], errs[i] = h.reconcileTarget(export)
+	}
+
+	unlock := h.lockTargets(targets)
+	defer unlock()
+
+	prepared := make([]nvmeof.PreparedTarget, len(desired))
+	for i, export := range desired {
+		if errs[i] == nil {
+			prepared[i], errs[i] = h.prepareExport(ctx, export, targets[i])
 		}
 	}
-	return nil
+	for i, export := range desired {
+		if errs[i] == nil {
+			errs[i] = h.server.recheckFence(export.VolumeID, export.Fence, fenceGrant, prepared[i].Link)
+		}
+	}
+	return errs
 }
 
-func (h *NVMeoFTCPAgentHandler) reconcileExport(ctx context.Context, export ExportDesiredState) error {
+// reconcileTarget builds the configfs target of one desired export.
+func (h *NVMeoFTCPAgentHandler) reconcileTarget(export ExportDesiredState) (*nvmeof.NvmetTarget, error) {
 	bindAddress, port, err := nvmeofEndpoint(export.BindAddress, export.Port, export.ProtocolParams)
 	if err != nil {
-		return fmt.Errorf("Reconcile: volume %q: %w", export.VolumeID, err)
+		return nil, fmt.Errorf("Reconcile: volume %q: %w", export.VolumeID, err)
 	}
 
 	devicePath, err := h.server.resolveExportDevicePath(export.VolumeID, export.DevicePath)
 	if err != nil {
-		return fmt.Errorf("Reconcile: volume %q: resolve device path: %w", export.VolumeID, err)
+		return nil, fmt.Errorf("Reconcile: volume %q: resolve device path: %w", export.VolumeID, err)
 	}
 
 	targetID, err := volumeTargetID(agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP, export.VolumeID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	target := &nvmeof.NvmetTarget{
 		ConfigfsRoot: h.server.configfsRoot,
@@ -293,20 +321,47 @@ func (h *NVMeoFTCPAgentHandler) reconcileExport(ctx context.Context, export Expo
 		Port:         port,
 		ACLEnabled:   export.ACLEnabled,
 	}
-	// Without ACL enforcement allowed_hosts has no effect, and Apply would
+	// Without ACL enforcement allowed_hosts has no effect, and Prepare would
 	// close the subsystem (attr_allow_any_host=0) for a non-empty host list.
 	if export.ACLEnabled {
 		target.AllowedHosts = export.AllowedInitiators
 	}
+	return target, nil
+}
 
-	unlock := h.server.lockTarget(agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP, targetID)
-	defer unlock()
+// lockTargets acquires the target locks of every non-nil target once, in
+// target ID order so that concurrent reconciles cannot deadlock, and returns
+// the function releasing them.
+func (h *NVMeoFTCPAgentHandler) lockTargets(targets []*nvmeof.NvmetTarget) func() {
+	ids := make([]string, 0, len(targets))
+	for _, target := range targets {
+		if target != nil {
+			ids = append(ids, target.SubsystemNQN)
+		}
+	}
+	slices.Sort(ids)
+	ids = slices.Compact(ids)
+	unlocks := make([]func(), 0, len(ids))
+	for _, id := range ids {
+		unlocks = append(unlocks, h.server.lockTarget(agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP, id))
+	}
+	return func() {
+		for _, unlock := range slices.Backward(unlocks) {
+			unlock()
+		}
+	}
+}
 
-	// The device check and the configfs mutation run inside the same fenced
-	// critical section: the fencing mark is persisted first, then the device
-	// must exist before any subsystem is written.
-	reconcileErr := h.server.fenced(export.VolumeID, export.Fence, fenceGrant, func() error {
-		waitErr := h.waitForDeviceReady(ctx, devicePath)
+// prepareExport runs the prepare phase of one export: every configfs change
+// except the port link, inside the volume's fenced section.
+func (h *NVMeoFTCPAgentHandler) prepareExport(
+	ctx context.Context,
+	export ExportDesiredState,
+	target *nvmeof.NvmetTarget,
+) (nvmeof.PreparedTarget, error) {
+	var prepared nvmeof.PreparedTarget
+	err := h.server.fenced(export.VolumeID, export.Fence, fenceGrant, func() error {
+		waitErr := h.waitForDeviceReady(ctx, target.DevicePath)
 		if waitErr != nil {
 			return fmt.Errorf("Reconcile: volume %q: %w", export.VolumeID, waitErr)
 		}
@@ -315,9 +370,10 @@ func (h *NVMeoFTCPAgentHandler) reconcileExport(ctx context.Context, export Expo
 			return fmt.Errorf("applyExport %q: %w", export.VolumeID, identityErr)
 		}
 		target.Identity = identity
-		applyErr := target.Apply()
-		if applyErr != nil {
-			return fmt.Errorf("applyExport %q: %w", export.VolumeID, applyErr)
+		var prepareErr error
+		prepared, prepareErr = target.Prepare()
+		if prepareErr != nil {
+			return fmt.Errorf("applyExport %q: %w", export.VolumeID, prepareErr)
 		}
 		if export.ACLEnabled {
 			revokeErr := target.RevokeHostsExcept(export.AllowedInitiators)
@@ -327,10 +383,7 @@ func (h *NVMeoFTCPAgentHandler) reconcileExport(ctx context.Context, export Expo
 		}
 		return nil
 	})
-	if reconcileErr != nil {
-		return reconcileErr
-	}
-	return nil
+	return prepared, err
 }
 
 func (h *NVMeoFTCPAgentHandler) targetForVolume(volumeID string) (*nvmeof.NvmetTarget, error) {

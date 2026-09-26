@@ -252,10 +252,11 @@ func (s *Server) HealthCheck(
 ) (*agentv1.HealthCheckResponse, error) {
 	hs := s.collectHealthStatus(ctx)
 	return &agentv1.HealthCheckResponse{
-		Healthy:      hs.AllHealthy(),
-		Subsystems:   hs.ToProtoSubsystems(),
-		AgentVersion: agentVersion,
-		CheckedAt:    timestamppb.Now(),
+		Healthy:              hs.AllHealthy(),
+		Subsystems:           hs.ToProtoSubsystems(),
+		AgentVersion:         agentVersion,
+		CheckedAt:            timestamppb.Now(),
+		ExportRestorePending: s.exportRestorePending.Load(),
 	}, nil
 }
 

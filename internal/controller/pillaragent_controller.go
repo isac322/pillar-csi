@@ -74,6 +74,10 @@ const (
 
 	// LabelValueTrue is the string "true" used in Kubernetes label values.
 	labelValueTrue = "true"
+
+	// Requeue interval after a failed export restore.  The agent rejects new
+	// exports until the restore succeeds, so retry sooner than the health check.
+	requeueAfterExportRestoreFailure = 5 * time.Second
 )
 
 // requeueAfterAgentHealthCheck is the effective requeue interval for agent
@@ -90,6 +94,12 @@ var requeueAfterAgentHealthCheck = func() time.Duration {
 	}
 	return defaultRequeueAfterAgentHealthCheck
 }()
+
+// AgentExportRestorer restores every export of an agent in one complete
+// ReconcileState.  Implemented by the CSI controller server.
+type AgentExportRestorer interface {
+	RestoreAgentExports(ctx context.Context, agentName string) error
+}
 
 // PillarAgentReconciler reconciles a PillarAgent object.
 type PillarAgentReconciler struct {
@@ -110,6 +120,10 @@ type PillarAgentReconciler struct {
 	// Use agentclient.NewManagerFromFiles or NewManagerWithTLSCredentials to
 	// create a Dialer that enforces mTLS and reports IsMTLS()==true.
 	Dialer agentclient.Dialer
+
+	// Exports restores the exports of an agent that reports its export restore
+	// pending (after an agent start).  When nil, no restore is attempted.
+	Exports AgentExportRestorer
 }
 
 // +kubebuilder:rbac:groups=pillar-csi.bhyoo.com,resources=pillaragents,verbs=get;list;watch;create;update;patch;delete
@@ -193,7 +207,7 @@ func (r *PillarAgentReconciler) reconcileNormal(
 		target.Status.ResolvedAddress = resolved
 
 		// AgentConnected: perform a live gRPC HealthCheck against the agent.
-		connected := r.setAgentConnectedCondition(ctx, target, resolved)
+		connected, restorePending := r.setAgentConnectedCondition(ctx, target, resolved)
 
 		// Ready: True when the agent gRPC connection is established (healthy or degraded).
 		if connected {
@@ -222,7 +236,7 @@ func (r *PillarAgentReconciler) reconcileNormal(
 			return ctrl.Result{}, fmt.Errorf("failed to update PillarAgent status: %w", err)
 		}
 		// Requeue periodically to re-verify agent connectivity.
-		return ctrl.Result{RequeueAfter: requeueAfterAgentHealthCheck}, nil
+		return ctrl.Result{RequeueAfter: r.restorePendingExports(ctx, target.Name, restorePending)}, nil
 
 	default:
 		// Neither nodeRef nor external is set — webhook should prevent this,
@@ -416,7 +430,7 @@ func (r *PillarAgentReconciler) reconcileNodeRef(
 	})
 
 	// AgentConnected: perform a live gRPC HealthCheck against the agent.
-	connected := r.setAgentConnectedCondition(ctx, target, resolved)
+	connected, restorePending := r.setAgentConnectedCondition(ctx, target, resolved)
 
 	// Ready: True when the agent gRPC connection is established (healthy or degraded).
 	if connected {
@@ -451,7 +465,28 @@ func (r *PillarAgentReconciler) reconcileNodeRef(
 	}
 
 	// Requeue periodically to re-verify agent connectivity.
-	return ctrl.Result{RequeueAfter: requeueAfterAgentHealthCheck}, nil
+	return ctrl.Result{RequeueAfter: r.restorePendingExports(ctx, target.Name, restorePending)}, nil
+}
+
+// restorePendingExports restores the agent's exports when its health check
+// reported the export restore pending, and returns the requeue interval.  A
+// failure is logged and retried soon rather than failing the reconcile: the
+// status update already happened and the restore is retried on requeue.
+func (r *PillarAgentReconciler) restorePendingExports(
+	ctx context.Context,
+	agentName string,
+	restorePending bool,
+) time.Duration {
+	if !restorePending || r.Exports == nil {
+		return requeueAfterAgentHealthCheck
+	}
+	logf.FromContext(ctx).Info("Agent reports export restore pending; restoring its exports", "agent", agentName)
+	err := r.Exports.RestoreAgentExports(ctx, agentName)
+	if err != nil {
+		logf.FromContext(ctx).Error(err, "Failed to restore agent exports", "agent", agentName)
+		return requeueAfterExportRestoreFailure
+	}
+	return requeueAfterAgentHealthCheck
 }
 
 // setAgentConnectedCondition performs a live gRPC HealthCheck against the
@@ -466,9 +501,10 @@ func (r *PillarAgentReconciler) reconcileNodeRef(
 //   - "HealthCheckFailed"  – transport error (TCP or other) prevented the RPC.
 //   - "DialerNotConfigured"– no Dialer is wired up (dev/test only).
 //
-// It returns true when the agent gRPC connection is established (regardless of
-// whether the agent reports degraded subsystem health), and false when the
-// agent is truly unreachable (transport/handshake failure) or r.Dialer is nil.
+// It returns connected=true when the agent gRPC connection is established
+// (regardless of whether the agent reports degraded subsystem health), and
+// false when the agent is truly unreachable (transport/handshake failure) or
+// r.Dialer is nil.  The second return reports the agent's export_restore_pending.
 //
 // "Accept partial health": a reachable-but-degraded agent is still considered
 // connected so that capabilities status is populated and Ready=True, which is
@@ -482,7 +518,7 @@ func (r *PillarAgentReconciler) setAgentConnectedCondition(
 	ctx context.Context,
 	target *pillarcsiv1alpha1.PillarAgent,
 	address string,
-) bool {
+) (connected, restorePending bool) {
 	log := logf.FromContext(ctx)
 
 	if r.Dialer == nil {
@@ -493,7 +529,7 @@ func (r *PillarAgentReconciler) setAgentConnectedCondition(
 			Reason:             "DialerNotConfigured",
 			Message:            "No gRPC dialer is configured for this reconciler; agent connectivity cannot be verified",
 		})
-		return false
+		return false, false
 	}
 
 	// Use a short-lived context for the health-check RPC so a slow or
@@ -526,7 +562,7 @@ func (r *PillarAgentReconciler) setAgentConnectedCondition(
 				Message:            fmt.Sprintf("Agent health check at %q failed: %v", address, err),
 			})
 		}
-		return false
+		return false, false
 	}
 
 	if !resp.Healthy {
@@ -549,7 +585,7 @@ func (r *PillarAgentReconciler) setAgentConnectedCondition(
 				"Agent at %q is reachable but reports degraded health; some subsystems may be unavailable", address,
 			),
 		})
-		return true
+		return true, resp.GetExportRestorePending()
 	}
 
 	// Health check succeeded.  Reflect the authentication level in the reason
@@ -577,7 +613,7 @@ func (r *PillarAgentReconciler) setAgentConnectedCondition(
 			),
 		})
 	}
-	return true
+	return true, resp.GetExportRestorePending()
 }
 
 // populateCapabilitiesStatus calls GetCapabilities on the agent at address

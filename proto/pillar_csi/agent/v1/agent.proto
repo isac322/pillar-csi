@@ -204,6 +204,18 @@ service AgentService {
   // The agent MUST NOT return an error if configfs entries already exist — it
   // reconciles to the desired state.  Targets of volumes that are not listed
   // are never modified.
+  //
+  // Export restore after a process start: every subsystem of a storage node
+  // shares a few NVMe/TCP ports, and nvmet starts listening on a port when the
+  // first subsystem is linked to it.  A host that reconnects to a listening
+  // port for a subsystem that is not linked yet (or not fully configured) is
+  // rejected with a do-not-retry status and deletes its controller.  The agent
+  // therefore starts with HealthCheckResponse.export_restore_pending set and
+  // rejects export-creating RPCs (ExportVolume, AllowInitiator, and a
+  // ReconcileState without complete) with UNAVAILABLE until it has processed
+  // a request with complete=true.  For every request the agent first
+  // configures every listed export fully (subsystem, ACL, namespace identity,
+  // enabled namespace) and only then links them to their ports.
   rpc ReconcileState(ReconcileStateRequest) returns (ReconcileStateResponse);
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -482,6 +494,11 @@ message HealthCheckResponse {
   string agent_version = 3;
   // Timestamp at which this health snapshot was taken by the agent.
   google.protobuf.Timestamp checked_at = 4;
+  // True from agent start until the agent has processed a ReconcileState with
+  // complete=true.  While set, the agent links no subsystem to a port on its
+  // own and rejects export-creating RPCs; the controller must send the
+  // complete desired export state of this agent in one ReconcileState.
+  bool export_restore_pending = 5;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -782,6 +799,11 @@ message ReconcileStateRequest {
   // left untouched — the agent MUST NOT delete or modify them; deletion is
   // performed via UnexportVolume / DeleteVolume.
   repeated VolumeDesiredState volumes = 1;
+  // True when volumes lists every volume the caller exports from this agent.
+  // The agent prepares all of them before linking any to a port and clears
+  // HealthCheckResponse.export_restore_pending afterwards, even when some
+  // items fail (their results report the failure).
+  bool complete = 2;
 }
 
 // ReconcileItemResult holds the result for a single volume during reconcile.

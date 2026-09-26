@@ -54,3 +54,11 @@ func WithDevicePollParams(interval, timeout time.Duration) ServerOption {
 func WithDrainStateDir(dir string) ServerOption {
 	return func(s *Server) { s.drainStateDir = dir }
 }
+
+// WithExportRestoreGate starts the server with the export restore pending:
+// ExportVolume, AllowInitiator and ReconcileState without complete are
+// rejected with UNAVAILABLE until a complete ReconcileState was processed.
+// The agent binary always sets it; see server_export_restore.go.
+func WithExportRestoreGate() ServerOption {
+	return func(s *Server) { s.exportRestorePending.Store(true) }
+}

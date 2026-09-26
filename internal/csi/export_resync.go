@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -55,6 +56,13 @@ var errExportReconcile = errors.New("export reconcile failed")
 // must not stall either.  It exceeds the agent's device-poll timeout
 // (nvmeof.DefaultDevicePollTimeout, 5s) plus its fsync'd fencing-mark writes.
 const exportReconcileTimeout = 30 * time.Second
+
+// exportRestorePerVolumeTimeout is the share of a batch restore's RPC budget
+// granted to each listed volume.  The agent prepares the volumes one after
+// another, each bounded by its device poll (nvmeof.DefaultDevicePollTimeout,
+// 5s) plus fsync'd fencing-mark writes, so a fixed bound would time out a
+// storage node with many volumes and leave its export restore pending.
+const exportRestorePerVolumeTimeout = 10 * time.Second
 
 // exportSpecFor returns the durable export configuration for the agent export
 // parameters, or nil for protocols without a bind address and port.
@@ -176,14 +184,13 @@ func (s *ControllerServer) reconcileVolumeOnAgent(
 	ctx context.Context,
 	pvs *v1alpha1.PillarVolumeState,
 ) (string, error) {
-	target := &v1alpha1.PillarAgent{}
-	err := s.k8sClient.Get(ctx, types.NamespacedName{Name: pvs.Spec.AgentRef}, target)
+	agentAddr, err := s.agentAddress(ctx, pvs.Spec.AgentRef)
 	if err != nil {
-		return reasonAgentUnavailable, fmt.Errorf("get PillarAgent %q: %w", pvs.Spec.AgentRef, err)
+		return reasonAgentUnavailable, err
 	}
-	agentAddr := target.Status.ResolvedAddress
-	if agentAddr == "" {
-		return reasonAgentUnavailable, fmt.Errorf("PillarAgent %q has no resolved address", pvs.Spec.AgentRef)
+	desired, err := desiredVolumeState(pvs)
+	if err != nil {
+		return reasonReconcileFailed, fmt.Errorf("build desired state for %q: %w", pvs.Spec.AgentVolumeID, err)
 	}
 
 	// The agent call is bounded; the caller's ctx stays unbounded so the
@@ -191,37 +198,202 @@ func (s *ControllerServer) reconcileVolumeOnAgent(
 	rpcCtx, cancel := context.WithTimeout(ctx, exportReconcileTimeout)
 	defer cancel()
 
-	agentClient, closer, err := s.dialAgent(rpcCtx, agentAddr)
-	if err != nil {
-		return reasonAgentUnavailable, fmt.Errorf("dial agent at %q: %w", agentAddr, err)
-	}
-	defer closer.Close() //nolint:errcheck // best-effort close; RPC errors are reported
-
-	desired, err := desiredVolumeState(pvs)
-	if err != nil {
-		return reasonReconcileFailed, fmt.Errorf("build desired state for %q: %w", pvs.Spec.AgentVolumeID, err)
-	}
-	resp, err := agentClient.ReconcileState(rpcCtx, &agentv1.ReconcileStateRequest{
+	resp, err := s.reconcileStatesOnAgent(rpcCtx, agentAddr, &agentv1.ReconcileStateRequest{
 		Volumes: []*agentv1.VolumeDesiredState{desired},
 	})
 	if err != nil {
-		return reasonAgentUnavailable, fmt.Errorf("agent ReconcileState(%q): %w", pvs.Spec.AgentVolumeID, err)
+		return reasonAgentUnavailable, fmt.Errorf("volume %q: %w", pvs.Spec.AgentVolumeID, err)
 	}
 	results := resp.GetResults()
 	if len(results) != 1 || results[0].GetVolumeId() != pvs.Spec.AgentVolumeID {
 		return reasonReconcileFailed, fmt.Errorf("agent ReconcileState(%q): unexpected results %v",
 			pvs.Spec.AgentVolumeID, results)
 	}
-	if !results[0].GetSuccess() {
-		msg := results[0].GetErrorMessage()
-		if strings.HasPrefix(msg, "stale fencing token") {
-			return reasonStaleGeneration, fmt.Errorf("agent ReconcileState(%q): %s",
-				pvs.Spec.AgentVolumeID, msg)
-		}
-		return reasonReconcileFailed, fmt.Errorf("agent ReconcileState(%q): %s",
-			pvs.Spec.AgentVolumeID, msg)
+	return reconcileItemReason(pvs.Spec.AgentVolumeID, results[0])
+}
+
+// agentAddress returns the resolved gRPC address of the named PillarAgent.
+func (s *ControllerServer) agentAddress(ctx context.Context, agentName string) (string, error) {
+	target := &v1alpha1.PillarAgent{}
+	err := s.k8sClient.Get(ctx, types.NamespacedName{Name: agentName}, target)
+	if err != nil {
+		return "", fmt.Errorf("get PillarAgent %q: %w", agentName, err)
 	}
-	return "", nil
+	if target.Status.ResolvedAddress == "" {
+		return "", fmt.Errorf("PillarAgent %q has no resolved address", agentName)
+	}
+	return target.Status.ResolvedAddress, nil
+}
+
+// reconcileStatesOnAgent dials the agent at agentAddr and sends req.
+func (s *ControllerServer) reconcileStatesOnAgent(
+	ctx context.Context,
+	agentAddr string,
+	req *agentv1.ReconcileStateRequest,
+) (*agentv1.ReconcileStateResponse, error) {
+	agentClient, closer, err := s.dialAgent(ctx, agentAddr)
+	if err != nil {
+		return nil, fmt.Errorf("dial agent at %q: %w", agentAddr, err)
+	}
+	defer closer.Close() //nolint:errcheck // best-effort close; RPC errors are reported
+
+	resp, err := agentClient.ReconcileState(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("agent ReconcileState at %q: %w", agentAddr, err)
+	}
+	return resp, nil
+}
+
+// reconcileItemReason maps the agent's result for one volume to the condition
+// reason to record, or "" when the volume was reconciled.
+func reconcileItemReason(agentVolumeID string, result *agentv1.ReconcileItemResult) (string, error) {
+	if result.GetSuccess() {
+		return "", nil
+	}
+	msg := result.GetErrorMessage()
+	if strings.HasPrefix(msg, "stale fencing token") {
+		return reasonStaleGeneration, fmt.Errorf("agent ReconcileState(%q): %s", agentVolumeID, msg)
+	}
+	return reasonReconcileFailed, fmt.Errorf("agent ReconcileState(%q): %s", agentVolumeID, msg)
+}
+
+// restoreEntry is one volume of a batch export restore.
+type restoreEntry struct {
+	pvsName string
+	desired *agentv1.VolumeDesiredState
+}
+
+// RestoreAgentExports restores every export of the named agent in one
+// complete ReconcileState.  The agent starts with its export restore pending
+// and links no subsystem to a port until it receives this request: nvmet
+// starts listening on a shared port with the first linked subsystem, and a
+// host reconnecting for a subsystem not linked yet is rejected with a
+// do-not-retry status and deletes its controller (issue #92).  The request is
+// sent even when the agent exports nothing, because only a complete request
+// clears the pending restore.
+//
+// It holds the per-volume lock of every volume of the agent, acquired in
+// sorted volume-ID order (all other holders take a single lock, so this cannot
+// deadlock), until the outcomes are recorded.  Otherwise a concurrent unpublish
+// could advance a volume's fencing generation after it was read, the agent
+// would reject that item as stale, and its subsystem would stay unlinked while
+// the agent leaves the restore state.  Volumes are skipped under the same rules
+// as ReconcileVolumeExport.  The outcome of each volume is recorded on its
+// ExportReconciled condition; a non-nil error asks the caller to retry.
+func (s *ControllerServer) RestoreAgentExports(ctx context.Context, agentName string) error {
+	names, volumeIDs, err := s.agentVolumeStates(ctx, agentName)
+	if err != nil {
+		return err
+	}
+	unlocks := make([]func(), 0, len(volumeIDs))
+	for _, volumeID := range volumeIDs {
+		unlocks = append(unlocks, s.volumeLocks.lock(volumeID))
+	}
+	defer func() {
+		for _, unlock := range slices.Backward(unlocks) {
+			unlock()
+		}
+	}()
+
+	entries := make([]restoreEntry, 0, len(names))
+	var errs []error
+	for _, name := range names {
+		pvs, found, readErr := s.readVolumeState(ctx, name)
+		if readErr != nil {
+			return readErr
+		}
+		if !found || !pvs.DeletionTimestamp.IsZero() || pvs.Status.Deleting || pvs.Spec.AgentRef != agentName {
+			continue
+		}
+		if pvs.Status.ExportSpec == nil {
+			errs = append(errs, s.setExportReconciled(ctx, name, metav1.ConditionFalse, reasonExportSpecMissing,
+				"status.exportSpec is not recorded; the export cannot be re-created from durable state"))
+			continue
+		}
+		desired, buildErr := desiredVolumeState(pvs)
+		if buildErr != nil {
+			buildErr = fmt.Errorf("%w: build desired state for %q: %w", errExportReconcile, pvs.Spec.AgentVolumeID, buildErr)
+			errs = append(errs, buildErr,
+				s.setExportReconciled(ctx, name, metav1.ConditionFalse, reasonReconcileFailed, buildErr.Error()))
+			continue
+		}
+		entries = append(entries, restoreEntry{pvsName: name, desired: desired})
+	}
+
+	errs = append(errs, s.sendAgentRestore(ctx, agentName, entries))
+	return errors.Join(errs...) //nolint:wrapcheck // multi-error is already wrapped per item
+}
+
+// agentVolumeStates lists, uncached, the PillarVolumeStates of the agent and
+// returns their names and their sorted, de-duplicated volume IDs.
+func (s *ControllerServer) agentVolumeStates(
+	ctx context.Context,
+	agentName string,
+) (names, volumeIDs []string, err error) {
+	list := &v1alpha1.PillarVolumeStateList{}
+	err = s.apiReader.List(ctx, list)
+	if err != nil {
+		return nil, nil, fmt.Errorf("list PillarVolumeStates of agent %q: %w", agentName, err)
+	}
+	for i := range list.Items {
+		if list.Items[i].Spec.AgentRef != agentName {
+			continue
+		}
+		names = append(names, list.Items[i].Name)
+		volumeIDs = append(volumeIDs, list.Items[i].Spec.VolumeID)
+	}
+	slices.Sort(volumeIDs)
+	return names, slices.Compact(volumeIDs), nil
+}
+
+// sendAgentRestore sends the complete ReconcileState for entries to the agent
+// and records each volume's outcome.
+func (s *ControllerServer) sendAgentRestore(ctx context.Context, agentName string, entries []restoreEntry) error {
+	req := &agentv1.ReconcileStateRequest{Complete: true}
+	for _, entry := range entries {
+		req.Volumes = append(req.Volumes, entry.desired)
+	}
+
+	agentAddr, err := s.agentAddress(ctx, agentName)
+	var resp *agentv1.ReconcileStateResponse
+	if err == nil {
+		// Bounded like reconcileVolumeOnAgent, scaled by the volume count.
+		timeout := exportReconcileTimeout + time.Duration(len(entries))*exportRestorePerVolumeTimeout
+		rpcCtx, cancel := context.WithTimeout(ctx, timeout)
+		resp, err = s.reconcileStatesOnAgent(rpcCtx, agentAddr, req)
+		cancel()
+	}
+	if err != nil {
+		errs := make([]error, 0, 1+len(entries))
+		errs = append(errs, fmt.Errorf("%w: restore exports of agent %q: %w", errExportReconcile, agentName, err))
+		for _, entry := range entries {
+			errs = append(errs, s.setExportReconciled(ctx, entry.pvsName, metav1.ConditionFalse,
+				reasonAgentUnavailable, err.Error()))
+		}
+		return errors.Join(errs...) //nolint:wrapcheck // multi-error is already wrapped per item
+	}
+
+	results := make(map[string]*agentv1.ReconcileItemResult, len(resp.GetResults()))
+	for _, result := range resp.GetResults() {
+		results[result.GetVolumeId()] = result
+	}
+	var errs []error
+	for _, entry := range entries {
+		volumeID := entry.desired.GetVolumeId()
+		result, ok := results[volumeID]
+		reason, itemErr := reasonReconcileFailed, fmt.Errorf("agent ReconcileState(%q): no result", volumeID)
+		if ok {
+			reason, itemErr = reconcileItemReason(volumeID, result)
+		}
+		if itemErr == nil {
+			errs = append(errs, s.setExportReconciled(ctx, entry.pvsName, metav1.ConditionTrue,
+				reasonExportReconciled, "export and ACL match the desired state"))
+			continue
+		}
+		errs = append(errs, fmt.Errorf("%w: %w", errExportReconcile, itemErr),
+			s.setExportReconciled(ctx, entry.pvsName, metav1.ConditionFalse, reason, itemErr.Error()))
+	}
+	return errors.Join(errs...) //nolint:wrapcheck // multi-error is already wrapped per item
 }
 
 // setExportReconciled records the ExportReconciled condition, writing only

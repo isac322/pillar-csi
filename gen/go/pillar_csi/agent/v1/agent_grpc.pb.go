@@ -187,6 +187,18 @@ type AgentServiceClient interface {
 	// The agent MUST NOT return an error if configfs entries already exist — it
 	// reconciles to the desired state.  Targets of volumes that are not listed
 	// are never modified.
+	//
+	// Export restore after a process start: every subsystem of a storage node
+	// shares a few NVMe/TCP ports, and nvmet starts listening on a port when the
+	// first subsystem is linked to it.  A host that reconnects to a listening
+	// port for a subsystem that is not linked yet (or not fully configured) is
+	// rejected with a do-not-retry status and deletes its controller.  The agent
+	// therefore starts with HealthCheckResponse.export_restore_pending set and
+	// rejects export-creating RPCs (ExportVolume, AllowInitiator, and a
+	// ReconcileState without complete) with UNAVAILABLE until it has processed
+	// a request with complete=true.  For every request the agent first
+	// configures every listed export fully (subsystem, ACL, namespace identity,
+	// enabled namespace) and only then links them to their ports.
 	ReconcileState(ctx context.Context, in *ReconcileStateRequest, opts ...grpc.CallOption) (*ReconcileStateResponse, error)
 	// Drain stops the agent from accepting new mutating RPCs and waits until
 	// all in-flight per-target operations have released their locks.  After
@@ -490,6 +502,18 @@ type AgentServiceServer interface {
 	// The agent MUST NOT return an error if configfs entries already exist — it
 	// reconciles to the desired state.  Targets of volumes that are not listed
 	// are never modified.
+	//
+	// Export restore after a process start: every subsystem of a storage node
+	// shares a few NVMe/TCP ports, and nvmet starts listening on a port when the
+	// first subsystem is linked to it.  A host that reconnects to a listening
+	// port for a subsystem that is not linked yet (or not fully configured) is
+	// rejected with a do-not-retry status and deletes its controller.  The agent
+	// therefore starts with HealthCheckResponse.export_restore_pending set and
+	// rejects export-creating RPCs (ExportVolume, AllowInitiator, and a
+	// ReconcileState without complete) with UNAVAILABLE until it has processed
+	// a request with complete=true.  For every request the agent first
+	// configures every listed export fully (subsystem, ACL, namespace identity,
+	// enabled namespace) and only then links them to their ports.
 	ReconcileState(context.Context, *ReconcileStateRequest) (*ReconcileStateResponse, error)
 	// Drain stops the agent from accepting new mutating RPCs and waits until
 	// all in-flight per-target operations have released their locks.  After

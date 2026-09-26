@@ -1622,9 +1622,14 @@ type HealthCheckResponse struct {
 	// Agent binary version string (semver).
 	AgentVersion string `protobuf:"bytes,3,opt,name=agent_version,json=agentVersion,proto3" json:"agent_version,omitempty"`
 	// Timestamp at which this health snapshot was taken by the agent.
-	CheckedAt     *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=checked_at,json=checkedAt,proto3" json:"checked_at,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	CheckedAt *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=checked_at,json=checkedAt,proto3" json:"checked_at,omitempty"`
+	// True from agent start until the agent has processed a ReconcileState with
+	// complete=true.  While set, the agent links no subsystem to a port on its
+	// own and rejects export-creating RPCs; the controller must send the
+	// complete desired export state of this agent in one ReconcileState.
+	ExportRestorePending bool `protobuf:"varint,5,opt,name=export_restore_pending,json=exportRestorePending,proto3" json:"export_restore_pending,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *HealthCheckResponse) Reset() {
@@ -1683,6 +1688,13 @@ func (x *HealthCheckResponse) GetCheckedAt() *timestamppb.Timestamp {
 		return x.CheckedAt
 	}
 	return nil
+}
+
+func (x *HealthCheckResponse) GetExportRestorePending() bool {
+	if x != nil {
+		return x.ExportRestorePending
+	}
+	return false
 }
 
 // CreateVolumeRequest asks the agent to create a backend storage resource.
@@ -2968,7 +2980,12 @@ type ReconcileStateRequest struct {
 	// Desired state for the volumes to reconcile.  Volumes not in this list are
 	// left untouched — the agent MUST NOT delete or modify them; deletion is
 	// performed via UnexportVolume / DeleteVolume.
-	Volumes       []*VolumeDesiredState `protobuf:"bytes,1,rep,name=volumes,proto3" json:"volumes,omitempty"`
+	Volumes []*VolumeDesiredState `protobuf:"bytes,1,rep,name=volumes,proto3" json:"volumes,omitempty"`
+	// True when volumes lists every volume the caller exports from this agent.
+	// The agent prepares all of them before linking any to a port and clears
+	// HealthCheckResponse.export_restore_pending afterwards, even when some
+	// items fail (their results report the failure).
+	Complete      bool `protobuf:"varint,2,opt,name=complete,proto3" json:"complete,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3008,6 +3025,13 @@ func (x *ReconcileStateRequest) GetVolumes() []*VolumeDesiredState {
 		return x.Volumes
 	}
 	return nil
+}
+
+func (x *ReconcileStateRequest) GetComplete() bool {
+	if x != nil {
+		return x.Complete
+	}
+	return false
 }
 
 // ReconcileItemResult holds the result for a single volume during reconcile.
@@ -3311,7 +3335,7 @@ const file_pillar_csi_agent_v1_agent_proto_rawDesc = "" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
 	"\ahealthy\x18\x02 \x01(\bR\ahealthy\x12\x18\n" +
 	"\amessage\x18\x03 \x01(\tR\amessage\"\x14\n" +
-	"\x12HealthCheckRequest\"\xd5\x01\n" +
+	"\x12HealthCheckRequest\"\x8b\x02\n" +
 	"\x13HealthCheckResponse\x12\x18\n" +
 	"\ahealthy\x18\x01 \x01(\bR\ahealthy\x12D\n" +
 	"\n" +
@@ -3319,7 +3343,8 @@ const file_pillar_csi_agent_v1_agent_proto_rawDesc = "" +
 	"subsystems\x12#\n" +
 	"\ragent_version\x18\x03 \x01(\tR\fagentVersion\x129\n" +
 	"\n" +
-	"checked_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\tcheckedAt\"\xea\x02\n" +
+	"checked_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\tcheckedAt\x124\n" +
+	"\x16export_restore_pending\x18\x05 \x01(\bR\x14exportRestorePending\"\xea\x02\n" +
 	"\x13CreateVolumeRequest\x12\x1b\n" +
 	"\tvolume_id\x18\x01 \x01(\tR\bvolumeId\x12%\n" +
 	"\x0ecapacity_bytes\x18\x02 \x01(\x03R\rcapacityBytes\x12C\n" +
@@ -3404,9 +3429,10 @@ const file_pillar_csi_agent_v1_agent_proto_rawDesc = "" +
 	"\rexport_params\x18\x02 \x01(\v2!.pillar_csi.agent.v1.ExportParamsR\fexportParams\x12-\n" +
 	"\x12allowed_initiators\x18\x03 \x03(\tR\x11allowedInitiators\x12\x1f\n" +
 	"\vacl_enabled\x18\x04 \x01(\bR\n" +
-	"aclEnabled\"Z\n" +
+	"aclEnabled\"v\n" +
 	"\x15ReconcileStateRequest\x12A\n" +
-	"\avolumes\x18\x01 \x03(\v2'.pillar_csi.agent.v1.VolumeDesiredStateR\avolumes\"q\n" +
+	"\avolumes\x18\x01 \x03(\v2'.pillar_csi.agent.v1.VolumeDesiredStateR\avolumes\x12\x1a\n" +
+	"\bcomplete\x18\x02 \x01(\bR\bcomplete\"q\n" +
 	"\x13ReconcileItemResult\x12\x1b\n" +
 	"\tvolume_id\x18\x01 \x01(\tR\bvolumeId\x12\x18\n" +
 	"\asuccess\x18\x02 \x01(\bR\asuccess\x12#\n" +

@@ -55,6 +55,19 @@ type mockDialer struct {
 	// capabilitiesErr, when non-nil, is returned by GetCapabilities instead
 	// of a response.
 	capabilitiesErr error
+	// restorePending controls HealthCheckResponse.ExportRestorePending.
+	restorePending bool
+}
+
+// fakeExportRestorer records RestoreAgentExports calls and returns err.
+type fakeExportRestorer struct {
+	calls []string
+	err   error
+}
+
+func (f *fakeExportRestorer) RestoreAgentExports(_ context.Context, agentName string) error {
+	f.calls = append(f.calls, agentName)
+	return f.err
 }
 
 // Ensure mockDialer satisfies the Dialer interface at compile time.
@@ -69,7 +82,7 @@ func (m *mockDialer) HealthCheck(_ context.Context, _ string) (*agentv1.HealthCh
 	if m.err != nil {
 		return nil, m.err
 	}
-	return &agentv1.HealthCheckResponse{Healthy: m.healthy}, nil
+	return &agentv1.HealthCheckResponse{Healthy: m.healthy, ExportRestorePending: m.restorePending}, nil
 }
 
 func (m *mockDialer) GetCapabilities(_ context.Context, _ string) (*agentv1.GetCapabilitiesResponse, error) {
@@ -804,6 +817,82 @@ var _ = Describe("PillarAgent Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.RequeueAfter).To(Equal(requeueAfterAgentHealthCheck),
 				"reconciler should requeue periodically to re-verify agent connectivity")
+		})
+	})
+
+	Context("Export restore of a restarted agent", func() {
+		const restoreTargetName = "test-target-export-restore"
+		restoreNN := types.NamespacedName{Name: restoreTargetName}
+
+		var restorer *fakeExportRestorer
+
+		newReconciler := func(dialer *mockDialer) *PillarAgentReconciler {
+			return &PillarAgentReconciler{
+				Client:  k8sClient,
+				Scheme:  k8sClient.Scheme(),
+				Dialer:  dialer,
+				Exports: restorer,
+			}
+		}
+
+		BeforeEach(func() {
+			restorer = &fakeExportRestorer{}
+			obj := &pillarcsiv1alpha1.PillarAgent{
+				ObjectMeta: metav1.ObjectMeta{Name: restoreTargetName},
+				Spec: pillarcsiv1alpha1.PillarAgentSpec{
+					External: &pillarcsiv1alpha1.ExternalSpec{Address: "10.0.0.98", Port: 9500},
+				},
+			}
+			Expect(k8sClient.Create(bctx, obj)).To(Succeed())
+			// First reconcile: adds finalizer.
+			_, err := newReconciler(&mockDialer{healthy: true}).
+				Reconcile(bctx, reconcile.Request{NamespacedName: restoreNN})
+			Expect(err).NotTo(HaveOccurred())
+			restorer.calls = nil
+		})
+
+		AfterEach(func() {
+			t := &pillarcsiv1alpha1.PillarAgent{}
+			if err := k8sClient.Get(bctx, restoreNN, t); err == nil {
+				controllerutil.RemoveFinalizer(t, pillarAgentFinalizer)
+				Expect(k8sClient.Update(bctx, t)).To(Succeed())
+				Expect(k8sClient.Delete(bctx, t)).To(Succeed())
+			}
+		})
+
+		It("restores the agent's exports when it reports the restore pending", func() {
+			result, err := newReconciler(&mockDialer{healthy: true, restorePending: true}).
+				Reconcile(bctx, reconcile.Request{NamespacedName: restoreNN})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(restorer.calls).To(Equal([]string{restoreTargetName}))
+			Expect(result.RequeueAfter).To(Equal(requeueAfterAgentHealthCheck))
+		})
+
+		It("restores a degraded agent that reports the restore pending", func() {
+			_, err := newReconciler(&mockDialer{healthy: false, restorePending: true}).
+				Reconcile(bctx, reconcile.Request{NamespacedName: restoreNN})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(restorer.calls).To(Equal([]string{restoreTargetName}))
+		})
+
+		It("does not restore when the agent reports no restore pending", func() {
+			_, err := newReconciler(&mockDialer{healthy: true}).
+				Reconcile(bctx, reconcile.Request{NamespacedName: restoreNN})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(restorer.calls).To(BeEmpty())
+		})
+
+		It("keeps the status update and retries soon when the restore fails", func() {
+			restorer.err = fmt.Errorf("agent unavailable")
+			result, err := newReconciler(&mockDialer{healthy: true, restorePending: true}).
+				Reconcile(bctx, reconcile.Request{NamespacedName: restoreNN})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(restorer.calls).To(Equal([]string{restoreTargetName}))
+			Expect(result.RequeueAfter).To(Equal(requeueAfterExportRestoreFailure))
+
+			fetched := &pillarcsiv1alpha1.PillarAgent{}
+			Expect(k8sClient.Get(bctx, restoreNN, fetched)).To(Succeed())
+			Expect(apimeta.IsStatusConditionTrue(fetched.Status.Conditions, "Ready")).To(BeTrue())
 		})
 	})
 

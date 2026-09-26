@@ -142,6 +142,36 @@ func (s *Server) fenced(
 	return nil
 }
 
+// recheckFence runs mutate under volumeID's fencing lock if token is still
+// admitted without advancing the durable mark, i.e. token already passed
+// fenced for op and no newer operation superseded it since.  It writes
+// nothing to disk, so a caller can finish a mutation that fenced started
+// (Reconcile links prepared exports this way) without a durable write
+// between consecutive mutations.
+func (s *Server) recheckFence(
+	volumeID string,
+	token *agentv1.FencingToken,
+	op fenceOp,
+	mutate func() error,
+) error {
+	unlock := s.lockFencing(volumeID)
+	defer unlock()
+
+	stored, exists, err := s.readFencingMark(volumeID)
+	if err != nil {
+		return err
+	}
+	_, changed, err := admitFencingToken(volumeID, token, op, stored, exists)
+	if err != nil {
+		return err
+	}
+	if changed {
+		return status.Errorf(codes.FailedPrecondition,
+			"fencing mark of volume %q changed since the operation was admitted", volumeID)
+	}
+	return mutate()
+}
+
 // admitFencingToken applies the fencing rules (see agentv1.FencingToken).  It
 // returns the mark that must be durable before the mutation runs and whether
 // that mark differs from the stored one.  A request without a token is always

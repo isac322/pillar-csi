@@ -252,7 +252,11 @@ func main() {
 	}
 
 	volumeBackends := buildVolumeBackends(backends)
-	srv := agent.NewServer(volumeBackends, *cfgRoot)
+	// The agent starts with the export restore pending: it re-creates no
+	// export until the controller sent the complete export state in one
+	// ReconcileState, so a shared NVMe/TCP port starts listening only after
+	// every export on it is ready (issue #92).
+	srv := agent.NewServer(volumeBackends, *cfgRoot, agent.WithExportRestoreGate())
 
 	lis, err := net.Listen("tcp", *listenAddr)
 	if err != nil {

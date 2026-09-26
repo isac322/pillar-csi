@@ -89,6 +89,11 @@ type Server struct {
 	// with codes.Unavailable once true.
 	drained atomic.Bool
 
+	// exportRestorePending gates export-creating RPCs until a complete
+	// ReconcileState has restored every export (see server_export_restore.go).
+	// Set by WithExportRestoreGate; once cleared it is never set again.
+	exportRestorePending atomic.Bool
+
 	// drainGate sequences Drain against in-flight intercepted RPCs.  The
 	// DrainGuardInterceptor takes an RLock for the entire handler invocation;
 	// Drain takes the WLock so it blocks until every already-accepted RPC

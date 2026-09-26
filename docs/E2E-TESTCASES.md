@@ -1953,10 +1953,22 @@ Target 상태 유실 복구 (level-triggered):
         └─► ControllerServer.ReconcileVolumeExport()   ← ControllerPublish/Unpublish/DeleteVolume과 같은 볼륨 락
                 │  desired = status.exportSpec + status.publishedNodes[].initiatorID (revoking 제외, 정확 집합)
                 │  fence   = FencingToken{PVS UID, status.publicationGeneration}
-                └─► agent ReconcileState() ──► fenced(NvmetTarget.Apply() + RevokeHostsExcept()) ──► configfs 재구성
+                └─► agent ReconcileState() ──► fenced(NvmetTarget.Prepare() + RevokeHostsExcept()) ──► Link ──► configfs 재구성
                         (해당 볼륨 subsystem만 수정, ACL 활성 시 빈 집합 = 아무도 허용 안 함)
         결과: PillarVolumeState 조건 ExportReconciled (True / False+reason: ExportSpecMissing,
               AgentUnavailable, StaleGeneration, ReconcileFailed)
+
+에이전트 시작 직후 전체 복원 (issue #92):
+  에이전트는 export_restore_pending 상태로 시작한다. 이 동안 ExportVolume·AllowInitiator·complete가 아닌
+  ReconcileState는 UNAVAILABLE로 거부한다 (포트에 subsystem을 하나라도 link하면 nvmet이 포트를 listen하고,
+  아직 link되지 않은 subsystem으로 재접속하는 호스트는 DNR 거부를 받아 컨트롤러를 삭제하기 때문).
+  PillarAgent 컨트롤러 (HealthCheck.export_restore_pending == true)
+        │
+        └─► ControllerServer.RestoreAgentExports()   ← 해당 에이전트의 모든 볼륨 락 (VolumeID 정렬 순)
+                └─► agent ReconcileState(complete=true, 에이전트의 모든 볼륨)
+                        1단계: 모든 export를 fenced Prepare (ACL · namespace identity · enable · port 속성, link 없음)
+                        2단계: 준비된 export를 한 번에 port에 link ──► 이후 export_restore_pending=false
+        호스트는 포트가 listen하기 전에는 connection refused(-111, 재시도), 그 후에는 완전히 구성된 subsystem만 본다.
 ```
 
 > **`ExportSpecMissing` 운영 복구 (issue #83):** `status.exportSpec`이 없는 레거시 볼륨은 자동 복구가
