@@ -279,6 +279,11 @@ assert_pod_ports_unambiguous "${NODE_DS}" \
 assert_pod_ports_unambiguous "${AGENT_DS_DEFAULT}" \
   "default agent Pod ports must be unique and probe-resolvable"
 
+# CreateVolume reads the PVC override annotations and the claim identity from
+# the claim name/namespace csi-provisioner passes only with this flag (#112).
+assert_contains "${CTL_DEP_DEFAULT}" "- --extra-create-metadata" \
+  "default csi-provisioner must pass --extra-create-metadata"
+
 # ──────────────────────────────────────────────────────────────────────────
 # Mode 1b: controller.replicaCount=2 (issue #96 — standby replicas)
 # ──────────────────────────────────────────────────────────────────────────

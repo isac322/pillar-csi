@@ -192,6 +192,9 @@ spec:
             - --leader-election
             - --leader-election-namespace={{ include "pillar-csi.namespace" . }}
             - --v=5
+            # Passes the claim name/namespace to CreateVolume: the driver reads
+            # the PVC override annotations and the claim identity from them.
+            - --extra-create-metadata
             {{- range .Values.controller.sidecars.provisioner.extraArgs }}
             - {{ . | quote }}
             {{- end }}

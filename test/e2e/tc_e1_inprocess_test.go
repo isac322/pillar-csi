@@ -846,7 +846,7 @@ func assertE1_PVCAnnotation_BackendOverride_Compression(tc documentedCase) {
 			Name:      "pvc-annot-compress",
 			Namespace: "default",
 			Annotations: map[string]string{
-				"pillar-csi.bhyoo.com/backend-override": `{"pillar-csi.bhyoo.com/zfs-prop.compression":"zstd"}`,
+				"pillar-csi.bhyoo.com/backend-override": "zfs:\n  properties:\n    compression: zstd\n",
 			},
 		},
 		Spec: corev1.PersistentVolumeClaimSpec{
@@ -872,6 +872,8 @@ func assertE1_PVCAnnotation_BackendOverride_Compression(tc documentedCase) {
 	reqs := env.agentSrv.createVolumeReqs
 	env.agentSrv.mu.Unlock()
 	Expect(reqs).To(HaveLen(1))
+	Expect(reqs[0].GetBackendParams().GetZfs().GetProperties()).To(HaveKeyWithValue("compression", "zstd"),
+		"%s: PVC backend-override must reach the agent", tc.tcNodeLabel())
 }
 
 func assertE1_PVCAnnotation_StructuralFieldBlocked(tc documentedCase) {
@@ -903,7 +905,7 @@ func assertE1_PVCAnnotation_StructuralFieldBlocked(tc documentedCase) {
 	Expect(status.Code(err)).To(Equal(codes.InvalidArgument))
 }
 
-func assertE1_PVCAnnotation_PVCNotFound_GracefulFallback(tc documentedCase) {
+func assertE1_PVCAnnotation_PVCNotFound_FailedPrecondition(tc documentedCase) {
 	env := newControllerTestEnv()
 	defer env.close()
 
@@ -911,13 +913,17 @@ func assertE1_PVCAnnotation_PVCNotFound_GracefulFallback(tc documentedCase) {
 	params["csi.storage.k8s.io/pvc/name"] = "nonexistent-pvc"
 	params["csi.storage.k8s.io/pvc/namespace"] = "default"
 
-	resp, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
+	_, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
 		Name:               "pvc-annot-notfound",
 		Parameters:         params,
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
 	})
-	Expect(err).NotTo(HaveOccurred(), "%s: missing PVC should fallback gracefully", tc.tcNodeLabel())
-	Expect(resp.GetVolume().GetVolumeId()).NotTo(BeEmpty())
+	Expect(status.Code(err)).To(Equal(codes.FailedPrecondition),
+		"%s: a named claim that cannot be read must fail provisioning, not drop its overrides", tc.tcNodeLabel())
+	env.agentSrv.mu.Lock()
+	reqs := env.agentSrv.createVolumeReqs
+	env.agentSrv.mu.Unlock()
+	Expect(reqs).To(BeEmpty(), "%s: no volume may be created without the claim's overrides", tc.tcNodeLabel())
 }
 
 func assertE1_PVCAnnotation_FlatKeyOverride(tc documentedCase) {
@@ -947,6 +953,12 @@ func assertE1_PVCAnnotation_FlatKeyOverride(tc documentedCase) {
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: flat key annotation", tc.tcNodeLabel())
 	Expect(resp.GetVolume().GetVolumeId()).NotTo(BeEmpty())
+	env.agentSrv.mu.Lock()
+	reqs := env.agentSrv.createVolumeReqs
+	env.agentSrv.mu.Unlock()
+	Expect(reqs).To(HaveLen(1))
+	Expect(reqs[0].GetBackendParams().GetZfs().GetProperties()).To(HaveKeyWithValue("volblocksize", "16K"),
+		"%s: flat param.zfs-prop annotation must reach the agent", tc.tcNodeLabel())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

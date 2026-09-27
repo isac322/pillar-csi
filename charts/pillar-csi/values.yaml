@@ -94,7 +94,8 @@ controller:
         requests:
           cpu: 10m
           memory: 32Mi
-      # -- Extra arguments for csi-provisioner.
+      # -- Extra arguments for csi-provisioner. `--extra-create-metadata` is
+      # always passed: CreateVolume reads the PVC override annotations through it.
       extraArgs: []
 
     attacher:

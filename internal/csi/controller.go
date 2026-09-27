@@ -451,7 +451,9 @@ func describeSupportedModes(protocolType v1alpha1.ProtocolType) string {
 
 const (
 	// StorageClass parameter keys written by PillarStorageClassReconciler.
-	paramPool         = "pillar-csi.bhyoo.com/store"
+	paramPool = "pillar-csi.bhyoo.com/store"
+	// ParamBinding names the PillarStorageClass that generated the
+	// StorageClass; CreateVolume reads its store and overrides from it.
 	paramBinding      = "pillar-csi.bhyoo.com/storage-class"
 	paramProtocol     = "pillar-csi.bhyoo.com/protocol"
 	paramBackendType  = "pillar-csi.bhyoo.com/backend-type"
@@ -493,15 +495,10 @@ const (
 	// Example: "pillar-csi.bhyoo.com/zfs-prop.compression" = "lz4".
 	paramZFSPropPrefix = "pillar-csi.bhyoo.com/zfs-prop."
 
-	// ParamPVCName / paramPVCNamespace are injected by external-provisioner
-	// when the --extra-create-metadata flag is set.  They allow CreateVolume
-	// to look up the originating PVC and read per-PVC annotation overrides.
-	paramPVCName      = "csi.storage.k8s.io/pvc-name"
-	paramPVCNamespace = "csi.storage.k8s.io/pvc-namespace"
-
 	// ParamPVCNameMeta and paramPVCNamespaceMeta are the keys
-	// external-provisioner actually injects with --extra-create-metadata.
-	// They name the claim a CreateVolume call provisions for.
+	// external-provisioner injects with --extra-create-metadata.  They name
+	// the claim a CreateVolume call provisions for: its annotations are the
+	// PVC override layer and its UID identifies the volume's lifecycle.
 	paramPVCNameMeta      = "csi.storage.k8s.io/pvc/name"
 	paramPVCNamespaceMeta = "csi.storage.k8s.io/pvc/namespace"
 
@@ -617,18 +614,22 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 
 	// ── 4-level merge hierarchy: Pool → Protocol → Binding → PVC annotation ──
 	// mergeParamsFromCRDs augments the StorageClass params with data fetched
-	// live from the PillarStorageClass, PillarStore, and PillarProtocol CRDs and
-	// then overlays any per-PVC annotation overrides.  Falls back gracefully
-	// when the binding name is absent (e.g. manually-created StorageClasses).
+	// live from the PillarStorageClass and PillarStore CRDs and then overlays
+	// any per-PVC annotation overrides.  A StorageClass that names no binding
+	// (hand-written) skips the CRD layers.
 	params, err := s.mergeParamsFromCRDs(ctx, scParams)
 	if err != nil {
 		// PVC annotation validation errors are user-facing (bad annotation
 		// content); surface them as InvalidArgument so the CO can surface
-		// a useful message to the user.  Infrastructure errors (CRD fetch
-		// failures, etc.) are surfaced as Internal.
+		// a useful message to the user.  A referenced binding, store or claim
+		// that does not exist is FailedPrecondition; any other lookup failure
+		// is Internal.  Both are retried by the provisioner.
 		if annotErr, ok := errors.AsType[*pvcAnnotationValidationError](err); ok {
 			return nil, status.Errorf(codes.InvalidArgument,
 				"PVC annotation validation failed: %v", annotErr)
+		}
+		if k8serrors.IsNotFound(err) {
+			return nil, status.Errorf(codes.FailedPrecondition, "parameter merge failed: %v", err)
 		}
 		return nil, status.Errorf(codes.Internal, "parameter merge failed: %v", err)
 	}
@@ -1225,10 +1226,10 @@ func (s *ControllerServer) assertVolumeExists(ctx context.Context, volumeID stri
 
 // mergeParamsFromCRDs builds the 4-level parameter merge hierarchy:
 //
-//	Layer 1 (Pool)    – ZFS properties from PillarStore.spec.backend.zfs.properties
+//	Layer 1 (Pool)    – ZFS properties and LVM provisioning mode from PillarStore.spec.backend
 //	Layer 2 (Protocol)– (protocol params already captured in StorageClass at bind time)
-//	Layer 3 (Binding) – ZFS property overrides from PillarStorageClass.spec.overrides.backend.zfs
-//	Layer 4 (PVC)     – per-PVC annotation overrides prefixed with pvcAnnotationParamPrefix
+//	Layer 3 (Binding) – ZFS property and LVM mode overrides from PillarStorageClass.spec.overrides.backend
+//	Layer 4 (PVC)     – per-PVC annotation overrides (see ParsePVCAnnotations)
 //
 // The StorageClass parameters (scParams) are the authoritative source for
 // routing metadata (target, backend-type, protocol-type, etc.) and serve as
@@ -1237,11 +1238,12 @@ func (s *ControllerServer) assertVolumeExists(ctx context.Context, volumeID stri
 // overrides are applied, and finally per-PVC annotation overrides win over
 // everything else.
 //
-// When the binding name is absent from scParams the function returns a shallow
-// copy of scParams unchanged, preserving backward compatibility with
-// manually-crafted StorageClasses that do not reference a PillarStorageClass.
-//
-//nolint:gocognit,gocyclo // complex but necessary parameter merge hierarchy
+// The PillarStorageClass is named by the paramBinding StorageClass parameter,
+// which the PillarStorageClass controller writes into every StorageClass it
+// generates.  A StorageClass without it (hand-written) has no CRD layers: its
+// parameters are used as-is and only the PVC layer is applied.  A binding or
+// store that the StorageClass references but that cannot be read is an error:
+// provisioning without it would silently drop the settings it declares.
 func (s *ControllerServer) mergeParamsFromCRDs(
 	ctx context.Context,
 	scParams map[string]string,
@@ -1252,54 +1254,50 @@ func (s *ControllerServer) mergeParamsFromCRDs(
 	maps.Copy(merged, scParams)
 
 	bindingName := scParams[paramBinding]
-	if bindingName == "" {
-		// No binding reference — skip CRD lookups and go straight to PVC
-		// annotations (still useful even without a binding name).
-		err := s.applyPVCAnnotationOverrides(ctx, merged, scParams)
+	if bindingName != "" {
+		err := s.applyCRDLayers(ctx, merged, bindingName)
 		if err != nil {
 			return nil, err
 		}
-		return merged, nil
 	}
 
-	// ── Fetch PillarStorageClass ───────────────────────────────────────────────────
+	// ── Layer 4: PVC annotation overrides (highest priority) ─────────────────
+	err := s.applyPVCAnnotationOverrides(ctx, merged, scParams)
+	if err != nil {
+		return nil, err
+	}
+	return merged, nil
+}
+
+// applyCRDLayers merges the PillarStore (Layer 1) and PillarStorageClass
+// (Layer 3) backend settings of binding bindingName into merged.  A missing
+// binding or store is returned as a NotFound-wrapping error.
+func (s *ControllerServer) applyCRDLayers(
+	ctx context.Context,
+	merged map[string]string,
+	bindingName string,
+) error {
 	binding := &v1alpha1.PillarStorageClass{}
 	err := s.k8sClient.Get(ctx, types.NamespacedName{Name: bindingName}, binding)
 	if err != nil {
-		if k8serrors.IsNotFound(err) {
-			// Binding was deleted after the StorageClass was created — fall back
-			// to StorageClass params only.
-			err2 := s.applyPVCAnnotationOverrides(ctx, merged, scParams)
-			if err2 != nil {
-				return nil, err2
-			}
-			return merged, nil
-		}
-		return nil, fmt.Errorf("fetch PillarStorageClass %q: %w", bindingName, err)
+		return fmt.Errorf("get PillarStorageClass %q named by StorageClass parameter %q: %w",
+			bindingName, paramBinding, err)
 	}
 
-	// ── Layer 1: fetch PillarStore and apply ZFS properties ───────────────────
 	pool := &v1alpha1.PillarStore{}
 	err = s.k8sClient.Get(ctx, types.NamespacedName{Name: binding.Spec.StoreRef}, pool)
 	if err != nil {
-		if k8serrors.IsNotFound(err) {
-			err2 := s.applyPVCAnnotationOverrides(ctx, merged, scParams)
-			if err2 != nil {
-				return nil, err2
-			}
-			return merged, nil
-		}
-		return nil, fmt.Errorf("fetch PillarStore %q: %w", binding.Spec.StoreRef, err)
+		return fmt.Errorf("get PillarStore %q of PillarStorageClass %q: %w",
+			binding.Spec.StoreRef, bindingName, err)
 	}
 
-	// Apply Pool-level ZFS properties as the lowest-priority ZFS property layer.
+	// ── Layer 1: PillarStore backend defaults ────────────────────────────────
 	if pool.Spec.Backend.ZFS != nil {
 		for k, v := range pool.Spec.Backend.ZFS.Properties {
 			merged[paramZFSPropPrefix+k] = v
 		}
 	}
 
-	// Apply Pool-level LVM provisioning mode as the lowest-priority LVM mode layer.
 	// Only set when a non-empty mode is configured AND the StorageClass has not
 	// already supplied an explicit override.  An absent key in the final merged
 	// map lets the agent backend use its compiled-in default.
@@ -1309,63 +1307,54 @@ func (s *ControllerServer) mergeParamsFromCRDs(
 		}
 	}
 
-	// ── Layer 3: apply Binding ZFS property overrides ────────────────────────
+	// ── Layer 3: PillarStorageClass backend overrides ────────────────────────
 	// (Layer 2 — protocol params — are already embedded in the StorageClass.)
-	if binding.Spec.Overrides != nil &&
-		binding.Spec.Overrides.Backend != nil &&
-		binding.Spec.Overrides.Backend.ZFS != nil {
-		for k, v := range binding.Spec.Overrides.Backend.ZFS.Properties {
+	if binding.Spec.Overrides == nil || binding.Spec.Overrides.Backend == nil {
+		return nil
+	}
+	backend := binding.Spec.Overrides.Backend
+	if backend.ZFS != nil {
+		for k, v := range backend.ZFS.Properties {
 			merged[paramZFSPropPrefix+k] = v
 		}
 	}
-
-	// Apply Binding-level LVM provisioning mode override (Layer 3).
-	// A non-empty value here wins over the Pool-level default applied above.
-	if binding.Spec.Overrides != nil &&
-		binding.Spec.Overrides.Backend != nil &&
-		binding.Spec.Overrides.Backend.LVM != nil &&
-		binding.Spec.Overrides.Backend.LVM.ProvisioningMode != "" {
-		merged[paramLVMMode] = string(binding.Spec.Overrides.Backend.LVM.ProvisioningMode)
+	if backend.LVM != nil && backend.LVM.ProvisioningMode != "" {
+		merged[paramLVMMode] = string(backend.LVM.ProvisioningMode)
 	}
-
-	// ── Layer 4: PVC annotation overrides (highest priority) ─────────────────
-	err = s.applyPVCAnnotationOverrides(ctx, merged, scParams)
-	if err != nil {
-		return nil, err
-	}
-
-	return merged, nil
+	return nil
 }
 
 // applyPVCAnnotationOverrides looks up the PVC identified by the
-// csi.storage.k8s.io/pvc-name and csi.storage.k8s.io/pvc-namespace
+// csi.storage.k8s.io/pvc/name and csi.storage.k8s.io/pvc/namespace
 // parameters (injected by external-provisioner --extra-create-metadata) and
 // merges PVC-level annotation overrides into merged using ParsePVCAnnotations.
 // This is the highest-priority override layer.
 //
-// PVC lookup failures are silently ignored (the annotation override is
-// optional and a missing PVC or API error should not fail provisioning).
-// Annotation validation errors (e.g. structural field overrides) are returned
-// as errors so that CreateVolume can reject them with InvalidArgument.
+// Without that metadata no claim is known and the layer is skipped; the chart
+// always runs csi-provisioner with --extra-create-metadata.  A claim that is
+// named but cannot be read is an error (the provisioner retries), because
+// provisioning without it would drop the claim's overrides.  Annotation
+// validation errors are returned as *pvcAnnotationValidationError so that
+// CreateVolume can reject them with InvalidArgument.
 func (s *ControllerServer) applyPVCAnnotationOverrides(
 	ctx context.Context,
 	merged map[string]string,
 	scParams map[string]string,
 ) error {
-	pvcName := scParams[paramPVCName]
-	pvcNamespace := scParams[paramPVCNamespace]
+	pvcName := scParams[paramPVCNameMeta]
+	pvcNamespace := scParams[paramPVCNamespaceMeta]
 	if pvcName == "" || pvcNamespace == "" {
 		return nil
 	}
 
 	pvc := &corev1.PersistentVolumeClaim{}
-	pvcGetErr := s.k8sClient.Get(ctx, types.NamespacedName{
+	err := s.apiReader.Get(ctx, types.NamespacedName{
 		Name:      pvcName,
 		Namespace: pvcNamespace,
 	}, pvc)
-	if pvcGetErr != nil {
-		// PVC lookup failure is non-fatal; skip annotation overrides.
-		return nil //nolint:nilerr // intentional: PVC lookup failure is non-fatal
+	if err != nil {
+		return fmt.Errorf("get PersistentVolumeClaim %s/%s for annotation overrides: %w",
+			pvcNamespace, pvcName, err)
 	}
 
 	overrides, err := ParsePVCAnnotations(pvc.Annotations)

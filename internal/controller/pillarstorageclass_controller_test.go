@@ -160,6 +160,36 @@ func TestPillarStorageClass_ParameterDrift_RecreatesStorageClass(t *testing.T) {
 	}
 }
 
+// A StorageClass generated before the controller named its PillarStorageClass
+// in the parameters (issue #112) lacks that immutable parameter; the upgrade
+// re-creates it so CreateVolume can resolve the store and binding settings.
+func TestPillarStorageClass_UpgradeAddsBindingParameter(t *testing.T) {
+	ctx := context.Background()
+	reconciler, recorder, binding, pool, protocol := newDriftTestReconciler(t, interceptor.Funcs{})
+
+	sc := &storagev1.StorageClass{}
+	if err := reconciler.Get(ctx, types.NamespacedName{Name: binding.Name}, sc); err != nil {
+		t.Fatalf("get StorageClass: %v", err)
+	}
+	delete(sc.Parameters, "pillar-csi.bhyoo.com/storage-class")
+	if err := reconciler.Update(ctx, sc); err != nil {
+		t.Fatalf("revert StorageClass to its pre-#112 parameters: %v", err)
+	}
+
+	if err := reconciler.reconcileStorageClass(ctx, binding, pool, protocol, binding.Name); err != nil {
+		t.Fatalf("reconcile pre-#112 StorageClass: %v", err)
+	}
+	expectEvent(t, recorder, "StorageClassRecreated")
+
+	got := &storagev1.StorageClass{}
+	if err := reconciler.Get(ctx, types.NamespacedName{Name: binding.Name}, got); err != nil {
+		t.Fatalf("get re-created StorageClass: %v", err)
+	}
+	if name := got.Parameters["pillar-csi.bhyoo.com/storage-class"]; name != binding.Name {
+		t.Errorf("storage-class parameter = %q, want the binding name %q", name, binding.Name)
+	}
+}
+
 // allowVolumeExpansion is the one mutable managed field; drift in it alone is
 // reverted in place.
 func TestPillarStorageClass_MutableDrift_UpdatesInPlace(t *testing.T) {

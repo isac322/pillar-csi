@@ -100,21 +100,41 @@ func TestParsePVCAnnotations_UnrelatedAnnotationsIgnored(t *testing.T) {
 // Flat param.* overrides (legacy path)
 // ─────────────────────────────────────────────────────────────────────────────.
 
+// A flat "param.<name>" annotation sets the namespaced parameter key that
+// buildBackendParams and the node consume; an unprefixed "zfs-prop.x" key
+// would reach no consumer.
 func TestParsePVCAnnotations_FlatParamPrefix(t *testing.T) {
 	ann := map[string]string{
-		// Should be stripped to "zfs-prop.compression"
-		"pillar-csi.bhyoo.com/param.zfs-prop.compression": "zstd",
-		// Should be stripped to "zfs-prop.volblocksize"
+		"pillar-csi.bhyoo.com/param.zfs-prop.compression":  "zstd",
 		"pillar-csi.bhyoo.com/param.zfs-prop.volblocksize": "16K",
+		"pillar-csi.bhyoo.com/param.lvm-mode":              "linear",
 		// Prefix-only (no suffix) — must be ignored
 		"pillar-csi.bhyoo.com/param.": "ignored",
+		// Empty value is not an override
+		"pillar-csi.bhyoo.com/param.nvmeof-ctrl-loss-tmo": "",
 	}
 	result := mustParseAnnotations(t, ann)
 
-	assertParam(t, result, "zfs-prop.compression", "zstd")
-	assertParam(t, result, "zfs-prop.volblocksize", "16K")
-	// Prefix-only key must not appear
-	assertNoKey(t, result, "")
+	assertParam(t, result, paramZFSPropPrefix+"compression", "zstd")
+	assertParam(t, result, paramZFSPropPrefix+"volblocksize", "16K")
+	assertParam(t, result, paramLVMMode, "linear")
+	assertNoKey(t, result, "zfs-prop.compression")
+	assertNoKey(t, result, paramKeyPrefix)
+	assertNoKey(t, result, paramNVMeOFCtrlLossTmo)
+	if len(result) != 3 {
+		t.Errorf("result = %v, want exactly the 3 non-empty overrides", result)
+	}
+}
+
+// A flat annotation must not redirect a volume to another store, agent,
+// pool, port or disable ACLs.
+func TestParsePVCAnnotations_FlatParamStructuralBlocked(t *testing.T) {
+	for _, name := range []string{"store", "agent", "storage-class", "zfs-parent-dataset", "lvm-vg", "acl-enabled"} {
+		_, err := ParsePVCAnnotations(map[string]string{"pillar-csi.bhyoo.com/param." + name: "x"})
+		if err == nil {
+			t.Errorf("param.%s: expected error for structural parameter", name)
+		}
+	}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -544,7 +564,7 @@ mkfsOptions: ["-K"]
 	result := mustParseAnnotations(t, ann)
 
 	// Flat prefix
-	assertParam(t, result, "zfs-prop.atime", "off")
+	assertParam(t, result, paramZFSPropPrefix+"atime", "off")
 
 	// Backend overrides
 	assertParam(t, result, paramZFSPropPrefix+"compression", "zstd")

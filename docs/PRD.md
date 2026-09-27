@@ -396,6 +396,10 @@ fsType/mkfsOptions 전달 규칙:
 
 **PVC annotation 오버라이드 범위 제한:** 튜닝 파라미터만 허용한다 (properties, maxQueueSize, fsType 등). 구조적 참조 변경(pool, parentDataset, type, port 등)은 controller가 CreateVolume 시점에 거부한다. CRD 필드 immutability 규칙과 동일 기준.
 
+**해석 방식:** PillarStorageClass controller는 생성하는 StorageClass의 `pillar-csi.bhyoo.com/storage-class` 파라미터에 PillarStorageClass 이름을 기록한다. CreateVolume은 이 이름으로 PillarStorageClass와 그 PillarStore를 조회해 backend 기본값(`zfs.properties`, `lvm.provisioningMode`)과 바인딩 오버라이드를 적용하고, csi-provisioner `--extra-create-metadata`(차트 기본값)가 전달하는 `csi.storage.k8s.io/pvc/name`·`pvc/namespace`로 PVC를 조회해 annotation을 마지막에 적용한다. StorageClass가 가리키는 PillarStorageClass·PillarStore·PVC가 없으면 FailedPrecondition, 조회가 실패하면 Internal로 CreateVolume이 실패하며(provisioner가 재시도) 설정을 버린 채 볼륨을 만들지 않는다. `pillar-csi.bhyoo.com/storage-class`가 없는 수동 StorageClass는 자신의 파라미터와 PVC annotation만 사용한다.
+
+저수준 flat annotation `pillar-csi.bhyoo.com/param.<name>: <value>`는 파라미터 `pillar-csi.bhyoo.com/<name>`을 설정한다 (예: `param.zfs-prop.volblocksize: 16K`). 빈 값은 오버라이드가 아니며, 구조적 파라미터(`store`, `agent`, `zfs-parent-dataset`, `lvm-vg`, `nvmeof-port`, `acl-enabled` 등)는 거부된다.
+
 PVC annotation 예시:
 ```yaml
 apiVersion: v1

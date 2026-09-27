@@ -1448,8 +1448,9 @@ func TestGetCapacity_TargetNoAddress(t *testing.T) {
 // newControllerTestEnvWithPVC builds a ControllerServer test environment where
 // a PVC in the given namespace carries the supplied annotations.  The
 // StorageClass parameters in the returned request include the
-// csi.storage.k8s.io/pvc-name and csi.storage.k8s.io/pvc-namespace keys so
-// that CreateVolume can look up the PVC and apply annotation overrides.
+// csi.storage.k8s.io/pvc/name and csi.storage.k8s.io/pvc/namespace keys
+// (external-provisioner --extra-create-metadata) so that CreateVolume can
+// look up the PVC and apply annotation overrides.
 func newControllerTestEnvWithPVC(
 	t *testing.T,
 	pvcNamespace, pvcName string,
@@ -1496,11 +1497,11 @@ func newControllerTestEnvWithPVC(
 	}
 	srv := NewControllerServerWithDialer(fakeClient, "pillar-csi.bhyoo.com", dialer)
 
-	// Build a CreateVolumeRequest that includes the pvc-name / pvc-namespace
-	// metadata injected by external-provisioner --extra-create-metadata.
+	// Build a CreateVolumeRequest that includes the claim metadata injected
+	// by external-provisioner --extra-create-metadata.
 	req := baseCreateVolumeRequest()
-	req.Parameters["csi.storage.k8s.io/pvc-name"] = pvcName
-	req.Parameters["csi.storage.k8s.io/pvc-namespace"] = pvcNamespace
+	req.Parameters[paramPVCNameMeta] = pvcName
+	req.Parameters[paramPVCNamespaceMeta] = pvcNamespace
 
 	return &controllerTestEnv{srv: srv, agent: agent, scheme: scheme}, req
 }
@@ -1598,8 +1599,8 @@ func TestCreateVolume_PVCAnnotationOverride_FlatParam(t *testing.T) {
 	t.Parallel()
 
 	annotations := map[string]string{
-		// Flat override: sets zfs-prop.compression directly.
-		"pillar-csi.bhyoo.com/param." + paramZFSPropPrefix + "compression": "lz4",
+		// Flat override: sets pillar-csi.bhyoo.com/zfs-prop.compression.
+		"pillar-csi.bhyoo.com/param.zfs-prop.compression": "lz4",
 	}
 
 	env, req := newControllerTestEnvWithPVC(t, "default", "pvc-flat-test", annotations)
@@ -1654,7 +1655,7 @@ zfs:
 }
 
 // TestCreateVolume_PVCAnnotationOverride_NoPVCMetadata verifies that when the
-// pvc-name / pvc-namespace parameters are absent (StorageClass provisioned
+// pvc/name / pvc/namespace parameters are absent (StorageClass provisioned
 // without external-provisioner --extra-create-metadata) the call succeeds
 // without annotation overrides.
 func TestCreateVolume_PVCAnnotationOverride_NoPVCMetadata(t *testing.T) {
@@ -1663,7 +1664,7 @@ func TestCreateVolume_PVCAnnotationOverride_NoPVCMetadata(t *testing.T) {
 	ctx := context.Background()
 
 	req := baseCreateVolumeRequest()
-	// Deliberately omit pvc-name and pvc-namespace.
+	// Deliberately omit pvc/name and pvc/namespace.
 
 	resp, err := env.srv.CreateVolume(ctx, req)
 	if err != nil {
@@ -1675,6 +1676,69 @@ func TestCreateVolume_PVCAnnotationOverride_NoPVCMetadata(t *testing.T) {
 	// Agent must still have been called normally.
 	if env.agent.createVolumeCalls != 1 {
 		t.Errorf("agent.CreateVolume call count = %d, want 1", env.agent.createVolumeCalls)
+	}
+}
+
+// A claim that external-provisioner named but that cannot be read must fail
+// provisioning (retryable) instead of provisioning without its overrides.
+func TestCreateVolume_PVCLookupFailure_NotSilentlySkipped(t *testing.T) {
+	t.Parallel()
+	env, req := newControllerTestEnvWithPVC(t, "default", "pvc-unreadable", map[string]string{
+		AnnotationBackendOverride: "zfs:\n  properties:\n    compression: zstd\n",
+	})
+	funcs := fakeuid.Interceptor()
+	funcs.Get = func(ctx context.Context, c ctrlclient.WithWatch, key ctrlclient.ObjectKey,
+		obj ctrlclient.Object, opts ...ctrlclient.GetOption,
+	) error {
+		if _, ok := obj.(*corev1.PersistentVolumeClaim); ok {
+			return errors.New("apiserver unavailable")
+		}
+		return c.Get(ctx, key, obj, opts...)
+	}
+	env.srv.apiReader = fake.NewClientBuilder().WithScheme(env.scheme).WithInterceptorFuncs(funcs).Build()
+
+	_, err := env.srv.CreateVolume(context.Background(), req)
+	if status.Code(err) != codes.Internal || !strings.Contains(err.Error(), "default/pvc-unreadable") {
+		t.Fatalf("CreateVolume error = %v, want Internal naming the claim", err)
+	}
+	if env.agent.createVolumeCalls != 0 {
+		t.Errorf("agent.CreateVolume called without the claim's overrides")
+	}
+
+	req.Parameters[paramPVCNameMeta] = "pvc-deleted"
+	env.srv.apiReader = env.srv.k8sClient
+	_, err = env.srv.CreateVolume(context.Background(), req)
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("CreateVolume for a missing claim: error = %v, want FailedPrecondition", err)
+	}
+}
+
+// A StorageClass that names a PillarStorageClass (or whose binding names a
+// PillarStore) that no longer exists must not provision a volume without the
+// store and binding settings.
+func TestCreateVolume_MissingBindingOrStore_FailedPrecondition(t *testing.T) {
+	t.Parallel()
+	binding := &v1alpha1.PillarStorageClass{
+		ObjectMeta: metav1.ObjectMeta{Name: "orphan-binding"},
+		Spec:       v1alpha1.PillarStorageClassSpec{StoreRef: "deleted-store", ProtocolRef: "nvmeof-tcp"},
+	}
+	for name, bindingName := range map[string]string{"binding": "deleted-binding", "store": binding.Name} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			env := newControllerTestEnv(t)
+			if err := env.srv.k8sClient.Create(context.Background(), binding.DeepCopy()); err != nil {
+				t.Fatalf("create binding: %v", err)
+			}
+			req := baseCreateVolumeRequest()
+			req.Parameters[paramBinding] = bindingName
+			_, err := env.srv.CreateVolume(context.Background(), req)
+			if status.Code(err) != codes.FailedPrecondition {
+				t.Fatalf("CreateVolume error = %v, want FailedPrecondition", err)
+			}
+			if env.agent.createVolumeCalls != 0 {
+				t.Errorf("agent.CreateVolume called without the store and binding settings")
+			}
+		})
 	}
 }
 

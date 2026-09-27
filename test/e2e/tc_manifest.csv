@@ -25,7 +25,7 @@ tc_id,group_id,type,in_437_scope,test_func,description
 "E1.9-5","E1.9","A",true,"TestCSIController_PartialFailure_LoadStateFromCRD","컨트롤러 재기동 시 기존 PillarVolumeState CRD에서 상태 복원"
 "E1.10-1","E1.10","A",true,"TestCSIController_CreateVolume_PVCAnnotation_BackendOverride_Compression","PVC 어노테이션의 ZFS compression 프로퍼티가 agent BackendParams에 반영"
 "E1.10-2","E1.10","A",true,"TestCSIController_CreateVolume_PVCAnnotation_StructuralFieldBlocked","구조적 필드(`zfs.pool`)를 어노테이션으로 오버라이드하면 InvalidArgument 반환"
-"E1.10-3","E1.10","A",true,"TestCSIController_CreateVolume_PVCAnnotation_PVCNotFound_GracefulFallback","pvc-name에 해당하는 PVC가 없으면 어노테이션 오버라이드 없이 기본 파라미터로 진행"
+"E1.10-3","E1.10","A",true,"TestCSIController_CreateVolume_PVCAnnotation_PVCNotFound_FailedPrecondition","pvc/name에 해당하는 PVC를 읽을 수 없으면 오버라이드를 버리지 않고 FailedPrecondition으로 실패"
 "E1.10-4","E1.10","A",true,"TestCSIController_CreateVolume_PVCAnnotation_FlatKeyOverride","저수준 어노테이션(`pillar-csi.bhyoo.com/param.zfs-prop.volblocksize`)이 반영"
 "E1.11-1","E1.11","A",true,"TestCSIController_CreateVolume_VolumeID_ZFSPoolWithSlash","ZFS pool 이름에 슬래시 포함 시 agent-vol-id 파싱 정확성"
 "E1.11-2","E1.11","A",true,"TestCSIController_CreateVolume_VolumeID_ZFSParentDataset","ZFS parent dataset 파라미터 설정 시 agent-vol-id에 반영"

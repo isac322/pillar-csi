@@ -196,6 +196,30 @@ var blockedISCSIFields = map[string]bool{
 	"port": true,
 }
 
+// paramKeyPrefix is the namespace of the pillar-csi CreateVolume parameter
+// keys; a flat "param.<name>" annotation overrides key paramKeyPrefix+<name>.
+const paramKeyPrefix = "pillar-csi.bhyoo.com/"
+
+// blockedFlatParams are the parameter names (without paramKeyPrefix) that
+// route or secure a volume — which PillarStorageClass, store, agent, pool,
+// dataset, port or access control it uses — and therefore cannot be set by
+// a flat "param.<name>" PVC annotation.
+var blockedFlatParams = map[string]bool{
+	"storage-class":      true,
+	"store":              true,
+	"protocol":           true,
+	"backend-type":       true,
+	"protocol-type":      true,
+	"agent":              true,
+	"zfs-parent-dataset": true,
+	"lvm-vg":             true,
+	"lvm-thin-pool":      true,
+	"nvmeof-port":        true,
+	"iscsi-port":         true,
+	"nfs-version":        true,
+	"acl-enabled":        true,
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // ParsePVCAnnotations
 // ─────────────────────────────────────────────────────────────────────────────.
@@ -209,9 +233,9 @@ var blockedISCSIFields = map[string]bool{
 //   - AnnotationProtocolOverride — protocol (NVMe-oF, iSCSI, …) tuning params
 //   - AnnotationFSOverride       — filesystem type and mkfs options
 //
-// In addition, any annotation whose key starts with pvcAnnotationParamPrefix
-// ("pillar-csi.bhyoo.com/param.") is mapped directly to the param key
-// formed by stripping the prefix (legacy / low-level override path).
+// In addition, any annotation "pillar-csi.bhyoo.com/param.<name>" with a
+// non-empty value sets parameter "pillar-csi.bhyoo.com/<name>" (legacy /
+// low-level override path); structural names (blockedFlatParams) are an error.
 //
 // ParsePVCAnnotations returns an error if any annotation attempts to override
 // a blocked structural field (e.g. zfs.pool, lvm.volumeGroup, nvmeofTcp.port).  All other
@@ -225,11 +249,18 @@ func ParsePVCAnnotations(annotations map[string]string) (map[string]string, erro
 
 	// ── Flat param.* overrides (legacy, low-level path) ───────────────────
 	// Example: "pillar-csi.bhyoo.com/param.zfs-prop.compression" = "lz4"
-	// → result["zfs-prop.compression"] = "lz4"
+	// → result["pillar-csi.bhyoo.com/zfs-prop.compression"] = "lz4"
+	// An empty value is not an override: the lower layers stay in effect.
 	for k, v := range annotations {
-		if after, ok := strings.CutPrefix(k, pvcAnnotationParamPrefix); ok && after != "" {
-			result[after] = v
+		name, ok := strings.CutPrefix(k, pvcAnnotationParamPrefix)
+		if !ok || name == "" || v == "" {
+			continue
 		}
+		if blockedFlatParams[name] {
+			return nil, fmt.Errorf("%s: %q is a structural parameter and cannot be overridden via PVC annotation",
+				k, name)
+		}
+		result[paramKeyPrefix+name] = v
 	}
 
 	// ── Structured YAML: backend-override ─────────────────────────────────

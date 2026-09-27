@@ -35,7 +35,7 @@
     "id": "E1.10-3",
     "category": "E1",
     "type": "A",
-    "description": "pvc-name에 해당하는 PVC가 없으면 어노테이션 오버라이드 없이 기본 파라미터로 진행",
+    "description": "pvc/name에 해당하는 PVC를 읽을 수 없으면 오버라이드를 버리지 않고 FailedPrecondition으로 실패",
     "subsection": "E1.10",
     "in_437": true
   },
