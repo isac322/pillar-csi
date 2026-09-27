@@ -182,6 +182,8 @@ type StorageClassOverrides struct {
 	FSType string `json:"fsType,omitempty"`
 
 	// mkfsOptions overrides the protocol-level mkfsOptions for this binding.
+	// Each element is one mkfs argv element (no shell) and must not contain
+	// "/" or "..".  A PVC fs-override mkfsOptions replaces it.
 	// +optional
 	MkfsOptions []string `json:"mkfsOptions,omitempty"`
 }

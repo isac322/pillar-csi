@@ -385,7 +385,13 @@ PillarStorageClass의 오버라이드는 CRD typed schema를 사용한다 (JSON 
 - Backend 파라미터: ZFS properties(compression, volblocksize 등)
 - Protocol 파라미터: NVMe-oF/iSCSI 타임아웃, 큐 사이즈 등
 - fsType: ext4(기본값) 또는 xfs. 블록 프로토콜 + `volumeMode: Filesystem`일 때만
-- mkfsOptions: mkfs 추가 옵션
+- mkfsOptions: mkfs 추가 옵션 (우선순위: PVC `fs-override` > PillarStorageClass `overrides.mkfsOptions` > PillarProtocol `mkfsOptions`)
+
+fsType/mkfsOptions 전달 규칙:
+- StorageClass 파라미터 `pillar-csi.bhyoo.com/mkfs-options`와 PVC `fs-override`의 mkfsOptions는 모두 JSON 문자열 배열(`["-E","lazy_itable_init=0"]`)로 인코딩된다. CreateVolume은 병합된 값을 PV VolumeContext(`pillar-csi.bhyoo.com/mkfs-options`)에 기록하고, PVC fsType은 `pillar-csi.bhyoo.com/fs-type`에 기록한다.
+- NodeStageVolume은 디바이스에 파일시스템이 없을 때만(blkid 기준) mkfs를 실행하며, 이미 포맷된 볼륨은 절대 재포맷하지 않는다. mkfs 인자는 셸 없이 argv 요소 그대로 전달되고, 빈 작업 디렉터리에서 실행된다. 기본 인자(ext4: `-F -m0`) 뒤에 붙으므로 같은 옵션을 지정하면 사용자 값이 우선한다.
+- 포맷 타입 우선순위: PVC fsType > PV `spec.csi.fsType`(StorageClass `csi.storage.k8s.io/fstype`) > ext4. external-provisioner는 PV fsType을 StorageClass에서만 채우므로 PVC fsType을 쓰면 PV의 `spec.csi.fsType`은 클래스 값으로 남는다. 노드는 포맷한 타입을 스테이지 상태 파일에 기록하고, VolumeContext를 받지 않는 NodeExpandVolume은 이 값으로 resize 도구를 고른다.
+- 적용될 수 없는 설정은 CreateVolume이 `InvalidArgument`로 거부한다: 잘못된 JSON, 빈 요소, `/` 또는 `..`를 포함한 요소(다른 파일/디바이스 참조 차단 — 예: `-J device=/dev/…`, `-l logdev=/dev/…`), ext4/xfs 이외의 fsType, NFS/SMB 볼륨의 fsType/mkfsOptions, `volumeMode: Block` PVC의 PVC fsType/mkfsOptions. 클래스 수준 mkfsOptions는 Block 볼륨에서 `csi.storage.k8s.io/fstype`처럼 무시된다.
 
 **PVC annotation 오버라이드 범위 제한:** 튜닝 파라미터만 허용한다 (properties, maxQueueSize, fsType 등). 구조적 참조 변경(pool, parentDataset, type, port 등)은 controller가 CreateVolume 시점에 거부한다. CRD 필드 immutability 규칙과 동일 기준.
 
@@ -708,7 +714,7 @@ NVMe NQN: nqn.2024-01.com.bhyoo.pillar-csi:rock5bp:pvc-abc123
              (타임아웃 파라미터 적용)
       NFS: mount.nfs <ip>:<path> <staging>
    c. Block protocol + volumeMode=Filesystem:
-      mkfs (첫 사용, fsType/mkfsOptions 적용) + mount
+      mkfs (디바이스에 파일시스템이 없을 때만, fsType/mkfsOptions 적용) + mount
    d. Block protocol + volumeMode=Block: 디바이스 경로 기록
    e. 커널 모듈 미로드 시 명확한 에러 반환
 ```

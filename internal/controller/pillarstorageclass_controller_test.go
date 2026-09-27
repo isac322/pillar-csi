@@ -2116,7 +2116,7 @@ var _ = Describe("buildStorageClassParams", func() {
 			"binding override should win over protocol-level fsType")
 	})
 
-	It("should use protocol-level mkfsOptions for block protocols", func() {
+	It("should encode protocol-level mkfsOptions as a JSON argv array for block protocols", func() {
 		binding := makeBinding("pool", "proto", nil)
 		pool := &pillarcsiv1alpha1.PillarStore{
 			Spec: pillarcsiv1alpha1.PillarStoreSpec{
@@ -2127,13 +2127,15 @@ var _ = Describe("buildStorageClassParams", func() {
 		protocol := &pillarcsiv1alpha1.PillarProtocol{
 			Spec: pillarcsiv1alpha1.PillarProtocolSpec{
 				Type:        pillarcsiv1alpha1.ProtocolTypeISCSI,
-				MkfsOptions: []string{"-E", "lazy_itable_init=0"},
+				MkfsOptions: []string{"-E", "lazy_itable_init=0", "-L", "data vol"},
 			},
 		}
 		params := buildStorageClassParams(binding, pool, protocol)
 
-		Expect(params).To(HaveKey("pillar-csi.bhyoo.com/mkfs-options"))
-		Expect(params["pillar-csi.bhyoo.com/mkfs-options"]).To(Equal("-E lazy_itable_init=0"))
+		// JSON keeps every argv element intact (the label contains a space),
+		// matching the PVC fs-override encoding the node decodes.
+		Expect(params).To(HaveKeyWithValue("pillar-csi.bhyoo.com/mkfs-options",
+			`["-E","lazy_itable_init=0","-L","data vol"]`))
 	})
 
 	It("should use binding-override mkfsOptions over protocol-level mkfsOptions", func() {
@@ -2155,7 +2157,7 @@ var _ = Describe("buildStorageClassParams", func() {
 		}
 		params := buildStorageClassParams(binding, pool, protocol)
 
-		Expect(params["pillar-csi.bhyoo.com/mkfs-options"]).To(Equal("-m 0"),
+		Expect(params["pillar-csi.bhyoo.com/mkfs-options"]).To(Equal(`["-m","0"]`),
 			"binding mkfsOptions should override protocol-level mkfsOptions")
 	})
 

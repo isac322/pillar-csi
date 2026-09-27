@@ -139,13 +139,9 @@ func (n *NodeServer) NodeExpandVolume(
 	}
 
 	// ── Determine filesystem type ────────────────────────────────────────────
-	// Prefer the fsType from the VolumeCapability when present; fall back to
-	// the project default (ext4) when the CO does not supply a capability.
-	fsType := defaultFsType
-	if volCap != nil {
-		if mnt := volCap.GetMount(); mnt != nil && mnt.GetFsType() != "" {
-			fsType = mnt.GetFsType()
-		}
+	fsType, err := n.expandFsType(req.GetVolumeId(), volCap)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "NodeExpandVolume: %v", err)
 	}
 
 	// ── Run filesystem resize ────────────────────────────────────────────────
@@ -165,6 +161,26 @@ func (n *NodeServer) NodeExpandVolume(
 	// the CO can update the PersistentVolume capacity field.  A zero value
 	// means "fill the available block device capacity" — the CO accepts this.
 	return &csi.NodeExpandVolumeResponse{CapacityBytes: blockExpandCapacity(req)}, nil
+}
+
+// expandFsType returns the filesystem type NodeExpandVolume resizes.  The
+// type NodeStageVolume recorded in the stage state wins: a PVC fs-override
+// can format the volume with a type other than the PV's csi.fsType, and
+// NodeExpandVolume carries no VolumeContext.  Volumes staged before the stage
+// state recorded the type fall back to the VolumeCapability, then to the
+// project default (ext4).
+func (n *NodeServer) expandFsType(volumeID string, volCap *csi.VolumeCapability) (string, error) {
+	stageState, err := n.readStageState(volumeID)
+	if err != nil {
+		return "", fmt.Errorf("read stage state for %q: %w", volumeID, err)
+	}
+	if stageState != nil && stageState.FsType != "" {
+		return stageState.FsType, nil
+	}
+	if fsType := volCap.GetMount().GetFsType(); fsType != "" {
+		return fsType, nil
+	}
+	return defaultFsType, nil
 }
 
 // blockExpandCapacity echoes required_bytes from the request's capacity_range,

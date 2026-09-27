@@ -381,8 +381,8 @@ MVP에서 제품 문서와 테스트는 아래 이름을 기준으로 맞춘다.
 | `initialLoginRetryMax` | `PillarProtocol` / `PillarStorageClass` / PVC override | `pillar-csi.bhyoo.com/iscsi-initial-login-retry-max` | 초기 login 재시도 상한 |
 | `noopOutInterval` | `PillarProtocol` / `PillarStorageClass` / PVC override | `pillar-csi.bhyoo.com/iscsi-noop-out-interval` | connection keepalive ping 간격 |
 | `noopOutTimeout` | `PillarProtocol` / `PillarStorageClass` / PVC override | `pillar-csi.bhyoo.com/iscsi-noop-out-timeout` | ping 응답 대기 시간 |
-| `fsType` | `PillarProtocol` / `PillarStorageClass` / PVC override | `csi.storage.k8s.io/fstype` | `mkfs` / mount |
-| `mkfsOptions` | `PillarProtocol` / `PillarStorageClass` / PVC override | `pillar-csi.bhyoo.com/mkfs-options` | `mkfs` 인자 |
+| `fsType` | `PillarProtocol` / `PillarStorageClass` / PVC override | `csi.storage.k8s.io/fstype` (PVC override: VolumeContext `pillar-csi.bhyoo.com/fs-type`) | `mkfs` / mount |
+| `mkfsOptions` | `PillarProtocol` / `PillarStorageClass` / PVC override | `pillar-csi.bhyoo.com/mkfs-options` (JSON 문자열 배열, VolumeContext로 전달) | 새 볼륨 `mkfs` 인자 |
 
 주의:
 

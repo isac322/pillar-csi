@@ -150,12 +150,17 @@ const (
 
 	// Filesystem parameters.
 
-	// ParamFSType is the filesystem type to format when volumeMode is Filesystem.
-	// Valid values: "ext4" (default), "xfs".
+	// ParamFSType is the per-PVC filesystem type override (fs-override
+	// fsType).  Valid values: "ext4", "xfs".  Copied into the VolumeContext
+	// by CreateVolume; NodeStageVolume formats and mounts with it in place of
+	// the PV's csi.fsType.
 	paramFSType = "pillar-csi.bhyoo.com/fs-type"
 
-	// ParamMkfsOptions is a JSON-encoded string array of extra mkfs arguments.
-	// Example value: `["-E","lazy_itable_init=0"]`.
+	// ParamMkfsOptions is a JSON-encoded string array of extra mkfs arguments,
+	// written by the StorageClass reconciler and the PVC fs-override.
+	// Example value: `["-E","lazy_itable_init=0"]`.  Copied into the
+	// VolumeContext by CreateVolume and used when NodeStageVolume formats a
+	// blank device (see parseMkfsOptions).
 	paramMkfsOptions = "pillar-csi.bhyoo.com/mkfs-options"
 )
 

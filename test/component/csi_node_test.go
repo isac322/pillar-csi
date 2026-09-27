@@ -160,7 +160,7 @@ func (m *csiMockConnector) GetDevicePath(ctx context.Context, subsysNQN string) 
 type csiMockMounter struct {
 	mu sync.Mutex
 
-	formatAndMountFn func(source, target, fsType string, options []string) error
+	formatAndMountFn func(source, target, fsType string, options, formatOptions []string) error
 	mountFn          func(source, target, fsType string, options []string) error
 	unmountFn        func(target string) error
 	isMountedFn      func(target string) (bool, error)
@@ -182,13 +182,13 @@ func newCsiMockMounter() *csiMockMounter {
 	return &csiMockMounter{mounted: make(map[string]bool)}
 }
 
-func (m *csiMockMounter) FormatAndMount(source, target, fsType string, options []string) error {
+func (m *csiMockMounter) FormatAndMount(source, target, fsType string, options, formatOptions []string) error {
 	m.mu.Lock()
 	m.formatAndMountCalls++
 	fn := m.formatAndMountFn
 	m.mu.Unlock()
 	if fn != nil {
-		return fn(source, target, fsType, options)
+		return fn(source, target, fsType, options, formatOptions)
 	}
 	m.mu.Lock()
 	m.mounted[target] = true
@@ -384,7 +384,7 @@ func TestCSINode_NodeStageVolume_MountAccess(t *testing.T) {
 	}
 
 	var capturedSource, capturedTarget string
-	env.mounter.formatAndMountFn = func(source, target, _ string, _ []string) error {
+	env.mounter.formatAndMountFn = func(source, target, _ string, _, _ []string) error {
 		capturedSource, capturedTarget = source, target
 		return nil
 	}
@@ -624,7 +624,7 @@ func TestCSINode_NodeStageVolume_MountFails(t *testing.T) {
 	ctx := context.Background()
 	stagingPath := t.TempDir()
 
-	env.mounter.formatAndMountFn = func(_, _ string, _ string, _ []string) error {
+	env.mounter.formatAndMountFn = func(_, _ string, _ string, _, _ []string) error {
 		return errors.New("mkfs.ext4: device busy")
 	}
 

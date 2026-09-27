@@ -807,12 +807,12 @@ type mkdirMounter struct {
 
 // FormatAndMount creates the target directory if it does not exist, then
 // delegates to the wrapped Mounter's FormatAndMount.
-func (m *mkdirMounter) FormatAndMount(source, target, fsType string, options []string) error {
+func (m *mkdirMounter) FormatAndMount(source, target, fsType string, options, formatOptions []string) error {
 	mkdirErr := os.MkdirAll(target, 0o750)
 	if mkdirErr != nil {
 		return fmt.Errorf("mkdirMounter: create mount target %q: %w", target, mkdirErr)
 	}
-	return m.wrapped.FormatAndMount(source, target, fsType, options)
+	return m.wrapped.FormatAndMount(source, target, fsType, options, formatOptions)
 }
 
 // Mount provisions the target before delegating to the wrapped Mounter.

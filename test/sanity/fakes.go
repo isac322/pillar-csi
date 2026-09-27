@@ -45,7 +45,7 @@ func newFakeMounter() *fakeMounter {
 	return &fakeMounter{mounted: map[string]bool{}}
 }
 
-func (m *fakeMounter) FormatAndMount(_, target, _ string, _ []string) error {
+func (m *fakeMounter) FormatAndMount(_, target, _ string, _, _ []string) error {
 	if err := os.MkdirAll(target, 0o755); err != nil {
 		return err
 	}

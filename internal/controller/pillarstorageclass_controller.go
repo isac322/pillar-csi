@@ -20,7 +20,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -550,12 +549,19 @@ func buildStorageClassParams(
 		}
 
 		// mkfsOptions: binding override takes precedence, then protocol-level.
+		// Encoded as a JSON string array — the same encoding the PVC
+		// fs-override annotation produces — so every argv element survives
+		// intact (e.g. a label containing spaces) on its way through the PV
+		// VolumeContext to NodeStageVolume.
 		mkfsOptions := protocol.Spec.MkfsOptions
 		if binding.Spec.Overrides != nil && len(binding.Spec.Overrides.MkfsOptions) > 0 {
 			mkfsOptions = binding.Spec.Overrides.MkfsOptions
 		}
 		if len(mkfsOptions) > 0 {
-			params["pillar-csi.bhyoo.com/mkfs-options"] = strings.Join(mkfsOptions, " ")
+			encoded, err := json.Marshal(mkfsOptions)
+			if err == nil { // json.Marshal of a []string cannot fail
+				params["pillar-csi.bhyoo.com/mkfs-options"] = string(encoded)
+			}
 		}
 	}
 

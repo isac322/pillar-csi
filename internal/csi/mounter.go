@@ -46,18 +46,6 @@ func NewKubeMounter() *KubeMounter {
 	}
 }
 
-// FormatAndMount formats the block device at source with the given
-// filesystem type (if it is not already formatted) and then mounts it at
-// target.  The call is idempotent: if source is already formatted with
-// fsType the format step is skipped.
-func (m *KubeMounter) FormatAndMount(source, target, fsType string, options []string) error {
-	err := m.inner.FormatAndMount(source, target, fsType, options)
-	if err != nil {
-		return fmt.Errorf("FormatAndMount %s → %s: %w", source, target, err)
-	}
-	return nil
-}
-
 // Mount performs a plain mount of source at target with the given type and
 // options.  Callers typically use this for bind mounts where the source
 // block device is already formatted.

@@ -108,8 +108,10 @@ spec:
                     - xfs
                     type: string
                   mkfsOptions:
-                    description: mkfsOptions overrides the protocol-level mkfsOptions
-                      for this binding.
+                    description: |-
+                      mkfsOptions overrides the protocol-level mkfsOptions for this binding.
+                      Each element is one mkfs argv element (no shell) and must not contain
+                      "/" or "..".  A PVC fs-override mkfsOptions replaces it.
                     items:
                       type: string
                     type: array
