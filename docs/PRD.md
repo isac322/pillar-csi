@@ -181,7 +181,7 @@ status:
 | Condition | 의미 |
 |-----------|------|
 | `TargetReady` | 참조 PillarAgent이 Ready인지 |
-| `PoolDiscovered` | agent에서 해당 pool이 발견되었는지 |
+| `PoolDiscovered` | agent에서 해당 pool(ZFS pool / LVM VG)이 발견되었고, agent `--backend`의 `parent`/`thinpool`이 `zfs.parentDataset`/`lvm.thinPool`과 일치하는지. 불일치 시 `False`/`BackendLayoutMismatch`이며 agent는 CreateVolume을 `FailedPrecondition`으로 거부한다 (다른 위치에 볼륨을 만들지 않음) |
 | `BackendSupported` | backend 타입이 agent capabilities에 있는지 |
 | `Ready` | 전체 준비 상태 |
 

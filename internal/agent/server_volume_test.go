@@ -19,6 +19,7 @@ package agent_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -55,6 +56,8 @@ type mockBackend struct {
 	capacityTotal     int64
 	capacityAvailable int64
 	capacityErr       error
+	// Layout
+	layout backend.Layout
 	// ListVolumes
 	listVolumesResult []*agentv1.VolumeInfo
 	listVolumesErr    error
@@ -104,6 +107,8 @@ func (m *mockBackend) DevicePath(_ string) string {
 func (*mockBackend) Type() agentv1.BackendType {
 	return agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL
 }
+
+func (m *mockBackend) Layout() backend.Layout { return m.layout }
 
 // Ensure mockBackend satisfies the interface.
 var _ backend.VolumeBackend = (*mockBackend)(nil)
@@ -235,6 +240,33 @@ func TestCreateVolume_ConflictSize(t *testing.T) {
 	}
 	if !strings.Contains(st.Message(), "already exists") {
 		t.Errorf("message %q does not mention 'already exists'", st.Message())
+	}
+}
+
+// TestCreateVolume_LayoutMismatch verifies that a backend refusing a create
+// because the declared layout differs from its configuration (issue #113)
+// surfaces as FailedPrecondition, not Internal: retrying cannot succeed until
+// an operator aligns the PillarStore with the agent --backend flag.
+func TestCreateVolume_LayoutMismatch(t *testing.T) {
+	t.Parallel()
+	mb := &mockBackend{
+		createErr: fmt.Errorf("zfs: create %q: %w", testVolumeID, &backend.LayoutMismatchError{
+			VolumeID: testVolumeID, Setting: "ZFS parent dataset", Requested: "k8s", Configured: "",
+		}),
+	}
+	srv := newTestServer(t, mb)
+
+	_, err := srv.CreateVolume(context.Background(), &agentv1.CreateVolumeRequest{
+		VolumeId:      testVolumeID,
+		Fence:         testFence(t),
+		CapacityBytes: 1 << 30,
+	})
+	st, _ := status.FromError(err)
+	if st.Code() != codes.FailedPrecondition {
+		t.Fatalf("code = %v (err %v), want FailedPrecondition", st.Code(), err)
+	}
+	if !strings.Contains(st.Message(), `requested ZFS parent dataset "k8s"`) {
+		t.Errorf("message %q lost the mismatch detail", st.Message())
 	}
 }
 

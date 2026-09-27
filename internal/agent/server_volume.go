@@ -72,6 +72,9 @@ func createVolumeError(err error) error {
 	if conflictErr, ok := errors.AsType[*backend.ConflictError](err); ok {
 		return status.Errorf(codes.AlreadyExists, "CreateVolume: %v", conflictErr)
 	}
+	if mismatch, ok := errors.AsType[*backend.LayoutMismatchError](err); ok {
+		return status.Errorf(codes.FailedPrecondition, "CreateVolume: %v", mismatch)
+	}
 	capErr := insufficientCapacityStatus("CreateVolume", err)
 	if capErr != nil {
 		return capErr

@@ -79,11 +79,14 @@ func (s *Server) collectPoolInfo(ctx context.Context) []*agentv1.PoolInfo {
 		if err != nil {
 			continue // Best-effort: skip pools whose capacity cannot be queried.
 		}
+		layout := b.Layout()
 		pools = append(pools, &agentv1.PoolInfo{
 			Name:           name,
 			BackendType:    b.Type(),
 			TotalBytes:     total,
 			AvailableBytes: avail,
+			ParentDataset:  layout.ParentDataset,
+			ThinPool:       layout.ThinPool,
 		})
 	}
 	return pools

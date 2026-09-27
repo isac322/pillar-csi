@@ -627,6 +627,91 @@ var _ = Describe("PillarStore Controller", func() {
 			Expect(readyCond.Status).To(Equal(metav1.ConditionFalse))
 			Expect(readyCond.Reason).To(Equal("ConditionsNotMet"))
 		})
+
+		// Issue #113: the agent reports where it creates volumes in the pool;
+		// a store declaring another parent dataset must not become Ready.
+		It("should set PoolDiscovered=False/BackendLayoutMismatch when the agent's parent dataset differs", func() {
+			// The store declares the pool root; the agent creates under hot-data/k8s.
+			setTargetReadyWithData([]pillarcsiv1alpha1.DiscoveredPool{
+				{Name: zfsPoolName, Type: "zfs-zvol", ParentDataset: "k8s"},
+			}, []string{"zfs-zvol"})
+
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := fetchPool()
+			cond := findCondition(fetched, "PoolDiscovered")
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cond.Reason).To(Equal("BackendLayoutMismatch"))
+			Expect(cond.Message).To(ContainSubstring(`parentDataset "" but the agent creates volumes under "k8s"`))
+			readyCond := findCondition(fetched, "Ready")
+			Expect(readyCond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(readyCond.Message).To(ContainSubstring("BackendLayoutMismatch"))
+		})
+
+		It("should set Ready=True when the store declares the agent's parent dataset", func() {
+			store := fetchPool()
+			store.Spec.Backend.ZFS.ParentDataset = "k8s/" // equivalent spelling
+			Expect(k8sClient.Update(bctx, store)).To(Succeed())
+			setTargetReadyWithData([]pillarcsiv1alpha1.DiscoveredPool{
+				{Name: zfsPoolName, Type: "zfs-zvol", ParentDataset: "k8s"},
+			}, []string{"zfs-zvol"})
+
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := fetchPool()
+			Expect(findCondition(fetched, "PoolDiscovered").Status).To(Equal(metav1.ConditionTrue))
+			Expect(findCondition(fetched, "Ready").Status).To(Equal(metav1.ConditionTrue))
+		})
+	})
+
+	Context("PoolDiscovered evaluation — LVM volume group and thin pool", func() {
+		lvmStore := func(vg, thinPool string) *pillarcsiv1alpha1.PillarStore {
+			return &pillarcsiv1alpha1.PillarStore{Spec: pillarcsiv1alpha1.PillarStoreSpec{
+				AgentRef: "agent-a",
+				Backend: pillarcsiv1alpha1.BackendSpec{
+					Type: pillarcsiv1alpha1.BackendTypeLVMLV,
+					LVM:  &pillarcsiv1alpha1.LVMBackendConfig{VolumeGroup: vg, ThinPool: thinPool},
+				},
+			}}
+		}
+		agentWith := func(pools ...pillarcsiv1alpha1.DiscoveredPool) *pillarcsiv1alpha1.PillarAgent {
+			return &pillarcsiv1alpha1.PillarAgent{Status: pillarcsiv1alpha1.PillarAgentStatus{DiscoveredPools: pools}}
+		}
+
+		It("should report BackendLayoutMismatch when the agent's thin pool differs", func() {
+			status, reason, msg := evaluatePoolDiscovered(
+				lvmStore("data-vg", "thin-pool-1"),
+				agentWith(pillarcsiv1alpha1.DiscoveredPool{Name: "data-vg", Type: "lvm-lv", ThinPool: "thin-pool-0"}),
+			)
+			Expect(status).To(Equal(metav1.ConditionFalse))
+			Expect(reason).To(Equal("BackendLayoutMismatch"))
+			Expect(msg).To(ContainSubstring(`thinPool "thin-pool-1" but the agent's thin pool is "thin-pool-0"`))
+		})
+
+		It("should report BackendLayoutMismatch when the store declares no thin pool but the agent has one", func() {
+			status, reason, _ := evaluatePoolDiscovered(
+				lvmStore("data-vg", ""),
+				agentWith(pillarcsiv1alpha1.DiscoveredPool{Name: "data-vg", Type: "lvm-lv", ThinPool: "thin-pool-0"}),
+			)
+			Expect(status).To(Equal(metav1.ConditionFalse))
+			Expect(reason).To(Equal("BackendLayoutMismatch"))
+		})
+
+		It("should match the store's volume group, not another VG on the agent", func() {
+			agent := agentWith(
+				pillarcsiv1alpha1.DiscoveredPool{Name: "other-vg", Type: "lvm-lv"},
+				pillarcsiv1alpha1.DiscoveredPool{Name: "data-vg", Type: "lvm-lv", ThinPool: "thin-pool-0"},
+			)
+			status, _, _ := evaluatePoolDiscovered(lvmStore("data-vg", "thin-pool-0"), agent)
+			Expect(status).To(Equal(metav1.ConditionTrue))
+
+			status, reason, _ := evaluatePoolDiscovered(lvmStore("missing-vg", ""), agent)
+			Expect(status).To(Equal(metav1.ConditionFalse))
+			Expect(reason).To(Equal("PoolNotFound"))
+		})
 	})
 
 	Context("PoolDiscovered condition — target not ready sets Unknown", func() {

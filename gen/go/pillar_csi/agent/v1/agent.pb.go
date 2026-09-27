@@ -316,9 +316,14 @@ func (x *FencingToken) GetGeneration() uint64 {
 // map directly to ZFS properties; unknown keys are forwarded as-is to zfs(8).
 type ZfsVolumeParams struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The ZFS pool (e.g. "hot-data").
+	// The ZFS pool (e.g. "hot-data").  When non-empty it must equal the pool
+	// of the agent backend that owns the volume.
 	Pool string `protobuf:"bytes,1,opt,name=pool,proto3" json:"pool,omitempty"`
-	// Parent dataset under which the volume is created (e.g. "k8s").
+	// Parent dataset under which the volume is created (e.g. "k8s"), as
+	// declared by the PillarStore.  The agent does not relocate volumes: it
+	// rejects CreateVolume with FAILED_PRECONDITION unless this equals the
+	// parent dataset its backend for the pool was started with (empty means the
+	// pool root dataset).
 	ParentDataset string `protobuf:"bytes,2,opt,name=parent_dataset,json=parentDataset,proto3" json:"parent_dataset,omitempty"`
 	// ZFS properties to set at creation time.
 	// Example: {"compression": "lz4", "volblocksize": "8K"}.
@@ -391,6 +396,12 @@ type LvmVolumeParams struct {
 	// An empty string (the default) means "use the backend default", i.e. thin
 	// when the backend was started with a thinpool= flag, linear otherwise.
 	ProvisionMode string `protobuf:"bytes,3,opt,name=provision_mode,json=provisionMode,proto3" json:"provision_mode,omitempty"`
+	// thin_pool is the thin pool LV declared by the PillarStore (empty: the
+	// store declares none).  When set, the agent rejects CreateVolume with
+	// FAILED_PRECONDITION unless it equals the thin pool its backend for the
+	// VG was started with.  Unset (a caller that does not declare a thin pool)
+	// skips the check.
+	ThinPool      *string `protobuf:"bytes,4,opt,name=thin_pool,json=thinPool,proto3,oneof" json:"thin_pool,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -442,6 +453,13 @@ func (x *LvmVolumeParams) GetExtraFlags() []string {
 func (x *LvmVolumeParams) GetProvisionMode() string {
 	if x != nil {
 		return x.ProvisionMode
+	}
+	return ""
+}
+
+func (x *LvmVolumeParams) GetThinPool() string {
+	if x != nil && x.ThinPool != nil {
+		return *x.ThinPool
 	}
 	return ""
 }
@@ -1036,8 +1054,14 @@ type PoolInfo struct {
 	TotalBytes int64 `protobuf:"varint,3,opt,name=total_bytes,json=totalBytes,proto3" json:"total_bytes,omitempty"`
 	// Available (free) capacity in bytes.
 	AvailableBytes int64 `protobuf:"varint,4,opt,name=available_bytes,json=availableBytes,proto3" json:"available_bytes,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// ZFS backends: the parent dataset (relative to the pool) under which the
+	// agent creates volumes; empty means the pool root dataset.
+	ParentDataset string `protobuf:"bytes,5,opt,name=parent_dataset,json=parentDataset,proto3" json:"parent_dataset,omitempty"`
+	// LVM backends: the thin pool LV the agent creates thin volumes in; empty
+	// means the backend has no thin pool (linear LVs only).
+	ThinPool      string `protobuf:"bytes,6,opt,name=thin_pool,json=thinPool,proto3" json:"thin_pool,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *PoolInfo) Reset() {
@@ -1096,6 +1120,20 @@ func (x *PoolInfo) GetAvailableBytes() int64 {
 		return x.AvailableBytes
 	}
 	return 0
+}
+
+func (x *PoolInfo) GetParentDataset() string {
+	if x != nil {
+		return x.ParentDataset
+	}
+	return ""
+}
+
+func (x *PoolInfo) GetThinPool() string {
+	if x != nil {
+		return x.ThinPool
+	}
+	return ""
 }
 
 type GetCapabilitiesRequest struct {
@@ -3254,12 +3292,15 @@ const file_pillar_csi_agent_v1_agent_proto_rawDesc = "" +
 	"properties\x1a=\n" +
 	"\x0fPropertiesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"|\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xac\x01\n" +
 	"\x0fLvmVolumeParams\x12!\n" +
 	"\fvolume_group\x18\x01 \x01(\tR\vvolumeGroup\x12\x1f\n" +
 	"\vextra_flags\x18\x02 \x03(\tR\n" +
 	"extraFlags\x12%\n" +
-	"\x0eprovision_mode\x18\x03 \x01(\tR\rprovisionMode\"\x8d\x01\n" +
+	"\x0eprovision_mode\x18\x03 \x01(\tR\rprovisionMode\x12 \n" +
+	"\tthin_pool\x18\x04 \x01(\tH\x00R\bthinPool\x88\x01\x01B\f\n" +
+	"\n" +
+	"_thin_pool\"\x8d\x01\n" +
 	"\rBackendParams\x128\n" +
 	"\x03zfs\x18\x01 \x01(\v2$.pillar_csi.agent.v1.ZfsVolumeParamsH\x00R\x03zfs\x128\n" +
 	"\x03lvm\x18\x02 \x01(\v2$.pillar_csi.agent.v1.LvmVolumeParamsH\x00R\x03lvmB\b\n" +
@@ -3297,13 +3338,15 @@ const file_pillar_csi_agent_v1_agent_proto_rawDesc = "" +
 	"\x0ecapacity_bytes\x18\x02 \x01(\x03R\rcapacityBytes\x12\x1f\n" +
 	"\vdevice_path\x18\x03 \x01(\tR\n" +
 	"devicePath\x12\x1a\n" +
-	"\bexported\x18\x04 \x01(\bR\bexported\"\xad\x01\n" +
+	"\bexported\x18\x04 \x01(\bR\bexported\"\xf1\x01\n" +
 	"\bPoolInfo\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12C\n" +
 	"\fbackend_type\x18\x02 \x01(\x0e2 .pillar_csi.agent.v1.BackendTypeR\vbackendType\x12\x1f\n" +
 	"\vtotal_bytes\x18\x03 \x01(\x03R\n" +
 	"totalBytes\x12'\n" +
-	"\x0favailable_bytes\x18\x04 \x01(\x03R\x0eavailableBytes\"\x18\n" +
+	"\x0favailable_bytes\x18\x04 \x01(\x03R\x0eavailableBytes\x12%\n" +
+	"\x0eparent_dataset\x18\x05 \x01(\tR\rparentDataset\x12\x1b\n" +
+	"\tthin_pool\x18\x06 \x01(\tR\bthinPool\"\x18\n" +
 	"\x16GetCapabilitiesRequest\"\xad\x02\n" +
 	"\x17GetCapabilitiesResponse\x12#\n" +
 	"\ragent_version\x18\x01 \x01(\tR\fagentVersion\x12O\n" +
@@ -3642,6 +3685,7 @@ func file_pillar_csi_agent_v1_agent_proto_init() {
 	if File_pillar_csi_agent_v1_agent_proto != nil {
 		return
 	}
+	file_pillar_csi_agent_v1_agent_proto_msgTypes[2].OneofWrappers = []any{}
 	file_pillar_csi_agent_v1_agent_proto_msgTypes[3].OneofWrappers = []any{
 		(*BackendParams_Zfs)(nil),
 		(*BackendParams_Lvm)(nil),

@@ -27,6 +27,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	agentv1 "github.com/bhyoo/pillar-csi/gen/go/pillar_csi/agent/v1"
+	"github.com/bhyoo/pillar-csi/internal/agent/backend"
 )
 
 // GetCapacity handler tests for LVM linear provisioning mode.
@@ -171,6 +172,7 @@ func TestGetCapabilities_IncludesPoolInfo(t *testing.T) {
 	mb := &mockBackend{
 		capacityTotal:     100 << 30,
 		capacityAvailable: 60 << 30,
+		layout:            backend.Layout{ParentDataset: "k8s", ThinPool: "thin-pool-0"},
 	}
 	srv := newTestServer(t, mb)
 
@@ -191,6 +193,12 @@ func TestGetCapabilities_IncludesPoolInfo(t *testing.T) {
 	}
 	if pool.GetAvailableBytes() != 60<<30 {
 		t.Errorf("AvailableBytes = %d, want %d", pool.GetAvailableBytes(), 60<<30)
+	}
+	// The layout lets the controller detect a PillarStore that declares a
+	// different parent dataset / thin pool (issue #113).
+	if pool.GetParentDataset() != "k8s" || pool.GetThinPool() != "thin-pool-0" {
+		t.Errorf("layout = {ParentDataset: %q, ThinPool: %q}, want {k8s, thin-pool-0}",
+			pool.GetParentDataset(), pool.GetThinPool())
 	}
 }
 

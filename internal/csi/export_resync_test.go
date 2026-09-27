@@ -77,6 +77,7 @@ func (resyncBackend) ListVolumes(context.Context) ([]*agentv1.VolumeInfo, error)
 }
 func (resyncBackend) DevicePath(string) string  { return resyncDevicePath }
 func (resyncBackend) Type() agentv1.BackendType { return agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL }
+func (resyncBackend) Layout() backend.Layout    { return backend.Layout{} }
 
 type resyncEnv struct {
 	srv            *ControllerServer

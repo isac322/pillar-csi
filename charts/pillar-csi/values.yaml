@@ -327,6 +327,11 @@ agent:
   # and an LVM VG must not share a name either): volumes are routed to a
   # backend by pool/VG name alone, so a duplicate fails the chart render and
   # the agent refuses to start when given one.
+  # `parent` and `thinpool` decide where volumes are created and must equal
+  # the PillarStore's spec.backend.zfs.parentDataset / spec.backend.lvm.thinPool
+  # for that pool/VG (omitted = pool root / no thin pool).  On a mismatch the
+  # PillarStore is not Ready (PoolDiscovered=False, BackendLayoutMismatch) and
+  # CreateVolume fails; volumes are never placed elsewhere.
   #
   # Example:
   #   backends:

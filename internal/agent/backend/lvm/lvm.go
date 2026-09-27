@@ -213,6 +213,11 @@ type Params struct {
 	// Use ParseProvisionMode to convert the wire string to a ProvisionMode.
 	ProvisionModeOverride ProvisionMode
 
+	// ThinPool is the thin pool the caller declares (LvmVolumeParams.thin_pool,
+	// from PillarStore.spec.backend.lvm.thinPool; "" declares none).  nil
+	// means the caller does not declare a thin pool and the check is skipped.
+	ThinPool *string
+
 	// hasModeOverride is true when ProvisionModeOverride was explicitly set by
 	// the caller; false means "no override, use backend default".
 	hasModeOverride bool
@@ -256,6 +261,10 @@ func ParseParams(p *agentv1.LvmVolumeParams) Params {
 	params := Params{
 		VGOverride: strings.TrimSpace(p.GetVolumeGroup()),
 		ExtraFlags: p.GetExtraFlags(),
+	}
+	if p.ThinPool != nil {
+		thinPool := strings.TrimSpace(p.GetThinPool())
+		params.ThinPool = &thinPool
 	}
 	if raw := strings.TrimSpace(p.GetProvisionMode()); raw != "" {
 		mode, ok := ParseProvisionMode(raw)
@@ -608,6 +617,48 @@ func (*Backend) Type() agentv1.BackendType {
 	return agentv1.BackendType_BACKEND_TYPE_LVM
 }
 
+// Layout reports the thin pool this backend creates thin LVs in.
+func (b *Backend) Layout() backend.Layout {
+	return backend.Layout{ThinPool: b.thinpool}
+}
+
+// validateLayout rejects a create request whose declared thin pool differs
+// from the one this backend was started with.  The LV is never created in
+// the requested pool instead: ListVolumes and Capacity derive the thin pool
+// from the backend configuration alone.  A request that declares no thin pool
+// (p.ThinPool == nil) is accepted.
+func (b *Backend) validateLayout(volumeID string, p Params) error {
+	if p.ThinPool == nil || *p.ThinPool == b.thinpool {
+		return nil
+	}
+	return &backend.LayoutMismatchError{
+		VolumeID: volumeID, Setting: "LVM thin pool", Requested: *p.ThinPool, Configured: b.thinpool,
+	}
+}
+
+// createParams parses and validates the per-volume LVM parameters of a
+// create request.  A nil p is valid — treated as no overrides.  The layout
+// check runs before the mode checks so that a store/agent thin pool
+// disagreement is reported as such rather than as a mode error.
+func (b *Backend) createParams(volumeID string, p *agentv1.LvmVolumeParams) (Params, error) {
+	if p != nil {
+		err := validateProvisionModeString(p.GetProvisionMode())
+		if err != nil {
+			return Params{}, err
+		}
+	}
+	lvmParams := ParseParams(p)
+	err := b.validateLayout(volumeID, lvmParams)
+	if err != nil {
+		return Params{}, err
+	}
+	err = ValidateParams(lvmParams, b.vg, b.thinpool)
+	if err != nil {
+		return Params{}, err
+	}
+	return lvmParams, nil
+}
+
 // lvsBytes queries LVM for the current size of an LV in bytes.
 // It returns a *notExistError when the LV does not exist at all, which allows
 // callers to distinguish "missing" from other errors.
@@ -740,19 +791,9 @@ func (b *Backend) Create(
 		return "", 0, fmt.Errorf("lvm: create %q: volume name (LV name) must not be empty", volumeID)
 	}
 
-	// Parse and validate per-volume LVM parameters from the BackendParams wrapper.
-	// A nil params or nil params.GetLvm() is valid — treated as no overrides.
-	lvmProto := params.GetLvm()
-	if lvmProto != nil {
-		modeErr := validateProvisionModeString(lvmProto.GetProvisionMode())
-		if modeErr != nil {
-			return "", 0, fmt.Errorf("lvm: create %q: %w", volumeID, modeErr)
-		}
-	}
-	lvmParams := ParseParams(lvmProto)
-	validateErr := ValidateParams(lvmParams, b.vg, b.thinpool)
-	if validateErr != nil {
-		return "", 0, fmt.Errorf("lvm: create %q: %w", volumeID, validateErr)
+	lvmParams, err := b.createParams(volumeID, params.GetLvm())
+	if err != nil {
+		return "", 0, fmt.Errorf("lvm: create %q: %w", volumeID, err)
 	}
 
 	// Determine the effective thin pool to use for this volume.

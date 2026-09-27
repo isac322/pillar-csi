@@ -1944,6 +1944,30 @@ var _ = Describe("buildStorageClassParams", func() {
 		Expect(params).NotTo(HaveKey("pillar-csi.bhyoo.com/zfs-parent-dataset"))
 	})
 
+	// Issue #113: the store's thin pool must reach the agent so that it can
+	// refuse to create volumes in another thin pool.  The key is emitted even
+	// when the store declares none, because "" is itself a declaration.
+	It("should declare the LVM store's thinPool as lvm-thin-pool, even when empty", func() {
+		protocol := &pillarcsiv1alpha1.PillarProtocol{
+			Spec: pillarcsiv1alpha1.PillarProtocolSpec{Type: pillarcsiv1alpha1.ProtocolTypeNVMeOFTCP},
+		}
+		makeLVMPool := func(thinPool string) *pillarcsiv1alpha1.PillarStore {
+			return &pillarcsiv1alpha1.PillarStore{Spec: pillarcsiv1alpha1.PillarStoreSpec{
+				AgentRef: "t",
+				Backend: pillarcsiv1alpha1.BackendSpec{
+					Type: pillarcsiv1alpha1.BackendTypeLVMLV,
+					LVM:  &pillarcsiv1alpha1.LVMBackendConfig{VolumeGroup: "data-vg", ThinPool: thinPool},
+				},
+			}}
+		}
+
+		params := buildStorageClassParams(makeBinding("lvm", "proto", nil), makeLVMPool("thin-pool-0"), protocol)
+		Expect(params).To(HaveKeyWithValue("pillar-csi.bhyoo.com/lvm-thin-pool", "thin-pool-0"))
+
+		params = buildStorageClassParams(makeBinding("lvm", "proto", nil), makeLVMPool(""), protocol)
+		Expect(params).To(HaveKeyWithValue("pillar-csi.bhyoo.com/lvm-thin-pool", ""))
+	})
+
 	It("should include nvmeof-port for NVMeOF-TCP protocol", func() {
 		binding := makeBinding("pool", "proto", nil)
 		pool := &pillarcsiv1alpha1.PillarStore{

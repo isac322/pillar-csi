@@ -64,6 +64,41 @@ func (e *InsufficientCapacityError) Error() string {
 
 func (e *InsufficientCapacityError) Unwrap() error { return e.Err }
 
+// LayoutMismatchError is returned by VolumeBackend.Create when the request
+// declares a volume location (ZFS parent dataset, LVM thin pool) that differs
+// from the one this backend was started with (the agent's --backend flag).
+// The backend never relocates a volume to match the request: every other RPC
+// (Delete, Expand, Export, ListVolumes) derives the location from the
+// backend's own configuration, so a volume created elsewhere would be lost to
+// them.  Callers should map this to gRPC codes.FailedPrecondition.
+type LayoutMismatchError struct {
+	VolumeID string
+	// Setting names the disagreeing setting, e.g. "parent dataset".
+	Setting    string
+	Requested  string
+	Configured string
+}
+
+func (e *LayoutMismatchError) Error() string {
+	return fmt.Sprintf(
+		"volume %q: requested %s %q does not match the agent backend's configured %s %q; "+
+			"align the PillarStore spec with the agent --backend flag (chart agent.backends)",
+		e.VolumeID, e.Setting, e.Requested, e.Setting, e.Configured,
+	)
+}
+
+// Layout describes where a backend creates new volumes inside its pool.  The
+// agent reports it in GetCapabilities so the controller can compare it with
+// the PillarStore spec.
+type Layout struct {
+	// ParentDataset is the ZFS dataset, relative to the pool, under which
+	// volumes are created; empty means the pool root dataset.
+	ParentDataset string
+	// ThinPool is the LVM thin pool LV thin volumes are created in; empty
+	// means the backend has no thin pool.
+	ThinPool string
+}
+
 // VolumeBackend abstracts the storage-backend lifecycle for a single pool.
 // All methods MUST be idempotent so that the controller can safely retry.
 //
@@ -123,4 +158,8 @@ type VolumeBackend interface {
 	// PoolInfo record with its actual backend type, making both RPCs
 	// backend-agnostic.
 	Type() agentv1.BackendType
+
+	// Layout returns where this backend creates new volumes inside its pool
+	// (ZFS parent dataset, LVM thin pool), as configured at agent start.
+	Layout() Layout
 }

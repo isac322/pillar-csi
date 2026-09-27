@@ -1428,6 +1428,7 @@ var _ = Describe("PillarAgent Controller", func() {
 								BackendType:    agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
 								TotalBytes:     10 * 1024 * 1024 * 1024, // 10Gi
 								AvailableBytes: 8 * 1024 * 1024 * 1024,  // 8Gi
+								ParentDataset:  "k8s",
 							},
 						},
 					},
@@ -1504,6 +1505,8 @@ var _ = Describe("PillarAgent Controller", func() {
 			Expect(pool.Type).To(Equal("zfs-zvol"))
 			Expect(pool.Total).NotTo(BeNil(), "Total capacity should be set")
 			Expect(pool.Available).NotTo(BeNil(), "Available capacity should be set")
+			// The layout is what PillarStore readiness compares against (issue #113).
+			Expect(pool.ParentDataset).To(Equal("k8s"))
 		})
 	})
 

@@ -235,6 +235,42 @@ func (*Backend) Type() agentv1.BackendType {
 	return agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL
 }
 
+// Layout reports the parent dataset this backend creates zvols under.
+func (z *Backend) Layout() backend.Layout {
+	return backend.Layout{ParentDataset: normalizeDataset(z.parentDataset)}
+}
+
+// normalizeDataset canonicalises a relative dataset path so that "k8s",
+// "/k8s/" and "k8s//" compare equal; the pool root is "".
+func normalizeDataset(s string) string {
+	return strings.Trim(path.Clean("/"+s), "/")
+}
+
+// validateLayout rejects a create request whose declared pool or parent
+// dataset (the PillarStore spec, forwarded by the controller) differs from
+// this backend's configuration.  The zvol is never placed at the requested
+// location instead: Delete, Expand and export derive the dataset from the
+// backend configuration alone, so a zvol created elsewhere would be orphaned.
+// A nil p (a caller that declares no layout) is accepted.
+func (z *Backend) validateLayout(volumeID string, p *agentv1.ZfsVolumeParams) error {
+	if p == nil {
+		return nil
+	}
+	if p.GetPool() != "" && p.GetPool() != z.pool {
+		return &backend.LayoutMismatchError{
+			VolumeID: volumeID, Setting: "ZFS pool", Requested: p.GetPool(), Configured: z.pool,
+		}
+	}
+	requested := normalizeDataset(p.GetParentDataset())
+	configured := normalizeDataset(z.parentDataset)
+	if requested != configured {
+		return &backend.LayoutMismatchError{
+			VolumeID: volumeID, Setting: "ZFS parent dataset", Requested: requested, Configured: configured,
+		}
+	}
+	return nil
+}
+
 // volsizeBytes queries ZFS for the current volsize of dataset in bytes.
 // It returns a *notExistError when the dataset does not exist at all, which
 // allows callers to distinguish "missing" from other errors.
@@ -264,12 +300,20 @@ func (z *Backend) volsizeBytes(ctx context.Context, dataset string) (int64, erro
 //
 // The actual allocated size is read back after creation and returned; ZFS may
 // round the requested size up to the next volblocksize boundary.
+//
+// A request whose params declare a pool or parent dataset other than this
+// backend's is refused with a *backend.LayoutMismatchError (validateLayout).
 func (z *Backend) Create(
 	ctx context.Context,
 	volumeID string,
 	capacityBytes int64,
 	params *agentv1.BackendParams,
 ) (devicePath string, allocatedBytes int64, err error) {
+	err = z.validateLayout(volumeID, params.GetZfs())
+	if err != nil {
+		return "", 0, fmt.Errorf("zfs: create %q: %w", volumeID, err)
+	}
+
 	ds := z.datasetName(volumeID)
 
 	// If the zvol already exists, check that the requested size is compatible.

@@ -70,6 +70,7 @@ func (*fenceTestBackend) ListVolumes(context.Context) ([]*agentv1.VolumeInfo, er
 func (*fenceTestBackend) DevicePath(volumeID string) string { return "/dev/fake/" + volumeID }
 
 func (*fenceTestBackend) Type() agentv1.BackendType { return agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL }
+func (*fenceTestBackend) Layout() backend.Layout    { return backend.Layout{} }
 
 // hasTestVolume reports whether the test volume's backend resource exists.
 func (b *fenceTestBackend) hasTestVolume() bool {

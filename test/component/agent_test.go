@@ -145,6 +145,8 @@ func (*mockVolumeBackend) Type() agentv1.BackendType {
 	return agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL
 }
 
+func (*mockVolumeBackend) Layout() backend.Layout { return backend.Layout{} }
+
 var _ backend.VolumeBackend = (*mockVolumeBackend)(nil)
 
 // ---------------------------------------------------------------------------
