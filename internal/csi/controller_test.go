@@ -38,6 +38,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"maps"
 	"strings"
 	"sync"
 	"testing"
@@ -1739,6 +1740,106 @@ func TestCreateVolume_MissingBindingOrStore_FailedPrecondition(t *testing.T) {
 				t.Errorf("agent.CreateVolume called without the store and binding settings")
 			}
 		})
+	}
+}
+
+// Once a volume is durably Ready the retry must keep serving it even when the
+// after the response was lost); re-requiring the merge inputs would strand a
+// completed backend behind an error.  The retried response must also replay
+// the overrides the claim set: it may still become the PV's VolumeContext.
+func TestCreateVolume_CompletedRetry_ClaimDeleted(t *testing.T) {
+	t.Parallel()
+	env, req := newControllerTestEnvWithPVC(t, "default", "pvc-gone-after", map[string]string{
+		"pillar-csi.bhyoo.com/param.nvmeof-ctrl-loss-tmo": "900",
+	})
+	ctx := context.Background()
+
+	resp, err := env.srv.CreateVolume(ctx, req)
+	if err != nil {
+		t.Fatalf("first CreateVolume: %v", err)
+	}
+	if got := resp.GetVolume().GetVolumeContext()[paramNVMeOFCtrlLossTmo]; got != "900" {
+		t.Fatalf("first VolumeContext ctrl-loss-tmo = %q, want 900", got)
+	}
+
+	pvc := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "pvc-gone-after", Namespace: "default"},
+	}
+	if delErr := env.srv.k8sClient.Delete(ctx, pvc); delErr != nil {
+		t.Fatalf("delete claim: %v", delErr)
+	}
+
+	resp2, err := env.srv.CreateVolume(ctx, req)
+	if err != nil {
+		t.Fatalf("retry after claim deletion: %v", err)
+	}
+	if !maps.Equal(resp2.GetVolume().GetVolumeContext(), resp.GetVolume().GetVolumeContext()) {
+		t.Errorf("retry VolumeContext %v != first %v",
+			resp2.GetVolume().GetVolumeContext(), resp.GetVolume().GetVolumeContext())
+	}
+	if resp2.GetVolume().GetVolumeId() != resp.GetVolume().GetVolumeId() {
+		t.Errorf("retry VolumeId %q != first %q", resp2.GetVolume().GetVolumeId(), resp.GetVolume().GetVolumeId())
+	}
+	if env.agent.createVolumeCalls != 1 || env.agent.exportVolumeCalls != 1 {
+		t.Errorf("retry re-provisioned: create=%d export=%d, want 1/1",
+			env.agent.createVolumeCalls, env.agent.exportVolumeCalls)
+	}
+}
+
+// Same guarantee when the referenced PillarStorageClass (binding) — and thus
+// its store — is deleted after the volume was created.
+func TestCreateVolume_CompletedRetry_BindingDeleted(t *testing.T) {
+	t.Parallel()
+	env := newControllerTestEnv(t)
+	ctx := context.Background()
+
+	pool := &v1alpha1.PillarStore{
+		ObjectMeta: metav1.ObjectMeta{Name: "gone-pool"},
+		Spec: v1alpha1.PillarStoreSpec{
+			AgentRef: "storage-node-1",
+			Backend: v1alpha1.BackendSpec{
+				Type: v1alpha1.BackendTypeZFSZvol,
+				ZFS: &v1alpha1.ZFSBackendConfig{
+					Pool:       "tank",
+					Properties: map[string]string{"compression": "lz4"},
+				},
+			},
+		},
+	}
+	binding := &v1alpha1.PillarStorageClass{
+		ObjectMeta: metav1.ObjectMeta{Name: "gone-binding"},
+		Spec:       v1alpha1.PillarStorageClassSpec{StoreRef: pool.Name, ProtocolRef: "nvmeof-tcp"},
+	}
+	for _, obj := range []ctrlclient.Object{pool, binding} {
+		if err := env.srv.k8sClient.Create(ctx, obj); err != nil {
+			t.Fatalf("create %s: %v", obj.GetName(), err)
+		}
+	}
+
+	req := baseCreateVolumeRequest()
+	req.Parameters[paramBinding] = binding.Name
+	resp, err := env.srv.CreateVolume(ctx, req)
+	if err != nil {
+		t.Fatalf("first CreateVolume: %v", err)
+	}
+
+	if delErr := env.srv.k8sClient.Delete(ctx, binding); delErr != nil {
+		t.Fatalf("delete binding: %v", delErr)
+	}
+	if delErr := env.srv.k8sClient.Delete(ctx, pool); delErr != nil {
+		t.Fatalf("delete store: %v", delErr)
+	}
+
+	resp2, err := env.srv.CreateVolume(ctx, req)
+	if err != nil {
+		t.Fatalf("retry after binding deletion: %v", err)
+	}
+	if resp2.GetVolume().GetVolumeId() != resp.GetVolume().GetVolumeId() {
+		t.Errorf("retry VolumeId %q != first %q", resp2.GetVolume().GetVolumeId(), resp.GetVolume().GetVolumeId())
+	}
+	if env.agent.createVolumeCalls != 1 || env.agent.exportVolumeCalls != 1 {
+		t.Errorf("retry re-provisioned: create=%d export=%d, want 1/1",
+			env.agent.createVolumeCalls, env.agent.exportVolumeCalls)
 	}
 }
 

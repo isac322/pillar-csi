@@ -55,6 +55,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	v1alpha1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
 	agentv1 "github.com/bhyoo/pillar-csi/gen/go/pillar_csi/agent/v1"
@@ -612,32 +613,13 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 
 	scParams := req.GetParameters()
 
-	// ── 4-level merge hierarchy: Pool → Protocol → Binding → PVC annotation ──
-	// mergeParamsFromCRDs augments the StorageClass params with data fetched
-	// live from the PillarStorageClass and PillarStore CRDs and then overlays
-	// any per-PVC annotation overrides.  A StorageClass that names no binding
-	// (hand-written) skips the CRD layers.
-	params, err := s.mergeParamsFromCRDs(ctx, scParams)
-	if err != nil {
-		// PVC annotation validation errors are user-facing (bad annotation
-		// content); surface them as InvalidArgument so the CO can surface
-		// a useful message to the user.  A referenced binding, store or claim
-		// that does not exist is FailedPrecondition; any other lookup failure
-		// is Internal.  Both are retried by the provisioner.
-		if annotErr, ok := errors.AsType[*pvcAnnotationValidationError](err); ok {
-			return nil, status.Errorf(codes.InvalidArgument,
-				"PVC annotation validation failed: %v", annotErr)
-		}
-		if k8serrors.IsNotFound(err) {
-			return nil, status.Errorf(codes.FailedPrecondition, "parameter merge failed: %v", err)
-		}
-		return nil, status.Errorf(codes.Internal, "parameter merge failed: %v", err)
-	}
-
 	// ── Extract required routing parameters ──────────────────────────────────
-	targetName := params[paramTarget]
-	backendTypeStr := params[paramBackendType]
-	protocolTypeStr := params[paramProtocolType]
+	// Routing comes straight from the StorageClass: the merge below only adds
+	// tunables (zfs-prop.*, lvm-mode, connect timeouts), never routing keys,
+	// so a completed volume can be served without re-resolving the CRDs.
+	targetName := scParams[paramTarget]
+	backendTypeStr := scParams[paramBackendType]
+	protocolTypeStr := scParams[paramProtocolType]
 
 	if targetName == "" {
 		return nil, status.Errorf(codes.InvalidArgument,
@@ -652,51 +634,13 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 			"StorageClass parameter %q is required", paramProtocolType)
 	}
 
-	protocolType := v1alpha1.ProtocolType(protocolTypeStr)
-	for _, cap := range req.GetVolumeCapabilities() {
-		if !isSupportedAccessMode(protocolType, cap.GetAccessMode().GetMode()) {
-			return nil, status.Errorf(codes.InvalidArgument,
-				"access mode %s is not supported for protocol %q; supported modes: %s",
-				cap.GetAccessMode().GetMode(),
-				protocolType,
-				describeSupportedModes(protocolType))
-		}
-	}
-
-	// The NVMe-oF connect tuning is frozen into the PV VolumeContext and
-	// only parsed again at NodeStageVolume, and the in-capsule data size is
-	// only sent to the agent at export; reject a malformed value now,
-	// before any durable state exists, instead of provisioning a volume that
-	// can never be exported or staged.
-	var inCapsuleDataSize int32
-	if protocolType == v1alpha1.ProtocolTypeNVMeOFTCP {
-		_, optsErr := ParseNVMeoFConnectOptions(params)
-		if optsErr != nil {
-			return nil, status.Errorf(codes.InvalidArgument, "invalid NVMe-oF connect parameter: %v", optsErr)
-		}
-		var sizeErr error
-		inCapsuleDataSize, sizeErr = parseNVMeoFInCapsuleDataSize(params)
-		if sizeErr != nil {
-			return nil, status.Errorf(codes.InvalidArgument, "invalid NVMe-oF export parameter: %v", sizeErr)
-		}
-	}
-
-	// The filesystem settings are frozen into the PV VolumeContext and only
-	// applied when NodeStageVolume formats the volume; reject a setting that
-	// is malformed or cannot apply to this volume before any durable state
-	// exists, instead of provisioning a volume that ignores it.
-	fsErr := validateFilesystemParams(params, scParams, protocolType, req.GetVolumeCapabilities())
-	if fsErr != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "invalid filesystem parameter: %v", fsErr)
-	}
-
 	agentBackendType := mapBackendType(backendTypeStr)
 	agentProtocolType := mapProtocolType(protocolTypeStr)
 
 	// ── Build the agent-level volume ID ──────────────────────────────────────
 	// For ZFS backends: "<pool>/<volume-name>" (pool = ZFS pool name from StorageClass params).
 	// Fallback: "<pillar-pool-name>/<volume-name>".
-	agentVolID := buildAgentVolumeID(params, req.GetName())
+	agentVolID := buildAgentVolumeID(scParams, req.GetName())
 
 	// ── Build the CSI volume ID (encodes all routing metadata) ───────────────
 	// Format: <target>/<protocol-type>/<backend-type>/<agent-vol-id>
@@ -718,7 +662,99 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 		// Restore the in-memory state machine entry from the persisted phase.
 		s.sm.ForceState(volumeID, pillarVolumeStatePhaseToVolumeState(existingPV.Status.Phase))
 	}
-	// If the volume is already fully provisioned, return the cached response.
+	completed := s.sm.GetState(volumeID) == StateCreated &&
+		pvExists && existingPV.Status.ExportInfo != nil && !existingPV.Status.Deleting
+
+	var params map[string]string
+	switch {
+	case completed && len(existingPV.Spec.NodeConnectParams) > 0:
+		// Replay the connect parameters resolved at create time: the retry
+		// response becomes the PV's VolumeContext, so it must reproduce the
+		// effective overrides even when the claim or the CRDs behind them are
+		// gone.
+		params = maps.Clone(scParams)
+		maps.Copy(params, existingPV.Spec.NodeConnectParams)
+	case completed:
+		// Legacy volume without recorded connect parameters: re-derive them,
+		// but a claim or binding that no longer exists must not strand a
+		// completed volume — fall back to the StorageClass parameters.
+		params = scParams
+		merged, mergeErr := s.mergeParamsFromCRDs(ctx, scParams)
+		if mergeErr != nil {
+			logf.FromContext(ctx).Error(mergeErr, "parameter merge failed on a completed-volume retry; "+
+				"StorageClass parameters are used for the response", "volumeName", pvName)
+		} else {
+			params = merged
+		}
+	default:
+
+		// ── 4-level merge hierarchy: Pool → Protocol → Binding → PVC annotation ──
+
+		// mergeParamsFromCRDs augments the StorageClass params with data fetched
+		// live from the PillarStorageClass and PillarStore CRDs and then overlays
+		// any per-PVC annotation overrides.  A StorageClass that names no binding
+		// (hand-written) skips the CRD layers.  It runs before any durable state:
+		// when a referenced binding, store or claim is missing or unreadable the
+		// volume must not be provisioned without its configured settings.
+		var err error
+		params, err = s.mergeParamsFromCRDs(ctx, scParams)
+		if err != nil {
+			// PVC annotation validation errors are user-facing (bad annotation
+			// content); surface them as InvalidArgument so the CO can surface
+			// a useful message to the user.  A referenced binding, store or claim
+			// that does not exist is FailedPrecondition; any other lookup failure
+			// is Internal.  Both are retried by the provisioner.
+			if annotErr, ok := errors.AsType[*pvcAnnotationValidationError](err); ok {
+				return nil, status.Errorf(codes.InvalidArgument,
+					"PVC annotation validation failed: %v", annotErr)
+			}
+			if k8serrors.IsNotFound(err) {
+				return nil, status.Errorf(codes.FailedPrecondition, "parameter merge failed: %v", err)
+			}
+			return nil, status.Errorf(codes.Internal, "parameter merge failed: %v", err)
+		}
+	}
+
+	protocolType := v1alpha1.ProtocolType(protocolTypeStr)
+	for _, cap := range req.GetVolumeCapabilities() {
+		if !isSupportedAccessMode(protocolType, cap.GetAccessMode().GetMode()) {
+			return nil, status.Errorf(codes.InvalidArgument,
+				"access mode %s is not supported for protocol %q; supported modes: %s",
+				cap.GetAccessMode().GetMode(),
+				protocolType,
+				describeSupportedModes(protocolType))
+		}
+	}
+
+	// The NVMe-oF connect tuning is frozen into the PV VolumeContext and
+	// only parsed again at NodeStageVolume, and the in-capsule data size is
+	// only sent to the agent at export; reject a malformed value now,
+	// before any durable state exists, instead of provisioning a volume that
+	// can never be exported or staged.
+	var inCapsuleDataSize int32
+	if !completed && protocolType == v1alpha1.ProtocolTypeNVMeOFTCP {
+		_, optsErr := ParseNVMeoFConnectOptions(params)
+		if optsErr != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "invalid NVMe-oF connect parameter: %v", optsErr)
+		}
+		var sizeErr error
+		inCapsuleDataSize, sizeErr = parseNVMeoFInCapsuleDataSize(params)
+		if sizeErr != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "invalid NVMe-oF export parameter: %v", sizeErr)
+		}
+	}
+
+	// The filesystem settings are frozen into the PV VolumeContext and only
+	// applied when NodeStageVolume formats the volume; reject a setting that
+	// is malformed or cannot apply to this volume before any durable state
+	// exists, instead of provisioning a volume that ignores it.
+	if !completed {
+		fsErr := validateFilesystemParams(params, scParams, protocolType, req.GetVolumeCapabilities())
+		if fsErr != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "invalid filesystem parameter: %v", fsErr)
+		}
+	}
+
 	if s.sm.GetState(volumeID) == StateCreated &&
 		pvExists && existingPV.Status.ExportInfo != nil && !existingPV.Status.Deleting {
 		ei := existingPV.Status.ExportInfo
@@ -769,7 +805,6 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 	// agent ever creates belongs to a lifecycle (its UID) that DeleteVolume can
 	// find and fence; a volume without a PillarVolumeState owns nothing.  The
 	// claim identity lets the controller tear down an attempt whose claim was
-	// deleted before a PersistentVolume existed (ReapAbandonedVolume).
 	spec := v1alpha1.PillarVolumeStateSpec{
 		VolumeID:      volumeID,
 		AgentVolumeID: agentVolID,
@@ -777,6 +812,17 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 		BackendType:   backendTypeStr,
 		ProtocolType:  protocolTypeStr,
 		CapacityBytes: capacityBytes,
+	}
+	// Freeze the effective node-connect params so a retry of an already-Ready
+	// volume reproduces the same VolumeContext even when the overrides' sources
+	// (claim, binding, protocol CRDs) no longer exist.
+	for _, k := range nodeConnectParamKeys {
+		if v := params[k]; v != "" {
+			if spec.NodeConnectParams == nil {
+				spec.NodeConnectParams = map[string]string{}
+			}
+			spec.NodeConnectParams[k] = v
+		}
 	}
 	attempt := existingPV
 	if !pvExists {
@@ -789,7 +835,7 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 		}
 		attempt = &v1alpha1.PillarVolumeState{ObjectMeta: metav1.ObjectMeta{Name: pvName}, Spec: spec}
 	}
-	err = s.refuseAbandonedClaim(ctx, attempt)
+	err := s.refuseAbandonedClaim(ctx, attempt)
 	if err != nil {
 		return nil, err
 	}

@@ -1257,6 +1257,18 @@ spec:
                 required:
                 - uid
                 type: object
+              nodeConnectParams:
+                additionalProperties:
+                  type: string
+                description: |-
+                  nodeConnectParams are the effective node-connect overrides resolved by
+                  the parameter merge at the first CreateVolume attempt (PVC > Binding >
+                  Protocol > defaults).  They are replayed verbatim into the
+                  CreateVolumeResponse VolumeContext on retries of an already-Ready volume,
+                  so a retry stays byte-identical even when the claim or the CRDs behind
+                  the overrides no longer exist.  Volumes created before this field
+                  existed re-derive the values on retry.
+                type: object
               protocolType:
                 description: |-
                   protocolType is the network storage protocol string (e.g. "nvmeof-tcp",
