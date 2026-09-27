@@ -667,12 +667,16 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 
 	var params map[string]string
 	switch {
-	case completed && len(existingPV.Spec.NodeConnectParams) > 0:
-		// Replay the connect parameters resolved at create time: the retry
-		// response becomes the PV's VolumeContext, so it must reproduce the
-		// effective overrides even when the claim or the CRDs behind them are
-		// gone.
+	case completed && existingPV.Spec.ConnectParamsRecorded:
+		// Replay the connect parameters resolved at create time — including an
+		// all-default (empty) snapshot.  The retry response becomes the PV's
+		// VolumeContext, so it must reproduce the effective overrides exactly:
+		// clear the live connect keys first, then overlay the snapshot so keys
+		// intentionally absent at create time stay absent.
 		params = maps.Clone(scParams)
+		for _, k := range nodeConnectParamKeys {
+			delete(params, k)
+		}
 		maps.Copy(params, existingPV.Spec.NodeConnectParams)
 	case completed:
 		// Legacy volume without recorded connect parameters: re-derive them,
@@ -813,9 +817,11 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 		ProtocolType:  protocolTypeStr,
 		CapacityBytes: capacityBytes,
 	}
-	// Freeze the effective node-connect params so a retry of an already-Ready
-	// volume reproduces the same VolumeContext even when the overrides' sources
-	// (claim, binding, protocol CRDs) no longer exist.
+	// Freeze the effective node-connect params so a retry reproduces the same
+	// VolumeContext even when the overrides' sources (claim, binding, protocol
+	// CRDs) no longer exist.  The marker stays set for an all-default merge —
+	// its absence alone would be indistinguishable from a pre-field volume.
+	spec.ConnectParamsRecorded = true
 	for _, k := range nodeConnectParamKeys {
 		if v := params[k]; v != "" {
 			if spec.NodeConnectParams == nil {
@@ -849,10 +855,12 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 	}
 
 	// One authoritative snapshot for the whole lifecycle: once the durable
-	// spec exists, the connect parameters reported in every response — the
-	// first success, a partial-failure retry, and a completed retry — are the
-	// ones frozen at the first attempt.
-	if len(pvs.Spec.NodeConnectParams) > 0 {
+	// spec records the first-attempt merge, the connect parameters reported in
+	// every response — the first success, a partial-failure retry, and a
+	// completed retry — are the ones frozen then.  Keys absent from the
+	// snapshot are removed so a StorageClass change cannot resurrect them;
+	// volumes without the marker keep the live merge (pre-snapshot legacy).
+	if pvs.Spec.ConnectParamsRecorded {
 		for _, k := range nodeConnectParamKeys {
 			delete(params, k)
 		}

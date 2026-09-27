@@ -1904,6 +1904,83 @@ func TestCreateVolume_PartialThenCompletedRetry_StableVolumeContext(t *testing.T
 	}
 }
 
+// An all-default first-attempt merge is still a recorded snapshot: a connect
+// override added to the claim before a partial retry must NOT leak into the
+// response.
+func TestCreateVolume_PartialRetry_EmptySnapshotBlocksLaterOverride(t *testing.T) {
+	t.Parallel()
+	env, req := newControllerTestEnvWithPVC(t, "default", "pvc-defaults", nil)
+	ctx := context.Background()
+
+	env.agent.exportVolumeErr = status.Error(codes.Internal, "simulated export failure")
+	if _, err := env.srv.CreateVolume(ctx, req); err == nil {
+		t.Fatal("first CreateVolume: expected export failure")
+	}
+
+	pvc := &corev1.PersistentVolumeClaim{}
+	if err := env.srv.k8sClient.Get(ctx,
+		types.NamespacedName{Name: "pvc-defaults", Namespace: "default"}, pvc); err != nil {
+		t.Fatalf("get claim: %v", err)
+	}
+	pvc.Annotations = map[string]string{
+		"pillar-csi.bhyoo.com/param.nvmeof-ctrl-loss-tmo": "600",
+	}
+	if err := env.srv.k8sClient.Update(ctx, pvc); err != nil {
+		t.Fatalf("update claim: %v", err)
+	}
+
+	env.agent.exportVolumeErr = nil
+	resp, err := env.srv.CreateVolume(ctx, req)
+	if err != nil {
+		t.Fatalf("partial retry: %v", err)
+	}
+	if got := resp.GetVolume().GetVolumeContext()[paramNVMeOFCtrlLossTmo]; got != "" {
+		t.Errorf("partial-retry ctrl-loss-tmo = %q, want absent (snapshot had no overrides)", got)
+	}
+}
+
+// A connect key the create-time merge intentionally left absent (overridden
+// to the empty string) must not be resurrected by the StorageClass value on a
+// completed-volume retry.
+func TestCreateVolume_CompletedRetry_AbsentSnapshotKeyStaysAbsent(t *testing.T) {
+	t.Parallel()
+	env, req := newControllerTestEnvWithPVC(t, "default", "pvc-blank-delay", map[string]string{
+		AnnotationProtocolOverride: "nvmeofTcp:\n  ctrlLossTmo: 900\n  reconnectDelay: \"\"\n",
+	})
+	req.Parameters[paramNVMeOFReconnectDelay] = "5"
+	ctx := context.Background()
+
+	resp, err := env.srv.CreateVolume(ctx, req)
+	if err != nil {
+		t.Fatalf("first CreateVolume: %v", err)
+	}
+	if got := resp.GetVolume().GetVolumeContext()[paramNVMeOFCtrlLossTmo]; got != "900" {
+		t.Fatalf("first ctrl-loss-tmo = %q, want 900", got)
+	}
+	if got := resp.GetVolume().GetVolumeContext()[paramNVMeOFReconnectDelay]; got != "" {
+		t.Fatalf("first reconnect-delay = %q, want absent (overridden to empty)", got)
+	}
+
+	pvc := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "pvc-blank-delay", Namespace: "default"},
+	}
+	if delErr := env.srv.k8sClient.Delete(ctx, pvc); delErr != nil {
+		t.Fatalf("delete claim: %v", delErr)
+	}
+
+	resp2, err := env.srv.CreateVolume(ctx, req)
+	if err != nil {
+		t.Fatalf("retry after claim deletion: %v", err)
+	}
+	if !maps.Equal(resp2.GetVolume().GetVolumeContext(), resp.GetVolume().GetVolumeContext()) {
+		t.Errorf("retry VolumeContext %v != first %v",
+			resp2.GetVolume().GetVolumeContext(), resp.GetVolume().GetVolumeContext())
+	}
+	if got := resp2.GetVolume().GetVolumeContext()[paramNVMeOFReconnectDelay]; got != "" {
+		t.Errorf("retry reconnect-delay = %q, want absent: snapshot must win over StorageClass", got)
+	}
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // LVM mode parameter-parsing unit tests
 // ─────────────────────────────────────────────────────────────────────────────
