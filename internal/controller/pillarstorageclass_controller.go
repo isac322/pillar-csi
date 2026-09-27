@@ -552,9 +552,19 @@ func buildStorageClassParams(
 
 // reconcileStorageClass creates or updates the StorageClass owned by this binding.
 //
-// It uses controllerutil.CreateOrUpdate to apply a desired StorageClass spec,
-// and sets an owner reference so that deleting the PillarStorageClass cascades to
-// the StorageClass (once no PVCs are blocking deletion).
+// A StorageClass is immutable apart from its metadata and allowVolumeExpansion:
+// the API server rejects any update of provisioner, parameters, reclaimPolicy,
+// volumeBindingMode, mountOptions or allowedTopologies.  Pool, protocol and
+// binding edits change the parameters, so an in-place update cannot converge.
+// When an immutable field differs from the desired state, the StorageClass is
+// deleted and re-created with the desired spec (recreateStorageClass); only
+// the mutable remainder goes through a regular update.  Existing
+// PersistentVolumes are unaffected either way: a PV snapshots its parameters
+// into spec.csi.volumeAttributes at provisioning time and refers to its class
+// only by name.
+//
+// The owner reference makes deleting the PillarStorageClass cascade to the
+// StorageClass once no PVCs are blocking deletion.
 func (r *PillarStorageClassReconciler) reconcileStorageClass(
 	ctx context.Context,
 	binding *pillarcsiv1alpha1.PillarStorageClass,
@@ -563,30 +573,15 @@ func (r *PillarStorageClassReconciler) reconcileStorageClass(
 	scName string,
 ) error {
 	log := logf.FromContext(ctx)
+	desired := desiredStorageClassFor(binding, pool, protocol)
 
-	// Build the desired ReclaimPolicy.
-	reclaimPolicy := corev1.PersistentVolumeReclaimDelete
-	if binding.Spec.StorageClass.ReclaimPolicy == pillarcsiv1alpha1.ReclaimPolicyRetain {
-		reclaimPolicy = corev1.PersistentVolumeReclaimRetain
-	}
-
-	// Build the desired VolumeBindingMode.
-	volumeBindingMode := storagev1.VolumeBindingImmediate
-	if binding.Spec.StorageClass.VolumeBindingMode == pillarcsiv1alpha1.VolumeBindingWaitForFirstConsumer {
-		volumeBindingMode = storagev1.VolumeBindingWaitForFirstConsumer
-	}
-
-	params := buildStorageClassParams(binding, pool, protocol)
-	allowVolumeExpansion := binding.Spec.StorageClass.AllowVolumeExpansion
-	if allowVolumeExpansion == nil {
-		defaultAllow := protocol.Spec.Type != pillarcsiv1alpha1.ProtocolTypeNFS
-		allowVolumeExpansion = &defaultAllow
-	}
-	desired := desiredStorageClass{
-		params:               params,
-		reclaimPolicy:        reclaimPolicy,
-		volumeBindingMode:    volumeBindingMode,
-		allowVolumeExpansion: allowVolumeExpansion,
+	existing := &storagev1.StorageClass{}
+	getErr := r.Get(ctx, types.NamespacedName{Name: scName}, existing)
+	switch {
+	case getErr == nil && storageClassImmutableDrift(existing, desired):
+		return r.recreateStorageClass(ctx, binding, existing, desired)
+	case getErr != nil && !errors.IsNotFound(getErr):
+		return fmt.Errorf("failed to get StorageClass %q: %w", scName, getErr)
 	}
 
 	sc := &storagev1.StorageClass{
@@ -603,24 +598,12 @@ func (r *PillarStorageClassReconciler) reconcileStorageClass(
 			return fmt.Errorf("failed to set owner reference on StorageClass: %w", setErr)
 		}
 
-		if r.Recorder != nil && sc.ResourceVersion != "" && storageClassDrifted(sc, desired) {
-			r.Recorder.Eventf(
-				binding,
-				nil,
-				corev1.EventTypeNormal,
-				"StorageClassReverted",
-				"Reconcile",
-				"StorageClass %q drifted, reverting to PillarStorageClass spec",
-				scName,
-			)
+		if sc.ResourceVersion != "" && storageClassDrifted(sc, desired) {
+			r.recordEvent(binding, "StorageClassReverted",
+				"StorageClass %q drifted, reverting to PillarStorageClass spec", scName)
 		}
 
-		sc.Provisioner = pillarCSIProvisioner
-		sc.Parameters = desired.params
-		sc.ReclaimPolicy = &desired.reclaimPolicy
-		sc.VolumeBindingMode = &desired.volumeBindingMode
-		sc.AllowVolumeExpansion = desired.allowVolumeExpansion
-
+		applyDesiredStorageClass(sc, desired)
 		return nil
 	})
 	if err != nil {
@@ -631,12 +614,131 @@ func (r *PillarStorageClassReconciler) reconcileStorageClass(
 	return nil
 }
 
-func storageClassDrifted(sc *storagev1.StorageClass, desired desiredStorageClass) bool {
+// recreateStorageClass replaces existing, whose immutable fields differ from
+// desired, with a StorageClass built from desired.  Metadata and the
+// immutable fields this controller does not manage (mountOptions,
+// allowedTopologies) are carried over so the replacement differs only in the
+// managed spec.  A StorageClass that another object controls is never
+// deleted.
+//
+// StorageClasses carry no finalizers, so the delete completes synchronously
+// and the name is free for the create that follows.  If the create fails, the
+// StorageClass is absent and the next reconcile creates it; no state is lost
+// that the spec cannot rebuild.
+func (r *PillarStorageClassReconciler) recreateStorageClass(
+	ctx context.Context,
+	binding *pillarcsiv1alpha1.PillarStorageClass,
+	existing *storagev1.StorageClass,
+	desired desiredStorageClass,
+) error {
+	owner := metav1.GetControllerOf(existing)
+	if owner != nil && owner.UID != binding.UID {
+		return fmt.Errorf(
+			"recreate StorageClass %q: controlled by %s %q, not by this PillarStorageClass",
+			existing.Name, owner.Kind, owner.Name)
+	}
+	if !existing.DeletionTimestamp.IsZero() {
+		return fmt.Errorf("recreate StorageClass %q: previous StorageClass is still being deleted", existing.Name)
+	}
+
+	replacement := &storagev1.StorageClass{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        existing.Name,
+			Labels:      existing.Labels,
+			Annotations: existing.Annotations,
+		},
+		MountOptions:      existing.MountOptions,
+		AllowedTopologies: existing.AllowedTopologies,
+	}
+	applyDesiredStorageClass(replacement, desired)
+	err := controllerutil.SetControllerReference(binding, replacement, r.Scheme)
+	if err != nil {
+		return fmt.Errorf("failed to set owner reference on StorageClass: %w", err)
+	}
+
+	// Preconditions pin the delete to the object whose drift was observed,
+	// so a concurrent writer is never replaced blindly.
+	err = r.Delete(ctx, existing, client.Preconditions{
+		UID:             &existing.UID,
+		ResourceVersion: &existing.ResourceVersion,
+	})
+	if err != nil && !errors.IsNotFound(err) {
+		return fmt.Errorf("delete StorageClass %q for recreation: %w", existing.Name, err)
+	}
+	err = r.Create(ctx, replacement)
+	if err != nil {
+		return fmt.Errorf("create StorageClass %q after deleting it for recreation: %w", existing.Name, err)
+	}
+
+	r.recordEvent(binding, "StorageClassRecreated",
+		"StorageClass %q re-created because immutable fields changed; existing volumes keep their parameters",
+		existing.Name)
+	logf.FromContext(ctx).Info("StorageClass re-created with the desired immutable fields", "name", existing.Name)
+	return nil
+}
+
+// desiredStorageClassFor computes the managed StorageClass fields for binding.
+func desiredStorageClassFor(
+	binding *pillarcsiv1alpha1.PillarStorageClass,
+	pool *pillarcsiv1alpha1.PillarStore,
+	protocol *pillarcsiv1alpha1.PillarProtocol,
+) desiredStorageClass {
+	reclaimPolicy := corev1.PersistentVolumeReclaimDelete
+	if binding.Spec.StorageClass.ReclaimPolicy == pillarcsiv1alpha1.ReclaimPolicyRetain {
+		reclaimPolicy = corev1.PersistentVolumeReclaimRetain
+	}
+
+	volumeBindingMode := storagev1.VolumeBindingImmediate
+	if binding.Spec.StorageClass.VolumeBindingMode == pillarcsiv1alpha1.VolumeBindingWaitForFirstConsumer {
+		volumeBindingMode = storagev1.VolumeBindingWaitForFirstConsumer
+	}
+
+	allowVolumeExpansion := binding.Spec.StorageClass.AllowVolumeExpansion
+	if allowVolumeExpansion == nil {
+		defaultAllow := protocol.Spec.Type != pillarcsiv1alpha1.ProtocolTypeNFS
+		allowVolumeExpansion = &defaultAllow
+	}
+	return desiredStorageClass{
+		params:               buildStorageClassParams(binding, pool, protocol),
+		reclaimPolicy:        reclaimPolicy,
+		volumeBindingMode:    volumeBindingMode,
+		allowVolumeExpansion: allowVolumeExpansion,
+	}
+}
+
+// applyDesiredStorageClass writes the managed fields of desired into sc.
+func applyDesiredStorageClass(sc *storagev1.StorageClass, desired desiredStorageClass) {
+	sc.Provisioner = pillarCSIProvisioner
+	sc.Parameters = desired.params
+	sc.ReclaimPolicy = &desired.reclaimPolicy
+	sc.VolumeBindingMode = &desired.volumeBindingMode
+	sc.AllowVolumeExpansion = desired.allowVolumeExpansion
+}
+
+// storageClassImmutableDrift reports whether a managed field that the API
+// server refuses to update differs from desired.
+func storageClassImmutableDrift(sc *storagev1.StorageClass, desired desiredStorageClass) bool {
 	return sc.Provisioner != pillarCSIProvisioner ||
 		!equality.Semantic.DeepEqual(sc.Parameters, desired.params) ||
 		!equality.Semantic.DeepEqual(sc.ReclaimPolicy, &desired.reclaimPolicy) ||
-		!equality.Semantic.DeepEqual(sc.VolumeBindingMode, &desired.volumeBindingMode) ||
+		!equality.Semantic.DeepEqual(sc.VolumeBindingMode, &desired.volumeBindingMode)
+}
+
+func storageClassDrifted(sc *storagev1.StorageClass, desired desiredStorageClass) bool {
+	return storageClassImmutableDrift(sc, desired) ||
 		!equality.Semantic.DeepEqual(sc.AllowVolumeExpansion, desired.allowVolumeExpansion)
+}
+
+// recordEvent emits a Normal event on binding when a recorder is configured.
+func (r *PillarStorageClassReconciler) recordEvent(
+	binding *pillarcsiv1alpha1.PillarStorageClass,
+	reason, messageFmt string,
+	args ...any,
+) {
+	if r.Recorder == nil {
+		return
+	}
+	r.Recorder.Eventf(binding, nil, corev1.EventTypeNormal, reason, "Reconcile", messageFmt, args...)
 }
 
 // setBindingNotReady is a helper that sets the top-level Ready condition to
