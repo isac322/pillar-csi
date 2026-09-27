@@ -12,7 +12,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	pillarv1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
-	csidrv "github.com/bhyoo/pillar-csi/internal/csi"
 )
 
 // makeCSINodeWithNQN creates a fake storagev1.CSINode with the given NVMe-oF
@@ -24,21 +23,6 @@ func makeCSINodeWithNQN(env *controllerTestEnv, nodeName, hostNQN string) {
 			Name: nodeName,
 			Annotations: map[string]string{
 				"pillar-csi.bhyoo.com/nvmeof-host-nqn": hostNQN,
-			},
-		},
-	}
-	_ = env.k8sClient.Create(env.ctx, csiNode)
-}
-
-// makeCSINodeWithIQN creates a fake storagev1.CSINode with the given iSCSI
-// initiator IQN annotation so that ControllerPublishVolume can resolve the
-// initiator identity.
-func makeCSINodeWithIQN(env *controllerTestEnv, nodeName, iqn string) {
-	csiNode := &storagev1.CSINode{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: nodeName,
-			Annotations: map[string]string{
-				"pillar-csi.bhyoo.com/iscsi-initiator-iqn": iqn,
 			},
 		},
 	}
@@ -95,33 +79,33 @@ func assertE2_ControllerPublishVolume(tc documentedCase) {
 	Expect(c.AllowInitiator).To(Equal(1), "%s: allowInitiatorCalls", tc.tcNodeLabel())
 }
 
-func assertE2_ControllerPublishVolume_ISCSI(tc documentedCase) {
+func assertE2_ControllerPublishVolume_NQNFromCSINode(tc documentedCase) {
 	env := newControllerTestEnv()
 	defer env.close()
 
-	makeCSINodeWithIQN(env, "worker-2", "iqn.1993-08.org.debian:worker-2")
+	const hostNQN = "nqn.2026-01.io.example:worker-2"
+	makeCSINodeWithNQN(env, "worker-2", hostNQN)
 
-	// Use iSCSI volume ID format
-	volumeID := "storage-1/iscsi/zfs-zvol/tank/pvc-iscsi-publish"
-	seedE2VolumeState(env, "pvc-iscsi-publish", volumeID)
-	env.controller.GetStateMachine().ForceState(volumeID, csidrv.StateCreated)
+	resp, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
+		Name:               "pvc-nqn-publish",
+		Parameters:         env.params,
+		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
+	})
+	Expect(err).NotTo(HaveOccurred(), "%s: CreateVolume", tc.tcNodeLabel())
 
-	_, err := env.controller.ControllerPublishVolume(env.ctx, &csiapi.ControllerPublishVolumeRequest{
-		VolumeId:         volumeID,
+	_, err = env.controller.ControllerPublishVolume(env.ctx, &csiapi.ControllerPublishVolumeRequest{
+		VolumeId:         resp.GetVolume().GetVolumeId(),
 		NodeId:           "worker-2",
 		VolumeCapability: mountCapability("ext4"),
 	})
-	Expect(err).NotTo(HaveOccurred(), "%s: iSCSI ControllerPublishVolume", tc.tcNodeLabel())
+	Expect(err).NotTo(HaveOccurred(), "%s: ControllerPublishVolume", tc.tcNodeLabel())
 
-	c := env.agentSrv.counts()
-	Expect(c.AllowInitiator).To(Equal(1), "%s: allowInitiatorCalls", tc.tcNodeLabel())
 	env.agentSrv.mu.Lock()
 	reqs := env.agentSrv.allowInitiatorReqs
 	env.agentSrv.mu.Unlock()
-	if len(reqs) > 0 {
-		Expect(reqs[0].GetInitiatorId()).To(Equal("iqn.1993-08.org.debian:worker-2"),
-			"%s: initiator ID should match IQN", tc.tcNodeLabel())
-	}
+	Expect(reqs).To(HaveLen(1), "%s: allowInitiator calls", tc.tcNodeLabel())
+	Expect(reqs[0].GetInitiatorId()).To(Equal(hostNQN),
+		"%s: initiator ID must be the host NQN published on the CSINode", tc.tcNodeLabel())
 }
 
 func assertE2_ControllerPublishVolume_AlreadyPublished(tc documentedCase) {

@@ -375,6 +375,7 @@ func TestConcurrentError_CreateVolume_SameID_NoDeadlock(t *testing.T) {
 			<-start
 			_, errs[i] = srv.CreateVolume(context.Background(), &agentv1.CreateVolumeRequest{
 				VolumeId:      "tank/pvc-cc5-concurrent-create",
+				BackendType:   agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
 				Fence:         testFence(t),
 				CapacityBytes: 5 * 1024 * 1024 * 1024,
 			})

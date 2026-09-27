@@ -179,10 +179,9 @@ func bootstrapSuiteBackends(
 			"[AC4] warn: install backend tools in %s: %v\n", nodeContainer, installErr)
 	}
 
-	// ── AC9b: Set up NVMe-oF and iSCSI fabric backends ────────────────────────
+	// ── AC9b: Set up the NVMe-oF fabric backend ───────────────────────────────
 	//
-	// Configure kernel-level NVMe-oF TCP target and start tgtd iSCSI daemon
-	// directly via docker exec. This avoids the multi-minute Kubernetes
+	// Configure the kernel-level NVMe-oF TCP target directly via docker exec. This avoids the multi-minute Kubernetes
 	// DaemonSet deployment path and keeps fabric setup within the 2-minute
 	// suite budget. AC9c checks these backends in SynchronizedBeforeSuite.
 	if fabricErr := setupFabricBackends(ctx, nodeContainer, output); fabricErr != nil {

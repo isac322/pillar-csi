@@ -59,7 +59,7 @@
     "id": "E1.11-2",
     "category": "E1",
     "type": "A",
-    "description": "ZFS parent dataset 파라미터 설정 시 agent-vol-id에 반영",
+    "description": "PillarStore `zfs.parentDataset`이 agent BackendParams로 전달되고 VolumeId에는 포함되지 않음",
     "subsection": "E1.11",
     "in_437": true
   },
@@ -75,7 +75,7 @@
     "id": "E1.11-4",
     "category": "E1",
     "type": "A",
-    "description": "StorageClass parameter에 target 키 없으면 InvalidArgument",
+    "description": "직접 작성한 StorageClass에 `pillar-csi.bhyoo.com/store-ref`가 없으면 InvalidArgument",
     "subsection": "E1.11",
     "in_437": true
   },
@@ -83,7 +83,7 @@
     "id": "E1.11-5",
     "category": "E1",
     "type": "A",
-    "description": "StorageClass parameter에 backend-type 키 없으면 InvalidArgument",
+    "description": "제거된 평면 StorageClass 파라미터(`backend-type`, `protocol-type`, `agent`, `store`, `zfs-prop.*`, `lvm-mode`, `acl-enabled`)는 무시되지 않고 거부",
     "subsection": "E1.11",
     "in_437": true
   },
@@ -91,7 +91,7 @@
     "id": "E1.11-6",
     "category": "E1",
     "type": "A",
-    "description": "StorageClass parameter에 protocol-type 키 없으면 InvalidArgument",
+    "description": "직접 작성한 StorageClass에 `pillar-csi.bhyoo.com/protocol-ref`가 없으면 InvalidArgument",
     "subsection": "E1.11",
     "in_437": true
   },
@@ -315,7 +315,7 @@
     "id": "E1.8-2",
     "category": "E1",
     "type": "A",
-    "description": "Parameters[\"target\"]이 존재하지 않는 PillarAgent을 참조하면 NotFound 반환",
+    "description": "PillarStore의 agentRef가 존재하지 않는 PillarAgent을 참조하면 NotFound 반환",
     "subsection": "E1.8",
     "in_437": true
   },
@@ -595,7 +595,7 @@
     "id": "E14.4-1",
     "category": "E14",
     "type": "A",
-    "description": "알 수 없는 backend-type 파라미터로 CreateVolume",
+    "description": "알 수 없는 `pillar-csi.bhyoo.com/` StorageClass 파라미터(제거된 `backend-type` 등)로 CreateVolume",
     "subsection": "E14.4",
     "in_437": true
   },
@@ -603,7 +603,7 @@
     "id": "E14.4-2",
     "category": "E14",
     "type": "A",
-    "description": "protocol-type 파라미터 값이 빈 문자열",
+    "description": "`pillar-csi.bhyoo.com/protocol-ref` 파라미터 값이 빈 문자열",
     "subsection": "E14.4",
     "in_437": true
   },
@@ -2619,7 +2619,7 @@
     "id": "E25.5.2",
     "category": "E25",
     "type": "C",
-    "description": "블록 백엔드(lvm-lv) + 블록 프로토콜(iscsi) → 허용",
+    "description": "블록 백엔드(lvm-lv) + 블록 프로토콜(nvmeof-tcp) → 허용",
     "subsection": "E25.5",
     "in_437": true
   },
@@ -2627,7 +2627,7 @@
     "id": "E25.5.3",
     "category": "E25",
     "type": "C",
-    "description": "파일 백엔드(zfs-dataset) + 파일 프로토콜(nfs) → 허용",
+    "description": "`lvm` 스토어를 참조하는 바인딩이 `overrides.backend.zfs`를 지정 → 거부",
     "subsection": "E25.5",
     "in_437": true
   },
@@ -2635,7 +2635,7 @@
     "id": "E25.5.4",
     "category": "E25",
     "type": "C",
-    "description": "파일 백엔드(dir) + 파일 프로토콜(nfs) → 허용",
+    "description": "`zfs` 스토어를 참조하는 바인딩이 `overrides.backend.lvm`을 지정 → 거부",
     "subsection": "E25.5",
     "in_437": true
   },
@@ -2651,7 +2651,7 @@
     "id": "E25.5.6",
     "category": "E25",
     "type": "C",
-    "description": "블록 백엔드(lvm-lv) + 파일 프로토콜(nfs) → 거부",
+    "description": "`lvm` 스토어에 `overrides.backend.lvm.provisioningMode=thin` 지정 → 허용",
     "subsection": "E25.5",
     "in_437": true
   },
@@ -2659,7 +2659,7 @@
     "id": "E25.5.7",
     "category": "E25",
     "type": "C",
-    "description": "파일 백엔드(zfs-dataset) + 블록 프로토콜(nvmeof-tcp) → 거부",
+    "description": "`overrides.protocol.nvmeofTcp` 튜너블(maxQueueSize=64) 지정 → 허용",
     "subsection": "E25.5",
     "in_437": true
   },
@@ -2667,7 +2667,7 @@
     "id": "E25.5.8",
     "category": "E25",
     "type": "C",
-    "description": "파일 백엔드(dir) + 블록 프로토콜(iscsi) → 거부",
+    "description": "스토어 미존재 시 오버라이드 멤버 일치 검사 건너뜀 — 컨트롤러 조건과 CreateVolume 해석으로 위임",
     "subsection": "E25.5",
     "in_437": true
   },
@@ -2771,7 +2771,7 @@
     "id": "E25.9.3",
     "category": "E25",
     "type": "C",
-    "description": "생성된 StorageClass의 parameters에 pool, protocol, backend-type, protocol-type 파라미터 포함",
+    "description": "생성된 StorageClass의 parameters는 identity 참조와 fstype만 포함",
     "subsection": "E25.9",
     "in_437": true
   },
@@ -3867,7 +3867,7 @@
     "id": "E29.1-2",
     "category": "E29",
     "type": "A",
-    "description": "LVM thin 모드 CreateVolume 시 agent에 ProvisionMode=\"thin\" 전달",
+    "description": "직접 작성한 StorageClass의 `pillar-csi.bhyoo.com/backend` 문서(`lvm: {provisioningMode: thin}`)로 thin 모드 선택 시 agent에 ProvisionMode=\"thin\" 전달",
     "subsection": "E29.1",
     "in_437": true
   },
@@ -3907,7 +3907,7 @@
     "id": "E29.2-269a",
     "category": "E29",
     "type": "A",
-    "description": "PVC annotation에 잘못된 lvm-mode 값(\"striped\") 시 agent가 거부",
+    "description": "PVC 백엔드 문서의 잘못된 provisioningMode(\"striped\")는 공유 디코더가 거부",
     "subsection": "E29.2",
     "in_437": true
   },
@@ -3915,7 +3915,7 @@
     "id": "E29.2-269b",
     "category": "E29",
     "type": "A",
-    "description": "PVC annotation lvm-mode=\"\" 빈 문자열 시 Binding 레벨 값 사용",
+    "description": "빈 PVC 백엔드 문서는 오버라이드가 아니므로 Binding 레벨 값 사용",
     "subsection": "E29.2",
     "in_437": true
   },
@@ -3931,7 +3931,7 @@
     "id": "E29.2-4",
     "category": "E29",
     "type": "A",
-    "description": "모든 레이어 미지정 시 빈 문자열 → agent backend 컴파일 시점 기본값",
+    "description": "모든 레이어 미지정 시 단일 기본값(linear) 적용",
     "subsection": "E29.2",
     "in_437": true
   },
@@ -4563,7 +4563,7 @@
     "id": "E32.1-1",
     "category": "E32",
     "type": "C",
-    "description": "type=lvm-lv, volumeGroup 지정, provisioningMode=linear 설정이 유효",
+    "description": "`backend.lvm` 멤버에 volumeGroup 지정, provisioningMode=linear 설정이 유효",
     "subsection": "E32.1",
     "in_437": true
   },
@@ -4571,7 +4571,7 @@
     "id": "E32.1-2",
     "category": "E32",
     "type": "C",
-    "description": "type=lvm-lv, volumeGroup + thinPool, provisioningMode=thin 유효",
+    "description": "`backend.lvm` 멤버에 volumeGroup + thinPool, provisioningMode=thin 유효",
     "subsection": "E32.1",
     "in_437": true
   },
@@ -4579,7 +4579,7 @@
     "id": "E32.1-3",
     "category": "E32",
     "type": "C",
-    "description": "type=lvm-lv이나 lvm.volumeGroup 미지정 시 검증 실패",
+    "description": "`backend.lvm` 멤버이나 lvm.volumeGroup 미지정 시 검증 실패",
     "subsection": "E32.1",
     "in_437": true
   },
@@ -4595,7 +4595,7 @@
     "id": "E32.1-5",
     "category": "E32",
     "type": "C",
-    "description": "type=lvm-lv이나 backend.lvm 섹션 자체 누락 시 웹훅 거부",
+    "description": "`spec.backend`에 lvm 멤버도 zfs 멤버도 없으면 거부",
     "subsection": "E32.1",
     "in_437": true
   },
@@ -4635,7 +4635,7 @@
     "id": "E32.2-4",
     "category": "E32",
     "type": "C",
-    "description": "lvm-lv(Block) + nfs(Filesystem) 조합이 비호환 거부",
+    "description": "lvm 스토어를 참조하는 바인딩의 `overrides.backend.zfs`는 멤버 불일치로 거부",
     "subsection": "E32.2",
     "in_437": true
   },
@@ -4933,262 +4933,6 @@
     "type": "B",
     "description": "CreateVolume과 ListVolumes 모두 형식 일관",
     "subsection": "E33.4",
-    "in_437": true
-  },
-  {
-    "id": "E34.1",
-    "category": "E34",
-    "type": "B",
-    "description": "iSCSI generated StorageClass, CreateVolume , Publish/Unpublish ACL",
-    "subsection": "E34.3",
-    "in_437": true
-  },
-  {
-    "id": "E34.1-1",
-    "category": "E34",
-    "type": "B",
-    "description": "generated StorageClass가 , , iSCSI timeout 파라미터를 포함",
-    "subsection": "E34.1",
-    "in_437": true
-  },
-  {
-    "id": "E34.1-2",
-    "category": "E34",
-    "type": "B",
-    "description": "iSCSI CreateVolume이 PV 에 target IQN, portal IP, port, LUN을 기록",
-    "subsection": "E34.1",
-    "in_437": true
-  },
-  {
-    "id": "E34.1-3",
-    "category": "E34",
-    "type": "B",
-    "description": "node-side publisher가 compute-worker의 initiator IQN을 annotation에 반영하고, 이 그 값을 사용해 ACL을 추가",
-    "subsection": "E34.1",
-    "in_437": true
-  },
-  {
-    "id": "E34.1-4",
-    "category": "E34",
-    "type": "B",
-    "description": "Pod 삭제 시 annotation에서 해석된 동일 IQN ACL이 제거",
-    "subsection": "E34.1",
-    "in_437": true
-  },
-  {
-    "id": "E34.2",
-    "category": "E34",
-    "type": "B",
-    "description": "Filesystem PVC 프로비저닝, Pod mount, per-volume timeout override, logout/cleanup",
-    "subsection": "E34.3",
-    "in_437": true
-  },
-  {
-    "id": "E34.2-1",
-    "category": "E34",
-    "type": "B",
-    "description": "를 참조하는 StorageClass로 PVC가 정상 Bound",
-    "subsection": "E34.2",
-    "in_437": true
-  },
-  {
-    "id": "E34.2-2",
-    "category": "E34",
-    "type": "B",
-    "description": "Pod 생성 시 compute-worker에서 iSCSI discovery/login 후 마운트 성공",
-    "subsection": "E34.2",
-    "in_437": true
-  },
-  {
-    "id": "E34.2-3",
-    "category": "E34",
-    "type": "B",
-    "description": "PVC annotation이 단일 volume의 iSCSI timeout만 오버라이드",
-    "subsection": "E34.2",
-    "in_437": true
-  },
-  {
-    "id": "E34.2-4",
-    "category": "E34",
-    "type": "B",
-    "description": "Pod 삭제 시 bind mount 해제, staging 해제, session logout 수행",
-    "subsection": "E34.2",
-    "in_437": true
-  },
-  {
-    "id": "E34.2-5",
-    "category": "E34",
-    "type": "B",
-    "description": "PVC 삭제 시 target export와 backend LV가 모두 정리",
-    "subsection": "E34.2",
-    "in_437": true
-  },
-  {
-    "id": "E34.3",
-    "category": "E34",
-    "type": "B",
-    "description": "Raw block, online expansion, NodeGetVolumeStats, 재스테이징 멱등성",
-    "subsection": "E34.3",
-    "in_437": true
-  },
-  {
-    "id": "E34.3-1",
-    "category": "E34",
-    "type": "B",
-    "description": "PVC가 raw block device로 publish",
-    "subsection": "E34.3",
-    "in_437": true
-  },
-  {
-    "id": "E34.3-2",
-    "category": "E34",
-    "type": "B",
-    "description": "PVC 확장 시 backend LV와 node filesystem이 모두 커짐",
-    "subsection": "E34.3",
-    "in_437": true
-  },
-  {
-    "id": "E34.3-3",
-    "category": "E34",
-    "type": "B",
-    "description": "iSCSI 경로에서도 가 filesystem/block 모드별로 올바른 usage를 반환",
-    "subsection": "E34.3",
-    "in_437": true
-  },
-  {
-    "id": "E34.3-4",
-    "category": "E34",
-    "type": "B",
-    "description": "node plugin 재시작 후 재스테이징이 session 중복 없이 복구",
-    "subsection": "E34.3",
-    "in_437": true
-  },
-  {
-    "id": "E35.1",
-    "category": "E35",
-    "type": "B",
-    "description": "zvol+iSCSI generated StorageClass, CreateVolume , Publish/Unpublish ACL",
-    "subsection": "E35.3",
-    "in_437": true
-  },
-  {
-    "id": "E35.1-1",
-    "category": "E35",
-    "type": "B",
-    "description": "generated StorageClass가 , pool/zvol 파라미터, , iSCSI timer 파라미터를 함께 포함",
-    "subsection": "E35.1",
-    "in_437": true
-  },
-  {
-    "id": "E35.1-2",
-    "category": "E35",
-    "type": "B",
-    "description": "zvol-backed iSCSI CreateVolume이 PV 에 target IQN, portal IP, port, LUN을 기록하고 backend zvol을 준비",
-    "subsection": "E35.1",
-    "in_437": true
-  },
-  {
-    "id": "E35.1-3",
-    "category": "E35",
-    "type": "B",
-    "description": "이 annotation의 compute-worker initiator IQN을 사용해 zvol-backed target ACL을 추가",
-    "subsection": "E35.1",
-    "in_437": true
-  },
-  {
-    "id": "E35.1-4",
-    "category": "E35",
-    "type": "B",
-    "description": "Pod 삭제 시 동일 IQN ACL만 제거되고 export 삭제는 PVC 삭제 단계까지 보류",
-    "subsection": "E35.1",
-    "in_437": true
-  },
-  {
-    "id": "E35.2",
-    "category": "E35",
-    "type": "B",
-    "description": "Filesystem PVC 프로비저닝, Pod mount, ZFS 파라미터 유지, logout/cleanup",
-    "subsection": "E35.3",
-    "in_437": true
-  },
-  {
-    "id": "E35.2-1",
-    "category": "E35",
-    "type": "B",
-    "description": "를 참조하는 zfs-zvol StorageClass로 PVC가 정상 Bound",
-    "subsection": "E35.2",
-    "in_437": true
-  },
-  {
-    "id": "E35.2-2",
-    "category": "E35",
-    "type": "B",
-    "description": "Pod 생성 시 compute-worker에서 iSCSI discovery/login 후 마운트 성공",
-    "subsection": "E35.2",
-    "in_437": true
-  },
-  {
-    "id": "E35.2-3",
-    "category": "E35",
-    "type": "B",
-    "description": ", 같은 ZFS 파라미터가 iSCSI 경로에서도 유지",
-    "subsection": "E35.2",
-    "in_437": true
-  },
-  {
-    "id": "E35.2-4",
-    "category": "E35",
-    "type": "B",
-    "description": "Pod 삭제 시 bind mount 해제, staging 해제, session logout 수행",
-    "subsection": "E35.2",
-    "in_437": true
-  },
-  {
-    "id": "E35.2-5",
-    "category": "E35",
-    "type": "B",
-    "description": "PVC 삭제 시 target export와 backend zvol이 모두 정리",
-    "subsection": "E35.2",
-    "in_437": true
-  },
-  {
-    "id": "E35.3",
-    "category": "E35",
-    "type": "B",
-    "description": "Raw block, online expansion, NodeGetVolumeStats, 재스테이징 멱등성",
-    "subsection": "E35.3",
-    "in_437": true
-  },
-  {
-    "id": "E35.3-1",
-    "category": "E35",
-    "type": "B",
-    "description": "PVC가 zvol-backed raw block device로 publish",
-    "subsection": "E35.3",
-    "in_437": true
-  },
-  {
-    "id": "E35.3-2",
-    "category": "E35",
-    "type": "B",
-    "description": "PVC 확장 시 backend zvol과 node filesystem이 모두 커짐",
-    "subsection": "E35.3",
-    "in_437": true
-  },
-  {
-    "id": "E35.3-3",
-    "category": "E35",
-    "type": "B",
-    "description": "iSCSI + zvol 경로에서도 가 filesystem/block 모드별로 올바른 usage를 반환",
-    "subsection": "E35.3",
-    "in_437": true
-  },
-  {
-    "id": "E35.3-4",
-    "category": "E35",
-    "type": "B",
-    "description": "node plugin 재시작 후 재스테이징이 session 중복 없이 복구",
-    "subsection": "E35.3",
     "in_437": true
   },
   {

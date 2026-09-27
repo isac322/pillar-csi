@@ -73,7 +73,7 @@ var _ = Describe("PillarProtocol Controller", func() {
 					Name: pprProtocolName,
 				},
 				Spec: pillarcsiv1alpha1.PillarProtocolSpec{
-					Type: pillarcsiv1alpha1.ProtocolTypeNVMeOFTCP,
+					Protocol: pillarcsiv1alpha1.ProtocolSpec{NVMeOFTCP: &pillarcsiv1alpha1.NVMeOFTCPConfig{}},
 				},
 			}
 			Expect(k8sClient.Create(pctx, obj)).To(Succeed())
@@ -122,7 +122,7 @@ var _ = Describe("PillarProtocol Controller", func() {
 				Spec: pillarcsiv1alpha1.PillarStoreSpec{
 					AgentRef: pprTargetName,
 					Backend: pillarcsiv1alpha1.BackendSpec{
-						Type: pillarcsiv1alpha1.BackendTypeZFSZvol,
+						ZFS: &pillarcsiv1alpha1.ZFSBackendConfig{Pool: "tank"},
 					},
 				},
 			}
@@ -266,14 +266,14 @@ var _ = Describe("PillarProtocol Controller", func() {
 			Expect(result.RequeueAfter).To(BeZero())
 		})
 
-		It("should mention the protocol type in the Ready condition message", func() {
+		It("should mention the protocol in the Ready condition message", func() {
 			_, err := doReconcile()
 			Expect(err).NotTo(HaveOccurred())
 
 			fetched := fetchProtocol()
 			cond := findProtocolCondition(fetched, "Ready")
 			Expect(cond).NotTo(BeNil())
-			Expect(cond.Message).To(ContainSubstring(string(pillarcsiv1alpha1.ProtocolTypeNVMeOFTCP)))
+			Expect(cond.Message).To(ContainSubstring(string(pillarcsiv1alpha1.ProtocolIDNVMeOFTCP)))
 		})
 	})
 

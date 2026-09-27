@@ -40,21 +40,7 @@ func TestVolumeTargetID_NVMeoFTCP(t *testing.T) {
 	}
 }
 
-func TestVolumeTargetID_ISCSI(t *testing.T) {
-	t.Parallel()
-
-	got, err := volumeTargetID(agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI, "tank/pvc-abc")
-	if err != nil {
-		t.Fatalf("volumeTargetID unexpected error: %v", err)
-	}
-
-	const want = "iqn.2026-01.com.bhyoo.pillar-csi:tank.pvc-abc"
-	if got != want {
-		t.Fatalf("volumeTargetID = %q, want %q", got, want)
-	}
-}
-
-func TestVolumeTargetID_UsesSharedVolumeIDSuffixAcrossBlockProtocols(t *testing.T) {
+func TestVolumeTargetID_ReplacesEverySlashWithDot(t *testing.T) {
 	t.Parallel()
 
 	const (
@@ -62,24 +48,23 @@ func TestVolumeTargetID_UsesSharedVolumeIDSuffixAcrossBlockProtocols(t *testing.
 		wantSuffix = "pool-alpha.volume.with-mixed_chars-01"
 	)
 
-	for _, protocol := range []agentv1.ProtocolType{
-		agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
-		agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI,
-	} {
-		got, err := volumeTargetID(protocol, volumeID)
-		if err != nil {
-			t.Fatalf("volumeTargetID(%s) unexpected error: %v", protocol.String(), err)
-		}
-		if !strings.HasSuffix(got, wantSuffix) {
-			t.Fatalf("volumeTargetID(%s) = %q, want suffix %q", protocol.String(), got, wantSuffix)
-		}
+	got, err := volumeTargetID(agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP, volumeID)
+	if err != nil {
+		t.Fatalf("volumeTargetID unexpected error: %v", err)
+	}
+	if !strings.HasSuffix(got, wantSuffix) || strings.Contains(got, "/") {
+		t.Fatalf("volumeTargetID = %q, want suffix %q and no '/'", got, wantSuffix)
 	}
 }
 
-func TestVolumeTargetID_FileProtocolsNeedHandlerSpecificContext(t *testing.T) {
+// TestVolumeTargetID_UnimplementedProtocolsRejected verifies that protocols
+// without an agent implementation are rejected explicitly instead of
+// deriving a target name for a transport the agent cannot export.
+func TestVolumeTargetID_UnimplementedProtocolsRejected(t *testing.T) {
 	t.Parallel()
 
 	for _, protocol := range []agentv1.ProtocolType{
+		agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI,
 		agentv1.ProtocolType_PROTOCOL_TYPE_NFS,
 		agentv1.ProtocolType_PROTOCOL_TYPE_SMB,
 	} {

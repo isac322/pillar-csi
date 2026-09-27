@@ -14,7 +14,7 @@ package sanity
 //	  that csi-sanity drives over its CSI client.
 //
 // Shared in-memory state — pillarcsi VolumeStateMachine, fake K8s client
-// containing the PillarAgent — is plumbed so the state transitions between
+// containing the PillarAgent, PillarStore and PillarProtocol — is plumbed so the state transitions between
 // ControllerPublishVolume and NodeStageVolume succeed.
 
 import (
@@ -49,16 +49,17 @@ const (
 	driverVersion = "0.0.0-sanity"
 	bufconnSize   = 1 << 20
 	targetName    = "sanity-target"
+	storeName     = "tank"
+	protocolName  = "nvmeof"
 )
 
-// storageClassParams mirrors the StorageClass.parameters block that the
-// in-cluster external-provisioner forwards to CreateVolume.  The controller
-// requires every key.
+// storageClassParams mirrors the parameters of a hand-written StorageClass
+// that the in-cluster external-provisioner forwards to CreateVolume: the
+// identity references of the PillarStore and PillarProtocol that buildDriver
+// seeds into the fake Kubernetes client.
 var storageClassParams = map[string]string{
-	"pillar-csi.bhyoo.com/agent":         targetName,
-	"pillar-csi.bhyoo.com/store":         "tank",
-	"pillar-csi.bhyoo.com/backend-type":  "zfs-zvol",
-	"pillar-csi.bhyoo.com/protocol-type": "nvmeof-tcp",
+	"pillar-csi.bhyoo.com/store-ref":    storeName,
+	"pillar-csi.bhyoo.com/protocol-ref": protocolName,
 }
 
 // TestCSISanity exercises the entire csi-sanity battery against the in-process
@@ -166,8 +167,7 @@ func buildDriver(
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "sanity-node",
 			Annotations: map[string]string{
-				"pillar-csi.bhyoo.com/nvmeof-host-nqn":     "nqn.2026-01.com.bhyoo.pillar-csi:host.sanity",
-				"pillar-csi.bhyoo.com/iscsi-initiator-iqn": "iqn.2026-01.com.bhyoo.pillar-csi:host.sanity",
+				"pillar-csi.bhyoo.com/nvmeof-host-nqn": "nqn.2026-01.com.bhyoo.pillar-csi:host.sanity",
 			},
 		},
 		Spec: storagev1.CSINodeSpec{
@@ -177,11 +177,31 @@ func buildDriver(
 			}},
 		},
 	}
+	store := &pillarv1.PillarStore{
+		ObjectMeta: metav1.ObjectMeta{Name: storeName},
+		Spec: pillarv1.PillarStoreSpec{
+			AgentRef: targetName,
+			Backend: pillarv1.BackendSpec{
+				ZFS: &pillarv1.ZFSBackendConfig{
+					VolumeType: pillarv1.ZFSVolumeTypeZvol,
+					Pool:       "tank",
+				},
+			},
+		},
+	}
+	protocol := &pillarv1.PillarProtocol{
+		ObjectMeta: metav1.ObjectMeta{Name: protocolName},
+		Spec: pillarv1.PillarProtocolSpec{
+			Protocol: pillarv1.ProtocolSpec{
+				NVMeOFTCP: &pillarv1.NVMeOFTCPConfig{Port: 4420},
+			},
+		},
+	}
 	k8sClient := clientfake.NewClientBuilder().
 		WithInterceptorFuncs(fakeuid.Interceptor()).
 		WithScheme(scheme).
 		WithStatusSubresource(&pillarv1.PillarAgent{}, &pillarv1.PillarVolumeState{}).
-		WithObjects(target, csiNode).
+		WithObjects(target, csiNode, store, protocol).
 		Build()
 
 	identity := csidrv.NewIdentityServer(driverName, driverVersion)

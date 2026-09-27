@@ -559,8 +559,8 @@ AlreadyExists) are tested within this component.
 | 4 | `TestCSIController_CreateVolume_AgentError` | Agent generic error maps to Internal | Mock agent: CreateVolume→gRPC Internal | Returns gRPC Internal |
 | 5 | `TestCSIController_CreateVolume_AgentUnreachable` | Agent unreachable maps to non-OK status | Mock agent: CreateVolume→gRPC Unavailable | Returns non-OK gRPC status |
 | 6 | `TestCSIController_CreateVolume_MissingName` | Missing volume name returns InvalidArgument | Name="" in request | Returns gRPC InvalidArgument |
-| 7 | `TestCSIController_CreateVolume_TargetNotFound` | Target node not found returns NotFound | Mock agent lookup fails for target | Returns gRPC NotFound or Internal |
-| 8 | `TestCSIController_CreateVolume_MissingParams` | Missing required storage parameters returns InvalidArgument | No pool parameter in volume context | Returns gRPC InvalidArgument |
+| 7 | `TestCSIController_CreateVolume_TargetNotFound` | PillarStore's agentRef names a missing PillarAgent returns NotFound | Hand-written SC store-ref names a PillarStore whose agentRef has no PillarAgent | Returns gRPC NotFound |
+| 8 | `TestCSIController_CreateVolume_MissingParams` | Hand-written SC missing an identity ref returns InvalidArgument | store-ref or protocol-ref parameter removed | Returns gRPC InvalidArgument |
 | 9 | `TestCSIController_CreateVolume_DuplicateName` | Same name with conflicting capacity returns AlreadyExists | Mock agent: CreateVolume→gRPC AlreadyExists | Returns gRPC AlreadyExists |
 
 ---

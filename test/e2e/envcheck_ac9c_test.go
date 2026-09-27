@@ -28,8 +28,8 @@ import (
 
 // TestRunAllBackendEnvChecks_EmptyContainerReturnsError verifies that
 // runAllBackendEnvChecks returns a non-nil error when nodeContainer is empty.
-// This covers the most basic guard: all four backend checks share the same
-// container-empty detection path so a single empty string fails all four.
+// This covers the most basic guard: all three backend checks share the same
+// container-empty detection path so a single empty string fails all three.
 func TestRunAllBackendEnvChecks_EmptyContainerReturnsError(t *testing.T) {
 	t.Parallel()
 
@@ -49,8 +49,8 @@ func TestRunAllBackendEnvChecks_EmptyContainerReturnsError(t *testing.T) {
 		t.Errorf("[AC9c] expected error to contain 'AC9c' tag:\n%s", msg)
 	}
 
-	// All four backends must be reported as failed.
-	for _, name := range []string{"ZFS", "LVM", "NVMe-oF", "iSCSI"} {
+	// All three backends must be reported as failed.
+	for _, name := range []string{"ZFS", "LVM", "NVMe-oF"} {
 		if !strings.Contains(msg, name) {
 			t.Errorf("[AC9c] expected error to mention backend %q:\n%s", name, msg)
 		}
@@ -116,10 +116,10 @@ func TestRunAllBackendEnvChecks_NonExistentContainerError(t *testing.T) {
 		t.Fatal("[AC9c] expected non-nil error for non-existent container, got nil")
 	}
 
-	// Error must contain the 4-backend count.
+	// Error must contain the 3-backend count.
 	msg := err.Error()
-	if !strings.Contains(msg, "4/4") {
-		t.Errorf("[AC9c] expected '4/4' backend failure count in error:\n%s", msg)
+	if !strings.Contains(msg, "3/3") {
+		t.Errorf("[AC9c] expected '3/3' backend failure count in error:\n%s", msg)
 	}
 
 	// Error must include AC 10 policy note.
@@ -234,27 +234,6 @@ func TestEnvCheckNVMeOFBackend_EmptyContainerReturnsError(t *testing.T) {
 	}
 }
 
-// TestEnvCheckISCSIBackend_EmptyContainerReturnsError verifies that
-// envCheckISCSIBackend returns an actionable error when nodeContainer is empty.
-func TestEnvCheckISCSIBackend_EmptyContainerReturnsError(t *testing.T) {
-	t.Parallel()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	r := envCheckISCSIBackend(ctx, "" /*nodeContainer*/)
-
-	if r.Err == nil {
-		t.Fatal("[AC9c/iSCSI] expected non-nil error for empty nodeContainer, got nil")
-	}
-	if r.Name != "iSCSI" {
-		t.Errorf("[AC9c/iSCSI] expected Name='iSCSI', got %q", r.Name)
-	}
-	if !strings.Contains(r.Details, "PILLAR_E2E_BACKEND_CONTAINER") {
-		t.Errorf("[AC9c/iSCSI] Details should mention PILLAR_E2E_BACKEND_CONTAINER env var:\n%s", r.Details)
-	}
-}
-
 // ─── Error message shape tests ────────────────────────────────────────────────
 
 // TestEnvCheckErrorMessages_ContainAC10PolicyNote verifies that every error
@@ -283,7 +262,7 @@ func TestEnvCheckErrorMessages_ContainAC10PolicyNote(t *testing.T) {
 
 // TestEnvCheckErrorMessages_ContainRemediationForAllBackends verifies that the
 // aggregated error message includes backend-specific remediation hints for each
-// of the four backends.
+// of the three backends.
 func TestEnvCheckErrorMessages_ContainRemediationForAllBackends(t *testing.T) {
 	t.Parallel()
 
@@ -301,7 +280,6 @@ func TestEnvCheckErrorMessages_ContainRemediationForAllBackends(t *testing.T) {
 		"ZFS",
 		"LVM",
 		"NVMe-oF",
-		"iSCSI",
 		"bootstrapSuiteBackends",
 		"PILLAR_E2E_BACKEND_PROVISIONED",
 	}

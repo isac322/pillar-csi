@@ -76,11 +76,7 @@ func assertE15_GetCapacity_AgentErr(tc documentedCase) {
 	env.agentSrv.mu.Unlock()
 
 	_, err := env.controller.GetCapacity(env.ctx, &csiapi.GetCapacityRequest{
-		Parameters: map[string]string{
-			"pillar-csi.bhyoo.com/agent":        env.target.Name,
-			"pillar-csi.bhyoo.com/store":        "tank",
-			"pillar-csi.bhyoo.com/backend-type": "zfs-zvol",
-		},
+		Parameters: env.params,
 	})
 	Expect(err).To(HaveOccurred(), "%s: expected error when agent GetCapacity fails", tc.tcNodeLabel())
 }

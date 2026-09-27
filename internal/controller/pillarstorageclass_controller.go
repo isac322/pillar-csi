@@ -69,7 +69,7 @@ const (
 	conditionProtocolValid = "ProtocolValid"
 
 	// Compatible: set to True when the pool backend and protocol are
-	// compatible (e.g. block-only backends are incompatible with NFS).
+	// compatible (a block backend cannot be exported over a file protocol).
 	conditionCompatible = "Compatible"
 
 	// StorageClassCreated: set to True when the Kubernetes StorageClass
@@ -94,6 +94,7 @@ type PillarStorageClassReconciler struct {
 
 type desiredStorageClass struct {
 	params               map[string]string
+	mountOptions         []string
 	reclaimPolicy        corev1.PersistentVolumeReclaimPolicy
 	volumeBindingMode    storagev1.VolumeBindingMode
 	allowVolumeExpansion *bool
@@ -317,7 +318,7 @@ func (r *PillarStorageClassReconciler) reconcileNormal(
 			ObservedGeneration: binding.Generation,
 			Reason:             "ProtocolValid",
 			Message: fmt.Sprintf(
-				"PillarProtocol %q is valid (type: %s)", binding.Spec.ProtocolRef, protocol.Spec.Type,
+				"PillarProtocol %q is valid (protocol: %s)", binding.Spec.ProtocolRef, protocol.Spec.Protocol.Kind(),
 			),
 		})
 	} else {
@@ -347,21 +348,19 @@ func (r *PillarStorageClassReconciler) reconcileNormal(
 	}
 
 	// --- 3. Check backend/protocol compatibility (Compatible condition) ---
-	compatMsg, compatible := evaluateCompatibility(pool, protocol)
-	if compatible {
+	compat := evaluateCompatibility(pool, protocol)
+	if compat.OK {
 		meta.SetStatusCondition(&binding.Status.Conditions, metav1.Condition{
 			Type:               conditionCompatible,
 			Status:             metav1.ConditionTrue,
 			ObservedGeneration: binding.Generation,
 			Reason:             "Compatible",
-			Message: fmt.Sprintf(
-				"Backend type %q and protocol type %q are compatible",
-				pool.Spec.Backend.Type, protocol.Spec.Type,
-			),
+			Message:            compat.Message,
 		})
 	} else {
+		compatMsg := compat.Message
 		log.Info("Backend and protocol are incompatible", "binding", binding.Name,
-			"backend", pool.Spec.Backend.Type, "protocol", protocol.Spec.Type)
+			"backend", compat.BackendID, "protocol", compat.ProtocolID)
 		meta.SetStatusCondition(&binding.Status.Conditions, metav1.Condition{
 			Type:               conditionCompatible,
 			Status:             metav1.ConditionFalse,
@@ -379,7 +378,7 @@ func (r *PillarStorageClassReconciler) reconcileNormal(
 
 	// --- 4. Create / update owned StorageClass (StorageClassCreated condition) ---
 	scName := storageClassNameFor(binding)
-	scErr := r.reconcileStorageClass(ctx, binding, pool, protocol, scName)
+	scErr := r.reconcileStorageClass(ctx, binding, scName)
 	if scErr != nil {
 		log.Error(scErr, "Failed to reconcile StorageClass", "binding", binding.Name, "storageClass", scName)
 		meta.SetStatusCondition(&binding.Status.Conditions, metav1.Condition{
@@ -440,189 +439,61 @@ func (r *PillarStorageClassReconciler) reconcileNormal(
 func evaluateCompatibility(
 	pool *pillarcsiv1alpha1.PillarStore,
 	protocol *pillarcsiv1alpha1.PillarProtocol,
-) (string, bool) {
-	compat := pillarcsiv1alpha1.Compatible(pool.Spec.Backend.Type, protocol.Spec.Type)
-	if compat.OK {
-		return "", true
-	}
-	return compat.Message, false
+) pillarcsiv1alpha1.Compatibility {
+	return pillarcsiv1alpha1.Compatible(pool.Spec.Backend, protocol.Spec.Protocol)
 }
 
-// buildStorageClassParams constructs the StorageClass parameter map from the
-// binding's pool, protocol, and optional overrides.
-//
-// The parameters encode all configuration that the CSI node/controller plugin
-// needs to provision and attach volumes.  They follow the key convention:
-//
-//	pillar-csi.bhyoo.com/<parameter-name>
-//
-//nolint:gocognit,gocyclo // ZFS and protocol-specific param branches drive the complexity.
-func buildStorageClassParams(
-	binding *pillarcsiv1alpha1.PillarStorageClass,
-	pool *pillarcsiv1alpha1.PillarStore,
-	protocol *pillarcsiv1alpha1.PillarProtocol,
-) map[string]string {
-	params := map[string]string{
-		// The CSI controller reads the store and binding overrides of this
-		// PillarStorageClass at CreateVolume; CreateVolume receives only the
-		// StorageClass parameters, not the StorageClass name.
-		"pillar-csi.bhyoo.com/storage-class": binding.Name,
-		"pillar-csi.bhyoo.com/store":         binding.Spec.StoreRef,
-		"pillar-csi.bhyoo.com/protocol":      binding.Spec.ProtocolRef,
-		"pillar-csi.bhyoo.com/backend-type":  string(pool.Spec.Backend.Type),
-		"pillar-csi.bhyoo.com/protocol-type": string(protocol.Spec.Type),
-		"pillar-csi.bhyoo.com/agent":         pool.Spec.AgentRef,
-	}
+// Parameters of a generated StorageClass.  The generated class carries only
+// the identity of its PillarStorageClass plus what Kubernetes itself needs:
+// backend, protocol and filesystem tunables are resolved from the live CRs at
+// CreateVolume, so editing them never forces a StorageClass re-create.
+const (
+	// ScParamStorageClass names the PillarStorageClass that generated the
+	// StorageClass; CreateVolume receives only the StorageClass parameters,
+	// not the StorageClass name, and resolves the binding from it.
+	scParamStorageClass = "pillar-csi.bhyoo.com/storage-class"
 
-	// ZFS backend parameters: overwrite the generic pool reference with the
-	// actual ZFS pool name so the CSI controller can construct agent volume
-	// IDs and backend params without a separate zfs-pool parameter.
-	if pool.Spec.Backend.ZFS != nil {
-		if pool.Spec.Backend.ZFS.Pool != "" {
-			params["pillar-csi.bhyoo.com/store"] = pool.Spec.Backend.ZFS.Pool
-		}
-		if pool.Spec.Backend.ZFS.ParentDataset != "" {
-			params["pillar-csi.bhyoo.com/zfs-parent-dataset"] = pool.Spec.Backend.ZFS.ParentDataset
-		}
-	}
+	// ScParamFSType is the CSI well-known fsType parameter the
+	// external-provisioner copies onto the PersistentVolume.
+	scParamFSType = "csi.storage.k8s.io/fstype"
 
-	// LVM backend parameters: overwrite the generic pool reference with the
-	// actual LVM Volume Group name so the CSI controller can construct agent
-	// volume IDs correctly (mirroring the ZFS pattern above).
-	if pool.Spec.Backend.LVM != nil {
-		if pool.Spec.Backend.LVM.VolumeGroup != "" {
-			params["pillar-csi.bhyoo.com/store"] = pool.Spec.Backend.LVM.VolumeGroup
-			params["pillar-csi.bhyoo.com/lvm-vg"] = pool.Spec.Backend.LVM.VolumeGroup
-		}
-		// Always emitted, even empty: the key declares the store's thin pool
-		// ("" = none) so that the agent refuses CreateVolume when its
-		// --backend thinpool disagrees, instead of silently using its own.
-		params["pillar-csi.bhyoo.com/lvm-thin-pool"] = pool.Spec.Backend.LVM.ThinPool
-	}
+	// DefaultFSType is the filesystem used when the binding sets none; it
+	// matches the FilesystemConfig.fsType CRD default.
+	defaultFSType = "ext4"
+)
 
-	// Protocol-specific parameters.
-	switch protocol.Spec.Type {
-	case pillarcsiv1alpha1.ProtocolTypeNVMeOFTCP:
-		if protocol.Spec.NVMeOFTCP != nil {
-			params["pillar-csi.bhyoo.com/nvmeof-port"] = fmt.Sprintf("%d", protocol.Spec.NVMeOFTCP.Port)
-			// Propagate ACL toggle so the CSI controller passes the correct
-			// AclEnabled flag to agent.ExportVolume.  The default (true) is
-			// emitted explicitly so that a future protocol update that flips
-			// the field from false back to true is reflected in the StorageClass.
-			if protocol.Spec.NVMeOFTCP.ACL {
-				params["pillar-csi.bhyoo.com/acl-enabled"] = labelValueTrue
-			} else {
-				params["pillar-csi.bhyoo.com/acl-enabled"] = "false"
-			}
-			// Initiator reconnect tuning, applied by the node at fabrics
-			// connect.  Emitted only when set (0 included) so an unset field
-			// keeps the kernel defaults.
-			if v := protocol.Spec.NVMeOFTCP.CtrlLossTmo; v != nil {
-				params["pillar-csi.bhyoo.com/nvmeof-ctrl-loss-tmo"] = fmt.Sprintf("%d", *v)
-			}
-			if v := protocol.Spec.NVMeOFTCP.ReconnectDelay; v != nil {
-				params["pillar-csi.bhyoo.com/nvmeof-reconnect-delay"] = fmt.Sprintf("%d", *v)
-			}
-			addNVMeoFSizingParams(params, protocol.Spec.NVMeOFTCP, nvmeofTCPOverrides(binding))
-		}
-	case pillarcsiv1alpha1.ProtocolTypeISCSI:
-		if protocol.Spec.ISCSI != nil {
-			params["pillar-csi.bhyoo.com/iscsi-port"] = fmt.Sprintf("%d", protocol.Spec.ISCSI.Port)
-			// Same ACL toggle for iSCSI (initiator IQN-based access control).
-			if protocol.Spec.ISCSI.ACL {
-				params["pillar-csi.bhyoo.com/acl-enabled"] = labelValueTrue
-			} else {
-				params["pillar-csi.bhyoo.com/acl-enabled"] = "false"
-			}
-		}
-	case pillarcsiv1alpha1.ProtocolTypeNFS:
-		if protocol.Spec.NFS != nil && protocol.Spec.NFS.Version != "" {
-			params["pillar-csi.bhyoo.com/nfs-version"] = protocol.Spec.NFS.Version
-		}
+// buildStorageClassParams constructs the parameter map of the StorageClass
+// generated for binding: the binding identity and the resolved class fsType.
+func buildStorageClassParams(binding *pillarcsiv1alpha1.PillarStorageClass) map[string]string {
+	fsType := defaultFSType
+	if fs := binding.Spec.Filesystem; fs != nil && fs.FSType != "" {
+		fsType = fs.FSType
 	}
-
-	addFilesystemParams(params, binding, protocol)
-
-	return params
-}
-
-// addFilesystemParams emits the filesystem parameters for block protocols:
-// fsType and mkfsOptions, where the binding override takes precedence over
-// the protocol-level default for each.
-func addFilesystemParams(
-	params map[string]string,
-	binding *pillarcsiv1alpha1.PillarStorageClass,
-	protocol *pillarcsiv1alpha1.PillarProtocol,
-) {
-	if protocol.Spec.Type == pillarcsiv1alpha1.ProtocolTypeNFS {
-		return
-	}
-	fsType := protocol.Spec.FSType
-	if binding.Spec.Overrides != nil && binding.Spec.Overrides.FSType != "" {
-		fsType = binding.Spec.Overrides.FSType
-	}
-	if fsType != "" {
-		params["csi.storage.k8s.io/fstype"] = fsType
-	}
-
-	// mkfsOptions: encoded as a JSON string array — the same encoding the
-	// PVC fs-override annotation produces — so every argv element survives
-	// intact (e.g. a label containing spaces) on its way through the PV
-	// VolumeContext to NodeStageVolume.
-	mkfsOptions := protocol.Spec.MkfsOptions
-	if binding.Spec.Overrides != nil && len(binding.Spec.Overrides.MkfsOptions) > 0 {
-		mkfsOptions = binding.Spec.Overrides.MkfsOptions
-	}
-	if len(mkfsOptions) > 0 {
-		encoded, err := json.Marshal(mkfsOptions)
-		if err == nil { // json.Marshal of a []string cannot fail
-			params["pillar-csi.bhyoo.com/mkfs-options"] = string(encoded)
-		}
+	return map[string]string{
+		scParamStorageClass: binding.Name,
+		scParamFSType:       fsType,
 	}
 }
 
-// nvmeofTCPOverrides returns the binding's NVMe-oF/TCP protocol overrides, or
-// nil when it has none.
-func nvmeofTCPOverrides(binding *pillarcsiv1alpha1.PillarStorageClass) *pillarcsiv1alpha1.NVMeOFTCPOverrides {
-	if binding.Spec.Overrides == nil || binding.Spec.Overrides.Protocol == nil {
+// storageClassMountOptions returns the mountOptions of the StorageClass
+// generated for binding: spec.filesystem.mountOptions, where an omitted list
+// yields nil and an explicit empty list yields an empty list.
+func storageClassMountOptions(binding *pillarcsiv1alpha1.PillarStorageClass) []string {
+	fs := binding.Spec.Filesystem
+	if fs == nil || fs.MountOptions == nil {
 		return nil
 	}
-	return binding.Spec.Overrides.Protocol.NVMeOFTCP
-}
-
-// addNVMeoFSizingParams emits the queue depth (initiator queue_size at
-// connect) and the in-capsule data size (target port
-// param_inline_data_size).  A binding override wins over the protocol value;
-// a value set on neither is omitted so the kernel default applies.
-func addNVMeoFSizingParams(
-	params map[string]string,
-	protocol *pillarcsiv1alpha1.NVMeOFTCPConfig,
-	overrides *pillarcsiv1alpha1.NVMeOFTCPOverrides,
-) {
-	maxQueueSize := protocol.MaxQueueSize
-	inCapsuleDataSize := protocol.InCapsuleDataSize
-	if overrides != nil {
-		if overrides.MaxQueueSize != nil {
-			maxQueueSize = overrides.MaxQueueSize
-		}
-		if overrides.InCapsuleDataSize != nil {
-			inCapsuleDataSize = overrides.InCapsuleDataSize
-		}
-	}
-	if maxQueueSize != nil {
-		params["pillar-csi.bhyoo.com/nvmeof-max-queue-size"] = fmt.Sprintf("%d", *maxQueueSize)
-	}
-	if inCapsuleDataSize != nil {
-		params["pillar-csi.bhyoo.com/nvmeof-in-capsule-data-size"] = fmt.Sprintf("%d", *inCapsuleDataSize)
-	}
+	return append([]string{}, (*fs.MountOptions)...)
 }
 
 // reconcileStorageClass creates or updates the StorageClass owned by this binding.
 //
 // A StorageClass is immutable apart from its metadata and allowVolumeExpansion:
 // the API server rejects any update of provisioner, parameters, reclaimPolicy,
-// volumeBindingMode, mountOptions or allowedTopologies.  Pool, protocol and
-// binding edits change the parameters, so an in-place update cannot converge.
+// volumeBindingMode, mountOptions or allowedTopologies.  Binding edits of
+// reclaimPolicy, volumeBindingMode, filesystem.fsType or
+// filesystem.mountOptions change those fields, so an in-place update cannot
+// converge.
 // When an immutable field differs from the desired state, the StorageClass is
 // deleted and re-created with the desired spec (recreateStorageClass); only
 // the mutable remainder goes through a regular update.  Existing
@@ -635,12 +506,10 @@ func addNVMeoFSizingParams(
 func (r *PillarStorageClassReconciler) reconcileStorageClass(
 	ctx context.Context,
 	binding *pillarcsiv1alpha1.PillarStorageClass,
-	pool *pillarcsiv1alpha1.PillarStore,
-	protocol *pillarcsiv1alpha1.PillarProtocol,
 	scName string,
 ) error {
 	log := logf.FromContext(ctx)
-	desired := desiredStorageClassFor(binding, pool, protocol)
+	desired := desiredStorageClassFor(binding)
 
 	existing := &storagev1.StorageClass{}
 	getErr := r.Get(ctx, types.NamespacedName{Name: scName}, existing)
@@ -737,11 +606,11 @@ func (r *PillarStorageClassReconciler) currentBinding(
 const storageClassCarryOverAnnotation = "pillar-csi.bhyoo.com/storage-class-carry-over"
 
 // storageClassCarryOver is the part of a StorageClass that this controller
-// does not manage and a re-create keeps.
+// does not manage and a re-create keeps.  The mount options are not part of
+// it: they are managed, derived from the binding's spec.filesystem.mountOptions.
 type storageClassCarryOver struct {
 	Labels            map[string]string             `json:"labels,omitempty"`
 	Annotations       map[string]string             `json:"annotations,omitempty"`
-	MountOptions      []string                      `json:"mountOptions,omitempty"`
 	AllowedTopologies []corev1.TopologySelectorTerm `json:"allowedTopologies,omitempty"`
 }
 
@@ -749,7 +618,6 @@ func carryOverFrom(sc *storagev1.StorageClass) *storageClassCarryOver {
 	return &storageClassCarryOver{
 		Labels:            sc.Labels,
 		Annotations:       sc.Annotations,
-		MountOptions:      sc.MountOptions,
 		AllowedTopologies: sc.AllowedTopologies,
 	}
 }
@@ -757,7 +625,6 @@ func carryOverFrom(sc *storagev1.StorageClass) *storageClassCarryOver {
 func (c *storageClassCarryOver) applyTo(sc *storagev1.StorageClass) {
 	sc.Labels = c.Labels
 	sc.Annotations = c.Annotations
-	sc.MountOptions = c.MountOptions
 	sc.AllowedTopologies = c.AllowedTopologies
 }
 
@@ -809,8 +676,8 @@ func (r *PillarStorageClassReconciler) recordCarryOver(
 
 // recreateStorageClass replaces existing, whose immutable fields differ from
 // desired, with a StorageClass built from desired.  Metadata and the
-// immutable fields this controller does not manage (mountOptions,
-// allowedTopologies) are carried over so the replacement differs only in the
+// immutable field this controller does not manage (allowedTopologies) are
+// carried over so the replacement differs only in the
 // managed spec.  A StorageClass that another object controls is never
 // deleted.
 //
@@ -871,11 +738,7 @@ func (r *PillarStorageClassReconciler) recreateStorageClass(
 }
 
 // desiredStorageClassFor computes the managed StorageClass fields for binding.
-func desiredStorageClassFor(
-	binding *pillarcsiv1alpha1.PillarStorageClass,
-	pool *pillarcsiv1alpha1.PillarStore,
-	protocol *pillarcsiv1alpha1.PillarProtocol,
-) desiredStorageClass {
+func desiredStorageClassFor(binding *pillarcsiv1alpha1.PillarStorageClass) desiredStorageClass {
 	reclaimPolicy := corev1.PersistentVolumeReclaimDelete
 	if binding.Spec.StorageClass.ReclaimPolicy == pillarcsiv1alpha1.ReclaimPolicyRetain {
 		reclaimPolicy = corev1.PersistentVolumeReclaimRetain
@@ -886,13 +749,16 @@ func desiredStorageClassFor(
 		volumeBindingMode = storagev1.VolumeBindingWaitForFirstConsumer
 	}
 
+	// Every served backend is a block backend the CSI controller can expand,
+	// so expansion is allowed unless the binding disables it.
 	allowVolumeExpansion := binding.Spec.StorageClass.AllowVolumeExpansion
 	if allowVolumeExpansion == nil {
-		defaultAllow := protocol.Spec.Type != pillarcsiv1alpha1.ProtocolTypeNFS
+		defaultAllow := true
 		allowVolumeExpansion = &defaultAllow
 	}
 	return desiredStorageClass{
-		params:               buildStorageClassParams(binding, pool, protocol),
+		params:               buildStorageClassParams(binding),
+		mountOptions:         storageClassMountOptions(binding),
 		reclaimPolicy:        reclaimPolicy,
 		volumeBindingMode:    volumeBindingMode,
 		allowVolumeExpansion: allowVolumeExpansion,
@@ -903,6 +769,7 @@ func desiredStorageClassFor(
 func applyDesiredStorageClass(sc *storagev1.StorageClass, desired desiredStorageClass) {
 	sc.Provisioner = pillarCSIProvisioner
 	sc.Parameters = desired.params
+	sc.MountOptions = desired.mountOptions
 	sc.ReclaimPolicy = &desired.reclaimPolicy
 	sc.VolumeBindingMode = &desired.volumeBindingMode
 	sc.AllowVolumeExpansion = desired.allowVolumeExpansion
@@ -913,6 +780,7 @@ func applyDesiredStorageClass(sc *storagev1.StorageClass, desired desiredStorage
 func storageClassImmutableDrift(sc *storagev1.StorageClass, desired desiredStorageClass) bool {
 	return sc.Provisioner != pillarCSIProvisioner ||
 		!equality.Semantic.DeepEqual(sc.Parameters, desired.params) ||
+		!equality.Semantic.DeepEqual(sc.MountOptions, desired.mountOptions) ||
 		!equality.Semantic.DeepEqual(sc.ReclaimPolicy, &desired.reclaimPolicy) ||
 		!equality.Semantic.DeepEqual(sc.VolumeBindingMode, &desired.volumeBindingMode)
 }

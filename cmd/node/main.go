@@ -928,8 +928,8 @@ func main() {
 	// production NVMe-oF TCP implementation using /dev/nvme-fabrics directly
 	// (no nvme-cli required in the container image).
 	//
-	// Additional protocol handlers (iSCSI, NFS, SMB) are registered here
-	// as they are implemented per the multi-protocol RFC.
+	// NVMe-oF TCP is the only implemented transport; iSCSI, NFS and SMB are
+	// not implemented, so NodeStage for them fails with an explicit error.
 	handlers := map[string]csisvc.ProtocolHandler{
 		csisvc.ProtocolNVMeoFTCP: newFabricsConnector(hostNQN, hostID),
 	}

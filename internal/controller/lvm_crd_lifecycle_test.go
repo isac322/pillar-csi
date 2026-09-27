@@ -27,27 +27,27 @@ package controller
 // E32.1 — PillarStore LVM configuration validation (TC IDs 276–280)
 //
 //   - TC-276 TestPillarStore_LVM_ValidLinearConfig:
-//     type=lvm-lv + lvm.volumeGroup + lvm.provisioningMode=linear is accepted.
+//     backend.lvm with volumeGroup + provisioningMode=linear is accepted.
 //   - TC-277 TestPillarStore_LVM_ValidThinConfig:
-//     type=lvm-lv + lvm.volumeGroup + lvm.thinPool + lvm.provisioningMode=thin is accepted.
+//     backend.lvm with volumeGroup + thinPool + provisioningMode=thin is accepted.
 //   - TC-278 TestPillarStore_LVM_MissingVolumeGroup_Rejected:
-//     type=lvm-lv with lvm.volumeGroup="" → CRD MinLength=1 violation → HTTP 422.
+//     backend.lvm with volumeGroup="" → CRD MinLength=1 violation → HTTP 422.
 //   - TC-279 TestPillarStore_LVM_InvalidProvisioningMode_Rejected:
 //     lvm.provisioningMode="striped" → CRD Enum violation → HTTP 422.
 //   - TC-280 TestPillarStore_LVM_MissingLVMConfig_Rejected:
-//     type=lvm-lv with backend.lvm=nil → webhook Required field error.
+//     backend without a member → exactly-one union rejection.
 //
 // E32.2 — PillarStorageClass LVM override and compatibility (TC IDs 281–284)
 //
 //   - TC-281 TestPillarStorageClass_LVM_ValidOverride:
 //     PillarStorageClass with overrides.backend.lvm.provisioningMode=linear reconciles
-//     to Ready=True and creates a StorageClass with lvm-vg parameter.
+//     to Ready=True and creates a StorageClass naming the binding (tunables are
+//     not StorageClass parameters).
 //   - TC-282 TestPillarStorageClass_LVM_InvalidOverride_Rejected:
 //     overrides.backend.lvm.provisioningMode="raid5" → CRD Enum violation → HTTP 422.
 //   - TC-283 TestPillarStorageClass_LVM_NVMeOFTCP_Compatible:
 //     lvm-lv backend + nvmeof-tcp protocol → Compatible=True after reconcile.
-//   - TC-284 TestPillarStorageClass_LVM_NFS_Incompatible:
-//     lvm-lv backend + nfs protocol → webhook rejects (incompatible).
+//   - TC-284 (lvm-lv + nfs incompatibility) was removed with the nfs protocol.
 
 import (
 	"context"
@@ -101,7 +101,6 @@ var _ = Describe("E32.1: PillarStore LVM Configuration Validation", func() {
 			Spec: pillarcsiv1alpha1.PillarStoreSpec{
 				AgentRef: "some-target",
 				Backend: pillarcsiv1alpha1.BackendSpec{
-					Type: pillarcsiv1alpha1.BackendTypeLVMLV,
 					LVM: &pillarcsiv1alpha1.LVMBackendConfig{
 						VolumeGroup:      "data-vg",
 						ProvisioningMode: pillarcsiv1alpha1.LVMProvisioningModeLinear,
@@ -127,7 +126,6 @@ var _ = Describe("E32.1: PillarStore LVM Configuration Validation", func() {
 			Spec: pillarcsiv1alpha1.PillarStoreSpec{
 				AgentRef: "some-target",
 				Backend: pillarcsiv1alpha1.BackendSpec{
-					Type: pillarcsiv1alpha1.BackendTypeLVMLV,
 					LVM: &pillarcsiv1alpha1.LVMBackendConfig{
 						VolumeGroup:      "data-vg",
 						ThinPool:         "thin-pool-0",
@@ -147,7 +145,7 @@ var _ = Describe("E32.1: PillarStore LVM Configuration Validation", func() {
 	// Submitting an empty volumeGroup should trigger HTTP 422.
 	It("TC-278: TestPillarStore_LVM_MissingVolumeGroup_Rejected — empty lvm.volumeGroup is rejected", func() {
 		const poolName = "e32-lvm-empty-vg"
-		By("submitting a PillarStore with type=lvm-lv and lvm.volumeGroup=\"\"")
+		By("submitting a PillarStore with backend.lvm.volumeGroup=\"\"")
 
 		// Use Server-Side Apply so the empty string is sent on the wire.
 		rawJSON := []byte(fmt.Sprintf(`{
@@ -157,7 +155,6 @@ var _ = Describe("E32.1: PillarStore LVM Configuration Validation", func() {
 			"spec": {
 				"agentRef": "some-target",
 				"backend": {
-					"type": "lvm-lv",
 					"lvm": {"volumeGroup": ""}
 				}
 			}
@@ -193,7 +190,6 @@ var _ = Describe("E32.1: PillarStore LVM Configuration Validation", func() {
 			"spec": {
 				"agentRef": "some-target",
 				"backend": {
-					"type": "lvm-lv",
 					"lvm": {"volumeGroup": "data-vg", "provisioningMode": "striped"}
 				}
 			}
@@ -215,10 +211,8 @@ var _ = Describe("E32.1: PillarStore LVM Configuration Validation", func() {
 		DeferCleanup(func() { deletePoolIfExists(poolName) })
 	})
 
-	// TC-280 is tested in internal/webhook/v1alpha1/pillarstore_webhook_test.go
-	// as a direct validator call because the controller suite does not run
-	// admission webhooks.  Testing it there exercises the same real code path
-	// (validatePillarStoreSpec) without requiring a live webhook server.
+	// TC-280 (a backend without a member) is enforced by the CRD's
+	// exactly-one union rule, covered by E20.2.2 in pillarstore_controller_test.go.
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -271,7 +265,7 @@ var _ = Describe("E32.2: PillarStorageClass LVM Override and Compatibility", fun
 	// A PillarStorageClass with overrides.backend.lvm.provisioningMode=linear that
 	// references a Ready lvm-lv PillarStore and a Ready nvmeof-tcp PillarProtocol
 	// should reconcile to Compatible=True, Ready=True, and produce a StorageClass
-	// that includes the lvm-vg parameter.
+	// that identifies the binding.
 	It("TC-281: TestPillarStorageClass_LVM_ValidOverride — LVM override reconciles to Ready with StorageClass", func() {
 		const (
 			poolName     = "e32-lvm-override-pool"
@@ -285,7 +279,6 @@ var _ = Describe("E32.2: PillarStorageClass LVM Override and Compatibility", fun
 			Spec: pillarcsiv1alpha1.PillarStoreSpec{
 				AgentRef: "some-target",
 				Backend: pillarcsiv1alpha1.BackendSpec{
-					Type: pillarcsiv1alpha1.BackendTypeLVMLV,
 					LVM: &pillarcsiv1alpha1.LVMBackendConfig{
 						VolumeGroup:      "data-vg",
 						ProvisioningMode: pillarcsiv1alpha1.LVMProvisioningModeLinear,
@@ -318,7 +311,7 @@ var _ = Describe("E32.2: PillarStorageClass LVM Override and Compatibility", fun
 		protocol := &pillarcsiv1alpha1.PillarProtocol{
 			ObjectMeta: metav1.ObjectMeta{Name: protocolName},
 			Spec: pillarcsiv1alpha1.PillarProtocolSpec{
-				Type: pillarcsiv1alpha1.ProtocolTypeNVMeOFTCP,
+				Protocol: pillarcsiv1alpha1.ProtocolSpec{NVMeOFTCP: &pillarcsiv1alpha1.NVMeOFTCPConfig{}},
 			},
 		}
 		Expect(k8sClient.Create(e32bCtx, protocol)).To(Succeed())
@@ -342,7 +335,7 @@ var _ = Describe("E32.2: PillarStorageClass LVM Override and Compatibility", fun
 				ProtocolRef: protocolName,
 				Overrides: &pillarcsiv1alpha1.StorageClassOverrides{
 					Backend: &pillarcsiv1alpha1.BackendOverrides{
-						LVM: &pillarcsiv1alpha1.LVMOverrides{
+						LVM: &pillarcsiv1alpha1.LVMBackendOverrides{
 							ProvisioningMode: pillarcsiv1alpha1.LVMProvisioningModeLinear,
 						},
 					},
@@ -379,17 +372,18 @@ var _ = Describe("E32.2: PillarStorageClass LVM Override and Compatibility", fun
 		Expect(readyCond).NotTo(BeNil(), "Ready condition should be set")
 		Expect(readyCond.Status).To(Equal(metav1.ConditionTrue))
 
-		By("verifying StorageClass was created with lvm-vg parameter")
+		By("verifying StorageClass was created naming the binding")
 		sc := &storagev1.StorageClass{}
 		Expect(k8sClient.Get(e32bCtx, types.NamespacedName{Name: bindingName}, sc)).To(Succeed())
 		Expect(sc.Provisioner).To(Equal(pillarCSIProvisioner))
-		Expect(sc.Parameters).To(HaveKey("pillar-csi.bhyoo.com/lvm-vg"),
-			"StorageClass should carry lvm-vg parameter derived from pool.spec.backend.lvm.volumeGroup")
-		Expect(sc.Parameters["pillar-csi.bhyoo.com/lvm-vg"]).To(Equal("data-vg"))
+		Expect(sc.Parameters).To(HaveKeyWithValue("pillar-csi.bhyoo.com/storage-class", bindingName),
+			"the CSI controller resolves the store and the LVM override from the binding named here")
+		Expect(sc.Parameters).NotTo(HaveKey("pillar-csi.bhyoo.com/lvm-vg"),
+			"backend placement is resolved from the live PillarStore, not carried on the StorageClass")
 	})
 
 	// ── TC-282 ────────────────────────────────────────────────────────────────
-	// LVMOverrides.ProvisioningMode has +kubebuilder:validation:Enum=linear;thin.
+	// LVMBackendOverrides.ProvisioningMode has +kubebuilder:validation:Enum=linear;thin.
 	// An invalid value ("raid5") should be rejected by the API server with HTTP 422.
 	It("TC-282: TestPillarStorageClass_LVM_InvalidOverride_Rejected — invalid LVM provisioningMode override is rejected", func() {
 		const bindingName = "e32-lvm-invalid-override"
@@ -442,7 +436,6 @@ var _ = Describe("E32.2: PillarStorageClass LVM Override and Compatibility", fun
 			Spec: pillarcsiv1alpha1.PillarStoreSpec{
 				AgentRef: "some-target",
 				Backend: pillarcsiv1alpha1.BackendSpec{
-					Type: pillarcsiv1alpha1.BackendTypeLVMLV,
 					LVM: &pillarcsiv1alpha1.LVMBackendConfig{
 						VolumeGroup:      "data-vg",
 						ProvisioningMode: pillarcsiv1alpha1.LVMProvisioningModeLinear,
@@ -469,7 +462,7 @@ var _ = Describe("E32.2: PillarStorageClass LVM Override and Compatibility", fun
 		protocol := &pillarcsiv1alpha1.PillarProtocol{
 			ObjectMeta: metav1.ObjectMeta{Name: protocolName},
 			Spec: pillarcsiv1alpha1.PillarProtocolSpec{
-				Type: pillarcsiv1alpha1.ProtocolTypeNVMeOFTCP,
+				Protocol: pillarcsiv1alpha1.ProtocolSpec{NVMeOFTCP: &pillarcsiv1alpha1.NVMeOFTCPConfig{}},
 			},
 		}
 		Expect(k8sClient.Create(e32bCtx, protocol)).To(Succeed())
@@ -511,9 +504,4 @@ var _ = Describe("E32.2: PillarStorageClass LVM Override and Compatibility", fun
 			"lvm-lv + nvmeof-tcp is a valid block+block pairing → Compatible=True")
 	})
 
-	// TC-284 is tested in internal/webhook/v1alpha1/pillarstorageclass_webhook_test.go
-	// via the full envtest webhook server.  That suite registers PillarStorageClass
-	// ValidateCreate which fetches the referenced pool and protocol and rejects
-	// incompatible pairings.  The controller suite does not run admission webhooks
-	// so the rejection cannot be observed here.
 })

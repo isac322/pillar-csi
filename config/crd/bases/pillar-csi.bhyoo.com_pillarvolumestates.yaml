@@ -81,9 +81,9 @@ spec:
                 type: string
               backendType:
                 description: |-
-                  backendType is the storage backend driver string (e.g. "zfs-zvol",
-                  "lvm-lv").  Mirrors the pillar-csi.bhyoo.com/backend-type StorageClass
-                  parameter.
+                  backendType is the storage backend routing token (e.g. "zfs-zvol",
+                  "lvm-lv").  It is the backend member selected by the store's
+                  spec.backend union at CreateVolume time.
                 type: string
               capacityBytes:
                 description: capacityBytes is the requested volume size in bytes.
@@ -113,32 +113,211 @@ spec:
                 required:
                 - uid
                 type: object
-              connectParamsRecorded:
-                description: |-
-                  connectParamsRecorded marks that nodeConnectParams reflects the merge
-                  result of the first CreateVolume attempt — even when that result is
-                  empty.  It distinguishes a recorded all-default snapshot (authoritative:
-                  later-added overrides must not leak into retries) from a volume created
-                  before this field existed (no snapshot; retries re-derive values).
-                type: boolean
-              nodeConnectParams:
-                additionalProperties:
-                  type: string
-                description: |-
-                  nodeConnectParams are the effective node-connect overrides resolved by
-                  the parameter merge at the first CreateVolume attempt (PVC > Binding >
-                  Protocol > defaults).  They are replayed verbatim into the
-                  CreateVolumeResponse VolumeContext on retries of an already-Ready volume,
-                  so a retry stays byte-identical even when the claim or the CRDs behind
-                  the overrides no longer exist.  Volumes created before this field
-                  existed re-derive the values on retry.
-                type: object
               protocolType:
                 description: |-
-                  protocolType is the network storage protocol string (e.g. "nvmeof-tcp",
-                  "iscsi").  Mirrors the pillar-csi.bhyoo.com/protocol-type StorageClass
-                  parameter.
+                  protocolType is the network storage protocol routing token
+                  (e.g. "nvmeof-tcp").  It is the protocol member selected by the
+                  protocol's spec.protocol union at CreateVolume time.
                 type: string
+              resolved:
+                description: |-
+                  resolved is the effective per-volume configuration resolved at the
+                  first CreateVolume attempt from the PillarStore, PillarProtocol,
+                  PillarStorageClass overrides, StorageClass parameter documents and PVC
+                  annotations (in that precedence order).  It is replayed on every retry
+                  so the volume keeps the settings it was provisioned with even when the
+                  claim or the CRDs behind the overrides no longer exist.
+                properties:
+                  backend:
+                    description: |-
+                      backend is the effective storage backend configuration: the store's
+                      spec.backend with binding, StorageClass-document and PVC tunable
+                      overrides applied.
+                    properties:
+                      lvm:
+                        description: lvm holds LVM-specific configuration.
+                        properties:
+                          provisioningMode:
+                            default: linear
+                            description: |-
+                              provisioningMode controls whether new volumes are created as fully-
+                              allocated linear LVs or as thin-provisioned LVs inside the thinPool.
+                              Defaults to "linear"; set to "thin" together with a non-empty thinPool
+                              to enable thin provisioning.
+                            enum:
+                            - linear
+                            - thin
+                            type: string
+                          thinPool:
+                            description: |-
+                              thinPool is the name of the LVM thin pool LV within the volume group
+                              (e.g. "thin-pool-0").  When non-empty the backend operates in thin-
+                              provisioned mode; when empty it creates fully-allocated linear LVs.
+                              The thin pool must be pre-created before the agent starts, and must
+                              equal the thinPool of the agent's backend configuration for this VG
+                              (chart agent.backends[].lvm.thinPool; empty = none): on a mismatch the
+                              store is not Ready (PoolDiscovered=False, BackendLayoutMismatch) and
+                              CreateVolume fails instead of using another thin pool.
+                            type: string
+                          volumeGroup:
+                            description: |-
+                              volumeGroup is the LVM Volume Group name that pillar-csi will create
+                              logical volumes in (e.g. "data-vg").  The VG must be pre-created on
+                              the node before the agent starts; the driver does not manage VG lifecycle.
+                            minLength: 1
+                            type: string
+                        required:
+                        - volumeGroup
+                        type: object
+                      zfs:
+                        description: zfs holds ZFS-specific configuration.
+                        properties:
+                          parentDataset:
+                            description: |-
+                              parentDataset is the ZFS dataset path under which pillar-csi will
+                              create per-volume zvols (e.g. "k8s").  It must equal the parentDataset
+                              of the agent's backend configuration for this pool (chart
+                              agent.backends[].zfs.parentDataset; empty = pool root): on a mismatch
+                              the store is not Ready (PoolDiscovered=False, BackendLayoutMismatch)
+                              and CreateVolume fails instead of placing volumes elsewhere.
+                            type: string
+                          pool:
+                            description: pool is the ZFS pool name (e.g. "hot-data").
+                            minLength: 1
+                            type: string
+                          properties:
+                            additionalProperties:
+                              type: string
+                            description: |-
+                              properties are arbitrary ZFS properties applied to every volume created
+                              in this pool (e.g. compression, volblocksize).
+                            type: object
+                          volumeType:
+                            default: zvol
+                            description: volumeType selects the ZFS volume kind.  Only
+                              "zvol" is implemented.
+                            enum:
+                            - zvol
+                            type: string
+                        required:
+                        - pool
+                        type: object
+                    type: object
+                    x-kubernetes-validations:
+                    - message: exactly one of zfs or lvm must be set
+                      rule: '(has(self.zfs) ? 1 : 0) + (has(self.lvm) ? 1 : 0) ==
+                        1'
+                  filesystem:
+                    description: |-
+                      filesystem is the effective filesystem configuration the node applies
+                      when the volume is a Filesystem-mode mount.
+                    properties:
+                      fsType:
+                        default: ext4
+                        description: |-
+                          fsType is the filesystem the node formats a new volume with when
+                          volumeMode is Filesystem.
+                        enum:
+                        - ext4
+                        - xfs
+                        type: string
+                      mkfsOptions:
+                        description: |-
+                          mkfsOptions are additional mkfs arguments used when the node formats a
+                          new volume; a volume that already carries a filesystem is never
+                          reformatted.  Each element is one argv element (no shell); only
+                          filesystem tuning flags of the formatted type are accepted.
+                          A null/omitted value inherits the options of the layer below; an
+                          explicit empty list [] clears them.
+                        items:
+                          type: string
+                        type: array
+                      mountOptions:
+                        description: |-
+                          mountOptions are the mount options the node applies when mounting a
+                          Filesystem-mode volume.  On a PillarStorageClass they are written to
+                          the generated Kubernetes StorageClass's mountOptions; a PVC annotation
+                          value overrides them for that volume.
+                          A null/omitted value inherits the options of the layer below; an
+                          explicit empty list [] clears them.
+                        items:
+                          type: string
+                        type: array
+                    type: object
+                  protocol:
+                    description: |-
+                      protocol is the effective transport configuration: the protocol's
+                      spec.protocol with binding, StorageClass-document and PVC tunable
+                      overrides applied.
+                    properties:
+                      nvmeofTcp:
+                        description: nvmeofTcp holds NVMe-oF/TCP configuration.
+                        properties:
+                          acl:
+                            default: false
+                            description: |-
+                              acl enables host NQN-based access control when true.
+                              When false the subsystem uses allow_any_host.
+                              Defaults to false (allow_any_host) so that e2e tests and simple
+                              deployments work without registering initiator NQNs.
+                            type: boolean
+                          ctrlLossTmo:
+                            description: |-
+                              ctrlLossTmo is the maximum seconds to wait before declaring a target
+                              permanently lost after connectivity failure.
+                            format: int32
+                            minimum: 0
+                            type: integer
+                          inCapsuleDataSize:
+                            description: |-
+                              inCapsuleDataSize is the maximum in-capsule data size in bytes the
+                              target advertises (the nvmet port's param_inline_data_size).  It is a
+                              property of the listening port, shared by every volume exported on the
+                              same storage node address and port: exporting a volume that requests a
+                              value different from the port's current value fails instead of
+                              silently using the port's value.  Unset keeps the transport default
+                              (16384 for TCP on 4 KiB pages) and accepts whatever value the port has.
+                              The minimum is 1024: NVMe/TCP hosts send the 1024-byte fabrics Connect
+                              data in-capsule, so a smaller value makes every connect fail.
+                            format: int32
+                            minimum: 1024
+                            type: integer
+                          maxQueueSize:
+                            description: |-
+                              maxQueueSize is the I/O queue depth the initiator requests for each
+                              queue of the connection (the fabrics queue_size connect option).
+                              Unset keeps the kernel default (128).  The kernel accepts 16-1024.
+                              Applies to connections made after the change; a staged volume keeps
+                              the value from its CreateVolume.
+                            format: int32
+                            maximum: 1024
+                            minimum: 16
+                            type: integer
+                          port:
+                            default: 4420
+                            description: |-
+                              port is the TCP port on which the NVMe-oF target listens.
+                              Defaults to 4420.
+                            format: int32
+                            maximum: 65535
+                            minimum: 1
+                            type: integer
+                          reconnectDelay:
+                            description: reconnectDelay is the interval in seconds
+                              between reconnect attempts.
+                            format: int32
+                            minimum: 0
+                            type: integer
+                        type: object
+                    type: object
+                    x-kubernetes-validations:
+                    - message: 'exactly one protocol member must be set (supported:
+                        nvmeofTcp)'
+                      rule: has(self.nvmeofTcp)
+                required:
+                - backend
+                - protocol
+                type: object
               volumeID:
                 description: |-
                   volumeID is the CSI volume ID assigned by the controller.
@@ -251,19 +430,18 @@ spec:
                       PillarAgent.Status.ResolvedAddress with the port stripped).
                     type: string
                   port:
-                    description: port is the TCP port on which the NVMe-oF or iSCSI
-                      target listens.
+                    description: port is the TCP port on which the NVMe-oF target
+                      listens.
                     format: int32
                     type: integer
                   targetID:
-                    description: |-
-                      targetID is the NVMe Qualified Name (NQN) of the NVMe-oF subsystem, or
-                      the iSCSI Qualified Name (IQN) of the iSCSI target.
+                    description: targetID is the NVMe Qualified Name (NQN) of the
+                      NVMe-oF subsystem.
                     type: string
                   volumeRef:
                     description: |-
-                      volumeRef is the protocol-level reference for this volume (e.g., the
-                      NVMe-oF subsystem name or the iSCSI target LUN identifier).
+                      volumeRef is the protocol-level reference for this volume (the NVMe-oF
+                      subsystem name).
                     type: string
                 type: object
               exportSpec:
@@ -323,8 +501,8 @@ spec:
                     type: boolean
                   exportCreated:
                     description: |-
-                      exportCreated is true when the network export (NVMe-oF target, iSCSI
-                      target, NFS share) was successfully created before the failure.  When
+                      exportCreated is true when the network export (NVMe-oF subsystem) was
+                      successfully created before the failure.  When
                       true, cleanup must call UnexportVolume before DeleteVolume.
                     type: boolean
                   failedAt:

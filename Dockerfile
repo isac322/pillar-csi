@@ -95,7 +95,7 @@ RUN set -eux \
     && rm -f /bin/sh /bin/bash /usr/bin/env
 COPY --from=builder --link --chmod=0555 /workspace/bin/agent /usr/bin/pillar-agent
 USER 65532:65532
-EXPOSE 50051
+EXPOSE 9500
 ENTRYPOINT ["/usr/bin/pillar-agent"]
 
 # ── Runtime: node ─────────────────────────────────────────────────────────────

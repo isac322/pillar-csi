@@ -107,8 +107,8 @@ type PartialFailureInfo struct {
 	// +optional
 	BackendCreated bool `json:"backendCreated,omitempty"`
 
-	// exportCreated is true when the network export (NVMe-oF target, iSCSI
-	// target, NFS share) was successfully created before the failure.  When
+	// exportCreated is true when the network export (NVMe-oF subsystem) was
+	// successfully created before the failure.  When
 	// true, cleanup must call UnexportVolume before DeleteVolume.
 	// +optional
 	ExportCreated bool `json:"exportCreated,omitempty"`
@@ -118,8 +118,7 @@ type PartialFailureInfo struct {
 // agent's ExportVolume RPC.  These values are stored durably so that
 // DeleteVolume can tear down the export after a controller restart.
 type VolumeExportInfo struct {
-	// targetID is the NVMe Qualified Name (NQN) of the NVMe-oF subsystem, or
-	// the iSCSI Qualified Name (IQN) of the iSCSI target.
+	// targetID is the NVMe Qualified Name (NQN) of the NVMe-oF subsystem.
 	// +optional
 	TargetID string `json:"targetID,omitempty"`
 
@@ -128,12 +127,12 @@ type VolumeExportInfo struct {
 	// +optional
 	Address string `json:"address,omitempty"`
 
-	// port is the TCP port on which the NVMe-oF or iSCSI target listens.
+	// port is the TCP port on which the NVMe-oF target listens.
 	// +optional
 	Port int32 `json:"port,omitempty"`
 
-	// volumeRef is the protocol-level reference for this volume (e.g., the
-	// NVMe-oF subsystem name or the iSCSI target LUN identifier).
+	// volumeRef is the protocol-level reference for this volume (the NVMe-oF
+	// subsystem name).
 	// +optional
 	VolumeRef string `json:"volumeRef,omitempty"`
 }
@@ -251,15 +250,15 @@ type PillarVolumeStateSpec struct {
 	// +kubebuilder:validation:MinLength=1
 	AgentRef string `json:"agentRef"`
 
-	// backendType is the storage backend driver string (e.g. "zfs-zvol",
-	// "lvm-lv").  Mirrors the pillar-csi.bhyoo.com/backend-type StorageClass
-	// parameter.
+	// backendType is the storage backend routing token (e.g. "zfs-zvol",
+	// "lvm-lv").  It is the backend member selected by the store's
+	// spec.backend union at CreateVolume time.
 	// +required
 	BackendType string `json:"backendType"`
 
-	// protocolType is the network storage protocol string (e.g. "nvmeof-tcp",
-	// "iscsi").  Mirrors the pillar-csi.bhyoo.com/protocol-type StorageClass
-	// parameter.
+	// protocolType is the network storage protocol routing token
+	// (e.g. "nvmeof-tcp").  It is the protocol member selected by the
+	// protocol's spec.protocol union at CreateVolume time.
 	// +required
 	ProtocolType string `json:"protocolType"`
 
@@ -278,23 +277,36 @@ type PillarVolumeStateSpec struct {
 	// +optional
 	ClaimRef *VolumeClaimRef `json:"claimRef,omitempty"`
 
-	// nodeConnectParams are the effective node-connect overrides resolved by
-	// the parameter merge at the first CreateVolume attempt (PVC > Binding >
-	// Protocol > defaults).  They are replayed verbatim into the
-	// CreateVolumeResponse VolumeContext on retries of an already-Ready volume,
-	// so a retry stays byte-identical even when the claim or the CRDs behind
-	// the overrides no longer exist.  Volumes created before this field
-	// existed re-derive the values on retry.
+	// resolved is the effective per-volume configuration resolved at the
+	// first CreateVolume attempt from the PillarStore, PillarProtocol,
+	// PillarStorageClass overrides, StorageClass parameter documents and PVC
+	// annotations (in that precedence order).  It is replayed on every retry
+	// so the volume keeps the settings it was provisioned with even when the
+	// claim or the CRDs behind the overrides no longer exist.
 	// +optional
-	NodeConnectParams map[string]string `json:"nodeConnectParams,omitempty"`
+	Resolved *ResolvedVolumeConfig `json:"resolved,omitempty"`
+}
 
-	// connectParamsRecorded marks that nodeConnectParams reflects the merge
-	// result of the first CreateVolume attempt — even when that result is
-	// empty.  It distinguishes a recorded all-default snapshot (authoritative:
-	// later-added overrides must not leak into retries) from a volume created
-	// before this field existed (no snapshot; retries re-derive values).
+// ResolvedVolumeConfig is the durable record of the effective configuration
+// a volume was provisioned with.  The shapes reuse the CRD union documents
+// so the stored object reads exactly like the layers it was resolved from.
+type ResolvedVolumeConfig struct {
+	// backend is the effective storage backend configuration: the store's
+	// spec.backend with binding, StorageClass-document and PVC tunable
+	// overrides applied.
+	// +required
+	Backend BackendSpec `json:"backend"`
+
+	// protocol is the effective transport configuration: the protocol's
+	// spec.protocol with binding, StorageClass-document and PVC tunable
+	// overrides applied.
+	// +required
+	Protocol ProtocolSpec `json:"protocol"`
+
+	// filesystem is the effective filesystem configuration the node applies
+	// when the volume is a Filesystem-mode mount.
 	// +optional
-	ConnectParamsRecorded bool `json:"connectParamsRecorded,omitempty"`
+	Filesystem *FilesystemConfig `json:"filesystem,omitempty"`
 }
 
 // PillarVolumeStateStatus reflects the controller-observed state of a PillarVolumeState.

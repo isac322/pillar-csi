@@ -26,7 +26,7 @@ func assertE30_ExactlyOneLV_AfterExportFailureRetry(tc documentedCase) {
 	env := newControllerTestEnv()
 	defer env.close()
 
-	params := lvmControllerParams(env.target.Name)
+	params := lvmControllerParams(env)
 	volName := "pvc-e30-retry"
 	caps := []*csiapi.VolumeCapability{mountCapability("ext4")}
 
@@ -80,7 +80,7 @@ func assertE30_LVRegistry_DeleteAfterPartialCreate(tc documentedCase) {
 	env := newControllerTestEnv()
 	defer env.close()
 
-	params := lvmControllerParams(env.target.Name)
+	params := lvmControllerParams(env)
 	volName := "pvc-e30-del-partial"
 	caps := []*csiapi.VolumeCapability{mountCapability("ext4")}
 
@@ -126,7 +126,7 @@ func assertE30_MultipleRetries_NeverDuplicate(tc documentedCase) {
 	env := newControllerTestEnv()
 	defer env.close()
 
-	params := lvmControllerParams(env.target.Name)
+	params := lvmControllerParams(env)
 	volName := "pvc-e30-multi-retry"
 	caps := []*csiapi.VolumeCapability{mountCapability("ext4")}
 

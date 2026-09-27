@@ -1,7 +1,7 @@
 package e2e
 
-// tc_backend_lifecycle.go — per-TC backend provisioning for ZFS, LVM, and
-// iSCSI resources.
+// tc_backend_lifecycle.go — per-TC backend provisioning for ZFS and LVM
+// resources.
 //
 // Each Provision* function:
 //  1. Derives a globally unique resource name from scope.ScopeTag.
@@ -19,7 +19,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/bhyoo/pillar-csi/test/e2e/framework/iscsi"
 	"github.com/bhyoo/pillar-csi/test/e2e/framework/lvm"
 	"github.com/bhyoo/pillar-csi/test/e2e/framework/zfs"
 )
@@ -27,7 +26,7 @@ import (
 // BackendHandle is a generic handle for a provisioned backend resource.
 // It contains the provisioned resource's name and metadata for observability.
 type BackendHandle struct {
-	// Kind is "zfs-pool", "lvm-vg", or "iscsi-target".
+	// Kind is "zfs-pool" or "lvm-vg".
 	Kind string
 
 	// Name is the unique resource name (pool name, VG name, or IQN).
@@ -145,56 +144,6 @@ func ProvisionLVMVG(ctx context.Context, scope *TestCaseScope, nodeContainer str
 	return handle, nil
 }
 
-// ProvisionISCSITarget provisions an ephemeral iSCSI target inside the given
-// Kind container node and registers its teardown with the TC scope.
-//
-// The IQN is derived from scope.ScopeTag to ensure global uniqueness across
-// parallel test runs. The IQN uses the prefix "iqn.2024-01.io.pillar-csi:"
-// followed by the first 12 characters of the scope tag.
-func ProvisionISCSITarget(ctx context.Context, scope *TestCaseScope, nodeContainer string) (*BackendHandle, error) {
-	if scope == nil {
-		return nil, fmt.Errorf("ProvisionISCSITarget: scope is required")
-	}
-	if strings.TrimSpace(nodeContainer) == "" {
-		return nil, fmt.Errorf("ProvisionISCSITarget: nodeContainer is required")
-	}
-
-	iqn := iscsiIQN(scope.ScopeTag)
-
-	target, err := iscsi.CreateTarget(ctx, iscsi.CreateTargetOptions{
-		NodeContainer: nodeContainer,
-		IQN:           iqn,
-		SizeMiB:       512,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("ProvisionISCSITarget: create target %q in %s: %w",
-			iqn, nodeContainer, err)
-	}
-
-	handle := &BackendHandle{
-		Kind:          "iscsi-target",
-		Name:          iqn,
-		NodeContainer: nodeContainer,
-		cleanup:       func(cleanupCtx context.Context) error { return target.Destroy(cleanupCtx) },
-	}
-
-	tid := target.TID
-	if err := scope.TrackBackendRecord("iscsi-target:"+iqn, PathResourceSpec{
-		Path: iqn, // logical identifier, not a filesystem path
-		Cleanup: func() error {
-			return handle.cleanup(context.Background())
-		},
-		IsPresent: func() (bool, error) {
-			return iscsi.TargetExists(context.Background(), nodeContainer, tid)
-		},
-	}); err != nil {
-		_ = target.Destroy(context.Background())
-		return nil, fmt.Errorf("ProvisionISCSITarget: register teardown for %q: %w", iqn, err)
-	}
-
-	return handle, nil
-}
-
 // ─── name derivation helpers ─────────────────────────────────────────────────
 
 // zfsPoolName derives a ZFS pool name from a TC scope tag.
@@ -216,14 +165,6 @@ func lvmVGName(scopeTag string) string {
 	return "e2evg-" + scopeTagSuffix(scopeTag, 8)
 }
 
-// iscsiIQN derives an iSCSI IQN from a TC scope tag.
-//
-// Format: "iqn.2024-01.io.pillar-csi:<uniqueSuffix>" where uniqueSuffix is
-// the last 12 characters of the scope tag.
-func iscsiIQN(scopeTag string) string {
-	return "iqn.2024-01.io.pillar-csi:" + scopeTagSuffix(scopeTag, 12)
-}
-
 // scopeTagSuffix returns the last n characters of the scope tag.
 //
 // The scope tag produced by NewTestCaseScope embeds a process-unique
@@ -233,7 +174,7 @@ func iscsiIQN(scopeTag string) string {
 // common prefix that all TCs with the same TC ID share.
 //
 // The result is stripped of leading/trailing hyphens to satisfy OS naming
-// constraints for ZFS pools, LVM VGs, and iSCSI IQN suffixes.
+// constraints for ZFS pools and LVM VGs.
 func scopeTagSuffix(scopeTag string, n int) string {
 	token := dnsLabelToken(scopeTag)
 	if len(token) <= n {

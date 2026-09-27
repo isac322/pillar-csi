@@ -511,7 +511,7 @@ type PillarStoreOptions struct {
 // Parameters:
 //   - suffix    — resource name suffix (e.g. "pool", "zfs-pool")
 //   - agentRef — name of the PillarAgent this pool references
-//   - backend   — BackendSpec (type + ZFS or LVM config)
+//   - backend   — BackendSpec (exactly one of zfs or lvm)
 //   - opts      — optional extra metadata (nil is safe)
 func (f *Factory) PillarStore(
 	suffix, agentRef string,
@@ -543,12 +543,12 @@ type PillarProtocolOptions struct {
 //
 // PillarProtocol is protocol-level and does not reference a PillarAgent
 // directly; the target association happens through PillarStorageClass → PillarStore →
-// PillarAgent.  Callers supply the full spec (including Type and the
-// matching config field: NVMeOFTCP, ISCSI, NFS, or SMB).
+// PillarAgent.  Callers supply the full spec: spec.protocol is an
+// exactly-one union whose only served member is nvmeofTcp.
 //
 // Parameters:
-//   - suffix — resource name suffix (e.g. "proto", "nvmeof", "iscsi")
-//   - spec   — PillarProtocolSpec (protocol type + config)
+//   - suffix — resource name suffix (e.g. "proto", "nvmeof")
+//   - spec   — PillarProtocolSpec (protocol union member + config)
 //   - opts   — optional extra metadata (nil is safe)
 func (f *Factory) PillarProtocol(
 	suffix string,

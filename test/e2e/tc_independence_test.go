@@ -117,8 +117,8 @@ func independenceCaseMatrix() []independenceCase {
 		{TCID: "E19.1"},
 		{TCID: "E25.1"},
 		{TCID: "E33.1"},
-		{TCID: "E34.1"},
-		{TCID: "E35.1"},
+		{TCID: "E32.1"},
+		{TCID: "F28.1"},
 		{TCID: "F27.1"},
 	}
 }

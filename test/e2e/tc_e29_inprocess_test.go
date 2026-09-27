@@ -2,10 +2,11 @@ package e2e
 
 // tc_e29_inprocess_test.go — Per-TC assertions for E29: CSI Controller LVM parameter propagation.
 //
-// E29 covers the CSI controller's LVM parameter propagation path: how the
-// BackendType=LVM flag, LvmVolumeParams (VolumeGroup, ProvisionMode), and the
-// 3-tier mode override hierarchy (Pool → Binding → PVC annotation) are carried
-// through to the agent RPC requests.
+// E29 covers the CSI controller's LVM parameter propagation path: how an lvm
+// PillarStore (volumeGroup, thinPool, provisioningMode), the binding-level
+// overrides.backend.lvm document, a hand-written StorageClass backend document
+// and the pillar-csi.bhyoo.com/backend PVC annotation resolve into the
+// LvmVolumeParams carried by the agent CreateVolume RPC.
 //
 // All functions use the controllerTestEnv (fakeAgentServer via bufconn).
 
@@ -14,6 +15,7 @@ import (
 	"strings"
 
 	csiapi "github.com/container-storage-interface/spec/lib/go/csi"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -24,16 +26,21 @@ import (
 	agentv1 "github.com/bhyoo/pillar-csi/gen/go/pillar_csi/agent/v1"
 )
 
-// lvmControllerParams returns default StorageClass params for LVM volumes.
-// Uses pool "data-vg" (matching the paramPool field) and sets lvm-vg for
-// VolumeGroup propagation to the agent.
-func lvmControllerParams(target string) map[string]string {
-	return map[string]string{
-		"pillar-csi.bhyoo.com/agent":         target,
-		"pillar-csi.bhyoo.com/store":         "data-vg",
-		"pillar-csi.bhyoo.com/backend-type":  "lvm-lv",
-		"pillar-csi.bhyoo.com/protocol-type": "nvmeof-tcp",
+const (
+	e29StoreName = "lvm-store"
+	e29VG        = "data-vg"
+	e29ThinPool  = "thin0"
+)
+
+// lvmControllerParams seeds the LVM PillarStore used by the E29 TCs (volume
+// group data-vg with thin pool thin0, linear by default) and returns the
+// hand-written StorageClass parameters referencing it.
+func lvmControllerParams(env *controllerTestEnv) map[string]string {
+	store := e2eLVMStore(e29StoreName, env.target.Name, e29VG, e29ThinPool, pillarv1.LVMProvisioningModeLinear)
+	if err := env.k8sClient.Create(env.ctx, store); err != nil {
+		Expect(err.Error()).To(ContainSubstring("already exists"), "create LVM store %s", e29StoreName)
 	}
+	return e2eHandWrittenParams(e29StoreName, e2eDefaultProtocolName)
 }
 
 // agentCreateReqs safely copies the fakeAgentServer's captured CreateVolume requests.
@@ -45,46 +52,30 @@ func agentCreateReqs(env *controllerTestEnv) []*agentv1.CreateVolumeRequest {
 	return out
 }
 
-// makeLVMBinding creates a PillarStore (lvm-lv type) and PillarStorageClass in the
-// fake K8s client and returns the binding name for use as paramBinding.
-// poolMode may be empty (pool has no LVM mode preference).
+// makeLVMBinding creates an lvm PillarStore and a PillarStorageClass binding it
+// to the default NVMe-oF protocol, and returns the binding name for the
+// generated-StorageClass parameter.
+// storeMode may be empty (store leaves provisioningMode unset).
 // bindingOverrideMode may be empty (no binding-level override).
 func makeLVMBinding(
 	env *controllerTestEnv,
 	suffix string,
-	poolMode pillarv1.LVMProvisioningMode,
+	storeMode pillarv1.LVMProvisioningMode,
 	bindingOverrideMode pillarv1.LVMProvisioningMode,
 ) string {
-	poolName := fmt.Sprintf("pool-lvm-%s", suffix)
+	storeName := fmt.Sprintf("store-lvm-%s", suffix)
 	bindingName := fmt.Sprintf("binding-lvm-%s", suffix)
 
-	pool := &pillarv1.PillarStore{
-		ObjectMeta: metav1.ObjectMeta{Name: poolName},
-		Spec: pillarv1.PillarStoreSpec{
-			AgentRef: env.target.Name,
-			Backend: pillarv1.BackendSpec{
-				Type: pillarv1.BackendTypeLVMLV,
-				LVM: &pillarv1.LVMBackendConfig{
-					VolumeGroup:      "data-vg",
-					ProvisioningMode: poolMode,
-				},
-			},
-		},
-	}
-	Expect(env.k8sClient.Create(env.ctx, pool)).To(Succeed(),
-		"create LVM pool %s for test", poolName)
+	store := e2eLVMStore(storeName, env.target.Name, e29VG, e29ThinPool, "")
+	store.Spec.Backend.LVM.ProvisioningMode = storeMode
+	Expect(env.k8sClient.Create(env.ctx, store)).To(Succeed(),
+		"create LVM store %s for test", storeName)
 
-	binding := &pillarv1.PillarStorageClass{
-		ObjectMeta: metav1.ObjectMeta{Name: bindingName},
-		Spec: pillarv1.PillarStorageClassSpec{
-			StoreRef:    poolName,
-			ProtocolRef: "proto-nvmeof",
-		},
-	}
+	binding := e2eBinding(bindingName, storeName, e2eDefaultProtocolName)
 	if bindingOverrideMode != "" {
 		binding.Spec.Overrides = &pillarv1.StorageClassOverrides{
 			Backend: &pillarv1.BackendOverrides{
-				LVM: &pillarv1.LVMOverrides{
+				LVM: &pillarv1.LVMBackendOverrides{
 					ProvisioningMode: bindingOverrideMode,
 				},
 			},
@@ -96,8 +87,9 @@ func makeLVMBinding(
 	return bindingName
 }
 
-// makePVCWithBackendAnnotation creates a PVC with the given LVM provisioningMode
-// in the structured backend-override annotation. Returns the PVC.
+// makePVCWithBackendAnnotation creates a PVC whose pillar-csi.bhyoo.com/backend
+// document sets lvm.provisioningMode to mode (an empty mode writes an empty
+// document).  Returns the PVC.
 func makePVCWithBackendAnnotation(env *controllerTestEnv, name, mode string) *corev1.PersistentVolumeClaim {
 	var annot string
 	if mode != "" {
@@ -108,7 +100,7 @@ func makePVCWithBackendAnnotation(env *controllerTestEnv, name, mode string) *co
 			Name:      name,
 			Namespace: "default",
 			Annotations: map[string]string{
-				"pillar-csi.bhyoo.com/backend-override": annot,
+				e2eDocBackend: annot,
 			},
 		},
 		Spec: corev1.PersistentVolumeClaimSpec{},
@@ -118,56 +110,64 @@ func makePVCWithBackendAnnotation(env *controllerTestEnv, name, mode string) *co
 	return pvc
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// E29.1: LVM CreateVolume normal path (linear, thin, VolumeId format)
-// ─────────────────────────────────────────────────────────────────────────────
+// e29BindingParams returns generated-StorageClass parameters for binding plus
+// the external-provisioner PVC metadata when pvc is non-nil.
+func e29BindingParams(binding string, pvc *corev1.PersistentVolumeClaim) map[string]string {
+	params := e2eBindingParams(binding)
+	if pvc != nil {
+		params[e2eParamPVCName] = pvc.Name
+		params[e2eParamPVCNamespace] = pvc.Namespace
+	}
+	return params
+}
 
-// TestCSIController_CreateVolume_LVM_Linear
-func assertE29_CreateVolume_LVM_Linear(tc documentedCase) {
-	env := newControllerTestEnv()
-	defer env.close()
-
-	params := lvmControllerParams(env.target.Name)
-	params["pillar-csi.bhyoo.com/lvm-mode"] = "linear"
-
+// e29CreateAndCaptureMode issues CreateVolume and returns the provisioning mode
+// the agent received.
+func e29CreateAndCaptureMode(tc documentedCase, env *controllerTestEnv, name string, params map[string]string) string {
+	GinkgoHelper()
 	resp, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
-		Name:               "pvc-e29-linear",
+		Name:               name,
 		Parameters:         params,
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
 		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 	})
-	Expect(err).NotTo(HaveOccurred(), "%s: LVM linear CreateVolume", tc.tcNodeLabel())
+	Expect(err).NotTo(HaveOccurred(), "%s: CreateVolume %s", tc.tcNodeLabel(), name)
 	Expect(resp.GetVolume().GetVolumeId()).NotTo(BeEmpty(), "%s: VolumeId", tc.tcNodeLabel())
-
 	reqs := agentCreateReqs(env)
 	Expect(reqs).To(HaveLen(1), "%s: exactly one agent CreateVolume call", tc.tcNodeLabel())
 	Expect(reqs[0].GetBackendType()).To(Equal(agentv1.BackendType_BACKEND_TYPE_LVM),
 		"%s: BackendType must be BACKEND_TYPE_LVM", tc.tcNodeLabel())
-	Expect(reqs[0].GetBackendParams().GetLvm().GetProvisionMode()).To(Equal("linear"),
-		"%s: ProvisionMode must be linear", tc.tcNodeLabel())
+	Expect(reqs[0].GetBackendParams().GetLvm().GetVolumeGroup()).To(Equal(e29VG),
+		"%s: the store's lvm.volumeGroup must reach the agent", tc.tcNodeLabel())
+	return reqs[0].GetBackendParams().GetLvm().GetProvisionMode()
 }
 
-// TestCSIController_CreateVolume_LVM_Thin
+// ─────────────────────────────────────────────────────────────────────────────
+// E29.1: LVM CreateVolume normal path (linear, thin, VolumeId format)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TestCSIController_CreateVolume_LVM_Linear — a linear lvm store provisions a
+// linear LV.
+func assertE29_CreateVolume_LVM_Linear(tc documentedCase) {
+	env := newControllerTestEnv()
+	defer env.close()
+
+	mode := e29CreateAndCaptureMode(tc, env, "pvc-e29-linear", lvmControllerParams(env))
+	Expect(mode).To(Equal("linear"), "%s: ProvisionMode must be linear", tc.tcNodeLabel())
+}
+
+// TestCSIController_CreateVolume_LVM_Thin — a hand-written StorageClass backend
+// document selects thin provisioning on a store that declares a thin pool.
 func assertE29_CreateVolume_LVM_Thin(tc documentedCase) {
 	env := newControllerTestEnv()
 	defer env.close()
 
-	params := lvmControllerParams(env.target.Name)
-	params["pillar-csi.bhyoo.com/lvm-mode"] = "thin"
-
-	resp, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
-		Name:               "pvc-e29-thin",
-		Parameters:         params,
-		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
-	})
-	Expect(err).NotTo(HaveOccurred(), "%s: LVM thin CreateVolume", tc.tcNodeLabel())
-	Expect(resp.GetVolume().GetVolumeId()).NotTo(BeEmpty(), "%s: VolumeId", tc.tcNodeLabel())
-
-	reqs := agentCreateReqs(env)
-	Expect(reqs).To(HaveLen(1), "%s: exactly one agent CreateVolume call", tc.tcNodeLabel())
-	Expect(reqs[0].GetBackendParams().GetLvm().GetProvisionMode()).To(Equal("thin"),
-		"%s: ProvisionMode must be thin", tc.tcNodeLabel())
+	params := lvmControllerParams(env)
+	params[e2eDocBackend] = "lvm:\n  provisioningMode: thin\n"
+	mode := e29CreateAndCaptureMode(tc, env, "pvc-e29-thin", params)
+	Expect(mode).To(Equal("thin"), "%s: ProvisionMode must be thin", tc.tcNodeLabel())
+	Expect(agentCreateReqs(env)[0].GetBackendParams().GetLvm().GetThinPool()).To(Equal(e29ThinPool),
+		"%s: the store's lvm.thinPool must reach the agent", tc.tcNodeLabel())
 }
 
 // TestCSIController_CreateVolume_LVM_VolumeIdFormat
@@ -177,218 +177,111 @@ func assertE29_CreateVolume_LVM_VolumeIdFormat(tc documentedCase) {
 
 	resp, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
 		Name:               "pvc-e29-volid-fmt",
-		Parameters:         lvmControllerParams(env.target.Name),
+		Parameters:         lvmControllerParams(env),
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: LVM CreateVolume for VolumeId format test", tc.tcNodeLabel())
 
 	vid := resp.GetVolume().GetVolumeId()
-	// Format: <target>/<protocol>/<backend>/<pool>/<volume-name>
-	// e.g. "storage-1/nvmeof-tcp/lvm-lv/data-vg/pvc-e29-volid-fmt"
+	// Format: <agent>/<protocol>/<backend>/<volumeGroup>/<volume-name>
 	parts := strings.Split(vid, "/")
-	Expect(parts).To(HaveLen(5),
-		"%s: VolumeId should have 5 slash-delimited segments, got %q", tc.tcNodeLabel(), vid)
+	Expect(parts).To(HaveLen(5), "%s: VolumeId should have 5 slash-delimited segments, got %q", tc.tcNodeLabel(), vid)
 	Expect(parts[2]).To(Equal("lvm-lv"),
-		"%s: VolumeId segment[2] must be 'lvm-lv' (backend-type), got %q", tc.tcNodeLabel(), vid)
-	Expect(parts[3]).To(Equal("data-vg"),
-		"%s: VolumeId segment[3] must be 'data-vg' (pool), got %q", tc.tcNodeLabel(), vid)
+		"%s: VolumeId segment[2] must be 'lvm-lv' (backend), got %q", tc.tcNodeLabel(), vid)
+	Expect(parts[3]).To(Equal(e29VG),
+		"%s: VolumeId segment[3] must be the volume group, got %q", tc.tcNodeLabel(), vid)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // E29.2: Provisioning mode override 3-tier + PVC annotation edge cases
 // ─────────────────────────────────────────────────────────────────────────────
 
-// TestCSIController_LVM_ModeOverride_PoolDefault — Pool.lvm.provisioningMode="thin"
-// with no Binding or PVC override: agent receives ProvisionMode="thin".
+// TestCSIController_LVM_ModeOverride_PoolDefault — store lvm.provisioningMode=thin
+// with no binding or PVC override: agent receives ProvisionMode="thin".
 func assertE29_LVM_ModeOverride_PoolDefault(tc documentedCase) {
 	env := newControllerTestEnv()
 	defer env.close()
 
-	// Pool: thin. No binding override, no PVC annotation.
-	bindingName := makeLVMBinding(env, "pool-default", pillarv1.LVMProvisioningModeThin, "")
-
-	params := lvmControllerParams(env.target.Name)
-	params["pillar-csi.bhyoo.com/storage-class"] = bindingName
-
-	resp, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
-		Name:               "pvc-e29-mode-pool",
-		Parameters:         params,
-		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
-	})
-	Expect(err).NotTo(HaveOccurred(), "%s: CreateVolume with Pool default mode", tc.tcNodeLabel())
-	Expect(resp.GetVolume().GetVolumeId()).NotTo(BeEmpty(), "%s: VolumeId", tc.tcNodeLabel())
-
-	reqs := agentCreateReqs(env)
-	Expect(reqs).To(HaveLen(1), "%s: one agent call", tc.tcNodeLabel())
-	Expect(reqs[0].GetBackendParams().GetLvm().GetProvisionMode()).To(Equal("thin"),
-		"%s: Pool-level mode 'thin' must reach agent", tc.tcNodeLabel())
+	binding := makeLVMBinding(env, "pool-default", pillarv1.LVMProvisioningModeThin, "")
+	mode := e29CreateAndCaptureMode(tc, env, "pvc-e29-mode-pool", e29BindingParams(binding, nil))
+	Expect(mode).To(Equal("thin"), "%s: store-level mode 'thin' must reach agent", tc.tcNodeLabel())
 }
 
-// TestCSIController_LVM_ModeOverride_StorageClassOverridesPool — Binding overrides Pool mode.
-// Pool="thin", Binding override="linear" → agent receives "linear".
+// TestCSIController_LVM_ModeOverride_StorageClassOverridesPool — the binding
+// overrides the store mode. Store=thin, binding override=linear → "linear".
 func assertE29_LVM_ModeOverride_StorageClassOverridesPool(tc documentedCase) {
 	env := newControllerTestEnv()
 	defer env.close()
 
-	// Pool: thin. Binding override: linear.
-	bindingName := makeLVMBinding(env, "bind-override",
+	binding := makeLVMBinding(env, "bind-override",
 		pillarv1.LVMProvisioningModeThin, pillarv1.LVMProvisioningModeLinear)
-
-	params := lvmControllerParams(env.target.Name)
-	params["pillar-csi.bhyoo.com/storage-class"] = bindingName
-
-	_, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
-		Name:               "pvc-e29-mode-bind",
-		Parameters:         params,
-		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
-	})
-	Expect(err).NotTo(HaveOccurred(), "%s: CreateVolume with Binding override mode", tc.tcNodeLabel())
-
-	reqs := agentCreateReqs(env)
-	Expect(reqs).To(HaveLen(1), "%s: one agent call", tc.tcNodeLabel())
-	Expect(reqs[0].GetBackendParams().GetLvm().GetProvisionMode()).To(Equal("linear"),
-		"%s: Binding override 'linear' must win over Pool's 'thin'", tc.tcNodeLabel())
+	mode := e29CreateAndCaptureMode(tc, env, "pvc-e29-mode-bind", e29BindingParams(binding, nil))
+	Expect(mode).To(Equal("linear"), "%s: binding override 'linear' must win over store 'thin'", tc.tcNodeLabel())
 }
 
-// TestCSIController_LVM_ModeOverride_PVCAnnotationOverridesBinding — PVC annotation
-// overrides Binding-level mode. Binding="linear", PVC annotation="thin" → agent gets "thin".
+// TestCSIController_LVM_ModeOverride_PVCAnnotationOverridesBinding — the PVC
+// backend document overrides the binding. Binding=linear, PVC=thin → "thin".
 func assertE29_LVM_ModeOverride_PVCAnnotationOverridesBinding(tc documentedCase) {
 	env := newControllerTestEnv()
 	defer env.close()
 
-	// Pool: thin. Binding override: linear.
-	bindingName := makeLVMBinding(env, "pvc-override",
+	binding := makeLVMBinding(env, "pvc-override",
 		pillarv1.LVMProvisioningModeThin, pillarv1.LVMProvisioningModeLinear)
-
-	// PVC with backend-override annotation setting lvm.provisioningMode=thin
 	pvc := makePVCWithBackendAnnotation(env, "pvc-e29-mode-annot", "thin")
-
-	params := lvmControllerParams(env.target.Name)
-	params["pillar-csi.bhyoo.com/storage-class"] = bindingName
-	params["csi.storage.k8s.io/pvc/name"] = pvc.Name
-	params["csi.storage.k8s.io/pvc/namespace"] = pvc.Namespace
-
-	_, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
-		Name:               "pvc-e29-mode-annot",
-		Parameters:         params,
-		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
-	})
-	Expect(err).NotTo(HaveOccurred(), "%s: CreateVolume with PVC annotation override", tc.tcNodeLabel())
-
-	reqs := agentCreateReqs(env)
-	Expect(reqs).To(HaveLen(1), "%s: one agent call", tc.tcNodeLabel())
-	Expect(reqs[0].GetBackendParams().GetLvm().GetProvisionMode()).To(Equal("thin"),
-		"%s: PVC annotation 'thin' must win over Binding's 'linear'", tc.tcNodeLabel())
+	mode := e29CreateAndCaptureMode(tc, env, "pvc-e29-mode-annot", e29BindingParams(binding, pvc))
+	Expect(mode).To(Equal("thin"), "%s: PVC document 'thin' must win over binding 'linear'", tc.tcNodeLabel())
 }
 
-// TestCSIController_LVM_ModeOverride_AbsentUsesBackendDefault — when all layers are absent,
-// ProvisionMode="" is passed to the agent (agent applies its compiled-in default).
+// TestCSIController_LVM_ModeOverride_AbsentUsesBackendDefault — when no layer
+// sets a mode the single documented default (linear) applies.  The fake client
+// does not run CRD defaulting, so the store's mode is genuinely unset here;
+// the agent treats an empty mode as linear as well.
 func assertE29_LVM_ModeOverride_AbsentUsesBackendDefault(tc documentedCase) {
 	env := newControllerTestEnv()
 	defer env.close()
 
-	// Pool: no mode set. No binding override. No PVC annotation.
-	bindingName := makeLVMBinding(env, "absent-mode", "", "")
-
-	params := lvmControllerParams(env.target.Name)
-	params["pillar-csi.bhyoo.com/storage-class"] = bindingName
-
-	resp, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
-		Name:               "pvc-e29-mode-absent",
-		Parameters:         params,
-		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
-	})
-	Expect(err).NotTo(HaveOccurred(), "%s: CreateVolume with absent mode", tc.tcNodeLabel())
-
-	reqs := agentCreateReqs(env)
-	Expect(reqs).To(HaveLen(1), "%s: one agent call", tc.tcNodeLabel())
-	Expect(reqs[0].GetBackendParams().GetLvm().GetProvisionMode()).To(BeEmpty(),
-		"%s: absent mode must result in empty ProvisionMode (agent uses backend default)", tc.tcNodeLabel())
-	_ = resp
+	binding := makeLVMBinding(env, "absent-mode", "", "")
+	mode := e29CreateAndCaptureMode(tc, env, "pvc-e29-mode-absent", e29BindingParams(binding, nil))
+	Expect(mode).To(BeElementOf("", "linear"),
+		"%s: an unset mode must resolve to the linear default, got %q", tc.tcNodeLabel(), mode)
 }
 
-// TestCSIController_LVM_ModeOverride_InvalidPVCAnnotation — PVC annotation sets
-// provisioningMode="striped" which is invalid; fakeAgent is configured to reject it.
+// TestCSIController_LVM_ModeOverride_InvalidPVCAnnotation — a PVC backend
+// document with provisioningMode="striped" is outside the lvm enum and is
+// rejected by the shared decoder before the agent is called.
 func assertE29_LVM_ModeOverride_InvalidPVCAnnotation(tc documentedCase) {
 	env := newControllerTestEnv()
 	defer env.close()
 
-	// Simulate agent rejecting an unknown provisioning mode.
-	env.agentSrv.mu.Lock()
-	env.agentSrv.createVolumeErr = status.Errorf(codes.InvalidArgument,
-		"unknown provisioning mode: striped")
-	env.agentSrv.mu.Unlock()
-
-	// PVC with backend-override annotation: lvm.provisioningMode=striped
+	binding := makeLVMBinding(env, "invalid-mode", "", pillarv1.LVMProvisioningModeLinear)
 	pvc := makePVCWithBackendAnnotation(env, "pvc-e29-invalid-mode", "striped")
-
-	params := lvmControllerParams(env.target.Name)
-	params["csi.storage.k8s.io/pvc/name"] = pvc.Name
-	params["csi.storage.k8s.io/pvc/namespace"] = pvc.Namespace
 
 	_, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
 		Name:               "pvc-e29-invalid-mode",
-		Parameters:         params,
+		Parameters:         e29BindingParams(binding, pvc),
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
 		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 	})
-	Expect(err).To(HaveOccurred(),
-		"%s: CreateVolume with invalid provisioning mode should fail", tc.tcNodeLabel())
-
-	// Verify the mode made it to the agent (fakeAgent recorded the request before rejecting).
-	reqs := agentCreateReqs(env)
-	Expect(reqs).To(HaveLen(1), "%s: agent was called once", tc.tcNodeLabel())
-	Expect(reqs[0].GetBackendParams().GetLvm().GetProvisionMode()).To(Equal("striped"),
-		"%s: invalid mode 'striped' was propagated to agent before rejection", tc.tcNodeLabel())
+	Expect(status.Code(err)).To(Equal(codes.InvalidArgument),
+		"%s: invalid provisioning mode must be rejected, got %v", tc.tcNodeLabel(), err)
+	Expect(err.Error()).To(ContainSubstring("lvm.provisioningMode"),
+		"%s: the rejection must name the field path", tc.tcNodeLabel())
+	Expect(agentCreateReqs(env)).To(BeEmpty(),
+		"%s: an invalid document must not reach the agent", tc.tcNodeLabel())
 }
 
-// TestCSIController_LVM_ModeOverride_EmptyPVCAnnotation_FallsThrough — when the PVC
-// annotation uses the flat-key style with an empty value for lvm-mode, the Binding-level
-// value "thin" is preserved (an empty flat-key value is not an override).
+// TestCSIController_LVM_ModeOverride_EmptyPVCAnnotation_FallsThrough — an empty
+// pillar-csi.bhyoo.com/backend document is not an override, so the binding's
+// value "thin" is preserved.
 func assertE29_LVM_ModeOverride_EmptyPVCAnnotation_FallsThrough(tc documentedCase) {
 	env := newControllerTestEnv()
 	defer env.close()
 
-	// Binding override: thin (this should be the effective mode).
-	bindingName := makeLVMBinding(env, "fallthrough", "", pillarv1.LVMProvisioningModeThin)
-
-	// PVC with flat-key annotation lvm-mode="" — an empty value is not an
-	// override, so paramLVMMode keeps the Binding-level value.
-	pvc := &corev1.PersistentVolumeClaim{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "pvc-e29-empty-annot",
-			Namespace: "default",
-			Annotations: map[string]string{
-				"pillar-csi.bhyoo.com/param.lvm-mode": "", // flat key, empty value → falls through
-			},
-		},
-		Spec: corev1.PersistentVolumeClaimSpec{},
-	}
-	Expect(env.k8sClient.Create(env.ctx, pvc)).To(Succeed())
-
-	params := lvmControllerParams(env.target.Name)
-	params["pillar-csi.bhyoo.com/storage-class"] = bindingName
-	params["csi.storage.k8s.io/pvc/name"] = pvc.Name
-	params["csi.storage.k8s.io/pvc/namespace"] = pvc.Namespace
-
-	resp, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
-		Name:               "pvc-e29-empty-annot",
-		Parameters:         params,
-		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
-	})
-	Expect(err).NotTo(HaveOccurred(), "%s: CreateVolume with empty flat-key annotation", tc.tcNodeLabel())
-
-	reqs := agentCreateReqs(env)
-	Expect(reqs).To(HaveLen(1), "%s: one agent call", tc.tcNodeLabel())
-	Expect(reqs[0].GetBackendParams().GetLvm().GetProvisionMode()).To(Equal("thin"),
-		"%s: Binding 'thin' preserved because an empty flat-key annotation is not an override",
-		tc.tcNodeLabel())
-	_ = resp
+	binding := makeLVMBinding(env, "fallthrough", "", pillarv1.LVMProvisioningModeThin)
+	pvc := makePVCWithBackendAnnotation(env, "pvc-e29-empty-annot", "")
+	mode := e29CreateAndCaptureMode(tc, env, "pvc-e29-empty-annot", e29BindingParams(binding, pvc))
+	Expect(mode).To(Equal("thin"),
+		"%s: binding 'thin' preserved because an empty document is not an override", tc.tcNodeLabel())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -402,7 +295,7 @@ func assertE29_DeleteVolume_LVM(tc documentedCase) {
 
 	resp, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
 		Name:               "pvc-e29-del-lvm",
-		Parameters:         lvmControllerParams(env.target.Name),
+		Parameters:         lvmControllerParams(env),
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
 		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 	})
@@ -428,7 +321,7 @@ func assertE29_ControllerExpandVolume_LVM(tc documentedCase) {
 
 	resp, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
 		Name:               "pvc-e29-expand-lvm",
-		Parameters:         lvmControllerParams(env.target.Name),
+		Parameters:         lvmControllerParams(env),
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
 		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 	})
@@ -463,7 +356,7 @@ func assertE29_LVM_FullRoundTrip(tc documentedCase) {
 	// Stage 1: CreateVolume
 	createResp, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
 		Name:               "pvc-e29-fullroundtrip",
-		Parameters:         lvmControllerParams(env.target.Name),
+		Parameters:         lvmControllerParams(env),
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
 		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 	})

@@ -15,9 +15,8 @@ func TestBackendHandleNamesAreUniquePerTC(t *testing.T) {
 	const numScopes = 5
 
 	type names struct {
-		zfsPool  string
-		lvmVG    string
-		iscsiIQN string
+		zfsPool string
+		lvmVG   string
 	}
 
 	results := make([]names, numScopes)
@@ -35,9 +34,8 @@ func TestBackendHandleNamesAreUniquePerTC(t *testing.T) {
 			defer func() { _ = scope.Close() }()
 
 			results[idx] = names{
-				zfsPool:  zfsPoolName(scope.ScopeTag),
-				lvmVG:    lvmVGName(scope.ScopeTag),
-				iscsiIQN: iscsiIQN(scope.ScopeTag),
+				zfsPool: zfsPoolName(scope.ScopeTag),
+				lvmVG:   lvmVGName(scope.ScopeTag),
 			}
 		}(i)
 	}
@@ -61,18 +59,9 @@ func TestBackendHandleNamesAreUniquePerTC(t *testing.T) {
 		}
 		lvmSeen[n.lvmVG] = i
 	}
-
-	// Verify all iSCSI IQNs are distinct.
-	iqnSeen := make(map[string]int)
-	for i, n := range results {
-		if other, dup := iqnSeen[n.iscsiIQN]; dup {
-			t.Errorf("iSCSI IQN %q duplicated at indices %d and %d", n.iscsiIQN, other, i)
-		}
-		iqnSeen[n.iscsiIQN] = i
-	}
 }
 
-// TestBackendNamingDerivesFromScopeTag verifies that the derived pool/VG/IQN
+// TestBackendNamingDerivesFromScopeTag verifies that the derived pool/VG
 // names embed a substring from the TC scope tag, ensuring traceability.
 func TestBackendNamingDerivesFromScopeTag(t *testing.T) {
 	t.Parallel()
@@ -84,16 +73,12 @@ func TestBackendNamingDerivesFromScopeTag(t *testing.T) {
 
 	pool := zfsPoolName(scope.ScopeTag)
 	vg := lvmVGName(scope.ScopeTag)
-	iqn := iscsiIQN(scope.ScopeTag)
 
 	if len(pool) == 0 {
 		t.Error("zfsPoolName returned empty string")
 	}
 	if len(vg) == 0 {
 		t.Error("lvmVGName returned empty string")
-	}
-	if len(iqn) == 0 {
-		t.Error("iscsiIQN returned empty string")
 	}
 
 	// Prefixes must be present.
@@ -102,10 +87,6 @@ func TestBackendNamingDerivesFromScopeTag(t *testing.T) {
 	}
 	if len(vg) < 6 || vg[:6] != "e2evg-" {
 		t.Errorf("lvmVGName %q does not start with 'e2evg-'", vg)
-	}
-	iqnPrefix := "iqn.2024-01.io.pillar-csi:"
-	if len(iqn) < len(iqnPrefix) || iqn[:len(iqnPrefix)] != iqnPrefix {
-		t.Errorf("iscsiIQN %q does not start with %q", iqn, iqnPrefix)
 	}
 }
 
@@ -116,8 +97,6 @@ func TestBackendNamingDerivesFromScopeTag(t *testing.T) {
 //     (we restrict to alphanumeric + hyphens in our derivation).
 //   - LVM VG names: alphanumeric, hyphens, underscores, periods, plus signs.
 //     (we restrict to alphanumeric + hyphens in our derivation).
-//   - iSCSI IQNs: the suffix after "iqn.2024-01.io.pillar-csi:" must be
-//     alphanumeric + hyphens.
 func TestBackendNamesAreDNSSafe(t *testing.T) {
 	t.Parallel()
 	scope, err := NewTestCaseScope("dns-safe-tc-99")
@@ -137,13 +116,6 @@ func TestBackendNamesAreDNSSafe(t *testing.T) {
 	vg := lvmVGName(scope.ScopeTag)
 	if !safeRe.MatchString(vg) {
 		t.Errorf("LVM VG name %q contains unsafe characters", vg)
-	}
-
-	iqn := iscsiIQN(scope.ScopeTag)
-	// IQN format: "iqn.<date>.<reversed-domain>:<suffix>"
-	iqnRe := regexp.MustCompile(`^iqn\.\d{4}-\d{2}\.[a-z0-9.\-]+:[a-z0-9\-]+$`)
-	if !iqnRe.MatchString(iqn) {
-		t.Errorf("iSCSI IQN %q is not a valid IQN format", iqn)
 	}
 }
 

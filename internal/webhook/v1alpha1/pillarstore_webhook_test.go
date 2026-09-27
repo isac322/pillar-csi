@@ -27,15 +27,24 @@ import (
 	pillarcsiv1alpha1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
 )
 
-// E21.3: PillarStore webhook — immutable field update rejection tests.
+// E21.3: PillarStore webhook — union validation and immutable field update rejection.
 //
-// These tests validate that PillarStoreCustomValidator.ValidateUpdate() correctly
-// rejects mutations to spec.agentRef, spec.backend.type, and spec.backend.zfs.pool,
-// which are immutable because changing them would invalidate all volumes provisioned
-// from the pool.
+// These tests validate that PillarStoreCustomValidator rejects an empty or
+// double-member backend union on create, and on update rejects mutations to
+// spec.agentRef, the backend member (zfs ↔ lvm), spec.backend.zfs.pool and
+// spec.backend.lvm.volumeGroup, which are immutable because changing them
+// would invalidate all volumes provisioned from the store.
 //
 // All tests call the validator directly — no envtest API server is required for
 // compilation or execution of the validator logic.
+
+func zfsBackend(pool string) pillarcsiv1alpha1.BackendSpec {
+	return pillarcsiv1alpha1.BackendSpec{ZFS: &pillarcsiv1alpha1.ZFSBackendConfig{Pool: pool}}
+}
+
+func lvmBackend(vg string) pillarcsiv1alpha1.BackendSpec {
+	return pillarcsiv1alpha1.BackendSpec{LVM: &pillarcsiv1alpha1.LVMBackendConfig{VolumeGroup: vg}}
+}
 
 var _ = Describe("PillarStore Webhook", func() {
 	var (
@@ -50,261 +59,208 @@ var _ = Describe("PillarStore Webhook", func() {
 		obj = &pillarcsiv1alpha1.PillarStore{}
 		oldObj = &pillarcsiv1alpha1.PillarStore{}
 		validator = PillarStoreCustomValidator{}
-		Expect(validator).NotTo(BeNil(), "Expected validator to be initialized")
-		Expect(oldObj).NotTo(BeNil(), "Expected oldObj to be initialized")
-		Expect(obj).NotTo(BeNil(), "Expected obj to be initialized")
-	})
-
-	AfterEach(func() {
-		// no teardown required for direct validator tests
 	})
 
 	Context("When creating or updating PillarStore under Validating Webhook", func() {
 		// ── E21.3 — ID 158 ──────────────────────────────────────────────────────
 		// TestPillarStoreWebhook_Update_AgentRefImmutable
 		It("Should deny update when spec.agentRef is changed", func() {
-			By("setting oldObj.spec.agentRef to target-a and newObj.spec.agentRef to target-b")
 			oldObj.Spec.AgentRef = "target-a"
-			oldObj.Spec.Backend = pillarcsiv1alpha1.BackendSpec{
-				Type: pillarcsiv1alpha1.BackendTypeZFSZvol,
-			}
+			oldObj.Spec.Backend = zfsBackend("tank")
 			obj.Spec.AgentRef = "target-b"
-			obj.Spec.Backend = pillarcsiv1alpha1.BackendSpec{
-				Type: pillarcsiv1alpha1.BackendTypeZFSZvol,
-			}
+			obj.Spec.Backend = zfsBackend("tank")
 
 			_, err := validator.ValidateUpdate(ctx, oldObj, obj)
 			Expect(err).To(HaveOccurred(), "Expected error when spec.agentRef is changed")
-			Expect(err.Error()).To(ContainSubstring("target-a"),
-				"Error should mention old agentRef value")
-			Expect(err.Error()).To(ContainSubstring("target-b"),
-				"Error should mention new agentRef value")
+			Expect(err.Error()).To(ContainSubstring("target-a"), "Error should mention old agentRef value")
+			Expect(err.Error()).To(ContainSubstring("target-b"), "Error should mention new agentRef value")
 		})
 
 		// ── E21.3 — ID 159 ──────────────────────────────────────────────────────
-		// TestPillarStoreWebhook_Update_BackendTypeImmutable
-		It("Should deny update when spec.backend.type is changed", func() {
-			By("changing backend.type from zfs-zvol to lvm-lv")
+		// TestPillarStoreWebhook_Update_BackendMemberImmutable
+		It("Should deny update when the backend member changes from zfs to lvm", func() {
 			oldObj.Spec.AgentRef = "t1"
-			oldObj.Spec.Backend = pillarcsiv1alpha1.BackendSpec{
-				Type: pillarcsiv1alpha1.BackendTypeZFSZvol,
-			}
+			oldObj.Spec.Backend = zfsBackend("tank")
 			obj.Spec.AgentRef = "t1"
-			obj.Spec.Backend = pillarcsiv1alpha1.BackendSpec{
-				Type: pillarcsiv1alpha1.BackendTypeLVMLV,
-			}
+			obj.Spec.Backend = lvmBackend("data-vg")
 
 			_, err := validator.ValidateUpdate(ctx, oldObj, obj)
-			Expect(err).To(HaveOccurred(), "Expected error when spec.backend.type is changed")
-			Expect(err.Error()).To(ContainSubstring("zfs-zvol"),
-				"Error should mention old backend.type value")
-			Expect(err.Error()).To(ContainSubstring("lvm-lv"),
-				"Error should mention new backend.type value")
+			Expect(err).To(HaveOccurred(), "Expected error when the backend member is changed")
+			Expect(err.Error()).To(ContainSubstring("spec.backend"), "Error should name spec.backend")
+			Expect(err.Error()).To(ContainSubstring(`"zfs"`), "Error should mention the old member")
+			Expect(err.Error()).To(ContainSubstring(`"lvm"`), "Error should mention the new member")
 		})
 
 		// ── E21.3 — ID 160 ──────────────────────────────────────────────────────
 		// TestPillarStoreWebhook_Update_ZFSPoolImmutable
 		It("Should deny update when only the ZFS pool name changes", func() {
-			By("keeping backend.type as zfs-zvol but changing zfs.pool from tank to new-tank")
 			oldObj.Spec.AgentRef = "t1"
-			oldObj.Spec.Backend = pillarcsiv1alpha1.BackendSpec{
-				Type: pillarcsiv1alpha1.BackendTypeZFSZvol,
-				ZFS:  &pillarcsiv1alpha1.ZFSBackendConfig{Pool: "tank"},
-			}
+			oldObj.Spec.Backend = zfsBackend("tank")
 			obj.Spec.AgentRef = "t1"
-			obj.Spec.Backend = pillarcsiv1alpha1.BackendSpec{
-				Type: pillarcsiv1alpha1.BackendTypeZFSZvol,
-				ZFS:  &pillarcsiv1alpha1.ZFSBackendConfig{Pool: "new-tank"},
-			}
+			obj.Spec.Backend = zfsBackend("new-tank")
 
 			_, err := validator.ValidateUpdate(ctx, oldObj, obj)
-			Expect(err).To(HaveOccurred(),
-				"Changing the ZFS pool name should be rejected")
-			Expect(err.Error()).To(ContainSubstring("spec.backend.zfs.pool"),
-				"Error should mention spec.backend.zfs.pool field")
+			Expect(err).To(HaveOccurred(), "Changing the ZFS pool name should be rejected")
+			Expect(err.Error()).To(ContainSubstring("spec.backend.zfs.pool"))
+		})
+
+		// TestPillarStoreWebhook_Update_LVMVolumeGroupImmutable
+		It("Should deny update when only the LVM volume group changes", func() {
+			oldObj.Spec.AgentRef = "t1"
+			oldObj.Spec.Backend = lvmBackend("data-vg")
+			obj.Spec.AgentRef = "t1"
+			obj.Spec.Backend = lvmBackend("other-vg")
+
+			_, err := validator.ValidateUpdate(ctx, oldObj, obj)
+			Expect(err).To(HaveOccurred(), "Changing the LVM volume group should be rejected")
+			Expect(err.Error()).To(ContainSubstring("spec.backend.lvm.volumeGroup"))
 		})
 
 		// ── E21.3 — ID 161 ──────────────────────────────────────────────────────
 		// TestPillarStoreWebhook_Update_BothFieldsChanged_MultipleErrors
-		It("Should return errors for both spec.agentRef and spec.backend.type when both change", func() {
-			By("changing both agentRef and backend.type simultaneously")
+		It("Should return errors for both spec.agentRef and spec.backend when both change", func() {
 			oldObj.Spec.AgentRef = "t1"
-			oldObj.Spec.Backend = pillarcsiv1alpha1.BackendSpec{
-				Type: pillarcsiv1alpha1.BackendTypeZFSZvol,
-			}
+			oldObj.Spec.Backend = zfsBackend("tank")
 			obj.Spec.AgentRef = "t2"
-			obj.Spec.Backend = pillarcsiv1alpha1.BackendSpec{
-				Type: pillarcsiv1alpha1.BackendTypeLVMLV,
-			}
+			obj.Spec.Backend = lvmBackend("data-vg")
 
 			_, err := validator.ValidateUpdate(ctx, oldObj, obj)
-			Expect(err).To(HaveOccurred(), "Expected error when both immutable fields are changed")
-			Expect(err.Error()).To(ContainSubstring("spec.agentRef"),
-				"Error should mention spec.agentRef field")
-			Expect(err.Error()).To(ContainSubstring("spec.backend.type"),
-				"Error should mention spec.backend.type field")
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("spec.agentRef"))
+			Expect(err.Error()).To(ContainSubstring("spec.backend"))
 		})
 
 		// ── E21.3 — ID 162 ──────────────────────────────────────────────────────
 		// TestPillarStoreWebhook_Create_Valid
-		It("Should allow valid PillarStore creation (current ValidateCreate is no-op scaffolding)", func() {
-			By("creating a PillarStore with valid spec.agentRef and spec.backend")
+		It("Should allow valid zfs and lvm PillarStore creation", func() {
 			obj.Spec.AgentRef = "target-1"
-			obj.Spec.Backend = pillarcsiv1alpha1.BackendSpec{
-				Type: pillarcsiv1alpha1.BackendTypeZFSZvol,
-				ZFS:  &pillarcsiv1alpha1.ZFSBackendConfig{Pool: "tank"},
-			}
-
+			obj.Spec.Backend = zfsBackend("tank")
 			_, err := validator.ValidateCreate(ctx, obj)
-			Expect(err).NotTo(HaveOccurred(),
-				"Valid PillarStore creation should be allowed")
+			Expect(err).NotTo(HaveOccurred())
+
+			obj.Spec.Backend = lvmBackend("data-vg")
+			_, err = validator.ValidateCreate(ctx, obj)
+			Expect(err).NotTo(HaveOccurred())
 		})
 
-		// ── E32.1 TC-280 ─────────────────────────────────────────────────────
-		// TestPillarStore_LVM_MissingLVMConfig_Rejected
-		// When backend.type == "lvm-lv" but backend.lvm is nil the cross-field
-		// constraint validated by validatePillarStoreSpec must return an error.
-		It("TC-280: TestPillarStore_LVM_MissingLVMConfig_Rejected — "+
-			"lvm-lv without backend.lvm is rejected by ValidateCreate", func() {
-			By("calling ValidateCreate with a PillarStore that has type=lvm-lv and no backend.lvm")
+		// ── E32.1 TC-280 ───────────────────────────────────────────────────────
+		// TestPillarStore_EmptyBackendUnion_Rejected
+		It("TC-280: should reject a PillarStore whose backend sets no member", func() {
 			obj.Spec.AgentRef = "storage-1"
-			obj.Spec.Backend = pillarcsiv1alpha1.BackendSpec{
-				Type: pillarcsiv1alpha1.BackendTypeLVMLV,
-				// LVM field intentionally omitted — must be rejected.
-			}
-
 			_, err := validator.ValidateCreate(ctx, obj)
-			Expect(err).To(HaveOccurred(),
-				"ValidateCreate should reject a PillarStore with type=lvm-lv and no backend.lvm section")
-			Expect(err.Error()).To(ContainSubstring("lvm"),
-				"error message should mention the missing lvm section")
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("exactly one of zfs or lvm"))
 		})
 
-		// ── E20.1.2 ──────────────────────────────────────────────────────────
-		// TestPillarStoreWebhook_ValidCreate_Dir
-		It("Should allow valid PillarStore creation with dir backend type (no ZFS config needed)", func() {
-			By("creating a PillarStore with backend.type=dir and no ZFS configuration")
-			obj.Spec.AgentRef = "target-a"
-			obj.Spec.Backend = pillarcsiv1alpha1.BackendSpec{
-				Type: pillarcsiv1alpha1.BackendTypeDir,
-			}
-
-			_, err := validator.ValidateCreate(ctx, obj)
-			Expect(err).NotTo(HaveOccurred(),
-				"dir backend PillarStore creation should be allowed; no ZFS config is required")
-		})
-
-		// ── E20.3.4 ──────────────────────────────────────────────────────────
+		// ── E20.3.4 ───────────────────────────────────────────────────────────
 		// TestPillarStoreWebhook_MutableUpdate_ZFSPropertiesChange
-		It("Should allow update when only spec.backend.zfs.properties change (immutable fields unchanged)", func() {
-			By("keeping agentRef and backend.type identical; changing only zfs.properties")
+		It("Should allow update when only zfs.properties change", func() {
 			oldObj.Spec.AgentRef = "t1"
-			oldObj.Spec.Backend = pillarcsiv1alpha1.BackendSpec{
-				Type: pillarcsiv1alpha1.BackendTypeZFSZvol,
-				ZFS: &pillarcsiv1alpha1.ZFSBackendConfig{
-					Pool:       "hot-data",
-					Properties: map[string]string{"compression": "off"},
-				},
-			}
+			oldObj.Spec.Backend = pillarcsiv1alpha1.BackendSpec{ZFS: &pillarcsiv1alpha1.ZFSBackendConfig{
+				Pool: "hot-data", Properties: map[string]string{"compression": "off"},
+			}}
 			obj.Spec.AgentRef = "t1"
-			obj.Spec.Backend = pillarcsiv1alpha1.BackendSpec{
-				Type: pillarcsiv1alpha1.BackendTypeZFSZvol,
-				ZFS: &pillarcsiv1alpha1.ZFSBackendConfig{
-					Pool:       "hot-data",
-					Properties: map[string]string{"compression": "lz4"},
-				},
-			}
+			obj.Spec.Backend = pillarcsiv1alpha1.BackendSpec{ZFS: &pillarcsiv1alpha1.ZFSBackendConfig{
+				Pool: "hot-data", Properties: map[string]string{"compression": "lz4"},
+			}}
 
 			_, err := validator.ValidateUpdate(ctx, oldObj, obj)
-			Expect(err).NotTo(HaveOccurred(),
-				"Changing only zfs.properties should be allowed; it is not an immutable field")
+			Expect(err).NotTo(HaveOccurred(), "zfs.properties is not an immutable field")
 		})
 	})
 })
 
-func TestPillarStore_ZfsPoolImmutable(t *testing.T) {
+func TestPillarStore_ValidateCreate_BackendUnion(t *testing.T) {
 	tests := []struct {
-		name          string
-		oldBackend    pillarcsiv1alpha1.BackendSpec
-		newBackend    pillarcsiv1alpha1.BackendSpec
-		wantForbidden bool
+		name     string
+		backend  pillarcsiv1alpha1.BackendSpec
+		wantPath string // expected field path; admitted when blank
 	}{
+		{name: "zfs admitted", backend: zfsBackend("tank")},
+		{name: "lvm admitted", backend: lvmBackend("data-vg")},
+		{name: "empty union", backend: pillarcsiv1alpha1.BackendSpec{}, wantPath: "spec.backend"},
 		{
-			name: "rename forbidden",
-			oldBackend: pillarcsiv1alpha1.BackendSpec{
-				Type: pillarcsiv1alpha1.BackendTypeZFSZvol,
-				ZFS:  &pillarcsiv1alpha1.ZFSBackendConfig{Pool: "tank"},
+			name: "both members",
+			backend: pillarcsiv1alpha1.BackendSpec{
+				ZFS: &pillarcsiv1alpha1.ZFSBackendConfig{Pool: "tank"},
+				LVM: &pillarcsiv1alpha1.LVMBackendConfig{VolumeGroup: "data-vg"},
 			},
-			newBackend: pillarcsiv1alpha1.BackendSpec{
-				Type: pillarcsiv1alpha1.BackendTypeZFSZvol,
-				ZFS:  &pillarcsiv1alpha1.ZFSBackendConfig{Pool: "tank2"},
-			},
-			wantForbidden: true,
+			wantPath: "spec.backend",
 		},
+		{name: "empty zfs pool", backend: zfsBackend(""), wantPath: "spec.backend.zfs.pool"},
+		{name: "empty lvm volumeGroup", backend: lvmBackend(""), wantPath: "spec.backend.lvm.volumeGroup"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &pillarcsiv1alpha1.PillarStore{Spec: pillarcsiv1alpha1.PillarStoreSpec{
+				AgentRef: "target-a", Backend: tt.backend,
+			}}
+			_, err := (&PillarStoreCustomValidator{}).ValidateCreate(context.Background(), store)
+			if tt.wantPath == "" {
+				if err != nil {
+					t.Fatalf("ValidateCreate() error = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("ValidateCreate() error = nil, want error on %s", tt.wantPath)
+			}
+			if !strings.Contains(err.Error(), tt.wantPath) {
+				t.Fatalf("ValidateCreate() error = %v, want path %s", err, tt.wantPath)
+			}
+		})
+	}
+}
+
+func TestPillarStore_BackendImmutable(t *testing.T) {
+	tests := []struct {
+		name       string
+		oldBackend pillarcsiv1alpha1.BackendSpec
+		newBackend pillarcsiv1alpha1.BackendSpec
+		wantPath   string // expected field path; admitted when blank
+	}{
+		{name: "zfs pool rename forbidden", oldBackend: zfsBackend("tank"), newBackend: zfsBackend("tank2"),
+			wantPath: "spec.backend.zfs.pool"},
+		{name: "lvm volumeGroup rename forbidden", oldBackend: lvmBackend("data-vg"),
+			newBackend: lvmBackend("other-vg"), wantPath: "spec.backend.lvm.volumeGroup"},
+		{name: "zfs to lvm forbidden", oldBackend: zfsBackend("tank"), newBackend: lvmBackend("tank"),
+			wantPath: "spec.backend"},
+		{name: "lvm to zfs forbidden", oldBackend: lvmBackend("data-vg"), newBackend: zfsBackend("data-vg"),
+			wantPath: "spec.backend"},
+		{name: "zfs unchanged", oldBackend: zfsBackend("tank"), newBackend: zfsBackend("tank")},
+		{name: "lvm unchanged", oldBackend: lvmBackend("data-vg"), newBackend: lvmBackend("data-vg")},
 		{
-			name: "nil-block unchanged",
-			oldBackend: pillarcsiv1alpha1.BackendSpec{
-				Type: pillarcsiv1alpha1.BackendTypeLVMLV,
-				LVM:  &pillarcsiv1alpha1.LVMBackendConfig{VolumeGroup: "data-vg"},
-			},
-			newBackend: pillarcsiv1alpha1.BackendSpec{
-				Type: pillarcsiv1alpha1.BackendTypeLVMLV,
-				LVM:  &pillarcsiv1alpha1.LVMBackendConfig{VolumeGroup: "data-vg"},
-			},
-		},
-		{
-			name: "introduce mismatch",
-			oldBackend: pillarcsiv1alpha1.BackendSpec{
-				Type: pillarcsiv1alpha1.BackendTypeZFSZvol,
-			},
-			newBackend: pillarcsiv1alpha1.BackendSpec{
-				Type: pillarcsiv1alpha1.BackendTypeZFSZvol,
-				ZFS:  &pillarcsiv1alpha1.ZFSBackendConfig{Pool: "tank"},
-			},
-			wantForbidden: true,
-		},
-		{
-			name: "unchanged",
-			oldBackend: pillarcsiv1alpha1.BackendSpec{
-				Type: pillarcsiv1alpha1.BackendTypeZFSZvol,
-				ZFS:  &pillarcsiv1alpha1.ZFSBackendConfig{Pool: "tank"},
-			},
-			newBackend: pillarcsiv1alpha1.BackendSpec{
-				Type: pillarcsiv1alpha1.BackendTypeZFSZvol,
-				ZFS:  &pillarcsiv1alpha1.ZFSBackendConfig{Pool: "tank"},
-			},
+			name:       "lvm thinPool and provisioningMode mutable",
+			oldBackend: lvmBackend("data-vg"),
+			newBackend: pillarcsiv1alpha1.BackendSpec{LVM: &pillarcsiv1alpha1.LVMBackendConfig{
+				VolumeGroup: "data-vg", ThinPool: "thin0",
+				ProvisioningMode: pillarcsiv1alpha1.LVMProvisioningModeThin,
+			}},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			oldPool := &pillarcsiv1alpha1.PillarStore{
-				Spec: pillarcsiv1alpha1.PillarStoreSpec{
-					AgentRef: "target-a",
-					Backend:  tt.oldBackend,
-				},
-			}
-			newPool := &pillarcsiv1alpha1.PillarStore{
-				Spec: pillarcsiv1alpha1.PillarStoreSpec{
-					AgentRef: "target-a",
-					Backend:  tt.newBackend,
-				},
-			}
-
-			_, err := (&PillarStoreCustomValidator{}).ValidateUpdate(context.Background(), oldPool, newPool)
-
-			if !tt.wantForbidden {
+			oldStore := &pillarcsiv1alpha1.PillarStore{Spec: pillarcsiv1alpha1.PillarStoreSpec{
+				AgentRef: "target-a", Backend: tt.oldBackend,
+			}}
+			newStore := &pillarcsiv1alpha1.PillarStore{Spec: pillarcsiv1alpha1.PillarStoreSpec{
+				AgentRef: "target-a", Backend: tt.newBackend,
+			}}
+			_, err := (&PillarStoreCustomValidator{}).ValidateUpdate(context.Background(), oldStore, newStore)
+			if tt.wantPath == "" {
 				if err != nil {
 					t.Fatalf("ValidateUpdate() error = %v, want nil", err)
 				}
 				return
 			}
 			if err == nil {
-				t.Fatal("ValidateUpdate() error = nil, want forbidden spec.backend.zfs.pool error")
+				t.Fatalf("ValidateUpdate() error = nil, want forbidden %s error", tt.wantPath)
 			}
 			errText := err.Error()
-			if !strings.Contains(errText, "spec.backend.zfs.pool") {
-				t.Fatalf("ValidateUpdate() error = %v, want spec.backend.zfs.pool path", err)
+			if !strings.Contains(errText, tt.wantPath+":") {
+				t.Fatalf("ValidateUpdate() error = %v, want %s path", err, tt.wantPath)
 			}
 			if !strings.Contains(errText, "Forbidden") {
 				t.Fatalf("ValidateUpdate() error = %v, want field.Forbidden error", err)

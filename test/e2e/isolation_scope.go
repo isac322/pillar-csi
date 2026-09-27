@@ -51,8 +51,7 @@ type TestCaseScope struct {
 	namespaceDir   string // filesystem path: RootDir/namespaces/DerivedNamespace
 	backendObjects map[string]*BackendObject
 	portLeases     map[string]*PortLease
-	portAllocs     map[string]*ports.Allocation     // registry-backed typed allocations
-	iscsiRanges    map[string]*ports.ISCSIPortRange // range-based iSCSI port allocations; see ReserveISCSIPortRange
+	portAllocs     map[string]*ports.Allocation // registry-backed typed allocations
 	resources      map[string]*trackedResource
 	resourceOrder  []string
 	closed         bool
@@ -158,7 +157,6 @@ func NewTestCaseScope(tcID string) (*TestCaseScope, error) {
 		backendObjects:   make(map[string]*BackendObject),
 		portLeases:       make(map[string]*PortLease),
 		portAllocs:       make(map[string]*ports.Allocation),
-		iscsiRanges:      make(map[string]*ports.ISCSIPortRange),
 		resources:        make(map[string]*trackedResource),
 	}, nil
 }
@@ -451,8 +449,8 @@ func (s *TestCaseScope) Close() error {
 				errs = append(errs, err)
 			}
 		}
-		// Release typed registry allocations (e.g. iSCSI target ports allocated
-		// via ReserveISCSITargetPort / ReserveCSIGRPCPort).
+		// Release typed registry allocations (e.g. gRPC ports allocated via
+		// ReserveCSIGRPCPort / ReserveAgentGRPCPort).
 		if len(allocs) > 0 {
 			if err := measureTimingPhaseErr(phaseTeardownPortLeases, func() error {
 				var allocErrs []error

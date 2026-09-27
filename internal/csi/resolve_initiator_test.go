@@ -85,10 +85,6 @@ func TestResolveInitiatorID_AnnotationKeyValues(t *testing.T) {
 		t.Errorf("AnnotationNVMeOFHostNQN = %q, want \"pillar-csi.bhyoo.com/nvmeof-host-nqn\"",
 			AnnotationNVMeOFHostNQN)
 	}
-	if AnnotationISCSIInitiatorIQN != "pillar-csi.bhyoo.com/iscsi-initiator-iqn" {
-		t.Errorf("AnnotationISCSIInitiatorIQN = %q, want \"pillar-csi.bhyoo.com/iscsi-initiator-iqn\"",
-			AnnotationISCSIInitiatorIQN)
-	}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -193,8 +189,8 @@ func TestResolveInitiatorID_NVMeoF_Success(t *testing.T) {
 }
 
 // TestResolveInitiatorID_NVMeoF_OnlyNVMeoFAnnotationRead verifies that
-// when a CSINode has both NVMe-oF and iSCSI annotations, an NVMe-oF TCP
-// request reads only the NVMe-oF annotation.
+// when a CSINode carries other annotations too, an NVMe-oF TCP request reads
+// only the NVMe-oF annotation.
 func TestResolveInitiatorID_NVMeoF_OnlyNVMeoFAnnotationRead(t *testing.T) {
 	t.Parallel()
 
@@ -203,8 +199,8 @@ func TestResolveInitiatorID_NVMeoF_OnlyNVMeoFAnnotationRead(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "multi-proto-node",
 			Annotations: map[string]string{
-				AnnotationNVMeOFHostNQN:     wantNQN,
-				AnnotationISCSIInitiatorIQN: "iqn.1993-08.org.debian:01:multi-proto-node",
+				AnnotationNVMeOFHostNQN:                    wantNQN,
+				"pillar-csi.bhyoo.com/iscsi-initiator-iqn": "iqn.1993-08.org.debian:01:multi-proto-node",
 			},
 		},
 	}
@@ -219,99 +215,7 @@ func TestResolveInitiatorID_NVMeoF_OnlyNVMeoFAnnotationRead(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// iSCSI protocol
-// ─────────────────────────────────────────────────────────────────────────────
-
-// TestResolveInitiatorID_ISCSI_CSINodeNotFound verifies FailedPrecondition
-// for the iSCSI protocol when the CSINode is absent.
-func TestResolveInitiatorID_ISCSI_CSINodeNotFound(t *testing.T) {
-	t.Parallel()
-
-	srv := newMinimalControllerServer(t) // no CSINode seeded
-	_, err := srv.resolveInitiatorID(context.Background(), "worker-node-1", "iscsi")
-	if err == nil {
-		t.Fatal("expected FailedPrecondition error, got nil")
-	}
-	st, _ := status.FromError(err)
-	if st.Code() != codes.FailedPrecondition {
-		t.Errorf("error code = %v, want %v", st.Code(), codes.FailedPrecondition)
-	}
-}
-
-// TestResolveInitiatorID_ISCSI_AnnotationMissing verifies FailedPrecondition
-// for iSCSI when the CSINode exists but iscsi-initiator-iqn is absent.
-func TestResolveInitiatorID_ISCSI_AnnotationMissing(t *testing.T) {
-	t.Parallel()
-
-	csiNode := &storagev1.CSINode{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "worker-node-1",
-			// iscsi-initiator-iqn deliberately omitted.
-		},
-	}
-	srv := newMinimalControllerServer(t, csiNode)
-	_, err := srv.resolveInitiatorID(context.Background(), "worker-node-1", "iscsi")
-	if err == nil {
-		t.Fatal("expected FailedPrecondition error, got nil")
-	}
-	st, _ := status.FromError(err)
-	if st.Code() != codes.FailedPrecondition {
-		t.Errorf("error code = %v, want %v", st.Code(), codes.FailedPrecondition)
-	}
-}
-
-// TestResolveInitiatorID_ISCSI_Success verifies that the IQN is returned
-// verbatim from the CSINode annotation.
-func TestResolveInitiatorID_ISCSI_Success(t *testing.T) {
-	t.Parallel()
-
-	const wantIQN = "iqn.1993-08.org.debian:01:worker-node-1"
-	csiNode := &storagev1.CSINode{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "worker-node-1",
-			Annotations: map[string]string{
-				AnnotationISCSIInitiatorIQN: wantIQN,
-			},
-		},
-	}
-	srv := newMinimalControllerServer(t, csiNode)
-	got, err := srv.resolveInitiatorID(context.Background(), "worker-node-1", "iscsi")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got != wantIQN {
-		t.Errorf("resolveInitiatorID = %q, want %q", got, wantIQN)
-	}
-}
-
-// TestResolveInitiatorID_ISCSI_OnlyISCSIAnnotationRead verifies that when
-// a node has both NVMe-oF and iSCSI annotations, an iSCSI request reads only
-// the iSCSI annotation.
-func TestResolveInitiatorID_ISCSI_OnlyISCSIAnnotationRead(t *testing.T) {
-	t.Parallel()
-
-	const wantIQN = "iqn.1993-08.org.debian:01:multi-proto-node"
-	csiNode := &storagev1.CSINode{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "multi-proto-node",
-			Annotations: map[string]string{
-				AnnotationNVMeOFHostNQN:     "nqn.2014-08.org.nvmexpress:uuid:multi-proto-node",
-				AnnotationISCSIInitiatorIQN: wantIQN,
-			},
-		},
-	}
-	srv := newMinimalControllerServer(t, csiNode)
-	got, err := srv.resolveInitiatorID(context.Background(), "multi-proto-node", "iscsi")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got != wantIQN {
-		t.Errorf("resolveInitiatorID = %q, want iSCSI IQN %q", got, wantIQN)
-	}
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Protocol passthrough (NFS and unknown)
+// Protocol passthrough (every non-NVMe-oF protocol string)
 // ─────────────────────────────────────────────────────────────────────────────
 
 // TestResolveInitiatorID_NFS_PassthroughNodeID verifies that for the NFS
@@ -403,7 +307,6 @@ func TestResolveInitiatorID_TableDriven(t *testing.T) {
 
 	const (
 		testNQN  = "nqn.2014-08.org.nvmexpress:uuid:table-test-uuid"
-		testIQN  = "iqn.1993-08.org.debian:01:table-test"
 		testNode = "node-table-test"
 	)
 
@@ -444,25 +347,11 @@ func TestResolveInitiatorID_TableDriven(t *testing.T) {
 			seedObjs:   []ctrlclient.Object{csiNodeWith(map[string]string{AnnotationNVMeOFHostNQN: testNQN})},
 			wantResult: testNQN,
 		},
-		// iSCSI cases
+		// Removed protocols are no longer resolved through the CSINode.
 		{
-			name:     "iscsi: CSINode not found → FailedPrecondition",
-			protocol: "iscsi",
-			wantErr:  true,
-			wantCode: codes.FailedPrecondition,
-		},
-		{
-			name:     "iscsi: annotation absent → FailedPrecondition",
-			protocol: "iscsi",
-			seedObjs: []ctrlclient.Object{csiNodeWith(nil)},
-			wantErr:  true,
-			wantCode: codes.FailedPrecondition,
-		},
-		{
-			name:       "iscsi: annotation present → IQN returned",
+			name:       "iscsi (removed): nodeID passthrough",
 			protocol:   "iscsi",
-			seedObjs:   []ctrlclient.Object{csiNodeWith(map[string]string{AnnotationISCSIInitiatorIQN: testIQN})},
-			wantResult: testIQN,
+			wantResult: testNode,
 		},
 		// Passthrough cases
 		{

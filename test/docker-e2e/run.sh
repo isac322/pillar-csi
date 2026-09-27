@@ -720,7 +720,7 @@ install_driver() {
     --set "node.image.pullPolicy=Never"
   )
   if [[ "${topology}" == internal ]]; then
-    helm_args+=(--set "agent.backends[0].type=lvm-lv" --set "agent.backends[0].vg=${vg_name}")
+    helm_args+=(--set "agent.backends[0].lvm.volumeGroup=${vg_name}")
   fi
   helm "${helm_args[@]}"
   wait_for_webhook_api
@@ -734,11 +734,10 @@ kind: PillarProtocol
 metadata:
   name: pillar-e2e-webhook-readiness
 spec:
-  type: nvmeof-tcp
-  nvmeofTcp:
-    port: ${nvmeof_port}
-    acl: true
-  fsType: ext4
+  protocol:
+    nvmeofTcp:
+      port: ${nvmeof_port}
+      acl: true
 EOF
     then
       return
@@ -804,7 +803,6 @@ metadata:
 spec:
   agentRef: pillar-e2e-agent
   backend:
-    type: lvm-lv
     lvm:
       volumeGroup: ${vg_name}
 ---
@@ -813,11 +811,10 @@ kind: PillarProtocol
 metadata:
   name: pillar-e2e-nvme
 spec:
-  type: nvmeof-tcp
-  nvmeofTcp:
-    port: ${nvmeof_port}
-    acl: true
-  fsType: ext4
+  protocol:
+    nvmeofTcp:
+      port: ${nvmeof_port}
+      acl: true
 ---
 apiVersion: pillar-csi.bhyoo.com/v1alpha1
 kind: PillarStorageClass
@@ -831,6 +828,8 @@ spec:
     reclaimPolicy: Delete
     volumeBindingMode: WaitForFirstConsumer
     allowVolumeExpansion: true
+  filesystem:
+    fsType: ext4
 EOF
 
   wait_for_resource_ready pillaragent/pillar-e2e-agent

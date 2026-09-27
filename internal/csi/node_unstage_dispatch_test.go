@@ -276,7 +276,8 @@ func TestNodeUnstageVolume_Dispatch_LegacyMigration(t *testing.T) {
 func TestNodeUnstageVolume_Dispatch_UnknownProtocol(t *testing.T) {
 	t.Parallel()
 
-	// Register only the NVMe-oF handler; the state file will claim "iscsi".
+	// Register only the NVMe-oF handler; the state file will claim "iscsi"
+	// (a protocol this driver no longer serves).
 	handlers := map[string]ProtocolHandler{
 		ProtocolNVMeoFTCP: &mockProtocolHandler{},
 	}
@@ -288,11 +289,6 @@ func TestNodeUnstageVolume_Dispatch_UnknownProtocol(t *testing.T) {
 	// Write a state file with an unregistered protocol type.
 	if err := env.srv.writeStageState(volumeID, &nodeStageState{
 		ProtocolType: "iscsi",
-		ISCSI: &ISCSIStageState{
-			TargetIQN: "iqn.2024-01.com.example:storage:vol1",
-			Portal:    "10.0.0.5:3260",
-			LUN:       0,
-		},
 	}); err != nil {
 		t.Fatalf("writeStageState: %v", err)
 	}

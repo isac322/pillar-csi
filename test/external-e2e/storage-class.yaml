@@ -1,8 +1,10 @@
 # StorageClass used by the SIG-Storage External Storage e2e suite.
 #
-# Adjust the `parameters` block to point at a PillarAgent that exists in the
-# cluster under test.  The driver name must match Identity.GetPluginInfo.Name
-# advertised by pillar-csi.
+# A hand-written StorageClass names the PillarStore and PillarProtocol that
+# bootstrap.sh applies (store-ref / protocol-ref); the store's agentRef selects
+# the agent.  Optional per-class tunables go in the pillar-csi.bhyoo.com/
+# {backend,protocol,filesystem} YAML document parameters.  The driver name must
+# match Identity.GetPluginInfo.Name advertised by pillar-csi.
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
@@ -12,7 +14,6 @@ volumeBindingMode: WaitForFirstConsumer
 allowVolumeExpansion: true
 reclaimPolicy: Delete
 parameters:
-  pillar-csi.bhyoo.com/agent: pillar-target-default
-  pillar-csi.bhyoo.com/store: pillar-vg
-  pillar-csi.bhyoo.com/backend-type: lvm-lv
-  pillar-csi.bhyoo.com/protocol-type: nvmeof-tcp
+  pillar-csi.bhyoo.com/store-ref: pillar-vg
+  pillar-csi.bhyoo.com/protocol-ref: nvmeof-tcp
+  csi.storage.k8s.io/fstype: ext4

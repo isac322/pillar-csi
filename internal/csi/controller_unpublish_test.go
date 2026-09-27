@@ -22,7 +22,7 @@ package csi
 // volume's PillarVolumeState:
 //
 //   - no record → success without contacting the agent
-//   - recorded initiator (NQN / IQN / NFS node ID) → DenyInitiator, then the
+//   - recorded initiator (NVMe-oF host NQN) → DenyInitiator, then the
 //     record is removed, even when the node's CSINode is gone
 //   - empty node_id → every recorded publication is revoked
 //   - DenyInitiator failure → record kept (fail-closed)
@@ -147,8 +147,6 @@ func TestControllerUnpublishVolume_DeniesRecordedInitiator(t *testing.T) {
 		initiator string
 	}{
 		{"nvmeof host NQN", baseUnpublishRequest().GetVolumeId(), exclNQN(exclNode1)},
-		{"iscsi IQN", "storage-node-1/iscsi/zfs-zvol/tank/pvc-abc123", "iqn.1993-08.org.debian:01:worker-node-1"},
-		{"nfs node ID", exclNFSID, exclNode1},
 	}
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -300,87 +298,5 @@ func TestControllerUnpublishVolume_HandoverToAnotherNode(t *testing.T) {
 	got := exclPublishedNodes(t, env.srv.k8sClient, volumeID)
 	if len(got) != 1 || got[0].NodeID != exclNode2 || got[0].InitiatorID != exclNQN(exclNode2) {
 		t.Errorf("publishedNodes = %+v, want only %s", got, exclNode2)
-	}
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Additional ControllerPublishVolume cases
-// ─────────────────────────────────────────────────────────────────────────────
-
-// TestControllerPublishVolume_ISCSI_SuccessWithAnnotation verifies that
-// ControllerPublishVolume resolves the IQN from the CSINode annotation and
-// passes it as initiator_id to AllowInitiator for the iSCSI protocol.
-func TestControllerPublishVolume_ISCSI_SuccessWithAnnotation(t *testing.T) {
-	t.Parallel()
-
-	const initiatorIQN = "iqn.1993-08.org.debian:01:worker-node-1"
-
-	csiNode := &storagev1.CSINode{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "worker-node-1",
-			Annotations: map[string]string{
-				AnnotationISCSIInitiatorIQN: initiatorIQN,
-			},
-		},
-	}
-	env := newPublishTestEnv(t, csiNode, volumeStateFor("storage-node-1/iscsi/zfs-zvol/tank/pvc-abc123"))
-
-	req := &csi.ControllerPublishVolumeRequest{
-		VolumeId: "storage-node-1/iscsi/zfs-zvol/tank/pvc-abc123",
-		NodeId:   "worker-node-1",
-		VolumeCapability: &csi.VolumeCapability{
-			AccessType: &csi.VolumeCapability_Block{
-				Block: &csi.VolumeCapability_BlockVolume{},
-			},
-			AccessMode: &csi.VolumeCapability_AccessMode{
-				Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER,
-			},
-		},
-	}
-	_, err := env.srv.ControllerPublishVolume(context.Background(), req)
-	if err != nil {
-		t.Fatalf("ControllerPublishVolume iSCSI: unexpected error: %v", err)
-	}
-
-	if env.agent.allowInitiatorCalls != 1 {
-		t.Errorf("AllowInitiator call count = %d, want 1", env.agent.allowInitiatorCalls)
-	}
-	if got := env.agent.lastAllowInitiator.InitiatorId; got != initiatorIQN {
-		t.Errorf("AllowInitiator.InitiatorId = %q, want %q", got, initiatorIQN)
-	}
-}
-
-// TestControllerPublishVolume_NFS_PassthroughNodeID verifies that for the NFS
-// protocol the nodeID is passed directly to AllowInitiator without reading any
-// CSINode annotation.  RFC §5.2: NFS annotation-based resolution is Phase 2.
-func TestControllerPublishVolume_NFS_PassthroughNodeID(t *testing.T) {
-	t.Parallel()
-
-	// No CSINode seeded.
-	env := newPublishTestEnv(t, volumeStateFor(exclNFSID))
-
-	const nodeID = "worker-node-1"
-	req := &csi.ControllerPublishVolumeRequest{
-		VolumeId: "storage-node-1/nfs/nfs-share/tank/pvc-abc123",
-		NodeId:   nodeID,
-		VolumeCapability: &csi.VolumeCapability{
-			AccessType: &csi.VolumeCapability_Block{
-				Block: &csi.VolumeCapability_BlockVolume{},
-			},
-			AccessMode: &csi.VolumeCapability_AccessMode{
-				Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER,
-			},
-		},
-	}
-	_, err := env.srv.ControllerPublishVolume(context.Background(), req)
-	if err != nil {
-		t.Fatalf("ControllerPublishVolume NFS: unexpected error: %v", err)
-	}
-
-	if env.agent.allowInitiatorCalls != 1 {
-		t.Errorf("AllowInitiator call count = %d, want 1", env.agent.allowInitiatorCalls)
-	}
-	if got := env.agent.lastAllowInitiator.InitiatorId; got != nodeID {
-		t.Errorf("AllowInitiator.InitiatorId = %q, want nodeID %q", got, nodeID)
 	}
 }

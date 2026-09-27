@@ -17,9 +17,6 @@ spec:
   scope: Cluster
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.type
-      name: Type
-      type: string
     - jsonPath: .status.storageClassCount
       name: Bindings
       type: integer
@@ -56,167 +53,81 @@ spec:
           metadata:
             type: object
           spec:
-            description: spec defines the desired protocol configuration.
+            description: PillarProtocolSpec defines the desired state of PillarProtocol.
             properties:
-              fsType:
-                default: ext4
+              protocol:
                 description: |-
-                  fsType is the default filesystem type for block protocols when
-                  volumeMode is Filesystem.  Only relevant for block-based protocols
-                  (nvmeof-tcp, iscsi).
-                enum:
-                - ext4
-                - xfs
-                type: string
-              iscsi:
-                description: iscsi holds iSCSI configuration; required when type is
-                  iscsi.
+                  protocol selects the network storage protocol and its configuration.
+                  Exactly one member must be set.
                 properties:
-                  acl:
-                    default: false
-                    description: |-
-                      acl enables initiator IQN-based access control when true.
-                      When false the target allows any initiator.
-                      Defaults to false so that e2e tests and simple deployments work
-                      without registering initiator IQNs.
-                    type: boolean
-                  loginTimeout:
-                    description: |-
-                      loginTimeout is the number of seconds to wait for a login response.
-                      Defaults to 15.
-                    format: int32
-                    minimum: 0
-                    type: integer
-                  nodeSessionTimeout:
-                    description: |-
-                      nodeSessionTimeout is the number of seconds for the node session
-                      retry timeout. Defaults to 120.
-                    format: int32
-                    minimum: 0
-                    type: integer
-                  port:
-                    default: 3260
-                    description: |-
-                      port is the TCP port on which the iSCSI target listens.
-                      Defaults to 3260.
-                    format: int32
-                    maximum: 65535
-                    minimum: 1
-                    type: integer
-                  replacementTimeout:
-                    description: |-
-                      replacementTimeout is the number of seconds to wait for a session
-                      replacement after a connection failure. Defaults to 120.
-                    format: int32
-                    minimum: 0
-                    type: integer
+                  nvmeofTcp:
+                    description: nvmeofTcp holds NVMe-oF/TCP configuration.
+                    properties:
+                      acl:
+                        default: false
+                        description: |-
+                          acl enables host NQN-based access control when true.
+                          When false the subsystem uses allow_any_host.
+                          Defaults to false (allow_any_host) so that e2e tests and simple
+                          deployments work without registering initiator NQNs.
+                        type: boolean
+                      ctrlLossTmo:
+                        description: |-
+                          ctrlLossTmo is the maximum seconds to wait before declaring a target
+                          permanently lost after connectivity failure.
+                        format: int32
+                        minimum: 0
+                        type: integer
+                      inCapsuleDataSize:
+                        description: |-
+                          inCapsuleDataSize is the maximum in-capsule data size in bytes the
+                          target advertises (the nvmet port's param_inline_data_size).  It is a
+                          property of the listening port, shared by every volume exported on the
+                          same storage node address and port: exporting a volume that requests a
+                          value different from the port's current value fails instead of
+                          silently using the port's value.  Unset keeps the transport default
+                          (16384 for TCP on 4 KiB pages) and accepts whatever value the port has.
+                          The minimum is 1024: NVMe/TCP hosts send the 1024-byte fabrics Connect
+                          data in-capsule, so a smaller value makes every connect fail.
+                        format: int32
+                        minimum: 1024
+                        type: integer
+                      maxQueueSize:
+                        description: |-
+                          maxQueueSize is the I/O queue depth the initiator requests for each
+                          queue of the connection (the fabrics queue_size connect option).
+                          Unset keeps the kernel default (128).  The kernel accepts 16-1024.
+                          Applies to connections made after the change; a staged volume keeps
+                          the value from its CreateVolume.
+                        format: int32
+                        maximum: 1024
+                        minimum: 16
+                        type: integer
+                      port:
+                        default: 4420
+                        description: |-
+                          port is the TCP port on which the NVMe-oF target listens.
+                          Defaults to 4420.
+                        format: int32
+                        maximum: 65535
+                        minimum: 1
+                        type: integer
+                      reconnectDelay:
+                        description: reconnectDelay is the interval in seconds between
+                          reconnect attempts.
+                        format: int32
+                        minimum: 0
+                        type: integer
+                    type: object
                 type: object
-              mkfsOptions:
-                description: |-
-                  mkfsOptions are additional mkfs arguments used when the node formats a
-                  new volume; a volume that already carries a filesystem is never
-                  reformatted.  Each element is one argv element (no shell); only
-                  filesystem tuning flags of the formatted type are accepted.  Only
-                  relevant for block-based protocols.
-                items:
-                  type: string
-                type: array
-              nfs:
-                description: nfs holds NFS configuration; required when type is nfs.
-                properties:
-                  version:
-                    default: "4.2"
-                    description: version is the NFS protocol version to use (e.g.
-                      "4.2").
-                    type: string
-                type: object
-              nvmeofTcp:
-                description: nvmeofTcp holds NVMe-oF/TCP configuration; required when
-                  type is nvmeof-tcp.
-                properties:
-                  acl:
-                    default: false
-                    description: |-
-                      acl enables host NQN-based access control when true.
-                      When false the subsystem uses allow_any_host.
-                      Defaults to false (allow_any_host) so that e2e tests and simple
-                      deployments work without registering initiator NQNs.
-                    type: boolean
-                  ctrlLossTmo:
-                    description: |-
-                      ctrlLossTmo is the maximum seconds to wait before declaring a target
-                      permanently lost after connectivity failure.
-                    format: int32
-                    minimum: 0
-                    type: integer
-                  inCapsuleDataSize:
-                    description: |-
-                      inCapsuleDataSize is the maximum in-capsule data size in bytes the
-                      target advertises (the nvmet port's param_inline_data_size).  It is a
-                      property of the listening port, shared by every volume exported on the
-                      same storage node address and port: exporting a volume that requests a
-                      value different from the port's current value fails instead of
-                      silently using the port's value.  Unset keeps the transport default
-                      (16384 for TCP on 4 KiB pages) and accepts whatever value the port has.
-                      The minimum is 1024: NVMe/TCP hosts send the 1024-byte fabrics Connect
-                      data in-capsule, so a smaller value makes every connect fail.
-                    format: int32
-                    minimum: 1024
-                    type: integer
-                  maxQueueSize:
-                    description: |-
-                      maxQueueSize is the I/O queue depth the initiator requests for each
-                      queue of the connection (the fabrics queue_size connect option).
-                      Unset keeps the kernel default (128).  The kernel accepts 16-1024.
-                      Applies to connections made after the change; a staged volume keeps
-                      the value from its CreateVolume.
-                    format: int32
-                    maximum: 1024
-                    minimum: 16
-                    type: integer
-                  port:
-                    default: 4420
-                    description: |-
-                      port is the TCP port on which the NVMe-oF target listens.
-                      Defaults to 4420.
-                    format: int32
-                    maximum: 65535
-                    minimum: 1
-                    type: integer
-                  reconnectDelay:
-                    description: reconnectDelay is the interval in seconds between
-                      reconnect attempts.
-                    format: int32
-                    minimum: 0
-                    type: integer
-                type: object
-              smb:
-                description: smb holds SMB/CIFS configuration; required when type
-                  is smb.
-                properties:
-                  port:
-                    default: 445
-                    description: |-
-                      port is the TCP port on which the SMB server listens.
-                      Defaults to 445.
-                    format: int32
-                    maximum: 65535
-                    minimum: 1
-                    type: integer
-                type: object
-              type:
-                description: type identifies the network storage protocol.
-                enum:
-                - nvmeof-tcp
-                - iscsi
-                - nfs
-                - smb
-                type: string
+                x-kubernetes-validations:
+                - message: 'exactly one protocol member must be set (supported: nvmeofTcp)'
+                  rule: has(self.nvmeofTcp)
             required:
-            - type
+            - protocol
             type: object
           status:
-            description: status reflects the reconciler-observed state of this protocol.
+            description: PillarProtocolStatus defines the observed state of PillarProtocol.
             properties:
               activeAgents:
                 description: |-
@@ -296,8 +207,6 @@ spec:
                 format: int32
                 type: integer
             type: object
-        required:
-        - spec
         type: object
     served: true
     storage: true

@@ -51,10 +51,9 @@ import (
 // "default-profile" because those specs require a Helm-deployed agent pod that
 // exceeds the 2-minute suiteLevelTimeout.
 //
-// Note: E34 (13), E35 (13), F27 (9), F28 (2), F29 (3), F30 (3), F31 (2) = 45
-// specs are NOT in the default-profile because they require host-level iSCSI
-// or NVMe-oF initiator tooling (iscsi_tcp module / iscsiadm / nvme CLI) that
-// is not available in the standard CI host environment.
+// Note: F27 (9), F28 (2), F29 (3), F30 (3), F31 (2) = 19 specs are NOT in
+// the default-profile because they require host-level NVMe-oF initiator
+// tooling (nvme_tcp module / nvme CLI) that is not available in the standard CI host environment.
 const defaultProfileCaseCount = 388
 
 type documentedCase struct {
@@ -123,7 +122,7 @@ var (
 		// the Category 2 section header of docs/E2E-TESTCASES.md.
 		// Real cluster validation is in tc_e27_helm_e2e_test.go (no build tag).
 		{Key: "E27", Count: 29},
-		// E33, E34, E35, F27–F31 are NOT in the catalog-driven profile.
+		// E33 and F27–F31 are NOT in the catalog-driven profile.
 		// They live in dedicated *_e2e_test.go files (no build tag) with
 		// Label("default-profile",...) on the outer Describe so Ginkgo picks
 		// them up automatically under the default label filter.
@@ -253,7 +252,7 @@ func parseDocumentedCases() ([]documentedCase, error) {
 		// Rows in cluster / full-E2E sections use plain ordinal numbers as the
 		// first column (e.g. 285, 318) instead of E-prefixed identifiers.
 		// Prefix them with the group key so the TC node name starts with
-		// [TC-E33.285], [TC-E34.318], etc. — required by AC 7 which checks
+		// [TC-E33.285], [TC-F27.1], etc. — required by AC 7 which checks
 		// that every spec node name contains [TC-<EorF><digit>].
 		docID := rawDocID
 		if isAllDigits(rawDocID) && groupKey != "" {

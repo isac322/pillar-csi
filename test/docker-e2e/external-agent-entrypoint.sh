@@ -9,6 +9,14 @@ loop_device=$(losetup --find --show "${backing_file}")
 pvcreate --force --yes "${loop_device}"
 vgcreate "${vg_name}" "${loop_device}"
 
+config_file=/etc/pillar-agent/config.yaml
+mkdir -p "$(dirname "${config_file}")"
+cat >"${config_file}" <<EOF
+backends:
+  - lvm:
+      volumeGroup: ${vg_name}
+EOF
+
 exec /usr/local/bin/pillar-agent \
   --listen-address=0.0.0.0:9500 \
-  --backend="type=lvm-lv,vg=${vg_name}"
+  --config="${config_file}"

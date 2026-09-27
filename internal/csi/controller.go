@@ -33,7 +33,6 @@ package csi
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -49,37 +48,15 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
-	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	v1alpha1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
 	agentv1 "github.com/bhyoo/pillar-csi/gen/go/pillar_csi/agent/v1"
 )
-
-// ─────────────────────────────────────────────────────────────────────────────
-// PVC annotation validation error sentinel
-// ─────────────────────────────────────────────────────────────────────────────.
-
-// pvcAnnotationValidationError wraps a ParsePVCAnnotations error so that
-// CreateVolume can distinguish annotation validation failures (InvalidArgument)
-// from infrastructure errors (Internal).
-type pvcAnnotationValidationError struct {
-	pvcNamespace string
-	pvcName      string
-	cause        error
-}
-
-func (e *pvcAnnotationValidationError) Error() string {
-	return fmt.Sprintf("PVC %s/%s annotation validation failed: %v",
-		e.pvcNamespace, e.pvcName, e.cause)
-}
-
-func (e *pvcAnnotationValidationError) Unwrap() error { return e.cause }
 
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -265,16 +242,16 @@ func pillarVolumeStatePhaseToVolumeState(phase v1alpha1.PillarVolumeStatePhase) 
 // Capability declarations
 // ─────────────────────────────────────────────────────────────────────────────.
 
-// baseSupportedAccessModes lists the VolumeCapability access modes pillar-csi
-// supports for every protocol. File protocols add shared-writer modes on top
-// of this baseline.
+// supportedAccessModes lists the VolumeCapability access modes pillar-csi
+// supports.  Every served protocol is a block protocol, which cannot satisfy
+// multi-node writer semantics.
 //
 // Access-mode mapping (Kubernetes PVC → CSI constant):
 //
 //	ReadWriteOnce    (RWO)  → SINGLE_NODE_WRITER
 //	ReadWriteOncePod (RWOP) → SINGLE_NODE_SINGLE_WRITER   (CSI spec v1.5+)
 //	ReadOnlyMany     (ROX)  → MULTI_NODE_READER_ONLY
-var baseSupportedAccessModes = []csi.VolumeCapability_AccessMode_Mode{
+var supportedAccessModes = []csi.VolumeCapability_AccessMode_Mode{
 	// RWO: one node may mount read-write.
 	csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER,
 	// RWO (K8s 1.35+): Kubernetes maps ReadWriteOnce to SINGLE_NODE_MULTI_WRITER.
@@ -284,13 +261,6 @@ var baseSupportedAccessModes = []csi.VolumeCapability_AccessMode_Mode{
 	csi.VolumeCapability_AccessMode_SINGLE_NODE_SINGLE_WRITER,
 	// ROX: multiple nodes may mount read-only simultaneously.
 	csi.VolumeCapability_AccessMode_MULTI_NODE_READER_ONLY,
-}
-
-// fileProtocolAdditionalAccessModes are only supported by file protocols. NFS
-// and SMB can satisfy shared writer semantics; block protocols cannot.
-var fileProtocolAdditionalAccessModes = []csi.VolumeCapability_AccessMode_Mode{
-	csi.VolumeCapability_AccessMode_MULTI_NODE_SINGLE_WRITER,
-	csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER,
 }
 
 // ControllerGetCapabilities reports the operations this controller supports.
@@ -364,25 +334,18 @@ func (s *ControllerServer) ValidateVolumeCapabilities(
 		return nil, existsErr
 	}
 
-	protocolType := protocolTypeFromValidateVolumeCapabilitiesRequest(req)
 	for _, cap := range req.GetVolumeCapabilities() {
 		if cap.GetAccessMode() == nil {
 			//nolint:wrapcheck // gRPC status errors must not be double-wrapped
 			return nil, status.Error(codes.InvalidArgument,
 				"each volume capability must specify an access_mode")
 		}
-		if cap.GetBlock() != nil && isFileProtocol(protocolType) {
-			//nolint:wrapcheck // gRPC status errors must not be double-wrapped
-			return nil, status.Error(codes.InvalidArgument,
-				"raw block volume mode is not supported with file protocols (NFS/SMB)")
-		}
-		if !isSupportedAccessMode(protocolType, cap.GetAccessMode().GetMode()) {
+		if !isSupportedAccessMode(cap.GetAccessMode().GetMode()) {
 			return &csi.ValidateVolumeCapabilitiesResponse{
 				Message: fmt.Sprintf(
-					"access mode %s is not supported for protocol %q; supported modes: %s",
+					"access mode %s is not supported; supported modes: %s",
 					cap.GetAccessMode().GetMode(),
-					protocolType,
-					describeSupportedModes(protocolType),
+					describeSupportedModes(),
 				),
 			}, nil
 		}
@@ -398,116 +361,35 @@ func (s *ControllerServer) ValidateVolumeCapabilities(
 	}, nil
 }
 
-func protocolTypeFromValidateVolumeCapabilitiesRequest(
-	req *csi.ValidateVolumeCapabilitiesRequest,
-) v1alpha1.ProtocolType {
-	if parts := strings.SplitN(req.GetVolumeId(), "/", volumeIDParts); len(parts) == volumeIDParts {
-		if protocolType := v1alpha1.ProtocolType(parts[1]); protocolType != "" {
-			return protocolType
-		}
-	}
-	if protocolType := v1alpha1.ProtocolType(req.GetVolumeContext()[vcProtocolType]); protocolType != "" {
-		return protocolType
-	}
-	return v1alpha1.ProtocolType(req.GetParameters()[paramProtocolType])
-}
-
-// supportedAccessModesForProtocol returns the access modes supported for the
-// given protocol. File protocols accept shared writer modes; block protocols
-// do not.
-func supportedAccessModesForProtocol(protocolType v1alpha1.ProtocolType) []csi.VolumeCapability_AccessMode_Mode {
-	if !isFileProtocol(protocolType) {
-		return baseSupportedAccessModes
-	}
-
-	modes := make([]csi.VolumeCapability_AccessMode_Mode, 0,
-		len(baseSupportedAccessModes)+len(fileProtocolAdditionalAccessModes))
-	modes = append(modes, baseSupportedAccessModes...)
-	modes = append(modes, fileProtocolAdditionalAccessModes...)
-	return modes
-}
-
-// isSupportedAccessMode returns true when mode is supported for the protocol.
-func isSupportedAccessMode(
-	protocolType v1alpha1.ProtocolType,
-	mode csi.VolumeCapability_AccessMode_Mode,
-) bool {
-	return slices.Contains(supportedAccessModesForProtocol(protocolType), mode)
+// isSupportedAccessMode returns true when mode is supported.
+func isSupportedAccessMode(mode csi.VolumeCapability_AccessMode_Mode) bool {
+	return slices.Contains(supportedAccessModes, mode)
 }
 
 // describeSupportedModes returns a comma-separated string of the supported
 // access mode names, used in diagnostic messages.
-func describeSupportedModes(protocolType v1alpha1.ProtocolType) string {
-	supportedModes := supportedAccessModesForProtocol(protocolType)
-	names := make([]string, 0, len(supportedModes))
-	for _, m := range supportedModes {
+func describeSupportedModes() string {
+	names := make([]string, 0, len(supportedAccessModes))
+	for _, m := range supportedAccessModes {
 		names = append(names, m.String())
 	}
 	return strings.Join(names, ", ")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// StorageClass / VolumeContext parameter key constants
+// VolumeContext and provisioner-metadata key constants
 // ─────────────────────────────────────────────────────────────────────────────.
+//
+// StorageClass parameter keys live in resolve.go.
 
 const (
-	// StorageClass parameter keys written by PillarStorageClassReconciler.
-	paramPool = "pillar-csi.bhyoo.com/store"
-	// ParamBinding names the PillarStorageClass that generated the
-	// StorageClass; CreateVolume reads its store and overrides from it.
-	paramBinding      = "pillar-csi.bhyoo.com/storage-class"
-	paramProtocol     = "pillar-csi.bhyoo.com/protocol"
-	paramBackendType  = "pillar-csi.bhyoo.com/backend-type"
-	paramProtocolType = "pillar-csi.bhyoo.com/protocol-type"
-	paramTarget       = "pillar-csi.bhyoo.com/agent"
-	paramZFSParent    = "pillar-csi.bhyoo.com/zfs-parent-dataset"
-	paramNVMeOFPort   = "pillar-csi.bhyoo.com/nvmeof-port"
-	paramISCSIPort    = "pillar-csi.bhyoo.com/iscsi-port"
-	paramNFSVersion   = "pillar-csi.bhyoo.com/nfs-version"
-	paramLVMVG        = "pillar-csi.bhyoo.com/lvm-vg"
-
-	// LVM provisioning mode parameter key for StorageClass/PillarStorageClass that selects
-	// the LVM provisioning mode for new volumes.  Accepted values: "linear",
-	// "thin".  When absent the LVM backend uses its compiled-in default (thin
-	// when the backend was started with a thinpool= flag, linear otherwise).
-	//
-	// Layer 1 (PillarStore):   populated from LVMBackendConfig.ProvisioningMode.
-	// Layer 3 (PillarStorageClass): overridden by LVMOverrides.ProvisioningMode.
-	// Layer 4 (PVC annotation): highest-priority override via
-	//   "pillar-csi.bhyoo.com/param.lvm-mode" PVC annotation.
-	paramLVMMode = "pillar-csi.bhyoo.com/lvm-mode"
-
-	// The lvm-thin-pool parameter carries PillarStore.spec.backend.lvm.thinPool (written
-	// by the PillarStorageClass controller for every LVM store, empty when the
-	// store declares no thin pool).  It is forwarded as
-	// LvmVolumeParams.thin_pool so that the agent refuses to create a volume
-	// when its --backend thinpool differs.  Absent (a hand-written
-	// StorageClass) leaves thin_pool unset and skips that check.  Structural:
-	// never overridable per PVC.
-	paramLVMThinPool = "pillar-csi.bhyoo.com/lvm-thin-pool"
-
-	// ParamACLEnabled controls NVMe-oF host NQN ACL enforcement.
-	// Value: "true" (default, ACL enforced) or "false" (allow_any_host=1).
-	// Set by the PillarStorageClass controller from the PillarProtocol NVMeOFTCPConfig.ACL field.
-	paramACLEnabled = "pillar-csi.bhyoo.com/acl-enabled"
-
-	// ParamZFSPropPrefix is the key prefix used to pass individual ZFS
-	// properties through the merged parameter map to buildBackendParams.
-	// Example: "pillar-csi.bhyoo.com/zfs-prop.compression" = "lz4".
-	paramZFSPropPrefix = "pillar-csi.bhyoo.com/zfs-prop."
-
 	// ParamPVCNameMeta and paramPVCNamespaceMeta are the keys
 	// external-provisioner injects with --extra-create-metadata.  They name
 	// the claim a CreateVolume call provisions for: its annotations are the
-	// PVC override layer and its UID identifies the volume's lifecycle.
+	// per-volume configuration layer and its UID identifies the volume's
+	// lifecycle.
 	paramPVCNameMeta      = "csi.storage.k8s.io/pvc/name"
 	paramPVCNamespaceMeta = "csi.storage.k8s.io/pvc/namespace"
-
-	// PvcAnnotationParamPrefix is the PVC annotation prefix for per-PVC
-	// parameter overrides (Layer 4 of the merge hierarchy).
-	// Example annotation: "pillar-csi.bhyoo.com/param.zfs-prop.compression=lz4"
-	// results in param key "pillar-csi.bhyoo.com/zfs-prop.compression" = "lz4".
-	pvcAnnotationParamPrefix = "pillar-csi.bhyoo.com/param."
 
 	// VolumeContext keys stored in the PersistentVolume and read by NodeStageVolume.
 	//
@@ -546,11 +428,6 @@ const (
 	// host NQN for this node (read from /etc/nvme/hostnqn).
 	// Example value: "nqn.2014-08.org.nvmexpress:uuid:xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx".
 	AnnotationNVMeOFHostNQN = "pillar-csi.bhyoo.com/nvmeof-host-nqn"
-
-	// AnnotationISCSIInitiatorIQN is the CSINode annotation that stores the
-	// iSCSI initiator IQN for this node (read from /etc/iscsi/initiatorname.iscsi).
-	// Example value: "iqn.1993-08.org.debian:01:xxxxxxxx".
-	AnnotationISCSIInitiatorIQN = "pillar-csi.bhyoo.com/iscsi-initiator-iqn"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -563,7 +440,7 @@ const (
 //  1. Call agent.CreateVolume — creates the backend storage resource
 //     (ZFS zvol, LVM LV, …).
 //  2. Call agent.ExportVolume — publishes the volume over the configured
-//     network protocol (NVMe-oF TCP, iSCSI, NFS).
+//     network protocol (NVMe-oF TCP).
 //
 // The returned VolumeId encodes routing metadata in the form:
 //
@@ -612,190 +489,84 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 	}
 
 	scParams := req.GetParameters()
+	pvName := req.GetName()
 
-	// ── Extract required routing parameters ──────────────────────────────────
-	// Routing comes straight from the StorageClass: the merge below only adds
-	// tunables (zfs-prop.*, lvm-mode, connect timeouts), never routing keys,
-	// so a completed volume can be served without re-resolving the CRDs.
-	targetName := scParams[paramTarget]
-	backendTypeStr := scParams[paramBackendType]
-	protocolTypeStr := scParams[paramProtocolType]
-
-	if targetName == "" {
-		return nil, status.Errorf(codes.InvalidArgument,
-			"StorageClass parameter %q is required", paramTarget)
+	// Access modes depend only on the request (every served protocol is a
+	// block protocol), so they are checked before any retry fast path.
+	for _, cap := range req.GetVolumeCapabilities() {
+		if !isSupportedAccessMode(cap.GetAccessMode().GetMode()) {
+			return nil, status.Errorf(codes.InvalidArgument,
+				"access mode %s is not supported; supported modes: %s",
+				cap.GetAccessMode().GetMode(), describeSupportedModes())
+		}
 	}
-	if backendTypeStr == "" {
-		return nil, status.Errorf(codes.InvalidArgument,
-			"StorageClass parameter %q is required", paramBackendType)
-	}
-	if protocolTypeStr == "" {
-		return nil, status.Errorf(codes.InvalidArgument,
-			"StorageClass parameter %q is required", paramProtocolType)
-	}
-
-	agentBackendType := mapBackendType(backendTypeStr)
-	agentProtocolType := mapProtocolType(protocolTypeStr)
-
-	// ── Build the agent-level volume ID ──────────────────────────────────────
-	// For ZFS backends: "<pool>/<volume-name>" (pool = ZFS pool name from StorageClass params).
-	// Fallback: "<pillar-pool-name>/<volume-name>".
-	agentVolID := buildAgentVolumeID(scParams, req.GetName())
-
-	// ── Build the CSI volume ID (encodes all routing metadata) ───────────────
-	// Format: <target>/<protocol-type>/<backend-type>/<agent-vol-id>
-	volumeID := strings.Join(
-		[]string{targetName, protocolTypeStr, backendTypeStr, agentVolID},
-		"/",
-	)
 
 	// ── Load persisted state (idempotency and partial-failure recovery) ───────
 	// The PillarVolumeState CRD name is the CSI volume name, which is a
 	// Kubernetes-compatible identifier assigned by the CO (e.g. "pvc-abc123").
-	pvName := req.GetName()
 	existingPV, pvExists, pvErr := s.loadPillarVolumeState(ctx, pvName)
 	if pvErr != nil {
 		return nil, status.Errorf(codes.Internal,
 			"failed to load PillarVolumeState %q: %v", pvName, pvErr)
 	}
-	if pvExists {
-		// Restore the in-memory state machine entry from the persisted phase.
+
+	// ── Completed volume: answer from the durable record ─────────────────────
+	// A Ready lifecycle is answered from its recorded routing and resolved
+	// configuration without consulting the CRDs or the claim, so the retry
+	// response (which becomes the PV's VolumeContext) reproduces the first
+	// success even when those sources no longer exist.
+	if pvExists && existingPV.Spec.Resolved != nil && existingPV.Status.ExportInfo != nil &&
+		!existingPV.Status.Deleting {
+		volumeID := existingPV.Spec.VolumeID
 		s.sm.ForceState(volumeID, pillarVolumeStatePhaseToVolumeState(existingPV.Status.Phase))
-	}
-	completed := s.sm.GetState(volumeID) == StateCreated &&
-		pvExists && existingPV.Status.ExportInfo != nil && !existingPV.Status.Deleting
-
-	var params map[string]string
-	switch {
-	case completed && existingPV.Spec.ConnectParamsRecorded:
-		// Replay the connect parameters resolved at create time — including an
-		// all-default (empty) snapshot.  The retry response becomes the PV's
-		// VolumeContext, so it must reproduce the effective overrides exactly:
-		// clear the live connect keys first, then overlay the snapshot so keys
-		// intentionally absent at create time stay absent.
-		params = maps.Clone(scParams)
-		for _, k := range nodeConnectParamKeys {
-			delete(params, k)
-		}
-		maps.Copy(params, existingPV.Spec.NodeConnectParams)
-	case completed:
-		// Legacy volume without recorded connect parameters: re-derive them,
-		// but a claim or binding that no longer exists must not strand a
-		// completed volume — fall back to the StorageClass parameters.
-		params = scParams
-		merged, mergeErr := s.mergeParamsFromCRDs(ctx, scParams)
-		if mergeErr != nil {
-			logf.FromContext(ctx).Error(mergeErr, "parameter merge failed on a completed-volume retry; "+
-				"StorageClass parameters are used for the response", "volumeName", pvName)
-		} else {
-			params = merged
-		}
-	default:
-
-		// ── 4-level merge hierarchy: Pool → Protocol → Binding → PVC annotation ──
-
-		// mergeParamsFromCRDs augments the StorageClass params with data fetched
-		// live from the PillarStorageClass and PillarStore CRDs and then overlays
-		// any per-PVC annotation overrides.  A StorageClass that names no binding
-		// (hand-written) skips the CRD layers.  It runs before any durable state:
-		// when a referenced binding, store or claim is missing or unreadable the
-		// volume must not be provisioned without its configured settings.
-		var err error
-		params, err = s.mergeParamsFromCRDs(ctx, scParams)
-		if err != nil {
-			// PVC annotation validation errors are user-facing (bad annotation
-			// content); surface them as InvalidArgument so the CO can surface
-			// a useful message to the user.  A referenced binding, store or claim
-			// that does not exist is FailedPrecondition; any other lookup failure
-			// is Internal.  Both are retried by the provisioner.
-			if annotErr, ok := errors.AsType[*pvcAnnotationValidationError](err); ok {
-				return nil, status.Errorf(codes.InvalidArgument,
-					"PVC annotation validation failed: %v", annotErr)
-			}
-			if k8serrors.IsNotFound(err) {
-				return nil, status.Errorf(codes.FailedPrecondition, "parameter merge failed: %v", err)
-			}
-			return nil, status.Errorf(codes.Internal, "parameter merge failed: %v", err)
+		if s.sm.GetState(volumeID) == StateCreated {
+			return completedVolumeResponse(req, existingPV)
 		}
 	}
 
-	protocolType := v1alpha1.ProtocolType(protocolTypeStr)
-	for _, cap := range req.GetVolumeCapabilities() {
-		if !isSupportedAccessMode(protocolType, cap.GetAccessMode().GetMode()) {
-			return nil, status.Errorf(codes.InvalidArgument,
-				"access mode %s is not supported for protocol %q; supported modes: %s",
-				cap.GetAccessMode().GetMode(),
-				protocolType,
-				describeSupportedModes(protocolType))
-		}
+	// ── Resolve the effective configuration from live CRs ───────────────────
+	// It runs before any durable state: when a referenced binding, store,
+	// protocol or claim is missing or invalid the volume must not be
+	// provisioned without its configured settings.  A retry of a lifecycle
+	// that already recorded its resolution re-resolves only the export
+	// settings; the backend, filesystem and agent stay as recorded.
+	var recordedCfg *v1alpha1.ResolvedVolumeConfig
+	if pvExists {
+		recordedCfg = existingPV.Spec.Resolved
 	}
-
-	// The NVMe-oF connect tuning is frozen into the PV VolumeContext and
-	// only parsed again at NodeStageVolume, and the in-capsule data size is
-	// only sent to the agent at export; reject a malformed value now,
-	// before any durable state exists, instead of provisioning a volume that
-	// can never be exported or staged.
-	var inCapsuleDataSize int32
-	if !completed && protocolType == v1alpha1.ProtocolTypeNVMeOFTCP {
-		_, optsErr := ParseNVMeoFConnectOptions(params)
-		if optsErr != nil {
-			return nil, status.Errorf(codes.InvalidArgument, "invalid NVMe-oF connect parameter: %v", optsErr)
-		}
-		var sizeErr error
-		inCapsuleDataSize, sizeErr = parseNVMeoFInCapsuleDataSize(params)
-		if sizeErr != nil {
-			return nil, status.Errorf(codes.InvalidArgument, "invalid NVMe-oF export parameter: %v", sizeErr)
-		}
+	res, err := s.resolveVolumeConfig(ctx, scParams, recordedCfg)
+	if err != nil {
+		return nil, err
 	}
+	resolved := res.resolved
+	targetName := res.agentRef
+	if recordedCfg != nil {
+		targetName = existingPV.Spec.AgentRef
+	}
+	backendID := resolved.Backend.Kind()
+	protocolID := resolved.Protocol.Kind()
+	agentBackendType := mapBackendType(string(backendID))
+	agentProtocolType := mapProtocolType(string(protocolID))
 
 	// The filesystem settings are frozen into the PV VolumeContext and only
 	// applied when NodeStageVolume formats the volume; reject a setting that
-	// is malformed or cannot apply to this volume before any durable state
-	// exists, instead of provisioning a volume that ignores it.
-	if !completed {
-		fsErr := validateFilesystemParams(params, scParams, protocolType, req.GetVolumeCapabilities())
-		if fsErr != nil {
-			return nil, status.Errorf(codes.InvalidArgument, "invalid filesystem parameter: %v", fsErr)
-		}
+	// cannot apply to this volume before any durable state exists, instead
+	// of provisioning a volume that ignores it.
+	fsErr := validateFilesystemConfig(resolved.Filesystem, res.pvcFS, req.GetVolumeCapabilities())
+	if fsErr != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid filesystem configuration: %v", fsErr)
 	}
 
-	if s.sm.GetState(volumeID) == StateCreated &&
-		pvExists && existingPV.Status.ExportInfo != nil && !existingPV.Status.Deleting {
-		ei := existingPV.Status.ExportInfo
-		existingCap := existingPV.Spec.CapacityBytes
-
-		// CSI spec §5.1.1: if the existing volume doesn't satisfy the new
-		// capacity range, return AlreadyExists to signal incompatibility.
-		if cr := req.GetCapacityRange(); cr != nil {
-			if cr.GetRequiredBytes() > 0 && existingCap < cr.GetRequiredBytes() {
-				return nil, status.Errorf(codes.AlreadyExists,
-					"volume %q already exists with capacity %d bytes, which is less than "+
-						"the requested minimum %d bytes",
-					req.GetName(), existingCap, cr.GetRequiredBytes())
-			}
-			if cr.GetLimitBytes() > 0 && existingCap > cr.GetLimitBytes() {
-				return nil, status.Errorf(codes.AlreadyExists,
-					"volume %q already exists with capacity %d bytes, which exceeds "+
-						"the requested limit %d bytes",
-					req.GetName(), existingCap, cr.GetLimitBytes())
-			}
-		}
-
-		volumeContext := map[string]string{
-			vcTargetID:     ei.TargetID,
-			vcAddress:      ei.Address,
-			vcPort:         strconv.Itoa(int(ei.Port)),
-			vcVolumeRef:    ei.VolumeRef,
-			vcProtocolType: existingPV.Spec.ProtocolType,
-		}
-		copyNodeConnectParams(volumeContext, params)
-		return &csi.CreateVolumeResponse{
-			Volume: &csi.Volume{
-				VolumeId:      volumeID,
-				CapacityBytes: existingCap,
-				VolumeContext: volumeContext,
-			},
-		}, nil
+	// ── Build the agent-level and CSI volume IDs ─────────────────────────────
+	// Agent volume ID: "<pool>/<volume-name>", pool = ZFS pool or LVM VG.
+	// CSI volume ID:   "<agent>/<protocol>/<backend>/<agent-vol-id>".
+	agentVolID := resolved.Backend.PoolName() + "/" + pvName
+	volumeID := strings.Join(
+		[]string{targetName, string(protocolID), string(backendID), agentVolID},
+		"/",
+	)
+	if pvExists {
+		s.sm.ForceState(volumeID, pillarVolumeStatePhaseToVolumeState(existingPV.Status.Phase))
 	}
 
 	// ── Requested capacity ────────────────────────────────────────────────────
@@ -809,26 +580,17 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 	// agent ever creates belongs to a lifecycle (its UID) that DeleteVolume can
 	// find and fence; a volume without a PillarVolumeState owns nothing.  The
 	// claim identity lets the controller tear down an attempt whose claim was
+	// removed before any PersistentVolume existed.  The resolved
+	// configuration is recorded with it and stays authoritative for the whole
+	// lifecycle (the spec is immutable once created).
 	spec := v1alpha1.PillarVolumeStateSpec{
 		VolumeID:      volumeID,
 		AgentVolumeID: agentVolID,
 		AgentRef:      targetName,
-		BackendType:   backendTypeStr,
-		ProtocolType:  protocolTypeStr,
+		BackendType:   string(backendID),
+		ProtocolType:  string(protocolID),
 		CapacityBytes: capacityBytes,
-	}
-	// Freeze the effective node-connect params so a retry reproduces the same
-	// VolumeContext even when the overrides' sources (claim, binding, protocol
-	// CRDs) no longer exist.  The marker stays set for an all-default merge —
-	// its absence alone would be indistinguishable from a pre-field volume.
-	spec.ConnectParamsRecorded = true
-	for _, k := range nodeConnectParamKeys {
-		if v := params[k]; v != "" {
-			if spec.NodeConnectParams == nil {
-				spec.NodeConnectParams = map[string]string{}
-			}
-			spec.NodeConnectParams[k] = v
-		}
+		Resolved:      resolved,
 	}
 	attempt := existingPV
 	if !pvExists {
@@ -841,7 +603,7 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 		}
 		attempt = &v1alpha1.PillarVolumeState{ObjectMeta: metav1.ObjectMeta{Name: pvName}, Spec: spec}
 	}
-	err := s.refuseAbandonedClaim(ctx, attempt)
+	err = s.refuseAbandonedClaim(ctx, attempt)
 	if err != nil {
 		return nil, err
 	}
@@ -853,18 +615,13 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 	if err != nil {
 		return nil, err
 	}
-
-	// One authoritative snapshot for the whole lifecycle: once the durable
-	// spec records the first-attempt merge, the connect parameters reported in
-	// every response — the first success, a partial-failure retry, and a
-	// completed retry — are the ones frozen then.  Keys absent from the
-	// snapshot are removed so a StorageClass change cannot resurrect them;
-	// volumes without the marker keep the live merge (pre-snapshot legacy).
-	if pvs.Spec.ConnectParamsRecorded {
-		for _, k := range nodeConnectParamKeys {
-			delete(params, k)
-		}
-		maps.Copy(params, pvs.Spec.NodeConnectParams)
+	// The first attempt's resolution is authoritative for the backend and
+	// the node-side settings; only the export parameters below come from
+	// this attempt's resolution, so a retry can correct e.g. an in-capsule
+	// data size that conflicted with the shared target port.
+	recorded := resolved
+	if pvs.Spec.Resolved != nil {
+		recorded = pvs.Spec.Resolved
 	}
 
 	// ── Resolve the agent address from PillarAgent ───────────────────────────
@@ -895,11 +652,11 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 
 	// ── Step 1: Create the backend storage resource ──────────────────────────
 	bindIP := extractIP(agentAddr)
-	exportParams := buildExportParams(params, agentProtocolType, bindIP, inCapsuleDataSize)
+	exportParams, aclEnabled := exportParamsFromResolved(resolved.Protocol, bindIP)
 	// The durable export spec is recorded with the partial state so the
 	// resync controller can re-create the export after the storage node
 	// loses its target state, independent of later parameter changes.
-	exportSpec := exportSpecFor(exportParams, parseACLEnabled(params[paramACLEnabled]))
+	exportSpec := exportSpecFor(exportParams, aclEnabled)
 	// A lifecycle already in CreatePartial created its backend in an earlier
 	// attempt whose export failed; the device path recorded then is reused and
 	// only the export is retried, so a zvol that may hold data is never
@@ -925,8 +682,8 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 				VolumeId:      agentVolID,
 				CapacityBytes: capacityBytes,
 				BackendType:   agentBackendType,
-				BackendParams: buildBackendParams(params, agentBackendType),
-				AccessType:    accessTypeForBackend(agentBackendType),
+				BackendParams: backendParamsFromResolved(recorded.Backend),
+				AccessType:    agentv1.VolumeAccessType_VOLUME_ACCESS_TYPE_BLOCK,
 			}, exportSpec)
 		if err != nil {
 			return nil, err
@@ -934,7 +691,7 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 	}
 
 	// ── Step 2: Export the volume over the network protocol ───────────────────
-	// The NVMe-oF / iSCSI bind address is the storage node's IP (no port).
+	// The NVMe-oF bind address is the storage node's IP (no port).
 	// agent.ExportVolume is idempotent: if the export already exists (retry
 	// scenario), it returns the existing ExportInfo without error.
 	exportToken, err := s.claimOperation(ctx, pvName, volumeID, pvs.UID)
@@ -946,7 +703,7 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 		ProtocolType: agentProtocolType,
 		ExportParams: exportParams,
 		DevicePath:   devicePath,
-		AclEnabled:   parseACLEnabled(params[paramACLEnabled]),
+		AclEnabled:   aclEnabled,
 		Fence:        exportToken,
 	})
 	if err != nil {
@@ -978,14 +735,57 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 		vcAddress:      info.GetAddress(),
 		vcPort:         strconv.Itoa(int(info.GetPort())),
 		vcVolumeRef:    info.GetVolumeRef(),
-		vcProtocolType: protocolTypeStr,
+		vcProtocolType: string(protocolID),
 	}
-	copyNodeConnectParams(volumeContext, params)
+	nodeVolumeContext(recorded, volumeContext)
 
 	return &csi.CreateVolumeResponse{
 		Volume: &csi.Volume{
 			VolumeId:      volumeID,
 			CapacityBytes: actualCapacity,
+			VolumeContext: volumeContext,
+		},
+	}, nil
+}
+
+// completedVolumeResponse answers a CreateVolume retry for a Ready
+// lifecycle from its durable record (see CreateVolume).
+func completedVolumeResponse(
+	req *csi.CreateVolumeRequest,
+	pvs *v1alpha1.PillarVolumeState,
+) (*csi.CreateVolumeResponse, error) {
+	ei := pvs.Status.ExportInfo
+	existingCap := pvs.Spec.CapacityBytes
+
+	// CSI spec §5.1.1: if the existing volume doesn't satisfy the new
+	// capacity range, return AlreadyExists to signal incompatibility.
+	if cr := req.GetCapacityRange(); cr != nil {
+		if cr.GetRequiredBytes() > 0 && existingCap < cr.GetRequiredBytes() {
+			return nil, status.Errorf(codes.AlreadyExists,
+				"volume %q already exists with capacity %d bytes, which is less than "+
+					"the requested minimum %d bytes",
+				req.GetName(), existingCap, cr.GetRequiredBytes())
+		}
+		if cr.GetLimitBytes() > 0 && existingCap > cr.GetLimitBytes() {
+			return nil, status.Errorf(codes.AlreadyExists,
+				"volume %q already exists with capacity %d bytes, which exceeds "+
+					"the requested limit %d bytes",
+				req.GetName(), existingCap, cr.GetLimitBytes())
+		}
+	}
+
+	volumeContext := map[string]string{
+		vcTargetID:     ei.TargetID,
+		vcAddress:      ei.Address,
+		vcPort:         strconv.Itoa(int(ei.Port)),
+		vcVolumeRef:    ei.VolumeRef,
+		vcProtocolType: pvs.Spec.ProtocolType,
+	}
+	nodeVolumeContext(pvs.Spec.Resolved, volumeContext)
+	return &csi.CreateVolumeResponse{
+		Volume: &csi.Volume{
+			VolumeId:      pvs.Spec.VolumeID,
+			CapacityBytes: existingCap,
 			VolumeContext: volumeContext,
 		},
 	}, nil
@@ -1282,218 +1082,32 @@ func (s *ControllerServer) assertVolumeExists(ctx context.Context, volumeID stri
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Volume ID helpers
+// Backend / protocol token mappers
 // ─────────────────────────────────────────────────────────────────────────────.
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 4-level parameter merge hierarchy
-// ─────────────────────────────────────────────────────────────────────────────.
-
-// mergeParamsFromCRDs builds the 4-level parameter merge hierarchy:
-//
-//	Layer 1 (Pool)    – ZFS properties and LVM provisioning mode from PillarStore.spec.backend
-//	Layer 2 (Protocol)– (protocol params already captured in StorageClass at bind time)
-//	Layer 3 (Binding) – ZFS property and LVM mode overrides from PillarStorageClass.spec.overrides.backend
-//	Layer 4 (PVC)     – per-PVC annotation overrides (see ParsePVCAnnotations)
-//
-// The StorageClass parameters (scParams) are the authoritative source for
-// routing metadata (target, backend-type, protocol-type, etc.) and serve as
-// the baseline.  ZFS properties (which are not stored in the StorageClass)
-// are fetched from the PillarStore CRD and layered on top, then Binding
-// overrides are applied, and finally per-PVC annotation overrides win over
-// everything else.
-//
-// The PillarStorageClass is named by the paramBinding StorageClass parameter,
-// which the PillarStorageClass controller writes into every StorageClass it
-// generates.  A StorageClass without it (hand-written) has no CRD layers: its
-// parameters are used as-is and only the PVC layer is applied.  A binding or
-// store that the StorageClass references but that cannot be read is an error:
-// provisioning without it would silently drop the settings it declares.
-func (s *ControllerServer) mergeParamsFromCRDs(
-	ctx context.Context,
-	scParams map[string]string,
-) (map[string]string, error) {
-	// Start with a copy of the StorageClass params so callers can freely mutate
-	// the returned map without affecting the original request parameters.
-	merged := make(map[string]string, len(scParams))
-	maps.Copy(merged, scParams)
-
-	bindingName := scParams[paramBinding]
-	if bindingName != "" {
-		err := s.applyCRDLayers(ctx, merged, bindingName)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	// ── Layer 4: PVC annotation overrides (highest priority) ─────────────────
-	err := s.applyPVCAnnotationOverrides(ctx, merged, scParams)
-	if err != nil {
-		return nil, err
-	}
-	return merged, nil
-}
-
-// applyCRDLayers merges the PillarStore (Layer 1) and PillarStorageClass
-// (Layer 3) backend settings of binding bindingName into merged.  A missing
-// binding or store is returned as a NotFound-wrapping error.
-func (s *ControllerServer) applyCRDLayers(
-	ctx context.Context,
-	merged map[string]string,
-	bindingName string,
-) error {
-	binding := &v1alpha1.PillarStorageClass{}
-	err := s.k8sClient.Get(ctx, types.NamespacedName{Name: bindingName}, binding)
-	if err != nil {
-		return fmt.Errorf("get PillarStorageClass %q named by StorageClass parameter %q: %w",
-			bindingName, paramBinding, err)
-	}
-
-	pool := &v1alpha1.PillarStore{}
-	err = s.k8sClient.Get(ctx, types.NamespacedName{Name: binding.Spec.StoreRef}, pool)
-	if err != nil {
-		return fmt.Errorf("get PillarStore %q of PillarStorageClass %q: %w",
-			binding.Spec.StoreRef, bindingName, err)
-	}
-
-	// ── Layer 1: PillarStore backend defaults ────────────────────────────────
-	if pool.Spec.Backend.ZFS != nil {
-		for k, v := range pool.Spec.Backend.ZFS.Properties {
-			merged[paramZFSPropPrefix+k] = v
-		}
-	}
-
-	// Only set when a non-empty mode is configured AND the StorageClass has not
-	// already supplied an explicit override.  An absent key in the final merged
-	// map lets the agent backend use its compiled-in default.
-	if pool.Spec.Backend.LVM != nil && pool.Spec.Backend.LVM.ProvisioningMode != "" {
-		if _, alreadySet := merged[paramLVMMode]; !alreadySet {
-			merged[paramLVMMode] = string(pool.Spec.Backend.LVM.ProvisioningMode)
-		}
-	}
-
-	// ── Layer 3: PillarStorageClass backend overrides ────────────────────────
-	// (Layer 2 — protocol params — are already embedded in the StorageClass.)
-	if binding.Spec.Overrides == nil || binding.Spec.Overrides.Backend == nil {
-		return nil
-	}
-	backend := binding.Spec.Overrides.Backend
-	if backend.ZFS != nil {
-		for k, v := range backend.ZFS.Properties {
-			merged[paramZFSPropPrefix+k] = v
-		}
-	}
-	if backend.LVM != nil && backend.LVM.ProvisioningMode != "" {
-		merged[paramLVMMode] = string(backend.LVM.ProvisioningMode)
-	}
-	return nil
-}
-
-// applyPVCAnnotationOverrides looks up the PVC identified by the
-// csi.storage.k8s.io/pvc/name and csi.storage.k8s.io/pvc/namespace
-// parameters (injected by external-provisioner --extra-create-metadata) and
-// merges PVC-level annotation overrides into merged using ParsePVCAnnotations.
-// This is the highest-priority override layer.
-//
-// Without that metadata no claim is known and the layer is skipped; the chart
-// always runs csi-provisioner with --extra-create-metadata.  A claim that is
-// named but cannot be read is an error (the provisioner retries), because
-// provisioning without it would drop the claim's overrides.  Annotation
-// validation errors are returned as *pvcAnnotationValidationError so that
-// CreateVolume can reject them with InvalidArgument.
-func (s *ControllerServer) applyPVCAnnotationOverrides(
-	ctx context.Context,
-	merged map[string]string,
-	scParams map[string]string,
-) error {
-	pvcName := scParams[paramPVCNameMeta]
-	pvcNamespace := scParams[paramPVCNamespaceMeta]
-	if pvcName == "" || pvcNamespace == "" {
-		return nil
-	}
-
-	pvc := &corev1.PersistentVolumeClaim{}
-	err := s.apiReader.Get(ctx, types.NamespacedName{
-		Name:      pvcName,
-		Namespace: pvcNamespace,
-	}, pvc)
-	if err != nil {
-		return fmt.Errorf("get PersistentVolumeClaim %s/%s for annotation overrides: %w",
-			pvcNamespace, pvcName, err)
-	}
-
-	overrides, err := ParsePVCAnnotations(pvc.Annotations)
-	if err != nil {
-		// Annotation validation failure (e.g. structural field override
-		// attempt) is surfaced to the caller so CreateVolume can reject it
-		// with InvalidArgument (not Internal).
-		return &pvcAnnotationValidationError{
-			pvcNamespace: pvcNamespace,
-			pvcName:      pvcName,
-			cause:        err,
-		}
-	}
-
-	maps.Copy(merged, overrides)
-	return nil
-}
-
-// nodeConnectParamKeys are the merged CreateVolume parameters the node needs
-// at stage time: the NVMe-oF connect tuning, and the per-PVC fsType override
-// and mkfs options applied when NodeStageVolume formats a new volume.  They
-// travel in the VolumeContext because NodeStageVolume receives no
-// StorageClass parameters.
-var nodeConnectParamKeys = []string{
-	paramNVMeOFCtrlLossTmo,
-	paramNVMeOFReconnectDelay,
-	paramNVMeOFMaxQueueSize,
-	paramFSType,
-	paramMkfsOptions,
-}
-
-// copyNodeConnectParams copies every non-empty nodeConnectParamKeys entry
-// from the merged parameters into volumeContext.  Absent keys stay absent so
-// the node keeps the kernel defaults.
-func copyNodeConnectParams(volumeContext, params map[string]string) {
-	for _, k := range nodeConnectParamKeys {
-		if v := params[k]; v != "" {
-			volumeContext[k] = v
-		}
-	}
-}
-
-// buildAgentVolumeID constructs the volume identifier used in all agent RPCs.
-//
-// The format is "<pool>/<volume-name>" where pool is the storage pool name
-// from the pillar-csi.bhyoo.com/store StorageClass parameter.  For ZFS
-// backends this matches the agent's internal naming convention
-// (/dev/zvol/<pool>/<name>); for other backends it is the pool name passed
-// to --backend type=<t>,pool=<name>.
-func buildAgentVolumeID(params map[string]string, volumeName string) string {
-	if pool := params[paramPool]; pool != "" {
-		return pool + "/" + volumeName
-	}
-	return volumeName
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Backend / protocol type mappers
-// ─────────────────────────────────────────────────────────────────────────────.
-
-// mapBackendType converts the StorageClass backend-type string to the agent
-// protobuf enum value.
+// mapBackendType converts a backend routing token (the backend segment of a
+// volume ID, v1alpha1.BackendID) to the agent protobuf enum value.  An
+// unsupported token maps to UNSPECIFIED, which the agent rejects explicitly.
 func mapBackendType(s string) agentv1.BackendType {
-	switch v1alpha1.BackendType(s) {
-	case v1alpha1.BackendTypeZFSZvol:
+	switch v1alpha1.BackendID(s) {
+	case v1alpha1.BackendIDZFSZvol:
 		return agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL
-	case v1alpha1.BackendTypeZFSDataset:
-		return agentv1.BackendType_BACKEND_TYPE_ZFS_DATASET
-	case v1alpha1.BackendTypeLVMLV:
+	case v1alpha1.BackendIDLVMLV:
 		return agentv1.BackendType_BACKEND_TYPE_LVM
-	case v1alpha1.BackendTypeDir:
-		return agentv1.BackendType_BACKEND_TYPE_DIRECTORY
 	default:
 		return agentv1.BackendType_BACKEND_TYPE_UNSPECIFIED
+	}
+}
+
+// mapProtocolType converts a protocol routing token (the protocol segment of
+// a volume ID, v1alpha1.ProtocolID) to the agent protobuf enum value.  An
+// unsupported token maps to UNSPECIFIED, which the agent rejects explicitly.
+func mapProtocolType(s string) agentv1.ProtocolType {
+	switch v1alpha1.ProtocolID(s) {
+	case v1alpha1.ProtocolIDNVMeOFTCP:
+		return agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP
+	default:
+		return agentv1.ProtocolType_PROTOCOL_TYPE_UNSPECIFIED
 	}
 }
 
@@ -1503,26 +1117,17 @@ func mapBackendType(s string) agentv1.BackendType {
 // Identity resolution by protocol:
 //
 //	NVMe-oF TCP → CSINode.annotations["pillar-csi.bhyoo.com/nvmeof-host-nqn"]
-//	iSCSI       → CSINode.annotations["pillar-csi.bhyoo.com/iscsi-initiator-iqn"]
-//	NFS/SMB     → nodeID (annotation-based resolution is a future Phase 2 item)
+//	other       → nodeID unchanged (the agent rejects an unsupported protocol)
 //
 // Returns FailedPrecondition if the CSINode does not exist or the required
 // annotation is absent.  This causes the CO (external-attacher) to retry with
 // exponential backoff, giving the node plugin time to publish its identity
 // after a fresh node bootstrap.
 func (s *ControllerServer) resolveInitiatorID(ctx context.Context, nodeID, protocolTypeStr string) (string, error) {
-	var annotationKey string
-	switch v1alpha1.ProtocolType(protocolTypeStr) {
-	case v1alpha1.ProtocolTypeNVMeOFTCP:
-		annotationKey = AnnotationNVMeOFHostNQN
-	case v1alpha1.ProtocolTypeISCSI:
-		annotationKey = AnnotationISCSIInitiatorIQN
-	default:
-		// NFS, SMB and unknown protocols: initiator identity is not stored in a
-		// CSINode annotation in Phase 1.  Return nodeID as-is so that the caller
-		// can pass it unchanged to AllowInitiator/DenyInitiator.
+	if v1alpha1.ProtocolID(protocolTypeStr) != v1alpha1.ProtocolIDNVMeOFTCP {
 		return nodeID, nil
 	}
+	annotationKey := AnnotationNVMeOFHostNQN
 
 	csiNode := &storagev1.CSINode{}
 	err := s.k8sClient.Get(ctx, types.NamespacedName{Name: nodeID}, csiNode)
@@ -1545,159 +1150,46 @@ func (s *ControllerServer) resolveInitiatorID(ctx context.Context, nodeID, proto
 	return initiatorID, nil
 }
 
-// mapProtocolType converts the StorageClass protocol-type string to the agent
-// protobuf enum value.
-func mapProtocolType(s string) agentv1.ProtocolType {
-	switch v1alpha1.ProtocolType(s) {
-	case v1alpha1.ProtocolTypeNVMeOFTCP:
-		return agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP
-	case v1alpha1.ProtocolTypeISCSI:
-		return agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI
-	case v1alpha1.ProtocolTypeNFS:
-		return agentv1.ProtocolType_PROTOCOL_TYPE_NFS
-	case v1alpha1.ProtocolTypeSMB:
-		return agentv1.ProtocolType_PROTOCOL_TYPE_SMB
-	default:
-		return agentv1.ProtocolType_PROTOCOL_TYPE_UNSPECIFIED
-	}
-}
-
-// accessTypeForBackend returns the VolumeAccessType to request from the agent
-// for the given storage backend.
-//
-// Filesystem backends (ZFS datasets, directories) produce mounted filesystems,
-// so the agent creates a MOUNT resource. Block-oriented backends (zvols, LVM
-// LVs, and future raw block backends) produce block devices, so the agent
-// creates a BLOCK resource.
-func accessTypeForBackend(bt agentv1.BackendType) agentv1.VolumeAccessType {
-	switch bt {
-	case agentv1.BackendType_BACKEND_TYPE_ZFS_DATASET, agentv1.BackendType_BACKEND_TYPE_DIRECTORY:
-		return agentv1.VolumeAccessType_VOLUME_ACCESS_TYPE_MOUNT
-	default:
-		return agentv1.VolumeAccessType_VOLUME_ACCESS_TYPE_BLOCK
-	}
-}
-
-// isFileProtocol reports whether the given ProtocolType is a file-based
-// (network filesystem) protocol.  File protocols (NFS, SMB) handle resize
-// entirely on the server side; NodeExpandVolume is not needed.
-func isFileProtocol(p v1alpha1.ProtocolType) bool {
-	switch p {
-	case v1alpha1.ProtocolTypeNFS, v1alpha1.ProtocolTypeSMB:
-		return true
-	default:
-		return false
-	}
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Backend / export parameter builders
 // ─────────────────────────────────────────────────────────────────────────────.
 
-// buildBackendParams constructs the backend-specific creation parameters for
-// the agent.CreateVolume RPC from the StorageClass parameter map.
+// backendParamsFromResolved constructs the agent CreateVolume backend
+// parameters from the resolved backend configuration.
 //
-// For ZFS backends the Properties map is populated from all params that carry
-// the paramZFSPropPrefix prefix (e.g. "pillar-csi.bhyoo.com/zfs-prop.compression").
-// These originate from PillarStore.spec.backend.zfs.properties (Layer 1),
-// PillarStorageClass.spec.overrides.backend.zfs.properties (Layer 3), or per-PVC
-// annotation overrides (Layer 4) and have already been merged into params by
-// mergeParamsFromCRDs before CreateVolume calls buildBackendParams.
-func buildBackendParams(params map[string]string, backendType agentv1.BackendType) *agentv1.BackendParams {
-	switch backendType {
-	case agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL, agentv1.BackendType_BACKEND_TYPE_ZFS_DATASET:
-		// Collect ZFS properties from the merged parameter map.
-		var zfsProps map[string]string
-		for k, v := range params {
-			if after, ok := strings.CutPrefix(k, paramZFSPropPrefix); ok && after != "" {
-				if zfsProps == nil {
-					zfsProps = make(map[string]string)
-				}
-				zfsProps[after] = v
-			}
+// ZFS: pool, parent dataset and the merged properties (store < binding <
+// StorageClass document < PVC).  LVM: volume group, the resolved
+// provisioning mode (default linear) and the store's thin pool — always
+// sent, "" meaning none, so the agent refuses to create a volume when its
+// configured thin pool differs from the store's.
+func backendParamsFromResolved(b v1alpha1.BackendSpec) *agentv1.BackendParams {
+	switch {
+	case b.ZFS != nil:
+		var props map[string]string
+		if len(b.ZFS.Properties) > 0 {
+			props = maps.Clone(b.ZFS.Properties)
 		}
 		return &agentv1.BackendParams{
 			Params: &agentv1.BackendParams_Zfs{
 				Zfs: &agentv1.ZfsVolumeParams{
-					Pool:          params[paramPool],
-					ParentDataset: params[paramZFSParent],
-					Properties:    zfsProps,
+					Pool:          b.ZFS.Pool,
+					ParentDataset: b.ZFS.ParentDataset,
+					Properties:    props,
 				},
 			},
 		}
-	case agentv1.BackendType_BACKEND_TYPE_LVM:
-		lvm := &agentv1.LvmVolumeParams{
-			VolumeGroup:   params[paramLVMVG],
-			ProvisionMode: params[paramLVMMode],
+	case b.LVM != nil:
+		mode := b.LVM.ProvisioningMode
+		if mode == "" {
+			mode = v1alpha1.LVMProvisioningModeLinear
 		}
-		if thinPool, declared := params[paramLVMThinPool]; declared {
-			lvm.ThinPool = &thinPool
-		}
+		thinPool := b.LVM.ThinPool
 		return &agentv1.BackendParams{
-			Params: &agentv1.BackendParams_Lvm{Lvm: lvm},
-		}
-	default:
-		return nil
-	}
-}
-
-// buildExportParams constructs the protocol-specific export parameters for the
-// agent.ExportVolume RPC.
-//
-// BindAddress is the raw IP address of the storage node — specifically,
-// PillarAgent.Status.ResolvedAddress with the ":port" suffix stripped.
-// The NVMe-oF / iSCSI kernel targets bind to an IP, not an IP:port pair.
-// The NVMe-oF in-capsule data size is passed in already parsed (see
-// parseNVMeoFInCapsuleDataSize); 0 when none is configured.
-func buildExportParams(
-	params map[string]string,
-	protocolType agentv1.ProtocolType,
-	bindAddress string,
-	inCapsuleDataSize int32,
-) *agentv1.ExportParams {
-	switch protocolType {
-	case agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP:
-		port := int32(4420)
-		if portStr := params[paramNVMeOFPort]; portStr != "" {
-			p, parseErr := strconv.ParseInt(portStr, 10, 32)
-			if parseErr == nil {
-				port = int32(p)
-			}
-		}
-		return &agentv1.ExportParams{
-			Params: &agentv1.ExportParams_NvmeofTcp{
-				NvmeofTcp: &agentv1.NvmeofTcpExportParams{
-					BindAddress:       bindAddress,
-					Port:              port,
-					InCapsuleDataSize: inCapsuleDataSize,
-				},
-			},
-		}
-	case agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI:
-		port := int32(3260)
-		if portStr := params[paramISCSIPort]; portStr != "" {
-			p, parseErr := strconv.ParseInt(portStr, 10, 32)
-			if parseErr == nil {
-				port = int32(p)
-			}
-		}
-		return &agentv1.ExportParams{
-			Params: &agentv1.ExportParams_Iscsi{
-				Iscsi: &agentv1.IscsiExportParams{
-					BindAddress: bindAddress,
-					Port:        port,
-				},
-			},
-		}
-	case agentv1.ProtocolType_PROTOCOL_TYPE_NFS:
-		version := "4.2"
-		if v := params[paramNFSVersion]; v != "" {
-			version = v
-		}
-		return &agentv1.ExportParams{
-			Params: &agentv1.ExportParams_Nfs{
-				Nfs: &agentv1.NfsExportParams{
-					Version: version,
+			Params: &agentv1.BackendParams_Lvm{
+				Lvm: &agentv1.LvmVolumeParams{
+					VolumeGroup:   b.LVM.VolumeGroup,
+					ProvisionMode: string(mode),
+					ThinPool:      &thinPool,
 				},
 			},
 		}
@@ -1706,45 +1198,35 @@ func buildExportParams(
 	}
 }
 
-// minNVMeoFInCapsuleDataSize is the smallest usable in-capsule data size:
-// every Linux NVMe/TCP host sends the 1024-byte fabrics Connect data
-// (struct nvmf_connect_data) in-capsule, and nvmet_tcp rejects an in-capsule
-// payload larger than the port's param_inline_data_size with a do-not-retry
-// status, so a smaller value makes every connect to the port fail.
-const minNVMeoFInCapsuleDataSize = 1024
+// defaultNVMeOFPort is the NVMe-oF/TCP listener port when the protocol does
+// not set one (the CRD default).
+const defaultNVMeOFPort = 4420
 
-// parseNVMeoFInCapsuleDataSize returns the NVMe-oF in-capsule data size in
-// bytes from the merged CreateVolume parameters, or 0 when none is
-// configured so the agent keeps the port's value.  A value that is not a
-// base-10 int32 of at least minNVMeoFInCapsuleDataSize is an error rather
-// than a silent fallback to the default or an unconnectable export.
-func parseNVMeoFInCapsuleDataSize(params map[string]string) (int32, error) {
-	raw := params[paramNVMeOFInCapsuleDataSize]
-	if raw == "" {
-		return 0, nil
+// exportParamsFromResolved constructs the agent ExportVolume parameters and
+// the ACL flag from the resolved protocol configuration.  The bind address is
+// the storage node's IP (PillarAgent.status.resolvedAddress without its port).
+func exportParamsFromResolved(p v1alpha1.ProtocolSpec, bindAddress string) (*agentv1.ExportParams, bool) {
+	n := p.NVMeOFTCP
+	if n == nil {
+		return nil, false
 	}
-	v, err := strconv.ParseInt(raw, 10, 32)
-	if err != nil {
-		return 0, fmt.Errorf("parse %s=%q: %w", paramNVMeOFInCapsuleDataSize, raw, err)
+	port := n.Port
+	if port == 0 {
+		port = defaultNVMeOFPort
 	}
-	if v < minNVMeoFInCapsuleDataSize {
-		return 0, fmt.Errorf("parse %s=%d: in-capsule data size must be at least %d, the fabrics Connect data "+
-			"every NVMe/TCP host sends in-capsule", paramNVMeOFInCapsuleDataSize, v, minNVMeoFInCapsuleDataSize)
+	var inCapsuleDataSize int32
+	if n.InCapsuleDataSize != nil {
+		inCapsuleDataSize = *n.InCapsuleDataSize
 	}
-	return int32(v), nil
-}
-
-// parseACLEnabled interprets the acl-enabled StorageClass parameter.
-//
-// The parameter is written by the PillarStorageClass controller using the value of
-// PillarProtocol.spec.nvmeofTcp.acl (or the iSCSI equivalent).  The default
-// behavior when the key is absent or empty is true (ACL enforced), which
-// matches the protocol-type defaults in the CRD schema.
-//
-// Only the literal string "false" disables ACL; any other value (including
-// "true", "1", "yes", or an empty string) keeps ACL enabled.
-func parseACLEnabled(val string) bool {
-	return val != "false"
+	return &agentv1.ExportParams{
+		Params: &agentv1.ExportParams_NvmeofTcp{
+			NvmeofTcp: &agentv1.NvmeofTcpExportParams{
+				BindAddress:       bindAddress,
+				Port:              port,
+				InCapsuleDataSize: inCapsuleDataSize,
+			},
+		},
+	}, n.ACL
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1850,13 +1332,12 @@ func canSharePublication(a, b v1alpha1.VolumePublication) bool {
 // validatePublishAccessMode rejects an access mode the volume's protocol
 // cannot serve (for example a multi-node writer mode on a block protocol).
 func validatePublishAccessMode(protocolTypeStr string, mode csi.VolumeCapability_AccessMode_Mode) error {
-	protocolType := v1alpha1.ProtocolType(protocolTypeStr)
-	if isSupportedAccessMode(protocolType, mode) {
+	if isSupportedAccessMode(mode) {
 		return nil
 	}
 	return status.Errorf(codes.InvalidArgument,
 		"access mode %s is not supported for protocol %q; supported modes: %s",
-		mode, protocolType, describeSupportedModes(protocolType))
+		mode, protocolTypeStr, describeSupportedModes())
 }
 
 // resolvePublishInitiator resolves the node's protocol initiator identity for
@@ -1890,8 +1371,6 @@ func (s *ControllerServer) resolvePublishInitiator(
 // startup:
 //
 //	NVMe-oF TCP → CSINode["pillar-csi.bhyoo.com/nvmeof-host-nqn"] (host NQN)
-//	iSCSI       → CSINode["pillar-csi.bhyoo.com/iscsi-initiator-iqn"] (IQN)
-//	NFS/SMB     → nodeID used as-is (annotation-based resolution is Phase 2)
 //
 // If the required CSINode annotation is absent, FailedPrecondition is returned
 // and the CO (external-attacher) retries with exponential backoff, giving the
@@ -2242,11 +1721,10 @@ func (s *ControllerServer) syncUnpublishedState(volumeID string, remaining int) 
 // ControllerExpandVolume resizes a volume on the storage backend by delegating
 // to agent.ExpandVolume.
 //
-// The method returns the actual capacity after expansion. For block protocols
-// (nvmeof-tcp, iscsi) node_expansion_required is set to true so that the CO
-// will subsequently call NodeExpandVolume to rescan the block device and
-// resize the filesystem. For file protocols (nfs, smb) node_expansion_required
-// is set to false because the resize is fully server-side.
+// The method returns the actual capacity after expansion.  Every served
+// protocol is a block protocol, so node_expansion_required is always true:
+// the CO subsequently calls NodeExpandVolume to rescan the block device and
+// resize the filesystem.
 //
 // Idempotency: ExpandVolume on the agent is idempotent — calling it with a
 // requested_bytes ≤ current size is a no-op and returns the current size.
@@ -2278,7 +1756,6 @@ func (s *ControllerServer) ControllerExpandVolume(
 			volumeID)
 	}
 	targetName := parts[0]
-	protocolTypeStr := parts[1]
 	backendTypeStr := parts[2]
 	agentVolID := parts[3]
 
@@ -2336,15 +1813,11 @@ func (s *ControllerServer) ControllerExpandVolume(
 		actualBytes = requiredBytes
 	}
 
-	// File-protocol volumes (NFS, SMB) are resized entirely on the server side;
-	// the node does not need to rescan a block device or grow a filesystem.
-	// Block-protocol volumes (nvmeof-tcp, iscsi) require a node-side rescan
-	// to pick up the new block-device size and optionally run resize2fs/xfs_growfs.
-	nodeExpansionRequired := !isFileProtocol(v1alpha1.ProtocolType(protocolTypeStr))
-
+	// Every served protocol is a block protocol: the node must rescan the
+	// block device and grow the filesystem of a Filesystem-mode volume.
 	return &csi.ControllerExpandVolumeResponse{
 		CapacityBytes:         actualBytes,
-		NodeExpansionRequired: nodeExpansionRequired,
+		NodeExpansionRequired: true,
 	}, nil
 }
 
@@ -2357,32 +1830,41 @@ func (s *ControllerServer) ControllerExpandVolume(
 //
 // The CO may call this before scheduling a PVC in order to pick a storage
 // backend that has enough space.  Pillar-csi delegates the actual capacity
-// query to the pillar-agent running on the storage node.
-//
-// Required StorageClass parameters:
-//   - pillar-csi.bhyoo.com/agent       — name of the PillarAgent
-//   - pillar-csi.bhyoo.com/store         — pool name on the storage node
-//   - pillar-csi.bhyoo.com/backend-type — e.g. "zfs-zvol"
+// query to the pillar-agent running on the storage node.  The PillarStore is
+// identified the same way CreateVolume identifies it: through the
+// PillarStorageClass named by pillar-csi.bhyoo.com/storage-class, or directly
+// by pillar-csi.bhyoo.com/store-ref.
 func (s *ControllerServer) GetCapacity(
 	ctx context.Context,
 	req *csi.GetCapacityRequest,
 ) (*csi.GetCapacityResponse, error) {
 	params := req.GetParameters()
 
-	targetName := params[paramTarget]
-	poolName := params[paramPool]
-	backendTypeStr := params[paramBackendType]
-
 	// CSI spec §4.1.2: GetCapacity MAY be called with empty parameters and
 	// MUST NOT fail in that case — it should return zero available capacity
 	// so the CO knows no pool is selectable.  Returning InvalidArgument here
 	// breaks csi-sanity's "no optional values added" test and is wrong per
 	// the spec; the parameters field is informational, not validated.
-	if targetName == "" || poolName == "" || backendTypeStr == "" {
+	storeName := params[paramStoreRef]
+	if bindingName := params[paramBinding]; bindingName != "" {
+		binding := &v1alpha1.PillarStorageClass{}
+		err := s.k8sClient.Get(ctx, types.NamespacedName{Name: bindingName}, binding)
+		if err != nil {
+			return nil, capacityLookupError("PillarStorageClass", bindingName, err)
+		}
+		storeName = binding.Spec.StoreRef
+	}
+	if storeName == "" {
 		return &csi.GetCapacityResponse{AvailableCapacity: 0}, nil
 	}
-
-	agentBackendType := mapBackendType(backendTypeStr)
+	store := &v1alpha1.PillarStore{}
+	err := s.k8sClient.Get(ctx, types.NamespacedName{Name: storeName}, store)
+	if err != nil {
+		return nil, capacityLookupError("PillarStore", storeName, err)
+	}
+	targetName := store.Spec.AgentRef
+	poolName := store.Spec.Backend.PoolName()
+	agentBackendType := mapBackendType(string(store.Spec.Backend.Kind()))
 
 	// ── Resolve the agent address from PillarAgent ───────────────────────────
 	target := &v1alpha1.PillarAgent{}
@@ -2439,4 +1921,13 @@ func extractIP(hostport string) string {
 		return hostport
 	}
 	return host
+}
+
+// capacityLookupError converts a failed CR read in GetCapacity to a gRPC
+// status: NotFound for a missing CR, Internal otherwise.
+func capacityLookupError(kind, name string, err error) error {
+	if k8serrors.IsNotFound(err) {
+		return status.Errorf(codes.NotFound, "%s %q not found", kind, name)
+	}
+	return status.Errorf(codes.Internal, "failed to get %s %q: %v", kind, name, err)
 }

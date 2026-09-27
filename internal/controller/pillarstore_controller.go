@@ -412,9 +412,9 @@ func (r *PillarStoreReconciler) reconcileNormal(
 // distinguish "we haven't checked yet" from "pool is not there".
 //
 // ZFS stores are matched by spec.backend.zfs.pool and LVM stores by
-// spec.backend.lvm.volumeGroup (the agent reports a VG under its name).  For
-// backends without a named pool (dir), pool discovery is considered satisfied
-// once the target reports any pools.
+// spec.backend.lvm.volumeGroup (the agent reports a VG under its name).  A
+// store whose backend union selects no member names no pool and is reported
+// as not discovered.
 func evaluatePoolDiscovered(
 	pool *pillarcsiv1alpha1.PillarStore,
 	target *pillarcsiv1alpha1.PillarAgent,
@@ -427,15 +427,13 @@ func evaluatePoolDiscovered(
 			)
 	}
 
-	expectedPoolName := storePoolName(pool)
+	expectedPoolName := pool.Spec.Backend.PoolName()
 	if expectedPoolName == "" {
-		// Backend type does not carry an explicit pool name (e.g. dir).
-		// Treat as discovered once the target reports it is responsive.
-		return metav1.ConditionTrue, "PoolDiscovered",
-			fmt.Sprintf(
-				"Backend type %q does not require a named pool for discovery validation",
-				pool.Spec.Backend.Type,
-			)
+		// The CRD schema requires exactly one backend member with a
+		// non-empty pool/volumeGroup; an object that bypassed it names no
+		// pool, so there is nothing to discover.
+		return metav1.ConditionFalse, "BackendNotConfigured",
+			"spec.backend names no pool: exactly one of zfs.pool or lvm.volumeGroup must be set"
 	}
 
 	// Search for the expected pool in the target's discovered list.
@@ -450,7 +448,7 @@ func evaluatePoolDiscovered(
 			return metav1.ConditionFalse, "BackendLayoutMismatch",
 				fmt.Sprintf(
 					"Pool %q on PillarAgent %q: %s; CreateVolume is refused until the PillarStore spec "+
-						"and the agent --backend flag (chart agent.backends) agree",
+						"and the agent backend config (chart agent.backends) agree",
 					expectedPoolName, pool.Spec.AgentRef, mismatch,
 				)
 		}
@@ -464,23 +462,6 @@ func evaluatePoolDiscovered(
 	return metav1.ConditionFalse, "PoolNotFound",
 		fmt.Sprintf("Pool %q was not found in PillarAgent %q discovered pools (found: [%s])",
 			expectedPoolName, pool.Spec.AgentRef, strings.Join(discoveredNames, ", "))
-}
-
-// storePoolName returns the name under which the agent reports the pool the
-// store declares: the ZFS pool for ZFS backends, the volume group for LVM.
-// It returns "" for backends without a named pool.
-func storePoolName(pool *pillarcsiv1alpha1.PillarStore) string {
-	switch pool.Spec.Backend.Type {
-	case pillarcsiv1alpha1.BackendTypeZFSZvol, pillarcsiv1alpha1.BackendTypeZFSDataset:
-		if pool.Spec.Backend.ZFS != nil {
-			return pool.Spec.Backend.ZFS.Pool
-		}
-	case pillarcsiv1alpha1.BackendTypeLVMLV:
-		if pool.Spec.Backend.LVM != nil {
-			return pool.Spec.Backend.LVM.VolumeGroup
-		}
-	}
-	return ""
 }
 
 // layoutMismatch compares where the store declares volumes live inside the
@@ -516,8 +497,9 @@ func normalizeDataset(s string) string {
 	return c
 }
 
-// evaluateBackendSupported checks whether the backend type declared in
-// spec.backend.type is listed in the target's capabilities.backends.
+// evaluateBackendSupported checks whether the backend selected by the
+// spec.backend union (as its routing token, e.g. "zfs-zvol") is listed in the
+// target's capabilities.backends.
 //
 // Returns Unknown when the target has not yet reported any capabilities —
 // this happens before the agent gRPC connection is established.
@@ -533,7 +515,7 @@ func evaluateBackendSupported(
 			)
 	}
 
-	backendType := string(pool.Spec.Backend.Type)
+	backendType := string(pool.Spec.Backend.Kind())
 	if slices.Contains(target.Status.Capabilities.Backends, backendType) {
 		return metav1.ConditionTrue, "BackendSupported",
 			fmt.Sprintf(
@@ -549,10 +531,10 @@ func evaluateBackendSupported(
 // syncCapacityFromTarget reads capacity data for this pool from the matching
 // entry in target.Status.DiscoveredPools and writes it to pool.Status.Capacity.
 //
-// Matching logic (storePoolName):
-//   - ZFS backends (zfs-zvol, zfs-dataset): match by pool name (spec.backend.zfs.pool).
-//   - LVM backends (lvm-lv): match by volume group (spec.backend.lvm.volumeGroup).
-//   - Other backends (dir): no named pool — match the first DiscoveredPool entry.
+// Matching logic (spec.backend.PoolName):
+//   - ZFS backends: match by pool name (spec.backend.zfs.pool).
+//   - LVM backends: match by volume group (spec.backend.lvm.volumeGroup).
+//   - A backend naming no pool matches no entry.
 //
 // The function computes Used = Total − Available when both quantities are present,
 // clamping the result at zero to protect against corrupted agent data.
@@ -567,13 +549,16 @@ func syncCapacityFromTarget(
 		return false
 	}
 
-	expectedName := storePoolName(pool)
+	expectedName := pool.Spec.Backend.PoolName()
+	if expectedName == "" {
+		return false
+	}
 
 	// Walk the discovered pool list and find the first matching entry.
 	var found *pillarcsiv1alpha1.DiscoveredPool
 	for i := range target.Status.DiscoveredPools {
 		dp := &target.Status.DiscoveredPools[i]
-		if expectedName == "" || dp.Name == expectedName {
+		if dp.Name == expectedName {
 			found = dp
 			break
 		}

@@ -146,15 +146,12 @@ APTEOF
 	// Failure handling: if the combined install fails (e.g. network timeout),
 	// we fall back to the two-package combined output for diagnostics. The
 	// provisioners detect missing binaries and soft-skip independently.
-	// Install zfsutils-linux, lvm2, AND tgt (iSCSI target daemon) in one
-	// apt-get call to avoid multiple round-trips and apt database parses.
-	// tgt provides tgtd and tgtadm needed by the AC9c iSCSI backend check.
 	if _, err := kindContainerExec(ctx, nodeContainer,
 		"bash", "-c",
-		"DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends zfsutils-linux lvm2 tgt 2>&1",
+		"DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends zfsutils-linux lvm2 2>&1",
 	); err != nil {
 		_, _ = fmt.Fprintf(output,
-			"[AC4] warn: install zfsutils-linux lvm2 tgt in %s: %v — ZFS/LVM/iSCSI provisioning will soft-skip\n",
+			"[AC4] warn: install zfsutils-linux lvm2 in %s: %v — ZFS/LVM provisioning will soft-skip\n",
 			nodeContainer, err)
 		// Non-fatal: provisioners detect missing binaries and soft-skip.
 	} else {
@@ -241,7 +238,7 @@ func kindContainerExec(ctx context.Context, container string, args ...string) (s
 	return strings.TrimSpace(stdout.String()), nil
 }
 
-// setupFabricBackends configures NVMe-oF TCP and iSCSI targets inside the Kind
+// setupFabricBackends configures the NVMe-oF TCP target inside the Kind
 // container so that the AC9c backend env-check passes on all Ginkgo nodes.
 //
 // This replaces the DeployFabricReadinessDaemonSet Kubernetes DaemonSet approach
@@ -249,7 +246,6 @@ func kindContainerExec(ctx context.Context, container string, args ...string) (s
 // and keeping fabric setup within the 2-minute suite budget.
 //
 // NVMe-oF setup: configures kernel configfs subsystem + port + symlink.
-// iSCSI setup: starts tgtd and creates the E2E target IQN.
 //
 // All steps are idempotent — safe to call on a pre-configured container.
 // Non-fatal errors are logged; hard failures return non-nil error.
@@ -258,11 +254,7 @@ func setupFabricBackends(ctx context.Context, nodeContainer string, output io.Wr
 		output = io.Discard
 	}
 
-	const (
-		nvmeSubsysNQN = "nqn.2024-01.io.pillar-csi:e2e-target"
-		iscsiIQN      = "iqn.2024-01.io.pillar-csi:e2e-target"
-		iscsiTID      = "10"
-	)
+	const nvmeSubsysNQN = "nqn.2024-01.io.pillar-csi:e2e-target"
 
 	// ── NVMe-oF TCP target via kernel configfs ────────────────────────────────
 	//
@@ -305,46 +297,13 @@ func setupFabricBackends(ctx context.Context, nodeContainer string, output io.Wr
 	}, "\n")
 
 	if _, err := kindContainerExec(ctx, nodeContainer, "bash", "-c", nvmofScript); err != nil {
-		// NVMe-oF setup failed — log but continue (iSCSI check may still pass)
+		// NVMe-oF setup failed — log but continue; the AC9c check reports it.
 		_, _ = fmt.Fprintf(output,
 			"[AC9b] warn: NVMe-oF TCP setup in %s: %v — NVMe-oF AC9c check may fail\n",
 			nodeContainer, err)
 	} else {
 		_, _ = fmt.Fprintf(output,
 			"[AC9b] NVMe-oF TCP target configured in container %s\n", nodeContainer)
-	}
-
-	// ── iSCSI target via tgtd ─────────────────────────────────────────────────
-	//
-	// tgt was installed by installKindContainerBackendTools above. Start tgtd
-	// (if not already running) and create the E2E target IQN.
-	iscsiScript := strings.Join([]string{
-		// Start tgtd if not already running
-		`if ! pgrep -x tgtd > /dev/null 2>&1; then`,
-		`  tgtd 2>/dev/null || true`,
-		`  sleep 2`,
-		`fi`,
-		// Create iSCSI target (idempotent)
-		`IQN="` + iscsiIQN + `"`,
-		`TID=` + iscsiTID,
-		`if ! tgtadm --lld iscsi --mode target --op show 2>/dev/null | grep -q "${IQN}"; then`,
-		`  dd if=/dev/zero of=/tmp/iscsi-e2e-lun0.img bs=1M count=64 status=none 2>/dev/null || true`,
-		`  ISCSI_LOOP=$(losetup --find --show /tmp/iscsi-e2e-lun0.img 2>/dev/null || echo "")`,
-		`  tgtadm --lld iscsi --mode target --op new --tid ${TID} --targetname "${IQN}" 2>/dev/null || true`,
-		`  if [ -n "${ISCSI_LOOP}" ]; then`,
-		`    tgtadm --lld iscsi --mode logicalunit --op new --tid ${TID} --lun 1 --backing-store "${ISCSI_LOOP}" 2>/dev/null || true`,
-		`  fi`,
-		`  tgtadm --lld iscsi --mode target --op bind --tid ${TID} --initiator-address ALL 2>/dev/null || true`,
-		`fi`,
-	}, "\n")
-
-	if _, err := kindContainerExec(ctx, nodeContainer, "bash", "-c", iscsiScript); err != nil {
-		_, _ = fmt.Fprintf(output,
-			"[AC9b] warn: iSCSI target setup in %s: %v — iSCSI AC9c check may fail\n",
-			nodeContainer, err)
-	} else {
-		_, _ = fmt.Fprintf(output,
-			"[AC9b] iSCSI target configured in container %s\n", nodeContainer)
 	}
 
 	return nil

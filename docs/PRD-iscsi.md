@@ -1,3 +1,7 @@
+> **SUPERSEDED — NOT IMPLEMENTED.** iSCSI is not implemented. This document is kept only as a design reference for a future protocol.
+> The configuration interface it describes is obsolete: the served CRD schema has no `iscsi` protocol member, and the flat StorageClass/PVC keys shown here (`iscsi-*`, `acl-enabled`, `fsType`/`mkfsOptions` on `PillarProtocol`, `type:` discriminators) were removed.
+> A future iSCSI implementation must follow the current interface in [`PRD.md`](./PRD.md) §2.1–§2.3: a `spec.protocol.iscsi` union member, `PillarStorageClass.spec.overrides.protocol.iscsi`, and the `pillar-csi.bhyoo.com/protocol` YAML document, with no flat keys.
+
 # pillar-csi iSCSI Support PRD
 
 ## 1. 문서 목적

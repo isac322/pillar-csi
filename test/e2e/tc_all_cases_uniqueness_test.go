@@ -153,8 +153,8 @@ func TestAC3CrossCategoryIDsDifferentNamespaces(t *testing.T) {
 		{"E9.1", "E19.1"},
 		{"E19.1", "E20.1"},
 		{"E25.1", "E26.1"},
-		{"E33.1", "E34.1"},
-		{"E33.1", "E35.1"},
+		{"E33.1", "F27.1"},
+		{"E32.1", "E33.1"},
 		{"F27.1", "F28.1"},
 		{"F27.1", "E27.1"},
 	}
@@ -272,7 +272,7 @@ func TestAC3ScopeNamesAreDNSSafe(t *testing.T) {
 		"E16.1", "E17.1", "E18.1", "E19.1", "E20.1",
 		"E21.1", "E22.1", "E23.1", "E24.1", "E25.1",
 		"E26.1", "E28.1", "E29.1", "E30.1", "E32.1",
-		"E33.1", "E34.1", "E35.1",
+		"E33.1",
 		"F27.1", "F28.1", "F29.1", "F30.1", "F31.1",
 	}
 
@@ -324,8 +324,8 @@ func TestAC3BackendObjectNamesAreUniqueCrossTCAndLabel(t *testing.T) {
 		{"E9.2", "zfs", "pool"},
 		{"E28.1", "lvm", "pool"},
 		{"E33.1", "nvme", "target"},
-		{"E34.1", "iscsi", "target"},
-		{"E35.1", "zfs", "pool"},
+		{"E33.2", "lvm", "target"},
+		{"F28.1", "zfs", "pool"},
 		{"F27.1", "lvm", "vg"},
 	}
 

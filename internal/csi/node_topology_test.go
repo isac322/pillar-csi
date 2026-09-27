@@ -22,9 +22,8 @@ package csi
 // verify that:
 //
 //  1. Topology key constants carry the correct string values (RFC §5.8).
-//  2. buildTopologySegments produces the right key-value pairs for every
-//     combination of protocol availability.
-//  3. Absent protocols are omitted rather than set to "false", so
+//  2. buildTopologySegments reports the NVMe-oF key when available.
+//  3. An unavailable protocol is omitted rather than set to "false", so
 //     StorageClass allowedTopologies In/NotIn selectors work correctly.
 //
 // Run with:
@@ -52,8 +51,6 @@ func TestTopologyKeyConstants(t *testing.T) {
 		want     string
 	}{
 		{TopologyKeyNVMeoF, "pillar-csi.bhyoo.com/nvmeof"},
-		{TopologyKeyISCSI, "pillar-csi.bhyoo.com/iscsi"},
-		{TopologyKeyNFS, "pillar-csi.bhyoo.com/nfs"},
 	}
 
 	for _, tc := range cases {
@@ -91,34 +88,6 @@ func TestBuildTopologySegments_NVMeoFOnly(t *testing.T) {
 	}
 }
 
-// TestBuildTopologySegments_ISCSIOnly verifies that when only iSCSI is
-// available exactly one key is present and it carries value "true".
-func TestBuildTopologySegments_ISCSIOnly(t *testing.T) {
-	t.Parallel()
-
-	segs := buildTopologySegments(&stubProber{iscsi: true})
-	if len(segs) != 1 {
-		t.Errorf("len(segs) = %d, want 1; segs = %v", len(segs), segs)
-	}
-	if segs[TopologyKeyISCSI] != topologyValueTrue {
-		t.Errorf("segs[%q] = %q, want %q", TopologyKeyISCSI, segs[TopologyKeyISCSI], topologyValueTrue)
-	}
-}
-
-// TestBuildTopologySegments_NFSOnly verifies that when only NFS is available
-// exactly one key is present and it carries value "true".
-func TestBuildTopologySegments_NFSOnly(t *testing.T) {
-	t.Parallel()
-
-	segs := buildTopologySegments(&stubProber{nfs: true})
-	if len(segs) != 1 {
-		t.Errorf("len(segs) = %d, want 1; segs = %v", len(segs), segs)
-	}
-	if segs[TopologyKeyNFS] != topologyValueTrue {
-		t.Errorf("segs[%q] = %q, want %q", TopologyKeyNFS, segs[TopologyKeyNFS], topologyValueTrue)
-	}
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // buildTopologySegments — no protocols
 // ─────────────────────────────────────────────────────────────────────────────
@@ -132,152 +101,6 @@ func TestBuildTopologySegments_NoneAvailable(t *testing.T) {
 	segs := buildTopologySegments(&stubProber{})
 	if len(segs) != 0 {
 		t.Errorf("expected empty segments when no protocols available, got %v", segs)
-	}
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// buildTopologySegments — all protocols
-// ─────────────────────────────────────────────────────────────────────────────
-
-// TestBuildTopologySegments_AllProtocols verifies that when all three
-// protocols are available all three keys are present.
-func TestBuildTopologySegments_AllProtocols(t *testing.T) {
-	t.Parallel()
-
-	segs := buildTopologySegments(&stubProber{nvmeof: true, iscsi: true, nfs: true})
-	if len(segs) != 3 {
-		t.Errorf("len(segs) = %d, want 3; segs = %v", len(segs), segs)
-	}
-	for _, key := range []string{TopologyKeyNVMeoF, TopologyKeyISCSI, TopologyKeyNFS} {
-		if segs[key] != topologyValueTrue {
-			t.Errorf("segs[%q] = %q, want %q", key, segs[key], topologyValueTrue)
-		}
-	}
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// buildTopologySegments — partial combinations
-// ─────────────────────────────────────────────────────────────────────────────
-
-// TestBuildTopologySegments_NVMeoFAndISCSI verifies the NVMe-oF + iSCSI
-// combination produces exactly two keys.
-func TestBuildTopologySegments_NVMeoFAndISCSI(t *testing.T) {
-	t.Parallel()
-
-	segs := buildTopologySegments(&stubProber{nvmeof: true, iscsi: true})
-	if len(segs) != 2 {
-		t.Errorf("len(segs) = %d, want 2; segs = %v", len(segs), segs)
-	}
-	if segs[TopologyKeyNVMeoF] != topologyValueTrue {
-		t.Errorf("segs[%q] = %q, want %q", TopologyKeyNVMeoF, segs[TopologyKeyNVMeoF], topologyValueTrue)
-	}
-	if segs[TopologyKeyISCSI] != topologyValueTrue {
-		t.Errorf("segs[%q] = %q, want %q", TopologyKeyISCSI, segs[TopologyKeyISCSI], topologyValueTrue)
-	}
-	if _, ok := segs[TopologyKeyNFS]; ok {
-		t.Errorf("unexpected key %q present when NFS is not available", TopologyKeyNFS)
-	}
-}
-
-// TestBuildTopologySegments_NVMeoFAndNFS verifies the NVMe-oF + NFS
-// combination produces exactly two keys.
-func TestBuildTopologySegments_NVMeoFAndNFS(t *testing.T) {
-	t.Parallel()
-
-	segs := buildTopologySegments(&stubProber{nvmeof: true, nfs: true})
-	if len(segs) != 2 {
-		t.Errorf("len(segs) = %d, want 2; segs = %v", len(segs), segs)
-	}
-	if segs[TopologyKeyNVMeoF] != topologyValueTrue {
-		t.Errorf("segs[%q] = %q, want %q", TopologyKeyNVMeoF, segs[TopologyKeyNVMeoF], topologyValueTrue)
-	}
-	if segs[TopologyKeyNFS] != topologyValueTrue {
-		t.Errorf("segs[%q] = %q, want %q", TopologyKeyNFS, segs[TopologyKeyNFS], topologyValueTrue)
-	}
-	if _, ok := segs[TopologyKeyISCSI]; ok {
-		t.Errorf("unexpected key %q present when iSCSI is not available", TopologyKeyISCSI)
-	}
-}
-
-// TestBuildTopologySegments_ISCSIAndNFS verifies the iSCSI + NFS
-// combination produces exactly two keys.
-func TestBuildTopologySegments_ISCSIAndNFS(t *testing.T) {
-	t.Parallel()
-
-	segs := buildTopologySegments(&stubProber{iscsi: true, nfs: true})
-	if len(segs) != 2 {
-		t.Errorf("len(segs) = %d, want 2; segs = %v", len(segs), segs)
-	}
-	if segs[TopologyKeyISCSI] != topologyValueTrue {
-		t.Errorf("segs[%q] = %q, want %q", TopologyKeyISCSI, segs[TopologyKeyISCSI], topologyValueTrue)
-	}
-	if segs[TopologyKeyNFS] != topologyValueTrue {
-		t.Errorf("segs[%q] = %q, want %q", TopologyKeyNFS, segs[TopologyKeyNFS], topologyValueTrue)
-	}
-	if _, ok := segs[TopologyKeyNVMeoF]; ok {
-		t.Errorf("unexpected key %q present when NVMe-oF is not available", TopologyKeyNVMeoF)
-	}
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// buildTopologySegments — absent keys are omitted, not "false"
-// ─────────────────────────────────────────────────────────────────────────────
-
-// TestBuildTopologySegments_AbsentKeysOmitted verifies that protocols that are
-// not available are absent from the map entirely, rather than being set to the
-// string "false".  StorageClass allowedTopologies with In/NotIn operators
-// interpret key absence differently from key-with-false-value, so omission is
-// the correct semantics (RFC §5.8).
-func TestBuildTopologySegments_AbsentKeysOmitted(t *testing.T) {
-	t.Parallel()
-
-	cases := []struct {
-		name        string
-		prober      ProtocolProber
-		presentKeys []string
-		absentKeys  []string
-	}{
-		{
-			name:        "nvmeof only — iscsi and nfs absent",
-			prober:      &stubProber{nvmeof: true},
-			presentKeys: []string{TopologyKeyNVMeoF},
-			absentKeys:  []string{TopologyKeyISCSI, TopologyKeyNFS},
-		},
-		{
-			name:        "iscsi only — nvmeof and nfs absent",
-			prober:      &stubProber{iscsi: true},
-			presentKeys: []string{TopologyKeyISCSI},
-			absentKeys:  []string{TopologyKeyNVMeoF, TopologyKeyNFS},
-		},
-		{
-			name:        "nfs only — nvmeof and iscsi absent",
-			prober:      &stubProber{nfs: true},
-			presentKeys: []string{TopologyKeyNFS},
-			absentKeys:  []string{TopologyKeyNVMeoF, TopologyKeyISCSI},
-		},
-		{
-			name:        "no protocols — all keys absent",
-			prober:      &stubProber{},
-			presentKeys: nil,
-			absentKeys:  []string{TopologyKeyNVMeoF, TopologyKeyISCSI, TopologyKeyNFS},
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			segs := buildTopologySegments(tc.prober)
-			for _, key := range tc.presentKeys {
-				if segs[key] != topologyValueTrue {
-					t.Errorf("present key %q = %q, want %q", key, segs[key], topologyValueTrue)
-				}
-			}
-			for _, key := range tc.absentKeys {
-				if val, ok := segs[key]; ok {
-					t.Errorf("absent key %q is present with value %q (should be omitted)", key, val)
-				}
-			}
-		})
 	}
 }
 

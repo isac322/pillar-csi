@@ -20,12 +20,15 @@ spec:
         {{- with .Values.agent.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-      {{- with .Values.agent.podAnnotations }}
       annotations:
+        # Roll the agent pods when the rendered backend config changes: the
+        # agent reads its config file only at startup.
+        checksum/agent-config: {{ include "pillar-csi.agent.config" . | sha256sum }}
+        {{- with .Values.agent.podAnnotations }}
         {{- toYaml . | nindent 8 }}
-      {{- end }}
+        {{- end }}
     spec:
-      # hostNetwork: true is required for the NVMe-oF/iSCSI data plane.
+      # hostNetwork: true is required for the NVMe-oF data plane.
       # The kernel binds nvmet_tcp listening sockets in the netns of the
       # process that writes configfs `enable=1` (the agent).  With
       # hostNetwork: false that listener lives in the pod netns and is
@@ -94,7 +97,7 @@ spec:
               {{- end }}
               protocol: TCP
           securityContext:
-            # CAP_SYS_ADMIN is required for NVMe-oF / iSCSI target management
+            # CAP_SYS_ADMIN is required for NVMe-oF target management
             # (configfs writes, block device operations).
             # runAsUser 0 overrides the Dockerfile USER directive because ZFS and
             # configfs operations require root.
@@ -116,29 +119,7 @@ spec:
             allowPrivilegeEscalation: true
           args:
             - --listen-address=:{{ .Values.agent.grpcPort }}
-            {{- /* Volumes are routed to a backend by pool/VG name alone, so the
-                   agent refuses to start when two entries share one; fail the
-                   render instead of shipping a crash-looping DaemonSet. */}}
-            {{- $backendKeys := dict }}
-            {{- range .Values.agent.backends }}
-            {{- $key := "" }}
-            - --backend
-            {{- if eq .type "zfs-zvol" }}
-            {{- $key = required "agent.backends[].pool is required when type=zfs-zvol" .pool }}
-            - {{ printf "type=zfs-zvol,pool=%s" $key }}{{ if .parent }}{{ printf ",parent=%s" .parent }}{{ end }}
-            {{- else if eq .type "lvm-lv" }}
-            {{- $key = required "agent.backends[].vg is required when type=lvm-lv" .vg }}
-            - {{ printf "type=lvm-lv,vg=%s" $key }}{{ if .thinpool }}{{ printf ",thinpool=%s" .thinpool }}{{ end }}
-            {{- else }}
-            {{- fail (printf "agent.backends[].type %q is not supported; use zfs-zvol or lvm-lv" .type) }}
-            {{- end }}
-            {{- /* Trim like the agent's --backend parser so " tank" and "tank" collide. */}}
-            {{- $normKey := trim (toString $key) }}
-            {{- if hasKey $backendKeys $normKey }}
-            {{- fail (printf "agent.backends: pool/VG %q appears in more than one entry; each ZFS pool and LVM VG name must be unique across agent.backends" $normKey) }}
-            {{- end }}
-            {{- $_ := set $backendKeys $normKey true }}
-            {{- end }}
+            - --config={{ include "pillar-csi.agent.configPath" . }}
             {{- if .Values.mtls.enabled }}
             - --tls-cert={{ include "pillar-csi.mtls.certDir" . }}/tls.crt
             - --tls-key={{ include "pillar-csi.mtls.certDir" . }}/tls.key
@@ -206,6 +187,10 @@ spec:
             # agent must not depend on volumes it serves).
             - name: agent-state
               mountPath: /var/lib/pillar-csi/agent
+            # Backend placement config rendered from agent.backends.
+            - name: agent-config
+              mountPath: {{ include "pillar-csi.agent.configDir" . }}
+              readOnly: true
             {{- if .Values.mtls.enabled }}
             - name: mtls-certs
               mountPath: {{ include "pillar-csi.mtls.certDir" . }}
@@ -235,6 +220,9 @@ spec:
           hostPath:
             path: /lib/modules
             type: Directory
+        - name: agent-config
+          configMap:
+            name: {{ include "pillar-csi.fullname" . }}-agent-config
         {{- if .Values.mtls.enabled }}
         - name: mtls-certs
           secret:

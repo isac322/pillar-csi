@@ -1,5 +1,5 @@
 // Package registry provides a thread-safe registry for ephemeral E2E test
-// resources (ZFS pools, LVM VGs, iSCSI targets, …) created inside Kind
+// resources (ZFS pools, LVM VGs, …) created inside Kind
 // container nodes during a test run.
 //
 // # Motivation
@@ -28,7 +28,6 @@
 //
 //   - [Registry.RegisterZFSPool]      — wraps zfs.Pool
 //   - [Registry.RegisterLVMVG]        — wraps lvm.VG
-//   - [Registry.RegisterISCSITarget]  — wraps iscsi.Target
 //
 // To add a new backend type:
 //
@@ -64,7 +63,6 @@ import (
 	"sync"
 	"syscall"
 
-	"github.com/bhyoo/pillar-csi/test/e2e/framework/iscsi"
 	"github.com/bhyoo/pillar-csi/test/e2e/framework/lvm"
 	"github.com/bhyoo/pillar-csi/test/e2e/framework/zfs"
 )
@@ -82,7 +80,7 @@ type Registry struct {
 	mu sync.Mutex
 
 	// resources holds every registered [Resource] in registration order.
-	// All backend types (ZFS, LVM, iSCSI, …) are stored here via the common
+	// All backend types (ZFS, LVM, …) are stored here via the common
 	// interface so that new backends require zero framework changes.
 	resources []Resource
 
@@ -156,18 +154,6 @@ func (r *Registry) RegisterLVMVG(vg *lvm.VG) {
 	r.Register(vg)
 }
 
-// RegisterISCSITarget adds target to the registry.  It is equivalent to
-// calling [Register](target).  After registration the registry will call
-// target.Destroy during [Registry.Cleanup].
-//
-// Passing a nil target is a safe no-op — nil targets are silently ignored.
-func (r *Registry) RegisterISCSITarget(target *iscsi.Target) {
-	if target == nil {
-		return
-	}
-	r.Register(target)
-}
-
 // ── Type-filtered counts (convenience for tests & diagnostics) ─────────────
 
 // ZFSPoolCount returns the number of ZFS pools currently registered.
@@ -194,21 +180,6 @@ func (r *Registry) LVMVGCount() int {
 	n := 0
 	for _, res := range r.resources {
 		if _, ok := res.(*lvm.VG); ok {
-			n++
-		}
-	}
-	return n
-}
-
-// ISCSITargetCount returns the number of iSCSI targets currently registered.
-// Targets that have already been cleaned up (after [Cleanup] is called) are
-// not counted.
-func (r *Registry) ISCSITargetCount() int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	n := 0
-	for _, res := range r.resources {
-		if _, ok := res.(*iscsi.Target); ok {
 			n++
 		}
 	}

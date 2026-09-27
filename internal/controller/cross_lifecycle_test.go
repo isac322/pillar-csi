@@ -110,7 +110,7 @@ var _ = Describe("E26: Cross-CRD Deletion Protection", func() {
 				Spec: pillarcsiv1alpha1.PillarStoreSpec{
 					AgentRef: tgtName,
 					Backend: pillarcsiv1alpha1.BackendSpec{
-						Type: pillarcsiv1alpha1.BackendTypeDir,
+						ZFS: &pillarcsiv1alpha1.ZFSBackendConfig{Pool: "tank"},
 					},
 				},
 			}
@@ -230,7 +230,7 @@ var _ = Describe("E26: Cross-CRD Deletion Protection", func() {
 				Spec: pillarcsiv1alpha1.PillarStoreSpec{
 					AgentRef: "nonexistent-target",
 					Backend: pillarcsiv1alpha1.BackendSpec{
-						Type: pillarcsiv1alpha1.BackendTypeDir,
+						ZFS: &pillarcsiv1alpha1.ZFSBackendConfig{Pool: "tank"},
 					},
 				},
 			}
@@ -244,10 +244,9 @@ var _ = Describe("E26: Cross-CRD Deletion Protection", func() {
 			proto := &pillarcsiv1alpha1.PillarProtocol{
 				ObjectMeta: metav1.ObjectMeta{Name: protoName},
 				Spec: pillarcsiv1alpha1.PillarProtocolSpec{
-					Type: pillarcsiv1alpha1.ProtocolTypeNVMeOFTCP,
-					NVMeOFTCP: &pillarcsiv1alpha1.NVMeOFTCPConfig{
+					Protocol: pillarcsiv1alpha1.ProtocolSpec{NVMeOFTCP: &pillarcsiv1alpha1.NVMeOFTCPConfig{
 						Port: 4420,
-					},
+					}},
 				},
 			}
 			Expect(k8sClient.Create(bctx, proto)).To(Succeed())
@@ -383,10 +382,9 @@ var _ = Describe("E26: Cross-CRD Deletion Protection", func() {
 			proto := &pillarcsiv1alpha1.PillarProtocol{
 				ObjectMeta: metav1.ObjectMeta{Name: protoName},
 				Spec: pillarcsiv1alpha1.PillarProtocolSpec{
-					Type: pillarcsiv1alpha1.ProtocolTypeNVMeOFTCP,
-					NVMeOFTCP: &pillarcsiv1alpha1.NVMeOFTCPConfig{
+					Protocol: pillarcsiv1alpha1.ProtocolSpec{NVMeOFTCP: &pillarcsiv1alpha1.NVMeOFTCPConfig{
 						Port: 4420,
-					},
+					}},
 				},
 			}
 			Expect(k8sClient.Create(bctx, proto)).To(Succeed())
@@ -401,7 +399,7 @@ var _ = Describe("E26: Cross-CRD Deletion Protection", func() {
 				Spec: pillarcsiv1alpha1.PillarStoreSpec{
 					AgentRef: "nonexistent-target",
 					Backend: pillarcsiv1alpha1.BackendSpec{
-						Type: pillarcsiv1alpha1.BackendTypeDir,
+						ZFS: &pillarcsiv1alpha1.ZFSBackendConfig{Pool: "tank"},
 					},
 				},
 			}
@@ -560,7 +558,7 @@ var _ = Describe("E26: Cross-CRD Deletion Protection", func() {
 				Spec: pillarcsiv1alpha1.PillarStoreSpec{
 					AgentRef: tgtName,
 					Backend: pillarcsiv1alpha1.BackendSpec{
-						Type: pillarcsiv1alpha1.BackendTypeDir,
+						ZFS: &pillarcsiv1alpha1.ZFSBackendConfig{Pool: "tank"},
 					},
 				},
 			}
@@ -571,10 +569,9 @@ var _ = Describe("E26: Cross-CRD Deletion Protection", func() {
 			proto := &pillarcsiv1alpha1.PillarProtocol{
 				ObjectMeta: metav1.ObjectMeta{Name: protoName},
 				Spec: pillarcsiv1alpha1.PillarProtocolSpec{
-					Type: pillarcsiv1alpha1.ProtocolTypeNVMeOFTCP,
-					NVMeOFTCP: &pillarcsiv1alpha1.NVMeOFTCPConfig{
+					Protocol: pillarcsiv1alpha1.ProtocolSpec{NVMeOFTCP: &pillarcsiv1alpha1.NVMeOFTCPConfig{
 						Port: 4420,
-					},
+					}},
 				},
 			}
 			Expect(k8sClient.Create(bctx, proto)).To(Succeed())

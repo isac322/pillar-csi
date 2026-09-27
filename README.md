@@ -19,7 +19,7 @@ pillar-csi is a Go-based Kubernetes CSI driver that exports local ZFS zvols and 
 | Storage-node IPC | SSH (parses shell output, key management, injection risk) | gRPC agent (typed, auto-reconnect, mTLS-capable) |
 | Target configuration | `targetcli` / `nvmetcli` CLI (Python dependency) | Direct configfs writes with read-back verification |
 | Node prerequisites | open-iscsi / nvme-cli pre-installed on every worker | Bundled in node image + init-container `modprobe` |
-| Parameter overrides | StorageClass parameters + PVC annotation | 4-layer hierarchy: Pool → Protocol → Binding → PVC annotation |
+| Parameter overrides | StorageClass parameters + PVC annotation | Same YAML shape at every layer: Store/Protocol → Binding → PVC annotation docs |
 | Backend / protocol extension | Driver-type hard-coded (`zfs-generic-iscsi`, …) | `Backend` and `Protocol` plugin interfaces |
 
 ## Architecture
@@ -28,7 +28,7 @@ pillar-csi is a Go-based Kubernetes CSI driver that exports local ZFS zvols and 
 ┌─────────────────────────────────────────────────────────┐
 │                     storage node                         │
 │                                                         │
-│   ZFS pool (zvol)     LVM VG (LV)     /data (dir)…       │
+│   ZFS pool (zvol)     LVM VG (LV)     /data (dir)†       │
 │         │                  │                │            │
 │         └──────────────────┴────────────────┘            │
 │                            │                            │
@@ -36,7 +36,7 @@ pillar-csi is a Go-based Kubernetes CSI driver that exports local ZFS zvols and 
 │              gRPC server + direct configfs              │
 │                            │                            │
 │              ┌───────────┼───────────┐              │
-│           NVMe-oF/TCP   iSCSI*         NFS*              │
+│           NVMe-oF/TCP   iSCSI†         NFS†              │
 └─────────────┼───────────┼───────────┼──────────────────┘
               │             │             │
               ▼             ▼             ▼
@@ -44,14 +44,16 @@ pillar-csi is a Go-based Kubernetes CSI driver that exports local ZFS zvols and 
                          worker node (Pod)
 ```
 
+† Designed but not implemented: the served CRD schema accepts only the `zfs` and `lvm` backends and the `nvmeofTcp` protocol.
+
 The control plane (`pillar-controller`) runs as a `Deployment` and reconciles the `Pillar*` CRDs. `pillar-agent` runs as a `DaemonSet` on storage nodes only (auto-labelled when a `PillarAgent` CR is created) and owns all configfs writes on the host; `pillar-node` runs on every worker and handles the CSI Node service — initiator connect, mkfs, bind-mount. Both DaemonSets use `hostNetwork: true` so the NVMe-oF/TCP data plane can bind to the host network namespace.
 
 | CRD | Purpose |
 |---|---|
 | `PillarAgent` | Locates a storage agent (in-cluster `nodeRef` or external address) |
-| `PillarStore` | A storage pool on a target — ZFS pool name, LVM VG, and backend config |
-| `PillarProtocol` | Network protocol configuration (NVMe-oF/TCP, iSCSI, NFS, SMB) |
-| `PillarStorageClass` | Pool × Protocol → auto-generated `StorageClass` |
+| `PillarStore` | A storage pool on a target — exactly one `backend` member (`zfs` or `lvm`) |
+| `PillarProtocol` | Network protocol configuration — exactly one `protocol` member (`nvmeofTcp`) |
+| `PillarStorageClass` | Store × Protocol → auto-generated `StorageClass`, plus the filesystem and per-binding overrides |
 
 `PillarVolumeState` is an internal durable-state CRD used to recover from partial provisioning failures and to record which nodes a volume is published to; users do not author it. The controller enforces CSI access-mode exclusivity from that record: a `SINGLE_NODE_*` (RWO/RWOP) volume published to one node is rejected on any other node with `FAILED_PRECONDITION` until it is unpublished, and a published volume cannot be deleted.
 
@@ -129,7 +131,7 @@ helm install pillar-csi charts/pillar-csi \
 
 ## Quickstart
 
-Apply target, pool, protocol, binding once per cluster, then provision PVCs against the generated `StorageClass`:
+Apply the agent, store, protocol, and binding once per cluster, then provision PVCs against the generated `StorageClass`:
 
 ```yaml
 apiVersion: pillar-csi.bhyoo.com/v1alpha1
@@ -146,8 +148,7 @@ metadata:
   name: rock5bp-hot
 spec:
   agentRef: rock5bp
-  backend:
-    type: zfs-zvol
+  backend:                    # exactly one member: zfs or lvm
     zfs:
       pool: tank
       parentDataset: k8s
@@ -157,10 +158,10 @@ kind: PillarProtocol
 metadata:
   name: nvmeof-default
 spec:
-  type: nvmeof-tcp
-  nvmeofTcp:
-    port: 4420
-    acl: true
+  protocol:                   # exactly one member: nvmeofTcp
+    nvmeofTcp:
+      port: 4420
+      acl: true
 ---
 apiVersion: pillar-csi.bhyoo.com/v1alpha1
 kind: PillarStorageClass
@@ -173,6 +174,9 @@ spec:
     name: pillar-hot
     reclaimPolicy: Delete
     volumeBindingMode: WaitForFirstConsumer
+  filesystem:                 # optional; fsType defaults to ext4
+    fsType: xfs
+    mountOptions: [noatime]
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -187,7 +191,68 @@ spec:
       storage: 10Gi
 ```
 
-The agent creates volumes where its `--backend` flag (chart `agent.backends`) says; the PillarStore declares the same layout. For the store above the agent needs `--backend type=zfs-zvol,pool=tank,parent=k8s` (`agent.backends: [{type: zfs-zvol, pool: tank, parent: k8s}]`); an LVM store's `lvm.thinPool` must likewise equal the agent's `thinpool=`. When they disagree, the store's `PoolDiscovered` condition is `False` with reason `BackendLayoutMismatch`, and `CreateVolume` fails with `FailedPrecondition` instead of placing the volume elsewhere.
+The agent creates volumes where its config file (`--config`; the chart renders `agent.backends` into it) says; the PillarStore declares the same layout. For the store above the agent config needs a matching `zfs` entry — the same keys as `PillarStore.spec.backend`:
+
+```yaml
+# pillar-agent --config file (chart: agent.backends)
+backends:
+  - zfs: {pool: tank, parentDataset: k8s}
+  - lvm: {volumeGroup: data-vg, thinPool: thin0}
+```
+
+An LVM store's `lvm.thinPool` must likewise equal the agent entry's `thinPool`. When they disagree, the store's `PoolDiscovered` condition is `False` with reason `BackendLayoutMismatch`, and `CreateVolume` fails with `FailedPrecondition` instead of placing the volume elsewhere. The agent's gRPC port defaults to `9500`.
+
+### Configuration surfaces
+
+Each setting has one key name and one nested shape everywhere it can be set. Storage, protocol, and filesystem are separate axes: nothing of one axis is set in another axis' resource or key.
+
+| Axis | Base | Per binding (`PillarStorageClass`) | Per volume (PVC annotation / hand-written StorageClass parameter) |
+|---|---|---|---|
+| Storage | `PillarStore.spec.backend.{zfs,lvm}` | `spec.overrides.backend.{zfs,lvm}` | `pillar-csi.bhyoo.com/backend` YAML doc |
+| Protocol | `PillarProtocol.spec.protocol.nvmeofTcp` | `spec.overrides.protocol.nvmeofTcp` | `pillar-csi.bhyoo.com/protocol` YAML doc |
+| Filesystem | — (default `fsType: ext4`) | `spec.filesystem` | `pillar-csi.bhyoo.com/filesystem` YAML doc |
+
+Only the per-volume tunable subset can be overridden: `zfs.properties`, `lvm.provisioningMode`, `nvmeofTcp.{maxQueueSize,inCapsuleDataSize,ctrlLossTmo,reconnectDelay}`, and the whole filesystem doc (`fsType`, `mkfsOptions`, `mountOptions`). Structural fields (`pool`, `parentDataset`, `volumeGroup`, `thinPool`, `port`, `acl`) are rejected with their path, for example `pillar-csi.bhyoo.com/protocol: nvmeofTcp.acl is structural and cannot be set per volume`. Unknown keys and any other `pillar-csi.bhyoo.com/` annotation are rejected too.
+
+Precedence, lowest to highest: store/protocol → binding overrides and `spec.filesystem` → hand-written StorageClass docs → PVC annotation docs. ZFS `properties` merge per key. For `mkfsOptions` and `mountOptions`, an omitted list inherits and an explicit `[]` clears. The controller resolves the effective configuration once, at `CreateVolume`, from the live CRs, and freezes it in `PillarVolumeState.spec.resolved`, so retries and restores reuse the same values. The generated StorageClass carries only `pillar-csi.bhyoo.com/storage-class` (the `PillarStorageClass` name), `csi.storage.k8s.io/fstype`, and `mountOptions`, so editing a tunable never requires recreating it.
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-data
+  annotations:
+    pillar-csi.bhyoo.com/backend: |
+      zfs:
+        properties: {volblocksize: 16K, compression: zstd}
+    pillar-csi.bhyoo.com/protocol: |
+      nvmeofTcp: {maxQueueSize: 64}
+    pillar-csi.bhyoo.com/filesystem: |
+      fsType: xfs
+      mkfsOptions: ["-K"]
+spec:
+  storageClassName: pillar-hot
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 50Gi
+```
+
+A hand-written StorageClass (no `PillarStorageClass`) names the CRs with `pillar-csi.bhyoo.com/store-ref` and `pillar-csi.bhyoo.com/protocol-ref` and may carry the same three YAML docs as parameters. If it sets both `csi.storage.k8s.io/fstype` and a filesystem doc with `fsType`, the two must agree:
+
+```yaml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: manual-hot
+provisioner: pillar-csi.bhyoo.com
+parameters:
+  pillar-csi.bhyoo.com/store-ref: rock5bp-hot
+  pillar-csi.bhyoo.com/protocol-ref: nvmeof-default
+  pillar-csi.bhyoo.com/backend: |
+    zfs: {properties: {compression: lz4}}
+  csi.storage.k8s.io/fstype: ext4
+```
 
 ## Troubleshooting
 
@@ -217,7 +282,7 @@ The `ExportReconciled` condition on every `PillarVolumeState` reports whether th
 There is no automatic inference of the missing spec, and this procedure deliberately keeps it that way. `status.exportInfo` is a runtime observation (`targetID`, `address`, `port`, `volumeRef`) — it does not record `aclEnabled`, and its `address`/`port` describe the last live endpoint, which may not equal the original provisioning inputs (renumbered storage network, replaced PillarProtocol, port moved since). Do not copy from `exportInfo` or from the *current* PillarProtocol/PillarStorageClass/PillarAgent CRs. Guessing the security fields is dangerous in both directions: enabling ACL on a volume that ran open breaks every consumer; disabling it on a volume that required ACL enforcement silently exposes the LUN to the whole network. Use the original provisioning inputs — or make an explicit, recorded operator decision — as described in step 3.
 
 **Scope and prerequisites**
-- Applies only when `status.exportSpec` is absent *and* the condition reports `reason: ExportSpecMissing`. Other reasons (`AgentUnavailable`, `StaleGeneration`, `ReconcileFailed`) mean a spec exists or another fault must be fixed first — do not patch. Protocols whose export carries no bind address/port never get an `exportSpec` by design, so this procedure currently applies to `nvmeof-tcp` volumes (and `iscsi` when it ships).
+- Applies only when `status.exportSpec` is absent *and* the condition reports `reason: ExportSpecMissing`. Other reasons (`AgentUnavailable`, `StaleGeneration`, `ReconcileFailed`) mean a spec exists or another fault must be fixed first — do not patch. Protocols whose export carries no bind address/port never get an `exportSpec` by design, so this procedure applies to `nvmeof-tcp` volumes.
 - You need `patch` on `pillarvolumestates/status` (cluster-scoped; e.g. cluster-admin).
 - The volume's `PillarAgent` must be reachable (`AgentConnected` condition `True` on `kubectl describe pillaragent <spec.agentRef>`).
 - Treat every volume independently; repair one at a time and verify before the next.
@@ -301,8 +366,8 @@ There is no automatic inference of the missing spec, and this procedure delibera
    | Field | Authoritative inputs | Evidence, not truth |
    |---|---|---|
    | `bindAddress` | **Explicit operator decision.** No durable record of the *requested* bind exists for legacy volumes — `pv.spec.csi.volumeAttributes["address"]` and `status.exportInfo.address` record only the endpoint the agent actually exported at provision time, so they corroborate but do not authorize. Normally choose that same address. ⚠️ The PV endpoint is *not* updated by this patch — consumers keep dialing `volumeAttributes.address`/`port`, so a changed bind can converge to `ExportReconciled=True` while consumers still connect to the old endpoint; a changed endpoint needs a separate consumer-connectivity plan, not this procedure | `exportInfo.address` on its own |
-   | `port` | Explicit value; `volumeAttributes["port"]` and `exportInfo.port` record what the export used against the class default (`4420` / `3260`) — cross-check before reusing any of them. No PVC annotation ever overrode the port: annotations did not reach provisioning before #112, and a flat `param.nvmeof-port`/`param.iscsi-port` annotation is rejected since | current StorageClass/`PillarProtocol.spec.nvmeofTcp.port` — may be regenerated |
-   | `aclEnabled` | **No durable provision-time record exists** — this is why the controller refuses to guess. Reconstruct it from the provision-time `acl-enabled` StorageClass parameter (generated from `PillarProtocol.spec.nvmeofTcp.acl`; usable only if the protocol/binding CRs provably have not changed — GitOps history, snapshot, audit), or an explicit recorded operator decision; no PVC annotation ever overrode it (annotations did not reach provisioning before #112, and a flat `param.acl-enabled` annotation is rejected since). **If evidence cannot justify `true` or `false`, stop — do not patch.** `true` admits only `publishedNodes` initiators (`revoking` excluded; empty set = nobody, and the resync can still report `Reconciled` while unrecorded consumers stay locked out). `false` writes `attr_allow_any_host=1`, exposing the volume network-wide. Deliberately changing the historical intent is allowed only after recording the choice and its connectivity/security consequences | `exportInfo` has no ACL field; today's `PillarProtocol` value proves nothing about the original |
+   | `port` | Explicit value; `volumeAttributes["port"]` and `exportInfo.port` record what the export used against the class default (`4420`) — cross-check before reusing any of them. No PVC annotation ever overrode the port: annotations did not reach provisioning before #112, and `nvmeofTcp.port` is structural (rejected in the `pillar-csi.bhyoo.com/protocol` doc) since | current `PillarProtocol.spec.protocol.nvmeofTcp.port` — may have changed |
+   | `aclEnabled` | **No durable provision-time record exists** — this is why the controller refuses to guess. Reconstruct it from the provision-time ACL setting: the ACL flag in the parameters of the StorageClass the volume was provisioned from (controllers before the configuration redesign copied the protocol's `nvmeofTcp.acl` into generated StorageClasses), usable only if the protocol/binding CRs provably have not changed since — GitOps history, snapshot, audit — or an explicit recorded operator decision. No PVC annotation ever overrode it (annotations did not reach provisioning before #112, and `nvmeofTcp.acl` is structural and rejected per volume since). **If evidence cannot justify `true` or `false`, stop — do not patch.** `true` admits only `publishedNodes` initiators (`revoking` excluded; empty set = nobody, and the resync can still report `Reconciled` while unrecorded consumers stay locked out). `false` writes `attr_allow_any_host=1`, exposing the volume network-wide. Deliberately changing the historical intent is allowed only after recording the choice and its connectivity/security consequences | `exportInfo` has no ACL field; today's `PillarProtocol` value proves nothing about the original |
 
    Leave the optional `inCapsuleDataSize` field out: controllers that recorded no `exportSpec` never applied an in-capsule data size to the export, so the restored export keeps accepting the port's value as before.
 
@@ -366,7 +431,7 @@ There is no automatic inference of the missing spec, and this procedure delibera
 ## Documentation
 
 - [`docs/PRD.md`](docs/PRD.md) — product requirements: architecture, CRDs, lifecycle
-- [`docs/PRD-iscsi.md`](docs/PRD-iscsi.md) — iSCSI design (Phase 2)
+- [`docs/PRD-iscsi.md`](docs/PRD-iscsi.md) — iSCSI design (not implemented; reference for a future protocol)
 - [`docs/RFC-multi-protocol-driver-foundation.md`](docs/RFC-multi-protocol-driver-foundation.md) — multi-protocol driver foundation RFC
 - [`docs/prd-audit-phase1-2026-06.md`](docs/prd-audit-phase1-2026-06.md) — Phase 1 readiness audit (June 2026)
 - [`docs/decisions/`](docs/decisions/) — architecture decision records

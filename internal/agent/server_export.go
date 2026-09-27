@@ -73,24 +73,12 @@ func exportParamsForRequest(req *agentv1.ExportVolumeRequest) (ExportParams, err
 		if req.GetExportParams().GetNvmeofTcp() == nil {
 			return ExportParams{}, status.Errorf(codes.InvalidArgument, "nvmeof_tcp export params required")
 		}
-	case agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI:
-		if req.GetExportParams().GetIscsi() == nil {
-			return ExportParams{}, status.Errorf(codes.InvalidArgument, "iscsi export params required")
-		}
-	case agentv1.ProtocolType_PROTOCOL_TYPE_NFS:
-		if req.GetExportParams().GetNfs() == nil {
-			return ExportParams{}, status.Errorf(codes.InvalidArgument, "nfs export params required")
-		}
-	case agentv1.ProtocolType_PROTOCOL_TYPE_SMB:
-		if req.GetExportParams().GetSmb() == nil {
-			return ExportParams{}, status.Errorf(codes.InvalidArgument, "smb export params required")
-		}
 	case agentv1.ProtocolType_PROTOCOL_TYPE_UNSPECIFIED:
 		return ExportParams{}, status.Errorf(codes.InvalidArgument,
 			"exportParamsForRequest: protocol_type is required")
 	default:
-		return ExportParams{}, status.Errorf(codes.InvalidArgument,
-			"protocol %s has no export parameter mapping", req.GetProtocolType().String())
+		return ExportParams{}, status.Errorf(codes.Unimplemented,
+			"exportParamsForRequest: unsupported protocol type %s", req.GetProtocolType().String())
 	}
 
 	return params, nil

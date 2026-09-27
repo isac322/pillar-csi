@@ -46,7 +46,7 @@ pillar-csi는 **분산 파일시스템(DFS)이 아니다.** 여러 backend를 �
 | **스토리지 노드 통신** | SSH (셸 명령 파싱, 키 관리, 인젝션 위험) | gRPC agent (타입 안전, 자동 재연결) |
 | **Target 설정** | targetcli/nvmetcli CLI (Python 의존) | configfs 직접 조작 (의존성 제로) |
 | **노드 사전 설치** | 워커 노드에 open-iscsi, nvme-cli 등 필요 | 컨테이너에 번들 + init container modprobe |
-| **파라미터 커스터마이징** | StorageClass parameters + PVC annotation | Pool → Protocol → Binding → PVC annotation 4단계 |
+| **파라미터 커스터마이징** | StorageClass parameters + PVC annotation | Store/Protocol → Binding → PVC annotation 문서. 모든 계층에서 같은 키·같은 YAML 구조 |
 | **프로토콜/백엔드 확장** | 드라이버 타입 하드코딩 (zfs-generic-iscsi 등) | Backend/Protocol 플러그인 아키텍처 |
 
 ## 2. 아키텍처
@@ -86,7 +86,7 @@ status:
   resolvedAddress: 192.168.219.6
   agentVersion: "0.1.0"
   capabilities:
-    backends: [zfs-zvol, zfs-dataset]
+    backends: [zfs-zvol, lvm-lv]
     protocols: [nvmeof-tcp]
   discoveredPools:
     - name: hot-data
@@ -130,7 +130,7 @@ gRPC 주소 결정 로직 (nodeRef):
 
 #### PillarStore
 
-특정 target의 특정 스토리지 풀. Backend 타입과 설정을 포함한다. **사용자가 생성한다.**
+특정 target의 특정 스토리지 풀. **storage 축만** 담는다: `spec.backend`는 정확히 하나의 멤버(`zfs` 또는 `lvm`)를 갖는 union이며 `type` 필드는 없다 (CRD CEL이 exactly-one을 강제). **사용자가 생성한다.**
 
 ```yaml
 apiVersion: pillar-csi.bhyoo.com/v1alpha1
@@ -139,16 +139,19 @@ metadata:
   name: rock5bp-hot-data
 spec:
   agentRef: rock5bp                   # PillarAgent 참조
-  backend:
-    type: zfs-zvol
+  backend:                             # 정확히 하나의 멤버: zfs | lvm
     zfs:
+      volumeType: zvol                 # 선택 (기본값·유일한 구현: zvol)
       pool: hot-data
-      parentDataset: k8s
-      properties:
+      parentDataset: k8s               # 선택: 생략 시 pool 루트
+      properties:                      # 선택: 모든 볼륨에 적용할 ZFS property
         compression: lz4
         volblocksize: 8K
-        quota: 500G                    # 선택: ZFS quota
-        reservation: 100G             # 선택: ZFS reservation
+    # 또는
+    # lvm:
+    #   volumeGroup: data-vg
+    #   thinPool: thin0                # 선택
+    #   provisioningMode: linear       # linear | thin (기본값: linear)
 status:
   capacity:
     total: 712G
@@ -177,17 +180,21 @@ status:
       lastTransitionTime: "2025-01-15T10:00:00Z"
 ```
 
+`backend` 멤버 이름은 agent 설정 파일(`--config`)의 `backends` 항목과 같은 키·같은 구조를 쓴다. `zfs.pool`, `zfs.parentDataset`, `lvm.volumeGroup`, `lvm.thinPool`은 구조적 필드이며 PillarStorageClass 오버라이드·PVC annotation에서 설정할 수 없다.
+
+> **미구현 backend (설계 노트):** `zfs-dataset`(파일시스템 backend)과 `dir`(디렉토리 backend)은 설계만 존재하며 구현되지 않았다. served CRD schema에는 해당 멤버가 없고, 수동 StorageClass·PVC 문서·agent 설정·gRPC 경로 모두 명시적으로 거부한다.
+
 **PillarStore conditions:**
 | Condition | 의미 |
 |-----------|------|
 | `TargetReady` | 참조 PillarAgent이 Ready인지 |
-| `PoolDiscovered` | agent에서 해당 pool(ZFS pool / LVM VG)이 발견되었고, agent `--backend`의 `parent`/`thinpool`이 `zfs.parentDataset`/`lvm.thinPool`과 일치하는지. 불일치 시 `False`/`BackendLayoutMismatch`이며 agent는 CreateVolume을 `FailedPrecondition`으로 거부한다 (다른 위치에 볼륨을 만들지 않음) |
+| `PoolDiscovered` | agent에서 해당 pool(ZFS pool / LVM VG)이 발견되었고, agent 설정 파일 `backends` 항목의 `zfs.parentDataset`/`lvm.thinPool`이 store의 `zfs.parentDataset`/`lvm.thinPool`과 일치하는지. 불일치 시 `False`/`BackendLayoutMismatch`이며 agent는 CreateVolume을 `FailedPrecondition`으로 거부한다 (다른 위치에 볼륨을 만들지 않음) |
 | `BackendSupported` | backend 타입이 agent capabilities에 있는지 |
 | `Ready` | 전체 준비 상태 |
 
 #### PillarProtocol
 
-네트워크 공유 프로토콜의 타입과 기본 설정. **노드와 무관하게 재사용 가능하다.** Target bind IP는 포함하지 않는다 — controller가 런타임에 PillarAgent에서 resolve하여 agent에 전달한다.
+네트워크 공유 프로토콜과 그 기본 설정. **transport 축만** 담는다: `spec.protocol`은 정확히 하나의 멤버를 갖는 union이며 `type` 필드는 없다. 현재 구현된 멤버는 `nvmeofTcp` 하나다. 파일시스템 설정(`fsType`, `mkfsOptions`)은 여기에 두지 않는다 — PillarStorageClass `spec.filesystem`과 PVC `filesystem` 문서에서 설정한다. **노드와 무관하게 재사용 가능하다.** Target bind IP는 포함하지 않는다 — controller가 런타임에 PillarAgent에서 resolve하여 agent에 전달한다.
 
 status에는 이 프로토콜을 참조하는 바인딩의 역참조 메타 정보를 포함한다 (`storageClassCount`, `activeAgents`). Reconciler가 자동으로 계산한다.
 
@@ -197,76 +204,75 @@ kind: PillarProtocol
 metadata:
   name: nvmeof-tcp
 spec:
-  type: nvmeof-tcp
-  nvmeofTcp:
-    port: 4420
-    acl: true                          # true: host NQN 기반 ACL / false: allow_any_host
-    # initiator 큐 깊이: pillar-node가 fabrics connect의 queue_size로 적용 (커널 허용 범위 16-1024, 생략 시 커널 기본값 128).
-    # PillarStorageClass overrides.protocol.nvmeofTcp.maxQueueSize, PVC protocol-override로 덮어쓸 수 있다.
-    maxQueueSize: 128
-    # target port의 in-capsule data size (nvmet ports/<id>/param_inline_data_size, 바이트).
-    # 같은 storage node 주소·포트로 export되는 모든 볼륨이 공유하는 포트 속성이며, 커널은 포트에
-    # subsystem이 하나라도 링크된 동안 변경을 거부한다(EACCES). 따라서 agent는:
-    #   - 링크된 subsystem이 없는 포트: 요청값(없으면 transport 기본값 -1)을 쓰고 read-back 검증한다.
-    #   - 이미 사용 중인 포트: 요청값이 포트의 현재 값과 다르면 ExportVolume이 FAILED_PRECONDITION으로
-    #     실패한다(조용히 포트 값을 쓰지 않는다). 값을 요청하지 않은 볼륨은 포트의 현재 값을 그대로 쓴다.
-    # 같은 포트를 쓰는 PillarProtocol/PillarStorageClass/PVC는 같은 값을 쓰거나 다른 포트를 사용해야 한다.
-    # 생략 시 TCP transport 기본값(4 * PAGE_SIZE, 4KiB 페이지에서 16384). 최소값은 1024: NVMe/TCP host는
-    # 1024바이트 fabrics Connect 데이터를 항상 in-capsule로 보내므로 더 작은 값이면 모든 connect가 실패한다.
-    # agent 재시작 복구는 PillarVolumeState.status.exportSpec.inCapsuleDataSize를 사용하며, 포트에 먼저
-    # 링크되는 export가 값을 정하므로 CreateVolume이 완료된 볼륨을 CreatePartial 볼륨보다, 같은 그룹에서는
-    # 값을 요구하는 export를 먼저 링크한다. CreatePartial 재시도는 재시도에 쓴 값으로 exportSpec을 갱신한다.
-    inCapsuleDataSize: 16384
-    # initiator 타임아웃/재연결 파라미터 (pillar-node가 nvme connect 시 적용)
-    # 생략 시 connect 문자열에서 빠지고 커널 기본값(600/10)이 적용된다.
-    # 신규 볼륨의 VolumeContext에만 기록되므로 기존 PV에는 소급 적용되지 않는다.
-    # 커널 의미(Linux fabrics.c): ctrlLossTmo=0 → 재연결 시도 없음, 음수(PVC override로만 가능) → 무한 재연결.
-    # reconnectDelay=0은 CRD상 허용되지만 커널이 EINVAL로 거부하므로 NodeStage connect가 명시적으로 실패한다.
-    # StorageClass parameters는 불변이므로 기존 바인딩에 이 값을 새로 설정하면 StorageClass 재생성이 필요하다.
-    ctrlLossTmo: 600                   # 초. target 유실 시 최대 대기 시간
-    reconnectDelay: 10                 # 초. 재연결 시도 간격
-  # 블록 프로토콜에서 volumeMode: Filesystem일 때 적용
-  fsType: ext4                         # ext4 | xfs (기본값: ext4)
-  mkfsOptions: []                      # 예: ["-E", "lazy_itable_init=0"]
+  protocol:                            # 정확히 하나의 멤버: nvmeofTcp
+    nvmeofTcp:
+      port: 4420                       # 기본값: 4420
+      acl: true                        # true: host NQN 기반 ACL / false: allow_any_host (기본값: false)
+      # initiator 큐 깊이: pillar-node가 fabrics connect의 queue_size로 적용 (허용 범위 16-1024, 생략 시 커널 기본값 128).
+      # PillarStorageClass overrides.protocol.nvmeofTcp.maxQueueSize, PVC pillar-csi.bhyoo.com/protocol 문서로 덮어쓸 수 있다.
+      maxQueueSize: 128
+      # target port의 in-capsule data size (nvmet ports/<id>/param_inline_data_size, 바이트).
+      # 같은 storage node 주소·포트로 export되는 모든 볼륨이 공유하는 포트 속성이며, 커널은 포트에
+      # subsystem이 하나라도 링크된 동안 변경을 거부한다(EACCES). 따라서 agent는:
+      #   - 링크된 subsystem이 없는 포트: 요청값(없으면 transport 기본값 -1)을 쓰고 read-back 검증한다.
+      #   - 이미 사용 중인 포트: 요청값이 포트의 현재 값과 다르면 ExportVolume이 FAILED_PRECONDITION으로
+      #     실패한다(조용히 포트 값을 쓰지 않는다). 값을 요청하지 않은 볼륨은 포트의 현재 값을 그대로 쓴다.
+      # 같은 포트를 쓰는 PillarProtocol/PillarStorageClass/PVC는 같은 값을 쓰거나 다른 포트를 사용해야 한다.
+      # 생략 시 TCP transport 기본값(4 * PAGE_SIZE, 4KiB 페이지에서 16384). 최소값은 1024: NVMe/TCP host는
+      # 1024바이트 fabrics Connect 데이터를 항상 in-capsule로 보내므로 더 작은 값이면 모든 connect가 실패한다.
+      # agent 재시작 복구는 PillarVolumeState.status.exportSpec.inCapsuleDataSize를 사용하며, 포트에 먼저
+      # 링크되는 export가 값을 정하므로 CreateVolume이 완료된 볼륨을 CreatePartial 볼륨보다, 같은 그룹에서는
+      # 값을 요구하는 export를 먼저 링크한다. CreatePartial 재시도는 재시도에 쓴 값으로 exportSpec을 갱신한다.
+      inCapsuleDataSize: 16384
+      # initiator 타임아웃/재연결 파라미터 (pillar-node가 nvme connect 시 적용). 모든 계층에서 같은 범위(>= 0)를 쓴다.
+      # 생략 시 connect 문자열에서 빠지고 커널 기본값(600/10)이 적용된다.
+      # 커널 의미(Linux fabrics.c): ctrlLossTmo=0 → 재연결 시도 없음.
+      # reconnectDelay=0은 CRD상 허용되지만 커널이 EINVAL로 거부하므로 NodeStage connect가 명시적으로 실패한다.
+      # 값은 CreateVolume 시점에 live CR에서 resolve되어 PillarVolumeState.spec.resolved에 고정된다.
+      # 따라서 값을 바꿔도 StorageClass 재생성은 필요 없고, 이후 생성되는 볼륨부터 적용된다 (기존 볼륨에는 소급 적용되지 않는다).
+      ctrlLossTmo: 600                 # 초. target 유실 시 최대 대기 시간
+      reconnectDelay: 10               # 초. 재연결 시도 간격
 status:
   storageClassCount: 2                      # 이 Protocol을 참조하는 PillarStorageClass 수
   activeAgents: [rock5bp]             # 이 Protocol이 사용 중인 Target 목록
 ```
 
+> **미구현 프로토콜 (설계 노트):** 아래 iSCSI·NFS 예시는 설계 참고용이며 **구현되지 않았다.** served CRD schema에는 `iscsi`·`nfs`·`smb` 멤버가 없으므로 이 YAML은 현재 API server가 거부한다. 구현 시에도 같은 union 규칙(`spec.protocol.<member>`, `type` 필드 없음)을 따른다. iSCSI 상세 설계는 [`PRD-iscsi.md`](./PRD-iscsi.md)(미구현) 참조.
+
 ```yaml
-# iSCSI 예시
+# iSCSI 예시 — 미구현 설계 노트
 apiVersion: pillar-csi.bhyoo.com/v1alpha1
 kind: PillarProtocol
 metadata:
   name: iscsi
 spec:
-  type: iscsi
-  iscsi:
-    port: 3260
-    acl: true
-    # iSCSI 타임아웃 파라미터 (pillar-csi가 합리적 기본값 제공)
-    loginTimeout: 15                   # 선택: 초 단위 (기본값: 15)
-    replacementTimeout: 120            # 선택: 초 단위 (기본값: 120)
-    nodeSessionTimeout: 120            # 선택: 초 단위 (기본값: 120)
+  protocol:
+    iscsi:
+      port: 3260
+      acl: true
+      # iSCSI 타임아웃 파라미터 (pillar-csi가 합리적 기본값 제공)
+      loginTimeout: 15                 # 선택: 초 단위 (기본값: 15)
+      replacementTimeout: 120          # 선택: 초 단위 (기본값: 120)
+      nodeSessionTimeout: 120          # 선택: 초 단위 (기본값: 120)
 ```
 
 ```yaml
-# NFS 예시
+# NFS 예시 — 미구현 설계 노트
 apiVersion: pillar-csi.bhyoo.com/v1alpha1
 kind: PillarProtocol
 metadata:
   name: nfs
 spec:
-  type: nfs
-  nfs:
-    version: "4.2"
+  protocol:
+    nfs:
+      version: "4.2"
 ```
 
 #### PillarStorageClass
 
-PillarStore과 PillarProtocol을 조합하여 Kubernetes StorageClass를 자동 생성한다. 파라미터 오버라이드 레이어를 제공한다. **사용자가 생성한다.**
+PillarStore과 PillarProtocol을 조합하여 Kubernetes StorageClass를 자동 생성한다. **filesystem 축**(`spec.filesystem`)과 바인딩별 backend·protocol 오버라이드(`spec.overrides`)를 담는다. **사용자가 생성한다.**
 
-호환되지 않는 조합(Block backend + File protocol)은 validation webhook이 거부한다.
+호환되지 않는 조합(Block backend + File protocol)은 validation webhook이 거부한다. 현재 구현된 조합(`zfs`/`lvm` × `nvmeofTcp`)은 모두 Block이므로 항상 호환된다.
 
 ```yaml
 apiVersion: pillar-csi.bhyoo.com/v1alpha1
@@ -281,16 +287,18 @@ spec:
     reclaimPolicy: Delete
     volumeBindingMode: Immediate
     allowVolumeExpansion: true          # 선택: 미지정 시 backend capability에서 자동 결정
-  overrides:
-    backend:
+  filesystem:                           # 선택: 블록 프로토콜 + volumeMode: Filesystem일 때만 적용
+    fsType: ext4                        # ext4(기본값) | xfs
+    mkfsOptions: ["-E", "lazy_itable_init=1"]  # 선택: mkfs 추가 옵션
+    mountOptions: [noatime]             # 선택: 생성되는 StorageClass의 mountOptions
+  overrides:                            # 선택: 튜닝 가능한 부분집합만 허용
+    backend:                            # 정확히 하나의 멤버, store의 backend와 같은 멤버여야 한다
       zfs:
         properties:
-          volblocksize: 16K            # pool 기본값(8K) 오버라이드
-    protocol:
+          volblocksize: 16K             # store 값(8K) 오버라이드
+    protocol:                           # 정확히 하나의 멤버, protocol의 멤버와 같아야 한다
       nvmeofTcp:
-        maxQueueSize: 256              # protocol 기본값(128) 오버라이드
-    fsType: ext4                       # 선택: ext4(기본값) 또는 xfs. 블록 프로토콜 + volumeMode: Filesystem일 때만
-    mkfsOptions: ["-E", "lazy_itable_init=1"]  # 선택: mkfs 추가 옵션
+        maxQueueSize: 256               # protocol 값(128) 오버라이드
 status:
   storageClassName: fast-nvmeof
   conditions:
@@ -339,12 +347,14 @@ status:
 | 프로토콜 | 클라이언트 디바이스 | AccessMode | volumeMode |
 |----------|-----------------|------------|------------|
 | NVMe-oF TCP | `/dev/nvmeXnY` | RWO, RWOP, ROX | Block 또는 Filesystem |
-| iSCSI | `/dev/sdX` | RWO, RWOP, ROX | Block 또는 Filesystem |
+| iSCSI (미구현) | `/dev/sdX` | RWO, RWOP, ROX | Block 또는 Filesystem |
 
 - `volumeMode: Filesystem` → 블록 디바이스에 mkfs + mount
 - `volumeMode: Block` → raw 블록 디바이스를 Pod에 직접 제공
 
-#### 파일시스템 프로토콜
+#### 파일시스템 프로토콜 (미구현 설계 노트)
+
+NFS·SMB는 설계만 존재하며 구현되지 않았다. served CRD schema에 해당 멤버가 없다.
 
 | 프로토콜 | 클라이언트 마운트 | AccessMode | volumeMode |
 |----------|---------------|------------|------------|
@@ -365,40 +375,92 @@ RWX는 Phase 3 (NFS)에서 지원한다.
 
 규칙: **Block backend ↔ Block protocol, Filesystem backend ↔ Filesystem protocol.**
 
+현재 구현되어 served schema에 있는 조합은 **zfs-zvol × NVMe-oF TCP**와 **lvm × NVMe-oF TCP**뿐이다. 나머지 행·열(zfs-dataset, block-device, directory, iSCSI, NFS, SMB)은 미구현 설계 노트다.
+
 ### 2.3 파라미터 오버라이드 계층
 
-모든 스택(backend, protocol)의 파라미터를 **PVC 단위까지 세밀하게 커스터마이징**할 수 있다. 가장 구체적인 레벨이 우선한다.
+storage·protocol·filesystem 세 축의 튜닝 파라미터를 **PVC 단위까지 세밀하게 커스터마이징**할 수 있다. 하나의 설정은 설정할 수 있는 모든 위치에서 **같은 키 이름과 같은 YAML 구조**를 쓰며, 한 축의 설정은 다른 축의 리소스나 키에 두지 않는다. 뒤의 계층이 앞의 계층을 덮어쓴다.
 
 ```
-PillarStore (backend 기본값)
+PillarStore.spec.backend / PillarProtocol.spec.protocol   (기본값)
   ↓ 오버라이드
-PillarProtocol (protocol 기본값)
+PillarStorageClass spec.overrides.{backend,protocol} + spec.filesystem   (바인딩별)
   ↓ 오버라이드
-PillarStorageClass (바인딩별 오버라이드 — CRD typed schema)
+수동 StorageClass의 backend/protocol/filesystem 문서 파라미터   (PillarStorageClass 없이 쓰는 경우만)
   ↓ 오버라이드
-PVC annotation (볼륨별 오버라이드)
+PVC annotation 문서 pillar-csi.bhyoo.com/{backend,protocol,filesystem}   (볼륨별)
 ```
 
-PillarStorageClass의 오버라이드는 CRD typed schema를 사용한다 (JSON string이 아님). Phase 1에서는 ZFS + NVMe-oF 필드를 정적으로 정의하고, 타입 추가 시 kubebuilder marker로 확장한다.
+| 축 | 기본값 | 바인딩 (PillarStorageClass) | 볼륨 (PVC annotation = 수동 SC 파라미터) |
+|----|--------|---------------------------|----------------------------------------|
+| storage | `PillarStore.spec.backend.{zfs,lvm}` | `spec.overrides.backend.{zfs,lvm}` | `pillar-csi.bhyoo.com/backend` |
+| protocol | `PillarProtocol.spec.protocol.nvmeofTcp` | `spec.overrides.protocol.nvmeofTcp` | `pillar-csi.bhyoo.com/protocol` |
+| filesystem | — (fsType 기본값 ext4) | `spec.filesystem` | `pillar-csi.bhyoo.com/filesystem` |
 
-오버라이드 가능 항목:
-- Backend 파라미터: ZFS properties(compression, volblocksize 등)
-- Protocol 파라미터: NVMe-oF/iSCSI 타임아웃, 큐 사이즈 등
-- fsType: ext4(기본값) 또는 xfs. 블록 프로토콜 + `volumeMode: Filesystem`일 때만
-- mkfsOptions: mkfs 추가 옵션 (우선순위: PVC `fs-override` > PillarStorageClass `overrides.mkfsOptions` > PillarProtocol `mkfsOptions`)
+오버라이드 가능 항목 (튜닝 부분집합):
+
+| 문서 | 허용 키 | 병합 규칙 |
+|------|---------|-----------|
+| backend | `zfs.properties` (compression, volblocksize 등) | 키 단위 병합. 우선순위: PVC > 바인딩 > store |
+| backend | `lvm.provisioningMode` (`linear` \| `thin`, 기본값 linear) | 마지막 계층의 값 |
+| protocol | `nvmeofTcp.maxQueueSize` (16-1024), `inCapsuleDataSize` (>= 1024), `ctrlLossTmo` (>= 0), `reconnectDelay` (>= 0) | 필드 단위, 마지막 계층의 값 |
+| filesystem | `fsType` (`ext4` \| `xfs`) | 마지막 계층의 값 |
+| filesystem | `mkfsOptions`, `mountOptions` | 생략 = 상속, 명시적 `[]` = 비움, 값 = 교체 (모든 계층 동일) |
+
+backend·protocol 문서는 exactly-one union이다: 정확히 하나의 멤버만 쓸 수 있고, 그 멤버는 store의 backend(`zfs`/`lvm`)·protocol(`nvmeofTcp`)과 같아야 한다. 같은 수치 범위와 기본값(ACL 기본값 false, LVM provisioningMode 기본값 linear)이 모든 계층에 적용된다.
+
+**구조적 필드·알 수 없는 키 거부:** PVC annotation·수동 SC 문서에서는 튜닝 부분집합만 허용한다. 구조적 필드(`zfs.pool`, `zfs.parentDataset`, `zfs.volumeType`, `lvm.volumeGroup`, `lvm.thinPool`, `nvmeofTcp.port`, `nvmeofTcp.acl`)와 알 수 없는 키는 하나의 공유 decoder가 전체 경로와 함께 거부한다 (예: `pillar-csi.bhyoo.com/protocol: nvmeofTcp.acl is structural and cannot be set per volume`). PVC의 그 밖의 `pillar-csi.bhyoo.com/` annotation도 알 수 없는 키로 거부된다.
 
 fsType/mkfsOptions 전달 규칙:
-- StorageClass 파라미터 `pillar-csi.bhyoo.com/mkfs-options`와 PVC `fs-override`의 mkfsOptions는 모두 JSON 문자열 배열(`["-E","lazy_itable_init=0"]`)로 인코딩된다. CreateVolume은 병합된 값을 PV VolumeContext(`pillar-csi.bhyoo.com/mkfs-options`)에 기록하고, PVC fsType은 `pillar-csi.bhyoo.com/fs-type`에 기록한다.
+- CreateVolume은 resolve된 fsType을 PV VolumeContext `pillar-csi.bhyoo.com/fs-type`에, mkfsOptions를 `pillar-csi.bhyoo.com/mkfs-options`(JSON 문자열 배열)에 기록한다. PVC `filesystem` 문서가 클래스의 mountOptions를 바꾼 경우에만 `pillar-csi.bhyoo.com/mount-options`(JSON 문자열 배열)를 기록한다.
 - NodeStageVolume은 디바이스에 파일시스템이 없을 때만(blkid 기준) mkfs를 실행하며, 이미 포맷된 볼륨은 절대 재포맷하지 않는다. mkfs 인자는 셸 없이 argv 요소 그대로 전달된다. 기본 인자(ext4: `-F -m0`) 뒤에 붙으므로 같은 옵션을 지정하면 사용자 값이 우선한다. mkfs 종료 후 blkid로 요청한 파일시스템이 생성되었는지 확인하고, 아니면 (옵션 없이 다시 포맷하지 않고) 실패한다.
-- 포맷 타입 우선순위: PVC fsType > PV `spec.csi.fsType`(StorageClass `csi.storage.k8s.io/fstype`) > ext4. external-provisioner는 PV fsType을 StorageClass에서만 채우므로 PVC fsType을 쓰면 PV의 `spec.csi.fsType`은 클래스 값으로 남는다. 노드는 포맷한 타입을 스테이지 상태 파일에 기록하고, VolumeContext를 받지 않는 NodeExpandVolume은 이 값으로 resize 도구를 고른다.
+- 포맷 타입 우선순위: PVC `filesystem` 문서 fsType > 수동 SC `filesystem` 문서 fsType > PillarStorageClass `spec.filesystem.fsType` > ext4. 생성된 StorageClass는 바인딩의 fsType(기본값 ext4)을 `csi.storage.k8s.io/fstype`으로 싣는다. 수동 SC가 `csi.storage.k8s.io/fstype`과 fsType이 있는 `filesystem` 문서를 함께 쓰면 두 값이 같아야 한다 (다르면 `InvalidArgument`). external-provisioner는 PV fsType을 StorageClass에서만 채우므로 PVC fsType을 쓰면 PV의 `spec.csi.fsType`은 클래스 값으로 남는다. 노드는 포맷한 타입을 스테이지 상태 파일에 기록하고, VolumeContext를 받지 않는 NodeExpandVolume은 이 값으로 resize 도구를 고른다.
 - mkfsOptions는 파일시스템별 허용 목록(allowlist)만 받는다. ext4: `-b -C -D -e -E(허용 서브옵션) -F -g -G -i -I -j -J(size,fast_commit_size,location) -L -m -M -N -o -O(journal_dev 제외) -q -r -T -U -v`, xfs: `-b -d -i -l -m -n -s`(각각 허용 서브옵션) `-f -K -L -q`. 다른 파일/디바이스를 여는 옵션(`-J device=`(LABEL=/UUID= 포함), `-l logdev=`, `-r rtdev=`, `-d name=/file=`, ext4 `-d`/`-l`/`-z`, xfs `-p`/`-c`), 파일시스템을 만들지 않거나 다른 결과를 내는 옵션(ext4 `-n`/`-S`/`-V`/`-t`/`-E offset=`, xfs `-N`), 위치 인자·긴 옵션·묶인 플래그(`-Fq`)는 거부된다.
-- 적용될 수 없는 설정은 CreateVolume이 `InvalidArgument`로 거부한다: 잘못된 JSON, 허용 목록 밖 mkfs 옵션(포맷할 fsType 기준), ext4/xfs 이외의 fsType, NFS/SMB 볼륨의 fsType/mkfsOptions, `volumeMode: Block` PVC의 PVC fsType/mkfsOptions. 클래스 수준 mkfsOptions는 Block 볼륨에서 `csi.storage.k8s.io/fstype`처럼 무시된다.
+- 적용될 수 없는 설정은 CreateVolume이 `InvalidArgument`로 거부한다: 잘못된 YAML 문서, 알 수 없는 키·구조적 필드, 허용 목록 밖 mkfs 옵션(포맷할 fsType 기준), ext4/xfs 이외의 fsType, `volumeMode: Block` PVC의 PVC `filesystem` 문서 fsType/mkfsOptions. 클래스 수준 mkfsOptions는 Block 볼륨에서 `csi.storage.k8s.io/fstype`처럼 무시된다.
 
-**PVC annotation 오버라이드 범위 제한:** 튜닝 파라미터만 허용한다 (properties, maxQueueSize, fsType 등). 구조적 참조 변경(pool, parentDataset, type, port 등)은 controller가 CreateVolume 시점에 거부한다. CRD 필드 immutability 규칙과 동일 기준.
+**해석 방식 (단일 resolve 지점):** 유효 설정은 CreateVolume에서 한 번만, live CR로부터 resolve한다.
 
-**해석 방식:** PillarStorageClass controller는 생성하는 StorageClass의 `pillar-csi.bhyoo.com/storage-class` 파라미터에 PillarStorageClass 이름을 기록한다. CreateVolume은 이 이름으로 PillarStorageClass와 그 PillarStore를 조회해 backend 기본값(`zfs.properties`, `lvm.provisioningMode`)과 바인딩 오버라이드를 적용하고, csi-provisioner `--extra-create-metadata`(차트 기본값)가 전달하는 `csi.storage.k8s.io/pvc/name`·`pvc/namespace`로 PVC를 조회해 annotation을 마지막에 적용한다. StorageClass가 가리키는 PillarStorageClass·PillarStore·PVC가 없으면 FailedPrecondition, 조회가 실패하면 Internal로 CreateVolume이 실패하며(provisioner가 재시도) 설정을 버린 채 볼륨을 만들지 않는다. `pillar-csi.bhyoo.com/storage-class`가 없는 수동 StorageClass는 자신의 파라미터와 PVC annotation만 사용한다.
+1. identity: StorageClass 파라미터 `pillar-csi.bhyoo.com/storage-class`가 있으면 그 PillarStorageClass에서 store·protocol 이름, `spec.overrides`, `spec.filesystem`을 얻는다. 없으면(수동 StorageClass) `pillar-csi.bhyoo.com/store-ref`·`pillar-csi.bhyoo.com/protocol-ref`로 CR을 찾고 `backend`/`protocol`/`filesystem` 문서 파라미터를 바인딩 대신 쓴다.
+2. backend: `PillarStore.spec.backend`를 복사한 뒤 바인딩 오버라이드 → 수동 SC 문서 → PVC 문서 순으로 적용한다. protocol과 filesystem도 같은 순서다.
+3. PVC는 csi-provisioner `--extra-create-metadata`(차트 기본값)가 전달하는 `csi.storage.k8s.io/pvc/name`·`pvc/namespace`로 조회한다.
+4. 결과(`ResolvedVolumeConfig{backend, protocol, filesystem}`)를 `PillarVolumeState.spec.resolved`에 저장한다. 재시도와 복구는 저장된 값을 다시 쓰므로, 도중에 CR이 바뀌어도 한 볼륨의 설정은 바뀌지 않는다.
 
-저수준 flat annotation `pillar-csi.bhyoo.com/param.<name>: <value>`는 파라미터 `pillar-csi.bhyoo.com/<name>`을 설정한다 (예: `param.zfs-prop.volblocksize: 16K`). 빈 값은 오버라이드가 아니며, 구조적 파라미터(`store`, `agent`, `zfs-parent-dataset`, `lvm-vg`, `nvmeof-port`, `acl-enabled` 등)는 거부된다.
+StorageClass가 가리키는 PillarStorageClass·PillarStore·PillarProtocol·PVC가 없으면 FailedPrecondition, 조회가 실패하면 Internal로 CreateVolume이 실패하며(provisioner가 재시도) 설정을 버린 채 볼륨을 만들지 않는다.
+
+생성되는 StorageClass에는 identity 참조와 Kubernetes가 직접 쓰는 값만 들어간다: `pillar-csi.bhyoo.com/storage-class`(PillarStorageClass 이름), `csi.storage.k8s.io/fstype`, 그리고 `mountOptions` 필드. 튜닝 값은 CreateVolume에서 live로 resolve하므로 튜닝 값을 바꿔도 StorageClass를 다시 만들 필요가 없다.
+
+StorageClass 파라미터 (`pillar-csi.bhyoo.com/` 접두사):
+
+| 키 | 작성 주체 | 의미 |
+|----|----------|------|
+| `pillar-csi.bhyoo.com/storage-class` | 생성된 SC | PillarStorageClass 이름 (identity 참조) |
+| `pillar-csi.bhyoo.com/store-ref` | 수동 SC | PillarStore 이름 (identity 참조) |
+| `pillar-csi.bhyoo.com/protocol-ref` | 수동 SC | PillarProtocol 이름 (identity 참조) |
+| `pillar-csi.bhyoo.com/backend` | 수동 SC | backend 오버라이드 YAML 문서 |
+| `pillar-csi.bhyoo.com/protocol` | 수동 SC | protocol 오버라이드 YAML 문서 |
+| `pillar-csi.bhyoo.com/filesystem` | 수동 SC | filesystem YAML 문서 |
+| `csi.storage.k8s.io/fstype` | 생성된 SC, 수동 SC | PV fsType (생성된 SC: 바인딩 `spec.filesystem.fsType`, 기본값 ext4) |
+
+그 밖의 `pillar-csi.bhyoo.com/` 파라미터 키는 `unsupported StorageClass parameter "<key>"`로 `InvalidArgument` 거부된다.
+
+수동 StorageClass 예시:
+```yaml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: manual-nvmeof
+provisioner: pillar-csi.bhyoo.com
+parameters:
+  pillar-csi.bhyoo.com/store-ref: rock5bp-hot-data
+  pillar-csi.bhyoo.com/protocol-ref: nvmeof-tcp
+  pillar-csi.bhyoo.com/backend: |
+    zfs:
+      properties:
+        compression: lz4
+  pillar-csi.bhyoo.com/filesystem: |
+    fsType: xfs
+  csi.storage.k8s.io/fstype: xfs          # filesystem 문서의 fsType과 같아야 한다
+```
 
 PVC annotation 예시:
 ```yaml
@@ -407,17 +469,18 @@ kind: PersistentVolumeClaim
 metadata:
   name: postgres-data
   annotations:
-    pillar-csi.bhyoo.com/backend-override: |
+    pillar-csi.bhyoo.com/backend: |
       zfs:
         properties:
           volblocksize: "8K"
           compression: zstd
-    pillar-csi.bhyoo.com/protocol-override: |
+    pillar-csi.bhyoo.com/protocol: |
       nvmeofTcp:
         maxQueueSize: 64
-    pillar-csi.bhyoo.com/fs-override: |
+    pillar-csi.bhyoo.com/filesystem: |
       fsType: xfs
       mkfsOptions: ["-K"]
+      mountOptions: []                   # 명시적 [] = 클래스 mountOptions 비움
 spec:
   storageClassName: fast-nvmeof
   accessModes: [ReadWriteOnce]
@@ -477,6 +540,8 @@ spec:
 └───────────────────────────────────────────────────────────┘
 ```
 
+위 그림의 iSCSI·NFS·SMB 경로와 directory backend는 미구현 설계 노트다. 현재 구현은 ZFS zvol·LVM backend와 NVMe-oF TCP뿐이다.
+
 **democratic-csi와의 배포 차이:**
 - democratic-csi: backend마다 controller StatefulSet + node DaemonSet = N개 배포
 - pillar-csi: controller 1개 + node DaemonSet 1개 + agent DaemonSet 1개 = 항상 3개. Backend/Protocol 추가는 CR만 생성.
@@ -494,8 +559,28 @@ CLI 도구 없이 **configfs 직접 조작**으로 target을 설정한다:
 | Protocol | configfs 경로 | Go 참조 구현 |
 |----------|-------------|------------|
 | NVMe-oF TCP | `/sys/kernel/config/nvmet/` | `github.com/0xfd4d/nvmet-config` (~150줄) |
-| iSCSI LIO | `/sys/kernel/config/target/iscsi/` | `github.com/sapslaj/shortrack` (~1400줄) |
-| NFS | `/etc/exports` + `exportfs` | 직접 작성 |
+| iSCSI LIO (미구현) | `/sys/kernel/config/target/iscsi/` | `github.com/sapslaj/shortrack` (~1400줄) |
+| NFS (미구현) | `/etc/exports` + `exportfs` | 직접 작성 |
+
+#### Agent 설정 파일
+
+Agent가 볼륨을 만들 위치(backend 배치)는 `--config <path>` YAML 파일에서 읽는다. 차트는 `agent.backends` 값을 ConfigMap으로 렌더링해 마운트한다. 각 항목은 `PillarStore.spec.backend`와 같은 키·같은 구조의 union 멤버 하나다 (항목마다 공유 decoder로 검증, 알 수 없는 키·미구현 backend 거부).
+
+```yaml
+# pillar-agent --config 파일 (차트: agent.backends)
+backends:
+  - zfs:
+      volumeType: zvol                 # 선택 (기본값: zvol)
+      pool: hot-data
+      parentDataset: k8s               # 선택
+  - lvm:
+      volumeGroup: data-vg
+      thinPool: thin0                  # 선택
+```
+
+- 라우팅 키: zfs → `pool`, lvm → `volumeGroup`. 같은 이름이 두 항목에 나오면 agent가 시작을 거부한다.
+- 같은 pool/VG를 쓰는 PillarStore는 `zfs.parentDataset`/`lvm.thinPool`을 agent 항목과 같게 선언해야 한다 (불일치 시 `PoolDiscovered=False`/`BackendLayoutMismatch`).
+- gRPC listen 주소 기본값은 `:9500`이며 PillarAgent `nodeRef.port`/`external.port`와 차트 `agent.grpcPort` 기본값과 같다.
 
 #### Agent 디스커버리
 
@@ -582,8 +667,8 @@ CSI `ControllerPublishVolume`/`ControllerUnpublishVolume` RPC를 구현하여 �
 | Protocol | ACL 메커니즘 | acl: true | acl: false |
 |----------|------------|-----------|------------|
 | NVMe-oF TCP | `allowed_hosts` symlink | host NQN 추가/제거 | `attr_allow_any_host=1` |
-| iSCSI | LIO ACL | initiator IQN 추가/제거 | `generate_node_acls=1` |
-| NFS | export client list | 클라이언트 IP 추가/제거 | 전체 허용 |
+| iSCSI (미구현) | LIO ACL | initiator IQN 추가/제거 | `generate_node_acls=1` |
+| NFS (미구현) | export client list | 클라이언트 IP 추가/제거 | 전체 허용 |
 
 `acl: false`이면 ControllerPublish/Unpublish는 no-op이다.
 
@@ -613,10 +698,10 @@ type Backend interface {
 | Backend | VolumeType | 생성 방식 | 볼륨 경로 | 스냅샷 | 리사이즈 | 클론 |
 |---------|-----------|----------|----------|:---:|:---:|:---:|
 | **zfs-zvol** | Block | `zfs create -V` | `/dev/zvol/pool/name` | O | O | O |
-| **zfs-dataset** | Filesystem | `zfs create` | ZFS 마운트포인트 | O | O (quota) | O |
+| **zfs-dataset** (미구현) | Filesystem | `zfs create` | ZFS 마운트포인트 | O | O (quota) | O |
 | **lvm** | Block | `lvcreate` | `/dev/vg/lv` | O (thin) | O | O (thin) |
-| **block-device** | Block | 기존 디바이스 사용 | `/dev/sdX` | X | X | X |
-| **directory** | Filesystem | `mkdir` | `/path/to/dir` | X | X | X |
+| **block-device** (미구현) | Block | 기존 디바이스 사용 | `/dev/sdX` | X | X | X |
+| **directory** (미구현) | Filesystem | `mkdir` | `/path/to/dir` | X | X | X |
 
 ## 4. Protocol 플러그인
 
@@ -641,7 +726,7 @@ type ProtocolInitiator interface {
 
 ### Protocol 구현 세부사항
 
-| | NVMe-oF TCP | iSCSI | NFS | SMB |
+| | NVMe-oF TCP | iSCSI (미구현) | NFS (미구현) | SMB (미구현) |
 |--|--|--|--|--|
 | **Target 구현** | nvmet configfs | LIO configfs | /etc/exports + exportfs | Samba |
 | **Initiator 구현** | nvme-cli | open-iscsi | mount.nfs | mount.cifs |
@@ -674,9 +759,10 @@ NVMe NQN: nqn.2024-01.com.bhyoo.pillar-csi:rock5bp:pvc-abc123
 1. PVC 생성
 2. external-provisioner → CSI CreateVolume
 3. pillar-controller:
-   a. PillarStorageClass에서 storeRef, protocolRef 확인
-   b. 파라미터 머지 (Pool → Protocol → Binding → PVC annotation)
-      - PVC annotation은 튜닝 파라미터만 허용, 구조적 참조 거부
+   a. StorageClass의 identity 참조 확인 (`storage-class` → PillarStorageClass, 수동 SC는 `store-ref`/`protocol-ref`)
+   b. 유효 설정 resolve (store/protocol → 바인딩 → 수동 SC 문서 → PVC 문서, §2.3)
+      - PVC 문서는 튜닝 부분집합만 허용, 구조적 필드·알 수 없는 키 거부
+      - 결과를 PillarVolumeState.spec.resolved에 저장 (재시도는 저장된 값 재사용)
    c. Backend-Protocol 호환성 검증
    d. PillarStore → PillarAgent → Node IP resolve
    e. gRPC로 agent에 CreateVolume + ExportVolume 요청
@@ -752,8 +838,8 @@ NVMe NQN: nqn.2024-01.com.bhyoo.pillar-csi:rock5bp:pvc-abc123
 - NVMe-oF ACL on/off (PillarProtocol acl 필드)
 - NVMe-oF 타임아웃 파라미터 (PillarProtocol 필드)
 - StorageClass 자동 생성 (PillarStorageClass reconcile, ownerReference 관리)
-- 파라미터 오버라이드 계층 (Pool → Protocol → Binding → PVC annotation)
-- fsType/mkfsOptions 오버라이드 (기본값: ext4)
+- 파라미터 오버라이드 계층 (store/protocol → 바인딩 → 수동 SC 문서 → PVC 문서)
+- filesystem 축: fsType/mkfsOptions/mountOptions (fsType 기본값: ext4)
 - volumeMode: Filesystem 지원
 - 볼륨 확장 (allowVolumeExpansion: backend capability 자동 결정 + 사용자 오버라이드)
 - AccessMode: RWO, RWOP, ROX
@@ -789,8 +875,8 @@ NVMe NQN: nqn.2024-01.com.bhyoo.pillar-csi:rock5bp:pvc-abc123
 
 | 필드 구분 | 예시 | 수정 가능 |
 |----------|------|:---:|
-| **참조/타입** | agentRef, storeRef, protocolRef, backend.type, protocol.type | X (validation webhook 거부) |
-| **튜닝 파라미터** | properties, maxQueueSize, acl, fsType, ctrlLossTmo | O |
+| **참조/구조** | agentRef, storeRef, protocolRef, storageClass.name, backend 멤버(zfs ↔ lvm), zfs.pool, lvm.volumeGroup, protocol 멤버 | X (validation webhook 거부) |
+| **튜닝 파라미터** | zfs.properties, maxQueueSize, acl, ctrlLossTmo, filesystem.fsType | O |
 
 ### 7.2 의존성 삭제 보호
 

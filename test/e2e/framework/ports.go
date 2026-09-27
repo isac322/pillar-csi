@@ -6,13 +6,13 @@
 //
 // When hundreds of test cases run concurrently each test case may need one or
 // more TCP ports for in-process services (gRPC servers, HTTP servers) or for
-// services that bind inside a Kind cluster node (iSCSI targets).  If two
+// services that bind inside a Kind cluster node (NVMe-oF targets).  If two
 // concurrent test cases bind the same port the faster one will succeed and the
 // slower one will get EADDRINUSE, making the test fail for an irrelevant reason.
 //
 // # Solution
 //
-// This file exposes three orthogonal port allocation strategies, all backed by
+// This file exposes two orthogonal port allocation strategies, all backed by
 // the process-scoped registry in the ports sub-package.  Tests choose the
 // strategy that matches their service lifecycle:
 //
@@ -24,17 +24,11 @@
 //
 //  2. Probe-and-release (AllocateContainerPort) — the same :0 trick is used
 //     to determine a free port, but the listener is closed immediately so a
-//     container process (e.g. an iSCSI LIO daemon inside a Kind node) can bind
+//     container process (e.g. an NVMe-oF target inside a Kind node) can bind
 //     to the same host port.  The port number is tracked in the registry for
 //     the TC duration to prevent this process from re-issuing the same number
 //     to another concurrent test case.  There is a brief TOCTOU window between
 //     listener release and container bind; this is acceptable in test envs.
-//
-//  3. Deterministic range (AllocateISCSIPortRange) — each TC is assigned a
-//     contiguous, non-overlapping block of ports [Base, Base+Count) from a
-//     global atomic counter.  This gives tests that set up multiple simultaneous
-//     iSCSI targets a predictable set of port numbers without per-port OS calls.
-//     The 404-TC suite with the default 10-port stride occupies [30100, 34140).
 //
 // # Usage
 //
@@ -43,24 +37,17 @@
 //	defer release()
 //	grpcServer.Serve(port.Listener())
 //
-//	// iSCSI target inside Kind node:
-//	port, release, err := framework.AllocateContainerPort(tcID, "iscsi-primary")
+//	// NVMe-oF target inside Kind node:
+//	port, release, err := framework.AllocateContainerPort(tcID, "nvmeof-primary")
 //	defer release()
 //	kindConfig.ExtraPortMappings = append(kindConfig.ExtraPortMappings,
-//	    kindapi.PortMapping{HostPort: int32(port.Port), ContainerPort: 3260})
-//
-//	// Multiple iSCSI targets via range:
-//	portRange, err := framework.AllocateISCSIPortRange(tcID, "iscsi-targets")
-//	kindConfig.ExtraPortMappings = append(kindConfig.ExtraPortMappings,
-//	    kindapi.PortMapping{HostPort: int32(portRange.Port(0)), ContainerPort: 3260},
-//	    kindapi.PortMapping{HostPort: int32(portRange.Port(1)), ContainerPort: 3261},
-//	)
+//	    kindapi.PortMapping{HostPort: int32(port.Port), ContainerPort: 4420})
 //
 // # Isolation contract
 //
 // Every allocation obtained through this package is guaranteed unique within the
 // current process invocation.  The uniqueness guarantee holds across all
-// goroutines and across all three allocation strategies: the global Registry
+// goroutines and across both allocation strategies: the global Registry
 // (backed by a sync.Mutex and atomic counters) prevents duplicates.
 //
 // Each allocation is associated with a TC ID string for diagnostic output.
@@ -86,7 +73,7 @@ type PortHandle struct {
 	TCID string
 
 	// Label is the caller-supplied logical name for the service (e.g. "agent",
-	// "primary-iscsi", "csi-driver").  Used in diagnostic messages.
+	// "primary-nvmeof", "csi-driver").  Used in diagnostic messages.
 	Label string
 
 	// Port is the allocated TCP port number in the range [1024, 65535].
@@ -185,16 +172,16 @@ func allocateHostPortKind(tcID, label string, kind ports.ServiceKind) (*PortHand
 // to yield the address to a container process, and the port number is tracked in
 // the process-scoped registry until the ReleaseFunc is called.
 //
-// Use this for services that bind inside a Kind cluster node (e.g. iSCSI LIO
+// Use this for services that bind inside a Kind cluster node (e.g. NVMe-oF
 // targets).  The returned handle carries the port number to use as the Kind
-// portMapping.HostPort value; the container port (e.g. 3260 for iSCSI) is
+// portMapping.HostPort value; the container port (e.g. 4420 for NVMe-oF) is
 // configured separately in the Kind cluster config.
 //
 // There is a brief TOCTOU window between the host listener close and the
 // container bind.  This is acceptable in test environments where the probability
 // of the OS re-assigning the port in that window is negligible.
 func AllocateContainerPort(tcID, label string) (*PortHandle, ReleaseFunc, error) {
-	alloc, err := ports.Global.AllocateISCSITarget(tcLabel(tcID, label))
+	alloc, err := ports.Global.AllocateForContainer(ports.KindGeneric, tcLabel(tcID, label))
 	if err != nil {
 		return nil, noop, fmt.Errorf("framework: allocate container port for TC %s/%s: %w",
 			tcID, label, err)
@@ -209,32 +196,6 @@ func AllocateContainerPort(tcID, label string) (*PortHandle, ReleaseFunc, error)
 	}
 	release := func() { _ = alloc.Release() }
 	return h, release, nil
-}
-
-// ─── AllocateISCSIPortRange ──────────────────────────────────────────────────
-
-// AllocateISCSIPortRange assigns a non-overlapping block of host TCP ports to a
-// test case from the global deterministic range allocator.
-//
-// Each call atomically claims the next available range:
-//
-//	Base  = GlobalISCSIRangeAllocator.BasePort + CaseIndex * PortsPerCase
-//	Count = GlobalISCSIRangeAllocator.PortsPerCase  (default: 10)
-//	End   = Base + Count                              (exclusive)
-//
-// The returned *ports.ISCSIPortRange holds no OS resources; it does not need to
-// be explicitly released.  Ranges across concurrent invocations are guaranteed
-// non-overlapping.
-//
-// Use this when a single TC sets up multiple simultaneous iSCSI targets:
-//
-//	portRange, err := framework.AllocateISCSIPortRange(tcID, "iscsi")
-//	HostPort0 := portRange.Port(0)  // first target
-//	HostPort1 := portRange.Port(1)  // second target
-func AllocateISCSIPortRange(_ string, _ string) (*ports.ISCSIPortRange, error) {
-	// tcID and label are accepted for future diagnostics; currently unused
-	// because ISCSIRangeAllocator is stateless from the caller's perspective.
-	return ports.GlobalISCSIRangeAllocator.Allocate(), nil
 }
 
 // ─── MustAllocateHostPort / MustAllocateContainerPort ────────────────────────
@@ -259,15 +220,6 @@ func MustAllocateContainerPort(tcID, label string) (*PortHandle, ReleaseFunc) {
 	return h, release
 }
 
-// MustAllocateISCSIPortRange is like AllocateISCSIPortRange but panics on error.
-func MustAllocateISCSIPortRange(tcID, label string) *ports.ISCSIPortRange {
-	r, err := AllocateISCSIPortRange(tcID, label)
-	if err != nil {
-		panic(fmt.Sprintf("MustAllocateISCSIPortRange: TC=%s label=%s: %v", tcID, label, err))
-	}
-	return r
-}
-
 // ─── PortSet ─────────────────────────────────────────────────────────────────
 
 // PortSet is a collection of named ports allocated for a single test case.
@@ -282,7 +234,7 @@ func MustAllocateISCSIPortRange(tcID, label string) *ports.ISCSIPortRange {
 //	    ps = framework.NewPortSet(CurrentSpecReport().FullText())
 //	    DeferCleanup(ps.Close)
 //	    _ = ps.HostPort("agent-grpc")
-//	    _ = ps.ContainerPort("iscsi-target")
+//	    _ = ps.ContainerPort("nvmeof-target")
 //	})
 //
 //	It("serves on the allocated ports", func() {

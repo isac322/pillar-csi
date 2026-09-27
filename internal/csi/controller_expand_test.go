@@ -18,10 +18,9 @@ package csi
 
 // Tests for ControllerExpandVolume protocol-aware NodeExpansionRequired (AC 13d).
 //
-// RFC §5.7.3: For block protocols (nvmeof-tcp, iscsi) node_expansion_required
-// must be true so that the CO subsequently calls NodeExpandVolume to rescan the
-// block device and resize the filesystem.  For file protocols (nfs, smb)
-// node_expansion_required must be false because resize is fully server-side.
+// RFC §5.7.3: every served protocol (nvmeof-tcp) is a block protocol, so
+// node_expansion_required is always true: the CO subsequently calls
+// NodeExpandVolume to rescan the block device and resize the filesystem.
 //
 // Run with:
 //
@@ -68,9 +67,9 @@ func expandVolumeID(protocol, backend, agentVolID string) string {
 // expandableVolumeID returns the ID of a provisioned volume: it seeds the
 // volume's PillarVolumeState, which ControllerExpandVolume requires (the
 // expand carries the lifecycle's fencing token).
-func expandableVolumeID(t *testing.T, env *controllerTestEnv, protocol, backend, agentVolID string) string {
+func expandableVolumeID(t *testing.T, env *controllerTestEnv, agentVolID string) string {
 	t.Helper()
-	volumeID := expandVolumeID(protocol, backend, agentVolID)
+	volumeID := expandVolumeID("nvmeof-tcp", "zfs-zvol", agentVolID)
 	seedPillarVolumeState(t, env, pillarVolumeStateNameFromVolumeID(volumeID))
 	return volumeID
 }
@@ -90,7 +89,7 @@ func TestControllerExpandVolume_NVMeoFTCP_NodeExpansionRequired(t *testing.T) {
 	const wantBytes int64 = 2147483648 // 2 GiB
 	env.agent.expandVolumeResp = &agentv1.ExpandVolumeResponse{CapacityBytes: wantBytes}
 
-	volumeID := expandableVolumeID(t, env, "nvmeof-tcp", "zfs-zvol", "tank/pvc-nvme-expand")
+	volumeID := expandableVolumeID(t, env, "tank/pvc-nvme-expand")
 	resp, err := env.srv.ControllerExpandVolume(context.Background(), expandRequest(volumeID, wantBytes))
 	if err != nil {
 		t.Fatalf("ControllerExpandVolume: %v", err)
@@ -104,80 +103,9 @@ func TestControllerExpandVolume_NVMeoFTCP_NodeExpansionRequired(t *testing.T) {
 	}
 }
 
-// TestControllerExpandVolume_ISCSI_NodeExpansionRequired verifies that
-// ControllerExpandVolume returns NodeExpansionRequired=true for "iscsi" volumes.
-func TestControllerExpandVolume_ISCSI_NodeExpansionRequired(t *testing.T) {
-	t.Parallel()
-
-	env := newControllerTestEnv(t)
-	const wantBytes int64 = 3221225472 // 3 GiB
-	env.agent.expandVolumeResp = &agentv1.ExpandVolumeResponse{CapacityBytes: wantBytes}
-
-	volumeID := expandableVolumeID(t, env, "iscsi", "zfs-zvol", "tank/pvc-iscsi-expand")
-	resp, err := env.srv.ControllerExpandVolume(context.Background(), expandRequest(volumeID, wantBytes))
-	if err != nil {
-		t.Fatalf("ControllerExpandVolume: %v", err)
-	}
-
-	if !resp.GetNodeExpansionRequired() {
-		t.Error("NodeExpansionRequired = false for iscsi; want true (block device needs rescan)")
-	}
-	if resp.GetCapacityBytes() != wantBytes {
-		t.Errorf("CapacityBytes = %d, want %d", resp.GetCapacityBytes(), wantBytes)
-	}
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // File protocols — NodeExpansionRequired == false
 // ─────────────────────────────────────────────────────────────────────────────
-
-// TestControllerExpandVolume_NFS_NoNodeExpansion verifies that
-// ControllerExpandVolume returns NodeExpansionRequired=false for "nfs" volumes.
-// NFS resize is handled entirely on the server side; the CO must not call
-// NodeExpandVolume on the client node.
-func TestControllerExpandVolume_NFS_NoNodeExpansion(t *testing.T) {
-	t.Parallel()
-
-	env := newControllerTestEnv(t)
-	const wantBytes int64 = 5368709120 // 5 GiB
-	env.agent.expandVolumeResp = &agentv1.ExpandVolumeResponse{CapacityBytes: wantBytes}
-
-	volumeID := expandableVolumeID(t, env, "nfs", "zfs-dataset", "tank/pvc-nfs-expand")
-	resp, err := env.srv.ControllerExpandVolume(context.Background(), expandRequest(volumeID, wantBytes))
-	if err != nil {
-		t.Fatalf("ControllerExpandVolume: %v", err)
-	}
-
-	if resp.GetNodeExpansionRequired() {
-		t.Error("NodeExpansionRequired = true for nfs; want false (server-side resize only)")
-	}
-	if resp.GetCapacityBytes() != wantBytes {
-		t.Errorf("CapacityBytes = %d, want %d", resp.GetCapacityBytes(), wantBytes)
-	}
-}
-
-// TestControllerExpandVolume_SMB_NoNodeExpansion verifies that
-// ControllerExpandVolume returns NodeExpansionRequired=false for "smb" volumes.
-func TestControllerExpandVolume_SMB_NoNodeExpansion(t *testing.T) {
-	t.Parallel()
-
-	env := newControllerTestEnv(t)
-	const wantBytes int64 = 10737418240 // 10 GiB
-	env.agent.expandVolumeResp = &agentv1.ExpandVolumeResponse{CapacityBytes: wantBytes}
-
-	volumeID := expandableVolumeID(t, env, "smb", "zfs-dataset", "tank/pvc-smb-expand")
-	resp, err := env.srv.ControllerExpandVolume(context.Background(), expandRequest(volumeID, wantBytes))
-	if err != nil {
-		t.Fatalf("ControllerExpandVolume: %v", err)
-	}
-
-	if resp.GetNodeExpansionRequired() {
-		t.Error("NodeExpansionRequired = true for smb; want false (server-side resize only)")
-	}
-	if resp.GetCapacityBytes() != wantBytes {
-		t.Errorf("CapacityBytes = %d, want %d", resp.GetCapacityBytes(), wantBytes)
-	}
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Capacity fallback when agent returns zero
@@ -194,7 +122,7 @@ func TestControllerExpandVolume_CapacityFallbackToRequested(t *testing.T) {
 	env.agent.expandVolumeResp = &agentv1.ExpandVolumeResponse{CapacityBytes: 0}
 
 	const requestedBytes int64 = 1073741824 // 1 GiB
-	volumeID := expandableVolumeID(t, env, "nvmeof-tcp", "zfs-zvol", "tank/pvc-fallback")
+	volumeID := expandableVolumeID(t, env, "tank/pvc-fallback")
 	resp, err := env.srv.ControllerExpandVolume(context.Background(), expandRequest(volumeID, requestedBytes))
 	if err != nil {
 		t.Fatalf("ControllerExpandVolume: %v", err)
@@ -236,7 +164,7 @@ func TestControllerExpandVolume_MissingCapacityRange(t *testing.T) {
 	t.Parallel()
 
 	env := newControllerTestEnv(t)
-	volumeID := expandableVolumeID(t, env, "nvmeof-tcp", "zfs-zvol", "tank/pvc-no-range")
+	volumeID := expandableVolumeID(t, env, "tank/pvc-no-range")
 	_, err := env.srv.ControllerExpandVolume(context.Background(), &csi.ControllerExpandVolumeRequest{
 		VolumeId:      volumeID,
 		CapacityRange: nil,
@@ -256,7 +184,7 @@ func TestControllerExpandVolume_NegativeRequiredBytes(t *testing.T) {
 	t.Parallel()
 
 	env := newControllerTestEnv(t)
-	volumeID := expandableVolumeID(t, env, "nvmeof-tcp", "zfs-zvol", "tank/pvc-neg-bytes")
+	volumeID := expandableVolumeID(t, env, "tank/pvc-neg-bytes")
 	_, err := env.srv.ControllerExpandVolume(context.Background(), &csi.ControllerExpandVolumeRequest{
 		VolumeId: volumeID,
 		CapacityRange: &csi.CapacityRange{
@@ -305,7 +233,7 @@ func TestControllerExpandVolume_CallsAgentExpandVolume(t *testing.T) {
 	const wantBytes int64 = 2147483648
 	env.agent.expandVolumeResp = &agentv1.ExpandVolumeResponse{CapacityBytes: wantBytes}
 
-	volumeID := expandableVolumeID(t, env, "nvmeof-tcp", "zfs-zvol", "tank/pvc-agent-call")
+	volumeID := expandableVolumeID(t, env, "tank/pvc-agent-call")
 	_, err := env.srv.ControllerExpandVolume(context.Background(), expandRequest(volumeID, wantBytes))
 	if err != nil {
 		t.Fatalf("ControllerExpandVolume: %v", err)
@@ -313,62 +241,6 @@ func TestControllerExpandVolume_CallsAgentExpandVolume(t *testing.T) {
 
 	if env.agent.expandVolumeCalls != 1 {
 		t.Errorf("agent.ExpandVolume call count = %d, want 1", env.agent.expandVolumeCalls)
-	}
-}
-
-// TestControllerExpandVolume_AllBlockProtocols_NodeExpansionRequired verifies
-// that all block protocol types require node-side expansion.
-func TestControllerExpandVolume_AllBlockProtocols_NodeExpansionRequired(t *testing.T) {
-	t.Parallel()
-
-	blockProtocols := []string{"nvmeof-tcp", "iscsi"}
-	for _, proto := range blockProtocols {
-		t.Run(proto, func(t *testing.T) {
-			t.Parallel()
-
-			env := newControllerTestEnv(t)
-			env.agent.expandVolumeResp = &agentv1.ExpandVolumeResponse{CapacityBytes: 1073741824}
-
-			volumeID := expandableVolumeID(t, env, proto, "zfs-zvol", "tank/pvc-block-"+proto)
-			resp, err := env.srv.ControllerExpandVolume(
-				context.Background(),
-				expandRequest(volumeID, 1073741824),
-			)
-			if err != nil {
-				t.Fatalf("ControllerExpandVolume(%s): %v", proto, err)
-			}
-			if !resp.GetNodeExpansionRequired() {
-				t.Errorf("NodeExpansionRequired = false for %s; want true", proto)
-			}
-		})
-	}
-}
-
-// TestControllerExpandVolume_AllFileProtocols_NoNodeExpansion verifies that
-// all file protocol types do NOT require node-side expansion.
-func TestControllerExpandVolume_AllFileProtocols_NoNodeExpansion(t *testing.T) {
-	t.Parallel()
-
-	fileProtocols := []string{"nfs", "smb"}
-	for _, proto := range fileProtocols {
-		t.Run(proto, func(t *testing.T) {
-			t.Parallel()
-
-			env := newControllerTestEnv(t)
-			env.agent.expandVolumeResp = &agentv1.ExpandVolumeResponse{CapacityBytes: 1073741824}
-
-			volumeID := expandableVolumeID(t, env, proto, "zfs-dataset", "tank/pvc-file-"+proto)
-			resp, err := env.srv.ControllerExpandVolume(
-				context.Background(),
-				expandRequest(volumeID, 1073741824),
-			)
-			if err != nil {
-				t.Fatalf("ControllerExpandVolume(%s): %v", proto, err)
-			}
-			if resp.GetNodeExpansionRequired() {
-				t.Errorf("NodeExpansionRequired = true for %s; want false", proto)
-			}
-		})
 	}
 }
 
@@ -396,7 +268,7 @@ func TestControllerExpandVolume_DeletingVolume_FailedPrecondition(t *testing.T) 
 	t.Parallel()
 	env := newControllerTestEnv(t)
 	ctx := context.Background()
-	volumeID := expandableVolumeID(t, env, "nvmeof-tcp", "zfs-zvol", "tank/pvc-deleting")
+	volumeID := expandableVolumeID(t, env, "tank/pvc-deleting")
 	pvs := &v1alpha1.PillarVolumeState{}
 	if err := env.srv.k8sClient.Get(ctx, types.NamespacedName{Name: "pvc-deleting"}, pvs); err != nil {
 		t.Fatal(err)

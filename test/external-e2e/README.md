@@ -17,10 +17,11 @@ multi-pod attach, etc.) works in a real cluster.
    `KUBECONFIG` exported.
 2. pillar-csi deployed into that cluster (e.g. via the
    [Helm chart](../../charts/pillar-csi/)).
-3. A `PillarAgent` matching the StorageClass `parameters` block in
-   [`storage-class.yaml`](./storage-class.yaml) — by default
-   `pillar-target-default` with LVM volume group `pillar-vg`, `lvm-lv`
-   backend, and NVMe-oF TCP protocol.
+3. The `PillarStore` and `PillarProtocol` named by the StorageClass
+   `parameters` in [`storage-class.yaml`](./storage-class.yaml)
+   (`pillar-csi.bhyoo.com/store-ref` / `pillar-csi.bhyoo.com/protocol-ref`) —
+   by default the LVM store `pillar-vg` on the PillarAgent
+   `pillar-target-default` and the NVMe-oF/TCP protocol `nvmeof-tcp`.
 4. `curl`, `tar` and `kubectl` on PATH.
 
 ## Run
@@ -54,7 +55,7 @@ make test-external-e2e
 | File | Purpose |
 | --- | --- |
 | `external-driver.yaml` | Capability declaration consumed by `e2e.test -storage.testdriver=`. Toggle capability flags as the driver implements them. |
-| `storage-class.yaml` | StorageClass that the suite uses to provision dynamic PVCs. Edit `parameters` to match your `PillarAgent` / pool / backend / protocol. |
+| `storage-class.yaml` | StorageClass that the suite uses to provision dynamic PVCs. Edit `parameters` to name your `PillarStore` / `PillarProtocol` (`store-ref` / `protocol-ref`). |
 | `run.sh` | Downloads `e2e.test`, applies the StorageClass, runs the suite. |
 
 ## Scope

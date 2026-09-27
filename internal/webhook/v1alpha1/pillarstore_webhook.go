@@ -58,27 +58,29 @@ func (*PillarStoreCustomValidator) ValidateCreate(
 	return nil, validatePillarStoreSpec(pillarstore)
 }
 
-// validatePillarStoreSpec applies cross-field validation rules to a PillarStore spec.
-// These rules enforce constraints that cannot be expressed in OpenAPI schema alone
-// (e.g., requiring backend.lvm when backend.type == "lvm-lv").
-func validatePillarStoreSpec(pool *pillarcsiv1alpha1.PillarStore) error {
+// validatePillarStoreSpec re-checks the backend union of a PillarStore spec.
+// The CRD schema (CEL exactly-one rule, MinLength on pool/volumeGroup)
+// already enforces these constraints at the API server; the webhook repeats
+// them so a schema that failed to install can never admit a store without a
+// usable backend.
+func validatePillarStoreSpec(store *pillarcsiv1alpha1.PillarStore) error {
 	var allErrs field.ErrorList
+	backendPath := field.NewPath("spec", "backend")
+	backend := store.Spec.Backend
 
-	// When backend.type is lvm-lv, the backend.lvm section must be present and
-	// must provide at minimum a non-empty volumeGroup so that the agent knows
-	// which LVM Volume Group to use.
-	if pool.Spec.Backend.Type == pillarcsiv1alpha1.BackendTypeLVMLV {
-		if pool.Spec.Backend.LVM == nil {
-			allErrs = append(allErrs, field.Required(
-				field.NewPath("spec", "backend", "lvm"),
-				fmt.Sprintf("spec.backend.lvm is required when spec.backend.type is %q", pillarcsiv1alpha1.BackendTypeLVMLV),
-			))
-		} else if pool.Spec.Backend.LVM.VolumeGroup == "" {
-			allErrs = append(allErrs, field.Required(
-				field.NewPath("spec", "backend", "lvm", "volumeGroup"),
-				"spec.backend.lvm.volumeGroup must be non-empty when spec.backend.type is lvm-lv",
-			))
-		}
+	switch {
+	case backend.ZFS != nil && backend.LVM != nil:
+		allErrs = append(allErrs, field.Invalid(backendPath, "zfs, lvm",
+			"exactly one of zfs or lvm must be set"))
+	case backend.Kind() == "":
+		allErrs = append(allErrs, field.Required(backendPath,
+			"exactly one of zfs or lvm must be set"))
+	case backend.ZFS != nil && backend.ZFS.Pool == "":
+		allErrs = append(allErrs, field.Required(backendPath.Child("zfs", "pool"),
+			"the ZFS pool name must be non-empty"))
+	case backend.LVM != nil && backend.LVM.VolumeGroup == "":
+		allErrs = append(allErrs, field.Required(backendPath.Child("lvm", "volumeGroup"),
+			"the LVM volume group name must be non-empty"))
 	}
 
 	if len(allErrs) > 0 {
@@ -87,48 +89,73 @@ func validatePillarStoreSpec(pool *pillarcsiv1alpha1.PillarStore) error {
 	return nil
 }
 
+// backendMember returns the name of the union member set in a backend spec
+// ("zfs" or "lvm"), or "" when none is set.
+func backendMember(b pillarcsiv1alpha1.BackendSpec) string {
+	switch {
+	case b.ZFS != nil:
+		return "zfs"
+	case b.LVM != nil:
+		return "lvm"
+	default:
+		return ""
+	}
+}
+
 // ValidateUpdate implements admission.Validator so a webhook will be registered for the type PillarStore.
 func (*PillarStoreCustomValidator) ValidateUpdate(
-	_ context.Context, oldPool, newPool *pillarcsiv1alpha1.PillarStore,
+	_ context.Context, oldStore, newStore *pillarcsiv1alpha1.PillarStore,
 ) (admission.Warnings, error) {
-	pillarstorelog.Info("Validation for PillarStore upon update", "name", newPool.GetName())
+	pillarstorelog.Info("Validation for PillarStore upon update", "name", newStore.GetName())
 
 	var allErrs field.ErrorList
 
-	// spec.agentRef is immutable: the pool is bound to a specific storage target at creation.
-	// Moving a pool to a different target would change which physical storage is used,
-	// invalidating all existing volumes provisioned from this pool.
-	if oldPool.Spec.AgentRef != newPool.Spec.AgentRef {
+	// spec.agentRef is immutable: the store is bound to a specific storage agent at creation.
+	// Moving a store to a different agent would change which physical storage is used,
+	// invalidating all existing volumes provisioned from this store.
+	if oldStore.Spec.AgentRef != newStore.Spec.AgentRef {
 		allErrs = append(allErrs, field.Forbidden(
 			field.NewPath("spec", "agentRef"),
 			fmt.Sprintf("field is immutable; old value %q cannot be changed to %q",
-				oldPool.Spec.AgentRef, newPool.Spec.AgentRef),
+				oldStore.Spec.AgentRef, newStore.Spec.AgentRef),
 		))
 	}
 
-	// spec.backend.type is immutable: changing the backend driver type (e.g. zfs-zvol → lvm-lv)
-	// would silently break volumes that were provisioned using the original driver.
-	if oldPool.Spec.Backend.Type != newPool.Spec.Backend.Type {
+	// The backend member (zfs or lvm) is immutable: switching backends would silently
+	// break volumes that were provisioned by the original backend.
+	oldMember := backendMember(oldStore.Spec.Backend)
+	newMember := backendMember(newStore.Spec.Backend)
+	if oldMember != newMember {
 		allErrs = append(allErrs, field.Forbidden(
-			field.NewPath("spec", "backend", "type"),
-			fmt.Sprintf("field is immutable; old value %q cannot be changed to %q",
-				oldPool.Spec.Backend.Type, newPool.Spec.Backend.Type),
+			field.NewPath("spec", "backend"),
+			fmt.Sprintf("the backend member is immutable; old member %q cannot be changed to %q",
+				oldMember, newMember),
 		))
 	}
-	oldZFS := oldPool.Spec.Backend.ZFS
-	newZFS := newPool.Spec.Backend.ZFS
-	if (oldZFS == nil) != (newZFS == nil) ||
-		(oldZFS != nil && newZFS != nil && oldZFS.Pool != newZFS.Pool) {
+
+	// The physical pool identity is immutable: it is embedded in the volume IDs of every
+	// volume provisioned from this store.
+	oldZFS, newZFS := oldStore.Spec.Backend.ZFS, newStore.Spec.Backend.ZFS
+	if oldZFS != nil && newZFS != nil && oldZFS.Pool != newZFS.Pool {
 		allErrs = append(allErrs, field.Forbidden(
 			field.NewPath("spec", "backend", "zfs", "pool"),
-			"field is immutable",
+			fmt.Sprintf("field is immutable; old value %q cannot be changed to %q",
+				oldZFS.Pool, newZFS.Pool),
+		))
+	}
+	oldLVM, newLVM := oldStore.Spec.Backend.LVM, newStore.Spec.Backend.LVM
+	if oldLVM != nil && newLVM != nil && oldLVM.VolumeGroup != newLVM.VolumeGroup {
+		allErrs = append(allErrs, field.Forbidden(
+			field.NewPath("spec", "backend", "lvm", "volumeGroup"),
+			fmt.Sprintf("field is immutable; old value %q cannot be changed to %q",
+				oldLVM.VolumeGroup, newLVM.VolumeGroup),
 		))
 	}
 
 	if len(allErrs) > 0 {
 		return nil, allErrs.ToAggregate()
 	}
-	return nil, nil
+	return nil, validatePillarStoreSpec(newStore)
 }
 
 // ValidateDelete implements admission.Validator so a webhook will be registered for the type PillarStore.

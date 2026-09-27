@@ -6,7 +6,7 @@
 //
 // The E2E pipeline performs backend provisioning as a dedicated phase that runs
 // after Kind cluster creation and before test execution. New backend types
-// (ZFS, LVM, iSCSI, NVMe-oF, and future backends) plug into this phase by
+// (ZFS, LVM, NVMe-oF, and future backends) plug into this phase by
 // implementing [BackendProvisioner] and passing the implementation to
 // [Pipeline.AddBackend]. No framework code changes are needed.
 //
@@ -69,14 +69,14 @@ import (
 // Any type that implements BackendProvisioner can be registered with a
 // [Pipeline] and participate in the backend provisioning phase without any
 // changes to the framework itself. This is the primary extensibility point for
-// new storage backend types (ZFS, LVM, iSCSI, NVMe-oF, …).
+// new storage backend types (ZFS, LVM, NVMe-oF, …).
 //
 // # Implementing BackendProvisioner
 //
 // A backend type satisfies BackendProvisioner by providing two methods:
 //
 //  1. BackendType — returns a human-readable string identifying the backend
-//     (e.g. "zfs", "lvm", "iscsi", "nvmeof"). Used in log output and error
+//     (e.g. "zfs", "lvm", "nvmeof"). Used in log output and error
 //     messages. Must be non-empty.
 //
 //  2. Provision — creates the ephemeral storage resources needed by the test
@@ -103,7 +103,7 @@ import (
 // container in a clean state.
 type BackendProvisioner interface {
 	// BackendType returns a human-readable identifier for this backend type.
-	// Examples: "zfs", "lvm", "iscsi", "nvmeof".
+	// Examples: "zfs", "lvm", "nvmeof".
 	// Must not return an empty string.
 	BackendType() string
 

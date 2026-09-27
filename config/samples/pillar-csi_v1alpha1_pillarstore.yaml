@@ -6,4 +6,18 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: pillarstore-sample
 spec:
-  # TODO(user): Add fields here
+  agentRef: pillaragent-sample
+  # Exactly one backend member.  pool/parentDataset must match the agent's
+  # config (chart agent.backends[].zfs).
+  backend:
+    zfs:
+      volumeType: zvol
+      pool: hot-data
+      parentDataset: k8s
+      properties:
+        compression: lz4
+    # or:
+    # lvm:
+    #   volumeGroup: data-vg
+    #   thinPool: thin0
+    #   provisioningMode: linear

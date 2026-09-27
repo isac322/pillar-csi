@@ -66,7 +66,7 @@ func (e *InsufficientCapacityError) Unwrap() error { return e.Err }
 
 // LayoutMismatchError is returned by VolumeBackend.Create when the request
 // declares a volume location (ZFS parent dataset, LVM thin pool) that differs
-// from the one this backend was started with (the agent's --backend flag).
+// from the one this backend was started with (the agent's --config file).
 // The backend never relocates a volume to match the request: every other RPC
 // (Delete, Expand, Export, ListVolumes) derives the location from the
 // backend's own configuration, so a volume created elsewhere would be lost to
@@ -82,7 +82,7 @@ type LayoutMismatchError struct {
 func (e *LayoutMismatchError) Error() string {
 	return fmt.Sprintf(
 		"volume %q: requested %s %q does not match the agent backend's configured %s %q; "+
-			"align the PillarStore spec with the agent --backend flag (chart agent.backends)",
+			"align the PillarStore spec with the agent config file backends entry (chart agent.backends)",
 		e.VolumeID, e.Setting, e.Requested, e.Setting, e.Configured,
 	)
 }

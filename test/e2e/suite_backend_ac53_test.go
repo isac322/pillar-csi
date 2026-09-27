@@ -17,7 +17,7 @@ package e2e
 //  4. ProvisionPerTestPillarStore creates a PillarStore CR with the correct spec:
 //     - name matches pillarStoreName(scope.DerivedNamespace)
 //     - spec.agentRef matches the given agentRef
-//     - spec.backend.type == "lvm-lv"
+//     - spec.backend has the lvm member
 //     - spec.backend.lvm.volumeGroup matches perTestLVMVGName(scope.DerivedNamespace)
 //     - spec.backend.lvm.provisioningMode == "linear"
 //  5. ProvisionPerTestPillarStore registers teardown: after scope.Close() the
@@ -303,7 +303,7 @@ func TestAC53NamingIsUniqueAcrossTestCaseScopes(t *testing.T) {
 // ProvisionPerTestPillarStore creates a PillarStore CR with:
 //   - Name derived from scope.DerivedNamespace via pillarStoreName
 //   - spec.agentRef matching the given agentRef
-//   - spec.backend.type == "lvm-lv"
+//   - spec.backend has the lvm member
 //   - spec.backend.lvm.volumeGroup derived from scope.DerivedNamespace via perTestLVMVGName
 //   - spec.backend.lvm.provisioningMode == "linear"
 func TestAC53ProvisionPerTestPillarStoreCreatesCorrectSpec(t *testing.T) {
@@ -353,9 +353,9 @@ func TestAC53ProvisionPerTestPillarStoreCreatesCorrectSpec(t *testing.T) {
 	if pool.Spec.AgentRef != agentRef {
 		t.Errorf("AC53: pool.Spec.AgentRef = %q, want %q", pool.Spec.AgentRef, agentRef)
 	}
-	if pool.Spec.Backend.Type != pillarv1.BackendTypeLVMLV {
-		t.Errorf("AC53: pool.Spec.Backend.Type = %q, want %q",
-			pool.Spec.Backend.Type, pillarv1.BackendTypeLVMLV)
+	if pool.Spec.Backend.Kind() != pillarv1.BackendIDLVMLV {
+		t.Errorf("AC53: pool.Spec.Backend.Kind() = %q, want %q",
+			pool.Spec.Backend.Kind(), pillarv1.BackendIDLVMLV)
 	}
 	if pool.Spec.Backend.LVM == nil {
 		t.Fatal("AC53: pool.Spec.Backend.LVM is nil — LVM config not set")
@@ -369,9 +369,9 @@ func TestAC53ProvisionPerTestPillarStoreCreatesCorrectSpec(t *testing.T) {
 			pool.Spec.Backend.LVM.ProvisioningMode, pillarv1.LVMProvisioningModeLinear)
 	}
 
-	t.Logf("AC53: PillarStore %q created with correct spec (target=%s, vg=%s, type=%s, mode=%s)",
+	t.Logf("AC53: PillarStore %q created with correct spec (target=%s, vg=%s, backend=%s, mode=%s)",
 		wantPoolName, agentRef, wantVGName,
-		pool.Spec.Backend.Type, pool.Spec.Backend.LVM.ProvisioningMode)
+		pool.Spec.Backend.Kind(), pool.Spec.Backend.LVM.ProvisioningMode)
 }
 
 // ── 5. Teardown deletes the PillarStore CR ────────────────────────────────────
@@ -695,8 +695,7 @@ func TestAC53FakeClientHasPillarStoreScheme(t *testing.T) {
 		Spec: pillarv1.PillarStoreSpec{
 			AgentRef: "storage-1",
 			Backend: pillarv1.BackendSpec{
-				Type: pillarv1.BackendTypeLVMLV,
-				LVM:  &pillarv1.LVMBackendConfig{VolumeGroup: "vg-test"},
+				LVM: &pillarv1.LVMBackendConfig{VolumeGroup: "vg-test"},
 			},
 		},
 	}

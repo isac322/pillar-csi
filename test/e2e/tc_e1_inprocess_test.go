@@ -83,12 +83,9 @@ func assertE1_CreateVolume_PillarAgentNotFound(tc documentedCase) {
 	env := newControllerTestEnv()
 	defer env.close()
 
-	params := map[string]string{
-		"pillar-csi.bhyoo.com/agent":         "ghost-node",
-		"pillar-csi.bhyoo.com/store":         "tank",
-		"pillar-csi.bhyoo.com/backend-type":  "zfs-zvol",
-		"pillar-csi.bhyoo.com/protocol-type": "nvmeof-tcp",
-	}
+	// The PillarStore exists but its agentRef names a PillarAgent that does not.
+	Expect(env.k8sClient.Create(env.ctx, e2eZFSStore("ghost-store", "ghost-node", "tank"))).To(Succeed())
+	params := e2eHandWrittenParams("ghost-store", e2eDefaultProtocolName)
 	_, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
 		Name:               "pvc-e1-target-notfound",
 		Parameters:         params,
@@ -96,8 +93,8 @@ func assertE1_CreateVolume_PillarAgentNotFound(tc documentedCase) {
 	})
 	Expect(err).To(HaveOccurred(), "%s: expected error for missing target", tc.tcNodeLabel())
 	code := status.Code(err)
-	Expect(code).To(BeElementOf(codes.NotFound, codes.Internal),
-		"%s: expected NotFound or Internal, got %v", tc.tcNodeLabel(), code)
+	Expect(code).To(Equal(codes.NotFound),
+		"%s: expected NotFound for the store's missing PillarAgent, got %v", tc.tcNodeLabel(), code)
 }
 
 func assertE1_CreateVolume_AgentCreateError(tc documentedCase) {
@@ -604,7 +601,11 @@ func assertE1_CreateVolume_PillarAgentEmptyAddress(tc documentedCase) {
 		WithInterceptorFuncs(fakeuid.Interceptor()).
 		WithScheme(scheme).
 		WithStatusSubresource(&pillarv1.PillarAgent{}, &pillarv1.PillarVolumeState{}).
-		WithObjects(target).
+		WithObjects(
+			target,
+			e2eZFSStore(e2eDefaultStoreName, target.Name, e2eDefaultZFSPool),
+			e2eNVMeOFProtocol(e2eDefaultProtocolName),
+		).
 		Build()
 
 	controller := csidrv.NewControllerServerWithDialer(
@@ -615,12 +616,7 @@ func assertE1_CreateVolume_PillarAgentEmptyAddress(tc documentedCase) {
 		},
 	)
 
-	params := map[string]string{
-		"pillar-csi.bhyoo.com/agent":         "storage-empty-addr",
-		"pillar-csi.bhyoo.com/store":         "tank",
-		"pillar-csi.bhyoo.com/backend-type":  "zfs-zvol",
-		"pillar-csi.bhyoo.com/protocol-type": "nvmeof-tcp",
-	}
+	params := e2eHandWrittenParams(e2eDefaultStoreName, e2eDefaultProtocolName)
 	_, err := controller.CreateVolume(context.Background(), &csiapi.CreateVolumeRequest{
 		Name:               "pvc-empty-addr",
 		Parameters:         params,
@@ -644,7 +640,11 @@ func assertE1_CreateVolume_AgentDialFails(tc documentedCase) {
 		WithInterceptorFuncs(fakeuid.Interceptor()).
 		WithScheme(scheme).
 		WithStatusSubresource(&pillarv1.PillarAgent{}, &pillarv1.PillarVolumeState{}).
-		WithObjects(target).
+		WithObjects(
+			target,
+			e2eZFSStore(e2eDefaultStoreName, target.Name, e2eDefaultZFSPool),
+			e2eNVMeOFProtocol(e2eDefaultProtocolName),
+		).
 		Build()
 
 	controller := csidrv.NewControllerServerWithDialer(
@@ -655,12 +655,7 @@ func assertE1_CreateVolume_AgentDialFails(tc documentedCase) {
 		},
 	)
 
-	params := map[string]string{
-		"pillar-csi.bhyoo.com/agent":         "storage-dial-fail",
-		"pillar-csi.bhyoo.com/store":         "tank",
-		"pillar-csi.bhyoo.com/backend-type":  "zfs-zvol",
-		"pillar-csi.bhyoo.com/protocol-type": "nvmeof-tcp",
-	}
+	params := e2eHandWrittenParams(e2eDefaultStoreName, e2eDefaultProtocolName)
 	_, err := controller.CreateVolume(context.Background(), &csiapi.CreateVolumeRequest{
 		Name:               "pvc-dial-fail",
 		Parameters:         params,
@@ -846,7 +841,7 @@ func assertE1_PVCAnnotation_BackendOverride_Compression(tc documentedCase) {
 			Name:      "pvc-annot-compress",
 			Namespace: "default",
 			Annotations: map[string]string{
-				"pillar-csi.bhyoo.com/backend-override": "zfs:\n  properties:\n    compression: zstd\n",
+				e2eDocBackend: "zfs:\n  properties:\n    compression: zstd\n",
 			},
 		},
 		Spec: corev1.PersistentVolumeClaimSpec{
@@ -856,8 +851,8 @@ func assertE1_PVCAnnotation_BackendOverride_Compression(tc documentedCase) {
 	Expect(env.k8sClient.Create(env.ctx, pvc)).To(Succeed())
 
 	params := copyParams(env.params)
-	params["csi.storage.k8s.io/pvc/name"] = pvc.Name
-	params["csi.storage.k8s.io/pvc/namespace"] = pvc.Namespace
+	params[e2eParamPVCName] = pvc.Name
+	params[e2eParamPVCNamespace] = pvc.Namespace
 
 	resp, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
 		Name:               "pvc-annot-compress",
@@ -873,19 +868,21 @@ func assertE1_PVCAnnotation_BackendOverride_Compression(tc documentedCase) {
 	env.agentSrv.mu.Unlock()
 	Expect(reqs).To(HaveLen(1))
 	Expect(reqs[0].GetBackendParams().GetZfs().GetProperties()).To(HaveKeyWithValue("compression", "zstd"),
-		"%s: PVC backend-override must reach the agent", tc.tcNodeLabel())
+		"%s: PVC backend document must reach the agent", tc.tcNodeLabel())
 }
 
 func assertE1_PVCAnnotation_StructuralFieldBlocked(tc documentedCase) {
 	env := newControllerTestEnv()
 	defer env.close()
 
+	// zfs.pool is a structural (placement) field of the store: a per-volume
+	// backend document may only carry tunables.
 	pvc := &corev1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "pvc-annot-blocked",
 			Namespace: "default",
 			Annotations: map[string]string{
-				"pillar-csi.bhyoo.com/backend-override": `{"pillar-csi.bhyoo.com/store":"overridden-pool"}`,
+				e2eDocBackend: "zfs:\n  pool: overridden-pool\n",
 			},
 		},
 		Spec: corev1.PersistentVolumeClaimSpec{},
@@ -893,8 +890,8 @@ func assertE1_PVCAnnotation_StructuralFieldBlocked(tc documentedCase) {
 	Expect(env.k8sClient.Create(env.ctx, pvc)).To(Succeed())
 
 	params := copyParams(env.params)
-	params["csi.storage.k8s.io/pvc/name"] = pvc.Name
-	params["csi.storage.k8s.io/pvc/namespace"] = pvc.Namespace
+	params[e2eParamPVCName] = pvc.Name
+	params[e2eParamPVCNamespace] = pvc.Namespace
 
 	_, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
 		Name:               "pvc-annot-blocked",
@@ -902,7 +899,13 @@ func assertE1_PVCAnnotation_StructuralFieldBlocked(tc documentedCase) {
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
 	})
 	Expect(err).To(HaveOccurred(), "%s: structural field override should be blocked", tc.tcNodeLabel())
-	Expect(status.Code(err)).To(Equal(codes.InvalidArgument))
+	Expect(status.Code(err)).To(Equal(codes.InvalidArgument), "%s", tc.tcNodeLabel())
+	Expect(err.Error()).To(ContainSubstring("zfs.pool is structural and cannot be set per volume"),
+		"%s: the rejection must name the structural field's path", tc.tcNodeLabel())
+	env.agentSrv.mu.Lock()
+	reqs := env.agentSrv.createVolumeReqs
+	env.agentSrv.mu.Unlock()
+	Expect(reqs).To(BeEmpty(), "%s: no agent call after a rejected document", tc.tcNodeLabel())
 }
 
 func assertE1_PVCAnnotation_PVCNotFound_FailedPrecondition(tc documentedCase) {
@@ -910,8 +913,8 @@ func assertE1_PVCAnnotation_PVCNotFound_FailedPrecondition(tc documentedCase) {
 	defer env.close()
 
 	params := copyParams(env.params)
-	params["csi.storage.k8s.io/pvc/name"] = "nonexistent-pvc"
-	params["csi.storage.k8s.io/pvc/namespace"] = "default"
+	params[e2eParamPVCName] = "nonexistent-pvc"
+	params[e2eParamPVCNamespace] = "default"
 
 	_, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
 		Name:               "pvc-annot-notfound",
@@ -926,39 +929,45 @@ func assertE1_PVCAnnotation_PVCNotFound_FailedPrecondition(tc documentedCase) {
 	Expect(reqs).To(BeEmpty(), "%s: no volume may be created without the claim's overrides", tc.tcNodeLabel())
 }
 
-func assertE1_PVCAnnotation_FlatKeyOverride(tc documentedCase) {
-	env := newControllerTestEnv()
-	defer env.close()
-
-	pvc := &corev1.PersistentVolumeClaim{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "pvc-annot-flat",
-			Namespace: "default",
-			Annotations: map[string]string{
-				"pillar-csi.bhyoo.com/param.zfs-prop.volblocksize": "16K",
-			},
-		},
-		Spec: corev1.PersistentVolumeClaimSpec{},
+func assertE1_PVCAnnotation_RemovedKeysRejected(tc documentedCase) {
+	// The flat param.<key> path and the *-override annotation keys were
+	// removed: each must be rejected instead of silently ignored.
+	removed := map[string]string{
+		"pillar-csi.bhyoo.com/param.zfs-prop.volblocksize": "16K",
+		"pillar-csi.bhyoo.com/backend-override":            "zfs:\n  properties:\n    volblocksize: 16K\n",
+		"pillar-csi.bhyoo.com/protocol-override":           "nvmeofTcp:\n  maxQueueSize: 64\n",
+		"pillar-csi.bhyoo.com/fs-override":                 "fsType: xfs\n",
 	}
-	Expect(env.k8sClient.Create(env.ctx, pvc)).To(Succeed())
+	for key, value := range removed {
+		env := newControllerTestEnv()
 
-	params := copyParams(env.params)
-	params["csi.storage.k8s.io/pvc/name"] = pvc.Name
-	params["csi.storage.k8s.io/pvc/namespace"] = pvc.Namespace
+		pvc := &corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:        "pvc-annot-removed",
+				Namespace:   "default",
+				Annotations: map[string]string{key: value},
+			},
+			Spec: corev1.PersistentVolumeClaimSpec{},
+		}
+		Expect(env.k8sClient.Create(env.ctx, pvc)).To(Succeed())
 
-	resp, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
-		Name:               "pvc-annot-flat",
-		Parameters:         params,
-		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-	})
-	Expect(err).NotTo(HaveOccurred(), "%s: flat key annotation", tc.tcNodeLabel())
-	Expect(resp.GetVolume().GetVolumeId()).NotTo(BeEmpty())
-	env.agentSrv.mu.Lock()
-	reqs := env.agentSrv.createVolumeReqs
-	env.agentSrv.mu.Unlock()
-	Expect(reqs).To(HaveLen(1))
-	Expect(reqs[0].GetBackendParams().GetZfs().GetProperties()).To(HaveKeyWithValue("volblocksize", "16K"),
-		"%s: flat param.zfs-prop annotation must reach the agent", tc.tcNodeLabel())
+		params := copyParams(env.params)
+		params[e2eParamPVCName] = pvc.Name
+		params[e2eParamPVCNamespace] = pvc.Namespace
+
+		_, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
+			Name:               "pvc-annot-removed",
+			Parameters:         params,
+			VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
+		})
+		Expect(status.Code(err)).To(Equal(codes.InvalidArgument),
+			"%s: removed PVC annotation %q must be rejected, got %v", tc.tcNodeLabel(), key, err)
+		env.agentSrv.mu.Lock()
+		reqs := env.agentSrv.createVolumeReqs
+		env.agentSrv.mu.Unlock()
+		Expect(reqs).To(BeEmpty(), "%s: no agent call for removed annotation %q", tc.tcNodeLabel(), key)
+		env.close()
+	}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -988,19 +997,27 @@ func assertE1_VolumeID_ZFSParentDataset(tc documentedCase) {
 	env := newControllerTestEnv()
 	defer env.close()
 
-	params := copyParams(env.params)
-	params["pillar-csi.bhyoo.com/zfs-parent-dataset"] = "volumes"
+	// The parent dataset is placement config of the PillarStore; it reaches
+	// the agent as a backend parameter and is not part of the volume ID.
+	store := e2eZFSStore("tank-volumes", env.target.Name, "tank")
+	store.Spec.Backend.ZFS.ParentDataset = "volumes"
+	Expect(env.k8sClient.Create(env.ctx, store)).To(Succeed())
 
 	resp, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
 		Name:               "pvc-abc",
-		Parameters:         params,
+		Parameters:         e2eHandWrittenParams(store.Name, e2eDefaultProtocolName),
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s", tc.tcNodeLabel())
-	volumeID := resp.GetVolume().GetVolumeId()
-	Expect(volumeID).NotTo(BeEmpty(), "%s: VolumeId empty", tc.tcNodeLabel())
-	// The volume ID should encode the parent dataset in the agent vol ID
-	Expect(volumeID).To(ContainSubstring("tank"), "%s: VolumeId should contain pool", tc.tcNodeLabel())
+	Expect(resp.GetVolume().GetVolumeId()).To(Equal("storage-1/nvmeof-tcp/zfs-zvol/tank/pvc-abc"),
+		"%s: VolumeId is <agent>/<protocol>/<backend>/<pool>/<name>", tc.tcNodeLabel())
+
+	env.agentSrv.mu.Lock()
+	reqs := env.agentSrv.createVolumeReqs
+	env.agentSrv.mu.Unlock()
+	Expect(reqs).To(HaveLen(1))
+	Expect(reqs[0].GetBackendParams().GetZfs().GetParentDataset()).To(Equal("volumes"),
+		"%s: the store's zfs.parentDataset must reach the agent", tc.tcNodeLabel())
 }
 
 func assertE1_CreateVolume_MissingVolumeName(tc documentedCase) {
@@ -1015,46 +1032,62 @@ func assertE1_CreateVolume_MissingVolumeName(tc documentedCase) {
 	Expect(status.Code(err)).To(Equal(codes.InvalidArgument))
 }
 
-func assertE1_CreateVolume_MissingTargetParam(tc documentedCase) {
+func assertE1_CreateVolume_MissingStoreRefParam(tc documentedCase) {
 	env := newControllerTestEnv()
 	defer env.close()
 	params := copyParams(env.params)
-	delete(params, "pillar-csi.bhyoo.com/agent")
+	delete(params, e2eParamStoreRef)
 	_, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
-		Name:               "pvc-missing-target",
+		Name:               "pvc-missing-store-ref",
 		Parameters:         params,
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
 	})
-	Expect(err).To(HaveOccurred(), "%s: missing target param", tc.tcNodeLabel())
-	Expect(status.Code(err)).To(Equal(codes.InvalidArgument))
+	Expect(err).To(HaveOccurred(), "%s: missing store-ref param", tc.tcNodeLabel())
+	Expect(status.Code(err)).To(Equal(codes.InvalidArgument), "%s", tc.tcNodeLabel())
 }
 
-func assertE1_CreateVolume_MissingBackendTypeParam(tc documentedCase) {
-	env := newControllerTestEnv()
-	defer env.close()
-	params := copyParams(env.params)
-	delete(params, "pillar-csi.bhyoo.com/backend-type")
-	_, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
-		Name:               "pvc-missing-backend",
-		Parameters:         params,
-		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-	})
-	Expect(err).To(HaveOccurred(), "%s: missing backend-type param", tc.tcNodeLabel())
-	Expect(status.Code(err)).To(Equal(codes.InvalidArgument))
+func assertE1_CreateVolume_LegacyFlatParamRejected(tc documentedCase) {
+	// Flat backend/protocol keys of the removed parameter vocabulary are
+	// unknown pillar-csi parameters and must be rejected, never ignored.
+	legacy := map[string]string{
+		"pillar-csi.bhyoo.com/backend-type":         "zfs-zvol",
+		"pillar-csi.bhyoo.com/protocol-type":        "nvmeof-tcp",
+		"pillar-csi.bhyoo.com/agent":                "storage-1",
+		"pillar-csi.bhyoo.com/store":                "tank",
+		"pillar-csi.bhyoo.com/zfs-prop.compression": "lz4",
+		"pillar-csi.bhyoo.com/lvm-mode":             "thin",
+		"pillar-csi.bhyoo.com/acl-enabled":          "true",
+	}
+	for key, value := range legacy {
+		env := newControllerTestEnv()
+		params := copyParams(env.params)
+		params[key] = value
+		_, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
+			Name:               "pvc-legacy-param",
+			Parameters:         params,
+			VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
+		})
+		Expect(status.Code(err)).To(Equal(codes.InvalidArgument),
+			"%s: legacy parameter %q must be rejected, got %v", tc.tcNodeLabel(), key, err)
+		Expect(err.Error()).To(ContainSubstring("unsupported StorageClass parameter"),
+			"%s: legacy parameter %q", tc.tcNodeLabel(), key)
+		Expect(err.Error()).To(ContainSubstring(key), "%s", tc.tcNodeLabel())
+		env.close()
+	}
 }
 
-func assertE1_CreateVolume_MissingProtocolTypeParam(tc documentedCase) {
+func assertE1_CreateVolume_MissingProtocolRefParam(tc documentedCase) {
 	env := newControllerTestEnv()
 	defer env.close()
 	params := copyParams(env.params)
-	delete(params, "pillar-csi.bhyoo.com/protocol-type")
+	delete(params, e2eParamProtocolRef)
 	_, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
-		Name:               "pvc-missing-protocol",
+		Name:               "pvc-missing-protocol-ref",
 		Parameters:         params,
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
 	})
-	Expect(err).To(HaveOccurred(), "%s: missing protocol-type param", tc.tcNodeLabel())
-	Expect(status.Code(err)).To(Equal(codes.InvalidArgument))
+	Expect(err).To(HaveOccurred(), "%s: missing protocol-ref param", tc.tcNodeLabel())
+	Expect(status.Code(err)).To(Equal(codes.InvalidArgument), "%s", tc.tcNodeLabel())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

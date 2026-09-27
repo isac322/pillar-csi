@@ -68,7 +68,7 @@ func newCSIControllerTestEnvNoResolvedAddr(t *testing.T) *csiControllerTestEnv {
 	fakeClient := fake.NewClientBuilder().
 		WithInterceptorFuncs(fakeuid.Interceptor()).
 		WithScheme(scheme).
-		WithObjects(target).
+		WithObjects(append(componentConfigObjects(), target)...).
 		WithStatusSubresource(&v1alpha1.PillarVolumeState{}, &v1alpha1.PillarAgent{}).
 		Build()
 
@@ -535,7 +535,7 @@ func TestCSIController_CreateVolume_ExportFails_RecordsCreatePartial(t *testing.
 	fakeClient := fake.NewClientBuilder().
 		WithInterceptorFuncs(fakeuid.Interceptor()).
 		WithScheme(scheme).
-		WithObjects(target).
+		WithObjects(append(componentConfigObjects(), target)...).
 		WithStatusSubresource(&v1alpha1.PillarVolumeState{}, &v1alpha1.PillarAgent{}).
 		Build()
 

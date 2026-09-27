@@ -284,11 +284,60 @@ type csiControllerTestEnv struct {
 	k8sClient client.Client
 }
 
+// Hand-written StorageClass identity parameters and the configuration CRs
+// every CSI controller test environment seeds.  CreateVolume resolves the
+// backend (and the PillarAgent via the store's agentRef) and the protocol
+// from these live CRs.
+const (
+	compParamStoreRef    = "pillar-csi.bhyoo.com/store-ref"
+	compParamProtocolRef = "pillar-csi.bhyoo.com/protocol-ref"
+
+	compStoreName    = "tank" // ZFS store: pool "tank" on agent storage-node-1
+	compProtocolName = "nvme" // NVMe-oF/TCP protocol, acl unset (default false)
+)
+
+// compZFSStore returns a PillarStore whose backend is ZFS pool "tank" hosted
+// by agentRef.
+func compZFSStore(name, agentRef string) *v1alpha1.PillarStore {
+	return &v1alpha1.PillarStore{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec: v1alpha1.PillarStoreSpec{
+			AgentRef: agentRef,
+			Backend: v1alpha1.BackendSpec{ZFS: &v1alpha1.ZFSBackendConfig{
+				VolumeType: v1alpha1.ZFSVolumeTypeZvol,
+				Pool:       "tank",
+			}},
+		},
+	}
+}
+
+// compNVMeOFProtocol returns a PillarProtocol selecting NVMe-oF/TCP on port
+// 4420 with the given ACL setting.
+func compNVMeOFProtocol(name string, acl bool) *v1alpha1.PillarProtocol {
+	return &v1alpha1.PillarProtocol{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec: v1alpha1.PillarProtocolSpec{
+			Protocol: v1alpha1.ProtocolSpec{NVMeOFTCP: &v1alpha1.NVMeOFTCPConfig{Port: 4420, ACL: acl}},
+		},
+	}
+}
+
+// componentConfigObjects returns fresh copies of the PillarStore and
+// PillarProtocol that baseCSICreateVolumeRequest references.  The protocol
+// leaves acl unset, i.e. the default false.
+func componentConfigObjects() []client.Object {
+	return []client.Object{
+		compZFSStore(compStoreName, "storage-node-1"),
+		compNVMeOFProtocol(compProtocolName, false),
+	}
+}
+
 // newCSIControllerTestEnv builds a ControllerServer backed by:
 //   - a controller-runtime fake k8s client seeded with one PillarAgent
-//     whose ResolvedAddress is "192.168.1.10:9500"
+//     whose ResolvedAddress is "192.168.1.10:9500", the configuration CRs
+//     of componentConfigObjects, and any extra objects
 //   - a csiMockAgent injected via the AgentDialer
-func newCSIControllerTestEnv(t *testing.T) *csiControllerTestEnv {
+func newCSIControllerTestEnv(t *testing.T, extra ...client.Object) *csiControllerTestEnv {
 	t.Helper()
 
 	scheme := runtime.NewScheme()
@@ -314,10 +363,12 @@ func newCSIControllerTestEnv(t *testing.T) *csiControllerTestEnv {
 		},
 	}
 
+	objs := append(componentConfigObjects(), target)
+	objs = append(objs, extra...)
 	fakeClient := fake.NewClientBuilder().
 		WithInterceptorFuncs(fakeuid.Interceptor()).
 		WithScheme(scheme).
-		WithObjects(target).
+		WithObjects(objs...).
 		WithStatusSubresource(&v1alpha1.PillarVolumeState{}, &v1alpha1.PillarAgent{}).
 		Build()
 
@@ -371,7 +422,7 @@ func newCSIControllerTestEnvWithDialErr(t *testing.T, dialErr error) *csiControl
 	fakeClient := fake.NewClientBuilder().
 		WithInterceptorFuncs(fakeuid.Interceptor()).
 		WithScheme(scheme).
-		WithObjects(target).
+		WithObjects(append(componentConfigObjects(), target)...).
 		WithStatusSubresource(&v1alpha1.PillarVolumeState{}, &v1alpha1.PillarAgent{}).
 		Build()
 
@@ -405,8 +456,9 @@ func seedCSINodeForNVMeOF(ctx context.Context, t *testing.T, k8sClient client.Cl
 	}
 }
 
-// baseCSICreateVolumeRequest returns a valid CreateVolumeRequest for
-// "storage-node-1" (the seeded PillarAgent) with a 1 GiB capacity.
+// baseCSICreateVolumeRequest returns a valid CreateVolumeRequest from a
+// hand-written StorageClass naming the seeded ZFS store (hosted by
+// "storage-node-1") and NVMe-oF protocol, with a 1 GiB capacity.
 func baseCSICreateVolumeRequest() *csipb.CreateVolumeRequest {
 	return &csipb.CreateVolumeRequest{
 		Name: "pvc-component-test",
@@ -424,10 +476,8 @@ func baseCSICreateVolumeRequest() *csipb.CreateVolumeRequest {
 			RequiredBytes: 1 << 30, // 1 GiB
 		},
 		Parameters: map[string]string{
-			"pillar-csi.bhyoo.com/agent":         "storage-node-1",
-			"pillar-csi.bhyoo.com/backend-type":  "zfs-zvol",
-			"pillar-csi.bhyoo.com/protocol-type": "nvmeof-tcp",
-			"pillar-csi.bhyoo.com/store":         "tank",
+			compParamStoreRef:    compStoreName,
+			compParamProtocolRef: compProtocolName,
 		},
 	}
 }
@@ -643,15 +693,15 @@ func TestCSIController_CreateVolume_MissingName(t *testing.T) {
 // TestCSIController_CreateVolume_TargetNotFound
 // ─────────────────────────────────────────────────────────────────────────────.
 
-// TestCSIController_CreateVolume_TargetNotFound verifies that referencing a
-// non-existent PillarAgent returns NotFound.
+// TestCSIController_CreateVolume_TargetNotFound verifies that a PillarStore
+// whose agentRef names a non-existent PillarAgent returns NotFound.
 func TestCSIController_CreateVolume_TargetNotFound(t *testing.T) {
 	t.Parallel()
-	env := newCSIControllerTestEnv(t)
+	env := newCSIControllerTestEnv(t, compZFSStore("orphan-store", "does-not-exist"))
 	ctx := context.Background()
 
 	req := baseCSICreateVolumeRequest()
-	req.Parameters["pillar-csi.bhyoo.com/agent"] = "does-not-exist"
+	req.Parameters[compParamStoreRef] = "orphan-store"
 
 	_, err := env.srv.CreateVolume(ctx, req)
 	if err == nil {
@@ -667,8 +717,9 @@ func TestCSIController_CreateVolume_TargetNotFound(t *testing.T) {
 // TestCSIController_CreateVolume_MissingParams
 // ─────────────────────────────────────────────────────────────────────────────.
 
-// TestCSIController_CreateVolume_MissingParams verifies that missing required
-// StorageClass parameters are rejected with InvalidArgument.
+// TestCSIController_CreateVolume_MissingParams verifies that a hand-written
+// StorageClass missing either identity reference (store-ref / protocol-ref)
+// is rejected with InvalidArgument.
 func TestCSIController_CreateVolume_MissingParams(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -677,9 +728,8 @@ func TestCSIController_CreateVolume_MissingParams(t *testing.T) {
 		name        string
 		removeParam string
 	}{
-		{"missing target", "pillar-csi.bhyoo.com/agent"},
-		{"missing backend-type", "pillar-csi.bhyoo.com/backend-type"},
-		{"missing protocol-type", "pillar-csi.bhyoo.com/protocol-type"},
+		{"missing store-ref", compParamStoreRef},
+		{"missing protocol-ref", compParamProtocolRef},
 	}
 
 	for _, tc := range tests {
@@ -1257,86 +1307,66 @@ func TestCSIController_GetCapabilities(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// TestCSIController_CreateVolume_ACLToggle
+// TestCSIController_CreateVolume_ACL
 // ─────────────────────────────────────────────────────────────────────────────.
 
-// TestCSIController_CreateVolume_ACLDisabled verifies that the controller
-// passes AclEnabled=false to agent.ExportVolume when the StorageClass
-// parameter "pillar-csi.bhyoo.com/acl-enabled" is set to "false".
+// TestCSIController_CreateVolume_ACL verifies that the controller passes the
+// referenced PillarProtocol's spec.protocol.nvmeofTcp.acl to
+// agent.ExportVolume as AclEnabled, and that an unset acl defaults to false
+// (the default on every layer).
 //
-// This corresponds to PillarProtocol.spec.nvmeofTcp.acl = false, which tells
-// the agent to set attr_allow_any_host=1 so any initiator may connect without
-// an explicit AllowInitiator call.
-func TestCSIController_CreateVolume_ACLDisabled(t *testing.T) {
+// A false acl tells the agent to set attr_allow_any_host=1 so any initiator
+// may connect without an explicit AllowInitiator call.
+func TestCSIController_CreateVolume_ACL(t *testing.T) {
 	t.Parallel()
-	env := newCSIControllerTestEnv(t)
-	ctx := context.Background()
 
-	var capturedExportReq *agentv1.ExportVolumeRequest
-	env.agent.exportVolumeFn = func(
-		_ context.Context, req *agentv1.ExportVolumeRequest,
-	) (*agentv1.ExportVolumeResponse, error) {
-		capturedExportReq = req
-		return &agentv1.ExportVolumeResponse{
-			ExportInfo: &agentv1.ExportInfo{
-				TargetId:  "nqn.2026-01.com.pillar-csi:acl-off-vol",
-				Address:   "192.168.1.10",
-				Port:      4420,
-				VolumeRef: "1",
-			},
-		}, nil
+	tests := []struct {
+		name     string
+		protocol *v1alpha1.PillarProtocol // nil: the seeded protocol with acl unset
+		want     bool
+	}{
+		{"acl true", compNVMeOFProtocol("nvme-acl-on", true), true},
+		{"acl false", compNVMeOFProtocol("nvme-acl-off", false), false},
+		{"acl unset defaults to false", nil, false},
 	}
 
-	req := baseCSICreateVolumeRequest()
-	req.Parameters["pillar-csi.bhyoo.com/acl-enabled"] = "false"
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			req := baseCSICreateVolumeRequest()
+			var env *csiControllerTestEnv
+			if tc.protocol != nil {
+				env = newCSIControllerTestEnv(t, tc.protocol)
+				req.Parameters[compParamProtocolRef] = tc.protocol.Name
+			} else {
+				env = newCSIControllerTestEnv(t)
+			}
 
-	_, err := env.srv.CreateVolume(ctx, req)
-	if err != nil {
-		t.Fatalf("CreateVolume: unexpected error: %v", err)
-	}
+			var capturedExportReq *agentv1.ExportVolumeRequest
+			env.agent.exportVolumeFn = func(
+				_ context.Context, req *agentv1.ExportVolumeRequest,
+			) (*agentv1.ExportVolumeResponse, error) {
+				capturedExportReq = req
+				return &agentv1.ExportVolumeResponse{
+					ExportInfo: &agentv1.ExportInfo{
+						TargetId:  "nqn.2026-01.com.pillar-csi:acl-vol",
+						Address:   "192.168.1.10",
+						Port:      4420,
+						VolumeRef: "1",
+					},
+				}, nil
+			}
 
-	if capturedExportReq == nil {
-		t.Fatal("agent.ExportVolume was not called")
-	}
-	if capturedExportReq.GetAclEnabled() {
-		t.Errorf("ExportVolumeRequest.AclEnabled = true, want false when acl-enabled param is %q",
-			"false")
-	}
-}
-
-// TestCSIController_CreateVolume_ACLEnabled_Default verifies that the
-// controller defaults to AclEnabled=true when the acl-enabled StorageClass
-// parameter is absent (maintaining backward compatibility).
-func TestCSIController_CreateVolume_ACLEnabled_Default(t *testing.T) {
-	t.Parallel()
-	env := newCSIControllerTestEnv(t)
-	ctx := context.Background()
-
-	var capturedExportReq *agentv1.ExportVolumeRequest
-	env.agent.exportVolumeFn = func(
-		_ context.Context, req *agentv1.ExportVolumeRequest,
-	) (*agentv1.ExportVolumeResponse, error) {
-		capturedExportReq = req
-		return &agentv1.ExportVolumeResponse{
-			ExportInfo: &agentv1.ExportInfo{
-				TargetId:  "nqn.2026-01.com.pillar-csi:acl-default-vol",
-				Address:   "192.168.1.10",
-				Port:      4420,
-				VolumeRef: "1",
-			},
-		}, nil
-	}
-
-	// Base request has no acl-enabled parameter — ACL should default to true.
-	_, err := env.srv.CreateVolume(ctx, baseCSICreateVolumeRequest())
-	if err != nil {
-		t.Fatalf("CreateVolume: unexpected error: %v", err)
-	}
-
-	if capturedExportReq == nil {
-		t.Fatal("agent.ExportVolume was not called")
-	}
-	if !capturedExportReq.GetAclEnabled() {
-		t.Errorf("ExportVolumeRequest.AclEnabled = false, want true (default) when acl-enabled param is absent")
+			_, err := env.srv.CreateVolume(context.Background(), req)
+			if err != nil {
+				t.Fatalf("CreateVolume: unexpected error: %v", err)
+			}
+			if capturedExportReq == nil {
+				t.Fatal("agent.ExportVolume was not called")
+			}
+			if got := capturedExportReq.GetAclEnabled(); got != tc.want {
+				t.Errorf("ExportVolumeRequest.AclEnabled = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

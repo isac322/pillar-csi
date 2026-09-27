@@ -44,11 +44,10 @@ const (
 // StorageClass from this binding.
 //
 // A StorageClass is immutable apart from allowVolumeExpansion, so a change to
-// reclaimPolicy, volumeBindingMode, or any pool, protocol or override field
-// that feeds the StorageClass parameters makes the controller delete and
-// re-create the StorageClass.  The change applies to volumes provisioned
-// afterwards; existing PersistentVolumes keep the parameters they were
-// provisioned with.
+// reclaimPolicy or volumeBindingMode makes the controller delete and re-create
+// the StorageClass.  Tunable overrides do not feed the StorageClass parameters
+// — they are resolved from live CRs at CreateVolume — so editing them never
+// forces a StorageClass recreation.
 type StorageClassTemplate struct {
 	// name is the name of the generated StorageClass.
 	// Defaults to the PillarStorageClass's own name when omitted.
@@ -74,42 +73,101 @@ type StorageClassTemplate struct {
 	AllowVolumeExpansion *bool `json:"allowVolumeExpansion,omitempty"`
 }
 
-// ZFSPropertyOverrides are ZFS dataset/zvol property overrides applied on top
-// of the pool-level defaults.
-type ZFSPropertyOverrides struct {
+// FilesystemConfig describes the filesystem axis: which filesystem the CSI
+// node creates on a new block volume and how it mounts it.  The same shape
+// is used at every layer that may set it — PillarStorageClass.spec.filesystem,
+// a hand-written StorageClass's pillar-csi.bhyoo.com/filesystem parameter and
+// the pillar-csi.bhyoo.com/filesystem PVC annotation.
+//
+// List fields use list semantics on every layer: omitted (absent or null)
+// inherits the value of the layer below, an explicit empty list [] clears it.
+type FilesystemConfig struct {
+	// fsType is the filesystem the node formats a new volume with when
+	// volumeMode is Filesystem.
+	// +optional
+	// +kubebuilder:validation:Enum=ext4;xfs
+	// +kubebuilder:default=ext4
+	FSType string `json:"fsType,omitempty"`
+
+	// mkfsOptions are additional mkfs arguments used when the node formats a
+	// new volume; a volume that already carries a filesystem is never
+	// reformatted.  Each element is one argv element (no shell); only
+	// filesystem tuning flags of the formatted type are accepted.
+	// A null/omitted value inherits the options of the layer below; an
+	// explicit empty list [] clears them.
+	// +optional
+	MkfsOptions *[]string `json:"mkfsOptions,omitempty"`
+
+	// mountOptions are the mount options the node applies when mounting a
+	// Filesystem-mode volume.  On a PillarStorageClass they are written to
+	// the generated Kubernetes StorageClass's mountOptions; a PVC annotation
+	// value overrides them for that volume.
+	// A null/omitted value inherits the options of the layer below; an
+	// explicit empty list [] clears them.
+	// +optional
+	MountOptions *[]string `json:"mountOptions,omitempty"`
+}
+
+// ZFSBackendOverrides holds the per-volume-tunable subset of
+// ZFSBackendConfig.  Structural placement fields (pool, parentDataset,
+// volumeType) are not part of this type and are rejected with their path by
+// the shared document decoder.
+type ZFSBackendOverrides struct {
 	// properties are arbitrary ZFS properties that override pool defaults
-	// (e.g. volblocksize, compression).
+	// (e.g. volblocksize, compression).  Entries merge key-wise onto the
+	// PillarStore's zfs.properties.
 	// +optional
 	Properties map[string]string `json:"properties,omitempty"`
 }
 
-// LVMOverrides holds per-binding overrides for LVM backend configuration.
-// These settings override the PillarStore-level LVM defaults for volumes
-// created through this specific binding.
-type LVMOverrides struct {
-	// provisioningMode overrides the LVM provisioning mode for this binding.
-	// Accepted values: "linear" (fully-allocated LV) or "thin"
-	// (thin-provisioned LV inside the backend's thin pool).
-	// When omitted, the PillarStore-level default is used.
+// LVMBackendOverrides holds the per-volume-tunable subset of
+// LVMBackendConfig.  Structural placement fields (volumeGroup, thinPool)
+// are not part of this type and are rejected with their path by the shared
+// document decoder.
+type LVMBackendOverrides struct {
+	// provisioningMode overrides the LVM provisioning mode for this volume or
+	// binding: "linear" (fully-allocated LV) or "thin" (thin-provisioned LV
+	// inside the backend's thin pool).  When omitted, the PillarStore-level
+	// value is used.
 	// +optional
 	// +kubebuilder:validation:Enum=linear;thin
 	ProvisioningMode LVMProvisioningMode `json:"provisioningMode,omitempty"`
 }
 
-// BackendOverrides holds per-binding overrides for backend configuration.
-// Only the field matching the pool's backend type is used.
+// BackendOverrides is the per-binding or per-volume override document for the
+// storage backend.  Exactly one member must be set, and it must match the
+// backend member configured on the referenced PillarStore.
+//
+// +kubebuilder:validation:XValidation:rule="(has(self.zfs) ? 1 : 0) + (has(self.lvm) ? 1 : 0) == 1",message="exactly one of zfs or lvm must be set"
 type BackendOverrides struct {
-	// zfs overrides ZFS-specific properties; used when the pool backend is
-	// zfs-zvol or zfs-dataset.
+	// zfs overrides ZFS-specific tunables; valid only when the store's
+	// backend is zfs.
 	// +optional
-	ZFS *ZFSPropertyOverrides `json:"zfs,omitempty"`
+	ZFS *ZFSBackendOverrides `json:"zfs,omitempty"`
 
-	// lvm overrides LVM-specific parameters; used when the pool backend is lvm-lv.
+	// lvm overrides LVM-specific tunables; valid only when the store's
+	// backend is lvm.
 	// +optional
-	LVM *LVMOverrides `json:"lvm,omitempty"`
+	LVM *LVMBackendOverrides `json:"lvm,omitempty"`
 }
 
-// NVMeOFTCPOverrides holds per-binding NVMe-oF/TCP parameter overrides.
+// Kind returns the selected override member name ("zfs" or "lvm"), or "" when
+// the union is empty.
+func (b BackendOverrides) Kind() string {
+	switch {
+	case b.ZFS != nil:
+		return "zfs"
+	case b.LVM != nil:
+		return "lvm"
+	default:
+		return ""
+	}
+}
+
+// NVMeOFTCPOverrides holds the per-volume-tunable subset of NVMeOFTCPConfig.
+// Structural fields (port — which listener the export lives on — and acl —
+// the security policy anchor) are not part of this type and are rejected with
+// their path by the shared document decoder.
 type NVMeOFTCPOverrides struct {
 	// maxQueueSize overrides the protocol-level maxQueueSize (the initiator's
 	// fabrics queue_size; the kernel accepts 16-1024).
@@ -124,68 +182,53 @@ type NVMeOFTCPOverrides struct {
 	// +optional
 	// +kubebuilder:validation:Minimum=1024
 	InCapsuleDataSize *int32 `json:"inCapsuleDataSize,omitempty"`
-}
 
-// ISCSIOverrides holds per-binding iSCSI parameter overrides.
-type ISCSIOverrides struct {
-	// loginTimeout overrides the protocol-level loginTimeout.
+	// ctrlLossTmo overrides the protocol-level ctrlLossTmo (seconds before
+	// declaring a target permanently lost).
 	// +optional
 	// +kubebuilder:validation:Minimum=0
-	LoginTimeout *int32 `json:"loginTimeout,omitempty"`
+	CtrlLossTmo *int32 `json:"ctrlLossTmo,omitempty"`
 
-	// replacementTimeout overrides the protocol-level replacementTimeout.
+	// reconnectDelay overrides the protocol-level reconnectDelay (seconds
+	// between reconnect attempts).
 	// +optional
 	// +kubebuilder:validation:Minimum=0
-	ReplacementTimeout *int32 `json:"replacementTimeout,omitempty"`
+	ReconnectDelay *int32 `json:"reconnectDelay,omitempty"`
 }
 
-// ProtocolOverrides holds per-binding overrides for protocol parameters.
-// Only the field matching the protocol type is consulted.
+// ProtocolOverrides is the per-binding or per-volume override document for
+// the transport protocol.  Exactly one member must be set, and it must match
+// the protocol member configured on the referenced PillarProtocol.
+//
+// +kubebuilder:validation:XValidation:rule="has(self.nvmeofTcp)",message="exactly one protocol member must be set (supported: nvmeofTcp)"
 type ProtocolOverrides struct {
-	// nvmeofTcp overrides NVMe-oF/TCP parameters.
+	// nvmeofTcp overrides NVMe-oF/TCP tunables; valid only when the
+	// protocol's member is nvmeofTcp.
 	// +optional
 	NVMeOFTCP *NVMeOFTCPOverrides `json:"nvmeofTcp,omitempty"`
-
-	// iscsi overrides iSCSI parameters.
-	// +optional
-	ISCSI *ISCSIOverrides `json:"iscsi,omitempty"`
-
-	// smb overrides SMB/CIFS parameters.
-	// +optional
-	SMB *SMBOverrides `json:"smb,omitempty"`
 }
 
-// SMBOverrides holds per-binding SMB parameter overrides.
-type SMBOverrides struct {
-	// port overrides the protocol-level SMB port.
-	// +optional
-	// +kubebuilder:validation:Minimum=1
-	// +kubebuilder:validation:Maximum=65535
-	Port *int32 `json:"port,omitempty"`
+// Kind returns the selected override member name ("nvmeofTcp"), or "" when
+// the union is empty.
+func (p ProtocolOverrides) Kind() string {
+	if p.NVMeOFTCP != nil {
+		return "nvmeofTcp"
+	}
+	return ""
 }
 
-// StorageClassOverrides is the optional layer of per-binding parameter overrides
-// applied on top of pool and protocol defaults.
+// StorageClassOverrides is the optional layer of per-binding parameter
+// overrides applied on top of the store and protocol defaults.
 type StorageClassOverrides struct {
-	// backend contains backend-specific parameter overrides.
+	// backend contains backend tunable overrides (same shape as the
+	// pillar-csi.bhyoo.com/backend PVC annotation document).
 	// +optional
 	Backend *BackendOverrides `json:"backend,omitempty"`
 
-	// protocol contains protocol-specific parameter overrides.
+	// protocol contains protocol tunable overrides (same shape as the
+	// pillar-csi.bhyoo.com/protocol PVC annotation document).
 	// +optional
 	Protocol *ProtocolOverrides `json:"protocol,omitempty"`
-
-	// fsType overrides the protocol-level fsType for this binding.
-	// Only relevant for block protocols with volumeMode: Filesystem.
-	// +optional
-	// +kubebuilder:validation:Enum=ext4;xfs
-	FSType string `json:"fsType,omitempty"`
-
-	// mkfsOptions overrides the protocol-level mkfsOptions for this binding.
-	// Each element is one mkfs argv element (no shell); only filesystem
-	// tuning flags are accepted.  A PVC fs-override mkfsOptions replaces it.
-	// +optional
-	MkfsOptions []string `json:"mkfsOptions,omitempty"`
 }
 
 // PillarStorageClassSpec defines the desired state of PillarStorageClass.
@@ -206,8 +249,13 @@ type PillarStorageClassSpec struct {
 	// +optional
 	StorageClass StorageClassTemplate `json:"storageClass,omitempty"`
 
+	// filesystem configures the filesystem axis for volumes of this binding:
+	// which filesystem the node formats and which mount options it applies.
+	// +optional
+	Filesystem *FilesystemConfig `json:"filesystem,omitempty"`
+
 	// overrides provides a fine-grained parameter layer on top of the
-	// referenced pool and protocol defaults.
+	// referenced store and protocol defaults.
 	// +optional
 	Overrides *StorageClassOverrides `json:"overrides,omitempty"`
 }
@@ -224,7 +272,7 @@ type PillarStorageClassStatus struct {
 	// - "StoreReady"           – the referenced PillarStore is in Ready state.
 	// - "ProtocolValid"       – the referenced PillarProtocol exists and is valid.
 	// - "Compatible"          – the pool backend and protocol are compatible
-	//                           (e.g. block backend cannot be combined with NFS).
+	//                           (e.g. block backend cannot be combined with a file protocol).
 	// - "StorageClassCreated" – the Kubernetes StorageClass has been created.
 	// - "Ready"               – all checks pass; the binding is operational.
 	//
@@ -245,23 +293,15 @@ type PillarStorageClassStatus struct {
 
 // PillarStorageClass combines a PillarStore and a PillarProtocol to create a
 // Kubernetes StorageClass.  A validation webhook rejects incompatible
-// backend/protocol combinations (e.g. block backend with NFS).
+// backend/protocol combinations (e.g. a block backend with a file protocol).
 // Parameter overrides allow fine-tuning per binding without changing the
-// shared pool or protocol resources.
+// shared store or protocol resources.
 type PillarStorageClass struct {
-	metav1.TypeMeta `json:",inline"`
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	// metadata is standard object metadata.
-	// +optional
-	metav1.ObjectMeta `json:"metadata,omitzero"`
-
-	// spec defines the desired state of PillarStorageClass.
-	// +required
-	Spec PillarStorageClassSpec `json:"spec"`
-
-	// status reflects the reconciler-observed state of this binding.
-	// +optional
-	Status PillarStorageClassStatus `json:"status,omitzero"`
+	Spec   PillarStorageClassSpec   `json:"spec,omitempty"`
+	Status PillarStorageClassStatus `json:"status,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -269,7 +309,7 @@ type PillarStorageClass struct {
 // PillarStorageClassList contains a list of PillarStorageClass.
 type PillarStorageClassList struct {
 	metav1.TypeMeta `json:",inline"`
-	metav1.ListMeta `json:"metadata,omitzero"`
+	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []PillarStorageClass `json:"items"`
 }
 

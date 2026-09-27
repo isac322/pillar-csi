@@ -2,7 +2,7 @@
   "meta": {
     "source": "docs/E2E-TESTCASES.md",
     "claimed_total": 437,
-    "actual_total": 718,
+    "actual_total": 692,
     "in_scope": 615,
     "type_dist_scope": {
       "A": 328,
@@ -198,7 +198,7 @@
       "type": "A",
       "in_437_scope": true,
       "test_func": "TestCSIController_CreateVolume_PillarAgentNotFound",
-      "description": "Parameters[\"target\"]이 존재하지 않는 PillarAgent을 참조하면 NotFound 반환"
+      "description": "PillarStore의 agentRef가 존재하지 않는 PillarAgent을 참조하면 NotFound 반환"
     },
     {
       "tc_id": "E1.8-3",
@@ -278,7 +278,7 @@
       "type": "A",
       "in_437_scope": true,
       "test_func": "TestCSIController_CreateVolume_PVCAnnotation_StructuralFieldBlocked",
-      "description": "구조적 필드(`zfs.pool`)를 어노테이션으로 오버라이드하면 InvalidArgument 반환"
+      "description": "구조적 필드(`zfs.pool`)를 PVC 백엔드 문서로 오버라이드하면 InvalidArgument 반환"
     },
     {
       "tc_id": "E1.10-3",
@@ -297,8 +297,8 @@
       "category": "E1: 볼륨 라이프사이클 — CreateVolume / DeleteVolume",
       "type": "A",
       "in_437_scope": true,
-      "test_func": "TestCSIController_CreateVolume_PVCAnnotation_FlatKeyOverride",
-      "description": "저수준 어노테이션(`pillar-csi.bhyoo.com/param.zfs-prop.volblocksize`)이 반영"
+      "test_func": "TestCSIController_CreateVolume_PVCAnnotation_RemovedKeysRejected",
+      "description": "제거된 PVC 어노테이션 키(`pillar-csi.bhyoo.com/param.zfs-prop.volblocksize`, `backend-override`, `protocol-override`, `fs-override`)는 무시되지 않고 거부"
     },
     {
       "tc_id": "E1.11-1",
@@ -318,7 +318,7 @@
       "type": "A",
       "in_437_scope": true,
       "test_func": "TestCSIController_CreateVolume_VolumeID_ZFSParentDataset",
-      "description": "ZFS parent dataset 파라미터 설정 시 agent-vol-id에 반영"
+      "description": "PillarStore `zfs.parentDataset`이 agent BackendParams로 전달되고 VolumeId에는 포함되지 않음"
     },
     {
       "tc_id": "E1.11-3",
@@ -337,8 +337,8 @@
       "category": "E1: 볼륨 라이프사이클 — CreateVolume / DeleteVolume",
       "type": "A",
       "in_437_scope": true,
-      "test_func": "TestCSIController_CreateVolume_MissingTargetParam",
-      "description": "StorageClass parameter에 target 키 없으면 InvalidArgument"
+      "test_func": "TestCSIController_CreateVolume_MissingStoreRefParam",
+      "description": "직접 작성한 StorageClass에 `pillar-csi.bhyoo.com/store-ref`가 없으면 InvalidArgument"
     },
     {
       "tc_id": "E1.11-5",
@@ -347,8 +347,8 @@
       "category": "E1: 볼륨 라이프사이클 — CreateVolume / DeleteVolume",
       "type": "A",
       "in_437_scope": true,
-      "test_func": "TestCSIController_CreateVolume_MissingBackendTypeParam",
-      "description": "StorageClass parameter에 backend-type 키 없으면 InvalidArgument"
+      "test_func": "TestCSIController_CreateVolume_LegacyFlatParamRejected",
+      "description": "제거된 평면 StorageClass 파라미터(`backend-type`, `protocol-type`, `agent`, `store`, `zfs-prop.*`, `lvm-mode`, `acl-enabled`)는 무시되지 않고 거부"
     },
     {
       "tc_id": "E1.11-6",
@@ -357,8 +357,8 @@
       "category": "E1: 볼륨 라이프사이클 — CreateVolume / DeleteVolume",
       "type": "A",
       "in_437_scope": true,
-      "test_func": "TestCSIController_CreateVolume_MissingProtocolTypeParam",
-      "description": "StorageClass parameter에 protocol-type 키 없으면 InvalidArgument"
+      "test_func": "TestCSIController_CreateVolume_MissingProtocolRefParam",
+      "description": "직접 작성한 StorageClass에 `pillar-csi.bhyoo.com/protocol-ref`가 없으면 InvalidArgument"
     },
     {
       "tc_id": "E2",
@@ -377,8 +377,8 @@
       "category": "E2: CSI Controller — ControllerPublish / ControllerUnpublish / ControllerExpandVolume",
       "type": "A",
       "in_437_scope": true,
-      "test_func": "TestCSIController_ControllerPublishVolume_ISCSIInitiatorFromCSINodeAnnotations",
-      "description": "iSCSI 볼륨 publish 시 controller가 `CSINode` annotation에서 initiator IQN을 해석해 AllowInitiator 호출"
+      "test_func": "TestCSIController_ControllerPublishVolume_NQNFromCSINodeAnnotations",
+      "description": "NVMe-oF publish에서 `NodeId=worker-2`가 `CSINode` annotation의 host NQN으로 해석되어 AllowInitiator에 전달됨"
     },
     {
       "tc_id": "E2.1-4",
@@ -467,8 +467,8 @@
       "category": "E2: CSI Controller — ControllerPublish / ControllerUnpublish / ControllerExpandVolume",
       "type": "A",
       "in_437_scope": true,
-      "test_func": "TestCSIController_ControllerPublishVolume_ISCSIInitiatorFromCSINodeAnnotations",
-      "description": "iSCSI publish에서 `NodeId=worker-2`가 `CSINode` annotation의 initiator IQN으로 해석되어 AllowInitiator에 전달됨"
+      "test_func": "TestCSIController_ControllerPublishVolume_NQNFromCSINodeAnnotations",
+      "description": "NVMe-oF publish에서 `NodeId=worker-2`가 `CSINode` annotation의 host NQN으로 해석되어 AllowInitiator에 전달됨"
     },
     {
       "tc_id": "E2.5-3",
@@ -578,7 +578,7 @@
       "type": "A",
       "in_437_scope": true,
       "test_func": "TestCSIController_CreateVolume_PillarAgentNotFound",
-      "description": "참조된 PillarAgent이 존재하지 않으면 NotFound 반환"
+      "description": "PillarStore의 agentRef가 존재하지 않는 PillarAgent을 참조하면 NotFound 반환"
     },
     {
       "tc_id": "E5",
@@ -1048,7 +1048,7 @@
       "type": "C",
       "in_437_scope": true,
       "test_func": "TestPillarStoreWebhook_ValidCreate_ZFSZvol",
-      "description": "`backend.type=\"zfs-zvol\"` + ZFS 설정으로 ValidateCreate 통과"
+      "description": "`backend.zfs` 멤버(zvol)로 ValidateCreate 통과"
     },
     {
       "tc_id": "E20.1.2",
@@ -1057,8 +1057,8 @@
       "category": "E20: PillarStore CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarStoreWebhook_ValidCreate_Dir",
-      "description": "`backend.type=\"dir\"`로 ValidateCreate 통과 (ZFS 설정 불필요)"
+      "test_func": "TestPillarStoreWebhook_ValidCreate_LVM",
+      "description": "`backend.lvm` 멤버로 ValidateCreate 통과 (ZFS 설정 불필요)"
     },
     {
       "tc_id": "E20.1.3",
@@ -1097,8 +1097,8 @@
       "category": "E20: PillarStore CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarStoreCRD_InvalidCreate_InvalidBackendType",
-      "description": "`spec.backend.type`에 열거형 외 값 설정 시 거부"
+      "test_func": "TestPillarStoreCRD_InvalidCreate_RemovedBackendMember",
+      "description": "제거된 백엔드 변형(`dir`, `zfs-dataset`)만 가진 `spec.backend`는 거부"
     },
     {
       "tc_id": "E20.2.3",
@@ -1107,8 +1107,8 @@
       "category": "E20: PillarStore CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarStoreCRD_InvalidCreate_EmptyBackendType",
-      "description": "`spec.backend.type`이 빈 문자열인 경우 거부"
+      "test_func": "TestPillarStoreCRD_InvalidCreate_EmptyBackend",
+      "description": "`spec.backend`에 멤버가 없는 경우 거부"
     },
     {
       "tc_id": "E20.3.1",
@@ -1127,8 +1127,8 @@
       "category": "E20: PillarStore CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarStoreWebhook_ImmutableUpdate_BackendTypeChange",
-      "description": "`spec.backend.type` 변경 시 거부 — 기존 볼륨의 드라이버 변경 방지"
+      "test_func": "TestPillarStoreWebhook_ImmutableUpdate_BackendMemberChange",
+      "description": "`spec.backend` 멤버 변경 시 거부 — 기존 볼륨의 드라이버 변경 방지"
     },
     {
       "tc_id": "E20.3.3",
@@ -1138,7 +1138,7 @@
       "type": "C",
       "in_437_scope": true,
       "test_func": "TestPillarStoreWebhook_ImmutableUpdate_BothFieldsChange",
-      "description": "`spec.agentRef`와 `spec.backend.type` 동시 변경 시 두 오류 모두 반환"
+      "description": "`spec.agentRef`와 `spec.backend` 멤버 동시 변경 시 두 오류 모두 반환"
     },
     {
       "tc_id": "E20.3.4",
@@ -1217,8 +1217,8 @@
       "category": "E20: PillarStore CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarStoreController_PoolDiscovered_True_DirBackend_NoNameRequired",
-      "description": "backend.type=\"dir\"` 백엔드는 명시적 풀 이름 없이 `discoveredPools`에 항목만 있으면 `PoolDiscovered=True"
+      "test_func": "TestPillarStoreController_PoolDiscovered_True_LVMVolumeGroupMatch",
+      "description": "`lvm` 멤버 PillarStore의 `lvm.volumeGroup`이 `discoveredPools`에 있으면 `PoolDiscovered=True`"
     },
     {
       "tc_id": "E20.6.1",
@@ -1238,7 +1238,7 @@
       "type": "C",
       "in_437_scope": true,
       "test_func": "TestPillarStoreController_BackendSupported_True_BackendInCapabilities",
-      "description": "capabilities.backends`에 해당 `backend.type`이 있으면 `BackendSupported=True"
+      "description": "`capabilities.backends`에 스토어 백엔드(`spec.backend.Kind()`)가 있으면 `BackendSupported=True`"
     },
     {
       "tc_id": "E20.6.3",
@@ -1248,7 +1248,7 @@
       "type": "C",
       "in_437_scope": true,
       "test_func": "TestPillarStoreController_BackendSupported_False_BackendNotInCapabilities",
-      "description": "capabilities.backends`에 해당 `backend.type`이 없으면 `BackendSupported=False/BackendNotSupported"
+      "description": "`capabilities.backends`에 스토어 백엔드가 없으면 `BackendSupported=False/BackendNotSupported`"
     },
     {
       "tc_id": "E20.7.1",
@@ -1397,8 +1397,8 @@
       "category": "E22: 비호환 백엔드-프로토콜 오류 시나리오 (Incompatible Backend-Protocol Error Scenarios)",
       "type": "A",
       "in_437_scope": true,
-      "test_func": "TestCSIProtocol_CreateVolume_ISCSIUnimplemented",
-      "description": "`protocol-type=\"iscsi\"`로 CreateVolume 호출 시 agent.ExportVolume이 `codes.Unimplemented`(\"only NVMe-oF TCP is supported\") 반환 → CSI 컨트롤러가 비-OK 상태 전파"
+      "test_func": "TestCSIProtocol_CreateVolume_ProtocolDoc_ISCSIRejected",
+      "description": "프로토콜 문서가 제거된 `iscsi` 멤버를 선택하면 거부"
     },
     {
       "tc_id": "E22.172",
@@ -1407,8 +1407,8 @@
       "category": "E22: 비호환 백엔드-프로토콜 오류 시나리오 (Incompatible Backend-Protocol Error Scenarios)",
       "type": "A",
       "in_437_scope": true,
-      "test_func": "TestCSIProtocol_CreateVolume_NFSUnimplemented",
-      "description": "`protocol-type=\"nfs\"`로 CreateVolume 호출 시 agent.ExportVolume이 `codes.Unimplemented` 반환"
+      "test_func": "TestCSIProtocol_CreateVolume_ProtocolDoc_NFSRejected",
+      "description": "프로토콜 문서가 제거된 `nfs` 멤버를 선택하면 거부"
     },
     {
       "tc_id": "E22.173",
@@ -1417,8 +1417,8 @@
       "category": "E22: 비호환 백엔드-프로토콜 오류 시나리오 (Incompatible Backend-Protocol Error Scenarios)",
       "type": "A",
       "in_437_scope": true,
-      "test_func": "TestCSIProtocol_CreateVolume_UnknownProtocol_MapsToUnspecified",
-      "description": "`protocol-type=\"smb-v3-unknown\"` — 알 수 없는 프로토콜 문자열이 `PROTOCOL_TYPE_UNSPECIFIED(0)`으로 매핑되어 agent에 전달됨 → agent가 Unimplemented 반환"
+      "test_func": "TestCSIProtocol_CreateVolume_LegacyProtocolTypeParamRejected",
+      "description": "제거된 평면 키 `pillar-csi.bhyoo.com/protocol-type`(값 `smb-v3-unknown`)을 지정하면 거부"
     },
     {
       "tc_id": "E22.174",
@@ -1427,8 +1427,8 @@
       "category": "E22: 비호환 백엔드-프로토콜 오류 시나리오 (Incompatible Backend-Protocol Error Scenarios)",
       "type": "A",
       "in_437_scope": true,
-      "test_func": "TestCSIProtocol_ControllerPublish_ISCSIUnimplemented",
-      "description": "ControllerPublishVolume에서 `protocol-type=\\\"iscsi\\\"` 볼륨 ID를 가진 PillarVolumeState CRD 존재 시 agent.AllowInitiator가 `codes.Unimplemented` 반환 → ControllerPublishVolume이 오류 전파"
+      "test_func": "TestCSIProtocol_CreateVolume_ProtocolDoc_StructuralFieldRejected",
+      "description": "프로토콜 문서가 구조적 필드 `nvmeofTcp.acl`을 지정하면 거부"
     },
     {
       "tc_id": "E22.175",
@@ -1497,8 +1497,8 @@
       "category": "E22: 비호환 백엔드-프로토콜 오류 시나리오 (Incompatible Backend-Protocol Error Scenarios)",
       "type": "A",
       "in_437_scope": true,
-      "test_func": "TestCSIProtocol_CreateVolume_UnknownBackendType_MapsToUnspecified",
-      "description": "`backend-type=\"fuse-experimental\"` — 알 수 없는 백엔드 타입 문자열이 `BACKEND_TYPE_UNSPECIFIED(0)`으로 매핑되어 `agent.CreateVolume` 요청에 전달됨"
+      "test_func": "TestCSIProtocol_CreateVolume_BackendDoc_RemovedVariantRejected",
+      "description": "백엔드 문서가 제거된 변형(`zfs-dataset`, `dir`)을 선택하면 거부"
     },
     {
       "tc_id": "E22.182",
@@ -1507,8 +1507,8 @@
       "category": "E22: 비호환 백엔드-프로토콜 오류 시나리오 (Incompatible Backend-Protocol Error Scenarios)",
       "type": "A",
       "in_437_scope": true,
-      "test_func": "TestCSIProtocol_CreateVolume_LVMBackendUnimplemented",
-      "description": "`backend-type=\"lvm\"`으로 CreateVolume 호출 시 agent.CreateVolume이 `codes.Unimplemented` 반환 — 현재 단일 ZFS 스토리지 노드에서 LVM 백엔드를 지원하지 않는 시나리오"
+      "test_func": "TestCSIProtocol_CreateVolume_BackendDoc_MemberMismatchRejected",
+      "description": "ZFS 스토어에 `lvm` 백엔드 문서를 지정하면 거부"
     },
     {
       "tc_id": "E23",
@@ -1528,7 +1528,7 @@
       "type": "C",
       "in_437_scope": true,
       "test_func": "TestPillarProtocolWebhook_ValidCreate_NVMeOFTCP",
-      "description": "`spec.type=\"nvmeof-tcp\"` 스펙으로 ValidateCreate 통과 (현재 구현은 항상 허용)"
+      "description": "`spec.protocol.nvmeofTcp` 스펙으로 ValidateCreate 통과"
     },
     {
       "tc_id": "E23.1.2",
@@ -1537,8 +1537,8 @@
       "category": "E23: PillarProtocol CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarProtocolWebhook_ValidCreate_ISCSI",
-      "description": "`spec.type=\"iscsi\"` 스펙으로 ValidateCreate 통과"
+      "test_func": "TestPillarProtocolWebhook_InvalidCreate_EmptyProtocol",
+      "description": "멤버가 없는 `spec.protocol`은 ValidateCreate가 거부"
     },
     {
       "tc_id": "E23.1.3",
@@ -1547,8 +1547,8 @@
       "category": "E23: PillarProtocol CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarProtocolWebhook_ValidCreate_NFS",
-      "description": "`spec.type=\"nfs\"` 스펙으로 ValidateCreate 통과"
+      "test_func": "TestPillarProtocolCRD_InvalidCreate_RemovedProtocolMember",
+      "description": "제거된 프로토콜 변형(`iscsi`, `nfs`)만 가진 PillarProtocol은 API 서버가 거부"
     },
     {
       "tc_id": "E23.1.4",
@@ -1577,8 +1577,8 @@
       "category": "E23: PillarProtocol CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarProtocolCRD_InvalidCreate_UnknownType",
-      "description": "`spec.type`에 열거형 외 값 설정 시 API 서버가 HTTP 422로 거부"
+      "test_func": "TestPillarProtocolCRD_InvalidCreate_EmptyProtocol",
+      "description": "`spec.protocol`에 멤버가 없으면 API 서버가 HTTP 422로 거부"
     },
     {
       "tc_id": "E23.2.2",
@@ -1588,7 +1588,7 @@
       "type": "C",
       "in_437_scope": true,
       "test_func": "TestPillarProtocolCRD_InvalidCreate_NVMeOFTCPPortTooLow",
-      "description": "`spec.nvmeofTcp.port=0` (최솟값 미달) 시 API 서버가 거부"
+      "description": "`spec.protocol.nvmeofTcp.port=0` (최솟값 미달) 시 API 서버가 거부"
     },
     {
       "tc_id": "E23.2.3",
@@ -1598,7 +1598,7 @@
       "type": "C",
       "in_437_scope": true,
       "test_func": "TestPillarProtocolCRD_InvalidCreate_NVMeOFTCPPortTooHigh",
-      "description": "`spec.nvmeofTcp.port=65536` (최댓값 초과) 시 API 서버가 거부"
+      "description": "`spec.protocol.nvmeofTcp.port=65536` (최댓값 초과) 시 API 서버가 거부"
     },
     {
       "tc_id": "E23.2.4",
@@ -1607,8 +1607,8 @@
       "category": "E23: PillarProtocol CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarProtocolCRD_InvalidCreate_InvalidFSType",
-      "description": "`spec.fsType`에 허용 외 값(`ext4`, `xfs` 외) 설정 시 거부"
+      "test_func": "TestPillarProtocolCRD_InvalidCreate_MaxQueueSizeOutOfRange",
+      "description": "`spec.protocol.nvmeofTcp.maxQueueSize`가 커널 허용 범위(16-1024) 밖이면 거부"
     },
     {
       "tc_id": "E23.3.1",
@@ -1617,8 +1617,8 @@
       "category": "E23: PillarProtocol CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarProtocolWebhook_ImmutableUpdate_TypeChange_NVMeToISCSI",
-      "description": "`spec.type=\"nvmeof-tcp\"` → `\"iscsi\"` 변경 시 `field.Forbidden` 오류 반환"
+      "test_func": "TestPillarProtocolWebhook_ImmutableUpdate_MemberRemoved",
+      "description": "`spec.protocol.nvmeofTcp` 멤버를 제거하는 업데이트는 `field.Forbidden` 오류 반환"
     },
     {
       "tc_id": "E23.3.2",
@@ -1627,8 +1627,8 @@
       "category": "E23: PillarProtocol CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarProtocolWebhook_ImmutableUpdate_TypeChange_ISCSIToNFS",
-      "description": "`spec.type=\"iscsi\"` → `\"nfs\"` 변경 시 거부"
+      "test_func": "TestPillarProtocolWebhook_Update_MaxQueueSizeOutOfRange",
+      "description": "업데이트에서도 `nvmeofTcp` 범위 검사 수행 — `maxQueueSize=2048` 거부"
     },
     {
       "tc_id": "E23.3.3",
@@ -1638,7 +1638,7 @@
       "type": "C",
       "in_437_scope": true,
       "test_func": "TestPillarProtocolWebhook_MutableUpdate_PortChange",
-      "description": "`spec.nvmeofTcp.port` 변경은 허용 (식별 필드 아님)"
+      "description": "`spec.protocol.nvmeofTcp.port` 변경은 허용 (멤버 변경 아님)"
     },
     {
       "tc_id": "E23.4.1",
@@ -1668,7 +1668,7 @@
       "type": "C",
       "in_437_scope": true,
       "test_func": "TestPillarProtocolController_Ready_Message_ContainsType",
-      "description": "`Ready` 조건 메시지에 `spec.type` 값이 포함됨"
+      "description": "`Ready` 조건 메시지에 프로토콜 멤버(`spec.protocol.Kind()`) 값이 포함됨"
     },
     {
       "tc_id": "E23.4.4",
@@ -2208,7 +2208,7 @@
       "type": "C",
       "in_437_scope": true,
       "test_func": "TestPillarStorageClassDefaulter_AllowVolumeExpansion_True_ZFSZvol",
-      "description": "`backend.type=\"zfs-zvol\"` 풀 참조 시 `allowVolumeExpansion=true` 자동 설정"
+      "description": "`backend.zfs` 스토어 참조 시 `allowVolumeExpansion=true` 자동 설정"
     },
     {
       "tc_id": "E25.4.2",
@@ -2218,7 +2218,7 @@
       "type": "C",
       "in_437_scope": true,
       "test_func": "TestPillarStorageClassDefaulter_AllowVolumeExpansion_True_LVMLV",
-      "description": "`backend.type=\"lvm-lv\"` 풀 참조 시 `allowVolumeExpansion=true` 자동 설정"
+      "description": "`backend.lvm` 스토어 참조 시 `allowVolumeExpansion=true` 자동 설정"
     },
     {
       "tc_id": "E25.4.3",
@@ -2227,8 +2227,8 @@
       "category": "E25: PillarStorageClass CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarStorageClassDefaulter_AllowVolumeExpansion_False_ZFSDataset",
-      "description": "`backend.type=\"zfs-dataset\"` 풀 참조 시 `allowVolumeExpansion=false` 자동 설정"
+      "test_func": "TestPillarStorageClassDefaulter_AllowVolumeExpansion_True_LVMThinPool",
+      "description": "thin pool을 선언한 `backend.lvm` 스토어(thin 모드) 참조 시에도 `allowVolumeExpansion=true` 자동 설정"
     },
     {
       "tc_id": "E25.4.4",
@@ -2237,8 +2237,8 @@
       "category": "E25: PillarStorageClass CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarStorageClassDefaulter_AllowVolumeExpansion_False_Dir",
-      "description": "`backend.type=\"dir\"` 풀 참조 시 `allowVolumeExpansion=false` 자동 설정"
+      "test_func": "TestPillarStorageClassDefaulter_AllowVolumeExpansion_NotOverridden_ExplicitTrue",
+      "description": "`allowVolumeExpansion=true`가 명시된 경우 Defaulter가 값을 유지"
     },
     {
       "tc_id": "E25.4.5",
@@ -2277,8 +2277,8 @@
       "category": "E25: PillarStorageClass CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarStorageClassWebhook_Compatible_LVMLV_ISCSI",
-      "description": "블록 백엔드(lvm-lv) + 블록 프로토콜(iscsi) → 허용"
+      "test_func": "TestPillarStorageClassWebhook_Compatible_LVMLV_NVMeOFTCP",
+      "description": "블록 백엔드(lvm-lv) + 블록 프로토콜(nvmeof-tcp) → 허용"
     },
     {
       "tc_id": "E25.5.3",
@@ -2287,8 +2287,8 @@
       "category": "E25: PillarStorageClass CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarStorageClassWebhook_Compatible_ZFSDataset_NFS",
-      "description": "파일 백엔드(zfs-dataset) + 파일 프로토콜(nfs) → 허용"
+      "test_func": "TestPillarStorageClassWebhook_OverrideMismatch_ZFSOverrideOnLVMStore",
+      "description": "`lvm` 스토어를 참조하는 바인딩이 `overrides.backend.zfs`를 지정 → 거부"
     },
     {
       "tc_id": "E25.5.4",
@@ -2297,8 +2297,8 @@
       "category": "E25: PillarStorageClass CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarStorageClassWebhook_Compatible_Dir_NFS",
-      "description": "파일 백엔드(dir) + 파일 프로토콜(nfs) → 허용"
+      "test_func": "TestPillarStorageClassWebhook_OverrideMismatch_LVMOverrideOnZFSStore",
+      "description": "`zfs` 스토어를 참조하는 바인딩이 `overrides.backend.lvm`을 지정 → 거부"
     },
     {
       "tc_id": "E25.5.5",
@@ -2307,8 +2307,8 @@
       "category": "E25: PillarStorageClass CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarStorageClassWebhook_Incompatible_ZFSZvol_NFS",
-      "description": "블록 백엔드(zfs-zvol) + 파일 프로토콜(nfs) → 거부; `spec.protocolRef` 경로 오류"
+      "test_func": "TestPillarStorageClassWebhook_OverrideMatch_ZFSPropertiesOnZFSStore",
+      "description": "`zfs` 스토어에 `overrides.backend.zfs.properties` 지정 → 허용"
     },
     {
       "tc_id": "E25.5.6",
@@ -2317,8 +2317,8 @@
       "category": "E25: PillarStorageClass CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarStorageClassWebhook_Incompatible_LVMLV_NFS",
-      "description": "블록 백엔드(lvm-lv) + 파일 프로토콜(nfs) → 거부"
+      "test_func": "TestPillarStorageClassWebhook_OverrideMatch_LVMModeOnLVMStore",
+      "description": "`lvm` 스토어에 `overrides.backend.lvm.provisioningMode=thin` 지정 → 허용"
     },
     {
       "tc_id": "E25.5.7",
@@ -2327,8 +2327,8 @@
       "category": "E25: PillarStorageClass CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarStorageClassWebhook_Incompatible_ZFSDataset_NVMeOFTCP",
-      "description": "파일 백엔드(zfs-dataset) + 블록 프로토콜(nvmeof-tcp) → 거부"
+      "test_func": "TestPillarStorageClassWebhook_ProtocolOverride_NVMeOFTCP_Allowed",
+      "description": "`overrides.protocol.nvmeofTcp` 튜너블(maxQueueSize=64) 지정 → 허용"
     },
     {
       "tc_id": "E25.5.8",
@@ -2337,8 +2337,8 @@
       "category": "E25: PillarStorageClass CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarStorageClassWebhook_Incompatible_Dir_ISCSI",
-      "description": "파일 백엔드(dir) + 블록 프로토콜(iscsi) → 거부"
+      "test_func": "TestPillarStorageClassWebhook_OverrideCheckSkipped_StoreNotFound",
+      "description": "스토어 미존재 시 오버라이드 멤버 일치 검사 건너뜀 — 컨트롤러 조건과 CreateVolume 해석으로 위임"
     },
     {
       "tc_id": "E25.5.9",
@@ -2437,8 +2437,8 @@
       "category": "E25: PillarStorageClass CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarStorageClassController_Compatible_False_BlockBackend_FileProtocol",
-      "description": "zfs-zvol + nfs 비호환 → `Compatible=False/Incompatible`; `Ready=False`; StorageClass 미생성"
+      "test_func": "TestPillarStorageClassController_Compatible_True_LVMLV_NVMeOFTCP",
+      "description": "lvm-lv + nvmeof-tcp 조합 → `Compatible=True`; `Ready=True`; StorageClass 생성"
     },
     {
       "tc_id": "E25.8.3",
@@ -2478,7 +2478,7 @@
       "type": "C",
       "in_437_scope": true,
       "test_func": "TestPillarStorageClassController_StorageClass_Parameters",
-      "description": "생성된 StorageClass의 parameters에 pool, protocol, backend-type, protocol-type 파라미터 포함"
+      "description": "생성된 StorageClass의 parameters는 identity 참조와 fstype만 포함"
     },
     {
       "tc_id": "E25.9.4",
@@ -3677,8 +3677,8 @@
       "category": "E14: 잘못된 입력값 및 엣지 케이스 (Invalid Inputs & Edge Cases)",
       "type": "A",
       "in_437_scope": true,
-      "test_func": "TestCSIEdge_CreateVolume_UnsupportedBackendType",
-      "description": "알 수 없는 backend-type 파라미터로 CreateVolume"
+      "test_func": "TestCSIEdge_CreateVolume_UnknownPillarParam",
+      "description": "알 수 없는 `pillar-csi.bhyoo.com/` StorageClass 파라미터(제거된 `backend-type` 등)로 CreateVolume"
     },
     {
       "tc_id": "E114",
@@ -3687,8 +3687,8 @@
       "category": "E14: 잘못된 입력값 및 엣지 케이스 (Invalid Inputs & Edge Cases)",
       "type": "A",
       "in_437_scope": true,
-      "test_func": "TestCSIEdge_CreateVolume_EmptyProtocolType",
-      "description": "protocol-type 파라미터 값이 빈 문자열"
+      "test_func": "TestCSIEdge_CreateVolume_EmptyProtocolRef",
+      "description": "`pillar-csi.bhyoo.com/protocol-ref` 파라미터 값이 빈 문자열"
     },
     {
       "tc_id": "E115",
@@ -4137,8 +4137,8 @@
       "category": "E21: 잘못된 CR 오류 시나리오 (Invalid CR Error Scenarios)",
       "type": "A",
       "in_437_scope": true,
-      "test_func": "TestPillarStoreWebhook_Update_BackendTypeImmutable",
-      "description": "`spec.backend.type` 변경 시도 거부"
+      "test_func": "TestPillarStoreWebhook_Update_BackendMemberImmutable",
+      "description": "`spec.backend` 멤버 변경(zfs→lvm) 시도 거부"
     },
     {
       "tc_id": "E160",
@@ -4147,8 +4147,8 @@
       "category": "E21: 잘못된 CR 오류 시나리오 (Invalid CR Error Scenarios)",
       "type": "A",
       "in_437_scope": true,
-      "test_func": "TestPillarStoreWebhook_Update_ZFSPoolChange_OK",
-      "description": "`spec.backend.type` 변경 없이 ZFS 풀 이름만 변경된 업데이트는 허용됨"
+      "test_func": "TestPillarStoreWebhook_Update_ZFSPropertiesChange_OK",
+      "description": "`spec.backend` 멤버와 풀 이름을 유지한 채 `zfs.properties`만 변경한 업데이트는 허용됨"
     },
     {
       "tc_id": "E161",
@@ -4158,7 +4158,7 @@
       "type": "A",
       "in_437_scope": true,
       "test_func": "TestPillarStoreWebhook_Update_BothFieldsChanged_MultipleErrors",
-      "description": "`spec.agentRef`와 `spec.backend.type` 모두 변경 시도 → 두 필드 모두 Forbidden 오류 포함"
+      "description": "`spec.agentRef`와 `spec.backend` 멤버 모두 변경 시도 → 두 필드 모두 Forbidden 오류 포함"
     },
     {
       "tc_id": "E162",
@@ -4227,8 +4227,8 @@
       "category": "E21: 잘못된 CR 오류 시나리오 (Invalid CR Error Scenarios)",
       "type": "A",
       "in_437_scope": true,
-      "test_func": "TestCRDSchema_PillarStore_BackendType_Invalid",
-      "description": "`spec.backend.type=\"not-supported\"` → `+kubebuilder:validation:Enum=zfs-zvol;zfs-dataset;lvm-lv;dir` 위반"
+      "test_func": "TestCRDSchema_PillarStore_BackendUnion_Invalid",
+      "description": "`spec.backend`에 멤버가 없거나(`{}`) 두 멤버(`zfs`+`lvm`)를 함께 지정 → `x-kubernetes-validations` exactly-one 규칙 위반"
     },
     {
       "tc_id": "E169",
@@ -5188,7 +5188,7 @@
       "type": "A",
       "in_437_scope": true,
       "test_func": "TestCSIController_CreateVolume_LVM_Thin",
-      "description": "LVM thin 모드 CreateVolume 시 agent에 ProvisionMode=\"thin\" 전달"
+      "description": "직접 작성한 StorageClass의 `pillar-csi.bhyoo.com/backend` 문서(`lvm: {provisioningMode: thin}`)로 thin 모드 선택 시 agent에 ProvisionMode=\"thin\" 전달"
     },
     {
       "tc_id": "E265",
@@ -5238,7 +5238,7 @@
       "type": "A",
       "in_437_scope": true,
       "test_func": "TestCSIController_LVM_ModeOverride_AbsentUsesBackendDefault",
-      "description": "모든 레이어 미지정 시 빈 문자열 → agent backend 컴파일 시점 기본값"
+      "description": "모든 레이어 미지정 시 단일 기본값(linear) 적용"
     },
     {
       "tc_id": "E270",
@@ -5308,7 +5308,7 @@
       "type": "C",
       "in_437_scope": true,
       "test_func": "TestPillarStore_LVM_ValidLinearConfig",
-      "description": "type=lvm-lv, volumeGroup 지정, provisioningMode=linear 설정이 유효"
+      "description": "`backend.lvm` 멤버에 volumeGroup 지정, provisioningMode=linear 설정이 유효"
     },
     {
       "tc_id": "E277",
@@ -5318,7 +5318,7 @@
       "type": "C",
       "in_437_scope": true,
       "test_func": "TestPillarStore_LVM_ValidThinConfig",
-      "description": "type=lvm-lv, volumeGroup + thinPool, provisioningMode=thin 유효"
+      "description": "`backend.lvm` 멤버에 volumeGroup + thinPool, provisioningMode=thin 유효"
     },
     {
       "tc_id": "E278",
@@ -5328,7 +5328,7 @@
       "type": "C",
       "in_437_scope": true,
       "test_func": "TestPillarStore_LVM_MissingVolumeGroup_Rejected",
-      "description": "type=lvm-lv이나 lvm.volumeGroup 미지정 시 검증 실패"
+      "description": "`backend.lvm` 멤버이나 lvm.volumeGroup 미지정 시 검증 실패"
     },
     {
       "tc_id": "E279",
@@ -5348,7 +5348,7 @@
       "type": "C",
       "in_437_scope": true,
       "test_func": "TestPillarStore_LVM_MissingLVMConfig_Rejected",
-      "description": "type=lvm-lv이나 backend.lvm 섹션 자체 누락 시 웹훅 거부"
+      "description": "`spec.backend`에 lvm 멤버도 zfs 멤버도 없으면 거부"
     },
     {
       "tc_id": "E281",
@@ -5387,8 +5387,8 @@
       "category": "E32: PillarStore/PillarStorageClass LVM CRD 라이프사이클",
       "type": "C",
       "in_437_scope": true,
-      "test_func": "TestPillarStorageClass_LVM_NFS_Incompatible",
-      "description": "lvm-lv(Block) + nfs(Filesystem) 조합이 비호환 거부"
+      "test_func": "TestPillarStorageClass_LVM_ZFSOverride_Rejected",
+      "description": "lvm 스토어를 참조하는 바인딩의 `overrides.backend.zfs`는 멤버 불일치로 거부"
     },
     {
       "tc_id": "E285",
@@ -5719,266 +5719,6 @@
       "in_437_scope": true,
       "test_func": "TestLVMBackend_DevicePath",
       "description": "CreateVolume과 ListVolumes 모두 `/dev/<vg>/<lv>` 형식 일관"
-    },
-    {
-      "tc_id": "E318",
-      "group_id": "E34.1",
-      "top_section": "E34",
-      "category": "E34: LVM Kind 클러스터 E2E — 실제 LVM VG + iSCSI",
-      "type": "B",
-      "in_437_scope": true,
-      "test_func": "It(\"PillarStorageClass generates an iSCSI StorageClass with protocol-type=iscsi and timer parameters\")",
-      "description": "generated StorageClass가 `protocol-type=iscsi`, `iscsi-port`, iSCSI timeout 파라미터를 포함"
-    },
-    {
-      "tc_id": "E319",
-      "group_id": "E34.1",
-      "top_section": "E34",
-      "category": "E34: LVM Kind 클러스터 E2E — 실제 LVM VG + iSCSI",
-      "type": "B",
-      "in_437_scope": true,
-      "test_func": "It(\"CreateVolume returns target IQN, portal, port and LUN in VolumeContext\")",
-      "description": "iSCSI CreateVolume이 PV `VolumeContext`에 target IQN, portal IP, port, LUN을 기록"
-    },
-    {
-      "tc_id": "E320",
-      "group_id": "E34.1",
-      "top_section": "E34",
-      "category": "E34: LVM Kind 클러스터 E2E — 실제 LVM VG + iSCSI",
-      "type": "B",
-      "in_437_scope": true,
-      "test_func": "It(\"pillar-node publishes the initiator IQN to CSINode annotations and ControllerPublishVolume uses it for ACLs\")",
-      "description": "node-side publisher가 compute-worker의 initiator IQN을 `CSINode` annotation에 반영하고, `ControllerPublishVolume`이 그 값을 사용해 ACL을 추가"
-    },
-    {
-      "tc_id": "E321",
-      "group_id": "E34.1",
-      "top_section": "E34",
-      "category": "E34: LVM Kind 클러스터 E2E — 실제 LVM VG + iSCSI",
-      "type": "B",
-      "in_437_scope": true,
-      "test_func": "It(\"ControllerUnpublishVolume revokes the same CSINode-derived initiator IQN ACL\")",
-      "description": "Pod 삭제 시 `CSINode` annotation에서 해석된 동일 IQN ACL이 제거"
-    },
-    {
-      "tc_id": "E322",
-      "group_id": "E34.2",
-      "top_section": "E34",
-      "category": "E34: LVM Kind 클러스터 E2E — 실제 LVM VG + iSCSI",
-      "type": "B",
-      "in_437_scope": true,
-      "test_func": "It(\"filesystem PVC becomes Bound via LVM + iSCSI\")",
-      "description": "`PillarProtocol(type=iscsi)`를 참조하는 StorageClass로 PVC가 정상 Bound"
-    },
-    {
-      "tc_id": "E323",
-      "group_id": "E34.2",
-      "top_section": "E34",
-      "category": "E34: LVM Kind 클러스터 E2E — 실제 LVM VG + iSCSI",
-      "type": "B",
-      "in_437_scope": true,
-      "test_func": "It(\"a Pod mounting the iSCSI PVC reaches Running on the compute-worker node\")",
-      "description": "Pod 생성 시 compute-worker에서 iSCSI discovery/login 후 마운트 성공"
-    },
-    {
-      "tc_id": "E324",
-      "group_id": "E34.2",
-      "top_section": "E34",
-      "category": "E34: LVM Kind 클러스터 E2E — 실제 LVM VG + iSCSI",
-      "type": "B",
-      "in_437_scope": true,
-      "test_func": "It(\"PVC protocol override changes the iSCSI replacement timeout for one volume only\")",
-      "description": "PVC annotation이 단일 volume의 iSCSI timeout만 오버라이드"
-    },
-    {
-      "tc_id": "E325",
-      "group_id": "E34.2",
-      "top_section": "E34",
-      "category": "E34: LVM Kind 클러스터 E2E — 실제 LVM VG + iSCSI",
-      "type": "B",
-      "in_437_scope": true,
-      "test_func": "It(\"deleting the Pod triggers NodeUnpublish, NodeUnstage and iSCSI logout\")",
-      "description": "Pod 삭제 시 bind mount 해제, staging 해제, session logout 수행"
-    },
-    {
-      "tc_id": "E326",
-      "group_id": "E34.2",
-      "top_section": "E34",
-      "category": "E34: LVM Kind 클러스터 E2E — 실제 LVM VG + iSCSI",
-      "type": "B",
-      "in_437_scope": true,
-      "test_func": "It(\"deleting the PVC removes the exported target and destroys the LV\")",
-      "description": "PVC 삭제 시 target export와 backend LV가 모두 정리"
-    },
-    {
-      "tc_id": "E327",
-      "group_id": "E34.3",
-      "top_section": "E34",
-      "category": "E34: LVM Kind 클러스터 E2E — 실제 LVM VG + iSCSI",
-      "type": "B",
-      "in_437_scope": true,
-      "test_func": "It(\"raw block PVC is published as an unformatted block device to the Pod\")",
-      "description": "`volumeMode: Block` PVC가 raw block device로 publish"
-    },
-    {
-      "tc_id": "E328",
-      "group_id": "E34.3",
-      "top_section": "E34",
-      "category": "E34: LVM Kind 클러스터 E2E — 실제 LVM VG + iSCSI",
-      "type": "B",
-      "in_437_scope": true,
-      "test_func": "It(\"online expansion rescans the iSCSI session and grows the filesystem inside the running Pod\")",
-      "description": "PVC 확장 시 backend LV와 node filesystem이 모두 커짐"
-    },
-    {
-      "tc_id": "E329",
-      "group_id": "E34.3",
-      "top_section": "E34",
-      "category": "E34: LVM Kind 클러스터 E2E — 실제 LVM VG + iSCSI",
-      "type": "B",
-      "in_437_scope": true,
-      "test_func": "It(\"NodeGetVolumeStats reports bytes and inodes for filesystem volumes and bytes for raw block volumes\")",
-      "description": "iSCSI 경로에서도 `NodeGetVolumeStats`가 filesystem/block 모드별로 올바른 usage를 반환"
-    },
-    {
-      "tc_id": "E330",
-      "group_id": "E34.3",
-      "top_section": "E34",
-      "category": "E34: LVM Kind 클러스터 E2E — 실제 LVM VG + iSCSI",
-      "type": "B",
-      "in_437_scope": true,
-      "test_func": "It(\"after node plugin restart, restaging is idempotent and does not create duplicate iSCSI sessions\")",
-      "description": "node plugin 재시작 후 재스테이징이 session 중복 없이 복구"
-    },
-    {
-      "tc_id": "E331",
-      "group_id": "E35.1",
-      "top_section": "E35",
-      "category": "E35: ZFS Kind 클러스터 E2E — 실제 ZFS zvol + iSCSI",
-      "type": "B",
-      "in_437_scope": true,
-      "test_func": "It(\"PillarStorageClass generates an iSCSI StorageClass for zfs-zvol pools without losing zvol parameters\")",
-      "description": "generated StorageClass가 `backend-type=zfs-zvol`, pool/zvol 파라미터, `protocol-type=iscsi`, iSCSI timer 파라미터를 함께 포함"
-    },
-    {
-      "tc_id": "E332",
-      "group_id": "E35.1",
-      "top_section": "E35",
-      "category": "E35: ZFS Kind 클러스터 E2E — 실제 ZFS zvol + iSCSI",
-      "type": "B",
-      "in_437_scope": true,
-      "test_func": "It(\"CreateVolume provisions a zvol-backed volume and returns target IQN, portal, port and LUN in VolumeContext\")",
-      "description": "zvol-backed iSCSI CreateVolume이 PV `VolumeContext`에 target IQN, portal IP, port, LUN을 기록하고 backend zvol을 준비"
-    },
-    {
-      "tc_id": "E333",
-      "group_id": "E35.1",
-      "top_section": "E35",
-      "category": "E35: ZFS Kind 클러스터 E2E — 실제 ZFS zvol + iSCSI",
-      "type": "B",
-      "in_437_scope": true,
-      "test_func": "It(\"ControllerPublishVolume resolves the compute-worker initiator IQN from CSINode annotations for a zvol-backed target\")",
-      "description": "`ControllerPublishVolume`이 `CSINode` annotation의 compute-worker initiator IQN을 사용해 zvol-backed target ACL을 추가"
-    },
-    {
-      "tc_id": "E334",
-      "group_id": "E35.1",
-      "top_section": "E35",
-      "category": "E35: ZFS Kind 클러스터 E2E — 실제 ZFS zvol + iSCSI",
-      "type": "B",
-      "in_437_scope": true,
-      "test_func": "It(\"ControllerUnpublishVolume revokes the CSINode-derived initiator IQN ACL without deleting the zvol-backed target before PVC cleanup\")",
-      "description": "Pod 삭제 시 동일 IQN ACL만 제거되고 export 삭제는 PVC 삭제 단계까지 보류"
-    },
-    {
-      "tc_id": "E335",
-      "group_id": "E35.2",
-      "top_section": "E35",
-      "category": "E35: ZFS Kind 클러스터 E2E — 실제 ZFS zvol + iSCSI",
-      "type": "B",
-      "in_437_scope": true,
-      "test_func": "It(\"filesystem PVC becomes Bound via ZFS zvol + iSCSI\")",
-      "description": "`PillarProtocol(type=iscsi)`를 참조하는 zfs-zvol StorageClass로 PVC가 정상 Bound"
-    },
-    {
-      "tc_id": "E336",
-      "group_id": "E35.2",
-      "top_section": "E35",
-      "category": "E35: ZFS Kind 클러스터 E2E — 실제 ZFS zvol + iSCSI",
-      "type": "B",
-      "in_437_scope": true,
-      "test_func": "It(\"a Pod mounting the zvol-backed iSCSI PVC reaches Running on the compute-worker node\")",
-      "description": "Pod 생성 시 compute-worker에서 iSCSI discovery/login 후 마운트 성공"
-    },
-    {
-      "tc_id": "E337",
-      "group_id": "E35.2",
-      "top_section": "E35",
-      "category": "E35: ZFS Kind 클러스터 E2E — 실제 ZFS zvol + iSCSI",
-      "type": "B",
-      "in_437_scope": true,
-      "test_func": "It(\"zfs-specific volume parameters remain effective when the protocol is iSCSI\")",
-      "description": "`zfs-parent-dataset`, `compression` 같은 ZFS 파라미터가 iSCSI 경로에서도 유지"
-    },
-    {
-      "tc_id": "E338",
-      "group_id": "E35.2",
-      "top_section": "E35",
-      "category": "E35: ZFS Kind 클러스터 E2E — 실제 ZFS zvol + iSCSI",
-      "type": "B",
-      "in_437_scope": true,
-      "test_func": "It(\"deleting the Pod triggers NodeUnpublish, NodeUnstage and iSCSI logout for the zvol-backed volume\")",
-      "description": "Pod 삭제 시 bind mount 해제, staging 해제, session logout 수행"
-    },
-    {
-      "tc_id": "E339",
-      "group_id": "E35.2",
-      "top_section": "E35",
-      "category": "E35: ZFS Kind 클러스터 E2E — 실제 ZFS zvol + iSCSI",
-      "type": "B",
-      "in_437_scope": true,
-      "test_func": "It(\"deleting the PVC removes the exported target and destroys the zvol\")",
-      "description": "PVC 삭제 시 target export와 backend zvol이 모두 정리"
-    },
-    {
-      "tc_id": "E340",
-      "group_id": "E35.3",
-      "top_section": "E35",
-      "category": "E35: ZFS Kind 클러스터 E2E — 실제 ZFS zvol + iSCSI",
-      "type": "B",
-      "in_437_scope": true,
-      "test_func": "It(\"raw block PVC is published as an unformatted block device from a zvol-backed iSCSI LUN\")",
-      "description": "`volumeMode: Block` PVC가 zvol-backed raw block device로 publish"
-    },
-    {
-      "tc_id": "E341",
-      "group_id": "E35.3",
-      "top_section": "E35",
-      "category": "E35: ZFS Kind 클러스터 E2E — 실제 ZFS zvol + iSCSI",
-      "type": "B",
-      "in_437_scope": true,
-      "test_func": "It(\"online expansion grows the zvol, rescans the iSCSI session and expands the filesystem inside the running Pod\")",
-      "description": "PVC 확장 시 backend zvol과 node filesystem이 모두 커짐"
-    },
-    {
-      "tc_id": "E342",
-      "group_id": "E35.3",
-      "top_section": "E35",
-      "category": "E35: ZFS Kind 클러스터 E2E — 실제 ZFS zvol + iSCSI",
-      "type": "B",
-      "in_437_scope": true,
-      "test_func": "It(\"NodeGetVolumeStats reports bytes and inodes for filesystem volumes and bytes for raw block volumes on zvol-backed iSCSI volumes\")",
-      "description": "iSCSI + zvol 경로에서도 `NodeGetVolumeStats`가 filesystem/block 모드별로 올바른 usage를 반환"
-    },
-    {
-      "tc_id": "E343",
-      "group_id": "E35.3",
-      "top_section": "E35",
-      "category": "E35: ZFS Kind 클러스터 E2E — 실제 ZFS zvol + iSCSI",
-      "type": "B",
-      "in_437_scope": true,
-      "test_func": "It(\"after node plugin restart, restaging is idempotent and does not create duplicate iSCSI sessions for the same zvol-backed volume\")",
-      "description": "node plugin 재시작 후 재스테이징이 session 중복 없이 복구"
     },
     {
       "tc_id": "F1.1",

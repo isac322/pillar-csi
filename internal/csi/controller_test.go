@@ -36,9 +36,11 @@ package csi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"maps"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -113,6 +115,8 @@ type mockAgentClient struct {
 	lastCreateVolumeReq *agentv1.CreateVolumeRequest
 	// lastExportVolumeReq captures the most recent ExportVolume request.
 	lastExportVolumeReq *agentv1.ExportVolumeRequest
+	// lastGetCapacityReq captures the most recent GetCapacity request.
+	lastGetCapacityReq *agentv1.GetCapacityRequest
 }
 
 // Compile-time check that mockAgentClient implements the full interface.
@@ -194,10 +198,11 @@ func (*mockAgentClient) GetCapabilities(
 }
 func (m *mockAgentClient) GetCapacity(
 	_ context.Context,
-	_ *agentv1.GetCapacityRequest,
+	req *agentv1.GetCapacityRequest,
 	_ ...grpc.CallOption,
 ) (*agentv1.GetCapacityResponse, error) {
 	m.getCapacityCalls++
+	m.lastGetCapacityReq = req
 	if m.getCapacityErr != nil {
 		return nil, m.getCapacityErr
 	}
@@ -315,11 +320,54 @@ type controllerTestEnv struct {
 	scheme *runtime.Scheme
 }
 
+// Names of the configuration CRs every controller test environment seeds.
+const (
+	testStoreName    = "tank"     // ZFS store: pool "tank" on agent storage-node-1
+	testLVMStoreName = "vg-store" // LVM store: volume group "data-vg", thin pool "thin-pool-0"
+	testProtocolName = "nvme"     // PillarProtocol with an nvmeofTcp member
+)
+
+// testConfigObjects returns fresh copies of the PillarStore / PillarProtocol
+// CRs a hand-written StorageClass (store-ref / protocol-ref) resolves.
+func testConfigObjects() []ctrlclient.Object {
+	return []ctrlclient.Object{
+		&v1alpha1.PillarStore{
+			ObjectMeta: metav1.ObjectMeta{Name: testStoreName},
+			Spec: v1alpha1.PillarStoreSpec{
+				AgentRef: "storage-node-1",
+				Backend: v1alpha1.BackendSpec{ZFS: &v1alpha1.ZFSBackendConfig{
+					VolumeType: v1alpha1.ZFSVolumeTypeZvol,
+					Pool:       "tank",
+				}},
+			},
+		},
+		&v1alpha1.PillarStore{
+			ObjectMeta: metav1.ObjectMeta{Name: testLVMStoreName},
+			Spec: v1alpha1.PillarStoreSpec{
+				AgentRef: "storage-node-1",
+				Backend: v1alpha1.BackendSpec{LVM: &v1alpha1.LVMBackendConfig{
+					VolumeGroup: "data-vg",
+					ThinPool:    "thin-pool-0",
+				}},
+			},
+		},
+		&v1alpha1.PillarProtocol{
+			ObjectMeta: metav1.ObjectMeta{Name: testProtocolName},
+			Spec: v1alpha1.PillarProtocolSpec{
+				Protocol: v1alpha1.ProtocolSpec{NVMeOFTCP: &v1alpha1.NVMeOFTCPConfig{Port: 4420}},
+			},
+		},
+	}
+}
+
 // newControllerTestEnv builds a ControllerServer backed by:
 //   - a controller-runtime fake k8s client seeded with one PillarAgent
-//     that reports ResolvedAddress = "192.168.1.10:9500"
+//     that reports ResolvedAddress = "192.168.1.10:9500" and the
+//     configuration CRs of testConfigObjects
 //   - a mockAgentClient injected via the AgentDialer
-func newControllerTestEnv(t *testing.T) *controllerTestEnv {
+//
+// Extra objects (e.g. a PillarStorageClass binding) are seeded as well.
+func newControllerTestEnv(t *testing.T, extra ...ctrlclient.Object) *controllerTestEnv {
 	t.Helper()
 
 	// Build the scheme with the v1alpha1 types and core/v1 PVC types registered.
@@ -350,10 +398,12 @@ func newControllerTestEnv(t *testing.T) *controllerTestEnv {
 		},
 	}
 
+	objs := append(testConfigObjects(), target)
+	objs = append(objs, extra...)
 	fakeClient := fake.NewClientBuilder().
 		WithInterceptorFuncs(fakeuid.Interceptor()).
 		WithScheme(scheme).
-		WithObjects(target).
+		WithObjects(objs...).
 		WithStatusSubresource(&v1alpha1.PillarVolumeState{}, &v1alpha1.PillarAgent{}).
 		Build()
 
@@ -387,7 +437,8 @@ func seedPillarVolumeState(t *testing.T, env *controllerTestEnv, name string) {
 	}
 }
 
-// baseCreateVolumeRequest returns a minimal valid CreateVolumeRequest.
+// baseCreateVolumeRequest returns a minimal valid CreateVolumeRequest from a
+// hand-written StorageClass naming the seeded ZFS store and NVMe-oF protocol.
 func baseCreateVolumeRequest() *csi.CreateVolumeRequest {
 	return &csi.CreateVolumeRequest{
 		Name: "pvc-abc123",
@@ -405,12 +456,23 @@ func baseCreateVolumeRequest() *csi.CreateVolumeRequest {
 			RequiredBytes: 1073741824, // 1 GiB
 		},
 		Parameters: map[string]string{
-			"pillar-csi.bhyoo.com/agent":         "storage-node-1",
-			"pillar-csi.bhyoo.com/backend-type":  "zfs-zvol",
-			"pillar-csi.bhyoo.com/protocol-type": "nvmeof-tcp",
-			"pillar-csi.bhyoo.com/store":         "tank",
+			paramStoreRef:    testStoreName,
+			paramProtocolRef: testProtocolName,
 		},
 	}
+}
+
+// loadResolved returns spec.resolved of the named volume's PillarVolumeState.
+func loadResolved(t *testing.T, env *controllerTestEnv, name string) *v1alpha1.ResolvedVolumeConfig {
+	t.Helper()
+	pvs, _, err := env.srv.loadPillarVolumeState(context.Background(), name)
+	if err != nil {
+		t.Fatalf("load PillarVolumeState %q: %v", name, err)
+	}
+	if pvs.Spec.Resolved == nil {
+		t.Fatalf("PillarVolumeState %q: spec.resolved is nil", name)
+	}
+	return pvs.Spec.Resolved
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -458,6 +520,45 @@ func TestCreateVolume_FirstCall(t *testing.T) {
 	}
 }
 
+// TestCreateVolume_FirstCallResolvedDefaults verifies that a first call
+// provisions from the store's zfs member and the protocol's nvmeofTcp member
+// with every default applied (ACL off, ext4) and persists that effective
+// configuration in spec.resolved.
+func TestCreateVolume_FirstCallResolvedDefaults(t *testing.T) {
+	t.Parallel()
+	env := newControllerTestEnv(t)
+	resp, err := env.srv.CreateVolume(context.Background(), baseCreateVolumeRequest())
+	if err != nil {
+		t.Fatalf("CreateVolume unexpected error: %v", err)
+	}
+
+	zfs := env.agent.lastCreateVolumeReq.GetBackendParams().GetZfs()
+	if zfs == nil || zfs.GetPool() != "tank" {
+		t.Errorf("BackendParams.Zfs = %+v, want pool tank", zfs)
+	}
+	exp := env.agent.lastExportVolumeReq
+	if exp.GetExportParams().GetNvmeofTcp().GetPort() != 4420 {
+		t.Errorf("ExportParams.NvmeofTcp.Port = %d, want 4420", exp.GetExportParams().GetNvmeofTcp().GetPort())
+	}
+	if exp.GetAclEnabled() {
+		t.Error("ExportVolume AclEnabled = true, want false (acl defaults to false)")
+	}
+
+	// Nothing sets a filesystem: the node still learns the ext4 default.
+	if got := resp.GetVolume().GetVolumeContext()[paramFSType]; got != "ext4" {
+		t.Errorf("VolumeContext[%s] = %q, want the ext4 default", paramFSType, got)
+	}
+
+	// The effective configuration is persisted for retries and restore.
+	resolved := loadResolved(t, env, "pvc-abc123")
+	if resolved.Backend.ZFS == nil || resolved.Backend.ZFS.Pool != "tank" {
+		t.Errorf("spec.resolved.backend = %+v, want zfs pool tank", resolved.Backend)
+	}
+	if resolved.Protocol.NVMeOFTCP == nil || resolved.Protocol.NVMeOFTCP.ACL {
+		t.Errorf("spec.resolved.protocol = %+v, want nvmeofTcp with acl=false", resolved.Protocol)
+	}
+}
+
 // TestCreateVolume_VolumeContextCarriesNVMeoFReconnectTuning verifies that
 // the merged ctrl_loss_tmo / reconnect_delay parameters reach the node via the
 // VolumeContext (explicit ctrl_loss_tmo=0 preserved), that an idempotent retry
@@ -469,8 +570,7 @@ func TestCreateVolume_VolumeContextCarriesNVMeoFReconnectTuning(t *testing.T) {
 	ctx := context.Background()
 
 	req := baseCreateVolumeRequest()
-	req.Parameters[paramNVMeOFCtrlLossTmo] = "0"
-	req.Parameters[paramNVMeOFReconnectDelay] = "5"
+	req.Parameters[paramProtocolDoc] = "nvmeofTcp:\n  ctrlLossTmo: 0\n  reconnectDelay: 5\n"
 
 	for attempt := 1; attempt <= 2; attempt++ {
 		resp, err := env.srv.CreateVolume(ctx, req)
@@ -505,7 +605,7 @@ func TestCreateVolume_MalformedNVMeoFTuning_RejectedBeforeProvisioning(t *testin
 	t.Parallel()
 	env := newControllerTestEnv(t)
 	req := baseCreateVolumeRequest()
-	req.Parameters[paramNVMeOFCtrlLossTmo] = "10m"
+	req.Parameters[paramProtocolDoc] = "nvmeofTcp:\n  ctrlLossTmo: 10m\n"
 
 	_, err := env.srv.CreateVolume(context.Background(), req)
 	if status.Code(err) != codes.InvalidArgument {
@@ -528,8 +628,7 @@ func TestCreateVolume_NVMeoFQueueAndInCapsuleSize(t *testing.T) {
 
 	env := newControllerTestEnv(t)
 	req := baseCreateVolumeRequest()
-	req.Parameters[paramNVMeOFMaxQueueSize] = "64"
-	req.Parameters[paramNVMeOFInCapsuleDataSize] = "8192"
+	req.Parameters[paramProtocolDoc] = "nvmeofTcp:\n  maxQueueSize: 64\n  inCapsuleDataSize: 8192\n"
 	resp, err := env.srv.CreateVolume(ctx, req)
 	if err != nil {
 		t.Fatalf("CreateVolume: %v", err)
@@ -537,9 +636,6 @@ func TestCreateVolume_NVMeoFQueueAndInCapsuleSize(t *testing.T) {
 	vc := resp.GetVolume().GetVolumeContext()
 	if vc[paramNVMeOFMaxQueueSize] != "64" {
 		t.Errorf("VolumeContext[%s] = %q, want \"64\"", paramNVMeOFMaxQueueSize, vc[paramNVMeOFMaxQueueSize])
-	}
-	if _, ok := vc[paramNVMeOFInCapsuleDataSize]; ok {
-		t.Errorf("VolumeContext must not carry the target-side %s", paramNVMeOFInCapsuleDataSize)
 	}
 	if got := env.agent.lastExportVolumeReq.GetExportParams().GetNvmeofTcp().GetInCapsuleDataSize(); got != 8192 {
 		t.Errorf("ExportVolume in_capsule_data_size = %d, want 8192", got)
@@ -582,14 +678,14 @@ func TestCreateVolume_PartialRetryRecordsCorrectedInCapsuleSize(t *testing.T) {
 	env := newControllerTestEnv(t)
 
 	req := baseCreateVolumeRequest()
-	req.Parameters[paramNVMeOFInCapsuleDataSize] = "4096"
+	req.Parameters[paramProtocolDoc] = "nvmeofTcp:\n  inCapsuleDataSize: 4096\n"
 	env.agent.exportVolumeErr = status.Error(codes.FailedPrecondition, "port in-capsule data size conflict")
 	if _, err := env.srv.CreateVolume(ctx, req); status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("first CreateVolume err = %v, want FailedPrecondition", err)
 	}
 
 	env.agent.exportVolumeErr = nil
-	req.Parameters[paramNVMeOFInCapsuleDataSize] = "8192"
+	req.Parameters[paramProtocolDoc] = "nvmeofTcp:\n  inCapsuleDataSize: 8192\n"
 	if _, err := env.srv.CreateVolume(ctx, req); err != nil {
 		t.Fatalf("retried CreateVolume: %v", err)
 	}
@@ -605,6 +701,111 @@ func TestCreateVolume_PartialRetryRecordsCorrectedInCapsuleSize(t *testing.T) {
 	}
 }
 
+// TestCreateVolume_PartialRetryKeepsResolvedBackend verifies that once the
+// first attempt persisted spec.resolved (CreatePartial), a retry re-resolves
+// only the protocol axis from the live CRs: the backend and agentRef come
+// from spec.resolved and the PillarStore is not re-loaded at all.
+func TestCreateVolume_PartialRetryKeepsResolvedBackend(t *testing.T) {
+	t.Parallel()
+	for _, mutate := range []struct {
+		name  string
+		patch func(t *testing.T, env *controllerTestEnv)
+	}{
+		{
+			name: "store mutated to an invalid config",
+			patch: func(t *testing.T, env *controllerTestEnv) {
+				t.Helper()
+				store := &v1alpha1.PillarStore{}
+				if err := env.srv.k8sClient.Get(context.Background(), ctrlKey(testLVMStoreName), store); err != nil {
+					t.Fatalf("get store: %v", err)
+				}
+				// thin without a thinPool would fail resolution if the
+				// store were re-loaded.
+				store.Spec.Backend.LVM.ThinPool = ""
+				store.Spec.Backend.LVM.ProvisioningMode = v1alpha1.LVMProvisioningModeThin
+				if err := env.srv.k8sClient.Update(context.Background(), store); err != nil {
+					t.Fatalf("update store: %v", err)
+				}
+			},
+		},
+		{
+			name: "store deleted",
+			patch: func(t *testing.T, env *controllerTestEnv) {
+				t.Helper()
+				store := &v1alpha1.PillarStore{ObjectMeta: metav1.ObjectMeta{Name: testLVMStoreName}}
+				if err := env.srv.k8sClient.Delete(context.Background(), store); err != nil {
+					t.Fatalf("delete store: %v", err)
+				}
+			},
+		},
+	} {
+		t.Run(mutate.name, func(t *testing.T) {
+			t.Parallel()
+			env := newControllerTestEnv(t)
+			ctx := context.Background()
+			req := baseCreateVolumeRequest()
+			req.Parameters[paramStoreRef] = testLVMStoreName
+
+			env.agent.exportVolumeErr = status.Error(codes.Unavailable, "agent restarting")
+			if _, err := env.srv.CreateVolume(ctx, req); status.Code(err) != codes.Unavailable {
+				t.Fatalf("first CreateVolume err = %v, want Unavailable", err)
+			}
+
+			// The protocol axis is re-resolved (new values win) while the
+			// backend axis must stay the first attempt's linear mode even
+			// though the store can no longer be loaded as resolved.
+			mutate.patch(t, env)
+			patchNVMeoFProtocol(t, env, func(nvme *v1alpha1.NVMeOFTCPConfig) {
+				nvme.MaxQueueSize = testInt32(64)
+				nvme.InCapsuleDataSize = testInt32(8192)
+			})
+			env.agent.exportVolumeErr = nil
+			assertPartialRetryReusesBackend(t, env, req)
+		})
+	}
+}
+
+// patchNVMeoFProtocol applies mutate to the seeded PillarProtocol's
+// nvmeofTcp member.
+func patchNVMeoFProtocol(t *testing.T, env *controllerTestEnv, mutate func(*v1alpha1.NVMeOFTCPConfig)) {
+	t.Helper()
+	proto := &v1alpha1.PillarProtocol{}
+	if err := env.srv.k8sClient.Get(context.Background(), ctrlKey(testProtocolName), proto); err != nil {
+		t.Fatalf("get protocol: %v", err)
+	}
+	mutate(proto.Spec.Protocol.NVMeOFTCP)
+	if err := env.srv.k8sClient.Update(context.Background(), proto); err != nil {
+		t.Fatalf("update protocol: %v", err)
+	}
+}
+
+// assertPartialRetryReusesBackend verifies the retry of req: it must succeed
+// without a second backend CreateVolume, keep spec.resolved.backend at the
+// first attempt's linear LVM mode, send the protocol's new export value to
+// the agent, and keep the node-side VolumeContext from spec.resolved.
+func assertPartialRetryReusesBackend(t *testing.T, env *controllerTestEnv, req *csi.CreateVolumeRequest) {
+	t.Helper()
+	resp, err := env.srv.CreateVolume(context.Background(), req)
+	if err != nil {
+		t.Fatalf("partial retry: %v", err)
+	}
+	if env.agent.createVolumeCalls != 1 {
+		t.Fatalf("backend created %d times, want once (retry only re-exports)", env.agent.createVolumeCalls)
+	}
+	resolved := loadResolved(t, env, req.GetName())
+	if resolved.Backend.LVM == nil || string(resolved.Backend.LVM.ProvisioningMode) != "linear" {
+		t.Errorf("spec.resolved.backend.lvm = %+v, want the first attempt's linear mode", resolved.Backend.LVM)
+	}
+	// Node-side connect options stay the first attempt's (no maxQueueSize).
+	if got, ok := resp.GetVolume().GetVolumeContext()[paramNVMeOFMaxQueueSize]; ok {
+		t.Errorf("VolumeContext[%s] = %q, want absent (fixed by spec.resolved)", paramNVMeOFMaxQueueSize, got)
+	}
+	exp := env.agent.lastExportVolumeReq.GetExportParams().GetNvmeofTcp()
+	if exp.GetInCapsuleDataSize() != 8192 {
+		t.Errorf("ExportParams.InCapsuleDataSize = %d, want the retried 8192", exp.GetInCapsuleDataSize())
+	}
+}
+
 // TestCreateVolume_InvalidNVMeoFQueueOrInCapsuleSize_RejectedBeforeProvisioning
 // verifies that a queue size the kernel would reject and a malformed or
 // negative in-capsule data size fail CreateVolume with InvalidArgument
@@ -612,16 +813,16 @@ func TestCreateVolume_PartialRetryRecordsCorrectedInCapsuleSize(t *testing.T) {
 func TestCreateVolume_InvalidNVMeoFQueueOrInCapsuleSize_RejectedBeforeProvisioning(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct{ key, value string }{
-		{paramNVMeOFMaxQueueSize, "8"},
-		{paramNVMeOFMaxQueueSize, "2048"},
-		{paramNVMeOFInCapsuleDataSize, "-1"},
-		{paramNVMeOFInCapsuleDataSize, "0"},
-		{paramNVMeOFInCapsuleDataSize, "1023"},
-		{paramNVMeOFInCapsuleDataSize, "16K"},
+		{"maxQueueSize", "8"},
+		{"maxQueueSize", "2048"},
+		{"inCapsuleDataSize", "-1"},
+		{"inCapsuleDataSize", "0"},
+		{"inCapsuleDataSize", "1023"},
+		{"inCapsuleDataSize", "16K"},
 	} {
 		env := newControllerTestEnv(t)
 		req := baseCreateVolumeRequest()
-		req.Parameters[tc.key] = tc.value
+		req.Parameters[paramProtocolDoc] = "nvmeofTcp:\n  " + tc.key + ": " + tc.value + "\n"
 		_, err := env.srv.CreateVolume(context.Background(), req)
 		if status.Code(err) != codes.InvalidArgument || !strings.Contains(err.Error(), tc.key) {
 			t.Errorf("%s=%s: CreateVolume err = %v, want InvalidArgument naming the key", tc.key, tc.value, err)
@@ -633,71 +834,6 @@ func TestCreateVolume_InvalidNVMeoFQueueOrInCapsuleSize_RejectedBeforeProvisioni
 	}
 }
 
-// TestCreateVolume_UsesBackendTypeForAccessType verifies that the controller
-// derives agent access type from the backend type, not the network protocol.
-func TestCreateVolume_UsesBackendTypeForAccessType(t *testing.T) {
-	t.Parallel()
-
-	env := newControllerTestEnv(t)
-	ctx := context.Background()
-	req := baseCreateVolumeRequest()
-
-	req.VolumeCapabilities = []*csi.VolumeCapability{
-		{
-			AccessType: &csi.VolumeCapability_Mount{
-				Mount: &csi.VolumeCapability_MountVolume{},
-			},
-			AccessMode: &csi.VolumeCapability_AccessMode{
-				Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER,
-			},
-		},
-	}
-	req.Parameters["pillar-csi.bhyoo.com/backend-type"] = string(v1alpha1.BackendTypeZFSDataset)
-	req.Parameters["pillar-csi.bhyoo.com/protocol-type"] = testProtocolNFS
-
-	if _, err := env.srv.CreateVolume(ctx, req); err != nil {
-		t.Fatalf("CreateVolume unexpected error: %v", err)
-	}
-
-	if env.agent.lastCreateVolumeReq == nil {
-		t.Fatal("lastCreateVolumeReq is nil")
-	}
-	if got, want := env.agent.lastCreateVolumeReq.GetAccessType(),
-		agentv1.VolumeAccessType_VOLUME_ACCESS_TYPE_MOUNT; got != want {
-		t.Errorf("CreateVolume agent access type = %v, want %v", got, want)
-	}
-}
-
-func TestValidateVolumeCapabilities_FileProtocolAcceptsRWX(t *testing.T) {
-	t.Parallel()
-
-	srv := &ControllerServer{}
-	req := &csi.ValidateVolumeCapabilitiesRequest{
-		VolumeId: "storage-node-1/nfs/zfs-dataset/tank/pvc-abc123",
-		VolumeContext: map[string]string{
-			vcProtocolType: testProtocolNFS,
-		},
-		VolumeCapabilities: []*csi.VolumeCapability{
-			{
-				AccessType: &csi.VolumeCapability_Mount{
-					Mount: &csi.VolumeCapability_MountVolume{},
-				},
-				AccessMode: &csi.VolumeCapability_AccessMode{
-					Mode: csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER,
-				},
-			},
-		},
-	}
-
-	resp, err := srv.ValidateVolumeCapabilities(context.Background(), req)
-	if err != nil {
-		t.Fatalf("ValidateVolumeCapabilities unexpected error: %v", err)
-	}
-	if resp.GetConfirmed() == nil {
-		t.Fatalf("ValidateVolumeCapabilities rejected file protocol RWX: %q", resp.GetMessage())
-	}
-}
-
 func TestValidateVolumeCapabilities_BlockProtocolRejectsRWX(t *testing.T) {
 	t.Parallel()
 
@@ -705,7 +841,7 @@ func TestValidateVolumeCapabilities_BlockProtocolRejectsRWX(t *testing.T) {
 	req := &csi.ValidateVolumeCapabilitiesRequest{
 		VolumeId: "storage-node-1/nvmeof-tcp/zfs-zvol/tank/pvc-abc123",
 		VolumeContext: map[string]string{
-			vcProtocolType: string(v1alpha1.ProtocolTypeNVMeOFTCP),
+			vcProtocolType: string(v1alpha1.ProtocolIDNVMeOFTCP),
 		},
 		VolumeCapabilities: []*csi.VolumeCapability{
 			{
@@ -731,30 +867,6 @@ func TestValidateVolumeCapabilities_BlockProtocolRejectsRWX(t *testing.T) {
 	}
 }
 
-func TestCreateVolume_FileProtocolAcceptsRWX(t *testing.T) {
-	t.Parallel()
-
-	env := newControllerTestEnv(t)
-	ctx := context.Background()
-	req := baseCreateVolumeRequest()
-	req.Parameters["pillar-csi.bhyoo.com/backend-type"] = string(v1alpha1.BackendTypeZFSDataset)
-	req.Parameters["pillar-csi.bhyoo.com/protocol-type"] = testProtocolNFS
-	req.VolumeCapabilities = []*csi.VolumeCapability{
-		{
-			AccessType: &csi.VolumeCapability_Mount{
-				Mount: &csi.VolumeCapability_MountVolume{},
-			},
-			AccessMode: &csi.VolumeCapability_AccessMode{
-				Mode: csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER,
-			},
-		},
-	}
-
-	if _, err := env.srv.CreateVolume(ctx, req); err != nil {
-		t.Fatalf("CreateVolume unexpected error for file protocol RWX: %v", err)
-	}
-}
-
 func TestCreateVolume_BlockProtocolRejectsRWX(t *testing.T) {
 	t.Parallel()
 
@@ -777,6 +889,31 @@ func TestCreateVolume_BlockProtocolRejectsRWX(t *testing.T) {
 	}
 	if env.agent.createVolumeCalls != 0 || env.agent.exportVolumeCalls != 0 {
 		t.Errorf("agent was contacted despite block protocol RWX validation failure")
+	}
+}
+
+// TestCreateVolume_AccessModeRevalidatedOnReadyRetry verifies that access
+// modes are validated even when the volume is already Ready: a same-name
+// retry must not take the completed fast path before the mode check.
+func TestCreateVolume_AccessModeRevalidatedOnReadyRetry(t *testing.T) {
+	t.Parallel()
+	env := newControllerTestEnv(t)
+	ctx := context.Background()
+
+	if _, err := env.srv.CreateVolume(ctx, baseCreateVolumeRequest()); err != nil {
+		t.Fatalf("first CreateVolume: %v", err)
+	}
+	req := baseCreateVolumeRequest()
+	req.VolumeCapabilities[0].GetAccessMode().Mode = csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER
+	_, err := env.srv.CreateVolume(ctx, req)
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("retried CreateVolume err = %v, want InvalidArgument", err)
+	}
+	if !strings.Contains(err.Error(), "access mode") {
+		t.Errorf("error %q does not name the access mode", err)
+	}
+	if env.agent.exportVolumeCalls != 1 {
+		t.Errorf("exportVolumeCalls = %d, want 1 (the retry must not reach the agent)", env.agent.exportVolumeCalls)
 	}
 }
 
@@ -975,14 +1112,22 @@ func TestCreateVolume_CreatePartialRetry_DevicePathPreserved(t *testing.T) {
 	}
 }
 
-// TestCreateVolume_ValidationErrors checks that missing required parameters
-// are rejected with InvalidArgument before any agent dial is attempted.
+// TestCreateVolume_ValidationErrors checks that malformed requests and
+// StorageClass parameters are rejected before any agent dial is attempted:
+// InvalidArgument for request/parameter errors, FailedPrecondition when a
+// referenced configuration CR does not exist.
 func TestCreateVolume_ValidationErrors(t *testing.T) {
 	t.Parallel()
+	withParams := func(mutate func(map[string]string)) *csi.CreateVolumeRequest {
+		req := baseCreateVolumeRequest()
+		mutate(req.Parameters)
+		return req
+	}
 	tests := []struct {
-		name string
-		req  *csi.CreateVolumeRequest
-		code codes.Code
+		name     string
+		req      *csi.CreateVolumeRequest
+		code     codes.Code
+		fragment string // required substring of the error message ("" = any)
 	}{
 		{
 			name: "missing volume name",
@@ -1001,20 +1146,73 @@ func TestCreateVolume_ValidationErrors(t *testing.T) {
 			code: codes.InvalidArgument,
 		},
 		{
-			name: "missing target parameter",
-			req: &csi.CreateVolumeRequest{
-				Name: "pvc-test",
-				VolumeCapabilities: []*csi.VolumeCapability{
-					{AccessMode: &csi.VolumeCapability_AccessMode{
-						Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER,
-					}},
-				},
-				Parameters: map[string]string{
-					"pillar-csi.bhyoo.com/backend-type":  "zfs-zvol",
-					"pillar-csi.bhyoo.com/protocol-type": "nvmeof-tcp",
-				},
-			},
+			name: "no identity parameters",
+			req:  withParams(func(p map[string]string) { clear(p) }),
 			code: codes.InvalidArgument,
+		},
+		{
+			name: "store-ref without protocol-ref",
+			req:  withParams(func(p map[string]string) { delete(p, paramProtocolRef) }),
+			code: codes.InvalidArgument,
+		},
+		{
+			name: "protocol-ref without store-ref",
+			req:  withParams(func(p map[string]string) { delete(p, paramStoreRef) }),
+			code: codes.InvalidArgument,
+		},
+		{
+			name: "binding and store refs both set",
+			req:  withParams(func(p map[string]string) { p[paramBinding] = "some-binding" }),
+			code: codes.InvalidArgument,
+		},
+		{
+			name:     "unknown pillar-csi parameter",
+			req:      withParams(func(p map[string]string) { p["pillar-csi.bhyoo.com/filesytem"] = "fsType: xfs" }),
+			code:     codes.InvalidArgument,
+			fragment: "pillar-csi.bhyoo.com/filesytem",
+		},
+		{
+			name: "structural field in backend document",
+			req: withParams(func(p map[string]string) {
+				p[paramBackendDoc] = "zfs:\n  pool: other-pool\n"
+			}),
+			code:     codes.InvalidArgument,
+			fragment: "zfs.pool is structural",
+		},
+		{
+			name: "backend document member does not match the store",
+			req: withParams(func(p map[string]string) {
+				p[paramBackendDoc] = "lvm:\n  provisioningMode: thin\n"
+			}),
+			code: codes.InvalidArgument,
+		},
+		{
+			name: "structural field in protocol document",
+			req: withParams(func(p map[string]string) {
+				p[paramProtocolDoc] = "nvmeofTcp:\n  acl: true\n"
+			}),
+			code:     codes.InvalidArgument,
+			fragment: "nvmeofTcp.acl is structural",
+		},
+		{
+			name: "filesystem document disagrees with csi fstype",
+			req: withParams(func(p map[string]string) {
+				p[paramFSTypeSC] = "ext4"
+				p[paramFilesystemDoc] = "fsType: xfs\n"
+			}),
+			code: codes.InvalidArgument,
+		},
+		{
+			name:     "unknown store",
+			req:      withParams(func(p map[string]string) { p[paramStoreRef] = "no-such-store" }),
+			code:     codes.FailedPrecondition,
+			fragment: "no-such-store",
+		},
+		{
+			name:     "unknown protocol",
+			req:      withParams(func(p map[string]string) { p[paramProtocolRef] = "no-such-protocol" }),
+			code:     codes.FailedPrecondition,
+			fragment: "no-such-protocol",
 		},
 	}
 
@@ -1027,13 +1225,54 @@ func TestCreateVolume_ValidationErrors(t *testing.T) {
 			}
 			st, _ := status.FromError(err)
 			if st.Code() != tc.code {
-				t.Errorf("error code = %v, want %v", st.Code(), tc.code)
+				t.Errorf("error code = %v (%v), want %v", st.Code(), err, tc.code)
+			}
+			if tc.fragment != "" && !strings.Contains(st.Message(), tc.fragment) {
+				t.Errorf("error %q does not mention %q", st.Message(), tc.fragment)
 			}
 			// No agent calls should have been made.
 			if env.agent.createVolumeCalls != 0 || env.agent.exportVolumeCalls != 0 {
 				t.Errorf("agent was contacted despite validation error")
 			}
 		})
+	}
+}
+
+// TestCreateVolume_LegacyFlatParametersRejected verifies that the removed
+// flat StorageClass vocabulary is rejected by name instead of silently
+// ignored, so an old StorageClass cannot provision with unintended defaults.
+func TestCreateVolume_LegacyFlatParametersRejected(t *testing.T) {
+	t.Parallel()
+	for _, key := range []string{
+		"pillar-csi.bhyoo.com/backend-type",
+		"pillar-csi.bhyoo.com/protocol-type",
+		"pillar-csi.bhyoo.com/store",
+		"pillar-csi.bhyoo.com/agent",
+		"pillar-csi.bhyoo.com/zfs-parent-dataset",
+		"pillar-csi.bhyoo.com/zfs-prop.compression",
+		"pillar-csi.bhyoo.com/lvm-vg",
+		"pillar-csi.bhyoo.com/lvm-thin-pool",
+		"pillar-csi.bhyoo.com/lvm-mode",
+		"pillar-csi.bhyoo.com/nvmeof-port",
+		"pillar-csi.bhyoo.com/nvmeof-ctrl-loss-tmo",
+		"pillar-csi.bhyoo.com/nvmeof-in-capsule-data-size",
+		"pillar-csi.bhyoo.com/acl-enabled",
+		"pillar-csi.bhyoo.com/iscsi-port",
+		"pillar-csi.bhyoo.com/nfs-version",
+		"pillar-csi.bhyoo.com/fs-type",
+		"pillar-csi.bhyoo.com/mkfs-options",
+		"pillar-csi.bhyoo.com/param.lvm-mode",
+	} {
+		env := newControllerTestEnv(t)
+		req := baseCreateVolumeRequest()
+		req.Parameters[key] = "x"
+		_, err := env.srv.CreateVolume(context.Background(), req)
+		if status.Code(err) != codes.InvalidArgument || !strings.Contains(err.Error(), key) {
+			t.Errorf("%s: CreateVolume err = %v, want InvalidArgument naming the key", key, err)
+		}
+		if env.agent.createVolumeCalls != 0 {
+			t.Errorf("%s: agent contacted despite rejected parameter", key)
+		}
 	}
 }
 
@@ -1150,7 +1389,7 @@ func TestCreateVolume_AgentUnavailable(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().
 		WithInterceptorFuncs(fakeuid.Interceptor()).
 		WithScheme(scheme).
-		WithObjects(target).
+		WithObjects(append(testConfigObjects(), target)...).
 		WithStatusSubresource(&v1alpha1.PillarVolumeState{}).
 		Build()
 
@@ -1200,19 +1439,20 @@ func ctrlKey(name string) types.NamespacedName {
 // GetCapacity tests
 // ─────────────────────────────────────────────────────────────────────────────.
 
-// baseGetCapacityRequest returns a minimal valid GetCapacityRequest.
+// baseGetCapacityRequest returns a minimal valid GetCapacityRequest from a
+// hand-written StorageClass naming the seeded ZFS store.
 func baseGetCapacityRequest() *csi.GetCapacityRequest {
 	return &csi.GetCapacityRequest{
 		Parameters: map[string]string{
-			"pillar-csi.bhyoo.com/agent":        "storage-node-1",
-			"pillar-csi.bhyoo.com/store":        "tank",
-			"pillar-csi.bhyoo.com/backend-type": "zfs-zvol",
+			paramStoreRef:    testStoreName,
+			paramProtocolRef: testProtocolName,
 		},
 	}
 }
 
-// TestGetCapacity_Success verifies the happy path: the controller dials the
-// agent, calls GetCapacity, and returns AvailableCapacity from the response.
+// TestGetCapacity_Success verifies the happy path: the controller resolves
+// the store, dials its agent, asks for the store's pool and backend, and
+// returns AvailableCapacity from the response.
 func TestGetCapacity_Success(t *testing.T) {
 	t.Parallel()
 	env := newControllerTestEnv(t)
@@ -1236,94 +1476,104 @@ func TestGetCapacity_Success(t *testing.T) {
 	if env.agent.getCapacityCalls != 1 {
 		t.Errorf("getCapacityCalls = %d, want 1", env.agent.getCapacityCalls)
 	}
+	got := env.agent.lastGetCapacityReq
+	if got.GetPoolName() != "tank" || got.GetBackendType() != agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL {
+		t.Errorf("agent GetCapacity request = %+v, want pool tank / ZFS_ZVOL", got)
+	}
 }
 
-// TestGetCapacity_MissingTargetParam verifies that omitting the required
-// target parameter returns AvailableCapacity=0 with no error.  Per CSI spec
-// §4.1.2 the parameters field is informational; the driver must not fail
-// GetCapacity when it cannot resolve a pool from the supplied parameters,
-// and instead reports zero so the CO knows no pool was selectable.
-func TestGetCapacity_MissingTargetParam(t *testing.T) {
+// TestGetCapacity_LVMStoreUsesVolumeGroup verifies that the pool asked for
+// is the store's physical volume group, not the PillarStore name.
+func TestGetCapacity_LVMStoreUsesVolumeGroup(t *testing.T) {
+	t.Parallel()
+	env := newControllerTestEnv(t)
+	req := baseGetCapacityRequest()
+	req.Parameters[paramStoreRef] = testLVMStoreName
+
+	if _, err := env.srv.GetCapacity(context.Background(), req); err != nil {
+		t.Fatalf("GetCapacity: %v", err)
+	}
+	got := env.agent.lastGetCapacityReq
+	if got.GetPoolName() != "data-vg" || got.GetBackendType() != agentv1.BackendType_BACKEND_TYPE_LVM {
+		t.Errorf("agent GetCapacity request = %+v, want pool data-vg / LVM", got)
+	}
+}
+
+// TestGetCapacity_BindingIdentity verifies that a generated StorageClass
+// (storage-class parameter only) resolves the store through the binding.
+func TestGetCapacity_BindingIdentity(t *testing.T) {
+	t.Parallel()
+	env := newControllerTestEnv(t, &v1alpha1.PillarStorageClass{
+		ObjectMeta: metav1.ObjectMeta{Name: "lvm-binding"},
+		Spec:       v1alpha1.PillarStorageClassSpec{StoreRef: testLVMStoreName, ProtocolRef: testProtocolName},
+	})
+	req := &csi.GetCapacityRequest{Parameters: map[string]string{paramBinding: "lvm-binding"}}
+	if _, err := env.srv.GetCapacity(context.Background(), req); err != nil {
+		t.Fatalf("GetCapacity: %v", err)
+	}
+	if got := env.agent.lastGetCapacityReq.GetPoolName(); got != "data-vg" {
+		t.Errorf("agent GetCapacity pool = %q, want data-vg", got)
+	}
+}
+
+// TestGetCapacity_NoIdentityParams verifies that a request naming no store
+// returns AvailableCapacity=0 with no error.  Per CSI spec §4.1.2 the
+// parameters field is informational; the driver must not fail GetCapacity
+// when it cannot resolve a pool from the supplied parameters, and instead
+// reports zero so the CO knows no pool was selectable.
+func TestGetCapacity_NoIdentityParams(t *testing.T) {
 	t.Parallel()
 	env := newControllerTestEnv(t)
 	ctx := context.Background()
 
-	req := &csi.GetCapacityRequest{
-		Parameters: map[string]string{
-			"pillar-csi.bhyoo.com/store":        "tank",
-			"pillar-csi.bhyoo.com/backend-type": "zfs-zvol",
-		},
+	for _, params := range []map[string]string{nil, {"csi.storage.k8s.io/fstype": "ext4"}} {
+		resp, err := env.srv.GetCapacity(ctx, &csi.GetCapacityRequest{Parameters: params})
+		if err != nil {
+			t.Fatalf("params %v: expected no error, got %v", params, err)
+		}
+		if resp.GetAvailableCapacity() != 0 {
+			t.Errorf("params %v: AvailableCapacity = %d, want 0", params, resp.GetAvailableCapacity())
+		}
 	}
-
-	resp, err := env.srv.GetCapacity(ctx, req)
-	if err != nil {
-		t.Fatalf("expected no error, got %v", err)
-	}
-	if resp.GetAvailableCapacity() != 0 {
-		t.Errorf("AvailableCapacity = %d, want 0", resp.GetAvailableCapacity())
+	if env.agent.getCapacityCalls != 0 {
+		t.Errorf("agent contacted %d times without a store", env.agent.getCapacityCalls)
 	}
 }
 
-// TestGetCapacity_MissingPoolParam verifies the same zero-capacity contract
-// when the pool parameter is omitted; see TestGetCapacity_MissingTargetParam.
-func TestGetCapacity_MissingPoolParam(t *testing.T) {
+// TestGetCapacity_UnknownConfigCR verifies that a store or binding that does
+// not exist returns codes.NotFound without contacting any agent.
+func TestGetCapacity_UnknownConfigCR(t *testing.T) {
 	t.Parallel()
-	env := newControllerTestEnv(t)
-	ctx := context.Background()
-
-	req := &csi.GetCapacityRequest{
-		Parameters: map[string]string{
-			"pillar-csi.bhyoo.com/agent":        "storage-node-1",
-			"pillar-csi.bhyoo.com/backend-type": "zfs-zvol",
-		},
-	}
-
-	resp, err := env.srv.GetCapacity(ctx, req)
-	if err != nil {
-		t.Fatalf("expected no error, got %v", err)
-	}
-	if resp.GetAvailableCapacity() != 0 {
-		t.Errorf("AvailableCapacity = %d, want 0", resp.GetAvailableCapacity())
+	for name, params := range map[string]map[string]string{
+		"store":   {paramStoreRef: "no-such-store", paramProtocolRef: testProtocolName},
+		"binding": {paramBinding: "no-such-binding"},
+	} {
+		env := newControllerTestEnv(t)
+		_, err := env.srv.GetCapacity(context.Background(), &csi.GetCapacityRequest{Parameters: params})
+		if status.Code(err) != codes.NotFound {
+			t.Errorf("%s: GetCapacity err = %v, want NotFound", name, err)
+		}
+		if env.agent.getCapacityCalls != 0 {
+			t.Errorf("%s: agent contacted for an unknown CR", name)
+		}
 	}
 }
 
-// TestGetCapacity_MissingBackendTypeParam verifies the same zero-capacity
-// contract when backend-type is omitted; see TestGetCapacity_MissingTargetParam.
-func TestGetCapacity_MissingBackendTypeParam(t *testing.T) {
-	t.Parallel()
-	env := newControllerTestEnv(t)
-	ctx := context.Background()
-
-	req := &csi.GetCapacityRequest{
-		Parameters: map[string]string{
-			"pillar-csi.bhyoo.com/agent": "storage-node-1",
-			"pillar-csi.bhyoo.com/store": "tank",
-		},
-	}
-
-	resp, err := env.srv.GetCapacity(ctx, req)
-	if err != nil {
-		t.Fatalf("expected no error, got %v", err)
-	}
-	if resp.GetAvailableCapacity() != 0 {
-		t.Errorf("AvailableCapacity = %d, want 0", resp.GetAvailableCapacity())
-	}
-}
-
-// TestGetCapacity_TargetNotFound verifies that referencing a non-existent
-// PillarAgent returns codes.NotFound.
+// TestGetCapacity_TargetNotFound verifies that a store whose agentRef names a
+// non-existent PillarAgent returns codes.NotFound.
 func TestGetCapacity_TargetNotFound(t *testing.T) {
 	t.Parallel()
-	env := newControllerTestEnv(t)
+	env := newControllerTestEnv(t, &v1alpha1.PillarStore{
+		ObjectMeta: metav1.ObjectMeta{Name: "orphan-store"},
+		Spec: v1alpha1.PillarStoreSpec{
+			AgentRef: "nonexistent-target",
+			Backend:  v1alpha1.BackendSpec{ZFS: &v1alpha1.ZFSBackendConfig{Pool: "tank"}},
+		},
+	})
 	ctx := context.Background()
 
-	req := &csi.GetCapacityRequest{
-		Parameters: map[string]string{
-			"pillar-csi.bhyoo.com/agent":        "nonexistent-target",
-			"pillar-csi.bhyoo.com/store":        "tank",
-			"pillar-csi.bhyoo.com/backend-type": "zfs-zvol",
-		},
-	}
+	req := baseGetCapacityRequest()
+	req.Parameters[paramStoreRef] = "orphan-store"
 
 	_, err := env.srv.GetCapacity(ctx, req)
 	if err == nil {
@@ -1377,7 +1627,7 @@ func TestAgentResourceExhausted_Propagated(t *testing.T) {
 			name: "ControllerExpandVolume",
 			call: func(t *testing.T, env *controllerTestEnv) error {
 				env.agent.expandVolumeErr = agentErr
-				volumeID := expandableVolumeID(t, env, "nvmeof-tcp", "zfs-zvol", "tank/pvc-full")
+				volumeID := expandableVolumeID(t, env, "tank/pvc-full")
 				_, err := env.srv.ControllerExpandVolume(context.Background(),
 					expandRequest(volumeID, 1<<40))
 				return err
@@ -1422,7 +1672,7 @@ func TestGetCapacity_TargetNoAddress(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().
 		WithInterceptorFuncs(fakeuid.Interceptor()).
 		WithScheme(scheme).
-		WithObjects(target).
+		WithObjects(append(testConfigObjects(), target)...).
 		WithStatusSubresource(&v1alpha1.PillarAgent{}).
 		Build()
 
@@ -1488,7 +1738,7 @@ func newControllerTestEnvWithPVC(
 	fakeClient := fake.NewClientBuilder().
 		WithInterceptorFuncs(fakeuid.Interceptor()).
 		WithScheme(scheme).
-		WithObjects(target, pvc).
+		WithObjects(append(testConfigObjects(), target, pvc)...).
 		WithStatusSubresource(&v1alpha1.PillarVolumeState{}, &v1alpha1.PillarAgent{}).
 		Build()
 
@@ -1508,15 +1758,14 @@ func newControllerTestEnvWithPVC(
 }
 
 // TestCreateVolume_PVCOverrideWinsForNVMeoFReconnectTuning verifies the
-// existing precedence (PVC annotation over StorageClass/protocol) carries
-// through to the VolumeContext the node connects with.
+// precedence (PVC protocol document over the StorageClass protocol document)
+// carries through to the VolumeContext the node connects with.
 func TestCreateVolume_PVCOverrideWinsForNVMeoFReconnectTuning(t *testing.T) {
 	t.Parallel()
 	env, req := newControllerTestEnvWithPVC(t, "tenant-a", "pvc-tuned", map[string]string{
-		AnnotationProtocolOverride: "nvmeofTcp:\n  ctrlLossTmo: 900\n",
+		v1alpha1.AnnotationProtocolDoc: "nvmeofTcp:\n  ctrlLossTmo: 900\n",
 	})
-	req.Parameters[paramNVMeOFCtrlLossTmo] = "1800"
-	req.Parameters[paramNVMeOFReconnectDelay] = "5"
+	req.Parameters[paramProtocolDoc] = "nvmeofTcp:\n  ctrlLossTmo: 1800\n  reconnectDelay: 5\n"
 
 	resp, err := env.srv.CreateVolume(context.Background(), req)
 	if err != nil {
@@ -1535,15 +1784,14 @@ func TestCreateVolume_PVCOverrideWinsForNVMeoFReconnectTuning(t *testing.T) {
 // PVC annotation override flow for a ZFS property (compression).
 //
 // Expected behavior:
-//  1. The PVC carries "pillar-csi.bhyoo.com/backend-override" with zfs.properties.compression=zstd.
-//  2. CreateVolume merges this annotation into the parameter map.
-//  3. buildBackendParams populates ZfsVolumeParams.Properties["compression"] = "zstd".
-//  4. The agent.CreateVolume request contains that ZFS property.
+//  1. The PVC carries "pillar-csi.bhyoo.com/backend" with zfs.properties.compression=zstd.
+//  2. CreateVolume merges this document onto the store's backend.
+//  3. The agent.CreateVolume request contains that ZFS property.
 func TestCreateVolume_PVCAnnotationOverride_ZFSProperty(t *testing.T) {
 	t.Parallel()
 
 	annotations := map[string]string{
-		AnnotationBackendOverride: `
+		v1alpha1.AnnotationBackendDoc: `
 zfs:
   properties:
     compression: zstd
@@ -1593,34 +1841,32 @@ zfs:
 	}
 }
 
-// TestCreateVolume_PVCAnnotationOverride_FlatParam verifies that a flat
-// "pillar-csi.bhyoo.com/param.<key>" annotation is also merged into the
-// parameter map and reaches the agent as a ZFS property.
-func TestCreateVolume_PVCAnnotationOverride_FlatParam(t *testing.T) {
+// TestCreateVolume_PVCRemovedAnnotationsRejected verifies that the removed PVC
+// annotation vocabulary (flat "param.<key>", the *-override documents) and
+// unknown pillar-csi.bhyoo.com/ keys fail provisioning with InvalidArgument
+// naming the annotation instead of being silently ignored.
+func TestCreateVolume_PVCRemovedAnnotationsRejected(t *testing.T) {
 	t.Parallel()
-
-	annotations := map[string]string{
-		// Flat override: sets pillar-csi.bhyoo.com/zfs-prop.compression.
-		"pillar-csi.bhyoo.com/param.zfs-prop.compression": "lz4",
-	}
-
-	env, req := newControllerTestEnvWithPVC(t, "default", "pvc-flat-test", annotations)
-	ctx := context.Background()
-
-	_, err := env.srv.CreateVolume(ctx, req)
-	if err != nil {
-		t.Fatalf("CreateVolume unexpected error: %v", err)
-	}
-	if env.agent.createVolumeCalls != 1 {
-		t.Fatalf("agent.CreateVolume call count = %d, want 1", env.agent.createVolumeCalls)
-	}
-
-	zfsParams := env.agent.lastCreateVolumeReq.GetBackendParams().GetZfs()
-	if zfsParams == nil {
-		t.Fatal("BackendParams.Zfs is nil")
-	}
-	if got := zfsParams.GetProperties()["compression"]; got != "lz4" {
-		t.Errorf("ZfsVolumeParams.Properties[\"compression\"] = %q, want \"lz4\"", got)
+	for _, key := range []string{
+		"pillar-csi.bhyoo.com/param.zfs-prop.compression",
+		"pillar-csi.bhyoo.com/backend-override",
+		"pillar-csi.bhyoo.com/protocol-override",
+		"pillar-csi.bhyoo.com/fs-override",
+		"pillar-csi.bhyoo.com/fs-type",
+	} {
+		t.Run(key, func(t *testing.T) {
+			t.Parallel()
+			env, req := newControllerTestEnvWithPVC(t, "default", "pvc-removed", map[string]string{
+				key: "zfs:\n  properties:\n    compression: lz4\n",
+			})
+			_, err := env.srv.CreateVolume(context.Background(), req)
+			if status.Code(err) != codes.InvalidArgument || !strings.Contains(err.Error(), key) {
+				t.Fatalf("CreateVolume err = %v, want InvalidArgument naming %q", err, key)
+			}
+			if env.agent.createVolumeCalls != 0 {
+				t.Errorf("agent.CreateVolume called despite rejected annotation")
+			}
+		})
 	}
 }
 
@@ -1631,7 +1877,7 @@ func TestCreateVolume_PVCAnnotationOverride_BlockedField(t *testing.T) {
 	t.Parallel()
 
 	annotations := map[string]string{
-		AnnotationBackendOverride: `
+		v1alpha1.AnnotationBackendDoc: `
 zfs:
   pool: evil-pool
 `,
@@ -1648,6 +1894,10 @@ zfs:
 	st, _ := status.FromError(err)
 	if st.Code() != codes.InvalidArgument {
 		t.Errorf("error code = %v, want InvalidArgument (got message: %s)", st.Code(), st.Message())
+	}
+	want := v1alpha1.AnnotationBackendDoc + ": zfs.pool is structural and cannot be set per volume"
+	if !strings.Contains(st.Message(), want) {
+		t.Errorf("error %q does not contain %q", st.Message(), want)
 	}
 	// Agent must NOT have been called.
 	if env.agent.createVolumeCalls != 0 {
@@ -1685,7 +1935,7 @@ func TestCreateVolume_PVCAnnotationOverride_NoPVCMetadata(t *testing.T) {
 func TestCreateVolume_PVCLookupFailure_NotSilentlySkipped(t *testing.T) {
 	t.Parallel()
 	env, req := newControllerTestEnvWithPVC(t, "default", "pvc-unreadable", map[string]string{
-		AnnotationBackendOverride: "zfs:\n  properties:\n    compression: zstd\n",
+		v1alpha1.AnnotationBackendDoc: "zfs:\n  properties:\n    compression: zstd\n",
 	})
 	funcs := fakeuid.Interceptor()
 	funcs.Get = func(ctx context.Context, c ctrlclient.WithWatch, key ctrlclient.ObjectKey,
@@ -1715,23 +1965,28 @@ func TestCreateVolume_PVCLookupFailure_NotSilentlySkipped(t *testing.T) {
 }
 
 // A StorageClass that names a PillarStorageClass (or whose binding names a
-// PillarStore) that no longer exists must not provision a volume without the
-// store and binding settings.
+// PillarStore / PillarProtocol) that no longer exists must not provision a
+// volume without the store, protocol and binding settings.
 func TestCreateVolume_MissingBindingOrStore_FailedPrecondition(t *testing.T) {
 	t.Parallel()
-	binding := &v1alpha1.PillarStorageClass{
-		ObjectMeta: metav1.ObjectMeta{Name: "orphan-binding"},
-		Spec:       v1alpha1.PillarStorageClassSpec{StoreRef: "deleted-store", ProtocolRef: "nvmeof-tcp"},
+	orphanStore := &v1alpha1.PillarStorageClass{
+		ObjectMeta: metav1.ObjectMeta{Name: "orphan-store-binding"},
+		Spec:       v1alpha1.PillarStorageClassSpec{StoreRef: "deleted-store", ProtocolRef: testProtocolName},
 	}
-	for name, bindingName := range map[string]string{"binding": "deleted-binding", "store": binding.Name} {
+	orphanProtocol := &v1alpha1.PillarStorageClass{
+		ObjectMeta: metav1.ObjectMeta{Name: "orphan-protocol-binding"},
+		Spec:       v1alpha1.PillarStorageClassSpec{StoreRef: testStoreName, ProtocolRef: "deleted-protocol"},
+	}
+	for name, bindingName := range map[string]string{
+		"binding":  "deleted-binding",
+		"store":    orphanStore.Name,
+		"protocol": orphanProtocol.Name,
+	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			env := newControllerTestEnv(t)
-			if err := env.srv.k8sClient.Create(context.Background(), binding.DeepCopy()); err != nil {
-				t.Fatalf("create binding: %v", err)
-			}
+			env := newControllerTestEnv(t, orphanStore.DeepCopy(), orphanProtocol.DeepCopy())
 			req := baseCreateVolumeRequest()
-			req.Parameters[paramBinding] = bindingName
+			req.Parameters = map[string]string{paramBinding: bindingName}
 			_, err := env.srv.CreateVolume(context.Background(), req)
 			if status.Code(err) != codes.FailedPrecondition {
 				t.Fatalf("CreateVolume error = %v, want FailedPrecondition", err)
@@ -1750,7 +2005,7 @@ func TestCreateVolume_MissingBindingOrStore_FailedPrecondition(t *testing.T) {
 func TestCreateVolume_CompletedRetry_ClaimDeleted(t *testing.T) {
 	t.Parallel()
 	env, req := newControllerTestEnvWithPVC(t, "default", "pvc-gone-after", map[string]string{
-		"pillar-csi.bhyoo.com/param.nvmeof-ctrl-loss-tmo": "900",
+		v1alpha1.AnnotationProtocolDoc: "nvmeofTcp:\n  ctrlLossTmo: 900\n",
 	})
 	ctx := context.Background()
 
@@ -1798,7 +2053,6 @@ func TestCreateVolume_CompletedRetry_BindingDeleted(t *testing.T) {
 		Spec: v1alpha1.PillarStoreSpec{
 			AgentRef: "storage-node-1",
 			Backend: v1alpha1.BackendSpec{
-				Type: v1alpha1.BackendTypeZFSZvol,
 				ZFS: &v1alpha1.ZFSBackendConfig{
 					Pool:       "tank",
 					Properties: map[string]string{"compression": "lz4"},
@@ -1808,7 +2062,7 @@ func TestCreateVolume_CompletedRetry_BindingDeleted(t *testing.T) {
 	}
 	binding := &v1alpha1.PillarStorageClass{
 		ObjectMeta: metav1.ObjectMeta{Name: "gone-binding"},
-		Spec:       v1alpha1.PillarStorageClassSpec{StoreRef: pool.Name, ProtocolRef: "nvmeof-tcp"},
+		Spec:       v1alpha1.PillarStorageClassSpec{StoreRef: pool.Name, ProtocolRef: testProtocolName},
 	}
 	for _, obj := range []ctrlclient.Object{pool, binding} {
 		if err := env.srv.k8sClient.Create(ctx, obj); err != nil {
@@ -1817,7 +2071,7 @@ func TestCreateVolume_CompletedRetry_BindingDeleted(t *testing.T) {
 	}
 
 	req := baseCreateVolumeRequest()
-	req.Parameters[paramBinding] = binding.Name
+	req.Parameters = map[string]string{paramBinding: binding.Name}
 	resp, err := env.srv.CreateVolume(ctx, req)
 	if err != nil {
 		t.Fatalf("first CreateVolume: %v", err)
@@ -1849,13 +2103,13 @@ func TestCreateVolume_CompletedRetry_BindingDeleted(t *testing.T) {
 }
 
 // A CreatePartial retry reports the connect parameters frozen at the first
-// attempt, and the completed retry that follows reports the same — the
-// VolumeContext never changes between responses for one volume even when the
-// claim's annotation changed or the claim is gone.
+// attempt (spec.resolved), and the completed retry that follows reports the
+// same — the VolumeContext never changes between responses for one volume
+// even when the claim's annotation changed or the claim is gone.
 func TestCreateVolume_PartialThenCompletedRetry_StableVolumeContext(t *testing.T) {
 	t.Parallel()
 	env, req := newControllerTestEnvWithPVC(t, "default", "pvc-tuned-900", map[string]string{
-		"pillar-csi.bhyoo.com/param.nvmeof-ctrl-loss-tmo": "900",
+		v1alpha1.AnnotationProtocolDoc: "nvmeofTcp:\n  ctrlLossTmo: 900\n",
 	})
 	ctx := context.Background()
 
@@ -1872,7 +2126,7 @@ func TestCreateVolume_PartialThenCompletedRetry_StableVolumeContext(t *testing.T
 		types.NamespacedName{Name: "pvc-tuned-900", Namespace: "default"}, pvc); err != nil {
 		t.Fatalf("get claim: %v", err)
 	}
-	pvc.Annotations["pillar-csi.bhyoo.com/param.nvmeof-ctrl-loss-tmo"] = "600"
+	pvc.Annotations[v1alpha1.AnnotationProtocolDoc] = "nvmeofTcp:\n  ctrlLossTmo: 600\n"
 	if err := env.srv.k8sClient.Update(ctx, pvc); err != nil {
 		t.Fatalf("update claim: %v", err)
 	}
@@ -1923,7 +2177,7 @@ func TestCreateVolume_PartialRetry_EmptySnapshotBlocksLaterOverride(t *testing.T
 		t.Fatalf("get claim: %v", err)
 	}
 	pvc.Annotations = map[string]string{
-		"pillar-csi.bhyoo.com/param.nvmeof-ctrl-loss-tmo": "600",
+		v1alpha1.AnnotationProtocolDoc: "nvmeofTcp:\n  ctrlLossTmo: 600\n",
 	}
 	if err := env.srv.k8sClient.Update(ctx, pvc); err != nil {
 		t.Fatalf("update claim: %v", err)
@@ -1939,15 +2193,14 @@ func TestCreateVolume_PartialRetry_EmptySnapshotBlocksLaterOverride(t *testing.T
 	}
 }
 
-// A connect key the create-time merge intentionally left absent (overridden
-// to the empty string) must not be resurrected by the StorageClass value on a
-// completed-volume retry.
-func TestCreateVolume_CompletedRetry_AbsentSnapshotKeyStaysAbsent(t *testing.T) {
+// A connect key the create-time resolution left absent must not be
+// resurrected by a later change to the live PillarProtocol on a
+// completed-volume retry: spec.resolved wins over the CRs.
+func TestCreateVolume_CompletedRetry_AbsentKeyNotResurrected(t *testing.T) {
 	t.Parallel()
-	env, req := newControllerTestEnvWithPVC(t, "default", "pvc-blank-delay", map[string]string{
-		AnnotationProtocolOverride: "nvmeofTcp:\n  ctrlLossTmo: 900\n  reconnectDelay: \"\"\n",
+	env, req := newControllerTestEnvWithPVC(t, "default", "pvc-no-delay", map[string]string{
+		v1alpha1.AnnotationProtocolDoc: "nvmeofTcp:\n  ctrlLossTmo: 900\n",
 	})
-	req.Parameters[paramNVMeOFReconnectDelay] = "5"
 	ctx := context.Background()
 
 	resp, err := env.srv.CreateVolume(ctx, req)
@@ -1957,12 +2210,21 @@ func TestCreateVolume_CompletedRetry_AbsentSnapshotKeyStaysAbsent(t *testing.T) 
 	if got := resp.GetVolume().GetVolumeContext()[paramNVMeOFCtrlLossTmo]; got != "900" {
 		t.Fatalf("first ctrl-loss-tmo = %q, want 900", got)
 	}
-	if got := resp.GetVolume().GetVolumeContext()[paramNVMeOFReconnectDelay]; got != "" {
-		t.Fatalf("first reconnect-delay = %q, want absent (overridden to empty)", got)
+	if got, ok := resp.GetVolume().GetVolumeContext()[paramNVMeOFReconnectDelay]; ok {
+		t.Fatalf("first reconnect-delay = %q, want absent (not configured anywhere)", got)
 	}
 
+	// The protocol gains a reconnectDelay and the claim is deleted.
+	proto := &v1alpha1.PillarProtocol{}
+	if err = env.srv.k8sClient.Get(ctx, ctrlKey(testProtocolName), proto); err != nil {
+		t.Fatalf("get protocol: %v", err)
+	}
+	proto.Spec.Protocol.NVMeOFTCP.ReconnectDelay = testInt32(5)
+	if err = env.srv.k8sClient.Update(ctx, proto); err != nil {
+		t.Fatalf("update protocol: %v", err)
+	}
 	pvc := &corev1.PersistentVolumeClaim{
-		ObjectMeta: metav1.ObjectMeta{Name: "pvc-blank-delay", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "pvc-no-delay", Namespace: "default"},
 	}
 	if delErr := env.srv.k8sClient.Delete(ctx, pvc); delErr != nil {
 		t.Fatalf("delete claim: %v", delErr)
@@ -1976,357 +2238,586 @@ func TestCreateVolume_CompletedRetry_AbsentSnapshotKeyStaysAbsent(t *testing.T) 
 		t.Errorf("retry VolumeContext %v != first %v",
 			resp2.GetVolume().GetVolumeContext(), resp.GetVolume().GetVolumeContext())
 	}
-	if got := resp2.GetVolume().GetVolumeContext()[paramNVMeOFReconnectDelay]; got != "" {
-		t.Errorf("retry reconnect-delay = %q, want absent: snapshot must win over StorageClass", got)
-	}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// LVM mode parameter-parsing unit tests
+// Effective configuration resolution (store → binding → SC docs → PVC docs)
 // ─────────────────────────────────────────────────────────────────────────────
 
-// TestBuildBackendParams_LVM_WithThinMode verifies that buildBackendParams
-// correctly propagates the "thin" provisioning mode from the merged parameter
-// map into LvmVolumeParams.ProvisionMode.
-func TestBuildBackendParams_LVM_WithThinMode(t *testing.T) {
-	t.Parallel()
-
-	params := map[string]string{
-		paramLVMVG:   "data-vg",
-		paramLVMMode: testModeThin,
+// createLVMVolume provisions req on the seeded LVM store through a
+// hand-written StorageClass carrying scBackendDoc (may be empty) and returns
+// the LVM params the agent received.
+func createLVMVolume(
+	t *testing.T, env *controllerTestEnv, req *csi.CreateVolumeRequest, scBackendDoc string,
+) *agentv1.LvmVolumeParams {
+	t.Helper()
+	req.Parameters[paramStoreRef] = testLVMStoreName
+	if scBackendDoc != "" {
+		req.Parameters[paramBackendDoc] = scBackendDoc
 	}
-	got := buildBackendParams(params, agentv1.BackendType_BACKEND_TYPE_LVM)
-	if got == nil {
-		t.Fatal("buildBackendParams returned nil")
+	resp, err := env.srv.CreateVolume(context.Background(), req)
+	if err != nil {
+		t.Fatalf("CreateVolume: %v", err)
 	}
-	lvm := got.GetLvm()
+	if want := "storage-node-1/nvmeof-tcp/lvm-lv/data-vg/" + req.GetName(); resp.GetVolume().GetVolumeId() != want {
+		t.Errorf("VolumeId = %q, want %q", resp.GetVolume().GetVolumeId(), want)
+	}
+	if got := env.agent.lastCreateVolumeReq.GetBackendType(); got != agentv1.BackendType_BACKEND_TYPE_LVM {
+		t.Errorf("agent BackendType = %v, want LVM", got)
+	}
+	lvm := env.agent.lastCreateVolumeReq.GetBackendParams().GetLvm()
 	if lvm == nil {
 		t.Fatal("BackendParams.Lvm is nil")
 	}
 	if lvm.GetVolumeGroup() != "data-vg" {
-		t.Errorf("VolumeGroup = %q, want %q", lvm.GetVolumeGroup(), "data-vg")
+		t.Errorf("VolumeGroup = %q, want data-vg", lvm.GetVolumeGroup())
 	}
-	if lvm.GetProvisionMode() != testModeThin {
-		t.Errorf("ProvisionMode = %q, want %q", lvm.GetProvisionMode(), testModeThin)
+	return lvm
+}
+
+// setLVMStoreMode sets the seeded LVM store's provisioningMode.
+func setLVMStoreMode(t *testing.T, env *controllerTestEnv, mode v1alpha1.LVMProvisioningMode) {
+	t.Helper()
+	store := &v1alpha1.PillarStore{}
+	if err := env.srv.k8sClient.Get(context.Background(), ctrlKey(testLVMStoreName), store); err != nil {
+		t.Fatalf("get store: %v", err)
+	}
+	store.Spec.Backend.LVM.ProvisioningMode = mode
+	if err := env.srv.k8sClient.Update(context.Background(), store); err != nil {
+		t.Fatalf("update store: %v", err)
 	}
 }
 
-// TestBuildBackendParams_LVM_WithLinearMode verifies that "linear" mode is
-// forwarded correctly.
-func TestBuildBackendParams_LVM_WithLinearMode(t *testing.T) {
+// TestCreateVolume_LVMProvisioningModePrecedence verifies the provisioning
+// mode resolution PVC > StorageClass document > store > default "linear",
+// and that the resolved mode is always sent to the agent and persisted.
+func TestCreateVolume_LVMProvisioningModePrecedence(t *testing.T) {
 	t.Parallel()
-
-	params := map[string]string{
-		paramLVMVG:   "fast-vg",
-		paramLVMMode: "linear",
-	}
-	got := buildBackendParams(params, agentv1.BackendType_BACKEND_TYPE_LVM)
-	lvm := got.GetLvm()
-	if lvm == nil {
-		t.Fatal("BackendParams.Lvm is nil")
-	}
-	if lvm.GetProvisionMode() != "linear" {
-		t.Errorf("ProvisionMode = %q, want %q", lvm.GetProvisionMode(), "linear")
-	}
-}
-
-// TestBuildBackendParams_LVM_AbsentMode verifies that when paramLVMMode is
-// absent from the parameter map, ProvisionMode is the empty string (letting the
-// agent backend use its compiled-in default).
-func TestBuildBackendParams_LVM_AbsentMode(t *testing.T) {
-	t.Parallel()
-
-	params := map[string]string{
-		paramLVMVG: "data-vg",
-		// paramLVMMode intentionally absent
-	}
-	got := buildBackendParams(params, agentv1.BackendType_BACKEND_TYPE_LVM)
-	lvm := got.GetLvm()
-	if lvm == nil {
-		t.Fatal("BackendParams.Lvm is nil")
-	}
-	if lvm.GetProvisionMode() != "" {
-		t.Errorf("ProvisionMode = %q, want empty string", lvm.GetProvisionMode())
-	}
-}
-
-// TestBuildBackendParams_LVM_ThinPool verifies that the store's thin pool
-// (lvm-thin-pool StorageClass parameter) reaches the agent as
-// LvmVolumeParams.thin_pool, including an empty value (the store declares no
-// thin pool), so that the agent can refuse a create in a different thin pool
-// (issue #113).  An absent parameter leaves thin_pool unset.
-func TestBuildBackendParams_LVM_ThinPool(t *testing.T) {
-	t.Parallel()
-
-	for name, tc := range map[string]struct {
-		params       map[string]string
-		wantDeclared bool
-		wantThinPool string
+	tests := []struct {
+		name      string
+		storeMode v1alpha1.LVMProvisioningMode
+		scDoc     string
+		pvcDoc    string
+		want      string
 	}{
-		"declared": {
-			params:       map[string]string{paramLVMThinPool: "thin-pool-0"},
-			wantDeclared: true, wantThinPool: "thin-pool-0",
+		{name: "default is linear", want: "linear"},
+		{name: "store thin", storeMode: v1alpha1.LVMProvisioningModeThin, want: testModeThin},
+		{
+			name: "StorageClass document beats store", storeMode: v1alpha1.LVMProvisioningModeThin,
+			scDoc: "lvm:\n  provisioningMode: linear\n", want: "linear",
 		},
-		"declared none": {params: map[string]string{paramLVMThinPool: ""}, wantDeclared: true},
-		"absent":        {params: map[string]string{}},
-	} {
-		t.Run(name, func(t *testing.T) {
+		{
+			name: "PVC document beats StorageClass document", storeMode: v1alpha1.LVMProvisioningModeLinear,
+			scDoc: "lvm:\n  provisioningMode: linear\n", pvcDoc: "lvm:\n  provisioningMode: thin\n", want: testModeThin,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			lvm := buildBackendParams(tc.params, agentv1.BackendType_BACKEND_TYPE_LVM).GetLvm()
-			if lvm == nil {
-				t.Fatal("BackendParams.Lvm is nil")
+			var ann map[string]string
+			if tc.pvcDoc != "" {
+				ann = map[string]string{v1alpha1.AnnotationBackendDoc: tc.pvcDoc}
 			}
-			if (lvm.ThinPool != nil) != tc.wantDeclared || lvm.GetThinPool() != tc.wantThinPool {
-				t.Errorf("ThinPool = %v (%q), want declared=%v %q",
-					lvm.ThinPool != nil, lvm.GetThinPool(), tc.wantDeclared, tc.wantThinPool)
+			env, req := newControllerTestEnvWithPVC(t, "default", "pvc-lvm", ann)
+			if tc.storeMode != "" {
+				setLVMStoreMode(t, env, tc.storeMode)
+			}
+			lvm := createLVMVolume(t, env, req, tc.scDoc)
+			if lvm.GetProvisionMode() != tc.want {
+				t.Errorf("ProvisionMode = %q, want %q", lvm.GetProvisionMode(), tc.want)
+			}
+			resolved := loadResolved(t, env, req.GetName())
+			if resolved.Backend.LVM == nil || string(resolved.Backend.LVM.ProvisioningMode) != tc.want {
+				t.Errorf("spec.resolved.backend.lvm = %+v, want provisioningMode %q", resolved.Backend.LVM, tc.want)
 			}
 		})
 	}
 }
 
-// TestMergeParamsFromCRDs_LVM_PoolDefault verifies that the PillarStore-level
-// LVM provisioning mode (Layer 1) is propagated into the merged parameter map
-// as paramLVMMode when no binding-level override is present.
-func TestMergeParamsFromCRDs_LVM_PoolDefault(t *testing.T) {
+// TestCreateVolume_LVMBindingPrecedence verifies PVC > binding > store for the
+// LVM provisioning mode on the generated StorageClass path.
+func TestCreateVolume_LVMBindingPrecedence(t *testing.T) {
 	t.Parallel()
-
-	scheme := runtime.NewScheme()
-	if err := v1alpha1.AddToScheme(scheme); err != nil {
-		t.Fatalf("AddToScheme v1alpha1: %v", err)
-	}
-	if err := corev1.AddToScheme(scheme); err != nil {
-		t.Fatalf("AddToScheme corev1: %v", err)
-	}
-
-	pool := &v1alpha1.PillarStore{
-		ObjectMeta: metav1.ObjectMeta{Name: "lvm-pool"},
-		Spec: v1alpha1.PillarStoreSpec{
-			AgentRef: "storage-node-1",
-			Backend: v1alpha1.BackendSpec{
-				Type: v1alpha1.BackendTypeLVMLV,
-				LVM: &v1alpha1.LVMBackendConfig{
-					VolumeGroup:      "data-vg",
-					ThinPool:         "thin-pool-0",
-					ProvisioningMode: v1alpha1.LVMProvisioningModeThin,
-				},
-			},
-		},
-	}
-	binding := &v1alpha1.PillarStorageClass{
-		ObjectMeta: metav1.ObjectMeta{Name: "lvm-binding"},
-		Spec: v1alpha1.PillarStorageClassSpec{
-			StoreRef:    "lvm-pool",
-			ProtocolRef: "nvmeof-tcp",
-			// No LVM overrides — pool default should surface.
-		},
-	}
-
-	fakeClient := fake.NewClientBuilder().
-		WithInterceptorFuncs(fakeuid.Interceptor()).
-		WithScheme(scheme).
-		WithObjects(pool, binding).
-		Build()
-
-	srv := NewControllerServerWithDialer(fakeClient, "pillar-csi.bhyoo.com", nil)
-
-	scParams := map[string]string{
-		paramBinding: "lvm-binding",
-	}
-	merged, err := srv.mergeParamsFromCRDs(context.Background(), scParams)
-	if err != nil {
-		t.Fatalf("mergeParamsFromCRDs unexpected error: %v", err)
-	}
-
-	if got := merged[paramLVMMode]; got != testModeThin {
-		t.Errorf("merged[paramLVMMode] = %q, want %q", got, testModeThin)
-	}
-}
-
-// TestMergeParamsFromCRDs_LVM_BindingOverride verifies that the PillarStorageClass-
-// level LVM provisioning mode override (Layer 3) wins over the pool-level
-// default (Layer 1).
-func TestMergeParamsFromCRDs_LVM_BindingOverride(t *testing.T) {
-	t.Parallel()
-
-	scheme := runtime.NewScheme()
-	if err := v1alpha1.AddToScheme(scheme); err != nil {
-		t.Fatalf("AddToScheme v1alpha1: %v", err)
-	}
-	if err := corev1.AddToScheme(scheme); err != nil {
-		t.Fatalf("AddToScheme corev1: %v", err)
-	}
-
-	// Pool default is "linear" …
-	pool := &v1alpha1.PillarStore{
-		ObjectMeta: metav1.ObjectMeta{Name: "lvm-pool2"},
-		Spec: v1alpha1.PillarStoreSpec{
-			AgentRef: "storage-node-1",
-			Backend: v1alpha1.BackendSpec{
-				Type: v1alpha1.BackendTypeLVMLV,
-				LVM: &v1alpha1.LVMBackendConfig{
-					VolumeGroup:      "data-vg",
-					ThinPool:         "thin-pool-0",
-					ProvisioningMode: v1alpha1.LVMProvisioningModeLinear,
-				},
-			},
-		},
-	}
-	// … but binding overrides to "thin".
-	binding := &v1alpha1.PillarStorageClass{
-		ObjectMeta: metav1.ObjectMeta{Name: "lvm-binding2"},
-		Spec: v1alpha1.PillarStorageClassSpec{
-			StoreRef:    "lvm-pool2",
-			ProtocolRef: "nvmeof-tcp",
-			Overrides: &v1alpha1.StorageClassOverrides{
-				Backend: &v1alpha1.BackendOverrides{
-					LVM: &v1alpha1.LVMOverrides{
-						ProvisioningMode: v1alpha1.LVMProvisioningModeThin,
+	for name, tc := range map[string]struct {
+		pvcDoc string
+		want   string
+	}{
+		"binding beats store": {want: testModeThin},
+		"PVC beats binding":   {pvcDoc: "lvm:\n  provisioningMode: linear\n", want: "linear"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			var ann map[string]string
+			if tc.pvcDoc != "" {
+				ann = map[string]string{v1alpha1.AnnotationBackendDoc: tc.pvcDoc}
+			}
+			env, req := newControllerTestEnvWithPVC(t, "default", "pvc-lvm", ann)
+			binding := &v1alpha1.PillarStorageClass{
+				ObjectMeta: metav1.ObjectMeta{Name: "lvm-binding"},
+				Spec: v1alpha1.PillarStorageClassSpec{
+					StoreRef:    testLVMStoreName,
+					ProtocolRef: testProtocolName,
+					Overrides: &v1alpha1.StorageClassOverrides{
+						Backend: &v1alpha1.BackendOverrides{
+							LVM: &v1alpha1.LVMBackendOverrides{ProvisioningMode: v1alpha1.LVMProvisioningModeThin},
+						},
 					},
 				},
-			},
-		},
-	}
+			}
+			if err := env.srv.k8sClient.Create(context.Background(), binding); err != nil {
+				t.Fatalf("create binding: %v", err)
+			}
+			setLVMStoreMode(t, env, v1alpha1.LVMProvisioningModeLinear)
 
-	fakeClient := fake.NewClientBuilder().
-		WithInterceptorFuncs(fakeuid.Interceptor()).
-		WithScheme(scheme).
-		WithObjects(pool, binding).
-		Build()
-
-	srv := NewControllerServerWithDialer(fakeClient, "pillar-csi.bhyoo.com", nil)
-
-	scParams := map[string]string{
-		paramBinding: "lvm-binding2",
-	}
-	merged, err := srv.mergeParamsFromCRDs(context.Background(), scParams)
-	if err != nil {
-		t.Fatalf("mergeParamsFromCRDs unexpected error: %v", err)
-	}
-
-	// The binding override ("thin") must beat the pool default ("linear").
-	if got := merged[paramLVMMode]; got != testModeThin {
-		t.Errorf("merged[paramLVMMode] = %q, want %q (binding override should win)", got, testModeThin)
+			req.Parameters = map[string]string{
+				paramBinding:          binding.Name,
+				paramPVCNameMeta:      "pvc-lvm",
+				paramPVCNamespaceMeta: "default",
+			}
+			if _, err := env.srv.CreateVolume(context.Background(), req); err != nil {
+				t.Fatalf("CreateVolume: %v", err)
+			}
+			lvm := env.agent.lastCreateVolumeReq.GetBackendParams().GetLvm()
+			if lvm.GetVolumeGroup() != "data-vg" || lvm.GetProvisionMode() != tc.want {
+				t.Errorf("Lvm params = %+v, want data-vg / %s", lvm, tc.want)
+			}
+		})
 	}
 }
 
-// TestMergeParamsFromCRDs_LVM_SCOverridePool verifies that an explicit lvm-mode
-// value already present in the StorageClass parameters (Layer 2) takes priority
-// over the PillarStore-level default (Layer 1).  The StorageClass value must be
-// preserved unchanged after mergeParamsFromCRDs returns.
-func TestMergeParamsFromCRDs_LVM_SCOverridePool(t *testing.T) {
+// TestCreateVolume_LVMThinPoolSent verifies that the store's thin pool
+// reaches the agent as LvmVolumeParams.thin_pool, including an empty value
+// when the store declares none, so the agent can refuse a create in a
+// different thin pool (issue #113).
+func TestCreateVolume_LVMThinPoolSent(t *testing.T) {
 	t.Parallel()
-
-	scheme := runtime.NewScheme()
-	if err := v1alpha1.AddToScheme(scheme); err != nil {
-		t.Fatalf("AddToScheme v1alpha1: %v", err)
-	}
-	if err := corev1.AddToScheme(scheme); err != nil {
-		t.Fatalf("AddToScheme corev1: %v", err)
-	}
-
-	// Pool wants "thin" provisioning …
-	pool := &v1alpha1.PillarStore{
-		ObjectMeta: metav1.ObjectMeta{Name: "lvm-pool-sc"},
-		Spec: v1alpha1.PillarStoreSpec{
-			AgentRef: "storage-node-1",
-			Backend: v1alpha1.BackendSpec{
-				Type: v1alpha1.BackendTypeLVMLV,
-				LVM: &v1alpha1.LVMBackendConfig{
-					VolumeGroup:      "data-vg",
-					ThinPool:         "thin-pool-0",
-					ProvisioningMode: v1alpha1.LVMProvisioningModeThin,
-				},
-			},
-		},
-	}
-	binding := &v1alpha1.PillarStorageClass{
-		ObjectMeta: metav1.ObjectMeta{Name: "lvm-binding-sc"},
-		Spec: v1alpha1.PillarStorageClassSpec{
-			StoreRef:    "lvm-pool-sc",
-			ProtocolRef: "nvmeof-tcp",
-			// No LVM overrides — pool default should remain below SC value.
-		},
-	}
-
-	fakeClient := fake.NewClientBuilder().
-		WithInterceptorFuncs(fakeuid.Interceptor()).
-		WithScheme(scheme).
-		WithObjects(pool, binding).
-		Build()
-
-	srv := NewControllerServerWithDialer(fakeClient, "pillar-csi.bhyoo.com", nil)
-
-	// StorageClass explicitly opts into "linear" even though the pool defaults to "thin".
-	scParams := map[string]string{
-		paramBinding: "lvm-binding-sc",
-		paramLVMMode: "linear", // SC override
-	}
-	merged, err := srv.mergeParamsFromCRDs(context.Background(), scParams)
-	if err != nil {
-		t.Fatalf("mergeParamsFromCRDs unexpected error: %v", err)
-	}
-
-	// SC value must win over pool default.
-	if got := merged[paramLVMMode]; got != "linear" {
-		t.Errorf("merged[paramLVMMode] = %q, want %q (SC override should beat pool default)", got, "linear")
+	for name, thinPool := range map[string]string{"declared": "thin-pool-0", "none": ""} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			env := newControllerTestEnv(t)
+			store := &v1alpha1.PillarStore{}
+			if err := env.srv.k8sClient.Get(context.Background(), ctrlKey(testLVMStoreName), store); err != nil {
+				t.Fatalf("get store: %v", err)
+			}
+			store.Spec.Backend.LVM.ThinPool = thinPool
+			if err := env.srv.k8sClient.Update(context.Background(), store); err != nil {
+				t.Fatalf("update store: %v", err)
+			}
+			lvm := createLVMVolume(t, env, baseCreateVolumeRequest(), "")
+			if lvm.ThinPool == nil || lvm.GetThinPool() != thinPool {
+				t.Errorf("ThinPool = %v, want declared %q", lvm.ThinPool, thinPool)
+			}
+		})
 	}
 }
 
-// TestMergeParamsFromCRDs_LVM_NoModeConfigured verifies that paramLVMMode is
-// absent from the merged map when neither the pool nor the binding specifies a
-// provisioning mode.  This lets the agent use its compiled-in default.
-func TestMergeParamsFromCRDs_LVM_NoModeConfigured(t *testing.T) {
-	t.Parallel()
-
-	scheme := runtime.NewScheme()
-	if err := v1alpha1.AddToScheme(scheme); err != nil {
-		t.Fatalf("AddToScheme v1alpha1: %v", err)
-	}
-	if err := corev1.AddToScheme(scheme); err != nil {
-		t.Fatalf("AddToScheme corev1: %v", err)
-	}
-
-	pool := &v1alpha1.PillarStore{
-		ObjectMeta: metav1.ObjectMeta{Name: "lvm-pool3"},
+// zfsPrecedenceStore is a ZFS store whose properties every override layer
+// partially replaces.
+func zfsPrecedenceStore() *v1alpha1.PillarStore {
+	return &v1alpha1.PillarStore{
+		ObjectMeta: metav1.ObjectMeta{Name: "zfs-layers"},
 		Spec: v1alpha1.PillarStoreSpec{
 			AgentRef: "storage-node-1",
-			Backend: v1alpha1.BackendSpec{
-				Type: v1alpha1.BackendTypeLVMLV,
-				LVM: &v1alpha1.LVMBackendConfig{
-					VolumeGroup: "data-vg",
-					// ProvisioningMode deliberately omitted.
-				},
-			},
+			Backend: v1alpha1.BackendSpec{ZFS: &v1alpha1.ZFSBackendConfig{
+				VolumeType:    v1alpha1.ZFSVolumeTypeZvol,
+				Pool:          "hot-data",
+				ParentDataset: "k8s",
+				Properties:    map[string]string{"atime": "store", "compression": "store", "volblocksize": "store"},
+			}},
 		},
 	}
+}
+
+// assertZFSLayers checks the agent received the store's placement and the
+// key-wise merged properties.
+func assertZFSLayers(t *testing.T, env *controllerTestEnv, resp *csi.CreateVolumeResponse, want map[string]string) {
+	t.Helper()
+	// The volume ID carries the physical pool, not the PillarStore name,
+	// and not the parent dataset (the agent applies its own).
+	const wantID = "storage-node-1/nvmeof-tcp/zfs-zvol/hot-data/pvc-zfs"
+	if got := resp.GetVolume().GetVolumeId(); got != wantID {
+		t.Errorf("VolumeId = %q, want %q", got, wantID)
+	}
+	zfs := env.agent.lastCreateVolumeReq.GetBackendParams().GetZfs()
+	if zfs.GetPool() != "hot-data" || zfs.GetParentDataset() != "k8s" {
+		t.Errorf("Zfs placement = pool %q parent %q, want hot-data / k8s", zfs.GetPool(), zfs.GetParentDataset())
+	}
+	if !maps.Equal(zfs.GetProperties(), want) {
+		t.Errorf("Zfs properties = %v, want %v", zfs.GetProperties(), want)
+	}
+}
+
+// TestCreateVolume_ZFSPropertiesPrecedence_Binding verifies PVC > binding >
+// store for ZFS properties on the generated StorageClass path.
+func TestCreateVolume_ZFSPropertiesPrecedence_Binding(t *testing.T) {
+	t.Parallel()
+	env, req := newControllerTestEnvWithPVC(t, "default", "pvc-zfs", map[string]string{
+		v1alpha1.AnnotationBackendDoc: "zfs:\n  properties:\n    volblocksize: pvc\n",
+	})
+	ctx := context.Background()
 	binding := &v1alpha1.PillarStorageClass{
-		ObjectMeta: metav1.ObjectMeta{Name: "lvm-binding3"},
+		ObjectMeta: metav1.ObjectMeta{Name: "zfs-binding"},
 		Spec: v1alpha1.PillarStorageClassSpec{
-			StoreRef:    "lvm-pool3",
-			ProtocolRef: "nvmeof-tcp",
-			// No overrides.
+			StoreRef:    "zfs-layers",
+			ProtocolRef: testProtocolName,
+			Overrides: &v1alpha1.StorageClassOverrides{Backend: &v1alpha1.BackendOverrides{
+				ZFS: &v1alpha1.ZFSBackendOverrides{Properties: map[string]string{
+					"compression": "binding", "volblocksize": "binding",
+				}},
+			}},
 		},
 	}
-
-	fakeClient := fake.NewClientBuilder().
-		WithInterceptorFuncs(fakeuid.Interceptor()).
-		WithScheme(scheme).
-		WithObjects(pool, binding).
-		Build()
-
-	srv := NewControllerServerWithDialer(fakeClient, "pillar-csi.bhyoo.com", nil)
-
-	scParams := map[string]string{
-		paramBinding: "lvm-binding3",
+	for _, obj := range []ctrlclient.Object{zfsPrecedenceStore(), binding} {
+		if err := env.srv.k8sClient.Create(ctx, obj); err != nil {
+			t.Fatalf("create %s: %v", obj.GetName(), err)
+		}
 	}
-	merged, err := srv.mergeParamsFromCRDs(context.Background(), scParams)
+	req.Name = "pvc-zfs"
+	req.Parameters = map[string]string{
+		paramBinding:          binding.Name,
+		paramPVCNameMeta:      "pvc-zfs",
+		paramPVCNamespaceMeta: "default",
+	}
+
+	resp, err := env.srv.CreateVolume(ctx, req)
 	if err != nil {
-		t.Fatalf("mergeParamsFromCRDs unexpected error: %v", err)
+		t.Fatalf("CreateVolume: %v", err)
+	}
+	assertZFSLayers(t, env, resp, map[string]string{"atime": "store", "compression": "binding", "volblocksize": "pvc"})
+}
+
+// TestCreateVolume_ZFSPropertiesPrecedence_HandWritten verifies PVC >
+// StorageClass document > store for ZFS properties on a hand-written
+// StorageClass.
+func TestCreateVolume_ZFSPropertiesPrecedence_HandWritten(t *testing.T) {
+	t.Parallel()
+	env, req := newControllerTestEnvWithPVC(t, "default", "pvc-zfs", map[string]string{
+		v1alpha1.AnnotationBackendDoc: "zfs:\n  properties:\n    volblocksize: pvc\n",
+	})
+	if err := env.srv.k8sClient.Create(context.Background(), zfsPrecedenceStore()); err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	req.Name = "pvc-zfs"
+	req.Parameters[paramStoreRef] = "zfs-layers"
+	req.Parameters[paramBackendDoc] = "zfs:\n  properties:\n    compression: sc\n    volblocksize: sc\n"
+
+	resp, err := env.srv.CreateVolume(context.Background(), req)
+	if err != nil {
+		t.Fatalf("CreateVolume: %v", err)
+	}
+	assertZFSLayers(t, env, resp, map[string]string{"atime": "store", "compression": "sc", "volblocksize": "pvc"})
+}
+
+// TestCreateVolume_PVCBackendMemberMustMatchStore verifies that a PVC backend
+// document naming the other backend is rejected rather than ignored.
+func TestCreateVolume_PVCBackendMemberMustMatchStore(t *testing.T) {
+	t.Parallel()
+	env, req := newControllerTestEnvWithPVC(t, "default", "pvc-mismatch", map[string]string{
+		v1alpha1.AnnotationBackendDoc: "lvm:\n  provisioningMode: thin\n",
+	})
+	_, err := env.srv.CreateVolume(context.Background(), req)
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("CreateVolume err = %v, want InvalidArgument (lvm document on a zfs store)", err)
+	}
+	if env.agent.createVolumeCalls != 0 {
+		t.Error("agent contacted despite mismatched backend document")
+	}
+}
+
+// TestCreateVolume_ProtocolACLAndPort verifies that the protocol's acl and
+// port reach ExportVolume and the durable exportSpec.
+func TestCreateVolume_ProtocolACLAndPort(t *testing.T) {
+	t.Parallel()
+	env := newControllerTestEnv(t, &v1alpha1.PillarProtocol{
+		ObjectMeta: metav1.ObjectMeta{Name: "nvme-acl"},
+		Spec: v1alpha1.PillarProtocolSpec{Protocol: v1alpha1.ProtocolSpec{
+			NVMeOFTCP: &v1alpha1.NVMeOFTCPConfig{Port: 4421, ACL: true},
+		}},
+	})
+	req := baseCreateVolumeRequest()
+	req.Parameters[paramProtocolRef] = "nvme-acl"
+	if _, err := env.srv.CreateVolume(context.Background(), req); err != nil {
+		t.Fatalf("CreateVolume: %v", err)
+	}
+	exp := env.agent.lastExportVolumeReq
+	if !exp.GetAclEnabled() || exp.GetExportParams().GetNvmeofTcp().GetPort() != 4421 {
+		t.Errorf("ExportVolume acl=%v port=%d, want true / 4421",
+			exp.GetAclEnabled(), exp.GetExportParams().GetNvmeofTcp().GetPort())
+	}
+	pvs, _, err := env.srv.loadPillarVolumeState(context.Background(), req.GetName())
+	if err != nil {
+		t.Fatalf("load PillarVolumeState: %v", err)
+	}
+	if spec := pvs.Status.ExportSpec; spec == nil || !spec.ACLEnabled || spec.Port != 4421 {
+		t.Errorf("status.exportSpec = %+v, want aclEnabled / port 4421", spec)
+	}
+}
+
+// filesystemBinding is a PillarStorageClass carrying the filesystem axis and
+// a protocol override.
+func filesystemBinding() *v1alpha1.PillarStorageClass {
+	mkfs := []string{"-K"}
+	mount := []string{"noatime"}
+	return &v1alpha1.PillarStorageClass{
+		ObjectMeta: metav1.ObjectMeta{Name: "xfs-binding"},
+		Spec: v1alpha1.PillarStorageClassSpec{
+			StoreRef:    testStoreName,
+			ProtocolRef: testProtocolName,
+			Filesystem:  &v1alpha1.FilesystemConfig{FSType: "xfs", MkfsOptions: &mkfs, MountOptions: &mount},
+			Overrides: &v1alpha1.StorageClassOverrides{Protocol: &v1alpha1.ProtocolOverrides{
+				NVMeOFTCP: &v1alpha1.NVMeOFTCPOverrides{MaxQueueSize: testInt32(128)},
+			}},
+		},
+	}
+}
+
+// createWithFilesystemBinding provisions a Mount volume through a generated
+// StorageClass (binding + csi fstype) for a claim carrying ann.
+func createWithFilesystemBinding(
+	t *testing.T, ann map[string]string,
+) (*controllerTestEnv, *csi.CreateVolumeResponse, error) {
+	t.Helper()
+	env, req := newControllerTestEnvWithPVC(t, "default", "pvc-fs", ann)
+	if err := env.srv.k8sClient.Create(context.Background(), filesystemBinding()); err != nil {
+		t.Fatalf("create binding: %v", err)
+	}
+	req.Parameters = map[string]string{
+		paramBinding:          "xfs-binding",
+		paramFSTypeSC:         "xfs",
+		paramPVCNameMeta:      "pvc-fs",
+		paramPVCNamespaceMeta: "default",
+	}
+	req.VolumeCapabilities = []*csi.VolumeCapability{{
+		AccessType: &csi.VolumeCapability_Mount{Mount: &csi.VolumeCapability_MountVolume{FsType: "xfs"}},
+		AccessMode: &csi.VolumeCapability_AccessMode{Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER},
+	}}
+	resp, err := env.srv.CreateVolume(context.Background(), req)
+	return env, resp, err
+}
+
+// TestCreateVolume_BindingFilesystemAndProtocolOverride verifies that the
+// binding's filesystem axis and protocol override reach the node through the
+// VolumeContext, including the binding's mountOptions (resolved, so the node
+// applies them even though the kubelet passes the StorageClass's own list).
+func TestCreateVolume_BindingFilesystemAndProtocolOverride(t *testing.T) {
+	t.Parallel()
+	env, resp, err := createWithFilesystemBinding(t, nil)
+	if err != nil {
+		t.Fatalf("CreateVolume: %v", err)
+	}
+	vc := resp.GetVolume().GetVolumeContext()
+	if vc[paramFSType] != "xfs" {
+		t.Errorf("VolumeContext[%s] = %q, want xfs", paramFSType, vc[paramFSType])
+	}
+	var mkfs []string
+	err = json.Unmarshal([]byte(vc[paramMkfsOptions]), &mkfs)
+	if err != nil || !slices.Equal(mkfs, []string{"-K"}) {
+		t.Errorf("VolumeContext[%s] = %q, want [\"-K\"]", paramMkfsOptions, vc[paramMkfsOptions])
+	}
+	if vc[paramNVMeOFMaxQueueSize] != "128" {
+		t.Errorf("VolumeContext[%s] = %q, want 128 (binding override)", paramNVMeOFMaxQueueSize, vc[paramNVMeOFMaxQueueSize])
+	}
+	var mount []string
+	err = json.Unmarshal([]byte(vc[paramMountOptions]), &mount)
+	if err != nil || !slices.Equal(mount, []string{"noatime"}) {
+		t.Errorf("VolumeContext[%s] = %q, want [\"noatime\"]", paramMountOptions, vc[paramMountOptions])
+	}
+	resolved := loadResolved(t, env, "pvc-abc123")
+	if resolved.Filesystem == nil || resolved.Filesystem.FSType != "xfs" {
+		t.Errorf("spec.resolved.filesystem = %+v, want fsType xfs", resolved.Filesystem)
+	}
+}
+
+// TestCreateVolume_FilesystemListSemantics verifies list semantics from the
+// binding to the PVC layer: an omitted (or null) list inherits the binding's,
+// an explicit [] clears it (mkfs options disappear; mount options are sent as
+// "[]" so the node drops the StorageClass flags), a set list replaces it.
+func TestCreateVolume_FilesystemListSemantics(t *testing.T) {
+	t.Parallel()
+	const absent = "<absent>"
+	for name, tc := range map[string]struct {
+		pvcDoc    string
+		wantMkfs  string
+		wantMount string
+	}{
+		"PVC omits both lists": {wantMkfs: `["-K"]`, wantMount: `["noatime"]`},
+		"PVC null lists inherit": {
+			pvcDoc: "mkfsOptions: null\nmountOptions: null\n", wantMkfs: `["-K"]`, wantMount: `["noatime"]`,
+		},
+		"PVC clears mkfsOptions":  {pvcDoc: "mkfsOptions: []\n", wantMkfs: absent, wantMount: `["noatime"]`},
+		"PVC clears mountOptions": {pvcDoc: "mountOptions: []\n", wantMkfs: `["-K"]`, wantMount: `[]`},
+		"PVC replaces mountOptions": {
+			pvcDoc: "mountOptions: [nodiscard]\n", wantMkfs: `["-K"]`, wantMount: `["nodiscard"]`,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			var ann map[string]string
+			if tc.pvcDoc != "" {
+				ann = map[string]string{v1alpha1.AnnotationFilesystemDoc: tc.pvcDoc}
+			}
+			_, resp, err := createWithFilesystemBinding(t, ann)
+			if err != nil {
+				t.Fatalf("CreateVolume: %v", err)
+			}
+			vc := resp.GetVolume().GetVolumeContext()
+			for key, want := range map[string]string{paramMkfsOptions: tc.wantMkfs, paramMountOptions: tc.wantMount} {
+				got, ok := vc[key]
+				if !ok {
+					got = absent
+				}
+				if got != want {
+					t.Errorf("VolumeContext[%s] = %s, want %s", key, got, want)
+				}
+			}
+		})
+	}
+}
+
+// TestCreateVolume_NVMeoFTuningPrecedence verifies PVC > binding > protocol
+// (generated StorageClass) and PVC > StorageClass document > protocol
+// (hand-written StorageClass) for every per-volume NVMe-oF tunable: the
+// connect settings reach the VolumeContext, inCapsuleDataSize reaches
+// ExportVolume.
+func TestCreateVolume_NVMeoFTuningPrecedence(t *testing.T) {
+	t.Parallel()
+	protocol := &v1alpha1.PillarProtocol{
+		ObjectMeta: metav1.ObjectMeta{Name: "nvme-tuned"},
+		Spec: v1alpha1.PillarProtocolSpec{Protocol: v1alpha1.ProtocolSpec{NVMeOFTCP: &v1alpha1.NVMeOFTCPConfig{
+			Port:              4420,
+			MaxQueueSize:      testInt32(32),
+			InCapsuleDataSize: testInt32(4096),
+			CtrlLossTmo:       testInt32(600),
+			ReconnectDelay:    testInt32(10),
+		}}},
+	}
+	// Middle layer sets three fields, the PVC one; each layer leaves the
+	// rest to the layer below.
+	const middleDoc = "nvmeofTcp:\n  maxQueueSize: 64\n  inCapsuleDataSize: 8192\n  ctrlLossTmo: 1200\n"
+	const pvcDoc = "nvmeofTcp:\n  ctrlLossTmo: 1800\n"
+	check := func(t *testing.T, env *controllerTestEnv, resp *csi.CreateVolumeResponse) {
+		t.Helper()
+		vc := resp.GetVolume().GetVolumeContext()
+		for key, want := range map[string]string{
+			paramNVMeOFMaxQueueSize:   "64",   // middle layer
+			paramNVMeOFCtrlLossTmo:    "1800", // PVC
+			paramNVMeOFReconnectDelay: "10",   // protocol
+		} {
+			if vc[key] != want {
+				t.Errorf("VolumeContext[%s] = %q, want %q", key, vc[key], want)
+			}
+		}
+		if got := env.agent.lastExportVolumeReq.GetExportParams().GetNvmeofTcp().GetInCapsuleDataSize(); got != 8192 {
+			t.Errorf("ExportVolume in_capsule_data_size = %d, want 8192 (middle layer)", got)
+		}
 	}
 
-	// paramLVMMode must not be set — absent key means "use agent default".
-	if got, present := merged[paramLVMMode]; present {
-		t.Errorf("merged[paramLVMMode] = %q, want key absent", got)
+	t.Run("binding", func(t *testing.T) {
+		t.Parallel()
+		env, req := newControllerTestEnvWithPVC(t, "default", "pvc-nvme", map[string]string{
+			v1alpha1.AnnotationProtocolDoc: pvcDoc,
+		})
+		binding := &v1alpha1.PillarStorageClass{
+			ObjectMeta: metav1.ObjectMeta{Name: "nvme-binding"},
+			Spec: v1alpha1.PillarStorageClassSpec{
+				StoreRef:    testStoreName,
+				ProtocolRef: protocol.Name,
+				Overrides: &v1alpha1.StorageClassOverrides{Protocol: &v1alpha1.ProtocolOverrides{
+					NVMeOFTCP: &v1alpha1.NVMeOFTCPOverrides{
+						MaxQueueSize: testInt32(64), InCapsuleDataSize: testInt32(8192), CtrlLossTmo: testInt32(1200),
+					},
+				}},
+			},
+		}
+		for _, obj := range []ctrlclient.Object{protocol.DeepCopy(), binding} {
+			if err := env.srv.k8sClient.Create(context.Background(), obj); err != nil {
+				t.Fatalf("create %s: %v", obj.GetName(), err)
+			}
+		}
+		req.Parameters = map[string]string{
+			paramBinding:          binding.Name,
+			paramPVCNameMeta:      "pvc-nvme",
+			paramPVCNamespaceMeta: "default",
+		}
+		resp, err := env.srv.CreateVolume(context.Background(), req)
+		if err != nil {
+			t.Fatalf("CreateVolume: %v", err)
+		}
+		check(t, env, resp)
+	})
+
+	t.Run("hand-written", func(t *testing.T) {
+		t.Parallel()
+		env, req := newControllerTestEnvWithPVC(t, "default", "pvc-nvme", map[string]string{
+			v1alpha1.AnnotationProtocolDoc: pvcDoc,
+		})
+		if err := env.srv.k8sClient.Create(context.Background(), protocol.DeepCopy()); err != nil {
+			t.Fatalf("create protocol: %v", err)
+		}
+		req.Parameters[paramProtocolRef] = protocol.Name
+		req.Parameters[paramProtocolDoc] = middleDoc
+		resp, err := env.srv.CreateVolume(context.Background(), req)
+		if err != nil {
+			t.Fatalf("CreateVolume: %v", err)
+		}
+		check(t, env, resp)
+	})
+}
+
+// TestCreateVolume_DocumentShapeSameOnPVCAndStorageClass verifies that the
+// identical three documents are accepted both as PVC annotations and as
+// hand-written StorageClass parameters and resolve to the same volume.
+func TestCreateVolume_DocumentShapeSameOnPVCAndStorageClass(t *testing.T) {
+	t.Parallel()
+	docs := map[string]string{
+		v1alpha1.AnnotationBackendDoc:    "zfs:\n  properties:\n    volblocksize: 16K\n",
+		v1alpha1.AnnotationProtocolDoc:   "nvmeofTcp:\n  maxQueueSize: 64\n",
+		v1alpha1.AnnotationFilesystemDoc: "fsType: xfs\nmkfsOptions: [\"-K\"]\nmountOptions: [noatime]\n",
+	}
+	create := func(t *testing.T, onPVC bool) (*controllerTestEnv, *csi.CreateVolumeResponse) {
+		t.Helper()
+		var ann map[string]string
+		if onPVC {
+			ann = docs
+		}
+		env, req := newControllerTestEnvWithPVC(t, "default", "pvc-docs", ann)
+		if !onPVC {
+			maps.Copy(req.Parameters, docs)
+		}
+		req = mountCreateVolumeRequest(req, "xfs")
+		resp, err := env.srv.CreateVolume(context.Background(), req)
+		if err != nil {
+			t.Fatalf("CreateVolume (onPVC=%v): %v", onPVC, err)
+		}
+		return env, resp
+	}
+	pvcEnv, pvcResp := create(t, true)
+	scEnv, scResp := create(t, false)
+	if !maps.Equal(pvcResp.GetVolume().GetVolumeContext(), scResp.GetVolume().GetVolumeContext()) {
+		t.Errorf("VolumeContext differs: PVC %v, StorageClass %v",
+			pvcResp.GetVolume().GetVolumeContext(), scResp.GetVolume().GetVolumeContext())
+	}
+	pvcProps := pvcEnv.agent.lastCreateVolumeReq.GetBackendParams().GetZfs().GetProperties()
+	scProps := scEnv.agent.lastCreateVolumeReq.GetBackendParams().GetZfs().GetProperties()
+	if pvcProps["volblocksize"] != "16K" || !maps.Equal(pvcProps, scProps) {
+		t.Errorf("zfs properties: PVC %v, StorageClass %v, want volblocksize=16K on both", pvcProps, scProps)
+	}
+}
+
+// TestCreateVolume_PVCFsTypeRevalidatesInheritedMkfsOptions verifies that the
+// mkfs allowlist is checked against the effective fsType: a claim switching
+// to ext4 while inheriting the class's xfs-only "-K" is rejected before
+// provisioning.
+func TestCreateVolume_PVCFsTypeRevalidatesInheritedMkfsOptions(t *testing.T) {
+	t.Parallel()
+	env, _, err := createWithFilesystemBinding(t, map[string]string{
+		v1alpha1.AnnotationFilesystemDoc: "fsType: ext4\n",
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("CreateVolume err = %v, want InvalidArgument (-K is not an ext4 option)", err)
+	}
+	if env.agent.createVolumeCalls != 0 {
+		t.Error("agent contacted despite invalid mkfs options")
 	}
 }
 
@@ -2335,9 +2826,10 @@ func TestMergeParamsFromCRDs_LVM_NoModeConfigured(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // newPublishTestEnv builds a ControllerServer wired to a fake k8s client that
-// has a PillarAgent but no CSINode and no PillarVolumeState by default.
-// Callers seed CSINode objects and the volume's PillarVolumeState (see
-// volumeStateFor) as needed for each test case.
+// has a PillarAgent and the configuration CRs of testConfigObjects (so
+// baseCreateVolumeRequest resolves) but no CSINode and no PillarVolumeState
+// by default.  Callers seed CSINode objects and the volume's
+// PillarVolumeState (see volumeStateFor) as needed for each test case.
 func newPublishTestEnv(t *testing.T, objs ...ctrlclient.Object) *controllerTestEnv {
 	t.Helper()
 
@@ -2359,7 +2851,7 @@ func newPublishTestEnv(t *testing.T, objs ...ctrlclient.Object) *controllerTestE
 		},
 	}
 
-	allObjs := append([]ctrlclient.Object{target}, objs...)
+	allObjs := append(append(testConfigObjects(), target), objs...)
 	fakeClient := fake.NewClientBuilder().
 		WithInterceptorFuncs(fakeuid.Interceptor()).
 		WithScheme(scheme).
@@ -2510,107 +3002,13 @@ func TestControllerPublishVolume_SuccessWithAnnotation(t *testing.T) {
 	}
 }
 
-// TestControllerPublishVolume_FailedPrecondition_ISCSIAnnotationMissing verifies
-// that ControllerPublishVolume returns FailedPrecondition for the iSCSI protocol
-// when the iscsi-initiator-iqn annotation is absent.
-func TestControllerPublishVolume_FailedPrecondition_ISCSIAnnotationMissing(t *testing.T) {
-	t.Parallel()
-
-	// CSINode exists but has no iSCSI IQN annotation.
-	csiNode := &storagev1.CSINode{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "worker-node-1",
-			// No iscsi-initiator-iqn annotation.
-		},
-	}
-	env := newPublishTestEnv(t, csiNode, volumeStateFor("storage-node-1/iscsi/zfs-zvol/tank/pvc-abc123"))
-	ctx := context.Background()
-
-	req := &csi.ControllerPublishVolumeRequest{
-		VolumeId: "storage-node-1/iscsi/zfs-zvol/tank/pvc-abc123",
-		NodeId:   "worker-node-1",
-		VolumeCapability: &csi.VolumeCapability{
-			AccessType: &csi.VolumeCapability_Block{
-				Block: &csi.VolumeCapability_BlockVolume{},
-			},
-			AccessMode: &csi.VolumeCapability_AccessMode{
-				Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER,
-			},
-		},
-	}
-
-	_, err := env.srv.ControllerPublishVolume(ctx, req)
-	if err == nil {
-		t.Fatal("expected FailedPrecondition error, got nil")
-	}
-
-	st, ok := status.FromError(err)
-	if !ok {
-		t.Fatalf("expected gRPC status error, got: %v", err)
-	}
-	if st.Code() != codes.FailedPrecondition {
-		t.Errorf("error code = %v, want %v", st.Code(), codes.FailedPrecondition)
-	}
-}
-
-func TestValidateVolumeCapabilities_RejectsRawBlockForFileProtocols(t *testing.T) {
-	t.Parallel()
-
-	testCases := []struct {
-		name     string
-		protocol string
-	}{
-		{name: "nfs", protocol: string(v1alpha1.ProtocolTypeNFS)},
-		{name: "smb", protocol: string(v1alpha1.ProtocolTypeSMB)},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			env := newControllerTestEnv(t)
-			seedPillarVolumeState(t, env, "pvc-abc123")
-			req := &csi.ValidateVolumeCapabilitiesRequest{
-				VolumeId: "storage-node-1/" + tc.protocol + "/zfs-dataset/tank/pvc-abc123",
-				VolumeCapabilities: []*csi.VolumeCapability{
-					{
-						AccessType: &csi.VolumeCapability_Block{
-							Block: &csi.VolumeCapability_BlockVolume{},
-						},
-						AccessMode: &csi.VolumeCapability_AccessMode{
-							Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER,
-						},
-					},
-				},
-			}
-
-			_, err := env.srv.ValidateVolumeCapabilities(context.Background(), req)
-			if err == nil {
-				t.Fatal("expected InvalidArgument error, got nil")
-			}
-
-			st, ok := status.FromError(err)
-			if !ok {
-				t.Fatalf("expected gRPC status error, got: %v", err)
-			}
-			if st.Code() != codes.InvalidArgument {
-				t.Fatalf("error code = %v, want %v", st.Code(), codes.InvalidArgument)
-			}
-			const wantMessage = "raw block volume mode is not supported with file protocols (NFS/SMB)"
-			if st.Message() != wantMessage {
-				t.Fatalf("error message = %q, want %q", st.Message(), wantMessage)
-			}
-		})
-	}
-}
-
-func TestValidateVolumeCapabilities_AllowsFilesystemVolumeModeForFileProtocol(t *testing.T) {
+func TestValidateVolumeCapabilities_AllowsFilesystemVolumeMode(t *testing.T) {
 	t.Parallel()
 
 	env := newControllerTestEnv(t)
 	seedPillarVolumeState(t, env, "pvc-abc123")
 	req := &csi.ValidateVolumeCapabilitiesRequest{
-		VolumeId: "storage-node-1/nfs/zfs-dataset/tank/pvc-abc123",
+		VolumeId: "storage-node-1/nvmeof-tcp/zfs-zvol/tank/pvc-abc123",
 		VolumeCapabilities: []*csi.VolumeCapability{
 			{
 				AccessType: &csi.VolumeCapability_Mount{
@@ -2639,7 +3037,6 @@ func TestValidateVolumeCapabilities_AllowsFilesystemVolumeModeForFileProtocol(t 
 const (
 	exclNode1 = "worker-node-1"
 	exclNode2 = "worker-node-2"
-	exclNFSID = "storage-node-1/nfs/nfs-share/tank/pvc-abc123"
 )
 
 // exclNQN returns the NVMe-oF host NQN the fixture CSINode reports for node.
@@ -2672,7 +3069,7 @@ func exclPublishReq(
 }
 
 // exclPub builds the publication record ControllerPublishVolume writes for
-// an NVMe-oF node (or, for file protocols, initiator == nodeID).
+// an NVMe-oF node.
 func exclPub(
 	node, initiator string,
 	mode csi.VolumeCapability_AccessMode_Mode,
@@ -2771,15 +3168,6 @@ func TestControllerPublishVolume_Exclusivity(t *testing.T) {
 			exclPublishReq(blockID, exclNode2, mnro, true), codes.OK, 2},
 		{"block protocol rejects MULTI_NODE_MULTI_WRITER", blockID, nil,
 			exclPublishReq(blockID, exclNode1, mnmw, false), codes.InvalidArgument, 0},
-		{"file protocol MULTI_NODE_MULTI_WRITER shares across nodes", exclNFSID,
-			[]v1alpha1.VolumePublication{exclPub(exclNode1, exclNode1, mnmw, false)},
-			exclPublishReq(exclNFSID, exclNode2, mnmw, false), codes.OK, 2},
-		{"file protocol MULTI_NODE_SINGLE_WRITER rejects second writer", exclNFSID,
-			[]v1alpha1.VolumePublication{exclPub(exclNode1, exclNode1, mnsw, false)},
-			exclPublishReq(exclNFSID, exclNode2, mnsw, false), codes.FailedPrecondition, 1},
-		{"file protocol MULTI_NODE_SINGLE_WRITER admits a reader", exclNFSID,
-			[]v1alpha1.VolumePublication{exclPub(exclNode1, exclNode1, mnsw, false)},
-			exclPublishReq(exclNFSID, exclNode2, mnsw, true), codes.OK, 2},
 	}
 
 	for _, tc := range testCases {

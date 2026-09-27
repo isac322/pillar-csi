@@ -185,3 +185,68 @@ when dialing the agent.  Resolution order:
 {{ printf "%s-agent.%s.svc" (include "pillar-csi.fullname" .) (include "pillar-csi.namespace" .) }}
 {{- end -}}
 {{- end }}
+
+{{/*
+Agent placement config file (mounted into the agent at
+pillar-csi.agent.configPath and passed via --config).  .Values.agent.backends
+is rendered verbatim: its entries already have the shape the agent decodes
+(same keys as PillarStore.spec.backend), and the agent rejects unknown fields
+with their path.  The chart checks only what would otherwise ship a
+crash-looping DaemonSet:
+  - every entry sets exactly one of zfs or lvm;
+  - the routing key (zfs.pool / lvm.volumeGroup) is set;
+  - no routing key appears twice.  Volumes are routed to a backend by
+    pool/VG name alone, so a ZFS pool and an LVM VG must not share a name
+    either.  Keys are trimmed so " tank " and "tank" collide.
+*/}}
+{{- define "pillar-csi.agent.config" -}}
+{{- $backends := .Values.agent.backends | default list }}
+{{- if not (kindIs "slice" $backends) }}
+{{- fail "agent.backends must be a list of {zfs: {...}} or {lvm: {...}} entries" }}
+{{- end }}
+{{- $seen := dict }}
+{{- range $i, $entry := $backends }}
+{{- if not (kindIs "map" $entry) }}
+{{- fail (printf "agent.backends[%d] must be a mapping with exactly one of zfs or lvm" $i) }}
+{{- end }}
+{{- $members := keys $entry | sortAlpha }}
+{{- if ne (len $members) 1 }}
+{{- fail (printf "agent.backends[%d]: exactly one of zfs or lvm must be set, got %v" $i $members) }}
+{{- end }}
+{{- $member := first $members }}
+{{- $body := get $entry $member }}
+{{- if not (kindIs "map" $body) }}
+{{- fail (printf "agent.backends[%d].%s must be a mapping" $i $member) }}
+{{- end }}
+{{- $key := "" }}
+{{- if eq $member "zfs" }}
+{{- $key = required (printf "agent.backends[%d].zfs.pool is required" $i) (get $body "pool") }}
+{{- else if eq $member "lvm" }}
+{{- $key = required (printf "agent.backends[%d].lvm.volumeGroup is required" $i) (get $body "volumeGroup") }}
+{{- else }}
+{{- fail (printf "agent.backends[%d].%s is not a supported backend; use zfs or lvm" $i $member) }}
+{{- end }}
+{{- $normKey := trim (toString $key) }}
+{{- if hasKey $seen $normKey }}
+{{- fail (printf "agent.backends: pool/VG %q appears in more than one entry; each ZFS pool and LVM VG name must be unique across agent.backends" $normKey) }}
+{{- end }}
+{{- $_ := set $seen $normKey true }}
+{{- end }}
+{{- if $backends -}}
+backends:
+{{- toYaml $backends | nindent 2 }}
+{{- else -}}
+backends: []
+{{- end }}
+{{- end }}
+
+{{/*
+Directory and file path of the agent config file inside the agent container.
+*/}}
+{{- define "pillar-csi.agent.configDir" -}}
+/etc/pillar-agent
+{{- end }}
+
+{{- define "pillar-csi.agent.configPath" -}}
+{{ include "pillar-csi.agent.configDir" . }}/config.yaml
+{{- end }}

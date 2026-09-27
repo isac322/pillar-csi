@@ -14,7 +14,7 @@ package e2e
 //	"envtest"    → runEnvtestTCBody(tc)
 //	"cluster"    → runClusterTCBody(tc)
 //
-// E33, E34, E35, F27–F31 are NOT dispatched through runTCBody.
+// E33 and F27–F31 are NOT dispatched through runTCBody.
 // Their specs live directly in *_e2e_test.go files with Label("default-profile")
 // and run under the default label filter without going through the catalog.
 //

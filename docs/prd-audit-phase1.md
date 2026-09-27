@@ -3,6 +3,8 @@
 > For the current status see
 > [docs/prd-audit-phase1-2026-06.md](./prd-audit-phase1-2026-06.md)
 > (dated 2026-06-21).
+>
+> The configuration vocabulary cited below (`spec.backend.type`, `spec.type`, and the `backend-override`/`protocol-override`/`fs-override` annotations) has since been removed. For the current interface see [docs/PRD.md](./PRD.md) §2.1–§2.3.
 
 # Phase 1 PRD Audit — Implementation Status
 

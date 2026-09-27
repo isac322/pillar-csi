@@ -20,6 +20,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -38,6 +39,9 @@ import (
 //   - spec.storeRef must be non-empty (MinLength=1)
 //   - spec.protocolRef must be non-empty (MinLength=1)
 //   - spec.storageClass.reclaimPolicy must be one of the allowed enum values (Delete, Retain)
+//   - spec.filesystem.fsType must be one of the allowed enum values (ext4, xfs)
+//   - spec.overrides.backend and spec.overrides.protocol are exactly-one unions
+//   - the removed spec.overrides.fsType/mkfsOptions fields are rejected
 //
 // All tests exercise the real CRD validation path by sending invalid objects and
 // expecting a 422 UnprocessableEntity response with a descriptive validation error.
@@ -169,5 +173,77 @@ var _ = Describe("PillarStorageClass CRD Schema Validation", func() {
 			"HTTP status code should be 422 UnprocessableEntity for enum violation")
 
 		DeferCleanup(func() { deleteBindingIfExists("crd-test-invalid-reclaim") })
+	})
+
+	// applyBinding server-side applies a PillarStorageClass named name with the
+	// given raw spec JSON and returns the API server's answer.
+	applyBinding := func(name, spec string) error {
+		DeferCleanup(func() { deleteBindingIfExists(name) })
+		rawJSON := []byte(fmt.Sprintf(`{
+			"apiVersion": "pillar-csi.bhyoo.com/v1alpha1",
+			"kind": "PillarStorageClass",
+			"metadata": {"name": %q},
+			"spec": %s
+		}`, name, spec))
+		return k8sClient.Patch(
+			crdCtx,
+			&pillarcsiv1alpha1.PillarStorageClass{ObjectMeta: metav1.ObjectMeta{Name: name}},
+			client.RawPatch(types.ApplyPatchType, rawJSON),
+			client.ForceOwnership,
+			client.FieldOwner("e2e-test"),
+		)
+	}
+
+	expectUnprocessable := func(err error, contains string) {
+		Expect(err).To(HaveOccurred())
+		statusErr, ok := err.(*errors.StatusError)
+		Expect(ok).To(BeTrue(), "error should be a *errors.StatusError: %v", err)
+		Expect(statusErr.ErrStatus.Code).To(Equal(int32(422)),
+			"HTTP status code should be 422 UnprocessableEntity: %v", err)
+		Expect(err.Error()).To(ContainSubstring(contains))
+	}
+
+	// ── E25.2.4 — TestPillarStorageClassCRD_InvalidCreate_InvalidFSType ──────
+	It("Should reject spec.filesystem.fsType outside the enum (btrfs)", func() {
+		err := applyBinding("crd-test-fstype",
+			`{"storeRef": "p", "protocolRef": "q", "filesystem": {"fsType": "btrfs"}}`)
+		expectUnprocessable(err, "spec.filesystem.fsType")
+	})
+
+	// ── E25.2.5 — TestPillarStorageClassCRD_InvalidCreate_TwoBackendOverrides ─
+	It("Should reject spec.overrides.backend with both zfs and lvm", func() {
+		err := applyBinding("crd-test-two-backend-overrides", `{"storeRef": "p", "protocolRef": "q",
+			"overrides": {"backend": {"zfs": {"properties": {"compression": "zstd"}}, "lvm": {"provisioningMode": "thin"}}}}`)
+		expectUnprocessable(err, "exactly one of zfs or lvm must be set")
+	})
+
+	// ── E25.2.6 — TestPillarStorageClassCRD_InvalidCreate_EmptyBackendOverrides
+	It("Should reject spec.overrides.backend without a member", func() {
+		err := applyBinding("crd-test-empty-backend-overrides",
+			`{"storeRef": "p", "protocolRef": "q", "overrides": {"backend": {}}}`)
+		expectUnprocessable(err, "exactly one of zfs or lvm must be set")
+	})
+
+	// ── E25.2.7 — TestPillarStorageClassCRD_InvalidCreate_EmptyProtocolOverrides
+	It("Should reject spec.overrides.protocol without a member", func() {
+		err := applyBinding("crd-test-empty-protocol-overrides",
+			`{"storeRef": "p", "protocolRef": "q", "overrides": {"protocol": {}}}`)
+		expectUnprocessable(err, "exactly one protocol member must be set")
+	})
+
+	// ── E25.2.8 — TestPillarStorageClassCRD_InvalidCreate_RemovedOverrideFields
+	It("Should reject the removed spec.overrides.fsType field", func() {
+		err := applyBinding("crd-test-removed-override-fstype",
+			`{"storeRef": "p", "protocolRef": "q", "overrides": {"fsType": "xfs"}}`)
+		Expect(err).To(HaveOccurred(), "removed fields must not be accepted")
+		Expect(err.Error()).To(ContainSubstring(".spec.overrides.fsType: field not declared in schema"))
+	})
+
+	// ── E25.2.9 — TestPillarStorageClassCRD_InvalidCreate_StructuralOverride ──
+	It("Should reject a structural field in a backend override (zfs.pool)", func() {
+		err := applyBinding("crd-test-structural-override",
+			`{"storeRef": "p", "protocolRef": "q", "overrides": {"backend": {"zfs": {"pool": "other"}}}}`)
+		Expect(err).To(HaveOccurred(), "structural fields are not part of the override schema")
+		Expect(err.Error()).To(ContainSubstring(".spec.overrides.backend.zfs.pool: field not declared in schema"))
 	})
 })

@@ -130,7 +130,7 @@ var DefaultParallelNodes = runtime.NumCPU()
 // DefaultParallelNodes value provides enough parallelism.
 //
 // The 45-second test-exec budget (testsBudgetSeconds = 45) requires at least
-// 8 workers to distribute the ~91 cluster-level specs (E10, E27, E33-E35)
+// 8 workers to distribute the ~65 cluster-level specs (E10, E27, E33)
 // so that no worker's share exceeds the per-worker budget. On a 1-7 CPU
 // machine, defaulting to runtime.NumCPU() would starve parallelism.
 const minParallelProcs = 8

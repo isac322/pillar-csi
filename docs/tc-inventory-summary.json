@@ -1,6 +1,6 @@
 {
-  "total_found": 806,
-  "in_437_found": 703,
+  "total_found": 774,
+  "in_437_found": 671,
   "document_claimed_437": 437,
   "document_claimed_by_type": {
     "A": 239,
@@ -47,8 +47,6 @@
     "E10": 3,
     "E27": 29,
     "E33": 33,
-    "E34": 13,
-    "E35": 13,
     "F27-F31": 19
   },
   "parsed_by_category": {
@@ -78,8 +76,6 @@
     "E30": 3,
     "E32": 11,
     "E33": 37,
-    "E34": 16,
-    "E35": 16,
     "E4": 4,
     "E5": 6,
     "E6": 11,

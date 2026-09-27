@@ -261,8 +261,7 @@ var _ = Describe("Deletion guards account for PersistentVolumes and PillarVolume
 				Spec: pillarcsiv1alpha1.PillarStoreSpec{
 					AgentRef: storeAgent,
 					Backend: pillarcsiv1alpha1.BackendSpec{
-						Type: pillarcsiv1alpha1.BackendTypeLVMLV,
-						LVM:  &pillarcsiv1alpha1.LVMBackendConfig{VolumeGroup: "vg-guard"},
+						LVM: &pillarcsiv1alpha1.LVMBackendConfig{VolumeGroup: "vg-guard"},
 					},
 				},
 			}
@@ -320,8 +319,7 @@ var _ = Describe("Deletion guards account for PersistentVolumes and PillarVolume
 				Spec: pillarcsiv1alpha1.PillarStoreSpec{
 					AgentRef: storeAgent,
 					Backend: pillarcsiv1alpha1.BackendSpec{
-						Type: pillarcsiv1alpha1.BackendTypeLVMLV,
-						LVM:  &pillarcsiv1alpha1.LVMBackendConfig{VolumeGroup: siblingVG},
+						LVM: &pillarcsiv1alpha1.LVMBackendConfig{VolumeGroup: siblingVG},
 					},
 				},
 			}
@@ -511,14 +509,13 @@ var _ = Describe("Deletion guards account for PersistentVolumes and PillarVolume
 				Spec: pillarcsiv1alpha1.PillarStoreSpec{
 					AgentRef: bindingAgent,
 					Backend: pillarcsiv1alpha1.BackendSpec{
-						Type: pillarcsiv1alpha1.BackendTypeZFSZvol,
-						ZFS:  &pillarcsiv1alpha1.ZFSBackendConfig{Pool: bindingZFSPool},
+						ZFS: &pillarcsiv1alpha1.ZFSBackendConfig{Pool: bindingZFSPool},
 					},
 				},
 			})
 			track(&pillarcsiv1alpha1.PillarProtocol{
 				ObjectMeta: metav1.ObjectMeta{Name: bindingProto},
-				Spec:       pillarcsiv1alpha1.PillarProtocolSpec{Type: pillarcsiv1alpha1.ProtocolTypeNVMeOFTCP},
+				Spec:       pillarcsiv1alpha1.PillarProtocolSpec{Protocol: pillarcsiv1alpha1.ProtocolSpec{NVMeOFTCP: &pillarcsiv1alpha1.NVMeOFTCPConfig{}}},
 			})
 			binding = &pillarcsiv1alpha1.PillarStorageClass{
 				ObjectMeta: metav1.ObjectMeta{Name: bindingName},

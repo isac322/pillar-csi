@@ -19,6 +19,7 @@ package v1alpha1
 import (
 	"context"
 	"fmt"
+	"math"
 
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -55,7 +56,52 @@ func (*PillarProtocolCustomValidator) ValidateCreate(
 ) (admission.Warnings, error) {
 	pillarprotocollog.Info("Validation for PillarProtocol upon creation", "name", pillarprotocol.GetName())
 
-	return nil, nil
+	return nil, validateProtocolSpec(pillarprotocol.Spec.Protocol)
+}
+
+// protocolMember returns the name of the union member set in a protocol spec
+// ("nvmeofTcp"), or "" when none is set.
+func protocolMember(p pillarcsiv1alpha1.ProtocolSpec) string {
+	if p.NVMeOFTCP != nil {
+		return "nvmeofTcp"
+	}
+	return ""
+}
+
+// validateProtocolSpec re-checks spec.protocol with the same union rule and
+// numeric domains as the CRD schema and the shared configdocs decoder, so the
+// webhook never admits a protocol the agent or node would later reject.
+func validateProtocolSpec(p pillarcsiv1alpha1.ProtocolSpec) error {
+	protocolPath := field.NewPath("spec", "protocol")
+	if protocolMember(p) == "" {
+		return field.ErrorList{field.Required(protocolPath,
+			"exactly one protocol member must be set (supported: nvmeofTcp)")}.ToAggregate()
+	}
+
+	var allErrs field.ErrorList
+	cfg := p.NVMeOFTCP
+	nvmePath := protocolPath.Child("nvmeofTcp")
+	checkRange := func(name string, v int32, minimum, maximum int64) {
+		if int64(v) < minimum || int64(v) > maximum {
+			allErrs = append(allErrs, field.Invalid(nvmePath.Child(name), v,
+				fmt.Sprintf("must be between %d and %d", minimum, maximum)))
+		}
+	}
+	checkOptional := func(name string, v *int32, minimum, maximum int64) {
+		if v != nil {
+			checkRange(name, *v, minimum, maximum)
+		}
+	}
+	checkRange("port", cfg.Port, 1, 65535)
+	checkOptional("maxQueueSize", cfg.MaxQueueSize, 16, 1024)
+	checkOptional("inCapsuleDataSize", cfg.InCapsuleDataSize, 1024, math.MaxInt32)
+	checkOptional("ctrlLossTmo", cfg.CtrlLossTmo, 0, math.MaxInt32)
+	checkOptional("reconnectDelay", cfg.ReconnectDelay, 0, math.MaxInt32)
+
+	if len(allErrs) > 0 {
+		return allErrs.ToAggregate()
+	}
+	return nil
 }
 
 // ValidateUpdate implements admission.Validator so a webhook will be registered for the type PillarProtocol.
@@ -64,23 +110,20 @@ func (*PillarProtocolCustomValidator) ValidateUpdate(
 ) (admission.Warnings, error) {
 	pillarprotocollog.Info("Validation for PillarProtocol upon update", "name", newProtocol.GetName())
 
-	var allErrs field.ErrorList
-
-	// spec.type is immutable: each protocol type requires a distinct kernel subsystem and configfs
-	// namespace (NVMe-oF vs iSCSI vs NFS). Allowing type changes would orphan all volumes that were
-	// exported via the original protocol without any migration path.
-	if oldProtocol.Spec.Type != newProtocol.Spec.Type {
-		allErrs = append(allErrs, field.Forbidden(
-			field.NewPath("spec", "type"),
-			fmt.Sprintf("field is immutable; old value %q cannot be changed to %q",
-				oldProtocol.Spec.Type, newProtocol.Spec.Type),
-		))
+	// The protocol member is immutable: each protocol requires a distinct kernel subsystem
+	// and configfs namespace. Switching members would orphan every volume exported via
+	// the original protocol without any migration path.
+	oldMember := protocolMember(oldProtocol.Spec.Protocol)
+	newMember := protocolMember(newProtocol.Spec.Protocol)
+	if oldMember != newMember {
+		return nil, field.ErrorList{field.Forbidden(
+			field.NewPath("spec", "protocol"),
+			fmt.Sprintf("the protocol member is immutable; old member %q cannot be changed to %q",
+				oldMember, newMember),
+		)}.ToAggregate()
 	}
 
-	if len(allErrs) > 0 {
-		return nil, allErrs.ToAggregate()
-	}
-	return nil, nil
+	return nil, validateProtocolSpec(newProtocol.Spec.Protocol)
 }
 
 // ValidateDelete implements admission.Validator so a webhook will be registered for the type PillarProtocol.

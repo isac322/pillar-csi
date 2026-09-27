@@ -53,7 +53,8 @@ const (
 // controllerTestEnv is an isolated test environment for CSI controller TCs.
 // It creates:
 //   - A fakeAgentServer registered with a real gRPC server (bufconn transport)
-//   - A fake K8s client with pre-registered PillarAgent/PillarVolumeState/PVC objects
+//   - A fake K8s client with pre-registered PillarAgent, PillarStore
+//     ("tank", ZFS pool "tank") and PillarProtocol ("nvmeof", NVMe-oF/TCP)
 //   - A CSI ControllerServer dialing the bufconn gRPC server
 type controllerTestEnv struct {
 	ctx        context.Context
@@ -62,7 +63,7 @@ type controllerTestEnv struct {
 	agentSrv   *fakeAgentServer // controllable fake agent
 	k8sClient  client.Client
 	target     *pillarv1.PillarAgent
-	params     map[string]string // default StorageClass params
+	params     map[string]string // default hand-written StorageClass params (store-ref + protocol-ref)
 	lis        *bufconn.Listener
 	grpcSrv    *grpc.Server
 	agentConn  *grpc.ClientConn
@@ -96,7 +97,11 @@ func newControllerTestEnv() *controllerTestEnv {
 		WithInterceptorFuncs(fakeuid.Interceptor()).
 		WithScheme(scheme).
 		WithStatusSubresource(&pillarv1.PillarAgent{}, &pillarv1.PillarVolumeState{}).
-		WithObjects(target).
+		WithObjects(
+			target,
+			e2eZFSStore(e2eDefaultStoreName, target.Name, e2eDefaultZFSPool),
+			e2eNVMeOFProtocol(e2eDefaultProtocolName),
+		).
 		Build()
 
 	agentSrv := newFakeAgentServer()
@@ -129,12 +134,7 @@ func newControllerTestEnv() *controllerTestEnv {
 		},
 	)
 
-	params := map[string]string{
-		"pillar-csi.bhyoo.com/agent":         target.Name,
-		"pillar-csi.bhyoo.com/store":         "tank",
-		"pillar-csi.bhyoo.com/backend-type":  "zfs-zvol",
-		"pillar-csi.bhyoo.com/protocol-type": "nvmeof-tcp",
-	}
+	params := e2eHandWrittenParams(e2eDefaultStoreName, e2eDefaultProtocolName)
 
 	return &controllerTestEnv{
 		ctx:        ctx,

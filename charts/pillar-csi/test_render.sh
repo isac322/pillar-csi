@@ -179,42 +179,112 @@ if render --set-string agent.privileged=yes >/dev/null 2>&1; then
   mark_fail "non-boolean agent.privileged must fail the render instead of silently dropping privilege"
 fi
 
+# Agent config file contract. agent.backends is rendered verbatim (same keys as
+# PillarStore.spec.backend) into the agent-config ConfigMap, which the agent
+# DaemonSet mounts and passes via --config; no per-backend CLI flag exists.
+# Prints the config.yaml payload of the rendered agent-config ConfigMap.
+agent_config_yaml() {
+  extract_doc "$1" "agent-configmap.yaml" | awk '
+    /^  config.yaml: \|$/ { in_cfg = 1; next }
+    in_cfg && /^    / { print substr($0, 5); next }
+    in_cfg && /^$/ { next }
+    in_cfg { exit }
+  '
+}
+assert_agent_config() {
+  local body="$1" want="$2" description="$3" got
+  got="$(agent_config_yaml "${body}")"
+  if [[ "${got}" != "${want}" ]]; then
+    mark_fail "${description}"
+    echo "      expected agent config.yaml:"
+    sed 's/^/        /' <<< "${want}"
+    echo "      got:"
+    sed 's/^/        /' <<< "${got}"
+  fi
+}
+
+assert_contains "${AGENT_DS_DEFAULT}" "- --config=/etc/pillar-agent/config.yaml" \
+  "default agent DaemonSet must pass --config pointing at the mounted config file"
+assert_contains "${AGENT_DS_DEFAULT}" "name: pillar-csi-test-agent-config" \
+  "default agent DaemonSet must mount the agent-config ConfigMap"
+assert_contains "${AGENT_DS_DEFAULT}" "mountPath: /etc/pillar-agent" \
+  "default agent DaemonSet must mount the config directory at /etc/pillar-agent"
+assert_not_contains "${AGENT_DS_DEFAULT}" "--backend" \
+  "agent DaemonSet must not render the removed --backend flag"
+assert_agent_config "${DEFAULT_OUT}" "backends: []" \
+  "default agent config must render an empty backends list"
+
+BACKENDS_OK_OUT="$(render \
+  --set 'agent.backends[0].zfs.volumeType=zvol' --set 'agent.backends[0].zfs.pool=tank' --set 'agent.backends[0].zfs.parentDataset=k8s' \
+  --set 'agent.backends[1].lvm.volumeGroup=data-vg' --set 'agent.backends[1].lvm.thinPool=thin0' --set 'agent.backends[1].lvm.provisioningMode=thin' \
+  --set 'agent.backends[2].zfs.pool=hot')"
+assert_agent_config "${BACKENDS_OK_OUT}" "backends:
+  - zfs:
+      parentDataset: k8s
+      pool: tank
+      volumeType: zvol
+  - lvm:
+      provisioningMode: thin
+      thinPool: thin0
+      volumeGroup: data-vg
+  - zfs:
+      pool: hot" \
+  "distinct agent.backends entries must render verbatim, in order, into the agent config file"
+BACKENDS_OK_DS="$(extract_doc "${BACKENDS_OK_OUT}" "agent-daemonset.yaml")"
+assert_not_contains "${BACKENDS_OK_DS}" "--backend" \
+  "agent DaemonSet with backends must not render the removed --backend flag"
+# The agent reads its config file only at startup, so the pod template must
+# change whenever the rendered config changes.
+checksum_of() { grep -o 'checksum/agent-config: [0-9a-f]*' <<< "$1" || true; }
+if [[ -z "$(checksum_of "${AGENT_DS_DEFAULT}")" || "$(checksum_of "${AGENT_DS_DEFAULT}")" == "$(checksum_of "${BACKENDS_OK_DS}")" ]]; then
+  mark_fail "agent pod template must carry a checksum/agent-config annotation that changes with agent.backends"
+fi
+
+# Union contract: each entry sets exactly one of zfs or lvm; the old flat
+# {type,pool,vg,...} entry shape and unimplemented variants fail the render.
+BOTH_ERR="$(render \
+  --set 'agent.backends[0].zfs.pool=tank' --set 'agent.backends[0].lvm.volumeGroup=vg0' 2>&1 >/dev/null || true)"
+assert_contains "${BOTH_ERR}" 'agent.backends[0]: exactly one of zfs or lvm must be set' \
+  "an agent.backends entry setting both zfs and lvm must fail the render"
+LEGACY_ERR="$(render \
+  --set 'agent.backends[0].type=zfs-zvol' --set 'agent.backends[0].pool=tank' 2>&1 >/dev/null || true)"
+assert_contains "${LEGACY_ERR}" 'agent.backends[0]: exactly one of zfs or lvm must be set' \
+  "the removed flat agent.backends[].{type,pool} shape must fail the render"
+UNSUPPORTED_ERR="$(render --set 'agent.backends[0].dir.path=/srv' 2>&1 >/dev/null || true)"
+assert_contains "${UNSUPPORTED_ERR}" 'agent.backends[0].dir is not a supported backend' \
+  "an unimplemented backend member must fail the render"
+NO_POOL_ERR="$(render --set 'agent.backends[0].zfs.parentDataset=k8s' 2>&1 >/dev/null || true)"
+assert_contains "${NO_POOL_ERR}" 'agent.backends[0].zfs.pool is required' \
+  "a zfs entry without pool must fail the render"
+NO_VG_ERR="$(render --set 'agent.backends[0].lvm.thinPool=thin0' 2>&1 >/dev/null || true)"
+assert_contains "${NO_VG_ERR}" 'agent.backends[0].lvm.volumeGroup is required' \
+  "an lvm entry without volumeGroup must fail the render"
+
 # Backend registry key contract (issue #100). The agent routes volumes by
 # pool/VG name alone and refuses to start when two agent.backends entries share
 # one, so the chart must reject such values at render time instead of shipping
-# a crash-looping DaemonSet. Distinct keys must still render every entry.
-BACKENDS_OK_DS="$(extract_doc "$(render \
-  --set 'agent.backends[0].type=zfs-zvol' --set 'agent.backends[0].pool=tank' --set 'agent.backends[0].parent=k8s' \
-  --set 'agent.backends[1].type=lvm-lv' --set 'agent.backends[1].vg=data-vg' --set 'agent.backends[1].thinpool=thin0' \
-  --set 'agent.backends[2].type=zfs-zvol' --set 'agent.backends[2].pool=hot')" "agent-daemonset.yaml")"
-assert_contains "${BACKENDS_OK_DS}" "- type=zfs-zvol,pool=tank,parent=k8s" \
-  "distinct agent.backends: first ZFS entry must render"
-assert_contains "${BACKENDS_OK_DS}" "- type=lvm-lv,vg=data-vg,thinpool=thin0" \
-  "distinct agent.backends: LVM entry must render"
-assert_contains "${BACKENDS_OK_DS}" "- type=zfs-zvol,pool=hot" \
-  "distinct agent.backends: second ZFS entry must render"
+# a crash-looping DaemonSet.
 if render \
-  --set 'agent.backends[0].type=zfs-zvol' --set 'agent.backends[0].pool=tank' --set 'agent.backends[0].parent=a' \
-  --set 'agent.backends[1].type=zfs-zvol' --set 'agent.backends[1].pool=tank' --set 'agent.backends[1].parent=b' \
+  --set 'agent.backends[0].zfs.pool=tank' --set 'agent.backends[0].zfs.parentDataset=a' \
+  --set 'agent.backends[1].zfs.pool=tank' --set 'agent.backends[1].zfs.parentDataset=b' \
   >/dev/null 2>&1; then
   mark_fail "two agent.backends entries on one ZFS pool must fail the render"
 fi
 if render \
-  --set 'agent.backends[0].type=lvm-lv' --set 'agent.backends[0].vg=vg0' \
-  --set 'agent.backends[1].type=lvm-lv' --set 'agent.backends[1].vg=vg0' --set 'agent.backends[1].thinpool=thin0' \
+  --set 'agent.backends[0].lvm.volumeGroup=vg0' \
+  --set 'agent.backends[1].lvm.volumeGroup=vg0' --set 'agent.backends[1].lvm.thinPool=thin0' \
   >/dev/null 2>&1; then
   mark_fail "two agent.backends entries on one LVM VG must fail the render"
 fi
 DUP_MIXED_ERR="$(render \
-  --set 'agent.backends[0].type=zfs-zvol' --set 'agent.backends[0].pool=shared' \
-  --set 'agent.backends[1].type=lvm-lv' --set 'agent.backends[1].vg=shared' 2>&1 >/dev/null || true)"
+  --set 'agent.backends[0].zfs.pool=shared' \
+  --set 'agent.backends[1].lvm.volumeGroup=shared' 2>&1 >/dev/null || true)"
 assert_contains "${DUP_MIXED_ERR}" 'pool/VG "shared" appears in more than one entry' \
   "a ZFS pool and an LVM VG sharing one name must fail the render with a clear error"
-# The agent trims whitespace from --backend values, so " tank " and "tank"
-# are the same registry key and must collide at render time too.
+# Keys are compared trimmed, so " tank " and "tank" collide at render time.
 if render \
-  --set 'agent.backends[0].type=zfs-zvol' --set 'agent.backends[0].pool=tank' \
-  --set 'agent.backends[1].type=zfs-zvol' --set-string 'agent.backends[1].pool= tank ' \
+  --set 'agent.backends[0].zfs.pool=tank' \
+  --set-string 'agent.backends[1].zfs.pool= tank ' \
   >/dev/null 2>&1; then
   mark_fail "agent.backends pool names differing only in whitespace must fail the render"
 fi

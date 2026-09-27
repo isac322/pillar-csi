@@ -1,3 +1,5 @@
+> **Design reference — only NVMe-oF/TCP is implemented.** The iSCSI, NFS, and SMB paths in this RFC are future-protocol design notes. The served CRD schema contains only the `nvmeofTcp` protocol member (and the `zfs`/`lvm` backend members). Configuration follows the current interface in [`PRD.md`](./PRD.md) §2.3.
+
 # pillar-csi Multi-Protocol Driver Foundation RFC
 
 ## 1. 문서 목적
@@ -32,8 +34,8 @@
 
 - **Agent proto 정의** (`agent.proto`): `ProtocolType` enum, `ExportParams` oneof,
   `AllowInitiator`/`DenyInitiator` RPC가 protocol-agnostic하게 설계됨.
-- **CRD 정의** (`PillarProtocol`, `PillarStorageClass`): discriminated union 패턴
-  (`nvmeofTcp`/`iscsi`/`nfs`)으로 protocol별 config를 분리.
+- **CRD 정의** (`PillarProtocol`, `PillarStorageClass`): exactly-one union 패턴
+  (`spec.protocol.<member>`, `type` 필드 없음)으로 protocol별 config를 분리. 현재 served 멤버는 `nvmeofTcp` 하나이며, 새 protocol은 union 멤버를 추가하는 방식으로 수용한다.
 - **Volume ID 라우팅**: `<target>/<protocol>/<backend>/<vol-id>` 포맷이
   모든 CSI 호출에서 protocol type과 backend type을 모두 포함.
 - **Controller CreateVolume/DeleteVolume**: protocol type을 파라미터로 전달하며

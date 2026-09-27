@@ -104,8 +104,8 @@ func (d *diLVMProvisioner) Provision(_ context.Context) (registry.Resource, erro
 // compile-time interface check.
 var _ provisioner.BackendProvisioner = (*diLVMProvisioner)(nil)
 
-// diCustomProvisioner simulates a hypothetical new backend type (e.g. iSCSI,
-// NVMe-oF) that can be injected without any changes to the framework.
+// diCustomProvisioner simulates a hypothetical new backend type (e.g. a
+// future transport) that can be injected without any changes to the framework.
 type diCustomProvisioner struct {
 	backendType string
 	resource    registry.Resource
@@ -147,9 +147,9 @@ func TestDICustomProvisionerRequiresNoFrameworkChanges(t *testing.T) {
 	const clusterName = "pillar-csi-e2e-p00001-abcd1234"
 	clusterState := stubKindBootstrapState(t, clusterName)
 
-	customRes := &destroyCountResource{description: "custom-iscsi"}
+	customRes := &destroyCountResource{description: "custom-backend"}
 	custom := &diCustomProvisioner{
-		backendType: "iscsi",
+		backendType: "custom",
 		resource:    customRes,
 	}
 
@@ -406,7 +406,7 @@ func TestDIMultipleCustomBackendsInjectedSimultaneously(t *testing.T) {
 
 	pool := &zfs.Pool{NodeContainer: container, PoolName: poolName}
 	vg := &lvm.VG{NodeContainer: container, VGName: vgName}
-	unknownRes := &destroyCountResource{description: "unknown-iscsi"}
+	unknownRes := &destroyCountResource{description: "unknown-custom"}
 
 	clusterState := stubKindBootstrapState(t, clusterName)
 
@@ -416,7 +416,7 @@ func TestDIMultipleCustomBackendsInjectedSimultaneously(t *testing.T) {
 	state, err := bootstrapSuiteBackends(ctx, clusterState, nil,
 		&diZFSProvisioner{pool: pool},
 		&diLVMProvisioner{vg: vg},
-		&diCustomProvisioner{backendType: "iscsi", resource: unknownRes},
+		&diCustomProvisioner{backendType: "custom", resource: unknownRes},
 	)
 	if err != nil {
 		t.Fatalf("DI: multi-backend injection: %v", err)
@@ -433,7 +433,7 @@ func TestDIMultipleCustomBackendsInjectedSimultaneously(t *testing.T) {
 		t.Errorf("DI: LVMVG = %v, want VGName=%q", state.LVMVG, vgName)
 	}
 
-	t.Logf("DI: multi-backend injection OK: ZFS=%q LVM=%q iscsi-resource=%q",
+	t.Logf("DI: multi-backend injection OK: ZFS=%q LVM=%q custom-resource=%q",
 		state.ZFSPool.PoolName, state.LVMVG.VGName, unknownRes.description)
 }
 

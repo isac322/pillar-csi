@@ -16,632 +16,372 @@ limitations under the License.
 
 package csi
 
-// Tests for ParsePVCAnnotations and the three internal parsers.
+// Tests for decodePVCAnnotations: the per-volume YAML documents
+// pillar-csi.bhyoo.com/{backend,protocol,filesystem} and the rejection of
+// every other pillar-csi.bhyoo.com/ annotation on a claim.
 //
 // Run with:
 //
-//	go test ./internal/csi/ -v -run TestParsePVCAnnotations
+//	go test ./internal/csi/ -v -run TestDecodePVCAnnotations
 
 import (
-	"encoding/json"
+	"slices"
+	"strings"
 	"testing"
+
+	v1alpha1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
 )
 
+// mustDecodeAnnotations calls decodePVCAnnotations and fails on error.
+func mustDecodeAnnotations(t *testing.T, ann map[string]string) pvcDocs {
+	t.Helper()
+	docs, err := decodePVCAnnotations(ann)
+	if err != nil {
+		t.Fatalf("decodePVCAnnotations: unexpected error: %v", err)
+	}
+	return docs
+}
+
+// requireDecodeError asserts that decoding fails and the error message
+// contains every fragment.
+func requireDecodeError(t *testing.T, ann map[string]string, fragments ...string) {
+	t.Helper()
+	_, err := decodePVCAnnotations(ann)
+	if err == nil {
+		t.Fatalf("decodePVCAnnotations(%v): expected error, got nil", ann)
+	}
+	for _, f := range fragments {
+		if !strings.Contains(err.Error(), f) {
+			t.Errorf("error %q does not contain %q", err.Error(), f)
+		}
+	}
+}
+
+func testInt32(v int32) *int32 { return new(v) }
+
+func TestDecodePVCAnnotations_AbsentDocuments(t *testing.T) {
+	t.Parallel()
+	for name, ann := range map[string]map[string]string{
+		"nil":   nil,
+		"empty": {},
+		"unrelated": {
+			"kubectl.kubernetes.io/last-applied-configuration": "{}",
+			"volume.kubernetes.io/storage-provisioner":         "pillar-csi.bhyoo.com",
+		},
+		"blank documents": {
+			v1alpha1.AnnotationBackendDoc:    "",
+			v1alpha1.AnnotationProtocolDoc:   "  \n",
+			v1alpha1.AnnotationFilesystemDoc: "",
+		},
+	} {
+		docs := mustDecodeAnnotations(t, ann)
+		if docs.Backend != nil || docs.Protocol != nil || docs.Filesystem != nil {
+			t.Errorf("%s: docs = %+v, want all nil (absent document is not an override)", name, docs)
+		}
+	}
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
-// Helpers
+// Backend document
 // ─────────────────────────────────────────────────────────────────────────────.
 
-// mustParseAnnotations calls ParsePVCAnnotations and fails the test on error.
-func mustParseAnnotations(t *testing.T, ann map[string]string) map[string]string {
-	t.Helper()
-	result, err := ParsePVCAnnotations(ann)
-	if err != nil {
-		t.Fatalf("ParsePVCAnnotations: unexpected error: %v", err)
-	}
-	return result
-}
-
-// assertParam asserts that the result map contains key=want.
-func assertParam(t *testing.T, result map[string]string, key, want string) {
-	t.Helper()
-	got, ok := result[key]
-	if !ok {
-		t.Errorf("key %q: not present in result", key)
-		return
-	}
-	if got != want {
-		t.Errorf("key %q: got %q, want %q", key, got, want)
-	}
-}
-
-// assertNoKey asserts that the result map does NOT contain key.
-func assertNoKey(t *testing.T, result map[string]string, key string) {
-	t.Helper()
-	if _, ok := result[key]; ok {
-		t.Errorf("key %q: unexpectedly present in result", key)
-	}
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// ParsePVCAnnotations — nil / empty input
-// ─────────────────────────────────────────────────────────────────────────────.
-
-func TestParsePVCAnnotations_Nil(t *testing.T) {
-	result, err := ParsePVCAnnotations(nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result == nil {
-		t.Fatal("result must never be nil")
-	}
-	if len(result) != 0 {
-		t.Errorf("expected empty map, got %v", result)
-	}
-}
-
-func TestParsePVCAnnotations_Empty(t *testing.T) {
-	result := mustParseAnnotations(t, map[string]string{})
-	if len(result) != 0 {
-		t.Errorf("expected empty map, got %v", result)
-	}
-}
-
-func TestParsePVCAnnotations_UnrelatedAnnotationsIgnored(t *testing.T) {
-	result := mustParseAnnotations(t, map[string]string{
-		"kubectl.kubernetes.io/last-applied-configuration": "{}",
-		"some.other.annotation/foo":                        "bar",
+func TestDecodePVCAnnotations_BackendZFSProperties(t *testing.T) {
+	t.Parallel()
+	docs := mustDecodeAnnotations(t, map[string]string{
+		v1alpha1.AnnotationBackendDoc: "zfs:\n  properties:\n    compression: zstd\n    volblocksize: 16K\n",
 	})
-	if len(result) != 0 {
-		t.Errorf("expected empty map, got %v", result)
+	if docs.Backend == nil || docs.Backend.ZFS == nil || docs.Backend.LVM != nil {
+		t.Fatalf("Backend = %+v, want only the zfs member", docs.Backend)
+	}
+	want := map[string]string{"compression": "zstd", "volblocksize": "16K"}
+	if got := docs.Backend.ZFS.Properties; len(got) != len(want) ||
+		got["compression"] != want["compression"] || got["volblocksize"] != want["volblocksize"] {
+		t.Errorf("zfs.properties = %v, want %v", got, want)
+	}
+}
+
+func TestDecodePVCAnnotations_BackendLVMProvisioningMode(t *testing.T) {
+	t.Parallel()
+	docs := mustDecodeAnnotations(t, map[string]string{
+		v1alpha1.AnnotationBackendDoc: "lvm:\n  provisioningMode: thin\n",
+	})
+	if docs.Backend == nil || docs.Backend.LVM == nil || docs.Backend.ZFS != nil {
+		t.Fatalf("Backend = %+v, want only the lvm member", docs.Backend)
+	}
+	if got := docs.Backend.LVM.ProvisioningMode; got != v1alpha1.LVMProvisioningModeThin {
+		t.Errorf("lvm.provisioningMode = %q, want thin", got)
+	}
+}
+
+// Structural placement fields identify the pool; a claim can never move
+// its volume by naming another one.
+func TestDecodePVCAnnotations_BackendStructuralFieldsRejected(t *testing.T) {
+	t.Parallel()
+	for doc, path := range map[string]string{
+		"zfs:\n  pool: evil-pool\n":       "zfs.pool",
+		"zfs:\n  parentDataset: other\n":  "zfs.parentDataset",
+		"zfs:\n  volumeType: zvol\n":      "zfs.volumeType",
+		"lvm:\n  volumeGroup: other-vg\n": "lvm.volumeGroup",
+		"lvm:\n  thinPool: other-thin\n":  "lvm.thinPool",
+	} {
+		requireDecodeError(t, map[string]string{v1alpha1.AnnotationBackendDoc: doc},
+			v1alpha1.AnnotationBackendDoc+": "+path+" is structural and cannot be set per volume")
+	}
+}
+
+func TestDecodePVCAnnotations_BackendInvalidDocuments(t *testing.T) {
+	t.Parallel()
+	for name, tc := range map[string]struct {
+		doc       string
+		fragments []string
+	}{
+		"malformed YAML":       {"this: is: invalid: yaml: [", []string{"invalid YAML"}},
+		"not a mapping":        {"- zfs", []string{"expected a YAML mapping"}},
+		"unknown member":       {"dir:\n  path: /x\n", []string{`unknown field "dir"`}},
+		"zfs-dataset member":   {"zfs-dataset:\n  properties: {}\n", []string{`unknown field "zfs-dataset"`}},
+		"two members":          {"zfs:\n  properties: {a: b}\nlvm:\n  provisioningMode: thin\n", []string{"exactly one of"}},
+		"zfs member scalar":    {"zfs: just-a-string", []string{"zfs"}},
+		"unknown zfs field":    {"zfs:\n  quota: 10G\n", []string{"unknown field zfs.quota"}},
+		"properties not a map": {"zfs:\n  properties: not-a-map\n", []string{"zfs.properties"}},
+		"invalid lvm mode":     {"lvm:\n  provisioningMode: striped\n", []string{"lvm.provisioningMode"}},
+		"legacy type field":    {"type: zfs-zvol\n", []string{`unknown field "type"`}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			requireDecodeError(t, map[string]string{v1alpha1.AnnotationBackendDoc: tc.doc},
+				append([]string{v1alpha1.AnnotationBackendDoc}, tc.fragments...)...)
+		})
 	}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Flat param.* overrides (legacy path)
+// Protocol document
 // ─────────────────────────────────────────────────────────────────────────────.
 
-// A flat "param.<name>" annotation sets the namespaced parameter key that
-// buildBackendParams and the node consume; an unprefixed "zfs-prop.x" key
-// would reach no consumer.
-func TestParsePVCAnnotations_FlatParamPrefix(t *testing.T) {
-	ann := map[string]string{
-		"pillar-csi.bhyoo.com/param.zfs-prop.compression":  "zstd",
-		"pillar-csi.bhyoo.com/param.zfs-prop.volblocksize": "16K",
-		"pillar-csi.bhyoo.com/param.lvm-mode":              "linear",
-		// Prefix-only (no suffix) — must be ignored
-		"pillar-csi.bhyoo.com/param.": "ignored",
-		// Empty value is not an override
-		"pillar-csi.bhyoo.com/param.nvmeof-ctrl-loss-tmo": "",
+func TestDecodePVCAnnotations_ProtocolNVMeOFTunables(t *testing.T) {
+	t.Parallel()
+	docs := mustDecodeAnnotations(t, map[string]string{
+		v1alpha1.AnnotationProtocolDoc: "nvmeofTcp:\n  maxQueueSize: 64\n  inCapsuleDataSize: 16384\n" +
+			"  ctrlLossTmo: 0\n  reconnectDelay: 5\n",
+	})
+	if docs.Protocol == nil || docs.Protocol.NVMeOFTCP == nil {
+		t.Fatalf("Protocol = %+v, want nvmeofTcp member", docs.Protocol)
 	}
-	result := mustParseAnnotations(t, ann)
-
-	assertParam(t, result, paramZFSPropPrefix+"compression", "zstd")
-	assertParam(t, result, paramZFSPropPrefix+"volblocksize", "16K")
-	assertParam(t, result, paramLVMMode, "linear")
-	assertNoKey(t, result, "zfs-prop.compression")
-	assertNoKey(t, result, paramKeyPrefix)
-	assertNoKey(t, result, paramNVMeOFCtrlLossTmo)
-	if len(result) != 3 {
-		t.Errorf("result = %v, want exactly the 3 non-empty overrides", result)
-	}
-}
-
-// A flat annotation must not redirect a volume to another store, agent,
-// pool, port or disable ACLs.
-func TestParsePVCAnnotations_FlatParamStructuralBlocked(t *testing.T) {
-	for _, name := range []string{"store", "agent", "storage-class", "zfs-parent-dataset", "lvm-vg", "acl-enabled"} {
-		_, err := ParsePVCAnnotations(map[string]string{"pillar-csi.bhyoo.com/param." + name: "x"})
-		if err == nil {
-			t.Errorf("param.%s: expected error for structural parameter", name)
+	got := docs.Protocol.NVMeOFTCP
+	for name, pair := range map[string][2]*int32{
+		"maxQueueSize":      {got.MaxQueueSize, testInt32(64)},
+		"inCapsuleDataSize": {got.InCapsuleDataSize, testInt32(16384)},
+		"ctrlLossTmo":       {got.CtrlLossTmo, testInt32(0)}, // explicit zero preserved
+		"reconnectDelay":    {got.ReconnectDelay, testInt32(5)},
+	} {
+		if pair[0] == nil || *pair[0] != *pair[1] {
+			t.Errorf("nvmeofTcp.%s = %v, want %d", name, pair[0], *pair[1])
 		}
 	}
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// backend-override annotation
-// ─────────────────────────────────────────────────────────────────────────────.
-
-func TestParsePVCAnnotations_BackendOverride_ZFS(t *testing.T) {
-	ann := map[string]string{
-		AnnotationBackendOverride: `
-zfs:
-  properties:
-    volblocksize: "8K"
-    compression: zstd
-`,
+// Fields the document does not mention stay nil so lower layers apply.
+func TestDecodePVCAnnotations_ProtocolPartialLeavesOthersUnset(t *testing.T) {
+	t.Parallel()
+	docs := mustDecodeAnnotations(t, map[string]string{
+		v1alpha1.AnnotationProtocolDoc: "nvmeofTcp:\n  maxQueueSize: 128\n",
+	})
+	o := docs.Protocol.NVMeOFTCP
+	if o.MaxQueueSize == nil || *o.MaxQueueSize != 128 {
+		t.Errorf("maxQueueSize = %v, want 128", o.MaxQueueSize)
 	}
-	result := mustParseAnnotations(t, ann)
-
-	assertParam(t, result, paramZFSPropPrefix+"volblocksize", "8K")
-	assertParam(t, result, paramZFSPropPrefix+"compression", "zstd")
-}
-
-func TestParsePVCAnnotations_BackendOverride_ZFS_Quota(t *testing.T) {
-	ann := map[string]string{
-		AnnotationBackendOverride: `
-zfs:
-  properties:
-    quota: 500G
-    reservation: 100G
-`,
-	}
-	result := mustParseAnnotations(t, ann)
-
-	assertParam(t, result, paramZFSPropPrefix+"quota", "500G")
-	assertParam(t, result, paramZFSPropPrefix+"reservation", "100G")
-}
-
-func TestParsePVCAnnotations_BackendOverride_Empty(t *testing.T) {
-	ann := map[string]string{
-		AnnotationBackendOverride: "{}",
-	}
-	result := mustParseAnnotations(t, ann)
-	if len(result) != 0 {
-		t.Errorf("expected empty result for empty backend override, got %v", result)
+	if o.InCapsuleDataSize != nil || o.CtrlLossTmo != nil || o.ReconnectDelay != nil {
+		t.Errorf("unmentioned fields must stay nil: %+v", o)
 	}
 }
 
-func TestParsePVCAnnotations_BackendOverride_EmptyString(t *testing.T) {
-	// Empty annotation value should be treated as absent.
-	ann := map[string]string{
-		AnnotationBackendOverride: "",
+// An explicit YAML null means "omitted": the field inherits from the layer
+// below instead of failing validation or clearing it.
+func TestDecodePVCAnnotations_NullMeansOmitted(t *testing.T) {
+	t.Parallel()
+	docs := mustDecodeAnnotations(t, map[string]string{
+		v1alpha1.AnnotationBackendDoc:    "lvm:\n  provisioningMode: null\n",
+		v1alpha1.AnnotationProtocolDoc:   "nvmeofTcp:\n  maxQueueSize: null\n  ctrlLossTmo: 30\n",
+		v1alpha1.AnnotationFilesystemDoc: "fsType: null\nmkfsOptions: null\nmountOptions: [noatime]\n",
+	})
+	if docs.Backend == nil || docs.Backend.LVM == nil || docs.Backend.LVM.ProvisioningMode != "" {
+		t.Errorf("Backend = %+v, want lvm member with provisioningMode unset", docs.Backend)
 	}
-	result := mustParseAnnotations(t, ann)
-	if len(result) != 0 {
-		t.Errorf("expected empty result, got %v", result)
+	if p := docs.Protocol.NVMeOFTCP; p.MaxQueueSize != nil || p.CtrlLossTmo == nil || *p.CtrlLossTmo != 30 {
+		t.Errorf("nvmeofTcp = %+v, want maxQueueSize nil and ctrlLossTmo 30", p)
 	}
-}
-
-// ── Blocked structural fields in backend-override ─────────────────────────.
-
-func TestParsePVCAnnotations_BackendOverride_ZFS_BlockedPool(t *testing.T) {
-	ann := map[string]string{
-		AnnotationBackendOverride: `
-zfs:
-  pool: hacked-pool
-  properties:
-    compression: lz4
-`,
+	fs := docs.Filesystem
+	if fs.FSType != "" || fs.MkfsOptions != nil {
+		t.Errorf("filesystem = %+v, want fsType and mkfsOptions inherited (unset)", fs)
 	}
-	_, err := ParsePVCAnnotations(ann)
-	if err == nil {
-		t.Fatal("expected error for blocked zfs.pool field")
+	if fs.MountOptions == nil || !slices.Equal(*fs.MountOptions, []string{"noatime"}) {
+		t.Errorf("mountOptions = %v, want [noatime]", fs.MountOptions)
 	}
 }
 
-func TestParsePVCAnnotations_BackendOverride_ZFS_BlockedParentDataset(t *testing.T) {
-	ann := map[string]string{
-		AnnotationBackendOverride: `
-zfs:
-  parentDataset: k8s/override
-`,
-	}
-	_, err := ParsePVCAnnotations(ann)
-	if err == nil {
-		t.Fatal("expected error for blocked zfs.parentDataset field")
+func TestDecodePVCAnnotations_ProtocolStructuralFieldsRejected(t *testing.T) {
+	t.Parallel()
+	for doc, path := range map[string]string{
+		"nvmeofTcp:\n  acl: false\n": "nvmeofTcp.acl",
+		"nvmeofTcp:\n  port: 4421\n": "nvmeofTcp.port",
+	} {
+		requireDecodeError(t, map[string]string{v1alpha1.AnnotationProtocolDoc: doc},
+			v1alpha1.AnnotationProtocolDoc+": "+path+" is structural and cannot be set per volume")
 	}
 }
 
-// ── YAML malformed ────────────────────────────────────────────────────────.
-
-func TestParsePVCAnnotations_BackendOverride_MalformedYAML(t *testing.T) {
-	ann := map[string]string{
-		AnnotationBackendOverride: "this: is: invalid: yaml: [",
-	}
-	_, err := ParsePVCAnnotations(ann)
-	if err == nil {
-		t.Fatal("expected error for malformed YAML")
-	}
-}
-
-func TestParsePVCAnnotations_BackendOverride_ZFS_NotAMap(t *testing.T) {
-	ann := map[string]string{
-		AnnotationBackendOverride: "zfs: just-a-string",
-	}
-	_, err := ParsePVCAnnotations(ann)
-	if err == nil {
-		t.Fatal("expected error when zfs is not a map")
-	}
-}
-
-func TestParsePVCAnnotations_BackendOverride_ZFS_Properties_NotAMap(t *testing.T) {
-	ann := map[string]string{
-		AnnotationBackendOverride: `
-zfs:
-  properties: not-a-map
-`,
-	}
-	_, err := ParsePVCAnnotations(ann)
-	if err == nil {
-		t.Fatal("expected error when zfs.properties is not a map")
-	}
-}
-
-// ── LVM backend-override ─────────────────────────────────────────────────.
-
-func TestParsePVCAnnotations_BackendOverride_LVM_ProvisioningMode(t *testing.T) {
-	ann := map[string]string{
-		AnnotationBackendOverride: `
-lvm:
-  provisioningMode: linear
-`,
-	}
-	result := mustParseAnnotations(t, ann)
-	assertParam(t, result, paramLVMMode, "linear")
-}
-
-func TestParsePVCAnnotations_BackendOverride_LVM_BlockedVolumeGroup(t *testing.T) {
-	ann := map[string]string{
-		AnnotationBackendOverride: `
-lvm:
-  volumeGroup: hacked-vg
-`,
-	}
-	_, err := ParsePVCAnnotations(ann)
-	if err == nil {
-		t.Fatal("expected error for blocked lvm.volumeGroup field")
-	}
-}
-
-func TestParsePVCAnnotations_BackendOverride_LVM_BlockedThinPool(t *testing.T) {
-	ann := map[string]string{
-		AnnotationBackendOverride: `
-lvm:
-  thinPool: hacked-pool
-`,
-	}
-	_, err := ParsePVCAnnotations(ann)
-	if err == nil {
-		t.Fatal("expected error for blocked lvm.thinPool field")
-	}
-}
-
-func TestParsePVCAnnotations_BackendOverride_LVM_NotAMap(t *testing.T) {
-	ann := map[string]string{
-		AnnotationBackendOverride: "lvm: just-a-string",
-	}
-	_, err := ParsePVCAnnotations(ann)
-	if err == nil {
-		t.Fatal("expected error when lvm is not a map")
+func TestDecodePVCAnnotations_ProtocolInvalidDocuments(t *testing.T) {
+	t.Parallel()
+	for name, tc := range map[string]struct {
+		doc       string
+		fragments []string
+	}{
+		"iscsi member":           {"iscsi:\n  loginTimeout: 30\n", []string{`unknown field "iscsi"`}},
+		"nfs member":             {"nfs:\n  version: \"4.2\"\n", []string{`unknown field "nfs"`}},
+		"member scalar":          {"nvmeofTcp: just-a-string", []string{"nvmeofTcp"}},
+		"unknown field":          {"nvmeofTcp:\n  keepAliveTmo: 5\n", []string{"unknown field nvmeofTcp.keepAliveTmo"}},
+		"queue too small":        {"nvmeofTcp:\n  maxQueueSize: 8\n", []string{"nvmeofTcp.maxQueueSize"}},
+		"queue too large":        {"nvmeofTcp:\n  maxQueueSize: 2048\n", []string{"nvmeofTcp.maxQueueSize"}},
+		"in-capsule too small":   {"nvmeofTcp:\n  inCapsuleDataSize: 1023\n", []string{"nvmeofTcp.inCapsuleDataSize"}},
+		"in-capsule with suffix": {"nvmeofTcp:\n  inCapsuleDataSize: 16K\n", []string{"nvmeofTcp.inCapsuleDataSize"}},
+		"negative ctrl loss tmo": {"nvmeofTcp:\n  ctrlLossTmo: -1\n", []string{"nvmeofTcp.ctrlLossTmo"}},
+		"duration reconnect":     {"nvmeofTcp:\n  reconnectDelay: 10m\n", []string{"nvmeofTcp.reconnectDelay"}},
+		"legacy protocol-type":   {"type: nvmeof-tcp\n", []string{`unknown field "type"`}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			requireDecodeError(t, map[string]string{v1alpha1.AnnotationProtocolDoc: tc.doc},
+				append([]string{v1alpha1.AnnotationProtocolDoc}, tc.fragments...)...)
+		})
 	}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// protocol-override annotation
+// Filesystem document
 // ─────────────────────────────────────────────────────────────────────────────.
 
-func TestParsePVCAnnotations_ProtocolOverride_NVMeOF(t *testing.T) {
-	ann := map[string]string{
-		AnnotationProtocolOverride: `
-nvmeofTcp:
-  maxQueueSize: 64
-  inCapsuleDataSize: 8192
-  ctrlLossTmo: 600
-  reconnectDelay: 10
-`,
+func TestDecodePVCAnnotations_Filesystem(t *testing.T) {
+	t.Parallel()
+	docs := mustDecodeAnnotations(t, map[string]string{
+		v1alpha1.AnnotationFilesystemDoc: "fsType: xfs\nmkfsOptions: [\"-K\"]\nmountOptions: [noatime, nodiscard]\n",
+	})
+	fs := docs.Filesystem
+	if fs == nil || fs.FSType != "xfs" {
+		t.Fatalf("Filesystem = %+v, want fsType xfs", fs)
 	}
-	result := mustParseAnnotations(t, ann)
-
-	assertParam(t, result, paramNVMeOFMaxQueueSize, "64")
-	assertParam(t, result, paramNVMeOFInCapsuleDataSize, "8192")
-	assertParam(t, result, paramNVMeOFCtrlLossTmo, "600")
-	assertParam(t, result, paramNVMeOFReconnectDelay, "10")
-}
-
-func TestParsePVCAnnotations_ProtocolOverride_NVMeOF_Partial(t *testing.T) {
-	// Only maxQueueSize is overridden — other keys must not appear in output.
-	ann := map[string]string{
-		AnnotationProtocolOverride: `
-nvmeofTcp:
-  maxQueueSize: 128
-`,
+	if fs.MkfsOptions == nil || !slices.Equal(*fs.MkfsOptions, []string{"-K"}) {
+		t.Errorf("mkfsOptions = %v, want [-K]", fs.MkfsOptions)
 	}
-	result := mustParseAnnotations(t, ann)
-
-	assertParam(t, result, paramNVMeOFMaxQueueSize, "128")
-	assertNoKey(t, result, paramNVMeOFCtrlLossTmo)
-	assertNoKey(t, result, paramNVMeOFReconnectDelay)
-	assertNoKey(t, result, paramNVMeOFInCapsuleDataSize)
-}
-
-func TestParsePVCAnnotations_ProtocolOverride_ISCSI(t *testing.T) {
-	ann := map[string]string{
-		AnnotationProtocolOverride: `
-iscsi:
-  loginTimeout: 30
-  replacementTimeout: 240
-  nodeSessionTimeout: 180
-`,
-	}
-	result := mustParseAnnotations(t, ann)
-
-	assertParam(t, result, paramISCSILoginTimeout, "30")
-	assertParam(t, result, paramISCSIReplacementTimeout, "240")
-	assertParam(t, result, paramISCSINodeSessionTimeout, "180")
-}
-
-// ── Blocked structural fields in protocol-override ───────────────────────.
-
-func TestParsePVCAnnotations_ProtocolOverride_NVMeOF_BlockedPort(t *testing.T) {
-	ann := map[string]string{
-		AnnotationProtocolOverride: `
-nvmeofTcp:
-  port: 9999
-  maxQueueSize: 64
-`,
-	}
-	_, err := ParsePVCAnnotations(ann)
-	if err == nil {
-		t.Fatal("expected error for blocked nvmeofTcp.port field")
+	if fs.MountOptions == nil || !slices.Equal(*fs.MountOptions, []string{"noatime", "nodiscard"}) {
+		t.Errorf("mountOptions = %v, want [noatime nodiscard]", fs.MountOptions)
 	}
 }
 
-func TestParsePVCAnnotations_ProtocolOverride_ISCSI_BlockedPort(t *testing.T) {
-	ann := map[string]string{
-		AnnotationProtocolOverride: `
-iscsi:
-  port: 12345
-`,
+// List semantics: an omitted list inherits (nil), an explicit [] clears
+// (non-nil, empty).
+func TestDecodePVCAnnotations_FilesystemListSemantics(t *testing.T) {
+	t.Parallel()
+	inherit := mustDecodeAnnotations(t, map[string]string{v1alpha1.AnnotationFilesystemDoc: "fsType: ext4\n"})
+	if inherit.Filesystem.MkfsOptions != nil || inherit.Filesystem.MountOptions != nil {
+		t.Errorf("omitted lists must decode as nil (inherit): %+v", inherit.Filesystem)
 	}
-	_, err := ParsePVCAnnotations(ann)
-	if err == nil {
-		t.Fatal("expected error for blocked iscsi.port field")
+
+	cleared := mustDecodeAnnotations(t, map[string]string{
+		v1alpha1.AnnotationFilesystemDoc: "mkfsOptions: []\nmountOptions: []\n",
+	})
+	fs := cleared.Filesystem
+	if fs.MkfsOptions == nil || len(*fs.MkfsOptions) != 0 {
+		t.Errorf("mkfsOptions: [] must decode as an explicit empty list, got %v", fs.MkfsOptions)
+	}
+	if fs.MountOptions == nil || len(*fs.MountOptions) != 0 {
+		t.Errorf("mountOptions: [] must decode as an explicit empty list, got %v", fs.MountOptions)
+	}
+	if fs.FSType != "" {
+		t.Errorf("fsType = %q, want empty (inherit)", fs.FSType)
 	}
 }
 
-func TestParsePVCAnnotations_ProtocolOverride_NVMeOF_NotAMap(t *testing.T) {
-	ann := map[string]string{
-		AnnotationProtocolOverride: "nvmeofTcp: just-a-string",
-	}
-	_, err := ParsePVCAnnotations(ann)
-	if err == nil {
-		t.Fatal("expected error when nvmeofTcp is not a map")
+func TestDecodePVCAnnotations_FilesystemInvalidDocuments(t *testing.T) {
+	t.Parallel()
+	for name, tc := range map[string]struct {
+		doc       string
+		fragments []string
+	}{
+		"unsupported fsType":     {"fsType: btrfs\n", []string{"fsType"}},
+		"fsType not a string":    {"fsType: 42\n", []string{"fsType"}},
+		"mkfsOptions not a list": {"mkfsOptions: not-a-list\n", []string{"mkfsOptions"}},
+		"non-string element":     {"mkfsOptions: [42, 99]\n", []string{"mkfsOptions"}},
+		"unknown field":          {"fsTyp: xfs\n", []string{"unknown field fsTyp"}},
+		"not a mapping":          {"xfs", []string{"expected a YAML mapping"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			requireDecodeError(t, map[string]string{v1alpha1.AnnotationFilesystemDoc: tc.doc},
+				append([]string{v1alpha1.AnnotationFilesystemDoc}, tc.fragments...)...)
+		})
 	}
 }
 
-func TestParsePVCAnnotations_ProtocolOverride_ISCSI_NotAMap(t *testing.T) {
-	ann := map[string]string{
-		AnnotationProtocolOverride: "iscsi: 42",
+func TestDecodePVCAnnotations_AllDocuments(t *testing.T) {
+	t.Parallel()
+	docs := mustDecodeAnnotations(t, map[string]string{
+		v1alpha1.AnnotationBackendDoc:    "zfs:\n  properties: {atime: \"off\"}\n",
+		v1alpha1.AnnotationProtocolDoc:   "nvmeofTcp:\n  ctrlLossTmo: 900\n",
+		v1alpha1.AnnotationFilesystemDoc: "fsType: xfs\n",
+		"unrelated.example.com/key":      "ignored",
+	})
+	if docs.Backend == nil || docs.Backend.ZFS.Properties["atime"] != "off" {
+		t.Errorf("Backend = %+v", docs.Backend)
 	}
-	_, err := ParsePVCAnnotations(ann)
-	if err == nil {
-		t.Fatal("expected error when iscsi is not a map")
+	if docs.Protocol == nil || docs.Protocol.NVMeOFTCP.CtrlLossTmo == nil || *docs.Protocol.NVMeOFTCP.CtrlLossTmo != 900 {
+		t.Errorf("Protocol = %+v", docs.Protocol)
+	}
+	if docs.Filesystem == nil || docs.Filesystem.FSType != "xfs" {
+		t.Errorf("Filesystem = %+v", docs.Filesystem)
 	}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// fs-override annotation
+// Removed vocabulary and the strict pillar-csi.bhyoo.com/ domain
 // ─────────────────────────────────────────────────────────────────────────────.
 
-func TestParsePVCAnnotations_FSOverride_XFS(t *testing.T) {
-	ann := map[string]string{
-		AnnotationFSOverride: `
-fsType: xfs
-mkfsOptions: ["-K"]
-`,
-	}
-	result := mustParseAnnotations(t, ann)
-
-	assertParam(t, result, paramFSType, "xfs")
-
-	// mkfsOptions should be JSON-encoded
-	var opts []string
-	if err := json.Unmarshal([]byte(result[paramMkfsOptions]), &opts); err != nil {
-		t.Fatalf("mkfsOptions: invalid JSON %q: %v", result[paramMkfsOptions], err)
-	}
-	if len(opts) != 1 || opts[0] != "-K" {
-		t.Errorf("mkfsOptions: got %v, want [\"-K\"]", opts)
+// The flat param.<name> path is gone; the error points at the documents.
+func TestDecodePVCAnnotations_FlatParamRejected(t *testing.T) {
+	t.Parallel()
+	for _, key := range []string{
+		"pillar-csi.bhyoo.com/param.zfs-prop.compression",
+		"pillar-csi.bhyoo.com/param.lvm-mode",
+		"pillar-csi.bhyoo.com/param.nvmeof-ctrl-loss-tmo",
+		"pillar-csi.bhyoo.com/param.store",
+		"pillar-csi.bhyoo.com/param.acl-enabled",
+	} {
+		requireDecodeError(t, map[string]string{key: "x"}, key, v1alpha1.AnnotationBackendDoc)
 	}
 }
 
-func TestParsePVCAnnotations_FSOverride_Ext4(t *testing.T) {
-	ann := map[string]string{
-		AnnotationFSOverride: `fsType: ext4`,
-	}
-	result := mustParseAnnotations(t, ann)
-
-	assertParam(t, result, paramFSType, "ext4")
-	assertNoKey(t, result, paramMkfsOptions)
-}
-
-func TestParsePVCAnnotations_FSOverride_MkfsOptionsMultiple(t *testing.T) {
-	ann := map[string]string{
-		AnnotationFSOverride: `
-fsType: ext4
-mkfsOptions:
-  - "-E"
-  - "lazy_itable_init=0"
-  - "-b"
-  - "4096"
-`,
-	}
-	result := mustParseAnnotations(t, ann)
-
-	assertParam(t, result, paramFSType, "ext4")
-
-	var opts []string
-	if err := json.Unmarshal([]byte(result[paramMkfsOptions]), &opts); err != nil {
-		t.Fatalf("mkfsOptions: invalid JSON: %v", err)
-	}
-	want := []string{"-E", "lazy_itable_init=0", "-b", "4096"}
-	if len(opts) != len(want) {
-		t.Fatalf("mkfsOptions: got %v, want %v", opts, want)
-	}
-	for i, v := range want {
-		if opts[i] != v {
-			t.Errorf("mkfsOptions[%d]: got %q, want %q", i, opts[i], v)
-		}
+// The *-override annotations were renamed; they are rejected with the
+// replacement key rather than silently ignored.
+func TestDecodePVCAnnotations_OldOverrideKeysRejected(t *testing.T) {
+	t.Parallel()
+	for old, replacement := range map[string]string{
+		"pillar-csi.bhyoo.com/backend-override":  v1alpha1.AnnotationBackendDoc,
+		"pillar-csi.bhyoo.com/protocol-override": v1alpha1.AnnotationProtocolDoc,
+		"pillar-csi.bhyoo.com/fs-override":       v1alpha1.AnnotationFilesystemDoc,
+	} {
+		requireDecodeError(t, map[string]string{old: "zfs:\n  properties: {a: b}\n"}, old, replacement)
 	}
 }
 
-func TestParsePVCAnnotations_FSOverride_FsTypeOnly(t *testing.T) {
-	ann := map[string]string{
-		AnnotationFSOverride: `fsType: xfs`,
-	}
-	result := mustParseAnnotations(t, ann)
-
-	assertParam(t, result, paramFSType, "xfs")
-	assertNoKey(t, result, paramMkfsOptions)
-}
-
-// ── Validation errors for fs-override ────────────────────────────────────.
-
-func TestParsePVCAnnotations_FSOverride_InvalidFsType(t *testing.T) {
-	ann := map[string]string{
-		AnnotationFSOverride: `fsType: btrfs`,
-	}
-	_, err := ParsePVCAnnotations(ann)
-	if err == nil {
-		t.Fatal("expected error for unsupported fsType")
-	}
-}
-
-func TestParsePVCAnnotations_FSOverride_FsTypeNotString(t *testing.T) {
-	ann := map[string]string{
-		AnnotationFSOverride: `fsType: 42`,
-	}
-	_, err := ParsePVCAnnotations(ann)
-	if err == nil {
-		t.Fatal("expected error when fsType is not a string")
-	}
-}
-
-func TestParsePVCAnnotations_FSOverride_MkfsOptionsNotAList(t *testing.T) {
-	ann := map[string]string{
-		AnnotationFSOverride: `
-fsType: ext4
-mkfsOptions: not-a-list
-`,
-	}
-	_, err := ParsePVCAnnotations(ann)
-	if err == nil {
-		t.Fatal("expected error when mkfsOptions is not a list")
-	}
-}
-
-func TestParsePVCAnnotations_FSOverride_MkfsOptionsNonStringElement(t *testing.T) {
-	ann := map[string]string{
-		AnnotationFSOverride: `
-fsType: ext4
-mkfsOptions: [42, 99]
-`,
-	}
-	_, err := ParsePVCAnnotations(ann)
-	if err == nil {
-		t.Fatal("expected error when mkfsOptions element is not a string")
-	}
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Combined annotations — all three + flat prefix
-// ─────────────────────────────────────────────────────────────────────────────.
-
-func TestParsePVCAnnotations_AllAnnotations(t *testing.T) {
-	ann := map[string]string{
-		// Flat prefix (low-level)
-		"pillar-csi.bhyoo.com/param.zfs-prop.atime": "off",
-
-		// Structured backend override
-		AnnotationBackendOverride: `
-zfs:
-  properties:
-    compression: zstd
-    volblocksize: "16K"
-`,
-		// Structured protocol override
-		AnnotationProtocolOverride: `
-nvmeofTcp:
-  maxQueueSize: 256
-  ctrlLossTmo: 300
-`,
-		// Structured FS override
-		AnnotationFSOverride: `
-fsType: xfs
-mkfsOptions: ["-K"]
-`,
-	}
-
-	result := mustParseAnnotations(t, ann)
-
-	// Flat prefix
-	assertParam(t, result, paramZFSPropPrefix+"atime", "off")
-
-	// Backend overrides
-	assertParam(t, result, paramZFSPropPrefix+"compression", "zstd")
-	assertParam(t, result, paramZFSPropPrefix+"volblocksize", "16K")
-
-	// Protocol overrides
-	assertParam(t, result, paramNVMeOFMaxQueueSize, "256")
-	assertParam(t, result, paramNVMeOFCtrlLossTmo, "300")
-	assertNoKey(t, result, paramNVMeOFReconnectDelay)
-
-	// FS overrides
-	assertParam(t, result, paramFSType, "xfs")
-	var opts []string
-	if err := json.Unmarshal([]byte(result[paramMkfsOptions]), &opts); err != nil {
-		t.Fatalf("mkfsOptions: invalid JSON: %v", err)
-	}
-	if len(opts) != 1 || opts[0] != "-K" {
-		t.Errorf("mkfsOptions: got %v, want [\"-K\"]", opts)
-	}
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Higher-priority structured annotation overwrites flat prefix
-// ─────────────────────────────────────────────────────────────────────────────.
-
-func TestParsePVCAnnotations_StructuredOverwritesFlat(t *testing.T) {
-	// The structured backend-override is processed after the flat param.* loop,
-	// so it wins when both set the same key.
-	ann := map[string]string{
-		// Flat prefix sets compression=lz4
-		"pillar-csi.bhyoo.com/param." + paramZFSPropPrefix + "compression": "lz4",
-		// Structured sets compression=zstd — should win
-		AnnotationBackendOverride: `
-zfs:
-  properties:
-    compression: zstd
-`,
-	}
-	result := mustParseAnnotations(t, ann)
-	assertParam(t, result, paramZFSPropPrefix+"compression", "zstd")
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Annotation constant values (regression: do not rename unexpectedly)
-// ─────────────────────────────────────────────────────────────────────────────.
-
-func TestAnnotationConstants(t *testing.T) {
-	if AnnotationBackendOverride != "pillar-csi.bhyoo.com/backend-override" {
-		t.Errorf("AnnotationBackendOverride = %q", AnnotationBackendOverride)
-	}
-	if AnnotationProtocolOverride != "pillar-csi.bhyoo.com/protocol-override" {
-		t.Errorf("AnnotationProtocolOverride = %q", AnnotationProtocolOverride)
-	}
-	if AnnotationFSOverride != "pillar-csi.bhyoo.com/fs-override" {
-		t.Errorf("AnnotationFSOverride = %q", AnnotationFSOverride)
-	}
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Param key constant values (regression: do not rename unexpectedly)
-// ─────────────────────────────────────────────────────────────────────────────.
-
-func TestParamKeyConstants(t *testing.T) {
-	cases := []struct{ name, got, want string }{
-		{"paramNVMeOFMaxQueueSize", paramNVMeOFMaxQueueSize, "pillar-csi.bhyoo.com/nvmeof-max-queue-size"},
-		{"paramNVMeOFInCapsuleDataSize", paramNVMeOFInCapsuleDataSize, "pillar-csi.bhyoo.com/nvmeof-in-capsule-data-size"},
-		{"paramNVMeOFCtrlLossTmo", paramNVMeOFCtrlLossTmo, "pillar-csi.bhyoo.com/nvmeof-ctrl-loss-tmo"},
-		{"paramNVMeOFReconnectDelay", paramNVMeOFReconnectDelay, "pillar-csi.bhyoo.com/nvmeof-reconnect-delay"},
-		{"paramISCSILoginTimeout", paramISCSILoginTimeout, "pillar-csi.bhyoo.com/iscsi-login-timeout"},
-		{"paramISCSIReplacementTimeout", paramISCSIReplacementTimeout, "pillar-csi.bhyoo.com/iscsi-replacement-timeout"},
-		{"paramISCSINodeSessionTimeout", paramISCSINodeSessionTimeout, "pillar-csi.bhyoo.com/iscsi-node-session-timeout"},
-		{"paramFSType", paramFSType, "pillar-csi.bhyoo.com/fs-type"},
-		{"paramMkfsOptions", paramMkfsOptions, "pillar-csi.bhyoo.com/mkfs-options"},
-	}
-	for _, tc := range cases {
-		if tc.got != tc.want {
-			t.Errorf("%s = %q, want %q", tc.name, tc.got, tc.want)
-		}
+// Any other pillar-csi.bhyoo.com/ key on a claim is unknown: a typo must
+// not silently provision with defaults.
+func TestDecodePVCAnnotations_UnknownPillarKeyRejected(t *testing.T) {
+	t.Parallel()
+	for _, key := range []string{
+		"pillar-csi.bhyoo.com/filesytem",
+		"pillar-csi.bhyoo.com/zfs-prop.compression",
+		"pillar-csi.bhyoo.com/store-ref",
+		"pillar-csi.bhyoo.com/storage-class",
+	} {
+		requireDecodeError(t, map[string]string{key: "x"}, key)
 	}
 }

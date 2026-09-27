@@ -52,10 +52,8 @@ import (
 const (
 	// VolumeContextKeyTargetID is the protocol-agnostic target identifier set
 	// by the controller in CreateVolume.  Corresponds to ExportInfo.TargetId
-	// returned by the agent.  The semantics depend on the protocol:
-	//   - NVMe-oF TCP: NVMe Qualified Name (NQN), e.g. "nqn.2024-01.com.example:vol1"
-	//   - iSCSI:       target IQN, e.g. "iqn.2024-01.com.example:vol1"
-	//   - NFS/SMB:     server IP address (the primary connection identifier)
+	// returned by the agent; for NVMe-oF TCP it is the subsystem NVMe
+	// Qualified Name (NQN), e.g. "nqn.2024-01.com.example:vol1".
 	VolumeContextKeyTargetID = "target_id"
 
 	// VolumeContextKeyAddress is the IP address (or hostname) of the storage
@@ -63,16 +61,13 @@ const (
 	VolumeContextKeyAddress = "address"
 
 	// VolumeContextKeyPort is the TCP port of the storage target encoded as a
-	// decimal string.  Derived from ExportInfo.Port.
-	// Examples: "4420" for NVMe-oF TCP, "3260" for iSCSI.
-	// May be empty for file protocols (NFS, SMB).
+	// decimal string (e.g. "4420").  Derived from ExportInfo.Port.
 	VolumeContextKeyPort = "port"
 
-	// VolumeContextKeyProtocolType is the storage protocol type set by the
-	// controller in CreateVolume.  It is used by NodeStageVolume to dispatch
-	// the volume to the correct ProtocolHandler (e.g. NVMeoFTCPHandler).
-	// Known values: "nvmeof-tcp", "iscsi", "nfs", "smb".
-	// Matches the StorageClass parameter "pillar-csi.bhyoo.com/protocol-type".
+	// VolumeContextKeyProtocolType is the storage protocol routing token set
+	// by the controller in CreateVolume.  It is used by NodeStageVolume to
+	// dispatch the volume to the correct ProtocolHandler (NVMeoFTCPHandler).
+	// Known values: "nvmeof-tcp".
 	VolumeContextKeyProtocolType = "pillar-csi.bhyoo.com/protocol-type"
 )
 
@@ -274,9 +269,6 @@ func handlersFromConnector(conn Connector) map[string]ProtocolHandler {
 // strings extracted from volumeID path components (which could be any string).
 var knownProtocolTypes = map[string]struct{}{
 	ProtocolNVMeoFTCP: {},
-	ProtocolISCSI:     {},
-	ProtocolNFS:       {},
-	ProtocolSMB:       {},
 }
 
 // resolveProtocolType derives the storage protocol type for the given volume.
@@ -662,14 +654,11 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 
 	// ── Step 3: Protocol-specific VolumeContext validation ──────────────────
 	// Extract common VolumeContext parameters used across protocols.
-	// File protocols (NFS, SMB) may not require all three fields; their
-	// handlers validate their own required parameters inside Attach.
 	targetID := volCtx[VolumeContextKeyTargetID]
 	address := volCtx[VolumeContextKeyAddress]
 	port := volCtx[VolumeContextKeyPort]
 
 	// NVMe-oF TCP requires target_id (NQN), address, and port.
-	// iSCSI, NFS, SMB: handlers validate their own required parameters inside Attach.
 	if protocolType == ProtocolNVMeoFTCP {
 		if targetID == "" {
 			return nil, status.Errorf(codes.InvalidArgument,
@@ -749,14 +738,14 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 	// Resolve the filesystem type and mkfs options of a MOUNT volume before
 	// any attach side effect, so a malformed VolumeContext fails fast.
 	var fsType string
-	var mkfsOpts []string
+	var mkfsOpts, mountFlags []string
 	if volCap.GetMount() != nil {
-		var fsErr error
-		fsType, mkfsOpts, fsErr = stageFilesystem(volCtx, volCap)
+		staged, fsErr := stageFilesystem(volCtx, volCap)
 		if fsErr != nil {
 			return nil, status.Errorf(codes.InvalidArgument,
 				"NodeStageVolume: volume %q: %v", volumeID, fsErr)
 		}
+		fsType, mkfsOpts, mountFlags = staged.fsType, staged.mkfsOptions, staged.mountFlags
 	}
 
 	// ── Step 4: Attach via protocol handler ─────────────────────────────────
@@ -794,8 +783,7 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 	switch {
 	case volCap.GetMount() != nil:
 		// MOUNT access: format (only if the device carries no filesystem)
-		// and mount to staging path.
-		mountFlags := volCap.GetMount().GetMountFlags()
+		// and mount to staging path with the resolved mount options.
 
 		// Check IsMounted before FormatAndMount to provide an additional
 		// idempotency guard (e.g., after a partial failure where the state
@@ -1143,10 +1131,16 @@ func (n *NodeServer) NodePublishVolume( //nolint:gocyclo // SM guard + capabilit
 
 	// ── Build mount options ─────────────────────────────────────────────────
 	// Start with "bind" to perform a bind mount from the staging path.
-	// Append any caller-supplied mount flags, then add "ro" if readonly.
+	// Append the resolved mount options (VolumeContext, else the caller's
+	// mount flags), then add "ro" if readonly.
 	mountOptions := []string{"bind"}
 	if volCap.GetMount() != nil {
-		mountOptions = append(mountOptions, volCap.GetMount().GetMountFlags()...)
+		flags, flagsErr := resolveMountFlags(req.GetVolumeContext(), volCap)
+		if flagsErr != nil {
+			return nil, status.Errorf(codes.InvalidArgument,
+				"NodePublishVolume: volume %q: %v", volumeID, flagsErr)
+		}
+		mountOptions = append(mountOptions, flags...)
 	}
 	if readonly {
 		mountOptions = append(mountOptions, "ro")

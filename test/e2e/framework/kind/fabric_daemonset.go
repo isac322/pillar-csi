@@ -1,13 +1,13 @@
 // Package kind provides helpers for creating Kind clusters and deploying the
 // privileged fabric-readiness DaemonSet that pre-installs and validates real
-// NVMe-oF TCP and iSCSI targets on every Kind node.
+// NVMe-oF TCP targets on every Kind node.
 //
 // # Sub-AC 9b Design
 //
 // This file implements the fabric (network fabric) backend DaemonSet, which
 // is the companion to the storage backend DaemonSet in backend_daemonset.go
-// (Sub-AC 9a). Together they ensure that all four storage backends — ZFS, LVM,
-// NVMe-oF TCP, and iSCSI — are fully operational before any TC runs.
+// (Sub-AC 9a). Together they ensure that all three storage backends — ZFS, LVM,
+// and NVMe-oF TCP — are fully operational before any TC runs.
 //
 // The DaemonSet approach is Kubernetes-native and scales across all Kind nodes:
 //
@@ -21,12 +21,11 @@
 //     control-plane).
 //     • Uses hostPID: true so the init container can nsenter into the Kind
 //     node's mount namespace and run apt-get directly on the node's filesystem.
-//     • Init container installs nvme-cli and tgt (tgtd) on the Kind node,
-//     configures the NVMe-oF TCP target in kernel configfs, starts the tgtd
-//     daemon, and creates the iSCSI target.
-//     • Main container stays running with a readiness probe that validates both
-//     NVMe-oF (configfs symlink check) and iSCSI (tgtadm target list) via
-//     nsenter into the Kind node's mount namespace.
+//     • Init container installs nvme-cli on the Kind node and configures the
+//     NVMe-oF TCP target in kernel configfs.
+//     • Main container stays running with a readiness probe that validates the
+//     NVMe-oF target (configfs symlink check) via nsenter into the Kind node's
+//     mount namespace.
 //
 //  3. WaitForFabricDaemonSetReady — polls until all DaemonSet pods are Ready
 //     or the deadline is reached. On timeout or pod failure, fetches pod events
@@ -47,14 +46,6 @@
 //   - Creates a loop-device-backed namespace (namespace 1) under the subsystem.
 //   - Creates an NVMe-oF TCP port at nvmet/ports/1, listening on 0.0.0.0:4420.
 //   - Symlinks the subsystem into the port's subsystems directory.
-//
-// # iSCSI Target Architecture
-//
-// The iSCSI target uses tgtd (Linux SCSI Target Framework daemon), which runs
-// as a user-space process inside the Kind node. The init container:
-//   - Starts tgtd (daemon mode; child process is reparented to Kind node PID 1).
-//   - Creates a loop-device-backed LUN (LUN 1) for the iSCSI target.
-//   - Binds the target to ALL initiator addresses.
 //
 // # Why nsenter?
 //
@@ -96,8 +87,8 @@ const (
 
 	// FabricDaemonSetReadyTimeout is the default maximum time to wait for all
 	// fabric DaemonSet pods to transition to Ready.  5 minutes is sufficient
-	// even on cold-cache machines where apt-get must download tgt and nvme-cli
-	// plus set up the NVMe-oF target and start tgtd.
+	// even on cold-cache machines where apt-get must download nvme-cli
+	// plus set up the NVMe-oF target.
 	FabricDaemonSetReadyTimeout = 5 * time.Minute
 
 	// fabricDaemonSetPollInterval is how often WaitForFabricDaemonSetReady
@@ -112,14 +103,6 @@ const (
 	// NVMeOFTCPPort is the TCP port on which the E2E NVMe-oF TCP target listens.
 	// Port 4420 is the IANA-assigned well-known port for NVMe-oF.
 	NVMeOFTCPPort = "4420"
-
-	// ISCSITargetIQN is the IQN for the E2E iSCSI target created by tgtd.
-	ISCSITargetIQN = "iqn.2024-01.io.pillar-csi:e2e-target"
-
-	// ISCSITargetTID is the fixed tgtadm target ID used for the E2E iSCSI target.
-	// TID 10 is chosen to avoid collisions with dynamically allocated TIDs in
-	// [1, 9] used by individual TCs that call iscsi.CreateTarget.
-	ISCSITargetTID = "10"
 )
 
 // fabricReadinessDaemonSetTemplate is the DaemonSet manifest applied by
@@ -135,18 +118,13 @@ const (
 //   - tolerations with operator: Exists schedules the pod on all nodes.
 //   - The installer init container runs all fabric setup inside the Kind node's
 //     mount namespace (nsenter --mount=/proc/1/ns/mnt) so that `docker exec
-//     <kind-node>` invocations in the test suite find tgtd running and configfs
-//     entries present.
+//     <kind-node>` invocations in the test suite find the configfs entries
+//     present.
 //   - NVMe-oF target: configured via Linux kernel configfs (nvmet module).
 //     No user-space daemon required — kernel state persists after init exits.
-//   - iSCSI target: tgtd daemon is started with daemon-mode fork; the child
-//     process is reparented to the Kind node's PID 1 and persists after the
-//     init container exits.
-//   - Readiness probe validates BOTH backends via nsenter:
-//   - NVMe-oF: verifies that the configfs subsystem→port symlink exists,
-//     confirming the TCP target is configured and the nvmet_tcp module is bound.
-//   - iSCSI: runs tgtadm target show and greps for the E2E IQN, confirming
-//     that tgtd is running and the target is accessible.
+//   - Readiness probe validates the NVMe-oF target via nsenter: it verifies
+//     that the configfs subsystem→port symlink exists, confirming the TCP
+//     target is configured and the nvmet_tcp module is bound.
 const fabricReadinessDaemonSetTemplate = `apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -176,15 +154,14 @@ spec:
       # hostPID: true shares the Kind node's PID namespace with each container.
       # This makes /proc/1/ns/mnt point to the mount namespace of the Kind
       # node container's init process, allowing nsenter to enter that namespace
-      # and run commands (apt-get, configfs ops, tgtd, tgtadm) on the node's
+      # and run commands (apt-get, configfs ops) on the node's
       # own filesystem.
       hostPID: true
 
       initContainers:
       # fabric-installer runs once per pod start and:
-      #   1. Installs nvme-cli and tgt (tgtd) on the Kind node's filesystem.
+      #   1. Installs nvme-cli on the Kind node's filesystem.
       #   2. Configures the NVMe-oF TCP target in kernel configfs.
-      #   3. Starts the tgtd daemon and creates the iSCSI target.
       # All steps run via nsenter --mount=/proc/1/ns/mnt so they operate on
       # the Kind node's filesystem, not the pod's overlay filesystem.
       - name: fabric-installer
@@ -208,8 +185,8 @@ spec:
             echo "[fabric-installer] apt-get update..."
             apt-get update -qq
 
-            echo "[fabric-installer] Installing nvme-cli and tgt..."
-            apt-get install -y -q --no-install-recommends nvme-cli tgt
+            echo "[fabric-installer] Installing nvme-cli..."
+            apt-get install -y -q --no-install-recommends nvme-cli
 
             echo "[fabric-installer] Packages installed."
 
@@ -269,51 +246,13 @@ spec:
 
             echo "[fabric-installer] NVMe-oF TCP target configured."
 
-            # ── Step 3: iSCSI target setup via tgtd ────────────────────────────
-            echo "[fabric-installer] Starting tgtd iSCSI daemon..."
-
-            # Start tgtd in daemon mode (forks; parent returns, child persists).
-            # The child is reparented to Kind node PID 1 when this init container
-            # exits, ensuring tgtd survives the container lifecycle.
-            # Guard with PID file check to avoid double-start on pod restart.
-            if [ -f /var/run/tgtd.pid ] && kill -0 $(cat /var/run/tgtd.pid 2>/dev/null) 2>/dev/null; then
-              echo "[fabric-installer] tgtd already running (pid $(cat /var/run/tgtd.pid)), skipping."
-            else
-              tgtd
-              # Allow tgtd to fully initialise before issuing tgtadm commands.
-              sleep 3
-              echo "[fabric-installer] tgtd started."
-            fi
-
-            ISCSI_IQN="iqn.2024-01.io.pillar-csi:e2e-target"
-            ISCSI_TID=10
-
-            # Create iSCSI target — idempotent.
-            if tgtadm --lld iscsi --mode target --op show 2>/dev/null | grep -q "${ISCSI_IQN}"; then
-              echo "[fabric-installer] iSCSI target already exists, skipping."
-            else
-              echo "[fabric-installer] Creating iSCSI target ${ISCSI_IQN}..."
-
-              dd if=/dev/zero of=/tmp/iscsi-e2e-lun0.img bs=1M count=64 status=none
-              ISCSI_LOOP=$(losetup --find --show /tmp/iscsi-e2e-lun0.img)
-
-              tgtadm --lld iscsi --mode target --op new \
-                --tid ${ISCSI_TID} --targetname "${ISCSI_IQN}"
-              tgtadm --lld iscsi --mode logicalunit --op new \
-                --tid ${ISCSI_TID} --lun 1 --backing-store "${ISCSI_LOOP}"
-              tgtadm --lld iscsi --mode target --op bind \
-                --tid ${ISCSI_TID} --initiator-address ALL
-
-              echo "[fabric-installer] iSCSI target created on ${ISCSI_LOOP}."
-            fi
-
             echo "[fabric-installer] All fabric backends configured successfully."
           '
 
       containers:
       # fabric-readiness is the main container.  It stays running so the
       # readiness probe can be evaluated continuously.  The pod transitions to
-      # Ready only when both NVMe-oF TCP and iSCSI pass their readiness checks.
+      # Ready only when the NVMe-oF TCP target passes its readiness check.
       - name: fabric-readiness
         image: debian:bookworm-slim
         imagePullPolicy: IfNotPresent
@@ -353,18 +292,9 @@ spec:
                 exit 1
               fi
 
-              # ── iSCSI readiness ───────────────────────────────────────────────
-              # Verify tgtd is running and the E2E target is accessible.
-              nsenter --mount=/proc/1/ns/mnt -- \
-                tgtadm --lld iscsi --mode target --op show 2>/dev/null \
-                | grep -q "iqn.2024-01.io.pillar-csi:e2e-target" || {
-                echo "[readiness] FAIL: iSCSI target not found in tgtd — is tgtd running?"
-                exit 1
-              }
-
-              echo "[readiness] PASS: NVMe-oF TCP and iSCSI targets are operational."
+              echo "[readiness] PASS: NVMe-oF TCP target is operational."
           # initialDelaySeconds accounts for apt-get download + installation +
-          # NVMe-oF configfs setup + tgtd start + target creation time.
+          # NVMe-oF configfs setup time.
           # 30 s is conservative; on a warm cache this typically takes 10-20 s.
           initialDelaySeconds: 30
           # periodSeconds controls how often the probe runs after the initial delay.
@@ -378,8 +308,8 @@ spec:
 
 // ─── Fabric kernel module prerequisite check ──────────────────────────────────
 
-// FabricKernelModule describes a kernel module required by the fabric (NVMe-oF
-// TCP or iSCSI) storage backends.
+// FabricKernelModule describes a kernel module required by the NVMe-oF TCP
+// fabric backend.
 type FabricKernelModule struct {
 	// Name is the module name as it appears in /proc/modules (underscores).
 	Name string
@@ -392,7 +322,7 @@ type FabricKernelModule struct {
 }
 
 // requiredFabricModules lists the kernel modules required for the NVMe-oF TCP
-// and iSCSI target fabric backends.  All entries are treated as required: if
+// target fabric backend.  All entries are treated as required: if
 // any is absent, CheckFabricKernelModules returns a non-nil error.
 var requiredFabricModules = []FabricKernelModule{
 	{
@@ -464,7 +394,7 @@ func formatMissingFabricModulesError(missing []FabricKernelModule) error {
 	sb.WriteString("║    pillar-csi E2E fabric kernel modules MISSING              ║\n")
 	sb.WriteString("╚══════════════════════════════════════════════════════════════╝\n")
 	sb.WriteString("\n  All 404 test cases require real storage backends including\n")
-	sb.WriteString("  NVMe-oF TCP and iSCSI fabric transports.\n")
+	sb.WriteString("  NVMe-oF TCP fabric transport.\n")
 	sb.WriteString("  Soft-skip is DISABLED — missing modules cause FAIL, not SKIP.\n")
 	sb.WriteString("\n  Missing fabric modules:\n\n")
 
@@ -486,7 +416,7 @@ func formatMissingFabricModulesError(missing []FabricKernelModule) error {
 	sb.WriteString("  or:\n")
 	sb.WriteString("    go test ./test/e2e/ -tags=e2e -v\n")
 	sb.WriteString("\n  Verify current module status with:\n")
-	sb.WriteString("    lsmod | grep -E 'nvmet|iscsi'\n")
+	sb.WriteString("    lsmod | grep -E 'nvmet'\n")
 
 	return fmt.Errorf("%s", sb.String())
 }
@@ -607,7 +537,7 @@ func WaitForFabricDaemonSetReady(
 // exist returns nil.
 //
 // Note: this function removes the Kubernetes DaemonSet object but does NOT
-// clean up the NVMe-oF configfs entries or stop the tgtd daemon.  Those are
+// clean up the NVMe-oF configfs entries.  Those are
 // cleaned up when the Kind cluster is deleted (node container removal).
 //
 // kubectlBinary defaults to "kubectl" when empty.
@@ -767,11 +697,10 @@ func buildFabricReadinessTimeoutError(
 	sb.WriteString("    • nvmet module not loaded on host → run: modprobe nvmet\n")
 	sb.WriteString("    • nvmet_tcp module not loaded → run: modprobe nvmet_tcp\n")
 	sb.WriteString("    • configfs not mountable (kernel config issue)\n")
-	sb.WriteString("    • tgt package unavailable in apt → check apt-get network\n")
 	sb.WriteString("    • nvme-cli package unavailable in apt → check apt-get network\n")
 	sb.WriteString("    • Kind node image lacks bash/losetup → use Debian/Ubuntu-based Kind image\n")
 	sb.WriteString("\n  Re-run CheckFabricKernelModules() to verify module status.\n")
-	sb.WriteString("  Verify with: lsmod | grep -E 'nvmet|iscsi'\n")
+	sb.WriteString("  Verify with: lsmod | grep -E 'nvmet'\n")
 
 	return fmt.Errorf("%s", sb.String())
 }

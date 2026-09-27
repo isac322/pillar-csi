@@ -387,6 +387,41 @@ func TestCreate_ThinLV(t *testing.T) {
 		"--virtualsize", "2147483648b", "--thinpool", "thin-pool-0", "data-vg")
 }
 
+// TestCreate_ModeSelectsPath verifies that without a per-volume
+// provision_mode the backend's configured mode decides the lvcreate path:
+// a VG with a thin pool but linear mode creates a linear LV.
+func TestCreate_ModeSelectsPath(t *testing.T) {
+	t.Parallel()
+
+	fake := newFake(t,
+		lvNotExistResp("pvc-lin"),
+		ok(""),
+		ok("1073741824\n"),
+	)
+	b := lvm.New("data-vg", "thin-pool-0").WithMode(lvm.ProvisionModeLinear)
+	lvm.SetBackendExec(t, b, fake.exec())
+
+	_, _, err := b.Create(context.Background(), "data-vg/pvc-lin", 1<<30, nil)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	fake.assertArgsContain(1, "lvcreate", "-y", "-n", "pvc-lin", "-L", "1073741824b", "data-vg")
+	if args := strings.Join(fake.calls[1].args, " "); strings.Contains(args, "--thinpool") {
+		t.Errorf("lvcreate args %q: linear mode must not use the thin pool", args)
+	}
+}
+
+// TestValidate_ThinModeRequiresThinPool verifies a thin mode without a thin
+// pool is rejected instead of silently creating linear volumes.
+func TestValidate_ThinModeRequiresThinPool(t *testing.T) {
+	t.Parallel()
+
+	err := lvm.New("data-vg", "").WithMode(lvm.ProvisionModeThin).Validate()
+	if err == nil || !strings.Contains(err.Error(), "requires a thin pool") {
+		t.Fatalf("Validate() = %v, want thin-pool error", err)
+	}
+}
+
 func TestCreate_Idempotent_AlreadyExists(t *testing.T) {
 	t.Parallel()
 

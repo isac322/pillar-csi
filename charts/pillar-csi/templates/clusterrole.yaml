@@ -220,9 +220,9 @@ metadata:
   labels:
     {{- include "pillar-csi.componentLabels" (dict "root" . "component" "node") | nindent 4 }}
 rules:
-  # Node plugin must patch CSINode annotations to publish NVMe host NQN and
-  # iSCSI initiator IQN so that the controller can resolve initiator identity
-  # without assuming node_id == NQN (RFC §5.2).
+  # Node plugin must patch CSINode annotations to publish its NVMe host NQN so
+  # that the controller can resolve initiator identity without assuming
+  # node_id == NQN (RFC §5.2).
   - apiGroups:
       - storage.k8s.io
     resources:

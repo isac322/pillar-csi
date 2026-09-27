@@ -1,11 +1,20 @@
 package e2e
 
-// tc_e22_inprocess_test.go — Per-TC assertions for E22: Access mode matrix / incompatible backend-protocol.
+// tc_e22_inprocess_test.go — Per-TC assertions for E22: incompatible or
+// unsupported backend/protocol selections.
+//
+// Backend and protocol are selected by the PillarStore / PillarProtocol a
+// StorageClass references; only the zfs and lvm backend members and the
+// nvmeofTcp protocol member exist.  A hand-written StorageClass may add
+// backend / protocol override documents, and every selection of a removed
+// variant (iscsi, nfs, zfs-dataset, dir, …) or a flat legacy key must be
+// rejected explicitly with InvalidArgument before the agent is called.
 
 import (
-	"fmt"
+	"strings"
 
 	csiapi "github.com/container-storage-interface/spec/lib/go/csi"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -13,90 +22,132 @@ import (
 	agentv1 "github.com/bhyoo/pillar-csi/gen/go/pillar_csi/agent/v1"
 )
 
-func assertE22_CreateVolume_UnsupportedProtocol(tc documentedCase) {
-	env := newControllerTestEnv()
-	defer env.close()
-
-	params := map[string]string{
-		"pillar-csi.bhyoo.com/agent":         env.target.Name,
-		"pillar-csi.bhyoo.com/store":         "tank",
-		"pillar-csi.bhyoo.com/backend-type":  "zfs-zvol",
-		"pillar-csi.bhyoo.com/protocol-type": "fc", // unsupported protocol
-	}
+// expectE22Rejected issues CreateVolume with params and asserts an
+// InvalidArgument whose message contains every fragment, and that the agent
+// was never asked to create a volume.
+func expectE22Rejected(tc documentedCase, env *controllerTestEnv, name string, params map[string]string, fragments ...string) {
+	GinkgoHelper()
 	_, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
-		Name:               "pvc-e22-unsupported-proto",
+		Name:               name,
 		Parameters:         params,
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
 	})
-	Expect(err).To(HaveOccurred(), "%s: expected error for unsupported protocol", tc.tcNodeLabel())
+	Expect(err).To(HaveOccurred(), "%s: expected rejection", tc.tcNodeLabel())
 	Expect(status.Code(err)).To(Equal(codes.InvalidArgument),
-		"%s: expected InvalidArgument for unsupported protocol", tc.tcNodeLabel())
+		"%s: expected InvalidArgument, got %v", tc.tcNodeLabel(), err)
+	for _, fragment := range fragments {
+		Expect(err.Error()).To(ContainSubstring(fragment), "%s", tc.tcNodeLabel())
+	}
+	env.agentSrv.mu.Lock()
+	reqs := env.agentSrv.createVolumeReqs
+	env.agentSrv.mu.Unlock()
+	Expect(reqs).To(BeEmpty(), "%s: no agent call for a rejected selection", tc.tcNodeLabel())
+}
+
+// e22HandWrittenWithDoc returns the default hand-written StorageClass
+// parameters plus one override document.
+func e22HandWrittenWithDoc(env *controllerTestEnv, docKey, doc string) map[string]string {
+	params := copyParams(env.params)
+	params[docKey] = doc
+	return params
+}
+
+func assertE22_CreateVolume_ProtocolDoc_ISCSIRejected(tc documentedCase) {
+	env := newControllerTestEnv()
+	defer env.close()
+
+	expectE22Rejected(tc, env, "pvc-e22-iscsi",
+		e22HandWrittenWithDoc(env, e2eDocProtocol, "iscsi:\n  port: 3260\n"),
+		e2eDocProtocol, `unknown field "iscsi"`)
+}
+
+func assertE22_CreateVolume_ProtocolDoc_NFSRejected(tc documentedCase) {
+	env := newControllerTestEnv()
+	defer env.close()
+
+	expectE22Rejected(tc, env, "pvc-e22-nfs",
+		e22HandWrittenWithDoc(env, e2eDocProtocol, "nfs:\n  version: \"4.2\"\n"),
+		e2eDocProtocol, `unknown field "nfs"`)
+}
+
+func assertE22_CreateVolume_LegacyProtocolTypeParamRejected(tc documentedCase) {
+	env := newControllerTestEnv()
+	defer env.close()
+
+	params := copyParams(env.params)
+	params["pillar-csi.bhyoo.com/protocol-type"] = "smb-v3-unknown"
+	expectE22Rejected(tc, env, "pvc-e22-legacy-protocol-type", params,
+		"unsupported StorageClass parameter", "pillar-csi.bhyoo.com/protocol-type")
+}
+
+func assertE22_CreateVolume_ProtocolDoc_StructuralFieldRejected(tc documentedCase) {
+	env := newControllerTestEnv()
+	defer env.close()
+
+	// acl is the security anchor of the PillarProtocol: it is structural and
+	// may not be changed by a per-class or per-volume document.
+	expectE22Rejected(tc, env, "pvc-e22-structural-acl",
+		e22HandWrittenWithDoc(env, e2eDocProtocol, "nvmeofTcp:\n  acl: true\n"),
+		"nvmeofTcp.acl is structural and cannot be set per volume")
+}
+
+func assertE22_CreateVolume_BackendDoc_RemovedVariantRejected(tc documentedCase) {
+	for _, member := range []string{"zfs-dataset", "dir"} {
+		env := newControllerTestEnv()
+		expectE22Rejected(tc, env, "pvc-e22-removed-backend",
+			e22HandWrittenWithDoc(env, e2eDocBackend, member+":\n  properties: {}\n"),
+			e2eDocBackend, `unknown field "`+member+`"`)
+		env.close()
+	}
+}
+
+func assertE22_CreateVolume_BackendDoc_MemberMismatchRejected(tc documentedCase) {
+	env := newControllerTestEnv()
+	defer env.close()
+
+	// The default store is ZFS: an lvm override document does not match it.
+	_, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
+		Name:               "pvc-e22-backend-mismatch",
+		Parameters:         e22HandWrittenWithDoc(env, e2eDocBackend, "lvm:\n  provisioningMode: thin\n"),
+		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
+	})
+	Expect(status.Code(err)).To(Equal(codes.InvalidArgument),
+		"%s: expected InvalidArgument, got %v", tc.tcNodeLabel(), err)
+	Expect(strings.Contains(err.Error(), "lvm") && strings.Contains(err.Error(), "zfs")).To(BeTrue(),
+		"%s: the rejection must name both the override member and the store backend: %v", tc.tcNodeLabel(), err)
+	env.agentSrv.mu.Lock()
+	reqs := env.agentSrv.createVolumeReqs
+	env.agentSrv.mu.Unlock()
+	Expect(reqs).To(BeEmpty(), "%s: no agent call for a mismatched override", tc.tcNodeLabel())
 }
 
 func assertE22_CreateVolume_NVMeOF_TCP(tc documentedCase) {
 	env := newControllerTestEnv()
 	defer env.close()
 
-	params := map[string]string{
-		"pillar-csi.bhyoo.com/agent":         env.target.Name,
-		"pillar-csi.bhyoo.com/store":         "tank",
-		"pillar-csi.bhyoo.com/backend-type":  "zfs-zvol",
-		"pillar-csi.bhyoo.com/protocol-type": "nvmeof-tcp",
-	}
 	resp, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
 		Name:               "pvc-e22-nvmeof-tcp",
-		Parameters:         params,
+		Parameters:         env.params,
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: NVMe-oF TCP CreateVolume", tc.tcNodeLabel())
-	Expect(resp.GetVolume().GetVolumeId()).To(ContainSubstring("nvmeof-tcp"),
+	Expect(resp.GetVolume().GetVolumeId()).To(ContainSubstring("/nvmeof-tcp/"),
 		"%s: volume ID should contain protocol", tc.tcNodeLabel())
 }
 
-func assertE22_ControllerPublish_ProtocolMismatch(tc documentedCase) {
+func assertE22_CreateVolume_LVMBackend_NVMeOF(tc documentedCase) {
 	env := newControllerTestEnv()
 	defer env.close()
 
-	// Create NVMe-oF volume but try to publish to iSCSI node
+	Expect(env.k8sClient.Create(env.ctx, e2eLVMStore("lvm-store", env.target.Name, "data-vg", "", ""))).To(Succeed())
 	resp, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
-		Name:               "pvc-e22-proto-mismatch",
-		Parameters:         env.params, // nvmeof-tcp
+		Name:               "pvc-e22-lvm-nvmeof",
+		Parameters:         e2eHandWrittenParams("lvm-store", e2eDefaultProtocolName),
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
 	})
-	Expect(err).NotTo(HaveOccurred(), "%s: CreateVolume", tc.tcNodeLabel())
-	volumeID := resp.GetVolume().GetVolumeId()
-
-	// Create iSCSI node — no NQN annotation, only IQN
-	makeCSINodeWithIQN(env, "iscsi-worker", "iqn.1993-08.org.debian:iscsi-worker")
-
-	_, err = env.controller.ControllerPublishVolume(env.ctx, &csiapi.ControllerPublishVolumeRequest{
-		VolumeId:         volumeID,
-		NodeId:           "iscsi-worker",
-		VolumeCapability: mountCapability("ext4"),
-	})
-	// This may succeed (if iSCSI initiator is found and volume is nvmeof) or fail
-	// The key assertion is that it doesn't panic
-	_ = err
-}
-
-func assertE22_CreateVolume_iSCSI(tc documentedCase) {
-	env := newControllerTestEnv()
-	defer env.close()
-
-	params := map[string]string{
-		"pillar-csi.bhyoo.com/agent":         env.target.Name,
-		"pillar-csi.bhyoo.com/store":         "tank",
-		"pillar-csi.bhyoo.com/backend-type":  "zfs-zvol",
-		"pillar-csi.bhyoo.com/protocol-type": "iscsi",
-	}
-	resp, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
-		Name:               "pvc-e22-iscsi",
-		Parameters:         params,
-		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-	})
-	Expect(err).NotTo(HaveOccurred(), "%s: iSCSI CreateVolume", tc.tcNodeLabel())
-	Expect(resp.GetVolume().GetVolumeId()).To(ContainSubstring("iscsi"),
-		"%s: volume ID should contain protocol", tc.tcNodeLabel())
+	Expect(err).NotTo(HaveOccurred(), "%s: LVM+NVMe-oF CreateVolume", tc.tcNodeLabel())
+	Expect(resp.GetVolume().GetVolumeId()).To(Equal("storage-1/nvmeof-tcp/lvm-lv/data-vg/pvc-e22-lvm-nvmeof"),
+		"%s: volume ID should name the lvm-lv backend and the volume group", tc.tcNodeLabel())
 }
 
 func assertE22_AgentErrors_Export_InvalidProtocol(tc documentedCase) {
@@ -105,6 +156,7 @@ func assertE22_AgentErrors_Export_InvalidProtocol(tc documentedCase) {
 
 	fence := agentLifecycleFence("tank/pvc-e22-export-proto")
 	_, _ = env.client.CreateVolume(env.ctx, &agentv1.CreateVolumeRequest{
+		BackendType:   agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
 		VolumeId:      "tank/pvc-e22-export-proto",
 		CapacityBytes: 10 << 20,
 		Fence:         fence,
@@ -156,82 +208,4 @@ func assertE22_AgentProtocol_DenyInitiator_InvalidProtocol(tc documentedCase) {
 		Fence:        agentLifecycleFence("tank/pvc-e22-deny-proto"),
 	})
 	Expect(err).To(HaveOccurred(), "%s: expected error for invalid protocol in DenyInitiator", tc.tcNodeLabel())
-}
-
-func assertE22_CreateVolume_UnknownBackendType_Rejected(tc documentedCase) {
-	env := newControllerTestEnv()
-	defer env.close()
-
-	params := map[string]string{
-		"pillar-csi.bhyoo.com/agent":         env.target.Name,
-		"pillar-csi.bhyoo.com/store":         "tank",
-		"pillar-csi.bhyoo.com/backend-type":  "unknown-backend-xyz",
-		"pillar-csi.bhyoo.com/protocol-type": "nvmeof-tcp",
-	}
-	_, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
-		Name:               "pvc-e22-unknown-backend-rejected",
-		Parameters:         params,
-		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-	})
-	Expect(err).To(HaveOccurred(), "%s: expected error for unknown backend", tc.tcNodeLabel())
-	Expect(status.Code(err)).To(Equal(codes.InvalidArgument),
-		"%s: expected InvalidArgument", tc.tcNodeLabel())
-}
-
-func assertE22_CreateVolume_UnknownBackendType_Error(tc documentedCase) {
-	env := newControllerTestEnv()
-	defer env.close()
-
-	params := map[string]string{
-		"pillar-csi.bhyoo.com/agent":         env.target.Name,
-		"pillar-csi.bhyoo.com/store":         "tank",
-		"pillar-csi.bhyoo.com/backend-type":  fmt.Sprintf("unknown-%d", 999),
-		"pillar-csi.bhyoo.com/protocol-type": "nvmeof-tcp",
-	}
-	_, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
-		Name:               "pvc-e22-unknown-backend-error",
-		Parameters:         params,
-		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-	})
-	Expect(err).To(HaveOccurred(), "%s: expected error for unknown backend type", tc.tcNodeLabel())
-}
-
-func assertE22_CreateVolume_LVMBackend_NVMeOF(tc documentedCase) {
-	env := newControllerTestEnv()
-	defer env.close()
-
-	params := map[string]string{
-		"pillar-csi.bhyoo.com/agent":         env.target.Name,
-		"pillar-csi.bhyoo.com/store":         "tank",
-		"pillar-csi.bhyoo.com/backend-type":  "lvm-lv",
-		"pillar-csi.bhyoo.com/protocol-type": "nvmeof-tcp",
-	}
-	resp, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
-		Name:               "pvc-e22-lvm-nvmeof",
-		Parameters:         params,
-		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-	})
-	Expect(err).NotTo(HaveOccurred(), "%s: LVM+NVMe-oF CreateVolume", tc.tcNodeLabel())
-	Expect(resp.GetVolume().GetVolumeId()).To(ContainSubstring("lvm-lv"),
-		"%s: volume ID should contain backend type", tc.tcNodeLabel())
-}
-
-func assertE22_CreateVolume_LVMBackend_iSCSI(tc documentedCase) {
-	env := newControllerTestEnv()
-	defer env.close()
-
-	params := map[string]string{
-		"pillar-csi.bhyoo.com/agent":         env.target.Name,
-		"pillar-csi.bhyoo.com/store":         "tank",
-		"pillar-csi.bhyoo.com/backend-type":  "lvm-lv",
-		"pillar-csi.bhyoo.com/protocol-type": "iscsi",
-	}
-	resp, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
-		Name:               "pvc-e22-lvm-iscsi",
-		Parameters:         params,
-		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
-	})
-	Expect(err).NotTo(HaveOccurred(), "%s: LVM+iSCSI CreateVolume", tc.tcNodeLabel())
-	Expect(resp.GetVolume().GetVolumeId()).To(ContainSubstring("lvm-lv"),
-		"%s: volume ID should contain backend type", tc.tcNodeLabel())
 }

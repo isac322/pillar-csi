@@ -103,7 +103,7 @@ var _ = Describe("TC isolation scope — Kubernetes isolation", Label("ac:2.2", 
 	// ── 1. CopyKubeconfigFrom ────────────────────────────────────────────────
 
 	It("AC2.2.1 CopyKubeconfigFrom copies the source kubeconfig to the TC-private path", func() {
-		scope := newScope("E35.kube.copy.1")
+		scope := newScope("E33.kube.copy.1")
 		srcPath := writeTmpKubeconfigForScopeTest(minimalKubeconfigForScopeTest)
 
 		destPath, err := scope.CopyKubeconfigFrom("suite", srcPath)
@@ -128,8 +128,8 @@ var _ = Describe("TC isolation scope — Kubernetes isolation", Label("ac:2.2", 
 	})
 
 	It("AC2.2.2 two TCs copying from the same source receive distinct paths", func() {
-		left := newScope("E35.kube.copy.left")
-		right := newScope("E35.kube.copy.right")
+		left := newScope("E33.kube.copy.left")
+		right := newScope("E33.kube.copy.right")
 		srcPath := writeTmpKubeconfigForScopeTest(minimalKubeconfigForScopeTest)
 
 		leftPath, err := left.CopyKubeconfigFrom("suite", srcPath)
@@ -144,7 +144,7 @@ var _ = Describe("TC isolation scope — Kubernetes isolation", Label("ac:2.2", 
 	})
 
 	It("AC2.2.3 CopyKubeconfigFrom is idempotent within the same scope", func() {
-		scope := newScope("E35.kube.copy.idempotent")
+		scope := newScope("E33.kube.copy.idempotent")
 		srcPath := writeTmpKubeconfigForScopeTest(minimalKubeconfigForScopeTest)
 
 		first, err := scope.CopyKubeconfigFrom("suite", srcPath)
@@ -158,7 +158,7 @@ var _ = Describe("TC isolation scope — Kubernetes isolation", Label("ac:2.2", 
 	})
 
 	It("AC2.2.4 CopyKubeconfigFrom errors on a closed scope", func() {
-		scope, err := NewTestCaseScope("E35.kube.copy.closed")
+		scope, err := NewTestCaseScope("E33.kube.copy.closed")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(scope.Close()).To(Succeed())
 
@@ -169,7 +169,7 @@ var _ = Describe("TC isolation scope — Kubernetes isolation", Label("ac:2.2", 
 	})
 
 	It("AC2.2.5 CopyKubeconfigFrom errors when source path is empty", func() {
-		scope := newScope("E35.kube.copy.empty-src")
+		scope := newScope("E33.kube.copy.empty-src")
 		_, err := scope.CopyKubeconfigFrom("suite", "")
 		Expect(err).To(HaveOccurred(),
 			"CopyKubeconfigFrom with empty source path must return an error")
@@ -178,7 +178,7 @@ var _ = Describe("TC isolation scope — Kubernetes isolation", Label("ac:2.2", 
 	// ── 2. WriteKubeconfig ───────────────────────────────────────────────────
 
 	It("AC2.2.6 WriteKubeconfig writes content to the TC-private path", func() {
-		scope := newScope("E35.kube.write.1")
+		scope := newScope("E33.kube.write.1")
 		content := []byte(minimalKubeconfigForScopeTest)
 
 		path, err := scope.WriteKubeconfig("suite", content)
@@ -194,7 +194,7 @@ var _ = Describe("TC isolation scope — Kubernetes isolation", Label("ac:2.2", 
 	})
 
 	It("AC2.2.7 WriteKubeconfig overwrites a previously written kubeconfig", func() {
-		scope := newScope("E35.kube.write.overwrite")
+		scope := newScope("E33.kube.write.overwrite")
 		first := []byte("apiVersion: v1\nkind: Config\n# first\n")
 		second := []byte(minimalKubeconfigForScopeTest)
 
@@ -210,7 +210,7 @@ var _ = Describe("TC isolation scope — Kubernetes isolation", Label("ac:2.2", 
 	})
 
 	It("AC2.2.8 WriteKubeconfig errors on a closed scope", func() {
-		scope, err := NewTestCaseScope("E35.kube.write.closed")
+		scope, err := NewTestCaseScope("E33.kube.write.closed")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(scope.Close()).To(Succeed())
 
@@ -221,7 +221,7 @@ var _ = Describe("TC isolation scope — Kubernetes isolation", Label("ac:2.2", 
 	// ── 3. BuildRestConfig ───────────────────────────────────────────────────
 
 	It("AC2.2.9 BuildRestConfig parses the TC-private kubeconfig and returns non-nil *rest.Config", func() {
-		scope := newScope("E35.kube.restconfig.1")
+		scope := newScope("E33.kube.restconfig.1")
 		_, err := scope.WriteKubeconfig("suite", []byte(minimalKubeconfigForScopeTest))
 		Expect(err).NotTo(HaveOccurred())
 
@@ -233,7 +233,7 @@ var _ = Describe("TC isolation scope — Kubernetes isolation", Label("ac:2.2", 
 	})
 
 	It("AC2.2.10 BuildRestConfig errors when no kubeconfig has been written", func() {
-		scope := newScope("E35.kube.restconfig.no-file")
+		scope := newScope("E33.kube.restconfig.no-file")
 		_, err := scope.BuildRestConfig("suite")
 		Expect(err).To(HaveOccurred(),
 			"BuildRestConfig must error when the kubeconfig file does not exist")
@@ -241,7 +241,7 @@ var _ = Describe("TC isolation scope — Kubernetes isolation", Label("ac:2.2", 
 
 	It("AC2.2.11 BuildRestConfig errors on a closed scope (path exists but scope is closed)", func() {
 		// Write the kubeconfig while the scope is open.
-		scope, err := NewTestCaseScope("E35.kube.restconfig.closed")
+		scope, err := NewTestCaseScope("E33.kube.restconfig.closed")
 		Expect(err).NotTo(HaveOccurred())
 		_, writeErr := scope.WriteKubeconfig("suite", []byte(minimalKubeconfigForScopeTest))
 		Expect(writeErr).NotTo(HaveOccurred())
@@ -256,7 +256,7 @@ var _ = Describe("TC isolation scope — Kubernetes isolation", Label("ac:2.2", 
 	})
 
 	It("AC2.2.12 BuildRestConfig Host matches the server URL in the kubeconfig", func() {
-		scope := newScope("E35.kube.restconfig.host")
+		scope := newScope("E33.kube.restconfig.host")
 		_, err := scope.WriteKubeconfig("kind", []byte(minimalKubeconfigForScopeTest))
 		Expect(err).NotTo(HaveOccurred())
 
@@ -270,7 +270,7 @@ var _ = Describe("TC isolation scope — Kubernetes isolation", Label("ac:2.2", 
 	// ── 4. /tmp constraint ───────────────────────────────────────────────────
 
 	It("AC2.2.13 all kubeconfig paths are under os.TempDir()", func() {
-		scope := newScope("E35.kube.path.tmp")
+		scope := newScope("E33.kube.path.tmp")
 		srcPath := writeTmpKubeconfigForScopeTest(minimalKubeconfigForScopeTest)
 
 		copyPath, err := scope.CopyKubeconfigFrom("copy", srcPath)
@@ -288,8 +288,8 @@ var _ = Describe("TC isolation scope — Kubernetes isolation", Label("ac:2.2", 
 	// ── 5. Copy isolation between TCs ───────────────────────────────────────
 
 	It("AC2.2.14 writing to one TC's kubeconfig does not affect another TC's copy", func() {
-		left := newScope("E35.kube.iso.left")
-		right := newScope("E35.kube.iso.right")
+		left := newScope("E33.kube.iso.left")
+		right := newScope("E33.kube.iso.right")
 		srcPath := writeTmpKubeconfigForScopeTest(minimalKubeconfigForScopeTest)
 
 		leftPath, err := left.CopyKubeconfigFrom("suite", srcPath)
@@ -310,7 +310,7 @@ var _ = Describe("TC isolation scope — Kubernetes isolation", Label("ac:2.2", 
 	// ── 6. RegisterKubernetesNamespace / KubernetesNamespace ─────────────────
 
 	It("AC2.2.15 RegisterKubernetesNamespace stores the name and KubernetesNamespace retrieves it", func() {
-		scope := newScope("E35.kube.ns.register")
+		scope := newScope("E33.kube.ns.register")
 
 		const label = "primary"
 		const nsName = "e2e-test-550e8400-e29b-41d4-a716-446655440000"
@@ -320,7 +320,7 @@ var _ = Describe("TC isolation scope — Kubernetes isolation", Label("ac:2.2", 
 	})
 
 	It("AC2.2.16 RegisterKubernetesNamespace is idempotent for the same label+name", func() {
-		scope := newScope("E35.kube.ns.idempotent")
+		scope := newScope("E33.kube.ns.idempotent")
 		const label = "primary"
 		const nsName = "e2e-test-idempotent"
 
@@ -331,7 +331,7 @@ var _ = Describe("TC isolation scope — Kubernetes isolation", Label("ac:2.2", 
 	})
 
 	It("AC2.2.17 RegisterKubernetesNamespace errors when the same label is registered with a different name", func() {
-		scope := newScope("E35.kube.ns.conflict")
+		scope := newScope("E33.kube.ns.conflict")
 		const label = "primary"
 
 		Expect(scope.RegisterKubernetesNamespace(label, "e2e-test-first")).To(Succeed())
@@ -343,12 +343,12 @@ var _ = Describe("TC isolation scope — Kubernetes isolation", Label("ac:2.2", 
 	})
 
 	It("AC2.2.18 KubernetesNamespace returns empty string for an unregistered label", func() {
-		scope := newScope("E35.kube.ns.unregistered")
+		scope := newScope("E33.kube.ns.unregistered")
 		Expect(scope.KubernetesNamespace("nonexistent")).To(BeEmpty())
 	})
 
 	It("AC2.2.19 KubernetesNamespace returns empty string after scope is closed", func() {
-		scope, err := NewTestCaseScope("E35.kube.ns.closed")
+		scope, err := NewTestCaseScope("E33.kube.ns.closed")
 		Expect(err).NotTo(HaveOccurred())
 
 		Expect(scope.RegisterKubernetesNamespace("primary", "e2e-test-closed-check")).To(Succeed())
@@ -360,8 +360,8 @@ var _ = Describe("TC isolation scope — Kubernetes isolation", Label("ac:2.2", 
 	})
 
 	It("AC2.2.20 different TC scopes store independent namespace registrations", func() {
-		left := newScope("E35.kube.ns.left")
-		right := newScope("E35.kube.ns.right")
+		left := newScope("E33.kube.ns.left")
+		right := newScope("E33.kube.ns.right")
 
 		const label = "primary"
 		Expect(left.RegisterKubernetesNamespace(label, "e2e-test-left")).To(Succeed())
@@ -391,7 +391,7 @@ var _ = Describe("TC isolation scope — Kubernetes isolation", Label("ac:2.2", 
 			wg.Add(1)
 			go func(i int) {
 				defer wg.Done()
-				scope, err := NewTestCaseScope(fmt.Sprintf("E35.kube.concurrent.%d", i))
+				scope, err := NewTestCaseScope(fmt.Sprintf("E33.kube.concurrent.%d", i))
 				if err != nil {
 					results <- result{err: err}
 					return
@@ -430,7 +430,7 @@ var _ = Describe("TC isolation scope — Kubernetes isolation", Label("ac:2.2", 
 	// ── 8. Kubeconfig cleanup on scope.Close ─────────────────────────────────
 
 	It("AC2.2.22 kubeconfig files are removed when scope.Close() is called", func() {
-		scope, err := NewTestCaseScope("E35.kube.cleanup")
+		scope, err := NewTestCaseScope("E33.kube.cleanup")
 		Expect(err).NotTo(HaveOccurred())
 
 		destPath, writeErr := scope.WriteKubeconfig("suite", []byte(minimalKubeconfigForScopeTest))
@@ -451,7 +451,7 @@ var _ = Describe("TC isolation scope — Kubernetes isolation", Label("ac:2.2", 
 	// ── 9. Kubeconfig file permissions ───────────────────────────────────────
 
 	It("AC2.2.23 kubeconfig files are created with 0600 permissions", func() {
-		scope := newScope("E35.kube.perms")
+		scope := newScope("E33.kube.perms")
 		path, err := scope.WriteKubeconfig("suite", []byte(minimalKubeconfigForScopeTest))
 		Expect(err).NotTo(HaveOccurred())
 
@@ -464,7 +464,7 @@ var _ = Describe("TC isolation scope — Kubernetes isolation", Label("ac:2.2", 
 	// ── 10. KubeconfigPath returns a deterministic path per label ─────────────
 
 	It("AC2.2.24 KubeconfigPath returns a path under /tmp even before the file is written", func() {
-		scope := newScope("E35.kube.path.deterministic")
+		scope := newScope("E33.kube.path.deterministic")
 		path := scope.KubeconfigPath("suite")
 		Expect(path).NotTo(BeEmpty())
 		Expect(path).To(HavePrefix(os.TempDir()))
@@ -474,14 +474,14 @@ var _ = Describe("TC isolation scope — Kubernetes isolation", Label("ac:2.2", 
 	})
 
 	It("AC2.2.25 two calls to KubeconfigPath with the same label return the same path", func() {
-		scope := newScope("E35.kube.path.stable")
+		scope := newScope("E33.kube.path.stable")
 		first := scope.KubeconfigPath("primary")
 		second := scope.KubeconfigPath("primary")
 		Expect(first).To(Equal(second), "KubeconfigPath must be stable for the same label")
 	})
 
 	It("AC2.2.26 two different labels return different paths within the same scope", func() {
-		scope := newScope("E35.kube.path.different-labels")
+		scope := newScope("E33.kube.path.different-labels")
 		primary := scope.KubeconfigPath("primary")
 		secondary := scope.KubeconfigPath("secondary")
 		Expect(primary).NotTo(Equal(secondary),
@@ -491,7 +491,7 @@ var _ = Describe("TC isolation scope — Kubernetes isolation", Label("ac:2.2", 
 	// ── 11. BuildRestConfig uses the TC-private copy, not the shared suite kubeconfig ──
 
 	It("AC2.2.27 BuildRestConfig after CopyKubeconfigFrom connects to the same host as the source", func() {
-		scope := newScope("E35.kube.restconfig.copy-host")
+		scope := newScope("E33.kube.restconfig.copy-host")
 		srcPath := writeTmpKubeconfigForScopeTest(minimalKubeconfigForScopeTest)
 
 		destPath, err := scope.CopyKubeconfigFrom("suite", srcPath)
@@ -523,7 +523,7 @@ var _ = Describe("TC isolation scope — Kubernetes isolation", Label("ac:2.2", 
 			wg.Add(1)
 			go func(i int) {
 				defer wg.Done()
-				scope, err := NewTestCaseScope(fmt.Sprintf("E35.kube.ns.concurrent.%d", i))
+				scope, err := NewTestCaseScope(fmt.Sprintf("E33.kube.ns.concurrent.%d", i))
 				if err != nil {
 					results <- result{err: err}
 					return
@@ -583,7 +583,7 @@ users:
     token: test-token-loopback
 `, addr)
 
-		scope := newScope("E35.kube.restconfig.loopback")
+		scope := newScope("E33.kube.restconfig.loopback")
 		_, writeErr := scope.WriteKubeconfig("local", []byte(customKubeconfig))
 		Expect(writeErr).NotTo(HaveOccurred())
 

@@ -73,7 +73,7 @@ var _ = Describe("PillarStore Controller", func() {
 				Spec: pillarcsiv1alpha1.PillarStoreSpec{
 					AgentRef: targetName,
 					Backend: pillarcsiv1alpha1.BackendSpec{
-						Type: pillarcsiv1alpha1.BackendTypeZFSZvol,
+						ZFS: &pillarcsiv1alpha1.ZFSBackendConfig{Pool: "tank"},
 					},
 				},
 			}
@@ -460,7 +460,6 @@ var _ = Describe("PillarStore Controller", func() {
 					Spec: pillarcsiv1alpha1.PillarStoreSpec{
 						AgentRef: targetName,
 						Backend: pillarcsiv1alpha1.BackendSpec{
-							Type: pillarcsiv1alpha1.BackendTypeZFSZvol,
 							ZFS: &pillarcsiv1alpha1.ZFSBackendConfig{
 								Pool: zfsPoolName,
 							},
@@ -524,7 +523,7 @@ var _ = Describe("PillarStore Controller", func() {
 				{Name: zfsPoolName, Type: "zfs"},
 				{Name: "other-pool", Type: "zfs"},
 			}
-			setTargetReadyWithData(discoveredPools, []string{"zfs-zvol", "zfs-dataset"})
+			setTargetReadyWithData(discoveredPools, []string{"zfs-zvol"})
 
 			_, err := doReconcile()
 			Expect(err).NotTo(HaveOccurred())
@@ -559,7 +558,7 @@ var _ = Describe("PillarStore Controller", func() {
 			discoveredPools := []pillarcsiv1alpha1.DiscoveredPool{
 				{Name: zfsPoolName, Type: "zfs"},
 			}
-			setTargetReadyWithData(discoveredPools, []string{"zfs-zvol", "zfs-dataset", "lvm-lv"})
+			setTargetReadyWithData(discoveredPools, []string{"zfs-zvol", "lvm-lv"})
 
 			_, err := doReconcile()
 			Expect(err).NotTo(HaveOccurred())
@@ -577,7 +576,7 @@ var _ = Describe("PillarStore Controller", func() {
 				{Name: zfsPoolName, Type: "zfs"},
 			}
 			// Target only supports lvm-lv but the pool uses zfs-zvol.
-			setTargetReadyWithData(discoveredPools, []string{"lvm-lv", "dir"})
+			setTargetReadyWithData(discoveredPools, []string{"lvm-lv"})
 
 			_, err := doReconcile()
 			Expect(err).NotTo(HaveOccurred())
@@ -594,7 +593,7 @@ var _ = Describe("PillarStore Controller", func() {
 			discoveredPools := []pillarcsiv1alpha1.DiscoveredPool{
 				{Name: zfsPoolName, Type: "zfs"},
 			}
-			setTargetReadyWithData(discoveredPools, []string{"zfs-zvol", "zfs-dataset"})
+			setTargetReadyWithData(discoveredPools, []string{"zfs-zvol"})
 
 			_, err := doReconcile()
 			Expect(err).NotTo(HaveOccurred())
@@ -672,8 +671,7 @@ var _ = Describe("PillarStore Controller", func() {
 			return &pillarcsiv1alpha1.PillarStore{Spec: pillarcsiv1alpha1.PillarStoreSpec{
 				AgentRef: "agent-a",
 				Backend: pillarcsiv1alpha1.BackendSpec{
-					Type: pillarcsiv1alpha1.BackendTypeLVMLV,
-					LVM:  &pillarcsiv1alpha1.LVMBackendConfig{VolumeGroup: vg, ThinPool: thinPool},
+					LVM: &pillarcsiv1alpha1.LVMBackendConfig{VolumeGroup: vg, ThinPool: thinPool},
 				},
 			}}
 		}
@@ -777,8 +775,7 @@ var _ = Describe("PillarStore Controller", func() {
 					Spec: pillarcsiv1alpha1.PillarStoreSpec{
 						AgentRef: capTarget,
 						Backend: pillarcsiv1alpha1.BackendSpec{
-							Type: pillarcsiv1alpha1.BackendTypeZFSZvol,
-							ZFS:  &pillarcsiv1alpha1.ZFSBackendConfig{Pool: capZFSPool},
+							ZFS: &pillarcsiv1alpha1.ZFSBackendConfig{Pool: capZFSPool},
 						},
 					},
 				})).To(Succeed())
@@ -859,7 +856,7 @@ var _ = Describe("PillarStore Controller", func() {
 					Total:     quantityPtr("100Gi"),
 					Available: quantityPtr("75Gi"),
 				},
-			}, []string{"zfs-zvol", "zfs-dataset"})
+			}, []string{"zfs-zvol"})
 
 			_, err := doCapReconcile()
 			Expect(err).NotTo(HaveOccurred())
@@ -989,15 +986,16 @@ var _ = Describe("PillarStore Controller", func() {
 				"Used should not be computed when Available is missing")
 		})
 
-		It("should sync capacity for non-ZFS backends using the first DiscoveredPool entry", func() {
-			// Create a dir-backend pool (no named pool).
-			dirPoolName := "dir-cap-pool"
+		It("should sync capacity for LVM backends from the entry named after the volume group", func() {
+			dirPoolName := "lvm-cap-pool"
 			dirNN := types.NamespacedName{Name: dirPoolName}
 			Expect(k8sClient.Create(bctx, &pillarcsiv1alpha1.PillarStore{
 				ObjectMeta: metav1.ObjectMeta{Name: dirPoolName},
 				Spec: pillarcsiv1alpha1.PillarStoreSpec{
 					AgentRef: capTarget,
-					Backend:  pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeDir},
+					Backend: pillarcsiv1alpha1.BackendSpec{
+						LVM: &pillarcsiv1alpha1.LVMBackendConfig{VolumeGroup: "cap-vg"},
+					},
 				},
 			})).To(Succeed())
 			defer func() {
@@ -1009,14 +1007,22 @@ var _ = Describe("PillarStore Controller", func() {
 				}
 			}()
 
+			// The first entry belongs to another pool: matching must go by
+			// the volume group name, not by position.
 			setCapTarget([]pillarcsiv1alpha1.DiscoveredPool{
 				{
-					Name:      "host-dir",
-					Type:      "dir",
+					Name:      "other-pool",
+					Type:      "zfs-zvol",
+					Total:     quantityPtr("10Gi"),
+					Available: quantityPtr("5Gi"),
+				},
+				{
+					Name:      "cap-vg",
+					Type:      "lvm-lv",
 					Total:     quantityPtr("1Ti"),
 					Available: quantityPtr("800Gi"),
 				},
-			}, []string{"dir"})
+			}, []string{"zfs-zvol", "lvm-lv"})
 
 			dirReconciler := &PillarStoreReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 
@@ -1030,7 +1036,7 @@ var _ = Describe("PillarStore Controller", func() {
 			dirPool := &pillarcsiv1alpha1.PillarStore{}
 			Expect(k8sClient.Get(bctx, dirNN, dirPool)).To(Succeed())
 			Expect(dirPool.Status.Capacity).NotTo(BeNil(),
-				"dir-backend pool should pick up capacity from the first DiscoveredPool entry")
+				"LVM pool should pick up capacity from the DiscoveredPool entry named after its volume group")
 			expectedTotal := resource.MustParse("1Ti")
 			Expect(dirPool.Status.Capacity.Total.Cmp(expectedTotal)).To(Equal(0))
 		})
@@ -1250,7 +1256,7 @@ var _ = Describe("PillarStore Controller", func() {
 				Spec: pillarcsiv1alpha1.PillarStoreSpec{
 					AgentRef: "",
 					Backend: pillarcsiv1alpha1.BackendSpec{
-						Type: pillarcsiv1alpha1.BackendTypeZFSZvol,
+						ZFS: &pillarcsiv1alpha1.ZFSBackendConfig{Pool: "tank"},
 					},
 				},
 			}
@@ -1262,131 +1268,46 @@ var _ = Describe("PillarStore Controller", func() {
 		})
 
 		// E20.2.2
-		// TestPillarStoreCRD_InvalidCreate_InvalidBackendType
-		It("should reject PillarStore with unsupported spec.backend.type (Enum violation)", func() {
+		// TestPillarStoreCRD_InvalidCreate_NoBackendMember
+		It("should reject PillarStore whose spec.backend sets no member (exactly-one union)", func() {
 			pool := &pillarcsiv1alpha1.PillarStore{
 				ObjectMeta: metav1.ObjectMeta{
-					Name: "schema-test-bad-backend-type",
+					Name: "schema-test-no-backend-member",
 				},
 				Spec: pillarcsiv1alpha1.PillarStoreSpec{
 					AgentRef: "some-target",
-					Backend: pillarcsiv1alpha1.BackendSpec{
-						Type: "not-supported",
-					},
+					Backend:  pillarcsiv1alpha1.BackendSpec{},
 				},
 			}
 			err := k8sClient.Create(bctx, pool)
 			Expect(err).To(HaveOccurred(),
-				"API server should reject PillarStore with unknown backend.type")
+				"API server should reject PillarStore without a backend member")
 			Expect(errors.IsInvalid(err)).To(BeTrue(),
 				"error should indicate an invalid object (HTTP 422)")
+			Expect(err.Error()).To(ContainSubstring("exactly one of zfs or lvm must be set"))
 		})
 
 		// E20.2.3
-		// TestPillarStoreCRD_InvalidCreate_EmptyBackendType
-		It("should reject PillarStore with empty spec.backend.type", func() {
+		// TestPillarStoreCRD_InvalidCreate_TwoBackendMembers
+		It("should reject PillarStore whose spec.backend sets both zfs and lvm", func() {
 			pool := &pillarcsiv1alpha1.PillarStore{
 				ObjectMeta: metav1.ObjectMeta{
-					Name: "schema-test-empty-backend-type",
+					Name: "schema-test-two-backend-members",
 				},
 				Spec: pillarcsiv1alpha1.PillarStoreSpec{
 					AgentRef: "some-target",
 					Backend: pillarcsiv1alpha1.BackendSpec{
-						Type: "",
+						ZFS: &pillarcsiv1alpha1.ZFSBackendConfig{Pool: "tank"},
+						LVM: &pillarcsiv1alpha1.LVMBackendConfig{VolumeGroup: "vg0"},
 					},
 				},
 			}
 			err := k8sClient.Create(bctx, pool)
 			Expect(err).To(HaveOccurred(),
-				"API server should reject PillarStore with empty spec.backend.type")
+				"API server should reject PillarStore with two backend members")
 			Expect(errors.IsInvalid(err)).To(BeTrue(),
 				"error should indicate an invalid object (HTTP 422)")
-		})
-	})
-
-	// ──────────────────────────────────────────────────────────────────────────
-	// E20.5.4 — PoolDiscovered for dir backend (no named pool required)
-	// ──────────────────────────────────────────────────────────────────────────
-
-	Context("PoolDiscovered condition — dir backend uses first discoveredPool entry", func() {
-		const (
-			dirPoolResourceName = "dir-pool-discovery-test"
-			dirTargetName       = "dir-target-discovery-test"
-		)
-
-		var dirPoolNN types.NamespacedName
-
-		BeforeEach(func() {
-			dirPoolNN = types.NamespacedName{Name: dirPoolResourceName}
-
-			// Create a dir-backend pool referencing dirTargetName.
-			Expect(k8sClient.Create(bctx, &pillarcsiv1alpha1.PillarStore{
-				ObjectMeta: metav1.ObjectMeta{Name: dirPoolResourceName},
-				Spec: pillarcsiv1alpha1.PillarStoreSpec{
-					AgentRef: dirTargetName,
-					Backend:  pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeDir},
-				},
-			})).To(Succeed())
-
-			// First reconcile adds finalizer.
-			r := &PillarStoreReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
-			_, err := r.Reconcile(bctx, reconcile.Request{NamespacedName: dirPoolNN})
-			Expect(err).NotTo(HaveOccurred())
-		})
-
-		AfterEach(func() {
-			p := &pillarcsiv1alpha1.PillarStore{}
-			if err := k8sClient.Get(bctx, dirPoolNN, p); err == nil {
-				controllerutil.RemoveFinalizer(p, pillarStoreFinalizer)
-				Expect(k8sClient.Update(bctx, p)).To(Succeed())
-				Expect(k8sClient.Delete(bctx, p)).To(Succeed())
-			}
-			t := &pillarcsiv1alpha1.PillarAgent{}
-			if err := k8sClient.Get(bctx, types.NamespacedName{Name: dirTargetName}, t); err == nil {
-				controllerutil.RemoveFinalizer(t, pillarAgentFinalizer)
-				Expect(k8sClient.Update(bctx, t)).To(Succeed())
-				Expect(k8sClient.Delete(bctx, t)).To(Succeed())
-			}
-		})
-
-		// E20.5.4
-		// TestPillarStoreController_PoolDiscovered_True_DirBackend_NoNameRequired
-		It("should set PoolDiscovered=True for dir backend when target reports any discoveredPool entry", func() {
-			// Create the target with Ready=True and at least one entry in discoveredPools.
-			Expect(k8sClient.Create(bctx, &pillarcsiv1alpha1.PillarAgent{
-				ObjectMeta: metav1.ObjectMeta{Name: dirTargetName},
-				Spec: pillarcsiv1alpha1.PillarAgentSpec{
-					External: &pillarcsiv1alpha1.ExternalSpec{Address: "192.0.2.30", Port: 9500},
-				},
-			})).To(Succeed())
-			tgt := &pillarcsiv1alpha1.PillarAgent{}
-			Expect(k8sClient.Get(bctx, types.NamespacedName{Name: dirTargetName}, tgt)).To(Succeed())
-			tgt.Status.ResolvedAddress = "192.0.2.30:9500"
-			tgt.Status.DiscoveredPools = []pillarcsiv1alpha1.DiscoveredPool{
-				{Name: "any-entry", Type: "dir"},
-			}
-			tgt.Status.Capabilities = &pillarcsiv1alpha1.AgentCapabilities{Backends: []string{"dir"}}
-			tgt.Status.Conditions = []metav1.Condition{{
-				Type:               "Ready",
-				Status:             metav1.ConditionTrue,
-				Reason:             "AgentConnected",
-				Message:            "agent connected",
-				LastTransitionTime: metav1.Now(),
-			}}
-			Expect(k8sClient.Status().Update(bctx, tgt)).To(Succeed())
-
-			r := &PillarStoreReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
-			_, err := r.Reconcile(bctx, reconcile.Request{NamespacedName: dirPoolNN})
-			Expect(err).NotTo(HaveOccurred())
-
-			fetched := &pillarcsiv1alpha1.PillarStore{}
-			Expect(k8sClient.Get(bctx, dirPoolNN, fetched)).To(Succeed())
-
-			cond := meta.FindStatusCondition(fetched.Status.Conditions, "PoolDiscovered")
-			Expect(cond).NotTo(BeNil(), "PoolDiscovered condition should be set")
-			Expect(cond.Status).To(Equal(metav1.ConditionTrue),
-				"dir backend pool should be considered Discovered when target reports any pool entry")
-			Expect(cond.Reason).To(Equal("PoolDiscovered"))
+			Expect(err.Error()).To(ContainSubstring("exactly one of zfs or lvm must be set"))
 		})
 	})
 
@@ -1412,7 +1333,7 @@ var _ = Describe("PillarStore Controller", func() {
 				Spec: pillarcsiv1alpha1.PillarStoreSpec{
 					AgentRef: bsTargetName,
 					Backend: pillarcsiv1alpha1.BackendSpec{
-						Type: pillarcsiv1alpha1.BackendTypeLVMLV, // lvm-lv
+						LVM: &pillarcsiv1alpha1.LVMBackendConfig{VolumeGroup: "vg0"},
 					},
 				},
 			})).To(Succeed())
@@ -1450,13 +1371,13 @@ var _ = Describe("PillarStore Controller", func() {
 			tgt := &pillarcsiv1alpha1.PillarAgent{}
 			Expect(k8sClient.Get(bctx, types.NamespacedName{Name: bsTargetName}, tgt)).To(Succeed())
 			tgt.Status.ResolvedAddress = "192.0.2.40:9500"
-			// lvm-lv backend pool has no pool name requirement; discoveredPools has entries.
+			// The store's volume group is discovered.
 			tgt.Status.DiscoveredPools = []pillarcsiv1alpha1.DiscoveredPool{
-				{Name: "vg0", Type: "lvm"},
+				{Name: "vg0", Type: "lvm-lv"},
 			}
 			// Target only supports ZFS backends — not lvm-lv.
 			tgt.Status.Capabilities = &pillarcsiv1alpha1.AgentCapabilities{
-				Backends: []string{"zfs-zvol", "zfs-dataset"},
+				Backends: []string{"zfs-zvol"},
 			}
 			tgt.Status.Conditions = []metav1.Condition{{
 				Type:               "Ready",

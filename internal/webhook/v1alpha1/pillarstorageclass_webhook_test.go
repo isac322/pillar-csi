@@ -19,13 +19,48 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"context"
+	"strings"
+	"testing"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	pillarcsiv1alpha1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
 )
+
+func newZFSStore(name string) *pillarcsiv1alpha1.PillarStore {
+	return &pillarcsiv1alpha1.PillarStore{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec: pillarcsiv1alpha1.PillarStoreSpec{
+			AgentRef: "test-target",
+			Backend:  pillarcsiv1alpha1.BackendSpec{ZFS: &pillarcsiv1alpha1.ZFSBackendConfig{Pool: "tank"}},
+		},
+	}
+}
+
+func newLVMStore(name string) *pillarcsiv1alpha1.PillarStore {
+	return &pillarcsiv1alpha1.PillarStore{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec: pillarcsiv1alpha1.PillarStoreSpec{
+			AgentRef: "test-target",
+			Backend:  pillarcsiv1alpha1.BackendSpec{LVM: &pillarcsiv1alpha1.LVMBackendConfig{VolumeGroup: "data-vg"}},
+		},
+	}
+}
+
+func newNVMeProtocol(name string) *pillarcsiv1alpha1.PillarProtocol {
+	return &pillarcsiv1alpha1.PillarProtocol{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec: pillarcsiv1alpha1.PillarProtocolSpec{
+			Protocol: pillarcsiv1alpha1.ProtocolSpec{NVMeOFTCP: &pillarcsiv1alpha1.NVMeOFTCPConfig{Port: 4420}},
+		},
+	}
+}
 
 var _ = Describe("PillarStorageClass Webhook", func() {
 	var (
@@ -35,226 +70,97 @@ var _ = Describe("PillarStorageClass Webhook", func() {
 		defaulter PillarStorageClassCustomDefaulter
 	)
 
+	createStore := func(store *pillarcsiv1alpha1.PillarStore) {
+		Expect(k8sClient.Create(ctx, store)).To(Succeed())
+		DeferCleanup(func() {
+			Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, store))).To(Succeed())
+		})
+	}
+	createProtocol := func(proto *pillarcsiv1alpha1.PillarProtocol) {
+		Expect(k8sClient.Create(ctx, proto)).To(Succeed())
+		DeferCleanup(func() {
+			Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, proto))).To(Succeed())
+		})
+	}
+
 	BeforeEach(func() {
 		obj = &pillarcsiv1alpha1.PillarStorageClass{}
 		oldObj = &pillarcsiv1alpha1.PillarStorageClass{}
 		validator = PillarStorageClassCustomValidator{Client: k8sClient}
-		Expect(validator).NotTo(BeNil(), "Expected validator to be initialized")
 		defaulter = PillarStorageClassCustomDefaulter{Client: k8sClient}
-		Expect(defaulter).NotTo(BeNil(), "Expected defaulter to be initialized")
-		Expect(oldObj).NotTo(BeNil(), "Expected oldObj to be initialized")
-		Expect(obj).NotTo(BeNil(), "Expected obj to be initialized")
-	})
-
-	AfterEach(func() {
-		// TODO (user): Add any teardown logic common to all tests
 	})
 
 	Context("When creating PillarStorageClass under Defaulting Webhook", func() {
-		It("Should set allowVolumeExpansion=true when pool backend is zfs-zvol", func() {
-			By("creating a PillarStore with zfs-zvol backend")
-			pool := &pillarcsiv1alpha1.PillarStore{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-pool-zvol"},
-				Spec: pillarcsiv1alpha1.PillarStoreSpec{
-					AgentRef: "test-target",
-					Backend: pillarcsiv1alpha1.BackendSpec{
-						Type: pillarcsiv1alpha1.BackendTypeZFSZvol,
-						ZFS: &pillarcsiv1alpha1.ZFSBackendConfig{
-							Pool: "tank",
-						},
-					},
-				},
-			}
-			Expect(k8sClient.Create(ctx, pool)).To(Succeed())
-			DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, pool))).To(Succeed()) })
+		It("Should set allowVolumeExpansion=true when the store backend is zfs", func() {
+			createStore(newZFSStore("test-pool-zvol"))
 
-			By("creating a PillarStorageClass referencing the pool, without allowVolumeExpansion set")
 			obj.Name = "test-binding-zvol"
-			obj.Spec = pillarcsiv1alpha1.PillarStorageClassSpec{
-				StoreRef:    "test-pool-zvol",
-				ProtocolRef: "test-protocol",
-			}
+			obj.Spec = pillarcsiv1alpha1.PillarStorageClassSpec{StoreRef: "test-pool-zvol", ProtocolRef: "test-protocol"}
 			Expect(defaulter.Default(ctx, obj)).To(Succeed())
 
-			By("verifying allowVolumeExpansion is set to true")
 			Expect(obj.Spec.StorageClass.AllowVolumeExpansion).NotTo(BeNil())
 			Expect(*obj.Spec.StorageClass.AllowVolumeExpansion).To(BeTrue())
 		})
 
-		It("Should set allowVolumeExpansion=true when pool backend is lvm-lv", func() {
-			By("creating a PillarStore with lvm-lv backend")
-			pool := &pillarcsiv1alpha1.PillarStore{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-pool-lvm"},
-				Spec: pillarcsiv1alpha1.PillarStoreSpec{
-					AgentRef: "test-target",
-					Backend: pillarcsiv1alpha1.BackendSpec{
-						Type: pillarcsiv1alpha1.BackendTypeLVMLV,
-						LVM:  &pillarcsiv1alpha1.LVMBackendConfig{VolumeGroup: "data-vg"},
-					},
-				},
-			}
-			Expect(k8sClient.Create(ctx, pool)).To(Succeed())
-			DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, pool))).To(Succeed()) })
+		It("Should set allowVolumeExpansion=true when the store backend is lvm", func() {
+			createStore(newLVMStore("test-pool-lvm"))
 
-			By("calling Default on a binding without allowVolumeExpansion")
 			obj.Name = "test-binding-lvm"
-			obj.Spec = pillarcsiv1alpha1.PillarStorageClassSpec{
-				StoreRef:    "test-pool-lvm",
-				ProtocolRef: "test-protocol",
-			}
+			obj.Spec = pillarcsiv1alpha1.PillarStorageClassSpec{StoreRef: "test-pool-lvm", ProtocolRef: "test-protocol"}
 			Expect(defaulter.Default(ctx, obj)).To(Succeed())
 
-			By("verifying allowVolumeExpansion is set to true")
 			Expect(obj.Spec.StorageClass.AllowVolumeExpansion).NotTo(BeNil())
 			Expect(*obj.Spec.StorageClass.AllowVolumeExpansion).To(BeTrue())
-		})
-
-		It("Should set allowVolumeExpansion=false when pool backend is zfs-dataset", func() {
-			By("creating a PillarStore with zfs-dataset backend")
-			pool := &pillarcsiv1alpha1.PillarStore{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-pool-zfs-ds"},
-				Spec: pillarcsiv1alpha1.PillarStoreSpec{
-					AgentRef: "test-target",
-					Backend: pillarcsiv1alpha1.BackendSpec{
-						Type: pillarcsiv1alpha1.BackendTypeZFSDataset,
-						ZFS: &pillarcsiv1alpha1.ZFSBackendConfig{
-							Pool: "tank",
-						},
-					},
-				},
-			}
-			Expect(k8sClient.Create(ctx, pool)).To(Succeed())
-			DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, pool))).To(Succeed()) })
-
-			By("calling Default on a binding without allowVolumeExpansion")
-			obj.Name = "test-binding-zfs-ds"
-			obj.Spec = pillarcsiv1alpha1.PillarStorageClassSpec{
-				StoreRef:    "test-pool-zfs-ds",
-				ProtocolRef: "test-protocol",
-			}
-			Expect(defaulter.Default(ctx, obj)).To(Succeed())
-
-			By("verifying allowVolumeExpansion is set to false")
-			Expect(obj.Spec.StorageClass.AllowVolumeExpansion).NotTo(BeNil())
-			Expect(*obj.Spec.StorageClass.AllowVolumeExpansion).To(BeFalse())
-		})
-
-		It("Should set allowVolumeExpansion=false when pool backend is dir", func() {
-			By("creating a PillarStore with dir backend")
-			pool := &pillarcsiv1alpha1.PillarStore{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-pool-dir"},
-				Spec: pillarcsiv1alpha1.PillarStoreSpec{
-					AgentRef: "test-target",
-					Backend: pillarcsiv1alpha1.BackendSpec{
-						Type: pillarcsiv1alpha1.BackendTypeDir,
-					},
-				},
-			}
-			Expect(k8sClient.Create(ctx, pool)).To(Succeed())
-			DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, pool))).To(Succeed()) })
-
-			By("calling Default on a binding without allowVolumeExpansion")
-			obj.Name = "test-binding-dir"
-			obj.Spec = pillarcsiv1alpha1.PillarStorageClassSpec{
-				StoreRef:    "test-pool-dir",
-				ProtocolRef: "test-protocol",
-			}
-			Expect(defaulter.Default(ctx, obj)).To(Succeed())
-
-			By("verifying allowVolumeExpansion is set to false")
-			Expect(obj.Spec.StorageClass.AllowVolumeExpansion).NotTo(BeNil())
-			Expect(*obj.Spec.StorageClass.AllowVolumeExpansion).To(BeFalse())
 		})
 
 		It("Should not override allowVolumeExpansion when already explicitly set", func() {
-			By("creating a PillarStore with zfs-zvol backend (which would default to true)")
-			pool := &pillarcsiv1alpha1.PillarStore{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-pool-override"},
-				Spec: pillarcsiv1alpha1.PillarStoreSpec{
-					AgentRef: "test-target",
-					Backend: pillarcsiv1alpha1.BackendSpec{
-						Type: pillarcsiv1alpha1.BackendTypeZFSZvol,
-						ZFS: &pillarcsiv1alpha1.ZFSBackendConfig{
-							Pool: "tank",
-						},
-					},
-				},
-			}
-			Expect(k8sClient.Create(ctx, pool)).To(Succeed())
-			DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, pool))).To(Succeed()) })
+			createStore(newZFSStore("test-pool-override"))
 
-			By("setting allowVolumeExpansion to false explicitly (opposite of backend default)")
 			falseVal := false
 			obj.Name = "test-binding-override"
 			obj.Spec = pillarcsiv1alpha1.PillarStorageClassSpec{
-				StoreRef:    "test-pool-override",
-				ProtocolRef: "test-protocol",
-				StorageClass: pillarcsiv1alpha1.StorageClassTemplate{
-					AllowVolumeExpansion: &falseVal,
-				},
+				StoreRef:     "test-pool-override",
+				ProtocolRef:  "test-protocol",
+				StorageClass: pillarcsiv1alpha1.StorageClassTemplate{AllowVolumeExpansion: &falseVal},
 			}
 			Expect(defaulter.Default(ctx, obj)).To(Succeed())
 
-			By("verifying the explicit value is preserved")
 			Expect(obj.Spec.StorageClass.AllowVolumeExpansion).NotTo(BeNil())
 			Expect(*obj.Spec.StorageClass.AllowVolumeExpansion).To(BeFalse())
 		})
 
-		It("Should leave allowVolumeExpansion unset when pool does not exist", func() {
-			By("calling Default with a storeRef that does not exist in the cluster")
+		It("Should leave allowVolumeExpansion unset when the store does not exist", func() {
 			obj.Name = "test-binding-nopool"
-			obj.Spec = pillarcsiv1alpha1.PillarStorageClassSpec{
-				StoreRef:    "nonexistent-pool",
-				ProtocolRef: "test-protocol",
-			}
+			obj.Spec = pillarcsiv1alpha1.PillarStorageClassSpec{StoreRef: "nonexistent-pool", ProtocolRef: "test-protocol"}
 			Expect(defaulter.Default(ctx, obj)).To(Succeed())
 
-			By("verifying allowVolumeExpansion is still nil (not set)")
 			Expect(obj.Spec.StorageClass.AllowVolumeExpansion).To(BeNil())
 		})
 	})
 
 	Context("When creating or updating PillarStorageClass under Validating Webhook", func() {
 		It("Should admit creation with all required fields present", func() {
-			By("simulating a valid creation")
 			obj.Name = "test-binding-valid"
-			obj.Spec = pillarcsiv1alpha1.PillarStorageClassSpec{
-				StoreRef:    "some-pool",
-				ProtocolRef: "some-protocol",
-			}
+			obj.Spec = pillarcsiv1alpha1.PillarStorageClassSpec{StoreRef: "some-pool", ProtocolRef: "some-protocol"}
 			_, err := validator.ValidateCreate(ctx, obj)
 			Expect(err).NotTo(HaveOccurred())
 		})
 
 		It("Should deny update when storeRef is changed", func() {
-			By("simulating an update that changes storeRef")
 			oldObj.Name = "test-binding-immutable"
-			oldObj.Spec = pillarcsiv1alpha1.PillarStorageClassSpec{
-				StoreRef:    "pool-a",
-				ProtocolRef: "proto-a",
-			}
+			oldObj.Spec = pillarcsiv1alpha1.PillarStorageClassSpec{StoreRef: "pool-a", ProtocolRef: "proto-a"}
 			obj.Name = "test-binding-immutable"
-			obj.Spec = pillarcsiv1alpha1.PillarStorageClassSpec{
-				StoreRef:    "pool-b", // changed
-				ProtocolRef: "proto-a",
-			}
+			obj.Spec = pillarcsiv1alpha1.PillarStorageClassSpec{StoreRef: "pool-b", ProtocolRef: "proto-a"}
 			_, err := validator.ValidateUpdate(ctx, oldObj, obj)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("storeRef"))
 		})
 
 		It("Should deny update when protocolRef is changed", func() {
-			By("simulating an update that changes protocolRef")
 			oldObj.Name = "test-binding-immutable2"
-			oldObj.Spec = pillarcsiv1alpha1.PillarStorageClassSpec{
-				StoreRef:    "pool-a",
-				ProtocolRef: "proto-a",
-			}
+			oldObj.Spec = pillarcsiv1alpha1.PillarStorageClassSpec{StoreRef: "pool-a", ProtocolRef: "proto-a"}
 			obj.Name = "test-binding-immutable2"
-			obj.Spec = pillarcsiv1alpha1.PillarStorageClassSpec{
-				StoreRef:    "pool-a",
-				ProtocolRef: "proto-b", // changed
-			}
+			obj.Spec = pillarcsiv1alpha1.PillarStorageClassSpec{StoreRef: "pool-a", ProtocolRef: "proto-b"}
 			_, err := validator.ValidateUpdate(ctx, oldObj, obj)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("protocolRef"))
@@ -263,14 +169,12 @@ var _ = Describe("PillarStorageClass Webhook", func() {
 		It("Should deny update when the generated StorageClass name changes", func() {
 			oldObj.Name = "test-binding-scname"
 			oldObj.Spec = pillarcsiv1alpha1.PillarStorageClassSpec{
-				StoreRef:     "pool-a",
-				ProtocolRef:  "proto-a",
+				StoreRef: "pool-a", ProtocolRef: "proto-a",
 				StorageClass: pillarcsiv1alpha1.StorageClassTemplate{Name: "fast"},
 			}
 			obj.Name = "test-binding-scname"
 			obj.Spec = pillarcsiv1alpha1.PillarStorageClassSpec{
-				StoreRef:     "pool-a",
-				ProtocolRef:  "proto-a",
+				StoreRef: "pool-a", ProtocolRef: "proto-a",
 				StorageClass: pillarcsiv1alpha1.StorageClassTemplate{Name: "faster"},
 			}
 			_, err := validator.ValidateUpdate(ctx, oldObj, obj)
@@ -283,8 +187,7 @@ var _ = Describe("PillarStorageClass Webhook", func() {
 			oldObj.Spec = pillarcsiv1alpha1.PillarStorageClassSpec{StoreRef: "pool-a", ProtocolRef: "proto-a"}
 			obj.Name = "test-binding-scname-default"
 			obj.Spec = pillarcsiv1alpha1.PillarStorageClassSpec{
-				StoreRef:     "pool-a",
-				ProtocolRef:  "proto-a",
+				StoreRef: "pool-a", ProtocolRef: "proto-a",
 				StorageClass: pillarcsiv1alpha1.StorageClassTemplate{Name: "renamed"},
 			}
 			_, err := validator.ValidateUpdate(ctx, oldObj, obj)
@@ -297,8 +200,7 @@ var _ = Describe("PillarStorageClass Webhook", func() {
 			oldObj.Spec = pillarcsiv1alpha1.PillarStorageClassSpec{StoreRef: "pool-a", ProtocolRef: "proto-a"}
 			obj.Name = "test-binding-scname-explicit"
 			obj.Spec = pillarcsiv1alpha1.PillarStorageClassSpec{
-				StoreRef:     "pool-a",
-				ProtocolRef:  "proto-a",
+				StoreRef: "pool-a", ProtocolRef: "proto-a",
 				StorageClass: pillarcsiv1alpha1.StorageClassTemplate{Name: "test-binding-scname-explicit"},
 			}
 			_, err := validator.ValidateUpdate(ctx, oldObj, obj)
@@ -306,319 +208,193 @@ var _ = Describe("PillarStorageClass Webhook", func() {
 		})
 
 		It("Should admit update when only non-immutable fields are changed", func() {
-			By("simulating a valid update changing only storageClass settings")
 			oldObj.Name = "test-binding-mutable"
 			oldObj.Spec = pillarcsiv1alpha1.PillarStorageClassSpec{
-				StoreRef:    "pool-a",
-				ProtocolRef: "proto-a",
-				StorageClass: pillarcsiv1alpha1.StorageClassTemplate{
-					ReclaimPolicy: pillarcsiv1alpha1.ReclaimPolicyDelete,
-				},
+				StoreRef: "pool-a", ProtocolRef: "proto-a",
+				StorageClass: pillarcsiv1alpha1.StorageClassTemplate{ReclaimPolicy: pillarcsiv1alpha1.ReclaimPolicyDelete},
 			}
 			obj.Name = "test-binding-mutable"
 			obj.Spec = pillarcsiv1alpha1.PillarStorageClassSpec{
-				StoreRef:    "pool-a",
-				ProtocolRef: "proto-a",
-				StorageClass: pillarcsiv1alpha1.StorageClassTemplate{
-					ReclaimPolicy: pillarcsiv1alpha1.ReclaimPolicyRetain, // allowed to change
-				},
+				StoreRef: "pool-a", ProtocolRef: "proto-a",
+				StorageClass: pillarcsiv1alpha1.StorageClassTemplate{ReclaimPolicy: pillarcsiv1alpha1.ReclaimPolicyRetain},
+				Filesystem:   &pillarcsiv1alpha1.FilesystemConfig{FSType: "xfs"},
 			}
 			_, err := validator.ValidateUpdate(ctx, oldObj, obj)
 			Expect(err).NotTo(HaveOccurred())
 		})
 	})
 
-	Context("When validating Backend-Protocol compatibility", func() {
-		It("Should admit block backend (zfs-zvol) with block protocol (nvmeof-tcp)", func() {
-			By("creating compatible pool and protocol resources")
-			pool := &pillarcsiv1alpha1.PillarStore{
-				ObjectMeta: metav1.ObjectMeta{Name: "compat-pool-zvol-nvme"},
-				Spec: pillarcsiv1alpha1.PillarStoreSpec{
-					AgentRef: "test-target",
-					Backend: pillarcsiv1alpha1.BackendSpec{
-						Type: pillarcsiv1alpha1.BackendTypeZFSZvol,
-						ZFS:  &pillarcsiv1alpha1.ZFSBackendConfig{Pool: "tank"},
-					},
-				},
-			}
-			Expect(k8sClient.Create(ctx, pool)).To(Succeed())
-			DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, pool))).To(Succeed()) })
-
-			proto := &pillarcsiv1alpha1.PillarProtocol{
-				ObjectMeta: metav1.ObjectMeta{Name: "compat-proto-nvme"},
-				Spec:       pillarcsiv1alpha1.PillarProtocolSpec{Type: pillarcsiv1alpha1.ProtocolTypeNVMeOFTCP},
-			}
-			Expect(k8sClient.Create(ctx, proto)).To(Succeed())
-			DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, proto))).To(Succeed()) })
+	Context("When validating Backend-Protocol compatibility and override members", func() {
+		It("Should admit zfs backend with nvmeofTcp protocol", func() {
+			createStore(newZFSStore("compat-pool-zvol-nvme"))
+			createProtocol(newNVMeProtocol("compat-proto-nvme"))
 
 			obj.Name = "compat-binding-zvol-nvme"
 			obj.Spec = pillarcsiv1alpha1.PillarStorageClassSpec{
-				StoreRef:    "compat-pool-zvol-nvme",
-				ProtocolRef: "compat-proto-nvme",
+				StoreRef: "compat-pool-zvol-nvme", ProtocolRef: "compat-proto-nvme",
 			}
 			_, err := validator.ValidateCreate(ctx, obj)
 			Expect(err).NotTo(HaveOccurred())
 		})
 
-		It("Should admit block backend (lvm-lv) with block protocol (iscsi)", func() {
-			By("creating compatible pool and protocol resources")
-			pool := &pillarcsiv1alpha1.PillarStore{
-				ObjectMeta: metav1.ObjectMeta{Name: "compat-pool-lvm-iscsi"},
-				Spec: pillarcsiv1alpha1.PillarStoreSpec{
-					AgentRef: "test-target",
-					Backend: pillarcsiv1alpha1.BackendSpec{
-						Type: pillarcsiv1alpha1.BackendTypeLVMLV,
-						LVM:  &pillarcsiv1alpha1.LVMBackendConfig{VolumeGroup: "data-vg"},
-					},
-				},
-			}
-			Expect(k8sClient.Create(ctx, pool)).To(Succeed())
-			DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, pool))).To(Succeed()) })
+		It("Should admit lvm backend with nvmeofTcp protocol and matching overrides", func() {
+			createStore(newLVMStore("compat-pool-lvm-nvme"))
+			createProtocol(newNVMeProtocol("compat-proto-nvme-lvm"))
 
-			proto := &pillarcsiv1alpha1.PillarProtocol{
-				ObjectMeta: metav1.ObjectMeta{Name: "compat-proto-iscsi"},
-				Spec:       pillarcsiv1alpha1.PillarProtocolSpec{Type: pillarcsiv1alpha1.ProtocolTypeISCSI},
-			}
-			Expect(k8sClient.Create(ctx, proto)).To(Succeed())
-			DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, proto))).To(Succeed()) })
-
-			obj.Name = "compat-binding-lvm-iscsi"
+			obj.Name = "compat-binding-lvm-nvme"
 			obj.Spec = pillarcsiv1alpha1.PillarStorageClassSpec{
-				StoreRef:    "compat-pool-lvm-iscsi",
-				ProtocolRef: "compat-proto-iscsi",
+				StoreRef: "compat-pool-lvm-nvme", ProtocolRef: "compat-proto-nvme-lvm",
+				Overrides: &pillarcsiv1alpha1.StorageClassOverrides{
+					Backend: &pillarcsiv1alpha1.BackendOverrides{LVM: &pillarcsiv1alpha1.LVMBackendOverrides{
+						ProvisioningMode: pillarcsiv1alpha1.LVMProvisioningModeThin,
+					}},
+					Protocol: &pillarcsiv1alpha1.ProtocolOverrides{NVMeOFTCP: &pillarcsiv1alpha1.NVMeOFTCPOverrides{}},
+				},
 			}
 			_, err := validator.ValidateCreate(ctx, obj)
 			Expect(err).NotTo(HaveOccurred())
 		})
 
-		It("Should admit file backend (zfs-dataset) with file protocol (nfs)", func() {
-			By("creating compatible pool and protocol resources")
-			pool := &pillarcsiv1alpha1.PillarStore{
-				ObjectMeta: metav1.ObjectMeta{Name: "compat-pool-zfsds-nfs"},
-				Spec: pillarcsiv1alpha1.PillarStoreSpec{
-					AgentRef: "test-target",
-					Backend: pillarcsiv1alpha1.BackendSpec{
-						Type: pillarcsiv1alpha1.BackendTypeZFSDataset,
-						ZFS:  &pillarcsiv1alpha1.ZFSBackendConfig{Pool: "tank"},
-					},
-				},
-			}
-			Expect(k8sClient.Create(ctx, pool)).To(Succeed())
-			DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, pool))).To(Succeed()) })
+		It("Should deny a zfs backend override on an lvm store", func() {
+			createStore(newLVMStore("mismatch-pool-lvm"))
+			createProtocol(newNVMeProtocol("mismatch-proto-nvme"))
 
-			proto := &pillarcsiv1alpha1.PillarProtocol{
-				ObjectMeta: metav1.ObjectMeta{Name: "compat-proto-nfs"},
-				Spec:       pillarcsiv1alpha1.PillarProtocolSpec{Type: pillarcsiv1alpha1.ProtocolTypeNFS},
-			}
-			Expect(k8sClient.Create(ctx, proto)).To(Succeed())
-			DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, proto))).To(Succeed()) })
-
-			obj.Name = "compat-binding-zfsds-nfs"
+			obj.Name = "mismatch-binding"
 			obj.Spec = pillarcsiv1alpha1.PillarStorageClassSpec{
-				StoreRef:    "compat-pool-zfsds-nfs",
-				ProtocolRef: "compat-proto-nfs",
-			}
-			_, err := validator.ValidateCreate(ctx, obj)
-			Expect(err).NotTo(HaveOccurred())
-		})
-
-		It("Should admit file backend (dir) with file protocol (nfs)", func() {
-			By("creating compatible pool and protocol resources")
-			pool := &pillarcsiv1alpha1.PillarStore{
-				ObjectMeta: metav1.ObjectMeta{Name: "compat-pool-dir-nfs"},
-				Spec: pillarcsiv1alpha1.PillarStoreSpec{
-					AgentRef: "test-target",
-					Backend:  pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeDir},
+				StoreRef: "mismatch-pool-lvm", ProtocolRef: "mismatch-proto-nvme",
+				Overrides: &pillarcsiv1alpha1.StorageClassOverrides{
+					Backend: &pillarcsiv1alpha1.BackendOverrides{ZFS: &pillarcsiv1alpha1.ZFSBackendOverrides{
+						Properties: map[string]string{"compression": "lz4"},
+					}},
 				},
-			}
-			Expect(k8sClient.Create(ctx, pool)).To(Succeed())
-			DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, pool))).To(Succeed()) })
-
-			proto := &pillarcsiv1alpha1.PillarProtocol{
-				ObjectMeta: metav1.ObjectMeta{Name: "compat-proto-nfs2"},
-				Spec:       pillarcsiv1alpha1.PillarProtocolSpec{Type: pillarcsiv1alpha1.ProtocolTypeNFS},
-			}
-			Expect(k8sClient.Create(ctx, proto)).To(Succeed())
-			DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, proto))).To(Succeed()) })
-
-			obj.Name = "compat-binding-dir-nfs"
-			obj.Spec = pillarcsiv1alpha1.PillarStorageClassSpec{
-				StoreRef:    "compat-pool-dir-nfs",
-				ProtocolRef: "compat-proto-nfs2",
-			}
-			_, err := validator.ValidateCreate(ctx, obj)
-			Expect(err).NotTo(HaveOccurred())
-		})
-
-		It("Should deny block backend (zfs-zvol) with file protocol (nfs) on create", func() {
-			By("creating incompatible pool and protocol resources")
-			pool := &pillarcsiv1alpha1.PillarStore{
-				ObjectMeta: metav1.ObjectMeta{Name: "incompat-pool-zvol-nfs"},
-				Spec: pillarcsiv1alpha1.PillarStoreSpec{
-					AgentRef: "test-target",
-					Backend: pillarcsiv1alpha1.BackendSpec{
-						Type: pillarcsiv1alpha1.BackendTypeZFSZvol,
-						ZFS:  &pillarcsiv1alpha1.ZFSBackendConfig{Pool: "tank"},
-					},
-				},
-			}
-			Expect(k8sClient.Create(ctx, pool)).To(Succeed())
-			DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, pool))).To(Succeed()) })
-
-			proto := &pillarcsiv1alpha1.PillarProtocol{
-				ObjectMeta: metav1.ObjectMeta{Name: "incompat-proto-nfs"},
-				Spec:       pillarcsiv1alpha1.PillarProtocolSpec{Type: pillarcsiv1alpha1.ProtocolTypeNFS},
-			}
-			Expect(k8sClient.Create(ctx, proto)).To(Succeed())
-			DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, proto))).To(Succeed()) })
-
-			obj.Name = "incompat-binding-zvol-nfs"
-			obj.Spec = pillarcsiv1alpha1.PillarStorageClassSpec{
-				StoreRef:    "incompat-pool-zvol-nfs",
-				ProtocolRef: "incompat-proto-nfs",
 			}
 			_, err := validator.ValidateCreate(ctx, obj)
 			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("incompatible"))
-		})
+			Expect(err.Error()).To(ContainSubstring("spec.overrides.backend"))
 
-		// ── E32.2 TC-284 ─────────────────────────────────────────────────────
-		// TestPillarStorageClass_LVM_NFS_Incompatible
-		// lvm-lv (block backend) + nfs (file protocol) is an incompatible pairing.
-		// ValidateCreate fetches the referenced pool and protocol and rejects.
-		It("TC-284: TestPillarStorageClass_LVM_NFS_Incompatible — lvm-lv + nfs is rejected as incompatible", func() {
-			By("creating incompatible pool and protocol resources")
-			pool := &pillarcsiv1alpha1.PillarStore{
-				ObjectMeta: metav1.ObjectMeta{Name: "incompat-pool-lvm-nfs"},
-				Spec: pillarcsiv1alpha1.PillarStoreSpec{
-					AgentRef: "test-target",
-					Backend: pillarcsiv1alpha1.BackendSpec{
-						Type: pillarcsiv1alpha1.BackendTypeLVMLV,
-						LVM:  &pillarcsiv1alpha1.LVMBackendConfig{VolumeGroup: "data-vg"},
-					},
-				},
-			}
-			Expect(k8sClient.Create(ctx, pool)).To(Succeed())
-			DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, pool))).To(Succeed()) })
-
-			proto := &pillarcsiv1alpha1.PillarProtocol{
-				ObjectMeta: metav1.ObjectMeta{Name: "incompat-proto-nfs2"},
-				Spec:       pillarcsiv1alpha1.PillarProtocolSpec{Type: pillarcsiv1alpha1.ProtocolTypeNFS},
-			}
-			Expect(k8sClient.Create(ctx, proto)).To(Succeed())
-			DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, proto))).To(Succeed()) })
-
-			obj.Name = "incompat-binding-lvm-nfs"
-			obj.Spec = pillarcsiv1alpha1.PillarStorageClassSpec{
-				StoreRef:    "incompat-pool-lvm-nfs",
-				ProtocolRef: "incompat-proto-nfs2",
-			}
-			_, err := validator.ValidateCreate(ctx, obj)
+			By("rejecting the same mismatch on update")
+			_, err = validator.ValidateUpdate(ctx, obj.DeepCopy(), obj)
 			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("incompatible"))
+			Expect(err.Error()).To(ContainSubstring("spec.overrides.backend"))
 		})
 
-		It("Should deny file backend (zfs-dataset) with block protocol (nvmeof-tcp) on create", func() {
-			By("creating incompatible pool and protocol resources")
-			pool := &pillarcsiv1alpha1.PillarStore{
-				ObjectMeta: metav1.ObjectMeta{Name: "incompat-pool-zfsds-nvme"},
-				Spec: pillarcsiv1alpha1.PillarStoreSpec{
-					AgentRef: "test-target",
-					Backend: pillarcsiv1alpha1.BackendSpec{
-						Type: pillarcsiv1alpha1.BackendTypeZFSDataset,
-						ZFS:  &pillarcsiv1alpha1.ZFSBackendConfig{Pool: "tank"},
-					},
-				},
-			}
-			Expect(k8sClient.Create(ctx, pool)).To(Succeed())
-			DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, pool))).To(Succeed()) })
-
-			proto := &pillarcsiv1alpha1.PillarProtocol{
-				ObjectMeta: metav1.ObjectMeta{Name: "incompat-proto-nvme"},
-				Spec:       pillarcsiv1alpha1.PillarProtocolSpec{Type: pillarcsiv1alpha1.ProtocolTypeNVMeOFTCP},
-			}
-			Expect(k8sClient.Create(ctx, proto)).To(Succeed())
-			DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, proto))).To(Succeed()) })
-
-			obj.Name = "incompat-binding-zfsds-nvme"
-			obj.Spec = pillarcsiv1alpha1.PillarStorageClassSpec{
-				StoreRef:    "incompat-pool-zfsds-nvme",
-				ProtocolRef: "incompat-proto-nvme",
-			}
-			_, err := validator.ValidateCreate(ctx, obj)
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("incompatible"))
-		})
-
-		It("Should deny file backend (dir) with block protocol (iscsi) on create", func() {
-			By("creating incompatible pool and protocol resources")
-			pool := &pillarcsiv1alpha1.PillarStore{
-				ObjectMeta: metav1.ObjectMeta{Name: "incompat-pool-dir-iscsi"},
-				Spec: pillarcsiv1alpha1.PillarStoreSpec{
-					AgentRef: "test-target",
-					Backend:  pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeDir},
-				},
-			}
-			Expect(k8sClient.Create(ctx, pool)).To(Succeed())
-			DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, pool))).To(Succeed()) })
-
-			proto := &pillarcsiv1alpha1.PillarProtocol{
-				ObjectMeta: metav1.ObjectMeta{Name: "incompat-proto-iscsi"},
-				Spec:       pillarcsiv1alpha1.PillarProtocolSpec{Type: pillarcsiv1alpha1.ProtocolTypeISCSI},
-			}
-			Expect(k8sClient.Create(ctx, proto)).To(Succeed())
-			DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, proto))).To(Succeed()) })
-
-			obj.Name = "incompat-binding-dir-iscsi"
-			obj.Spec = pillarcsiv1alpha1.PillarStorageClassSpec{
-				StoreRef:    "incompat-pool-dir-iscsi",
-				ProtocolRef: "incompat-proto-iscsi",
-			}
-			_, err := validator.ValidateCreate(ctx, obj)
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("incompatible"))
-		})
-
-		It("Should admit creation when pool does not exist (defer to controller)", func() {
-			By("creating only the protocol, not the pool")
-			proto := &pillarcsiv1alpha1.PillarProtocol{
-				ObjectMeta: metav1.ObjectMeta{Name: "compat-proto-nopool"},
-				Spec:       pillarcsiv1alpha1.PillarProtocolSpec{Type: pillarcsiv1alpha1.ProtocolTypeNFS},
-			}
-			Expect(k8sClient.Create(ctx, proto)).To(Succeed())
-			DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, proto))).To(Succeed()) })
+		It("Should admit creation when the store does not exist (defer to controller)", func() {
+			createProtocol(newNVMeProtocol("compat-proto-nopool"))
 
 			obj.Name = "compat-binding-nopool"
-			obj.Spec = pillarcsiv1alpha1.PillarStorageClassSpec{
-				StoreRef:    "nonexistent-pool",
-				ProtocolRef: "compat-proto-nopool",
-			}
+			obj.Spec = pillarcsiv1alpha1.PillarStorageClassSpec{StoreRef: "nonexistent-pool", ProtocolRef: "compat-proto-nopool"}
 			_, err := validator.ValidateCreate(ctx, obj)
 			Expect(err).NotTo(HaveOccurred())
 		})
 
-		It("Should admit creation when protocol does not exist (defer to controller)", func() {
-			By("creating only the pool, not the protocol")
-			pool := &pillarcsiv1alpha1.PillarStore{
-				ObjectMeta: metav1.ObjectMeta{Name: "compat-pool-noproto"},
-				Spec: pillarcsiv1alpha1.PillarStoreSpec{
-					AgentRef: "test-target",
-					Backend: pillarcsiv1alpha1.BackendSpec{
-						Type: pillarcsiv1alpha1.BackendTypeZFSZvol,
-						ZFS:  &pillarcsiv1alpha1.ZFSBackendConfig{Pool: "tank"},
-					},
-				},
-			}
-			Expect(k8sClient.Create(ctx, pool)).To(Succeed())
-			DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, pool))).To(Succeed()) })
+		It("Should admit creation when the protocol does not exist (defer to controller)", func() {
+			createStore(newZFSStore("compat-pool-noproto"))
 
 			obj.Name = "compat-binding-noproto"
-			obj.Spec = pillarcsiv1alpha1.PillarStorageClassSpec{
-				StoreRef:    "compat-pool-noproto",
-				ProtocolRef: "nonexistent-protocol",
-			}
+			obj.Spec = pillarcsiv1alpha1.PillarStorageClassSpec{StoreRef: "compat-pool-noproto", ProtocolRef: "nonexistent-protocol"}
 			_, err := validator.ValidateCreate(ctx, obj)
 			Expect(err).NotTo(HaveOccurred())
 		})
 	})
 })
+
+// TestPillarStorageClass_OverrideMemberMatch exercises the override member
+// checks against a fake client (no envtest needed).
+func TestPillarStorageClass_OverrideMemberMatch(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := pillarcsiv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme: %v", err)
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+		newZFSStore("zfs-store"), newLVMStore("lvm-store"), newNVMeProtocol("nvme"),
+	).Build()
+	validator := &PillarStorageClassCustomValidator{Client: c}
+
+	zfsOverride := &pillarcsiv1alpha1.BackendOverrides{ZFS: &pillarcsiv1alpha1.ZFSBackendOverrides{
+		Properties: map[string]string{"volblocksize": "16K"},
+	}}
+	lvmOverride := &pillarcsiv1alpha1.BackendOverrides{LVM: &pillarcsiv1alpha1.LVMBackendOverrides{
+		ProvisioningMode: pillarcsiv1alpha1.LVMProvisioningModeLinear,
+	}}
+	nvmeOverride := &pillarcsiv1alpha1.ProtocolOverrides{NVMeOFTCP: &pillarcsiv1alpha1.NVMeOFTCPOverrides{}}
+
+	tests := []struct {
+		name      string
+		store     string
+		overrides *pillarcsiv1alpha1.StorageClassOverrides
+		wantPaths []string // empty = admitted
+	}{
+		{name: "no overrides", store: "zfs-store"},
+		{name: "zfs override on zfs store", store: "zfs-store",
+			overrides: &pillarcsiv1alpha1.StorageClassOverrides{Backend: zfsOverride, Protocol: nvmeOverride}},
+		{name: "lvm override on lvm store", store: "lvm-store",
+			overrides: &pillarcsiv1alpha1.StorageClassOverrides{Backend: lvmOverride}},
+		{name: "lvm override on zfs store", store: "zfs-store",
+			overrides: &pillarcsiv1alpha1.StorageClassOverrides{Backend: lvmOverride},
+			wantPaths: []string{"spec.overrides.backend"}},
+		{name: "zfs override on lvm store", store: "lvm-store",
+			overrides: &pillarcsiv1alpha1.StorageClassOverrides{Backend: zfsOverride},
+			wantPaths: []string{"spec.overrides.backend"}},
+		{name: "empty backend and protocol override unions", store: "zfs-store",
+			overrides: &pillarcsiv1alpha1.StorageClassOverrides{
+				Backend: &pillarcsiv1alpha1.BackendOverrides{}, Protocol: &pillarcsiv1alpha1.ProtocolOverrides{},
+			},
+			wantPaths: []string{"spec.overrides.backend", "spec.overrides.protocol"}},
+		{name: "missing store skips backend check", store: "missing",
+			overrides: &pillarcsiv1alpha1.StorageClassOverrides{Backend: lvmOverride}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			psc := &pillarcsiv1alpha1.PillarStorageClass{
+				ObjectMeta: metav1.ObjectMeta{Name: "psc"},
+				Spec: pillarcsiv1alpha1.PillarStorageClassSpec{
+					StoreRef: tt.store, ProtocolRef: "nvme", Overrides: tt.overrides,
+				},
+			}
+			_, err := validator.ValidateCreate(context.Background(), psc)
+			if len(tt.wantPaths) == 0 {
+				if err != nil {
+					t.Fatalf("ValidateCreate() error = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("ValidateCreate() error = nil, want errors on %v", tt.wantPaths)
+			}
+			for _, p := range tt.wantPaths {
+				if !strings.Contains(err.Error(), p+":") {
+					t.Fatalf("ValidateCreate() error = %v, want path %s", err, p)
+				}
+			}
+		})
+	}
+}
+
+// TestPillarStorageClass_DefaultAllowVolumeExpansion checks that every served
+// backend member defaults allowVolumeExpansion to true.
+func TestPillarStorageClass_DefaultAllowVolumeExpansion(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := pillarcsiv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme: %v", err)
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+		newZFSStore("zfs-store"), newLVMStore("lvm-store"),
+	).Build()
+	defaulter := &PillarStorageClassCustomDefaulter{Client: c}
+
+	for _, store := range []string{"zfs-store", "lvm-store"} {
+		t.Run(store, func(t *testing.T) {
+			psc := &pillarcsiv1alpha1.PillarStorageClass{Spec: pillarcsiv1alpha1.PillarStorageClassSpec{
+				StoreRef: store, ProtocolRef: "nvme",
+			}}
+			if err := defaulter.Default(context.Background(), psc); err != nil {
+				t.Fatalf("Default() error = %v", err)
+			}
+			got := psc.Spec.StorageClass.AllowVolumeExpansion
+			if got == nil || !*got {
+				t.Fatalf("allowVolumeExpansion = %v, want true", got)
+			}
+		})
+	}
+}
