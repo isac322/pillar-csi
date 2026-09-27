@@ -174,8 +174,11 @@ type PillarProtocolSpec struct {
 	// +kubebuilder:default=ext4
 	FSType string `json:"fsType,omitempty"`
 
-	// mkfsOptions are additional arguments passed to mkfs when formatting a
-	// new volume.  Only relevant for block-based protocols.
+	// mkfsOptions are additional mkfs arguments used when the node formats a
+	// new volume; a volume that already carries a filesystem is never
+	// reformatted.  Each element is one argv element (no shell); only
+	// filesystem tuning flags of the formatted type are accepted.  Only
+	// relevant for block-based protocols.
 	// +optional
 	MkfsOptions []string `json:"mkfsOptions,omitempty"`
 }

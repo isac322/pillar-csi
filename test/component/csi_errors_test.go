@@ -331,7 +331,7 @@ func TestCSIErrors_NodeStage_MkfsFailure(t *testing.T) {
 
 	// FormatAndMount fails with a realistic mkfs.ext4 error message.
 	const mkfsErr = "mkfs.ext4: /dev/nvme0n1: Input/output error while checking if filesystem is mounted"
-	env.mounter.formatAndMountFn = func(_, _ string, _ string, _ []string) error {
+	env.mounter.formatAndMountFn = func(_, _ string, _ string, _, _ []string) error {
 		return errors.New(mkfsErr)
 	}
 
@@ -389,7 +389,7 @@ func TestCSIErrors_NodeStage_TOCTOU_DeviceDisappears(t *testing.T) {
 
 	// Step 3: FormatAndMount fails because the device disappeared between
 	// GetDevicePath and FormatAndMount — the classic TOCTOU window.
-	env.mounter.formatAndMountFn = func(src, _, _ string, _ []string) error {
+	env.mounter.formatAndMountFn = func(src, _, _ string, _, _ []string) error {
 		if src == csiTestDevicePath {
 			return errors.New("mkfs.ext4: No such device or address while trying to open /dev/nvme0n1")
 		}

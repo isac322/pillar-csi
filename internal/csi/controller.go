@@ -680,6 +680,15 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 		}
 	}
 
+	// The filesystem settings are frozen into the PV VolumeContext and only
+	// applied when NodeStageVolume formats the volume; reject a setting that
+	// is malformed or cannot apply to this volume before any durable state
+	// exists, instead of provisioning a volume that ignores it.
+	fsErr := validateFilesystemParams(params, scParams, protocolType, req.GetVolumeCapabilities())
+	if fsErr != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid filesystem parameter: %v", fsErr)
+	}
+
 	agentBackendType := mapBackendType(backendTypeStr)
 	agentProtocolType := mapProtocolType(protocolTypeStr)
 
@@ -1376,12 +1385,16 @@ func (s *ControllerServer) applyPVCAnnotationOverrides(
 }
 
 // nodeConnectParamKeys are the merged CreateVolume parameters the node needs
-// at attach time.  They travel in the VolumeContext because NodeStageVolume
-// receives no StorageClass parameters.
+// at stage time: the NVMe-oF connect tuning, and the per-PVC fsType override
+// and mkfs options applied when NodeStageVolume formats a new volume.  They
+// travel in the VolumeContext because NodeStageVolume receives no
+// StorageClass parameters.
 var nodeConnectParamKeys = []string{
 	paramNVMeOFCtrlLossTmo,
 	paramNVMeOFReconnectDelay,
 	paramNVMeOFMaxQueueSize,
+	paramFSType,
+	paramMkfsOptions,
 }
 
 // copyNodeConnectParams copies every non-empty nodeConnectParamKeys entry

@@ -77,6 +77,14 @@ type nodeStageState struct {
 	// migrates to AccessTypeFilesystem (the only mode shipped historically).
 	AccessType string `json:"access_type,omitempty"`
 
+	// FsType is the filesystem type NodeStageVolume formatted (if the device
+	// was blank) and mounted a Filesystem-mode volume with.  It can differ
+	// from the PV's csi.fsType when a PVC fs-override chose the type, and
+	// NodeExpandVolume — which receives no VolumeContext — reads it to pick
+	// the matching resize tool.  Empty for Block mode and for state files
+	// written before the field existed.
+	FsType string `json:"fs_type,omitempty"`
+
 	// NVMeoF holds NVMe-oF TCP teardown state.  Non-nil when ProtocolType == "nvmeof-tcp".
 	NVMeoF *NVMeoFStageState `json:"nvmeof,omitempty"`
 

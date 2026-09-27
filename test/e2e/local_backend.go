@@ -1328,7 +1328,7 @@ func newLocalMockMounter() *localMockMounter {
 
 var _ csidrv.Mounter = (*localMockMounter)(nil)
 
-func (m *localMockMounter) FormatAndMount(source, target, fsType string, options []string) error {
+func (m *localMockMounter) FormatAndMount(source, target, fsType string, options, _ []string) error {
 	m.formatAndMountCalls = append(m.formatAndMountCalls, localFormatAndMountCall{source: source, target: target, fsType: fsType, options: slices.Clone(options)})
 	if err := os.MkdirAll(target, 0o755); err != nil {
 		return err

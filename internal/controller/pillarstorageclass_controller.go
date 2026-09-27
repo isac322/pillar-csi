@@ -20,7 +20,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -538,28 +537,44 @@ func buildStorageClassParams(
 		}
 	}
 
-	// fsType (block protocols only): binding override takes precedence,
-	// then protocol-level default.
-	if protocol.Spec.Type != pillarcsiv1alpha1.ProtocolTypeNFS {
-		fsType := protocol.Spec.FSType
-		if binding.Spec.Overrides != nil && binding.Spec.Overrides.FSType != "" {
-			fsType = binding.Spec.Overrides.FSType
-		}
-		if fsType != "" {
-			params["csi.storage.k8s.io/fstype"] = fsType
-		}
-
-		// mkfsOptions: binding override takes precedence, then protocol-level.
-		mkfsOptions := protocol.Spec.MkfsOptions
-		if binding.Spec.Overrides != nil && len(binding.Spec.Overrides.MkfsOptions) > 0 {
-			mkfsOptions = binding.Spec.Overrides.MkfsOptions
-		}
-		if len(mkfsOptions) > 0 {
-			params["pillar-csi.bhyoo.com/mkfs-options"] = strings.Join(mkfsOptions, " ")
-		}
-	}
+	addFilesystemParams(params, binding, protocol)
 
 	return params
+}
+
+// addFilesystemParams emits the filesystem parameters for block protocols:
+// fsType and mkfsOptions, where the binding override takes precedence over
+// the protocol-level default for each.
+func addFilesystemParams(
+	params map[string]string,
+	binding *pillarcsiv1alpha1.PillarStorageClass,
+	protocol *pillarcsiv1alpha1.PillarProtocol,
+) {
+	if protocol.Spec.Type == pillarcsiv1alpha1.ProtocolTypeNFS {
+		return
+	}
+	fsType := protocol.Spec.FSType
+	if binding.Spec.Overrides != nil && binding.Spec.Overrides.FSType != "" {
+		fsType = binding.Spec.Overrides.FSType
+	}
+	if fsType != "" {
+		params["csi.storage.k8s.io/fstype"] = fsType
+	}
+
+	// mkfsOptions: encoded as a JSON string array — the same encoding the
+	// PVC fs-override annotation produces — so every argv element survives
+	// intact (e.g. a label containing spaces) on its way through the PV
+	// VolumeContext to NodeStageVolume.
+	mkfsOptions := protocol.Spec.MkfsOptions
+	if binding.Spec.Overrides != nil && len(binding.Spec.Overrides.MkfsOptions) > 0 {
+		mkfsOptions = binding.Spec.Overrides.MkfsOptions
+	}
+	if len(mkfsOptions) > 0 {
+		encoded, err := json.Marshal(mkfsOptions)
+		if err == nil { // json.Marshal of a []string cannot fail
+			params["pillar-csi.bhyoo.com/mkfs-options"] = string(encoded)
+		}
+	}
 }
 
 // nvmeofTCPOverrides returns the binding's NVMe-oF/TCP protocol overrides, or

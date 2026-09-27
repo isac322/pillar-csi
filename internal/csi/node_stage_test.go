@@ -119,6 +119,7 @@ type mockMounter struct {
 type formatAndMountCall struct {
 	source, target, fsType string
 	options                []string
+	formatOptions          []string
 }
 
 type mountCall struct {
@@ -130,8 +131,9 @@ func newMockMounter() *mockMounter {
 	return &mockMounter{mountedPaths: make(map[string]bool)}
 }
 
-func (m *mockMounter) FormatAndMount(source, target, fsType string, options []string) error {
-	m.formatAndMountCalls = append(m.formatAndMountCalls, formatAndMountCall{source, target, fsType, options})
+func (m *mockMounter) FormatAndMount(source, target, fsType string, options, formatOptions []string) error {
+	m.formatAndMountCalls = append(m.formatAndMountCalls,
+		formatAndMountCall{source, target, fsType, options, formatOptions})
 	if m.formatAndMountErr != nil {
 		return m.formatAndMountErr
 	}

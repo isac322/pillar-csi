@@ -316,10 +316,13 @@ func resolveProtocolType(volumeID string, volCtx map[string]string) string {
 // without touching the filesystem.
 type Mounter interface {
 	// FormatAndMount formats the block device at source with the given
-	// filesystem type (if not already formatted) and bind-mounts it at target.
+	// filesystem type and mkfs arguments (formatOptions) if — and only if —
+	// it carries no filesystem yet, then mounts it at target.  An existing
+	// filesystem is never reformatted; formatOptions are ignored for it.
 	// fsType must be a kernel-supported filesystem name, e.g. "ext4" or "xfs".
-	// options are passed verbatim as -o flags to mount(8).
-	FormatAndMount(source, target, fsType string, options []string) error
+	// options are passed verbatim as -o flags to mount(8); formatOptions are
+	// separate mkfs argv elements (no shell).
+	FormatAndMount(source, target, fsType string, options, formatOptions []string) error
 
 	// Mount performs a plain mount of source at target with the given type and
 	// options.  Callers use this for bind mounts (source already formatted).
@@ -742,6 +745,20 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 		// Fall through to re-connect and re-mount below.
 	}
 
+	// ── Filesystem settings ─────────────────────────────────────────────────
+	// Resolve the filesystem type and mkfs options of a MOUNT volume before
+	// any attach side effect, so a malformed VolumeContext fails fast.
+	var fsType string
+	var mkfsOpts []string
+	if volCap.GetMount() != nil {
+		var fsErr error
+		fsType, mkfsOpts, fsErr = stageFilesystem(volCtx, volCap)
+		if fsErr != nil {
+			return nil, status.Errorf(codes.InvalidArgument,
+				"NodeStageVolume: volume %q: %v", volumeID, fsErr)
+		}
+	}
+
 	// ── Step 4: Attach via protocol handler ─────────────────────────────────
 	// Attach performs transport-level connection setup (RFC §5.4.2 Layer 1)
 	// and returns the device path (block protocols) or mount source (file
@@ -776,11 +793,8 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 	// ── Step 5: Mount or bind-mount depending on access type ───────────────
 	switch {
 	case volCap.GetMount() != nil:
-		// MOUNT access: format (if not already formatted) and mount to staging path.
-		fsType := volCap.GetMount().GetFsType()
-		if fsType == "" {
-			fsType = defaultFsType
-		}
+		// MOUNT access: format (only if the device carries no filesystem)
+		// and mount to staging path.
 		mountFlags := volCap.GetMount().GetMountFlags()
 
 		// Check IsMounted before FormatAndMount to provide an additional
@@ -792,7 +806,7 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 				"NodeStageVolume: check if %q is mounted: %v", stagingPath, mountCheckErr)
 		}
 		if !alreadyMounted {
-			formatErr := n.mounter.FormatAndMount(devicePath, stagingPath, fsType, mountFlags)
+			formatErr := n.mounter.FormatAndMount(devicePath, stagingPath, fsType, mountFlags, mkfsOpts)
 			if formatErr != nil {
 				return nil, status.Errorf(codes.Internal,
 					"NodeStageVolume: format-and-mount %q → %q (fs=%s): %v",
@@ -835,6 +849,7 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 		accessType = AccessTypeBlock
 	}
 	stageState := stageStateFromAttachResult(protocolType, accessType, targetID, address, port, attachResult)
+	stageState.FsType = fsType
 	writeErr := n.writeStageState(volumeID, stageState)
 	if writeErr != nil {
 		return nil, status.Errorf(codes.Internal,

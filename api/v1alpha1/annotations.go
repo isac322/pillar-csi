@@ -94,18 +94,26 @@ type PVCProtocolOverride = ProtocolOverrides
 // when the CSI node formats a newly provisioned block device.
 //
 // Applicable only for block protocols (nvmeof-tcp, iscsi) combined with
-// volumeMode: Filesystem.  Ignored for NFS volumes.
+// volumeMode: Filesystem; CreateVolume rejects it for NFS/SMB volumes and for
+// volumeMode: Block.
 type PVCFSOverride struct {
 	// fsType is the filesystem to create on the block device.
-	// Supported values: ext4, xfs. Defaults to the PillarProtocol fsType
-	// (which itself defaults to ext4).
+	// Supported values: ext4, xfs. Defaults to the StorageClass fsType
+	// (PillarStorageClass overrides.fsType, then PillarProtocol fsType, which
+	// itself defaults to ext4).  The node formats and mounts the volume with
+	// this type; the PersistentVolume's spec.csi.fsType keeps the
+	// StorageClass value.
 	// +optional
 	// +kubebuilder:validation:Enum=ext4;xfs
 	FSType string `json:"fsType,omitempty" yaml:"fsType,omitempty"`
 
-	// mkfsOptions are additional arguments passed verbatim to mkfs when
-	// formatting the device.  Each element is a separate shell token
-	// (e.g. ["-K"] disables zero-initialization for xfs).
+	// mkfsOptions are additional mkfs arguments used when the node formats
+	// the volume for the first time; a volume that already carries a
+	// filesystem is never reformatted.  Each element is one argv element
+	// (no shell; e.g. ["-K"] skips discard at mkfs time for xfs).  Only
+	// filesystem tuning flags of the formatted type are accepted; options
+	// that reference other files or devices (external journal/log, content
+	// copy, undo files) are rejected.  Replaces the StorageClass mkfsOptions.
 	// +optional
 	MkfsOptions []string `json:"mkfsOptions,omitempty" yaml:"mkfsOptions,omitempty"`
 }
