@@ -176,24 +176,41 @@ func (b *backendFlag) Set(v string) error {
 		}
 	}
 
-	if spec.typ == "" {
+	err := spec.validate()
+	if err != nil {
+		return err
+	}
+	*b = append(*b, spec)
+	return nil
+}
+
+// validate checks the per-type required keys of a parsed --backend spec.
+func (s backendSpec) validate() error {
+	if s.typ == "" {
 		return fmt.Errorf("backend: type= key is required")
 	}
 
-	switch spec.typ {
+	switch s.typ {
 	case backendTypeZfsZvol:
-		if spec.pool == "" {
+		if s.pool == "" {
 			return fmt.Errorf("backend: pool= key is required for type=%s", backendTypeZfsZvol)
 		}
+		// parent= names a dataset inside the pool: a "." or ".." component
+		// would place volumes elsewhere (e.g. parent=../k8s creates in pool
+		// "k8s") while the reported layout claims otherwise.
+		for comp := range strings.SplitSeq(s.parent, "/") {
+			if comp == "." || comp == ".." {
+				return fmt.Errorf("backend: parent=%q must be a dataset path inside pool %q "+
+					"(no %q components)", s.parent, s.pool, comp)
+			}
+		}
 	case backendTypeLvmLV:
-		if spec.vg == "" {
+		if s.vg == "" {
 			return fmt.Errorf("backend: vg= key is required for type=%s", backendTypeLvmLV)
 		}
 	default:
-		return fmt.Errorf("backend: unsupported type %q (supported: %s, %s)", spec.typ, backendTypeZfsZvol, backendTypeLvmLV)
+		return fmt.Errorf("backend: unsupported type %q (supported: %s, %s)", s.typ, backendTypeZfsZvol, backendTypeLvmLV)
 	}
-
-	*b = append(*b, spec)
 	return nil
 }
 

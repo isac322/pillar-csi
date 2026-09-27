@@ -804,8 +804,10 @@ func buildDiscoveredPools(pools []*agentv1.PoolInfo) []pillarcsiv1alpha1.Discove
 	result := make([]pillarcsiv1alpha1.DiscoveredPool, 0, len(pools))
 	for _, p := range pools {
 		dp := pillarcsiv1alpha1.DiscoveredPool{
-			Name: p.GetName(),
-			Type: backendTypeToString(p.GetBackendType()),
+			Name:          p.GetName(),
+			Type:          backendTypeToString(p.GetBackendType()),
+			ParentDataset: p.GetParentDataset(),
+			ThinPool:      p.GetThinPool(),
 		}
 		if total := p.GetTotalBytes(); total > 0 {
 			q := resource.NewQuantity(total, resource.BinarySI)

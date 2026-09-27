@@ -78,6 +78,7 @@ func (pvsResyncBackend) ListVolumes(context.Context) ([]*agentv1.VolumeInfo, err
 }
 func (pvsResyncBackend) DevicePath(string) string  { return pvsResyncDevice }
 func (pvsResyncBackend) Type() agentv1.BackendType { return agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL }
+func (pvsResyncBackend) Layout() backend.Layout    { return backend.Layout{} }
 
 type nopClose struct{}
 

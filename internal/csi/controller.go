@@ -473,6 +473,15 @@ const (
 	//   "pillar-csi.bhyoo.com/param.lvm-mode" PVC annotation.
 	paramLVMMode = "pillar-csi.bhyoo.com/lvm-mode"
 
+	// The lvm-thin-pool parameter carries PillarStore.spec.backend.lvm.thinPool (written
+	// by the PillarStorageClass controller for every LVM store, empty when the
+	// store declares no thin pool).  It is forwarded as
+	// LvmVolumeParams.thin_pool so that the agent refuses to create a volume
+	// when its --backend thinpool differs.  Absent (a hand-written
+	// StorageClass) leaves thin_pool unset and skips that check.  Structural:
+	// never overridable per PVC.
+	paramLVMThinPool = "pillar-csi.bhyoo.com/lvm-thin-pool"
+
 	// ParamACLEnabled controls NVMe-oF host NQN ACL enforcement.
 	// Value: "true" (default, ACL enforced) or "false" (allow_any_host=1).
 	// Set by the PillarStorageClass controller from the PillarProtocol NVMeOFTCPConfig.ACL field.
@@ -1534,13 +1543,15 @@ func buildBackendParams(params map[string]string, backendType agentv1.BackendTyp
 			},
 		}
 	case agentv1.BackendType_BACKEND_TYPE_LVM:
+		lvm := &agentv1.LvmVolumeParams{
+			VolumeGroup:   params[paramLVMVG],
+			ProvisionMode: params[paramLVMMode],
+		}
+		if thinPool, declared := params[paramLVMThinPool]; declared {
+			lvm.ThinPool = &thinPool
+		}
 		return &agentv1.BackendParams{
-			Params: &agentv1.BackendParams_Lvm{
-				Lvm: &agentv1.LvmVolumeParams{
-					VolumeGroup:   params[paramLVMVG],
-					ProvisionMode: params[paramLVMMode],
-				},
-			},
+			Params: &agentv1.BackendParams_Lvm{Lvm: lvm},
 		}
 	default:
 		return nil

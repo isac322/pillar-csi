@@ -41,7 +41,11 @@ type ZFSBackendConfig struct {
 	Pool string `json:"pool"`
 
 	// parentDataset is the ZFS dataset path under which pillar-csi will
-	// create per-volume datasets or zvols (e.g. "k8s").
+	// create per-volume datasets or zvols (e.g. "k8s").  It must equal the
+	// parent= of the agent's --backend flag for this pool (chart
+	// agent.backends[].parent; empty = pool root): on a mismatch the store is
+	// not Ready (PoolDiscovered=False, BackendLayoutMismatch) and CreateVolume
+	// fails instead of placing volumes elsewhere.
 	// +optional
 	ParentDataset string `json:"parentDataset,omitempty"`
 
@@ -78,7 +82,11 @@ type LVMBackendConfig struct {
 	// thinPool is the name of the LVM thin pool LV within the volume group
 	// (e.g. "thin-pool-0").  When non-empty the backend operates in thin-
 	// provisioned mode; when empty it creates fully-allocated linear LVs.
-	// The thin pool must be pre-created before the agent starts.
+	// The thin pool must be pre-created before the agent starts, and must
+	// equal the thinpool= of the agent's --backend flag for this VG (chart
+	// agent.backends[].thinpool; empty = none): on a mismatch the store is not
+	// Ready (PoolDiscovered=False, BackendLayoutMismatch) and CreateVolume
+	// fails instead of using another thin pool.
 	// +optional
 	ThinPool string `json:"thinPool,omitempty"`
 
@@ -144,7 +152,10 @@ type PillarStoreStatus struct {
 	//
 	// Known condition types:
 	// - "AgentReady"       – the referenced PillarAgent is in Ready state.
-	// - "PoolDiscovered"    – the pool named in spec.backend has been found on the agent.
+	// - "PoolDiscovered"    – the pool named in spec.backend has been found on the agent
+	//                         and the agent creates volumes in it where the store declares
+	//                         (zfs.parentDataset, lvm.thinPool); reason BackendLayoutMismatch
+	//                         otherwise.
 	// - "BackendSupported"  – the backend type is listed in the agent's capabilities.
 	// - "Ready"             – all checks pass; the pool can provision volumes.
 	//

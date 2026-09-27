@@ -3175,6 +3175,78 @@ func TestCreate_ThinOverride_WithThinPool(t *testing.T) {
 	fake.assertArgsContain(1, "--virtualsize", "--thinpool", "thin-pool-0")
 }
 
+// lvmThinPoolParams builds the BackendParams the controller sends for a store
+// that declares thinPool (possibly "" = none).
+func lvmThinPoolParams(mode, thinPool string) *agentv1.BackendParams {
+	return &agentv1.BackendParams{Params: &agentv1.BackendParams_Lvm{
+		Lvm: &agentv1.LvmVolumeParams{VolumeGroup: "data-vg", ProvisionMode: mode, ThinPool: &thinPool},
+	}}
+}
+
+// TestCreate_RejectsThinPoolMismatch verifies that a create declaring a thin
+// pool (PillarStore.spec.backend.lvm.thinPool) other than the backend's fails
+// with a LayoutMismatchError before any LVM command runs, instead of silently
+// using the backend's own thin pool or linear mode (issue #113).
+func TestCreate_RejectsThinPoolMismatch(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]struct {
+		backendThinPool string
+		mode, declared  string
+	}{
+		"different thin pools":           {backendThinPool: "thin-pool-0", mode: "thin", declared: "thin-pool-1"},
+		"store declares none, agent has": {backendThinPool: "thin-pool-0", mode: "linear", declared: ""},
+		"store declares one, agent none": {backendThinPool: "", mode: "thin", declared: "thin-pool-0"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			fake := newFake(t) // any LVM call fails the test
+			b := lvm.New("data-vg", tc.backendThinPool)
+			lvm.SetBackendExec(t, b, fake.exec())
+
+			_, _, err := b.Create(context.Background(), testVolIDPvcA, 1<<30, lvmThinPoolParams(tc.mode, tc.declared))
+			mismatch, isMismatch := errors.AsType[*backend.LayoutMismatchError](err)
+			if !isMismatch {
+				t.Fatalf("Create error = %v; want *backend.LayoutMismatchError", err)
+			}
+			if mismatch.Requested != tc.declared || mismatch.Configured != tc.backendThinPool {
+				t.Errorf("LayoutMismatchError{Requested: %q, Configured: %q}; want {%q, %q}",
+					mismatch.Requested, mismatch.Configured, tc.declared, tc.backendThinPool)
+			}
+			fake.assertCallCount(0)
+		})
+	}
+}
+
+// TestCreate_MatchingThinPoolCreatesInIt verifies that a create declaring the
+// backend's own thin pool creates the thin LV in it.
+func TestCreate_MatchingThinPoolCreatesInIt(t *testing.T) {
+	t.Parallel()
+
+	fake := newFake(t,
+		lvNotExistResp("pvc-a"),
+		ok(""),
+		ok("1073741824\n"),
+	)
+	b := lvm.New("data-vg", "thin-pool-0")
+	lvm.SetBackendExec(t, b, fake.exec())
+
+	_, _, err := b.Create(context.Background(), testVolIDPvcA, 1<<30, lvmThinPoolParams("thin", "thin-pool-0"))
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	fake.assertArgsContain(1, "--virtualsize", "--thinpool", "thin-pool-0")
+}
+
+func TestLayout_ReportsThinPool(t *testing.T) {
+	t.Parallel()
+
+	if got := lvm.New("data-vg", "thin-pool-0").Layout(); got != (backend.Layout{ThinPool: "thin-pool-0"}) {
+		t.Errorf("Layout() = %+v; want ThinPool %q", got, "thin-pool-0")
+	}
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Backend.Type test
 // ─────────────────────────────────────────────────────────────────────────────

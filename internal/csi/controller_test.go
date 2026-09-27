@@ -1628,6 +1628,40 @@ func TestBuildBackendParams_LVM_AbsentMode(t *testing.T) {
 	}
 }
 
+// TestBuildBackendParams_LVM_ThinPool verifies that the store's thin pool
+// (lvm-thin-pool StorageClass parameter) reaches the agent as
+// LvmVolumeParams.thin_pool, including an empty value (the store declares no
+// thin pool), so that the agent can refuse a create in a different thin pool
+// (issue #113).  An absent parameter leaves thin_pool unset.
+func TestBuildBackendParams_LVM_ThinPool(t *testing.T) {
+	t.Parallel()
+
+	for name, tc := range map[string]struct {
+		params       map[string]string
+		wantDeclared bool
+		wantThinPool string
+	}{
+		"declared": {
+			params:       map[string]string{paramLVMThinPool: "thin-pool-0"},
+			wantDeclared: true, wantThinPool: "thin-pool-0",
+		},
+		"declared none": {params: map[string]string{paramLVMThinPool: ""}, wantDeclared: true},
+		"absent":        {params: map[string]string{}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			lvm := buildBackendParams(tc.params, agentv1.BackendType_BACKEND_TYPE_LVM).GetLvm()
+			if lvm == nil {
+				t.Fatal("BackendParams.Lvm is nil")
+			}
+			if (lvm.ThinPool != nil) != tc.wantDeclared || lvm.GetThinPool() != tc.wantThinPool {
+				t.Errorf("ThinPool = %v (%q), want declared=%v %q",
+					lvm.ThinPool != nil, lvm.GetThinPool(), tc.wantDeclared, tc.wantThinPool)
+			}
+		})
+	}
+}
+
 // TestMergeParamsFromCRDs_LVM_PoolDefault verifies that the PillarStore-level
 // LVM provisioning mode (Layer 1) is propagated into the merged parameter map
 // as paramLVMMode when no binding-level override is present.

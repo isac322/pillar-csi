@@ -491,6 +491,10 @@ func buildStorageClassParams(
 			params["pillar-csi.bhyoo.com/store"] = pool.Spec.Backend.LVM.VolumeGroup
 			params["pillar-csi.bhyoo.com/lvm-vg"] = pool.Spec.Backend.LVM.VolumeGroup
 		}
+		// Always emitted, even empty: the key declares the store's thin pool
+		// ("" = none) so that the agent refuses CreateVolume when its
+		// --backend thinpool disagrees, instead of silently using its own.
+		params["pillar-csi.bhyoo.com/lvm-thin-pool"] = pool.Spec.Backend.LVM.ThinPool
 	}
 
 	// Protocol-specific parameters.

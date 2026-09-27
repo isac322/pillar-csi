@@ -232,6 +232,20 @@ spec:
                       description: name is the pool name as known to the storage subsystem
                         (e.g. ZFS pool name).
                       type: string
+                    parentDataset:
+                      description: |-
+                        parentDataset is, for ZFS pools, the dataset relative to the pool under
+                        which the agent creates volumes (its --backend parent=); empty means
+                        the pool root dataset.  A PillarStore on this pool must declare the
+                        same spec.backend.zfs.parentDataset to become Ready.
+                      type: string
+                    thinPool:
+                      description: |-
+                        thinPool is, for LVM volume groups, the thin pool LV the agent creates
+                        thin volumes in (its --backend thinpool=); empty means none.  A
+                        PillarStore on this VG must declare the same spec.backend.lvm.thinPool
+                        to become Ready.
+                      type: string
                     total:
                       anyOf:
                       - type: integer

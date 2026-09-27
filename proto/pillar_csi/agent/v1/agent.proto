@@ -279,9 +279,14 @@ enum VolumeAccessType {
 // ZfsVolumeParams holds ZFS-specific creation parameters.  All string fields
 // map directly to ZFS properties; unknown keys are forwarded as-is to zfs(8).
 message ZfsVolumeParams {
-  // The ZFS pool (e.g. "hot-data").
+  // The ZFS pool (e.g. "hot-data").  When non-empty it must equal the pool
+  // of the agent backend that owns the volume.
   string pool = 1;
-  // Parent dataset under which the volume is created (e.g. "k8s").
+  // Parent dataset under which the volume is created (e.g. "k8s"), as
+  // declared by the PillarStore.  The agent does not relocate volumes: it
+  // rejects CreateVolume with FAILED_PRECONDITION unless this equals the
+  // parent dataset its backend for the pool was started with (empty means the
+  // pool root dataset).
   string parent_dataset = 2;
   // ZFS properties to set at creation time.
   // Example: {"compression": "lz4", "volblocksize": "8K"}.
@@ -300,6 +305,12 @@ message LvmVolumeParams {
   // An empty string (the default) means "use the backend default", i.e. thin
   // when the backend was started with a thinpool= flag, linear otherwise.
   string provision_mode = 3;
+  // thin_pool is the thin pool LV declared by the PillarStore (empty: the
+  // store declares none).  When set, the agent rejects CreateVolume with
+  // FAILED_PRECONDITION unless it equals the thin pool its backend for the
+  // VG was started with.  Unset (a caller that does not declare a thin pool)
+  // skips the check.
+  optional string thin_pool = 4;
 }
 
 // BackendParams is a oneof wrapper for backend-specific creation parameters.
@@ -399,6 +410,12 @@ message PoolInfo {
   int64 total_bytes = 3;
   // Available (free) capacity in bytes.
   int64 available_bytes = 4;
+  // ZFS backends: the parent dataset (relative to the pool) under which the
+  // agent creates volumes; empty means the pool root dataset.
+  string parent_dataset = 5;
+  // LVM backends: the thin pool LV the agent creates thin volumes in; empty
+  // means the backend has no thin pool (linear LVs only).
+  string thin_pool = 6;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

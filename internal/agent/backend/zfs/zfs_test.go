@@ -393,6 +393,99 @@ func TestCreate_NoParentDataset(t *testing.T) {
 	}
 }
 
+// zfsParams wraps pool/parent into the BackendParams the controller sends.
+func zfsParams(pool, parent string) *agentv1.BackendParams {
+	return &agentv1.BackendParams{Params: &agentv1.BackendParams_Zfs{
+		Zfs: &agentv1.ZfsVolumeParams{Pool: pool, ParentDataset: parent},
+	}}
+}
+
+// TestCreate_RejectsLayoutMismatch verifies that a create whose declared pool
+// or parent dataset (the PillarStore spec) differs from the backend's
+// configuration fails with a LayoutMismatchError before any zfs command runs,
+// instead of silently placing the zvol at the backend's own location
+// (issue #113).
+func TestCreate_RejectsLayoutMismatch(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]struct {
+		backendParent string
+		params        *agentv1.BackendParams
+		wantSetting   string
+	}{
+		"store parent, agent pool root": {
+			backendParent: "", params: zfsParams("tank", "k8s"), wantSetting: "ZFS parent dataset",
+		},
+		"store pool root, agent parent": {
+			backendParent: "k8s", params: zfsParams("tank", ""), wantSetting: "ZFS parent dataset",
+		},
+		"different parents": {
+			backendParent: "k8s", params: zfsParams("tank", "k8s-staging"), wantSetting: "ZFS parent dataset",
+		},
+		"different pool": {
+			backendParent: "k8s", params: zfsParams("hot-data", "k8s"), wantSetting: "ZFS pool",
+		},
+		// parent=../k8s would create in pool "k8s", not tank/k8s.
+		"agent parent escapes the pool": {
+			backendParent: "../k8s", params: zfsParams("tank", "k8s"), wantSetting: "ZFS parent dataset",
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			fake := newFake(t) // any zfs call fails the test
+			b := zfs.New("tank", tc.backendParent)
+			zfs.SetBackendExec(t, b, fake.exec())
+
+			_, _, err := b.Create(context.Background(), "tank/pvc-a", 1<<30, tc.params)
+			mismatch, isMismatch := errors.AsType[*backend.LayoutMismatchError](err)
+			if !isMismatch {
+				t.Fatalf("Create error = %v; want *backend.LayoutMismatchError", err)
+			}
+			if mismatch.Setting != tc.wantSetting || mismatch.VolumeID != "tank/pvc-a" {
+				t.Errorf("LayoutMismatchError{Setting: %q, VolumeID: %q}; want {%q, %q}",
+					mismatch.Setting, mismatch.VolumeID, tc.wantSetting, "tank/pvc-a")
+			}
+			fake.assertCallCount(0)
+		})
+	}
+}
+
+// TestCreate_MatchingLayoutCreatesUnderParent verifies that a create declaring
+// the backend's own parent dataset (in any equivalent spelling) creates the
+// zvol under it.
+func TestCreate_MatchingLayoutCreatesUnderParent(t *testing.T) {
+	t.Parallel()
+
+	fake := newFake(t,
+		notExistResp("tank/k8s/pvc-a"),
+		ok(""),
+		ok("1073741824\n"),
+	)
+	b := zfs.New("tank", "k8s")
+	zfs.SetBackendExec(t, b, fake.exec())
+
+	devPath, _, err := b.Create(context.Background(), "tank/pvc-a", 1<<30, zfsParams("tank", "/k8s/"))
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if devPath != "/dev/zvol/tank/k8s/pvc-a" {
+		t.Errorf("devicePath = %q; want /dev/zvol/tank/k8s/pvc-a", devPath)
+	}
+	fake.assertArgsContain(1, "zfs", "create", "tank/k8s/pvc-a")
+}
+
+func TestLayout_ReportsParentDataset(t *testing.T) {
+	t.Parallel()
+
+	if got := zfs.New("tank", "/k8s/").Layout(); got != (backend.Layout{ParentDataset: "k8s"}) {
+		t.Errorf("Layout() = %+v; want ParentDataset %q", got, "k8s")
+	}
+	if got := zfs.New("tank", "").Layout(); got != (backend.Layout{}) {
+		t.Errorf("Layout() = %+v; want zero (pool root)", got)
+	}
+}
+
 // Delete tests.
 
 func TestDelete_ExistingVolume(t *testing.T) {

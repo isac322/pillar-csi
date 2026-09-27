@@ -55,6 +55,8 @@ func (*drainTestBackend) Type() agentv1.BackendType {
 	return agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL
 }
 
+func (*drainTestBackend) Layout() backend.Layout { return backend.Layout{} }
+
 var _ backend.VolumeBackend = (*drainTestBackend)(nil)
 
 func newDrainTestServer(stateDir string) *Server {

@@ -187,13 +187,15 @@ spec:
       storage: 10Gi
 ```
 
+The agent creates volumes where its `--backend` flag (chart `agent.backends`) says; the PillarStore declares the same layout. For the store above the agent needs `--backend type=zfs-zvol,pool=tank,parent=k8s` (`agent.backends: [{type: zfs-zvol, pool: tank, parent: k8s}]`); an LVM store's `lvm.thinPool` must likewise equal the agent's `thinpool=`. When they disagree, the store's `PoolDiscovered` condition is `False` with reason `BackendLayoutMismatch`, and `CreateVolume` fails with `FailedPrecondition` instead of placing the volume elsewhere.
+
 ## Troubleshooting
 
 Everything is reflected in standard Kubernetes resources — no extra CLI needed:
 
 ```sh
 kubectl describe pillaragent rock5bp        # AgentConnected / Ready conditions
-kubectl describe pillarstore   rock5bp-hot    # PoolDiscovered / BackendSupported
+kubectl describe pillarstore   rock5bp-hot    # PoolDiscovered (incl. BackendLayoutMismatch) / BackendSupported
 kubectl describe pillarstorageclass hot           # PoolReady / ProtocolValid / Compatible / StorageClassCreated
 kubectl describe pillarvolumestate <name>         # internal volume state after provisioning
 kubectl describe pvc data                    # provisioner events
