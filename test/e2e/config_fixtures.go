@@ -42,9 +42,10 @@ const (
 
 // Default fixture names seeded by the in-process controller environments.
 const (
-	e2eDefaultStoreName    = "tank"
-	e2eDefaultZFSPool      = "tank"
-	e2eDefaultProtocolName = "nvmeof"
+	e2eDefaultStoreName       = "tank"
+	e2eDefaultZFSPool         = "tank"
+	e2eDefaultProtocolName    = "nvmeof"
+	e2eDefaultACLProtocolName = "nvmeof-acl"
 )
 
 // e2eZFSStore returns a PillarStore whose backend is a ZFS pool on agent.
@@ -85,7 +86,10 @@ func e2eLVMStore(name, agent, vg, thinPool string, mode pillarv1.LVMProvisioning
 }
 
 // e2eNVMeOFProtocol returns a PillarProtocol selecting NVMe-oF/TCP on the
-// default port with ACL disabled (the default on every layer).
+// default port with ACL disabled (the default on every layer).  The
+// controller skips the AllowInitiator/DenyInitiator RPCs for volumes created
+// over this protocol; tests asserting the initiator grant/revoke path must
+// use e2eNVMeOFACLProtocol instead.
 func e2eNVMeOFProtocol(name string) *pillarv1.PillarProtocol {
 	return &pillarv1.PillarProtocol{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
@@ -95,6 +99,15 @@ func e2eNVMeOFProtocol(name string) *pillarv1.PillarProtocol {
 			},
 		},
 	}
+}
+
+// e2eNVMeOFACLProtocol returns a PillarProtocol selecting NVMe-oF/TCP on the
+// default port with ACL enabled (acl: true), so the controller calls
+// agent.AllowInitiator/DenyInitiator on publish/unpublish.
+func e2eNVMeOFACLProtocol(name string) *pillarv1.PillarProtocol {
+	p := e2eNVMeOFProtocol(name)
+	p.Spec.Protocol.NVMeOFTCP.ACL = true
+	return p
 }
 
 // e2eBinding returns a PillarStorageClass binding store and protocol.

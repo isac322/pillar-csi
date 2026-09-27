@@ -43,6 +43,14 @@ func lvmControllerParams(env *controllerTestEnv) map[string]string {
 	return e2eHandWrittenParams(e29StoreName, e2eDefaultProtocolName)
 }
 
+// lvmACLControllerParams is lvmControllerParams over the ACL-enabled protocol
+// "nvmeof-acl", for TCs that exercise the initiator grant/revoke path.
+func lvmACLControllerParams(env *controllerTestEnv) map[string]string {
+	params := lvmControllerParams(env)
+	params[e2eParamProtocolRef] = e2eDefaultACLProtocolName
+	return params
+}
+
 // agentCreateReqs safely copies the fakeAgentServer's captured CreateVolume requests.
 func agentCreateReqs(env *controllerTestEnv) []*agentv1.CreateVolumeRequest {
 	env.agentSrv.mu.Lock()
@@ -356,7 +364,7 @@ func assertE29_LVM_FullRoundTrip(tc documentedCase) {
 	// Stage 1: CreateVolume
 	createResp, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
 		Name:               "pvc-e29-fullroundtrip",
-		Parameters:         lvmControllerParams(env),
+		Parameters:         lvmACLControllerParams(env),
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
 		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 	})

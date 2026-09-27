@@ -35,7 +35,7 @@ tc_id,group_id,type,in_437_scope,test_func,description
 "E1.11-6","E1.11","A",true,"TestCSIController_CreateVolume_MissingProtocolRefParam","직접 작성한 StorageClass에 `pillar-csi.bhyoo.com/protocol-ref`가 없으면 InvalidArgument"
 "E2","E1.1","A",true,"TestCSIController_CreateVolume_Idempotency","동일한 볼륨 이름으로 CreateVolume을 두 번 호출하면 두 번째 호출은 agent.CreateVolume/ExportVolume을 재호출하지 않고 동일한 응답 반환"
 "E2.1-2","E2.1","A",true,"TestCSIController_ControllerPublishVolume_NQNFromCSINodeAnnotations","NVMe-oF publish에서 `NodeId=worker-2`가 `CSINode` annotation의 host NQN으로 해석되어 AllowInitiator에 전달됨"
-"E2.1-4","E2.1","A",true,"TestCSIController_ControllerPublishVolume_AlreadyPublished","이미 Publish된 볼륨·노드 조합으로 재호출 성공 (컴포넌트 테스트)"
+"E2.1-4","E2.1","A",true,"TestCSIController_ControllerPublishVolume_AlreadyPublished","이미 Publish된 볼륨·노드 조합으로 재호출 성공; 컴포넌트는 AllowInitiator 2회, 인프로세스 e2e는 ACL-off skip(0회) 경로 검증"
 "E2.2-2","E2.2","A",true,"TestCSIController_ControllerUnpublishVolume_Success","ControllerUnpublishVolume 정상 경로 (컴포넌트 테스트)"
 "E2.2-4","E2.2","A",true,"TestCSIController_ControllerUnpublishVolume_AlreadyUnpublished","이미 Unpublish된 볼륨에 재호출 성공 (컴포넌트 테스트)"
 "E2.2-5","E2.2","A",true,"TestCSIController_ControllerUnpublishVolume_EmptyVolumeID","VolumeId=""""이면 InvalidArgument 반환; DenyInitiator 0회 (컴포넌트 테스트)"

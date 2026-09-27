@@ -59,7 +59,7 @@ func assertE2_ControllerPublishVolume(tc documentedCase) {
 	// Create volume first
 	resp, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
 		Name:               "pvc-e2-publish",
-		Parameters:         env.params,
+		Parameters:         env.aclParams(),
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: CreateVolume", tc.tcNodeLabel())
@@ -88,7 +88,7 @@ func assertE2_ControllerPublishVolume_NQNFromCSINode(tc documentedCase) {
 
 	resp, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
 		Name:               "pvc-nqn-publish",
-		Parameters:         env.params,
+		Parameters:         env.aclParams(),
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: CreateVolume", tc.tcNodeLabel())
@@ -114,6 +114,8 @@ func assertE2_ControllerPublishVolume_AlreadyPublished(tc documentedCase) {
 
 	makeCSINodeWithNQN(env, "worker-1", "nqn.2026-01.io.example:worker-1")
 
+	// ACL-off fixture: the default "nvmeof" protocol has acl unset, so
+	// publish/unpublish must skip the per-host initiator RPCs.
 	resp, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
 		Name:               "pvc-e2-already-pub",
 		Parameters:         env.params,
@@ -134,7 +136,19 @@ func assertE2_ControllerPublishVolume_AlreadyPublished(tc documentedCase) {
 	Expect(err).NotTo(HaveOccurred(), "%s: second publish (idempotent)", tc.tcNodeLabel())
 
 	c := env.agentSrv.counts()
-	Expect(c.AllowInitiator).To(Equal(2), "%s: allowInitiator called twice (no dedup at controller level)", tc.tcNodeLabel())
+	Expect(c.AllowInitiator).To(BeZero(),
+		"%s: ACL-off export must skip agent.AllowInitiator (attr_allow_any_host=1)", tc.tcNodeLabel())
+	Expect(publishedNodeIDs(env, "pvc-e2-already-pub")).To(ConsistOf("worker-1"),
+		"%s: publication still recorded", tc.tcNodeLabel())
+
+	_, err = env.controller.ControllerUnpublishVolume(env.ctx, &csiapi.ControllerUnpublishVolumeRequest{
+		VolumeId: volumeID,
+		NodeId:   "worker-1",
+	})
+	Expect(err).NotTo(HaveOccurred(), "%s: unpublish", tc.tcNodeLabel())
+	c = env.agentSrv.counts()
+	Expect(c.DenyInitiator).To(BeZero(),
+		"%s: ACL-off export must skip agent.DenyInitiator", tc.tcNodeLabel())
 }
 
 func assertE2_ControllerUnpublishVolume_Success(tc documentedCase) {
@@ -145,7 +159,7 @@ func assertE2_ControllerUnpublishVolume_Success(tc documentedCase) {
 
 	resp, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
 		Name:               "pvc-e2-unpublish",
-		Parameters:         env.params,
+		Parameters:         env.aclParams(),
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
 	})
 	Expect(err).NotTo(HaveOccurred())
@@ -211,7 +225,7 @@ func assertE2_ControllerUnpublishVolume_EmptyNodeID(tc documentedCase) {
 	makeCSINodeWithNQN(env, "worker-1", "nqn.2026-01.io.example:worker-1")
 	resp, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
 		Name:               "pvc-e2-empty-node",
-		Parameters:         env.params,
+		Parameters:         env.aclParams(),
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
 	})
 	Expect(err).NotTo(HaveOccurred())
@@ -266,7 +280,7 @@ func assertE2_DenyInitiatorNonNotFound(tc documentedCase) {
 	makeCSINodeWithNQN(env, "worker-1", "nqn.2026-01.io.example:worker-1")
 	resp, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
 		Name:               "pvc-e2-deny-err",
-		Parameters:         env.params,
+		Parameters:         env.aclParams(),
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
 	})
 	Expect(err).NotTo(HaveOccurred())
@@ -299,7 +313,7 @@ func assertE2_ControllerPublish_DifferentNodes(tc documentedCase) {
 
 	resp, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
 		Name:               "pvc-e2-diff-nodes",
-		Parameters:         env.params,
+		Parameters:         env.aclParams(),
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
 	})
 	Expect(err).NotTo(HaveOccurred())
@@ -341,7 +355,7 @@ func assertE2_AllowInitiatorFails(tc documentedCase) {
 
 	resp, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
 		Name:               "pvc-e2-allow-fail",
-		Parameters:         env.params,
+		Parameters:         env.aclParams(),
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
 	})
 	Expect(err).NotTo(HaveOccurred())

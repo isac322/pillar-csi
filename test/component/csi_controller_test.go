@@ -391,10 +391,23 @@ func newCSIControllerTestEnv(t *testing.T, extra ...client.Object) *csiControlle
 // gating on volume existence treat the named volume as a driver-issued
 // volume — used by tests like ValidateVolumeCapabilities that operate on a
 // pre-existing volume rather than provisioning a new one.
+//
+// The stub records status.exportSpec with ACLEnabled=true: a volume
+// provisioned by this driver always has a durable export spec (the
+// authoritative record for ControllerPublishVolume/ControllerUnpublishVolume
+// initiator management), so the grant/revoke RPCs tests assert run against an
+// ACL-enforcing export rather than the legacy no-record fallback.
 func seedComponentPillarVolumeState(t *testing.T, env *csiControllerTestEnv, name string) {
 	t.Helper()
 	pv := &v1alpha1.PillarVolumeState{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Status: v1alpha1.PillarVolumeStateStatus{
+			ExportSpec: &v1alpha1.VolumeExportSpec{
+				BindAddress: "192.168.1.10",
+				Port:        4420,
+				ACLEnabled:  true,
+			},
+		},
 	}
 	if err := env.k8sClient.Create(context.Background(), pv); err != nil {
 		t.Fatalf("seed PillarVolumeState %q: %v", name, err)

@@ -104,7 +104,7 @@ func assertE24_FullCycle(tc documentedCase) {
 	// Stage 1: CreateVolume
 	createResp, err := env.ctrlEnv.controller.CreateVolume(env.ctrlEnv.ctx, &csiapi.CreateVolumeRequest{
 		Name:               "pvc-e24-full-cycle",
-		Parameters:         env.ctrlEnv.params,
+		Parameters:         env.ctrlEnv.aclParams(),
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
 		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 	})
@@ -245,7 +245,7 @@ func assertE24_OrderingConstraints(tc documentedCase) {
 	// Phase 1: CreateVolume
 	createResp, err := env.ctrlEnv.controller.CreateVolume(env.ctrlEnv.ctx, &csiapi.CreateVolumeRequest{
 		Name:               "pvc-e24-ordering",
-		Parameters:         env.ctrlEnv.params,
+		Parameters:         env.ctrlEnv.aclParams(),
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
 		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 	})
@@ -542,7 +542,7 @@ func assertE24_ControllerPublishVolume_AgentAllowInitiatorFails(tc documentedCas
 
 	resp, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
 		Name:               "pvc-e24-allow-fail",
-		Parameters:         env.params,
+		Parameters:         env.aclParams(),
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
 		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 	})
@@ -851,7 +851,7 @@ func assertE24_ControllerUnpublishVolume_AgentDenyInitiatorFails(tc documentedCa
 	// Create and publish volume
 	resp, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
 		Name:               "pvc-e24-deny-fail",
-		Parameters:         env.params,
+		Parameters:         env.aclParams(),
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
 	})
 	Expect(err).NotTo(HaveOccurred())

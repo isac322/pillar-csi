@@ -303,7 +303,7 @@ func verifyControllerLocalBackend() error {
 			target,
 			csiNode,
 			e2eZFSStore(e2eDefaultStoreName, target.Name, e2eDefaultZFSPool),
-			e2eNVMeOFProtocol(e2eDefaultProtocolName),
+			e2eNVMeOFACLProtocol(e2eDefaultProtocolName),
 		).
 		Build()
 

@@ -73,7 +73,7 @@ func assertE18_ControllerPublish_AgentInternal(tc documentedCase) {
 
 	resp, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
 		Name:               "pvc-e18-pub-internal",
-		Parameters:         env.params,
+		Parameters:         env.aclParams(),
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
 		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 	})

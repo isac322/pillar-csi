@@ -388,7 +388,7 @@
       "type": "A",
       "in_437_scope": true,
       "test_func": "TestCSIController_ControllerPublishVolume_AlreadyPublished",
-      "description": "이미 Publish된 볼륨·노드 조합으로 재호출 성공 (컴포넌트 테스트)"
+      "description": "이미 Publish된 볼륨·노드 조합으로 재호출 성공; 컴포넌트는 AllowInitiator 2회, 인프로세스 e2e는 ACL-off skip(0회) 경로 검증"
     },
     {
       "tc_id": "E2.2-2",

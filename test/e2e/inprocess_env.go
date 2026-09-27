@@ -101,6 +101,7 @@ func newControllerTestEnv() *controllerTestEnv {
 			target,
 			e2eZFSStore(e2eDefaultStoreName, target.Name, e2eDefaultZFSPool),
 			e2eNVMeOFProtocol(e2eDefaultProtocolName),
+			e2eNVMeOFACLProtocol(e2eDefaultACLProtocolName),
 		).
 		Build()
 
@@ -170,6 +171,20 @@ func (e *controllerTestEnv) createVolume(name string, caps []*csiapi.VolumeCapab
 		return "", err
 	}
 	return resp.GetVolume().GetVolumeId(), nil
+}
+
+// aclParams returns the default hand-written StorageClass parameters with
+// protocol-ref pointed at the ACL-enabled protocol "nvmeof-acl".  The default
+// protocol "nvmeof" has acl unset (false), so the controller skips the
+// AllowInitiator/DenyInitiator RPCs; tests that verify the initiator
+// grant/revoke path must create their volumes with these parameters.
+func (e *controllerTestEnv) aclParams() map[string]string {
+	params := make(map[string]string, len(e.params))
+	for k, v := range e.params {
+		params[k] = v
+	}
+	params[e2eParamProtocolRef] = e2eDefaultACLProtocolName
+	return params
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
