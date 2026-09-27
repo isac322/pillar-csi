@@ -160,8 +160,11 @@ func (s *ControllerServer) ensureVolumeState(
 		return pvs, nil
 	}
 	created := &v1alpha1.PillarVolumeState{
-		ObjectMeta: metav1.ObjectMeta{Name: pvName},
-		Spec:       spec,
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        pvName,
+			Annotations: map[string]string{annotationSuccessRecorded: "true"},
+		},
+		Spec: spec,
 	}
 	err = s.k8sClient.Create(ctx, created)
 	if err != nil && !k8serrors.IsAlreadyExists(err) {

@@ -753,7 +753,7 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 	}
 	attempt := existingPV
 	if !pvExists {
-		claimRef, claimFound, claimErr := s.claimRefFor(ctx, scParams)
+		claimRef, claimFound, claimErr := s.claimRefFor(ctx, pvName, scParams)
 		if claimErr != nil {
 			return nil, claimErr
 		}

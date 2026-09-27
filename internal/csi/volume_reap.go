@@ -55,6 +55,7 @@ import (
 	"google.golang.org/grpc/status"
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/bhyoo/pillar-csi/api/v1alpha1"
@@ -71,13 +72,17 @@ const provisionerVolumePrefix = "pvc-"
 // stall export resync of every other volume.
 const reapTeardownTimeout = 60 * time.Second
 
-// claimRefFor returns the identity of the claim a first CreateVolume call
-// provisions for, from the claim name and namespace external-provisioner
-// passes with --extra-create-metadata; found is false when they are absent or
-// name no claim.  The provisioner only provisions an existing claim, so its
-// current UID is read back uncached.
+// claimRefFor returns the identity of the claim a first CreateVolume call for
+// volume volumeName provisions for, from the claim name and namespace
+// external-provisioner passes with --extra-create-metadata; found is false
+// when they are absent.  The provisioner only provisions an existing claim,
+// so its current UID is read back uncached.  A named claim that no longer
+// exists, or whose UID differs from the one a default "pvc-<claim UID>"
+// volume name encodes (the name was reused by a new claim), means the
+// provisioning was abandoned: FailedPrecondition is returned.
 func (s *ControllerServer) claimRefFor(
 	ctx context.Context,
+	volumeName string,
 	params map[string]string,
 ) (ref v1alpha1.VolumeClaimRef, found bool, err error) {
 	name, namespace := params[paramPVCNameMeta], params[paramPVCNamespaceMeta]
@@ -88,9 +93,17 @@ func (s *ControllerServer) claimRefFor(
 	err = s.apiReader.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, claim)
 	switch {
 	case k8serrors.IsNotFound(err):
-		return ref, false, nil
+		return ref, false, status.Errorf(codes.FailedPrecondition,
+			"PersistentVolumeClaim %s/%s of volume %q no longer exists; provisioning abandoned",
+			namespace, name, volumeName)
 	case err != nil:
 		return ref, false, status.Errorf(codes.Internal, "get PersistentVolumeClaim %s/%s: %v", namespace, name, err)
+	}
+	nameUID := volumeClaimUID(&v1alpha1.PillarVolumeState{ObjectMeta: metav1.ObjectMeta{Name: volumeName}})
+	if nameUID != "" && nameUID != claim.UID {
+		return ref, false, status.Errorf(codes.FailedPrecondition,
+			"PersistentVolumeClaim %s/%s is now claim %s, not claim %s of volume %q; provisioning abandoned",
+			namespace, name, claim.UID, nameUID, volumeName)
 	}
 	return v1alpha1.VolumeClaimRef{UID: string(claim.UID), Namespace: namespace, Name: name}, true, nil
 }
@@ -164,12 +177,23 @@ func (s *ControllerServer) refuseAbandonedClaim(ctx context.Context, attempt *v1
 	return nil
 }
 
-// reapablePhase reports whether a lifecycle in phase never reported success,
-// i.e. never had a PersistentVolume.
-func reapablePhase(phase v1alpha1.PillarVolumeStatePhase) bool {
-	switch phase {
-	case "", v1alpha1.PillarVolumeStatePhaseProvisioning, v1alpha1.PillarVolumeStatePhaseCreatePartial:
+// annotationSuccessRecorded marks a lifecycle created by a controller that
+// records Ready before CreateVolume reports success.  Earlier controllers
+// treated the Ready write as best-effort, so a lifecycle they left in
+// CreatePartial may have been reported created and may have a (Retain)
+// PersistentVolume history; only Provisioning is unambiguous for those.
+const annotationSuccessRecorded = "pillar-csi.bhyoo.com/success-recorded"
+
+// reapablePhase reports whether pvs never reported success, i.e. never had a
+// PersistentVolume.  Provisioning precedes the backend record under every
+// controller version; CreatePartial is conclusive only for lifecycles created
+// under the success-recording contract.
+func reapablePhase(pvs *v1alpha1.PillarVolumeState) bool {
+	switch pvs.Status.Phase {
+	case "", v1alpha1.PillarVolumeStatePhaseProvisioning:
 		return true
+	case v1alpha1.PillarVolumeStatePhaseCreatePartial:
+		return pvs.Annotations[annotationSuccessRecorded] == "true"
 	default:
 		return false
 	}
@@ -214,7 +238,7 @@ func (s *ControllerServer) ReapAbandonedVolume(ctx context.Context, pvsName stri
 
 	decidedUID := pvs.UID
 	pvs, fence, err := s.markVolumeDeleting(ctx, pvsName, volumeID, func(cur *v1alpha1.PillarVolumeState) error {
-		if cur.UID != decidedUID || !reapablePhase(cur.Status.Phase) {
+		if cur.UID != decidedUID || !reapablePhase(cur) {
 			return status.Errorf(codes.Aborted,
 				"volume %q changed to phase %q while being reaped", volumeID, cur.Status.Phase)
 		}
@@ -254,7 +278,7 @@ func (s *ControllerServer) provisioningAbandoned(
 	ctx context.Context,
 	pvs *v1alpha1.PillarVolumeState,
 ) (bool, error) {
-	if !reapablePhase(pvs.Status.Phase) {
+	if !reapablePhase(pvs) {
 		return false, nil
 	}
 	gone, err := s.claimGone(ctx, pvs)

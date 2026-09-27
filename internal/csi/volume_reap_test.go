@@ -390,3 +390,71 @@ func TestReapAbandonedVolume_PublishedVolumeKept(t *testing.T) {
 		t.Fatal("PillarVolumeState removed")
 	}
 }
+
+// TestReapAbandonedVolume_LegacyCreatePartialKept: controllers before the
+// success-recording contract could report a CreatePartial lifecycle created
+// (the Ready write was best-effort), so without the marker such a record may
+// back a Retain volume and is never reaped.  A legacy Provisioning record
+// never reported success and is.
+func TestReapAbandonedVolume_LegacyCreatePartialKept(t *testing.T) {
+	t.Parallel()
+	for phase, wantReaped := range map[v1alpha1.PillarVolumeStatePhase]bool{
+		v1alpha1.PillarVolumeStatePhaseCreatePartial: false,
+		v1alpha1.PillarVolumeStatePhaseProvisioning:  true,
+	} {
+		t.Run(string(phase), func(t *testing.T) {
+			t.Parallel()
+			env := newControllerTestEnv(t)
+			req, pvc := failedAttempt(t, env)
+			deleteClaim(t, env, pvc)
+			pvs := volumeState(t, env, req.Name)
+			delete(pvs.Annotations, annotationSuccessRecorded)
+			if err := env.srv.k8sClient.Update(context.Background(), pvs); err != nil {
+				t.Fatalf("drop marker: %v", err)
+			}
+			pvs = volumeState(t, env, req.Name)
+			pvs.Status.Phase = phase
+			if err := env.srv.k8sClient.Status().Update(context.Background(), pvs); err != nil {
+				t.Fatalf("set phase: %v", err)
+			}
+
+			if got := reap(t, env, req.Name); got != wantReaped {
+				t.Fatalf("legacy %s record reaped = %t, want %t", phase, got, wantReaped)
+			}
+		})
+	}
+}
+
+// TestCreateVolume_NamedClaimGoneOrReplaced: a delayed first attempt whose
+// named claim no longer exists, or whose name now belongs to a different
+// claim than the "pvc-<claim UID>" volume name encodes, is abandoned and
+// must not start a lifecycle.
+func TestCreateVolume_NamedClaimGoneOrReplaced(t *testing.T) {
+	t.Parallel()
+	for name, replace := range map[string]bool{"gone": false, "replaced": true} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			env := newControllerTestEnv(t)
+			if replace {
+				pvc := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{
+					Name: "data", Namespace: "default", UID: "11111111-2222-3333-4444-555555555555",
+				}}
+				if err := env.srv.k8sClient.Create(context.Background(), pvc); err != nil {
+					t.Fatalf("create PVC: %v", err)
+				}
+			}
+			req := baseCreateVolumeRequest()
+			req.Name = "pvc-" + reapClaimUID
+			req.Parameters[paramPVCNameMeta] = "data"
+			req.Parameters[paramPVCNamespaceMeta] = "default"
+
+			_, err := env.srv.CreateVolume(context.Background(), req)
+			if status.Code(err) != codes.FailedPrecondition {
+				t.Fatalf("want FailedPrecondition, got %v", err)
+			}
+			if env.agent.createVolumeCalls != 0 || volumeState(t, env, req.Name) != nil {
+				t.Fatal("abandoned attempt started a lifecycle")
+			}
+		})
+	}
+}
