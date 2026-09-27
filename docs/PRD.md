@@ -803,6 +803,9 @@ PillarAgent ← PillarStore ← PillarStorageClass ← StorageClass ← PVC
 - PillarStore이 참조하는 PillarAgent 삭제 시도 → **거부**
 - PillarStorageClass이 참조하는 PillarStore 삭제 시도 → **거부**
 - 활성 PVC가 있는 StorageClass의 PillarStorageClass 삭제 시도 → **거부**
+- 볼륨(PersistentVolume, PillarVolumeState)이 남아 있으면 그 볼륨이 프로비저닝된 PillarStorageClass·PillarStore와 볼륨이 놓인 PillarAgent 삭제 시도 → **거부**
+
+볼륨은 StorageClass로 귀속한다: PV는 `spec.storageClassName`, PillarVolumeState는 같은 이름의 PV 또는 `spec.claimRef`가 가리키는 PVC의 StorageClass를 따른다. StorageClass가 정말 그 PillarStorageClass의 생성물인지는 확인된 증거만 인정한다: 존재하는 StorageClass는 PillarStorageClass를 가리키는 ownerReference가 있어야 하고, 없어진 StorageClass 이름은 binding의 `status.storageClassName` 기록이 증거가 된다. spec에 요청한 이름만으로는 귀속되지 않는다 — 준비되지 않은 binding이 다른 class와 이름이 충돌할 수 있으므로. 확인된 binding의 `spec.storeRef`가 볼륨의 PillarStore다. 한 풀(ZFS pool, LVM VG)에 PillarStore를 여러 개 두는 구성에서 다른 PillarStore의 볼륨은 삭제를 막지 않는다. 귀속할 수 없는 볼륨(어느 PillarStorageClass의 생성물로도 확인되지 않는 StorageClass, PV·claim 기록이 모두 없는 PillarVolumeState)은 안전하게 볼륨이 놓인 풀의 모든 PillarStore 삭제를 막는다.
 
 사용자는 역순(PVC → PillarStorageClass → PillarStore → PillarAgent)으로 삭제해야 한다.
 
