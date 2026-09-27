@@ -484,6 +484,16 @@ func TestStablePortID(t *testing.T) {
 
 // CreatePort tests.
 
+// createPort creates or converges the port of tgt the way Link does before
+// linking, without linking a subsystem.
+func (t *NvmetTarget) createPort() (portSpec, error) {
+	spec, err := t.portSpec()
+	if err != nil {
+		return portSpec{}, err
+	}
+	return spec, t.ensurePortLocked(spec)
+}
+
 func TestCreatePort(t *testing.T) {
 	root := t.TempDir()
 	tgt := &NvmetTarget{

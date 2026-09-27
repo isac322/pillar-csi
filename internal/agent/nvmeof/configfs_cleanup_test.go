@@ -31,6 +31,12 @@ func ownPortDir(t *NvmetTarget) string {
 	return t.portDir(stablePortID(t.BindAddress, t.Port))
 }
 
+// unexportTarget is the target the agent's Unexport builds: it knows only
+// the subsystem, not the endpoint or the allowed hosts.
+func unexportTarget(t *NvmetTarget) *NvmetTarget {
+	return &NvmetTarget{ConfigfsRoot: t.ConfigfsRoot, SubsystemNQN: t.SubsystemNQN, NamespaceID: t.NamespaceID}
+}
+
 func assertExists(t *testing.T, path, what string) {
 	t.Helper()
 	if _, err := os.Lstat(path); err != nil {
@@ -59,7 +65,7 @@ func TestRemove_PrunesPortWhenLastSubsystemUnlinked(t *testing.T) {
 	}
 	pDir := ownPortDir(a)
 
-	if err := a.Remove(); err != nil {
+	if err := unexportTarget(a).Remove(); err != nil {
 		t.Fatalf("Remove a: %v", err)
 	}
 	assertExists(t, pDir, "port shared with b")
@@ -68,7 +74,7 @@ func TestRemove_PrunesPortWhenLastSubsystemUnlinked(t *testing.T) {
 	}
 	assertFileContent(t, filepath.Join(pDir, "addr_trsvcid"), "4420")
 
-	if err := b.Remove(); err != nil {
+	if err := unexportTarget(b).Remove(); err != nil {
 		t.Fatalf("Remove b: %v", err)
 	}
 	assertGone(t, pDir, "port without subsystems")
@@ -100,26 +106,52 @@ func TestRemove_LeavesPortsItNeverUsed(t *testing.T) {
 	assertExists(t, foreign, "unrelated empty port")
 }
 
-// TestRemove_PrunesOwnPortPreparedButNeverLinked verifies a port created by
-// Prepare is not leaked when the export is removed before Link.
-func TestRemove_PrunesOwnPortPreparedButNeverLinked(t *testing.T) {
+// TestPrepare_CreatesNoPort verifies a port exists only while a subsystem is
+// linked to it: Prepare creates none, so an export removed before Link (for
+// example because the fence recheck refused the link) leaks no port.
+func TestPrepare_CreatesNoPort(t *testing.T) {
 	t.Parallel()
 	tgt := orderingTarget(t.TempDir(), "unlinked")
 	if _, err := tgt.Prepare(); err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
-	assertExists(t, ownPortDir(tgt), "prepared port")
+	assertGone(t, ownPortDir(tgt), "port of a prepared, unlinked export")
 
-	if err := tgt.Remove(); err != nil {
+	if err := unexportTarget(tgt).Remove(); err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
-	assertGone(t, ownPortDir(tgt), "port of a removed, never linked export")
+	assertGone(t, filepath.Join(tgt.ConfigfsRoot, "nvmet", "ports"), "ports")
+}
+
+// TestLink_FailurePrunesPortItCreated verifies Link leaves no port behind
+// when creating or linking it fails.
+func TestLink_FailurePrunesPortItCreated(t *testing.T) {
+	t.Parallel()
+	tgt := orderingTarget(t.TempDir(), "link-fails")
+	prepared, err := tgt.Prepare()
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	// An unreadable transport attribute makes Link fail after it created
+	// the port directory.
+	pDir := ownPortDir(tgt)
+	if err := os.MkdirAll(filepath.Join(pDir, "addr_trtype"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := prepared.Link(); err == nil {
+		t.Fatal("Link succeeded with an unreadable port attribute")
+	}
+	if portLinked(tgt) {
+		t.Fatal("failed Link left the subsystem linked")
+	}
+	assertGone(t, pDir, "port of a failed Link")
 }
 
 // TestLink_RecreatesPortPrunedAfterPrepare verifies the ordering contract
 // survives pruning: when the last linked subsystem is removed between another
 // export's Prepare and Link, the port stops existing (and listening) until
-// Link re-creates it with its attributes and links the prepared subsystem.
+// Link creates it again with its attributes and links the prepared subsystem.
 func TestLink_RecreatesPortPrunedAfterPrepare(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
@@ -133,7 +165,7 @@ func TestLink_RecreatesPortPrunedAfterPrepare(t *testing.T) {
 		t.Fatalf("Prepare b: %v", err)
 	}
 
-	if err := a.Remove(); err != nil {
+	if err := unexportTarget(a).Remove(); err != nil {
 		t.Fatalf("Remove a: %v", err)
 	}
 	pDir := ownPortDir(b)
@@ -211,7 +243,7 @@ func TestRemove_RevokesHostsGrantedOutsideAllowedHosts(t *testing.T) {
 		t.Fatalf("AllowHost: %v", err)
 	}
 
-	if err := tgt.Remove(); err != nil {
+	if err := unexportTarget(tgt).Remove(); err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
 	assertGone(t, tgt.subsystemDir(), "subsystem")
@@ -252,4 +284,68 @@ func TestHostEntry_AllowRacingDenyKeepsGrant(t *testing.T) {
 		}
 		assertGone(t, b.hostDir(orderingHost), "host no subsystem allows")
 	}
+}
+
+// TestRemove_PortPruneFailureKeepsLinkForRetry verifies unlinking and
+// pruning a port is one step: when the port cannot be removed, Remove fails
+// with the subsystem still linked, and a retry prunes the port.
+func TestRemove_PortPruneFailureKeepsLinkForRetry(t *testing.T) {
+	t.Parallel()
+	tgt := orderingTarget(t.TempDir(), "port-retry")
+	if err := tgt.Apply(); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	pDir := ownPortDir(tgt)
+	blocker := filepath.Join(pDir, "blocker")
+	mustWrite(t, blocker, "")
+
+	if err := unexportTarget(tgt).Remove(); err == nil {
+		t.Fatal("Remove succeeded although the port could not be removed")
+	}
+	if !portLinked(tgt) {
+		t.Fatal("failed port pruning dropped the subsystem link")
+	}
+	assertExists(t, tgt.namespaceDir(), "namespace of a failed Remove")
+
+	if err := os.Remove(blocker); err != nil {
+		t.Fatal(err)
+	}
+	if err := unexportTarget(tgt).Remove(); err != nil {
+		t.Fatalf("retried Remove: %v", err)
+	}
+	assertGone(t, pDir, "port after retried Remove")
+	assertGone(t, tgt.subsystemDir(), "subsystem after retried Remove")
+}
+
+// TestRemove_HostPruneFailureKeepsLinkForRetry verifies unlinking and
+// pruning a host entry is one step: when the entry cannot be removed, the
+// allowed_hosts link stays, so a retried Remove, which finds hosts by their
+// links, still prunes a host granted outside AllowedHosts.
+func TestRemove_HostPruneFailureKeepsLinkForRetry(t *testing.T) {
+	t.Parallel()
+	tgt := orderingTarget(t.TempDir(), "host-retry")
+	tgt.AllowedHosts = nil
+	if err := tgt.Apply(); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if err := tgt.AllowHost(orderingHost); err != nil {
+		t.Fatalf("AllowHost: %v", err)
+	}
+	hDir := tgt.hostDir(orderingHost)
+	blocker := filepath.Join(hDir, "blocker")
+	mustWrite(t, blocker, "")
+
+	if err := unexportTarget(tgt).Remove(); err == nil {
+		t.Fatal("Remove succeeded although the host entry could not be removed")
+	}
+	assertExists(t, tgt.allowedHostLink(orderingHost), "allowed_hosts link of a failed prune")
+
+	if err := os.Remove(blocker); err != nil {
+		t.Fatal(err)
+	}
+	if err := unexportTarget(tgt).Remove(); err != nil {
+		t.Fatalf("retried Remove: %v", err)
+	}
+	assertGone(t, hDir, "host after retried Remove")
+	assertGone(t, tgt.subsystemDir(), "subsystem after retried Remove")
 }
