@@ -71,12 +71,14 @@ func init() {
 // PillarAgentReconciler so that it can perform live HealthCheck calls against
 // pillar-agent instances and reflect the results in AgentConnected conditions.
 // AgentExports restores an agent's exports when it reports its export restore
-// pending; exports resyncs single volumes.
+// pending; exports resyncs single volumes; reaper ends the lifecycle of
+// volumes whose provisioning was abandoned.
 func setupControllers(
 	mgr ctrl.Manager,
 	agentDialer agentclient.Dialer,
 	agentExports controller.AgentExportRestorer,
 	exports controller.VolumeExportReconciler,
+	reaper controller.VolumeReaper,
 ) error {
 	err := (&controller.PillarAgentReconciler{
 		Client:  mgr.GetClient(),
@@ -113,6 +115,7 @@ func setupControllers(
 	err = (&controller.PillarVolumeStateReconciler{
 		Client:  mgr.GetClient(),
 		Exports: exports,
+		Reaper:  reaper,
 	}).SetupWithManager(mgr)
 	if err != nil {
 		return fmt.Errorf("PillarVolumeState controller: %w", err)
@@ -517,7 +520,7 @@ func runManager(mgr ctrl.Manager, agentDialer agentclient.Dialer, csiEndpoint st
 	// agent and the PillarVolumeState reconciler its per-volume export resync.
 	ctrlSrv := csi.NewControllerServer(mgr.GetClient(), mgr.GetAPIReader(), driverName)
 
-	err := setupControllers(mgr, agentDialer, ctrlSrv, ctrlSrv)
+	err := setupControllers(mgr, agentDialer, ctrlSrv, ctrlSrv, ctrlSrv)
 	if err != nil {
 		return fmt.Errorf("unable to create controllers: %w", err)
 	}
