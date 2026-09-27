@@ -1356,6 +1356,14 @@ func TestCapacityFailuresAreClassified(t *testing.T) {
 				"  Cannot create new thin volume, free space in thin pool data-vg/thin-pool-0 reached threshold.",
 			op: create,
 		},
+		"thin create, status query fails": {
+			// lvm2 appends the generic threshold error after the dm-status
+			// failure; a status error is not a capacity condition.
+			thinpool: "thin-pool-0",
+			lvmOut: "  Expected thin-pool segment type but got error instead.\n" +
+				"  Cannot create new thin volume, free space in thin pool data-vg/thin-pool-0 reached threshold.",
+			op: create,
+		},
 		"expand, VG full": {
 			lvmOut:       "  Insufficient free extents: 256 extents needed, but only 10 available",
 			op:           expand,

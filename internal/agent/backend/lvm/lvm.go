@@ -389,8 +389,14 @@ var insufficientSpaceMarkers = []string{
 	"insufficient suitable contiguous allocatable extents",
 	"is out of data space",
 	"remaining free space in metadata of thin pool",
-	"cannot create new thin volume, free space in thin pool",
 }
+
+// thinPoolThresholdMarker is lvm2's generic "Cannot create new thin volume,
+// free space in thin pool vg/tp reached threshold" error.  It is only a
+// capacity diagnostic when nothing else accompanied it: a crossed configured
+// autoextend threshold is logged at debug level, while every non-capacity
+// reason lvm2 can cite prints its own error or warning first.
+const thinPoolThresholdMarker = "cannot create new thin volume, free space in thin pool"
 
 // thinPoolFaultMarkers are the conditions lvm2's thin_pool_below_threshold
 // warns about ("WARNING: Thin pool vg/tp is failed.") before the same
@@ -404,21 +410,47 @@ var thinPoolFaultMarkers = []string{
 	" has unexpected transaction id",
 }
 
+// lineFaultMarkers are other lvm2 diagnostics that precede the generic
+// threshold error without citing the pool as failed, such as the
+// "Expected thin-pool segment type but got error instead." dm-status failure.
+var lineFaultMarkers = []string{
+	"error",
+	"fail",
+	"warn",
+	"expected",
+	"couldn't",
+}
+
 // isInsufficientSpaceOutput reports whether lvcreate/lvextend output says the
 // VG or thin pool cannot hold the requested size.
 func isInsufficientSpaceOutput(out []byte) bool {
 	s := strings.ToLower(string(out))
+	sawThreshold := false
+	sawOtherDiagnostic := false
 	for line := range strings.SplitSeq(s, "\n") {
-		if !strings.Contains(line, "thin pool") {
+		line = strings.TrimSpace(line)
+		if line == "" {
 			continue
 		}
-		for _, fault := range thinPoolFaultMarkers {
-			if strings.Contains(line, fault) {
-				return false
-			}
+		if strings.Contains(line, thinPoolThresholdMarker) {
+			sawThreshold = true
+			continue
 		}
+		if containsAny(line, thinPoolFaultMarkers) &&
+			(strings.Contains(line, "thin pool") || strings.Contains(line, "thin-pool")) {
+			return false
+		}
+		sawOtherDiagnostic = sawOtherDiagnostic || containsAny(line, lineFaultMarkers)
 	}
-	for _, marker := range insufficientSpaceMarkers {
+	if containsAny(s, insufficientSpaceMarkers) {
+		return true
+	}
+	return sawThreshold && !sawOtherDiagnostic
+}
+
+// containsAny reports whether s holds any of the markers.
+func containsAny(s string, markers []string) bool {
+	for _, marker := range markers {
 		if strings.Contains(s, marker) {
 			return true
 		}
