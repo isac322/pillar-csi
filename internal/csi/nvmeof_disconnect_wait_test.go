@@ -45,37 +45,37 @@ func subsysCtrlPath(sysfsRoot, ctrlName string) string {
 }
 
 // removeAfter removes path after delay, like a kernel teardown finishing in
-// the background.  The returned channel is closed once path is gone.
-func removeAfter(t *testing.T, path string, delay time.Duration) <-chan struct{} {
+// the background.  Cleanup waits for a callback that already started.
+func removeAfter(t *testing.T, path string, delay time.Duration) {
 	t.Helper()
-	removed := make(chan struct{})
+	done := make(chan struct{})
 	timer := time.AfterFunc(delay, func() {
+		defer close(done)
 		if err := os.RemoveAll(path); err != nil {
 			t.Errorf("remove %s: %v", path, err)
 		}
-		close(removed)
 	})
-	t.Cleanup(func() { timer.Stop() })
-	return removed
+	t.Cleanup(func() {
+		if !timer.Stop() {
+			<-done
+		}
+	})
 }
 
-// requireClosed fails the test unless ch is already closed.
-func requireClosed(t *testing.T, ch <-chan struct{}, msg string) {
+// requireGone fails the test unless path no longer resolves: a call that
+// waits for the controller must not return while it is still present.
+func requireGone(t *testing.T, path, msg string) {
 	t.Helper()
-	select {
-	case <-ch:
-	default:
-		t.Fatal(msg)
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("%s: %s still present (stat err=%v)", msg, path, err)
 	}
 }
 
 // simulateKernelDelete mimics the kernel teardown: once "1" has been written
-// to deleteCtrlPath it waits delay, then removes subsysEntry.  The returned
-// channel is closed after the removal.  The goroutine stops at test cleanup
-// if no delete request ever arrives.
-func simulateKernelDelete(t *testing.T, deleteCtrlPath, subsysEntry string, delay time.Duration) <-chan struct{} {
+// to deleteCtrlPath it waits delay, then removes subsysEntry.  The goroutine
+// stops at test cleanup if no delete request ever arrives.
+func simulateKernelDelete(t *testing.T, deleteCtrlPath, subsysEntry string, delay time.Duration) {
 	t.Helper()
-	removed := make(chan struct{})
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
 	wg.Go(func() {
@@ -97,13 +97,11 @@ func simulateKernelDelete(t *testing.T, deleteCtrlPath, subsysEntry string, dela
 		if err := os.RemoveAll(subsysEntry); err != nil {
 			t.Errorf("simulate kernel delete: remove %s: %v", subsysEntry, err)
 		}
-		close(removed)
 	})
 	t.Cleanup(func() {
 		close(stop)
 		wg.Wait()
 	})
-	return removed
 }
 
 // Disconnect must not return while the subsystem still links the controller:
@@ -111,7 +109,7 @@ func simulateKernelDelete(t *testing.T, deleteCtrlPath, subsysEntry string, dela
 func TestDisconnect_WaitsForControllerRemoval(t *testing.T) {
 	root, deleteCtrlPath := fakeSysfsWithController(t, waitTestNQN, "nvme0")
 	entry := subsysCtrlPath(root, "nvme0")
-	removed := simulateKernelDelete(t, deleteCtrlPath, entry, 200*time.Millisecond)
+	simulateKernelDelete(t, deleteCtrlPath, entry, 200*time.Millisecond)
 
 	c := newConnector(root, "")
 	c.removalWait = fastRemovalWait
@@ -119,10 +117,7 @@ func TestDisconnect_WaitsForControllerRemoval(t *testing.T) {
 		t.Fatalf("Disconnect: %v", err)
 	}
 
-	requireClosed(t, removed, "Disconnect returned before the controller left the subsystem")
-	if _, err := os.Stat(entry); !os.IsNotExist(err) {
-		t.Fatalf("controller entry %s still present after Disconnect (stat err=%v)", entry, err)
-	}
+	requireGone(t, entry, "Disconnect returned before the controller left the subsystem")
 }
 
 // A controller that never leaves sysfs is a failed teardown: Disconnect
@@ -179,14 +174,15 @@ func TestDisconnect_DeleteAttributeGone_WaitsForInFlightTeardown(t *testing.T) {
 	if err := os.RemoveAll(filepath.Dir(deleteCtrlPath)); err != nil {
 		t.Fatal(err)
 	}
-	removed := removeAfter(t, subsysCtrlPath(root, "nvme0"), 150*time.Millisecond)
+	entry := subsysCtrlPath(root, "nvme0")
+	removeAfter(t, entry, 150*time.Millisecond)
 
 	c := newConnector(root, "")
 	c.removalWait = fastRemovalWait
 	if err := c.Disconnect(context.Background(), waitTestNQN); err != nil {
 		t.Fatalf("Disconnect: %v", err)
 	}
-	requireClosed(t, removed, "Disconnect returned while the teardown was still in flight")
+	requireGone(t, entry, "Disconnect returned while the teardown was still in flight")
 }
 
 // Another volume's subsystem destroyed during the scan (its subsysnqn now
@@ -258,7 +254,8 @@ func TestConnect_WaitsForDyingController(t *testing.T) {
 		t.Run(state, func(t *testing.T) {
 			root := fakeSysfs(t, waitTestNQN, false)
 			addSubsysController(t, root, "nvme0", state)
-			removed := removeAfter(t, subsysCtrlPath(root, "nvme0"), 150*time.Millisecond)
+			entry := subsysCtrlPath(root, "nvme0")
+			removeAfter(t, entry, 150*time.Millisecond)
 			fabricsDev := fakeFabricsDev(t)
 
 			c := newConnector(root, fabricsDev)
@@ -267,7 +264,7 @@ func TestConnect_WaitsForDyingController(t *testing.T) {
 				NVMeoFConnectOptions{}); err != nil {
 				t.Fatalf("Connect: %v", err)
 			}
-			requireClosed(t, removed, "connect issued while the dying controller was still present")
+			requireGone(t, entry, "connect issued while the dying controller was still present")
 			content, err := os.ReadFile(fabricsDev) //nolint:gosec
 			if err != nil {
 				t.Fatal(err)

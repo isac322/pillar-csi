@@ -163,23 +163,25 @@ func TestFabricsConnectorNvmeConnect_WaitsForDyingController(t *testing.T) {
 		c, fabricsDev := newTestFabricsConnector(t, nqn, map[string]string{"nvme0": "dead"})
 		c.removalWait = wait
 		ctrl := filepath.Join(c.sysfsRoot, "class", "nvme-subsystem", "nvme-subsys0", "nvme0")
-		removed := make(chan struct{})
+		done := make(chan struct{})
 		timer := time.AfterFunc(150*time.Millisecond, func() {
+			defer close(done)
 			if err := os.RemoveAll(ctrl); err != nil {
 				t.Errorf("remove %s: %v", ctrl, err)
 			}
-			close(removed)
 		})
-		t.Cleanup(func() { timer.Stop() })
+		t.Cleanup(func() {
+			if !timer.Stop() {
+				<-done
+			}
+		})
 
 		err := c.nvmeConnect(context.Background(), nqn, "10.0.0.7", "4420", csisvc.NVMeoFConnectOptions{})
 		if err != nil {
 			t.Fatalf("nvmeConnect: %v", err)
 		}
-		select {
-		case <-removed:
-		default:
-			t.Fatal("connect issued while the dying controller was still present")
+		if _, statErr := os.Stat(ctrl); !os.IsNotExist(statErr) {
+			t.Fatalf("connect issued while the dying controller was still present (stat err=%v)", statErr)
 		}
 		content, err := os.ReadFile(fabricsDev) //nolint:gosec
 		if err != nil {

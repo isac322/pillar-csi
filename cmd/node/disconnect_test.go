@@ -59,7 +59,6 @@ func TestFabricsConnectorDetach_WaitsForControllerRemoval(t *testing.T) {
 	root, subsysCtrl := detachSysfs(t)
 	deletePath := filepath.Join(root, "class", "nvme", "nvme3", "delete_controller")
 
-	removed := make(chan struct{})
 	stop := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
@@ -78,7 +77,6 @@ func TestFabricsConnectorDetach_WaitsForControllerRemoval(t *testing.T) {
 		if err := os.RemoveAll(subsysCtrl); err != nil {
 			t.Errorf("remove %s: %v", subsysCtrl, err)
 		}
-		close(removed)
 	}()
 	t.Cleanup(func() {
 		close(stop)
@@ -92,10 +90,8 @@ func TestFabricsConnectorDetach_WaitsForControllerRemoval(t *testing.T) {
 	if err := c.Detach(context.Background(), &csisvc.NVMeoFProtocolState{SubsysNQN: detachTestNQN}); err != nil {
 		t.Fatalf("Detach: %v", err)
 	}
-	select {
-	case <-removed:
-	default:
-		t.Fatal("Detach returned before the controller left the subsystem")
+	if _, err := os.Stat(subsysCtrl); !os.IsNotExist(err) {
+		t.Fatalf("Detach returned before the controller left the subsystem (stat err=%v)", err)
 	}
 }
 
