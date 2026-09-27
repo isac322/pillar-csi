@@ -267,8 +267,8 @@ func assertE29_LVM_ModeOverride_PVCAnnotationOverridesBinding(tc documentedCase)
 
 	params := lvmControllerParams(env.target.Name)
 	params["pillar-csi.bhyoo.com/storage-class"] = bindingName
-	params["csi.storage.k8s.io/pvc-name"] = pvc.Name
-	params["csi.storage.k8s.io/pvc-namespace"] = pvc.Namespace
+	params["csi.storage.k8s.io/pvc/name"] = pvc.Name
+	params["csi.storage.k8s.io/pvc/namespace"] = pvc.Namespace
 
 	_, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
 		Name:               "pvc-e29-mode-annot",
@@ -327,8 +327,8 @@ func assertE29_LVM_ModeOverride_InvalidPVCAnnotation(tc documentedCase) {
 	pvc := makePVCWithBackendAnnotation(env, "pvc-e29-invalid-mode", "striped")
 
 	params := lvmControllerParams(env.target.Name)
-	params["csi.storage.k8s.io/pvc-name"] = pvc.Name
-	params["csi.storage.k8s.io/pvc-namespace"] = pvc.Namespace
+	params["csi.storage.k8s.io/pvc/name"] = pvc.Name
+	params["csi.storage.k8s.io/pvc/namespace"] = pvc.Namespace
 
 	_, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
 		Name:               "pvc-e29-invalid-mode",
@@ -348,7 +348,7 @@ func assertE29_LVM_ModeOverride_InvalidPVCAnnotation(tc documentedCase) {
 
 // TestCSIController_LVM_ModeOverride_EmptyPVCAnnotation_FallsThrough — when the PVC
 // annotation uses the flat-key style with an empty value for lvm-mode, the Binding-level
-// value "thin" is preserved (flat-key annotation uses "lvm-mode" not the full paramLVMMode key).
+// value "thin" is preserved (an empty flat-key value is not an override).
 func assertE29_LVM_ModeOverride_EmptyPVCAnnotation_FallsThrough(tc documentedCase) {
 	env := newControllerTestEnv()
 	defer env.close()
@@ -356,9 +356,8 @@ func assertE29_LVM_ModeOverride_EmptyPVCAnnotation_FallsThrough(tc documentedCas
 	// Binding override: thin (this should be the effective mode).
 	bindingName := makeLVMBinding(env, "fallthrough", "", pillarv1.LVMProvisioningModeThin)
 
-	// PVC with flat-key annotation lvm-mode="" — this does NOT override paramLVMMode
-	// because the flat key strips the "pillar-csi.bhyoo.com/param." prefix, yielding
-	// "lvm-mode" which is a different key from paramLVMMode="pillar-csi.bhyoo.com/lvm-mode".
+	// PVC with flat-key annotation lvm-mode="" — an empty value is not an
+	// override, so paramLVMMode keeps the Binding-level value.
 	pvc := &corev1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "pvc-e29-empty-annot",
@@ -373,8 +372,8 @@ func assertE29_LVM_ModeOverride_EmptyPVCAnnotation_FallsThrough(tc documentedCas
 
 	params := lvmControllerParams(env.target.Name)
 	params["pillar-csi.bhyoo.com/storage-class"] = bindingName
-	params["csi.storage.k8s.io/pvc-name"] = pvc.Name
-	params["csi.storage.k8s.io/pvc-namespace"] = pvc.Namespace
+	params["csi.storage.k8s.io/pvc/name"] = pvc.Name
+	params["csi.storage.k8s.io/pvc/namespace"] = pvc.Namespace
 
 	resp, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
 		Name:               "pvc-e29-empty-annot",
@@ -387,7 +386,7 @@ func assertE29_LVM_ModeOverride_EmptyPVCAnnotation_FallsThrough(tc documentedCas
 	reqs := agentCreateReqs(env)
 	Expect(reqs).To(HaveLen(1), "%s: one agent call", tc.tcNodeLabel())
 	Expect(reqs[0].GetBackendParams().GetLvm().GetProvisionMode()).To(Equal("thin"),
-		"%s: Binding 'thin' preserved because empty flat-key annotation does not override paramLVMMode",
+		"%s: Binding 'thin' preserved because an empty flat-key annotation is not an override",
 		tc.tcNodeLabel())
 	_ = resp
 }

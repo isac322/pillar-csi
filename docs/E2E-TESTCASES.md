@@ -750,9 +750,9 @@ CSI ControllerServer → (실제 gRPC, localhost:0) → mockAgentServer
 
 ### E1.10 PVC 어노테이션 오버라이드 (PVC Annotation Override)
 
-StorageClass 파라미터와 별도로, `external-provisioner`의 `--extra-create-metadata` 플래그가
-활성화된 경우 `csi.storage.k8s.io/pvc-name` / `pvc-namespace` 파라미터가 CreateVolume 요청에
-포함되어 PVC 어노테이션 오버라이드(Layer 4)가 적용된다.
+StorageClass 파라미터와 별도로, `external-provisioner`의 `--extra-create-metadata` 플래그(차트 기본값)가
+전달하는 `csi.storage.k8s.io/pvc/name` / `pvc/namespace` 파라미터로 CreateVolume이 PVC를 조회해
+PVC 어노테이션 오버라이드(Layer 4)를 적용한다.
 
 **지원하는 오버라이드 어노테이션:**
 - `pillar-csi.bhyoo.com/backend-override` — ZFS 프로퍼티 오버라이드 (YAML)
@@ -766,9 +766,9 @@ StorageClass 파라미터와 별도로, `external-provisioner`의 `--extra-creat
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| E1.10-1 | `TestCSIController_CreateVolume_PVCAnnotation_BackendOverride_Compression` | PVC 어노테이션의 ZFS compression 프로퍼티가 agent BackendParams에 반영 | fake 클라이언트에 PVC 등록 (annotation: `pillar-csi.bhyoo.com/backend-override`); StorageClass Parameters에 pvc-name/pvc-namespace 포함 | 1) CreateVolumeRequest 전송 | 성공; agent.CreateVolume의 BackendParams에 `pillar-csi.bhyoo.com/zfs-prop.compression=zstd` 포함 | `CSI-C`, `Agent`, `VolCRD`, `gRPC` |
+| E1.10-1 | `TestCSIController_CreateVolume_PVCAnnotation_BackendOverride_Compression` | PVC 어노테이션의 ZFS compression 프로퍼티가 agent BackendParams에 반영 | fake 클라이언트에 PVC 등록 (annotation: `pillar-csi.bhyoo.com/backend-override`); StorageClass Parameters에 pvc/name, pvc/namespace 포함 | 1) CreateVolumeRequest 전송 | 성공; agent.CreateVolume의 BackendParams에 `pillar-csi.bhyoo.com/zfs-prop.compression=zstd` 포함 | `CSI-C`, `Agent`, `VolCRD`, `gRPC` |
 | E1.10-2 | `TestCSIController_CreateVolume_PVCAnnotation_StructuralFieldBlocked` | 구조적 필드(`zfs.pool`)를 어노테이션으로 오버라이드하면 InvalidArgument 반환 | fake 클라이언트에 PVC 등록 (annotation에 zfs.pool 오버라이드 시도) | 1) CreateVolumeRequest 전송 | gRPC InvalidArgument; `pvcAnnotationValidationError` 발생; agent 호출 없음 | `CSI-C`, `VolCRD` |
-| E1.10-3 | `TestCSIController_CreateVolume_PVCAnnotation_PVCNotFound_GracefulFallback` | pvc-name에 해당하는 PVC가 없으면 어노테이션 오버라이드 없이 기본 파라미터로 진행 | fake 클라이언트에 PVC 미등록; StorageClass Parameters에 pvc-name/pvc-namespace 포함 | 1) CreateVolumeRequest 전송 | 성공 (PVC 어노테이션 미적용 상태로 기본 파라미터 사용); agent.CreateVolume 정상 호출 | `CSI-C`, `Agent`, `VolCRD`, `gRPC` |
+| E1.10-3 | `TestCSIController_CreateVolume_PVCAnnotation_PVCNotFound_FailedPrecondition` | pvc/name에 해당하는 PVC를 읽을 수 없으면 오버라이드를 버리지 않고 FailedPrecondition으로 실패 | fake 클라이언트에 PVC 미등록; StorageClass Parameters에 pvc/name, pvc/namespace 포함 | 1) CreateVolumeRequest 전송 | gRPC FailedPrecondition (provisioner가 재시도); agent.CreateVolume 호출 없음 | `CSI-C`, `Agent`, `VolCRD`, `gRPC` |
 | E1.10-4 | `TestCSIController_CreateVolume_PVCAnnotation_FlatKeyOverride` | 저수준 어노테이션(`pillar-csi.bhyoo.com/param.zfs-prop.volblocksize`)이 반영 | fake 클라이언트에 PVC 등록 (annotation: volblocksize=16K) | 1) CreateVolumeRequest 전송 | 성공; agent.CreateVolume의 BackendParams에 `pillar-csi.bhyoo.com/zfs-prop.volblocksize=16K` 포함 | `CSI-C`, `Agent`, `VolCRD`, `gRPC` |
 
 ---

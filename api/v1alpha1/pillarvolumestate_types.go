@@ -277,6 +277,24 @@ type PillarVolumeStateSpec struct {
 	// the default "pvc-<claim UID>" volume name.
 	// +optional
 	ClaimRef *VolumeClaimRef `json:"claimRef,omitempty"`
+
+	// nodeConnectParams are the effective node-connect overrides resolved by
+	// the parameter merge at the first CreateVolume attempt (PVC > Binding >
+	// Protocol > defaults).  They are replayed verbatim into the
+	// CreateVolumeResponse VolumeContext on retries of an already-Ready volume,
+	// so a retry stays byte-identical even when the claim or the CRDs behind
+	// the overrides no longer exist.  Volumes created before this field
+	// existed re-derive the values on retry.
+	// +optional
+	NodeConnectParams map[string]string `json:"nodeConnectParams,omitempty"`
+
+	// connectParamsRecorded marks that nodeConnectParams reflects the merge
+	// result of the first CreateVolume attempt — even when that result is
+	// empty.  It distinguishes a recorded all-default snapshot (authoritative:
+	// later-added overrides must not leak into retries) from a volume created
+	// before this field existed (no snapshot; retries re-derive values).
+	// +optional
+	ConnectParamsRecorded bool `json:"connectParamsRecorded,omitempty"`
 }
 
 // PillarVolumeStateStatus reflects the controller-observed state of a PillarVolumeState.

@@ -38,6 +38,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"maps"
 	"strings"
 	"sync"
 	"testing"
@@ -1448,8 +1449,9 @@ func TestGetCapacity_TargetNoAddress(t *testing.T) {
 // newControllerTestEnvWithPVC builds a ControllerServer test environment where
 // a PVC in the given namespace carries the supplied annotations.  The
 // StorageClass parameters in the returned request include the
-// csi.storage.k8s.io/pvc-name and csi.storage.k8s.io/pvc-namespace keys so
-// that CreateVolume can look up the PVC and apply annotation overrides.
+// csi.storage.k8s.io/pvc/name and csi.storage.k8s.io/pvc/namespace keys
+// (external-provisioner --extra-create-metadata) so that CreateVolume can
+// look up the PVC and apply annotation overrides.
 func newControllerTestEnvWithPVC(
 	t *testing.T,
 	pvcNamespace, pvcName string,
@@ -1496,11 +1498,11 @@ func newControllerTestEnvWithPVC(
 	}
 	srv := NewControllerServerWithDialer(fakeClient, "pillar-csi.bhyoo.com", dialer)
 
-	// Build a CreateVolumeRequest that includes the pvc-name / pvc-namespace
-	// metadata injected by external-provisioner --extra-create-metadata.
+	// Build a CreateVolumeRequest that includes the claim metadata injected
+	// by external-provisioner --extra-create-metadata.
 	req := baseCreateVolumeRequest()
-	req.Parameters["csi.storage.k8s.io/pvc-name"] = pvcName
-	req.Parameters["csi.storage.k8s.io/pvc-namespace"] = pvcNamespace
+	req.Parameters[paramPVCNameMeta] = pvcName
+	req.Parameters[paramPVCNamespaceMeta] = pvcNamespace
 
 	return &controllerTestEnv{srv: srv, agent: agent, scheme: scheme}, req
 }
@@ -1598,8 +1600,8 @@ func TestCreateVolume_PVCAnnotationOverride_FlatParam(t *testing.T) {
 	t.Parallel()
 
 	annotations := map[string]string{
-		// Flat override: sets zfs-prop.compression directly.
-		"pillar-csi.bhyoo.com/param." + paramZFSPropPrefix + "compression": "lz4",
+		// Flat override: sets pillar-csi.bhyoo.com/zfs-prop.compression.
+		"pillar-csi.bhyoo.com/param.zfs-prop.compression": "lz4",
 	}
 
 	env, req := newControllerTestEnvWithPVC(t, "default", "pvc-flat-test", annotations)
@@ -1654,7 +1656,7 @@ zfs:
 }
 
 // TestCreateVolume_PVCAnnotationOverride_NoPVCMetadata verifies that when the
-// pvc-name / pvc-namespace parameters are absent (StorageClass provisioned
+// pvc/name / pvc/namespace parameters are absent (StorageClass provisioned
 // without external-provisioner --extra-create-metadata) the call succeeds
 // without annotation overrides.
 func TestCreateVolume_PVCAnnotationOverride_NoPVCMetadata(t *testing.T) {
@@ -1663,7 +1665,7 @@ func TestCreateVolume_PVCAnnotationOverride_NoPVCMetadata(t *testing.T) {
 	ctx := context.Background()
 
 	req := baseCreateVolumeRequest()
-	// Deliberately omit pvc-name and pvc-namespace.
+	// Deliberately omit pvc/name and pvc/namespace.
 
 	resp, err := env.srv.CreateVolume(ctx, req)
 	if err != nil {
@@ -1675,6 +1677,307 @@ func TestCreateVolume_PVCAnnotationOverride_NoPVCMetadata(t *testing.T) {
 	// Agent must still have been called normally.
 	if env.agent.createVolumeCalls != 1 {
 		t.Errorf("agent.CreateVolume call count = %d, want 1", env.agent.createVolumeCalls)
+	}
+}
+
+// A claim that external-provisioner named but that cannot be read must fail
+// provisioning (retryable) instead of provisioning without its overrides.
+func TestCreateVolume_PVCLookupFailure_NotSilentlySkipped(t *testing.T) {
+	t.Parallel()
+	env, req := newControllerTestEnvWithPVC(t, "default", "pvc-unreadable", map[string]string{
+		AnnotationBackendOverride: "zfs:\n  properties:\n    compression: zstd\n",
+	})
+	funcs := fakeuid.Interceptor()
+	funcs.Get = func(ctx context.Context, c ctrlclient.WithWatch, key ctrlclient.ObjectKey,
+		obj ctrlclient.Object, opts ...ctrlclient.GetOption,
+	) error {
+		if _, ok := obj.(*corev1.PersistentVolumeClaim); ok {
+			return errors.New("apiserver unavailable")
+		}
+		return c.Get(ctx, key, obj, opts...)
+	}
+	env.srv.apiReader = fake.NewClientBuilder().WithScheme(env.scheme).WithInterceptorFuncs(funcs).Build()
+
+	_, err := env.srv.CreateVolume(context.Background(), req)
+	if status.Code(err) != codes.Internal || !strings.Contains(err.Error(), "default/pvc-unreadable") {
+		t.Fatalf("CreateVolume error = %v, want Internal naming the claim", err)
+	}
+	if env.agent.createVolumeCalls != 0 {
+		t.Errorf("agent.CreateVolume called without the claim's overrides")
+	}
+
+	req.Parameters[paramPVCNameMeta] = "pvc-deleted"
+	env.srv.apiReader = env.srv.k8sClient
+	_, err = env.srv.CreateVolume(context.Background(), req)
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("CreateVolume for a missing claim: error = %v, want FailedPrecondition", err)
+	}
+}
+
+// A StorageClass that names a PillarStorageClass (or whose binding names a
+// PillarStore) that no longer exists must not provision a volume without the
+// store and binding settings.
+func TestCreateVolume_MissingBindingOrStore_FailedPrecondition(t *testing.T) {
+	t.Parallel()
+	binding := &v1alpha1.PillarStorageClass{
+		ObjectMeta: metav1.ObjectMeta{Name: "orphan-binding"},
+		Spec:       v1alpha1.PillarStorageClassSpec{StoreRef: "deleted-store", ProtocolRef: "nvmeof-tcp"},
+	}
+	for name, bindingName := range map[string]string{"binding": "deleted-binding", "store": binding.Name} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			env := newControllerTestEnv(t)
+			if err := env.srv.k8sClient.Create(context.Background(), binding.DeepCopy()); err != nil {
+				t.Fatalf("create binding: %v", err)
+			}
+			req := baseCreateVolumeRequest()
+			req.Parameters[paramBinding] = bindingName
+			_, err := env.srv.CreateVolume(context.Background(), req)
+			if status.Code(err) != codes.FailedPrecondition {
+				t.Fatalf("CreateVolume error = %v, want FailedPrecondition", err)
+			}
+			if env.agent.createVolumeCalls != 0 {
+				t.Errorf("agent.CreateVolume called without the store and binding settings")
+			}
+		})
+	}
+}
+
+// Once a volume is durably Ready the retry must keep serving it even when the
+// after the response was lost); re-requiring the merge inputs would strand a
+// completed backend behind an error.  The retried response must also replay
+// the overrides the claim set: it may still become the PV's VolumeContext.
+func TestCreateVolume_CompletedRetry_ClaimDeleted(t *testing.T) {
+	t.Parallel()
+	env, req := newControllerTestEnvWithPVC(t, "default", "pvc-gone-after", map[string]string{
+		"pillar-csi.bhyoo.com/param.nvmeof-ctrl-loss-tmo": "900",
+	})
+	ctx := context.Background()
+
+	resp, err := env.srv.CreateVolume(ctx, req)
+	if err != nil {
+		t.Fatalf("first CreateVolume: %v", err)
+	}
+	if got := resp.GetVolume().GetVolumeContext()[paramNVMeOFCtrlLossTmo]; got != "900" {
+		t.Fatalf("first VolumeContext ctrl-loss-tmo = %q, want 900", got)
+	}
+
+	pvc := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "pvc-gone-after", Namespace: "default"},
+	}
+	if delErr := env.srv.k8sClient.Delete(ctx, pvc); delErr != nil {
+		t.Fatalf("delete claim: %v", delErr)
+	}
+
+	resp2, err := env.srv.CreateVolume(ctx, req)
+	if err != nil {
+		t.Fatalf("retry after claim deletion: %v", err)
+	}
+	if !maps.Equal(resp2.GetVolume().GetVolumeContext(), resp.GetVolume().GetVolumeContext()) {
+		t.Errorf("retry VolumeContext %v != first %v",
+			resp2.GetVolume().GetVolumeContext(), resp.GetVolume().GetVolumeContext())
+	}
+	if resp2.GetVolume().GetVolumeId() != resp.GetVolume().GetVolumeId() {
+		t.Errorf("retry VolumeId %q != first %q", resp2.GetVolume().GetVolumeId(), resp.GetVolume().GetVolumeId())
+	}
+	if env.agent.createVolumeCalls != 1 || env.agent.exportVolumeCalls != 1 {
+		t.Errorf("retry re-provisioned: create=%d export=%d, want 1/1",
+			env.agent.createVolumeCalls, env.agent.exportVolumeCalls)
+	}
+}
+
+// Same guarantee when the referenced PillarStorageClass (binding) — and thus
+// its store — is deleted after the volume was created.
+func TestCreateVolume_CompletedRetry_BindingDeleted(t *testing.T) {
+	t.Parallel()
+	env := newControllerTestEnv(t)
+	ctx := context.Background()
+
+	pool := &v1alpha1.PillarStore{
+		ObjectMeta: metav1.ObjectMeta{Name: "gone-pool"},
+		Spec: v1alpha1.PillarStoreSpec{
+			AgentRef: "storage-node-1",
+			Backend: v1alpha1.BackendSpec{
+				Type: v1alpha1.BackendTypeZFSZvol,
+				ZFS: &v1alpha1.ZFSBackendConfig{
+					Pool:       "tank",
+					Properties: map[string]string{"compression": "lz4"},
+				},
+			},
+		},
+	}
+	binding := &v1alpha1.PillarStorageClass{
+		ObjectMeta: metav1.ObjectMeta{Name: "gone-binding"},
+		Spec:       v1alpha1.PillarStorageClassSpec{StoreRef: pool.Name, ProtocolRef: "nvmeof-tcp"},
+	}
+	for _, obj := range []ctrlclient.Object{pool, binding} {
+		if err := env.srv.k8sClient.Create(ctx, obj); err != nil {
+			t.Fatalf("create %s: %v", obj.GetName(), err)
+		}
+	}
+
+	req := baseCreateVolumeRequest()
+	req.Parameters[paramBinding] = binding.Name
+	resp, err := env.srv.CreateVolume(ctx, req)
+	if err != nil {
+		t.Fatalf("first CreateVolume: %v", err)
+	}
+
+	if delErr := env.srv.k8sClient.Delete(ctx, binding); delErr != nil {
+		t.Fatalf("delete binding: %v", delErr)
+	}
+	if delErr := env.srv.k8sClient.Delete(ctx, pool); delErr != nil {
+		t.Fatalf("delete store: %v", delErr)
+	}
+
+	resp2, err := env.srv.CreateVolume(ctx, req)
+	if err != nil {
+		t.Fatalf("retry after binding deletion: %v", err)
+	}
+	if !maps.Equal(resp2.GetVolume().GetVolumeContext(), resp.GetVolume().GetVolumeContext()) {
+		t.Errorf("retry VolumeContext %v != first %v",
+			resp2.GetVolume().GetVolumeContext(), resp.GetVolume().GetVolumeContext())
+	}
+
+	if resp2.GetVolume().GetVolumeId() != resp.GetVolume().GetVolumeId() {
+		t.Errorf("retry VolumeId %q != first %q", resp2.GetVolume().GetVolumeId(), resp.GetVolume().GetVolumeId())
+	}
+	if env.agent.createVolumeCalls != 1 || env.agent.exportVolumeCalls != 1 {
+		t.Errorf("retry re-provisioned: create=%d export=%d, want 1/1",
+			env.agent.createVolumeCalls, env.agent.exportVolumeCalls)
+	}
+}
+
+// A CreatePartial retry reports the connect parameters frozen at the first
+// attempt, and the completed retry that follows reports the same — the
+// VolumeContext never changes between responses for one volume even when the
+// claim's annotation changed or the claim is gone.
+func TestCreateVolume_PartialThenCompletedRetry_StableVolumeContext(t *testing.T) {
+	t.Parallel()
+	env, req := newControllerTestEnvWithPVC(t, "default", "pvc-tuned-900", map[string]string{
+		"pillar-csi.bhyoo.com/param.nvmeof-ctrl-loss-tmo": "900",
+	})
+	ctx := context.Background()
+
+	// First attempt: backend is created, export fails → CreatePartial.
+	env.agent.exportVolumeErr = status.Error(codes.Internal, "simulated export failure")
+	if _, err := env.srv.CreateVolume(ctx, req); err == nil {
+		t.Fatal("first CreateVolume: expected export failure")
+	}
+
+	// The claim's annotation changes while the volume is unfinished; the
+	// retry must still report the value the volume was created with.
+	pvc := &corev1.PersistentVolumeClaim{}
+	if err := env.srv.k8sClient.Get(ctx,
+		types.NamespacedName{Name: "pvc-tuned-900", Namespace: "default"}, pvc); err != nil {
+		t.Fatalf("get claim: %v", err)
+	}
+	pvc.Annotations["pillar-csi.bhyoo.com/param.nvmeof-ctrl-loss-tmo"] = "600"
+	if err := env.srv.k8sClient.Update(ctx, pvc); err != nil {
+		t.Fatalf("update claim: %v", err)
+	}
+
+	env.agent.exportVolumeErr = nil
+	resp, err := env.srv.CreateVolume(ctx, req)
+	if err != nil {
+		t.Fatalf("partial retry: %v", err)
+	}
+	if got := resp.GetVolume().GetVolumeContext()[paramNVMeOFCtrlLossTmo]; got != "900" {
+		t.Fatalf("partial-retry ctrl-loss-tmo = %q, want the first-attempt value 900", got)
+	}
+
+	// The claim is deleted; the completed retry must report identically.
+	if delErr := env.srv.k8sClient.Delete(ctx, pvc); delErr != nil {
+		t.Fatalf("delete claim: %v", delErr)
+	}
+	resp2, err := env.srv.CreateVolume(ctx, req)
+	if err != nil {
+		t.Fatalf("completed retry: %v", err)
+	}
+	if !maps.Equal(resp2.GetVolume().GetVolumeContext(), resp.GetVolume().GetVolumeContext()) {
+		t.Errorf("completed-retry VolumeContext %v != partial-retry %v",
+			resp2.GetVolume().GetVolumeContext(), resp.GetVolume().GetVolumeContext())
+	}
+	if env.agent.createVolumeCalls != 1 || env.agent.exportVolumeCalls != 2 {
+		t.Errorf("agent calls = create %d / export %d, want 1/2",
+			env.agent.createVolumeCalls, env.agent.exportVolumeCalls)
+	}
+}
+
+// An all-default first-attempt merge is still a recorded snapshot: a connect
+// override added to the claim before a partial retry must NOT leak into the
+// response.
+func TestCreateVolume_PartialRetry_EmptySnapshotBlocksLaterOverride(t *testing.T) {
+	t.Parallel()
+	env, req := newControllerTestEnvWithPVC(t, "default", "pvc-defaults", nil)
+	ctx := context.Background()
+
+	env.agent.exportVolumeErr = status.Error(codes.Internal, "simulated export failure")
+	if _, err := env.srv.CreateVolume(ctx, req); err == nil {
+		t.Fatal("first CreateVolume: expected export failure")
+	}
+
+	pvc := &corev1.PersistentVolumeClaim{}
+	if err := env.srv.k8sClient.Get(ctx,
+		types.NamespacedName{Name: "pvc-defaults", Namespace: "default"}, pvc); err != nil {
+		t.Fatalf("get claim: %v", err)
+	}
+	pvc.Annotations = map[string]string{
+		"pillar-csi.bhyoo.com/param.nvmeof-ctrl-loss-tmo": "600",
+	}
+	if err := env.srv.k8sClient.Update(ctx, pvc); err != nil {
+		t.Fatalf("update claim: %v", err)
+	}
+
+	env.agent.exportVolumeErr = nil
+	resp, err := env.srv.CreateVolume(ctx, req)
+	if err != nil {
+		t.Fatalf("partial retry: %v", err)
+	}
+	if got := resp.GetVolume().GetVolumeContext()[paramNVMeOFCtrlLossTmo]; got != "" {
+		t.Errorf("partial-retry ctrl-loss-tmo = %q, want absent (snapshot had no overrides)", got)
+	}
+}
+
+// A connect key the create-time merge intentionally left absent (overridden
+// to the empty string) must not be resurrected by the StorageClass value on a
+// completed-volume retry.
+func TestCreateVolume_CompletedRetry_AbsentSnapshotKeyStaysAbsent(t *testing.T) {
+	t.Parallel()
+	env, req := newControllerTestEnvWithPVC(t, "default", "pvc-blank-delay", map[string]string{
+		AnnotationProtocolOverride: "nvmeofTcp:\n  ctrlLossTmo: 900\n  reconnectDelay: \"\"\n",
+	})
+	req.Parameters[paramNVMeOFReconnectDelay] = "5"
+	ctx := context.Background()
+
+	resp, err := env.srv.CreateVolume(ctx, req)
+	if err != nil {
+		t.Fatalf("first CreateVolume: %v", err)
+	}
+	if got := resp.GetVolume().GetVolumeContext()[paramNVMeOFCtrlLossTmo]; got != "900" {
+		t.Fatalf("first ctrl-loss-tmo = %q, want 900", got)
+	}
+	if got := resp.GetVolume().GetVolumeContext()[paramNVMeOFReconnectDelay]; got != "" {
+		t.Fatalf("first reconnect-delay = %q, want absent (overridden to empty)", got)
+	}
+
+	pvc := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "pvc-blank-delay", Namespace: "default"},
+	}
+	if delErr := env.srv.k8sClient.Delete(ctx, pvc); delErr != nil {
+		t.Fatalf("delete claim: %v", delErr)
+	}
+
+	resp2, err := env.srv.CreateVolume(ctx, req)
+	if err != nil {
+		t.Fatalf("retry after claim deletion: %v", err)
+	}
+	if !maps.Equal(resp2.GetVolume().GetVolumeContext(), resp.GetVolume().GetVolumeContext()) {
+		t.Errorf("retry VolumeContext %v != first %v",
+			resp2.GetVolume().GetVolumeContext(), resp.GetVolume().GetVolumeContext())
+	}
+	if got := resp2.GetVolume().GetVolumeContext()[paramNVMeOFReconnectDelay]; got != "" {
+		t.Errorf("retry reconnect-delay = %q, want absent: snapshot must win over StorageClass", got)
 	}
 }
 

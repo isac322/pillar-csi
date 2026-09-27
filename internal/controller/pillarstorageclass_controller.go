@@ -463,6 +463,10 @@ func buildStorageClassParams(
 	protocol *pillarcsiv1alpha1.PillarProtocol,
 ) map[string]string {
 	params := map[string]string{
+		// The CSI controller reads the store and binding overrides of this
+		// PillarStorageClass at CreateVolume; CreateVolume receives only the
+		// StorageClass parameters, not the StorageClass name.
+		"pillar-csi.bhyoo.com/storage-class": binding.Name,
 		"pillar-csi.bhyoo.com/store":         binding.Spec.StoreRef,
 		"pillar-csi.bhyoo.com/protocol":      binding.Spec.ProtocolRef,
 		"pillar-csi.bhyoo.com/backend-type":  string(pool.Spec.Backend.Type),

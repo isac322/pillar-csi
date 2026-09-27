@@ -287,8 +287,8 @@
       "category": "E1: 볼륨 라이프사이클 — CreateVolume / DeleteVolume",
       "type": "A",
       "in_437_scope": true,
-      "test_func": "TestCSIController_CreateVolume_PVCAnnotation_PVCNotFound_GracefulFallback",
-      "description": "pvc-name에 해당하는 PVC가 없으면 어노테이션 오버라이드 없이 기본 파라미터로 진행"
+      "test_func": "TestCSIController_CreateVolume_PVCAnnotation_PVCNotFound_FailedPrecondition",
+      "description": "pvc/name에 해당하는 PVC를 읽을 수 없으면 오버라이드를 버리지 않고 FailedPrecondition으로 실패"
     },
     {
       "tc_id": "E1.10-4",
