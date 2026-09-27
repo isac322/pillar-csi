@@ -240,6 +240,26 @@ assert_pod_ports_unambiguous "${AGENT_DS_DEFAULT}" \
   "default agent Pod ports must be unique and probe-resolvable"
 
 # ──────────────────────────────────────────────────────────────────────────
+# Mode 1b: controller.replicaCount=2 (issue #96 — standby replicas)
+# ──────────────────────────────────────────────────────────────────────────
+# The standby-safety contract: every replica's pod-local CSI socket serves all
+# four CSI sidecars, so scaling out must preserve the socket wiring, the
+# sidecars' leader-election flags, and the liveness probe path verbatim.
+HA_DEP="$(extract_doc "$(render --set controller.replicaCount=2)" "controller-deployment.yaml")"
+assert_contains "${HA_DEP}" "replicas: 2" \
+  "replicaCount=2 must reach the controller Deployment spec"
+assert_contains "${HA_DEP}" "- --leader-elect" \
+  "replicaCount=2: controller must still run with --leader-elect"
+assert_min_count "${HA_DEP}" "--csi-address=/csi/csi.sock" 4 \
+  "replicaCount=2: all 4 CSI sidecars must dial the pod-local socket"
+assert_min_count "${HA_DEP}" "--leader-election$" 3 \
+  "replicaCount=2: provisioner, attacher and resizer must keep leader election"
+assert_contains "${HA_DEP}" "port: csi-healthz" \
+  "replicaCount=2: controller liveness probe must keep targeting csi-healthz"
+assert_pod_ports_unambiguous "${HA_DEP}" \
+  "replicaCount=2 controller Pod ports must be unique and probe-resolvable"
+
+# ──────────────────────────────────────────────────────────────────────────
 # Mode 2: mtls.enabled (secret mode, operator-managed Secrets)
 # ──────────────────────────────────────────────────────────────────────────
 MTLS_OUT="$(render --set mtls.enabled=true)"

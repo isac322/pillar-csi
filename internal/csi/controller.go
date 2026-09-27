@@ -1052,17 +1052,22 @@ func (s *ControllerServer) finishDelete(
 // ─────────────────────────────────────────────────────────────────────────────.
 
 // loadPillarVolumeState returns the PillarVolumeState CRD for the given volume name,
-// along with a boolean indicating whether it was found.  A nil k8sClient or
+// along with a boolean indicating whether it was found.  A nil apiReader or
 // a NotFound error are treated as "not found" (non-error).
+//
+// The read is uncached (apiReader), matching readVolumeState: the CSI server
+// runs on every replica, so an existence or idempotency answer derived from a
+// lagging informer cache during a failover could resurface a volume the
+// leader's pod has already deleted.
 func (s *ControllerServer) loadPillarVolumeState(
 	ctx context.Context,
 	pvName string,
 ) (*v1alpha1.PillarVolumeState, bool, error) {
-	if s.k8sClient == nil {
+	if s.apiReader == nil {
 		return nil, false, nil
 	}
 	pv := &v1alpha1.PillarVolumeState{}
-	err := s.k8sClient.Get(ctx, types.NamespacedName{Name: pvName}, pv)
+	err := s.apiReader.Get(ctx, types.NamespacedName{Name: pvName}, pv)
 	if err != nil {
 		if k8serrors.IsNotFound(err) {
 			return nil, false, nil

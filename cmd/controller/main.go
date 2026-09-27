@@ -39,7 +39,6 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
-	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
@@ -161,27 +160,47 @@ func resolvedDefaultCSIEndpoint() string {
 	return runtimepaths.ResolveControllerCSIEndpoint(defaultCSIEndpoint)
 }
 
-func managerStartedReadyFn(started *atomic.Bool) func(context.Context) (bool, error) {
-	return func(_ context.Context) (bool, error) {
-		return started.Load(), nil
-	}
-}
-
-func managerStartedRunnable(started *atomic.Bool) manager.Runnable {
-	return manager.RunnableFunc(func(ctx context.Context) error {
-		started.Store(true)
-		<-ctx.Done()
-		return nil
-	})
-}
-
 // csiGRPCServer is a controller-runtime Runnable that starts the CSI gRPC
 // server on a Unix-domain socket.  Adding it to the manager ensures that it
-// shares the manager's signal handling and leader-election lifecycle.
+// shares the manager's signal handling — but NOT its leader-election
+// lifecycle: NeedLeaderElection reports false so the socket is bound on every
+// replica (issue #96).
+//
+// Serving on standby replicas is required, not optional: the CSI sidecars in
+// the same pod (csi-provisioner, csi-attacher, csi-resizer) dial the pod-local
+// socket before entering their own leader elections and exit when it never
+// appears, while the liveness-probe sidecar blocks on it without ever opening
+// its HTTP port, which fails the controller container's liveness probe.
+// It is safe because CSI writes are fenced across processes: every mutating
+// handler orders its durable record through a PillarVolumeState
+// resourceVersion compare-and-swap and its agent RPCs through the committed
+// status.publicationGeneration fencing token, so the elected sidecar's calls
+// cannot interleave destructively even during a lease transition.
 type csiGRPCServer struct {
 	endpoint string
 	grpcSrv  *grpc.Server
 	ctrlSrv  *csi.ControllerServer
+	// serving flips true once the socket listener exists and the gRPC server
+	// is about to accept, and back to false when Serve returns.  It backs the
+	// IdentityServer Probe readiness gate.
+	serving atomic.Bool
+}
+
+// NeedLeaderElection implements manager.LeaderElectionRunnable.  Returning
+// false places the server in the manager's always-on runnable group, which
+// controller-runtime starts on every replica — after the informer caches have
+// synced, before leader election resolves — so standby pods keep their CSI
+// socket (and the sidecars that depend on it) alive and can take over when
+// the leader's pod dies.
+func (*csiGRPCServer) NeedLeaderElection() bool { return false }
+
+// probeReady reports whether the CSI socket is bound and serving, independent
+// of leader election.  Standby replicas must report Ready: the sidecars run
+// Probe before acquiring their own leader leases, so a standby that reports
+// not-ready never joins its elections and can never take over, and the
+// liveness-probe sidecar would fail the pod's liveness check.
+func (s *csiGRPCServer) probeReady(_ context.Context) (bool, error) {
+	return s.serving.Load(), nil
 }
 
 // Start implements manager.Runnable.  It is called by controller-runtime after
@@ -228,6 +247,8 @@ func (s *csiGRPCServer) Start(ctx context.Context) error {
 		s.grpcSrv.GracefulStop()
 	}()
 
+	s.serving.Store(true)
+	defer s.serving.Store(false)
 	log.Info("CSI gRPC server listening", "endpoint", s.endpoint)
 	serveErr := s.grpcSrv.Serve(lis)
 	if serveErr != nil {
@@ -508,21 +529,18 @@ func runManager(mgr ctrl.Manager, agentDialer agentclient.Dialer, csiEndpoint st
 		driverVersion = bi.Main.Version
 	}
 
-	var managerStarted atomic.Bool
-	identitySrv := csi.NewIdentityServerWithReadyFn(driverName, driverVersion, managerStartedReadyFn(&managerStarted))
-	csiGRPC := grpc.NewServer()
-	csi.RegisterGRPC(csiGRPC, identitySrv, ctrlSrv)
-
-	err = mgr.Add(managerStartedRunnable(&managerStarted))
-	if err != nil {
-		return fmt.Errorf("unable to add manager start marker to manager: %w", err)
-	}
-
-	err = mgr.Add(&csiGRPCServer{
+	csiSrv := &csiGRPCServer{
 		endpoint: csiEndpoint,
-		grpcSrv:  csiGRPC,
+		grpcSrv:  grpc.NewServer(),
 		ctrlSrv:  ctrlSrv,
-	})
+	}
+	// Probe readiness is bound to the CSI socket actually serving, not to
+	// leader election: standby replicas must answer Ready so their sidecars
+	// stay alive and join their own elections (issue #96).
+	identitySrv := csi.NewIdentityServerWithReadyFn(driverName, driverVersion, csiSrv.probeReady)
+	csi.RegisterGRPC(csiSrv.grpcSrv, identitySrv, ctrlSrv)
+
+	err = mgr.Add(csiSrv)
 	if err != nil {
 		return fmt.Errorf("unable to add CSI gRPC server to manager: %w", err)
 	}

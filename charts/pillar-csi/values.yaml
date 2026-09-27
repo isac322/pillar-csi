@@ -27,7 +27,10 @@ nameOverride: ""
 # Kubernetes Deployment: CRD reconciler + CSI Controller service.
 # Runs CSI sidecars: provisioner, attacher, resizer, liveness-probe.
 controller:
-  # -- Number of controller replicas. Leader-election is enabled so >1 is safe.
+  # -- Number of controller replicas. >1 is safe: every replica serves the
+  # pod-local CSI socket so its sidecars stay healthy, while the manager and
+  # the CSI sidecars hold independent leader-election leases. Pair with
+  # controller.affinity podAntiAffinity so replicas land on different nodes.
   replicaCount: 1
 
   image:
