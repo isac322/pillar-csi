@@ -456,7 +456,7 @@ func evaluateCompatibility(
 //
 //	pillar-csi.bhyoo.com/<parameter-name>
 //
-//nolint:gocognit,gocyclo,funlen // ZFS and protocol-specific param branches drive the complexity.
+//nolint:gocognit,gocyclo // ZFS and protocol-specific param branches drive the complexity.
 func buildStorageClassParams(
 	binding *pillarcsiv1alpha1.PillarStorageClass,
 	pool *pillarcsiv1alpha1.PillarStore,
