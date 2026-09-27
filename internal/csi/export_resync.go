@@ -279,22 +279,23 @@ type restoreEntry struct {
 // restoreRank orders a batch restore.  The agent links exports in request
 // order, and the first export linked to a port fixes the port's
 // param_inline_data_size until no subsystem is linked any more; an export
-// requiring another value is then rejected.  Exports whose volume completed
-// CreateVolume (the settings hosts already use) come before exports whose
-// export never succeeded (CreatePartial), so a failed attempt with a
-// conflicting value cannot displace working volumes; within each group,
-// exports requiring a value come before exports accepting any.
+// requiring another value is then rejected.  Exports requiring a value come
+// first, those whose volume completed CreateVolume (the value hosts already
+// use) before those whose export never succeeded (CreatePartial), so a
+// failed attempt with a conflicting value cannot displace working volumes.
+// Exports accepting any value come last: they work with whatever value the
+// port gets and must not enable it with the transport default ahead of an
+// export that requires a specific value.
 func restoreRank(pvs *v1alpha1.PillarVolumeState) int {
-	rank := 0
+	if pvs.Status.ExportSpec.InCapsuleDataSize == nil {
+		return 2
+	}
 	switch pvs.Status.Phase {
 	case v1alpha1.PillarVolumeStatePhaseProvisioning, v1alpha1.PillarVolumeStatePhaseCreatePartial:
-		rank = 2
+		return 1
 	default:
+		return 0
 	}
-	if pvs.Status.ExportSpec.InCapsuleDataSize == nil {
-		rank++
-	}
-	return rank
 }
 
 // RestoreAgentExports restores every export of the named agent in one

@@ -248,3 +248,27 @@ func TestRestoreAgentExports_EstablishedInCapsuleSizeWinsTheSharedPort(t *testin
 		t.Errorf("partial volume ExportReconciled = %+v, want False", cond)
 	}
 }
+
+// TestRestoreAgentExports_RequiredInCapsuleSizeLinksBeforeUnrestricted
+// verifies that a volume accepting any in-capsule data size does not enable
+// the shared port with the transport default ahead of a CreatePartial volume
+// that requires a value: both are restored and the port carries the value.
+func TestRestoreAgentExports_RequiredInCapsuleSizeLinksBeforeUnrestricted(t *testing.T) {
+	t.Parallel()
+	required := int32(8192)
+	unset := restorePVS(resyncAgentName, "pvc-a-unset", "aaaaaaaa-0000-0000-0000-000000000010")
+	partial := restorePVS(resyncAgentName, "pvc-b-partial", "aaaaaaaa-0000-0000-0000-000000000011")
+	partial.Status.Phase = v1alpha1.PillarVolumeStatePhaseCreatePartial
+	partial.Status.ExportSpec = &v1alpha1.VolumeExportSpec{
+		BindAddress: "10.0.0.1", Port: 4420, ACLEnabled: true, InCapsuleDataSize: &required,
+	}
+	env := newResyncEnvObjects(t, t.TempDir(), []client.Object{unset, partial}, agent.WithExportRestoreGate())
+
+	if err := env.srv.RestoreAgentExports(context.Background(), resyncAgentName); err != nil {
+		t.Fatalf("RestoreAgentExports: %v", err)
+	}
+	want := []string{restoreNQN(unset.Name), restoreNQN(partial.Name)}
+	if linked := env.linkedSubsystems(t); !slices.Equal(linked, want) {
+		t.Errorf("linked subsystems = %v, want %v", linked, want)
+	}
+}
