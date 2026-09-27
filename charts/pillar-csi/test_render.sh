@@ -210,6 +210,14 @@ DUP_MIXED_ERR="$(render \
   --set 'agent.backends[1].type=lvm-lv' --set 'agent.backends[1].vg=shared' 2>&1 >/dev/null || true)"
 assert_contains "${DUP_MIXED_ERR}" 'pool/VG "shared" appears in more than one entry' \
   "a ZFS pool and an LVM VG sharing one name must fail the render with a clear error"
+# The agent trims whitespace from --backend values, so " tank " and "tank"
+# are the same registry key and must collide at render time too.
+if render \
+  --set 'agent.backends[0].type=zfs-zvol' --set 'agent.backends[0].pool=tank' \
+  --set 'agent.backends[1].type=zfs-zvol' --set-string 'agent.backends[1].pool= tank ' \
+  >/dev/null 2>&1; then
+  mark_fail "agent.backends pool names differing only in whitespace must fail the render"
+fi
 
 assert_contains "${NODE_DS}" "terminationGracePeriodSeconds: 60" \
   "default node DaemonSet must set terminationGracePeriodSeconds=60"
