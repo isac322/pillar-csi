@@ -75,7 +75,9 @@ const defaultNodeShutdownGracePeriod = 5 * time.Second
 // and polls sysfs until the block device node appears.
 //
 // Detach removes each controller for the given subsystem NQN by writing
-// "1" to its delete_controller sysfs entry.
+// "1" to its delete_controller sysfs entry and waits (bounded) until each
+// controller has left sysfs, so an immediate re-stage never races a dying
+// controller.
 //
 // Rescan writes "1" to rescan_controller sysfs entries so the device
 // re-reads its capacity after an online volume expansion.
@@ -109,6 +111,10 @@ type fabricsConnector struct {
 	// two fields must always travel together.  Persisted to
 	// /etc/nvme/hostid alongside the host NQN.
 	hostID string
+
+	// removalWait bounds the Detach wait for deleted controllers to leave
+	// sysfs.  The zero value selects csisvc.DefaultControllerRemovalWait.
+	removalWait csisvc.ControllerRemovalWait
 }
 
 // newFabricsConnector returns a production-ready fabricsConnector that uses
@@ -221,6 +227,13 @@ func (c *fabricsConnector) nvmeConnect(
 	if already {
 		return nil
 	}
+	// A controller of this NQN that the kernel is still deleting (its own
+	// ctrl_loss_tmo teardown, not our unstage) must be gone before a new
+	// connection, or device discovery can return its dying namespace.
+	err = csisvc.WaitForDyingControllers(ctx, c.sysfsRoot, subsysNQN, c.removalWait)
+	if err != nil {
+		return fmt.Errorf("fabricsConnector nvmeConnect: %w", err)
+	}
 
 	f, err := os.OpenFile(c.fabricsDev, os.O_RDWR, 0)
 	if err != nil {
@@ -289,20 +302,14 @@ func (c *fabricsConnector) forEachNVMeController(subsysNQN string, fn func(ctrlN
 }
 
 // nvmeDisconnect tears down all NVMe-oF controllers associated with the given
-// subsystem NQN by writing "1" to each controller's delete_controller sysfs
-// entry.
+// subsystem NQN and returns only after each one has left sysfs; a controller
+// still present when the bounded wait expires is an error (see
+// csisvc.DeleteSubsystemControllers for why the write alone is not enough).
 //
 // It is idempotent: if the NQN is not connected the method returns nil
 // immediately.
-func (c *fabricsConnector) nvmeDisconnect(_ context.Context, subsysNQN string) error {
-	return c.forEachNVMeController(subsysNQN, func(name string) error {
-		deletePath := filepath.Join(c.sysfsRoot, "class", "nvme", name, "delete_controller")
-		writeErr := os.WriteFile(deletePath, []byte("1"), 0o600)
-		if writeErr != nil {
-			return fmt.Errorf("delete controller %s: %w", deletePath, writeErr)
-		}
-		return nil
-	})
+func (c *fabricsConnector) nvmeDisconnect(ctx context.Context, subsysNQN string) error {
+	return csisvc.DisconnectSubsystem(ctx, c.sysfsRoot, subsysNQN, c.removalWait)
 }
 
 // nvmeGetDevicePath returns the /dev/nvmeXnY block-device path for the given

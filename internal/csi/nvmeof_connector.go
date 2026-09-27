@@ -20,10 +20,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
+	"time"
 )
 
 // NVMeoFConnectOptions carries optional kernel fabrics tuning for a connect.
@@ -82,7 +85,8 @@ func (o NVMeoFConnectOptions) AppendTo(connectOpts string) string {
 // been available since Linux 4.15.
 //
 // Connect writes "transport=tcp,traddr=X,trsvcid=Y,nqn=Z" to /dev/nvme-fabrics.
-// Disconnect writes "1" to each controller's delete_controller sysfs entry.
+// Disconnect writes "1" to each controller's delete_controller sysfs entry and
+// waits (bounded) until each controller has left sysfs.
 // GetDevicePath scans /sys/class/nvme-subsystem/ for the block device.
 //
 // Both Connect and Disconnect are idempotent:
@@ -96,6 +100,11 @@ type NVMeoFConnector struct {
 	// fabricsDev is the path to the NVMe-fabrics character device.
 	// Production value: NvmeFabricsDevice.
 	fabricsDev string
+
+	// removalWait bounds how long Disconnect waits for each deleted
+	// controller to leave sysfs.  The zero value selects
+	// DefaultControllerRemovalWait.
+	removalWait ControllerRemovalWait
 }
 
 // NewNVMeoFConnector constructs a production-ready NVMeoFConnector.
@@ -126,8 +135,11 @@ var _ Connector = (*NVMeoFConnector)(nil)
 //
 // connectOpts only affect a new connection; an existing controller keeps the
 // options it was created with.
+//
+// Before a new connection it waits (bounded) for any controller of the same
+// NQN that the kernel is still deleting (see WaitForDyingControllers).
 func (c *NVMeoFConnector) Connect(
-	_ context.Context,
+	ctx context.Context,
 	subsysNQN, trAddr, trSvcID string,
 	connectOpts NVMeoFConnectOptions,
 ) error {
@@ -137,6 +149,10 @@ func (c *NVMeoFConnector) Connect(
 	}
 	if already {
 		return nil
+	}
+	err = WaitForDyingControllers(ctx, c.sysfsRoot, subsysNQN, c.removalWait)
+	if err != nil {
+		return fmt.Errorf("nvmeof Connect: %w", err)
 	}
 
 	f, err := os.OpenFile(c.fabricsDev, os.O_RDWR, 0)
@@ -160,37 +176,130 @@ func (c *NVMeoFConnector) Connect(
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Disconnect tears down all NVMe-oF controllers associated with the given
-// subsystem NQN by writing "1" to each controller's delete_controller sysfs
-// entry.
+// subsystem NQN and returns only after each one has left sysfs (see
+// DisconnectSubsystem).
 //
 // It is idempotent: if the NQN is not connected the method returns nil.
-func (c *NVMeoFConnector) Disconnect(_ context.Context, subsysNQN string) error {
-	subsysDir := filepath.Join(c.sysfsRoot, "class", "nvme-subsystem")
-	var disconnectErr error
+func (c *NVMeoFConnector) Disconnect(ctx context.Context, subsysNQN string) error {
+	return DisconnectSubsystem(ctx, c.sysfsRoot, subsysNQN, c.removalWait)
+}
 
+// DisconnectSubsystem deletes every controller of each
+// /sys/class/nvme-subsystem entry whose subsysnqn matches subsysNQN and waits
+// until each controller has left sysfs (see DeleteSubsystemControllers).
+// A missing nvme-subsystem class means nothing is connected and returns nil.
+func DisconnectSubsystem(ctx context.Context, sysfsRoot, subsysNQN string, wait ControllerRemovalWait) error {
+	err := forEachMatchingSubsystem(sysfsRoot, subsysNQN, func(subsysDir, name string) error {
+		return DeleteSubsystemControllers(ctx, sysfsRoot, subsysDir, name, wait)
+	})
+	if err != nil {
+		return fmt.Errorf("nvmeof disconnect %q: %w", subsysNQN, err)
+	}
+	return nil
+}
+
+// WaitForDyingControllers waits (bounded) until every controller of a
+// subsystem matching subsysNQN whose state is "dead", "deleting" or
+// "deleting (no IO)" has left sysfs.  Call it before a fresh connect: a
+// deletion the kernel started on its own (ctrl_loss_tmo expiry, a DNR
+// status) finishes asynchronously, and until it does a new connection can
+// pick up the dying controller's namespace.
+func WaitForDyingControllers(ctx context.Context, sysfsRoot, subsysNQN string, wait ControllerRemovalWait) error {
+	err := forEachMatchingSubsystem(sysfsRoot, subsysNQN, func(subsysDir, name string) error {
+		return waitSubsystemDyingControllers(ctx, filepath.Join(subsysDir, name), wait)
+	})
+	if err != nil {
+		return fmt.Errorf("wait for dying controllers of %q: %w", subsysNQN, err)
+	}
+	return nil
+}
+
+// waitSubsystemDyingControllers waits for each dying controller linked from
+// subsysPath to leave sysfs.
+func waitSubsystemDyingControllers(ctx context.Context, subsysPath string, wait ControllerRemovalWait) error {
+	ctrlEntries, err := os.ReadDir(subsysPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // subsystem destroyed with its last controller
+		}
+		return fmt.Errorf("read subsystem dir %s: %w", subsysPath, err)
+	}
+	var errs []error
+	for _, ctrlEntry := range ctrlEntries {
+		if !IsNVMeControllerEntry(ctrlEntry.Name()) {
+			continue
+		}
+		ctrlPath := filepath.Join(subsysPath, ctrlEntry.Name())
+		statePath := filepath.Join(ctrlPath, "state")
+		state, readErr := os.ReadFile(statePath) //nolint:gosec // G304: sysfs path under connector-controlled root.
+		if readErr != nil {
+			if os.IsNotExist(readErr) {
+				continue // controller already gone (dangling link) or no state attribute
+			}
+			errs = append(errs, fmt.Errorf("read controller state %s: %w", statePath, readErr))
+			continue
+		}
+		if !isDyingControllerState(strings.TrimSpace(string(state))) {
+			continue
+		}
+		waitErr := waitControllerRemoved(ctx, ctrlPath, wait)
+		if waitErr != nil {
+			errs = append(errs, waitErr)
+		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("subsystem %s: %w", subsysPath, errors.Join(errs...))
+	}
+	return nil
+}
+
+// forEachMatchingSubsystem calls fn for each /sys/class/nvme-subsystem entry
+// whose subsysnqn equals subsysNQN and joins the errors.  An entry that
+// vanishes while being read belongs to a subsystem the kernel just destroyed
+// (another volume's teardown), so it cannot be ours and is skipped.
+func forEachMatchingSubsystem(sysfsRoot, subsysNQN string, fn func(subsysDir, name string) error) error {
+	subsysDir := filepath.Join(sysfsRoot, "class", "nvme-subsystem")
 	entries, err := os.ReadDir(subsysDir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil // no nvme-subsystem class — nothing to disconnect
+			return nil // no nvme-subsystem class — nothing connected
 		}
-		return fmt.Errorf("nvmeof Disconnect: read %s: %w", subsysDir, err)
+		return fmt.Errorf("read %s: %w", subsysDir, err)
 	}
 
+	var errs []error
 	for _, entry := range entries {
 		matches, readErr := SubsystemMatchesNQN(subsysDir, entry.Name(), subsysNQN)
 		if readErr != nil {
-			disconnectErr = errors.Join(disconnectErr, readErr)
+			if errors.Is(readErr, fs.ErrNotExist) || errors.Is(readErr, syscall.ENODEV) {
+				continue
+			}
+			errs = append(errs, readErr)
 			continue
 		}
 		if !matches {
 			continue
 		}
-		disconnectErr = errors.Join(disconnectErr, DeleteSubsystemControllers(c.sysfsRoot, subsysDir, entry.Name()))
+		fnErr := fn(subsysDir, entry.Name())
+		if fnErr != nil {
+			errs = append(errs, fnErr)
+		}
 	}
-	if disconnectErr != nil {
-		return fmt.Errorf("nvmeof Disconnect: delete controllers: %w", disconnectErr)
+	if len(errs) > 0 {
+		return fmt.Errorf("scan %s: %w", subsysDir, errors.Join(errs...))
 	}
 	return nil
+}
+
+// isDyingControllerState reports whether a controller sysfs state means the
+// kernel is tearing the controller down and it will never serve I/O again.
+func isDyingControllerState(state string) bool {
+	switch state {
+	case "dead", "deleting", "deleting (no IO)":
+		return true
+	default:
+		return false
+	}
 }
 
 // SubsystemMatchesNQN reads the subsysnqn sysfs file for the given subsystem
@@ -255,22 +364,65 @@ func SubsystemHasActiveController(subsysPath string) (bool, error) {
 			}
 			return true, nil
 		}
-		switch strings.TrimSpace(string(state)) {
-		case "dead", "deleting", "deleting (no IO)":
+		if isDyingControllerState(strings.TrimSpace(string(state))) {
 			continue
-		default:
-			return true, nil
 		}
+		return true, nil
 	}
 	return false, nil
 }
 
+// ErrControllerNotRemoved reports that a controller was still present in
+// sysfs when the bounded removal wait expired.
+var ErrControllerNotRemoved = errors.New("nvme controller still present after delete_controller")
+
+// ControllerRemovalWait bounds the wait for a deleted controller to leave
+// sysfs.  Zero fields select the DefaultControllerRemovalWait values.
+type ControllerRemovalWait struct {
+	Timeout      time.Duration
+	PollInterval time.Duration
+}
+
+// DefaultControllerRemovalWait keeps the wait well inside kubelet's CSI call
+// timeout so a stuck teardown surfaces as this error, not a gRPC deadline.
+var DefaultControllerRemovalWait = ControllerRemovalWait{
+	Timeout:      10 * time.Second,
+	PollInterval: 50 * time.Millisecond,
+}
+
+func (w ControllerRemovalWait) withDefaults() ControllerRemovalWait {
+	if w.Timeout <= 0 {
+		w.Timeout = DefaultControllerRemovalWait.Timeout
+	}
+	if w.PollInterval <= 0 {
+		w.PollInterval = DefaultControllerRemovalWait.PollInterval
+	}
+	return w
+}
+
 // DeleteSubsystemControllers writes "1" to each controller's delete_controller
-// sysfs entry for the given subsystem. Errors are collected and returned.
-func DeleteSubsystemControllers(sysfsRoot, subsysDir, subsystemName string) error {
+// sysfs entry for the given subsystem and waits until the controller has left
+// the subsystem.  Errors are collected and returned.
+//
+// The write alone does not prove the controller is gone.  The kernel's
+// nvme_sysfs_delete runs the teardown synchronously only for the caller that
+// moves the controller to DELETING; when a kernel path (ctrl_loss_tmo expiry,
+// a DNR status) already started the deletion, the write returns success at
+// once while nvme_delete_wq is still tearing the controller down.  A re-stage
+// in that window would connect next to a dying controller and could pick up
+// its namespace, so every delete is followed by a read-back wait for
+// <subsystem>/<ctrl> to stop resolving.
+func DeleteSubsystemControllers(
+	ctx context.Context,
+	sysfsRoot, subsysDir, subsystemName string,
+	wait ControllerRemovalWait,
+) error {
 	subsysPath := filepath.Join(subsysDir, subsystemName)
 	ctrlEntries, err := os.ReadDir(subsysPath)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // subsystem destroyed with its last controller
+		}
 		return fmt.Errorf("read subsystem dir %s: %w", subsysPath, err)
 	}
 
@@ -280,17 +432,91 @@ func DeleteSubsystemControllers(sysfsRoot, subsysDir, subsystemName string) erro
 		if !IsNVMeControllerEntry(name) {
 			continue
 		}
-
-		deletePath := filepath.Join(sysfsRoot, "class", "nvme", name, "delete_controller")
-		writeErr := os.WriteFile(deletePath, []byte("1"), 0o600)
-		if writeErr != nil {
-			errs = append(errs, fmt.Errorf("write %s: %w", deletePath, writeErr))
+		deleteErr := deleteControllerAndWait(ctx, sysfsRoot, subsysPath, name, wait)
+		if deleteErr != nil {
+			errs = append(errs, deleteErr)
 		}
 	}
 	if len(errs) > 0 {
 		return fmt.Errorf("delete controllers for %s: %w", subsystemName, errors.Join(errs...))
 	}
 	return nil
+}
+
+// deleteControllerAndWait requests deletion of controller name and waits
+// until subsysPath/name no longer resolves.  ENOENT from the write means the
+// controller (or its attribute) is already gone, which is still confirmed by
+// the wait; any other write error is returned without waiting because no
+// deletion was started.
+func deleteControllerAndWait(
+	ctx context.Context,
+	sysfsRoot, subsysPath, name string,
+	wait ControllerRemovalWait,
+) error {
+	deletePath := filepath.Join(sysfsRoot, "class", "nvme", name, "delete_controller")
+	writeErr := writeSysfsAttr(deletePath, "1")
+	if writeErr != nil && !errors.Is(writeErr, fs.ErrNotExist) {
+		return writeErr
+	}
+	return waitControllerRemoved(ctx, filepath.Join(subsysPath, name), wait)
+}
+
+// writeSysfsAttr writes value to an existing sysfs attribute.  It never
+// creates the file: on sysfs a vanished attribute opened with O_CREAT fails
+// with EACCES, while opening it without O_CREAT reports ENOENT.
+func writeSysfsAttr(path, value string) error {
+	f, err := os.OpenFile(path, os.O_WRONLY, 0) //nolint:gosec // G304: sysfs path under connector-controlled root.
+	if err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	_, writeErr := f.WriteString(value)
+	closeErr := f.Close()
+	joined := errors.Join(writeErr, closeErr)
+	if joined != nil {
+		return fmt.Errorf("write %s: %w", path, joined)
+	}
+	return nil
+}
+
+// waitControllerRemoved polls until ctrlPath (the subsystem's link to the
+// controller) no longer resolves: the kernel removes the controller device
+// in nvme_uninit_ctrl, after its namespaces, so a dangling or removed link
+// means the controller and its namespaces are gone.
+func waitControllerRemoved(ctx context.Context, ctrlPath string, wait ControllerRemovalWait) error {
+	w := wait.withDefaults()
+	deadline := time.NewTimer(w.Timeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(w.PollInterval)
+	defer ticker.Stop()
+
+	for {
+		_, statErr := os.Stat(ctrlPath)
+		if os.IsNotExist(statErr) {
+			return nil
+		}
+		if statErr != nil {
+			return fmt.Errorf("verify removal of controller %s: %w", ctrlPath, statErr)
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("wait for removal of controller %s: %w", ctrlPath, ctx.Err())
+		case <-deadline.C:
+			return fmt.Errorf("controller %s (state %q) after %s: %w",
+				ctrlPath, readControllerState(ctrlPath), w.Timeout, ErrControllerNotRemoved)
+		case <-ticker.C:
+		}
+	}
+}
+
+// readControllerState returns the controller's sysfs state for diagnostics,
+// or a description of why it could not be read.
+func readControllerState(ctrlPath string) string {
+	statePath := filepath.Join(ctrlPath, "state")
+	state, err := os.ReadFile(statePath) //nolint:gosec // G304: sysfs path under connector-controlled root.
+	if err != nil {
+		return "unreadable: " + err.Error()
+	}
+	return strings.TrimSpace(string(state))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

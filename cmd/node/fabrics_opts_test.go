@@ -18,11 +18,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	csisvc "github.com/bhyoo/pillar-csi/internal/csi"
 )
@@ -118,8 +120,9 @@ func newTestFabricsConnector(
 // TestFabricsConnectorNvmeConnect_ControllerStates is the production-path
 // regression for issue #85: once ctrl_loss_tmo removed every controller the
 // lingering subsystem made nvmeConnect skip the connect, so restage waited
-// 30 s for a namespace that never appeared.  A dead-only subsystem must
-// reconnect; a live or reconnecting controller must not be duplicated.
+// 30 s for a namespace that never appeared.  A subsystem without a usable
+// controller must reconnect; a live or reconnecting controller must not be
+// duplicated.
 func TestFabricsConnectorNvmeConnect_ControllerStates(t *testing.T) {
 	const nqn = "nqn.2026-01.io.pillar-csi:pvc-test"
 	cases := []struct {
@@ -128,7 +131,6 @@ func TestFabricsConnectorNvmeConnect_ControllerStates(t *testing.T) {
 		wantConnect bool
 	}{
 		{name: "empty lingering subsystem", wantConnect: true},
-		{name: "dead controller", controllers: map[string]string{"nvme0": "dead"}, wantConnect: true},
 		{name: "live controller", controllers: map[string]string{"nvme0": "live"}, wantConnect: false},
 		{name: "connecting controller", controllers: map[string]string{"nvme0": "connecting"}, wantConnect: false},
 	}
@@ -148,6 +150,64 @@ func TestFabricsConnectorNvmeConnect_ControllerStates(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A controller the kernel is still deleting (issue #102) must be gone before
+// nvmeConnect issues the new connect, so discovery never returns its dying
+// namespace; one that never leaves fails the stage instead of connecting.
+func TestFabricsConnectorNvmeConnect_WaitsForDyingController(t *testing.T) {
+	const nqn = "nqn.2026-01.io.pillar-csi:pvc-test"
+	wait := csisvc.ControllerRemovalWait{Timeout: 5 * time.Second, PollInterval: 5 * time.Millisecond}
+
+	t.Run("removed during the wait", func(t *testing.T) {
+		c, fabricsDev := newTestFabricsConnector(t, nqn, map[string]string{"nvme0": "dead"})
+		c.removalWait = wait
+		ctrl := filepath.Join(c.sysfsRoot, "class", "nvme-subsystem", "nvme-subsys0", "nvme0")
+		done := make(chan struct{})
+		timer := time.AfterFunc(150*time.Millisecond, func() {
+			defer close(done)
+			if err := os.RemoveAll(ctrl); err != nil {
+				t.Errorf("remove %s: %v", ctrl, err)
+			}
+		})
+		t.Cleanup(func() {
+			if !timer.Stop() {
+				<-done
+			}
+		})
+
+		err := c.nvmeConnect(context.Background(), nqn, "10.0.0.7", "4420", csisvc.NVMeoFConnectOptions{})
+		if err != nil {
+			t.Fatalf("nvmeConnect: %v", err)
+		}
+		if _, statErr := os.Stat(ctrl); !os.IsNotExist(statErr) {
+			t.Fatalf("connect issued while the dying controller was still present (stat err=%v)", statErr)
+		}
+		content, err := os.ReadFile(fabricsDev) //nolint:gosec
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(content) == 0 {
+			t.Fatal("no fabrics connect issued after the dying controller left")
+		}
+	})
+
+	t.Run("never removed", func(t *testing.T) {
+		c, fabricsDev := newTestFabricsConnector(t, nqn, map[string]string{"nvme0": "deleting"})
+		c.removalWait = csisvc.ControllerRemovalWait{Timeout: 100 * time.Millisecond, PollInterval: 5 * time.Millisecond}
+
+		err := c.nvmeConnect(context.Background(), nqn, "10.0.0.7", "4420", csisvc.NVMeoFConnectOptions{})
+		if !errors.Is(err, csisvc.ErrControllerNotRemoved) {
+			t.Fatalf("nvmeConnect error = %v, want ErrControllerNotRemoved", err)
+		}
+		content, readErr := os.ReadFile(fabricsDev) //nolint:gosec
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if len(content) != 0 {
+			t.Fatalf("fabrics connect issued next to a dying controller: %q", content)
+		}
+	})
 }
 
 // TestFabricsConnectorAttach_ForwardsReconnectTuning verifies the production

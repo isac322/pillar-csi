@@ -309,6 +309,7 @@ func TestNVMeoFTCPHandler_Attach_MalformedTuning_NoConnect(t *testing.T) {
 func TestNVMeoFTCPHandler_Detach_DeletesController(t *testing.T) {
 	const nqn = "nqn.2024-01.com.example:vol1"
 	root, deleteCtrlPath := fakeSysfsWithController(t, nqn, "nvme0")
+	simulateKernelDelete(t, deleteCtrlPath, subsysCtrlPath(root, "nvme0"), 0)
 
 	h := newTestHandler(root, "")
 	state := &NVMeoFProtocolState{SubsysNQN: nqn, Address: "192.168.1.10", Port: "4420"}
@@ -468,6 +469,7 @@ func TestNVMeoFTCPHandler_Attach_Detach_RoundTrip(t *testing.T) {
 	// and a controller entry so Detach can write delete_controller.
 	// Use "nvme1" (not "nvme0") to vary the ctrlName argument across tests.
 	root, deleteCtrlPath := fakeSysfsWithController(t, nqn, "nvme1")
+	simulateKernelDelete(t, deleteCtrlPath, subsysCtrlPath(root, "nvme1"), 0)
 
 	// Also add namespace entry so GetDevicePath returns the device.
 	nsDir := filepath.Join(root, "class", "nvme-subsystem", "nvme-subsys0", "nvme0n1")
