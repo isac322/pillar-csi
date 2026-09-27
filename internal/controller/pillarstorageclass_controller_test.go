@@ -34,7 +34,9 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/events"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -43,9 +45,10 @@ import (
 	pillarcsiv1alpha1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
 )
 
-// newDriftTestReconciler returns a reconciler over a fake client plus a
-// binding, pool and protocol whose StorageClass has already been created.
-func newDriftTestReconciler(t *testing.T) (
+// newDriftTestReconciler returns a reconciler over a fake client, holding the
+// returned binding, whose StorageClass has already been created from the
+// returned binding, pool and protocol.  funcs intercept the fake client.
+func newDriftTestReconciler(t *testing.T, funcs interceptor.Funcs) (
 	*PillarStorageClassReconciler,
 	*events.FakeRecorder,
 	*pillarcsiv1alpha1.PillarStorageClass,
@@ -61,17 +64,7 @@ func newDriftTestReconciler(t *testing.T) (
 		t.Fatalf("add pillar-csi scheme: %v", err)
 	}
 
-	recorder := events.NewFakeRecorder(4)
-	reconciler := &PillarStorageClassReconciler{
-		Client:   fake.NewClientBuilder().WithScheme(testScheme).Build(),
-		Scheme:   testScheme,
-		Recorder: recorder,
-	}
 	binding := &pillarcsiv1alpha1.PillarStorageClass{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: "pillar-csi.bhyoo.com/v1alpha1",
-			Kind:       "PillarStorageClass",
-		},
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "drift-binding",
 			UID:  types.UID("drift-binding-uid"),
@@ -80,6 +73,19 @@ func newDriftTestReconciler(t *testing.T) (
 			StoreRef:    "drift-pool",
 			ProtocolRef: "drift-protocol",
 		},
+	}
+	recorder := events.NewFakeRecorder(4)
+	reconciler := &PillarStorageClassReconciler{
+		Client: fake.NewClientBuilder().
+			WithScheme(testScheme).
+			WithObjects(binding.DeepCopy()).
+			WithInterceptorFuncs(funcs).
+			Build(),
+		Scheme:   testScheme,
+		Recorder: recorder,
+	}
+	if err := reconciler.Get(context.Background(), types.NamespacedName{Name: binding.Name}, binding); err != nil {
+		t.Fatalf("get binding: %v", err)
 	}
 	pool := &pillarcsiv1alpha1.PillarStore{
 		Spec: pillarcsiv1alpha1.PillarStoreSpec{
@@ -118,7 +124,7 @@ func expectEvent(t *testing.T, recorder *events.FakeRecorder, reason string) {
 // StorageClass rather than by an update the API server would reject.
 func TestPillarStorageClass_ParameterDrift_RecreatesStorageClass(t *testing.T) {
 	ctx := context.Background()
-	reconciler, recorder, binding, pool, protocol := newDriftTestReconciler(t)
+	reconciler, recorder, binding, pool, protocol := newDriftTestReconciler(t, interceptor.Funcs{})
 
 	sc := &storagev1.StorageClass{}
 	if err := reconciler.Get(ctx, types.NamespacedName{Name: binding.Name}, sc); err != nil {
@@ -158,7 +164,7 @@ func TestPillarStorageClass_ParameterDrift_RecreatesStorageClass(t *testing.T) {
 // reverted in place.
 func TestPillarStorageClass_MutableDrift_UpdatesInPlace(t *testing.T) {
 	ctx := context.Background()
-	reconciler, recorder, binding, pool, protocol := newDriftTestReconciler(t)
+	reconciler, recorder, binding, pool, protocol := newDriftTestReconciler(t, interceptor.Funcs{})
 
 	sc := &storagev1.StorageClass{}
 	if err := reconciler.Get(ctx, types.NamespacedName{Name: binding.Name}, sc); err != nil {
@@ -188,11 +194,78 @@ func TestPillarStorageClass_MutableDrift_UpdatesInPlace(t *testing.T) {
 	}
 }
 
+// A re-create interrupted between deleting the old StorageClass and creating
+// the replacement must not lose the carried-over fields: the next reconcile
+// finds the StorageClass absent and restores them.
+func TestPillarStorageClass_InterruptedRecreate_KeepsCarriedOverFields(t *testing.T) {
+	ctx := context.Background()
+	failCreate := false
+	reconciler, _, binding, pool, protocol := newDriftTestReconciler(t, interceptor.Funcs{
+		Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+			if _, ok := obj.(*storagev1.StorageClass); ok && failCreate {
+				return errors.NewServiceUnavailable("injected create failure")
+			}
+			return c.Create(ctx, obj, opts...)
+		},
+	})
+
+	sc := &storagev1.StorageClass{}
+	if err := reconciler.Get(ctx, types.NamespacedName{Name: binding.Name}, sc); err != nil {
+		t.Fatalf("get StorageClass: %v", err)
+	}
+	sc.Parameters["csi.storage.k8s.io/fstype"] = "xfs"
+	sc.Annotations = map[string]string{"storageclass.kubernetes.io/is-default-class": "true"}
+	sc.MountOptions = []string{"noatime"}
+	if err := reconciler.Update(ctx, sc); err != nil {
+		t.Fatalf("drift StorageClass: %v", err)
+	}
+
+	failCreate = true
+	if err := reconciler.reconcileStorageClass(ctx, binding, pool, protocol, binding.Name); err == nil {
+		t.Fatal("reconcileStorageClass succeeded despite the injected create failure")
+	}
+	err := reconciler.Get(ctx, types.NamespacedName{Name: binding.Name}, &storagev1.StorageClass{})
+	if !errors.IsNotFound(err) {
+		t.Fatalf("StorageClass after the failed create: err = %v, want NotFound", err)
+	}
+
+	// A fresh reconcile starts from the stored binding, like a restarted controller.
+	failCreate = false
+	stored := &pillarcsiv1alpha1.PillarStorageClass{}
+	if err := reconciler.Get(ctx, types.NamespacedName{Name: binding.Name}, stored); err != nil {
+		t.Fatalf("get binding: %v", err)
+	}
+	if err := reconciler.reconcileStorageClass(ctx, stored, pool, protocol, binding.Name); err != nil {
+		t.Fatalf("complete the interrupted re-create: %v", err)
+	}
+
+	got := &storagev1.StorageClass{}
+	if err := reconciler.Get(ctx, types.NamespacedName{Name: binding.Name}, got); err != nil {
+		t.Fatalf("get re-created StorageClass: %v", err)
+	}
+	if got.Parameters["csi.storage.k8s.io/fstype"] != "ext4" {
+		t.Errorf("fstype parameter = %q, want the desired %q", got.Parameters["csi.storage.k8s.io/fstype"], "ext4")
+	}
+	if got.Annotations["storageclass.kubernetes.io/is-default-class"] != "true" {
+		t.Errorf("default-class annotation lost by the interrupted re-create: %v", got.Annotations)
+	}
+	if len(got.MountOptions) != 1 || got.MountOptions[0] != "noatime" {
+		t.Errorf("mountOptions = %v, want [noatime] restored", got.MountOptions)
+	}
+
+	if err := reconciler.Get(ctx, types.NamespacedName{Name: binding.Name}, stored); err != nil {
+		t.Fatalf("get binding: %v", err)
+	}
+	if _, ok := stored.Annotations[storageClassCarryOverAnnotation]; ok {
+		t.Errorf("carry-over record left on the binding after the re-create completed: %v", stored.Annotations)
+	}
+}
+
 // A StorageClass that another object controls is never deleted, even when its
 // immutable fields differ from this binding's desired state.
 func TestPillarStorageClass_ImmutableDrift_ForeignControllerNotDeleted(t *testing.T) {
 	ctx := context.Background()
-	reconciler, _, binding, pool, protocol := newDriftTestReconciler(t)
+	reconciler, _, binding, pool, protocol := newDriftTestReconciler(t, interceptor.Funcs{})
 
 	sc := &storagev1.StorageClass{}
 	if err := reconciler.Get(ctx, types.NamespacedName{Name: binding.Name}, sc); err != nil {

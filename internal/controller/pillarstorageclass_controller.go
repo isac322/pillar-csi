@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -575,6 +576,11 @@ func (r *PillarStorageClassReconciler) reconcileStorageClass(
 	log := logf.FromContext(ctx)
 	desired := desiredStorageClassFor(binding, pool, protocol)
 
+	carryOver, pending, err := pendingCarryOver(binding)
+	if err != nil {
+		return err
+	}
+
 	existing := &storagev1.StorageClass{}
 	getErr := r.Get(ctx, types.NamespacedName{Name: scName}, existing)
 	switch {
@@ -591,6 +597,12 @@ func (r *PillarStorageClassReconciler) reconcileStorageClass(
 	}
 
 	op, err := controllerutil.CreateOrUpdate(ctx, r.Client, sc, func() error {
+		// A create completing an interrupted re-create restores the fields
+		// recorded before the old StorageClass was deleted.
+		if sc.ResourceVersion == "" && pending {
+			carryOver.applyTo(sc)
+		}
+
 		// Set owner reference so that the StorageClass is garbage-collected
 		// when the PillarStorageClass is deleted (after PVC blocking is resolved).
 		setErr := controllerutil.SetControllerReference(binding, sc, r.Scheme)
@@ -609,8 +621,90 @@ func (r *PillarStorageClassReconciler) reconcileStorageClass(
 	if err != nil {
 		return fmt.Errorf("failed to create or update StorageClass %q: %w", scName, err)
 	}
-
 	log.Info("StorageClass reconciled", "name", scName, "operation", op)
+
+	if pending {
+		// The StorageClass exists again, so the record has served its purpose.
+		return r.recordCarryOver(ctx, binding, nil)
+	}
+	return nil
+}
+
+// storageClassCarryOverAnnotation holds, on the PillarStorageClass, the
+// StorageClass fields a re-create carries over.  It is written before the old
+// StorageClass is deleted and removed once the replacement exists, so that a
+// failed create or a controller restart in between cannot lose them: the next
+// reconcile creates the StorageClass from the recorded fields.
+const storageClassCarryOverAnnotation = "pillar-csi.bhyoo.com/storage-class-carry-over"
+
+// storageClassCarryOver is the part of a StorageClass that this controller
+// does not manage and a re-create keeps.
+type storageClassCarryOver struct {
+	Labels            map[string]string             `json:"labels,omitempty"`
+	Annotations       map[string]string             `json:"annotations,omitempty"`
+	MountOptions      []string                      `json:"mountOptions,omitempty"`
+	AllowedTopologies []corev1.TopologySelectorTerm `json:"allowedTopologies,omitempty"`
+}
+
+func carryOverFrom(sc *storagev1.StorageClass) *storageClassCarryOver {
+	return &storageClassCarryOver{
+		Labels:            sc.Labels,
+		Annotations:       sc.Annotations,
+		MountOptions:      sc.MountOptions,
+		AllowedTopologies: sc.AllowedTopologies,
+	}
+}
+
+func (c *storageClassCarryOver) applyTo(sc *storagev1.StorageClass) {
+	sc.Labels = c.Labels
+	sc.Annotations = c.Annotations
+	sc.MountOptions = c.MountOptions
+	sc.AllowedTopologies = c.AllowedTopologies
+}
+
+// pendingCarryOver returns the carry-over recorded on binding by an
+// interrupted re-create, and whether there is one.
+func pendingCarryOver(binding *pillarcsiv1alpha1.PillarStorageClass) (*storageClassCarryOver, bool, error) {
+	raw, ok := binding.Annotations[storageClassCarryOverAnnotation]
+	if !ok {
+		return &storageClassCarryOver{}, false, nil
+	}
+	carryOver := &storageClassCarryOver{}
+	err := json.Unmarshal([]byte(raw), carryOver)
+	if err != nil {
+		return nil, false, fmt.Errorf("decode annotation %s on PillarStorageClass %q: %w",
+			storageClassCarryOverAnnotation, binding.Name, err)
+	}
+	return carryOver, true, nil
+}
+
+// recordCarryOver durably records carryOver on binding, or removes the record
+// when carryOver is nil.
+func (r *PillarStorageClassReconciler) recordCarryOver(
+	ctx context.Context,
+	binding *pillarcsiv1alpha1.PillarStorageClass,
+	carryOver *storageClassCarryOver,
+) error {
+	if carryOver == nil {
+		if _, ok := binding.Annotations[storageClassCarryOverAnnotation]; !ok {
+			return nil
+		}
+		delete(binding.Annotations, storageClassCarryOverAnnotation)
+	} else {
+		raw, err := json.Marshal(carryOver)
+		if err != nil {
+			return fmt.Errorf("encode StorageClass carry-over for PillarStorageClass %q: %w", binding.Name, err)
+		}
+		if binding.Annotations == nil {
+			binding.Annotations = map[string]string{}
+		}
+		binding.Annotations[storageClassCarryOverAnnotation] = string(raw)
+	}
+	err := r.Update(ctx, binding)
+	if err != nil {
+		return fmt.Errorf("update annotation %s on PillarStorageClass %q: %w",
+			storageClassCarryOverAnnotation, binding.Name, err)
+	}
 	return nil
 }
 
@@ -621,10 +715,11 @@ func (r *PillarStorageClassReconciler) reconcileStorageClass(
 // managed spec.  A StorageClass that another object controls is never
 // deleted.
 //
-// StorageClasses carry no finalizers, so the delete completes synchronously
-// and the name is free for the create that follows.  If the create fails, the
-// StorageClass is absent and the next reconcile creates it; no state is lost
-// that the spec cannot rebuild.
+// The carry-over is recorded on the binding before the delete, so the
+// replacement is complete even when the create fails or the controller
+// restarts in between: the next reconcile finds the StorageClass absent and
+// creates it from the record.  StorageClasses carry no finalizers, so the
+// delete completes synchronously and the name is free for the create.
 func (r *PillarStorageClassReconciler) recreateStorageClass(
 	ctx context.Context,
 	binding *pillarcsiv1alpha1.PillarStorageClass,
@@ -641,19 +736,18 @@ func (r *PillarStorageClassReconciler) recreateStorageClass(
 		return fmt.Errorf("recreate StorageClass %q: previous StorageClass is still being deleted", existing.Name)
 	}
 
-	replacement := &storagev1.StorageClass{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        existing.Name,
-			Labels:      existing.Labels,
-			Annotations: existing.Annotations,
-		},
-		MountOptions:      existing.MountOptions,
-		AllowedTopologies: existing.AllowedTopologies,
-	}
+	carryOver := carryOverFrom(existing)
+	replacement := &storagev1.StorageClass{ObjectMeta: metav1.ObjectMeta{Name: existing.Name}}
+	carryOver.applyTo(replacement)
 	applyDesiredStorageClass(replacement, desired)
 	err := controllerutil.SetControllerReference(binding, replacement, r.Scheme)
 	if err != nil {
 		return fmt.Errorf("failed to set owner reference on StorageClass: %w", err)
+	}
+
+	err = r.recordCarryOver(ctx, binding, carryOver)
+	if err != nil {
+		return err
 	}
 
 	// Preconditions pin the delete to the object whose drift was observed,
@@ -674,7 +768,7 @@ func (r *PillarStorageClassReconciler) recreateStorageClass(
 		"StorageClass %q re-created because immutable fields changed; existing volumes keep their parameters",
 		existing.Name)
 	logf.FromContext(ctx).Info("StorageClass re-created with the desired immutable fields", "name", existing.Name)
-	return nil
+	return r.recordCarryOver(ctx, binding, nil)
 }
 
 // desiredStorageClassFor computes the managed StorageClass fields for binding.
