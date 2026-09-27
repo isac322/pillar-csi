@@ -220,6 +220,10 @@ func TestPillarStorageClass_InterruptedRecreate_KeepsCarriedOverFields(t *testin
 		t.Fatalf("drift StorageClass: %v", err)
 	}
 
+	// The informer cache may still serve the binding as it was before the
+	// carry-over record was written, while already showing the deletion.
+	staleBinding := binding.DeepCopy()
+
 	failCreate = true
 	if err := reconciler.reconcileStorageClass(ctx, binding, pool, protocol, binding.Name); err == nil {
 		t.Fatal("reconcileStorageClass succeeded despite the injected create failure")
@@ -229,15 +233,11 @@ func TestPillarStorageClass_InterruptedRecreate_KeepsCarriedOverFields(t *testin
 		t.Fatalf("StorageClass after the failed create: err = %v, want NotFound", err)
 	}
 
-	// A fresh reconcile starts from the stored binding, like a restarted controller.
 	failCreate = false
-	stored := &pillarcsiv1alpha1.PillarStorageClass{}
-	if err := reconciler.Get(ctx, types.NamespacedName{Name: binding.Name}, stored); err != nil {
-		t.Fatalf("get binding: %v", err)
-	}
-	if err := reconciler.reconcileStorageClass(ctx, stored, pool, protocol, binding.Name); err != nil {
+	if err := reconciler.reconcileStorageClass(ctx, staleBinding, pool, protocol, binding.Name); err != nil {
 		t.Fatalf("complete the interrupted re-create: %v", err)
 	}
+	stored := &pillarcsiv1alpha1.PillarStorageClass{}
 
 	got := &storagev1.StorageClass{}
 	if err := reconciler.Get(ctx, types.NamespacedName{Name: binding.Name}, got); err != nil {

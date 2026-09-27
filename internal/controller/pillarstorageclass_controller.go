@@ -85,8 +85,12 @@ const (
 // PillarStorageClassReconciler reconciles a PillarStorageClass object.
 type PillarStorageClassReconciler struct {
 	client.Client
-	Scheme   *runtime.Scheme
-	Recorder recorder.EventRecorder
+	// APIReader reads from the API server, bypassing the informer cache.  It
+	// is used where a stale cached PillarStorageClass would lose state; when
+	// nil, Client is used.
+	APIReader client.Reader
+	Scheme    *runtime.Scheme
+	Recorder  recorder.EventRecorder
 }
 
 type desiredStorageClass struct {
@@ -576,11 +580,6 @@ func (r *PillarStorageClassReconciler) reconcileStorageClass(
 	log := logf.FromContext(ctx)
 	desired := desiredStorageClassFor(binding, pool, protocol)
 
-	carryOver, pending, err := pendingCarryOver(binding)
-	if err != nil {
-		return err
-	}
-
 	existing := &storagev1.StorageClass{}
 	getErr := r.Get(ctx, types.NamespacedName{Name: scName}, existing)
 	switch {
@@ -588,6 +587,23 @@ func (r *PillarStorageClassReconciler) reconcileStorageClass(
 		return r.recreateStorageClass(ctx, binding, existing, desired)
 	case getErr != nil && !errors.IsNotFound(getErr):
 		return fmt.Errorf("failed to get StorageClass %q: %w", scName, getErr)
+	}
+
+	// An absent StorageClass may be the gap of an interrupted re-create.  The
+	// informer caches of StorageClasses and PillarStorageClasses advance
+	// independently, so the cached binding may predate the carry-over record
+	// written before the delete; read the record from the API server.
+	checkpoint := binding
+	if getErr != nil {
+		var err error
+		checkpoint, err = r.currentBinding(ctx, binding)
+		if err != nil {
+			return err
+		}
+	}
+	carryOver, pending, err := pendingCarryOver(checkpoint)
+	if err != nil {
+		return err
 	}
 
 	sc := &storagev1.StorageClass{
@@ -625,9 +641,30 @@ func (r *PillarStorageClassReconciler) reconcileStorageClass(
 
 	if pending {
 		// The StorageClass exists again, so the record has served its purpose.
-		return r.recordCarryOver(ctx, binding, nil)
+		return r.recordCarryOver(ctx, checkpoint, nil)
 	}
 	return nil
+}
+
+// currentBinding returns binding as stored in the API server: binding itself
+// when it is current, else the fresher copy.
+func (r *PillarStorageClassReconciler) currentBinding(
+	ctx context.Context,
+	binding *pillarcsiv1alpha1.PillarStorageClass,
+) (*pillarcsiv1alpha1.PillarStorageClass, error) {
+	reader := r.APIReader
+	if reader == nil {
+		reader = r.Client
+	}
+	current := &pillarcsiv1alpha1.PillarStorageClass{}
+	err := reader.Get(ctx, types.NamespacedName{Name: binding.Name}, current)
+	if err != nil {
+		return nil, fmt.Errorf("read PillarStorageClass %q from the API server: %w", binding.Name, err)
+	}
+	if current.ResourceVersion == binding.ResourceVersion {
+		return binding, nil
+	}
+	return current, nil
 }
 
 // storageClassCarryOverAnnotation holds, on the PillarStorageClass, the

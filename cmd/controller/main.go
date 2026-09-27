@@ -102,9 +102,10 @@ func setupControllers(
 		return fmt.Errorf("PillarProtocol controller: %w", err)
 	}
 	err = (&controller.PillarStorageClassReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorder("pillarstorageclass-controller"),
+		Client:    mgr.GetClient(),
+		APIReader: mgr.GetAPIReader(),
+		Scheme:    mgr.GetScheme(),
+		Recorder:  mgr.GetEventRecorder("pillarstorageclass-controller"),
 	}).SetupWithManager(mgr)
 	if err != nil {
 		return fmt.Errorf("PillarStorageClass controller: %w", err)
