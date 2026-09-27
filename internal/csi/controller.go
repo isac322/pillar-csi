@@ -51,6 +51,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -114,6 +115,10 @@ func DefaultAgentDialer(_ context.Context, addr string) (agentv1.AgentServiceCli
 // lifecycle state); no reconciler owns it, so its RBAC is declared here.
 // +kubebuilder:rbac:groups=pillar-csi.bhyoo.com,resources=pillarvolumestates,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=pillar-csi.bhyoo.com,resources=pillarvolumestates/status,verbs=get;update;patch
+// ReapAbandonedVolume reads PersistentVolumes and PersistentVolumeClaims to
+// decide whether a provisioning attempt was abandoned.
+// +kubebuilder:rbac:groups="",resources=persistentvolumes,verbs=get;list
+// +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch
 
 // ControllerServer implements the CSI Controller service
 // (csi.ControllerServer).  It translates CSI RPC calls into sequences of
@@ -484,6 +489,12 @@ const (
 	paramPVCName      = "csi.storage.k8s.io/pvc-name"
 	paramPVCNamespace = "csi.storage.k8s.io/pvc-namespace"
 
+	// ParamPVCNameMeta and paramPVCNamespaceMeta are the keys
+	// external-provisioner actually injects with --extra-create-metadata.
+	// They name the claim a CreateVolume call provisions for.
+	paramPVCNameMeta      = "csi.storage.k8s.io/pvc/name"
+	paramPVCNamespaceMeta = "csi.storage.k8s.io/pvc/namespace"
+
 	// PvcAnnotationParamPrefix is the PVC annotation prefix for per-PVC
 	// parameter overrides (Layer 4 of the merge hierarchy).
 	// Example annotation: "pillar-csi.bhyoo.com/param.zfs-prop.compression=lz4"
@@ -729,15 +740,33 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 	// ── Durable lifecycle before any agent call ──────────────────────────────
 	// The PillarVolumeState is created first, so every backend resource an
 	// agent ever creates belongs to a lifecycle (its UID) that DeleteVolume can
-	// find and fence; a volume without a PillarVolumeState owns nothing.
-	pvs, err := s.ensureVolumeState(ctx, pvName, v1alpha1.PillarVolumeStateSpec{
+	// find and fence; a volume without a PillarVolumeState owns nothing.  The
+	// claim identity lets the controller tear down an attempt whose claim was
+	// deleted before a PersistentVolume existed (ReapAbandonedVolume).
+	spec := v1alpha1.PillarVolumeStateSpec{
 		VolumeID:      volumeID,
 		AgentVolumeID: agentVolID,
 		AgentRef:      targetName,
 		BackendType:   backendTypeStr,
 		ProtocolType:  protocolTypeStr,
 		CapacityBytes: capacityBytes,
-	})
+	}
+	attempt := existingPV
+	if !pvExists {
+		claimRef, claimFound, claimErr := s.claimRefFor(ctx, pvName, scParams)
+		if claimErr != nil {
+			return nil, claimErr
+		}
+		if claimFound {
+			spec.ClaimRef = &claimRef
+		}
+		attempt = &v1alpha1.PillarVolumeState{ObjectMeta: metav1.ObjectMeta{Name: pvName}, Spec: spec}
+	}
+	err = s.refuseAbandonedClaim(ctx, attempt)
+	if err != nil {
+		return nil, err
+	}
+	pvs, err := s.ensureVolumeState(ctx, pvName, spec)
 	if err != nil {
 		return nil, err
 	}
@@ -829,15 +858,18 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 			"agent ExportVolume(%q) failed: %v", agentVolID, err)
 	}
 
-	// ── Advance to fully-created state ────────────────────────────────────────
-	s.sm.ForceState(volumeID, StateCreated)
-
-	// Best-effort: mark the lifecycle Ready and cache the export parameters
-	// for idempotent CreateVolume retries.  A failure here is not fatal — the
-	// volume is provisioned and a retry re-exports idempotently.
+	// ── Record the lifecycle Ready before reporting success ──────────────────
+	// The provisioner creates the PersistentVolume from this response, so the
+	// Ready record must be durable first: a lifecycle that is not Ready never
+	// has a PersistentVolume, which is what lets ReapAbandonedVolume end one
+	// whose claim is gone.  A failure is returned; the retry re-exports
+	// idempotently from CreatePartial and records Ready again.
 	info := exportResp.GetExportInfo()
-	//nolint:errcheck // best-effort CRD update; volume is already provisioned
-	_ = s.persistVolumeReady(ctx, pvName, pvs.UID, info)
+	err = s.persistVolumeReady(ctx, pvName, pvs.UID, info)
+	if err != nil {
+		return nil, err
+	}
+	s.sm.ForceState(volumeID, StateCreated)
 
 	// ── Build VolumeContext from ExportInfo ───────────────────────────────────
 	// These key/value pairs are stored in the PersistentVolume and forwarded to
@@ -946,12 +978,6 @@ func (s *ControllerServer) DeleteVolume(
 		return &csi.DeleteVolumeResponse{}, nil
 	}
 	targetName := parts[0]
-	protocolTypeStr := parts[1]
-	backendTypeStr := parts[2]
-	agentVolID := parts[3]
-
-	agentProtocolType := mapProtocolType(protocolTypeStr)
-	agentBackendType := mapBackendType(backendTypeStr)
 
 	pvName := pillarVolumeStateNameFromVolumeID(volumeID)
 	unlock := s.volumeLocks.lock(volumeID)
@@ -961,7 +987,7 @@ func (s *ControllerServer) DeleteVolume(
 	// deleting flag is committed by compare-and-swap only while no
 	// publication is recorded, so a concurrent publish on another controller
 	// is rejected instead of racing the deletion.
-	pvs, fence, err := s.markVolumeDeleting(ctx, pvName, volumeID)
+	pvs, fence, err := s.markVolumeDeleting(ctx, pvName, volumeID, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -969,82 +995,119 @@ func (s *ControllerServer) DeleteVolume(
 		return &csi.DeleteVolumeResponse{}, nil
 	}
 
+	err = s.teardownMarkedVolume(ctx, volumeTeardown{
+		volumeID:     volumeID,
+		pvName:       pvName,
+		uid:          pvs.UID,
+		targetName:   targetName,
+		protocolType: mapProtocolType(parts[1]),
+		backendType:  mapBackendType(parts[2]),
+		agentVolID:   parts[3],
+		fence:        fence,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &csi.DeleteVolumeResponse{}, nil
+}
+
+// volumeTeardown identifies one lifecycle whose PillarVolumeState is already
+// marked deleting, and routes its agent RPCs.
+type volumeTeardown struct {
+	volumeID     string
+	pvName       string
+	uid          types.UID
+	targetName   string
+	protocolType agentv1.ProtocolType
+	backendType  agentv1.BackendType
+	agentVolID   string
+	fence        *agentv1.FencingToken
+}
+
+// teardownMarkedVolume removes the export and the backend resource of a
+// lifecycle already marked deleting, then deletes its PillarVolumeState.  The
+// caller holds the volume lock.  Both agent RPCs are idempotent (a missing
+// export or backend resource is success) and carry the deletion's fencing
+// token, so the teardown is safe whether or not the backend resource was ever
+// created and is repeated unchanged on retry.  Any failure keeps the record
+// (still marked deleting) for the retry.
+func (s *ControllerServer) teardownMarkedVolume(ctx context.Context, t volumeTeardown) error {
 	// ── Resolve the agent address from PillarAgent ───────────────────────────
 	target := &v1alpha1.PillarAgent{}
-	getTargetErrDV := s.k8sClient.Get(ctx, types.NamespacedName{Name: targetName}, target)
-	if getTargetErrDV != nil {
-		if !k8serrors.IsNotFound(getTargetErrDV) {
-			return nil, status.Errorf(codes.Internal,
-				"failed to get PillarAgent %q: %v", targetName, getTargetErrDV)
+	getTargetErr := s.k8sClient.Get(ctx, types.NamespacedName{Name: t.targetName}, target)
+	if getTargetErr != nil {
+		if !k8serrors.IsNotFound(getTargetErr) {
+			return status.Errorf(codes.Internal,
+				"failed to get PillarAgent %q: %v", t.targetName, getTargetErr)
 		}
 		// A missing PillarAgent object does not prove the node's backend and
 		// target are gone, and without the agent the lifecycle cannot be
 		// ended durably.  Keep the record (marked deleting) and fail closed;
-		// the CO retries until the agent is reachable again.
-		return nil, status.Errorf(codes.FailedPrecondition,
+		// the caller retries until the agent is reachable again.
+		return status.Errorf(codes.FailedPrecondition,
 			"PillarAgent %q not found; cannot confirm deletion of volume %q on its storage node",
-			targetName, volumeID)
+			t.targetName, t.volumeID)
 	}
 
 	agentAddr := target.Status.ResolvedAddress
 	if agentAddr == "" {
 		// Target exists but has no address yet.  This is a transient state;
-		// return Unavailable so the CO will retry.
-		return nil, status.Errorf(codes.Unavailable,
-			"PillarAgent %q has no resolved address", targetName)
+		// return Unavailable so the caller retries.
+		return status.Errorf(codes.Unavailable,
+			"PillarAgent %q has no resolved address", t.targetName)
 	}
 
 	// ── Dial the agent ────────────────────────────────────────────────────────
 	agentClient, closer, err := s.dialAgent(ctx, agentAddr)
 	if err != nil {
-		return nil, status.Errorf(codes.Unavailable,
+		return status.Errorf(codes.Unavailable,
 			"failed to dial agent at %q: %v", agentAddr, err)
 	}
 	defer closer.Close() //nolint:errcheck // best-effort close; dial errors already handled
 
 	// ── Step 1: Remove the network export (idempotent) ────────────────────────
 	_, unexportErr := agentClient.UnexportVolume(ctx, &agentv1.UnexportVolumeRequest{
-		VolumeId:     agentVolID,
-		ProtocolType: agentProtocolType,
-		Fence:        fence,
+		VolumeId:     t.agentVolID,
+		ProtocolType: t.protocolType,
+		Fence:        t.fence,
 	})
 	unexportCode := status.Code(unexportErr)
 	if unexportErr != nil && unexportCode != codes.NotFound {
-		return nil, status.Errorf(unexportCode,
-			"agent UnexportVolume(%q) failed: %v", agentVolID, unexportErr)
+		return status.Errorf(unexportCode,
+			"agent UnexportVolume(%q) failed: %v", t.agentVolID, unexportErr)
 	}
 
 	// ── Step 2: Destroy the backend storage resource (idempotent) ─────────────
 	// Only a successful deletion ends the lifecycle at the agent; the record
-	// is kept on any failure so the CO retries with the same token.
+	// is kept on any failure so the caller retries with the same token.
 	_, deleteErr := agentClient.DeleteVolume(ctx, &agentv1.DeleteVolumeRequest{
-		VolumeId:    agentVolID,
-		BackendType: agentBackendType,
-		Fence:       fence,
+		VolumeId:    t.agentVolID,
+		BackendType: t.backendType,
+		Fence:       t.fence,
 	})
 	if deleteErr != nil {
 		st, _ := status.FromError(deleteErr)
-		return nil, status.Errorf(st.Code(),
-			"agent DeleteVolume(%q) failed: %v", agentVolID, deleteErr)
+		return status.Errorf(st.Code(),
+			"agent DeleteVolume(%q) failed: %v", t.agentVolID, deleteErr)
 	}
 
-	return s.finishDelete(ctx, volumeID, pvName, pvs.UID)
+	return s.finishDelete(ctx, t.volumeID, t.pvName, t.uid)
 }
 
 // finishDelete forgets the volume in memory and removes the lifecycle's
-// PillarVolumeState.  A failure is returned so the CO retries: the retry
+// PillarVolumeState.  A failure is returned so the caller retries: the retry
 // finds the record still marked deleting and repeats the idempotent steps.
 func (s *ControllerServer) finishDelete(
 	ctx context.Context,
 	volumeID, pvName string,
 	uid types.UID,
-) (*csi.DeleteVolumeResponse, error) {
+) error {
 	err := s.deleteVolumeState(ctx, pvName, uid)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	s.sm.ForceState(volumeID, StateNonExistent)
-	return &csi.DeleteVolumeResponse{}, nil
+	return nil
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

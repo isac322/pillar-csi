@@ -204,6 +204,24 @@ type VolumePublication struct {
 	Revoking bool `json:"revoking,omitempty"`
 }
 
+// VolumeClaimRef identifies the PersistentVolumeClaim a volume was
+// provisioned for.  The UID pins one claim: a claim deleted and re-created
+// under the same name is a different claim.
+type VolumeClaimRef struct {
+	// uid is the UID of the PersistentVolumeClaim.
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	UID string `json:"uid"`
+
+	// namespace is the namespace of the PersistentVolumeClaim.
+	// +optional
+	Namespace string `json:"namespace,omitempty"`
+
+	// name is the name of the PersistentVolumeClaim.
+	// +optional
+	Name string `json:"name,omitempty"`
+}
+
 // PillarVolumeStateSpec defines the immutable identity and routing information for
 // a CSI volume.  Fields are populated by the controller at CreateVolume time
 // and never changed thereafter.
@@ -242,6 +260,16 @@ type PillarVolumeStateSpec struct {
 	// +optional
 	// +kubebuilder:validation:Minimum=0
 	CapacityBytes int64 `json:"capacityBytes,omitempty"`
+
+	// claimRef identifies the PersistentVolumeClaim this volume was
+	// provisioned for, when the provisioner named it (external-provisioner
+	// --extra-create-metadata); its UID is read from the claim at the first
+	// CreateVolume.  The controller uses it to recognize a provisioning
+	// attempt that was abandoned because its claim was removed before any
+	// PersistentVolume was created.  Without it the claim UID is derived from
+	// the default "pvc-<claim UID>" volume name.
+	// +optional
+	ClaimRef *VolumeClaimRef `json:"claimRef,omitempty"`
 }
 
 // PillarVolumeStateStatus reflects the controller-observed state of a PillarVolumeState.

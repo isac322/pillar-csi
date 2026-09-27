@@ -37,8 +37,13 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -120,7 +125,7 @@ func newPVSResyncFixture() *pvsResyncFixture {
 		cfgRoot:        cfgRoot,
 		agentClient:    agentClient,
 		reconcileCalls: calls,
-		reconciler:     &PillarVolumeStateReconciler{Client: k8sClient, Exports: exports},
+		reconciler:     &PillarVolumeStateReconciler{Client: k8sClient, Exports: exports, Reaper: exports},
 	}
 }
 
@@ -227,5 +232,106 @@ var _ = Describe("PillarVolumeState export resync", func() {
 		Expect(res.RequeueAfter).To(BeZero())
 		Expect(f.reconcileCalls.Load()).To(BeZero())
 		Expect(filepath.Join(f.cfgRoot, "nvmet")).NotTo(BeADirectory())
+	})
+})
+
+// createClaimVolume creates a claim and the PillarVolumeState of a
+// provisioning attempt for it, still in phase Provisioning as CreateVolume
+// leaves it when a step after the agent's backend creation fails (issue #97).
+func createClaimVolume() (*corev1.PersistentVolumeClaim, *pillarcsiv1alpha1.PillarVolumeState) {
+	pvc := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{GenerateName: "reap-", Namespace: "default"},
+		Spec: corev1.PersistentVolumeClaimSpec{
+			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+			Resources: corev1.VolumeResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("1Gi")},
+			},
+		},
+	}
+	Expect(k8sClient.Create(ctx, pvc)).To(Succeed())
+	DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, pvc))).To(Succeed()) })
+
+	name := "pvc-" + string(pvc.UID)
+	pvs := &pillarcsiv1alpha1.PillarVolumeState{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec: pillarcsiv1alpha1.PillarVolumeStateSpec{
+			VolumeID:      pvsResyncAgent + "/nvmeof-tcp/zfs-zvol/tank/" + name,
+			AgentVolumeID: "tank/" + name,
+			AgentRef:      pvsResyncAgent,
+			BackendType:   "zfs-zvol",
+			ProtocolType:  "nvmeof-tcp",
+		},
+	}
+	Expect(k8sClient.Create(ctx, pvs)).To(Succeed())
+	DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, pvs))).To(Succeed()) })
+	pvs.Status = pillarcsiv1alpha1.PillarVolumeStateStatus{
+		Phase:                 pillarcsiv1alpha1.PillarVolumeStatePhaseProvisioning,
+		PublicationGeneration: 1,
+	}
+	Expect(k8sClient.Status().Update(ctx, pvs)).To(Succeed())
+	return pvc, pvs
+}
+
+var _ = Describe("PillarVolumeState abandoned provisioning", func() {
+	It("keeps the attempt while its claim exists and ends it through the agent once the claim is deleted", func() {
+		f := newPVSResyncFixture()
+		createResyncAgent()
+		pvc, pvs := createClaimVolume()
+		key := types.NamespacedName{Name: pvs.Name}
+
+		// The agent already exported the volume of this attempt: the phase
+		// does not tell whether the storage node holds anything.
+		_, err := f.agentClient.ExportVolume(ctx, &agentv1.ExportVolumeRequest{
+			VolumeId: pvs.Spec.AgentVolumeID, ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
+			DevicePath: pvsResyncDevice, AclEnabled: true,
+			Fence: &agentv1.FencingToken{VolumeUid: string(pvs.UID), Generation: 1},
+			ExportParams: &agentv1.ExportParams{Params: &agentv1.ExportParams_NvmeofTcp{
+				NvmeofTcp: &agentv1.NvmeofTcpExportParams{BindAddress: "10.0.0.1", Port: 4420},
+			}},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		subsystems := filepath.Join(f.cfgRoot, "nvmet", "subsystems")
+		Expect(os.ReadDir(subsystems)).To(HaveLen(1))
+
+		// Claim exists: the provisioner may retry CreateVolume on this record.
+		res, err := f.reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.RequeueAfter).To(Equal(volumeExportResyncInterval))
+		kept := &pillarcsiv1alpha1.PillarVolumeState{}
+		Expect(k8sClient.Get(ctx, key, kept)).To(Succeed())
+		Expect(kept.Status.Deleting).To(BeFalse())
+		Expect(os.ReadDir(subsystems)).To(HaveLen(1))
+
+		// Claim deleted while a Pod still references it: the API server's
+		// pvc-protection finalizer keeps it terminating, and
+		// external-provisioner keeps provisioning it, so the attempt stays.
+		Expect(k8sClient.Delete(ctx, pvc)).To(Succeed())
+		claimKey := types.NamespacedName{Name: pvc.Name, Namespace: pvc.Namespace}
+		Expect(k8sClient.Get(ctx, claimKey, pvc)).To(Succeed())
+		Expect(pvc.DeletionTimestamp).NotTo(BeNil())
+		_, err = f.reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(k8sClient.Get(ctx, key, kept)).To(Succeed(), "attempt of a terminating claim removed")
+		Expect(kept.Status.Deleting).To(BeFalse())
+
+		// Claim removed before any PersistentVolume existed: no DeleteVolume
+		// will ever come, so the reconciler ends the lifecycle itself.
+		pvc.Finalizers = nil
+		Expect(k8sClient.Update(ctx, pvc)).To(Succeed())
+		Eventually(func() error { return k8sClient.Get(ctx, claimKey, pvc) }).Should(Satisfy(apierrors.IsNotFound))
+
+		res, err = f.reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.RequeueAfter).To(BeZero())
+		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, key, kept))).To(BeTrue(), "PillarVolumeState not removed")
+		Expect(os.ReadDir(subsystems)).To(BeEmpty(), "export of the abandoned attempt left on the storage node")
+
+		// The agent recorded the lifecycle as ended: a stale grant for it
+		// (e.g. a delayed CreateVolume retry) is rejected.
+		_, err = f.agentClient.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
+			VolumeId: pvs.Spec.AgentVolumeID, CapacityBytes: 1 << 30,
+			Fence: &agentv1.FencingToken{VolumeUid: string(pvs.UID), Generation: 2},
+		})
+		Expect(status.Code(err)).To(Equal(codes.FailedPrecondition))
 	})
 })
