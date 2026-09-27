@@ -394,8 +394,9 @@ spec:
                 description: |-
                   mkfsOptions are additional mkfs arguments used when the node formats a
                   new volume; a volume that already carries a filesystem is never
-                  reformatted.  Each element is one argv element (no shell) and must not
-                  contain "/" or "..".  Only relevant for block-based protocols.
+                  reformatted.  Each element is one argv element (no shell); only
+                  filesystem tuning flags of the formatted type are accepted.  Only
+                  relevant for block-based protocols.
                 items:
                   type: string
                 type: array
@@ -694,8 +695,8 @@ spec:
                   mkfsOptions:
                     description: |-
                       mkfsOptions overrides the protocol-level mkfsOptions for this binding.
-                      Each element is one mkfs argv element (no shell) and must not contain
-                      "/" or "..".  A PVC fs-override mkfsOptions replaces it.
+                      Each element is one mkfs argv element (no shell); only filesystem
+                      tuning flags are accepted.  A PVC fs-override mkfsOptions replaces it.
                     items:
                       type: string
                     type: array

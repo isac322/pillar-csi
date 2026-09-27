@@ -110,8 +110,8 @@ spec:
                   mkfsOptions:
                     description: |-
                       mkfsOptions overrides the protocol-level mkfsOptions for this binding.
-                      Each element is one mkfs argv element (no shell) and must not contain
-                      "/" or "..".  A PVC fs-override mkfsOptions replaces it.
+                      Each element is one mkfs argv element (no shell); only filesystem
+                      tuning flags are accepted.  A PVC fs-override mkfsOptions replaces it.
                     items:
                       type: string
                     type: array

@@ -20,8 +20,8 @@ package csi
 
 // Tests for KubeMounter.FormatAndMount with mkfs options (issue #115).  The
 // host tools are replaced by a scripted fake exec that models one block
-// device: blkid reports it blank until an mkfs call succeeds, after which it
-// reports the new filesystem.
+// device: blkid reports it blank until an mkfs call creates a filesystem,
+// after which it reports that filesystem.
 
 import (
 	"errors"
@@ -40,26 +40,25 @@ const fakeDevice = "/dev/nvme0n1"
 type execCall struct {
 	cmd  string
 	args []string
-	cmdh *testingexec.FakeCmd
 }
 
 // fakeDeviceExec scripts blkid / mkfs.* / fsck for a single device.
 type fakeDeviceExec struct {
-	fsType  string // current filesystem on the device; "" = blank
-	mkfsErr error  // returned by mkfs.* when non-nil
-	calls   []*execCall
+	fsType   string // current filesystem on the device; "" = blank
+	mkfsErr  error  // returned by mkfs.* when non-nil
+	mkfsNoop bool   // mkfs.* exits 0 without creating a filesystem
+	calls    []execCall
 }
 
 func (f *fakeDeviceExec) exec() *testingexec.FakeExec {
 	fe := &testingexec.FakeExec{}
 	for range 16 {
 		fe.CommandScript = append(fe.CommandScript, func(cmd string, args ...string) utilexec.Cmd {
-			call := &execCall{cmd: cmd, args: slices.Clone(args), cmdh: &testingexec.FakeCmd{}}
-			f.calls = append(f.calls, call)
-			call.cmdh.CombinedOutputScript = []testingexec.FakeAction{func() ([]byte, []byte, error) {
-				return f.run(cmd)
+			f.calls = append(f.calls, execCall{cmd: cmd, args: slices.Clone(args)})
+			fc := &testingexec.FakeCmd{CombinedOutputScript: []testingexec.FakeAction{
+				func() ([]byte, []byte, error) { return f.run(cmd) },
 			}}
-			return testingexec.InitFakeCmd(call.cmdh, cmd, args...)
+			return testingexec.InitFakeCmd(fc, cmd, args...)
 		})
 	}
 	return fe
@@ -76,15 +75,17 @@ func (f *fakeDeviceExec) run(cmd string) (stdout, stderr []byte, err error) {
 		if f.mkfsErr != nil {
 			return []byte("mkfs: bad option"), nil, f.mkfsErr
 		}
-		f.fsType = strings.TrimPrefix(cmd, "mkfs.")
+		if !f.mkfsNoop {
+			f.fsType = strings.TrimPrefix(cmd, "mkfs.")
+		}
 		return nil, nil, nil
 	default: // fsck
 		return nil, nil, nil
 	}
 }
 
-func (f *fakeDeviceExec) mkfsCalls() []*execCall {
-	var out []*execCall
+func (f *fakeDeviceExec) mkfsCalls() []execCall {
+	var out []execCall
 	for _, c := range f.calls {
 		if strings.HasPrefix(c.cmd, "mkfs.") {
 			out = append(out, c)
@@ -100,8 +101,7 @@ func newFormatTestMounter(dev *fakeDeviceExec) (*KubeMounter, *mount.FakeMounter
 
 // TestKubeMounter_FormatAndMount_BlankDeviceUsesMkfsOptions verifies that a
 // blank device is formatted exactly once with the default arguments followed
-// by the configured mkfs options, from an isolated working directory, and is
-// then mounted with the requested type.
+// by the configured mkfs options, and is then mounted with the requested type.
 func TestKubeMounter_FormatAndMount_BlankDeviceUsesMkfsOptions(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -119,9 +119,8 @@ func TestKubeMounter_FormatAndMount_BlankDeviceUsesMkfsOptions(t *testing.T) {
 			t.Parallel()
 			dev := &fakeDeviceExec{}
 			km, fake := newFormatTestMounter(dev)
-			target := t.TempDir()
 
-			err := km.FormatAndMount(fakeDevice, target, tc.fsType, nil, tc.opts)
+			err := km.FormatAndMount(fakeDevice, t.TempDir(), tc.fsType, nil, tc.opts)
 			if err != nil {
 				t.Fatalf("FormatAndMount: %v", err)
 			}
@@ -131,9 +130,6 @@ func TestKubeMounter_FormatAndMount_BlankDeviceUsesMkfsOptions(t *testing.T) {
 			}
 			if mkfs[0].cmd != "mkfs."+tc.fsType || !slices.Equal(mkfs[0].args, tc.want) {
 				t.Errorf("mkfs = %s %q, want mkfs.%s %q", mkfs[0].cmd, mkfs[0].args, tc.fsType, tc.want)
-			}
-			if dirs := mkfs[0].cmdh.Dirs; len(dirs) != 1 || dirs[0] == "" || dirs[0] == "/" {
-				t.Errorf("mkfs working directory = %q, want one isolated scratch directory", dirs)
 			}
 			if len(fake.MountPoints) != 1 || fake.MountPoints[0].Type != tc.fsType {
 				t.Errorf("mount table = %+v, want one %s mount", fake.MountPoints, tc.fsType)
@@ -169,7 +165,7 @@ func TestKubeMounter_FormatAndMount_ReadOnlyBlankNotFormatted(t *testing.T) {
 	dev := &fakeDeviceExec{}
 	km, fake := newFormatTestMounter(dev)
 
-	err := km.FormatAndMount(fakeDevice, t.TempDir(), "ext4", []string{"ro"}, []string{"-K"})
+	err := km.FormatAndMount(fakeDevice, t.TempDir(), "xfs", []string{"ro"}, []string{"-K"})
 	if err == nil {
 		t.Fatal("FormatAndMount of a blank device read-only: want error, got nil")
 	}
@@ -185,7 +181,7 @@ func TestKubeMounter_FormatAndMount_MkfsFailure(t *testing.T) {
 	dev := &fakeDeviceExec{mkfsErr: errors.New("exit status 1")}
 	km, fake := newFormatTestMounter(dev)
 
-	err := km.FormatAndMount(fakeDevice, t.TempDir(), "xfs", nil, []string{"-b", "bogus"})
+	err := km.FormatAndMount(fakeDevice, t.TempDir(), "xfs", nil, []string{"-b", "size=3"})
 	if err == nil || !strings.Contains(err.Error(), "mkfs: bad option") {
 		t.Fatalf("FormatAndMount error = %v, want the mkfs failure with its output", err)
 	}
@@ -194,17 +190,37 @@ func TestKubeMounter_FormatAndMount_MkfsFailure(t *testing.T) {
 	}
 }
 
+// TestKubeMounter_FormatAndMount_MkfsLeavesDeviceBlank verifies that an mkfs
+// run that exits 0 without creating the filesystem fails the call instead of
+// letting SafeFormatAndMount format the device again without the options.
+func TestKubeMounter_FormatAndMount_MkfsLeavesDeviceBlank(t *testing.T) {
+	t.Parallel()
+	dev := &fakeDeviceExec{mkfsNoop: true}
+	km, fake := newFormatTestMounter(dev)
+
+	err := km.FormatAndMount(fakeDevice, t.TempDir(), "ext4", nil, []string{"-L", "data"})
+	if err == nil {
+		t.Fatal("FormatAndMount after a no-op mkfs: want error, got nil")
+	}
+	if n := len(dev.mkfsCalls()); n != 1 {
+		t.Errorf("mkfs calls = %d, want exactly the configured one", n)
+	}
+	if len(fake.MountPoints) != 0 {
+		t.Errorf("mount table = %+v, want nothing mounted", fake.MountPoints)
+	}
+}
+
 // TestKubeMounter_FormatAndMount_RejectsUnsafeOptions verifies that the
-// mounter itself refuses an mkfs option that references another file or
-// device, without running any command.
+// mounter itself refuses an mkfs option outside the allowlist without
+// running any command.
 func TestKubeMounter_FormatAndMount_RejectsUnsafeOptions(t *testing.T) {
 	t.Parallel()
 	dev := &fakeDeviceExec{}
 	km, _ := newFormatTestMounter(dev)
 
-	err := km.FormatAndMount(fakeDevice, t.TempDir(), "xfs", nil, []string{"-l", "logdev=/dev/sda"})
+	err := km.FormatAndMount(fakeDevice, t.TempDir(), "ext4", nil, []string{"-J", "device=LABEL=journal"})
 	if err == nil {
-		t.Fatal("FormatAndMount with a device-path mkfs option: want error, got nil")
+		t.Fatal("FormatAndMount with an external-journal mkfs option: want error, got nil")
 	}
 	if len(dev.calls) != 0 {
 		t.Errorf("commands run = %d, want 0", len(dev.calls))

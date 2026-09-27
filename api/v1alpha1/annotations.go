@@ -110,9 +110,10 @@ type PVCFSOverride struct {
 	// mkfsOptions are additional mkfs arguments used when the node formats
 	// the volume for the first time; a volume that already carries a
 	// filesystem is never reformatted.  Each element is one argv element
-	// (no shell; e.g. ["-K"] disables discard at mkfs time for xfs) and must
-	// not contain "/" or "..": options may not reference other files or
-	// devices.  Replaces the StorageClass mkfsOptions.
+	// (no shell; e.g. ["-K"] skips discard at mkfs time for xfs).  Only
+	// filesystem tuning flags of the formatted type are accepted; options
+	// that reference other files or devices (external journal/log, content
+	// copy, undo files) are rejected.  Replaces the StorageClass mkfsOptions.
 	// +optional
 	MkfsOptions []string `json:"mkfsOptions,omitempty" yaml:"mkfsOptions,omitempty"`
 }

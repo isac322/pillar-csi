@@ -20,7 +20,6 @@ package csi
 
 import (
 	"fmt"
-	"os"
 	"slices"
 	"strings"
 )
@@ -55,11 +54,12 @@ func (m *KubeMounter) FormatAndMount(source, target, fsType string, options, for
 // untouched, and a read-only mount request leaves a blank device alone so
 // SafeFormatAndMount reports it as an unformatted read-only disk.
 //
-// The mkfs binary is executed directly (no shell) from an empty temporary working
-// directory, so a relative name in formatOptions cannot resolve to a file of
-// the node plugin; validateMkfsOptions rejects paths.
+// The mkfs binary is executed directly (no shell) with options that passed
+// the validateMkfsOptions allowlist.  Afterwards the device must carry a
+// fsType filesystem: otherwise SafeFormatAndMount would find it still blank
+// and format it again without the configured options.
 func (m *KubeMounter) formatIfBlank(source, fsType string, mountOptions, formatOptions []string) error {
-	err := validateMkfsOptions(formatOptions)
+	err := validateMkfsOptions(fsType, formatOptions)
 	if err != nil {
 		return fmt.Errorf("format %s as %s: %w", source, fsType, err)
 	}
@@ -71,19 +71,19 @@ func (m *KubeMounter) formatIfBlank(source, fsType string, mountOptions, formatO
 		return nil
 	}
 
-	workDir, err := os.MkdirTemp("", "pillar-mkfs-")
-	if err != nil {
-		return fmt.Errorf("create mkfs working directory for %s: %w", source, err)
-	}
-	defer os.RemoveAll(workDir) //nolint:errcheck // best-effort removal of an empty scratch directory
-
 	args := mkfsArgs(fsType, source, formatOptions)
-	cmd := m.inner.Exec.Command("mkfs."+fsType, args...)
-	cmd.SetDir(workDir)
-	out, err := cmd.CombinedOutput()
+	out, err := m.inner.Exec.Command("mkfs."+fsType, args...).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("format %s: mkfs.%s %q: %w: %s",
 			source, fsType, args, err, strings.TrimSpace(string(out)))
+	}
+	formatted, err := m.inner.GetDiskFormat(source)
+	if err != nil {
+		return fmt.Errorf("verify filesystem on %s after mkfs.%s: %w", source, fsType, err)
+	}
+	if formatted != fsType {
+		return fmt.Errorf("format %s: mkfs.%s %q succeeded but blkid reports filesystem %q, want %q: %s",
+			source, fsType, args, formatted, fsType, strings.TrimSpace(string(out)))
 	}
 	return nil
 }

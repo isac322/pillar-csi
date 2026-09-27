@@ -110,14 +110,19 @@ func TestCreateVolume_RejectsInapplicableFilesystemSettings(t *testing.T) {
 			params: map[string]string{paramMkfsOptions: "-E lazy_itable_init=0"},
 		},
 		{
-			name:   "mkfs option naming a device",
+			name:   "xfs external log device",
 			fsType: "xfs",
 			annot:  "mkfsOptions: [\"-l\", \"logdev=/dev/sda\"]\n",
 		},
 		{
-			name:   "mkfs option with parent-directory reference",
+			name:   "ext4 external journal by label",
 			fsType: "ext4",
-			annot:  "mkfsOptions: [\"-d\", \"..\"]\n",
+			annot:  "mkfsOptions: [\"-J\", \"device=LABEL=other-journal\"]\n",
+		},
+		{
+			name:   "PVC fsType selects the allowlist",
+			fsType: "ext4",
+			annot:  "fsType: xfs\nmkfsOptions: [\"-E\", \"lazy_itable_init=0\"]\n",
 		},
 		{
 			name:   "unsupported fs-type via flat param override",
@@ -269,8 +274,8 @@ func TestNodeStageVolume_InvalidFilesystemSettings_NoAttach(t *testing.T) {
 	for name, extra := range map[string]map[string]string{
 		"unsupported fs-type": {paramFSType: "btrfs"},
 		"non-JSON mkfs":       {paramMkfsOptions: "-E lazy_itable_init=0"},
-		"mkfs device path":    {paramMkfsOptions: `["-J","device=/dev/sda"]`},
-		"empty mkfs element":  {paramMkfsOptions: `["-K",""]`},
+		"external journal":    {paramMkfsOptions: `["-J","device=LABEL=journal"]`},
+		"empty mkfs value":    {paramMkfsOptions: `["-L",""]`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -289,5 +294,67 @@ func TestNodeStageVolume_InvalidFilesystemSettings_NoAttach(t *testing.T) {
 					len(env.connector.connectCalls), len(env.mounter.formatAndMountCalls))
 			}
 		})
+	}
+}
+
+// TestValidateMkfsOptions pins the mkfs allowlist boundary: filesystem
+// tuning is accepted, while every option that makes mkfs touch another file
+// or device, or not leave the expected filesystem on the volume, is rejected.
+func TestValidateMkfsOptions(t *testing.T) {
+	t.Parallel()
+	allowed := map[string][][]string{
+		defaultFsType: {
+			{"-E", "lazy_itable_init=0,lazy_journal_init=0"},
+			{"-Elazy_itable_init=0"},
+			{"-m", "1", "-L", "data vol", "-O", "^has_journal", "-J", "size=64"},
+			{"-b", "4096", "-i", "16384", "-I", "256", "-T", "largefile"},
+		},
+		xfsFsType: {
+			{"-m", "reflink=1,crc=1", "-i", "size=512", "-K"},
+			{"-d", "su=64k,sw=4", "-l", "size=64m", "-n", "ftype=1", "-f"},
+		},
+	}
+	rejected := map[string][][]string{
+		defaultFsType: {
+			{"-J", "device=/dev/sdb"},              // external journal by path
+			{"-J", "device=LABEL=journal"},         // … by label
+			{"-J", "device=UUID=0f0e"},             // … by UUID
+			{"-d", "etc"},                          // copy a directory in
+			{"-l", "badblocks"},                    // read a bad-block list
+			{"-z", "undo"},                         // write an undo file
+			{"-E", "offset=4096"},                  // filesystem not at offset 0
+			{"-O", "journal_dev"},                  // journal device, not a filesystem
+			{"-n"}, {"-S"}, {"-V"}, {"-t", "ext3"}, // no or another filesystem
+			{"/dev/sdb"}, {"sdb"}, {"--help"}, // positional / long options
+			{"-Fq"},    // clustered flags
+			{"-L"},     // missing value
+			{"-L", ""}, // empty value
+			{"-K"},     // an xfs flag
+		},
+		xfsFsType: {
+			{"-l", "logdev=/dev/sdb"},
+			{"-r", "rtdev=/dev/sdb"},
+			{"-d", "name=/dev/sdb"},
+			{"-d", "file=1,size=1g"},
+			{"-p", "proto"},
+			{"-c", "options=conf"},
+			{"-N"},
+			{"-E", "lazy_itable_init=0"}, // an ext4 flag
+		},
+		"btrfs": {{"-L", "x"}},
+	}
+	for fsType, cases := range allowed {
+		for _, opts := range cases {
+			if err := validateMkfsOptions(fsType, opts); err != nil {
+				t.Errorf("%s %q: unexpected error %v", fsType, opts, err)
+			}
+		}
+	}
+	for fsType, cases := range rejected {
+		for _, opts := range cases {
+			if err := validateMkfsOptions(fsType, opts); err == nil {
+				t.Errorf("%s %q: accepted, want rejection", fsType, opts)
+			}
+		}
 	}
 }
