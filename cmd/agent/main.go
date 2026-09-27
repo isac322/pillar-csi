@@ -99,20 +99,38 @@ func (b *backendFlag) String() string {
 	}
 	parts := make([]string, len(*b))
 	for i, s := range *b {
-		switch s.typ {
-		case backendTypeLvmLV:
-			parts[i] = "type=" + s.typ + ",vg=" + s.vg
-			if s.thinpool != "" {
-				parts[i] += ",thinpool=" + s.thinpool
-			}
-		default:
-			parts[i] = "type=" + s.typ + ",pool=" + s.pool
-			if s.parent != "" {
-				parts[i] += ",parent=" + s.parent
-			}
-		}
+		parts[i] = s.String()
 	}
 	return strings.Join(parts, " ")
+}
+
+// String renders the spec in its --backend flag form,
+// e.g. "type=zfs-zvol,pool=tank,parent=k8s".
+func (s backendSpec) String() string {
+	out := "type=" + s.typ
+	switch s.typ {
+	case backendTypeLvmLV:
+		out += ",vg=" + s.vg
+		if s.thinpool != "" {
+			out += ",thinpool=" + s.thinpool
+		}
+	default:
+		out += ",pool=" + s.pool
+		if s.parent != "" {
+			out += ",parent=" + s.parent
+		}
+	}
+	return out
+}
+
+// registryKey returns the key under which the backend is registered: the ZFS
+// pool name or the LVM VG name.  It is the prefix of every volume ID routed to
+// this backend ("<key>/<volume-name>"), so it must be unique across all specs.
+func (s backendSpec) registryKey() string {
+	if s.typ == backendTypeLvmLV {
+		return s.vg
+	}
+	return s.pool
 }
 
 // Set parses a single --backend flag value and appends the resulting
@@ -183,17 +201,32 @@ func (b *backendFlag) Set(v string) error {
 // For ZFS backends the registry key is the pool name.
 // For LVM backends the registry key is the VG name (used as the "pool" prefix
 // in VolumeIDs of the form "<vg>/<lv-name>").
-func buildVolumeBackends(specs backendFlag) map[string]backend.VolumeBackend {
+//
+// The key must be unique across all specs: agent RPCs route a volume to its
+// backend by the volume ID's first path component alone (pool name or VG
+// name), so two backends sharing a key are indistinguishable.  Rather than
+// silently dropping all but the last spec, a duplicate key is a fatal
+// configuration error.
+func buildVolumeBackends(specs backendFlag) (map[string]backend.VolumeBackend, error) {
 	m := make(map[string]backend.VolumeBackend, len(specs))
+	seen := make(map[string]backendSpec, len(specs))
 	for _, spec := range specs {
+		key := spec.registryKey()
+		if prev, dup := seen[key]; dup {
+			return nil, fmt.Errorf(
+				"backend: duplicate pool/VG %q: %q conflicts with %q; "+
+					"pool/VG names must be unique across --backend flags",
+				key, spec.String(), prev.String())
+		}
+		seen[key] = spec
 		switch spec.typ {
 		case backendTypeLvmLV:
-			m[spec.vg] = lvm.New(spec.vg, spec.thinpool)
+			m[key] = lvm.New(spec.vg, spec.thinpool)
 		default: // backendTypeZfsZvol
-			m[spec.pool] = zfs.New(spec.pool, spec.parent)
+			m[key] = zfs.New(spec.pool, spec.parent)
 		}
 	}
-	return m
+	return m, nil
 }
 
 // buildGRPCOpts returns the gRPC server options for the given TLS
@@ -251,7 +284,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	volumeBackends := buildVolumeBackends(backends)
+	volumeBackends, err := buildVolumeBackends(backends)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
 	// The agent starts with the export restore pending: it re-creates no
 	// export until the controller sent the complete export state in one
 	// ReconcileState, so a shared NVMe/TCP port starts listening only after

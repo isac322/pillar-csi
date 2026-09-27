@@ -500,7 +500,10 @@ func TestBuildVolumeBackends_LvmLinear(t *testing.T) {
 		t.Fatalf("backendFlag.Set: %v", err)
 	}
 
-	bs := buildVolumeBackends(bf)
+	bs, err := buildVolumeBackends(bf)
+	if err != nil {
+		t.Fatalf("buildVolumeBackends: %v", err)
+	}
 
 	b, ok := bs["data-vg"]
 	if !ok {
@@ -526,8 +529,10 @@ func TestBuildVolumeBackends_LvmThin(t *testing.T) {
 	if err := bf.Set("type=lvm-lv,vg=ssd-vg,thinpool=fast-pool"); err != nil {
 		t.Fatalf("backendFlag.Set: %v", err)
 	}
-
-	bs := buildVolumeBackends(bf)
+	bs, err := buildVolumeBackends(bf)
+	if err != nil {
+		t.Fatalf("buildVolumeBackends: %v", err)
+	}
 
 	b, ok := bs["ssd-vg"]
 	if !ok {
@@ -555,7 +560,10 @@ func TestBuildVolumeBackends_LvmType(t *testing.T) {
 		t.Fatalf("backendFlag.Set: %v", err)
 	}
 
-	bs := buildVolumeBackends(bf)
+	bs, err := buildVolumeBackends(bf)
+	if err != nil {
+		t.Fatalf("buildVolumeBackends: %v", err)
+	}
 	b := bs["my-vg"]
 	if b == nil {
 		t.Fatal("LVM backend is nil")
@@ -578,8 +586,10 @@ func TestBuildVolumeBackends_LvmAndZfsMixed(t *testing.T) {
 	if err := bf.Set("type=lvm-lv,vg=data-vg"); err != nil {
 		t.Fatalf("bf.Set(lvm-lv): %v", err)
 	}
-
-	bs := buildVolumeBackends(bf)
+	bs, err := buildVolumeBackends(bf)
+	if err != nil {
+		t.Fatalf("buildVolumeBackends: %v", err)
+	}
 
 	if len(bs) != 2 {
 		t.Fatalf("len(registry) = %d; want 2", len(bs))
@@ -634,5 +644,99 @@ func TestBackendFlag_VolumeNameExtraction(t *testing.T) {
 				t.Errorf("DevicePath(%q) = %q; want %q", tc.volumeID, devPath, wantDevPath)
 			}
 		})
+	}
+}
+
+// TestBuildVolumeBackends_DuplicateKeyRejected verifies that two --backend
+// specs sharing the same pool/VG registry key are rejected with an error
+// instead of silently dropping all but the last spec.  The agent routes RPCs
+// to a backend by the volume ID's first path component alone, so two backends
+// behind one key are indistinguishable (issue #100).
+func TestBuildVolumeBackends_DuplicateKeyRejected(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]struct {
+		specs []string
+	}{
+		"same zfs pool, different parents": {
+			specs: []string{
+				"type=zfs-zvol,pool=tank,parent=fast",
+				"type=zfs-zvol,pool=tank,parent=bulk",
+			},
+		},
+		"same zfs pool, identical specs": {
+			specs: []string{
+				"type=zfs-zvol,pool=tank,parent=k8s",
+				"type=zfs-zvol,pool=tank,parent=k8s",
+			},
+		},
+		"same lvm vg, different thinpools": {
+			specs: []string{
+				"type=lvm-lv,vg=data-vg,thinpool=thin-a",
+				"type=lvm-lv,vg=data-vg,thinpool=thin-b",
+			},
+		},
+		"cross-type collision: zfs pool equals lvm vg": {
+			specs: []string{
+				"type=zfs-zvol,pool=shared",
+				"type=lvm-lv,vg=shared",
+			},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			var bf backendFlag
+			for _, s := range tc.specs {
+				if err := bf.Set(s); err != nil {
+					t.Fatalf("backendFlag.Set(%q): %v", s, err)
+				}
+			}
+
+			bs, err := buildVolumeBackends(bf)
+			if err == nil {
+				t.Fatalf("buildVolumeBackends(%v) succeeded; want duplicate-key error", tc.specs)
+			}
+			if bs != nil {
+				t.Errorf("buildVolumeBackends returned a registry alongside the error")
+			}
+			if !strings.Contains(err.Error(), "duplicate") {
+				t.Errorf("error %q should mention 'duplicate'", err)
+			}
+		})
+	}
+}
+
+// TestBuildVolumeBackends_DistinctKeysAccepted verifies that different pools
+// and VGs — including a ZFS pool and an LVM VG used together — still build a
+// complete registry without error.
+func TestBuildVolumeBackends_DistinctKeysAccepted(t *testing.T) {
+	t.Parallel()
+
+	var bf backendFlag
+	for _, s := range []string{
+		"type=zfs-zvol,pool=tank,parent=fast",
+		"type=zfs-zvol,pool=archive,parent=bulk",
+		"type=lvm-lv,vg=data-vg",
+		"type=lvm-lv,vg=ssd-vg,thinpool=thin-0",
+	} {
+		if err := bf.Set(s); err != nil {
+			t.Fatalf("backendFlag.Set(%q): %v", s, err)
+		}
+	}
+
+	bs, err := buildVolumeBackends(bf)
+	if err != nil {
+		t.Fatalf("buildVolumeBackends: unexpected error: %v", err)
+	}
+	if len(bs) != 4 {
+		t.Fatalf("len(registry) = %d; want 4", len(bs))
+	}
+	for _, key := range []string{"tank", "archive", "data-vg", "ssd-vg"} {
+		if bs[key] == nil {
+			t.Errorf("registry missing backend for %q", key)
+		}
 	}
 }
