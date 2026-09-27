@@ -179,6 +179,38 @@ if render --set-string agent.privileged=yes >/dev/null 2>&1; then
   mark_fail "non-boolean agent.privileged must fail the render instead of silently dropping privilege"
 fi
 
+# Backend registry key contract (issue #100). The agent routes volumes by
+# pool/VG name alone and refuses to start when two agent.backends entries share
+# one, so the chart must reject such values at render time instead of shipping
+# a crash-looping DaemonSet. Distinct keys must still render every entry.
+BACKENDS_OK_DS="$(extract_doc "$(render \
+  --set 'agent.backends[0].type=zfs-zvol' --set 'agent.backends[0].pool=tank' --set 'agent.backends[0].parent=k8s' \
+  --set 'agent.backends[1].type=lvm-lv' --set 'agent.backends[1].vg=data-vg' --set 'agent.backends[1].thinpool=thin0' \
+  --set 'agent.backends[2].type=zfs-zvol' --set 'agent.backends[2].pool=hot')" "agent-daemonset.yaml")"
+assert_contains "${BACKENDS_OK_DS}" "- type=zfs-zvol,pool=tank,parent=k8s" \
+  "distinct agent.backends: first ZFS entry must render"
+assert_contains "${BACKENDS_OK_DS}" "- type=lvm-lv,vg=data-vg,thinpool=thin0" \
+  "distinct agent.backends: LVM entry must render"
+assert_contains "${BACKENDS_OK_DS}" "- type=zfs-zvol,pool=hot" \
+  "distinct agent.backends: second ZFS entry must render"
+if render \
+  --set 'agent.backends[0].type=zfs-zvol' --set 'agent.backends[0].pool=tank' --set 'agent.backends[0].parent=a' \
+  --set 'agent.backends[1].type=zfs-zvol' --set 'agent.backends[1].pool=tank' --set 'agent.backends[1].parent=b' \
+  >/dev/null 2>&1; then
+  mark_fail "two agent.backends entries on one ZFS pool must fail the render"
+fi
+if render \
+  --set 'agent.backends[0].type=lvm-lv' --set 'agent.backends[0].vg=vg0' \
+  --set 'agent.backends[1].type=lvm-lv' --set 'agent.backends[1].vg=vg0' --set 'agent.backends[1].thinpool=thin0' \
+  >/dev/null 2>&1; then
+  mark_fail "two agent.backends entries on one LVM VG must fail the render"
+fi
+DUP_MIXED_ERR="$(render \
+  --set 'agent.backends[0].type=zfs-zvol' --set 'agent.backends[0].pool=shared' \
+  --set 'agent.backends[1].type=lvm-lv' --set 'agent.backends[1].vg=shared' 2>&1 >/dev/null || true)"
+assert_contains "${DUP_MIXED_ERR}" 'pool/VG "shared" appears in more than one entry' \
+  "a ZFS pool and an LVM VG sharing one name must fail the render with a clear error"
+
 assert_contains "${NODE_DS}" "terminationGracePeriodSeconds: 60" \
   "default node DaemonSet must set terminationGracePeriodSeconds=60"
 # The node DaemonSet also carries the existing node-driver-registrar preStop

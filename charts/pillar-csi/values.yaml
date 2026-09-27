@@ -325,8 +325,8 @@ agent:
   # provided.  Unknown `type` values cause a chart render failure.
   # Each ZFS `pool` and LVM `vg` may appear in at most one entry (a ZFS pool
   # and an LVM VG must not share a name either): volumes are routed to a
-  # backend by pool/VG name alone, so the agent refuses to start when two
-  # entries share one.
+  # backend by pool/VG name alone, so a duplicate fails the chart render and
+  # the agent refuses to start when given one.
   #
   # Example:
   #   backends:
