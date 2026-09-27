@@ -323,6 +323,10 @@ agent:
   #               for lvcreate -T; omit for thick LVs).
   # At least one backend is required; the agent exits with an error if none are
   # provided.  Unknown `type` values cause a chart render failure.
+  # Each ZFS `pool` and LVM `vg` may appear in at most one entry (a ZFS pool
+  # and an LVM VG must not share a name either): volumes are routed to a
+  # backend by pool/VG name alone, so a duplicate fails the chart render and
+  # the agent refuses to start when given one.
   #
   # Example:
   #   backends:
