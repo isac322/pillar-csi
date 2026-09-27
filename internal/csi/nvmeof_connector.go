@@ -31,19 +31,33 @@ import (
 
 // NVMeoFConnectOptions carries optional kernel fabrics tuning for a connect.
 // A nil field is omitted from the connect string so the kernel default
-// applies (ctrl_loss_tmo=600, reconnect_delay=10 on Linux).  Explicit values,
-// including 0 and -1, are passed through verbatim.
+// applies (ctrl_loss_tmo=600, reconnect_delay=10, queue_size=128 on Linux).
+// Explicit values, including 0 and -1 for the timeouts, are passed through
+// verbatim.
 type NVMeoFConnectOptions struct {
 	// CtrlLossTmo maps to the ctrl_loss_tmo fabrics option (seconds).
 	CtrlLossTmo *int32
 	// ReconnectDelay maps to the reconnect_delay fabrics option (seconds).
 	ReconnectDelay *int32
+	// QueueSize maps to the queue_size fabrics option: the I/O queue depth
+	// of every queue of the controller.
+	QueueSize *int32
 }
+
+// Linux accepts a fabrics queue_size only within [NVMF_MIN_QUEUE_SIZE,
+// NVMF_MAX_QUEUE_SIZE] (drivers/nvme/host/fabrics.h) and fails the whole
+// connect with EINVAL otherwise.
+const (
+	minNVMeoFQueueSize = 16
+	maxNVMeoFQueueSize = 1024
+)
 
 // ParseNVMeoFConnectOptions extracts the NVMe-oF fabrics tuning parameters
 // that CreateVolume copied into the VolumeContext.  Absent or empty keys leave
 // the option unset; a present value that is not a base-10 int32 is an error
 // so a misconfigured timeout is never silently replaced by the kernel default.
+// A queue size outside the kernel's accepted range is an error too, because
+// the kernel would reject the connect.
 func ParseNVMeoFConnectOptions(volCtx map[string]string) (NVMeoFConnectOptions, error) {
 	var opts NVMeoFConnectOptions
 	for _, f := range []struct {
@@ -52,6 +66,7 @@ func ParseNVMeoFConnectOptions(volCtx map[string]string) (NVMeoFConnectOptions, 
 	}{
 		{paramNVMeOFCtrlLossTmo, &opts.CtrlLossTmo},
 		{paramNVMeOFReconnectDelay, &opts.ReconnectDelay},
+		{paramNVMeOFMaxQueueSize, &opts.QueueSize},
 	} {
 		raw := volCtx[f.key]
 		if raw == "" {
@@ -64,6 +79,10 @@ func ParseNVMeoFConnectOptions(volCtx map[string]string) (NVMeoFConnectOptions, 
 		v32 := int32(v)
 		*f.dst = &v32
 	}
+	if q := opts.QueueSize; q != nil && (*q < minNVMeoFQueueSize || *q > maxNVMeoFQueueSize) {
+		return NVMeoFConnectOptions{}, fmt.Errorf("parse %s=%d: queue size must be within [%d, %d]",
+			paramNVMeOFMaxQueueSize, *q, minNVMeoFQueueSize, maxNVMeoFQueueSize)
+	}
 	return opts, nil
 }
 
@@ -74,6 +93,9 @@ func (o NVMeoFConnectOptions) AppendTo(connectOpts string) string {
 	}
 	if o.ReconnectDelay != nil {
 		connectOpts += ",reconnect_delay=" + strconv.Itoa(int(*o.ReconnectDelay))
+	}
+	if o.QueueSize != nil {
+		connectOpts += ",queue_size=" + strconv.Itoa(int(*o.QueueSize))
 	}
 	return connectOpts
 }
@@ -131,7 +153,7 @@ var _ Connector = (*NVMeoFConnector)(nil)
 //
 // On a new connection it opens /dev/nvme-fabrics and writes:
 //
-//	transport=tcp,traddr=<trAddr>,trsvcid=<trSvcID>,nqn=<subsysNQN>[,ctrl_loss_tmo=N][,reconnect_delay=N]
+//	transport=tcp,traddr=<trAddr>,trsvcid=<trSvcID>,nqn=<subsysNQN>[,ctrl_loss_tmo=N][,reconnect_delay=N][,queue_size=N]
 //
 // connectOpts only affect a new connection; an existing controller keeps the
 // options it was created with.

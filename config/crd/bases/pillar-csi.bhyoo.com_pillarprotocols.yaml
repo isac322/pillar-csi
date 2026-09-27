@@ -147,16 +147,29 @@ spec:
                     minimum: 0
                     type: integer
                   inCapsuleDataSize:
-                    description: inCapsuleDataSize is the maximum in-capsule data
-                      size in bytes.
+                    description: |-
+                      inCapsuleDataSize is the maximum in-capsule data size in bytes the
+                      target advertises (the nvmet port's param_inline_data_size).  It is a
+                      property of the listening port, shared by every volume exported on the
+                      same storage node address and port: exporting a volume that requests a
+                      value different from the port's current value fails instead of
+                      silently using the port's value.  Unset keeps the transport default
+                      (16384 for TCP on 4 KiB pages) and accepts whatever value the port has.
+                      The minimum is 1024: NVMe/TCP hosts send the 1024-byte fabrics Connect
+                      data in-capsule, so a smaller value makes every connect fail.
                     format: int32
-                    minimum: 0
+                    minimum: 1024
                     type: integer
                   maxQueueSize:
-                    description: maxQueueSize is the maximum number of I/O queue entries
-                      per connection.
+                    description: |-
+                      maxQueueSize is the I/O queue depth the initiator requests for each
+                      queue of the connection (the fabrics queue_size connect option).
+                      Unset keeps the kernel default (128).  The kernel accepts 16-1024.
+                      Applies to connections made after the change; a staged volume keeps
+                      the value from its CreateVolume.
                     format: int32
-                    minimum: 1
+                    maximum: 1024
+                    minimum: 16
                     type: integer
                   port:
                     default: 4420

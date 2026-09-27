@@ -181,10 +181,10 @@ func stateDirWritable(stateDir string) bool {
 // On a new connection it opens /dev/nvme-fabrics and writes:
 //
 //	transport=tcp,traddr=<trAddr>,trsvcid=<trSvcID>,nqn=<subsysNQN>,
-//	    hostnqn=<c.hostNQN>,hostid=<c.hostID>[,ctrl_loss_tmo=N][,reconnect_delay=N]
+//	    hostnqn=<c.hostNQN>,hostid=<c.hostID>[,ctrl_loss_tmo=N][,reconnect_delay=N][,queue_size=N]
 //
-// ctrl_loss_tmo / reconnect_delay are appended only when the VolumeContext
-// carries them; otherwise the kernel defaults apply.
+// ctrl_loss_tmo / reconnect_delay / queue_size are appended only when the
+// VolumeContext carries them; otherwise the kernel defaults apply.
 //
 // Both identity fields are mandatory:
 //

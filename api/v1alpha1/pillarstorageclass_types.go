@@ -111,14 +111,18 @@ type BackendOverrides struct {
 
 // NVMeOFTCPOverrides holds per-binding NVMe-oF/TCP parameter overrides.
 type NVMeOFTCPOverrides struct {
-	// maxQueueSize overrides the protocol-level maxQueueSize.
+	// maxQueueSize overrides the protocol-level maxQueueSize (the initiator's
+	// fabrics queue_size; the kernel accepts 16-1024).
 	// +optional
-	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Minimum=16
+	// +kubebuilder:validation:Maximum=1024
 	MaxQueueSize *int32 `json:"maxQueueSize,omitempty"`
 
-	// inCapsuleDataSize overrides the protocol-level inCapsuleDataSize.
+	// inCapsuleDataSize overrides the protocol-level inCapsuleDataSize (the
+	// target port's param_inline_data_size, shared by every volume exported
+	// on the same storage node address and port; at least 1024).
 	// +optional
-	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Minimum=1024
 	InCapsuleDataSize *int32 `json:"inCapsuleDataSize,omitempty"`
 }
 

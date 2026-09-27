@@ -136,16 +136,20 @@ spec:
                         description: nvmeofTcp overrides NVMe-oF/TCP parameters.
                         properties:
                           inCapsuleDataSize:
-                            description: inCapsuleDataSize overrides the protocol-level
-                              inCapsuleDataSize.
+                            description: |-
+                              inCapsuleDataSize overrides the protocol-level inCapsuleDataSize (the
+                              target port's param_inline_data_size, shared by every volume exported
+                              on the same storage node address and port; at least 1024).
                             format: int32
-                            minimum: 0
+                            minimum: 1024
                             type: integer
                           maxQueueSize:
-                            description: maxQueueSize overrides the protocol-level
-                              maxQueueSize.
+                            description: |-
+                              maxQueueSize overrides the protocol-level maxQueueSize (the initiator's
+                              fabrics queue_size; the kernel accepts 16-1024).
                             format: int32
-                            minimum: 1
+                            maximum: 1024
+                            minimum: 16
                             type: integer
                         type: object
                       smb:

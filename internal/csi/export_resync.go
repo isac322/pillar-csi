@@ -70,7 +70,11 @@ func exportSpecFor(params *agentv1.ExportParams, aclEnabled bool) *v1alpha1.Volu
 	switch {
 	case params.GetNvmeofTcp() != nil:
 		p := params.GetNvmeofTcp()
-		return &v1alpha1.VolumeExportSpec{BindAddress: p.GetBindAddress(), Port: p.GetPort(), ACLEnabled: aclEnabled}
+		spec := &v1alpha1.VolumeExportSpec{BindAddress: p.GetBindAddress(), Port: p.GetPort(), ACLEnabled: aclEnabled}
+		if v := p.GetInCapsuleDataSize(); v != 0 {
+			spec.InCapsuleDataSize = &v
+		}
+		return spec
 	case params.GetIscsi() != nil:
 		p := params.GetIscsi()
 		return &v1alpha1.VolumeExportSpec{BindAddress: p.GetBindAddress(), Port: p.GetPort(), ACLEnabled: aclEnabled}
@@ -83,8 +87,16 @@ func exportSpecFor(params *agentv1.ExportParams, aclEnabled bool) *v1alpha1.Volu
 func exportParamsFor(protocol agentv1.ProtocolType, spec *v1alpha1.VolumeExportSpec) *agentv1.ExportParams {
 	switch protocol {
 	case agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP:
+		var inCapsuleDataSize int32
+		if spec.InCapsuleDataSize != nil {
+			inCapsuleDataSize = *spec.InCapsuleDataSize
+		}
 		return &agentv1.ExportParams{Params: &agentv1.ExportParams_NvmeofTcp{
-			NvmeofTcp: &agentv1.NvmeofTcpExportParams{BindAddress: spec.BindAddress, Port: spec.Port},
+			NvmeofTcp: &agentv1.NvmeofTcpExportParams{
+				BindAddress:       spec.BindAddress,
+				Port:              spec.Port,
+				InCapsuleDataSize: inCapsuleDataSize,
+			},
 		}}
 	case agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI:
 		return &agentv1.ExportParams{Params: &agentv1.ExportParams_Iscsi{
@@ -261,6 +273,29 @@ func reconcileItemReason(agentVolumeID string, result *agentv1.ReconcileItemResu
 type restoreEntry struct {
 	pvsName string
 	desired *agentv1.VolumeDesiredState
+	rank    int
+}
+
+// restoreRank orders a batch restore.  The agent links exports in request
+// order, and the first export linked to a port fixes the port's
+// param_inline_data_size until no subsystem is linked any more; an export
+// requiring another value is then rejected.  Exports requiring a value come
+// first, those whose volume completed CreateVolume (the value hosts already
+// use) before those whose export never succeeded (CreatePartial), so a
+// failed attempt with a conflicting value cannot displace working volumes.
+// Exports accepting any value come last: they work with whatever value the
+// port gets and must not enable it with the transport default ahead of an
+// export that requires a specific value.
+func restoreRank(pvs *v1alpha1.PillarVolumeState) int {
+	if pvs.Status.ExportSpec.InCapsuleDataSize == nil {
+		return 2
+	}
+	switch pvs.Status.Phase {
+	case v1alpha1.PillarVolumeStatePhaseProvisioning, v1alpha1.PillarVolumeStatePhaseCreatePartial:
+		return 1
+	default:
+		return 0
+	}
 }
 
 // RestoreAgentExports restores every export of the named agent in one
@@ -317,9 +352,10 @@ func (s *ControllerServer) RestoreAgentExports(ctx context.Context, agentName st
 				s.setExportReconciled(ctx, name, metav1.ConditionFalse, reasonReconcileFailed, buildErr.Error()))
 			continue
 		}
-		entries = append(entries, restoreEntry{pvsName: name, desired: desired})
+		entries = append(entries, restoreEntry{pvsName: name, desired: desired, rank: restoreRank(pvs)})
 	}
 
+	slices.SortStableFunc(entries, func(a, b restoreEntry) int { return a.rank - b.rank })
 	errs = append(errs, s.sendAgentRestore(ctx, agentName, entries))
 	return errors.Join(errs...) //nolint:wrapcheck // multi-error is already wrapped per item
 }

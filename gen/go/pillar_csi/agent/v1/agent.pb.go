@@ -555,9 +555,20 @@ type NvmeofTcpExportParams struct {
 	BindAddress string `protobuf:"bytes,1,opt,name=bind_address,json=bindAddress,proto3" json:"bind_address,omitempty"`
 	// TCP port (default: 4420).
 	Port int32 `protobuf:"varint,2,opt,name=port,proto3" json:"port,omitempty"`
-	// Maximum I/O queue depth.
+	// Not used by the agent: the I/O queue depth is requested by the
+	// initiator (fabrics queue_size connect option), not configured on the
+	// target port.
 	MaxQueueSize int32 `protobuf:"varint,3,opt,name=max_queue_size,json=maxQueueSize,proto3" json:"max_queue_size,omitempty"`
-	// In-capsule data size in bytes.
+	// In-capsule data size in bytes, applied as the nvmet port's
+	// param_inline_data_size; 0 means not set.  A set value must be at least
+	// 1024, the size of the fabrics Connect data every NVMe/TCP host sends
+	// in-capsule.  The port is shared by every volume exported on the same
+	// bind_address and port, and the kernel accepts the attribute only while
+	// no subsystem is linked to the port.  When set, ExportVolume writes it to
+	// a port without linked subsystems, and fails with FAILED_PRECONDITION
+	// when the port already serves other volumes with a different value.  When
+	// not set, a port without linked subsystems is reset to the transport
+	// default and an active port is used as is.
 	InCapsuleDataSize int32 `protobuf:"varint,4,opt,name=in_capsule_data_size,json=inCapsuleDataSize,proto3" json:"in_capsule_data_size,omitempty"`
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache

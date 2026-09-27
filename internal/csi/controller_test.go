@@ -110,6 +110,8 @@ type mockAgentClient struct {
 	// lastCreateVolumeReq captures the most recent CreateVolume request for
 	// assertion on backend/export params in annotation integration tests.
 	lastCreateVolumeReq *agentv1.CreateVolumeRequest
+	// lastExportVolumeReq captures the most recent ExportVolume request.
+	lastExportVolumeReq *agentv1.ExportVolumeRequest
 }
 
 // Compile-time check that mockAgentClient implements the full interface.
@@ -136,10 +138,11 @@ func (m *mockAgentClient) CreateVolume(
 
 func (m *mockAgentClient) ExportVolume(
 	_ context.Context,
-	_ *agentv1.ExportVolumeRequest,
+	req *agentv1.ExportVolumeRequest,
 	_ ...grpc.CallOption,
 ) (*agentv1.ExportVolumeResponse, error) {
 	m.exportVolumeCalls++
+	m.lastExportVolumeReq = req
 	if m.exportVolumeErr != nil {
 		return nil, m.exportVolumeErr
 	}
@@ -510,6 +513,122 @@ func TestCreateVolume_MalformedNVMeoFTuning_RejectedBeforeProvisioning(t *testin
 	if env.agent.createVolumeCalls != 0 || env.agent.exportVolumeCalls != 0 {
 		t.Fatalf("agent must not be called: create=%d export=%d",
 			env.agent.createVolumeCalls, env.agent.exportVolumeCalls)
+	}
+}
+
+// TestCreateVolume_NVMeoFQueueAndInCapsuleSize verifies that the merged
+// max-queue-size reaches the node through the VolumeContext (it becomes the
+// fabrics queue_size), that the in-capsule data size reaches the agent in
+// ExportVolume and the durable exportSpec used by export restore, and that
+// both stay unset when not configured so the kernel defaults apply.
+func TestCreateVolume_NVMeoFQueueAndInCapsuleSize(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	env := newControllerTestEnv(t)
+	req := baseCreateVolumeRequest()
+	req.Parameters[paramNVMeOFMaxQueueSize] = "64"
+	req.Parameters[paramNVMeOFInCapsuleDataSize] = "8192"
+	resp, err := env.srv.CreateVolume(ctx, req)
+	if err != nil {
+		t.Fatalf("CreateVolume: %v", err)
+	}
+	vc := resp.GetVolume().GetVolumeContext()
+	if vc[paramNVMeOFMaxQueueSize] != "64" {
+		t.Errorf("VolumeContext[%s] = %q, want \"64\"", paramNVMeOFMaxQueueSize, vc[paramNVMeOFMaxQueueSize])
+	}
+	if _, ok := vc[paramNVMeOFInCapsuleDataSize]; ok {
+		t.Errorf("VolumeContext must not carry the target-side %s", paramNVMeOFInCapsuleDataSize)
+	}
+	if got := env.agent.lastExportVolumeReq.GetExportParams().GetNvmeofTcp().GetInCapsuleDataSize(); got != 8192 {
+		t.Errorf("ExportVolume in_capsule_data_size = %d, want 8192", got)
+	}
+	pvs, _, err := env.srv.loadPillarVolumeState(ctx, req.GetName())
+	if err != nil {
+		t.Fatalf("load PillarVolumeState: %v", err)
+	}
+	if spec := pvs.Status.ExportSpec; spec == nil || spec.InCapsuleDataSize == nil || *spec.InCapsuleDataSize != 8192 {
+		t.Errorf("status.exportSpec = %+v, want inCapsuleDataSize 8192", spec)
+	}
+
+	unsetEnv := newControllerTestEnv(t)
+	resp, err = unsetEnv.srv.CreateVolume(ctx, baseCreateVolumeRequest())
+	if err != nil {
+		t.Fatalf("CreateVolume without tuning: %v", err)
+	}
+	if _, ok := resp.GetVolume().GetVolumeContext()[paramNVMeOFMaxQueueSize]; ok {
+		t.Errorf("VolumeContext must not carry %s when unset", paramNVMeOFMaxQueueSize)
+	}
+	if got := unsetEnv.agent.lastExportVolumeReq.GetExportParams().GetNvmeofTcp().GetInCapsuleDataSize(); got != 0 {
+		t.Errorf("ExportVolume in_capsule_data_size = %d, want unset (0)", got)
+	}
+	pvs, _, err = unsetEnv.srv.loadPillarVolumeState(ctx, baseCreateVolumeRequest().GetName())
+	if err != nil {
+		t.Fatalf("load PillarVolumeState: %v", err)
+	}
+	if spec := pvs.Status.ExportSpec; spec == nil || spec.InCapsuleDataSize != nil {
+		t.Errorf("status.exportSpec = %+v, want no inCapsuleDataSize", spec)
+	}
+}
+
+// TestCreateVolume_PartialRetryRecordsCorrectedInCapsuleSize verifies that a
+// CreateVolume retry after a failed export (e.g. an in-capsule data size
+// conflicting with the shared port) records the export settings it retries
+// with, so export restore re-creates the export the volume actually has.
+func TestCreateVolume_PartialRetryRecordsCorrectedInCapsuleSize(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	env := newControllerTestEnv(t)
+
+	req := baseCreateVolumeRequest()
+	req.Parameters[paramNVMeOFInCapsuleDataSize] = "4096"
+	env.agent.exportVolumeErr = status.Error(codes.FailedPrecondition, "port in-capsule data size conflict")
+	if _, err := env.srv.CreateVolume(ctx, req); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("first CreateVolume err = %v, want FailedPrecondition", err)
+	}
+
+	env.agent.exportVolumeErr = nil
+	req.Parameters[paramNVMeOFInCapsuleDataSize] = "8192"
+	if _, err := env.srv.CreateVolume(ctx, req); err != nil {
+		t.Fatalf("retried CreateVolume: %v", err)
+	}
+	if env.agent.createVolumeCalls != 1 {
+		t.Fatalf("backend created %d times, want once (retry only re-exports)", env.agent.createVolumeCalls)
+	}
+	pvs, _, err := env.srv.loadPillarVolumeState(ctx, req.GetName())
+	if err != nil {
+		t.Fatalf("load PillarVolumeState: %v", err)
+	}
+	if spec := pvs.Status.ExportSpec; spec == nil || spec.InCapsuleDataSize == nil || *spec.InCapsuleDataSize != 8192 {
+		t.Errorf("status.exportSpec = %+v, want the retried inCapsuleDataSize 8192", spec)
+	}
+}
+
+// TestCreateVolume_InvalidNVMeoFQueueOrInCapsuleSize_RejectedBeforeProvisioning
+// verifies that a queue size the kernel would reject and a malformed or
+// negative in-capsule data size fail CreateVolume with InvalidArgument
+// before any agent call.
+func TestCreateVolume_InvalidNVMeoFQueueOrInCapsuleSize_RejectedBeforeProvisioning(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ key, value string }{
+		{paramNVMeOFMaxQueueSize, "8"},
+		{paramNVMeOFMaxQueueSize, "2048"},
+		{paramNVMeOFInCapsuleDataSize, "-1"},
+		{paramNVMeOFInCapsuleDataSize, "0"},
+		{paramNVMeOFInCapsuleDataSize, "1023"},
+		{paramNVMeOFInCapsuleDataSize, "16K"},
+	} {
+		env := newControllerTestEnv(t)
+		req := baseCreateVolumeRequest()
+		req.Parameters[tc.key] = tc.value
+		_, err := env.srv.CreateVolume(context.Background(), req)
+		if status.Code(err) != codes.InvalidArgument || !strings.Contains(err.Error(), tc.key) {
+			t.Errorf("%s=%s: CreateVolume err = %v, want InvalidArgument naming the key", tc.key, tc.value, err)
+		}
+		if env.agent.createVolumeCalls != 0 || env.agent.exportVolumeCalls != 0 {
+			t.Errorf("%s=%s: agent must not be called: create=%d export=%d", tc.key, tc.value,
+				env.agent.createVolumeCalls, env.agent.exportVolumeCalls)
+		}
 	}
 }
 

@@ -110,6 +110,12 @@ type NvmetTarget struct {
 	// any initiator to connect without an ACL entry.
 	ACLEnabled bool
 
+	// InlineDataSize is the in-capsule data size in bytes the export
+	// requires on its port (param_inline_data_size); at least
+	// MinInlineDataSize.  nil accepts the port's value.  See
+	// ensureInlineDataSizeLocked for the shared-port contract.
+	InlineDataSize *int32
+
 	// Identity is the host-visible namespace and subsystem identity written
 	// before the namespace is enabled.  The zero value selects
 	// DeriveIdentity(SubsystemNQN, NamespaceID).
@@ -575,6 +581,9 @@ const listenWildcardV6 = "::"
 type portSpec struct {
 	id    uint32
 	attrs map[string]string
+	// inlineDataSize is the param_inline_data_size the export requires, or
+	// nil when it accepts the port's value (see ensureInlineDataSizeLocked).
+	inlineDataSize *int32
 	// desc names the endpoint in error messages ("<bind address>:<port>").
 	desc string
 }
@@ -602,6 +611,9 @@ func (t *NvmetTarget) portSpec() (portSpec, error) {
 	if ip == nil {
 		return portSpec{}, fmt.Errorf("port: invalid BindAddress %q: not an IP literal", t.BindAddress)
 	}
+	if v := t.InlineDataSize; v != nil && *v < MinInlineDataSize {
+		return portSpec{}, fmt.Errorf("port: invalid InlineDataSize %d: must be at least %d", *v, MinInlineDataSize)
+	}
 	adrfam, wildcard := "ipv4", listenWildcard
 	if ip.To4() == nil {
 		adrfam, wildcard = "ipv6", listenWildcardV6
@@ -615,7 +627,8 @@ func (t *NvmetTarget) portSpec() (portSpec, error) {
 			"addr_traddr":  wildcard,
 			"addr_trsvcid": trsvcid,
 		},
-		desc: net.JoinHostPort(t.BindAddress, trsvcid),
+		inlineDataSize: t.InlineDataSize,
+		desc:           net.JoinHostPort(t.BindAddress, trsvcid),
 	}, nil
 }
 
@@ -646,7 +659,96 @@ func (t *NvmetTarget) ensurePortLocked(spec portSpec) error {
 			return fmt.Errorf("port %s attr %s: %w", spec.desc, attr, err)
 		}
 	}
+	return ensureInlineDataSizeLocked(pDir, spec)
+}
+
+// portInlineDataSizeAttr is the port attribute holding the in-capsule data
+// size the target advertises (IOCCSZ) to hosts connecting through the port.
+const portInlineDataSizeAttr = "param_inline_data_size"
+
+// MinInlineDataSize is the smallest usable param_inline_data_size: Linux
+// NVMe/TCP hosts always send fabrics commands in-capsule, including the
+// 1024-byte Connect data (struct nvmf_connect_data), and nvmet_tcp rejects an
+// in-capsule payload larger than the port's inline_data_size with a
+// do-not-retry status, so a smaller value makes every connect fail.
+const MinInlineDataSize = 1024
+
+// transportDefaultInlineDataSize is the param_inline_data_size value that
+// lets the transport choose (4 * PAGE_SIZE for TCP) when the port is enabled.
+const transportDefaultInlineDataSize = "-1"
+
+// ErrPortInlineDataSizeConflict reports that an export requires an in-capsule
+// data size other than the one its shared, already active port uses.
+var ErrPortInlineDataSizeConflict = errors.New("port in-capsule data size conflict")
+
+// ensureInlineDataSizeLocked makes the port's param_inline_data_size satisfy
+// spec.  The attribute belongs to the port, which every volume exported on
+// the same address and port shares, and Linux accepts writes to it only
+// while no subsystem is linked to the port (nvmet_is_port_enabled, EACCES
+// otherwise).  Hence:
+//
+//   - port without linked subsystems: the requested value, or the transport
+//     default when none is requested, is written and read back;
+//   - port with linked subsystems: a requested value must equal the value
+//     the port already uses, otherwise ErrPortInlineDataSizeConflict is
+//     returned instead of silently exporting with the port's value; an
+//     export without a requested value uses the port as is.
+//
+// A missing attribute (no value to reset) is left alone when nothing is
+// requested.  The caller holds the port's writeFileLock.
+func ensureInlineDataSizeLocked(pDir string, spec portSpec) error {
+	attrPath := filepath.Join(pDir, portInlineDataSizeAttr)
+	current, err := readFileTrimmed(attrPath)
+	if err != nil {
+		return fmt.Errorf("port %s attr %s read: %w", spec.desc, portInlineDataSizeAttr, err)
+	}
+	linked, err := portHasSubsystems(pDir)
+	if err != nil {
+		return fmt.Errorf("port %s: %w", spec.desc, err)
+	}
+
+	if linked {
+		if spec.inlineDataSize == nil {
+			return nil
+		}
+		want := strconv.Itoa(int(*spec.inlineDataSize))
+		if current != want {
+			return fmt.Errorf("port %s: %s is %q but the export requires %s; the in-capsule data "+
+				"size is shared by every volume exported on this port and can change only "+
+				"while no volume is exported on it: %w",
+				spec.desc, portInlineDataSizeAttr, current, want, ErrPortInlineDataSizeConflict)
+		}
+		return nil
+	}
+
+	want := transportDefaultInlineDataSize
+	if spec.inlineDataSize != nil {
+		want = strconv.Itoa(int(*spec.inlineDataSize))
+	} else if current == "" {
+		return nil
+	}
+	if current == want {
+		return nil
+	}
+	err = writeFile(attrPath, want)
+	if err != nil {
+		return fmt.Errorf("port %s attr %s: %w", spec.desc, portInlineDataSizeAttr, err)
+	}
 	return nil
+}
+
+// portHasSubsystems reports whether any subsystem is linked to the port at
+// pDir, i.e. whether the kernel has enabled the port.
+func portHasSubsystems(pDir string) (bool, error) {
+	subsDir := filepath.Join(pDir, "subsystems")
+	subs, err := os.ReadDir(subsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("configfs read %q: %w", subsDir, err)
+	}
+	return len(subs) > 0, nil
 }
 
 // linkSubsystemToPort creates a symlink in the port's subsystems/ directory
@@ -897,8 +999,8 @@ func restoreLink(oldname, newname string) error {
 	return nil
 }
 
-// portAttrs are the listener attributes ensurePortLocked writes to a port.
-var portAttrs = []string{"addr_trtype", "addr_adrfam", "addr_traddr", "addr_trsvcid"}
+// portAttrs are the attributes ensurePortLocked writes to a port.
+var portAttrs = []string{"addr_trtype", "addr_adrfam", "addr_traddr", "addr_trsvcid", portInlineDataSizeAttr}
 
 // prunePortLocked removes the port directory at pDir when no subsystem is
 // linked to it, and reads back that it is gone.  A port without subsystems

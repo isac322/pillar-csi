@@ -469,6 +469,11 @@ func TestConnect_FabricsOptions(t *testing.T) {
 			opts: NVMeoFConnectOptions{ReconnectDelay: i32(15)},
 			want: base + ",reconnect_delay=15",
 		},
+		{
+			name: "queue size",
+			opts: NVMeoFConnectOptions{CtrlLossTmo: i32(600), QueueSize: i32(64)},
+			want: base + ",ctrl_loss_tmo=600,queue_size=64",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -499,6 +504,7 @@ func TestParseNVMeoFConnectOptions(t *testing.T) {
 	got, err := ParseNVMeoFConnectOptions(map[string]string{
 		paramNVMeOFCtrlLossTmo:    "-1",
 		paramNVMeOFReconnectDelay: "5",
+		paramNVMeOFMaxQueueSize:   "256",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -509,12 +515,15 @@ func TestParseNVMeoFConnectOptions(t *testing.T) {
 	if got.ReconnectDelay == nil || *got.ReconnectDelay != 5 {
 		t.Errorf("ReconnectDelay = %v, want 5", got.ReconnectDelay)
 	}
+	if got.QueueSize == nil || *got.QueueSize != 256 {
+		t.Errorf("QueueSize = %v, want 256", got.QueueSize)
+	}
 
 	unset, err := ParseNVMeoFConnectOptions(map[string]string{paramNVMeOFCtrlLossTmo: ""})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if unset.CtrlLossTmo != nil || unset.ReconnectDelay != nil {
+	if unset.CtrlLossTmo != nil || unset.ReconnectDelay != nil || unset.QueueSize != nil {
 		t.Errorf("empty/absent keys must stay unset, got %+v", unset)
 	}
 
@@ -522,6 +531,24 @@ func TestParseNVMeoFConnectOptions(t *testing.T) {
 		_, err := ParseNVMeoFConnectOptions(map[string]string{paramNVMeOFReconnectDelay: bad})
 		if err == nil || !strings.Contains(err.Error(), paramNVMeOFReconnectDelay) {
 			t.Errorf("value %q: expected error naming %s, got %v", bad, paramNVMeOFReconnectDelay, err)
+		}
+	}
+}
+
+// TestParseNVMeoFConnectOptions_QueueSizeRange verifies the kernel's
+// queue_size bounds: Linux rejects a value outside [16, 1024] with EINVAL,
+// so such a value must fail here, before a PV is provisioned with it.
+func TestParseNVMeoFConnectOptions_QueueSizeRange(t *testing.T) {
+	for _, q := range []string{"16", "1024"} {
+		opts, err := ParseNVMeoFConnectOptions(map[string]string{paramNVMeOFMaxQueueSize: q})
+		if err != nil || opts.QueueSize == nil {
+			t.Errorf("queue size %s: want accepted, got %+v, %v", q, opts, err)
+		}
+	}
+	for _, bad := range []string{"15", "1025", "0", "-1", "big"} {
+		_, err := ParseNVMeoFConnectOptions(map[string]string{paramNVMeOFMaxQueueSize: bad})
+		if err == nil || !strings.Contains(err.Error(), paramNVMeOFMaxQueueSize) {
+			t.Errorf("queue size %q: expected error naming %s, got %v", bad, paramNVMeOFMaxQueueSize, err)
 		}
 	}
 }
