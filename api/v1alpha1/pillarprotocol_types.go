@@ -69,8 +69,10 @@ type NVMeOFTCPConfig struct {
 	// value different from the port's current value fails instead of
 	// silently using the port's value.  Unset keeps the transport default
 	// (16384 for TCP on 4 KiB pages) and accepts whatever value the port has.
+	// The minimum is 1024: NVMe/TCP hosts send the 1024-byte fabrics Connect
+	// data in-capsule, so a smaller value makes every connect fail.
 	// +optional
-	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Minimum=1024
 	InCapsuleDataSize *int32 `json:"inCapsuleDataSize,omitempty"`
 
 	// ctrlLossTmo is the maximum seconds to wait before declaring a target

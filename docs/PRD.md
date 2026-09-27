@@ -211,8 +211,11 @@ spec:
     #   - 이미 사용 중인 포트: 요청값이 포트의 현재 값과 다르면 ExportVolume이 FAILED_PRECONDITION으로
     #     실패한다(조용히 포트 값을 쓰지 않는다). 값을 요청하지 않은 볼륨은 포트의 현재 값을 그대로 쓴다.
     # 같은 포트를 쓰는 PillarProtocol/PillarStorageClass/PVC는 같은 값을 쓰거나 다른 포트를 사용해야 한다.
-    # 생략 시 TCP transport 기본값(4 * PAGE_SIZE, 4KiB 페이지에서 16384).
-    # agent 재시작 복구는 PillarVolumeState.status.exportSpec.inCapsuleDataSize를 사용하며, 값을 요구하는 export를 먼저 링크한다.
+    # 생략 시 TCP transport 기본값(4 * PAGE_SIZE, 4KiB 페이지에서 16384). 최소값은 1024: NVMe/TCP host는
+    # 1024바이트 fabrics Connect 데이터를 항상 in-capsule로 보내므로 더 작은 값이면 모든 connect가 실패한다.
+    # agent 재시작 복구는 PillarVolumeState.status.exportSpec.inCapsuleDataSize를 사용하며, 포트에 먼저
+    # 링크되는 export가 값을 정하므로 CreateVolume이 완료된 볼륨을 CreatePartial 볼륨보다, 같은 그룹에서는
+    # 값을 요구하는 export를 먼저 링크한다. CreatePartial 재시도는 재시도에 쓴 값으로 exportSpec을 갱신한다.
     inCapsuleDataSize: 16384
     # initiator 타임아웃/재연결 파라미터 (pillar-node가 nvme connect 시 적용)
     # 생략 시 connect 문자열에서 빠지고 커널 기본값(600/10)이 적용된다.

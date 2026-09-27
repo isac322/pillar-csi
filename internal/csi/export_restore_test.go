@@ -18,6 +18,7 @@ package csi
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -204,5 +205,46 @@ func TestRestoreAgentExports_ItemFailureIsReportedAndRetried(t *testing.T) {
 	}
 	if linked := env.linkedSubsystems(t); !slices.Equal(linked, []string{restoreNQN(good.Name)}) {
 		t.Errorf("linked subsystems = %v, want only %s", linked, restoreNQN(good.Name))
+	}
+}
+
+// TestRestoreAgentExports_EstablishedInCapsuleSizeWinsTheSharedPort verifies
+// the restore order on a shared port: a volume whose CreateVolume completed
+// fixes the port's param_inline_data_size before a volume whose export never
+// succeeded (CreatePartial after a conflict), even when the partial volume
+// is listed first, so a failed attempt cannot lock working volumes out.
+func TestRestoreAgentExports_EstablishedInCapsuleSizeWinsTheSharedPort(t *testing.T) {
+	t.Parallel()
+	established, conflicting := int32(8192), int32(4096)
+	partial := restorePVS(resyncAgentName, "pvc-a-partial", "aaaaaaaa-0000-0000-0000-000000000007")
+	partial.Status.Phase = v1alpha1.PillarVolumeStatePhaseCreatePartial
+	partial.Status.ExportSpec = &v1alpha1.VolumeExportSpec{
+		BindAddress: "10.0.0.1", Port: 4420, ACLEnabled: true, InCapsuleDataSize: &conflicting,
+	}
+	unset := restorePVS(resyncAgentName, "pvc-b-unset", "aaaaaaaa-0000-0000-0000-000000000008")
+	ready := restorePVS(resyncAgentName, "pvc-c-ready", "aaaaaaaa-0000-0000-0000-000000000009")
+	ready.Status.ExportSpec = &v1alpha1.VolumeExportSpec{
+		BindAddress: "10.0.0.1", Port: 4420, ACLEnabled: true, InCapsuleDataSize: &established,
+	}
+	env := newResyncEnvObjects(t, t.TempDir(), []client.Object{partial, unset, ready}, agent.WithExportRestoreGate())
+
+	if err := env.srv.RestoreAgentExports(context.Background(), resyncAgentName); err == nil {
+		t.Fatal("RestoreAgentExports succeeded although the partial volume conflicts with the port")
+	}
+
+	want := []string{restoreNQN(unset.Name), restoreNQN(ready.Name)}
+	if linked := env.linkedSubsystems(t); !slices.Equal(linked, want) {
+		t.Errorf("linked subsystems = %v, want %v", linked, want)
+	}
+	sizes, err := filepath.Glob(filepath.Join(env.cfgRoot, "nvmet", "ports", "*", "param_inline_data_size"))
+	if err != nil || len(sizes) != 1 {
+		t.Fatalf("param_inline_data_size files = %v (err %v), want exactly one", sizes, err)
+	}
+	raw, err := os.ReadFile(sizes[0])
+	if err != nil || strings.TrimSpace(string(raw)) != "8192" {
+		t.Errorf("param_inline_data_size = %q err=%v, want the established 8192", raw, err)
+	}
+	if cond := env.conditionOf(t, partial.Name); cond == nil || cond.Status != metav1.ConditionFalse {
+		t.Errorf("partial volume ExportReconciled = %+v, want False", cond)
 	}
 }

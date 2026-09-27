@@ -133,6 +133,12 @@ func (h *NVMeoFTCPAgentHandler) Export(
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "Export: nvmeof_tcp export params required")
 	}
+	inlineDataSize := nvmeofInlineDataSize(params.ProtocolParams)
+	if inlineDataSize != nil && *inlineDataSize < nvmeof.MinInlineDataSize {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"Export: volume %q: in_capsule_data_size %d is below the minimum %d",
+			params.VolumeID, *inlineDataSize, nvmeof.MinInlineDataSize)
+	}
 
 	devicePath, err := h.server.resolveExportDevicePath(params.VolumeID, params.DevicePath)
 	if err != nil {
@@ -155,7 +161,7 @@ func (h *NVMeoFTCPAgentHandler) Export(
 		BindAddress:    bindAddress,
 		Port:           port,
 		ACLEnabled:     params.ACLEnabled,
-		InlineDataSize: nvmeofInlineDataSize(params.ProtocolParams),
+		InlineDataSize: inlineDataSize,
 	}
 
 	unlock := h.server.lockTarget(agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP, targetID)
@@ -267,11 +273,10 @@ func (h *NVMeoFTCPAgentHandler) DenyInitiator(
 //     device, pin the identity and nvmeof.Prepare the target (subsystem, ACL,
 //     namespace) without creating or linking its port;
 //  2. link: create the port if needed and link every prepared export in one
-//     tight loop.  Exports that require an in-capsule data size link first:
-//     the first link enables a port and freezes its param_inline_data_size,
-//     so an export that accepts any value must not enable the port with the
-//     transport default before an export that requires a specific value
-//     (see nvmeof.ErrPortInlineDataSizeConflict).
+//     tight loop, in request order.  The first link enables a port and
+//     freezes its param_inline_data_size, so the caller orders exports whose
+//     in-capsule data size must win first; a later export requiring another
+//     value fails with nvmeof.ErrPortInlineDataSizeConflict.
 //
 // The target locks of all entries are held across both phases.  The device
 // check runs inside the fenced mutation so a destroyed backend never gets a
@@ -298,32 +303,12 @@ func (h *NVMeoFTCPAgentHandler) Reconcile(
 			prepared[i], errs[i] = h.prepareExport(ctx, export, targets[i])
 		}
 	}
-	for _, i := range linkOrder(targets) {
+	for i, export := range desired {
 		if errs[i] == nil {
-			export := desired[i]
 			errs[i] = h.server.recheckFence(export.VolumeID, export.Fence, fenceGrant, prepared[i].Link)
 		}
 	}
 	return errs
-}
-
-// linkOrder returns the indexes of targets with every target that requires
-// an in-capsule data size before the others, each group in input order.
-// Nil targets (entries that already failed) keep their place in the second
-// group; the caller skips them.
-func linkOrder(targets []*nvmeof.NvmetTarget) []int {
-	order := make([]int, 0, len(targets))
-	for i, target := range targets {
-		if target != nil && target.InlineDataSize != nil {
-			order = append(order, i)
-		}
-	}
-	for i, target := range targets {
-		if target == nil || target.InlineDataSize == nil {
-			order = append(order, i)
-		}
-	}
-	return order
 }
 
 // reconcileTarget builds the configfs target of one desired export.
@@ -471,10 +456,10 @@ func (s *Server) resolveExportDevicePath(volumeID, devicePath string) (string, e
 }
 
 // nvmeofInlineDataSize returns the in-capsule data size the export requires
-// on its port, or nil when it sets none.
+// on its port, or nil when it sets none (in_capsule_data_size 0).
 func nvmeofInlineDataSize(protocolParams *agentv1.ExportParams) *int32 {
-	if nvmeParams := protocolParams.GetNvmeofTcp(); nvmeParams != nil {
-		return nvmeParams.InCapsuleDataSize
+	if v := protocolParams.GetNvmeofTcp().GetInCapsuleDataSize(); v != 0 {
+		return &v
 	}
 	return nil
 }

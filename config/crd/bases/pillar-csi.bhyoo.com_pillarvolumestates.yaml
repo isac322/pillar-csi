@@ -271,7 +271,7 @@ spec:
                       export requires on its port; absent when the export accepts the port's
                       value.  NVMe-oF/TCP only.
                     format: int32
-                    minimum: 0
+                    minimum: 1024
                     type: integer
                   port:
                     description: |-

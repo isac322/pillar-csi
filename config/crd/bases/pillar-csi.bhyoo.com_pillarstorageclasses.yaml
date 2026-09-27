@@ -139,9 +139,9 @@ spec:
                             description: |-
                               inCapsuleDataSize overrides the protocol-level inCapsuleDataSize (the
                               target port's param_inline_data_size, shared by every volume exported
-                              on the same storage node address and port).
+                              on the same storage node address and port; at least 1024).
                             format: int32
-                            minimum: 0
+                            minimum: 1024
                             type: integer
                           maxQueueSize:
                             description: |-

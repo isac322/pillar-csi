@@ -542,14 +542,16 @@ type NvmeofTcpExportParams struct {
 	// target port.
 	MaxQueueSize int32 `protobuf:"varint,3,opt,name=max_queue_size,json=maxQueueSize,proto3" json:"max_queue_size,omitempty"`
 	// In-capsule data size in bytes, applied as the nvmet port's
-	// param_inline_data_size.  The port is shared by every volume exported on
-	// the same bind_address and port, and the kernel accepts the attribute
-	// only while no subsystem is linked to the port.  When set, ExportVolume
-	// writes it to a port without linked subsystems, and fails with
-	// FAILED_PRECONDITION when the port already serves other volumes with a
-	// different value.  When unset, a port without linked subsystems is reset
-	// to the transport default and an active port is used as is.
-	InCapsuleDataSize *int32 `protobuf:"varint,4,opt,name=in_capsule_data_size,json=inCapsuleDataSize,proto3,oneof" json:"in_capsule_data_size,omitempty"`
+	// param_inline_data_size; 0 means not set.  A set value must be at least
+	// 1024, the size of the fabrics Connect data every NVMe/TCP host sends
+	// in-capsule.  The port is shared by every volume exported on the same
+	// bind_address and port, and the kernel accepts the attribute only while
+	// no subsystem is linked to the port.  When set, ExportVolume writes it to
+	// a port without linked subsystems, and fails with FAILED_PRECONDITION
+	// when the port already serves other volumes with a different value.  When
+	// not set, a port without linked subsystems is reset to the transport
+	// default and an active port is used as is.
+	InCapsuleDataSize int32 `protobuf:"varint,4,opt,name=in_capsule_data_size,json=inCapsuleDataSize,proto3" json:"in_capsule_data_size,omitempty"`
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
 }
@@ -606,8 +608,8 @@ func (x *NvmeofTcpExportParams) GetMaxQueueSize() int32 {
 }
 
 func (x *NvmeofTcpExportParams) GetInCapsuleDataSize() int32 {
-	if x != nil && x.InCapsuleDataSize != nil {
-		return *x.InCapsuleDataSize
+	if x != nil {
+		return x.InCapsuleDataSize
 	}
 	return 0
 }
@@ -3272,13 +3274,12 @@ const file_pillar_csi_agent_v1_agent_proto_rawDesc = "" +
 	"\rBackendParams\x128\n" +
 	"\x03zfs\x18\x01 \x01(\v2$.pillar_csi.agent.v1.ZfsVolumeParamsH\x00R\x03zfs\x128\n" +
 	"\x03lvm\x18\x02 \x01(\v2$.pillar_csi.agent.v1.LvmVolumeParamsH\x00R\x03lvmB\b\n" +
-	"\x06params\"\xc3\x01\n" +
+	"\x06params\"\xa5\x01\n" +
 	"\x15NvmeofTcpExportParams\x12!\n" +
 	"\fbind_address\x18\x01 \x01(\tR\vbindAddress\x12\x12\n" +
 	"\x04port\x18\x02 \x01(\x05R\x04port\x12$\n" +
-	"\x0emax_queue_size\x18\x03 \x01(\x05R\fmaxQueueSize\x124\n" +
-	"\x14in_capsule_data_size\x18\x04 \x01(\x05H\x00R\x11inCapsuleDataSize\x88\x01\x01B\x17\n" +
-	"\x15_in_capsule_data_size\"J\n" +
+	"\x0emax_queue_size\x18\x03 \x01(\x05R\fmaxQueueSize\x12/\n" +
+	"\x14in_capsule_data_size\x18\x04 \x01(\x05R\x11inCapsuleDataSize\"J\n" +
 	"\x11IscsiExportParams\x12!\n" +
 	"\fbind_address\x18\x01 \x01(\tR\vbindAddress\x12\x12\n" +
 	"\x04port\x18\x02 \x01(\x05R\x04port\"+\n" +
@@ -3656,7 +3657,6 @@ func file_pillar_csi_agent_v1_agent_proto_init() {
 		(*BackendParams_Zfs)(nil),
 		(*BackendParams_Lvm)(nil),
 	}
-	file_pillar_csi_agent_v1_agent_proto_msgTypes[4].OneofWrappers = []any{}
 	file_pillar_csi_agent_v1_agent_proto_msgTypes[8].OneofWrappers = []any{
 		(*ExportParams_NvmeofTcp)(nil),
 		(*ExportParams_Iscsi)(nil),

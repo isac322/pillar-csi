@@ -38,6 +38,7 @@ import (
 	"io"
 	"maps"
 	"net"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -657,18 +658,16 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 	// only sent to the agent at export; reject a malformed value now,
 	// before any durable state exists, instead of provisioning a volume that
 	// can never be exported or staged.
-	var inCapsuleDataSize *int32
+	var inCapsuleDataSize int32
 	if protocolType == v1alpha1.ProtocolTypeNVMeOFTCP {
 		_, optsErr := ParseNVMeoFConnectOptions(params)
 		if optsErr != nil {
 			return nil, status.Errorf(codes.InvalidArgument, "invalid NVMe-oF connect parameter: %v", optsErr)
 		}
-		size, set, sizeErr := parseNVMeoFInCapsuleDataSize(params)
+		var sizeErr error
+		inCapsuleDataSize, sizeErr = parseNVMeoFInCapsuleDataSize(params)
 		if sizeErr != nil {
 			return nil, status.Errorf(codes.InvalidArgument, "invalid NVMe-oF export parameter: %v", sizeErr)
-		}
-		if set {
-			inCapsuleDataSize = &size
 		}
 	}
 
@@ -813,6 +812,10 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 	// ── Step 1: Create the backend storage resource ──────────────────────────
 	bindIP := extractIP(agentAddr)
 	exportParams := buildExportParams(params, agentProtocolType, bindIP, inCapsuleDataSize)
+	// The durable export spec is recorded with the partial state so the
+	// resync controller can re-create the export after the storage node
+	// loses its target state, independent of later parameter changes.
+	exportSpec := exportSpecFor(exportParams, parseACLEnabled(params[paramACLEnabled]))
 	// A lifecycle already in CreatePartial created its backend in an earlier
 	// attempt whose export failed; the device path recorded then is reused and
 	// only the export is retried, so a zvol that may hold data is never
@@ -823,11 +826,16 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 		if pvs.Spec.CapacityBytes > 0 {
 			actualCapacity = pvs.Spec.CapacityBytes
 		}
+		// The retry exports with the current parameters (e.g. a corrected
+		// in-capsule data size after a port conflict), so the durable spec
+		// must describe them before the export exists.
+		if !reflect.DeepEqual(pvs.Status.ExportSpec, exportSpec) {
+			err = s.persistCreatePartial(ctx, pvName, pvs.UID, devicePath, exportSpec)
+			if err != nil {
+				return nil, err
+			}
+		}
 	} else {
-		// The durable export spec is recorded with the partial state so the
-		// resync controller can re-create the export after the storage node
-		// loses its target state, independent of later parameter changes.
-		exportSpec := exportSpecFor(exportParams, parseACLEnabled(params[paramACLEnabled]))
 		devicePath, actualCapacity, err = s.createBackend(ctx, agentClient, pvName, volumeID, pvs.UID,
 			&agentv1.CreateVolumeRequest{
 				VolumeId:      agentVolID,
@@ -1562,12 +1570,12 @@ func buildBackendParams(params map[string]string, backendType agentv1.BackendTyp
 // PillarAgent.Status.ResolvedAddress with the ":port" suffix stripped.
 // The NVMe-oF / iSCSI kernel targets bind to an IP, not an IP:port pair.
 // The NVMe-oF in-capsule data size is passed in already parsed (see
-// parseNVMeoFInCapsuleDataSize); nil when none is configured.
+// parseNVMeoFInCapsuleDataSize); 0 when none is configured.
 func buildExportParams(
 	params map[string]string,
 	protocolType agentv1.ProtocolType,
 	bindAddress string,
-	inCapsuleDataSize *int32,
+	inCapsuleDataSize int32,
 ) *agentv1.ExportParams {
 	switch protocolType {
 	case agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP:
@@ -1620,25 +1628,32 @@ func buildExportParams(
 	}
 }
 
+// minNVMeoFInCapsuleDataSize is the smallest usable in-capsule data size:
+// every Linux NVMe/TCP host sends the 1024-byte fabrics Connect data
+// (struct nvmf_connect_data) in-capsule, and nvmet_tcp rejects an in-capsule
+// payload larger than the port's param_inline_data_size with a do-not-retry
+// status, so a smaller value makes every connect to the port fail.
+const minNVMeoFInCapsuleDataSize = 1024
+
 // parseNVMeoFInCapsuleDataSize returns the NVMe-oF in-capsule data size in
-// bytes from the merged CreateVolume parameters; set is false when none is
+// bytes from the merged CreateVolume parameters, or 0 when none is
 // configured so the agent keeps the port's value.  A value that is not a
-// non-negative base-10 int32 is an error rather than a silent fallback to
-// the default.
-func parseNVMeoFInCapsuleDataSize(params map[string]string) (size int32, set bool, err error) {
+// base-10 int32 of at least minNVMeoFInCapsuleDataSize is an error rather
+// than a silent fallback to the default or an unconnectable export.
+func parseNVMeoFInCapsuleDataSize(params map[string]string) (int32, error) {
 	raw := params[paramNVMeOFInCapsuleDataSize]
 	if raw == "" {
-		return 0, false, nil
+		return 0, nil
 	}
 	v, err := strconv.ParseInt(raw, 10, 32)
 	if err != nil {
-		return 0, false, fmt.Errorf("parse %s=%q: %w", paramNVMeOFInCapsuleDataSize, raw, err)
+		return 0, fmt.Errorf("parse %s=%q: %w", paramNVMeOFInCapsuleDataSize, raw, err)
 	}
-	if v < 0 {
-		return 0, false, fmt.Errorf("parse %s=%d: in-capsule data size must not be negative",
-			paramNVMeOFInCapsuleDataSize, v)
+	if v < minNVMeoFInCapsuleDataSize {
+		return 0, fmt.Errorf("parse %s=%d: in-capsule data size must be at least %d, the fabrics Connect data "+
+			"every NVMe/TCP host sends in-capsule", paramNVMeOFInCapsuleDataSize, v, minNVMeoFInCapsuleDataSize)
 	}
-	return int32(v), true, nil
+	return int32(v), nil
 }
 
 // parseACLEnabled interprets the acl-enabled StorageClass parameter.

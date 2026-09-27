@@ -111,8 +111,9 @@ type NvmetTarget struct {
 	ACLEnabled bool
 
 	// InlineDataSize is the in-capsule data size in bytes the export
-	// requires on its port (param_inline_data_size).  nil accepts the port's
-	// value.  See ensureInlineDataSizeLocked for the shared-port contract.
+	// requires on its port (param_inline_data_size); at least
+	// MinInlineDataSize.  nil accepts the port's value.  See
+	// ensureInlineDataSizeLocked for the shared-port contract.
 	InlineDataSize *int32
 
 	// Identity is the host-visible namespace and subsystem identity written
@@ -610,8 +611,8 @@ func (t *NvmetTarget) portSpec() (portSpec, error) {
 	if ip == nil {
 		return portSpec{}, fmt.Errorf("port: invalid BindAddress %q: not an IP literal", t.BindAddress)
 	}
-	if v := t.InlineDataSize; v != nil && *v < 0 {
-		return portSpec{}, fmt.Errorf("port: invalid InlineDataSize %d: must not be negative", *v)
+	if v := t.InlineDataSize; v != nil && *v < MinInlineDataSize {
+		return portSpec{}, fmt.Errorf("port: invalid InlineDataSize %d: must be at least %d", *v, MinInlineDataSize)
 	}
 	adrfam, wildcard := "ipv4", listenWildcard
 	if ip.To4() == nil {
@@ -664,6 +665,13 @@ func (t *NvmetTarget) ensurePortLocked(spec portSpec) error {
 // portInlineDataSizeAttr is the port attribute holding the in-capsule data
 // size the target advertises (IOCCSZ) to hosts connecting through the port.
 const portInlineDataSizeAttr = "param_inline_data_size"
+
+// MinInlineDataSize is the smallest usable param_inline_data_size: Linux
+// NVMe/TCP hosts always send fabrics commands in-capsule, including the
+// 1024-byte Connect data (struct nvmf_connect_data), and nvmet_tcp rejects an
+// in-capsule payload larger than the port's inline_data_size with a
+// do-not-retry status, so a smaller value makes every connect fail.
+const MinInlineDataSize = 1024
 
 // transportDefaultInlineDataSize is the param_inline_data_size value that
 // lets the transport choose (4 * PAGE_SIZE for TCP) when the port is enabled.

@@ -18,6 +18,7 @@ package agent_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,11 +29,12 @@ import (
 
 	agentv1 "github.com/bhyoo/pillar-csi/gen/go/pillar_csi/agent/v1"
 	"github.com/bhyoo/pillar-csi/internal/agent"
+	"github.com/bhyoo/pillar-csi/internal/agent/nvmeof"
 )
 
 // nvmeofExportParamsInline builds NVMe-oF export params on 10.0.0.1:4420
-// with the given in-capsule data size (nil: none requested).
-func nvmeofExportParamsInline(size *int32) *agentv1.ExportParams {
+// with the given in-capsule data size (0: none requested).
+func nvmeofExportParamsInline(size int32) *agentv1.ExportParams {
 	params := nvmeofExportParams("10.0.0.1", 4420)
 	params.GetNvmeofTcp().InCapsuleDataSize = size
 	return params
@@ -65,12 +67,11 @@ func TestNVMeoFTCPAgentHandler_ExportInlineDataSizeConflict(t *testing.T) {
 	t.Parallel()
 	handler, cfgRoot := newNVMeoFTCPHandler(t)
 	ctx := context.Background()
-	size := func(v int32) *int32 { return &v }
 
 	const first, second = testPool + "/pvc-inline-a", testPool + "/pvc-inline-b"
 	_, err := handler.Export(ctx, agent.ExportParams{
 		VolumeID: first, Fence: inlineFence(t, first), DevicePath: "/dev/zvol/" + first,
-		ProtocolParams: nvmeofExportParamsInline(size(8192)),
+		ProtocolParams: nvmeofExportParamsInline(8192),
 	})
 	if err != nil {
 		t.Fatalf("Export %s: %v", first, err)
@@ -81,7 +82,7 @@ func TestNVMeoFTCPAgentHandler_ExportInlineDataSizeConflict(t *testing.T) {
 
 	_, err = handler.Export(ctx, agent.ExportParams{
 		VolumeID: second, Fence: inlineFence(t, second), DevicePath: "/dev/zvol/" + second,
-		ProtocolParams: nvmeofExportParamsInline(size(4096)),
+		ProtocolParams: nvmeofExportParamsInline(4096),
 	})
 	if status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "param_inline_data_size") {
 		t.Fatalf("conflicting Export err = %v, want FailedPrecondition naming param_inline_data_size", err)
@@ -91,31 +92,49 @@ func TestNVMeoFTCPAgentHandler_ExportInlineDataSizeConflict(t *testing.T) {
 	}
 }
 
-// TestNVMeoFTCPAgentHandler_ReconcileLinksRequiredInlineDataSizeFirst
-// verifies that a restore batch sharing one port succeeds when an export
-// without an in-capsule data size is listed before one that requires a
-// value: the export requiring the value must enable the port, since the
-// kernel freezes the attribute once the port has a linked subsystem.
-func TestNVMeoFTCPAgentHandler_ReconcileLinksRequiredInlineDataSizeFirst(t *testing.T) {
+// TestNVMeoFTCPAgentHandler_ExportRejectsInlineDataSizeBelowConnectData
+// verifies that a size too small for the fabrics Connect data is rejected
+// as InvalidArgument before anything is configured.
+func TestNVMeoFTCPAgentHandler_ExportRejectsInlineDataSizeBelowConnectData(t *testing.T) {
 	t.Parallel()
 	handler, cfgRoot := newNVMeoFTCPHandler(t)
-	size := int32(8192)
 
-	const unset, required = testPool + "/pvc-unset", testPool + "/pvc-required"
-	errs := handler.Reconcile(context.Background(), []agent.ExportDesiredState{
-		{
-			VolumeID: unset, Fence: inlineFence(t, unset), DevicePath: "/dev/zvol/" + unset,
-			ProtocolParams: nvmeofExportParamsInline(nil),
-		},
-		{
-			VolumeID: required, Fence: inlineFence(t, required), DevicePath: "/dev/zvol/" + required,
-			ProtocolParams: nvmeofExportParamsInline(&size),
-		},
+	_, err := handler.Export(context.Background(), agent.ExportParams{
+		VolumeID: testVolumeID, Fence: testFence(t), DevicePath: testDevicePath,
+		ProtocolParams: nvmeofExportParamsInline(512),
 	})
-	for i, err := range errs {
-		if err != nil {
-			t.Errorf("Reconcile export %d: %v", i, err)
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("Export err = %v, want InvalidArgument", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(cfgRoot, "nvmet", "subsystems", testVolumeNQN)); !os.IsNotExist(statErr) {
+		t.Fatalf("subsystem created for a rejected export: %v", statErr)
+	}
+}
+
+// TestNVMeoFTCPAgentHandler_ReconcileLinksInRequestOrder verifies that a
+// restore batch sharing one port links in request order: the first export
+// fixes the port's in-capsule data size, a later export accepting any value
+// joins it, and a later export requiring another value is reported as a
+// conflict rather than exported with the port's value.
+func TestNVMeoFTCPAgentHandler_ReconcileLinksInRequestOrder(t *testing.T) {
+	t.Parallel()
+	handler, cfgRoot := newNVMeoFTCPHandler(t)
+
+	const required, unset, conflicting = testPool + "/pvc-required", testPool + "/pvc-unset", testPool + "/pvc-conflict"
+	export := func(volumeID string, size int32) agent.ExportDesiredState {
+		return agent.ExportDesiredState{
+			VolumeID: volumeID, Fence: inlineFence(t, volumeID), DevicePath: "/dev/zvol/" + volumeID,
+			ProtocolParams: nvmeofExportParamsInline(size),
 		}
+	}
+	errs := handler.Reconcile(context.Background(), []agent.ExportDesiredState{
+		export(required, 8192), export(unset, 0), export(conflicting, 4096),
+	})
+	if errs[0] != nil || errs[1] != nil {
+		t.Fatalf("Reconcile errors = %v, want the first two exports linked", errs)
+	}
+	if !errors.Is(errs[2], nvmeof.ErrPortInlineDataSizeConflict) {
+		t.Fatalf("conflicting export error = %v, want ErrPortInlineDataSizeConflict", errs[2])
 	}
 	if got := portInlineDataSize(t, cfgRoot); got != "8192" {
 		t.Fatalf("param_inline_data_size = %q, want 8192", got)

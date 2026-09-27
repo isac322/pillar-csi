@@ -1994,7 +1994,7 @@ var _ = Describe("buildStorageClassParams", func() {
 		Expect(params).To(HaveKeyWithValue("pillar-csi.bhyoo.com/nvmeof-max-queue-size", "128"))
 		Expect(params).To(HaveKeyWithValue("pillar-csi.bhyoo.com/nvmeof-in-capsule-data-size", "16384"))
 
-		overrideQueue, overrideInCapsule := int32(64), int32(0)
+		overrideQueue, overrideInCapsule := int32(64), int32(8192)
 		binding := makeBinding("pool", "proto", &pillarcsiv1alpha1.StorageClassOverrides{
 			Protocol: &pillarcsiv1alpha1.ProtocolOverrides{
 				NVMeOFTCP: &pillarcsiv1alpha1.NVMeOFTCPOverrides{
@@ -2005,7 +2005,7 @@ var _ = Describe("buildStorageClassParams", func() {
 		})
 		params = buildStorageClassParams(binding, pool, protocol)
 		Expect(params).To(HaveKeyWithValue("pillar-csi.bhyoo.com/nvmeof-max-queue-size", "64"))
-		Expect(params).To(HaveKeyWithValue("pillar-csi.bhyoo.com/nvmeof-in-capsule-data-size", "0"))
+		Expect(params).To(HaveKeyWithValue("pillar-csi.bhyoo.com/nvmeof-in-capsule-data-size", "8192"))
 
 		// An override on a protocol without the value still applies.
 		params = buildStorageClassParams(binding, pool, makeProtocolNVMeOF(4420))

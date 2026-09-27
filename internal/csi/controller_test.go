@@ -528,7 +528,7 @@ func TestCreateVolume_NVMeoFQueueAndInCapsuleSize(t *testing.T) {
 	env := newControllerTestEnv(t)
 	req := baseCreateVolumeRequest()
 	req.Parameters[paramNVMeOFMaxQueueSize] = "64"
-	req.Parameters[paramNVMeOFInCapsuleDataSize] = "0"
+	req.Parameters[paramNVMeOFInCapsuleDataSize] = "8192"
 	resp, err := env.srv.CreateVolume(ctx, req)
 	if err != nil {
 		t.Fatalf("CreateVolume: %v", err)
@@ -540,16 +540,15 @@ func TestCreateVolume_NVMeoFQueueAndInCapsuleSize(t *testing.T) {
 	if _, ok := vc[paramNVMeOFInCapsuleDataSize]; ok {
 		t.Errorf("VolumeContext must not carry the target-side %s", paramNVMeOFInCapsuleDataSize)
 	}
-	got := env.agent.lastExportVolumeReq.GetExportParams().GetNvmeofTcp().InCapsuleDataSize
-	if got == nil || *got != 0 {
-		t.Errorf("ExportVolume in_capsule_data_size = %v, want explicit 0", got)
+	if got := env.agent.lastExportVolumeReq.GetExportParams().GetNvmeofTcp().GetInCapsuleDataSize(); got != 8192 {
+		t.Errorf("ExportVolume in_capsule_data_size = %d, want 8192", got)
 	}
 	pvs, _, err := env.srv.loadPillarVolumeState(ctx, req.GetName())
 	if err != nil {
 		t.Fatalf("load PillarVolumeState: %v", err)
 	}
-	if spec := pvs.Status.ExportSpec; spec == nil || spec.InCapsuleDataSize == nil || *spec.InCapsuleDataSize != 0 {
-		t.Errorf("status.exportSpec = %+v, want inCapsuleDataSize 0", spec)
+	if spec := pvs.Status.ExportSpec; spec == nil || spec.InCapsuleDataSize == nil || *spec.InCapsuleDataSize != 8192 {
+		t.Errorf("status.exportSpec = %+v, want inCapsuleDataSize 8192", spec)
 	}
 
 	unsetEnv := newControllerTestEnv(t)
@@ -560,8 +559,48 @@ func TestCreateVolume_NVMeoFQueueAndInCapsuleSize(t *testing.T) {
 	if _, ok := resp.GetVolume().GetVolumeContext()[paramNVMeOFMaxQueueSize]; ok {
 		t.Errorf("VolumeContext must not carry %s when unset", paramNVMeOFMaxQueueSize)
 	}
-	if got := unsetEnv.agent.lastExportVolumeReq.GetExportParams().GetNvmeofTcp().InCapsuleDataSize; got != nil {
-		t.Errorf("ExportVolume in_capsule_data_size = %d, want unset", *got)
+	if got := unsetEnv.agent.lastExportVolumeReq.GetExportParams().GetNvmeofTcp().GetInCapsuleDataSize(); got != 0 {
+		t.Errorf("ExportVolume in_capsule_data_size = %d, want unset (0)", got)
+	}
+	pvs, _, err = unsetEnv.srv.loadPillarVolumeState(ctx, baseCreateVolumeRequest().GetName())
+	if err != nil {
+		t.Fatalf("load PillarVolumeState: %v", err)
+	}
+	if spec := pvs.Status.ExportSpec; spec == nil || spec.InCapsuleDataSize != nil {
+		t.Errorf("status.exportSpec = %+v, want no inCapsuleDataSize", spec)
+	}
+}
+
+// TestCreateVolume_PartialRetryRecordsCorrectedInCapsuleSize verifies that a
+// CreateVolume retry after a failed export (e.g. an in-capsule data size
+// conflicting with the shared port) records the export settings it retries
+// with, so export restore re-creates the export the volume actually has.
+func TestCreateVolume_PartialRetryRecordsCorrectedInCapsuleSize(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	env := newControllerTestEnv(t)
+
+	req := baseCreateVolumeRequest()
+	req.Parameters[paramNVMeOFInCapsuleDataSize] = "4096"
+	env.agent.exportVolumeErr = status.Error(codes.FailedPrecondition, "port in-capsule data size conflict")
+	if _, err := env.srv.CreateVolume(ctx, req); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("first CreateVolume err = %v, want FailedPrecondition", err)
+	}
+
+	env.agent.exportVolumeErr = nil
+	req.Parameters[paramNVMeOFInCapsuleDataSize] = "8192"
+	if _, err := env.srv.CreateVolume(ctx, req); err != nil {
+		t.Fatalf("retried CreateVolume: %v", err)
+	}
+	if env.agent.createVolumeCalls != 1 {
+		t.Fatalf("backend created %d times, want once (retry only re-exports)", env.agent.createVolumeCalls)
+	}
+	pvs, _, err := env.srv.loadPillarVolumeState(ctx, req.GetName())
+	if err != nil {
+		t.Fatalf("load PillarVolumeState: %v", err)
+	}
+	if spec := pvs.Status.ExportSpec; spec == nil || spec.InCapsuleDataSize == nil || *spec.InCapsuleDataSize != 8192 {
+		t.Errorf("status.exportSpec = %+v, want the retried inCapsuleDataSize 8192", spec)
 	}
 }
 
@@ -575,6 +614,8 @@ func TestCreateVolume_InvalidNVMeoFQueueOrInCapsuleSize_RejectedBeforeProvisioni
 		{paramNVMeOFMaxQueueSize, "8"},
 		{paramNVMeOFMaxQueueSize, "2048"},
 		{paramNVMeOFInCapsuleDataSize, "-1"},
+		{paramNVMeOFInCapsuleDataSize, "0"},
+		{paramNVMeOFInCapsuleDataSize, "1023"},
 		{paramNVMeOFInCapsuleDataSize, "16K"},
 	} {
 		env := newControllerTestEnv(t)

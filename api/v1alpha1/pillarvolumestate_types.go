@@ -165,7 +165,7 @@ type VolumeExportSpec struct {
 	// export requires on its port; absent when the export accepts the port's
 	// value.  NVMe-oF/TCP only.
 	// +optional
-	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Minimum=1024
 	InCapsuleDataSize *int32 `json:"inCapsuleDataSize,omitempty"`
 }
 

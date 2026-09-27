@@ -420,8 +420,10 @@ spec:
                       value different from the port's current value fails instead of
                       silently using the port's value.  Unset keeps the transport default
                       (16384 for TCP on 4 KiB pages) and accepts whatever value the port has.
+                      The minimum is 1024: NVMe/TCP hosts send the 1024-byte fabrics Connect
+                      data in-capsule, so a smaller value makes every connect fail.
                     format: int32
-                    minimum: 0
+                    minimum: 1024
                     type: integer
                   maxQueueSize:
                     description: |-
@@ -705,9 +707,9 @@ spec:
                             description: |-
                               inCapsuleDataSize overrides the protocol-level inCapsuleDataSize (the
                               target port's param_inline_data_size, shared by every volume exported
-                              on the same storage node address and port).
+                              on the same storage node address and port; at least 1024).
                             format: int32
-                            minimum: 0
+                            minimum: 1024
                             type: integer
                           maxQueueSize:
                             description: |-
@@ -1383,7 +1385,7 @@ spec:
                       export requires on its port; absent when the export accepts the port's
                       value.  NVMe-oF/TCP only.
                     format: int32
-                    minimum: 0
+                    minimum: 1024
                     type: integer
                   port:
                     description: |-

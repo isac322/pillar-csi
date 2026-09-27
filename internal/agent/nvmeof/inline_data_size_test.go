@@ -52,18 +52,6 @@ func TestApply_InlineDataSizeWrittenOnFirstExport(t *testing.T) {
 	}
 }
 
-// TestApply_InlineDataSizeExplicitZero verifies 0 (no in-capsule data) is
-// applied as a value, not treated as "unset".
-func TestApply_InlineDataSizeExplicitZero(t *testing.T) {
-	t.Parallel()
-	tgt := inlineTarget(t.TempDir(), "zero", int32Ptr(0))
-
-	if err := tgt.Apply(); err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	assertFileContent(t, inlineSizePath(tgt), "0")
-}
-
 // TestApply_InlineDataSizeConflictOnActivePort verifies that an export
 // requiring a value other than the one of its already active port fails
 // with ErrPortInlineDataSizeConflict and is not linked, while an export
@@ -154,11 +142,21 @@ func TestRemove_PrunesPortWithInlineDataSize(t *testing.T) {
 	}
 }
 
-func TestPrepare_RejectsNegativeInlineDataSize(t *testing.T) {
+// TestPrepare_RejectsInlineDataSizeBelowConnectData verifies that a size too
+// small for the 1024-byte fabrics Connect data, which would make every
+// connect to the port fail, is rejected before any configfs change, while
+// the minimum itself is accepted.
+func TestPrepare_RejectsInlineDataSizeBelowConnectData(t *testing.T) {
 	t.Parallel()
-	tgt := inlineTarget(t.TempDir(), "negative", int32Ptr(-1))
-
-	if _, err := tgt.Prepare(); err == nil {
-		t.Fatal("Prepare accepted a negative InlineDataSize")
+	for _, size := range []int32{-1, 0, MinInlineDataSize - 1} {
+		tgt := inlineTarget(t.TempDir(), "small", int32Ptr(size))
+		if _, err := tgt.Prepare(); err == nil {
+			t.Errorf("Prepare accepted InlineDataSize %d", size)
+		}
 	}
+	tgt := inlineTarget(t.TempDir(), "minimum", int32Ptr(MinInlineDataSize))
+	if err := tgt.Apply(); err != nil {
+		t.Fatalf("Apply with InlineDataSize %d: %v", MinInlineDataSize, err)
+	}
+	assertFileContent(t, inlineSizePath(tgt), "1024")
 }

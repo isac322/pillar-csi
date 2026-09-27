@@ -120,9 +120,9 @@ type NVMeOFTCPOverrides struct {
 
 	// inCapsuleDataSize overrides the protocol-level inCapsuleDataSize (the
 	// target port's param_inline_data_size, shared by every volume exported
-	// on the same storage node address and port).
+	// on the same storage node address and port; at least 1024).
 	// +optional
-	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Minimum=1024
 	InCapsuleDataSize *int32 `json:"inCapsuleDataSize,omitempty"`
 }
 
