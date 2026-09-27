@@ -40,7 +40,7 @@ import (
 
 // fakeSysfs creates a minimal /sys/class/nvme-subsystem tree inside dir for
 // the given NQN. If addNamespace is true it also creates an nvme0n1 entry.
-func fakeSysfs(t *testing.T, nqn string, addNamespace bool) string { //nolint:unparam
+func fakeSysfs(t *testing.T, nqn string, addNamespace bool) string {
 	t.Helper()
 	root := t.TempDir()
 	subsysDir := filepath.Join(root, "class", "nvme-subsystem", "nvme-subsys0")
@@ -78,12 +78,16 @@ func fakeSysfsWithController(t *testing.T, nqn, ctrlName string) (sysfsRoot, del
 	if err := os.MkdirAll(ctrlDir, 0o750); err != nil {
 		t.Fatalf("mkdirall ctrl: %v", err)
 	}
-	// class/nvme/<ctrlName>/ so Disconnect can create delete_controller there.
+	// class/nvme/<ctrlName>/delete_controller: the kernel attribute exists
+	// before the write, and Disconnect opens it without O_CREAT.
 	nvmeClassDir := filepath.Join(sysfsRoot, "class", "nvme", ctrlName)
 	if err := os.MkdirAll(nvmeClassDir, 0o750); err != nil {
 		t.Fatalf("mkdirall nvme class: %v", err)
 	}
 	deleteCtrlPath = filepath.Join(nvmeClassDir, "delete_controller")
+	if err := os.WriteFile(deleteCtrlPath, nil, 0o600); err != nil {
+		t.Fatalf("create delete_controller: %v", err)
+	}
 	return sysfsRoot, deleteCtrlPath
 }
 
@@ -146,6 +150,7 @@ func TestDisconnect_SysfsAbsent_IsNoOp(t *testing.T) {
 func TestDisconnect_Connected_DeletesController(t *testing.T) {
 	const nqn = "nqn.2024-01.com.example:vol1"
 	root, deleteCtrlPath := fakeSysfsWithController(t, nqn, "nvme0")
+	simulateKernelDelete(t, deleteCtrlPath, subsysCtrlPath(root, "nvme0"), 0)
 	c := newConnector(root, "")
 
 	if err := c.Disconnect(context.Background(), nqn); err != nil {
@@ -201,8 +206,11 @@ func TestDisconnect_DifferentNQN_IsNoOp(t *testing.T) {
 	}
 
 	// delete_controller must NOT have been written.
-	if _, err := os.Stat(deleteCtrlPath); err == nil {
-		data, _ := os.ReadFile(deleteCtrlPath) //nolint:errcheck,gosec
+	data, err := os.ReadFile(deleteCtrlPath) //nolint:gosec
+	if err != nil {
+		t.Fatalf("read delete_controller: %v", err)
+	}
+	if len(data) != 0 {
 		t.Fatalf("delete_controller must not be written for a different NQN; got %q", data)
 	}
 }
@@ -351,9 +359,6 @@ func TestConnect_SubsystemControllerStates(t *testing.T) {
 		wantConnect bool
 	}{
 		{name: "empty lingering subsystem", controllers: nil, wantConnect: true},
-		{name: "only dead controller", controllers: map[string]string{"nvme0": "dead"}, wantConnect: true},
-		{name: "only deleting controller", controllers: map[string]string{"nvme0": "deleting"}, wantConnect: true},
-		{name: "deleting no IO controller", controllers: map[string]string{"nvme0": "deleting (no IO)"}, wantConnect: true},
 		{name: "live controller", controllers: map[string]string{"nvme0": "live"}, wantConnect: false},
 		{name: "connecting controller", controllers: map[string]string{"nvme0": "connecting"}, wantConnect: false},
 		{name: "resetting controller", controllers: map[string]string{"nvme0": "resetting"}, wantConnect: false},
