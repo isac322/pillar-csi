@@ -1261,6 +1261,150 @@ func TestExpand_CommandFails(t *testing.T) {
 	}
 }
 
+// TestCapacityFailuresAreClassified verifies that lvm2 insufficient-space
+// failures of linear create, thin create and lvextend surface as
+// *backend.InsufficientCapacityError (mapped to ResourceExhausted by the
+// agent) with the command output preserved, while other command failures stay
+// unclassified (issue #99).
+func TestCapacityFailuresAreClassified(t *testing.T) {
+	t.Parallel()
+
+	const volID = "data-vg/pvc-cap"
+	const size = int64(2 << 30)
+	create := func(t *testing.T, b *lvm.Backend, lvmOut string) error {
+		t.Helper()
+		lvm.SetBackendExec(t, b, newFake(t, lvNotExistResp("pvc-cap"), fail(lvmOut)).exec())
+		_, _, err := b.Create(context.Background(), volID, size, nil)
+		return err
+	}
+	expand := func(t *testing.T, b *lvm.Backend, lvmOut string) error {
+		t.Helper()
+		// Pre-check reports the current 1 GiB size, then lvextend fails.
+		lvm.SetBackendExec(t, b, newFake(t, ok("1073741824\n"), fail(lvmOut)).exec())
+		_, err := b.Expand(context.Background(), volID, size)
+		return err
+	}
+	cases := map[string]struct {
+		thinpool     string
+		lvmOut       string
+		op           func(*testing.T, *lvm.Backend, string) error
+		wantCapacity bool
+	}{
+		"linear create, VG full": {
+			lvmOut:       "  Insufficient free space: 512 extents needed, but only 10 available",
+			op:           create,
+			wantCapacity: true,
+		},
+		"linear create, no allocatable extents": {
+			lvmOut: "  Insufficient suitable allocatable extents for logical volume pvc-cap: " +
+				"502 more required",
+			op:           create,
+			wantCapacity: true,
+		},
+		"linear create, no contiguous allocatable extents": {
+			lvmOut: "  Insufficient suitable contiguous allocatable extents for logical volume pvc-cap: " +
+				"502 more required",
+			op:           create,
+			wantCapacity: true,
+		},
+		"thin create, VG full": {
+			thinpool:     "thin-pool-0",
+			lvmOut:       `  Volume group "data-vg" has insufficient free space (10 extents): 512 required.`,
+			op:           create,
+			wantCapacity: true,
+		},
+		"thin create, thin pool out of data space": {
+			thinpool: "thin-pool-0",
+			lvmOut: "  WARNING: Thin pool data-vg/thin-pool-0 is out of data space.\n" +
+				"  Cannot create new thin volume, free space in thin pool data-vg/thin-pool-0 reached threshold.",
+			op:           create,
+			wantCapacity: true,
+		},
+		"thin create, thin pool metadata exhausted": {
+			thinpool: "thin-pool-0",
+			lvmOut: "  WARNING: Remaining free space in metadata of thin pool data-vg/thin-pool-0 " +
+				"is too low (75.00% >= 75.00%). Resize is recommended.\n" +
+				"  Cannot create new thin volume, free space in thin pool data-vg/thin-pool-0 reached threshold.",
+			op:           create,
+			wantCapacity: true,
+		},
+		"thin create, configured threshold crossed": {
+			// lvm2 logs the crossed thin_pool_autoextend_threshold at debug
+			// level only; the threshold error is the sole diagnostic.
+			thinpool:     "thin-pool-0",
+			lvmOut:       "  Cannot create new thin volume, free space in thin pool data-vg/thin-pool-0 reached threshold.",
+			op:           create,
+			wantCapacity: true,
+		},
+		"thin create, thin pool failed": {
+			// lvm2 prints the same generic threshold error for a failed pool,
+			// which is not a capacity condition.
+			thinpool: "thin-pool-0",
+			lvmOut: "  WARNING: Thin pool data-vg/thin-pool-0 is failed.\n" +
+				"  Cannot create new thin volume, free space in thin pool data-vg/thin-pool-0 reached threshold.",
+			op: create,
+		},
+		"thin create, failed pool out of data space": {
+			thinpool: "thin-pool-0",
+			lvmOut: "  WARNING: Thin pool data-vg/thin-pool-0 is failed is out of data space.\n" +
+				"  Cannot create new thin volume, free space in thin pool data-vg/thin-pool-0 reached threshold.",
+			op: create,
+		},
+		"thin create, thin pool needs check": {
+			thinpool: "thin-pool-0",
+			lvmOut: "  WARNING: Thin pool data-vg/thin-pool-0 needs check.\n" +
+				"  Cannot create new thin volume, free space in thin pool data-vg/thin-pool-0 reached threshold.",
+			op: create,
+		},
+		"thin create, status query fails": {
+			// lvm2 appends the generic threshold error after the dm-status
+			// failure; a status error is not a capacity condition.
+			thinpool: "thin-pool-0",
+			lvmOut: "  Expected thin-pool segment type but got error instead.\n" +
+				"  Cannot create new thin volume, free space in thin pool data-vg/thin-pool-0 reached threshold.",
+			op: create,
+		},
+		"expand, VG full": {
+			lvmOut:       "  Insufficient free extents: 256 extents needed, but only 10 available",
+			op:           expand,
+			wantCapacity: true,
+		},
+		"linear create, VG not found": {
+			lvmOut: `  Volume group "data-vg" not found`,
+			op:     create,
+		},
+		"expand, device busy": {
+			lvmOut: "  Can't open data-vg/pvc-cap exclusively.  Mounted filesystem?",
+			op:     expand,
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			b := lvm.New("data-vg", tc.thinpool)
+
+			err := tc.op(t, b, tc.lvmOut)
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			capErr, isCapacity := errors.AsType[*backend.InsufficientCapacityError](err)
+			if isCapacity != tc.wantCapacity {
+				t.Fatalf("InsufficientCapacityError = %v, want %v (err: %v)", isCapacity, tc.wantCapacity, err)
+			}
+			if !isCapacity {
+				return
+			}
+			if capErr.VolumeID != volID || capErr.RequestedBytes != size {
+				t.Errorf("InsufficientCapacityError{VolumeID: %q, RequestedBytes: %d}; want {%q, %d}",
+					capErr.VolumeID, capErr.RequestedBytes, volID, size)
+			}
+			if !strings.Contains(err.Error(), strings.TrimSpace(tc.lvmOut)) {
+				t.Errorf("error %q lost the lvm output", err)
+			}
+		})
+	}
+}
+
 // TestExpand_ThinLV verifies that Expand works identically for thin-provisioned
 // LVs — the same lvextend command is used regardless of provisioning mode.
 func TestExpand_ThinLV(t *testing.T) {

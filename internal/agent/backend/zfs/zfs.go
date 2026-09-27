@@ -96,6 +96,33 @@ func isNotExistOutput(out []byte) bool {
 		strings.Contains(s, "does not exist")
 }
 
+// outOfSpaceMarkers are the zfs(8) diagnostics reporting that the pool or an
+// ancestor dataset quota cannot hold the requested volsize:
+//
+//	cannot create 'tank/pvc': out of space
+//	cannot set property for 'tank/pvc': size is greater than available space
+//
+// libzfs prints "out of space" for ENOSPC and EDQUOT (zfs_standard_error).
+// Growing a thick zvol also grows its refreservation, and an ENOSPC on that
+// reservation is reported as "size is greater than available space"
+// (zfs_setprop_error), which libzfs emits only for reservations.
+var outOfSpaceMarkers = []string{
+	"out of space",
+	"size is greater than available space",
+}
+
+// isOutOfSpaceOutput reports whether `zfs create -V` or `zfs set volsize`
+// output says the pool cannot hold the requested size.
+func isOutOfSpaceOutput(out []byte) bool {
+	s := string(out)
+	for _, marker := range outOfSpaceMarkers {
+		if strings.Contains(s, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 // Backend implements backend.VolumeBackend using ZFS zvols.
 //
 // A single Backend instance is scoped to one ZFS pool and one optional
@@ -279,8 +306,14 @@ func (z *Backend) Create(
 
 	out, runErr := z.exec.run(ctx, "zfs", args...)
 	if runErr != nil {
-		return "", 0, fmt.Errorf("zfs create -V %d %s: %w\n%s",
+		cmdErr := fmt.Errorf("zfs create -V %d %s: %w\n%s",
 			capacityBytes, ds, runErr, strings.TrimSpace(string(out)))
+		if isOutOfSpaceOutput(out) {
+			return "", 0, &backend.InsufficientCapacityError{
+				VolumeID: volumeID, RequestedBytes: capacityBytes, Err: cmdErr,
+			}
+		}
+		return "", 0, cmdErr
 	}
 
 	// ZFS rounds volsize up to the nearest volblocksize boundary, so the
@@ -327,8 +360,14 @@ func (z *Backend) Expand(ctx context.Context, volumeID string, requestedBytes in
 	volsizeArg := "volsize=" + strconv.FormatInt(requestedBytes, 10)
 	out, err := z.exec.run(ctx, "zfs", "set", volsizeArg, ds)
 	if err != nil {
-		return 0, fmt.Errorf("zfs set %s %s: %w\n%s",
+		cmdErr := fmt.Errorf("zfs set %s %s: %w\n%s",
 			volsizeArg, ds, err, strings.TrimSpace(string(out)))
+		if isOutOfSpaceOutput(out) {
+			return 0, &backend.InsufficientCapacityError{
+				VolumeID: volumeID, RequestedBytes: requestedBytes, Err: cmdErr,
+			}
+		}
+		return 0, cmdErr
 	}
 
 	// Read back the actual size after rounding.

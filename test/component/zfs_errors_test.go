@@ -39,6 +39,7 @@ import (
 	"testing"
 
 	agentv1 "github.com/bhyoo/pillar-csi/gen/go/pillar_csi/agent/v1"
+	"github.com/bhyoo/pillar-csi/internal/agent/backend"
 	"github.com/bhyoo/pillar-csi/internal/agent/backend/zfs"
 )
 
@@ -47,13 +48,14 @@ import (
 // ---------------------------------------------------------------------------.
 
 // TestZFSBackend_Error_DiskFull_Expand validates that an ENOSPC error returned
-// by 'zfs set volsize' during zvol expansion is propagated as a non-nil error.
+// by 'zfs set volsize' during zvol expansion surfaces as
+// *backend.InsufficientCapacityError with the zfs message preserved.
 //
 // This is distinct from the create-time disk-full test: the pool ran out of
 // space after the initial allocation and the resize request cannot be fulfilled.
 //
 //	Setup:   seqExec: "zfs set volsize" returns "out of space" error
-//	Expect:  Expand returns non-nil error containing the "out of space" message
+//	Expect:  Expand returns an InsufficientCapacityError containing "out of space"
 func TestZFSBackend_Error_DiskFull_Expand(t *testing.T) {
 	t.Parallel()
 
@@ -65,6 +67,13 @@ func TestZFSBackend_Error_DiskFull_Expand(t *testing.T) {
 	_, err := b.Expand(context.Background(), "tank/pvc-expand-full", 20*1024*1024*1024)
 	if err == nil {
 		t.Fatal("expected disk-full error on expand, got nil")
+	}
+	capErr, ok := errors.AsType[*backend.InsufficientCapacityError](err)
+	if !ok {
+		t.Fatalf("error %v is not an *backend.InsufficientCapacityError", err)
+	}
+	if capErr.RequestedBytes != 20*1024*1024*1024 {
+		t.Errorf("InsufficientCapacityError.RequestedBytes = %d, want %d", capErr.RequestedBytes, 20*1024*1024*1024)
 	}
 	if !strings.Contains(err.Error(), "out of space") {
 		t.Errorf("error %q does not mention 'out of space'", err.Error())

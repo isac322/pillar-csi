@@ -369,6 +369,107 @@ func isAlreadyExistsOutput(out []byte) bool {
 	return strings.Contains(s, "already exists")
 }
 
+// insufficientSpaceMarkers are the lvm2 diagnostics reporting that the VG, or
+// the thin pool a thin LV is created in, cannot hold the requested size, e.g.
+//
+//	Insufficient free space: 1024 extents needed, but only 512 available
+//	Volume group "vg" has insufficient free space (10 extents): 20 required.
+//	Insufficient suitable allocatable extents for logical volume lv: 64 more required
+//	Insufficient suitable contiguous allocatable extents for logical volume lv: 64 more required
+//	WARNING: Thin pool vg/tp is out of data space.
+//	WARNING: Remaining free space in metadata of thin pool vg/tp is too low (...).
+//	Cannot create new thin volume, free space in thin pool vg/tp reached threshold.
+//
+// lvm2 logs a crossed thin_pool_autoextend_threshold only at debug level, so
+// the threshold error can be the sole diagnostic of a full pool.
+var insufficientSpaceMarkers = []string{
+	"insufficient free space",
+	"insufficient free extents",
+	"insufficient suitable allocatable extents",
+	"insufficient suitable contiguous allocatable extents",
+	"is out of data space",
+	"remaining free space in metadata of thin pool",
+}
+
+// thinPoolThresholdMarker is lvm2's generic "Cannot create new thin volume,
+// free space in thin pool vg/tp reached threshold" error.  It is only a
+// capacity diagnostic when nothing else accompanied it: a crossed configured
+// autoextend threshold is logged at debug level, while every non-capacity
+// reason lvm2 can cite prints its own error or warning first.
+const thinPoolThresholdMarker = "cannot create new thin volume, free space in thin pool"
+
+// thinPoolFaultMarkers are the conditions lvm2's thin_pool_below_threshold
+// warns about ("WARNING: Thin pool vg/tp is failed.") before the same
+// threshold error it prints for a full pool.  A faulty pool is not a capacity
+// condition, so any of them vetoes the classification.
+var thinPoolFaultMarkers = []string{
+	" is failed",
+	" needs check",
+	" is erroring",
+	" has read-only metadata",
+	" has unexpected transaction id",
+}
+
+// lineFaultMarkers are other lvm2 diagnostics that precede the generic
+// threshold error without citing the pool as failed, such as the
+// "Expected thin-pool segment type but got error instead." dm-status failure.
+var lineFaultMarkers = []string{
+	"error",
+	"fail",
+	"warn",
+	"expected",
+	"couldn't",
+}
+
+// isInsufficientSpaceOutput reports whether lvcreate/lvextend output says the
+// VG or thin pool cannot hold the requested size.
+func isInsufficientSpaceOutput(out []byte) bool {
+	s := strings.ToLower(string(out))
+	sawThreshold := false
+	sawOtherDiagnostic := false
+	for line := range strings.SplitSeq(s, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if strings.Contains(line, thinPoolThresholdMarker) {
+			sawThreshold = true
+			continue
+		}
+		if containsAny(line, thinPoolFaultMarkers) &&
+			(strings.Contains(line, "thin pool") || strings.Contains(line, "thin-pool")) {
+			return false
+		}
+		sawOtherDiagnostic = sawOtherDiagnostic || containsAny(line, lineFaultMarkers)
+	}
+	if containsAny(s, insufficientSpaceMarkers) {
+		return true
+	}
+	return sawThreshold && !sawOtherDiagnostic
+}
+
+// containsAny reports whether s holds any of the markers.
+func containsAny(s string, markers []string) bool {
+	for _, marker := range markers {
+		if strings.Contains(s, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// cmdError builds the error of a failed lvm2 command.  When the output reports
+// insufficient VG space the error is a *backend.InsufficientCapacityError so
+// the caller can report the CSI capacity condition.
+func cmdError(volumeID string, requestedBytes int64, out []byte, err error) error {
+	if isInsufficientSpaceOutput(out) {
+		return &backend.InsufficientCapacityError{
+			VolumeID: volumeID, RequestedBytes: requestedBytes, Err: err,
+		}
+	}
+	return err
+}
+
 // Backend implements backend.VolumeBackend using LVM logical volumes.
 //
 // A single Backend instance is scoped to one LVM Volume Group and one optional
@@ -585,8 +686,11 @@ func (b *Backend) createThinLV(
 		if isAlreadyExistsOutput(out) {
 			return nil
 		}
-		return fmt.Errorf("lvcreate --virtualsize %s/%s in thinpool %s: %w\n%s",
-			vg, lvName, thinPool, err, strings.TrimSpace(string(out)))
+		// VolumeIDs are "<vg>/<lv-name>" (see lvName), so vg/lvName is the
+		// caller's volume ID.
+		return cmdError(vg+"/"+lvName, sizeBytes, out,
+			fmt.Errorf("lvcreate --virtualsize %s/%s in thinpool %s: %w\n%s",
+				vg, lvName, thinPool, err, strings.TrimSpace(string(out))))
 	}
 	return nil
 }
@@ -707,8 +811,9 @@ func (b *Backend) Create(
 
 		out, runErr := b.exec.run(ctx, "lvcreate", args...)
 		if runErr != nil {
-			return "", 0, fmt.Errorf("lvcreate %s/%s: %w\n%s",
-				b.vg, lv, runErr, strings.TrimSpace(string(out)))
+			return "", 0, cmdError(volumeID, capacityBytes, out,
+				fmt.Errorf("lvcreate %s/%s: %w\n%s",
+					b.vg, lv, runErr, strings.TrimSpace(string(out))))
 		}
 	}
 
@@ -793,8 +898,9 @@ func (b *Backend) Expand(ctx context.Context, volumeID string, requestedBytes in
 		b.vg+"/"+lv,
 	)
 	if runErr != nil {
-		return 0, fmt.Errorf("lvextend %s/%s to %d: %w\n%s",
-			b.vg, lv, requestedBytes, runErr, strings.TrimSpace(string(out)))
+		return 0, cmdError(volumeID, requestedBytes, out,
+			fmt.Errorf("lvextend %s/%s to %d: %w\n%s",
+				b.vg, lv, requestedBytes, runErr, strings.TrimSpace(string(out))))
 	}
 
 	// Read back the actual size after extent rounding.

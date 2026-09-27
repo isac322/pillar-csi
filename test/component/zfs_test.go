@@ -221,7 +221,8 @@ func TestZFSBackend_Create_ConflictDifferentSize(t *testing.T) {
 }
 
 // TestZFSBackend_Create_DiskFull validates that a disk-full error from
-// the create command propagates as a non-nil error.
+// the create command surfaces as *backend.InsufficientCapacityError, which the
+// agent reports as ResourceExhausted.
 func TestZFSBackend_Create_DiskFull(t *testing.T) {
 	t.Parallel()
 
@@ -235,6 +236,13 @@ func TestZFSBackend_Create_DiskFull(t *testing.T) {
 	_, _, err := b.Create(context.Background(), "tank/pvc-abc", 10*1024*1024*1024, nil)
 	if err == nil {
 		t.Fatal("expected disk-full error, got nil")
+	}
+	capErr, ok := errors.AsType[*backend.InsufficientCapacityError](err)
+	if !ok {
+		t.Fatalf("error %v is not an *backend.InsufficientCapacityError", err)
+	}
+	if capErr.VolumeID != "tank/pvc-abc" {
+		t.Errorf("InsufficientCapacityError.VolumeID = %q, want %q", capErr.VolumeID, "tank/pvc-abc")
 	}
 }
 

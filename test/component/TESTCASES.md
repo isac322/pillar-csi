@@ -86,7 +86,7 @@ error-handling logic.
 |---|--------------|-------------|-------|-----------------|
 | 1 | `TestAgentServer_CreateVolume_Success` | Normal volume creation returns device path and allocated size | Mock backend: devicePath="/dev/zvol/tank/pvc-abc", allocatedBytes=10 GiB | Returns CreateVolumeResponse with device_path and capacity_bytes; no error |
 | 2 | `TestAgentServer_CreateVolume_Idempotent` | Creating same volume twice returns identical result | Mock backend always returns same device path; request issued twice | Both calls succeed; no error |
-| 3 | `TestAgentServer_CreateVolume_DiskFull` | Disk-full backend error maps to non-OK gRPC status | Mock backend: createErr="out of space" | Returns non-OK gRPC status; code ≠ OK |
+| 3 | `TestAgentServer_CreateVolume_DiskFull` | Insufficient-capacity backend error maps to ResourceExhausted | Mock backend: createErr=`*backend.InsufficientCapacityError` ("out of space") | Returns gRPC ResourceExhausted |
 | 4 | `TestAgentServer_CreateVolume_InvalidPool` | Volume ID referencing unknown pool returns NotFound | VolumeID="missing-pool/pvc-xyz"; server has no backend for that pool | Returns gRPC NotFound |
 | 5 | `TestAgentServer_CreateVolume_InvalidVolumeID` | Malformed volume ID (no slash) returns InvalidArgument | VolumeID="noslash" | Returns gRPC InvalidArgument |
 | 6 | `TestAgentServer_CreateVolume_BackendError` | Generic backend error maps to Internal | Mock backend: createErr="unexpected ZFS failure" | Returns gRPC Internal |
@@ -232,7 +232,7 @@ error-handling logic.
 | 61 | `TestAgentErrors_AllowInitiator_InvalidProtocol` | Invalid protocol for AllowInitiator returns error without touching configfs | protocol_type=PROTOCOL_TYPE_ISCSI; exported volume in tmpdir | Returns non-OK gRPC status; no side-effects |
 | 62 | `TestAgentErrors_DenyInitiator_InvalidProtocol` | Invalid protocol for DenyInitiator returns error | protocol_type=PROTOCOL_TYPE_ISCSI | Returns non-OK gRPC status |
 | 63 | `TestAgentErrors_UnexportVolume_InvalidProtocol` | Invalid protocol for UnexportVolume returns error | protocol_type=PROTOCOL_TYPE_ISCSI | Returns non-OK gRPC status |
-| 64 | `TestAgentErrors_CreateVolume_DiskFullPropagation` | Disk-full error propagates from backend through gRPC layer | Mock backend: createErr="out of space" | Returns gRPC ResourceExhausted or Internal; error message preserves detail |
+| 64 | `TestAgentErrors_CreateVolume_DiskFullPropagation` | Disk-full error propagates from backend through gRPC layer | Mock backend: createErr=`*backend.InsufficientCapacityError` ("out of space") | Returns gRPC ResourceExhausted; error message preserves detail |
 | 65 | `TestAgentErrors_ExportVolume_MissingNvmeofTcpParams` | Missing NVMe-oF TCP export params returns InvalidArgument | NVMEOF_TCP protocol selected but export_params.nvmeof_tcp is nil | Returns gRPC InvalidArgument |
 
 ---
@@ -253,7 +253,7 @@ invalid properties) are tested here because they exercise the ZFS command logic.
 | 1 | `TestZFSBackend_Create_Success` | Creates zvol with correct zfs command; returns device path and allocated size | seqExec: existence check→"not found"; `zfs create -V 10G tank/pvc-abc`→ok; `zfs list` readback→"10G" | Returns devicePath="/dev/zvol/tank/pvc-abc", allocatedBytes=10 GiB; no error |
 | 2 | `TestZFSBackend_Create_Idempotent` | Re-create of existing same-size volume returns existing info | seqExec: existence check returns volume at 10G | Returns ConflictError or existing size; no destructive command |
 | 3 | `TestZFSBackend_Create_ConflictDifferentSize` | Existing zvol with different capacity returns ConflictError | seqExec: existence check returns 10G but requested 20G | Returns ConflictError with ExistingBytes=10G and RequestedBytes=20G |
-| 4 | `TestZFSBackend_Create_DiskFull` | ENOSPC from zfs create propagates as error | seqExec: existence check→"not found"; `zfs create`→"out of space" | Returns non-nil error containing "out of space" |
+| 4 | `TestZFSBackend_Create_DiskFull` | ENOSPC from zfs create is classified as insufficient capacity | seqExec: existence check→"not found"; `zfs create`→"out of space" | Returns `*backend.InsufficientCapacityError` |
 | 5 | `TestZFSBackend_Create_PoolOffline` | Pool offline during create returns error | seqExec: existence check→"pool is not available" | Returns non-nil error; no create command issued |
 | 6 | `TestZFSBackend_Create_WithParentDataset` | Parent dataset is incorporated into dataset path | Backend constructed with pool="tank", parentDataset="k8s" | zfs create command uses dataset path "tank/k8s/pvc-abc" |
 | 7 | `TestZFSBackend_Create_WithProperties` | ZFS properties are forwarded verbatim to create command | ZfsVolumeParams with compression="lz4" and sync="disabled" | zfs create command includes `-o compression=lz4 -o sync=disabled` |
@@ -331,7 +331,7 @@ invalid properties) are tested here because they exercise the ZFS command logic.
 
 | # | Test Function | Description | Setup | Expected Outcome |
 |---|--------------|-------------|-------|-----------------|
-| 31 | `TestZFSBackend_Error_DiskFull_Expand` | Disk-full error from `zfs set volsize` propagates with message | seqExec: `zfs set volsize`→"out of space" | Returns non-nil error; error message contains "out of space" |
+| 31 | `TestZFSBackend_Error_DiskFull_Expand` | Disk-full error from `zfs set volsize` is classified as insufficient capacity | seqExec: `zfs set volsize`→"out of space" | Returns `*backend.InsufficientCapacityError`; error message contains "out of space" |
 | 32 | `TestZFSBackend_Error_DeviceBusy_ExpandFails` | Device busy error during expand propagates | seqExec: `zfs set volsize`→"device busy" | Returns non-nil error; error message contains "device busy" |
 
 ---

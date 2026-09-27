@@ -1234,6 +1234,50 @@ func TestGetCapacity_AgentError(t *testing.T) {
 	}
 }
 
+// TestAgentResourceExhausted_Propagated verifies that an agent's
+// ResourceExhausted (pool out of space) reaches the CO unchanged from both
+// CreateVolume and ControllerExpandVolume, so the provisioner and resizer
+// report insufficient capacity rather than an internal error (issue #99).
+func TestAgentResourceExhausted_Propagated(t *testing.T) {
+	t.Parallel()
+	agentErr := status.Error(codes.ResourceExhausted, "pool tank is out of space")
+	tests := []struct {
+		name string
+		call func(t *testing.T, env *controllerTestEnv) error
+	}{
+		{
+			name: "CreateVolume",
+			call: func(_ *testing.T, env *controllerTestEnv) error {
+				env.agent.createVolumeErr = agentErr
+				_, err := env.srv.CreateVolume(context.Background(), baseCreateVolumeRequest())
+				return err
+			},
+		},
+		{
+			name: "ControllerExpandVolume",
+			call: func(t *testing.T, env *controllerTestEnv) error {
+				env.agent.expandVolumeErr = agentErr
+				volumeID := expandableVolumeID(t, env, "nvmeof-tcp", "zfs-zvol", "tank/pvc-full")
+				_, err := env.srv.ControllerExpandVolume(context.Background(),
+					expandRequest(volumeID, 1<<40))
+				return err
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := tc.call(t, newControllerTestEnv(t))
+			if st, _ := status.FromError(err); st.Code() != codes.ResourceExhausted {
+				t.Fatalf("code = %v, want ResourceExhausted (err: %v)", st.Code(), err)
+			}
+			if !strings.Contains(err.Error(), "out of space") {
+				t.Errorf("error %q lost the agent detail", err)
+			}
+		})
+	}
+}
+
 // TestGetCapacity_TargetNoAddress verifies that a PillarAgent with an empty
 // ResolvedAddress returns codes.Unavailable.
 func TestGetCapacity_TargetNoAddress(t *testing.T) {

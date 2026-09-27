@@ -464,9 +464,9 @@ func TestAgentErrors_UnexportVolume_InvalidProtocol(t *testing.T) {
 // TestAgentErrors_CreateVolume_DiskFullPropagation
 // ─────────────────────────────────────────────────────────────────────────────.
 
-// TestAgentErrors_CreateVolume_DiskFullPropagation verifies that the
-// "out of space" backend error is propagated as a non-OK gRPC status with
-// a meaningful error message.
+// TestAgentErrors_CreateVolume_DiskFullPropagation verifies that a backend
+// insufficient-capacity error is propagated as gRPC ResourceExhausted with
+// the backend's diagnostic text preserved in the message (issue #99).
 //
 // This extends the basic DiskFull test by also verifying the error message
 // contains diagnostic text.
@@ -474,7 +474,11 @@ func TestAgentErrors_CreateVolume_DiskFullPropagation(t *testing.T) {
 	t.Parallel()
 
 	const diskFullMsg = "zfs: out of space (pool capacity 100%)"
-	mb := &mockVolumeBackend{createErr: errors.New(diskFullMsg)}
+	mb := &mockVolumeBackend{createErr: &backend.InsufficientCapacityError{
+		VolumeID:       compTestVolumeID,
+		RequestedBytes: 1 << 30,
+		Err:            errors.New(diskFullMsg),
+	}}
 	srv, _ := newAgentServer(t, mb)
 
 	_, err := srv.CreateVolume(context.Background(), &agentv1.CreateVolumeRequest{
@@ -487,14 +491,13 @@ func TestAgentErrors_CreateVolume_DiskFullPropagation(t *testing.T) {
 		t.Fatal("expected error for disk-full condition, got nil")
 	}
 	st, _ := status.FromError(err)
-	if st.Code() == codes.OK {
-		t.Error("expected non-OK gRPC status")
+	if st.Code() != codes.ResourceExhausted {
+		t.Errorf("code = %v, want ResourceExhausted", st.Code())
 	}
 	// The error message should carry enough context for the CO to log it.
-	if msg := st.Message(); msg == "" {
-		t.Error("gRPC error message is empty; expected backend reason")
+	if !strings.Contains(st.Message(), diskFullMsg) {
+		t.Errorf("gRPC message %q lost the backend reason %q", st.Message(), diskFullMsg)
 	}
-	t.Logf("disk-full propagated as gRPC %v: %v", st.Code(), err)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

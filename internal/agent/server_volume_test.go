@@ -370,6 +370,54 @@ func TestExpandVolume_BackendError(t *testing.T) {
 	}
 }
 
+// TestVolumeRPCs_InsufficientCapacity verifies that a backend
+// *InsufficientCapacityError is reported as ResourceExhausted by both
+// CreateVolume and ExpandVolume, as the CSI spec requires for insufficient
+// capacity, and that the backend detail survives in the message (issue #99).
+func TestVolumeRPCs_InsufficientCapacity(t *testing.T) {
+	t.Parallel()
+	capErr := func() error {
+		return &backend.InsufficientCapacityError{
+			VolumeID:       testVolumeID,
+			RequestedBytes: 5 << 30,
+			Err:            errors.New("zfs create -V 5368709120 tank/test-vol: out of space"),
+		}
+	}
+	cases := map[string]func(t *testing.T) error{
+		"CreateVolume": func(t *testing.T) error {
+			srv := newTestServer(t, &mockBackend{createErr: capErr()})
+			_, err := srv.CreateVolume(context.Background(), &agentv1.CreateVolumeRequest{
+				VolumeId:      testVolumeID,
+				Fence:         testFence(t),
+				CapacityBytes: 5 << 30,
+			})
+			return err
+		},
+		"ExpandVolume": func(t *testing.T) error {
+			srv := newTestServer(t, &mockBackend{expandErr: capErr()})
+			_, err := srv.ExpandVolume(context.Background(), &agentv1.ExpandVolumeRequest{
+				VolumeId:       testVolumeID,
+				Fence:          testFence(t),
+				RequestedBytes: 5 << 30,
+			})
+			return err
+		},
+	}
+	for name, call := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			err := call(t)
+			st, _ := status.FromError(err)
+			if st.Code() != codes.ResourceExhausted {
+				t.Fatalf("code = %v, want ResourceExhausted (err: %v)", st.Code(), err)
+			}
+			if !strings.Contains(st.Message(), "out of space") {
+				t.Errorf("message %q lost the backend detail", st.Message())
+			}
+		})
+	}
+}
+
 // GetCapacity tests.
 func TestGetCapacity_Success(t *testing.T) {
 	t.Parallel()

@@ -25,6 +25,7 @@ import (
 	"testing"
 
 	agentv1 "github.com/bhyoo/pillar-csi/gen/go/pillar_csi/agent/v1"
+	"github.com/bhyoo/pillar-csi/internal/agent/backend"
 	"github.com/bhyoo/pillar-csi/internal/agent/backend/zfs"
 )
 
@@ -288,6 +289,84 @@ func TestCreate_CreateCommandFails(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "out of space") {
 		t.Errorf("Create: error %q should mention 'out of space'", err)
+	}
+}
+
+// TestCapacityFailuresAreClassified verifies that zfs(8) "out of space"
+// failures of create and volsize growth surface as
+// *backend.InsufficientCapacityError (mapped to ResourceExhausted by the
+// agent) with the command output preserved, while other command failures stay
+// unclassified (issue #99).
+func TestCapacityFailuresAreClassified(t *testing.T) {
+	t.Parallel()
+
+	const volID = "tank/pvc-cap"
+	create := func(b *zfs.Backend) error {
+		_, _, err := b.Create(context.Background(), volID, 5<<30, nil)
+		return err
+	}
+	expand := func(b *zfs.Backend) error {
+		_, err := b.Expand(context.Background(), volID, 5<<30)
+		return err
+	}
+	cases := map[string]struct {
+		responses    []fakeResponse
+		op           func(*zfs.Backend) error
+		wantCapacity bool
+	}{
+		"create out of space": {
+			responses:    []fakeResponse{notExistResp(volID), fail("cannot create 'tank/pvc-cap': out of space")},
+			op:           create,
+			wantCapacity: true,
+		},
+		"expand out of space": {
+			responses:    []fakeResponse{fail("cannot set property for 'tank/pvc-cap': out of space")},
+			op:           expand,
+			wantCapacity: true,
+		},
+		"expand refreservation exceeds available space": {
+			// Growing a thick zvol grows its refreservation; libzfs reports
+			// that reservation's ENOSPC with this text instead.
+			responses: []fakeResponse{
+				fail("cannot set property for 'tank/pvc-cap': size is greater than available space"),
+			},
+			op:           expand,
+			wantCapacity: true,
+		},
+		"create pool offline": {
+			responses: []fakeResponse{notExistResp(volID), fail("cannot open 'tank': pool I/O is currently suspended")},
+			op:        create,
+		},
+		"expand shrink rejected": {
+			responses: []fakeResponse{fail("cannot set property for 'tank/pvc-cap': volume size cannot be decreased")},
+			op:        expand,
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			b := zfs.New("tank", "")
+			zfs.SetBackendExec(t, b, newFake(t, tc.responses...).exec())
+
+			err := tc.op(b)
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			capErr, isCapacity := errors.AsType[*backend.InsufficientCapacityError](err)
+			if isCapacity != tc.wantCapacity {
+				t.Fatalf("InsufficientCapacityError = %v, want %v (err: %v)", isCapacity, tc.wantCapacity, err)
+			}
+			if !isCapacity {
+				return
+			}
+			if capErr.VolumeID != volID || capErr.RequestedBytes != 5<<30 {
+				t.Errorf("InsufficientCapacityError{VolumeID: %q, RequestedBytes: %d}; want {%q, %d}",
+					capErr.VolumeID, capErr.RequestedBytes, volID, int64(5<<30))
+			}
+			if !strings.Contains(err.Error(), "cannot ") {
+				t.Errorf("error %q lost the zfs output", err)
+			}
+		})
 	}
 }
 
