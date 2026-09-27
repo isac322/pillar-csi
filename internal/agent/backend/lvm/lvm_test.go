@@ -1301,6 +1301,12 @@ func TestCapacityFailuresAreClassified(t *testing.T) {
 			op:           create,
 			wantCapacity: true,
 		},
+		"linear create, no contiguous allocatable extents": {
+			lvmOut: "  Insufficient suitable contiguous allocatable extents for logical volume pvc-cap: " +
+				"502 more required",
+			op:           create,
+			wantCapacity: true,
+		},
 		"thin create, VG full": {
 			thinpool:     "thin-pool-0",
 			lvmOut:       `  Volume group "data-vg" has insufficient free space (10 extents): 512 required.`,
@@ -1322,11 +1328,31 @@ func TestCapacityFailuresAreClassified(t *testing.T) {
 			op:           create,
 			wantCapacity: true,
 		},
+		"thin create, configured threshold crossed": {
+			// lvm2 logs the crossed thin_pool_autoextend_threshold at debug
+			// level only; the threshold error is the sole diagnostic.
+			thinpool:     "thin-pool-0",
+			lvmOut:       "  Cannot create new thin volume, free space in thin pool data-vg/thin-pool-0 reached threshold.",
+			op:           create,
+			wantCapacity: true,
+		},
 		"thin create, thin pool failed": {
 			// lvm2 prints the same generic threshold error for a failed pool,
 			// which is not a capacity condition.
 			thinpool: "thin-pool-0",
 			lvmOut: "  WARNING: Thin pool data-vg/thin-pool-0 is failed.\n" +
+				"  Cannot create new thin volume, free space in thin pool data-vg/thin-pool-0 reached threshold.",
+			op: create,
+		},
+		"thin create, failed pool out of data space": {
+			thinpool: "thin-pool-0",
+			lvmOut: "  WARNING: Thin pool data-vg/thin-pool-0 is failed is out of data space.\n" +
+				"  Cannot create new thin volume, free space in thin pool data-vg/thin-pool-0 reached threshold.",
+			op: create,
+		},
+		"thin create, thin pool needs check": {
+			thinpool: "thin-pool-0",
+			lvmOut: "  WARNING: Thin pool data-vg/thin-pool-0 needs check.\n" +
 				"  Cannot create new thin volume, free space in thin pool data-vg/thin-pool-0 reached threshold.",
 			op: create,
 		},

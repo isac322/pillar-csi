@@ -375,24 +375,49 @@ func isAlreadyExistsOutput(out []byte) bool {
 //	Insufficient free space: 1024 extents needed, but only 512 available
 //	Volume group "vg" has insufficient free space (10 extents): 20 required.
 //	Insufficient suitable allocatable extents for logical volume lv: 64 more required
+//	Insufficient suitable contiguous allocatable extents for logical volume lv: 64 more required
 //	WARNING: Thin pool vg/tp is out of data space.
 //	WARNING: Remaining free space in metadata of thin pool vg/tp is too low (...).
+//	Cannot create new thin volume, free space in thin pool vg/tp reached threshold.
 //
-// The thin pool warnings precede the generic lvcreate error saying free space
-// in the thin pool reached its threshold. That error is not a marker itself:
-// lvm2 prints it for failed or needs-check pools too.
+// lvm2 logs a crossed thin_pool_autoextend_threshold only at debug level, so
+// the threshold error can be the sole diagnostic of a full pool.
 var insufficientSpaceMarkers = []string{
 	"insufficient free space",
 	"insufficient free extents",
 	"insufficient suitable allocatable extents",
+	"insufficient suitable contiguous allocatable extents",
 	"is out of data space",
 	"remaining free space in metadata of thin pool",
+	"cannot create new thin volume, free space in thin pool",
+}
+
+// thinPoolFaultMarkers are the conditions lvm2's thin_pool_below_threshold
+// warns about ("WARNING: Thin pool vg/tp is failed.") before the same
+// threshold error it prints for a full pool.  A faulty pool is not a capacity
+// condition, so any of them vetoes the classification.
+var thinPoolFaultMarkers = []string{
+	" is failed",
+	" needs check",
+	" is erroring",
+	" has read-only metadata",
+	" has unexpected transaction id",
 }
 
 // isInsufficientSpaceOutput reports whether lvcreate/lvextend output says the
-// VG cannot hold the requested size.
+// VG or thin pool cannot hold the requested size.
 func isInsufficientSpaceOutput(out []byte) bool {
 	s := strings.ToLower(string(out))
+	for line := range strings.SplitSeq(s, "\n") {
+		if !strings.Contains(line, "thin pool") {
+			continue
+		}
+		for _, fault := range thinPoolFaultMarkers {
+			if strings.Contains(line, fault) {
+				return false
+			}
+		}
+	}
 	for _, marker := range insufficientSpaceMarkers {
 		if strings.Contains(s, marker) {
 			return true
