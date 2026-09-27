@@ -69,7 +69,7 @@ The agent stores these marks on the storage node's local disk under `/var/lib/pi
 
 Out of scope: `SendVolume` and `ReceiveVolume` are out-of-band data streams the controller does not call, and they carry no token.
 
-**Upgrade (clean cutover):** detach every volume (no `VolumeAttachment` for this driver) before upgrading to this version. Earlier versions recorded no publications, lifecycles, or generations, so the new controller cannot revoke access granted by the old one. No migration shim is provided. Upgrade the controller and every agent together in the same rollout: the fenced agent rejects mutation RPCs that carry no token with `FAILED_PRECONDITION`, so an old controller paired with a new agent cannot create, export, grant, or delete anything.
+**Upgrade from 0.1.x (clean cutover):** detach every volume (no `VolumeAttachment` for this driver) before upgrading to 0.2.0 or later. 0.1.x recorded no publications, lifecycles, or generations, so the new controller cannot revoke access granted by the old one. No migration shim is provided. Upgrade the controller and every agent together in the same rollout: the fenced agent rejects mutation RPCs that carry no token with `FAILED_PRECONDITION`, so an old controller paired with a new agent cannot create, export, grant, or delete anything.
 
 ### NVMe-oF namespace identity
 
@@ -128,6 +128,17 @@ helm install pillar-csi charts/pillar-csi \
 **Kubernetes ≥ 1.24** is required (native `grpc:` liveness/readiness probes; GA in 1.27).
 
 **Kernel modules:** storage nodes need `nvmet` and `nvmet_tcp`; worker nodes need `nvme_tcp` and `nvme_fabrics`. The agent and node init-containers run `modprobe` on startup — the host kernel must include these modules (vanilla Linux ≥ 5.0 is sufficient for NVMe-oF/TCP).
+
+**Upgrade from 0.2.x (clean cutover):** 0.3.0 changes the configuration interface incompatibly, so 0.2 configuration cannot be upgraded in place. Rewrite it before installing 0.3.0:
+
+- `PillarStore.spec.backend` is an exactly-one union, `zfs: {volumeType, pool, parentDataset, properties}` or `lvm: {volumeGroup, thinPool, provisioningMode}`; `backend.type` is gone.
+- `PillarProtocol.spec` is `protocol: {nvmeofTcp: {...}}` and carries transport settings only; `fsType` and `mkfsOptions` moved to `PillarStorageClass.spec.filesystem: {fsType, mkfsOptions, mountOptions}`, and `spec.overrides` takes the same nested shapes as the CRs.
+- PVC annotations are the YAML docs `pillar-csi.bhyoo.com/backend`, `/protocol`, and `/filesystem`. The old `backend-override`, `protocol-override`, `fs-override`, and `param.*` annotations are rejected.
+- Hand-written StorageClasses use `pillar-csi.bhyoo.com/store-ref` and `/protocol-ref` plus the same docs. The old flat keys (`zfs-prop.*`, `lvm-*`, `nvmeof-*`, `acl-enabled`, `backend-type`, …) are rejected, and StorageClass parameters are immutable, so delete and recreate these classes.
+- Helm `agent.backends` entries use the `PillarStore.spec.backend` shape (`{zfs: {...}}` or `{lvm: {...}}`), rendered into the agent's `--config` file; the `--backend` flag is gone. The agent's default listen port is `9500`.
+- iSCSI, NFS, SMB, `zfs-dataset`, and `dir` are no longer in the served schemas.
+
+Volumes provisioned by 0.2 are not migrated: their `PillarVolumeState` has `spec.nodeConnectParams` instead of the `spec.resolved` configuration 0.3.0 records at `CreateVolume`, and their StorageClasses carry the old parameters. No migration shim is provided. Back up the data, delete every 0.2 volume, upgrade the controller, node plugin, and every agent together, then provision fresh volumes against the rewritten resources.
 
 ## Quickstart
 
