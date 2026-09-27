@@ -848,6 +848,17 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 		return nil, err
 	}
 
+	// One authoritative snapshot for the whole lifecycle: once the durable
+	// spec exists, the connect parameters reported in every response — the
+	// first success, a partial-failure retry, and a completed retry — are the
+	// ones frozen at the first attempt.
+	if len(pvs.Spec.NodeConnectParams) > 0 {
+		for _, k := range nodeConnectParamKeys {
+			delete(params, k)
+		}
+		maps.Copy(params, pvs.Spec.NodeConnectParams)
+	}
+
 	// ── Resolve the agent address from PillarAgent ───────────────────────────
 	target := &v1alpha1.PillarAgent{}
 	getTargetErr := s.k8sClient.Get(ctx, types.NamespacedName{Name: targetName}, target)

@@ -1834,11 +1834,72 @@ func TestCreateVolume_CompletedRetry_BindingDeleted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("retry after binding deletion: %v", err)
 	}
+	if !maps.Equal(resp2.GetVolume().GetVolumeContext(), resp.GetVolume().GetVolumeContext()) {
+		t.Errorf("retry VolumeContext %v != first %v",
+			resp2.GetVolume().GetVolumeContext(), resp.GetVolume().GetVolumeContext())
+	}
+
 	if resp2.GetVolume().GetVolumeId() != resp.GetVolume().GetVolumeId() {
 		t.Errorf("retry VolumeId %q != first %q", resp2.GetVolume().GetVolumeId(), resp.GetVolume().GetVolumeId())
 	}
 	if env.agent.createVolumeCalls != 1 || env.agent.exportVolumeCalls != 1 {
 		t.Errorf("retry re-provisioned: create=%d export=%d, want 1/1",
+			env.agent.createVolumeCalls, env.agent.exportVolumeCalls)
+	}
+}
+
+// A CreatePartial retry reports the connect parameters frozen at the first
+// attempt, and the completed retry that follows reports the same — the
+// VolumeContext never changes between responses for one volume even when the
+// claim's annotation changed or the claim is gone.
+func TestCreateVolume_PartialThenCompletedRetry_StableVolumeContext(t *testing.T) {
+	t.Parallel()
+	env, req := newControllerTestEnvWithPVC(t, "default", "pvc-tuned-900", map[string]string{
+		"pillar-csi.bhyoo.com/param.nvmeof-ctrl-loss-tmo": "900",
+	})
+	ctx := context.Background()
+
+	// First attempt: backend is created, export fails → CreatePartial.
+	env.agent.exportVolumeErr = status.Error(codes.Internal, "simulated export failure")
+	if _, err := env.srv.CreateVolume(ctx, req); err == nil {
+		t.Fatal("first CreateVolume: expected export failure")
+	}
+
+	// The claim's annotation changes while the volume is unfinished; the
+	// retry must still report the value the volume was created with.
+	pvc := &corev1.PersistentVolumeClaim{}
+	if err := env.srv.k8sClient.Get(ctx,
+		types.NamespacedName{Name: "pvc-tuned-900", Namespace: "default"}, pvc); err != nil {
+		t.Fatalf("get claim: %v", err)
+	}
+	pvc.Annotations["pillar-csi.bhyoo.com/param.nvmeof-ctrl-loss-tmo"] = "600"
+	if err := env.srv.k8sClient.Update(ctx, pvc); err != nil {
+		t.Fatalf("update claim: %v", err)
+	}
+
+	env.agent.exportVolumeErr = nil
+	resp, err := env.srv.CreateVolume(ctx, req)
+	if err != nil {
+		t.Fatalf("partial retry: %v", err)
+	}
+	if got := resp.GetVolume().GetVolumeContext()[paramNVMeOFCtrlLossTmo]; got != "900" {
+		t.Fatalf("partial-retry ctrl-loss-tmo = %q, want the first-attempt value 900", got)
+	}
+
+	// The claim is deleted; the completed retry must report identically.
+	if delErr := env.srv.k8sClient.Delete(ctx, pvc); delErr != nil {
+		t.Fatalf("delete claim: %v", delErr)
+	}
+	resp2, err := env.srv.CreateVolume(ctx, req)
+	if err != nil {
+		t.Fatalf("completed retry: %v", err)
+	}
+	if !maps.Equal(resp2.GetVolume().GetVolumeContext(), resp.GetVolume().GetVolumeContext()) {
+		t.Errorf("completed-retry VolumeContext %v != partial-retry %v",
+			resp2.GetVolume().GetVolumeContext(), resp.GetVolume().GetVolumeContext())
+	}
+	if env.agent.createVolumeCalls != 1 || env.agent.exportVolumeCalls != 2 {
+		t.Errorf("agent calls = create %d / export %d, want 1/2",
 			env.agent.createVolumeCalls, env.agent.exportVolumeCalls)
 	}
 }
