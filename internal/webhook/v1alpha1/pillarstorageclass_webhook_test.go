@@ -260,6 +260,51 @@ var _ = Describe("PillarStorageClass Webhook", func() {
 			Expect(err.Error()).To(ContainSubstring("protocolRef"))
 		})
 
+		It("Should deny update when the generated StorageClass name changes", func() {
+			oldObj.Name = "test-binding-scname"
+			oldObj.Spec = pillarcsiv1alpha1.PillarStorageClassSpec{
+				StoreRef:     "pool-a",
+				ProtocolRef:  "proto-a",
+				StorageClass: pillarcsiv1alpha1.StorageClassTemplate{Name: "fast"},
+			}
+			obj.Name = "test-binding-scname"
+			obj.Spec = pillarcsiv1alpha1.PillarStorageClassSpec{
+				StoreRef:     "pool-a",
+				ProtocolRef:  "proto-a",
+				StorageClass: pillarcsiv1alpha1.StorageClassTemplate{Name: "faster"},
+			}
+			_, err := validator.ValidateUpdate(ctx, oldObj, obj)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("spec.storageClass.name"))
+		})
+
+		It("Should deny setting storageClass.name when it renames the defaulted StorageClass", func() {
+			oldObj.Name = "test-binding-scname-default"
+			oldObj.Spec = pillarcsiv1alpha1.PillarStorageClassSpec{StoreRef: "pool-a", ProtocolRef: "proto-a"}
+			obj.Name = "test-binding-scname-default"
+			obj.Spec = pillarcsiv1alpha1.PillarStorageClassSpec{
+				StoreRef:     "pool-a",
+				ProtocolRef:  "proto-a",
+				StorageClass: pillarcsiv1alpha1.StorageClassTemplate{Name: "renamed"},
+			}
+			_, err := validator.ValidateUpdate(ctx, oldObj, obj)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("spec.storageClass.name"))
+		})
+
+		It("Should admit spelling out the defaulted StorageClass name", func() {
+			oldObj.Name = "test-binding-scname-explicit"
+			oldObj.Spec = pillarcsiv1alpha1.PillarStorageClassSpec{StoreRef: "pool-a", ProtocolRef: "proto-a"}
+			obj.Name = "test-binding-scname-explicit"
+			obj.Spec = pillarcsiv1alpha1.PillarStorageClassSpec{
+				StoreRef:     "pool-a",
+				ProtocolRef:  "proto-a",
+				StorageClass: pillarcsiv1alpha1.StorageClassTemplate{Name: "test-binding-scname-explicit"},
+			}
+			_, err := validator.ValidateUpdate(ctx, oldObj, obj)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
 		It("Should admit update when only non-immutable fields are changed", func() {
 			By("simulating a valid update changing only storageClass settings")
 			oldObj.Name = "test-binding-mutable"

@@ -180,6 +180,7 @@ spec:
                     description: |-
                       name is the name of the generated StorageClass.
                       Defaults to the PillarStorageClass's own name when omitted.
+                      Immutable: PVCs reference their StorageClass by name.
                     minLength: 1
                     type: string
                   reclaimPolicy:

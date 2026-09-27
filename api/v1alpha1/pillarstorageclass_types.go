@@ -42,9 +42,17 @@ const (
 
 // StorageClassTemplate defines the parameters used to generate a Kubernetes
 // StorageClass from this binding.
+//
+// A StorageClass is immutable apart from allowVolumeExpansion, so a change to
+// reclaimPolicy, volumeBindingMode, or any pool, protocol or override field
+// that feeds the StorageClass parameters makes the controller delete and
+// re-create the StorageClass.  The change applies to volumes provisioned
+// afterwards; existing PersistentVolumes keep the parameters they were
+// provisioned with.
 type StorageClassTemplate struct {
 	// name is the name of the generated StorageClass.
 	// Defaults to the PillarStorageClass's own name when omitted.
+	// Immutable: PVCs reference their StorageClass by name.
 	// +optional
 	// +kubebuilder:validation:MinLength=1
 	Name string `json:"name,omitempty"`

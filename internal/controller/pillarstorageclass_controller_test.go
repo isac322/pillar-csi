@@ -34,7 +34,9 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/events"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -43,8 +45,17 @@ import (
 	pillarcsiv1alpha1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
 )
 
-func TestPillarStorageClass_StorageClassDrift_EmitsEvent(t *testing.T) {
-	ctx := context.Background()
+// newDriftTestReconciler returns a reconciler over a fake client, holding the
+// returned binding, whose StorageClass has already been created from the
+// returned binding, pool and protocol.  funcs intercept the fake client.
+func newDriftTestReconciler(t *testing.T, funcs interceptor.Funcs) (
+	*PillarStorageClassReconciler,
+	*events.FakeRecorder,
+	*pillarcsiv1alpha1.PillarStorageClass,
+	*pillarcsiv1alpha1.PillarStore,
+	*pillarcsiv1alpha1.PillarProtocol,
+) {
+	t.Helper()
 	testScheme := runtime.NewScheme()
 	if err := clientgoscheme.AddToScheme(testScheme); err != nil {
 		t.Fatalf("add core scheme: %v", err)
@@ -53,17 +64,7 @@ func TestPillarStorageClass_StorageClassDrift_EmitsEvent(t *testing.T) {
 		t.Fatalf("add pillar-csi scheme: %v", err)
 	}
 
-	orderRecorder := events.NewFakeRecorder(1)
-	reconciler := &PillarStorageClassReconciler{
-		Client:   fake.NewClientBuilder().WithScheme(testScheme).Build(),
-		Scheme:   testScheme,
-		Recorder: orderRecorder,
-	}
 	binding := &pillarcsiv1alpha1.PillarStorageClass{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: "pillar-csi.bhyoo.com/v1alpha1",
-			Kind:       "PillarStorageClass",
-		},
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "drift-binding",
 			UID:  types.UID("drift-binding-uid"),
@@ -72,6 +73,19 @@ func TestPillarStorageClass_StorageClassDrift_EmitsEvent(t *testing.T) {
 			StoreRef:    "drift-pool",
 			ProtocolRef: "drift-protocol",
 		},
+	}
+	recorder := events.NewFakeRecorder(4)
+	reconciler := &PillarStorageClassReconciler{
+		Client: fake.NewClientBuilder().
+			WithScheme(testScheme).
+			WithObjects(binding.DeepCopy()).
+			WithInterceptorFuncs(funcs).
+			Build(),
+		Scheme:   testScheme,
+		Recorder: recorder,
+	}
+	if err := reconciler.Get(context.Background(), types.NamespacedName{Name: binding.Name}, binding); err != nil {
+		t.Fatalf("get binding: %v", err)
 	}
 	pool := &pillarcsiv1alpha1.PillarStore{
 		Spec: pillarcsiv1alpha1.PillarStoreSpec{
@@ -88,15 +102,37 @@ func TestPillarStorageClass_StorageClassDrift_EmitsEvent(t *testing.T) {
 		},
 	}
 
-	if err := reconciler.reconcileStorageClass(ctx, binding, pool, protocol, binding.Name); err != nil {
+	if err := reconciler.reconcileStorageClass(context.Background(), binding, pool, protocol, binding.Name); err != nil {
 		t.Fatalf("create StorageClass: %v", err)
 	}
+	return reconciler, recorder, binding, pool, protocol
+}
+
+func expectEvent(t *testing.T, recorder *events.FakeRecorder, reason string) {
+	t.Helper()
+	select {
+	case event := <-recorder.Events:
+		if !strings.Contains(event, reason) {
+			t.Fatalf("event = %q, want %s", event, reason)
+		}
+	default:
+		t.Fatalf("expected %s event, got none", reason)
+	}
+}
+
+// Parameters are immutable, so drift in them is reverted by re-creating the
+// StorageClass rather than by an update the API server would reject.
+func TestPillarStorageClass_ParameterDrift_RecreatesStorageClass(t *testing.T) {
+	ctx := context.Background()
+	reconciler, recorder, binding, pool, protocol := newDriftTestReconciler(t, interceptor.Funcs{})
+
 	sc := &storagev1.StorageClass{}
 	if err := reconciler.Get(ctx, types.NamespacedName{Name: binding.Name}, sc); err != nil {
 		t.Fatalf("get StorageClass: %v", err)
 	}
-	sc.ResourceVersion = "1"
 	sc.Parameters["csi.storage.k8s.io/fstype"] = "xfs"
+	sc.Annotations = map[string]string{"storageclass.kubernetes.io/is-default-class": "true"}
+	sc.MountOptions = []string{"noatime"}
 	if err := reconciler.Update(ctx, sc); err != nil {
 		t.Fatalf("drift StorageClass: %v", err)
 	}
@@ -104,14 +140,162 @@ func TestPillarStorageClass_StorageClassDrift_EmitsEvent(t *testing.T) {
 	if err := reconciler.reconcileStorageClass(ctx, binding, pool, protocol, binding.Name); err != nil {
 		t.Fatalf("revert StorageClass drift: %v", err)
 	}
+	expectEvent(t, recorder, "StorageClassRecreated")
 
-	select {
-	case event := <-orderRecorder.Events:
-		if !strings.Contains(event, "StorageClassReverted") {
-			t.Fatalf("event = %q, want StorageClassReverted", event)
-		}
-	default:
-		t.Fatal("expected StorageClassReverted event, got none")
+	got := &storagev1.StorageClass{}
+	if err := reconciler.Get(ctx, types.NamespacedName{Name: binding.Name}, got); err != nil {
+		t.Fatalf("get re-created StorageClass: %v", err)
+	}
+	if fsType := got.Parameters["csi.storage.k8s.io/fstype"]; fsType != "ext4" {
+		t.Errorf("fstype parameter = %q, want the desired %q", fsType, "ext4")
+	}
+	if got.Annotations["storageclass.kubernetes.io/is-default-class"] != "true" {
+		t.Errorf("default-class annotation lost on re-create: %v", got.Annotations)
+	}
+	if len(got.MountOptions) != 1 || got.MountOptions[0] != "noatime" {
+		t.Errorf("mountOptions = %v, want the unmanaged [noatime] carried over", got.MountOptions)
+	}
+	if !metav1.IsControlledBy(got, binding) {
+		t.Errorf("re-created StorageClass is not controlled by the binding: %v", got.OwnerReferences)
+	}
+}
+
+// allowVolumeExpansion is the one mutable managed field; drift in it alone is
+// reverted in place.
+func TestPillarStorageClass_MutableDrift_UpdatesInPlace(t *testing.T) {
+	ctx := context.Background()
+	reconciler, recorder, binding, pool, protocol := newDriftTestReconciler(t, interceptor.Funcs{})
+
+	sc := &storagev1.StorageClass{}
+	if err := reconciler.Get(ctx, types.NamespacedName{Name: binding.Name}, sc); err != nil {
+		t.Fatalf("get StorageClass: %v", err)
+	}
+	disallow := false
+	sc.AllowVolumeExpansion = &disallow
+	if err := reconciler.Update(ctx, sc); err != nil {
+		t.Fatalf("drift StorageClass: %v", err)
+	}
+	driftedUID := sc.UID
+
+	if err := reconciler.reconcileStorageClass(ctx, binding, pool, protocol, binding.Name); err != nil {
+		t.Fatalf("revert StorageClass drift: %v", err)
+	}
+	expectEvent(t, recorder, "StorageClassReverted")
+
+	got := &storagev1.StorageClass{}
+	if err := reconciler.Get(ctx, types.NamespacedName{Name: binding.Name}, got); err != nil {
+		t.Fatalf("get StorageClass: %v", err)
+	}
+	if got.UID != driftedUID {
+		t.Errorf("StorageClass was re-created (UID %s -> %s); a mutable drift must update in place", driftedUID, got.UID)
+	}
+	if got.AllowVolumeExpansion == nil || !*got.AllowVolumeExpansion {
+		t.Errorf("allowVolumeExpansion = %v, want reverted to true", got.AllowVolumeExpansion)
+	}
+}
+
+// A re-create interrupted between deleting the old StorageClass and creating
+// the replacement must not lose the carried-over fields: the next reconcile
+// finds the StorageClass absent and restores them.
+func TestPillarStorageClass_InterruptedRecreate_KeepsCarriedOverFields(t *testing.T) {
+	ctx := context.Background()
+	failCreate := false
+	reconciler, _, binding, pool, protocol := newDriftTestReconciler(t, interceptor.Funcs{
+		Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+			if _, ok := obj.(*storagev1.StorageClass); ok && failCreate {
+				return errors.NewServiceUnavailable("injected create failure")
+			}
+			return c.Create(ctx, obj, opts...)
+		},
+	})
+
+	sc := &storagev1.StorageClass{}
+	if err := reconciler.Get(ctx, types.NamespacedName{Name: binding.Name}, sc); err != nil {
+		t.Fatalf("get StorageClass: %v", err)
+	}
+	sc.Parameters["csi.storage.k8s.io/fstype"] = "xfs"
+	sc.Annotations = map[string]string{"storageclass.kubernetes.io/is-default-class": "true"}
+	sc.MountOptions = []string{"noatime"}
+	if err := reconciler.Update(ctx, sc); err != nil {
+		t.Fatalf("drift StorageClass: %v", err)
+	}
+
+	// The informer cache may still serve the binding as it was before the
+	// carry-over record was written, while already showing the deletion.
+	staleBinding := binding.DeepCopy()
+
+	failCreate = true
+	if err := reconciler.reconcileStorageClass(ctx, binding, pool, protocol, binding.Name); err == nil {
+		t.Fatal("reconcileStorageClass succeeded despite the injected create failure")
+	}
+	err := reconciler.Get(ctx, types.NamespacedName{Name: binding.Name}, &storagev1.StorageClass{})
+	if !errors.IsNotFound(err) {
+		t.Fatalf("StorageClass after the failed create: err = %v, want NotFound", err)
+	}
+
+	failCreate = false
+	if err := reconciler.reconcileStorageClass(ctx, staleBinding, pool, protocol, binding.Name); err != nil {
+		t.Fatalf("complete the interrupted re-create: %v", err)
+	}
+	stored := &pillarcsiv1alpha1.PillarStorageClass{}
+
+	got := &storagev1.StorageClass{}
+	if err := reconciler.Get(ctx, types.NamespacedName{Name: binding.Name}, got); err != nil {
+		t.Fatalf("get re-created StorageClass: %v", err)
+	}
+	if got.Parameters["csi.storage.k8s.io/fstype"] != "ext4" {
+		t.Errorf("fstype parameter = %q, want the desired %q", got.Parameters["csi.storage.k8s.io/fstype"], "ext4")
+	}
+	if got.Annotations["storageclass.kubernetes.io/is-default-class"] != "true" {
+		t.Errorf("default-class annotation lost by the interrupted re-create: %v", got.Annotations)
+	}
+	if len(got.MountOptions) != 1 || got.MountOptions[0] != "noatime" {
+		t.Errorf("mountOptions = %v, want [noatime] restored", got.MountOptions)
+	}
+
+	if err := reconciler.Get(ctx, types.NamespacedName{Name: binding.Name}, stored); err != nil {
+		t.Fatalf("get binding: %v", err)
+	}
+	if _, ok := stored.Annotations[storageClassCarryOverAnnotation]; ok {
+		t.Errorf("carry-over record left on the binding after the re-create completed: %v", stored.Annotations)
+	}
+}
+
+// A StorageClass that another object controls is never deleted, even when its
+// immutable fields differ from this binding's desired state.
+func TestPillarStorageClass_ImmutableDrift_ForeignControllerNotDeleted(t *testing.T) {
+	ctx := context.Background()
+	reconciler, _, binding, pool, protocol := newDriftTestReconciler(t, interceptor.Funcs{})
+
+	sc := &storagev1.StorageClass{}
+	if err := reconciler.Get(ctx, types.NamespacedName{Name: binding.Name}, sc); err != nil {
+		t.Fatalf("get StorageClass: %v", err)
+	}
+	controller := true
+	sc.OwnerReferences = []metav1.OwnerReference{{
+		APIVersion: "pillar-csi.bhyoo.com/v1alpha1",
+		Kind:       "PillarStorageClass",
+		Name:       "other-binding",
+		UID:        types.UID("other-binding-uid"),
+		Controller: &controller,
+	}}
+	sc.Parameters["csi.storage.k8s.io/fstype"] = "xfs"
+	if err := reconciler.Update(ctx, sc); err != nil {
+		t.Fatalf("hand StorageClass to another controller: %v", err)
+	}
+	foreignUID := sc.UID
+
+	err := reconciler.reconcileStorageClass(ctx, binding, pool, protocol, binding.Name)
+	if err == nil || !strings.Contains(err.Error(), "other-binding") {
+		t.Fatalf("reconcileStorageClass error = %v, want refusal naming the controlling owner", err)
+	}
+
+	got := &storagev1.StorageClass{}
+	if err := reconciler.Get(ctx, types.NamespacedName{Name: binding.Name}, got); err != nil {
+		t.Fatalf("foreign StorageClass was deleted: %v", err)
+	}
+	if got.UID != foreignUID || got.Parameters["csi.storage.k8s.io/fstype"] != "xfs" {
+		t.Errorf("foreign StorageClass was replaced: UID %s -> %s, params %v", foreignUID, got.UID, got.Parameters)
 	}
 }
 
@@ -685,6 +869,142 @@ var _ = Describe("PillarStorageClass Controller", func() {
 			result, err := doReconcile()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.RequeueAfter).To(BeZero())
+		})
+	})
+
+	// -------------------------------------------------------------------------
+	// Issue #94: editing a CRD that feeds immutable StorageClass fields must
+	// converge.  The real API server of envtest rejects any update of
+	// StorageClass parameters/reclaimPolicy/volumeBindingMode, which is what
+	// wedged the binding in StorageClassError forever.
+	// -------------------------------------------------------------------------
+	Context("Editing CRDs that feed immutable StorageClass fields", func() {
+		getSC := func() *storagev1.StorageClass {
+			sc := &storagev1.StorageClass{}
+			Expect(k8sClient.Get(bctx, types.NamespacedName{Name: bindingName}, sc)).To(Succeed())
+			return sc
+		}
+
+		expectReady := func() {
+			fetched := fetchBinding()
+			scCond := findBindingCondition(fetched, conditionStorageClassCreated)
+			Expect(scCond).NotTo(BeNil())
+			Expect(scCond.Status).To(Equal(metav1.ConditionTrue), scCond.Message)
+			readyCond := findBindingCondition(fetched, conditionReady)
+			Expect(readyCond).NotTo(BeNil())
+			Expect(readyCond.Status).To(Equal(metav1.ConditionTrue), readyCond.Message)
+		}
+
+		BeforeEach(func() {
+			createBinding()
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+			createPool(&trueStatus, "pool ready")
+			createProtocol(&trueStatus, "protocol ready")
+
+			protocol := &pillarcsiv1alpha1.PillarProtocol{}
+			Expect(k8sClient.Get(bctx, types.NamespacedName{Name: protocolName}, protocol)).To(Succeed())
+			ctrlLossTmo := int32(1200)
+			protocol.Spec.NVMeOFTCP = &pillarcsiv1alpha1.NVMeOFTCPConfig{CtrlLossTmo: &ctrlLossTmo}
+			Expect(k8sClient.Update(bctx, protocol)).To(Succeed())
+
+			_, err = doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(getSC().Parameters).To(HaveKeyWithValue("pillar-csi.bhyoo.com/nvmeof-ctrl-loss-tmo", "1200"))
+		})
+
+		AfterEach(func() {
+			forceRemoveBindingFinalizer()
+			deleteBinding()
+			deletePool()
+			deleteProtocol()
+			sc := &storagev1.StorageClass{}
+			if err := k8sClient.Get(bctx, types.NamespacedName{Name: bindingName}, sc); err == nil {
+				Expect(k8sClient.Delete(bctx, sc)).To(Succeed())
+			}
+		})
+
+		It("re-creates the StorageClass with the new parameters after a PillarProtocol edit", func() {
+			before := getSC()
+
+			protocol := &pillarcsiv1alpha1.PillarProtocol{}
+			Expect(k8sClient.Get(bctx, types.NamespacedName{Name: protocolName}, protocol)).To(Succeed())
+			ctrlLossTmo := int32(1500)
+			protocol.Spec.NVMeOFTCP.CtrlLossTmo = &ctrlLossTmo
+			Expect(k8sClient.Update(bctx, protocol)).To(Succeed())
+
+			result, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(BeZero())
+
+			after := getSC()
+			Expect(after.UID).NotTo(Equal(before.UID), "an immutable change must re-create the StorageClass")
+			Expect(after.Parameters).To(HaveKeyWithValue("pillar-csi.bhyoo.com/nvmeof-ctrl-loss-tmo", "1500"))
+			binding := fetchBinding()
+			Expect(metav1.IsControlledBy(after, binding)).To(BeTrue())
+			expectReady()
+
+			By("converging: a further reconcile leaves the re-created StorageClass alone")
+			_, err = doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(getSC().UID).To(Equal(after.UID))
+		})
+
+		It("re-creates the StorageClass when the binding's reclaimPolicy changes", func() {
+			before := getSC()
+			Expect(*before.ReclaimPolicy).To(Equal(corev1.PersistentVolumeReclaimDelete))
+
+			binding := fetchBinding()
+			binding.Spec.StorageClass.ReclaimPolicy = pillarcsiv1alpha1.ReclaimPolicyRetain
+			Expect(k8sClient.Update(bctx, binding)).To(Succeed())
+
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			after := getSC()
+			Expect(after.UID).NotTo(Equal(before.UID))
+			Expect(*after.ReclaimPolicy).To(Equal(corev1.PersistentVolumeReclaimRetain))
+			expectReady()
+		})
+
+		It("keeps user metadata and unmanaged immutable fields across the re-create", func() {
+			sc := getSC()
+			sc.Annotations = map[string]string{"storageclass.kubernetes.io/is-default-class": "true"}
+			sc.Labels = map[string]string{"team": "storage"}
+			Expect(k8sClient.Update(bctx, sc)).To(Succeed())
+
+			protocol := &pillarcsiv1alpha1.PillarProtocol{}
+			Expect(k8sClient.Get(bctx, types.NamespacedName{Name: protocolName}, protocol)).To(Succeed())
+			ctrlLossTmo := int32(1500)
+			protocol.Spec.NVMeOFTCP.CtrlLossTmo = &ctrlLossTmo
+			Expect(k8sClient.Update(bctx, protocol)).To(Succeed())
+
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			after := getSC()
+			Expect(after.UID).NotTo(Equal(sc.UID))
+			Expect(after.Annotations).To(HaveKeyWithValue("storageclass.kubernetes.io/is-default-class", "true"))
+			Expect(after.Labels).To(HaveKeyWithValue("team", "storage"))
+		})
+
+		It("updates allowVolumeExpansion in place without re-creating the StorageClass", func() {
+			before := getSC()
+			Expect(before.AllowVolumeExpansion).NotTo(BeNil())
+			Expect(*before.AllowVolumeExpansion).To(BeTrue())
+
+			binding := fetchBinding()
+			disallow := false
+			binding.Spec.StorageClass.AllowVolumeExpansion = &disallow
+			Expect(k8sClient.Update(bctx, binding)).To(Succeed())
+
+			_, err := doReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			after := getSC()
+			Expect(after.UID).To(Equal(before.UID))
+			Expect(*after.AllowVolumeExpansion).To(BeFalse())
+			expectReady()
 		})
 	})
 

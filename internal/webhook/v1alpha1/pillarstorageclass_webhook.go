@@ -169,6 +169,20 @@ func (v *PillarStorageClassCustomValidator) ValidateUpdate(
 		))
 	}
 
+	// The generated StorageClass name is immutable: PVCs and PVs reference their class
+	// by name, and a rename would leave the old StorageClass orphaned (its owner reference
+	// only cascades on deletion of this binding) while new PVCs silently switch classes.
+	// The name defaults to the binding name, so setting or clearing it is also a rename.
+	oldSCName := effectiveStorageClassName(oldBinding)
+	newSCName := effectiveStorageClassName(newBinding)
+	if oldSCName != newSCName {
+		allErrs = append(allErrs, field.Forbidden(
+			field.NewPath("spec", "storageClass", "name"),
+			fmt.Sprintf("the generated StorageClass name is immutable; old value %q cannot be changed to %q",
+				oldSCName, newSCName),
+		))
+	}
+
 	if len(allErrs) > 0 {
 		return nil, allErrs.ToAggregate()
 	}
@@ -192,6 +206,16 @@ func (*PillarStorageClassCustomValidator) ValidateDelete(
 	pillarstorageclasslog.Info("Validation for PillarStorageClass upon deletion", "name", pillarstorageclass.GetName())
 
 	return nil, nil
+}
+
+// effectiveStorageClassName returns the name of the StorageClass generated for
+// pb: spec.storageClass.name, defaulting to the binding's own name.  It mirrors
+// storageClassNameFor in the PillarStorageClass controller.
+func effectiveStorageClassName(pb *pillarcsiv1alpha1.PillarStorageClass) string {
+	if pb.Spec.StorageClass.Name != "" {
+		return pb.Spec.StorageClass.Name
+	}
+	return pb.Name
 }
 
 // validateCompatibility checks that the backend type of the referenced
