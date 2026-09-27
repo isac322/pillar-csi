@@ -96,13 +96,31 @@ func isNotExistOutput(out []byte) bool {
 		strings.Contains(s, "does not exist")
 }
 
-// isOutOfSpaceOutput reports whether zfs(8) output reports that the pool or
-// an ancestor dataset quota cannot hold the requested volsize.  The zfs CLI
-// prints "out of space" for ENOSPC and maps EDQUOT to the same text, both when
-// `zfs create -V` cannot reserve the refreservation and when `zfs set
-// volsize` cannot grow it (e.g. "cannot create 'tank/pvc': out of space").
+// outOfSpaceMarkers are the zfs(8) diagnostics reporting that the pool or an
+// ancestor dataset quota cannot hold the requested volsize:
+//
+//	cannot create 'tank/pvc': out of space
+//	cannot set property for 'tank/pvc': size is greater than available space
+//
+// libzfs prints "out of space" for ENOSPC and EDQUOT (zfs_standard_error).
+// Growing a thick zvol also grows its refreservation, and an ENOSPC on that
+// reservation is reported as "size is greater than available space"
+// (zfs_setprop_error), which libzfs emits only for reservations.
+var outOfSpaceMarkers = []string{
+	"out of space",
+	"size is greater than available space",
+}
+
+// isOutOfSpaceOutput reports whether `zfs create -V` or `zfs set volsize`
+// output says the pool cannot hold the requested size.
 func isOutOfSpaceOutput(out []byte) bool {
-	return strings.Contains(string(out), "out of space")
+	s := string(out)
+	for _, marker := range outOfSpaceMarkers {
+		if strings.Contains(s, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // Backend implements backend.VolumeBackend using ZFS zvols.

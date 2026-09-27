@@ -369,16 +369,24 @@ func isAlreadyExistsOutput(out []byte) bool {
 	return strings.Contains(s, "already exists")
 }
 
-// insufficientSpaceMarkers are the lvm2 diagnostics reporting that the VG (or
-// the thin pool's VG) cannot allocate the requested extents, e.g.
+// insufficientSpaceMarkers are the lvm2 diagnostics reporting that the VG, or
+// the thin pool a thin LV is created in, cannot hold the requested size, e.g.
 //
 //	Insufficient free space: 1024 extents needed, but only 512 available
 //	Volume group "vg" has insufficient free space (10 extents): 20 required.
 //	Insufficient suitable allocatable extents for logical volume lv: 64 more required
+//	WARNING: Thin pool vg/tp is out of data space.
+//	WARNING: Remaining free space in metadata of thin pool vg/tp is too low (...).
+//
+// The thin pool warnings precede the generic lvcreate error saying free space
+// in the thin pool reached its threshold. That error is not a marker itself:
+// lvm2 prints it for failed or needs-check pools too.
 var insufficientSpaceMarkers = []string{
 	"insufficient free space",
 	"insufficient free extents",
 	"insufficient suitable allocatable extents",
+	"is out of data space",
+	"remaining free space in metadata of thin pool",
 }
 
 // isInsufficientSpaceOutput reports whether lvcreate/lvextend output says the

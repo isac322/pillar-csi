@@ -324,6 +324,15 @@ func TestCapacityFailuresAreClassified(t *testing.T) {
 			op:           expand,
 			wantCapacity: true,
 		},
+		"expand refreservation exceeds available space": {
+			// Growing a thick zvol grows its refreservation; libzfs reports
+			// that reservation's ENOSPC with this text instead.
+			responses: []fakeResponse{
+				fail("cannot set property for 'tank/pvc-cap': size is greater than available space"),
+			},
+			op:           expand,
+			wantCapacity: true,
+		},
 		"create pool offline": {
 			responses: []fakeResponse{notExistResp(volID), fail("cannot open 'tank': pool I/O is currently suspended")},
 			op:        create,
@@ -354,7 +363,7 @@ func TestCapacityFailuresAreClassified(t *testing.T) {
 				t.Errorf("InsufficientCapacityError{VolumeID: %q, RequestedBytes: %d}; want {%q, %d}",
 					capErr.VolumeID, capErr.RequestedBytes, volID, int64(5<<30))
 			}
-			if !strings.Contains(err.Error(), "out of space") {
+			if !strings.Contains(err.Error(), "cannot ") {
 				t.Errorf("error %q lost the zfs output", err)
 			}
 		})

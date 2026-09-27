@@ -1307,6 +1307,29 @@ func TestCapacityFailuresAreClassified(t *testing.T) {
 			op:           create,
 			wantCapacity: true,
 		},
+		"thin create, thin pool out of data space": {
+			thinpool: "thin-pool-0",
+			lvmOut: "  WARNING: Thin pool data-vg/thin-pool-0 is out of data space.\n" +
+				"  Cannot create new thin volume, free space in thin pool data-vg/thin-pool-0 reached threshold.",
+			op:           create,
+			wantCapacity: true,
+		},
+		"thin create, thin pool metadata exhausted": {
+			thinpool: "thin-pool-0",
+			lvmOut: "  WARNING: Remaining free space in metadata of thin pool data-vg/thin-pool-0 " +
+				"is too low (75.00% >= 75.00%). Resize is recommended.\n" +
+				"  Cannot create new thin volume, free space in thin pool data-vg/thin-pool-0 reached threshold.",
+			op:           create,
+			wantCapacity: true,
+		},
+		"thin create, thin pool failed": {
+			// lvm2 prints the same generic threshold error for a failed pool,
+			// which is not a capacity condition.
+			thinpool: "thin-pool-0",
+			lvmOut: "  WARNING: Thin pool data-vg/thin-pool-0 is failed.\n" +
+				"  Cannot create new thin volume, free space in thin pool data-vg/thin-pool-0 reached threshold.",
+			op: create,
+		},
 		"expand, VG full": {
 			lvmOut:       "  Insufficient free extents: 256 extents needed, but only 10 available",
 			op:           expand,
@@ -1341,7 +1364,7 @@ func TestCapacityFailuresAreClassified(t *testing.T) {
 				t.Errorf("InsufficientCapacityError{VolumeID: %q, RequestedBytes: %d}; want {%q, %d}",
 					capErr.VolumeID, capErr.RequestedBytes, volID, size)
 			}
-			if !strings.Contains(strings.ToLower(err.Error()), "insufficient") {
+			if !strings.Contains(err.Error(), strings.TrimSpace(tc.lvmOut)) {
 				t.Errorf("error %q lost the lvm output", err)
 			}
 		})
