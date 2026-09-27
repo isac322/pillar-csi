@@ -72,12 +72,28 @@ func createVolumeError(err error) error {
 	if conflictErr, ok := errors.AsType[*backend.ConflictError](err); ok {
 		return status.Errorf(codes.AlreadyExists, "CreateVolume: %v", conflictErr)
 	}
+	capErr := insufficientCapacityStatus("CreateVolume", err)
+	if capErr != nil {
+		return capErr
+	}
 	// Preserve gRPC status codes returned by the backend (e.g. InvalidArgument
 	// from name-validation wrappers). Plain Go errors are wrapped with Internal.
 	if _, ok := status.FromError(err); ok {
 		return err
 	}
 	return status.Errorf(codes.Internal, "CreateVolume: %v", err)
+}
+
+// insufficientCapacityStatus maps a backend *InsufficientCapacityError onto
+// ResourceExhausted, the code the CSI spec prescribes for CreateVolume and
+// ControllerExpandVolume when the pool cannot hold the requested size.  It
+// returns nil when err is not a capacity failure.
+func insufficientCapacityStatus(op string, err error) error {
+	capErr, ok := errors.AsType[*backend.InsufficientCapacityError](err)
+	if !ok {
+		return nil
+	}
+	return status.Errorf(codes.ResourceExhausted, "%s: %v", op, capErr)
 }
 
 // DeleteVolume destroys the backend storage resource for the given volume.
@@ -125,6 +141,10 @@ func (s *Server) ExpandVolume(
 		var expandErr error
 		allocated, expandErr = b.Expand(ctx, req.GetVolumeId(), req.GetRequestedBytes())
 		if expandErr != nil {
+			capErr := insufficientCapacityStatus("ExpandVolume", expandErr)
+			if capErr != nil {
+				return capErr
+			}
 			return status.Errorf(codes.Internal, "ExpandVolume: %v", expandErr)
 		}
 		return s.revalidateNamespace(req.GetVolumeId())

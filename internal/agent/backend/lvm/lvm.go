@@ -369,6 +369,42 @@ func isAlreadyExistsOutput(out []byte) bool {
 	return strings.Contains(s, "already exists")
 }
 
+// insufficientSpaceMarkers are the lvm2 diagnostics reporting that the VG (or
+// the thin pool's VG) cannot allocate the requested extents, e.g.
+//
+//	Insufficient free space: 1024 extents needed, but only 512 available
+//	Volume group "vg" has insufficient free space (10 extents): 20 required.
+//	Insufficient suitable allocatable extents for logical volume lv: 64 more required
+var insufficientSpaceMarkers = []string{
+	"insufficient free space",
+	"insufficient free extents",
+	"insufficient suitable allocatable extents",
+}
+
+// isInsufficientSpaceOutput reports whether lvcreate/lvextend output says the
+// VG cannot hold the requested size.
+func isInsufficientSpaceOutput(out []byte) bool {
+	s := strings.ToLower(string(out))
+	for _, marker := range insufficientSpaceMarkers {
+		if strings.Contains(s, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// cmdError builds the error of a failed lvm2 command.  When the output reports
+// insufficient VG space the error is a *backend.InsufficientCapacityError so
+// the caller can report the CSI capacity condition.
+func cmdError(volumeID string, requestedBytes int64, out []byte, err error) error {
+	if isInsufficientSpaceOutput(out) {
+		return &backend.InsufficientCapacityError{
+			VolumeID: volumeID, RequestedBytes: requestedBytes, Err: err,
+		}
+	}
+	return err
+}
+
 // Backend implements backend.VolumeBackend using LVM logical volumes.
 //
 // A single Backend instance is scoped to one LVM Volume Group and one optional
@@ -585,8 +621,11 @@ func (b *Backend) createThinLV(
 		if isAlreadyExistsOutput(out) {
 			return nil
 		}
-		return fmt.Errorf("lvcreate --virtualsize %s/%s in thinpool %s: %w\n%s",
-			vg, lvName, thinPool, err, strings.TrimSpace(string(out)))
+		// VolumeIDs are "<vg>/<lv-name>" (see lvName), so vg/lvName is the
+		// caller's volume ID.
+		return cmdError(vg+"/"+lvName, sizeBytes, out,
+			fmt.Errorf("lvcreate --virtualsize %s/%s in thinpool %s: %w\n%s",
+				vg, lvName, thinPool, err, strings.TrimSpace(string(out))))
 	}
 	return nil
 }
@@ -707,8 +746,9 @@ func (b *Backend) Create(
 
 		out, runErr := b.exec.run(ctx, "lvcreate", args...)
 		if runErr != nil {
-			return "", 0, fmt.Errorf("lvcreate %s/%s: %w\n%s",
-				b.vg, lv, runErr, strings.TrimSpace(string(out)))
+			return "", 0, cmdError(volumeID, capacityBytes, out,
+				fmt.Errorf("lvcreate %s/%s: %w\n%s",
+					b.vg, lv, runErr, strings.TrimSpace(string(out))))
 		}
 	}
 
@@ -793,8 +833,9 @@ func (b *Backend) Expand(ctx context.Context, volumeID string, requestedBytes in
 		b.vg+"/"+lv,
 	)
 	if runErr != nil {
-		return 0, fmt.Errorf("lvextend %s/%s to %d: %w\n%s",
-			b.vg, lv, requestedBytes, runErr, strings.TrimSpace(string(out)))
+		return 0, cmdError(volumeID, requestedBytes, out,
+			fmt.Errorf("lvextend %s/%s to %d: %w\n%s",
+				b.vg, lv, requestedBytes, runErr, strings.TrimSpace(string(out))))
 	}
 
 	// Read back the actual size after extent rounding.

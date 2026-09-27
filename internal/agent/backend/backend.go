@@ -44,6 +44,26 @@ func (e *ConflictError) Error() string {
 	)
 }
 
+// InsufficientCapacityError is returned by VolumeBackend.Create and
+// VolumeBackend.Expand when the storage pool (ZFS pool / dataset quota, LVM VG
+// or thin pool) cannot hold the requested size.  Callers should map it to gRPC
+// codes.ResourceExhausted, the code the CSI spec prescribes for insufficient
+// capacity on CreateVolume and ControllerExpandVolume.
+//
+// Err is the underlying command failure, kept for its diagnostic output.
+type InsufficientCapacityError struct {
+	VolumeID       string
+	RequestedBytes int64
+	Err            error
+}
+
+func (e *InsufficientCapacityError) Error() string {
+	return fmt.Sprintf("insufficient capacity for volume %q (%d bytes requested): %v",
+		e.VolumeID, e.RequestedBytes, e.Err)
+}
+
+func (e *InsufficientCapacityError) Unwrap() error { return e.Err }
+
 // VolumeBackend abstracts the storage-backend lifecycle for a single pool.
 // All methods MUST be idempotent so that the controller can safely retry.
 //

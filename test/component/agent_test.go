@@ -265,12 +265,17 @@ func TestAgentServer_CreateVolume_Idempotent(t *testing.T) {
 	}
 }
 
-// TestAgentServer_CreateVolume_DiskFull validates that a disk-full backend
-// error maps to ResourceExhausted or Internal gRPC status.
+// TestAgentServer_CreateVolume_DiskFull validates that a backend
+// insufficient-capacity error maps to ResourceExhausted, the code the CSI spec
+// prescribes for CreateVolume when the pool is too small (issue #99).
 func TestAgentServer_CreateVolume_DiskFull(t *testing.T) {
 	t.Parallel()
 	mb := &mockVolumeBackend{
-		createErr: errors.New("out of space"),
+		createErr: &backend.InsufficientCapacityError{
+			VolumeID:       compTestVolumeID,
+			RequestedBytes: 10 * 1024 * 1024 * 1024,
+			Err:            errors.New("out of space"),
+		},
 	}
 	srv, _ := newAgentServer(t, mb)
 
@@ -282,10 +287,9 @@ func TestAgentServer_CreateVolume_DiskFull(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	// Backend errors are wrapped as Internal by server_volume.go
 	st, _ := status.FromError(err)
-	if st.Code() == codes.OK {
-		t.Errorf("code = OK, want non-OK gRPC status")
+	if st.Code() != codes.ResourceExhausted {
+		t.Errorf("code = %v, want ResourceExhausted", st.Code())
 	}
 }
 

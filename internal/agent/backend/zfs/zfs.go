@@ -96,6 +96,15 @@ func isNotExistOutput(out []byte) bool {
 		strings.Contains(s, "does not exist")
 }
 
+// isOutOfSpaceOutput reports whether zfs(8) output reports that the pool or
+// an ancestor dataset quota cannot hold the requested volsize.  The zfs CLI
+// prints "out of space" for ENOSPC and maps EDQUOT to the same text, both when
+// `zfs create -V` cannot reserve the refreservation and when `zfs set
+// volsize` cannot grow it (e.g. "cannot create 'tank/pvc': out of space").
+func isOutOfSpaceOutput(out []byte) bool {
+	return strings.Contains(string(out), "out of space")
+}
+
 // Backend implements backend.VolumeBackend using ZFS zvols.
 //
 // A single Backend instance is scoped to one ZFS pool and one optional
@@ -279,8 +288,14 @@ func (z *Backend) Create(
 
 	out, runErr := z.exec.run(ctx, "zfs", args...)
 	if runErr != nil {
-		return "", 0, fmt.Errorf("zfs create -V %d %s: %w\n%s",
+		cmdErr := fmt.Errorf("zfs create -V %d %s: %w\n%s",
 			capacityBytes, ds, runErr, strings.TrimSpace(string(out)))
+		if isOutOfSpaceOutput(out) {
+			return "", 0, &backend.InsufficientCapacityError{
+				VolumeID: volumeID, RequestedBytes: capacityBytes, Err: cmdErr,
+			}
+		}
+		return "", 0, cmdErr
 	}
 
 	// ZFS rounds volsize up to the nearest volblocksize boundary, so the
@@ -327,8 +342,14 @@ func (z *Backend) Expand(ctx context.Context, volumeID string, requestedBytes in
 	volsizeArg := "volsize=" + strconv.FormatInt(requestedBytes, 10)
 	out, err := z.exec.run(ctx, "zfs", "set", volsizeArg, ds)
 	if err != nil {
-		return 0, fmt.Errorf("zfs set %s %s: %w\n%s",
+		cmdErr := fmt.Errorf("zfs set %s %s: %w\n%s",
 			volsizeArg, ds, err, strings.TrimSpace(string(out)))
+		if isOutOfSpaceOutput(out) {
+			return 0, &backend.InsufficientCapacityError{
+				VolumeID: volumeID, RequestedBytes: requestedBytes, Err: cmdErr,
+			}
+		}
+		return 0, cmdErr
 	}
 
 	// Read back the actual size after rounding.
