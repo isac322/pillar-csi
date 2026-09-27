@@ -1468,9 +1468,14 @@ func (s *ControllerServer) ControllerPublishVolume(
 		return nil, reserveErr
 	}
 
-	grantErr := s.grantPublication(ctx, agentAddr, agentVolID, agentProtocolType, initiatorID, fence)
-	if grantErr != nil {
-		return nil, grantErr
+	// An export with ACL off (attr_allow_any_host=1) has no per-host ACL: the
+	// kernel rejects allowed_hosts links with EINVAL.  The publication record
+	// above still orders exclusivity; only the grant RPC is skipped.
+	if exportACLEnabled(pvs) {
+		grantErr := s.grantPublication(ctx, agentAddr, agentVolID, agentProtocolType, initiatorID, fence)
+		if grantErr != nil {
+			return nil, grantErr
+		}
 	}
 
 	// ── Advance state machine to ControllerPublished ─────────────────────────
@@ -1486,6 +1491,22 @@ func (s *ControllerServer) ControllerPublishVolume(
 	return &csi.ControllerPublishVolumeResponse{
 		PublishContext: map[string]string{},
 	}, nil
+}
+
+// exportACLEnabled reports whether the volume's export enforces a per-host
+// ACL, i.e. whether ControllerPublish/Unpublish must grant and revoke
+// initiators on the agent.  The durable status.exportSpec is authoritative;
+// without it the resolved protocol configuration decides.  A volume with
+// neither record (provisioned before either existed) keeps the historical
+// behavior of managing initiators.
+func exportACLEnabled(pvs *v1alpha1.PillarVolumeState) bool {
+	if spec := pvs.Status.ExportSpec; spec != nil {
+		return spec.ACLEnabled
+	}
+	if r := pvs.Spec.Resolved; r != nil && r.Protocol.NVMeOFTCP != nil {
+		return r.Protocol.NVMeOFTCP.ACL
+	}
+	return true
 }
 
 // Grant access using the protocol-specific identity resolved from CSINode.
@@ -1601,40 +1622,48 @@ func (s *ControllerServer) ControllerUnpublishVolume(
 		return &csi.ControllerUnpublishVolumeResponse{}, nil
 	}
 
-	// ── Resolve the agent address from PillarAgent ───────────────────────────
-	target := &v1alpha1.PillarAgent{}
-	getTargetErrCUV := s.k8sClient.Get(ctx, types.NamespacedName{Name: targetName}, target)
-	if getTargetErrCUV != nil {
-		if !k8serrors.IsNotFound(getTargetErrCUV) {
-			return nil, status.Errorf(codes.Internal,
-				"failed to get PillarAgent %q: %v", targetName, getTargetErrCUV)
+	// An export with ACL off (attr_allow_any_host=1) has no per-host ACL to
+	// revoke — and the kernel rejects allowed_hosts changes with EINVAL —
+	// so the records are dropped without contacting the agent.
+	acl := exportACLEnabled(existingPV)
+	var agentClient agentv1.AgentServiceClient
+	if acl {
+		// ── Resolve the agent address from PillarAgent ───────────────────────
+		target := &v1alpha1.PillarAgent{}
+		getTargetErrCUV := s.k8sClient.Get(ctx, types.NamespacedName{Name: targetName}, target)
+		if getTargetErrCUV != nil {
+			if !k8serrors.IsNotFound(getTargetErrCUV) {
+				return nil, status.Errorf(codes.Internal,
+					"failed to get PillarAgent %q: %v", targetName, getTargetErrCUV)
+			}
+			// A missing PillarAgent object does not prove the node's ACL entries
+			// are gone; dropping the records would let another node be granted
+			// while the old grant may still exist.  Keep them and fail closed.
+			return nil, status.Errorf(codes.FailedPrecondition,
+				"PillarAgent %q not found; cannot revoke volume %q on its storage node",
+				targetName, volumeID)
 		}
-		// A missing PillarAgent object does not prove the node's ACL entries
-		// are gone; dropping the records would let another node be granted
-		// while the old grant may still exist.  Keep them and fail closed.
-		return nil, status.Errorf(codes.FailedPrecondition,
-			"PillarAgent %q not found; cannot revoke volume %q on its storage node",
-			targetName, volumeID)
-	}
 
-	agentAddr := target.Status.ResolvedAddress
-	if agentAddr == "" {
-		// Transient; CO will retry.
-		return nil, status.Errorf(codes.Unavailable,
-			"PillarAgent %q has no resolved address", targetName)
-	}
+		agentAddr := target.Status.ResolvedAddress
+		if agentAddr == "" {
+			// Transient; CO will retry.
+			return nil, status.Errorf(codes.Unavailable,
+				"PillarAgent %q has no resolved address", targetName)
+		}
 
-	// ── Dial the agent ────────────────────────────────────────────────────────
-	agentClient, closer, err := s.dialAgent(ctx, agentAddr)
-	if err != nil {
-		return nil, status.Errorf(codes.Unavailable,
-			"failed to dial agent at %q: %v", agentAddr, err)
+		// ── Dial the agent ────────────────────────────────────────────────────
+		dialed, closer, err := s.dialAgent(ctx, agentAddr)
+		if err != nil {
+			return nil, status.Errorf(codes.Unavailable,
+				"failed to dial agent at %q: %v", agentAddr, err)
+		}
+		defer closer.Close() //nolint:errcheck // best-effort close; dial errors already handled
+		agentClient = dialed
 	}
-	defer closer.Close() //nolint:errcheck // best-effort close; dial errors already handled
 
 	// ── Revoke initiator access (idempotent), then drop the records ──────────
 	remaining, revokeErr := s.revokePublications(ctx, agentClient, agentVolID,
-		agentProtocolType, pvName, existingPV.UID, nodeID)
+		agentProtocolType, pvName, existingPV.UID, nodeID, acl)
 	if revokeErr != nil {
 		return nil, revokeErr
 	}
@@ -1664,6 +1693,9 @@ func hasPublicationFor(pubs []v1alpha1.VolumePublication, nodeID string) bool {
 //  3. releasePublication drops the records only while the generation is
 //     still the fence's and only after every revoke succeeded, so neither a
 //     newer re-publish nor a crash can leave an unrecorded grant (fail-closed).
+//
+// When acl is false the export allows every host, so no DenyInitiator RPCs
+// run (agentClient may be nil): the fencing token still orders the records.
 func (s *ControllerServer) revokePublications(
 	ctx context.Context,
 	agentClient agentv1.AgentServiceClient,
@@ -1672,6 +1704,7 @@ func (s *ControllerServer) revokePublications(
 	pvName string,
 	uid types.UID,
 	nodeID string,
+	acl bool,
 ) (remaining int, err error) {
 	fence, revoke, err := s.fencePublications(ctx, pvName, uid, nodeID)
 	if err != nil {
@@ -1679,6 +1712,10 @@ func (s *ControllerServer) revokePublications(
 	}
 	revokedNodes := make([]string, 0, len(revoke))
 	for _, pub := range revoke {
+		if !acl {
+			revokedNodes = append(revokedNodes, pub.NodeID)
+			continue
+		}
 		_, denyErr := agentClient.DenyInitiator(ctx, &agentv1.DenyInitiatorRequest{
 			VolumeId:     agentVolID,
 			ProtocolType: protocolType,

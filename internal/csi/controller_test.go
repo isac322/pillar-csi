@@ -322,9 +322,10 @@ type controllerTestEnv struct {
 
 // Names of the configuration CRs every controller test environment seeds.
 const (
-	testStoreName    = "tank"     // ZFS store: pool "tank" on agent storage-node-1
-	testLVMStoreName = "vg-store" // LVM store: volume group "data-vg", thin pool "thin-pool-0"
-	testProtocolName = "nvme"     // PillarProtocol with an nvmeofTcp member
+	testStoreName    = "tank"        // ZFS store: pool "tank" on agent storage-node-1
+	testLVMStoreName = "vg-store"    // LVM store: volume group "data-vg", thin pool "thin-pool-0"
+	testProtocolName = "nvme"        // PillarProtocol with an nvmeofTcp member (acl unset: false)
+	testACLProtocol  = "nvme-acl-on" // PillarProtocol with nvmeofTcp.acl true
 )
 
 // testConfigObjects returns fresh copies of the PillarStore / PillarProtocol
@@ -355,6 +356,12 @@ func testConfigObjects() []ctrlclient.Object {
 			ObjectMeta: metav1.ObjectMeta{Name: testProtocolName},
 			Spec: v1alpha1.PillarProtocolSpec{
 				Protocol: v1alpha1.ProtocolSpec{NVMeOFTCP: &v1alpha1.NVMeOFTCPConfig{Port: 4420}},
+			},
+		},
+		&v1alpha1.PillarProtocol{
+			ObjectMeta: metav1.ObjectMeta{Name: testACLProtocol},
+			Spec: v1alpha1.PillarProtocolSpec{
+				Protocol: v1alpha1.ProtocolSpec{NVMeOFTCP: &v1alpha1.NVMeOFTCPConfig{Port: 4420, ACL: true}},
 			},
 		},
 	}
@@ -2963,6 +2970,57 @@ func TestControllerPublishVolume_FailedPrecondition_AnnotationMissing(t *testing
 	}
 	if st.Code() != codes.FailedPrecondition {
 		t.Errorf("error code = %v, want %v", st.Code(), codes.FailedPrecondition)
+	}
+}
+
+// TestControllerPublishUnpublish_ACLOffSkipsInitiatorRPCs verifies that a
+// volume exported with ACL off (attr_allow_any_host=1, where the kernel
+// rejects allowed_hosts links with EINVAL) is published and unpublished
+// without AllowInitiator / DenyInitiator, while the publication record is
+// still kept and released (exclusivity and fencing stay ordered).
+func TestControllerPublishUnpublish_ACLOffSkipsInitiatorRPCs(t *testing.T) {
+	t.Parallel()
+
+	req := basePublishRequest()
+	pvs := volumeStateFor(req.GetVolumeId())
+	pvs.Status.ExportSpec = &v1alpha1.VolumeExportSpec{BindAddress: "192.168.1.10", Port: 4420, ACLEnabled: false}
+	csiNode := &storagev1.CSINode{ObjectMeta: metav1.ObjectMeta{
+		Name:        req.GetNodeId(),
+		Annotations: map[string]string{AnnotationNVMeOFHostNQN: "nqn.2014-08.org.nvmexpress:uuid:w1"},
+	}}
+	env := newPublishTestEnv(t, csiNode, pvs)
+	ctx := context.Background()
+
+	_, err := env.srv.ControllerPublishVolume(ctx, req)
+	if err != nil {
+		t.Fatalf("ControllerPublishVolume: %v", err)
+	}
+	if env.agent.allowInitiatorCalls != 0 {
+		t.Errorf("AllowInitiator calls = %d, want 0 for an allow-any-host export", env.agent.allowInitiatorCalls)
+	}
+	got, _, err := env.srv.loadPillarVolumeState(ctx, pvs.Name)
+	if err != nil {
+		t.Fatalf("load PillarVolumeState: %v", err)
+	}
+	if len(got.Status.PublishedNodes) != 1 || got.Status.PublishedNodes[0].NodeID != req.GetNodeId() {
+		t.Fatalf("publishedNodes = %+v, want the published node recorded", got.Status.PublishedNodes)
+	}
+
+	_, err = env.srv.ControllerUnpublishVolume(ctx, &csi.ControllerUnpublishVolumeRequest{
+		VolumeId: req.GetVolumeId(), NodeId: req.GetNodeId(),
+	})
+	if err != nil {
+		t.Fatalf("ControllerUnpublishVolume: %v", err)
+	}
+	if env.agent.denyInitiatorCalls != 0 {
+		t.Errorf("DenyInitiator calls = %d, want 0 for an allow-any-host export", env.agent.denyInitiatorCalls)
+	}
+	got, _, err = env.srv.loadPillarVolumeState(ctx, pvs.Name)
+	if err != nil {
+		t.Fatalf("load PillarVolumeState: %v", err)
+	}
+	if len(got.Status.PublishedNodes) != 0 {
+		t.Errorf("publishedNodes = %+v, want released", got.Status.PublishedNodes)
 	}
 }
 
