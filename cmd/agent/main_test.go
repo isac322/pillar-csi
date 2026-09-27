@@ -271,6 +271,28 @@ func TestBackendFlag_Set_RejectsMissingPool(t *testing.T) {
 	}
 }
 
+// TestBackendFlag_Set_RejectsEscapingParent verifies that a parent= leaving
+// the pool is refused at startup: parent=../k8s would create volumes in pool
+// "k8s" while the agent reports a layout inside "tank" (issue #113).
+func TestBackendFlag_Set_RejectsEscapingParent(t *testing.T) {
+	t.Parallel()
+
+	for _, v := range []string{
+		"type=zfs-zvol,pool=tank,parent=../k8s",
+		"type=zfs-zvol,pool=tank,parent=k8s/../../other",
+		"type=zfs-zvol,pool=tank,parent=./k8s",
+	} {
+		var bf backendFlag
+		if err := bf.Set(v); err == nil {
+			t.Errorf("backendFlag.Set(%q) expected error, got nil", v)
+		}
+	}
+	var bf backendFlag
+	if err := bf.Set("type=zfs-zvol,pool=tank,parent=k8s/sub"); err != nil {
+		t.Errorf("backendFlag.Set nested parent: %v", err)
+	}
+}
+
 // TestBackendFlag_Set_RejectsUnknownType verifies that an unsupported type
 // value returns an error.
 func TestBackendFlag_Set_RejectsUnknownType(t *testing.T) {

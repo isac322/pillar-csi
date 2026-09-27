@@ -241,9 +241,14 @@ func (z *Backend) Layout() backend.Layout {
 }
 
 // normalizeDataset canonicalises a relative dataset path so that "k8s",
-// "/k8s/" and "k8s//" compare equal; the pool root is "".
+// "/k8s/" and "k8s//" compare equal; the pool root is "".  A leading ".."
+// is kept, so a path escaping the pool never equals one inside it.
 func normalizeDataset(s string) string {
-	return strings.Trim(path.Clean("/"+s), "/")
+	c := path.Clean(strings.Trim(s, "/"))
+	if c == "." {
+		return ""
+	}
+	return c
 }
 
 // validateLayout rejects a create request whose declared pool or parent

@@ -425,6 +425,10 @@ func TestCreate_RejectsLayoutMismatch(t *testing.T) {
 		"different pool": {
 			backendParent: "k8s", params: zfsParams("hot-data", "k8s"), wantSetting: "ZFS pool",
 		},
+		// parent=../k8s would create in pool "k8s", not tank/k8s.
+		"agent parent escapes the pool": {
+			backendParent: "../k8s", params: zfsParams("tank", "k8s"), wantSetting: "ZFS parent dataset",
+		},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {

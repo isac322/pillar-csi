@@ -502,9 +502,15 @@ func layoutMismatch(pool *pillarcsiv1alpha1.PillarStore, dp *pillarcsiv1alpha1.D
 }
 
 // normalizeDataset canonicalises a relative ZFS dataset path so that "k8s",
-// "/k8s/" and "k8s//" compare equal; the pool root is "".
+// "/k8s/" and "k8s//" compare equal; the pool root is "".  A leading ".."
+// is kept, so a path escaping the pool never equals one inside it.  It must
+// stay identical to the agent's zfs.normalizeDataset.
 func normalizeDataset(s string) string {
-	return strings.Trim(path.Clean("/"+s), "/")
+	c := path.Clean(strings.Trim(s, "/"))
+	if c == "." {
+		return ""
+	}
+	return c
 }
 
 // evaluateBackendSupported checks whether the backend type declared in
