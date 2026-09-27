@@ -21,26 +21,41 @@ package csi
 // CreateVolume creates the PillarVolumeState before any agent call, so a
 // failed attempt leaves one behind.  While the claim exists the provisioner
 // retries CreateVolume with the same name and the record makes that retry
-// idempotent.  Once the claim is deleted before any PersistentVolume was
-// created, the provisioner stops retrying and, having no PersistentVolume,
-// never calls DeleteVolume: nothing else ends that lifecycle.
+// idempotent.  Once the claim is removed before any PersistentVolume was
+// created, no PersistentVolume ever calls DeleteVolume: nothing else ends
+// that lifecycle.
 //
-// The phase does not tell whether the storage node holds anything: the agent
-// may have created the backend resource (and even the export) of an attempt
-// whose later CRD write or response was lost.  An abandoned lifecycle is
-// therefore always ended by the same fenced teardown as DeleteVolume
-// (UnexportVolume and DeleteVolume, both idempotent) before its record is
-// removed, never by deleting the record alone.
+// The lifecycle rules that make ending it safe:
+//
+//   - CreateVolume reports success only after the record is Ready, so a
+//     lifecycle that is not Ready never had a PersistentVolume.  Only those
+//     (Provisioning, CreatePartial) are reaped: a Ready volume is owned by
+//     its PersistentVolume and reclaim policy, even after the
+//     PersistentVolume object is gone (Retain).
+//   - A claim that still exists, even terminating, may still be provisioned:
+//     external-provisioner keeps retrying it.  Such an attempt is kept.
+//   - Once the claim is gone, CreateVolume refuses to start or continue the
+//     attempt with a final error (FailedPrecondition), which also ends the
+//     provisioner's in-progress retries of the deleted claim.
+//   - The phase does not tell whether the storage node holds anything: the
+//     agent may have created the backend resource (and even the export) of an
+//     attempt whose later CRD write or response was lost.  An abandoned
+//     lifecycle is therefore always ended by the same fenced teardown as
+//     DeleteVolume (UnexportVolume and DeleteVolume, both idempotent) before
+//     its record is removed, never by deleting the record alone.
 
 import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	corev1 "k8s.io/api/core/v1"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
-	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/bhyoo/pillar-csi/api/v1alpha1"
 )
@@ -50,19 +65,34 @@ import (
 // "<prefix>-<claim UID>".
 const provisionerVolumePrefix = "pvc-"
 
-// claimRefFromParams returns the claim identity external-provisioner passes
-// with --extra-create-metadata, or nil when the UID is absent: only the UID
-// pins one claim.
-func claimRefFromParams(params map[string]string) *v1alpha1.VolumeClaimRef {
-	uid := params[paramPVCUIDMeta]
-	if uid == "" {
-		return nil
+// reapTeardownTimeout bounds the agent teardown of one abandoned volume.  The
+// reaper runs on the PillarVolumeState reconciler's worker and holds the
+// volume lock, so an agent that accepts the call but never answers must not
+// stall export resync of every other volume.
+const reapTeardownTimeout = 60 * time.Second
+
+// claimRefFor returns the identity of the claim a first CreateVolume call
+// provisions for, from the claim name and namespace external-provisioner
+// passes with --extra-create-metadata; found is false when they are absent or
+// name no claim.  The provisioner only provisions an existing claim, so its
+// current UID is read back uncached.
+func (s *ControllerServer) claimRefFor(
+	ctx context.Context,
+	params map[string]string,
+) (ref v1alpha1.VolumeClaimRef, found bool, err error) {
+	name, namespace := params[paramPVCNameMeta], params[paramPVCNamespaceMeta]
+	if name == "" || namespace == "" {
+		return ref, false, nil
 	}
-	return &v1alpha1.VolumeClaimRef{
-		UID:       uid,
-		Namespace: params[paramPVCNamespaceMeta],
-		Name:      params[paramPVCNameMeta],
+	claim := &corev1.PersistentVolumeClaim{}
+	err = s.apiReader.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, claim)
+	switch {
+	case k8serrors.IsNotFound(err):
+		return ref, false, nil
+	case err != nil:
+		return ref, false, status.Errorf(codes.Internal, "get PersistentVolumeClaim %s/%s: %v", namespace, name, err)
 	}
+	return v1alpha1.VolumeClaimRef{UID: string(claim.UID), Namespace: namespace, Name: name}, true, nil
 }
 
 // volumeClaimUID returns the UID of the claim pvs was provisioned for: the
@@ -84,22 +114,84 @@ func volumeClaimUID(pvs *v1alpha1.PillarVolumeState) types.UID {
 	return types.UID(suffix)
 }
 
+// claimGone reports whether pvs is attributed to a claim and no claim with
+// that UID exists any more (a terminating claim still exists).  It reads
+// uncached: a stale informer cache could miss a just-created claim.
+func (s *ControllerServer) claimGone(ctx context.Context, pvs *v1alpha1.PillarVolumeState) (bool, error) {
+	claimUID := volumeClaimUID(pvs)
+	if claimUID == "" {
+		return false, nil
+	}
+	if ref := pvs.Spec.ClaimRef; ref != nil && ref.Name != "" && ref.Namespace != "" {
+		claim := &corev1.PersistentVolumeClaim{}
+		err := s.apiReader.Get(ctx, types.NamespacedName{Name: ref.Name, Namespace: ref.Namespace}, claim)
+		switch {
+		case k8serrors.IsNotFound(err):
+			return true, nil
+		case err != nil:
+			return false, fmt.Errorf("get PersistentVolumeClaim %s/%s: %w", ref.Namespace, ref.Name, err)
+		}
+		// A claim re-created under the same name is a different claim.
+		return claim.UID != claimUID, nil
+	}
+	claims := &corev1.PersistentVolumeClaimList{}
+	err := s.apiReader.List(ctx, claims)
+	if err != nil {
+		return false, fmt.Errorf("list PersistentVolumeClaims for volume %q: %w", pvs.Spec.VolumeID, err)
+	}
+	for i := range claims.Items {
+		if claims.Items[i].UID == claimUID {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// refuseAbandonedClaim rejects a CreateVolume attempt whose claim is gone with
+// FailedPrecondition, a final error for external-provisioner: no one can use
+// the volume, and ending the provisioner's retries lets ReapAbandonedVolume
+// end the lifecycle for good.
+func (s *ControllerServer) refuseAbandonedClaim(ctx context.Context, attempt *v1alpha1.PillarVolumeState) error {
+	gone, err := s.claimGone(ctx, attempt)
+	if err != nil {
+		return status.Errorf(codes.Internal, "%v", err)
+	}
+	if gone {
+		return status.Errorf(codes.FailedPrecondition,
+			"PersistentVolumeClaim %s of volume %q no longer exists; provisioning abandoned",
+			volumeClaimUID(attempt), attempt.Spec.VolumeID)
+	}
+	return nil
+}
+
+// reapablePhase reports whether a lifecycle in phase never reported success,
+// i.e. never had a PersistentVolume.
+func reapablePhase(phase v1alpha1.PillarVolumeStatePhase) bool {
+	switch phase {
+	case "", v1alpha1.PillarVolumeStatePhaseProvisioning, v1alpha1.PillarVolumeStatePhaseCreatePartial:
+		return true
+	default:
+		return false
+	}
+}
+
 // ReapAbandonedVolume ends the lifecycle of the named PillarVolumeState when
-// its provisioning was abandoned: the volume is attributed to a claim, that
-// claim no longer exists (or is terminating), and no PersistentVolume refers
-// to the volume.  It reports whether the lifecycle was ended.
+// its provisioning was abandoned: CreateVolume never reported it created
+// (phase Provisioning or CreatePartial), it is attributed to a claim, that
+// claim no longer exists (a terminating claim still exists), and no
+// PersistentVolume refers to the volume.  It reports whether the lifecycle
+// was ended.
 //
-// Every other volume is left alone and (false, nil) is returned: a volume
-// with a PersistentVolume is deleted through CSI DeleteVolume when that
-// PersistentVolume is released, a live claim may still retry CreateVolume,
-// and a volume whose claim cannot be identified cannot be proven abandoned.
+// Every other volume is left alone and (false, nil) is returned.
 //
 // The teardown runs under the volume lock and commits status.deleting with a
-// fresh fencing generation first, so a CreateVolume retry still in flight is
-// either refused (it re-reads deleting) or rejected by the agent as stale.  A
-// failure keeps the record marked deleting and is returned so the caller
-// retries; the retry repeats the idempotent steps with the same token.  A
-// volume still recorded as published is refused (FailedPrecondition) and kept.
+// fresh fencing generation first, in a compare-and-swap that still requires
+// the reapable phase, so an attempt that became Ready in between is kept.  A
+// CreateVolume still in flight is then refused (it re-reads deleting, and
+// persistVolumeReady refuses a lifecycle under deletion) or rejected by the
+// agent as stale.  A failure keeps the record marked deleting and is returned
+// so the caller retries; the retry repeats the idempotent steps with the same
+// token.  A volume still recorded as published is refused and kept.
 func (s *ControllerServer) ReapAbandonedVolume(ctx context.Context, pvsName string) (bool, error) {
 	pvs, found, err := s.readVolumeState(ctx, pvsName)
 	if err != nil || !found {
@@ -120,7 +212,14 @@ func (s *ControllerServer) ReapAbandonedVolume(ctx context.Context, pvsName stri
 		return false, err
 	}
 
-	pvs, fence, err := s.markVolumeDeleting(ctx, pvsName, volumeID)
+	decidedUID := pvs.UID
+	pvs, fence, err := s.markVolumeDeleting(ctx, pvsName, volumeID, func(cur *v1alpha1.PillarVolumeState) error {
+		if cur.UID != decidedUID || !reapablePhase(cur.Status.Phase) {
+			return status.Errorf(codes.Aborted,
+				"volume %q changed to phase %q while being reaped", volumeID, cur.Status.Phase)
+		}
+		return nil
+	})
 	if err != nil {
 		return false, err
 	}
@@ -128,7 +227,9 @@ func (s *ControllerServer) ReapAbandonedVolume(ctx context.Context, pvsName stri
 		return false, nil
 	}
 
-	err = s.teardownMarkedVolume(ctx, volumeTeardown{
+	teardownCtx, cancel := context.WithTimeout(ctx, reapTeardownTimeout)
+	defer cancel()
+	err = s.teardownMarkedVolume(teardownCtx, volumeTeardown{
 		volumeID:     volumeID,
 		pvName:       pvsName,
 		uid:          pvs.UID,
@@ -144,36 +245,25 @@ func (s *ControllerServer) ReapAbandonedVolume(ctx context.Context, pvsName stri
 	return true, nil
 }
 
-// provisioningAbandoned reports whether pvs belongs to a claim that no longer
-// exists and no PersistentVolume refers to it.  It reads uncached through
-// apiReader: a stale informer cache could miss a just-created
-// PersistentVolume and tear down a volume in use.
+// provisioningAbandoned reports whether pvs never reported success, its claim
+// is gone, and no PersistentVolume refers to it.  The claim is checked first:
+// once it is gone CreateVolume refuses the attempt, so no success (and no
+// PersistentVolume) can follow the checks.  A lifecycle already marked
+// deleting by an earlier reap resumes its teardown.
 func (s *ControllerServer) provisioningAbandoned(
 	ctx context.Context,
 	pvs *v1alpha1.PillarVolumeState,
 ) (bool, error) {
-	claimUID := volumeClaimUID(pvs)
-	if claimUID == "" {
+	if !reapablePhase(pvs.Status.Phase) {
 		return false, nil
 	}
-
+	gone, err := s.claimGone(ctx, pvs)
+	if err != nil || !gone {
+		return false, err
+	}
 	hasPV, err := s.persistentVolumeExists(ctx, pvs)
 	if err != nil || hasPV {
 		return false, err
-	}
-
-	claims := &corev1.PersistentVolumeClaimList{}
-	err = s.apiReader.List(ctx, claims)
-	if err != nil {
-		return false, fmt.Errorf("list PersistentVolumeClaims for volume %q: %w", pvs.Spec.VolumeID, err)
-	}
-	for i := range claims.Items {
-		claim := &claims.Items[i]
-		// A terminating claim is never provisioned again: the provisioner
-		// skips claims being deleted.
-		if claim.UID == claimUID && claim.DeletionTimestamp.IsZero() {
-			return false, nil
-		}
 	}
 	return true, nil
 }
@@ -191,7 +281,7 @@ func (s *ControllerServer) persistentVolumeExists(
 	if err == nil {
 		return true, nil
 	}
-	if ctrlclient.IgnoreNotFound(err) != nil {
+	if !k8serrors.IsNotFound(err) {
 		return false, fmt.Errorf("get PersistentVolume %q: %w", pvs.Name, err)
 	}
 

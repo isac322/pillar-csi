@@ -302,18 +302,23 @@ var _ = Describe("PillarVolumeState abandoned provisioning", func() {
 		Expect(kept.Status.Deleting).To(BeFalse())
 		Expect(os.ReadDir(subsystems)).To(HaveLen(1))
 
-		// Claim deleted before any PersistentVolume existed: no DeleteVolume
-		// will ever come, so the reconciler ends the lifecycle itself.  The
-		// API server's pvc-protection finalizer keeps the claim terminating,
-		// as it does while a Pod still references it; the provisioner never
-		// provisions a terminating claim again.
+		// Claim deleted while a Pod still references it: the API server's
+		// pvc-protection finalizer keeps it terminating, and
+		// external-provisioner keeps provisioning it, so the attempt stays.
 		Expect(k8sClient.Delete(ctx, pvc)).To(Succeed())
-		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pvc.Name, Namespace: pvc.Namespace}, pvc)).To(Succeed())
+		claimKey := types.NamespacedName{Name: pvc.Name, Namespace: pvc.Namespace}
+		Expect(k8sClient.Get(ctx, claimKey, pvc)).To(Succeed())
 		Expect(pvc.DeletionTimestamp).NotTo(BeNil())
-		DeferCleanup(func() {
-			pvc.Finalizers = nil
-			Expect(client.IgnoreNotFound(k8sClient.Update(ctx, pvc))).To(Succeed())
-		})
+		_, err = f.reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(k8sClient.Get(ctx, key, kept)).To(Succeed(), "attempt of a terminating claim removed")
+		Expect(kept.Status.Deleting).To(BeFalse())
+
+		// Claim removed before any PersistentVolume existed: no DeleteVolume
+		// will ever come, so the reconciler ends the lifecycle itself.
+		pvc.Finalizers = nil
+		Expect(k8sClient.Update(ctx, pvc)).To(Succeed())
+		Eventually(func() error { return k8sClient.Get(ctx, claimKey, pvc) }).Should(Satisfy(apierrors.IsNotFound))
 
 		res, err = f.reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 		Expect(err).NotTo(HaveOccurred())

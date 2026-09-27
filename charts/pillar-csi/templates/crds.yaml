@@ -1184,11 +1184,12 @@ spec:
               claimRef:
                 description: |-
                   claimRef identifies the PersistentVolumeClaim this volume was
-                  provisioned for, when the provisioner passed it (external-provisioner
-                  --extra-create-metadata).  The controller uses it to recognize a
-                  provisioning attempt that was abandoned because its claim was deleted
-                  before any PersistentVolume was created.  Without it the claim UID is
-                  derived from the default "pvc-<claim UID>" volume name.
+                  provisioned for, when the provisioner named it (external-provisioner
+                  --extra-create-metadata); its UID is read from the claim at the first
+                  CreateVolume.  The controller uses it to recognize a provisioning
+                  attempt that was abandoned because its claim was removed before any
+                  PersistentVolume was created.  Without it the claim UID is derived from
+                  the default "pvc-<claim UID>" volume name.
                 properties:
                   name:
                     description: name is the name of the PersistentVolumeClaim.

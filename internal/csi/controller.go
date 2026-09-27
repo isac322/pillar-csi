@@ -51,6 +51,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -488,10 +489,9 @@ const (
 	paramPVCName      = "csi.storage.k8s.io/pvc-name"
 	paramPVCNamespace = "csi.storage.k8s.io/pvc-namespace"
 
-	// ParamPVCUIDMeta, paramPVCNameMeta and paramPVCNamespaceMeta are the
-	// keys external-provisioner actually injects with --extra-create-metadata.
-	// Together they identify the claim a CreateVolume call provisions for.
-	paramPVCUIDMeta       = "csi.storage.k8s.io/pvc/uid"
+	// ParamPVCNameMeta and paramPVCNamespaceMeta are the keys
+	// external-provisioner actually injects with --extra-create-metadata.
+	// They name the claim a CreateVolume call provisions for.
 	paramPVCNameMeta      = "csi.storage.k8s.io/pvc/name"
 	paramPVCNamespaceMeta = "csi.storage.k8s.io/pvc/namespace"
 
@@ -743,15 +743,30 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 	// find and fence; a volume without a PillarVolumeState owns nothing.  The
 	// claim identity lets the controller tear down an attempt whose claim was
 	// deleted before a PersistentVolume existed (ReapAbandonedVolume).
-	pvs, err := s.ensureVolumeState(ctx, pvName, v1alpha1.PillarVolumeStateSpec{
+	spec := v1alpha1.PillarVolumeStateSpec{
 		VolumeID:      volumeID,
 		AgentVolumeID: agentVolID,
 		AgentRef:      targetName,
 		BackendType:   backendTypeStr,
 		ProtocolType:  protocolTypeStr,
 		CapacityBytes: capacityBytes,
-		ClaimRef:      claimRefFromParams(scParams),
-	})
+	}
+	attempt := existingPV
+	if !pvExists {
+		claimRef, claimFound, claimErr := s.claimRefFor(ctx, scParams)
+		if claimErr != nil {
+			return nil, claimErr
+		}
+		if claimFound {
+			spec.ClaimRef = &claimRef
+		}
+		attempt = &v1alpha1.PillarVolumeState{ObjectMeta: metav1.ObjectMeta{Name: pvName}, Spec: spec}
+	}
+	err = s.refuseAbandonedClaim(ctx, attempt)
+	if err != nil {
+		return nil, err
+	}
+	pvs, err := s.ensureVolumeState(ctx, pvName, spec)
 	if err != nil {
 		return nil, err
 	}
@@ -843,15 +858,18 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 			"agent ExportVolume(%q) failed: %v", agentVolID, err)
 	}
 
-	// ── Advance to fully-created state ────────────────────────────────────────
-	s.sm.ForceState(volumeID, StateCreated)
-
-	// Best-effort: mark the lifecycle Ready and cache the export parameters
-	// for idempotent CreateVolume retries.  A failure here is not fatal — the
-	// volume is provisioned and a retry re-exports idempotently.
+	// ── Record the lifecycle Ready before reporting success ──────────────────
+	// The provisioner creates the PersistentVolume from this response, so the
+	// Ready record must be durable first: a lifecycle that is not Ready never
+	// has a PersistentVolume, which is what lets ReapAbandonedVolume end one
+	// whose claim is gone.  A failure is returned; the retry re-exports
+	// idempotently from CreatePartial and records Ready again.
 	info := exportResp.GetExportInfo()
-	//nolint:errcheck // best-effort CRD update; volume is already provisioned
-	_ = s.persistVolumeReady(ctx, pvName, pvs.UID, info)
+	err = s.persistVolumeReady(ctx, pvName, pvs.UID, info)
+	if err != nil {
+		return nil, err
+	}
+	s.sm.ForceState(volumeID, StateCreated)
 
 	// ── Build VolumeContext from ExportInfo ───────────────────────────────────
 	// These key/value pairs are stored in the PersistentVolume and forwarded to
@@ -969,7 +987,7 @@ func (s *ControllerServer) DeleteVolume(
 	// deleting flag is committed by compare-and-swap only while no
 	// publication is recorded, so a concurrent publish on another controller
 	// is rejected instead of racing the deletion.
-	pvs, fence, err := s.markVolumeDeleting(ctx, pvName, volumeID)
+	pvs, fence, err := s.markVolumeDeleting(ctx, pvName, volumeID, nil)
 	if err != nil {
 		return nil, err
 	}

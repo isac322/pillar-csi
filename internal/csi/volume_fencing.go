@@ -383,10 +383,13 @@ func (s *ControllerServer) releasePublication(
 // lifecycle and its token, or a nil object when the volume has no
 // PillarVolumeState: CreateVolume creates it before any backend resource, so
 // such a volume owns nothing and there is nothing to delete.  A retry after
-// deleting was set returns the already committed generation.
+// deleting was set returns the already committed generation.  A non-nil admit
+// is evaluated on the fresh object inside the same compare-and-swap before
+// deleting is first set; its error aborts the mark.
 func (s *ControllerServer) markVolumeDeleting(
 	ctx context.Context,
 	pvName, volumeID string,
+	admit func(*v1alpha1.PillarVolumeState) error,
 ) (*v1alpha1.PillarVolumeState, *agentv1.FencingToken, error) {
 	// Pin the lifecycle observed first: a conflict retry must never rebind to
 	// a PillarVolumeState re-created under the same name in between.
@@ -409,6 +412,12 @@ func (s *ControllerServer) markVolumeDeleting(
 			return status.Errorf(codes.FailedPrecondition,
 				"volume %q is still published to nodes %v; unpublish it before deleting",
 				volumeID, nodes)
+		}
+		if admit != nil {
+			admitErr := admit(pvs)
+			if admitErr != nil {
+				return admitErr
+			}
 		}
 		pvs.Status.Deleting = true
 		return nil
@@ -520,7 +529,10 @@ type exportInfoGetter interface {
 }
 
 // persistVolumeReady marks the lifecycle uid Ready and caches the export
-// parameters for idempotent CreateVolume retries.
+// parameters for idempotent CreateVolume retries.  CreateVolume reports
+// success only after this record is durable, so a lifecycle that is not
+// Ready never has a PersistentVolume.  A lifecycle under deletion is refused:
+// its teardown already started and the volume must not be reported created.
 func (s *ControllerServer) persistVolumeReady(
 	ctx context.Context,
 	pvName string,
@@ -528,6 +540,10 @@ func (s *ControllerServer) persistVolumeReady(
 	info exportInfoGetter,
 ) error {
 	_, err := s.updateVolumeState(ctx, pvName, uid, false, func(pvs *v1alpha1.PillarVolumeState) error {
+		if pvs.Status.Deleting {
+			return status.Errorf(codes.FailedPrecondition,
+				"volume %q is being deleted", pvs.Spec.VolumeID)
+		}
 		pvs.Status.Phase = v1alpha1.PillarVolumeStatePhaseReady
 		pvs.Status.PartialFailure = nil
 		pvs.Status.BackendDevicePath = ""
