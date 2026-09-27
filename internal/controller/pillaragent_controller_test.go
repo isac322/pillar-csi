@@ -60,13 +60,19 @@ type mockDialer struct {
 }
 
 // fakeExportRestorer records RestoreAgentExports calls and returns err.
+// duringCall, when set, runs inside RestoreAgentExports so tests can inspect
+// the persisted status while the restore is in flight.
 type fakeExportRestorer struct {
-	calls []string
-	err   error
+	calls      []string
+	err        error
+	duringCall func(agentName string)
 }
 
 func (f *fakeExportRestorer) RestoreAgentExports(_ context.Context, agentName string) error {
 	f.calls = append(f.calls, agentName)
+	if f.duringCall != nil {
+		f.duringCall(agentName)
+	}
 	return f.err
 }
 
@@ -866,6 +872,13 @@ var _ = Describe("PillarAgent Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(restorer.calls).To(Equal([]string{restoreTargetName}))
 			Expect(result.RequeueAfter).To(Equal(requeueAfterAgentHealthCheck))
+
+			// The complete restore cleared the agent's gate, so this reconcile
+			// already reports the agent ready to serve exports.
+			fetched := &pillarcsiv1alpha1.PillarAgent{}
+			Expect(k8sClient.Get(bctx, restoreNN, fetched)).To(Succeed())
+			Expect(apimeta.IsStatusConditionTrue(fetched.Status.Conditions, "Ready")).To(BeTrue())
+			Expect(apimeta.IsStatusConditionTrue(fetched.Status.Conditions, "ExportsReady")).To(BeTrue())
 		})
 
 		It("restores a degraded agent that reports the restore pending", func() {
@@ -873,6 +886,11 @@ var _ = Describe("PillarAgent Controller", func() {
 				Reconcile(bctx, reconcile.Request{NamespacedName: restoreNN})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(restorer.calls).To(Equal([]string{restoreTargetName}))
+
+			fetched := &pillarcsiv1alpha1.PillarAgent{}
+			Expect(k8sClient.Get(bctx, restoreNN, fetched)).To(Succeed())
+			Expect(apimeta.IsStatusConditionTrue(fetched.Status.Conditions, "Ready")).To(BeTrue(),
+				"a degraded-but-reachable agent whose restore succeeded is ready")
 		})
 
 		It("does not restore when the agent reports no restore pending", func() {
@@ -880,9 +898,72 @@ var _ = Describe("PillarAgent Controller", func() {
 				Reconcile(bctx, reconcile.Request{NamespacedName: restoreNN})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(restorer.calls).To(BeEmpty())
+
+			fetched := &pillarcsiv1alpha1.PillarAgent{}
+			Expect(k8sClient.Get(bctx, restoreNN, fetched)).To(Succeed())
+			Expect(apimeta.IsStatusConditionTrue(fetched.Status.Conditions, "ExportsReady")).To(BeTrue())
+			Expect(apimeta.IsStatusConditionTrue(fetched.Status.Conditions, "Ready")).To(BeTrue())
 		})
 
-		It("keeps the status update and retries soon when the restore fails", func() {
+		It("withdraws Ready while the restore is in flight", func() {
+			// Issue #101: while export_restore_pending is set the agent refuses
+			// ExportVolume/AllowInitiator, so a Ready=True from before the agent
+			// restarted must be withdrawn before the restore attempt begins —
+			// not only after it finishes.
+			_, err := newReconciler(&mockDialer{healthy: true}).
+				Reconcile(bctx, reconcile.Request{NamespacedName: restoreNN})
+			Expect(err).NotTo(HaveOccurred())
+			prior := &pillarcsiv1alpha1.PillarAgent{}
+			Expect(k8sClient.Get(bctx, restoreNN, prior)).To(Succeed())
+			Expect(apimeta.IsStatusConditionTrue(prior.Status.Conditions, "Ready")).To(BeTrue())
+			restorer.duringCall = func(_ string) {
+				fetched := &pillarcsiv1alpha1.PillarAgent{}
+				Expect(k8sClient.Get(bctx, restoreNN, fetched)).To(Succeed())
+				ready := apimeta.FindStatusCondition(fetched.Status.Conditions, "Ready")
+				Expect(ready).NotTo(BeNil())
+				Expect(ready.Status).To(Equal(metav1.ConditionFalse),
+					"Ready must already be False while the restore is running")
+				Expect(ready.Reason).To(Equal("ExportRestorePending"))
+				exports := apimeta.FindStatusCondition(fetched.Status.Conditions, "ExportsReady")
+				Expect(exports).NotTo(BeNil())
+				Expect(exports.Status).To(Equal(metav1.ConditionFalse))
+				Expect(exports.Reason).To(Equal("ExportRestorePending"))
+			}
+			result, err := newReconciler(&mockDialer{healthy: true, restorePending: true}).
+				Reconcile(bctx, reconcile.Request{NamespacedName: restoreNN})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(restorer.calls).To(Equal([]string{restoreTargetName}))
+			Expect(result.RequeueAfter).To(Equal(requeueAfterAgentHealthCheck))
+
+			fetched := &pillarcsiv1alpha1.PillarAgent{}
+			Expect(k8sClient.Get(bctx, restoreNN, fetched)).To(Succeed())
+			Expect(apimeta.IsStatusConditionTrue(fetched.Status.Conditions, "Ready")).To(BeTrue(),
+				"the successful restore turns Ready=True in the same reconcile")
+		})
+
+		It("reports Ready=False while the restore is pending and no restorer is wired", func() {
+			reconcilerNoRestorer := &PillarAgentReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				Dialer: &mockDialer{healthy: true, restorePending: true},
+			}
+			result, err := reconcilerNoRestorer.Reconcile(bctx, reconcile.Request{NamespacedName: restoreNN})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(requeueAfterAgentHealthCheck))
+
+			fetched := &pillarcsiv1alpha1.PillarAgent{}
+			Expect(k8sClient.Get(bctx, restoreNN, fetched)).To(Succeed())
+			exports := apimeta.FindStatusCondition(fetched.Status.Conditions, "ExportsReady")
+			Expect(exports).NotTo(BeNil())
+			Expect(exports.Status).To(Equal(metav1.ConditionFalse))
+			Expect(exports.Reason).To(Equal("ExportRestorePending"))
+			ready := apimeta.FindStatusCondition(fetched.Status.Conditions, "Ready")
+			Expect(ready).NotTo(BeNil())
+			Expect(ready.Status).To(Equal(metav1.ConditionFalse))
+			Expect(ready.Reason).To(Equal("ExportRestorePending"))
+		})
+
+		It("reports the restore failure on the status and retries soon", func() {
 			restorer.err = fmt.Errorf("agent unavailable")
 			result, err := newReconciler(&mockDialer{healthy: true, restorePending: true}).
 				Reconcile(bctx, reconcile.Request{NamespacedName: restoreNN})
@@ -892,7 +973,69 @@ var _ = Describe("PillarAgent Controller", func() {
 
 			fetched := &pillarcsiv1alpha1.PillarAgent{}
 			Expect(k8sClient.Get(bctx, restoreNN, fetched)).To(Succeed())
+
+			exports := apimeta.FindStatusCondition(fetched.Status.Conditions, "ExportsReady")
+			Expect(exports).NotTo(BeNil())
+			Expect(exports.Status).To(Equal(metav1.ConditionFalse))
+			Expect(exports.Reason).To(Equal("ExportRestoreFailed"))
+			Expect(exports.Message).To(ContainSubstring("agent unavailable"))
+
+			ready := apimeta.FindStatusCondition(fetched.Status.Conditions, "Ready")
+			Expect(ready).NotTo(BeNil())
+			Expect(ready.Status).To(Equal(metav1.ConditionFalse),
+				"Ready must stay False while the export restore keeps failing")
+			Expect(ready.Reason).To(Equal("ExportRestoreFailed"))
+		})
+
+		It("does not rewrite the status while a failing restore is retried", func() {
+			// Each status change re-enqueues the agent through its own watch,
+			// so a retry that flips the conditions would bypass the 5s delay.
+			restorer.err = fmt.Errorf("agent unavailable")
+			_, err := newReconciler(&mockDialer{healthy: true, restorePending: true}).
+				Reconcile(bctx, reconcile.Request{NamespacedName: restoreNN})
+			Expect(err).NotTo(HaveOccurred())
+			before := &pillarcsiv1alpha1.PillarAgent{}
+			Expect(k8sClient.Get(bctx, restoreNN, before)).To(Succeed())
+
+			restorer.duringCall = func(_ string) {
+				inFlight := &pillarcsiv1alpha1.PillarAgent{}
+				Expect(k8sClient.Get(bctx, restoreNN, inFlight)).To(Succeed())
+				Expect(apimeta.FindStatusCondition(inFlight.Status.Conditions, "ExportsReady").Reason).
+					To(Equal("ExportRestoreFailed"), "the retry keeps the failure visible")
+			}
+			result, err := newReconciler(&mockDialer{healthy: true, restorePending: true}).
+				Reconcile(bctx, reconcile.Request{NamespacedName: restoreNN})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(requeueAfterExportRestoreFailure))
+			Expect(restorer.calls).To(HaveLen(2))
+
+			after := &pillarcsiv1alpha1.PillarAgent{}
+			Expect(k8sClient.Get(bctx, restoreNN, after)).To(Succeed())
+			Expect(after.ResourceVersion).To(Equal(before.ResourceVersion),
+				"a repeated identical failure must not produce a status change event")
+		})
+
+		It("retries the restore on the next reconcile and turns Ready once it succeeds", func() {
+			restorer.err = fmt.Errorf("agent unavailable")
+			_, err := newReconciler(&mockDialer{healthy: true, restorePending: true}).
+				Reconcile(bctx, reconcile.Request{NamespacedName: restoreNN})
+			Expect(err).NotTo(HaveOccurred())
+			fetched := &pillarcsiv1alpha1.PillarAgent{}
+			Expect(k8sClient.Get(bctx, restoreNN, fetched)).To(Succeed())
+			Expect(apimeta.IsStatusConditionTrue(fetched.Status.Conditions, "Ready")).To(BeFalse())
+
+			// The agent still reports the gate pending; the retried restore
+			// succeeds and Ready flips to True.
+			restorer.err = nil
+			result, err := newReconciler(&mockDialer{healthy: true, restorePending: true}).
+				Reconcile(bctx, reconcile.Request{NamespacedName: restoreNN})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(restorer.calls).To(Equal([]string{restoreTargetName, restoreTargetName}))
+			Expect(result.RequeueAfter).To(Equal(requeueAfterAgentHealthCheck))
+
+			Expect(k8sClient.Get(bctx, restoreNN, fetched)).To(Succeed())
 			Expect(apimeta.IsStatusConditionTrue(fetched.Status.Conditions, "Ready")).To(BeTrue())
+			Expect(apimeta.IsStatusConditionTrue(fetched.Status.Conditions, "ExportsReady")).To(BeTrue())
 		})
 	})
 

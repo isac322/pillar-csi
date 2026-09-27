@@ -120,6 +120,7 @@ status:
 |-----------|------|
 | `NodeExists` | nodeRef의 K8s Node가 존재하는지 |
 | `AgentConnected` | agent gRPC 연결 상태 |
+| `ExportsReady` | 에이전트의 export 복원이 완료되어 export를 서빙하는지 (`export_restore_pending` 게이트 반영) |
 | `Ready` | 전체 준비 상태 (모든 condition True) |
 
 gRPC 주소 결정 로직 (nodeRef):
