@@ -137,6 +137,12 @@ type PillarAgentStatus struct {
 	//     False / "HealthCheckFailed"  – TCP-level or transport error.
 	//     False / "AgentUnhealthy"     – agent reachable but reports degraded health.
 	//     False / "DialerNotConfigured"– no gRPC dialer is wired (dev/test only).
+	// - "ExportsReady"   – the agent's export restore has completed and it
+	//   serves exports.  Reasons:
+	//     True  / "ExportsServing"        – no export restore is pending (or it finished).
+	//     False / "ExportRestorePending"  – the agent is restoring exports after a restart.
+	//     False / "ExportRestoreFailed"   – the last restore attempt failed; it is retried.
+	//     Unknown                          – agent connectivity is not established.
 	// - "Ready"          – all checks pass; the target is ready to serve pools.
 	//
 	// +listType=map

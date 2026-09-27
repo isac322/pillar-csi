@@ -122,7 +122,8 @@ type PillarAgentReconciler struct {
 	Dialer agentclient.Dialer
 
 	// Exports restores the exports of an agent that reports its export restore
-	// pending (after an agent start).  When nil, no restore is attempted.
+	// pending (after an agent start).  When nil, no restore is attempted and
+	// the agent's ExportsReady condition stays False while the gate is pending.
 	Exports AgentExportRestorer
 }
 
@@ -183,9 +184,8 @@ func (r *PillarAgentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 // reconcileNormal handles the steady-state reconciliation of a PillarAgent
 // that is not being deleted.  It resolves the agent address, updates the
 // NodeExists status condition, performs a live gRPC HealthCheck via r.Dialer
-// to set AgentConnected, and derives Ready accordingly.
-//
-//nolint:funlen // Three distinct spec branches (nodeRef / external / missing) each require separate condition updates.
+// to set AgentConnected, runs the export restore when the agent reports it
+// pending, and derives ExportsReady and Ready accordingly.
 func (r *PillarAgentReconciler) reconcileNormal(
 	ctx context.Context,
 	target *pillarcsiv1alpha1.PillarAgent,
@@ -213,34 +213,22 @@ func (r *PillarAgentReconciler) reconcileNormal(
 		// AgentConnected: perform a live gRPC HealthCheck against the agent.
 		connected, restorePending := r.setAgentConnectedCondition(ctx, target, resolved)
 
-		// Ready: True when the agent gRPC connection is established (healthy or degraded).
+		// Best-effort: populate AgentVersion / Capabilities / DiscoveredPools.
 		if connected {
-			// Best-effort: populate AgentVersion / Capabilities / DiscoveredPools.
 			r.populateCapabilitiesStatus(ctx, target, resolved)
-
-			meta.SetStatusCondition(&target.Status.Conditions, metav1.Condition{
-				Type:               "Ready",
-				Status:             metav1.ConditionTrue,
-				ObservedGeneration: target.Generation,
-				Reason:             "AgentConnected",
-				Message:            fmt.Sprintf("PillarAgent is ready: agent at %q is connected", resolved),
-			})
-		} else {
-			meta.SetStatusCondition(&target.Status.Conditions, metav1.Condition{
-				Type:               "Ready",
-				Status:             metav1.ConditionFalse,
-				ObservedGeneration: target.Generation,
-				Reason:             "AgentNotConnected",
-				Message:            "PillarAgent is not ready: agent gRPC connection has not been established",
-			})
 		}
+
+		// ExportsReady and Ready: gate readiness on the agent's export
+		// restore and run the restore when it reports the restore pending.
+		requeue := r.reconcileExportRestore(ctx, target, connected, restorePending,
+			fmt.Sprintf("PillarAgent is ready: agent at %q is connected", resolved))
 
 		err := r.Status().Update(ctx, target)
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to update PillarAgent status: %w", err)
 		}
 		// Requeue periodically to re-verify agent connectivity.
-		return ctrl.Result{RequeueAfter: r.restorePendingExports(ctx, target.Name, restorePending)}, nil
+		return ctrl.Result{RequeueAfter: requeue}, nil
 
 	default:
 		// Neither nodeRef nor external is set — webhook should prevent this,
@@ -262,6 +250,13 @@ func (r *PillarAgentReconciler) reconcileNormal(
 			Message:            "Neither spec.nodeRef nor spec.external is set; cannot determine agent address",
 		})
 		meta.SetStatusCondition(&target.Status.Conditions, metav1.Condition{
+			Type:               "ExportsReady",
+			Status:             metav1.ConditionUnknown,
+			ObservedGeneration: target.Generation,
+			Reason:             "MissingSpec",
+			Message:            "Neither spec.nodeRef nor spec.external is set; export restore state is unknown",
+		})
+		meta.SetStatusCondition(&target.Status.Conditions, metav1.Condition{
 			Type:               "Ready",
 			Status:             metav1.ConditionFalse,
 			ObservedGeneration: target.Generation,
@@ -281,10 +276,10 @@ func (r *PillarAgentReconciler) reconcileNormal(
 // reconcileNodeRef fetches the referenced Kubernetes Node, resolves the agent
 // IP according to the addressType and optional CIDR filter, then updates the
 // NodeExists condition, resolvedAddress status fields, labels the node as a
-// storage node, and performs a live gRPC HealthCheck to set AgentConnected /
-// Ready conditions via r.Dialer.
+// storage node, performs a live gRPC HealthCheck to set AgentConnected via
+// r.Dialer, and gates ExportsReady / Ready on the export-restore gate.
 //
-//nolint:funlen,gocognit // Three sub-paths (not found / addr error / success) require unavoidable length.
+//nolint:funlen // Three sub-paths (not found / addr error / success) require unavoidable length.
 func (r *PillarAgentReconciler) reconcileNodeRef(
 	ctx context.Context,
 	target *pillarcsiv1alpha1.PillarAgent,
@@ -314,6 +309,15 @@ func (r *PillarAgentReconciler) reconcileNodeRef(
 				Reason:             "NodeNotFound",
 				Message: fmt.Sprintf(
 					"Cannot connect to agent: Node %q was not found in the cluster", nodeRef.Name,
+				),
+			})
+			meta.SetStatusCondition(&target.Status.Conditions, metav1.Condition{
+				Type:               "ExportsReady",
+				Status:             metav1.ConditionUnknown,
+				ObservedGeneration: target.Generation,
+				Reason:             "NodeNotFound",
+				Message: fmt.Sprintf(
+					"Export restore state is unknown: Node %q was not found in the cluster", nodeRef.Name,
 				),
 			})
 			meta.SetStatusCondition(&target.Status.Conditions, metav1.Condition{
@@ -379,6 +383,15 @@ func (r *PillarAgentReconciler) reconcileNodeRef(
 			),
 		})
 		meta.SetStatusCondition(&target.Status.Conditions, metav1.Condition{
+			Type:               "ExportsReady",
+			Status:             metav1.ConditionUnknown,
+			ObservedGeneration: target.Generation,
+			Reason:             "AddressNotResolved",
+			Message: fmt.Sprintf(
+				"Export restore state is unknown: no resolvable address on Node %q", nodeRef.Name,
+			),
+		})
+		meta.SetStatusCondition(&target.Status.Conditions, metav1.Condition{
 			Type:               "Ready",
 			Status:             metav1.ConditionFalse,
 			ObservedGeneration: target.Generation,
@@ -436,32 +449,17 @@ func (r *PillarAgentReconciler) reconcileNodeRef(
 	// AgentConnected: perform a live gRPC HealthCheck against the agent.
 	connected, restorePending := r.setAgentConnectedCondition(ctx, target, resolved)
 
-	// Ready: True when the agent gRPC connection is established (healthy or degraded).
+	// Best-effort: populate AgentVersion / Capabilities / DiscoveredPools.
 	if connected {
-		// Best-effort: populate AgentVersion / Capabilities / DiscoveredPools.
 		r.populateCapabilitiesStatus(ctx, target, resolved)
-
-		meta.SetStatusCondition(&target.Status.Conditions, metav1.Condition{
-			Type:               "Ready",
-			Status:             metav1.ConditionTrue,
-			ObservedGeneration: target.Generation,
-			Reason:             "AgentConnected",
-			Message: fmt.Sprintf(
-				"PillarAgent is ready: agent at %q (node %q) is connected",
-				resolved, nodeRef.Name,
-			),
-		})
-	} else {
-		meta.SetStatusCondition(&target.Status.Conditions, metav1.Condition{
-			Type:               "Ready",
-			Status:             metav1.ConditionFalse,
-			ObservedGeneration: target.Generation,
-			Reason:             "AgentNotConnected",
-			Message:            "PillarAgent is not ready: agent gRPC connection has not been established",
-		})
 	}
 
 	target.Status.ResolvedAddress = resolved
+
+	// ExportsReady and Ready: gate readiness on the agent's export
+	// restore and run the restore when it reports the restore pending.
+	requeue := r.reconcileExportRestore(ctx, target, connected, restorePending,
+		fmt.Sprintf("PillarAgent is ready: agent at %q (node %q) is connected", resolved, nodeRef.Name))
 
 	err = r.Status().Update(ctx, target)
 	if err != nil {
@@ -469,27 +467,155 @@ func (r *PillarAgentReconciler) reconcileNodeRef(
 	}
 
 	// Requeue periodically to re-verify agent connectivity.
-	return ctrl.Result{RequeueAfter: r.restorePendingExports(ctx, target.Name, restorePending)}, nil
+	return ctrl.Result{RequeueAfter: requeue}, nil
 }
 
-// restorePendingExports restores the agent's exports when its health check
-// reported the export restore pending, and returns the requeue interval.  A
-// failure is logged and retried soon rather than failing the reconcile: the
-// status update already happened and the restore is retried on requeue.
-func (r *PillarAgentReconciler) restorePendingExports(
+// reconcileExportRestore drives the agent's export-restore gate
+// (HealthCheckResponse.export_restore_pending, issue #93) and records its
+// state on the ExportsReady and Ready conditions of target.
+//
+// While a restore is outstanding the agent rejects ExportVolume and
+// AllowInitiator with UNAVAILABLE, so the PillarAgent must not report
+// Ready=True.  When the agent was Ready, Ready=False/ExportRestorePending is
+// persisted before the restore RPC so a stale Ready=True left over from the
+// agent's previous incarnation is withdrawn while a long restore is in
+// flight; the caller then persists the outcome of the attempt.  Retries of a
+// failed restore keep ExportRestoreFailed and write nothing extra, so they do
+// not re-enqueue the agent through its own status watch.
+//
+// Outcomes:
+//   - !connected            → ExportsReady=Unknown, Ready=False, normal requeue.
+//   - restore not pending   → ExportsReady=True, Ready=True, normal requeue.
+//   - pending, no restorer  → ExportsReady=False, Ready=False, normal requeue
+//     (the periodic health check keeps reporting the pending gate).
+//   - restore succeeded     → ExportsReady=True, Ready=True, normal requeue.
+//     A complete ReconcileState clears the agent's gate, so the following
+//     health check confirms restorePending=false.
+//   - restore failed        → ExportsReady=False/ExportRestoreFailed,
+//     Ready=False, requeue after requeueAfterExportRestoreFailure; the next
+//     health check still reports the gate pending and retries the restore.
+//
+//nolint:funlen // Five distinct outcomes each require their own pair of condition writes.
+func (r *PillarAgentReconciler) reconcileExportRestore(
 	ctx context.Context,
-	agentName string,
-	restorePending bool,
+	target *pillarcsiv1alpha1.PillarAgent,
+	connected, restorePending bool,
+	readyMessage string,
 ) time.Duration {
-	if !restorePending || r.Exports == nil {
+	if !connected {
+		meta.SetStatusCondition(&target.Status.Conditions, metav1.Condition{
+			Type:               "ExportsReady",
+			Status:             metav1.ConditionUnknown,
+			ObservedGeneration: target.Generation,
+			Reason:             "AgentNotConnected",
+			Message:            "Agent connectivity is not established; export restore state is unknown",
+		})
+		meta.SetStatusCondition(&target.Status.Conditions, metav1.Condition{
+			Type:               "Ready",
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: target.Generation,
+			Reason:             "AgentNotConnected",
+			Message:            "PillarAgent is not ready: agent gRPC connection has not been established",
+		})
 		return requeueAfterAgentHealthCheck
 	}
-	logf.FromContext(ctx).Info("Agent reports export restore pending; restoring its exports", "agent", agentName)
-	err := r.Exports.RestoreAgentExports(ctx, agentName)
+
+	if !restorePending {
+		meta.SetStatusCondition(&target.Status.Conditions, metav1.Condition{
+			Type:               "ExportsReady",
+			Status:             metav1.ConditionTrue,
+			ObservedGeneration: target.Generation,
+			Reason:             "ExportsServing",
+			Message:            "The agent is serving its configured exports; no export restore is pending",
+		})
+		meta.SetStatusCondition(&target.Status.Conditions, metav1.Condition{
+			Type:               "Ready",
+			Status:             metav1.ConditionTrue,
+			ObservedGeneration: target.Generation,
+			Reason:             "AgentConnected",
+			Message:            readyMessage,
+		})
+		return requeueAfterAgentHealthCheck
+	}
+
+	// The agent's export restore gate is pending: the agent refuses to serve
+	// exports until a complete restore lands.  Withdraw a stale Ready=True now
+	// (before the restore attempt) so it is not served while the restore is
+	// in flight or the reconciler dies mid-attempt.  While a failed restore is
+	// being retried, keep ExportRestoreFailed visible and write nothing here:
+	// flipping it to Pending and back each attempt would emit status watch
+	// events that re-enqueue the agent immediately and defeat the retry delay.
+	wasReady := meta.IsStatusConditionTrue(target.Status.Conditions, "Ready")
+	exportsCond := meta.FindStatusCondition(target.Status.Conditions, "ExportsReady")
+	retrying := exportsCond != nil && exportsCond.Reason == "ExportRestoreFailed"
+	if !retrying {
+		meta.SetStatusCondition(&target.Status.Conditions, metav1.Condition{
+			Type:               "ExportsReady",
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: target.Generation,
+			Reason:             "ExportRestorePending",
+			Message:            "The agent is restoring its exports after a restart and does not serve them yet",
+		})
+		meta.SetStatusCondition(&target.Status.Conditions, metav1.Condition{
+			Type:               "Ready",
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: target.Generation,
+			Reason:             "ExportRestorePending",
+			Message:            "PillarAgent is not ready: the agent is restoring its exports after a restart",
+		})
+	}
+	if wasReady {
+		updateErr := r.Status().Update(ctx, target)
+		if updateErr != nil {
+			// The final status update retries the persist; do not abort the
+			// restore attempt — the agent's gate must be cleared regardless.
+			logf.FromContext(ctx).Error(updateErr,
+				"Failed to persist Ready=False before the restore attempt")
+		}
+	}
+
+	if r.Exports == nil {
+		// No restorer is wired (dev/test): the gate stays pending until a
+		// complete ReconcileState arrives through another path.
+		return requeueAfterAgentHealthCheck
+	}
+	logf.FromContext(ctx).Info("Agent reports export restore pending; restoring its exports",
+		"agent", target.Name)
+	err := r.Exports.RestoreAgentExports(ctx, target.Name)
 	if err != nil {
-		logf.FromContext(ctx).Error(err, "Failed to restore agent exports", "agent", agentName)
+		logf.FromContext(ctx).Error(err, "Failed to restore agent exports", "agent", target.Name)
+		meta.SetStatusCondition(&target.Status.Conditions, metav1.Condition{
+			Type:               "ExportsReady",
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: target.Generation,
+			Reason:             "ExportRestoreFailed",
+			Message:            fmt.Sprintf("Export restore failed and is retried: %v", err),
+		})
+		meta.SetStatusCondition(&target.Status.Conditions, metav1.Condition{
+			Type:               "Ready",
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: target.Generation,
+			Reason:             "ExportRestoreFailed",
+			Message:            fmt.Sprintf("PillarAgent is not ready: export restore failed and is retried: %v", err),
+		})
 		return requeueAfterExportRestoreFailure
 	}
+
+	// The complete restore cleared the agent's gate.
+	meta.SetStatusCondition(&target.Status.Conditions, metav1.Condition{
+		Type:               "ExportsReady",
+		Status:             metav1.ConditionTrue,
+		ObservedGeneration: target.Generation,
+		Reason:             "ExportsServing",
+		Message:            "The export restore completed; the agent is serving its configured exports",
+	})
+	meta.SetStatusCondition(&target.Status.Conditions, metav1.Condition{
+		Type:               "Ready",
+		Status:             metav1.ConditionTrue,
+		ObservedGeneration: target.Generation,
+		Reason:             "AgentConnected",
+		Message:            readyMessage,
+	})
 	return requeueAfterAgentHealthCheck
 }
 
@@ -511,11 +637,12 @@ func (r *PillarAgentReconciler) restorePendingExports(
 // r.Dialer is nil.  The second return reports the agent's export_restore_pending.
 //
 // "Accept partial health": a reachable-but-degraded agent is still considered
-// connected so that capabilities status is populated and Ready=True, which is
-// essential in CI / e2e environments where kernel modules are unavailable.
+// connected so that capabilities status is populated, which is essential in
+// CI / e2e environments where kernel modules are unavailable.  Ready still
+// requires the export restore to have completed (see reconcileExportRestore).
 //
-// The caller is responsible for subsequently setting the Ready condition and
-// persisting the status update.
+// The caller is responsible for subsequently setting the ExportsReady and
+// Ready conditions and persisting the status update.
 //
 //nolint:funlen // Six outcome branches (mTLS/plain × healthy/unhealthy/error) need separate condition updates.
 func (r *PillarAgentReconciler) setAgentConnectedCondition(
