@@ -130,6 +130,8 @@ type PillarAgentReconciler struct {
 // +kubebuilder:rbac:groups=pillar-csi.bhyoo.com,resources=pillaragents/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=pillar-csi.bhyoo.com,resources=pillaragents/finalizers,verbs=update
 // +kubebuilder:rbac:groups=pillar-csi.bhyoo.com,resources=pillarstores,verbs=get;list;watch
+// +kubebuilder:rbac:groups=pillar-csi.bhyoo.com,resources=pillarvolumestates,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=persistentvolumes,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch;update;patch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
@@ -139,7 +141,9 @@ type PillarAgentReconciler struct {
 //  1. Adds a finalizer on first creation (deletion protection for future steps).
 //  2. On normal operation: resolves the node IP from nodeRef (or uses the
 //     external address directly) and updates the NodeExists status condition.
-//  3. On deletion: removes the finalizer to allow garbage collection.
+//  3. On deletion: blocks until no PillarStore, PersistentVolume or
+//     PillarVolumeState references the agent, then removes the finalizer to
+//     allow garbage collection.
 //
 //nolint:dupl // All four CRD controllers share identical Reconcile boilerplate; extraction requires reflection.
 func (r *PillarAgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -742,11 +746,13 @@ func isTLSHandshakeError(err error) bool {
 
 // reconcileDelete handles the deletion flow.
 //
-// It first checks whether any PillarStore resources still reference this
-// PillarAgent via spec.agentRef.  If any do, deletion is blocked and the
-// reconciler requeues until they are removed.  Only once no references remain
-// does it clean up the storage-node label on the referenced Node and release
-// the finalizer.
+// Deletion is blocked while any PillarStore references this PillarAgent via
+// spec.agentRef, or any PersistentVolume or PillarVolumeState of a volume
+// hosted on it remains: DeleteVolume resolves the agent to tear the volume
+// down, and without it the backend volume and its export leak on the storage
+// node.  While blocked, the Ready condition names the blockers and the
+// reconciler requeues.  Only once no references remain does it clean up the
+// storage-node label on the referenced Node and release the finalizer.
 func (r *PillarAgentReconciler) reconcileDelete(
 	ctx context.Context,
 	target *pillarcsiv1alpha1.PillarAgent,
@@ -757,7 +763,7 @@ func (r *PillarAgentReconciler) reconcileDelete(
 		return ctrl.Result{}, nil
 	}
 
-	log.Info("PillarAgent is being deleted — checking for referencing PillarStores", "name", target.Name)
+	log.Info("PillarAgent is being deleted — checking for referencing PillarStores and volumes", "name", target.Name)
 
 	// List all PillarStores (cluster-scoped) and find those that reference this target.
 	poolList := &pillarcsiv1alpha1.PillarStoreList{}
@@ -773,20 +779,46 @@ func (r *PillarAgentReconciler) reconcileDelete(
 		}
 	}
 
-	if len(referencingPools) > 0 {
+	volumes, err := listVolumeReferences(ctx, r.Client,
+		func(pv *corev1.PersistentVolume) bool {
+			ref, ok := volumeRefFromPV(pv)
+			return ok && ref.agent == target.Name
+		},
+		func(pvs *pillarcsiv1alpha1.PillarVolumeState, _ *corev1.PersistentVolume) bool {
+			return pvs.Spec.AgentRef == target.Name
+		},
+	)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	var blockers deletionBlockers
+	blockers.add("PillarStore(s)", referencingPools)
+	blockers.addVolumes(volumes)
+	if len(blockers) > 0 {
 		// Deletion is blocked — log the reason and requeue.
-		msg := fmt.Sprintf(
-			"Deletion blocked: PillarStore(s) [%s] still reference this target; delete them first",
-			strings.Join(referencingPools, ", "),
-		)
+		msg := blockers.message("this target")
 		log.Info(msg, "name", target.Name)
 
+		meta.SetStatusCondition(&target.Status.Conditions, metav1.Condition{
+			Type:               "Ready",
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: target.Generation,
+			Reason:             "DeletionBlocked",
+			Message:            msg,
+		})
+		statusErr := r.Status().Update(ctx, target)
+		if statusErr != nil {
+			// Log but don't fail — the important thing is to requeue.
+			log.Error(statusErr, "Failed to update status while deletion is blocked")
+		}
+
 		// Requeue after a short delay so we re-check once the operator has had
-		// a chance to remove the blocking PillarStores.
+		// a chance to remove the blockers.
 		return ctrl.Result{RequeueAfter: requeueAfterTargetDeletionBlock}, nil
 	}
 
-	// No remaining PillarStore references — proceed with cleanup.
+	// No remaining PillarStore or volume references — proceed with cleanup.
 
 	// Remove the storage-node label unless another PillarAgent still needs it.
 	if target.Spec.NodeRef != nil {
@@ -971,7 +1003,7 @@ func (r *PillarAgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		}
 	}
 
-	return ctrl.NewControllerManagedBy(mgr).
+	bldr := ctrl.NewControllerManagedBy(mgr).
 		For(&pillarcsiv1alpha1.PillarAgent{}).
 		// Re-enqueue PillarAgents whenever the referenced Node changes.
 		Watches(
@@ -984,6 +1016,9 @@ func (r *PillarAgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			&pillarcsiv1alpha1.PillarStore{},
 			handler.EnqueueRequestsFromMapFunc(mapPoolToTarget),
 		).
-		Named("pillaragent").
-		Complete(r)
+		Named("pillaragent")
+	// Re-check a blocked PillarAgent deletion once one of its volumes is gone.
+	return watchVolumeDeletions(bldr, mgr.GetClient(), func() client.ObjectList {
+		return &pillarcsiv1alpha1.PillarAgentList{}
+	}).Complete(r)
 }

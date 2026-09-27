@@ -107,6 +107,8 @@ type desiredStorageClass struct {
 // +kubebuilder:rbac:groups=pillar-csi.bhyoo.com,resources=pillarprotocols,verbs=get;list;watch
 // +kubebuilder:rbac:groups=storage.k8s.io,resources=storageclasses,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=persistentvolumes,verbs=get;list;watch
+// +kubebuilder:rbac:groups=pillar-csi.bhyoo.com,resources=pillarvolumestates,verbs=get;list;watch
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
@@ -886,9 +888,11 @@ func setBindingNotReady(binding *pillarcsiv1alpha1.PillarStorageClass, reason, m
 
 // reconcileDelete handles the deletion flow for PillarStorageClass.
 //
-// Deletion is blocked until no PVCs reference the generated StorageClass
-// (to prevent orphaned volumes).  Once the StorageClass is no longer in use,
-// the finalizer is removed and Kubernetes can garbage-collect the object.
+// Deletion is blocked while any PVC, PersistentVolume or PillarVolumeState of
+// the generated StorageClass remains: DeleteVolume of those volumes still
+// relies on the PillarStore and PillarAgent this binding keeps alive.  Once
+// nothing references it, the StorageClass is deleted and the finalizer is
+// removed so Kubernetes can garbage-collect the object.
 func (r *PillarStorageClassReconciler) reconcileDelete(
 	ctx context.Context,
 	binding *pillarcsiv1alpha1.PillarStorageClass,
@@ -900,7 +904,7 @@ func (r *PillarStorageClassReconciler) reconcileDelete(
 		return ctrl.Result{}, nil
 	}
 
-	log.Info("PillarStorageClass is being deleted — checking for PVCs that reference the StorageClass",
+	log.Info("PillarStorageClass is being deleted — checking for volumes of the StorageClass",
 		"name", binding.Name)
 
 	// Determine the StorageClass name from status (it was set during creation)
@@ -910,26 +914,20 @@ func (r *PillarStorageClassReconciler) reconcileDelete(
 		scName = storageClassNameFor(binding)
 	}
 
-	// List all PVCs cluster-wide and find those that reference this StorageClass.
-	pvcList := &corev1.PersistentVolumeClaimList{}
-	err := r.List(ctx, pvcList)
+	blockingPVCs, err := r.pvcsOfStorageClass(ctx, scName)
 	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("failed to list PersistentVolumeClaims: %w", err)
+		return ctrl.Result{}, err
+	}
+	volumes, err := r.bindingVolumeReferences(ctx, binding, scName)
+	if err != nil {
+		return ctrl.Result{}, err
 	}
 
-	var blockingPVCs []string
-	for i := range pvcList.Items {
-		pvc := &pvcList.Items[i]
-		if pvc.Spec.StorageClassName != nil && *pvc.Spec.StorageClassName == scName {
-			blockingPVCs = append(blockingPVCs, fmt.Sprintf("%s/%s", pvc.Namespace, pvc.Name))
-		}
-	}
-
-	if len(blockingPVCs) > 0 {
-		msg := fmt.Sprintf(
-			"Deletion blocked: PVC(s) [%s] still reference StorageClass %q; delete them first",
-			strings.Join(blockingPVCs, ", "), scName,
-		)
+	var blockers deletionBlockers
+	blockers.add("PVC(s)", blockingPVCs)
+	blockers.addVolumes(volumes)
+	if len(blockers) > 0 {
+		msg := blockers.message(fmt.Sprintf("StorageClass %q", scName))
 		log.Info(msg, "name", binding.Name)
 
 		meta.SetStatusCondition(&binding.Status.Conditions, metav1.Condition{
@@ -948,7 +946,7 @@ func (r *PillarStorageClassReconciler) reconcileDelete(
 		return ctrl.Result{RequeueAfter: requeueAfterBindingDeletionBlock}, nil
 	}
 
-	// No blocking PVCs — delete the owned StorageClass if it still exists.
+	// Nothing references the StorageClass — delete the owned StorageClass if it still exists.
 	sc := &storagev1.StorageClass{}
 	getErr := r.Get(ctx, types.NamespacedName{Name: scName}, sc)
 	if getErr != nil {
@@ -967,7 +965,7 @@ func (r *PillarStorageClassReconciler) reconcileDelete(
 	}
 
 	// Safe to remove the finalizer.
-	log.Info("No PVCs reference StorageClass; removing finalizer",
+	log.Info("No PVCs or volumes reference StorageClass; removing finalizer",
 		"binding", binding.Name, "storageClass", scName)
 	controllerutil.RemoveFinalizer(binding, pillarStorageClassFinalizer)
 	err = r.Update(ctx, binding)
@@ -976,6 +974,63 @@ func (r *PillarStorageClassReconciler) reconcileDelete(
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// pvcsOfStorageClass returns "namespace/name" of every PVC that requests
+// StorageClass scName.
+func (r *PillarStorageClassReconciler) pvcsOfStorageClass(ctx context.Context, scName string) ([]string, error) {
+	pvcList := &corev1.PersistentVolumeClaimList{}
+	err := r.List(ctx, pvcList)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list PersistentVolumeClaims: %w", err)
+	}
+	var names []string
+	for i := range pvcList.Items {
+		pvc := &pvcList.Items[i]
+		if pvc.Spec.StorageClassName != nil && *pvc.Spec.StorageClassName == scName {
+			names = append(names, pvc.Namespace+"/"+pvc.Name)
+		}
+	}
+	return names, nil
+}
+
+// bindingVolumeReferences returns the PersistentVolumes of StorageClass
+// scName and the PillarVolumeStates of volumes provisioned through binding.
+//
+// A PillarVolumeState records no StorageClass.  When its PV (the PV of the
+// same name) exists, that PV's StorageClass decides.  Without a PV, a volume
+// that lives in the binding's PillarStore and uses its protocol is attributed
+// to the binding; if either object is already gone this fallback cannot
+// attribute it, and the PillarStore and PillarAgent guards keep holding the
+// volume's storage node instead.
+func (r *PillarStorageClassReconciler) bindingVolumeReferences(
+	ctx context.Context,
+	binding *pillarcsiv1alpha1.PillarStorageClass,
+	scName string,
+) (volumeReferences, error) {
+	store := &pillarcsiv1alpha1.PillarStore{}
+	storeErr := r.Get(ctx, types.NamespacedName{Name: binding.Spec.StoreRef}, store)
+	if storeErr != nil && !errors.IsNotFound(storeErr) {
+		return volumeReferences{}, fmt.Errorf("get PillarStore %q: %w", binding.Spec.StoreRef, storeErr)
+	}
+	protocol := &pillarcsiv1alpha1.PillarProtocol{}
+	protocolErr := r.Get(ctx, types.NamespacedName{Name: binding.Spec.ProtocolRef}, protocol)
+	if protocolErr != nil && !errors.IsNotFound(protocolErr) {
+		return volumeReferences{}, fmt.Errorf("get PillarProtocol %q: %w", binding.Spec.ProtocolRef, protocolErr)
+	}
+	sourceKnown := storeErr == nil && protocolErr == nil
+
+	return listVolumeReferences(ctx, r.Client,
+		func(pv *corev1.PersistentVolume) bool {
+			return pv.Spec.StorageClassName == scName
+		},
+		func(pvs *pillarcsiv1alpha1.PillarVolumeState, pv *corev1.PersistentVolume) bool {
+			if pv != nil {
+				return pv.Spec.StorageClassName == scName
+			}
+			return sourceKnown && volumeRefFromVolumeState(pvs).provisionedThrough(store, protocol)
+		},
+	)
 }
 
 // SetupWithManager sets up the controller with the Manager.
@@ -1039,7 +1094,7 @@ func (r *PillarStorageClassReconciler) SetupWithManager(mgr ctrl.Manager) error 
 		return requests
 	}
 
-	return ctrl.NewControllerManagedBy(mgr).
+	bldr := ctrl.NewControllerManagedBy(mgr).
 		For(&pillarcsiv1alpha1.PillarStorageClass{}).
 		// Re-enqueue bindings whenever the referenced PillarStore changes.
 		Watches(
@@ -1054,6 +1109,9 @@ func (r *PillarStorageClassReconciler) SetupWithManager(mgr ctrl.Manager) error 
 		// Automatically re-enqueue the owning PillarStorageClass when its managed
 		// StorageClass is modified externally (self-healing).
 		Owns(&storagev1.StorageClass{}).
-		Named("pillarstorageclass").
-		Complete(r)
+		Named("pillarstorageclass")
+	// Re-check a blocked PillarStorageClass deletion once one of its volumes is gone.
+	return watchVolumeDeletions(bldr, mgr.GetClient(), func() client.ObjectList {
+		return &pillarcsiv1alpha1.PillarStorageClassList{}
+	}).Complete(r)
 }

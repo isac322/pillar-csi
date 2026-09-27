@@ -25,6 +25,7 @@ import (
 	"strings"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -41,11 +42,11 @@ import (
 )
 
 const (
-	// Finalizer added to every PillarStore to prevent deletion
-	// while PillarStorageClass resources still reference it.
+	// Finalizer added to every PillarStore to prevent deletion while
+	// PillarStorageClass resources or volumes provisioned from it remain.
 	pillarStoreFinalizer = "pillar-csi.bhyoo.com/store-protection"
 
-	// Requeue interval before re-checking whether blocking PillarStorageClasss have been removed.
+	// Requeue interval before re-checking whether blocking PillarStorageClasses and volumes have been removed.
 	requeueAfterPoolDeletionBlock = 10 * time.Second
 )
 
@@ -60,6 +61,8 @@ type PillarStoreReconciler struct {
 // +kubebuilder:rbac:groups=pillar-csi.bhyoo.com,resources=pillarstores/finalizers,verbs=update
 // +kubebuilder:rbac:groups=pillar-csi.bhyoo.com,resources=pillarstorageclasses,verbs=get;list;watch
 // +kubebuilder:rbac:groups=pillar-csi.bhyoo.com,resources=pillaragents,verbs=get;list;watch
+// +kubebuilder:rbac:groups=pillar-csi.bhyoo.com,resources=pillarvolumestates,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=persistentvolumes,verbs=get;list;watch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -68,8 +71,9 @@ type PillarStoreReconciler struct {
 //  1. Adds a finalizer on first creation (deletion protection).
 //  2. On normal operation: looks up the referenced PillarAgent, updates the
 //     TargetReady status condition, and sets PoolDiscovered / BackendSupported.
-//  3. On deletion: blocks until no PillarStorageClasss reference this pool, then
-//     removes the finalizer to allow the object to be garbage-collected.
+//  3. On deletion: blocks until no PillarStorageClass, PersistentVolume or
+//     PillarVolumeState references this pool, then removes the finalizer to
+//     allow the object to be garbage-collected.
 //
 //nolint:dupl // All four CRD controllers share identical Reconcile boilerplate; extraction requires reflection.
 func (r *PillarStoreReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -558,7 +562,9 @@ func syncCapacityFromTarget(
 }
 
 // reconcileDelete handles the deletion flow.  The finalizer is only removed
-// once no PillarStorageClasss reference this PillarStore.
+// once no PillarStorageClass references this PillarStore and no volume
+// provisioned from it remains: DeleteVolume of such a volume still relies on
+// the PillarAgent this pool keeps alive.
 func (r *PillarStoreReconciler) reconcileDelete(
 	ctx context.Context,
 	pool *pillarcsiv1alpha1.PillarStore,
@@ -570,7 +576,8 @@ func (r *PillarStoreReconciler) reconcileDelete(
 		return ctrl.Result{}, nil
 	}
 
-	log.Info("PillarStore is being deleted — checking for referencing PillarStorageClasss", "name", pool.Name)
+	log.Info("PillarStore is being deleted — checking for referencing PillarStorageClasses and volumes",
+		"name", pool.Name)
 
 	// List all PillarStorageClasss (cluster-scoped) and find those that reference this pool.
 	bindingList := &pillarcsiv1alpha1.PillarStorageClassList{}
@@ -586,12 +593,25 @@ func (r *PillarStoreReconciler) reconcileDelete(
 		}
 	}
 
-	if len(referencingNames) > 0 {
+	volumes, err := listVolumeReferences(ctx, r.Client,
+		func(pv *corev1.PersistentVolume) bool {
+			ref, ok := volumeRefFromPV(pv)
+			return ok && ref.inStore(pool)
+		},
+		func(pvs *pillarcsiv1alpha1.PillarVolumeState, _ *corev1.PersistentVolume) bool {
+			return volumeRefFromVolumeState(pvs).inStore(pool)
+		},
+	)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	var blockers deletionBlockers
+	blockers.add("PillarStorageClass(s)", referencingNames)
+	blockers.addVolumes(volumes)
+	if len(blockers) > 0 {
 		// Deletion is blocked — log the reason and requeue.
-		msg := fmt.Sprintf(
-			"Deletion blocked: PillarStorageClass(s) [%s] still reference this pool; delete them first",
-			strings.Join(referencingNames, ", "),
-		)
+		msg := blockers.message("this pool")
 		log.Info(msg, "name", pool.Name)
 
 		meta.SetStatusCondition(&pool.Status.Conditions, metav1.Condition{
@@ -609,12 +629,12 @@ func (r *PillarStoreReconciler) reconcileDelete(
 		}
 
 		// Requeue after a short delay so we re-check once the operator has had
-		// a chance to remove the blocking PillarStorageClasss.
+		// a chance to remove the blockers.
 		return ctrl.Result{RequeueAfter: requeueAfterPoolDeletionBlock}, nil
 	}
 
-	// No referencing bindings — safe to remove the finalizer.
-	log.Info("No PillarStorageClasss reference this pool; removing finalizer", "name", pool.Name)
+	// No referencing bindings or volumes — safe to remove the finalizer.
+	log.Info("No PillarStorageClasses or volumes reference this pool; removing finalizer", "name", pool.Name)
 	controllerutil.RemoveFinalizer(pool, pillarStoreFinalizer)
 	err = r.Update(ctx, pool)
 	if err != nil {
@@ -672,7 +692,7 @@ func (r *PillarStoreReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		}
 	}
 
-	return ctrl.NewControllerManagedBy(mgr).
+	bldr := ctrl.NewControllerManagedBy(mgr).
 		For(&pillarcsiv1alpha1.PillarStore{}).
 		// Re-enqueue PillarStores whenever the referenced PillarAgent changes.
 		Watches(
@@ -685,6 +705,9 @@ func (r *PillarStoreReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			&pillarcsiv1alpha1.PillarStorageClass{},
 			handler.EnqueueRequestsFromMapFunc(mapBindingToPool),
 		).
-		Named("pillarstore").
-		Complete(r)
+		Named("pillarstore")
+	// Re-check a blocked PillarStore deletion once one of its volumes is gone.
+	return watchVolumeDeletions(bldr, mgr.GetClient(), func() client.ObjectList {
+		return &pillarcsiv1alpha1.PillarStoreList{}
+	}).Complete(r)
 }
