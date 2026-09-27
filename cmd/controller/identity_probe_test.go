@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"sync/atomic"
 	"testing"
 
 	csispec "github.com/container-storage-interface/spec/lib/go/csi"
@@ -10,24 +9,38 @@ import (
 	csisvc "github.com/bhyoo/pillar-csi/internal/csi"
 )
 
-func TestProbe_Controller_NotReadyUntilStarted(t *testing.T) {
-	var started atomic.Bool
-	server := csisvc.NewIdentityServerWithReadyFn(driverName, "test", managerStartedReadyFn(&started))
+// TestProbe_Controller_FollowsSocketServing pins the CSI Probe semantics that
+// issue #96 depends on: readiness tracks the pod-local CSI socket, not leader
+// election.  Standby replicas must answer Ready so their sidecars pass
+// ProbeForever and the liveness-probe sidecar keeps the pod's liveness check
+// green; shutdown must revoke readiness again.
+func TestProbe_Controller_FollowsSocketServing(t *testing.T) {
+	srv := &csiGRPCServer{}
+	server := csisvc.NewIdentityServerWithReadyFn(driverName, "test", srv.probeReady)
 
 	response, err := server.Probe(context.Background(), &csispec.ProbeRequest{})
 	if err != nil {
-		t.Fatalf("Probe before manager start returned error: %v", err)
+		t.Fatalf("Probe before serving returned error: %v", err)
 	}
 	if response.GetReady().GetValue() {
-		t.Fatal("Probe ready before manager start = true, want false")
+		t.Fatal("Probe ready before socket is serving = true, want false")
 	}
 
-	started.Store(true)
+	srv.serving.Store(true)
 	response, err = server.Probe(context.Background(), &csispec.ProbeRequest{})
 	if err != nil {
-		t.Fatalf("Probe after manager start returned error: %v", err)
+		t.Fatalf("Probe after serving returned error: %v", err)
 	}
 	if !response.GetReady().GetValue() {
-		t.Fatal("Probe ready after manager start = false, want true")
+		t.Fatal("Probe ready after socket is serving = false, want true")
+	}
+
+	srv.serving.Store(false)
+	response, err = server.Probe(context.Background(), &csispec.ProbeRequest{})
+	if err != nil {
+		t.Fatalf("Probe after shutdown returned error: %v", err)
+	}
+	if response.GetReady().GetValue() {
+		t.Fatal("Probe ready after socket stopped = true, want false")
 	}
 }
