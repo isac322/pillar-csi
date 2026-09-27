@@ -70,7 +70,12 @@ func exportSpecFor(params *agentv1.ExportParams, aclEnabled bool) *v1alpha1.Volu
 	switch {
 	case params.GetNvmeofTcp() != nil:
 		p := params.GetNvmeofTcp()
-		return &v1alpha1.VolumeExportSpec{BindAddress: p.GetBindAddress(), Port: p.GetPort(), ACLEnabled: aclEnabled}
+		return &v1alpha1.VolumeExportSpec{
+			BindAddress:       p.GetBindAddress(),
+			Port:              p.GetPort(),
+			ACLEnabled:        aclEnabled,
+			InCapsuleDataSize: p.InCapsuleDataSize,
+		}
 	case params.GetIscsi() != nil:
 		p := params.GetIscsi()
 		return &v1alpha1.VolumeExportSpec{BindAddress: p.GetBindAddress(), Port: p.GetPort(), ACLEnabled: aclEnabled}
@@ -84,7 +89,11 @@ func exportParamsFor(protocol agentv1.ProtocolType, spec *v1alpha1.VolumeExportS
 	switch protocol {
 	case agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP:
 		return &agentv1.ExportParams{Params: &agentv1.ExportParams_NvmeofTcp{
-			NvmeofTcp: &agentv1.NvmeofTcpExportParams{BindAddress: spec.BindAddress, Port: spec.Port},
+			NvmeofTcp: &agentv1.NvmeofTcpExportParams{
+				BindAddress:       spec.BindAddress,
+				Port:              spec.Port,
+				InCapsuleDataSize: spec.InCapsuleDataSize,
+			},
 		}}
 	case agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI:
 		return &agentv1.ExportParams{Params: &agentv1.ExportParams_Iscsi{

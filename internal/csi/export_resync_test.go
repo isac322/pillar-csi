@@ -266,6 +266,30 @@ func TestReconcileVolumeExport_RestoresExportAndACLAfterTargetStateLoss(t *testi
 	}
 }
 
+// TestReconcileVolumeExport_RestoresPortInCapsuleDataSize verifies that the
+// in-capsule data size recorded in status.exportSpec is re-applied to the
+// port's param_inline_data_size when the export is restored after target
+// state loss, instead of the port coming back with the transport default.
+func TestReconcileVolumeExport_RestoresPortInCapsuleDataSize(t *testing.T) {
+	t.Parallel()
+	size := int32(8192)
+	spec := &v1alpha1.VolumeExportSpec{BindAddress: "10.0.0.1", Port: 4420, InCapsuleDataSize: &size}
+	env := newResyncEnv(t, resyncPVS(spec))
+
+	if err := env.srv.ReconcileVolumeExport(context.Background(), resyncPVSName); err != nil {
+		t.Fatalf("ReconcileVolumeExport: %v", err)
+	}
+
+	ports, err := filepath.Glob(filepath.Join(env.cfgRoot, "nvmet", "ports", "*", "param_inline_data_size"))
+	if err != nil || len(ports) != 1 {
+		t.Fatalf("port param_inline_data_size files = %v (err %v), want exactly one", ports, err)
+	}
+	raw, err := os.ReadFile(ports[0])
+	if err != nil || strings.TrimSpace(string(raw)) != "8192" {
+		t.Errorf("param_inline_data_size = %q err=%v, want 8192", raw, err)
+	}
+}
+
 func TestReconcileVolumeExport_ACLIsExactlyPublishedNodes(t *testing.T) {
 	t.Parallel()
 	env := newResyncEnv(t, resyncPVS(aclSpec, resyncHostB))

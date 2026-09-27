@@ -295,6 +295,7 @@ func TestParsePVCAnnotations_ProtocolOverride_NVMeOF(t *testing.T) {
 		AnnotationProtocolOverride: `
 nvmeofTcp:
   maxQueueSize: 64
+  inCapsuleDataSize: 8192
   ctrlLossTmo: 600
   reconnectDelay: 10
 `,
@@ -302,6 +303,7 @@ nvmeofTcp:
 	result := mustParseAnnotations(t, ann)
 
 	assertParam(t, result, paramNVMeOFMaxQueueSize, "64")
+	assertParam(t, result, paramNVMeOFInCapsuleDataSize, "8192")
 	assertParam(t, result, paramNVMeOFCtrlLossTmo, "600")
 	assertParam(t, result, paramNVMeOFReconnectDelay, "10")
 }
@@ -319,6 +321,7 @@ nvmeofTcp:
 	assertParam(t, result, paramNVMeOFMaxQueueSize, "128")
 	assertNoKey(t, result, paramNVMeOFCtrlLossTmo)
 	assertNoKey(t, result, paramNVMeOFReconnectDelay)
+	assertNoKey(t, result, paramNVMeOFInCapsuleDataSize)
 }
 
 func TestParsePVCAnnotations_ProtocolOverride_ISCSI(t *testing.T) {
@@ -607,6 +610,7 @@ func TestAnnotationConstants(t *testing.T) {
 func TestParamKeyConstants(t *testing.T) {
 	cases := []struct{ name, got, want string }{
 		{"paramNVMeOFMaxQueueSize", paramNVMeOFMaxQueueSize, "pillar-csi.bhyoo.com/nvmeof-max-queue-size"},
+		{"paramNVMeOFInCapsuleDataSize", paramNVMeOFInCapsuleDataSize, "pillar-csi.bhyoo.com/nvmeof-in-capsule-data-size"},
 		{"paramNVMeOFCtrlLossTmo", paramNVMeOFCtrlLossTmo, "pillar-csi.bhyoo.com/nvmeof-ctrl-loss-tmo"},
 		{"paramNVMeOFReconnectDelay", paramNVMeOFReconnectDelay, "pillar-csi.bhyoo.com/nvmeof-reconnect-delay"},
 		{"paramISCSILoginTimeout", paramISCSILoginTimeout, "pillar-csi.bhyoo.com/iscsi-login-timeout"},

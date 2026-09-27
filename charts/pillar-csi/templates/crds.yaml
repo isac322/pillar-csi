@@ -412,16 +412,27 @@ spec:
                     minimum: 0
                     type: integer
                   inCapsuleDataSize:
-                    description: inCapsuleDataSize is the maximum in-capsule data
-                      size in bytes.
+                    description: |-
+                      inCapsuleDataSize is the maximum in-capsule data size in bytes the
+                      target advertises (the nvmet port's param_inline_data_size).  It is a
+                      property of the listening port, shared by every volume exported on the
+                      same storage node address and port: exporting a volume that requests a
+                      value different from the port's current value fails instead of
+                      silently using the port's value.  Unset keeps the transport default
+                      (16384 for TCP on 4 KiB pages) and accepts whatever value the port has.
                     format: int32
                     minimum: 0
                     type: integer
                   maxQueueSize:
-                    description: maxQueueSize is the maximum number of I/O queue entries
-                      per connection.
+                    description: |-
+                      maxQueueSize is the I/O queue depth the initiator requests for each
+                      queue of the connection (the fabrics queue_size connect option).
+                      Unset keeps the kernel default (128).  The kernel accepts 16-1024.
+                      Applies to connections made after the change; a staged volume keeps
+                      the value from its CreateVolume.
                     format: int32
-                    minimum: 1
+                    maximum: 1024
+                    minimum: 16
                     type: integer
                   port:
                     default: 4420
@@ -691,16 +702,20 @@ spec:
                         description: nvmeofTcp overrides NVMe-oF/TCP parameters.
                         properties:
                           inCapsuleDataSize:
-                            description: inCapsuleDataSize overrides the protocol-level
-                              inCapsuleDataSize.
+                            description: |-
+                              inCapsuleDataSize overrides the protocol-level inCapsuleDataSize (the
+                              target port's param_inline_data_size, shared by every volume exported
+                              on the same storage node address and port).
                             format: int32
                             minimum: 0
                             type: integer
                           maxQueueSize:
-                            description: maxQueueSize overrides the protocol-level
-                              maxQueueSize.
+                            description: |-
+                              maxQueueSize overrides the protocol-level maxQueueSize (the initiator's
+                              fabrics queue_size; the kernel accepts 16-1024).
                             format: int32
-                            minimum: 1
+                            maximum: 1024
+                            minimum: 16
                             type: integer
                         type: object
                       smb:
@@ -1362,6 +1377,14 @@ spec:
                       listens on.
                     minLength: 1
                     type: string
+                  inCapsuleDataSize:
+                    description: |-
+                      inCapsuleDataSize is the NVMe-oF/TCP in-capsule data size in bytes the
+                      export requires on its port; absent when the export accepts the port's
+                      value.  NVMe-oF/TCP only.
+                    format: int32
+                    minimum: 0
+                    type: integer
                   port:
                     description: |-
                       port is the TCP port the target listens on; 0 selects the protocol's

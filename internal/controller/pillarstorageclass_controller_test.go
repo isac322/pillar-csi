@@ -1983,6 +1983,44 @@ var _ = Describe("buildStorageClassParams", func() {
 		Expect(params).NotTo(HaveKey("pillar-csi.bhyoo.com/nvmeof-reconnect-delay"))
 	})
 
+	It("should emit NVMe-oF queue size and in-capsule data size, the binding override winning", func() {
+		pool := makeZFSPool("t", "tank", "", pillarcsiv1alpha1.BackendTypeZFSZvol)
+		protocol := makeProtocolNVMeOF(4420)
+		queue, inCapsule := int32(128), int32(16384)
+		protocol.Spec.NVMeOFTCP.MaxQueueSize = &queue
+		protocol.Spec.NVMeOFTCP.InCapsuleDataSize = &inCapsule
+
+		params := buildStorageClassParams(makeBinding("pool", "proto", nil), pool, protocol)
+		Expect(params).To(HaveKeyWithValue("pillar-csi.bhyoo.com/nvmeof-max-queue-size", "128"))
+		Expect(params).To(HaveKeyWithValue("pillar-csi.bhyoo.com/nvmeof-in-capsule-data-size", "16384"))
+
+		overrideQueue, overrideInCapsule := int32(64), int32(0)
+		binding := makeBinding("pool", "proto", &pillarcsiv1alpha1.StorageClassOverrides{
+			Protocol: &pillarcsiv1alpha1.ProtocolOverrides{
+				NVMeOFTCP: &pillarcsiv1alpha1.NVMeOFTCPOverrides{
+					MaxQueueSize:      &overrideQueue,
+					InCapsuleDataSize: &overrideInCapsule,
+				},
+			},
+		})
+		params = buildStorageClassParams(binding, pool, protocol)
+		Expect(params).To(HaveKeyWithValue("pillar-csi.bhyoo.com/nvmeof-max-queue-size", "64"))
+		Expect(params).To(HaveKeyWithValue("pillar-csi.bhyoo.com/nvmeof-in-capsule-data-size", "0"))
+
+		// An override on a protocol without the value still applies.
+		params = buildStorageClassParams(binding, pool, makeProtocolNVMeOF(4420))
+		Expect(params).To(HaveKeyWithValue("pillar-csi.bhyoo.com/nvmeof-max-queue-size", "64"))
+	})
+
+	It("should omit NVMe-oF queue size and in-capsule data size when unset so kernel defaults apply", func() {
+		pool := makeZFSPool("t", "tank", "", pillarcsiv1alpha1.BackendTypeZFSZvol)
+
+		params := buildStorageClassParams(makeBinding("pool", "proto", nil), pool, makeProtocolNVMeOF(4420))
+
+		Expect(params).NotTo(HaveKey("pillar-csi.bhyoo.com/nvmeof-max-queue-size"))
+		Expect(params).NotTo(HaveKey("pillar-csi.bhyoo.com/nvmeof-in-capsule-data-size"))
+	})
+
 	It("should include iscsi-port for iSCSI protocol", func() {
 		binding := makeBinding("pool", "proto", nil)
 		pool := &pillarcsiv1alpha1.PillarStore{

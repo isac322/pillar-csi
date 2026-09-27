@@ -160,6 +160,13 @@ type VolumeExportSpec struct {
 	// published nodes; false admits any initiator.
 	// +required
 	ACLEnabled bool `json:"aclEnabled"`
+
+	// inCapsuleDataSize is the NVMe-oF/TCP in-capsule data size in bytes the
+	// export requires on its port; absent when the export accepts the port's
+	// value.  NVMe-oF/TCP only.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	InCapsuleDataSize *int32 `json:"inCapsuleDataSize,omitempty"`
 }
 
 // VolumePublication records one node to which ControllerPublishVolume granted

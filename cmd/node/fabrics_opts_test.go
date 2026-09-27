@@ -211,8 +211,9 @@ func TestFabricsConnectorNvmeConnect_WaitsForDyingController(t *testing.T) {
 }
 
 // TestFabricsConnectorAttach_ForwardsReconnectTuning verifies the production
-// node appends VolumeContext ctrl_loss_tmo / reconnect_delay to the connect
-// string, and omits them when absent so kernel defaults stay in force.
+// node appends VolumeContext ctrl_loss_tmo / reconnect_delay / queue_size to
+// the connect string, and omits them when absent so kernel defaults stay in
+// force.
 func TestFabricsConnectorAttach_ForwardsReconnectTuning(t *testing.T) {
 	const nqn = "nqn.2026-01.io.pillar-csi:pvc-test"
 	base := "transport=tcp,traddr=10.0.0.7,trsvcid=4420,nqn=" + nqn + ",hostnqn=h,hostid=i"
@@ -229,6 +230,13 @@ func TestFabricsConnectorAttach_ForwardsReconnectTuning(t *testing.T) {
 				"pillar-csi.bhyoo.com/nvmeof-reconnect-delay": "5",
 			},
 			want: base + ",ctrl_loss_tmo=0,reconnect_delay=5",
+		},
+		{
+			name: "queue size",
+			extra: map[string]string{
+				"pillar-csi.bhyoo.com/nvmeof-max-queue-size": "64",
+			},
+			want: base + ",queue_size=64",
 		},
 	}
 	for _, tc := range cases {

@@ -52,12 +52,23 @@ type NVMeOFTCPConfig struct {
 	// +kubebuilder:default=false
 	ACL bool `json:"acl"`
 
-	// maxQueueSize is the maximum number of I/O queue entries per connection.
+	// maxQueueSize is the I/O queue depth the initiator requests for each
+	// queue of the connection (the fabrics queue_size connect option).
+	// Unset keeps the kernel default (128).  The kernel accepts 16-1024.
+	// Applies to connections made after the change; a staged volume keeps
+	// the value from its CreateVolume.
 	// +optional
-	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Minimum=16
+	// +kubebuilder:validation:Maximum=1024
 	MaxQueueSize *int32 `json:"maxQueueSize,omitempty"`
 
-	// inCapsuleDataSize is the maximum in-capsule data size in bytes.
+	// inCapsuleDataSize is the maximum in-capsule data size in bytes the
+	// target advertises (the nvmet port's param_inline_data_size).  It is a
+	// property of the listening port, shared by every volume exported on the
+	// same storage node address and port: exporting a volume that requests a
+	// value different from the port's current value fails instead of
+	// silently using the port's value.  Unset keeps the transport default
+	// (16384 for TCP on 4 KiB pages) and accepts whatever value the port has.
 	// +optional
 	// +kubebuilder:validation:Minimum=0
 	InCapsuleDataSize *int32 `json:"inCapsuleDataSize,omitempty"`

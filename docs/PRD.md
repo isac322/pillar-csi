@@ -201,7 +201,18 @@ spec:
   nvmeofTcp:
     port: 4420
     acl: true                          # true: host NQN 기반 ACL / false: allow_any_host
+    # initiator 큐 깊이: pillar-node가 fabrics connect의 queue_size로 적용 (커널 허용 범위 16-1024, 생략 시 커널 기본값 128).
+    # PillarStorageClass overrides.protocol.nvmeofTcp.maxQueueSize, PVC protocol-override로 덮어쓸 수 있다.
     maxQueueSize: 128
+    # target port의 in-capsule data size (nvmet ports/<id>/param_inline_data_size, 바이트).
+    # 같은 storage node 주소·포트로 export되는 모든 볼륨이 공유하는 포트 속성이며, 커널은 포트에
+    # subsystem이 하나라도 링크된 동안 변경을 거부한다(EACCES). 따라서 agent는:
+    #   - 링크된 subsystem이 없는 포트: 요청값(없으면 transport 기본값 -1)을 쓰고 read-back 검증한다.
+    #   - 이미 사용 중인 포트: 요청값이 포트의 현재 값과 다르면 ExportVolume이 FAILED_PRECONDITION으로
+    #     실패한다(조용히 포트 값을 쓰지 않는다). 값을 요청하지 않은 볼륨은 포트의 현재 값을 그대로 쓴다.
+    # 같은 포트를 쓰는 PillarProtocol/PillarStorageClass/PVC는 같은 값을 쓰거나 다른 포트를 사용해야 한다.
+    # 생략 시 TCP transport 기본값(4 * PAGE_SIZE, 4KiB 페이지에서 16384).
+    # agent 재시작 복구는 PillarVolumeState.status.exportSpec.inCapsuleDataSize를 사용하며, 값을 요구하는 export를 먼저 링크한다.
     inCapsuleDataSize: 16384
     # initiator 타임아웃/재연결 파라미터 (pillar-node가 nvme connect 시 적용)
     # 생략 시 connect 문자열에서 빠지고 커널 기본값(600/10)이 적용된다.

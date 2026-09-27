@@ -516,6 +516,7 @@ func buildStorageClassParams(
 			if v := protocol.Spec.NVMeOFTCP.ReconnectDelay; v != nil {
 				params["pillar-csi.bhyoo.com/nvmeof-reconnect-delay"] = fmt.Sprintf("%d", *v)
 			}
+			addNVMeoFSizingParams(params, protocol.Spec.NVMeOFTCP, nvmeofTCPOverrides(binding))
 		}
 	case pillarcsiv1alpha1.ProtocolTypeISCSI:
 		if protocol.Spec.ISCSI != nil {
@@ -555,6 +556,42 @@ func buildStorageClassParams(
 	}
 
 	return params
+}
+
+// nvmeofTCPOverrides returns the binding's NVMe-oF/TCP protocol overrides, or
+// nil when it has none.
+func nvmeofTCPOverrides(binding *pillarcsiv1alpha1.PillarStorageClass) *pillarcsiv1alpha1.NVMeOFTCPOverrides {
+	if binding.Spec.Overrides == nil || binding.Spec.Overrides.Protocol == nil {
+		return nil
+	}
+	return binding.Spec.Overrides.Protocol.NVMeOFTCP
+}
+
+// addNVMeoFSizingParams emits the queue depth (initiator queue_size at
+// connect) and the in-capsule data size (target port
+// param_inline_data_size).  A binding override wins over the protocol value;
+// a value set on neither is omitted so the kernel default applies.
+func addNVMeoFSizingParams(
+	params map[string]string,
+	protocol *pillarcsiv1alpha1.NVMeOFTCPConfig,
+	overrides *pillarcsiv1alpha1.NVMeOFTCPOverrides,
+) {
+	maxQueueSize := protocol.MaxQueueSize
+	inCapsuleDataSize := protocol.InCapsuleDataSize
+	if overrides != nil {
+		if overrides.MaxQueueSize != nil {
+			maxQueueSize = overrides.MaxQueueSize
+		}
+		if overrides.InCapsuleDataSize != nil {
+			inCapsuleDataSize = overrides.InCapsuleDataSize
+		}
+	}
+	if maxQueueSize != nil {
+		params["pillar-csi.bhyoo.com/nvmeof-max-queue-size"] = fmt.Sprintf("%d", *maxQueueSize)
+	}
+	if inCapsuleDataSize != nil {
+		params["pillar-csi.bhyoo.com/nvmeof-in-capsule-data-size"] = fmt.Sprintf("%d", *inCapsuleDataSize)
+	}
 }
 
 // reconcileStorageClass creates or updates the StorageClass owned by this binding.

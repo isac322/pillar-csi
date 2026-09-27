@@ -317,10 +317,19 @@ message NvmeofTcpExportParams {
   string bind_address = 1;
   // TCP port (default: 4420).
   int32 port = 2;
-  // Maximum I/O queue depth.
+  // Not used by the agent: the I/O queue depth is requested by the
+  // initiator (fabrics queue_size connect option), not configured on the
+  // target port.
   int32 max_queue_size = 3;
-  // In-capsule data size in bytes.
-  int32 in_capsule_data_size = 4;
+  // In-capsule data size in bytes, applied as the nvmet port's
+  // param_inline_data_size.  The port is shared by every volume exported on
+  // the same bind_address and port, and the kernel accepts the attribute
+  // only while no subsystem is linked to the port.  When set, ExportVolume
+  // writes it to a port without linked subsystems, and fails with
+  // FAILED_PRECONDITION when the port already serves other volumes with a
+  // different value.  When unset, a port without linked subsystems is reset
+  // to the transport default and an active port is used as is.
+  optional int32 in_capsule_data_size = 4;
 }
 
 // IscsiExportParams holds iSCSI LIO target configuration.

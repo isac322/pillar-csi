@@ -302,6 +302,8 @@ There is no automatic inference of the missing spec, and this procedure delibera
    | `port` | Explicit value; `volumeAttributes["port"]` and `exportInfo.port` record what the export used, and a flat PVC annotation `pillar-csi.bhyoo.com/param.nvmeof-port` (or `param.iscsi-port`) could have overridden the class default (`4420` / `3260`) — cross-check before reusing any of them | current StorageClass/`PillarProtocol.spec.nvmeofTcp.port` — may be regenerated |
    | `aclEnabled` | **No durable provision-time record exists** — this is why the controller refuses to guess. Reconstruct it from the flat PVC annotation `pillar-csi.bhyoo.com/param.acl-enabled` (the only per-volume override of the class value), the provision-time `acl-enabled` StorageClass parameter (generated from `PillarProtocol.spec.nvmeofTcp.acl`; usable only if the protocol/binding CRs provably have not changed — GitOps history, snapshot, audit), or an explicit recorded operator decision. **If evidence cannot justify `true` or `false`, stop — do not patch.** `true` admits only `publishedNodes` initiators (`revoking` excluded; empty set = nobody, and the resync can still report `Reconciled` while unrecorded consumers stay locked out). `false` writes `attr_allow_any_host=1`, exposing the volume network-wide. Deliberately changing the historical intent is allowed only after recording the choice and its connectivity/security consequences | `exportInfo` has no ACL field; today's `PillarProtocol` value proves nothing about the original |
 
+   Leave the optional `inCapsuleDataSize` field out: controllers that recorded no `exportSpec` never applied an in-capsule data size to the export, so the restored export keeps accepting the port's value as before.
+
    Inspect the evidence:
 
    ```sh

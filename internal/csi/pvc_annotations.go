@@ -71,9 +71,11 @@ const (
 	// parameter overrides. Its value is a YAML document.
 	//
 	// Supported sub-keys (Phase 1):
-	//   nvmeofTcp.maxQueueSize:    maximum I/O queue depth
-	//   nvmeofTcp.ctrlLossTmo:     controller loss timeout (seconds)
-	//   nvmeofTcp.reconnectDelay:  reconnect attempt interval (seconds)
+	//   nvmeofTcp.maxQueueSize:      I/O queue depth (initiator queue_size)
+	//   nvmeofTcp.inCapsuleDataSize: in-capsule data size in bytes (target
+	//                                port setting shared by the port's volumes)
+	//   nvmeofTcp.ctrlLossTmo:       controller loss timeout (seconds)
+	//   nvmeofTcp.reconnectDelay:    reconnect attempt interval (seconds)
 	//   iscsi.loginTimeout:        session login timeout (seconds)
 	//   iscsi.replacementTimeout:  session replacement timeout (seconds)
 	//   iscsi.nodeSessionTimeout:  node session timeout (seconds)
@@ -110,7 +112,15 @@ const (
 
 	// ParamNVMeOFMaxQueueSize is the I/O queue depth for NVMe-oF TCP.
 	// Corresponds to PillarProtocol.spec.nvmeofTcp.maxQueueSize.
+	// Copied into the VolumeContext by CreateVolume and written as the
+	// queue_size /dev/nvme-fabrics option at NodeStageVolume.
 	paramNVMeOFMaxQueueSize = "pillar-csi.bhyoo.com/nvmeof-max-queue-size"
+
+	// ParamNVMeOFInCapsuleDataSize is the in-capsule data size in bytes.
+	// Corresponds to PillarProtocol.spec.nvmeofTcp.inCapsuleDataSize.
+	// Sent to the agent in NvmeofTcpExportParams.in_capsule_data_size and
+	// applied as the nvmet port's param_inline_data_size.
+	paramNVMeOFInCapsuleDataSize = "pillar-csi.bhyoo.com/nvmeof-in-capsule-data-size"
 
 	// ParamNVMeOFCtrlLossTmo is the controller loss timeout in seconds.
 	// Corresponds to PillarProtocol.spec.nvmeofTcp.ctrlLossTmo.
@@ -336,9 +346,10 @@ func parseLVMBackendOverride(lvmRaw any, out map[string]string) error {
 // Supported YAML structures (Phase 1):
 //
 //	nvmeofTcp:
-//	  maxQueueSize:   <int>
-//	  ctrlLossTmo:   <int>
-//	  reconnectDelay: <int>
+//	  maxQueueSize:      <int>
+//	  inCapsuleDataSize: <int>
+//	  ctrlLossTmo:       <int>
+//	  reconnectDelay:    <int>
 //
 //	iscsi:
 //	  loginTimeout:        <int>
@@ -372,6 +383,9 @@ func parseProtocolOverride(yamlStr string, out map[string]string) error { //noli
 
 		if v, ok := nvmeofMap["maxQueueSize"]; ok {
 			out[paramNVMeOFMaxQueueSize] = fmt.Sprintf("%v", v)
+		}
+		if v, ok := nvmeofMap["inCapsuleDataSize"]; ok {
+			out[paramNVMeOFInCapsuleDataSize] = fmt.Sprintf("%v", v)
 		}
 		if v, ok := nvmeofMap["ctrlLossTmo"]; ok {
 			out[paramNVMeOFCtrlLossTmo] = fmt.Sprintf("%v", v)
