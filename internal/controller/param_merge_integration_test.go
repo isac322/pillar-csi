@@ -111,6 +111,7 @@ func (*recordingBackend) ListVolumes(context.Context) ([]*agentv1.VolumeInfo, er
 }
 func (*recordingBackend) DevicePath(volumeID string) string { return "/dev/fake/" + volumeID }
 func (b *recordingBackend) Type() agentv1.BackendType       { return b.backendType }
+func (*recordingBackend) Layout() backend.Layout            { return backend.Layout{} }
 
 // mergeFixture is one storage node (real agent.Server over bufconn with a
 // recording ZFS and LVM backend) and the CSI controller server dialing it.
