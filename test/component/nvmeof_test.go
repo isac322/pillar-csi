@@ -568,7 +568,7 @@ func TestNvmeof_AllowHost_MultipleHosts(t *testing.T) {
 // allowed_hosts symlink for the given initiator NQN.
 //
 //	Setup:   Apply; AllowHost; DenyHost for same host
-//	Expect:  Symlink removed; host dir in hosts/ still exists
+//	Expect:  Symlink removed; the now unreferenced host dir in hosts/ removed
 func TestNvmeof_DenyHost_RemovesSymlink(t *testing.T) {
 	t.Parallel()
 	tmpdir := t.TempDir()
@@ -596,9 +596,8 @@ func TestNvmeof_DenyHost_RemovesSymlink(t *testing.T) {
 	// Symlink must be gone.
 	requireNotExist(t, linkPath)
 
-	// Host directory in hosts/ should still exist (not cleaned by DenyHost).
-	hostDir := filepath.Join(tmpdir, "nvmet", "hosts", hostNQN)
-	requireDirExists(t, hostDir)
+	// No subsystem allows the host any more, so its hosts/ entry is pruned.
+	requireNotExist(t, filepath.Join(tmpdir, "nvmet", "hosts", hostNQN))
 }
 
 // TestNvmeof_DenyHost_Idempotent verifies that DenyHost on a host that has

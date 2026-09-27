@@ -209,51 +209,54 @@ func TestNvmeof_Apply_NamespaceIDNonDefault(t *testing.T) {
 // Section 3.12 — Remove Lifecycle Edge Cases
 // ─────────────────────────────────────────────────────────────────────────────.
 
-// TestNvmeof_Remove_LeavesPortDirIntact verifies that Remove deletes the
-// subsystem's port symlink but does NOT remove the port directory itself
-// (other subsystems may still reference that port).
+// TestNvmeof_Remove_PrunesPortWithLastSubsystem verifies that Remove keeps
+// a port directory while another subsystem is linked to it and removes it
+// together with its last subsystem (issue #98).
 //
-//	Setup:   Apply; Remove; inspect nvmet/ports/
-//	Expect:  subsystem dir gone; ports/<id>/ still present
-func TestNvmeof_Remove_LeavesPortDirIntact(t *testing.T) {
+//	Setup:   Apply two targets on the same port; Remove one; Remove the other
+//	Expect:  ports/<id>/ present after the first Remove, gone after the second
+func TestNvmeof_Remove_PrunesPortWithLastSubsystem(t *testing.T) {
 	t.Parallel()
 	tmpdir := t.TempDir()
-	nqn := "nqn.test:pvc-port-intact"
-	tgt := defaultTarget(tmpdir, nqn)
+	first := defaultTarget(tmpdir, "nqn.test:pvc-port-first")
+	second := defaultTarget(tmpdir, "nqn.test:pvc-port-second")
 
-	if err := tgt.Apply(); err != nil {
-		t.Fatalf("Apply: %v", err)
+	for _, tgt := range []*nvmeof.NvmetTarget{first, second} {
+		if err := tgt.Apply(); err != nil {
+			t.Fatalf("Apply %s: %v", tgt.SubsystemNQN, err)
+		}
 	}
 	portDir := requireSinglePort(t, tmpdir)
 
-	if err := tgt.Remove(); err != nil {
-		t.Fatalf("Remove: %v", err)
+	if err := first.Remove(); err != nil {
+		t.Fatalf("Remove first: %v", err)
 	}
-
-	// Subsystem dir must be gone.
-	requireNotExist(t, nvmetSubsystemDir(tmpdir, nqn))
-
-	// Port dir must still exist (not cleaned by Remove).
+	requireNotExist(t, nvmetSubsystemDir(tmpdir, first.SubsystemNQN))
+	// The second subsystem still uses the port.
 	requireDirExists(t, portDir)
+
+	if err := second.Remove(); err != nil {
+		t.Fatalf("Remove second: %v", err)
+	}
+	requireNotExist(t, portDir)
 }
 
-// TestNvmeof_Remove_LeavesHostsDirIntact verifies that Remove does not clean
-// the global hosts/ directory, even when AllowedHosts were configured.
+// TestNvmeof_Remove_PrunesUnreferencedHostDir verifies that Remove deletes a
+// hosts/<nqn>/ entry once no subsystem allows that host (issue #98).
 //
 //	Setup:   Apply with AllowedHosts=["host-nqn"]; Remove
-//	Expect:  nvmet/hosts/ still present; hosts/host-nqn/ still exists
-func TestNvmeof_Remove_LeavesHostsDirIntact(t *testing.T) {
+//	Expect:  hosts/host-nqn/ gone
+func TestNvmeof_Remove_PrunesUnreferencedHostDir(t *testing.T) {
 	t.Parallel()
 	tmpdir := t.TempDir()
-	nqn := "nqn.test:pvc-hosts-intact"
-	hostNQN := "nqn.test:host-intact"
+	nqn := "nqn.test:pvc-hosts-pruned"
+	hostNQN := "nqn.test:host-pruned"
 
-	// Use AllowedHosts in the target struct so Remove knows to clean the symlinks.
 	tgt := &nvmeof.NvmetTarget{
 		ConfigfsRoot: tmpdir,
 		SubsystemNQN: nqn,
 		NamespaceID:  1,
-		DevicePath:   "/dev/zvol/tank/hosts-intact",
+		DevicePath:   "/dev/zvol/tank/hosts-pruned",
 		BindAddress:  extTestBindAddr,
 		Port:         4420,
 		AllowedHosts: []string{hostNQN},
@@ -269,10 +272,7 @@ func TestNvmeof_Remove_LeavesHostsDirIntact(t *testing.T) {
 		t.Fatalf("Remove: %v", err)
 	}
 
-	// The global hosts/ dir must still exist after Remove.
-	requireDirExists(t, filepath.Join(tmpdir, "nvmet", "hosts"))
-	// The specific host subdir must also still exist (Remove does not clean hosts/).
-	requireDirExists(t, hostDir)
+	requireNotExist(t, hostDir)
 }
 
 // TestNvmeof_Remove_PortLinkAlreadyGone verifies that Remove succeeds
@@ -400,39 +400,38 @@ func TestNvmeof_AllowHost_HostDirPreExists(t *testing.T) {
 	}
 }
 
-// TestNvmeof_DenyHost_LeavesHostDirIntact verifies that DenyHost removes the
-// allowed_hosts symlink but leaves the hosts/<nqn>/ directory intact
-// (other subsystems may still reference it).
+// TestNvmeof_DenyHost_KeepsHostDirStillReferenced verifies that DenyHost
+// removes the allowed_hosts symlink but keeps the hosts/<nqn>/ directory while
+// another subsystem still allows the host.
 //
-//	Setup:   Apply; AllowHost; DenyHost same host
-//	Expect:  allowed_hosts/<nqn> symlink gone; hosts/host-nqn/ dir still present
-func TestNvmeof_DenyHost_LeavesHostDirIntact(t *testing.T) {
+//	Setup:   Apply two targets; AllowHost on both; DenyHost on one
+//	Expect:  its allowed_hosts/<nqn> symlink gone; hosts/host-nqn/ dir present
+func TestNvmeof_DenyHost_KeepsHostDirStillReferenced(t *testing.T) {
 	t.Parallel()
 	tmpdir := t.TempDir()
-	nqn := "nqn.test:pvc-deny-hosts-intact"
 	hostNQN := "nqn.test:host-deny"
+	denied := defaultTarget(tmpdir, "nqn.test:pvc-deny-denied")
+	kept := defaultTarget(tmpdir, "nqn.test:pvc-deny-kept")
 
-	tgt := defaultTarget(tmpdir, nqn)
-	if err := tgt.Apply(); err != nil {
-		t.Fatalf("Apply: %v", err)
+	for _, tgt := range []*nvmeof.NvmetTarget{denied, kept} {
+		if err := tgt.Apply(); err != nil {
+			t.Fatalf("Apply %s: %v", tgt.SubsystemNQN, err)
+		}
+		if err := tgt.AllowHost(hostNQN); err != nil {
+			t.Fatalf("AllowHost %s: %v", tgt.SubsystemNQN, err)
+		}
 	}
-	if err := tgt.AllowHost(hostNQN); err != nil {
-		t.Fatalf("AllowHost: %v", err)
-	}
 
-	hostDir := filepath.Join(tmpdir, "nvmet", "hosts", hostNQN)
-	requireDirExists(t, hostDir)
-
-	if err := tgt.DenyHost(hostNQN); err != nil {
+	if err := denied.DenyHost(hostNQN); err != nil {
 		t.Fatalf("DenyHost: %v", err)
 	}
 
 	// Symlink must be gone.
-	linkPath := filepath.Join(nvmetSubsystemDir(tmpdir, nqn), "allowed_hosts", hostNQN)
+	linkPath := filepath.Join(nvmetSubsystemDir(tmpdir, denied.SubsystemNQN), "allowed_hosts", hostNQN)
 	requireNotExist(t, linkPath)
 
-	// hosts/<nqn>/ dir must still exist.
-	requireDirExists(t, hostDir)
+	// hosts/<nqn>/ dir must still exist: kept still allows the host.
+	requireDirExists(t, filepath.Join(tmpdir, "nvmet", "hosts", hostNQN))
 }
 
 // TestNvmeof_AllowHost_AllowedHostsDirCreated verifies that AllowHost creates

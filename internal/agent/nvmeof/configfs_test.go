@@ -495,10 +495,11 @@ func TestCreatePort(t *testing.T) {
 		Port:         4420,
 	}
 
-	portID, err := tgt.createPort()
+	port, err := tgt.createPort()
 	if err != nil {
 		t.Fatalf("createPort: %v", err)
 	}
+	portID := port.id
 	if portID < 1 || portID > 65535 {
 		t.Fatalf("portID %d out of range", portID)
 	}
@@ -510,11 +511,11 @@ func TestCreatePort(t *testing.T) {
 	assertFileContent(t, filepath.Join(pDir, "addr_trsvcid"), "4420")
 
 	// Idempotent.
-	portID2, err := tgt.createPort()
+	port2, err := tgt.createPort()
 	if err != nil {
 		t.Fatalf("idempotent createPort: %v", err)
 	}
-	if portID2 != portID {
+	if portID2 := port2.id; portID2 != portID {
 		t.Errorf("idempotent portID changed: %d vs %d", portID, portID2)
 	}
 }
@@ -530,10 +531,11 @@ func TestCreatePortDoesNotRewriteMatchingAttributes(t *testing.T) {
 		Port:         4420,
 	}
 
-	portID, err := tgt.createPort()
+	port, err := tgt.createPort()
 	if err != nil {
 		t.Fatalf("initial createPort: %v", err)
 	}
+	portID := port.id
 
 	attrs := []string{"addr_trtype", "addr_adrfam", "addr_traddr", "addr_trsvcid"}
 	frozen := time.Unix(1, 0)
@@ -571,12 +573,12 @@ func TestCreatePort_IPv6(t *testing.T) {
 		Port:         4420,
 	}
 
-	portID, err := tgt.createPort()
+	port, err := tgt.createPort()
 	if err != nil {
 		t.Fatalf("createPort: %v", err)
 	}
 
-	pDir := tgt.portDir(portID)
+	pDir := tgt.portDir(port.id)
 	assertFileContent(t, filepath.Join(pDir, "addr_trtype"), "tcp")
 	assertFileContent(t, filepath.Join(pDir, "addr_adrfam"), "ipv6")
 	assertFileContent(t, filepath.Join(pDir, "addr_traddr"), listenWildcardV6)
@@ -829,9 +831,9 @@ func TestAllowAndDenyHost(t *testing.T) {
 		t.Errorf("allowed_host symlink still exists after DenyHost")
 	}
 
-	// Host dir should still exist (shared across subsystems).
-	if _, err := os.Stat(tgt.hostDir(hostNQN)); err != nil {
-		t.Errorf("host dir removed by DenyHost — should be preserved")
+	// No subsystem references the host any more, so its entry is pruned.
+	if _, err := os.Lstat(tgt.hostDir(hostNQN)); !os.IsNotExist(err) {
+		t.Errorf("unreferenced host dir still exists after DenyHost (err %v)", err)
 	}
 
 	// Idempotent DenyHost.
