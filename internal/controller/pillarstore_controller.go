@@ -27,6 +27,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	storagev1 "k8s.io/api/storage/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -64,6 +65,8 @@ type PillarStoreReconciler struct {
 // +kubebuilder:rbac:groups=pillar-csi.bhyoo.com,resources=pillaragents,verbs=get;list;watch
 // +kubebuilder:rbac:groups=pillar-csi.bhyoo.com,resources=pillarvolumestates,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=persistentvolumes,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch
+// +kubebuilder:rbac:groups=storage.k8s.io,resources=storageclasses,verbs=get;list;watch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -609,10 +612,71 @@ func syncCapacityFromTarget(
 	return true
 }
 
+// storeDeletionBlockers returns every PillarStorageClass that references store
+// and every volume provisioned through it.  Volumes are attributed to their
+// provisioning PillarStorageClass — several PillarStores may share a pool, so
+// a sibling store's volumes do not block this store.  A volume whose
+// provisioning class cannot be resolved fails closed and blocks every
+// PillarStore it lies in by location.
+func (r *PillarStoreReconciler) storeDeletionBlockers(
+	ctx context.Context,
+	store *pillarcsiv1alpha1.PillarStore,
+) (deletionBlockers, error) {
+	// List all PillarStorageClasss (cluster-scoped): they both name the
+	// bindings that reference this store and attribute each generated
+	// StorageClass to the PillarStore that owns it.
+	bindingList := &pillarcsiv1alpha1.PillarStorageClassList{}
+	err := r.List(ctx, bindingList)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list PillarStorageClasss: %w", err)
+	}
+
+	var referencingNames []string
+	for i := range bindingList.Items {
+		if bindingList.Items[i].Spec.StoreRef == store.Name {
+			referencingNames = append(referencingNames, bindingList.Items[i].Name)
+		}
+	}
+
+	// StorageClass owner references confirm which binding generated a class.
+	scList := &storagev1.StorageClassList{}
+	err = r.List(ctx, scList)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list StorageClasses: %w", err)
+	}
+	scStores := storageClassStores(bindingList, scList)
+
+	volumes, err := listVolumeReferences(ctx, r.Client,
+		func(pv *corev1.PersistentVolume) bool {
+			ref, ok := volumeRefFromPV(pv)
+			return ok && volumeBlocksStore(pv.Spec.StorageClassName, ref, store, scStores)
+		},
+		func(pvs *pillarcsiv1alpha1.PillarVolumeState, pv *corev1.PersistentVolume, pvc *corev1.PersistentVolumeClaim) bool {
+			ref := volumeRefFromVolumeState(pvs)
+			scName := ""
+			switch {
+			case pv != nil:
+				scName = pv.Spec.StorageClassName
+			case pvc != nil && pvc.Spec.StorageClassName != nil:
+				scName = *pvc.Spec.StorageClassName
+			}
+			return volumeBlocksStore(scName, ref, store, scStores)
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	var blockers deletionBlockers
+	blockers.add("PillarStorageClass(s)", referencingNames)
+	blockers.addVolumes(volumes)
+	return blockers, nil
+}
+
 // reconcileDelete handles the deletion flow.  The finalizer is only removed
 // once no PillarStorageClass references this PillarStore and no volume
-// provisioned from it remains: DeleteVolume of such a volume still relies on
-// the PillarAgent this pool keeps alive.
+// provisioned through it remains: DeleteVolume of such a volume still relies
+// on the PillarAgent this store keeps alive.
 func (r *PillarStoreReconciler) reconcileDelete(
 	ctx context.Context,
 	pool *pillarcsiv1alpha1.PillarStore,
@@ -627,36 +691,10 @@ func (r *PillarStoreReconciler) reconcileDelete(
 	log.Info("PillarStore is being deleted — checking for referencing PillarStorageClasses and volumes",
 		"name", pool.Name)
 
-	// List all PillarStorageClasss (cluster-scoped) and find those that reference this pool.
-	bindingList := &pillarcsiv1alpha1.PillarStorageClassList{}
-	err := r.List(ctx, bindingList)
-	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("failed to list PillarStorageClasss: %w", err)
-	}
-
-	var referencingNames []string
-	for i := range bindingList.Items {
-		if bindingList.Items[i].Spec.StoreRef == pool.Name {
-			referencingNames = append(referencingNames, bindingList.Items[i].Name)
-		}
-	}
-
-	volumes, err := listVolumeReferences(ctx, r.Client,
-		func(pv *corev1.PersistentVolume) bool {
-			ref, ok := volumeRefFromPV(pv)
-			return ok && ref.inStore(pool)
-		},
-		func(pvs *pillarcsiv1alpha1.PillarVolumeState, _ *corev1.PersistentVolume) bool {
-			return volumeRefFromVolumeState(pvs).inStore(pool)
-		},
-	)
+	blockers, err := r.storeDeletionBlockers(ctx, pool)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-
-	var blockers deletionBlockers
-	blockers.add("PillarStorageClass(s)", referencingNames)
-	blockers.addVolumes(volumes)
 	if len(blockers) > 0 {
 		// Deletion is blocked — log the reason and requeue.
 		msg := blockers.message("this pool")

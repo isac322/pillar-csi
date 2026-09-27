@@ -133,6 +133,7 @@ type PillarAgentReconciler struct {
 // +kubebuilder:rbac:groups=pillar-csi.bhyoo.com,resources=pillarstores,verbs=get;list;watch
 // +kubebuilder:rbac:groups=pillar-csi.bhyoo.com,resources=pillarvolumestates,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=persistentvolumes,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch;update;patch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
@@ -913,7 +914,7 @@ func (r *PillarAgentReconciler) reconcileDelete(
 			ref, ok := volumeRefFromPV(pv)
 			return ok && ref.agent == target.Name
 		},
-		func(pvs *pillarcsiv1alpha1.PillarVolumeState, _ *corev1.PersistentVolume) bool {
+		func(pvs *pillarcsiv1alpha1.PillarVolumeState, _ *corev1.PersistentVolume, _ *corev1.PersistentVolumeClaim) bool {
 			return pvs.Spec.AgentRef == target.Name
 		},
 	)

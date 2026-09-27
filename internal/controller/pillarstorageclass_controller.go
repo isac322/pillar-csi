@@ -1057,10 +1057,13 @@ func (r *PillarStorageClassReconciler) pvcsOfStorageClass(ctx context.Context, s
 // bindingVolumeReferences returns the PersistentVolumes of StorageClass
 // scName and the PillarVolumeStates of volumes provisioned through binding.
 //
-// A PillarVolumeState records no StorageClass.  When its PV (the PV of the
-// same name) exists, that PV's StorageClass decides.  Without a PV, a volume
-// that lives in the binding's PillarStore and uses its protocol is attributed
-// to the binding; if either object is already gone this fallback cannot
+// A PillarVolumeState records no StorageClass, so its attribution follows the
+// StorageClass its volume used: the same-named PV's class when the PV exists,
+// else the class of the claim recorded in spec.claimRef — a PV-less
+// PillarVolumeState of a sibling binding on the same store and protocol does
+// not block this binding.  Only when neither attribution source exists does
+// the PillarVolumeState fall back to failing closed on the binding's store
+// and protocol; if either object is already gone this fallback cannot
 // attribute it, and the PillarStore and PillarAgent guards keep holding the
 // volume's storage node instead.
 func (r *PillarStorageClassReconciler) bindingVolumeReferences(
@@ -1084,9 +1087,12 @@ func (r *PillarStorageClassReconciler) bindingVolumeReferences(
 		func(pv *corev1.PersistentVolume) bool {
 			return pv.Spec.StorageClassName == scName
 		},
-		func(pvs *pillarcsiv1alpha1.PillarVolumeState, pv *corev1.PersistentVolume) bool {
+		func(pvs *pillarcsiv1alpha1.PillarVolumeState, pv *corev1.PersistentVolume, pvc *corev1.PersistentVolumeClaim) bool {
 			if pv != nil {
 				return pv.Spec.StorageClassName == scName
+			}
+			if pvc != nil && pvc.Spec.StorageClassName != nil {
+				return *pvc.Spec.StorageClassName == scName
 			}
 			return sourceKnown && volumeRefFromVolumeState(pvs).provisionedThrough(store, protocol)
 		},
