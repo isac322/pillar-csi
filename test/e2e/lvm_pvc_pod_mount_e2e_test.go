@@ -125,7 +125,6 @@ metadata:
 spec:
   agentRef: "%s"
   backend:
-    type: lvm-lv
     lvm:
       volumeGroup: %s
 `, poolName, poolName+"-target", lvmVG)
@@ -183,7 +182,6 @@ metadata:
 spec:
   agentRef: "%s"
   backend:
-    type: lvm-lv
     lvm:
       volumeGroup: %s
 `, poolName, poolName+"-target", lvmVG)
@@ -234,7 +232,6 @@ metadata:
 spec:
   agentRef: "%s"
   backend:
-    type: lvm-lv
     lvm:
       volumeGroup: %s
 `, poolName, poolName+"-target", lvmVG)

@@ -188,11 +188,10 @@ func assertE14_GetCapacity_UnknownTarget(tc documentedCase) {
 	defer env.close()
 
 	_, err := env.controller.GetCapacity(env.ctx, &csiapi.GetCapacityRequest{
-		Parameters: map[string]string{
-			"pillar-csi.bhyoo.com/agent": "nonexistent-target",
-		},
+		Parameters: e2eHandWrittenParams("nonexistent-store", e2eDefaultProtocolName),
 	})
-	Expect(err).To(HaveOccurred(), "%s: expected error for unknown target", tc.tcNodeLabel())
+	Expect(err).To(HaveOccurred(), "%s: expected error for unknown PillarStore", tc.tcNodeLabel())
+	Expect(status.Code(err)).To(Equal(codes.NotFound), "%s", tc.tcNodeLabel())
 }
 
 func assertE14_ControllerPublish_EmptyID(tc documentedCase) {
@@ -241,4 +240,42 @@ func assertE14_ValidateVolumeCapabilities(tc documentedCase) {
 	} else {
 		Expect(resp).NotTo(BeNil(), "%s: response should not be nil", tc.tcNodeLabel())
 	}
+}
+
+// TestCSIEdge_CreateVolume_UnknownPillarParam — a pillar-csi.bhyoo.com/ key
+// outside the configuration interface (here the removed flat backend-type key)
+// is rejected instead of ignored.
+func assertE14_CreateVolume_UnknownPillarParam(tc documentedCase) {
+	env := newControllerTestEnv()
+	defer env.close()
+
+	params := copyParams(env.params)
+	params["pillar-csi.bhyoo.com/backend-type"] = "lvm-lv"
+	_, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
+		Name:               "pvc-e14-unknown-param",
+		Parameters:         params,
+		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
+	})
+	Expect(status.Code(err)).To(Equal(codes.InvalidArgument),
+		"%s: unknown pillar-csi parameter must be rejected, got %v", tc.tcNodeLabel(), err)
+	Expect(err.Error()).To(ContainSubstring("unsupported StorageClass parameter"), "%s", tc.tcNodeLabel())
+	Expect(env.agentSrv.counts().CreateVolume).To(BeZero(), "%s: no agent call", tc.tcNodeLabel())
+}
+
+// TestCSIEdge_CreateVolume_EmptyProtocolRef — an empty protocol-ref identity
+// parameter is rejected.
+func assertE14_CreateVolume_EmptyProtocolRef(tc documentedCase) {
+	env := newControllerTestEnv()
+	defer env.close()
+
+	params := copyParams(env.params)
+	params[e2eParamProtocolRef] = ""
+	_, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
+		Name:               "pvc-e14-empty-protocol-ref",
+		Parameters:         params,
+		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
+	})
+	Expect(status.Code(err)).To(Equal(codes.InvalidArgument),
+		"%s: empty protocol-ref must be rejected, got %v", tc.tcNodeLabel(), err)
+	Expect(env.agentSrv.counts().CreateVolume).To(BeZero(), "%s: no agent call", tc.tcNodeLabel())
 }

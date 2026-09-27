@@ -22,10 +22,13 @@ package controller
 // PillarStorageClass reconciler generated (issue #112): the reconciler
 // writes the StorageClass into the suite's envtest API server, CreateVolume
 // receives exactly its parameters plus the claim metadata external-provisioner
-// adds with --extra-create-metadata, and a real agent.Server hands the merged
-// backend parameters to a recording backend.  The PillarStore, the
-// PillarStorageClass overrides and the PVC annotations must all reach the
-// backend with precedence PVC > PillarStorageClass > PillarStore.
+// adds with --extra-create-metadata, and a real agent.Server hands the
+// resolved backend parameters to a recording backend.  The generated
+// StorageClass names only its PillarStorageClass: CreateVolume resolves the
+// PillarStore, the PillarStorageClass overrides and the PVC annotation
+// documents from the live objects, and they must all reach the backend with
+// precedence PVC > PillarStorageClass > PillarStore.  The result is frozen in
+// the PillarVolumeState's spec.resolved.
 
 import (
 	"context"
@@ -184,10 +187,9 @@ func createMergeAgentAndProtocol() {
 	protocol := &pillarcsiv1alpha1.PillarProtocol{
 		ObjectMeta: metav1.ObjectMeta{Name: mergeProtocol},
 		Spec: pillarcsiv1alpha1.PillarProtocolSpec{
-			Type: pillarcsiv1alpha1.ProtocolTypeNVMeOFTCP,
-			NVMeOFTCP: &pillarcsiv1alpha1.NVMeOFTCPConfig{
+			Protocol: pillarcsiv1alpha1.ProtocolSpec{NVMeOFTCP: &pillarcsiv1alpha1.NVMeOFTCPConfig{
 				Port: 4420, ACL: true, CtrlLossTmo: &ctrlLossTmo, ReconnectDelay: &reconnectDelay,
-			},
+			}},
 		},
 	}
 	createReady(protocol, &protocol.Status.Conditions)
@@ -275,7 +277,6 @@ var _ = Describe("Parameter merge through a generated StorageClass", func() {
 			Spec: pillarcsiv1alpha1.PillarStoreSpec{
 				AgentRef: mergeAgent,
 				Backend: pillarcsiv1alpha1.BackendSpec{
-					Type: pillarcsiv1alpha1.BackendTypeZFSZvol,
 					ZFS: &pillarcsiv1alpha1.ZFSBackendConfig{
 						Pool: mergeZFSPool, ParentDataset: "k8s",
 						Properties: map[string]string{
@@ -293,7 +294,7 @@ var _ = Describe("Parameter merge through a generated StorageClass", func() {
 				StoreRef: store.Name, ProtocolRef: mergeProtocol,
 				Overrides: &pillarcsiv1alpha1.StorageClassOverrides{
 					Backend: &pillarcsiv1alpha1.BackendOverrides{
-						ZFS: &pillarcsiv1alpha1.ZFSPropertyOverrides{Properties: map[string]string{
+						ZFS: &pillarcsiv1alpha1.ZFSBackendOverrides{Properties: map[string]string{
 							"compression": "lz4", "logbias": "throughput", "volblocksize": "16K",
 						}},
 					},
@@ -302,11 +303,16 @@ var _ = Describe("Parameter merge through a generated StorageClass", func() {
 		})
 
 		pvc := createClaim("merge-zfs-claim", sc.Name, map[string]string{
-			pillarcsi.AnnotationBackendOverride: "zfs:\n  properties:\n" +
+			pillarcsiv1alpha1.AnnotationBackendDoc: "zfs:\n  properties:\n" +
 				"    compression: zstd\n    volblocksize: 128K\n    sync: always\n",
-			pillarcsi.AnnotationProtocolOverride: "nvmeofTcp:\n  ctrlLossTmo: 600\n",
+			pillarcsiv1alpha1.AnnotationProtocolDoc: "nvmeofTcp:\n  ctrlLossTmo: 600\n",
 		})
 		cleanupVolumeState("pvc-" + string(pvc.UID))
+
+		Expect(sc.Parameters).To(Equal(map[string]string{
+			"pillar-csi.bhyoo.com/storage-class": "merge-zfs",
+			"csi.storage.k8s.io/fstype":          "ext4",
+		}), "the generated StorageClass carries only the binding identity and the fstype")
 
 		resp, err := provision(f, sc, pvc)
 		Expect(err).NotTo(HaveOccurred())
@@ -328,6 +334,15 @@ var _ = Describe("Parameter merge through a generated StorageClass", func() {
 			"PVC protocol-override must win over the PillarProtocol value")
 		Expect(vc).To(HaveKeyWithValue("pillar-csi.bhyoo.com/nvmeof-reconnect-delay", "5"),
 			"PillarProtocol value must reach the node when no layer overrides it")
+
+		By("freezing the resolved configuration in the PillarVolumeState")
+		pvs := &pillarcsiv1alpha1.PillarVolumeState{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "pvc-" + string(pvc.UID)}, pvs)).To(Succeed())
+		Expect(pvs.Spec.Resolved).NotTo(BeNil(), "spec.resolved must record the effective configuration")
+		Expect(pvs.Spec.Resolved.Backend.ZFS).NotTo(BeNil())
+		Expect(pvs.Spec.Resolved.Backend.ZFS.Properties).To(Equal(params.GetZfs().GetProperties()))
+		Expect(pvs.Spec.Resolved.Protocol.NVMeOFTCP).NotTo(BeNil())
+		Expect(pvs.Spec.Resolved.Protocol.NVMeOFTCP.CtrlLossTmo).To(HaveValue(Equal(int32(600))))
 	})
 
 	It("hands the LV the store provisioning mode unless the binding or PVC overrides it", func() {
@@ -339,7 +354,6 @@ var _ = Describe("Parameter merge through a generated StorageClass", func() {
 			Spec: pillarcsiv1alpha1.PillarStoreSpec{
 				AgentRef: mergeAgent,
 				Backend: pillarcsiv1alpha1.BackendSpec{
-					Type: pillarcsiv1alpha1.BackendTypeLVMLV,
 					LVM: &pillarcsiv1alpha1.LVMBackendConfig{
 						VolumeGroup: mergeLVMVG, ThinPool: "thin-pool",
 						ProvisioningMode: pillarcsiv1alpha1.LVMProvisioningModeThin,
@@ -359,7 +373,7 @@ var _ = Describe("Parameter merge through a generated StorageClass", func() {
 				StoreRef: store.Name, ProtocolRef: mergeProtocol,
 				Overrides: &pillarcsiv1alpha1.StorageClassOverrides{
 					Backend: &pillarcsiv1alpha1.BackendOverrides{
-						LVM: &pillarcsiv1alpha1.LVMOverrides{ProvisioningMode: pillarcsiv1alpha1.LVMProvisioningModeLinear},
+						LVM: &pillarcsiv1alpha1.LVMBackendOverrides{ProvisioningMode: pillarcsiv1alpha1.LVMProvisioningModeLinear},
 					},
 				},
 			},
@@ -373,7 +387,7 @@ var _ = Describe("Parameter merge through a generated StorageClass", func() {
 			{sc: storeSC, claim: "merge-lvm-store", want: "thin"},
 			{sc: bindingSC, claim: "merge-lvm-binding", want: "linear"},
 			{sc: bindingSC, claim: "merge-lvm-pvc", want: "thin", annotations: map[string]string{
-				pillarcsi.AnnotationBackendOverride: "lvm:\n  provisioningMode: thin\n",
+				pillarcsiv1alpha1.AnnotationBackendDoc: "lvm:\n  provisioningMode: thin\n",
 			}},
 		}
 		for _, c := range cases {
@@ -396,8 +410,7 @@ var _ = Describe("Parameter merge through a generated StorageClass", func() {
 			Spec: pillarcsiv1alpha1.PillarStoreSpec{
 				AgentRef: mergeAgent,
 				Backend: pillarcsiv1alpha1.BackendSpec{
-					Type: pillarcsiv1alpha1.BackendTypeZFSZvol,
-					ZFS:  &pillarcsiv1alpha1.ZFSBackendConfig{Pool: mergeZFSPool},
+					ZFS: &pillarcsiv1alpha1.ZFSBackendConfig{Pool: mergeZFSPool},
 				},
 			},
 		}

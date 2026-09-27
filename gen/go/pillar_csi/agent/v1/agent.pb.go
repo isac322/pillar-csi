@@ -393,8 +393,8 @@ type LvmVolumeParams struct {
 	// provision_mode overrides the backend-level provisioning mode for this
 	// individual volume.  Accepted values: "linear" (fully-allocated LV in the
 	// VG) or "thin" (thin-provisioned LV inside the backend's thin pool).
-	// An empty string (the default) means "use the backend default", i.e. thin
-	// when the backend was started with a thinpool= flag, linear otherwise.
+	// An empty string (the default) means "use the backend default", i.e. the
+	// agent config's lvm.provisioningMode (linear unless set).
 	ProvisionMode string `protobuf:"bytes,3,opt,name=provision_mode,json=provisionMode,proto3" json:"provision_mode,omitempty"`
 	// thin_pool is the thin pool LV declared by the PillarStore (empty: the
 	// store declares none).  When set, the agent rejects CreateVolume with

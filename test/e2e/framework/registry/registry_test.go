@@ -12,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bhyoo/pillar-csi/test/e2e/framework/iscsi"
 	"github.com/bhyoo/pillar-csi/test/e2e/framework/lvm"
 	"github.com/bhyoo/pillar-csi/test/e2e/framework/zfs"
 )
@@ -420,7 +419,7 @@ func TestCleanup_PartialErrorDoesNotAbort(t *testing.T) {
 //
 // These tests verify that:
 //  1. Any type implementing Resource can be registered without framework changes.
-//  2. The built-in types (zfs.Pool, lvm.VG, iscsi.Target) implement Resource.
+//  2. The built-in types (zfs.Pool, lvm.VG) implement Resource.
 //  3. Generic Register / ResourceCount work alongside the convenience wrappers.
 //  4. Error messages from Cleanup use Description() for identifying resources.
 
@@ -448,7 +447,6 @@ var _ Resource = (*fakeResource)(nil)
 // compile-time checks: built-in backend types must implement Resource.
 var _ Resource = (*zfs.Pool)(nil)
 var _ Resource = (*lvm.VG)(nil)
-var _ Resource = (*iscsi.Target)(nil)
 
 // TestRegister_GenericCustomBackend demonstrates AC 9: a completely new backend
 // type (fakeResource) can be registered and cleaned up without any registry
@@ -505,43 +503,6 @@ func TestResourceCount_MixedBackends(t *testing.T) {
 	}
 	if got := r.LVMVGCount(); got != 1 {
 		t.Errorf("LVMVGCount() = %d, want 1", got)
-	}
-}
-
-// TestRegisterISCSITarget_IncreasesCount verifies that RegisterISCSITarget
-// and ISCSITargetCount work correctly.
-func TestRegisterISCSITarget_IncreasesCount(t *testing.T) {
-	t.Parallel()
-
-	r := New()
-	r.RegisterISCSITarget(&iscsi.Target{
-		NodeContainer: "test-container",
-		IQN:           "iqn.2024-01.io.pillar-csi:test1",
-		TID:           1,
-	})
-	r.RegisterISCSITarget(&iscsi.Target{
-		NodeContainer: "test-container",
-		IQN:           "iqn.2024-01.io.pillar-csi:test2",
-		TID:           2,
-	})
-
-	if got := r.ISCSITargetCount(); got != 2 {
-		t.Errorf("ISCSITargetCount() = %d, want 2", got)
-	}
-	if got := r.ResourceCount(); got != 2 {
-		t.Errorf("ResourceCount() = %d, want 2", got)
-	}
-}
-
-// TestRegisterISCSITarget_NilNoop verifies that RegisterISCSITarget(nil) is safe.
-func TestRegisterISCSITarget_NilNoop(t *testing.T) {
-	t.Parallel()
-
-	r := New()
-	r.RegisterISCSITarget(nil)
-
-	if got := r.ISCSITargetCount(); got != 0 {
-		t.Errorf("ISCSITargetCount() after nil registration = %d, want 0", got)
 	}
 }
 
@@ -650,24 +611,5 @@ func TestDescription_LVMVG(t *testing.T) {
 	}
 	if !strings.Contains(desc, "my-node") {
 		t.Errorf("lvm.VG.Description() = %q, want it to contain container name", desc)
-	}
-}
-
-// TestDescription_ISCSITarget verifies that iscsi.Target.Description() returns
-// a human-readable string containing IQN, TID, and container name.
-func TestDescription_ISCSITarget(t *testing.T) {
-	t.Parallel()
-
-	target := &iscsi.Target{
-		NodeContainer: "my-node",
-		IQN:           "iqn.2024-01.io.pillar-csi:test",
-		TID:           42,
-	}
-	desc := target.Description()
-	if !strings.Contains(desc, "iqn.2024-01.io.pillar-csi:test") {
-		t.Errorf("iscsi.Target.Description() = %q, want it to contain IQN", desc)
-	}
-	if !strings.Contains(desc, "my-node") {
-		t.Errorf("iscsi.Target.Description() = %q, want it to contain container name", desc)
 	}
 }

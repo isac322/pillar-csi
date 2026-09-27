@@ -16,11 +16,11 @@ limitations under the License.
 
 package csi
 
-// Tests for the filesystem settings path (issue #115): mkfs options from the
-// PillarProtocol / PillarStorageClass / PVC fs-override layers and the PVC
-// fsType override travel through the CreateVolume VolumeContext to
-// NodeStageVolume, which formats a new volume with them; settings that
-// cannot take effect are rejected instead of dropped.
+// Tests for the filesystem settings path (issue #115): mkfs options, mount
+// options and fsType from the PillarStorageClass / StorageClass filesystem
+// document / PVC pillar-csi.bhyoo.com/filesystem layers travel through the
+// CreateVolume VolumeContext to NodeStageVolume, which formats a new volume
+// with them; settings that cannot take effect are rejected instead of dropped.
 
 import (
 	"context"
@@ -31,6 +31,8 @@ import (
 	csi "github.com/container-storage-interface/spec/lib/go/csi"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+
+	v1alpha1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
 )
 
 // mountCreateVolumeRequest is baseCreateVolumeRequest with a Filesystem
@@ -41,19 +43,18 @@ func mountCreateVolumeRequest(req *csi.CreateVolumeRequest, fsType string) *csi.
 }
 
 // TestCreateVolume_FilesystemSettingsReachVolumeContext verifies that the
-// class-level mkfs options reach the node through the VolumeContext, that a
-// PVC fs-override wins over them and adds its fsType, and that an idempotent
-// retry returns the same keys.
+// class-level filesystem document reaches the node through the
+// VolumeContext, that a PVC filesystem document wins over it, and that an
+// idempotent retry returns the same keys.
 func TestCreateVolume_FilesystemSettingsReachVolumeContext(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	t.Run("class mkfsOptions only", func(t *testing.T) {
+	t.Run("class mkfs options only", func(t *testing.T) {
 		t.Parallel()
 		env := newControllerTestEnv(t)
 		req := mountCreateVolumeRequest(baseCreateVolumeRequest(), "ext4")
-		req.Parameters[paramMkfsOptions] = `["-E","lazy_itable_init=0"]`
-
+		req.Parameters[paramFilesystemDoc] = "mkfsOptions: [\"-E\", \"lazy_itable_init=0\"]\n"
 		for attempt := 1; attempt <= 2; attempt++ {
 			resp, err := env.srv.CreateVolume(ctx, req)
 			if err != nil {
@@ -63,20 +64,23 @@ func TestCreateVolume_FilesystemSettingsReachVolumeContext(t *testing.T) {
 			if got := vc[paramMkfsOptions]; got != `["-E","lazy_itable_init=0"]` {
 				t.Errorf("attempt %d: VolumeContext mkfs-options = %q, want class value", attempt, got)
 			}
-			if _, ok := vc[paramFSType]; ok {
-				t.Errorf("attempt %d: VolumeContext must not carry %q without a PVC override", attempt, paramFSType)
+			if got := vc[paramFSType]; got != "ext4" {
+				t.Errorf("attempt %d: VolumeContext fs-type = %q, want the ext4 default", attempt, got)
+			}
+			if _, ok := vc[paramMountOptions]; ok {
+				t.Errorf("attempt %d: VolumeContext must not carry %q when no layer sets mountOptions",
+					attempt, paramMountOptions)
 			}
 		}
 	})
 
-	t.Run("PVC fs-override wins", func(t *testing.T) {
+	t.Run("PVC filesystem document wins", func(t *testing.T) {
 		t.Parallel()
 		env, req := newControllerTestEnvWithPVC(t, "tenant-a", "pvc-xfs", map[string]string{
-			AnnotationFSOverride: "fsType: xfs\nmkfsOptions: [\"-m\", \"reflink=1\"]\n",
+			v1alpha1.AnnotationFilesystemDoc: "fsType: xfs\nmkfsOptions: [\"-m\", \"reflink=1\"]\n",
 		})
 		req = mountCreateVolumeRequest(req, "ext4")
-		req.Parameters[paramMkfsOptions] = `["-E","lazy_itable_init=0"]`
-
+		req.Parameters[paramFilesystemDoc] = "mkfsOptions: [\"-E\", \"lazy_itable_init=0\"]\n"
 		resp, err := env.srv.CreateVolume(ctx, req)
 		if err != nil {
 			t.Fatalf("CreateVolume: %v", err)
@@ -97,17 +101,16 @@ func TestCreateVolume_FilesystemSettingsReachVolumeContext(t *testing.T) {
 // call, instead of provisioning a volume that silently ignores it.
 func TestCreateVolume_RejectsInapplicableFilesystemSettings(t *testing.T) {
 	t.Parallel()
-
 	cases := []struct {
 		name   string
 		fsType string // mount capability fsType; "block" selects raw block
-		params map[string]string
-		annot  string // PVC fs-override annotation
+		scDoc  string // StorageClass filesystem document
+		annot  string // PVC filesystem document
 	}{
 		{
-			name:   "legacy space-joined mkfs-options",
+			name:   "space-joined mkfs options string",
 			fsType: "ext4",
-			params: map[string]string{paramMkfsOptions: "-E lazy_itable_init=0"},
+			scDoc:  "mkfsOptions: \"-E lazy_itable_init=0\"\n",
 		},
 		{
 			name:   "xfs external log device",
@@ -125,9 +128,9 @@ func TestCreateVolume_RejectsInapplicableFilesystemSettings(t *testing.T) {
 			annot:  "fsType: xfs\nmkfsOptions: [\"-E\", \"lazy_itable_init=0\"]\n",
 		},
 		{
-			name:   "unsupported fs-type via flat param override",
+			name:   "unsupported fsType in the class document",
 			fsType: "ext4",
-			params: map[string]string{paramFSType: "btrfs"},
+			scDoc:  "fsType: btrfs\n",
 		},
 		{
 			name:   "PVC fsType on raw block volume",
@@ -139,25 +142,21 @@ func TestCreateVolume_RejectsInapplicableFilesystemSettings(t *testing.T) {
 			fsType: "block",
 			annot:  "mkfsOptions: [\"-K\"]\n",
 		},
-		{
-			name:   "filesystem settings on NFS",
-			fsType: "ext4",
-			params: map[string]string{paramProtocolType: "nfs", paramFSType: "xfs"},
-		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			annotations := map[string]string{}
 			if tc.annot != "" {
-				annotations[AnnotationFSOverride] = tc.annot
+				annotations[v1alpha1.AnnotationFilesystemDoc] = tc.annot
 			}
 			env, req := newControllerTestEnvWithPVC(t, "tenant-a", "pvc-fs", annotations)
 			if tc.fsType != "block" {
 				req = mountCreateVolumeRequest(req, tc.fsType)
 			}
-			maps.Copy(req.Parameters, tc.params)
-
+			if tc.scDoc != "" {
+				req.Parameters[paramFilesystemDoc] = tc.scDoc
+			}
 			_, err := env.srv.CreateVolume(context.Background(), req)
 			if status.Code(err) != codes.InvalidArgument {
 				t.Fatalf("CreateVolume code = %v (err %v), want InvalidArgument", status.Code(err), err)
@@ -177,10 +176,8 @@ func TestCreateVolume_ClassMkfsOptionsIgnoredForBlockVolume(t *testing.T) {
 	t.Parallel()
 	env := newControllerTestEnv(t)
 	req := baseCreateVolumeRequest() // raw block
-	req.Parameters[paramMkfsOptions] = `["-E","lazy_itable_init=0"]`
-
-	_, err := env.srv.CreateVolume(context.Background(), req)
-	if err != nil {
+	req.Parameters[paramFilesystemDoc] = "mkfsOptions: [\"-E\", \"lazy_itable_init=0\"]\n"
+	if _, err := env.srv.CreateVolume(context.Background(), req); err != nil {
 		t.Fatalf("CreateVolume: %v", err)
 	}
 }

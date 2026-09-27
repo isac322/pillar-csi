@@ -6,4 +6,8 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: pillaragent-sample
 spec:
-  # TODO(user): Add fields here
+  # The pillar-agent DaemonSet pod on this node serves gRPC on the node IP.
+  nodeRef:
+    name: storage-node-1
+    addressType: InternalIP
+    port: 9500

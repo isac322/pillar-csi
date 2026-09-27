@@ -331,7 +331,8 @@ var _ = Describe("PillarVolumeState abandoned provisioning", func() {
 		// (e.g. a delayed CreateVolume retry) is rejected.
 		_, err = f.agentClient.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
 			VolumeId: pvs.Spec.AgentVolumeID, CapacityBytes: 1 << 30,
-			Fence: &agentv1.FencingToken{VolumeUid: string(pvs.UID), Generation: 2},
+			BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
+			Fence:       &agentv1.FencingToken{VolumeUid: string(pvs.UID), Generation: 2},
 		})
 		Expect(status.Code(err)).To(Equal(codes.FailedPrecondition))
 	})

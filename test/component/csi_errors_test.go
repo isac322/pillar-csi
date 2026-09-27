@@ -85,7 +85,7 @@ func newCSIControllerErrEnv(t *testing.T, agnt *csiMockAgent) *csiControllerTest
 	fakeClient := fake.NewClientBuilder().
 		WithInterceptorFuncs(fakeuid.Interceptor()).
 		WithScheme(scheme).
-		WithObjects(target).
+		WithObjects(append(componentConfigObjects(), target)...).
 		WithStatusSubresource(&v1alpha1.PillarVolumeState{}, &v1alpha1.PillarAgent{}).
 		Build()
 

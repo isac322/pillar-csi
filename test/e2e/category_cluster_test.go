@@ -7,8 +7,6 @@ package e2e
 //
 //	E10 — Kind bootstrap and invocation-scoped lifecycle contracts
 //	E33 — Kind + LVM NVMe-oF integration
-//	E34 — Kind + iSCSI integration
-//	E35 — Kind + ZFS integration
 //
 // These TCs validate that the Kind cluster lifecycle (create/destroy per
 // go test invocation) and the storage backend integrations work correctly in a
@@ -17,7 +15,7 @@ package e2e
 // Local execution: all cluster TCs run locally using the kind bootstrap
 // verifier (verifyKindBootstrapLocalContracts) together with the appropriate
 // backend verifier (verifyLVMLocalBackend or verifyZFSLocalBackend). No real
-// NVMe/iSCSI hardware is required — the backend verifiers use local stub
+// NVMe-oF hardware is required — the backend verifiers use local stub
 // implementations.
 //
 // Every assertion embeds tc.tcNodeLabel() and tc.SectionTitle in its message so

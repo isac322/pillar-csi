@@ -1,7 +1,7 @@
 package e2e
 
 // envcheck_ac9c.go — Sub-AC 9c: test-suite-level EnvCheck that asserts all
-// four real storage backends are reachable and functional before any TC runs.
+// three real storage backends are reachable and functional before any TC runs.
 //
 // # AC 9c Contract
 //
@@ -19,7 +19,7 @@ package e2e
 // in a degraded state, an LVM VG with a missing PV, a configfs directory that
 // exists but has no TCP port) fails the same as a completely absent backend.
 //
-// # Four backend checks
+// # Three backend checks
 //
 //  1. ZFS  — "docker exec <container> zpool list -H -o name,health <pool>"
 //             Pool must be ONLINE.
@@ -31,16 +31,12 @@ package e2e
 //             and /sys/kernel/config/nvmet/ports/1 inside the container.
 //             The NQN and port must have been created by the fabric DaemonSet
 //             (DeployFabricReadinessDaemonSet in framework/kind/fabric_daemonset.go).
-//
-//  4. iSCSI — "docker exec <container> tgtadm --lld iscsi --mode target --op show"
-//             must succeed and contain the E2E target IQN (ISCSITargetIQN),
-//             proving that tgtd is running and the target was created by the
-//             fabric DaemonSet.
+
 //
 // # Stub/mock detection
 //
-// A stub backend would NOT create a real ZFS pool, LVM VG, configfs entry, or
-// iSCSI target inside the container. Therefore, passing all four checks proves
+// A stub backend would NOT create a real ZFS pool, LVM VG, or configfs entry
+// inside the container. Therefore, passing all three checks proves
 // that the suite is backed by real kernel-level storage — not in-process fakes.
 //
 // # Output
@@ -80,8 +76,8 @@ type backendCheckResult struct {
 
 // ─── Entry point ──────────────────────────────────────────────────────────────
 
-// runAllBackendEnvChecks asserts that all four real storage backends (ZFS, LVM,
-// NVMe-oF TCP, iSCSI) are reachable and functional inside the Kind container.
+// runAllBackendEnvChecks asserts that all three real storage backends (ZFS,
+// LVM, NVMe-oF TCP) are reachable and functional inside the Kind container.
 //
 // Parameters:
 //   - ctx           — timeout context (caller should use ≤60 s for fast-fail)
@@ -90,7 +86,7 @@ type backendCheckResult struct {
 //   - lvmVG         — LVM Volume Group name from PILLAR_E2E_LVM_VG env var
 //   - output        — io.Writer for the check summary (pass GinkgoWriter or os.Stderr)
 //
-// Returns nil when all four backends pass. Returns a non-nil error listing ALL
+// Returns nil when all three backends pass. Returns a non-nil error listing ALL
 // failing backends when any check fails. The caller (Ginkgo
 // SynchronizedBeforeSuite) calls Expect(err).NotTo(HaveOccurred()) to abort
 // the suite on any failure.
@@ -110,7 +106,6 @@ func runAllBackendEnvChecks(
 		envCheckZFSBackend(ctx, nodeContainer, zfsPool),
 		envCheckLVMBackend(ctx, nodeContainer, lvmVG),
 		envCheckNVMeOFBackend(ctx, nodeContainer),
-		envCheckISCSIBackend(ctx, nodeContainer),
 	}
 
 	// ── Write the combined result summary to the output writer ────────────────
@@ -128,7 +123,7 @@ func runAllBackendEnvChecks(
 	}
 
 	if failed == 0 {
-		_, _ = fmt.Fprintln(output, "\n[AC9c] All four backends verified — NO fake/stub/mock detected.")
+		_, _ = fmt.Fprintln(output, "\n[AC9c] All three backends verified — NO fake/stub/mock detected.")
 		return nil
 	}
 
@@ -150,8 +145,6 @@ func runAllBackendEnvChecks(
 	sb.WriteString("  • For LVM: 'docker exec <node> vgs' must show the VG as writable.\n")
 	sb.WriteString("  • For NVMe-oF: DeployFabricReadinessDaemonSet must have run successfully;\n")
 	sb.WriteString("      check '/sys/kernel/config/nvmet/subsystems/<NQN>' exists in the container.\n")
-	sb.WriteString("  • For iSCSI: DeployFabricReadinessDaemonSet must have started tgtd;\n")
-	sb.WriteString("      run 'docker exec <node> tgtadm --lld iscsi --mode target --op show'.\n")
 	sb.WriteString("\nAC 10 policy: NO fake/stub/mock backends — every backend must be real.\n")
 	sb.WriteString("              Soft-skip is DISABLED; fix ALL issues above.\n")
 
@@ -372,74 +365,6 @@ func envCheckNVMeOFBackend(ctx context.Context, nodeContainer string) backendChe
 	}
 
 	r.Details = fmt.Sprintf("configfs: subsystem %q linked to port 1", nqn)
-	return r
-}
-
-// envCheckISCSIBackend verifies that the iSCSI target daemon (tgtd) is running
-// inside the Kind container and the E2E target IQN is present.
-//
-// The fabric DaemonSet (DeployFabricReadinessDaemonSet) installs tgt and starts
-// tgtd with the E2E target (ISCSITargetIQN). This function checks:
-//  1. tgtadm binary is present (tgt package installed).
-//  2. tgtd responds to tgtadm queries (daemon is running).
-//  3. The E2E target IQN appears in tgtadm output (target was created, not stubbed).
-func envCheckISCSIBackend(ctx context.Context, nodeContainer string) backendCheckResult {
-	r := backendCheckResult{Name: "iSCSI"}
-
-	if nodeContainer == "" {
-		r.Details = "nodeContainer empty — PILLAR_E2E_BACKEND_CONTAINER not set"
-		r.Err = fmt.Errorf("[AC9c/iSCSI] %s", r.Details)
-		return r
-	}
-
-	iqn := kindhelper.ISCSITargetIQN
-
-	// ── Probe 1: tgtadm present ───────────────────────────────────────────────
-	//
-	// tgtadm is installed by the fabric DaemonSet. Its absence means the
-	// DaemonSet did not run or the installation step failed.
-	if _, err := containerExecForEnvCheck(ctx, nodeContainer,
-		"which", "tgtadm"); err != nil {
-		r.Details = fmt.Sprintf("tgtadm not found in container %s — tgt package not installed", nodeContainer)
-		r.Err = fmt.Errorf("[AC9c/iSCSI] %s\n"+
-			"  Hint: DeployFabricReadinessDaemonSet installs 'tgt'; "+
-			"verify DaemonSet completed\n"+
-			"  Verify: 'docker exec %s which tgtadm'",
-			r.Details, nodeContainer)
-		return r
-	}
-
-	// ── Probe 2: tgtd running + E2E target present ────────────────────────────
-	//
-	// "tgtadm --lld iscsi --mode target --op show" lists all iSCSI targets.
-	// It exits non-zero if tgtd is not running.
-	// A real backend created by the fabric DaemonSet will contain the E2E IQN;
-	// a stub cannot fake tgtd output (tgtadm communicates with the actual daemon
-	// via a Unix socket inside the container).
-	out, err := containerExecForEnvCheck(ctx, nodeContainer,
-		"tgtadm", "--lld", "iscsi", "--mode", "target", "--op", "show")
-	if err != nil {
-		r.Details = fmt.Sprintf("tgtadm failed in container %s — tgtd may not be running", nodeContainer)
-		r.Err = fmt.Errorf("[AC9c/iSCSI] %s: %w\n"+
-			"  Hint: verify with 'docker exec %s tgtadm --lld iscsi --mode target --op show'",
-			r.Details, err, nodeContainer)
-		return r
-	}
-
-	if !strings.Contains(out, iqn) {
-		r.Details = fmt.Sprintf("E2E iSCSI target %q not found in tgtadm output", iqn)
-		r.Err = fmt.Errorf("[AC9c/iSCSI] %s\n"+
-			"  tgtadm output:\n%s\n"+
-			"  Hint: fabric DaemonSet may not have created the E2E target\n"+
-			"  Verify: 'docker exec %s tgtadm --lld iscsi --mode target --op show | grep %s'",
-			r.Details, indent(out, "    "), nodeContainer, iqn)
-		return r
-	}
-
-	// Count target entries for the audit log.
-	targetCount := strings.Count(out, "Target ")
-	r.Details = fmt.Sprintf("tgtd reachable; E2E target %q present (%d total target(s))",
-		iqn, targetCount)
 	return r
 }
 

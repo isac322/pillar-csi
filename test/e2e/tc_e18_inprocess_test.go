@@ -73,7 +73,7 @@ func assertE18_ControllerPublish_AgentInternal(tc documentedCase) {
 
 	resp, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
 		Name:               "pvc-e18-pub-internal",
-		Parameters:         env.params,
+		Parameters:         env.aclParams(),
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
 		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 	})
@@ -121,6 +121,7 @@ func assertE18_ReconcileState_PartialExport(tc documentedCase) {
 
 	// Create a volume to establish partial state.
 	_, _ = env.client.CreateVolume(env.ctx, &agentv1.CreateVolumeRequest{
+		BackendType:   agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
 		VolumeId:      "tank/pvc-e18-partial",
 		CapacityBytes: 10 << 20,
 		Fence:         agentLifecycleFence("tank/pvc-e18-partial"),

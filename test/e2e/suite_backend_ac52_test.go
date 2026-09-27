@@ -564,7 +564,7 @@ func TestAC52IsKernelModuleLoadedParsesModules(t *testing.T) {
 	procModulesContent := strings.Join([]string{
 		"zfs 5058560 3 zunicode,zavl,zcommon, Live 0xffffffffc0a00000",
 		"dm_thin_pool 49152 0 - Live 0xffffffff00000000",
-		"iscsi_tcp 32768 0 - Live 0xffffffff00000001",
+		"nvmet_tcp 32768 0 - Live 0xffffffff00000001",
 	}, "\n")
 
 	checkLoaded := func(name string) bool {
@@ -588,7 +588,7 @@ func TestAC52IsKernelModuleLoadedParsesModules(t *testing.T) {
 		{"zfs", true},
 		{"dm_thin_pool", true},
 		{"dm-thin-pool", true}, // hyphens normalised to underscores
-		{"iscsi_tcp", true},
+		{"nvmet_tcp", true},
 		{"nvme_tcp", false},
 		{"not_loaded", false},
 	}

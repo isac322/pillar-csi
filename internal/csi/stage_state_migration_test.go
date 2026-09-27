@@ -97,21 +97,6 @@ func TestMigrateFromLegacy_PopulatesNVMeoFSubsysNQN(t *testing.T) {
 	}
 }
 
-func TestMigrateFromLegacy_OtherProtocolSubStructsNil(t *testing.T) {
-	t.Parallel()
-	raw := &legacyNodeStageState{SubsysNQN: "nqn.2024-01.com.example:vol1"}
-	got := migrateFromLegacy(raw)
-	if got.ISCSI != nil {
-		t.Error("ISCSI sub-struct should be nil after NVMeoF migration")
-	}
-	if got.NFS != nil {
-		t.Error("NFS sub-struct should be nil after NVMeoF migration")
-	}
-	if got.SMB != nil {
-		t.Error("SMB sub-struct should be nil after NVMeoF migration")
-	}
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // readStageState integration tests — legacy migration
 // ─────────────────────────────────────────────────────────────────────────────

@@ -20,9 +20,8 @@ package csi
 // ProtocolState types, stageStateFromAttachResult, and the mock/fake handler
 // pattern.
 //
-// These tests verify the interface contract independently of any specific
-// protocol implementation so that future protocol handlers (iSCSI, NFS, SMB)
-// can be validated against the same set of expectations.
+// These tests verify the interface contract independently of the NVMe-oF/TCP
+// implementation.
 //
 // Run with:
 //
@@ -179,22 +178,6 @@ func TestAttachResult_BlockProtocol(t *testing.T) {
 	}
 	if result.MountSource != "" {
 		t.Errorf("block protocol AttachResult must have empty MountSource, got %q", result.MountSource)
-	}
-}
-
-// TestAttachResult_FileProtocol verifies the AttachResult invariant for file
-// protocols: MountSource is set and DevicePath is empty.
-func TestAttachResult_FileProtocol(t *testing.T) {
-	t.Parallel()
-	result := &AttachResult{
-		MountSource: "192.168.1.10:/export/pvc-abc123",
-		State:       &fakeProtocolState{protocol: "nfs"},
-	}
-	if result.MountSource == "" {
-		t.Error("file protocol AttachResult must have non-empty MountSource")
-	}
-	if result.DevicePath != "" {
-		t.Errorf("file protocol AttachResult must have empty DevicePath, got %q", result.DevicePath)
 	}
 }
 
@@ -550,39 +533,6 @@ func TestProtocolHandler_AttachDetachLifecycle_Block(t *testing.T) {
 	}
 }
 
-// TestProtocolHandler_AttachDetachLifecycle_File verifies the full file protocol
-// lifecycle: Attach returns a MountSource, DevicePath is empty.
-func TestProtocolHandler_AttachDetachLifecycle_File(t *testing.T) {
-	t.Parallel()
-	state := &fakeProtocolState{protocol: "nfs"}
-	h := &fakeProtocolHandler{
-		attachResult: &AttachResult{
-			MountSource: "192.168.1.20:/export/pvc-abc123",
-			State:       state,
-		},
-	}
-
-	result, err := h.Attach(context.Background(), AttachParams{
-		ProtocolType: "nfs",
-		ConnectionID: "192.168.1.20",
-		VolumeRef:    "/export/pvc-abc123",
-	})
-	if err != nil {
-		t.Fatalf("Attach: %v", err)
-	}
-	if result.DevicePath != "" {
-		t.Errorf("DevicePath = %q; want empty for file protocol", result.DevicePath)
-	}
-	if result.MountSource != "192.168.1.20:/export/pvc-abc123" {
-		t.Errorf("MountSource = %q", result.MountSource)
-	}
-
-	// Detach (e.g. NFS unmount — no-op at ProtocolHandler level).
-	if err := h.Detach(context.Background(), result.State); err != nil {
-		t.Fatalf("Detach: %v", err)
-	}
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Rescan after expansion — protocol-level contract
 // ─────────────────────────────────────────────────────────────────────────────
@@ -618,19 +568,5 @@ func TestProtocolHandler_Rescan_BlockAfterExpansion(t *testing.T) {
 	}
 	if h.rescanCalls[0] != state {
 		t.Error("Rescan was not called with the State returned by Attach")
-	}
-}
-
-// TestProtocolHandler_Rescan_FileProtocol_IsNoOp verifies that file protocol
-// handlers report Rescan as a no-op (returns nil) because server-side resize
-// is transparent to the client mount.
-func TestProtocolHandler_Rescan_FileProtocol_IsNoOp(t *testing.T) {
-	t.Parallel()
-	// fakeProtocolHandler.rescanErr defaults to nil — represents a no-op Rescan.
-	h := &fakeProtocolHandler{protocol: "nfs"}
-
-	state := &fakeProtocolState{protocol: "nfs"}
-	if err := h.Rescan(context.Background(), state); err != nil {
-		t.Fatalf("Rescan for file protocol must be a no-op (nil), got: %v", err)
 	}
 }

@@ -17,207 +17,76 @@ limitations under the License.
 package v1alpha1
 
 // Annotation keys written on a PersistentVolumeClaim to override per-volume
-// storage parameters.
+// storage parameters.  Each annotation's value is a YAML document whose
+// shape is identical to the corresponding CRD subtree — the per-volume
+// tunable subset of it; structural fields (pool, volumeGroup, thinPool,
+// port, acl, …) are rejected with their path.
+//
+// The same keys are valid as parameters on a hand-written StorageClass
+// (parameters are string scalars, so the same YAML document is the value).
 //
 // Override hierarchy (lowest wins):
 //
-//	PillarStore (pool-level defaults)
-//	  ↓ override
-//	PillarProtocol (protocol defaults)
+//	PillarStore / PillarProtocol (infrastructure defaults)
 //	  ↓ override
 //	PillarStorageClass (binding-level overrides — CRD typed schema)
 //	  ↓ override
+//	StorageClass parameter documents (hand-written classes only)
+//	  ↓ override
 //	PVC annotation (volume-level overrides — only tuning parameters)
-//
-// Restriction: only tuning parameters may be overridden via PVC annotations.
-// Structural reference fields (pool name, parentDataset, protocol type, port,
-// ACL toggle, storeRef, protocolRef, agentRef) are rejected by the controller
-// at CreateVolume time.  See [ForbiddenZFSAnnotationKeys],
-// [ForbiddenNVMeOFTCPAnnotationKeys], and [ForbiddenISCSIAnnotationKeys].
 const (
-	// AnnotationBackendOverride is a PVC annotation whose YAML value is
-	// decoded as [PVCBackendOverride].
+	// AnnotationBackendDoc is a PVC annotation whose YAML value decodes as
+	// [BackendOverrides].  The selected member must match the store's
+	// backend.
 	//
 	// Example:
 	//   annotations:
-	//     pillar-csi.bhyoo.com/backend-override: |
+	//     pillar-csi.bhyoo.com/backend: |
 	//       zfs:
 	//         properties:
 	//           volblocksize: "8K"
 	//           compression: zstd
-	AnnotationBackendOverride = "pillar-csi.bhyoo.com/backend-override"
+	AnnotationBackendDoc = "pillar-csi.bhyoo.com/backend"
 
-	// AnnotationProtocolOverride is a PVC annotation whose YAML value is
-	// decoded as [PVCProtocolOverride].
+	// AnnotationProtocolDoc is a PVC annotation whose YAML value decodes as
+	// [ProtocolOverrides].  The selected member must match the referenced
+	// protocol.
 	//
 	// Example:
 	//   annotations:
-	//     pillar-csi.bhyoo.com/protocol-override: |
+	//     pillar-csi.bhyoo.com/protocol: |
 	//       nvmeofTcp:
 	//         maxQueueSize: 64
-	//       iscsi:
-	//         loginTimeout: 30
-	AnnotationProtocolOverride = "pillar-csi.bhyoo.com/protocol-override"
+	AnnotationProtocolDoc = "pillar-csi.bhyoo.com/protocol"
 
-	// AnnotationFSOverride is a PVC annotation whose YAML value is decoded
-	// as [PVCFSOverride].  Only applicable to block protocols
-	// (nvmeof-tcp, iscsi) combined with volumeMode: Filesystem.
+	// AnnotationFilesystemDoc is a PVC annotation whose YAML value decodes as
+	// [FilesystemConfig].  Applicable only for volumeMode: Filesystem
+	// volumes.
 	//
 	// Example:
 	//   annotations:
-	//     pillar-csi.bhyoo.com/fs-override: |
+	//     pillar-csi.bhyoo.com/filesystem: |
 	//       fsType: xfs
 	//       mkfsOptions: ["-K"]
-	AnnotationFSOverride = "pillar-csi.bhyoo.com/fs-override"
+	AnnotationFilesystemDoc = "pillar-csi.bhyoo.com/filesystem"
 )
 
-// ─────────────────────────────────────────────────────────────────────────────
-// PVC annotation value types
-// ─────────────────────────────────────────────────────────────────────────────.
-
-// PVCBackendOverride is the Go representation of the
-// [AnnotationBackendOverride] annotation value.
+// PVCBackendOverride is the Go representation of the [AnnotationBackendDoc]
+// annotation value.
 //
 // Re-uses [BackendOverrides] so that the set of tunable fields is defined
 // in exactly one place.
 type PVCBackendOverride = BackendOverrides
 
 // PVCProtocolOverride is the Go representation of the
-// [AnnotationProtocolOverride] annotation value.
+// [AnnotationProtocolDoc] annotation value.
 //
 // Re-uses [ProtocolOverrides] so that the set of tunable fields is defined
 // in exactly one place.
 type PVCProtocolOverride = ProtocolOverrides
 
-// PVCFSOverride is the Go representation of the [AnnotationFSOverride]
-// annotation value.  It controls the filesystem type and mkfs arguments used
-// when the CSI node formats a newly provisioned block device.
-//
-// Applicable only for block protocols (nvmeof-tcp, iscsi) combined with
-// volumeMode: Filesystem; CreateVolume rejects it for NFS/SMB volumes and for
-// volumeMode: Block.
-type PVCFSOverride struct {
-	// fsType is the filesystem to create on the block device.
-	// Supported values: ext4, xfs. Defaults to the StorageClass fsType
-	// (PillarStorageClass overrides.fsType, then PillarProtocol fsType, which
-	// itself defaults to ext4).  The node formats and mounts the volume with
-	// this type; the PersistentVolume's spec.csi.fsType keeps the
-	// StorageClass value.
-	// +optional
-	// +kubebuilder:validation:Enum=ext4;xfs
-	FSType string `json:"fsType,omitempty" yaml:"fsType,omitempty"`
-
-	// mkfsOptions are additional mkfs arguments used when the node formats
-	// the volume for the first time; a volume that already carries a
-	// filesystem is never reformatted.  Each element is one argv element
-	// (no shell; e.g. ["-K"] skips discard at mkfs time for xfs).  Only
-	// filesystem tuning flags of the formatted type are accepted; options
-	// that reference other files or devices (external journal/log, content
-	// copy, undo files) are rejected.  Replaces the StorageClass mkfsOptions.
-	// +optional
-	MkfsOptions []string `json:"mkfsOptions,omitempty" yaml:"mkfsOptions,omitempty"`
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Forbidden structural annotation key sets
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// The controller must reject a PVC annotation that attempts to change any of
-// these structural reference fields.  Structural fields define topology,
-// identity, or security anchors; they cannot be changed on a per-volume basis.
-//
-// Detection strategy: after decoding each annotation into a
-// map[string]interface{}, verify that no top-level (or protocol-section) key
-// belongs to the corresponding forbidden set.
-
-// ForbiddenZFSAnnotationKeys is the set of JSON/YAML field names that are
-// structural within the ZFS backend section of [AnnotationBackendOverride].
-//
-// These correspond to [ZFSBackendConfig] fields that identify the pool
-// topology and cannot be overridden per-volume:
-//   - "pool"          — ZFS pool name
-//   - "parentDataset" — parent dataset path under which volumes are created
-//
-// Note: the "properties" map itself is allowed; this set governs only the
-// sibling keys of "properties" within the "zfs" section.
-var ForbiddenZFSAnnotationKeys = map[string]struct{}{
-	"pool":          {},
-	"parentDataset": {},
-}
-
-// ForbiddenLVMAnnotationKeys is the set of JSON/YAML field names that are
-// structural within the LVM backend section of [AnnotationBackendOverride].
-//
-// These correspond to [LVMBackendConfig] fields that identify the volume
-// group / thin pool topology and cannot be overridden per-volume:
-//   - "volumeGroup" — LVM Volume Group name
-//   - "thinPool"    — thin pool LV name within the VG
-var ForbiddenLVMAnnotationKeys = map[string]struct{}{
-	"volumeGroup": {},
-	"thinPool":    {},
-}
-
-// ForbiddenNVMeOFTCPAnnotationKeys is the set of JSON/YAML field names that
-// are structural within the nvmeofTcp section of [AnnotationProtocolOverride].
-//
-// These correspond to [NVMeOFTCPConfig] fields that are infrastructure/security
-// anchors and cannot be changed per-volume:
-//   - "port" — target TCP port; changing it would route to a different listener
-//   - "acl"  — ACL on/off is a security policy; must not be per-volume
-var ForbiddenNVMeOFTCPAnnotationKeys = map[string]struct{}{
-	"port": {},
-	"acl":  {},
-}
-
-// ForbiddenISCSIAnnotationKeys is the set of JSON/YAML field names that are
-// structural within the iscsi section of [AnnotationProtocolOverride].
-//
-// These correspond to [ISCSIConfig] fields that are infrastructure/security
-// anchors:
-//   - "port" — target TCP port
-//   - "acl"  — ACL on/off is a security policy; must not be per-volume
-var ForbiddenISCSIAnnotationKeys = map[string]struct{}{
-	"port": {},
-	"acl":  {},
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Supported override key documentation
-// ─────────────────────────────────────────────────────────────────────────────.
-
-// SupportedZFSAnnotationKeys enumerates the JSON/YAML field names that are
-// supported within the zfs section of [AnnotationBackendOverride].
-//
-// Currently the only supported key is "properties": a map of arbitrary ZFS
-// dataset/zvol properties (e.g. compression, volblocksize, recordsize).
-//
-// This set is used in error messages to guide users toward valid overrides.
-var SupportedZFSAnnotationKeys = map[string]struct{}{
-	"properties": {},
-}
-
-// SupportedLVMAnnotationKeys enumerates the JSON/YAML field names that are
-// supported within the lvm section of [AnnotationBackendOverride].
-//
-// Currently the only supported key is "provisioningMode": selects between
-// "linear" (fully-allocated) and "thin" (thin-provisioned) LV creation.
-var SupportedLVMAnnotationKeys = map[string]struct{}{
-	"provisioningMode": {},
-}
-
-// SupportedNVMeOFTCPAnnotationKeys enumerates the JSON/YAML field names that
-// are supported within the nvmeofTcp section of [AnnotationProtocolOverride].
-var SupportedNVMeOFTCPAnnotationKeys = map[string]struct{}{
-	"maxQueueSize":      {},
-	"inCapsuleDataSize": {},
-	"ctrlLossTmo":       {},
-	"reconnectDelay":    {},
-}
-
-// SupportedISCSIAnnotationKeys enumerates the JSON/YAML field names that are
-// supported within the iscsi section of [AnnotationProtocolOverride].
-var SupportedISCSIAnnotationKeys = map[string]struct{}{
-	"loginTimeout":       {},
-	"replacementTimeout": {},
-	"nodeSessionTimeout": {},
-}
+// PVCFilesystemOverride is the Go representation of the
+// [AnnotationFilesystemDoc] annotation value.  It controls the filesystem
+// type, mkfs arguments and mount options used when the CSI node formats and
+// mounts a newly provisioned block device.
+type PVCFilesystemOverride = FilesystemConfig

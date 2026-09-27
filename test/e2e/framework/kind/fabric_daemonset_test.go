@@ -175,16 +175,6 @@ func TestFabricDaemonSetConstants(t *testing.T) {
 			got:  kindhelper.NVMeOFTCPPort,
 			want: "4420",
 		},
-		{
-			name: "ISCSITargetIQN",
-			got:  kindhelper.ISCSITargetIQN,
-			want: "iqn.2024-01.io.pillar-csi:e2e-target",
-		},
-		{
-			name: "ISCSITargetTID",
-			got:  kindhelper.ISCSITargetTID,
-			want: "10",
-		},
 	}
 
 	for _, tc := range tests {
@@ -269,21 +259,15 @@ func TestRemoveFabricReadinessDaemonSet_EmptyKubeconfigReturnsError(t *testing.T
 	}
 }
 
-// ─── NQN / IQN format tests ───────────────────────────────────────────────────
+// ─── NQN format tests ────────────────────────────────────────────────────────
 
-// TestFabricNQNAndIQNFormats verifies that the exported NQN and IQN constants
-// follow the correct format specifications:
-//   - NQN must start with "nqn."
-//   - IQN must start with "iqn."
-func TestFabricNQNAndIQNFormats(t *testing.T) {
+// TestFabricNQNFormat verifies that the exported NQN constant follows the
+// NVMe Qualified Name format: it must start with "nqn.".
+func TestFabricNQNFormat(t *testing.T) {
 	t.Parallel()
 
 	if !strings.HasPrefix(kindhelper.NVMeOFSubsystemNQN, "nqn.") {
 		t.Errorf("NVMeOFSubsystemNQN %q does not start with 'nqn.'", kindhelper.NVMeOFSubsystemNQN)
-	}
-
-	if !strings.HasPrefix(kindhelper.ISCSITargetIQN, "iqn.") {
-		t.Errorf("ISCSITargetIQN %q does not start with 'iqn.'", kindhelper.ISCSITargetIQN)
 	}
 }
 

@@ -82,7 +82,7 @@ var lvmReservedLVPrefixes = []string{"snapshot", "pvmove"}
 //   - contain only letters, digits, underscores, hyphens, plus signs, or dots.
 //
 // The function is exported so that callers outside the lvm package (e.g. the
-// agent CLI flag parser) can reuse the same validation logic.
+// agent config file loader) can reuse the same validation logic.
 func ValidateVGName(vg string) error {
 	if vg == "" {
 		return errors.New("lvm: volume group name must not be empty")
@@ -188,7 +188,7 @@ func (m ProvisionMode) String() string {
 
 // Params holds per-volume LVM parameters extracted from the LvmVolumeParams
 // gRPC message.  These act as optional per-volume overrides on top of the
-// backend-level defaults configured at agent startup via --backend flags.
+// backend-level defaults configured at agent startup via the --config file.
 type Params struct {
 	// ExtraFlags are additional lvcreate arguments forwarded verbatim to the
 	// lvcreate(8) invocation.  Example: ["--addtag", "owner=team-a"].
@@ -207,8 +207,8 @@ type Params struct {
 	// ProvisionModeOverride, when non-empty, overrides the backend-level
 	// provisioning mode for this individual volume.  Valid values are
 	// ProvisionModeLinear and ProvisionModeThin.  A zero value means "use the
-	// backend default" (thin when the backend has a thinpool configured,
-	// linear otherwise).
+	// backend default" (the agent config's lvm.provisioningMode, linear
+	// unless set).
 	//
 	// Use ParseProvisionMode to convert the wire string to a ProvisionMode.
 	ProvisionModeOverride ProvisionMode
@@ -283,7 +283,7 @@ func ParseParams(p *agentv1.LvmVolumeParams) Params {
 //   - VGOverride is non-empty and refers to a different VG than the one the
 //     backend was started with.
 //   - ProvisionModeOverride is ProvisionModeThin but the backend has no thin
-//     pool configured (no thinpool= CLI flag was given).
+//     pool configured (no lvm.thinPool in the agent config file).
 //   - The raw provision_mode string from the proto was non-empty but not a
 //     recognized value (detected via HasModeOverride() being false).
 func ValidateParams(p Params, backendVG, backendThinPool string) error {
@@ -297,7 +297,7 @@ func ValidateParams(p Params, backendVG, backendThinPool string) error {
 	if p.hasModeOverride && p.ProvisionModeOverride == ProvisionModeThin && backendThinPool == "" {
 		return fmt.Errorf(
 			"lvm: provision_mode %q requested but backend has no thin pool configured; "+
-				"start the agent with --backend type=lvm-lv,vg=%s,thinpool=<name>",
+				"configure the agent with backends: [{lvm: {volumeGroup: %s, thinPool: <name>}}]",
 			"thin", backendVG,
 		)
 	}
@@ -493,8 +493,13 @@ type Backend struct {
 	vg string
 
 	// thinpool is the LVM thin pool LV name within vg (e.g. "thin-pool-0").
-	// Empty string means linear (non-thin) provisioning mode.
+	// Empty string means the VG has no thin pool.
 	thinpool string
+
+	// mode is the provisioning mode used when a CreateVolume request sets no
+	// provision_mode.  New derives it from thinpool; the agent sets it from
+	// its config's lvm.provisioningMode via WithMode.
+	mode ProvisionMode
 
 	// exec is the executor used to run LVM commands.  It defaults to
 	// osExecutor{} and can be overridden in tests via SetBackendExec.
@@ -520,6 +525,7 @@ func New(vg, thinpool string) *Backend {
 	return &Backend{
 		vg:       vg,
 		thinpool: thinpool,
+		mode:     modeForThinPool(thinpool),
 		exec:     osExecutor{},
 		devBase:  defaultDevBase,
 	}
@@ -542,6 +548,7 @@ func NewWithExecFn(
 	return &Backend{
 		vg:       vg,
 		thinpool: thinpool,
+		mode:     modeForThinPool(thinpool),
 		exec:     execFunc(fn),
 		devBase:  defaultDevBase,
 	}
@@ -557,10 +564,22 @@ func (b *Backend) VG() string { return b.vg }
 // ThinPool returns the thin pool LV name (empty when mode is linear).
 func (b *Backend) ThinPool() string { return b.thinpool }
 
-// Mode returns the provisioning mode (ProvisionModeLinear or ProvisionModeThin).
-// It is derived from the thinpool field: non-empty thinpool implies thin mode.
-func (b *Backend) Mode() ProvisionMode {
-	if b.thinpool != "" {
+// Mode returns the provisioning mode used for requests that set no
+// provision_mode (ProvisionModeLinear or ProvisionModeThin).
+func (b *Backend) Mode() ProvisionMode { return b.mode }
+
+// WithMode sets the provisioning mode used for requests that set no
+// provision_mode and returns b.  Validate rejects ProvisionModeThin without
+// a thin pool.
+func (b *Backend) WithMode(mode ProvisionMode) *Backend {
+	b.mode = mode
+	return b
+}
+
+// modeForThinPool is the constructors' default mode: thin when a thin pool
+// is configured, linear otherwise.
+func modeForThinPool(thinpool string) ProvisionMode {
+	if thinpool != "" {
 		return ProvisionModeThin
 	}
 	return ProvisionModeLinear
@@ -569,8 +588,7 @@ func (b *Backend) Mode() ProvisionMode {
 // Validate checks that the backend configuration is internally consistent.
 // It returns an error if:
 //   - the VG name is empty or blank
-//   - the Mode() is ProvisionModeThin but thinpool is empty (should not happen
-//     via New(), but guards against direct struct construction in tests)
+//   - the Mode() is ProvisionModeThin but thinpool is empty
 //
 // Validate does NOT probe the host; VG/thin-pool existence is checked at
 // runtime when LVM commands are executed.
@@ -578,7 +596,9 @@ func (b *Backend) Validate() error {
 	if strings.TrimSpace(b.vg) == "" {
 		return fmt.Errorf("lvm: volume group name must not be empty")
 	}
-	// thinpool == "" means linear; a non-blank thinpool is always valid.
+	if b.mode == ProvisionModeThin && strings.TrimSpace(b.thinpool) == "" {
+		return fmt.Errorf("lvm: volume group %q: provisioning mode thin requires a thin pool", b.vg)
+	}
 	return nil
 }
 
@@ -754,11 +774,11 @@ func (b *Backend) createThinLV(
 // effective provisioning mode (see below).
 //
 // Effective provisioning mode selection (highest-priority wins):
-//  1. params.GetLvm().GetProvisionMode() — per-volume override from StorageClass
-//     or PillarStorageClass.  "linear" forces a linear LV (ignores backend thinpool);
-//     "thin" forces a thin LV (requires backend thinpool to be configured).
-//  2. Backend default — thin when the backend was started with thinpool=<name>,
-//     linear otherwise.
+//  1. params.GetLvm().GetProvisionMode() — the resolved per-volume mode the
+//     CSI controller always sends.  "linear" forces a linear LV (ignores the
+//     backend thin pool); "thin" forces a thin LV (requires a thin pool).
+//  2. Backend default — the agent config's lvm.provisioningMode (linear
+//     unless set).
 //
 // params is the backend-specific oneof wrapper; the LVM backend reads
 // params.GetLvm() if non-nil for:
@@ -797,14 +817,17 @@ func (b *Backend) Create(
 	}
 
 	// Determine the effective thin pool to use for this volume.
-	// Start from the backend default (b.thinpool), then apply any per-volume
-	// provision_mode override:
-	//   - "linear" override → effectiveThinPool = "" (force linear lvcreate path)
-	//   - "thin"   override → effectiveThinPool = b.thinpool (already validated non-empty)
-	//   - no override       → effectiveThinPool = b.thinpool (backend default)
-	effectiveThinPool := b.thinpool
-	if lvmParams.hasModeOverride && lvmParams.ProvisionModeOverride == ProvisionModeLinear {
-		effectiveThinPool = ""
+	// A per-volume provision_mode wins; without one the backend's mode
+	// (b.mode) applies:
+	//   - thin   → effectiveThinPool = b.thinpool (validated non-empty)
+	//   - linear → effectiveThinPool = "" (linear lvcreate path)
+	mode := b.mode
+	if lvmParams.hasModeOverride {
+		mode = lvmParams.ProvisionModeOverride
+	}
+	effectiveThinPool := ""
+	if mode == ProvisionModeThin {
+		effectiveThinPool = b.thinpool
 	}
 
 	// Idempotency check: if the LV already exists and has compatible size, return as-is.

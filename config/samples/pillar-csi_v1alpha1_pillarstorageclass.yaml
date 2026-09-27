@@ -6,4 +6,24 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: pillarstorageclass-sample
 spec:
-  # TODO(user): Add fields here
+  storeRef: pillarstore-sample
+  protocolRef: pillarprotocol-sample
+  storageClass:
+    name: pillar-zfs-nvme
+    reclaimPolicy: Delete
+    volumeBindingMode: WaitForFirstConsumer
+    allowVolumeExpansion: true
+  filesystem:
+    fsType: xfs
+    mkfsOptions: ["-K"]
+    mountOptions: [noatime]
+  # Per-binding tunables; the member must match the store's backend and the
+  # protocol's member.
+  overrides:
+    backend:
+      zfs:
+        properties:
+          volblocksize: 16K
+    protocol:
+      nvmeofTcp:
+        maxQueueSize: 64

@@ -94,14 +94,14 @@ type DiscoveredPool struct {
 	Available *resource.Quantity `json:"available,omitempty"`
 
 	// parentDataset is, for ZFS pools, the dataset relative to the pool under
-	// which the agent creates volumes (its --backend parent=); empty means
+	// which the agent creates volumes (its config zfs.parentDataset); empty means
 	// the pool root dataset.  A PillarStore on this pool must declare the
 	// same spec.backend.zfs.parentDataset to become Ready.
 	// +optional
 	ParentDataset string `json:"parentDataset,omitempty"`
 
 	// thinPool is, for LVM volume groups, the thin pool LV the agent creates
-	// thin volumes in (its --backend thinpool=); empty means none.  A
+	// thin volumes in (its config lvm.thinPool); empty means none.  A
 	// PillarStore on this VG must declare the same spec.backend.lvm.thinPool
 	// to become Ready.
 	// +optional
@@ -111,12 +111,12 @@ type DiscoveredPool struct {
 // AgentCapabilities describes what backends and protocols the remote agent supports.
 type AgentCapabilities struct {
 	// backends lists the backend driver types the agent can manage
-	// (e.g. zfs-zvol, zfs-dataset, lvm-lv).
+	// (zfs-zvol, lvm-lv).
 	// +optional
 	Backends []string `json:"backends,omitempty"`
 
 	// protocols lists the network protocols the agent can export storage over
-	// (e.g. nvmeof-tcp, iscsi, nfs).
+	// (nvmeof-tcp).
 	// +optional
 	Protocols []string `json:"protocols,omitempty"`
 }

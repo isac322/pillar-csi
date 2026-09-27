@@ -112,20 +112,16 @@ func TestNodeGetInfo_NodeIDRoundTrips(t *testing.T) {
 // topologyTrue aliases the production constant for use in topology assertions.
 const topologyTrue = topologyValueTrue
 
-// stubProber is a test ProtocolProber with configurable availability flags.
+// stubProber is a test ProtocolProber with a configurable availability flag.
 type stubProber struct {
 	nvmeof bool
-	iscsi  bool
-	nfs    bool
 }
 
 func (s *stubProber) NVMeoFAvailable() bool { return s.nvmeof }
-func (s *stubProber) ISCSIAvailable() bool  { return s.iscsi }
-func (s *stubProber) NFSAvailable() bool    { return s.nfs }
 
-// TestNodeGetInfo_TopologyNVMeoFOnly verifies that when only NVMe-oF is
-// available the AccessibleTopology contains only the NVMe-oF key.
-func TestNodeGetInfo_TopologyNVMeoFOnly(t *testing.T) {
+// TestNodeGetInfo_TopologyNVMeoF verifies that when NVMe-oF is available the
+// AccessibleTopology contains exactly the NVMe-oF key.
+func TestNodeGetInfo_TopologyNVMeoF(t *testing.T) {
 	t.Parallel()
 
 	srv := NewNodeServerWithStateDir("worker-1", &mockConnector{}, &mockMounter{}, t.TempDir()).
@@ -142,34 +138,8 @@ func TestNodeGetInfo_TopologyNVMeoFOnly(t *testing.T) {
 	if segs[TopologyKeyNVMeoF] != topologyTrue {
 		t.Errorf("expected %q = \"true\", got %q", TopologyKeyNVMeoF, segs[TopologyKeyNVMeoF])
 	}
-	if _, ok := segs[TopologyKeyISCSI]; ok {
-		t.Errorf("unexpected topology key %q present (iSCSI not available)", TopologyKeyISCSI)
-	}
-	if _, ok := segs[TopologyKeyNFS]; ok {
-		t.Errorf("unexpected topology key %q present (NFS not available)", TopologyKeyNFS)
-	}
-}
-
-// TestNodeGetInfo_TopologyAllProtocols verifies that when all protocols are
-// available AccessibleTopology contains all three protocol keys.
-func TestNodeGetInfo_TopologyAllProtocols(t *testing.T) {
-	t.Parallel()
-
-	srv := NewNodeServerWithStateDir("worker-1", &mockConnector{}, &mockMounter{}, t.TempDir()).
-		WithTopologyProber(&stubProber{nvmeof: true, iscsi: true, nfs: true})
-
-	resp, err := srv.NodeGetInfo(context.Background(), &csi.NodeGetInfoRequest{})
-	if err != nil {
-		t.Fatalf("NodeGetInfo: unexpected error: %v", err)
-	}
-	if resp.AccessibleTopology == nil {
-		t.Fatal("AccessibleTopology is nil, expected non-nil topology")
-	}
-	segs := resp.AccessibleTopology.GetSegments()
-	for _, key := range []string{TopologyKeyNVMeoF, TopologyKeyISCSI, TopologyKeyNFS} {
-		if segs[key] != topologyTrue {
-			t.Errorf("expected %q = \"true\", got %q", key, segs[key])
-		}
+	if len(segs) != 1 {
+		t.Errorf("segments = %v, want only %q", segs, TopologyKeyNVMeoF)
 	}
 }
 
@@ -188,54 +158,5 @@ func TestNodeGetInfo_TopologyNoProtocols(t *testing.T) {
 	if resp.AccessibleTopology != nil {
 		t.Errorf("expected AccessibleTopology nil when no protocols available, got %v",
 			resp.AccessibleTopology)
-	}
-}
-
-// TestNodeGetInfo_TopologyISCSIOnly verifies the iSCSI-only topology segment.
-func TestNodeGetInfo_TopologyISCSIOnly(t *testing.T) {
-	t.Parallel()
-
-	srv := NewNodeServerWithStateDir("worker-1", &mockConnector{}, &mockMounter{}, t.TempDir()).
-		WithTopologyProber(&stubProber{iscsi: true})
-
-	resp, err := srv.NodeGetInfo(context.Background(), &csi.NodeGetInfoRequest{})
-	if err != nil {
-		t.Fatalf("NodeGetInfo: unexpected error: %v", err)
-	}
-	if resp.AccessibleTopology == nil {
-		t.Fatal("AccessibleTopology is nil, expected non-nil topology")
-	}
-	segs := resp.AccessibleTopology.GetSegments()
-	if segs[TopologyKeyISCSI] != topologyTrue {
-		t.Errorf("expected %q = \"true\", got %q", TopologyKeyISCSI, segs[TopologyKeyISCSI])
-	}
-	if _, ok := segs[TopologyKeyNVMeoF]; ok {
-		t.Errorf("unexpected topology key %q present (NVMe-oF not available)", TopologyKeyNVMeoF)
-	}
-}
-
-// TestNodeGetInfo_TopologyNFSOnly verifies the NFS-only topology segment.
-func TestNodeGetInfo_TopologyNFSOnly(t *testing.T) {
-	t.Parallel()
-
-	srv := NewNodeServerWithStateDir("worker-1", &mockConnector{}, &mockMounter{}, t.TempDir()).
-		WithTopologyProber(&stubProber{nfs: true})
-
-	resp, err := srv.NodeGetInfo(context.Background(), &csi.NodeGetInfoRequest{})
-	if err != nil {
-		t.Fatalf("NodeGetInfo: unexpected error: %v", err)
-	}
-	if resp.AccessibleTopology == nil {
-		t.Fatal("AccessibleTopology is nil, expected non-nil topology")
-	}
-	segs := resp.AccessibleTopology.GetSegments()
-	if segs[TopologyKeyNFS] != topologyTrue {
-		t.Errorf("expected %q = \"true\", got %q", TopologyKeyNFS, segs[TopologyKeyNFS])
-	}
-	if _, ok := segs[TopologyKeyNVMeoF]; ok {
-		t.Errorf("unexpected topology key %q present (NVMe-oF not available)", TopologyKeyNVMeoF)
-	}
-	if _, ok := segs[TopologyKeyISCSI]; ok {
-		t.Errorf("unexpected topology key %q present (iSCSI not available)", TopologyKeyISCSI)
 	}
 }

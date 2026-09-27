@@ -1,0 +1,16 @@
+{{- /*
+Agent placement config file.  Rendered from .Values.agent.backends (same
+keys as PillarStore.spec.backend) and passed to pillar-agent via --config.
+The agent DaemonSet carries a checksum of this content so a changed backend
+list rolls the agent pods.
+*/ -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "pillar-csi.fullname" . }}-agent-config
+  namespace: {{ include "pillar-csi.namespace" . }}
+  labels:
+    {{- include "pillar-csi.componentLabels" (dict "root" . "component" "agent") | nindent 4 }}
+data:
+  config.yaml: |
+    {{- include "pillar-csi.agent.config" . | nindent 4 }}

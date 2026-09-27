@@ -55,7 +55,7 @@ func TestLoadedKernelModules_ParsesCorrectly(t *testing.T) {
 
 	fakeContent := `zfs 5058560 3 zunicode,zavl,zcommon, Live 0xffffffffc0a00000
 dm_thin_pool 81920 1 - Live 0xffffffffc08f0000
-iscsi_tcp 24576 0 - Live 0xffffffffc0890000
+nvme_tcp 24576 0 - Live 0xffffffffc0890000
 `
 	if _, err := tmp.WriteString(fakeContent); err != nil {
 		t.Fatalf("write fake /proc/modules: %v", err)
@@ -80,7 +80,7 @@ iscsi_tcp 24576 0 - Live 0xffffffffc0890000
 		modules[name] = struct{}{}
 	}
 
-	expected := []string{"zfs", "dm_thin_pool", "iscsi_tcp"}
+	expected := []string{"zfs", "dm_thin_pool", "nvme_tcp"}
 	for _, mod := range expected {
 		if _, ok := modules[mod]; !ok {
 			t.Errorf("expected module %q to be parsed from /proc/modules content", mod)

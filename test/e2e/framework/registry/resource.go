@@ -13,7 +13,7 @@ import "context"
 //
 // Any type that satisfies Resource can be registered with [Registry.Register]
 // without any changes to the registry framework itself — this is the primary
-// extensibility point for new backend types (ZFS, LVM, iSCSI, NVMe-oF, …).
+// extensibility point for new backend types (ZFS, LVM, NVMe-oF, …).
 //
 // # Implementing Resource
 //
@@ -50,7 +50,6 @@ import "context"
 //
 //   - [zfs.Pool]    — ephemeral ZFS pool on a loop device
 //   - [lvm.VG]      — ephemeral LVM Volume Group on a loop device
-//   - [iscsi.Target] — ephemeral iSCSI target backed by a loop device
 type Resource interface {
 	// Destroy releases all storage resources associated with this ephemeral
 	// backend instance.  Must be idempotent and nil-safe.

@@ -142,6 +142,7 @@ func TestCreateVolume_Success(t *testing.T) {
 
 	resp, err := srv.CreateVolume(context.Background(), &agentv1.CreateVolumeRequest{
 		VolumeId:      testVolumeID,
+		BackendType:   agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
 		Fence:         testFence(t),
 		CapacityBytes: 1 << 30,
 	})
@@ -165,8 +166,9 @@ func TestCreateVolume_InvalidVolumeID(t *testing.T) {
 	srv := newTestServer(t, mb)
 
 	_, err := srv.CreateVolume(context.Background(), &agentv1.CreateVolumeRequest{
-		VolumeId: "no-slash",
-		Fence:    testFence(t),
+		VolumeId:    "no-slash",
+		BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
+		Fence:       testFence(t),
 	})
 	if err == nil {
 		t.Fatal("expected error for invalid volumeID, got nil")
@@ -183,8 +185,9 @@ func TestCreateVolume_UnknownPool(t *testing.T) {
 	srv := newTestServer(t, mb)
 
 	_, err := srv.CreateVolume(context.Background(), &agentv1.CreateVolumeRequest{
-		VolumeId: "other-pool/pvc-xyz",
-		Fence:    testFence(t),
+		VolumeId:    "other-pool/pvc-xyz",
+		BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
+		Fence:       testFence(t),
 	})
 	if err == nil {
 		t.Fatal("expected error for unknown pool, got nil")
@@ -202,6 +205,7 @@ func TestCreateVolume_BackendError(t *testing.T) {
 
 	_, err := srv.CreateVolume(context.Background(), &agentv1.CreateVolumeRequest{
 		VolumeId:      testVolumeID,
+		BackendType:   agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
 		Fence:         testFence(t),
 		CapacityBytes: 1 << 30,
 	})
@@ -228,6 +232,7 @@ func TestCreateVolume_ConflictSize(t *testing.T) {
 
 	_, err := srv.CreateVolume(context.Background(), &agentv1.CreateVolumeRequest{
 		VolumeId:      testVolumeID,
+		BackendType:   agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
 		Fence:         testFence(t),
 		CapacityBytes: 1 << 30,
 	})
@@ -246,7 +251,7 @@ func TestCreateVolume_ConflictSize(t *testing.T) {
 // TestCreateVolume_LayoutMismatch verifies that a backend refusing a create
 // because the declared layout differs from its configuration (issue #113)
 // surfaces as FailedPrecondition, not Internal: retrying cannot succeed until
-// an operator aligns the PillarStore with the agent --backend flag.
+// an operator aligns the PillarStore with the agent config file.
 func TestCreateVolume_LayoutMismatch(t *testing.T) {
 	t.Parallel()
 	mb := &mockBackend{
@@ -258,6 +263,7 @@ func TestCreateVolume_LayoutMismatch(t *testing.T) {
 
 	_, err := srv.CreateVolume(context.Background(), &agentv1.CreateVolumeRequest{
 		VolumeId:      testVolumeID,
+		BackendType:   agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
 		Fence:         testFence(t),
 		CapacityBytes: 1 << 30,
 	})
@@ -267,6 +273,44 @@ func TestCreateVolume_LayoutMismatch(t *testing.T) {
 	}
 	if !strings.Contains(st.Message(), `requested ZFS parent dataset "k8s"`) {
 		t.Errorf("message %q lost the mismatch detail", st.Message())
+	}
+}
+
+// TestCreateVolume_BackendTypeRejected verifies that CreateVolume refuses a
+// backend_type that is missing, names a backend kind the agent does not
+// implement, or differs from the backend owning the volume's pool, and that
+// the backend is never asked to create anything in those cases.
+func TestCreateVolume_BackendTypeRejected(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		backendType agentv1.BackendType
+		want        codes.Code
+	}{
+		{"unspecified", agentv1.BackendType_BACKEND_TYPE_UNSPECIFIED, codes.InvalidArgument},
+		{"zfs dataset", agentv1.BackendType_BACKEND_TYPE_ZFS_DATASET, codes.Unimplemented},
+		{"directory", agentv1.BackendType_BACKEND_TYPE_DIRECTORY, codes.Unimplemented},
+		{"lvm on a zfs pool", agentv1.BackendType_BACKEND_TYPE_LVM, codes.InvalidArgument},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			mb := &mockBackend{createDevicePath: "/dev/zvol/tank/pvc-abc", createAllocated: 1 << 30}
+			srv := newTestServer(t, mb)
+
+			_, err := srv.CreateVolume(context.Background(), &agentv1.CreateVolumeRequest{
+				VolumeId:      testVolumeID,
+				BackendType:   tc.backendType,
+				Fence:         testFence(t),
+				CapacityBytes: 1 << 30,
+			})
+			if code := status.Code(err); code != tc.want {
+				t.Fatalf("code = %v (err %v), want %v", code, err, tc.want)
+			}
+			if len(mb.createCalledWith) != 0 {
+				t.Errorf("backend.Create called %d times, want 0", len(mb.createCalledWith))
+			}
+		})
 	}
 }
 
@@ -420,6 +464,7 @@ func TestVolumeRPCs_InsufficientCapacity(t *testing.T) {
 			srv := newTestServer(t, &mockBackend{createErr: capErr()})
 			_, err := srv.CreateVolume(context.Background(), &agentv1.CreateVolumeRequest{
 				VolumeId:      testVolumeID,
+				BackendType:   agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
 				Fence:         testFence(t),
 				CapacityBytes: 5 << 30,
 			})

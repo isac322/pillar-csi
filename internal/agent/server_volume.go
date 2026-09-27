@@ -41,6 +41,10 @@ func (s *Server) CreateVolume(
 	if err != nil {
 		return nil, err
 	}
+	err = checkBackendType(req.GetBackendType(), b.Type(), req.GetVolumeId())
+	if err != nil {
+		return nil, err
+	}
 	var (
 		devicePath string
 		allocated  int64
@@ -62,6 +66,26 @@ func (s *Server) CreateVolume(
 		DevicePath:    devicePath,
 		CapacityBytes: allocated,
 	}, nil
+}
+
+// checkBackendType rejects a CreateVolume whose backend_type is missing,
+// names a backend this agent does not implement, or differs from the
+// backend that owns the volume's pool/VG.
+func checkBackendType(requested, configured agentv1.BackendType, volumeID string) error {
+	switch requested {
+	case agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL, agentv1.BackendType_BACKEND_TYPE_LVM:
+		if requested != configured {
+			return status.Errorf(codes.InvalidArgument,
+				"CreateVolume %q: backend_type %s does not match the pool's configured backend %s",
+				volumeID, requested, configured)
+		}
+		return nil
+	case agentv1.BackendType_BACKEND_TYPE_UNSPECIFIED:
+		return status.Errorf(codes.InvalidArgument, "CreateVolume %q: backend_type is required", volumeID)
+	default:
+		return status.Errorf(codes.Unimplemented,
+			"CreateVolume %q: unsupported backend type %s", volumeID, requested)
+	}
 }
 
 // createVolumeError maps a backend Create error onto a gRPC status.

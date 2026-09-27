@@ -108,7 +108,6 @@ func ProvisionPerTestPillarStore(
 		Spec: pillarv1.PillarStoreSpec{
 			AgentRef: agentRef,
 			Backend: pillarv1.BackendSpec{
-				Type: pillarv1.BackendTypeLVMLV,
 				LVM: &pillarv1.LVMBackendConfig{
 					VolumeGroup:      vgName,
 					ProvisioningMode: pillarv1.LVMProvisioningModeLinear,

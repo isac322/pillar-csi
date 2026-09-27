@@ -16,10 +16,7 @@ limitations under the License.
 
 package csi
 
-import (
-	"os"
-	"os/exec"
-)
+import "os"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Topology key constants
@@ -36,15 +33,6 @@ const (
 	// TopologyKeyNVMeoF is set to topologyValueTrue when the NVMe-oF TCP
 	// kernel module is loaded (/sys/module/nvme_tcp exists).
 	TopologyKeyNVMeoF = "pillar-csi.bhyoo.com/nvmeof"
-
-	// TopologyKeyISCSI is set to topologyValueTrue when the iSCSI initiator
-	// is available (iscsid process running or /etc/iscsi/initiatorname.iscsi
-	// exists).
-	TopologyKeyISCSI = "pillar-csi.bhyoo.com/iscsi"
-
-	// TopologyKeyNFS is set to topologyValueTrue when the mount.nfs binary
-	// is present.
-	TopologyKeyNFS = "pillar-csi.bhyoo.com/nfs"
 
 	// Segment value used to mark protocols present on this node.
 	// Absent protocols are omitted rather than set to "false".
@@ -63,14 +51,6 @@ type ProtocolProber interface {
 	// NVMeoFAvailable returns true when the NVMe-oF TCP kernel module is
 	// loaded and the node can act as an NVMe-oF initiator.
 	NVMeoFAvailable() bool
-
-	// ISCSIAvailable returns true when the iSCSI initiator daemon or config
-	// file is present and the node can act as an iSCSI initiator.
-	ISCSIAvailable() bool
-
-	// NFSAvailable returns true when the mount.nfs binary is present and the
-	// node can mount NFS volumes.
-	NFSAvailable() bool
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -92,8 +72,7 @@ func (n *NodeServer) WithTopologyProber(p ProtocolProber) *NodeServer {
 // ─────────────────────────────────────────────────────────────────────────────.
 
 // sysfsProber is the default ProtocolProber used in production.  It checks
-// kernel module state via /sys/module, iSCSI availability via procfs and the
-// initiatorname config file, and NFS availability via PATH lookup.
+// kernel module state via /sys/module.
 type sysfsProber struct{}
 
 // NVMeoFAvailable implements ProtocolProber.
@@ -101,26 +80,6 @@ type sysfsProber struct{}
 // kernel module is loaded.
 func (*sysfsProber) NVMeoFAvailable() bool {
 	_, err := os.Stat("/sys/module/nvme_tcp")
-	return err == nil
-}
-
-// ISCSIAvailable implements ProtocolProber.
-// Returns true when either:
-//   - /etc/iscsi/initiatorname.iscsi exists (iSCSI initiator is configured), or
-//   - iscsid binary is reachable via PATH (daemon may be running).
-func (*sysfsProber) ISCSIAvailable() bool {
-	_, statErr := os.Stat("/etc/iscsi/initiatorname.iscsi")
-	if statErr == nil {
-		return true
-	}
-	_, err := exec.LookPath("iscsid")
-	return err == nil
-}
-
-// NFSAvailable implements ProtocolProber.
-// Returns true when mount.nfs is reachable via PATH.
-func (*sysfsProber) NFSAvailable() bool {
-	_, err := exec.LookPath("mount.nfs")
 	return err == nil
 }
 
@@ -137,12 +96,6 @@ func buildTopologySegments(p ProtocolProber) map[string]string {
 	segs := make(map[string]string)
 	if p.NVMeoFAvailable() {
 		segs[TopologyKeyNVMeoF] = topologyValueTrue
-	}
-	if p.ISCSIAvailable() {
-		segs[TopologyKeyISCSI] = topologyValueTrue
-	}
-	if p.NFSAvailable() {
-		segs[TopologyKeyNFS] = topologyValueTrue
 	}
 	return segs
 }

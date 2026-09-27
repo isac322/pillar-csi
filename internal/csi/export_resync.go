@@ -75,9 +75,6 @@ func exportSpecFor(params *agentv1.ExportParams, aclEnabled bool) *v1alpha1.Volu
 			spec.InCapsuleDataSize = &v
 		}
 		return spec
-	case params.GetIscsi() != nil:
-		p := params.GetIscsi()
-		return &v1alpha1.VolumeExportSpec{BindAddress: p.GetBindAddress(), Port: p.GetPort(), ACLEnabled: aclEnabled}
 	default:
 		return nil
 	}
@@ -97,10 +94,6 @@ func exportParamsFor(protocol agentv1.ProtocolType, spec *v1alpha1.VolumeExportS
 				Port:              spec.Port,
 				InCapsuleDataSize: inCapsuleDataSize,
 			},
-		}}
-	case agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI:
-		return &agentv1.ExportParams{Params: &agentv1.ExportParams_Iscsi{
-			Iscsi: &agentv1.IscsiExportParams{BindAddress: spec.BindAddress, Port: spec.Port},
 		}}
 	default:
 		return nil

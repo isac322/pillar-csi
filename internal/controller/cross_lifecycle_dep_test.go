@@ -199,7 +199,7 @@ var _ = Describe("E26.1: Cross-CRD Dependency Ordering", func() {
 			ObjectMeta: metav1.ObjectMeta{Name: poolName},
 			Spec: pillarcsiv1alpha1.PillarStoreSpec{
 				AgentRef: targetName,
-				Backend:  pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeZFSZvol},
+				Backend:  pillarcsiv1alpha1.BackendSpec{ZFS: &pillarcsiv1alpha1.ZFSBackendConfig{Pool: "tank"}},
 			},
 		}
 		Expect(k8sClient.Create(bctx, pool)).To(Succeed())
@@ -251,7 +251,7 @@ var _ = Describe("E26.1: Cross-CRD Dependency Ordering", func() {
 			ObjectMeta: metav1.ObjectMeta{Name: poolName},
 			Spec: pillarcsiv1alpha1.PillarStoreSpec{
 				AgentRef: targetName,
-				Backend:  pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeZFSZvol},
+				Backend:  pillarcsiv1alpha1.BackendSpec{ZFS: &pillarcsiv1alpha1.ZFSBackendConfig{Pool: "tank"}},
 			},
 		}
 		Expect(k8sClient.Create(bctx, pool)).To(Succeed())
@@ -301,7 +301,7 @@ var _ = Describe("E26.1: Cross-CRD Dependency Ordering", func() {
 			ObjectMeta: metav1.ObjectMeta{Name: poolName},
 			Spec: pillarcsiv1alpha1.PillarStoreSpec{
 				AgentRef: targetName,
-				Backend:  pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeZFSZvol},
+				Backend:  pillarcsiv1alpha1.BackendSpec{ZFS: &pillarcsiv1alpha1.ZFSBackendConfig{Pool: "tank"}},
 			},
 		}
 		Expect(k8sClient.Create(bctx, pool)).To(Succeed())
@@ -379,7 +379,7 @@ var _ = Describe("E26.1: Cross-CRD Dependency Ordering", func() {
 			ObjectMeta: metav1.ObjectMeta{Name: poolName},
 			Spec: pillarcsiv1alpha1.PillarStoreSpec{
 				AgentRef: "some-target",
-				Backend:  pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeZFSZvol},
+				Backend:  pillarcsiv1alpha1.BackendSpec{ZFS: &pillarcsiv1alpha1.ZFSBackendConfig{Pool: "tank"}},
 			},
 		}
 		Expect(k8sClient.Create(bctx, pool)).To(Succeed())
@@ -427,7 +427,7 @@ var _ = Describe("E26.1: Cross-CRD Dependency Ordering", func() {
 			ObjectMeta: metav1.ObjectMeta{Name: poolName},
 			Spec: pillarcsiv1alpha1.PillarStoreSpec{
 				AgentRef: "some-target",
-				Backend:  pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeZFSZvol},
+				Backend:  pillarcsiv1alpha1.BackendSpec{ZFS: &pillarcsiv1alpha1.ZFSBackendConfig{Pool: "tank"}},
 			},
 		}
 		Expect(k8sClient.Create(bctx, pool)).To(Succeed())
@@ -523,8 +523,7 @@ var _ = Describe("E26.1: Cross-CRD Dependency Ordering", func() {
 			Spec: pillarcsiv1alpha1.PillarStoreSpec{
 				AgentRef: "some-target",
 				Backend: pillarcsiv1alpha1.BackendSpec{
-					Type: pillarcsiv1alpha1.BackendTypeZFSZvol,
-					ZFS:  &pillarcsiv1alpha1.ZFSBackendConfig{Pool: "tank"},
+					ZFS: &pillarcsiv1alpha1.ZFSBackendConfig{Pool: "tank"},
 				},
 			},
 		}
@@ -535,7 +534,7 @@ var _ = Describe("E26.1: Cross-CRD Dependency Ordering", func() {
 		By("creating a Ready PillarProtocol with nvmeof-tcp type")
 		proto := &pillarcsiv1alpha1.PillarProtocol{
 			ObjectMeta: metav1.ObjectMeta{Name: protocolName},
-			Spec:       pillarcsiv1alpha1.PillarProtocolSpec{Type: pillarcsiv1alpha1.ProtocolTypeNVMeOFTCP},
+			Spec:       pillarcsiv1alpha1.PillarProtocolSpec{Protocol: pillarcsiv1alpha1.ProtocolSpec{NVMeOFTCP: &pillarcsiv1alpha1.NVMeOFTCPConfig{}}},
 		}
 		Expect(k8sClient.Create(bctx, proto)).To(Succeed())
 		DeferCleanup(func() { cleanupProtocol(protocolName) })
@@ -730,7 +729,7 @@ var _ = Describe("E26.2: Cross-CRD Cascading Status Updates", func() {
 			ObjectMeta: metav1.ObjectMeta{Name: poolName},
 			Spec: pillarcsiv1alpha1.PillarStoreSpec{
 				AgentRef: targetName,
-				Backend:  pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeZFSZvol},
+				Backend:  pillarcsiv1alpha1.BackendSpec{ZFS: &pillarcsiv1alpha1.ZFSBackendConfig{Pool: "tank"}},
 			},
 		}
 		Expect(k8sClient.Create(bctx, pool)).To(Succeed())
@@ -789,7 +788,7 @@ var _ = Describe("E26.2: Cross-CRD Cascading Status Updates", func() {
 			ObjectMeta: metav1.ObjectMeta{Name: poolName},
 			Spec: pillarcsiv1alpha1.PillarStoreSpec{
 				AgentRef: targetName,
-				Backend:  pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeZFSZvol},
+				Backend:  pillarcsiv1alpha1.BackendSpec{ZFS: &pillarcsiv1alpha1.ZFSBackendConfig{Pool: "tank"}},
 			},
 		}
 		Expect(k8sClient.Create(bctx, pool)).To(Succeed())
@@ -833,7 +832,7 @@ var _ = Describe("E26.2: Cross-CRD Cascading Status Updates", func() {
 			ObjectMeta: metav1.ObjectMeta{Name: poolName},
 			Spec: pillarcsiv1alpha1.PillarStoreSpec{
 				AgentRef: "some-target",
-				Backend:  pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeZFSZvol},
+				Backend:  pillarcsiv1alpha1.BackendSpec{ZFS: &pillarcsiv1alpha1.ZFSBackendConfig{Pool: "tank"}},
 			},
 		}
 		Expect(k8sClient.Create(bctx, pool)).To(Succeed())
@@ -843,7 +842,7 @@ var _ = Describe("E26.2: Cross-CRD Cascading Status Updates", func() {
 		By("creating a Ready PillarProtocol")
 		proto := &pillarcsiv1alpha1.PillarProtocol{
 			ObjectMeta: metav1.ObjectMeta{Name: protocolName},
-			Spec:       pillarcsiv1alpha1.PillarProtocolSpec{Type: pillarcsiv1alpha1.ProtocolTypeNVMeOFTCP},
+			Spec:       pillarcsiv1alpha1.PillarProtocolSpec{Protocol: pillarcsiv1alpha1.ProtocolSpec{NVMeOFTCP: &pillarcsiv1alpha1.NVMeOFTCPConfig{}}},
 		}
 		Expect(k8sClient.Create(bctx, proto)).To(Succeed())
 		DeferCleanup(func() { cleanupProtocolE262(protocolName) })
@@ -905,7 +904,7 @@ var _ = Describe("E26.2: Cross-CRD Cascading Status Updates", func() {
 			ObjectMeta: metav1.ObjectMeta{Name: poolName},
 			Spec: pillarcsiv1alpha1.PillarStoreSpec{
 				AgentRef: "some-target",
-				Backend:  pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeZFSZvol},
+				Backend:  pillarcsiv1alpha1.BackendSpec{ZFS: &pillarcsiv1alpha1.ZFSBackendConfig{Pool: "tank"}},
 			},
 		}
 		Expect(k8sClient.Create(bctx, pool)).To(Succeed())
@@ -915,7 +914,7 @@ var _ = Describe("E26.2: Cross-CRD Cascading Status Updates", func() {
 		By("creating a Ready PillarProtocol")
 		proto := &pillarcsiv1alpha1.PillarProtocol{
 			ObjectMeta: metav1.ObjectMeta{Name: protocolName},
-			Spec:       pillarcsiv1alpha1.PillarProtocolSpec{Type: pillarcsiv1alpha1.ProtocolTypeNVMeOFTCP},
+			Spec:       pillarcsiv1alpha1.PillarProtocolSpec{Protocol: pillarcsiv1alpha1.ProtocolSpec{NVMeOFTCP: &pillarcsiv1alpha1.NVMeOFTCPConfig{}}},
 		}
 		Expect(k8sClient.Create(bctx, proto)).To(Succeed())
 		DeferCleanup(func() { cleanupProtocolE262(protocolName) })
@@ -985,7 +984,7 @@ var _ = Describe("E26.2: Cross-CRD Cascading Status Updates", func() {
 			ObjectMeta: metav1.ObjectMeta{Name: poolName},
 			Spec: pillarcsiv1alpha1.PillarStoreSpec{
 				AgentRef: targetName,
-				Backend:  pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeZFSZvol},
+				Backend:  pillarcsiv1alpha1.BackendSpec{ZFS: &pillarcsiv1alpha1.ZFSBackendConfig{Pool: "tank"}},
 			},
 		}
 		Expect(k8sClient.Create(bctx, pool)).To(Succeed())
@@ -996,7 +995,7 @@ var _ = Describe("E26.2: Cross-CRD Cascading Status Updates", func() {
 		By("creating a Ready PillarProtocol")
 		proto := &pillarcsiv1alpha1.PillarProtocol{
 			ObjectMeta: metav1.ObjectMeta{Name: protocolName},
-			Spec:       pillarcsiv1alpha1.PillarProtocolSpec{Type: pillarcsiv1alpha1.ProtocolTypeNVMeOFTCP},
+			Spec:       pillarcsiv1alpha1.PillarProtocolSpec{Protocol: pillarcsiv1alpha1.ProtocolSpec{NVMeOFTCP: &pillarcsiv1alpha1.NVMeOFTCPConfig{}}},
 		}
 		Expect(k8sClient.Create(bctx, proto)).To(Succeed())
 		DeferCleanup(func() { cleanupProtocolE262(protocolName) })
@@ -1066,7 +1065,7 @@ var _ = Describe("E26.2: Cross-CRD Cascading Status Updates", func() {
 			ObjectMeta: metav1.ObjectMeta{Name: poolName},
 			Spec: pillarcsiv1alpha1.PillarStoreSpec{
 				AgentRef: "some-target",
-				Backend:  pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeZFSZvol},
+				Backend:  pillarcsiv1alpha1.BackendSpec{ZFS: &pillarcsiv1alpha1.ZFSBackendConfig{Pool: "tank"}},
 			},
 		}
 		Expect(k8sClient.Create(bctx, pool)).To(Succeed())
@@ -1076,7 +1075,7 @@ var _ = Describe("E26.2: Cross-CRD Cascading Status Updates", func() {
 		By("creating a Ready PillarProtocol")
 		proto := &pillarcsiv1alpha1.PillarProtocol{
 			ObjectMeta: metav1.ObjectMeta{Name: protocolName},
-			Spec:       pillarcsiv1alpha1.PillarProtocolSpec{Type: pillarcsiv1alpha1.ProtocolTypeNVMeOFTCP},
+			Spec:       pillarcsiv1alpha1.PillarProtocolSpec{Protocol: pillarcsiv1alpha1.ProtocolSpec{NVMeOFTCP: &pillarcsiv1alpha1.NVMeOFTCPConfig{}}},
 		}
 		Expect(k8sClient.Create(bctx, proto)).To(Succeed())
 		DeferCleanup(func() { cleanupProtocolE262(protocolName) })
@@ -1138,7 +1137,7 @@ var _ = Describe("E26.2: Cross-CRD Cascading Status Updates", func() {
 		By("creating a PillarProtocol")
 		proto := &pillarcsiv1alpha1.PillarProtocol{
 			ObjectMeta: metav1.ObjectMeta{Name: protocolName},
-			Spec:       pillarcsiv1alpha1.PillarProtocolSpec{Type: pillarcsiv1alpha1.ProtocolTypeNVMeOFTCP},
+			Spec:       pillarcsiv1alpha1.PillarProtocolSpec{Protocol: pillarcsiv1alpha1.ProtocolSpec{NVMeOFTCP: &pillarcsiv1alpha1.NVMeOFTCPConfig{}}},
 		}
 		Expect(k8sClient.Create(bctx, proto)).To(Succeed())
 		DeferCleanup(func() { cleanupProtocolE262(protocolName) })
@@ -1157,7 +1156,7 @@ var _ = Describe("E26.2: Cross-CRD Cascading Status Updates", func() {
 			ObjectMeta: metav1.ObjectMeta{Name: poolName},
 			Spec: pillarcsiv1alpha1.PillarStoreSpec{
 				AgentRef: "some-target",
-				Backend:  pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeZFSZvol},
+				Backend:  pillarcsiv1alpha1.BackendSpec{ZFS: &pillarcsiv1alpha1.ZFSBackendConfig{Pool: "tank"}},
 			},
 		}
 		Expect(k8sClient.Create(bctx, pool)).To(Succeed())

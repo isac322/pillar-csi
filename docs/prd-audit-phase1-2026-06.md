@@ -1,3 +1,5 @@
+> **HISTORICAL (2026-06-21 snapshot).** The iSCSI/NFS/SMB scaffolding described below was removed from the CRD types, the chart, and the code in the configuration-interface redesign; those protocols now exist only as not-implemented design notes in [`PRD.md`](./PRD.md) and [`PRD-iscsi.md`](./PRD-iscsi.md).
+
 # Phase 1 PRD Audit — 2026-06
 
 **Date:** 2026-06-21

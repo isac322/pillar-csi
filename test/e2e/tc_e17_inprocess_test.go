@@ -65,7 +65,7 @@ func assertE17_ControllerUnpublishDeniesAccess(tc documentedCase) {
 
 	resp, err := env.controller.CreateVolume(env.ctx, &csiapi.CreateVolumeRequest{
 		Name:               "pvc-e17-unpub",
-		Parameters:         env.params,
+		Parameters:         env.aclParams(),
 		VolumeCapabilities: []*csiapi.VolumeCapability{mountCapability("ext4")},
 		CapacityRange:      &csiapi.CapacityRange{RequiredBytes: 10 << 20},
 	})

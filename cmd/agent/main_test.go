@@ -14,745 +14,287 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// White-box unit tests for cmd/agent/main.go.
+// White-box unit tests for the agent's backend config file and registry.
 //
 // These tests verify:
-//   - backendFlag parses type=zfs-zvol,pool=<name>[,parent=<p>] values.
-//   - backendFlag parses type=lvm-lv,vg=<vg>[,thinpool=<tp>] values.
-//   - The backend-registration loop in main() produces exactly one distinct
-//     backend instance per pool/VG, keyed by pool/VG name, with no aliasing.
-//   - Each backend is correctly bound to its own pool/VG (DevicePath output is
-//     pool/VG-specific).
+//   - the --config file (backends: [{zfs: ...} | {lvm: ...}]) is decoded
+//     strictly with the shared configdocs decoder, rejecting unknown fields,
+//     removed vocabulary and invalid placements with the entry path;
+//   - buildVolumeBackends produces exactly one distinct backend per pool/VG,
+//     keyed by pool/VG name, bound to its own pool (DevicePath), and refuses
+//     duplicate keys.
 package main
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
+	pillarv1alpha1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
 	"github.com/bhyoo/pillar-csi/internal/agent/backend"
 	"github.com/bhyoo/pillar-csi/internal/agent/backend/lvm"
-	"github.com/bhyoo/pillar-csi/internal/agent/backend/zfs"
 )
 
-const testVGDataVG = "data-vg"
+const testConfigSource = "/etc/pillar-agent/config.yaml"
 
-// Backend registry tests.
-
-// buildBackends creates the pool→backend registry for testing, mirroring the
-// backend-registration loop from main().  Keeping the logic here lets the test
-// remain a pure unit test with no flag/os interaction.
-func buildBackends(pools []string, parent string) map[string]backend.VolumeBackend {
-	backends := make(map[string]backend.VolumeBackend, len(pools))
-	for _, pool := range pools {
-		backends[pool] = zfs.New(pool, parent)
+// mustParse parses an agent config document, failing the test on error.
+func mustParse(t *testing.T, doc string) []pillarv1alpha1.BackendSpec {
+	t.Helper()
+	specs, err := parseAgentConfig(testConfigSource, []byte(doc))
+	if err != nil {
+		t.Fatalf("parseAgentConfig: unexpected error: %v\n%s", err, doc)
 	}
-	return backends
+	return specs
 }
 
-// TestBuildBackends_OneEntryPerPool verifies that the registry contains
-// exactly one entry for each pool name and that all entries are non-nil.
-func TestBuildBackends_OneEntryPerPool(t *testing.T) {
+// mustBuild parses an agent config document and builds its registry.
+func mustBuild(t *testing.T, doc string) map[string]backend.VolumeBackend {
+	t.Helper()
+	bs, err := buildVolumeBackends(mustParse(t, doc))
+	if err != nil {
+		t.Fatalf("buildVolumeBackends: unexpected error: %v", err)
+	}
+	return bs
+}
+
+// zfsPoolsDoc renders a config with one zfs entry per pool.
+func zfsPoolsDoc(pools []string, parent string) string {
+	var b strings.Builder
+	b.WriteString("backends:\n")
+	for _, p := range pools {
+		if parent == "" {
+			fmt.Fprintf(&b, "  - zfs: {pool: %s}\n", p)
+		} else {
+			fmt.Fprintf(&b, "  - zfs: {pool: %s, parentDataset: %s}\n", p, parent)
+		}
+	}
+	return b.String()
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Registry tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TestBuildVolumeBackends_OneEntryPerPool verifies that the registry contains
+// exactly one non-nil entry for each configured pool.
+func TestBuildVolumeBackends_OneEntryPerPool(t *testing.T) {
 	t.Parallel()
 
 	pools := []string{"tank", "hot-data", "ssd-pool"}
-	backends := buildBackends(pools, "k8s")
+	backends := mustBuild(t, zfsPoolsDoc(pools, "k8s"))
 
 	if got, want := len(backends), len(pools); got != want {
 		t.Fatalf("len(backends) = %d; want %d", got, want)
 	}
-
 	for _, pool := range pools {
-		b, ok := backends[pool]
-		if !ok {
-			t.Errorf("pool %q: not found in registry", pool)
-			continue
-		}
-		if b == nil {
-			t.Errorf("pool %q: backend is nil", pool)
+		if b, ok := backends[pool]; !ok || b == nil {
+			t.Errorf("pool %q: missing or nil in registry", pool)
 		}
 	}
 }
 
-// TestBuildBackends_DistinctInstances verifies that each pool maps to a
-// distinct backend instance — no two pools share the same pointer.  Sharing
-// would allow volume operations on one pool to accidentally mutate another's
-// state.
-func TestBuildBackends_DistinctInstances(t *testing.T) {
+// TestBuildVolumeBackends_DistinctInstances verifies that each pool maps to a
+// distinct backend instance — sharing would let volume operations on one
+// pool mutate another's state.
+func TestBuildVolumeBackends_DistinctInstances(t *testing.T) {
 	t.Parallel()
 
 	pools := []string{"tank", "hot-data", "ssd-pool"}
-	backends := buildBackends(pools, "k8s")
+	backends := mustBuild(t, zfsPoolsDoc(pools, "k8s"))
 
 	for i := range pools {
 		for j := i + 1; j < len(pools); j++ {
-			p1, p2 := pools[i], pools[j]
-			if backends[p1] == backends[p2] {
-				t.Errorf("pools %q and %q share the same backend instance (pointer aliasing)", p1, p2)
+			if backends[pools[i]] == backends[pools[j]] {
+				t.Errorf("pools %q and %q share the same backend instance", pools[i], pools[j])
 			}
 		}
 	}
 }
 
-// TestBuildBackends_PoolBoundCorrectly verifies that each backend in the
-// registry is bound to the correct pool by inspecting DevicePath output.
-//
-// For a backend registered under pool P, calling DevicePath("P/vol") must
-// return a path whose first component after /dev/zvol/ is P — not any other
-// pool name.  This catches transposition bugs where, e.g., the loop variable
-// is captured by reference rather than value.
-func TestBuildBackends_PoolBoundCorrectly(t *testing.T) {
+// TestBuildVolumeBackends_PoolBoundCorrectly verifies that each backend is
+// bound to its own pool: DevicePath("P/vol") must start with /dev/zvol/P/
+// and never with another pool's prefix (catches loop-variable aliasing).
+func TestBuildVolumeBackends_PoolBoundCorrectly(t *testing.T) {
 	t.Parallel()
 
 	pools := []string{"tank", "hot-data", "ssd-pool"}
-	const parent = "k8s"
-	const volName = "pvc-verify"
-
-	backends := buildBackends(pools, parent)
+	backends := mustBuild(t, zfsPoolsDoc(pools, "k8s"))
 
 	for _, pool := range pools {
-		t.Run(fmt.Sprintf("pool=%s", pool), func(t *testing.T) {
-			t.Parallel()
-
-			b := backends[pool]
-			volumeID := pool + "/" + volName
-
-			devPath := b.DevicePath(volumeID)
-
-			// The path must start with /dev/zvol/<pool>/.
-			wantPrefix := "/dev/zvol/" + pool + "/"
-			if !strings.HasPrefix(devPath, wantPrefix) {
-				t.Errorf("backends[%q].DevicePath(%q) = %q; want prefix %q",
-					pool, volumeID, devPath, wantPrefix)
+		devPath := backends[pool].DevicePath(pool + "/pvc-verify")
+		if want := "/dev/zvol/" + pool + "/"; !strings.HasPrefix(devPath, want) {
+			t.Errorf("backends[%q].DevicePath = %q; want prefix %q", pool, devPath, want)
+		}
+		for _, other := range pools {
+			if other != pool && strings.HasPrefix(devPath, "/dev/zvol/"+other+"/") {
+				t.Errorf("backends[%q].DevicePath = %q: bound to pool %q", pool, devPath, other)
 			}
-
-			// Extra guard: the path must not start with any OTHER pool's
-			// prefix, confirming no backend cross-mapping.
-			for _, other := range pools {
-				if other == pool {
-					continue
-				}
-				wrongPrefix := "/dev/zvol/" + other + "/"
-				if strings.HasPrefix(devPath, wrongPrefix) {
-					t.Errorf("backends[%q].DevicePath(%q) = %q: starts with wrong pool prefix %q",
-						pool, volumeID, devPath, wrongPrefix)
-				}
-			}
-		})
-	}
-}
-
-// TestBuildBackends_EmptyParent verifies that the registry is built correctly
-// when no parent dataset is specified (parentDataset=""), which is a valid
-// production configuration.
-func TestBuildBackends_EmptyParent(t *testing.T) {
-	t.Parallel()
-
-	pools := []string{"fast", "slow"}
-	backends := buildBackends(pools, "" /* no parent dataset */)
-
-	for _, pool := range pools {
-		b, ok := backends[pool]
-		if !ok {
-			t.Errorf("pool %q: not found in registry", pool)
-			continue
-		}
-
-		volumeID := pool + "/pvc-x"
-		devPath := b.DevicePath(volumeID)
-
-		// With no parent dataset: /dev/zvol/<pool>/<volName>.
-		want := "/dev/zvol/" + pool + "/pvc-x"
-		if devPath != want {
-			t.Errorf("backends[%q].DevicePath(%q) = %q; want %q", pool, volumeID, devPath, want)
 		}
 	}
 }
 
-// BackendFlag tests — validate the pluggable --backend flag parsing.
-
-// TestBackendFlag_Set_BasicZfsZvol verifies that a well-formed
-// "type=zfs-zvol,pool=<name>" value is parsed correctly.
-func TestBackendFlag_Set_BasicZfsZvol(t *testing.T) {
+// TestBuildVolumeBackends_EmptyParent verifies that omitting parentDataset
+// places volumes at the pool root.
+func TestBuildVolumeBackends_EmptyParent(t *testing.T) {
 	t.Parallel()
 
-	var bf backendFlag
-	if err := bf.Set("type=zfs-zvol,pool=tank"); err != nil {
-		t.Fatalf("backendFlag.Set: unexpected error: %v", err)
-	}
-	if got, want := len(bf), 1; got != want {
-		t.Fatalf("len(backendFlag) = %d; want %d", got, want)
-	}
-	if got, want := bf[0].typ, backendTypeZfsZvol; got != want {
-		t.Errorf("spec.typ = %q; want %q", got, want)
-	}
-	if got, want := bf[0].pool, "tank"; got != want {
-		t.Errorf("spec.pool = %q; want %q", got, want)
-	}
-	if got, want := bf[0].parent, ""; got != want {
-		t.Errorf("spec.parent = %q; want %q", got, want)
-	}
-}
-
-// TestBackendFlag_Set_WithParent verifies that the optional parent= key is
-// parsed and stored correctly.
-func TestBackendFlag_Set_WithParent(t *testing.T) {
-	t.Parallel()
-
-	var bf backendFlag
-	if err := bf.Set("type=zfs-zvol,pool=hot-data,parent=k8s"); err != nil {
-		t.Fatalf("backendFlag.Set: unexpected error: %v", err)
-	}
-	if got, want := bf[0].parent, "k8s"; got != want {
-		t.Errorf("spec.parent = %q; want %q", got, want)
-	}
-}
-
-// TestBackendFlag_Set_Repeated verifies that multiple Set calls accumulate
-// distinct backendSpec entries in order.
-func TestBackendFlag_Set_Repeated(t *testing.T) {
-	t.Parallel()
-
-	values := []string{
-		"type=zfs-zvol,pool=alpha",
-		"type=zfs-zvol,pool=beta,parent=ds",
-		"type=zfs-zvol,pool=gamma",
-	}
-
-	var bf backendFlag
-	for _, v := range values {
-		if err := bf.Set(v); err != nil {
-			t.Fatalf("backendFlag.Set(%q): %v", v, err)
-		}
-	}
-
-	if got, want := len(bf), len(values); got != want {
-		t.Fatalf("len(backendFlag) = %d; want %d", got, want)
-	}
-
-	pools := []string{"alpha", "beta", "gamma"}
-	for i, want := range pools {
-		if got := bf[i].pool; got != want {
-			t.Errorf("bf[%d].pool = %q; want %q", i, got, want)
+	backends := mustBuild(t, zfsPoolsDoc([]string{"fast", "slow"}, ""))
+	for _, pool := range []string{"fast", "slow"} {
+		if got, want := backends[pool].DevicePath(pool+"/pvc-x"), "/dev/zvol/"+pool+"/pvc-x"; got != want {
+			t.Errorf("backends[%q].DevicePath = %q; want %q", pool, got, want)
 		}
 	}
 }
 
-// TestBackendFlag_Set_RejectsEmpty verifies that an empty value returns an
-// error.
-func TestBackendFlag_Set_RejectsEmpty(t *testing.T) {
+// TestBuildVolumeBackends_Lvm verifies that LVM entries are keyed by VG name
+// and produce /dev/<vg>/<lv> device paths, linear and thin alike.
+func TestBuildVolumeBackends_Lvm(t *testing.T) {
 	t.Parallel()
 
-	var bf backendFlag
-	if err := bf.Set(""); err == nil {
-		t.Error("backendFlag.Set(\"\") expected error, got nil")
+	backends := mustBuild(t, `
+backends:
+  - lvm: {volumeGroup: data-vg}
+  - lvm: {volumeGroup: ssd-vg, thinPool: fast-pool, provisioningMode: thin}
+`)
+	for vg, volID := range map[string]string{"data-vg": "data-vg/pvc-l", "ssd-vg": "ssd-vg/pvc-thin"} {
+		b, ok := backends[vg]
+		if !ok || b == nil {
+			t.Fatalf("backend for VG %q missing", vg)
+		}
+		if got, want := b.DevicePath(volID), "/dev/"+volID; got != want {
+			t.Errorf("DevicePath(%q) = %q; want %q", volID, got, want)
+		}
 	}
 }
 
-// TestBackendFlag_Set_RejectsMissingType verifies that omitting the type=
-// key returns an error.
-func TestBackendFlag_Set_RejectsMissingType(t *testing.T) {
+// TestBuildVolumeBackends_LvmProvisioningMode verifies the config's
+// lvm.provisioningMode becomes the backend's mode for requests without a
+// per-volume mode: linear by default even when a thin pool is configured.
+func TestBuildVolumeBackends_LvmProvisioningMode(t *testing.T) {
 	t.Parallel()
 
-	var bf backendFlag
-	if err := bf.Set("pool=tank"); err == nil {
-		t.Error("backendFlag.Set without type= expected error, got nil")
-	}
-}
-
-// TestBackendFlag_Set_RejectsMissingPool verifies that omitting the pool=
-// key returns an error.
-func TestBackendFlag_Set_RejectsMissingPool(t *testing.T) {
-	t.Parallel()
-
-	var bf backendFlag
-	if err := bf.Set("type=zfs-zvol"); err == nil {
-		t.Error("backendFlag.Set without pool= expected error, got nil")
-	}
-}
-
-// TestBackendFlag_Set_RejectsEscapingParent verifies that a parent= leaving
-// the pool is refused at startup: parent=../k8s would create volumes in pool
-// "k8s" while the agent reports a layout inside "tank" (issue #113).
-func TestBackendFlag_Set_RejectsEscapingParent(t *testing.T) {
-	t.Parallel()
-
-	for _, v := range []string{
-		"type=zfs-zvol,pool=tank,parent=../k8s",
-		"type=zfs-zvol,pool=tank,parent=k8s/../../other",
-		"type=zfs-zvol,pool=tank,parent=./k8s",
+	backends := mustBuild(t, `
+backends:
+  - lvm: {volumeGroup: plain-vg}
+  - lvm: {volumeGroup: pool-vg, thinPool: t0}
+  - lvm: {volumeGroup: thin-vg, thinPool: t0, provisioningMode: thin}
+`)
+	for vg, want := range map[string]lvm.ProvisionMode{
+		"plain-vg": lvm.ProvisionModeLinear,
+		"pool-vg":  lvm.ProvisionModeLinear,
+		"thin-vg":  lvm.ProvisionModeThin,
 	} {
-		var bf backendFlag
-		if err := bf.Set(v); err == nil {
-			t.Errorf("backendFlag.Set(%q) expected error, got nil", v)
+		b, ok := backends[vg].(*lvm.Backend)
+		if !ok {
+			t.Fatalf("backend for VG %q is %T, want *lvm.Backend", vg, backends[vg])
+		}
+		if got := b.Mode(); got != want {
+			t.Errorf("VG %q: Mode() = %v, want %v", vg, got, want)
 		}
 	}
-	var bf backendFlag
-	if err := bf.Set("type=zfs-zvol,pool=tank,parent=k8s/sub"); err != nil {
-		t.Errorf("backendFlag.Set nested parent: %v", err)
-	}
 }
 
-// TestBackendFlag_Set_RejectsUnknownType verifies that an unsupported type
-// value returns an error.
-func TestBackendFlag_Set_RejectsUnknownType(t *testing.T) {
+// TestParseAgentConfig_DateShapedNamesStayStrings verifies plain scalars
+// that YAML would read as timestamps keep their text, as they do in the
+// PillarStore the layout is compared with.
+func TestParseAgentConfig_DateShapedNamesStayStrings(t *testing.T) {
 	t.Parallel()
 
-	var bf backendFlag
-	if err := bf.Set("type=lvm,pool=vg0"); err == nil {
-		t.Error("backendFlag.Set with unsupported type expected error, got nil")
+	specs := mustParse(t, `
+backends:
+  - zfs: {pool: tank, parentDataset: 2026-01-01}
+  - lvm: {volumeGroup: 2026-02-02}
+`)
+	if got := specs[0].ZFS.ParentDataset; got != "2026-01-01" {
+		t.Errorf("parentDataset = %q, want 2026-01-01", got)
+	}
+	if got := specs[1].LVM.VolumeGroup; got != "2026-02-02" {
+		t.Errorf("volumeGroup = %q, want 2026-02-02", got)
 	}
 }
 
-// TestBackendFlag_Set_RejectsUnknownKey verifies that an unrecognized key
-// causes an error so that typos are detected early.
-func TestBackendFlag_Set_RejectsUnknownKey(t *testing.T) {
-	t.Parallel()
-
-	var bf backendFlag
-	if err := bf.Set("type=zfs-zvol,pool=tank,bogus=val"); err == nil {
-		t.Error("backendFlag.Set with unknown key expected error, got nil")
-	}
-}
-
-// TestBackendFlag_Set_RejectsNonKeyValue verifies that a token without '='
-// returns an error.
-func TestBackendFlag_Set_RejectsNonKeyValue(t *testing.T) {
-	t.Parallel()
-
-	var bf backendFlag
-	if err := bf.Set("type=zfs-zvol,notakeyvalue,pool=tank"); err == nil {
-		t.Error("backendFlag.Set with bare token expected error, got nil")
-	}
-}
-
-// TestBackendFlag_String_Empty verifies that String() returns "" on a
-// zero-value flag.
-func TestBackendFlag_String_Empty(t *testing.T) {
-	t.Parallel()
-
-	var bf backendFlag
-	if got := bf.String(); got != "" {
-		t.Errorf("empty backendFlag.String() = %q; want %q", got, "")
-	}
-}
-
-// TestBackendFlag_String_MultipleSpecs verifies that String() produces a
-// space-separated summary for multiple registered specs.
-func TestBackendFlag_String_MultipleSpecs(t *testing.T) {
-	t.Parallel()
-
-	var bf backendFlag
-	if err := bf.Set("type=zfs-zvol,pool=alpha"); err != nil {
-		t.Fatalf("bf.Set(alpha): %v", err)
-	}
-	if err := bf.Set("type=zfs-zvol,pool=beta,parent=k8s"); err != nil {
-		t.Fatalf("bf.Set(beta): %v", err)
-	}
-
-	s := bf.String()
-	if !strings.Contains(s, "pool=alpha") {
-		t.Errorf("backendFlag.String() = %q; missing pool=alpha", s)
-	}
-	if !strings.Contains(s, "pool=beta") {
-		t.Errorf("backendFlag.String() = %q; missing pool=beta", s)
-	}
-	if !strings.Contains(s, "parent=k8s") {
-		t.Errorf("backendFlag.String() = %q; missing parent=k8s", s)
-	}
-}
-
-// TestBackendFlag_BuildsCorrectBackend verifies that a backendFlag parsed
-// from a --backend value produces a backend whose DevicePath includes the
-// pool name — i.e. the spec is wired correctly to zfs.New.
-func TestBackendFlag_BuildsCorrectBackend(t *testing.T) {
-	t.Parallel()
-
-	var bf backendFlag
-	if err := bf.Set("type=zfs-zvol,pool=mypool,parent=ds"); err != nil {
-		t.Fatalf("backendFlag.Set: %v", err)
-	}
-
-	// Replicate the --backend build loop from main().
-	bs := make(map[string]backend.VolumeBackend, len(bf))
-	for _, spec := range bf {
-		bs[spec.pool] = zfs.New(spec.pool, spec.parent)
-	}
-
-	b, ok := bs["mypool"]
-	if !ok {
-		t.Fatal("backend for pool 'mypool' not found in registry")
-	}
-
-	devPath := b.DevicePath("mypool/pvc-test")
-	wantPrefix := "/dev/zvol/mypool/"
-	if !strings.HasPrefix(devPath, wantPrefix) {
-		t.Errorf("DevicePath(%q) = %q; want prefix %q", "mypool/pvc-test", devPath, wantPrefix)
-	}
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// LVM backend flag tests
-// ─────────────────────────────────────────────────────────────────────────────
-
-// TestBackendFlag_Set_BasicLvmLV verifies that a well-formed
-// "type=lvm-lv,vg=<name>" value is parsed correctly into a backendSpec.
-func TestBackendFlag_Set_BasicLvmLV(t *testing.T) {
-	t.Parallel()
-
-	var bf backendFlag
-	if err := bf.Set("type=lvm-lv,vg=data-vg"); err != nil {
-		t.Fatalf("backendFlag.Set: unexpected error: %v", err)
-	}
-	if got, want := len(bf), 1; got != want {
-		t.Fatalf("len(backendFlag) = %d; want %d", got, want)
-	}
-	if got, want := bf[0].typ, backendTypeLvmLV; got != want {
-		t.Errorf("spec.typ = %q; want %q", got, want)
-	}
-	if got, want := bf[0].vg, testVGDataVG; got != want {
-		t.Errorf("spec.vg = %q; want %q", got, want)
-	}
-	if got, want := bf[0].thinpool, ""; got != want {
-		t.Errorf("spec.thinpool = %q; want %q (empty)", got, want)
-	}
-}
-
-// TestBackendFlag_Set_LvmLV_WithThinpool verifies that the optional thinpool=
-// key is parsed and stored correctly for type=lvm-lv.
-func TestBackendFlag_Set_LvmLV_WithThinpool(t *testing.T) {
-	t.Parallel()
-
-	var bf backendFlag
-	if err := bf.Set("type=lvm-lv,vg=data-vg,thinpool=thin-pool-0"); err != nil {
-		t.Fatalf("backendFlag.Set: unexpected error: %v", err)
-	}
-	if got, want := bf[0].vg, testVGDataVG; got != want {
-		t.Errorf("spec.vg = %q; want %q", got, want)
-	}
-	if got, want := bf[0].thinpool, "thin-pool-0"; got != want {
-		t.Errorf("spec.thinpool = %q; want %q", got, want)
-	}
-}
-
-// TestBackendFlag_Set_LvmLV_RejectsMissingVG verifies that omitting the vg=
-// key for type=lvm-lv returns an error.
-func TestBackendFlag_Set_LvmLV_RejectsMissingVG(t *testing.T) {
-	t.Parallel()
-
-	var bf backendFlag
-	if err := bf.Set("type=lvm-lv"); err == nil {
-		t.Error("backendFlag.Set without vg= expected error, got nil")
-	}
-}
-
-// TestBackendFlag_Set_LvmLV_RejectsInvalidType verifies that "type=lvm" (not
-// "type=lvm-lv") is still rejected — only the canonical "lvm-lv" is valid.
-func TestBackendFlag_Set_LvmLV_RejectsInvalidType(t *testing.T) {
-	t.Parallel()
-
-	var bf backendFlag
-	if err := bf.Set("type=lvm,vg=data-vg"); err == nil {
-		t.Error("backendFlag.Set with type=lvm expected error, got nil")
-	}
-}
-
-// TestBackendFlag_Set_MixedZfsAndLvm verifies that multiple --backend flags
-// with mixed types (ZFS and LVM) can coexist in the same backendFlag slice.
-func TestBackendFlag_Set_MixedZfsAndLvm(t *testing.T) {
-	t.Parallel()
-
-	var bf backendFlag
-	inputs := []string{
-		"type=zfs-zvol,pool=tank",
-		"type=lvm-lv,vg=data-vg",
-		"type=lvm-lv,vg=ssd-vg,thinpool=fast-pool",
-	}
-	for _, v := range inputs {
-		if err := bf.Set(v); err != nil {
-			t.Fatalf("backendFlag.Set(%q): %v", v, err)
-		}
-	}
-
-	if got, want := len(bf), 3; got != want {
-		t.Fatalf("len(backendFlag) = %d; want %d", got, want)
-	}
-	if bf[0].typ != backendTypeZfsZvol {
-		t.Errorf("bf[0].typ = %q; want zfs-zvol", bf[0].typ)
-	}
-	if bf[1].typ != backendTypeLvmLV || bf[1].vg != testVGDataVG {
-		t.Errorf("bf[1]: typ=%q vg=%q; want lvm-lv data-vg", bf[1].typ, bf[1].vg)
-	}
-	if bf[2].typ != backendTypeLvmLV || bf[2].vg != "ssd-vg" || bf[2].thinpool != "fast-pool" {
-		t.Errorf("bf[2]: typ=%q vg=%q thinpool=%q; want lvm-lv ssd-vg fast-pool",
-			bf[2].typ, bf[2].vg, bf[2].thinpool)
-	}
-}
-
-// TestBackendFlag_String_LvmSpec verifies that String() produces the correct
-// representation for LVM-type backend specs.
-func TestBackendFlag_String_LvmSpec(t *testing.T) {
-	t.Parallel()
-
-	var bf backendFlag
-	if err := bf.Set("type=lvm-lv,vg=data-vg,thinpool=thin-pool-0"); err != nil {
-		t.Fatalf("backendFlag.Set: %v", err)
-	}
-
-	s := bf.String()
-	if !strings.Contains(s, "type=lvm-lv") {
-		t.Errorf("backendFlag.String() = %q; missing type=lvm-lv", s)
-	}
-	if !strings.Contains(s, "vg=data-vg") {
-		t.Errorf("backendFlag.String() = %q; missing vg=data-vg", s)
-	}
-	if !strings.Contains(s, "thinpool=thin-pool-0") {
-		t.Errorf("backendFlag.String() = %q; missing thinpool=thin-pool-0", s)
-	}
-}
-
-// TestBuildVolumeBackends_LvmLinear verifies that buildVolumeBackends creates
-// an LVM linear backend with the correct VG name as registry key.
-// The DevicePath of the resulting backend must follow /dev/<vg>/<lv>.
-func TestBuildVolumeBackends_LvmLinear(t *testing.T) {
-	t.Parallel()
-
-	var bf backendFlag
-	if err := bf.Set("type=lvm-lv,vg=data-vg"); err != nil {
-		t.Fatalf("backendFlag.Set: %v", err)
-	}
-
-	bs, err := buildVolumeBackends(bf)
-	if err != nil {
-		t.Fatalf("buildVolumeBackends: %v", err)
-	}
-
-	b, ok := bs["data-vg"]
-	if !ok {
-		t.Fatal("backend for VG 'data-vg' not found in registry")
-	}
-	if b == nil {
-		t.Fatal("LVM backend is nil")
-	}
-
-	devPath := b.DevicePath("data-vg/pvc-test")
-	want := "/dev/data-vg/pvc-test"
-	if devPath != want {
-		t.Errorf("DevicePath = %q; want %q", devPath, want)
-	}
-}
-
-// TestBuildVolumeBackends_LvmThin verifies that buildVolumeBackends creates
-// an LVM thin-provisioned backend when thinpool= is supplied.
-func TestBuildVolumeBackends_LvmThin(t *testing.T) {
-	t.Parallel()
-
-	var bf backendFlag
-	if err := bf.Set("type=lvm-lv,vg=ssd-vg,thinpool=fast-pool"); err != nil {
-		t.Fatalf("backendFlag.Set: %v", err)
-	}
-	bs, err := buildVolumeBackends(bf)
-	if err != nil {
-		t.Fatalf("buildVolumeBackends: %v", err)
-	}
-
-	b, ok := bs["ssd-vg"]
-	if !ok {
-		t.Fatal("backend for VG 'ssd-vg' not found in registry")
-	}
-	if b == nil {
-		t.Fatal("LVM thin backend is nil")
-	}
-
-	// The device path format is the same for linear and thin LVs.
-	devPath := b.DevicePath("ssd-vg/pvc-thin")
-	want := "/dev/ssd-vg/pvc-thin"
-	if devPath != want {
-		t.Errorf("DevicePath = %q; want %q", devPath, want)
-	}
-}
-
-// TestBuildVolumeBackends_LvmType verifies that the LVM backend returns
-// BACKEND_TYPE_LVM from its Type() method.
-func TestBuildVolumeBackends_LvmType(t *testing.T) {
-	t.Parallel()
-
-	var bf backendFlag
-	if err := bf.Set("type=lvm-lv,vg=my-vg"); err != nil {
-		t.Fatalf("backendFlag.Set: %v", err)
-	}
-
-	bs, err := buildVolumeBackends(bf)
-	if err != nil {
-		t.Fatalf("buildVolumeBackends: %v", err)
-	}
-	b := bs["my-vg"]
-	if b == nil {
-		t.Fatal("LVM backend is nil")
-	}
-
-	// Ensure the backend identifies itself as LVM (BackendType_BACKEND_TYPE_LVM = 3).
-	_ = b.Type() // compile-time guard that Type() exists on the interface
-}
-
-// TestBuildVolumeBackends_LvmAndZfsMixed verifies that a mixed registry
-// (ZFS + LVM) is built correctly: each backend is keyed by the correct
-// pool/VG identifier and returns the expected device path prefix.
+// TestBuildVolumeBackends_LvmAndZfsMixed verifies a mixed registry keys each
+// backend by its own pool/VG with the matching device path layout.
 func TestBuildVolumeBackends_LvmAndZfsMixed(t *testing.T) {
 	t.Parallel()
 
-	var bf backendFlag
-	if err := bf.Set("type=zfs-zvol,pool=tank"); err != nil {
-		t.Fatalf("bf.Set(zfs-zvol): %v", err)
-	}
-	if err := bf.Set("type=lvm-lv,vg=data-vg"); err != nil {
-		t.Fatalf("bf.Set(lvm-lv): %v", err)
-	}
-	bs, err := buildVolumeBackends(bf)
-	if err != nil {
-		t.Fatalf("buildVolumeBackends: %v", err)
-	}
-
+	bs := mustBuild(t, `
+backends:
+  - zfs: {pool: tank}
+  - lvm: {volumeGroup: data-vg}
+`)
 	if len(bs) != 2 {
 		t.Fatalf("len(registry) = %d; want 2", len(bs))
 	}
-
-	zfsB, zfsOK := bs["tank"]
-	if !zfsOK || zfsB == nil {
-		t.Error("ZFS backend for pool 'tank' not found or nil")
-	} else {
-		devPath := zfsB.DevicePath("tank/pvc-z")
-		if !strings.HasPrefix(devPath, "/dev/zvol/tank/") {
-			t.Errorf("ZFS DevicePath = %q; want /dev/zvol/tank/ prefix", devPath)
-		}
+	if got := bs["tank"].DevicePath("tank/pvc-z"); !strings.HasPrefix(got, "/dev/zvol/tank/") {
+		t.Errorf("ZFS DevicePath = %q; want /dev/zvol/tank/ prefix", got)
 	}
-
-	lvmB, lvmOK := bs["data-vg"]
-	if !lvmOK || lvmB == nil {
-		t.Error("LVM backend for VG 'data-vg' not found or nil")
-	} else {
-		devPath := lvmB.DevicePath("data-vg/pvc-l")
-		if !strings.HasPrefix(devPath, "/dev/data-vg/") {
-			t.Errorf("LVM DevicePath = %q; want /dev/data-vg/ prefix", devPath)
-		}
+	if got := bs["data-vg"].DevicePath("data-vg/pvc-l"); !strings.HasPrefix(got, "/dev/data-vg/") {
+		t.Errorf("LVM DevicePath = %q; want /dev/data-vg/ prefix", got)
 	}
 }
 
-// TestBackendFlag_VolumeNameExtraction verifies that the VG name is correctly
-// used as the registry key, matching the "<vg>/<lv-name>" volumeID format
-// used throughout the agent gRPC API.
-func TestBackendFlag_VolumeNameExtraction(t *testing.T) {
-	t.Parallel()
-
-	// Verifies the naming convention: volumeID = "<vg>/<lv-name>"
-	// The registry lookup uses the VG component of the volumeID.
-	tests := []struct {
-		volumeID   string
-		wantVG     string
-		wantLVName string
-	}{
-		{volumeID: "data-vg/pvc-abc123", wantVG: "data-vg", wantLVName: "pvc-abc123"},
-		{volumeID: "ssd-vg/pvc-xyz", wantVG: "ssd-vg", wantLVName: "pvc-xyz"},
-		{volumeID: "vg0/vol0", wantVG: "vg0", wantLVName: "vol0"},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.volumeID, func(t *testing.T) {
-			t.Parallel()
-			b := lvm.New(tc.wantVG, "")
-			devPath := b.DevicePath(tc.volumeID)
-			wantDevPath := "/dev/" + tc.wantVG + "/" + tc.wantLVName
-			if devPath != wantDevPath {
-				t.Errorf("DevicePath(%q) = %q; want %q", tc.volumeID, devPath, wantDevPath)
-			}
-		})
-	}
-}
-
-// TestBuildVolumeBackends_DuplicateKeyRejected verifies that two --backend
-// specs sharing the same pool/VG registry key are rejected with an error
-// instead of silently dropping all but the last spec.  The agent routes RPCs
-// to a backend by the volume ID's first path component alone, so two backends
-// behind one key are indistinguishable (issue #100).
+// TestBuildVolumeBackends_DuplicateKeyRejected verifies that two entries
+// sharing a pool/VG registry key are rejected instead of silently dropping
+// all but the last.  RPCs route by the volume ID's first path component
+// alone, so two backends behind one key are indistinguishable (issue #100).
 func TestBuildVolumeBackends_DuplicateKeyRejected(t *testing.T) {
 	t.Parallel()
 
-	cases := map[string]struct {
-		specs []string
-	}{
-		"same zfs pool, different parents": {
-			specs: []string{
-				"type=zfs-zvol,pool=tank,parent=fast",
-				"type=zfs-zvol,pool=tank,parent=bulk",
-			},
-		},
-		"same zfs pool, identical specs": {
-			specs: []string{
-				"type=zfs-zvol,pool=tank,parent=k8s",
-				"type=zfs-zvol,pool=tank,parent=k8s",
-			},
-		},
-		"same lvm vg, different thinpools": {
-			specs: []string{
-				"type=lvm-lv,vg=data-vg,thinpool=thin-a",
-				"type=lvm-lv,vg=data-vg,thinpool=thin-b",
-			},
-		},
-		"cross-type collision: zfs pool equals lvm vg": {
-			specs: []string{
-				"type=zfs-zvol,pool=shared",
-				"type=lvm-lv,vg=shared",
-			},
-		},
+	cases := map[string]string{
+		"same zfs pool, different parents": `
+backends:
+  - zfs: {pool: tank, parentDataset: fast}
+  - zfs: {pool: tank, parentDataset: bulk}
+`,
+		"same zfs pool, identical entries": `
+backends:
+  - zfs: {pool: tank, parentDataset: k8s}
+  - zfs: {pool: tank, parentDataset: k8s}
+`,
+		"same lvm vg, different thin pools": `
+backends:
+  - lvm: {volumeGroup: data-vg, thinPool: thin-a}
+  - lvm: {volumeGroup: data-vg, thinPool: thin-b}
+`,
+		"cross-backend collision: zfs pool equals lvm vg": `
+backends:
+  - zfs: {pool: shared}
+  - lvm: {volumeGroup: shared}
+`,
 	}
-
-	for name, tc := range cases {
+	for name, doc := range cases {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-
-			var bf backendFlag
-			for _, s := range tc.specs {
-				if err := bf.Set(s); err != nil {
-					t.Fatalf("backendFlag.Set(%q): %v", s, err)
-				}
-			}
-
-			bs, err := buildVolumeBackends(bf)
+			bs, err := buildVolumeBackends(mustParse(t, doc))
 			if err == nil {
-				t.Fatalf("buildVolumeBackends(%v) succeeded; want duplicate-key error", tc.specs)
+				t.Fatal("buildVolumeBackends succeeded; want duplicate-key error")
 			}
 			if bs != nil {
-				t.Errorf("buildVolumeBackends returned a registry alongside the error")
+				t.Error("buildVolumeBackends returned a registry alongside the error")
 			}
-			if !strings.Contains(err.Error(), "duplicate") {
-				t.Errorf("error %q should mention 'duplicate'", err)
+			if !strings.Contains(err.Error(), "duplicate") || !strings.Contains(err.Error(), "backends[1]") {
+				t.Errorf("error %q should name the duplicate and the conflicting entry backends[1]", err)
 			}
 		})
 	}
 }
 
-// TestBuildVolumeBackends_DistinctKeysAccepted verifies that different pools
-// and VGs — including a ZFS pool and an LVM VG used together — still build a
-// complete registry without error.
+// TestBuildVolumeBackends_DistinctKeysAccepted verifies distinct pools and
+// VGs build a complete registry.
 func TestBuildVolumeBackends_DistinctKeysAccepted(t *testing.T) {
 	t.Parallel()
 
-	var bf backendFlag
-	for _, s := range []string{
-		"type=zfs-zvol,pool=tank,parent=fast",
-		"type=zfs-zvol,pool=archive,parent=bulk",
-		"type=lvm-lv,vg=data-vg",
-		"type=lvm-lv,vg=ssd-vg,thinpool=thin-0",
-	} {
-		if err := bf.Set(s); err != nil {
-			t.Fatalf("backendFlag.Set(%q): %v", s, err)
-		}
-	}
-
-	bs, err := buildVolumeBackends(bf)
-	if err != nil {
-		t.Fatalf("buildVolumeBackends: unexpected error: %v", err)
-	}
+	bs := mustBuild(t, `
+backends:
+  - zfs: {pool: tank, parentDataset: fast}
+  - zfs: {pool: archive, parentDataset: bulk}
+  - lvm: {volumeGroup: data-vg}
+  - lvm: {volumeGroup: ssd-vg, thinPool: thin-0}
+`)
 	if len(bs) != 4 {
 		t.Fatalf("len(registry) = %d; want 4", len(bs))
 	}
@@ -760,5 +302,206 @@ func TestBuildVolumeBackends_DistinctKeysAccepted(t *testing.T) {
 		if bs[key] == nil {
 			t.Errorf("registry missing backend for %q", key)
 		}
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Config file decoding tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TestParseAgentConfig_ValidFullSpec verifies the full backend shape —
+// structural placement fields included — decodes with CRD defaults applied
+// (zfs.volumeType=zvol, lvm.provisioningMode=linear) and entry order kept.
+func TestParseAgentConfig_ValidFullSpec(t *testing.T) {
+	t.Parallel()
+
+	specs := mustParse(t, `
+backends:
+  - zfs: {pool: hot-data, parentDataset: k8s}
+  - zfs: {volumeType: zvol, pool: tank}
+  - lvm: {volumeGroup: data-vg}
+  - lvm: {volumeGroup: ssd-vg, thinPool: thin0, provisioningMode: thin}
+`)
+	want := []pillarv1alpha1.BackendSpec{
+		{ZFS: &pillarv1alpha1.ZFSBackendConfig{
+			VolumeType: pillarv1alpha1.ZFSVolumeTypeZvol, Pool: "hot-data", ParentDataset: "k8s",
+		}},
+		{ZFS: &pillarv1alpha1.ZFSBackendConfig{VolumeType: pillarv1alpha1.ZFSVolumeTypeZvol, Pool: "tank"}},
+		{LVM: &pillarv1alpha1.LVMBackendConfig{
+			VolumeGroup: "data-vg", ProvisioningMode: pillarv1alpha1.LVMProvisioningModeLinear,
+		}},
+		{LVM: &pillarv1alpha1.LVMBackendConfig{
+			VolumeGroup: "ssd-vg", ThinPool: "thin0", ProvisioningMode: pillarv1alpha1.LVMProvisioningModeThin,
+		}},
+	}
+	if !reflect.DeepEqual(specs, want) {
+		t.Errorf("specs = %s; want %s (defaults volumeType=zvol, provisioningMode=linear applied)",
+			describeSpecs(specs), describeSpecs(want))
+	}
+}
+
+func describeSpecs(specs []pillarv1alpha1.BackendSpec) string {
+	parts := make([]string, 0, len(specs))
+	for _, s := range specs {
+		switch {
+		case s.ZFS != nil:
+			parts = append(parts, fmt.Sprintf("zfs%+v", *s.ZFS))
+		case s.LVM != nil:
+			parts = append(parts, fmt.Sprintf("lvm%+v", *s.LVM))
+		default:
+			parts = append(parts, "{}")
+		}
+	}
+	return "[" + strings.Join(parts, " ") + "]"
+}
+
+// TestParseAgentConfig_Rejected verifies every invalid document is refused
+// with an error naming the config file and the offending path.
+func TestParseAgentConfig_Rejected(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]struct {
+		doc     string
+		wantErr []string
+	}{
+		"empty document": {
+			doc:     "",
+			wantErr: []string{"at least one backend is required"},
+		},
+		"empty backends list": {
+			doc:     "backends: []\n",
+			wantErr: []string{"backends: at least one backend is required"},
+		},
+		"backends not a list": {
+			doc:     "backends:\n  zfs: {pool: tank}\n",
+			wantErr: []string{"backends: expected a list"},
+		},
+		"unknown top-level field": {
+			doc:     "backends:\n  - zfs: {pool: tank}\nlisten: \":9500\"\n",
+			wantErr: []string{`unknown field "listen"`},
+		},
+		"duplicate key keeps neither value": {
+			doc:     "backends:\n  - zfs: {pool: tank, pool: other}\n",
+			wantErr: []string{`mapping key "pool" already defined`},
+		},
+		"duplicate top-level key": {
+			doc:     "backends:\n  - zfs: {pool: tank}\nbackends:\n  - lvm: {volumeGroup: vg0}\n",
+			wantErr: []string{`mapping key "backends" already defined`},
+		},
+		"unknown member field": {
+			doc:     "backends:\n  - zfs: {pool: tank, bogus: x}\n",
+			wantErr: []string{"backends[0]", "unknown field zfs.bogus"},
+		},
+		"removed flat vocabulary (type/pool)": {
+			doc:     "backends:\n  - type: zfs-zvol\n    pool: tank\n",
+			wantErr: []string{"backends[0]", `unknown field "pool"`},
+		},
+		"removed lvm vocabulary (vg/thinpool)": {
+			doc:     "backends:\n  - lvm: {vg: data-vg, thinpool: t0}\n",
+			wantErr: []string{"backends[0]", "unknown field lvm.thinpool"},
+		},
+		"unimplemented backend member": {
+			doc:     "backends:\n  - zfs: {pool: tank}\n  - dir: {path: /srv}\n",
+			wantErr: []string{"backends[1]", `unknown field "dir"`},
+		},
+		"both members in one entry": {
+			doc:     "backends:\n  - zfs: {pool: tank}\n    lvm: {volumeGroup: vg0}\n",
+			wantErr: []string{"backends[0]", "exactly one of"},
+		},
+		"null entry": {
+			doc:     "backends:\n  - zfs: {pool: tank}\n  -\n",
+			wantErr: []string{"backends[1]", "entry is empty"},
+		},
+		"unimplemented zfs volumeType": {
+			doc:     "backends:\n  - zfs: {volumeType: dataset, pool: tank}\n",
+			wantErr: []string{"backends[0]", "zfs.volumeType"},
+		},
+		"zfs pool missing": {
+			doc:     "backends:\n  - zfs: {parentDataset: k8s}\n",
+			wantErr: []string{"backends[0]", "zfs.pool is required"},
+		},
+		"zfs pool empty": {
+			doc:     "backends:\n  - zfs: {pool: \"\"}\n",
+			wantErr: []string{"backends[0]", "zfs.pool"},
+		},
+		"zfs properties are per-volume": {
+			doc:     "backends:\n  - zfs: {pool: tank, properties: {compression: lz4}}\n",
+			wantErr: []string{"backends[0]", "zfs.properties"},
+		},
+		"lvm volumeGroup missing": {
+			doc:     "backends:\n  - lvm: {thinPool: t0}\n",
+			wantErr: []string{"backends[0]", "lvm.volumeGroup"},
+		},
+		"lvm volumeGroup illegal name": {
+			doc:     "backends:\n  - lvm: {volumeGroup: -bad}\n",
+			wantErr: []string{"backends[0]", "lvm.volumeGroup"},
+		},
+		"lvm provisioningMode enum": {
+			doc:     "backends:\n  - lvm: {volumeGroup: vg0, provisioningMode: striped}\n",
+			wantErr: []string{"backends[0]", "lvm.provisioningMode"},
+		},
+		"lvm thin mode without thinPool": {
+			doc:     "backends:\n  - lvm: {volumeGroup: vg0, provisioningMode: thin}\n",
+			wantErr: []string{"backends[0]", "requires lvm.thinPool"},
+		},
+		"invalid YAML": {
+			doc:     "backends: [\n",
+			wantErr: []string{"invalid YAML"},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			specs, err := parseAgentConfig(testConfigSource, []byte(tc.doc))
+			if err == nil {
+				t.Fatalf("parseAgentConfig succeeded with %+v; want error", specs)
+			}
+			for _, want := range append([]string{testConfigSource}, tc.wantErr...) {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not contain %q", err, want)
+				}
+			}
+		})
+	}
+}
+
+// TestParseAgentConfig_RejectsEscapingParent verifies that a parentDataset
+// leaving the pool is refused at startup: "../k8s" would create volumes in
+// pool "k8s" while the agent reports a layout inside "tank" (issue #113).
+// A nested dataset path stays valid.
+func TestParseAgentConfig_RejectsEscapingParent(t *testing.T) {
+	t.Parallel()
+
+	for _, parent := range []string{"../k8s", "k8s/../../other", "./k8s", "."} {
+		doc := fmt.Sprintf("backends:\n  - zfs: {pool: tank, parentDataset: %q}\n", parent)
+		_, err := parseAgentConfig(testConfigSource, []byte(doc))
+		if err == nil || !strings.Contains(err.Error(), "zfs.parentDataset") {
+			t.Errorf("parentDataset %q: err = %v; want zfs.parentDataset rejection", parent, err)
+		}
+	}
+	mustParse(t, "backends:\n  - zfs: {pool: tank, parentDataset: k8s/sub}\n")
+}
+
+// TestLoadAgentConfig_File verifies loading from disk: a valid file decodes
+// and a missing file is an error naming the path.
+func TestLoadAgentConfig_File(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("backends:\n  - lvm: {volumeGroup: data-vg}\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	specs, err := loadAgentConfig(path)
+	if err != nil {
+		t.Fatalf("loadAgentConfig: %v", err)
+	}
+	if len(specs) != 1 || specs[0].PoolName() != "data-vg" {
+		t.Errorf("specs = %+v; want one lvm backend data-vg", specs)
+	}
+
+	missing := filepath.Join(dir, "absent.yaml")
+	if _, err := loadAgentConfig(missing); err == nil || !strings.Contains(err.Error(), missing) {
+		t.Errorf("loadAgentConfig(missing) err = %v; want error naming %s", err, missing)
 	}
 }

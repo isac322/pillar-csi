@@ -12,7 +12,7 @@ package e2e
 //  1. Files are excluded when running unit/integration tests without -tags=e2e.
 //  2. Files with exactly "//go:build e2e" are included when `make test-e2e`
 //     passes -tags=e2e to go test.
-//  3. Files with "//go:build e2e && e2e_helm" (Helm-only specs: E34, E35,
+//  3. Files with "//go:build e2e && e2e_helm" (Helm-only specs:
 //     F27–F31) are included only when both tags are active; they are excluded
 //     from the default `make test-e2e` run and counted as non-default-profile.
 //  4. No real-backend spec file accidentally compiles in all builds (which
@@ -23,7 +23,7 @@ package e2e
 //
 // Any file matching *_e2e_test.go or *_e2e.go (non-test helpers) in the
 // test/e2e/ directory (top-level only, not subdirectories). These files
-// contain Ginkgo Describe blocks that exercise the real ZFS / LVM / iSCSI /
+// contain Ginkgo Describe blocks that exercise the real ZFS / LVM /
 // NVMe-oF storage backends inside a Kind cluster and therefore MUST be
 // compiled only when -tags=e2e is active.
 //
@@ -55,7 +55,7 @@ import (
 // "//go:build e2e" (or "//go:build e2e && ...") as its very first line.
 //
 // Rationale: these files contain Ginkgo specs that require a live Kind cluster
-// with real ZFS/LVM/iSCSI/NVMe-oF backends. Compiling them without
+// with real ZFS/LVM/NVMe-oF backends. Compiling them without
 // -tags=e2e would introduce unwanted dependencies (docker exec, kubeconfig,
 // real storage drivers) into every unit test binary, and would cause test
 // failures on developer machines without the storage infrastructure.

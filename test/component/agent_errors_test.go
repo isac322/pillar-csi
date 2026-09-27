@@ -202,6 +202,7 @@ func TestAgentErrors_CreateVolume_EmptyVolumeID(t *testing.T) {
 
 	_, err := srv.CreateVolume(context.Background(), &agentv1.CreateVolumeRequest{
 		VolumeId:      "",
+		BackendType:   agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
 		Fence:         testFence(t),
 		CapacityBytes: 1 << 30,
 	})
@@ -322,6 +323,7 @@ func TestAgentErrors_CreateVolume_BackendContextError(t *testing.T) {
 
 	_, err := srv.CreateVolume(context.Background(), &agentv1.CreateVolumeRequest{
 		VolumeId:      compTestVolumeID,
+		BackendType:   agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
 		Fence:         testFence(t),
 		CapacityBytes: 1 << 30,
 	})
@@ -483,6 +485,7 @@ func TestAgentErrors_CreateVolume_DiskFullPropagation(t *testing.T) {
 
 	_, err := srv.CreateVolume(context.Background(), &agentv1.CreateVolumeRequest{
 		VolumeId:      compTestVolumeID,
+		BackendType:   agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
 		Fence:         testFence(t),
 		CapacityBytes: 1 << 30,
 	})

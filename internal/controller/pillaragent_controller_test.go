@@ -200,7 +200,7 @@ var _ = Describe("PillarAgent Controller", func() {
 				Spec: pillarcsiv1alpha1.PillarStoreSpec{
 					AgentRef: targetName,
 					Backend: pillarcsiv1alpha1.BackendSpec{
-						Type: pillarcsiv1alpha1.BackendTypeDir,
+						ZFS: &pillarcsiv1alpha1.ZFSBackendConfig{Pool: "tank"},
 					},
 				},
 			}
@@ -349,7 +349,7 @@ var _ = Describe("PillarAgent Controller", func() {
 						Spec: pillarcsiv1alpha1.PillarStoreSpec{
 							AgentRef: multiTargetName,
 							Backend: pillarcsiv1alpha1.BackendSpec{
-								Type: pillarcsiv1alpha1.BackendTypeDir,
+								ZFS: &pillarcsiv1alpha1.ZFSBackendConfig{Pool: "tank"},
 							},
 						},
 					}

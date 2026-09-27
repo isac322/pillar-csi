@@ -164,7 +164,7 @@ func (n *NodeServer) NodeExpandVolume(
 }
 
 // expandFsType returns the filesystem type NodeExpandVolume resizes.  The
-// type NodeStageVolume recorded in the stage state wins: a PVC fs-override
+// type NodeStageVolume recorded in the stage state wins: a filesystem document
 // can format the volume with a type other than the PV's csi.fsType, and
 // NodeExpandVolume carries no VolumeContext.  Volumes staged before the stage
 // state recorded the type fall back to the VolumeCapability, then to the

@@ -179,8 +179,8 @@ func (r *PillarProtocolReconciler) reconcileNormal(
 		ObservedGeneration: protocol.Generation,
 		Reason:             "ProtocolConfigured",
 		Message: fmt.Sprintf(
-			"PillarProtocol is configured with type %q; referenced by %d binding(s) across %d active target(s)",
-			protocol.Spec.Type, count, len(activeAgents),
+			"PillarProtocol is configured with protocol %q; referenced by %d binding(s) across %d active target(s)",
+			protocol.Spec.Protocol.Kind(), count, len(activeAgents),
 		),
 	})
 

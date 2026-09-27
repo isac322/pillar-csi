@@ -734,8 +734,8 @@ var _ = Describe("E27: Helm 차트 설치 및 릴리스 검증", Label("helm", "
 			columns []string
 		}{
 			{"E27.217r", "pillaragents." + crdGroup, "PillarAgent", []string{"Address", "Agent", "Ready", "Age"}},
-			{"E27.217s", "pillarstores." + crdGroup, "PillarStore", []string{"Target", "Backend", "Available", "Ready"}},
-			{"E27.217t", "pillarprotocols." + crdGroup, "PillarProtocol", []string{"Type", "Bindings", "Ready"}},
+			{"E27.217s", "pillarstores." + crdGroup, "PillarStore", []string{"Target", "Available", "Ready"}},
+			{"E27.217t", "pillarprotocols." + crdGroup, "PillarProtocol", []string{"Bindings", "Ready"}},
 			{"E27.217u", "pillarstorageclasses." + crdGroup, "PillarStorageClass", []string{"Pool", "Protocol", "StorageClass", "Ready"}},
 		}
 

@@ -16,6 +16,7 @@ func assertE9_CreateAndDeleteVolume(tc documentedCase) {
 
 	fence := agentLifecycleFence("tank/pvc-e9-create")
 	_, err := env.client.CreateVolume(env.ctx, &agentv1.CreateVolumeRequest{
+		BackendType:   agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
 		VolumeId:      "tank/pvc-e9-create",
 		CapacityBytes: 10 << 20,
 		Fence:         fence,
@@ -35,6 +36,7 @@ func assertE9_ExportAndUnexportVolume(tc documentedCase) {
 
 	fence := agentLifecycleFence("tank/pvc-e9-export")
 	_, err := env.client.CreateVolume(env.ctx, &agentv1.CreateVolumeRequest{
+		BackendType:   agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
 		VolumeId:      "tank/pvc-e9-export",
 		CapacityBytes: 10 << 20,
 		Fence:         fence,
@@ -63,6 +65,7 @@ func assertE9_AllowAndDenyInitiator(tc documentedCase) {
 
 	fence := agentLifecycleFence("tank/pvc-e9-initiator")
 	_, err := env.client.CreateVolume(env.ctx, &agentv1.CreateVolumeRequest{
+		BackendType:   agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
 		VolumeId:      "tank/pvc-e9-initiator",
 		CapacityBytes: 10 << 20,
 		Fence:         fence,
@@ -100,6 +103,7 @@ func assertE9_ExpandVolume(tc documentedCase) {
 
 	fence := agentLifecycleFence("tank/pvc-e9-expand")
 	_, err := env.client.CreateVolume(env.ctx, &agentv1.CreateVolumeRequest{
+		BackendType:   agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
 		VolumeId:      "tank/pvc-e9-expand",
 		CapacityBytes: 10 << 20,
 		Fence:         fence,

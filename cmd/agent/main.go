@@ -26,7 +26,6 @@ import (
 	"net"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -34,6 +33,7 @@ import (
 	healthsrv "google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 
+	pillarv1alpha1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
 	agentv1 "github.com/bhyoo/pillar-csi/gen/go/pillar_csi/agent/v1"
 	"github.com/bhyoo/pillar-csi/internal/agent"
 	"github.com/bhyoo/pillar-csi/internal/agent/backend"
@@ -44,203 +44,42 @@ import (
 	"github.com/bhyoo/pillar-csi/internal/tlscreds"
 )
 
-const (
-	backendTypeZfsZvol = "zfs-zvol"
-	backendTypeLvmLV   = "lvm-lv"
-)
-
-// backendSpec holds the parsed fields from a single --backend flag value.
-// The flag value is a comma-separated list of key=value pairs, e.g.:
+// buildVolumeBackends constructs the pool→backend registry from the agent
+// config file's backends entries.  For ZFS backends the registry key is the
+// pool name.  For LVM backends the registry key is the VG name (used as the
+// "pool" prefix in VolumeIDs of the form "<vg>/<lv-name>").
 //
-//	type=zfs-zvol,pool=tank
-//	type=zfs-zvol,pool=hot-data,parent=k8s
-//	type=lvm-lv,vg=data-vg
-//	type=lvm-lv,vg=data-vg,thinpool=thin-pool-0
-type backendSpec struct {
-	// typ is the backend type identifier.  Supported values: "zfs-zvol", "lvm-lv".
-	typ string
-
-	// pool is the storage pool name (ZFS pool for type=zfs-zvol).
-	// Not used for lvm-lv; use vg instead.
-	pool string
-
-	// parent is the optional parent dataset path within the ZFS pool.
-	// For ZFS this maps to the parentDataset argument of zfs.New.
-	// Not used for lvm-lv.
-	parent string
-
-	// vg is the LVM Volume Group name (required for type=lvm-lv).
-	// Used as the backend registry key and passed to lvm.New.
-	vg string
-
-	// thinpool is the LVM thin pool LV name within vg (optional for type=lvm-lv).
-	// When empty the backend operates in linear provisioning mode.
-	// When non-empty the backend creates thin-provisioned LVs inside this pool.
-	thinpool string
-}
-
-// backendFlag is a repeatable flag that accumulates one backendSpec per
-// --backend invocation.  It satisfies flag.Value so that the standard flag
-// package can be used without a third-party CLI library.
-//
-// Usage:
-//
-//	pillar-agent --backend type=zfs-zvol,pool=tank
-//	pillar-agent --backend type=zfs-zvol,pool=tank,parent=k8s --backend type=zfs-zvol,pool=hot-data
-//	pillar-agent --backend type=lvm-lv,vg=data-vg
-//	pillar-agent --backend type=lvm-lv,vg=data-vg,thinpool=thin-pool-0
-type backendFlag []backendSpec
-
-// String returns a human-readable summary of all registered backend specs.
-// The flag package calls this when printing usage / defaults.
-func (b *backendFlag) String() string {
-	if b == nil || len(*b) == 0 {
-		return ""
-	}
-	parts := make([]string, len(*b))
-	for i, s := range *b {
-		parts[i] = s.String()
-	}
-	return strings.Join(parts, " ")
-}
-
-// String renders the spec in its --backend flag form,
-// e.g. "type=zfs-zvol,pool=tank,parent=k8s".
-func (s backendSpec) String() string {
-	out := "type=" + s.typ
-	switch s.typ {
-	case backendTypeLvmLV:
-		out += ",vg=" + s.vg
-		if s.thinpool != "" {
-			out += ",thinpool=" + s.thinpool
-		}
-	default:
-		out += ",pool=" + s.pool
-		if s.parent != "" {
-			out += ",parent=" + s.parent
-		}
-	}
-	return out
-}
-
-// registryKey returns the key under which the backend is registered: the ZFS
-// pool name or the LVM VG name.  It is the prefix of every volume ID routed to
-// this backend ("<key>/<volume-name>"), so it must be unique across all specs.
-func (s backendSpec) registryKey() string {
-	if s.typ == backendTypeLvmLV {
-		return s.vg
-	}
-	return s.pool
-}
-
-// Set parses a single --backend flag value and appends the resulting
-// backendSpec.  Called by flag.Parse for each --backend occurrence.
-//
-// Supported key sets per backend type:
-//
-//	type=zfs-zvol  — pool (required), parent (optional)
-//	type=lvm-lv    — vg (required), thinpool (optional)
-//
-// An unknown key causes an error so that typos are caught early.
-// Supported keys across all types: type, pool, parent, vg, thinpool.
-func (b *backendFlag) Set(v string) error {
-	if v == "" {
-		return fmt.Errorf("backend: value must not be empty")
-	}
-
-	spec := backendSpec{}
-	for kv := range strings.SplitSeq(v, ",") {
-		kv = strings.TrimSpace(kv)
-		if kv == "" {
-			continue
-		}
-		key, val, ok := strings.Cut(kv, "=")
-		if !ok {
-			return fmt.Errorf("backend: %q is not a key=value pair", kv)
-		}
-		key = strings.TrimSpace(key)
-		val = strings.TrimSpace(val)
-		switch key {
-		case "type":
-			spec.typ = val
-		case "pool":
-			spec.pool = val
-		case "parent":
-			spec.parent = val
-		case "vg":
-			spec.vg = val
-		case "thinpool":
-			spec.thinpool = val
-		default:
-			return fmt.Errorf("backend: unknown key %q (supported: type, pool, parent, vg, thinpool)", key)
-		}
-	}
-
-	err := spec.validate()
-	if err != nil {
-		return err
-	}
-	*b = append(*b, spec)
-	return nil
-}
-
-// validate checks the per-type required keys of a parsed --backend spec.
-func (s backendSpec) validate() error {
-	if s.typ == "" {
-		return fmt.Errorf("backend: type= key is required")
-	}
-
-	switch s.typ {
-	case backendTypeZfsZvol:
-		if s.pool == "" {
-			return fmt.Errorf("backend: pool= key is required for type=%s", backendTypeZfsZvol)
-		}
-		// parent= names a dataset inside the pool: a "." or ".." component
-		// would place volumes elsewhere (e.g. parent=../k8s creates in pool
-		// "k8s") while the reported layout claims otherwise.
-		for comp := range strings.SplitSeq(s.parent, "/") {
-			if comp == "." || comp == ".." {
-				return fmt.Errorf("backend: parent=%q must be a dataset path inside pool %q "+
-					"(no %q components)", s.parent, s.pool, comp)
-			}
-		}
-	case backendTypeLvmLV:
-		if s.vg == "" {
-			return fmt.Errorf("backend: vg= key is required for type=%s", backendTypeLvmLV)
-		}
-	default:
-		return fmt.Errorf("backend: unsupported type %q (supported: %s, %s)", s.typ, backendTypeZfsZvol, backendTypeLvmLV)
-	}
-	return nil
-}
-
-// buildVolumeBackends constructs the pool→backend registry from --backend flags.
-// For ZFS backends the registry key is the pool name.
-// For LVM backends the registry key is the VG name (used as the "pool" prefix
-// in VolumeIDs of the form "<vg>/<lv-name>").
-//
-// The key must be unique across all specs: agent RPCs route a volume to its
+// The key must be unique across all entries: agent RPCs route a volume to its
 // backend by the volume ID's first path component alone (pool name or VG
 // name), so two backends sharing a key are indistinguishable.  Rather than
-// silently dropping all but the last spec, a duplicate key is a fatal
+// silently dropping all but the last entry, a duplicate key is a fatal
 // configuration error.
-func buildVolumeBackends(specs backendFlag) (map[string]backend.VolumeBackend, error) {
+//
+// Per-volume settings (LVM provisioningMode) are resolved by the controller
+// and sent with each CreateVolume, so the backend only needs placement.
+func buildVolumeBackends(specs []pillarv1alpha1.BackendSpec) (map[string]backend.VolumeBackend, error) {
 	m := make(map[string]backend.VolumeBackend, len(specs))
-	seen := make(map[string]backendSpec, len(specs))
-	for _, spec := range specs {
-		key := spec.registryKey()
+	seen := make(map[string]int, len(specs))
+	for i, spec := range specs {
+		key := spec.PoolName()
 		if prev, dup := seen[key]; dup {
 			return nil, fmt.Errorf(
-				"backend: duplicate pool/VG %q: %q conflicts with %q; "+
-					"pool/VG names must be unique across --backend flags",
-				key, spec.String(), prev.String())
+				"agent config: duplicate pool/VG %q: backends[%d] (%s) conflicts with backends[%d] (%s); "+
+					"pool/VG names must be unique across backends",
+				key, i, spec.Kind(), prev, specs[prev].Kind())
 		}
-		seen[key] = spec
-		switch spec.typ {
-		case backendTypeLvmLV:
-			m[key] = lvm.New(spec.vg, spec.thinpool)
-		default: // backendTypeZfsZvol
-			m[key] = zfs.New(spec.pool, spec.parent)
+		seen[key] = i
+		switch {
+		case spec.ZFS != nil:
+			m[key] = zfs.New(spec.ZFS.Pool, spec.ZFS.ParentDataset)
+		case spec.LVM != nil:
+			mode := lvm.ProvisionModeLinear
+			if spec.LVM.ProvisioningMode == pillarv1alpha1.LVMProvisioningModeThin {
+				mode = lvm.ProvisionModeThin
+			}
+			m[key] = lvm.New(spec.LVM.VolumeGroup, spec.LVM.ThinPool).WithMode(mode)
+		default:
+			return nil, fmt.Errorf("agent config: backends[%d]: exactly one of lvm, zfs must be set", i)
 		}
 	}
 	return m, nil
@@ -263,22 +102,15 @@ func buildGRPCOpts(tlsEnabled bool, cert, key, ca string) ([]grpc.ServerOption, 
 }
 
 func main() {
-	listenAddr := flag.String("listen-address", ":50051", "gRPC listen address (host:port)")
+	listenAddr := flag.String("listen-address", ":9500", "gRPC listen address (host:port)")
 	gracePeriod := flag.Duration("shutdown-grace-period", 5*time.Second,
 		"Time to wait between health=NOT_SERVING and GracefulStop, giving "+
 			"any already-routed RPCs time to complete.")
-
-	// --backend: pluggable backend flag.
-	// ZFS:  type=zfs-zvol,pool=<pool>[,parent=<dataset>]
-	// LVM:  type=lvm-lv,vg=<vg>[,thinpool=<pool>]
-	var backends backendFlag
-	flag.Var(&backends, "backend",
-		"Backend spec as comma-separated key=value pairs.\n"+
-			"ZFS:  type=zfs-zvol,pool=<pool>[,parent=<dataset>]\n"+
-			"LVM:  type=lvm-lv,vg=<vg>[,thinpool=<thinpool>]\n"+
-			"Example (ZFS):  --backend type=zfs-zvol,pool=tank,parent=k8s\n"+
-			"Example (LVM):  --backend type=lvm-lv,vg=data-vg,thinpool=thin-pool-0")
-
+	configPath := flag.String("config", "",
+		"Path to the backend placement config file (required). YAML, same shape as the chart's agent.backends:\n"+
+			"  backends:\n"+
+			"    - zfs: {pool: tank, parentDataset: k8s}\n"+
+			"    - lvm: {volumeGroup: data-vg, thinPool: thin-pool-0}")
 	cfgRoot := flag.String("configfs-root", resolvedDefaultConfigfsRoot(),
 		"nvmet configfs root directory (override in tests)")
 	tlsCert := flag.String("tls-cert", "", "path to PEM server certificate for mTLS")
@@ -287,11 +119,8 @@ func main() {
 
 	flag.Parse()
 
-	if len(backends) == 0 {
-		fmt.Fprintln(os.Stderr,
-			"error: at least one backend is required; examples:\n"+
-				"  --backend type=zfs-zvol,pool=<pool>\n"+
-				"  --backend type=lvm-lv,vg=<vg>")
+	if *configPath == "" {
+		fmt.Fprintln(os.Stderr, "error: --config is required (path to the agent backend config file)")
 		os.Exit(1)
 	}
 
@@ -301,7 +130,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	volumeBackends, err := buildVolumeBackends(backends)
+	backendSpecs, err := loadAgentConfig(*configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	volumeBackends, err := buildVolumeBackends(backendSpecs)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)

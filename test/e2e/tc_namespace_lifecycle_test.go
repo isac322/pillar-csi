@@ -172,7 +172,7 @@ var _ = Describe("Namespace lifecycle integration", Label("ac:3.2", "framework",
 		})
 
 		It("3.2.10 DerivedNamespace conforms to Kubernetes DNS label rules", func() {
-			tcIDs := []string{"E1.1", "E3.1", "F27.1", "E33.100", "E34.285"}
+			tcIDs := []string{"E1.1", "E3.1", "F27.1", "E33.100", "E33.285"}
 			for _, tcID := range tcIDs {
 				scope, err := NewTestCaseScope(tcID)
 				Expect(err).NotTo(HaveOccurred())

@@ -20,9 +20,6 @@ spec:
     - jsonPath: .spec.agentRef
       name: Target
       type: string
-    - jsonPath: .spec.backend.type
-      name: Backend
-      type: string
     - jsonPath: .status.capacity.available
       name: Available
       type: string
@@ -58,7 +55,7 @@ spec:
           metadata:
             type: object
           spec:
-            description: spec defines the desired state of PillarStore.
+            description: PillarStoreSpec defines the desired state of PillarStore.
             properties:
               agentRef:
                 description: agentRef is the name of the PillarAgent this pool lives
@@ -66,12 +63,12 @@ spec:
                 minLength: 1
                 type: string
               backend:
-                description: backend describes the storage technology and pool to
-                  use.
+                description: |-
+                  backend describes the storage backend and pool to use.  Exactly one
+                  member (zfs or lvm) must be set.
                 properties:
                   lvm:
-                    description: lvm holds LVM-specific configuration; required when
-                      type is lvm-lv.
+                    description: lvm holds LVM-specific configuration.
                     properties:
                       provisioningMode:
                         default: linear
@@ -90,10 +87,10 @@ spec:
                           (e.g. "thin-pool-0").  When non-empty the backend operates in thin-
                           provisioned mode; when empty it creates fully-allocated linear LVs.
                           The thin pool must be pre-created before the agent starts, and must
-                          equal the thinpool= of the agent's --backend flag for this VG (chart
-                          agent.backends[].thinpool; empty = none): on a mismatch the store is not
-                          Ready (PoolDiscovered=False, BackendLayoutMismatch) and CreateVolume
-                          fails instead of using another thin pool.
+                          equal the thinPool of the agent's backend configuration for this VG
+                          (chart agent.backends[].lvm.thinPool; empty = none): on a mismatch the
+                          store is not Ready (PoolDiscovered=False, BackendLayoutMismatch) and
+                          CreateVolume fails instead of using another thin pool.
                         type: string
                       volumeGroup:
                         description: |-
@@ -105,26 +102,17 @@ spec:
                     required:
                     - volumeGroup
                     type: object
-                  type:
-                    description: type identifies the backend driver.
-                    enum:
-                    - zfs-zvol
-                    - zfs-dataset
-                    - lvm-lv
-                    - dir
-                    type: string
                   zfs:
-                    description: zfs holds ZFS-specific configuration; required when
-                      type is zfs-zvol or zfs-dataset.
+                    description: zfs holds ZFS-specific configuration.
                     properties:
                       parentDataset:
                         description: |-
                           parentDataset is the ZFS dataset path under which pillar-csi will
-                          create per-volume datasets or zvols (e.g. "k8s").  It must equal the
-                          parent= of the agent's --backend flag for this pool (chart
-                          agent.backends[].parent; empty = pool root): on a mismatch the store is
-                          not Ready (PoolDiscovered=False, BackendLayoutMismatch) and CreateVolume
-                          fails instead of placing volumes elsewhere.
+                          create per-volume zvols (e.g. "k8s").  It must equal the parentDataset
+                          of the agent's backend configuration for this pool (chart
+                          agent.backends[].zfs.parentDataset; empty = pool root): on a mismatch
+                          the store is not Ready (PoolDiscovered=False, BackendLayoutMismatch)
+                          and CreateVolume fails instead of placing volumes elsewhere.
                         type: string
                       pool:
                         description: pool is the ZFS pool name (e.g. "hot-data").
@@ -137,18 +125,26 @@ spec:
                           properties are arbitrary ZFS properties applied to every volume created
                           in this pool (e.g. compression, volblocksize).
                         type: object
+                      volumeType:
+                        default: zvol
+                        description: volumeType selects the ZFS volume kind.  Only
+                          "zvol" is implemented.
+                        enum:
+                        - zvol
+                        type: string
                     required:
                     - pool
                     type: object
-                required:
-                - type
                 type: object
+                x-kubernetes-validations:
+                - message: exactly one of zfs or lvm must be set
+                  rule: '(has(self.zfs) ? 1 : 0) + (has(self.lvm) ? 1 : 0) == 1'
             required:
             - agentRef
             - backend
             type: object
           status:
-            description: status defines the observed state of PillarStore.
+            description: PillarStoreStatus defines the observed state of PillarStore.
             properties:
               capacity:
                 description: capacity reflects the latest capacity reading for this
@@ -187,7 +183,7 @@ spec:
                                           and the agent creates volumes in it where the store declares
                                           (zfs.parentDataset, lvm.thinPool); reason BackendLayoutMismatch
                                           otherwise.
-                  - "BackendSupported"  – the backend type is listed in the agent's capabilities.
+                  - "BackendSupported"  – the backend is listed in the agent's capabilities.
                   - "Ready"             – all checks pass; the pool can provision volumes.
                 items:
                   description: Condition contains details for one aspect of the current
@@ -248,8 +244,6 @@ spec:
                 - type
                 x-kubernetes-list-type: map
             type: object
-        required:
-        - spec
         type: object
     served: true
     storage: true

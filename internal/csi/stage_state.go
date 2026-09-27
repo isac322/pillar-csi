@@ -28,9 +28,6 @@ import "fmt"
 const (
 	// ProtocolNVMeoFTCP identifies the NVMe-oF TCP transport protocol.
 	ProtocolNVMeoFTCP = "nvmeof-tcp"
-	ProtocolISCSI     = "iscsi"
-	ProtocolNFS       = "nfs"
-	ProtocolSMB       = "smb"
 )
 
 // CSI access-type string constants persisted in nodeStageState.AccessType so
@@ -56,8 +53,8 @@ const (
 // approach) so that each storage protocol can store its own typed teardown
 // parameters without sharing a generic map.
 //
-// Exactly one of NVMeoF, ISCSI, NFS, or SMB will be non-nil, identified by
-// the ProtocolType tag.  This ensures that the fields required by each
+// The sub-struct matching the ProtocolType tag is non-nil (NVMeoF is the
+// only implemented protocol).  This ensures that the fields required by each
 // protocol's Detach() implementation are present and type-checked at compile
 // time rather than discovered at runtime as missing map keys.
 //
@@ -66,7 +63,7 @@ const (
 // readStageState performs in-place migration from the old format.
 type nodeStageState struct {
 	// ProtocolType identifies which typed sub-struct is populated.
-	// Known values: "nvmeof-tcp", "iscsi", "nfs", "smb".
+	// Known values: "nvmeof-tcp".
 	ProtocolType string `json:"protocol_type"`
 
 	// AccessType records whether NodeStageVolume staged the volume in
@@ -79,7 +76,7 @@ type nodeStageState struct {
 
 	// FsType is the filesystem type NodeStageVolume formatted (if the device
 	// was blank) and mounted a Filesystem-mode volume with.  It can differ
-	// from the PV's csi.fsType when a PVC fs-override chose the type, and
+	// from the PV's csi.fsType when a filesystem document chose the type, and
 	// NodeExpandVolume — which receives no VolumeContext — reads it to pick
 	// the matching resize tool.  Empty for Block mode and for state files
 	// written before the field existed.
@@ -87,15 +84,6 @@ type nodeStageState struct {
 
 	// NVMeoF holds NVMe-oF TCP teardown state.  Non-nil when ProtocolType == "nvmeof-tcp".
 	NVMeoF *NVMeoFStageState `json:"nvmeof,omitempty"`
-
-	// ISCSI holds iSCSI teardown state.  Non-nil when ProtocolType == "iscsi".
-	ISCSI *ISCSIStageState `json:"iscsi,omitempty"`
-
-	// NFS holds NFS unmount state.  Non-nil when ProtocolType == "nfs".
-	NFS *NFSStageState `json:"nfs,omitempty"`
-
-	// SMB holds SMB unmount state.  Non-nil when ProtocolType == "smb".
-	SMB *SMBStageState `json:"smb,omitempty"`
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -114,39 +102,6 @@ type NVMeoFStageState struct {
 
 	// Port is the TCP port of the NVMe-oF TCP target (e.g. "4420").
 	Port string `json:"port"`
-}
-
-// ISCSIStageState holds the iSCSI parameters needed to log out of an iSCSI
-// session during NodeUnstageVolume.
-type ISCSIStageState struct {
-	// TargetIQN is the iSCSI Qualified Name of the target.
-	TargetIQN string `json:"target_iqn"`
-
-	// Portal is the iSCSI portal address in "ip:port" format (e.g. "192.168.1.10:3260").
-	Portal string `json:"portal"`
-
-	// LUN is the Logical Unit Number within the iSCSI target.
-	LUN int `json:"lun"`
-}
-
-// NFSStageState holds the NFS parameters needed to unmount an NFS volume
-// during NodeUnstageVolume.
-type NFSStageState struct {
-	// Server is the IP address or hostname of the NFS server.
-	Server string `json:"server"`
-
-	// ExportPath is the server-side export path (e.g. "/mnt/tank/pvc-abc123").
-	ExportPath string `json:"export_path"`
-}
-
-// SMBStageState holds the SMB/CIFS parameters needed to unmount an SMB share
-// during NodeUnstageVolume.
-type SMBStageState struct {
-	// Server is the IP address or hostname of the SMB server.
-	Server string `json:"server"`
-
-	// Share is the SMB share name (e.g. "pvc-abc123").
-	Share string `json:"share"`
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -213,9 +168,6 @@ func migrateFromLegacy(raw *legacyNodeStageState) *nodeStageState {
 //
 // The mapping is:
 //   - "nvmeof-tcp" → *NVMeoFProtocolState  (defined in nvmeof_tcp_handler.go)
-//   - "iscsi"      → nil (not yet implemented)
-//   - "nfs"        → nil (not yet implemented; NFS detach is just unmount)
-//   - "smb"        → nil (not yet implemented; SMB detach is just unmount)
 //
 // Returns nil with an error if the protocol type is unrecognized or the
 // required sub-struct is absent.
@@ -233,9 +185,6 @@ func (s *nodeStageState) ToProtocolState() (ProtocolState, error) {
 			Address:   s.NVMeoF.Address,
 			Port:      s.NVMeoF.Port,
 		}, nil
-	case ProtocolISCSI, ProtocolNFS, ProtocolSMB:
-		// Protocol states to be populated when those handlers are implemented.
-		return nil, fmt.Errorf("protocol %q stage state conversion not yet implemented", s.ProtocolType)
 	default:
 		return nil, fmt.Errorf("unrecognized protocol type %q in persisted stage state", s.ProtocolType)
 	}
@@ -256,8 +205,7 @@ func (s *nodeStageState) ToProtocolState() (ProtocolState, error) {
 //   - "nvmeof-tcp": uses targetID (NQN), address, port from VolumeContext.
 //     Falls back to NVMeoFProtocolState values from attachResult.State if
 //     the result carries a concrete *NVMeoFProtocolState.
-//   - Other protocols: only ProtocolType is set; typed sub-structs are populated
-//     when those handlers are implemented.
+//   - Other protocols: only ProtocolType is set (none is implemented).
 func stageStateFromAttachResult(
 	protocolType, accessType, targetID, address, port string,
 	attachResult *AttachResult,
@@ -266,7 +214,6 @@ func stageStateFromAttachResult(
 
 	// NVMe-oF TCP: prefer state from AttachResult if it carries a concrete
 	// NVMeoFProtocolState; fall back to VolumeContext fields for the legacy path.
-	// iSCSI, NFS, SMB: sub-structs populated when those handlers are implemented.
 	if protocolType == ProtocolNVMeoFTCP {
 		subsysNQN := targetID
 		trAddr := address

@@ -44,8 +44,6 @@ import (
 // "partial" run.  All default-profile TCs (388 catalog + 7 E33 standalone + 9 other = 404)
 // require the listed modules and tools; a missing item causes an immediate FAIL.
 //
-// Note: iscsi_tcp and iscsiadm are NOT checked here because iSCSI initiator
-// functionality runs inside Kind container worker nodes (not on the host).
 // The nvme binary is NOT checked here because F27-F31 NVMe-oF host-connect
 // tests are not in the default profile and perform their own prereq checks.
 func CheckHostPrerequisites() error {
@@ -150,7 +148,7 @@ type kernelModule struct {
 //  1. All 404 TCs must run locally by default with no capability gating.
 //  2. "Never soft-skip" is a hard AC 10 constraint: missing modules cause
 //     an immediate FAIL with clear remediation, not a silent SKIP.
-//  3. The suite uses real ZFS, real LVM, real iSCSI, and real NVMe-oF TCP —
+//  3. The suite uses real ZFS, real LVM, and real NVMe-oF TCP —
 //     none of these can be emulated without the corresponding kernel module.
 var requiredModules = []kernelModule{
 	{
@@ -270,7 +268,7 @@ func checkKernelModulesFromSet(loaded map[string]struct{}) error {
 	sb.WriteString("  Remediation:\n")
 	sb.WriteString("     • Load each missing module with the modprobe command shown above.\n")
 	sb.WriteString("     • Install the corresponding kernel package for your distribution.\n")
-	sb.WriteString("  Verify: lsmod | grep -E 'zfs|dm_thin|iscsi|nvme'\n")
+	sb.WriteString("  Verify: lsmod | grep -E 'zfs|dm_thin|nvme'\n")
 	sb.WriteString("  AC 10: soft-skip is DISABLED — every module must be present or the suite FAILs.\n")
 
 	return fmt.Errorf("%s", sb.String())

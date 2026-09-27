@@ -20,6 +20,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -35,12 +36,13 @@ import (
 //
 // These tests verify that the Kubernetes API server (running under envtest)
 // enforces the OpenAPI v3 schema constraints embedded in the PillarProtocol CRD:
-//   - spec.type must be one of the allowed enum values
-//   - spec.nvmeofTcp.port must be in the range [1, 65535]
-//   - spec.fsType must be one of the allowed enum values
+//   - spec.protocol is an exactly-one union: a union without a member is rejected
+//   - members the schema does not declare (removed protocols, the removed
+//     spec.type/spec.fsType fields) are rejected, not silently dropped
+//   - spec.protocol.nvmeofTcp.port must be in the range [1, 65535]
 //
-// All tests exercise the real CRD validation path by calling k8sClient.Create and
-// expecting a 422 UnprocessableEntity response with a descriptive validation error.
+// All tests exercise the real CRD validation path through a Server-Side Apply
+// of raw JSON, bypassing Go type safety.
 
 var _ = Describe("PillarProtocol CRD Schema Validation", func() {
 	var crdCtx context.Context
@@ -57,138 +59,74 @@ var _ = Describe("PillarProtocol CRD Schema Validation", func() {
 		}
 	}
 
-	// ── E23.2.1 — TestPillarProtocolCRD_InvalidCreate_UnknownType ────────────
-	It("Should reject creation when spec.type is not an allowed enum value", func() {
-		By("attempting to create a PillarProtocol with spec.type=unknown-protocol")
-		// We submit raw JSON so we can bypass Go type safety and reach the CRD
-		// schema validator with an invalid enum value.
-		rawJSON := []byte(`{
+	// applyProtocol server-side applies a PillarProtocol named name with the
+	// given raw spec JSON and returns the API server's answer.
+	applyProtocol := func(name, spec string) error {
+		DeferCleanup(func() { deleteProtocolIfExists(name) })
+		rawJSON := []byte(fmt.Sprintf(`{
 			"apiVersion": "pillar-csi.bhyoo.com/v1alpha1",
 			"kind": "PillarProtocol",
-			"metadata": {"name": "crd-test-unknown-type"},
-			"spec": {"type": "unknown-protocol"}
-		}`)
-
-		err := k8sClient.Patch(
+			"metadata": {"name": %q},
+			"spec": %s
+		}`, name, spec))
+		return k8sClient.Patch(
 			crdCtx,
-			&pillarcsiv1alpha1.PillarProtocol{
-				ObjectMeta: metav1.ObjectMeta{Name: "crd-test-unknown-type"},
-			},
+			&pillarcsiv1alpha1.PillarProtocol{ObjectMeta: metav1.ObjectMeta{Name: name}},
 			client.RawPatch(types.ApplyPatchType, rawJSON),
 			client.ForceOwnership,
 			client.FieldOwner("e2e-test"),
 		)
+	}
 
-		Expect(err).To(HaveOccurred(),
-			"API server should reject PillarProtocol with an unknown spec.type")
-
+	expectUnprocessable := func(err error, contains string) {
+		Expect(err).To(HaveOccurred())
 		statusErr, ok := err.(*errors.StatusError)
-		Expect(ok).To(BeTrue(), "error should be a *errors.StatusError")
+		Expect(ok).To(BeTrue(), "error should be a *errors.StatusError: %v", err)
 		Expect(statusErr.ErrStatus.Code).To(Equal(int32(422)),
-			"HTTP status code should be 422 UnprocessableEntity for enum violation")
+			"HTTP status code should be 422 UnprocessableEntity: %v", err)
+		Expect(err.Error()).To(ContainSubstring(contains))
+	}
 
-		DeferCleanup(func() { deleteProtocolIfExists("crd-test-unknown-type") })
+	// ── E23.2.1 — TestPillarProtocolCRD_InvalidCreate_NoProtocolMember ────────
+	It("Should reject creation when spec.protocol sets no member", func() {
+		err := applyProtocol("crd-test-no-member", `{"protocol": {}}`)
+		expectUnprocessable(err, "exactly one protocol member must be set")
 	})
 
 	// ── E23.2.2 — TestPillarProtocolCRD_InvalidCreate_NVMeOFTCPPortTooLow ────
-	It("Should reject creation when spec.nvmeofTcp.port is below the minimum (0 < minimum=1)", func() {
-		By("attempting to create a PillarProtocol with spec.nvmeofTcp.port=0")
-		rawJSON := []byte(`{
-			"apiVersion": "pillar-csi.bhyoo.com/v1alpha1",
-			"kind": "PillarProtocol",
-			"metadata": {"name": "crd-test-port-low"},
-			"spec": {
-				"type": "nvmeof-tcp",
-				"nvmeofTcp": {"port": 0}
-			}
-		}`)
-
-		err := k8sClient.Patch(
-			crdCtx,
-			&pillarcsiv1alpha1.PillarProtocol{
-				ObjectMeta: metav1.ObjectMeta{Name: "crd-test-port-low"},
-			},
-			client.RawPatch(types.ApplyPatchType, rawJSON),
-			client.ForceOwnership,
-			client.FieldOwner("e2e-test"),
-		)
-
-		Expect(err).To(HaveOccurred(),
-			"API server should reject PillarProtocol with port=0 (below minimum=1)")
-
-		statusErr, ok := err.(*errors.StatusError)
-		Expect(ok).To(BeTrue(), "error should be a *errors.StatusError")
-		Expect(statusErr.ErrStatus.Code).To(Equal(int32(422)),
-			"HTTP status code should be 422 UnprocessableEntity for minimum violation")
-
-		DeferCleanup(func() { deleteProtocolIfExists("crd-test-port-low") })
+	It("Should reject creation when spec.protocol.nvmeofTcp.port is below the minimum (0 < minimum=1)", func() {
+		err := applyProtocol("crd-test-port-low", `{"protocol": {"nvmeofTcp": {"port": 0}}}`)
+		expectUnprocessable(err, "spec.protocol.nvmeofTcp.port")
 	})
 
 	// ── E23.2.3 — TestPillarProtocolCRD_InvalidCreate_NVMeOFTCPPortTooHigh ───
-	It("Should reject creation when spec.nvmeofTcp.port exceeds the maximum (65536 > maximum=65535)", func() {
-		By("attempting to create a PillarProtocol with spec.nvmeofTcp.port=65536")
-		rawJSON := []byte(`{
-			"apiVersion": "pillar-csi.bhyoo.com/v1alpha1",
-			"kind": "PillarProtocol",
-			"metadata": {"name": "crd-test-port-high"},
-			"spec": {
-				"type": "nvmeof-tcp",
-				"nvmeofTcp": {"port": 65536}
-			}
-		}`)
-
-		err := k8sClient.Patch(
-			crdCtx,
-			&pillarcsiv1alpha1.PillarProtocol{
-				ObjectMeta: metav1.ObjectMeta{Name: "crd-test-port-high"},
-			},
-			client.RawPatch(types.ApplyPatchType, rawJSON),
-			client.ForceOwnership,
-			client.FieldOwner("e2e-test"),
-		)
-
-		Expect(err).To(HaveOccurred(),
-			"API server should reject PillarProtocol with port=65536 (above maximum=65535)")
-
-		statusErr, ok := err.(*errors.StatusError)
-		Expect(ok).To(BeTrue(), "error should be a *errors.StatusError")
-		Expect(statusErr.ErrStatus.Code).To(Equal(int32(422)),
-			"HTTP status code should be 422 UnprocessableEntity for maximum violation")
-
-		DeferCleanup(func() { deleteProtocolIfExists("crd-test-port-high") })
+	It("Should reject creation when spec.protocol.nvmeofTcp.port exceeds the maximum (65536 > maximum=65535)", func() {
+		err := applyProtocol("crd-test-port-high", `{"protocol": {"nvmeofTcp": {"port": 65536}}}`)
+		expectUnprocessable(err, "spec.protocol.nvmeofTcp.port")
 	})
 
-	// ── E23.2.4 — TestPillarProtocolCRD_InvalidCreate_InvalidFSType ──────────
-	It("Should reject creation when spec.fsType is not an allowed enum value (btrfs is not in enum)", func() {
-		By("attempting to create a PillarProtocol with spec.fsType=btrfs")
-		rawJSON := []byte(`{
-			"apiVersion": "pillar-csi.bhyoo.com/v1alpha1",
-			"kind": "PillarProtocol",
-			"metadata": {"name": "crd-test-fstype"},
-			"spec": {
-				"type": "nvmeof-tcp",
-				"fsType": "btrfs"
-			}
-		}`)
+	// ── E23.2.4 — TestPillarProtocolCRD_InvalidCreate_RemovedProtocolMember ──
+	It("Should reject a protocol member the schema does not serve (iscsi)", func() {
+		err := applyProtocol("crd-test-iscsi", `{"protocol": {"iscsi": {"port": 3260}}}`)
+		Expect(err).To(HaveOccurred(), "an unserved protocol member must not be accepted")
+		Expect(err.Error()).To(ContainSubstring(".spec.protocol.iscsi: field not declared in schema"))
+	})
 
-		err := k8sClient.Patch(
-			crdCtx,
-			&pillarcsiv1alpha1.PillarProtocol{
-				ObjectMeta: metav1.ObjectMeta{Name: "crd-test-fstype"},
-			},
-			client.RawPatch(types.ApplyPatchType, rawJSON),
-			client.ForceOwnership,
-			client.FieldOwner("e2e-test"),
-		)
+	// ── E23.2.5 — TestPillarProtocolCRD_InvalidCreate_RemovedTopLevelFields ──
+	It("Should reject the removed spec.type and spec.fsType fields", func() {
+		err := applyProtocol("crd-test-old-fields",
+			`{"type": "nvmeof-tcp", "fsType": "ext4", "protocol": {"nvmeofTcp": {}}}`)
+		Expect(err).To(HaveOccurred(), "removed fields must not be accepted")
+		Expect(err.Error()).To(MatchRegexp(`\.spec\.(type|fsType): field not declared in schema`))
+	})
 
-		Expect(err).To(HaveOccurred(),
-			"API server should reject PillarProtocol with fsType=btrfs (not in enum [ext4, xfs])")
-
-		statusErr, ok := err.(*errors.StatusError)
-		Expect(ok).To(BeTrue(), "error should be a *errors.StatusError")
-		Expect(statusErr.ErrStatus.Code).To(Equal(int32(422)),
-			"HTTP status code should be 422 UnprocessableEntity for fsType enum violation")
-
-		DeferCleanup(func() { deleteProtocolIfExists("crd-test-fstype") })
+	// ── E23.2.6 — TestPillarProtocolCRD_ValidCreate_Defaults ──────────────────
+	It("Should accept nvmeofTcp and default port=4420 and acl=false", func() {
+		Expect(applyProtocol("crd-test-defaults", `{"protocol": {"nvmeofTcp": {}}}`)).To(Succeed())
+		got := &pillarcsiv1alpha1.PillarProtocol{}
+		Expect(k8sClient.Get(crdCtx, types.NamespacedName{Name: "crd-test-defaults"}, got)).To(Succeed())
+		Expect(got.Spec.Protocol.NVMeOFTCP).NotTo(BeNil())
+		Expect(got.Spec.Protocol.NVMeOFTCP.Port).To(Equal(int32(4420)))
+		Expect(got.Spec.Protocol.NVMeOFTCP.ACL).To(BeFalse())
 	})
 })

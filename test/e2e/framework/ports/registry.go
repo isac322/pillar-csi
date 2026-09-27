@@ -10,7 +10,7 @@
 // Release or Close), the listener is closed.
 //
 // Probe-and-release allocation: used when the actual TCP binding will happen
-// inside a container (e.g. an iSCSI target inside a Kind node).  A listener is
+// inside a container (e.g. a daemon inside a Kind node).  A listener is
 // opened on :0 to obtain a free OS-assigned port, immediately closed to yield
 // the port to the container binder, and the port number is returned.  There is
 // an inherent TOCTOU window between the release and the container bind; this is
@@ -30,11 +30,11 @@
 //	grpcServer.Serve(alloc.Listener())
 //
 //	// Container service (port yielded immediately):
-//	alloc, err := ports.Global.AllocateForContainer(ports.KindISCSITarget, "zfs-pool")
+//	alloc, err := ports.Global.AllocateForContainer(ports.KindGeneric, "nvmeof-target")
 //	defer alloc.Release()
 //	kindConfig.Nodes[0].ExtraPortMappings = append(..., PortMapping{
 //	    HostPort:      int32(alloc.Port),
-//	    ContainerPort: 3260,
+//	    ContainerPort: 4420,
 //	})
 package ports
 
@@ -53,11 +53,6 @@ import (
 type ServiceKind string
 
 const (
-	// KindISCSITarget is used for iSCSI target services (LIO, TGT, etc.)
-	// running inside Kind containers.  The allocation is probe-and-release so
-	// that the Kind container can bind to the same host port.
-	KindISCSITarget ServiceKind = "iscsi-target"
-
 	// KindCSIGRPC is used for CSI driver gRPC endpoints listening on the host.
 	// The listener is held open until explicitly released.
 	KindCSIGRPC ServiceKind = "csi-grpc"
@@ -231,8 +226,8 @@ func (r *Registry) Allocate(service ServiceKind, label string) (*Allocation, err
 // port.  The returned Allocation carries the port number but has a nil
 // Listener(); Release is a no-op (it only deregisters from the Registry).
 //
-// Use this for services that bind inside a Kind container (e.g. iSCSI LIO
-// targets) whose host port mapping must be configured at cluster-creation time.
+// Use this for services that bind inside a Kind container (e.g. an NVMe-oF
+// target) whose host port mapping must be configured at cluster-creation time.
 // There is a brief TOCTOU window between listener release and container bind;
 // this is acceptable in test environments where the window is negligible.
 //
@@ -288,15 +283,6 @@ func (r *Registry) AllocateForContainer(service ServiceKind, label string) (*All
 		return a, nil
 	}
 	return nil, fmt.Errorf("ports: allocate-for-container %s/%s: exhausted %d attempts (registry conflict on every OS pick)", service, label, allocMaxAttempts)
-}
-
-// AllocateISCSITarget is a convenience wrapper that allocates a port for an
-// iSCSI target that will bind inside a Kind container.
-//
-// The caller should use a.Port as the Kind portMapping.hostPort value and
-// 3260 (or a custom container port) as portMapping.containerPort.
-func (r *Registry) AllocateISCSITarget(label string) (*Allocation, error) {
-	return r.AllocateForContainer(KindISCSITarget, label)
 }
 
 // AllocateCSIGRPC is a convenience wrapper that allocates a host-bound port

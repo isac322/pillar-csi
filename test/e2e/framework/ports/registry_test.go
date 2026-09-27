@@ -151,13 +151,13 @@ func TestRelease_NilAllocationIsNoop(t *testing.T) {
 func TestAllocateForContainer_ReturnsUniquePort(t *testing.T) {
 	reg := ports.NewRegistry()
 
-	a1, err := reg.AllocateForContainer(ports.KindISCSITarget, "iscsi1")
+	a1, err := reg.AllocateForContainer(ports.KindGeneric, "container1")
 	if err != nil {
 		t.Fatalf("first AllocateForContainer: %v", err)
 	}
 	defer a1.Release()
 
-	a2, err := reg.AllocateForContainer(ports.KindISCSITarget, "iscsi2")
+	a2, err := reg.AllocateForContainer(ports.KindGeneric, "container2")
 	if err != nil {
 		t.Fatalf("second AllocateForContainer: %v", err)
 	}
@@ -170,7 +170,7 @@ func TestAllocateForContainer_ReturnsUniquePort(t *testing.T) {
 
 func TestAllocateForContainer_ListenerIsNil(t *testing.T) {
 	reg := ports.NewRegistry()
-	a, err := reg.AllocateForContainer(ports.KindISCSITarget, "no-listener")
+	a, err := reg.AllocateForContainer(ports.KindGeneric, "no-listener")
 	if err != nil {
 		t.Fatalf("AllocateForContainer: %v", err)
 	}
@@ -183,7 +183,7 @@ func TestAllocateForContainer_ListenerIsNil(t *testing.T) {
 
 func TestAllocateForContainer_PortIsRebindable(t *testing.T) {
 	reg := ports.NewRegistry()
-	a, err := reg.AllocateForContainer(ports.KindISCSITarget, "rebind")
+	a, err := reg.AllocateForContainer(ports.KindGeneric, "rebind")
 	if err != nil {
 		t.Fatalf("AllocateForContainer: %v", err)
 	}
@@ -218,25 +218,6 @@ func TestAllocateForContainer_TrackedUntilRelease(t *testing.T) {
 }
 
 // ─── Convenience helpers ─────────────────────────────────────────────────────
-
-func TestAllocateISCSITarget_WrapsAllocateForContainer(t *testing.T) {
-	reg := ports.NewRegistry()
-	a, err := reg.AllocateISCSITarget("my-target")
-	if err != nil {
-		t.Fatalf("AllocateISCSITarget: %v", err)
-	}
-	defer a.Release()
-
-	if a.Service != ports.KindISCSITarget {
-		t.Errorf("Service = %q, want %q", a.Service, ports.KindISCSITarget)
-	}
-	if a.Label != "my-target" {
-		t.Errorf("Label = %q, want %q", a.Label, "my-target")
-	}
-	if a.Listener() != nil {
-		t.Error("AllocateISCSITarget should use probe-and-release (nil Listener)")
-	}
-}
 
 func TestAllocateCSIGRPC_WrapsAllocate(t *testing.T) {
 	reg := ports.NewRegistry()
@@ -301,7 +282,7 @@ func TestAllocate_ConcurrentAllocationNeverCollides(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			a, err := reg.AllocateForContainer(ports.KindISCSITarget, fmt.Sprintf("container-%d", i))
+			a, err := reg.AllocateForContainer(ports.KindGeneric, fmt.Sprintf("container-%d", i))
 			results <- result{alloc: a, err: err}
 		}(i)
 	}

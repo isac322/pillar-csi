@@ -17,6 +17,7 @@ limitations under the License.
 package csi
 
 import (
+	"encoding/json"
 	"fmt"
 
 	csi "github.com/container-storage-interface/spec/lib/go/csi"
@@ -24,63 +25,117 @@ import (
 	v1alpha1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
 )
 
-// validateFilesystemParams checks the filesystem settings of a CreateVolume
-// request after the parameter merge, so that a setting that cannot take
-// effect is rejected (InvalidArgument) instead of being silently dropped:
+// validateFilesystemConfig checks the resolved filesystem configuration of a
+// CreateVolume request, so that a setting that cannot take effect is
+// rejected (InvalidArgument) instead of being silently dropped:
 //
-//   - paramFSType (only written by the PVC fs-override annotation) must be
-//     "ext4" or "xfs";
-//   - paramMkfsOptions must be a JSON string array and, for a Filesystem
-//     volume, pass the mkfs allowlist of the type the node will format
-//     (validateMkfsOptions);
-//   - file protocols (NFS, SMB) have no node-side filesystem, so neither
-//     setting is accepted for them;
-//   - a raw block volume has no filesystem either, so a PVC fsType is
-//     rejected, and so are mkfs options that differ from the StorageClass
-//     value (i.e. come from the PVC).  Class-level mkfs options apply to the
-//     class's filesystem volumes and are ignored for block volumes, exactly
-//     like the class's csi.storage.k8s.io/fstype.
-func validateFilesystemParams(
-	params, scParams map[string]string,
-	protocolType v1alpha1.ProtocolType,
+//   - for a Filesystem volume the mkfs options must pass the allowlist of
+//     the resolved fsType (validateMkfsOptions);
+//   - a raw block volume has no filesystem, so a per-volume filesystem
+//     document (pvcFS, the PVC annotation) is rejected for it.  Class-level
+//     filesystem settings apply to the class's Filesystem volumes and are
+//     ignored for Block volumes, exactly like csi.storage.k8s.io/fstype.
+func validateFilesystemConfig(
+	fs *v1alpha1.FilesystemConfig,
+	pvcFS *v1alpha1.FilesystemConfig,
 	caps []*csi.VolumeCapability,
 ) error {
-	fsType := params[paramFSType]
-	if fsType != "" && fsType != defaultFsType && fsType != xfsFsType {
-		return fmt.Errorf("unsupported %s %q: must be %q or %q", paramFSType, fsType, defaultFsType, xfsFsType)
-	}
-	mkfsRaw := params[paramMkfsOptions]
-	mkfsOpts, err := decodeMkfsOptions(mkfsRaw)
-	if err != nil {
-		return err
-	}
-	if fsType == "" && mkfsRaw == "" {
-		return nil
-	}
-	if isFileProtocol(protocolType) {
-		return fmt.Errorf("protocol %q: filesystem settings (fsType, mkfsOptions) apply only to "+
-			"block protocols whose volumes the node formats", protocolType)
-	}
 	for _, c := range caps {
-		if mnt := c.GetMount(); mnt != nil {
-			err = validateMkfsOptions(formatFsType(fsType, mnt), mkfsOpts)
+		if c.GetMount() != nil {
+			err := validateMkfsOptions(fs.FSType, derefList(fs.MkfsOptions))
 			if err != nil {
 				return err
 			}
 			continue
 		}
-		if fsType != "" {
-			return fmt.Errorf("fsType %q cannot apply to a raw block volume (volumeMode: Block)", fsType)
-		}
-		if mkfsRaw != scParams[paramMkfsOptions] {
-			return fmt.Errorf("mkfsOptions %s cannot apply to a raw block volume (volumeMode: Block)", mkfsRaw)
+		if pvcFS != nil {
+			return fmt.Errorf("%s cannot apply to a raw block volume (volumeMode: Block)",
+				v1alpha1.AnnotationFilesystemDoc)
 		}
 	}
 	return nil
 }
 
+// filesystemVolumeContext returns the VolumeContext entries that carry the
+// resolved filesystem configuration to NodeStageVolume / NodePublishVolume:
+// the fsType, the mkfs options (JSON array, when any) and the mount options
+// (JSON array, when the resolved configuration sets them — an explicit empty
+// list is written so the node clears the StorageClass options).
+func filesystemVolumeContext(fs *v1alpha1.FilesystemConfig, volCtx map[string]string) {
+	if fs == nil {
+		return
+	}
+	volCtx[paramFSType] = fs.FSType
+	if opts := derefList(fs.MkfsOptions); len(opts) > 0 {
+		volCtx[paramMkfsOptions] = mustJSON(opts)
+	}
+	if fs.MountOptions != nil {
+		volCtx[paramMountOptions] = mustJSON(*fs.MountOptions)
+	}
+}
+
+// stageFilesystem resolves the filesystem type, mkfs options and mount flags
+// that NodeStageVolume uses for a MOUNT volume from its VolumeContext
+// (written by CreateVolume) and VolumeCapability.
+//
+// The type is, in order of precedence: the resolved fsType (paramFSType),
+// the capability's fsType (the PV's csi.fsType, taken from the StorageClass
+// csi.storage.k8s.io/fstype), then ext4.  The resolved value has to win
+// because the external-provisioner writes the PV's csi.fsType from the
+// StorageClass only; the VolumeContext is the sole carrier of a per-PVC
+// choice.  The mkfs options are only used when the device carries no
+// filesystem yet — see Mounter.FormatAndMount.
+//
+// The mount flags are the resolved mount options (paramMountOptions) when the
+// VolumeContext carries them, otherwise the capability's mount flags (the
+// PV's mountOptions, taken from the StorageClass).
+func stageFilesystem(
+	volCtx map[string]string,
+	volCap *csi.VolumeCapability,
+) (stagedFilesystem, error) {
+	override := volCtx[paramFSType]
+	if override != "" && override != defaultFsType && override != xfsFsType {
+		return stagedFilesystem{}, fmt.Errorf("volume_context %s %q is unsupported: must be %q or %q",
+			paramFSType, override, defaultFsType, xfsFsType)
+	}
+	fsType := formatFsType(override, volCap.GetMount())
+	mkfsOptions, err := parseMkfsOptions(fsType, volCtx[paramMkfsOptions])
+	if err != nil {
+		return stagedFilesystem{}, fmt.Errorf("volume_context: %w", err)
+	}
+	mountFlags, err := resolveMountFlags(volCtx, volCap)
+	if err != nil {
+		return stagedFilesystem{}, err
+	}
+	return stagedFilesystem{fsType: fsType, mkfsOptions: mkfsOptions, mountFlags: mountFlags}, nil
+}
+
+// stagedFilesystem is the filesystem configuration NodeStageVolume applies
+// to a MOUNT volume.
+type stagedFilesystem struct {
+	fsType      string
+	mkfsOptions []string
+	mountFlags  []string
+}
+
+// resolveMountFlags returns the resolved mount options from the VolumeContext
+// when present, otherwise the capability's mount flags.
+func resolveMountFlags(volCtx map[string]string, volCap *csi.VolumeCapability) ([]string, error) {
+	raw, ok := volCtx[paramMountOptions]
+	if !ok {
+		return volCap.GetMount().GetMountFlags(), nil
+	}
+	var flags []string
+	err := json.Unmarshal([]byte(raw), &flags)
+	if err != nil {
+		return nil, fmt.Errorf("volume_context: decode %s %q as a JSON string array: %w",
+			paramMountOptions, raw, err)
+	}
+	return flags, nil
+}
+
 // formatFsType returns the type NodeStageVolume formats a MOUNT volume with
-// (see stageFilesystem): the PVC override, the capability fsType, then ext4.
+// (see stageFilesystem): the resolved override, the capability fsType, then ext4.
 func formatFsType(override string, mnt *csi.VolumeCapability_MountVolume) string {
 	if override != "" {
 		return override
@@ -91,30 +146,23 @@ func formatFsType(override string, mnt *csi.VolumeCapability_MountVolume) string
 	return defaultFsType
 }
 
-// stageFilesystem resolves the filesystem type and mkfs options that
-// NodeStageVolume uses for a MOUNT volume from its VolumeContext (written by
-// CreateVolume) and VolumeCapability.
-//
-// The type is, in order of precedence: the per-PVC fs-override fsType
-// (paramFSType), the capability's fsType (the PV's csi.fsType, taken from the
-// StorageClass csi.storage.k8s.io/fstype), then ext4.  A PVC override has to
-// win because the external-provisioner writes the PV's csi.fsType from the
-// StorageClass only; the VolumeContext is the sole carrier of the per-PVC
-// choice.  The mkfs options (paramMkfsOptions) are only used when the device
-// carries no filesystem yet — see Mounter.FormatAndMount.
-func stageFilesystem(
-	volCtx map[string]string,
-	volCap *csi.VolumeCapability,
-) (fsType string, mkfsOptions []string, err error) {
-	override := volCtx[paramFSType]
-	if override != "" && override != defaultFsType && override != xfsFsType {
-		return "", nil, fmt.Errorf("volume_context %s %q is unsupported: must be %q or %q",
-			paramFSType, override, defaultFsType, xfsFsType)
+// derefList returns the list a *[]string points to, or nil.
+func derefList(p *[]string) []string {
+	if p == nil {
+		return nil
 	}
-	fsType = formatFsType(override, volCap.GetMount())
-	mkfsOptions, err = parseMkfsOptions(fsType, volCtx[paramMkfsOptions])
+	return *p
+}
+
+// mustJSON encodes a string slice as a JSON array.  Marshaling a []string
+// cannot fail.
+func mustJSON(v []string) string {
+	if v == nil {
+		v = []string{}
+	}
+	b, err := json.Marshal(v)
 	if err != nil {
-		return "", nil, fmt.Errorf("volume_context: %w", err)
+		panic(fmt.Sprintf("marshal string slice: %v", err))
 	}
-	return fsType, mkfsOptions, nil
+	return string(b)
 }

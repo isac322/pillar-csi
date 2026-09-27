@@ -1,7 +1,7 @@
 {{- /*
-Node DaemonSet — CSI Node service + protocol initiators (NVMe-oF, iSCSI, NFS).
+Node DaemonSet — CSI Node service + NVMe-oF/TCP initiator.
 Runs on every worker node. Uses privileged security context for mount operations.
-hostNetwork: true is required for the NVMe-oF/iSCSI data plane: the kernel
+hostNetwork: true is required for the NVMe-oF data plane: the kernel
 issues `nvme connect` TCP SYNs in the netns of the process that writes
 `/dev/nvme-fabrics`.  With hostNetwork: false the initiator lives in the pod
 netns, which cannot reach the host-network nvmet listener exposed by the
@@ -57,7 +57,7 @@ spec:
       dnsPolicy: ClusterFirstWithHostNet
       {{- end }}
       # ── Init containers ──────────────────────────────────────────────────────
-      # Loads initiator kernel modules (NVMe-oF, iSCSI, NFS).
+      # Loads NVMe-oF initiator kernel modules.
       # Each modprobe is run with "|| true" so the init container always exits 0.
       # The pod does NOT fail to start if a module cannot be loaded.
       initContainers:
@@ -167,7 +167,7 @@ spec:
             - name: kubelet-csi-dir
               mountPath: /var/lib/kubelet/plugins/kubernetes.io/csi
               mountPropagation: Bidirectional
-            # /dev — required for block device operations (NVMe-oF, iSCSI target discovery).
+            # /dev — required for block device operations (NVMe-oF namespaces).
             - name: dev
               mountPath: /dev
             # /sys — required for NVMe device discovery (/sys/class/nvme-subsystem)

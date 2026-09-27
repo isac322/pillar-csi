@@ -1,3 +1,5 @@
+> **HISTORICAL.** This review targets an earlier PRD revision. Its configuration examples (the `type:` discriminators, `fsType` on `PillarProtocol`, and iSCSI parameters) describe an interface that has since been removed. For the current configuration interface see [`PRD.md`](./PRD.md) §2.1–§2.3.
+
 # PRD Review: Inconsistencies and Missing Parts
 
 Cross-reference against:

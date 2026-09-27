@@ -142,17 +142,17 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 		"[AC2b] node %d: in-process backends initialised (%d verifiers pre-warmed)\n",
 		GinkgoParallelProcess(), len(allLocalVerifierNames))
 
-	// ── AC9c: Assert all four real backends are reachable and functional ──────
+	// ── AC9c: Assert all three real backends are reachable and functional ─────
 	//
-	// runAllBackendEnvChecks verifies that ZFS, LVM, NVMe-oF TCP, and iSCSI are
-	// all provisioned and genuinely functional inside the Kind container. It
+	// runAllBackendEnvChecks verifies that ZFS, LVM, and NVMe-oF TCP are all
+	// provisioned and genuinely functional inside the Kind container. It
 	// fails the suite immediately if ANY backend is absent or non-functional,
 	// ensuring that no TC can silently run against a fake/stub/mock backend.
 	//
 	// The check runs on EVERY parallel worker node so that every node confirms
-	// the shared backend environment before it begins executing specs. All four
-	// checks are read-only (docker exec with zpool list, vgs, test -d, tgtadm
-	// show) and complete in under 10 seconds even on loaded hosts.
+	// the shared backend environment before it begins executing specs. All three
+	// checks are read-only (docker exec with zpool list, vgs, test -d) and
+	// complete in under 10 seconds even on loaded hosts.
 	//
 	// AC 10 policy: Soft-skip is DISABLED. A non-nil error from
 	// runAllBackendEnvChecks causes an unconditional Fail, aborting this
@@ -177,12 +177,12 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 	Expect(envCheckErr).NotTo(HaveOccurred(),
 		"[AC9c] Backend env-check FAILED on Ginkgo node %d: "+
 			"one or more real backends are absent or replaced by a stub/mock.\n"+
-			"AC 10 policy: soft-skip is DISABLED — ALL four backends must be real.\n"+
+			"AC 10 policy: soft-skip is DISABLED — ALL three backends must be real.\n"+
 			"See the error above for remediation steps.",
 		GinkgoParallelProcess())
 
 	_, _ = fmt.Fprintf(GinkgoWriter,
-		"[AC9c] node %d: all four backends (ZFS, LVM, NVMe-oF, iSCSI) verified — "+
+		"[AC9c] node %d: all three backends (ZFS, LVM, NVMe-oF) verified — "+
 			"no fake/stub/mock backend detected\n",
 		GinkgoParallelProcess())
 })

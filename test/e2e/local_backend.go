@@ -244,7 +244,7 @@ func resolveLocalExecutionPlan(tc documentedCase) (localExecutionPlan, error) {
 			Summary:   "helm chart structure and template rendering contracts",
 			Verifiers: []localVerifierName{localVerifierHelm},
 		}, nil
-	// E33, E34, E35, F27–F31 are NOT catalog-driven.
+	// E33 and F27–F31 are NOT catalog-driven.
 	// Their Ginkgo specs live in dedicated *_e2e_test.go files and run under
 	// the "default-profile" label filter directly — no dispatch through
 	// resolveLocalExecutionPlan / runTCBody needed.
@@ -299,7 +299,12 @@ func verifyControllerLocalBackend() error {
 		WithInterceptorFuncs(fakeuid.Interceptor()).
 		WithScheme(scheme).
 		WithStatusSubresource(&pillarv1.PillarAgent{}, &pillarv1.PillarVolumeState{}).
-		WithObjects(target, csiNode).
+		WithObjects(
+			target,
+			csiNode,
+			e2eZFSStore(e2eDefaultStoreName, target.Name, e2eDefaultZFSPool),
+			e2eNVMeOFACLProtocol(e2eDefaultProtocolName),
+		).
 		Build()
 
 	// Use fakeAgentServer (controllable gRPC server) to test the CSI controller
@@ -355,12 +360,7 @@ func verifyControllerLocalBackend() error {
 		},
 	)
 
-	params := map[string]string{
-		"pillar-csi.bhyoo.com/agent":         target.Name,
-		"pillar-csi.bhyoo.com/store":         "tank",
-		"pillar-csi.bhyoo.com/backend-type":  "zfs-zvol",
-		"pillar-csi.bhyoo.com/protocol-type": "nvmeof-tcp",
-	}
+	params := e2eHandWrittenParams(e2eDefaultStoreName, e2eDefaultProtocolName)
 
 	createResp, err := controller.CreateVolume(ctx, &csiapi.CreateVolumeRequest{
 		Name:               "pvc-local",
@@ -403,11 +403,7 @@ func verifyControllerLocalBackend() error {
 	}
 
 	capResp, err := controller.GetCapacity(ctx, &csiapi.GetCapacityRequest{
-		Parameters: map[string]string{
-			"pillar-csi.bhyoo.com/agent":        target.Name,
-			"pillar-csi.bhyoo.com/store":        "tank",
-			"pillar-csi.bhyoo.com/backend-type": "zfs-zvol",
-		},
+		Parameters: e2eHandWrittenParams(e2eDefaultStoreName, e2eDefaultProtocolName),
 	})
 	if err != nil {
 		return fmt.Errorf("controller get capacity: %w", err)
@@ -607,6 +603,7 @@ func verifyAgentLocalBackendForProcess(processNum int) error {
 	})
 
 	if _, err := server.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
+		BackendType:   agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
 		VolumeId:      volID,
 		CapacityBytes: 10 << 20, // 10 MiB — pool is 128 MiB, keep volumes small
 		Fence:         fence,
@@ -799,30 +796,19 @@ func verifyCRDLocalContracts() error {
 
 	poolValidator := &webhookv1alpha1.PillarStoreCustomValidator{}
 	_, err = poolValidator.ValidateUpdate(context.Background(),
-		&pillarv1.PillarStore{
-			Spec: pillarv1.PillarStoreSpec{
-				AgentRef: "target-a",
-				Backend:  pillarv1.BackendSpec{Type: pillarv1.BackendTypeZFSZvol},
-			},
-		},
-		&pillarv1.PillarStore{
-			Spec: pillarv1.PillarStoreSpec{
-				AgentRef: "target-a",
-				Backend:  pillarv1.BackendSpec{Type: pillarv1.BackendTypeLVMLV},
-			},
-		},
+		e2eZFSStore("pool-a", "target-a", "tank"),
+		e2eLVMStore("pool-a", "target-a", "data-vg", "", ""),
 	)
 	if err == nil {
-		return errors.New("pillar pool validator accepted immutable backend type change")
+		return errors.New("pillar pool validator accepted immutable backend member change zfs→lvm")
 	}
 
 	protocolValidator := &webhookv1alpha1.PillarProtocolCustomValidator{}
-	_, err = protocolValidator.ValidateUpdate(context.Background(),
-		&pillarv1.PillarProtocol{Spec: pillarv1.PillarProtocolSpec{Type: pillarv1.ProtocolTypeNVMeOFTCP}},
-		&pillarv1.PillarProtocol{Spec: pillarv1.PillarProtocolSpec{Type: pillarv1.ProtocolTypeISCSI}},
+	_, err = protocolValidator.ValidateCreate(context.Background(),
+		&pillarv1.PillarProtocol{ObjectMeta: metav1.ObjectMeta{Name: "protocol-empty"}},
 	)
 	if err == nil {
-		return errors.New("pillar protocol validator accepted immutable type change")
+		return errors.New("pillar protocol validator accepted an empty spec.protocol union")
 	}
 
 	scheme := runtime.NewScheme()
@@ -836,41 +822,17 @@ func verifyCRDLocalContracts() error {
 		return fmt.Errorf("register storagev1 scheme for CRD verifier: %w", err)
 	}
 
-	lvmPool := &pillarv1.PillarStore{
-		ObjectMeta: metav1.ObjectMeta{Name: "pool-lvm"},
-		Spec: pillarv1.PillarStoreSpec{
-			AgentRef: "target-a",
-			Backend: pillarv1.BackendSpec{
-				Type: pillarv1.BackendTypeLVMLV,
-				LVM: &pillarv1.LVMBackendConfig{
-					VolumeGroup:      "data-vg",
-					ProvisioningMode: pillarv1.LVMProvisioningModeThin,
-				},
-			},
-		},
-	}
-	nfsProtocol := &pillarv1.PillarProtocol{
-		ObjectMeta: metav1.ObjectMeta{Name: "protocol-nfs"},
-		Spec: pillarv1.PillarProtocolSpec{
-			Type: pillarv1.ProtocolTypeNFS,
-			NFS:  &pillarv1.NFSConfig{Version: "4.2"},
-		},
-	}
+	lvmPool := e2eLVMStore("pool-lvm", "target-a", "data-vg", "", pillarv1.LVMProvisioningModeThin)
+	nvmeProtocol := e2eNVMeOFProtocol("protocol-nvmeof")
 
 	fakeClient := clientfake.NewClientBuilder().
 		WithInterceptorFuncs(fakeuid.Interceptor()).
 		WithScheme(scheme).
-		WithObjects(lvmPool, nfsProtocol).
+		WithObjects(lvmPool, nvmeProtocol).
 		Build()
 
 	defaulter := &webhookv1alpha1.PillarStorageClassCustomDefaulter{Client: fakeClient}
-	binding := &pillarv1.PillarStorageClass{
-		ObjectMeta: metav1.ObjectMeta{Name: "binding-local"},
-		Spec: pillarv1.PillarStorageClassSpec{
-			StoreRef:    lvmPool.Name,
-			ProtocolRef: nfsProtocol.Name,
-		},
-	}
+	binding := e2eBinding("binding-local", lvmPool.Name, nvmeProtocol.Name)
 	if err := defaulter.Default(context.Background(), binding); err != nil {
 		return fmt.Errorf("pillar binding defaulter: %w", err)
 	}
@@ -879,9 +841,19 @@ func verifyCRDLocalContracts() error {
 	}
 
 	bindingValidator := &webhookv1alpha1.PillarStorageClassCustomValidator{Client: fakeClient}
-	_, err = bindingValidator.ValidateCreate(context.Background(), binding)
+	if _, err = bindingValidator.ValidateCreate(context.Background(), binding); err != nil {
+		return fmt.Errorf("pillar binding validator rejected valid lvm+nvmeof binding: %w", err)
+	}
+
+	mismatched := e2eBinding("binding-mismatch", lvmPool.Name, nvmeProtocol.Name)
+	mismatched.Spec.Overrides = &pillarv1.StorageClassOverrides{
+		Backend: &pillarv1.BackendOverrides{
+			ZFS: &pillarv1.ZFSBackendOverrides{Properties: map[string]string{"compression": "lz4"}},
+		},
+	}
+	_, err = bindingValidator.ValidateCreate(context.Background(), mismatched)
 	if err == nil {
-		return errors.New("pillar binding validator accepted incompatible lvm+nfs combination")
+		return errors.New("pillar binding validator accepted a zfs backend override on an lvm store")
 	}
 
 	return nil

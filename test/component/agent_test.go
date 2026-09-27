@@ -231,6 +231,7 @@ func TestAgentServer_CreateVolume_Success(t *testing.T) {
 
 	resp, err := srv.CreateVolume(context.Background(), &agentv1.CreateVolumeRequest{
 		VolumeId:      compTestVolumeID,
+		BackendType:   agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
 		Fence:         testFence(t),
 		CapacityBytes: 10 * 1024 * 1024 * 1024,
 	})
@@ -257,6 +258,7 @@ func TestAgentServer_CreateVolume_Idempotent(t *testing.T) {
 
 	req := &agentv1.CreateVolumeRequest{
 		VolumeId:      compTestVolumeID,
+		BackendType:   agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
 		Fence:         testFence(t),
 		CapacityBytes: 10 * 1024 * 1024 * 1024,
 	}
@@ -283,6 +285,7 @@ func TestAgentServer_CreateVolume_DiskFull(t *testing.T) {
 
 	_, err := srv.CreateVolume(context.Background(), &agentv1.CreateVolumeRequest{
 		VolumeId:      compTestVolumeID,
+		BackendType:   agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
 		Fence:         testFence(t),
 		CapacityBytes: 10 * 1024 * 1024 * 1024,
 	})
@@ -303,6 +306,7 @@ func TestAgentServer_CreateVolume_InvalidPool(t *testing.T) {
 
 	_, err := srv.CreateVolume(context.Background(), &agentv1.CreateVolumeRequest{
 		VolumeId:      "missing-pool/pvc-xyz",
+		BackendType:   agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
 		Fence:         testFence(t),
 		CapacityBytes: 10 * 1024 * 1024 * 1024,
 	})
@@ -323,6 +327,7 @@ func TestAgentServer_CreateVolume_InvalidVolumeID(t *testing.T) {
 
 	_, err := srv.CreateVolume(context.Background(), &agentv1.CreateVolumeRequest{
 		VolumeId:      "noslash",
+		BackendType:   agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
 		Fence:         testFence(t),
 		CapacityBytes: 10 * 1024 * 1024 * 1024,
 	})
@@ -346,6 +351,7 @@ func TestAgentServer_CreateVolume_BackendError(t *testing.T) {
 
 	_, err := srv.CreateVolume(context.Background(), &agentv1.CreateVolumeRequest{
 		VolumeId:      compTestVolumeID,
+		BackendType:   agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
 		Fence:         testFence(t),
 		CapacityBytes: 10 * 1024 * 1024 * 1024,
 	})
@@ -373,6 +379,7 @@ func TestAgentServer_CreateVolume_ConflictSize(t *testing.T) {
 
 	_, err := srv.CreateVolume(context.Background(), &agentv1.CreateVolumeRequest{
 		VolumeId:      compTestVolumeID,
+		BackendType:   agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
 		Fence:         testFence(t),
 		CapacityBytes: 20 * 1024 * 1024 * 1024,
 	})

@@ -53,8 +53,8 @@ func TestVolumeRefFromPV(t *testing.T) {
 		},
 		{
 			name:   "volume without a pool segment",
-			pv:     pvWithHandle(pillarCSIProvisioner, "node-a/nfs/dir/pvc-1"),
-			want:   volumeRef{agent: "node-a", protocol: "nfs", backend: "dir"},
+			pv:     pvWithHandle(pillarCSIProvisioner, "node-a/nvmeof-tcp/lvm-lv/pvc-1"),
+			want:   volumeRef{agent: "node-a", protocol: "nvmeof-tcp", backend: "lvm-lv"},
 			wantOK: true,
 		},
 		{
@@ -91,8 +91,7 @@ func TestVolumeRefInStore(t *testing.T) {
 		Spec: pillarcsiv1alpha1.PillarStoreSpec{
 			AgentRef: "node-a",
 			Backend: pillarcsiv1alpha1.BackendSpec{
-				Type: pillarcsiv1alpha1.BackendTypeZFSZvol,
-				ZFS:  &pillarcsiv1alpha1.ZFSBackendConfig{Pool: "tank"},
+				ZFS: &pillarcsiv1alpha1.ZFSBackendConfig{Pool: "tank"},
 			},
 		},
 	}
@@ -101,16 +100,8 @@ func TestVolumeRefInStore(t *testing.T) {
 		Spec: pillarcsiv1alpha1.PillarStoreSpec{
 			AgentRef: "node-a",
 			Backend: pillarcsiv1alpha1.BackendSpec{
-				Type: pillarcsiv1alpha1.BackendTypeLVMLV,
-				LVM:  &pillarcsiv1alpha1.LVMBackendConfig{VolumeGroup: "vg0"},
+				LVM: &pillarcsiv1alpha1.LVMBackendConfig{VolumeGroup: "vg0"},
 			},
-		},
-	}
-	dirStore := &pillarcsiv1alpha1.PillarStore{
-		ObjectMeta: metav1.ObjectMeta{Name: "dir-store"},
-		Spec: pillarcsiv1alpha1.PillarStoreSpec{
-			AgentRef: "node-a",
-			Backend:  pillarcsiv1alpha1.BackendSpec{Type: pillarcsiv1alpha1.BackendTypeDir},
 		},
 	}
 
@@ -125,8 +116,7 @@ func TestVolumeRefInStore(t *testing.T) {
 		{"zfs volume on another agent", volumeRef{agent: "node-b", backend: "zfs-zvol", pool: "tank"}, zfsStore, false},
 		{"lvm volume in the volume group", volumeRef{agent: "node-a", backend: "lvm-lv", pool: "vg0"}, lvmStore, true},
 		{"volume of another backend in a same-named pool", volumeRef{agent: "node-a", backend: "zfs-zvol", pool: "vg0"}, lvmStore, false},
-		{"dir volume keyed by the store name", volumeRef{agent: "node-a", backend: "dir", pool: "dir-store"}, dirStore, true},
-		{"dir volume of another store", volumeRef{agent: "node-a", backend: "dir", pool: "other-store"}, dirStore, false},
+		{"volume without a pool segment", volumeRef{agent: "node-a", backend: "lvm-lv", pool: ""}, lvmStore, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -225,8 +215,7 @@ func TestVolumeBlocksStore(t *testing.T) {
 		Spec: pillarcsiv1alpha1.PillarStoreSpec{
 			AgentRef: "node-a",
 			Backend: pillarcsiv1alpha1.BackendSpec{
-				Type: pillarcsiv1alpha1.BackendTypeZFSZvol,
-				ZFS:  &pillarcsiv1alpha1.ZFSBackendConfig{Pool: "tank"},
+				ZFS: &pillarcsiv1alpha1.ZFSBackendConfig{Pool: "tank"},
 			},
 		},
 	}

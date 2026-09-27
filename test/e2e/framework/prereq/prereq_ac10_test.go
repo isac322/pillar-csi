@@ -11,10 +11,8 @@
 //  3. Error messages contain per-item remediation instructions.
 //  4. The word "Remediation" appears in every error message.
 //  5. nvme_tcp is in requiredModules (AC 10 requires NVMe-oF backend modules).
-//  6. iscsi_tcp is NOT in requiredModules (iSCSI runs inside Kind container nodes,
-//     not on the host — E34/E35 iSCSI tests perform their own prereq checks).
-//  7. CheckHostPrerequisites aggregates all failures into a single error.
-//  8. The package never calls t.Skip or GinkgoSkip — a static text scan
+//  6. CheckHostPrerequisites aggregates all failures into a single error.
+//  7. The package never calls t.Skip or GinkgoSkip — a static text scan
 //     of the production source confirms the absence of any skip call.
 //
 // Test strategy
@@ -40,7 +38,6 @@ import (
 // TestAC10_AllModulesRequired_EmptySetFails verifies that a completely empty
 // loaded-module set causes an immediate FAIL listing all required modules.
 // Required modules: zfs, dm_thin_pool, nvme_tcp, nvmet, nvmet_tcp.
-// Note: iscsi_tcp is NOT required at the host level (runs inside Kind nodes).
 func TestAC10_AllModulesRequired_EmptySetFails(t *testing.T) {
 	err := checkKernelModulesFromSet(map[string]struct{}{})
 	if err == nil {
@@ -57,7 +54,6 @@ func TestAC10_AllModulesRequired_EmptySetFails(t *testing.T) {
 // TestAC10_AllModulesPresent_NoError verifies that when all required modules
 // are in the loaded set, checkKernelModulesFromSet returns nil (no failure).
 // Required: zfs, dm_thin_pool, nvme_tcp, nvmet, nvmet_tcp.
-// iscsi_tcp is NOT required at host level (iSCSI runs inside Kind nodes).
 func TestAC10_AllModulesPresent_NoError(t *testing.T) {
 	fullSet := map[string]struct{}{
 		"zfs":          {},
@@ -108,25 +104,6 @@ func TestAC10_DmThinPoolMissing_CausesFail(t *testing.T) {
 	msg := err.Error()
 	if !strings.Contains(msg, "dm_thin_pool") {
 		t.Errorf("error must mention 'dm_thin_pool', got:\n%s", msg)
-	}
-}
-
-// TestAC10_IscsiTcpNotRequired verifies that a missing iscsi_tcp module does
-// NOT cause a FAIL from the host-level prereq check.  iSCSI initiator support
-// runs inside Kind container worker nodes (not on the host): E34/E35 iSCSI
-// tests are not in the default profile and perform their own prereq checks.
-func TestAC10_IscsiTcpNotRequired(t *testing.T) {
-	loaded := map[string]struct{}{
-		"zfs":          {},
-		"dm_thin_pool": {},
-		"nvme_tcp":     {},
-		"nvmet":        {},
-		"nvmet_tcp":    {},
-		// iscsi_tcp intentionally absent — must NOT cause a host prereq FAIL
-	}
-	if err := checkKernelModulesFromSet(loaded); err != nil {
-		t.Errorf("checkKernelModulesFromSet: unexpected FAIL when iscsi_tcp is absent — "+
-			"iscsi_tcp is not a host-level requirement for the default profile:\n%v", err)
 	}
 }
 
@@ -226,27 +203,9 @@ func TestAC10_NvmeTcpInRequiredModules(t *testing.T) {
 	}
 }
 
-// TestAC10_IscsiTcpNotInRequiredModules verifies that iscsi_tcp does NOT appear
-// in requiredModules. iSCSI initiator support runs inside Kind container worker
-// nodes (not on the host). E34/E35 iSCSI tests are outside the default profile
-// and perform their own runtime prereq checks.
-func TestAC10_IscsiTcpNotInRequiredModules(t *testing.T) {
-	for _, mod := range requiredModules {
-		if mod.name == "iscsi_tcp" {
-			t.Error("iscsi_tcp must NOT be in requiredModules — iSCSI runs inside " +
-				"Kind container nodes, not on the host. Remove it from requiredModules " +
-				"or move E34/E35 tests out of the default profile.")
-			return
-		}
-	}
-	// iscsi_tcp correctly absent from host-level requirements.
-}
-
 // TestAC10_RequiredModulesCount verifies that exactly five kernel modules are
 // required: zfs, dm_thin_pool, nvme_tcp, nvmet, nvmet_tcp.
 // Sub-AC 9b adds nvmet and nvmet_tcp for the NVMe-oF target (server side).
-// Note: iscsi_tcp is NOT required at host level (E34/E35 iSCSI tests are
-// outside the default profile and run their own prereq checks).
 func TestAC10_RequiredModulesCount(t *testing.T) {
 	const wantCount = 5
 	if len(requiredModules) != wantCount {
@@ -256,8 +215,7 @@ func TestAC10_RequiredModulesCount(t *testing.T) {
 }
 
 // TestAC10_RequiredModulesContainNVMeAndZFSLVM verifies that the NVMe-oF and
-// storage backend modules appear in requiredModules. iscsi_tcp is NOT required
-// at host level (E34/E35 iSCSI tests run inside Kind nodes).
+// storage backend modules appear in requiredModules.
 func TestAC10_RequiredModulesContainNVMeAndZFSLVM(t *testing.T) {
 	wantModules := []string{"zfs", "dm_thin_pool", "nvme_tcp"}
 	nameSet := make(map[string]struct{}, len(requiredModules))
@@ -269,10 +227,6 @@ func TestAC10_RequiredModulesContainNVMeAndZFSLVM(t *testing.T) {
 			t.Errorf("requiredModules missing %q — AC 10 requires NVMe-oF and storage backends", want)
 		}
 	}
-	// iscsi_tcp must NOT be required (iSCSI runs inside Kind nodes).
-	if _, ok := nameSet["iscsi_tcp"]; ok {
-		t.Error("requiredModules must NOT contain 'iscsi_tcp' — iSCSI runs inside Kind container nodes, not on the host")
-	}
 }
 
 // ─── 4. Binary tool checks ────────────────────────────────────────────────────
@@ -280,7 +234,7 @@ func TestAC10_RequiredModulesContainNVMeAndZFSLVM(t *testing.T) {
 // TestAC10_AllBinariesMissing_CausesFail verifies that when all required
 // binaries are absent (lookup returns an error for everything), the checker
 // returns a non-nil error listing all missing tools.
-// Note: iscsiadm and nvme are NOT required at host level.
+// Note: nvme is NOT required at host level.
 func TestAC10_AllBinariesMissing_CausesFail(t *testing.T) {
 	alwaysFail := func(_ string) (string, error) {
 		return "", errors.New("not found")
@@ -295,11 +249,9 @@ func TestAC10_AllBinariesMissing_CausesFail(t *testing.T) {
 			t.Errorf("error missing binary name %q\ngot:\n%s", bin, msg)
 		}
 	}
-	// iscsiadm and nvme must NOT appear in host-level prereq errors.
-	for _, bin := range []string{"iscsiadm", "nvme"} {
-		if strings.Contains(msg, bin) {
-			t.Errorf("error must NOT mention %q — it is not a host-level requirement\ngot:\n%s", bin, msg)
-		}
+	// nvme must NOT appear in host-level prereq errors.
+	if strings.Contains(msg, "nvme") {
+		t.Errorf("error must NOT mention %q — it is not a host-level requirement\ngot:\n%s", "nvme", msg)
 	}
 }
 
@@ -349,24 +301,6 @@ func TestAC10_HelmBinaryMissing_CausesFail(t *testing.T) {
 	msg := err.Error()
 	if !strings.Contains(msg, "helm") {
 		t.Errorf("error must mention 'helm', got:\n%s", msg)
-	}
-}
-
-// TestAC10_IscsiadmNotRequired verifies that a missing iscsiadm binary does NOT
-// cause a host-level prereq FAIL. iSCSI initiator functionality runs inside
-// Kind container worker nodes, not on the host — so iscsiadm is not a host
-// prerequisite.
-func TestAC10_IscsiadmNotRequired(t *testing.T) {
-	// All required binaries present EXCEPT iscsiadm (which is not required).
-	lookup := func(binary string) (string, error) {
-		if binary == "iscsiadm" {
-			return "", errors.New("not found")
-		}
-		return "/usr/bin/" + binary, nil
-	}
-	err := checkBinariesWithLookup(lookup)
-	if err != nil {
-		t.Errorf("iscsiadm is not a host-level requirement; expected nil error, got:\n%v", err)
 	}
 }
 
@@ -438,8 +372,8 @@ func TestAC10_BinaryErrorContainsInstallHints(t *testing.T) {
 
 // TestAC10_RequiredBinariesContainsMandatoryTools verifies that all six
 // mandatory host-level tools appear in requiredBinaries.
-// Note: iscsiadm and nvme are intentionally excluded — they are not host-level
-// requirements (iSCSI runs inside Kind nodes; nvme is only for non-default-profile tests).
+// Note: nvme is intentionally excluded — it is only needed by
+// non-default-profile tests.
 func TestAC10_RequiredBinariesContainsMandatoryTools(t *testing.T) {
 	wantBinaries := []string{
 		"kind", "helm",
@@ -557,7 +491,6 @@ func TestAC10_ProductionCodeContainsNoSkipCalls(t *testing.T) {
 func TestAC10_KernelModuleErrorIncludesCount(t *testing.T) {
 	// Exactly one module missing: nvme_tcp.
 	// All other required modules (zfs, dm_thin_pool, nvmet, nvmet_tcp) are present.
-	// Note: iscsi_tcp is NOT in requiredModules, so its absence is irrelevant.
 	loaded := map[string]struct{}{
 		"zfs":          {},
 		"dm_thin_pool": {},

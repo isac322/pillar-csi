@@ -255,9 +255,13 @@ func fenceVolumeID() string { return basePublishRequest().GetVolumeId() }
 
 const fenceAgentVolumeID = "tank/pvc-abc123"
 
+// createVolume provisions the fencing test volume over an ACL-enforcing
+// protocol, so publish and unpublish exercise the fenced initiator RPCs.
 func createVolume(t *testing.T, srv *ControllerServer) {
 	t.Helper()
-	if _, err := srv.CreateVolume(context.Background(), baseCreateVolumeRequest()); err != nil {
+	req := baseCreateVolumeRequest()
+	req.Parameters[paramProtocolRef] = testACLProtocol
+	if _, err := srv.CreateVolume(context.Background(), req); err != nil {
 		t.Fatalf("CreateVolume: %v", err)
 	}
 }

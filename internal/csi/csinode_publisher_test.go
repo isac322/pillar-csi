@@ -310,8 +310,8 @@ func TestKubeCSINodePatcher_PatchAnnotations_MultipleAnnotations(t *testing.T) {
 	patcher := NewKubeCSINodePatcher(fakeClient)
 
 	annotations := map[string]string{
-		AnnotationNVMeOFHostNQN:     "nqn.2014-08.org.nvmexpress:uuid:multi-anno",
-		AnnotationISCSIInitiatorIQN: "iqn.1993-08.org.debian:01:multi-anno",
+		AnnotationNVMeOFHostNQN:        "nqn.2014-08.org.nvmexpress:uuid:multi-anno",
+		"example.com/other-annotation": "kept",
 	}
 	err := patcher.PatchAnnotations(context.Background(), nodeName, annotations)
 	if err != nil {

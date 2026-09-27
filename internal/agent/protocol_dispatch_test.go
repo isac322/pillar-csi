@@ -168,19 +168,19 @@ func dispatchNfsExportParams(version string) *agentv1.ExportParams {
 func TestExportVolume_DispatchesToResolvedHandler(t *testing.T) {
 	t.Parallel()
 
-	nvmeHandler := &recordingProtocolHandler{}
-	iscsiHandler := &recordingProtocolHandler{
+	nvmeHandler := &recordingProtocolHandler{
 		exportResult: &ExportResult{
-			TargetID:  "iqn.2026-01.com.bhyoo.pillar-csi:tank.pvc-abc",
+			TargetID:  "nqn.2026-01.com.bhyoo.pillar-csi:tank.pvc-abc",
 			Address:   "10.0.0.2",
-			Port:      3260,
-			VolumeRef: "0",
+			Port:      4420,
+			VolumeRef: "1",
 		},
 	}
+	otherHandler := &recordingProtocolHandler{}
 	resolver := &recordingProtocolResolver{
 		handlers: map[agentv1.ProtocolType]AgentProtocolHandler{
 			agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP: nvmeHandler,
-			agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI:      iscsiHandler,
+			agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI:      otherHandler,
 		},
 	}
 
@@ -190,8 +190,8 @@ func TestExportVolume_DispatchesToResolvedHandler(t *testing.T) {
 	req := &agentv1.ExportVolumeRequest{
 		VolumeId:     dispatchTestVolumeID,
 		DevicePath:   dispatchTestDevicePath,
-		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI,
-		ExportParams: dispatchIscsiExportParams("10.0.0.2", 3260),
+		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
+		ExportParams: dispatchNvmeofExportParams("10.0.0.2"),
 		AclEnabled:   true,
 	}
 
@@ -201,18 +201,18 @@ func TestExportVolume_DispatchesToResolvedHandler(t *testing.T) {
 	}
 
 	if !reflect.DeepEqual(resolver.calls, []agentv1.ProtocolType{
-		agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI,
+		agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 	}) {
-		t.Fatalf("resolver calls = %v, want [PROTOCOL_TYPE_ISCSI]", resolver.calls)
+		t.Fatalf("resolver calls = %v, want [PROTOCOL_TYPE_NVMEOF_TCP]", resolver.calls)
 	}
-	if len(nvmeHandler.exportCalls) != 0 {
-		t.Fatalf("NVMe handler export calls = %d, want 0", len(nvmeHandler.exportCalls))
+	if len(otherHandler.exportCalls) != 0 {
+		t.Fatalf("other handler export calls = %d, want 0", len(otherHandler.exportCalls))
 	}
-	if len(iscsiHandler.exportCalls) != 1 {
-		t.Fatalf("iSCSI handler export calls = %d, want 1", len(iscsiHandler.exportCalls))
+	if len(nvmeHandler.exportCalls) != 1 {
+		t.Fatalf("NVMe handler export calls = %d, want 1", len(nvmeHandler.exportCalls))
 	}
 
-	gotParams := iscsiHandler.exportCalls[0]
+	gotParams := nvmeHandler.exportCalls[0]
 	if gotParams.VolumeID != req.GetVolumeId() {
 		t.Errorf("VolumeID = %q, want %q", gotParams.VolumeID, req.GetVolumeId())
 	}
@@ -226,17 +226,47 @@ func TestExportVolume_DispatchesToResolvedHandler(t *testing.T) {
 		t.Errorf("ProtocolParams = %v, want %v", gotParams.ProtocolParams, req.GetExportParams())
 	}
 
-	if got := resp.GetExportInfo().GetTargetId(); got != iscsiHandler.exportResult.TargetID {
-		t.Errorf("TargetId = %q, want %q", got, iscsiHandler.exportResult.TargetID)
+	if got := resp.GetExportInfo().GetTargetId(); got != nvmeHandler.exportResult.TargetID {
+		t.Errorf("TargetId = %q, want %q", got, nvmeHandler.exportResult.TargetID)
 	}
-	if got := resp.GetExportInfo().GetAddress(); got != iscsiHandler.exportResult.Address {
-		t.Errorf("Address = %q, want %q", got, iscsiHandler.exportResult.Address)
+	if got := resp.GetExportInfo().GetAddress(); got != nvmeHandler.exportResult.Address {
+		t.Errorf("Address = %q, want %q", got, nvmeHandler.exportResult.Address)
 	}
-	if got := resp.GetExportInfo().GetPort(); got != iscsiHandler.exportResult.Port {
-		t.Errorf("Port = %d, want %d", got, iscsiHandler.exportResult.Port)
+	if got := resp.GetExportInfo().GetPort(); got != nvmeHandler.exportResult.Port {
+		t.Errorf("Port = %d, want %d", got, nvmeHandler.exportResult.Port)
 	}
-	if got := resp.GetExportInfo().GetVolumeRef(); got != iscsiHandler.exportResult.VolumeRef {
-		t.Errorf("VolumeRef = %q, want %q", got, iscsiHandler.exportResult.VolumeRef)
+	if got := resp.GetExportInfo().GetVolumeRef(); got != nvmeHandler.exportResult.VolumeRef {
+		t.Errorf("VolumeRef = %q, want %q", got, nvmeHandler.exportResult.VolumeRef)
+	}
+}
+
+// TestExportVolume_UnimplementedProtocolRejectedBeforeHandler verifies that an
+// export for a protocol without export parameter support (iSCSI/NFS/SMB are
+// not implemented) is rejected explicitly, even when a resolver would supply
+// a handler, and that the handler is never invoked.
+func TestExportVolume_UnimplementedProtocolRejectedBeforeHandler(t *testing.T) {
+	t.Parallel()
+
+	handler := &recordingProtocolHandler{}
+	resolver := &recordingProtocolResolver{
+		handlers: map[agentv1.ProtocolType]AgentProtocolHandler{
+			agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI: handler,
+		},
+	}
+	srv := NewServer(nil, "", WithDrainStateDir(t.TempDir()))
+	srv.protocolHandlerResolver = resolver.Resolve
+
+	_, err := srv.ExportVolume(context.Background(), &agentv1.ExportVolumeRequest{
+		VolumeId:     dispatchTestVolumeID,
+		DevicePath:   dispatchTestDevicePath,
+		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI,
+		ExportParams: dispatchIscsiExportParams("10.0.0.2", 3260),
+	})
+	if status.Code(err) != codes.Unimplemented {
+		t.Fatalf("ExportVolume code = %v (err=%v), want Unimplemented", status.Code(err), err)
+	}
+	if len(handler.exportCalls) != 0 {
+		t.Fatalf("handler export calls = %d, want 0", len(handler.exportCalls))
 	}
 }
 

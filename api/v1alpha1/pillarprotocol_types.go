@@ -20,16 +20,16 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// ProtocolType enumerates supported network storage protocols.
-// +kubebuilder:validation:Enum=nvmeof-tcp;iscsi;nfs;smb
-type ProtocolType string
+// ProtocolID identifies a network storage protocol.  It is the union member
+// name used everywhere a protocol can be selected — PillarProtocol.spec.protocol,
+// override documents, PVC annotations — and also the token embedded in CSI
+// volume IDs and agent RPCs.
+type ProtocolID string
 
-// Supported ProtocolType values.
+// Supported ProtocolID values.
 const (
-	ProtocolTypeNVMeOFTCP ProtocolType = "nvmeof-tcp"
-	ProtocolTypeISCSI     ProtocolType = "iscsi"
-	ProtocolTypeNFS       ProtocolType = "nfs"
-	ProtocolTypeSMB       ProtocolType = "smb"
+	// ProtocolIDNVMeOFTCP exports volumes over NVMe-oF/TCP.
+	ProtocolIDNVMeOFTCP ProtocolID = "nvmeof-tcp"
 )
 
 // NVMeOFTCPConfig holds NVMe-oF/TCP-specific protocol parameters.
@@ -87,100 +87,35 @@ type NVMeOFTCPConfig struct {
 	ReconnectDelay *int32 `json:"reconnectDelay,omitempty"`
 }
 
-// ISCSIConfig holds iSCSI-specific protocol parameters.
-type ISCSIConfig struct {
-	// port is the TCP port on which the iSCSI target listens.
-	// Defaults to 3260.
+// ProtocolSpec describes the transport protocol of a PillarProtocol.
+// Exactly one member must be set: the member name selects the protocol
+// (nvmeofTcp) and its value carries that protocol's configuration.
+//
+// Per-binding and per-volume override documents use ProtocolOverrides,
+// which keeps only the tunable subset.
+//
+// +kubebuilder:validation:XValidation:rule="has(self.nvmeofTcp)",message="exactly one protocol member must be set (supported: nvmeofTcp)"
+type ProtocolSpec struct {
+	// nvmeofTcp holds NVMe-oF/TCP configuration.
 	// +optional
-	// +kubebuilder:default=3260
-	// +kubebuilder:validation:Minimum=1
-	// +kubebuilder:validation:Maximum=65535
-	Port int32 `json:"port,omitempty"`
-
-	// acl enables initiator IQN-based access control when true.
-	// When false the target allows any initiator.
-	// Defaults to false so that e2e tests and simple deployments work
-	// without registering initiator IQNs.
-	// +optional
-	// +kubebuilder:default=false
-	ACL bool `json:"acl"`
-
-	// loginTimeout is the number of seconds to wait for a login response.
-	// Defaults to 15.
-	// +optional
-	// +kubebuilder:validation:Minimum=0
-	LoginTimeout *int32 `json:"loginTimeout,omitempty"`
-
-	// replacementTimeout is the number of seconds to wait for a session
-	// replacement after a connection failure. Defaults to 120.
-	// +optional
-	// +kubebuilder:validation:Minimum=0
-	ReplacementTimeout *int32 `json:"replacementTimeout,omitempty"`
-
-	// nodeSessionTimeout is the number of seconds for the node session
-	// retry timeout. Defaults to 120.
-	// +optional
-	// +kubebuilder:validation:Minimum=0
-	NodeSessionTimeout *int32 `json:"nodeSessionTimeout,omitempty"`
+	NVMeOFTCP *NVMeOFTCPConfig `json:"nvmeofTcp,omitempty"`
 }
 
-// NFSConfig holds NFS-specific protocol parameters.
-type NFSConfig struct {
-	// version is the NFS protocol version to use (e.g. "4.2").
-	// +optional
-	// +kubebuilder:default="4.2"
-	Version string `json:"version,omitempty"`
-}
-
-// SMBConfig holds SMB/CIFS-specific protocol parameters.
-type SMBConfig struct {
-	// port is the TCP port on which the SMB server listens.
-	// Defaults to 445.
-	// +optional
-	// +kubebuilder:default=445
-	// +kubebuilder:validation:Minimum=1
-	// +kubebuilder:validation:Maximum=65535
-	Port int32 `json:"port,omitempty"`
+// Kind returns the selected protocol member as a ProtocolID, or "" when the
+// union is empty.
+func (p ProtocolSpec) Kind() ProtocolID {
+	if p.NVMeOFTCP != nil {
+		return ProtocolIDNVMeOFTCP
+	}
+	return ""
 }
 
 // PillarProtocolSpec defines the desired state of PillarProtocol.
-// Exactly one protocol config field must be set, matching the chosen type.
 type PillarProtocolSpec struct {
-	// type identifies the network storage protocol.
+	// protocol selects the network storage protocol and its configuration.
+	// Exactly one member must be set.
 	// +required
-	Type ProtocolType `json:"type"`
-
-	// nvmeofTcp holds NVMe-oF/TCP configuration; required when type is nvmeof-tcp.
-	// +optional
-	NVMeOFTCP *NVMeOFTCPConfig `json:"nvmeofTcp,omitempty"`
-
-	// iscsi holds iSCSI configuration; required when type is iscsi.
-	// +optional
-	ISCSI *ISCSIConfig `json:"iscsi,omitempty"`
-
-	// nfs holds NFS configuration; required when type is nfs.
-	// +optional
-	NFS *NFSConfig `json:"nfs,omitempty"`
-
-	// smb holds SMB/CIFS configuration; required when type is smb.
-	// +optional
-	SMB *SMBConfig `json:"smb,omitempty"`
-
-	// fsType is the default filesystem type for block protocols when
-	// volumeMode is Filesystem.  Only relevant for block-based protocols
-	// (nvmeof-tcp, iscsi).
-	// +optional
-	// +kubebuilder:validation:Enum=ext4;xfs
-	// +kubebuilder:default=ext4
-	FSType string `json:"fsType,omitempty"`
-
-	// mkfsOptions are additional mkfs arguments used when the node formats a
-	// new volume; a volume that already carries a filesystem is never
-	// reformatted.  Each element is one argv element (no shell); only
-	// filesystem tuning flags of the formatted type are accepted.  Only
-	// relevant for block-based protocols.
-	// +optional
-	MkfsOptions []string `json:"mkfsOptions,omitempty"`
+	Protocol ProtocolSpec `json:"protocol"`
 }
 
 // PillarProtocolStatus defines the observed state of PillarProtocol.
@@ -209,7 +144,6 @@ type PillarProtocolStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Cluster,shortName=pstr
-// +kubebuilder:printcolumn:name="Type",type=string,JSONPath=`.spec.type`
 // +kubebuilder:printcolumn:name="Bindings",type=integer,JSONPath=`.status.storageClassCount`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
@@ -219,19 +153,11 @@ type PillarProtocolStatus struct {
 // PillarStorageClass resources across different pools and targets.  The controller
 // resolves the target bind address at runtime from the relevant PillarAgent.
 type PillarProtocol struct {
-	metav1.TypeMeta `json:",inline"`
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	// metadata is standard object metadata.
-	// +optional
-	metav1.ObjectMeta `json:"metadata,omitzero"`
-
-	// spec defines the desired protocol configuration.
-	// +required
-	Spec PillarProtocolSpec `json:"spec"`
-
-	// status reflects the reconciler-observed state of this protocol.
-	// +optional
-	Status PillarProtocolStatus `json:"status,omitzero"`
+	Spec   PillarProtocolSpec   `json:"spec,omitempty"`
+	Status PillarProtocolStatus `json:"status,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -239,7 +165,7 @@ type PillarProtocol struct {
 // PillarProtocolList contains a list of PillarProtocol.
 type PillarProtocolList struct {
 	metav1.TypeMeta `json:",inline"`
-	metav1.ListMeta `json:"metadata,omitzero"`
+	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []PillarProtocol `json:"items"`
 }
 

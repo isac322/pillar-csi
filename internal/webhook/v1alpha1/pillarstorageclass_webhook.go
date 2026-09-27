@@ -50,7 +50,7 @@ func SetupPillarStorageClassWebhookWithManager(mgr ctrl.Manager) error {
 // as it is used only for temporary operations and does not need to be deeply copied.
 type PillarStorageClassCustomDefaulter struct {
 	// Client is used to look up referenced PillarStore resources so that
-	// allowVolumeExpansion can be derived from the pool's backend type.
+	// allowVolumeExpansion can be derived from the store's backend member.
 	Client client.Client
 }
 
@@ -62,7 +62,7 @@ func (d *PillarStorageClassCustomDefaulter) Default(
 ) error {
 	pillarstorageclasslog.Info("Defaulting for PillarStorageClass", "name", pillarstorageclass.GetName())
 
-	// Auto-set allowVolumeExpansion from the referenced pool's backend type when
+	// Auto-set allowVolumeExpansion from the referenced store's backend member when
 	// the user has not explicitly configured the field.
 	if pillarstorageclass.Spec.StorageClass.AllowVolumeExpansion == nil {
 		err := d.defaultAllowVolumeExpansion(ctx, pillarstorageclass)
@@ -80,33 +80,27 @@ func (d *PillarStorageClassCustomDefaulter) Default(
 }
 
 // defaultAllowVolumeExpansion looks up the referenced PillarStore and writes
-// spec.storageClass.allowVolumeExpansion based on the pool's backend type.
+// spec.storageClass.allowVolumeExpansion based on the store's backend member.
 func (d *PillarStorageClassCustomDefaulter) defaultAllowVolumeExpansion(
 	ctx context.Context, pb *pillarcsiv1alpha1.PillarStorageClass,
 ) error {
 	if d.Client == nil {
 		return fmt.Errorf("defaulter client is nil, cannot look up PillarStore")
 	}
-	pool := &pillarcsiv1alpha1.PillarStore{}
-	err := d.Client.Get(ctx, types.NamespacedName{Name: pb.Spec.StoreRef}, pool)
+	store := &pillarcsiv1alpha1.PillarStore{}
+	err := d.Client.Get(ctx, types.NamespacedName{Name: pb.Spec.StoreRef}, store)
 	if err != nil {
 		return fmt.Errorf("cannot look up PillarStore %q: %w", pb.Spec.StoreRef, err)
 	}
-	val := backendSupportsVolumeExpansion(pool.Spec.Backend.Type)
+	val := backendSupportsVolumeExpansion(store.Spec.Backend.Kind())
 	pb.Spec.StorageClass.AllowVolumeExpansion = &val
 	return nil
 }
 
-// backendSupportsVolumeExpansion returns true when the given backend type can
-// resize volumes online. Block-device backends (zfs-zvol, lvm-lv) support
-// expansion; filesystem/directory backends (zfs-dataset, dir) do not.
-func backendSupportsVolumeExpansion(bt pillarcsiv1alpha1.BackendType) bool {
-	switch bt {
-	case pillarcsiv1alpha1.BackendTypeZFSZvol, pillarcsiv1alpha1.BackendTypeLVMLV:
-		return true
-	default: // zfs-dataset, dir, and any unknown future backend types
-		return false
-	}
+// backendSupportsVolumeExpansion returns true when the given backend can
+// resize volumes online: every block-device backend (zfs zvol, lvm LV) can.
+func backendSupportsVolumeExpansion(id pillarcsiv1alpha1.BackendID) bool {
+	return pillarcsiv1alpha1.CategoryOf(id) == pillarcsiv1alpha1.BackendCategoryBlock
 }
 
 // NOTE: If you want to customize the 'path', use the flags '--defaulting-path' or '--validation-path'.
@@ -119,7 +113,7 @@ func backendSupportsVolumeExpansion(bt pillarcsiv1alpha1.BackendType) bool {
 // as this struct is used only for temporary operations and does not need to be deeply copied.
 type PillarStorageClassCustomValidator struct {
 	// Client is used to look up referenced PillarStore and PillarProtocol resources in order
-	// to verify that the backend type and protocol type are compatible.
+	// to verify backend/protocol compatibility and override member matches.
 	Client client.Client
 }
 
@@ -218,11 +212,18 @@ func effectiveStorageClassName(pb *pillarcsiv1alpha1.PillarStorageClass) string 
 	return pb.Name
 }
 
-// validateCompatibility checks that the backend type of the referenced
-// PillarStore and the protocol type of the referenced PillarProtocol are a
-// valid combination. If either referenced resource does not yet exist the
-// check is skipped: the controller will detect and surface the mismatch via
-// status conditions once both resources are available.
+// validateCompatibility checks the binding against the live PillarStore and
+// PillarProtocol it references:
+//   - the backend and protocol must be a compatible combination;
+//   - spec.overrides.backend must select the same member (zfs/lvm) as the
+//     store's backend, and spec.overrides.protocol the same member
+//     (nvmeofTcp) as the protocol — an override for another member could
+//     never apply and is rejected again at CreateVolume.
+//
+// If either referenced resource does not yet exist the checks that need it
+// are skipped: the controller detects and surfaces the problem via status
+// conditions once both resources are available, and CreateVolume re-checks
+// the overrides.
 func (v *PillarStorageClassCustomValidator) validateCompatibility(
 	ctx context.Context, pb *pillarcsiv1alpha1.PillarStorageClass,
 ) error {
@@ -230,34 +231,58 @@ func (v *PillarStorageClassCustomValidator) validateCompatibility(
 		return nil
 	}
 
-	pool := &pillarcsiv1alpha1.PillarStore{}
-	poolErr := v.Client.Get(ctx, types.NamespacedName{Name: pb.Spec.StoreRef}, pool)
-	if poolErr != nil {
-		// Pool not found yet — skip; controller reconciliation handles this case.
-		pillarstorageclasslog.V(1).Info("Skipping compatibility check: cannot fetch pool",
-			"storeRef", pb.Spec.StoreRef, "reason", poolErr.Error())
-		return nil
+	var allErrs field.ErrorList
+	overridesPath := field.NewPath("spec", "overrides")
+
+	store := &pillarcsiv1alpha1.PillarStore{}
+	storeErr := v.Client.Get(ctx, types.NamespacedName{Name: pb.Spec.StoreRef}, store)
+	if storeErr != nil {
+		// Store not found yet — skip; controller reconciliation handles this case.
+		pillarstorageclasslog.V(1).Info("Skipping store-dependent checks: cannot fetch store",
+			"storeRef", pb.Spec.StoreRef, "reason", storeErr.Error())
+	} else if pb.Spec.Overrides != nil && pb.Spec.Overrides.Backend != nil {
+		overrideMember := pb.Spec.Overrides.Backend.Kind()
+		storeMember := backendMember(store.Spec.Backend)
+		if overrideMember != storeMember {
+			allErrs = append(allErrs, field.Invalid(
+				overridesPath.Child("backend"), overrideMember,
+				fmt.Sprintf("backend override member %q does not match the %q backend of PillarStore %q",
+					overrideMember, storeMember, pb.Spec.StoreRef),
+			))
+		}
 	}
 
 	protocol := &pillarcsiv1alpha1.PillarProtocol{}
 	protoErr := v.Client.Get(ctx, types.NamespacedName{Name: pb.Spec.ProtocolRef}, protocol)
 	if protoErr != nil {
 		// Protocol not found yet — skip; controller reconciliation handles this case.
-		pillarstorageclasslog.V(1).Info("Skipping compatibility check: cannot fetch protocol",
+		pillarstorageclasslog.V(1).Info("Skipping protocol-dependent checks: cannot fetch protocol",
 			"protocolRef", pb.Spec.ProtocolRef, "reason", protoErr.Error())
-		return nil
+	} else if pb.Spec.Overrides != nil && pb.Spec.Overrides.Protocol != nil {
+		overrideMember := pb.Spec.Overrides.Protocol.Kind()
+		protocolMemberName := protocolMember(protocol.Spec.Protocol)
+		if overrideMember != protocolMemberName {
+			allErrs = append(allErrs, field.Invalid(
+				overridesPath.Child("protocol"), overrideMember,
+				fmt.Sprintf("protocol override member %q does not match the %q protocol of PillarProtocol %q",
+					overrideMember, protocolMemberName, pb.Spec.ProtocolRef),
+			))
+		}
 	}
 
-	backendType := pool.Spec.Backend.Type
-	protocolType := protocol.Spec.Type
-	compat := pillarcsiv1alpha1.Compatible(backendType, protocolType)
-	if !compat.OK {
-		return field.Invalid(
-			field.NewPath("spec", "protocolRef"),
-			pb.Spec.ProtocolRef,
-			compat.Message,
-		)
+	if storeErr == nil && protoErr == nil {
+		compat := pillarcsiv1alpha1.Compatible(store.Spec.Backend, protocol.Spec.Protocol)
+		if !compat.OK {
+			allErrs = append(allErrs, field.Invalid(
+				field.NewPath("spec", "protocolRef"),
+				pb.Spec.ProtocolRef,
+				compat.Message,
+			))
+		}
 	}
 
+	if len(allErrs) > 0 {
+		return allErrs.ToAggregate()
+	}
 	return nil
 }

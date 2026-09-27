@@ -88,21 +88,21 @@ func TestLockTarget_DistinguishesProtocolsForSameTargetID(t *testing.T) {
 	}
 }
 
-func TestLockTarget_SerializesDerivedISCSITargetID(t *testing.T) {
+func TestLockTarget_SerializesDerivedTargetID(t *testing.T) {
 	t.Parallel()
 
-	targetID, err := volumeTargetID(agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI, "tank/pvc-abc")
+	targetID, err := volumeTargetID(agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP, "tank/pvc-abc")
 	if err != nil {
 		t.Fatalf("volumeTargetID unexpected error: %v", err)
 	}
 
 	srv := NewServer(nil, "", WithDrainStateDir(t.TempDir()))
-	unlockFirst := srv.lockTarget(agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI, targetID)
+	unlockFirst := srv.lockTarget(agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP, targetID)
 
 	acquired := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
-		unlockSecond := srv.lockTarget(agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI, targetID)
+		unlockSecond := srv.lockTarget(agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP, targetID)
 		close(acquired)
 		unlockSecond()
 		close(done)
@@ -110,7 +110,7 @@ func TestLockTarget_SerializesDerivedISCSITargetID(t *testing.T) {
 
 	select {
 	case <-acquired:
-		t.Fatal("derived iSCSI target lock acquired before first lock was released")
+		t.Fatal("derived target lock acquired before first lock was released")
 	case <-time.After(25 * time.Millisecond):
 	}
 
@@ -119,12 +119,12 @@ func TestLockTarget_SerializesDerivedISCSITargetID(t *testing.T) {
 	select {
 	case <-acquired:
 	case <-time.After(time.Second):
-		t.Fatal("derived iSCSI target lock was not acquired after release")
+		t.Fatal("derived target lock was not acquired after release")
 	}
 
 	select {
 	case <-done:
 	case <-time.After(time.Second):
-		t.Fatal("derived iSCSI target lock holder did not finish")
+		t.Fatal("derived target lock holder did not finish")
 	}
 }

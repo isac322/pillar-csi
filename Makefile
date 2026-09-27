@@ -150,7 +150,7 @@ E2E_GO_FLAGS = -tags=e2e ./test/e2e/ -v -timeout=$(E2E_TIMEOUT) $(if $(E2E_RUN),
 #   1. The same Kind cluster (1 control-plane + 2 worker nodes).
 #   2. The same storage worker node (both /dev/zfs and /dev/mapper mounted).
 #   3. The same agent DaemonSet pod (both ZFS and LVM backends registered on
-#      the same agent process via separate --backend flags).
+#      the same agent process as separate entries of its config file).
 #   4. The same NVMe-oF protocol stack (shared configfs paths and TCP ports).
 #
 # Running them in parallel across separate goroutines or processes would risk

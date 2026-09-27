@@ -176,7 +176,7 @@ webhook:
 
 
 # ─── pillar-node ─────────────────────────────────────────────────────────────
-# Kubernetes DaemonSet: CSI Node service + protocol initiators (NVMe-oF, iSCSI, NFS).
+# Kubernetes DaemonSet: CSI Node service + NVMe-oF/TCP initiator.
 # Runs CSI sidecars: node-driver-registrar, liveness-probe.
 # Init container: best-effort modprobe for initiator kernel modules.
 node:
@@ -252,9 +252,6 @@ node:
     modules:
       - nvme_fabrics
       - nvme_tcp
-      - iscsi_tcp
-      - nfs
-      - cifs
     # -- Resource requests/limits for the modprobe init container.
     resources:
       limits:
@@ -305,7 +302,7 @@ node:
 # (the controller manages this label automatically via PillarAgent CRs).
 # hostNetwork defaults to true so that nvmet_tcp listeners and `nvme connect`
 # TCP sockets are created in the host network namespace.  Disabling this
-# breaks the NVMe-oF/iSCSI data plane in every clustered deployment; see
+# breaks the NVMe-oF data plane in every clustered deployment; see
 # PRD §2.4 for the kernel netns rationale.
 # Init container: best-effort modprobe for target kernel modules.
 agent:
@@ -317,33 +314,45 @@ agent:
     # -- Per-container image pull policy override.
     pullPolicy: ""
 
-  # -- Backend specifications passed as --backend flags to the pillar-agent.
-  # Each entry renders one --backend flag whose form depends on `type`:
-  #   - zfs-zvol: `pool` is required, `parent` is optional.
-  #   - lvm-lv:   `vg`   is required, `thinpool` is optional (thin pool name
-  #               for lvcreate -T; omit for thick LVs).
-  # At least one backend is required; the agent exits with an error if none are
-  # provided.  Unknown `type` values cause a chart render failure.
-  # Each ZFS `pool` and LVM `vg` may appear in at most one entry (a ZFS pool
-  # and an LVM VG must not share a name either): volumes are routed to a
-  # backend by pool/VG name alone, so a duplicate fails the chart render and
-  # the agent refuses to start when given one.
-  # `parent` and `thinpool` decide where volumes are created and must equal
-  # the PillarStore's spec.backend.zfs.parentDataset / spec.backend.lvm.thinPool
-  # for that pool/VG (omitted = pool root / no thin pool).  On a mismatch the
-  # PillarStore is not Ready (PoolDiscovered=False, BackendLayoutMismatch) and
-  # CreateVolume fails; volumes are never placed elsewhere.
+  # -- Backend placement config for the pillar-agent.  The list is rendered
+  # verbatim into the `backends:` list of the agent config file (ConfigMap
+  # <fullname>-agent-config, passed to the agent via --config).  Each entry
+  # sets exactly one of `zfs` or `lvm`, with the same keys as the placement
+  # fields of PillarStore.spec.backend:
+  #   - zfs: `pool` is required; `volumeType` (only `zvol`, the default) and
+  #          `parentDataset` are optional.  `properties` is refused: ZFS
+  #          properties are per-volume settings of the PillarStore,
+  #          PillarStorageClass overrides or PVC backend document.
+  #   - lvm: `volumeGroup` is required; `thinPool` (thin pool LV used by
+  #          thin volumes) and `provisioningMode` (`linear` default | `thin`;
+  #          the mode for agent requests that name none — CSI always names
+  #          the resolved mode) are optional.
+  # The agent rejects unknown keys with their path and exits with an error
+  # when no backend is configured.  An entry setting neither or both of
+  # zfs/lvm fails the chart render.
+  # Each ZFS `pool` and LVM `volumeGroup` may appear in at most one entry (a
+  # ZFS pool and an LVM VG must not share a name either): volumes are routed
+  # to a backend by pool/VG name alone, so a duplicate fails the chart render
+  # and the agent refuses to start when given one.
+  # `parentDataset` and `thinPool` decide where volumes are created and must
+  # equal the PillarStore's spec.backend.zfs.parentDataset /
+  # spec.backend.lvm.thinPool for that pool/VG (omitted = pool root / no thin
+  # pool).  On a mismatch the PillarStore is not Ready (PoolDiscovered=False,
+  # BackendLayoutMismatch) and CreateVolume fails; volumes are never placed
+  # elsewhere.
   #
   # Example:
   #   backends:
-  #     - type: zfs-zvol
-  #       pool: tank
-  #     - type: zfs-zvol
-  #       pool: hot-data
-  #       parent: k8s
-  #     - type: lvm-lv
-  #       vg: data-vg
-  #       thinpool: thin-pool-0
+  #     - zfs:
+  #         pool: tank
+  #     - zfs:
+  #         volumeType: zvol
+  #         pool: hot-data
+  #         parentDataset: k8s
+  #     - lvm:
+  #         volumeGroup: data-vg
+  #         thinPool: thin0
+  #         provisioningMode: linear
   backends: []
 
   # -- Extra command-line arguments appended to the pillar-agent entrypoint.
@@ -396,9 +405,9 @@ agent:
   podLabels: {}
 
   # -- Run the agent Pod in the host network namespace.  Required for the
-  # NVMe-oF/iSCSI data plane (see PRD §2.4).  Set to false only for isolated
+  # NVMe-oF data plane (see PRD §2.4).  Set to false only for isolated
   # gRPC-only deployments where no kernel target is exported (e.g. unit-test
-  # harnesses); production NVMe-oF/iSCSI exports will fail with
+  # harnesses); production NVMe-oF exports will fail with
   # "connection refused" at NodeStageVolume when this is false.
   hostNetwork: true
 
@@ -420,11 +429,10 @@ agent:
       tag: "1.38.0"
       pullPolicy: ""
     # -- Kernel modules to load. Failures are silently ignored (best-effort).
+    # nvmet must be listed before nvmet_tcp (it is a dependency).
     modules:
       - nvmet
       - nvmet_tcp
-      - target_core_mod
-      - iscsi_target_mod
     # -- Resource requests/limits for the modprobe init container.
     resources:
       limits:

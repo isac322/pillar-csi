@@ -26,10 +26,10 @@ import (
 // decodeMkfsOptions decodes the paramMkfsOptions value — a JSON array of
 // strings, one mkfs argv element each.  An empty raw value yields no options.
 //
-// The same encoding is written by the PillarStorageClass reconciler
-// (PillarProtocol.spec.mkfsOptions / PillarStorageClass.spec.overrides.mkfsOptions)
-// and by the PVC fs-override annotation, travels unchanged in the PV
-// VolumeContext, and is decoded again by NodeStageVolume.
+// The value is written by CreateVolume from the resolved filesystem
+// mkfsOptions (PillarStorageClass spec.filesystem, or a StorageClass / PVC
+// filesystem document), travels unchanged in the PV VolumeContext, and is
+// decoded again by NodeStageVolume.
 func decodeMkfsOptions(raw string) ([]string, error) {
 	if raw == "" {
 		return nil, nil

@@ -22,23 +22,18 @@ import "fmt"
 type BackendCategory string
 
 const (
-	// BackendCategoryUnknown represents an unrecognized backend type.
+	// BackendCategoryUnknown represents an unrecognized backend.
 	BackendCategoryUnknown BackendCategory = "unknown"
 
 	// BackendCategoryBlock represents raw block-device backends.
 	BackendCategoryBlock BackendCategory = "block"
-
-	// BackendCategoryFilesystem represents filesystem/directory backends.
-	BackendCategoryFilesystem BackendCategory = "filesystem"
 )
 
-// CategoryOf returns the compatibility category for a backend type.
-func CategoryOf(bt BackendType) BackendCategory {
-	switch bt {
-	case BackendTypeZFSZvol, BackendTypeLVMLV:
+// CategoryOf returns the compatibility category for a backend kind.
+func CategoryOf(b BackendID) BackendCategory {
+	switch b {
+	case BackendIDZFSZvol, BackendIDLVMLV:
 		return BackendCategoryBlock
-	case BackendTypeZFSDataset, BackendTypeDir:
-		return BackendCategoryFilesystem
 	default:
 		return BackendCategoryUnknown
 	}
@@ -48,23 +43,18 @@ func CategoryOf(bt BackendType) BackendCategory {
 type ProtocolCategory string
 
 const (
-	// ProtocolCategoryUnknown represents an unrecognized protocol type.
+	// ProtocolCategoryUnknown represents an unrecognized protocol.
 	ProtocolCategoryUnknown ProtocolCategory = "unknown"
 
 	// ProtocolCategoryBlock represents block-storage protocols.
 	ProtocolCategoryBlock ProtocolCategory = "block"
-
-	// ProtocolCategoryFile represents file-storage protocols.
-	ProtocolCategoryFile ProtocolCategory = "file"
 )
 
-// ProtocolCategoryOf returns the compatibility category for a protocol type.
-func ProtocolCategoryOf(pt ProtocolType) ProtocolCategory {
-	switch pt {
-	case ProtocolTypeNVMeOFTCP, ProtocolTypeISCSI:
+// ProtocolCategoryOf returns the compatibility category for a protocol kind.
+func ProtocolCategoryOf(p ProtocolID) ProtocolCategory {
+	switch p {
+	case ProtocolIDNVMeOFTCP:
 		return ProtocolCategoryBlock
-	case ProtocolTypeNFS, ProtocolTypeSMB:
-		return ProtocolCategoryFile
 	default:
 		return ProtocolCategoryUnknown
 	}
@@ -72,63 +62,38 @@ func ProtocolCategoryOf(pt ProtocolType) ProtocolCategory {
 
 // Compatibility describes the compatibility verdict for a backend/protocol pair.
 type Compatibility struct {
-	BackendType      BackendType
+	BackendID        BackendID
 	BackendCategory  BackendCategory
-	ProtocolType     ProtocolType
+	ProtocolID       ProtocolID
 	ProtocolCategory ProtocolCategory
 	OK               bool
 	Message          string
 }
 
-// Compatible evaluates whether a backend type can be served over a protocol type.
-func Compatible(bt BackendType, pt ProtocolType) Compatibility {
+// Compatible evaluates whether the backend selected by spec can be served
+// over the protocol selected by pspec: both must be a served variant and
+// export the same kind of volume.
+func Compatible(spec BackendSpec, pspec ProtocolSpec) Compatibility {
+	bt := spec.Kind()
+	pt := pspec.Kind()
 	result := Compatibility{
-		BackendType:      bt,
+		BackendID:        bt,
 		BackendCategory:  CategoryOf(bt),
-		ProtocolType:     pt,
+		ProtocolID:       pt,
 		ProtocolCategory: ProtocolCategoryOf(pt),
 	}
 
-	result.OK = result.BackendCategory != BackendCategoryUnknown &&
-		result.ProtocolCategory != ProtocolCategoryUnknown &&
-		((result.BackendCategory == BackendCategoryBlock && result.ProtocolCategory == ProtocolCategoryBlock) ||
-			(result.BackendCategory == BackendCategoryFilesystem && result.ProtocolCategory == ProtocolCategoryFile))
-
 	switch {
-	case result.OK:
+	case result.BackendCategory == BackendCategoryUnknown || result.ProtocolCategory == ProtocolCategoryUnknown:
 		result.Message = fmt.Sprintf(
-			"Backend type %q and protocol type %q are compatible",
-			bt, pt,
-		)
-	case result.BackendCategory == BackendCategoryBlock && result.ProtocolCategory == ProtocolCategoryFile:
+			"backend %q is incompatible with protocol %q: backend or protocol is not supported", bt, pt)
+	case string(result.BackendCategory) != string(result.ProtocolCategory):
 		result.Message = fmt.Sprintf(
-			"backend type %q is incompatible with protocol type %q: raw block backends cannot be exported via %s; "+
-				"use zfs-dataset or dir for file protocols (nfs, smb), or switch to a block protocol (nvmeof-tcp, iscsi)",
-			bt, pt, protocolDisplayName(pt),
-		)
-	case result.BackendCategory == BackendCategoryFilesystem && result.ProtocolCategory == ProtocolCategoryBlock:
-		result.Message = fmt.Sprintf(
-			"backend type %q is incompatible with protocol type %q: filesystem backends cannot be exposed as block devices; "+
-				"use zfs-zvol or lvm-lv for block protocols, or switch to NFS or SMB",
-			bt, pt,
-		)
+			"backend %q (%s volumes) is incompatible with protocol %q (%s volumes)",
+			bt, result.BackendCategory, pt, result.ProtocolCategory)
 	default:
-		result.Message = fmt.Sprintf(
-			"backend type %q is incompatible with protocol type %q: compatibility categories could not be evaluated",
-			bt, pt,
-		)
+		result.OK = true
+		result.Message = fmt.Sprintf("backend %q and protocol %q are compatible", bt, pt)
 	}
-
 	return result
-}
-
-func protocolDisplayName(pt ProtocolType) string {
-	switch pt {
-	case ProtocolTypeNFS:
-		return "NFS"
-	case ProtocolTypeSMB:
-		return "SMB"
-	default:
-		return string(pt)
-	}
 }

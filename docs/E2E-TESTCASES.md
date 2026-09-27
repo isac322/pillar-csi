@@ -11,7 +11,7 @@
 - 실제 커널 모듈, 실제 ZFS, 실제 NVMe-oF 장치를 요구하는 테스트는
   별도로 표시하고 현실적인 인프라 요구사항을 함께 기술한다.
 
-**총 테스트 케이스: 404** (인프로세스 239개 + envtest 통합 117개 + 클러스터 레벨 48개; E28 LVM Agent gRPC 30개 · E29 CSI Controller LVM 파라미터 12개 · E30 LVM LV 중복 방지 3개 · E32 LVM CRD 라이프사이클 9개 · E33 default-profile 7개(standalone 7) + teardown-guarantee 4개 + backend-teardown-absence 5개 포함 / 추가 문서화 비기본 TC: E33 core-rpc 9개 · E33 mount 12개 · E33 expansion 5개(e2e_helm 빌드 태그 필요) · E34 Kind+LVM iSCSI 13개 · E35 Kind+ZFS iSCSI 13개 · F27–F31 LVM 완전 E2E 19개 — 특수 레이블 필터 필요 / 수동 AD 시나리오 3개 · BP 시나리오 4개 별도)
+**총 테스트 케이스: 404** (인프로세스 239개 + envtest 통합 117개 + 클러스터 레벨 48개; E28 LVM Agent gRPC 30개 · E29 CSI Controller LVM 파라미터 12개 · E30 LVM LV 중복 방지 3개 · E32 LVM CRD 라이프사이클 9개 · E33 default-profile 7개(standalone 7) + teardown-guarantee 4개 + backend-teardown-absence 5개 포함 / 추가 문서화 비기본 TC: E33 core-rpc 9개 · E33 mount 12개 · E33 expansion 5개(e2e_helm 빌드 태그 필요) · F27–F31 LVM 완전 E2E 19개 — 특수 레이블 필터 필요 / 수동 AD 시나리오 3개 · BP 시나리오 3개 별도)
 
 ---
 
@@ -133,14 +133,6 @@
   - [E33.2: LVM PVC 프로비저닝 및 Pod 마운트](#e332-lvm-pvc-프로비저닝-및-pod-마운트)
   - [E33.3: LVM 볼륨 확장](#e333-lvm-볼륨-확장)
   - [E33.4: LVM 백엔드 독립 E2E (Standalone)](#e334-lvm-백엔드-독립-e2e-standalone)
-- [E34: LVM Kind 클러스터 E2E — 실제 LVM VG + iSCSI](#e34-lvm-kind-클러스터-e2e--실제-lvm-vg--iscsi)
-  - [E34.1: iSCSI 제어면 및 export 계약](#e341-iscsi-제어면-및-export-계약)
-  - [E34.2: iSCSI PVC 프로비저닝 및 Pod 마운트](#e342-iscsi-pvc-프로비저닝-및-pod-마운트)
-  - [E34.3: Raw Block, 확장, 통계 및 재스테이징](#e343-raw-block-확장-통계-및-재스테이징)
-- [E35: ZFS Kind 클러스터 E2E — 실제 ZFS zvol + iSCSI](#e35-zfs-kind-클러스터-e2e--실제-zfs-zvol--iscsi)
-  - [E35.1: zvol 백엔드 제어면 및 export 계약](#e351-zvol-백엔드-제어면-및-export-계약)
-  - [E35.2: zvol-backed Filesystem PVC 및 Pod 마운트](#e352-zvol-backed-filesystem-pvc-및-pod-마운트)
-  - [E35.3: Raw Block, 확장, 통계 및 재스테이징](#e353-raw-block-확장-통계-및-재스테이징)
 
 ### 카테고리 3 — 완전 E2E / 수동 스테이징 테스트 (유형 F) ❌
 > 빌드 태그: `//go:build e2e_full` | 실제 ZFS/NVMe-oF 커널 모듈 필요 | 베어메탈/KVM 서버 필요
@@ -617,7 +609,7 @@ CSI ControllerServer → (실제 gRPC, localhost:0) → mockAgentServer
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| 1 | `TestCSIController_CreateVolume` | CreateVolume이 agent.CreateVolume → agent.ExportVolume을 순서대로 호출하고 올바른 VolumeId/VolumeContext를 반환 | PillarAgent="storage-1" fake 클라이언트에 등록; mockAgentServer 정상 동작; pool="tank"(PillarStore CRD); 프로토콜=nvmeof-tcp; 용량=1GiB | 1) CreateVolumeRequest 전송 | VolumeId="storage-1/nvmeof-tcp/zfs-zvol/tank/pvc-create-test"; VolumeContext에 target_id/address/port/volume-ref/protocol-type 포함 | `CSI-C`, `Agent`, `TgtCRD`, `VolCRD`, `gRPC` |
+| 1 | `TestCSIController_CreateVolume` | CreateVolume이 agent.CreateVolume → agent.ExportVolume을 순서대로 호출하고 올바른 VolumeId/VolumeContext를 반환 | PillarAgent="storage-1" fake 클라이언트에 등록; mockAgentServer 정상 동작; pool="tank"(PillarStore CRD); 프로토콜=nvmeof-tcp; 용량=1GiB | 1) CreateVolumeRequest 전송 | VolumeId="storage-1/nvmeof-tcp/zfs-zvol/tank/pvc-create-test"; VolumeContext에 target_id/address/port/volume-ref/protocol-type 포함; PillarStore="tank"(zfs.pool=tank, agentRef=storage-1)·PillarProtocol="nvmeof"(nvmeofTcp) fake 클라이언트에 등록; Parameters=`pillar-csi.bhyoo.com/store-ref`="tank", `pillar-csi.bhyoo.com/protocol-ref`="nvmeof" | `CSI-C`, `Agent`, `TgtCRD`, `VolCRD`, `gRPC` |
 | 2 | `TestCSIController_CreateVolume_Idempotency` | 동일한 볼륨 이름으로 CreateVolume을 두 번 호출하면 두 번째 호출은 agent.CreateVolume/ExportVolume을 재호출하지 않고 동일한 응답 반환 | 위와 동일; mockAgentServer 정상 동작 | 1) CreateVolumeRequest 전송; 2) 동일 파라미터로 CreateVolumeRequest 재전송 | 두 번째 호출 성공; 동일한 VolumeId 반환; agent CreateVolume은 1회, ExportVolume은 1회만 호출 | `CSI-C`, `Agent`, `TgtCRD`, `VolCRD`, `gRPC` |
 
 ---
@@ -626,7 +618,7 @@ CSI ControllerServer → (실제 gRPC, localhost:0) → mockAgentServer
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| 3 | `TestCSIController_CreateVolume_MissingParams` | StorageClass 파라미터 누락 시 InvalidArgument 반환 | ControllerServer 초기화; StorageClass Parameters에서 필수 키(target/backend-type/protocol-type/pool) 일부 또는 전부 제거 | 1) 파라미터 일부 누락한 CreateVolumeRequest 전송 | gRPC InvalidArgument; agent 호출 없음 | `CSI-C` |
+| 3 | `TestCSIController_CreateVolume_MissingParams` | StorageClass 파라미터 누락 시 InvalidArgument 반환 | ControllerServer 초기화; StorageClass Parameters를 빈 맵으로 전송(identity 키 `pillar-csi.bhyoo.com/storage-class` 또는 `store-ref`+`protocol-ref` 없음) | 1) 파라미터 일부 누락한 CreateVolumeRequest 전송 | gRPC InvalidArgument; agent 호출 없음 | `CSI-C` |
 | 4 | `TestCSIController_CreateVolume_PillarAgentNotFound` | 참조된 PillarAgent이 존재하지 않으면 NotFound 반환 | fake 클라이언트에 PillarAgent 미등록; Parameters["target"]="nonexistent" | 1) CreateVolumeRequest 전송 | gRPC NotFound 또는 Internal; agent 호출 없음 | `CSI-C`, `TgtCRD` |
 | 5 | `TestCSIController_CreateVolume_AgentCreateError` | agent.CreateVolume 실패 시 오류 전파 | mockAgentServer.CreateVolumeErr 설정; PillarAgent 정상 등록 | 1) CreateVolumeRequest 전송 | 비-OK gRPC 상태 반환; ExportVolume 미호출 | `CSI-C`, `Agent`, `TgtCRD`, `gRPC` |
 | 6 | `TestCSIController_CreateVolume_AgentExportError` | agent.CreateVolume 성공 후 agent.ExportVolume 실패 시 오류 전파 | mockAgentServer.ExportVolumeErr 설정; CreateVolume은 성공 | 1) CreateVolumeRequest 전송 | 비-OK gRPC 상태 반환; PillarVolumeState CRD에 PartialFailure 기록 | `CSI-C`, `Agent`, `TgtCRD`, `VolCRD`, `gRPC` |
@@ -722,7 +714,7 @@ CSI ControllerServer → (실제 gRPC, localhost:0) → mockAgentServer
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
 | E1.8-1 | `TestCSIController_CreateVolume_PillarAgentEmptyAddress` | PillarAgent이 존재하지만 ResolvedAddress=""이면 Unavailable 반환 | fake 클라이언트에 PillarAgent 등록; Status.ResolvedAddress="" | 1) 해당 target을 참조하는 CreateVolumeRequest 전송 | gRPC Unavailable; "has no resolved address; agent may not be ready" 메시지; agent 다이얼 시도 없음 | `CSI-C`, `TgtCRD` |
-| E1.8-2 | `TestCSIController_CreateVolume_PillarAgentNotFound` | Parameters["target"]이 존재하지 않는 PillarAgent을 참조하면 NotFound 반환 | fake 클라이언트에 PillarAgent 미등록; Parameters["pillar-csi.bhyoo.com/agent"]="ghost-node" | 1) CreateVolumeRequest 전송 | gRPC NotFound; "PillarAgent … not found" 메시지; agent 호출 없음 | `CSI-C`, `TgtCRD` |
+| E1.8-2 | `TestCSIController_CreateVolume_PillarAgentNotFound` | PillarStore의 agentRef가 존재하지 않는 PillarAgent을 참조하면 NotFound 반환 | fake 클라이언트에 PillarStore "ghost-store"(agentRef="ghost-node") 등록, PillarAgent "ghost-node" 미등록; Parameters=`store-ref`="ghost-store", `protocol-ref`="nvmeof" | 1) CreateVolumeRequest 전송 | gRPC NotFound; "PillarAgent … not found" 메시지; agent 호출 없음 | `CSI-C`, `TgtCRD` |
 | E1.8-3 | `TestCSIController_CreateVolume_AgentDialFails` | agent 다이얼 자체가 실패하면 Unavailable 반환 | PillarAgent 등록 (ResolvedAddress=유효); dialAgent 함수에 연결 실패 에러 주입 | 1) CreateVolumeRequest 전송 | gRPC Unavailable; "failed to dial agent" 메시지; agent.CreateVolume 호출 없음 | `CSI-C`, `TgtCRD`, `gRPC` |
 
 ---
@@ -755,10 +747,10 @@ StorageClass 파라미터와 별도로, `external-provisioner`의 `--extra-creat
 PVC 어노테이션 오버라이드(Layer 4)를 적용한다.
 
 **지원하는 오버라이드 어노테이션:**
-- `pillar-csi.bhyoo.com/backend-override` — ZFS 프로퍼티 오버라이드 (YAML)
-- `pillar-csi.bhyoo.com/protocol-override` — NVMe-oF / iSCSI 파라미터 오버라이드 (YAML)
-- `pillar-csi.bhyoo.com/fs-override` — 파일시스템 포맷 파라미터 오버라이드 (YAML)
-- `pillar-csi.bhyoo.com/param.<key>` — 저수준 플랫 키-값 오버라이드
+- `pillar-csi.bhyoo.com/backend` — 백엔드 튜너블 YAML 문서 (`zfs: {properties: {...}}` 또는 `lvm: {provisioningMode: ...}`; PillarStorageClass `spec.overrides.backend`와 동일한 형태)
+- `pillar-csi.bhyoo.com/protocol` — 프로토콜 튜너블 YAML 문서 (`nvmeofTcp: {maxQueueSize, inCapsuleDataSize, ctrlLossTmo, reconnectDelay}`)
+- `pillar-csi.bhyoo.com/filesystem` — 파일시스템 YAML 문서 (`fsType`, `mkfsOptions`, `mountOptions`; PillarStorageClass `spec.filesystem`과 동일한 형태)
+- 제거된 키(`pillar-csi.bhyoo.com/param.<key>`, `backend-override`, `protocol-override`, `fs-override`)와 그 밖의 알 수 없는 `pillar-csi.bhyoo.com/` 어노테이션은 InvalidArgument로 거부된다
 
 **차단되는 구조적 필드:** `zfs.pool`, `zfs.parentDataset`, port 번호, protocol 종류 등
 
@@ -766,16 +758,16 @@ PVC 어노테이션 오버라이드(Layer 4)를 적용한다.
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| E1.10-1 | `TestCSIController_CreateVolume_PVCAnnotation_BackendOverride_Compression` | PVC 어노테이션의 ZFS compression 프로퍼티가 agent BackendParams에 반영 | fake 클라이언트에 PVC 등록 (annotation: `pillar-csi.bhyoo.com/backend-override`); StorageClass Parameters에 pvc/name, pvc/namespace 포함 | 1) CreateVolumeRequest 전송 | 성공; agent.CreateVolume의 BackendParams에 `pillar-csi.bhyoo.com/zfs-prop.compression=zstd` 포함 | `CSI-C`, `Agent`, `VolCRD`, `gRPC` |
-| E1.10-2 | `TestCSIController_CreateVolume_PVCAnnotation_StructuralFieldBlocked` | 구조적 필드(`zfs.pool`)를 어노테이션으로 오버라이드하면 InvalidArgument 반환 | fake 클라이언트에 PVC 등록 (annotation에 zfs.pool 오버라이드 시도) | 1) CreateVolumeRequest 전송 | gRPC InvalidArgument; `pvcAnnotationValidationError` 발생; agent 호출 없음 | `CSI-C`, `VolCRD` |
+| E1.10-1 | `TestCSIController_CreateVolume_PVCAnnotation_BackendOverride_Compression` | PVC 어노테이션의 ZFS compression 프로퍼티가 agent BackendParams에 반영 | fake 클라이언트에 PVC 등록 (annotation: `pillar-csi.bhyoo.com/backend` = `zfs: {properties: {compression: zstd}}`); StorageClass Parameters에 pvc/name, pvc/namespace 포함 | 1) CreateVolumeRequest 전송 | 성공; agent.CreateVolume의 ZfsVolumeParams.Properties에 `compression=zstd` 포함 | `CSI-C`, `Agent`, `VolCRD`, `gRPC` |
+| E1.10-2 | `TestCSIController_CreateVolume_PVCAnnotation_StructuralFieldBlocked` | 구조적 필드(`zfs.pool`)를 PVC 백엔드 문서로 오버라이드하면 InvalidArgument 반환 | fake 클라이언트에 PVC 등록 (annotation `pillar-csi.bhyoo.com/backend` = `zfs: {pool: overridden-pool}`) | 1) CreateVolumeRequest 전송 | gRPC InvalidArgument; 메시지에 `zfs.pool is structural and cannot be set per volume`; agent 호출 없음 | `CSI-C`, `VolCRD` |
 | E1.10-3 | `TestCSIController_CreateVolume_PVCAnnotation_PVCNotFound_FailedPrecondition` | pvc/name에 해당하는 PVC를 읽을 수 없으면 오버라이드를 버리지 않고 FailedPrecondition으로 실패 | fake 클라이언트에 PVC 미등록; StorageClass Parameters에 pvc/name, pvc/namespace 포함 | 1) CreateVolumeRequest 전송 | gRPC FailedPrecondition (provisioner가 재시도); agent.CreateVolume 호출 없음 | `CSI-C`, `Agent`, `VolCRD`, `gRPC` |
-| E1.10-4 | `TestCSIController_CreateVolume_PVCAnnotation_FlatKeyOverride` | 저수준 어노테이션(`pillar-csi.bhyoo.com/param.zfs-prop.volblocksize`)이 반영 | fake 클라이언트에 PVC 등록 (annotation: volblocksize=16K) | 1) CreateVolumeRequest 전송 | 성공; agent.CreateVolume의 BackendParams에 `pillar-csi.bhyoo.com/zfs-prop.volblocksize=16K` 포함 | `CSI-C`, `Agent`, `VolCRD`, `gRPC` |
+| E1.10-4 | `TestCSIController_CreateVolume_PVCAnnotation_RemovedKeysRejected` | 제거된 PVC 어노테이션 키(`pillar-csi.bhyoo.com/param.zfs-prop.volblocksize`, `backend-override`, `protocol-override`, `fs-override`)는 무시되지 않고 거부 | 키마다 fake 클라이언트에 해당 어노테이션 하나만 가진 PVC 등록 | 1) 키마다 CreateVolumeRequest 전송 | 각 키에 대해 gRPC InvalidArgument; agent.CreateVolume 호출 없음 | `CSI-C`, `VolCRD` |
 
 ---
 
 ### E1.11 VolumeId 형식 및 파라미터 검증 심화
 
-**VolumeId 형식:** `<target-name>/<protocol-type>/<backend-type>/<agent-vol-id>`
+**VolumeId 형식:** `<agent-name>/<protocol>/<backend>/<agent-vol-id>` — agent는 PillarStore `spec.agentRef`, protocol은 PillarProtocol 멤버(`nvmeof-tcp`), backend는 PillarStore 멤버(`zfs-zvol`/`lvm-lv`)에서 결정된다.
 
 ZFS zvol의 `agent-vol-id`는 `<pool>/<volume-name>` 형식(PillarStore CRD의 pool 이름)이므로 전체 VolumeId에
 슬래시가 5개 포함될 수 있다. `strings.SplitN(id, "/", 4)` 로 정확히 4 파트로 분리한다.
@@ -785,11 +777,11 @@ ZFS zvol의 `agent-vol-id`는 `<pool>/<volume-name>` 형식(PillarStore CRD의 p
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
 | E1.11-1 | `TestCSIController_CreateVolume_VolumeID_ZFSPoolWithSlash` | ZFS pool 이름에 슬래시 포함 시 agent-vol-id 파싱 정확성 | pool="tank"(PillarStore CRD); volume-name="pvc-abc" | 1) CreateVolumeRequest 전송; 2) 반환된 VolumeId로 DeleteVolumeRequest 전송 | CreateVolume: VolumeId="storage-1/nvmeof-tcp/zfs-zvol/tank/pvc-abc"; DeleteVolume: agent-vol-id="tank/pvc-abc" 정확 파싱 | `CSI-C`, `Agent`, `gRPC` |
-| E1.11-2 | `TestCSIController_CreateVolume_VolumeID_ZFSParentDataset` | ZFS parent dataset 파라미터 설정 시 agent-vol-id에 반영 | pool="tank"(PillarStore CRD); zfs-parent-dataset="volumes"; volume-name="pvc-abc" | 1) CreateVolumeRequest 전송 | agent-vol-id="tank/volumes/pvc-abc"; VolumeId="storage-1/nvmeof-tcp/zfs-zvol/tank/volumes/pvc-abc" | `CSI-C`, `Agent`, `gRPC` |
+| E1.11-2 | `TestCSIController_CreateVolume_VolumeID_ZFSParentDataset` | PillarStore `zfs.parentDataset`이 agent BackendParams로 전달되고 VolumeId에는 포함되지 않음 | PillarStore "tank-volumes"(zfs.pool=tank, zfs.parentDataset=volumes); Parameters=`store-ref`="tank-volumes", `protocol-ref`="nvmeof"; volume-name="pvc-abc" | 1) CreateVolumeRequest 전송 | VolumeId="storage-1/nvmeof-tcp/zfs-zvol/tank/pvc-abc"; agent ZfsVolumeParams.ParentDataset="volumes" | `CSI-C`, `Agent`, `gRPC` |
 | E1.11-3 | `TestCSIController_CreateVolume_MissingVolumeName` | 볼륨 이름이 빈 문자열이면 InvalidArgument | ControllerServer 초기화만 필요 | 1) Name=""로 CreateVolumeRequest 전송 | gRPC InvalidArgument; "volume name is required" 메시지; agent 호출 없음 | `CSI-C` |
-| E1.11-4 | `TestCSIController_CreateVolume_MissingTargetParam` | StorageClass parameter에 target 키 없으면 InvalidArgument | ControllerServer 초기화; Parameters에서 `pillar-csi.bhyoo.com/agent` 제거 | 1) target 파라미터 없는 CreateVolumeRequest 전송 | gRPC InvalidArgument; "parameter … is required" 메시지 | `CSI-C` |
-| E1.11-5 | `TestCSIController_CreateVolume_MissingBackendTypeParam` | StorageClass parameter에 backend-type 키 없으면 InvalidArgument | ControllerServer 초기화; Parameters에서 `pillar-csi.bhyoo.com/backend-type` 제거 | 1) backend-type 파라미터 없는 CreateVolumeRequest 전송 | gRPC InvalidArgument | `CSI-C` |
-| E1.11-6 | `TestCSIController_CreateVolume_MissingProtocolTypeParam` | StorageClass parameter에 protocol-type 키 없으면 InvalidArgument | ControllerServer 초기화; Parameters에서 `pillar-csi.bhyoo.com/protocol-type` 제거 | 1) protocol-type 파라미터 없는 CreateVolumeRequest 전송 | gRPC InvalidArgument | `CSI-C` |
+| E1.11-4 | `TestCSIController_CreateVolume_MissingStoreRefParam` | 직접 작성한 StorageClass에 `pillar-csi.bhyoo.com/store-ref`가 없으면 InvalidArgument | ControllerServer 초기화; Parameters에서 `pillar-csi.bhyoo.com/store-ref` 제거 (`protocol-ref`만 남김) | 1) CreateVolumeRequest 전송 | gRPC InvalidArgument; agent 호출 없음 | `CSI-C` |
+| E1.11-5 | `TestCSIController_CreateVolume_LegacyFlatParamRejected` | 제거된 평면 StorageClass 파라미터(`backend-type`, `protocol-type`, `agent`, `store`, `zfs-prop.*`, `lvm-mode`, `acl-enabled`)는 무시되지 않고 거부 | ControllerServer 초기화; 유효한 `store-ref`/`protocol-ref`에 레거시 키 하나씩 추가 | 1) 키마다 CreateVolumeRequest 전송 | 각 키에 대해 gRPC InvalidArgument; 메시지에 `unsupported StorageClass parameter`와 키 이름 | `CSI-C` |
+| E1.11-6 | `TestCSIController_CreateVolume_MissingProtocolRefParam` | 직접 작성한 StorageClass에 `pillar-csi.bhyoo.com/protocol-ref`가 없으면 InvalidArgument | ControllerServer 초기화; Parameters에서 `pillar-csi.bhyoo.com/protocol-ref` 제거 | 1) CreateVolumeRequest 전송 | gRPC InvalidArgument; agent 호출 없음 | `CSI-C` |
 
 ---
 
@@ -826,7 +818,7 @@ agent.AllowInitiator(VolumeID=agent-vol-id, InitiatorID=resolvedInitiatorID, Pro
     ▼
 pillar-agent (스토리지 노드)
     └── protocol target ACL에 이니시에이터 항목 추가
-        → 해당 node의 resolved identity(NVMe host NQN / iSCSI initiator IQN 등)만 볼륨 접근 가능
+        → 해당 node의 resolved identity(NVMe host NQN)만 볼륨 접근 가능
 ```
 
 **언어태치 흐름:** `ControllerUnpublishVolume` → `status.publishedNodes`에 기록된 publication만 대상으로
@@ -851,9 +843,9 @@ pillar-agent (스토리지 노드)
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
 | 14 | `TestCSIController_ControllerPublishVolume` | ControllerPublishVolume이 `CSINode` annotation에서 NVMe host NQN을 해석해 agent.AllowInitiator를 호출 | PillarAgent="storage-1" fake 클라이언트에 등록; fake `CSINode` `worker-1`에 `pillar-csi.bhyoo.com/nvmeof-host-nqn=nqn.2014-08.org.nvmexpress:uuid:worker-1` annotation 설정; mockAgentServer(실제 gRPC 리스너) 정상; VolumeId=`storage-1/nvmeof-tcp/zfs-zvol/tank/pvc-publish-test`; NodeId=`worker-1` | 1) ControllerPublishVolumeRequest 전송 | 성공; non-nil PublishContext 반환; AllowInitiator 1회; AllowInitiator.VolumeID=`tank/pvc-publish-test`; AllowInitiator.InitiatorID=`nqn.2014-08.org.nvmexpress:uuid:worker-1`; AllowInitiator.ProtocolType=NVMEOF_TCP | `CSI-C`, `Agent`, `TgtCRD`, `gRPC` |
-| E2.1-2 | `TestCSIController_ControllerPublishVolume_ISCSIInitiatorFromCSINodeAnnotations` | iSCSI 볼륨 publish 시 controller가 `CSINode` annotation에서 initiator IQN을 해석해 AllowInitiator 호출 | `test/component/csi_controller_test.go`; `csiMockAgent`(in-process); PillarAgent fake 등록; fake `CSINode` `worker-2`에 `pillar-csi.bhyoo.com/iscsi-initiator-iqn=iqn.1993-08.org.debian:worker-2` annotation 설정; VolumeId=`pool/iscsi/zfs-zvol/tank/vol`; NodeId=`worker-2` | 1) ControllerPublishVolumeRequest 전송 | 성공; allowInitiatorCalls==1; agent.AllowInitiator.InitiatorID=`iqn.1993-08.org.debian:worker-2`; PublishContext 반환 | `CSI-C`, `Agent`, `TgtCRD` |
+| E2.1-2 | `TestCSIController_ControllerPublishVolume_NQNFromCSINodeAnnotations` | NVMe-oF 볼륨 publish 시 controller가 `CSINode` annotation에서 host NQN을 해석해 AllowInitiator 호출 | PillarAgent·PillarStore·PillarProtocol fake 등록; fake `CSINode` `worker-2`에 `pillar-csi.bhyoo.com/nvmeof-host-nqn=nqn.2026-01.io.example:worker-2` annotation 설정; CreateVolume으로 만든 VolumeId; NodeId=`worker-2` | 1) CreateVolumeRequest 전송; 2) ControllerPublishVolumeRequest 전송 | 성공; allowInitiatorCalls==1; agent.AllowInitiator.InitiatorID=`nqn.2026-01.io.example:worker-2` | `CSI-C`, `Agent`, `TgtCRD` |
 | 15 | `TestCSIController_ControllerPublishVolume_Idempotency` | 동일 node handle과 동일 `CSINode` annotation으로 두 번 호출해도 CSI 계층은 agent 중복 억제 없이 각 호출을 전달 | 유효한 VolumeId/NodeId; 대응 `CSINode` annotation 존재; mockAgentServer 정상 | 1) ControllerPublishVolumeRequest 전송; 2) 동일 인수로 재전송 | 두 호출 모두 성공; PublishContext 동일; AllowInitiator 각 1회씩 총 2회 | `CSI-C`, `Agent`, `gRPC` |
-| E2.1-4 | `TestCSIController_ControllerPublishVolume_AlreadyPublished` | 이미 Publish된 볼륨·노드 조합으로 재호출 성공 (컴포넌트 테스트) | `test/component/csi_controller_test.go`; allowInitiatorFn=nil(항상 성공); `CSINode` annotation 준비 | 1) ControllerPublishVolume 1회; 2) 동일 인수로 재호출 | 두 호출 모두 성공; agent.AllowInitiator 총 2회 (CSI 계층은 억제 없음; 멱등성은 agent 책임) | `CSI-C`, `Agent` |
+| E2.1-4 | `TestCSIController_ControllerPublishVolume_AlreadyPublished` | 이미 Publish된 볼륨·노드 조합으로 재호출 성공 | `test/component/csi_controller_test.go`; allowInitiatorFn=nil(항상 성공); `CSINode` annotation 준비 | 1) ControllerPublishVolume 1회; 2) 동일 인수로 재호출 | 두 호출 모두 성공; publication 기록 유지. 컴포넌트(ACL on): agent.AllowInitiator 총 2회. 인프로세스 e2e(기본 protocol `acl` 미설정 = ACL off): AllowInitiator/DenyInitiator RPC가 생략되고(unpublish 포함 0회) publish/unpublish는 성공 — ACL-off skip 경로 커버 | `CSI-C`, `Agent` |
 
 ---
 
@@ -896,7 +888,7 @@ pillar-agent (스토리지 노드)
 pillar-csi의 "노드 친화성"은 `NodeId`를 stable node handle로 유지한 채,
 controller가 `CSINode` annotation에서 protocol-specific identity를 해석하는 방식으로 구현된다.
 Kubernetes CO가 `ControllerPublishVolume(NodeId=<node-handle>)`을 호출하면, pillar-csi는
-해당 `CSINode`의 annotation에서 NVMe host NQN 또는 iSCSI initiator IQN을 찾고,
+해당 `CSINode`의 annotation에서 NVMe host NQN을 찾고,
 이를 `agent.AllowInitiator(InitiatorID=<resolved-identity>)`로 변환한다.
 그 결과 해당 transport identity를 가진 노드만 그 볼륨에 물리적으로 접근할 수 있다.
 
@@ -906,7 +898,6 @@ K8s 워커 노드 (NodeId: worker-1)
     │
     ├─ CSINode annotations:
     │    pillar-csi.bhyoo.com/nvmeof-host-nqn = nqn.2014-08.org.nvmexpress:uuid:<uuid>
-    │    pillar-csi.bhyoo.com/iscsi-initiator-iqn = iqn.1993-08.org.debian:worker-1
     │
     ▼ ControllerPublishVolume(NodeId = worker-1)
 CSI ControllerServer
@@ -915,7 +906,7 @@ CSI ControllerServer
 agent.AllowInitiator(VolumeID, InitiatorID=resolved identity, ProtocolType)
     │
     ▼
-pillar-agent → configfs/LIO ACL 추가
+pillar-agent → nvmet configfs ACL(allowed_hosts) 추가
     └── 해당 identity를 가진 노드만 볼륨 접근 가능 (물리적 어태치)
 ```
 
@@ -924,14 +915,13 @@ pillar-agent → configfs/LIO ACL 추가
 - `MULTI_NODE_READER_ONLY`: 여러 노드에 각각 Publish 호출 → N개 AllowInitiator 항목 (독립 호출, publication 공존)
 - `CSINode` annotation 예시:
   - `pillar-csi.bhyoo.com/nvmeof-host-nqn`
-  - `pillar-csi.bhyoo.com/iscsi-initiator-iqn`
 
 > **CI 실행 가능 여부:** ✅ 인프로세스 E2E — 별도 인프라 불필요 (mockAgentServer 기반)
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
 | E2.5-1 | `TestCSIController_ControllerPublishVolume` | NVMe-oF publish에서 `NodeId=worker-1`이 `CSINode` annotation의 host NQN으로 해석되어 AllowInitiator에 전달됨 | VolumeId=`storage-1/nvmeof-tcp/zfs-zvol/tank/pvc-publish-test`; NodeId=`worker-1`; fake `CSINode` `worker-1`에 `pillar-csi.bhyoo.com/nvmeof-host-nqn` annotation 설정; PillarAgent 등록; mockAgentServer | 1) ControllerPublishVolumeRequest 전송; 2) AllowInitiator 호출 내용 검사 | AllowInitiator.InitiatorID == `CSINode` annotation의 host NQN; AllowInitiator.VolumeID==`tank/pvc-publish-test`; AllowInitiator.ProtocolType==NVMEOF_TCP | `CSI-C`, `Agent`, `TgtCRD`, `gRPC` |
-| E2.5-2 | `TestCSIController_ControllerPublishVolume_ISCSIInitiatorFromCSINodeAnnotations` | iSCSI publish에서 `NodeId=worker-2`가 `CSINode` annotation의 initiator IQN으로 해석되어 AllowInitiator에 전달됨 | VolumeId=`storage-1/iscsi/zfs-zvol/tank/pvc-publish-test`; NodeId=`worker-2`; fake `CSINode` `worker-2`에 `pillar-csi.bhyoo.com/iscsi-initiator-iqn=iqn.1993-08.org.debian:worker-2` annotation 설정; PillarAgent 등록; mockAgentServer | 1) ControllerPublishVolumeRequest 전송; 2) AllowInitiator 호출 내용 검사 | AllowInitiator.InitiatorID == `CSINode` annotation의 initiator IQN; AllowInitiator.VolumeID==`tank/pvc-publish-test`; AllowInitiator.ProtocolType==ISCSI | `CSI-C`, `Agent`, `TgtCRD`, `gRPC` |
+| E2.5-2 | `TestCSIController_ControllerPublishVolume_NQNFromCSINodeAnnotations` | NVMe-oF publish에서 `NodeId=worker-2`가 `CSINode` annotation의 host NQN으로 해석되어 AllowInitiator에 전달됨 | CreateVolume으로 만든 VolumeId; NodeId=`worker-2`; fake `CSINode` `worker-2`에 `pillar-csi.bhyoo.com/nvmeof-host-nqn=nqn.2026-01.io.example:worker-2` annotation 설정; PillarAgent·PillarStore·PillarProtocol 등록; mockAgentServer | 1) ControllerPublishVolumeRequest 전송; 2) AllowInitiator 호출 내용 검사 | AllowInitiator.InitiatorID == `CSINode` annotation의 host NQN; AllowInitiator.ProtocolType==NVMEOF_TCP | `CSI-C`, `Agent`, `TgtCRD`, `gRPC` |
 | E2.5-3 | `TestCSIPublishIdempotency_ControllerPublishVolume_DifferentNodes` | SINGLE_NODE_WRITER 볼륨이 worker-a에 publish된 상태에서 다른 node handle(worker-b)로 ControllerPublishVolume 호출 시 FailedPrecondition 반환; AllowInitiator는 worker-a에 대해 1회만 호출 | VolumeId 동일(SINGLE_NODE_WRITER); NodeId1=`worker-node-a`; NodeId2=`worker-node-b`; 두 `CSINode`에 서로 다른 protocol-specific annotation 설정; mockAgentServer | 1) ControllerPublishVolume(NodeId1); 2) ControllerPublishVolume(NodeId2) | 1) 성공; 2) gRPC FailedPrecondition; AllowInitiator 총 1회; `status.publishedNodes`에는 worker-node-a만 기록 | `CSI-C`, `Agent`, `TgtCRD`, `gRPC` |
 
 > ℹ️ E2.5-2, E2.5-3은 [E7: 게시 멱등성](#e7-게시-멱등성-publish-idempotency) 섹션과 동일한 테스트 함수를 다른 관점에서 서술한다.
@@ -954,7 +944,7 @@ CSI 명세에 따라:
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
 | E2.6-1 | `TestCSIErrors_ControllerPublish_AllowInitiatorFails` | agent.AllowInitiator가 Internal 오류 반환 시 ControllerPublishVolume이 비-OK gRPC 상태 반환; 오류 은폐 없음 (실제로는 configfs ACL 쓰기 실패 시 발생) | `test/component/csi_errors_test.go`; allowInitiatorFn=gRPC Internal("configfs write failed: permission denied") | 1) ControllerPublishVolumeRequest 전송 | 비-OK gRPC 상태(Internal); 오류 메시지 포함; 성공 은폐 없음 | `CSI-C`, `Agent` |
-| E2.6-2 | `TestCSIErrors_ControllerPublish_MissingNodeIdentityAnnotation` | `CSINode`는 존재하지만 protocol별 initiator annotation이 없으면 ControllerPublishVolume이 FailedPrecondition 반환; agent 호출 없음 | `test/component/csi_errors_test.go`; fake `CSINode` `worker-1` 존재하지만 `pillar-csi.bhyoo.com/nvmeof-host-nqn` 또는 `pillar-csi.bhyoo.com/iscsi-initiator-iqn` 없음; 유효한 VolumeId/NodeId | 1) ControllerPublishVolumeRequest 전송 | gRPC FailedPrecondition; AllowInitiator 0회; "`CSINode` identity not ready" 계열 메시지 | `CSI-C`, `TgtCRD` |
+| E2.6-2 | `TestCSIErrors_ControllerPublish_MissingNodeIdentityAnnotation` | `CSINode`는 존재하지만 protocol별 initiator annotation이 없으면 ControllerPublishVolume이 FailedPrecondition 반환; agent 호출 없음 | `test/component/csi_errors_test.go`; fake `CSINode` `worker-1` 존재하지만 `pillar-csi.bhyoo.com/nvmeof-host-nqn` 없음; 유효한 VolumeId/NodeId | 1) ControllerPublishVolumeRequest 전송 | gRPC FailedPrecondition; AllowInitiator 0회; "`CSINode` identity not ready" 계열 메시지 | `CSI-C`, `TgtCRD` |
 | E2.6-3 | `TestCSIController_ControllerPublishVolume_EmptyVolumeID` | VolumeId="" — agent 호출 전 입력 검증 실패 → InvalidArgument | `test/component/csi_controller_extended_test.go`; VolumeId=""; 유효한 NodeId/VolumeCapability | 1) VolumeId=""로 ControllerPublishVolumeRequest 전송 | gRPC InvalidArgument; AllowInitiator 0회 | `CSI-C` |
 | E2.6-4 | `TestCSIController_ControllerPublishVolume_EmptyNodeID` | NodeId="" — agent 호출 전 입력 검증 실패 → InvalidArgument | `test/component/csi_controller_extended_test.go`; 유효한 VolumeId; NodeId="" | 1) NodeId=""로 ControllerPublishVolumeRequest 전송 | gRPC InvalidArgument; AllowInitiator 0회 | `CSI-C` |
 | E2.6-5 | `TestCSIController_ControllerPublishVolume_NilVolumeCapability` | VolumeCapability=nil — 입력 검증 실패 → InvalidArgument | `test/component/csi_controller_extended_test.go`; VolumeCapability=nil | 1) VolumeCapability=nil로 ControllerPublishVolumeRequest 전송 | gRPC InvalidArgument | `CSI-C` |
@@ -1792,8 +1782,8 @@ CreateVolume(VolumeContentSource: {Snapshot: "snap-A"})
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| 113 | `TestCSIEdge_CreateVolume_UnsupportedBackendType` | 알 수 없는 backend-type 파라미터로 CreateVolume | ControllerServer 초기화; PillarAgent 등록 | 1) parameters["backend-type"]="lvm" 로 CreateVolumeRequest 전송 | gRPC InvalidArgument; agent 호출 없음 | `CSI-C` |
-| 114 | `TestCSIEdge_CreateVolume_EmptyProtocolType` | protocol-type 파라미터 값이 빈 문자열 | ControllerServer 초기화; PillarAgent 등록 | 1) parameters["protocol-type"]="" 로 CreateVolumeRequest 전송 | gRPC InvalidArgument; agent 호출 없음 | `CSI-C` |
+| 113 | `TestCSIEdge_CreateVolume_UnknownPillarParam` | 알 수 없는 `pillar-csi.bhyoo.com/` StorageClass 파라미터(제거된 `backend-type` 등)로 CreateVolume | ControllerServer 초기화; PillarAgent·PillarStore·PillarProtocol 등록 | 1) 유효한 `store-ref`/`protocol-ref`에 parameters["pillar-csi.bhyoo.com/backend-type"]="lvm-lv"를 추가해 CreateVolumeRequest 전송 | gRPC InvalidArgument; 메시지에 `unsupported StorageClass parameter`; agent 호출 없음 | `CSI-C` |
+| 114 | `TestCSIEdge_CreateVolume_EmptyProtocolRef` | `pillar-csi.bhyoo.com/protocol-ref` 파라미터 값이 빈 문자열 | ControllerServer 초기화; PillarAgent·PillarStore 등록 | 1) parameters["pillar-csi.bhyoo.com/protocol-ref"]="" 로 CreateVolumeRequest 전송 | gRPC InvalidArgument; agent 호출 없음 | `CSI-C` |
 
 ---
 
@@ -2154,17 +2144,17 @@ go test -tags=integration ./internal/webhook/v1alpha1/ -v -run PillarStore
 
 **자동화 가능 여부:** ✅ CI 실행 가능
 
-`PillarStore`의 `spec.agentRef`와 `spec.backend.type`은 생성 시 고정된다.
+`PillarStore`의 `spec.agentRef`와 `spec.backend`의 멤버(`zfs`/`lvm`)와 풀 식별자(`zfs.pool`/`lvm.volumeGroup`)는 생성 시 고정된다.
 이 필드들을 변경하면 해당 풀에서 이미 프로비저닝된 모든 볼륨이 잘못된 백엔드/타깃을
 가리키게 된다. `PillarStoreCustomValidator.ValidateUpdate()`가 이를 방지한다.
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| 158 | `TestPillarStoreWebhook_Update_AgentRefImmutable` | `spec.agentRef` 변경 시도 거부 | `validator = PillarStoreCustomValidator{}`; `oldObj.spec={agentRef:"target-a", backend:{type:"zfs-zvol"}}`; `newObj.spec={agentRef:"target-b", backend:{type:"zfs-zvol"}}` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | 오류 반환; `field.Forbidden(spec.agentRef, ...)` 포함; 이전값 "target-a", 신값 "target-b" 언급 | `Webhook`, `TgtCRD`, `VolCRD` |
-| 159 | `TestPillarStoreWebhook_Update_BackendTypeImmutable` | `spec.backend.type` 변경 시도 거부 | `oldObj.spec={agentRef:"t1", backend:{type:"zfs-zvol"}}`; `newObj.spec={agentRef:"t1", backend:{type:"lvm-lv"}}` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | 오류 반환; `field.Forbidden(spec.backend.type, ...)` 포함; 이전값 "zfs-zvol", 신값 "lvm-lv" 언급 | `Webhook`, `TgtCRD`, `VolCRD` |
-| 160 | `TestPillarStoreWebhook_Update_ZFSPoolChange_OK` | `spec.backend.type` 변경 없이 ZFS 풀 이름만 변경된 업데이트는 허용됨 | `oldObj.spec={agentRef:"t1", backend:{type:"zfs-zvol", zfs:{pool:"tank"}}}`; `newObj.spec={agentRef:"t1", backend:{type:"zfs-zvol", zfs:{pool:"new-tank"}}}` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | 오류 없음(nil 반환); 업데이트 허용됨 | `Webhook`, `TgtCRD`, `VolCRD` |
-| 161 | `TestPillarStoreWebhook_Update_BothFieldsChanged_MultipleErrors` | `spec.agentRef`와 `spec.backend.type` 모두 변경 시도 → 두 필드 모두 Forbidden 오류 포함 | `oldObj.spec={agentRef:"t1", backend:{type:"zfs-zvol"}}`; `newObj.spec={agentRef:"t2", backend:{type:"lvm-lv"}}` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | 오류 반환; `field.ErrorList` 길이 = 2; `spec.agentRef`와 `spec.backend.type` 모두 Forbidden | `Webhook`, `TgtCRD`, `VolCRD` |
-| 162 | `TestPillarStoreWebhook_Create_Valid` | 유효한 PillarStore 생성 시 웹훅이 허용 (현재 ValidateCreate는 no-op 스캐폴딩) | `obj.spec={agentRef:"target-1", backend:{type:"zfs-zvol", zfs:{pool:"tank"}}}` | 1) `validator.ValidateCreate(ctx, obj)` 호출 | 오류 없음(nil 반환) — 현재 구현은 스캐폴딩(TODO); 향후 검증 추가 시 갱신 필요 | `Webhook`, `TgtCRD`, `VolCRD` |
+| 158 | `TestPillarStoreWebhook_Update_AgentRefImmutable` | `spec.agentRef` 변경 시도 거부 | `validator = PillarStoreCustomValidator{}`; `oldObj.spec={agentRef:"target-a", backend:{zfs:{pool:"tank"}}}`; `newObj.spec={agentRef:"target-b", backend:{zfs:{pool:"tank"}}}` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | 오류 반환; `field.Forbidden(spec.agentRef, ...)` 포함; 이전값 "target-a", 신값 "target-b" 언급 | `Webhook`, `TgtCRD`, `VolCRD` |
+| 159 | `TestPillarStoreWebhook_Update_BackendMemberImmutable` | `spec.backend` 멤버 변경(zfs→lvm) 시도 거부 | `oldObj.spec={agentRef:"t1", backend:{zfs:{pool:"tank"}}}`; `newObj.spec={agentRef:"t1", backend:{lvm:{volumeGroup:"data-vg"}}}` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | 오류 반환; `field.Forbidden(spec.backend, ...)` 포함; 이전 멤버 "zfs", 신 멤버 "lvm" 언급 | `Webhook`, `TgtCRD`, `VolCRD` |
+| 160 | `TestPillarStoreWebhook_Update_ZFSPropertiesChange_OK` | `spec.backend` 멤버와 풀 이름을 유지한 채 `zfs.properties`만 변경한 업데이트는 허용됨 | `oldObj.spec={agentRef:"t1", backend:{zfs:{pool:"tank"}}}`; `newObj.spec={agentRef:"t1", backend:{zfs:{pool:"tank", properties:{compression:"lz4"}}}}` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | 오류 없음(nil 반환); 업데이트 허용됨 | `Webhook`, `TgtCRD`, `VolCRD` |
+| 161 | `TestPillarStoreWebhook_Update_BothFieldsChanged_MultipleErrors` | `spec.agentRef`와 `spec.backend` 멤버 모두 변경 시도 → 두 필드 모두 Forbidden 오류 포함 | `oldObj.spec={agentRef:"t1", backend:{zfs:{pool:"tank"}}}`; `newObj.spec={agentRef:"t2", backend:{lvm:{volumeGroup:"data-vg"}}}` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | 오류 반환; `field.ErrorList` 길이 = 2; `spec.agentRef`와 `spec.backend` 모두 Forbidden | `Webhook`, `TgtCRD`, `VolCRD` |
+| 162 | `TestPillarStoreWebhook_Create_Valid` | 유효한 PillarStore 생성 시 웹훅이 허용 (현재 ValidateCreate는 no-op 스캐폴딩) | `obj.spec={agentRef:"target-1", backend:{zfs:{pool:"tank"}}}` | 1) `validator.ValidateCreate(ctx, obj)` 호출 | 오류 없음(nil 반환) — 현재 구현은 스캐폴딩(TODO); 향후 검증 추가 시 갱신 필요 | `Webhook`, `TgtCRD`, `VolCRD` |
 
 ---
 
@@ -2201,8 +2191,8 @@ fake client와 달리 envtest API 서버는 CRD 스키마 검증을 실제로 �
 | 164 | `TestCRDSchema_PillarAgent_ExternalPort_Zero` | `spec.external.port=0` → `+kubebuilder:validation:Minimum=1` 위반 | envtest API 서버; `PillarAgent{spec:{external:{address:"1.2.3.4", port:0}}}` | 1) `k8sClient.Create(ctx, target)` 호출 | 422 반환; `spec.external.port` 최솟값(1) 미만 오류; 리소스 미생성 | `TgtCRD`, `API서버스키마` |
 | 165 | `TestCRDSchema_PillarAgent_ExternalAddress_Empty` | `spec.external.address=""` → `+kubebuilder:validation:MinLength=1` 위반 | envtest API 서버; `PillarAgent{spec:{external:{address:"", port:9500}}}` | 1) `k8sClient.Create(ctx, target)` 호출 | 422 반환; `spec.external.address` 길이 오류; 리소스 미생성 | `TgtCRD`, `API서버스키마` |
 | 166 | `TestCRDSchema_PillarAgent_NodeRefAddressType_Invalid` | `spec.nodeRef.addressType="FooType"` → `+kubebuilder:validation:Enum=InternalIP;ExternalIP` 위반 | envtest API 서버; `PillarAgent{spec:{nodeRef:{name:"n1", addressType:"FooType"}}}` | 1) `k8sClient.Create(ctx, target)` 호출 | 422 반환; `spec.nodeRef.addressType` Enum 위반 오류; "FooType" 불허, 허용값("InternalIP", "ExternalIP") 표시 | `TgtCRD`, `API서버스키마` |
-| 167 | `TestCRDSchema_PillarStore_AgentRef_Empty` | `spec.agentRef=""`인 PillarStore 생성 → `+kubebuilder:validation:MinLength=1` 위반 | envtest API 서버; `PillarStore{spec:{agentRef:"", backend:{type:"zfs-zvol"}}}` | 1) `k8sClient.Create(ctx, pool)` 호출 | 422 반환; `spec.agentRef` 길이 오류; 리소스 미생성 | `TgtCRD`, `VolCRD`, `API서버스키마` |
-| 168 | `TestCRDSchema_PillarStore_BackendType_Invalid` | `spec.backend.type="not-supported"` → `+kubebuilder:validation:Enum=zfs-zvol;zfs-dataset;lvm-lv;dir` 위반 | envtest API 서버; `PillarStore{spec:{agentRef:"t1", backend:{type:"not-supported"}}}` | 1) `k8sClient.Create(ctx, pool)` 호출 | 422 반환; `spec.backend.type` Enum 위반; 허용값(zfs-zvol, zfs-dataset, lvm-lv, dir) 표시 | `TgtCRD`, `VolCRD`, `API서버스키마` |
+| 167 | `TestCRDSchema_PillarStore_AgentRef_Empty` | `spec.agentRef=""`인 PillarStore 생성 → `+kubebuilder:validation:MinLength=1` 위반 | envtest API 서버; `PillarStore{spec:{agentRef:"", backend:{zfs:{pool:"tank"}}}}` | 1) `k8sClient.Create(ctx, pool)` 호출 | 422 반환; `spec.agentRef` 길이 오류; 리소스 미생성 | `TgtCRD`, `VolCRD`, `API서버스키마` |
+| 168 | `TestCRDSchema_PillarStore_BackendUnion_Invalid` | `spec.backend`에 멤버가 없거나(`{}`) 두 멤버(`zfs`+`lvm`)를 함께 지정 → `x-kubernetes-validations` exactly-one 규칙 위반 | envtest API 서버; `PillarStore{spec:{agentRef:"t1", backend:{}}}` 및 `backend:{zfs:{pool:"tank"}, lvm:{volumeGroup:"vg"}}` | 1) 각각 `k8sClient.Create(ctx, pool)` 호출 | 422 반환; "exactly one of zfs or lvm must be set"; 리소스 미생성 | `TgtCRD`, `VolCRD`, `API서버스키마` |
 | 169 | `TestCRDSchema_PillarVolumeState_Phase_Invalid` | `status.phase="GarbagePhase"` — `+kubebuilder:validation:Enum=Provisioning;CreatePartial;Ready;...` 위반 | envtest API 서버; 유효한 PillarVolumeState 생성 완료; `status.phase="GarbagePhase"` 패치 시도 | 1) `k8sClient.Status().Patch(ctx, pv, client.MergeFrom(original))` 호출; phase를 "GarbagePhase"로 변경 | 422 반환; `status.phase` Enum 위반 오류; 기존 상태 유지됨 | `VolCRD`, `API서버스키마` |
 | 170 | `TestCRDSchema_PillarVolumeState_CapacityBytes_Negative` | `spec.capacityBytes=-1` → `+kubebuilder:validation:Minimum=0` 위반 | envtest API 서버; `PillarVolumeState{spec:{volumeID:"t/p/b/v", agentVolumeID:"p/v", agentRef:"t1", backendType:"zfs-zvol", protocolType:"nvmeof-tcp", capacityBytes:-1}}` | 1) `k8sClient.Create(ctx, pv)` 호출 | 422 반환; `spec.capacityBytes` Minimum(0) 위반 오류; 리소스 미생성 | `VolCRD`, `API서버스키마` |
 
@@ -2235,70 +2225,71 @@ fake client와 달리 envtest API 서버는 CRD 스키마 검증을 실제로 �
 
 **테스트 유형:** A (인프로세스 E2E) ✅ CI 실행 가능 (E22.1–E22.3) / ❌ CI 실행 불가 (E22.4)
 
-CSI 컨트롤러 또는 Agent가 **현재 미지원 프로토콜 타입**, **알 수 없는 백엔드 타입**,
-또는 **실제 배포 환경에서의 버전 불일치**를 처리할 때의 오류 전파 경로를 검증한다.
+CSI 컨트롤러 또는 Agent가 **존재하지 않는(제거된) 프로토콜·백엔드 변형**, **구조적 필드를 건드리는 오버라이드 문서**,
+**스토어와 맞지 않는 오버라이드 멤버**, 또는 **실제 배포 환경에서의 버전 불일치**를 처리할 때의 오류 경로를 검증한다.
+
+백엔드와 프로토콜은 StorageClass가 참조하는 PillarStore(`spec.backend`: `zfs` | `lvm`)와
+PillarProtocol(`spec.protocol`: `nvmeofTcp`)이 선택한다. iscsi·nfs·smb 프로토콜과 zfs-dataset·dir 백엔드는
+스키마에 존재하지 않으며, 직접 작성한 StorageClass의 문서 파라미터(`pillar-csi.bhyoo.com/backend`,
+`pillar-csi.bhyoo.com/protocol`)나 제거된 평면 키(`protocol-type` 등)로 이를 선택하려는 시도는
+agent 호출 전에 `InvalidArgument`로 거부된다.
 
 > **E14·E1.11과의 차이점:**
-> - **E1.11 / E14** — StorageClass 파라미터 키 **자체가 누락**된 경우(`protocol-type` 키 없음) → `InvalidArgument`
-> - **E22** — 파라미터 키는 존재하나 **에이전트가 지원하지 않는 값** 지정 (예: `"iscsi"`, `"nfs"`) 또는
->   실제 에이전트 바이너리와의 **버전·기능 불일치** → `Unimplemented` 또는 전파된 에이전트 오류
+> - **E1.11 / E14** — identity 파라미터(`store-ref`/`protocol-ref`) **누락** 또는 알 수 없는 파라미터 키 → `InvalidArgument`
+> - **E22** — 오버라이드 문서가 **존재하지 않는 멤버**(`iscsi`, `nfs`, `zfs-dataset`, `dir`), **구조적 필드**,
+>   또는 **스토어와 다른 멤버**를 지정 → `InvalidArgument`; agent gRPC 직접 호출 경로의 미지원 프로토콜 → `Unimplemented`
 
 **오류 시나리오 분류:**
 
 | 소섹션 | 테스트 유형 | CI 실행 | 핵심 시나리오 |
 |--------|-----------|--------|------------|
-| E22.1 | A (in-process) | ✅ 표준 CI | CSI Controller — StorageClass에 미지원 프로토콜 타입 지정 |
+| E22.1 | A (in-process) | ✅ 표준 CI | CSI Controller — 직접 작성한 StorageClass의 프로토콜 문서/레거시 키로 미지원 프로토콜 선택 |
 | E22.2 | A (in-process) | ✅ 표준 CI | Agent gRPC — 각 RPC에서 미지원 프로토콜 거부 |
-| E22.3 | A (in-process) | ✅ 표준 CI | CSI Controller — StorageClass에 미지원 백엔드 타입 지정 |
+| E22.3 | A (in-process) | ✅ 표준 CI | CSI Controller — 백엔드 문서로 제거된 백엔드 변형 또는 스토어와 다른 멤버 선택 |
 | E22.4 | 수동/스테이징 | ❌ CI 불가 | 실제 버전 불일치·커널 모듈 미로드 시나리오 |
 
 **아키텍처 (E22 전용):**
 ```
-CSI Controller
+CSI Controller (CreateVolume)
         │
-        │  StorageClass params: protocol-type="iscsi" (미지원)
+        │  StorageClass params: store-ref, protocol-ref
+        │                       + pillar-csi.bhyoo.com/protocol: "iscsi: {...}"
         │       │
-        │  mapProtocolType("iscsi") → PROTOCOL_TYPE_ISCSI (또는 "unknown" → UNSPECIFIED)
+        │  configdocs.DecodeProtocolOverride → unknown field "iscsi" (supported: nvmeofTcp)
         │       │
-        │  agent.ExportVolume(ProtocolType=ISCSI)
-        │       │
-        │       └─► agent.Server: "only NVMe-oF TCP is supported"
-        │                   └─► codes.Unimplemented 반환
-        │       │
-        └───────────────────────────────────► CO에 비-OK 상태 전파
+        └───────► codes.InvalidArgument (agent 호출 없음)
 
-Agent gRPC Server (직접 호출 경로):
-  ExportVolume(iSCSI)   → Unimplemented (configfs 사이드 이펙트 없음)
-  AllowInitiator(iSCSI) → Unimplemented (nvmet/hosts 디렉터리 미생성)
-  DenyInitiator(iSCSI)  → Unimplemented
-  UnexportVolume(iSCSI) → Unimplemented
+Agent gRPC Server (직접 호출 경로; proto 열거형은 변경 없음):
+  ExportVolume(PROTOCOL_TYPE_ISCSI)   → Unimplemented (configfs 사이드 이펙트 없음)
+  AllowInitiator(PROTOCOL_TYPE_ISCSI) → Unimplemented (nvmet/hosts 디렉터리 미생성)
+  DenyInitiator(PROTOCOL_TYPE_ISCSI)  → Unimplemented
+  UnexportVolume(PROTOCOL_TYPE_ISCSI) → Unimplemented
   ReconcileState(iSCSI export) → results[].success=false (타 볼륨 계속 처리)
 ```
 
 ---
 
-### E22.1 CSI Controller — StorageClass 미지원 프로토콜 타입 지정
+### E22.1 CSI Controller — 미지원 프로토콜 선택 거부
 
 **테스트 유형:** A (인프로세스 E2E) ✅ CI 실행 가능
 
 **실행 명령:**
 ```bash
-go test ./test/e2e/ -v -run TestCSIProtocol
+go test ./test/e2e/ -v -run 'TC-E22\.'
 ```
 
-**위치:** `test/e2e/csi_controller_e2e_test.go`
+**위치:** `test/e2e/tc_e22_inprocess_test.go`
 
-**핵심 동작:** CSI 컨트롤러는 `StorageClass`의 `protocol-type` 파라미터를 `mapProtocolType()`으로
-agent protobuf 열거형으로 변환한다. 인식되지 않는 문자열은 `PROTOCOL_TYPE_UNSPECIFIED(0)`으로
-매핑된다. agent 서버는 현재 `PROTOCOL_TYPE_NVMEOF_TCP` 외의 모든 프로토콜 타입에 대해
-`codes.Unimplemented`를 반환한다 (`internal/agent/server_export.go:51-52`).
+**핵심 동작:** 직접 작성한 StorageClass의 `pillar-csi.bhyoo.com/protocol` 문서는 공유 디코더(`internal/configdocs`)가
+엄격하게 검증한다. 알 수 없는 멤버와 구조적 필드(`nvmeofTcp.port`, `nvmeofTcp.acl`)는 전체 경로와 함께 거부되고,
+제거된 평면 키는 `unsupported StorageClass parameter`로 거부된다. 모든 거부는 agent 호출 전에 일어난다.
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| 171 | `TestCSIProtocol_CreateVolume_ISCSIUnimplemented` | `protocol-type="iscsi"`로 CreateVolume 호출 시 agent.ExportVolume이 `codes.Unimplemented`("only NVMe-oF TCP is supported") 반환 → CSI 컨트롤러가 비-OK 상태 전파 | `mockAgentServer.ExportVolumeErr = status.Errorf(codes.Unimplemented, "only NVMe-oF TCP is supported")`; StorageClass params에 `protocol-type: "iscsi"` 설정; PillarAgent CRD 등록; `agent.CreateVolume` 성공(백엔드 zvol 생성 후 export 단계에서 실패) | 1) `CreateVolumeRequest` 전송; 2) 반환 오류 gRPC 코드 확인 | 비-OK gRPC 상태(`codes.OK` 불가); agent의 `Unimplemented` 오류 전파; CreateVolume 실패 시 부분 생성된 zvol 정리 여부는 구현 의존 | `CSI-C`, `Agent`, `gRPC` |
-| 172 | `TestCSIProtocol_CreateVolume_NFSUnimplemented` | `protocol-type="nfs"`로 CreateVolume 호출 시 agent.ExportVolume이 `codes.Unimplemented` 반환 | `mockAgentServer.ExportVolumeErr = status.Errorf(codes.Unimplemented, "only NVMe-oF TCP is supported")`; StorageClass params에 `protocol-type: "nfs"` 설정; PillarAgent CRD 등록 | 1) `CreateVolumeRequest` 전송 | 비-OK gRPC 상태; NFS export 미지원으로 인한 오류 전파 | `CSI-C`, `Agent`, `gRPC` |
-| 173 | `TestCSIProtocol_CreateVolume_UnknownProtocol_MapsToUnspecified` | `protocol-type="smb-v3-unknown"` — 알 수 없는 프로토콜 문자열이 `PROTOCOL_TYPE_UNSPECIFIED(0)`으로 매핑되어 agent에 전달됨 → agent가 Unimplemented 반환 | `mockAgentServer.ExportVolumeErr = status.Errorf(codes.Unimplemented, "only NVMe-oF TCP is supported")`; StorageClass params에 `protocol-type: "smb-v3-unknown"` 설정 | 1) `CreateVolumeRequest` 전송; 2) `env.AgentMock.ExportVolumeCalls[0].ProtocolType` 값 확인 | 비-OK gRPC 상태; `ExportVolumeCalls[0].ProtocolType == PROTOCOL_TYPE_UNSPECIFIED` (UNSPECIFIED로 매핑 확인); agent Unimplemented 전파 | `CSI-C`, `Agent`, `gRPC` |
-| 174 | `TestCSIProtocol_ControllerPublish_ISCSIUnimplemented` | ControllerPublishVolume에서 `protocol-type=\"iscsi\"` 볼륨 ID를 가진 PillarVolumeState CRD 존재 시 agent.AllowInitiator가 `codes.Unimplemented` 반환 → ControllerPublishVolume이 오류 전파 | `mockAgentServer.AllowInitiatorErr = status.Errorf(codes.Unimplemented, "only NVMe-oF TCP is supported")`; PillarVolumeState CRD 존재(Phase=Ready, VolumeId에 `iscsi` 포함); PillarAgent CRD 등록; fake Node에 `pillar-csi.bhyoo.com/iscsi-initiator-iqn` annotation 설정 | 1) `ControllerPublishVolumeRequest`(NodeId=`worker-1`) 전송 | 비-OK gRPC 상태; agent AllowInitiator Unimplemented 전파; 오류 은폐 없음 | `CSI-C`, `Agent`, `TgtCRD`, `gRPC` |
+| 171 | `TestCSIProtocol_CreateVolume_ProtocolDoc_ISCSIRejected` | 프로토콜 문서가 제거된 `iscsi` 멤버를 선택하면 거부 | PillarAgent·PillarStore("tank")·PillarProtocol("nvmeof") 등록; StorageClass params `store-ref`="tank", `protocol-ref`="nvmeof", `pillar-csi.bhyoo.com/protocol`=`iscsi: {port: 3260}` | 1) CreateVolumeRequest 전송 | gRPC InvalidArgument; 메시지에 `pillar-csi.bhyoo.com/protocol`과 `unknown field "iscsi"`; agent.CreateVolume 호출 없음 | `CSI-C` |
+| 172 | `TestCSIProtocol_CreateVolume_ProtocolDoc_NFSRejected` | 프로토콜 문서가 제거된 `nfs` 멤버를 선택하면 거부 | E22.171과 동일; `pillar-csi.bhyoo.com/protocol`=`nfs: {version: "4.2"}` | 1) CreateVolumeRequest 전송 | gRPC InvalidArgument; 메시지에 `unknown field "nfs"`; agent.CreateVolume 호출 없음 | `CSI-C` |
+| 173 | `TestCSIProtocol_CreateVolume_LegacyProtocolTypeParamRejected` | 제거된 평면 키 `pillar-csi.bhyoo.com/protocol-type`(값 `smb-v3-unknown`)을 지정하면 거부 | E22.171과 동일한 identity params에 `pillar-csi.bhyoo.com/protocol-type`="smb-v3-unknown" 추가 | 1) CreateVolumeRequest 전송 | gRPC InvalidArgument; 메시지에 `unsupported StorageClass parameter`와 키 이름; agent.CreateVolume 호출 없음 | `CSI-C` |
+| 174 | `TestCSIProtocol_CreateVolume_ProtocolDoc_StructuralFieldRejected` | 프로토콜 문서가 구조적 필드 `nvmeofTcp.acl`을 지정하면 거부 | E22.171과 동일; `pillar-csi.bhyoo.com/protocol`=`nvmeofTcp: {acl: true}` | 1) CreateVolumeRequest 전송 | gRPC InvalidArgument; 메시지에 `nvmeofTcp.acl is structural and cannot be set per volume`; agent.CreateVolume 호출 없음 | `CSI-C` |
 
 ---
 
@@ -2341,30 +2332,29 @@ go test ./test/component/ -v -run 'TestAgentProtocol'
 
 ---
 
-### E22.3 CSI Controller — StorageClass 미지원 백엔드 타입 지정
+### E22.3 CSI Controller — 미지원 백엔드 선택 거부
 
 **테스트 유형:** A (인프로세스 E2E) ✅ CI 실행 가능
 
 **실행 명령:**
 ```bash
-go test ./test/e2e/ -v -run TestCSIProtocol
+go test ./test/e2e/ -v -run 'TC-E22\.'
 ```
 
-**위치:** `test/e2e/csi_controller_e2e_test.go`
+**위치:** `test/e2e/tc_e22_inprocess_test.go`
 
-**핵심 동작:** CSI 컨트롤러는 `StorageClass`의 `backend-type` 파라미터를 `mapBackendType()`으로
-agent protobuf 열거형으로 변환한다. 인식되지 않는 문자열(예: `"lvm-unknown"`, `"fuse"`)은
-`BACKEND_TYPE_UNSPECIFIED(0)`으로 매핑되어 agent에 전달된다
-(`internal/csi/controller.go`의 `mapBackendType` default 분기).
+**핵심 동작:** 백엔드는 참조된 PillarStore의 `spec.backend` 멤버(`zfs`/`lvm`)로 결정된다. 직접 작성한
+StorageClass의 `pillar-csi.bhyoo.com/backend` 문서는 튜너블만 담을 수 있고, 그 멤버는 스토어의 멤버와 같아야 한다.
+제거된 변형(`zfs-dataset`, `dir`)은 알 수 없는 멤버로, 스토어와 다른 멤버는 불일치로 agent 호출 전에 거부된다.
 
 > **E1.11-5와의 차이점:**
-> - **E1.11-5** (`TestCSIController_CreateVolume_MissingBackendTypeParam`): `backend-type` 키 자체 **누락** → `InvalidArgument` (agent 호출 전 검증)
-> - **E22.3** (신규): `backend-type` 키는 **존재**하지만 알 수 없는 값 → `BACKEND_TYPE_UNSPECIFIED`으로 매핑 → agent에 전달되어 agent의 동작에 위임
+> - **E1.11-5** (`TestCSIController_CreateVolume_LegacyFlatParamRejected`): 제거된 평면 키(`backend-type` 등) → `unsupported StorageClass parameter`
+> - **E22.3**: 백엔드 **문서** 자체가 존재하지 않는 멤버 또는 스토어와 다른 멤버를 지정 → `InvalidArgument`
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| 181 | `TestCSIProtocol_CreateVolume_UnknownBackendType_MapsToUnspecified` | `backend-type="fuse-experimental"` — 알 수 없는 백엔드 타입 문자열이 `BACKEND_TYPE_UNSPECIFIED(0)`으로 매핑되어 `agent.CreateVolume` 요청에 전달됨 | `mockAgentServer` 기본 설정(CreateVolume 성공 반환); StorageClass params에 `backend-type: "fuse-experimental"` 설정; PillarAgent CRD 등록; `protocol-type: "nvmeof-tcp"` | 1) `CreateVolumeRequest` 전송; 2) `env.AgentMock.CreateVolumeCalls[0].BackendType` 값 확인 | `CreateVolumeCalls[0].BackendType == BACKEND_TYPE_UNSPECIFIED` (UNSPECIFIED로 매핑 확인); CreateVolume 자체는 mock 기준 성공 반환; 감사 목적 — UNSPECIFIED 백엔드 타입이 agent에 도달함을 문서화 | `CSI-C`, `Agent` |
-| 182 | `TestCSIProtocol_CreateVolume_LVMBackendUnimplemented` | `backend-type="lvm"`으로 CreateVolume 호출 시 agent.CreateVolume이 `codes.Unimplemented` 반환 — 현재 단일 ZFS 스토리지 노드에서 LVM 백엔드를 지원하지 않는 시나리오 | `mockAgentServer.CreateVolumeErr = status.Errorf(codes.Unimplemented, "LVM backend not supported in this deployment")`; StorageClass params에 `backend-type: "lvm"` 설정; PillarAgent CRD 등록 | 1) `CreateVolumeRequest` 전송 | 비-OK gRPC 상태; agent의 `Unimplemented` 전파; PillarVolumeState CRD 미생성 | `CSI-C`, `Agent`, `gRPC` |
+| 181 | `TestCSIProtocol_CreateVolume_BackendDoc_RemovedVariantRejected` | 백엔드 문서가 제거된 변형(`zfs-dataset`, `dir`)을 선택하면 거부 | PillarAgent·PillarStore("tank", zfs)·PillarProtocol("nvmeof") 등록; StorageClass params `store-ref`/`protocol-ref` + `pillar-csi.bhyoo.com/backend`=`zfs-dataset: {properties: {}}` (또는 `dir: …`) | 1) 변형마다 CreateVolumeRequest 전송 | 각각 gRPC InvalidArgument; 메시지에 `pillar-csi.bhyoo.com/backend`와 `unknown field "<변형>"`; agent.CreateVolume 호출 없음 | `CSI-C` |
+| 182 | `TestCSIProtocol_CreateVolume_BackendDoc_MemberMismatchRejected` | ZFS 스토어에 `lvm` 백엔드 문서를 지정하면 거부 | E22.181과 동일; `pillar-csi.bhyoo.com/backend`=`lvm: {provisioningMode: thin}` | 1) CreateVolumeRequest 전송 | gRPC InvalidArgument; 메시지에 오버라이드 멤버 `lvm`과 스토어 백엔드 `zfs`; agent.CreateVolume 호출 없음 | `CSI-C` |
 
 ---
 
@@ -2384,8 +2374,7 @@ agent protobuf 열거형으로 변환한다. 인식되지 않는 문자열(예: 
 |----|---------|----------|--------------|---------|---------|
 | BP-1 | **Controller-Agent 에이전트 버전 확인 — `GetCapabilitiesResponse.agent_version` 필드 기록 여부** | 실제 Kubernetes 클러스터; pillar-csi-controller 배포; pillar-agent 배포 (`agent_version="0.1.0"` 내장, `internal/agent/server.go:36` 상수) | 1) PillarAgent CRD 등록 후 컨트롤러 재조정 대기; 2) `kubectl get pillaragent <name> -o yaml`로 `status.agentVersion` 또는 관련 조건 메시지 확인; 3) 에이전트 바이너리를 이전 버전으로 교체 후 컨트롤러 반응 확인 | `PillarAgent.status` 또는 이벤트에 에이전트 버전 정보 기록됨; 버전 불일치 경고는 현재 미구현(향후 구현 예정); 버전 불일치 시에도 볼륨 생성 시도 가능 — 미지원 RPC 호출 시 `Unimplemented` 반환으로 오류 감지 | `Agent`, `TgtCRD`, `gRPC` |
 | BP-2 | **스토리지 노드에서 nvmet 커널 모듈 미로드 — HealthCheck 경고 및 ExportVolume 실패** | 실제 스토리지 노드; ZFS 커널 모듈 로드됨; nvmet/nvme-fabrics 모듈 **미로드** (`modprobe -r nvmet nvme-fabrics`) | 1) pillar-agent 프로세스 시작; 2) `agent.HealthCheck()` 응답의 `subsystems` 배열 확인 — `nvmet-configfs` 서브시스템 `healthy` 필드 값 확인; 3) PVC 생성 시도(CSI CreateVolume → `agent.CreateVolume` 성공 → `agent.ExportVolume` 실패 예상); 4) `kubectl describe pvc`에서 오류 이벤트 확인 | `HealthCheck` 응답에 `nvmet-configfs.healthy=false` 표시; `ExportVolume` 호출 시 configfs 디렉터리 생성 실패로 `codes.Internal` 또는 `codes.FailedPrecondition` 반환; PVC가 `Pending` 상태 유지; 오류 메시지에 configfs 관련 진단 정보 포함 | `Agent`, `NVMeF`, `TgtCRD` |
-| BP-3 | **프로토콜 협상 실패 엔드투엔드 — StorageClass `protocol-type: iscsi`로 PVC 생성 시 오류 전파** | 실제 Kubernetes 클러스터; StorageClass `protocol-type: iscsi`로 구성; 실제 pillar-agent 배포 (NVMe-oF TCP 전용) | 1) `kubectl apply -f storageclass-iscsi.yaml`; 2) `kubectl apply -f pvc-iscsi.yaml`; 3) PVC 이벤트 확인 (`kubectl describe pvc <name>`); 4) CSI 컨트롤러 로그에서 `Unimplemented` 오류 확인 | PVC가 `Pending` 상태 유지; CSI CreateVolume 오류 이벤트에 `Unimplemented: only NVMe-oF TCP is supported` 메시지; 지속적인 재시도 없이 명확한 오류 보고; PillarVolumeState CRD 미생성 | `CSI-C`, `Agent`, `gRPC`, `실제 Kubernetes클러스터` |
-| BP-4 | **향후 iSCSI 지원 추가 시 회귀 검증 체크리스트** | iSCSI 지원 버전의 pillar-agent 배포 후; LIO 커널 모듈 로드됨 (`iscsi_target_mod`, `target_core_mod`, `configfs`) | 1) StorageClass에 `protocol-type: "iscsi"` 설정; 2) PVC 생성; 3) `kubectl describe pvc`로 `Bound` 확인; 4) 스토리지 노드에서 `targetcli ls` 실행하여 iSCSI 타깃 생성 확인 | PVC `Bound` 상태; iSCSI LIO 타깃 생성 확인; **현재 E22.1 테스트(171-172)가 `Unimplemented` 예상에서 `OK` 예상으로 갱신 필요**; `TestAgentErrors_*_InvalidProtocol` 시리즈 삭제 또는 프로토콜 목록 업데이트 필요 | `Agent`, `CSI-C`, `실제 커널`, `실제 Kubernetes클러스터` |
+| BP-3 | **미지원 프로토콜 선택 엔드투엔드 — 직접 작성한 StorageClass의 `pillar-csi.bhyoo.com/protocol: "iscsi: {}"`로 PVC 생성 시 오류 전파** | 실제 Kubernetes 클러스터; PillarStore·PillarProtocol(nvmeofTcp) 준비; 직접 작성한 StorageClass에 `store-ref`/`protocol-ref`와 `pillar-csi.bhyoo.com/protocol: "iscsi: {}"` 설정 | 1) `kubectl apply -f storageclass-iscsi-doc.yaml`; 2) `kubectl apply -f pvc.yaml`; 3) PVC 이벤트 확인 (`kubectl describe pvc <name>`); 4) CSI 컨트롤러 로그에서 `InvalidArgument` 오류 확인 | PVC가 `Pending` 상태 유지; CreateVolume 오류 이벤트에 `InvalidArgument`와 `unknown field "iscsi" (supported: nvmeofTcp)`; agent 호출 없음; PillarVolumeState CRD 미생성 | `CSI-C`, `실제 Kubernetes클러스터` |
 
 ---
 
@@ -2393,18 +2382,16 @@ agent protobuf 열거형으로 변환한다. 인식되지 않는 문자열(예: 
 
 | 소섹션 | 검증 내용 | 테스트 수 | CI 실행 |
 |--------|---------|----------|--------|
-| E22.1 | CSI Controller → agent 미지원 프로토콜 전파 | 4개 | ✅ 표준 CI |
+| E22.1 | CSI Controller — 미지원 프로토콜 문서/레거시 키 거부 | 4개 | ✅ 표준 CI |
 | E22.2 | Agent 서버 각 RPC에서 미지원 프로토콜 거부 (기존 4개 + 신규 2개) | 6개 | ✅ 표준 CI |
-| E22.3 | CSI Controller → agent 미지원 백엔드 타입 전파 | 2개 | ✅ 표준 CI |
-| E22.4 | 실제 버전 불일치·커널 모듈 미로드 수동 검증 | 4개 시나리오 | ❌ CI 불가 |
-| **합계** | | **12개 자동 + 4개 수동** | — |
+| E22.3 | CSI Controller — 제거된 백엔드 변형/불일치 멤버 거부 | 2개 | ✅ 표준 CI |
+| E22.4 | 실제 버전 불일치·커널 모듈 미로드 수동 검증 | 3개 시나리오 | ❌ CI 불가 |
+| **합계** | | **12개 자동 + 3개 수동** | — |
 
 **CI에서 검증 불가 항목 (정직한 평가):**
 
 | 항목 | 이유 | 대안 |
 |------|------|------|
-| 실제 iSCSI 프로토콜 협상 | LIO 커널 모듈 + root 권한 필요 | BP-3 수동 스테이징 검증 |
-| 실제 NFS 마운트 익스포트 | `nfsd` 커널 서비스 + root 권한 필요 | 수동 스테이징 검증 |
 | `agent_version` 필드 기반 버전 체크 | 현재 컨트롤러에 버전 검증 로직 **미구현** | BP-1 수동 확인; 버전 체크 구현 후 E22.1에 추가 |
 | `GetCapabilitiesResponse.supported_protocols` 사전 검증 | 컨트롤러가 CreateVolume 전 지원 프로토콜 목록을 확인하지 않음 | 향후 사전 검증 로직 추가 후 E22.1에 `InvalidArgument` 테스트 추가 |
 | gRPC 스트리밍 RPC 프로토콜 협상 (`SendVolume`, `ReceiveVolume`) | 멀티-청크 스트리밍 + 실제 ZFS send/recv 필요 | 유형 F 완전 E2E 테스트 |
@@ -2445,7 +2432,7 @@ NodeUnpublish → NodeUnstage → ControllerUnpublish → DeleteVolume
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| E24.1-1 | `TestCSILifecycle_FullCycle` _(기존 구현)_ | 8단계 전체 라이프사이클 정상 경로 완전 검증. `csiLifecycleEnv`를 통해 ControllerServer와 NodeServer가 단일 mockAgentServer를 공유하며 전체 체인을 인프로세스로 실행 | `csiLifecycleEnv` 초기화: `mockAgentServer`(ExportVolumeInfo 사전 설정), `mockCSIConnector`(DevicePath=`/dev/nvme0n1`), `mockCSIMounter`, `t.TempDir()` StateDir; PillarAgent CRD 등록 | 1) `CreateVolumeRequest{Name="pvc-lifecycle-full", CapacityRange=1GiB, Parameters{target, backend-type=zfs-zvol, protocol-type=nvmeof-tcp, pool}}` 전송; 2) `ControllerPublishVolumeRequest{VolumeId, NodeId="worker-1"}` 전송; 3) `NodeStageVolumeRequest{VolumeId, StagingTargetPath, VolumeContext}` 전송; 4) `NodePublishVolumeRequest{VolumeId, StagingTargetPath, TargetPath}` 전송; 5) `NodeUnpublishVolumeRequest{VolumeId, TargetPath}` 전송; 6) `NodeUnstageVolumeRequest{VolumeId, StagingTargetPath}` 전송; 7) `ControllerUnpublishVolumeRequest{VolumeId, NodeId}` 전송; 8) `DeleteVolumeRequest{VolumeId}` 전송 | 모든 단계 성공; `VolumeContext`(NQN, address, port)가 CreateVolume → NodeStageVolume으로 키 변환 없이 전달; `agent.CreateVolume` 1회 · `agent.ExportVolume` 1회 · `agent.AllowInitiator` 1회 · `agent.DenyInitiator` 1회 · `agent.UnexportVolume` 1회 · `agent.DeleteVolume` 1회; `mockConnector.Connect` 1회 · `mockConnector.Disconnect` 1회; PillarVolumeState CRD 삭제됨(NotFound) | `CSI-C`, `CSI-N`, `Agent`, `Conn`, `Mnt`, `TgtCRD`, `VolCRD`, `State`, `gRPC` |
+| E24.1-1 | `TestCSILifecycle_FullCycle` _(기존 구현)_ | 8단계 전체 라이프사이클 정상 경로 완전 검증. `csiLifecycleEnv`를 통해 ControllerServer와 NodeServer가 단일 mockAgentServer를 공유하며 전체 체인을 인프로세스로 실행 | `csiLifecycleEnv` 초기화: `mockAgentServer`(ExportVolumeInfo 사전 설정), `mockCSIConnector`(DevicePath=`/dev/nvme0n1`), `mockCSIMounter`, `t.TempDir()` StateDir; PillarAgent CRD 등록 | 1) `CreateVolumeRequest{Name="pvc-lifecycle-full", CapacityRange=1GiB, Parameters{store-ref, protocol-ref}}` 전송; 2) `ControllerPublishVolumeRequest{VolumeId, NodeId="worker-1"}` 전송; 3) `NodeStageVolumeRequest{VolumeId, StagingTargetPath, VolumeContext}` 전송; 4) `NodePublishVolumeRequest{VolumeId, StagingTargetPath, TargetPath}` 전송; 5) `NodeUnpublishVolumeRequest{VolumeId, TargetPath}` 전송; 6) `NodeUnstageVolumeRequest{VolumeId, StagingTargetPath}` 전송; 7) `ControllerUnpublishVolumeRequest{VolumeId, NodeId}` 전송; 8) `DeleteVolumeRequest{VolumeId}` 전송 | 모든 단계 성공; `VolumeContext`(NQN, address, port)가 CreateVolume → NodeStageVolume으로 키 변환 없이 전달; `agent.CreateVolume` 1회 · `agent.ExportVolume` 1회 · `agent.AllowInitiator` 1회 · `agent.DenyInitiator` 1회 · `agent.UnexportVolume` 1회 · `agent.DeleteVolume` 1회; `mockConnector.Connect` 1회 · `mockConnector.Disconnect` 1회; PillarVolumeState CRD 삭제됨(NotFound) | `CSI-C`, `CSI-N`, `Agent`, `Conn`, `Mnt`, `TgtCRD`, `VolCRD`, `State`, `gRPC` |
 | E24.1-2 | `TestCSILifecycle_VolumeContextFlowThrough` _(기존 구현)_ | CreateVolume의 VolumeContext(NQN/address/port)가 키 변환 없이 NodeStageVolume의 `mockConnector.Connect` 인수로 전달됨을 검증. 컨트롤러와 노드 서버가 VolumeContext 키 이름에 합의(no translation)되어 있어야 함 | `csiLifecycleEnv`; `mockAgentServer.ExportVolumeInfo`: `TargetId=lifecycleTestNQN`, `Address=127.0.0.1`, `Port=4420` | 1) `CreateVolumeRequest` 전송; 2) `VolumeContext` 추출; 3) `NodeStageVolumeRequest{VolumeContext: 그대로 전달}` 전송; 4) `mockConnector.ConnectCalls[0]` 검증 | `mockConnector.Connect.SubsysNQN == VolumeContext["target_id"]`; `TrAddr == VolumeContext["address"]`; `TrSvcID == VolumeContext["port"]`; 키 변환 없음 확인 | `CSI-C`, `CSI-N`, `Agent`, `Conn`, `gRPC` |
 | E24.1-3 | `TestCSILifecycle_OrderingConstraints` _(기존 구현)_ | 8단계 체인에서 올바른 순서 준수: 각 단계 완료 후 다음 단계 진행 시 모든 agent RPC가 정확히 1회씩 호출됨 | 동일한 `csiLifecycleEnv`; 각 단계를 Phase 1~8로 명시 | Phase 1: CreateVolume; Phase 2: ControllerPublish; Phase 3: NodeStage; Phase 4: NodePublish; Phase 5: NodeUnpublish; Phase 6: NodeUnstage; Phase 7: ControllerUnpublish; Phase 8: DeleteVolume — 각 Phase 후 중간 상태 검증 | Phase 3 후: `mockConnector.ConnectCalls` 1개; Phase 4 후: `targetPath` 마운트됨; Phase 5 후: `targetPath` 언마운트됨 · `stagingPath` 유지; Phase 6 후: `stagingPath` 언마운트됨 · `mockConnector.DisconnectCalls` 1개; 최종: 6개 agent RPC 각 1회 | `CSI-C`, `CSI-N`, `Agent`, `Conn`, `Mnt`, `gRPC` |
 | E24.1-4 | `TestCSILifecycle_IdempotentSteps` _(기존 구현)_ | 8단계 각 단계를 두 번씩 동일 인수로 호출해도 오류 없이 최종 상태 동일 — CSI 명세의 멱등성 요구 통합 검증 | `csiLifecycleEnv` 초기화; `callTwice` 헬퍼 함수 사용 | 각 단계 `callTwice(step, fn)` — CreateVolume 2회 · ControllerPublish 2회 · NodeStage 2회 · NodePublish 2회 · NodeUnpublish 2회 · NodeUnstage 2회 · ControllerUnpublish 2회 · DeleteVolume 2회 | 모든 재호출 성공; 오류 없음; 두 번째 호출은 no-op 처리 | `CSI-C`, `CSI-N`, `Agent`, `Conn`, `Mnt`, `SM`, `gRPC` |
@@ -2764,26 +2751,28 @@ thin pool이 거의 가득 찼거나 완전히 찼을 때의 CreateVolume 동작
 
 **테스트 유형:** A (인프로세스 E2E) ✅ CI 실행 가능
 
-CSI ControllerServer가 LVM 백엔드 타입의 StorageClass 파라미터를 파싱하여
+CSI ControllerServer가 lvm 멤버를 가진 PillarStore와 오버라이드 문서들을 해석하여
 agent gRPC 요청에 `LvmVolumeParams`로 전달하는지, 그리고 프로비저닝 모드
-오버라이드 3계층(Pool → Binding → PVC annotation)이 올바르게 적용되는지 검증한다.
+오버라이드 계층(Store → Binding `overrides.backend.lvm` → 직접 작성한 StorageClass의
+`pillar-csi.bhyoo.com/backend` 문서 → PVC `pillar-csi.bhyoo.com/backend` 어노테이션)이 올바르게 적용되는지 검증한다.
 
 **E1·E2와의 차이점:**
-> E1·E2는 `backend-type="zfs-zvol"`로 ZFS 경로만 테스트한다.
-> E29는 `backend-type="lvm-lv"`를 사용하여 LVM 고유 파라미터 매핑
-> (`paramLVMVG`, `paramLVMMode`)과 3계층 오버라이드 전파를 검증한다.
+> E1·E2는 `zfs` 멤버 PillarStore로 ZFS 경로만 테스트한다.
+> E29는 `lvm` 멤버 PillarStore(`volumeGroup`, `thinPool`, `provisioningMode`)를 사용하여 LVM 고유 파라미터 매핑과
+> 계층별 오버라이드 전파를 검증한다.
 
 **아키텍처:**
 ```
-CSI ControllerServer
+CSI ControllerServer (CreateVolume)
     │
-    ├── mapBackendType("lvm-lv") → BACKEND_TYPE_LVM
-    ├── buildBackendParams(LVM) → LvmVolumeParams{VolumeGroup, ProvisionMode}
-    ├── mergeParams: Pool.LVM.ProvisioningMode
-    │                 → Binding.LVM.ProvisioningMode
-    │                   → PVC annotation "lvm-mode"
+    ├── PillarStore.spec.backend.lvm → BACKEND_TYPE_LVM
+    ├── 해석: Store.lvm.provisioningMode
+    │          → Binding.overrides.backend.lvm.provisioningMode
+    │            → StorageClass "pillar-csi.bhyoo.com/backend" 문서 (직접 작성한 StorageClass만)
+    │              → PVC annotation "pillar-csi.bhyoo.com/backend"
+    ├── LvmVolumeParams{VolumeGroup, ThinPool, ProvisionMode}
     │
-    └──► mockAgentServer (실제 gRPC, localhost:0)
+    └──► mockAgentServer (실제 gRPC, bufconn)
              └── LvmVolumeParams 수신 확인
 ```
 
@@ -2793,8 +2782,8 @@ CSI ControllerServer
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| 263 | `TestCSIController_CreateVolume_LVM_Linear` | LVM linear 모드 CreateVolume 시 agent에 BackendType=LVM, LvmVolumeParams{VolumeGroup, ProvisionMode="linear"} 전달 | PillarAgent 등록; PillarStore(type=lvm-lv, lvm.volumeGroup="data-vg", lvm.provisioningMode=linear); PillarProtocol(nvmeof-tcp); PillarStorageClass; mockAgentServer 정상 | 1) CreateVolumeRequest 전송 | 성공; agent.CreateVolume에 BackendType=BACKEND_TYPE_LVM; LvmVolumeParams.VolumeGroup="data-vg"; ProvisionMode="linear"; VolumeId에 "lvm-lv" 포함 | `CSI-C`, `Agent`, `LVM`, `TgtCRD`, `VolCRD`, `gRPC` |
-| 264 | `TestCSIController_CreateVolume_LVM_Thin` | LVM thin 모드 CreateVolume 시 agent에 ProvisionMode="thin" 전달 | PillarStore(lvm.thinPool="thin-pool-0", lvm.provisioningMode=thin) | 1) CreateVolumeRequest 전송 | 성공; ProvisionMode="thin"; VolumeGroup="data-vg" | `CSI-C`, `Agent`, `LVM`, `TgtCRD`, `VolCRD`, `gRPC` |
+| 263 | `TestCSIController_CreateVolume_LVM_Linear` | LVM linear 모드 CreateVolume 시 agent에 BackendType=LVM, LvmVolumeParams{VolumeGroup, ProvisionMode="linear"} 전달 | PillarAgent 등록; PillarStore(backend.lvm{volumeGroup="data-vg", thinPool="thin0", provisioningMode=linear}); PillarProtocol(nvmeofTcp); 직접 작성한 StorageClass params `store-ref`/`protocol-ref`; mockAgentServer 정상 | 1) CreateVolumeRequest 전송 | 성공; agent.CreateVolume에 BackendType=BACKEND_TYPE_LVM; LvmVolumeParams.VolumeGroup="data-vg"; ProvisionMode="linear"; VolumeId에 "lvm-lv" 포함 | `CSI-C`, `Agent`, `LVM`, `TgtCRD`, `VolCRD`, `gRPC` |
+| 264 | `TestCSIController_CreateVolume_LVM_Thin` | 직접 작성한 StorageClass의 `pillar-csi.bhyoo.com/backend` 문서(`lvm: {provisioningMode: thin}`)로 thin 모드 선택 시 agent에 ProvisionMode="thin" 전달 | PillarStore(backend.lvm{volumeGroup="data-vg", thinPool="thin0", provisioningMode=linear}); StorageClass params에 `pillar-csi.bhyoo.com/backend`=`lvm: {provisioningMode: thin}` | 1) CreateVolumeRequest 전송 | 성공; ProvisionMode="thin"; VolumeGroup="data-vg"; ThinPool="thin0" | `CSI-C`, `Agent`, `LVM`, `TgtCRD`, `VolCRD`, `gRPC` |
 | 265 | `TestCSIController_CreateVolume_LVM_VolumeIdFormat` | LVM VolumeId가 "target/nvmeof-tcp/lvm-lv/data-vg/pvc-xxx" 5세그먼트 형식 | 동일 | 1) CreateVolumeRequest 전송; 2) VolumeId 세그먼트 파싱 | VolumeId에 5개 슬래시 구분 세그먼트; 3번째="lvm-lv"; 4번째="data-vg" | `CSI-C`, `VolCRD` |
 
 ---
@@ -2803,12 +2792,12 @@ CSI ControllerServer
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| 266 | `TestCSIController_LVM_ModeOverride_PoolDefault` | Pool 레벨 provisioningMode가 기본값으로 agent에 전달 | PillarStore.lvm.provisioningMode="thin"; PillarStorageClass에 LVM 오버라이드 없음; PVC annotation 없음 | 1) CreateVolumeRequest 전송; 2) agent.CreateVolumeCalls[0] 확인 | LvmVolumeParams.ProvisionMode="thin" | `CSI-C`, `Agent`, `LVM` |
+| 266 | `TestCSIController_LVM_ModeOverride_PoolDefault` | Pool 레벨 provisioningMode가 기본값으로 agent에 전달 | PillarStore.backend.lvm.provisioningMode="thin"; PillarStorageClass에 LVM 오버라이드 없음; StorageClass params=`storage-class`; PVC annotation 없음 | 1) CreateVolumeRequest 전송; 2) agent.CreateVolumeCalls[0] 확인 | LvmVolumeParams.ProvisionMode="thin" | `CSI-C`, `Agent`, `LVM` |
 | 267 | `TestCSIController_LVM_ModeOverride_StorageClassOverridesPool` | Binding 레벨이 Pool 기본값 오버라이드 | Pool.lvm.provisioningMode="thin"; Binding.overrides.backend.lvm.provisioningMode="linear" | 1) CreateVolumeRequest 전송 | ProvisionMode="linear" (Pool의 "thin" 오버라이드됨) | `CSI-C`, `Agent`, `LVM` |
-| 268 | `TestCSIController_LVM_ModeOverride_PVCAnnotationOverridesBinding` | PVC annotation이 Binding 레벨 오버라이드 | Binding.overrides.backend.lvm.provisioningMode="linear"; PVC annotation "pillar-csi.bhyoo.com/lvm-mode"="thin" | 1) CreateVolumeRequest(PVC annotation 포함) 전송 | ProvisionMode="thin" (Binding의 "linear" 오버라이드됨) | `CSI-C`, `Agent`, `LVM` |
-| 269 | `TestCSIController_LVM_ModeOverride_AbsentUsesBackendDefault` | 모든 레이어 미지정 시 빈 문자열 → agent backend 컴파일 시점 기본값 | Pool.lvm.provisioningMode=""; Binding 오버라이드 없음 | 1) CreateVolumeRequest 전송 | ProvisionMode="" (빈 문자열); agent backend가 자체 기본값 적용 | `CSI-C`, `Agent`, `LVM` |
-| 269a | `TestCSIController_LVM_ModeOverride_InvalidPVCAnnotation` | PVC annotation에 잘못된 lvm-mode 값("striped") 시 agent가 거부 | PVC annotation "pillar-csi.bhyoo.com/lvm-mode"="striped" | 1) CreateVolumeRequest(annotation 포함) 전송 | gRPC InvalidArgument; agent가 알 수 없는 provisioning mode 거부 | `CSI-C`, `Agent`, `LVM` |
-| 269b | `TestCSIController_LVM_ModeOverride_EmptyPVCAnnotation_FallsThrough` | PVC annotation lvm-mode="" 빈 문자열 시 Binding 레벨 값 사용 | Binding.overrides.backend.lvm.provisioningMode="thin"; PVC annotation lvm-mode="" | 1) CreateVolumeRequest 전송 | ProvisionMode="thin" (Binding 값 유지, 빈 문자열은 오버라이드 아님) | `CSI-C`, `Agent`, `LVM` |
+| 268 | `TestCSIController_LVM_ModeOverride_PVCAnnotationOverridesBinding` | PVC annotation이 Binding 레벨 오버라이드 | Binding.overrides.backend.lvm.provisioningMode="linear"; PVC annotation `pillar-csi.bhyoo.com/backend`=`lvm: {provisioningMode: thin}` | 1) CreateVolumeRequest(PVC annotation 포함) 전송 | ProvisionMode="thin" (Binding의 "linear" 오버라이드됨) | `CSI-C`, `Agent`, `LVM` |
+| 269 | `TestCSIController_LVM_ModeOverride_AbsentUsesBackendDefault` | 모든 레이어 미지정 시 단일 기본값(linear) 적용 | Store.backend.lvm.provisioningMode 미지정; Binding 오버라이드 없음; PVC annotation 없음 | 1) CreateVolumeRequest 전송 | ProvisionMode가 linear 기본값("linear" 또는 agent가 linear로 해석하는 빈 문자열) | `CSI-C`, `Agent`, `LVM` |
+| 269a | `TestCSIController_LVM_ModeOverride_InvalidPVCAnnotation` | PVC 백엔드 문서의 잘못된 provisioningMode("striped")는 공유 디코더가 거부 | PVC annotation `pillar-csi.bhyoo.com/backend`=`lvm: {provisioningMode: striped}` | 1) CreateVolumeRequest(annotation 포함) 전송 | gRPC InvalidArgument; 메시지에 `lvm.provisioningMode`; agent.CreateVolume 호출 없음 | `CSI-C`, `LVM` |
+| 269b | `TestCSIController_LVM_ModeOverride_EmptyPVCAnnotation_FallsThrough` | 빈 PVC 백엔드 문서는 오버라이드가 아니므로 Binding 레벨 값 사용 | Binding.overrides.backend.lvm.provisioningMode="thin"; PVC annotation `pillar-csi.bhyoo.com/backend`="" | 1) CreateVolumeRequest 전송 | ProvisionMode="thin" (Binding 값 유지, 빈 문서는 오버라이드 아님) | `CSI-C`, `Agent`, `LVM` |
 
 ---
 
@@ -2867,7 +2856,7 @@ LV 존재 여부 추적.
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| 273 | `TestCSILVMNoDup_ExactlyOneLVAfterExportFailureRetry` | export 실패 후 재시도 시 LV가 정확히 1개만 존재 — skipBackend 동작 확인 | `statefulLVAgentServer` 초기화; `ExportVolumeErr` 주입 후 재시도 전 제거; LVM 백엔드 파라미터(backend-type=lvm-lv, lvm-vg=data-vg) | 1) CreateVolume(ExportVolume 실패) → 오류; 2) LV 수=1, agent.CreateVolume 호출=1, CRD Phase=CreatePartial, BackendDevicePath 비어 있지 않음; 3) CreateVolume 재시도(성공); 4) LV 수=1, CreateVolume 호출=1 유지, CRD Phase=Ready | 재시도 후 LV 총 1개; agent.CreateVolume 총 1회 (skipBackend); agent.ExportVolume 총 2회; CRD Phase=Ready | `CSI-C`, `Agent`, `LVM`, `VolCRD`, `gRPC`, `SM` |
+| 273 | `TestCSILVMNoDup_ExactlyOneLVAfterExportFailureRetry` | export 실패 후 재시도 시 LV가 정확히 1개만 존재 — skipBackend 동작 확인 | `statefulLVAgentServer` 초기화; `ExportVolumeErr` 주입 후 재시도 전 제거; LVM PillarStore(backend.lvm.volumeGroup=data-vg) | 1) CreateVolume(ExportVolume 실패) → 오류; 2) LV 수=1, agent.CreateVolume 호출=1, CRD Phase=CreatePartial, BackendDevicePath 비어 있지 않음; 3) CreateVolume 재시도(성공); 4) LV 수=1, CreateVolume 호출=1 유지, CRD Phase=Ready | 재시도 후 LV 총 1개; agent.CreateVolume 총 1회 (skipBackend); agent.ExportVolume 총 2회; CRD Phase=Ready | `CSI-C`, `Agent`, `LVM`, `VolCRD`, `gRPC`, `SM` |
 | 274 | `TestCSILVMNoDup_LVRegistryReflectsDeleteAfterPartialCreate` | 부분 생성 후 DeleteVolume 시 LV 레지스트리 1→0 감소 | 부분 실패 후 PillarVolumeState CRD 존재; `statefulLVAgentServer` | 1) CreateVolume(ExportVolume 실패) → LV 1개; 2) CRD에서 VolumeID 읽기; 3) DeleteVolume; 4) LV 수=0, CRD NotFound | DeleteVolume 성공; LV 레지스트리 0; CRD 제거 | `CSI-C`, `Agent`, `LVM`, `VolCRD`, `gRPC` |
 | 275 | `TestCSILVMNoDup_MultipleRetriesNeverDuplicate` | 연속 3회 export 실패 후 최종 성공 — 매 재시도마다 LV 수 1 유지 | `retryFails=3`; `statefulLVAgentServer`; 3회 실패 후 `ExportVolumeErr=nil` | 1) 3회 연속 CreateVolume(실패); 2) 각 실패 후 LV 수=1, CreateVolume 호출=1; 3) 4번째 성공 | 모든 재시도에서 LV 수 1; agent.CreateVolume 총 1회; agent.ExportVolume 총 4회; 최종 Ready | `CSI-C`, `Agent`, `LVM`, `VolCRD`, `gRPC`, `SM` |
 
@@ -3066,7 +3055,7 @@ PillarStore CRD의 전체 라이프사이클을 검증한다. 이 CRD는 특정 
 특정 스토리지 풀(ZFS pool, LVM volume group 등)을 나타내는 클러스터-스코프 리소스이다.
 다음 동작을 검증한다:
 
-1. **유효/무효 스펙 생성** — `spec.agentRef`, `spec.backend.type` 필드 검증
+1. **유효/무효 스펙 생성** — `spec.agentRef`, `spec.backend` exactly-one 유니온(`zfs` | `lvm`) 검증
 2. **상태 조건 전이** — `TargetReady`, `PoolDiscovered`, `BackendSupported`, `Ready` 조건의 정확한 전이
 3. **용량 동기화** — PillarAgent의 `DiscoveredPools`에서 `status.capacity`로의 자동 동기화
 4. **삭제 보호 동작** — PillarStorageClass이 참조하는 동안 파이널라이저가 삭제를 차단
@@ -3085,12 +3074,12 @@ PillarStore CRD의 전체 라이프사이클을 검증한다. 이 CRD는 특정 
 
 ### E20.1 유효한 스펙으로 생성
 
-**목적:** 다양한 `backend.type`으로 유효한 PillarStore을 생성하거나 검증기를 통과할 수 있음을 확인한다.
+**목적:** `spec.backend`의 각 멤버(`zfs`, `lvm`)로 유효한 PillarStore을 생성하거나 검증기를 통과할 수 있음을 확인한다.
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| E20.1.1 | `TestPillarStoreWebhook_ValidCreate_ZFSZvol` | `backend.type="zfs-zvol"` + ZFS 설정으로 ValidateCreate 통과 | envtest; PillarStore CRD 설치; `PillarStoreCustomValidator` 인스턴스 생성 | 1) `spec.agentRef="target-a"`, `spec.backend.type="zfs-zvol"`, `spec.backend.zfs.pool="hot-data"`로 `validator.ValidateCreate(ctx, obj)` 호출 | `err=nil`; 허용 | `PoolWH` |
-| E20.1.2 | `TestPillarStoreWebhook_ValidCreate_Dir` | `backend.type="dir"`로 ValidateCreate 통과 (ZFS 설정 불필요) | envtest; PillarStore CRD 설치; `PillarStoreCustomValidator` 인스턴스 생성 | 1) `spec.agentRef="target-a"`, `spec.backend.type="dir"`로 `validator.ValidateCreate(ctx, obj)` 호출 | `err=nil`; 허용 | `PoolWH` |
+| E20.1.1 | `TestPillarStoreWebhook_ValidCreate_ZFSZvol` | `backend.zfs` 멤버(zvol)로 ValidateCreate 통과 | envtest; PillarStore CRD 설치; `PillarStoreCustomValidator` 인스턴스 생성 | 1) `spec.agentRef="target-a"`, `spec.backend.zfs={volumeType: zvol, pool: "hot-data"}`로 `validator.ValidateCreate(ctx, obj)` 호출 | `err=nil`; 허용 | `PoolWH` |
+| E20.1.2 | `TestPillarStoreWebhook_ValidCreate_LVM` | `backend.lvm` 멤버로 ValidateCreate 통과 (ZFS 설정 불필요) | envtest; PillarStore CRD 설치; `PillarStoreCustomValidator` 인스턴스 생성 | 1) `spec.agentRef="target-a"`, `spec.backend.lvm={volumeGroup: "data-vg"}`로 `validator.ValidateCreate(ctx, obj)` 호출 | `err=nil`; 허용 | `PoolWH` |
 | E20.1.3 | `TestPillarStoreController_FinalizerAddedOnFirstReconcile` | PillarStore 생성 후 첫 번째 `Reconcile` 호출에서 `pool-protection` 파이널라이저 자동 추가 | envtest; `PillarStoreReconciler` 초기화; zfs-zvol 스펙으로 PillarStore 생성 | 1) `k8sClient.Create(ctx, pool)` 실행; 2) `reconciler.Reconcile(ctx, req)` 1회 호출 | PillarStore에 `pillar-csi.bhyoo.com/store-protection` 파이널라이저 존재; `result.RequeueAfter==0` | `PoolCRD`, `PoolCtrl` |
 | E20.1.4 | `TestPillarStoreController_FinalizerNotDuplicated` | 동일 PillarStore을 두 번 조정해도 파이널라이저 중복 없음 | envtest; PillarStore 생성; 첫 조정으로 파이널라이저 추가 완료 | 1) 두 번째 `reconciler.Reconcile(ctx, req)` 호출 | 파이널라이저 개수 정확히 1개; 중복 없음 | `PoolCRD`, `PoolCtrl` |
 
@@ -3103,23 +3092,23 @@ PillarStore CRD의 전체 라이프사이클을 검증한다. 이 CRD는 특정 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
 | E20.2.1 | `TestPillarStoreCRD_InvalidCreate_EmptyAgentRef` | `spec.agentRef`가 빈 문자열인 경우 API 서버가 거부 | envtest; PillarStore CRD 설치 (`MinLength=1` 마커 포함) | 1) `spec.agentRef=""`로 `k8sClient.Create(ctx, pool)` 호출 | 오류 반환; HTTP 422; `spec.agentRef` 필드 검증 실패 | `PoolCRD` |
-| E20.2.2 | `TestPillarStoreCRD_InvalidCreate_InvalidBackendType` | `spec.backend.type`에 열거형 외 값 설정 시 거부 | envtest; PillarStore CRD 설치 (`Enum=zfs-zvol;zfs-dataset;lvm-lv;dir` 마커 포함) | 1) `spec.backend.type="unknown-backend"`로 Create 호출 | 오류 반환; HTTP 422; `spec.backend.type` 열거형 검증 실패 | `PoolCRD` |
-| E20.2.3 | `TestPillarStoreCRD_InvalidCreate_EmptyBackendType` | `spec.backend.type`이 빈 문자열인 경우 거부 | envtest; PillarStore CRD 설치 | 1) `spec.backend.type=""`로 Create 호출 | 오류 반환; `spec.backend.type` 필수 필드 오류 | `PoolCRD` |
+| E20.2.2 | `TestPillarStoreCRD_InvalidCreate_RemovedBackendMember` | 제거된 백엔드 변형(`dir`, `zfs-dataset`)만 가진 `spec.backend`는 거부 | envtest; PillarStore CRD 설치 (`spec.backend`는 `zfs`/`lvm` 멤버만 정의) | 1) `spec.backend={dir: {}}`로 Create 호출 | 오류 반환; HTTP 422; 알 수 없는 필드는 제거되고 exactly-one 규칙 위반("exactly one of zfs or lvm must be set") | `PoolCRD` |
+| E20.2.3 | `TestPillarStoreCRD_InvalidCreate_EmptyBackend` | `spec.backend`에 멤버가 없는 경우 거부 | envtest; PillarStore CRD 설치 | 1) `spec.backend={}`로 Create 호출 | 오류 반환; HTTP 422; "exactly one of zfs or lvm must be set" | `PoolCRD` |
 
 ---
 
 ### E20.3 불변 필드 업데이트 거부 — 웹훅 검증
 
-**목적:** `spec.agentRef`와 `spec.backend.type`은 생성 후 변경할 수 없음을 확인한다.
+**목적:** `spec.agentRef`와 `spec.backend`의 멤버와 풀 식별자(`zfs.pool`/`lvm.volumeGroup`)는 생성 후 변경할 수 없음을 확인한다.
 기존 볼륨이 원래 backend 드라이버와 target에 묶여 있기 때문이다.
 이 검증은 `internal/webhook/v1alpha1.PillarStoreCustomValidator.ValidateUpdate`에서 수행된다.
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
 | E20.3.1 | `TestPillarStoreWebhook_ImmutableUpdate_AgentRefChange` | `spec.agentRef` 변경 시 거부 — 풀이 묶인 스토리지 노드 변경 방지 | `oldObj.spec.agentRef="target-a"`; `newObj.spec.agentRef="target-b"` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | `err != nil`; `field.Forbidden`; `spec.agentRef` 경로; 오류 메시지에 이전값 `"target-a"`과 신규값 `"target-b"` 모두 포함 | `PoolWH` |
-| E20.3.2 | `TestPillarStoreWebhook_ImmutableUpdate_BackendTypeChange` | `spec.backend.type` 변경 시 거부 — 기존 볼륨의 드라이버 변경 방지 | `oldObj.spec.backend.type="zfs-zvol"`; `newObj.spec.backend.type="lvm-lv"` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | `err != nil`; `field.Forbidden`; `spec.backend.type` 경로 | `PoolWH` |
-| E20.3.3 | `TestPillarStoreWebhook_ImmutableUpdate_BothFieldsChange` | `spec.agentRef`와 `spec.backend.type` 동시 변경 시 두 오류 모두 반환 | `oldObj.spec.agentRef="target-a"`, `backend.type="zfs-zvol"`; `newObj.spec.agentRef="target-b"`, `backend.type="lvm-lv"` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | `err != nil`; 오류 집계(Aggregate)에 2개 오류; `spec.agentRef`와 `spec.backend.type` 모두 Forbidden | `PoolWH` |
-| E20.3.4 | `TestPillarStoreWebhook_MutableUpdate_ZFSPropertiesChange` | `spec.backend.zfs.properties` 변경은 허용 (불변 필드 아님) | `oldObj.spec.backend.type="zfs-zvol"`, `zfs.pool="hot-data"`, `properties={"compression":"off"}`; `newObj.properties={"compression":"lz4"}` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | `err=nil`; 허용; `backend.type`과 `agentRef`는 동일 | `PoolWH` |
+| E20.3.2 | `TestPillarStoreWebhook_ImmutableUpdate_BackendMemberChange` | `spec.backend` 멤버 변경 시 거부 — 기존 볼륨의 드라이버 변경 방지 | `oldObj.spec.backend={zfs:{pool:"hot-data"}}`; `newObj.spec.backend={lvm:{volumeGroup:"data-vg"}}` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | `err != nil`; `field.Forbidden`; `spec.backend` 경로; 메시지에 이전 멤버 "zfs"와 신 멤버 "lvm" | `PoolWH` |
+| E20.3.3 | `TestPillarStoreWebhook_ImmutableUpdate_BothFieldsChange` | `spec.agentRef`와 `spec.backend` 멤버 동시 변경 시 두 오류 모두 반환 | `oldObj.spec.agentRef="target-a"`, `backend={zfs:{pool:"hot-data"}}`; `newObj.spec.agentRef="target-b"`, `backend={lvm:{volumeGroup:"data-vg"}}` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | `err != nil`; 오류 집계(Aggregate)에 2개 오류; `spec.agentRef`와 `spec.backend` 모두 Forbidden | `PoolWH` |
+| E20.3.4 | `TestPillarStoreWebhook_MutableUpdate_ZFSPropertiesChange` | `spec.backend.zfs.properties` 변경은 허용 (불변 필드 아님) | `oldObj.spec.backend.zfs.pool="hot-data"`, `properties={"compression":"off"}`; `newObj.properties={"compression":"lz4"}` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | `err=nil`; 허용; 백엔드 멤버·풀과 `agentRef`는 동일 | `PoolWH` |
 
 ---
 
@@ -3146,7 +3135,7 @@ PillarAgent이 없거나 Not-Ready이면 하위 조건(`PoolDiscovered`, `Backen
 | E20.5.1 | `TestPillarStoreController_PoolDiscovered_Unknown_EmptyDiscoveredPools` | PillarAgent `Ready=True`이지만 `discoveredPools=[]`이면 `PoolDiscovered=Unknown/WaitingForAgentData` | envtest; PillarStore(zfs-zvol, `zfs.pool="hot-data"`); PillarAgent Ready=True이나 `discoveredPools=[]` | 1) 일반 조정 실행 | `PoolDiscovered.Status=Unknown`; `Reason="WaitingForAgentData"` | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
 | E20.5.2 | `TestPillarStoreController_PoolDiscovered_True_ZFSPoolNameMatch` | `discoveredPools`에 ZFS 풀 이름이 일치하는 항목이 있으면 `PoolDiscovered=True` | envtest; PillarStore(zfs-zvol, `zfs.pool="hot-data"`); PillarAgent `discoveredPools=[{name:"hot-data", type:"zfs"}]` | 1) 일반 조정 실행 | `PoolDiscovered.Status=True`; `Reason="PoolDiscovered"`; `Message`에 `"hot-data"` 포함 | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
 | E20.5.3 | `TestPillarStoreController_PoolDiscovered_False_ZFSPoolNameMismatch` | `discoveredPools`에 ZFS 풀 이름이 없으면 `PoolDiscovered=False/PoolNotFound` | envtest; PillarStore(zfs-zvol, `zfs.pool="hot-data"`); PillarAgent `discoveredPools=[{name:"cold-data", type:"zfs"}]` | 1) 일반 조정 실행 | `PoolDiscovered.Status=False`; `Reason="PoolNotFound"`; `Message`에 `"hot-data"`와 발견된 풀 이름 목록(`["cold-data"]`) 포함 | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
-| E20.5.4 | `TestPillarStoreController_PoolDiscovered_True_DirBackend_NoNameRequired` | `backend.type="dir"` 백엔드는 명시적 풀 이름 없이 `discoveredPools`에 항목만 있으면 `PoolDiscovered=True` | envtest; PillarStore(dir); PillarAgent `discoveredPools=[{name:"any-entry", type:"dir"}]` | 1) 일반 조정 실행 | `PoolDiscovered.Status=True`; `Reason="PoolDiscovered"` | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
+| E20.5.4 | `TestPillarStoreController_PoolDiscovered_True_LVMVolumeGroupMatch` | `lvm` 멤버 PillarStore의 `lvm.volumeGroup`이 `discoveredPools`에 있으면 `PoolDiscovered=True` | envtest; PillarStore(`backend.lvm.volumeGroup="data-vg"`); PillarAgent `discoveredPools=[{name:"data-vg", type:"lvm"}]` | 1) 일반 조정 실행 | `PoolDiscovered.Status=True`; `Reason="PoolDiscovered"` | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
 
 ---
 
@@ -3158,8 +3147,8 @@ PillarAgent이 없거나 Not-Ready이면 하위 조건(`PoolDiscovered`, `Backen
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
 | E20.6.1 | `TestPillarStoreController_BackendSupported_Unknown_NoCapabilities` | PillarAgent `Ready=True`이지만 `capabilities=nil`이면 `BackendSupported=Unknown/WaitingForAgentData` | envtest; PillarStore(zfs-zvol); PillarAgent Ready=True이나 `capabilities=nil` | 1) 일반 조정 실행 | `BackendSupported.Status=Unknown`; `Reason="WaitingForAgentData"` | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
-| E20.6.2 | `TestPillarStoreController_BackendSupported_True_BackendInCapabilities` | `capabilities.backends`에 해당 `backend.type`이 있으면 `BackendSupported=True` | envtest; PillarStore(zfs-zvol); PillarAgent `capabilities.backends=["zfs-zvol","zfs-dataset"]` | 1) 일반 조정 실행 | `BackendSupported.Status=True`; `Reason="BackendSupported"` | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
-| E20.6.3 | `TestPillarStoreController_BackendSupported_False_BackendNotInCapabilities` | `capabilities.backends`에 해당 `backend.type`이 없으면 `BackendSupported=False/BackendNotSupported` | envtest; PillarStore(lvm-lv); PillarAgent `capabilities.backends=["zfs-zvol","zfs-dataset"]` | 1) 일반 조정 실행 | `BackendSupported.Status=False`; `Reason="BackendNotSupported"`; `Message`에 `"lvm-lv"`와 지원 목록(`["zfs-zvol","zfs-dataset"]`) 포함 | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
+| E20.6.2 | `TestPillarStoreController_BackendSupported_True_BackendInCapabilities` | `capabilities.backends`에 스토어 백엔드(`spec.backend.Kind()`)가 있으면 `BackendSupported=True` | envtest; PillarStore(`backend.zfs`); PillarAgent `capabilities.backends=["zfs-zvol","lvm-lv"]` | 1) 일반 조정 실행 | `BackendSupported.Status=True`; `Reason="BackendSupported"` | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
+| E20.6.3 | `TestPillarStoreController_BackendSupported_False_BackendNotInCapabilities` | `capabilities.backends`에 스토어 백엔드가 없으면 `BackendSupported=False/BackendNotSupported` | envtest; PillarStore(`backend.lvm`); PillarAgent `capabilities.backends=["zfs-zvol"]` | 1) 일반 조정 실행 | `BackendSupported.Status=False`; `Reason="BackendNotSupported"`; `Message`에 `"lvm-lv"`와 지원 목록(`["zfs-zvol"]`) 포함 | `PoolCRD`, `PoolCtrl`, `TgtCRD` |
 
 ---
 
@@ -3232,19 +3221,19 @@ go test -tags=integration ./internal/webhook/... -v -run 'TestWebhooks/PillarPro
 
 **목적:**
 PillarProtocol CRD의 전체 라이프사이클을 검증한다. 이 CRD는 스토리지 볼륨을 노출할 때
-사용할 네트워크 프로토콜 구성(NVMe-oF/TCP, iSCSI, NFS)을 정의하는 클러스터-스코프 리소스이다.
+사용할 네트워크 프로토콜 구성(`spec.protocol` exactly-one 유니온; 현재 구현된 멤버는 `nvmeofTcp`뿐이며 iSCSI·NFS·SMB는 미구현으로 스키마에 없음)을 정의하는 클러스터-스코프 리소스이다.
 동일한 PillarProtocol을 여러 PillarStorageClass이 참조할 수 있으며, 다음 동작을 검증한다:
 
-1. **유효/무효 스펙 생성** — `spec.type` 열거형 검증 및 프로토콜별 포트 범위 검증
-2. **불변 필드 업데이트 거부** — `spec.type`은 생성 후 변경 불가 (웹훅 검증)
+1. **유효/무효 스펙 생성** — `spec.protocol` 유니온(정확히 한 멤버) 검증 및 `nvmeofTcp` 필드 범위 검증
+2. **불변 필드 업데이트 거부** — `spec.protocol` 멤버 추가·제거는 생성 후 불가 (웹훅 검증)
 3. **상태 조건 전이** — `Ready` 조건, `StorageClassCount`, `ActiveAgents` 상태 필드의 정확한 전이
 4. **삭제 보호 동작** — PillarStorageClass이 참조하는 동안 파이널라이저가 삭제를 차단
 
 > **CI 실행 가능 여부:** ✅ CI에서 실행 가능 — envtest는 실제 K8s 클러스터 없이
 > 인메모리 API 서버만 구동하므로 도커/Kind 불필요.
 >
-> **단, PillarProtocol 웹훅(ValidateCreate, ValidateDelete) 구현은 현재 스캐폴딩 수준으로 TODO 상태다.**
-> `ValidateUpdate`만 `spec.type` 불변 검증이 구현되어 있다.
+> **PillarProtocol 웹훅:** `ValidateCreate`는 빈 유니온과 `nvmeofTcp` 필드 범위 위반을 거부하고,
+> `ValidateUpdate`는 멤버 추가·제거를 `spec.protocol` 경로의 Forbidden으로 거부하며 같은 범위 검사를 수행한다.
 
 **컴포넌트 약어 참조:**
 
@@ -3264,40 +3253,40 @@ PillarProtocol CRD의 전체 라이프사이클을 검증한다. 이 CRD는 스�
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| E23.1.1 | `TestPillarProtocolWebhook_ValidCreate_NVMeOFTCP` | `spec.type="nvmeof-tcp"` 스펙으로 ValidateCreate 통과 (현재 구현은 항상 허용) | envtest API 서버; PillarProtocol CRD 설치; `PillarProtocolCustomValidator` 인스턴스 생성 | 1) `spec.type="nvmeof-tcp"`, `spec.nvmeofTcp.port=4420`으로 `validator.ValidateCreate(ctx, obj)` 호출 | `warnings=nil`; `err=nil`; 허용 | `PProtWH` |
-| E23.1.2 | `TestPillarProtocolWebhook_ValidCreate_ISCSI` | `spec.type="iscsi"` 스펙으로 ValidateCreate 통과 | envtest API 서버; PillarProtocol CRD 설치; `PillarProtocolCustomValidator` 인스턴스 생성 | 1) `spec.type="iscsi"`, `spec.iscsi.port=3260`으로 `validator.ValidateCreate(ctx, obj)` 호출 | `warnings=nil`; `err=nil`; 허용 | `PProtWH` |
-| E23.1.3 | `TestPillarProtocolWebhook_ValidCreate_NFS` | `spec.type="nfs"` 스펙으로 ValidateCreate 통과 | envtest API 서버; PillarProtocol CRD 설치; `PillarProtocolCustomValidator` 인스턴스 생성 | 1) `spec.type="nfs"`, `spec.nfs.version="4.2"`으로 `validator.ValidateCreate(ctx, obj)` 호출 | `warnings=nil`; `err=nil`; 허용 | `PProtWH` |
-| E23.1.4 | `TestPillarProtocolController_FinalizerAddedOnFirstReconcile` | PillarProtocol 생성 후 첫 번째 `Reconcile` 호출에서 `protocol-protection` 파이널라이저 자동 추가 | envtest; `PillarProtocolReconciler` 초기화; `spec.type="nvmeof-tcp"` PillarProtocol 생성 | 1) `k8sClient.Create(ctx, protocol)` 실행; 2) `reconciler.Reconcile(ctx, req)` 1회 호출 | PillarProtocol에 `pillar-csi.bhyoo.com/protocol-protection` 파이널라이저 존재; `result.RequeueAfter==0` | `PProtCRD`, `PProtCtrl` |
+| E23.1.1 | `TestPillarProtocolWebhook_ValidCreate_NVMeOFTCP` | `spec.protocol.nvmeofTcp` 스펙으로 ValidateCreate 통과 | envtest API 서버; PillarProtocol CRD 설치; `PillarProtocolCustomValidator` 인스턴스 생성 | 1) `spec.protocol.nvmeofTcp={port: 4420}`으로 `validator.ValidateCreate(ctx, obj)` 호출 | `warnings=nil`; `err=nil`; 허용 | `PProtWH` |
+| E23.1.2 | `TestPillarProtocolWebhook_InvalidCreate_EmptyProtocol` | 멤버가 없는 `spec.protocol`은 ValidateCreate가 거부 | envtest API 서버; PillarProtocol CRD 설치; `PillarProtocolCustomValidator` 인스턴스 생성 | 1) `spec.protocol={}`으로 `validator.ValidateCreate(ctx, obj)` 호출 | `err != nil`; `spec.protocol` 경로의 Required; "exactly one protocol member must be set (supported: nvmeofTcp)" | `PProtWH` |
+| E23.1.3 | `TestPillarProtocolCRD_InvalidCreate_RemovedProtocolMember` | 제거된 프로토콜 변형(`iscsi`, `nfs`)만 가진 PillarProtocol은 API 서버가 거부 | envtest API 서버; PillarProtocol CRD 설치 (`spec.protocol`은 `nvmeofTcp` 멤버만 정의) | 1) `spec.protocol={iscsi: {port: 3260}}`, `spec.protocol={nfs: {version: "4.2"}}`로 각각 `k8sClient.Create(ctx, protocol)` 호출 | 각각 오류 반환; HTTP 422; 알 수 없는 필드는 제거되고 "exactly one protocol member must be set (supported: nvmeofTcp)" | `PProtCRD` |
+| E23.1.4 | `TestPillarProtocolController_FinalizerAddedOnFirstReconcile` | PillarProtocol 생성 후 첫 번째 `Reconcile` 호출에서 `protocol-protection` 파이널라이저 자동 추가 | envtest; `PillarProtocolReconciler` 초기화; `spec.protocol.nvmeofTcp` PillarProtocol 생성 | 1) `k8sClient.Create(ctx, protocol)` 실행; 2) `reconciler.Reconcile(ctx, req)` 1회 호출 | PillarProtocol에 `pillar-csi.bhyoo.com/protocol-protection` 파이널라이저 존재; `result.RequeueAfter==0` | `PProtCRD`, `PProtCtrl` |
 | E23.1.5 | `TestPillarProtocolController_FinalizerNotDuplicated` | 동일 PillarProtocol을 두 번 조정해도 파이널라이저 중복 없음 | envtest; PillarProtocol 생성; 첫 조정으로 파이널라이저 추가 완료 | 1) 두 번째 `reconciler.Reconcile(ctx, req)` 호출 | 파이널라이저 개수 정확히 1개; 중복 없음 | `PProtCRD`, `PProtCtrl` |
 
 ---
 
 ### E23.2 잘못된 스펙으로 생성 거부 — CRD 스키마 검증
 
-**목적:** kubebuilder 마커(`+kubebuilder:validation:Enum=nvmeof-tcp;iscsi;nfs` 등)에 의해
+**목적:** CRD 스키마(`x-kubernetes-validations` exactly-one 규칙과 `nvmeofTcp` 필드의 Minimum/Maximum 마커)에 의해
 잘못된 필드 값이 Kubernetes API 서버 수준에서 거부됨을 확인한다.
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| E23.2.1 | `TestPillarProtocolCRD_InvalidCreate_UnknownType` | `spec.type`에 열거형 외 값 설정 시 API 서버가 HTTP 422로 거부 | envtest; PillarProtocol CRD 설치 (`Enum=nvmeof-tcp;iscsi;nfs` 마커 포함) | 1) `spec.type="unknown-protocol"`으로 `k8sClient.Create(ctx, protocol)` 호출 | 오류 반환; HTTP 422 UnprocessableEntity; `spec.type` 열거형 검증 실패 메시지 포함 | `PProtCRD` |
-| E23.2.2 | `TestPillarProtocolCRD_InvalidCreate_NVMeOFTCPPortTooLow` | `spec.nvmeofTcp.port=0` (최솟값 미달) 시 API 서버가 거부 | envtest; PillarProtocol CRD 설치 (`Minimum=1` 마커 포함) | 1) `spec.type="nvmeof-tcp"`, `spec.nvmeofTcp.port=0`으로 Create 호출 | 오류 반환; `spec.nvmeofTcp.port` 값 범위 검증 실패 | `PProtCRD` |
-| E23.2.3 | `TestPillarProtocolCRD_InvalidCreate_NVMeOFTCPPortTooHigh` | `spec.nvmeofTcp.port=65536` (최댓값 초과) 시 API 서버가 거부 | envtest; PillarProtocol CRD 설치 (`Maximum=65535` 마커 포함) | 1) `spec.type="nvmeof-tcp"`, `spec.nvmeofTcp.port=65536`으로 Create 호출 | 오류 반환; `spec.nvmeofTcp.port` 값 범위 검증 실패 | `PProtCRD` |
-| E23.2.4 | `TestPillarProtocolCRD_InvalidCreate_InvalidFSType` | `spec.fsType`에 허용 외 값(`ext4`, `xfs` 외) 설정 시 거부 | envtest; PillarProtocol CRD 설치 (`Enum=ext4;xfs` 마커 포함) | 1) `spec.type="nvmeof-tcp"`, `spec.fsType="btrfs"`으로 Create 호출 | 오류 반환; HTTP 422; `spec.fsType` 열거형 검증 실패 | `PProtCRD` |
+| E23.2.1 | `TestPillarProtocolCRD_InvalidCreate_EmptyProtocol` | `spec.protocol`에 멤버가 없으면 API 서버가 HTTP 422로 거부 | envtest; PillarProtocol CRD 설치 (`has(self.nvmeofTcp)` CEL 규칙 포함) | 1) `spec.protocol={}`으로 `k8sClient.Create(ctx, protocol)` 호출 | 오류 반환; HTTP 422 UnprocessableEntity; "exactly one protocol member must be set (supported: nvmeofTcp)" | `PProtCRD` |
+| E23.2.2 | `TestPillarProtocolCRD_InvalidCreate_NVMeOFTCPPortTooLow` | `spec.protocol.nvmeofTcp.port=0` (최솟값 미달) 시 API 서버가 거부 | envtest; PillarProtocol CRD 설치 (`Minimum=1` 마커 포함) | 1) `spec.protocol.nvmeofTcp.port=0`으로 Create 호출 | 오류 반환; `spec.protocol.nvmeofTcp.port` 값 범위 검증 실패 | `PProtCRD` |
+| E23.2.3 | `TestPillarProtocolCRD_InvalidCreate_NVMeOFTCPPortTooHigh` | `spec.protocol.nvmeofTcp.port=65536` (최댓값 초과) 시 API 서버가 거부 | envtest; PillarProtocol CRD 설치 (`Maximum=65535` 마커 포함) | 1) `spec.protocol.nvmeofTcp.port=65536`으로 Create 호출 | 오류 반환; `spec.protocol.nvmeofTcp.port` 값 범위 검증 실패 | `PProtCRD` |
+| E23.2.4 | `TestPillarProtocolCRD_InvalidCreate_MaxQueueSizeOutOfRange` | `spec.protocol.nvmeofTcp.maxQueueSize`가 커널 허용 범위(16-1024) 밖이면 거부 | envtest; PillarProtocol CRD 설치 (`Minimum=16`, `Maximum=1024` 마커 포함) | 1) `spec.protocol.nvmeofTcp.maxQueueSize=8`로 Create 호출 | 오류 반환; HTTP 422; `spec.protocol.nvmeofTcp.maxQueueSize` 범위 검증 실패 | `PProtCRD` |
 
 ---
 
 ### E23.3 불변 필드 업데이트 거부 — 웹훅 검증
 
-**목적:** `spec.type`은 생성 후 변경할 수 없음을 확인한다. 각 프로토콜 타입은 서로 다른
-커널 서브시스템(NVMe-oF vs iSCSI vs NFS)을 사용하므로, 타입 변경은 모든 기존 볼륨을
+**목적:** `spec.protocol`의 멤버는 생성 후 추가·제거할 수 없음을 확인한다. 프로토콜 멤버는 볼륨이 노출되는
+커널 서브시스템을 결정하므로, 멤버 변경은 모든 기존 볼륨을
 orphan 상태로 만드는 치명적 변경이다.
 이 검증은 `internal/webhook/v1alpha1.PillarProtocolCustomValidator.ValidateUpdate`에서 수행된다.
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| E23.3.1 | `TestPillarProtocolWebhook_ImmutableUpdate_TypeChange_NVMeToISCSI` | `spec.type="nvmeof-tcp"` → `"iscsi"` 변경 시 `field.Forbidden` 오류 반환 | `oldObj.spec.type="nvmeof-tcp"`; `newObj.spec.type="iscsi"` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | `err != nil`; 오류 메시지에 `"immutable"` 포함; `spec.type` 경로의 `field.Forbidden`; 이전값 `"nvmeof-tcp"`, 신규값 `"iscsi"` 모두 언급 | `PProtWH` |
-| E23.3.2 | `TestPillarProtocolWebhook_ImmutableUpdate_TypeChange_ISCSIToNFS` | `spec.type="iscsi"` → `"nfs"` 변경 시 거부 | `oldObj.spec.type="iscsi"`; `newObj.spec.type="nfs"` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | `err != nil`; `field.Forbidden`; `spec.type` 경로 | `PProtWH` |
-| E23.3.3 | `TestPillarProtocolWebhook_MutableUpdate_PortChange` | `spec.nvmeofTcp.port` 변경은 허용 (식별 필드 아님) | `oldObj.spec.type="nvmeof-tcp"`, `port=4420`; `newObj.spec.type="nvmeof-tcp"`, `port=4421` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | `err=nil`; `warnings=nil`; 허용 | `PProtWH` |
+| E23.3.1 | `TestPillarProtocolWebhook_ImmutableUpdate_MemberRemoved` | `spec.protocol.nvmeofTcp` 멤버를 제거하는 업데이트는 `field.Forbidden` 오류 반환 | `oldObj.spec.protocol={nvmeofTcp:{port:4420}}`; `newObj.spec.protocol={}` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | `err != nil`; `spec.protocol` 경로의 `field.Forbidden` | `PProtWH` |
+| E23.3.2 | `TestPillarProtocolWebhook_Update_MaxQueueSizeOutOfRange` | 업데이트에서도 `nvmeofTcp` 범위 검사 수행 — `maxQueueSize=2048` 거부 | `oldObj.spec.protocol={nvmeofTcp:{port:4420}}`; `newObj.spec.protocol={nvmeofTcp:{port:4420, maxQueueSize:2048}}` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | `err != nil`; `spec.protocol.nvmeofTcp.maxQueueSize` 경로 | `PProtWH` |
+| E23.3.3 | `TestPillarProtocolWebhook_MutableUpdate_PortChange` | `spec.protocol.nvmeofTcp.port` 변경은 허용 (멤버 변경 아님) | `oldObj.spec.protocol={nvmeofTcp:{port:4420}}`; `newObj.spec.protocol={nvmeofTcp:{port:4421}}` | 1) `validator.ValidateUpdate(ctx, oldObj, newObj)` 호출 | `err=nil`; `warnings=nil`; 허용 | `PProtWH` |
 
 ---
 
@@ -3309,7 +3298,7 @@ orphan 상태로 만드는 치명적 변경이다.
 |----|------------|------|----------|------|----------|---------|
 | E23.4.1 | `TestPillarProtocolController_Ready_True_NoBindings` | 참조 PillarStorageClass 없는 정상 조정에서 `Ready=True/ProtocolConfigured` | envtest; PillarProtocol 생성; 파이널라이저 추가 조정 완료 | 1) 두 번째 `reconciler.Reconcile(ctx, req)` 호출 | `Ready.Status=True`; `Ready.Reason="ProtocolConfigured"` | `PProtCRD`, `PProtCtrl` |
 | E23.4.2 | `TestPillarProtocolController_Ready_True_WithBindings` | 참조 PillarStorageClass이 존재하는 정상 조정에서도 `Ready=True` | envtest; PillarProtocol + PillarStorageClass(참조) 생성; 파이널라이저 추가 완료 | 1) `reconciler.Reconcile(ctx, req)` 호출 | `Ready.Status=True`; `Ready.Reason="ProtocolConfigured"` | `PProtCRD`, `PProtCtrl`, `BindCRD` |
-| E23.4.3 | `TestPillarProtocolController_Ready_Message_ContainsType` | `Ready` 조건 메시지에 `spec.type` 값이 포함됨 | envtest; `spec.type="nvmeof-tcp"` PillarProtocol; 파이널라이저 추가 완료 | 1) `reconciler.Reconcile(ctx, req)` 호출 | `Ready.Message`에 `"nvmeof-tcp"` 포함 | `PProtCRD`, `PProtCtrl` |
+| E23.4.3 | `TestPillarProtocolController_Ready_Message_ContainsType` | `Ready` 조건 메시지에 프로토콜 멤버(`spec.protocol.Kind()`) 값이 포함됨 | envtest; `spec.protocol.nvmeofTcp` PillarProtocol; 파이널라이저 추가 완료 | 1) `reconciler.Reconcile(ctx, req)` 호출 | `Ready.Message`에 `"nvmeof-tcp"` 포함 | `PProtCRD`, `PProtCtrl` |
 | E23.4.4 | `TestPillarProtocolController_Ready_False_DeletionBlocked` | 삭제 요청 중 참조 PillarStorageClass 존재 시 `Ready=False/DeletionBlocked` | envtest; PillarProtocol + 파이널라이저; 참조 PillarStorageClass 존재; 삭제 요청 | 1) `k8sClient.Delete(ctx, protocol)` 호출; 2) `reconciler.Reconcile(ctx, req)` 호출 | `Ready.Status=False`; `Ready.Reason="DeletionBlocked"`; `Ready.Message`에 참조 PillarStorageClass 이름 포함 | `PProtCRD`, `PProtCtrl`, `BindCRD` |
 | E23.4.5 | `TestPillarProtocolController_NoRequeue_WhenReady` | 정상 상태에서 `result.RequeueAfter==0` — 불필요한 재조정 없음 | envtest; PillarProtocol; 파이널라이저 추가 완료 | 1) `reconciler.Reconcile(ctx, req)` 호출 | `result.RequeueAfter==0` | `PProtCRD`, `PProtCtrl` |
 
@@ -3441,46 +3430,46 @@ StorageClass는 특정 풀과 프로토콜에 묶여 있어, 변경 시 기존 P
 ### E25.4 Defaulting 웹훅 — allowVolumeExpansion 자동 설정
 
 **목적:** PillarStorageClass 생성 시 `spec.storageClass.allowVolumeExpansion`이 명시적으로
-설정되지 않은 경우, Defaulting 웹훅이 참조된 PillarStore의 백엔드 타입을 조회하여
+설정되지 않은 경우, Defaulting 웹훅이 참조된 PillarStore의 백엔드 멤버(`zfs`/`lvm`)를 조회하여
 자동으로 적절한 값을 설정함을 확인한다.
 이 로직은 `internal/webhook/v1alpha1.PillarStorageClassCustomDefaulter.Default`에서 수행된다.
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| E25.4.1 | `TestPillarStorageClassDefaulter_AllowVolumeExpansion_True_ZFSZvol` | `backend.type="zfs-zvol"` 풀 참조 시 `allowVolumeExpansion=true` 자동 설정 | envtest; `backend.type="zfs-zvol"` PillarStore 생성; PillarStorageClass에 `allowVolumeExpansion` 미설정 | 1) `defaulter.Default(ctx, obj)` 호출 | `spec.storageClass.allowVolumeExpansion=true` | `BindDef`, `PoolCRD` |
-| E25.4.2 | `TestPillarStorageClassDefaulter_AllowVolumeExpansion_True_LVMLV` | `backend.type="lvm-lv"` 풀 참조 시 `allowVolumeExpansion=true` 자동 설정 | envtest; `backend.type="lvm-lv"` PillarStore 생성; PillarStorageClass에 `allowVolumeExpansion` 미설정 | 1) `defaulter.Default(ctx, obj)` 호출 | `spec.storageClass.allowVolumeExpansion=true` | `BindDef`, `PoolCRD` |
-| E25.4.3 | `TestPillarStorageClassDefaulter_AllowVolumeExpansion_False_ZFSDataset` | `backend.type="zfs-dataset"` 풀 참조 시 `allowVolumeExpansion=false` 자동 설정 | envtest; `backend.type="zfs-dataset"` PillarStore 생성; PillarStorageClass에 `allowVolumeExpansion` 미설정 | 1) `defaulter.Default(ctx, obj)` 호출 | `spec.storageClass.allowVolumeExpansion=false` | `BindDef`, `PoolCRD` |
-| E25.4.4 | `TestPillarStorageClassDefaulter_AllowVolumeExpansion_False_Dir` | `backend.type="dir"` 풀 참조 시 `allowVolumeExpansion=false` 자동 설정 | envtest; `backend.type="dir"` PillarStore 생성; PillarStorageClass에 `allowVolumeExpansion` 미설정 | 1) `defaulter.Default(ctx, obj)` 호출 | `spec.storageClass.allowVolumeExpansion=false` | `BindDef`, `PoolCRD` |
-| E25.4.5 | `TestPillarStorageClassDefaulter_AllowVolumeExpansion_NotOverridden_Explicit` | `allowVolumeExpansion`이 명시적으로 설정된 경우 Defaulter가 덮어쓰지 않음 | envtest; `backend.type="zfs-zvol"` PillarStore(기본값은 true); PillarStorageClass에 `allowVolumeExpansion=false` 명시 | 1) `defaulter.Default(ctx, obj)` 호출 | `spec.storageClass.allowVolumeExpansion=false` (명시값 유지) | `BindDef`, `PoolCRD` |
+| E25.4.1 | `TestPillarStorageClassDefaulter_AllowVolumeExpansion_True_ZFSZvol` | `backend.zfs` 스토어 참조 시 `allowVolumeExpansion=true` 자동 설정 | envtest; `backend.zfs` PillarStore 생성; PillarStorageClass에 `allowVolumeExpansion` 미설정 | 1) `defaulter.Default(ctx, obj)` 호출 | `spec.storageClass.allowVolumeExpansion=true` | `BindDef`, `PoolCRD` |
+| E25.4.2 | `TestPillarStorageClassDefaulter_AllowVolumeExpansion_True_LVMLV` | `backend.lvm` 스토어 참조 시 `allowVolumeExpansion=true` 자동 설정 | envtest; `backend.lvm` PillarStore 생성; PillarStorageClass에 `allowVolumeExpansion` 미설정 | 1) `defaulter.Default(ctx, obj)` 호출 | `spec.storageClass.allowVolumeExpansion=true` | `BindDef`, `PoolCRD` |
+| E25.4.3 | `TestPillarStorageClassDefaulter_AllowVolumeExpansion_True_LVMThinPool` | thin pool을 선언한 `backend.lvm` 스토어(thin 모드) 참조 시에도 `allowVolumeExpansion=true` 자동 설정 | envtest; `backend.lvm={volumeGroup: "data-vg", thinPool: "thin0", provisioningMode: thin}` PillarStore 생성; PillarStorageClass에 `allowVolumeExpansion` 미설정 | 1) `defaulter.Default(ctx, obj)` 호출 | `spec.storageClass.allowVolumeExpansion=true` | `BindDef`, `PoolCRD` |
+| E25.4.4 | `TestPillarStorageClassDefaulter_AllowVolumeExpansion_NotOverridden_ExplicitTrue` | `allowVolumeExpansion=true`가 명시된 경우 Defaulter가 값을 유지 | envtest; `backend.lvm` PillarStore; PillarStorageClass에 `allowVolumeExpansion=true` 명시 | 1) `defaulter.Default(ctx, obj)` 호출 | `spec.storageClass.allowVolumeExpansion=true` (명시값 유지) | `BindDef`, `PoolCRD` |
+| E25.4.5 | `TestPillarStorageClassDefaulter_AllowVolumeExpansion_NotOverridden_Explicit` | `allowVolumeExpansion`이 명시적으로 설정된 경우 Defaulter가 덮어쓰지 않음 | envtest; `backend.zfs` PillarStore(기본값은 true); PillarStorageClass에 `allowVolumeExpansion=false` 명시 | 1) `defaulter.Default(ctx, obj)` 호출 | `spec.storageClass.allowVolumeExpansion=false` (명시값 유지) | `BindDef`, `PoolCRD` |
 | E25.4.6 | `TestPillarStorageClassDefaulter_AllowVolumeExpansion_NilWhenPoolNotFound` | 참조 PillarStore이 없을 때 `allowVolumeExpansion` 설정 건너뜀 (nil 유지, 오류 없음) | envtest; `storeRef="nonexistent-pool"` — pool 미존재; PillarStorageClass에 `allowVolumeExpansion` 미설정 | 1) `defaulter.Default(ctx, obj)` 호출 | `spec.storageClass.allowVolumeExpansion=nil`; 오류 없음 (graceful skip) | `BindDef` |
 
 ---
 
 ### E25.5 백엔드-프로토콜 호환성 웹훅 검증
 
-**목적:** Validating 웹훅이 참조된 PillarStore의 백엔드 타입과 PillarProtocol의 프로토콜 타입의
-호환성을 검증함을 확인한다. 블록 백엔드(zfs-zvol, lvm-lv)는 블록 프로토콜(nvmeof-tcp, iscsi)만
-허용하고, 파일 백엔드(zfs-dataset, dir)는 파일 프로토콜(nfs)만 허용한다.
+**목적:** Validating 웹훅이 참조된 PillarStore의 백엔드 멤버와 PillarProtocol의 프로토콜 멤버의
+호환성(`Compatible(spec.backend, spec.protocol)`)과, 바인딩 `spec.overrides`의 멤버가 참조 대상과 일치하는지를
+검증함을 확인한다. 현재 서비스되는 조합(zfs-zvol/lvm-lv × nvmeof-tcp)은 모두 블록 범주이므로 항상 호환되며,
+오버라이드 멤버가 스토어의 백엔드와 다르면 `spec.overrides.backend` 경로의 Invalid로 거부된다.
+파일 백엔드(zfs-dataset, dir)와 iSCSI·NFS 프로토콜은 구현되지 않아 스키마에 존재하지 않는다.
 
-**호환성 매트릭스:**
+**호환성 매트릭스 (서비스되는 멤버):**
 
-| 백엔드 타입 | nvmeof-tcp | iscsi | nfs |
-|------------|:---------:|:-----:|:---:|
-| zfs-zvol   | ✅ | ✅ | ❌ |
-| lvm-lv     | ✅ | ✅ | ❌ |
-| zfs-dataset| ❌ | ❌ | ✅ |
-| dir        | ❌ | ❌ | ✅ |
+| 백엔드 멤버 | nvmeofTcp |
+|------------|:---------:|
+| zfs (zfs-zvol) | ✅ |
+| lvm (lvm-lv)   | ✅ |
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| E25.5.1 | `TestPillarStorageClassWebhook_Compatible_ZFSZvol_NVMeOFTCP` | 블록 백엔드(zfs-zvol) + 블록 프로토콜(nvmeof-tcp) → 허용 | envtest; `backend.type="zfs-zvol"` PillarStore; `type="nvmeof-tcp"` PillarProtocol | 1) `validator.ValidateCreate(ctx, obj)` 호출 | `err=nil`; 허용 | `BindWH`, `PoolCRD`, `PProtCRD` |
-| E25.5.2 | `TestPillarStorageClassWebhook_Compatible_LVMLV_ISCSI` | 블록 백엔드(lvm-lv) + 블록 프로토콜(iscsi) → 허용 | envtest; `backend.type="lvm-lv"` PillarStore; `type="iscsi"` PillarProtocol | 1) `validator.ValidateCreate(ctx, obj)` 호출 | `err=nil`; 허용 | `BindWH`, `PoolCRD`, `PProtCRD` |
-| E25.5.3 | `TestPillarStorageClassWebhook_Compatible_ZFSDataset_NFS` | 파일 백엔드(zfs-dataset) + 파일 프로토콜(nfs) → 허용 | envtest; `backend.type="zfs-dataset"` PillarStore; `type="nfs"` PillarProtocol | 1) `validator.ValidateCreate(ctx, obj)` 호출 | `err=nil`; 허용 | `BindWH`, `PoolCRD`, `PProtCRD` |
-| E25.5.4 | `TestPillarStorageClassWebhook_Compatible_Dir_NFS` | 파일 백엔드(dir) + 파일 프로토콜(nfs) → 허용 | envtest; `backend.type="dir"` PillarStore; `type="nfs"` PillarProtocol | 1) `validator.ValidateCreate(ctx, obj)` 호출 | `err=nil`; 허용 | `BindWH`, `PoolCRD`, `PProtCRD` |
-| E25.5.5 | `TestPillarStorageClassWebhook_Incompatible_ZFSZvol_NFS` | 블록 백엔드(zfs-zvol) + 파일 프로토콜(nfs) → 거부; `spec.protocolRef` 경로 오류 | envtest; `backend.type="zfs-zvol"` PillarStore; `type="nfs"` PillarProtocol | 1) `validator.ValidateCreate(ctx, obj)` 호출 | `err != nil`; 오류 메시지에 `"incompatible"` 포함; `spec.protocolRef` 경로 | `BindWH`, `PoolCRD`, `PProtCRD` |
-| E25.5.6 | `TestPillarStorageClassWebhook_Incompatible_LVMLV_NFS` | 블록 백엔드(lvm-lv) + 파일 프로토콜(nfs) → 거부 | envtest; `backend.type="lvm-lv"` PillarStore; `type="nfs"` PillarProtocol | 1) `validator.ValidateCreate(ctx, obj)` 호출 | `err != nil`; `"incompatible"` 포함 | `BindWH`, `PoolCRD`, `PProtCRD` |
-| E25.5.7 | `TestPillarStorageClassWebhook_Incompatible_ZFSDataset_NVMeOFTCP` | 파일 백엔드(zfs-dataset) + 블록 프로토콜(nvmeof-tcp) → 거부 | envtest; `backend.type="zfs-dataset"` PillarStore; `type="nvmeof-tcp"` PillarProtocol | 1) `validator.ValidateCreate(ctx, obj)` 호출 | `err != nil`; `"incompatible"` 포함 | `BindWH`, `PoolCRD`, `PProtCRD` |
-| E25.5.8 | `TestPillarStorageClassWebhook_Incompatible_Dir_ISCSI` | 파일 백엔드(dir) + 블록 프로토콜(iscsi) → 거부 | envtest; `backend.type="dir"` PillarStore; `type="iscsi"` PillarProtocol | 1) `validator.ValidateCreate(ctx, obj)` 호출 | `err != nil`; `"incompatible"` 포함 | `BindWH`, `PoolCRD`, `PProtCRD` |
+| E25.5.1 | `TestPillarStorageClassWebhook_Compatible_ZFSZvol_NVMeOFTCP` | 블록 백엔드(zfs-zvol) + 블록 프로토콜(nvmeof-tcp) → 허용 | envtest; `backend.zfs` PillarStore; `protocol.nvmeofTcp` PillarProtocol | 1) `validator.ValidateCreate(ctx, obj)` 호출 | `err=nil`; 허용 | `BindWH`, `PoolCRD`, `PProtCRD` |
+| E25.5.2 | `TestPillarStorageClassWebhook_Compatible_LVMLV_NVMeOFTCP` | 블록 백엔드(lvm-lv) + 블록 프로토콜(nvmeof-tcp) → 허용 | envtest; `backend.lvm` PillarStore; `protocol.nvmeofTcp` PillarProtocol | 1) `validator.ValidateCreate(ctx, obj)` 호출 | `err=nil`; 허용 | `BindWH`, `PoolCRD`, `PProtCRD` |
+| E25.5.3 | `TestPillarStorageClassWebhook_OverrideMismatch_ZFSOverrideOnLVMStore` | `lvm` 스토어를 참조하는 바인딩이 `overrides.backend.zfs`를 지정 → 거부 | envtest; `backend.lvm` PillarStore; `protocol.nvmeofTcp` PillarProtocol; `spec.overrides.backend={zfs:{properties:{compression:lz4}}}` | 1) `validator.ValidateCreate(ctx, obj)` 호출 | `err != nil`; `spec.overrides.backend` 경로의 Invalid; 메시지에 `backend override member "zfs" does not match the "lvm" backend` | `BindWH`, `PoolCRD`, `PProtCRD` |
+| E25.5.4 | `TestPillarStorageClassWebhook_OverrideMismatch_LVMOverrideOnZFSStore` | `zfs` 스토어를 참조하는 바인딩이 `overrides.backend.lvm`을 지정 → 거부 | envtest; `backend.zfs` PillarStore; `protocol.nvmeofTcp` PillarProtocol; `spec.overrides.backend={lvm:{provisioningMode:thin}}` | 1) `validator.ValidateCreate(ctx, obj)` 호출 | `err != nil`; `spec.overrides.backend` 경로의 Invalid | `BindWH`, `PoolCRD`, `PProtCRD` |
+| E25.5.5 | `TestPillarStorageClassWebhook_OverrideMatch_ZFSPropertiesOnZFSStore` | `zfs` 스토어에 `overrides.backend.zfs.properties` 지정 → 허용 | envtest; `backend.zfs` PillarStore; `protocol.nvmeofTcp` PillarProtocol; `spec.overrides.backend={zfs:{properties:{volblocksize:16K}}}` | 1) `validator.ValidateCreate(ctx, obj)` 호출 | `err=nil`; 허용 | `BindWH`, `PoolCRD`, `PProtCRD` |
+| E25.5.6 | `TestPillarStorageClassWebhook_OverrideMatch_LVMModeOnLVMStore` | `lvm` 스토어에 `overrides.backend.lvm.provisioningMode=thin` 지정 → 허용 | envtest; `backend.lvm` PillarStore(thinPool 선언); `protocol.nvmeofTcp` PillarProtocol | 1) `validator.ValidateCreate(ctx, obj)` 호출 | `err=nil`; 허용 | `BindWH`, `PoolCRD`, `PProtCRD` |
+| E25.5.7 | `TestPillarStorageClassWebhook_ProtocolOverride_NVMeOFTCP_Allowed` | `overrides.protocol.nvmeofTcp` 튜너블(maxQueueSize=64) 지정 → 허용 | envtest; `backend.zfs` PillarStore; `protocol.nvmeofTcp` PillarProtocol; `spec.overrides.protocol={nvmeofTcp:{maxQueueSize:64}}` | 1) `validator.ValidateCreate(ctx, obj)` 호출 | `err=nil`; 허용 | `BindWH`, `PoolCRD`, `PProtCRD` |
+| E25.5.8 | `TestPillarStorageClassWebhook_OverrideCheckSkipped_StoreNotFound` | 스토어 미존재 시 오버라이드 멤버 일치 검사 건너뜀 — 컨트롤러 조건과 CreateVolume 해석으로 위임 | envtest; PillarProtocol 존재; PillarStore 미존재; `spec.overrides.backend={zfs:{properties:{compression:lz4}}}` | 1) `validator.ValidateCreate(ctx, obj)` 호출 | `err=nil`; 허용 (graceful skip) | `BindWH` |
 | E25.5.9 | `TestPillarStorageClassWebhook_CompatibilitySkipped_PoolNotFound` | pool 미존재 시 호환성 검사 건너뜀 — 컨트롤러 `Compatible` 조건으로 위임 | envtest; PillarProtocol 존재; PillarStore 미존재 | 1) `validator.ValidateCreate(ctx, obj)` 호출 | `err=nil`; 허용 (graceful skip) | `BindWH` |
 | E25.5.10 | `TestPillarStorageClassWebhook_CompatibilitySkipped_ProtocolNotFound` | protocol 미존재 시 호환성 검사 건너뜀 — 컨트롤러 `Compatible` 조건으로 위임 | envtest; PillarStore 존재; PillarProtocol 미존재 | 1) `validator.ValidateCreate(ctx, obj)` 호출 | `err=nil`; 허용 (graceful skip) | `BindWH` |
 
@@ -3520,7 +3509,7 @@ StorageClass는 특정 풀과 프로토콜에 묶여 있어, 변경 시 기존 P
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
 | E25.8.1 | `TestPillarStorageClassController_Compatible_True_AllConditionsMet` | zfs-zvol + nvmeof-tcp 조합 → `Compatible=True`; `Ready=True/AllConditionsMet`; StorageClass 생성 | envtest; PillarStorageClass + 파이널라이저; PillarStore(zfs-zvol, Ready=True); PillarProtocol(nvmeof-tcp, Ready=True) | 1) `reconciler.Reconcile(ctx, req)` 호출 | `PoolReady=True`; `ProtocolValid=True`; `Compatible=True`; `StorageClassCreated=True`; `Ready=True`; `Ready.Reason="AllConditionsMet"` | `BindCRD`, `BindCtrl`, `PoolCRD`, `PProtCRD`, `SC` |
-| E25.8.2 | `TestPillarStorageClassController_Compatible_False_BlockBackend_FileProtocol` | zfs-zvol + nfs 비호환 → `Compatible=False/Incompatible`; `Ready=False`; StorageClass 미생성 | envtest; PillarStorageClass + 파이널라이저; PillarStore(zfs-zvol, Ready=True); PillarProtocol(nfs, Ready=True) | 1) `reconciler.Reconcile(ctx, req)` 호출 | `Compatible.Status=False`; `Compatible.Reason="Incompatible"`; `Compatible.Message`에 `"zfs-zvol"` 포함; `Ready.Status=False`; StorageClass 미생성 | `BindCRD`, `BindCtrl`, `PoolCRD`, `PProtCRD` |
+| E25.8.2 | `TestPillarStorageClassController_Compatible_True_LVMLV_NVMeOFTCP` | lvm-lv + nvmeof-tcp 조합 → `Compatible=True`; `Ready=True`; StorageClass 생성 | envtest; PillarStorageClass + 파이널라이저; PillarStore(`backend.lvm`, Ready=True); PillarProtocol(`protocol.nvmeofTcp`, Ready=True) | 1) `reconciler.Reconcile(ctx, req)` 호출 | `Compatible.Status=True`; `Ready.Status=True`; StorageClass 생성 | `BindCRD`, `BindCtrl`, `PoolCRD`, `PProtCRD` |
 | E25.8.3 | `TestPillarStorageClassController_NoRequeue_WhenReady` | 모든 조건 충족 시 `result.RequeueAfter==0` — 불필요한 재조정 없음 | envtest; 모든 조건 충족 (PillarStore/Protocol Ready, 호환 가능) | 1) `reconciler.Reconcile(ctx, req)` 호출 | `result.RequeueAfter==0` | `BindCRD`, `BindCtrl` |
 
 ---
@@ -3534,7 +3523,7 @@ StorageClass는 특정 풀과 프로토콜에 묶여 있어, 변경 시 기존 P
 |----|------------|------|----------|------|----------|---------|
 | E25.9.1 | `TestPillarStorageClassController_StorageClass_OwnerReference` | 생성된 StorageClass에 PillarStorageClass을 가리키는 ownerReference(`Kind=PillarStorageClass`, `controller=true`) 설정 | envtest; PillarStorageClass + 파이널라이저; PillarStore(Ready=True); PillarProtocol(Ready=True) | 1) `reconciler.Reconcile(ctx, req)` 호출; 2) StorageClass 조회 | `len(sc.OwnerReferences)==1`; `sc.OwnerReferences[0].Kind="PillarStorageClass"`; `*sc.OwnerReferences[0].Controller=true` | `BindCRD`, `BindCtrl`, `SC` |
 | E25.9.2 | `TestPillarStorageClassController_StorageClass_Provisioner` | 생성된 StorageClass의 provisioner가 `"pillar-csi.bhyoo.com"` | envtest; 동일 사전 조건 | 1) `reconciler.Reconcile(ctx, req)` 호출; 2) StorageClass 조회 | `sc.Provisioner="pillar-csi.bhyoo.com"` | `BindCRD`, `BindCtrl`, `SC` |
-| E25.9.3 | `TestPillarStorageClassController_StorageClass_Parameters` | 생성된 StorageClass의 parameters에 pool, protocol, backend-type, protocol-type 파라미터 포함 | envtest; PillarStore(zfs-zvol, Ready=True); PillarProtocol(nvmeof-tcp, Ready=True) | 1) `reconciler.Reconcile(ctx, req)` 호출; 2) `sc.Parameters` 검사 | `sc.Parameters["pillar-csi.bhyoo.com/store"]=poolName`; `"pillar-csi.bhyoo.com/protocol"=protocolName`; `"pillar-csi.bhyoo.com/backend-type"="zfs-zvol"`; `"pillar-csi.bhyoo.com/protocol-type"="nvmeof-tcp"` | `BindCRD`, `BindCtrl`, `SC` |
+| E25.9.3 | `TestPillarStorageClassController_StorageClass_Parameters` | 생성된 StorageClass의 parameters는 identity 참조와 fstype만 포함 | envtest; PillarStore(`backend.zfs`, Ready=True); PillarProtocol(`protocol.nvmeofTcp`, Ready=True); PillarStorageClass `spec.filesystem.fsType=xfs`, `mountOptions=[noatime]` | 1) `reconciler.Reconcile(ctx, req)` 호출; 2) `sc.Parameters`와 `sc.MountOptions` 검사 | `sc.Parameters`가 정확히 `{"pillar-csi.bhyoo.com/storage-class": <PillarStorageClass 이름>, "csi.storage.k8s.io/fstype": "xfs"}`; `sc.MountOptions=[noatime]`; 튜너블·평면 키 없음 | `BindCRD`, `BindCtrl`, `SC` |
 | E25.9.4 | `TestPillarStorageClassController_StorageClass_DefaultReclaimPolicy` | StorageClass ReclaimPolicy 기본값 `Delete` | envtest; 기본 PillarStorageClass (reclaimPolicy 미설정); PillarStore/Protocol Ready | 1) `reconciler.Reconcile(ctx, req)` 호출; 2) `sc.ReclaimPolicy` 검사 | `*sc.ReclaimPolicy=PersistentVolumeReclaimDelete` | `BindCRD`, `BindCtrl`, `SC` |
 | E25.9.5 | `TestPillarStorageClassController_StorageClass_DefaultVolumeBindingMode` | StorageClass VolumeBindingMode 기본값 `Immediate` | envtest; 기본 PillarStorageClass (volumeBindingMode 미설정); PillarStore/Protocol Ready | 1) `reconciler.Reconcile(ctx, req)` 호출; 2) `sc.VolumeBindingMode` 검사 | `*sc.VolumeBindingMode=VolumeBindingImmediate` | `BindCRD`, `BindCtrl`, `SC` |
 | E25.9.6 | `TestPillarStorageClassController_StorageClass_StatusStorageClassName` | StorageClass 생성 후 `status.storageClassName`에 이름 반영 | envtest; 기본 PillarStorageClass; PillarStore/Protocol Ready | 1) `reconciler.Reconcile(ctx, req)` 호출; 2) PillarStorageClass 상태 조회 | `binding.status.storageClassName=bindingName` | `BindCRD`, `BindCtrl`, `SC` |
@@ -3660,7 +3649,7 @@ PillarProtocol (ppr)
 | E26.1.5 | `TestCrossLifecycle_Binding_PoolNotReady_PoolReadyFalse` | 참조 PillarStore이 존재하지만 `Ready=False`이면 `PoolReady=False` 조건 설정 | envtest; PillarStore(`Ready=False`) 등록; PillarStorageClass(`storeRef=pool`) 생성 | 1) PillarStorageClass 생성; 2) `bindingReconciler.Reconcile(ctx, req)` 호출; 3) PillarStorageClass 상태 조회 | `PoolReady.Status=False`; `PoolReady.Reason="PoolNotReady"`; `Ready.Status=False` | `BindCRD`, `BindCtrl`, `PoolCRD` |
 | E26.1.6 | `TestCrossLifecycle_Binding_ProtocolMissing_ProtocolValidFalse` | PillarStorageClass 생성 시 참조 PillarProtocol이 없으면 `ProtocolValid=False` 조건 설정 | envtest; PillarStorageClass(`storeRef="valid-pool"`, `protocolRef="nonexistent-protocol"`) 생성; PillarProtocol 미등록; PillarStore 등록 | 1) PillarStorageClass 생성; 2) `bindingReconciler.Reconcile(ctx, req)` 호출; 3) PillarStorageClass 상태 조회 | `ProtocolValid.Status=False`; `ProtocolValid.Reason="ProtocolNotFound"`; `Ready.Status=False` | `BindCRD`, `BindCtrl`, `PProtCRD` |
 | E26.1.7 | `TestCrossLifecycle_Binding_BothMissing_BothConditionsFalse` | PillarStore과 PillarProtocol 둘 다 없을 때 두 조건 모두 `False` | envtest; PillarStorageClass(`storeRef="missing-pool"`, `protocolRef="missing-proto"`) 생성; 둘 다 미등록 | 1) PillarStorageClass 생성; 2) `bindingReconciler.Reconcile(ctx, req)` 호출; 3) PillarStorageClass 상태 조회 | `PoolReady.Status=False`; `ProtocolValid.Status=False`; `Ready.Status=False`; StorageClass 미생성 | `BindCRD`, `BindCtrl`, `PoolCRD`, `PProtCRD` |
-| E26.1.8 | `TestCrossLifecycle_Binding_PoolReadyProtocolReady_BecomeReady` | Pool `Ready=True` + Protocol `Ready=True` → Binding `Ready=True`, StorageClass 생성 | envtest; PillarStore(`Ready=True`, `backend.type="zfs-zvol"`) 등록; PillarProtocol(`Ready=True`, `type="nvmeof-tcp"`) 등록; PillarStorageClass 생성 | 1) PillarStorageClass 생성; 2) `bindingReconciler.Reconcile(ctx, req)` 호출; 3) PillarStorageClass 상태 및 StorageClass 조회 | `PoolReady.Status=True`; `ProtocolValid.Status=True`; `Compatible.Status=True`; `StorageClassCreated.Status=True`; `Ready.Status=True`; StorageClass 존재 | `BindCRD`, `BindCtrl`, `PoolCRD`, `PProtCRD`, `SC` |
+| E26.1.8 | `TestCrossLifecycle_Binding_PoolReadyProtocolReady_BecomeReady` | Pool `Ready=True` + Protocol `Ready=True` → Binding `Ready=True`, StorageClass 생성 | envtest; PillarStore(`Ready=True`, `backend.zfs`) 등록; PillarProtocol(`Ready=True`, `protocol.nvmeofTcp`) 등록; PillarStorageClass 생성 | 1) PillarStorageClass 생성; 2) `bindingReconciler.Reconcile(ctx, req)` 호출; 3) PillarStorageClass 상태 및 StorageClass 조회 | `PoolReady.Status=True`; `ProtocolValid.Status=True`; `Compatible.Status=True`; `StorageClassCreated.Status=True`; `Ready.Status=True`; StorageClass 존재 | `BindCRD`, `BindCtrl`, `PoolCRD`, `PProtCRD`, `SC` |
 
 ---
 
@@ -3793,11 +3782,11 @@ PillarStore과 PillarStorageClass CRD에서 LVM 고유 필드의 OpenAPI 스키�
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| 276 | `TestPillarStore_LVM_ValidLinearConfig` | type=lvm-lv, volumeGroup 지정, provisioningMode=linear 설정이 유효 | envtest; PillarAgent Ready | 1) PillarStore(type=lvm-lv, lvm.volumeGroup="data-vg", lvm.provisioningMode=linear) 생성 | 생성 성공; OpenAPI 스키마 검증 통과 | `PoolCRD` |
-| 277 | `TestPillarStore_LVM_ValidThinConfig` | type=lvm-lv, volumeGroup + thinPool, provisioningMode=thin 유효 | envtest; PillarAgent Ready | 1) PillarStore(lvm.volumeGroup="data-vg", lvm.thinPool="thin-pool-0", lvm.provisioningMode=thin) 생성 | 생성 성공 | `PoolCRD` |
-| 278 | `TestPillarStore_LVM_MissingVolumeGroup_Rejected` | type=lvm-lv이나 lvm.volumeGroup 미지정 시 검증 실패 | envtest | 1) PillarStore(type=lvm-lv, lvm.volumeGroup="") 생성 시도 | 생성 실패; OpenAPI minLength=1 위반 | `PoolCRD` |
+| 276 | `TestPillarStore_LVM_ValidLinearConfig` | `backend.lvm` 멤버에 volumeGroup 지정, provisioningMode=linear 설정이 유효 | envtest; PillarAgent Ready | 1) PillarStore(`backend.lvm={volumeGroup: "data-vg", provisioningMode: linear}`) 생성 | 생성 성공; OpenAPI 스키마 검증 통과 | `PoolCRD` |
+| 277 | `TestPillarStore_LVM_ValidThinConfig` | `backend.lvm` 멤버에 volumeGroup + thinPool, provisioningMode=thin 유효 | envtest; PillarAgent Ready | 1) PillarStore(lvm.volumeGroup="data-vg", lvm.thinPool="thin-pool-0", lvm.provisioningMode=thin) 생성 | 생성 성공 | `PoolCRD` |
+| 278 | `TestPillarStore_LVM_MissingVolumeGroup_Rejected` | `backend.lvm` 멤버이나 lvm.volumeGroup 미지정 시 검증 실패 | envtest | 1) PillarStore(`backend.lvm.volumeGroup=""`) 생성 시도 | 생성 실패; OpenAPI minLength=1 위반 | `PoolCRD` |
 | 279 | `TestPillarStore_LVM_InvalidProvisioningMode_Rejected` | provisioningMode에 "linear"/"thin" 외 값 지정 시 거부 | envtest | 1) PillarStore(lvm.provisioningMode="striped") 생성 시도 | 생성 실패; Enum 검증 오류 | `PoolCRD` |
-| 280 | `TestPillarStore_LVM_MissingLVMConfig_Rejected` | type=lvm-lv이나 backend.lvm 섹션 자체 누락 시 웹훅 거부 | envtest | 1) PillarStore(type=lvm-lv, lvm=nil) 생성 시도 | 웹훅 ValidationFailed; backend.lvm required when type=lvm-lv | `PoolCRD` |
+| 280 | `TestPillarStore_LVM_MissingLVMConfig_Rejected` | `spec.backend`에 lvm 멤버도 zfs 멤버도 없으면 거부 | envtest | 1) PillarStore(`backend={}`) 생성 시도 | API 서버 422; "exactly one of zfs or lvm must be set" | `PoolCRD` |
 
 ---
 
@@ -3808,7 +3797,7 @@ PillarStore과 PillarStorageClass CRD에서 LVM 고유 필드의 OpenAPI 스키�
 | 281 | `TestPillarStorageClass_LVM_ValidOverride` | LVM provisioningMode 오버라이드 설정 유효 | envtest; PillarStore(lvm-lv) Ready; PillarProtocol(nvmeof-tcp) 존재 | 1) PillarStorageClass(overrides.backend.lvm.provisioningMode="linear") 생성 | 생성 성공; StorageClass 자동 생성 | `BindCRD`, `SC` |
 | 282 | `TestPillarStorageClass_LVM_InvalidOverride_Rejected` | provisioningMode에 잘못된 Enum 값 시 거부 | envtest | 1) PillarStorageClass(overrides.backend.lvm.provisioningMode="raid5") 생성 시도 | Enum 검증 오류 | `BindCRD` |
 | 283 | `TestPillarStorageClass_LVM_NVMeOFTCP_Compatible` | lvm-lv(Block) + nvmeof-tcp(Block) 조합이 Compatible=True | envtest; PillarStore(lvm-lv) Ready; PillarProtocol(nvmeof-tcp) | 1) PillarStorageClass 생성; 2) Reconcile | Compatible=True; Ready=True | `BindCRD`, `BindCtrl` |
-| 284 | `TestPillarStorageClass_LVM_NFS_Incompatible` | lvm-lv(Block) + nfs(Filesystem) 조합이 비호환 거부 | envtest; PillarStore(lvm-lv); PillarProtocol(nfs) | 1) PillarStorageClass 생성 시도 | 웹훅 거부 또는 Compatible=False; Block backend + File protocol 비호환 | `BindCRD`, `BindCtrl` |
+| 284 | `TestPillarStorageClass_LVM_ZFSOverride_Rejected` | lvm 스토어를 참조하는 바인딩의 `overrides.backend.zfs`는 멤버 불일치로 거부 | envtest; PillarStore(`backend.lvm`); PillarProtocol(`protocol.nvmeofTcp`) | 1) PillarStorageClass(`overrides.backend.zfs.properties`) 생성 시도 | 웹훅 거부; `spec.overrides.backend` 경로의 Invalid | `BindCRD`, `BindWH` |
 
 ---
 
@@ -3817,7 +3806,7 @@ PillarStore과 PillarStorageClass CRD에서 LVM 고유 필드의 OpenAPI 스키�
 | 소섹션 | 검증 내용 | 테스트 수 | CI 실행 |
 |--------|---------|----------|--------|
 | E32.1 | PillarStore LVM 설정 — 정상(linear/thin), VG 누락, 잘못된 모드, LVM config 누락 | 5개 | ⚠️ envtest |
-| E32.2 | PillarStorageClass LVM — 정상 오버라이드, 잘못된 값, nvmeof-tcp 호환, nfs 비호환 | 4개 | ⚠️ envtest |
+| E32.2 | PillarStorageClass LVM — 정상 오버라이드, 잘못된 값, nvmeof-tcp 호환, 오버라이드 멤버 불일치 거부 | 4개 | ⚠️ envtest |
 | **합계** | | **9개** | ⚠️ |
 
 ---
@@ -4128,8 +4117,8 @@ kubectl get crd pillaragents.pillar-csi.bhyoo.com \
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
 | 217r | `TestHelm/CRD_PrinterColumns_PillarAgent` | PillarAgent CRD에 `Address`, `Agent`, `Ready`, `Age` 프린터 컬럼이 정의되어 있다 | E27.1 완료 | 1) `kubectl get crd pillaragents.pillar-csi.bhyoo.com -o json`; 2) `.spec.versions[0].additionalPrinterColumns` 배열 검증 | 배열에 `name: "Address"`, `name: "Agent"`, `name: "Ready"`, `name: "Age"` 항목 포함; `Address` jsonPath: `.status.resolvedAddress`; `Ready` jsonPath: `.status.conditions[?(@.type=="Ready")].status` | `TgtCRD`, `Kubernetes클러스터` |
-| 217s | `TestHelm/CRD_PrinterColumns_PillarStore` | PillarStore CRD에 `Target`, `Backend`, `Available`, `Ready`, `Age` 프린터 컬럼이 정의되어 있다 | E27.1 완료 | 1) `kubectl get crd pillarstores.pillar-csi.bhyoo.com -o json`; 2) `.spec.versions[0].additionalPrinterColumns` 배열 검증 | `name: "Target"` (jsonPath: `.spec.agentRef`); `name: "Backend"` (jsonPath: `.spec.backend.type`); `name: "Available"` (jsonPath: `.status.capacity.available`); `name: "Ready"` 항목 포함 | `VolCRD`, `Kubernetes클러스터` |
-| 217t | `TestHelm/CRD_PrinterColumns_PillarProtocol` | PillarProtocol CRD에 `Type`, `Bindings`, `Ready`, `Age` 프린터 컬럼이 정의되어 있다 | E27.1 완료 | 1) `kubectl get crd pillarprotocols.pillar-csi.bhyoo.com -o json`; 2) `.spec.versions[0].additionalPrinterColumns` 배열 검증 | `name: "Type"` (jsonPath: `.spec.type`); `name: "Bindings"` (jsonPath: `.status.storageClassCount`); `name: "Ready"` 항목 포함 | `VolCRD`, `Kubernetes클러스터` |
+| 217s | `TestHelm/CRD_PrinterColumns_PillarStore` | PillarStore CRD에 `Target`, `Available`, `Ready`, `Age` 프린터 컬럼이 정의되어 있다 | E27.1 완료 | 1) `kubectl get crd pillarstores.pillar-csi.bhyoo.com -o json`; 2) `.spec.versions[0].additionalPrinterColumns` 배열 검증 | `name: "Target"` (jsonPath: `.spec.agentRef`); `name: "Available"` (jsonPath: `.status.capacity.available`); `name: "Ready"` 항목 포함 | `VolCRD`, `Kubernetes클러스터` |
+| 217t | `TestHelm/CRD_PrinterColumns_PillarProtocol` | PillarProtocol CRD에 `Bindings`, `Ready`, `Age` 프린터 컬럼이 정의되어 있다 | E27.1 완료 | 1) `kubectl get crd pillarprotocols.pillar-csi.bhyoo.com -o json`; 2) `.spec.versions[0].additionalPrinterColumns` 배열 검증 | `name: "Bindings"` (jsonPath: `.status.storageClassCount`); `name: "Ready"` 항목 포함 | `VolCRD`, `Kubernetes클러스터` |
 | 217u | `TestHelm/CRD_PrinterColumns_PillarStorageClass` | PillarStorageClass CRD에 `Pool`, `Protocol`, `StorageClass`, `Ready`, `Age` 프린터 컬럼이 정의되어 있다 | E27.1 완료 | 1) `kubectl get crd pillarstorageclasses.pillar-csi.bhyoo.com -o json`; 2) `.spec.versions[0].additionalPrinterColumns` 배열 검증 | `name: "Pool"` (jsonPath: `.spec.storeRef`); `name: "Protocol"` (jsonPath: `.spec.protocolRef`); `name: "StorageClass"` (jsonPath: `.status.storageClassName`); `name: "Ready"` 항목 포함 | `VolCRD`, `Kubernetes클러스터` |
 
 ---
@@ -4590,7 +4579,7 @@ kubectl get csidriver pillar-csi.bhyoo.com -o json | jq '{
 > - kubelet은 NodeStageVolume/NodePublishVolume 호출 전 `VolumeAttachment` 오브젝트를 생성한다.
 > - CSI 컨트롤러 사이드카(csi-attacher)가 `VolumeAttachment`를 감시하고 `ControllerPublishVolume` RPC를 호출한다.
 > - pillar-csi의 ControllerPublishVolume은 controller-side ACL/authorization publish 단계이며,
->   실제 iSCSI/NVMe-oF login/connect는 NodeStage/NodeUnstage 경로에서 수행된다.
+>   실제 NVMe-oF connect는 NodeStage/NodeUnstage 경로에서 수행된다.
 > - 따라서 `false`로 바꾸면 controller-side publish 훅이 사라져 target ACL 관리가 불가능해진다.
 
 **검증 명령 예시:**
@@ -5006,10 +4995,10 @@ NVMe-oF TCP → 워커 노드 마운트의 **전체 데이터 경로**를 관통
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| 294 | `It("PillarStore BackendSupported condition becomes True (agent advertises lvm-lv)")` | agent가 lvm-lv 백엔드 지원 보고 | PillarAgent Ready; PillarStore(type=lvm-lv) 생성 | 1) PillarStore 조건 폴링 | BackendSupported=True | `Agent`, `LVM`, `PoolCRD` |
+| 294 | `It("PillarStore BackendSupported condition becomes True (agent advertises lvm-lv)")` | agent가 lvm-lv 백엔드 지원 보고 | PillarAgent Ready; PillarStore(`backend.lvm`) 생성 | 1) PillarStore 조건 폴링 | BackendSupported=True | `Agent`, `LVM`, `PoolCRD` |
 | 295 | `It("PillarStore PoolDiscovered condition becomes True (VG is visible to agent)")` | agent가 LVM VG 발견 | PillarAgent Ready; PillarStore 생성 | 1) PillarStore 조건 폴링 | PoolDiscovered=True | `Agent`, `LVM`, `PoolCRD` |
 | 296 | `It("PillarStore reaches Ready=True and reports capacity")` | PillarStore Ready + VG 용량 보고 | 위 조건 True | 1) PillarStore 상태 확인 | Ready=True; capacity.total > 0; capacity.available > 0 | `Agent`, `LVM`, `PoolCRD` |
-| 297 | `It("PillarStorageClass generates a Kubernetes StorageClass with the pillar-csi provisioner")` | StorageClass 자동 생성 | PillarStore Ready; PillarProtocol·PillarStorageClass 생성 | 1) StorageClass 확인 | provisioner=pillar-csi.bhyoo.com; parameters에 backend-type=lvm-lv | `BindCRD`, `SC` |
+| 297 | `It("PillarStorageClass generates a Kubernetes StorageClass with the pillar-csi provisioner")` | StorageClass 자동 생성 | PillarStore Ready; PillarProtocol·PillarStorageClass 생성 | 1) StorageClass 확인 | provisioner=pillar-csi.bhyoo.com; parameters에 `pillar-csi.bhyoo.com/storage-class`=<PillarStorageClass 이름> | `BindCRD`, `SC` |
 | 298 | `It("first PVC (1Gi) becomes Bound via LVM CreateVolume")` | 1GiB PVC → LVM LV 프로비저닝 → Bound | StorageClass 존재; VG 여유 | 1) PVC(1Gi) 생성; 2) Bound 대기 | PVC Phase=Bound | `CSI-C`, `Agent`, `LVM`, `VolCRD` |
 | 299 | `It("bound PV (first PVC) has capacity >= 1Gi")` | PV capacity ≥ 1Gi — LVM PE 반올림 가능 | PVC Bound | 1) PV capacity 확인 | storage ≥ 1Gi | `CSI-C`, `LVM` |
 | 300 | `It("bound PV (first PVC) references the correct StorageClass")` | PV StorageClass 참조 정확 | PVC Bound | 1) PV.spec.storageClassName 확인 | 이름 일치 | `CSI-C` |
@@ -5072,243 +5061,6 @@ Docker host에서 블록 디바이스 존재를 직접 확인하므로 실제 `l
 E33 테스트는 표준 GitHub Actions에서 LVM 루프백 VG를 생성할 수 있으므로
 **조건부 CI 실행 가능**하다. 단, NVMe-oF 커널 모듈(`nvmet`, `nvmet-tcp`,
 `nvme-tcp`)이 필요한 E33.2·E33.3은 커널 모듈 지원 러너가 필요하다.
-
----
-
-## E34: LVM Kind 클러스터 E2E — 실제 LVM VG + iSCSI
-
-**테스트 유형:** D (Kind 클러스터 + 실제 LVM VG + 실제 iSCSI) ⚠️ Kind + 실제 LVM + LIO/open-iscsi 필요
-
-> **목적:** E33이 `NVMe-oF TCP` 경로를 검증한다면, E34는 동일한 `LVM LV`
-> 백엔드를 `iSCSI`로 export 했을 때의 전체 제품 경로를 검증한다.
-> 즉, `PillarProtocol(type=iscsi)` → generated `StorageClass` →
-> `ControllerPublish/Unpublish` ACL → `NodeStage` discovery/login/logout →
-> filesystem/raw block 사용까지를 실제 Kind 환경에서 검증한다.
-
-**인프라 요구사항:**
-
-| 항목 | 버전/사양 | 비고 |
-|------|----------|------|
-| Kind | v0.23+ | 2노드 클러스터 (storage-worker + compute-worker) |
-| Docker | 24+ | Kind 및 테스트 이미지 로드 |
-| 호스트 커널 | 5.15+ | `target_core_mod`, `iscsi_target_mod`, `iscsi_tcp`, `libiscsi` 모듈 필요 |
-| configfs | `/sys/kernel/config` | storage-worker에서 LIO target export용 |
-| LVM2 도구 | `lvcreate`, `vgs`, `lvs` | storage-worker 컨테이너 내 설치 |
-| open-iscsi | `iscsiadm`, `iscsid` | compute-worker 측 node image에 번들 |
-| pillar-csi 이미지 | 로컬 빌드 | `make docker-build` |
-| `PILLAR_E2E_LVM_VG` | 환경변수 | 테스트용 VG 이름 |
-| `PILLAR_E2E_ISCSI_PORT` | 환경변수 (선택) | 기본값 `3260` |
-
-**빌드 태그:** `//go:build e2e`
-
-```
-실행 명령:
-  go test ./test/e2e/ -tags=e2e -v --ginkgo.label-filter="iscsi"
-
-특정 그룹만:
-  go test ./test/e2e/ -tags=e2e -v --ginkgo.label-filter="iscsi && controlplane"
-  go test ./test/e2e/ -tags=e2e -v --ginkgo.label-filter="iscsi && mount"
-  go test ./test/e2e/ -tags=e2e -v --ginkgo.label-filter="iscsi && expansion"
-```
-
-**위치(신규 작성 필요):**
-
-- `test/e2e/lvm_iscsi_core_rpcs_e2e_test.go`
-- `test/e2e/lvm_iscsi_pvc_pod_mount_e2e_test.go`
-- `test/e2e/lvm_iscsi_volume_expansion_e2e_test.go`
-
----
-
-### E34.1 iSCSI 제어면 및 export 계약
-
-`PillarProtocol(type=iscsi)`가 만들어내는 generated `StorageClass`와
-CSI Controller의 `CreateVolume` / `ControllerPublish` / `ControllerUnpublish`
-계약을 검증한다. 핵심 포인트는 app 사용자가 `portal`, `target IQN`, `LUN`을
-직접 다루지 않아도 되고, 이 값들이 런타임 `VolumeContext`로만 노출되며,
-publish/unpublish는 `CSINode` annotation에 publish된 initiator IQN을 기준으로 동작한다는 점이다.
-
-| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
-|----|------------|------|----------|------|----------|---------|
-| 318 | `It("PillarStorageClass generates an iSCSI StorageClass with protocol-type=iscsi and timer parameters")` | generated StorageClass가 `protocol-type=iscsi`, `iscsi-port`, iSCSI timeout 파라미터를 포함 | Kind; PillarAgent Ready; PillarStore(type=lvm-lv); PillarProtocol(type=iscsi) 생성 | 1) PillarStorageClass 생성; 2) StorageClass 조회 | StorageClass 존재; `parameters["pillar-csi.bhyoo.com/protocol-type"]=="iscsi"`; `iscsi-port` 및 iSCSI timer 파라미터 존재 | `CSI-C`, `TgtCRD`, `gRPC` |
-| 319 | `It("CreateVolume returns target IQN, portal, port and LUN in VolumeContext")` | iSCSI CreateVolume이 PV `VolumeContext`에 target IQN, portal IP, port, LUN을 기록 | StorageClass Ready; agent가 iSCSI export 가능 | 1) PVC 생성; 2) PV 생성 대기; 3) PV `spec.csi.volumeAttributes` 조회 | `target_id`는 IQN 형식; `address`는 storage-worker IP; `port==3260`(또는 override 값); `volume_ref`는 LUN 문자열 | `CSI-C`, `Agent`, `LVM`, `VolCRD`, `gRPC` |
-| 320 | `It("pillar-node publishes the initiator IQN to CSINode annotations and ControllerPublishVolume uses it for ACLs")` | node-side publisher가 compute-worker의 initiator IQN을 `CSINode` annotation에 반영하고, `ControllerPublishVolume`이 그 값을 사용해 ACL을 추가 | PVC Bound; Pod 미생성; compute-worker node image에 initiator IQN 설정 | 1) compute-worker `CSINode` annotation `pillar-csi.bhyoo.com/iscsi-initiator-iqn` 대기; 2) Pod 생성; 3) ControllerPublish 발생; 4) storage-worker의 LIO ACL 조회 | `CSINode` annotation 존재; Pod Running; 해당 target ACL에 annotation과 같은 compute-worker IQN 존재 | `CSI-C`, `CSI-N`, `Agent`, `LVM`, `gRPC` |
-| 321 | `It("ControllerUnpublishVolume revokes the same CSINode-derived initiator IQN ACL")` | Pod 삭제 시 `CSINode` annotation에서 해석된 동일 IQN ACL이 제거 | 320 성공 후 Pod Running | 1) Pod 삭제; 2) ControllerUnpublish 완료 대기; 3) LIO ACL 조회 | target ACL에서 해당 IQN 제거; 다른 volume/session 영향 없음 | `CSI-C`, `Agent`, `LVM`, `gRPC` |
-
----
-
-### E34.2 iSCSI PVC 프로비저닝 및 Pod 마운트
-
-`CreateVolume` 이후 실제 compute-worker에서 discovery/login/mount가 수행되고,
-filesystem PVC가 앱 관점에서 정상 사용 가능한지 검증한다. 이 섹션은
-`pillar-csi`가 iSCSI를 "동적 프로비저닝되는 CSI block protocol"로 제공함을 보여준다.
-
-| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
-|----|------------|------|----------|------|----------|---------|
-| 322 | `It("filesystem PVC becomes Bound via LVM + iSCSI")` | `PillarProtocol(type=iscsi)`를 참조하는 StorageClass로 PVC가 정상 Bound | StorageClass Ready; VG 여유 공간 존재 | 1) Filesystem PVC(1Gi) 생성; 2) Bound 대기 | PVC Phase=Bound; PV provisioner=`pillar-csi.bhyoo.com` | `CSI-C`, `Agent`, `LVM`, `VolCRD` |
-| 323 | `It("a Pod mounting the iSCSI PVC reaches Running on the compute-worker node")` | Pod 생성 시 compute-worker에서 iSCSI discovery/login 후 마운트 성공 | 322 성공; compute-worker에 open-iscsi 실행 가능 | 1) Pod 생성; 2) Running 대기; 3) `mount` / `lsblk` 확인 | Pod Running; pod 내부 mount 성공; node에서 active iSCSI session 1개 | `CSI-C`, `CSI-N`, `Agent`, `LVM`, `Conn`, `Mnt` |
-| 324 | `It("PVC protocol override changes the iSCSI replacement timeout for one volume only")` | PVC annotation이 단일 volume의 iSCSI timeout만 오버라이드 | Binding에 기본 `replacementTimeout=120`; PVC annotation에 `replacementTimeout=180` 지정 | 1) PVC 생성; 2) Pod 생성; 3) node session 파라미터 조회 | 해당 session만 replacement timeout 180 반영; 다른 PVC/session은 기본값 유지 | `CSI-C`, `CSI-N`, `Agent`, `Conn` |
-| 325 | `It("deleting the Pod triggers NodeUnpublish, NodeUnstage and iSCSI logout")` | Pod 삭제 시 bind mount 해제, staging 해제, session logout 수행 | 323 성공 후 Pod Running | 1) Pod 삭제; 2) node mount/session 상태 확인 | target path 정리; staging path 정리; `iscsiadm -m session`에서 세션 제거 | `CSI-N`, `Conn`, `Mnt`, `State` |
-| 326 | `It("deleting the PVC removes the exported target and destroys the LV")` | PVC 삭제 시 target export와 backend LV가 모두 정리 | 325 완료; PVC/PV 잔존 | 1) PVC 삭제; 2) PV 삭제 대기; 3) storage-worker에서 LIO target/LV 확인 | PV 제거; target export 없음; LV 삭제됨 | `CSI-C`, `Agent`, `LVM`, `VolCRD`, `gRPC` |
-
----
-
-### E34.3 Raw Block, 확장, 통계 및 재스테이징
-
-iSCSI를 단순 mount 경로가 아니라 block protocol로서 완성도 있게 제공하려면,
-raw block, online expansion, node stats, restage idempotency까지 검증해야 한다.
-
-| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
-|----|------------|------|----------|------|----------|---------|
-| 327 | `It("raw block PVC is published as an unformatted block device to the Pod")` | `volumeMode: Block` PVC가 raw block device로 publish | StorageClass Ready; block-mode PVC 생성 | 1) Block PVC 생성; 2) raw block consumer Pod 생성; 3) pod 내부 장치 확인 | pod에 block device 노출; filesystem 생성 흔적 없음; device path 접근 가능 | `CSI-C`, `CSI-N`, `Agent`, `LVM`, `Conn` |
-| 328 | `It("online expansion rescans the iSCSI session and grows the filesystem inside the running Pod")` | PVC 확장 시 backend LV와 node filesystem이 모두 커짐 | Filesystem Pod Running; `allowVolumeExpansion=true` | 1) PVC 1Gi→2Gi patch; 2) Expand 완료 대기; 3) pod 내부 `df` 확인 | PVC/PV capacity 증가; iSCSI session rescan 완료; pod 내부 filesystem 용량 증가 | `CSI-C`, `CSI-N`, `Agent`, `LVM`, `Conn`, `Mnt` |
-| 329 | `It("NodeGetVolumeStats reports bytes and inodes for filesystem volumes and bytes for raw block volumes")` | iSCSI 경로에서도 `NodeGetVolumeStats`가 filesystem/block 모드별로 올바른 usage를 반환 | 323, 327 성공 | 1) filesystem PVC에 stats 조회; 2) raw block PVC에 stats 조회 | filesystem은 bytes+inodes; raw block은 total bytes만 보고 | `CSI-N`, `Conn`, `Mnt` |
-| 330 | `It("after node plugin restart, restaging is idempotent and does not create duplicate iSCSI sessions")` | node plugin 재시작 후 재스테이징이 session 중복 없이 복구 | Filesystem Pod Running; node plugin restart 가능 | 1) node plugin 재시작; 2) workload 유지/복구 대기; 3) session 수와 mount 상태 확인 | volume 재사용 성공; 동일 volume에 중복 session 없음; mount 상태 일관 | `CSI-N`, `Conn`, `Mnt`, `State` |
-
----
-
-### E34 커버리지 요약
-
-| 소섹션 | 검증 내용 | 테스트 수 | 인프라 |
-|--------|---------|----------|--------|
-| E34.1 | iSCSI generated StorageClass, CreateVolume `VolumeContext`, Publish/Unpublish ACL | 4개 | Kind + LVM + LIO |
-| E34.2 | Filesystem PVC 프로비저닝, Pod mount, per-volume timeout override, logout/cleanup | 5개 | Kind + LVM + LIO + open-iscsi |
-| E34.3 | Raw block, online expansion, NodeGetVolumeStats, 재스테이징 멱등성 | 4개 | Kind + LVM + LIO + open-iscsi |
-| **합계** | | **13개** | ⚠️ |
-
-**CI 실행 가능 여부:**
-E34는 E33보다 호스트 요구사항이 높다. LVM 루프백 VG 외에도
-`target_core_mod`, `iscsi_target_mod`, `iscsi_tcp`, `libiscsi` 커널 모듈과
-compute-worker 측 `open-iscsi` 런타임이 필요하므로, 표준 GitHub Actions에서는
-기본적으로 비활성화하고 커널 모듈이 보장되는 self-hosted/전용 러너에서 실행한다.
-
-**MVP 범위에서 제외되는 시나리오:**
-
-- CHAP Secret 기반 인증
-- multipath / multi-portal
-- RWX
-
-이 항목들은 iSCSI 후속 phase의 제품 스코프이며, 기능이 실제로 제품에 들어간 뒤
-별도 E2E 섹션으로 추가한다.
-
----
-
-## E35: ZFS Kind 클러스터 E2E — 실제 ZFS zvol + iSCSI
-
-**테스트 유형:** D (Kind 클러스터 + 실제 ZFS zvol + 실제 iSCSI) ⚠️ Kind + 실제 ZFS + LIO/open-iscsi 필요
-
-> **목적:** E35는 `zfs-zvol` backend를 `iSCSI`로 export했을 때의 전체 제품 경로를
-> 검증한다. `PillarProtocol(type=iscsi)`와 ZFS 고유 파라미터가 함께 적용되는지,
-> `ControllerPublish/Unpublish` ACL과 `NodeStage` discovery/login/logout,
-> filesystem/raw block/확장/통계/재스테이징까지 실제 Kind 환경에서 확인한다.
-
-**인프라 요구사항:**
-
-| 항목 | 버전/사양 | 비고 |
-|------|----------|------|
-| Kind | v0.23+ | 2노드 클러스터 (storage-worker + compute-worker) |
-| Docker | 24+ | Kind 및 테스트 이미지 로드 |
-| 호스트 커널 | 5.15+ | `zfs`, `target_core_mod`, `iscsi_target_mod`, `iscsi_tcp`, `libiscsi` 모듈 필요 |
-| ZFS 도구 | `zpool`, `zfs` | storage-worker 측에서 실제 zvol 생성/삭제 |
-| `/dev/zvol` | udev 활성화 | zvol 블록 장치 노출 필요 |
-| configfs | `/sys/kernel/config` | storage-worker에서 LIO target export용 |
-| open-iscsi | `iscsiadm`, `iscsid` | compute-worker 측 node image에 번들 |
-| pillar-csi 이미지 | 로컬 빌드 | `make docker-build` |
-| `PILLAR_E2E_ZFS_POOL` | 환경변수 | 테스트용 zpool 이름 |
-| `PILLAR_E2E_ZFS_PARENT_DATASET` | 환경변수 (선택) | zvol parent dataset 검증용 |
-| `PILLAR_E2E_ISCSI_PORT` | 환경변수 (선택) | 기본값 `3260` |
-
-**빌드 태그:** `//go:build e2e`
-
-```
-실행 명령:
-  go test ./test/e2e/ -tags=e2e -v --ginkgo.label-filter="iscsi && zfs"
-
-특정 그룹만:
-  go test ./test/e2e/ -tags=e2e -v --ginkgo.label-filter="iscsi && zfs && controlplane"
-  go test ./test/e2e/ -tags=e2e -v --ginkgo.label-filter="iscsi && zfs && mount"
-  go test ./test/e2e/ -tags=e2e -v --ginkgo.label-filter="iscsi && zfs && expansion"
-```
-
-**위치(신규 작성 필요):**
-
-- `test/e2e/zfs_iscsi_core_rpcs_e2e_test.go`
-- `test/e2e/zfs_iscsi_pvc_pod_mount_e2e_test.go`
-- `test/e2e/zfs_iscsi_volume_expansion_e2e_test.go`
-
----
-
-### E35.1 zvol 백엔드 제어면 및 export 계약
-
-`PillarStore(type=zfs-zvol)`과 `PillarProtocol(type=iscsi)` 조합이 만들어내는
-generated `StorageClass`, `CreateVolume`, `ControllerPublish`, `ControllerUnpublish`
-계약을 검증한다. 핵심은 ZFS 고유 파라미터가 유지된 채 iSCSI 연결 정보가
-런타임 `VolumeContext`로 노출되고, publish/unpublish ACL이 `CSINode` annotation에서
-해석한 initiator IQN에 맞춰 동작하는지 확인하는 것이다.
-
-| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
-|----|------------|------|----------|------|----------|---------|
-| 331 | `It("PillarStorageClass generates an iSCSI StorageClass for zfs-zvol pools without losing zvol parameters")` | generated StorageClass가 `backend-type=zfs-zvol`, pool/zvol 파라미터, `protocol-type=iscsi`, iSCSI timer 파라미터를 함께 포함 | Kind; PillarAgent Ready; PillarStore(type=zfs-zvol); PillarProtocol(type=iscsi) 생성 | 1) PillarStorageClass 생성; 2) StorageClass 조회 | StorageClass 존재; `parameters["pillar-csi.bhyoo.com/backend-type"]=="zfs-zvol"`; `protocol-type=iscsi`; pool/zvol 파라미터와 iSCSI 파라미터가 모두 유지 | `CSI-C`, `TgtCRD`, `gRPC`, `ZFS` |
-| 332 | `It("CreateVolume provisions a zvol-backed volume and returns target IQN, portal, port and LUN in VolumeContext")` | zvol-backed iSCSI CreateVolume이 PV `VolumeContext`에 target IQN, portal IP, port, LUN을 기록하고 backend zvol을 준비 | StorageClass Ready; agent가 ZFS zvol 생성 및 iSCSI export 가능 | 1) PVC 생성; 2) PV/PillarVolumeState 생성 대기; 3) PV `spec.csi.volumeAttributes`와 PillarVolumeState 상태 조회 | `target_id`는 IQN 형식; `address`는 storage-worker IP; `port==3260`(또는 override 값); `volume_ref`는 LUN 문자열; backend path가 `/dev/zvol/` 아래에 존재 | `CSI-C`, `Agent`, `ZFS`, `VolCRD`, `gRPC` |
-| 333 | `It("ControllerPublishVolume resolves the compute-worker initiator IQN from CSINode annotations for a zvol-backed target")` | `ControllerPublishVolume`이 `CSINode` annotation의 compute-worker initiator IQN을 사용해 zvol-backed target ACL을 추가 | PVC Bound; Pod 미생성; compute-worker node image에 initiator IQN 설정; `CSINode` annotation publish 완료 | 1) Pod 생성; 2) ControllerPublish 발생; 3) storage-worker의 LIO ACL 조회 | Pod Running; 해당 target ACL에 `CSINode` annotation과 같은 compute-worker IQN 존재 | `CSI-C`, `Agent`, `ZFS`, `gRPC` |
-| 334 | `It("ControllerUnpublishVolume revokes the CSINode-derived initiator IQN ACL without deleting the zvol-backed target before PVC cleanup")` | Pod 삭제 시 동일 IQN ACL만 제거되고 export 삭제는 PVC 삭제 단계까지 보류 | 333 성공 후 Pod Running | 1) Pod 삭제; 2) ControllerUnpublish 완료 대기; 3) LIO ACL/target 조회 | target ACL에서 해당 IQN 제거; target export는 PVC 삭제 전까지 유지; 다른 volume/session 영향 없음 | `CSI-C`, `Agent`, `ZFS`, `gRPC` |
-
----
-
-### E35.2 zvol-backed Filesystem PVC 및 Pod 마운트
-
-이 섹션은 ZFS backend 고유 파라미터가 유지된 상태에서 iSCSI filesystem PVC가
-실제로 Bound 되고, compute-worker에서 discovery/login/mount 후 앱이 사용할 수
-있는지 검증한다.
-
-| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
-|----|------------|------|----------|------|----------|---------|
-| 335 | `It("filesystem PVC becomes Bound via ZFS zvol + iSCSI")` | `PillarProtocol(type=iscsi)`를 참조하는 zfs-zvol StorageClass로 PVC가 정상 Bound | StorageClass Ready; zpool 여유 공간 존재 | 1) Filesystem PVC(1Gi) 생성; 2) Bound 대기 | PVC Phase=Bound; PV provisioner=`pillar-csi.bhyoo.com`; backend는 zvol | `CSI-C`, `Agent`, `ZFS`, `VolCRD` |
-| 336 | `It("a Pod mounting the zvol-backed iSCSI PVC reaches Running on the compute-worker node")` | Pod 생성 시 compute-worker에서 iSCSI discovery/login 후 마운트 성공 | 335 성공; compute-worker에 open-iscsi 실행 가능 | 1) Pod 생성; 2) Running 대기; 3) `mount` / `lsblk` 확인 | Pod Running; pod 내부 mount 성공; node에서 active iSCSI session 1개 | `CSI-C`, `CSI-N`, `Agent`, `ZFS`, `Conn`, `Mnt` |
-| 337 | `It("zfs-specific volume parameters remain effective when the protocol is iSCSI")` | `zfs-parent-dataset`, `compression` 같은 ZFS 파라미터가 iSCSI 경로에서도 유지 | Binding 또는 pool에 ZFS 파라미터 설정; `PILLAR_E2E_ZFS_PARENT_DATASET` 준비 | 1) PVC 생성; 2) Pod 생성; 3) storage-worker에서 `zfs list` / `zfs get` 확인 | zvol이 기대 parent dataset 아래 생성; 설정한 ZFS 속성 유지; Pod Running | `CSI-C`, `CSI-N`, `Agent`, `ZFS`, `VolCRD` |
-| 338 | `It("deleting the Pod triggers NodeUnpublish, NodeUnstage and iSCSI logout for the zvol-backed volume")` | Pod 삭제 시 bind mount 해제, staging 해제, session logout 수행 | 336 성공 후 Pod Running | 1) Pod 삭제; 2) node mount/session 상태 확인 | target path 정리; staging path 정리; `iscsiadm -m session`에서 세션 제거 | `CSI-N`, `Conn`, `Mnt`, `State` |
-| 339 | `It("deleting the PVC removes the exported target and destroys the zvol")` | PVC 삭제 시 target export와 backend zvol이 모두 정리 | 338 완료; PVC/PV 잔존 | 1) PVC 삭제; 2) PV 삭제 대기; 3) storage-worker에서 LIO target/zvol 확인 | PV 제거; target export 없음; `zfs list`에 zvol 없음 | `CSI-C`, `Agent`, `ZFS`, `VolCRD`, `gRPC` |
-
----
-
-### E35.3 Raw Block, 확장, 통계 및 재스테이징
-
-ZFS zvol을 iSCSI로 제공하는 경로에서도 raw block, online expansion,
-node stats, restage idempotency까지 동일 수준으로 제공해야 한다.
-
-| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
-|----|------------|------|----------|------|----------|---------|
-| 340 | `It("raw block PVC is published as an unformatted block device from a zvol-backed iSCSI LUN")` | `volumeMode: Block` PVC가 zvol-backed raw block device로 publish | StorageClass Ready; block-mode PVC 생성 | 1) Block PVC 생성; 2) raw block consumer Pod 생성; 3) pod 내부 장치 확인 | pod에 block device 노출; filesystem 생성 흔적 없음; device path 접근 가능 | `CSI-C`, `CSI-N`, `Agent`, `ZFS`, `Conn` |
-| 341 | `It("online expansion grows the zvol, rescans the iSCSI session and expands the filesystem inside the running Pod")` | PVC 확장 시 backend zvol과 node filesystem이 모두 커짐 | Filesystem Pod Running; `allowVolumeExpansion=true` | 1) PVC 1Gi→2Gi patch; 2) Expand 완료 대기; 3) storage-worker `zfs list`; 4) pod 내부 `df` 확인 | PVC/PV capacity 증가; zvol size 증가; iSCSI session rescan 완료; pod 내부 filesystem 용량 증가 | `CSI-C`, `CSI-N`, `Agent`, `ZFS`, `Conn`, `Mnt` |
-| 342 | `It("NodeGetVolumeStats reports bytes and inodes for filesystem volumes and bytes for raw block volumes on zvol-backed iSCSI volumes")` | iSCSI + zvol 경로에서도 `NodeGetVolumeStats`가 filesystem/block 모드별로 올바른 usage를 반환 | 336, 340 성공 | 1) filesystem PVC에 stats 조회; 2) raw block PVC에 stats 조회 | filesystem은 bytes+inodes; raw block은 total bytes만 보고 | `CSI-N`, `Conn`, `Mnt` |
-| 343 | `It("after node plugin restart, restaging is idempotent and does not create duplicate iSCSI sessions for the same zvol-backed volume")` | node plugin 재시작 후 재스테이징이 session 중복 없이 복구 | Filesystem Pod Running; node plugin restart 가능 | 1) node plugin 재시작; 2) workload 유지/복구 대기; 3) session 수와 mount 상태 확인 | volume 재사용 성공; 동일 volume에 중복 session 없음; mount 상태 일관 | `CSI-N`, `Conn`, `Mnt`, `State` |
-
----
-
-### E35 커버리지 요약
-
-| 소섹션 | 검증 내용 | 테스트 수 | 인프라 |
-|--------|---------|----------|--------|
-| E35.1 | zvol+iSCSI generated StorageClass, CreateVolume `VolumeContext`, Publish/Unpublish ACL | 4개 | Kind + ZFS + LIO |
-| E35.2 | Filesystem PVC 프로비저닝, Pod mount, ZFS 파라미터 유지, logout/cleanup | 5개 | Kind + ZFS + LIO + open-iscsi |
-| E35.3 | Raw block, online expansion, NodeGetVolumeStats, 재스테이징 멱등성 | 4개 | Kind + ZFS + LIO + open-iscsi |
-| **합계** | | **13개** | ⚠️ |
-
-**CI 실행 가능 여부:**
-E35는 E34보다도 호스트 요구사항이 높다. `zfs` 커널 모듈과 실제 zpool,
-`/dev/zvol` 장치 생성, `target_core_mod`, `iscsi_target_mod`, `iscsi_tcp`,
-`libiscsi` 커널 모듈, compute-worker 측 `open-iscsi` 런타임이 모두 필요하므로
-표준 GitHub Actions에서는 실행하지 않고 ZFS/iSCSI가 보장되는 self-hosted/전용
-러너에서만 실행한다.
-
-**MVP 범위에서 제외되는 시나리오:**
-
-- CHAP Secret 기반 인증
-- multipath / multi-portal
-- RWX
-- snapshot/clone 전용 iSCSI UX
-
-이 항목들은 iSCSI 후속 phase의 제품 스코프이며, 기능이 실제로 제품에 들어간 뒤
-별도 E2E 섹션으로 추가한다.
 
 ---
 

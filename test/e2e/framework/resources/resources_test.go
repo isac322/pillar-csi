@@ -541,8 +541,7 @@ func TestPillarAgent_NameFromResourceName(t *testing.T) {
 func TestPillarStore_BasicFields(t *testing.T) {
 	f := resources.New("E1.1")
 	backend := pillarv1alpha1.BackendSpec{
-		Type: pillarv1alpha1.BackendTypeLVMLV,
-		LVM:  &pillarv1alpha1.LVMBackendConfig{VolumeGroup: "data-vg"},
+		LVM: &pillarv1alpha1.LVMBackendConfig{VolumeGroup: "data-vg"},
 	}
 	pp := f.PillarStore("pool", "my-target", backend, nil)
 
@@ -552,8 +551,8 @@ func TestPillarStore_BasicFields(t *testing.T) {
 	if pp.Spec.AgentRef != "my-target" {
 		t.Errorf("PillarStore AgentRef = %q, want my-target", pp.Spec.AgentRef)
 	}
-	if pp.Spec.Backend.Type != pillarv1alpha1.BackendTypeLVMLV {
-		t.Errorf("PillarStore backend type = %q, want lvm-lv", pp.Spec.Backend.Type)
+	if pp.Spec.Backend.Kind() != pillarv1alpha1.BackendIDLVMLV {
+		t.Errorf("PillarStore backend kind = %q, want lvm-lv", pp.Spec.Backend.Kind())
 	}
 	if pp.Labels[resources.LabelManagedBy] != "e2e-fixture" {
 		t.Errorf("PillarStore missing TC label")
@@ -565,16 +564,17 @@ func TestPillarStore_BasicFields(t *testing.T) {
 func TestPillarProtocol_BasicFields(t *testing.T) {
 	f := resources.New("E1.1")
 	spec := pillarv1alpha1.PillarProtocolSpec{
-		Type:      pillarv1alpha1.ProtocolTypeNVMeOFTCP,
-		NVMeOFTCP: &pillarv1alpha1.NVMeOFTCPConfig{Port: 4420},
+		Protocol: pillarv1alpha1.ProtocolSpec{
+			NVMeOFTCP: &pillarv1alpha1.NVMeOFTCPConfig{Port: 4420},
+		},
 	}
 	ppr := f.PillarProtocol("proto", spec, nil)
 
 	if ppr == nil {
 		t.Fatal("PillarProtocol() returned nil")
 	}
-	if ppr.Spec.Type != pillarv1alpha1.ProtocolTypeNVMeOFTCP {
-		t.Errorf("PillarProtocol type = %q, want nvmeof-tcp", ppr.Spec.Type)
+	if ppr.Spec.Protocol.Kind() != pillarv1alpha1.ProtocolIDNVMeOFTCP {
+		t.Errorf("PillarProtocol kind = %q, want nvmeof-tcp", ppr.Spec.Protocol.Kind())
 	}
 	if ppr.Namespace != "" {
 		t.Errorf("PillarProtocol.Namespace should be empty (cluster-scoped)")

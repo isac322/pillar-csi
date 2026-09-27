@@ -246,6 +246,7 @@ var _ = Describe("F27: 실제 LVM LV 생성/삭제/확장/용량",
 			})
 
 			resp, err := agentClient.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
+				BackendType:   agentv1.BackendType_BACKEND_TYPE_LVM,
 				VolumeId:      volID,
 				Fence:         agentLifecycleFence(volID),
 				CapacityBytes: 10 << 20, // 10 MiB
@@ -290,6 +291,7 @@ var _ = Describe("F27: 실제 LVM LV 생성/삭제/확장/용량",
 			})
 
 			resp, err := agentClient.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
+				BackendType:   agentv1.BackendType_BACKEND_TYPE_LVM,
 				VolumeId:      volID,
 				Fence:         agentLifecycleFence(volID),
 				CapacityBytes: 10 << 20,
@@ -329,6 +331,7 @@ var _ = Describe("F27: 실제 LVM LV 생성/삭제/확장/용량",
 			})
 
 			req := &agentv1.CreateVolumeRequest{
+				BackendType:   agentv1.BackendType_BACKEND_TYPE_LVM,
 				VolumeId:      volID,
 				Fence:         agentLifecycleFence(volID),
 				CapacityBytes: 10 << 20,
@@ -357,6 +360,7 @@ var _ = Describe("F27: 실제 LVM LV 생성/삭제/확장/용량",
 			volName := fmt.Sprintf("f27-del-%d", GinkgoParallelProcess())
 			volID := vg + "/" + volName
 			createResp, err := agentClient.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
+				BackendType:   agentv1.BackendType_BACKEND_TYPE_LVM,
 				VolumeId:      volID,
 				Fence:         agentLifecycleFence(volID),
 				CapacityBytes: 10 << 20,
@@ -393,6 +397,7 @@ var _ = Describe("F27: 실제 LVM LV 생성/삭제/확장/용량",
 			volName := fmt.Sprintf("f27-exp-%d", GinkgoParallelProcess())
 			volID := vg + "/" + volName
 			createResp, err := agentClient.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
+				BackendType:   agentv1.BackendType_BACKEND_TYPE_LVM,
 				VolumeId:      volID,
 				Fence:         agentLifecycleFence(volID),
 				CapacityBytes: 10 << 20,
@@ -471,6 +476,7 @@ var _ = Describe("F27: 실제 LVM LV 생성/삭제/확장/용량",
 			volID := vg + "/" + volName
 
 			_, err = agentClient.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
+				BackendType:   agentv1.BackendType_BACKEND_TYPE_LVM,
 				VolumeId:      volID,
 				Fence:         agentLifecycleFence(volID),
 				CapacityBytes: oversized,
@@ -497,6 +503,7 @@ var _ = Describe("F27: 실제 LVM LV 생성/삭제/확장/용량",
 			})
 
 			resp, err := agentClient.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
+				BackendType:   agentv1.BackendType_BACKEND_TYPE_LVM,
 				VolumeId:      volID,
 				Fence:         agentLifecycleFence(volID),
 				CapacityBytes: requestedBytes,
@@ -542,6 +549,7 @@ var _ = Describe("F28: 실제 LVM + NVMe-oF configfs 내보내기",
 			volID = vg + "/" + volName
 
 			resp, err := agentClient.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
+				BackendType:   agentv1.BackendType_BACKEND_TYPE_LVM,
 				VolumeId:      volID,
 				Fence:         agentLifecycleFence(volID),
 				CapacityBytes: 32 << 20,
@@ -653,6 +661,7 @@ var _ = Describe("F29: 실제 LVM + NVMe-oF TCP 연결",
 			nqn = fVolumeNQN(volID)
 
 			resp, err := agentClient.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
+				BackendType:   agentv1.BackendType_BACKEND_TYPE_LVM,
 				VolumeId:      volID,
 				Fence:         agentLifecycleFence(volID),
 				CapacityBytes: 32 << 20,
@@ -747,6 +756,7 @@ var _ = Describe("F29: 실제 LVM + NVMe-oF TCP 연결",
 
 			By("creating LV")
 			createResp, err := agentClient.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
+				BackendType:   agentv1.BackendType_BACKEND_TYPE_LVM,
 				VolumeId:      fullVolID,
 				Fence:         agentLifecycleFence(fullVolID),
 				CapacityBytes: 32 << 20,

@@ -823,39 +823,33 @@ func buildDiscoveredPools(pools []*agentv1.PoolInfo) []pillarcsiv1alpha1.Discove
 	return result
 }
 
+// unknownCapability is reported for an agent backend or protocol enum value
+// that has no served API member (e.g. a variant the proto defines but the
+// driver does not implement), so it can never satisfy a PillarStore's
+// BackendSupported check.
+const unknownCapability = "unknown"
+
 // backendTypeToString converts an agentv1.BackendType proto enum to the
-// lowercase kebab-case string used in pillar-csi API types (e.g. "zfs-zvol").
+// backend routing token of the served API (pillarcsiv1alpha1.BackendID).
 func backendTypeToString(bt agentv1.BackendType) string {
 	switch bt {
 	case agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL:
-		return "zfs-zvol"
-	case agentv1.BackendType_BACKEND_TYPE_ZFS_DATASET:
-		return "zfs-dataset"
+		return string(pillarcsiv1alpha1.BackendIDZFSZvol)
 	case agentv1.BackendType_BACKEND_TYPE_LVM:
-		return "lvm-lv"
-	case agentv1.BackendType_BACKEND_TYPE_BLOCK_DEVICE:
-		return "block-device"
-	case agentv1.BackendType_BACKEND_TYPE_DIRECTORY:
-		return "dir"
+		return string(pillarcsiv1alpha1.BackendIDLVMLV)
 	default:
-		return strings.ToLower(bt.String())
+		return unknownCapability
 	}
 }
 
 // protocolTypeToString converts an agentv1.ProtocolType proto enum to the
-// lowercase kebab-case string used in pillar-csi API types (e.g. "nvmeof-tcp").
+// protocol routing token of the served API (pillarcsiv1alpha1.ProtocolID).
 func protocolTypeToString(pt agentv1.ProtocolType) string {
 	switch pt {
 	case agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP:
-		return "nvmeof-tcp"
-	case agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI:
-		return "iscsi"
-	case agentv1.ProtocolType_PROTOCOL_TYPE_NFS:
-		return "nfs"
-	case agentv1.ProtocolType_PROTOCOL_TYPE_SMB:
-		return "smb"
+		return string(pillarcsiv1alpha1.ProtocolIDNVMeOFTCP)
 	default:
-		return strings.ToLower(pt.String())
+		return unknownCapability
 	}
 }
 

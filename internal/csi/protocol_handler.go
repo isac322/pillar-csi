@@ -23,20 +23,19 @@ import "context"
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ProtocolHandler abstracts transport-level operations for different storage
-// protocols. Each protocol (NVMe-oF TCP, iSCSI, NFS, SMB) provides its own
-// implementation. The three layers of the node runtime are:
+// protocols. Each served protocol (NVMe-oF TCP) provides its own
+// implementation; iSCSI, NFS and SMB are designed in docs/PRD.md but not
+// implemented. The three layers of the node runtime are:
 //
 //  1. ProtocolHandler (Layer 1): transport/session setup and teardown.
 //  2. VolumePresenter (Layer 2): convert Layer 1 output to workload-accessible form.
 //  3. CSI node orchestration (Layer 3): NodeStage/Unstage/Publish/Unpublish/Expand.
 type ProtocolHandler interface {
 	// Attach establishes the transport connection and returns either:
-	//   - Block protocols (NVMe-oF, iSCSI): the local block device path
-	//     (e.g. /dev/nvme0n1 or /dev/disk/by-path/ip-<ip>:3260-iscsi-<iqn>-lun-<lun>)
-	//     via AttachResult.DevicePath.
-	//   - File protocols (NFS, SMB): the mount source string
-	//     (e.g. "192.168.1.10:/export/vol1" or "//192.168.1.10/share")
-	//     via AttachResult.MountSource.
+	//   - Block protocols (NVMe-oF): the local block device path
+	//     (e.g. /dev/nvme0n1) via AttachResult.DevicePath.
+	//   - File protocols (not implemented): the mount source string via
+	//     AttachResult.MountSource.
 	//
 	// The returned AttachResult indicates which presentation path Layer 3 should
 	// follow (block vs. file).
@@ -63,7 +62,7 @@ type ProtocolHandler interface {
 // protocol; protocol handlers interpret fields according to their own semantics.
 type AttachParams struct {
 	// ProtocolType identifies the storage protocol.
-	// Known values: "nvmeof-tcp", "iscsi", "nfs", "smb".
+	// Known values: "nvmeof-tcp" (the only implemented protocol).
 	ProtocolType string
 
 	// ConnectionID is the protocol-specific identifier for the transport target:
@@ -132,7 +131,7 @@ type AttachResult struct {
 // ProtocolState is the opaque, per-protocol state that ProtocolHandler.Detach
 // and ProtocolHandler.Rescan need to identify and tear down a transport
 // connection. Each protocol handler defines its own concrete implementation
-// (e.g. *NVMeoFStageState, *ISCSIStageState) and type-asserts the received
+// (e.g. *NVMeoFProtocolState) and type-asserts the received
 // value to its own type.
 //
 // ProtocolState values are serialized into nodeStageState JSON on disk and

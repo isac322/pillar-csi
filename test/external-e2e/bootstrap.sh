@@ -149,9 +149,7 @@ helm upgrade --install "${HELM_RELEASE}" "${REPO_ROOT}/charts/pillar-csi" \
   --set "agent.image.tag=${IMAGE_TAG}" \
   --set "agent.image.pullPolicy=Never" \
   --set "agent.privileged=true" \
-  --set-string "agent.extraArgs[0]=--backend" \
-  --set-string "agent.extraArgs[1]=type=lvm-lv\,vg=${VG_NAME}" \
-  --set-string "agent.extraArgs[2]=--listen-address=:9500" \
+  --set "agent.backends[0].lvm.volumeGroup=${VG_NAME}" \
   --set "webhook.enabled=false"
 
 # ── 5. Apply PillarAgent / PillarStore / PillarProtocol ─────────────────────
@@ -174,7 +172,6 @@ metadata:
 spec:
   agentRef: pillar-target-default
   backend:
-    type: lvm-lv
     lvm:
       volumeGroup: ${VG_NAME}
 ---
@@ -183,10 +180,9 @@ kind: PillarProtocol
 metadata:
   name: nvmeof-tcp
 spec:
-  type: nvmeof-tcp
-  nvmeofTcp:
-    port: 4420
-  fsType: ext4
+  protocol:
+    nvmeofTcp:
+      port: 4420
 EOF
 
 # ── 6. Wait for PillarAgent Ready ──────────────────────────────────────────

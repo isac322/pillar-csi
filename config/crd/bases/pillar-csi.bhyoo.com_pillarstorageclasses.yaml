@@ -38,9 +38,9 @@ spec:
         description: |-
           PillarStorageClass combines a PillarStore and a PillarProtocol to create a
           Kubernetes StorageClass.  A validation webhook rejects incompatible
-          backend/protocol combinations (e.g. block backend with NFS).
+          backend/protocol combinations (e.g. a block backend with a file protocol).
           Parameter overrides allow fine-tuning per binding without changing the
-          shared pool or protocol resources.
+          shared store or protocol resources.
         properties:
           apiVersion:
             description: |-
@@ -60,26 +60,66 @@ spec:
           metadata:
             type: object
           spec:
-            description: spec defines the desired state of PillarStorageClass.
+            description: PillarStorageClassSpec defines the desired state of PillarStorageClass.
             properties:
+              filesystem:
+                description: |-
+                  filesystem configures the filesystem axis for volumes of this binding:
+                  which filesystem the node formats and which mount options it applies.
+                properties:
+                  fsType:
+                    default: ext4
+                    description: |-
+                      fsType is the filesystem the node formats a new volume with when
+                      volumeMode is Filesystem.
+                    enum:
+                    - ext4
+                    - xfs
+                    type: string
+                  mkfsOptions:
+                    description: |-
+                      mkfsOptions are additional mkfs arguments used when the node formats a
+                      new volume; a volume that already carries a filesystem is never
+                      reformatted.  Each element is one argv element (no shell); only
+                      filesystem tuning flags of the formatted type are accepted.
+                      A null/omitted value inherits the options of the layer below; an
+                      explicit empty list [] clears them.
+                    items:
+                      type: string
+                    type: array
+                  mountOptions:
+                    description: |-
+                      mountOptions are the mount options the node applies when mounting a
+                      Filesystem-mode volume.  On a PillarStorageClass they are written to
+                      the generated Kubernetes StorageClass's mountOptions; a PVC annotation
+                      value overrides them for that volume.
+                      A null/omitted value inherits the options of the layer below; an
+                      explicit empty list [] clears them.
+                    items:
+                      type: string
+                    type: array
+                type: object
               overrides:
                 description: |-
                   overrides provides a fine-grained parameter layer on top of the
-                  referenced pool and protocol defaults.
+                  referenced store and protocol defaults.
                 properties:
                   backend:
-                    description: backend contains backend-specific parameter overrides.
+                    description: |-
+                      backend contains backend tunable overrides (same shape as the
+                      pillar-csi.bhyoo.com/backend PVC annotation document).
                     properties:
                       lvm:
-                        description: lvm overrides LVM-specific parameters; used when
-                          the pool backend is lvm-lv.
+                        description: |-
+                          lvm overrides LVM-specific tunables; valid only when the store's
+                          backend is lvm.
                         properties:
                           provisioningMode:
                             description: |-
-                              provisioningMode overrides the LVM provisioning mode for this binding.
-                              Accepted values: "linear" (fully-allocated LV) or "thin"
-                              (thin-provisioned LV inside the backend's thin pool).
-                              When omitted, the PillarStore-level default is used.
+                              provisioningMode overrides the LVM provisioning mode for this volume or
+                              binding: "linear" (fully-allocated LV) or "thin" (thin-provisioned LV
+                              inside the backend's thin pool).  When omitted, the PillarStore-level
+                              value is used.
                             enum:
                             - linear
                             - thin
@@ -87,56 +127,40 @@ spec:
                         type: object
                       zfs:
                         description: |-
-                          zfs overrides ZFS-specific properties; used when the pool backend is
-                          zfs-zvol or zfs-dataset.
+                          zfs overrides ZFS-specific tunables; valid only when the store's
+                          backend is zfs.
                         properties:
                           properties:
                             additionalProperties:
                               type: string
                             description: |-
                               properties are arbitrary ZFS properties that override pool defaults
-                              (e.g. volblocksize, compression).
+                              (e.g. volblocksize, compression).  Entries merge key-wise onto the
+                              PillarStore's zfs.properties.
                             type: object
                         type: object
                     type: object
-                  fsType:
-                    description: |-
-                      fsType overrides the protocol-level fsType for this binding.
-                      Only relevant for block protocols with volumeMode: Filesystem.
-                    enum:
-                    - ext4
-                    - xfs
-                    type: string
-                  mkfsOptions:
-                    description: |-
-                      mkfsOptions overrides the protocol-level mkfsOptions for this binding.
-                      Each element is one mkfs argv element (no shell); only filesystem
-                      tuning flags are accepted.  A PVC fs-override mkfsOptions replaces it.
-                    items:
-                      type: string
-                    type: array
+                    x-kubernetes-validations:
+                    - message: exactly one of zfs or lvm must be set
+                      rule: '(has(self.zfs) ? 1 : 0) + (has(self.lvm) ? 1 : 0) ==
+                        1'
                   protocol:
-                    description: protocol contains protocol-specific parameter overrides.
+                    description: |-
+                      protocol contains protocol tunable overrides (same shape as the
+                      pillar-csi.bhyoo.com/protocol PVC annotation document).
                     properties:
-                      iscsi:
-                        description: iscsi overrides iSCSI parameters.
-                        properties:
-                          loginTimeout:
-                            description: loginTimeout overrides the protocol-level
-                              loginTimeout.
-                            format: int32
-                            minimum: 0
-                            type: integer
-                          replacementTimeout:
-                            description: replacementTimeout overrides the protocol-level
-                              replacementTimeout.
-                            format: int32
-                            minimum: 0
-                            type: integer
-                        type: object
                       nvmeofTcp:
-                        description: nvmeofTcp overrides NVMe-oF/TCP parameters.
+                        description: |-
+                          nvmeofTcp overrides NVMe-oF/TCP tunables; valid only when the
+                          protocol's member is nvmeofTcp.
                         properties:
+                          ctrlLossTmo:
+                            description: |-
+                              ctrlLossTmo overrides the protocol-level ctrlLossTmo (seconds before
+                              declaring a target permanently lost).
+                            format: int32
+                            minimum: 0
+                            type: integer
                           inCapsuleDataSize:
                             description: |-
                               inCapsuleDataSize overrides the protocol-level inCapsuleDataSize (the
@@ -153,18 +177,19 @@ spec:
                             maximum: 1024
                             minimum: 16
                             type: integer
-                        type: object
-                      smb:
-                        description: smb overrides SMB/CIFS parameters.
-                        properties:
-                          port:
-                            description: port overrides the protocol-level SMB port.
+                          reconnectDelay:
+                            description: |-
+                              reconnectDelay overrides the protocol-level reconnectDelay (seconds
+                              between reconnect attempts).
                             format: int32
-                            maximum: 65535
-                            minimum: 1
+                            minimum: 0
                             type: integer
                         type: object
                     type: object
+                    x-kubernetes-validations:
+                    - message: 'exactly one protocol member must be set (supported:
+                        nvmeofTcp)'
+                      rule: has(self.nvmeofTcp)
                 type: object
               protocolRef:
                 description: protocolRef is the name of the PillarProtocol used to
@@ -216,7 +241,7 @@ spec:
             - storeRef
             type: object
           status:
-            description: status reflects the reconciler-observed state of this binding.
+            description: PillarStorageClassStatus defines the observed state of PillarStorageClass.
             properties:
               conditions:
                 description: |-
@@ -226,7 +251,7 @@ spec:
                   - "StoreReady"           – the referenced PillarStore is in Ready state.
                   - "ProtocolValid"       – the referenced PillarProtocol exists and is valid.
                   - "Compatible"          – the pool backend and protocol are compatible
-                                            (e.g. block backend cannot be combined with NFS).
+                                            (e.g. block backend cannot be combined with a file protocol).
                   - "StorageClassCreated" – the Kubernetes StorageClass has been created.
                   - "Ready"               – all checks pass; the binding is operational.
                 items:
@@ -291,8 +316,6 @@ spec:
                 description: storageClassName is the name of the generated StorageClass.
                 type: string
             type: object
-        required:
-        - spec
         type: object
     served: true
     storage: true

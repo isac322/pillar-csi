@@ -1349,129 +1349,6 @@ func TestStageState_DiscriminatedUnion_NVMeoF(t *testing.T) {
 	if got.NVMeoF.Port != want.NVMeoF.Port {
 		t.Errorf("Port = %q, want %q", got.NVMeoF.Port, want.NVMeoF.Port)
 	}
-	// Other protocol sub-structs must remain nil.
-	if got.ISCSI != nil {
-		t.Errorf("ISCSI = %+v, want nil", got.ISCSI)
-	}
-	if got.NFS != nil {
-		t.Errorf("NFS = %+v, want nil", got.NFS)
-	}
-	if got.SMB != nil {
-		t.Errorf("SMB = %+v, want nil", got.SMB)
-	}
-}
-
-// TestStageState_DiscriminatedUnion_NFS verifies that an NFS state file
-// roundtrips correctly and only the NFS sub-struct is populated.
-func TestStageState_DiscriminatedUnion_NFS(t *testing.T) {
-	t.Parallel()
-
-	srv := NewNodeServerWithStateDir("n", nil, nil, t.TempDir())
-	const volumeID = "pool/nfs-vol"
-
-	want := &nodeStageState{
-		ProtocolType: "nfs",
-		NFS: &NFSStageState{
-			Server:     "192.168.1.20",
-			ExportPath: "/mnt/tank/pvc-abc123",
-		},
-	}
-
-	if err := srv.writeStageState(volumeID, want); err != nil {
-		t.Fatalf("writeStageState: %v", err)
-	}
-	got, err := srv.readStageState(volumeID)
-	if err != nil {
-		t.Fatalf("readStageState: %v", err)
-	}
-	if got == nil {
-		t.Fatal("readStageState returned nil")
-	}
-	if got.ProtocolType != "nfs" {
-		t.Errorf("ProtocolType = %q, want %q", got.ProtocolType, "nfs")
-	}
-	if got.NFS == nil {
-		t.Fatal("NFS sub-struct is nil")
-	}
-	if got.NFS.Server != want.NFS.Server {
-		t.Errorf("Server = %q, want %q", got.NFS.Server, want.NFS.Server)
-	}
-	if got.NFS.ExportPath != want.NFS.ExportPath {
-		t.Errorf("ExportPath = %q, want %q", got.NFS.ExportPath, want.NFS.ExportPath)
-	}
-	if got.NVMeoF != nil {
-		t.Errorf("NVMeoF = %+v, want nil", got.NVMeoF)
-	}
-}
-
-// TestStageState_DiscriminatedUnion_ISCSI verifies iSCSI state roundtrip.
-func TestStageState_DiscriminatedUnion_ISCSI(t *testing.T) {
-	t.Parallel()
-
-	srv := NewNodeServerWithStateDir("n", nil, nil, t.TempDir())
-	const volumeID = "pool/iscsi-vol"
-
-	want := &nodeStageState{
-		ProtocolType: "iscsi",
-		ISCSI: &ISCSIStageState{
-			TargetIQN: "iqn.2024-01.com.example:vol1",
-			Portal:    "192.168.1.30:3260",
-			LUN:       0,
-		},
-	}
-
-	if err := srv.writeStageState(volumeID, want); err != nil {
-		t.Fatalf("writeStageState: %v", err)
-	}
-	got, err := srv.readStageState(volumeID)
-	if err != nil {
-		t.Fatalf("readStageState: %v", err)
-	}
-	if got == nil || got.ISCSI == nil {
-		t.Fatal("iSCSI state not restored after roundtrip")
-	}
-	if got.ProtocolType != "iscsi" {
-		t.Errorf("ProtocolType = %q, want %q", got.ProtocolType, "iscsi")
-	}
-	if got.ISCSI.TargetIQN != want.ISCSI.TargetIQN {
-		t.Errorf("TargetIQN = %q, want %q", got.ISCSI.TargetIQN, want.ISCSI.TargetIQN)
-	}
-	if got.ISCSI.Portal != want.ISCSI.Portal {
-		t.Errorf("Portal = %q, want %q", got.ISCSI.Portal, want.ISCSI.Portal)
-	}
-}
-
-// TestStageState_DiscriminatedUnion_SMB verifies SMB state roundtrip.
-func TestStageState_DiscriminatedUnion_SMB(t *testing.T) {
-	t.Parallel()
-
-	srv := NewNodeServerWithStateDir("n", nil, nil, t.TempDir())
-	const volumeID = "pool/smb-vol"
-
-	want := &nodeStageState{
-		ProtocolType: "smb",
-		SMB: &SMBStageState{
-			Server: "192.168.1.40",
-			Share:  "pvc-smb1",
-		},
-	}
-
-	if err := srv.writeStageState(volumeID, want); err != nil {
-		t.Fatalf("writeStageState: %v", err)
-	}
-	got, err := srv.readStageState(volumeID)
-	if err != nil {
-		t.Fatalf("readStageState: %v", err)
-	}
-	if got == nil || got.SMB == nil {
-		t.Fatal("SMB state not restored after roundtrip")
-	}
-	if got.SMB.Server != want.SMB.Server {
-		t.Errorf("Server = %q, want %q", got.SMB.Server, want.SMB.Server)
-	}
-	if got.SMB.Share != want.SMB.Share {
-		t.Errorf("Share = %q, want %q", got.SMB.Share, want.SMB.Share)
-	}
 }
 
 // TestStageState_LegacyMigration verifies that a pre-Phase2 state file
@@ -1602,22 +1479,10 @@ func TestResolveProtocolType_FromVolumeContext(t *testing.T) {
 			wantProtocol: "nvmeof-tcp",
 		},
 		{
-			name:         "iscsi from VolumeContext overrides volumeID",
+			name:         "VolumeContext value wins over volumeID",
 			volumeID:     "storage-node/nvmeof-tcp/zfs-zvol/tank/pvc-abc",
 			volCtx:       map[string]string{VolumeContextKeyProtocolType: "iscsi"},
 			wantProtocol: "iscsi",
-		},
-		{
-			name:         "nfs from VolumeContext",
-			volumeID:     "storage-node/nfs/zfs-dataset/tank/pvc-abc",
-			volCtx:       map[string]string{VolumeContextKeyProtocolType: "nfs"},
-			wantProtocol: "nfs",
-		},
-		{
-			name:         "smb from VolumeContext",
-			volumeID:     "storage-node/smb/zfs-dataset/tank/pvc-abc",
-			volCtx:       map[string]string{VolumeContextKeyProtocolType: "smb"},
-			wantProtocol: "smb",
 		},
 	}
 
@@ -1646,21 +1511,6 @@ func TestResolveProtocolType_FromVolumeID(t *testing.T) {
 			name:         "nvmeof-tcp from volumeID",
 			volumeID:     "storage-node/nvmeof-tcp/zfs-zvol/tank/pvc-abc",
 			wantProtocol: "nvmeof-tcp",
-		},
-		{
-			name:         "iscsi from volumeID",
-			volumeID:     "storage-node/iscsi/zfs-zvol/tank/pvc-abc",
-			wantProtocol: "iscsi",
-		},
-		{
-			name:         "nfs from volumeID",
-			volumeID:     "storage-node/nfs/zfs-dataset/tank/pvc-abc",
-			wantProtocol: "nfs",
-		},
-		{
-			name:         "smb from volumeID",
-			volumeID:     "storage-node/smb/samba-share/tank/pvc-abc",
-			wantProtocol: "smb",
 		},
 	}
 

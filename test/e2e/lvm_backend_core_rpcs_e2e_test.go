@@ -248,6 +248,7 @@ var _ = Describe("E33: LVM Kind 클러스터 E2E — 실제 LVM VG + NVMe-oF TCP
 				volumeID := fmt.Sprintf("%s/e33-286-%s", lvmVG, uniqueID)
 				fence := agentLifecycleFence(volumeID)
 				resp, err := agentClient.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
+					BackendType:   agentv1.BackendType_BACKEND_TYPE_LVM,
 					VolumeId:      volumeID,
 					Fence:         fence,
 					CapacityBytes: 32 * 1024 * 1024, // 32 MiB
@@ -284,6 +285,7 @@ var _ = Describe("E33: LVM Kind 클러스터 E2E — 실제 LVM VG + NVMe-oF TCP
 				volumeID := fmt.Sprintf("%s/e33-287-%s", lvmVG, uniqueID)
 				fence := agentLifecycleFence(volumeID)
 				resp, err := agentClient.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
+					BackendType:   agentv1.BackendType_BACKEND_TYPE_LVM,
 					VolumeId:      volumeID,
 					Fence:         fence,
 					CapacityBytes: 32 * 1024 * 1024, // 32 MiB
@@ -317,6 +319,7 @@ var _ = Describe("E33: LVM Kind 클러스터 E2E — 실제 LVM VG + NVMe-oF TCP
 				volumeID := fmt.Sprintf("%s/e33-288-%s", lvmVG, uniqueID)
 				fence := agentLifecycleFence(volumeID)
 				_, err := agentClient.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
+					BackendType:   agentv1.BackendType_BACKEND_TYPE_LVM,
 					VolumeId:      volumeID,
 					Fence:         fence,
 					CapacityBytes: 32 * 1024 * 1024,
@@ -352,6 +355,7 @@ var _ = Describe("E33: LVM Kind 클러스터 E2E — 실제 LVM VG + NVMe-oF TCP
 
 				By("creating initial 32 MiB LV")
 				_, err := agentClient.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
+					BackendType:   agentv1.BackendType_BACKEND_TYPE_LVM,
 					VolumeId:      volumeID,
 					Fence:         fence,
 					CapacityBytes: 32 * 1024 * 1024,
@@ -394,6 +398,7 @@ var _ = Describe("E33: LVM Kind 클러스터 E2E — 실제 LVM VG + NVMe-oF TCP
 
 				By("creating an LV")
 				_, err := agentClient.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
+					BackendType:   agentv1.BackendType_BACKEND_TYPE_LVM,
 					VolumeId:      volumeID,
 					Fence:         fence,
 					CapacityBytes: 32 * 1024 * 1024,
@@ -444,6 +449,7 @@ var _ = Describe("E33: LVM Kind 클러스터 E2E — 실제 LVM VG + NVMe-oF TCP
 				volumeID := fmt.Sprintf("%s/e33-291-%s", lvmVG, uniqueID)
 				fence := agentLifecycleFence(volumeID)
 				req := &agentv1.CreateVolumeRequest{
+					BackendType:   agentv1.BackendType_BACKEND_TYPE_LVM,
 					VolumeId:      volumeID,
 					Fence:         fence,
 					CapacityBytes: 32 * 1024 * 1024,
@@ -484,6 +490,7 @@ var _ = Describe("E33: LVM Kind 클러스터 E2E — 실제 LVM VG + NVMe-oF TCP
 				volumeID := fmt.Sprintf("%s/e33-292-%s", lvmVG, uniqueID)
 				fence := agentLifecycleFence(volumeID)
 				req := &agentv1.CreateVolumeRequest{
+					BackendType:   agentv1.BackendType_BACKEND_TYPE_LVM,
 					VolumeId:      volumeID,
 					Fence:         fence,
 					CapacityBytes: 32 * 1024 * 1024,

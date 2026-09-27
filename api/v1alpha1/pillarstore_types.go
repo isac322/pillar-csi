@@ -21,31 +21,50 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// BackendType enumerates supported storage backend drivers.
-// +kubebuilder:validation:Enum=zfs-zvol;zfs-dataset;lvm-lv;dir
-type BackendType string
+// BackendID identifies a storage backend kind.  It is the union member name
+// used everywhere a backend can be selected — PillarStore.spec.backend,
+// override documents, PVC annotations, agent config — and also the token
+// embedded in CSI volume IDs and agent RPCs.
+type BackendID string
 
-// Supported BackendType values.
+// Supported BackendID values.
 const (
-	BackendTypeZFSZvol    BackendType = "zfs-zvol"
-	BackendTypeZFSDataset BackendType = "zfs-dataset"
-	BackendTypeLVMLV      BackendType = "lvm-lv"
-	BackendTypeDir        BackendType = "dir"
+	// BackendIDZFSZvol provisions ZFS zvols (block volumes).
+	BackendIDZFSZvol BackendID = "zfs-zvol"
+
+	// BackendIDLVMLV provisions LVM logical volumes (block volumes).
+	BackendIDLVMLV BackendID = "lvm-lv"
+)
+
+// ZFSVolumeType enumerates the ZFS volume kinds the driver can create.
+// +kubebuilder:validation:Enum=zvol
+type ZFSVolumeType string
+
+// Supported ZFSVolumeType values.
+const (
+	// ZFSVolumeTypeZvol creates block-device zvols.  It is currently the
+	// only implemented kind; zfs datasets are a future variant.
+	ZFSVolumeTypeZvol ZFSVolumeType = "zvol"
 )
 
 // ZFSBackendConfig holds ZFS-specific pool and dataset settings.
 type ZFSBackendConfig struct {
+	// volumeType selects the ZFS volume kind.  Only "zvol" is implemented.
+	// +optional
+	// +kubebuilder:default=zvol
+	VolumeType ZFSVolumeType `json:"volumeType,omitempty"`
+
 	// pool is the ZFS pool name (e.g. "hot-data").
 	// +required
 	// +kubebuilder:validation:MinLength=1
 	Pool string `json:"pool"`
 
 	// parentDataset is the ZFS dataset path under which pillar-csi will
-	// create per-volume datasets or zvols (e.g. "k8s").  It must equal the
-	// parent= of the agent's --backend flag for this pool (chart
-	// agent.backends[].parent; empty = pool root): on a mismatch the store is
-	// not Ready (PoolDiscovered=False, BackendLayoutMismatch) and CreateVolume
-	// fails instead of placing volumes elsewhere.
+	// create per-volume zvols (e.g. "k8s").  It must equal the parentDataset
+	// of the agent's backend configuration for this pool (chart
+	// agent.backends[].zfs.parentDataset; empty = pool root): on a mismatch
+	// the store is not Ready (PoolDiscovered=False, BackendLayoutMismatch)
+	// and CreateVolume fails instead of placing volumes elsewhere.
 	// +optional
 	ParentDataset string `json:"parentDataset,omitempty"`
 
@@ -83,10 +102,10 @@ type LVMBackendConfig struct {
 	// (e.g. "thin-pool-0").  When non-empty the backend operates in thin-
 	// provisioned mode; when empty it creates fully-allocated linear LVs.
 	// The thin pool must be pre-created before the agent starts, and must
-	// equal the thinpool= of the agent's --backend flag for this VG (chart
-	// agent.backends[].thinpool; empty = none): on a mismatch the store is not
-	// Ready (PoolDiscovered=False, BackendLayoutMismatch) and CreateVolume
-	// fails instead of using another thin pool.
+	// equal the thinPool of the agent's backend configuration for this VG
+	// (chart agent.backends[].lvm.thinPool; empty = none): on a mismatch the
+	// store is not Ready (PoolDiscovered=False, BackendLayoutMismatch) and
+	// CreateVolume fails instead of using another thin pool.
 	// +optional
 	ThinPool string `json:"thinPool,omitempty"`
 
@@ -99,20 +118,49 @@ type LVMBackendConfig struct {
 	ProvisioningMode LVMProvisioningMode `json:"provisioningMode,omitempty"`
 }
 
-// BackendSpec describes the storage technology and its configuration.
-// Exactly one backend config field must be set to match the chosen type.
+// BackendSpec describes the storage backend of a PillarStore.  Exactly one
+// member must be set: the member name selects the backend (zfs or lvm) and
+// its value carries that backend's configuration.
+//
+// The same union shape is reused for the agent's backend placement config
+// file; per-volume and per-binding override documents use BackendOverrides,
+// which keeps only the tunable subset.
+//
+// +kubebuilder:validation:XValidation:rule="(has(self.zfs) ? 1 : 0) + (has(self.lvm) ? 1 : 0) == 1",message="exactly one of zfs or lvm must be set"
 type BackendSpec struct {
-	// type identifies the backend driver.
-	// +required
-	Type BackendType `json:"type"`
-
-	// zfs holds ZFS-specific configuration; required when type is zfs-zvol or zfs-dataset.
+	// zfs holds ZFS-specific configuration.
 	// +optional
 	ZFS *ZFSBackendConfig `json:"zfs,omitempty"`
 
-	// lvm holds LVM-specific configuration; required when type is lvm-lv.
+	// lvm holds LVM-specific configuration.
 	// +optional
 	LVM *LVMBackendConfig `json:"lvm,omitempty"`
+}
+
+// Kind returns the selected backend member as a BackendID, or "" when the
+// union is empty.
+func (b BackendSpec) Kind() BackendID {
+	switch {
+	case b.ZFS != nil:
+		return BackendIDZFSZvol
+	case b.LVM != nil:
+		return BackendIDLVMLV
+	default:
+		return ""
+	}
+}
+
+// PoolName returns the physical pool identifier used in agent volume IDs:
+// the ZFS pool name or the LVM volume group name.
+func (b BackendSpec) PoolName() string {
+	switch {
+	case b.ZFS != nil:
+		return b.ZFS.Pool
+	case b.LVM != nil:
+		return b.LVM.VolumeGroup
+	default:
+		return ""
+	}
 }
 
 // StoreCapacity reports the measured capacity of the pool.
@@ -137,7 +185,8 @@ type PillarStoreSpec struct {
 	// +kubebuilder:validation:MinLength=1
 	AgentRef string `json:"agentRef"`
 
-	// backend describes the storage technology and pool to use.
+	// backend describes the storage backend and pool to use.  Exactly one
+	// member (zfs or lvm) must be set.
 	// +required
 	Backend BackendSpec `json:"backend"`
 }
@@ -156,7 +205,7 @@ type PillarStoreStatus struct {
 	//                         and the agent creates volumes in it where the store declares
 	//                         (zfs.parentDataset, lvm.thinPool); reason BackendLayoutMismatch
 	//                         otherwise.
-	// - "BackendSupported"  – the backend type is listed in the agent's capabilities.
+	// - "BackendSupported"  – the backend is listed in the agent's capabilities.
 	// - "Ready"             – all checks pass; the pool can provision volumes.
 	//
 	// +listType=map
@@ -169,7 +218,6 @@ type PillarStoreStatus struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Cluster,shortName=pst
 // +kubebuilder:printcolumn:name="Target",type=string,JSONPath=`.spec.agentRef`
-// +kubebuilder:printcolumn:name="Backend",type=string,JSONPath=`.spec.backend.type`
 // +kubebuilder:printcolumn:name="Available",type=string,JSONPath=`.status.capacity.available`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
@@ -178,19 +226,11 @@ type PillarStoreStatus struct {
 // create PillarStore resources to declare that a pool is available for CSI
 // volume provisioning; the controller validates availability and updates status.
 type PillarStore struct {
-	metav1.TypeMeta `json:",inline"`
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	// metadata is a standard object metadata.
-	// +optional
-	metav1.ObjectMeta `json:"metadata,omitzero"`
-
-	// spec defines the desired state of PillarStore.
-	// +required
-	Spec PillarStoreSpec `json:"spec"`
-
-	// status defines the observed state of PillarStore.
-	// +optional
-	Status PillarStoreStatus `json:"status,omitzero"`
+	Spec   PillarStoreSpec   `json:"spec,omitempty"`
+	Status PillarStoreStatus `json:"status,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -198,7 +238,7 @@ type PillarStore struct {
 // PillarStoreList contains a list of PillarStore.
 type PillarStoreList struct {
 	metav1.TypeMeta `json:",inline"`
-	metav1.ListMeta `json:"metadata,omitzero"`
+	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []PillarStore `json:"items"`
 }
 

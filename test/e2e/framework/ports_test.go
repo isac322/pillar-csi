@@ -4,10 +4,9 @@ package framework_test
 // ports.go.  Every test uses a private ports.Registry instance (via the
 // framework package) so the global registry is not polluted.  Tests verify:
 //
-//   - uniqueness guarantees for all three allocation strategies
+//   - uniqueness guarantees for both allocation strategies
 //   - host-bound listeners block re-use while open
 //   - probe-and-release ports are immediately rebindable by a container
-//   - iSCSI port ranges are non-overlapping across concurrent callers
 //   - PortSet lifecycle (allocate → use → Close → release)
 //   - concurrent safety: 50 goroutines allocate ports without collision
 
@@ -18,7 +17,6 @@ import (
 	"testing"
 
 	"github.com/bhyoo/pillar-csi/test/e2e/framework"
-	"github.com/bhyoo/pillar-csi/test/e2e/framework/ports"
 )
 
 // ─── AllocateHostPort ────────────────────────────────────────────────────────
@@ -137,7 +135,7 @@ func TestAllocateAgentGRPCPort_ReturnsNonNilListener(t *testing.T) {
 // ─── AllocateContainerPort ───────────────────────────────────────────────────
 
 func TestAllocateContainerPort_ReturnsValidHandle(t *testing.T) {
-	h, release, err := framework.AllocateContainerPort("TC-10", "iscsi")
+	h, release, err := framework.AllocateContainerPort("TC-10", "container")
 	if err != nil {
 		t.Fatalf("AllocateContainerPort: %v", err)
 	}
@@ -149,7 +147,7 @@ func TestAllocateContainerPort_ReturnsValidHandle(t *testing.T) {
 }
 
 func TestAllocateContainerPort_ListenerIsNil(t *testing.T) {
-	h, release, err := framework.AllocateContainerPort("TC-11", "iscsi-nil-listener")
+	h, release, err := framework.AllocateContainerPort("TC-11", "container-nil-listener")
 	if err != nil {
 		t.Fatalf("AllocateContainerPort: %v", err)
 	}
@@ -179,13 +177,13 @@ func TestAllocateContainerPort_PortRebindable(t *testing.T) {
 }
 
 func TestAllocateContainerPort_UniqueAcrossConcurrentCalls(t *testing.T) {
-	h1, r1, err := framework.AllocateContainerPort("TC-13a", "iscsi")
+	h1, r1, err := framework.AllocateContainerPort("TC-13a", "container")
 	if err != nil {
 		t.Fatalf("first AllocateContainerPort: %v", err)
 	}
 	defer r1()
 
-	h2, r2, err := framework.AllocateContainerPort("TC-13b", "iscsi")
+	h2, r2, err := framework.AllocateContainerPort("TC-13b", "container")
 	if err != nil {
 		t.Fatalf("second AllocateContainerPort: %v", err)
 	}
@@ -193,60 +191,6 @@ func TestAllocateContainerPort_UniqueAcrossConcurrentCalls(t *testing.T) {
 
 	if h1.Port == h2.Port {
 		t.Errorf("concurrent container port allocations returned the same port %d", h1.Port)
-	}
-}
-
-// ─── AllocateISCSIPortRange ──────────────────────────────────────────────────
-
-func TestAllocateISCSIPortRange_ReturnsNonNil(t *testing.T) {
-	r, err := framework.AllocateISCSIPortRange("TC-20", "targets")
-	if err != nil {
-		t.Fatalf("AllocateISCSIPortRange: %v", err)
-	}
-	if r == nil {
-		t.Fatal("AllocateISCSIPortRange returned nil")
-	}
-}
-
-func TestAllocateISCSIPortRange_ValidPortRange(t *testing.T) {
-	r, err := framework.AllocateISCSIPortRange("TC-21", "validate")
-	if err != nil {
-		t.Fatalf("AllocateISCSIPortRange: %v", err)
-	}
-
-	if r.Base < 1024 {
-		t.Errorf("Base %d is below 1024 (privileged port)", r.Base)
-	}
-	if r.End > 65535 {
-		t.Errorf("End %d exceeds 65535", r.End)
-	}
-	if r.Count <= 0 {
-		t.Errorf("Count %d must be positive", r.Count)
-	}
-	if r.End != r.Base+r.Count {
-		t.Errorf("End %d != Base %d + Count %d", r.End, r.Base, r.Count)
-	}
-}
-
-func TestAllocateISCSIPortRange_NonOverlappingAcrossCallersForTCLevel(t *testing.T) {
-	// Collect several ranges and verify no two share a port.
-	const n = 10
-	collected := make([]*ports.ISCSIPortRange, n)
-	for i := range n {
-		r, err := framework.AllocateISCSIPortRange(fmt.Sprintf("TC-22.%d", i), "pool")
-		if err != nil {
-			t.Fatalf("AllocateISCSIPortRange #%d: %v", i, err)
-		}
-		collected[i] = r
-	}
-
-	for i := range n {
-		for j := i + 1; j < n; j++ {
-			if collected[i].Overlaps(collected[j]) {
-				t.Errorf("range[%d]=%s overlaps range[%d]=%s",
-					i, collected[i], j, collected[j])
-			}
-		}
 	}
 }
 
@@ -278,18 +222,6 @@ func TestMustAllocateContainerPort_DoesNotPanicOnSuccess(t *testing.T) {
 	}
 }
 
-func TestMustAllocateISCSIPortRange_DoesNotPanicOnSuccess(t *testing.T) {
-	defer func() {
-		if r := recover(); r != nil {
-			t.Errorf("MustAllocateISCSIPortRange panicked: %v", r)
-		}
-	}()
-	r := framework.MustAllocateISCSIPortRange("TC-32", "must-range")
-	if r == nil {
-		t.Fatal("MustAllocateISCSIPortRange returned nil")
-	}
-}
-
 // ─── PortSet ─────────────────────────────────────────────────────────────────
 
 func TestPortSet_HostPort_ReturnsDeterministicHandle(t *testing.T) {
@@ -311,8 +243,8 @@ func TestPortSet_ContainerPort_ReturnsDeterministicHandle(t *testing.T) {
 	ps := framework.NewPortSet("TC-41")
 	defer ps.Close() //nolint:errcheck
 
-	h1 := ps.ContainerPort("iscsi")
-	h2 := ps.ContainerPort("iscsi")
+	h1 := ps.ContainerPort("container")
+	h2 := ps.ContainerPort("container")
 
 	if h1 == nil {
 		t.Fatal("first ContainerPort returned nil")
@@ -466,7 +398,7 @@ func TestConcurrentContainerPortAllocations_AllUnique(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			h, release, err := framework.AllocateContainerPort(
-				fmt.Sprintf("TC-cpx-%d", i), "iscsi",
+				fmt.Sprintf("TC-cpx-%d", i), "container",
 			)
 			if err != nil {
 				ch <- result{err: err}
@@ -506,67 +438,6 @@ func TestConcurrentContainerPortAllocations_AllUnique(t *testing.T) {
 	for port, count := range seen {
 		if count > 1 {
 			t.Errorf("port %d allocated %d times; must be unique", port, count)
-		}
-	}
-}
-
-func TestConcurrentISCSIPortRanges_AllNonOverlapping(t *testing.T) {
-	const goroutines = 50
-
-	type rangeResult struct {
-		base, end int
-		caseIdx   int
-		err       error
-	}
-	ch := make(chan rangeResult, goroutines)
-
-	var wg sync.WaitGroup
-	for i := range goroutines {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			r, err := framework.AllocateISCSIPortRange(
-				fmt.Sprintf("TC-range-%d", i), "targets",
-			)
-			if err != nil {
-				ch <- rangeResult{err: err}
-				return
-			}
-			ch <- rangeResult{base: r.Base, end: r.End, caseIdx: r.CaseIndex}
-		}(i)
-	}
-	wg.Wait()
-	close(ch)
-
-	type rangeItem struct{ base, end, caseIdx int }
-	var collected []rangeItem
-	for r := range ch {
-		if r.err != nil {
-			t.Errorf("concurrent AllocateISCSIPortRange error: %v", r.err)
-			continue
-		}
-		collected = append(collected, rangeItem{r.base, r.end, r.caseIdx})
-	}
-
-	// All CaseIndex values must be distinct.
-	seenIdx := make(map[int]int)
-	for _, r := range collected {
-		seenIdx[r.caseIdx]++
-	}
-	for idx, count := range seenIdx {
-		if count > 1 {
-			t.Errorf("CaseIndex %d assigned %d times; must be unique", idx, count)
-		}
-	}
-
-	// No two ranges may overlap: [a.base, a.end) ∩ [b.base, b.end) = ∅.
-	for i := range len(collected) {
-		for j := i + 1; j < len(collected); j++ {
-			a, b := collected[i], collected[j]
-			if a.base < b.end && b.base < a.end {
-				t.Errorf("range[%d] [%d,%d) overlaps range[%d] [%d,%d)",
-					i, a.base, a.end, j, b.base, b.end)
-			}
 		}
 	}
 }
