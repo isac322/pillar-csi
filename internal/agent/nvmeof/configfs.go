@@ -45,6 +45,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -90,7 +91,7 @@ type NvmetTarget struct {
 	// bind address, which must be reachable from the agent process's network
 	// namespace.  In Kubernetes deployments the agent runs without host
 	// networking, so the only address guaranteed to be bindable is the
-	// wildcard "0.0.0.0".  See createPort for how this separation is
+	// wildcard "0.0.0.0".  See portSpec for how this separation is
 	// enforced.
 	BindAddress string
 
@@ -333,6 +334,23 @@ func removeDir(path string) error {
 	return nil
 }
 
+// removeDirVerified removes the directory at path like removeDir and reads
+// back that the kernel actually destroyed it.
+func removeDirVerified(path string) error {
+	err := removeDir(path)
+	if err != nil {
+		return err
+	}
+	_, err = os.Lstat(path)
+	if err == nil {
+		return fmt.Errorf("configfs verify rmdir %q: still present after removal", path)
+	}
+	if !os.IsNotExist(err) {
+		return fmt.Errorf("configfs verify rmdir %q: %w", path, err)
+	}
+	return nil
+}
+
 // bestEffort accepts an error value and discards it.  It is used to silence
 // errcheck for intentionally best-effort cleanup operations where failure is
 // expected and acceptable (e.g. removing files on a regular filesystem in tests).
@@ -552,14 +570,20 @@ const listenWildcard = "0.0.0.0"
 // reachable from inside the pod's network namespace.
 const listenWildcardV6 = "::"
 
-// createPort creates or converges the configfs port directory for this target's
-// bind address and TCP port.
+// portSpec is the configfs port a target is exported on: its stable ID and
+// the listener attributes it must carry.
+type portSpec struct {
+	id    uint32
+	attrs map[string]string
+	// desc names the endpoint in error messages ("<bind address>:<port>").
+	desc string
+}
+
+// portSpec derives the port of this target from BindAddress and Port.
 //
 // The port ID is derived deterministically from (BindAddress, Port) via
 // stablePortID so all subsystems advertised at the same endpoint share one
-// listener.
-//
-// After the port directory is created the function ensures:
+// listener.  The listener attributes are:
 //   - addr_trtype  = "tcp"
 //   - addr_adrfam  = "ipv4" or "ipv6" — derived from BindAddress
 //   - addr_traddr  = "0.0.0.0" or "::" — kernel-side bind wildcard matching adrfam
@@ -569,56 +593,60 @@ const listenWildcardV6 = "::"
 // unparseable value is rejected up-front so the caller does not silently
 // produce a port that the kernel will reject when the subsystem symlink is
 // later created.
-//
-// The operation is idempotent. Once any subsystem is linked, Linux makes the
-// listener attributes immutable and rejects even same-value writes. Existing
-// matching values are therefore read and retained rather than rewritten.
-func (t *NvmetTarget) createPort() (uint32, error) {
+func (t *NvmetTarget) portSpec() (portSpec, error) {
 	port := t.Port
 	if port == 0 {
 		port = DefaultPort
 	}
 	ip := net.ParseIP(t.BindAddress)
 	if ip == nil {
-		return 0, fmt.Errorf("createPort: invalid BindAddress %q: not an IP literal", t.BindAddress)
+		return portSpec{}, fmt.Errorf("port: invalid BindAddress %q: not an IP literal", t.BindAddress)
 	}
 	adrfam, wildcard := "ipv4", listenWildcard
 	if ip.To4() == nil {
 		adrfam, wildcard = "ipv6", listenWildcardV6
 	}
-	portID := stablePortID(t.BindAddress, port)
-	pDir := t.portDir(portID)
-	portLock := writeFileLock(pDir)
-	portLock.Lock()
-	defer portLock.Unlock()
+	trsvcid := strconv.Itoa(int(port))
+	return portSpec{
+		id: stablePortID(t.BindAddress, port),
+		attrs: map[string]string{
+			"addr_trtype":  "tcp",
+			"addr_adrfam":  adrfam,
+			"addr_traddr":  wildcard,
+			"addr_trsvcid": trsvcid,
+		},
+		desc: net.JoinHostPort(t.BindAddress, trsvcid),
+	}, nil
+}
 
+// ensurePortLocked creates the port directory of spec if needed and writes
+// every listener attribute that does not hold its value yet.  The caller
+// holds the port's writeFileLock, which serializes it with pruning the port.
+//
+// Once any subsystem is linked, Linux makes the listener attributes immutable
+// and rejects even same-value writes.  Existing matching values are therefore
+// read and retained rather than rewritten.
+func (t *NvmetTarget) ensurePortLocked(spec portSpec) error {
+	pDir := t.portDir(spec.id)
 	err := mkdirAll(pDir)
 	if err != nil {
-		return 0, fmt.Errorf("createPort %s:%d: %w", t.BindAddress, port, err)
+		return fmt.Errorf("port %s: %w", spec.desc, err)
 	}
-
-	attrs := map[string]string{
-		"addr_trtype":  "tcp",
-		"addr_adrfam":  adrfam,
-		"addr_traddr":  wildcard,
-		"addr_trsvcid": fmt.Sprintf("%d", port),
-	}
-	for attr, val := range attrs {
+	for attr, val := range spec.attrs {
 		attrPath := filepath.Join(pDir, attr)
 		current, readErr := readFileTrimmed(attrPath)
 		if readErr != nil {
-			return 0, fmt.Errorf("createPort %s:%d attr %s read: %w",
-				t.BindAddress, port, attr, readErr)
+			return fmt.Errorf("port %s attr %s read: %w", spec.desc, attr, readErr)
 		}
 		if current == val {
 			continue
 		}
 		err = writeFile(attrPath, val)
 		if err != nil {
-			return 0, fmt.Errorf("createPort %s:%d attr %s: %w", t.BindAddress, port, attr, err)
+			return fmt.Errorf("port %s attr %s: %w", spec.desc, attr, err)
 		}
 	}
-	return portID, nil
+	return nil
 }
 
 // linkSubsystemToPort creates a symlink in the port's subsystems/ directory
@@ -627,17 +655,37 @@ func (t *NvmetTarget) createPort() (uint32, error) {
 // (nvmet_port_subsys_allow_link → nvmet_enable_port), so from this moment
 // hosts reach the subsystem, and every other subsystem sharing the port that
 // is not linked yet answers connects with a do-not-retry rejection.
-func (t *NvmetTarget) linkSubsystemToPort(portID uint32) error {
-	linkPath := t.portSubsystemLink(portID)
-	target := t.subsystemDir()
+//
+// Under the port lock, shared with pruning the port, it creates the port and
+// its transport attributes if needed (the kernel refuses to enable a port
+// without them) and then links.  A port therefore exists only while a
+// subsystem is linked to it: when linking fails, a port left without any
+// subsystem is pruned again.
+func (t *NvmetTarget) linkSubsystemToPort(spec portSpec) error {
+	pDir := t.portDir(spec.id)
+	portLock := writeFileLock(pDir)
+	portLock.Lock()
+	defer portLock.Unlock()
 
-	// Ensure the ports/<id>/subsystems/ parent directory exists.
-	err := mkdirAll(filepath.Dir(linkPath))
+	err := t.linkSubsystemToPortLocked(spec)
 	if err != nil {
-		return fmt.Errorf("linkSubsystemToPort mkdir: %w", err)
+		return fmt.Errorf("linkSubsystemToPort: %w", errors.Join(err, prunePortLocked(pDir)))
 	}
+	return nil
+}
 
-	return symlink(target, linkPath)
+func (t *NvmetTarget) linkSubsystemToPortLocked(spec portSpec) error {
+	err := t.ensurePortLocked(spec)
+	if err != nil {
+		return err
+	}
+	linkPath := t.portSubsystemLink(spec.id)
+	// Ensure the ports/<id>/subsystems/ parent directory exists.
+	err = mkdirAll(filepath.Dir(linkPath))
+	if err != nil {
+		return fmt.Errorf("mkdir: %w", err)
+	}
+	return symlink(t.subsystemDir(), linkPath)
 }
 
 // Apply, Prepare, Link and Remove implement the full target lifecycle.
@@ -656,14 +704,19 @@ func (t *NvmetTarget) linkSubsystemToPort(portID uint32) error {
 //     prepared: a caller restoring several exports calls Prepare for all of
 //     them first and Link for each only afterwards, with nothing slow
 //     (device waits, durable writes) between the links;
-//   - Remove unlinks the subsystem from its ports before tearing it down.
+//   - Link creates the port and its transport attributes and links the
+//     subsystem under the port lock; Prepare creates no port, so a port
+//     exists only while a subsystem is linked to it;
+//   - Remove unlinks the subsystem from its ports before tearing it down, and
+//     under the same lock removes a port it was linked to once no subsystem
+//     is linked any more.
 
-// PreparedTarget is a target whose subsystem, ACL, namespace and port are
+// PreparedTarget is a target whose subsystem, ACL and namespace are
 // configured but which is not yet linked to its port, so no host can reach it.
 type PreparedTarget struct {
 	target   *NvmetTarget
 	identity Identity
-	portID   uint32
+	port     portSpec
 }
 
 // Prepare configures everything a host needs before the subsystem becomes
@@ -672,12 +725,15 @@ type PreparedTarget struct {
 //  1. Subsystem with its final attr_allow_any_host and serial.
 //  2. Allowed hosts (nvmet accepts them only while attr_allow_any_host is 0).
 //  3. Namespace: identity, device_path, then enable.
-//  4. Port transport attributes (the port does not listen until a subsystem
-//     is linked to it).
 //
-// It never links the subsystem to the port.  Every step is idempotent, and
+// It validates the port endpoint up front but neither creates the port nor
+// links the subsystem to it; Link does both.  Every step is idempotent, and
 // an already linked subsystem stays linked.
 func (t *NvmetTarget) Prepare() (PreparedTarget, error) {
+	port, err := t.portSpec()
+	if err != nil {
+		return PreparedTarget{}, fmt.Errorf("Prepare: %w", err)
+	}
 	id, err := t.desiredIdentity()
 	if err != nil {
 		return PreparedTarget{}, fmt.Errorf("Prepare: %w", err)
@@ -696,11 +752,7 @@ func (t *NvmetTarget) Prepare() (PreparedTarget, error) {
 	if err != nil {
 		return PreparedTarget{}, fmt.Errorf("Prepare: %w", err)
 	}
-	portID, err := t.createPort()
-	if err != nil {
-		return PreparedTarget{}, fmt.Errorf("Prepare: %w", err)
-	}
-	return PreparedTarget{target: t, identity: id, portID: portID}, nil
+	return PreparedTarget{target: t, identity: id, port: port}, nil
 }
 
 // Link makes the prepared subsystem reachable on its port.  It first reads
@@ -716,7 +768,7 @@ func (p PreparedTarget) Link() error {
 	if err != nil {
 		return fmt.Errorf("Link %q: %w", t.SubsystemNQN, err)
 	}
-	err = t.linkSubsystemToPort(p.portID)
+	err = t.linkSubsystemToPort(p.port)
 	if err != nil {
 		return fmt.Errorf("Link %q: %w", t.SubsystemNQN, err)
 	}
@@ -778,42 +830,122 @@ func (t *NvmetTarget) Apply() error {
 	return nil
 }
 
-// scanAndRemovePortLinks scans <nvmetRoot>/ports/ for any port entries and
-// removes the subsystem symlink from each port's subsystems/ directory.
-// If the ports directory does not exist, the function returns nil.
-func (t *NvmetTarget) scanAndRemovePortLinks() error {
+// unlinkFromPorts unlinks the subsystem from every port under
+// <nvmetRoot>/ports/ and prunes each port it was linked to once no subsystem
+// is linked to it any more.  A missing ports directory is not an error.
+func (t *NvmetTarget) unlinkFromPorts() error {
 	portsDir := filepath.Join(t.nvmetRoot(), "ports")
 	entries, err := os.ReadDir(portsDir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
 		}
-		return fmt.Errorf("scanAndRemovePortLinks: read ports dir: %w", err)
+		return fmt.Errorf("unlinkFromPorts: read ports dir: %w", err)
 	}
 	for _, entry := range entries {
-		linkPath := filepath.Join(portsDir, entry.Name(), "subsystems", t.SubsystemNQN)
-		err = removeSymlink(linkPath)
+		err = t.unlinkFromPort(filepath.Join(portsDir, entry.Name()))
 		if err != nil {
-			return fmt.Errorf("scanAndRemovePortLinks: port %s: %w", entry.Name(), err)
+			return fmt.Errorf("unlinkFromPorts: port %s: %w", entry.Name(), err)
 		}
 	}
 	return nil
 }
 
+// unlinkFromPort removes the subsystem's link from the port at pDir and
+// prunes the port if no subsystem is linked to it any more.  Ports the
+// subsystem is not linked to are left alone.
+//
+// It runs under the port lock shared with Link, so a port is never pruned
+// between Link creating it and linking to it.  Unlinking and pruning are one
+// step: when pruning fails the link is restored, so that the error leaves the
+// subsystem exported as before and a retry finds the port again.
+func (t *NvmetTarget) unlinkFromPort(pDir string) error {
+	portLock := writeFileLock(pDir)
+	portLock.Lock()
+	defer portLock.Unlock()
+
+	linkPath := filepath.Join(pDir, "subsystems", t.SubsystemNQN)
+	_, err := os.Lstat(linkPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("configfs stat %q: %w", linkPath, err)
+	}
+	err = removeSymlink(linkPath)
+	if err != nil {
+		return err
+	}
+	err = prunePortLocked(pDir)
+	if err != nil {
+		return fmt.Errorf("prune port: %w", errors.Join(err, restoreLink(t.subsystemDir(), linkPath)))
+	}
+	return nil
+}
+
+// restoreLink re-creates a link removed by an operation that failed later.
+// Its parent is a default group on configfs, which survives a failed rmdir of
+// its item; a regular filesystem (tests) may have lost it.
+func restoreLink(oldname, newname string) error {
+	err := mkdirAll(filepath.Dir(newname))
+	if err == nil {
+		err = symlink(oldname, newname)
+	}
+	if err != nil {
+		return fmt.Errorf("restore %q after failure: %w", newname, err)
+	}
+	return nil
+}
+
+// portAttrs are the listener attributes ensurePortLocked writes to a port.
+var portAttrs = []string{"addr_trtype", "addr_adrfam", "addr_traddr", "addr_trsvcid"}
+
+// prunePortLocked removes the port directory at pDir when no subsystem is
+// linked to it, and reads back that it is gone.  A port without subsystems
+// does not listen, so removing it changes no connection.  The caller holds
+// the port's writeFileLock.
+func prunePortLocked(pDir string) error {
+	_, err := os.Lstat(pDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("configfs stat %q: %w", pDir, err)
+	}
+	subsDir := filepath.Join(pDir, "subsystems")
+	subs, err := os.ReadDir(subsDir)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("configfs read %q: %w", subsDir, err)
+	}
+	if len(subs) > 0 {
+		return nil
+	}
+	// On real configfs the kernel removes pseudo-files and default groups
+	// with the port directory; on a regular filesystem (tests) we must clean
+	// them up manually.
+	for _, attr := range portAttrs {
+		bestEffort(os.Remove(filepath.Join(pDir, attr)))
+	}
+	bestEffort(removeDir(subsDir))
+	return removeDirVerified(pDir)
+}
+
 // Remove tears down the NVMe-oF TCP target entry in configfs.  The steps are
 // executed in reverse dependency order:
 //
-//  1. Unlink subsystem from all ports (scans ports/ directory)
+//  1. Unlink subsystem from all ports (scans ports/ directory) and prune the
+//     ports it was linked to that no subsystem is linked to any more
 //  2. Disable namespace (write "0" to enable)
 //  3. Remove namespace directory
-//  4. Remove allowed_hosts symlinks
+//  4. Remove the allowed_hosts symlinks actually present and prune the host
+//     entries no subsystem references any more
 //  5. Remove subsystem directory
 //
 // Every step is idempotent — Remove can be called on an already-removed target
 // without error.
 func (t *NvmetTarget) Remove() error {
 	// 1. Unlink subsystem from all ports.
-	err := t.scanAndRemovePortLinks()
+	err := t.unlinkFromPorts()
 	if err != nil {
 		return fmt.Errorf("Remove: %w", err)
 	}
@@ -834,12 +966,12 @@ func (t *NvmetTarget) Remove() error {
 		return fmt.Errorf("Remove: namespace dir: %w", err)
 	}
 
-	// 4. Remove allowed_hosts symlinks.
-	for _, host := range t.AllowedHosts {
-		err = removeSymlink(t.allowedHostLink(host))
-		if err != nil {
-			return fmt.Errorf("Remove: allowed_host %q: %w", host, err)
-		}
+	// 4. Revoke every host actually linked, not just t.AllowedHosts: hosts
+	//    granted by AllowInitiator are not part of the target description,
+	//    and Unexport knows only the subsystem NQN.
+	err = t.RevokeHostsExcept(nil)
+	if err != nil {
+		return fmt.Errorf("Remove: %w", err)
 	}
 
 	// 5. Remove subsystem directory.
@@ -860,14 +992,26 @@ func (t *NvmetTarget) Remove() error {
 
 // ACL management functions.
 
+// hostLock returns the lock that serializes granting hostNQN to any
+// subsystem with pruning its host entry, so that a host entry is never
+// removed between AllowHost creating it and linking to it.
+func (t *NvmetTarget) hostLock(hostNQN string) *sync.Mutex {
+	return writeFileLock(t.hostDir(hostNQN))
+}
+
 // AllowHost grants the given host NQN access to this subsystem by:
 //  1. Creating <nvmetRoot>/hosts/<hostNQN>/ directory (the kernel instantiates
 //     the host object).
 //  2. Creating a symlink at <subsystemDir>/allowed_hosts/<hostNQN> →
 //     <nvmetRoot>/hosts/<hostNQN>.
 //
-// The operation is idempotent.
+// Both steps run under the host lock shared with pruning.  The operation is
+// idempotent.
 func (t *NvmetTarget) AllowHost(hostNQN string) error {
+	lock := t.hostLock(hostNQN)
+	lock.Lock()
+	defer lock.Unlock()
+
 	hDir := t.hostDir(hostNQN)
 	err := mkdirAll(hDir)
 	if err != nil {
@@ -890,24 +1034,88 @@ func (t *NvmetTarget) AllowHost(hostNQN string) error {
 }
 
 // DenyHost revokes the given host NQN's access to this subsystem by removing
-// the allowed_hosts symlink.  The host directory under <nvmetRoot>/hosts/ is
-// NOT removed because other subsystems may still reference it.
+// the allowed_hosts symlink, then removes the host entry under
+// <nvmetRoot>/hosts/ if no subsystem's allowed_hosts links to it any more.
+// Both steps run under the host lock shared with AllowHost.  When removing
+// the host entry fails the link is restored, so that the error leaves the ACL
+// unchanged and a retry, which discovers hosts by their links, finds the
+// host again.
 //
 // The operation is idempotent.
 func (t *NvmetTarget) DenyHost(hostNQN string) error {
-	err := removeSymlink(t.allowedHostLink(hostNQN))
+	lock := t.hostLock(hostNQN)
+	lock.Lock()
+	defer lock.Unlock()
+
+	linkPath := t.allowedHostLink(hostNQN)
+	_, statErr := os.Lstat(linkPath)
+	linked := statErr == nil
+	if statErr != nil && !os.IsNotExist(statErr) {
+		return fmt.Errorf("DenyHost %q: configfs stat %q: %w", hostNQN, linkPath, statErr)
+	}
+	err := removeSymlink(linkPath)
 	if err != nil {
+		return fmt.Errorf("DenyHost %q: %w", hostNQN, err)
+	}
+	err = t.pruneHostLocked(hostNQN)
+	if err != nil {
+		if linked {
+			err = errors.Join(err, restoreLink(t.hostDir(hostNQN), linkPath))
+		}
 		return fmt.Errorf("DenyHost %q: %w", hostNQN, err)
 	}
 	return nil
 }
 
+// pruneHostLocked removes <nvmetRoot>/hosts/<hostNQN> and reads back that it
+// is gone, unless it is absent or some subsystem's allowed_hosts still links
+// to it.  The caller holds the host lock.
+func (t *NvmetTarget) pruneHostLocked(hostNQN string) error {
+	hDir := t.hostDir(hostNQN)
+	_, err := os.Lstat(hDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("configfs stat %q: %w", hDir, err)
+	}
+	referenced, err := t.hostReferenced(hostNQN)
+	if err != nil || referenced {
+		return err
+	}
+	return removeDirVerified(hDir)
+}
+
+// hostReferenced reports whether any subsystem's allowed_hosts links to
+// hostNQN.
+func (t *NvmetTarget) hostReferenced(hostNQN string) (bool, error) {
+	subsDir := filepath.Join(t.nvmetRoot(), "subsystems")
+	entries, err := os.ReadDir(subsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("configfs read %q: %w", subsDir, err)
+	}
+	for _, entry := range entries {
+		link := filepath.Join(subsDir, entry.Name(), "allowed_hosts", hostNQN)
+		_, err = os.Lstat(link)
+		if err == nil {
+			return true, nil
+		}
+		if !os.IsNotExist(err) {
+			return false, fmt.Errorf("configfs stat %q: %w", link, err)
+		}
+	}
+	return false, nil
+}
+
 // RevokeHostsExcept removes every allowed_hosts entry of this subsystem whose
 // host NQN is not in keep, making the subsystem ACL exactly keep (together
 // with AllowHost for each member).  Only this subsystem's allowed_hosts links
-// are touched; host directories under <nvmetRoot>/hosts/ and other subsystems
-// are never modified.  A missing allowed_hosts directory means no host is
-// allowed and is not an error.
+// are touched, and only the host entries it revoked are pruned (see DenyHost);
+// other subsystems are never modified.  A missing allowed_hosts directory
+// means no host is allowed and is not an error.
 func (t *NvmetTarget) RevokeHostsExcept(keep []string) error {
 	ahDir := filepath.Join(t.subsystemDir(), "allowed_hosts")
 	entries, err := os.ReadDir(ahDir)

@@ -260,8 +260,9 @@ func (h *NVMeoFTCPAgentHandler) DenyInitiator(
 //
 //  1. prepare: for every export, inside its fenced section, wait for the
 //     device, pin the identity and nvmeof.Prepare the target (subsystem, ACL,
-//     namespace, port attributes) without linking it;
-//  2. link: link every prepared export in one tight loop.
+//     namespace) without creating or linking its port;
+//  2. link: create the port if needed and link every prepared export in one
+//     tight loop.
 //
 // The target locks of all entries are held across both phases.  The device
 // check runs inside the fenced mutation so a destroyed backend never gets a

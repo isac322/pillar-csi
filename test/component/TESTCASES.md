@@ -403,7 +403,7 @@ concurrent apply, TOCTOU symlink races) are tested here.
 | 12 | `TestNvmeof_AllowHost_Idempotent` | Allowing same host twice creates single symlink | AllowHost called twice with same host NQN | Single symlink; no error |
 | 13 | `TestNvmeof_AllowHost_MultipleHosts` | Multiple different hosts can be allowed concurrently | AllowHost for 3 different host NQNs | 3 symlinks in allowed_hosts/ |
 | 14 | `TestNvmeof_AllowHost_SymlinkWrongTarget` | Existing symlink with wrong target is corrected | Pre-create allowed_hosts/<nqn> pointing to wrong path | AllowHost corrects or replaces the symlink; returns nil |
-| 15 | `TestNvmeof_DenyHost_RemovesSymlink` | Revoking access removes allowed_hosts symlink | Apply; AllowHost; DenyHost same host | Symlink removed from allowed_hosts/; hosts/<nqn> dir may remain |
+| 15 | `TestNvmeof_DenyHost_RemovesSymlink` | Revoking access removes allowed_hosts symlink | Apply; AllowHost; DenyHost same host | Symlink removed from allowed_hosts/; hosts/<nqn> dir removed once no subsystem allows it |
 | 16 | `TestNvmeof_DenyHost_Idempotent` | Denying non-allowed host is a no-op | DenyHost without prior AllowHost | Returns nil; no error |
 
 ---
@@ -503,8 +503,8 @@ concurrent apply, TOCTOU symlink races) are tested here.
 
 | # | Test Function | Description | Setup | Expected Outcome |
 |---|--------------|-------------|-------|-----------------|
-| 52 | `TestNvmeof_Remove_LeavesPortDirIntact` | Remove deletes subsystem's port symlink but not the port directory itself | Apply; Remove; inspect ports/ | subsystem dir gone; ports/<id>/ dir still present under nvmet/ports/ |
-| 53 | `TestNvmeof_Remove_LeavesHostsDirIntact` | Remove does not clean the global hosts/ directory | Apply; AllowHost("host-nqn"); Remove | nvmet/hosts/ dir still present; hosts/host-nqn/ still exists after Remove |
+| 52 | `TestNvmeof_Remove_PrunesPortWithLastSubsystem` | Remove keeps a port shared with another subsystem and removes it with its last subsystem | Apply two targets on one port; Remove one; Remove the other | ports/<id>/ present after the first Remove, gone after the second |
+| 53 | `TestNvmeof_Remove_PrunesUnreferencedHostDir` | Remove deletes a hosts/<nqn>/ entry no subsystem allows any more | Apply with AllowedHosts=["host-nqn"]; Remove | hosts/host-nqn/ gone after Remove |
 | 54 | `TestNvmeof_Remove_PortLinkAlreadyGone` | Remove succeeds even when the port subsystem symlink is already absent | Apply; manually delete port symlink; Remove | Returns nil; subsystem dir cleaned; no error |
 | 55 | `TestNvmeof_Remove_SuccessAfterApplyWithNoHosts` | Apply with no ACL hosts followed by Remove leaves clean state | Apply with empty AllowedHosts; Remove | All created dirs removed; no dangling entries in subsystems/ or namespaces/ |
 
@@ -516,7 +516,7 @@ concurrent apply, TOCTOU symlink races) are tested here.
 |---|--------------|-------------|-------|-----------------|
 | 56 | `TestNvmeof_AllowHost_CreatesHostDir` | AllowHost creates the global hosts/<hostNQN>/ directory if absent | Apply; AllowHost("host-nqn") | hosts/host-nqn/ dir exists under nvmet/ after AllowHost |
 | 57 | `TestNvmeof_AllowHost_HostDirPreExists` | AllowHost is idempotent when hosts/<nqn>/ dir pre-exists | Pre-create nvmet/hosts/host-nqn/ manually; AllowHost("host-nqn") | Returns nil; allowed_hosts/<nqn> symlink created; no duplicate-dir error |
-| 58 | `TestNvmeof_DenyHost_LeavesHostDirIntact` | DenyHost removes allowed_hosts symlink but leaves hosts/<nqn>/ dir | Apply; AllowHost; DenyHost same host | allowed_hosts/<nqn> symlink gone; hosts/host-nqn/ dir still present |
+| 58 | `TestNvmeof_DenyHost_KeepsHostDirStillReferenced` | DenyHost removes allowed_hosts symlink but keeps hosts/<nqn>/ while another subsystem allows it | Apply two targets; AllowHost on both; DenyHost on one | its allowed_hosts/<nqn> symlink gone; hosts/host-nqn/ dir still present |
 | 59 | `TestNvmeof_AllowHost_AllowedHostsDirCreated` | AllowHost creates allowed_hosts/ dir inside subsystem if it is absent | Apply; directly call AllowHost (allowed_hosts/ not pre-created) | allowed_hosts/ dir exists under subsystem dir; symlink inside it |
 
 ---
