@@ -65,7 +65,7 @@ You do not set these. They are listed so you can recognize them and leave them a
 
 | Key | Object | Set by | Meaning |
 |---|---|---|---|
-| `pillar-csi.bhyoo.com/nvmeof-host-nqn` | CSINode | node plugin at startup | The node's NVMe host NQN from `/etc/nvme/hostnqn` on the host, which the node plugin generates on first start if the file is missing. The controller uses it to grant and revoke ACL access. |
+| `pillar-csi.bhyoo.com/nvmeof-host-nqn` | CSINode | node plugin at startup | The node's NVMe host NQN, read from `/etc/nvme/hostnqn` on the host. If `/etc/nvme/hostnqn` or `/etc/nvme/hostid` is missing, the node plugin writes a generated ID into it. These are ID files; no packages are installed. The controller uses the NQN to grant and revoke ACL access. |
 | `pillar-csi.bhyoo.com/storage-class-carry-over` | PillarStorageClass | controller | Temporary record of the generated StorageClass's labels, annotations and `allowedTopologies` while the controller deletes and recreates the class. Removed once the new class exists. |
 | `pillar-csi.bhyoo.com/success-recorded` | PillarVolumeState | controller | Marks a volume lifecycle created under the rule that `Ready` is recorded before `CreateVolume` reports success. Used when cleaning up abandoned provisioning attempts. |
 
@@ -84,10 +84,13 @@ While deletion is blocked, the object's `Ready` condition is `False` with reason
 
 ### Volume attributes
 
-The controller writes these into `PersistentVolume.spec.csi.volumeAttributes` at `CreateVolume`. The node plugin reads them when it connects, formats and mounts. Keys that were not set anywhere are omitted.
+The controller writes these into `PersistentVolume.spec.csi.volumeAttributes` at `CreateVolume`. The node plugin reads them when it connects, formats and mounts. Keys that were not set anywhere are omitted. The first three keys have no prefix.
 
 | Key | Value |
 |---|---|
+| `target_id` | target identifier; for NVMe-oF/TCP, the subsystem NQN |
+| `address` | storage node address the export listens on, recorded at provisioning |
+| `port` | TCP port the export listens on, recorded at provisioning |
 | `pillar-csi.bhyoo.com/protocol-type` | `nvmeof-tcp` |
 | `pillar-csi.bhyoo.com/volume-ref` | protocol-level reference of the volume (the NVMe subsystem name) |
 | `pillar-csi.bhyoo.com/nvmeof-max-queue-size` | resolved `maxQueueSize` |

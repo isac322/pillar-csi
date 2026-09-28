@@ -18,6 +18,9 @@ html {
 }
 
 body.lp {
+	/* Show literal characters in mono text: no `>-` or `==` ligatures. */
+	font-variant-ligatures: none;
+	font-feature-settings: 'liga' 0, 'calt' 0;
 	margin: 0;
 	background: var(--pc-ground);
 	color: var(--pc-text);
@@ -554,30 +557,18 @@ body.lp {
 	overflow-wrap: anywhere;
 }
 
-/* Narrow screens: numeral on the left, text on the right. */
+/* Narrow screens: compact cards with the numeral on its own line, so every
+ * card's text starts at the same edge. */
 @media (max-width: 559px) {
 	.lp-negation {
-		display: grid;
-		grid-template-columns: 3.25rem minmax(0, 1fr);
-		column-gap: 12px;
-		row-gap: 4px;
-		padding: 16px;
-	}
-	.lp-negation {
-		grid-template-columns: minmax(2.5rem, max-content) minmax(0, 1fr);
+		gap: 4px;
+		padding: 14px 16px;
 	}
 	.lp-negation__value {
-		grid-row: span 2;
 		font-size: 1.75rem;
 	}
 	.lp-negation__label {
 		font-size: 0.875rem;
-	}
-	.lp-negation__evidence {
-		padding-top: 0;
-	}
-	.lp-negation__note {
-		display: none;
 	}
 }
 
@@ -1044,7 +1035,12 @@ body.lp {
 		margin: 6px 8px;
 	}
 	.lp-starbar__text {
-		font-size: 0.8125rem;
+		display: none;
+	}
+	.lp-starbar__inner {
+		justify-content: center;
+		padding-top: 6px;
+		padding-bottom: 6px;
 	}
 	.lp-starcallout {
 		padding: 10px;

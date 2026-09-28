@@ -15,7 +15,7 @@ const cellHeaders = hasLabelHeader ? comparison.columns.slice(1) : comparison.co
 
 <section class="lp-section lp-compare" aria-labelledby="compare-title">
 	<div class="lp-wrap">
-		<h2 id="compare-title" class="lp-section__label">04 / Comparison</h2>
+		<h2 id="compare-title" class="lp-section__label"><span aria-hidden="true">04 / </span>Comparison</h2>
 		<div class="lp-compare__scroll">
 			<table class="lp-compare__table">
 				<thead>
@@ -42,7 +42,7 @@ const cellHeaders = hasLabelHeader ? comparison.columns.slice(1) : comparison.co
 			{
 				cellHeaders.map((col, i) => (
 					<li class="lp-compare__card">
-						<h3 class="lp-compare__card-title">{col}</h3>
+						<p class="lp-compare__card-title">{col}</p>
 						<dl>
 							{comparison.rows.map((row) => (
 								<div class="lp-compare__line">

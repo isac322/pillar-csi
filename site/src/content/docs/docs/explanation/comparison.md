@@ -11,18 +11,37 @@ Checked on 2026-09-28 against each project's own documentation, linked below. Ot
 
 ## At a glance
 
-| | pillar-csi | democratic-csi | Longhorn | OpenEBS LocalPV ZFS / LVM | TopoLVM |
-| --- | --- | --- | --- | --- | --- |
-| Pods on other nodes can use a volume | Yes, over NVMe/TCP | Yes, over NFS, iSCSI, SMB or NVMe-oF | Yes | No, node-bound | No, node-local |
-| Replication across nodes | No | Not provided by the driver | Yes, synchronous replicas | No | No |
-| Storage it uses | An existing ZFS pool or LVM volume group on a storage node | ZFS on TrueNAS or any ZFS-on-Linux host, plus Synology and others | Disks on cluster nodes, managed by Longhorn | ZFS pool or LVM volume group on each node | LVM volume group on each node |
-| How the driver manages the storage host | gRPC agent that writes kernel `nvmet` configfs directly | SSH commands, or the TrueNAS API (experimental) | Longhorn manager on each node | Node plugin on the same node | Node plugin on the same node |
-| Snapshots and clones | Not supported yet | Yes | Yes, plus backups to NFS or S3 | ZFS: snapshot, restore, clone. LVM: snapshot, restore | Snapshots of thin volumes, restored on the same node |
-| RWX (ReadWriteMany) | Not supported yet | Yes, with the NFS and SMB drivers | Yes, through an NFSv4 share-manager pod | No | Not listed in scope |
-| Drivers to install for several pools and protocols | One driver and one Helm release. iSCSI, NFS and SMB are planned inside the same driver | One Helm release per driver, such as one for `zfs-generic-nvmeof` and another for `zfs-generic-nfs` | One installation | Separate drivers for ZFS and LVM | One driver, LVM only |
-| Host packages required | None beyond kernel modules and the pool: the images carry `zfs`, `lvm2` and mkfs tools, and there is no SSH or target CLI | On a ZFS-on-Linux storage host: SSH, `zfs`, and `targetcli` or `nvmetcli` for iSCSI or NVMe-oF. On nodes: `nfs-common`, `cifs-utils` or `open-iscsi` for those protocols | `open-iscsi` with `iscsid` running, an NFSv4 client for RWX, and basic tools such as `findmnt`, `blkid` and `lsblk` on every node | ZFS: `zfsutils-linux` on every node. LVM: `lvm2` and the `dm-snapshot` module on every node | A volume group on each node; getting-started lists nothing else |
+### Features
 
-Sources: [democratic-csi README](https://github.com/democratic-csi/democratic-csi), [What is Longhorn](https://longhorn.io/docs/1.12.1/what-is-longhorn/), [Longhorn RWX volumes](https://longhorn.io/docs/1.12.1/nodes-and-volumes/volumes/rwx-volumes/), [Longhorn installation requirements](https://longhorn.io/docs/1.12.1/deploy/install/), [OpenEBS LocalPV ZFS](https://github.com/openebs/zfs-localpv) and its [quickstart](https://github.com/openebs/zfs-localpv/blob/develop/docs/quickstart.md), [OpenEBS LocalPV LVM](https://github.com/openebs/lvm-localpv) and its [quickstart](https://github.com/openebs/lvm-localpv/blob/develop/docs/quickstart.md), [TopoLVM README](https://github.com/topolvm/topolvm), [TopoLVM getting started](https://github.com/topolvm/topolvm/blob/main/docs/getting-started.md), [TopoLVM limitations](https://github.com/topolvm/topolvm/blob/main/docs/limitations.md). pillar-csi facts come from this repository at v0.3.0 (`Dockerfile`, `api/v1alpha1/`).
+| Driver | Serves pods on other nodes | Replicas | Snapshots | RWX |
+| --- | --- | --- | --- | --- |
+| pillar-csi | Yes, NVMe-oF/TCP | No | Not yet | Not yet |
+| democratic-csi | Yes, NFS, iSCSI, SMB or NVMe-oF | No | Yes, plus clones | Yes, NFS and SMB drivers |
+| Longhorn | Yes | Yes, synchronous | Yes, plus backups to NFS or S3 | Yes, NFSv4 share-manager pod |
+| OpenEBS LocalPV | No, node-bound | No | ZFS: yes, plus clones. LVM: yes | No |
+| TopoLVM | No, node-local | No | Thin volumes, same-node restore | Not in scope |
+
+### Storage and management
+
+| Driver | Storage it uses | How it manages the storage |
+| --- | --- | --- |
+| pillar-csi | An existing ZFS pool or LVM volume group on a storage node | A gRPC agent that writes the kernel NVMe-oF target through configfs |
+| democratic-csi | TrueNAS, any ZFS-on-Linux host, Synology and others | SSH commands, or the TrueNAS API (experimental) |
+| Longhorn | Disks on cluster nodes, managed by Longhorn | Longhorn manager on each node |
+| OpenEBS LocalPV | A ZFS pool or LVM volume group on each node | Node plugin on the same node |
+| TopoLVM | An LVM volume group on each node | Node plugin on the same node |
+
+### What you install
+
+| Driver | Drivers for several pools and protocols | Host packages |
+| --- | --- | --- |
+| pillar-csi | One driver, one Helm release. iSCSI, NFS and SMB are planned in the same driver | None. Hosts provide the kernel modules and the pool; the images carry `zfs`, `lvm2` and the mkfs tools |
+| democratic-csi | One Helm release per driver, for example one for NVMe-oF and one for NFS | Storage host: SSH, `zfs`, and `targetcli` or `nvmetcli`. Nodes: `nfs-common`, `cifs-utils` or `open-iscsi` for those protocols |
+| Longhorn | One installation | Every node: `open-iscsi` with `iscsid`, an NFSv4 client for RWX, and tools such as `findmnt`, `blkid` and `lsblk` |
+| OpenEBS LocalPV | Separate drivers for ZFS and LVM | ZFS: `zfsutils-linux` on every node. LVM: `lvm2` and the `dm-snapshot` module on every node |
+| TopoLVM | One driver, LVM only | A volume group on each node; the getting-started guide lists nothing else |
+
+Sources: [democratic-csi README](https://github.com/democratic-csi/democratic-csi), [What is Longhorn](https://longhorn.io/docs/1.12.1/what-is-longhorn/), [Longhorn RWX volumes](https://longhorn.io/docs/1.12.1/nodes-and-volumes/volumes/rwx-volumes/), [Longhorn installation requirements](https://longhorn.io/docs/1.12.1/deploy/install/), [OpenEBS LocalPV ZFS](https://github.com/openebs/zfs-localpv) and its [quickstart](https://github.com/openebs/zfs-localpv/blob/develop/docs/quickstart.md), [OpenEBS LocalPV LVM](https://github.com/openebs/lvm-localpv) and its [quickstart](https://github.com/openebs/lvm-localpv/blob/develop/docs/quickstart.md), [TopoLVM README](https://github.com/topolvm/topolvm), [TopoLVM getting started](https://github.com/topolvm/topolvm/blob/main/docs/getting-started.md), [TopoLVM limitations](https://github.com/topolvm/topolvm/blob/main/docs/limitations.md). pillar-csi facts come from the pillar-csi repository at v0.3.0.
 
 ## democratic-csi
 

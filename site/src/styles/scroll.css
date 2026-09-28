@@ -1,0 +1,64 @@
+/*
+ * Sideways-scroll affordance for tables and code blocks (see public/scroll-hint.js).
+ * While content continues to the right, the box shows an inset edge shadow and
+ * a small "scroll" chip. Both disappear once the reader reaches the end.
+ */
+
+.pc-scroll {
+	position: relative;
+}
+
+.pc-scroll__table {
+	overflow-x: auto;
+}
+
+/* Inside the wrapper the table lays out as a real table at full width. */
+.sl-markdown-content .pc-scroll__table > table:not(:where(.not-content *)) {
+	display: table;
+	width: 100%;
+	overflow: visible;
+}
+
+.pc-scroll::before,
+.pc-scroll::after {
+	position: absolute;
+	pointer-events: none;
+	opacity: 0;
+}
+
+.pc-scroll::before {
+	content: '';
+	top: 0;
+	right: 0;
+	bottom: 0;
+	width: 16px;
+	box-shadow: inset -12px 0 10px -10px rgb(0 0 0 / 0.7);
+	z-index: 1;
+}
+
+.pc-scroll::after {
+	content: 'scroll \2192';
+	right: 6px;
+	bottom: 6px;
+	padding: 2px 8px;
+	border-radius: 2px;
+	background: var(--pc-steel);
+	color: var(--pc-text);
+	font-family: var(--pc-font-mono);
+	font-size: 0.6875rem;
+	line-height: 1.5;
+	letter-spacing: 0.04em;
+	z-index: 2;
+}
+
+.pc-scroll--more::before,
+.pc-scroll--more::after {
+	opacity: 1;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+	.pc-scroll::before,
+	.pc-scroll::after {
+		transition: opacity 120ms linear;
+	}
+}

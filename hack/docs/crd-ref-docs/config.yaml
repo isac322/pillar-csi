@@ -3,6 +3,9 @@
 processor:
   ignoreTypes:
     - "List$"
+    # Go-side helpers in compatibility.go; no CRD field uses them.
+    - "\\bCompatibility$"
+    - "\\b(Backend|Protocol)Category$"
   ignoreFields:
     - "TypeMeta$"
 

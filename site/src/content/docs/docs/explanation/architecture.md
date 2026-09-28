@@ -12,36 +12,39 @@ pillar-csi is not a distributed filesystem. It does not replicate, stripe or poo
 ## Components
 
 ```text
-            Kubernetes API (CRDs, PVCs, PillarVolumeState)
-                 |                                  |
-                 v                                  v
-   +---------------------------+        +---------------------------+
-   | pillar-controller         |        | pillar-node               |
-   | Deployment                |        | DaemonSet, every worker   |
-   | CRD reconcilers           |        | CSI Node service          |
-   | CSI Controller service    |        | connect, mkfs, mount      |
-   +---------------------------+        +---------------------------+
-                 |                                  ^
-                 | gRPC, port 9500                  | NVMe/TCP, port 4420
-                 | (control path, mTLS opt-in)      | (data path, kernel only)
-                 v                                  |
-   +-------------------------------------------------------------------+
-   | storage node                                                      |
-   |   pillar-agent (DaemonSet)  -->  zfs / lvm commands               |
-   |                             -->  /sys/kernel/config/nvmet         |
-   |   ZFS zvol or LVM LV  -->  kernel nvmet subsystem  -->  TCP port  |
-   +-------------------------------------------------------------------+
+Kubernetes API
+(CRDs, PVCs, PillarVolumeState)
+  |                 |
+  v                 v
+pillar-controller  pillar-node
+Deployment         DaemonSet,
+                   every worker
+reconcilers,       CSI Node:
+CSI Controller     connect,
+                   mkfs, mount
+  |                 ^
+  | gRPC :9500      | NVMe/TCP
+  | control path    | :4420
+  | mTLS opt-in     | data path,
+  v                 | kernel only
+storage node -------+
+  pillar-agent (DaemonSet)
+    -> zfs / lvm commands
+    -> nvmet configfs
+  zvol or LV
+    -> kernel nvmet subsystem
+    -> TCP listener
 ```
 
 The diagram shows only shipped parts. The one protocol is NVMe-oF over TCP, and the backends are ZFS zvols and LVM logical volumes.
 
 ### pillar-controller
 
-A Deployment that runs the CRD reconcilers and the CSI Controller service, with the standard `csi-provisioner`, `csi-attacher`, `csi-resizer` and `livenessprobe` sidecars (`charts/pillar-csi/values.yaml`). It never touches a disk. For every volume operation it calls the agent on the storage node that owns the pool and records the result in the Kubernetes API. `replicaCount` defaults to 1; more replicas are safe because the manager and the sidecars use leader election.
+A Deployment that runs the CRD reconcilers and the CSI Controller service, with the standard `csi-provisioner`, `csi-attacher`, `csi-resizer` and `livenessprobe` sidecars. It never touches a disk. For every volume operation it calls the agent on the storage node that owns the pool and records the result in the Kubernetes API. `replicaCount` defaults to 1; more replicas are safe because the manager and the sidecars use leader election.
 
 ### pillar-agent
 
-A DaemonSet that runs only on storage nodes. The controller labels a node `pillar-csi.bhyoo.com/agent-node=true` when a `PillarAgent` resource points at it, and the agent DaemonSet's `nodeSelector` matches that label (`internal/controller/pillaragent_controller.go`). The agent is a gRPC server on port 9500 with no Kubernetes API client. It creates and deletes zvols and logical volumes in the pools listed in its `--config` file (the chart renders `agent.backends` into it), and it writes the NVMe-oF target directly into `/sys/kernel/config/nvmet`. It reads back what it wrote, so a configfs write that did not take effect becomes an error. The agent runs with `hostNetwork: true` because the kernel binds the `nvmet_tcp` listener in the network namespace of the process that enables the port.
+A DaemonSet that runs only on storage nodes. The controller labels a node `pillar-csi.bhyoo.com/agent-node=true` when a `PillarAgent` resource points at it, and the agent DaemonSet's `nodeSelector` matches that label. The agent is a gRPC server on port 9500 with no Kubernetes API client. It creates and deletes zvols and logical volumes in the pools listed in its `--config` file (the chart renders `agent.backends` into it), and it writes the NVMe-oF target directly into `/sys/kernel/config/nvmet`. It reads back what it wrote, so a configfs write that did not take effect becomes an error. The agent runs with `hostNetwork: true` because the kernel binds the `nvmet_tcp` listener in the network namespace of the process that enables the port.
 
 ### pillar-node
 
@@ -51,7 +54,7 @@ Both DaemonSets have an init container that runs `modprobe` against the host's `
 
 ### What the images contain
 
-Each image carries the tools its component runs, so hosts do not need them (`Dockerfile`):
+Each image carries the tools its component runs, so hosts do not need them.
 
 | Image | Base | Tools inside |
 | --- | --- | --- |
@@ -71,7 +74,7 @@ The data path contains only kernel code. Once a volume is connected, reads and w
 
 ## Custom resources
 
-All pillar-csi resources are cluster-scoped and live in the `pillar-csi.bhyoo.com/v1alpha1` API group (`api/v1alpha1/`).
+All pillar-csi resources are cluster-scoped and live in the `pillar-csi.bhyoo.com/v1alpha1` API group.
 
 | Resource | What it describes | References |
 | --- | --- | --- |
@@ -93,7 +96,7 @@ Configuration is split into three axes: the backend (`zfs` or `lvm`), the protoc
 2. `PillarStorageClass.spec.overrides` and `spec.filesystem` override them for one storage class.
 3. The PVC annotations `pillar-csi.bhyoo.com/backend`, `pillar-csi.bhyoo.com/protocol` and `pillar-csi.bhyoo.com/filesystem` override them for one volume.
 
-For example, `zfs: {properties: {compression: zstd}}` means the same thing in a store, in a class override and in a PVC annotation. Overrides accept only tuning fields. Placement and security fields such as `pool`, `volumeGroup`, `port` and `acl` are rejected with their path (`api/v1alpha1/annotations.go`). See [volume overrides](/docs/how-to/volume-overrides/) for the full rules.
+For example, `zfs: {properties: {compression: zstd}}` means the same thing in a store, in a class override and in a PVC annotation. Overrides accept only tuning fields. Placement and security fields such as `pool`, `volumeGroup`, `port` and `acl` are rejected with their path. See [volume overrides](/docs/how-to/volume-overrides/) for the full rules.
 
 Each axis is a union with one member per implementation, and the controller, node plugin and agent dispatch on that member. iSCSI, NFS and SMB are planned as new members of the same driver and the same configuration model. They are not implemented, and the CRDs accept only the `nvmeofTcp` protocol and the `zfs` and `lvm` backends today.
 
@@ -112,7 +115,7 @@ The agent keeps two small records per volume in `/var/lib/pillar-csi/agent` on t
 
 ## After a storage-node reboot
 
-A reboot empties `nvmet` configfs, so every export on that node disappears. Connected workers keep retrying their connections while the node is down. When the agent starts, it refuses to create any export until the controller sends the complete export state for that node in one request. The agent then prepares every export before it enables any listener, so a reconnecting worker finds either no listener or its fully configured subsystem (`internal/agent/server_export_restore.go`). Each namespace comes back with the same UUID, NGUID and serial it had before, which the worker's kernel requires in order to keep the device.
+A reboot empties `nvmet` configfs, so every export on that node disappears. Connected workers keep retrying their connections while the node is down. When the agent starts, it refuses to create any export until the controller sends the complete export state for that node in one request. The agent then prepares every export before it enables any listener, so a reconnecting worker finds either no listener or its fully configured subsystem. Each namespace comes back with the same UUID, NGUID and serial it had before, which the worker's kernel requires in order to keep the device.
 
 Workers reconnect only within the kernel's `ctrl_loss_tmo` window: 600 seconds by default, or the `ctrlLossTmo` set on the `PillarProtocol`. A storage node that stays down longer than that loses its connections for good, and the filesystems on those volumes see I/O errors. While a storage node is down, its volumes are unavailable; no other node holds a copy.
 

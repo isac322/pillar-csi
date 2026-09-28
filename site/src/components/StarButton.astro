@@ -10,20 +10,17 @@ interface Props {
 const { repo, label, variant = 'nav' } = Astro.props;
 ---
 
-<a
-	class={`pc-star pc-star--${variant}`}
-	href={`https://github.com/${repo}`}
-	data-star-repo={repo}
-	aria-label={variant === 'compact' ? label : undefined}
->
+<a class={`pc-star pc-star--${variant}`} href={`https://github.com/${repo}`} data-star-repo={repo}>
 	<svg class="pc-star__icon" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
 		<path
 			fill="currentColor"
 			d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.75.75 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25Z"
 		></path>
 	</svg>
-	{variant !== 'compact' && <span class="pc-star__label">{label}</span>}
-	<span class="pc-star__count" data-star-count hidden></span>
+	<span class={variant === 'compact' ? 'pc-star__sr' : 'pc-star__label'}>{label}</span>
+	<span class="pc-star__count" data-star-count hidden
+		><span data-star-n></span><span class="pc-star__sr"> stars</span></span
+	>
 </a>
 
 <style>
@@ -59,6 +56,15 @@ const { repo, label, variant = 'nav' } = Astro.props;
 	}
 	.pc-star__count[hidden] {
 		display: none;
+	}
+	.pc-star__sr {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		margin: -1px;
+		overflow: hidden;
+		clip: rect(0 0 0 0);
+		white-space: nowrap;
 	}
 
 	.pc-star--nav {

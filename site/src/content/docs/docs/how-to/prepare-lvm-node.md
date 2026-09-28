@@ -29,12 +29,20 @@ sudo modprobe -a nvmet nvmet_tcp dm_thin_pool
 ls /sys/kernel/config/nvmet
 ```
 
-The last command lists `hosts`, `ports`, and `subsystems`. If `modprobe` cannot find `nvmet` or `nvmet_tcp` on Ubuntu, install `linux-modules-extra-$(uname -r)` and try again. If they are still missing, the kernel lacks NVMe-oF target support; see [Prerequisites](/docs/reference/prerequisites/).
+The last command lists `hosts`, `ports`, and `subsystems`. If `modprobe` cannot find `nvmet` or `nvmet_tcp` on Ubuntu, install the extra kernel modules package and try again:
+
+```sh
+sudo apt install -y linux-modules-extra-$(uname -r)
+```
+
+If they are still missing, the kernel lacks NVMe-oF target support; see [Prerequisites](/docs/reference/prerequisites/).
 
 Load them at every boot:
 
 ```sh
-printf 'nvmet\nnvmet_tcp\ndm_thin_pool\n' | sudo tee /etc/modules-load.d/pillar-csi-target.conf
+printf 'nvmet\nnvmet_tcp\n' \
+  | sudo tee /etc/modules-load.d/nvme-target.conf
+printf 'dm_thin_pool\n' | sudo tee /etc/modules-load.d/dm-thin-pool.conf
 ```
 
 The agent Pod also runs `modprobe nvmet` and `modprobe nvmet_tcp` when it starts, but that only works when the host kernel ships them.
@@ -43,7 +51,8 @@ If Pods that use pillar-csi volumes may also run on this node, load the initiato
 
 ```sh
 sudo modprobe -a nvme_fabrics nvme_tcp
-printf 'nvme_fabrics\nnvme_tcp\n' | sudo tee /etc/modules-load.d/pillar-csi-initiator.conf
+printf 'nvme_fabrics\nnvme_tcp\n' \
+  | sudo tee /etc/modules-load.d/nvme-initiator.conf
 ```
 
 ## Create the volume group
@@ -75,6 +84,7 @@ Add the volume group to `agent.backends` in your Helm values and install or upgr
 Linear volumes only:
 
 ```yaml
+# values.yaml
 agent:
   backends:
     - lvm:
@@ -84,6 +94,7 @@ agent:
 With the thin pool:
 
 ```yaml
+# values.yaml
 agent:
   backends:
     - lvm:

@@ -12,8 +12,8 @@ const { legend } = matrix;
 
 <section class="lp-section lp-matrix" aria-labelledby="matrix-title">
 	<div class="lp-wrap">
-		<h2 id="matrix-title" class="lp-section__label">02 / One driver</h2>
-		<h3 class="lp-section__title">{matrix.heading}</h3>
+		<p class="lp-section__label" aria-hidden="true">02 / One driver</p>
+		<h2 id="matrix-title" class="lp-section__title">{matrix.heading}</h2>
 		<p class="lp-section__body">{matrix.body}</p>
 
 		<div class="lp-matrix__grid">
@@ -59,7 +59,7 @@ const { legend } = matrix;
 			{
 				matrix.rows.map((row) => (
 					<li class={`lp-matrix__block lp-matrix__head--${row.status}`}>
-						<h4 class="lp-matrix__block-title">{row.name}</h4>
+						<p class="lp-matrix__block-title">{row.name}</p>
 						<dl>
 							{row.cells.map((cell, i) =>
 								cell === 'na' ? null : (

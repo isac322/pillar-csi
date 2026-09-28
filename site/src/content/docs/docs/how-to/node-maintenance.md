@@ -108,7 +108,12 @@ The node plugin keeps a record of each staged volume in `/var/lib/pillar-csi/nod
 If a worker loses power or crashes, its volumes stay published to it, and the controller refuses to publish them to another node. First make sure the node is really off. Then mark it out of service so Kubernetes detaches its volumes (the Kubernetes non-graceful node shutdown feature):
 
 ```sh
-kubectl taint nodes <worker> node.kubernetes.io/out-of-service=nodeshutdown:NoExecute
+kubectl taint nodes <worker> \
+  node.kubernetes.io/out-of-service=nodeshutdown:NoExecute
 ```
 
-Remove the taint after the node is back and healthy.
+After the node is back and healthy, remove the taint:
+
+```sh
+kubectl taint nodes <worker> node.kubernetes.io/out-of-service-
+```

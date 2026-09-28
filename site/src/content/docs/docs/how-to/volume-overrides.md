@@ -108,7 +108,7 @@ spec:
 
 The annotations must be on the PVC when it is provisioned. The controller reads them once in `CreateVolume`; adding or editing them later changes nothing for that volume.
 
-Any other annotation key under `pillar-csi.bhyoo.com/` on the PVC is rejected, so a typo or a key from 0.2 fails provisioning instead of being ignored. An unknown field or a value outside its range is rejected the same way. The PVC stays `Pending` and its events carry the message:
+Any other annotation key under `pillar-csi.bhyoo.com/` on the PVC is rejected, so a typo or a key from 0.2 fails provisioning instead of being ignored. An unknown field or a value outside its range is rejected the same way. The PVC stays `Pending`, and its events carry the error. Read them with:
 
 ```sh
 kubectl describe pvc postgres-data

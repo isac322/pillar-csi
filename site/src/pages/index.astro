@@ -8,6 +8,7 @@ import '@fontsource/jetbrains-mono/600.css';
 import h1Font from '@fontsource/inter-tight/files/inter-tight-latin-700-normal.woff2?url';
 import '../styles/tokens.css';
 import '../styles/landing.css';
+import '../styles/scroll.css';
 import { landing } from '../data/landing';
 import Nav from '../components/landing/Nav.astro';
 import StarBar from '../components/landing/StarBar.astro';
@@ -118,6 +119,7 @@ const jsonLd = {
 		</main>
 		<Footer cta={landing.cta} star={landing.star} />
 		<script is:inline src="/star.js"></script>
+		<script is:inline src="/scroll-hint.js"></script>
 		<script is:inline>
 			document.querySelectorAll('[data-copy]').forEach((button) => {
 				button.hidden = false;

@@ -604,7 +604,7 @@ docs-gen: crd-ref-docs helm-docs ## Generate the CRD reference, the Helm values 
 	"$(HELM_DOCS)" --chart-search-root=charts --output-file=README.md \
 		--template-files=README.md.gotmpl --template-files="$(CURDIR)/hack/docs/helm-docs/_values-table.gotmpl"
 	"$(HELM_DOCS)" --chart-search-root=charts --output-file=../../$(HELM_VALUES_OUT) \
-		--template-files="$(CURDIR)/hack/docs/helm-docs/helm-values.md.gotmpl" --template-files="$(CURDIR)/hack/docs/helm-docs/_values-table.gotmpl"
+		--template-files="$(CURDIR)/hack/docs/helm-docs/helm-values.md.gotmpl"
 
 .PHONY: docs-check
 docs-check: docs-gen ## Fail if generated docs differ from api/v1alpha1 and charts/pillar-csi/values.yaml.

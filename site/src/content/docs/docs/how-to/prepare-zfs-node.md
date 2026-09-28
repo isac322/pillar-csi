@@ -26,7 +26,7 @@ The agent container brings its own copy of the ZFS command-line tools. The host 
 lsmod | grep -w zfs
 ```
 
-## Load the NVMe-oF target modules
+## Load the kernel modules
 
 Load the modules now:
 
@@ -35,12 +35,19 @@ sudo modprobe -a nvmet nvmet_tcp
 ls /sys/kernel/config/nvmet
 ```
 
-The last command lists `hosts`, `ports`, and `subsystems`. If `modprobe` cannot find the modules on Ubuntu, install `linux-modules-extra-$(uname -r)` and try again. If they are still missing, the kernel lacks NVMe-oF target support; see [Prerequisites](/docs/reference/prerequisites/).
+The last command lists `hosts`, `ports`, and `subsystems`. If `modprobe` cannot find the modules on Ubuntu, install the extra kernel modules package and try again:
+
+```sh
+sudo apt install -y linux-modules-extra-$(uname -r)
+```
+
+If they are still missing, the kernel lacks NVMe-oF target support; see [Prerequisites](/docs/reference/prerequisites/).
 
 Load them at every boot:
 
 ```sh
-printf 'nvmet\nnvmet_tcp\n' | sudo tee /etc/modules-load.d/pillar-csi-target.conf
+printf 'nvmet\nnvmet_tcp\n' \
+  | sudo tee /etc/modules-load.d/nvme-target.conf
 ```
 
 The agent Pod also runs `modprobe` for these modules when it starts, but that only works when the host kernel ships them.
@@ -49,7 +56,8 @@ If Pods that use pillar-csi volumes may also run on this node, load the initiato
 
 ```sh
 sudo modprobe -a nvme_fabrics nvme_tcp
-printf 'nvme_fabrics\nnvme_tcp\n' | sudo tee /etc/modules-load.d/pillar-csi-initiator.conf
+printf 'nvme_fabrics\nnvme_tcp\n' \
+  | sudo tee /etc/modules-load.d/nvme-initiator.conf
 ```
 
 ## Create the pool
@@ -84,6 +92,7 @@ pillar-csi then creates each volume as a zvol named `tank/k8s/<volume>`. To plac
 Add the pool to `agent.backends` in your Helm values and install or upgrade the chart as described in [Install with Helm](/docs/how-to/install-helm/):
 
 ```yaml
+# values.yaml
 agent:
   backends:
     - zfs:

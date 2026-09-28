@@ -17,7 +17,7 @@ No. pillar-csi uses NVMe-oF over TCP, which runs on ordinary Ethernet and IP. RD
 
 No packages. The images carry the tools pillar-csi runs: the agent image has the OpenZFS userland and `lvm2`, and the node image has `util-linux`, `e2fsprogs` and `xfsprogs`. The node plugin connects through the kernel's `/dev/nvme-fabrics` device, so workers do not need `nvme-cli`. The agent writes the target through configfs, so the storage node does not need `nvmetcli` or `targetcli`, and the controller reaches the agent over gRPC, so no host needs SSH access.
 
-The hosts must provide what a container cannot: the NVMe-oF kernel modules, and on the storage node the pool itself (a ZFS pool imported by the host's ZFS kernel module, or an LVM volume group). You also list each pool in the chart's `agent.backends` value, which is empty by default. See [prerequisites](/docs/reference/prerequisites/).
+The hosts must provide what a container cannot: the NVMe-oF kernel modules, and on the storage node the pool itself (a ZFS pool imported by the host's ZFS kernel module, or an LVM volume group). You also list each pool in the chart's `agent.backends` value, which is empty by default. At run time the agent and node plugin keep small state files in hostPath directories under `/var/lib/pillar-csi/`; that is data, not installed software. See [prerequisites](/docs/reference/prerequisites/).
 
 ## What are the kernel requirements?
 
@@ -43,7 +43,7 @@ Yes. Create one `PillarAgent` per storage node and one `PillarStore` per pool, t
 
 No. They are planned as additions to the same driver and the same configuration model: a new member of `PillarProtocol.spec.protocol`, set with the same YAML shape in storage class overrides and PVC annotations. They are not implemented yet, and there are no release dates. Today the CRDs accept only the `nvmeofTcp` protocol. [Architecture](/docs/explanation/architecture/#one-driver-for-every-backend-and-protocol) explains the model.
 
-## How is pillar-csi different from democratic-csi?
+## How does democratic-csi compare?
 
 Both can export ZFS zvols over NVMe-oF. democratic-csi manages a ZFS-on-Linux host by running commands over SSH and expects you to set up `nvmetcli` and the target ports by hand. pillar-csi runs a gRPC agent on the storage node that writes the kernel target configuration directly and reads it back. It adds LVM, fencing of stale requests and stable namespace identity across reboots, and it serves any number of pools from one Helm release. democratic-csi covers far more: TrueNAS and Synology appliances, NFS, iSCSI and SMB, snapshots and RWX. The [comparison page](/docs/explanation/comparison/#democratic-csi) has details and sources.
 

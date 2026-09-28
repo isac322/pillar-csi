@@ -74,19 +74,27 @@ Load the NVMe-oF target modules on the storage node and keep them loaded after a
 
 ```sh
 sudo modprobe -a nvmet nvmet_tcp
-printf 'nvmet\nnvmet_tcp\n' | sudo tee /etc/modules-load.d/pillar-csi-target.conf
+printf 'nvmet\nnvmet_tcp\n' \
+  | sudo tee /etc/modules-load.d/nvme-target.conf
 ```
 
-If `modprobe` reports that a module is not found, run `sudo apt install -y linux-modules-extra-$(uname -r)` and try again. If the modules are still missing, your kernel was built without NVMe-oF target support.
+If `modprobe` reports that a module is not found, install the extra kernel modules package and try again:
+
+```sh
+sudo apt install -y linux-modules-extra-$(uname -r)
+```
+
+If the modules are still missing, your kernel was built without NVMe-oF target support.
 
 Load the initiator modules on every node where your Pod might run:
 
 ```sh
 sudo modprobe -a nvme_fabrics nvme_tcp
-printf 'nvme_fabrics\nnvme_tcp\n' | sudo tee /etc/modules-load.d/pillar-csi-initiator.conf
+printf 'nvme_fabrics\nnvme_tcp\n' \
+  | sudo tee /etc/modules-load.d/nvme-initiator.conf
 ```
 
-If you have no pool yet, create a demo pool named `pillar-demo` on a 20 GiB sparse file, so you do not need a spare disk. To use a real disk instead, follow [Prepare a ZFS storage node](/docs/how-to/prepare-zfs-node/) or [Prepare an LVM storage node](/docs/how-to/prepare-lvm-node/).
+If you have no pool yet, create a demo pool named `pillar-demo` on a 20 GiB sparse file, so you do not need a spare disk. The `zfsutils-linux` or `lvm2` package is only needed to create the pool; pillar-csi does not use it. To use a real disk instead, follow [Prepare a ZFS storage node](/docs/how-to/prepare-zfs-node/) or [Prepare an LVM storage node](/docs/how-to/prepare-lvm-node/).
 
 <Tabs syncKey="backend">
 <TabItem label="ZFS">
@@ -294,7 +302,7 @@ Every resource shows `True` in the `READY` column, and the StorageClass `pillar-
 Create a 1 GiB claim:
 
 ```sh
-kubectl apply -f - <<'EOF'
+kubectl apply -f - <<EOF
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -312,7 +320,7 @@ EOF
 The claim stays `Pending` until a Pod uses it, because the StorageClass binds on first consumer. Save a Pod that appends a line to a file on the volume, then start it:
 
 ```sh
-cat > pillar-demo-pod.yaml <<'EOF'
+cat > pillar-demo-pod.yaml <<EOF
 apiVersion: v1
 kind: Pod
 metadata:
@@ -322,7 +330,10 @@ spec:
   containers:
     - name: app
       image: busybox:1.38.0
-      command: ["sh", "-c", "echo hello from pillar-csi >> /data/hello.txt && sleep 3600"]
+      command:
+        - sh
+        - -c
+        - echo hello from pillar-csi >> /data/hello.txt && sleep 3600
       volumeMounts:
         - name: data
           mountPath: /data

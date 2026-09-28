@@ -7,8 +7,6 @@ sidebar:
 
 A CSI driver that exports block devices over the network can corrupt data in ways a local driver cannot. Two nodes can mount the same ext4 filesystem. A delayed request from an old controller can re-grant access that a newer request revoked. A reboot can change a namespace's identity under a connected host. This page describes how pillar-csi prevents each of these, and why it refuses to proceed when it cannot prove an operation is safe.
 
-The mechanisms live in `internal/csi/volume_fencing.go` (controller side), `internal/agent/fencing.go` and `internal/agent/nvme_identity.go` (storage-node side).
-
 ## One writer per volume
 
 The controller records every node a volume is published to in the `status.publishedNodes` list of the volume's `PillarVolumeState`. It writes that record before it asks the agent to grant the node access, using a compare-and-swap on the object's `resourceVersion`. Because the record lives in the Kubernetes API, it survives controller restarts and leader changes.
@@ -52,7 +50,7 @@ The controller creates the `PillarVolumeState` before it creates anything on a s
 
 The Linux NVMe host caches each namespace's identifiers: UUID, NGUID and EUI-64. When it reconnects after the target went away, it compares the new identifiers with the cached ones. If they differ, it logs `identifiers changed for nsid N` and removes the namespace, so I/O fails and the filesystem on it shuts down, even though the reconnect itself succeeded.
 
-The kernel target assigns a random UUID and subsystem serial each time a namespace is created, and a storage-node reboot recreates every namespace. The agent therefore sets the identity explicitly before it enables a namespace and reads it back to confirm. The namespace UUID, the NGUID and the subsystem serial are derived from the subsystem NQN, which is derived from the volume ID. The same volume gets the same identity after an agent restart, after a storage-node reboot, and after the agent's state directory is lost. No CRD or RPC field is involved (`internal/agent/nvmeof/identity.go`).
+The kernel target assigns a random UUID and subsystem serial each time a namespace is created, and a storage-node reboot recreates every namespace. The agent therefore sets the identity explicitly before it enables a namespace and reads it back to confirm. The namespace UUID, the NGUID and the subsystem serial are derived from the subsystem NQN, which is derived from the volume ID. The same volume gets the same identity after an agent restart, after a storage-node reboot, and after the agent's state directory is lost. No CRD or RPC field is involved.
 
 The agent never changes the identity of a namespace that is enabled, because connected hosts have already cached it and `nvmet` cannot change it without disabling the namespace. Exports created by pillar-csi 0.2.0 or earlier carry kernel-random identifiers. When the agent finds such a live export, it keeps the identity and records it under `/var/lib/pillar-csi/agent/nvmet-identity/`. Later re-creations reproduce the recorded identity. The record is deleted when the volume is unexported, after which the derived identity applies.
 
@@ -72,3 +70,5 @@ The cost is that some failures need an operator. A pod can stay in `ContainerCre
 - [Architecture](/docs/explanation/architecture/)
 - [Node maintenance](/docs/how-to/node-maintenance/)
 - [Troubleshooting](/docs/how-to/troubleshooting/)
+
+The code is on GitHub: [controller fencing](https://github.com/isac322/pillar-csi/blob/master/internal/csi/volume_fencing.go), [agent fencing](https://github.com/isac322/pillar-csi/blob/master/internal/agent/fencing.go) and [namespace identity](https://github.com/isac322/pillar-csi/blob/master/internal/agent/nvme_identity.go).

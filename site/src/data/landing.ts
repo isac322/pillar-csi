@@ -15,7 +15,7 @@ export const landing = {
       'Block storage for bare-metal Kubernetes, kernel to pod.',
       'Turn your storage box into Kubernetes volumes.',
       'Serve zvols and LVs to any Kubernetes node.',
-      'Your NAS pool, attached over kernel NVMe/TCP.',
+      'Your NAS pool, attached over kernel NVMe-oF/TCP.',
     ],
     subline:
       'One CSI driver serves ZFS zvols and LVM volumes to your Kubernetes nodes over kernel NVMe-oF/TCP. Its images bring their own tools, so homelab and bare-metal hosts need only kernel modules and a pool.',
@@ -94,7 +94,7 @@ helm install pillar-csi oci://ghcr.io/isac322/charts/pillar-csi \\
       title: 'Declare the pool',
       body: 'A PillarStore names the pool, and a PillarStorageClass turns it into a Kubernetes StorageClass. The quickstart adds the PillarAgent and PillarProtocol they reference.',
       moreHref: '/docs/tutorials/first-pvc/',
-      moreLabel: 'Full manifest in the quickstart',
+      moreLabel: 'Complete example in the quickstart',
       code: `apiVersion: pillar-csi.bhyoo.com/v1alpha1
 kind: PillarStore
 metadata: {name: nas-tank}
@@ -131,7 +131,7 @@ spec:
       {
         label: 'Data path',
         cells: [
-          'Kernel nvmet target to kernel NVMe/TCP initiator',
+          'Kernel nvmet target to the kernel NVMe-oF/TCP initiator',
           'Depends on the driver: NFS, iSCSI, SMB or NVMe-oF target',
           'Longhorn engine process per volume, writing to replicas',
           'Local zvol or LV on the node running the pod',

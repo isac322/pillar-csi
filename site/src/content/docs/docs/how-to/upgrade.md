@@ -40,7 +40,7 @@ Restarting the agent pods does not remove kernel exports, so connected workers k
 | Hand-written StorageClass | flat keys such as `zfs-prop.*`, `lvm-*`, `nvmeof-*`, `acl-enabled`, `backend-type` | `pillar-csi.bhyoo.com/store-ref`, `/protocol-ref` and the same three documents; the old keys are rejected |
 | Helm `agent.backends` | `{type: zfs-zvol, pool, parent}`, `{type: lvm-lv, vg, thinpool}` | `{zfs: {pool, parentDataset}}`, `{lvm: {volumeGroup, thinPool}}`, rendered into the agent's `--config` file |
 | `pillar-agent` flags | `--backend` | `--config`; `--backend` is gone. Default listen port `9500` |
-| Served schema | iSCSI, NFS, SMB, `zfs-dataset` and `dir` variants | removed; only `zfs`, `lvm` and `nvmeofTcp` |
+| Served schema | schema-only placeholders for iSCSI, NFS, SMB, `zfs-dataset` and `dir`, never implemented | placeholders removed; the schema accepts only `zfs`, `lvm` and `nvmeofTcp`. iSCSI, NFS and SMB remain planned |
 
 A 0.2 `PillarVolumeState` has `spec.nodeConnectParams`. 0.3 instead records the resolved configuration in `spec.resolved` at `CreateVolume`, and 0.2 StorageClasses carry the old parameters. No migration shim exists.
 
@@ -160,7 +160,7 @@ The API group, version (`v1alpha1`), kinds and schema did not change with the re
 
 With `installCRDs=true` (the default) on a 0.1.x chart, the old CRD has no keep annotation. `helm upgrade` deletes it because the new manifests no longer contain it, and the API server deletes every `PillarVolumeState` in it. The two CRDs cannot coexist because they share a kind: the new one reports `NamesAccepted=False` with `ListKindConflict` until the old one is gone. No automatic migration exists. If the cluster has no `PillarVolumeState` objects, or you can discard them, `helm uninstall` and a fresh install is enough. To keep them, follow the steps below.
 
-With `installCRDs=false`, the result depends on where your CRDs came from. If you applied `config/crd/bases/`, the old chart's RBAC granted access only to `pillarvolumestatestates`, so the controller's `PillarVolumeState` calls failed with Forbidden; the new chart fixes that. If you applied CRDs extracted from the old chart, run steps 2 and 4 below yourself, and in step 3 apply the new CRD directly and delete the old one instead of running Helm.
+With `installCRDs=false`, the result depends on where your CRDs came from. If you applied `config/crd/bases/`, the old chart's RBAC granted access only to `pillarvolumestatestates`, so the controller's `PillarVolumeState` calls failed with Forbidden; the new chart fixes that. If you applied CRDs extracted from the old chart, run steps 3 and 5 below yourself, and in step 4 apply the new CRD directly and delete the old one instead of running Helm.
 
 If you are going on to 0.3, you delete every volume anyway, so the `PillarVolumeState` objects need no migration.
 
@@ -168,7 +168,7 @@ If you are going on to 0.3, you delete every volume anyway, so the `PillarVolume
 
 Set `RELEASE` and `HELM_NAMESPACE` (the namespace the release is installed in) to your values. The workload namespace is `namespaceOverride` when set, otherwise `HELM_NAMESPACE`. `CreateVolume`, `DeleteVolume` and `ControllerPublishVolume` stop during the migration.
 
-0. Find the controller Deployment and its replica count. The Deployment name can differ from the release name (`fullnameOverride`, `nameOverride`); the chart labels it `app.kubernetes.io/component=controller`. Exactly one must match. If zero or several do, stop and check the install values.
+1. Find the controller Deployment and its replica count. The Deployment name can differ from the release name (`fullnameOverride`, `nameOverride`); the chart labels it `app.kubernetes.io/component=controller`. Exactly one must match. If zero or several do, stop and check the install values.
 
    ```bash
    WORKLOAD_NAMESPACE=$(helm get values "$RELEASE" -n "$HELM_NAMESPACE" -o json \
@@ -182,21 +182,21 @@ Set `RELEASE` and `HELM_NAMESPACE` (the namespace the release is installed in) t
    echo "controller=$DEPLOY namespace=$WORKLOAD_NAMESPACE replicas=$REPLICAS"
    ```
 
-1. Stop the controller so nothing writes `PillarVolumeState`:
+2. Stop the controller so nothing writes `PillarVolumeState`:
 
    ```bash
    kubectl -n "$WORKLOAD_NAMESPACE" scale deployment/"$DEPLOY" --replicas=0
    kubectl -n "$WORKLOAD_NAMESPACE" rollout status deployment/"$DEPLOY"
    ```
 
-2. Back up the old objects, spec and status:
+3. Back up the old objects, spec and status:
 
    ```bash
    kubectl get pillarvolumestatestates.pillar-csi.bhyoo.com -o json > pvs-backup.json
    jq '.items | length' pvs-backup.json
    ```
 
-3. Upgrade with the controller still at zero replicas, and wait for the new CRD. This step deletes the old CRD and its objects.
+4. Upgrade with the controller still at zero replicas, and wait for the new CRD. This step deletes the old CRD and its objects.
 
    ```bash
    helm upgrade "$RELEASE" <chart> -n "$HELM_NAMESPACE" --reuse-values --set controller.replicaCount=0
@@ -204,7 +204,7 @@ Set `RELEASE` and `HELM_NAMESPACE` (the namespace the release is installed in) t
    kubectl get crd pillarvolumestatestates.pillar-csi.bhyoo.com   # must be NotFound
    ```
 
-4. Recreate the objects, then restore their status. Status is a subresource and a create request ignores it, so it needs a separate patch.
+5. Recreate the objects, then restore their status. Status is a subresource and a create request ignores it, so it needs a separate patch.
 
    ```bash
    jq '.items[] | del(.metadata.uid, .metadata.resourceVersion, .metadata.creationTimestamp,
@@ -218,7 +218,7 @@ Set `RELEASE` and `HELM_NAMESPACE` (the namespace the release is installed in) t
    kubectl get pvst
    ```
 
-5. Compare the restored count and phases with the backup, then return the controller to its replica count:
+6. Compare the restored count and phases with the backup, then return the controller to its replica count:
 
    ```bash
    helm upgrade "$RELEASE" <chart> -n "$HELM_NAMESPACE" --reuse-values --set controller.replicaCount="$REPLICAS"

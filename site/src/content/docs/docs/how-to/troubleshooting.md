@@ -125,7 +125,7 @@ kubectl -n pillar-csi logs <agent-pod> -c agent --previous
 | `duplicate pool/VG` | Two `agent.backends` entries name the same pool or volume group. Keep one. |
 | `unknown field` | An `agent.backends` entry has a key the agent does not accept, such as a 0.2 key (`type`, `vg`, `parent`). Use the 0.3 shape. |
 
-### PillarAgent: AgentConnected is False
+### PillarAgent: AgentConnected is False or degraded
 
 ```sh
 kubectl get pillaragent <name> \
@@ -137,6 +137,8 @@ With reason `HealthCheckFailed`, the controller could not complete a gRPC health
 With reason `TLSHandshakeFailed`, mTLS is on and the certificates do not match. See [Configure mTLS](/docs/how-to/configure-mtls/).
 
 With `AddressNotResolved`, the node has no address of the type in `spec.nodeRef.addressType`, or none inside `spec.nodeRef.addressSelector`.
+
+`AgentConnected` can also be `True` with reason `AgentDegraded`. The agent answers but reports a degraded subsystem, for example a missing `nvmet` module or an unmounted configfs. The agent's init container runs `modprobe nvmet nvmet_tcp` against the host's `/lib/modules`, so the modules must exist in the host kernel.
 
 ### PillarStore is not Ready: pool not discovered
 
@@ -150,8 +152,6 @@ kubectl get pillaragent <agent> -o jsonpath='{.status.discoveredPools}'
 | `WaitingForAgentData` | The agent has not reported pools yet, often because it is not connected. | Fix `AgentConnected` first. |
 | `PoolNotFound` | The pool or volume group is not in the agent's `discoveredPools`. | Add it to `agent.backends`. If the list is empty, check that `agent.privileged` is `true` (the default); without it the container cannot open `/dev/zfs` or `/dev/mapper/control`. Check that the pool is imported or the VG is active on the host. |
 | `BackendLayoutMismatch` | The store's `zfs.parentDataset` or `lvm.thinPool` differs from the agent's entry. The message names both values. | Make the `PillarStore` and the `agent.backends` entry agree. `CreateVolume` is refused until they do. |
-
-An `AgentConnected` reason of `AgentDegraded` means the agent answers but reports a degraded subsystem, for example a missing `nvmet` module or an unmounted configfs. The agent's init container runs `modprobe nvmet nvmet_tcp` against the host's `/lib/modules`, so the modules must exist in the host kernel.
 
 ### PillarAgent stays not Ready after a restart
 
@@ -178,6 +178,7 @@ kubectl -n pillar-csi logs <node-pod> -c node
 | `CSINode "<node>" is missing annotation "pillar-csi.bhyoo.com/nvmeof-host-nqn"` | The node plugin has not published the worker's host NQN yet. | Check that the node plugin pod runs on that worker. |
 | `CSINode "<node>" not found` | The node plugin never registered on that worker. | Check the `node-driver-registrar` container of the node plugin pod. |
 | an NVMe connect error, or a timeout waiting for the device | The worker cannot reach the storage node's NVMe/TCP port (`4420` by default), or `nvme_tcp` is not loaded. | Open the port on the storage node's firewall. On the worker, check that `/sys/module/nvme_tcp` exists; the init container only runs `modprobe` against the host's `/lib/modules`. |
+| `resize2fs` or `xfs_growfs` | Growing the filesystem after an expansion failed. | See [Expand a volume](/docs/how-to/expand-volume/#failures). |
 
 A worker without `nvme_tcp` loaded also lacks the topology key `pillar-csi.bhyoo.com/nvmeof` on its CSINode:
 
@@ -202,10 +203,6 @@ dmesg -T | grep -i nvme
 If the log shows reconnect attempts followed by the controller being removed, the outage lasted longer than the volume's `ctrlLossTmo` (600 seconds when unset). The kernel removed the device and the filesystem shut down. Stop every pod that uses the volume, wait until its `VolumeAttachment` is gone, and start the workload again. To avoid it next time, see [Maintain storage and worker nodes](/docs/how-to/node-maintenance/).
 
 If the log shows `identifiers changed for nsid`, the namespace came back with a different identity. Volumes exported by 0.3.0 keep a fixed identity across reboots. An export created by 0.2.0 or earlier that was lost before an upgraded agent recorded its identity cannot keep it. Restart the workload as above.
-
-### Resize fails on the worker
-
-See [Expand a volume](/docs/how-to/expand-volume/#failures).
 
 ## Reporting a bug
 

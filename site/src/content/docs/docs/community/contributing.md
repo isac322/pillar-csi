@@ -24,6 +24,6 @@ The repository keeps its design notes under `docs/`. Several are written in Kore
 | [RFC-multi-protocol-driver-foundation.md](https://github.com/isac322/pillar-csi/blob/master/docs/RFC-multi-protocol-driver-foundation.md) | How the controller, node plugin and agent dispatch by protocol. Only NVMe-oF/TCP is implemented | Korean |
 | [PRD-iscsi.md](https://github.com/isac322/pillar-csi/blob/master/docs/PRD-iscsi.md) | Design reference for a possible iSCSI protocol. Not implemented, and its configuration interface is obsolete | Korean |
 | [E2E-TESTCASES.md](https://github.com/isac322/pillar-csi/blob/master/docs/E2E-TESTCASES.md) | The specification every end-to-end test traces back to | Korean |
-| [upgrade-crd-names.md](https://github.com/isac322/pillar-csi/blob/master/docs/upgrade-crd-names.md) | Upgrading across the CRD name changes of issue #58 | Korean |
+| [upgrade-crd-names.md](https://github.com/isac322/pillar-csi/blob/master/docs/upgrade-crd-names.md) | Upgrading across the CRD name changes of [issue #58](https://github.com/isac322/pillar-csi/issues/58) | Korean |
 
 The [architecture](/docs/explanation/architecture/) and [fencing and consistency](/docs/explanation/fencing-and-consistency/) pages summarize the parts of these documents that match the current code in English.

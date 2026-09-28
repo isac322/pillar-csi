@@ -2,7 +2,7 @@
 // (cached per session, hidden on failure) and handles the dismissible bar.
 (() => {
 	const ss = { get: (k) => { try { return sessionStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { sessionStorage.setItem(k, v); } catch {} } };
-	const show = (n) => document.querySelectorAll('[data-star-count]').forEach((el) => { el.textContent = new Intl.NumberFormat('en', { notation: 'compact' }).format(n); el.hidden = false; });
+	const show = (n) => document.querySelectorAll('[data-star-count]').forEach((el) => { el.querySelector('[data-star-n]').textContent = new Intl.NumberFormat('en', { notation: 'compact' }).format(n); el.hidden = false; });
 	const repo = document.querySelector('[data-star-repo]')?.dataset.starRepo;
 	const cached = ss.get('pc-stars');
 	if (cached !== null) show(Number(cached));

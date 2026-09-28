@@ -6,18 +6,22 @@
 
 {{ if $type.IsAlias }}_Underlying type:_ _{{ markdownRenderTypeLink $type.UnderlyingType  }}_{{ end }}
 
-{{ $type.Doc | replace "<" "&lt;" }}
+{{ template "proseDoc" $type.Doc }}
 
 {{ if $type.Validation -}}
 _Validation:_
 {{- range $type.Validation }}
-- {{ . | replace "<" "&lt;" }}
+- {{ template "proseDoc" (. | replace ": {}" "") }}
 {{- end }}
 {{- end }}
 
-{{ if $type.References -}}
+{{ $refs := list -}}
+{{ range $type.SortedReferences -}}
+{{ if markdownShouldRenderType . }}{{ $refs = append $refs . }}{{ end -}}
+{{ end -}}
+{{ if $refs -}}
 _Appears in:_
-{{- range $type.SortedReferences }}
+{{- range $refs }}
 - {{ markdownRenderTypeLink . }}
 {{- end }}
 {{- end }}
@@ -31,7 +35,7 @@ _Appears in:_
 {{ end -}}
 
 {{ range $type.Members -}}
-| `{{ .Name  }}` _{{ markdownRenderType .Type }}_ | {{ template "type_members" . }} | {{ markdownRenderDefault .Default }} | {{ range .Validation -}} {{ markdownRenderFieldDoc (. | replace "<" "&lt;") }} <br />{{ end }} |
+| `{{ .Name  }}` _{{ markdownRenderType .Type }}_ | {{ template "type_members" . }} | {{ markdownRenderDefault .Default }} | {{ range .Validation -}} {{ template "cellDoc" (. | replace ": {}" "") }} <br />{{ end }} |
 {{ end -}}
 
 {{ end -}}
@@ -40,7 +44,7 @@ _Appears in:_
 | Field | Description |
 | --- | --- |
 {{ range $type.EnumValues -}}
-| `{{ .Name }}` | {{ markdownRenderFieldDoc (.Doc | replace "<" "&lt;") }} |
+| `{{ .Name }}` | {{ template "cellDoc" .Doc }} |
 {{ end -}}
 {{ end -}}
 

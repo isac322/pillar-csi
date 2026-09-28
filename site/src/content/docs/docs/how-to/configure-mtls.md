@@ -59,11 +59,11 @@ Create two Secrets in the release namespace before you install. Each must contai
 | Agent | `pillar-agent-mtls` | extended key usage `serverAuth`, and a SAN the controller can match (see below) |
 
 ```sh
-kubectl -n pillar-csi create secret generic ctl-mtls \
+kubectl -n pillar-csi create secret generic pillar-controller-mtls \
   --from-file=tls.crt=controller.crt \
   --from-file=tls.key=controller.key \
   --from-file=ca.crt=ca.crt
-kubectl -n pillar-csi create secret generic agt-mtls \
+kubectl -n pillar-csi create secret generic pillar-agent-mtls \
   --from-file=tls.crt=agent.crt \
   --from-file=tls.key=agent.key \
   --from-file=ca.crt=ca.crt
@@ -74,10 +74,10 @@ helm upgrade --install pillar-csi oci://ghcr.io/isac322/charts/pillar-csi \
   --version 0.3.0 \
   --namespace pillar-csi --create-namespace \
   --reuse-values \
-  --set mtls.enabled=true \
-  --set mtls.secretRefs.controller.secretName=ctl-mtls \
-  --set mtls.secretRefs.agent.secretName=agt-mtls
+  --set mtls.enabled=true
 ```
+
+To use other Secret names, set `mtls.secretRefs.controller.secretName` and `mtls.secretRefs.agent.secretName`.
 
 The controller dials each agent at the address it resolves from the `PillarAgent`: the node's `InternalIP` by default (`spec.nodeRef.addressType`), or `spec.external` for an agent outside the cluster. With `mtls.serverName` empty, it checks the agent certificate against that address. You have two ways to make the check pass:
 
@@ -97,7 +97,7 @@ Each binary refuses to start if only some of its three file flags are set. The c
 
 ## Check that mTLS is active
 
-The `AgentConnected` condition on each `PillarAgent` shows how the controller reached the agent. The reason is `Authenticated` over mTLS and `Dialed` over plaintext.
+The `AgentConnected` condition on each `PillarAgent` shows how the controller reached the agent. The reason is `Authenticated` when the controller connected over mTLS, or `Dialed` when it connected in plaintext.
 
 ```sh
 kubectl get pillaragent <name> \

@@ -14,9 +14,9 @@ One driver serves every backend and protocol, and each combination uses the same
 | Backend | Volume type | NVMe-oF/TCP | iSCSI | NFS | SMB |
 | --- | --- | --- | --- | --- | --- |
 | ZFS | zvol (block) | Shipped | Planned | Not applicable | Not applicable |
+| ZFS | Dataset (file) | Not applicable | Not applicable | Planned | Planned |
 | LVM | Linear logical volume (block) | Shipped | Planned | Not applicable | Not applicable |
 | LVM | Thin logical volume (block) | Shipped | Planned | Not applicable | Not applicable |
-| ZFS | Dataset (file), planned | Not applicable | Not applicable | Planned | Planned |
 
 A protocol exports either block devices (NVMe-oF, and iSCSI once added) or file systems (NFS and SMB once added). A block volume therefore pairs only with a block protocol, and the planned ZFS dataset only with a file protocol.
 
@@ -49,7 +49,7 @@ Filesystem settings (`fsType`, `mkfsOptions`, `mountOptions`) come from `PillarS
 | Service | Capability | Supported |
 | --- | --- | --- |
 | Identity | `CONTROLLER_SERVICE` | Yes |
-| Identity | Online volume expansion | Yes |
+| Identity | `VolumeExpansion`: `ONLINE` | Yes |
 | Controller | `CREATE_DELETE_VOLUME` | Yes |
 | Controller | `PUBLISH_UNPUBLISH_VOLUME` | Yes |
 | Controller | `EXPAND_VOLUME` | Yes |
@@ -83,7 +83,7 @@ Volume expansion runs online: the agent grows the zvol or logical volume, and th
 | --- | --- | --- |
 | mTLS between controller and agent | Yes, with cert-manager or your own Secrets | Off |
 | NVMe-oF host access control by host NQN | Yes, `PillarProtocol.spec.protocol.nvmeofTcp.acl` | Off (`acl: false` allows any host) |
-| NVMe-oF in-band authentication (DH-HMAC-CHAP) | Not supported yet | |
-| NVMe-oF/TCP transport encryption (TLS) | Not supported yet | |
+| NVMe-oF in-band authentication (DH-HMAC-CHAP) | Not supported yet | Not applicable |
+| NVMe-oF/TCP transport encryption (TLS) | Not supported yet | Not applicable |
 
 See [Configure mTLS](/docs/how-to/configure-mtls/) and [Prerequisites](/docs/reference/prerequisites/).

@@ -10,7 +10,7 @@ const { steps } = Astro.props;
 
 <section class="lp-section lp-steps" aria-labelledby="steps-title">
 	<div class="lp-wrap">
-		<h2 id="steps-title" class="lp-section__label">03 / Steps</h2>
+		<h2 id="steps-title" class="lp-section__label"><span aria-hidden="true">03 / </span>Steps</h2>
 		<ol class="lp-steps__list">
 			{
 				steps.map((step, i) => (
@@ -30,6 +30,13 @@ const { steps } = Astro.props;
 						<div class="lp-code">
 							<div class="lp-code__bar">
 								<span class="lp-code__lang">{step.lang}</span>
+								<button
+									type="button"
+									class="lp-copy"
+									data-copy={step.code}
+									aria-label={`Copy ${step.lang} for step ${i + 1}`}
+									hidden>Copy</button
+								>
 							</div>
 							<pre><code class={`language-${step.lang}`}>{step.code}</code></pre>
 						</div>
