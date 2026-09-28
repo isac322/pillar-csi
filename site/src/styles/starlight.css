@@ -38,13 +38,24 @@ h1#_top {
 	letter-spacing: -0.01em;
 }
 
-/* Current sidebar entry: a text-color rule instead of a filled accent block. */
+/* Sidebar: no tree rules. The current page is marked by weight, full text
+ * color, and a surface background. */
+.sidebar-content ul ul li {
+	border-inline-start: 0;
+	margin-inline-start: 0;
+}
+
 .sidebar-content a[aria-current='page'],
 .sidebar-content a[aria-current='page']:hover,
 .sidebar-content a[aria-current='page']:focus {
 	color: var(--pc-text);
-	background-color: var(--pc-surface);
-	box-shadow: inset 2px 0 0 var(--pc-text);
+	font-weight: 600;
+	background-color: var(--pc-steel);
+	border-radius: 2px;
+}
+
+:root[data-theme='light'] .sidebar-content a[aria-current='page'] {
+	background-color: var(--pc-grid);
 }
 
 /* Square corners across docs chrome: radius stays at 2px or less. */
@@ -73,10 +84,63 @@ site-search button,
 	border-color: var(--pc-text) !important;
 }
 
-.sl-markdown-content table {
+/* Tables: padded cells on every side, a ruled grid, a tinted header row.
+ * Starlight's block display keeps wide tables scrollable on narrow screens. */
+.sl-markdown-content table:not(:where(.not-content *)) {
 	border-collapse: collapse;
+	font-size: 0.9375rem;
+	line-height: 1.5;
 }
 
-.sl-markdown-content :is(th, td) {
-	border: 1px solid var(--sl-color-gray-5);
+.sl-markdown-content :is(th, td):not(:where(.not-content *)) {
+	padding: 0.625rem 0.875rem;
+	border: 1px solid var(--pc-steel);
+	vertical-align: top;
+}
+
+.sl-markdown-content :is(th:first-child, td:first-child):not(:where(.not-content *)) {
+	padding-inline-start: 0.875rem;
+}
+
+.sl-markdown-content :is(th:last-child, td:last-child):not(:where(.not-content *)) {
+	padding-inline-end: 0.875rem;
+}
+
+.sl-markdown-content th:not(:where(.not-content *)) {
+	background: var(--pc-surface);
+	font-weight: 600;
+	color: var(--pc-text);
+	text-align: start;
+}
+
+.sl-markdown-content td code {
+	overflow-wrap: anywhere;
+}
+
+/* Narrow screens: keep cells readable and let the table scroll sideways. */
+@media (max-width: 50rem) {
+	.sl-markdown-content :is(th, td):not(:where(.not-content *)) {
+		min-width: 8rem;
+		max-width: 16rem;
+	}
+}
+
+/* Room around asides, tabs and cards so their content does not touch edges. */
+.sl-markdown-content .starlight-aside {
+	padding: 1rem 1.125rem;
+}
+
+.sl-markdown-content details {
+	padding: 0.75rem 1rem;
+	border: 1px solid var(--pc-steel);
+	border-radius: 2px;
+}
+
+.sl-markdown-content details > summary {
+	cursor: pointer;
+	font-weight: 600;
+}
+
+.sl-markdown-content details[open] > summary {
+	margin-bottom: 0.75rem;
 }

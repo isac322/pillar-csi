@@ -1,0 +1,107 @@
+---
+// GitHub star button shared by the landing page and the docs header.
+// The count is filled in by /star.js and stays hidden if the API call fails.
+interface Props {
+	repo: string;
+	label: string;
+	variant?: 'nav' | 'amber' | 'ink' | 'compact';
+}
+
+const { repo, label, variant = 'nav' } = Astro.props;
+---
+
+<a
+	class={`pc-star pc-star--${variant}`}
+	href={`https://github.com/${repo}`}
+	data-star-repo={repo}
+	aria-label={variant === 'compact' ? label : undefined}
+>
+	<svg class="pc-star__icon" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+		<path
+			fill="currentColor"
+			d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.75.75 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25Z"
+		></path>
+	</svg>
+	{variant !== 'compact' && <span class="pc-star__label">{label}</span>}
+	<span class="pc-star__count" data-star-count hidden></span>
+</a>
+
+<style>
+	.pc-star {
+		display: inline-flex;
+		align-items: stretch;
+		gap: 0;
+		border: 1px solid currentColor;
+		border-radius: 2px;
+		font-family: var(--pc-font-mono);
+		font-size: 0.8125rem;
+		font-weight: 600;
+		line-height: 1;
+		white-space: nowrap;
+		text-decoration: none !important;
+	}
+	.pc-star__icon {
+		align-self: center;
+		margin: 0 0 0 10px;
+		flex: none;
+	}
+	.pc-star__label {
+		align-self: center;
+		padding: 8px 10px 8px 6px;
+	}
+	.pc-star__count {
+		align-self: stretch;
+		display: inline-flex;
+		align-items: center;
+		padding: 0 10px;
+		border-left: 1px solid currentColor;
+		font-variant-numeric: tabular-nums;
+	}
+	.pc-star__count[hidden] {
+		display: none;
+	}
+
+	.pc-star--nav {
+		color: var(--pc-text) !important;
+	}
+	.pc-star--nav:hover {
+		background: var(--pc-steel);
+	}
+
+	.pc-star--amber {
+		border-color: var(--pc-kernel);
+		background: var(--pc-kernel);
+		color: #0a0f1d !important;
+		font-size: 0.9375rem;
+	}
+	.pc-star--amber .pc-star__label {
+		padding: 11px 14px 11px 8px;
+	}
+	.pc-star--amber .pc-star__icon {
+		margin-left: 14px;
+	}
+	.pc-star--amber:hover {
+		background: #fbbf24;
+	}
+
+	.pc-star--ink {
+		border-color: #0a0f1d;
+		background: #0a0f1d;
+		color: #fbbf24 !important;
+	}
+	.pc-star--ink .pc-star__count {
+		border-left-color: #334155;
+		color: #f8fafc;
+	}
+
+	.pc-star--compact {
+		color: var(--pc-text) !important;
+		font-size: 0.75rem;
+	}
+	.pc-star--compact .pc-star__icon {
+		margin: 6px 8px;
+	}
+	.pc-star--compact .pc-star__count {
+		padding: 0 8px;
+	}
+</style>

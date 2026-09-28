@@ -72,6 +72,94 @@ body.lp {
 	padding: 0 24px;
 }
 
+/* Star bar: sticky, high contrast. Dismissible for the current session. */
+
+.lp-starbar {
+	position: sticky;
+	top: 0;
+	z-index: 20;
+	background: var(--pc-kernel);
+	color: #0a0f1d;
+	border-bottom: 1px solid #0a0f1d;
+}
+
+.lp-starbar[hidden] {
+	display: none;
+}
+
+.lp-starbar__inner {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px 16px;
+	padding-top: 8px;
+	padding-bottom: 8px;
+}
+
+.lp-starbar__text {
+	margin: 0;
+	font-family: var(--pc-font-mono);
+	font-size: 0.875rem;
+	font-weight: 600;
+	line-height: 1.4;
+}
+
+.lp-starbar__actions {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.lp-starbar__close {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 32px;
+	height: 32px;
+	padding: 0;
+	border: 1px solid #0a0f1d;
+	border-radius: 2px;
+	background: transparent;
+	color: #0a0f1d;
+	cursor: pointer;
+}
+
+.lp-starbar__close[hidden] {
+	display: none;
+}
+
+.lp-starbar__close:hover {
+	background: #0a0f1d;
+	color: var(--pc-kernel);
+}
+
+.lp .lp-starbar :focus-visible {
+	outline-color: #0a0f1d;
+}
+
+/* Hero star callout */
+
+.lp-starcallout {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 10px 16px;
+	margin-top: 16px;
+	padding: 12px;
+	border: 1px solid var(--pc-kernel);
+	border-radius: 2px;
+	background: var(--pc-ground);
+}
+
+.lp-starcallout__text {
+	flex: 1 1 16em;
+	margin: 0;
+	font-size: 0.875rem;
+	line-height: 1.45;
+	color: var(--pc-text);
+}
+
 /* Nav */
 
 .lp-nav {
@@ -108,6 +196,7 @@ body.lp {
 
 .lp-nav__links {
 	display: flex;
+	align-items: center;
 	flex-wrap: wrap;
 	gap: 4px 20px;
 	margin: 0;
@@ -944,6 +1033,21 @@ body.lp {
 	.lp-nav__links {
 		gap: 4px 10px;
 		font-size: 0.8125rem;
+	}
+	.lp-nav__star .pc-star__label {
+		display: none;
+	}
+	.lp-nav__links li:nth-child(2) {
+		display: none;
+	}
+	.lp-nav__star .pc-star__icon {
+		margin: 6px 8px;
+	}
+	.lp-starbar__text {
+		font-size: 0.8125rem;
+	}
+	.lp-starcallout {
+		padding: 10px;
 	}
 	.lp-button {
 		padding: 10px 12px;

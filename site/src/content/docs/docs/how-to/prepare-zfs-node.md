@@ -5,9 +5,9 @@ sidebar:
   order: 2
 ---
 
-A ZFS storage node is a Kubernetes node with a ZFS pool that pillar-csi carves into zvols and exports over NVMe-oF/TCP. This guide prepares the host, creates the pool, and registers the node with the controller. Run the host commands as root on the storage node.
+A ZFS storage node is a Kubernetes node with a ZFS pool that pillar-csi carves into zvols and exports over NVMe-oF/TCP. This guide covers the one-time operating system setup such a node needs, then registers it with the controller. Run the host commands as root on the storage node.
 
-pillar-csi does not create or import pools. The pool must exist, and the `zfs` kernel module must be loaded, before the agent starts.
+pillar-csi installs nothing on the host and does not create or import pools. Every step before [Configure the agent](#configure-the-agent) is ordinary ZFS and kernel setup. If the node already has a pool and loads the `zfs`, `nvmet`, and `nvmet_tcp` modules at boot, skip to that section.
 
 ## Install ZFS
 

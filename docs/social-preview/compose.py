@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
-"""Generate pillar-csi brand assets from one source of geometry.
+"""Generate every pillar-csi brand asset from one source of geometry.
 
 Outputs:
-  docs/social-preview/pillar-csi-og.png   GitHub social preview, 1280x640
-  site/public/og.png                      site Open Graph image, 1200x630
-  site/public/favicon.ico                 16, 32 and 48 px, from site/public/favicon.svg
-  site/public/apple-touch-icon.png        180x180
-  site/public/brand/logo.svg              horizontal lockup, wordmark as paths
-  site/public/brand/logo-light.svg        same lockup for light grounds
+  site/public/brand/mark.svg              mark for dark grounds
   site/public/brand/mark-light.svg        mark for light grounds
+  site/public/brand/logo.svg              lockup for dark grounds, wordmark as outlines
+  site/public/brand/logo-light.svg        lockup for light grounds
+  site/public/favicon.svg                 transparent, follows prefers-color-scheme
+  site/public/favicon.ico                 16, 32 and 48 px on a dark tile
+  site/public/apple-touch-icon.png        180x180 on a dark square
+  site/public/og.png                      site Open Graph image, 1200x630
+  docs/social-preview/pillar-csi-og.png   GitHub social preview, 1280x640
 
 Needs the resvg and usvg binaries on PATH plus the Inter and JetBrains Mono
 font files. The one-line way to get all of them:
@@ -22,6 +24,7 @@ library is used.
 from __future__ import annotations
 
 import argparse
+import re
 import shutil
 import struct
 import subprocess
@@ -39,10 +42,10 @@ BRAND = PUBLIC / "brand"
 # Keep in sync with site/src/styles/tokens.css.
 GROUND = "#0A0F1D"
 GRID = "#1E293B"
-STEEL = "#334155"
 SURFACE = "#111827"
 TEXT = "#F8FAFC"
 MUTED = "#94A3B8"
+LIGHT_MUTED = "#475569"
 WIRE = "#00ADD8"
 KERNEL = "#F59E0B"
 
@@ -57,12 +60,75 @@ SUBTITLE = (
 SVG_NS = "http://www.w3.org/2000/svg"
 ET.register_namespace("", SVG_NS)
 
-# Mark geometry on a 32-unit canvas. Every edge is even, so the mark lands on
-# whole pixels at 16x16. Slabs are the volumes, the wire is the data path, the
-# kernel block is the nvmet target it ends on.
-SLABS = [(x, y, 10, 4) for y in (4, 12, 20) for x in (2, 20)]
-WIRE_RECT = (14, 2, 4, 24)
-KERNEL_RECT = (12, 26, 8, 4)
+# ---------------------------------------------------------------- mark geometry
+#
+# 32-unit canvas, every coordinate even, so each edge lands on a whole pixel at
+# 16x16. Six half-slabs (three volumes split by a channel) form one block with
+# 2-unit outer corners. The cyan wire runs down the channel, starting 2 units
+# below the block's top edge, and ends on the amber kernel target, which hangs
+# below the block as the end of the data path.
+
+CORNER = 2
+SLAB_ROWS = (2, 10, 18)
+SLAB_H = 6
+SLAB_W = 10
+SLAB_X = (2, 20)
+WIRE_RECT = (14, 4, 4, 20)  # x, y, w, h: y 4..24
+KERNEL_BOX = (12, 24, 8, 6)  # x, y, w, h: y 24..30, bottom corners rounded
+
+
+def rrect(x: float, y: float, w: float, h: float, tl=0, tr=0, br=0, bl=0) -> str:
+    """Path data for a rectangle with per-corner radii."""
+    d = [f"M{x + tl:g} {y:g}", f"H{x + w - tr:g}"]
+    if tr:
+        d.append(f"A{tr:g} {tr:g} 0 0 1 {x + w:g} {y + tr:g}")
+    d.append(f"V{y + h - br:g}")
+    if br:
+        d.append(f"A{br:g} {br:g} 0 0 1 {x + w - br:g} {y + h:g}")
+    d.append(f"H{x + bl:g}")
+    if bl:
+        d.append(f"A{bl:g} {bl:g} 0 0 1 {x:g} {y + h - bl:g}")
+    d.append(f"V{y + tl:g}")
+    if tl:
+        d.append(f"A{tl:g} {tl:g} 0 0 1 {x + tl:g} {y:g}")
+    return " ".join(d) + " Z"
+
+
+def slab_paths() -> str:
+    top, bottom = SLAB_ROWS[0], SLAB_ROWS[-1]
+    parts = []
+    for y in SLAB_ROWS:
+        for x in SLAB_X:
+            left = x == SLAB_X[0]
+            parts.append(rrect(
+                x, y, SLAB_W, SLAB_H,
+                tl=CORNER if y == top and left else 0,
+                tr=CORNER if y == top and not left else 0,
+                br=CORNER if y == bottom and not left else 0,
+                bl=CORNER if y == bottom and left else 0,
+            ))
+    return " ".join(parts)
+
+
+SLAB_D = slab_paths()
+WIRE_D = rrect(*WIRE_RECT)
+KERNEL_D = rrect(*KERNEL_BOX, br=CORNER, bl=CORNER)
+
+
+def mark_shapes(slab: str, classes: bool = False) -> str:
+    """The three mark shapes with literal fills (and classes for inline recoloring)."""
+    def cls(name: str) -> str:
+        return f' class="{name}"' if classes else ""
+    return (
+        f'<path{cls("pc-slab")} fill="{slab}" d="{SLAB_D}"/>'
+        f'<path{cls("pc-wire")} fill="{WIRE}" d="{WIRE_D}"/>'
+        f'<path{cls("pc-kernel")} fill="{KERNEL}" d="{KERNEL_D}"/>'
+    )
+
+
+def mark(x: float, y: float, scale: float, slab: str = TEXT) -> str:
+    """The mark placed with its 32-unit canvas origin at (x, y)."""
+    return f'<g transform="translate({x:g} {y:g}) scale({scale:g})">{mark_shapes(slab)}</g>'
 
 
 # ---------------------------------------------------------------- helpers
@@ -87,7 +153,6 @@ def find_fonts(dirs: list[Path]) -> dict[str, Path]:
         "inter": "Inter.ttc",
         "mono-regular": "JetBrainsMono-Regular.ttf",
         "mono-medium": "JetBrainsMono-Medium.ttf",
-        "mono-bold": "JetBrainsMono-Bold.ttf",
     }
     found: dict[str, Path] = {}
     for key, name in wanted.items():
@@ -113,16 +178,6 @@ def rect(x: float, y: float, w: float, h: float, **attrs: str) -> str:
     return f'<rect x="{x:g}" y="{y:g}" width="{w:g}" height="{h:g}"{extra}/>'
 
 
-def mark(x: float, y: float, scale: float, slab: str = TEXT) -> str:
-    """The mark placed with its 32-unit canvas origin at (x, y)."""
-    parts = [f'<g transform="translate({x:g} {y:g}) scale({scale:g})">']
-    parts += [rect(*r, fill=slab) for r in SLABS]
-    parts.append(rect(*WIRE_RECT, fill=WIRE))
-    parts.append(rect(*KERNEL_RECT, fill=KERNEL))
-    parts.append("</g>")
-    return "".join(parts)
-
-
 def text(x: float, y: float, s: str, size: float, fill: str, family: str,
          weight: int = 400, anchor: str = "start", spacing: float = 0) -> str:
     return (
@@ -138,6 +193,18 @@ def mono(x, y, s, size, fill, weight=400, anchor="start", spacing=0):
 
 def sans(x, y, s, size, fill, weight=500):
     return text(x, y, s, size, fill, "Inter", weight)
+
+
+# Wordmark: Inter Bold with tight tracking; "csi" in the muted color.
+WORD_TRACKING = -0.02  # em
+
+
+def wordmark(x: float, y: float, size: float, ink: str, muted: str) -> str:
+    return (
+        f'<text x="{x:g}" y="{y:g}" font-family="Inter" font-weight="700" font-size="{size:g}" '
+        f'letter-spacing="{size * WORD_TRACKING:g}">'
+        f'<tspan fill="{ink}">pillar-</tspan><tspan fill="{muted}">csi</tspan></text>'
+    )
 
 
 def render(svg: str, out: Path, fonts: dict[str, Path], width: int | None = None) -> None:
@@ -190,8 +257,8 @@ def card_content(url: str) -> str:
     cx = 1040  # data path column
     parts = [
         # Left: lockup, subtitle, URL.
-        mark(96, 154, 3),
-        mono(216, 228, "pillar-csi", 56, TEXT, 700),
+        mark(96, 150, 3),
+        wordmark(212, 222, 60, TEXT, MUTED),
     ]
     for i, (line, color) in enumerate(SUBTITLE):
         parts.append(sans(96, 318 + i * 38, line, 28, color))
@@ -227,6 +294,50 @@ def card(w: int, h: int, url: str) -> str:
 
 # ---------------------------------------------------------------- icons
 
+STYLE_NOTE = (
+    "Generated by docs/social-preview/compose.py. Inline use: the fills map to the\n"
+    "       pc-mark-slab, pc-mark-wire, pc-mark-kernel, pc-text and pc-muted custom\n"
+    "       properties from tokens.css; class \"pc-mono\" on an ancestor draws\n"
+    "       everything in currentColor."
+)
+
+
+def mark_svg(slab: str) -> str:
+    return f"""<svg xmlns="{SVG_NS}" viewBox="0 0 32 32" width="32" height="32" role="img" aria-labelledby="pc-mark-title">
+  <title id="pc-mark-title">pillar-csi</title>
+  <!-- {STYLE_NOTE} -->
+  <style>
+    @supports (fill: var(--pc-a)) {{
+      .pc-slab {{ fill: var(--pc-mark-slab, {slab}); }}
+      .pc-wire {{ fill: var(--pc-mark-wire, {WIRE}); }}
+      .pc-kernel {{ fill: var(--pc-mark-kernel, {KERNEL}); }}
+    }}
+    .pc-mono .pc-slab, .pc-mono .pc-wire, .pc-mono .pc-kernel {{ fill: currentColor; }}
+  </style>
+  {mark_shapes(slab, classes=True)}
+</svg>
+"""
+
+
+def favicon_svg() -> str:
+    return f"""<svg xmlns="{SVG_NS}" viewBox="0 0 32 32" width="32" height="32">
+  <!-- Generated by docs/social-preview/compose.py. Slabs follow the browser color scheme. -->
+  <style>
+    .pc-slab {{ fill: {GROUND}; }}
+    @media (prefers-color-scheme: dark) {{ .pc-slab {{ fill: {TEXT}; }} }}
+  </style>
+  {mark_shapes(GROUND, classes=True)}
+</svg>
+"""
+
+
+def tile_svg(size: int) -> str:
+    """Mark on a dark rounded tile, for raster icons that cannot follow the theme."""
+    return (
+        f'<svg xmlns="{SVG_NS}" width="{size}" height="{size}" viewBox="0 0 32 32">'
+        f'<rect width="32" height="32" rx="4" fill="{GROUND}"/>{mark_shapes(TEXT)}</svg>'
+    )
+
 
 def apple_touch_icon() -> str:
     # iOS rounds the corners itself, so the ground is a full square.
@@ -250,61 +361,50 @@ def write_ico(pngs: list[tuple[int, bytes]], out: Path) -> None:
 
 # ---------------------------------------------------------------- lockup
 
-WORD_SIZE = 22
-WORD_X = 38
-WORD_BASELINE = 23.5
+WORD_SIZE = 24
+WORD_X = 40
+WORD_BASELINE = 25
 
 
-def wordmark_paths(fonts: dict[str, Path]) -> str:
-    """Convert the wordmark to outlines with usvg and return the path data."""
+def wordmark_paths(fonts: dict[str, Path]) -> tuple[str, str, float]:
+    """Outline the wordmark with usvg. Returns (ink path, muted path, right edge)."""
     src = (
-        f'<svg xmlns="{SVG_NS}" width="200" height="32" viewBox="0 0 200 32">'
-        f"{mono(WORD_X, WORD_BASELINE, 'pillar-csi', WORD_SIZE, TEXT, 700)}</svg>"
+        f'<svg xmlns="{SVG_NS}" width="240" height="32" viewBox="0 0 240 32">'
+        f"{wordmark(WORD_X, WORD_BASELINE, WORD_SIZE, TEXT, MUTED)}</svg>"
     )
     with tempfile.TemporaryDirectory() as tmp:
         inp, out = Path(tmp, "in.svg"), Path(tmp, "out.svg")
         inp.write_text(src)
         subprocess.run([need("usvg"), *font_args(fonts), "--coordinates-precision", "2", str(inp), str(out)], check=True)
         tree = ET.parse(out)
-    ds = [p.get("d") for p in tree.iter(f"{{{SVG_NS}}}path")]
-    if not ds:
+    ink, muted = [], []
+    for p in tree.iter(f"{{{SVG_NS}}}path"):
+        (muted if p.get("fill", "").upper() == MUTED else ink).append(p.get("d"))
+    if not ink or not muted:
         sys.exit("usvg produced no outlines for the wordmark; check the font files")
-    return " ".join(ds)
+    xs = [float(n) for d in ink + muted for n in re.findall(r"-?\d+(?:\.\d+)?", d)[0::2]]
+    return " ".join(ink), " ".join(muted), max(xs)
 
 
-def lockup(word_d: str, slab: str, word: str) -> str:
-    width = WORD_X + WORD_SIZE * 0.6 * 10  # JetBrains Mono advance is 600/1000 em
-    body = "".join(rect(*r) for r in SLABS)
-    return f"""<svg xmlns="{SVG_NS}" viewBox="0 0 {width + 2:g} 32" width="{(width + 2) * 5:g}" height="160" role="img" aria-labelledby="pc-logo-title">
+def lockup(ink_d: str, muted_d: str, right: float, slab: str, ink: str, muted: str) -> str:
+    width = round(right) + 2
+    return f"""<svg xmlns="{SVG_NS}" viewBox="0 0 {width} 32" width="{width * 5}" height="160" role="img" aria-labelledby="pc-logo-title">
   <title id="pc-logo-title">pillar-csi</title>
-  <!-- Generated by docs/social-preview/compose.py. Inline use: colors follow the
-       pc-mark-* and pc-text custom properties from tokens.css; class "pc-mono"
-       on an ancestor draws everything in currentColor. -->
+  <!-- {STYLE_NOTE} -->
   <style>
     @supports (fill: var(--pc-a)) {{
       .pc-slab {{ fill: var(--pc-mark-slab, {slab}); }}
       .pc-wire {{ fill: var(--pc-mark-wire, {WIRE}); }}
       .pc-kernel {{ fill: var(--pc-mark-kernel, {KERNEL}); }}
-      .pc-word {{ fill: var(--pc-text, {word}); }}
+      .pc-word {{ fill: var(--pc-text, {ink}); }}
+      .pc-word-muted {{ fill: var(--pc-muted, {muted}); }}
     }}
-    .pc-mono .pc-slab, .pc-mono .pc-wire, .pc-mono .pc-kernel, .pc-mono .pc-word {{ fill: currentColor; }}
+    .pc-mono .pc-slab, .pc-mono .pc-wire, .pc-mono .pc-kernel,
+    .pc-mono .pc-word, .pc-mono .pc-word-muted {{ fill: currentColor; }}
   </style>
-  <g class="pc-slab" fill="{slab}">{body}</g>
-  {rect(*WIRE_RECT, **{"class": "pc-wire", "fill": WIRE})}
-  {rect(*KERNEL_RECT, **{"class": "pc-kernel", "fill": KERNEL})}
-  <path class="pc-word" fill="{word}" d="{word_d}"/>
-</svg>
-"""
-
-
-def mark_light() -> str:
-    body = "".join(rect(*r) for r in SLABS)
-    return f"""<svg xmlns="{SVG_NS}" viewBox="0 0 32 32" width="32" height="32" role="img" aria-labelledby="pc-mark-title">
-  <title id="pc-mark-title">pillar-csi</title>
-  <!-- Generated by docs/social-preview/compose.py: mark.svg with slabs for light grounds. -->
-  <g fill="{GROUND}">{body}</g>
-  {rect(*WIRE_RECT, fill=WIRE)}
-  {rect(*KERNEL_RECT, fill=KERNEL)}
+  {mark_shapes(slab, classes=True)}
+  <path class="pc-word" fill="{ink}" d="{ink_d}"/>
+  <path class="pc-word-muted" fill="{muted}" d="{muted_d}"/>
 </svg>
 """
 
@@ -318,23 +418,25 @@ def main() -> int:
     args = ap.parse_args()
     fonts = find_fonts(args.font_dir)
 
+    (BRAND / "mark.svg").write_text(mark_svg(TEXT))
+    (BRAND / "mark-light.svg").write_text(mark_svg(GROUND))
+    (PUBLIC / "favicon.svg").write_text(favicon_svg())
+
+    ink_d, muted_d, right = wordmark_paths(fonts)
+    (BRAND / "logo.svg").write_text(lockup(ink_d, muted_d, right, TEXT, TEXT, MUTED))
+    (BRAND / "logo-light.svg").write_text(lockup(ink_d, muted_d, right, GROUND, GROUND, LIGHT_MUTED))
+
     render(card(1280, 640, "github.com/isac322/pillar-csi"), HERE / "pillar-csi-og.png", fonts)
     render(card(1200, 630, "pillar-csi.bhyoo.com"), PUBLIC / "og.png", fonts)
     render(apple_touch_icon(), PUBLIC / "apple-touch-icon.png", fonts)
 
-    favicon = (PUBLIC / "favicon.svg").read_text()
     pngs = []
     with tempfile.TemporaryDirectory() as tmp:
         for size in (16, 32, 48):
             out = Path(tmp, f"{size}.png")
-            render(favicon, out, fonts, width=size)
+            render(tile_svg(size), out, fonts, width=size)
             pngs.append((size, out.read_bytes()))
     write_ico(pngs, PUBLIC / "favicon.ico")
-
-    word_d = wordmark_paths(fonts)
-    (BRAND / "logo.svg").write_text(lockup(word_d, TEXT, TEXT))
-    (BRAND / "logo-light.svg").write_text(lockup(word_d, GROUND, GROUND))
-    (BRAND / "mark-light.svg").write_text(mark_light())
     return 0
 
 

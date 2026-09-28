@@ -7,63 +7,109 @@ sidebar:
 
 import { Tabs, TabItem } from '@astrojs/starlight/components';
 
-In this tutorial you turn one node of your cluster into a storage node, install pillar-csi, and run a Pod that writes to a PersistentVolumeClaim served over NVMe-oF/TCP. You finish by reading the file back after the Pod restarts.
+In this tutorial you install pillar-csi, point it at a ZFS pool or LVM volume group on one node, and run a Pod that writes to a PersistentVolumeClaim served over NVMe-oF/TCP. You finish by reading the file back after the Pod restarts.
 
-To keep the path the same on every machine, the pool lives in a 20 GiB sparse file on the storage node. You do not need a spare disk. When you are ready to use a real disk, follow [Prepare a ZFS storage node](/docs/how-to/prepare-zfs-node/) or [Prepare an LVM storage node](/docs/how-to/prepare-lvm-node/).
+pillar-csi installs nothing on your hosts. Its container images carry every tool the driver runs. The hosts only need two things that belong to the operating system: the NVMe-oF kernel modules and a pool to carve volumes from.
 
 ## What you need
 
 - A Kubernetes cluster, version 1.24 or later, with `kubectl` access.
 - Helm 3.8 or later on your workstation.
-- Root shell access to the node you choose as the storage node. The host commands below use Ubuntu packages.
-- A storage node that accepts ordinary Pods. If it carries a `NoSchedule` taint, as kubeadm control-plane nodes do, pick another node.
-
-On the hosts you load kernel modules and create the pool, which needs the ZFS or LVM tools on the storage node. The driver's images carry every tool the driver itself runs, so you install no other host packages.
+- A storage node: a cluster node with a ZFS pool or an LVM volume group, and the `nvmet` and `nvmet_tcp` modules loaded. It must accept ordinary Pods, so avoid a node with a `NoSchedule` taint, such as a kubeadm control-plane node.
+- The `nvme_fabrics` and `nvme_tcp` modules loaded on every node where your Pod might run, including the storage node.
+- Root shell access to the storage node, to run the checks below.
 
 Pick the backend you want to try. Every tab group on this page follows your choice.
 
-## 1. Prepare the storage node
+## 1. Check the storage node
 
-Open a root shell on the storage node.
+On the storage node, set `POOL` to the name of your ZFS pool or volume group and confirm it exists:
 
 <Tabs syncKey="backend">
 <TabItem label="ZFS">
 
-Install the ZFS tools and load the NVMe-oF target modules:
+```sh
+POOL=<your-pool>
+sudo zpool list "$POOL"
+```
+
+pillar-csi creates volumes as zvols directly under the pool, named `<pool>/pvc-...`.
+
+</TabItem>
+<TabItem label="LVM">
+
+```sh
+POOL=<your-volume-group>
+sudo vgs "$POOL"
+```
+
+pillar-csi creates volumes as linear logical volumes in the volume group, named `pvc-...`.
+
+</TabItem>
+</Tabs>
+
+Confirm that the NVMe-oF target is available:
+
+```sh
+lsmod | grep nvmet
+ls /sys/kernel/config/nvmet
+```
+
+`lsmod` lists `nvmet` and `nvmet_tcp`, and the directory contains `hosts`, `ports`, and `subsystems`.
+
+On every node where your Pod might run, confirm the initiator modules:
+
+```sh
+lsmod | grep -E 'nvme_(fabrics|tcp)'
+```
+
+If all checks pass, go to [step 2](#2-install-pillar-csi). Otherwise open the preparation below.
+
+<details>
+<summary>One-time host preparation (skip if your node already has a pool and the modules)</summary>
+
+This is ordinary operating system setup, and you do it once per node. The commands use Ubuntu packages. [Prerequisites](/docs/reference/prerequisites/) lists the kernel options for other distributions.
+
+Load the NVMe-oF target modules on the storage node and keep them loaded after a reboot:
+
+```sh
+sudo modprobe -a nvmet nvmet_tcp
+printf 'nvmet\nnvmet_tcp\n' | sudo tee /etc/modules-load.d/pillar-csi-target.conf
+```
+
+If `modprobe` reports that a module is not found, run `sudo apt install -y linux-modules-extra-$(uname -r)` and try again. If the modules are still missing, your kernel was built without NVMe-oF target support.
+
+Load the initiator modules on every node where your Pod might run:
+
+```sh
+sudo modprobe -a nvme_fabrics nvme_tcp
+printf 'nvme_fabrics\nnvme_tcp\n' | sudo tee /etc/modules-load.d/pillar-csi-initiator.conf
+```
+
+If you have no pool yet, create a demo pool named `pillar-demo` on a 20 GiB sparse file, so you do not need a spare disk. To use a real disk instead, follow [Prepare a ZFS storage node](/docs/how-to/prepare-zfs-node/) or [Prepare an LVM storage node](/docs/how-to/prepare-lvm-node/).
+
+<Tabs syncKey="backend">
+<TabItem label="ZFS">
 
 ```sh
 sudo apt update
 sudo apt install -y zfsutils-linux
-sudo modprobe -a nvmet nvmet_tcp
-```
-
-Create a pool named `pillar-demo` on a sparse file:
-
-```sh
 sudo truncate -s 20G /var/lib/pillar-demo.img
 sudo zpool create pillar-demo /var/lib/pillar-demo.img
-sudo zpool list pillar-demo
+POOL=pillar-demo
 ```
 
 </TabItem>
 <TabItem label="LVM">
 
-Install the LVM tools and load the NVMe-oF target modules:
-
 ```sh
 sudo apt update
 sudo apt install -y lvm2
-sudo modprobe -a nvmet nvmet_tcp
-```
-
-Create a volume group named `pillar-demo` on a loop device backed by a sparse file:
-
-```sh
 sudo truncate -s 20G /var/lib/pillar-demo.img
 LOOP=$(sudo losetup --find --show /var/lib/pillar-demo.img)
 sudo pvcreate "$LOOP"
 sudo vgcreate pillar-demo "$LOOP"
-sudo vgs pillar-demo
+POOL=pillar-demo
 ```
 
 The loop device does not come back after a reboot, so finish the tutorial in one session.
@@ -71,37 +117,24 @@ The loop device does not come back after a reboot, so finish the tutorial in one
 </TabItem>
 </Tabs>
 
-If `modprobe` reports that `nvmet` or `nvmet_tcp` is not found, run `sudo apt install -y linux-modules-extra-$(uname -r)` and try again. If the modules are still missing, your kernel was built without NVMe-oF target support; see [Prerequisites](/docs/reference/prerequisites/).
+Run the checks in step 1 again before you continue.
 
-Check that the kernel target is available:
+</details>
 
-```sh
-ls /sys/kernel/config/nvmet
-```
+## 2. Install pillar-csi
 
-You should see `hosts`, `ports`, and `subsystems`.
-
-## 2. Load the initiator modules
-
-Run this on every node where your Pod might start, including the storage node:
-
-```sh
-sudo modprobe -a nvme_fabrics nvme_tcp
-```
-
-## 3. Install pillar-csi
-
-On your workstation, write a values file that tells the agent which pool to use.
+On your workstation, set `POOL` to the same name, then write a values file that tells the agent which pool to use.
 
 <Tabs syncKey="backend">
 <TabItem label="ZFS">
 
 ```sh
-cat > pillar-values.yaml <<'EOF'
+POOL=<your-pool>
+cat > pillar-values.yaml <<EOF
 agent:
   backends:
     - zfs:
-        pool: pillar-demo
+        pool: ${POOL}
 EOF
 ```
 
@@ -109,11 +142,12 @@ EOF
 <TabItem label="LVM">
 
 ```sh
-cat > pillar-values.yaml <<'EOF'
+POOL=<your-volume-group>
+cat > pillar-values.yaml <<EOF
 agent:
   backends:
     - lvm:
-        volumeGroup: pillar-demo
+        volumeGroup: ${POOL}
 EOF
 ```
 
@@ -132,7 +166,7 @@ helm install pillar-csi oci://ghcr.io/isac322/charts/pillar-csi \
 
 When the command returns, the controller Deployment and the node DaemonSet are running. The agent DaemonSet has no Pods yet. It starts on the storage node in the next step.
 
-## 4. Describe the storage
+## 3. Describe the storage
 
 Set a shell variable to the Kubernetes name of your storage node:
 
@@ -164,7 +198,7 @@ spec:
   agentRef: ${STORAGE_NODE}
   backend:
     zfs:
-      pool: pillar-demo
+      pool: ${POOL}
 ---
 apiVersion: pillar-csi.bhyoo.com/v1alpha1
 kind: PillarProtocol
@@ -212,7 +246,7 @@ spec:
   agentRef: ${STORAGE_NODE}
   backend:
     lvm:
-      volumeGroup: pillar-demo
+      volumeGroup: ${POOL}
 ---
 apiVersion: pillar-csi.bhyoo.com/v1alpha1
 kind: PillarProtocol
@@ -255,7 +289,7 @@ kubectl get storageclass pillar-demo
 
 Every resource shows `True` in the `READY` column, and the StorageClass `pillar-demo` uses the provisioner `pillar-csi.bhyoo.com`.
 
-## 5. Claim a volume and mount it
+## 4. Claim a volume and mount it
 
 Create a 1 GiB claim:
 
@@ -304,7 +338,7 @@ kubectl get pvc pillar-demo
 
 The claim is now `Bound`.
 
-## 6. Check the result
+## 5. Check the result
 
 Read the file and look at the mount:
 
@@ -321,14 +355,14 @@ On the storage node, the volume is an ordinary zvol or logical volume:
 <TabItem label="ZFS">
 
 ```sh
-sudo zfs list -t volume -r pillar-demo
+sudo zfs list -t volume -r "$POOL"
 ```
 
 </TabItem>
 <TabItem label="LVM">
 
 ```sh
-sudo lvs pillar-demo
+sudo lvs "$POOL"
 ```
 
 </TabItem>
@@ -345,7 +379,7 @@ kubectl exec pillar-demo -- cat /data/hello.txt
 
 The file now holds two `hello from pillar-csi` lines, one from each run.
 
-## 7. Clean up
+## 6. Clean up
 
 Delete the workload first so the driver can remove the volume, then the pillar-csi resources, then the chart:
 
@@ -359,7 +393,12 @@ kubectl delete pillaragent ${STORAGE_NODE}
 helm uninstall pillar-csi --namespace pillar-csi
 ```
 
-Then remove the demo pool on the storage node:
+Your pool keeps its other contents. The chart keeps its CustomResourceDefinitions after `helm uninstall`; [Install with Helm](/docs/how-to/install-helm/#uninstall) shows how to remove them.
+
+<details>
+<summary>Remove the demo pool (only if you created it during host preparation)</summary>
+
+Run on the storage node:
 
 <Tabs syncKey="backend">
 <TabItem label="ZFS">
@@ -383,10 +422,10 @@ sudo rm /var/lib/pillar-demo.img
 </TabItem>
 </Tabs>
 
-The chart keeps its CustomResourceDefinitions after `helm uninstall`. [Install with Helm](/docs/how-to/install-helm/#uninstall) shows how to remove them.
+</details>
 
 ## Next steps
 
-- Put a real disk behind the pool and load the kernel modules at boot: [Prepare a ZFS storage node](/docs/how-to/prepare-zfs-node/) or [Prepare an LVM storage node](/docs/how-to/prepare-lvm-node/).
+- Put a real disk behind the pool: [Prepare a ZFS storage node](/docs/how-to/prepare-zfs-node/) or [Prepare an LVM storage node](/docs/how-to/prepare-lvm-node/).
 - Install for longer-term use: [Install with Helm](/docs/how-to/install-helm/).
 - See what the driver supports: [Support matrix](/docs/reference/support-matrix/).

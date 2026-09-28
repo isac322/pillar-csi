@@ -1,5 +1,11 @@
 ---
-const repo = 'https://github.com/isac322/pillar-csi';
+import StarButton from '../StarButton.astro';
+
+interface Props {
+	repo: string;
+}
+
+const { repo } = Astro.props;
 ---
 
 <header class="lp-nav">
@@ -12,7 +18,7 @@ const repo = 'https://github.com/isac322/pillar-csi';
 			<ul class="lp-nav__links">
 				<li><a href="/docs/">Docs</a></li>
 				<li><a href="/docs/tutorials/first-pvc/">Quickstart</a></li>
-				<li><a href={repo}>GitHub</a></li>
+				<li class="lp-nav__star"><StarButton repo={repo} label="Star" /></li>
 			</ul>
 		</nav>
 	</div>

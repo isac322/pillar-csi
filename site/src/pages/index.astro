@@ -10,6 +10,7 @@ import '../styles/tokens.css';
 import '../styles/landing.css';
 import { landing } from '../data/landing';
 import Nav from '../components/landing/Nav.astro';
+import StarBar from '../components/landing/StarBar.astro';
 import Hero from '../components/landing/Hero.astro';
 import Negations from '../components/landing/Negations.astro';
 import Matrix from '../components/landing/Matrix.astro';
@@ -100,16 +101,23 @@ const jsonLd = {
 	</head>
 	<body class="lp">
 		<a class="lp-skip" href="#main">Skip to content</a>
-		<Nav />
+		<StarBar star={landing.star} />
+		<script is:inline>
+			try {
+				if (sessionStorage.getItem('pc-starbar-hidden')) document.currentScript.previousElementSibling.hidden = true;
+			} catch {}
+		</script>
+		<Nav repo={landing.star.repo} />
 		<main id="main">
-			<Hero hero={landing.hero} cta={landing.cta} />
+			<Hero hero={landing.hero} cta={landing.cta} star={landing.star} />
 			<Negations items={landing.negations} />
 			<Matrix matrix={landing.matrix} />
 			<Steps steps={landing.steps} />
 			<Comparison comparison={landing.comparison} />
 			<Limits text={landing.limits} />
 		</main>
-		<Footer cta={landing.cta} />
+		<Footer cta={landing.cta} star={landing.star} />
+		<script is:inline src="/star.js"></script>
 		<script is:inline>
 			document.querySelectorAll('[data-copy]').forEach((button) => {
 				button.hidden = false;

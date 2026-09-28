@@ -5,9 +5,9 @@ sidebar:
   order: 3
 ---
 
-An LVM storage node is a Kubernetes node with a volume group that pillar-csi carves into logical volumes and exports over NVMe-oF/TCP. This guide prepares the host, creates the volume group, and registers the node with the controller. Run the host commands as root on the storage node.
+An LVM storage node is a Kubernetes node with a volume group that pillar-csi carves into logical volumes and exports over NVMe-oF/TCP. This guide covers the one-time operating system setup such a node needs, then registers it with the controller. Run the host commands as root on the storage node.
 
-pillar-csi does not create volume groups or thin pools. Both must exist before the agent starts.
+pillar-csi installs nothing on the host and does not create volume groups or thin pools. Every step before [Configure the agent](#configure-the-agent) is ordinary LVM and kernel setup. If the node already has a volume group and loads the `nvmet` and `nvmet_tcp` modules at boot, skip to that section.
 
 ## Install LVM
 

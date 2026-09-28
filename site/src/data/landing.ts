@@ -22,6 +22,13 @@ export const landing = {
     installCommand:
       "helm install pillar-csi oci://ghcr.io/isac322/charts/pillar-csi --version 0.3.0 --namespace pillar-csi --create-namespace --set 'agent.backends[0].zfs.pool=tank'",
   },
+  star: {
+    banner: 'One person builds pillar-csi. A GitHub star helps other self-hosters find it.',
+    button: 'Star on GitHub',
+    reason:
+      'A star helps pillar-csi show up when people search GitHub for Kubernetes storage, and it tells the maintainer that someone runs it.',
+    repo: 'isac322/pillar-csi',
+  },
   negations: [
     {
       value: '0',

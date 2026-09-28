@@ -1,13 +1,15 @@
 ---
 import type { landing } from '../../data/landing';
 import Schematic from './Schematic.astro';
+import StarButton from '../StarButton.astro';
 
 interface Props {
 	hero: (typeof landing)['hero'];
 	cta: (typeof landing)['cta'];
+	star: (typeof landing)['star'];
 }
 
-const { hero, cta } = Astro.props;
+const { hero, cta, star } = Astro.props;
 // Candidate headlines stay in the markup for owner review only.
 const alternatives = `<!-- h1 alternatives: ${hero.h1Alternatives
 	.map((h) => h.replaceAll('--', '- -'))
@@ -51,6 +53,10 @@ const narrowCommand = args.join(' \\\n');
 			<div class="lp-cta lp-hero__cta">
 				<a class="lp-button lp-button--primary" href={cta.primary.href}>{cta.primary.label}</a>
 				<a class="lp-button" href={cta.secondary.href}>{cta.secondary.label}</a>
+			</div>
+			<div class="lp-starcallout">
+				<StarButton repo={star.repo} label={star.button} variant="amber" />
+				<p class="lp-starcallout__text">{star.reason}</p>
 			</div>
 		</div>
 		<Schematic />

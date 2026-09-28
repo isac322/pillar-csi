@@ -4,46 +4,41 @@ This file specifies the pillar-csi mark, the social cards, and the script that b
 
 ## Mark
 
-The mark is three horizontal slabs stacked as a column, split by one vertical line that runs through their center and ends on a small amber block. The slabs are volumes. The cyan line is the data path from the pool to the Pod, with no hop in between. The amber block is the kernel NVMe-oF target (nvmet) that the path ends on.
+The mark is one block made of three stacked slabs, split down the middle by a channel. The slabs are volumes. A cyan line runs down the channel as the data path from the pool to the Pod, with no hop in between. It ends on an amber tab that hangs below the block: the kernel NVMe-oF target (nvmet), drawn where the path terminates.
 
-Every edge sits on a 32-unit canvas at even coordinates, so at 16x16 each edge lands on a whole pixel. The slabs are 2 px tall with 2 px gaps at that size, and the line is 2 px wide with 1 px of clearance on each side.
+The geometry sits on a 32-unit canvas with every coordinate even, so at 16x16 each edge lands on a whole pixel. The block spans x 2 to 30 and y 2 to 24 with 2-unit outer corners, so it reads as a machined part and still fits inside a circular avatar crop. Each slab is 6 units tall with 2-unit gaps. The channel is 8 units wide and the line is 4, which leaves 2 units of clearance on each side. The line starts at y 4, matching the 2-unit gap grid, and meets the amber tab at y 24. The tab is 8 by 6 units with rounded bottom corners.
 
-### Candidates
+### How it was chosen
 
-The owner can compare three drafts in `site/public/brand/candidates/`:
-
-| File | Idea |
-|---|---|
-| `mark-a.svg` | Split slabs with the line running through a channel between the halves. |
-| `mark-b.svg` | Full-width slabs graded white, gray, and steel, with the line drawn over them. |
-| `mark-c.svg` | Outlined slabs pierced by a line that ends in an amber tip. |
-
-Candidate A is the shipped mark. At 16 px it stays sharp because every edge is pixel aligned, and the 1 px channel keeps the cyan line visibly separate from the slabs, so the line reads as one unbroken path. B loses its bottom slab at 16 px because steel on the dark ground is too faint, and its overlaid line blends into the slabs. C blurs at the outline edges and reads as a ladder or a server rack. A has no capital or fluting, so it does not read as a classical column.
+Two rounds of drafts are kept outside the site, in the owner's review folder (`pillar-brand-report/brand-candidates/`). The first round (`mark-a` to `mark-c`) produced the earlier split-slab mark, which the owner found cheap. The second round (`v2-a` to `v2-e`) tried thicker slabs, tonal shading, pill shapes, and a two-slab version. A review panel picked `v2-c`, which clips the slabs into one solid block and gives the mark the strongest silhouette of the set. The panel rejected `v2-a` as too close to the first mark. Before shipping, `v2-c` changed in three ways: the corner radius dropped from 6 units to 2 so it stops reading as an app icon, the amber target moved below the block so it visibly ends the line instead of sitting between slabs, and the line gained a top margin that matches the gap grid.
 
 ### Colors
 
 | Token | Hex | Use in the mark |
 |---|---|---|
-| `--pc-text` | `#F8FAFC` | Slabs on dark grounds |
-| `--pc-ground` | `#0A0F1D` | Slabs on light grounds, favicon background |
+| `--pc-text` | `#F8FAFC` | Slabs on dark grounds, wordmark ink on dark |
+| `--pc-ground` | `#0A0F1D` | Slabs on light grounds, wordmark ink on light, icon background |
+| `--pc-muted` | `#94A3B8` (dark), `#475569` (light) | The `csi` part of the wordmark |
 | `--pc-wire` | `#00ADD8` | Data path line |
-| `--pc-kernel` | `#F59E0B` | Kernel target block |
+| `--pc-kernel` | `#F59E0B` | Kernel target tab |
 
-The full token set, including the light theme for the docs, lives in `site/src/styles/tokens.css`. The script keeps its own copy of these hex values and of the mark geometry, so a change to `tokens.css`, `mark.svg`, or `favicon.svg` needs the same change in `docs/social-preview/compose.py`.
+The full token set, including the light theme for the docs, lives in `site/src/styles/tokens.css`. The script keeps its own copy of these hex values, so a change to `tokens.css` needs the same change in `docs/social-preview/compose.py`.
 
 ### Files
 
+The script generates every file below from one set of geometry constants. Edit `compose.py`, not the SVGs.
+
 | File | Notes |
 |---|---|
-| `site/public/brand/mark.svg` | Hand-written. White slabs for dark grounds. |
-| `site/public/brand/mark-light.svg` | Generated. Dark slabs for light grounds. |
-| `site/public/brand/logo.svg` | Generated lockup: mark plus the lowercase wordmark `pillar-csi` in JetBrains Mono Bold, converted to outlines so it renders without the font. |
-| `site/public/brand/logo-light.svg` | Generated lockup for light grounds. |
-| `site/public/favicon.svg` | Hand-written. Mark on a dark rounded square. |
-| `site/public/favicon.ico` | Generated. 16, 32, and 48 px PNG entries rasterized from `favicon.svg`. |
-| `site/public/apple-touch-icon.png` | Generated. 180x180, mark on a full dark square (iOS rounds the corners). |
+| `site/public/brand/mark.svg` | Light slabs for dark grounds. |
+| `site/public/brand/mark-light.svg` | Dark slabs for light grounds. |
+| `site/public/brand/logo.svg` | Lockup: mark plus the wordmark `pillar-csi` in Inter Bold with tracking of -0.02em, `csi` in the muted color. The wordmark is converted to outlines so it renders without the font. |
+| `site/public/brand/logo-light.svg` | Lockup for light grounds. |
+| `site/public/favicon.svg` | Transparent. The slabs switch between dark and light with `prefers-color-scheme`. |
+| `site/public/favicon.ico` | 16, 32, and 48 px PNG entries, mark on a dark rounded tile. |
+| `site/public/apple-touch-icon.png` | 180x180, mark on a full dark square (iOS rounds the corners). |
 
-Each SVG sets literal fill colors, so renderers without CSS variable support draw it correctly. When a page inlines the SVG, a `<style>` block maps the fills to the `--pc-mark-slab`, `--pc-mark-wire`, `--pc-mark-kernel`, and `--pc-text` custom properties from `tokens.css`, which lets the docs light theme recolor the slabs. Add class `pc-mono` to any ancestor to draw the whole mark or lockup in `currentColor`.
+Each SVG sets literal fill colors, so renderers without CSS variable support draw it correctly. When a page inlines the SVG, a `<style>` block maps the fills to the `--pc-mark-slab`, `--pc-mark-wire`, `--pc-mark-kernel`, `--pc-text`, and `--pc-muted` custom properties from `tokens.css`, which lets the docs light theme recolor the slabs and wordmark. Add class `pc-mono` to any ancestor to draw the whole mark or lockup in `currentColor`.
 
 ## Social cards
 
@@ -83,7 +78,7 @@ Without Nix, install `resvg` and pass the font directories yourself:
 python3 docs/social-preview/compose.py --font-dir /path/to/inter --font-dir /path/to/jetbrains-mono
 ```
 
-The script expects `Inter.ttc` and `JetBrainsMono-{Regular,Medium,Bold}.ttf` somewhere under those directories. It reads `site/public/favicon.svg` for the ICO, so edit the favicon first when the mark changes, then run the script.
+The script expects `Inter.ttc` and `JetBrainsMono-{Regular,Medium}.ttf` somewhere under those directories. To change the mark, edit the geometry constants at the top of `compose.py` and run it again; it rewrites the SVGs, the icons, and both cards together.
 
 ## Deploy the GitHub card
 

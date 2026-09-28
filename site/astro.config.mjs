@@ -39,6 +39,8 @@ export default defineConfig({
 			},
 			components: {
 				ThemeProvider: './src/components/starlight/ThemeProvider.astro',
+				SocialIcons: './src/components/starlight/SocialIcons.astro',
+				Search: './src/components/starlight/Search.astro',
 			},
 			head: [
 				{ tag: 'meta', attrs: { property: 'og:image', content: `${site}/og.png` } },
@@ -47,6 +49,7 @@ export default defineConfig({
 				{ tag: 'meta', attrs: { name: 'twitter:image', content: `${site}/og.png` } },
 				{ tag: 'meta', attrs: { name: 'theme-color', content: '#0A0F1D' } },
 				{ tag: 'link', attrs: { rel: 'apple-touch-icon', href: '/apple-touch-icon.png' } },
+				{ tag: 'script', attrs: { src: '/star.js', defer: true } },
 				...(cfBeaconToken
 					? [
 							{
