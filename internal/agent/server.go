@@ -35,7 +35,7 @@ import (
 )
 
 // agentVersion is the semver version string embedded in discovery responses.
-const agentVersion = "0.3.3"
+const agentVersion = "0.3.4"
 
 // nqnPrefix is the fixed NQN prefix used for all NVMe subsystem names.
 const nqnPrefix = "nqn.2026-01.com.bhyoo.pillar-csi:"
