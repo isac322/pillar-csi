@@ -81,7 +81,8 @@ stack. Do not set the wordmark in another face or weight.
 - `social/og.svg` → `social/og.png` (1200x630) — `og:image`; also copied to
   `site/public/og.png`.
 - `site/public/` copies of mark, logo, favicon, and icon files are generated
-  by the same build — identical files, never edit either side.
+  by the same build — identical files, never edit either side; the build also
+  writes `site/public/site.webmanifest` and the three webmanifest PNG icons.
 
 ## Do / don't
 
