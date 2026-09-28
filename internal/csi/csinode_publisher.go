@@ -21,7 +21,6 @@ import (
 	"encoding/json"
 	"fmt"
 
-	storagev1 "k8s.io/api/storage/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -33,8 +32,8 @@ import (
 // a full API server.
 type NodeAnnotationPatcher interface {
 	// PatchAnnotations merges the given key-value pairs into
-	// CSINode.metadata.annotations using a strategic merge patch.
-	// nodeName is the Kubernetes node name (== CSINode.metadata.name).
+	// CSINode.metadata.annotations via a JSON merge patch.  nodeName is the
+	// Kubernetes node name (== CSINode.metadata.name).
 	PatchAnnotations(ctx context.Context, nodeName string, annotations map[string]string) error
 }
 
@@ -49,11 +48,21 @@ func NewKubeCSINodePatcher(client kubernetes.Interface) *KubeCSINodePatcher {
 	return &KubeCSINodePatcher{client: client}
 }
 
-// PatchAnnotations applies a strategic merge patch to the named CSINode
+// PatchAnnotations applies a JSON merge patch (RFC 7386) to the named CSINode
 // object, adding or updating the given annotation key-value pairs.
 //
-// The patch is idempotent: if the annotation already carries the expected
-// value the API server accepts the no-op patch without error.
+// The patch body is an untyped document that contains only
+// metadata.annotations.  It is deliberately NOT built by marshaling a
+// storagev1.CSINode: CSINode.Spec and CSINodeSpec.Drivers lack omitempty, so
+// the marshaled body would carry {"spec":{"drivers":null},"status":{}},
+// and under a merge patch "drivers":null deletes the entire spec.drivers
+// list — wiping every CSI driver registration kubelet wrote on the node
+// (issue #128).  Keeping the body untyped guarantees no other CSINode field
+// can ever be sent.
+//
+// Merge semantics preserve pre-existing annotations and all other fields of
+// the object, and the patch is idempotent: if the annotation already carries
+// the expected value the API server accepts the no-op patch without error.
 //
 // Returns a wrapped error if the patch fails.  Callers should log the error
 // and retry; the controller will return FailedPrecondition until the
@@ -63,12 +72,11 @@ func (p *KubeCSINodePatcher) PatchAnnotations(
 	nodeName string,
 	annotations map[string]string,
 ) error {
-	// Build a minimal CSINode object containing only the annotations field.
-	// Strategic merge patch merges the annotations map without overwriting
-	// other existing annotations on the CSINode.
-	patch := &storagev1.CSINode{
-		ObjectMeta: metav1.ObjectMeta{
-			Annotations: annotations,
+	// Untyped body so that exactly one field — metadata.annotations — is
+	// present in the patch.  See the doc comment above.
+	patch := map[string]any{
+		"metadata": map[string]any{
+			"annotations": annotations,
 		},
 	}
 	patchBytes, err := json.Marshal(patch)
@@ -79,7 +87,7 @@ func (p *KubeCSINodePatcher) PatchAnnotations(
 	_, err = p.client.StorageV1().CSINodes().Patch(
 		ctx,
 		nodeName,
-		types.StrategicMergePatchType,
+		types.MergePatchType,
 		patchBytes,
 		metav1.PatchOptions{FieldManager: "pillar-node"},
 	)

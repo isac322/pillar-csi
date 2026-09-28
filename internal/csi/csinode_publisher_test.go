@@ -340,3 +340,107 @@ func TestKubeCSINodePatcher_PatchAnnotations_NodeNotFound(t *testing.T) {
 		t.Errorf("expected k8serrors.IsNotFound(err) = true; err = %v", err)
 	}
 }
+
+// TestKubeCSINodePatcher_PatchAnnotations_PreservesSpecDrivers is the
+// regression test for issue #128: "node plugin restart wipes CSINode driver
+// registrations".
+//
+// The bug: PatchAnnotations marshaled a whole storagev1.CSINode carrying
+// only ObjectMeta.Annotations.  CSINodeSpec.Drivers has no omitempty, so the
+// body was {"metadata":{"annotations":{…}},"spec":{"drivers":null},"status":{}}.
+// Under a strategic merge patch "drivers":null deletes the entire
+// spec.drivers list, so every node-plugin (re)start wiped every CSI driver
+// registration kubelet had written — including other drivers — and broke
+// attach with "CSINode <node> does not contain driver pillar-csi.bhyoo.com".
+// The fake clientset applies real strategic-merge/merge patch semantics
+// (client-go testing fixture → strategicpatch.StrategicMergePatch /
+// jsonpatch.MergePatch), so this test would have caught the bug.
+//
+// The test seeds a CSINode whose spec.drivers already contains pillar-csi AND
+// an unrelated driver (as kubelet leaves it after registration), patches the
+// NQN annotation twice (initial publish + node-plugin restart), and asserts
+// both drivers and a pre-existing annotation survive while the NQN
+// annotation is written.
+func TestKubeCSINodePatcher_PatchAnnotations_PreservesSpecDrivers(t *testing.T) {
+	t.Parallel()
+
+	const (
+		nodeName        = "macmini"
+		wantNQN         = "nqn.2014-08.org.nvmexpress:uuid:issue-128"
+		otherDriver     = "org.democratic-csi.iscsi"
+		pillarDriver    = "pillar-csi.bhyoo.com"
+		otherAnnotation = "example.com/unrelated"
+		otherAnnoValue  = "must-survive"
+	)
+
+	// Seed the CSINode the way kubelet leaves it: spec.drivers populated for
+	// our driver and an unrelated one, plus an unrelated annotation.
+	seeded := &storagev1.CSINode{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        nodeName,
+			Annotations: map[string]string{otherAnnotation: otherAnnoValue},
+		},
+		Spec: storagev1.CSINodeSpec{
+			Drivers: []storagev1.CSINodeDriver{
+				{
+					Name:         pillarDriver,
+					NodeID:       nodeName,
+					TopologyKeys: []string{"kubernetes.io/hostname"},
+				},
+				{
+					Name:   otherDriver,
+					NodeID: "iqn.2003-01.org.other:node",
+				},
+			},
+		},
+	}
+	fakeClient := kubefake.NewSimpleClientset(seeded)
+	patcher := NewKubeCSINodePatcher(fakeClient)
+
+	// Patch twice: initial startup publish, then a node-plugin restart
+	// (the sequence that wiped spec.drivers in #128).
+	for attempt := 1; attempt <= 2; attempt++ {
+		err := patcher.PatchAnnotations(context.Background(), nodeName, map[string]string{
+			AnnotationNVMeOFHostNQN: wantNQN,
+		})
+		if err != nil {
+			t.Fatalf("PatchAnnotations attempt %d returned unexpected error: %v", attempt, err)
+		}
+	}
+
+	got, err := fakeClient.StorageV1().CSINodes().Get(
+		context.Background(), nodeName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get CSINode %q: %v", nodeName, err)
+	}
+
+	// The NQN annotation was written...
+	if gotNQN := got.Annotations[AnnotationNVMeOFHostNQN]; gotNQN != wantNQN {
+		t.Errorf("annotation[%q] = %q, want %q", AnnotationNVMeOFHostNQN, gotNQN, wantNQN)
+	}
+	// ...without touching the pre-existing annotation...
+	if gotOther := got.Annotations[otherAnnotation]; gotOther != otherAnnoValue {
+		t.Errorf("unrelated annotation[%q] = %q, want %q", otherAnnotation, gotOther, otherAnnoValue)
+	}
+	// ...and without wiping spec.drivers (#128).
+	if len(got.Spec.Drivers) != 2 {
+		t.Fatalf("spec.drivers wiped by annotation patch (#128): got %d entries %+v, want 2",
+			len(got.Spec.Drivers), got.Spec.Drivers)
+	}
+	byName := make(map[string]storagev1.CSINodeDriver, len(got.Spec.Drivers))
+	for _, d := range got.Spec.Drivers {
+		byName[d.Name] = d
+	}
+	pillar, ok := byName[pillarDriver]
+	if !ok {
+		t.Fatalf("spec.drivers missing %q after annotation patch (#128): %+v",
+			pillarDriver, got.Spec.Drivers)
+	}
+	if pillar.NodeID != nodeName || len(pillar.TopologyKeys) != 1 {
+		t.Errorf("driver %q fields mangled by patch: %+v", pillarDriver, pillar)
+	}
+	if _, ok := byName[otherDriver]; !ok {
+		t.Errorf("unrelated driver %q wiped by annotation patch (#128): %+v",
+			otherDriver, got.Spec.Drivers)
+	}
+}
