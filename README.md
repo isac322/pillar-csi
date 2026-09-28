@@ -44,7 +44,7 @@ The agent reads back each configfs value it writes and returns an error when the
 | LVM logical volume (linear or thin) | Shipped | Planned | n/a | n/a |
 | ZFS dataset (planned) | n/a | n/a | Planned | Planned |
 
-Planned items are not available in v0.3.1, and the CRDs reject them. n/a marks combinations that do not apply: block backends are not shared over file protocols, and a dataset is not exported as a block device.
+Planned items are not available in v0.3.2, and the CRDs reject them. n/a marks combinations that do not apply: block backends are not shared over file protocols, and a dataset is not exported as a block device.
 
 What works today:
 
@@ -150,7 +150,7 @@ agent:
 
 ```sh
 helm install pillar-csi oci://ghcr.io/isac322/charts/pillar-csi \
-  --version 0.3.1 \
+  --version 0.3.2 \
   --namespace pillar-csi --create-namespace \
   -f values.yaml
 ```
@@ -212,6 +212,8 @@ spec:
 ```
 
 To encrypt controller-to-agent traffic, see [Configure mTLS](https://pillar-csi.bhyoo.com/docs/how-to/configure-mtls/). Upgrading from 0.2.x requires rewriting your resources and reprovisioning volumes, so read the [upgrade guide](https://pillar-csi.bhyoo.com/docs/how-to/upgrade/) before installing 0.3.0.
+
+Upgrading from 0.3.1 to 0.3.2 is a drop-in `helm upgrade`: no CRD, API or wire changes. 0.3.2 fixes the node plugin wiping the CSINode `spec.drivers` entry when it publishes its NQN annotation on restart ([#128](https://github.com/isac322/pillar-csi/issues/128)).
 
 ## Troubleshooting
 
