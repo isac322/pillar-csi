@@ -1,15 +1,15 @@
 ---
 title: Support matrix
-description: "What pillar-csi v0.3.3 supports: CSI capabilities, access and volume modes, filesystems, ZFS and LVM backends, NVMe-oF/TCP, and features not supported yet."
+description: "What pillar-csi v0.3.4 supports: CSI capabilities, access and volume modes, filesystems, ZFS and LVM backends, NVMe-oF/TCP, and features not supported yet."
 sidebar:
   order: 2
 ---
 
-This page describes pillar-csi v0.3.3. The CSI driver name is `pillar-csi.bhyoo.com`.
+This page describes pillar-csi v0.3.4. The CSI driver name is `pillar-csi.bhyoo.com`.
 
 ## Backends and protocols
 
-One driver serves every backend and protocol, and each combination uses the same resources: a `PillarStore` and a `PillarProtocol` joined by a `PillarStorageClass`. v0.3.3 ships ZFS and LVM over NVMe-oF/TCP. Cells marked Planned are not in this release.
+One driver serves every backend and protocol, and each combination uses the same resources: a `PillarStore` and a `PillarProtocol` joined by a `PillarStorageClass`. v0.3.4 ships ZFS and LVM over NVMe-oF/TCP. Cells marked Planned are not in this release.
 
 | Backend | Volume type | NVMe-oF/TCP | iSCSI | NFS | SMB |
 | --- | --- | --- | --- | --- | --- |
@@ -20,7 +20,7 @@ One driver serves every backend and protocol, and each combination uses the same
 
 A protocol exports either block devices (NVMe-oF, and iSCSI once added) or file systems (NFS and SMB once added). A block volume therefore pairs only with a block protocol, and the planned ZFS dataset only with a file protocol.
 
-In v0.3.3 the API accepts only `zfs` and `lvm` in `PillarStore.spec.backend` and only `nvmeofTcp` in `PillarProtocol.spec.protocol`. For ZFS, `volumeType` accepts only `zvol`.
+In v0.3.4 the API accepts only `zfs` and `lvm` in `PillarStore.spec.backend` and only `nvmeofTcp` in `PillarProtocol.spec.protocol`. For ZFS, `volumeType` accepts only `zvol`.
 
 pillar-csi does not replicate data. Each volume lives on one storage node, and it is unavailable while that node is down.
 

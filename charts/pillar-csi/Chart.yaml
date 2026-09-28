@@ -2,8 +2,8 @@ apiVersion: v2
 name: pillar-csi
 description: One Kubernetes CSI driver for ZFS and LVM pools, served over kernel NVMe-oF/TCP.
 type: application
-version: 0.3.3
-appVersion: "0.3.3"
+version: 0.3.4
+appVersion: "0.3.4"
 kubeVersion: ">=1.24.0-0"
 keywords:
   - csi
