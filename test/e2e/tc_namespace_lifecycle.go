@@ -52,7 +52,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/bhyoo/pillar-csi/test/e2e/framework/names"
+	"github.com/isac322/pillar-csi/test/e2e/framework/names"
 )
 
 // NamespaceLifecycleBinding holds the per-It derived namespace state that is

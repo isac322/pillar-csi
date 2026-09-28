@@ -8,8 +8,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
 
-	pillarv1alpha1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
-	"github.com/bhyoo/pillar-csi/test/e2e/framework/resources"
+	pillarv1alpha1 "github.com/isac322/pillar-csi/api/v1alpha1"
+	"github.com/isac322/pillar-csi/test/e2e/framework/resources"
 )
 
 // dnsLabelRe matches a valid Kubernetes DNS label.

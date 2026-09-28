@@ -20,7 +20,7 @@ import (
 	"testing"
 	"time"
 
-	agentv1 "github.com/bhyoo/pillar-csi/gen/go/pillar_csi/agent/v1"
+	agentv1 "github.com/isac322/pillar-csi/gen/go/pillar_csi/agent/v1"
 )
 
 func TestLockTarget_SerializesSameProtocolAndTarget(t *testing.T) {

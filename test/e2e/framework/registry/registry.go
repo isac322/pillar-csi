@@ -63,8 +63,8 @@ import (
 	"sync"
 	"syscall"
 
-	"github.com/bhyoo/pillar-csi/test/e2e/framework/lvm"
-	"github.com/bhyoo/pillar-csi/test/e2e/framework/zfs"
+	"github.com/isac322/pillar-csi/test/e2e/framework/lvm"
+	"github.com/isac322/pillar-csi/test/e2e/framework/zfs"
 )
 
 // Registry is a thread-safe store of ephemeral storage resources created

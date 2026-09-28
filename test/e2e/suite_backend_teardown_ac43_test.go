@@ -24,8 +24,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bhyoo/pillar-csi/test/e2e/framework/lvm"
-	"github.com/bhyoo/pillar-csi/test/e2e/framework/zfs"
+	"github.com/isac322/pillar-csi/test/e2e/framework/lvm"
+	"github.com/isac322/pillar-csi/test/e2e/framework/zfs"
 )
 
 // ── 1. Nil state is a no-op ──────────────────────────────────────────────────

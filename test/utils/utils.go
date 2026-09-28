@@ -27,7 +27,7 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/bhyoo/pillar-csi/internal/runtimepaths"
+	"github.com/isac322/pillar-csi/internal/runtimepaths"
 	. "github.com/onsi/ginkgo/v2" //nolint:revive,staticcheck
 )
 

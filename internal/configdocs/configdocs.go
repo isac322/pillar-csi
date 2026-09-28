@@ -25,7 +25,7 @@ import (
 	yamlv3 "gopkg.in/yaml.v3"
 	"sigs.k8s.io/yaml"
 
-	pillarv1alpha1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
+	pillarv1alpha1 "github.com/isac322/pillar-csi/api/v1alpha1"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────

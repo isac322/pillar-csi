@@ -19,8 +19,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/bhyoo/pillar-csi/test/e2e/framework/lvm"
-	"github.com/bhyoo/pillar-csi/test/e2e/framework/zfs"
+	"github.com/isac322/pillar-csi/test/e2e/framework/lvm"
+	"github.com/isac322/pillar-csi/test/e2e/framework/zfs"
 )
 
 // BackendHandle is a generic handle for a provisioned backend resource.

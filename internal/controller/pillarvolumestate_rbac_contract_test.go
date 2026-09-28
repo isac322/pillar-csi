@@ -38,7 +38,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
 
-	pillarcsiv1alpha1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
+	pillarcsiv1alpha1 "github.com/isac322/pillar-csi/api/v1alpha1"
 )
 
 var _ = Describe("PillarVolumeState RBAC contract", func() {

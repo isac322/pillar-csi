@@ -12,7 +12,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/bhyoo/pillar-csi/test/e2e/docspec"
+	"github.com/isac322/pillar-csi/test/e2e/docspec"
 )
 
 func main() {

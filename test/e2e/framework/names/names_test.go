@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bhyoo/pillar-csi/test/e2e/framework/names"
+	"github.com/isac322/pillar-csi/test/e2e/framework/names"
 )
 
 // dnsLabelRe matches a valid Kubernetes DNS-label: starts and ends with an

@@ -27,8 +27,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
-	v1alpha1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
-	agentv1 "github.com/bhyoo/pillar-csi/gen/go/pillar_csi/agent/v1"
+	v1alpha1 "github.com/isac322/pillar-csi/api/v1alpha1"
+	agentv1 "github.com/isac322/pillar-csi/gen/go/pillar_csi/agent/v1"
 )
 
 const reapClaimUID = "0f3c2a5e-7b41-4c8e-9d3a-1e2f3a4b5c6d"

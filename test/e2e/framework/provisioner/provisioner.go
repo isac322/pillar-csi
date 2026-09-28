@@ -61,7 +61,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bhyoo/pillar-csi/test/e2e/framework/registry"
+	"github.com/isac322/pillar-csi/test/e2e/framework/registry"
 )
 
 // BackendProvisioner is the extensibility contract for E2E backend setup.

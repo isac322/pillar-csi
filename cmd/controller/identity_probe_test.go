@@ -6,7 +6,7 @@ import (
 
 	csispec "github.com/container-storage-interface/spec/lib/go/csi"
 
-	csisvc "github.com/bhyoo/pillar-csi/internal/csi"
+	csisvc "github.com/isac322/pillar-csi/internal/csi"
 )
 
 // TestProbe_Controller_FollowsSocketServing pins the CSI Probe semantics that

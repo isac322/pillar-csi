@@ -40,8 +40,8 @@ import (
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	v1alpha1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
-	"github.com/bhyoo/pillar-csi/internal/testutil/fakeuid"
+	v1alpha1 "github.com/isac322/pillar-csi/api/v1alpha1"
+	"github.com/isac322/pillar-csi/internal/testutil/fakeuid"
 )
 
 // newMinimalControllerServer builds a ControllerServer backed by a fake

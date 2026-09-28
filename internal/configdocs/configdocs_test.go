@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	pillarv1alpha1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
+	pillarv1alpha1 "github.com/isac322/pillar-csi/api/v1alpha1"
 )
 
 // TestDecodeOverrides_Rejections pins the strict-decoding contract shared by

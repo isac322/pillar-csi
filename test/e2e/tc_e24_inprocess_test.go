@@ -31,8 +31,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
-	pillarv1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
-	csidrv "github.com/bhyoo/pillar-csi/internal/csi"
+	pillarv1 "github.com/isac322/pillar-csi/api/v1alpha1"
+	csidrv "github.com/isac322/pillar-csi/internal/csi"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────

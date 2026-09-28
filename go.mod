@@ -1,4 +1,4 @@
-module github.com/bhyoo/pillar-csi
+module github.com/isac322/pillar-csi
 
 go 1.26.0
 

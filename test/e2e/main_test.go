@@ -41,7 +41,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bhyoo/pillar-csi/test/e2e/framework/prereq"
+	"github.com/isac322/pillar-csi/test/e2e/framework/prereq"
 )
 
 // tcRunFocusOverride is set by TestMain when the -test.run flag looks like a

@@ -22,7 +22,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/bhyoo/pillar-csi/test/e2e/framework"
+	"github.com/isac322/pillar-csi/test/e2e/framework"
 )
 
 var _ = Describe("Isolation check framework", Label("ac:3.4", "framework", "default-profile"), func() {

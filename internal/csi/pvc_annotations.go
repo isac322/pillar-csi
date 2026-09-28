@@ -39,8 +39,8 @@ import (
 	"sort"
 	"strings"
 
-	v1alpha1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
-	"github.com/bhyoo/pillar-csi/internal/configdocs"
+	v1alpha1 "github.com/isac322/pillar-csi/api/v1alpha1"
+	"github.com/isac322/pillar-csi/internal/configdocs"
 )
 
 // pillarAnnotationDomain is the annotation-key prefix owned by pillar-csi.

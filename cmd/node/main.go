@@ -49,8 +49,8 @@ import (
 
 	csi "github.com/container-storage-interface/spec/lib/go/csi"
 
-	csisvc "github.com/bhyoo/pillar-csi/internal/csi"
-	"github.com/bhyoo/pillar-csi/internal/runtimepaths"
+	csisvc "github.com/isac322/pillar-csi/internal/csi"
+	"github.com/isac322/pillar-csi/internal/runtimepaths"
 )
 
 // driverName is the CSI provisioner name declared in the StorageClass.

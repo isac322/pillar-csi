@@ -492,7 +492,7 @@ formatters:
     goimports:
       # Group imports: stdlib / external / internal.
       local-prefixes:
-        - github.com/bhyoo/pillar-csi
+        - github.com/isac322/pillar-csi
   exclusions:
     generated: lax
     paths:

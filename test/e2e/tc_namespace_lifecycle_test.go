@@ -29,7 +29,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/bhyoo/pillar-csi/test/e2e/framework/names"
+	"github.com/isac322/pillar-csi/test/e2e/framework/names"
 )
 
 var _ = Describe("Namespace lifecycle integration", Label("ac:3.2", "framework", "default-profile"), func() {

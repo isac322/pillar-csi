@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	agentv1 "github.com/bhyoo/pillar-csi/gen/go/pillar_csi/agent/v1"
-	"github.com/bhyoo/pillar-csi/internal/agent"
+	agentv1 "github.com/isac322/pillar-csi/gen/go/pillar_csi/agent/v1"
+	"github.com/isac322/pillar-csi/internal/agent"
 )
 
 const testListExportNQN = "nqn.2026-01.com.bhyoo.pillar-csi:tank.vol1"

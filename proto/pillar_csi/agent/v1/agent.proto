@@ -47,7 +47,7 @@ package pillar_csi.agent.v1;
 
 import "google/protobuf/timestamp.proto";
 
-option go_package = "github.com/bhyoo/pillar-csi/gen/go/pillar_csi/agent/v1;agentv1";
+option go_package = "github.com/isac322/pillar-csi/gen/go/pillar_csi/agent/v1;agentv1";
 
 // FencingToken orders every mutation of one volume's resources.
 //

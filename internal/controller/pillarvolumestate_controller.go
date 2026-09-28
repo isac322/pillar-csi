@@ -28,7 +28,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	pillarcsiv1alpha1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
+	pillarcsiv1alpha1 "github.com/isac322/pillar-csi/api/v1alpha1"
 )
 
 // volumeExportResyncInterval bounds how long a volume's export and ACL may

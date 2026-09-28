@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/bhyoo/pillar-csi/internal/runtimepaths"
+	"github.com/isac322/pillar-csi/internal/runtimepaths"
 )
 
 func TestResolvedDefaultCSIEndpointUsesSuiteWorkspace(t *testing.T) {

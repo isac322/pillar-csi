@@ -31,9 +31,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/bhyoo/pillar-csi/internal/agentclient"
-	"github.com/bhyoo/pillar-csi/internal/testutil/testcerts"
-	"github.com/bhyoo/pillar-csi/internal/tlscreds"
+	"github.com/isac322/pillar-csi/internal/agentclient"
+	"github.com/isac322/pillar-csi/internal/testutil/testcerts"
+	"github.com/isac322/pillar-csi/internal/tlscreds"
 )
 
 // writeTempFile writes data to a temporary file and returns its path.

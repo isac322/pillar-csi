@@ -31,10 +31,10 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
-	agentv1 "github.com/bhyoo/pillar-csi/gen/go/pillar_csi/agent/v1"
-	agentsrv "github.com/bhyoo/pillar-csi/internal/agent"
-	agentbackend "github.com/bhyoo/pillar-csi/internal/agent/backend"
-	lvmb "github.com/bhyoo/pillar-csi/internal/agent/backend/lvm"
+	agentv1 "github.com/isac322/pillar-csi/gen/go/pillar_csi/agent/v1"
+	agentsrv "github.com/isac322/pillar-csi/internal/agent"
+	agentbackend "github.com/isac322/pillar-csi/internal/agent/backend"
+	lvmb "github.com/isac322/pillar-csi/internal/agent/backend/lvm"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────

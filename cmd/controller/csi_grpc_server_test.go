@@ -11,7 +11,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	csisvc "github.com/bhyoo/pillar-csi/internal/csi"
+	csisvc "github.com/isac322/pillar-csi/internal/csi"
 )
 
 // TestCSIGRPCServer_DoesNotNeedLeaderElection is the regression guard for

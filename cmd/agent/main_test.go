@@ -33,9 +33,9 @@ import (
 	"strings"
 	"testing"
 
-	pillarv1alpha1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
-	"github.com/bhyoo/pillar-csi/internal/agent/backend"
-	"github.com/bhyoo/pillar-csi/internal/agent/backend/lvm"
+	pillarv1alpha1 "github.com/isac322/pillar-csi/api/v1alpha1"
+	"github.com/isac322/pillar-csi/internal/agent/backend"
+	"github.com/isac322/pillar-csi/internal/agent/backend/lvm"
 )
 
 const testConfigSource = "/etc/pillar-agent/config.yaml"

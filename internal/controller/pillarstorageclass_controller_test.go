@@ -43,7 +43,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	pillarcsiv1alpha1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
+	pillarcsiv1alpha1 "github.com/isac322/pillar-csi/api/v1alpha1"
 )
 
 // driftTestMountOptions are the spec.filesystem.mountOptions of the binding
