@@ -493,6 +493,31 @@ def tokens_json() -> str:
     return json.dumps(doc, indent=2) + "\n"
 
 
+def webmanifest_json() -> str:
+    doc = {
+        "name": "pillar-csi",
+        "short_name": "pillar-csi",
+        "description": (
+            "One Kubernetes CSI driver for ZFS and LVM pools, "
+            "served over kernel NVMe-oF/TCP."
+        ),
+        "start_url": "/",
+        "scope": "/",
+        "display": "browser",
+        "theme_color": DEEP_ENAMEL,
+        "background_color": DEEP_ENAMEL,
+        "icons": [
+            {"src": "/icon-192.png", "sizes": "192x192",
+             "type": "image/png", "purpose": "any"},
+            {"src": "/icon-512.png", "sizes": "512x512",
+             "type": "image/png", "purpose": "any"},
+            {"src": "/icon-maskable-512.png", "sizes": "512x512",
+             "type": "image/png", "purpose": "maskable"},
+        ],
+    }
+    return json.dumps(doc, indent=2) + "\n"
+
+
 def palette_css() -> str:
     lines = [f"/* {GEN_NOTE} */", ":root {"]
     for key, name, hx, role in PALETTE:
@@ -597,11 +622,15 @@ def build(font: Path) -> dict[str, Path]:
     for src, dst in (
         (KIT / "favicon" / "favicon.ico", PUBLIC / "favicon.ico"),
         (KIT / "favicon" / "apple-touch-icon.png", PUBLIC / "apple-touch-icon.png"),
+        (KIT / "favicon" / "icon-192.png", PUBLIC / "icon-192.png"),
+        (KIT / "favicon" / "icon-512.png", PUBLIC / "icon-512.png"),
+        (KIT / "favicon" / "icon-maskable-512.png", PUBLIC / "icon-maskable-512.png"),
         (KIT / "social" / "og.png", PUBLIC / "og.png"),
         (KIT / "social" / "pillar-csi-og.png", DOCS_OG),
     ):
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(src, dst)
+    write(PUBLIC / "site.webmanifest", webmanifest_json())
 
     return svgd
 
