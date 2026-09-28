@@ -44,6 +44,17 @@ The controller records which nodes a volume is published to. It refuses to publi
 
 Filesystem settings (`fsType`, `mkfsOptions`, `mountOptions`) come from `PillarStorageClass.spec.filesystem` or the `pillar-csi.bhyoo.com/filesystem` PVC annotation.
 
+### Filesystem compatibility
+
+The oldest node kernel pillar-csi supports is Linux 5.15. A volume can move to another node, so the node formats it with only the on-disk features that every supported kernel can mount, whatever the `mkfs` version in the node image:
+
+| `fsType` | Features on a new volume |
+| --- | --- |
+| `xfs` | The xfsprogs Linux 5.15 LTS profile (`/usr/share/xfsprogs/mkfs/lts_5.15.conf` in the node image): V5 with CRC, reflink, bigtime, inode btree counters, and sparse inodes. Newer `mkfs.xfs` defaults stay off: reverse mapping (`rmapbt`), large extent counters (`nrext64`, needs Linux 5.19), exchange-range (`exchange`, needs Linux 6.10), and parent pointers (`parent`, needs Linux 6.12). |
+| `ext4` | The `mke2fs` defaults of the node image. They include `orphan_file`, which needs Linux 5.15. |
+
+The node image build fails if its `mkfs` would create a filesystem that Linux 5.15 cannot mount. To use a newer feature when every node that can mount the volume runs a kernel that supports it, opt in with `mkfsOptions`, for example `["-i", "exchange=1", "-n", "parent=1"]` for XFS. A value you set replaces the profile value for the same option. See [mkfs options](/docs/how-to/volume-overrides/#mkfs-options).
+
 ## CSI capabilities
 
 | Service | Capability | Supported |

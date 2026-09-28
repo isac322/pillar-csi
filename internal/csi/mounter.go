@@ -33,6 +33,9 @@ import (
 // Use NewKubeMounter to construct a ready-to-use instance.
 type KubeMounter struct {
 	inner mount.SafeFormatAndMount
+	// xfsProfile is the mkfs.xfs configuration file whose options new XFS
+	// filesystems get by default (xfsCompatProfile).
+	xfsProfile string
 }
 
 // NewKubeMounter returns a KubeMounter that delegates all privileged
@@ -43,6 +46,7 @@ func NewKubeMounter() *KubeMounter {
 			Interface: mount.New(""),
 			Exec:      utilexec.New(),
 		},
+		xfsProfile: xfsCompatProfile,
 	}
 }
 

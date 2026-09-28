@@ -49,7 +49,7 @@ Planned items are not available in v0.3.3, and the CRDs reject them. n/a marks c
 What works today:
 
 - Access modes `ReadWriteOnce`, `ReadWriteOncePod`, and `ReadOnlyMany`.
-- Volume modes `Filesystem` (ext4 or xfs) and `Block`.
+- Volume modes `Filesystem` (ext4 or xfs) and `Block`. New filesystems use only on-disk features that Linux 5.15 can mount, so a volume stays mountable on every node it moves to.
 - Volume expansion, volume usage stats, and capacity reporting to the scheduler.
 - Per-volume tuning of ZFS properties, LVM provisioning mode, NVMe-oF/TCP queue and reconnect settings, and filesystem options through PVC annotations.
 - Optional mTLS between the controller and the agents (off by default).

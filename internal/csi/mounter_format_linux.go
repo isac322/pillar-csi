@@ -20,6 +20,7 @@ package csi
 
 import (
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 )
@@ -71,7 +72,10 @@ func (m *KubeMounter) formatIfBlank(source, fsType string, mountOptions, formatO
 		return nil
 	}
 
-	args := mkfsArgs(fsType, source, formatOptions)
+	args, err := mkfsArgs(fsType, source, formatOptions, m.xfsProfile)
+	if err != nil {
+		return fmt.Errorf("format %s: %w", source, err)
+	}
 	out, err := m.inner.Exec.Command("mkfs."+fsType, args...).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("format %s: mkfs.%s %q: %w: %s",
@@ -91,13 +95,27 @@ func (m *KubeMounter) formatIfBlank(source, fsType string, mountOptions, formatO
 // mkfsArgs builds the mkfs.<fsType> argument vector.  The ext4 defaults match
 // k8s.io/utils/mount.SafeFormatAndMount (force, no reserved blocks); the
 // configured options follow them so a user value for the same option (e.g.
-// "-m", "1") takes precedence, and the device comes last.  The type is ext4
-// or xfs (see stageFilesystem).
-func mkfsArgs(fsType, source string, formatOptions []string) []string {
-	args := make([]string, 0, len(formatOptions)+3)
-	if fsType == defaultFsType {
-		args = append(args, "-F", "-m0")
+// "-m", "1") takes precedence, and the device comes last.  For xfs the
+// defaults are the options of the xfsProfile configuration file (see
+// xfsCompatProfile) that the configured options do not set.  The type is
+// ext4 or xfs (see stageFilesystem).
+func mkfsArgs(fsType, source string, formatOptions []string, xfsProfile string) ([]string, error) {
+	var defaults []string
+	switch fsType {
+	case defaultFsType:
+		defaults = []string{"-F", "-m0"}
+	case xfsFsType:
+		profile, err := os.ReadFile(xfsProfile) //nolint:gosec // G304: KubeMounter's fixed xfsCompatProfile path.
+		if err != nil {
+			return nil, fmt.Errorf("read the mkfs.xfs compatibility profile: %w", err)
+		}
+		defaults, err = xfsProfileArgs(string(profile), formatOptions)
+		if err != nil {
+			return nil, fmt.Errorf("mkfs.xfs compatibility profile %s: %w", xfsProfile, err)
+		}
 	}
+	args := make([]string, 0, len(defaults)+len(formatOptions)+1)
+	args = append(args, defaults...)
 	args = append(args, formatOptions...)
-	return append(args, source)
+	return append(args, source), nil
 }

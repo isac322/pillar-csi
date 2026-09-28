@@ -82,8 +82,11 @@ The end-to-end test scripts in the repository run on Kind with Kubernetes 1.37.
 | --- | --- |
 | `fsType` | `ext4` (default) or `xfs` |
 | Volume modes | `Filesystem` and `Block` |
+| Oldest node kernel for `Filesystem` volumes | Linux 5.15 |
 
 Set `fsType`, `mkfsOptions`, and `mountOptions` under `spec.filesystem` of a `PillarStorageClass`, or per volume with the `pillar-csi.bhyoo.com/filesystem` PVC annotation. [Support matrix](/docs/reference/support-matrix/) lists access modes and CSI features.
+
+The node formats a new volume with only the on-disk features that Linux 5.15 can mount, because the volume can later be mounted by any worker. A node with an older kernel may be unable to mount it. [Filesystem compatibility](/docs/reference/support-matrix/#filesystem-compatibility) lists the features and how to opt in to newer ones.
 
 ## Network ports
 

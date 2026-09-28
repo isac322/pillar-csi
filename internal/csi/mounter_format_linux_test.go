@@ -25,6 +25,8 @@ package csi
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -94,16 +96,61 @@ func (f *fakeDeviceExec) mkfsCalls() []execCall {
 	return out
 }
 
-func newFormatTestMounter(dev *fakeDeviceExec) (*KubeMounter, *mount.FakeMounter) {
+// xfsLTS515Profile is mkfs/lts_5.15.conf of xfsprogs 7.0.1, the profile the
+// node image ships at xfsCompatProfile.
+const xfsLTS515Profile = `# V5 features that were the mkfs defaults when the upstream Linux 5.15 LTS
+# kernel was released at the end of 2021.
+
+[metadata]
+bigtime=1
+crc=1
+finobt=1
+inobtcount=1
+metadir=0
+reflink=1
+rmapbt=0
+autofsck=0
+
+[inode]
+sparse=1
+nrext64=0
+exchange=0
+
+[naming]
+parent=0
+`
+
+// writeXFSProfile writes an mkfs.xfs configuration file and returns its path.
+func writeXFSProfile(t *testing.T, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "lts.conf")
+	err := os.WriteFile(path, []byte(content), 0o600)
+	if err != nil {
+		t.Fatalf("write xfs profile: %v", err)
+	}
+	return path
+}
+
+func newFormatTestMounter(t *testing.T, dev *fakeDeviceExec) (*KubeMounter, *mount.FakeMounter) {
+	t.Helper()
 	fake := mount.NewFakeMounter(nil)
-	return &KubeMounter{inner: mount.SafeFormatAndMount{Interface: fake, Exec: dev.exec()}}, fake
+	return &KubeMounter{
+		inner:      mount.SafeFormatAndMount{Interface: fake, Exec: dev.exec()},
+		xfsProfile: writeXFSProfile(t, xfsLTS515Profile),
+	}, fake
 }
 
 // TestKubeMounter_FormatAndMount_BlankDeviceUsesMkfsOptions verifies that a
 // blank device is formatted exactly once with the default arguments followed
 // by the configured mkfs options, and is then mounted with the requested type.
+// The xfs defaults are the Linux 5.15 LTS profile (issue #133) minus every
+// key the configured options set, since mkfs.xfs rejects a respecified key.
 func TestKubeMounter_FormatAndMount_BlankDeviceUsesMkfsOptions(t *testing.T) {
 	t.Parallel()
+	const (
+		ltsMetadata = "bigtime=1,crc=1,finobt=1,inobtcount=1,metadir=0,reflink=1,rmapbt=0,autofsck=0"
+		ltsInode    = "sparse=1,nrext64=0,exchange=0"
+	)
 	for _, tc := range []struct {
 		fsType string
 		opts   []string
@@ -111,14 +158,25 @@ func TestKubeMounter_FormatAndMount_BlankDeviceUsesMkfsOptions(t *testing.T) {
 	}{
 		{"ext4", []string{"-E", "lazy_itable_init=0", "-m", "1"},
 			[]string{"-F", "-m0", "-E", "lazy_itable_init=0", "-m", "1", fakeDevice}},
-		{"xfs", []string{"-m", "reflink=1", "-L", "data vol"},
-			[]string{"-m", "reflink=1", "-L", "data vol", fakeDevice}},
 		{"ext4", nil, []string{"-F", "-m0", fakeDevice}},
+		{"xfs", nil,
+			[]string{"-m", ltsMetadata, "-i", ltsInode, "-n", "parent=0", fakeDevice}},
+		{"xfs", []string{"-m", "reflink=0", "-L", "data vol"},
+			[]string{"-m", "bigtime=1,crc=1,finobt=1,inobtcount=1,metadir=0,rmapbt=0,autofsck=0",
+				"-i", ltsInode, "-n", "parent=0", "-m", "reflink=0", "-L", "data vol", fakeDevice}},
+		// Opting in to newer features, attached and separate value forms.
+		{"xfs", []string{"-iexchange=1,nrext64=1", "-n", "parent=1", "-mrmapbt=1"},
+			[]string{"-m", "bigtime=1,crc=1,finobt=1,inobtcount=1,metadir=0,reflink=1,autofsck=0",
+				"-i", "sparse=1", "-iexchange=1,nrext64=1", "-n", "parent=1", "-mrmapbt=1", fakeDevice}},
+		// Options outside the profile leave it whole.
+		{"xfs", []string{"-K", "-i", "size=512", "-n", "size=8192"},
+			[]string{"-m", ltsMetadata, "-i", ltsInode, "-n", "parent=0",
+				"-K", "-i", "size=512", "-n", "size=8192", fakeDevice}},
 	} {
 		t.Run(tc.fsType+"/"+strings.Join(tc.opts, ","), func(t *testing.T) {
 			t.Parallel()
 			dev := &fakeDeviceExec{}
-			km, fake := newFormatTestMounter(dev)
+			km, fake := newFormatTestMounter(t, dev)
 
 			err := km.FormatAndMount(fakeDevice, t.TempDir(), tc.fsType, nil, tc.opts)
 			if err != nil {
@@ -138,13 +196,45 @@ func TestKubeMounter_FormatAndMount_BlankDeviceUsesMkfsOptions(t *testing.T) {
 	}
 }
 
+// TestKubeMounter_FormatAndMount_XFSProfileUnusable verifies that a blank
+// device is not formatted as xfs when the compatibility profile is missing or
+// unreadable: formatting with the mkfs.xfs defaults could create a filesystem
+// that older supported kernels refuse to mount.
+func TestKubeMounter_FormatAndMount_XFSProfileUnusable(t *testing.T) {
+	t.Parallel()
+	for name, profile := range map[string]string{
+		"missing":                  "",
+		"unknown section":          "[proto]\nslashes_are_spaces=1\n",
+		"option outside a section": "crc=1\n",
+		"option without value":     "[metadata]\ncrc\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			dev := &fakeDeviceExec{}
+			km, fake := newFormatTestMounter(t, dev)
+			km.xfsProfile = filepath.Join(t.TempDir(), "absent.conf")
+			if profile != "" {
+				km.xfsProfile = writeXFSProfile(t, profile)
+			}
+
+			err := km.FormatAndMount(fakeDevice, t.TempDir(), "xfs", nil, nil)
+			if err == nil || !strings.Contains(err.Error(), "compatibility profile") {
+				t.Fatalf("FormatAndMount error = %v, want a compatibility profile error", err)
+			}
+			if n := len(dev.mkfsCalls()); n != 0 || len(fake.MountPoints) != 0 {
+				t.Errorf("mkfs calls = %d, mounts = %d, want none", n, len(fake.MountPoints))
+			}
+		})
+	}
+}
+
 // TestKubeMounter_FormatAndMount_ExistingFilesystemNeverReformatted verifies
 // that a device that already carries a filesystem is mounted without any mkfs
 // call even when mkfs options are configured.
 func TestKubeMounter_FormatAndMount_ExistingFilesystemNeverReformatted(t *testing.T) {
 	t.Parallel()
 	dev := &fakeDeviceExec{fsType: "ext4"}
-	km, fake := newFormatTestMounter(dev)
+	km, fake := newFormatTestMounter(t, dev)
 
 	err := km.FormatAndMount(fakeDevice, t.TempDir(), "ext4", nil, []string{"-E", "lazy_itable_init=0"})
 	if err != nil {
@@ -163,7 +253,7 @@ func TestKubeMounter_FormatAndMount_ExistingFilesystemNeverReformatted(t *testin
 func TestKubeMounter_FormatAndMount_ReadOnlyBlankNotFormatted(t *testing.T) {
 	t.Parallel()
 	dev := &fakeDeviceExec{}
-	km, fake := newFormatTestMounter(dev)
+	km, fake := newFormatTestMounter(t, dev)
 
 	err := km.FormatAndMount(fakeDevice, t.TempDir(), "xfs", []string{"ro"}, []string{"-K"})
 	if err == nil {
@@ -179,7 +269,7 @@ func TestKubeMounter_FormatAndMount_ReadOnlyBlankNotFormatted(t *testing.T) {
 func TestKubeMounter_FormatAndMount_MkfsFailure(t *testing.T) {
 	t.Parallel()
 	dev := &fakeDeviceExec{mkfsErr: errors.New("exit status 1")}
-	km, fake := newFormatTestMounter(dev)
+	km, fake := newFormatTestMounter(t, dev)
 
 	err := km.FormatAndMount(fakeDevice, t.TempDir(), "xfs", nil, []string{"-b", "size=3"})
 	if err == nil || !strings.Contains(err.Error(), "mkfs: bad option") {
@@ -196,7 +286,7 @@ func TestKubeMounter_FormatAndMount_MkfsFailure(t *testing.T) {
 func TestKubeMounter_FormatAndMount_MkfsLeavesDeviceBlank(t *testing.T) {
 	t.Parallel()
 	dev := &fakeDeviceExec{mkfsNoop: true}
-	km, fake := newFormatTestMounter(dev)
+	km, fake := newFormatTestMounter(t, dev)
 
 	err := km.FormatAndMount(fakeDevice, t.TempDir(), "ext4", nil, []string{"-L", "data"})
 	if err == nil {
@@ -216,7 +306,7 @@ func TestKubeMounter_FormatAndMount_MkfsLeavesDeviceBlank(t *testing.T) {
 func TestKubeMounter_FormatAndMount_RejectsUnsafeOptions(t *testing.T) {
 	t.Parallel()
 	dev := &fakeDeviceExec{}
-	km, _ := newFormatTestMounter(dev)
+	km, _ := newFormatTestMounter(t, dev)
 
 	err := km.FormatAndMount(fakeDevice, t.TempDir(), "ext4", nil, []string{"-J", "device=LABEL=journal"})
 	if err == nil {

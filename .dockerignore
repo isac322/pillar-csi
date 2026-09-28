@@ -13,6 +13,9 @@
 # Re-include .git for VCS version stamping (Go 1.24+)
 !.git
 
+# Node image build-time check of the mkfs defaults.
+!hack/verify-mkfs-baseline.sh
+
 # Self-contained Docker E2E harness inputs.
 !Dockerfile
 !docker-bake.hcl
