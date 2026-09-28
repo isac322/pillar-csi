@@ -1,0 +1,29 @@
+---
+interface Props {
+	syncKey?: string;
+}
+const { syncKey } = Astro.props;
+const html = await Astro.slots.render('default');
+const labels = [...html.matchAll(/data-tab-label="([^"]*)"/g)].map((m) => m[1]);
+const id = `tabs-${Math.random().toString(36).slice(2, 8)}`;
+---
+
+<div class="tabs" data-tabs data-sync-key={syncKey}>
+	<div class="tab-list" role="tablist">
+		{
+			labels.map((label, i) => (
+				<button
+					type="button"
+					role="tab"
+					id={`${id}-tab-${i}`}
+					aria-controls={`${id}-panel-${i}`}
+					aria-selected={i === 0 ? 'true' : 'false'}
+					tabindex={i === 0 ? 0 : -1}
+					data-label={label}
+					set:html={label}
+				/>
+			))
+		}
+	</div>
+	<div class="tab-panels" data-id={id} set:html={html} />
+</div>

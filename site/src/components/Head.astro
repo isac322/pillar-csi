@@ -1,0 +1,40 @@
+---
+import '@fontsource-variable/archivo/wdth.css';
+import '@fontsource/ibm-plex-mono/400.css';
+import '@fontsource/ibm-plex-mono/500.css';
+import { SITE_URL } from '../lib/site';
+
+interface Props {
+	title: string;
+	description: string;
+	type?: 'website' | 'article';
+	/** Error pages: no canonical URL, and ask crawlers not to index. */
+	noindex?: boolean;
+}
+const { title, description, type = 'website', noindex = false } = Astro.props;
+const cfToken = import.meta.env.PUBLIC_CF_WEB_ANALYTICS_TOKEN ?? process.env.PUBLIC_CF_WEB_ANALYTICS_TOKEN;
+const canonical = new URL(Astro.url.pathname, SITE_URL).href;
+const og = new URL('/og.png', SITE_URL).href;
+---
+
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>{title}</title>
+<meta name="description" content={description} />
+{noindex ? <meta name="robots" content="noindex" /> : <link rel="canonical" href={canonical} />}
+<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+<link rel="icon" href="/favicon.ico" sizes="32x32" />
+<link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+<link rel="sitemap" href="/sitemap-index.xml" />
+<meta property="og:type" content={type} />
+<meta property="og:site_name" content="pillar-csi" />
+<meta property="og:title" content={title} />
+<meta property="og:description" content={description} />
+{!noindex && <meta property="og:url" content={canonical} />}
+<meta property="og:image" content={og} />
+<meta property="og:image:alt" content="pillar-csi: export your ZFS and LVM pools to Kubernetes" />
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content={title} />
+<meta name="twitter:description" content={description} />
+<meta name="twitter:image" content={og} />
+{cfToken && <script is:inline defer src="https://static.cloudflareinsights.com/beacon.min.js" data-cf-beacon={JSON.stringify({ token: cfToken })} />}

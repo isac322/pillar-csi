@@ -1,0 +1,16 @@
+---
+import Icon from './Icon.astro';
+import { REPO_URL } from '../lib/site';
+
+interface Props {
+	label?: string;
+	class?: string;
+}
+const { label = 'Star on GitHub', class: cls } = Astro.props;
+---
+
+<a class:list={['star-btn', cls]} href={REPO_URL} data-star-link>
+	<Icon name="star" size={16} />
+	<span>{label}</span>
+	<span class="star-count" data-star-count hidden></span>
+</a>

@@ -1,0 +1,120 @@
+---
+import '../styles/global.css';
+import Head from '../components/Head.astro';
+import Icon from '../components/Icon.astro';
+import TitleBlock from '../components/TitleBlock.astro';
+import { REPO_URL } from '../lib/site';
+---
+
+<!doctype html>
+<html lang="en" data-theme="light">
+	<head>
+		<Head title="Page not found | pillar-csi" description="This page does not exist on pillar-csi.bhyoo.com." noindex />
+	</head>
+	<body class="landing">
+		<a class="skip-link" href="#main">Skip to content</a>
+		<div class="sheet">
+			<header class="top">
+				<a class="brand" href="/" aria-label="pillar-csi home">
+					<img src="/brand/logo-light.svg" alt="pillar-csi" width="160" height="40" />
+				</a>
+				<nav class="top-nav" aria-label="Main">
+					<a href="/docs/">Docs</a>
+					<a href={REPO_URL}>GitHub</a>
+				</nav>
+			</header>
+
+			<main id="main" class="missing">
+				<p class="sheet-no lettering">Sheet 404</p>
+				<h1 class="display">This page is not in the drawing set.</h1>
+				<p class="lede">The link may be old, or the address may have a typo. These sheets exist:</p>
+				<ul class="ways">
+					<li><a href="/">Home <Icon name="arrow" size={16} /></a></li>
+					<li><a href="/docs/">Documentation <Icon name="arrow" size={16} /></a></li>
+					<li><a href="/docs/tutorials/first-pvc/">Tutorial: your first PVC <Icon name="arrow" size={16} /></a></li>
+				</ul>
+			</main>
+
+			<TitleBlock />
+		</div>
+	</body>
+</html>
+
+<style>
+	.sheet {
+		position: relative;
+		max-width: 1360px;
+		min-height: calc(100vh - 14px);
+		display: flex;
+		flex-direction: column;
+		margin: 14px max(14px, calc((100vw - 1360px) / 2)) 0;
+		padding: 0 clamp(1rem, 4vw, 3.5rem) clamp(1rem, 3vw, 2rem);
+		border: 1.5px solid var(--line);
+		border-bottom: 0;
+		outline: 1px solid var(--rule);
+		outline-offset: 6px;
+	}
+	.top {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 1rem;
+		padding: 1rem 0;
+		border-bottom: 1px solid var(--rule);
+	}
+	.brand img {
+		height: 36px;
+		width: auto;
+	}
+	.top-nav {
+		display: flex;
+		gap: 1.25rem;
+		font-weight: 600;
+	}
+	.top-nav a {
+		color: var(--fg);
+		text-decoration: none;
+	}
+	.top-nav a:hover {
+		text-decoration: underline;
+	}
+	.missing {
+		flex: 1;
+		padding: clamp(3rem, 10vw, 8rem) 0 clamp(3rem, 8vw, 6rem);
+		max-width: 44rem;
+	}
+	.sheet-no {
+		margin: 0 0 1rem;
+		color: var(--mark);
+	}
+	h1 {
+		margin: 0;
+		font-size: clamp(2rem, 5vw, 3.5rem);
+		line-height: 1.02;
+	}
+	.lede {
+		margin: 1.25rem 0 2rem;
+		color: var(--fg-2);
+		font-size: 1.1875rem;
+	}
+	.ways {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		border-top: 1.5px solid var(--line);
+	}
+	.ways a {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 1rem;
+		padding: 1rem 0;
+		border-bottom: 1px solid var(--rule);
+		color: var(--fg);
+		font-weight: 600;
+		text-decoration: none;
+	}
+	.ways a:hover {
+		color: var(--link);
+	}
+</style>

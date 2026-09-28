@@ -1,0 +1,180 @@
+---
+import '../styles/global.css';
+import '../styles/docs.css';
+import Head from '../components/Head.astro';
+import Icon from '../components/Icon.astro';
+import StarButton from '../components/StarButton.astro';
+import TitleBlock from '../components/TitleBlock.astro';
+import type { NavGroup, NavItem } from '../lib/docs';
+import type { MarkdownHeading } from 'astro';
+import { REPO_URL } from '../lib/site';
+
+interface Props {
+	title: string;
+	description: string;
+	groups: NavGroup[];
+	current: string;
+	headings: MarkdownHeading[];
+	prev?: NavItem;
+	next?: NavItem;
+	sourcePath: string;
+}
+const { title, description, groups, current, headings, prev, next, sourcePath } = Astro.props;
+const pageTitle = current === '/docs/' ? title : `${title} | pillar-csi docs`;
+---
+
+<!doctype html>
+<html lang="en" data-theme="light">
+	<head>
+		<Head title={pageTitle} description={description} type="article" />
+		<script is:inline>
+			(() => {
+				const saved = localStorage.getItem('pcsi-theme');
+				const dark = saved ? saved === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+				document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+			})();
+		</script>
+	</head>
+	<body class="docs">
+		<a class="skip-link" href="#content">Skip to content</a>
+		<header class="d-header">
+			<button class="icon-btn menu-btn" type="button" aria-label="Open navigation" aria-controls="d-nav" aria-expanded="false" data-menu>
+				<Icon name="menu" size={18} />
+			</button>
+			<a class="d-brand" href="/" aria-label="pillar-csi home">
+				<img class="logo-light" src="/brand/logo-light.svg" alt="pillar-csi" width="128" height="32" />
+				<img class="logo-dark" src="/brand/logo.svg" alt="" width="128" height="32" />
+			</a>
+			<a class="d-home" href="/docs/">Docs</a>
+			<button class="search-btn" type="button" data-search-open>
+				<Icon name="search" size={16} />
+				<span class="search-btn-label">Search docs</span>
+				<kbd>/</kbd>
+			</button>
+			<div class="d-tools">
+				<button class="icon-btn theme-btn" type="button" data-theme-toggle aria-label="Switch to dark theme">
+					<Icon name="moon" size={16} class="i-moon" />
+					<Icon name="sun" size={16} class="i-sun" />
+				</button>
+				<a class="icon-btn" href={REPO_URL} aria-label="pillar-csi on GitHub"><Icon name="github" size={18} /></a>
+				<StarButton label="Star" />
+			</div>
+		</header>
+
+		<div class="d-shell">
+			<nav class="d-nav" id="d-nav" aria-label="Documentation">
+				<div class="d-nav-inner">
+					<a class:list={['nav-link', 'nav-overview', { active: current === '/docs/' }]} href="/docs/" aria-current={current === '/docs/' ? 'page' : undefined}>Overview</a>
+					{
+						groups.map((g) => (
+							<section class="nav-group">
+								<h2 class="lettering">{g.label}</h2>
+								<ul>
+									{g.items.map((it) => (
+										<li>
+											<a class:list={['nav-link', { active: current === it.href }]} href={it.href} aria-current={current === it.href ? 'page' : undefined}>
+												{it.label}
+											</a>
+										</li>
+									))}
+								</ul>
+							</section>
+						))
+					}
+				</div>
+			</nav>
+			<div class="nav-scrim" data-scrim hidden></div>
+
+			<main class="d-main" id="content">
+				<article class="d-article">
+					<header class="d-title">
+						<h1 class="display">{title}</h1>
+						{description && current !== '/docs/' && <p class="d-lede">{description}</p>}
+					</header>
+
+					{
+						headings.length > 1 && (
+							<details class="toc-mobile">
+								<summary>On this page</summary>
+								<ul>
+									{headings.map((h) => (
+										<li class={`toc-d${h.depth}`}>
+											<a href={`#${h.slug}`}>{h.text}</a>
+										</li>
+									))}
+								</ul>
+							</details>
+						)
+					}
+
+					<div class="prose" data-pagefind-body>
+						<slot />
+					</div>
+
+					<aside class="star-plate" aria-label="Star the project">
+						<div>
+							<p class="star-plate-title">Useful so far? Star pillar-csi on GitHub.</p>
+							<p>Stars help other self-hosters find the project.</p>
+						</div>
+						<StarButton label="Star on GitHub" />
+					</aside>
+
+					<nav class="pager" aria-label="Previous and next pages">
+						{
+							prev ? (
+								<a class="pager-link prev" href={prev.href}>
+									<span class="lettering">Previous</span>
+									<span class="pager-title">{prev.label}</span>
+								</a>
+							) : (
+								<span />
+							)
+						}
+						{
+							next && (
+								<a class="pager-link next" href={next.href}>
+									<span class="lettering">Next</span>
+									<span class="pager-title">{next.label}</span>
+								</a>
+							)
+						}
+					</nav>
+					<p class="edit-link"><a href={`${REPO_URL}/edit/master/${sourcePath}`}>Edit this page on GitHub</a></p>
+				</article>
+
+				{
+					headings.length > 1 && (
+						<aside class="d-toc" aria-labelledby="toc-h">
+							<h2 id="toc-h" class="lettering">On this page</h2>
+							<ul>
+								{headings.map((h) => (
+									<li class={`toc-d${h.depth}`}>
+										<a href={`#${h.slug}`} data-toc-link={h.slug}>
+											{h.text}
+										</a>
+									</li>
+								))}
+							</ul>
+						</aside>
+					)
+				}
+			</main>
+		</div>
+		<div class="d-foot"><TitleBlock /></div>
+
+		<dialog class="search" data-search aria-label="Search documentation">
+			<div class="search-box">
+				<Icon name="search" size={18} />
+				<input type="search" placeholder="Search the docs" aria-label="Search the docs" autocomplete="off" spellcheck="false" data-search-input />
+				<button class="icon-btn" type="button" aria-label="Close search" data-search-close><Icon name="x" size={16} /></button>
+			</div>
+			<p class="search-status" data-search-status aria-live="polite">Type to search every page.</p>
+			<ol class="search-results" data-search-results></ol>
+		</dialog>
+
+		<script>
+			import '../scripts/stars';
+			import '../scripts/docs';
+		</script>
+	</body>
+</html>

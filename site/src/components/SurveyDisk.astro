@@ -1,0 +1,41 @@
+---
+import { REPO_URL } from '../lib/site';
+
+interface Props {
+	size?: number;
+	id: string;
+}
+const { size = 168, id } = Astro.props;
+const ring = 'STAR PILLAR-CSI ON GITHUB · STAR PILLAR-CSI ON GITHUB · ';
+---
+
+<a class="survey-disk" href={REPO_URL} style={`--disk:${size}px`} data-star-link aria-label="Star pillar-csi on GitHub">
+	<svg viewBox="0 0 200 200" aria-hidden="true">
+		<defs>
+			<path id={`${id}-ring`} d="M100,100 m-74,0 a74,74 0 1,1 148,0 a74,74 0 1,1 -148,0" />
+			<radialGradient id={`${id}-metal`} cx="38%" cy="32%" r="75%">
+				<stop offset="0" stop-color="#EBCB7C" />
+				<stop offset="0.55" stop-color="#D4A849" />
+				<stop offset="1" stop-color="#A67C22" />
+			</radialGradient>
+		</defs>
+		<circle cx="100" cy="100" r="97" fill={`url(#${id}-metal)`} />
+		<circle cx="100" cy="100" r="92" fill="none" stroke="#8A6414" stroke-width="1.5" />
+		<circle cx="100" cy="100" r="58" fill="none" stroke="#8A6414" stroke-width="1.5" />
+		<text class="disk-ring" fill="#112A23">
+			<textPath href={`#${id}-ring`} startOffset="0" textLength="462" lengthAdjust="spacing">{ring}</textPath>
+		</text>
+		<g class="disk-reticle" stroke="#112A23" stroke-width="2">
+			<line x1="100" y1="46" x2="100" y2="64" />
+			<line x1="100" y1="136" x2="100" y2="154" />
+			<line x1="46" y1="100" x2="64" y2="100" />
+			<line x1="136" y1="100" x2="154" y2="100" />
+		</g>
+		<path
+			transform="translate(76 74) scale(3)"
+			fill="#112A23"
+			d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.751.751 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25Z"
+		></path>
+	</svg>
+	<span class="disk-count" data-star-count hidden></span>
+</a>

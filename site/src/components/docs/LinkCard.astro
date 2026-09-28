@@ -1,0 +1,14 @@
+---
+interface Props {
+	title: string;
+	description?: string;
+	href: string;
+}
+const { title, description, href } = Astro.props;
+---
+
+<a class="link-card" href={href}>
+	<span class="link-card-title">{title}</span>
+	{description && <span class="link-card-desc">{description}</span>}
+	<span class="link-card-path" aria-hidden="true">{href}</span>
+</a>
