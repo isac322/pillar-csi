@@ -1,6 +1,6 @@
 # Brand assets and social preview
 
-This file specifies the pillar-csi mark, its palette, the social cards, and the script that builds them.
+This file specifies the pillar-csi mark, its palette, the social cards, and the script that builds them. The complete marketing kit — mono and stacked variants, icons, banners, and palette tokens — lives in `assets/brand/`; see `assets/brand/README.md` for usage rules.
 
 ## Mark
 
@@ -28,18 +28,18 @@ The owner rejected the earlier slab-and-wire mark and its navy, cyan, and amber 
 | Name | Hex | Role | Contrast |
 |---|---|---|---|
 | Deep Enamel | `#15352B` | Dark ground: landing, docs, social cards | 13.3:1 with white |
-| Machine Green | `#2D5F4C` | Brand field: icon tiles, avatar, buttons and badges on white | 7.4:1 on white |
+| Machine Green | `#2D5F4C` | Brand field: icon tiles, avatar, buttons and badges on light | 7.4:1 on white |
 | Enamel Cream | `#F1EAD6` | Text on green; top plate and lit strip on dark | 11.1:1 on Deep Enamel |
 | Steel | `#AFBAB2` | Shaft on dark; muted text on dark | 6.7:1 on Deep Enamel |
 | Brass | `#D4A849` | The one accent on dark: collar, kernel target, primary action | 6.0:1 on Deep Enamel |
 | Brass Deep | `#8A6414` | Brass on white, safe for text | 5.4:1 on white |
 | Ink | `#112A23` | Text on white | 15.2:1 on white |
 
-Supporting shades live in the script: the mark's foot on dark (`#93A097`, `#76857B`), its colors on white (collar `#A87B1F`, lit strip `#5E8C78`, foot `#1F4739`), and card hairlines (`#3C6B5A`) and raised surfaces (`#1C4336`).
+Supporting shades live in the script: the mark's foot on dark (`#93A097`, `#76857B`), its colors on white (collar `#A87B1F`, lit strip `#5E8C78`, foot `#1F4739`), and card hairlines (`#3C6B5A`) and raised surfaces (`#1C4336`). Machine-readable copies are generated as `assets/brand/palette/tokens.json` and `palette.css`.
 
 Use brass sparingly. It marks one thing per view: the collar in the mark, the kernel target in the schematic, or the primary action on a page.
 
-The site's token set lives in `site/src/styles/tokens.css`. The script keeps its own copy of these hex values, so a palette change needs the same edit in both places.
+The site's token set lives in `site/src/styles/global.css` (`--enamel`, `--green`, `--cream`, `--steel`, `--brass`, `--brass-deep`, `--ink`). A palette change needs the same edit in `assets/brand/build.py` and that file.
 
 ## Type
 
@@ -49,25 +49,25 @@ The social cards set text in Archivo at normal width: Medium for the subtitle an
 
 ## Files
 
-The script generates every file below. Edit `compose.py`, not the outputs.
+`assets/brand/build.py` generates every file below plus the full kit in `assets/brand/` (mono marks, stacked and wordmark-only lockups, icon tiles, README banners, palette exports). Edit `build.py`, not the outputs.
 
 | File | Notes |
 |---|---|
-| `site/public/brand/mark.svg` | Mark for dark grounds. |
-| `site/public/brand/mark-light.svg` | Mark for white and light grounds. |
-| `site/public/brand/logo.svg` | Lockup for dark grounds: mark plus the outlined wordmark. |
-| `site/public/brand/logo-light.svg` | Lockup for light grounds. |
-| `site/public/favicon.svg` | The 16-unit drawing, transparent. It uses the white-ground colors, and switches to the dark-ground colors under `prefers-color-scheme: dark`. |
+| `site/public/brand/mark.svg` | Mark for dark grounds — identical to `assets/brand/mark/mark-color-dark.svg`. |
+| `site/public/brand/mark-light.svg` | Mark for white and light grounds — identical to `mark/mark-color-light.svg`. |
+| `site/public/brand/logo.svg` | Lockup for dark grounds — identical to `logo/logo-horizontal-dark.svg`. |
+| `site/public/brand/logo-light.svg` | Lockup for light grounds — identical to `logo/logo-horizontal-light.svg`. |
+| `site/public/favicon.svg` | The 16-unit drawing, transparent. It uses the white-ground colors, and switches to the dark-ground colors under `prefers-color-scheme: dark` — identical to `favicon/favicon.svg`. |
 | `site/public/favicon.ico` | 16, 32, and 48 px PNG entries on a Machine Green rounded tile. 16 and 48 use the 16-unit drawing (48 is 3x); 32 uses the full mark at half scale. |
 | `site/public/apple-touch-icon.png` | 180x180, the full mark at 2x on a Machine Green square (iOS rounds the corners). |
-| `site/public/og.png` | 1200x630 Open Graph image for pillar-csi.bhyoo.com. |
-| `docs/social-preview/pillar-csi-og.png` | 1280x640 GitHub repository social preview. |
+| `site/public/og.png` | 1200x630 Open Graph image for pillar-csi.bhyoo.com — identical to `social/og.png`. |
+| `docs/social-preview/pillar-csi-og.png` | 1280x640 GitHub repository social preview — identical to `social/pillar-csi-og.png`. |
 
 Every SVG uses literal fill colors and no CSS variables, so it renders the same in an `<img>`, on GitHub, and in any SVG viewer.
 
 ## Social cards
 
-Both cards share one layout, drawn for 1280x640 and scaled to fit 1200x630. All content stays inside the centered 1120x480 safe zone (x 80 to 1200, y 80 to 560), so social sites can crop the edges.
+Both cards share one layout, drawn for 1280x640 and scaled to fit 1200x630. All content stays inside the centered 1120x480 safe zone (x 80 to 1200, y 80 to 560), so social sites can crop the edges. SVG sources are `assets/brand/social/social-github.svg` and `assets/brand/social/og.svg`.
 
 The ground is flat Deep Enamel. The left column holds the dark lockup, 76 px tall, and this subtitle in Archivo Medium at 31 px on five lines. The first sentence is in Enamel Cream, the second in Steel:
 
@@ -86,19 +86,19 @@ Content rules:
 
 ## Regenerate
 
-`docs/social-preview/compose.py` builds every file listed above. It uses only the Python standard library and shells out to `resvg` (rasterizing) and `usvg` (converting the wordmark to outlines).
+`assets/brand/build.py` builds every file listed above. It uses only the Python standard library and shells out to `resvg` (rasterizing) and `usvg` (converting the wordmark to outlines).
 
 ```bash
-nix shell nixpkgs#resvg --command python3 docs/social-preview/compose.py
+nix shell nixpkgs#resvg --command python3 assets/brand/build.py
 ```
 
 The only font is Archivo, the variable font with width and weight axes. On first run the script downloads it from google/fonts at a pinned commit into `$XDG_CACHE_HOME/pillar-csi/` (default `~/.cache/pillar-csi/`) and checks its SHA-256, so the output does not depend on the machine. To work offline, pass a local copy:
 
 ```bash
-python3 docs/social-preview/compose.py --font-file /path/to/Archivo[wdth,wght].ttf
+python3 assets/brand/build.py --font-file /path/to/Archivo[wdth,wght].ttf
 ```
 
-To change the mark, edit the `MARK` and `SMALL` geometry or the palette constants at the top of `compose.py` and run it again. It rewrites the SVGs, the icons, and both cards together.
+To change the mark, edit the `MARK` and `SMALL` geometry or the palette constants at the top of `build.py` and run it again. It rewrites the kit and the `site/public/` copies together.
 
 ## Deploy the GitHub card
 

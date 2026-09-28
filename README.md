@@ -1,8 +1,8 @@
 <p align="center">
   <a href="https://pillar-csi.bhyoo.com">
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="site/public/brand/logo.svg">
-      <img src="site/public/brand/logo-light.svg" alt="pillar-csi" width="360">
+      <source media="(prefers-color-scheme: dark)" srcset="assets/brand/social/readme-banner-dark.svg">
+      <img src="assets/brand/social/readme-banner-light.svg" alt="pillar-csi" width="640">
     </picture>
   </a>
 </p>
@@ -11,7 +11,7 @@
 
 pillar-csi is one Kubernetes CSI driver for self-hosted and bare-metal clusters. It exports ZFS zvols and LVM volumes over kernel NVMe-oF/TCP.
 
-[![CI](https://github.com/isac322/pillar-csi/actions/workflows/ci.yml/badge.svg)](https://github.com/isac322/pillar-csi/actions/workflows/ci.yml) [![Go Report Card](https://goreportcard.com/badge/github.com/isac322/pillar-csi)](https://goreportcard.com/report/github.com/isac322/pillar-csi) [![Go](https://img.shields.io/github/go-mod/go-version/isac322/pillar-csi?color=00ADD8)](go.mod) [![Kubernetes ≥ 1.24](https://img.shields.io/badge/kubernetes-%E2%89%A5%201.24-blue?logo=kubernetes)](https://kubernetes.io) [![License](https://img.shields.io/github/license/isac322/pillar-csi?color=green)](LICENSE) [![Release](https://img.shields.io/github/v/release/isac322/pillar-csi?include_prereleases&color=orange)](https://github.com/isac322/pillar-csi/releases)
+[![CI](https://github.com/isac322/pillar-csi/actions/workflows/ci.yml/badge.svg)](https://github.com/isac322/pillar-csi) [![Go Report Card](https://goreportcard.com/badge/github.com/isac322/pillar-csi)](https://goreportcard.com/report/github.com/isac322/pillar-csi) [![Go](https://img.shields.io/github/go-mod/go-version/isac322/pillar-csi?color=2D5F4C)](go.mod) [![Kubernetes ≥ 1.24](https://img.shields.io/badge/kubernetes-%E2%89%A5%201.24-blue?logo=kubernetes)](https://kubernetes.io) [![License](https://img.shields.io/github/license/isac322/pillar-csi?color=green)](LICENSE) [![Release](https://img.shields.io/github/v/release/isac322/pillar-csi?include_prereleases&color=orange)](https://github.com/isac322/pillar-csi/releases)
 
 [Website](https://pillar-csi.bhyoo.com) · [Your first PVC](https://pillar-csi.bhyoo.com/docs/tutorials/first-pvc/) · [Documentation](https://pillar-csi.bhyoo.com/docs/) · [Support matrix](https://pillar-csi.bhyoo.com/docs/reference/support-matrix/)
 

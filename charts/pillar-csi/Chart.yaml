@@ -10,7 +10,7 @@ keywords:
   - storage
   - kubernetes
 home: https://pillar-csi.bhyoo.com
-icon: https://raw.githubusercontent.com/isac322/pillar-csi/master/site/public/brand/mark.svg
+icon: https://raw.githubusercontent.com/isac322/pillar-csi/master/assets/brand/mark/mark-color-light.svg
 sources:
   - https://github.com/isac322/pillar-csi
 maintainers:

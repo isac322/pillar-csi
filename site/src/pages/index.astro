@@ -534,14 +534,16 @@ const jsonLd = [
 	}
 	.notes li {
 		counter-increment: note;
-		display: grid;
-		grid-template-columns: 2rem 1fr;
-		gap: 0.9rem;
+		position: relative;
+		padding-left: 2.9rem;
 		font-size: 1.05rem;
 		line-height: 1.55;
 	}
 	.notes li::before {
 		content: counter(note);
+		position: absolute;
+		left: 0;
+		top: 0;
 		display: grid;
 		place-items: center;
 		width: 2rem;
