@@ -34,7 +34,7 @@ Configuration has three axes: storage, protocol and filesystem. Each axis has a 
 | Protocol | `PillarProtocol.spec.protocol.nvmeofTcp` | `PillarStorageClass.spec.overrides.protocol` | `pillar-csi.bhyoo.com/protocol` |
 | Filesystem | `fsType: ext4` | `PillarStorageClass.spec.filesystem` | `pillar-csi.bhyoo.com/filesystem` |
 
-`nvmeofTcp` is the only protocol in v0.3.1, and `zfs` and `lvm` are the only backends. iSCSI, NFS and SMB are planned. Each is designed to arrive as another member of the same `protocol` document, next to `nvmeofTcp`, and to follow the same three layers.
+`nvmeofTcp` is the only protocol in v0.3.2, and `zfs` and `lvm` are the only backends. iSCSI, NFS and SMB are planned. Each is designed to arrive as another member of the same `protocol` document, next to `nvmeofTcp`, and to follow the same three layers.
 
 ## What you can override
 
