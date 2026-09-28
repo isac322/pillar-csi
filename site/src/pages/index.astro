@@ -115,15 +115,18 @@ const jsonLd = {
 			<Limits text={landing.limits} />
 		</main>
 		<Footer cta={landing.cta} star={landing.star} />
+		<p class="lp-sr" role="status" data-copy-status></p>
 		<script is:inline src="/star.js"></script>
 		<script is:inline src="/scroll-hint.js"></script>
 		<script is:inline>
+			const copyStatus = document.querySelector('[data-copy-status]');
 			document.querySelectorAll('[data-copy]').forEach((button) => {
 				button.hidden = false;
 				button.addEventListener('click', async () => {
 					await navigator.clipboard.writeText(button.dataset.copy);
 					button.textContent = 'Copied';
-					setTimeout(() => (button.textContent = 'Copy'), 1500);
+					copyStatus.textContent = 'Copied to clipboard';
+					setTimeout(() => ((button.textContent = 'Copy'), (copyStatus.textContent = '')), 1500);
 				});
 			});
 		</script>

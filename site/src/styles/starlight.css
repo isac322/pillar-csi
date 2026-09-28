@@ -35,6 +35,39 @@
 	--sl-color-bg-inline-code: var(--pc-well);
 }
 
+/* Fill, not shadow: Starlight's dialog, popover and menu-button shadows. */
+:root {
+	--sl-shadow-sm: none;
+	--sl-shadow-md: none;
+	--sl-shadow-lg: none;
+}
+
+/* Dark code blocks sit in the Ink well like the landing's. The default syntax
+ * colors clear 4.5:1 on #112A23 and do not on the raised enamel. */
+:root[data-theme='dark'] .expressive-code {
+	--ec-codeBg: var(--pc-well);
+	--ec-frm-edBg: var(--pc-well);
+	--ec-frm-trmBg: var(--pc-well);
+	--ec-frm-edActTabBg: var(--pc-well);
+}
+
+/* Reading measure: prose lines run about 70 to 80 characters (56ch of
+ * Archivo's wide zero); tables
+ * and code keep the full column. */
+.sl-markdown-content :is(p, ul, ol, dl, blockquote):not(:where(.not-content *, td *, th *)) {
+	max-width: 56ch;
+}
+
+/* Sidebar and table-of-contents links are controls: at least 24px tall. */
+.sidebar-content a {
+	padding-block: 0.3125rem;
+}
+
+starlight-toc a,
+mobile-starlight-toc a {
+	padding-block: 0.3125rem !important;
+}
+
 ::selection {
 	background: var(--pc-accent);
 	color: var(--pc-on-accent);

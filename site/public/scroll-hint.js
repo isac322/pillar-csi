@@ -1,11 +1,20 @@
 // Marks tables and code blocks that scroll sideways: wraps each in .pc-scroll,
 // shows a "scroll" chip and an edge shadow while more content sits to the
-// right, and makes the scroller keyboard-focusable. Styles: src/styles/scroll.css.
+// right, and makes the scroller keyboard-focusable only while it overflows.
+// Styles: src/styles/scroll.css.
 (() => {
 	const sel = '.sl-markdown-content table, .expressive-code pre, .lp-code pre';
 	const update = (box, s) => {
 		const overflow = s.scrollWidth - s.clientWidth > 2;
-		if (overflow) s.tabIndex = 0;
+		// Add a tab stop only where the markup had none, and take it back when
+		// the element stops scrolling.
+		if (overflow && !s.hasAttribute('tabindex')) {
+			s.tabIndex = 0;
+			s.dataset.pcTab = '';
+		} else if (!overflow && 'pcTab' in s.dataset) {
+			s.removeAttribute('tabindex');
+			delete s.dataset.pcTab;
+		}
 		box.classList.toggle('pc-scroll--overflow', overflow);
 		box.classList.toggle('pc-scroll--more', overflow && s.scrollWidth - s.clientWidth - s.scrollLeft > 2);
 	};

@@ -6,6 +6,7 @@
 //    `democratic-csi`). The copied text is unchanged.
 // 2. Status cells: a table cell whose whole text is "Shipped", "Planned" or
 //    "Not applicable" is rendered as a badge (styles in starlight.css).
+// 3. Table headers: every <th> gets scope="col".
 
 const STATUS = { Shipped: 'shipped', Planned: 'planned', 'Not applicable': 'na' };
 
@@ -43,6 +44,10 @@ function visit(node, inPre) {
 		);
 		return;
 	}
+
+	// Markdown tables put <th> only in the header row: mark them as column
+	// headers so screen readers associate every cell with its column.
+	if (node.tagName === 'th') node.properties = { ...node.properties, scope: 'col' };
 
 	if (node.tagName === 'td') {
 		const status = STATUS[textOf(node).trim()];

@@ -5,6 +5,8 @@
  * action. Archivo (variable, self-hosted via @fontsource, imported in
  * src/pages/index.astro) sets display and stamped labels at 125% width and
  * body text at 100%. JetBrains Mono is for commands, paths and identifiers.
+ * Nothing on the page animates, so prefers-reduced-motion needs no rules;
+ * add a per-element reduced-motion rule with any future animation.
  */
 
 *,
@@ -222,7 +224,9 @@ body.lp {
 	font-weight: 500;
 }
 
-.lp .lp-nav__links a {
+.lp .lp-nav__links a:not(.pc-star) {
+	display: inline-block;
+	padding-block: 6px;
 	text-decoration: none;
 	color: var(--pc-muted);
 }
@@ -280,6 +284,11 @@ body.lp {
 	letter-spacing: 0.1em;
 	text-transform: uppercase;
 	color: var(--pc-muted);
+}
+
+/* Names with their own casing (NVMe-oF) stay as written inside capitals. */
+.lp-truecase {
+	text-transform: none;
 }
 
 /* The eyebrow is a riveted nameplate: steel edge, a rivet at each end. */
@@ -352,6 +361,10 @@ body.lp {
 	letter-spacing: 0.08em;
 	text-transform: uppercase;
 	color: var(--pc-muted);
+}
+
+.lp-code code {
+	font-family: inherit;
 }
 
 .lp-code pre {
@@ -865,7 +878,8 @@ body.lp {
 
 .lp-step__more {
 	display: inline-block;
-	margin-top: 10px;
+	margin-top: 6px;
+	padding-block: 4px;
 	font-size: 0.9375rem;
 	font-weight: 600;
 }
@@ -901,10 +915,9 @@ body.lp {
 	background: var(--pc-raised);
 	font-family: var(--pc-font-display);
 	font-stretch: var(--pc-stretch-display);
-	font-size: 0.75rem;
+	font-size: 0.875rem;
 	font-weight: 700;
-	letter-spacing: 0.06em;
-	text-transform: uppercase;
+	letter-spacing: 0.01em;
 }
 
 .lp-compare__table tbody th {
@@ -1052,6 +1065,8 @@ body.lp {
 }
 
 .lp-footer__nav a {
+	display: inline-block;
+	padding-block: 4px;
 	color: var(--pc-muted);
 }
 
@@ -1102,13 +1117,10 @@ body.lp {
 		gap: 12px;
 	}
 	.lp-nav__links {
-		gap: 4px 10px;
+		gap: 4px 12px;
 		font-size: 0.8125rem;
 	}
 	.lp-nav__star .pc-star__label {
-		display: none;
-	}
-	.lp-nav__links li:nth-child(2) {
 		display: none;
 	}
 	.lp-nav__star .pc-star__icon {
@@ -1158,12 +1170,3 @@ body.lp {
 	}
 }
 
-@media (prefers-reduced-motion: reduce) {
-	*,
-	*::before,
-	*::after {
-		transition: none !important;
-		animation: none !important;
-		scroll-behavior: auto !important;
-	}
-}

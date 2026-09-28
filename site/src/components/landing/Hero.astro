@@ -27,12 +27,17 @@ for (const arg of args) {
 const displayCommand = lines.join(' \\\n');
 // Narrow screens: one argument per line, no indent, so no line wraps mid-word.
 const narrowCommand = args.join(' \\\n');
+// The nameplate is set in capitals; names with their own casing (NVMe-oF,
+// pillar-csi) keep it.
+const eyebrowParts = hero.eyebrow.split(/(NVMe-oF\S*|pillar-csi)/);
 ---
 
 <section class="lp-hero" aria-labelledby="hero-title">
 	<div class="lp-wrap lp-hero__grid">
 		<div class="lp-hero__text">
-			<p class="lp-eyebrow">{hero.eyebrow}</p>
+			<p class="lp-eyebrow">
+				<span>{eyebrowParts.map((part, i) => (i % 2 ? <span class="lp-truecase">{part}</span> : part))}</span>
+			</p>
 			<Fragment set:html={alternatives} />
 			<h1 id="hero-title" class="lp-hero__title">{hero.h1}</h1>
 			<p class="lp-hero__subline">{hero.subline}</p>
@@ -43,7 +48,6 @@ const narrowCommand = args.join(' \\\n');
 						type="button"
 						class="lp-copy"
 						data-copy={hero.installCommand}
-						aria-live="polite"
 						hidden>Copy</button
 					>
 				</div>
