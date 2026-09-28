@@ -1,0 +1,11 @@
+# Files excluded from `helm package`.
+.DS_Store
+*.swp
+*.bak
+*.tmp
+*~
+# Artifact Hub metadata is pushed as its own OCI artifact by the release workflow.
+artifacthub-repo.yml
+# helm-docs template and chart render regression script.
+README.md.gotmpl
+test_render.sh

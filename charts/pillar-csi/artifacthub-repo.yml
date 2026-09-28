@@ -1,0 +1,5 @@
+# Artifact Hub repository metadata. The release workflow pushes this file to
+# ghcr.io/isac322/charts/pillar-csi:artifacthub.io; it is not part of the chart.
+repositoryID: 4cd5d50a-70c4-4cca-bf5a-16656c4a68c0
+owners:
+  - name: isac322
