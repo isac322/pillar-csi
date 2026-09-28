@@ -2,6 +2,7 @@
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
 import sitemap from '@astrojs/sitemap';
+import rehypeDocsTokens from './src/plugins/rehype-docs-tokens.mjs';
 
 const site = 'https://pillar-csi.bhyoo.com';
 const repo = 'https://github.com/isac322/pillar-csi';
@@ -44,7 +45,7 @@ export default defineConfig({
 	trailingSlash: 'ignore',
 	// Keep `--flag`, straight quotes and "..." exactly as written; typographic
 	// replacement turns CLI flags into en dashes that fail when copied.
-	markdown: { smartypants: false },
+	markdown: { smartypants: false, rehypePlugins: [rehypeDocsTokens] },
 	integrations: [
 		starlight({
 			title: 'pillar-csi',

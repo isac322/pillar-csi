@@ -7,14 +7,17 @@ import { CardGrid, LinkCard } from '@astrojs/starlight/components';
 
 pillar-csi is a Container Storage Interface (CSI) driver for Kubernetes. It creates volumes in the ZFS pools and LVM volume groups on your storage nodes, and the Linux kernel NVMe-oF target serves them to pods over TCP.
 
+The driver's container images carry every tool it runs, so your hosts need only the NVMe-oF kernel modules and a ZFS pool or LVM volume group. NVMe-oF/TCP ships today; iSCSI, NFS and SMB are planned.
+
 If you have not installed pillar-csi yet, start with the tutorial. It takes you from one storage node to a pod with a mounted volume.
 
+<LinkCard
+	title="Tutorial: your first PVC"
+	description="Set up a storage node with a ZFS pool or LVM volume group and create your first PVC."
+	href="/docs/tutorials/first-pvc/"
+/>
+
 <CardGrid>
-	<LinkCard
-		title="Tutorials"
-		description="Set up a storage node with a ZFS pool or LVM volume group and create your first PVC."
-		href="/docs/tutorials/first-pvc/"
-	/>
 	<LinkCard
 		title="How-to guides"
 		description="Install with Helm, prepare nodes, enable mTLS, expand volumes, upgrade, and fix common failures."

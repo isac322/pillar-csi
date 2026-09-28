@@ -21,7 +21,8 @@ This page covers chart version {{ template "chart.version" . }}. Pass overrides 
 ## {{ $top }}
 {{- end }}
 
-### `{{ .Key }}`
+{{/* <wbr> after each dot lets narrow screens wrap only there; it has no text, so the heading id stays e.g. #agentimagepullpolicy. */}}
+### <code>{{ .Key | replace "." ".<wbr>" }}</code>
 
 {{ $default := .Default | default .AutoDefault | trimAll "`" -}}
 Type: `{{ .Type }}`

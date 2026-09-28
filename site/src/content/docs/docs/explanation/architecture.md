@@ -13,27 +13,31 @@ pillar-csi is not a distributed filesystem. It does not replicate, stripe or poo
 
 ```text
 Kubernetes API
-(CRDs, PVCs, PillarVolumeState)
-  |                 |
-  v                 v
-pillar-controller  pillar-node
-Deployment         DaemonSet,
-                   every worker
-reconcilers,       CSI Node:
-CSI Controller     connect,
-                   mkfs, mount
-  |                 ^
-  | gRPC :9500      | NVMe/TCP
-  | control path    | :4420
-  | mTLS opt-in     | data path,
-  v                 | kernel only
-storage node -------+
+CRDs, PVCs, PillarVolumeState
+        |
+        v
+pillar-controller (Deployment)
+  CRD reconcilers
+  CSI Controller service
+        |
+        | control path:
+        | gRPC :9500, mTLS opt-in
+        v
+storage node
   pillar-agent (DaemonSet)
     -> zfs / lvm commands
     -> nvmet configfs
   zvol or LV
     -> kernel nvmet subsystem
-    -> TCP listener
+    -> TCP listener :4420
+        |
+        | data path:
+        | NVMe/TCP, kernel only
+        v
+worker node
+  pillar-node (DaemonSet)
+    connect, mkfs, mount
+  pod mounts /dev/nvmeXnY
 ```
 
 The diagram shows only shipped parts. The one protocol is NVMe-oF over TCP, and the backends are ZFS zvols and LVM logical volumes.

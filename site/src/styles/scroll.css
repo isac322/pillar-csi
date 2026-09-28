@@ -1,7 +1,9 @@
 /*
  * Sideways-scroll affordance for tables and code blocks (see public/scroll-hint.js).
- * While content continues to the right, the box shows an inset edge shadow and
- * a small "scroll" chip. Both disappear once the reader reaches the end.
+ * .pc-scroll--overflow: the block scrolls; a strip below it is reserved for the
+ *   "scroll" chip, so the chip never covers content.
+ * .pc-scroll--more: content continues to the right; the chip and an inset edge
+ *   shadow on the scrolling area are visible.
  */
 
 .pc-scroll {
@@ -19,46 +21,48 @@
 	overflow: visible;
 }
 
-.pc-scroll::before,
-.pc-scroll::after {
-	position: absolute;
-	pointer-events: none;
-	opacity: 0;
-}
-
 .pc-scroll::before {
 	content: '';
+	position: absolute;
 	top: 0;
 	right: 0;
 	bottom: 0;
 	width: 16px;
 	box-shadow: inset -12px 0 10px -10px rgb(0 0 0 / 0.7);
+	pointer-events: none;
+	opacity: 0;
 	z-index: 1;
 }
 
+.pc-scroll--overflow::before {
+	bottom: 1.625rem;
+}
+
 .pc-scroll::after {
+	content: none;
+}
+
+.pc-scroll--overflow::after {
 	content: 'scroll \2192';
-	right: 6px;
-	bottom: 6px;
-	padding: 2px 8px;
+	display: block;
+	width: max-content;
+	margin: 0.25rem 0 0 auto;
+	padding: 0 0.5rem;
 	border-radius: 2px;
 	background: var(--pc-steel);
 	color: var(--pc-text);
 	font-family: var(--pc-font-mono);
 	font-size: 0.6875rem;
-	line-height: 1.5;
+	line-height: 1.375rem;
 	letter-spacing: 0.04em;
-	z-index: 2;
+	visibility: hidden;
 }
 
-.pc-scroll--more::before,
-.pc-scroll--more::after {
+.pc-scroll--more::before {
 	opacity: 1;
 }
 
-@media (prefers-reduced-motion: no-preference) {
-	.pc-scroll::before,
-	.pc-scroll::after {
-		transition: opacity 120ms linear;
-	}
+.pc-scroll--more::after {
+	visibility: visible;
 }
+

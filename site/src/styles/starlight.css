@@ -113,18 +113,57 @@ site-search button,
 	text-align: start;
 }
 
-/* Identifiers in cells break only at their natural break points (hyphens,
- * slashes). Wide tables scroll sideways with the affordance from scroll.css. */
+/* Inline code keeps each token whole. rehype-docs-tokens splits code text into
+ * .pc-nb spans after '/' (and after '.' in long tokens), so a long path wraps
+ * only there and never at a hyphen. */
+.sl-markdown-content :not(pre) > code .pc-nb {
+	white-space: nowrap;
+}
+
 .sl-markdown-content td code {
 	overflow-wrap: normal;
 	word-break: normal;
 }
 
-/* Narrow screens: keep columns at a readable width; the table scrolls. */
+/* Narrow screens: columns keep a readable width and the table scrolls
+ * sideways (scroll.css) instead of crushing one column. */
 @media (max-width: 50rem) {
 	.sl-markdown-content :is(th, td):not(:where(.not-content *)) {
-		min-width: 7rem;
+		min-width: 10rem;
 	}
+}
+
+/* Status badges for table cells that read exactly Shipped, Planned or
+ * Not applicable (added by rehype-docs-tokens). Solid = shipped, dashed
+ * outline = planned, muted = not applicable; the word is always shown. */
+.pc-badge {
+	display: inline-block;
+	padding: 0.0625rem 0.5rem;
+	border: 1px solid transparent;
+	border-radius: 2px;
+	font-family: var(--pc-font-mono);
+	font-size: 0.8125rem;
+	line-height: 1.5;
+	white-space: nowrap;
+}
+
+.pc-badge--shipped {
+	border-color: var(--pc-text);
+	background: var(--pc-text);
+	color: var(--pc-ground);
+	font-weight: 600;
+}
+
+.pc-badge--planned {
+	border-color: var(--pc-muted);
+	border-style: dashed;
+	color: var(--pc-text);
+}
+
+.pc-badge--na {
+	padding-inline: 0;
+	color: var(--pc-muted);
+	white-space: normal;
 }
 
 /* JetBrains Mono ligatures turn `>-`, `==` and `<<<` into single glyphs that

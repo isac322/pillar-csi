@@ -15,89 +15,89 @@ This page covers chart version 0.3.0. Pass overrides with `-f my-values.yaml` or
 
 ## agent
 
-### `agent.annotations`
+### <code>agent.<wbr>annotations</code>
 
 Type: `object`. Default: `{}`
 
 Annotations added to the agent DaemonSet.
 
-### `agent.backends`
+### <code>agent.<wbr>backends</code>
 
 Type: `list`. Default: `[]`
 
 Backend placement config for the pillar-agent. The list is rendered verbatim into the `backends:` list of the agent config file (ConfigMap &lt;fullname>-agent-config, passed to the agent via `--config`). Each entry sets exactly one of `zfs` or `lvm`, with the same keys as the placement fields of PillarStore.spec.backend: - zfs: `pool` is required; `volumeType` (only `zvol`, the default) and `parentDataset` are optional. `properties` is refused: ZFS properties are per-volume settings of the PillarStore, PillarStorageClass overrides or PVC backend document. - lvm: `volumeGroup` is required; `thinPool` (thin pool LV used by thin volumes) and `provisioningMode` (`linear` default | `thin`; the mode for agent requests that name none — CSI always names the resolved mode) are optional. The agent rejects unknown keys with their path and exits with an error when no backend is configured. An entry setting neither or both of zfs/lvm fails the chart render. Each ZFS `pool` and LVM `volumeGroup` may appear in at most one entry (a ZFS pool and an LVM VG must not share a name either): volumes are routed to a backend by pool/VG name alone, so a duplicate fails the chart render and the agent refuses to start when given one. `parentDataset` and `thinPool` decide where volumes are created and must equal the PillarStore's spec.backend.zfs.parentDataset / spec.backend.lvm.thinPool for that pool/VG (omitted = pool root / no thin pool). On a mismatch the PillarStore is not Ready (PoolDiscovered=False, BackendLayoutMismatch) and CreateVolume fails; volumes are never placed elsewhere. Example: backends: - zfs: pool: tank - zfs: volumeType: zvol pool: hot-data parentDataset: k8s - lvm: volumeGroup: data-vg thinPool: thin0 provisioningMode: linear
 
-### `agent.extraArgs`
+### <code>agent.<wbr>extraArgs</code>
 
 Type: `list`. Default: `[]`
 
 Extra command-line arguments appended to the pillar-agent entrypoint.
 
-### `agent.extraEnv`
+### <code>agent.<wbr>extraEnv</code>
 
 Type: `list`. Default: `[]`
 
 Additional environment variables injected into the agent container.
 
-### `agent.grpcPort`
+### <code>agent.<wbr>grpcPort</code>
 
 Type: `int`. Default: `9500`
 
 gRPC listen port inside the container (also exposed as hostPort).
 
-### `agent.hostNetwork`
+### <code>agent.<wbr>hostNetwork</code>
 
 Type: `bool`. Default: `true`
 
 Run the agent Pod in the host network namespace. Required for the NVMe-oF data plane (see PRD §2.4). Set to false only for isolated gRPC-only deployments where no kernel target is exported (e.g. unit-test harnesses); production NVMe-oF exports will fail with "connection refused" at NodeStageVolume when this is false.
 
-### `agent.hostPort`
+### <code>agent.<wbr>hostPort</code>
 
 Type: `int`. Default: `9500`
 
 hostPort number bound on the node IP for agent gRPC access. Must match grpcPort. Set to 0 to disable hostPort (not recommended).
 
-### `agent.image.pullPolicy`
+### <code>agent.<wbr>image.<wbr>pullPolicy</code>
 
 Type: `string`. Default: `""`
 
 Per-container image pull policy override.
 
-### `agent.image.repository`
+### <code>agent.<wbr>image.<wbr>repository</code>
 
 Type: `string`. Default: `"ghcr.io/isac322/pillar-csi/agent"`
 
 Container image repository for the pillar-agent binary.
 
-### `agent.image.tag`
+### <code>agent.<wbr>image.<wbr>tag</code>
 
 Type: `string`. Default: `""`
 
 Image tag. Defaults to the chart's appVersion when empty.
 
-### `agent.initModprobe.image.pullPolicy`
+### <code>agent.<wbr>initModprobe.<wbr>image.<wbr>pullPolicy</code>
 
 Type: `string`. Default: `""`
 
-### `agent.initModprobe.image.repository`
+### <code>agent.<wbr>initModprobe.<wbr>image.<wbr>repository</code>
 
 Type: `string`. Default: `"busybox"`
 
 Image used for the modprobe init container (needs kmod/modprobe binary).
 
-### `agent.initModprobe.image.tag`
+### <code>agent.<wbr>initModprobe.<wbr>image.<wbr>tag</code>
 
 Type: `string`. Default: `"1.38.0"`
 
 Init container image tag.
 
-### `agent.initModprobe.modules`
+### <code>agent.<wbr>initModprobe.<wbr>modules</code>
 
 Type: `list`. Default: `["nvmet","nvmet_tcp"]`
 
 Kernel modules to load. Failures are silently ignored (best-effort). nvmet must be listed before nvmet_tcp (it is a dependency).
 
-### `agent.initModprobe.resources`
+### <code>agent.<wbr>initModprobe.<wbr>resources</code>
 
 Type: `object`. Default:
 
@@ -116,7 +116,7 @@ Type: `object`. Default:
 
 Resource requests/limits for the modprobe init container.
 
-### `agent.nodeSelector`
+### <code>agent.<wbr>nodeSelector</code>
 
 Type: `object`. Default:
 
@@ -128,25 +128,25 @@ Type: `object`. Default:
 
 Node selector applied to agent DaemonSet Pods. The controller automatically adds pillar-csi.bhyoo.com/agent-node=true to nodes referenced by PillarAgent CRs; this selector ensures the agent runs only on those nodes.
 
-### `agent.podAnnotations`
+### <code>agent.<wbr>podAnnotations</code>
 
 Type: `object`. Default: `{}`
 
 Annotations added to the agent Pod template.
 
-### `agent.podLabels`
+### <code>agent.<wbr>podLabels</code>
 
 Type: `object`. Default: `{}`
 
 Labels added to the agent Pod template.
 
-### `agent.privileged`
+### <code>agent.<wbr>privileged</code>
 
 Type: `bool`. Default: `true`
 
 Run the agent container in privileged mode (default: true). The storage backends open host device nodes directly: LVM needs /dev/mapper/control and every PV block device (and dm-N nodes created at runtime by lvcreate); ZFS needs /dev/zfs. For a non-privileged container the container runtime installs the default OCI device cgroup allowlist (on cgroup v2 an eBPF device filter), which rejects open() on these nodes with EPERM even for runAsUser=0 + CAP_SYS_ADMIN and a hostPath /dev mount — capabilities cannot bypass the device cgroup. The agent then cannot query pool capacity, reports degraded health and no discovered pools, and PillarStores never become Ready. This applies to bare-metal nodes as well as Kind/nested setups. Set to false only when the deployment authorizes those host devices for the agent container by other means (e.g. runtime device-cgroup configuration or a device plugin/CDI covering every required device).
 
-### `agent.resources`
+### <code>agent.<wbr>resources</code>
 
 Type: `object`. Default:
 
@@ -165,7 +165,7 @@ Type: `object`. Default:
 
 Resource requests/limits for the pillar-agent container.
 
-### `agent.tolerations`
+### <code>agent.<wbr>tolerations</code>
 
 Type: `list`. Default: `[]`
 
@@ -173,97 +173,97 @@ Tolerations applied to agent DaemonSet Pods.
 
 ## controller
 
-### `controller.affinity`
+### <code>controller.<wbr>affinity</code>
 
 Type: `object`. Default: `{}`
 
 Affinity rules for the controller Pod.
 
-### `controller.annotations`
+### <code>controller.<wbr>annotations</code>
 
 Type: `object`. Default: `{}`
 
 Annotations added to the controller Deployment.
 
-### `controller.csiSocketPath`
+### <code>controller.<wbr>csiSocketPath</code>
 
 Type: `string`. Default: `"/csi/csi.sock"`
 
 CSI Unix socket path on the shared emptyDir volume.
 
-### `controller.extraArgs`
+### <code>controller.<wbr>extraArgs</code>
 
 Type: `list`. Default: `[]`
 
 Extra command-line arguments appended to the manager entrypoint.
 
-### `controller.extraEnv`
+### <code>controller.<wbr>extraEnv</code>
 
 Type: `list`. Default: `[]`
 
 Additional environment variables injected into the manager container.
 
-### `controller.healthProbePort`
+### <code>controller.<wbr>healthProbePort</code>
 
 Type: `int`. Default: `8081`
 
 HTTP port exposed by the manager health-probe endpoint.
 
-### `controller.image.pullPolicy`
+### <code>controller.<wbr>image.<wbr>pullPolicy</code>
 
 Type: `string`. Default: `""`
 
 Per-container image pull policy override.
 
-### `controller.image.repository`
+### <code>controller.<wbr>image.<wbr>repository</code>
 
 Type: `string`. Default: `"ghcr.io/isac322/pillar-csi/controller"`
 
 Container image repository for the controller (manager) binary.
 
-### `controller.image.tag`
+### <code>controller.<wbr>image.<wbr>tag</code>
 
 Type: `string`. Default: `""`
 
 Image tag. Defaults to the chart's appVersion when empty.
 
-### `controller.livenessPort`
+### <code>controller.<wbr>livenessPort</code>
 
 Type: `int`. Default: `9809`
 
 HTTP port exposed by the liveness-probe sidecar for CSI socket health checks.
 
-### `controller.metricsPort`
+### <code>controller.<wbr>metricsPort</code>
 
 Type: `int`. Default: `8080`
 
 Metrics port exposed by the manager.
 
-### `controller.nodeSelector`
+### <code>controller.<wbr>nodeSelector</code>
 
 Type: `object`. Default: `{}`
 
 Node selector applied to the controller Pod.
 
-### `controller.podAnnotations`
+### <code>controller.<wbr>podAnnotations</code>
 
 Type: `object`. Default: `{}`
 
 Annotations added to the controller Pod template.
 
-### `controller.podLabels`
+### <code>controller.<wbr>podLabels</code>
 
 Type: `object`. Default: `{}`
 
 Labels added to the controller Pod template.
 
-### `controller.replicaCount`
+### <code>controller.<wbr>replicaCount</code>
 
 Type: `int`. Default: `1`
 
 Number of controller replicas. >1 is safe: every replica serves the pod-local CSI socket so its sidecars stay healthy, while the manager and the CSI sidecars hold independent leader-election leases. Pair with controller.affinity podAntiAffinity so replicas land on different nodes.
 
-### `controller.resources`
+### <code>controller.<wbr>resources</code>
 
 Type: `object`. Default:
 
@@ -282,29 +282,29 @@ Type: `object`. Default:
 
 Resource requests/limits for the manager container.
 
-### `controller.sidecars.attacher.extraArgs`
+### <code>controller.<wbr>sidecars.<wbr>attacher.<wbr>extraArgs</code>
 
 Type: `list`. Default: `[]`
 
 Extra arguments for csi-attacher.
 
-### `controller.sidecars.attacher.image.pullPolicy`
+### <code>controller.<wbr>sidecars.<wbr>attacher.<wbr>image.<wbr>pullPolicy</code>
 
 Type: `string`. Default: `""`
 
-### `controller.sidecars.attacher.image.repository`
+### <code>controller.<wbr>sidecars.<wbr>attacher.<wbr>image.<wbr>repository</code>
 
 Type: `string`. Default: `"registry.k8s.io/sig-storage/csi-attacher"`
 
 csi-attacher image repository.
 
-### `controller.sidecars.attacher.image.tag`
+### <code>controller.<wbr>sidecars.<wbr>attacher.<wbr>image.<wbr>tag</code>
 
 Type: `string`. Default: `"v4.12.0"`
 
 csi-attacher image tag.
 
-### `controller.sidecars.attacher.resources`
+### <code>controller.<wbr>sidecars.<wbr>attacher.<wbr>resources</code>
 
 Type: `object`. Default:
 
@@ -323,23 +323,23 @@ Type: `object`. Default:
 
 Resource requests/limits for the attacher sidecar.
 
-### `controller.sidecars.livenessProbe.image.pullPolicy`
+### <code>controller.<wbr>sidecars.<wbr>livenessProbe.<wbr>image.<wbr>pullPolicy</code>
 
 Type: `string`. Default: `""`
 
-### `controller.sidecars.livenessProbe.image.repository`
+### <code>controller.<wbr>sidecars.<wbr>livenessProbe.<wbr>image.<wbr>repository</code>
 
 Type: `string`. Default: `"registry.k8s.io/sig-storage/livenessprobe"`
 
 livenessprobe image repository.
 
-### `controller.sidecars.livenessProbe.image.tag`
+### <code>controller.<wbr>sidecars.<wbr>livenessProbe.<wbr>image.<wbr>tag</code>
 
 Type: `string`. Default: `"v2.19.0"`
 
 livenessprobe image tag (shared with node liveness sidecar).
 
-### `controller.sidecars.livenessProbe.resources`
+### <code>controller.<wbr>sidecars.<wbr>livenessProbe.<wbr>resources</code>
 
 Type: `object`. Default:
 
@@ -358,29 +358,29 @@ Type: `object`. Default:
 
 Resource requests/limits for the liveness-probe sidecar.
 
-### `controller.sidecars.provisioner.extraArgs`
+### <code>controller.<wbr>sidecars.<wbr>provisioner.<wbr>extraArgs</code>
 
 Type: `list`. Default: `[]`
 
 Extra arguments for csi-provisioner. `--extra-create-metadata` is always passed: CreateVolume reads the PVC override annotations through it.
 
-### `controller.sidecars.provisioner.image.pullPolicy`
+### <code>controller.<wbr>sidecars.<wbr>provisioner.<wbr>image.<wbr>pullPolicy</code>
 
 Type: `string`. Default: `""`
 
-### `controller.sidecars.provisioner.image.repository`
+### <code>controller.<wbr>sidecars.<wbr>provisioner.<wbr>image.<wbr>repository</code>
 
 Type: `string`. Default: `"registry.k8s.io/sig-storage/csi-provisioner"`
 
 csi-provisioner image repository.
 
-### `controller.sidecars.provisioner.image.tag`
+### <code>controller.<wbr>sidecars.<wbr>provisioner.<wbr>image.<wbr>tag</code>
 
 Type: `string`. Default: `"v6.3.0"`
 
 csi-provisioner image tag.
 
-### `controller.sidecars.provisioner.resources`
+### <code>controller.<wbr>sidecars.<wbr>provisioner.<wbr>resources</code>
 
 Type: `object`. Default:
 
@@ -399,29 +399,29 @@ Type: `object`. Default:
 
 Resource requests/limits for the provisioner sidecar.
 
-### `controller.sidecars.resizer.extraArgs`
+### <code>controller.<wbr>sidecars.<wbr>resizer.<wbr>extraArgs</code>
 
 Type: `list`. Default: `[]`
 
 Extra arguments for csi-resizer.
 
-### `controller.sidecars.resizer.image.pullPolicy`
+### <code>controller.<wbr>sidecars.<wbr>resizer.<wbr>image.<wbr>pullPolicy</code>
 
 Type: `string`. Default: `""`
 
-### `controller.sidecars.resizer.image.repository`
+### <code>controller.<wbr>sidecars.<wbr>resizer.<wbr>image.<wbr>repository</code>
 
 Type: `string`. Default: `"registry.k8s.io/sig-storage/csi-resizer"`
 
 csi-resizer image repository.
 
-### `controller.sidecars.resizer.image.tag`
+### <code>controller.<wbr>sidecars.<wbr>resizer.<wbr>image.<wbr>tag</code>
 
 Type: `string`. Default: `"v2.2.1"`
 
 csi-resizer image tag.
 
-### `controller.sidecars.resizer.resources`
+### <code>controller.<wbr>sidecars.<wbr>resizer.<wbr>resources</code>
 
 Type: `object`. Default:
 
@@ -440,7 +440,7 @@ Type: `object`. Default:
 
 Resource requests/limits for the resizer sidecar.
 
-### `controller.tolerations`
+### <code>controller.<wbr>tolerations</code>
 
 Type: `list`. Default: `[]`
 
@@ -448,31 +448,31 @@ Tolerations applied to the controller Pod.
 
 ## csiDriver
 
-### `csiDriver.attachRequired`
+### <code>csiDriver.<wbr>attachRequired</code>
 
 Type: `bool`. Default: `true`
 
 Indicates this CSI driver requires an attach operation (ControllerPublishVolume).
 
-### `csiDriver.create`
+### <code>csiDriver.<wbr>create</code>
 
 Type: `bool`. Default: `true`
 
 Set to false to skip CSIDriver object creation.
 
-### `csiDriver.fsGroupPolicy`
+### <code>csiDriver.<wbr>fsGroupPolicy</code>
 
 Type: `string`. Default: `"File"`
 
 fsGroupPolicy for the CSIDriver. Valid values: None, File, ReadWriteOnceWithFSType.
 
-### `csiDriver.podInfoOnMount`
+### <code>csiDriver.<wbr>podInfoOnMount</code>
 
 Type: `bool`. Default: `true`
 
 Inject Pod info (name/namespace/UID) as volume attributes on mount.
 
-### `csiDriver.volumeLifecycleModes`
+### <code>csiDriver.<wbr>volumeLifecycleModes</code>
 
 Type: `list`. Default: `["Persistent"]`
 
@@ -480,7 +480,7 @@ volumeLifecycleModes supported by the driver.
 
 ## fullnameOverride
 
-### `fullnameOverride`
+### <code>fullnameOverride</code>
 
 Type: `string`. Default: `""`
 
@@ -488,7 +488,7 @@ Full name override for resource naming.
 
 ## imagePullPolicy
 
-### `imagePullPolicy`
+### <code>imagePullPolicy</code>
 
 Type: `string`. Default: `"IfNotPresent"`
 
@@ -496,7 +496,7 @@ Global image pull policy applied to all containers unless overridden per compone
 
 ## imagePullSecrets
 
-### `imagePullSecrets`
+### <code>imagePullSecrets</code>
 
 Type: `list`. Default: `[]`
 
@@ -504,7 +504,7 @@ Optional list of imagePullSecrets applied to all Pods.
 
 ## installCRDs
 
-### `installCRDs`
+### <code>installCRDs</code>
 
 Type: `bool`. Default: `true`
 
@@ -512,7 +512,7 @@ Install CRDs as part of the Helm release. Set to false when managing CRDs separa
 
 ## metrics
 
-### `metrics.serviceMonitor`
+### <code>metrics.<wbr>serviceMonitor</code>
 
 Type: `object`. Default:
 
@@ -526,13 +526,13 @@ Type: `object`. Default:
 
 Set to true to create a Prometheus ServiceMonitor (requires prometheus-operator CRDs).
 
-### `metrics.serviceMonitor.additionalLabels`
+### <code>metrics.<wbr>serviceMonitor.<wbr>additionalLabels</code>
 
 Type: `object`. Default: `{}`
 
 Additional labels added to the ServiceMonitor.
 
-### `metrics.serviceMonitor.interval`
+### <code>metrics.<wbr>serviceMonitor.<wbr>interval</code>
 
 Type: `string`. Default: `""`
 
@@ -540,25 +540,25 @@ Scrape interval override. Defaults to the Prometheus global scrapeInterval.
 
 ## mtls
 
-### `mtls.certDir`
+### <code>mtls.<wbr>certDir</code>
 
 Type: `string`. Default: `"/etc/pillar-csi/mtls"`
 
 Path inside controller and agent containers where the cert Secret is mounted. Templates expose this via the pillar-csi.mtls.certDir helper.
 
-### `mtls.certManager.duration`
+### <code>mtls.<wbr>certManager.<wbr>duration</code>
 
 Type: `string`. Default: `"2160h"`
 
 Certificate lifetime; cert-manager renews "renewBefore" the expiry.
 
-### `mtls.certManager.enabled`
+### <code>mtls.<wbr>certManager.<wbr>enabled</code>
 
 Type: `bool`. Default: `false`
 
 If true the chart renders a cert-manager Issuer plus two Certificate resources that produce Secrets named "&lt;fullname>-controller-mtls" and "&lt;fullname>-agent-mtls". Requires cert-manager CRDs in the cluster.
 
-### `mtls.certManager.issuerRef`
+### <code>mtls.<wbr>certManager.<wbr>issuerRef</code>
 
 Type: `object`. Default:
 
@@ -572,17 +572,17 @@ Type: `object`. Default:
 
 Override the IssuerRef. When name is empty the chart creates a self-signed Issuer in the release namespace.
 
-### `mtls.certManager.renewBefore`
+### <code>mtls.<wbr>certManager.<wbr>renewBefore</code>
 
 Type: `string`. Default: `"360h"`
 
-### `mtls.enabled`
+### <code>mtls.<wbr>enabled</code>
 
 Type: `bool`. Default: `false`
 
 Enable mTLS for controller ↔ agent gRPC traffic. When false the controller dials the agent with plaintext credentials.
 
-### `mtls.secretRefs`
+### <code>mtls.<wbr>secretRefs</code>
 
 Type: `object`. Default:
 
@@ -599,7 +599,7 @@ Type: `object`. Default:
 
 When certManager.enabled is false the chart mounts pre-existing Secrets. The operator MUST create these Secrets in the release namespace with keys tls.crt, tls.key, ca.crt before installing.
 
-### `mtls.serverName`
+### <code>mtls.<wbr>serverName</code>
 
 Type: `string`. Default: `""`
 
@@ -607,7 +607,7 @@ Override the TLS server name the controller uses when verifying the agent's cert
 
 ## nameOverride
 
-### `nameOverride`
+### <code>nameOverride</code>
 
 Type: `string`. Default: `""`
 
@@ -615,7 +615,7 @@ Name override (replaces the chart name portion of generated names).
 
 ## namespaceOverride
 
-### `namespaceOverride`
+### <code>namespaceOverride</code>
 
 Type: `string`. Default: `""`
 
@@ -623,77 +623,77 @@ Namespace override. Defaults to the Helm release namespace.
 
 ## node
 
-### `node.annotations`
+### <code>node.<wbr>annotations</code>
 
 Type: `object`. Default: `{}`
 
 Annotations added to the node DaemonSet.
 
-### `node.csiSocketPath`
+### <code>node.<wbr>csiSocketPath</code>
 
 Type: `string`. Default: `"/var/lib/kubelet/plugins/pillar-csi.bhyoo.com/csi.sock"`
 
 CSI Unix socket path on the node host.
 
-### `node.extraArgs`
+### <code>node.<wbr>extraArgs</code>
 
 Type: `list`. Default: `[]`
 
 Extra command-line arguments appended to the pillar-node entrypoint.
 
-### `node.extraEnv`
+### <code>node.<wbr>extraEnv</code>
 
 Type: `list`. Default: `[]`
 
 Additional environment variables injected into the node container.
 
-### `node.hostNetwork`
+### <code>node.<wbr>hostNetwork</code>
 
 Type: `bool`. Default: `true`
 
 Run the node Pod in the host network namespace. Required because `nvme connect` writes to /dev/nvme-fabrics issue TCP SYNs from the caller's netns; with hostNetwork: false the SYNs originate in the pod netns and cannot reach the host-network nvmet listener exposed by the agent. See PRD §2.4 for the kernel netns rationale.
 
-### `node.image.pullPolicy`
+### <code>node.<wbr>image.<wbr>pullPolicy</code>
 
 Type: `string`. Default: `""`
 
 Per-container image pull policy override.
 
-### `node.image.repository`
+### <code>node.<wbr>image.<wbr>repository</code>
 
 Type: `string`. Default: `"ghcr.io/isac322/pillar-csi/node"`
 
 Container image repository for the pillar-node binary.
 
-### `node.image.tag`
+### <code>node.<wbr>image.<wbr>tag</code>
 
 Type: `string`. Default: `""`
 
 Image tag. Defaults to the chart's appVersion when empty.
 
-### `node.initModprobe.image.pullPolicy`
+### <code>node.<wbr>initModprobe.<wbr>image.<wbr>pullPolicy</code>
 
 Type: `string`. Default: `""`
 
-### `node.initModprobe.image.repository`
+### <code>node.<wbr>initModprobe.<wbr>image.<wbr>repository</code>
 
 Type: `string`. Default: `"busybox"`
 
 Image used for the modprobe init container (needs kmod/modprobe binary).
 
-### `node.initModprobe.image.tag`
+### <code>node.<wbr>initModprobe.<wbr>image.<wbr>tag</code>
 
 Type: `string`. Default: `"1.38.0"`
 
 Init container image tag.
 
-### `node.initModprobe.modules`
+### <code>node.<wbr>initModprobe.<wbr>modules</code>
 
 Type: `list`. Default: `["nvme_fabrics","nvme_tcp"]`
 
 Kernel modules to load. Failures are silently ignored (best-effort). nvme_fabrics must be listed before nvme_tcp (it is a dependency).
 
-### `node.initModprobe.resources`
+### <code>node.<wbr>initModprobe.<wbr>resources</code>
 
 Type: `object`. Default:
 
@@ -712,43 +712,43 @@ Type: `object`. Default:
 
 Resource requests/limits for the modprobe init container.
 
-### `node.kubeletPluginRegistrationDir`
+### <code>node.<wbr>kubeletPluginRegistrationDir</code>
 
 Type: `string`. Default: `"/var/lib/kubelet/plugins_registry"`
 
 Host path for the kubelet plugin registration socket directory.
 
-### `node.kubeletPluginsDir`
+### <code>node.<wbr>kubeletPluginsDir</code>
 
 Type: `string`. Default: `"/var/lib/kubelet/plugins"`
 
 Host path for the kubelet plugin registration directory.
 
-### `node.livenessPort`
+### <code>node.<wbr>livenessPort</code>
 
 Type: `int`. Default: `9808`
 
 Liveness probe HTTP port exposed by the node liveness sidecar (hostPort NOT used).
 
-### `node.nodeSelector`
+### <code>node.<wbr>nodeSelector</code>
 
 Type: `object`. Default: `{}`
 
 Node selector applied to node DaemonSet Pods. By default runs on all worker nodes.
 
-### `node.podAnnotations`
+### <code>node.<wbr>podAnnotations</code>
 
 Type: `object`. Default: `{}`
 
 Annotations added to the node Pod template.
 
-### `node.podLabels`
+### <code>node.<wbr>podLabels</code>
 
 Type: `object`. Default: `{}`
 
 Labels added to the node Pod template.
 
-### `node.resources`
+### <code>node.<wbr>resources</code>
 
 Type: `object`. Default:
 
@@ -767,23 +767,23 @@ Type: `object`. Default:
 
 Resource requests/limits for the pillar-node container.
 
-### `node.sidecars.livenessProbe.image.pullPolicy`
+### <code>node.<wbr>sidecars.<wbr>livenessProbe.<wbr>image.<wbr>pullPolicy</code>
 
 Type: `string`. Default: `""`
 
-### `node.sidecars.livenessProbe.image.repository`
+### <code>node.<wbr>sidecars.<wbr>livenessProbe.<wbr>image.<wbr>repository</code>
 
 Type: `string`. Default: `"registry.k8s.io/sig-storage/livenessprobe"`
 
 livenessprobe image repository (can differ from controller's).
 
-### `node.sidecars.livenessProbe.image.tag`
+### <code>node.<wbr>sidecars.<wbr>livenessProbe.<wbr>image.<wbr>tag</code>
 
 Type: `string`. Default: `"v2.19.0"`
 
 livenessprobe image tag.
 
-### `node.sidecars.livenessProbe.resources`
+### <code>node.<wbr>sidecars.<wbr>livenessProbe.<wbr>resources</code>
 
 Type: `object`. Default:
 
@@ -802,29 +802,29 @@ Type: `object`. Default:
 
 Resource requests/limits for the liveness-probe sidecar.
 
-### `node.sidecars.nodeDriverRegistrar.extraArgs`
+### <code>node.<wbr>sidecars.<wbr>nodeDriverRegistrar.<wbr>extraArgs</code>
 
 Type: `list`. Default: `[]`
 
 Extra arguments for csi-node-driver-registrar.
 
-### `node.sidecars.nodeDriverRegistrar.image.pullPolicy`
+### <code>node.<wbr>sidecars.<wbr>nodeDriverRegistrar.<wbr>image.<wbr>pullPolicy</code>
 
 Type: `string`. Default: `""`
 
-### `node.sidecars.nodeDriverRegistrar.image.repository`
+### <code>node.<wbr>sidecars.<wbr>nodeDriverRegistrar.<wbr>image.<wbr>repository</code>
 
 Type: `string`. Default: `"registry.k8s.io/sig-storage/csi-node-driver-registrar"`
 
 csi-node-driver-registrar image repository.
 
-### `node.sidecars.nodeDriverRegistrar.image.tag`
+### <code>node.<wbr>sidecars.<wbr>nodeDriverRegistrar.<wbr>image.<wbr>tag</code>
 
 Type: `string`. Default: `"v2.17.0"`
 
 csi-node-driver-registrar image tag.
 
-### `node.sidecars.nodeDriverRegistrar.resources`
+### <code>node.<wbr>sidecars.<wbr>nodeDriverRegistrar.<wbr>resources</code>
 
 Type: `object`. Default:
 
@@ -843,7 +843,7 @@ Type: `object`. Default:
 
 Resource requests/limits for the node-driver-registrar sidecar.
 
-### `node.tolerations`
+### <code>node.<wbr>tolerations</code>
 
 Type: `list`. Default: `[]`
 
@@ -851,7 +851,7 @@ Tolerations applied to node DaemonSet Pods.
 
 ## rbac
 
-### `rbac.create`
+### <code>rbac.<wbr>create</code>
 
 Type: `bool`. Default: `true`
 
@@ -859,55 +859,55 @@ Set to false to skip ClusterRole/ClusterRoleBinding creation.
 
 ## serviceAccount
 
-### `serviceAccount.agent.annotations`
+### <code>serviceAccount.<wbr>agent.<wbr>annotations</code>
 
 Type: `object`. Default: `{}`
 
 Annotations added to the agent ServiceAccount.
 
-### `serviceAccount.agent.create`
+### <code>serviceAccount.<wbr>agent.<wbr>create</code>
 
 Type: `bool`. Default: `true`
 
 Set to false to skip ServiceAccount creation for pillar-agent.
 
-### `serviceAccount.agent.name`
+### <code>serviceAccount.<wbr>agent.<wbr>name</code>
 
 Type: `string`. Default: `""`
 
 Override the ServiceAccount name. Defaults to &lt;fullname>-agent.
 
-### `serviceAccount.controller.annotations`
+### <code>serviceAccount.<wbr>controller.<wbr>annotations</code>
 
 Type: `object`. Default: `{}`
 
 Annotations added to the controller ServiceAccount (e.g. for IRSA/Workload Identity).
 
-### `serviceAccount.controller.create`
+### <code>serviceAccount.<wbr>controller.<wbr>create</code>
 
 Type: `bool`. Default: `true`
 
 Set to false to skip ServiceAccount creation for the controller.
 
-### `serviceAccount.controller.name`
+### <code>serviceAccount.<wbr>controller.<wbr>name</code>
 
 Type: `string`. Default: `""`
 
 Override the ServiceAccount name. Defaults to &lt;fullname>-controller.
 
-### `serviceAccount.node.annotations`
+### <code>serviceAccount.<wbr>node.<wbr>annotations</code>
 
 Type: `object`. Default: `{}`
 
 Annotations added to the node ServiceAccount.
 
-### `serviceAccount.node.create`
+### <code>serviceAccount.<wbr>node.<wbr>create</code>
 
 Type: `bool`. Default: `true`
 
 Set to false to skip ServiceAccount creation for pillar-node.
 
-### `serviceAccount.node.name`
+### <code>serviceAccount.<wbr>node.<wbr>name</code>
 
 Type: `string`. Default: `""`
 
@@ -915,19 +915,19 @@ Override the ServiceAccount name. Defaults to &lt;fullname>-node.
 
 ## webhook
 
-### `webhook.certDir`
+### <code>webhook.<wbr>certDir</code>
 
 Type: `string`. Default: `"/tmp/k8s-webhook-server/serving-certs"`
 
 Directory where the generated serving certificate is mounted.
 
-### `webhook.enabled`
+### <code>webhook.<wbr>enabled</code>
 
 Type: `bool`. Default: `true`
 
 Enable admission validation and defaulting webhooks.
 
-### `webhook.port`
+### <code>webhook.<wbr>port</code>
 
 Type: `int`. Default: `9443`
 
