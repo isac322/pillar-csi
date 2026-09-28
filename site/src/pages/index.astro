@@ -24,6 +24,10 @@ const ogImage = new URL('/og.png', site).href;
 const repo = 'https://github.com/isac322/pillar-csi';
 const { title, description } = landing.meta;
 
+// Cloudflare Web Analytics: the beacon is emitted only when the token is set
+// at build time (PUBLIC_CF_WEB_ANALYTICS_TOKEN). No other tracking.
+const cfBeaconToken = import.meta.env.PUBLIC_CF_WEB_ANALYTICS_TOKEN?.trim();
+
 const jsonLd = {
 	'@context': 'https://schema.org',
 	'@graph': [
@@ -62,6 +66,16 @@ const jsonLd = {
 		<meta name="theme-color" content="#0A0F1D" />
 		<meta name="color-scheme" content="dark" />
 		<link rel="preload" href={h1Font} as="font" type="font/woff2" crossorigin />
+		{
+			cfBeaconToken && (
+				<script
+					is:inline
+					defer
+					src="https://static.cloudflareinsights.com/beacon.min.js"
+					data-cf-beacon={JSON.stringify({ token: cfBeaconToken })}
+				/>
+			)
+		}
 		<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
 		<link rel="icon" href="/favicon.ico" sizes="32x32" />
 		<link rel="apple-touch-icon" href="/apple-touch-icon.png" />

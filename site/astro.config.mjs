@@ -5,6 +5,9 @@ import sitemap from '@astrojs/sitemap';
 
 const site = 'https://pillar-csi.bhyoo.com';
 const repo = 'https://github.com/isac322/pillar-csi';
+// Cloudflare Web Analytics token, read from the build environment. When it is
+// empty, no beacon is emitted. src/pages/index.astro reads the same variable.
+const cfBeaconToken = process.env.PUBLIC_CF_WEB_ANALYTICS_TOKEN?.trim();
 
 export default defineConfig({
 	site,
@@ -44,6 +47,18 @@ export default defineConfig({
 				{ tag: 'meta', attrs: { name: 'twitter:image', content: `${site}/og.png` } },
 				{ tag: 'meta', attrs: { name: 'theme-color', content: '#0A0F1D' } },
 				{ tag: 'link', attrs: { rel: 'apple-touch-icon', href: '/apple-touch-icon.png' } },
+				...(cfBeaconToken
+					? [
+							{
+								tag: /** @type {const} */ ('script'),
+								attrs: {
+									defer: true,
+									src: 'https://static.cloudflareinsights.com/beacon.min.js',
+									'data-cf-beacon': JSON.stringify({ token: cfBeaconToken }),
+								},
+							},
+						]
+					: []),
 			],
 			sidebar: [
 				{ label: 'Overview', link: '/docs/' },
