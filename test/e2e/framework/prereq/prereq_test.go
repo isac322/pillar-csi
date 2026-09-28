@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bhyoo/pillar-csi/test/e2e/framework/prereq"
+	"github.com/isac322/pillar-csi/test/e2e/framework/prereq"
 )
 
 // TestCheckDockerDaemon_DockerPresent verifies that when docker is in PATH

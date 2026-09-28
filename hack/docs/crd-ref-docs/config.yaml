@@ -1,0 +1,14 @@
+# crd-ref-docs configuration for `make docs-gen`.
+# Output: site/src/content/docs/docs/reference/crd.md
+processor:
+  ignoreTypes:
+    - "List$"
+    # Go-side helpers in compatibility.go; no CRD field uses them.
+    - "\\bCompatibility$"
+    - "\\b(Backend|Protocol)Category$"
+  ignoreFields:
+    - "TypeMeta$"
+
+render:
+  # Keep in sync with the k8s.io/api minor version in go.mod.
+  kubernetesVersion: 1.37

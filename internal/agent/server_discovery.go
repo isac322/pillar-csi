@@ -28,9 +28,9 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	agentv1 "github.com/bhyoo/pillar-csi/gen/go/pillar_csi/agent/v1"
-	"github.com/bhyoo/pillar-csi/internal/agent/health"
-	"github.com/bhyoo/pillar-csi/internal/agent/nvmeof"
+	agentv1 "github.com/isac322/pillar-csi/gen/go/pillar_csi/agent/v1"
+	"github.com/isac322/pillar-csi/internal/agent/health"
+	"github.com/isac322/pillar-csi/internal/agent/nvmeof"
 )
 
 // GetCapabilities returns the backend types and protocols supported by this

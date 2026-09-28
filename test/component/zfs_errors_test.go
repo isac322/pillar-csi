@@ -38,9 +38,9 @@ import (
 	"strings"
 	"testing"
 
-	agentv1 "github.com/bhyoo/pillar-csi/gen/go/pillar_csi/agent/v1"
-	"github.com/bhyoo/pillar-csi/internal/agent/backend"
-	"github.com/bhyoo/pillar-csi/internal/agent/backend/zfs"
+	agentv1 "github.com/isac322/pillar-csi/gen/go/pillar_csi/agent/v1"
+	"github.com/isac322/pillar-csi/internal/agent/backend"
+	"github.com/isac322/pillar-csi/internal/agent/backend/zfs"
 )
 
 // ---------------------------------------------------------------------------

@@ -40,7 +40,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	pillarcsiv1alpha1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
+	pillarcsiv1alpha1 "github.com/isac322/pillar-csi/api/v1alpha1"
 )
 
 var _ = Describe("Deletion guards account for PersistentVolumes and PillarVolumeStates", func() {

@@ -28,7 +28,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 
-	pillarcsiv1alpha1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
+	pillarcsiv1alpha1 "github.com/isac322/pillar-csi/api/v1alpha1"
 )
 
 // E23 — PillarProtocol CRD lifecycle: webhook validation tests.

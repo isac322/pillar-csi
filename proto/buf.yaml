@@ -1,7 +1,7 @@
 version: v2
 modules:
   - path: .
-    name: buf.build/bhyoo/pillar-csi
+    name: buf.build/isac322/pillar-csi
 lint:
   use:
     - STANDARD

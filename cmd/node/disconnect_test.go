@@ -24,7 +24,7 @@ import (
 	"testing"
 	"time"
 
-	csisvc "github.com/bhyoo/pillar-csi/internal/csi"
+	csisvc "github.com/isac322/pillar-csi/internal/csi"
 )
 
 const detachTestNQN = "nqn.2024-01.com.example:detach-vol"

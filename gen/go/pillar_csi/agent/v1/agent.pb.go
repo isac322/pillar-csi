@@ -3531,7 +3531,7 @@ const file_pillar_csi_agent_v1_agent_proto_rawDesc = "" +
 	"SendVolume\x12&.pillar_csi.agent.v1.SendVolumeRequest\x1a$.pillar_csi.agent.v1.SendVolumeChunk0\x01\x12f\n" +
 	"\rReceiveVolume\x12'.pillar_csi.agent.v1.ReceiveVolumeChunk\x1a*.pillar_csi.agent.v1.ReceiveVolumeResponse(\x01\x12i\n" +
 	"\x0eReconcileState\x12*.pillar_csi.agent.v1.ReconcileStateRequest\x1a+.pillar_csi.agent.v1.ReconcileStateResponse\x12N\n" +
-	"\x05Drain\x12!.pillar_csi.agent.v1.DrainRequest\x1a\".pillar_csi.agent.v1.DrainResponseB@Z>github.com/bhyoo/pillar-csi/gen/go/pillar_csi/agent/v1;agentv1b\x06proto3"
+	"\x05Drain\x12!.pillar_csi.agent.v1.DrainRequest\x1a\".pillar_csi.agent.v1.DrainResponseBBZ@github.com/isac322/pillar-csi/gen/go/pillar_csi/agent/v1;agentv1b\x06proto3"
 
 var (
 	file_pillar_csi_agent_v1_agent_proto_rawDescOnce sync.Once

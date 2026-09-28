@@ -13,9 +13,9 @@ import (
 	"sync/atomic"
 	"syscall"
 
-	"github.com/bhyoo/pillar-csi/test/e2e/framework"
-	"github.com/bhyoo/pillar-csi/test/e2e/framework/names"
-	"github.com/bhyoo/pillar-csi/test/e2e/framework/ports"
+	"github.com/isac322/pillar-csi/test/e2e/framework"
+	"github.com/isac322/pillar-csi/test/e2e/framework/names"
+	"github.com/isac322/pillar-csi/test/e2e/framework/ports"
 )
 
 const tcTempRoot = "/tmp"

@@ -1,0 +1,304 @@
+---
+// Section A-A through a pillar-csi cluster. Solid linework = shipped, dashed = planned.
+---
+
+<figure class="cut" aria-labelledby="cut-caption">
+	<p class="scroll-cue" data-cut-cue hidden>Scroll sideways for the whole drawing <span aria-hidden="true">→</span></p>
+	<div class="cut-pan" tabindex="0" role="group" aria-label="Section drawing of the pillar-csi data path" data-cut-pan>
+		<svg viewBox="0 0 640 600" role="img" aria-labelledby="cut-title cut-desc">
+			<title id="cut-title">Section through a pillar-csi cluster</title>
+			<desc id="cut-desc">
+				Pods sit on Kubernetes worker nodes. Two storage nodes, one with a ZFS pool and one with an LVM volume group, run pillar-agent and
+				take control calls from pillar-controller over gRPC port 9500. The data path runs only through the Linux kernel: nvmet on the storage
+				node, NVMe-oF over TCP port 4420, and nvme_tcp on the worker. iSCSI, NFS and SMB are drawn dashed because they are planned.
+			</desc>
+			<defs>
+				<pattern id="hatch" width="10" height="10" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+					<line x1="0" y1="0" x2="0" y2="10" class="hatch-line"></line>
+				</pattern>
+				<marker id="tick" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="10" markerHeight="10" orient="auto">
+					<line x1="2" y1="8" x2="8" y2="2" class="ln"></line>
+				</marker>
+			</defs>
+
+			<!-- Dimension: one Helm release -->
+			<g class="dim">
+				<line x1="40" y1="24" x2="232" y2="24" class="ln-thin" marker-start="url(#tick)"></line>
+				<line x1="408" y1="24" x2="600" y2="24" class="ln-thin" marker-end="url(#tick)"></line>
+				<line x1="40" y1="14" x2="40" y2="46" class="ln-thin"></line>
+				<line x1="600" y1="14" x2="600" y2="46" class="ln-thin"></line>
+				<text x="320" y="28" class="t" text-anchor="middle">One Helm release</text>
+			</g>
+
+			<!-- Deck: workers and pods -->
+			<rect x="60" y="56" width="148" height="36" class="box"></rect>
+			<text x="134" y="78" class="t t-mono" text-anchor="middle">pillar-controller</text>
+			<g class="pods">
+				<rect x="372" y="56" width="64" height="36" class="box"></rect>
+				<rect x="446" y="56" width="64" height="36" class="box"></rect>
+				<rect x="520" y="56" width="64" height="36" class="box box-live"></rect>
+				<text x="404" y="78" class="t" text-anchor="middle">pod</text>
+				<text x="478" y="78" class="t" text-anchor="middle">pod</text>
+				<text x="552" y="78" class="t" text-anchor="middle">pod</text>
+			</g>
+			<rect x="40" y="92" width="560" height="36" class="slab"></rect>
+			<text x="528" y="115" class="t t-small" text-anchor="end">Worker nodes · pillar-node</text>
+
+			<!-- Control path: gRPC :9500 -->
+			<path d="M134 92 V110 H290 V142 M150 110 V142" class="ctl"></path>
+			<text x="176" y="122" class="t t-small">gRPC :9500</text>
+
+			<!-- Piers: storage nodes -->
+			<g class="pier">
+				<rect x="100" y="142" width="100" height="16" class="cap"></rect>
+				<rect x="110" y="158" width="80" height="234" class="shaft"></rect>
+				<rect x="90" y="392" width="120" height="16" class="cap"></rect>
+				<rect x="124" y="304" width="52" height="18" class="vol"></rect>
+				<rect x="124" y="328" width="52" height="18" class="vol"></rect>
+				<rect x="124" y="352" width="52" height="18" class="vol vol-live"></rect>
+				<text x="150" y="176" class="t t-small" text-anchor="middle">agent</text>
+				<text transform="translate(156 292) rotate(-90)" class="t t-big">ZFS pool</text>
+			</g>
+			<g class="pier">
+				<rect x="240" y="142" width="100" height="16" class="cap"></rect>
+				<rect x="250" y="158" width="80" height="234" class="shaft"></rect>
+				<rect x="230" y="392" width="120" height="16" class="cap"></rect>
+				<rect x="264" y="304" width="52" height="18" class="vol"></rect>
+				<rect x="264" y="328" width="52" height="18" class="vol vol-live"></rect>
+				<rect x="264" y="352" width="52" height="18" class="vol"></rect>
+				<text x="290" y="176" class="t t-small" text-anchor="middle">agent</text>
+				<text transform="translate(296 292) rotate(-90)" class="t t-big">LVM VG</text>
+			</g>
+
+			<!-- Callouts on the right -->
+			<g class="callout">
+				<path d="M340 150 L372 176 H600" class="ln-thin"></path>
+				<text x="370" y="170" class="t">Storage nodes</text>
+				<text x="370" y="194" class="t t-note">zvols and logical volumes</text>
+				<text x="370" y="212" class="t t-note">in pools you already run</text>
+			</g>
+
+			<!-- Bedrock: the Linux kernel -->
+			<rect x="20" y="408" width="600" height="160" class="rock"></rect>
+			<line x1="20" y1="408" x2="620" y2="408" class="ground"></line>
+			<rect x="40" y="530" width="176" height="26" class="plate"></rect>
+			<text x="52" y="548" class="t t-strong">Linux kernel</text>
+
+			<!-- Data path: shipped, solid brass -->
+			<path id="data-zfs" d="M150 361 V448 H540 V92" class="data"></path>
+			<path d="M290 337 V448" class="data"></path>
+			<path d="M150 361 V448 H540 V92" class="pulse"></path>
+			<path d="M290 337 V448 H540 V92" class="pulse pulse-2"></path>
+
+			<rect x="96" y="456" width="68" height="22" class="plate"></rect>
+			<text x="104" y="472" class="t t-mono">nvmet</text>
+			<rect x="444" y="382" width="88" height="22" class="plate"></rect>
+			<text x="452" y="398" class="t t-mono">nvme_tcp</text>
+			<rect x="330" y="422" width="170" height="20" class="plate"></rect>
+			<text x="338" y="437" class="t">NVMe-oF/TCP :4420</text>
+
+			<!-- Planned protocols: dashed -->
+			<g class="planned">
+				<line x1="230" y1="484" x2="420" y2="484" class="plan"></line>
+				<line x1="230" y1="504" x2="420" y2="504" class="plan"></line>
+				<line x1="230" y1="524" x2="420" y2="524" class="plan"></line>
+				<rect x="424" y="474" width="142" height="60" class="plate"></rect>
+				<text x="432" y="489" class="t t-small">iSCSI · planned</text>
+				<text x="432" y="509" class="t t-small">NFS · planned</text>
+				<text x="432" y="529" class="t t-small">SMB · planned</text>
+			</g>
+
+			<!-- Note callouts, referenced in General notes -->
+			<g class="bubble"><circle cx="76" cy="300" r="12"></circle><text x="76" y="305" text-anchor="middle">1</text></g>
+			<g class="bubble"><circle cx="580" cy="448" r="12"></circle><text x="580" y="453" text-anchor="middle">2</text></g>
+			<g class="bubble"><circle cx="594" cy="504" r="12"></circle><text x="594" y="509" text-anchor="middle">3</text></g>
+		</svg>
+	</div>
+	<figcaption id="cut-caption">
+		<span class="lettering">Section A-A</span>
+		<span>Brass is the data path, and it runs only through the kernel. Dashed lines are planned.</span>
+	</figcaption>
+</figure>
+
+<script>
+	import { watchScroll } from '../scripts/scroll-cue';
+	const pan = document.querySelector<HTMLElement>('[data-cut-pan]');
+	if (pan) watchScroll(pan, document.querySelector<HTMLElement>('[data-cut-cue]'));
+</script>
+<style>
+	.cut {
+		margin: 0;
+	}
+	.cut-pan {
+		overflow-x: auto;
+		overscroll-behavior-x: contain;
+		scrollbar-width: thin;
+	}
+	.cut-pan svg {
+		width: 100%;
+		min-width: 520px;
+		height: auto;
+		overflow: visible;
+	}
+	figcaption {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.25rem 0.75rem;
+		align-items: baseline;
+		margin-top: 0.75rem;
+		font-size: 0.875rem;
+		color: var(--fg-2);
+	}
+	figcaption .lettering {
+		color: var(--fg);
+	}
+
+	.ln {
+		stroke: var(--line);
+		stroke-width: 1.5;
+		fill: none;
+	}
+	.ln-thin {
+		stroke: var(--line);
+		stroke-width: 1;
+		fill: none;
+	}
+	.box {
+		fill: var(--bg);
+		stroke: var(--line);
+		stroke-width: 1.5;
+	}
+	.box-live {
+		stroke: var(--brass-deep);
+		stroke-width: 2;
+	}
+	.slab {
+		fill: var(--bg-2);
+		stroke: var(--line);
+		stroke-width: 2;
+	}
+	.cap {
+		fill: var(--bg-2);
+		stroke: var(--line);
+		stroke-width: 2;
+	}
+	.shaft {
+		fill: var(--bg);
+		stroke: var(--line);
+		stroke-width: 2;
+	}
+	.vol {
+		fill: var(--bg-2);
+		stroke: var(--line);
+		stroke-width: 1;
+	}
+	.vol-live {
+		fill: var(--brass);
+		stroke: var(--brass-deep);
+	}
+	.ctl {
+		fill: none;
+		stroke: var(--line);
+		stroke-width: 1.25;
+	}
+	.rock {
+		fill: url(#hatch);
+	}
+	:global(.hatch-line) {
+		stroke: var(--rule);
+		stroke-width: 1.25;
+	}
+	.ground {
+		stroke: var(--line);
+		stroke-width: 3;
+	}
+	.plate {
+		fill: var(--bg);
+		stroke: var(--rule);
+		stroke-width: 1;
+	}
+	.data {
+		fill: none;
+		stroke: var(--brass-deep);
+		stroke-width: 4;
+		stroke-linejoin: round;
+	}
+	.pulse {
+		fill: none;
+		stroke: var(--brass);
+		stroke-width: 4;
+		stroke-linejoin: round;
+		stroke-dasharray: 26 900;
+		stroke-dashoffset: 0;
+		animation: pulse 3.6s cubic-bezier(0.45, 0, 0.2, 1) infinite;
+	}
+	.pulse-2 {
+		animation-delay: 1.8s;
+	}
+	@keyframes pulse {
+		from {
+			stroke-dashoffset: 26;
+		}
+		to {
+			stroke-dashoffset: -760;
+		}
+	}
+	.plan {
+		stroke: var(--line);
+		stroke-width: 2;
+		stroke-dasharray: 9 7;
+	}
+	.t {
+		fill: var(--fg);
+		font-family: var(--body);
+		font-stretch: 112%;
+		font-weight: 600;
+		font-size: 13px;
+		letter-spacing: 0.06em;
+		text-transform: uppercase;
+	}
+	.t-small {
+		font-size: 11.5px;
+	}
+	.t-big {
+		font-size: 15px;
+		letter-spacing: 0.12em;
+	}
+	.t-strong {
+		font-stretch: 125%;
+		font-weight: 700;
+		font-size: 14px;
+	}
+	.t-note {
+		fill: var(--fg-2);
+		font-stretch: 100%;
+		font-weight: 400;
+		text-transform: none;
+		letter-spacing: 0;
+		font-size: 14px;
+	}
+	.t-mono {
+		font-family: var(--mono);
+		font-stretch: 100%;
+		font-weight: 500;
+		text-transform: none;
+		letter-spacing: 0;
+		font-size: 13px;
+	}
+	.bubble circle {
+		fill: var(--bg);
+		stroke: var(--line);
+		stroke-width: 1.5;
+	}
+	.bubble text {
+		fill: var(--fg);
+		font-family: var(--mono);
+		font-weight: 500;
+		font-size: 13px;
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.pulse {
+			display: none;
+		}
+	}
+</style>

@@ -63,8 +63,8 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	pillarv1alpha1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
-	"github.com/bhyoo/pillar-csi/test/e2e/framework/names"
+	pillarv1alpha1 "github.com/isac322/pillar-csi/api/v1alpha1"
+	"github.com/isac322/pillar-csi/test/e2e/framework/names"
 )
 
 // ── Well-known metadata keys ──────────────────────────────────────────────────

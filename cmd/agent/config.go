@@ -24,9 +24,9 @@ import (
 
 	"sigs.k8s.io/yaml"
 
-	pillarv1alpha1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
-	"github.com/bhyoo/pillar-csi/internal/agent/backend/lvm"
-	"github.com/bhyoo/pillar-csi/internal/configdocs"
+	pillarv1alpha1 "github.com/isac322/pillar-csi/api/v1alpha1"
+	"github.com/isac322/pillar-csi/internal/agent/backend/lvm"
+	"github.com/isac322/pillar-csi/internal/configdocs"
 )
 
 // agentConfigBackendsKey is the only top-level key of the agent config file.

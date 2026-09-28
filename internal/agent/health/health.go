@@ -26,7 +26,7 @@ limitations under the License.
 package health
 
 import (
-	agentv1 "github.com/bhyoo/pillar-csi/gen/go/pillar_csi/agent/v1"
+	agentv1 "github.com/isac322/pillar-csi/gen/go/pillar_csi/agent/v1"
 )
 
 // ComponentStatus represents the health of a single agent subsystem component.

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	kindhelper "github.com/bhyoo/pillar-csi/test/e2e/framework/kind"
+	kindhelper "github.com/isac322/pillar-csi/test/e2e/framework/kind"
 )
 
 // TestKubeconfigPath verifies that KubeconfigPath returns a path that is

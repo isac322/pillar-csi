@@ -3,7 +3,7 @@ package e2e
 import (
 	"crypto/rand"
 
-	agentv1 "github.com/bhyoo/pillar-csi/gen/go/pillar_csi/agent/v1"
+	agentv1 "github.com/isac322/pillar-csi/gen/go/pillar_csi/agent/v1"
 )
 
 // agentFenceRunNonce makes lifecycle UIDs unique to this test process.  An

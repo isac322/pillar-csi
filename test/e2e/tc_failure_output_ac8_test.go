@@ -31,7 +31,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bhyoo/pillar-csi/test/e2e/docspec"
+	"github.com/isac322/pillar-csi/test/e2e/docspec"
 	"github.com/onsi/ginkgo/v2/types"
 )
 

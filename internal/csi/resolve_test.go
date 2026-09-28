@@ -21,7 +21,7 @@ import (
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
 
-	"github.com/bhyoo/pillar-csi/api/v1alpha1"
+	"github.com/isac322/pillar-csi/api/v1alpha1"
 )
 
 // TestResolveFilesystem_GeneratedClassMountOptions verifies a generated class

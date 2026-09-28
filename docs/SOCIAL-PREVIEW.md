@@ -1,95 +1,107 @@
-# Social Preview Image — Design Brief
+# Brand assets and social preview
 
-Source of truth for the **1280×640 PNG** uploaded as the repository's social
-preview at `Settings → General → Social preview` per
-[GitHub's documentation](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/customizing-your-repositorys-social-media-preview).
+This file specifies the pillar-csi mark, its palette, the social cards, and the script that builds them. The complete marketing kit — mono and stacked variants, icons, banners, and palette tokens — lives in `assets/brand/`; see `assets/brand/README.md` for usage rules.
 
-GitHub serves this image as the OpenGraph card on Twitter/X, LinkedIn, Slack,
-Discord, and any other site that crawls `og:image`. The default image (auto-
-generated avatar collage) is currently in use, which is what triggered this
-brief.
+## Mark
 
-## Hard requirements
+The mark is a column turned from one steel bar, like the column of a pillar drill. From top to bottom: a flat top plate, a brass collar, the shaft with one lit strip down its left side, and a cast foot in two steps. It is a load-bearing part in a workshop you trust. The brass collar is the one accent, sitting where the load meets the shaft.
 
-| Attribute | Value |
-|---|---|
-| Dimensions | **1280 × 640 px** (2:1) |
-| Format | **PNG** (no JPEG) |
-| Max file size | **< 1 MB** (GitHub limit is 1 MB) |
-| Color depth | 24-bit + alpha |
-| Subject area safe zone | Center 1100 × 540 (avoid edge crop on social cards) |
+The full mark is drawn on a 64-unit canvas with every edge on an even unit, so it renders crisp at 32 px and at any 2x multiple:
 
-## Layout
-
-Two columns. Left = mark + product name + one-line value prop. Right = the
-data-plane pipeline diagram. Bottom-right corner = repo URL in muted text.
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│                                                              │
-│   ▓▓▓                                ZFS ─┐                  │
-│   ▓▓▓   pillar-csi                        ├─▶  NVMe-oF/TCP  │
-│   ▓▓▓                                LVM ─┘                  │
-│                                                              │
-│   Kubernetes CSI driver for                                  │
-│   self-hosted clusters.                                      │
-│   ZFS + LVM over NVMe-oF/TCP.                                │
-│                                                              │
-│                                                              │
-│                                       github.com/isac322/    │
-│                                            pillar-csi        │
-└──────────────────────────────────────────────────────────────┘
-```
-
-## Color palette
-
-| Role | Hex | Notes |
+| Part | x, y, w, h | Corner |
 |---|---|---|
-| Background | `#0F172A` | slate-900 |
-| Primary text | `#F8FAFC` | slate-50 |
-| Accent (Go cyan) | `#00ADD8` | golang.org cyan, also used on the Go-version badge |
-| Secondary text | `#94A3B8` | slate-400 |
-| Path / network glow | `#06B6D4` | cyan-500 |
+| Top plate | 14, 4, 36, 6 | 2 |
+| Collar | 20, 12, 24, 6 | 2 |
+| Shaft | 24, 20, 16, 30 | 0 |
+| Lit strip | 26, 20, 4, 30 | 0 |
+| Foot, upper step | 18, 50, 28, 4 | 1 |
+| Foot, lower step | 12, 56, 40, 4 | 1.4 |
 
-## Typography
+Favicons use a separate drawing on a 16-unit grid, where every edge is a whole pixel: top plate 3,1,10,2; collar 5,4,6,2; shaft 6,6,4,7 with a 1 px lit strip; a single foot 2,13,12,2. At 16 px a two-step foot and half-pixel strips blur, so the small drawing drops them rather than scaling the full mark down.
 
-- Title `pillar-csi` — **Inter** or **Geist** Bold, 96 px, tracking `-0.01em`.
-- Subtitle — Inter Medium, 36 px, line-height 1.25.
-- URL bottom-right — Inter Mono, 22 px, color `#94A3B8`.
+### How it was chosen
 
-## Content rules
+The owner rejected the earlier slab-and-wire mark and its navy, cyan, and amber palette. Two new directions were drawn from the homelab's own world (`pillar-brand-report/logo-v5/`): a cairn-built column in granite and lichen, and this machinist's column in workshop enamel. The owner picked the machinist.
 
-- Title is lowercase `pillar-csi` (same as repo name).
-- Subtitle: exactly **"Kubernetes CSI driver for self-hosted clusters · ZFS + LVM over NVMe-oF/TCP"** — no marketing adjectives.
-- The pipeline arrow must read left-to-right (storage → network).
-- No CNCF logo (the project is not CNCF-affiliated).
-- No emoji.
-- No stock photography.
-- No AI-art tropes (swirls, particles, glow, glassmorphism, generative-art aesthetics).
-- No version number (the image outlives release tags).
+## Palette: Workshop Enamel
 
-## Production
+| Name | Hex | Role | Contrast |
+|---|---|---|---|
+| Deep Enamel | `#15352B` | Dark ground: landing, docs, social cards | 13.3:1 with white |
+| Machine Green | `#2D5F4C` | Brand field: icon tiles, avatar, buttons and badges on light | 7.4:1 on white |
+| Enamel Cream | `#F1EAD6` | Text on green; top plate and lit strip on dark | 11.1:1 on Deep Enamel |
+| Steel | `#AFBAB2` | Shaft on dark; muted text on dark | 6.7:1 on Deep Enamel |
+| Brass | `#D4A849` | The one accent on dark: collar, kernel target, primary action | 6.0:1 on Deep Enamel |
+| Brass Deep | `#8A6414` | Brass on white, safe for text | 5.4:1 on white |
+| Ink | `#112A23` | Text on white | 15.2:1 on white |
 
-The shipped asset lives at `docs/social-preview/pillar-csi-og.png` — a
-1280×640 PNG composed deterministically by `docs/social-preview/compose.py`
-using Pillow (PIL) over Adwaita Mono and Noto Sans Black. After multiple
-AI-generated attempts hit text-rendering artifacts and uncanny pseudo-3D
-panels, the design was finalized as a hand-composed Linear/Biome-style
-minimalist lockup: subtle dot grid, centroid-symmetric layered storage
-column mark in cyan, single wordmark, cyan eyebrow, and two monospace lines
-listing every supported backend and protocol.
+Supporting shades live in the script: the mark's foot on dark (`#93A097`, `#76857B`), its colors on white (collar `#A87B1F`, lit strip `#5E8C78`, foot `#1F4739`), and card hairlines (`#3C6B5A`) and raised surfaces (`#1C4336`). Machine-readable copies are generated as `assets/brand/palette/tokens.json` and `palette.css`.
 
-To regenerate the asset (after editing `compose.py`):
+Use brass sparingly. It marks one thing per view: the collar in the mark, the kernel target in the schematic, or the primary action on a page.
+
+The site's token set lives in `site/src/styles/global.css` (`--enamel`, `--green`, `--cream`, `--steel`, `--brass`, `--brass-deep`, `--ink`). A palette change needs the same edit in `assets/brand/build.py` and that file.
+
+## Type
+
+The wordmark is `pillar-csi` in Archivo Bold at width 125 (Expanded), with tracking of -0.01em, in one color: Enamel Cream on dark and Ink on white. Archivo is a grotesque in the 19th-century tradition, and the expanded width gives it the stance of a nameplate stamped on a machine. It starts 16 units right of the mark, with the band from its baseline to the top of the `l` centered on the mark's height. The script converts the wordmark to outlines, so the logo renders without the font.
+
+The social cards set text in Archivo at normal width: Medium for the subtitle and labels, Regular for the address.
+
+## Files
+
+`assets/brand/build.py` generates every file below plus the full kit in `assets/brand/` (mono marks, stacked and wordmark-only lockups, icon tiles, README banners, palette exports). Edit `build.py`, not the outputs.
+
+| File | Notes |
+|---|---|
+| `site/public/brand/mark.svg` | Mark for dark grounds — identical to `assets/brand/mark/mark-color-dark.svg`. |
+| `site/public/brand/mark-light.svg` | Mark for white and light grounds — identical to `mark/mark-color-light.svg`. |
+| `site/public/brand/logo.svg` | Lockup for dark grounds — identical to `logo/logo-horizontal-dark.svg`. |
+| `site/public/brand/logo-light.svg` | Lockup for light grounds — identical to `logo/logo-horizontal-light.svg`. |
+| `site/public/favicon.svg` | The 16-unit drawing, transparent. It uses the white-ground colors, and switches to the dark-ground colors under `prefers-color-scheme: dark` — identical to `favicon/favicon.svg`. |
+| `site/public/favicon.ico` | 16, 32, and 48 px PNG entries on a Machine Green rounded tile. 16 and 48 use the 16-unit drawing (48 is 3x); 32 uses the full mark at half scale. |
+| `site/public/apple-touch-icon.png` | 180x180, the full mark at 2x on a Machine Green square (iOS rounds the corners). |
+| `site/public/og.png` | 1200x630 Open Graph image for pillar-csi.bhyoo.com — identical to `social/og.png`. |
+| `docs/social-preview/pillar-csi-og.png` | 1280x640 GitHub repository social preview — identical to `social/pillar-csi-og.png`. |
+
+Every SVG uses literal fill colors and no CSS variables, so it renders the same in an `<img>`, on GitHub, and in any SVG viewer.
+
+## Social cards
+
+Both cards share one layout, drawn for 1280x640 and scaled to fit 1200x630. All content stays inside the centered 1120x480 safe zone (x 80 to 1200, y 80 to 560), so social sites can crop the edges. SVG sources are `assets/brand/social/social-github.svg` and `assets/brand/social/og.svg`.
+
+The ground is flat Deep Enamel. The left column holds the dark lockup, 76 px tall, and this subtitle in Archivo Medium at 31 px on five lines. The first sentence is in Enamel Cream, the second in Steel:
+
+> One Kubernetes CSI driver for your storage pools. ZFS and LVM over kernel NVMe-oF/TCP today, more protocols planned.
+
+The address sits below in Steel: `github.com/isac322/pillar-csi` on the GitHub card, `pillar-csi.bhyoo.com` on the site card.
+
+The right column is a schematic of the data path. A dashed "storage node" frame contains `ZFS zvol / LVM LV`, with an Enamel Cream arrow into `kernel nvmet`, which has the brass outline. From there a cream line labeled `NVMe-oF/TCP` drops straight into a dashed "worker node" frame and ends on `/dev/nvmeXnY in a Pod`, which shares the kernel target's center line.
+
+Content rules:
+
+- The schematic shows only shipped features: ZFS zvol and LVM LV backends over NVMe-oF/TCP. The subtitle may say more protocols are planned, but it must not name one or give a date.
+- Leave out version numbers, benchmark figures, and logos of other projects.
+- Draw the data path left to right and top to bottom, from storage to Pod.
+- Enamel Cream is the data path. Brass marks only the kernel target.
+
+## Regenerate
+
+`assets/brand/build.py` builds every file listed above. It uses only the Python standard library and shells out to `resvg` (rasterizing) and `usvg` (converting the wordmark to outlines).
 
 ```bash
-python3 docs/social-preview/compose.py
-# overwrites docs/social-preview/pillar-csi-og.png
+nix shell nixpkgs#resvg --command python3 assets/brand/build.py
 ```
 
-To deploy:
+The only font is Archivo, the variable font with width and weight axes. On first run the script downloads it from google/fonts at a pinned commit into `$XDG_CACHE_HOME/pillar-csi/` (default `~/.cache/pillar-csi/`) and checks its SHA-256, so the output does not depend on the machine. To work offline, pass a local copy:
 
-1. Open `Settings → General → Social preview`.
+```bash
+python3 assets/brand/build.py --font-file /path/to/Archivo[wdth,wght].ttf
+```
+
+To change the mark, edit the `MARK` and `SMALL` geometry or the palette constants at the top of `build.py` and run it again. It rewrites the kit and the `site/public/` copies together.
+
+## Deploy the GitHub card
+
+1. Open the repository's Settings, then General, then Social preview.
 2. Upload `docs/social-preview/pillar-csi-og.png`.
-3. Verify on the rendered repo page **and** by pasting the repo URL into a
-   Slack/Discord channel — the OpenGraph card must show this image, not the
-   default avatar collage.
+3. Paste the repository URL into a Slack or Discord message and check that the card shows this image.

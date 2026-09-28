@@ -1,0 +1,36 @@
+---
+import { render } from 'astro:content';
+import DocsLayout from '../../layouts/DocsLayout.astro';
+import { loadDocs, slugOf, hrefOf } from '../../lib/docs';
+
+export async function getStaticPaths() {
+	const { all } = await loadDocs();
+	return all.map((entry) => ({ params: { slug: slugOf(entry) }, props: { entry } }));
+}
+
+const { entry } = Astro.props;
+const { Content, headings } = await render(entry);
+const { groups, flat } = await loadDocs();
+const href = hrefOf(entry);
+const i = flat.findIndex((n) => n.href === href);
+const prev = i > 0 ? flat[i - 1] : undefined;
+const next = i >= 0 && i < flat.length - 1 ? flat[i + 1] : undefined;
+const toc = entry.data.tableOfContents;
+const maxLevel = typeof toc === 'object' ? (toc.maxHeadingLevel ?? 3) : 3;
+const minLevel = typeof toc === 'object' ? (toc.minHeadingLevel ?? 2) : 2;
+const tocHeadings = toc === false ? [] : headings.filter((h) => h.depth >= minLevel && h.depth <= maxLevel);
+const sourcePath = (entry.filePath ?? '').replace(/^.*?(src\/content\/docs\/)/, 'site/$1');
+---
+
+<DocsLayout
+	title={entry.data.title}
+	description={entry.data.description ?? ''}
+	groups={groups}
+	current={href}
+	headings={tocHeadings}
+	prev={prev}
+	next={next}
+	sourcePath={sourcePath}
+>
+	<Content />
+</DocsLayout>

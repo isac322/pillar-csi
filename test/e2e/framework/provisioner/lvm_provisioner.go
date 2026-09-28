@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/bhyoo/pillar-csi/test/e2e/framework/lvm"
-	"github.com/bhyoo/pillar-csi/test/e2e/framework/registry"
+	"github.com/isac322/pillar-csi/test/e2e/framework/lvm"
+	"github.com/isac322/pillar-csi/test/e2e/framework/registry"
 )
 
 // LVMProvisioner is a [BackendProvisioner] implementation that creates an

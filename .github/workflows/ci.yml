@@ -6,9 +6,84 @@ on:
   pull_request:
 
 jobs:
+  # ── changes ────────────────────────────────────────────────────────────────
+  # Detects docs-only changes so the heavy jobs below can be skipped for them.
+  #
+  # A workflow-level `paths-ignore` would not work here: Lint, Test, Build and
+  # E2E are required status checks, and a workflow that never starts leaves
+  # those checks pending, which blocks the pull request. A job skipped through
+  # `if:` reports "skipped", which satisfies a required check.
+  #
+  # The gate fails closed: a heavy job is skipped only when this job succeeded
+  # and reported no code change. If detection fails, every heavy job runs.
+  # `!cancelled()` lets them start after a failed `changes` job, so jobs with
+  # other prerequisites also check those results explicitly.
+  #
+  # `code` is true when any changed file lies outside site/** and **/*.md.
+  # docs/E2E-TESTCASES.md is a test input (verify-tc-coverage and the e2e
+  # catalog parse it), so it counts as code.
+  changes:
+    name: Detect code changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      code: ${{ steps.filter.outputs.code == 'true' || steps.filter.outputs.tcspec == 'true' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Filter changed paths
+        id: filter
+        uses: dorny/paths-filter@v4
+        with:
+          predicate-quantifier: some-with-excludes
+          filters: |
+            code:
+              - '**'
+              - '!site/**'
+              - '!**/*.md'
+            tcspec:
+              - 'docs/E2E-TESTCASES.md'
+
+  # ── docs ───────────────────────────────────────────────────────────────────
+  # Generated reference docs must match api/v1alpha1 and the chart values, and
+  # links in the README, CONTRIBUTING and site content must resolve.
+  docs:
+    name: Docs
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify generated docs are up to date
+        run: make docs-check
+
+      - name: Check links
+        uses: lycheeverse/lychee-action@v2
+        with:
+          args: >-
+            --config hack/docs/lychee.toml
+            --root-dir ${{ github.workspace }}/site/src/content/docs
+            README.md
+            CONTRIBUTING.md
+            'site/src/content/**/*.md'
+            'site/src/content/**/*.mdx'
+
   lint:
     name: Lint
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.code == 'true') }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -28,7 +103,10 @@ jobs:
     runs-on: ubuntu-latest
     # Skip when commit message contains [skip tc-verify] (infrastructure-only
     # changes that don't affect the E2E spec coverage).
+    needs: [changes]
     if: |
+      !cancelled() &&
+      (needs.changes.result != 'success' || needs.changes.outputs.code == 'true') &&
       !contains(github.event.head_commit.message, '[skip tc-verify]')
     steps:
       - name: Checkout
@@ -83,7 +161,13 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
-    needs: [verify-tc-coverage]
+    needs: [changes, verify-tc-coverage]
+    # Runs only after TC coverage verification succeeded, as before the gate
+    # was added ([skip tc-verify] still skips Test).
+    if: |
+      !cancelled() &&
+      needs.verify-tc-coverage.result == 'success' &&
+      (needs.changes.result != 'success' || needs.changes.outputs.code == 'true')
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -106,6 +190,8 @@ jobs:
   csi-sanity:
     name: csi-sanity (in-process CSI conformance)
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.code == 'true') }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -121,6 +207,8 @@ jobs:
   chart:
     name: Helm chart render regression
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.code == 'true') }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -141,7 +229,10 @@ jobs:
     runs-on: ubuntu-latest
     # Run on every push and pull_request (workflow-level triggers already set).
     # Skip if the commit message contains [skip e2e] or [e2e skip].
+    needs: [changes]
     if: |
+      !cancelled() &&
+      (needs.changes.result != 'success' || needs.changes.outputs.code == 'true') &&
       !contains(github.event.head_commit.message, '[skip e2e]') &&
       !contains(github.event.head_commit.message, '[e2e skip]')
     permissions:
@@ -351,7 +442,10 @@ jobs:
   e2e-bench:
     name: E2E Baseline Benchmark (≤120s)
     runs-on: ubuntu-latest
+    needs: [changes]
     if: |
+      !cancelled() &&
+      (needs.changes.result != 'success' || needs.changes.outputs.code == 'true') &&
       !contains(github.event.head_commit.message, '[skip e2e]') &&
       !contains(github.event.head_commit.message, '[e2e skip]')
     permissions:
@@ -410,6 +504,8 @@ jobs:
   build:
     name: Build (all platforms)
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.code == 'true') }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7

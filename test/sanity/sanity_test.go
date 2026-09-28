@@ -38,10 +38,10 @@ import (
 
 	csispec "github.com/container-storage-interface/spec/lib/go/csi"
 
-	pillarv1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
-	agentv1 "github.com/bhyoo/pillar-csi/gen/go/pillar_csi/agent/v1"
-	csidrv "github.com/bhyoo/pillar-csi/internal/csi"
-	"github.com/bhyoo/pillar-csi/internal/testutil/fakeuid"
+	pillarv1 "github.com/isac322/pillar-csi/api/v1alpha1"
+	agentv1 "github.com/isac322/pillar-csi/gen/go/pillar_csi/agent/v1"
+	csidrv "github.com/isac322/pillar-csi/internal/csi"
+	"github.com/isac322/pillar-csi/internal/testutil/fakeuid"
 )
 
 const (

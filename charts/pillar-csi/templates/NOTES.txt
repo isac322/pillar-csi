@@ -39,7 +39,7 @@ First-time configuration (cluster-scoped CRs)
 2. Declare a pool (ZFS or LVM) on that target, a protocol (NVMe-oF/TCP),
    and a binding that produces the StorageClass:
 
-   See https://github.com/bhyoo/pillar-csi#quickstart for the full YAML.
+   See https://github.com/isac322/pillar-csi#quickstart for the full YAML.
 
 3. Watch readiness:
 
@@ -79,5 +79,5 @@ Enable on production deployments:
 {{- end }}
 
 Docs:
-  https://github.com/bhyoo/pillar-csi/blob/main/docs/PRD.md
-  https://github.com/bhyoo/pillar-csi/blob/main/docs/prd-audit-phase1-2026-06.md
+  https://github.com/isac322/pillar-csi/blob/main/docs/PRD.md
+  https://github.com/isac322/pillar-csi/blob/main/docs/prd-audit-phase1-2026-06.md

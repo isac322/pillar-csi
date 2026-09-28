@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/bhyoo/pillar-csi/test/e2e/framework/registry"
-	"github.com/bhyoo/pillar-csi/test/e2e/framework/zfs"
+	"github.com/isac322/pillar-csi/test/e2e/framework/registry"
+	"github.com/isac322/pillar-csi/test/e2e/framework/zfs"
 )
 
 // ZFSProvisioner is a [BackendProvisioner] implementation that creates an

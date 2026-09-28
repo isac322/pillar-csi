@@ -1,0 +1,25 @@
+# lychee link checker config for the CI docs job.
+# Run locally from the repo root:
+#   lychee --config hack/docs/lychee.toml --root-dir "$PWD/site/src/content/docs" \
+#     README.md CONTRIBUTING.md 'site/src/content/**/*.md' 'site/src/content/**/*.mdx'
+# --root-dir must be absolute, so it is passed on the command line.
+
+# Starlight pages link to each other as /docs/<section>/<slug>/; resolve those
+# to the .md/.mdx source files under site/src/content/docs.
+fallback_extensions = ["md", "mdx"]
+index_files = ["index.md", "index.mdx"]
+
+exclude_all_private = true
+accept = ["100..=103", "200..=299", "429"]
+max_retries = 2
+no_progress = true
+
+exclude = [
+  # The site domain has no DNS record yet. Remove this once pillar-csi.bhyoo.com resolves.
+  '^https?://pillar-csi\.bhyoo\.com',
+  # Links to this repository's files on master return 404 in a pull request
+  # that adds the target file.
+  '^https://github\.com/isac322/pillar-csi/(blob|tree)/master/',
+  # "/" is the Astro landing page (src/pages/index.astro), not a content file.
+  '^file://.*/site/src/content/docs/?$',
+]

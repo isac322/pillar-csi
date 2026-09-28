@@ -1,0 +1,382 @@
+/* Foundation Plan: pillar-csi drawing set. Tokens from the Workshop Enamel palette. */
+:root {
+	--enamel: #15352b;
+	--enamel-2: #1c4236;
+	--green: #2d5f4c;
+	--cream: #f1ead6;
+	--vellum-2: #e7dec4;
+	--steel: #afbab2;
+	--brass: #d4a849;
+	--brass-deep: #8a6414;
+	--ink: #112a23;
+
+	--display: 'Archivo Variable', 'Archivo', sans-serif;
+	--body: 'Archivo Variable', 'Archivo', sans-serif;
+	--mono: 'IBM Plex Mono', ui-monospace, monospace;
+
+	--ease: cubic-bezier(0.16, 1, 0.3, 1);
+	--radius: 3px;
+	--header-h: 60px;
+	color-scheme: light;
+}
+
+:root,
+[data-theme='light'] {
+	--bg: var(--cream);
+	--bg-2: var(--vellum-2);
+	--fg: var(--ink);
+	--fg-2: #3c5249;
+	--line: var(--green);
+	--rule: rgb(45 95 76 / 0.32);
+	--rule-soft: rgb(45 95 76 / 0.16);
+	--link: var(--green);
+	--link-hover: var(--ink);
+	--mark: var(--brass-deep);
+	--plate: var(--vellum-2);
+	--focus: var(--ink);
+}
+
+[data-theme='dark'] {
+	color-scheme: dark;
+	--bg: var(--enamel);
+	--bg-2: var(--enamel-2);
+	--fg: var(--cream);
+	--fg-2: var(--steel);
+	--line: var(--steel);
+	--rule: rgb(175 186 178 / 0.3);
+	--rule-soft: rgb(175 186 178 / 0.14);
+	--link: var(--brass);
+	--link-hover: var(--cream);
+	--mark: var(--brass);
+	--plate: var(--enamel-2);
+	--focus: var(--brass);
+}
+
+*,
+*::before,
+*::after {
+	box-sizing: border-box;
+}
+
+html {
+	-webkit-text-size-adjust: 100%;
+	scrollbar-color: var(--line) var(--bg-2);
+}
+
+body {
+	margin: 0;
+	background: var(--bg);
+	color: var(--fg);
+	font-family: var(--body);
+	font-stretch: 100%;
+	font-size: 1.0625rem;
+	line-height: 1.6;
+	font-kerning: normal;
+	text-rendering: optimizeLegibility;
+	-webkit-font-smoothing: antialiased;
+}
+
+::selection {
+	background: var(--brass);
+	color: var(--ink);
+}
+
+::-webkit-scrollbar {
+	width: 12px;
+	height: 12px;
+}
+::-webkit-scrollbar-track {
+	background: var(--bg-2);
+}
+::-webkit-scrollbar-thumb {
+	background: var(--line);
+	border: 3px solid var(--bg-2);
+	border-radius: 6px;
+}
+
+a {
+	color: var(--link);
+	text-decoration-line: underline;
+	text-decoration-thickness: 1px;
+	text-underline-offset: 0.2em;
+	transition: color 160ms var(--ease), text-decoration-thickness 160ms var(--ease);
+}
+a:hover {
+	color: var(--link-hover);
+	text-decoration-thickness: 2px;
+}
+
+:focus-visible {
+	outline: 2px solid var(--focus);
+	outline-offset: 3px;
+	border-radius: 2px;
+}
+
+img,
+svg {
+	display: block;
+	max-width: 100%;
+}
+/* Icons are fixed-size marks: never let a shrinking flex parent squeeze them to 0px */
+.icon {
+	flex: none;
+	max-width: none;
+}
+
+code,
+kbd,
+pre,
+samp {
+	font-family: var(--mono);
+	font-variant-numeric: tabular-nums;
+}
+
+.visually-hidden {
+	position: absolute !important;
+	width: 1px;
+	height: 1px;
+	overflow: hidden;
+	clip: rect(0 0 0 0);
+	white-space: nowrap;
+}
+
+.skip-link {
+	position: absolute;
+	left: 1rem;
+	top: -3rem;
+	z-index: 100;
+	background: var(--brass);
+	color: var(--ink);
+	padding: 0.5rem 0.9rem;
+	font-weight: 600;
+	text-decoration: none;
+}
+.skip-link:focus {
+	top: 0.75rem;
+}
+
+/* Drafting lettering: labels on the drawing, never eyebrows over headings */
+.lettering {
+	font-family: var(--body);
+	font-stretch: 112%;
+	font-weight: 600;
+	font-size: 0.75rem;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+}
+
+.display {
+	font-family: var(--display);
+	font-stretch: 125%;
+	font-weight: 700;
+	letter-spacing: -0.02em;
+	text-wrap: balance;
+}
+
+/* ─── Shared buttons ─────────────────────────────────── */
+.star-btn {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.5rem;
+	min-height: 40px;
+	padding: 0.45rem 0.95rem;
+	background: var(--brass);
+	color: var(--ink);
+	font-family: var(--body);
+	font-stretch: 112%;
+	font-weight: 700;
+	font-size: 0.875rem;
+	letter-spacing: 0.01em;
+	text-decoration: none;
+	border-radius: var(--radius);
+	box-shadow: 0 1px 0 rgb(17 42 35 / 0.35), 0 2px 6px -2px rgb(17 42 35 / 0.4);
+	transition: transform 160ms var(--ease), box-shadow 160ms var(--ease), background 160ms var(--ease);
+	white-space: nowrap;
+}
+.star-btn:hover {
+	color: var(--ink);
+	background: #e0b659;
+	transform: translateY(-1px);
+	box-shadow: 0 2px 0 rgb(17 42 35 / 0.35), 0 8px 18px -6px rgb(17 42 35 / 0.5);
+}
+.star-btn .star-count {
+	font-family: var(--mono);
+	font-weight: 500;
+	font-size: 0.8125rem;
+	padding: 0.05rem 0.4rem;
+	background: var(--ink);
+	color: var(--brass);
+	border-radius: 2px;
+}
+
+.icon-btn {
+	display: inline-grid;
+	place-items: center;
+	width: 40px;
+	height: 40px;
+	border: 1px solid var(--rule);
+	border-radius: var(--radius);
+	background: transparent;
+	color: var(--fg);
+	cursor: pointer;
+	transition: background 160ms var(--ease), border-color 160ms var(--ease);
+}
+.icon-btn:hover {
+	background: var(--plate);
+	border-color: var(--line);
+	color: var(--fg);
+}
+
+/* ─── Title block (footer on every sheet) ────────────── */
+.title-block {
+	display: grid;
+	grid-template-columns: minmax(0, 2.2fr) repeat(3, minmax(0, 1fr));
+	border: 1.5px solid var(--line);
+	color: var(--fg);
+	font-size: 0.875rem;
+}
+.title-block > div {
+	padding: 0.8rem 1rem;
+	border-left: 1px solid var(--rule);
+	min-width: 0;
+}
+.title-block > div:first-child {
+	border-left: 0;
+}
+.title-block .tb-label {
+	display: block;
+	color: var(--fg-2);
+	margin-bottom: 0.25rem;
+	font-size: 0.6875rem;
+}
+.title-block .tb-name {
+	font-family: var(--display);
+	font-stretch: 125%;
+	font-weight: 700;
+	font-size: 1.125rem;
+	letter-spacing: -0.01em;
+}
+.title-block p {
+	margin: 0.2rem 0 0;
+	color: var(--fg-2);
+}
+.title-block ul {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	display: grid;
+	gap: 0;
+}
+.title-block ul a {
+	display: inline-block;
+	padding-block: 0.2rem;
+}
+
+/* ─── Horizontal scrollers (wide tables, the section drawing) ── */
+/* scroll-cue.ts sets data-more to the edges that still hide content; fade those edges. */
+[data-more='right'] {
+	-webkit-mask-image: linear-gradient(to right, #000 calc(100% - 48px), transparent);
+	mask-image: linear-gradient(to right, #000 calc(100% - 48px), transparent);
+}
+[data-more='left'] {
+	-webkit-mask-image: linear-gradient(to left, #000 calc(100% - 48px), transparent);
+	mask-image: linear-gradient(to left, #000 calc(100% - 48px), transparent);
+}
+[data-more='both'] {
+	-webkit-mask-image: linear-gradient(to right, transparent, #000 48px, #000 calc(100% - 48px), transparent);
+	mask-image: linear-gradient(to right, transparent, #000 48px, #000 calc(100% - 48px), transparent);
+}
+.scroll-cue {
+	display: flex;
+	justify-content: flex-end;
+	gap: 0.4rem;
+	margin: 1.4em 0 0.4rem;
+	font-size: 0.8125rem;
+	font-weight: 600;
+	color: var(--fg-2);
+}
+.scroll-cue[hidden] {
+	display: none;
+}
+@media (max-width: 760px) {
+	.title-block {
+		grid-template-columns: 1fr 1fr;
+	}
+	.title-block > div:first-child {
+		grid-column: 1 / -1;
+	}
+	.title-block > div:nth-child(2) {
+		border-left: 0;
+	}
+	.title-block > div:nth-child(n + 2) {
+		border-top: 1px solid var(--rule);
+	}
+	.title-block > div:nth-child(4) {
+		grid-column: 1 / -1;
+		border-left: 0;
+	}
+}
+
+/* ─── Brass survey disk: the primary star action ─── */
+.survey-disk {
+	position: relative;
+	color: var(--ink);
+	flex: none;
+	display: grid;
+	place-items: center;
+	width: var(--disk);
+	height: var(--disk);
+	border-radius: 50%;
+	text-decoration: none;
+	box-shadow: 0 2px 2px rgb(17 42 35 / 0.25), 0 10px 24px -8px rgb(17 42 35 / 0.45);
+	transition: transform 220ms var(--ease), box-shadow 220ms var(--ease);
+}
+.survey-disk svg {
+	width: 100%;
+	height: 100%;
+}
+.survey-disk .disk-ring {
+	font-family: var(--body);
+	font-stretch: 112%;
+	font-weight: 700;
+	font-size: 12.5px;
+	letter-spacing: 0.06em;
+}
+.survey-disk .disk-reticle {
+	transform-origin: 100px 100px;
+	transition: transform 420ms var(--ease);
+}
+.survey-disk:hover {
+	transform: translateY(-2px);
+	box-shadow: 0 4px 4px rgb(17 42 35 / 0.25), 0 18px 34px -10px rgb(17 42 35 / 0.55);
+}
+.survey-disk:hover .disk-reticle {
+	transform: rotate(45deg);
+}
+.survey-disk:focus-visible {
+	outline-offset: 5px;
+	border-radius: 50%;
+}
+.survey-disk .disk-count {
+	position: absolute;
+	left: 50%;
+	bottom: 15%;
+	transform: translateX(-50%);
+	padding: 0.05rem 0.45rem;
+	background: var(--ink);
+	color: var(--brass);
+	font-family: var(--mono);
+	font-weight: 500;
+	font-size: 0.8125rem;
+	letter-spacing: 0.04em;
+	border-radius: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	*,
+	*::before,
+	*::after {
+		animation: none !important;
+		transition-duration: 0.01ms !important;
+	}
+}

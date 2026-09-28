@@ -42,7 +42,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	pillarv1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
+	pillarv1 "github.com/isac322/pillar-csi/api/v1alpha1"
 )
 
 // PillarStoreHandle is a per-TC handle for a PillarStore K8s CR provisioned

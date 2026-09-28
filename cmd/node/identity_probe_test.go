@@ -8,7 +8,7 @@ import (
 
 	csispec "github.com/container-storage-interface/spec/lib/go/csi"
 
-	csisvc "github.com/bhyoo/pillar-csi/internal/csi"
+	csisvc "github.com/isac322/pillar-csi/internal/csi"
 )
 
 func TestProbe_Node_RequiresNvmeFabrics(t *testing.T) {

@@ -19,7 +19,7 @@ package e2e
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	pillarv1 "github.com/bhyoo/pillar-csi/api/v1alpha1"
+	pillarv1 "github.com/isac322/pillar-csi/api/v1alpha1"
 )
 
 // StorageClass parameter and PVC annotation keys of the configuration

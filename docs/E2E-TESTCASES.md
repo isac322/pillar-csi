@@ -1964,7 +1964,7 @@ Target 상태 유실 복구 (level-triggered):
 > **`ExportSpecMissing` 운영 복구 (issue #83):** `status.exportSpec`이 없는 레거시 볼륨은 자동 복구가
 > 의도적으로 비활성화되어 있다(fail-closed — 런타임 `exportInfo`나 현재 CR에서 ACL·bind address를 추측하지
 > 않는다). PV/PVC/PVS 백업과 UID+resourceVersion 가드 JSON patch로 `status.exportSpec`을 명시적으로 기록하는
-> 운영자 복구 절차는 `README.md` Troubleshooting의 "Legacy volumes stuck at `ExportSpecMissing`"을 따른다.
+> 운영자 복구 절차는 [Recover a missing export spec](https://pillar-csi.bhyoo.com/docs/how-to/recover-export-spec/) (`site/src/content/docs/docs/how-to/recover-export-spec.md`)을 따른다.
 
 ---
 
@@ -4428,7 +4428,7 @@ import (
     . "github.com/onsi/ginkgo/v2"
     . "github.com/onsi/gomega"
 
-    "github.com/bhyoo/pillar-csi/test/utils"
+    "github.com/isac322/pillar-csi/test/utils"
 )
 
 var _ = Describe("E27.11 전체 파드 Running 상태 종합 검증", Ordered, func() {
@@ -4814,7 +4814,7 @@ import (
     . "github.com/onsi/ginkgo/v2"
     . "github.com/onsi/gomega"
 
-    "github.com/bhyoo/pillar-csi/test/utils"
+    "github.com/isac322/pillar-csi/test/utils"
 )
 
 var _ = Describe("E27.12 CSIDriver 객체 생성 및 설정 검증", Ordered, func() {

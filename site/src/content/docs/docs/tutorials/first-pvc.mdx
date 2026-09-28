@@ -1,0 +1,442 @@
+---
+title: Your first PVC on ZFS or LVM
+description: Install pillar-csi with Helm, turn one node's ZFS pool or LVM volume group into a StorageClass, and mount an NVMe-oF/TCP volume in a Pod in about ten minutes.
+sidebar:
+  order: 1
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+In this tutorial you install pillar-csi, point it at a ZFS pool or LVM volume group on one node, and run a Pod that writes to a PersistentVolumeClaim served over NVMe-oF/TCP. You finish by reading the file back after the Pod restarts.
+
+pillar-csi installs nothing on your hosts. Its container images carry every tool the driver runs. The hosts only need two things that belong to the operating system: the NVMe-oF kernel modules and a pool to carve volumes from.
+
+## What you need
+
+- A Kubernetes cluster, version 1.24 or later, with `kubectl` access.
+- Helm 3.8 or later on your workstation.
+- A storage node: a cluster node with a ZFS pool or an LVM volume group, and the `nvmet` and `nvmet_tcp` modules loaded. It must accept ordinary Pods, so avoid a node with a `NoSchedule` taint, such as a kubeadm control-plane node.
+- The `nvme_fabrics` and `nvme_tcp` modules loaded on every node where your Pod might run, including the storage node.
+- Root shell access to the storage node, to run the checks below.
+
+Pick the backend you want to try. Every tab group on this page follows your choice.
+
+## 1. Check the storage node
+
+On the storage node, set `POOL` to the name of your ZFS pool or volume group and confirm it exists:
+
+<Tabs syncKey="backend">
+<TabItem label="ZFS">
+
+```sh
+POOL=<your-pool>
+sudo zpool list "$POOL"
+```
+
+pillar-csi creates volumes as zvols directly under the pool, named `<pool>/pvc-...`.
+
+</TabItem>
+<TabItem label="LVM">
+
+```sh
+POOL=<your-volume-group>
+sudo vgs "$POOL"
+```
+
+pillar-csi creates volumes as linear logical volumes in the volume group, named `pvc-...`.
+
+</TabItem>
+</Tabs>
+
+Confirm that the NVMe-oF target is available:
+
+```sh
+lsmod | grep nvmet
+ls /sys/kernel/config/nvmet
+```
+
+`lsmod` lists `nvmet` and `nvmet_tcp`, and the directory contains `hosts`, `ports`, and `subsystems`.
+
+On every node where your Pod might run, confirm the initiator modules:
+
+```sh
+lsmod | grep -E 'nvme_(fabrics|tcp)'
+```
+
+If all checks pass, go to [step 2](#2-install-pillar-csi). Otherwise open the preparation below.
+
+<details>
+<summary>One-time host preparation (skip if your node already has a pool and the modules)</summary>
+
+This is ordinary operating system setup, and you do it once per node. The commands use Ubuntu packages. [Prerequisites](/docs/reference/prerequisites/) lists the kernel options for other distributions.
+
+Load the NVMe-oF target modules on the storage node and keep them loaded after a reboot:
+
+```sh
+sudo modprobe -a nvmet nvmet_tcp
+printf 'nvmet\nnvmet_tcp\n' \
+  | sudo tee /etc/modules-load.d/nvme-target.conf
+```
+
+If `modprobe` reports that a module is not found, install the extra kernel modules package and try again:
+
+```sh
+sudo apt install -y linux-modules-extra-$(uname -r)
+```
+
+If the modules are still missing, your kernel was built without NVMe-oF target support.
+
+Load the initiator modules on every node where your Pod might run:
+
+```sh
+sudo modprobe -a nvme_fabrics nvme_tcp
+printf 'nvme_fabrics\nnvme_tcp\n' \
+  | sudo tee /etc/modules-load.d/nvme-initiator.conf
+```
+
+If you have no pool yet, create a demo pool named `pillar-demo` on a 20 GiB sparse file, so you do not need a spare disk. The `zfsutils-linux` or `lvm2` package is only needed to create the pool; pillar-csi does not use it. To use a real disk instead, follow [Prepare a ZFS storage node](/docs/how-to/prepare-zfs-node/) or [Prepare an LVM storage node](/docs/how-to/prepare-lvm-node/).
+
+<Tabs syncKey="backend">
+<TabItem label="ZFS">
+
+```sh
+sudo apt update
+sudo apt install -y zfsutils-linux
+sudo truncate -s 20G /var/lib/pillar-demo.img
+sudo zpool create pillar-demo /var/lib/pillar-demo.img
+POOL=pillar-demo
+```
+
+</TabItem>
+<TabItem label="LVM">
+
+```sh
+sudo apt update
+sudo apt install -y lvm2
+sudo truncate -s 20G /var/lib/pillar-demo.img
+LOOP=$(sudo losetup --find --show /var/lib/pillar-demo.img)
+sudo pvcreate "$LOOP"
+sudo vgcreate pillar-demo "$LOOP"
+POOL=pillar-demo
+```
+
+The loop device does not come back after a reboot, so finish the tutorial in one session.
+
+</TabItem>
+</Tabs>
+
+Run the checks in step 1 again before you continue.
+
+</details>
+
+## 2. Install pillar-csi
+
+On your workstation, set `POOL` to the same name, then write a values file that tells the agent which pool to use.
+
+<Tabs syncKey="backend">
+<TabItem label="ZFS">
+
+```sh
+POOL=<your-pool>
+cat > pillar-values.yaml <<EOF
+agent:
+  backends:
+    - zfs:
+        pool: ${POOL}
+EOF
+```
+
+</TabItem>
+<TabItem label="LVM">
+
+```sh
+POOL=<your-volume-group>
+cat > pillar-values.yaml <<EOF
+agent:
+  backends:
+    - lvm:
+        volumeGroup: ${POOL}
+EOF
+```
+
+</TabItem>
+</Tabs>
+
+Install the chart from the OCI registry:
+
+```sh
+helm install pillar-csi oci://ghcr.io/isac322/charts/pillar-csi \
+  --version 0.3.0 \
+  --namespace pillar-csi --create-namespace \
+  --values pillar-values.yaml \
+  --wait
+```
+
+When the command returns, the controller Deployment and the node DaemonSet are running. The agent DaemonSet has no Pods yet. It starts on the storage node in the next step.
+
+## 3. Describe the storage
+
+Set a shell variable to the Kubernetes name of your storage node:
+
+```sh
+kubectl get nodes
+STORAGE_NODE=<name-of-your-storage-node>
+```
+
+Apply four cluster-scoped resources. The PillarAgent points at the storage node, the PillarStore names the pool, the PillarProtocol selects NVMe-oF/TCP, and the PillarStorageClass binds them into a StorageClass called `pillar-demo`.
+
+<Tabs syncKey="backend">
+<TabItem label="ZFS">
+
+```sh
+kubectl apply -f - <<EOF
+apiVersion: pillar-csi.bhyoo.com/v1alpha1
+kind: PillarAgent
+metadata:
+  name: ${STORAGE_NODE}
+spec:
+  nodeRef:
+    name: ${STORAGE_NODE}
+---
+apiVersion: pillar-csi.bhyoo.com/v1alpha1
+kind: PillarStore
+metadata:
+  name: pillar-demo
+spec:
+  agentRef: ${STORAGE_NODE}
+  backend:
+    zfs:
+      pool: ${POOL}
+---
+apiVersion: pillar-csi.bhyoo.com/v1alpha1
+kind: PillarProtocol
+metadata:
+  name: nvmeof-tcp
+spec:
+  protocol:
+    nvmeofTcp:
+      port: 4420
+      acl: true
+---
+apiVersion: pillar-csi.bhyoo.com/v1alpha1
+kind: PillarStorageClass
+metadata:
+  name: pillar-demo
+spec:
+  storeRef: pillar-demo
+  protocolRef: nvmeof-tcp
+  storageClass:
+    reclaimPolicy: Delete
+    volumeBindingMode: WaitForFirstConsumer
+  filesystem:
+    fsType: ext4
+EOF
+```
+
+</TabItem>
+<TabItem label="LVM">
+
+```sh
+kubectl apply -f - <<EOF
+apiVersion: pillar-csi.bhyoo.com/v1alpha1
+kind: PillarAgent
+metadata:
+  name: ${STORAGE_NODE}
+spec:
+  nodeRef:
+    name: ${STORAGE_NODE}
+---
+apiVersion: pillar-csi.bhyoo.com/v1alpha1
+kind: PillarStore
+metadata:
+  name: pillar-demo
+spec:
+  agentRef: ${STORAGE_NODE}
+  backend:
+    lvm:
+      volumeGroup: ${POOL}
+---
+apiVersion: pillar-csi.bhyoo.com/v1alpha1
+kind: PillarProtocol
+metadata:
+  name: nvmeof-tcp
+spec:
+  protocol:
+    nvmeofTcp:
+      port: 4420
+      acl: true
+---
+apiVersion: pillar-csi.bhyoo.com/v1alpha1
+kind: PillarStorageClass
+metadata:
+  name: pillar-demo
+spec:
+  storeRef: pillar-demo
+  protocolRef: nvmeof-tcp
+  storageClass:
+    reclaimPolicy: Delete
+    volumeBindingMode: WaitForFirstConsumer
+  filesystem:
+    fsType: ext4
+EOF
+```
+
+</TabItem>
+</Tabs>
+
+If `kubectl apply` fails with an error about calling a webhook, the controller is still starting. Wait a few seconds and run the same command again.
+
+Wait for the agent and the StorageClass to report `Ready`:
+
+```sh
+kubectl wait --for=condition=Ready pillaragent/${STORAGE_NODE} --timeout=3m
+kubectl wait --for=condition=Ready pillarstorageclass/pillar-demo --timeout=3m
+kubectl get pillaragent,pillarstore,pillarprotocol,pillarstorageclass
+kubectl get storageclass pillar-demo
+```
+
+Every resource shows `True` in the `READY` column, and the StorageClass `pillar-demo` uses the provisioner `pillar-csi.bhyoo.com`.
+
+## 4. Claim a volume and mount it
+
+Create a 1 GiB claim:
+
+```sh
+kubectl apply -f - <<EOF
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pillar-demo
+  namespace: default
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: pillar-demo
+  resources:
+    requests:
+      storage: 1Gi
+EOF
+```
+
+The claim stays `Pending` until a Pod uses it, because the StorageClass binds on first consumer. Save a Pod that appends a line to a file on the volume, then start it:
+
+```sh
+cat > pillar-demo-pod.yaml <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pillar-demo
+  namespace: default
+spec:
+  containers:
+    - name: app
+      image: busybox:1.38.0
+      command:
+        - sh
+        - -c
+        - echo hello from pillar-csi >> /data/hello.txt && sleep 3600
+      volumeMounts:
+        - name: data
+          mountPath: /data
+  volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: pillar-demo
+EOF
+kubectl apply -f pillar-demo-pod.yaml
+kubectl wait --for=condition=Ready pod/pillar-demo --timeout=3m
+kubectl get pvc pillar-demo
+```
+
+The claim is now `Bound`.
+
+## 5. Check the result
+
+Read the file and look at the mount:
+
+```sh
+kubectl exec pillar-demo -- cat /data/hello.txt
+kubectl exec pillar-demo -- df -h /data
+```
+
+The first command prints `hello from pillar-csi`. In the `df` output, the `Filesystem` column names an NVMe device such as `/dev/nvme0n1`: the Pod's node reached the volume over NVMe-oF/TCP.
+
+On the storage node, the volume is an ordinary zvol or logical volume:
+
+<Tabs syncKey="backend">
+<TabItem label="ZFS">
+
+```sh
+sudo zfs list -t volume -r "$POOL"
+```
+
+</TabItem>
+<TabItem label="LVM">
+
+```sh
+sudo lvs "$POOL"
+```
+
+</TabItem>
+</Tabs>
+
+Now delete the Pod, start it again, and read the file:
+
+```sh
+kubectl delete pod pillar-demo
+kubectl apply -f pillar-demo-pod.yaml
+kubectl wait --for=condition=Ready pod/pillar-demo --timeout=3m
+kubectl exec pillar-demo -- cat /data/hello.txt
+```
+
+The file now holds two `hello from pillar-csi` lines, one from each run.
+
+## 6. Clean up
+
+Delete the workload first so the driver can remove the volume, then the pillar-csi resources, then the chart:
+
+```sh
+kubectl delete pod pillar-demo
+kubectl delete pvc pillar-demo
+kubectl delete pillarstorageclass pillar-demo
+kubectl delete pillarstore pillar-demo
+kubectl delete pillarprotocol nvmeof-tcp
+kubectl delete pillaragent ${STORAGE_NODE}
+helm uninstall pillar-csi --namespace pillar-csi
+```
+
+Your pool keeps its other contents. The chart keeps its CustomResourceDefinitions after `helm uninstall`; [Install with Helm](/docs/how-to/install-helm/#uninstall) shows how to remove them.
+
+<details>
+<summary>Remove the demo pool (only if you created it during host preparation)</summary>
+
+Run on the storage node:
+
+<Tabs syncKey="backend">
+<TabItem label="ZFS">
+
+```sh
+sudo zpool destroy pillar-demo
+sudo rm /var/lib/pillar-demo.img
+```
+
+</TabItem>
+<TabItem label="LVM">
+
+```sh
+LOOP=$(sudo losetup --associated /var/lib/pillar-demo.img | cut -d: -f1)
+sudo vgremove --yes pillar-demo
+sudo pvremove "$LOOP"
+sudo losetup --detach "$LOOP"
+sudo rm /var/lib/pillar-demo.img
+```
+
+</TabItem>
+</Tabs>
+
+</details>
+
+## Next steps
+
+- Put a real disk behind the pool: [Prepare a ZFS storage node](/docs/how-to/prepare-zfs-node/) or [Prepare an LVM storage node](/docs/how-to/prepare-lvm-node/).
+- Install for longer-term use: [Install with Helm](/docs/how-to/install-helm/).
+- See what the driver supports: [Support matrix](/docs/reference/support-matrix/).

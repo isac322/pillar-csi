@@ -1,0 +1,681 @@
+---
+import '../styles/global.css';
+import Head from '../components/Head.astro';
+import Icon from '../components/Icon.astro';
+import StarButton from '../components/StarButton.astro';
+import SurveyDisk from '../components/SurveyDisk.astro';
+import SectionCut from '../components/SectionCut.astro';
+import TitleBlock from '../components/TitleBlock.astro';
+import { REPO_URL, SITE_URL, CHART_VERSION } from '../lib/site';
+
+const title = 'pillar-csi: export your ZFS and LVM pools to Kubernetes';
+const description =
+	'One CSI driver for ZFS pools and LVM volume groups on your storage nodes. The Linux kernel NVMe-oF target serves each volume to your pods over TCP.';
+const zones = [1, 2, 3, 4, 5, 6];
+const jsonLd = [
+	{
+		'@context': 'https://schema.org',
+		'@type': 'SoftwareSourceCode',
+		name: 'pillar-csi',
+		description,
+		url: SITE_URL,
+		codeRepository: REPO_URL,
+		programmingLanguage: 'Go',
+		license: 'Apache-2.0',
+	},
+	{
+		'@context': 'https://schema.org',
+		'@type': 'SoftwareApplication',
+		name: 'pillar-csi',
+		description,
+		url: SITE_URL,
+		applicationCategory: 'DeveloperApplication',
+		operatingSystem: 'Linux',
+		softwareVersion: CHART_VERSION,
+		offers: { '@type': 'Offer', price: '0', priceCurrency: 'USD' },
+	},
+];
+---
+
+<!doctype html>
+<html lang="en" data-theme="light">
+	<head>
+		<Head title={title} description={description} />
+		<script type="application/ld+json" set:html={JSON.stringify(jsonLd).replace(/</g, '\\u003c')} />
+	</head>
+	<body class="landing">
+		<a class="skip-link" href="#main">Skip to content</a>
+		<div class="sheet">
+			<div class="zones" aria-hidden="true">
+				{zones.map((z) => <span>{z}</span>)}
+			</div>
+
+			<header class="top">
+				<a class="brand" href="/" aria-label="pillar-csi home">
+					<img src="/brand/logo-light.svg" alt="pillar-csi" width="160" height="40" />
+				</a>
+				<nav class="top-nav" aria-label="Main">
+					<a href="/docs/">Docs</a>
+					<a href={REPO_URL} class="gh" aria-label="GitHub"><Icon name="github" size={18} /><span>GitHub</span></a>
+					<StarButton />
+				</nav>
+			</header>
+
+			<main id="main">
+				<section class="hero" id="hero">
+					<div class="hero-copy">
+						<h1 class="display">Export your ZFS and LVM pools to Kubernetes.</h1>
+						<p class="lede">
+							Run one CSI driver for every pool on your storage nodes. The Linux kernel's NVMe-oF target serves each volume to your pods over
+							TCP.
+						</p>
+						<div class="actions">
+							<SurveyDisk id="disk-hero" size={152} />
+							<div class="actions-side">
+								<StarButton label="Star pillar-csi on GitHub" class="star-btn-lg" />
+								<a class="leader-link" href="/docs/tutorials/first-pvc/">
+									Start the tutorial <Icon name="arrow" size={16} />
+								</a>
+								<a class="leader-link" href="/docs/">Read the docs <Icon name="arrow" size={16} /></a>
+							</div>
+						</div>
+					</div>
+					<div class="hero-drawing">
+						<SectionCut />
+					</div>
+				</section>
+
+				<section class="band" aria-labelledby="one-driver">
+					<div class="band-text">
+						<h2 id="one-driver" class="display">One driver for every backend and protocol</h2>
+						<p>
+							Install one Helm release instead of a driver for each backend. ZFS and LVM pools share one configuration model: each setting has the
+							same YAML shape in a PillarStore or PillarProtocol, a PillarStorageClass, and a PVC annotation.
+						</p>
+						<p><a href="/docs/how-to/volume-overrides/">How overrides work</a></p>
+					</div>
+					<div class="band-detail">
+						<table class="schedule">
+							<caption class="lettering">Driver schedule</caption>
+							<thead>
+								<tr><th scope="col">Axis</th><th scope="col">Shipped</th><th scope="col">Planned</th></tr>
+							</thead>
+							<tbody>
+								<tr>
+									<th scope="row">Backends</th><td class="shipped">ZFS zvols, LVM logical volumes</td><td class="planned"><span>More backends</span></td>
+								</tr>
+								<tr>
+									<th scope="row">Protocols</th><td class="shipped"><span class="nw">NVMe-oF/TCP</span></td><td class="planned"><span>iSCSI, NFS, SMB</span></td>
+								</tr>
+							</tbody>
+						</table>
+						<p class="legend">
+							<span class="key key-solid" aria-hidden="true"></span> Shipped
+							<span class="key key-dash" aria-hidden="true"></span> Planned, not available yet
+						</p>
+						<figure class="detail">
+							<figcaption class="detail-cap"><span class="lettering">Detail A</span> One release serves both backends</figcaption>
+							<pre><code><span class="c"># values.yaml</span>
+<span class="k">agent</span>:
+  <span class="k">backends</span>:
+    - <span class="k">zfs</span>:
+        <span class="k">pool</span>: tank
+        <span class="k">parentDataset</span>: k8s
+    - <span class="k">lvm</span>:
+        <span class="k">volumeGroup</span>: data-vg</code></pre>
+						</figure>
+					</div>
+				</section>
+
+				<section class="band band-flip" aria-labelledby="hosts">
+					<div class="band-text">
+						<h2 id="hosts" class="display">Your hosts need kernel modules and a pool</h2>
+						<p>
+							The driver images carry the ZFS, LVM, and filesystem tools, and the agent writes the NVMe-oF target configuration itself. You install
+							no <span class="nw">pillar-csi</span> packages on the host, and the driver needs no SSH.
+						</p>
+						<p><a href="/docs/reference/prerequisites/">Check your kernel</a></p>
+					</div>
+					<div class="band-detail split">
+						<div class="split-col">
+							<h3 class="lettering">In the images</h3>
+							<ul>
+								<li><code>zfs</code> and <code>zpool</code> from OpenZFS 2.4</li>
+								<li><code>lvm2</code></li>
+								<li><code>mkfs.ext4</code>, <code>mkfs.xfs</code>, and the resize tools</li>
+								<li>NVMe-oF target setup through configfs, replacing <code>nvmetcli</code> and <code>targetcli</code></li>
+								<li>NVMe-oF connect through <code>/dev/nvme-fabrics</code>, replacing <code>nvme-cli</code></li>
+							</ul>
+						</div>
+						<div class="split-col host">
+							<h3 class="lettering">On your hosts</h3>
+							<dl>
+								<dt>Storage nodes</dt>
+								<dd><code>nvmet</code>, <code>nvmet_tcp</code>, and a ZFS pool or LVM volume group</dd>
+								<dt>Workers</dt>
+								<dd><code>nvme_fabrics</code>, <code>nvme_tcp</code></dd>
+								<dt>Cluster</dt>
+								<dd>Kubernetes 1.24 or later, Helm 3.8 or later</dd>
+							</dl>
+						</div>
+					</div>
+				</section>
+
+				<section class="notes" aria-labelledby="notes">
+					<h2 id="notes" class="display">General notes</h2>
+					<ol>
+						<li>
+							Each volume lives on one storage node. <span class="nw">pillar-csi</span> does not replicate data, so a volume is unavailable while its node is down.
+						</li>
+						<li>
+							The kernel carries every read and write. The controller, agent, and node plugin can restart without interrupting connected volumes.
+						</li>
+						<li>iSCSI, NFS, and SMB are planned as new protocols in the same driver and configuration model. NVMe-oF/TCP ships today.</li>
+					</ol>
+				</section>
+
+				<section class="star-band" aria-labelledby="star">
+					<SurveyDisk id="disk-foot" size={200} />
+					<div>
+						<h2 id="star" class="display">Star pillar-csi on GitHub</h2>
+						<p>Stars help other self-hosters find the project.</p>
+						<StarButton label="Star pillar-csi" class="star-btn-lg" />
+					</div>
+				</section>
+			</main>
+
+			<TitleBlock />
+		</div>
+
+		<a class="star-strip" href={REPO_URL} data-star-link data-star-strip>
+			<Icon name="star" size={18} />
+			<span>Star pillar-csi on GitHub</span>
+			<span class="star-count" data-star-count hidden></span>
+		</a>
+
+		<script>
+			import '../scripts/stars';
+			const strip = document.querySelector<HTMLElement>('[data-star-strip]');
+			// The strip stays out of the way while the hero or the star band (which already carry the star action) is on screen.
+			const anchors = [document.getElementById('hero'), document.querySelector('.star-band')].filter(Boolean) as Element[];
+			if (strip && anchors.length && 'IntersectionObserver' in window) {
+				const inView = new Set<Element>();
+				const io = new IntersectionObserver(
+					(entries) => {
+						for (const e of entries) e.isIntersecting ? inView.add(e.target) : inView.delete(e.target);
+						strip.classList.toggle('is-on', inView.size === 0);
+					},
+					{ threshold: 0 },
+				);
+				for (const a of anchors) io.observe(a);
+			}
+		</script>
+	</body>
+</html>
+
+<style>
+	.sheet {
+		position: relative;
+		max-width: 1360px;
+		margin: 14px auto 0;
+		padding: 0 clamp(1rem, 4vw, 3.5rem) clamp(1rem, 3vw, 2rem);
+		border: 1.5px solid var(--line);
+		border-bottom: 0;
+		outline: 1px solid var(--rule);
+		outline-offset: 6px;
+		margin-inline: max(14px, calc((100vw - 1360px) / 2));
+	}
+	.zones {
+		display: grid;
+		grid-template-columns: repeat(6, 1fr);
+		margin: 0 calc(-1 * clamp(1rem, 4vw, 3.5rem));
+		border-bottom: 1px solid var(--rule);
+		font-family: var(--mono);
+		font-size: 0.6875rem;
+		color: var(--fg-2);
+	}
+	.zones span {
+		padding: 0.15rem 0;
+		text-align: center;
+		border-left: 1px solid var(--rule);
+	}
+	.zones span:first-child {
+		border-left: 0;
+	}
+
+	.top {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 1rem;
+		padding: 1.1rem 0;
+	}
+	.brand img {
+		height: 40px;
+		width: auto;
+	}
+	.top-nav {
+		display: flex;
+		align-items: center;
+		gap: clamp(0.75rem, 2vw, 1.75rem);
+		font-weight: 600;
+	}
+	.top-nav > a:not(.star-btn) {
+		color: var(--fg);
+		text-decoration: none;
+	}
+	.top-nav > a:not(.star-btn):hover {
+		text-decoration: underline;
+	}
+	.gh {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+	}
+
+	/* Hero */
+	.hero {
+		display: grid;
+		grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+		gap: clamp(2rem, 5vw, 5rem);
+		align-items: center;
+		padding: clamp(1.5rem, 4vw, 3rem) 0 clamp(3rem, 7vw, 6rem);
+	}
+	h1 {
+		font-size: clamp(2.35rem, 4.6vw, 4.4rem);
+		line-height: 0.98;
+		margin: 0;
+		color: var(--ink);
+		text-wrap: balance;
+	}
+	.lede {
+		max-width: 38ch;
+		margin: 1.75rem 0 0;
+		font-size: clamp(1.125rem, 1.5vw, 1.3rem);
+		line-height: 1.5;
+		color: var(--fg-2);
+	}
+	.actions {
+		display: flex;
+		align-items: center;
+		gap: 1.5rem;
+		margin-top: 2.5rem;
+	}
+	.actions-side {
+		display: grid;
+		gap: 0.35rem;
+		justify-items: start;
+	}
+	.actions-side :global(.star-btn) {
+		margin-bottom: 0.5rem;
+	}
+	/* Secondary routes: quiet leader lines whose text aligns with the star button's edge */
+	.leader-link {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.45rem;
+		padding-block: 0.35rem;
+		font-weight: 650;
+		font-stretch: 112%;
+		font-size: 1.0625rem;
+		color: var(--green);
+		text-decoration: none;
+	}
+	.leader-link:hover {
+		color: var(--ink);
+		text-decoration: underline;
+	}
+	.leader-link:hover .icon {
+		transform: translateX(3px);
+	}
+	.leader-link .icon {
+		transition: transform 160ms var(--ease);
+	}
+	:global(body.landing) {
+		/* Room for the sticky star strip, so it never covers the title block at the end of the page */
+		padding-bottom: 84px;
+	}
+	.nw {
+		white-space: nowrap;
+	}
+
+	/* Bands */
+	.band {
+		display: grid;
+		grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+		gap: clamp(2rem, 5vw, 5rem);
+		padding: clamp(3rem, 7vw, 6rem) 0;
+		border-top: 1.5px solid var(--line);
+	}
+	.band-flip .band-text {
+		order: 2;
+	}
+	.band h2,
+	.notes h2,
+	.star-band h2 {
+		font-size: clamp(1.75rem, 3vw, 2.6rem);
+		line-height: 1.05;
+		margin: 0 0 1.25rem;
+		color: var(--ink);
+	}
+	.band-text p {
+		max-width: 46ch;
+		margin: 0 0 1rem;
+		color: var(--fg-2);
+		font-size: 1.125rem;
+	}
+	.band-text a {
+		font-weight: 600;
+	}
+
+	.schedule {
+		width: 100%;
+		border-collapse: collapse;
+		border: 1.5px solid var(--line);
+		font-size: 0.975rem;
+	}
+	.schedule caption {
+		text-align: left;
+		padding-bottom: 0.6rem;
+		color: var(--fg);
+	}
+	.schedule th,
+	.schedule td {
+		padding: 0.8rem 1rem;
+		text-align: left;
+		vertical-align: top;
+		border-bottom: 1px solid var(--rule);
+	}
+	.schedule thead th {
+		font-stretch: 112%;
+		font-weight: 600;
+		font-size: 0.7rem;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		background: var(--bg-2);
+		border-bottom: 1.5px solid var(--line);
+	}
+	.schedule tbody th {
+		font-weight: 600;
+		white-space: nowrap;
+	}
+	.schedule td.shipped {
+		font-weight: 600;
+	}
+	.schedule td.none {
+		color: var(--fg-2);
+	}
+	.schedule td.planned span {
+		display: inline-block;
+		padding: 0.1rem 0.5rem;
+		border: 1.5px dashed var(--line);
+		border-radius: 2px;
+	}
+	.legend {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.4rem 0.6rem;
+		margin: 0.8rem 0 2rem;
+		font-size: 0.875rem;
+		color: var(--fg-2);
+	}
+	.key {
+		display: inline-block;
+		width: 28px;
+		border-top: 2px solid var(--line);
+	}
+	.key-dash {
+		border-top-style: dashed;
+		margin-left: 0.8rem;
+	}
+
+	.detail {
+		margin: 0;
+	}
+	.detail figcaption {
+		display: flex;
+		align-items: baseline;
+		gap: 0.6rem;
+		margin-bottom: 0.6rem;
+		font-size: 0.9375rem;
+		font-weight: 600;
+	}
+	.detail figcaption .lettering {
+		white-space: nowrap;
+	}
+	.detail pre {
+		margin: 0;
+		padding: 1.1rem 1.25rem;
+		background: var(--ink);
+		color: var(--cream);
+		border-radius: var(--radius);
+		font-size: 0.9rem;
+		line-height: 1.6;
+		overflow-x: auto;
+	}
+	.detail .k {
+		color: #9fd3c0;
+	}
+	.detail .c {
+		color: #93a69b;
+		font-style: italic;
+	}
+
+	.split {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		border: 1.5px solid var(--line);
+		align-self: start;
+	}
+	.split-col {
+		padding: 1.25rem 1.4rem 1.4rem;
+	}
+	.split-col.host {
+		background: var(--bg-2);
+		border-left: 1px solid var(--rule);
+	}
+	.split h3 {
+		margin: 0 0 0.9rem;
+	}
+	.split ul {
+		margin: 0;
+		padding: 0;
+		list-style: none;
+		display: grid;
+		gap: 0.65rem;
+	}
+	.split li {
+		padding-left: 1.1rem;
+		position: relative;
+		line-height: 1.45;
+	}
+	.split li::before {
+		content: '';
+		position: absolute;
+		left: 0;
+		top: 0.6em;
+		width: 0.55rem;
+		border-top: 1.5px solid var(--line);
+	}
+	.split dl {
+		margin: 0;
+		display: grid;
+		gap: 0.3rem;
+	}
+	.split dt {
+		font-weight: 700;
+		margin-top: 0.5rem;
+	}
+	.split dt:first-child {
+		margin-top: 0;
+	}
+	.split dd {
+		margin: 0;
+		line-height: 1.45;
+	}
+	.split code,
+	.notes code {
+		font-size: 0.88em;
+	}
+
+	.notes {
+		padding: clamp(3rem, 7vw, 6rem) 0;
+		border-top: 1.5px solid var(--line);
+	}
+	.notes ol {
+		margin: 0;
+		padding: 0;
+		list-style: none;
+		counter-reset: note;
+		display: grid;
+		grid-template-columns: repeat(3, minmax(0, 1fr));
+		gap: clamp(1.5rem, 3vw, 3rem);
+	}
+	.notes li {
+		counter-increment: note;
+		position: relative;
+		padding-left: 2.9rem;
+		font-size: 1.05rem;
+		line-height: 1.55;
+	}
+	.notes li::before {
+		content: counter(note);
+		position: absolute;
+		left: 0;
+		top: 0;
+		display: grid;
+		place-items: center;
+		width: 2rem;
+		height: 2rem;
+		border: 1.5px solid var(--line);
+		border-radius: 50%;
+		font-family: var(--mono);
+		font-weight: 500;
+		font-size: 0.9rem;
+	}
+
+	.star-band {
+		/* The ink focus ring would vanish on enamel */
+		--focus: var(--cream);
+		display: flex;
+		align-items: center;
+		gap: clamp(1.5rem, 5vw, 4rem);
+		padding: clamp(2.5rem, 6vw, 4.5rem) clamp(1.5rem, 5vw, 4rem);
+		margin-bottom: clamp(2.5rem, 6vw, 4.5rem);
+		background: var(--enamel);
+		color: var(--cream);
+		border-radius: var(--radius);
+	}
+	.star-band h2 {
+		color: var(--cream);
+		font-size: clamp(2rem, 4.2vw, 3.6rem);
+	}
+	.star-band p {
+		margin: 0 0 1.5rem;
+		color: var(--steel);
+		font-size: 1.125rem;
+	}
+	:global(.star-btn-lg) {
+		min-height: 52px;
+		padding: 0.7rem 1.4rem !important;
+		font-size: 1.0625rem !important;
+	}
+
+	/* Sticky strip */
+	.star-strip {
+		position: fixed;
+		left: 50%;
+		bottom: 16px;
+		z-index: 40;
+		display: inline-flex;
+		align-items: center;
+		gap: 0.6rem;
+		padding: 0.8rem 1.3rem;
+		background: var(--brass);
+		color: var(--ink);
+		font-weight: 700;
+		font-stretch: 112%;
+		text-decoration: none;
+		border-radius: var(--radius);
+		box-shadow: 0 2px 0 rgb(17 42 35 / 0.4), 0 14px 30px -10px rgb(17 42 35 / 0.55);
+		transform: translate(-50%, 140%);
+		transition: transform 420ms var(--ease), background 160ms var(--ease);
+		white-space: nowrap;
+	}
+	.star-strip:global(.is-on) {
+		transform: translate(-50%, 0);
+	}
+	.star-strip:hover {
+		background: #e0b659;
+		color: var(--ink);
+	}
+	.star-strip .star-count {
+		font-family: var(--mono);
+		font-weight: 500;
+		padding: 0.05rem 0.45rem;
+		background: var(--ink);
+		color: var(--brass);
+		border-radius: 2px;
+	}
+
+	.sheet :global(.title-block) {
+		margin: 0 calc(-1 * clamp(1rem, 4vw, 3.5rem));
+		border-inline: 0;
+	}
+
+	@media (max-width: 1080px) {
+		.hero {
+			grid-template-columns: minmax(0, 1fr);
+		}
+		.band,
+		.band-flip {
+			grid-template-columns: minmax(0, 1fr);
+		}
+		.band-flip .band-text {
+			order: 0;
+		}
+		.notes ol {
+			grid-template-columns: minmax(0, 1fr);
+			max-width: 60ch;
+		}
+	}
+	@media (max-width: 640px) {
+		.sheet {
+			outline: 0;
+			margin: 6px;
+		}
+		.top-nav .gh span {
+			display: none;
+		}
+		.top-nav > a[href='/docs/'] {
+			font-size: 0.95rem;
+		}
+		.top :global(.star-btn) {
+			padding-inline: 0.7rem;
+		}
+		.brand img {
+			height: 32px;
+		}
+		.actions {
+			flex-direction: column;
+			align-items: flex-start;
+		}
+		.split {
+			grid-template-columns: minmax(0, 1fr);
+		}
+		.split-col.host {
+			order: -1;
+			border-left: 0;
+			border-bottom: 1px solid var(--rule);
+		}
+		.star-band {
+			flex-direction: column;
+			align-items: flex-start;
+		}
+		.schedule th,
+		.schedule td {
+			padding: 0.65rem 0.7rem;
+		}
+	}
+</style>

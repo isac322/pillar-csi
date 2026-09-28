@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/bhyoo/pillar-csi/test/e2e/framework"
+	"github.com/isac322/pillar-csi/test/e2e/framework"
 )
 
 // TestRegisterAndDeregisterActiveScope verifies the basic register/deregister

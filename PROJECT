@@ -7,7 +7,7 @@ domain: pillar-csi.bhyoo.com
 layout:
 - go.kubebuilder.io/v4
 projectName: pillar-csi
-repo: github.com/bhyoo/pillar-csi
+repo: github.com/isac322/pillar-csi
 resources:
 - api:
     crdVersion: v1
@@ -15,7 +15,7 @@ resources:
   domain: pillar-csi.bhyoo.com
   group: pillar-csi
   kind: PillarAgent
-  path: github.com/bhyoo/pillar-csi/api/v1alpha1
+  path: github.com/isac322/pillar-csi/api/v1alpha1
   version: v1alpha1
   webhooks:
     validation: true
@@ -26,7 +26,7 @@ resources:
   domain: pillar-csi.bhyoo.com
   group: pillar-csi
   kind: PillarStore
-  path: github.com/bhyoo/pillar-csi/api/v1alpha1
+  path: github.com/isac322/pillar-csi/api/v1alpha1
   version: v1alpha1
   webhooks:
     validation: true
@@ -37,7 +37,7 @@ resources:
   domain: pillar-csi.bhyoo.com
   group: pillar-csi
   kind: PillarProtocol
-  path: github.com/bhyoo/pillar-csi/api/v1alpha1
+  path: github.com/isac322/pillar-csi/api/v1alpha1
   version: v1alpha1
   webhooks:
     validation: true
@@ -48,7 +48,7 @@ resources:
   domain: pillar-csi.bhyoo.com
   group: pillar-csi
   kind: PillarStorageClass
-  path: github.com/bhyoo/pillar-csi/api/v1alpha1
+  path: github.com/isac322/pillar-csi/api/v1alpha1
   version: v1alpha1
   webhooks:
     defaulting: true
@@ -60,6 +60,6 @@ resources:
   domain: bhyoo.com
   group: pillar-csi
   kind: PillarVolumeState
-  path: github.com/bhyoo/pillar-csi/api/v1alpha1
+  path: github.com/isac322/pillar-csi/api/v1alpha1
   version: v1alpha1
 version: "3"
