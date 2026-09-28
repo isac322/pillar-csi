@@ -1,0 +1,26 @@
+---
+import type { landing } from '../../data/landing';
+
+interface Props {
+	cta: (typeof landing)['cta'];
+}
+
+const { cta } = Astro.props;
+const repo = 'https://github.com/isac322/pillar-csi';
+---
+
+<footer class="lp-footer">
+	<div class="lp-wrap">
+		<div class="lp-cta">
+			<a class="lp-button lp-button--primary" href={cta.primary.href}>{cta.primary.label}</a>
+			<a class="lp-button" href={cta.secondary.href}>{cta.secondary.label}</a>
+		</div>
+		<nav class="lp-footer__nav" aria-label="Footer">
+			<ul>
+				<li><a href="/docs/">Docs</a></li>
+				<li><a href={repo}>GitHub</a></li>
+				<li><a href={`${repo}/blob/master/LICENSE`}>License Apache-2.0</a></li>
+			</ul>
+		</nav>
+	</div>
+</footer>

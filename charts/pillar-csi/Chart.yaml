@@ -1,6 +1,6 @@
 apiVersion: v2
 name: pillar-csi
-description: A Helm chart for deploying pillar-csi — a Kubernetes CSI plugin with pluggable backends and protocols
+description: One Kubernetes CSI driver for ZFS and LVM pools, served over kernel NVMe-oF/TCP.
 type: application
 version: 0.3.0
 appVersion: "0.3.0"
@@ -9,9 +9,21 @@ keywords:
   - csi
   - storage
   - kubernetes
-home: https://github.com/isac322/pillar-csi
+home: https://pillar-csi.bhyoo.com
+icon: https://raw.githubusercontent.com/isac322/pillar-csi/master/site/public/brand/mark.svg
 sources:
   - https://github.com/isac322/pillar-csi
 maintainers:
   - name: bhyoo
     url: https://github.com/bhyoo
+annotations:
+  artifacthub.io/license: Apache-2.0
+  artifacthub.io/category: storage
+  artifacthub.io/prerelease: "true"
+  artifacthub.io/links: |
+    - name: Homepage
+      url: https://pillar-csi.bhyoo.com
+    - name: Documentation
+      url: https://pillar-csi.bhyoo.com/docs/
+    - name: Source
+      url: https://github.com/isac322/pillar-csi

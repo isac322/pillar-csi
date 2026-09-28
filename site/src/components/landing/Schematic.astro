@@ -1,0 +1,97 @@
+---
+// Static data-path drawing. Cyan marks the network wire; amber marks the
+// kernel nvmet target and nothing else. Two layouts: horizontal (wide) and a
+// compact vertical one (narrow).
+const title = 'pillar-csi data path';
+const desc =
+	'A ZFS zvol or LVM logical volume on the storage node is exported by the kernel nvmet target, configured through configfs. It travels over NVMe-oF/TCP to the kernel nvme_tcp initiator on the worker node and appears in the pod as the block device /dev/nvmeXnY. No userspace process sits between the two kernels.';
+const note = ['kernel to kernel,', 'no userspace hop'];
+---
+
+<figure class="lp-schematic">
+	<svg
+		class="sx sx--h"
+		viewBox="0 0 640 312"
+		role="img"
+		aria-labelledby="sx-h-title sx-h-desc"
+		xmlns="http://www.w3.org/2000/svg"
+	>
+		<title id="sx-h-title">{title}</title>
+		<desc id="sx-h-desc">{desc}</desc>
+
+		<text class="sx-label" x="12" y="16">STORAGE NODE</text>
+		<rect class="sx-frame" x="1" y="24" width="240" height="280" />
+		<text class="sx-label" x="410" y="16">WORKER NODE</text>
+		<rect class="sx-frame" x="399" y="24" width="240" height="280" />
+
+		<rect class="sx-pool" x="20" y="52" width="202" height="72" />
+		<text class="sx-t sx-strong" x="121" y="84" text-anchor="middle">ZFS zvol / LVM LV</text>
+		<text class="sx-t" x="121" y="106" text-anchor="middle">zpool / VG</text>
+
+		<line class="sx-link" x1="121" y1="124" x2="121" y2="180" />
+
+		<rect class="sx-target" x="20" y="180" width="202" height="90" />
+		<text class="sx-t sx-on-amber sx-strong" x="121" y="220" text-anchor="middle">kernel nvmet</text>
+		<text class="sx-t sx-on-amber" x="121" y="243" text-anchor="middle">configfs</text>
+
+		<text class="sx-t sx-cyan sx-small" x="320" y="213" text-anchor="middle">NVMe-oF/TCP</text>
+		<line class="sx-wire" x1="222" y1="225" x2="406" y2="225" />
+		<polygon class="sx-wire-head" points="418,225 404,217 404,233" />
+		<text class="sx-note" x="320" y="253" text-anchor="middle">{note[0]}</text>
+		<text class="sx-note" x="320" y="268" text-anchor="middle">{note[1]}</text>
+
+		<rect class="sx-box" x="418" y="180" width="202" height="90" />
+		<text class="sx-t sx-strong" x="519" y="220" text-anchor="middle">kernel nvme_tcp</text>
+		<text class="sx-t sx-muted" x="519" y="243" text-anchor="middle">initiator</text>
+
+		<line class="sx-link" x1="519" y1="180" x2="519" y2="136" />
+		<polygon class="sx-link-head" points="519,124 513,136 525,136" />
+
+		<rect class="sx-box" x="418" y="52" width="202" height="72" />
+		<text class="sx-t sx-strong" x="519" y="84" text-anchor="middle">Pod</text>
+		<text class="sx-t" x="519" y="106" text-anchor="middle">/dev/nvmeXnY</text>
+	</svg>
+
+	<svg
+		class="sx sx--v"
+		viewBox="0 0 320 408"
+		role="img"
+		aria-labelledby="sx-v-title sx-v-desc"
+		xmlns="http://www.w3.org/2000/svg"
+	>
+		<title id="sx-v-title">{title}</title>
+		<desc id="sx-v-desc">{desc}</desc>
+
+		<text class="sx-label" x="12" y="14">STORAGE NODE</text>
+		<rect class="sx-frame" x="1" y="22" width="318" height="158" />
+		<text class="sx-label" x="12" y="240">WORKER NODE</text>
+		<rect class="sx-frame" x="1" y="248" width="318" height="158" />
+
+		<rect class="sx-pool" x="20" y="36" width="280" height="48" />
+		<text class="sx-t sx-strong" x="160" y="57" text-anchor="middle">ZFS zvol / LVM LV</text>
+		<text class="sx-t" x="160" y="75" text-anchor="middle">zpool / VG</text>
+
+		<line class="sx-link" x1="160" y1="84" x2="160" y2="108" />
+
+		<rect class="sx-target" x="20" y="108" width="280" height="56" />
+		<text class="sx-t sx-on-amber sx-strong" x="160" y="132" text-anchor="middle">kernel nvmet</text>
+		<text class="sx-t sx-on-amber" x="160" y="152" text-anchor="middle">configfs</text>
+
+		<line class="sx-wire" x1="160" y1="164" x2="160" y2="250" />
+		<polygon class="sx-wire-head" points="160,262 152,248 168,248" />
+		<text class="sx-t sx-cyan sx-small" x="174" y="198">NVMe-oF/TCP</text>
+		<text class="sx-note" x="174" y="215">{note[0]}</text>
+		<text class="sx-note" x="174" y="229">{note[1]}</text>
+
+		<rect class="sx-box" x="20" y="262" width="280" height="56" />
+		<text class="sx-t sx-strong" x="160" y="286" text-anchor="middle">kernel nvme_tcp</text>
+		<text class="sx-t sx-muted" x="160" y="306" text-anchor="middle">initiator</text>
+
+		<line class="sx-link" x1="160" y1="318" x2="160" y2="332" />
+		<polygon class="sx-link-head" points="160,342 154,330 166,330" />
+
+		<rect class="sx-box" x="20" y="342" width="280" height="48" />
+		<text class="sx-t sx-strong" x="160" y="363" text-anchor="middle">Pod</text>
+		<text class="sx-t" x="160" y="381" text-anchor="middle">/dev/nvmeXnY</text>
+	</svg>
+</figure>

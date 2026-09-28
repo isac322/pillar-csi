@@ -1,0 +1,12 @@
+{{- /*
+Values table shared by charts/pillar-csi/README.md and the site's Helm values page.
+Differs from helm-docs' chart.valuesTable only in escaping description text:
+"|" would split the Markdown table cell and "<fullname>" would be parsed as an HTML tag.
+*/ -}}
+{{ define "pillar.valuesTable" -}}
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+{{- range .Values }}
+| {{ .Key }} | {{ .Type }} | {{ if .Default }}{{ .Default }}{{ else }}{{ .AutoDefault }}{{ end }} | {{ if .Description }}{{ .Description | replace "|" "\\|" | replace "<" "&lt;" }}{{ else }}{{ .AutoDescription | replace "|" "\\|" | replace "<" "&lt;" }}{{ end }} |
+{{- end }}
+{{- end }}

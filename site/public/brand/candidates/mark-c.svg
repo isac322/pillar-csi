@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-labelledby="t">
+  <title id="t">pillar-csi mark, candidate C: outlined slabs pierced by the wire</title>
+  <g fill="none" stroke="#F8FAFC" stroke-width="2">
+    <rect x="5" y="3" width="22" height="6"/>
+    <rect x="5" y="11" width="22" height="6"/>
+    <rect x="5" y="19" width="22" height="6"/>
+  </g>
+  <rect x="14" y="0" width="4" height="26" fill="#00ADD8"/>
+  <rect x="14" y="26" width="4" height="4" fill="#F59E0B"/>
+</svg>

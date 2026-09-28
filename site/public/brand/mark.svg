@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-labelledby="pc-mark-title">
+  <title id="pc-mark-title">pillar-csi</title>
+  <!--
+    Three volumes split by one unbroken data path that ends on the kernel target.
+    Edges sit on a 16px grid, so the mark stays sharp at 16x16.
+    Inline use: colors follow the pc-mark-slab, pc-mark-wire and pc-mark-kernel
+    custom properties from tokens.css; add class "pc-mono" to any ancestor to draw
+    everything in currentColor.
+  -->
+  <style>
+    @supports (fill: var(--pc-a)) {
+      .pc-slab { fill: var(--pc-mark-slab, #F8FAFC); }
+      .pc-wire { fill: var(--pc-mark-wire, #00ADD8); }
+      .pc-kernel { fill: var(--pc-mark-kernel, #F59E0B); }
+    }
+    .pc-mono .pc-slab, .pc-mono .pc-wire, .pc-mono .pc-kernel { fill: currentColor; }
+  </style>
+  <g class="pc-slab" fill="#F8FAFC">
+    <rect x="2" y="4" width="10" height="4"/>
+    <rect x="20" y="4" width="10" height="4"/>
+    <rect x="2" y="12" width="10" height="4"/>
+    <rect x="20" y="12" width="10" height="4"/>
+    <rect x="2" y="20" width="10" height="4"/>
+    <rect x="20" y="20" width="10" height="4"/>
+  </g>
+  <rect class="pc-wire" fill="#00ADD8" x="14" y="2" width="4" height="24"/>
+  <rect class="pc-kernel" fill="#F59E0B" x="12" y="26" width="8" height="4"/>
+</svg>

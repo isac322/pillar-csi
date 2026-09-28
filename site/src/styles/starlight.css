@@ -1,0 +1,82 @@
+/*
+ * Maps the pillar-csi design tokens (tokens.css) onto Starlight's theme
+ * variables. tokens.css swaps the --pc-* values under [data-theme='light'],
+ * so the mappings below follow the active theme. The docs default to dark
+ * (see components/starlight/ThemeProvider.astro) and use flat surfaces with
+ * no grid. Cyan is used for links only; chrome stays neutral. Amber is not
+ * used in the docs chrome because it means "kernel target" on the landing.
+ */
+
+:root,
+:root[data-theme='light'] {
+	--sl-font: var(--pc-font-body);
+	--sl-font-mono: var(--pc-font-mono);
+
+	--sl-color-white: var(--pc-text);
+	--sl-color-gray-1: color-mix(in srgb, var(--pc-text) 88%, var(--pc-muted));
+	--sl-color-gray-2: color-mix(in srgb, var(--pc-text) 45%, var(--pc-muted));
+	--sl-color-gray-3: var(--pc-muted);
+	--sl-color-gray-4: var(--pc-steel);
+	--sl-color-gray-5: var(--pc-grid);
+	--sl-color-gray-6: var(--pc-surface);
+	--sl-color-gray-7: var(--pc-ground);
+	--sl-color-black: var(--pc-ground);
+
+	--sl-color-accent-low: var(--pc-surface);
+	--sl-color-accent: var(--pc-wire);
+	--sl-color-accent-high: var(--pc-wire);
+	--sl-color-text-accent: var(--pc-wire);
+
+	--sl-color-bg-nav: var(--pc-ground);
+	--sl-color-bg-sidebar: var(--pc-ground);
+	--sl-color-hairline-shade: var(--pc-steel);
+}
+
+.sl-markdown-content :is(h1, h2, h3, h4),
+h1#_top {
+	font-family: var(--pc-font-display);
+	letter-spacing: -0.01em;
+}
+
+/* Current sidebar entry: a text-color rule instead of a filled accent block. */
+.sidebar-content a[aria-current='page'],
+.sidebar-content a[aria-current='page']:hover,
+.sidebar-content a[aria-current='page']:focus {
+	color: var(--pc-text);
+	background-color: var(--pc-surface);
+	box-shadow: inset 2px 0 0 var(--pc-text);
+}
+
+/* Square corners across docs chrome: radius stays at 2px or less. */
+.sl-markdown-content :is(pre, code, table, img, aside),
+.card,
+.sl-link-card,
+.expressive-code .frame,
+.expressive-code pre,
+site-search button,
+.pagination-links a {
+	border-radius: 2px !important;
+}
+
+.card,
+.sl-link-card,
+.pagination-links a {
+	box-shadow: none !important;
+}
+
+.sl-link-card {
+	border-color: var(--pc-steel) !important;
+	background: var(--pc-surface);
+}
+
+.sl-link-card:hover {
+	border-color: var(--pc-text) !important;
+}
+
+.sl-markdown-content table {
+	border-collapse: collapse;
+}
+
+.sl-markdown-content :is(th, td) {
+	border: 1px solid var(--sl-color-gray-5);
+}

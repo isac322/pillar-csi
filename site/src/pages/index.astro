@@ -1,0 +1,110 @@
+---
+import '@fontsource/inter-tight/600.css';
+import '@fontsource/inter-tight/700.css';
+import '@fontsource/inter/400.css';
+import '@fontsource/inter/500.css';
+import '@fontsource/jetbrains-mono/400.css';
+import '@fontsource/jetbrains-mono/600.css';
+import h1Font from '@fontsource/inter-tight/files/inter-tight-latin-700-normal.woff2?url';
+import '../styles/tokens.css';
+import '../styles/landing.css';
+import { landing } from '../data/landing';
+import Nav from '../components/landing/Nav.astro';
+import Hero from '../components/landing/Hero.astro';
+import Negations from '../components/landing/Negations.astro';
+import Matrix from '../components/landing/Matrix.astro';
+import Steps from '../components/landing/Steps.astro';
+import Comparison from '../components/landing/Comparison.astro';
+import Limits from '../components/landing/Limits.astro';
+import Footer from '../components/landing/Footer.astro';
+
+const site = Astro.site ?? new URL('https://pillar-csi.bhyoo.com');
+const canonical = new URL('/', site).href;
+const ogImage = new URL('/og.png', site).href;
+const repo = 'https://github.com/isac322/pillar-csi';
+const { title, description } = landing.meta;
+
+const jsonLd = {
+	'@context': 'https://schema.org',
+	'@graph': [
+		{
+			'@type': 'SoftwareSourceCode',
+			name: 'pillar-csi',
+			description,
+			url: canonical,
+			codeRepository: repo,
+			programmingLanguage: 'Go',
+			license: 'https://www.apache.org/licenses/LICENSE-2.0',
+			runtimePlatform: 'Kubernetes',
+		},
+		{
+			'@type': 'SoftwareApplication',
+			name: 'pillar-csi',
+			description,
+			url: canonical,
+			applicationCategory: 'DeveloperApplication',
+			operatingSystem: 'Linux',
+			license: 'https://www.apache.org/licenses/LICENSE-2.0',
+			offers: { '@type': 'Offer', price: '0', priceCurrency: 'USD' },
+		},
+	],
+};
+---
+
+<!doctype html>
+<html lang="en" dir="ltr">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>{title}</title>
+		<meta name="description" content={description} />
+		<link rel="canonical" href={canonical} />
+		<meta name="theme-color" content="#0A0F1D" />
+		<meta name="color-scheme" content="dark" />
+		<link rel="preload" href={h1Font} as="font" type="font/woff2" crossorigin />
+		<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+		<link rel="icon" href="/favicon.ico" sizes="32x32" />
+		<link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+		<link rel="sitemap" href="/sitemap-index.xml" />
+
+		<meta property="og:type" content="website" />
+		<meta property="og:site_name" content="pillar-csi" />
+		<meta property="og:locale" content="en_US" />
+		<meta property="og:url" content={canonical} />
+		<meta property="og:title" content={title} />
+		<meta property="og:description" content={description} />
+		<meta property="og:image" content={ogImage} />
+		<meta property="og:image:width" content="1200" />
+		<meta property="og:image:height" content="630" />
+		<meta property="og:image:alt" content={description} />
+		<meta name="twitter:card" content="summary_large_image" />
+		<meta name="twitter:title" content={title} />
+		<meta name="twitter:description" content={description} />
+		<meta name="twitter:image" content={ogImage} />
+
+		<script type="application/ld+json" set:html={JSON.stringify(jsonLd)} />
+	</head>
+	<body class="lp">
+		<a class="lp-skip" href="#main">Skip to content</a>
+		<Nav />
+		<main id="main">
+			<Hero hero={landing.hero} cta={landing.cta} />
+			<Negations items={landing.negations} />
+			<Matrix matrix={landing.matrix} />
+			<Steps steps={landing.steps} />
+			<Comparison comparison={landing.comparison} />
+			<Limits text={landing.limits} />
+		</main>
+		<Footer cta={landing.cta} />
+		<script is:inline>
+			document.querySelectorAll('[data-copy]').forEach((button) => {
+				button.hidden = false;
+				button.addEventListener('click', async () => {
+					await navigator.clipboard.writeText(button.dataset.copy);
+					button.textContent = 'Copied';
+					setTimeout(() => (button.textContent = 'Copy'), 1500);
+				});
+			});
+		</script>
+	</body>
+</html>

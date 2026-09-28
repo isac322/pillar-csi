@@ -1,0 +1,88 @@
+---
+import type { landing } from '../../data/landing';
+
+interface Props {
+	matrix: (typeof landing)['matrix'];
+}
+
+const { matrix } = Astro.props;
+const { legend } = matrix;
+// Cells show the status keyword; the legend carries the full wording once.
+---
+
+<section class="lp-section lp-matrix" aria-labelledby="matrix-title">
+	<div class="lp-wrap">
+		<h2 id="matrix-title" class="lp-section__label">02 / One driver</h2>
+		<h3 class="lp-section__title">{matrix.heading}</h3>
+		<p class="lp-section__body">{matrix.body}</p>
+
+		<div class="lp-matrix__grid">
+			<table class="lp-matrix__table">
+				<thead>
+					<tr>
+						<td></td>
+						{
+							matrix.columns.map((col) => (
+								<th scope="col" class={`lp-matrix__head lp-matrix__head--${col.status}`}>
+									{col.name}
+								</th>
+							))
+						}
+					</tr>
+				</thead>
+				<tbody>
+					{
+						matrix.rows.map((row) => (
+							<tr>
+								<th scope="row" class={`lp-matrix__head lp-matrix__head--${row.status}`}>
+									{row.name}
+								</th>
+								{row.cells.map((cell) => (
+									<td class="lp-matrix__slot">
+										{cell === 'na' ? (
+											<span class="lp-matrix__cell lp-matrix__cell--na">
+												<span class="lp-sr">{legend.na}</span>
+											</span>
+										) : (
+											<span class={`lp-matrix__cell lp-matrix__cell--${cell}`}>{cell}</span>
+										)}
+									</td>
+								))}
+							</tr>
+						))
+					}
+				</tbody>
+			</table>
+		</div>
+
+		<ul class="lp-matrix__stack">
+			{
+				matrix.rows.map((row) => (
+					<li class={`lp-matrix__block lp-matrix__head--${row.status}`}>
+						<h4 class="lp-matrix__block-title">{row.name}</h4>
+						<dl>
+							{row.cells.map((cell, i) =>
+								cell === 'na' ? null : (
+									<div class="lp-matrix__line">
+										<dt>{matrix.columns[i]?.name}</dt>
+										<dd>
+											<span class={`lp-matrix__cell lp-matrix__cell--${cell}`}>{cell}</span>
+										</dd>
+									</div>
+								),
+							)}
+						</dl>
+					</li>
+				))
+			}
+		</ul>
+
+		<ul class="lp-matrix__legend">
+			<li><span class="lp-matrix__swatch lp-matrix__cell--shipped" aria-hidden="true"></span>{legend.shipped}</li>
+			<li><span class="lp-matrix__swatch lp-matrix__cell--planned" aria-hidden="true"></span>{legend.planned}</li>
+			<li class="lp-matrix__legend-na">
+				<span class="lp-matrix__swatch lp-matrix__cell--na" aria-hidden="true"></span>{legend.na}
+			</li>
+		</ul>
+	</div>
+</section>

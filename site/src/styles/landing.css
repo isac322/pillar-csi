@@ -1,0 +1,962 @@
+/*
+ * Landing page styles. Colors come from tokens.css and carry meaning:
+ * --pc-wire (cyan) is the network wire and --pc-kernel (amber) is the kernel
+ * nvmet target. Nothing else uses them. No gradients, shadows, blur, or
+ * rounded pills; radius <= 2px. Fonts are self-hosted via @fontsource
+ * (imported in src/pages/index.astro); weights used: display 600/700,
+ * body 400/500, mono 400/600.
+ */
+
+*,
+*::before,
+*::after {
+	box-sizing: border-box;
+}
+
+html {
+	-webkit-text-size-adjust: 100%;
+}
+
+body.lp {
+	margin: 0;
+	background: var(--pc-ground);
+	color: var(--pc-text);
+	font-family: var(--pc-font-body);
+	font-size: 1rem;
+	line-height: 1.6;
+}
+
+.lp a {
+	color: var(--pc-text);
+	text-underline-offset: 3px;
+}
+
+.lp a:hover {
+	text-decoration-thickness: 2px;
+}
+
+.lp :focus-visible {
+	outline: 2px solid var(--pc-text);
+	outline-offset: 2px;
+}
+
+.lp-skip {
+	position: absolute;
+	left: 8px;
+	top: -48px;
+	padding: 8px 12px;
+	background: var(--pc-text);
+	color: var(--pc-ground) !important;
+	z-index: 10;
+}
+
+.lp-skip:focus {
+	top: 8px;
+}
+
+.lp-sr {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	margin: -1px;
+	padding: 0;
+	overflow: hidden;
+	clip: rect(0 0 0 0);
+	white-space: nowrap;
+	border: 0;
+}
+
+.lp-wrap {
+	max-width: 1160px;
+	margin: 0 auto;
+	padding: 0 24px;
+}
+
+/* Nav */
+
+.lp-nav {
+	border-bottom: 1px solid var(--pc-steel);
+}
+
+.lp-nav__inner {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 16px;
+	min-height: 60px;
+}
+
+.lp-brand {
+	display: inline-flex;
+	align-items: center;
+	gap: 10px;
+	font-family: var(--pc-font-mono);
+	font-weight: 600;
+	text-decoration: none;
+	white-space: nowrap;
+}
+
+.lp .lp-brand {
+	text-decoration: none;
+}
+
+.lp-brand img {
+	display: block;
+	width: 28px;
+	height: 28px;
+}
+
+.lp-nav__links {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px 20px;
+	margin: 0;
+	padding: 0;
+	list-style: none;
+	font-family: var(--pc-font-mono);
+	font-size: 0.875rem;
+}
+
+.lp .lp-nav__links a {
+	text-decoration: none;
+	color: var(--pc-muted);
+}
+
+.lp .lp-nav__links a:hover {
+	color: var(--pc-text);
+	text-decoration: underline;
+}
+
+/* Hero: a drawing sheet with a 1px CAD grid. */
+
+.lp-hero {
+	border-bottom: 1px solid var(--pc-steel);
+	background-color: var(--pc-ground);
+	background-image: var(--pc-grid-bg);
+	background-size: var(--pc-grid-size);
+	background-position: -1px -1px;
+}
+
+.lp-hero__grid {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr);
+	gap: 40px;
+	padding-top: 56px;
+	padding-bottom: 56px;
+}
+
+@media (min-width: 960px) {
+	.lp-hero__grid {
+		grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+		align-items: center;
+		gap: 56px;
+		padding-top: 64px;
+		padding-bottom: 64px;
+	}
+}
+
+.lp-eyebrow,
+.lp-section__label {
+	margin: 0 0 16px;
+	font-family: var(--pc-font-mono);
+	font-size: 0.8125rem;
+	font-weight: 400;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: var(--pc-muted);
+}
+
+.lp-hero__title {
+	margin: 0 0 20px;
+	font-family: var(--pc-font-display);
+	font-size: clamp(2.125rem, 5.2vw, 3.5rem);
+	font-weight: 700;
+	line-height: 1.08;
+	letter-spacing: -0.02em;
+	text-wrap: balance;
+}
+
+.lp-hero__subline {
+	max-width: 36em;
+	margin: 0 0 28px;
+	font-size: 1.125rem;
+	color: var(--pc-muted);
+}
+
+.lp-hero__cta {
+	margin-top: 20px;
+}
+
+/* Code blocks (hero install and steps) */
+
+.lp-code {
+	min-width: 0;
+	border: 1px solid var(--pc-steel);
+	border-radius: 2px;
+	background: var(--pc-surface);
+}
+
+.lp-code__bar {
+	display: flex;
+	align-items: stretch;
+	justify-content: space-between;
+	min-height: 30px;
+	border-bottom: 1px solid var(--pc-steel);
+}
+
+.lp-code__lang {
+	align-self: center;
+	padding: 0 12px;
+	font-family: var(--pc-font-mono);
+	font-size: 0.6875rem;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: var(--pc-muted);
+}
+
+.lp-code pre {
+	margin: 0;
+	padding: 10px 12px;
+	overflow-x: auto;
+	font-family: var(--pc-font-mono);
+	font-size: 0.8125rem;
+	line-height: 1.45;
+}
+
+/* The install command wraps instead of scrolling so every word is visible.
+ * Wide screens pack arguments per line; narrow screens show one per line. */
+.lp-install pre {
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+
+.lp-install__narrow {
+	display: none;
+}
+
+@media (max-width: 480px) {
+	.lp-install__wide {
+		display: none;
+	}
+	.lp-install__narrow {
+		display: block;
+	}
+}
+
+.lp-copy {
+	padding: 0 14px;
+	border: 0;
+	border-left: 1px solid var(--pc-steel);
+	border-radius: 0;
+	background: transparent;
+	color: var(--pc-text);
+	font-family: var(--pc-font-mono);
+	font-size: 0.75rem;
+	cursor: pointer;
+}
+
+.lp-copy:hover {
+	background: var(--pc-steel);
+}
+
+.lp-copy[hidden] {
+	display: none;
+}
+
+/* Schematic */
+
+.lp-schematic {
+	margin: 0;
+	min-width: 0;
+}
+
+.sx {
+	display: block;
+	width: 100%;
+	height: auto;
+}
+
+.sx--h {
+	display: none;
+}
+
+.sx--v {
+	max-width: 360px;
+	margin: 0 auto;
+}
+
+@media (min-width: 720px) {
+	.sx--h {
+		display: block;
+	}
+	.sx--v {
+		display: none;
+	}
+}
+
+.sx text {
+	font-family: var(--pc-font-mono);
+	font-size: 14px;
+}
+
+.sx .sx-label {
+	font-size: 11px;
+	letter-spacing: 0.08em;
+	fill: var(--pc-muted);
+}
+
+.sx .sx-small {
+	font-size: 12px;
+}
+
+.sx .sx-note {
+	font-size: 12px;
+	fill: var(--pc-muted);
+}
+
+.sx .sx-strong {
+	font-weight: 600;
+}
+
+.sx-frame {
+	fill: var(--pc-ground);
+	stroke: var(--pc-steel);
+	stroke-width: 1;
+	stroke-dasharray: 4 4;
+}
+
+.sx-pool {
+	fill: var(--pc-steel);
+	stroke: var(--pc-muted);
+	stroke-width: 1;
+}
+
+.sx-target {
+	fill: var(--pc-kernel);
+}
+
+.sx-box {
+	fill: var(--pc-surface);
+	stroke: var(--pc-muted);
+	stroke-width: 1;
+}
+
+.sx-link {
+	stroke: var(--pc-muted);
+	stroke-width: 2;
+}
+
+.sx-link-head {
+	fill: var(--pc-muted);
+}
+
+.sx-wire {
+	stroke: var(--pc-wire);
+	stroke-width: 3;
+}
+
+.sx-wire-head {
+	fill: var(--pc-wire);
+}
+
+.sx-t {
+	fill: var(--pc-text);
+}
+
+.sx-muted {
+	fill: var(--pc-muted);
+}
+
+.sx-cyan {
+	fill: var(--pc-wire);
+}
+
+.sx-on-amber {
+	fill: var(--pc-ground);
+}
+
+/* Sections */
+
+.lp-section {
+	border-bottom: 1px solid var(--pc-steel);
+	padding: 48px 0;
+}
+
+.lp-section__title {
+	margin: 0 0 8px;
+	font-family: var(--pc-font-display);
+	font-size: 1.5rem;
+	font-weight: 700;
+	line-height: 1.25;
+	letter-spacing: -0.01em;
+}
+
+.lp-section__body {
+	max-width: 44em;
+	margin: 0 0 20px;
+	color: var(--pc-muted);
+}
+
+/* Negation strip */
+
+.lp-negations__list {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr);
+	margin: 0;
+	padding: 0;
+	list-style: none;
+	border-top: 1px solid var(--pc-steel);
+	border-left: 1px solid var(--pc-steel);
+}
+
+@media (min-width: 560px) {
+	.lp-negations__list {
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+	}
+}
+
+@media (min-width: 960px) {
+	.lp-negations__list {
+		grid-template-columns: repeat(4, minmax(0, 1fr));
+	}
+}
+
+.lp-negation {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	padding: 16px 18px;
+	border-right: 1px solid var(--pc-steel);
+	border-bottom: 1px solid var(--pc-steel);
+}
+
+.lp-negation__value {
+	font-family: var(--pc-font-mono);
+	font-size: clamp(2.25rem, 4vw, 3rem);
+	font-weight: 600;
+	line-height: 1;
+	letter-spacing: -0.02em;
+	overflow-wrap: anywhere;
+}
+
+.lp-negation__label {
+	font-family: var(--pc-font-mono);
+	font-size: 0.9375rem;
+	line-height: 1.45;
+}
+
+.lp .lp-negation__evidence a {
+	color: var(--pc-muted);
+	text-decoration: none;
+}
+
+.lp .lp-negation__evidence a:hover {
+	color: var(--pc-text);
+	text-decoration: underline;
+}
+
+.lp-negation__evidence {
+	margin-top: auto;
+	padding-top: 6px;
+	font-family: var(--pc-font-mono);
+	font-size: 0.75rem;
+	line-height: 1.5;
+	color: var(--pc-muted);
+	overflow-wrap: anywhere;
+}
+
+/* Narrow screens: numeral on the left, text on the right. */
+@media (max-width: 559px) {
+	.lp-negation {
+		display: grid;
+		grid-template-columns: 3.25rem minmax(0, 1fr);
+		column-gap: 12px;
+		row-gap: 4px;
+		padding: 16px;
+	}
+	.lp-negation {
+		grid-template-columns: minmax(2.5rem, max-content) minmax(0, 1fr);
+	}
+	.lp-negation__value {
+		grid-row: span 2;
+		font-size: 1.75rem;
+	}
+	.lp-negation__label {
+		font-size: 0.875rem;
+	}
+	.lp-negation__evidence {
+		padding-top: 0;
+	}
+	.lp-negation__note {
+		display: none;
+	}
+}
+
+/* Backend x protocol matrix, drawn on the CAD grid.
+ * Shipped: solid text-color outline on a surface fill, labelled "shipped".
+ * Planned: dashed outline, labelled "planned".
+ * Not applicable: empty, with screen-reader text. */
+
+.lp-matrix__grid {
+	border: 1px solid var(--pc-steel);
+	background-color: var(--pc-ground);
+	background-image: var(--pc-grid-bg);
+	background-size: var(--pc-grid-size);
+}
+
+.lp-matrix__table {
+	width: 100%;
+	table-layout: fixed;
+	border-collapse: separate;
+	border-spacing: 8px;
+	padding: 8px;
+	font-family: var(--pc-font-mono);
+	font-size: 0.8125rem;
+}
+
+.lp-matrix__table th,
+.lp-matrix__table td {
+	padding: 0;
+	text-align: left;
+	vertical-align: middle;
+}
+
+.lp-matrix__head {
+	padding: 7px 10px !important;
+	font-weight: 600;
+	background: var(--pc-ground);
+	border: 1px solid var(--pc-steel);
+}
+
+.lp-matrix__head--planned {
+	border-style: dashed;
+	font-weight: 400;
+	color: var(--pc-muted);
+}
+
+.lp-matrix__cell {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	min-height: 34px;
+	padding: 4px 8px;
+	font-size: 0.75rem;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+	text-align: center;
+}
+
+.lp-matrix__cell--shipped {
+	background: var(--pc-surface);
+	border: 1px solid var(--pc-text);
+	color: var(--pc-text);
+	font-weight: 600;
+}
+
+.lp-matrix__cell--planned {
+	background: var(--pc-ground);
+	border: 1px dashed var(--pc-muted);
+	color: var(--pc-muted);
+}
+
+.lp-matrix__cell--na {
+	border: 1px solid transparent;
+}
+
+.lp-matrix__stack {
+	display: none;
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.lp-matrix__block {
+	border: 1px solid var(--pc-steel);
+	background: var(--pc-ground);
+}
+
+.lp-matrix__block + .lp-matrix__block {
+	margin-top: 8px;
+}
+
+.lp-matrix__block.lp-matrix__head--planned {
+	border-style: dashed;
+}
+
+.lp-matrix__block-title {
+	margin: 0;
+	padding: 8px 12px;
+	border-bottom: 1px solid var(--pc-grid);
+	font-family: var(--pc-font-mono);
+	font-size: 0.875rem;
+	font-weight: 600;
+}
+
+.lp-matrix__head--planned .lp-matrix__block-title {
+	color: var(--pc-muted);
+	font-weight: 400;
+}
+
+.lp-matrix__block dl {
+	margin: 0;
+	padding: 4px 12px;
+}
+
+.lp-matrix__line {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	padding: 4px 0;
+	font-family: var(--pc-font-mono);
+	font-size: 0.8125rem;
+}
+
+.lp-matrix__line dt::after {
+	content: ':';
+}
+
+.lp-matrix__line dd {
+	margin: 0;
+}
+
+.lp-matrix__line .lp-matrix__cell {
+	min-height: 0;
+	min-width: 88px;
+	padding: 2px 8px;
+}
+
+@media (max-width: 640px) {
+	.lp-matrix__grid {
+		display: none;
+	}
+	.lp-matrix__stack {
+		display: block;
+	}
+	.lp-matrix__legend-na {
+		display: none !important;
+	}
+}
+
+.lp-matrix__legend {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px 24px;
+	margin: 14px 0 0;
+	padding: 0;
+	list-style: none;
+	font-family: var(--pc-font-mono);
+	font-size: 0.8125rem;
+	color: var(--pc-muted);
+}
+
+.lp-matrix__legend li {
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.lp-matrix__swatch {
+	display: inline-block;
+	width: 28px;
+	height: 16px;
+	min-height: 0;
+	padding: 0;
+}
+
+.lp-matrix__swatch.lp-matrix__cell--na {
+	border: 1px solid var(--pc-grid);
+	background: var(--pc-ground);
+}
+
+/* Steps */
+
+.lp-steps__list {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr);
+	gap: 28px;
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.lp-step {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr);
+	gap: 14px;
+	min-width: 0;
+}
+
+@media (min-width: 960px) {
+	.lp-step {
+		grid-template-columns: minmax(0, 1fr) minmax(0, 1.7fr);
+		gap: 40px;
+		align-items: start;
+	}
+}
+
+.lp-step__num {
+	display: block;
+	font-family: var(--pc-font-mono);
+	font-size: 0.8125rem;
+	color: var(--pc-muted);
+}
+
+.lp-step__title {
+	margin: 4px 0 8px;
+	font-family: var(--pc-font-display);
+	font-size: 1.25rem;
+	font-weight: 600;
+	line-height: 1.3;
+}
+
+.lp-step__body {
+	margin: 0;
+	color: var(--pc-muted);
+}
+
+.lp-step__more {
+	display: inline-block;
+	margin-top: 10px;
+	font-family: var(--pc-font-mono);
+	font-size: 0.8125rem;
+}
+
+.lp-step__more::after {
+	content: ' \2192';
+}
+
+/* Comparison: a table on wide screens, one card per tool on narrow ones. */
+
+.lp-compare__scroll {
+	border: 1px solid var(--pc-steel);
+}
+
+.lp-compare__table {
+	width: 100%;
+	border-collapse: collapse;
+	font-size: 0.9375rem;
+}
+
+.lp-compare__table th,
+.lp-compare__table td {
+	padding: 12px 16px;
+	border-bottom: 1px solid var(--pc-grid);
+	text-align: left;
+	vertical-align: top;
+}
+
+.lp-compare__table thead th {
+	border-bottom: 1px solid var(--pc-steel);
+	font-family: var(--pc-font-mono);
+	font-size: 0.8125rem;
+	font-weight: 600;
+}
+
+.lp-compare__table tbody th {
+	font-weight: 500;
+	color: var(--pc-muted);
+}
+
+.lp-compare__table tbody tr:last-child > * {
+	border-bottom: 0;
+}
+
+.lp-compare__cards {
+	display: none;
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.lp-compare__card {
+	border: 1px solid var(--pc-steel);
+}
+
+.lp-compare__card + .lp-compare__card {
+	margin-top: 8px;
+}
+
+.lp-compare__card-title {
+	margin: 0;
+	padding: 8px 12px;
+	border-bottom: 1px solid var(--pc-steel);
+	font-family: var(--pc-font-mono);
+	font-size: 0.875rem;
+	font-weight: 600;
+}
+
+.lp-compare__card dl {
+	margin: 0;
+	padding: 4px 12px 8px;
+}
+
+.lp-compare__line {
+	padding: 6px 0;
+	font-size: 0.875rem;
+	line-height: 1.45;
+}
+
+.lp-compare__line + .lp-compare__line {
+	border-top: 1px solid var(--pc-grid);
+}
+
+.lp-compare__line dt {
+	font-family: var(--pc-font-mono);
+	font-size: 0.6875rem;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+	color: var(--pc-muted);
+}
+
+.lp-compare__line dd {
+	margin: 2px 0 0;
+}
+
+.lp-compare__checked {
+	margin: 10px 0 0;
+	font-family: var(--pc-font-mono);
+	font-size: 0.75rem;
+	color: var(--pc-muted);
+}
+
+@media (max-width: 720px) {
+	.lp-compare__scroll {
+		display: none;
+	}
+	.lp-compare__cards {
+		display: block;
+	}
+}
+
+/* Limits */
+
+.lp-limits__text {
+	max-width: 48em;
+	margin: 0;
+	padding-left: 16px;
+	border-left: 2px solid var(--pc-steel);
+	font-size: 1.125rem;
+}
+
+/* Buttons and footer */
+
+.lp-cta {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 12px;
+}
+
+.lp-button {
+	display: inline-block;
+	padding: 11px 18px;
+	border: 1px solid var(--pc-steel);
+	border-radius: 2px;
+	font-family: var(--pc-font-mono);
+	font-size: 0.9375rem;
+	font-weight: 600;
+}
+
+.lp .lp-button {
+	text-decoration: none;
+}
+
+.lp .lp-button--primary {
+	border-color: var(--pc-text);
+	background: var(--pc-text);
+	color: var(--pc-ground);
+}
+
+.lp .lp-button:hover {
+	border-color: var(--pc-text);
+}
+
+.lp-footer {
+	padding: 48px 0 36px;
+}
+
+.lp-footer .lp-cta {
+	margin-bottom: 40px;
+}
+
+.lp-footer__nav ul {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px 24px;
+	margin: 0;
+	padding: 24px 0 0;
+	border-top: 1px solid var(--pc-steel);
+	list-style: none;
+	font-family: var(--pc-font-mono);
+	font-size: 0.8125rem;
+}
+
+.lp-footer__nav a {
+	color: var(--pc-muted);
+}
+
+@media (max-width: 480px) {
+	.lp-wrap {
+		padding-left: 16px;
+		padding-right: 16px;
+	}
+	body.lp {
+		line-height: 1.55;
+	}
+	.lp-section {
+		padding: 32px 0;
+	}
+	.lp-hero__grid {
+		gap: 32px;
+		padding-top: 32px;
+		padding-bottom: 32px;
+	}
+	.lp-hero__subline {
+		margin-bottom: 20px;
+		font-size: 1rem;
+	}
+	.lp-install pre {
+		font-size: 0.75rem;
+	}
+	.lp-hero__cta {
+		gap: 10px;
+		margin-top: 16px;
+	}
+	.sx--v {
+		max-width: 300px;
+	}
+	.lp-step__body {
+		font-size: 0.9375rem;
+	}
+	.lp-matrix__block-title {
+		padding: 6px 12px;
+	}
+	.lp-matrix__line {
+		padding: 2px 0;
+	}
+	.lp-compare__line {
+		padding: 4px 0;
+		font-size: 0.8125rem;
+	}
+	.lp-nav__inner {
+		gap: 12px;
+	}
+	.lp-nav__links {
+		gap: 4px 10px;
+		font-size: 0.8125rem;
+	}
+	.lp-button {
+		padding: 10px 12px;
+		font-size: 0.8125rem;
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	*,
+	*::before,
+	*::after {
+		transition: none !important;
+		animation: none !important;
+		scroll-behavior: auto !important;
+	}
+}

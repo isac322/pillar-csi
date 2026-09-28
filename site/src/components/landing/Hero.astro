@@ -1,0 +1,58 @@
+---
+import type { landing } from '../../data/landing';
+import Schematic from './Schematic.astro';
+
+interface Props {
+	hero: (typeof landing)['hero'];
+	cta: (typeof landing)['cta'];
+}
+
+const { hero, cta } = Astro.props;
+// Candidate headlines stay in the markup for owner review only.
+const alternatives = `<!-- h1 alternatives: ${hero.h1Alternatives
+	.map((h) => h.replaceAll('--', '- -'))
+	.join(' | ')} -->`;
+// Show the one-line command as a readable multi-line shell command: pack the
+// arguments into lines of at most 62 characters with "\" continuations.
+// The copy button still copies the original single line.
+const args = hero.installCommand.split(/ (?=--|oci:\/\/)/);
+const lines: string[] = [];
+for (const arg of args) {
+	const last = lines.length - 1;
+	if (last >= 0 && lines[last].length + arg.length + 3 <= 62) lines[last] += ` ${arg}`;
+	else lines.push(last >= 0 ? `  ${arg}` : arg);
+}
+const displayCommand = lines.join(' \\\n');
+// Narrow screens: one argument per line, no indent, so no line wraps mid-word.
+const narrowCommand = args.join(' \\\n');
+---
+
+<section class="lp-hero" aria-labelledby="hero-title">
+	<div class="lp-wrap lp-hero__grid">
+		<div class="lp-hero__text">
+			<p class="lp-eyebrow">{hero.eyebrow}</p>
+			<Fragment set:html={alternatives} />
+			<h1 id="hero-title" class="lp-hero__title">{hero.h1}</h1>
+			<p class="lp-hero__subline">{hero.subline}</p>
+			<div class="lp-code lp-install">
+				<div class="lp-code__bar">
+					<span class="lp-code__lang">sh</span>
+					<button
+						type="button"
+						class="lp-copy"
+						data-copy={hero.installCommand}
+						aria-live="polite"
+						hidden>Copy</button
+					>
+				</div>
+				<pre class="lp-install__wide"><code>{displayCommand}</code></pre>
+				<pre class="lp-install__narrow"><code>{narrowCommand}</code></pre>
+			</div>
+			<div class="lp-cta lp-hero__cta">
+				<a class="lp-button lp-button--primary" href={cta.primary.href}>{cta.primary.label}</a>
+				<a class="lp-button" href={cta.secondary.href}>{cta.secondary.label}</a>
+			</div>
+		</div>
+		<Schematic />
+	</div>
+</section>

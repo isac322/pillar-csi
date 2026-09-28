@@ -1,0 +1,13 @@
+---
+// Starlight ThemeProvider override: the docs default to the dark theme that
+// matches the landing page. A reader's explicit choice (light, dark, auto) in
+// the theme picker is stored and respected as usual.
+import Default from '@astrojs/starlight/components/ThemeProvider.astro';
+---
+
+<script is:inline>
+	try {
+		if (!localStorage.getItem('starlight-theme')) localStorage.setItem('starlight-theme', 'dark');
+	} catch {}
+</script>
+<Default />

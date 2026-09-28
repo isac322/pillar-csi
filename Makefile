@@ -588,6 +588,30 @@ lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes
 lint-config: golangci-lint ## Verify golangci-lint linter configuration
 	"$(GOLANGCI_LINT)" config verify
 
+##@ Documentation
+
+## Generated reference docs. `docs-check` fails when any of them is stale.
+CRD_REF_DOCS_OUT = site/src/content/docs/docs/reference/crd.md
+HELM_VALUES_OUT = site/src/content/docs/docs/reference/helm-values.md
+CHART_README_OUT = charts/pillar-csi/README.md
+DOCS_GEN_OUTPUTS = $(CRD_REF_DOCS_OUT) $(HELM_VALUES_OUT) $(CHART_README_OUT)
+
+.PHONY: docs-gen
+docs-gen: crd-ref-docs helm-docs ## Generate the CRD reference, the Helm values page and the chart README.
+	@mkdir -p "$(dir $(CRD_REF_DOCS_OUT))"
+	"$(CRD_REF_DOCS)" --source-path=./api/v1alpha1 --config=hack/docs/crd-ref-docs/config.yaml \
+		--renderer=markdown --templates-dir=hack/docs/crd-ref-docs/templates --output-path=$(CRD_REF_DOCS_OUT)
+	"$(HELM_DOCS)" --chart-search-root=charts --output-file=README.md \
+		--template-files=README.md.gotmpl --template-files="$(CURDIR)/hack/docs/helm-docs/_values-table.gotmpl"
+	"$(HELM_DOCS)" --chart-search-root=charts --output-file=../../$(HELM_VALUES_OUT) \
+		--template-files="$(CURDIR)/hack/docs/helm-docs/helm-values.md.gotmpl" --template-files="$(CURDIR)/hack/docs/helm-docs/_values-table.gotmpl"
+
+.PHONY: docs-check
+docs-check: docs-gen ## Fail if generated docs differ from api/v1alpha1 and charts/pillar-csi/values.yaml.
+	@git diff --exit-code -- $(DOCS_GEN_OUTPUTS) || { echo "Generated docs are stale. Run 'make docs-gen' and commit the result." >&2; exit 1; }
+	@untracked="$$(git ls-files --others --exclude-standard -- $(DOCS_GEN_OUTPUTS))"; \
+		[ -z "$$untracked" ] || { echo "Generated docs are not committed: $$untracked" >&2; exit 1; }
+
 ##@ Protobuf
 
 .PHONY: proto-gen
@@ -687,6 +711,8 @@ BUF ?= $(LOCALBIN)/buf
 PROTOC_GEN_GO ?= $(LOCALBIN)/protoc-gen-go
 PROTOC_GEN_GO_GRPC ?= $(LOCALBIN)/protoc-gen-go-grpc
 GINKGO ?= $(LOCALBIN)/ginkgo
+CRD_REF_DOCS ?= $(LOCALBIN)/crd-ref-docs
+HELM_DOCS ?= $(LOCALBIN)/helm-docs
 
 ## Tool Versions
 KUSTOMIZE_VERSION ?= v5.8.1
@@ -694,6 +720,8 @@ CONTROLLER_TOOLS_VERSION ?= v0.22.0
 BUF_VERSION ?= v1.72.0
 PROTOC_GEN_GO_VERSION ?= v1.36.12
 PROTOC_GEN_GO_GRPC_VERSION ?= v1.6.2
+CRD_REF_DOCS_VERSION ?= v0.3.0
+HELM_DOCS_VERSION ?= v1.14.2
 
 #ENVTEST_VERSION is the version of controller-runtime release branch to fetch the envtest setup script (i.e. release-0.20)
 ENVTEST_VERSION ?= $(shell v='$(call gomodver,sigs.k8s.io/controller-runtime)'; \
@@ -754,6 +782,16 @@ $(PROTOC_GEN_GO_GRPC): $(LOCALBIN)
 ginkgo: $(GINKGO) ## Download ginkgo CLI locally if necessary.
 $(GINKGO): $(LOCALBIN)
 	$(call go-install-tool,$(GINKGO),github.com/onsi/ginkgo/v2/ginkgo,$(GINKGO_VERSION))
+
+.PHONY: crd-ref-docs
+crd-ref-docs: $(CRD_REF_DOCS) ## Download crd-ref-docs locally if necessary.
+$(CRD_REF_DOCS): $(LOCALBIN)
+	$(call go-install-tool,$(CRD_REF_DOCS),github.com/elastic/crd-ref-docs,$(CRD_REF_DOCS_VERSION))
+
+.PHONY: helm-docs
+helm-docs: $(HELM_DOCS) ## Download helm-docs locally if necessary.
+$(HELM_DOCS): $(LOCALBIN)
+	$(call go-install-tool,$(HELM_DOCS),github.com/norwoodj/helm-docs/cmd/helm-docs,$(HELM_DOCS_VERSION))
 
 # go-install-tool will 'go install' any package with custom target and name of binary, if it doesn't exist
 # $1 - target path with name of binary

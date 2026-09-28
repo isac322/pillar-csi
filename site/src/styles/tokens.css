@@ -1,0 +1,61 @@
+/*
+ * pillar-csi design tokens.
+ * Dark ("kernel blueprint") is the default. The light set applies to the docs
+ * when Starlight sets data-theme="light" on <html>.
+ * Owned by the brand assets; the site imports this file and never edits it.
+ */
+
+:root {
+  /* Ground and structure */
+  --pc-ground: #0a0f1d;
+  --pc-grid: #1e293b;
+  --pc-steel: #334155;
+  --pc-surface: #111827;
+
+  /* Text */
+  --pc-text: #f8fafc;
+  --pc-muted: #94a3b8;
+
+  /* Signal colors: the data path and the kernel target. Use them only for those meanings. */
+  --pc-wire: #00add8;
+  --pc-kernel: #f59e0b;
+
+  /* Type */
+  --pc-font-display: 'Inter Tight', 'Geist', 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --pc-font-body: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --pc-font-mono: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', monospace;
+
+  /* Shape */
+  --pc-radius: 2px;
+  --pc-line: 1px;
+
+  /* 1px CAD grid. Apply with: background-image: var(--pc-grid-bg); background-size: var(--pc-grid-size); */
+  --pc-grid-size: 32px 32px;
+  --pc-grid-bg:
+    linear-gradient(to right, var(--pc-grid) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--pc-grid) 1px, transparent 1px);
+
+  /* Mark colors (used by the inline logo SVG classes) */
+  --pc-mark-slab: var(--pc-text);
+  --pc-mark-wire: var(--pc-wire);
+  --pc-mark-kernel: var(--pc-kernel);
+}
+
+[data-theme='light'] {
+  --pc-ground: #ffffff;
+  --pc-grid: #e2e8f0;
+  --pc-steel: #cbd5e1;
+  --pc-surface: #f8fafc;
+
+  --pc-text: #0a0f1d;
+  --pc-muted: #475569;
+
+  /* Darker signal shades keep text-size uses above 4.5:1 on white. */
+  --pc-wire: #00759a;
+  --pc-kernel: #b45309;
+
+  /* The mark keeps its brand colors on light grounds; only the slabs flip. */
+  --pc-mark-slab: #0a0f1d;
+  --pc-mark-wire: #00add8;
+  --pc-mark-kernel: #f59e0b;
+}
