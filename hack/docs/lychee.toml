@@ -20,4 +20,6 @@ exclude = [
   # Links to this repository's files on master return 404 in a pull request
   # that adds the target file.
   '^https://github\.com/isac322/pillar-csi/(blob|tree)/master/',
+  # "/" is the Astro landing page (src/pages/index.astro), not a content file.
+  '^file://.*/site/src/content/docs/?$',
 ]
