@@ -41,7 +41,7 @@ Checked on 2026-09-28 against each project's own documentation, linked below. Ot
 | OpenEBS LocalPV | Separate drivers for ZFS and LVM | ZFS: `zfsutils-linux` on every node. LVM: `lvm2` and the `dm-snapshot` module on every node |
 | TopoLVM | One driver, LVM only | A volume group on each node; the getting-started guide lists nothing else |
 
-Sources: [democratic-csi README](https://github.com/democratic-csi/democratic-csi), [What is Longhorn](https://longhorn.io/docs/1.12.1/what-is-longhorn/), [Longhorn RWX volumes](https://longhorn.io/docs/1.12.1/nodes-and-volumes/volumes/rwx-volumes/), [Longhorn installation requirements](https://longhorn.io/docs/1.12.1/deploy/install/), [OpenEBS LocalPV ZFS](https://github.com/openebs/zfs-localpv) and its [quickstart](https://github.com/openebs/zfs-localpv/blob/develop/docs/quickstart.md), [OpenEBS LocalPV LVM](https://github.com/openebs/lvm-localpv) and its [quickstart](https://github.com/openebs/lvm-localpv/blob/develop/docs/quickstart.md), [TopoLVM README](https://github.com/topolvm/topolvm), [TopoLVM getting started](https://github.com/topolvm/topolvm/blob/main/docs/getting-started.md), [TopoLVM limitations](https://github.com/topolvm/topolvm/blob/main/docs/limitations.md). pillar-csi facts come from the pillar-csi repository at v0.3.0.
+Sources: [democratic-csi README](https://github.com/democratic-csi/democratic-csi), [What is Longhorn](https://longhorn.io/docs/1.12.1/what-is-longhorn/), [Longhorn RWX volumes](https://longhorn.io/docs/1.12.1/nodes-and-volumes/volumes/rwx-volumes/), [Longhorn installation requirements](https://longhorn.io/docs/1.12.1/deploy/install/), [OpenEBS LocalPV ZFS](https://github.com/openebs/zfs-localpv) and its [quickstart](https://github.com/openebs/zfs-localpv/blob/develop/docs/quickstart.md), [OpenEBS LocalPV LVM](https://github.com/openebs/lvm-localpv) and its [quickstart](https://github.com/openebs/lvm-localpv/blob/develop/docs/quickstart.md), [TopoLVM README](https://github.com/topolvm/topolvm), [TopoLVM getting started](https://github.com/topolvm/topolvm/blob/main/docs/getting-started.md), [TopoLVM limitations](https://github.com/topolvm/topolvm/blob/main/docs/limitations.md). pillar-csi facts come from the pillar-csi repository at v0.3.1.
 
 ## democratic-csi
 
@@ -86,4 +86,4 @@ pillar-csi fits a cluster where one or a few machines hold the disks in ZFS or L
 - A storage host outside the cluster. The chart runs the agent as a DaemonSet, so the storage node must be a Kubernetes node.
 - Backends other than ZFS zvols and LVM logical volumes.
 
-The [support matrix](/docs/reference/support-matrix/) lists what v0.3.0 supports.
+The [support matrix](/docs/reference/support-matrix/) lists what v0.3.1 supports.

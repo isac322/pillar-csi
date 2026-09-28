@@ -44,7 +44,7 @@ The agent reads back each configfs value it writes and returns an error when the
 | LVM logical volume (linear or thin) | Shipped | Planned | n/a | n/a |
 | ZFS dataset (planned) | n/a | n/a | Planned | Planned |
 
-Planned items are not available in v0.3.0, and the CRDs reject them. n/a marks combinations that do not apply: block backends are not shared over file protocols, and a dataset is not exported as a block device.
+Planned items are not available in v0.3.1, and the CRDs reject them. n/a marks combinations that do not apply: block backends are not shared over file protocols, and a dataset is not exported as a block device.
 
 What works today:
 
@@ -150,7 +150,7 @@ agent:
 
 ```sh
 helm install pillar-csi oci://ghcr.io/isac322/charts/pillar-csi \
-  --version 0.3.0 \
+  --version 0.3.1 \
   --namespace pillar-csi --create-namespace \
   -f values.yaml
 ```

@@ -122,7 +122,7 @@ pillar-csi has no snapshot support, so back up data with your application's own 
 
    ```sh
    helm upgrade pillar-csi oci://ghcr.io/isac322/charts/pillar-csi \
-     --version 0.3.0 --namespace pillar-csi -f values.yaml
+     --version 0.3.1 --namespace pillar-csi -f values.yaml
    ```
 
 7. Apply the rewritten CRs and StorageClasses, and wait until they are Ready:
