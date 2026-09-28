@@ -156,4 +156,6 @@ kubectl get pvst <pv-name> -o yaml
 
 `mkfsOptions` runs as root on the worker, and anyone who can create a PVC can set it. pillar-csi accepts only flags that tune the filesystem being created, from a fixed list per filesystem type. Options that make mkfs read or write another file or device are rejected, and so are positional arguments. Write each flag as its own list element (`["-L", "data"]` or `["-Ldata"]`); clustered flags such as `-Fq` are rejected. The options apply only when the node formats a blank device. A volume that already has a filesystem is never reformatted.
 
+For `xfs`, the node starts from the Linux 5.15 compatibility profile described in [Filesystem compatibility](/docs/reference/support-matrix/#filesystem-compatibility). An option you set replaces the profile value for the same key, so `["-i", "exchange=1", "-n", "parent=1"]` turns on exchange-range and parent pointers. Only do that when every node that can mount the volume runs Linux 6.12 or later. `-c` (a configuration file) is not accepted.
+
 See the [annotations reference](/docs/reference/annotations/) for every key pillar-csi reads or writes.

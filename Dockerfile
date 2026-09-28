@@ -100,21 +100,28 @@ ENTRYPOINT ["/usr/bin/pillar-agent"]
 
 # ── Runtime: node ─────────────────────────────────────────────────────────────
 # Alpine + mount utilities (util-linux) + ext4/XFS formatting and resize tools
-# (e2fsprogs, xfsprogs).  xfsprogs-extra carries xfs_growfs on Alpine.
+# (e2fsprogs, xfsprogs).  xfsprogs-extra carries xfs_growfs on Alpine, and the
+# mkfs.xfs LTS profiles under /usr/share/xfsprogs/mkfs: the node plugin formats
+# XFS with the Linux 5.15 one so every supported node kernel can mount the
+# volume.  hack/verify-mkfs-baseline.sh fails the build when the image's mkfs
+# would create a filesystem Linux 5.15 cannot mount.
 #
 # Runtime security (enforced in the DaemonSet manifest):
 #   --security-opt=no-new-privileges:true
 #   --read-only  (combine with tmpfs mounts for /tmp, /run)
 #   --cap-drop ALL --cap-add SYS_ADMIN  (mount(8) and NVMe-oF need SYS_ADMIN)
 FROM alpine:3.24 AS node
-RUN set -eux \
+RUN --mount=type=bind,source=hack/verify-mkfs-baseline.sh,target=/tmp/verify-mkfs-baseline.sh \
+    set -eux \
     && apk add --no-cache \
          'util-linux~=2.42' \
          'e2fsprogs~=1.47' \
          'e2fsprogs-extra~=1.47' \
          'xfsprogs~=7.0' \
-         'xfsprogs-extra~=7.0' \
-    && addgroup -g 65532 nonroot \
+         'xfsprogs-extra~=7.0'; \
+    # A separate command: the "|| true" below would mask a failure in the chain.
+    sh /tmp/verify-mkfs-baseline.sh; \
+    addgroup -g 65532 nonroot \
     && adduser  -u 65532 -G nonroot -s /sbin/nologin -D nonroot \
     # Strip SUID/SGID bits from every file on the root filesystem.
     && find / -xdev \( -perm -4000 -o -perm -2000 \) -exec chmod a-s {} + 2>/dev/null || true \
