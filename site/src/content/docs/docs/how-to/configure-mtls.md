@@ -17,7 +17,7 @@ You need cert-manager and its CRDs in the cluster. Then install or upgrade with:
 
 ```sh
 helm upgrade --install pillar-csi oci://ghcr.io/isac322/charts/pillar-csi \
-  --version 0.3.2 \
+  --version 0.3.3 \
   --namespace pillar-csi --create-namespace \
   --reuse-values \
   --set mtls.enabled=true \
@@ -71,7 +71,7 @@ kubectl -n pillar-csi create secret generic pillar-agent-mtls \
 
 ```sh
 helm upgrade --install pillar-csi oci://ghcr.io/isac322/charts/pillar-csi \
-  --version 0.3.2 \
+  --version 0.3.3 \
   --namespace pillar-csi --create-namespace \
   --reuse-values \
   --set mtls.enabled=true
