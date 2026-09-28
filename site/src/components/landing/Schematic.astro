@@ -1,7 +1,7 @@
 ---
-// Static data-path drawing. Cyan marks the network wire; amber marks the
-// kernel nvmet target and nothing else. Two layouts: horizontal (wide) and a
-// compact vertical one (narrow).
+// Static data-path drawing on a Machine Green plate. The brass line is the
+// NVMe-oF/TCP data path; the cream block is the kernel nvmet target. Two
+// layouts: horizontal (wide) and a compact vertical one (narrow).
 const title = 'pillar-csi data path';
 const desc =
 	'A ZFS zvol or LVM logical volume on the storage node is exported by the kernel nvmet target, configured through configfs. It travels over NVMe-oF/TCP to the kernel nvme_tcp initiator on the worker node and appears in the pod as the block device /dev/nvmeXnY. No userspace process sits between the two kernels.';
@@ -31,10 +31,10 @@ const note = ['kernel to kernel,', 'no userspace hop'];
 		<line class="sx-link" x1="121" y1="124" x2="121" y2="180" />
 
 		<rect class="sx-target" x="20" y="180" width="202" height="90" />
-		<text class="sx-t sx-on-amber sx-strong" x="121" y="220" text-anchor="middle">kernel nvmet</text>
-		<text class="sx-t sx-on-amber" x="121" y="243" text-anchor="middle">configfs</text>
+		<text class="sx-t sx-on-cap sx-strong" x="121" y="220" text-anchor="middle">kernel nvmet</text>
+		<text class="sx-t sx-on-cap" x="121" y="243" text-anchor="middle">configfs</text>
 
-		<text class="sx-t sx-cyan sx-small" x="320" y="213" text-anchor="middle">NVMe-oF/TCP</text>
+		<text class="sx-t sx-wire-label sx-small" x="320" y="213" text-anchor="middle">NVMe-oF/TCP</text>
 		<line class="sx-wire" x1="222" y1="225" x2="406" y2="225" />
 		<polygon class="sx-wire-head" points="418,225 404,217 404,233" />
 		<text class="sx-note" x="320" y="253" text-anchor="middle">{note[0]}</text>
@@ -74,12 +74,12 @@ const note = ['kernel to kernel,', 'no userspace hop'];
 		<line class="sx-link" x1="160" y1="84" x2="160" y2="108" />
 
 		<rect class="sx-target" x="20" y="108" width="280" height="56" />
-		<text class="sx-t sx-on-amber sx-strong" x="160" y="132" text-anchor="middle">kernel nvmet</text>
-		<text class="sx-t sx-on-amber" x="160" y="152" text-anchor="middle">configfs</text>
+		<text class="sx-t sx-on-cap sx-strong" x="160" y="132" text-anchor="middle">kernel nvmet</text>
+		<text class="sx-t sx-on-cap" x="160" y="152" text-anchor="middle">configfs</text>
 
 		<line class="sx-wire" x1="160" y1="164" x2="160" y2="250" />
 		<polygon class="sx-wire-head" points="160,262 152,248 168,248" />
-		<text class="sx-t sx-cyan sx-small" x="174" y="198">NVMe-oF/TCP</text>
+		<text class="sx-t sx-wire-label sx-small" x="174" y="198">NVMe-oF/TCP</text>
 		<text class="sx-note" x="174" y="215">{note[0]}</text>
 		<text class="sx-note" x="174" y="229">{note[1]}</text>
 

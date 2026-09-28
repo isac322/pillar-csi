@@ -1,10 +1,10 @@
 /*
- * Maps the pillar-csi design tokens (tokens.css) onto Starlight's theme
+ * Maps the "Workshop Enamel" tokens (tokens.css) onto Starlight's theme
  * variables. tokens.css swaps the --pc-* values under [data-theme='light'],
  * so the mappings below follow the active theme. The docs default to dark
- * (see components/starlight/ThemeProvider.astro) and use flat surfaces with
- * no grid. Cyan is used for links only; chrome stays neutral. Amber is not
- * used in the docs chrome because it means "kernel target" on the landing.
+ * enamel (components/starlight/ThemeProvider.astro); light is white paper
+ * with Ink text. Brass is the one accent: links and the focus ring. Machine
+ * Green marks the current page and shipped status.
  */
 
 :root,
@@ -16,30 +16,55 @@
 	--sl-color-gray-1: color-mix(in srgb, var(--pc-text) 88%, var(--pc-muted));
 	--sl-color-gray-2: color-mix(in srgb, var(--pc-text) 45%, var(--pc-muted));
 	--sl-color-gray-3: var(--pc-muted);
-	--sl-color-gray-4: var(--pc-steel);
-	--sl-color-gray-5: var(--pc-grid);
-	--sl-color-gray-6: var(--pc-surface);
+	--sl-color-gray-4: var(--pc-rule-strong);
+	--sl-color-gray-5: var(--pc-rule);
+	--sl-color-gray-6: var(--pc-raised);
 	--sl-color-gray-7: var(--pc-ground);
 	--sl-color-black: var(--pc-ground);
 
-	--sl-color-accent-low: var(--pc-surface);
-	--sl-color-accent: var(--pc-wire);
-	--sl-color-accent-high: var(--pc-wire);
-	--sl-color-text-accent: var(--pc-wire);
+	--sl-color-accent-low: var(--pc-raised);
+	--sl-color-accent: var(--pc-accent);
+	--sl-color-accent-high: var(--pc-accent);
+	--sl-color-text-accent: var(--pc-accent);
 
 	--sl-color-bg-nav: var(--pc-ground);
 	--sl-color-bg-sidebar: var(--pc-ground);
-	--sl-color-hairline-shade: var(--pc-steel);
+	--sl-color-hairline-light: var(--pc-rule);
+	--sl-color-hairline: var(--pc-rule);
+	--sl-color-hairline-shade: var(--pc-rule);
+	--sl-color-bg-inline-code: var(--pc-well);
 }
 
-.sl-markdown-content :is(h1, h2, h3, h4),
+::selection {
+	background: var(--pc-accent);
+	color: var(--pc-on-accent);
+}
+
+html {
+	scrollbar-color: var(--pc-rule-strong) var(--pc-ground);
+	accent-color: var(--pc-accent);
+}
+
+:focus-visible {
+	outline-color: var(--pc-accent);
+}
+
+/* Page titles and H2 in Archivo Expanded, as on the lockup; H3 and H4 stay
+ * at normal width so dense reference pages read quickly. */
+.sl-markdown-content :is(h1, h2),
 h1#_top {
 	font-family: var(--pc-font-display);
-	letter-spacing: -0.01em;
+	font-stretch: var(--pc-stretch-display);
+	font-weight: 700;
+	letter-spacing: -0.015em;
 }
 
-/* Sidebar: no tree rules. The current page is marked by weight, full text
- * color, and a surface background. */
+.sl-markdown-content :is(h3, h4) {
+	font-weight: 650;
+}
+
+/* Sidebar: no tree rules. The current page is a Machine Green enamel tab
+ * with cream lettering. */
 .sidebar-content ul ul li {
 	border-inline-start: 0;
 	margin-inline-start: 0;
@@ -48,17 +73,13 @@ h1#_top {
 .sidebar-content a[aria-current='page'],
 .sidebar-content a[aria-current='page']:hover,
 .sidebar-content a[aria-current='page']:focus {
-	color: var(--pc-text);
+	color: #f1ead6;
 	font-weight: 600;
-	background-color: var(--pc-steel);
-	border-radius: 2px;
+	background-color: var(--pc-field);
+	border-radius: var(--pc-radius-control);
 }
 
-:root[data-theme='light'] .sidebar-content a[aria-current='page'] {
-	background-color: var(--pc-grid);
-}
-
-/* Square corners across docs chrome: radius stays at 2px or less. */
+/* Plates and controls share the landing's corners. */
 .sl-markdown-content :is(pre, code, table, img, aside),
 .card,
 .sl-link-card,
@@ -66,7 +87,11 @@ h1#_top {
 .expressive-code pre,
 site-search button,
 .pagination-links a {
-	border-radius: 2px !important;
+	border-radius: var(--pc-radius-plate) !important;
+}
+
+.sl-markdown-content :not(pre) > code {
+	border-radius: var(--pc-radius-control) !important;
 }
 
 .card,
@@ -76,12 +101,12 @@ site-search button,
 }
 
 .sl-link-card {
-	border-color: var(--pc-steel) !important;
-	background: var(--pc-surface);
+	border-color: var(--pc-rule) !important;
+	background: var(--pc-raised);
 }
 
 .sl-link-card:hover {
-	border-color: var(--pc-text) !important;
+	border-color: var(--pc-accent) !important;
 }
 
 /* Tables: padded cells on every side, a ruled grid, a tinted header row.
@@ -94,7 +119,7 @@ site-search button,
 
 .sl-markdown-content :is(th, td):not(:where(.not-content *)) {
 	padding: 0.625rem 0.875rem;
-	border: 1px solid var(--pc-steel);
+	border: 1px solid var(--pc-rule);
 	vertical-align: top;
 }
 
@@ -107,7 +132,7 @@ site-search button,
 }
 
 .sl-markdown-content th:not(:where(.not-content *)) {
-	background: var(--pc-surface);
+	background: var(--pc-raised);
 	font-weight: 600;
 	color: var(--pc-text);
 	text-align: start;
@@ -140,22 +165,21 @@ site-search button,
 	display: inline-block;
 	padding: 0.0625rem 0.5rem;
 	border: 1px solid transparent;
-	border-radius: 2px;
-	font-family: var(--pc-font-mono);
+	border-radius: var(--pc-radius-control);
 	font-size: 0.8125rem;
 	line-height: 1.5;
 	white-space: nowrap;
 }
 
 .pc-badge--shipped {
-	border-color: var(--pc-text);
-	background: var(--pc-text);
-	color: var(--pc-ground);
+	border-color: var(--pc-field);
+	background: var(--pc-field);
+	color: #f1ead6;
 	font-weight: 600;
 }
 
 .pc-badge--planned {
-	border-color: var(--pc-muted);
+	border-color: var(--pc-rule-strong);
 	border-style: dashed;
 	color: var(--pc-text);
 }
@@ -202,7 +226,7 @@ body:has(.sidebar-content a[aria-current='page'][href$='/community/faq/']) .sl-m
 
 /* Light theme: inline code needs a visible chip on the white page. */
 :root[data-theme='light'] {
-	--sl-color-bg-inline-code: var(--pc-grid);
+	--sl-color-bg-inline-code: var(--pc-well);
 }
 
 /* Room around asides, tabs and cards so their content does not touch edges. */
@@ -212,8 +236,8 @@ body:has(.sidebar-content a[aria-current='page'][href$='/community/faq/']) .sl-m
 
 .sl-markdown-content details {
 	padding: 0.75rem 1rem;
-	border: 1px solid var(--pc-steel);
-	border-radius: 2px;
+	border: 1px solid var(--pc-rule);
+	border-radius: var(--pc-radius-plate);
 }
 
 .sl-markdown-content details > summary {

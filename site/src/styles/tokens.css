@@ -1,61 +1,64 @@
 /*
- * pillar-csi design tokens.
- * Dark ("kernel blueprint") is the default. The light set applies to the docs
- * when Starlight sets data-theme="light" on <html>.
- * Owned by the brand assets; the site imports this file and never edits it.
+ * pillar-csi design tokens: "Workshop Enamel".
+ * A machine tool's enamel body, cream lettering, steel shading and one brass
+ * part. Dark enamel is the default for the landing and the docs; the light set
+ * applies to the docs when Starlight sets data-theme="light" on <html>.
+ *
+ * Roles
+ *   ground   page background (Deep Enamel)
+ *   raised   panels, table headers, cards on the ground
+ *   field    Machine Green enamel: the brand field; featured plates, the
+ *            storage pool in the schematic, the current docs page
+ *   well     recessed code wells (Ink)
+ *   rule     decorative hairlines; rule-strong for control borders (>= 3:1)
+ *   text     Enamel Cream; muted = Steel; on-field-muted for secondary text
+ *            on a Machine Green plate
+ *   accent   Brass, the one accent: the data path, the primary action, links
+ *            in the docs. on-accent is text set on brass.
  */
 
 :root {
-  /* Ground and structure */
-  --pc-ground: #0a0f1d;
-  --pc-grid: #1e293b;
-  --pc-steel: #334155;
-  --pc-surface: #111827;
+  --pc-ground: #15352b;
+  --pc-raised: #1c4336;
+  --pc-field: #2d5f4c;
+  --pc-well: #112a23;
+  --pc-rule: #3c6b5a;
+  --pc-rule-strong: #7a9588;
 
-  /* Text */
-  --pc-text: #f8fafc;
-  --pc-muted: #94a3b8;
+  --pc-text: #f1ead6;
+  --pc-muted: #afbab2;
+  --pc-on-field-muted: #d9e0d6;
 
-  /* Signal colors: the data path and the kernel target. Use them only for those meanings. */
-  --pc-wire: #00add8;
-  --pc-kernel: #f59e0b;
+  --pc-accent: #d4a849;
+  --pc-accent-hover: #e2bd6a;
+  --pc-on-accent: #15352b;
 
-  /* Type */
-  --pc-font-display: 'Inter Tight', 'Geist', 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
-  --pc-font-body: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
-  --pc-font-mono: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', monospace;
+  /* Type. Archivo carries a width axis: display and stamped labels use it at
+   * 125% ("Archivo Expanded"), body text at 100%. Mono is for code only. */
+  --pc-font-display: 'Archivo Variable', 'Archivo', ui-sans-serif, system-ui, sans-serif;
+  --pc-font-body: 'Archivo Variable', 'Archivo', ui-sans-serif, system-ui, sans-serif;
+  --pc-font-mono: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+  --pc-stretch-display: 125%;
 
-  /* Shape */
-  --pc-radius: 2px;
-  --pc-line: 1px;
-
-  /* 1px CAD grid. Apply with: background-image: var(--pc-grid-bg); background-size: var(--pc-grid-size); */
-  --pc-grid-size: 32px 32px;
-  --pc-grid-bg:
-    linear-gradient(to right, var(--pc-grid) 1px, transparent 1px),
-    linear-gradient(to bottom, var(--pc-grid) 1px, transparent 1px);
-
-  /* Mark colors (used by the inline logo SVG classes) */
-  --pc-mark-slab: var(--pc-text);
-  --pc-mark-wire: var(--pc-wire);
-  --pc-mark-kernel: var(--pc-kernel);
+  /* Shape: enamel plates and machined controls. */
+  --pc-radius-plate: 6px;
+  --pc-radius-control: 4px;
 }
 
 [data-theme='light'] {
   --pc-ground: #ffffff;
-  --pc-grid: #e2e8f0;
-  --pc-steel: #cbd5e1;
-  --pc-surface: #f8fafc;
+  --pc-raised: #f3f1ea;
+  --pc-field: #2d5f4c;
+  --pc-well: #f3f1ea;
+  --pc-rule: #d9ddd5;
+  --pc-rule-strong: #78867f;
 
-  --pc-text: #0a0f1d;
-  --pc-muted: #475569;
+  --pc-text: #112a23;
+  --pc-muted: #4e6259;
+  --pc-on-field-muted: #d9e0d6;
 
-  /* Darker signal shades keep text-size uses above 4.5:1 on white. */
-  --pc-wire: #00759a;
-  --pc-kernel: #b45309;
-
-  /* The mark keeps its brand colors on light grounds; only the slabs flip. */
-  --pc-mark-slab: #0a0f1d;
-  --pc-mark-wire: #00add8;
-  --pc-mark-kernel: #f59e0b;
+  /* Brass Deep keeps text-size uses above 4.5:1 on white. */
+  --pc-accent: #8a6414;
+  --pc-accent-hover: #6f500f;
+  --pc-on-accent: #ffffff;
 }

@@ -48,12 +48,13 @@
 	width: max-content;
 	margin: 0.25rem 0 0 auto;
 	padding: 0 0.5rem;
-	border-radius: 2px;
-	background: var(--pc-steel);
+	border: 1px solid var(--pc-rule-strong);
+	border-radius: var(--pc-radius-control);
+	background: var(--pc-raised);
 	color: var(--pc-text);
 	font-family: var(--pc-font-mono);
 	font-size: 0.6875rem;
-	line-height: 1.375rem;
+	line-height: 1.25rem;
 	letter-spacing: 0.04em;
 	visibility: hidden;
 }

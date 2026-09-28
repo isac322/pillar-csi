@@ -1,10 +1,10 @@
 /*
- * Landing page styles. Colors come from tokens.css and carry meaning:
- * --pc-wire (cyan) is the network wire and --pc-kernel (amber) is the kernel
- * nvmet target. Nothing else uses them. No gradients, shadows, blur, or
- * rounded pills; radius <= 2px. Fonts are self-hosted via @fontsource
- * (imported in src/pages/index.astro); weights used: display 600/700,
- * body 400/500, mono 400/600.
+ * Landing page styles, "Workshop Enamel" (tokens.css). Deep Enamel ground,
+ * Machine Green plates for featured fields, cream type, steel shading, and
+ * brass as the one accent: the data path in the schematic and the primary
+ * action. Archivo (variable, self-hosted via @fontsource, imported in
+ * src/pages/index.astro) sets display and stamped labels at 125% width and
+ * body text at 100%. JetBrains Mono is for commands, paths and identifiers.
  */
 
 *,
@@ -15,6 +15,17 @@
 
 html {
 	-webkit-text-size-adjust: 100%;
+}
+
+body.lp::selection,
+.lp ::selection {
+	background: var(--pc-accent);
+	color: var(--pc-on-accent);
+}
+
+html:has(body.lp) {
+	scrollbar-color: var(--pc-rule-strong) var(--pc-ground);
+	accent-color: var(--pc-accent);
 }
 
 body.lp {
@@ -32,6 +43,7 @@ body.lp {
 .lp a {
 	color: var(--pc-text);
 	text-underline-offset: 3px;
+	text-decoration-color: color-mix(in srgb, currentColor 55%, transparent);
 }
 
 .lp a:hover {
@@ -39,7 +51,7 @@ body.lp {
 }
 
 .lp :focus-visible {
-	outline: 2px solid var(--pc-text);
+	outline: 2px solid var(--pc-accent);
 	outline-offset: 2px;
 }
 
@@ -81,9 +93,9 @@ body.lp {
 	position: sticky;
 	top: 0;
 	z-index: 20;
-	background: var(--pc-kernel);
-	color: #0a0f1d;
-	border-bottom: 1px solid #0a0f1d;
+	background: var(--pc-accent);
+	color: var(--pc-on-accent);
+	border-bottom: 1px solid var(--pc-on-accent);
 }
 
 .lp-starbar[hidden] {
@@ -102,8 +114,7 @@ body.lp {
 
 .lp-starbar__text {
 	margin: 0;
-	font-family: var(--pc-font-mono);
-	font-size: 0.875rem;
+	font-size: 0.9375rem;
 	font-weight: 600;
 	line-height: 1.4;
 }
@@ -121,10 +132,10 @@ body.lp {
 	width: 32px;
 	height: 32px;
 	padding: 0;
-	border: 1px solid #0a0f1d;
-	border-radius: 2px;
+	border: 1px solid var(--pc-on-accent);
+	border-radius: var(--pc-radius-control);
 	background: transparent;
-	color: #0a0f1d;
+	color: var(--pc-on-accent);
 	cursor: pointer;
 }
 
@@ -133,12 +144,12 @@ body.lp {
 }
 
 .lp-starbar__close:hover {
-	background: #0a0f1d;
-	color: var(--pc-kernel);
+	background: var(--pc-on-accent);
+	color: var(--pc-accent);
 }
 
 .lp .lp-starbar :focus-visible {
-	outline-color: #0a0f1d;
+	outline-color: var(--pc-on-accent);
 }
 
 /* Hero star callout */
@@ -150,9 +161,9 @@ body.lp {
 	gap: 10px 16px;
 	margin-top: 16px;
 	padding: 12px;
-	border: 1px solid var(--pc-kernel);
-	border-radius: 2px;
-	background: var(--pc-ground);
+	border: 1px solid var(--pc-rule-strong);
+	border-radius: var(--pc-radius-plate);
+	background: var(--pc-raised);
 }
 
 .lp-starcallout__text {
@@ -166,7 +177,7 @@ body.lp {
 /* Nav */
 
 .lp-nav {
-	border-bottom: 1px solid var(--pc-steel);
+	border-bottom: 1px solid var(--pc-rule);
 }
 
 .lp-nav__inner {
@@ -181,8 +192,10 @@ body.lp {
 	display: inline-flex;
 	align-items: center;
 	gap: 10px;
-	font-family: var(--pc-font-mono);
-	font-weight: 600;
+	font-family: var(--pc-font-display);
+	font-stretch: var(--pc-stretch-display);
+	font-size: 1.0625rem;
+	font-weight: 700;
 	text-decoration: none;
 	white-space: nowrap;
 }
@@ -205,8 +218,8 @@ body.lp {
 	margin: 0;
 	padding: 0;
 	list-style: none;
-	font-family: var(--pc-font-mono);
-	font-size: 0.875rem;
+	font-size: 0.9375rem;
+	font-weight: 500;
 }
 
 .lp .lp-nav__links a {
@@ -219,14 +232,24 @@ body.lp {
 	text-decoration: underline;
 }
 
-/* Hero: a drawing sheet with a 1px CAD grid. */
+/* Hero: the enamel casting, closed by a stepped cast foot. */
 
 .lp-hero {
-	border-bottom: 1px solid var(--pc-steel);
+	position: relative;
+	margin-bottom: 14px;
+	border-bottom: 8px solid var(--pc-field);
 	background-color: var(--pc-ground);
-	background-image: var(--pc-grid-bg);
-	background-size: var(--pc-grid-size);
-	background-position: -1px -1px;
+}
+
+/* Stepped cast foot under the hero, as on the column's base. */
+.lp-hero::after {
+	content: '';
+	position: absolute;
+	left: 0;
+	right: 0;
+	bottom: -14px;
+	height: 3px;
+	background: var(--pc-rule-strong);
 }
 
 .lp-hero__grid {
@@ -242,29 +265,53 @@ body.lp {
 		grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
 		align-items: center;
 		gap: 56px;
-		padding-top: 64px;
-		padding-bottom: 64px;
+		padding-top: 52px;
+		padding-bottom: 52px;
 	}
 }
 
 .lp-eyebrow,
 .lp-section__label {
 	margin: 0 0 16px;
-	font-family: var(--pc-font-mono);
-	font-size: 0.8125rem;
-	font-weight: 400;
-	letter-spacing: 0.08em;
+	font-family: var(--pc-font-display);
+	font-stretch: var(--pc-stretch-display);
+	font-size: 0.75rem;
+	font-weight: 700;
+	letter-spacing: 0.1em;
 	text-transform: uppercase;
 	color: var(--pc-muted);
+}
+
+/* The eyebrow is a riveted nameplate: steel edge, a rivet at each end. */
+.lp-eyebrow {
+	display: inline-flex;
+	align-items: center;
+	gap: 10px;
+	margin-bottom: 22px;
+	padding: 6px 10px;
+	border: 1px solid var(--pc-rule-strong);
+	border-radius: var(--pc-radius-control);
+	color: var(--pc-text);
+}
+
+.lp-eyebrow::before,
+.lp-eyebrow::after {
+	content: '';
+	flex: none;
+	width: 5px;
+	height: 5px;
+	border-radius: 50%;
+	background: var(--pc-rule-strong);
 }
 
 .lp-hero__title {
 	margin: 0 0 20px;
 	font-family: var(--pc-font-display);
-	font-size: clamp(2.125rem, 5.2vw, 3.5rem);
+	font-stretch: var(--pc-stretch-display);
+	font-size: clamp(2rem, 4.6vw, 3.25rem);
 	font-weight: 700;
 	line-height: 1.08;
-	letter-spacing: -0.02em;
+	letter-spacing: -0.015em;
 	text-wrap: balance;
 }
 
@@ -283,9 +330,10 @@ body.lp {
 
 .lp-code {
 	min-width: 0;
-	border: 1px solid var(--pc-steel);
-	border-radius: 2px;
-	background: var(--pc-surface);
+	overflow: hidden;
+	border: 1px solid var(--pc-rule);
+	border-radius: var(--pc-radius-plate);
+	background: var(--pc-well);
 }
 
 .lp-code__bar {
@@ -293,7 +341,7 @@ body.lp {
 	align-items: stretch;
 	justify-content: space-between;
 	min-height: 30px;
-	border-bottom: 1px solid var(--pc-steel);
+	border-bottom: 1px solid var(--pc-rule);
 }
 
 .lp-code__lang {
@@ -338,17 +386,18 @@ body.lp {
 .lp-copy {
 	padding: 0 14px;
 	border: 0;
-	border-left: 1px solid var(--pc-steel);
+	border-left: 1px solid var(--pc-rule);
 	border-radius: 0;
 	background: transparent;
 	color: var(--pc-text);
-	font-family: var(--pc-font-mono);
-	font-size: 0.75rem;
+	font-family: var(--pc-font-body);
+	font-size: 0.8125rem;
+	font-weight: 600;
 	cursor: pointer;
 }
 
 .lp-copy:hover {
-	background: var(--pc-steel);
+	background: var(--pc-raised);
 }
 
 .lp-copy[hidden] {
@@ -360,6 +409,9 @@ body.lp {
 .lp-schematic {
 	margin: 0;
 	min-width: 0;
+	padding: 20px;
+	border-radius: var(--pc-radius-plate);
+	background: var(--pc-field);
 }
 
 .sx {
@@ -392,9 +444,12 @@ body.lp {
 }
 
 .sx .sx-label {
+	font-family: var(--pc-font-display);
+	font-stretch: var(--pc-stretch-display);
 	font-size: 11px;
-	letter-spacing: 0.08em;
-	fill: var(--pc-muted);
+	font-weight: 700;
+	letter-spacing: 0.1em;
+	fill: var(--pc-on-field-muted);
 }
 
 .sx .sx-small {
@@ -403,52 +458,56 @@ body.lp {
 
 .sx .sx-note {
 	font-size: 12px;
-	fill: var(--pc-muted);
+	fill: var(--pc-on-field-muted);
 }
 
 .sx .sx-strong {
 	font-weight: 600;
 }
 
+/* Drawn on the Machine Green plate. The pool is a dark enamel recess, the
+ * kernel nvmet target is the cream machined part, the worker boxes are dark
+ * with steel edges, and the brass line is the data path. */
 .sx-frame {
-	fill: var(--pc-ground);
-	stroke: var(--pc-steel);
+	fill: none;
+	stroke: var(--pc-on-field-muted);
 	stroke-width: 1;
-	stroke-dasharray: 4 4;
+	stroke-dasharray: 3 5;
+	opacity: 0.55;
 }
 
 .sx-pool {
-	fill: var(--pc-steel);
-	stroke: var(--pc-muted);
-	stroke-width: 1;
+	fill: var(--pc-ground);
+	stroke: var(--pc-text);
+	stroke-width: 1.5;
 }
 
 .sx-target {
-	fill: var(--pc-kernel);
+	fill: var(--pc-text);
 }
 
 .sx-box {
-	fill: var(--pc-surface);
+	fill: var(--pc-ground);
 	stroke: var(--pc-muted);
 	stroke-width: 1;
 }
 
 .sx-link {
-	stroke: var(--pc-muted);
+	stroke: var(--pc-on-field-muted);
 	stroke-width: 2;
 }
 
 .sx-link-head {
-	fill: var(--pc-muted);
+	fill: var(--pc-on-field-muted);
 }
 
 .sx-wire {
-	stroke: var(--pc-wire);
-	stroke-width: 3;
+	stroke: var(--pc-accent);
+	stroke-width: 4;
 }
 
 .sx-wire-head {
-	fill: var(--pc-wire);
+	fill: var(--pc-accent);
 }
 
 .sx-t {
@@ -459,24 +518,26 @@ body.lp {
 	fill: var(--pc-muted);
 }
 
-.sx-cyan {
-	fill: var(--pc-wire);
+/* The wire label sits on the green plate: cream keeps it above 4.5:1. */
+.sx-wire-label {
+	fill: var(--pc-text);
 }
 
-.sx-on-amber {
+.sx-on-cap {
 	fill: var(--pc-ground);
 }
 
 /* Sections */
 
 .lp-section {
-	border-bottom: 1px solid var(--pc-steel);
+	border-bottom: 1px solid var(--pc-rule);
 	padding: 48px 0;
 }
 
 .lp-section__title {
 	margin: 0 0 8px;
 	font-family: var(--pc-font-display);
+	font-stretch: var(--pc-stretch-display);
 	font-size: 1.5rem;
 	font-weight: 700;
 	line-height: 1.25;
@@ -497,8 +558,10 @@ body.lp {
 	margin: 0;
 	padding: 0;
 	list-style: none;
-	border-top: 1px solid var(--pc-steel);
-	border-left: 1px solid var(--pc-steel);
+	gap: 2px;
+	overflow: hidden;
+	border-radius: var(--pc-radius-plate);
+	background: var(--pc-ground);
 }
 
 @media (min-width: 560px) {
@@ -517,28 +580,29 @@ body.lp {
 	display: flex;
 	flex-direction: column;
 	gap: 6px;
-	padding: 16px 18px;
-	border-right: 1px solid var(--pc-steel);
-	border-bottom: 1px solid var(--pc-steel);
+	padding: 18px 20px;
+	background: var(--pc-field);
 }
 
 .lp-negation__value {
-	font-family: var(--pc-font-mono);
+	font-family: var(--pc-font-display);
+	font-stretch: var(--pc-stretch-display);
 	font-size: clamp(2.25rem, 4vw, 3rem);
-	font-weight: 600;
+	font-weight: 700;
+	font-variant-numeric: tabular-nums;
 	line-height: 1;
 	letter-spacing: -0.02em;
 	overflow-wrap: anywhere;
 }
 
 .lp-negation__label {
-	font-family: var(--pc-font-mono);
-	font-size: 0.9375rem;
+	font-size: 1rem;
+	font-weight: 500;
 	line-height: 1.45;
 }
 
 .lp .lp-negation__evidence a {
-	color: var(--pc-muted);
+	color: var(--pc-on-field-muted);
 	text-decoration: none;
 }
 
@@ -553,7 +617,7 @@ body.lp {
 	font-family: var(--pc-font-mono);
 	font-size: 0.75rem;
 	line-height: 1.5;
-	color: var(--pc-muted);
+	color: var(--pc-on-field-muted);
 	overflow-wrap: anywhere;
 }
 
@@ -572,16 +636,15 @@ body.lp {
 	}
 }
 
-/* Backend x protocol matrix, drawn on the CAD grid.
- * Shipped: solid text-color outline on a surface fill, labelled "shipped".
- * Planned: dashed outline, labelled "planned".
+/* Backend x protocol matrix on a raised plate.
+ * Shipped: Machine Green enamel fill, cream word "shipped".
+ * Planned: dashed steel outline, labelled "planned".
  * Not applicable: empty, with screen-reader text. */
 
 .lp-matrix__grid {
-	border: 1px solid var(--pc-steel);
-	background-color: var(--pc-ground);
-	background-image: var(--pc-grid-bg);
-	background-size: var(--pc-grid-size);
+	border: 1px solid var(--pc-rule);
+	border-radius: var(--pc-radius-plate);
+	background-color: var(--pc-raised);
 }
 
 .lp-matrix__table {
@@ -590,8 +653,7 @@ body.lp {
 	border-collapse: separate;
 	border-spacing: 8px;
 	padding: 8px;
-	font-family: var(--pc-font-mono);
-	font-size: 0.8125rem;
+	font-size: 0.875rem;
 }
 
 .lp-matrix__table th,
@@ -605,7 +667,8 @@ body.lp {
 	padding: 7px 10px !important;
 	font-weight: 600;
 	background: var(--pc-ground);
-	border: 1px solid var(--pc-steel);
+	border: 1px solid var(--pc-rule-strong);
+	border-radius: var(--pc-radius-control);
 }
 
 .lp-matrix__head--planned {
@@ -620,22 +683,25 @@ body.lp {
 	justify-content: center;
 	min-height: 34px;
 	padding: 4px 8px;
-	font-size: 0.75rem;
-	letter-spacing: 0.06em;
+	border-radius: var(--pc-radius-control);
+	font-family: var(--pc-font-display);
+	font-stretch: var(--pc-stretch-display);
+	font-size: 0.6875rem;
+	font-weight: 700;
+	letter-spacing: 0.08em;
 	text-transform: uppercase;
 	text-align: center;
 }
 
 .lp-matrix__cell--shipped {
-	background: var(--pc-surface);
-	border: 1px solid var(--pc-text);
+	background: var(--pc-field);
+	border: 1px solid var(--pc-field);
 	color: var(--pc-text);
-	font-weight: 600;
 }
 
 .lp-matrix__cell--planned {
 	background: var(--pc-ground);
-	border: 1px dashed var(--pc-muted);
+	border: 1px dashed var(--pc-rule-strong);
 	color: var(--pc-muted);
 }
 
@@ -651,8 +717,9 @@ body.lp {
 }
 
 .lp-matrix__block {
-	border: 1px solid var(--pc-steel);
-	background: var(--pc-ground);
+	border: 1px solid var(--pc-rule);
+	border-radius: var(--pc-radius-plate);
+	background: var(--pc-raised);
 }
 
 .lp-matrix__block + .lp-matrix__block {
@@ -666,9 +733,8 @@ body.lp {
 .lp-matrix__block-title {
 	margin: 0;
 	padding: 8px 12px;
-	border-bottom: 1px solid var(--pc-grid);
-	font-family: var(--pc-font-mono);
-	font-size: 0.875rem;
+	border-bottom: 1px solid var(--pc-rule);
+	font-size: 0.9375rem;
 	font-weight: 600;
 }
 
@@ -688,8 +754,7 @@ body.lp {
 	justify-content: space-between;
 	gap: 12px;
 	padding: 4px 0;
-	font-family: var(--pc-font-mono);
-	font-size: 0.8125rem;
+	font-size: 0.875rem;
 }
 
 .lp-matrix__line dt::after {
@@ -725,8 +790,7 @@ body.lp {
 	margin: 14px 0 0;
 	padding: 0;
 	list-style: none;
-	font-family: var(--pc-font-mono);
-	font-size: 0.8125rem;
+	font-size: 0.875rem;
 	color: var(--pc-muted);
 }
 
@@ -745,8 +809,8 @@ body.lp {
 }
 
 .lp-matrix__swatch.lp-matrix__cell--na {
-	border: 1px solid var(--pc-grid);
-	background: var(--pc-ground);
+	border: 1px solid var(--pc-rule);
+	background: transparent;
 }
 
 /* Steps */
@@ -777,16 +841,20 @@ body.lp {
 
 .lp-step__num {
 	display: block;
-	font-family: var(--pc-font-mono);
-	font-size: 0.8125rem;
+	font-family: var(--pc-font-display);
+	font-stretch: var(--pc-stretch-display);
+	font-size: 0.875rem;
+	font-weight: 700;
+	letter-spacing: 0.06em;
 	color: var(--pc-muted);
 }
 
 .lp-step__title {
 	margin: 4px 0 8px;
 	font-family: var(--pc-font-display);
-	font-size: 1.25rem;
-	font-weight: 600;
+	font-stretch: var(--pc-stretch-display);
+	font-size: 1.1875rem;
+	font-weight: 700;
 	line-height: 1.3;
 }
 
@@ -798,8 +866,8 @@ body.lp {
 .lp-step__more {
 	display: inline-block;
 	margin-top: 10px;
-	font-family: var(--pc-font-mono);
-	font-size: 0.8125rem;
+	font-size: 0.9375rem;
+	font-weight: 600;
 }
 
 .lp-step__more::after {
@@ -809,7 +877,9 @@ body.lp {
 /* Comparison: a table on wide screens, one card per tool on narrow ones. */
 
 .lp-compare__scroll {
-	border: 1px solid var(--pc-steel);
+	overflow: hidden;
+	border: 1px solid var(--pc-rule);
+	border-radius: var(--pc-radius-plate);
 }
 
 .lp-compare__table {
@@ -821,16 +891,20 @@ body.lp {
 .lp-compare__table th,
 .lp-compare__table td {
 	padding: 12px 16px;
-	border-bottom: 1px solid var(--pc-grid);
+	border-bottom: 1px solid var(--pc-rule);
 	text-align: left;
 	vertical-align: top;
 }
 
 .lp-compare__table thead th {
-	border-bottom: 1px solid var(--pc-steel);
-	font-family: var(--pc-font-mono);
-	font-size: 0.8125rem;
-	font-weight: 600;
+	border-bottom: 1px solid var(--pc-rule);
+	background: var(--pc-raised);
+	font-family: var(--pc-font-display);
+	font-stretch: var(--pc-stretch-display);
+	font-size: 0.75rem;
+	font-weight: 700;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
 }
 
 .lp-compare__table tbody th {
@@ -850,7 +924,8 @@ body.lp {
 }
 
 .lp-compare__card {
-	border: 1px solid var(--pc-steel);
+	border: 1px solid var(--pc-rule);
+	border-radius: var(--pc-radius-plate);
 }
 
 .lp-compare__card + .lp-compare__card {
@@ -860,9 +935,9 @@ body.lp {
 .lp-compare__card-title {
 	margin: 0;
 	padding: 8px 12px;
-	border-bottom: 1px solid var(--pc-steel);
-	font-family: var(--pc-font-mono);
-	font-size: 0.875rem;
+	border-bottom: 1px solid var(--pc-rule);
+	background: var(--pc-raised);
+	font-size: 0.9375rem;
 	font-weight: 600;
 }
 
@@ -878,13 +953,15 @@ body.lp {
 }
 
 .lp-compare__line + .lp-compare__line {
-	border-top: 1px solid var(--pc-grid);
+	border-top: 1px solid var(--pc-rule);
 }
 
 .lp-compare__line dt {
-	font-family: var(--pc-font-mono);
+	font-family: var(--pc-font-display);
+	font-stretch: var(--pc-stretch-display);
 	font-size: 0.6875rem;
-	letter-spacing: 0.06em;
+	font-weight: 700;
+	letter-spacing: 0.08em;
 	text-transform: uppercase;
 	color: var(--pc-muted);
 }
@@ -895,8 +972,7 @@ body.lp {
 
 .lp-compare__checked {
 	margin: 10px 0 0;
-	font-family: var(--pc-font-mono);
-	font-size: 0.75rem;
+	font-size: 0.8125rem;
 	color: var(--pc-muted);
 }
 
@@ -914,8 +990,9 @@ body.lp {
 .lp-limits__text {
 	max-width: 48em;
 	margin: 0;
-	padding-left: 16px;
-	border-left: 2px solid var(--pc-steel);
+	padding: 16px 20px;
+	border: 1px solid var(--pc-rule-strong);
+	border-radius: var(--pc-radius-plate);
 	font-size: 1.125rem;
 }
 
@@ -930,10 +1007,9 @@ body.lp {
 .lp-button {
 	display: inline-block;
 	padding: 11px 18px;
-	border: 1px solid var(--pc-steel);
-	border-radius: 2px;
-	font-family: var(--pc-font-mono);
-	font-size: 0.9375rem;
+	border: 1px solid var(--pc-rule-strong);
+	border-radius: var(--pc-radius-control);
+	font-size: 1rem;
 	font-weight: 600;
 }
 
@@ -942,13 +1018,18 @@ body.lp {
 }
 
 .lp .lp-button--primary {
-	border-color: var(--pc-text);
-	background: var(--pc-text);
-	color: var(--pc-ground);
+	border-color: var(--pc-accent);
+	background: var(--pc-accent);
+	color: var(--pc-on-accent);
 }
 
 .lp .lp-button:hover {
 	border-color: var(--pc-text);
+}
+
+.lp .lp-button--primary:hover {
+	border-color: var(--pc-accent-hover);
+	background: var(--pc-accent-hover);
 }
 
 .lp-footer {
@@ -965,10 +1046,9 @@ body.lp {
 	gap: 8px 24px;
 	margin: 0;
 	padding: 24px 0 0;
-	border-top: 1px solid var(--pc-steel);
+	border-top: 1px solid var(--pc-rule);
 	list-style: none;
-	font-family: var(--pc-font-mono);
-	font-size: 0.8125rem;
+	font-size: 0.875rem;
 }
 
 .lp-footer__nav a {
@@ -1048,6 +1128,33 @@ body.lp {
 	.lp-button {
 		padding: 10px 12px;
 		font-size: 0.8125rem;
+	}
+	/* The nameplate stays on one line: narrower stamp, smaller rivets. */
+	.lp-eyebrow {
+		gap: 7px;
+		margin-bottom: 18px;
+		padding: 5px 8px;
+		font-size: 0.6875rem;
+		font-stretch: 108%;
+		letter-spacing: 0.05em;
+	}
+	.lp-eyebrow::before,
+	.lp-eyebrow::after {
+		width: 4px;
+		height: 4px;
+	}
+	.lp-schematic {
+		padding: 10px;
+	}
+}
+
+/* Footer star button matches the CTA buttons beside it. */
+@media (min-width: 481px) {
+	.lp .lp-footer .pc-star {
+		font-size: 1rem;
+	}
+	.lp .lp-footer .pc-star .pc-star__label {
+		padding: 11px 14px 11px 8px;
 	}
 }
 

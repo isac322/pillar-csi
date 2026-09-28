@@ -4,7 +4,7 @@
 interface Props {
 	repo: string;
 	label: string;
-	variant?: 'nav' | 'amber' | 'ink' | 'compact';
+	variant?: 'nav' | 'brass' | 'ink' | 'compact';
 }
 
 const { repo, label, variant = 'nav' } = Astro.props;
@@ -29,9 +29,9 @@ const { repo, label, variant = 'nav' } = Astro.props;
 		align-items: stretch;
 		gap: 0;
 		border: 1px solid currentColor;
-		border-radius: 2px;
-		font-family: var(--pc-font-mono);
-		font-size: 0.8125rem;
+		border-radius: var(--pc-radius-control);
+		font-family: var(--pc-font-body);
+		font-size: 0.875rem;
 		font-weight: 600;
 		line-height: 1;
 		white-space: nowrap;
@@ -68,46 +68,59 @@ const { repo, label, variant = 'nav' } = Astro.props;
 	}
 
 	.pc-star--nav {
+		border-color: var(--pc-rule-strong);
 		color: var(--pc-text) !important;
 	}
+	.pc-star--nav .pc-star__icon {
+		color: var(--pc-accent);
+	}
+	.pc-star--nav .pc-star__count {
+		border-left-color: var(--pc-rule-strong);
+	}
 	.pc-star--nav:hover {
-		background: var(--pc-steel);
+		background: var(--pc-raised);
 	}
 
-	.pc-star--amber {
-		border-color: var(--pc-kernel);
-		background: var(--pc-kernel);
-		color: #0a0f1d !important;
-		font-size: 0.9375rem;
+	/* Hero callout: brass, the page's one accent. */
+	.pc-star--brass {
+		border-color: var(--pc-accent);
+		background: var(--pc-accent);
+		color: var(--pc-on-accent) !important;
+		font-size: 1rem;
 	}
-	.pc-star--amber .pc-star__label {
+	.pc-star--brass .pc-star__label {
 		padding: 11px 14px 11px 8px;
 	}
-	.pc-star--amber .pc-star__icon {
+	.pc-star--brass .pc-star__icon {
 		margin-left: 14px;
 	}
-	.pc-star--amber:hover {
-		background: #fbbf24;
+	.pc-star--brass:hover {
+		border-color: var(--pc-accent-hover);
+		background: var(--pc-accent-hover);
 	}
 
+	/* On the brass star bar: a Deep Enamel button with brass lettering. */
 	.pc-star--ink {
-		border-color: #0a0f1d;
-		background: #0a0f1d;
-		color: #fbbf24 !important;
+		border-color: var(--pc-on-accent);
+		background: var(--pc-on-accent);
+		color: var(--pc-accent) !important;
 	}
 	.pc-star--ink .pc-star__count {
-		border-left-color: #334155;
-		color: #f8fafc;
+		border-left-color: var(--pc-rule-strong);
+		color: var(--pc-text);
 	}
 
 	.pc-star--compact {
+		border-color: var(--pc-rule-strong);
 		color: var(--pc-text) !important;
-		font-size: 0.75rem;
+		font-size: 0.8125rem;
 	}
 	.pc-star--compact .pc-star__icon {
 		margin: 6px 8px;
+		color: var(--pc-accent);
 	}
 	.pc-star--compact .pc-star__count {
 		padding: 0 8px;
+		border-left-color: var(--pc-rule-strong);
 	}
 </style>
