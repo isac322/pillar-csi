@@ -1,4 +1,0 @@
-User-agent: *
-Allow: /
-
-Sitemap: https://pillar-csi.bhyoo.com/sitemap-index.xml
