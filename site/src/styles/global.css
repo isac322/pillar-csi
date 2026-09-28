@@ -60,7 +60,6 @@
 
 html {
 	-webkit-text-size-adjust: 100%;
-	scroll-padding-top: calc(var(--header-h) + 1.5rem);
 	scrollbar-color: var(--line) var(--bg-2);
 }
 
@@ -117,6 +116,11 @@ img,
 svg {
 	display: block;
 	max-width: 100%;
+}
+/* Icons are fixed-size marks: never let a shrinking flex parent squeeze them to 0px */
+.icon {
+	flex: none;
+	max-width: none;
 }
 
 code,
@@ -261,7 +265,38 @@ samp {
 	margin: 0;
 	padding: 0;
 	display: grid;
-	gap: 0.2rem;
+	gap: 0;
+}
+.title-block ul a {
+	display: inline-block;
+	padding-block: 0.2rem;
+}
+
+/* ─── Horizontal scrollers (wide tables, the section drawing) ── */
+/* scroll-cue.ts sets data-more to the edges that still hide content; fade those edges. */
+[data-more='right'] {
+	-webkit-mask-image: linear-gradient(to right, #000 calc(100% - 48px), transparent);
+	mask-image: linear-gradient(to right, #000 calc(100% - 48px), transparent);
+}
+[data-more='left'] {
+	-webkit-mask-image: linear-gradient(to left, #000 calc(100% - 48px), transparent);
+	mask-image: linear-gradient(to left, #000 calc(100% - 48px), transparent);
+}
+[data-more='both'] {
+	-webkit-mask-image: linear-gradient(to right, transparent, #000 48px, #000 calc(100% - 48px), transparent);
+	mask-image: linear-gradient(to right, transparent, #000 48px, #000 calc(100% - 48px), transparent);
+}
+.scroll-cue {
+	display: flex;
+	justify-content: flex-end;
+	gap: 0.4rem;
+	margin: 1.4em 0 0.4rem;
+	font-size: 0.8125rem;
+	font-weight: 600;
+	color: var(--fg-2);
+}
+.scroll-cue[hidden] {
+	display: none;
 }
 @media (max-width: 760px) {
 	.title-block {

@@ -1,3 +1,5 @@
+import { watchScroll } from './scroll-cue';
+
 const root = document.documentElement;
 
 /* Theme */
@@ -15,15 +17,43 @@ themeBtn?.addEventListener('click', () => {
 /* Navigation drawer (narrow screens) */
 const menuBtn = document.querySelector<HTMLButtonElement>('[data-menu]');
 const scrim = document.querySelector<HTMLElement>('[data-scrim]');
+const nav = document.querySelector<HTMLElement>('.d-nav');
+const behindDrawer = ['.d-main', '.d-foot', '.d-brand', '.d-home', '.search-btn', '.d-tools'];
 function setMenu(open: boolean) {
 	document.body.classList.toggle('nav-open', open);
 	menuBtn?.setAttribute('aria-expanded', String(open));
 	menuBtn?.setAttribute('aria-label', open ? 'Close navigation' : 'Open navigation');
 	if (scrim) scrim.hidden = !open;
+	for (const sel of behindDrawer) document.querySelector<HTMLElement>(sel)?.toggleAttribute('inert', open);
+	if (open) (nav?.querySelector<HTMLElement>('.active') ?? nav?.querySelector<HTMLElement>('a'))?.focus();
+	else if (nav?.contains(document.activeElement)) menuBtn?.focus();
 }
 menuBtn?.addEventListener('click', () => setMenu(!document.body.classList.contains('nav-open')));
 scrim?.addEventListener('click', () => setMenu(false));
-document.querySelector('.d-nav .active')?.scrollIntoView({ block: 'center' });
+
+/* Scroll only the sidebar (never the window) so the active sheet sits mid-list. */
+function revealIn(box: HTMLElement | null | undefined, item: HTMLElement | null | undefined, at = 0.5) {
+	if (!box || !item) return;
+	const top = item.getBoundingClientRect().top - box.getBoundingClientRect().top + box.scrollTop;
+	box.scrollTop = Math.max(0, top - box.clientHeight * at + item.offsetHeight / 2);
+}
+revealIn(nav, nav?.querySelector<HTMLElement>('.active'));
+
+/* Wide tables: fade the hidden edge and show a "scroll sideways" cue while a table overflows */
+for (const wrap of document.querySelectorAll<HTMLElement>('.table-wrap')) {
+	const cue = document.createElement('p');
+	cue.className = 'scroll-cue';
+	cue.hidden = true;
+	cue.innerHTML = 'Scroll sideways for more columns <span aria-hidden="true">→</span>';
+	wrap.before(cue);
+	const head = wrap.closest('.prose') ? findHeading(wrap) : null;
+	if (head) wrap.setAttribute('aria-label', `Table: ${head}`);
+	watchScroll(wrap, cue);
+}
+function findHeading(el: Element): string | null {
+	for (let n = el.previousElementSibling; n; n = n.previousElementSibling) if (/^H[2-4]$/.test(n.tagName)) return n.textContent?.trim() || null;
+	return null;
+}
 
 /* Tabs, synced by syncKey across the page and visits */
 const TAB_KEY = 'pcsi-tabs';
@@ -85,12 +115,20 @@ for (const group of tabGroups) {
 document.addEventListener('click', async (e) => {
 	const btn = (e.target as HTMLElement).closest<HTMLButtonElement>('[data-copy]');
 	if (!btn) return;
-	const code = btn.closest('figure')?.querySelector('pre')?.innerText ?? '';
+	const pre = btn.closest('figure')?.querySelector('pre');
+	const code = pre?.innerText ?? '';
 	try {
 		await navigator.clipboard.writeText(code.replace(/\n$/, ''));
 		btn.textContent = 'Copied';
 	} catch {
-		btn.textContent = 'Press Ctrl+C';
+		// Clipboard API refused: select the code so the keyboard shortcut copies it.
+		if (pre) {
+			const range = document.createRange();
+			range.selectNodeContents(pre);
+			getSelection()?.removeAllRanges();
+			getSelection()?.addRange(range);
+		}
+		btn.textContent = /Mac|iPhone|iPad/.test(navigator.platform) ? 'Press ⌘C' : 'Press Ctrl+C';
 	}
 	btn.classList.add('is-done');
 	setTimeout(() => {
@@ -99,22 +137,39 @@ document.addEventListener('click', async (e) => {
 	}, 1600);
 });
 
-/* Table of contents: mark the section in view */
+/* Table of contents: mark the section in view, and keep the marked entry visible in a tall TOC */
 const tocLinks = new Map([...document.querySelectorAll<HTMLAnchorElement>('[data-toc-link]')].map((a) => [a.dataset.tocLink!, a]));
 if (tocLinks.size) {
+	const toc = document.querySelector<HTMLElement>('.d-toc');
 	const heads = [...tocLinks.keys()].map((id) => document.getElementById(id)).filter(Boolean) as HTMLElement[];
+	let last: HTMLAnchorElement | undefined;
 	const onScroll = () => {
 		let current = heads[0];
 		for (const h of heads) if (h.getBoundingClientRect().top < 140) current = h;
-		tocLinks.forEach((a, id) => a.classList.toggle('is-current', id === current?.id));
+		const link = tocLinks.get(current?.id ?? '');
+		tocLinks.forEach((a) => a.classList.toggle('is-current', a === link));
+		if (link && link !== last && toc && toc.scrollHeight > toc.clientHeight) {
+			const lt = link.getBoundingClientRect().top - toc.getBoundingClientRect().top;
+			if (lt < 0 || lt > toc.clientHeight - link.offsetHeight) revealIn(toc, link, 1 / 3);
+		}
+		last = link;
 	};
 	addEventListener('scroll', onScroll, { passive: true });
 	onScroll();
 }
 
 /* Search (Pagefind) */
-type PagefindResult = { data: () => Promise<{ url: string; excerpt: string; meta: { title?: string } }> };
+type PagefindSub = { title: string; url: string; excerpt: string; locations?: number[] };
+type PagefindData = { url: string; excerpt: string; meta: { title?: string }; sub_results?: PagefindSub[] };
+type PagefindResult = { data: () => Promise<PagefindData> };
 type Pagefind = { search: (q: string) => Promise<{ results: PagefindResult[] }>; init?: () => Promise<void> };
+
+/** The section with the most hits on a page, so a result opens at the heading that matched. */
+function bestSection(d: PagefindData): PagefindSub | null {
+	let best: PagefindSub | null = null;
+	for (const s of d.sub_results ?? []) if (!best || (s.locations?.length ?? 0) > (best.locations?.length ?? 0)) best = s;
+	return best;
+}
 
 const dialog = document.querySelector<HTMLDialogElement>('[data-search]');
 const input = document.querySelector<HTMLInputElement>('[data-search-input]');
@@ -174,21 +229,31 @@ input?.addEventListener('input', async () => {
 		return;
 	}
 	const { results } = await pf.search(q);
-	const data = await Promise.all(results.slice(0, 8).map((r) => r.data()));
+	// A docs set this size returns at most a few dozen pages, so render every match and keep the count honest.
+	const data = await Promise.all(results.map((r) => r.data()));
 	if (mine !== seq) return;
-	status.textContent = data.length ? `${results.length} ${results.length === 1 ? 'page' : 'pages'} match "${q}".` : `No pages match "${q}". Try a module name, CRD kind, or Helm value.`;
+	status.textContent = data.length ? `${data.length} ${data.length === 1 ? 'page matches' : 'pages match'} "${q}".` : `No pages match "${q}". Try a module name, CRD kind, or Helm value.`;
 	list.replaceChildren(
 		...data.map((d) => {
+			const sec = bestSection(d);
+			const pageTitle = d.meta.title ?? d.url;
 			const li = document.createElement('li');
 			const a = document.createElement('a');
-			a.href = d.url;
+			a.href = sec?.url ?? d.url;
 			const title = document.createElement('span');
 			title.className = 'sr-title';
-			title.textContent = d.meta.title ?? d.url;
+			title.textContent = pageTitle;
+			if (sec && sec.url.includes('#') && sec.title && sec.title !== pageTitle) {
+				const where = document.createElement('span');
+				where.className = 'sr-section';
+				where.textContent = sec.title;
+				title.append(' ', where);
+			}
 			const ex = document.createElement('span');
 			ex.className = 'sr-excerpt';
-			ex.innerHTML = d.excerpt;
+			ex.innerHTML = sec?.excerpt ?? d.excerpt;
 			a.append(title, ex);
+			a.addEventListener('click', () => dialog?.close());
 			li.append(a);
 			return li;
 		}),

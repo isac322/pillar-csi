@@ -3,7 +3,8 @@
 ---
 
 <figure class="cut" aria-labelledby="cut-caption">
-	<div class="cut-pan" tabindex="0" role="group" aria-label="Section drawing of the pillar-csi data path">
+	<p class="scroll-cue" data-cut-cue hidden>Scroll sideways for the whole drawing <span aria-hidden="true">→</span></p>
+	<div class="cut-pan" tabindex="0" role="group" aria-label="Section drawing of the pillar-csi data path" data-cut-pan>
 		<svg viewBox="0 0 640 600" role="img" aria-labelledby="cut-title cut-desc">
 			<title id="cut-title">Section through a pillar-csi cluster</title>
 			<desc id="cut-desc">
@@ -72,9 +73,9 @@
 			<!-- Callouts on the right -->
 			<g class="callout">
 				<path d="M340 150 L372 176 H600" class="ln-thin"></path>
-				<text x="378" y="170" class="t">Storage nodes</text>
-				<text x="378" y="194" class="t t-note">zvols and logical volumes</text>
-				<text x="378" y="212" class="t t-note">in pools you already run</text>
+				<text x="370" y="170" class="t">Storage nodes</text>
+				<text x="370" y="194" class="t t-note">zvols and logical volumes</text>
+				<text x="370" y="212" class="t t-note">in pools you already run</text>
 			</g>
 
 			<!-- Bedrock: the Linux kernel -->
@@ -119,6 +120,11 @@
 	</figcaption>
 </figure>
 
+<script>
+	import { watchScroll } from '../scripts/scroll-cue';
+	const pan = document.querySelector<HTMLElement>('[data-cut-pan]');
+	if (pan) watchScroll(pan, document.querySelector<HTMLElement>('[data-cut-cue]'));
+</script>
 <style>
 	.cut {
 		margin: 0;

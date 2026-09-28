@@ -155,7 +155,8 @@ body.docs {
 	content: '';
 	position: absolute;
 	left: 0.45rem;
-	top: 50%;
+	/* On the first line box, so a wrapped label keeps its tick beside the first line */
+	top: calc(0.34rem + 0.675em - 1px);
 	width: 0.55rem;
 	height: 2px;
 	background: var(--mark);
@@ -189,8 +190,14 @@ body.docs {
 }
 .d-title h1 {
 	margin: 0;
-	font-size: clamp(2rem, 3.4vw, 2.85rem);
+	font-size: clamp(1.75rem, 3.4vw, 2.85rem);
 	line-height: 1.05;
+	/* Long CamelCase identifiers (ExportSpecMissing) must not push a phone viewport sideways */
+	overflow-wrap: anywhere;
+}
+/* Deep links and TOC jumps land below the sticky header */
+.d-article [id] {
+	scroll-margin-top: calc(var(--header-h) + 1.5rem);
 }
 .d-lede {
 	margin: 1rem 0 0;
@@ -320,6 +327,9 @@ body.docs {
 }
 .table-wrap:focus-visible {
 	outline-offset: 2px;
+}
+.scroll-cue + .table-wrap {
+	margin-top: 0;
 }
 .prose table {
 	width: 100%;
@@ -579,6 +589,7 @@ figure.code pre *::selection {
 /* ─── Link cards: one title-block label grid ───── */
 .link-card {
 	display: grid;
+	grid-template-rows: auto 1fr auto;
 	gap: 0.35rem;
 	padding: 1rem 1.15rem 0.9rem;
 	border: 1.5px solid var(--line);
@@ -812,6 +823,13 @@ figure.code pre *::selection {
 }
 .sr-title {
 	font-weight: 700;
+}
+.sr-section {
+	font-weight: 500;
+	color: var(--fg-2);
+}
+.sr-section::before {
+	content: '› ';
 }
 .sr-excerpt {
 	font-size: 0.9rem;

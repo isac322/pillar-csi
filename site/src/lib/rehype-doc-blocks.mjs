@@ -26,6 +26,8 @@ export default function rehypeDocBlocks() {
 			if (node.tagName === 'table') {
 				visit(node, 'element', (cell) => {
 					if (cell.tagName === 'td') breakableCode(cell);
+					// A trailing space keeps search excerpts from running adjacent cells together; it does not render.
+					if (cell.tagName === 'td' || cell.tagName === 'th') cell.children.push({ type: 'text', value: ' ' });
 				});
 				parent.children[index] = {
 					type: 'element',
@@ -51,7 +53,7 @@ export default function rehypeDocBlocks() {
 								{
 									type: 'element',
 									tagName: 'button',
-									properties: { type: 'button', className: ['code-copy'], dataCopy: '' },
+									properties: { type: 'button', className: ['code-copy'], dataCopy: '', ariaLive: 'polite' },
 									children: [{ type: 'text', value: 'Copy' }],
 								},
 							],
