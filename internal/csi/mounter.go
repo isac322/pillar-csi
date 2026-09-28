@@ -24,6 +24,20 @@ import (
 	"k8s.io/utils/mount"
 )
 
+// xfsCompatProfile is the mkfs.xfs configuration file that pins the on-disk
+// feature set of new XFS volumes.  The xfsprogs package ships one
+// lts_<version>.conf per upstream LTS kernel with the features that kernel
+// can mount, and keeps the files current: a feature that becomes a mkfs
+// default later is added to the older profiles as disabled.  The node image
+// gets them from xfsprogs-extra.
+//
+// Linux 5.15 is the oldest node kernel pillar-csi supports.  A volume moves
+// between nodes, so its filesystem must be mountable by every supported
+// kernel, not only by the kernel of the node that formats it; the mkfs.xfs
+// defaults follow the newest kernel instead (xfsprogs 7.0 turns on the
+// exchange-range and parent-pointer features, which need Linux 6.10 and 6.12).
+const xfsCompatProfile = "/usr/share/xfsprogs/mkfs/lts_5.15.conf"
+
 // KubeMounter is the production Mounter implementation backed by
 // k8s.io/utils/mount.SafeFormatAndMount.  It shells out to the host
 // mount(8)/umount(8) binaries and uses blkid to detect existing
