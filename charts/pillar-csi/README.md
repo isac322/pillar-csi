@@ -108,9 +108,17 @@ Kubernetes: `>=1.24.0-0`
 | imagePullPolicy | string | `"IfNotPresent"` | Global image pull policy applied to all containers unless overridden per component. |
 | imagePullSecrets | list | `[]` | Optional list of imagePullSecrets applied to all Pods. |
 | installCRDs | bool | `true` | Install CRDs as part of the Helm release. Set to false when managing CRDs separately (e.g. via GitOps or a dedicated CRD chart). CRDs are annotated with helm.sh/resource-policy: keep so they are never deleted on chart uninstall. |
-| metrics.serviceMonitor | object | `{"additionalLabels":{},"enabled":false,"interval":""}` | Set to true to create a Prometheus ServiceMonitor (requires prometheus-operator CRDs). |
-| metrics.serviceMonitor.additionalLabels | object | `{}` | Additional labels added to the ServiceMonitor. |
-| metrics.serviceMonitor.interval | string | `""` | Scrape interval override. Defaults to the Prometheus global scrapeInterval. |
+| metrics.agent.port | int | `9501` | pillar-agent /metrics port. Bound to the host IP when agent.hostNetwork is true. |
+| metrics.controller.secure | bool | `true` | HTTPS + TokenReview/SubjectAccessReview on the controller endpoint (binary default). false passes --metrics-secure=false (plain HTTP). |
+| metrics.enabled | bool | `false` |  |
+| metrics.node.port | int | `9502` | pillar-node /metrics port. Bound to the host IP when node.hostNetwork is true. |
+| metrics.podMonitor.enabled | bool | `false` | Render prometheus-operator PodMonitors (requires monitoring.coreos.com/v1). |
+| metrics.podMonitor.interval | string | `""` | Scrape interval override. Defaults to the Prometheus global scrape interval. |
+| metrics.podMonitor.labels | object | `{}` | Additional labels added to every PodMonitor (e.g. the Prometheus podMonitorSelector). |
+| metrics.podMonitor.scrapeTimeout | string | `""` | Scrape timeout override. Defaults to the Prometheus global scrape timeout. |
+| metrics.sidecars.attacherPort | int | `8091` |  |
+| metrics.sidecars.provisionerPort | int | `8090` |  |
+| metrics.sidecars.resizerPort | int | `8092` |  |
 | mtls.certDir | string | `"/etc/pillar-csi/mtls"` | Path inside controller and agent containers where the cert Secret is mounted. Templates expose this via the pillar-csi.mtls.certDir helper. |
 | mtls.certManager.duration | string | `"2160h"` | Certificate lifetime; cert-manager renews "renewBefore" the expiry. |
 | mtls.certManager.enabled | bool | `false` | If true the chart renders a cert-manager Issuer plus two Certificate resources that produce Secrets named "&lt;fullname>-controller-mtls" and "&lt;fullname>-agent-mtls". Requires cert-manager CRDs in the cluster. |
@@ -161,6 +169,10 @@ Kubernetes: `>=1.24.0-0`
 | serviceAccount.node.annotations | object | `{}` | Annotations added to the node ServiceAccount. |
 | serviceAccount.node.create | bool | `true` | Set to false to skip ServiceAccount creation for pillar-node. |
 | serviceAccount.node.name | string | `""` | Override the ServiceAccount name. Defaults to &lt;fullname>-node. |
+| tracing.enabled | bool | `false` | Render OTEL_* env into controller, agent and node. The binaries trace only when an OTLP endpoint is set. |
+| tracing.endpoint | string | `""` | OTLP/gRPC endpoint, e.g. http://tempo-distributor.monitoring:4317 or http://$(HOST_IP):4317 for a node-local collector (hostNetwork pods keep cluster DNS through ClusterFirstWithHostNet). Required when tracing.enabled is true. |
+| tracing.insecure | bool | `true` | OTEL_EXPORTER_OTLP_INSECURE: dial the OTLP endpoint without TLS. |
+| tracing.samplerRatio | string | `"1.0"` | OTEL_TRACES_SAMPLER_ARG for the pillar root sampler (parent-based; parentless client spans always dropped). |
 | webhook.certDir | string | `"/tmp/k8s-webhook-server/serving-certs"` | Directory where the generated serving certificate is mounted. |
 | webhook.enabled | bool | `true` | Enable admission validation and defaulting webhooks. |
 | webhook.port | int | `9443` | HTTPS port served by controller-runtime inside the controller Pod. |

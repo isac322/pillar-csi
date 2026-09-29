@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	agentv1 "github.com/isac322/pillar-csi/gen/go/pillar_csi/agent/v1"
+	"github.com/isac322/pillar-csi/internal/telemetry"
 )
 
 // Durable per-volume fencing (see agentv1.FencingToken).
@@ -100,6 +102,27 @@ const (
 	fenceDestroy
 )
 
+// label returns the fence_op label value of op.
+func (op fenceOp) label() string {
+	switch op {
+	case fenceGrant:
+		return telemetry.FenceOpGrant
+	case fenceRevoke:
+		return telemetry.FenceOpRevoke
+	case fenceDestroy:
+		return telemetry.FenceOpDestroy
+	default:
+		return telemetry.LabelOther
+	}
+}
+
+// recordFenceDecision counts one admit/recheck outcome (M7) and records it on
+// the RPC's span and failure log line.
+func recordFenceDecision(ctx context.Context, op fenceOp, decision string) {
+	fencingDecisions.WithLabelValues(op.label(), telemetry.FenceDecisionLabel(decision)).Inc()
+	telemetry.RecordFenceDecision(ctx, op.label(), decision)
+}
+
 // fenced validates token against volumeID's durable mark, persists the
 // advanced mark, runs mutate, and for fenceDestroy records the lifecycle as
 // ended after mutate succeeded, all while holding the per-volume fencing lock
@@ -109,6 +132,7 @@ const (
 // state is written only after a successful deletion: if the deletion fails
 // the lifecycle stays open and no new lifecycle can claim the volume ID.
 func (s *Server) fenced(
+	ctx context.Context,
 	volumeID string,
 	token *agentv1.FencingToken,
 	op fenceOp,
@@ -119,16 +143,21 @@ func (s *Server) fenced(
 
 	stored, exists, err := s.readFencingMark(volumeID)
 	if err != nil {
+		recordFenceDecision(ctx, op, telemetry.FenceMarkIOError)
 		return err
 	}
-	next, changed, err := admitFencingToken(volumeID, token, op, stored, exists)
+	adm, err := admitFencingToken(volumeID, token, op, stored, exists)
 	if err != nil {
+		recordFenceDecision(ctx, op, adm.decision)
 		return err
 	}
-	err = s.persistFencingMark(volumeID, next, changed)
+	next := adm.next
+	err = s.persistFencingMark(volumeID, next, adm.changed)
 	if err != nil {
+		recordFenceDecision(ctx, op, telemetry.FenceMarkIOError)
 		return err
 	}
+	recordFenceDecision(ctx, op, adm.decision)
 	if mutate != nil {
 		err = mutate()
 		if err != nil {
@@ -149,6 +178,7 @@ func (s *Server) fenced(
 // (Reconcile links prepared exports this way) without a durable write
 // between consecutive mutations.
 func (s *Server) recheckFence(
+	ctx context.Context,
 	volumeID string,
 	token *agentv1.FencingToken,
 	op fenceOp,
@@ -159,67 +189,90 @@ func (s *Server) recheckFence(
 
 	stored, exists, err := s.readFencingMark(volumeID)
 	if err != nil {
+		recordFenceDecision(ctx, op, telemetry.FenceMarkIOError)
 		return err
 	}
-	_, changed, err := admitFencingToken(volumeID, token, op, stored, exists)
+	adm, err := admitFencingToken(volumeID, token, op, stored, exists)
 	if err != nil {
+		recordFenceDecision(ctx, op, adm.decision)
 		return err
 	}
-	if changed {
+	if adm.changed {
+		recordFenceDecision(ctx, op, telemetry.FenceRejectMarkChanged)
 		return status.Errorf(codes.FailedPrecondition,
 			"fencing mark of volume %q changed since the operation was admitted", volumeID)
 	}
+	recordFenceDecision(ctx, op, adm.decision)
 	return mutate()
 }
 
-// admitFencingToken applies the fencing rules (see agentv1.FencingToken).  It
-// returns the mark that must be durable before the mutation runs and whether
-// that mark differs from the stored one.  A request without a token is always
-// rejected: every mutation must belong to a lifecycle the controller recorded.
+// fenceAdmission is the outcome of admitFencingToken.
+type fenceAdmission struct {
+	// next is the mark that must be durable before the mutation runs.
+	next fencingMark
+	// changed reports whether next differs from the stored mark.
+	changed bool
+	// decision is the telemetry.Fence* admit or reject value, set for both
+	// admitted and rejected tokens.
+	decision string
+}
+
+// admitFencingToken applies the fencing rules (see agentv1.FencingToken).  A
+// rejection returns FailedPrecondition together with the reject decision.  A
+// request without a token is always rejected: every mutation must belong to
+// a lifecycle the controller recorded.
 func admitFencingToken(
 	volumeID string,
 	token *agentv1.FencingToken,
 	op fenceOp,
 	stored fencingMark,
 	exists bool,
-) (next fencingMark, changed bool, err error) {
+) (fenceAdmission, error) {
 	uid, gen := token.GetVolumeUid(), token.GetGeneration()
-	stale := func(reason string) error {
-		return status.Errorf(codes.FailedPrecondition,
+	reject := func(decision, reason string) (fenceAdmission, error) {
+		return fenceAdmission{decision: decision}, status.Errorf(codes.FailedPrecondition,
 			"stale fencing token (uid %q, generation %d) for volume %q: %s "+
 				"(mark uid %q, generation %d, ended %t)",
 			uid, gen, volumeID, reason, stored.VolumeUID, stored.Generation, stored.Ended)
 	}
 	switch {
 	case uid == "":
-		return fencingMark{}, false, status.Errorf(codes.FailedPrecondition,
+		return fenceAdmission{decision: telemetry.FenceRejectMissingToken}, status.Errorf(codes.FailedPrecondition,
 			"fencing token required for volume %q: every mutating request must carry the "+
 				"PillarVolumeState UID and generation", volumeID)
 	case !exists:
-		return fencingMark{VolumeUID: uid, Generation: gen}, true, nil
+		return fenceAdmission{
+			next:     fencingMark{VolumeUID: uid, Generation: gen},
+			changed:  true,
+			decision: telemetry.FenceAdmitNewLifecycle,
+		}, nil
 	case slices.Contains(stored.EndedUIDs, uid):
-		return fencingMark{}, false, stale("lifecycle was retired")
+		return reject(telemetry.FenceRejectRetired, "lifecycle was retired")
 	case uid != stored.VolumeUID:
 		if !stored.Ended {
-			return fencingMark{}, false, stale("another lifecycle owns the volume")
+			return reject(telemetry.FenceRejectOtherOwner, "another lifecycle owns the volume")
 		}
 		retired := append(slices.Clone(stored.EndedUIDs), stored.VolumeUID)
-		return fencingMark{VolumeUID: uid, Generation: gen, EndedUIDs: retired}, true, nil
+		return fenceAdmission{
+			next:     fencingMark{VolumeUID: uid, Generation: gen, EndedUIDs: retired},
+			changed:  true,
+			decision: telemetry.FenceAdmitNewLifecycle,
+		}, nil
 	case stored.Ended:
 		// Only a terminal-cleanup retry of the operation that ended the
 		// lifecycle may pass; nothing may be created or granted again.
 		if op == fenceGrant || gen != stored.Generation {
-			return fencingMark{}, false, stale("lifecycle already ended")
+			return reject(telemetry.FenceRejectEnded, "lifecycle already ended")
 		}
-		return stored, false, nil
+		return fenceAdmission{next: stored, decision: telemetry.FenceAdmitTerminalRetry}, nil
 	case gen < stored.Generation:
-		return fencingMark{}, false, stale("superseded by a newer operation")
+		return reject(telemetry.FenceRejectSuperseded, "superseded by a newer operation")
 	case gen == stored.Generation:
-		return stored, false, nil
+		return fenceAdmission{next: stored, decision: telemetry.FenceAdmitSameGeneration}, nil
 	default:
 		advanced := stored
 		advanced.Generation = gen
-		return advanced, true, nil
+		return fenceAdmission{next: advanced, changed: true, decision: telemetry.FenceAdmitAdvance}, nil
 	}
 }
 

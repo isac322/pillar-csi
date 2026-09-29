@@ -21,14 +21,21 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	grpcprom "github.com/grpc-ecosystem/go-grpc-middleware/providers/prometheus"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"google.golang.org/grpc"
 	healthsrv "google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
@@ -41,8 +48,17 @@ import (
 	"github.com/isac322/pillar-csi/internal/agent/backend/zfs"
 	"github.com/isac322/pillar-csi/internal/agent/nvmeof"
 	"github.com/isac322/pillar-csi/internal/runtimepaths"
+	"github.com/isac322/pillar-csi/internal/telemetry"
 	"github.com/isac322/pillar-csi/internal/tlscreds"
 )
+
+// observabilityShutdownTimeout bounds each of the metrics server shutdown
+// and the span flush on exit.
+const observabilityShutdownTimeout = 5 * time.Second
+
+// metricsReadHeaderTimeout bounds how long the metrics server waits for a
+// scrape's request headers.
+const metricsReadHeaderTimeout = 10 * time.Second
 
 // buildVolumeBackends constructs the pool→backend registry from the agent
 // config file's backends entries.  For ZFS backends the registry key is the
@@ -103,6 +119,8 @@ func buildGRPCOpts(tlsEnabled bool, cert, key, ca string) ([]grpc.ServerOption, 
 
 func main() {
 	listenAddr := flag.String("listen-address", ":9500", "gRPC listen address (host:port)")
+	metricsAddr := flag.String("metrics-bind-address", "0",
+		"Address (host:port) the Prometheus /metrics endpoint binds to. \"0\" disables it.")
 	gracePeriod := flag.Duration("shutdown-grace-period", 5*time.Second,
 		"Time to wait between health=NOT_SERVING and GracefulStop, giving "+
 			"any already-routed RPCs time to complete.")
@@ -146,19 +164,68 @@ func main() {
 	// every export on it is ready (issue #92).
 	srv := agent.NewServer(volumeBackends, *cfgRoot, agent.WithExportRestoreGate())
 
-	lis, err := net.Listen("tcp", *listenAddr)
+	serveAgent(srv, serveConfig{
+		listenAddr:  *listenAddr,
+		metricsAddr: *metricsAddr,
+		gracePeriod: *gracePeriod,
+		tlsEnabled:  tlsEnabled,
+		tlsCert:     *tlsCert,
+		tlsKey:      *tlsKey,
+		tlsCA:       *tlsCA,
+	})
+}
+
+// serveConfig is the serving part of the agent's command line.
+type serveConfig struct {
+	listenAddr  string
+	metricsAddr string
+	gracePeriod time.Duration
+	tlsEnabled  bool
+	tlsCert     string
+	tlsKey      string
+	tlsCA       string
+}
+
+// serveAgent sets up telemetry and the metrics endpoint, then serves srv
+// over gRPC until the server stops.  It exits the process on failure.
+func serveAgent(srv *agent.Server, cfg serveConfig) {
+	version, _ := telemetry.BuildVersion()
+	shutdownTelemetry, err := telemetry.Setup(context.Background(), telemetry.ComponentAgent, version)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "listen %s: %v\n", *listenAddr, err)
+		fmt.Fprintf(os.Stderr, "error: telemetry setup: %v\n", err)
+		os.Exit(1)
+	}
+	// os.Exit skips defers, so every exit path below calls fail, which
+	// shuts the metrics server down and flushes pending spans first.
+	var metricsSrv *http.Server
+	fail := func(format string, args ...any) {
+		fmt.Fprintf(os.Stderr, format, args...)
+		shutdownObservability(metricsSrv, shutdownTelemetry)
 		os.Exit(1)
 	}
 
-	grpcOpts, err := buildGRPCOpts(tlsEnabled, *tlsCert, *tlsKey, *tlsCA)
+	serverMetrics := newAgentServerMetrics()
+	reg, err := newAgentRegistry(srv, serverMetrics, version)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
+		fail("error: %v\n", err)
+	}
+	metricsSrv, err = startMetricsServer(cfg.metricsAddr, reg)
+	if err != nil {
+		fail("error: %v\n", err)
 	}
 
-	grpcSrv, healthSrv := newAgentGRPCServer(srv, grpcOpts)
+	lis, err := net.Listen("tcp", cfg.listenAddr)
+	if err != nil {
+		fail("listen %s: %v\n", cfg.listenAddr, err)
+	}
+
+	grpcOpts, err := buildGRPCOpts(cfg.tlsEnabled, cfg.tlsCert, cfg.tlsKey, cfg.tlsCA)
+	if err != nil {
+		fail("error: %v\n", err)
+	}
+
+	failureLog := telemetry.SlogFailureLogger(slog.New(slog.NewJSONHandler(os.Stderr, nil)))
+	grpcSrv, healthSrv := newAgentGRPCServer(srv, serverMetrics, failureLog, grpcOpts)
 
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT)
@@ -167,14 +234,94 @@ func main() {
 		runAgentShutdown(healthSrv, func(ctx context.Context) error {
 			_, drainErr := srv.Drain(ctx, &agentv1.DrainRequest{})
 			return drainErr
-		}, grpcSrv.GracefulStop, *gracePeriod)
+		}, grpcSrv.GracefulStop, cfg.gracePeriod)
 	}()
 
-	fmt.Fprintf(os.Stderr, "pillar-agent listening on %s\n", *listenAddr)
+	fmt.Fprintf(os.Stderr, "pillar-agent listening on %s\n", cfg.listenAddr)
 	serveErr := grpcSrv.Serve(lis)
 	if serveErr != nil {
-		fmt.Fprintf(os.Stderr, "serve: %v\n", serveErr)
-		os.Exit(1)
+		fail("serve: %v\n", serveErr)
+	}
+	shutdownObservability(metricsSrv, shutdownTelemetry)
+}
+
+// newAgentRegistry builds the agent's Prometheus registry: Go and process
+// collectors, pillar_csi_build_info, exec and certificate metrics, the
+// agent's own metrics, and the gRPC server metrics.
+func newAgentRegistry(
+	srv *agent.Server,
+	serverMetrics *grpcprom.ServerMetrics,
+	version string,
+) (*prometheus.Registry, error) {
+	reg := prometheus.NewRegistry()
+	for _, c := range []prometheus.Collector{
+		collectors.NewGoCollector(),
+		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
+		telemetry.BuildInfoCollector(telemetry.ComponentAgent, version),
+		serverMetrics,
+	} {
+		err := reg.Register(c)
+		if err != nil {
+			return nil, fmt.Errorf("register agent metrics collector: %w", err)
+		}
+	}
+	err := telemetry.RegisterExecMetrics(reg)
+	if err != nil {
+		return nil, fmt.Errorf("register exec metrics: %w", err)
+	}
+	err = telemetry.RegisterCertificateMetrics(reg)
+	if err != nil {
+		return nil, fmt.Errorf("register certificate metrics: %w", err)
+	}
+	err = srv.RegisterMetrics(reg)
+	if err != nil {
+		return nil, fmt.Errorf("register agent metrics: %w", err)
+	}
+	return reg, nil
+}
+
+// startMetricsServer serves reg on /metrics (OpenMetrics negotiated, so
+// exemplars are exposed) at addr.  Addr "0" disables the endpoint and
+// returns a nil server.  A listen failure is returned; a later serve failure
+// is reported on stderr.
+func startMetricsServer(addr string, reg *prometheus.Registry) (*http.Server, error) {
+	if addr == "0" {
+		return nil, nil //nolint:nilnil // a nil server means the endpoint is disabled.
+	}
+	lis, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, fmt.Errorf("listen metrics %s: %w", addr, err)
+	}
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{EnableOpenMetrics: true}))
+	metricsSrv := &http.Server{Handler: mux, ReadHeaderTimeout: metricsReadHeaderTimeout}
+	go func() {
+		serveErr := metricsSrv.Serve(lis)
+		if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+			fmt.Fprintf(os.Stderr, "pillar-agent: metrics server on %s stopped: %v\n", addr, serveErr)
+		}
+	}()
+	fmt.Fprintf(os.Stderr, "pillar-agent: serving metrics on %s\n", addr)
+	return metricsSrv, nil
+}
+
+// shutdownObservability stops the metrics server and then flushes pending
+// spans, each within observabilityShutdownTimeout.  Failures are reported on
+// stderr: the process is exiting either way.
+func shutdownObservability(metricsSrv *http.Server, shutdownTelemetry func(context.Context) error) {
+	if metricsSrv != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), observabilityShutdownTimeout)
+		err := metricsSrv.Shutdown(ctx)
+		cancel()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "pillar-agent: metrics server shutdown: %v\n", err)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), observabilityShutdownTimeout)
+	defer cancel()
+	err := shutdownTelemetry(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "pillar-agent: telemetry shutdown: %v\n", err)
 	}
 }
 

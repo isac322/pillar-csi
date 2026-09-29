@@ -7,10 +7,12 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
 	agentv1 "github.com/isac322/pillar-csi/gen/go/pillar_csi/agent/v1"
+	"github.com/isac322/pillar-csi/internal/telemetry"
 )
 
 const fencingTestVolume = drainTestPool + "/pvc-fence"
@@ -31,7 +33,7 @@ func runFenceSteps(t *testing.T, srv *Server, steps []fenceStep) {
 	t.Helper()
 	for _, step := range steps {
 		ran := false
-		err := srv.fenced(fencingTestVolume, step.token, step.op, func() error {
+		err := srv.fenced(t.Context(), fencingTestVolume, step.token, step.op, func() error {
 			ran = true
 			if step.fail {
 				return status.Error(codes.Internal, "backend failure")
@@ -137,14 +139,15 @@ func TestFenced_PerVolume(t *testing.T) {
 	t.Parallel()
 	srv := newDrainTestServer(t.TempDir())
 	for _, id := range []string{"a/b", "a_b", drainTestPool + "/x"} {
-		if err := srv.fenced(id, token("u-"+id, 9), fenceGrant, nil); err != nil {
+		if err := srv.fenced(t.Context(), id, token("u-"+id, 9), fenceGrant, nil); err != nil {
 			t.Fatalf("%s gen 9: %v", id, err)
 		}
 	}
-	if err := srv.fenced("a_b", token("u-a_b", 1), fenceGrant, nil); status.Code(err) != codes.FailedPrecondition {
-		t.Fatalf("a_b gen 1 after 9: %v, want FailedPrecondition", err)
+	staleErr := srv.fenced(t.Context(), "a_b", token("u-a_b", 1), fenceGrant, nil)
+	if status.Code(staleErr) != codes.FailedPrecondition {
+		t.Fatalf("a_b gen 1 after 9: %v, want FailedPrecondition", staleErr)
 	}
-	if err := srv.fenced("a/c", token("u-a/c", 1), fenceGrant, nil); err != nil {
+	if err := srv.fenced(t.Context(), "a/c", token("u-a/c", 1), fenceGrant, nil); err != nil {
 		t.Fatalf("a/c must not share a mark with a/b: %v", err)
 	}
 }
@@ -179,7 +182,7 @@ func TestFenced_CorruptMarkFailsClosed(t *testing.T) {
 	if err := os.WriteFile(markPath, []byte("{not json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	err := newDrainTestServer(stateDir).fenced(fencingTestVolume, token("u1", 100), fenceGrant, func() error {
+	err := newDrainTestServer(stateDir).fenced(t.Context(), fencingTestVolume, token("u1", 100), fenceGrant, func() error {
 		return errors.New("mutation must not run")
 	})
 	if status.Code(err) != codes.Internal {
@@ -195,7 +198,7 @@ func TestFenced_PersistFailureFailsClosed(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(stateDir, fencingDirName), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	err := newDrainTestServer(stateDir).fenced(fencingTestVolume, token("u1", 1), fenceGrant, func() error {
+	err := newDrainTestServer(stateDir).fenced(t.Context(), fencingTestVolume, token("u1", 1), fenceGrant, func() error {
 		return errors.New("mutation must not run")
 	})
 	if status.Code(err) != codes.Internal {
@@ -235,5 +238,37 @@ func TestDeleteVolume_EndsLifecycle(t *testing.T) {
 		VolumeId: fencingTestVolume, BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL, Fence: token("u2", 1),
 	}); err != nil {
 		t.Fatalf("CreateVolume of new lifecycle: %v", err)
+	}
+}
+
+// Every admit and rejection is counted once under its fence_op and decision.
+// Not parallel: pillar_csi_agent_fencing_decisions_total is process-global,
+// and the package's parallel tests only run once the sequential ones are done.
+func TestFenced_CountsDecisions(t *testing.T) {
+	srv := newDrainTestServer(t.TempDir())
+	newLifecycle := fencingDecisions.WithLabelValues(telemetry.FenceOpGrant, telemetry.FenceAdmitNewLifecycle)
+	superseded := fencingDecisions.WithLabelValues(telemetry.FenceOpGrant, telemetry.FenceRejectSuperseded)
+	newBefore, supersededBefore := testutil.ToFloat64(newLifecycle), testutil.ToFloat64(superseded)
+
+	err := srv.fenced(t.Context(), fencingTestVolume, token("u1", 5), fenceGrant, nil)
+	if err != nil {
+		t.Fatalf("first admit: %v", err)
+	}
+	if got := testutil.ToFloat64(newLifecycle) - newBefore; got != 1 {
+		t.Errorf("admit_new_lifecycle grew by %v after the first admit, want 1", got)
+	}
+
+	err = srv.fenced(t.Context(), fencingTestVolume, token("u1", 4), fenceGrant, func() error {
+		t.Fatal("a superseded request must not mutate")
+		return nil
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("stale generation: %v, want FailedPrecondition", err)
+	}
+	if got := testutil.ToFloat64(superseded) - supersededBefore; got != 1 {
+		t.Errorf("reject_superseded grew by %v after a stale generation, want 1", got)
+	}
+	if got := testutil.ToFloat64(newLifecycle) - newBefore; got != 1 {
+		t.Errorf("admit_new_lifecycle grew by %v in total, want 1 (a rejection must not count as an admit)", got)
 	}
 }

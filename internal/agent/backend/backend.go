@@ -163,3 +163,30 @@ type VolumeBackend interface {
 	// (ZFS parent dataset, LVM thin pool), as configured at agent start.
 	Layout() Layout
 }
+
+// CapacityDetails is one capacity probe of a pool: the same total and
+// available bytes as [VolumeBackend.Capacity], plus the thin pool's metadata
+// usage when the backend provisions from a thin pool.
+type CapacityDetails struct {
+	TotalBytes     int64
+	AvailableBytes int64
+	// ThinMetadataUsedRatio is the used fraction (0-1) of the thin pool's
+	// metadata LV; meaningful only when HasThinMetadata is true.
+	ThinMetadataUsedRatio float64
+	HasThinMetadata       bool
+}
+
+// CapacityDetailer is implemented by backends that report more than
+// [VolumeBackend.Capacity] in the same probe.  Metrics use it instead of
+// Capacity when available.
+type CapacityDetailer interface {
+	CapacityDetails(ctx context.Context) (CapacityDetails, error)
+}
+
+// ProvisionedBytesReporter is implemented by backends that can overcommit
+// their pool.  ProvisionedBytes returns the summed virtual size of the
+// volumes in the pool; ok is false when the backend's configuration cannot
+// overcommit (e.g. linear LVM), so there is nothing to report.
+type ProvisionedBytesReporter interface {
+	ProvisionedBytes(ctx context.Context) (bytes int64, ok bool, err error)
+}

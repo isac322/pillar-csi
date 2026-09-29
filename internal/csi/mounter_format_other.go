@@ -19,12 +19,13 @@ limitations under the License.
 package csi
 
 import (
+	"context"
 	"fmt"
 	"runtime"
 )
 
 // FormatAndMount is only implemented on Linux, the node plugin's platform:
 // k8s.io/utils/mount cannot detect existing filesystems elsewhere.
-func (*KubeMounter) FormatAndMount(source, target, fsType string, _, _ []string) error {
+func (*KubeMounter) FormatAndMount(_ context.Context, source, target, fsType string, _, _ []string) error {
 	return fmt.Errorf("FormatAndMount %s → %s as %s: unsupported on %s", source, target, fsType, runtime.GOOS)
 }

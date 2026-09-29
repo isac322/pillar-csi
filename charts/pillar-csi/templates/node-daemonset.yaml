@@ -101,6 +101,9 @@ spec:
           # the binary reads that env var automatically when --node-id is not passed.
           args:
             - --csi-socket={{ .Values.node.csiSocketPath }}
+            {{- if .Values.metrics.enabled }}
+            - --metrics-bind-address={{ include "pillar-csi.metricsBindAddress" (dict "hostNetwork" .Values.node.hostNetwork "port" .Values.metrics.node.port) }}
+            {{- end }}
             {{- range .Values.node.extraArgs }}
             - {{ . | quote }}
             {{- end }}
@@ -115,6 +118,12 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
+            {{- if or .Values.metrics.enabled .Values.tracing.enabled }}
+            {{- include "pillar-csi.telemetryPodEnv" . | trim | nindent 12 }}
+            {{- end }}
+            {{- if .Values.tracing.enabled }}
+            {{- include "pillar-csi.otelEnv" . | trim | nindent 12 }}
+            {{- end }}
             {{- with .Values.node.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -122,6 +131,11 @@ spec:
             - name: healthz
               containerPort: {{ .Values.node.livenessPort }}
               protocol: TCP
+            {{- if .Values.metrics.enabled }}
+            - name: metrics
+              containerPort: {{ .Values.metrics.node.port }}
+              protocol: TCP
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /healthz

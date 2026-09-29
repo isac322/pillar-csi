@@ -26,6 +26,7 @@ import (
 	agentv1 "github.com/isac322/pillar-csi/gen/go/pillar_csi/agent/v1"
 	"github.com/isac322/pillar-csi/internal/agent/backend"
 	"github.com/isac322/pillar-csi/internal/agent/nvmeof"
+	"github.com/isac322/pillar-csi/internal/telemetry"
 )
 
 // CreateVolume creates the backend storage resource (ZFS zvol) for the given
@@ -37,6 +38,7 @@ func (s *Server) CreateVolume(
 	ctx context.Context,
 	req *agentv1.CreateVolumeRequest,
 ) (*agentv1.CreateVolumeResponse, error) {
+	s.setVolumeSpanAttributes(ctx, req.GetVolumeId())
 	b, err := s.backendFor(req.GetVolumeId())
 	if err != nil {
 		return nil, err
@@ -49,7 +51,7 @@ func (s *Server) CreateVolume(
 		devicePath string
 		allocated  int64
 	)
-	err = s.fenced(req.GetVolumeId(), req.GetFence(), fenceGrant, func() error {
+	err = s.fenced(ctx, req.GetVolumeId(), req.GetFence(), fenceGrant, func() error {
 		var createErr error
 		devicePath, allocated, createErr = b.Create(
 			ctx,
@@ -135,11 +137,12 @@ func (s *Server) DeleteVolume(
 	ctx context.Context,
 	req *agentv1.DeleteVolumeRequest,
 ) (*agentv1.DeleteVolumeResponse, error) {
+	s.setVolumeSpanAttributes(ctx, req.GetVolumeId())
 	b, err := s.backendFor(req.GetVolumeId())
 	if err != nil {
 		return nil, err
 	}
-	err = s.fenced(req.GetVolumeId(), req.GetFence(), fenceDestroy, func() error {
+	err = s.fenced(ctx, req.GetVolumeId(), req.GetFence(), fenceDestroy, func() error {
 		deleteErr := b.Delete(ctx, req.GetVolumeId())
 		if deleteErr != nil {
 			return status.Errorf(codes.Internal, "DeleteVolume: %v", deleteErr)
@@ -159,12 +162,13 @@ func (s *Server) ExpandVolume(
 	ctx context.Context,
 	req *agentv1.ExpandVolumeRequest,
 ) (*agentv1.ExpandVolumeResponse, error) {
+	s.setVolumeSpanAttributes(ctx, req.GetVolumeId())
 	b, err := s.backendFor(req.GetVolumeId())
 	if err != nil {
 		return nil, err
 	}
 	var allocated int64
-	err = s.fenced(req.GetVolumeId(), req.GetFence(), fenceGrant, func() error {
+	err = s.fenced(ctx, req.GetVolumeId(), req.GetFence(), fenceGrant, func() error {
 		var expandErr error
 		allocated, expandErr = b.Expand(ctx, req.GetVolumeId(), req.GetRequestedBytes())
 		if expandErr != nil {
@@ -174,7 +178,7 @@ func (s *Server) ExpandVolume(
 			}
 			return status.Errorf(codes.Internal, "ExpandVolume: %v", expandErr)
 		}
-		return s.revalidateNamespace(req.GetVolumeId())
+		return s.revalidateNamespace(ctx, req.GetVolumeId())
 	})
 	if err != nil {
 		return nil, err
@@ -188,7 +192,7 @@ func (s *Server) ExpandVolume(
 // failure must be returned: otherwise ControllerExpandVolume reports success
 // while connected nodes keep seeing the old capacity and retry
 // NodeExpandVolume indefinitely.
-func (s *Server) revalidateNamespace(volumeID string) error {
+func (s *Server) revalidateNamespace(ctx context.Context, volumeID string) error {
 	nqn, nqnErr := volumeTargetID(agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP, volumeID)
 	if nqnErr != nil {
 		return status.Errorf(codes.Internal, "ExpandVolume: derive target NQN: %v", nqnErr)
@@ -198,7 +202,7 @@ func (s *Server) revalidateNamespace(volumeID string) error {
 		SubsystemNQN: nqn,
 		NamespaceID:  1,
 	}
-	resizeErr := target.ResizeNamespace()
+	resizeErr := traceNvmet(ctx, telemetry.SpanAgentNVMetResizeNS, target, "", target.ResizeNamespace)
 	if resizeErr != nil {
 		return status.Errorf(codes.Internal,
 			"ExpandVolume: revalidate NVMe namespace for volume %q (nqn=%q): %v",

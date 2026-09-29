@@ -204,6 +204,23 @@ rules:
       - get
       - patch
       - update
+  {{- if .Values.metrics.controller.secure }}
+  # Secure metrics endpoint (--metrics-secure): controller-runtime authenticates
+  # scrapers with TokenReview and authorizes them with SubjectAccessReview.
+  # Mirrors config/rbac/metrics_auth_role.yaml.
+  - apiGroups:
+      - authentication.k8s.io
+    resources:
+      - tokenreviews
+    verbs:
+      - create
+  - apiGroups:
+      - authorization.k8s.io
+    resources:
+      - subjectaccessreviews
+    verbs:
+      - create
+  {{- end }}
 {{- end }}
 ---
 {{/*

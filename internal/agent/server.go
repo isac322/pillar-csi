@@ -20,11 +20,13 @@ limitations under the License.
 package agent
 
 import (
+	"context"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -32,13 +34,11 @@ import (
 	agentv1 "github.com/isac322/pillar-csi/gen/go/pillar_csi/agent/v1"
 	"github.com/isac322/pillar-csi/internal/agent/backend"
 	"github.com/isac322/pillar-csi/internal/agent/nvmeof"
+	"github.com/isac322/pillar-csi/internal/telemetry"
 )
 
 // agentVersion is the semver version string embedded in discovery responses.
 const agentVersion = "0.3.4"
-
-// nqnPrefix is the fixed NQN prefix used for all NVMe subsystem names.
-const nqnPrefix = "nqn.2026-01.com.bhyoo.pillar-csi:"
 
 // defaultDrainStateDir is the production directory for the .drained marker.
 const defaultDrainStateDir = "/var/lib/pillar-csi/agent"
@@ -154,8 +154,17 @@ func (s *Server) Register(g *grpc.Server) {
 
 // lockTarget acquires the per-target mutex and returns an unlock function.
 // It serializes concurrent protocol mutations for the same protocol-qualified
-// target so that target state is always internally consistent.
-func (s *Server) lockTarget(protocolType agentv1.ProtocolType, targetID string) func() {
+// target so that target state is always internally consistent.  The time
+// spent waiting is recorded on the RPC span in ctx.
+func (s *Server) lockTarget(ctx context.Context, protocolType agentv1.ProtocolType, targetID string) func() {
+	unlock, wait := s.acquireTarget(protocolType, targetID)
+	recordLockWait(ctx, wait)
+	return unlock
+}
+
+// acquireTarget locks the per-target mutex and returns its unlock and how
+// long the lock took to acquire.
+func (s *Server) acquireTarget(protocolType agentv1.ProtocolType, targetID string) (func(), time.Duration) {
 	key := targetLockKey{
 		protocolType: protocolType,
 		targetID:     targetID,
@@ -166,8 +175,18 @@ func (s *Server) lockTarget(protocolType agentv1.ProtocolType, targetID string) 
 		// Should never happen: only *sync.Mutex values are stored in targetMu.
 		mu = &sync.Mutex{}
 	}
+	start := time.Now()
 	mu.Lock()
-	return mu.Unlock
+	return mu.Unlock, time.Since(start)
+}
+
+// recordLockWait sets pillar_csi.lock.target.wait_duration (seconds) on the
+// span in ctx.
+func recordLockWait(ctx context.Context, wait time.Duration) {
+	span := trace.SpanFromContext(ctx)
+	if span.IsRecording() {
+		span.SetAttributes(telemetry.KeyLockTargetWaitDuration.Float64(wait.Seconds()))
+	}
 }
 
 // poolFromVolumeID extracts the pool name from a volumeID of form

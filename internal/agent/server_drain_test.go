@@ -162,7 +162,7 @@ func TestDrain_StateFlushMarker(t *testing.T) {
 func TestDrain_WaitsForInFlight(t *testing.T) {
 	stateDir := t.TempDir()
 	srv := newDrainTestServer(stateDir)
-	unlock := srv.lockTarget(agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP, "test-target")
+	unlock := srv.lockTarget(t.Context(), agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP, "test-target")
 
 	done := make(chan error, 1)
 	go func() {

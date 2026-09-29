@@ -24,6 +24,7 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -31,6 +32,7 @@ import (
 
 	"github.com/isac322/pillar-csi/api/v1alpha1"
 	agentv1 "github.com/isac322/pillar-csi/gen/go/pillar_csi/agent/v1"
+	"github.com/isac322/pillar-csi/internal/telemetry"
 )
 
 // ConditionExportReconciled reports whether the storage node's export and ACL
@@ -193,6 +195,7 @@ func (s *ControllerServer) reconcileVolumeOnAgent(
 	ctx context.Context,
 	pvs *v1alpha1.PillarVolumeState,
 ) (string, error) {
+	ctx = withAgentName(ctx, pvs.Spec.AgentRef)
 	agentAddr, err := s.agentAddress(ctx, pvs.Spec.AgentRef)
 	if err != nil {
 		return reasonAgentUnavailable, err
@@ -313,9 +316,30 @@ func restoreRank(pvs *v1alpha1.PillarVolumeState) int {
 // as ReconcileVolumeExport.  The outcome of each volume is recorded on its
 // ExportReconciled condition; a non-nil error asks the caller to retry.
 func (s *ControllerServer) RestoreAgentExports(ctx context.Context, agentName string) error {
+	ctx, span := telemetry.Tracer().Start(ctx, telemetry.SpanControllerRestoreExports,
+		trace.WithNewRoot(), trace.WithSpanKind(trace.SpanKindInternal),
+		trace.WithAttributes(telemetry.KeyAgentName.String(agentName)))
+	defer span.End()
+	ctx = withAgentName(ctx, agentName)
+
+	volumes, failed, err := s.restoreAgentExports(ctx, agentName)
+	span.SetAttributes(
+		telemetry.KeyRestoreVolumes.Int(volumes),
+		telemetry.KeyRestoreFailed.Int(failed),
+	)
+	telemetry.SetSpanError(span, err, "")
+	return err
+}
+
+// restoreAgentExports is the body of RestoreAgentExports. It returns the
+// number of the agent's PillarVolumeStates and of the items that failed.
+func (s *ControllerServer) restoreAgentExports(
+	ctx context.Context,
+	agentName string,
+) (volumes, failed int, err error) {
 	names, volumeIDs, err := s.agentVolumeStates(ctx, agentName)
 	if err != nil {
-		return err
+		return len(names), 0, err
 	}
 	unlocks := make([]func(), 0, len(volumeIDs))
 	for _, volumeID := range volumeIDs {
@@ -332,18 +356,20 @@ func (s *ControllerServer) RestoreAgentExports(ctx context.Context, agentName st
 	for _, name := range names {
 		pvs, found, readErr := s.readVolumeState(ctx, name)
 		if readErr != nil {
-			return readErr
+			return len(names), failed, readErr
 		}
 		if !found || !pvs.DeletionTimestamp.IsZero() || pvs.Status.Deleting || pvs.Spec.AgentRef != agentName {
 			continue
 		}
 		if pvs.Status.ExportSpec == nil {
+			failed++
 			errs = append(errs, s.setExportReconciled(ctx, name, metav1.ConditionFalse, reasonExportSpecMissing,
 				"status.exportSpec is not recorded; the export cannot be re-created from durable state"))
 			continue
 		}
 		desired, buildErr := desiredVolumeState(pvs)
 		if buildErr != nil {
+			failed++
 			buildErr = fmt.Errorf("%w: build desired state for %q: %w", errExportReconcile, pvs.Spec.AgentVolumeID, buildErr)
 			errs = append(errs, buildErr,
 				s.setExportReconciled(ctx, name, metav1.ConditionFalse, reasonReconcileFailed, buildErr.Error()))
@@ -353,8 +379,10 @@ func (s *ControllerServer) RestoreAgentExports(ctx context.Context, agentName st
 	}
 
 	slices.SortStableFunc(entries, func(a, b restoreEntry) int { return a.rank - b.rank })
-	errs = append(errs, s.sendAgentRestore(ctx, agentName, entries))
-	return errors.Join(errs...) //nolint:wrapcheck // multi-error is already wrapped per item
+	sendFailed, sendErr := s.sendAgentRestore(ctx, agentName, entries)
+	errs = append(errs, sendErr)
+	failed += sendFailed
+	return len(names), failed, errors.Join(errs...)
 }
 
 // agentVolumeStates lists, uncached, the PillarVolumeStates of the agent and
@@ -380,8 +408,13 @@ func (s *ControllerServer) agentVolumeStates(
 }
 
 // sendAgentRestore sends the complete ReconcileState for entries to the agent
-// and records each volume's outcome.
-func (s *ControllerServer) sendAgentRestore(ctx context.Context, agentName string, entries []restoreEntry) error {
+// and records each volume's outcome. It returns the number of entries that
+// failed.
+func (s *ControllerServer) sendAgentRestore(
+	ctx context.Context,
+	agentName string,
+	entries []restoreEntry,
+) (int, error) {
 	req := &agentv1.ReconcileStateRequest{Complete: true}
 	for _, entry := range entries {
 		req.Volumes = append(req.Volumes, entry.desired)
@@ -403,7 +436,7 @@ func (s *ControllerServer) sendAgentRestore(ctx context.Context, agentName strin
 			errs = append(errs, s.setExportReconciled(ctx, entry.pvsName, metav1.ConditionFalse,
 				reasonAgentUnavailable, err.Error()))
 		}
-		return errors.Join(errs...) //nolint:wrapcheck // multi-error is already wrapped per item
+		return len(entries), errors.Join(errs...)
 	}
 
 	results := make(map[string]*agentv1.ReconcileItemResult, len(resp.GetResults()))
@@ -411,6 +444,7 @@ func (s *ControllerServer) sendAgentRestore(ctx context.Context, agentName strin
 		results[result.GetVolumeId()] = result
 	}
 	var errs []error
+	failed := 0
 	for _, entry := range entries {
 		volumeID := entry.desired.GetVolumeId()
 		result, ok := results[volumeID]
@@ -423,10 +457,11 @@ func (s *ControllerServer) sendAgentRestore(ctx context.Context, agentName strin
 				reasonExportReconciled, "export and ACL match the desired state"))
 			continue
 		}
+		failed++
 		errs = append(errs, fmt.Errorf("%w: %w", errExportReconcile, itemErr),
 			s.setExportReconciled(ctx, entry.pvsName, metav1.ConditionFalse, reason, itemErr.Error()))
 	}
-	return errors.Join(errs...) //nolint:wrapcheck // multi-error is already wrapped per item
+	return failed, errors.Join(errs...) //nolint:wrapcheck // multi-error is already wrapped per item
 }
 
 // setExportReconciled records the ExportReconciled condition, writing only

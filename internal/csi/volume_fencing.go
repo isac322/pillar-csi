@@ -77,8 +77,10 @@ func (s *ControllerServer) updateVolumeState(
 	mutate func(pvs *v1alpha1.PillarVolumeState) error,
 ) (*v1alpha1.PillarVolumeState, error) {
 	var result *v1alpha1.PillarVolumeState
+	attempts := 0
 	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		result = nil
+		attempts++
 		pvs, exists, getErr := s.readVolumeState(ctx, pvName)
 		if getErr != nil {
 			return status.Errorf(codes.Internal, "%v", getErr)
@@ -87,10 +89,12 @@ func (s *ControllerServer) updateVolumeState(
 			if uid == "" {
 				return nil
 			}
+			addPVSAbortedEvent(ctx)
 			return status.Errorf(codes.Aborted,
 				"PillarVolumeState %q (uid %s) no longer exists; the volume was deleted or re-created",
 				pvName, uid)
 		}
+		phaseFrom := pvs.Status.Phase
 		mutateErr := mutate(pvs)
 		if errors.Is(mutateErr, errNoStatusChange) {
 			result = pvs
@@ -106,6 +110,7 @@ func (s *ControllerServer) updateVolumeState(
 		if updateErr != nil {
 			return updateErr //nolint:wrapcheck // conflict detection by RetryOnConflict needs the raw error
 		}
+		addPVSUpdateEvent(ctx, phaseFrom, pvs.Status.Phase, pvs.Status.PublicationGeneration, attempts-1)
 		result = pvs
 		return nil
 	})
@@ -224,6 +229,7 @@ func (s *ControllerServer) currentToken(
 	if !exists {
 		return nil, status.Errorf(codes.NotFound, "volume %q not found", volumeID)
 	}
+	setClaimAttributes(ctx, pvs.Spec.ClaimRef)
 	err = refuseDeleting(pvs, volumeID)
 	if err != nil {
 		return nil, err

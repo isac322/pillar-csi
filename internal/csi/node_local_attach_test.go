@@ -392,8 +392,10 @@ type rollbackMounter struct {
 	events     *[]string
 }
 
-func (m *rollbackMounter) FormatAndMount(source, target, fsType string, options, mkfsOptions []string) error {
-	err := m.mockMounter.FormatAndMount(source, target, fsType, options, mkfsOptions)
+func (m *rollbackMounter) FormatAndMount(
+	ctx context.Context, source, target, fsType string, options, mkfsOptions []string,
+) error {
+	err := m.mockMounter.FormatAndMount(ctx, source, target, fsType, options, mkfsOptions)
 	if err == nil {
 		m.afterMount()
 	}

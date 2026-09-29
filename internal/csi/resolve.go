@@ -148,6 +148,10 @@ type classLayer struct {
 	// localAttach is the class's local attach setting (binding
 	// spec.localAttach, or a hand-written class's local-attach parameter).
 	localAttach bool
+
+	// storeName is the PillarStore the class names (loaded into store only
+	// when the store is resolved).
+	storeName string
 }
 
 // resolution is the outcome of resolveVolumeConfig.
@@ -161,6 +165,9 @@ type resolution struct {
 	// pvcFS is the claim's filesystem document (nil when the claim sets
 	// none); CreateVolume rejects it for a raw block volume.
 	pvcFS *v1alpha1.FilesystemConfig
+
+	// storeName is the PillarStore the StorageClass names.
+	storeName string
 }
 
 // resolveVolumeConfig resolves the effective configuration of a new volume
@@ -200,7 +207,7 @@ func (s *ControllerServer) resolveVolumeConfig(
 		}
 		exportOnly := recorded.DeepCopy()
 		exportOnly.Protocol = protocol
-		return &resolution{resolved: exportOnly, pvcFS: pvc.Filesystem}, nil
+		return &resolution{resolved: exportOnly, pvcFS: pvc.Filesystem, storeName: class.storeName}, nil
 	}
 
 	backend := *class.store.Spec.Backend.DeepCopy()
@@ -238,8 +245,9 @@ func (s *ControllerServer) resolveVolumeConfig(
 			Filesystem:  fs,
 			LocalAttach: class.localAttach,
 		},
-		agentRef: class.store.Spec.AgentRef,
-		pvcFS:    pvc.Filesystem,
+		agentRef:  class.store.Spec.AgentRef,
+		pvcFS:     pvc.Filesystem,
+		storeName: class.storeName,
 	}, nil
 }
 
@@ -365,6 +373,7 @@ func (s *ControllerServer) loadStoreAndProtocol(
 	storeName, protocolName string,
 	withStore bool,
 ) error {
+	class.storeName = storeName
 	class.protocol = &v1alpha1.PillarProtocol{}
 	err := s.getCR(ctx, protocolName, class.protocol, "PillarProtocol", paramProtocolRef)
 	if err != nil {

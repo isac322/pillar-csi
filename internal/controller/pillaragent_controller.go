@@ -666,7 +666,7 @@ func (r *PillarAgentReconciler) setAgentConnectedCondition(
 
 	// Use a short-lived context for the health-check RPC so a slow or
 	// unreachable agent does not block the reconcile loop indefinitely.
-	hcCtx, hcCancel := context.WithTimeout(ctx, agentHealthCheckTimeout)
+	hcCtx, hcCancel := context.WithTimeout(agentclient.WithAgentName(ctx, target.Name), agentHealthCheckTimeout)
 	defer hcCancel()
 
 	resp, err := r.Dialer.HealthCheck(hcCtx, address)
@@ -767,7 +767,7 @@ func (r *PillarAgentReconciler) populateCapabilitiesStatus(
 		return
 	}
 
-	capCtx, capCancel := context.WithTimeout(ctx, agentCapabilitiesTimeout)
+	capCtx, capCancel := context.WithTimeout(agentclient.WithAgentName(ctx, target.Name), agentCapabilitiesTimeout)
 	defer capCancel()
 
 	resp, err := r.Dialer.GetCapabilities(capCtx, address)

@@ -28,6 +28,16 @@
 #       two Certificate resources whose secretNames match the deployment
 #       Secret mounts (so the auto-issued chain reaches the pods)
 #
+#   metrics / tracing / PodMonitor (T9):
+#     - default: no OTEL_* env, no agent/node metrics port or flag, secure
+#       controller metrics with TokenReview/SubjectAccessReview RBAC
+#     - metrics.enabled: agent/node/sidecar ports unique and probe-resolvable,
+#       agent/node bind [$(HOST_IP)]:<port> under hostNetwork
+#     - tracing.enabled: POD_NAMESPACE/POD_NAME/NODE_NAME precede
+#       OTEL_RESOURCE_ATTRIBUTES; an empty endpoint fails the render
+#     - podMonitor.enabled: https + bearer controller endpoint, metrics-reader
+#       token; fails without the PodMonitor API
+#
 #   API contract (default and installCRDs=false, via hack/chartcontract;
 #   requires Go):
 #     - rendered CRDs equal config/crd/bases (names, shortNames, schema)
@@ -462,6 +472,153 @@ assert_contains "${CM_AGT_DS}" "secretName: ${RELEASE}-agent-mtls" \
 # verification fails when the controller dials a node IP.
 assert_contains "${CM_CTL_DEP}" "--agent-tls-server-name=${RELEASE}-agent.default.svc" \
   "certManager=on: controller must pass --agent-tls-server-name matching the agent Certificate dnsName"
+
+# ──────────────────────────────────────────────────────────────────────────
+# Mode 4 (T9): metrics, tracing and PodMonitor wiring
+# ──────────────────────────────────────────────────────────────────────────
+# Kubelet expands $(VAR) in an env value only from entries listed earlier in
+# the same container, so every variable OTEL_RESOURCE_ATTRIBUTES (or a
+# $(HOST_IP) endpoint) references must come first.
+assert_env_before() {
+  local body="$1" var="$2" anchor="$3" description="$4" var_line anchor_line
+  var_line="$(grep -n -m1 -- "- name: ${var}\$" <<< "${body}" | cut -d: -f1 || true)"
+  anchor_line="$(grep -n -m1 -- "- name: ${anchor}\$" <<< "${body}" | cut -d: -f1 || true)"
+  if [[ -z "${var_line}" || -z "${anchor_line}" ]] || (( var_line >= anchor_line )); then
+    mark_fail "${description}"
+    echo "      expected env ${var} (line ${var_line:-missing}) before ${anchor} (line ${anchor_line:-missing})"
+  fi
+}
+
+# Default: tracing and the agent/node/sidecar metrics endpoints are off; the
+# controller endpoint stays HTTPS with its authn/authz RBAC.
+assert_not_contains "${DEFAULT_OUT}" "OTEL_" \
+  "default render must NOT set any OTEL_* variable (tracing.enabled=false)"
+for doc in "${AGENT_DS_DEFAULT}" "${NODE_DS}"; do
+  assert_not_contains "${doc}" "--metrics-bind-address" \
+    "default agent/node must NOT pass --metrics-bind-address (metrics.enabled=false)"
+  assert_not_contains "${doc}" "name: metrics" \
+    "default agent/node must NOT declare a metrics port (metrics.enabled=false)"
+done
+assert_not_contains "${CTL_DEP_DEFAULT}" "--http-endpoint" \
+  "default CSI sidecars must NOT serve --http-endpoint (metrics.enabled=false)"
+assert_contains "${CTL_DEP_DEFAULT}" "- --metrics-secure=true" \
+  "default controller must serve metrics over HTTPS with authn/authz"
+CR_DEFAULT="$(extract_doc "${DEFAULT_OUT}" "clusterrole.yaml")"
+assert_contains "${CR_DEFAULT}" "- tokenreviews" \
+  "default controller ClusterRole must allow TokenReview creation for secure metrics"
+assert_contains "${CR_DEFAULT}" "- subjectaccessreviews" \
+  "default controller ClusterRole must allow SubjectAccessReview creation for secure metrics"
+assert_not_contains "${DEFAULT_OUT}" "kind: PodMonitor" \
+  "default render must NOT include PodMonitors"
+assert_not_contains "${DEFAULT_OUT}" "metrics-reader" \
+  "default render must NOT include the metrics-reader identity"
+
+# metrics.enabled: every new port is unique within its Pod, and the plaintext
+# agent/node endpoints bind the host IP only.
+METRICS_OUT="$(render --set metrics.enabled=true)"
+METRICS_CTL="$(extract_doc "${METRICS_OUT}" "controller-deployment.yaml")"
+METRICS_AGENT="$(extract_doc "${METRICS_OUT}" "agent-daemonset.yaml")"
+METRICS_NODE="$(extract_doc "${METRICS_OUT}" "node-daemonset.yaml")"
+assert_contains "${METRICS_AGENT}" '- --metrics-bind-address=[$(HOST_IP)]:9501' \
+  "metrics=on: hostNetwork agent must bind metrics to [\$(HOST_IP)]:9501"
+assert_contains "${METRICS_NODE}" '- --metrics-bind-address=[$(HOST_IP)]:9502' \
+  "metrics=on: hostNetwork node must bind metrics to [\$(HOST_IP)]:9502"
+for doc in "${METRICS_AGENT}" "${METRICS_NODE}"; do
+  assert_contains "${doc}" "fieldPath: status.hostIP" \
+    "metrics=on: agent/node must receive HOST_IP from the downward API"
+done
+assert_contains "${METRICS_AGENT}" "containerPort: 9501" \
+  "metrics=on: agent must declare containerPort 9501"
+assert_contains "${METRICS_NODE}" "containerPort: 9502" \
+  "metrics=on: node must declare containerPort 9502"
+for port in 8090 8091 8092; do
+  assert_contains "${METRICS_CTL}" "- --http-endpoint=:${port}" \
+    "metrics=on: a CSI sidecar must serve --http-endpoint=:${port}"
+  assert_contains "${METRICS_CTL}" "containerPort: ${port}" \
+    "metrics=on: a CSI sidecar must declare containerPort ${port}"
+done
+assert_pod_ports_unambiguous "${METRICS_CTL}" \
+  "metrics=on controller Pod ports must be unique and probe-resolvable"
+assert_pod_ports_unambiguous "${METRICS_AGENT}" \
+  "metrics=on agent Pod ports must be unique and probe-resolvable"
+assert_pod_ports_unambiguous "${METRICS_NODE}" \
+  "metrics=on node Pod ports must be unique and probe-resolvable"
+NOHOSTNET_AGENT="$(extract_doc "$(render --set metrics.enabled=true --set agent.hostNetwork=false)" "agent-daemonset.yaml")"
+assert_contains "${NOHOSTNET_AGENT}" "- --metrics-bind-address=:9501" \
+  "metrics=on, agent.hostNetwork=false: agent must bind metrics on the pod IP (:9501)"
+
+# tracing.enabled: OTEL_* env on all three binaries, resource attributes
+# expanded from earlier downward-API entries; extraEnv stays last.
+TRACING_OUT="$(render --set tracing.enabled=true --set tracing.endpoint=http://collector:4317 \
+  --set 'agent.extraEnv[0].name=OVERRIDE_ME' --set 'agent.extraEnv[0].value=x')"
+for tmpl in controller-deployment.yaml agent-daemonset.yaml node-daemonset.yaml; do
+  doc="$(extract_doc "${TRACING_OUT}" "${tmpl}")"
+  assert_contains "${doc}" 'value: "http://collector:4317"' \
+    "tracing=on: ${tmpl} must set OTEL_EXPORTER_OTLP_ENDPOINT from tracing.endpoint"
+  assert_contains "${doc}" "- name: OTEL_EXPORTER_OTLP_INSECURE" \
+    "tracing=on: ${tmpl} must set OTEL_EXPORTER_OTLP_INSECURE"
+  assert_contains "${doc}" "- name: OTEL_TRACES_SAMPLER_ARG" \
+    "tracing=on: ${tmpl} must set OTEL_TRACES_SAMPLER_ARG"
+  assert_contains "${doc}" 'value: "k8s.namespace.name=$(POD_NAMESPACE),k8s.pod.name=$(POD_NAME),k8s.node.name=$(NODE_NAME)"' \
+    "tracing=on: ${tmpl} must set OTEL_RESOURCE_ATTRIBUTES from the downward API"
+  for var in POD_NAMESPACE POD_NAME NODE_NAME; do
+    assert_env_before "${doc}" "${var}" "OTEL_RESOURCE_ATTRIBUTES" \
+      "tracing=on: ${tmpl} must declare ${var} before OTEL_RESOURCE_ATTRIBUTES"
+  done
+  assert_env_before "${doc}" "HOST_IP" "OTEL_EXPORTER_OTLP_ENDPOINT" \
+    "tracing=on: ${tmpl} must declare HOST_IP before OTEL_EXPORTER_OTLP_ENDPOINT (node-local collector endpoints)"
+done
+assert_env_before "$(extract_doc "${TRACING_OUT}" "agent-daemonset.yaml")" "OTEL_RESOURCE_ATTRIBUTES" "OVERRIDE_ME" \
+  "tracing=on: agent.extraEnv must stay after the OTEL_* env so it can override it"
+NO_ENDPOINT_ERR="$(render --set tracing.enabled=true 2>&1 >/dev/null || true)"
+assert_contains "${NO_ENDPOINT_ERR}" "tracing.endpoint is required when tracing.enabled is true" \
+  "tracing.enabled with an empty tracing.endpoint must fail the render with a clear error"
+
+# PodMonitors: the controller endpoint is scraped over HTTPS with the chart's
+# metrics-reader token; the render refuses clusters without the PodMonitor API.
+PM_ARGS=(--set metrics.enabled=true --set metrics.podMonitor.enabled=true --set metrics.podMonitor.interval=30s)
+NO_PM_API_ERR="$(render "${PM_ARGS[@]}" 2>&1 >/dev/null || true)"
+assert_contains "${NO_PM_API_ERR}" "requires the prometheus-operator PodMonitor CRD (monitoring.coreos.com/v1/PodMonitor)" \
+  "podMonitor.enabled without the monitoring.coreos.com/v1 PodMonitor API must fail the render clearly"
+PM_OUT="$(render "${PM_ARGS[@]}" --api-versions monitoring.coreos.com/v1/PodMonitor)"
+assert_min_count "${PM_OUT}" "^kind: PodMonitor" 3 \
+  "podMonitor=on, metrics=on: controller, agent and node PodMonitors must render"
+assert_contains "${PM_OUT}" "scheme: https" \
+  "podMonitor=on: the secure controller endpoint must be scraped over https"
+assert_contains "${PM_OUT}" "type: Bearer" \
+  "podMonitor=on: the secure controller endpoint must send a bearer token"
+assert_contains "${PM_OUT}" "name: ${RELEASE}-metrics-reader-token" \
+  "podMonitor=on: the controller endpoint must read the metrics-reader token Secret"
+assert_contains "${PM_OUT}" "insecureSkipVerify: true" \
+  "podMonitor=on: the controller endpoint must accept the self-signed metrics certificate"
+for port in prov-metrics attach-metrics resize-metrics; do
+  assert_contains "${PM_OUT}" "- port: ${port}" \
+    "podMonitor=on, metrics=on: the controller PodMonitor must scrape sidecar port ${port}"
+done
+assert_contains "${PM_OUT}" 'interval: "30s"' \
+  "podMonitor=on: metrics.podMonitor.interval must reach the endpoints"
+assert_contains "${PM_OUT}" "type: kubernetes.io/service-account-token" \
+  "podMonitor=on: the metrics-reader token Secret must render"
+assert_contains "${PM_OUT}" "kubernetes.io/service-account.name: ${RELEASE}-metrics-reader" \
+  "podMonitor=on: the token Secret must be bound to the metrics-reader ServiceAccount"
+assert_contains "${PM_OUT}" "- /metrics" \
+  "podMonitor=on: the metrics-reader ClusterRole must allow get on /metrics"
+PM_INSECURE_OUT="$(render --set metrics.podMonitor.enabled=true --set metrics.controller.secure=false \
+  --api-versions monitoring.coreos.com/v1/PodMonitor)"
+assert_contains "${PM_INSECURE_OUT}" "- --metrics-secure=false" \
+  "metrics.controller.secure=false must pass --metrics-secure=false"
+assert_not_contains "${PM_INSECURE_OUT}" "tokenreviews" \
+  "metrics.controller.secure=false must not grant TokenReview creation"
+assert_not_contains "${PM_INSECURE_OUT}" "metrics-reader" \
+  "metrics.controller.secure=false must not render the metrics-reader identity"
+assert_not_contains "${PM_INSECURE_OUT}" "scheme: https" \
+  "metrics.controller.secure=false must scrape the controller over plain http"
+if [[ "$(grep -c '^kind: PodMonitor' <<< "${PM_INSECURE_OUT}" || true)" != 1 ]]; then
+  mark_fail "podMonitor=on, metrics=off: only the controller PodMonitor must render"
+fi
+if render --set-string metrics.controller.secure=yes >/dev/null 2>&1; then
+  mark_fail "non-boolean metrics.controller.secure must fail the render"
+fi
 
 # ──────────────────────────────────────────────────────────────────────────
 # API contract: rendered CRDs and RBAC vs controller-gen output

@@ -32,6 +32,8 @@ import (
 	csi "github.com/container-storage-interface/spec/lib/go/csi"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+
+	"github.com/isac322/pillar-csi/internal/telemetry"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -480,13 +482,16 @@ func dmNotFound(out []byte) bool {
 		strings.Contains(msg, "not found")
 }
 
-// runDmsetup runs dmsetup without udev synchronization.
+// runDmsetup runs dmsetup without udev synchronization.  Every run is
+// observed in M9 and, inside a traced RPC, as an SP8 child span.
 func runDmsetup(ctx context.Context, args ...string) ([]byte, error) {
 	bin := findExecutable("dmsetup", "/usr/sbin/dmsetup", "/sbin/dmsetup")
-	cmd := exec.CommandContext(ctx, bin, //nolint:gosec // fixed binary, internal args
-		append([]string{"--noudevsync"}, args...)...)
+	argv := append([]string{"--noudevsync"}, args...)
+	obs := telemetry.StartExec(ctx, bin, argv...)
+	cmd := exec.CommandContext(ctx, bin, argv...) //nolint:gosec // fixed binary, internal args
 	cmd.Env = append(os.Environ(), "DM_DISABLE_UDEV=1")
 	out, err := cmd.CombinedOutput()
+	obs.End(out, err)
 	if err != nil {
 		return out, fmt.Errorf("exec %s: %w", bin, err)
 	}

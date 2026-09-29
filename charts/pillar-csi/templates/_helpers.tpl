@@ -250,3 +250,83 @@ Directory and file path of the agent config file inside the agent container.
 {{- define "pillar-csi.agent.configPath" -}}
 {{ include "pillar-csi.agent.configDir" . }}/config.yaml
 {{- end }}
+
+{{/*
+OTEL_* environment for the controller, agent and node containers, rendered
+only when tracing.enabled.  OTEL_RESOURCE_ATTRIBUTES references
+$(POD_NAMESPACE), $(POD_NAME) and $(NODE_NAME), and kubelet expands $(VAR)
+only from entries listed EARLIER in the same env list, so every caller must
+render those three variables (and HOST_IP, which tracing.endpoint may
+reference) before including this helper.  extraEnv stays after it as the
+override path.
+Usage: include "pillar-csi.otelEnv" . | trim | nindent 12
+*/}}
+{{- define "pillar-csi.otelEnv" -}}
+{{- if .Values.tracing.enabled }}
+{{- $endpoint := trim (toString .Values.tracing.endpoint) }}
+{{- if not $endpoint }}
+{{- fail "tracing.endpoint is required when tracing.enabled is true (e.g. http://tempo-distributor.monitoring:4317)" }}
+{{- end }}
+- name: OTEL_EXPORTER_OTLP_ENDPOINT
+  value: {{ $endpoint | quote }}
+- name: OTEL_EXPORTER_OTLP_INSECURE
+  value: {{ .Values.tracing.insecure | toString | quote }}
+- name: OTEL_TRACES_SAMPLER_ARG
+  value: {{ .Values.tracing.samplerRatio | toString | quote }}
+- name: OTEL_RESOURCE_ATTRIBUTES
+  value: "k8s.namespace.name=$(POD_NAMESPACE),k8s.pod.name=$(POD_NAME),k8s.node.name=$(NODE_NAME)"
+{{- end }}
+{{- end }}
+
+{{/*
+Downward-API env shared by the agent and node containers when metrics or
+tracing is enabled: HOST_IP feeds --metrics-bind-address=[$(HOST_IP)]:<port>
+(and a node-local tracing.endpoint), POD_NAME feeds OTEL_RESOURCE_ATTRIBUTES.
+Must render before pillar-csi.otelEnv.
+*/}}
+{{- define "pillar-csi.telemetryPodEnv" -}}
+{{- if or .Values.metrics.enabled .Values.tracing.enabled }}
+- name: POD_NAME
+  valueFrom:
+    fieldRef:
+      fieldPath: metadata.name
+- name: HOST_IP
+  valueFrom:
+    fieldRef:
+      fieldPath: status.hostIP
+{{- end }}
+{{- end }}
+
+{{/*
+--metrics-bind-address value for a hostNetwork-capable DaemonSet.  Under
+hostNetwork the plaintext endpoint binds only the node's primary IP instead
+of every host interface; brackets keep IPv6 host IPs valid.
+Usage: {{ include "pillar-csi.metricsBindAddress" (dict "hostNetwork" .Values.agent.hostNetwork "port" .Values.metrics.agent.port) }}
+*/}}
+{{- define "pillar-csi.metricsBindAddress" -}}
+{{- if .hostNetwork -}}
+[$(HOST_IP)]:{{ .port }}
+{{- else -}}
+:{{ .port }}
+{{- end -}}
+{{- end }}
+
+{{/*
+Name of the metrics-reader ClusterRole, ServiceAccount and binding; the
+token Secret the controller PodMonitor authenticates with is "<name>-token".
+*/}}
+{{- define "pillar-csi.metricsReaderName" -}}
+{{- printf "%s-metrics-reader" (include "pillar-csi.fullname" .) }}
+{{- end }}
+
+{{/*
+Optional interval/scrapeTimeout fields shared by every PodMonitor endpoint.
+*/}}
+{{- define "pillar-csi.podMonitorScrapeFields" -}}
+{{- with .Values.metrics.podMonitor.interval }}
+interval: {{ . | quote }}
+{{- end }}
+{{- with .Values.metrics.podMonitor.scrapeTimeout }}
+scrapeTimeout: {{ . | quote }}
+{{- end }}
+{{- end }}

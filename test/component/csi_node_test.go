@@ -182,7 +182,9 @@ func newCsiMockMounter() *csiMockMounter {
 	return &csiMockMounter{mounted: make(map[string]bool)}
 }
 
-func (m *csiMockMounter) FormatAndMount(source, target, fsType string, options, formatOptions []string) error {
+func (m *csiMockMounter) FormatAndMount(
+	_ context.Context, source, target, fsType string, options, formatOptions []string,
+) error {
 	m.mu.Lock()
 	m.formatAndMountCalls++
 	fn := m.formatAndMountFn

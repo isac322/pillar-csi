@@ -19,10 +19,12 @@ package agent
 import (
 	"context"
 
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	agentv1 "github.com/isac322/pillar-csi/gen/go/pillar_csi/agent/v1"
+	"github.com/isac322/pillar-csi/internal/telemetry"
 )
 
 // ReconcileState applies the full desired state for the listed volumes.  It
@@ -54,7 +56,7 @@ func (s *Server) ReconcileState(
 	var protocolOrder []agentv1.ProtocolType
 
 	for i, vol := range vols {
-		failures[i] = s.resolveVolumeHandlers(vol, handlers, &protocolOrder)
+		failures[i] = s.resolveVolumeHandlers(ctx, vol, handlers, &protocolOrder)
 	}
 	for i, vol := range vols {
 		if failures[i] != nil {
@@ -89,6 +91,7 @@ func (s *Server) ReconcileState(
 	for i, vol := range vols {
 		results = append(results, reconcileResult(vol.GetVolumeId(), failures[i]))
 	}
+	setReconcileSpanAttributes(ctx, req.GetComplete(), failures)
 	return &agentv1.ReconcileStateResponse{
 		Results:      results,
 		ReconciledAt: timestamppb.Now(),
@@ -97,8 +100,10 @@ func (s *Server) ReconcileState(
 
 // resolveVolumeHandlers resolves the handler of every protocol vol exports,
 // recording new protocols in first-seen order.  A volume with an unsupported
-// protocol fails as a whole: none of its exports is applied.
+// protocol fails as a whole: none of its exports is applied, and the failure
+// is recorded as a resolve-phase item_failed event on the span in ctx.
 func (s *Server) resolveVolumeHandlers(
+	ctx context.Context,
 	vol *agentv1.VolumeDesiredState,
 	handlers map[agentv1.ProtocolType]AgentProtocolHandler,
 	protocolOrder *[]agentv1.ProtocolType,
@@ -110,12 +115,34 @@ func (s *Server) resolveVolumeHandlers(
 		}
 		handler, err := s.handlerForProtocol(protocolType)
 		if err != nil {
+			recordReconcileItemFailed(ctx, vol.GetVolumeId(), reconcilePhaseResolve, err)
 			return err
 		}
 		handlers[protocolType] = handler
 		*protocolOrder = append(*protocolOrder, protocolType)
 	}
 	return nil
+}
+
+// setReconcileSpanAttributes sets the ReconcileState summary attributes on
+// the span in ctx: whether the request was complete, how many volumes it
+// listed and how many of them failed.
+func setReconcileSpanAttributes(ctx context.Context, complete bool, failures []error) {
+	span := trace.SpanFromContext(ctx)
+	if !span.IsRecording() {
+		return
+	}
+	failed := 0
+	for _, err := range failures {
+		if err != nil {
+			failed++
+		}
+	}
+	span.SetAttributes(
+		telemetry.KeyReconcileComplete.Bool(complete),
+		telemetry.KeyReconcileVolumes.Int(len(failures)),
+		telemetry.KeyReconcileFailed.Int(failed),
+	)
 }
 
 func exportDesiredState(vol *agentv1.VolumeDesiredState, export *agentv1.ExportDesiredState) ExportDesiredState {

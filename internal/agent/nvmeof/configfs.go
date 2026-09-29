@@ -48,7 +48,45 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/prometheus/client_golang/prometheus"
+
+	"github.com/isac322/pillar-csi/internal/telemetry"
 )
+
+// Configfs primitive operations (op label of
+// pillar_csi_nvmet_configfs_errors_total).
+const (
+	configfsOpWrite   = "write"
+	configfsOpTrigger = "trigger"
+	configfsOpMkdir   = "mkdir"
+	configfsOpSymlink = "symlink"
+	configfsOpUnlink  = "unlink"
+	configfsOpRmdir   = "rmdir"
+)
+
+// configfsErrors is M8, pillar_csi_nvmet_configfs_errors_total: one increment
+// per error returned by a configfs primitive.  Successes are not counted.
+var configfsErrors = prometheus.NewCounterVec(prometheus.CounterOpts{
+	Name: "pillar_csi_nvmet_configfs_errors_total",
+	Help: "Errors returned by nvmet configfs primitives, by operation and errno.",
+}, []string{"op", "errno"})
+
+// RegisterMetrics registers pillar_csi_nvmet_configfs_errors_total.
+func RegisterMetrics(reg prometheus.Registerer) error {
+	err := reg.Register(configfsErrors)
+	if err != nil {
+		return fmt.Errorf("register pillar_csi_nvmet_configfs_errors_total: %w", err)
+	}
+	return nil
+}
+
+// recordConfigfsError counts a non-nil error of the configfs primitive op.
+func recordConfigfsError(op string, err error) {
+	if err != nil {
+		configfsErrors.WithLabelValues(op, telemetry.ConfigfsErrnoLabel(err)).Inc()
+	}
+}
 
 const (
 	// DefaultConfigfsRoot is the standard kernel configfs mount point used in
@@ -205,12 +243,14 @@ func writeFileLock(path string) *sync.Mutex {
 //
 // The function is intentionally simple — it does not retry — because configfs
 // operations are synchronous kernel calls and transient errors are not expected.
-func writeFile(path, content string) error {
+func writeFile(path, content string) (err error) {
+	defer func() { recordConfigfsError(configfsOpWrite, err) }()
+
 	lock := writeFileLock(path)
 	lock.Lock()
 	defer lock.Unlock()
 
-	err := os.WriteFile(path, []byte(content), 0o600)
+	err = os.WriteFile(path, []byte(content), 0o600)
 	if err != nil {
 		return fmt.Errorf("configfs write %q = %q: %w", path, content, err)
 	}
@@ -240,12 +280,14 @@ func writeFile(path, content string) error {
 // triggerFile writes to a write-only configfs action attribute. Unlike
 // writeFile, it cannot read the value back because the kernel exposes no show
 // callback for action files such as revalidate_size.
-func triggerFile(path, content string) error {
+func triggerFile(path, content string) (err error) {
+	defer func() { recordConfigfsError(configfsOpTrigger, err) }()
+
 	lock := writeFileLock(path)
 	lock.Lock()
 	defer lock.Unlock()
 
-	err := os.WriteFile(path, []byte(content), 0o600)
+	err = os.WriteFile(path, []byte(content), 0o600)
 	if err != nil {
 		return fmt.Errorf("configfs trigger %q = %q: %w", path, content, err)
 	}
@@ -275,6 +317,7 @@ func readFileTrimmed(path string) (string, error) {
 // instantiate the corresponding object (subsystem, namespace, host, port).
 func mkdirAll(path string) error {
 	err := os.MkdirAll(path, 0o750)
+	recordConfigfsError(configfsOpMkdir, err)
 	if err != nil {
 		return fmt.Errorf("configfs mkdir %q: %w", path, err)
 	}
@@ -291,7 +334,9 @@ func mkdirAll(path string) error {
 // a relative path, so comparing the raw readlink value is insufficient. Any
 // other pre-existing path at newname is treated as an error to avoid silently
 // overwriting unrelated configfs state.
-func symlink(oldname, newname string) error {
+func symlink(oldname, newname string) (err error) {
+	defer func() { recordConfigfsError(configfsOpSymlink, err) }()
+
 	existing, err := os.Readlink(newname)
 	switch {
 	case err == nil:
@@ -322,7 +367,9 @@ func resolvedLinkTarget(linkPath, target string) string {
 // removeSymlink removes the symbolic link at path.  It is a no-op (idempotent)
 // when path does not exist.  Returns an error if path exists but is not a
 // symlink, to prevent accidental removal of real configfs directories.
-func removeSymlink(path string) error {
+func removeSymlink(path string) (err error) {
+	defer func() { recordConfigfsError(configfsOpUnlink, err) }()
+
 	fi, err := os.Lstat(path)
 	if os.IsNotExist(err) {
 		return nil // already gone — idempotent success
@@ -346,6 +393,7 @@ func removeSymlink(path string) error {
 func removeDir(path string) error {
 	err := os.Remove(path)
 	if err != nil && !os.IsNotExist(err) {
+		recordConfigfsError(configfsOpRmdir, err)
 		return fmt.Errorf("configfs rmdir %q: %w", path, err)
 	}
 	return nil

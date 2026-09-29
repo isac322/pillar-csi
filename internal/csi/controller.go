@@ -56,6 +56,8 @@ import (
 
 	v1alpha1 "github.com/isac322/pillar-csi/api/v1alpha1"
 	agentv1 "github.com/isac322/pillar-csi/gen/go/pillar_csi/agent/v1"
+	"github.com/isac322/pillar-csi/internal/agentclient"
+	"github.com/isac322/pillar-csi/internal/telemetry"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -76,14 +78,19 @@ type AgentDialer func(ctx context.Context, addr string) (agentv1.AgentServiceCli
 // DefaultAgentDialer is the production AgentDialer.  It opens a plain-text
 // gRPC connection to addr.  MTLS is tracked as a Phase 2 item; see the
 // AgentDialer doc comment for the trust boundary note.
-func DefaultAgentDialer(_ context.Context, addr string) (agentv1.AgentServiceClient, io.Closer, error) {
+//
+// The connection is instrumented with agentclient.TelemetryDialOptions, with
+// the agent name taken from ctx (agentclient.WithAgentName); one connection is
+// created per call, so the name is exact for every RPC on it.
+func DefaultAgentDialer(ctx context.Context, addr string) (agentv1.AgentServiceClient, io.Closer, error) {
 	// grpc.NewClient (not grpc.Dial) is the non-deprecated entry point as of
 	// gRPC-Go v1.64.  The connection is lazy; the first RPC attempt triggers
 	// the actual TCP handshake.
-	conn, err := grpc.NewClient(
-		addr,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	opts := slices.Concat(
+		agentclient.TelemetryDialOptions(agentclient.AgentNameFromContext(ctx)),
+		[]grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())},
 	)
+	conn, err := grpc.NewClient(addr, opts...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("dial agent at %q: %w", addr, err)
 	}
@@ -490,6 +497,8 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 
 	scParams := req.GetParameters()
 	pvName := req.GetName()
+	setSpanAttributes(ctx, telemetry.KeyPVName.String(pvName))
+	setPVCAttributes(ctx, scParams[paramPVCNameMeta], scParams[paramPVCNamespaceMeta])
 
 	// Access modes depend only on the request (every served protocol is a
 	// block protocol), so they are checked before any retry fast path.
@@ -520,7 +529,14 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 		volumeID := existingPV.Spec.VolumeID
 		s.sm.ForceState(volumeID, pillarVolumeStatePhaseToVolumeState(existingPV.Status.Phase))
 		if s.sm.GetState(volumeID) == StateCreated {
-			return completedVolumeResponse(req, existingPV)
+			telemetry.SetVolumeAttributes(ctx, volumeID)
+			setSpanAttributes(ctx, telemetry.KeyCreateResumedFrom.String(createResumedFromReady))
+			resp, respErr := completedVolumeResponse(req, existingPV)
+			if respErr == nil {
+				setSpanAttributes(ctx,
+					telemetry.KeyCapacityAllocatedBytes.Int64(resp.GetVolume().GetCapacityBytes()))
+			}
+			return resp, respErr
 		}
 	}
 
@@ -565,6 +581,11 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 		[]string{targetName, string(protocolID), string(backendID), agentVolID},
 		"/",
 	)
+	telemetry.SetVolumeAttributes(ctx, volumeID)
+	setSpanAttributes(ctx,
+		telemetry.KeyStoreName.String(res.storeName),
+		telemetry.KeyCreateResumedFrom.String(createResumedFrom(existingPV, pvExists)),
+	)
 	if pvExists {
 		s.sm.ForceState(volumeID, pillarVolumeStatePhaseToVolumeState(existingPV.Status.Phase))
 	}
@@ -574,6 +595,7 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 	if cr := req.GetCapacityRange(); cr != nil {
 		capacityBytes = cr.GetRequiredBytes()
 	}
+	setSpanAttributes(ctx, telemetry.KeyCapacityRequestedBytes.Int64(capacityBytes))
 
 	// ── Durable lifecycle before any agent call ──────────────────────────────
 	// The PillarVolumeState is created first, so every backend resource an
@@ -643,6 +665,7 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 	}
 
 	// ── Dial the agent ────────────────────────────────────────────────────────
+	ctx = withAgentName(ctx, targetName)
 	agentClient, closer, err := s.dialAgent(ctx, agentAddr)
 	if err != nil {
 		return nil, status.Errorf(codes.Unavailable,
@@ -738,6 +761,7 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 		vcProtocolType: string(protocolID),
 	}
 	nodeVolumeContext(recorded, volumeContext)
+	setSpanAttributes(ctx, telemetry.KeyCapacityAllocatedBytes.Int64(actualCapacity))
 
 	return &csi.CreateVolumeResponse{
 		Volume: &csi.Volume{
@@ -867,6 +891,7 @@ func (s *ControllerServer) DeleteVolume(
 		//nolint:wrapcheck // gRPC status errors must not be double-wrapped
 		return nil, status.Error(codes.InvalidArgument, "volume_id is required")
 	}
+	telemetry.SetVolumeAttributes(ctx, volumeID)
 
 	// ── Parse the encoded volume ID ───────────────────────────────────────────
 	// Format: <target-name>/<protocol-type>/<backend-type>/<agent-vol-id>
@@ -893,6 +918,7 @@ func (s *ControllerServer) DeleteVolume(
 	if pvs == nil {
 		return &csi.DeleteVolumeResponse{}, nil
 	}
+	setClaimAttributes(ctx, pvs.Spec.ClaimRef)
 
 	err = s.teardownMarkedVolume(ctx, volumeTeardown{
 		volumeID:     volumeID,
@@ -957,6 +983,7 @@ func (s *ControllerServer) teardownMarkedVolume(ctx context.Context, t volumeTea
 	}
 
 	// ── Dial the agent ────────────────────────────────────────────────────────
+	ctx = withAgentName(ctx, t.targetName)
 	agentClient, closer, err := s.dialAgent(ctx, agentAddr)
 	if err != nil {
 		return status.Errorf(codes.Unavailable,
@@ -1407,6 +1434,7 @@ func (s *ControllerServer) ControllerPublishVolume(
 ) (*csi.ControllerPublishVolumeResponse, error) {
 	volumeID := req.GetVolumeId()
 	nodeID := req.GetNodeId()
+	setPublishTargetAttributes(ctx, volumeID, nodeID)
 
 	if volumeID == "" {
 		//nolint:wrapcheck // gRPC status errors must not be double-wrapped
@@ -1456,6 +1484,7 @@ func (s *ControllerServer) ControllerPublishVolume(
 	if !pvExists {
 		return nil, status.Errorf(codes.NotFound, "volume %q not found", volumeID)
 	}
+	setClaimAttributes(ctx, pvs.Spec.ClaimRef)
 
 	// ── Resolve the storage node's PillarAgent ───────────────────────────────
 	agent, agentErr := s.getReadyAgent(ctx, targetName)
@@ -1464,6 +1493,7 @@ func (s *ControllerServer) ControllerPublishVolume(
 	}
 	agentAddr := agent.Status.ResolvedAddress
 	local := isLocalAttachPublish(pvs, agent, nodeID, mode)
+	setAttachAttributes(ctx, local, req.GetReadonly())
 
 	// ── Resolve initiator identity from CSINode annotation ───────────────────
 	// A local attach grants no initiator: the publication is identified by
@@ -1492,6 +1522,7 @@ func (s *ControllerServer) ControllerPublishVolume(
 		return nil, reserveErr
 	}
 
+	ctx = withAgentName(ctx, targetName)
 	return s.finishPublish(ctx, local, pvName, agentAddr, volumeID, agentVolID, agentProtocolType,
 		nodeID, initiatorID, pvs, fence)
 }
@@ -1770,6 +1801,7 @@ func (s *ControllerServer) ControllerUnpublishVolume(
 ) (*csi.ControllerUnpublishVolumeResponse, error) {
 	volumeID := req.GetVolumeId()
 	nodeID := req.GetNodeId()
+	setPublishTargetAttributes(ctx, volumeID, nodeID)
 
 	if volumeID == "" {
 		//nolint:wrapcheck // gRPC status errors must not be double-wrapped
@@ -1787,6 +1819,7 @@ func (s *ControllerServer) ControllerUnpublishVolume(
 	agentVolID := parts[3]
 
 	agentProtocolType := mapProtocolType(protocolTypeStr)
+	ctx = withAgentName(ctx, targetName)
 
 	unlock := s.volumeLocks.lock(volumeID)
 	defer unlock()
@@ -1801,6 +1834,7 @@ func (s *ControllerServer) ControllerUnpublishVolume(
 		// The volume does not exist; no access can have been granted.
 		return &csi.ControllerUnpublishVolumeResponse{}, nil
 	}
+	setClaimAttributes(ctx, existingPV.Spec.ClaimRef)
 	if !hasPublicationFor(existingPV.Status.PublishedNodes, nodeID) {
 		return &csi.ControllerUnpublishVolumeResponse{}, nil
 	}
@@ -1956,6 +1990,7 @@ func (s *ControllerServer) ControllerExpandVolume(
 	req *csi.ControllerExpandVolumeRequest,
 ) (*csi.ControllerExpandVolumeResponse, error) {
 	volumeID := req.GetVolumeId()
+	telemetry.SetVolumeAttributes(ctx, volumeID)
 	if volumeID == "" {
 		//nolint:wrapcheck // gRPC status errors must not be double-wrapped
 		return nil, status.Error(codes.InvalidArgument, "volume_id is required")
@@ -1965,6 +2000,7 @@ func (s *ControllerServer) ControllerExpandVolume(
 		return nil, status.Error(codes.InvalidArgument, "capacity_range is required")
 	}
 	requiredBytes := req.GetCapacityRange().GetRequiredBytes()
+	setSpanAttributes(ctx, telemetry.KeyCapacityRequestedBytes.Int64(requiredBytes))
 	if requiredBytes < 0 {
 		//nolint:wrapcheck // gRPC status errors must not be double-wrapped
 		return nil, status.Error(codes.InvalidArgument,
@@ -2003,6 +2039,7 @@ func (s *ControllerServer) ControllerExpandVolume(
 	}
 
 	// ── Dial the agent ────────────────────────────────────────────────────────
+	ctx = withAgentName(ctx, targetName)
 	agentClient, closer, err := s.dialAgent(ctx, agentAddr)
 	if err != nil {
 		return nil, status.Errorf(codes.Unavailable,
@@ -2035,6 +2072,7 @@ func (s *ControllerServer) ControllerExpandVolume(
 		// so the CO can update the PVC status correctly.
 		actualBytes = requiredBytes
 	}
+	setSpanAttributes(ctx, telemetry.KeyCapacityAllocatedBytes.Int64(actualBytes))
 
 	// Every served protocol is a block protocol: the node must rescan the
 	// block device and grow the filesystem of a Filesystem-mode volume.
@@ -2108,6 +2146,7 @@ func (s *ControllerServer) GetCapacity(
 	}
 
 	// ── Dial the agent ────────────────────────────────────────────────────────
+	ctx = withAgentName(ctx, targetName)
 	agentClient, closer, err := s.dialAgent(ctx, agentAddr)
 	if err != nil {
 		return nil, status.Errorf(codes.Unavailable,

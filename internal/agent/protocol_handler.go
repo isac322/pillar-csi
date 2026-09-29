@@ -21,12 +21,15 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"time"
 
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
 	agentv1 "github.com/isac322/pillar-csi/gen/go/pillar_csi/agent/v1"
 	"github.com/isac322/pillar-csi/internal/agent/nvmeof"
+	"github.com/isac322/pillar-csi/internal/telemetry"
 )
 
 // AgentProtocolHandler abstracts protocol-specific agent export operations.
@@ -152,7 +155,7 @@ func (h *NVMeoFTCPAgentHandler) Export(
 	if err != nil {
 		return nil, err
 	}
-	waitErr := h.waitForDeviceReady(ctx, devicePath)
+	waitErr := h.waitForDeviceReady(ctx, devicePath, true)
 	if waitErr != nil {
 		return nil, waitErr
 	}
@@ -173,16 +176,16 @@ func (h *NVMeoFTCPAgentHandler) Export(
 		DeviceClaimer:  h.server.deviceClaimer,
 	}
 
-	unlock := h.server.lockTarget(agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP, targetID)
+	unlock := h.server.lockTarget(ctx, agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP, targetID)
 	defer unlock()
 
-	err = h.server.fenced(params.VolumeID, params.Fence, fenceGrant, func() error {
+	err = h.server.fenced(ctx, params.VolumeID, params.Fence, fenceGrant, func() error {
 		identity, identityErr := h.server.resolveNVMeIdentity(params.VolumeID, params.Fence, target)
 		if identityErr != nil {
 			return identityErr
 		}
 		target.Identity = identity
-		applyErr := target.Apply()
+		applyErr := traceNvmet(ctx, telemetry.SpanAgentNVMetApply, target, "", target.Apply)
 		if errors.Is(applyErr, nvmeof.ErrPortInlineDataSizeConflict) || errors.Is(applyErr, nvmeof.ErrDeviceHeld) {
 			return status.Errorf(codes.FailedPrecondition, "ExportVolume: %v", applyErr)
 		}
@@ -208,17 +211,17 @@ func (h *NVMeoFTCPAgentHandler) Export(
 }
 
 // Unexport removes the NVMe-oF TCP configfs target for a volume.
-func (h *NVMeoFTCPAgentHandler) Unexport(_ context.Context, volumeID string, fence *agentv1.FencingToken) error {
+func (h *NVMeoFTCPAgentHandler) Unexport(ctx context.Context, volumeID string, fence *agentv1.FencingToken) error {
 	target, err := h.targetForVolume(volumeID)
 	if err != nil {
 		return err
 	}
 
-	unlock := h.server.lockTarget(agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP, target.SubsystemNQN)
+	unlock := h.server.lockTarget(ctx, agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP, target.SubsystemNQN)
 	defer unlock()
 
-	return h.server.fenced(volumeID, fence, fenceRevoke, func() error {
-		removeErr := target.Remove()
+	return h.server.fenced(ctx, volumeID, fence, fenceRevoke, func() error {
+		removeErr := traceNvmet(ctx, telemetry.SpanAgentNVMetRemove, target, "", target.Remove)
 		if removeErr != nil {
 			return status.Errorf(codes.Internal, "UnexportVolume: %v", removeErr)
 		}
@@ -230,7 +233,7 @@ func (h *NVMeoFTCPAgentHandler) Unexport(_ context.Context, volumeID string, fen
 
 // AllowInitiator grants NVMe-oF TCP access to the given initiator NQN.
 func (h *NVMeoFTCPAgentHandler) AllowInitiator(
-	_ context.Context,
+	ctx context.Context,
 	volumeID, initiatorID string,
 	fence *agentv1.FencingToken,
 ) error {
@@ -239,11 +242,13 @@ func (h *NVMeoFTCPAgentHandler) AllowInitiator(
 		return err
 	}
 
-	unlock := h.server.lockTarget(agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP, target.SubsystemNQN)
+	unlock := h.server.lockTarget(ctx, agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP, target.SubsystemNQN)
 	defer unlock()
 
-	return h.server.fenced(volumeID, fence, fenceGrant, func() error {
-		allowErr := target.AllowHost(initiatorID)
+	return h.server.fenced(ctx, volumeID, fence, fenceGrant, func() error {
+		allowErr := traceNvmet(ctx, telemetry.SpanAgentNVMetAllowHost, target, initiatorID, func() error {
+			return target.AllowHost(initiatorID)
+		})
 		if allowErr != nil {
 			return status.Errorf(codes.Internal, "AllowInitiator: %v", allowErr)
 		}
@@ -253,7 +258,7 @@ func (h *NVMeoFTCPAgentHandler) AllowInitiator(
 
 // DenyInitiator revokes NVMe-oF TCP access for the given initiator NQN.
 func (h *NVMeoFTCPAgentHandler) DenyInitiator(
-	_ context.Context,
+	ctx context.Context,
 	volumeID, initiatorID string,
 	fence *agentv1.FencingToken,
 ) error {
@@ -262,11 +267,13 @@ func (h *NVMeoFTCPAgentHandler) DenyInitiator(
 		return err
 	}
 
-	unlock := h.server.lockTarget(agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP, target.SubsystemNQN)
+	unlock := h.server.lockTarget(ctx, agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP, target.SubsystemNQN)
 	defer unlock()
 
-	return h.server.fenced(volumeID, fence, fenceRevoke, func() error {
-		denyErr := target.DenyHost(initiatorID)
+	return h.server.fenced(ctx, volumeID, fence, fenceRevoke, func() error {
+		denyErr := traceNvmet(ctx, telemetry.SpanAgentNVMetDenyHost, target, initiatorID, func() error {
+			return target.DenyHost(initiatorID)
+		})
 		if denyErr != nil {
 			return status.Errorf(codes.Internal, "DenyInitiator: %v", denyErr)
 		}
@@ -281,7 +288,7 @@ func (h *NVMeoFTCPAgentHandler) DenyInitiator(
 // enable value.  A missing export is NotFound; a held device is
 // FailedPrecondition, so the controller retries the remote publish.
 func (h *NVMeoFTCPAgentHandler) SetLocalAttach(
-	_ context.Context,
+	ctx context.Context,
 	volumeID string,
 	local bool,
 	fence *agentv1.FencingToken,
@@ -291,16 +298,23 @@ func (h *NVMeoFTCPAgentHandler) SetLocalAttach(
 		return "", err
 	}
 
-	unlock := h.server.lockTarget(agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP, target.SubsystemNQN)
+	unlock := h.server.lockTarget(ctx, agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP, target.SubsystemNQN)
 	defer unlock()
 
 	var devicePath string
-	err = h.server.fenced(volumeID, fence, fenceGrant, func() error {
+	err = h.server.fenced(ctx, volumeID, fence, fenceGrant, func() error {
 		var opErr error
 		if local {
-			devicePath, opErr = target.DisableNamespace()
+			opErr = traceNvmet(ctx, telemetry.SpanAgentNVMetDisableNS, target, "", func() error {
+				var disableErr error
+				devicePath, disableErr = target.DisableNamespace()
+				if disableErr != nil {
+					return fmt.Errorf("disable namespace of %q: %w", target.SubsystemNQN, disableErr)
+				}
+				return nil
+			})
 		} else {
-			opErr = target.EnableNamespace()
+			opErr = traceNvmet(ctx, telemetry.SpanAgentNVMetEnableNS, target, "", target.EnableNamespace)
 		}
 		return localAttachStatus(volumeID, local, opErr)
 	})
@@ -352,20 +366,29 @@ func (h *NVMeoFTCPAgentHandler) Reconcile(
 	targets := make([]*nvmeof.NvmetTarget, len(desired))
 	for i, export := range desired {
 		targets[i], errs[i] = h.reconcileTarget(export)
+		if errs[i] != nil {
+			recordReconcileItemFailed(ctx, export.VolumeID, reconcilePhasePrepare, errs[i])
+		}
 	}
 
-	unlock := h.lockTargets(targets)
+	unlock := h.lockTargets(ctx, targets)
 	defer unlock()
 
 	prepared := make([]nvmeof.PreparedTarget, len(desired))
 	for i, export := range desired {
 		if errs[i] == nil {
 			prepared[i], errs[i] = h.prepareExport(ctx, export, targets[i])
+			if errs[i] != nil {
+				recordReconcileItemFailed(ctx, export.VolumeID, reconcilePhasePrepare, errs[i])
+			}
 		}
 	}
 	for i, export := range desired {
 		if errs[i] == nil {
-			errs[i] = h.server.recheckFence(export.VolumeID, export.Fence, fenceGrant, prepared[i].Link)
+			errs[i] = h.server.recheckFence(ctx, export.VolumeID, export.Fence, fenceGrant, prepared[i].Link)
+			if errs[i] != nil {
+				recordReconcileItemFailed(ctx, export.VolumeID, reconcilePhaseLink, errs[i])
+			}
 		}
 	}
 	return errs
@@ -409,8 +432,9 @@ func (h *NVMeoFTCPAgentHandler) reconcileTarget(export ExportDesiredState) (*nvm
 
 // lockTargets acquires the target locks of every non-nil target once, in
 // target ID order so that concurrent reconciles cannot deadlock, and returns
-// the function releasing them.
-func (h *NVMeoFTCPAgentHandler) lockTargets(targets []*nvmeof.NvmetTarget) func() {
+// the function releasing them.  The summed wait is recorded on the RPC span
+// in ctx.
+func (h *NVMeoFTCPAgentHandler) lockTargets(ctx context.Context, targets []*nvmeof.NvmetTarget) func() {
 	ids := make([]string, 0, len(targets))
 	for _, target := range targets {
 		if target != nil {
@@ -420,9 +444,13 @@ func (h *NVMeoFTCPAgentHandler) lockTargets(targets []*nvmeof.NvmetTarget) func(
 	slices.Sort(ids)
 	ids = slices.Compact(ids)
 	unlocks := make([]func(), 0, len(ids))
+	var wait time.Duration
 	for _, id := range ids {
-		unlocks = append(unlocks, h.server.lockTarget(agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP, id))
+		unlock, waited := h.server.acquireTarget(agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP, id)
+		unlocks = append(unlocks, unlock)
+		wait += waited
 	}
+	recordLockWait(ctx, wait)
 	return func() {
 		for _, unlock := range slices.Backward(unlocks) {
 			unlock()
@@ -438,8 +466,8 @@ func (h *NVMeoFTCPAgentHandler) prepareExport(
 	target *nvmeof.NvmetTarget,
 ) (nvmeof.PreparedTarget, error) {
 	var prepared nvmeof.PreparedTarget
-	err := h.server.fenced(export.VolumeID, export.Fence, fenceGrant, func() error {
-		waitErr := h.waitForDeviceReady(ctx, target.DevicePath)
+	err := h.server.fenced(ctx, export.VolumeID, export.Fence, fenceGrant, func() error {
+		waitErr := h.waitForDeviceReady(ctx, target.DevicePath, false)
 		if waitErr != nil {
 			return fmt.Errorf("Reconcile: volume %q: %w", export.VolumeID, waitErr)
 		}
@@ -478,7 +506,11 @@ func (h *NVMeoFTCPAgentHandler) targetForVolume(volumeID string) (*nvmeof.NvmetT
 	}, nil
 }
 
-func (h *NVMeoFTCPAgentHandler) waitForDeviceReady(ctx context.Context, devicePath string) error {
+// waitForDeviceReady waits for the backend block device before configfs
+// writes.  When traced, the wait runs inside a pillar_csi.agent.device_wait
+// span (ExportVolume); the ReconcileState prepare loop passes false and
+// reports failures as span events instead.
+func (h *NVMeoFTCPAgentHandler) waitForDeviceReady(ctx context.Context, devicePath string, traced bool) error {
 	realConfigfs := h.server.configfsRoot == "" || h.server.configfsRoot == nvmeof.DefaultConfigfsRoot
 	if !realConfigfs && h.server.deviceChecker == nil {
 		return nil
@@ -493,7 +525,16 @@ func (h *NVMeoFTCPAgentHandler) waitForDeviceReady(ctx context.Context, devicePa
 		pollTimeout = nvmeof.DefaultDevicePollTimeout
 	}
 
+	var span trace.Span
+	if traced {
+		span = startChildSpan(ctx, telemetry.SpanAgentDeviceWait,
+			telemetry.KeyDevicePath.String(devicePath),
+			telemetry.KeyWaitTimeout.Float64(pollTimeout.Seconds()))
+	}
 	waitErr := nvmeof.WaitForDevice(ctx, devicePath, pollInterval, pollTimeout, h.server.deviceChecker)
+	if span != nil {
+		endDeviceWaitSpan(span, waitErr)
+	}
 	if waitErr != nil {
 		return status.Errorf(
 			codes.FailedPrecondition,

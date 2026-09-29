@@ -19,10 +19,15 @@ limitations under the License.
 package csi
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"slices"
 	"strings"
+
+	"go.opentelemetry.io/otel/trace"
+
+	"github.com/isac322/pillar-csi/internal/telemetry"
 )
 
 // FormatAndMount formats the block device at source with the given
@@ -35,11 +40,13 @@ import (
 // The format step is done here rather than by SafeFormatAndMount because
 // k8s.io/utils/mount has no way to pass extra mkfs arguments.  SafeFormatAndMount
 // then finds the new filesystem and only checks and mounts it.
-func (m *KubeMounter) FormatAndMount(source, target, fsType string, options, formatOptions []string) error {
+func (m *KubeMounter) FormatAndMount(
+	ctx context.Context, source, target, fsType string, options, formatOptions []string,
+) error {
 	if fsType == "" {
 		fsType = defaultFsType
 	}
-	err := m.formatIfBlank(source, fsType, options, formatOptions)
+	err := m.formatIfBlank(ctx, source, fsType, options, formatOptions)
 	if err != nil {
 		return err
 	}
@@ -59,7 +66,12 @@ func (m *KubeMounter) FormatAndMount(source, target, fsType string, options, for
 // the validateMkfsOptions allowlist.  Afterwards the device must carry a
 // fsType filesystem: otherwise SafeFormatAndMount would find it still blank
 // and format it again without the configured options.
-func (m *KubeMounter) formatIfBlank(source, fsType string, mountOptions, formatOptions []string) error {
+//
+// It sets pillar_csi.fs.detected and pillar_csi.mkfs.performed on the span in
+// ctx (SP13); the mkfs run itself is observed as an SP8 child and in M9.
+func (m *KubeMounter) formatIfBlank(
+	ctx context.Context, source, fsType string, mountOptions, formatOptions []string,
+) error {
 	err := validateMkfsOptions(fsType, formatOptions)
 	if err != nil {
 		return fmt.Errorf("format %s as %s: %w", source, fsType, err)
@@ -68,7 +80,10 @@ func (m *KubeMounter) formatIfBlank(source, fsType string, mountOptions, formatO
 	if err != nil {
 		return fmt.Errorf("detect existing filesystem on %s: %w", source, err)
 	}
+	span := trace.SpanFromContext(ctx)
+	span.SetAttributes(telemetry.KeyFSDetected.String(existing))
 	if existing != "" || slices.Contains(mountOptions, "ro") {
+		span.SetAttributes(telemetry.KeyMkfsPerformed.Bool(false))
 		return nil
 	}
 
@@ -76,7 +91,11 @@ func (m *KubeMounter) formatIfBlank(source, fsType string, mountOptions, formatO
 	if err != nil {
 		return fmt.Errorf("format %s: %w", source, err)
 	}
-	out, err := m.inner.Exec.Command("mkfs."+fsType, args...).CombinedOutput()
+	mkfs := "mkfs." + fsType
+	span.SetAttributes(telemetry.KeyMkfsPerformed.Bool(true))
+	obs := telemetry.StartExec(ctx, mkfs, args...)
+	out, err := m.inner.Exec.CommandContext(ctx, mkfs, args...).CombinedOutput()
+	obs.End(out, err)
 	if err != nil {
 		return fmt.Errorf("format %s: mkfs.%s %q: %w: %s",
 			source, fsType, args, err, strings.TrimSpace(string(out)))

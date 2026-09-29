@@ -1,0 +1,95 @@
+{{/*
+prometheus-operator PodMonitors for pillar-csi.  PodMonitor (not
+ServiceMonitor) because the agent and node DaemonSets run on hostNetwork and
+the CSI sidecar ports are per pod; neither needs a Service.
+  - controller: the controller-runtime endpoint (always served) plus, with
+    metrics.enabled, the provisioner/attacher/resizer --http-endpoint ports.
+    With metrics.controller.secure the endpoint is HTTPS with a self-signed
+    certificate (no --metrics-cert-path) and requires a bearer token allowed
+    to get /metrics, taken from the metrics-reader token Secret.
+  - agent, node: plain HTTP, only with metrics.enabled.
+*/}}
+{{- if .Values.metrics.podMonitor.enabled }}
+{{- if not (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1/PodMonitor") }}
+{{- fail "metrics.podMonitor.enabled=true requires the prometheus-operator PodMonitor CRD (monitoring.coreos.com/v1/PodMonitor), which this cluster does not serve; install prometheus-operator first (for helm template, pass --api-versions monitoring.coreos.com/v1/PodMonitor)" }}
+{{- end }}
+{{- $fullname := include "pillar-csi.fullname" . }}
+{{- $namespace := include "pillar-csi.namespace" . }}
+{{- $scrape := include "pillar-csi.podMonitorScrapeFields" . | trim }}
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: {{ $fullname }}-controller
+  namespace: {{ $namespace }}
+  labels:
+    {{- include "pillar-csi.componentLabels" (dict "root" . "component" "controller") | nindent 4 }}
+    {{- with .Values.metrics.podMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  namespaceSelector:
+    matchNames:
+      - {{ $namespace }}
+  selector:
+    matchLabels:
+      {{- include "pillar-csi.controllerSelectorLabels" . | nindent 6 }}
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics
+      {{- if .Values.metrics.controller.secure }}
+      scheme: https
+      authorization:
+        type: Bearer
+        credentials:
+          name: {{ include "pillar-csi.metricsReaderName" . }}-token
+          key: token
+      tlsConfig:
+        # The controller serves a self-signed certificate when
+        # --metrics-cert-path is unset.
+        insecureSkipVerify: true
+      {{- else }}
+      scheme: http
+      {{- end }}
+      {{- with $scrape }}
+      {{- . | nindent 6 }}
+      {{- end }}
+    {{- if .Values.metrics.enabled }}
+    {{- range list "prov-metrics" "attach-metrics" "resize-metrics" }}
+    - port: {{ . }}
+      path: /metrics
+      scheme: http
+      {{- with $scrape }}
+      {{- . | nindent 6 }}
+      {{- end }}
+    {{- end }}
+    {{- end }}
+{{- if .Values.metrics.enabled }}
+{{- range list "agent" "node" }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: {{ $fullname }}-{{ . }}
+  namespace: {{ $namespace }}
+  labels:
+    {{- include "pillar-csi.componentLabels" (dict "root" $ "component" .) | nindent 4 }}
+    {{- with $.Values.metrics.podMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  namespaceSelector:
+    matchNames:
+      - {{ $namespace }}
+  selector:
+    matchLabels:
+      {{- include "pillar-csi.componentSelectorLabels" (dict "root" $ "component" .) | nindent 6 }}
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics
+      scheme: http
+      {{- with $scrape }}
+      {{- . | nindent 6 }}
+      {{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
