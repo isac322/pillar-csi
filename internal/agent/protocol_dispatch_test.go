@@ -57,6 +57,11 @@ type initiatorDispatchCall struct {
 	initiatorID string
 }
 
+type localAttachDispatchCall struct {
+	volumeID string
+	local    bool
+}
+
 type recordingProtocolHandler struct {
 	exportResult *ExportResult
 	exportErr    error
@@ -65,11 +70,15 @@ type recordingProtocolHandler struct {
 	denyErr      error
 	reconcileErr error
 
-	exportCalls    []ExportParams
-	unexportCalls  []string
-	allowCalls     []initiatorDispatchCall
-	denyCalls      []initiatorDispatchCall
-	reconcileCalls [][]ExportDesiredState
+	localAttachDevicePath string
+	localAttachErr        error
+
+	exportCalls      []ExportParams
+	unexportCalls    []string
+	allowCalls       []initiatorDispatchCall
+	denyCalls        []initiatorDispatchCall
+	localAttachCalls []localAttachDispatchCall
+	reconcileCalls   [][]ExportDesiredState
 }
 
 func (h *recordingProtocolHandler) Export(
@@ -111,6 +120,16 @@ func (h *recordingProtocolHandler) DenyInitiator(
 		initiatorID: initiatorID,
 	})
 	return h.denyErr
+}
+
+func (h *recordingProtocolHandler) SetLocalAttach(
+	_ context.Context,
+	volumeID string,
+	local bool,
+	_ *agentv1.FencingToken,
+) (string, error) {
+	h.localAttachCalls = append(h.localAttachCalls, localAttachDispatchCall{volumeID: volumeID, local: local})
+	return h.localAttachDevicePath, h.localAttachErr
 }
 
 func (h *recordingProtocolHandler) Reconcile(
@@ -482,6 +501,62 @@ func TestAllowInitiator_UnsupportedProtocolDoesNotInvokeHandler(t *testing.T) {
 	}
 	if len(supportedHandler.allowCalls) != 0 {
 		t.Fatalf("supported handler allow calls = %d, want 0", len(supportedHandler.allowCalls))
+	}
+}
+
+// TestSetLocalAttach_RejectedBeforeHandler: SetLocalAttach is refused, without
+// touching any export, for an invalid volume ID, a missing or unsupported
+// protocol, and while the export restore is pending.
+func TestSetLocalAttach_RejectedBeforeHandler(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		volumeID string
+		protocol agentv1.ProtocolType
+		gated    bool
+		want     codes.Code
+	}{
+		{"invalid volume id", "no-slash", agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP, false, codes.InvalidArgument},
+		{"unspecified protocol", dispatchTestVolumeID, agentv1.ProtocolType_PROTOCOL_TYPE_UNSPECIFIED, false,
+			codes.InvalidArgument},
+		{"unsupported protocol", dispatchTestVolumeID, agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI, false,
+			codes.Unimplemented},
+		{"export restore pending", dispatchTestVolumeID, agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP, true,
+			codes.Unavailable},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			handler := &recordingProtocolHandler{}
+			opts := []ServerOption{WithDrainStateDir(t.TempDir())}
+			if tt.gated {
+				opts = append(opts, WithExportRestoreGate())
+			}
+			srv := NewServer(nil, "", opts...)
+			srv.protocolHandlerResolver = func(p agentv1.ProtocolType) (AgentProtocolHandler, error) {
+				switch p {
+				case agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP:
+					return handler, nil
+				case agentv1.ProtocolType_PROTOCOL_TYPE_UNSPECIFIED:
+					return nil, status.Error(codes.InvalidArgument, "protocol_type is required")
+				default:
+					return nil, status.Errorf(codes.Unimplemented, "protocol %s is not supported by this agent", p)
+				}
+			}
+
+			_, err := srv.SetLocalAttach(context.Background(), &agentv1.SetLocalAttachRequest{
+				VolumeId:     tt.volumeID,
+				ProtocolType: tt.protocol,
+				Local:        true,
+			})
+			if status.Code(err) != tt.want {
+				t.Fatalf("SetLocalAttach code = %v (%v), want %v", status.Code(err), err, tt.want)
+			}
+			if len(handler.localAttachCalls) != 0 {
+				t.Fatalf("handler SetLocalAttach calls = %v, want none", handler.localAttachCalls)
+			}
+		})
 	}
 }
 

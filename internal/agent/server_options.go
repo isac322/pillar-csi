@@ -50,6 +50,16 @@ func WithDevicePollParams(interval, timeout time.Duration) ServerOption {
 	}
 }
 
+// WithDeviceHeldProbe overrides the probe that checks, before a disabled
+// NVMe-oF namespace is enabled, whether its backend device is held
+// exclusively on the storage node (local attach in use).
+//
+// In production the server defaults to nvmeof.DeviceHeldExclusively (an
+// O_EXCL open).  Tests pass a fake to simulate a held device.
+func WithDeviceHeldProbe(p nvmeof.DeviceHeldProbe) ServerOption {
+	return func(s *Server) { s.deviceHeldProbe = p }
+}
+
 // WithDrainStateDir overrides where Drain writes the .drained marker.
 func WithDrainStateDir(dir string) ServerOption {
 	return func(s *Server) { s.drainStateDir = dir }

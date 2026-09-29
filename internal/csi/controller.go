@@ -1386,6 +1386,18 @@ func (s *ControllerServer) resolvePublishInitiator(
 //
 // Idempotency: an identical publish for an already recorded node succeeds and
 // re-applies AllowInitiator, which is idempotent on the agent side.
+//
+// Local attach: when the volume resolved localAttach, the access mode is a
+// SINGLE_NODE_* mode and nodeID is the node hosting the volume's PillarAgent
+// (spec.nodeRef; external agents never qualify), the publication is recorded
+// as local, the agent fences the network export (SetLocalAttach local=true)
+// instead of granting an initiator, and the PublishContext tells
+// NodeStageVolume to attach the backend device directly.  A later protocol
+// publish first has the agent re-enable the export (SetLocalAttach
+// local=false, which fails with FailedPrecondition while the storage node
+// still holds the device), then clears status.localAttachNode under a new
+// fencing generation, re-enables at that generation and only then grants
+// its initiator (see finishPublish).
 func (s *ControllerServer) ControllerPublishVolume(
 	ctx context.Context,
 	req *csi.ControllerPublishVolumeRequest,
@@ -1442,16 +1454,24 @@ func (s *ControllerServer) ControllerPublishVolume(
 		return nil, status.Errorf(codes.NotFound, "volume %q not found", volumeID)
 	}
 
-	// ── Resolve the agent address from PillarAgent ───────────────────────────
-	agentAddr, addrErr := s.resolveAgentAddress(ctx, targetName)
-	if addrErr != nil {
-		return nil, addrErr
+	// ── Resolve the storage node's PillarAgent ───────────────────────────────
+	agent, agentErr := s.getReadyAgent(ctx, targetName)
+	if agentErr != nil {
+		return nil, agentErr
 	}
+	agentAddr := agent.Status.ResolvedAddress
+	local := isLocalAttachPublish(pvs, agent, nodeID, mode)
 
 	// ── Resolve initiator identity from CSINode annotation ───────────────────
-	initiatorID, resolveErr := s.resolvePublishInitiator(ctx, nodeID, protocolTypeStr)
-	if resolveErr != nil {
-		return nil, resolveErr
+	// A local attach grants no initiator: the publication is identified by
+	// the node itself and needs no node-plugin identity.
+	initiatorID := nodeID
+	if !local {
+		var resolveErr error
+		initiatorID, resolveErr = s.resolvePublishInitiator(ctx, nodeID, protocolTypeStr)
+		if resolveErr != nil {
+			return nil, resolveErr
+		}
 	}
 
 	// ── Record the publication before granting access ────────────────────────
@@ -1463,16 +1483,73 @@ func (s *ControllerServer) ControllerPublishVolume(
 		InitiatorID: initiatorID,
 		AccessMode:  mode.String(),
 		Readonly:    req.GetReadonly(),
+		Local:       local,
 	})
 	if reserveErr != nil {
 		return nil, reserveErr
+	}
+
+	return s.finishPublish(ctx, local, pvName, agentAddr, volumeID, agentVolID, agentProtocolType,
+		nodeID, initiatorID, pvs, fence)
+}
+
+// finishPublish completes a publish whose publication is already committed
+// under fence: local publishes fence the export and return the backend
+// device path, protocol publishes re-enable a locally fenced export (if
+// needed) and grant the initiator.
+func (s *ControllerServer) finishPublish(
+	ctx context.Context,
+	local bool,
+	pvName, agentAddr, volumeID, agentVolID string,
+	protocolType agentv1.ProtocolType,
+	nodeID, initiatorID string,
+	pvs *v1alpha1.PillarVolumeState,
+	fence *agentv1.FencingToken,
+) (*csi.ControllerPublishVolumeResponse, error) {
+	if local {
+		return s.finishLocalPublish(ctx, agentAddr, volumeID, agentVolID, protocolType, nodeID, fence)
+	}
+
+	// ── Return the export from a previous local attach to the network ────────
+	// Clearing status.localAttachNode changes the desired export state the
+	// resync loop derives (local_attach=false), so the clear commits a new
+	// fencing generation and the unfence is issued twice:
+	//
+	//   1. at the reservation's generation, as a gate: the agent refuses
+	//      (FailedPrecondition) while the storage node still holds the backend
+	//      device, so the CO retries until the direct attach is really gone
+	//      and the reservation is kept meanwhile (fail-closed);
+	//   2. at the clear's generation, so the agent's applied fence advances
+	//      past every generation at which status.localAttachNode was set — a
+	//      resync desired-state built from a stale snapshot can no longer be
+	//      admitted and re-disable the namespace, and if one slipped in
+	//      between the two calls this re-enables it — and so the grant below
+	//      is ordered after the export's return to the network.
+	//
+	// A retry that already finds status.localAttachNode empty (a previous
+	// attempt committed the clear and then failed) skips this block: its
+	// reservation generation is already newer than any generation that ever
+	// recorded the field.
+	if prevLocal := pvs.Status.LocalAttachNode; prevLocal != "" {
+		_, unfenceErr := s.setLocalAttach(ctx, agentAddr, agentVolID, protocolType, false, fence)
+		if unfenceErr != nil {
+			return nil, unfenceErr
+		}
+		fence, unfenceErr = s.clearLocalAttachNode(ctx, pvName, pvs.UID, prevLocal)
+		if unfenceErr != nil {
+			return nil, unfenceErr
+		}
+		_, unfenceErr = s.setLocalAttach(ctx, agentAddr, agentVolID, protocolType, false, fence)
+		if unfenceErr != nil {
+			return nil, unfenceErr
+		}
 	}
 
 	// An export with ACL off (attr_allow_any_host=1) has no per-host ACL: the
 	// kernel rejects allowed_hosts links with EINVAL.  The publication record
 	// above still orders exclusivity; only the grant RPC is skipped.
 	if exportACLEnabled(pvs) {
-		grantErr := s.grantPublication(ctx, agentAddr, agentVolID, agentProtocolType, initiatorID, fence)
+		grantErr := s.grantPublication(ctx, agentAddr, agentVolID, protocolType, initiatorID, fence)
 		if grantErr != nil {
 			return nil, grantErr
 		}
@@ -1491,6 +1568,96 @@ func (s *ControllerServer) ControllerPublishVolume(
 	return &csi.ControllerPublishVolumeResponse{
 		PublishContext: map[string]string{},
 	}, nil
+}
+
+// isLocalAttachPublish reports whether publishing the volume to nodeID with
+// mode is a local attach: the volume resolved localAttach, the agent is an
+// in-cluster agent whose spec.nodeRef names nodeID, and the access mode is a
+// SINGLE_NODE_* mode (a multi-node mode always uses the protocol, which is
+// what other nodes need).
+func isLocalAttachPublish(
+	pvs *v1alpha1.PillarVolumeState,
+	agent *v1alpha1.PillarAgent,
+	nodeID string,
+	mode csi.VolumeCapability_AccessMode_Mode,
+) bool {
+	if pvs.Spec.Resolved == nil || !pvs.Spec.Resolved.LocalAttach {
+		return false
+	}
+	if agent.Spec.External != nil || agent.Spec.NodeRef == nil || agent.Spec.NodeRef.Name != nodeID {
+		return false
+	}
+	switch mode {
+	case csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER,
+		csi.VolumeCapability_AccessMode_SINGLE_NODE_READER_ONLY,
+		csi.VolumeCapability_AccessMode_SINGLE_NODE_SINGLE_WRITER,
+		csi.VolumeCapability_AccessMode_SINGLE_NODE_MULTI_WRITER:
+		return true
+	default:
+		return false
+	}
+}
+
+// finishLocalPublish completes a local-attach publish whose publication
+// (and status.localAttachNode) is already recorded under fence: the agent
+// fences the network export and reports the backend device, which the
+// PublishContext hands to NodeStageVolume.  Retrying is idempotent: the agent
+// call is idempotent and returns the same device path.
+func (s *ControllerServer) finishLocalPublish(
+	ctx context.Context,
+	agentAddr, volumeID, agentVolID string,
+	protocolType agentv1.ProtocolType,
+	nodeID string,
+	fence *agentv1.FencingToken,
+) (*csi.ControllerPublishVolumeResponse, error) {
+	devicePath, err := s.setLocalAttach(ctx, agentAddr, agentVolID, protocolType, true, fence)
+	if err != nil {
+		return nil, err
+	}
+	if devicePath == "" {
+		return nil, status.Errorf(codes.Internal,
+			"agent SetLocalAttach(%q, local=true) returned no device path", agentVolID)
+	}
+	s.sm.ForceState(volumeID, StateControllerPublished)
+	return &csi.ControllerPublishVolumeResponse{
+		PublishContext: map[string]string{
+			PublishContextKeyAttachMode:      AttachModeLocal,
+			PublishContextKeyLocalNode:       nodeID,
+			PublishContextKeyLocalDevicePath: devicePath,
+		},
+	}, nil
+}
+
+// setLocalAttach asks the agent to fence (local=true) or re-enable
+// (local=false) the volume's network export and returns the backend device
+// path the agent reports.  The agent's gRPC status code is preserved, so a
+// FailedPrecondition (device still held on the storage node) reaches the CO
+// as such and is retried.
+func (s *ControllerServer) setLocalAttach(
+	ctx context.Context,
+	agentAddr, agentVolID string,
+	protocolType agentv1.ProtocolType,
+	local bool,
+	fence *agentv1.FencingToken,
+) (string, error) {
+	agentClient, closer, err := s.dialAgent(ctx, agentAddr)
+	if err != nil {
+		return "", status.Errorf(codes.Unavailable,
+			"failed to dial agent at %q: %v", agentAddr, err)
+	}
+	defer closer.Close() //nolint:errcheck // best-effort close; dial errors already handled
+
+	resp, err := agentClient.SetLocalAttach(ctx, &agentv1.SetLocalAttachRequest{
+		VolumeId:     agentVolID,
+		ProtocolType: protocolType,
+		Local:        local,
+		Fence:        fence,
+	})
+	if err != nil {
+		return "", status.Errorf(status.Code(err),
+			"agent SetLocalAttach(%q, local=%t) failed: %v", agentVolID, local, err)
+	}
+	return resp.GetDevicePath(), nil
 }
 
 // exportACLEnabled reports whether the volume's export enforces a per-host
@@ -1541,23 +1708,23 @@ func (s *ControllerServer) grantPublication(
 	return nil
 }
 
-// resolveAgentAddress returns the resolved address of the PillarAgent
-// targetName: NotFound when the object does not exist, Unavailable while it
-// has no address yet, Internal on any other API error.
-func (s *ControllerServer) resolveAgentAddress(ctx context.Context, targetName string) (string, error) {
+// getReadyAgent returns the PillarAgent targetName once it has a resolved
+// address: NotFound when the object does not exist, Unavailable while it has
+// no address yet, Internal on any other API error.
+func (s *ControllerServer) getReadyAgent(ctx context.Context, targetName string) (*v1alpha1.PillarAgent, error) {
 	target := &v1alpha1.PillarAgent{}
 	err := s.k8sClient.Get(ctx, types.NamespacedName{Name: targetName}, target)
 	if err != nil {
 		if k8serrors.IsNotFound(err) {
-			return "", status.Errorf(codes.NotFound, "PillarAgent %q not found", targetName)
+			return nil, status.Errorf(codes.NotFound, "PillarAgent %q not found", targetName)
 		}
-		return "", status.Errorf(codes.Internal, "failed to get PillarAgent %q: %v", targetName, err)
+		return nil, status.Errorf(codes.Internal, "failed to get PillarAgent %q: %v", targetName, err)
 	}
 	if target.Status.ResolvedAddress == "" {
-		return "", status.Errorf(codes.Unavailable,
+		return nil, status.Errorf(codes.Unavailable,
 			"PillarAgent %q has no resolved address; agent may not be ready", targetName)
 	}
-	return target.Status.ResolvedAddress, nil
+	return target, nil
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1696,6 +1863,9 @@ func hasPublicationFor(pubs []v1alpha1.VolumePublication, nodeID string) bool {
 //
 // When acl is false the export allows every host, so no DenyInitiator RPCs
 // run (agentClient may be nil): the fencing token still orders the records.
+// A local publication granted no initiator, so it is released without a
+// DenyInitiator; status.localAttachNode stays set (the export stays fenced)
+// until a later protocol publish has the agent re-enable it.
 func (s *ControllerServer) revokePublications(
 	ctx context.Context,
 	agentClient agentv1.AgentServiceClient,
@@ -1712,7 +1882,7 @@ func (s *ControllerServer) revokePublications(
 	}
 	revokedNodes := make([]string, 0, len(revoke))
 	for _, pub := range revoke {
-		if !acl {
+		if !acl || pub.Local {
 			revokedNodes = append(revokedNodes, pub.NodeID)
 			continue
 		}

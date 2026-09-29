@@ -162,7 +162,7 @@ func (s *ControllerServer) ensureVolumeState(
 	created := &v1alpha1.PillarVolumeState{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        pvName,
-			Annotations: map[string]string{annotationSuccessRecorded: "true"},
+			Annotations: map[string]string{annotationSuccessRecorded: annotationValueTrue},
 		},
 		Spec: spec,
 	}
@@ -234,9 +234,11 @@ func (s *ControllerServer) currentToken(
 // reservePublication durably records pub before the agent grants the node
 // access, so that a concurrent or later publish to an incompatible node is
 // rejected even across controller restarts, and returns the fencing token
-// for the AllowInitiator call.  An identical re-publish still commits a new
-// generation so the re-issued grant is ordered after any operation already in
-// flight.
+// for the AllowInitiator (or SetLocalAttach) call.  An identical re-publish
+// still commits a new generation so the re-issued grant is ordered after any
+// operation already in flight.  A local publication also sets
+// status.localAttachNode in the same compare-and-swap, so the fence of the
+// remote export is durable before the agent is asked to apply it.
 //
 // Returns NotFound for an unknown volume, FailedPrecondition when another
 // node holds the volume incompatibly or the volume is being deleted,
@@ -253,6 +255,9 @@ func (s *ControllerServer) reservePublication(
 		if err != nil {
 			return err
 		}
+		if pub.Local {
+			pvs.Status.LocalAttachNode = pub.NodeID
+		}
 		for _, cur := range pvs.Status.PublishedNodes {
 			err = checkPublicationConflict(volumeID, cur, pub)
 			if err != nil {
@@ -265,6 +270,51 @@ func (s *ControllerServer) reservePublication(
 		pvs.Status.PublishedNodes = append(pvs.Status.PublishedNodes, pub)
 		return nil
 	})
+}
+
+// clearLocalAttachNode clears status.localAttachNode once the agent has
+// returned the export to serving remote initiators (SetLocalAttach with
+// local=false succeeded) and returns the fencing token of the new
+// generation.  It clears only while the field still names node: a different
+// value was written by a later local publish whose fence must stay.  A local
+// publication still recorded means the direct attach may be in use, so the
+// field is kept and Aborted returned.
+//
+// Unlike most status writes that only record what an agent call already
+// enforced, clearing this field changes the desired export state: export
+// resync derives ExportDesiredState.local_attach from it, so a Reconcile
+// built from a snapshot that still showed the field (at the reservation
+// generation or older) would re-disable the namespace after this remote
+// publish re-opened it.  The clear therefore commits a publication
+// generation bump like every other agent-ordering write, and the returned
+// token lets the caller re-issue SetLocalAttach(false) at the new
+// generation, which advances the agent's applied fence past every snapshot
+// that could still request local_attach=true (and re-enables the namespace
+// if a stale request was admitted in between).
+func (s *ControllerServer) clearLocalAttachNode(
+	ctx context.Context,
+	pvName string,
+	uid types.UID,
+	node string,
+) (*agentv1.FencingToken, error) {
+	token, err := s.committedToken(ctx, pvName, uid, func(pvs *v1alpha1.PillarVolumeState) error {
+		if pvs.Status.LocalAttachNode != node {
+			return errNoStatusChange
+		}
+		if slices.ContainsFunc(pvs.Status.PublishedNodes, func(p v1alpha1.VolumePublication) bool {
+			return p.Local
+		}) {
+			return status.Errorf(codes.Aborted,
+				"PillarVolumeState %q still records a local publication on node %q; retry",
+				pvName, node)
+		}
+		pvs.Status.LocalAttachNode = ""
+		return nil
+	})
+	if err != nil {
+		return nil, publicationRecordError("clear local attach node", pvName, node, err)
+	}
+	return token, nil
 }
 
 // checkPublicationConflict reports whether the recorded publication cur
@@ -289,6 +339,11 @@ func checkPublicationConflict(volumeID string, cur, pub v1alpha1.VolumePublicati
 			"volume %q is being unpublished from node %q; retry", volumeID, pub.NodeID)
 	case cur == pub:
 		return nil
+	case cur.Local != pub.Local:
+		return status.Errorf(codes.FailedPrecondition,
+			"volume %q is published to node %q with local attach %t; requested local attach %t; "+
+				"unpublish the volume from the node first",
+			volumeID, pub.NodeID, cur.Local, pub.Local)
 	case cur.InitiatorID != pub.InitiatorID:
 		return status.Errorf(codes.FailedPrecondition,
 			"volume %q is published to node %q as initiator %q but the node now reports "+

@@ -163,6 +163,23 @@ service AgentService {
   // Idempotent: if the ACL entry does not exist the agent MUST return success.
   rpc DenyInitiator(DenyInitiatorRequest) returns (DenyInitiatorResponse);
 
+  // SetLocalAttach switches a volume's network export between serving remote
+  // initiators and being fenced for a direct attach on the storage node
+  // itself.  Corresponds to CSI ControllerPublishVolume when the publishing
+  // node is the storage node (local = true) or when a later publish goes to
+  // a remote node after a local attach (local = false).
+  //
+  // local = true:  the agent stops the export from serving I/O to every
+  //                remote initiator (NVMe-oF TCP: namespace enable = 0) and
+  //                returns the backend device path the storage node mounts.
+  // local = false: the agent refuses with FAILED_PRECONDITION while the
+  //                backend device is still held exclusively on the storage
+  //                node (a local mount or device-mapper claim is still
+  //                present), and otherwise re-enables the export.
+  //
+  // Idempotent in both directions.
+  rpc SetLocalAttach(SetLocalAttachRequest) returns (SetLocalAttachResponse);
+
   // ── Volume data migration ──────────────────────────────────────────────────
 
   // SendVolume streams the raw binary content of a backend volume to the
@@ -777,6 +794,32 @@ message DenyInitiatorRequest {
 message DenyInitiatorResponse {}
 
 // ─────────────────────────────────────────────────────────────────────────────
+// SetLocalAttach — fence the network export for a storage-node-local attach
+// ─────────────────────────────────────────────────────────────────────────────
+
+message SetLocalAttachRequest {
+  // Volume identifier: "<pool>/<volume-name>".
+  string volume_id = 1;
+
+  // Protocol type of the export.
+  ProtocolType protocol_type = 2;
+
+  // True fences the export for a local attach; false returns it to serving
+  // remote initiators.  See AgentService.SetLocalAttach.
+  bool local = 3;
+
+  // Fencing token: the PillarVolumeState UID and the publicationGeneration
+  // the controller committed for this operation.  See FencingToken.
+  FencingToken fence = 4;
+}
+
+message SetLocalAttachResponse {
+  // Host path of the backend block device (e.g. /dev/zvol/<pool>/<name>)
+  // the storage node attaches directly.  Set when local is true.
+  string device_path = 1;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // ReconcileState — push full desired state after agent restart / node reboot
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -820,6 +863,13 @@ message ExportDesiredState {
   // admits nobody).  When false, any initiator may connect
   // (attr_allow_any_host=1) and allowed_initiators is ignored.
   bool acl_enabled = 4;
+
+  // When true, the volume is attached directly on the storage node and the
+  // export must serve no I/O to any remote initiator (NVMe-oF TCP: the
+  // namespace stays disabled).  When false the export serves I/O; the agent
+  // never enables an export whose backend device is held exclusively on the
+  // storage node and reports that volume as failed instead.
+  bool local_attach = 5;
 }
 
 message ReconcileStateRequest {

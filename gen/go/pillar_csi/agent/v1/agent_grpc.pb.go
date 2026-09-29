@@ -74,6 +74,7 @@ const (
 	AgentService_UnexportVolume_FullMethodName  = "/pillar_csi.agent.v1.AgentService/UnexportVolume"
 	AgentService_AllowInitiator_FullMethodName  = "/pillar_csi.agent.v1.AgentService/AllowInitiator"
 	AgentService_DenyInitiator_FullMethodName   = "/pillar_csi.agent.v1.AgentService/DenyInitiator"
+	AgentService_SetLocalAttach_FullMethodName  = "/pillar_csi.agent.v1.AgentService/SetLocalAttach"
 	AgentService_SendVolume_FullMethodName      = "/pillar_csi.agent.v1.AgentService/SendVolume"
 	AgentService_ReceiveVolume_FullMethodName   = "/pillar_csi.agent.v1.AgentService/ReceiveVolume"
 	AgentService_ReconcileState_FullMethodName  = "/pillar_csi.agent.v1.AgentService/ReconcileState"
@@ -152,6 +153,25 @@ type AgentServiceClient interface {
 	//
 	// Idempotent: if the ACL entry does not exist the agent MUST return success.
 	DenyInitiator(ctx context.Context, in *DenyInitiatorRequest, opts ...grpc.CallOption) (*DenyInitiatorResponse, error)
+	// SetLocalAttach switches a volume's network export between serving remote
+	// initiators and being fenced for a direct attach on the storage node
+	// itself.  Corresponds to CSI ControllerPublishVolume when the publishing
+	// node is the storage node (local = true) or when a later publish goes to
+	// a remote node after a local attach (local = false).
+	//
+	// local = true:  the agent stops the export from serving I/O to every
+	//
+	//	remote initiator (NVMe-oF TCP: namespace enable = 0) and
+	//	returns the backend device path the storage node mounts.
+	//
+	// local = false: the agent refuses with FAILED_PRECONDITION while the
+	//
+	//	backend device is still held exclusively on the storage
+	//	node (a local mount or device-mapper claim is still
+	//	present), and otherwise re-enables the export.
+	//
+	// Idempotent in both directions.
+	SetLocalAttach(ctx context.Context, in *SetLocalAttachRequest, opts ...grpc.CallOption) (*SetLocalAttachResponse, error)
 	// SendVolume streams the raw binary content of a backend volume to the
 	// caller.  Intended for cross-node volume migration and offline backup.
 	// The canonical implementation for ZFS backends is `zfs send`; for LVM it
@@ -343,6 +363,16 @@ func (c *agentServiceClient) DenyInitiator(ctx context.Context, in *DenyInitiato
 	return out, nil
 }
 
+func (c *agentServiceClient) SetLocalAttach(ctx context.Context, in *SetLocalAttachRequest, opts ...grpc.CallOption) (*SetLocalAttachResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetLocalAttachResponse)
+	err := c.cc.Invoke(ctx, AgentService_SetLocalAttach_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *agentServiceClient) SendVolume(ctx context.Context, in *SendVolumeRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[SendVolumeChunk], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	stream, err := c.cc.NewStream(ctx, &AgentService_ServiceDesc.Streams[0], AgentService_SendVolume_FullMethodName, cOpts...)
@@ -467,6 +497,25 @@ type AgentServiceServer interface {
 	//
 	// Idempotent: if the ACL entry does not exist the agent MUST return success.
 	DenyInitiator(context.Context, *DenyInitiatorRequest) (*DenyInitiatorResponse, error)
+	// SetLocalAttach switches a volume's network export between serving remote
+	// initiators and being fenced for a direct attach on the storage node
+	// itself.  Corresponds to CSI ControllerPublishVolume when the publishing
+	// node is the storage node (local = true) or when a later publish goes to
+	// a remote node after a local attach (local = false).
+	//
+	// local = true:  the agent stops the export from serving I/O to every
+	//
+	//	remote initiator (NVMe-oF TCP: namespace enable = 0) and
+	//	returns the backend device path the storage node mounts.
+	//
+	// local = false: the agent refuses with FAILED_PRECONDITION while the
+	//
+	//	backend device is still held exclusively on the storage
+	//	node (a local mount or device-mapper claim is still
+	//	present), and otherwise re-enables the export.
+	//
+	// Idempotent in both directions.
+	SetLocalAttach(context.Context, *SetLocalAttachRequest) (*SetLocalAttachResponse, error)
 	// SendVolume streams the raw binary content of a backend volume to the
 	// caller.  Intended for cross-node volume migration and offline backup.
 	// The canonical implementation for ZFS backends is `zfs send`; for LVM it
@@ -573,6 +622,9 @@ func (UnimplementedAgentServiceServer) AllowInitiator(context.Context, *AllowIni
 }
 func (UnimplementedAgentServiceServer) DenyInitiator(context.Context, *DenyInitiatorRequest) (*DenyInitiatorResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DenyInitiator not implemented")
+}
+func (UnimplementedAgentServiceServer) SetLocalAttach(context.Context, *SetLocalAttachRequest) (*SetLocalAttachResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetLocalAttach not implemented")
 }
 func (UnimplementedAgentServiceServer) SendVolume(*SendVolumeRequest, grpc.ServerStreamingServer[SendVolumeChunk]) error {
 	return status.Error(codes.Unimplemented, "method SendVolume not implemented")
@@ -823,6 +875,24 @@ func _AgentService_DenyInitiator_Handler(srv interface{}, ctx context.Context, d
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AgentService_SetLocalAttach_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetLocalAttachRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentServiceServer).SetLocalAttach(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentService_SetLocalAttach_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentServiceServer).SetLocalAttach(ctx, req.(*SetLocalAttachRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _AgentService_SendVolume_Handler(srv interface{}, stream grpc.ServerStream) error {
 	m := new(SendVolumeRequest)
 	if err := stream.RecvMsg(m); err != nil {
@@ -931,6 +1001,10 @@ var AgentService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DenyInitiator",
 			Handler:    _AgentService_DenyInitiator_Handler,
+		},
+		{
+			MethodName: "SetLocalAttach",
+			Handler:    _AgentService_SetLocalAttach_Handler,
 		},
 		{
 			MethodName: "ReconcileState",

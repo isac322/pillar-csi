@@ -20,8 +20,8 @@ func TestLoadCatalog(t *testing.T) {
 		t.Fatalf("load catalog: %v", err)
 	}
 
-	if catalog.DeclaredTotal != 404 {
-		t.Fatalf("declared total = %d, want 404", catalog.DeclaredTotal)
+	if catalog.DeclaredTotal != 410 {
+		t.Fatalf("declared total = %d, want 410", catalog.DeclaredTotal)
 	}
 	if len(catalog.Cases) == 0 {
 		t.Fatal("expected at least one concrete case row")

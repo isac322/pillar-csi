@@ -100,6 +100,10 @@ type mockAgentClient struct {
 	lastAllowInitiator *agentv1.AllowInitiatorRequest
 	lastDenyInitiator  *agentv1.DenyInitiatorRequest
 
+	// Responses for SetLocalAttach; every request is recorded in order.
+	setLocalAttachErr   error
+	setLocalAttachCalls []*agentv1.SetLocalAttachRequest
+
 	// Call counters — verified by tests.
 	createVolumeCalls   int
 	exportVolumeCalls   int
@@ -275,6 +279,20 @@ func (m *mockAgentClient) DenyInitiator(
 		return nil, m.denyInitiatorErr
 	}
 	return &agentv1.DenyInitiatorResponse{}, nil
+}
+func (m *mockAgentClient) SetLocalAttach(
+	_ context.Context,
+	req *agentv1.SetLocalAttachRequest,
+	_ ...grpc.CallOption,
+) (*agentv1.SetLocalAttachResponse, error) {
+	m.setLocalAttachCalls = append(m.setLocalAttachCalls, req)
+	if m.setLocalAttachErr != nil {
+		return nil, m.setLocalAttachErr
+	}
+	if !req.GetLocal() {
+		return &agentv1.SetLocalAttachResponse{}, nil
+	}
+	return &agentv1.SetLocalAttachResponse{DevicePath: "/dev/zvol/" + req.GetVolumeId()}, nil
 }
 func (*mockAgentClient) SendVolume(
 	_ context.Context,

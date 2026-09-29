@@ -215,6 +215,39 @@ To encrypt controller-to-agent traffic, see [Configure mTLS](https://pillar-csi.
 
 Upgrading from 0.3.1, 0.3.2 or 0.3.3 to 0.3.4 is a drop-in `helm upgrade`: no CRD, API or wire changes. 0.3.2 fixes the node plugin wiping the CSINode `spec.drivers` entry when it publishes its NQN annotation on restart ([#128](https://github.com/isac322/pillar-csi/issues/128)). 0.3.3 changes only the license file, which now carries the standard Apache-2.0 text. In 0.3.4, new XFS volumes are formatted with the Linux 5.15 LTS profile so they mount on every supported node kernel ([#133](https://github.com/isac322/pillar-csi/issues/133)); existing volumes are unchanged.
 
+### Local attach on the storage node
+
+By default every consumer, including a pod scheduled on the storage node itself, reaches the volume over NVMe-oF/TCP (a loopback connection on the storage node). Set `localAttach: true` on a `PillarStorageClass` (or `pillar-csi.bhyoo.com/local-attach: "true"` on a hand-written StorageClass; any value other than `"true"` or `"false"` is rejected with `InvalidArgument`) to let pods on the storage node use the backend zvol/LV directly:
+
+```yaml
+apiVersion: pillar-csi.bhyoo.com/v1alpha1
+kind: PillarStorageClass
+metadata:
+  name: hot-local
+spec:
+  storeRef: rock5bp-hot
+  protocolRef: nvmeof-default
+  localAttach: true
+  storageClass:
+    name: pillar-hot-local
+```
+
+The setting is resolved once at `CreateVolume` and recorded in `PillarVolumeState.spec.resolved.localAttach`, so editing the class later does not change existing volumes. A publish is local only when all of these hold; otherwise the volume attaches over the protocol exactly as without the flag:
+
+- the publishing node is the `PillarAgent`'s `spec.nodeRef.name` (an agent with `spec.external` never qualifies);
+- the access mode is single-node (`ReadWriteOnce`/`ReadWriteOncePod`/single-node read-only).
+
+Pods can move freely between the storage node and other nodes; each publish picks the local or the protocol path again.
+
+On a local attach the node plugin creates a device-mapper linear device `pillar-local-<hash>` over the backend device and mounts the filesystem on it (block volumes get the dm device). The node image needs `dmsetup` and the `dm_mod` kernel module; the chart's node init container loads `dm_mod`.
+
+The data is never written from two nodes at once, including during a Kubernetes force-detach (kubelet dead while the node's containers keep running):
+
+- **Remote export fenced while local.** A local publish first disables the NVMe-oF namespace for every remote initiator (`namespaces/<nsid>/enable = 0`), so a stale remote session can no longer do I/O. The controller records the storage node in `PillarVolumeState.status.localAttachNode`, and export resync keeps the namespace disabled across agent restarts and storage-node reboots.
+- **Both sides check before they commit.** When the node claims the backend device for a local stage, it reads the nvmet state of the volume's subsystem and refuses the stage with `FailedPrecondition` (releasing the dm claim) if any namespace is still enabled. Symmetrically, before the agent enables the export again it opens the backend device with `O_EXCL`; while a local claim exists, `ControllerPublishVolume` to another node fails with `FailedPrecondition` (`backend device ... is still held on the storage node (local attach in use)`) and the external-attacher keeps retrying. The pod on the other node stays `ContainerCreating` until the storage node really unstages the volume; `kubectl describe volumeattachment` shows the error. Either side backs off rather than trusting the other.
+
+`localAttach` does not change the backend, the protocol settings, or expansion. While the namespace is disabled, `ControllerExpandVolume` still grows the zvol/LV and `NodeExpandVolume` reloads the dm table before growing the filesystem.
+
 ## Troubleshooting
 
 The pillar-csi resources report their state in status conditions, and each workload logs to its main container:

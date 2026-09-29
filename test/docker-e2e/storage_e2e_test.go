@@ -5,6 +5,7 @@ package dockere2e
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -215,6 +216,357 @@ spec:
 	if got != "expansion-data" {
 		t.Fatalf("payload after expansion = %q, want expansion-data", got)
 	}
+}
+
+// outOfServiceTaint is the Kubernetes taint that makes the control plane
+// force-delete pods on a NotReady node and force-detach their volumes.
+const outOfServiceTaint = "node.kubernetes.io/out-of-service=nodeshutdown:NoExecute"
+
+type localAttachConfig struct {
+	suiteConfig
+	storageNode       string
+	localStorageClass string
+}
+
+// loadLocalAttachConfig loads the local attach settings.  Local attach only
+// applies to a PillarAgent bound to a cluster node (spec.nodeRef); an
+// external agent never qualifies, so the external topology has no storage
+// node to attach on.
+func loadLocalAttachConfig(t *testing.T) localAttachConfig {
+	t.Helper()
+	cfg := loadConfig(t)
+	if cfg.topology == "external" {
+		t.Skip("local attach never applies to an external PillarAgent; the internal topology covers it")
+	}
+	local := localAttachConfig{
+		suiteConfig:       cfg,
+		storageNode:       requireEnv(t, "PILLAR_E2E_STORAGE_NODE"),
+		localStorageClass: requireEnv(t, "PILLAR_E2E_LOCAL_STORAGE_CLASS"),
+	}
+	if local.storageNode == cfg.clientNodeA || local.storageNode == cfg.clientNodeB {
+		t.Fatalf("storage node %q must differ from the client nodes %q and %q",
+			local.storageNode, cfg.clientNodeA, cfg.clientNodeB)
+	}
+	return local
+}
+
+// TestLocalAttachFilesystemRoundTrip moves a filesystem volume of a
+// localAttach class storage node -> client node A -> storage node and checks
+// that the storage node attaches it directly (dm target, no NVMe/TCP) while
+// the client uses NVMe/TCP, with the payload intact across every move.
+func TestLocalAttachFilesystemRoundTrip(t *testing.T) {
+	cfg := loadLocalAttachConfig(t)
+	ns := createNamespace(t, "local-fs")
+	defer deleteNamespace(t, ns)
+
+	createLocalAttachPVC(t, ns, "data", cfg.localStorageClass, "Filesystem")
+	createFilesystemPod(t, ns, "local-writer", "data", cfg.storageNode)
+	waitForPodReady(t, ns, "local-writer")
+	assertPodNode(t, ns, "local-writer", cfg.storageNode)
+	target := readPVNVMeTarget(t, ns, "data", cfg.targetAddress)
+	dmName := localDMName(pvVolumeHandle(t, ns, "data"))
+	requireLocalAttach(t, cfg.storageNode, target, podMountDevice(t, ns, "local-writer"), dmName)
+
+	const payload = "pillar-csi-local-attach-payload"
+	kubectl(t, "-n", ns, "exec", "local-writer", "--", "sh", "-c",
+		fmt.Sprintf("printf '%%s' %q > /data/payload && sync", payload))
+
+	deletePod(t, ns, "local-writer")
+	waitForLocalDMRemoved(t, cfg.storageNode, dmName)
+
+	createFilesystemPod(t, ns, "remote-reader", "data", cfg.clientNodeA)
+	waitForPodReady(t, ns, "remote-reader")
+	requireNVMeConnected(t, cfg.clientNodeA, target, readNVMeNodeState(t, cfg.clientNodeA, target))
+	if got := kubectl(t, "-n", ns, "exec", "remote-reader", "--", "cat", "/data/payload"); got != payload {
+		t.Fatalf("client node read %q, want %q", got, payload)
+	}
+
+	deletePod(t, ns, "remote-reader")
+	waitForNVMeDetached(t, cfg.clientNodeA, target)
+
+	createFilesystemPod(t, ns, "local-again", "data", cfg.storageNode)
+	waitForPodReady(t, ns, "local-again")
+	requireLocalAttach(t, cfg.storageNode, target, podMountDevice(t, ns, "local-again"), dmName)
+	if got := kubectl(t, "-n", ns, "exec", "local-again", "--", "cat", "/data/payload"); got != payload {
+		t.Fatalf("storage node read %q after the round trip, want %q", got, payload)
+	}
+}
+
+// TestLocalAttachRawBlockRoundTrip is TestLocalAttachFilesystemRoundTrip for
+// a raw block volume.
+func TestLocalAttachRawBlockRoundTrip(t *testing.T) {
+	cfg := loadLocalAttachConfig(t)
+	ns := createNamespace(t, "local-block")
+	defer deleteNamespace(t, ns)
+
+	createLocalAttachPVC(t, ns, "raw", cfg.localStorageClass, "Block")
+	createRawBlockPod(t, ns, "local-writer", "raw", cfg.storageNode)
+	waitForPodReady(t, ns, "local-writer")
+	assertPodNode(t, ns, "local-writer", cfg.storageNode)
+	target := readPVNVMeTarget(t, ns, "raw", cfg.targetAddress)
+	dmName := localDMName(pvVolumeHandle(t, ns, "raw"))
+	requireLocalAttach(t, cfg.storageNode, target, podBlockDevice(t, ns, "local-writer"), dmName)
+
+	const marker = "pillar-csi-local-raw-block"
+	kubectl(t, "-n", ns, "exec", "local-writer", "--", "sh", "-c",
+		fmt.Sprintf("printf '%%s' %q | dd of=/dev/pillar bs=1 conv=fsync", marker))
+	readMarker := func(pod string) string {
+		return kubectl(t, "-n", ns, "exec", pod, "--", "sh", "-c",
+			fmt.Sprintf("dd if=/dev/pillar bs=1 count=%d", len(marker)))
+	}
+	if got := readMarker("local-writer"); got != marker {
+		t.Fatalf("storage node raw block read %q, want %q", got, marker)
+	}
+
+	deletePod(t, ns, "local-writer")
+	waitForLocalDMRemoved(t, cfg.storageNode, dmName)
+
+	createRawBlockPod(t, ns, "remote-reader", "raw", cfg.clientNodeA)
+	waitForPodReady(t, ns, "remote-reader")
+	requireNVMeConnected(t, cfg.clientNodeA, target, readNVMeNodeState(t, cfg.clientNodeA, target))
+	if got := readMarker("remote-reader"); got != marker {
+		t.Fatalf("client node raw block read %q, want %q", got, marker)
+	}
+
+	deletePod(t, ns, "remote-reader")
+	waitForNVMeDetached(t, cfg.clientNodeA, target)
+
+	createRawBlockPod(t, ns, "local-again", "raw", cfg.storageNode)
+	waitForPodReady(t, ns, "local-again")
+	requireLocalAttach(t, cfg.storageNode, target, podBlockDevice(t, ns, "local-again"), dmName)
+	if got := readMarker("local-again"); got != marker {
+		t.Fatalf("storage node raw block read %q after the round trip, want %q", got, marker)
+	}
+}
+
+// TestLocalAttachForceDetachFencing kills kubelet on the storage node while a
+// pod uses the volume locally and forces Kubernetes to detach it with the
+// out-of-service taint.  The storage node's mount (and its dm claim) survives,
+// so the publish to client node A must keep failing until the storage node
+// really releases the device; only then may the reader start.
+func TestLocalAttachForceDetachFencing(t *testing.T) {
+	cfg := loadLocalAttachConfig(t)
+	ns := createNamespace(t, "local-fence")
+	defer deleteNamespace(t, ns)
+
+	createLocalAttachPVC(t, ns, "data", cfg.localStorageClass, "Filesystem")
+	createFilesystemPod(t, ns, "local-writer", "data", cfg.storageNode)
+	waitForPodReady(t, ns, "local-writer")
+	target := readPVNVMeTarget(t, ns, "data", cfg.targetAddress)
+	pv := kubectl(t, "-n", ns, "get", "pvc", "data", "-o", "jsonpath={.spec.volumeName}")
+	dmName := localDMName(pvVolumeHandle(t, ns, "data"))
+	requireLocalAttach(t, cfg.storageNode, target, podMountDevice(t, ns, "local-writer"), dmName)
+
+	const payload = "pillar-csi-force-detach-payload"
+	kubectl(t, "-n", ns, "exec", "local-writer", "--", "sh", "-c",
+		fmt.Sprintf("printf '%%s' %q > /data/payload && sync", payload))
+
+	// Deferred after deleteNamespace so it runs first: namespace teardown
+	// needs a live kubelet on the storage node.
+	restored := false
+	restore := func() {
+		if restored {
+			return
+		}
+		restored = true
+		restoreStorageNode(t, cfg.storageNode)
+	}
+	defer restore()
+
+	dockerExec(t, cfg.storageNode, "systemctl", "stop", "kubelet")
+	waitFor(t, fmt.Sprintf("node %q to become NotReady", cfg.storageNode), func() (bool, string) {
+		ready := nodeReadyStatus(t, cfg.storageNode)
+		return ready != "True", "Ready=" + ready
+	})
+	kubectl(t, "taint", "node", cfg.storageNode, outOfServiceTaint)
+
+	createFilesystemPod(t, ns, "remote-reader", "data", cfg.clientNodeA)
+	waitFor(t, "attach to the client node to be refused while the storage node holds the device", func() (bool, string) {
+		message := volumeAttachmentError(t, pv, cfg.clientNodeA)
+		return strings.Contains(message, "still held"), "attachError=" + message
+	})
+	if !localDMPresent(t, cfg.storageNode, dmName) {
+		t.Fatalf("local attach target %s vanished from %s while kubelet was stopped", dmName, cfg.storageNode)
+	}
+	if ready := podReadyStatus(t, ns, "remote-reader"); ready == "True" {
+		t.Fatalf("reader on %s became Ready while %s still holds the device", cfg.clientNodeA, cfg.storageNode)
+	}
+	if ok, _ := nvmeConnectedState(target, readNVMeNodeState(t, cfg.clientNodeA, target)); ok {
+		t.Fatalf("%s connected to %s while %s still holds the device", cfg.clientNodeA, target.nqn, cfg.storageNode)
+	}
+
+	restore()
+	waitFor(t, "reader to become Ready after the storage node released the device", func() (bool, string) {
+		ready := podReadyStatus(t, ns, "remote-reader")
+		return ready == "True", "Ready=" + ready + " attachError=" + volumeAttachmentError(t, pv, cfg.clientNodeA)
+	})
+	waitForLocalDMRemoved(t, cfg.storageNode, dmName)
+	requireNVMeConnected(t, cfg.clientNodeA, target, readNVMeNodeState(t, cfg.clientNodeA, target))
+	if got := kubectl(t, "-n", ns, "exec", "remote-reader", "--", "cat", "/data/payload"); got != payload {
+		t.Fatalf("reader read %q after the force detach, want %q", got, payload)
+	}
+}
+
+func createLocalAttachPVC(t *testing.T, namespace, name, storageClass, volumeMode string) {
+	t.Helper()
+	apply(t, fmt.Sprintf(`apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  accessModes: [ReadWriteOnce]
+  volumeMode: %s
+  storageClassName: %s
+  resources:
+    requests:
+      storage: 64Mi
+`, name, namespace, volumeMode, storageClass))
+}
+
+func deletePod(t *testing.T, namespace, name string) {
+	t.Helper()
+	kubectl(t, "-n", namespace, "delete", "pod", name, "--wait=true", "--timeout=3m")
+}
+
+func pvVolumeHandle(t *testing.T, namespace, claim string) string {
+	t.Helper()
+	pv := kubectl(t, "-n", namespace, "get", "pvc", claim, "-o", "jsonpath={.spec.volumeName}")
+	handle := kubectl(t, "get", "pv", pv, "-o", "jsonpath={.spec.csi.volumeHandle}")
+	if handle == "" {
+		t.Fatalf("PV %s has no CSI volume handle", pv)
+	}
+	return handle
+}
+
+// localDMName mirrors the node plugin's device-mapper name for a local
+// attach: "pillar-local-" + the first 16 hex digits of sha256(volumeID).
+func localDMName(volumeID string) string {
+	sum := sha256.Sum256([]byte(volumeID))
+	return "pillar-local-" + hex.EncodeToString(sum[:])[:16]
+}
+
+// podMountDevice returns the major:minor of the filesystem mounted at /data
+// in pod.
+func podMountDevice(t *testing.T, namespace, pod string) string {
+	t.Helper()
+	device := kubectl(t, "-n", namespace, "exec", pod, "--", "awk", `$5 == "/data" { print $3 }`, "/proc/self/mountinfo")
+	if strings.Count(device, ":") != 1 || strings.ContainsAny(device, " \n") {
+		t.Fatalf("pod %s/%s /data mount device = %q, want one major:minor", namespace, pod, device)
+	}
+	return device
+}
+
+// podBlockDevice returns the decimal major:minor of /dev/pillar in pod.
+func podBlockDevice(t *testing.T, namespace, pod string) string {
+	t.Helper()
+	raw := kubectl(t, "-n", namespace, "exec", pod, "--", "stat", "-L", "-c", "%t:%T", "/dev/pillar")
+	majorHex, minorHex, found := strings.Cut(raw, ":")
+	if !found {
+		t.Fatalf("pod %s/%s /dev/pillar device = %q, want hex major:minor", namespace, pod, raw)
+	}
+	major, err := strconv.ParseUint(majorHex, 16, 32)
+	if err != nil {
+		t.Fatalf("parse major of /dev/pillar in %s/%s from %q: %v", namespace, pod, raw, err)
+	}
+	minor, err := strconv.ParseUint(minorHex, 16, 32)
+	if err != nil {
+		t.Fatalf("parse minor of /dev/pillar in %s/%s from %q: %v", namespace, pod, raw, err)
+	}
+	return fmt.Sprintf("%d:%d", major, minor)
+}
+
+// requireLocalAttach asserts that the device a pod on node uses is the local
+// attach dm target dmName and that node has no NVMe/TCP path to target.
+func requireLocalAttach(t *testing.T, node string, target nvmeTarget, device, dmName string) {
+	t.Helper()
+	name := dockerExec(t, node, "cat", "/sys/dev/block/"+device+"/dm/name")
+	if name != dmName {
+		t.Fatalf("pod device %s on %s is %q, want local attach dm target %q", device, node, name, dmName)
+	}
+	if ok, reason := nvmeDetachedState(target, readNVMeNodeState(t, node, target)); !ok {
+		t.Fatalf("storage node %s reaches %s over NVMe/TCP during a local attach: %s", node, target.nqn, reason)
+	}
+}
+
+func localDMNames(t *testing.T, node string) []string {
+	t.Helper()
+	output := dockerExec(t, node, "sh", "-ceu",
+		`for f in /sys/class/block/dm-*/dm/name; do if [ -e "$f" ]; then cat "$f"; fi; done`)
+	return strings.Fields(output)
+}
+
+func localDMPresent(t *testing.T, node, dmName string) bool {
+	t.Helper()
+	for _, name := range localDMNames(t, node) {
+		if name == dmName {
+			return true
+		}
+	}
+	return false
+}
+
+func waitForLocalDMRemoved(t *testing.T, node, dmName string) {
+	t.Helper()
+	waitFor(t, fmt.Sprintf("local attach target %s to be removed from %s", dmName, node), func() (bool, string) {
+		names := localDMNames(t, node)
+		for _, name := range names {
+			if name == dmName {
+				return false, fmt.Sprintf("dm targets=%v", names)
+			}
+		}
+		return true, ""
+	})
+}
+
+// volumeAttachmentError returns the attach error message of the
+// VolumeAttachment of pv to node, or "" if there is none yet.
+func volumeAttachmentError(t *testing.T, pv, node string) string {
+	t.Helper()
+	output := kubectl(t, "get", "volumeattachments", "-o",
+		`jsonpath={range .items[*]}{.spec.source.persistentVolumeName}{"\t"}{.spec.nodeName}{"\t"}{.status.attachError.message}{"\n"}{end}`)
+	for line := range strings.SplitSeq(output, "\n") {
+		fields := strings.SplitN(line, "\t", 3)
+		if len(fields) == 3 && fields[0] == pv && fields[1] == node {
+			return fields[2]
+		}
+	}
+	return ""
+}
+
+func nodeReadyStatus(t *testing.T, node string) string {
+	t.Helper()
+	return kubectl(t, "get", "node", node, "-o", `jsonpath={.status.conditions[?(@.type=="Ready")].status}`)
+}
+
+func podReadyStatus(t *testing.T, namespace, pod string) string {
+	t.Helper()
+	return kubectl(t, "-n", namespace, "get", "pod", pod, "-o", `jsonpath={.status.conditions[?(@.type=="Ready")].status}`)
+}
+
+// restoreStorageNode restarts kubelet on node, removes the out-of-service
+// taint and waits for the node to be Ready again.
+func restoreStorageNode(t *testing.T, node string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), operationTimeout)
+	defer cancel()
+	if _, stderr, err := runDockerExec(ctx, node, "systemctl", "start", "kubelet"); err != nil {
+		t.Errorf("restart kubelet on %s: %v\nstderr:\n%s", node, err, stderr)
+	}
+	taintKey, _, _ := strings.Cut(outOfServiceTaint, "=")
+	present, stderr, err := runKubectl(ctx, "get", "node", node, "-o",
+		fmt.Sprintf(`jsonpath={.spec.taints[?(@.key==%q)].key}`, taintKey))
+	if err != nil {
+		t.Errorf("read taints of node %s: %v\nstderr:\n%s", node, err, stderr)
+	} else if present != "" {
+		if _, stderr, err := runKubectl(ctx, "taint", "node", node, outOfServiceTaint+"-"); err != nil {
+			t.Errorf("remove taint %s from node %s: %v\nstderr:\n%s", outOfServiceTaint, node, err, stderr)
+		}
+	}
+	waitFor(t, fmt.Sprintf("node %q to become Ready", node), func() (bool, string) {
+		ready := nodeReadyStatus(t, node)
+		return ready == "True", "Ready=" + ready
+	})
 }
 
 func createNamespace(t *testing.T, purpose string) string {

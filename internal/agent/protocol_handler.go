@@ -47,6 +47,11 @@ type AgentProtocolHandler interface {
 	AllowInitiator(ctx context.Context, volumeID, initiatorID string, fence *agentv1.FencingToken) error
 	// DenyInitiator revokes access for a specific initiator.
 	DenyInitiator(ctx context.Context, volumeID, initiatorID string, fence *agentv1.FencingToken) error
+	// SetLocalAttach fences the export for a direct attach on the storage
+	// node (local=true, returning the backend device path) or returns it to
+	// serving remote initiators (local=false), refusing the latter while the
+	// backend device is held exclusively on the storage node.
+	SetLocalAttach(ctx context.Context, volumeID string, local bool, fence *agentv1.FencingToken) (string, error)
 	// Reconcile converges the given exports, which may belong to many
 	// volumes, to their desired state and returns one error (nil on
 	// success) per desired entry, in order.  It must make no export
@@ -87,6 +92,9 @@ type ExportDesiredState struct {
 	ACLEnabled bool
 	// Fence is the fencing token of the volume's reconcile entry.
 	Fence *agentv1.FencingToken
+	// LocalAttach keeps the export fenced for a local attach on the storage
+	// node: no remote initiator may do I/O through it.
+	LocalAttach bool
 }
 
 // NVMeoFTCPAgentHandler wraps the nvmeof configfs package behind the generic
@@ -154,14 +162,15 @@ func (h *NVMeoFTCPAgentHandler) Export(
 		return nil, err
 	}
 	target := &nvmeof.NvmetTarget{
-		ConfigfsRoot:   h.server.configfsRoot,
-		SubsystemNQN:   targetID,
-		NamespaceID:    1,
-		DevicePath:     devicePath,
-		BindAddress:    bindAddress,
-		Port:           port,
-		ACLEnabled:     params.ACLEnabled,
-		InlineDataSize: inlineDataSize,
+		ConfigfsRoot:    h.server.configfsRoot,
+		SubsystemNQN:    targetID,
+		NamespaceID:     1,
+		DevicePath:      devicePath,
+		BindAddress:     bindAddress,
+		Port:            port,
+		ACLEnabled:      params.ACLEnabled,
+		InlineDataSize:  inlineDataSize,
+		DeviceHeldProbe: h.server.deviceHeldProbe,
 	}
 
 	unlock := h.server.lockTarget(agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP, targetID)
@@ -174,7 +183,7 @@ func (h *NVMeoFTCPAgentHandler) Export(
 		}
 		target.Identity = identity
 		applyErr := target.Apply()
-		if errors.Is(applyErr, nvmeof.ErrPortInlineDataSizeConflict) {
+		if errors.Is(applyErr, nvmeof.ErrPortInlineDataSizeConflict) || errors.Is(applyErr, nvmeof.ErrDeviceHeld) {
 			return status.Errorf(codes.FailedPrecondition, "ExportVolume: %v", applyErr)
 		}
 		if applyErr != nil {
@@ -265,6 +274,57 @@ func (h *NVMeoFTCPAgentHandler) DenyInitiator(
 	})
 }
 
+// SetLocalAttach disables the NVMe-oF TCP namespace for a local attach
+// (local=true) and returns its backend device path, or enables it again
+// (local=false) only while the backend device is not held exclusively on the
+// storage node.  Both directions are idempotent and read back the written
+// enable value.  A missing export is NotFound; a held device is
+// FailedPrecondition, so the controller retries the remote publish.
+func (h *NVMeoFTCPAgentHandler) SetLocalAttach(
+	_ context.Context,
+	volumeID string,
+	local bool,
+	fence *agentv1.FencingToken,
+) (string, error) {
+	target, err := h.targetForVolume(volumeID)
+	if err != nil {
+		return "", err
+	}
+
+	unlock := h.server.lockTarget(agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP, target.SubsystemNQN)
+	defer unlock()
+
+	var devicePath string
+	err = h.server.fenced(volumeID, fence, fenceGrant, func() error {
+		var opErr error
+		if local {
+			devicePath, opErr = target.DisableNamespace()
+		} else {
+			opErr = target.EnableNamespace()
+		}
+		return localAttachStatus(volumeID, local, opErr)
+	})
+	if err != nil {
+		return "", err
+	}
+	return devicePath, nil
+}
+
+// localAttachStatus maps a namespace enable/disable error onto a gRPC status.
+func localAttachStatus(volumeID string, local bool, err error) error {
+	if err == nil {
+		return nil
+	}
+	switch {
+	case errors.Is(err, nvmeof.ErrNamespaceNotFound):
+		return status.Errorf(codes.NotFound, "SetLocalAttach(local=%t) volume %q: not exported: %v", local, volumeID, err)
+	case errors.Is(err, nvmeof.ErrDeviceHeld):
+		return status.Errorf(codes.FailedPrecondition, "SetLocalAttach(local=%t) volume %q: %v", local, volumeID, err)
+	default:
+		return status.Errorf(codes.Internal, "SetLocalAttach(local=%t) volume %q: %v", local, volumeID, err)
+	}
+}
+
 // Reconcile converges NVMe-oF TCP exports to the desired state in two phases,
 // so that a port shared by several exports starts listening only once all of
 // them are ready (see nvmeof's port ordering contract):
@@ -328,14 +388,16 @@ func (h *NVMeoFTCPAgentHandler) reconcileTarget(export ExportDesiredState) (*nvm
 		return nil, err
 	}
 	target := &nvmeof.NvmetTarget{
-		ConfigfsRoot:   h.server.configfsRoot,
-		SubsystemNQN:   targetID,
-		NamespaceID:    1,
-		DevicePath:     devicePath,
-		BindAddress:    bindAddress,
-		Port:           port,
-		ACLEnabled:     export.ACLEnabled,
-		InlineDataSize: nvmeofInlineDataSize(export.ProtocolParams),
+		ConfigfsRoot:    h.server.configfsRoot,
+		SubsystemNQN:    targetID,
+		NamespaceID:     1,
+		DevicePath:      devicePath,
+		BindAddress:     bindAddress,
+		Port:            port,
+		ACLEnabled:      export.ACLEnabled,
+		InlineDataSize:  nvmeofInlineDataSize(export.ProtocolParams),
+		LocalAttach:     export.LocalAttach,
+		DeviceHeldProbe: h.server.deviceHeldProbe,
 	}
 	// Without ACL enforcement allowed_hosts has no effect, and Prepare would
 	// close the subsystem (attr_allow_any_host=0) for a non-empty host list.
@@ -409,9 +471,10 @@ func (h *NVMeoFTCPAgentHandler) targetForVolume(volumeID string) (*nvmeof.NvmetT
 	}
 
 	return &nvmeof.NvmetTarget{
-		ConfigfsRoot: h.server.configfsRoot,
-		SubsystemNQN: targetID,
-		NamespaceID:  1,
+		ConfigfsRoot:    h.server.configfsRoot,
+		SubsystemNQN:    targetID,
+		NamespaceID:     1,
+		DeviceHeldProbe: h.server.deviceHeldProbe,
 	}, nil
 }
 

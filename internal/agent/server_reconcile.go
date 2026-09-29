@@ -126,6 +126,7 @@ func exportDesiredState(vol *agentv1.VolumeDesiredState, export *agentv1.ExportD
 		AllowedInitiators: export.GetAllowedInitiators(),
 		ACLEnabled:        export.GetAclEnabled(),
 		Fence:             vol.GetFence(),
+		LocalAttach:       export.GetLocalAttach(),
 	}
 }
 

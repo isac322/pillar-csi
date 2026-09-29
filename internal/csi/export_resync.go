@@ -103,15 +103,18 @@ func exportParamsFor(protocol agentv1.ProtocolType, spec *v1alpha1.VolumeExportS
 // desiredVolumeState builds the agent reconcile input for a volume from its
 // durable state.  The ACL is exactly the initiators of the published nodes,
 // excluding records marked revoking (an unpublish already fenced their
-// revoke); the device path is left empty so the agent derives it from its
-// backend.  Fence carries the lifecycle UID and the publication generation
+// revoke) and local publications (a direct attach grants no initiator); the
+// device path is left empty so the agent derives it from its backend.  The
+// export stays fenced for a local attach while status.localAttachNode is set,
+// so an agent restart or storage-node reboot cannot re-open it to remote
+// initiators.  Fence carries the lifecycle UID and the publication generation
 // committed by the same status read, so the agent rejects this resync when a
 // newer publication transition has already reached it.
 func desiredVolumeState(pvs *v1alpha1.PillarVolumeState) (*agentv1.VolumeDesiredState, error) {
 	protocol := mapProtocolType(pvs.Spec.ProtocolType)
 	initiators := make([]string, 0, len(pvs.Status.PublishedNodes))
 	for _, publication := range pvs.Status.PublishedNodes {
-		if publication.Revoking {
+		if publication.Revoking || publication.Local {
 			continue
 		}
 		initiators = append(initiators, publication.InitiatorID)
@@ -129,6 +132,7 @@ func desiredVolumeState(pvs *v1alpha1.PillarVolumeState) (*agentv1.VolumeDesired
 			ExportParams:      exportParamsFor(protocol, pvs.Status.ExportSpec),
 			AllowedInitiators: initiators,
 			AclEnabled:        pvs.Status.ExportSpec.ACLEnabled,
+			LocalAttach:       pvs.Status.LocalAttachNode != "",
 		}},
 	}, nil
 }

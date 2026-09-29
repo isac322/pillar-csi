@@ -67,3 +67,13 @@ func SetDevicePollParams(t *testing.T, s *Server, interval, timeout time.Duratio
 		s.devicePollTimeout = origTimeout
 	})
 }
+
+// SetDeviceHeldProbe overrides the exclusive-holder probe consulted before a
+// disabled NVMe-oF namespace is enabled.  The original probe is restored via
+// t.Cleanup.
+func SetDeviceHeldProbe(t *testing.T, s *Server, probe nvmeof.DeviceHeldProbe) {
+	t.Helper()
+	orig := s.deviceHeldProbe
+	s.deviceHeldProbe = probe
+	t.Cleanup(func() { s.deviceHeldProbe = orig })
+}

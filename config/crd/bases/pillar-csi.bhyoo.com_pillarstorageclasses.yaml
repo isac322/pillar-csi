@@ -99,6 +99,15 @@ spec:
                       type: string
                     type: array
                 type: object
+              localAttach:
+                description: |-
+                  localAttach lets a volume of this binding bypass the protocol when a
+                  pod using it runs on the storage node itself: the node mounts the
+                  backend zvol or logical volume directly and the network export is
+                  fenced for as long as that direct attach may be in use.  Pods on any
+                  other node always use the protocol.  Recorded per volume at
+                  provisioning time.
+                type: boolean
               overrides:
                 description: |-
                   overrides provides a fine-grained parameter layer on top of the

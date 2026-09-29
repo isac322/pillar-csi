@@ -26,6 +26,7 @@ readonly internal_backing_file="/var/lib/pillar-e2e-lvm.img"
 readonly external_backing_file="/var/lib/pillar-csi/${vg_name}.img"
 readonly nvmeof_port=4420
 readonly storage_class="pillar-e2e"
+readonly local_storage_class="pillar-e2e-local"
 readonly helm_namespace="pillar-csi-system"
 readonly helm_release="pillar-csi"
 readonly requested_topologies="${PILLAR_E2E_TOPOLOGIES:-internal external}"
@@ -267,6 +268,31 @@ cleanup_host_storage_state() {
         if ! error=$(rmdir -- "${port_dir}" 2>&1); then
           report_failure "remove empty NVMe listener port" "${port_dir}" "${error}"
         fi
+      fi
+    done
+
+    # A local attach leaves a device-mapper linear target pillar-local-<hash>
+    # over an E2E logical volume while the volume is staged on the storage
+    # node.  Remove any left behind by an interrupted run; it would otherwise
+    # hold the LV open and make vgremove fail.
+    lv_dm_prefix="${vg//-/--}-"
+    for dm_name_file in /sys/class/block/dm-*/dm/name; do
+      [[ -r "${dm_name_file}" ]] || continue
+      dm_name=$(<"${dm_name_file}")
+      [[ "${dm_name}" == pillar-local-* ]] || continue
+      dm_dir=${dm_name_file%/dm/name}
+      owned=false
+      for slave_name_file in "${dm_dir}"/slaves/*/dm/name; do
+        [[ -r "${slave_name_file}" ]] || continue
+        [[ "$(<"${slave_name_file}")" == "${lv_dm_prefix}"* ]] && owned=true
+      done
+      [[ "${owned}" == true ]] || continue
+      if ! command -v dmsetup >/dev/null 2>&1; then
+        report_failure "remove local attach device-mapper target" "${dm_name}" "dmsetup is not installed"
+        continue
+      fi
+      if ! error=$(dmsetup remove --noudevsync "${dm_name}" 2>&1); then
+        report_failure "remove local attach device-mapper target" "${dm_name}" "${error}"
       fi
     done
 
@@ -830,20 +856,40 @@ spec:
     allowVolumeExpansion: true
   filesystem:
     fsType: ext4
+---
+apiVersion: pillar-csi.bhyoo.com/v1alpha1
+kind: PillarStorageClass
+metadata:
+  name: ${local_storage_class}
+spec:
+  storeRef: pillar-e2e-store
+  protocolRef: pillar-e2e-nvme
+  localAttach: true
+  storageClass:
+    name: ${local_storage_class}
+    reclaimPolicy: Delete
+    volumeBindingMode: WaitForFirstConsumer
+    allowVolumeExpansion: true
+  filesystem:
+    fsType: ext4
 EOF
 
   wait_for_resource_ready pillaragent/pillar-e2e-agent
   wait_for_resource_ready "pillarstorageclass/${storage_class}"
+  wait_for_resource_ready "pillarstorageclass/${local_storage_class}"
 }
 
 run_tests() {
   topology=$1
-  client_a=$2
-  client_b=$3
-  target_address=$4
+  storage_node=$2
+  client_a=$3
+  client_b=$4
+  target_address=$5
   log "Running CSI lifecycle tests for ${topology} topology"
   PILLAR_E2E_TOPOLOGY="${topology}" \
   PILLAR_E2E_STORAGE_CLASS="${storage_class}" \
+  PILLAR_E2E_LOCAL_STORAGE_CLASS="${local_storage_class}" \
+  PILLAR_E2E_STORAGE_NODE="${storage_node}" \
   PILLAR_E2E_CLIENT_NODE_A="${client_a}" \
   PILLAR_E2E_CLIENT_NODE_B="${client_b}" \
   PILLAR_E2E_TARGET_ADDRESS="${target_address}" \
@@ -915,7 +961,7 @@ run_topology() {
   install_driver "${topology}" "${cluster}"
   capture_active_nvme_host_nqns "${client_a}" "${client_b}"
   apply_storage_resources "${topology}" "${storage_node}" "${target_address}"
-  run_tests "${topology}" "${client_a}" "${client_b}" "${target_address}"
+  run_tests "${topology}" "${storage_node}" "${client_a}" "${client_b}" "${target_address}"
 
   log "${topology} topology passed"
   if ! cleanup_topology; then

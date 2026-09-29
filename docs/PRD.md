@@ -291,6 +291,7 @@ spec:
     fsType: ext4                        # ext4(기본값) | xfs
     mkfsOptions: ["-E", "lazy_itable_init=1"]  # 선택: mkfs 추가 옵션
     mountOptions: [noatime]             # 선택: 생성되는 StorageClass의 mountOptions
+  localAttach: false                    # 선택: true면 스토리지 노드의 파드가 백엔드 디바이스를 직접 attach (아래 "로컬 attach" 참조)
   overrides:                            # 선택: 튜닝 가능한 부분집합만 허용
     backend:                            # 정확히 하나의 멤버, store의 backend와 같은 멤버여야 한다
       zfs:
@@ -439,6 +440,7 @@ StorageClass 파라미터 (`pillar-csi.bhyoo.com/` 접두사):
 | `pillar-csi.bhyoo.com/backend` | 수동 SC | backend 오버라이드 YAML 문서 |
 | `pillar-csi.bhyoo.com/protocol` | 수동 SC | protocol 오버라이드 YAML 문서 |
 | `pillar-csi.bhyoo.com/filesystem` | 수동 SC | filesystem YAML 문서 |
+| `pillar-csi.bhyoo.com/local-attach` | 수동 SC | `"true"` \| `"false"` (기본 false). 바인딩의 `spec.localAttach`와 같은 의미. 다른 값은 `InvalidArgument` |
 | `csi.storage.k8s.io/fstype` | 생성된 SC, 수동 SC | PV fsType (생성된 SC: 바인딩 `spec.filesystem.fsType`, 기본값 ext4) |
 
 그 밖의 `pillar-csi.bhyoo.com/` 파라미터 키는 `unsupported StorageClass parameter "<key>"`로 `InvalidArgument` 거부된다.
@@ -488,6 +490,24 @@ spec:
     requests:
       storage: 50Gi
 ```
+
+#### 로컬 attach (`localAttach`)
+
+`localAttach`는 CreateVolume에서 resolve되어 `PillarVolumeState.spec.resolved.localAttach`에 고정된다. 생성된 StorageClass에는 들어가지 않고 컨트롤러가 바인딩의 `spec.localAttach`를 읽는다. ControllerPublishVolume은 다음을 모두 만족할 때만 로컬 attach를 고른다. 그 외에는 플래그가 없을 때와 똑같이 프로토콜로 attach한다.
+
+- 대상 노드가 볼륨 PillarAgent의 `spec.nodeRef.name`이다 (`spec.external` 에이전트는 해당 없음).
+- access mode가 `SINGLE_NODE_*`이다 (multi-node 모드는 항상 프로토콜).
+
+로컬 publish는 PublishContext에 `pillar-csi.bhyoo.com/attach-mode: local`, `pillar-csi.bhyoo.com/local-node`, `pillar-csi.bhyoo.com/local-device-path`를 싣는다. NodeStageVolume은 프로토콜 connector를 호출하지 않고 백엔드 디바이스 위에 device-mapper linear 디바이스 `pillar-local-<sha256(volumeID) 앞 16 hex>`를 만들어 그 위에 마운트한다 (block 볼륨은 dm 디바이스를 bind). 파드는 스토리지 노드와 다른 노드 사이를 자유롭게 옮겨 다닐 수 있고, publish마다 경로가 다시 정해진다.
+
+안전 불변식: 데이터는 Kubernetes force-detach(한 노드의 kubelet이 죽었는데 컨테이너는 계속 쓰는 경우)를 포함해 어떤 경우에도 두 노드에서 동시에 쓰이지 않는다.
+
+1. 로컬 publish는 먼저 에이전트의 `SetLocalAttach(local=true)`로 모든 원격 initiator에 대해 export를 끈다 (NVMe-oF namespace `enable=0`, read-back 확인). 남아 있던 원격 세션은 I/O를 할 수 없다.
+2. 컨트롤러는 로컬 publication을 예약하는 같은 CAS에서 `status.localAttachNode`를 기록한다. export resync는 `ExportDesiredState.local_attach`로 이 값을 보내 에이전트 재시작·재부팅 후에도 namespace를 꺼진 상태로 복원한다.
+3. 로컬 stage는 백엔드 디바이스에 커널 exclusive claim(dm 디바이스)을 남긴다. 이 claim은 node plugin이나 kubelet이 죽어도 남고, 실제 unstage에서만 사라진다.
+4. 노드도 확인한다: 로컬 stage에서 dm claim을 잡은 뒤 해당 볼륨 subsystem의 nvmet `enable`을 읽고, 켜진 namespace가 하나라도 있으면 claim을 풀고 stage를 `FailedPrecondition`으로 거부한다 (에이전트는 반대로 enable 전에 holder를 다시 확인). 어느 쪽이든 상대를 맹신하지 않고 물러난다.
+
+namespace가 꺼진 동안에도 ControllerExpandVolume은 백엔드를 키운다 (에이전트는 `revalidate_size`만 건너뛴다). NodeExpandVolume은 dm 테이블을 다시 로드한 뒤 파일시스템을 키운다.
 
 ### 2.4 컴포넌트
 

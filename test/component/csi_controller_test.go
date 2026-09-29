@@ -195,6 +195,11 @@ func (*csiMockAgent) GetCapacity(
 ) (*agentv1.GetCapacityResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "not used in controller tests")
 }
+func (*csiMockAgent) SetLocalAttach(
+	_ context.Context, _ *agentv1.SetLocalAttachRequest, _ ...grpc.CallOption,
+) (*agentv1.SetLocalAttachResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "not used in controller tests")
+}
 func (*csiMockAgent) ListVolumes(
 	_ context.Context, _ *agentv1.ListVolumesRequest, _ ...grpc.CallOption,
 ) (*agentv1.ListVolumesResponse, error) {

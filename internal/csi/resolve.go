@@ -71,6 +71,11 @@ const (
 	// ParamFSTypeSC is the Kubernetes StorageClass fsType parameter; the
 	// external-provisioner copies it into the PV's spec.csi.fsType.
 	paramFSTypeSC = "csi.storage.k8s.io/fstype"
+
+	// ParamLocalAttach enables local attach on a hand-written StorageClass
+	// ("true" or "false"; absent is false).  A generated class carries the
+	// setting in its PillarStorageClass spec.localAttach instead.
+	paramLocalAttach = "pillar-csi.bhyoo.com/local-attach"
 )
 
 // VolumeContext keys carrying the resolved node-side settings from
@@ -114,6 +119,7 @@ var (
 		paramBackendDoc:    true,
 		paramProtocolDoc:   true,
 		paramFilesystemDoc: true,
+		paramLocalAttach:   true,
 	}
 )
 
@@ -138,6 +144,10 @@ type classLayer struct {
 
 	// source names the class layer in error messages.
 	source string
+
+	// localAttach is the class's local attach setting (binding
+	// spec.localAttach, or a hand-written class's local-attach parameter).
+	localAttach bool
 }
 
 // resolution is the outcome of resolveVolumeConfig.
@@ -161,9 +171,9 @@ type resolution struct {
 //
 // When recorded is non-nil (a retry of a lifecycle whose first attempt
 // already recorded its resolution) only the export settings are resolved
-// from the live CRs: the backend and filesystem come from recorded, so a
-// later store or filesystem change can neither block nor alter the retry of
-// a volume whose backend already exists.
+// from the live CRs: the backend, filesystem and local attach setting come
+// from recorded, so a later store, filesystem or class change can neither
+// block nor alter the retry of a volume whose backend already exists.
 func (s *ControllerServer) resolveVolumeConfig(
 	ctx context.Context,
 	scParams map[string]string,
@@ -223,9 +233,10 @@ func (s *ControllerServer) resolveVolumeConfig(
 
 	return &resolution{
 		resolved: &v1alpha1.ResolvedVolumeConfig{
-			Backend:    backend,
-			Protocol:   protocol,
-			Filesystem: fs,
+			Backend:     backend,
+			Protocol:    protocol,
+			Filesystem:  fs,
+			LocalAttach: class.localAttach,
 		},
 		agentRef: class.store.Spec.AgentRef,
 		pvcFS:    pvc.Filesystem,
@@ -272,8 +283,9 @@ func (s *ControllerServer) resolveClassLayer(
 			return nil, err
 		}
 		class := &classLayer{
-			filesystem: binding.Spec.Filesystem,
-			source:     fmt.Sprintf("PillarStorageClass %q spec.overrides", bindingName),
+			filesystem:  binding.Spec.Filesystem,
+			source:      fmt.Sprintf("PillarStorageClass %q spec.overrides", bindingName),
+			localAttach: binding.Spec.LocalAttach,
 		}
 		if ov := binding.Spec.Overrides; ov != nil {
 			class.backend, class.protocolOv = ov.Backend, ov.Protocol
@@ -313,12 +325,36 @@ func (s *ControllerServer) resolveClassLayer(
 	if err != nil {
 		return nil, invalidConfig("%v", err)
 	}
+	localAttach, err := parseLocalAttachParam(scParams)
+	if err != nil {
+		return nil, err
+	}
 	class.backend, class.protocolOv, class.filesystem = backendDoc, protocolDoc, filesystemDoc
+	class.localAttach = localAttach
 	err = s.loadStoreAndProtocol(ctx, class, storeName, protocolName, withStore)
 	if err != nil {
 		return nil, err
 	}
 	return class, nil
+}
+
+// parseLocalAttachParam reads a hand-written class's local-attach
+// parameter: "true" or "false", absent is false, anything else is
+// InvalidArgument.
+func parseLocalAttachParam(scParams map[string]string) (bool, error) {
+	raw, ok := scParams[paramLocalAttach]
+	if !ok {
+		return false, nil
+	}
+	switch raw {
+	case "true":
+		return true, nil
+	case "false":
+		return false, nil
+	default:
+		return false, invalidConfig("StorageClass parameter %s = %q: must be \"true\" or \"false\"",
+			paramLocalAttach, raw)
+	}
 }
 
 // loadStoreAndProtocol fetches the named PillarProtocol and, when withStore

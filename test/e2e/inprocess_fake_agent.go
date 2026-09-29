@@ -37,6 +37,7 @@ type fakeAgentServer struct {
 	expandVolumeErr   error
 	getCapacityResp   *agentv1.GetCapacityResponse
 	getCapacityErr    error
+	setLocalAttachErr error
 
 	// Call counters (read-safe under mu)
 	createVolumeCalls   int
@@ -47,12 +48,14 @@ type fakeAgentServer struct {
 	denyInitiatorCalls  int
 	expandVolumeCalls   int
 	getCapacityCalls    int
+	setLocalAttachCalls int
 
 	// Recorded requests for detailed assertions
 	createVolumeReqs   []*agentv1.CreateVolumeRequest
 	exportVolumeReqs   []*agentv1.ExportVolumeRequest
 	allowInitiatorReqs []*agentv1.AllowInitiatorRequest
 	denyInitiatorReqs  []*agentv1.DenyInitiatorRequest
+	setLocalAttachReqs []*agentv1.SetLocalAttachRequest
 }
 
 var _ agentv1.AgentServiceServer = (*fakeAgentServer)(nil)
@@ -162,6 +165,29 @@ func (s *fakeAgentServer) DenyInitiator(_ context.Context, req *agentv1.DenyInit
 	return &agentv1.DenyInitiatorResponse{}, nil
 }
 
+// fakeLocalDevicePath is the backend device path the fake agent reports for
+// a local attach of volumeID.
+func fakeLocalDevicePath(volumeID string) string {
+	return "/dev/zvol/" + volumeID
+}
+
+// SetLocalAttach records the request and, unless setLocalAttachErr is set,
+// reports fakeLocalDevicePath for local=true and no device for local=false,
+// like the real agent.
+func (s *fakeAgentServer) SetLocalAttach(_ context.Context, req *agentv1.SetLocalAttachRequest) (*agentv1.SetLocalAttachResponse, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.setLocalAttachCalls++
+	s.setLocalAttachReqs = append(s.setLocalAttachReqs, req)
+	if s.setLocalAttachErr != nil {
+		return nil, s.setLocalAttachErr
+	}
+	if !req.GetLocal() {
+		return &agentv1.SetLocalAttachResponse{}, nil
+	}
+	return &agentv1.SetLocalAttachResponse{DevicePath: fakeLocalDevicePath(req.GetVolumeId())}, nil
+}
+
 func (s *fakeAgentServer) ExpandVolume(_ context.Context, _ *agentv1.ExpandVolumeRequest) (*agentv1.ExpandVolumeResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -231,10 +257,12 @@ func (s *fakeAgentServer) resetCounts() {
 	s.denyInitiatorCalls = 0
 	s.expandVolumeCalls = 0
 	s.getCapacityCalls = 0
+	s.setLocalAttachCalls = 0
 	s.createVolumeReqs = nil
 	s.exportVolumeReqs = nil
 	s.allowInitiatorReqs = nil
 	s.denyInitiatorReqs = nil
+	s.setLocalAttachReqs = nil
 }
 
 // counts returns a snapshot of all call counters.
@@ -250,6 +278,7 @@ func (s *fakeAgentServer) counts() fakeAgentCounts {
 		DenyInitiator:  s.denyInitiatorCalls,
 		ExpandVolume:   s.expandVolumeCalls,
 		GetCapacity:    s.getCapacityCalls,
+		SetLocalAttach: s.setLocalAttachCalls,
 	}
 }
 
@@ -262,4 +291,5 @@ type fakeAgentCounts struct {
 	DenyInitiator  int
 	ExpandVolume   int
 	GetCapacity    int
+	SetLocalAttach int
 }

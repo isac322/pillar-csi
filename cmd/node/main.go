@@ -939,7 +939,10 @@ func main() {
 		version,
 		nodeReadyFn(csisvc.NvmeFabricsDevice, stateDir),
 	)
-	nodeSrv := csisvc.NewNodeServer(*nodeID, handlers, &mkdirMounter{wrapped: csisvc.NewKubeMounter()})
+	// The exec DeviceMapper (dmsetup) holds the backend device of a local
+	// attach on the storage node; see csisvc.DeviceMapper.
+	nodeSrv := csisvc.NewNodeServer(*nodeID, handlers, &mkdirMounter{wrapped: csisvc.NewKubeMounter()}).
+		WithDeviceMapper(csisvc.NewExecDeviceMapper())
 
 	// ── Open the Unix socket ───────────────────────────────────────────────
 	// Remove a stale socket file from a previous run so that net.Listen
