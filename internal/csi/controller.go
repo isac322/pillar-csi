@@ -510,6 +510,13 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 		}
 	}
 
+	// ── Requested capacity ────────────────────────────────────────────────────
+	var capacityBytes int64
+	if cr := req.GetCapacityRange(); cr != nil {
+		capacityBytes = cr.GetRequiredBytes()
+	}
+	setSpanAttributes(ctx, telemetry.KeyCapacityRequestedBytes.Int64(capacityBytes))
+
 	// ── Load persisted state (idempotency and partial-failure recovery) ───────
 	// The PillarVolumeState CRD name is the CSI volume name, which is a
 	// Kubernetes-compatible identifier assigned by the CO (e.g. "pvc-abc123").
@@ -589,13 +596,6 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 	if pvExists {
 		s.sm.ForceState(volumeID, pillarVolumeStatePhaseToVolumeState(existingPV.Status.Phase))
 	}
-
-	// ── Requested capacity ────────────────────────────────────────────────────
-	var capacityBytes int64
-	if cr := req.GetCapacityRange(); cr != nil {
-		capacityBytes = cr.GetRequiredBytes()
-	}
-	setSpanAttributes(ctx, telemetry.KeyCapacityRequestedBytes.Int64(capacityBytes))
 
 	// ── Durable lifecycle before any agent call ──────────────────────────────
 	// The PillarVolumeState is created first, so every backend resource an

@@ -170,7 +170,7 @@ Kubernetes: `>=1.24.0-0`
 | serviceAccount.node.create | bool | `true` | Set to false to skip ServiceAccount creation for pillar-node. |
 | serviceAccount.node.name | string | `""` | Override the ServiceAccount name. Defaults to &lt;fullname>-node. |
 | tracing.enabled | bool | `false` | Render OTEL_* env into controller, agent and node. The binaries trace only when an OTLP endpoint is set. |
-| tracing.endpoint | string | `""` | OTLP/gRPC endpoint, e.g. http://tempo-distributor.monitoring:4317 or http://$(HOST_IP):4317 for a node-local collector (hostNetwork pods keep cluster DNS through ClusterFirstWithHostNet). Required when tracing.enabled is true. |
+| tracing.endpoint | string | `""` | OTLP/gRPC endpoint, e.g. `http://tempo-distributor.monitoring:4317` or `http://$(HOST_IP):4317` for a node-local collector (hostNetwork pods keep cluster DNS through ClusterFirstWithHostNet). Required when tracing.enabled is true. |
 | tracing.insecure | bool | `true` | OTEL_EXPORTER_OTLP_INSECURE: dial the OTLP endpoint without TLS. |
 | tracing.samplerRatio | string | `"1.0"` | OTEL_TRACES_SAMPLER_ARG for the pillar root sampler (parent-based; parentless client spans always dropped). |
 | webhook.certDir | string | `"/tmp/k8s-webhook-server/serving-certs"` | Directory where the generated serving certificate is mounted. |

@@ -957,7 +957,7 @@ Render OTEL_* env into controller, agent and node. The binaries trace only when 
 
 Type: `string`. Default: `""`
 
-OTLP/gRPC endpoint, e.g. http://tempo-distributor.monitoring:4317 or http://$(HOST_IP):4317 for a node-local collector (hostNetwork pods keep cluster DNS through ClusterFirstWithHostNet). Required when tracing.enabled is true.
+OTLP/gRPC endpoint, e.g. `http://tempo-distributor.monitoring:4317` or `http://$(HOST_IP):4317` for a node-local collector (hostNetwork pods keep cluster DNS through ClusterFirstWithHostNet). Required when tracing.enabled is true.
 
 ### <code>tracing.<wbr>insecure</code>
 
