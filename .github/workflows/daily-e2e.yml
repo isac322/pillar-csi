@@ -1,0 +1,226 @@
+# Daily E2E — once a day, run every end-to-end suite against master, but only
+# when code changed since the last daily run that actually tested master.
+#
+#   - Kind e2e (e2e-kind.yml): the full Ginkgo suite on a multi-node Kind cluster.
+#   - SIG-Storage external e2e (external-e2e.yml).
+#   - Docker multi-node e2e (`make test-docker-e2e`): real NVMe-oF/TCP and
+#     device-mapper data paths across isolated storage and client nodes,
+#     including local attach and force-detach fencing.  Too slow for every PR,
+#     so it only runs here.
+#
+# "Code" means the same thing as the `changes` job in ci.yml: any file outside
+# site/** and **/*.md, plus docs/E2E-TESTCASES.md.  A failure (or a timed-out
+# suite) opens a GitHub issue labelled daily-e2e, or comments on the one that
+# is still open.
+#
+# A manual run with force=true tests the selected ref regardless of changes.
+# Pull requests that edit this file run the suites (never the issue report) so
+# the workflow proves itself before it lands.
+
+name: Daily E2E
+
+on:
+  schedule:
+    - cron: '0 7 * * *'  # 07:00 UTC daily
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Run every suite even if no code changed since the last tested run
+        type: boolean
+        default: false
+  pull_request:
+    paths:
+      - .github/workflows/daily-e2e.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: daily-e2e-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    name: Detect changes since last tested run
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+      last_sha: ${{ steps.decide.outputs.last_sha }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Decide whether to run
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          set -euo pipefail
+          run=true
+          last=""
+          if [ "${EVENT}" = pull_request ]; then
+            reason="pull request edits this workflow"
+          elif [ "${FORCE}" = true ]; then
+            reason="forced by workflow_dispatch"
+          elif [ "${REF}" != refs/heads/master ]; then
+            reason="${REF} is not master; always tested"
+          else
+            # The newest earlier daily run on master whose Docker e2e job
+            # finished (passed or failed) is the last tested commit.  Skipped
+            # and cancelled runs did not test their commit, so they are ignored.
+            runs=$(gh api "repos/${REPO}/actions/workflows/daily-e2e.yml/runs?branch=master&status=completed&per_page=30" \
+              --jq ".workflow_runs[] | select(.id != ${RUN_ID}) | select(.event == \"schedule\" or .event == \"workflow_dispatch\") | \"\(.id) \(.head_sha)\"")
+            while read -r id sha; do
+              [ -n "${id}" ] || continue
+              tested=$(gh api "repos/${REPO}/actions/runs/${id}/jobs?per_page=100" \
+                --jq '[.jobs[] | select(.name == "Docker multi-node e2e") | select(.conclusion == "success" or .conclusion == "failure")] | length')
+              if [ "${tested}" -gt 0 ]; then
+                last=${sha}
+                break
+              fi
+            done <<<"${runs}"
+
+            if [ -z "${last}" ]; then
+              reason="no earlier daily run tested master"
+            elif ! git cat-file -e "${last}^{commit}" 2>/dev/null; then
+              reason="last tested commit ${last} is not in master history"
+              last=""
+            else
+              changed=$( {
+                git diff --name-only "${last}" HEAD -- . ':(exclude)site/**' ':(exclude)*.md'
+                git diff --name-only "${last}" HEAD -- docs/E2E-TESTCASES.md
+              } | sort -u)
+              if [ -z "${changed}" ]; then
+                run=false
+                reason="no code change since ${last}"
+              else
+                reason="$(printf '%s\n' "${changed}" | wc -l | tr -d ' ') code file(s) changed since ${last}"
+                {
+                  echo "### Changed code files"
+                  echo '```'
+                  printf '%s\n' "${changed}" | head -100
+                  echo '```'
+                } >>"${GITHUB_STEP_SUMMARY}"
+              fi
+            fi
+          fi
+          echo "run=${run}" >>"${GITHUB_OUTPUT}"
+          echo "last_sha=${last}" >>"${GITHUB_OUTPUT}"
+          echo "::notice title=daily-e2e::run=${run}: ${reason}"
+          echo "## Daily E2E: run=${run}" >>"${GITHUB_STEP_SUMMARY}"
+          echo "${reason}" >>"${GITHUB_STEP_SUMMARY}"
+
+  kind:
+    name: Kind e2e
+    needs: [gate]
+    if: needs.gate.outputs.run == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/e2e-kind.yml
+
+  external:
+    name: External e2e
+    needs: [gate]
+    if: needs.gate.outputs.run == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/external-e2e.yml
+
+  docker:
+    name: Docker multi-node e2e
+    needs: [gate]
+    if: needs.gate.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    # Image build inside Docker-in-Docker plus two topologies (in-cluster and
+    # external agent), each with its own Kind cluster; the force-detach test
+    # alone waits several minutes for the attacher.
+    timeout-minutes: 150
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # test/docker-e2e/run.sh loads these from the host's /lib/modules inside
+      # the privileged container; linux-modules-extra ships the NVMe target.
+      - name: Install and load kernel modules
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y "linux-modules-extra-$(uname -r)"
+          sudo modprobe -a dm_mod loop nvme_fabrics nvme_tcp nvmet nvmet_tcp
+          test -d /sys/kernel/config/nvmet
+
+      - name: Run Docker multi-node e2e
+        run: make test-docker-e2e
+
+  report:
+    name: Open issue on failure
+    needs: [gate, kind, external, docker]
+    if: |
+      !cancelled() &&
+      github.event_name != 'pull_request' &&
+      (needs.gate.result == 'failure' ||
+       contains(needs.*.result, 'failure') ||
+       contains(needs.*.result, 'cancelled'))
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      issues: write
+    steps:
+      - name: Open or update the daily-e2e issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+          SHA: ${{ github.sha }}
+          REF_NAME: ${{ github.ref_name }}
+          LAST_SHA: ${{ needs.gate.outputs.last_sha }}
+        run: |
+          set -euo pipefail
+          label=daily-e2e
+          if ! gh label list --limit 200 --json name --jq '.[].name' | grep -qx "${label}"; then
+            gh label create "${label}" --color B60205 \
+              --description "Failure found by the daily e2e workflow"
+          fi
+
+          failed=$(gh api "repos/${GH_REPO}/actions/runs/${RUN_ID}/jobs?per_page=100" --jq '
+            .jobs[]
+            | select(.conclusion == "failure" or .conclusion == "cancelled" or .conclusion == "timed_out")
+            | "- [\(.name)](\(.html_url)): \(.conclusion)"
+              + ([.steps[]? | select(.conclusion == "failure") | .name]
+                 | if length > 0 then " at step \"" + join("\", \"") + "\"" else "" end)')
+          if [ -n "${LAST_SHA}" ]; then
+            changes="[\`${LAST_SHA:0:7}...${SHA:0:7}\`](${REPO_URL}/compare/${LAST_SHA}...${SHA})"
+          else
+            changes="no earlier tested run"
+          fi
+
+          body=$(mktemp)
+          {
+            echo "The daily e2e run failed on \`${REF_NAME}\` at [\`${SHA:0:7}\`](${REPO_URL}/commit/${SHA})."
+            echo
+            echo "- Run: ${RUN_URL}"
+            echo "- Changes since the last tested run: ${changes}"
+            echo
+            echo "Failed jobs:"
+            echo
+            echo "${failed:-"- (no failed job reported; see the run)"}"
+          } >"${body}"
+
+          existing=$(gh issue list --label "${label}" --state open --limit 1 --json number --jq '.[0].number // empty')
+          if [ -n "${existing}" ]; then
+            gh issue comment "${existing}" --body-file "${body}"
+          else
+            gh issue create --title "Daily e2e failed at ${SHA:0:7}" \
+              --label "${label}" --label bug --body-file "${body}"
+          fi
