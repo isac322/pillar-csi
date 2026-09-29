@@ -2,7 +2,7 @@
 title: Upgrade pillar-csi
 description: Upgrade the pillar-csi Helm chart, including the 0.2 to 0.3 configuration cutover, the 0.1 to 0.2 fencing cutover and the PillarVolumeState CRD rename.
 sidebar:
-  order: 9
+  order: 10
 ---
 
 pillar-csi is pre-1.0, and minor releases have broken compatibility. Read the section for every version you cross before you run `helm upgrade`.

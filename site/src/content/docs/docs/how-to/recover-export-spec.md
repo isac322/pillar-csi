@@ -2,7 +2,7 @@
 title: Recover a volume stuck at ExportSpecMissing
 description: Manual pillar-csi runbook for legacy volumes whose PillarVolumeState lacks exportSpec, so the NVMe-oF/TCP export cannot be rebuilt after a storage node restart.
 sidebar:
-  order: 10
+  order: 11
 ---
 
 Each `PillarVolumeState` has an `ExportReconciled` condition. It reports whether the kernel export on the storage node still matches the export the controller recorded for the volume in `status.exportSpec`. After an agent restart, a storage node reboot or an `nvmet` reload, the controller rebuilds the export from that record.

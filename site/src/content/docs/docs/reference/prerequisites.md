@@ -25,10 +25,11 @@ A storage node that also runs Pods using pillar-csi volumes needs the worker req
 | `nvmet_tcp` | Storage nodes | `CONFIG_NVME_TARGET_TCP` | TCP transport for the target |
 | `zfs` | ZFS storage nodes | OpenZFS, built out of tree | zvols and `/dev/zfs` |
 | `dm_thin_pool` | LVM storage nodes with a thin pool | `CONFIG_DM_THIN_PROVISIONING` | Thin logical volumes |
+| `dm_mod` | Storage nodes, for [local attach](/docs/how-to/local-attach/) | `CONFIG_BLK_DEV_DM` | Device-mapper target that holds the backend device while a pod on the storage node uses it directly |
 | `nvme_fabrics` | Worker nodes | `CONFIG_NVME_FABRICS` | Fabrics layer and `/dev/nvme-fabrics` |
 | `nvme_tcp` | Worker nodes | `CONFIG_NVME_TCP` | NVMe-oF/TCP initiator |
 
-The agent and node Pods each start with an init container that runs `modprobe` against the host's `/lib/modules`. By default it loads `nvmet` and `nvmet_tcp` on storage nodes and `nvme_fabrics` and `nvme_tcp` on worker nodes. The init container ignores `modprobe` failures, so the Pod starts even when a module is missing. Load the modules on the host and list them in `/etc/modules-load.d/` so they return after a reboot. The [ZFS](/docs/how-to/prepare-zfs-node/) and [LVM](/docs/how-to/prepare-lvm-node/) node guides show how. To change the lists, set `agent.initModprobe.modules` and `node.initModprobe.modules`.
+The agent and node Pods each start with an init container that runs `modprobe` against the host's `/lib/modules`. By default it loads `nvmet` and `nvmet_tcp` on storage nodes, and `nvme_fabrics`, `nvme_tcp` and `dm_mod` on every node the node plugin runs on. The init container ignores `modprobe` failures, so the Pod starts even when a module is missing. Load the modules on the host and list them in `/etc/modules-load.d/` so they return after a reboot. The [ZFS](/docs/how-to/prepare-zfs-node/) and [LVM](/docs/how-to/prepare-lvm-node/) node guides show how. To change the lists, set `agent.initModprobe.modules` and `node.initModprobe.modules`.
 
 Check a storage node:
 
@@ -56,6 +57,7 @@ Many vendor kernels, including some built for single-board computers, leave out 
 | LVM volume management | `lvm2` tools, in the agent image | An existing volume group, the `dm_thin_pool` module and a thin pool if you use thin volumes |
 | NVMe-oF target setup | The agent writes `/sys/kernel/config/nvmet` itself, with no `nvmetcli` or `targetcli` | The `nvmet` and `nvmet_tcp` modules |
 | NVMe-oF connect | The node plugin writes `/dev/nvme-fabrics` itself, with no `nvme-cli` | The `nvme_fabrics` and `nvme_tcp` modules |
+| Local attach on the storage node | `dmsetup`, in the node image | The `dm_mod` module |
 | Formatting, mounting, resizing | `util-linux`, `e2fsprogs`, and `xfsprogs`, in the node image | Nothing |
 | Controller to agent traffic | gRPC from the controller to each agent, with no SSH | Nothing |
 
