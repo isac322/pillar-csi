@@ -105,6 +105,8 @@ ENTRYPOINT ["/usr/bin/pillar-agent"]
 # XFS with the Linux 5.15 one so every supported node kernel can mount the
 # volume.  hack/verify-mkfs-baseline.sh fails the build when the image's mkfs
 # would create a filesystem Linux 5.15 cannot mount.
+# device-mapper carries dmsetup, which holds the backend device of a local
+# attach on the storage node through a linear target.
 #
 # Runtime security (enforced in the DaemonSet manifest):
 #   --security-opt=no-new-privileges:true
@@ -118,7 +120,8 @@ RUN --mount=type=bind,source=hack/verify-mkfs-baseline.sh,target=/tmp/verify-mkf
          'e2fsprogs~=1.47' \
          'e2fsprogs-extra~=1.47' \
          'xfsprogs~=7.0' \
-         'xfsprogs-extra~=7.0'; \
+         'xfsprogs-extra~=7.0' \
+         'device-mapper~=2.03'; \
     # A separate command: the "|| true" below would mask a failure in the chain.
     sh /tmp/verify-mkfs-baseline.sh; \
     addgroup -g 65532 nonroot \

@@ -36,7 +36,7 @@ A StorageClass generated from a `PillarStorageClass` carries one pillar-csi para
 |---|---|
 | `pillar-csi.bhyoo.com/storage-class` | name of the `PillarStorageClass` |
 
-Any other `pillar-csi.bhyoo.com/` parameter on a generated class is rejected.
+Any other `pillar-csi.bhyoo.com/` parameter on a generated class is rejected. Settings such as overrides and `spec.localAttach` stay on the `PillarStorageClass`, and the controller reads them from there at `CreateVolume`.
 
 A StorageClass you write yourself (`provisioner: pillar-csi.bhyoo.com`) accepts:
 
@@ -47,6 +47,7 @@ A StorageClass you write yourself (`provisioner: pillar-csi.bhyoo.com`) accepts:
 | `pillar-csi.bhyoo.com/backend` | no | backend document, as on a PVC |
 | `pillar-csi.bhyoo.com/protocol` | no | protocol document, as on a PVC |
 | `pillar-csi.bhyoo.com/filesystem` | no | filesystem document, as on a PVC |
+| `pillar-csi.bhyoo.com/local-attach` | no | `"true"` or `"false"`, default `false`; any other value is rejected with `InvalidArgument`. Same meaning as `PillarStorageClass.spec.localAttach`; see [Attach volumes locally on the storage node](/docs/how-to/local-attach/) |
 | `csi.storage.k8s.io/fstype` | no | `ext4` or `xfs`; must equal the filesystem document's `fsType` if both are set |
 
 Any other `pillar-csi.bhyoo.com/` parameter, including the 0.2 flat keys such as `zfs-prop.*`, `lvm-*`, `nvmeof-*`, `acl-enabled` and `backend-type`, is rejected.
@@ -99,6 +100,16 @@ The controller writes these into `PersistentVolume.spec.csi.volumeAttributes` at
 | `pillar-csi.bhyoo.com/fs-type` | resolved `fsType` |
 | `pillar-csi.bhyoo.com/mkfs-options` | resolved `mkfsOptions`, as a JSON string array |
 | `pillar-csi.bhyoo.com/mount-options` | resolved `mountOptions`, as a JSON string array |
+
+### Publish context
+
+`ControllerPublishVolume` returns these keys only for a [local attach](/docs/how-to/local-attach/). A publish over the network protocol returns an empty publish context. Kubernetes stores the map on the `VolumeAttachment` and passes it to the node plugin.
+
+| Key | Value |
+|---|---|
+| `pillar-csi.bhyoo.com/attach-mode` | `local` |
+| `pillar-csi.bhyoo.com/local-node` | name of the storage node the publish is for; `NodeStageVolume` on any other node fails with `FAILED_PRECONDITION` |
+| `pillar-csi.bhyoo.com/local-device-path` | path of the backend zvol or logical volume on that node, as reported by the agent |
 
 ### Topology
 

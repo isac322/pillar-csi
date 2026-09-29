@@ -2,7 +2,7 @@
 title: Troubleshooting
 description: Diagnose pillar-csi problems in the controller, the storage node agent and the worker node plugin, with kubectl commands to confirm each symptom and the fix.
 sidebar:
-  order: 11
+  order: 12
 ---
 
 pillar-csi reports its state through Kubernetes objects: conditions on the `Pillar*` resources, events on PVCs, and container logs. The examples assume the release name and namespace `pillar-csi`.
@@ -73,6 +73,17 @@ kubectl get pvst <pv-name> -o jsonpath='{.status.publishedNodes}'
 ```
 
 Stop the pod on the old node and wait until its `VolumeAttachment` is gone. If the old node is down and will not come back soon, see [a worker that went down without a drain](/docs/how-to/node-maintenance/#a-worker-that-went-down-without-a-drain).
+
+### Pod stuck in ContainerCreating: backend device still held on the storage node
+
+The attach error contains `FailedPrecondition` and `backend device ... is still held on the storage node (local attach in use)`. The volume was last attached [locally on the storage node](/docs/how-to/local-attach/), and the storage node still holds its `pillar-local-*` device-mapper target, so the export stays disabled for other nodes.
+
+```sh
+kubectl describe volumeattachment <name>
+kubectl get pvst <pv-name> -o jsonpath='{.status.localAttachNode}'
+```
+
+The publish goes through once the storage node unstages the volume. If the old pod on the storage node is still terminating, wait for it. If the storage node's kubelet is down, the old container may still be writing; bring the kubelet back or reboot the storage node. Do not remove the device-mapper target by hand.
 
 ### Deleting a Pillar resource hangs
 

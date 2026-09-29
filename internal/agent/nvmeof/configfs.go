@@ -120,6 +120,17 @@ type NvmetTarget struct {
 	// before the namespace is enabled.  The zero value selects
 	// DeriveIdentity(SubsystemNQN, NamespaceID).
 	Identity Identity
+
+	// LocalAttach keeps the namespace disabled (enable=0): the volume is
+	// attached directly on the storage node, so no remote initiator may do
+	// I/O through this export.  Prepare disables an enabled namespace and
+	// Link verifies enable=0 instead of 1.
+	LocalAttach bool
+
+	// DeviceClaimer takes an exclusive claim on the backend device before a
+	// disabled namespace is enabled; the claim is held across the enable
+	// write.  nil selects ClaimDeviceExclusively.
+	DeviceClaimer DeviceClaimer
 }
 
 // nvmetRoot returns the path to the nvmet subtree within configfs, e.g.
@@ -431,23 +442,28 @@ func (t *NvmetTarget) createSubsystem() error {
 }
 
 // createNamespace creates the configfs namespace directory for this target and
-// activates it against the backing block device.  Specifically it:
+// brings it to its desired enable state against the backing block device.
+// Specifically it:
 //
 //  1. Creates <subsystemDir>/namespaces/<nsid>/ (the kernel instantiates the
 //     namespace object when the directory appears).
-//  2. Writes t.DevicePath to the device_path pseudo-file so the kernel knows
+//  2. With LocalAttach, disables the namespace first (fencing every remote
+//     session before anything else changes).
+//  3. Writes t.DevicePath to the device_path pseudo-file so the kernel knows
 //     which block device backs this namespace.
-//  3. Writes the identity to device_uuid and device_nguid.  nvmet otherwise
+//  4. Writes the identity to device_uuid and device_nguid.  nvmet otherwise
 //     assigns a random UUID on every (re)creation, and a reconnecting host
 //     that sees a different UUID drops the namespace.
-//  4. Writes "1" to enable to activate the namespace; the kernel will begin
-//     accepting I/O after this write.
+//  5. Without LocalAttach, enables the namespace through enableNamespace,
+//     which refuses while the backend device is held exclusively on the
+//     storage node; the kernel accepts I/O after this write.
 //
 // Call createNamespace after createSubsystem because the namespace directory
 // lives inside the subsystem directory.
 //
 // An already-enabled namespace cannot change its identity (nvmet returns
-// EBUSY) and must not be disabled, because connected hosts would lose it.  If
+// EBUSY) and, unless LocalAttach asks for it, must not be disabled, because
+// connected hosts would lose it.  If
 // its identity differs from the desired one, createNamespace returns an error
 // instead of touching it; callers keep a live identity via LiveIdentity.
 //
@@ -462,6 +478,13 @@ func (t *NvmetTarget) createNamespace() error {
 	err = mkdirAll(nsDir)
 	if err != nil {
 		return fmt.Errorf("createNamespace %q ns=%d: %w", t.SubsystemNQN, t.NamespaceID, err)
+	}
+
+	if t.LocalAttach {
+		err = t.disableNamespace()
+		if err != nil {
+			return fmt.Errorf("createNamespace: %w", err)
+		}
 	}
 
 	// The kernel rejects writes to device_path while the namespace is
@@ -490,11 +513,10 @@ func (t *NvmetTarget) createNamespace() error {
 		return err
 	}
 
-	err = writeFile(enablePath, "1")
-	if err != nil {
-		return fmt.Errorf("createNamespace %q ns=%d: %w", t.SubsystemNQN, t.NamespaceID, err)
+	if t.LocalAttach {
+		return nil
 	}
-	return nil
+	return t.enableNamespace()
 }
 
 // ensureNamespaceIdentity writes id to a disabled namespace, or verifies that
@@ -536,18 +558,21 @@ func (t *NvmetTarget) ensureNamespaceIdentity(nsDir, enablePath string, id Ident
 // changed asynchronous event. It deliberately does not toggle enable: doing so
 // unregisters the live namespace and leaves mounted clients holding a stale
 // device node that fails with ENXIO during online filesystem expansion.
+//
+// It is a no-op when the volume is not exported, and when the namespace is
+// disabled (local attach): the kernel rejects revalidate_size on a disabled
+// namespace, and it re-reads the device size when the namespace is enabled.
 func (t *NvmetTarget) ResizeNamespace() error {
-	nsDir := t.namespaceDir()
-	_, statErr := os.Stat(nsDir)
-	if statErr != nil {
-		if os.IsNotExist(statErr) {
-			return nil // volume is not currently exported
-		}
-		return fmt.Errorf("ResizeNamespace %q ns=%d stat: %w", t.SubsystemNQN, t.NamespaceID, statErr)
+	exists, enabled, err := t.NamespaceEnabled()
+	if err != nil {
+		return fmt.Errorf("ResizeNamespace: %w", err)
+	}
+	if !exists || !enabled {
+		return nil
 	}
 
-	revalidatePath := filepath.Join(nsDir, "revalidate_size")
-	err := triggerFile(revalidatePath, "1")
+	revalidatePath := filepath.Join(t.namespaceDir(), "revalidate_size")
+	err = triggerFile(revalidatePath, "1")
 	if err != nil {
 		return fmt.Errorf(
 			"ResizeNamespace %q ns=%d revalidate backing size: %w",
@@ -826,7 +851,9 @@ type PreparedTarget struct {
 //
 //  1. Subsystem with its final attr_allow_any_host and serial.
 //  2. Allowed hosts (nvmet accepts them only while attr_allow_any_host is 0).
-//  3. Namespace: identity, device_path, then enable.
+//  3. Namespace: identity, device_path, then the desired enable state
+//     (disabled with LocalAttach; enabled only if the backend device is not
+//     held exclusively on the storage node).
 //
 // It validates the port endpoint up front but neither creates the port nor
 // links the subsystem to it; Link does both.  Every step is idempotent, and
@@ -858,9 +885,10 @@ func (t *NvmetTarget) Prepare() (PreparedTarget, error) {
 }
 
 // Link makes the prepared subsystem reachable on its port.  It first reads
-// back the state Prepare established and refuses to link a subsystem that a
-// host could not use: disabled namespace, other device or identity, or a
-// missing ACL entry.
+// back the state Prepare established and refuses to link a subsystem whose
+// namespace does not have the desired enable state (enabled, or disabled
+// with LocalAttach), carries another device or identity, or lacks an ACL
+// entry.
 func (p PreparedTarget) Link() error {
 	t := p.target
 	if t == nil {
@@ -891,7 +919,7 @@ func (t *NvmetTarget) verifyPrepared(id Identity) error {
 		{filepath.Join(nsDir, "device_path"), t.DevicePath},
 		{filepath.Join(nsDir, "device_uuid"), id.UUID},
 		{filepath.Join(nsDir, "device_nguid"), id.NGUID},
-		{filepath.Join(nsDir, "enable"), "1"},
+		{filepath.Join(nsDir, "enable"), t.desiredEnable()},
 	}
 	for _, c := range checks {
 		got, err := readAttr(c.path)

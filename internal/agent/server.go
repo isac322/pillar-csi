@@ -72,6 +72,13 @@ type Server struct {
 	// default.  Override in tests via SetDeviceChecker (export_test.go).
 	deviceChecker nvmeof.DeviceChecker
 
+	// deviceClaimer takes an exclusive claim on the backend device before a
+	// disabled NVMe-oF namespace is enabled; the claim is held across the
+	// enable write so a local attach on the storage node cannot race in.
+	// When nil, nvmeof.ClaimDeviceExclusively is used.  Override via
+	// WithDeviceClaimer or SetDeviceClaimer.
+	deviceClaimer nvmeof.DeviceClaimer
+
 	// targetMu serializes protocol handler operations on the same
 	// protocol-qualified target ID to prevent partial-state races when export
 	// and unexport are called concurrently for the same volume

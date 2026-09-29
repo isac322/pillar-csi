@@ -67,3 +67,13 @@ func SetDevicePollParams(t *testing.T, s *Server, interval, timeout time.Duratio
 		s.devicePollTimeout = origTimeout
 	})
 }
+
+// SetDeviceClaimer overrides the exclusive-device claimer consulted before a
+// disabled NVMe-oF namespace is enabled.  The original claimer is restored
+// via t.Cleanup.
+func SetDeviceClaimer(t *testing.T, s *Server, claimer nvmeof.DeviceClaimer) {
+	t.Helper()
+	orig := s.deviceClaimer
+	s.deviceClaimer = claimer
+	t.Cleanup(func() { s.deviceClaimer = orig })
+}

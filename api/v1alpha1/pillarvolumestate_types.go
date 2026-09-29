@@ -208,6 +208,15 @@ type VolumePublication struct {
 	// and a publish to the same node is rejected until the unpublish finishes.
 	// +optional
 	Revoking bool `json:"revoking,omitempty"`
+
+	// local is true when the publication attaches the backend device
+	// directly on the storage node instead of through the network export
+	// (localAttach enabled and nodeID is the node of the volume's
+	// PillarAgent).  A local publication grants no initiator: it is excluded
+	// from the export's ACL set and its unpublish revokes nothing on the
+	// target.
+	// +optional
+	Local bool `json:"local,omitempty"`
 }
 
 // VolumeClaimRef identifies the PersistentVolumeClaim a volume was
@@ -307,6 +316,13 @@ type ResolvedVolumeConfig struct {
 	// when the volume is a Filesystem-mode mount.
 	// +optional
 	Filesystem *FilesystemConfig `json:"filesystem,omitempty"`
+
+	// localAttach is true when the volume may be attached directly on the
+	// storage node, bypassing the network protocol, whenever it is published
+	// to the node that hosts its PillarAgent.  Publishes to any other node
+	// always use the protocol.
+	// +optional
+	LocalAttach bool `json:"localAttach,omitempty"`
 }
 
 // PillarVolumeStateStatus reflects the controller-observed state of a PillarVolumeState.
@@ -360,6 +376,15 @@ type PillarVolumeStateStatus struct {
 	// of being recovered.
 	// +optional
 	ExportSpec *VolumeExportSpec `json:"exportSpec,omitempty"`
+
+	// localAttachNode is the storage node on which the volume was last
+	// attached directly.  It is set in the same update that reserves a local
+	// publication and cleared only after the agent confirmed the backend
+	// device is no longer held on that node and returned the export to
+	// serving remote initiators.  While it is set the export serves no I/O
+	// to remote initiators, including after an agent restart.
+	// +optional
+	LocalAttachNode string `json:"localAttachNode,omitempty"`
 
 	// publicationGeneration is a monotonically increasing counter bumped by
 	// exactly 1 on every status update that changes publishedNodes or sets

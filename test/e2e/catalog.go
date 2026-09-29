@@ -42,10 +42,11 @@ import (
 //
 //	teardown_panic_guarantee_test.go    → 4 (ac:3 teardown-guarantee)
 //	backend_teardown_ac43_e2e_test.go   → 5 (ac:4.3 backend teardown absence)
+//	tc_e34_local_attach_inprocess_test.go → 6 (E34 local attach, in-process)
 //
-// Total default-profile spec count: 388+7+4+5 = 404.
-// This 404 total is the canonical "실제 실행되는 테스트 케이스" count declared
-// in docs/E2E-TESTCASES.md (239 in-process + 117 envtest + 48 cluster).
+// Total default-profile spec count: 388+7+4+5+6 = 410.
+// This 410 total is the canonical "실제 실행되는 테스트 케이스" count declared
+// in docs/E2E-TESTCASES.md (245 in-process + 117 envtest + 48 cluster).
 //
 // Note: lvm_backend_core_rpcs_e2e_test.go (9 E33.1 specs) intentionally omits
 // "default-profile" because those specs require a Helm-deployed agent pod that

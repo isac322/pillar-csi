@@ -82,8 +82,47 @@ type nodeStageState struct {
 	// written before the field existed.
 	FsType string `json:"fs_type,omitempty"`
 
-	// NVMeoF holds NVMe-oF TCP teardown state.  Non-nil when ProtocolType == "nvmeof-tcp".
+	// NVMeoF holds NVMe-oF TCP teardown state.  Non-nil when ProtocolType == "nvmeof-tcp"
+	// and the volume was staged through the protocol handler.
 	NVMeoF *NVMeoFStageState `json:"nvmeof,omitempty"`
+
+	// AttachMode records how NodeStageVolume attached the device:
+	// AttachModeLocal for a direct attach on the storage node, empty for a
+	// protocol attach.  State files written before local attach existed
+	// carry no field and therefore decode as a protocol attach.
+	AttachMode string `json:"attach_mode,omitempty"`
+
+	// Local holds the device-mapper claim of a local attach.  Non-nil when
+	// AttachMode == AttachModeLocal.
+	Local *LocalStageState `json:"local,omitempty"`
+}
+
+// isLocalAttach reports whether the volume was staged by a local attach.
+func (s *nodeStageState) isLocalAttach() bool {
+	return s != nil && s.AttachMode == AttachModeLocal
+}
+
+// LocalStageState holds what NodeUnstageVolume and NodeExpandVolume need to
+// manage the device-mapper target of a local attach.
+type LocalStageState struct {
+	// DMName is the device-mapper device name (see LocalDMName).
+	DMName string `json:"dm_name"`
+
+	// BackingDevice is the backend block device (zvol or logical volume)
+	// the linear target maps.
+	BackingDevice string `json:"backing_device"`
+}
+
+// localStageState builds the stage state of a local attach.  ProtocolType
+// is kept so the record still names the volume's transport, but unstage and
+// expand dispatch on AttachMode and never reach the protocol handler.
+func localStageState(protocolType, accessType, dmName, backingDevice string) *nodeStageState {
+	return &nodeStageState{
+		ProtocolType: protocolType,
+		AccessType:   accessType,
+		AttachMode:   AttachModeLocal,
+		Local:        &LocalStageState{DMName: dmName, BackingDevice: backingDevice},
+	}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

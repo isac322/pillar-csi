@@ -184,6 +184,10 @@ func (s *ControllerServer) refuseAbandonedClaim(ctx context.Context, attempt *v1
 // PersistentVolume history; only Provisioning is unambiguous for those.
 const annotationSuccessRecorded = "pillar-csi.bhyoo.com/success-recorded"
 
+// annotationValueTrue is the annotation value recording contract, kept as a
+// constant so writers and readers cannot disagree.
+const annotationValueTrue = "true"
+
 // reapablePhase reports whether pvs never reported success, i.e. never had a
 // PersistentVolume.  Provisioning precedes the backend record under every
 // controller version; CreatePartial is conclusive only for lifecycles created
@@ -193,7 +197,7 @@ func reapablePhase(pvs *v1alpha1.PillarVolumeState) bool {
 	case "", v1alpha1.PillarVolumeStatePhaseProvisioning:
 		return true
 	case v1alpha1.PillarVolumeStatePhaseCreatePartial:
-		return pvs.Annotations[annotationSuccessRecorded] == "true"
+		return pvs.Annotations[annotationSuccessRecorded] == annotationValueTrue
 	default:
 		return false
 	}

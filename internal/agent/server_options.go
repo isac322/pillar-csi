@@ -50,6 +50,18 @@ func WithDevicePollParams(interval, timeout time.Duration) ServerOption {
 	}
 }
 
+// WithDeviceClaimer overrides the claimer that takes an exclusive claim on
+// the backend device before a disabled NVMe-oF namespace is enabled; the
+// claim is held across the enable write so a local attach on the storage
+// node cannot claim the device in the gap.
+//
+// In production the server defaults to nvmeof.ClaimDeviceExclusively (an
+// O_EXCL open held for the enable).  Tests pass a fake to simulate a held
+// device or observe the claim ordering.
+func WithDeviceClaimer(c nvmeof.DeviceClaimer) ServerOption {
+	return func(s *Server) { s.deviceClaimer = c }
+}
+
 // WithDrainStateDir overrides where Drain writes the .drained marker.
 func WithDrainStateDir(dir string) ServerOption {
 	return func(s *Server) { s.drainStateDir = dir }

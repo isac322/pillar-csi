@@ -324,6 +324,7 @@ func newAgentTestEnvWithBackends(container, zfsPool, lvmVG, lvmThinPool string) 
 		backends,
 		configfsRoot,
 		agentsvc.WithDeviceChecker(nvmeof.AlwaysPresentChecker),
+		agentsvc.WithDeviceClaimer(nvmeof.UnclaimedDeviceClaimer),
 		agentsvc.WithDrainStateDir(filepath.Join(configfsRoot, ".agent-state")),
 	)
 

@@ -100,6 +100,10 @@ type mockAgentClient struct {
 	lastAllowInitiator *agentv1.AllowInitiatorRequest
 	lastDenyInitiator  *agentv1.DenyInitiatorRequest
 
+	// Responses for SetLocalAttach; every request is recorded in order.
+	setLocalAttachErr   error
+	setLocalAttachCalls []*agentv1.SetLocalAttachRequest
+
 	// Call counters — verified by tests.
 	createVolumeCalls   int
 	exportVolumeCalls   int
@@ -109,6 +113,11 @@ type mockAgentClient struct {
 	expandVolumeCalls   int
 	allowInitiatorCalls int
 	denyInitiatorCalls  int
+
+	// callOrder records the RPC method names in invocation order so tests can
+	// assert the relative ordering of agent calls (e.g. an unfence before the
+	// grant).
+	callOrder []string
 
 	// lastCreateVolumeReq captures the most recent CreateVolume request for
 	// assertion on backend/export params in annotation integration tests.
@@ -258,6 +267,7 @@ func (m *mockAgentClient) AllowInitiator(
 	_ ...grpc.CallOption,
 ) (*agentv1.AllowInitiatorResponse, error) {
 	m.allowInitiatorCalls++
+	m.callOrder = append(m.callOrder, "AllowInitiator")
 	m.lastAllowInitiator = req
 	if m.allowInitiatorErr != nil {
 		return nil, m.allowInitiatorErr
@@ -270,11 +280,27 @@ func (m *mockAgentClient) DenyInitiator(
 	_ ...grpc.CallOption,
 ) (*agentv1.DenyInitiatorResponse, error) {
 	m.denyInitiatorCalls++
+	m.callOrder = append(m.callOrder, "DenyInitiator")
 	m.lastDenyInitiator = req
 	if m.denyInitiatorErr != nil {
 		return nil, m.denyInitiatorErr
 	}
 	return &agentv1.DenyInitiatorResponse{}, nil
+}
+func (m *mockAgentClient) SetLocalAttach(
+	_ context.Context,
+	req *agentv1.SetLocalAttachRequest,
+	_ ...grpc.CallOption,
+) (*agentv1.SetLocalAttachResponse, error) {
+	m.setLocalAttachCalls = append(m.setLocalAttachCalls, req)
+	m.callOrder = append(m.callOrder, "SetLocalAttach")
+	if m.setLocalAttachErr != nil {
+		return nil, m.setLocalAttachErr
+	}
+	if !req.GetLocal() {
+		return &agentv1.SetLocalAttachResponse{}, nil
+	}
+	return &agentv1.SetLocalAttachResponse{DevicePath: "/dev/zvol/" + req.GetVolumeId()}, nil
 }
 func (*mockAgentClient) SendVolume(
 	_ context.Context,

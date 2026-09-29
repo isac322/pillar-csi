@@ -2,7 +2,7 @@
 title: Maintain storage and worker nodes
 description: Reboot a pillar-csi storage node or drain a worker without losing NVMe-oF/TCP volumes, using ctrlLossTmo, export restore status and a safe drain order.
 sidebar:
-  order: 8
+  order: 9
 ---
 
 pillar-csi does not replicate data. While a storage node is down, every volume it exports is unavailable. This page covers how to take a storage node or a worker node down and bring it back so that workloads resume without a restart.

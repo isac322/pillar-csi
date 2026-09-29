@@ -244,6 +244,13 @@ spec:
                           type: string
                         type: array
                     type: object
+                  localAttach:
+                    description: |-
+                      localAttach is true when the volume may be attached directly on the
+                      storage node, bypassing the network protocol, whenever it is published
+                      to the node that hosts its PillarAgent.  Publishes to any other node
+                      always use the protocol.
+                    type: boolean
                   protocol:
                     description: |-
                       protocol is the effective transport configuration: the protocol's
@@ -484,6 +491,15 @@ spec:
                 - bindAddress
                 - port
                 type: object
+              localAttachNode:
+                description: |-
+                  localAttachNode is the storage node on which the volume was last
+                  attached directly.  It is set in the same update that reserves a local
+                  publication and cleared only after the agent confirmed the backend
+                  device is no longer held on that node and returned the export to
+                  serving remote initiators.  While it is set the export serves no I/O
+                  to remote initiators, including after an agent restart.
+                type: string
               partialFailure:
                 description: |-
                   partialFailure is populated whenever the volume is in a partial-failure
@@ -588,6 +604,15 @@ spec:
                         object is gone.
                       minLength: 1
                       type: string
+                    local:
+                      description: |-
+                        local is true when the publication attaches the backend device
+                        directly on the storage node instead of through the network export
+                        (localAttach enabled and nodeID is the node of the volume's
+                        PillarAgent).  A local publication grants no initiator: it is excluded
+                        from the export's ACL set and its unpublish revokes nothing on the
+                        target.
+                      type: boolean
                     nodeID:
                       description: |-
                         nodeID is the CSI node_id (Kubernetes node name) the volume is

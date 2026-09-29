@@ -11,7 +11,7 @@
 - 실제 커널 모듈, 실제 ZFS, 실제 NVMe-oF 장치를 요구하는 테스트는
   별도로 표시하고 현실적인 인프라 요구사항을 함께 기술한다.
 
-**총 테스트 케이스: 404** (인프로세스 239개 + envtest 통합 117개 + 클러스터 레벨 48개; E28 LVM Agent gRPC 30개 · E29 CSI Controller LVM 파라미터 12개 · E30 LVM LV 중복 방지 3개 · E32 LVM CRD 라이프사이클 9개 · E33 default-profile 7개(standalone 7) + teardown-guarantee 4개 + backend-teardown-absence 5개 포함 / 추가 문서화 비기본 TC: E33 core-rpc 9개 · E33 mount 12개 · E33 expansion 5개(e2e_helm 빌드 태그 필요) · F27–F31 LVM 완전 E2E 19개 — 특수 레이블 필터 필요 / 수동 AD 시나리오 3개 · BP 시나리오 3개 별도)
+**총 테스트 케이스: 410** (인프로세스 245개 + envtest 통합 117개 + 클러스터 레벨 48개; E28 LVM Agent gRPC 30개 · E29 CSI Controller LVM 파라미터 12개 · E30 LVM LV 중복 방지 3개 · E34 로컬 attach 6개 · E32 LVM CRD 라이프사이클 9개 · E33 default-profile 7개(standalone 7) + teardown-guarantee 4개 + backend-teardown-absence 5개 포함 / 추가 문서화 비기본 TC: E33 core-rpc 9개 · E33 mount 12개 · E33 expansion 5개(e2e_helm 빌드 태그 필요) · F27–F31 LVM 완전 E2E 19개 — 특수 레이블 필터 필요 / 수동 AD 시나리오 3개 · BP 시나리오 3개 별도)
 
 ---
 
@@ -84,6 +84,7 @@
 - [E28: LVM Agent gRPC E2E 테스트](#e28-lvm-agent-grpc-e2e-테스트)
 - [E29: CSI Controller LVM 파라미터 전파 및 프로비저닝 모드 오버라이드](#e29-csi-controller-lvm-파라미터-전파-및-프로비저닝-모드-오버라이드)
 - [E30: LVM LV 중복 방지 — skipBackend 최적화](#e30-lvm-lv-중복-방지--skipbackend-최적화)
+- [E34: 로컬 attach — 스토리지 노드 직접 attach와 export 펜싱](#e34-로컬-attach--스토리지-노드-직접-attach와-export-펜싱)
 
 ### 카테고리 1.5 — Envtest 통합 테스트 (유형 C: envtest 필요) ⚠️
 > 빌드 태그: `//go:build integration` | `make setup-envtest && go test -tags=integration ./internal/...` | envtest API 서버 · Docker/Kind 불필요 · CI 실행 가능
@@ -2874,6 +2875,52 @@ LV 존재 여부 추적.
 |------|------|------|
 | 실제 LVM LV 중복 생성 방지 | 실제 LVM + root 권한 필요 | E33 Kind+LVM 또는 F27 |
 | `lvcreate` 이름 충돌 시 실제 오류 메시지 | 실제 LVM 필요 | E33 Kind+LVM 테스트 |
+
+---
+
+## E34: 로컬 attach — 스토리지 노드 직접 attach와 export 펜싱
+
+**테스트 유형:** A (인프로세스 E2E) ✅ CI 실행 가능
+
+**위치:** `test/e2e/tc_e34_local_attach_inprocess_test.go` (카탈로그 비경유 독립 Ginkgo 스펙, `Label("default-profile")`)
+
+`localAttach`(PillarStorageClass `spec.localAttach` 또는 수동 SC `pillar-csi.bhyoo.com/local-attach: "true"`) 볼륨을
+PillarAgent의 `spec.nodeRef.name` 노드에 SINGLE_NODE_* 모드로 publish하면 컨트롤러는 agent `SetLocalAttach(local=true)`로
+export를 모든 원격 initiator에 대해 끄고 로컬 PublishContext(`pillar-csi.bhyoo.com/attach-mode: local`, `local-node`,
+`local-device-path`)를 반환한다. 노드는 프로토콜 connector 없이 백엔드 디바이스 위에 dm linear 디바이스
+(`pillar-local-<hash>`)를 만들어 마운트한다. 다른 노드로의 publish는 스토리지 노드가 디바이스를 실제로 놓을 때까지
+(`O_EXCL` open이 `EBUSY`인 동안) `FailedPrecondition`으로 거부된다.
+
+**테스트 더블:** 컨트롤러 TC는 `fakeAgentServer`(bufconn gRPC)의 `SetLocalAttach`를, 에이전트 TC는 실제 `agent.Server` +
+임시 디렉터리 configfs + `agent.WithDeviceClaimer` 가짜 claimer를, 노드 TC는 `localMockConnector`·`localMockMounter`와
+`NodeServer.WithDeviceMapper` 가짜 dm을 쓴다. 실제 커널 동작(dm claim, `enable` 쓰기, force-detach 펜싱)은
+`test/docker-e2e/storage_e2e_test.go`의 `TestLocalAttach*` 다중 노드 테스트가 검증한다.
+
+> **CI 실행 가능 여부:** ✅ 인프로세스 E2E — 별도 인프라 불필요
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| E34.1 | `TestLocalAttach_ControllerPublish_StorageNodeIsLocal` | localAttach 볼륨을 스토리지 노드에 publish하면 로컬 PublishContext를 반환하고 export를 펜싱 | PillarAgent `storage-1`의 `spec.nodeRef.name=storage-node`; 수동 SC 파라미터에 `local-attach: "true"`, ACL 프로토콜 | 1) CreateVolume; 2) ControllerPublishVolume(node=storage-node, SINGLE_NODE_WRITER); 3) 같은 인자로 재호출 | PublishContext `attach-mode=local`, `local-node=storage-node`, `local-device-path`=agent 응답 경로; agent.SetLocalAttach 1회(local=true, fence 포함); AllowInitiator 0회; CRD `status.localAttachNode=storage-node`, publication `local=true`; 재호출은 같은 PublishContext | `CSI-C`, `Agent`, `VolCRD`, `gRPC` |
+| E34.2 | `TestLocalAttach_ControllerPublish_OtherNodeUsesProtocol` | 같은 localAttach 볼륨을 다른 노드에 publish하면 프로토콜 경로 | E34.1과 같은 환경; worker-1 CSINode에 host NQN | 1) CreateVolume; 2) ControllerPublishVolume(node=worker-1) | PublishContext에 `attach-mode` 없음; AllowInitiator 1회; SetLocalAttach 0회; `status.localAttachNode` 비어 있음 | `CSI-C`, `Agent`, `VolCRD`, `gRPC` |
+| E34.3 | `TestLocalAttach_ControllerPublish_RemoteWaitsForRelease` | 스토리지 노드가 디바이스를 잡고 있는 동안 원격 publish는 FailedPrecondition, 해제 후 성공 | E34.1 환경; 로컬 publish 후 ControllerUnpublish(storage-node) | 1) 로컬 publish; 2) unpublish; 3) agent SetLocalAttach에 FailedPrecondition 주입 후 worker-1 publish; 4) 주입 제거 후 worker-1 publish | 2) DenyInitiator 0회, `localAttachNode` 유지; 3) `FailedPrecondition`, AllowInitiator 0회, `localAttachNode` 유지; 4) 성공, 마지막 SetLocalAttach는 local=false, AllowInitiator 1회, `localAttachNode` 비움 | `CSI-C`, `Agent`, `VolCRD`, `gRPC`, `SM` |
+| E34.4 | `TestLocalAttach_AgentReconcileKeepsNamespaceDisabled` | agent는 local_attach 동안 namespace를 끄고, 디바이스가 잡혀 있으면 다시 켜지 않음 | 실제 `agent.Server` + 임시 configfs; `WithDeviceClaimer` 가짜(held 토글) | 1) ReconcileState(local_attach=true); 2) held=true로 ReconcileState(local_attach=false); 3) held=true로 SetLocalAttach(false); 4) held=false로 SetLocalAttach(false); 5) SetLocalAttach(true) | 1) 성공, `enable=0`; 2) 해당 볼륨 결과 실패, `enable=0` 유지; 3) `FailedPrecondition`, `enable=0`; 4) 성공, `enable=1`; 5) device_path=요청 DevicePath, `enable=0` | `Agent`, `NVMeF`, `gRPC` |
+| E34.5 | `TestLocalAttach_NodeStageUnstage_NoProtocolConnector` | 로컬 stage/unstage는 프로토콜 connector를 호출하지 않고 dm 디바이스에 마운트·제거하며, stage는 export가 펜싱됐는지 확인한다 | `nodeTestEnv`(nodeID `node-local`) + 가짜 DeviceMapper + 빈 subsystems의 임시 nvmet root | 1) NodeStageVolume(로컬 PublishContext, VolumeContext target_id); 2) NodeUnstageVolume; 3) namespace enable=1로 NodeStageVolume 재시도 | 1) connector Connect 0회; dm EnsureLinear(`LocalDMName(volumeID)`, 백엔드 경로) 1회; FormatAndMount source=dm 디바이스; 2) Disconnect 0회; dm Remove(같은 이름) 1회; staging 언마운트; 3) `FailedPrecondition`, dm ensure 후 remove로 claim 해제, 마운트 없음 | `CSI-N`, `Mnt`, `State` |
+| E34.6 | `TestLocalAttach_NodeStage_WrongNodeRefused` | 다른 노드용 로컬 PublishContext는 거부 | `nodeTestEnv`(nodeID `node-local`) + 가짜 DeviceMapper + 임시 nvmet root | 1) NodeStageVolume(`local-node=storage-node`, target_id 포함) | `FailedPrecondition`; dm·connector·mounter 호출 없음 | `CSI-N` |
+
+---
+
+### E34 커버리지 요약
+
+| 소섹션 | 검증 내용 | 테스트 수 | CI 실행 |
+|--------|---------|----------|--------|
+| E34 | 로컬/원격 publish 결정, export 펜싱, 원격 publish의 해제 대기, agent reconcile 유지, 노드 로컬 stage | 6개 | ✅ 표준 CI |
+
+**CI에서 검증 불가 항목:**
+
+| 항목 | 이유 | 대안 |
+|------|------|------|
+| dm linear 디바이스의 실제 exclusive claim과 `O_EXCL` EBUSY | 실제 커널 device-mapper 필요 | `test/docker-e2e` `TestLocalAttachForceDetachFencing` |
+| 스토리지 노드↔클라이언트 노드 간 파드 이동 시 데이터 보존 | 다중 노드 Kind + LVM + NVMe-oF 필요 | `test/docker-e2e` `TestLocalAttachFilesystemRoundTrip`, `TestLocalAttachRawBlockRoundTrip` |
 
 ---
 

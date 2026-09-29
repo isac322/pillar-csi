@@ -258,6 +258,15 @@ type PillarStorageClassSpec struct {
 	// referenced store and protocol defaults.
 	// +optional
 	Overrides *StorageClassOverrides `json:"overrides,omitempty"`
+
+	// localAttach lets a volume of this binding bypass the protocol when a
+	// pod using it runs on the storage node itself: the node mounts the
+	// backend zvol or logical volume directly and the network export is
+	// fenced for as long as that direct attach may be in use.  Pods on any
+	// other node always use the protocol.  Recorded per volume at
+	// provisioning time.
+	// +optional
+	LocalAttach bool `json:"localAttach,omitempty"`
 }
 
 // PillarStorageClassStatus defines the observed state of PillarStorageClass.

@@ -29,6 +29,7 @@ const (
 	e2eParamStorageClass = "pillar-csi.bhyoo.com/storage-class"
 	e2eParamStoreRef     = "pillar-csi.bhyoo.com/store-ref"
 	e2eParamProtocolRef  = "pillar-csi.bhyoo.com/protocol-ref"
+	e2eParamLocalAttach  = "pillar-csi.bhyoo.com/local-attach"
 
 	e2eDocBackend    = pillarv1.AnnotationBackendDoc
 	e2eDocProtocol   = pillarv1.AnnotationProtocolDoc

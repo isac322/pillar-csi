@@ -84,7 +84,7 @@ func (n *NodeServer) WithResizer(r Resizer) *NodeServer {
 // Capability: NodeServiceCapability_RPC_EXPAND_VOLUME must be advertised in
 // NodeGetCapabilities for the CO to invoke this RPC.
 func (n *NodeServer) NodeExpandVolume(
-	_ context.Context,
+	ctx context.Context,
 	req *csi.NodeExpandVolumeRequest,
 ) (*csi.NodeExpandVolumeResponse, error) {
 	// ── Input validation ────────────────────────────────────────────────────
@@ -105,7 +105,7 @@ func (n *NodeServer) NodeExpandVolume(
 	// the staging-target semantics; the resizer below handles the mount
 	// lookup and surfaces a real Internal error when the path exists but
 	// isn't a mount point.
-	_, statErr := os.Stat(volumePath)
+	fi, statErr := os.Stat(volumePath)
 	if statErr != nil {
 		if os.IsNotExist(statErr) {
 			return nil, status.Errorf(codes.NotFound,
@@ -115,15 +115,33 @@ func (n *NodeServer) NodeExpandVolume(
 			"NodeExpandVolume: stat %q: %v", volumePath, statErr)
 	}
 
+	// ── Local attach: grow the device-mapper target ─────────────────────────
+	// A local attach presents the backend device through a device-mapper
+	// linear target whose table fixes its length, so the target must be
+	// reloaded to the backend's new size before the block device (and any
+	// filesystem on it) can grow.  No NVMe rescan is involved.
+	stageState, stateErr := n.readStageState(req.GetVolumeId())
+	if stateErr != nil {
+		return nil, status.Errorf(codes.Internal,
+			"NodeExpandVolume: read stage state for %q: %v", req.GetVolumeId(), stateErr)
+	}
+	if stageState.isLocalAttach() {
+		expandErr := n.expandLocal(ctx, req.GetVolumeId(), stageState)
+		if expandErr != nil {
+			return nil, expandErr
+		}
+	}
+
 	// ── Block-mode short-circuit ─────────────────────────────────────────────
 	// Block-mode volumes have no filesystem to grow.  ControllerExpandVolume
 	// already enlarged the backing LV and the kernel's NVMe-oF initiator
 	// picks up the new namespace capacity via the controller's
-	// asynchronous-event "namespace attribute changed" notification, so the
-	// only work remaining on the node is to acknowledge the call.  Detect
+	// asynchronous-event "namespace attribute changed" notification (a
+	// local attach was reloaded above), so the only work remaining on the
+	// node is to acknowledge the call.  Detect
 	// Block-mode via the explicit VolumeCapability (CSI 1.0+ always carries
 	// one for online expansion) and, when the CO omits it (CSI 1.4+ optional),
-	// fall back to a stat of volume_path: NodeStageVolume Block-mode binds
+	// fall back to the stat of volume_path: NodeStageVolume Block-mode binds
 	// /dev/nvmeXnY onto a regular file (see blockStagingDeviceFile and
 	// NodePublishVolume), so a non-directory volume_path identifies a
 	// Block-mode publish target.
@@ -131,18 +149,12 @@ func (n *NodeServer) NodeExpandVolume(
 	if volCap != nil && volCap.GetBlock() != nil {
 		return &csi.NodeExpandVolumeResponse{CapacityBytes: blockExpandCapacity(req)}, nil
 	}
-	if volCap == nil {
-		st, statBlockErr := os.Stat(volumePath)
-		if statBlockErr == nil && !st.IsDir() {
-			return &csi.NodeExpandVolumeResponse{CapacityBytes: blockExpandCapacity(req)}, nil
-		}
+	if volCap == nil && !fi.IsDir() {
+		return &csi.NodeExpandVolumeResponse{CapacityBytes: blockExpandCapacity(req)}, nil
 	}
 
 	// ── Determine filesystem type ────────────────────────────────────────────
-	fsType, err := n.expandFsType(req.GetVolumeId(), volCap)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "NodeExpandVolume: %v", err)
-	}
+	fsType := expandFsType(stageState, volCap)
 
 	// ── Run filesystem resize ────────────────────────────────────────────────
 	r := n.resizer
@@ -169,18 +181,14 @@ func (n *NodeServer) NodeExpandVolume(
 // NodeExpandVolume carries no VolumeContext.  Volumes staged before the stage
 // state recorded the type fall back to the VolumeCapability, then to the
 // project default (ext4).
-func (n *NodeServer) expandFsType(volumeID string, volCap *csi.VolumeCapability) (string, error) {
-	stageState, err := n.readStageState(volumeID)
-	if err != nil {
-		return "", fmt.Errorf("read stage state for %q: %w", volumeID, err)
-	}
+func expandFsType(stageState *nodeStageState, volCap *csi.VolumeCapability) string {
 	if stageState != nil && stageState.FsType != "" {
-		return stageState.FsType, nil
+		return stageState.FsType
 	}
 	if fsType := volCap.GetMount().GetFsType(); fsType != "" {
-		return fsType, nil
+		return fsType
 	}
-	return defaultFsType, nil
+	return defaultFsType
 }
 
 // blockExpandCapacity echoes required_bytes from the request's capacity_range,

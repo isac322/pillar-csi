@@ -171,7 +171,12 @@ spec:
             - name: dev
               mountPath: /dev
             # /sys — required for NVMe device discovery (/sys/class/nvme-subsystem)
-            # and NVMe controller rescan during online volume expansion.
+            # and NVMe controller rescan during online volume expansion.  Local
+            # attach also reads the nvmet export state under
+            # /sys/kernel/config/nvmet: the CRI bind-mounts hostPath volumes
+            # recursively (rbind), so the host configfs submount is visible, and
+            # HostToContainer propagation carries a configfs mounted later.
+            # Without it a local stage fails closed ("cannot verify").
             - name: sys
               mountPath: /sys
               mountPropagation: HostToContainer

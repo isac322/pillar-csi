@@ -249,9 +249,12 @@ node:
       pullPolicy: ""
     # -- Kernel modules to load. Failures are silently ignored (best-effort).
     # nvme_fabrics must be listed before nvme_tcp (it is a dependency).
+    # dm_mod provides the device-mapper target that holds the backend device
+    # of a local attach on the storage node.
     modules:
       - nvme_fabrics
       - nvme_tcp
+      - dm_mod
     # -- Resource requests/limits for the modprobe init container.
     resources:
       limits:

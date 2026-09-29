@@ -409,6 +409,22 @@ type NodeServer struct {
 	// system binaries, and config files on the real host).
 	// Override in tests via WithTopologyProber to inject a mock prober.
 	topologyProber ProtocolProber
+
+	// dm manages the device-mapper linear targets that hold the backend
+	// device of a local attach (see devicemapper.go).  When nil,
+	// NewExecDeviceMapper is used.  Override via WithDeviceMapper.
+	dm DeviceMapper
+
+	// nvmetRoot is the nvmet configfs root the local attach export check
+	// reads (see nvmet_export_state.go).  When empty,
+	// DefaultNvmetConfigfsRoot is used.  Override via WithNvmetConfigfsRoot.
+	nvmetRoot string
+
+	// dmTargetPresentFn reports whether a device-mapper target exists; it
+	// gates the orphan-claim cleanup of NodeUnstageVolume without a stage
+	// state file.  When nil, the target is looked up in sysfs.  Override in
+	// tests.
+	dmTargetPresentFn func(name string) (bool, error)
 }
 
 // Ensure NodeServer satisfies the interface at compile time.
@@ -614,6 +630,19 @@ func (n *NodeServer) NodeGetInfo(
 //     that NodeUnstageVolume can disconnect the correct target without
 //     re-reading the VolumeContext.
 //
+// Local attach: when the PublishContext carries attach-mode=local (the
+// volume was published to its storage node), steps 3, 4 and 6 are replaced
+// by claiming the backend device through a device-mapper linear target
+// (see DeviceMapper) and then verifying that no nvmet namespace of the
+// volume's subsystem (VolumeContext target_id) is enabled — an enabled one
+// refuses the stage with FailedPrecondition.  The device-mapper device is
+// then mounted or bound, and the state file records the target for
+// NodeUnstageVolume/NodeExpandVolume.  Any failure after the claim rolls the
+// stage back: the staged surface is unmounted before the claim is removed
+// (so no mount outlives its dm device), then the state file is deleted.  A
+// failed unmount keeps the claim and the state file.  The local node
+// named in the PublishContext must be this node.
+//
 // Per CSI spec §4.7 the staging_target_path is guaranteed to be a pre-created
 // directory (for MOUNT) or a pre-created file (for BLOCK) by the CO.
 func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-step attach/mount/persist
@@ -636,42 +665,61 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 	volCtx := req.GetVolumeContext()
 	volCap := req.GetVolumeCapability()
 
-	// ── Step 1: Resolve protocol type ───────────────────────────────────────
+	// ── Step 1: Resolve attach mode ─────────────────────────────────────────
+	// A PublishContext carrying attach-mode=local means ControllerPublishVolume
+	// published the volume to the storage node itself: the backend device is
+	// attached directly through a device-mapper claim, and the protocol
+	// handler is never involved.  Without the key this is a protocol attach.
+	local, localDevice, localErr := n.localAttachRequest(req.GetPublishContext())
+	if localErr != nil {
+		return nil, localErr
+	}
+
+	// ── Step 2: Resolve protocol type ───────────────────────────────────────
 	// Derive the protocol type from VolumeContext["pillar-csi.bhyoo.com/protocol-type"]
 	// (preferred; set by the controller for all new volumes) or from the
 	// volumeID path component.  Falls back to "nvmeof-tcp" for backward
 	// compatibility with volumes provisioned before Phase 2.
 	protocolType := resolveProtocolType(volumeID, volCtx)
 
-	// ── Step 2: Protocol handler dispatch ───────────────────────────────────
-	// Look up the handler registered for this protocol type.  A nil handlers
-	// map means no handlers were registered (e.g., a state-only test server).
-	handler := n.handlers[protocolType]
-	if handler == nil {
-		return nil, status.Errorf(codes.FailedPrecondition,
-			"NodeStageVolume: no handler registered for protocol %q", protocolType)
-	}
-
-	// ── Step 3: Protocol-specific VolumeContext validation ──────────────────
 	// Extract common VolumeContext parameters used across protocols.
 	targetID := volCtx[VolumeContextKeyTargetID]
 	address := volCtx[VolumeContextKeyAddress]
 	port := volCtx[VolumeContextKeyPort]
 
-	// NVMe-oF TCP requires target_id (NQN), address, and port.
-	if protocolType == ProtocolNVMeoFTCP {
-		if targetID == "" {
-			return nil, status.Errorf(codes.InvalidArgument,
-				"NodeStageVolume: volume_context missing required key %q", VolumeContextKeyTargetID)
+	var handler ProtocolHandler
+	if !local {
+		// ── Step 3: Protocol handler dispatch ───────────────────────────────
+		// Look up the handler registered for this protocol type.  A nil handlers
+		// map means no handlers were registered (e.g., a state-only test server).
+		handler = n.handlers[protocolType]
+		if handler == nil {
+			return nil, status.Errorf(codes.FailedPrecondition,
+				"NodeStageVolume: no handler registered for protocol %q", protocolType)
 		}
-		if address == "" {
-			return nil, status.Errorf(codes.InvalidArgument,
-				"NodeStageVolume: volume_context missing required key %q", VolumeContextKeyAddress)
+
+		// ── Step 4: Protocol-specific VolumeContext validation ──────────────
+		// NVMe-oF TCP requires target_id (NQN), address, and port.
+		if protocolType == ProtocolNVMeoFTCP {
+			if targetID == "" {
+				return nil, status.Errorf(codes.InvalidArgument,
+					"NodeStageVolume: volume_context missing required key %q", VolumeContextKeyTargetID)
+			}
+			if address == "" {
+				return nil, status.Errorf(codes.InvalidArgument,
+					"NodeStageVolume: volume_context missing required key %q", VolumeContextKeyAddress)
+			}
+			if port == "" {
+				return nil, status.Errorf(codes.InvalidArgument,
+					"NodeStageVolume: volume_context missing required key %q", VolumeContextKeyPort)
+			}
 		}
-		if port == "" {
-			return nil, status.Errorf(codes.InvalidArgument,
-				"NodeStageVolume: volume_context missing required key %q", VolumeContextKeyPort)
-		}
+	} else if targetID == "" {
+		// A local attach reads the export state of the volume's NVMe-oF
+		// subsystem (named by target_id) to fence against remote
+		// initiators; the controller always sets it.
+		return nil, status.Errorf(codes.InvalidArgument,
+			"NodeStageVolume: volume_context missing required key %q for local attach", VolumeContextKeyTargetID)
 	}
 
 	// ── State machine ordering guard ────────────────────────────────────────
@@ -748,27 +796,51 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 		fsType, mkfsOpts, mountFlags = staged.fsType, staged.mkfsOptions, staged.mountFlags
 	}
 
-	// ── Step 4: Attach via protocol handler ─────────────────────────────────
-	// Attach performs transport-level connection setup (RFC §5.4.2 Layer 1)
-	// and returns the device path (block protocols) or mount source (file
-	// protocols) for Layer 2 presentation.
-	attachResult, attachErr := handler.Attach(ctx, AttachParams{
-		ProtocolType: protocolType,
-		ConnectionID: targetID,
-		Address:      address,
-		Port:         port,
-		Extra:        volCtx,
-	})
-	if attachErr != nil {
-		if ctx.Err() == context.DeadlineExceeded {
-			return nil, status.Errorf(codes.DeadlineExceeded,
-				"NodeStageVolume: timed out waiting for device for volume %q (protocol %q)",
-				volumeID, protocolType)
+	// ── Step 5: Attach ──────────────────────────────────────────────────────
+	// Local attach claims the backend device through a device-mapper linear
+	// target; protocol attach performs transport-level connection setup
+	// (RFC §5.4.2 Layer 1).  Both yield the device path for Layer 2
+	// presentation.
+	var devicePath string
+	var attachResult *AttachResult
+	if local {
+		dmPath, dmErr := n.attachLocal(ctx, volumeID, targetID, localDevice, stagingPath, volCap)
+		if dmErr != nil {
+			return nil, dmErr
 		}
-		return nil, status.Errorf(codes.Internal,
-			"NodeStageVolume: attach volume %q (protocol %q): %v", volumeID, protocolType, attachErr)
+		devicePath = dmPath
+	} else {
+		var attachErr error
+		attachResult, attachErr = handler.Attach(ctx, AttachParams{
+			ProtocolType: protocolType,
+			ConnectionID: targetID,
+			Address:      address,
+			Port:         port,
+			Extra:        volCtx,
+		})
+		if attachErr != nil {
+			if ctx.Err() == context.DeadlineExceeded {
+				return nil, status.Errorf(codes.DeadlineExceeded,
+					"NodeStageVolume: timed out waiting for device for volume %q (protocol %q)",
+					volumeID, protocolType)
+			}
+			return nil, status.Errorf(codes.Internal,
+				"NodeStageVolume: attach volume %q (protocol %q): %v", volumeID, protocolType, attachErr)
+		}
+		devicePath = attachResult.DevicePath
 	}
-	devicePath := attachResult.DevicePath
+
+	// failStaged returns err for a failure after the attach.  A local stage
+	// is rolled back (see abortLocal): its staged surface is unmounted, then
+	// its device-mapper claim is removed and any stage state file written by
+	// this attempt deleted, so neither a claim without the state that lets
+	// NodeUnstageVolume release it nor a mount on a removed dm device remains.
+	failStaged := func(err error) error {
+		if local {
+			return n.abortLocal(ctx, volumeID, stagingPath, volCap, err)
+		}
+		return err
+	}
 
 	// Record partial state: transport attached; mount not yet started.
 	// This drives the volume into NodeStagePartial so that a subsequent mount
@@ -779,7 +851,7 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 		_, _ = n.sm.Transition(volumeID, OpNodeStageConnected) //nolint:errcheck // best-effort; does not affect mount
 	}
 
-	// ── Step 5: Mount or bind-mount depending on access type ───────────────
+	// ── Step 6: Mount or bind-mount depending on access type ───────────────
 	switch {
 	case volCap.GetMount() != nil:
 		// MOUNT access: format (only if the device carries no filesystem)
@@ -790,15 +862,15 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 		// file write failed but the mount succeeded).
 		alreadyMounted, mountCheckErr := n.mounter.IsMounted(stagingPath)
 		if mountCheckErr != nil {
-			return nil, status.Errorf(codes.Internal,
-				"NodeStageVolume: check if %q is mounted: %v", stagingPath, mountCheckErr)
+			return nil, failStaged(status.Errorf(codes.Internal,
+				"NodeStageVolume: check if %q is mounted: %v", stagingPath, mountCheckErr))
 		}
 		if !alreadyMounted {
 			formatErr := n.mounter.FormatAndMount(devicePath, stagingPath, fsType, mountFlags, mkfsOpts)
 			if formatErr != nil {
-				return nil, status.Errorf(codes.Internal,
+				return nil, failStaged(status.Errorf(codes.Internal,
 					"NodeStageVolume: format-and-mount %q → %q (fs=%s): %v",
-					devicePath, stagingPath, fsType, formatErr)
+					devicePath, stagingPath, fsType, formatErr))
 			}
 		}
 
@@ -809,24 +881,24 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 		bindTarget := blockStagingDevicePath(stagingPath)
 		alreadyMounted, mountCheckErr := n.mounter.IsMounted(bindTarget)
 		if mountCheckErr != nil {
-			return nil, status.Errorf(codes.Internal,
-				"NodeStageVolume: check if %q is mounted: %v", bindTarget, mountCheckErr)
+			return nil, failStaged(status.Errorf(codes.Internal,
+				"NodeStageVolume: check if %q is mounted: %v", bindTarget, mountCheckErr))
 		}
 		if !alreadyMounted {
 			bindErr := n.mounter.Mount(devicePath, bindTarget, "", []string{"bind"})
 			if bindErr != nil {
-				return nil, status.Errorf(codes.Internal,
+				return nil, failStaged(status.Errorf(codes.Internal,
 					"NodeStageVolume: bind-mount block device %q → %q: %v",
-					devicePath, bindTarget, bindErr)
+					devicePath, bindTarget, bindErr))
 			}
 		}
 
 	default:
-		return nil, status.Error(codes.InvalidArgument, //nolint:wrapcheck
-			"NodeStageVolume: volume_capability must specify mount or block access type")
+		return nil, failStaged(status.Error(codes.InvalidArgument,
+			"NodeStageVolume: volume_capability must specify mount or block access type"))
 	}
 
-	// ── Step 6: Persist stage state ─────────────────────────────────────────
+	// ── Step 7: Persist stage state ─────────────────────────────────────────
 	// Write the protocol state to a state file so NodeUnstageVolume can
 	// disconnect the correct target even though it does not receive
 	// VolumeContext.  AccessType is captured here for the same reason: the
@@ -836,15 +908,20 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 	if volCap.GetBlock() != nil {
 		accessType = AccessTypeBlock
 	}
-	stageState := stageStateFromAttachResult(protocolType, accessType, targetID, address, port, attachResult)
+	var stageState *nodeStageState
+	if local {
+		stageState = localStageState(protocolType, accessType, LocalDMName(volumeID), localDevice)
+	} else {
+		stageState = stageStateFromAttachResult(protocolType, accessType, targetID, address, port, attachResult)
+	}
 	stageState.FsType = fsType
 	writeErr := n.writeStageState(volumeID, stageState)
 	if writeErr != nil {
-		return nil, status.Errorf(codes.Internal,
-			"NodeStageVolume: persist stage state for %q: %v", volumeID, writeErr)
+		return nil, failStaged(status.Errorf(codes.Internal,
+			"NodeStageVolume: persist stage state for %q: %v", volumeID, writeErr))
 	}
 
-	// ── Step 7: Advance state machine to NodeStaged ──────────────────────────
+	// ── Step 8: Advance state machine to NodeStaged ──────────────────────────
 	// All staging work (connect + mount + state file) completed successfully.
 	// Force the SM directly to NodeStaged regardless of whether we entered
 	// from ControllerPublished (→ NodeStagePartial via Step 1 above) or from
@@ -870,7 +947,8 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 //  3. If no state file exists, probe the staging surfaces: a live mount means
 //     the state was lost while the volume is still staged, so the call fails
 //     instead of reporting success over a leaked mount and transport session.
-//     Only when nothing is mounted does the call succeed idempotently.
+//     Only when nothing is mounted does the call succeed idempotently, after
+//     removing an orphan local-attach device-mapper target of the volume.
 //  4. Unmount the staged target via the idempotent Mounter.Unmount, which
 //     also tears down corrupted mounts whose probe returns EIO.  A failed
 //     unmount aborts here, before transport detach and state cleanup.
@@ -948,6 +1026,15 @@ func (n *NodeServer) NodeUnstageVolume(
 		if guardErr != nil {
 			return nil, guardErr
 		}
+		// Nothing is mounted, but a local stage that failed without its
+		// state file (or whose state directory was lost) may still hold
+		// the backend device through its deterministically named
+		// device-mapper target, which keeps the network export fenced.
+		// Release it before reporting success.
+		orphanErr := n.removeOrphanLocal(ctx, volumeID)
+		if orphanErr != nil {
+			return nil, orphanErr
+		}
 		return &csi.NodeUnstageVolumeResponse{}, nil
 	}
 
@@ -982,10 +1069,19 @@ func (n *NodeServer) NodeUnstageVolume(
 		_ = os.Remove(unmountTarget) //nolint:errcheck // best-effort cleanup
 	}
 
-	// ── Step 3: Disconnect the storage target ───────────────────────────────
-	// Dispatch to the ProtocolHandler registered for the persisted protocol type.
-	// Detach is idempotent: disconnecting an already-disconnected target is a no-op.
-	if n.handlers != nil {
+	// ── Step 3: Release the local claim or disconnect the storage target ───
+	// A local stage holds the backend device through a device-mapper target
+	// and never touched the protocol handler; removing the target releases
+	// the exclusive claim the agent checks before re-enabling the export.
+	// Otherwise dispatch to the ProtocolHandler registered for the persisted
+	// protocol type.  Detach is idempotent: disconnecting an
+	// already-disconnected target is a no-op.
+	if state.isLocalAttach() {
+		releaseErr := n.releaseLocal(ctx, volumeID, state)
+		if releaseErr != nil {
+			return nil, releaseErr
+		}
+	} else if n.handlers != nil {
 		handler, ok := n.handlers[state.ProtocolType]
 		if !ok {
 			return nil, status.Errorf(codes.Internal,

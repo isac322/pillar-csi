@@ -138,6 +138,34 @@ func (s *Server) DenyInitiator(
 	return &agentv1.DenyInitiatorResponse{}, nil
 }
 
+// SetLocalAttach switches a volume's export between serving remote
+// initiators (local=false) and being fenced for a direct attach on the
+// storage node (local=true, returning the backend device path).  It is gated
+// by the export restore like AllowInitiator and fenced (grant-class) in the
+// protocol handler.  The operation is idempotent in both directions.
+func (s *Server) SetLocalAttach(
+	ctx context.Context,
+	req *agentv1.SetLocalAttachRequest,
+) (*agentv1.SetLocalAttachResponse, error) {
+	_, err := poolFromVolumeID(req.GetVolumeId())
+	if err != nil {
+		return nil, err
+	}
+	handler, err := s.handlerForProtocol(req.GetProtocolType())
+	if err != nil {
+		return nil, protocolRPCError(err)
+	}
+	err = s.checkExportRestoreDone("SetLocalAttach")
+	if err != nil {
+		return nil, err
+	}
+	devicePath, err := handler.SetLocalAttach(ctx, req.GetVolumeId(), req.GetLocal(), req.GetFence())
+	if err != nil {
+		return nil, protocolRPCError(err)
+	}
+	return &agentv1.SetLocalAttachResponse{DevicePath: devicePath}, nil
+}
+
 func protocolRPCError(err error) error {
 	if st, ok := status.FromError(err); ok {
 		return status.Errorf(st.Code(), "%s", st.Message())

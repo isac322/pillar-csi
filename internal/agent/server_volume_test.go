@@ -403,6 +403,9 @@ func TestExpandVolume_ActiveNVMeNamespaceRevalidationFailure(t *testing.T) {
 	if err := os.MkdirAll(namespaceDir, 0o750); err != nil {
 		t.Fatalf("create active namespace: %v", err)
 	}
+	if err := os.WriteFile(filepath.Join(namespaceDir, "enable"), []byte("1"), 0o600); err != nil {
+		t.Fatalf("seed enabled namespace: %v", err)
+	}
 	if err := os.Mkdir(filepath.Join(namespaceDir, "revalidate_size"), 0o750); err != nil {
 		t.Fatalf("create invalid revalidate_size attribute: %v", err)
 	}

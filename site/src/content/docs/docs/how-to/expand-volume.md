@@ -2,7 +2,7 @@
 title: Expand a volume
 description: Grow a pillar-csi PVC backed by a ZFS zvol or an LVM logical volume while it stays mounted, and resize its ext4 or xfs filesystem on the Kubernetes worker.
 sidebar:
-  order: 7
+  order: 8
 ---
 
 pillar-csi supports online expansion. You raise the PVC's storage request, the agent grows the zvol or logical volume on the storage node, and the node plugin grows the filesystem while the pod keeps running. Shrinking is not supported.
@@ -43,6 +43,8 @@ kubectl describe pvc postgres-data
 4. The controller always reports that node expansion is required. On the worker, `NodeExpandVolume` rescans the NVMe controller so the kernel sees the new size, then grows the filesystem: `resize2fs <device>` for ext4, `xfs_growfs <mount point>` for xfs.
 
 For a raw block volume (`volumeMode: Block`) there is no filesystem, so step 4 only reports the new size. The application sees the larger device.
+
+For a volume [attached locally on the storage node](/docs/how-to/local-attach/#expansion), the namespace is disabled, so the agent skips `revalidate_size`. `NodeExpandVolume` on the storage node reloads the `pillar-local-*` device-mapper table to the new size and then grows the filesystem on that device.
 
 If no pod uses the PVC during expansion, Kubernetes finishes the filesystem step the next time a pod mounts it.
 
