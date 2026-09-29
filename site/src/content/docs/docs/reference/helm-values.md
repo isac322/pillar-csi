@@ -689,9 +689,9 @@ Init container image tag.
 
 ### <code>node.<wbr>initModprobe.<wbr>modules</code>
 
-Type: `list`. Default: `["nvme_fabrics","nvme_tcp"]`
+Type: `list`. Default: `["nvme_fabrics","nvme_tcp","dm_mod"]`
 
-Kernel modules to load. Failures are silently ignored (best-effort). nvme_fabrics must be listed before nvme_tcp (it is a dependency).
+Kernel modules to load. Failures are silently ignored (best-effort). nvme_fabrics must be listed before nvme_tcp (it is a dependency). dm_mod provides the device-mapper target that holds the backend device of a local attach on the storage node.
 
 ### <code>node.<wbr>initModprobe.<wbr>resources</code>
 

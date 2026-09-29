@@ -132,7 +132,7 @@ Kubernetes: `>=1.24.0-0`
 | node.initModprobe.image.pullPolicy | string | `""` |  |
 | node.initModprobe.image.repository | string | `"busybox"` | Image used for the modprobe init container (needs kmod/modprobe binary). |
 | node.initModprobe.image.tag | string | `"1.38.0"` | Init container image tag. |
-| node.initModprobe.modules | list | `["nvme_fabrics","nvme_tcp"]` | Kernel modules to load. Failures are silently ignored (best-effort). nvme_fabrics must be listed before nvme_tcp (it is a dependency). |
+| node.initModprobe.modules | list | `["nvme_fabrics","nvme_tcp","dm_mod"]` | Kernel modules to load. Failures are silently ignored (best-effort). nvme_fabrics must be listed before nvme_tcp (it is a dependency). dm_mod provides the device-mapper target that holds the backend device of a local attach on the storage node. |
 | node.initModprobe.resources | object | `{"limits":{"cpu":"50m","memory":"32Mi"},"requests":{"cpu":"5m","memory":"16Mi"}}` | Resource requests/limits for the modprobe init container. |
 | node.kubeletPluginRegistrationDir | string | `"/var/lib/kubelet/plugins_registry"` | Host path for the kubelet plugin registration socket directory. |
 | node.kubeletPluginsDir | string | `"/var/lib/kubelet/plugins"` | Host path for the kubelet plugin registration directory. |
