@@ -29,16 +29,17 @@ import (
 
 	agentv1 "github.com/isac322/pillar-csi/gen/go/pillar_csi/agent/v1"
 	"github.com/isac322/pillar-csi/internal/agent"
+	"github.com/isac322/pillar-csi/internal/agent/nvmeof"
 )
 
-// localAttachEnv carries an export test server and its holder-probe state:
-// the probe reports the backend device as held while held is true and
-// records every probed device path in probed.
+// localAttachEnv carries an export test server and its claimer state: the
+// claimer refuses with ErrDeviceHeld while held is true and records every
+// claimed device path in claimed.
 type localAttachEnv struct {
 	srv     *agent.Server
 	cfgRoot string
 	held    *atomic.Bool
-	probed  *[]string
+	claimed *[]string
 }
 
 func localAttachServer(t *testing.T) localAttachEnv {
@@ -46,10 +47,13 @@ func localAttachServer(t *testing.T) localAttachEnv {
 	env := localAttachEnv{}
 	env.srv, env.cfgRoot = newExportTestServer(t, &mockBackend{expandAllocated: 2 << 30})
 	env.held = &atomic.Bool{}
-	env.probed = &[]string{}
-	agent.SetDeviceHeldProbe(t, env.srv, func(path string) (bool, error) {
-		*env.probed = append(*env.probed, path)
-		return env.held.Load(), nil
+	env.claimed = &[]string{}
+	agent.SetDeviceClaimer(t, env.srv, func(path string) (func() error, error) {
+		*env.claimed = append(*env.claimed, path)
+		if env.held.Load() {
+			return nil, nvmeof.ErrDeviceHeld
+		}
+		return func() error { return nil }, nil
 	})
 	return env
 }
@@ -118,7 +122,7 @@ func TestSetLocalAttach_DisableThenEnable(t *testing.T) {
 	t.Parallel()
 	env := localAttachServer(t)
 	exportForLocalAttach(t, env.srv)
-	*env.probed = nil
+	*env.claimed = nil
 
 	for range 2 {
 		resp, err := setLocalAttach(env.srv, true, testFence(t))
@@ -139,11 +143,10 @@ func TestSetLocalAttach_DisableThenEnable(t *testing.T) {
 			t.Fatalf("SetLocalAttach(false): %v", err)
 		}
 	}
-	// Only the actual disabled→enabled transition probes the device: once
-	// before and once after the enable write.
-	if len(*env.probed) != 2 ||
-		(*env.probed)[0] != testDevicePath || (*env.probed)[1] != testDevicePath {
-		t.Errorf("probed devices = %v, want [%s %s]", *env.probed, testDevicePath, testDevicePath)
+	// Only the actual disabled→enabled transition claims the device, once,
+	// held across the enable write.
+	if len(*env.claimed) != 1 || (*env.claimed)[0] != testDevicePath {
+		t.Errorf("claimed devices = %v, want [%s]", *env.claimed, testDevicePath)
 	}
 }
 
@@ -178,30 +181,30 @@ func TestSetLocalAttach_EnableRefusedWhileDeviceHeld(t *testing.T) {
 	}
 }
 
-// TestSetLocalAttach_ReprobeAfterEnable: a storage-node claim established in
-// the window between the agent's holder check and the enable write is caught
-// by the post-enable probe: the request reports FailedPrecondition and the
-// namespace is left disabled.
-func TestSetLocalAttach_ReprobeAfterEnable(t *testing.T) {
+// TestSetLocalAttach_ClaimHeldAcrossEnable: the agent keeps its exclusive
+// claim on the backend device for the whole enable write, so the storage
+// node cannot claim the device under a still-disabled namespace.
+func TestSetLocalAttach_ClaimHeldAcrossEnable(t *testing.T) {
 	t.Parallel()
 	env := localAttachServer(t)
 	exportForLocalAttach(t, env.srv)
 	if _, err := setLocalAttach(env.srv, true, testFence(t)); err != nil {
 		t.Fatalf("SetLocalAttach(true): %v", err)
 	}
-	probes := 0
-	agent.SetDeviceHeldProbe(t, env.srv, func(string) (bool, error) {
-		probes++
-		return probes > 1, nil // claim lands between the check and the write
+	agent.SetDeviceClaimer(t, env.srv, func(string) (func() error, error) {
+		return func() error {
+			if got := namespaceEnable(t, env.cfgRoot); got != "1" {
+				t.Errorf("enable at claim release = %q, want 1 (claim held across the write)", got)
+			}
+			return nil
+		}, nil
 	})
 
-	_, err := setLocalAttach(env.srv, false, testFence(t))
-	if status.Code(err) != codes.FailedPrecondition {
-		t.Fatalf("SetLocalAttach(false) with claim racing enable: code = %v (%v), want FailedPrecondition",
-			status.Code(err), err)
+	if _, err := setLocalAttach(env.srv, false, testFence(t)); err != nil {
+		t.Fatalf("SetLocalAttach(false): %v", err)
 	}
-	if got := namespaceEnable(t, env.cfgRoot); got != "0" {
-		t.Fatalf("enable after raced switch = %q, want 0", got)
+	if got := namespaceEnable(t, env.cfgRoot); got != "1" {
+		t.Fatalf("enable after switch = %q, want 1", got)
 	}
 }
 
@@ -244,7 +247,7 @@ func TestReconcileState_LocalAttachKeepsNamespaceDisabled(t *testing.T) {
 	t.Parallel()
 	env := localAttachServer(t)
 	exportForLocalAttach(t, env.srv)
-	*env.probed = nil
+	*env.claimed = nil
 
 	for range 2 {
 		result := reconcileLocal(t, env.srv, true)
@@ -255,8 +258,8 @@ func TestReconcileState_LocalAttachKeepsNamespaceDisabled(t *testing.T) {
 			t.Fatalf("enable after local reconcile = %q, want 0", got)
 		}
 	}
-	if len(*env.probed) != 0 {
-		t.Errorf("probed devices = %v, want none for a local reconcile", *env.probed)
+	if len(*env.claimed) != 0 {
+		t.Errorf("claimed devices = %v, want none for a local reconcile", *env.claimed)
 	}
 }
 

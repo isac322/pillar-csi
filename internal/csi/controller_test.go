@@ -114,6 +114,11 @@ type mockAgentClient struct {
 	allowInitiatorCalls int
 	denyInitiatorCalls  int
 
+	// callOrder records the RPC method names in invocation order so tests can
+	// assert the relative ordering of agent calls (e.g. an unfence before the
+	// grant).
+	callOrder []string
+
 	// lastCreateVolumeReq captures the most recent CreateVolume request for
 	// assertion on backend/export params in annotation integration tests.
 	lastCreateVolumeReq *agentv1.CreateVolumeRequest
@@ -262,6 +267,7 @@ func (m *mockAgentClient) AllowInitiator(
 	_ ...grpc.CallOption,
 ) (*agentv1.AllowInitiatorResponse, error) {
 	m.allowInitiatorCalls++
+	m.callOrder = append(m.callOrder, "AllowInitiator")
 	m.lastAllowInitiator = req
 	if m.allowInitiatorErr != nil {
 		return nil, m.allowInitiatorErr
@@ -274,6 +280,7 @@ func (m *mockAgentClient) DenyInitiator(
 	_ ...grpc.CallOption,
 ) (*agentv1.DenyInitiatorResponse, error) {
 	m.denyInitiatorCalls++
+	m.callOrder = append(m.callOrder, "DenyInitiator")
 	m.lastDenyInitiator = req
 	if m.denyInitiatorErr != nil {
 		return nil, m.denyInitiatorErr
@@ -286,6 +293,7 @@ func (m *mockAgentClient) SetLocalAttach(
 	_ ...grpc.CallOption,
 ) (*agentv1.SetLocalAttachResponse, error) {
 	m.setLocalAttachCalls = append(m.setLocalAttachCalls, req)
+	m.callOrder = append(m.callOrder, "SetLocalAttach")
 	if m.setLocalAttachErr != nil {
 		return nil, m.setLocalAttachErr
 	}

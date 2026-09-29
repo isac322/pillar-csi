@@ -1396,8 +1396,11 @@ func (s *ControllerServer) resolvePublishInitiator(
 // publish first has the agent re-enable the export (SetLocalAttach
 // local=false, which fails with FailedPrecondition while the storage node
 // still holds the device), then clears status.localAttachNode under a new
-// fencing generation, re-enables at that generation and only then grants
-// its initiator (see finishPublish).
+// fencing generation and re-enables at that generation before granting its
+// initiator.  Even with status.localAttachNode already empty, a protocol
+// publish of a localAttach volume re-enables at its reservation, so a stale
+// resync can never leave the export disabled under a successful publish
+// (see finishPublish).
 func (s *ControllerServer) ControllerPublishVolume(
 	ctx context.Context,
 	req *csi.ControllerPublishVolumeRequest,
@@ -1495,8 +1498,9 @@ func (s *ControllerServer) ControllerPublishVolume(
 
 // finishPublish completes a publish whose publication is already committed
 // under fence: local publishes fence the export and return the backend
-// device path, protocol publishes re-enable a locally fenced export (if
-// needed) and grant the initiator.
+// device path, protocol publishes re-enable the export of a localAttach
+// volume (returning it from a previous local attach when
+// status.localAttachNode is set) and grant the initiator.
 func (s *ControllerServer) finishPublish(
 	ctx context.Context,
 	local bool,
@@ -1510,7 +1514,7 @@ func (s *ControllerServer) finishPublish(
 		return s.finishLocalPublish(ctx, agentAddr, volumeID, agentVolID, protocolType, nodeID, fence)
 	}
 
-	// ── Return the export from a previous local attach to the network ────────
+	// ── Return the export of a local attach to the network ─────────────────
 	// Clearing status.localAttachNode changes the desired export state the
 	// resync loop derives (local_attach=false), so the clear commits a new
 	// fencing generation and the unfence is issued twice:
@@ -1527,9 +1531,15 @@ func (s *ControllerServer) finishPublish(
 	//      is ordered after the export's return to the network.
 	//
 	// A retry that already finds status.localAttachNode empty (a previous
-	// attempt committed the clear and then failed) skips this block: its
-	// reservation generation is already newer than any generation that ever
-	// recorded the field.
+	// attempt committed the clear and then failed) still re-enables at its
+	// own reservation, which is newer than every generation that recorded
+	// the field: a stale resync admitted just before the failed attempt's
+	// re-fence may have left the namespace disabled, and skipping the call
+	// would grant — or, for an ACL-off export, succeed without any agent RPC
+	// at all — while the export still refuses the initiator.  An empty field
+	// cannot be told apart from "never attached locally" here, so every
+	// protocol publish of a localAttach volume re-enables at least once; the
+	// agent answers a no-op success when the export is already enabled.
 	if prevLocal := pvs.Status.LocalAttachNode; prevLocal != "" {
 		_, unfenceErr := s.setLocalAttach(ctx, agentAddr, agentVolID, protocolType, false, fence)
 		if unfenceErr != nil {
@@ -1543,11 +1553,17 @@ func (s *ControllerServer) finishPublish(
 		if unfenceErr != nil {
 			return nil, unfenceErr
 		}
+	} else if r := pvs.Spec.Resolved; r != nil && r.LocalAttach {
+		_, unfenceErr := s.setLocalAttach(ctx, agentAddr, agentVolID, protocolType, false, fence)
+		if unfenceErr != nil {
+			return nil, unfenceErr
+		}
 	}
 
 	// An export with ACL off (attr_allow_any_host=1) has no per-host ACL: the
 	// kernel rejects allowed_hosts links with EINVAL.  The publication record
-	// above still orders exclusivity; only the grant RPC is skipped.
+	// above still orders exclusivity; only the grant RPC is skipped (the
+	// unfence above is independent of the ACL).
 	if exportACLEnabled(pvs) {
 		grantErr := s.grantPublication(ctx, agentAddr, agentVolID, protocolType, initiatorID, fence)
 		if grantErr != nil {

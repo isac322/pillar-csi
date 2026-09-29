@@ -131,6 +131,7 @@ func newValidatingAgentTestEnv() *agentTestEnv {
 		backends,
 		configfsRoot,
 		agentsvc.WithDeviceChecker(nvmeof.AlwaysPresentChecker),
+		agentsvc.WithDeviceClaimer(nvmeof.UnclaimedDeviceClaimer),
 		agentsvc.WithDrainStateDir(filepath.Join(configfsRoot, ".agent-state")),
 	)
 

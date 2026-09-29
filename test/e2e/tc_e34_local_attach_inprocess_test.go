@@ -252,7 +252,10 @@ var _ = Describe("E34: 로컬 attach — 스토리지 노드 직접 attach와 ex
 			"[TC-E34.2] protocol publish carries no attach-mode")
 		c := env.agentSrv.counts()
 		Expect(c.AllowInitiator).To(Equal(1), "[TC-E34.2] initiator granted")
-		Expect(c.SetLocalAttach).To(BeZero(), "[TC-E34.2] export never fenced")
+		Expect(c.SetLocalAttach).To(Equal(1), "[TC-E34.2] localAttach export re-enabled once")
+		reqs := e34SetLocalAttachReqs(env)
+		Expect(reqs).To(HaveLen(1))
+		Expect(reqs[0].GetLocal()).To(BeFalse(), "[TC-E34.2] export re-enabled, not fenced")
 		Expect(e34VolumeState(env, "pvc-e34-remote").Status.LocalAttachNode).To(BeEmpty(),
 			"[TC-E34.2] no localAttachNode")
 	})
@@ -314,9 +317,12 @@ var _ = Describe("E34: 로컬 attach — 스토리지 노드 직접 attach와 ex
 			configfsRoot,
 			agentsvc.WithDeviceChecker(nvmeof.AlwaysPresentChecker),
 			agentsvc.WithDrainStateDir(filepath.Join(configfsRoot, ".agent-state")),
-			agentsvc.WithDeviceHeldProbe(func(path string) (bool, error) {
+			agentsvc.WithDeviceClaimer(func(path string) (func() error, error) {
 				probed.Store(path)
-				return held.Load(), nil
+				if held.Load() {
+					return nil, nvmeof.ErrDeviceHeld
+				}
+				return func() error { return nil }, nil
 			}),
 		)
 		fence := agentLifecycleFence(e34AgentVolumeID)

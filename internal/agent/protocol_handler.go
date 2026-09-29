@@ -162,15 +162,15 @@ func (h *NVMeoFTCPAgentHandler) Export(
 		return nil, err
 	}
 	target := &nvmeof.NvmetTarget{
-		ConfigfsRoot:    h.server.configfsRoot,
-		SubsystemNQN:    targetID,
-		NamespaceID:     1,
-		DevicePath:      devicePath,
-		BindAddress:     bindAddress,
-		Port:            port,
-		ACLEnabled:      params.ACLEnabled,
-		InlineDataSize:  inlineDataSize,
-		DeviceHeldProbe: h.server.deviceHeldProbe,
+		ConfigfsRoot:   h.server.configfsRoot,
+		SubsystemNQN:   targetID,
+		NamespaceID:    1,
+		DevicePath:     devicePath,
+		BindAddress:    bindAddress,
+		Port:           port,
+		ACLEnabled:     params.ACLEnabled,
+		InlineDataSize: inlineDataSize,
+		DeviceClaimer:  h.server.deviceClaimer,
 	}
 
 	unlock := h.server.lockTarget(agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP, targetID)
@@ -388,16 +388,16 @@ func (h *NVMeoFTCPAgentHandler) reconcileTarget(export ExportDesiredState) (*nvm
 		return nil, err
 	}
 	target := &nvmeof.NvmetTarget{
-		ConfigfsRoot:    h.server.configfsRoot,
-		SubsystemNQN:    targetID,
-		NamespaceID:     1,
-		DevicePath:      devicePath,
-		BindAddress:     bindAddress,
-		Port:            port,
-		ACLEnabled:      export.ACLEnabled,
-		InlineDataSize:  nvmeofInlineDataSize(export.ProtocolParams),
-		LocalAttach:     export.LocalAttach,
-		DeviceHeldProbe: h.server.deviceHeldProbe,
+		ConfigfsRoot:   h.server.configfsRoot,
+		SubsystemNQN:   targetID,
+		NamespaceID:    1,
+		DevicePath:     devicePath,
+		BindAddress:    bindAddress,
+		Port:           port,
+		ACLEnabled:     export.ACLEnabled,
+		InlineDataSize: nvmeofInlineDataSize(export.ProtocolParams),
+		LocalAttach:    export.LocalAttach,
+		DeviceClaimer:  h.server.deviceClaimer,
 	}
 	// Without ACL enforcement allowed_hosts has no effect, and Prepare would
 	// close the subsystem (attr_allow_any_host=0) for a non-empty host list.
@@ -471,10 +471,10 @@ func (h *NVMeoFTCPAgentHandler) targetForVolume(volumeID string) (*nvmeof.NvmetT
 	}
 
 	return &nvmeof.NvmetTarget{
-		ConfigfsRoot:    h.server.configfsRoot,
-		SubsystemNQN:    targetID,
-		NamespaceID:     1,
-		DeviceHeldProbe: h.server.deviceHeldProbe,
+		ConfigfsRoot:  h.server.configfsRoot,
+		SubsystemNQN:  targetID,
+		NamespaceID:   1,
+		DeviceClaimer: h.server.deviceClaimer,
 	}, nil
 }
 

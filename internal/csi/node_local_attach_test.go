@@ -30,6 +30,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -381,64 +382,179 @@ func TestNodeStageVolume_Local_MissingTargetIDRejected(t *testing.T) {
 	}
 }
 
-// afterFormatMounter runs after once FormatAndMount of the wrapped mock
-// succeeded.
-type afterFormatMounter struct {
+// rollbackMounter wraps the mock mounter for local-stage rollback tests: it
+// runs afterMount once a FormatAndMount or bind Mount succeeded and logs each
+// Unmount into events, which rollbackDeviceMapper shares, so the order of
+// unmount and claim removal is observable.
+type rollbackMounter struct {
 	*mockMounter
-	after func()
+	afterMount func()
+	events     *[]string
 }
 
-func (m *afterFormatMounter) FormatAndMount(source, target, fsType string, options, mkfsOptions []string) error {
+func (m *rollbackMounter) FormatAndMount(source, target, fsType string, options, mkfsOptions []string) error {
 	err := m.mockMounter.FormatAndMount(source, target, fsType, options, mkfsOptions)
 	if err == nil {
-		m.after()
+		m.afterMount()
 	}
 	return err
 }
 
+func (m *rollbackMounter) Mount(source, target, fsType string, options []string) error {
+	err := m.mockMounter.Mount(source, target, fsType, options)
+	if err == nil {
+		m.afterMount()
+	}
+	return err
+}
+
+func (m *rollbackMounter) Unmount(target string) error {
+	*m.events = append(*m.events, "unmount "+target)
+	return m.mockMounter.Unmount(target)
+}
+
+// rollbackDeviceMapper logs each claim removal into the events it shares
+// with rollbackMounter.
+type rollbackDeviceMapper struct {
+	*fakeDeviceMapper
+	events *[]string
+}
+
+func (d *rollbackDeviceMapper) Remove(ctx context.Context, name string) error {
+	*d.events = append(*d.events, "remove "+name)
+	return d.fakeDeviceMapper.Remove(ctx, name)
+}
+
+// failStateWriteAfterMount makes the stage state write of env fail once the
+// staged surface is mounted: an empty directory at the state file path makes
+// the final rename fail, while a rollback can still delete it.  It returns
+// the shared log of unmounts and claim removals.
+func failStateWriteAfterMount(t *testing.T, env *localTestEnv) *[]string {
+	t.Helper()
+	events := &[]string{}
+	stateFile := env.srv.stateFilePath(localTestVolumeID)
+	env.srv.mounter = &rollbackMounter{mockMounter: env.mounter, events: events, afterMount: func() {
+		if err := os.Mkdir(stateFile, 0o700); err != nil {
+			t.Errorf("block the state file path: %v", err)
+		}
+	}}
+	env.srv.WithDeviceMapper(&rollbackDeviceMapper{fakeDeviceMapper: env.dm, events: events})
+	return events
+}
+
 // TestNodeStageVolume_Local_MountFailureReleasesClaim verifies that a
-// failure after the claim was created (format-and-mount, bind mount, state
-// write) removes the claim so none exists without a stage state file.
+// failed format-and-mount or bind mount after the claim was created removes
+// the claim so none exists without a stage state file.
 func TestNodeStageVolume_Local_MountFailureReleasesClaim(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		volCap *csi.VolumeCapability
-		inject func(t *testing.T, env *localTestEnv)
+		inject func(env *localTestEnv)
 	}{
-		{name: "format-and-mount", volCap: mountCap("ext4"), inject: func(_ *testing.T, env *localTestEnv) {
+		{name: "format-and-mount", volCap: mountCap("ext4"), inject: func(env *localTestEnv) {
 			env.mounter.formatAndMountErr = errors.New("mkfs.ext4: exit status 1")
 		}},
-		{name: "bind mount", volCap: blockCap(), inject: func(_ *testing.T, env *localTestEnv) {
+		{name: "bind mount", volCap: blockCap(), inject: func(env *localTestEnv) {
 			env.mounter.mountErr = errors.New("mount: exit status 32")
-		}},
-		{name: "state write", volCap: mountCap("ext4"), inject: func(t *testing.T, env *localTestEnv) {
-			// Replace the state directory by a regular file once the
-			// volume is mounted, so only the final state write fails.
-			stateDir := env.srv.stateDir
-			env.srv.mounter = &afterFormatMounter{mockMounter: env.mounter, after: func() {
-				if err := os.RemoveAll(stateDir); err != nil {
-					t.Errorf("remove state dir: %v", err)
-				}
-				if err := os.WriteFile(stateDir, nil, 0o600); err != nil {
-					t.Errorf("replace state dir by a file: %v", err)
-				}
-			}}
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			env := newLocalTestEnv(t)
-			tc.inject(t, env)
+			tc.inject(env)
 
 			_, err := env.srv.NodeStageVolume(context.Background(), localStageRequest(t.TempDir(), tc.volCap))
 			requireGRPCCode(t, err, codes.Internal)
-			// Undo the state-write sabotage so the no-state assertion can
-			// read the (empty) state directory.
-			if fi, statErr := os.Stat(env.srv.stateDir); statErr == nil && !fi.IsDir() {
-				if rmErr := os.Remove(env.srv.stateDir); rmErr != nil {
-					t.Fatalf("restore state dir: %v", rmErr)
+			requireLocalClaimReleased(t, env)
+		})
+	}
+}
+
+// TestNodeStageVolume_Local_StateWriteFailureRollsBackMount verifies that a
+// local stage whose mount or bind succeeded but whose state write failed
+// unmounts the staged surface before it removes the claim — removing the
+// claim under a live bind would leave the bind on a dead dm device — and
+// leaves neither the sentinel nor a stage state entry behind.
+func TestNodeStageVolume_Local_StateWriteFailureRollsBackMount(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		volCap *csi.VolumeCapability
+	}{
+		{name: "filesystem", volCap: mountCap("ext4")},
+		{name: "block", volCap: blockCap()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newLocalTestEnv(t)
+			events := failStateWriteAfterMount(t, env)
+			stagingPath := t.TempDir()
+			surface := stageBindTarget(stagingPath, tc.volCap)
+			isBlock := tc.volCap.GetBlock() != nil
+			if isBlock {
+				if err := os.WriteFile(surface, nil, 0o600); err != nil {
+					t.Fatalf("create block sentinel: %v", err)
 				}
 			}
-			requireLocalClaimReleased(t, env)
+
+			_, err := env.srv.NodeStageVolume(context.Background(), localStageRequest(stagingPath, tc.volCap))
+			requireGRPCCode(t, err, codes.Internal)
+			if !strings.Contains(err.Error(), "persist stage state") {
+				t.Errorf("error = %v, want the state write failure", err)
+			}
+
+			requireSurfaceRolledBack(t, env, *events, surface, isBlock)
+		})
+	}
+}
+
+// requireSurfaceRolledBack fails t unless the failed local stage unmounted
+// surface before it removed the claim, released the claim, left no stage
+// state and, for block, removed the sentinel.
+func requireSurfaceRolledBack(t *testing.T, env *localTestEnv, events []string, surface string, isBlock bool) {
+	t.Helper()
+	want := []string{"unmount " + surface, "remove " + LocalDMName(localTestVolumeID)}
+	if !slices.Equal(events, want) {
+		t.Errorf("rollback = %v, want %v: the surface must be unmounted before the claim is removed", events, want)
+	}
+	if env.mounter.mountedPaths[surface] {
+		t.Errorf("%q still mounted after the failed stage", surface)
+	}
+	requireLocalClaimReleased(t, env)
+	if isBlock {
+		if _, statErr := os.Stat(surface); !os.IsNotExist(statErr) {
+			t.Errorf("block sentinel %q after rollback: stat err = %v, want not-exist", surface, statErr)
+		}
+	}
+}
+
+// TestNodeStageVolume_Local_RollbackUnmountFailureKeepsClaim verifies that a
+// rollback whose unmount fails keeps the claim — it is safe under the live
+// mount, while removing it would strand the mount on a dead device — and
+// reports the unmount failure joined to the stage failure.
+func TestNodeStageVolume_Local_RollbackUnmountFailureKeepsClaim(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		volCap *csi.VolumeCapability
+	}{
+		{name: "filesystem", volCap: mountCap("ext4")},
+		{name: "block", volCap: blockCap()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newLocalTestEnv(t)
+			failStateWriteAfterMount(t, env)
+			env.mounter.unmountErr = errors.New("umount: target is busy")
+			stagingPath := t.TempDir()
+			surface := stageBindTarget(stagingPath, tc.volCap)
+
+			_, err := env.srv.NodeStageVolume(context.Background(), localStageRequest(stagingPath, tc.volCap))
+			requireGRPCCode(t, err, codes.Internal)
+			if !strings.Contains(err.Error(), "persist stage state") || !errors.Is(err, env.mounter.unmountErr) {
+				t.Errorf("error = %v, want the state write failure joined with the unmount failure", err)
+			}
+			if len(env.dm.removeCalls) != 0 {
+				t.Errorf("Remove calls = %v, want none while %q is still mounted", env.dm.removeCalls, surface)
+			}
+			if !env.mounter.mountedPaths[surface] {
+				t.Errorf("%q not mounted; the failed unmount must leave it in place", surface)
+			}
 		})
 	}
 }

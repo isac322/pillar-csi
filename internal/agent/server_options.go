@@ -50,14 +50,16 @@ func WithDevicePollParams(interval, timeout time.Duration) ServerOption {
 	}
 }
 
-// WithDeviceHeldProbe overrides the probe that checks, before a disabled
-// NVMe-oF namespace is enabled, whether its backend device is held
-// exclusively on the storage node (local attach in use).
+// WithDeviceClaimer overrides the claimer that takes an exclusive claim on
+// the backend device before a disabled NVMe-oF namespace is enabled; the
+// claim is held across the enable write so a local attach on the storage
+// node cannot claim the device in the gap.
 //
-// In production the server defaults to nvmeof.DeviceHeldExclusively (an
-// O_EXCL open).  Tests pass a fake to simulate a held device.
-func WithDeviceHeldProbe(p nvmeof.DeviceHeldProbe) ServerOption {
-	return func(s *Server) { s.deviceHeldProbe = p }
+// In production the server defaults to nvmeof.ClaimDeviceExclusively (an
+// O_EXCL open held for the enable).  Tests pass a fake to simulate a held
+// device or observe the claim ordering.
+func WithDeviceClaimer(c nvmeof.DeviceClaimer) ServerOption {
+	return func(s *Server) { s.deviceClaimer = c }
 }
 
 // WithDrainStateDir overrides where Drain writes the .drained marker.

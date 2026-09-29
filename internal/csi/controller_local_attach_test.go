@@ -144,8 +144,11 @@ func TestControllerPublishVolume_LocalAttachDecision(t *testing.T) {
 }
 
 // requireProtocolPublish asserts a publish recorded exactly one publication
-// used the protocol path: empty PublishContext, AllowInitiator granted with
-// the node's NQN, no SetLocalAttach and no status.localAttachNode.
+// used the protocol path: empty PublishContext and AllowInitiator granted
+// with the node's NQN, no status.localAttachNode.  A localAttach volume is
+// additionally re-enabled once (SetLocalAttach local=false at the
+// reservation fence, ordered before the grant) whether or not it was ever
+// attached locally; other volumes send no SetLocalAttach at all.
 func requireProtocolPublish(
 	t *testing.T, env *controllerTestEnv,
 	resp *csi.ControllerPublishVolumeResponse, pvs *v1alpha1.PillarVolumeState,
@@ -154,8 +157,28 @@ func requireProtocolPublish(
 	if len(resp.GetPublishContext()) != 0 {
 		t.Errorf("PublishContext = %v, want empty (protocol attach)", resp.GetPublishContext())
 	}
-	if n := len(env.agent.setLocalAttachCalls); n != 0 {
-		t.Errorf("SetLocalAttach calls = %d, want 0", n)
+	wantCalls := 0
+	if r := pvs.Spec.Resolved; r != nil && r.LocalAttach {
+		wantCalls = 1
+	}
+	calls := env.agent.setLocalAttachCalls
+	if len(calls) != wantCalls {
+		t.Fatalf("SetLocalAttach calls = %d, want %d", len(calls), wantCalls)
+	}
+	if wantCalls == 1 {
+		call := calls[0]
+		if call.GetLocal() {
+			t.Errorf("SetLocalAttach request = %+v, want local=false (re-enable)", call)
+		}
+		fence := call.GetFence()
+		if fence.GetVolumeUid() != string(pvs.UID) ||
+			fence.GetGeneration() != generationOf(pvs) {
+			t.Errorf("SetLocalAttach fence = %+v, want the reservation (uid %s, generation %d)",
+				fence, pvs.UID, pvs.Status.PublicationGeneration)
+		}
+		if order := env.agent.callOrder; !slices.Equal(order, []string{"SetLocalAttach", "AllowInitiator"}) {
+			t.Errorf("agent call order = %v, want SetLocalAttach before AllowInitiator", order)
+		}
 	}
 	if env.agent.allowInitiatorCalls != 1 {
 		t.Errorf("AllowInitiator calls = %d, want 1", env.agent.allowInitiatorCalls)
@@ -344,10 +367,14 @@ func TestControllerPublishVolume_RemoteAfterLocal(t *testing.T) {
 
 // TestControllerPublishVolume_RemoteAfterLocalClearedRetry verifies the
 // retry of a remote publish whose previous attempt already committed the
-// status.localAttachNode clear: the field is empty, so the publish takes the
-// normal protocol path (no SetLocalAttach, no extra generation bump) and
-// grants at its own reservation, which is newer than every generation that
-// recorded the field.
+// status.localAttachNode clear: the field is empty, so there is no gate and
+// no further clear, but a localAttach volume still issues exactly one
+// SetLocalAttach(local=false) — ordered before the grant — at its own
+// reservation, which is newer than every generation that recorded the
+// field.  A stale resync admitted just before the failed attempt's re-fence
+// may have left the namespace disabled; without this call the publish would
+// grant — or, with ACL off, succeed without any agent RPC — while the
+// export still refuses the initiator.
 func TestControllerPublishVolume_RemoteAfterLocalClearedRetry(t *testing.T) {
 	t.Parallel()
 	volumeID := basePublishRequest().GetVolumeId()
@@ -361,8 +388,15 @@ func TestControllerPublishVolume_RemoteAfterLocalClearedRetry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("retried publish: %v", err)
 	}
-	if n := len(env.agent.setLocalAttachCalls); n != 0 {
-		t.Errorf("SetLocalAttach calls = %d, want 0 once localAttachNode is cleared", n)
+	calls := env.agent.setLocalAttachCalls
+	if len(calls) != 1 || calls[0].GetLocal() {
+		t.Fatalf("SetLocalAttach calls = %+v, want exactly one local=false re-enable", calls)
+	}
+	if got := calls[0].GetFence().GetGeneration(); got != 8 {
+		t.Errorf("SetLocalAttach fence generation = %d, want the reservation 8", got)
+	}
+	if order := env.agent.callOrder; !slices.Equal(order, []string{"SetLocalAttach", "AllowInitiator"}) {
+		t.Errorf("agent call order = %v, want the unfence before the grant", order)
 	}
 	if env.agent.allowInitiatorCalls != 1 {
 		t.Fatalf("AllowInitiator calls = %d, want 1", env.agent.allowInitiatorCalls)
@@ -373,6 +407,43 @@ func TestControllerPublishVolume_RemoteAfterLocalClearedRetry(t *testing.T) {
 	}
 	if got := env.agent.lastAllowInitiator.GetFence().GetGeneration(); got != 8 {
 		t.Errorf("AllowInitiator fence generation = %d, want 8", got)
+	}
+}
+
+// TestControllerPublishVolume_RemoteLocalAttachACLOff verifies the unfence
+// of a localAttach volume is not tied to granting an initiator: a protocol
+// publish of a volume whose export enforces no per-host ACL sends no
+// AllowInitiator yet still issues SetLocalAttach(local=false) at the
+// reservation.  Otherwise a namespace disabled by a delayed stale resync
+// could stay disabled while the publish reports success without any agent
+// RPC at all.
+func TestControllerPublishVolume_RemoteLocalAttachACLOff(t *testing.T) {
+	t.Parallel()
+	volumeID := basePublishRequest().GetVolumeId()
+	pvs := localAttachVolumeState(volumeID, true)
+	pvs.Status.ExportSpec.ACLEnabled = false
+	pvs.Status.PublicationGeneration = 5
+	env := newPublishTestEnv(t, append(exclCSINodes(), pvs)...)
+	setAgentSpec(t, env, nodeRefAgent(exclNode1))
+
+	_, err := env.srv.ControllerPublishVolume(context.Background(),
+		exclPublishReq(volumeID, exclNode2, localAttachSNW, false))
+	if err != nil {
+		t.Fatalf("publish of an ACL-off localAttach volume: %v", err)
+	}
+	calls := env.agent.setLocalAttachCalls
+	if len(calls) != 1 || calls[0].GetLocal() {
+		t.Fatalf("SetLocalAttach calls = %+v, want exactly one local=false re-enable", calls)
+	}
+	if got := calls[0].GetFence().GetGeneration(); got != 6 {
+		t.Errorf("SetLocalAttach fence generation = %d, want the reservation 6", got)
+	}
+	if got := calls[0].GetFence().GetVolumeUid(); got != string(pvs.UID) {
+		t.Errorf("SetLocalAttach fence uid = %q, want lifecycle %s", got, pvs.UID)
+	}
+	if env.agent.allowInitiatorCalls != 0 {
+		t.Errorf("AllowInitiator calls = %d, want 0 for an allow-any-host export",
+			env.agent.allowInitiatorCalls)
 	}
 }
 

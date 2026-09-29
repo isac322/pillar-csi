@@ -29,11 +29,13 @@ import (
 // A volume attached directly on the storage node (local attach) must never be
 // written through the network export at the same time.  The namespace is
 // therefore disabled (enable=0) while the volume is locally published, which
-// drops every remote session, and it is re-enabled only after verifying that
-// nothing on the storage node holds the backend device exclusively: a local
-// stage keeps a kernel exclusive claim on the device (device-mapper linear
-// target) until it is really unstaged, so an exclusive open failing with EBUSY
-// proves the local attach is still in use.
+// drops every remote session, and it is re-enabled only under an exclusive
+// claim on the backend device that is held across the entire enable write: a
+// local stage keeps a kernel exclusive claim on the device (device-mapper
+// linear target) until it is really unstaged, so an exclusive open failing
+// with EBUSY proves the local attach is still in use, and holding that open
+// makes the node's own claim fail for as long as the export is being
+// re-enabled.
 
 // ErrDeviceHeld reports that the namespace was not enabled because its
 // backend device is held exclusively on the storage node.
@@ -43,43 +45,61 @@ var ErrDeviceHeld = errors.New("backend device is held exclusively on the storag
 // i.e. the volume is not exported.
 var ErrNamespaceNotFound = errors.New("namespace not found")
 
-// DeviceHeldProbe reports whether the block device at path is held open
-// exclusively by someone else.  A non-nil error means the answer is unknown,
-// and callers must not enable an export on it.
-type DeviceHeldProbe func(path string) (held bool, err error)
+// DeviceClaimer takes an exclusive claim on the block device at path and
+// returns a release function that drops it.  While the claim is held, no one
+// else can open the device exclusively, so callers keep the export enable
+// write inside the claim's lifetime.  On success the release function is
+// never nil; it is a no-op when there was nothing to claim.  ErrDeviceHeld
+// reports a device that is already held; any other error means the claim
+// could not be established and callers must not enable an export on it.
+type DeviceClaimer func(path string) (release func() error, err error)
 
-// DeviceHeldExclusively is the production DeviceHeldProbe.  It opens path with
-// O_EXCL, which for a block device fails with EBUSY while another opener holds
-// an exclusive claim (a mounted filesystem, a device-mapper target, ...):
-//   - EBUSY  → (true, nil);
-//   - ENOENT → (false, nil): a device that does not exist cannot be held;
-//   - success → the descriptor is closed and (false, nil) returned;
-//   - any other error → (false, err).
-func DeviceHeldExclusively(path string) (bool, error) {
+// noRelease is the release function of a claim that holds nothing.
+func noRelease() error { return nil }
+
+// UnclaimedDeviceClaimer is a DeviceClaimer that grants every claim without
+// opening the device.  It is intended for tests that run the agent against a
+// temporary configfs root and must not open real block devices; production
+// code uses ClaimDeviceExclusively.
+var UnclaimedDeviceClaimer DeviceClaimer = func(_ string) (func() error, error) {
+	return noRelease, nil
+}
+
+// ClaimDeviceExclusively is the production DeviceClaimer.  It opens path
+// with O_EXCL, which for a block device fails with EBUSY while another
+// opener holds an exclusive claim (a mounted filesystem, a device-mapper
+// target, ...):
+//   - EBUSY  → ErrDeviceHeld;
+//   - ENOENT → a no-op release: a device that does not exist cannot be held;
+//   - success → release closes the held descriptor;
+//   - any other error → the open error.
+func ClaimDeviceExclusively(path string) (func() error, error) {
 	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_EXCL|syscall.O_CLOEXEC, 0)
 	if err != nil {
 		if errors.Is(err, syscall.EBUSY) {
-			return true, nil
+			return nil, fmt.Errorf("exclusive open %q: %w", path, ErrDeviceHeld)
 		}
 		if errors.Is(err, syscall.ENOENT) {
-			return false, nil
+			return noRelease, nil
 		}
-		return false, fmt.Errorf("exclusive open %q: %w", path, err)
+		return nil, fmt.Errorf("exclusive open %q: %w", path, err)
 	}
-	err = syscall.Close(fd)
-	if err != nil {
-		return false, fmt.Errorf("close exclusive probe of %q: %w", path, err)
-	}
-	return false, nil
+	return func() error {
+		closeErr := syscall.Close(fd)
+		if closeErr != nil {
+			return fmt.Errorf("close exclusive claim on %q: %w", path, closeErr)
+		}
+		return nil
+	}, nil
 }
 
-// deviceHeldProbe returns the target's probe, defaulting to
-// DeviceHeldExclusively.
-func (t *NvmetTarget) deviceHeldProbe() DeviceHeldProbe {
-	if t.DeviceHeldProbe != nil {
-		return t.DeviceHeldProbe
+// deviceClaimer returns the target's claimer, defaulting to
+// ClaimDeviceExclusively.
+func (t *NvmetTarget) deviceClaimer() DeviceClaimer {
+	if t.DeviceClaimer != nil {
+		return t.DeviceClaimer
 	}
-	return DeviceHeldExclusively
+	return ClaimDeviceExclusively
 }
 
 // namespaceEnablePath returns the enable attribute of the target's namespace.
@@ -176,16 +196,16 @@ func (t *NvmetTarget) disableNamespace() error {
 }
 
 // enableNamespace writes enable=1 unless the namespace is already enabled.
-// Before enabling it probes the namespace's live device_path and refuses with
-// ErrDeviceHeld while the device is held exclusively (a local attach on the
-// storage node still uses it).  The node plugin establishes its exclusive
-// claim only after the namespace reads disabled, so the probe is repeated
-// after the enable write: a claim established between the first probe and the
-// write is caught and enable=0 is restored (fail closed), guaranteeing the
-// export never stays enabled under a local holder.  Kernel serialization of
-// the claim and the enable makes at least one side observe the other.
-// An empty device_path names no device that could be held, so the probes are
-// skipped and the kernel decides on the enable write.
+// When the namespace's live device_path names a device, an exclusive claim
+// on it is taken first and held across the enable write and its read-back:
+// probing and then releasing before the write left a window in which the
+// storage node could claim the device under the still-disabled namespace,
+// after which enable=1 would expose the backend to remote initiators.  While
+// this claim is held, the node's device-mapper create fails, and once the
+// claim is released the node sees enable=1 and backs off — no window.
+// ErrDeviceHeld refuses the enable while the device is already claimed; the
+// namespace stays disabled.  An empty device_path names no device that could
+// be held, so no claim is taken and the kernel decides on the enable write.
 func (t *NvmetTarget) enableNamespace() error {
 	enablePath := t.namespaceEnablePath()
 	current, err := readAttr(enablePath)
@@ -200,38 +220,27 @@ func (t *NvmetTarget) enableNamespace() error {
 	if err != nil {
 		return fmt.Errorf("enable namespace %q ns=%d: %w", t.SubsystemNQN, t.NamespaceID, err)
 	}
+	release := noRelease
 	if devicePath != "" {
-		held, probeErr := t.deviceHeldProbe()(devicePath)
-		if probeErr != nil {
-			return fmt.Errorf("enable namespace %q ns=%d: probe exclusive holder of %s: %w",
-				t.SubsystemNQN, t.NamespaceID, devicePath, probeErr)
+		release, err = t.deviceClaimer()(devicePath)
+		if err != nil {
+			if errors.Is(err, ErrDeviceHeld) {
+				return fmt.Errorf("enable namespace %q ns=%d: backend device %s is still held on the "+
+					"storage node (local attach in use): %w", t.SubsystemNQN, t.NamespaceID, devicePath, err)
+			}
+			return fmt.Errorf("enable namespace %q ns=%d: claim backend device %s: %w",
+				t.SubsystemNQN, t.NamespaceID, devicePath, err)
 		}
-		if held {
-			return fmt.Errorf("enable namespace %q ns=%d: backend device %s is still held on the storage node "+
-				"(local attach in use): %w", t.SubsystemNQN, t.NamespaceID, devicePath, ErrDeviceHeld)
-		}
 	}
-	err = writeFile(enablePath, "1")
-	if err != nil {
-		return fmt.Errorf("enable namespace %q ns=%d: %w", t.SubsystemNQN, t.NamespaceID, err)
+	writeErr := writeFile(enablePath, "1")
+	// A release failure is reported, but the namespace state stays as written
+	// above: dropping the claim cannot un-write enable=1.
+	releaseErr := release()
+	if writeErr != nil || releaseErr != nil {
+		return fmt.Errorf("enable namespace %q ns=%d (device %q): %w",
+			t.SubsystemNQN, t.NamespaceID, devicePath, errors.Join(writeErr, releaseErr))
 	}
-	if devicePath == "" {
-		return nil
-	}
-	held, probeErr := t.deviceHeldProbe()(devicePath)
-	if probeErr == nil && !held {
-		return nil
-	}
-	// Fail closed: the namespace was already enabled above, so restore
-	// enable=0 before reporting refusal; a disable failure is joined in.
-	cause := ErrDeviceHeld
-	detail := "backend device is still held on the storage node (local attach in use)"
-	if probeErr != nil {
-		cause = probeErr
-		detail = "probe exclusive holder after enabling"
-	}
-	return fmt.Errorf("enable namespace %q ns=%d: %s: %s: %w",
-		t.SubsystemNQN, t.NamespaceID, devicePath, detail, errors.Join(cause, t.disableNamespace()))
+	return nil
 }
 
 // desiredEnable is the enable value Prepare establishes: "0" while the

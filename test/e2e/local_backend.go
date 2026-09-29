@@ -588,6 +588,7 @@ func verifyAgentLocalBackendForProcess(processNum int) error {
 		map[string]agentbackend.VolumeBackend{zfsPool: backend},
 		configfsRoot,
 		agentsvc.WithDeviceChecker(nvmeof.AlwaysPresentChecker),
+		agentsvc.WithDeviceClaimer(nvmeof.UnclaimedDeviceClaimer),
 		agentsvc.WithDrainStateDir(stateDir),
 	)
 

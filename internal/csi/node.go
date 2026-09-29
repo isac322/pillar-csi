@@ -637,8 +637,10 @@ func (n *NodeServer) NodeGetInfo(
 // volume's subsystem (VolumeContext target_id) is enabled — an enabled one
 // refuses the stage with FailedPrecondition.  The device-mapper device is
 // then mounted or bound, and the state file records the target for
-// NodeUnstageVolume/NodeExpandVolume.  Any failure after the claim removes
-// it again, so a claim never exists without its state file.  The local node
+// NodeUnstageVolume/NodeExpandVolume.  Any failure after the claim rolls the
+// stage back: the staged surface is unmounted before the claim is removed
+// (so no mount outlives its dm device), then the state file is deleted.  A
+// failed unmount keeps the claim and the state file.  The local node
 // named in the PublishContext must be this node.
 //
 // Per CSI spec §4.7 the staging_target_path is guaranteed to be a pre-created
@@ -802,7 +804,7 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 	var devicePath string
 	var attachResult *AttachResult
 	if local {
-		dmPath, dmErr := n.attachLocal(ctx, volumeID, targetID, localDevice)
+		dmPath, dmErr := n.attachLocal(ctx, volumeID, targetID, localDevice, stagingPath, volCap)
 		if dmErr != nil {
 			return nil, dmErr
 		}
@@ -829,12 +831,13 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 	}
 
 	// failStaged returns err for a failure after the attach.  A local stage
-	// has no stage state file yet, so its device-mapper claim is removed
-	// first: a claim is never left behind without the state that lets
-	// NodeUnstageVolume release it.
+	// is rolled back (see abortLocal): its staged surface is unmounted, then
+	// its device-mapper claim is removed and any stage state file written by
+	// this attempt deleted, so neither a claim without the state that lets
+	// NodeUnstageVolume release it nor a mount on a removed dm device remains.
 	failStaged := func(err error) error {
 		if local {
-			return n.abortLocal(ctx, volumeID, err)
+			return n.abortLocal(ctx, volumeID, stagingPath, volCap, err)
 		}
 		return err
 	}

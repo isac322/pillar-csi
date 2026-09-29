@@ -18,35 +18,52 @@ package nvmeof
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
-func TestDeviceHeldExclusively_UnheldAndMissing(t *testing.T) {
+func TestClaimDeviceExclusively_UnheldAndMissing(t *testing.T) {
 	t.Parallel()
 	free := filepath.Join(t.TempDir(), "dev")
 	if err := os.WriteFile(free, nil, 0o600); err != nil {
 		t.Fatalf("create device stand-in: %v", err)
 	}
 	for _, path := range []string{free, filepath.Join(t.TempDir(), "absent")} {
-		held, err := DeviceHeldExclusively(path)
-		if err != nil || held {
-			t.Errorf("DeviceHeldExclusively(%q) = %t, %v; want false, nil", path, held, err)
+		release, err := ClaimDeviceExclusively(path)
+		if err != nil {
+			t.Errorf("ClaimDeviceExclusively(%q) = %v; want nil error", path, err)
+			continue
+		}
+		releaseErr := release()
+		if releaseErr != nil {
+			t.Errorf("ClaimDeviceExclusively(%q) release = %v; want nil", path, releaseErr)
 		}
 	}
 }
 
-func localAttachTestTarget(t *testing.T, probe DeviceHeldProbe) *NvmetTarget {
+// mustRead returns the trimmed content of path, failing the test on error.
+func mustRead(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path) //nolint:gosec // G304: test helper reads from t.TempDir() paths only.
+	if err != nil {
+		t.Fatalf("read %q: %v", path, err)
+	}
+	return strings.TrimSpace(string(data))
+}
+
+func localAttachTestTarget(t *testing.T, claimer DeviceClaimer) *NvmetTarget {
 	t.Helper()
 	return &NvmetTarget{
-		ConfigfsRoot:    t.TempDir(),
-		SubsystemNQN:    "nqn.2026-01.io.pillar-csi:pvc-local",
-		NamespaceID:     1,
-		DevicePath:      "/dev/zvol/tank/pvc-local",
-		BindAddress:     "10.0.0.1",
-		Port:            DefaultPort,
-		DeviceHeldProbe: probe,
+		ConfigfsRoot:  t.TempDir(),
+		SubsystemNQN:  "nqn.2026-01.io.pillar-csi:pvc-local",
+		NamespaceID:   1,
+		DevicePath:    "/dev/zvol/tank/pvc-local",
+		BindAddress:   "10.0.0.1",
+		Port:          DefaultPort,
+		DeviceClaimer: claimer,
 	}
 }
 
@@ -54,7 +71,7 @@ func localAttachTestTarget(t *testing.T, probe DeviceHeldProbe) *NvmetTarget {
 // linked with its namespace disabled, and a later non-local Apply enables it.
 func TestApply_LocalAttachLinksDisabledNamespace(t *testing.T) {
 	t.Parallel()
-	tgt := localAttachTestTarget(t, func(string) (bool, error) { return false, nil })
+	tgt := localAttachTestTarget(t, UnclaimedDeviceClaimer)
 	if err := tgt.Apply(); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
@@ -72,18 +89,18 @@ func TestApply_LocalAttachLinksDisabledNamespace(t *testing.T) {
 }
 
 // TestPrepare_RefusesToEnableHeldDevice: Prepare keeps a disabled namespace
-// disabled and reports ErrDeviceHeld while the device is held, and a probe
-// failure is never treated as "not held".
+// disabled and reports ErrDeviceHeld while the device is claimed elsewhere,
+// and a claim failure is never treated as "claimed".
 func TestPrepare_RefusesToEnableHeldDevice(t *testing.T) {
 	t.Parallel()
-	probeErr := errors.New("permission denied")
-	for name, probe := range map[string]DeviceHeldProbe{
-		"held":        func(string) (bool, error) { return true, nil },
-		"probe error": func(string) (bool, error) { return false, probeErr },
+	claimErr := errors.New("permission denied")
+	for name, claimer := range map[string]DeviceClaimer{
+		"held":        func(string) (func() error, error) { return nil, ErrDeviceHeld },
+		"claim error": func(string) (func() error, error) { return nil, claimErr },
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			tgt := localAttachTestTarget(t, probe)
+			tgt := localAttachTestTarget(t, claimer)
 			tgt.LocalAttach = true
 			if _, err := tgt.Prepare(); err != nil {
 				t.Fatalf("Prepare local: %v", err)
@@ -91,13 +108,13 @@ func TestPrepare_RefusesToEnableHeldDevice(t *testing.T) {
 			tgt.LocalAttach = false
 			_, err := tgt.Prepare()
 			if err == nil {
-				t.Fatal("Prepare enabled a namespace whose holder check did not pass")
+				t.Fatal("Prepare enabled a namespace whose backend claim did not succeed")
 			}
 			if name == "held" && !errors.Is(err, ErrDeviceHeld) {
 				t.Errorf("Prepare error = %v, want ErrDeviceHeld", err)
 			}
-			if name == "probe error" && !errors.Is(err, probeErr) {
-				t.Errorf("Prepare error = %v, want the probe error", err)
+			if name == "claim error" && !errors.Is(err, claimErr) {
+				t.Errorf("Prepare error = %v, want the claim error", err)
 			}
 			assertFileContent(t, tgt.namespaceEnablePath(), "0")
 		})
@@ -109,7 +126,7 @@ func TestPrepare_RefusesToEnableHeldDevice(t *testing.T) {
 func TestLink_VerifiesDesiredEnable(t *testing.T) {
 	t.Parallel()
 	for _, local := range []bool{true, false} {
-		tgt := localAttachTestTarget(t, func(string) (bool, error) { return false, nil })
+		tgt := localAttachTestTarget(t, UnclaimedDeviceClaimer)
 		tgt.LocalAttach = local
 		prepared, err := tgt.Prepare()
 		if err != nil {
@@ -139,57 +156,26 @@ func TestResizeNamespace_SkipsDisabledNamespace(t *testing.T) {
 	}
 }
 
-// TestEnableNamespace_ReprobeAfterEnable: a claim established between the
-// pre-enable probe and the enable write is caught by the post-enable probe;
-// the namespace is left disabled (fail closed) and the refusal is reported.
-func TestEnableNamespace_ReprobeAfterEnable(t *testing.T) {
+// TestEnableNamespace_ClaimHeldAcrossEnable: the exclusive claim on the
+// backend device is acquired before the enable write and released only after
+// it — closing the window in which the storage node could claim the device
+// under a still-disabled namespace.
+func TestEnableNamespace_ClaimHeldAcrossEnable(t *testing.T) {
 	t.Parallel()
-	secondErr := errors.New("probe unavailable")
-	for name, tt := range map[string]struct {
-		secondHeld bool
-		secondErr  error
-		wantErr    error
-	}{
-		"held after enable":        {secondHeld: true, wantErr: ErrDeviceHeld},
-		"probe error after enable": {secondErr: secondErr, wantErr: secondErr},
-	} {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-			var calls int
-			tgt := localAttachTestTarget(t, func(string) (bool, error) {
-				calls++
-				if calls == 1 {
-					return false, nil
-				}
-				return tt.secondHeld, tt.secondErr
-			})
-			tgt.LocalAttach = true
-			if _, err := tgt.Prepare(); err != nil {
-				t.Fatalf("Prepare local: %v", err)
-			}
-			tgt.LocalAttach = false
-
-			err := tgt.EnableNamespace()
-			if !errors.Is(err, tt.wantErr) {
-				t.Fatalf("EnableNamespace = %v, want %v", err, tt.wantErr)
-			}
-			if calls != 2 {
-				t.Errorf("probe calls = %d, want 2", calls)
-			}
-			assertFileContent(t, tgt.namespaceEnablePath(), "0")
-		})
-	}
-}
-
-// TestEnableNamespace_ProbesAgainAfterEnable: a clean enable still re-probes
-// the backend device after the enable write and stays enabled while the
-// device is unheld.
-func TestEnableNamespace_ProbesAgainAfterEnable(t *testing.T) {
-	t.Parallel()
-	var calls int
-	tgt := localAttachTestTarget(t, func(string) (bool, error) {
-		calls++
-		return false, nil
+	var tgt *NvmetTarget
+	var events []string
+	var enableAtRelease string
+	tgt = localAttachTestTarget(t, func(path string) (func() error, error) {
+		events = append(events, "acquire "+path)
+		enableAtAcquire := mustRead(t, tgt.namespaceEnablePath())
+		if enableAtAcquire != "0" {
+			t.Errorf("enable at claim acquire = %q, want 0 (still fenced)", enableAtAcquire)
+		}
+		return func() error {
+			enableAtRelease = mustRead(t, tgt.namespaceEnablePath())
+			events = append(events, "release")
+			return nil
+		}, nil
 	})
 	tgt.LocalAttach = true
 	if _, err := tgt.Prepare(); err != nil {
@@ -200,8 +186,56 @@ func TestEnableNamespace_ProbesAgainAfterEnable(t *testing.T) {
 	if err := tgt.EnableNamespace(); err != nil {
 		t.Fatalf("EnableNamespace: %v", err)
 	}
-	if calls != 2 {
-		t.Errorf("probe calls = %d, want 2", calls)
+	if enableAtRelease != "1" {
+		t.Errorf("enable at claim release = %q, want 1 (claim held across the write)", enableAtRelease)
+	}
+	want := []string{"acquire " + tgt.DevicePath, "release"}
+	if len(events) != len(want) || events[0] != want[0] || events[1] != want[1] {
+		t.Errorf("claim events = %v, want %v", events, want)
+	}
+	assertFileContent(t, tgt.namespaceEnablePath(), "1")
+}
+
+// TestEnableNamespace_ReleaseErrorPropagates: a claim release failure is
+// reported while the namespace state stays as written.
+func TestEnableNamespace_ReleaseErrorPropagates(t *testing.T) {
+	t.Parallel()
+	releaseErr := errors.New("close failed")
+	tgt := localAttachTestTarget(t, func(string) (func() error, error) {
+		return func() error { return fmt.Errorf("release backend: %w", releaseErr) }, nil
+	})
+	tgt.LocalAttach = true
+	if _, err := tgt.Prepare(); err != nil {
+		t.Fatalf("Prepare local: %v", err)
+	}
+	tgt.LocalAttach = false
+
+	err := tgt.EnableNamespace()
+	if !errors.Is(err, releaseErr) {
+		t.Fatalf("EnableNamespace = %v, want the release error", err)
+	}
+	assertFileContent(t, tgt.namespaceEnablePath(), "1")
+}
+
+// TestEnableNamespace_EmptyDevicePathSkipsClaim: a namespace whose
+// device_path names no device is enabled without consulting the claimer.
+func TestEnableNamespace_EmptyDevicePathSkipsClaim(t *testing.T) {
+	t.Parallel()
+	tgt := localAttachTestTarget(t, func(string) (func() error, error) {
+		t.Error("DeviceClaimer called for a namespace without a device_path")
+		return noRelease, nil
+	})
+	tgt.LocalAttach = true
+	if _, err := tgt.Prepare(); err != nil {
+		t.Fatalf("Prepare local: %v", err)
+	}
+	devPathAttr := filepath.Join(tgt.namespaceDir(), "device_path")
+	if err := os.Remove(devPathAttr); err != nil {
+		t.Fatalf("remove device_path: %v", err)
+	}
+
+	if err := tgt.EnableNamespace(); err != nil {
+		t.Fatalf("EnableNamespace: %v", err)
 	}
 	assertFileContent(t, tgt.namespaceEnablePath(), "1")
 }

@@ -29,6 +29,7 @@ import (
 	"strings"
 	"syscall"
 
+	csi "github.com/container-storage-interface/spec/lib/go/csi"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -138,11 +139,16 @@ func (n *NodeServer) localAttachRequest(pubCtx map[string]string) (isLocal bool,
 //
 // After the claim exists it reads the nvmet enable state of the volume's
 // subsystem targetID (see nvmet_export_state.go).  An enabled namespace
-// means the network export may still serve remote initiators; the claim is
-// then removed again and the stage refused with FailedPrecondition.  A failed
-// check likewise removes the claim.  On error no claim of this call remains
-// unless its removal failed, which is joined into the returned error.
-func (n *NodeServer) attachLocal(ctx context.Context, volumeID, targetID, backingDevice string) (string, error) {
+// means the network export may still serve remote initiators; the stage is
+// then rolled back (see abortLocal) and refused with FailedPrecondition.  A
+// failed check likewise rolls the stage back.  The rollback unmounts the
+// staged surface named by stagingPath and volCap before it releases the
+// claim.
+func (n *NodeServer) attachLocal(
+	ctx context.Context,
+	volumeID, targetID, backingDevice, stagingPath string,
+	volCap *csi.VolumeCapability,
+) (string, error) {
 	name := LocalDMName(volumeID)
 	dmPath, err := n.deviceMapper().EnsureLinear(ctx, name, backingDevice)
 	if err != nil {
@@ -158,12 +164,12 @@ func (n *NodeServer) attachLocal(ctx context.Context, volumeID, targetID, backin
 	root := n.nvmetConfigfsRoot()
 	enabled, checkErr := enabledNvmetNamespaces(root, targetID)
 	if checkErr != nil {
-		return "", n.abortLocal(ctx, volumeID, status.Errorf(codes.Internal,
+		return "", n.abortLocal(ctx, volumeID, stagingPath, volCap, status.Errorf(codes.Internal,
 			"NodeStageVolume: local attach volume %q: verify network export %s under %s is disabled: %v",
 			volumeID, targetID, root, checkErr))
 	}
 	if len(enabled) > 0 {
-		return "", n.abortLocal(ctx, volumeID, status.Errorf(codes.FailedPrecondition,
+		return "", n.abortLocal(ctx, volumeID, stagingPath, volCap, status.Errorf(codes.FailedPrecondition,
 			"NodeStageVolume: network export of volume %q is still serving remote initiators "+
 				"(nvmet subsystem %s namespace(s) %s enabled)",
 			volumeID, targetID, strings.Join(enabled, ",")))
@@ -171,18 +177,56 @@ func (n *NodeServer) attachLocal(ctx context.Context, volumeID, targetID, backin
 	return dmPath, nil
 }
 
-// abortLocal removes the device-mapper claim of volumeID after a local stage
-// failed past EnsureLinear, so the claim never outlives a failed stage
-// without a stage state file.  It returns cause, joined with the removal
-// error when the removal fails; the gRPC code of cause is kept.
-func (n *NodeServer) abortLocal(ctx context.Context, volumeID string, cause error) error {
+// abortLocal rolls back a local stage of volumeID that failed past
+// EnsureLinear, so the device-mapper claim never outlives a failed stage
+// and no mount ever references a removed device-mapper device.
+//
+// The staged surface of volCap (stagingPath for MOUNT, the block sentinel
+// file for BLOCK; see stageBindTarget) is unmounted first: a bind of the
+// device node does not hold the dm device open, so removing the claim under
+// a live bind would succeed and leave the bind on a dead dev_t, and a
+// filesystem mount would make the removal fail busy.  Unmount is
+// idempotent, so a surface this call never mounted is a no-op.  When the
+// unmount fails the claim is kept — it is safe under a live mount — and so
+// is any stage state file, which lets NodeUnstageVolume tear both down.
+//
+// After the claim is removed the stage state file is deleted, so the next
+// attempt starts clean and no record outlives its claim; a failed removal
+// keeps the file as the record of the remaining claim.
+//
+// It returns cause, joined with every rollback failure; the gRPC code of
+// cause is kept.
+func (n *NodeServer) abortLocal(
+	ctx context.Context,
+	volumeID, stagingPath string,
+	volCap *csi.VolumeCapability,
+	cause error,
+) error {
+	// cause is the gRPC status of the failed stage; Join keeps its code
+	// (status.FromError unwraps) and appends the rollback failures.
+	surface := stageBindTarget(stagingPath, volCap)
+	unmountErr := n.mounter.Unmount(surface)
+	if unmountErr != nil {
+		return errors.Join(cause, //nolint:wrapcheck // both operands are wrapped/annotated
+			fmt.Errorf("unmount %q of volume %q after the failed stage (device-mapper %s kept): %w",
+				surface, volumeID, LocalDMName(volumeID), unmountErr))
+	}
+	if volCap.GetBlock() != nil {
+		// Like NodeUnstageVolume: drop the regular-file sentinel so the
+		// kubelet's rmdir of stagingPath is not refused.
+		_ = os.Remove(surface) //nolint:errcheck // best-effort cleanup of an unmounted placeholder
+	}
+
 	name := LocalDMName(volumeID)
 	rmErr := n.deviceMapper().Remove(ctx, name)
 	if rmErr != nil {
-		// cause is the gRPC status of the failed stage; Join keeps its code
-		// (status.FromError unwraps) and appends the removal failure.
-		return errors.Join(cause, //nolint:wrapcheck // both operands are wrapped/annotated above
+		return errors.Join(cause, //nolint:wrapcheck // both operands are wrapped/annotated
 			fmt.Errorf("release device-mapper %s of volume %q after the failed stage: %w", name, volumeID, rmErr))
+	}
+	deleteErr := n.deleteStageState(volumeID)
+	if deleteErr != nil {
+		return errors.Join(cause, //nolint:wrapcheck // both operands are wrapped/annotated
+			fmt.Errorf("delete stage state of volume %q after the failed stage: %w", volumeID, deleteErr))
 	}
 	return cause
 }

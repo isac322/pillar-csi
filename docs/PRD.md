@@ -505,7 +505,9 @@ spec:
 1. 로컬 publish는 먼저 에이전트의 `SetLocalAttach(local=true)`로 모든 원격 initiator에 대해 export를 끈다 (NVMe-oF namespace `enable=0`, read-back 확인). 남아 있던 원격 세션은 I/O를 할 수 없다.
 2. 컨트롤러는 로컬 publication을 예약하는 같은 CAS에서 `status.localAttachNode`를 기록한다. export resync는 `ExportDesiredState.local_attach`로 이 값을 보내 에이전트 재시작·재부팅 후에도 namespace를 꺼진 상태로 복원한다.
 3. 로컬 stage는 백엔드 디바이스에 커널 exclusive claim(dm 디바이스)을 남긴다. 이 claim은 node plugin이나 kubelet이 죽어도 남고, 실제 unstage에서만 사라진다.
-4. 노드도 확인한다: 로컬 stage에서 dm claim을 잡은 뒤 해당 볼륨 subsystem의 nvmet `enable`을 읽고, 켜진 namespace가 하나라도 있으면 claim을 풀고 stage를 `FailedPrecondition`으로 거부한다 (에이전트는 반대로 enable 전에 holder를 다시 확인). 어느 쪽이든 상대를 맹신하지 않고 물러난다.
+4. 노드는 claim을 먼저 잡는다: 로컬 stage에서 dm claim을 잡은 뒤 해당 볼륨 subsystem의 모든 nvmet namespace가 `enable=0`인지 읽고, 켜진 namespace가 하나라도 있으면 물러나 stage를 `FailedPrecondition`으로 거부한다. claim 이후 어느 단계에서든 stage가 실패하면 staged surface를 먼저 unmount한 뒤 claim을 푼다 (unmount가 실패하면 claim을 유지한다). stage 기록 없이 들어온 unstage도 남은 `pillar-local-*` claim을 제거한다.
+5. 에이전트는 자기 claim 안에서만 enable한다: `SetLocalAttach(local=false)`·Reconcile·Prepare가 namespace를 켤 때 백엔드 디바이스를 `O_EXCL`로 열어 `enable=1` 쓰기와 read-back이 끝날 때까지 유지한 뒤 닫는다. 디바이스가 이미 잡혀 있으면(스토리지 노드의 dm claim) 거부하고(`SetLocalAttach`는 `FailedPrecondition`, Reconcile은 해당 볼륨 항목의 오류) namespace는 꺼진 채로 둔다. 두 claim은 커널에서 상호 배타이므로, 에이전트가 enable하는 동안 노드는 claim을 잡을 수 없고, 그 뒤에 claim을 잡은 노드는 켜진 namespace를 보고 물러난다. 틈이 없다.
+6. localAttach 볼륨의 프로토콜 publish는 `status.localAttachNode`가 비어 있어도 매번 grant 전에 예약 generation으로 `SetLocalAttach(local=false)`를 호출한다 (이미 켜져 있으면 no-op). `status.localAttachNode`가 설정돼 있었다면 성공 후 새 fencing generation을 커밋하는 CAS로 비우고, 그 generation으로 한 번 더 `local=false`를 보낸 뒤 initiator를 grant한다.
 
 namespace가 꺼진 동안에도 ControllerExpandVolume은 백엔드를 키운다 (에이전트는 `revalidate_size`만 건너뛴다). NodeExpandVolume은 dm 테이블을 다시 로드한 뒤 파일시스템을 키운다.
 

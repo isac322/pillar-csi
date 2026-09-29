@@ -127,10 +127,10 @@ type NvmetTarget struct {
 	// Link verifies enable=0 instead of 1.
 	LocalAttach bool
 
-	// DeviceHeldProbe checks, before a disabled namespace is enabled, that
-	// the backend device is not held exclusively on the storage node.  nil
-	// selects DeviceHeldExclusively.
-	DeviceHeldProbe DeviceHeldProbe
+	// DeviceClaimer takes an exclusive claim on the backend device before a
+	// disabled namespace is enabled; the claim is held across the enable
+	// write.  nil selects ClaimDeviceExclusively.
+	DeviceClaimer DeviceClaimer
 }
 
 // nvmetRoot returns the path to the nvmet subtree within configfs, e.g.

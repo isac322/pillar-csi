@@ -70,8 +70,10 @@ kubectl get pvst <pv-name> -o jsonpath='{.spec.resolved.localAttach}'
 2. The controller asks the agent to take the export away from remote initiators. For NVMe-oF/TCP the agent writes `0` to the namespace's `enable` file in nvmet configfs and reads it back. The subsystem and the port stay configured; any remote session that is still connected can no longer do I/O.
 3. The agent returns the backend device path, and the controller hands it to the node plugin in the publish context.
 4. `NodeStageVolume` on the storage node creates a device-mapper linear target named `pillar-local-<16 hex>` over the whole backend device. The name is `pillar-local-` followed by the first 16 hex characters of the SHA-256 of the volume ID. The target holds the backend device open exclusively.
-5. With the claim in place, the node plugin reads the nvmet state of the volume's subsystem. If any namespace is still enabled, it removes the target again and fails the stage with `FailedPrecondition`.
-6. The node plugin formats and mounts the filesystem on `/dev/mapper/pillar-local-<16 hex>`. A `volumeMode: Block` volume is bound from the same device. If any step after the claim fails, the node plugin removes the target before it returns the error.
+5. With the claim in place, the node plugin reads the nvmet state of the volume's subsystem. If any namespace is still enabled, it backs off and fails the stage with `FailedPrecondition`.
+6. The node plugin formats and mounts the filesystem on `/dev/mapper/pillar-local-<16 hex>`. A `volumeMode: Block` volume is bound from the same device.
+
+If a stage fails at any step after the claim, the node plugin unmounts whatever it staged and then removes the target. If the unmount fails, it keeps the target and reports the unmount failure along with the original error, so no mount is left pointing at a removed device.
 
 `NodeUnstageVolume` unmounts and then removes the device-mapper target. If a stage record is missing, for example after a failed stage, unstage still removes a `pillar-local-*` target left for that volume.
 
@@ -81,11 +83,13 @@ Pods move freely; each publish picks the path again.
 
 **From another node to the storage node.** Kubernetes unpublishes the old node first, which revokes its initiator on the target. The local publish then disables the namespace, so even a remote host that kept its NVMe-oF session, for example after a force-detach while its kubelet was down, cannot write to the volume.
 
-**From the storage node to another node.** Kubernetes unstages the volume on the storage node, which removes the `pillar-local-*` target, and then unpublishes it. Unpublishing a local attach does not re-enable the export and leaves `status.localAttachNode` set. The publish to the new node does that:
+**From the storage node to another node.** Kubernetes unstages the volume on the storage node, which removes the `pillar-local-*` target, and then unpublishes it. Unpublishing a local attach does not re-enable the export and leaves `status.localAttachNode` set. Every publish of the volume over the network re-enables it before granting the new node's initiator:
 
-1. The agent opens the backend device with `O_EXCL`. If something on the storage node still holds it, the agent refuses and the publish fails with `FailedPrecondition`.
-2. Otherwise the agent writes `1` to the namespace's `enable` file, then checks for a holder again. If a local claim appeared in between, it writes `0` back and refuses the same way.
-3. The controller clears `status.localAttachNode`, confirms the export with the agent once more under the fencing generation that the clear committed, and then grants the new node's initiator.
+1. The agent opens the backend device with `O_EXCL`. If something on the storage node still holds it, the agent refuses, the namespace stays disabled, and the publish fails with `FailedPrecondition`.
+2. Otherwise the agent keeps the device open while it writes `1` to the namespace's `enable` file and reads it back, then closes it. While the agent holds the device, the node plugin cannot claim it, so the export and a local attach are never active together.
+3. If `status.localAttachNode` was set, the controller clears it and asks the agent to re-enable the export once more under the fencing generation that the clear committed. Then it grants the new node's initiator.
+
+The re-enable call is a no-op when the export is already enabled. The controller makes it on every network publish of a `localAttach` volume, including when `status.localAttachNode` is already empty.
 
 The external-attacher retries a failed publish, so the pod on the new node stays in `ContainerCreating` until the storage node really lets go of the device. This is what protects the volume during a force-detach: if the storage node's kubelet is dead but the container still runs and writes through the local mount, the target stays in place and the export stays disabled. The publish proceeds only after the claim is gone, for example after the kubelet comes back and unstages the volume, or after the storage node reboots.
 
