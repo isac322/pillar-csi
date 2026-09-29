@@ -30,17 +30,21 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"runtime/debug"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
 	healthsrv "google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
@@ -51,6 +55,7 @@ import (
 
 	csisvc "github.com/isac322/pillar-csi/internal/csi"
 	"github.com/isac322/pillar-csi/internal/runtimepaths"
+	"github.com/isac322/pillar-csi/internal/telemetry"
 )
 
 // driverName is the CSI provisioner name declared in the StorageClass.
@@ -121,7 +126,7 @@ type fabricsConnector struct {
 // /sys as the sysfs root and /dev/nvme-fabrics for connection requests.
 func newFabricsConnector(hostNQN, hostID string) *fabricsConnector {
 	return &fabricsConnector{
-		sysfsRoot:  "/sys",
+		sysfsRoot:  nodeSysfsRoot,
 		fabricsDev: csisvc.NvmeFabricsDevice,
 		hostNQN:    hostNQN,
 		hostID:     hostID,
@@ -215,22 +220,43 @@ func buildFabricsConnectOpts(
 		trAddr, trSvcID, subsysNQN, hostNQN, hostID))
 }
 
+// nvmeConnect runs inside the SP10 pillar_csi.node.nvmeof_connect span.  The
+// fabrics option string carries the host NQN and host ID and is never
+// recorded on it.
 func (c *fabricsConnector) nvmeConnect(
 	ctx context.Context,
 	subsysNQN, trAddr, trSvcID string,
 	connectOpts csisvc.NVMeoFConnectOptions,
-) error {
+) (err error) {
+	attrs := []attribute.KeyValue{
+		semconv.ServerAddress(trAddr),
+		telemetry.KeyNVMeSubsystemNQN.String(subsysNQN),
+	}
+	port, portErr := strconv.Atoi(trSvcID)
+	if portErr == nil {
+		attrs = append(attrs, semconv.ServerPort(port))
+	}
+	ctx, span := telemetry.Tracer().Start(ctx, telemetry.SpanNodeNVMeoFConnect,
+		trace.WithSpanKind(trace.SpanKindInternal), trace.WithAttributes(attrs...))
+	defer func() {
+		telemetry.SetSpanError(span, err, "")
+		span.End()
+	}()
+
 	already, err := c.isConnected(ctx, subsysNQN)
 	if err != nil {
 		return fmt.Errorf("fabricsConnector nvmeConnect: check existing connection for %q: %w", subsysNQN, err)
 	}
+	span.SetAttributes(telemetry.KeyNVMeAlreadyConnected.Bool(already))
 	if already {
 		return nil
 	}
 	// A controller of this NQN that the kernel is still deleting (its own
 	// ctrl_loss_tmo teardown, not our unstage) must be gone before a new
 	// connection, or device discovery can return its dying namespace.
+	dyingStart := time.Now()
 	err = csisvc.WaitForDyingControllers(ctx, c.sysfsRoot, subsysNQN, c.removalWait)
+	span.SetAttributes(telemetry.KeyNVMeDyingWaitDuration.Float64(time.Since(dyingStart).Seconds()))
 	if err != nil {
 		return fmt.Errorf("fabricsConnector nvmeConnect: %w", err)
 	}
@@ -308,8 +334,16 @@ func (c *fabricsConnector) forEachNVMeController(subsysNQN string, fn func(ctrlN
 //
 // It is idempotent: if the NQN is not connected the method returns nil
 // immediately.
+//
+// It runs inside the SP12 pillar_csi.node.nvmeof_disconnect span.
 func (c *fabricsConnector) nvmeDisconnect(ctx context.Context, subsysNQN string) error {
-	return csisvc.DisconnectSubsystem(ctx, c.sysfsRoot, subsysNQN, c.removalWait)
+	ctx, span := telemetry.Tracer().Start(ctx, telemetry.SpanNodeNVMeoFDisconnect,
+		trace.WithSpanKind(trace.SpanKindInternal),
+		trace.WithAttributes(telemetry.KeyNVMeSubsystemNQN.String(subsysNQN)))
+	defer span.End()
+	err := csisvc.DisconnectSubsystem(ctx, c.sysfsRoot, subsysNQN, c.removalWait)
+	telemetry.SetSpanError(span, err, "")
+	return err
 }
 
 // nvmeGetDevicePath returns the /dev/nvmeXnY block-device path for the given
@@ -710,28 +744,53 @@ func (c *fabricsConnector) Attach(ctx context.Context, params csisvc.AttachParam
 	}
 
 	// Step 2: poll until the block-device node appears in /dev.
+	devPath, waitErr := c.waitForDevice(ctx, subsysNQN)
+	if waitErr != nil {
+		return nil, waitErr
+	}
+	return &csisvc.AttachResult{
+		DevicePath: devPath,
+		State: &csisvc.NVMeoFProtocolState{
+			SubsysNQN: subsysNQN,
+			Address:   trAddr,
+			Port:      trSvcID,
+		},
+	}, nil
+}
+
+// waitForDevice polls, bounded by nvmeAttachTimeout, until the block device
+// of subsysNQN appears and returns its path.  It runs inside the SP11
+// pillar_csi.node.nvmeof_device_wait span, which records the number of
+// polls and error.type=timeout when the bound expires.
+func (c *fabricsConnector) waitForDevice(ctx context.Context, subsysNQN string) (devPath string, err error) {
+	ctx, span := telemetry.Tracer().Start(ctx, telemetry.SpanNodeNVMeoFDeviceWait,
+		trace.WithSpanKind(trace.SpanKindInternal),
+		trace.WithAttributes(telemetry.KeyNVMeSubsystemNQN.String(subsysNQN)))
+	attempts := 0
+	errorType := ""
+	defer func() {
+		span.SetAttributes(telemetry.KeyPollAttempts.Int(attempts))
+		telemetry.SetSpanError(span, err, errorType)
+		span.End()
+	}()
+
 	pollCtx, cancel := context.WithTimeout(ctx, nvmeAttachTimeout)
 	defer cancel()
 
 	for {
-		devPath, devErr := c.nvmeGetDevicePath(pollCtx, subsysNQN)
+		attempts++
+		path, devErr := c.nvmeGetDevicePath(pollCtx, subsysNQN)
 		if devErr != nil {
-			return nil, fmt.Errorf("fabricsConnector Attach: get device path for %q: %w",
+			return "", fmt.Errorf("fabricsConnector Attach: get device path for %q: %w",
 				subsysNQN, devErr)
 		}
-		if devPath != "" {
-			return &csisvc.AttachResult{
-				DevicePath: devPath,
-				State: &csisvc.NVMeoFProtocolState{
-					SubsysNQN: subsysNQN,
-					Address:   trAddr,
-					Port:      trSvcID,
-				},
-			}, nil
+		if path != "" {
+			return path, nil
 		}
 		select {
 		case <-pollCtx.Done():
-			return nil, fmt.Errorf("fabricsConnector Attach: block device for NQN %q "+
+			errorType = telemetry.ErrorTypeTimeout
+			return "", fmt.Errorf("fabricsConnector Attach: block device for NQN %q "+
 				"did not appear within %s", subsysNQN, nvmeAttachTimeout)
 		case <-time.After(nvmeAttachPollInterval):
 			// next iteration
@@ -807,12 +866,14 @@ type mkdirMounter struct {
 
 // FormatAndMount creates the target directory if it does not exist, then
 // delegates to the wrapped Mounter's FormatAndMount.
-func (m *mkdirMounter) FormatAndMount(source, target, fsType string, options, formatOptions []string) error {
+func (m *mkdirMounter) FormatAndMount(
+	ctx context.Context, source, target, fsType string, options, formatOptions []string,
+) error {
 	mkdirErr := os.MkdirAll(target, 0o750)
 	if mkdirErr != nil {
 		return fmt.Errorf("mkdirMounter: create mount target %q: %w", target, mkdirErr)
 	}
-	return m.wrapped.FormatAndMount(source, target, fsType, options, formatOptions)
+	return m.wrapped.FormatAndMount(ctx, source, target, fsType, options, formatOptions)
 }
 
 // Mount provisions the target before delegating to the wrapped Mounter.
@@ -885,6 +946,9 @@ func main() {
 		"Unique identifier for this Kubernetes node (typically the Node name). Required.")
 	csiSocket := flag.String("csi-socket", "/var/lib/kubelet/plugins/pillar-csi.bhyoo.com/csi.sock",
 		"Path to the Unix domain socket on which the CSI gRPC server listens.")
+	metricsAddr := flag.String("metrics-bind-address", metricsDisabled,
+		"The address the plaintext Prometheus /metrics endpoint binds to, e.g. :9502. "+
+			"Leave as 0 to disable the metrics endpoint.")
 	flag.Parse()
 
 	if *nodeID == "" {
@@ -898,10 +962,7 @@ func main() {
 	}
 
 	// Determine the driver version from build metadata when available.
-	version := "dev"
-	if bi, ok := debug.ReadBuildInfo(); ok && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
-		version = bi.Main.Version
-	}
+	version, _ := telemetry.BuildVersion()
 
 	// ── Publish node identity annotations to the CSINode object ──────────
 	// Read /etc/nvme/hostnqn and write it as the
@@ -970,8 +1031,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	// ── Register and start the gRPC server ────────────────────────────────
-	grpcSrv := grpc.NewServer()
+	// ── Tracing, metrics, and the gRPC server ─────────────────────────────
+	obs := startObservability(*metricsAddr, version)
+	grpcSrv := newNodeGRPCServer()
 	csi.RegisterIdentityServer(grpcSrv, identitySrv)
 	csi.RegisterNodeServer(grpcSrv, nodeSrv)
 	healthSrv := healthsrv.NewServer()
@@ -989,6 +1051,9 @@ func main() {
 	fmt.Fprintf(os.Stderr, "pillar-node: node-id=%s version=%s socket=%s\n",
 		*nodeID, version, *csiSocket)
 	serveErr := grpcSrv.Serve(lis)
+	// os.Exit skips defers: stop the metrics endpoint and flush spans
+	// explicitly on both the clean and the error path.
+	obs.shutdown()
 	if serveErr != nil {
 		fmt.Fprintf(os.Stderr, "pillar-node: serve: %v\n", serveErr)
 		os.Exit(1)
@@ -999,6 +1064,70 @@ func runNodeShutdown(h *healthsrv.Server, gracefulStopFn func(), grace time.Dura
 	h.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)
 	time.Sleep(grace)
 	gracefulStopFn()
+}
+
+// nodeSysfsRoot is the production sysfs root.
+const nodeSysfsRoot = "/sys"
+
+// observabilityShutdownTimeout bounds each of the metrics server shutdown and
+// the span flush.
+const observabilityShutdownTimeout = 5 * time.Second
+
+// nodeObservability holds what must be stopped before the process exits.
+type nodeObservability struct {
+	metricsSrv      *http.Server // nil when the endpoint is disabled
+	shutdownTracing func(context.Context) error
+}
+
+// startObservability sets up tracing and starts the metrics endpoint,
+// exiting the process on failure.
+func startObservability(metricsAddr, version string) *nodeObservability {
+	shutdownTracing, err := telemetry.Setup(context.Background(), telemetry.ComponentNode, version)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "pillar-node: %v\n", err)
+		os.Exit(1)
+	}
+	obs := &nodeObservability{shutdownTracing: shutdownTracing}
+	reg, err := newNodeMetricsRegistry(version, nodeSysfsRoot)
+	if err == nil {
+		obs.metricsSrv, err = startMetricsServer(metricsAddr, reg)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "pillar-node: %v\n", err)
+		obs.shutdown()
+		os.Exit(1)
+	}
+	return obs
+}
+
+// shutdown stops the metrics endpoint and then flushes pending spans, each
+// bounded by observabilityShutdownTimeout.  Failures are reported on stderr.
+func (o *nodeObservability) shutdown() {
+	if o.metricsSrv != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), observabilityShutdownTimeout)
+		err := o.metricsSrv.Shutdown(ctx)
+		cancel()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "pillar-node: metrics server shutdown: %v\n", err)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), observabilityShutdownTimeout)
+	defer cancel()
+	err := o.shutdownTracing(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "pillar-node: %v\n", err)
+	}
+}
+
+// newNodeGRPCServer returns the CSI gRPC server with the SP9 otelgrpc stats
+// handler (Stage/Unstage/Publish/Unpublish/Expand traced) and the L1 failure
+// log interceptor writing JSON lines to stderr.
+func newNodeGRPCServer() *grpc.Server {
+	failureLog := telemetry.SlogFailureLogger(slog.New(slog.NewJSONHandler(os.Stderr, nil)))
+	return grpc.NewServer(
+		grpc.StatsHandler(telemetry.NodeServerHandler()),
+		grpc.ChainUnaryInterceptor(telemetry.UnaryServerFailureInterceptor(failureLog)),
+	)
 }
 
 // resolveHostIdentityOrExit reads (and on first start, generates) the local

@@ -131,7 +131,9 @@ func newMockMounter() *mockMounter {
 	return &mockMounter{mountedPaths: make(map[string]bool)}
 }
 
-func (m *mockMounter) FormatAndMount(source, target, fsType string, options, formatOptions []string) error {
+func (m *mockMounter) FormatAndMount(
+	_ context.Context, source, target, fsType string, options, formatOptions []string,
+) error {
 	m.formatAndMountCalls = append(m.formatAndMountCalls,
 		formatAndMountCall{source, target, fsType, options, formatOptions})
 	if m.formatAndMountErr != nil {

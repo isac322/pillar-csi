@@ -27,10 +27,13 @@ import (
 	"syscall"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
 	csi "github.com/container-storage-interface/spec/lib/go/csi"
+
+	"github.com/isac322/pillar-csi/internal/telemetry"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -46,7 +49,7 @@ type Resizer interface {
 	// used; supported values are "ext4" (also "ext3"/"ext2") and "xfs".
 	// Implementations should return a non-nil error when the resize tool
 	// exits with a non-zero status or the filesystem type is unsupported.
-	ResizeFS(mountPath, fsType string) error
+	ResizeFS(ctx context.Context, mountPath, fsType string) error
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -87,6 +90,8 @@ func (n *NodeServer) NodeExpandVolume(
 	ctx context.Context,
 	req *csi.NodeExpandVolumeRequest,
 ) (*csi.NodeExpandVolumeResponse, error) {
+	telemetry.SetVolumeAttributes(ctx, req.GetVolumeId())
+
 	// ── Input validation ────────────────────────────────────────────────────
 	if req.GetVolumeId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "NodeExpandVolume: volume_id is required") //nolint:wrapcheck
@@ -125,6 +130,7 @@ func (n *NodeServer) NodeExpandVolume(
 		return nil, status.Errorf(codes.Internal,
 			"NodeExpandVolume: read stage state for %q: %v", req.GetVolumeId(), stateErr)
 	}
+	setSpanAttachMode(ctx, stageState)
 	if stageState.isLocalAttach() {
 		expandErr := n.expandLocal(ctx, req.GetVolumeId(), stageState)
 		if expandErr != nil {
@@ -155,6 +161,7 @@ func (n *NodeServer) NodeExpandVolume(
 
 	// ── Determine filesystem type ────────────────────────────────────────────
 	fsType := expandFsType(stageState, volCap)
+	trace.SpanFromContext(ctx).SetAttributes(telemetry.KeyFSType.String(fsType))
 
 	// ── Run filesystem resize ────────────────────────────────────────────────
 	r := n.resizer
@@ -162,7 +169,7 @@ func (n *NodeServer) NodeExpandVolume(
 		r = &execResizer{}
 	}
 
-	resizeErr := r.ResizeFS(volumePath, fsType)
+	resizeErr := r.ResizeFS(ctx, volumePath, fsType)
 	if resizeErr != nil {
 		return nil, status.Errorf(codes.Internal,
 			"NodeExpandVolume: resize %s filesystem at %q: %v", fsType, volumePath, resizeErr)
@@ -228,7 +235,10 @@ type execResizer struct{}
 //
 //	xfs_growfs operates on the mount point; it communicates with the kernel
 //	XFS driver directly via ioctl and does not need the raw device path.
-func (*execResizer) ResizeFS(mountPath, fsType string) error {
+//
+// Each resize tool run is observed in M9 and, inside a traced RPC, as an SP8
+// child span.
+func (*execResizer) ResizeFS(ctx context.Context, mountPath, fsType string) error {
 	// Reject unsupported filesystem types early, before doing any I/O.
 	switch fsType {
 	case defaultFsType, "ext3", "ext2", xfsFsType:
@@ -261,20 +271,29 @@ func (*execResizer) ResizeFS(mountPath, fsType string) error {
 	switch fsType {
 	case defaultFsType, "ext3", "ext2":
 		resize2fs := findExecutable("resize2fs", "/usr/sbin/resize2fs", "/sbin/resize2fs")
-		out, cmdErr := exec.Command(resize2fs, device).CombinedOutput() //nolint:gosec // device is from /proc/mounts
+		out, cmdErr := runObserved(ctx, resize2fs, device)
 		if cmdErr != nil {
 			return fmt.Errorf("resize2fs %q: %w: %s", device, cmdErr, strings.TrimSpace(string(out)))
 		}
 
 	case xfsFsType:
 		xfsGrowfs := findExecutable("xfs_growfs", "/usr/sbin/xfs_growfs", "/sbin/xfs_growfs")
-		out, cmdErr := exec.Command(xfsGrowfs, mountPath).CombinedOutput() //nolint:gosec // mountPath validated by caller
+		out, cmdErr := runObserved(ctx, xfsGrowfs, mountPath)
 		if cmdErr != nil {
 			return fmt.Errorf("xfs_growfs %q: %w: %s", mountPath, cmdErr, strings.TrimSpace(string(out)))
 		}
 	}
 
 	return nil
+}
+
+// runObserved runs name with args through exec.CommandContext and returns
+// its combined output, observing the run in M9 and as an SP8 span.
+func runObserved(ctx context.Context, name string, args ...string) ([]byte, error) {
+	obs := telemetry.StartExec(ctx, name, args...)
+	out, err := exec.CommandContext(ctx, name, args...).CombinedOutput() //nolint:gosec // callers pass fixed tools
+	obs.End(out, err)
+	return out, err //nolint:wrapcheck // callers wrap with the tool name and output
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

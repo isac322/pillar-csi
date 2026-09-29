@@ -42,6 +42,7 @@ package agentclient
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sync"
 
 	"google.golang.org/grpc"
@@ -187,10 +188,15 @@ func NewManagerWithTLSCredentials(creds credentials.TransportCredentials) *Manag
 // The caller is responsible for supplying appropriate credentials.  This
 // constructor exists primarily to allow unit tests to inject a custom dialer
 // (e.g. grpc.WithContextDialer pointing at a bufconn.Listener).
+//
+// Every connection is instrumented with [TelemetryDialOptions] (prepended to
+// opts). Connections are shared per address, so the client span carries no
+// agent name; the request counter takes it from [WithAgentName] on the ctx.
 func NewManagerWithOptions(opts ...grpc.DialOption) *Manager {
+	dialOpts := slices.Concat(TelemetryDialOptions(""), opts)
 	return &Manager{
 		conns:    make(map[string]*connEntry),
-		dialOpts: opts,
+		dialOpts: dialOpts,
 	}
 }
 

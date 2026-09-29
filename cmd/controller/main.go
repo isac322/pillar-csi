@@ -27,6 +27,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -39,6 +40,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
@@ -48,6 +50,7 @@ import (
 	"github.com/isac322/pillar-csi/internal/controller"
 	"github.com/isac322/pillar-csi/internal/csi"
 	"github.com/isac322/pillar-csi/internal/runtimepaths"
+	"github.com/isac322/pillar-csi/internal/telemetry"
 	webhookv1alpha1 "github.com/isac322/pillar-csi/internal/webhook/v1alpha1"
 	// +kubebuilder:scaffold:imports
 )
@@ -362,6 +365,21 @@ func main() {
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
+	// Tracing is set up before anything that may start a span. Its flush is
+	// deferred below, after the last os.Exit, so it runs once the manager has
+	// stopped.
+	version, _ := telemetry.BuildVersion()
+	shutdownTelemetry, err := telemetry.Setup(context.Background(), telemetry.ComponentController, version)
+	if err != nil {
+		setupLog.Error(err, "unable to set up telemetry")
+		os.Exit(1)
+	}
+	err = registerMetrics(version)
+	if err != nil {
+		setupLog.Error(err, "unable to register metrics")
+		os.Exit(1)
+	}
+
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
 	// due to its vulnerabilities. More specifically, disabling http/2 will
 	// prevent from being vulnerable to the HTTP/2 Stream Cancellation and
@@ -468,6 +486,14 @@ func main() {
 		os.Exit(1)
 	}
 	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), telemetryShutdownTimeout)
+		defer cancel()
+		shutdownErr := shutdownTelemetry(shutdownCtx)
+		if shutdownErr != nil {
+			setupLog.Error(shutdownErr, "failed to flush telemetry")
+		}
+	}()
+	defer func() {
 		closeErr := agentDialer.Close()
 		if closeErr != nil {
 			setupLog.Error(closeErr, "failed to close agent gRPC connection manager")
@@ -478,6 +504,35 @@ func main() {
 	if runErr != nil {
 		setupLog.Error(runErr, "manager exited with error")
 	}
+}
+
+// telemetryShutdownTimeout bounds the final span flush.
+const telemetryShutdownTimeout = 5 * time.Second
+
+// registerMetrics registers the controller's pillar_csi_* metrics on the
+// controller-runtime registry served by the manager's metrics server:
+// pillar_csi_agent_client_requests_total, pillar_csi_volumes_reaped_total,
+// pillar_csi_tls_certificate_not_after_timestamp_seconds and
+// pillar_csi_build_info. The leader-gated resource collector is registered in
+// runManager, which has the manager.
+func registerMetrics(version string) error {
+	err := agentclient.RegisterMetrics(ctrlmetrics.Registry)
+	if err != nil {
+		return fmt.Errorf("agent client metrics: %w", err)
+	}
+	err = csi.RegisterControllerMetrics(ctrlmetrics.Registry)
+	if err != nil {
+		return fmt.Errorf("CSI controller metrics: %w", err)
+	}
+	err = telemetry.RegisterCertificateMetrics(ctrlmetrics.Registry)
+	if err != nil {
+		return fmt.Errorf("certificate metrics: %w", err)
+	}
+	err = ctrlmetrics.Registry.Register(telemetry.BuildInfoCollector(telemetry.ComponentController, version))
+	if err != nil {
+		return fmt.Errorf("register pillar_csi_build_info: %w", err)
+	}
+	return nil
 }
 
 // initAgentDialer creates the gRPC connection manager for agent health-checks.
@@ -525,18 +580,26 @@ func runManager(mgr ctrl.Manager, agentDialer agentclient.Dialer, csiEndpoint st
 		return fmt.Errorf("unable to create controllers: %w", err)
 	}
 
+	// ── Leader-only resource metrics ──────────────────────────────────────────
+	err = ctrlmetrics.Registry.Register(controller.NewResourceMetricsCollector(mgr.GetClient(), mgr.Elected()))
+	if err != nil {
+		return fmt.Errorf("unable to register resource metrics collector: %w", err)
+	}
+
 	// ── CSI gRPC server ───────────────────────────────────────────────────────
 	// Build version string from embedded build info so GetPluginInfo returns a
 	// meaningful version even in release builds.
-	driverVersion := "dev"
-	if bi, ok := debug.ReadBuildInfo(); ok && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
-		driverVersion = bi.Main.Version
-	}
+	driverVersion, _ := telemetry.BuildVersion()
 
 	csiSrv := &csiGRPCServer{
 		endpoint: csiEndpoint,
-		grpcSrv:  grpc.NewServer(),
-		ctrlSrv:  ctrlSrv,
+		grpcSrv: grpc.NewServer(
+			grpc.StatsHandler(telemetry.ControllerServerHandler()),
+			grpc.ChainUnaryInterceptor(
+				telemetry.UnaryServerFailureInterceptor(telemetry.LogrFailureLogger(ctrl.Log.WithName("csi"))),
+			),
+		),
+		ctrlSrv: ctrlSrv,
 	}
 	// Probe readiness is bound to the CSI socket actually serving, not to
 	// leader election: standby replicas must answer Ready so their sidecars

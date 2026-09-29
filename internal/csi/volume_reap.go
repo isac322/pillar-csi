@@ -51,6 +51,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	corev1 "k8s.io/api/core/v1"
@@ -59,6 +60,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/isac322/pillar-csi/api/v1alpha1"
+	"github.com/isac322/pillar-csi/internal/telemetry"
 )
 
 // provisionerVolumePrefix is external-provisioner's default volume name
@@ -240,8 +242,33 @@ func (s *ControllerServer) ReapAbandonedVolume(ctx context.Context, pvsName stri
 		return false, err
 	}
 
+	// SP4 starts only for an abandoned lifecycle, so the periodic reconcile
+	// of every other volume creates no span.
+	ctx, span := telemetry.Tracer().Start(ctx, telemetry.SpanControllerVolumeReap,
+		trace.WithNewRoot(), trace.WithSpanKind(trace.SpanKindInternal),
+		trace.WithAttributes(telemetry.VolumeAttributes(volumeID)...))
+	defer span.End()
+
+	result, err := s.reapAbandoned(ctx, pvsName, pvs)
+	span.SetAttributes(telemetry.KeyReapResult.String(result))
+	volumesReaped.WithLabelValues(pvs.Spec.AgentRef, result).Inc()
+	if result == reapResultError {
+		telemetry.SetSpanError(span, err, "")
+	}
+	return result == reapResultReaped, err
+}
+
+// reapAbandoned tears down the abandoned lifecycle pvs (see
+// ReapAbandonedVolume) and returns the pillar_csi.reap.result outcome. A kept
+// outcome may still carry the refusal error for the caller to return.
+func (s *ControllerServer) reapAbandoned(
+	ctx context.Context,
+	pvsName string,
+	pvs *v1alpha1.PillarVolumeState,
+) (string, error) {
+	volumeID := pvs.Spec.VolumeID
 	decidedUID := pvs.UID
-	pvs, fence, err := s.markVolumeDeleting(ctx, pvsName, volumeID, func(cur *v1alpha1.PillarVolumeState) error {
+	marked, fence, err := s.markVolumeDeleting(ctx, pvsName, volumeID, func(cur *v1alpha1.PillarVolumeState) error {
 		if cur.UID != decidedUID || !reapablePhase(cur) {
 			return status.Errorf(codes.Aborted,
 				"volume %q changed to phase %q while being reaped", volumeID, cur.Status.Phase)
@@ -249,10 +276,13 @@ func (s *ControllerServer) ReapAbandonedVolume(ctx context.Context, pvsName stri
 		return nil
 	})
 	if err != nil {
-		return false, err
+		if status.Code(err) == codes.Aborted {
+			return reapResultKept, err
+		}
+		return reapResultError, err
 	}
-	if pvs == nil {
-		return false, nil
+	if marked == nil {
+		return reapResultKept, nil
 	}
 
 	teardownCtx, cancel := context.WithTimeout(ctx, reapTeardownTimeout)
@@ -260,17 +290,17 @@ func (s *ControllerServer) ReapAbandonedVolume(ctx context.Context, pvsName stri
 	err = s.teardownMarkedVolume(teardownCtx, volumeTeardown{
 		volumeID:     volumeID,
 		pvName:       pvsName,
-		uid:          pvs.UID,
-		targetName:   pvs.Spec.AgentRef,
-		protocolType: mapProtocolType(pvs.Spec.ProtocolType),
-		backendType:  mapBackendType(pvs.Spec.BackendType),
-		agentVolID:   pvs.Spec.AgentVolumeID,
+		uid:          marked.UID,
+		targetName:   marked.Spec.AgentRef,
+		protocolType: mapProtocolType(marked.Spec.ProtocolType),
+		backendType:  mapBackendType(marked.Spec.BackendType),
+		agentVolID:   marked.Spec.AgentVolumeID,
 		fence:        fence,
 	})
 	if err != nil {
-		return false, fmt.Errorf("tear down abandoned volume %q: %w", volumeID, err)
+		return reapResultError, fmt.Errorf("tear down abandoned volume %q: %w", volumeID, err)
 	}
-	return true, nil
+	return reapResultReaped, nil
 }
 
 // provisioningAbandoned reports whether pvs never reported success, its claim

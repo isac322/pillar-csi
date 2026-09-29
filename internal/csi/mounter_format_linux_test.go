@@ -178,7 +178,7 @@ func TestKubeMounter_FormatAndMount_BlankDeviceUsesMkfsOptions(t *testing.T) {
 			dev := &fakeDeviceExec{}
 			km, fake := newFormatTestMounter(t, dev)
 
-			err := km.FormatAndMount(fakeDevice, t.TempDir(), tc.fsType, nil, tc.opts)
+			err := km.FormatAndMount(t.Context(), fakeDevice, t.TempDir(), tc.fsType, nil, tc.opts)
 			if err != nil {
 				t.Fatalf("FormatAndMount: %v", err)
 			}
@@ -217,7 +217,7 @@ func TestKubeMounter_FormatAndMount_XFSProfileUnusable(t *testing.T) {
 				km.xfsProfile = writeXFSProfile(t, profile)
 			}
 
-			err := km.FormatAndMount(fakeDevice, t.TempDir(), "xfs", nil, nil)
+			err := km.FormatAndMount(t.Context(), fakeDevice, t.TempDir(), "xfs", nil, nil)
 			if err == nil || !strings.Contains(err.Error(), "compatibility profile") {
 				t.Fatalf("FormatAndMount error = %v, want a compatibility profile error", err)
 			}
@@ -236,7 +236,7 @@ func TestKubeMounter_FormatAndMount_ExistingFilesystemNeverReformatted(t *testin
 	dev := &fakeDeviceExec{fsType: "ext4"}
 	km, fake := newFormatTestMounter(t, dev)
 
-	err := km.FormatAndMount(fakeDevice, t.TempDir(), "ext4", nil, []string{"-E", "lazy_itable_init=0"})
+	err := km.FormatAndMount(t.Context(), fakeDevice, t.TempDir(), "ext4", nil, []string{"-E", "lazy_itable_init=0"})
 	if err != nil {
 		t.Fatalf("FormatAndMount: %v", err)
 	}
@@ -255,7 +255,7 @@ func TestKubeMounter_FormatAndMount_ReadOnlyBlankNotFormatted(t *testing.T) {
 	dev := &fakeDeviceExec{}
 	km, fake := newFormatTestMounter(t, dev)
 
-	err := km.FormatAndMount(fakeDevice, t.TempDir(), "xfs", []string{"ro"}, []string{"-K"})
+	err := km.FormatAndMount(t.Context(), fakeDevice, t.TempDir(), "xfs", []string{"ro"}, []string{"-K"})
 	if err == nil {
 		t.Fatal("FormatAndMount of a blank device read-only: want error, got nil")
 	}
@@ -271,7 +271,7 @@ func TestKubeMounter_FormatAndMount_MkfsFailure(t *testing.T) {
 	dev := &fakeDeviceExec{mkfsErr: errors.New("exit status 1")}
 	km, fake := newFormatTestMounter(t, dev)
 
-	err := km.FormatAndMount(fakeDevice, t.TempDir(), "xfs", nil, []string{"-b", "size=3"})
+	err := km.FormatAndMount(t.Context(), fakeDevice, t.TempDir(), "xfs", nil, []string{"-b", "size=3"})
 	if err == nil || !strings.Contains(err.Error(), "mkfs: bad option") {
 		t.Fatalf("FormatAndMount error = %v, want the mkfs failure with its output", err)
 	}
@@ -288,7 +288,7 @@ func TestKubeMounter_FormatAndMount_MkfsLeavesDeviceBlank(t *testing.T) {
 	dev := &fakeDeviceExec{mkfsNoop: true}
 	km, fake := newFormatTestMounter(t, dev)
 
-	err := km.FormatAndMount(fakeDevice, t.TempDir(), "ext4", nil, []string{"-L", "data"})
+	err := km.FormatAndMount(t.Context(), fakeDevice, t.TempDir(), "ext4", nil, []string{"-L", "data"})
 	if err == nil {
 		t.Fatal("FormatAndMount after a no-op mkfs: want error, got nil")
 	}
@@ -308,7 +308,7 @@ func TestKubeMounter_FormatAndMount_RejectsUnsafeOptions(t *testing.T) {
 	dev := &fakeDeviceExec{}
 	km, _ := newFormatTestMounter(t, dev)
 
-	err := km.FormatAndMount(fakeDevice, t.TempDir(), "ext4", nil, []string{"-J", "device=LABEL=journal"})
+	err := km.FormatAndMount(t.Context(), fakeDevice, t.TempDir(), "ext4", nil, []string{"-J", "device=LABEL=journal"})
 	if err == nil {
 		t.Fatal("FormatAndMount with an external-journal mkfs option: want error, got nil")
 	}

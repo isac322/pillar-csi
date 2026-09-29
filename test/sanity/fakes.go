@@ -45,7 +45,7 @@ func newFakeMounter() *fakeMounter {
 	return &fakeMounter{mounted: map[string]bool{}}
 }
 
-func (m *fakeMounter) FormatAndMount(_, target, _ string, _, _ []string) error {
+func (m *fakeMounter) FormatAndMount(_ context.Context, _, target, _ string, _, _ []string) error {
 	if err := os.MkdirAll(target, 0o755); err != nil {
 		return err
 	}
@@ -81,4 +81,4 @@ func (m *fakeMounter) IsMounted(target string) (bool, error) {
 // fakeResizer is a no-op Resizer for NodeExpandVolume.
 type fakeResizer struct{}
 
-func (fakeResizer) ResizeFS(_, _ string) error { return nil }
+func (fakeResizer) ResizeFS(_ context.Context, _, _ string) error { return nil }

@@ -492,13 +492,48 @@ csiDriver:
 
 # ─── Metrics / Monitoring ─────────────────────────────────────────────────────
 metrics:
-  # -- Set to true to create a Prometheus ServiceMonitor (requires prometheus-operator CRDs).
-  serviceMonitor:
+  # -- Serve pillar-agent and pillar-node /metrics and the CSI sidecars' --http-endpoint.
+  # The controller endpoint (controller.metricsPort) is always served.
+  enabled: false
+  controller:
+    # -- HTTPS + TokenReview/SubjectAccessReview on the controller endpoint (binary default).
+    # false passes --metrics-secure=false (plain HTTP).
+    secure: true
+  agent:
+    # -- pillar-agent /metrics port. Bound to the host IP when agent.hostNetwork is true.
+    port: 9501
+  node:
+    # -- pillar-node /metrics port. Bound to the host IP when node.hostNetwork is true.
+    port: 9502
+  sidecars:
+    # -- csi-provisioner --http-endpoint port (container port `provisioner-metrics`).
+    provisionerPort: 8090
+    # -- csi-attacher --http-endpoint port (container port `attacher-metrics`).
+    attacherPort: 8091
+    # -- csi-resizer --http-endpoint port (container port `resizer-metrics`).
+    resizerPort: 8092
+  podMonitor:
+    # -- Render prometheus-operator PodMonitors (requires monitoring.coreos.com/v1).
     enabled: false
-    # -- Scrape interval override. Defaults to the Prometheus global scrapeInterval.
+    # -- Scrape interval override. Defaults to the Prometheus global scrape interval.
     interval: ""
-    # -- Additional labels added to the ServiceMonitor.
-    additionalLabels: {}
+    # -- Scrape timeout override. Defaults to the Prometheus global scrape timeout.
+    scrapeTimeout: ""
+    # -- Additional labels added to every PodMonitor (e.g. the Prometheus podMonitorSelector).
+    labels: {}
+
+# ─── Tracing ─────────────────────────────────────────────────────────────────
+tracing:
+  # -- Render OTEL_* env into controller, agent and node. The binaries trace only when an OTLP endpoint is set.
+  enabled: false
+  # -- OTLP/gRPC endpoint, e.g. `http://tempo-distributor.monitoring:4317` or `http://$(HOST_IP):4317`
+  # for a node-local collector (hostNetwork pods keep cluster DNS through ClusterFirstWithHostNet).
+  # Required when tracing.enabled is true.
+  endpoint: ""
+  # -- OTEL_EXPORTER_OTLP_INSECURE: dial the OTLP endpoint without TLS.
+  insecure: true
+  # -- OTEL_TRACES_SAMPLER_ARG for the pillar root sampler (parent-based; parentless client spans always dropped).
+  samplerRatio: "1.0"
 
 # ─── mTLS between controller and agent ────────────────────────────────────────
 # Phase 1 PRD allows plaintext gRPC by default; mTLS is opt-in.

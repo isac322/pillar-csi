@@ -88,6 +88,10 @@ spec:
             - --leader-elect
             - --health-probe-bind-address=:{{ .Values.controller.healthProbePort }}
             - --metrics-bind-address=:{{ .Values.controller.metricsPort }}
+            {{- if not (kindIs "bool" .Values.metrics.controller.secure) }}
+            {{- fail "metrics.controller.secure must be a boolean (true or false)" }}
+            {{- end }}
+            - --metrics-secure={{ .Values.metrics.controller.secure }}
             - --csi-endpoint=unix://{{ .Values.controller.csiSocketPath }}
             {{- if .Values.webhook.enabled }}
             - --webhook-cert-path={{ .Values.webhook.certDir }}
@@ -114,6 +118,19 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
+            {{- if .Values.tracing.enabled }}
+            # NODE_NAME and HOST_IP must precede the OTEL_* entries: kubelet
+            # expands $(VAR) only from earlier env entries.
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: HOST_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+            {{- include "pillar-csi.otelEnv" . | trim | nindent 12 }}
+            {{- end }}
             {{- if not .Values.webhook.enabled }}
             - name: ENABLE_WEBHOOKS
               value: "false"
@@ -195,9 +212,19 @@ spec:
             # Passes the claim name/namespace to CreateVolume: the driver reads
             # the PVC override annotations and the claim identity from them.
             - --extra-create-metadata
+            {{- if .Values.metrics.enabled }}
+            - --http-endpoint=:{{ .Values.metrics.sidecars.provisionerPort }}
+            {{- end }}
             {{- range .Values.controller.sidecars.provisioner.extraArgs }}
             - {{ . | quote }}
             {{- end }}
+          {{- if .Values.metrics.enabled }}
+          # Port names are capped at 15 characters (IANA service name).
+          ports:
+            - name: prov-metrics
+              containerPort: {{ .Values.metrics.sidecars.provisionerPort }}
+              protocol: TCP
+          {{- end }}
           resources:
             {{- toYaml .Values.controller.sidecars.provisioner.resources | nindent 12 }}
           securityContext:
@@ -220,9 +247,18 @@ spec:
             - --leader-election
             - --leader-election-namespace={{ include "pillar-csi.namespace" . }}
             - --v=5
+            {{- if .Values.metrics.enabled }}
+            - --http-endpoint=:{{ .Values.metrics.sidecars.attacherPort }}
+            {{- end }}
             {{- range .Values.controller.sidecars.attacher.extraArgs }}
             - {{ . | quote }}
             {{- end }}
+          {{- if .Values.metrics.enabled }}
+          ports:
+            - name: attach-metrics
+              containerPort: {{ .Values.metrics.sidecars.attacherPort }}
+              protocol: TCP
+          {{- end }}
           resources:
             {{- toYaml .Values.controller.sidecars.attacher.resources | nindent 12 }}
           securityContext:
@@ -245,9 +281,18 @@ spec:
             - --leader-election
             - --leader-election-namespace={{ include "pillar-csi.namespace" . }}
             - --v=5
+            {{- if .Values.metrics.enabled }}
+            - --http-endpoint=:{{ .Values.metrics.sidecars.resizerPort }}
+            {{- end }}
             {{- range .Values.controller.sidecars.resizer.extraArgs }}
             - {{ . | quote }}
             {{- end }}
+          {{- if .Values.metrics.enabled }}
+          ports:
+            - name: resize-metrics
+              containerPort: {{ .Values.metrics.sidecars.resizerPort }}
+              protocol: TCP
+          {{- end }}
           resources:
             {{- toYaml .Values.controller.sidecars.resizer.resources | nindent 12 }}
           securityContext:

@@ -31,6 +31,7 @@ import (
 	agentv1 "github.com/isac322/pillar-csi/gen/go/pillar_csi/agent/v1"
 	"github.com/isac322/pillar-csi/internal/agent/health"
 	"github.com/isac322/pillar-csi/internal/agent/nvmeof"
+	"github.com/isac322/pillar-csi/internal/nvmeofnqn"
 )
 
 // GetCapabilities returns the backend types and protocols supported by this
@@ -234,7 +235,7 @@ func readTrimmedConfigfsFile(path string) (string, error) {
 }
 
 func volumeIDFromNQN(nqn string) string {
-	suffix, ok := strings.CutPrefix(nqn, nqnPrefix)
+	suffix, ok := strings.CutPrefix(nqn, nvmeofnqn.Prefix)
 	if !ok {
 		return ""
 	}

@@ -32,6 +32,7 @@ func (s *Server) ExportVolume(
 	ctx context.Context,
 	req *agentv1.ExportVolumeRequest,
 ) (*agentv1.ExportVolumeResponse, error) {
+	s.setVolumeSpanAttributes(ctx, req.GetVolumeId())
 	handler, err := s.handlerForProtocol(req.GetProtocolType())
 	if err != nil {
 		return nil, protocolRPCError(err)
@@ -89,6 +90,7 @@ func (s *Server) UnexportVolume(
 	ctx context.Context,
 	req *agentv1.UnexportVolumeRequest,
 ) (*agentv1.UnexportVolumeResponse, error) {
+	s.setVolumeSpanAttributes(ctx, req.GetVolumeId())
 	handler, err := s.handlerForProtocol(req.GetProtocolType())
 	if err != nil {
 		return nil, protocolRPCError(err)
@@ -106,6 +108,7 @@ func (s *Server) AllowInitiator(
 	ctx context.Context,
 	req *agentv1.AllowInitiatorRequest,
 ) (*agentv1.AllowInitiatorResponse, error) {
+	s.setVolumeSpanAttributes(ctx, req.GetVolumeId())
 	handler, err := s.handlerForProtocol(req.GetProtocolType())
 	if err != nil {
 		return nil, protocolRPCError(err)
@@ -127,6 +130,7 @@ func (s *Server) DenyInitiator(
 	ctx context.Context,
 	req *agentv1.DenyInitiatorRequest,
 ) (*agentv1.DenyInitiatorResponse, error) {
+	s.setVolumeSpanAttributes(ctx, req.GetVolumeId())
 	handler, err := s.handlerForProtocol(req.GetProtocolType())
 	if err != nil {
 		return nil, protocolRPCError(err)
@@ -147,6 +151,7 @@ func (s *Server) SetLocalAttach(
 	ctx context.Context,
 	req *agentv1.SetLocalAttachRequest,
 ) (*agentv1.SetLocalAttachResponse, error) {
+	s.setVolumeSpanAttributes(ctx, req.GetVolumeId())
 	_, err := poolFromVolumeID(req.GetVolumeId())
 	if err != nil {
 		return nil, err

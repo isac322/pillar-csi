@@ -512,31 +512,63 @@ Install CRDs as part of the Helm release. Set to false when managing CRDs separa
 
 ## metrics
 
-### <code>metrics.<wbr>serviceMonitor</code>
+### <code>metrics.<wbr>agent.<wbr>port</code>
 
-Type: `object`. Default:
+Type: `int`. Default: `9501`
 
-```json
-{
-  "additionalLabels": {},
-  "enabled": false,
-  "interval": ""
-}
-```
+pillar-agent /metrics port. Bound to the host IP when agent.hostNetwork is true.
 
-Set to true to create a Prometheus ServiceMonitor (requires prometheus-operator CRDs).
+### <code>metrics.<wbr>controller.<wbr>secure</code>
 
-### <code>metrics.<wbr>serviceMonitor.<wbr>additionalLabels</code>
+Type: `bool`. Default: `true`
 
-Type: `object`. Default: `{}`
+HTTPS + TokenReview/SubjectAccessReview on the controller endpoint (binary default). false passes `--metrics-secure`=false (plain HTTP).
 
-Additional labels added to the ServiceMonitor.
+### <code>metrics.<wbr>enabled</code>
 
-### <code>metrics.<wbr>serviceMonitor.<wbr>interval</code>
+Type: `bool`. Default: `false`
+
+### <code>metrics.<wbr>node.<wbr>port</code>
+
+Type: `int`. Default: `9502`
+
+pillar-node /metrics port. Bound to the host IP when node.hostNetwork is true.
+
+### <code>metrics.<wbr>podMonitor.<wbr>enabled</code>
+
+Type: `bool`. Default: `false`
+
+Render prometheus-operator PodMonitors (requires monitoring.coreos.com/v1).
+
+### <code>metrics.<wbr>podMonitor.<wbr>interval</code>
 
 Type: `string`. Default: `""`
 
-Scrape interval override. Defaults to the Prometheus global scrapeInterval.
+Scrape interval override. Defaults to the Prometheus global scrape interval.
+
+### <code>metrics.<wbr>podMonitor.<wbr>labels</code>
+
+Type: `object`. Default: `{}`
+
+Additional labels added to every PodMonitor (e.g. the Prometheus podMonitorSelector).
+
+### <code>metrics.<wbr>podMonitor.<wbr>scrapeTimeout</code>
+
+Type: `string`. Default: `""`
+
+Scrape timeout override. Defaults to the Prometheus global scrape timeout.
+
+### <code>metrics.<wbr>sidecars.<wbr>attacherPort</code>
+
+Type: `int`. Default: `8091`
+
+### <code>metrics.<wbr>sidecars.<wbr>provisionerPort</code>
+
+Type: `int`. Default: `8090`
+
+### <code>metrics.<wbr>sidecars.<wbr>resizerPort</code>
+
+Type: `int`. Default: `8092`
 
 ## mtls
 
@@ -912,6 +944,32 @@ Set to false to skip ServiceAccount creation for pillar-node.
 Type: `string`. Default: `""`
 
 Override the ServiceAccount name. Defaults to &lt;fullname>-node.
+
+## tracing
+
+### <code>tracing.<wbr>enabled</code>
+
+Type: `bool`. Default: `false`
+
+Render OTEL_* env into controller, agent and node. The binaries trace only when an OTLP endpoint is set.
+
+### <code>tracing.<wbr>endpoint</code>
+
+Type: `string`. Default: `""`
+
+OTLP/gRPC endpoint, e.g. `http://tempo-distributor.monitoring:4317` or `http://$(HOST_IP):4317` for a node-local collector (hostNetwork pods keep cluster DNS through ClusterFirstWithHostNet). Required when tracing.enabled is true.
+
+### <code>tracing.<wbr>insecure</code>
+
+Type: `bool`. Default: `true`
+
+OTEL_EXPORTER_OTLP_INSECURE: dial the OTLP endpoint without TLS.
+
+### <code>tracing.<wbr>samplerRatio</code>
+
+Type: `string`. Default: `"1.0"`
+
+OTEL_TRACES_SAMPLER_ARG for the pillar root sampler (parent-based; parentless client spans always dropped).
 
 ## webhook
 

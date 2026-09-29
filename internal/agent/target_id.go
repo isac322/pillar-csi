@@ -23,6 +23,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	agentv1 "github.com/isac322/pillar-csi/gen/go/pillar_csi/agent/v1"
+	"github.com/isac322/pillar-csi/internal/nvmeofnqn"
 )
 
 // volumeTargetID derives a protocol-specific target identifier from a volume
@@ -34,7 +35,7 @@ import (
 func volumeTargetID(protocol agentv1.ProtocolType, volumeID string) (string, error) {
 	switch protocol {
 	case agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP:
-		return nqnPrefix + strings.ReplaceAll(volumeID, "/", "."), nil
+		return nvmeofnqn.Prefix + strings.ReplaceAll(volumeID, "/", "."), nil
 	case agentv1.ProtocolType_PROTOCOL_TYPE_UNSPECIFIED:
 		return "", status.Errorf(codes.InvalidArgument, "volumeTargetID: protocol_type is required")
 	default:

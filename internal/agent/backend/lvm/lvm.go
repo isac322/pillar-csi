@@ -49,6 +49,7 @@ import (
 	agentv1 "github.com/isac322/pillar-csi/gen/go/pillar_csi/agent/v1"
 
 	"github.com/isac322/pillar-csi/internal/agent/backend"
+	"github.com/isac322/pillar-csi/internal/telemetry"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -330,9 +331,16 @@ type executor interface {
 // osExecutor is the real executor that delegates to os/exec.
 type osExecutor struct{}
 
+// run executes the command and observes it for telemetry: the
+// pillar_csi_exec_duration_seconds histogram always, and an exec span when
+// ctx carries a traced RPC.
 func (osExecutor) run(ctx context.Context, name string, args ...string) ([]byte, error) {
-	//nolint:gosec,wrapcheck // G204: intentional; raw exit error returned with output.
-	return exec.CommandContext(ctx, name, args...).CombinedOutput()
+	obs := telemetry.StartExec(ctx, name, args...)
+	//nolint:gosec // G204: intentional; argv is built by this backend, not by a shell.
+	out, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
+	obs.End(out, err)
+	//nolint:wrapcheck // raw exit error returned with output; callers wrap it with the command.
+	return out, err
 }
 
 // execFunc adapts a bare function to the executor interface, making it
@@ -1038,20 +1046,112 @@ func (b *Backend) capacityThin(ctx context.Context) (totalBytes, availableBytes 
 	if len(parts) != 2 {
 		return 0, 0, fmt.Errorf("lvm: unexpected lvs output for thin pool %s/%s: %q", b.vg, b.thinpool, line)
 	}
+	return parseThinPoolUsage(parts[0], parts[1])
+}
 
-	totalBytes, err = strconv.ParseInt(parts[0], 10, 64)
+// parseThinPoolUsage parses the lv_size and data_percent columns of a thin
+// pool and derives the bytes still available in it.
+func parseThinPoolUsage(sizeField, dataPercentField string) (totalBytes, availableBytes int64, err error) {
+	totalBytes, err = strconv.ParseInt(sizeField, 10, 64)
 	if err != nil {
-		return 0, 0, fmt.Errorf("lvm: parsing lv_size %q for thin pool: %w", parts[0], err)
+		return 0, 0, fmt.Errorf("lvm: parsing lv_size %q for thin pool: %w", sizeField, err)
 	}
 
-	dataPercent, parseErr := strconv.ParseFloat(parts[1], 64)
+	dataPercent, parseErr := strconv.ParseFloat(dataPercentField, 64)
 	if parseErr != nil {
-		return 0, 0, fmt.Errorf("lvm: parsing data_percent %q for thin pool: %w", parts[1], parseErr)
+		return 0, 0, fmt.Errorf("lvm: parsing data_percent %q for thin pool: %w", dataPercentField, parseErr)
 	}
 
 	usedBytes := int64(float64(totalBytes) * dataPercent / 100.0)
 	availableBytes = totalBytes - usedBytes
 	return totalBytes, availableBytes, nil
+}
+
+// Verify at compile time that Backend reports capacity details and
+// provisioned bytes.
+var (
+	_ backend.CapacityDetailer         = (*Backend)(nil)
+	_ backend.ProvisionedBytesReporter = (*Backend)(nil)
+)
+
+// CapacityDetails is [Backend.Capacity] plus, in thin mode, the thin pool's
+// metadata usage, read by the same lvs call (lv_size, data_percent and
+// metadata_percent), so a metrics refresh costs one command per pool.
+func (b *Backend) CapacityDetails(ctx context.Context) (backend.CapacityDetails, error) {
+	if b.thinpool == "" {
+		total, avail, err := b.capacityLinear(ctx)
+		if err != nil {
+			return backend.CapacityDetails{}, err
+		}
+		return backend.CapacityDetails{TotalBytes: total, AvailableBytes: avail}, nil
+	}
+
+	out, err := b.exec.run(ctx, "lvs",
+		"--noheadings", "-o", "lv_size,data_percent,metadata_percent",
+		"--units", "b", "--nosuffix",
+		b.vg+"/"+b.thinpool,
+	)
+	if err != nil {
+		return backend.CapacityDetails{}, fmt.Errorf("lvs %s/%s: %w\n%s",
+			b.vg, b.thinpool, err, strings.TrimSpace(string(out)))
+	}
+	line := strings.TrimSpace(string(out))
+	parts := strings.Fields(line)
+	if len(parts) != 3 {
+		return backend.CapacityDetails{}, fmt.Errorf("lvm: unexpected lvs output for thin pool %s/%s: %q",
+			b.vg, b.thinpool, line)
+	}
+	total, avail, err := parseThinPoolUsage(parts[0], parts[1])
+	if err != nil {
+		return backend.CapacityDetails{}, err
+	}
+	metadataPercent, err := strconv.ParseFloat(parts[2], 64)
+	if err != nil {
+		return backend.CapacityDetails{}, fmt.Errorf("lvm: parsing metadata_percent %q for thin pool %s/%s: %w",
+			parts[2], b.vg, b.thinpool, err)
+	}
+	return backend.CapacityDetails{
+		TotalBytes:            total,
+		AvailableBytes:        avail,
+		ThinMetadataUsedRatio: metadataPercent / 100.0,
+		HasThinMetadata:       true,
+	}, nil
+}
+
+// ProvisionedBytes returns the summed virtual size of the thin LVs in this
+// backend's thin pool, i.e. what the pool promised to its volumes.  LVs of
+// the VG outside the thin pool (linear LVs, other thin pools) are not
+// counted.  It runs
+//
+//	lvs --noheadings -o lv_name,lv_size,pool_lv --units b --nosuffix <vg>
+//
+// A linear backend cannot overcommit, so it returns ok=false without running
+// anything.
+func (b *Backend) ProvisionedBytes(ctx context.Context) (bytes int64, ok bool, err error) {
+	if b.thinpool == "" {
+		return 0, false, nil
+	}
+	out, err := b.exec.run(ctx, "lvs",
+		"--noheadings", "-o", "lv_name,lv_size,pool_lv",
+		"--units", "b", "--nosuffix",
+		b.vg,
+	)
+	if err != nil {
+		return 0, false, fmt.Errorf("lvs %s: %w\n%s", b.vg, err, strings.TrimSpace(string(out)))
+	}
+	for line := range strings.Lines(string(out)) {
+		parts := strings.Fields(line)
+		// A LV outside any thin pool has an empty pool_lv column.
+		if len(parts) != 3 || parts[2] != b.thinpool {
+			continue
+		}
+		size, parseErr := strconv.ParseInt(parts[1], 10, 64)
+		if parseErr != nil {
+			return 0, false, fmt.Errorf("lvm: parsing lv_size %q for LV %s/%s: %w", parts[1], b.vg, parts[0], parseErr)
+		}
+		bytes += size
+	}
+	return bytes, true, nil
 }
 
 // ListVolumes enumerates all LVs managed by pillar-csi in the volume group.

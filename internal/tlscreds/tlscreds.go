@@ -40,6 +40,8 @@ import (
 	"os"
 
 	"google.golang.org/grpc/credentials"
+
+	"github.com/isac322/pillar-csi/internal/telemetry"
 )
 
 // NewServerCredentials builds mTLS [credentials.TransportCredentials] for the
@@ -122,7 +124,30 @@ func LoadServerCredentials(certFile, keyFile, caFile string) (credentials.Transp
 	if err != nil {
 		return nil, fmt.Errorf("tlscreds: read CA cert %q: %w", caFile, err)
 	}
-	return NewServerCredentials(certPEM, keyPEM, caPEM)
+	creds, err := NewServerCredentials(certPEM, keyPEM, caPEM)
+	if err != nil {
+		return nil, err
+	}
+	err = recordCertificates(telemetry.CertRoleAgentServer, certPEM, caPEM)
+	if err != nil {
+		return nil, err
+	}
+	return creds, nil
+}
+
+// recordCertificates sets the M16 NotAfter gauges for the leaf certificate
+// (under role) and the CA bundle from the PEM bytes just loaded into the TLS
+// config.
+func recordCertificates(role string, certPEM, caPEM []byte) error {
+	err := telemetry.SetCertificateNotAfter(role, certPEM)
+	if err != nil {
+		return fmt.Errorf("tlscreds: record %s certificate expiry: %w", role, err)
+	}
+	err = telemetry.SetCertificateNotAfter(telemetry.CertRoleCA, caPEM)
+	if err != nil {
+		return fmt.Errorf("tlscreds: record CA certificate expiry: %w", err)
+	}
+	return nil
 }
 
 // LoadClientCredentials reads the TLS certificate, private key, and CA
@@ -145,5 +170,13 @@ func LoadClientCredentials(certFile, keyFile, caFile, serverName string) (creden
 	if err != nil {
 		return nil, fmt.Errorf("tlscreds: read CA cert %q: %w", caFile, err)
 	}
-	return NewClientCredentials(certPEM, keyPEM, caPEM, serverName)
+	creds, err := NewClientCredentials(certPEM, keyPEM, caPEM, serverName)
+	if err != nil {
+		return nil, err
+	}
+	err = recordCertificates(telemetry.CertRoleControllerClient, certPEM, caPEM)
+	if err != nil {
+		return nil, err
+	}
+	return creds, nil
 }

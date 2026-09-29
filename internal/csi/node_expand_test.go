@@ -53,7 +53,7 @@ type mockResizer struct {
 	called int
 }
 
-func (m *mockResizer) ResizeFS(mountPath, fsType string) error {
+func (m *mockResizer) ResizeFS(_ context.Context, mountPath, fsType string) error {
 	m.called++
 	m.capturedMount = mountPath
 	m.capturedFsType = fsType
@@ -374,7 +374,7 @@ func writeEmptyFile(t *testing.T, path string) error {
 
 func TestExecResizer_UnsupportedFsType(t *testing.T) {
 	r := &execResizer{}
-	err := r.ResizeFS("/mnt/vol", "btrfs")
+	err := r.ResizeFS(t.Context(), "/mnt/vol", "btrfs")
 	if err == nil {
 		t.Fatal("expected error for unsupported fsType, got nil")
 	}

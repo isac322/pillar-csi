@@ -1301,7 +1301,7 @@ func newLocalMockMounter() *localMockMounter {
 
 var _ csidrv.Mounter = (*localMockMounter)(nil)
 
-func (m *localMockMounter) FormatAndMount(source, target, fsType string, options, _ []string) error {
+func (m *localMockMounter) FormatAndMount(_ context.Context, source, target, fsType string, options, _ []string) error {
 	m.formatAndMountCalls = append(m.formatAndMountCalls, localFormatAndMountCall{source: source, target: target, fsType: fsType, options: slices.Clone(options)})
 	if err := os.MkdirAll(target, 0o755); err != nil {
 		return err
@@ -1353,7 +1353,7 @@ type localResizeCall struct {
 
 var _ csidrv.Resizer = (*localMockResizer)(nil)
 
-func (m *localMockResizer) ResizeFS(mountPath, fsType string) error {
+func (m *localMockResizer) ResizeFS(_ context.Context, mountPath, fsType string) error {
 	m.calls = append(m.calls, localResizeCall{mountPath: mountPath, fsType: fsType})
 	return m.err
 }

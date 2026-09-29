@@ -27,12 +27,12 @@ func TestLockTarget_SerializesSameProtocolAndTarget(t *testing.T) {
 	t.Parallel()
 
 	srv := NewServer(nil, "", WithDrainStateDir(t.TempDir()))
-	unlockFirst := srv.lockTarget(agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP, "shared-target")
+	unlockFirst := srv.lockTarget(t.Context(), agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP, "shared-target")
 
 	acquired := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
-		unlockSecond := srv.lockTarget(agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP, "shared-target")
+		unlockSecond := srv.lockTarget(t.Context(), agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP, "shared-target")
 		close(acquired)
 		unlockSecond()
 		close(done)
@@ -63,13 +63,13 @@ func TestLockTarget_DistinguishesProtocolsForSameTargetID(t *testing.T) {
 	t.Parallel()
 
 	srv := NewServer(nil, "", WithDrainStateDir(t.TempDir()))
-	unlockFirst := srv.lockTarget(agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP, "shared-target")
+	unlockFirst := srv.lockTarget(t.Context(), agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP, "shared-target")
 	defer unlockFirst()
 
 	acquired := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
-		unlockSecond := srv.lockTarget(agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI, "shared-target")
+		unlockSecond := srv.lockTarget(t.Context(), agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI, "shared-target")
 		close(acquired)
 		unlockSecond()
 		close(done)
@@ -97,12 +97,12 @@ func TestLockTarget_SerializesDerivedTargetID(t *testing.T) {
 	}
 
 	srv := NewServer(nil, "", WithDrainStateDir(t.TempDir()))
-	unlockFirst := srv.lockTarget(agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP, targetID)
+	unlockFirst := srv.lockTarget(t.Context(), agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP, targetID)
 
 	acquired := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
-		unlockSecond := srv.lockTarget(agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP, targetID)
+		unlockSecond := srv.lockTarget(t.Context(), agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP, targetID)
 		close(acquired)
 		unlockSecond()
 		close(done)

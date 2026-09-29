@@ -33,6 +33,7 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -40,6 +41,7 @@ import (
 	csi "github.com/container-storage-interface/spec/lib/go/csi"
 
 	"github.com/isac322/pillar-csi/internal/runtimepaths"
+	"github.com/isac322/pillar-csi/internal/telemetry"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -314,7 +316,7 @@ type Mounter interface {
 	// fsType must be a kernel-supported filesystem name, e.g. "ext4" or "xfs".
 	// options are passed verbatim as -o flags to mount(8); formatOptions are
 	// separate mkfs argv elements (no shell).
-	FormatAndMount(source, target, fsType string, options, formatOptions []string) error
+	FormatAndMount(ctx context.Context, source, target, fsType string, options, formatOptions []string) error
 
 	// Mount performs a plain mount of source at target with the given type and
 	// options.  Callers use this for bind mounts (source already formatted).
@@ -649,6 +651,8 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 	ctx context.Context,
 	req *csi.NodeStageVolumeRequest,
 ) (*csi.NodeStageVolumeResponse, error) {
+	telemetry.SetVolumeAttributes(ctx, req.GetVolumeId())
+
 	// ── Input validation ────────────────────────────────────────────────────
 	if req.GetVolumeId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "NodeStageVolume: volume_id is required") //nolint:wrapcheck
@@ -664,6 +668,7 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 	stagingPath := req.GetStagingTargetPath()
 	volCtx := req.GetVolumeContext()
 	volCap := req.GetVolumeCapability()
+	setSpanAccessType(ctx, volCap)
 
 	// ── Step 1: Resolve attach mode ─────────────────────────────────────────
 	// A PublishContext carrying attach-mode=local means ControllerPublishVolume
@@ -674,6 +679,7 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 	if localErr != nil {
 		return nil, localErr
 	}
+	trace.SpanFromContext(ctx).SetAttributes(telemetry.KeyAttachMode.String(spanAttachMode(local)))
 
 	// ── Step 2: Resolve protocol type ───────────────────────────────────────
 	// Derive the protocol type from VolumeContext["pillar-csi.bhyoo.com/protocol-type"]
@@ -776,11 +782,13 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 					"NodeStageVolume: re-persist stage state for %q: %v", volumeID, rewriteErr)
 			}
 			// Already fully staged — idempotent success.
+			trace.SpanFromContext(ctx).SetAttributes(telemetry.KeyStageAlreadyStaged.Bool(true))
 			return &csi.NodeStageVolumeResponse{}, nil
 		}
 		// State file exists but mount is gone (e.g., node reboot).
 		// Fall through to re-connect and re-mount below.
 	}
+	trace.SpanFromContext(ctx).SetAttributes(telemetry.KeyStageAlreadyStaged.Bool(false))
 
 	// ── Filesystem settings ─────────────────────────────────────────────────
 	// Resolve the filesystem type and mkfs options of a MOUNT volume before
@@ -794,6 +802,7 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 				"NodeStageVolume: volume %q: %v", volumeID, fsErr)
 		}
 		fsType, mkfsOpts, mountFlags = staged.fsType, staged.mkfsOptions, staged.mountFlags
+		trace.SpanFromContext(ctx).SetAttributes(telemetry.KeyFSType.String(fsType))
 	}
 
 	// ── Step 5: Attach ──────────────────────────────────────────────────────
@@ -866,7 +875,7 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 				"NodeStageVolume: check if %q is mounted: %v", stagingPath, mountCheckErr))
 		}
 		if !alreadyMounted {
-			formatErr := n.mounter.FormatAndMount(devicePath, stagingPath, fsType, mountFlags, mkfsOpts)
+			formatErr := n.formatAndMount(ctx, devicePath, stagingPath, fsType, mountFlags, mkfsOpts)
 			if formatErr != nil {
 				return nil, failStaged(status.Errorf(codes.Internal,
 					"NodeStageVolume: format-and-mount %q → %q (fs=%s): %v",
@@ -964,6 +973,8 @@ func (n *NodeServer) NodeUnstageVolume(
 	ctx context.Context,
 	req *csi.NodeUnstageVolumeRequest,
 ) (*csi.NodeUnstageVolumeResponse, error) {
+	telemetry.SetVolumeAttributes(ctx, req.GetVolumeId())
+
 	// ── Input validation ────────────────────────────────────────────────────
 	if req.GetVolumeId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "NodeUnstageVolume: volume_id is required") //nolint:wrapcheck
@@ -1015,6 +1026,7 @@ func (n *NodeServer) NodeUnstageVolume(
 		return nil, status.Errorf(codes.Internal,
 			"NodeUnstageVolume: read stage state for %q: %v", volumeID, readErr)
 	}
+	setSpanAttachMode(ctx, state)
 	if state == nil {
 		// CSI spec §4.7: NodeUnstageVolume must succeed if the volume was
 		// never staged (or was already cleanly unstaged on a prior call).
@@ -1170,9 +1182,11 @@ func (n *NodeServer) checkUnstagedWithoutState(volumeID, stagingPath string) err
 //
 // Per CSI spec §4.7 the target_path is pre-created by the CO before this call.
 func (n *NodeServer) NodePublishVolume( //nolint:gocyclo // SM guard + capability switch + readonly handling
-	_ context.Context,
+	ctx context.Context,
 	req *csi.NodePublishVolumeRequest,
 ) (*csi.NodePublishVolumeResponse, error) {
+	setPublishSpanAttributes(ctx, req)
+
 	// ── Input validation ────────────────────────────────────────────────────
 	if req.GetVolumeId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "NodePublishVolume: volume_id is required") //nolint:wrapcheck
@@ -1299,9 +1313,11 @@ func (n *NodeServer) NodePublishVolume( //nolint:gocyclo // SM guard + capabilit
 //     stat fails (e.g. EIO on an aborted filesystem); a real unmount
 //     failure is returned as Internal so the CO retries.
 func (n *NodeServer) NodeUnpublishVolume(
-	_ context.Context,
+	ctx context.Context,
 	req *csi.NodeUnpublishVolumeRequest,
 ) (*csi.NodeUnpublishVolumeResponse, error) {
+	telemetry.SetVolumeAttributes(ctx, req.GetVolumeId())
+
 	// ── Input validation ────────────────────────────────────────────────────
 	if req.GetVolumeId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "NodeUnpublishVolume: volume_id is required") //nolint:wrapcheck

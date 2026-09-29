@@ -236,6 +236,37 @@ kubectl logs -n pillar-csi ds/pillar-csi-node -c node
 
 A store whose `parentDataset` or `thinPool` differs from the agent's entry reports `PoolDiscovered=False` with reason `BackendLayoutMismatch`, and provisioning fails instead of placing the volume elsewhere. The [troubleshooting guide](https://pillar-csi.bhyoo.com/docs/how-to/troubleshooting/) covers more cases. Volumes provisioned before `status.exportSpec` existed can stick at `ExportSpecMissing` (issue #83); [Recover a missing export spec](https://pillar-csi.bhyoo.com/docs/how-to/recover-export-spec/) describes the one-time repair.
 
+## Monitoring and tracing
+
+pillar-csi exports Prometheus metrics from the controller, the storage agent and the node plugin, and it can send OpenTelemetry traces to an OTLP/gRPC endpoint such as Grafana Tempo or Jaeger. Metrics show pool capacity, agent health, failing operations and NVMe-oF path state across the fleet. Traces show which step failed for one PVC, and each failure log line carries the `trace_id` of its trace. The controller's metrics endpoint is always on; everything else is off by default:
+
+```sh
+helm upgrade pillar-csi oci://ghcr.io/isac322/charts/pillar-csi \
+  --namespace pillar-csi \
+  -f values.yaml \
+  --set metrics.enabled=true \
+  --set metrics.podMonitor.enabled=true \
+  --set tracing.enabled=true \
+  --set tracing.endpoint=http://tempo-distributor.monitoring:4317
+```
+
+- `metrics.enabled` serves `/metrics` on the agent and node, and on the CSI provisioner, attacher and resizer sidecars.
+- `metrics.podMonitor.enabled` renders prometheus-operator PodMonitors, including the token that the HTTPS controller endpoint requires (`metrics.controller.secure`, on by default).
+- `tracing.enabled`, `tracing.endpoint`, `tracing.insecure` and `tracing.samplerRatio` configure the OTLP exporter and the fraction of operations traced.
+
+| component | network | existing ports | metrics ports |
+|---|---|---|---|
+| agent | hostNetwork | gRPC 9500 | 9501 |
+| node | hostNetwork | liveness 9808 | 9502 |
+| controller | pod network | health 8081, webhook 9443, liveness 9809 | 8080 (controller), 8090 (provisioner), 8091 (attacher), 8092 (resizer) |
+
+Security notes:
+
+- The agent and node metrics endpoints are plaintext HTTP with no authentication. They listen on the host IP, so anyone who can reach the node can read them. Metrics carry no volume, PV or NQN labels, but they do show pool names and NVMe-oF target addresses. Restrict access with a NetworkPolicy or host firewall if needed.
+- The agent's gRPC port is plaintext by default and accepts a W3C `traceparent` from any caller, so a caller can force the agent to record and export spans. Such a caller could already call any agent RPC.
+
+[docs/observability.md](docs/observability.md) has the metric and span reference, TraceQL queries for finding a PVC's traces, example alert rules, and a known limitation: with `mtls.enabled=true`, volume operations fail with `Unavailable` while the agent health check passes.
+
 ## Documentation
 
 - [Your first PVC](https://pillar-csi.bhyoo.com/docs/tutorials/first-pvc/)
@@ -246,6 +277,7 @@ A store whose `parentDataset` or `thinPool` differs from the agent's entry repor
 - [Expand a volume](https://pillar-csi.bhyoo.com/docs/how-to/expand-volume/) and [node maintenance](https://pillar-csi.bhyoo.com/docs/how-to/node-maintenance/)
 - [CRD reference](https://pillar-csi.bhyoo.com/docs/reference/crd/) and [Helm values](https://pillar-csi.bhyoo.com/docs/reference/helm-values/)
 - [Architecture](https://pillar-csi.bhyoo.com/docs/explanation/architecture/)
+- [Monitoring and tracing](docs/observability.md)
 - [FAQ](https://pillar-csi.bhyoo.com/docs/community/faq/)
 
 ## FAQ

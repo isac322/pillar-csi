@@ -43,6 +43,7 @@ import (
 	agentv1 "github.com/isac322/pillar-csi/gen/go/pillar_csi/agent/v1"
 
 	"github.com/isac322/pillar-csi/internal/agent/backend"
+	"github.com/isac322/pillar-csi/internal/telemetry"
 )
 
 // defaultDevZvolBase is the production sysfs prefix under which the kernel
@@ -60,9 +61,16 @@ type executor interface {
 // osExecutor is the real executor that delegates to os/exec.
 type osExecutor struct{}
 
+// run executes the command and observes it for telemetry: the
+// pillar_csi_exec_duration_seconds histogram always, and an exec span when
+// ctx carries a traced RPC.
 func (osExecutor) run(ctx context.Context, name string, args ...string) ([]byte, error) {
-	//nolint:gosec,wrapcheck // G204: intentional; raw exit error returned with output.
-	return exec.CommandContext(ctx, name, args...).CombinedOutput()
+	obs := telemetry.StartExec(ctx, name, args...)
+	//nolint:gosec // G204: intentional; argv is built by this backend, not by a shell.
+	out, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
+	obs.End(out, err)
+	//nolint:wrapcheck // raw exit error returned with output; callers wrap it with the command.
+	return out, err
 }
 
 // execFunc adapts a bare function to the executor interface, making it
@@ -735,4 +743,21 @@ func (z *Backend) ListVolumes(ctx context.Context) ([]*agentv1.VolumeInfo, error
 	}
 
 	return volumes, nil
+}
+
+// Verify at compile time that Backend reports its provisioned bytes.
+var _ backend.ProvisionedBytesReporter = (*Backend)(nil)
+
+// ProvisionedBytes returns the sum of the volsize of every zvol under the
+// provisioning root (see [Backend.ListVolumes]), i.e. what the pool promised
+// to its volumes.  It always applies to ZFS, so ok is true on success.
+func (z *Backend) ProvisionedBytes(ctx context.Context) (bytes int64, ok bool, err error) {
+	volumes, err := z.ListVolumes(ctx)
+	if err != nil {
+		return 0, false, err
+	}
+	for _, v := range volumes {
+		bytes += v.GetCapacityBytes()
+	}
+	return bytes, true, nil
 }
