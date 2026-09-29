@@ -66,10 +66,14 @@ const (
 )
 
 // configfsErrors is M8, pillar_csi_nvmet_configfs_errors_total: one increment
-// per error returned by a configfs primitive.  Successes are not counted.
+// per failed configfs operation whose error is returned to the caller.
+// Successes are not counted, and neither are best-effort teardown steps:
+// those use plain os calls (see bestEffort), so tolerated misses like an
+// EPERM rmdir of a kernel-managed default group or an ENOENT disable write
+// on an already-removed namespace stay out of the metric.
 var configfsErrors = prometheus.NewCounterVec(prometheus.CounterOpts{
 	Name: "pillar_csi_nvmet_configfs_errors_total",
-	Help: "Errors returned by nvmet configfs primitives, by operation and errno.",
+	Help: "Errors returned to callers by nvmet configfs primitives, by operation and errno.",
 }, []string{"op", "errno"})
 
 // RegisterMetrics registers pillar_csi_nvmet_configfs_errors_total.
@@ -418,7 +422,11 @@ func removeDirVerified(path string) error {
 
 // bestEffort accepts an error value and discards it.  It is used to silence
 // errcheck for intentionally best-effort cleanup operations where failure is
-// expected and acceptable (e.g. removing files on a regular filesystem in tests).
+// expected and acceptable (e.g. removing pseudo-files on a regular filesystem
+// in tests, the EPERM rmdir of kernel-managed default groups, or the ENOENT
+// disable write of an already-removed namespace).  These call sites use plain
+// os primitives, never the counting wrappers above, so tolerated failures are
+// not counted by pillar_csi_nvmet_configfs_errors_total.
 func bestEffort(_ error) {}
 
 // Port ID allocation.
@@ -1104,7 +1112,7 @@ func prunePortLocked(pDir string) error {
 	for _, attr := range portAttrs {
 		bestEffort(os.Remove(filepath.Join(pDir, attr)))
 	}
-	bestEffort(removeDir(subsDir))
+	bestEffort(os.Remove(subsDir))
 	return removeDirVerified(pDir)
 }
 
@@ -1131,8 +1139,9 @@ func (t *NvmetTarget) Remove() error {
 	// 2-3. Disable + remove namespace.
 	nsDir := t.namespaceDir()
 	enablePath := filepath.Join(nsDir, "enable")
-	// Write "0" to disable — ignore error if namespace doesn't exist.
-	bestEffort(writeFile(enablePath, "0"))
+	// Write "0" to disable — ignore the error: on a retry or after partial
+	// teardown the namespace (and its enable attribute) is already gone.
+	bestEffort(os.WriteFile(enablePath, []byte("0"), 0o600))
 	// On real configfs the kernel removes pseudo-files when the directory is
 	// removed; on a regular filesystem (tests) we must clean them up manually.
 	bestEffort(os.Remove(filepath.Join(nsDir, "device_path")))
@@ -1156,8 +1165,8 @@ func (t *NvmetTarget) Remove() error {
 	//    This may fail if the kernel requires all child directories to be
 	//    removed first; the namespace was already removed in step 3.
 	//    Clean up subsystem pseudo-files (tests only; kernel auto-removes).
-	bestEffort(removeDir(filepath.Join(t.subsystemDir(), "allowed_hosts")))
-	bestEffort(removeDir(filepath.Join(t.subsystemDir(), "namespaces")))
+	bestEffort(os.Remove(filepath.Join(t.subsystemDir(), "allowed_hosts")))
+	bestEffort(os.Remove(filepath.Join(t.subsystemDir(), "namespaces")))
 	bestEffort(os.Remove(filepath.Join(t.subsystemDir(), "attr_allow_any_host")))
 	bestEffort(os.Remove(filepath.Join(t.subsystemDir(), "attr_serial")))
 	err = removeDir(t.subsystemDir())
