@@ -2,8 +2,8 @@
 # -storage.testdriver=external-driver.yaml` against a freshly bootstrapped
 # Kind cluster with pillar-csi Helm-installed.  Exercised on every PR and
 # master push so the in-cluster storage contract is gated alongside the
-# in-process csi-sanity check.  A nightly schedule keeps the signal alive
-# even when no PRs land.
+# in-process csi-sanity check.  daily-e2e.yml calls it once a day when code
+# changed since the last daily run.
 
 name: External Storage E2E
 
@@ -12,8 +12,7 @@ on:
   push:
     branches: [master]
   workflow_dispatch: {}
-  schedule:
-    - cron: '0 7 * * *'  # 07:00 UTC daily
+  workflow_call: {}
 
 permissions:
   contents: read
