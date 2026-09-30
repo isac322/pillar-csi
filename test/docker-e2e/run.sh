@@ -44,7 +44,7 @@ readonly helm_namespace="pillar-csi-system"
 readonly helm_release="pillar-csi"
 # pillar-node trims staged filesystem volumes every node.trim.interval; the
 # chart default is a week, so the trim test runs the node with a short one.
-readonly trim_interval="30s"
+readonly trim_interval="10s"
 readonly requested_topologies="${PILLAR_E2E_TOPOLOGIES:-internal external}"
 
 active_cluster=""

@@ -31,7 +31,7 @@ const (
 	// periodicTrimShrinkTimeout bounds the wait for the trimmed volume's
 	// space to return after the payload is deleted.
 	periodicTrimShrinkTimeout = 3 * time.Minute
-	periodicTrimPollInterval  = 5 * time.Second
+	periodicTrimPollInterval  = 2 * time.Second
 	// periodicTrimAttribute is the VolumeContext key carrying a resolved
 	// periodicTrim setting; it is emitted only when the setting is present.
 	periodicTrimAttribute = "pillar-csi.bhyoo.com/periodic-trim"
