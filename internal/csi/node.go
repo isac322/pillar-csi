@@ -1450,6 +1450,26 @@ func stateFileKey(volumeID string) string {
 // replacement before the rename preserves the previous record.  This mirrors
 // the fencing-mark write in internal/agent/fencing.go.
 func (n *NodeServer) writeStageState(volumeID string, state *nodeStageState) error {
+	stateFile := n.stateFilePath(volumeID)
+
+	// StagedAt anchors the first periodic trim of the record, so it is
+	// written once — at the NodeStageVolume that creates the record — and
+	// preserved by every rewrite.  For a record written before the field
+	// existed, the existing file's modification time is the closest durable
+	// approximation of the stage time and does not restart the initial
+	// delay on every rewrite.
+	if state.StagedAt == nil {
+		stagedAt := time.Now()
+		info, statErr := os.Stat(stateFile)
+		switch {
+		case statErr == nil:
+			stagedAt = info.ModTime()
+		case !errors.Is(statErr, os.ErrNotExist):
+			return fmt.Errorf("stat stage state file %q: %w", stateFile, statErr)
+		}
+		state.StagedAt = &stagedAt
+	}
+
 	data, marshalErr := json.Marshal(state)
 	if marshalErr != nil {
 		return fmt.Errorf("marshal stage state: %w", marshalErr)
@@ -1460,7 +1480,6 @@ func (n *NodeServer) writeStageState(volumeID string, state *nodeStageState) err
 		return fmt.Errorf("create state directory %q: %w", n.stateDir, mkdirErr)
 	}
 
-	stateFile := n.stateFilePath(volumeID)
 	// A unique temp file per attempt: concurrent NodeStageVolume calls for the
 	// same volumeID must not share a temp path, and a stale temp file left by
 	// a crash must never be reused.  CreateTemp applies mode 0600.

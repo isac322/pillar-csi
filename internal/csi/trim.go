@@ -325,13 +325,16 @@ func trimEligible(rec *nodeStageState) bool {
 
 // dueAt is when rec's next trim is due: one interval after the last
 // attempt, or — before the first attempt — a stable random delay in
-// [0, interval) after stagedAt, which spreads the first trims of the
-// volumes of a node (e.g. after install or upgrade) over one interval.
-func (t *trimmer) dueAt(rec *nodeStageState, stagedAt time.Time, key string) time.Time {
+// [0, interval) after the time the record was staged (StagedAt; the state
+// file's modification time for records written before it was persisted).
+func (t *trimmer) dueAt(rec *nodeStageState, fileModTime time.Time, key string) time.Time {
 	if rec.LastTrim != nil {
 		return rec.LastTrim.Add(t.interval)
 	}
-	return stagedAt.Add(t.jitter(key))
+	if rec.StagedAt != nil {
+		return rec.StagedAt.Add(t.jitter(key))
+	}
+	return fileModTime.Add(t.jitter(key))
 }
 
 // target returns the volume ID and the staging path of rec.  Records

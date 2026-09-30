@@ -20,6 +20,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -147,7 +148,7 @@ func (h *trimHarness) mount(path string) {
 }
 
 // stage writes the stage record of a Filesystem-mode NVMe-oF volume staged
-// at stagingPath, modified by mods, with the file's time set to stagedAt.
+// at stagingPath and at stagedAt, modified by mods.
 func (h *trimHarness) stage(volumeID, stagingPath string, mods ...func(*nodeStageState)) {
 	h.t.Helper()
 	rec := &nodeStageState{
@@ -157,15 +158,13 @@ func (h *trimHarness) stage(volumeID, stagingPath string, mods ...func(*nodeStag
 		NVMeoF:       &NVMeoFStageState{SubsysNQN: "nqn.test:" + volumeID, Address: testStorageAddr, Port: "4420"},
 		VolumeID:     volumeID,
 		StagingPath:  stagingPath,
+		StagedAt:     new(h.stagedAt),
 	}
 	for _, m := range mods {
 		m(rec)
 	}
 	if err := h.srv.writeStageState(volumeID, rec); err != nil {
 		h.t.Fatalf("write stage state: %v", err)
-	}
-	if err := os.Chtimes(h.srv.stateFilePath(volumeID), h.stagedAt, h.stagedAt); err != nil {
-		h.t.Fatalf("set stage state time: %v", err)
 	}
 }
 
@@ -222,6 +221,103 @@ func TestTrim_FirstTrimAfterJitterThenEveryInterval(t *testing.T) {
 	restarted.round()
 	if n := len(restarted.trimCalls()); n != 1 {
 		t.Fatalf("trims one interval after last_trim = %d, want 1", n)
+	}
+}
+
+// TestTrim_IdempotentRestageKeepsFirstDue verifies an idempotent
+// NodeStageVolume, which rewrites the stage record, does not restart the
+// initial delay: the first trim stays due at the original stage time +
+// jitter, however recent the state file's modification time is.
+func TestTrim_IdempotentRestageKeepsFirstDue(t *testing.T) {
+	t.Parallel()
+	env := newNodeTestEnv(t)
+	h := newTrimHarness(t, env.srv)
+	const vol = "tank/pvc-restage"
+	stagingPath := t.TempDir()
+	req := &csi.NodeStageVolumeRequest{
+		VolumeId:          vol,
+		StagingTargetPath: stagingPath,
+		VolumeCapability:  mountCap("ext4"),
+		VolumeContext:     mountVolumeContext("nqn.test:restage", testStorageAddr),
+	}
+	if _, err := env.srv.NodeStageVolume(context.Background(), req); err != nil {
+		t.Fatalf("NodeStageVolume: %v", err)
+	}
+	h.mount(stagingPath)
+	staged, err := env.srv.readStageState(vol)
+	if err != nil || staged == nil || staged.StagedAt == nil {
+		t.Fatalf("stage state after NodeStageVolume = %+v, %v; want staged_at", staged, err)
+	}
+	firstDue := staged.StagedAt.Add(trimTestJitter)
+
+	// Idempotent re-stage two days later: the record is rewritten.
+	later := staged.StagedAt.Add(48 * time.Hour)
+	_, err = env.srv.NodeStageVolume(context.Background(), req)
+	if err != nil {
+		t.Fatalf("idempotent NodeStageVolume: %v", err)
+	}
+	err = os.Chtimes(env.srv.stateFilePath(vol), later, later)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restaged, err := env.srv.readStageState(vol)
+	if err != nil || restaged == nil || restaged.StagedAt == nil || !restaged.StagedAt.Equal(*staged.StagedAt) {
+		t.Fatalf("staged_at after re-stage = %+v (err %v), want %v", restaged, err, staged.StagedAt)
+	}
+
+	h.now = firstDue.Add(-time.Second)
+	h.round()
+	if n := len(h.trimCalls()); n != 0 {
+		t.Fatalf("trims before stage time + jitter = %d, want 0", n)
+	}
+	h.now = firstDue
+	h.round()
+	if n := len(h.trimCalls()); n != 1 {
+		t.Fatalf("trims at the original stage time + jitter = %d, want 1 (re-stage moved the first trim)", n)
+	}
+}
+
+// TestTrim_LegacyRecordWithoutStagedAt verifies a record written before
+// staged_at existed is first due at its file's modification time + jitter,
+// and that the rewrite recording the attempt backfills staged_at from that
+// modification time instead of the current time.
+func TestTrim_LegacyRecordWithoutStagedAt(t *testing.T) {
+	t.Parallel()
+	h := newTrimHarness(t, nil)
+	const vol = "tank/pvc-no-staged-at"
+	path := filepath.Join(t.TempDir(), "globalmount")
+	h.mount(path)
+	data, err := json.Marshal(&nodeStageState{
+		ProtocolType: ProtocolNVMeoFTCP, AccessType: AccessTypeFilesystem, FsType: "ext4",
+		NVMeoF:   &NVMeoFStageState{SubsysNQN: "nqn.test:legacy"},
+		VolumeID: vol, StagingPath: path,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateFile := h.srv.stateFilePath(vol)
+	err = os.WriteFile(stateFile, data, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = os.Chtimes(stateFile, h.stagedAt, h.stagedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	h.now = h.stagedAt.Add(trimTestJitter - time.Second)
+	h.round()
+	if n := len(h.trimCalls()); n != 0 {
+		t.Fatalf("trims before file mtime + jitter = %d, want 0", n)
+	}
+	h.now = h.stagedAt.Add(trimTestJitter)
+	h.round()
+	if n := len(h.trimCalls()); n != 1 {
+		t.Fatalf("trims at file mtime + jitter = %d, want 1", n)
+	}
+	st, err := h.srv.readStageState(vol)
+	if err != nil || st == nil || st.StagedAt == nil || !st.StagedAt.Equal(h.stagedAt) {
+		t.Fatalf("staged_at after the last_trim rewrite = %+v (err %v), want backfilled %v", st, err, h.stagedAt)
 	}
 }
 

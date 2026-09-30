@@ -117,6 +117,14 @@ type nodeStageState struct {
 	// path.  Empty in records written before the field existed.
 	StagingPath string `json:"staging_path,omitempty"`
 
+	// StagedAt is when the record was first written by NodeStageVolume.
+	// The periodic trim schedules the first trim a random delay after it,
+	// so writeStageState preserves the recorded time across every later
+	// rewrite of the same record.  Nil in records written before the field
+	// existed; the trim loop uses the state file's modification time for
+	// them and the next rewrite backfills the field from it.
+	StagedAt *time.Time `json:"staged_at,omitempty"`
+
 	// PeriodicTrim is the resolved periodicTrim setting of a Filesystem-mode
 	// volume; false opts the volume out of the node's periodic trim.  Nil
 	// (unset, or a record written before the field existed) follows the
