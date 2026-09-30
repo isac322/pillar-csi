@@ -217,7 +217,7 @@ func effectiveStorageClassName(pb *pillarcsiv1alpha1.PillarStorageClass) string 
 //   - the backend and protocol must be a compatible combination;
 //   - spec.overrides.backend must select the same member (zfs/lvm) as the
 //     store's backend, and spec.overrides.protocol the same member
-//     (nvmeofTcp) as the protocol — an override for another member could
+//     (nvmeofTcp or iscsi) as the protocol — an override for another member could
 //     never apply and is rejected again at CreateVolume.
 //
 // If either referenced resource does not yet exist the checks that need it

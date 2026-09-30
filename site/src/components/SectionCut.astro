@@ -9,8 +9,9 @@
 			<title id="cut-title">Section through a pillar-csi cluster</title>
 			<desc id="cut-desc">
 				Pods sit on Kubernetes worker nodes. Two storage nodes, one with a ZFS pool and one with an LVM volume group, run pillar-agent and
-				take control calls from pillar-controller over gRPC port 9500. The data path runs only through the Linux kernel: nvmet on the storage
-				node, NVMe-oF over TCP port 4420, and nvme_tcp on the worker. iSCSI, NFS and SMB are drawn dashed because they are planned.
+				take control calls from pillar-controller over gRPC port 9500. The data path runs only through the Linux kernel: nvmet or the LIO
+				iSCSI target on the storage node, NVMe-oF over TCP port 4420 or iSCSI over TCP port 3260, and nvme_tcp or iscsi_tcp on the worker.
+				NFS and SMB are drawn dashed because they are planned.
 			</desc>
 			<defs>
 				<pattern id="hatch" width="10" height="10" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
@@ -90,20 +91,20 @@
 			<path d="M150 361 V448 H540 V92" class="pulse"></path>
 			<path d="M290 337 V448 H540 V92" class="pulse pulse-2"></path>
 
-			<rect x="96" y="456" width="68" height="22" class="plate"></rect>
-			<text x="104" y="472" class="t t-mono">nvmet</text>
-			<rect x="444" y="382" width="88" height="22" class="plate"></rect>
-			<text x="452" y="398" class="t t-mono">nvme_tcp</text>
-			<rect x="330" y="422" width="170" height="20" class="plate"></rect>
-			<text x="338" y="437" class="t">NVMe-oF/TCP :4420</text>
+			<rect x="96" y="456" width="104" height="22" class="plate"></rect>
+			<text x="104" y="472" class="t t-mono">nvmet · LIO</text>
+			<rect x="444" y="362" width="88" height="42" class="plate"></rect>
+			<text x="452" y="378" class="t t-mono">nvme_tcp</text>
+			<text x="452" y="398" class="t t-mono">iscsi_tcp</text>
+			<rect x="330" y="411" width="170" height="33" class="plate"></rect>
+			<text x="338" y="425" class="t t-small">NVMe-oF/TCP :4420</text>
+			<text x="338" y="439" class="t t-small">iSCSI :3260</text>
 
 			<!-- Planned protocols: dashed -->
 			<g class="planned">
-				<line x1="230" y1="484" x2="420" y2="484" class="plan"></line>
 				<line x1="230" y1="504" x2="420" y2="504" class="plan"></line>
 				<line x1="230" y1="524" x2="420" y2="524" class="plan"></line>
-				<rect x="424" y="474" width="142" height="60" class="plate"></rect>
-				<text x="432" y="489" class="t t-small">iSCSI · planned</text>
+				<rect x="424" y="494" width="142" height="40" class="plate"></rect>
 				<text x="432" y="509" class="t t-small">NFS · planned</text>
 				<text x="432" y="529" class="t t-small">SMB · planned</text>
 			</g>

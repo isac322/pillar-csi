@@ -28,6 +28,20 @@ func TestCompatible(t *testing.T) {
 			wantMessage: `backend "lvm-lv" and protocol "nvmeof-tcp" are compatible`,
 		},
 		{
+			name:        "zfs over iscsi",
+			backend:     BackendSpec{ZFS: &ZFSBackendConfig{Pool: "tank"}},
+			protocol:    ProtocolSpec{ISCSI: &ISCSIConfig{}},
+			wantOK:      true,
+			wantMessage: `backend "zfs-zvol" and protocol "iscsi" are compatible`,
+		},
+		{
+			name:        "lvm over iscsi",
+			backend:     BackendSpec{LVM: &LVMBackendConfig{VolumeGroup: "vg"}},
+			protocol:    ProtocolSpec{ISCSI: &ISCSIConfig{}},
+			wantOK:      true,
+			wantMessage: `backend "lvm-lv" and protocol "iscsi" are compatible`,
+		},
+		{
 			name:        "empty backend union",
 			backend:     BackendSpec{},
 			protocol:    nvme,

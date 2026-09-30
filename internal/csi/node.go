@@ -55,7 +55,8 @@ const (
 	// VolumeContextKeyTargetID is the protocol-agnostic target identifier set
 	// by the controller in CreateVolume.  Corresponds to ExportInfo.TargetId
 	// returned by the agent; for NVMe-oF TCP it is the subsystem NVMe
-	// Qualified Name (NQN), e.g. "nqn.2024-01.com.example:vol1".
+	// Qualified Name (NQN), e.g. "nqn.2024-01.com.example:vol1"; for iSCSI it
+	// is the target IQN.
 	VolumeContextKeyTargetID = "target_id"
 
 	// VolumeContextKeyAddress is the IP address (or hostname) of the storage
@@ -68,8 +69,8 @@ const (
 
 	// VolumeContextKeyProtocolType is the storage protocol routing token set
 	// by the controller in CreateVolume.  It is used by NodeStageVolume to
-	// dispatch the volume to the correct ProtocolHandler (NVMeoFTCPHandler).
-	// Known values: "nvmeof-tcp".
+	// dispatch the volume to the correct ProtocolHandler.
+	// Known values: "nvmeof-tcp", "iscsi".
 	VolumeContextKeyProtocolType = "pillar-csi.bhyoo.com/protocol-type"
 )
 
@@ -422,6 +423,11 @@ type NodeServer struct {
 	// DefaultNvmetConfigfsRoot is used.  Override via WithNvmetConfigfsRoot.
 	nvmetRoot string
 
+	// lioRoot is the LIO configfs root the local attach export check of
+	// iSCSI volumes reads (see lio_export_state.go).  When empty,
+	// DefaultLIOConfigfsRoot is used.  Override via WithLIOConfigfsRoot.
+	lioRoot string
+
 	// dmTargetPresentFn reports whether a device-mapper target exists; it
 	// gates the orphan-claim cleanup of NodeUnstageVolume without a stage
 	// state file.  When nil, the target is looked up in sysfs.  Override in
@@ -693,6 +699,15 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 	address := volCtx[VolumeContextKeyAddress]
 	port := volCtx[VolumeContextKeyPort]
 
+	attachParams := AttachParams{
+		ProtocolType: protocolType,
+		ConnectionID: targetID,
+		Address:      address,
+		Port:         port,
+		VolumeRef:    volCtx[vcVolumeRef],
+		Extra:        volCtx,
+	}
+
 	var handler ProtocolHandler
 	if !local {
 		// ── Step 3: Protocol handler dispatch ───────────────────────────────
@@ -701,12 +716,13 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 		handler = n.handlers[protocolType]
 		if handler == nil {
 			return nil, status.Errorf(codes.FailedPrecondition,
-				"NodeStageVolume: no handler registered for protocol %q", protocolType)
+				"NodeStageVolume: no handler registered for protocol %q%s",
+				protocolType, missingHandlerHint(protocolType))
 		}
 
 		// ── Step 4: Protocol-specific VolumeContext validation ──────────────
-		// NVMe-oF TCP requires target_id (NQN), address, and port.
-		if protocolType == ProtocolNVMeoFTCP {
+		// NVMe-oF TCP and iSCSI require target_id (NQN / IQN), address, and port.
+		if protocolType == ProtocolNVMeoFTCP || protocolType == ProtocolISCSI {
 			if targetID == "" {
 				return nil, status.Errorf(codes.InvalidArgument,
 					"NodeStageVolume: volume_context missing required key %q", VolumeContextKeyTargetID)
@@ -720,10 +736,19 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 					"NodeStageVolume: volume_context missing required key %q", VolumeContextKeyPort)
 			}
 		}
+		// iSCSI port, LUN and session timeouts are validated before any
+		// attach side effect so a malformed value is InvalidArgument.
+		if protocolType == ProtocolISCSI {
+			_, parseErr := parseISCSIAttachParams(attachParams)
+			if parseErr != nil {
+				return nil, status.Errorf(codes.InvalidArgument,
+					"NodeStageVolume: volume %q: invalid iSCSI volume_context: %v", volumeID, parseErr)
+			}
+		}
 	} else if targetID == "" {
-		// A local attach reads the export state of the volume's NVMe-oF
-		// subsystem (named by target_id) to fence against remote
-		// initiators; the controller always sets it.
+		// A local attach reads the export state of the volume's network
+		// export (NVMe-oF subsystem or iSCSI target, named by target_id) to
+		// fence against remote initiators; the controller always sets it.
 		return nil, status.Errorf(codes.InvalidArgument,
 			"NodeStageVolume: volume_context missing required key %q for local attach", VolumeContextKeyTargetID)
 	}
@@ -813,20 +838,14 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 	var devicePath string
 	var attachResult *AttachResult
 	if local {
-		dmPath, dmErr := n.attachLocal(ctx, volumeID, targetID, localDevice, stagingPath, volCap)
+		dmPath, dmErr := n.attachLocal(ctx, volumeID, protocolType, targetID, localDevice, stagingPath, volCap)
 		if dmErr != nil {
 			return nil, dmErr
 		}
 		devicePath = dmPath
 	} else {
 		var attachErr error
-		attachResult, attachErr = handler.Attach(ctx, AttachParams{
-			ProtocolType: protocolType,
-			ConnectionID: targetID,
-			Address:      address,
-			Port:         port,
-			Extra:        volCtx,
-		})
+		attachResult, attachErr = handler.Attach(ctx, attachParams)
 		if attachErr != nil {
 			if ctx.Err() == context.DeadlineExceeded {
 				return nil, status.Errorf(codes.DeadlineExceeded,
@@ -1097,7 +1116,8 @@ func (n *NodeServer) NodeUnstageVolume(
 		handler, ok := n.handlers[state.ProtocolType]
 		if !ok {
 			return nil, status.Errorf(codes.Internal,
-				"NodeUnstageVolume: no handler registered for protocol %q", state.ProtocolType)
+				"NodeUnstageVolume: no handler registered for protocol %q%s",
+				state.ProtocolType, missingHandlerHint(state.ProtocolType))
 		}
 		protoState, protoErr := state.ToProtocolState()
 		if protoErr != nil {
@@ -1527,7 +1547,7 @@ func (n *NodeServer) readStageState(volumeID string) (*nodeStageState, error) {
 // idempotent: if the file does not exist, the call succeeds silently.
 func (n *NodeServer) deleteStageState(volumeID string) error {
 	stateFile := n.stateFilePath(volumeID)
-	removeErr := os.Remove(stateFile)
+	removeErr := os.Remove(stateFile) // #nosec G703 -- path derived from controlled stateDir
 	if removeErr != nil && !os.IsNotExist(removeErr) {
 		return fmt.Errorf("remove state file %q: %w", stateFile, removeErr)
 	}

@@ -130,7 +130,7 @@ spec:
                   protocols:
                     description: |-
                       protocols lists the network protocols the agent can export storage over
-                      (nvmeof-tcp).
+                      (nvmeof-tcp, iscsi).
                     items:
                       type: string
                     type: array

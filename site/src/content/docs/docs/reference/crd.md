@@ -11,7 +11,7 @@ tableOfContents:
 
 All pillar-csi resources are cluster-scoped. The controller manages PillarVolumeState objects; do not create them by hand.
 
-The field descriptions come from comments in the Go API types. A few of them mention iSCSI, NFS or other file protocols. Those protocols are not supported yet; NVMe-oF/TCP is the only protocol pillar-csi exports today.
+The field descriptions come from comments in the Go API types. A few of them mention NFS or other file protocols. Those protocols are not supported yet; pillar-csi exports volumes over NVMe-oF/TCP and iSCSI today.
 
 ## Packages
 - [pillar-csi.bhyoo.com/v1alpha1](#pillar-csibhyoocomv1alpha1)
@@ -44,7 +44,7 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `backends` _string array_ | backends lists the backend driver types the agent can manage<br />(zfs-zvol, lvm-lv). |  | Optional <br /> |
-| `protocols` _string array_ | protocols lists the network protocols the agent can export storage over<br />(nvmeof-tcp). |  | Optional <br /> |
+| `protocols` _string array_ | protocols lists the network protocols the agent can export storage over<br />(nvmeof-tcp, iscsi). |  | Optional <br /> |
 
 
 
@@ -154,6 +154,58 @@ _Appears in:_
 | `fsType` _string_ | fsType is the filesystem the node formats a new volume with when<br />volumeMode is Filesystem. | ext4 | Enum: [ext4 xfs] <br />Optional <br /> |
 | `mkfsOptions` _string_ | mkfsOptions are additional mkfs arguments used when the node formats a<br />new volume; a volume that already carries a filesystem is never<br />reformatted.  Each element is one argv element (no shell); only<br />filesystem tuning flags of the formatted type are accepted.<br />A null/omitted value inherits the options of the layer below; an<br />explicit empty list [] clears them. |  | Optional <br /> |
 | `mountOptions` _string_ | mountOptions are the mount options the node applies when mounting a<br />Filesystem-mode volume.  On a PillarStorageClass they are written to<br />the generated Kubernetes StorageClass's mountOptions; a PVC annotation<br />value overrides them for that volume.<br />A null/omitted value inherits the options of the layer below; an<br />explicit empty list [] clears them. |  | Optional <br /> |
+
+
+#### ISCSIConfig
+
+
+
+ISCSIConfig holds iSCSI-specific protocol parameters.
+Target bind IP is not included here — the controller resolves it
+at runtime from the referenced PillarAgent.  The target IQN is derived by
+the agent from the volume ID, and the node's initiator IQN is published on
+its CSINode object, so neither is configured here.
+
+All timeouts are in seconds.  An unset timeout keeps the node default
+(loginTimeout 15, replacementTimeout 120, noopOutInterval 5,
+noopOutTimeout 5).  Timeouts apply to sessions logged in after the change;
+a staged volume keeps the values from its CreateVolume.
+
+
+
+_Appears in:_
+- [ProtocolSpec](#protocolspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `port` _integer_ | port is the TCP port on which the iSCSI target portal listens.<br />Defaults to 3260. | 3260 | Maximum: 65535 <br />Minimum: 1 <br />Optional <br /> |
+| `acl` _boolean_ | acl enables initiator IQN-based access control when true.<br />When false the target portal group runs in demo mode<br />(generate_node_acls) and accepts any initiator.<br />Defaults to false so that e2e tests and simple deployments work<br />without registering initiator IQNs. | false | Optional <br /> |
+| `loginTimeout` _integer_ | loginTimeout is the maximum seconds the initiator waits for a login<br />(TCP connect plus the login PDU exchange) to complete. |  | Minimum: 1 <br />Optional <br /> |
+| `replacementTimeout` _integer_ | replacementTimeout is the maximum seconds the initiator keeps I/O<br />queued while re-establishing a failed session before failing it back<br />to the block layer.  0 fails I/O immediately on connection loss. |  | Minimum: 0 <br />Optional <br /> |
+| `noopOutInterval` _integer_ | noopOutInterval is the interval in seconds between NOP-Out pings the<br />initiator sends to detect a dead connection.  0 disables the pings. |  | Minimum: 0 <br />Optional <br /> |
+| `noopOutTimeout` _integer_ | noopOutTimeout is the maximum seconds the initiator waits for a<br />NOP-In reply before declaring the connection failed. |  | Minimum: 0 <br />Optional <br /> |
+
+
+#### ISCSIOverrides
+
+
+
+ISCSIOverrides holds the per-volume-tunable subset of ISCSIConfig.
+Structural fields (port — which portal the target lives on — and acl —
+the security policy anchor) are not part of this type and are rejected with
+their path by the shared document decoder.
+
+
+
+_Appears in:_
+- [ProtocolOverrides](#protocoloverrides)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `loginTimeout` _integer_ | loginTimeout overrides the protocol-level loginTimeout (seconds the<br />initiator waits for a login to complete). |  | Minimum: 1 <br />Optional <br /> |
+| `replacementTimeout` _integer_ | replacementTimeout overrides the protocol-level replacementTimeout<br />(seconds I/O stays queued while a failed session is re-established). |  | Minimum: 0 <br />Optional <br /> |
+| `noopOutInterval` _integer_ | noopOutInterval overrides the protocol-level noopOutInterval (seconds<br />between NOP-Out pings; 0 disables them). |  | Minimum: 0 <br />Optional <br /> |
+| `noopOutTimeout` _integer_ | noopOutTimeout overrides the protocol-level noopOutTimeout (seconds<br />to wait for a NOP-In reply). |  | Minimum: 0 <br />Optional <br /> |
 
 
 #### LVMBackendConfig
@@ -666,6 +718,7 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `nvmeofTcp` _[NVMeOFTCPOverrides](#nvmeoftcpoverrides)_ | nvmeofTcp overrides NVMe-oF/TCP tunables; valid only when the<br />protocol's member is nvmeofTcp. |  | Optional <br /> |
+| `iscsi` _[ISCSIOverrides](#iscsioverrides)_ | iscsi overrides iSCSI tunables; valid only when the protocol's member<br />is iscsi. |  | Optional <br /> |
 
 
 #### ProtocolSpec
@@ -674,7 +727,7 @@ _Appears in:_
 
 ProtocolSpec describes the transport protocol of a PillarProtocol.
 Exactly one member must be set: the member name selects the protocol
-(nvmeofTcp) and its value carries that protocol's configuration.
+(nvmeofTcp or iscsi) and its value carries that protocol's configuration.
 
 Per-binding and per-volume override documents use ProtocolOverrides,
 which keeps only the tunable subset.
@@ -688,6 +741,7 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `nvmeofTcp` _[NVMeOFTCPConfig](#nvmeoftcpconfig)_ | nvmeofTcp holds NVMe-oF/TCP configuration. |  | Optional <br /> |
+| `iscsi` _[ISCSIConfig](#iscsiconfig)_ | iscsi holds iSCSI configuration. |  | Optional <br /> |
 
 
 #### ReclaimPolicy

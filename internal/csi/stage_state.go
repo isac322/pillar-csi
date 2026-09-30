@@ -28,6 +28,9 @@ import "fmt"
 const (
 	// ProtocolNVMeoFTCP identifies the NVMe-oF TCP transport protocol.
 	ProtocolNVMeoFTCP = "nvmeof-tcp"
+
+	// ProtocolISCSI identifies the iSCSI (TCP) transport protocol.
+	ProtocolISCSI = "iscsi"
 )
 
 // CSI access-type string constants persisted in nodeStageState.AccessType so
@@ -53,8 +56,8 @@ const (
 // approach) so that each storage protocol can store its own typed teardown
 // parameters without sharing a generic map.
 //
-// The sub-struct matching the ProtocolType tag is non-nil (NVMeoF is the
-// only implemented protocol).  This ensures that the fields required by each
+// The sub-struct matching the ProtocolType tag is non-nil (NVMe-oF TCP and
+// iSCSI are the implemented protocols).  This ensures that the fields required by each
 // protocol's Detach() implementation are present and type-checked at compile
 // time rather than discovered at runtime as missing map keys.
 //
@@ -63,7 +66,7 @@ const (
 // readStageState performs in-place migration from the old format.
 type nodeStageState struct {
 	// ProtocolType identifies which typed sub-struct is populated.
-	// Known values: "nvmeof-tcp".
+	// Known values: "nvmeof-tcp", "iscsi".
 	ProtocolType string `json:"protocol_type"`
 
 	// AccessType records whether NodeStageVolume staged the volume in
@@ -85,6 +88,10 @@ type nodeStageState struct {
 	// NVMeoF holds NVMe-oF TCP teardown state.  Non-nil when ProtocolType == "nvmeof-tcp"
 	// and the volume was staged through the protocol handler.
 	NVMeoF *NVMeoFStageState `json:"nvmeof,omitempty"`
+
+	// ISCSI holds iSCSI teardown state.  Non-nil when ProtocolType == "iscsi"
+	// and the volume was staged through the protocol handler.
+	ISCSI *ISCSIStageState `json:"iscsi,omitempty"`
 
 	// AttachMode records how NodeStageVolume attached the device:
 	// AttachModeLocal for a direct attach on the storage node, empty for a
@@ -141,6 +148,23 @@ type NVMeoFStageState struct {
 
 	// Port is the TCP port of the NVMe-oF TCP target (e.g. "4420").
 	Port string `json:"port"`
+}
+
+// ISCSIStageState holds the iSCSI parameters needed to log out of an iSCSI
+// session during NodeUnstageVolume or after a node reboot, and to rescan its
+// LUN during NodeExpandVolume.
+type ISCSIStageState struct {
+	// TargetIQN is the iSCSI Qualified Name of the logged-in target.
+	TargetIQN string `json:"target_iqn"`
+
+	// Address is the IP address of the iSCSI target portal.
+	Address string `json:"address"`
+
+	// Port is the TCP port of the iSCSI target portal (e.g. "3260").
+	Port string `json:"port"`
+
+	// LUN is the logical unit number of the volume within the target.
+	LUN int `json:"lun"`
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -207,6 +231,7 @@ func migrateFromLegacy(raw *legacyNodeStageState) *nodeStageState {
 //
 // The mapping is:
 //   - "nvmeof-tcp" → *NVMeoFProtocolState  (defined in nvmeof_tcp_handler.go)
+//   - "iscsi"      → *ISCSIProtocolState   (defined in iscsi_handler.go)
 //
 // Returns nil with an error if the protocol type is unrecognized or the
 // required sub-struct is absent.
@@ -223,6 +248,16 @@ func (s *nodeStageState) ToProtocolState() (ProtocolState, error) {
 			SubsysNQN: s.NVMeoF.SubsysNQN,
 			Address:   s.NVMeoF.Address,
 			Port:      s.NVMeoF.Port,
+		}, nil
+	case ProtocolISCSI:
+		if s.ISCSI == nil {
+			return nil, fmt.Errorf("iSCSI stage state sub-struct is nil")
+		}
+		return &ISCSIProtocolState{
+			TargetIQN: s.ISCSI.TargetIQN,
+			Address:   s.ISCSI.Address,
+			Port:      s.ISCSI.Port,
+			LUN:       s.ISCSI.LUN,
 		}, nil
 	default:
 		return nil, fmt.Errorf("unrecognized protocol type %q in persisted stage state", s.ProtocolType)
@@ -244,6 +279,8 @@ func (s *nodeStageState) ToProtocolState() (ProtocolState, error) {
 //   - "nvmeof-tcp": uses targetID (NQN), address, port from VolumeContext.
 //     Falls back to NVMeoFProtocolState values from attachResult.State if
 //     the result carries a concrete *NVMeoFProtocolState.
+//   - "iscsi": uses targetID (IQN), address, port from VolumeContext and
+//     LUN 0; the *ISCSIProtocolState from attachResult.State wins when present.
 //   - Other protocols: only ProtocolType is set (none is implemented).
 func stageStateFromAttachResult(
 	protocolType, accessType, targetID, address, port string,
@@ -269,6 +306,21 @@ func stageStateFromAttachResult(
 			Address:   trAddr,
 			Port:      trSvcID,
 		}
+	}
+
+	if protocolType == ProtocolISCSI {
+		st := &ISCSIStageState{TargetIQN: targetID, Address: address, Port: port}
+		if attachResult != nil {
+			if iscsiState, ok := attachResult.State.(*ISCSIProtocolState); ok && iscsiState != nil {
+				st = &ISCSIStageState{
+					TargetIQN: iscsiState.TargetIQN,
+					Address:   iscsiState.Address,
+					Port:      iscsiState.Port,
+					LUN:       iscsiState.LUN,
+				}
+			}
+		}
+		s.ISCSI = st
 	}
 
 	return s

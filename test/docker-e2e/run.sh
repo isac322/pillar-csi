@@ -25,6 +25,19 @@ readonly vg_name="pillar-e2e-vg"
 readonly internal_backing_file="/var/lib/pillar-e2e-lvm.img"
 readonly external_backing_file="/var/lib/pillar-csi/${vg_name}.img"
 readonly nvmeof_port=4420
+readonly iscsi_port=3260
+readonly iscsi_protocol="pillar-e2e-iscsi"
+readonly iscsi_storage_class="pillar-e2e-iscsi"
+readonly iscsi_xfs_storage_class="pillar-e2e-iscsi-xfs"
+# pillar-csi names every LIO target iqn.2026-01.com.bhyoo.pillar-csi:<volume ID
+# with "/" replaced by ".">; the E2E volumes live in ${vg_name}.
+readonly iscsi_owned_iqn_prefix="iqn.2026-01.com.bhyoo.pillar-csi:${vg_name}."
+# NETLINK_ISCSI exists only in the host init network namespace.  Compose
+# bind-mounts the host /proc at /host/proc; the Kind worker nodes receive the
+# same mount so pillar-node can open the netlink socket there.
+readonly host_proc=/host/proc
+readonly host_init_netns="${host_proc}/1/ns/net"
+readonly iscsi_cleanup_bin=/tmp/pillar-e2e-iscsi-session-cleanup
 readonly storage_class="pillar-e2e"
 readonly local_storage_class="pillar-e2e-local"
 readonly helm_namespace="pillar-csi-system"
@@ -36,6 +49,10 @@ active_external_agent=""
 active_storage_node=""
 active_target_address=""
 active_host_nqns=()
+# Whether the LIO iSCSI fabric directory and pillar-csi's iblock HBA existed
+# before this harness ran; cleanup removes only what the run created.
+lio_iscsi_fabric_preexisting=false
+lio_iblock_hba_preexisting=false
 topology_cleanup_failed=false
 diagnostics_collected=false
 
@@ -111,18 +128,38 @@ capture_active_nvme_host_nqns() {
 
 
 
+# cleanup_iscsi_sessions tears down every host iSCSI initiator session to an
+# E2E-owned target.  Kind nodes share the host kernel, so sessions opened by
+# pillar-node outlive a deleted cluster.
+cleanup_iscsi_sessions() {
+  if [[ ! -x "${iscsi_cleanup_bin}" ]]; then
+    printf 'iSCSI session cleanup helper %s is missing\n' "${iscsi_cleanup_bin}" >&2
+    return 1
+  fi
+  if ! timeout --kill-after=2s 60s "${iscsi_cleanup_bin}" \
+    --netns "${host_init_netns}" --target-prefix "${iscsi_owned_iqn_prefix}"; then
+    printf 'failed to tear down host iSCSI sessions to targets %s*\n' "${iscsi_owned_iqn_prefix}" >&2
+    return 1
+  fi
+}
+
 cleanup_host_storage_state() {
   log "Removing host-global storage state owned by Docker E2E"
   local cleanup_rc=0
+  local iscsi_rc=0
   local nvme_port_id=""
   if [[ -n "${active_target_address}" ]]; then
     nvme_port_id=$(stable_port_id "${active_target_address}" "${nvmeof_port}")
   fi
+  # Initiator sessions first: a live session keeps the LIO target's TPG busy.
+  cleanup_iscsi_sessions || iscsi_rc=1
   timeout --kill-after=2s 30s bash -u -o pipefail -c '
     vg=$1
     internal_backing_file=$2
     external_backing_file=$3
     nvme_port_id=$4
+    lio_iscsi_fabric_preexisting=$5
+    lio_iblock_hba_preexisting=$6
     nvmet_root=/sys/kernel/config/nvmet
     subsystems_root=${nvmet_root}/subsystems
     ports_root=${nvmet_root}/ports
@@ -134,7 +171,7 @@ cleanup_host_storage_state() {
     affected_ports=()
     loop_devices=()
     host_dirs=()
-    shift 4
+    shift 6
     requested_host_nqns=("$@")
     shopt -s nullglob
 
@@ -271,6 +308,94 @@ cleanup_host_storage_state() {
       fi
     done
 
+    # LIO iSCSI targets of E2E volumes (lio.Target.Remove order): disable the
+    # TPG, drop node ACLs with their mapped LUNs, network portals and LUNs,
+    # then the TPG, the target and its iblock backstore.  A backstore holds
+    # the LV open, so this must precede vgremove.
+    lio_root=/sys/kernel/config/target
+    iscsi_root=${lio_root}/iscsi
+    iblock_hba=${lio_root}/core/iblock_3260
+    owned_iqn_prefix="iqn.2026-01.com.bhyoo.pillar-csi:${vg}."
+
+    remove_symlinks_in() {
+      local dir=$1
+      local entry
+      for entry in "${dir}"/*; do
+        [[ -L "${entry}" ]] || continue
+        if ! error=$(rm -- "${entry}" 2>&1); then
+          report_failure "remove LIO symlink" "${entry}" "${error}"
+        fi
+      done
+    }
+    remove_lio_dir() {
+      local dir=$1
+      local operation=$2
+      [[ -d "${dir}" ]] || return 0
+      if ! error=$(rmdir -- "${dir}" 2>&1); then
+        report_failure "${operation}" "${dir}" "${error}"
+      fi
+    }
+
+    for target_dir in "${iscsi_root}/${owned_iqn_prefix}"*; do
+      [[ -d "${target_dir}" ]] || continue
+      for tpg_dir in "${target_dir}"/tpgt_*; do
+        [[ -d "${tpg_dir}" ]] || continue
+        if [[ -e "${tpg_dir}/enable" ]]; then
+          if ! error=$(sh -c "printf 0 > \"\$1\"" pillar-e2e-disable "${tpg_dir}/enable" 2>&1); then
+            report_failure "disable LIO TPG through" "${tpg_dir}/enable" "${error}"
+          fi
+        fi
+        for acl_dir in "${tpg_dir}"/acls/*; do
+          [[ -d "${acl_dir}" ]] || continue
+          for mapped_dir in "${acl_dir}"/lun_*; do
+            [[ -d "${mapped_dir}" ]] || continue
+            remove_symlinks_in "${mapped_dir}"
+            remove_lio_dir "${mapped_dir}" "remove LIO mapped LUN"
+          done
+          remove_lio_dir "${acl_dir}" "remove LIO node ACL"
+        done
+        for portal_dir in "${tpg_dir}"/np/*; do
+          remove_lio_dir "${portal_dir}" "remove LIO network portal"
+        done
+        for lun_dir in "${tpg_dir}"/lun/lun_*; do
+          [[ -d "${lun_dir}" ]] || continue
+          remove_symlinks_in "${lun_dir}"
+          remove_lio_dir "${lun_dir}" "remove LIO LUN"
+        done
+        remove_lio_dir "${tpg_dir}" "remove LIO TPG"
+      done
+      remove_lio_dir "${target_dir}" "remove LIO iSCSI target"
+    done
+    # Backstores are named after the target IQN without the owned prefix,
+    # i.e. "<vg>.<volume>"; this also catches a backstore whose target a
+    # previous interrupted run already removed.
+    for backstore_dir in "${iblock_hba}/${vg}."*; do
+      remove_lio_dir "${backstore_dir}" "remove LIO iblock backstore"
+    done
+
+    remaining_targets=("${iscsi_root}/${owned_iqn_prefix}"*)
+    if (( ${#remaining_targets[@]} > 0 )); then
+      report_failure "verify LIO iSCSI targets removed" "${iscsi_root}" "remaining: ${remaining_targets[*]}"
+    fi
+    if [[ "${lio_iblock_hba_preexisting}" != true && -d "${iblock_hba}" ]]; then
+      remaining_backstores=()
+      for entry in "${iblock_hba}"/*; do
+        [[ -d "${entry}" ]] && remaining_backstores+=("${entry}")
+      done
+      if (( ${#remaining_backstores[@]} == 0 )); then
+        remove_lio_dir "${iblock_hba}" "remove pillar-csi LIO iblock HBA"
+      fi
+    fi
+    if [[ "${lio_iscsi_fabric_preexisting}" != true && -d "${iscsi_root}" ]]; then
+      remaining_iscsi_targets=()
+      for entry in "${iscsi_root}"/iqn.*; do
+        [[ -d "${entry}" ]] && remaining_iscsi_targets+=("${entry}")
+      done
+      if (( ${#remaining_iscsi_targets[@]} == 0 )); then
+        remove_lio_dir "${iscsi_root}" "remove LIO iSCSI fabric"
+      fi
+    fi
+
     # A local attach leaves a device-mapper linear target pillar-local-<hash>
     # over an E2E logical volume while the volume is staged on the storage
     # node.  Remove any left behind by an interrupted run; it would otherwise
@@ -341,12 +466,16 @@ cleanup_host_storage_state() {
     done
     exit "${rc}"
   ' pillar-e2e-cleanup "${vg_name}" "${internal_backing_file}" "${external_backing_file}" "${nvme_port_id}" \
+    "${lio_iscsi_fabric_preexisting}" "${lio_iblock_hba_preexisting}" \
     "${active_host_nqns[@]}" || cleanup_rc=$?
   if [[ ${cleanup_rc} -eq 124 || ${cleanup_rc} -eq 137 ]]; then
     printf 'host storage cleanup for volume group %s exceeded its 32-second termination budget\n' "${vg_name}" >&2
   elif [[ ${cleanup_rc} -ne 0 && ${cleanup_rc} -ne 1 ]]; then
     printf 'host storage cleanup for volume group %s failed with exit status %d\n' \
       "${vg_name}" "${cleanup_rc}" >&2
+  fi
+  if [[ ${cleanup_rc} -eq 0 && ${iscsi_rc} -ne 0 ]]; then
+    cleanup_rc=1
   fi
   return "${cleanup_rc}"
 }
@@ -455,6 +584,15 @@ collect_diagnostics() {
     if [[ -n "${active_external_agent}" ]]; then
       timeout --kill-after=2s 5s docker logs "${active_external_agent}" 2>&1 | tail -300
     fi
+    # iSCSI state is host-global: LIO targets in configfs and initiator
+    # sessions in sysfs.
+    printf "\n[%s] LIO iSCSI targets and host iSCSI sessions\n" "$(date -u +%H:%M:%S)" >&2
+    find /sys/kernel/config/target/iscsi -mindepth 1 -maxdepth 5 \( -path "*/tpgt_*/acls/*" -o -path "*/tpgt_*/np/*" -o -path "*/tpgt_*/lun/*" -o -name "tpgt_*" -o -name "iqn.*" \) -print 2>&1 | head -200
+    for session in /sys/class/iscsi_session/session*; do
+      [[ -d "${session}" ]] || continue
+      printf "%s target=%s initiator=%s state=%s\n" "${session##*/}" \
+        "$(cat "${session}/targetname" 2>&1)" "$(cat "${session}/initiatorname" 2>&1)" "$(cat "${session}/state" 2>&1)"
+    done
   ' pillar-e2e-diagnostics "${active_cluster}" "${helm_namespace}" "${active_external_agent}" ||
     diagnostics_rc=$?
   if [[ ${diagnostics_rc} -eq 124 || ${diagnostics_rc} -eq 137 ]]; then
@@ -491,7 +629,7 @@ require_linux_storage_stack() {
       exit 1
     fi
   fi
-  for module in dm_mod loop nvme_fabrics nvme_tcp nvmet nvmet_tcp; do
+  for module in dm_mod loop nvme_fabrics nvme_tcp nvmet nvmet_tcp iscsi_tcp target_core_mod target_core_iblock iscsi_target_mod; do
     if ! error=$(modprobe "${module}" 2>&1); then
       missing+=("${module}")
       printf 'failed to load required kernel module %s: %s\n' "${module}" "${error:-modprobe exited nonzero}" >&2
@@ -500,9 +638,9 @@ require_linux_storage_stack() {
   if (( ${#missing[@]} > 0 )); then
     printf 'required kernel modules are unavailable: %s\n' "${missing[*]}" >&2
     printf '%s\n' \
-      'Run this harness on a Linux host or Linux VM whose kernel includes device-mapper, loop, NVMe initiator, and NVMe target support.' \
+      'Run this harness on a Linux host or Linux VM whose kernel includes device-mapper, loop, NVMe initiator/target, and iSCSI initiator/LIO target support.' \
       'Ubuntu/Debian commonly requires: sudo apt-get install linux-modules-extra-$(uname -r)' \
-      'Then load: sudo modprobe dm_mod loop nvmet nvmet-tcp nvme-fabrics nvme-tcp' >&2
+      'Then load: sudo modprobe dm_mod loop nvmet nvmet-tcp nvme-fabrics nvme-tcp iscsi_tcp target_core_mod target_core_iblock iscsi_target_mod' >&2
     exit 1
   fi
   if ! mountpoint -q /sys/kernel/config; then
@@ -515,6 +653,38 @@ require_linux_storage_stack() {
     printf '%s\n' \
       'NVMe target configfs is unavailable at /sys/kernel/config/nvmet.' \
       'Mount configfs on the Linux Docker host before running this harness.' >&2
+    exit 1
+  fi
+  # target_core_mod registers /sys/kernel/config/target; the iscsi fabric
+  # directory below it appears only once something mkdirs it (the agent
+  # does), so only the core directory is a prerequisite.
+  if [[ ! -d /sys/kernel/config/target ]]; then
+    printf '%s\n' \
+      'LIO target configfs is unavailable at /sys/kernel/config/target.' \
+      'Load target_core_mod on the Linux Docker host before running this harness.' >&2
+    exit 1
+  fi
+  if [[ ! -r /sys/class/iscsi_transport/tcp/handle ]]; then
+    printf 'iscsi_tcp loaded but the iSCSI tcp transport is not registered at /sys/class/iscsi_transport/tcp\n' >&2
+    exit 1
+  fi
+  [[ -d /sys/kernel/config/target/iscsi ]] && lio_iscsi_fabric_preexisting=true
+  [[ -d /sys/kernel/config/target/core/iblock_3260 ]] && lio_iblock_hba_preexisting=true
+  # pillar-node opens NETLINK_ISCSI in the host init network namespace through
+  # the host /proc that compose.yaml mounts at ${host_proc}.
+  if ! error=$(readlink "${host_init_netns}" 2>&1); then
+    printf 'host init network namespace %s is unavailable (compose.yaml must mount the host /proc at %s): %s\n' \
+      "${host_init_netns}" "${host_proc}" "${error:-readlink exited nonzero}" >&2
+    exit 1
+  fi
+  if [[ "${error}" == "$(readlink /proc/self/ns/net)" ]]; then
+    printf '%s is the harness network namespace, not the host init namespace; mount the host /proc at %s\n' \
+      "${host_init_netns}" "${host_proc}" >&2
+    exit 1
+  fi
+  log "Building the iSCSI session cleanup helper"
+  if ! error=$(cd "${repo_root}" && go build -o "${iscsi_cleanup_bin}" ./test/docker-e2e/cmd/iscsi-session-cleanup 2>&1); then
+    printf 'failed to build the iSCSI session cleanup helper: %s\n' "${error}" >&2
     exit 1
   fi
   if [[ ! -c /dev/mapper/control ]]; then
@@ -580,6 +750,16 @@ EOF
   done
 }
 
+# Every worker runs pillar-node, which opens NETLINK_ISCSI in the host init
+# network namespace through /host/proc/1/ns/net (helm value
+# node.iscsi.netlinkNetnsPath).  /host/proc here is the host /proc that
+# compose.yaml mounts into this container.
+#
+# A Kind node's own /sys is a read-only sysfs instance, so the client workers
+# receive the writable sysfs subtrees their initiators write, shared by
+# entrypoint.sh: nvme-fabrics for NVMe-oF, and /sys/devices/platform, where
+# the software iSCSI SCSI hosts live (pillar-node writes their scan and
+# per-device rescan attributes).
 write_kind_config() {
   topology=$1
   config_path=$2
@@ -594,18 +774,35 @@ nodes:
       - hostPath: /sys/kernel/config
         containerPath: /sys/kernel/config
         propagation: Bidirectional
+      - hostPath: /host/proc
+        containerPath: /host/proc
+        readOnly: true
   - role: worker
     extraMounts:
       - hostPath: /sys/devices/virtual/nvme-fabrics
         containerPath: /sys/devices/virtual/nvme-fabrics
         readOnly: false
         propagation: Bidirectional
+      - hostPath: /sys/devices/platform
+        containerPath: /sys/devices/platform
+        readOnly: false
+        propagation: Bidirectional
+      - hostPath: /host/proc
+        containerPath: /host/proc
+        readOnly: true
   - role: worker
     extraMounts:
       - hostPath: /sys/devices/virtual/nvme-fabrics
         containerPath: /sys/devices/virtual/nvme-fabrics
         readOnly: false
         propagation: Bidirectional
+      - hostPath: /sys/devices/platform
+        containerPath: /sys/devices/platform
+        readOnly: false
+        propagation: Bidirectional
+      - hostPath: /host/proc
+        containerPath: /host/proc
+        readOnly: true
 EOF
   else
     cat >"${config_path}" <<'EOF'
@@ -619,12 +816,26 @@ nodes:
         containerPath: /sys/devices/virtual/nvme-fabrics
         readOnly: false
         propagation: Bidirectional
+      - hostPath: /sys/devices/platform
+        containerPath: /sys/devices/platform
+        readOnly: false
+        propagation: Bidirectional
+      - hostPath: /host/proc
+        containerPath: /host/proc
+        readOnly: true
   - role: worker
     extraMounts:
       - hostPath: /sys/devices/virtual/nvme-fabrics
         containerPath: /sys/devices/virtual/nvme-fabrics
         readOnly: false
         propagation: Bidirectional
+      - hostPath: /sys/devices/platform
+        containerPath: /sys/devices/platform
+        readOnly: false
+        propagation: Bidirectional
+      - hostPath: /host/proc
+        containerPath: /host/proc
+        readOnly: true
 EOF
   fi
 }
@@ -727,6 +938,17 @@ install_driver() {
     "${workload_base_image}" \
     "${sidecar_images[@]}"
 
+  # kindest/node ships open-iscsi with one baked-in
+  # /etc/iscsi/initiatorname.iscsi, so every Kind node starts with the same
+  # IQN.  All Kind nodes share this kernel, and pillar-node treats sessions
+  # carrying its IQN as its own, so identical IQNs make every node recover
+  # and rebind the same kernel connection (a double BIND_CONN that crashes
+  # iscsi_tcp).  Remove the baked file so each pillar-node generates a unique
+  # IQN, as it would on a real host without open-iscsi.
+  for kind_node in $(kind get nodes --name "${cluster}"); do
+    docker exec "${kind_node}" rm -f /etc/iscsi/initiatorname.iscsi
+  done
+
   helm_args=(
     upgrade --install "${helm_release}" "${repo_root}/charts/pillar-csi"
     --namespace "${helm_namespace}"
@@ -744,6 +966,7 @@ install_driver() {
     --set "node.image.repository=pillar-csi/node"
     --set "node.image.tag=${image_tag}"
     --set "node.image.pullPolicy=Never"
+    --set "node.iscsi.netlinkNetnsPath=${host_init_netns}"
   )
   if [[ "${topology}" == internal ]]; then
     helm_args+=(--set "agent.backends[0].lvm.volumeGroup=${vg_name}")
@@ -872,11 +1095,53 @@ spec:
     allowVolumeExpansion: true
   filesystem:
     fsType: ext4
+---
+apiVersion: pillar-csi.bhyoo.com/v1alpha1
+kind: PillarProtocol
+metadata:
+  name: ${iscsi_protocol}
+spec:
+  protocol:
+    iscsi:
+      port: ${iscsi_port}
+      acl: true
+---
+apiVersion: pillar-csi.bhyoo.com/v1alpha1
+kind: PillarStorageClass
+metadata:
+  name: ${iscsi_storage_class}
+spec:
+  storeRef: pillar-e2e-store
+  protocolRef: ${iscsi_protocol}
+  storageClass:
+    name: ${iscsi_storage_class}
+    reclaimPolicy: Delete
+    volumeBindingMode: WaitForFirstConsumer
+    allowVolumeExpansion: true
+  filesystem:
+    fsType: ext4
+---
+apiVersion: pillar-csi.bhyoo.com/v1alpha1
+kind: PillarStorageClass
+metadata:
+  name: ${iscsi_xfs_storage_class}
+spec:
+  storeRef: pillar-e2e-store
+  protocolRef: ${iscsi_protocol}
+  storageClass:
+    name: ${iscsi_xfs_storage_class}
+    reclaimPolicy: Delete
+    volumeBindingMode: WaitForFirstConsumer
+    allowVolumeExpansion: true
+  filesystem:
+    fsType: xfs
 EOF
 
   wait_for_resource_ready pillaragent/pillar-e2e-agent
   wait_for_resource_ready "pillarstorageclass/${storage_class}"
   wait_for_resource_ready "pillarstorageclass/${local_storage_class}"
+  wait_for_resource_ready "pillarstorageclass/${iscsi_storage_class}"
+  wait_for_resource_ready "pillarstorageclass/${iscsi_xfs_storage_class}"
 }
 
 run_tests() {
@@ -889,11 +1154,14 @@ run_tests() {
   PILLAR_E2E_TOPOLOGY="${topology}" \
   PILLAR_E2E_STORAGE_CLASS="${storage_class}" \
   PILLAR_E2E_LOCAL_STORAGE_CLASS="${local_storage_class}" \
+  PILLAR_E2E_ISCSI_STORAGE_CLASS="${iscsi_storage_class}" \
+  PILLAR_E2E_ISCSI_XFS_STORAGE_CLASS="${iscsi_xfs_storage_class}" \
+  PILLAR_E2E_ISCSI_PROTOCOL="${iscsi_protocol}" \
   PILLAR_E2E_STORAGE_NODE="${storage_node}" \
   PILLAR_E2E_CLIENT_NODE_A="${client_a}" \
   PILLAR_E2E_CLIENT_NODE_B="${client_b}" \
   PILLAR_E2E_TARGET_ADDRESS="${target_address}" \
-    go test -tags=docker_e2e -count=1 -timeout=90m -v ./test/docker-e2e
+    go test -tags=docker_e2e -count=1 -timeout=150m -v ./test/docker-e2e
 }
 
 create_kind_cluster() {

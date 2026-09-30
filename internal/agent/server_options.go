@@ -19,6 +19,7 @@ package agent
 import (
 	"time"
 
+	"github.com/isac322/pillar-csi/internal/agent/lio"
 	"github.com/isac322/pillar-csi/internal/agent/nvmeof"
 )
 
@@ -73,4 +74,11 @@ func WithDrainStateDir(dir string) ServerOption {
 // The agent binary always sets it; see server_export_restore.go.
 func WithExportRestoreGate() ServerOption {
 	return func(s *Server) { s.exportRestorePending.Store(true) }
+}
+
+// WithLIOFS overrides the configfs operations of the iSCSI (LIO) handler.
+// Production uses lio.OSFS; tests pass an emulated kernel (package
+// lio/liotest) rooted at the server's configfs root.
+func WithLIOFS(fsys lio.FS) ServerOption {
+	return func(s *Server) { s.lioFS = fsys }
 }

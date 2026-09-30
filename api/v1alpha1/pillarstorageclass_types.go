@@ -196,25 +196,64 @@ type NVMeOFTCPOverrides struct {
 	ReconnectDelay *int32 `json:"reconnectDelay,omitempty"`
 }
 
+// ISCSIOverrides holds the per-volume-tunable subset of ISCSIConfig.
+// Structural fields (port — which portal the target lives on — and acl —
+// the security policy anchor) are not part of this type and are rejected with
+// their path by the shared document decoder.
+type ISCSIOverrides struct {
+	// loginTimeout overrides the protocol-level loginTimeout (seconds the
+	// initiator waits for a login to complete).
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	LoginTimeout *int32 `json:"loginTimeout,omitempty"`
+
+	// replacementTimeout overrides the protocol-level replacementTimeout
+	// (seconds I/O stays queued while a failed session is re-established).
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	ReplacementTimeout *int32 `json:"replacementTimeout,omitempty"`
+
+	// noopOutInterval overrides the protocol-level noopOutInterval (seconds
+	// between NOP-Out pings; 0 disables them).
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	NoopOutInterval *int32 `json:"noopOutInterval,omitempty"`
+
+	// noopOutTimeout overrides the protocol-level noopOutTimeout (seconds
+	// to wait for a NOP-In reply).
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	NoopOutTimeout *int32 `json:"noopOutTimeout,omitempty"`
+}
+
 // ProtocolOverrides is the per-binding or per-volume override document for
 // the transport protocol.  Exactly one member must be set, and it must match
 // the protocol member configured on the referenced PillarProtocol.
 //
-// +kubebuilder:validation:XValidation:rule="has(self.nvmeofTcp)",message="exactly one protocol member must be set (supported: nvmeofTcp)"
+// +kubebuilder:validation:XValidation:rule="(has(self.nvmeofTcp) ? 1 : 0) + (has(self.iscsi) ? 1 : 0) == 1",message="exactly one protocol member must be set (supported: nvmeofTcp, iscsi)"
 type ProtocolOverrides struct {
 	// nvmeofTcp overrides NVMe-oF/TCP tunables; valid only when the
 	// protocol's member is nvmeofTcp.
 	// +optional
 	NVMeOFTCP *NVMeOFTCPOverrides `json:"nvmeofTcp,omitempty"`
+
+	// iscsi overrides iSCSI tunables; valid only when the protocol's member
+	// is iscsi.
+	// +optional
+	ISCSI *ISCSIOverrides `json:"iscsi,omitempty"`
 }
 
-// Kind returns the selected override member name ("nvmeofTcp"), or "" when
-// the union is empty.
+// Kind returns the selected override member name ("nvmeofTcp" or "iscsi"),
+// or "" when the union is empty.
 func (p ProtocolOverrides) Kind() string {
-	if p.NVMeOFTCP != nil {
+	switch {
+	case p.NVMeOFTCP != nil:
 		return "nvmeofTcp"
+	case p.ISCSI != nil:
+		return "iscsi"
+	default:
+		return ""
 	}
-	return ""
 }
 
 // StorageClassOverrides is the optional layer of per-binding parameter

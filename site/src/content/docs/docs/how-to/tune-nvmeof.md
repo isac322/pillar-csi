@@ -5,7 +5,7 @@ sidebar:
   order: 5
 ---
 
-A `PillarProtocol` holds the NVMe-oF/TCP settings under `spec.protocol.nvmeofTcp`. pillar-csi does not ship its own performance defaults: every tuning field you leave unset keeps the Linux kernel default.
+A `PillarProtocol` holds the NVMe-oF/TCP settings under `spec.protocol.nvmeofTcp`. pillar-csi does not ship its own performance defaults: every tuning field you leave unset keeps the Linux kernel default. For iSCSI settings under `spec.protocol.iscsi`, see [Configure iSCSI](/docs/how-to/configure-iscsi/).
 
 ```yaml
 apiVersion: pillar-csi.bhyoo.com/v1alpha1

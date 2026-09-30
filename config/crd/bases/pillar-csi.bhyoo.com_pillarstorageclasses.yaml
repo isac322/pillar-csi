@@ -158,6 +158,40 @@ spec:
                       protocol contains protocol tunable overrides (same shape as the
                       pillar-csi.bhyoo.com/protocol PVC annotation document).
                     properties:
+                      iscsi:
+                        description: |-
+                          iscsi overrides iSCSI tunables; valid only when the protocol's member
+                          is iscsi.
+                        properties:
+                          loginTimeout:
+                            description: |-
+                              loginTimeout overrides the protocol-level loginTimeout (seconds the
+                              initiator waits for a login to complete).
+                            format: int32
+                            minimum: 1
+                            type: integer
+                          noopOutInterval:
+                            description: |-
+                              noopOutInterval overrides the protocol-level noopOutInterval (seconds
+                              between NOP-Out pings; 0 disables them).
+                            format: int32
+                            minimum: 0
+                            type: integer
+                          noopOutTimeout:
+                            description: |-
+                              noopOutTimeout overrides the protocol-level noopOutTimeout (seconds
+                              to wait for a NOP-In reply).
+                            format: int32
+                            minimum: 0
+                            type: integer
+                          replacementTimeout:
+                            description: |-
+                              replacementTimeout overrides the protocol-level replacementTimeout
+                              (seconds I/O stays queued while a failed session is re-established).
+                            format: int32
+                            minimum: 0
+                            type: integer
+                        type: object
                       nvmeofTcp:
                         description: |-
                           nvmeofTcp overrides NVMe-oF/TCP tunables; valid only when the
@@ -197,8 +231,9 @@ spec:
                     type: object
                     x-kubernetes-validations:
                     - message: 'exactly one protocol member must be set (supported:
-                        nvmeofTcp)'
-                      rule: has(self.nvmeofTcp)
+                        nvmeofTcp, iscsi)'
+                      rule: '(has(self.nvmeofTcp) ? 1 : 0) + (has(self.iscsi) ? 1
+                        : 0) == 1'
                 type: object
               protocolRef:
                 description: protocolRef is the name of the PillarProtocol used to

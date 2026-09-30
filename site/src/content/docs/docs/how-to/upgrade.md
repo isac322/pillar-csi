@@ -24,6 +24,18 @@ The controller, the node plugin and every agent belong to one Helm release, so o
 
 Restarting the agent pods does not remove kernel exports, so connected workers keep their sessions during the rollout. See [Maintain storage and worker nodes](/docs/how-to/node-maintenance/) for what happens on a storage node.
 
+Restarting the node plugin pods does not end iSCSI sessions either. A restarted node plugin adopts the pillar-csi sessions already on its node.
+
+## Upgrade to a release with iSCSI
+
+The first release with iSCSI adds the `iscsi` member to `PillarProtocol.spec.protocol` and to the protocol override documents. Existing NVMe-oF/TCP volumes, protocols and classes keep working unchanged. The chart also:
+
+- adds `target_core_mod`, `target_core_iblock` and `iscsi_target_mod` to `agent.initModprobe.modules`, and `iscsi_tcp` to `node.initModprobe.modules`. If you set these lists in your values file, add the modules yourself;
+- mounts `/etc/iscsi` from the host into the node plugin, where it keeps the initiator IQN;
+- adds `node.iscsi.netlinkNetnsPath`, which only Kind and other nodes that run in containers need.
+
+Load the modules on the hosts before you create an iSCSI `PillarProtocol`; see [Configure iSCSI](/docs/how-to/configure-iscsi/).
+
 ## 0.2 to 0.3: configuration cutover
 
 0.3.0 gives every storage, protocol and filesystem setting one name and one nested shape wherever it appears. The change is incompatible. A 0.2 configuration cannot be upgraded in place, and volumes provisioned by 0.2 are not migrated.
@@ -40,7 +52,7 @@ Restarting the agent pods does not remove kernel exports, so connected workers k
 | Hand-written StorageClass | flat keys such as `zfs-prop.*`, `lvm-*`, `nvmeof-*`, `acl-enabled`, `backend-type` | `pillar-csi.bhyoo.com/store-ref`, `/protocol-ref` and the same three documents; the old keys are rejected |
 | Helm `agent.backends` | `{type: zfs-zvol, pool, parent}`, `{type: lvm-lv, vg, thinpool}` | `{zfs: {pool, parentDataset}}`, `{lvm: {volumeGroup, thinPool}}`, rendered into the agent's `--config` file |
 | `pillar-agent` flags | `--backend` | `--config`; `--backend` is gone. Default listen port `9500` |
-| Served schema | schema-only placeholders for iSCSI, NFS, SMB, `zfs-dataset` and `dir`, never implemented | placeholders removed; the schema accepts only `zfs`, `lvm` and `nvmeofTcp`. iSCSI, NFS and SMB remain planned |
+| Served schema | schema-only placeholders for iSCSI, NFS, SMB, `zfs-dataset` and `dir`, never implemented | placeholders removed; the 0.3 schema accepts only `zfs`, `lvm` and `nvmeofTcp`. A later release adds `iscsi` (see [Upgrade to a release with iSCSI](#upgrade-to-a-release-with-iscsi)); NFS and SMB remain planned |
 
 A 0.2 `PillarVolumeState` has `spec.nodeConnectParams`. 0.3 instead records the resolved configuration in `spec.resolved` at `CreateVolume`, and 0.2 StorageClasses carry the old parameters. No migration shim exists.
 

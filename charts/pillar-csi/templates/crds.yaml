@@ -133,7 +133,7 @@ spec:
                   protocols:
                     description: |-
                       protocols lists the network protocols the agent can export storage over
-                      (nvmeof-tcp).
+                      (nvmeof-tcp, iscsi).
                     items:
                       type: string
                     type: array
@@ -339,6 +339,57 @@ spec:
                   protocol selects the network storage protocol and its configuration.
                   Exactly one member must be set.
                 properties:
+                  iscsi:
+                    description: iscsi holds iSCSI configuration.
+                    properties:
+                      acl:
+                        default: false
+                        description: |-
+                          acl enables initiator IQN-based access control when true.
+                          When false the target portal group runs in demo mode
+                          (generate_node_acls) and accepts any initiator.
+                          Defaults to false so that e2e tests and simple deployments work
+                          without registering initiator IQNs.
+                        type: boolean
+                      loginTimeout:
+                        description: |-
+                          loginTimeout is the maximum seconds the initiator waits for a login
+                          (TCP connect plus the login PDU exchange) to complete.
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      noopOutInterval:
+                        description: |-
+                          noopOutInterval is the interval in seconds between NOP-Out pings the
+                          initiator sends to detect a dead connection.  0 disables the pings.
+                        format: int32
+                        minimum: 0
+                        type: integer
+                      noopOutTimeout:
+                        description: |-
+                          noopOutTimeout is the maximum seconds the initiator waits for a
+                          NOP-In reply before declaring the connection failed.
+                        format: int32
+                        minimum: 0
+                        type: integer
+                      port:
+                        default: 3260
+                        description: |-
+                          port is the TCP port on which the iSCSI target portal listens.
+                          Defaults to 3260.
+                        format: int32
+                        maximum: 65535
+                        minimum: 1
+                        type: integer
+                      replacementTimeout:
+                        description: |-
+                          replacementTimeout is the maximum seconds the initiator keeps I/O
+                          queued while re-establishing a failed session before failing it back
+                          to the block layer.  0 fails I/O immediately on connection loss.
+                        format: int32
+                        minimum: 0
+                        type: integer
+                    type: object
                   nvmeofTcp:
                     description: nvmeofTcp holds NVMe-oF/TCP configuration.
                     properties:
@@ -400,8 +451,10 @@ spec:
                     type: object
                 type: object
                 x-kubernetes-validations:
-                - message: 'exactly one protocol member must be set (supported: nvmeofTcp)'
-                  rule: has(self.nvmeofTcp)
+                - message: 'exactly one protocol member must be set (supported: nvmeofTcp,
+                    iscsi)'
+                  rule: '(has(self.nvmeofTcp) ? 1 : 0) + (has(self.iscsi) ? 1 : 0)
+                    == 1'
             required:
             - protocol
             type: object
@@ -652,6 +705,40 @@ spec:
                       protocol contains protocol tunable overrides (same shape as the
                       pillar-csi.bhyoo.com/protocol PVC annotation document).
                     properties:
+                      iscsi:
+                        description: |-
+                          iscsi overrides iSCSI tunables; valid only when the protocol's member
+                          is iscsi.
+                        properties:
+                          loginTimeout:
+                            description: |-
+                              loginTimeout overrides the protocol-level loginTimeout (seconds the
+                              initiator waits for a login to complete).
+                            format: int32
+                            minimum: 1
+                            type: integer
+                          noopOutInterval:
+                            description: |-
+                              noopOutInterval overrides the protocol-level noopOutInterval (seconds
+                              between NOP-Out pings; 0 disables them).
+                            format: int32
+                            minimum: 0
+                            type: integer
+                          noopOutTimeout:
+                            description: |-
+                              noopOutTimeout overrides the protocol-level noopOutTimeout (seconds
+                              to wait for a NOP-In reply).
+                            format: int32
+                            minimum: 0
+                            type: integer
+                          replacementTimeout:
+                            description: |-
+                              replacementTimeout overrides the protocol-level replacementTimeout
+                              (seconds I/O stays queued while a failed session is re-established).
+                            format: int32
+                            minimum: 0
+                            type: integer
+                        type: object
                       nvmeofTcp:
                         description: |-
                           nvmeofTcp overrides NVMe-oF/TCP tunables; valid only when the
@@ -691,8 +778,9 @@ spec:
                     type: object
                     x-kubernetes-validations:
                     - message: 'exactly one protocol member must be set (supported:
-                        nvmeofTcp)'
-                      rule: has(self.nvmeofTcp)
+                        nvmeofTcp, iscsi)'
+                      rule: '(has(self.nvmeofTcp) ? 1 : 0) + (has(self.iscsi) ? 1
+                        : 0) == 1'
                 type: object
               protocolRef:
                 description: protocolRef is the name of the PillarProtocol used to
@@ -1336,6 +1424,57 @@ spec:
                       spec.protocol with binding, StorageClass-document and PVC tunable
                       overrides applied.
                     properties:
+                      iscsi:
+                        description: iscsi holds iSCSI configuration.
+                        properties:
+                          acl:
+                            default: false
+                            description: |-
+                              acl enables initiator IQN-based access control when true.
+                              When false the target portal group runs in demo mode
+                              (generate_node_acls) and accepts any initiator.
+                              Defaults to false so that e2e tests and simple deployments work
+                              without registering initiator IQNs.
+                            type: boolean
+                          loginTimeout:
+                            description: |-
+                              loginTimeout is the maximum seconds the initiator waits for a login
+                              (TCP connect plus the login PDU exchange) to complete.
+                            format: int32
+                            minimum: 1
+                            type: integer
+                          noopOutInterval:
+                            description: |-
+                              noopOutInterval is the interval in seconds between NOP-Out pings the
+                              initiator sends to detect a dead connection.  0 disables the pings.
+                            format: int32
+                            minimum: 0
+                            type: integer
+                          noopOutTimeout:
+                            description: |-
+                              noopOutTimeout is the maximum seconds the initiator waits for a
+                              NOP-In reply before declaring the connection failed.
+                            format: int32
+                            minimum: 0
+                            type: integer
+                          port:
+                            default: 3260
+                            description: |-
+                              port is the TCP port on which the iSCSI target portal listens.
+                              Defaults to 3260.
+                            format: int32
+                            maximum: 65535
+                            minimum: 1
+                            type: integer
+                          replacementTimeout:
+                            description: |-
+                              replacementTimeout is the maximum seconds the initiator keeps I/O
+                              queued while re-establishing a failed session before failing it back
+                              to the block layer.  0 fails I/O immediately on connection loss.
+                            format: int32
+                            minimum: 0
+                            type: integer
+                        type: object
                       nvmeofTcp:
                         description: nvmeofTcp holds NVMe-oF/TCP configuration.
                         properties:
@@ -1398,8 +1537,9 @@ spec:
                     type: object
                     x-kubernetes-validations:
                     - message: 'exactly one protocol member must be set (supported:
-                        nvmeofTcp)'
-                      rule: has(self.nvmeofTcp)
+                        nvmeofTcp, iscsi)'
+                      rule: '(has(self.nvmeofTcp) ? 1 : 0) + (has(self.iscsi) ? 1
+                        : 0) == 1'
                 required:
                 - backend
                 - protocol

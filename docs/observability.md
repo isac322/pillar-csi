@@ -245,7 +245,7 @@ SP1 events: `pillar_csi.pvs.update` after each PillarVolumeState status write, w
 | `pillar_csi.nvme.subsystem_nqn`, `pillar_csi.nvmet.port`, `pillar_csi.nvmet.acl_enabled`, `pillar_csi.nvme.host_nqn` | SP7 target and initiator. |
 | `pillar_csi.configfs.op`, `pillar_csi.configfs.path` | SP7 on error: the failed operation and path relative to the configfs root. |
 
-ReconcileState event `pillar_csi.reconcile.item_failed`: one per failed volume, with `pillar_csi.pv.name`, `pillar_csi.reconcile.phase` (`resolve`, `prepare`, `link`) and `error.type`.
+ReconcileState event `pillar_csi.reconcile.item_failed`: one per failed volume, with `pillar_csi.pv.name`, `pillar_csi.reconcile.phase` (`resolve`, `prepare`, `link`; for iSCSI, `link` is the portal and TPG enable) and `error.type`.
 
 **Exec attributes (SP8).** `process.executable.name` (basename), `pillar_csi.exec.subcommand` (same values as the M9 label, omitted when empty), `process.exit.code`. On error only: `process.command_args` and `pillar_csi.exec.output_tail` (last 1 KiB of output).
 

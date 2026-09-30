@@ -151,7 +151,7 @@ func TestReconcileState_UnsupportedProtocolReported(t *testing.T) {
 				DevicePath: testDevicePath,
 				Exports: []*agentv1.ExportDesiredState{
 					{
-						ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI,
+						ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NFS,
 						ExportParams: &agentv1.ExportParams{},
 					},
 				},
@@ -169,7 +169,7 @@ func TestReconcileState_UnsupportedProtocolReported(t *testing.T) {
 	}
 	if !strings.Contains(
 		resp.GetResults()[0].GetErrorMessage(),
-		"protocol PROTOCOL_TYPE_ISCSI is not supported by this agent",
+		"protocol PROTOCOL_TYPE_NFS is not supported by this agent",
 	) {
 		t.Errorf("ErrorMessage = %q, want unsupported protocol detail", resp.GetResults()[0].GetErrorMessage())
 	}

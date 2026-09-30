@@ -224,7 +224,8 @@ func TestHealthCheck_Structured_AgentMetadata(t *testing.T) {
 }
 
 // TestHealthCheck_Structured_SubsystemCount verifies that the response always
-// contains exactly one core entry (nvmet_configfs) plus one entry per registered pool.
+// contains exactly the core entries (nvmet_configfs, iscsi_target_configfs)
+// plus one entry per registered pool.
 func TestHealthCheck_Structured_SubsystemCount(t *testing.T) {
 	t.Parallel()
 
@@ -232,8 +233,8 @@ func TestHealthCheck_Structured_SubsystemCount(t *testing.T) {
 
 	resp := healthCheckResp(t, srv)
 
-	// 1 pool ("tank") registered, so 1 core + 1 pool = 2 total.
-	const wantTotal = 2
+	// 1 pool ("tank") registered, so 2 core + 1 pool = 3 total.
+	const wantTotal = 3
 	if got := len(resp.GetSubsystems()); got != wantTotal {
 		t.Errorf("len(Subsystems) = %d, want %d; names: %v",
 			got, wantTotal, subsysNames(resp.GetSubsystems()))

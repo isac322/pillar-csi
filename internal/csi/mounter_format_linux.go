@@ -62,6 +62,12 @@ func (m *KubeMounter) FormatAndMount(
 // untouched, and a read-only mount request leaves a blank device alone so
 // SafeFormatAndMount reports it as an unformatted read-only disk.
 //
+// The blkid tool exits 2 both for a device without signatures and for one
+// it cannot open (a disk the kernel is still registering reads ENXIO), and
+// GetDiskFormat reports both as blank.  The device is therefore proven
+// readable before blkid probes it, so a blank verdict can never come from a
+// device that merely was not ready: formatting it would destroy its data.
+//
 // The mkfs binary is executed directly (no shell) with options that passed
 // the validateMkfsOptions allowlist.  Afterwards the device must carry a
 // fsType filesystem: otherwise SafeFormatAndMount would find it still blank
@@ -75,6 +81,10 @@ func (m *KubeMounter) formatIfBlank(
 	err := validateMkfsOptions(fsType, formatOptions)
 	if err != nil {
 		return fmt.Errorf("format %s as %s: %w", source, fsType, err)
+	}
+	err = m.checkReadable(source)
+	if err != nil {
+		return fmt.Errorf("detect existing filesystem on %s: %w", source, err)
 	}
 	existing, err := m.inner.GetDiskFormat(source)
 	if err != nil {

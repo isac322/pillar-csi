@@ -1,4 +1,4 @@
-> **Design reference — only NVMe-oF/TCP is implemented.** The iSCSI, NFS, and SMB paths in this RFC are future-protocol design notes. The served CRD schema contains only the `nvmeofTcp` protocol member (and the `zfs`/`lvm` backend members). Configuration follows the current interface in [`PRD.md`](./PRD.md) §2.3.
+> **Design reference — NVMe-oF/TCP and iSCSI are implemented.** The NFS and SMB paths in this RFC are future-protocol design notes. The served CRD schema contains the `nvmeofTcp` and `iscsi` protocol members (and the `zfs`/`lvm` backend members). Configuration follows the current interface in [`PRD.md`](./PRD.md) §2.3; the implemented iSCSI design (LIO configfs on the agent, pure-Go in-process initiator over `NETLINK_ISCSI` in pillar-node, no `iscsiadm`/`iscsid`) is in [`PRD-iscsi.md`](./PRD-iscsi.md).
 
 # pillar-csi Multi-Protocol Driver Foundation RFC
 
@@ -175,7 +175,7 @@ Identity source별 특성:
 |----------|----------|--------|------|
 | NVMe-oF TCP | Host NQN | `/etc/nvme/hostnqn` | 파일 기반, 노드 고정 |
 | NVMe-oF RDMA | Host NQN | 동일 | NVMe/TCP와 identity 공유 |
-| iSCSI | Initiator IQN | `/etc/iscsi/initiatorname.iscsi` | 파일 기반, 노드 고정 |
+| iSCSI | Initiator IQN | `/etc/iscsi/initiatorname.iscsi` (`InitiatorName=`; 없으면 pillar-node가 `iqn.2026-01.com.bhyoo.pillar-csi:node.<hex>`를 생성·저장) → CSINode annotation `pillar-csi.bhyoo.com/iscsi-initiator-iqn` | 파일 기반, 노드 고정 (구현됨) |
 | NFS | Client IP | `Node.status.addresses` | IP 변경 가능 — 아래 참고 |
 | SMB | Credentials | K8s Secret (`nodeStageSecretRef`) | annotation 불필요 |
 
@@ -313,7 +313,7 @@ type ProtocolHandler interface {
 
     // Rescan triggers a device rescan after online volume expansion.
     // For NVMe-oF: echo 1 > /sys/class/nvme-ns/<ns>/rescan_controller
-    // For iSCSI: iscsiadm -m session --rescan
+    // For iSCSI: rescan the session's SCSI devices through sysfs (implemented without iscsiadm)
     // For NFS/SMB: no-op (server-side resize is transparent).
     Rescan(ctx context.Context, state ProtocolState) error
 }
@@ -538,7 +538,7 @@ protocol별 Stage/Unstage 의미:
 | Protocol | NodeStage | NodeUnstage |
 |----------|-----------|-------------|
 | NVMe-oF TCP | transport connect + device resolve + format/mount | unmount + disconnect |
-| iSCSI | discovery + login + device resolve + format/mount | unmount + logout |
+| iSCSI | in-process login (portal 직접 지정, discovery 없음) + `NETLINK_ISCSI`로 커널 `iscsi_tcp`에 인계 + LUN 0 device resolve + format/mount (구현됨) | unmount + logout (구현됨) |
 | NFS | `mount -t nfs server:path staging_path` | `umount staging_path` |
 | SMB | `mount -t cifs //server/share staging_path -o credentials` | `umount staging_path` |
 
@@ -563,7 +563,7 @@ protocol별 expand 의미:
 
 | Protocol | ControllerExpandVolume | NodeExpandVolume |
 |----------|----------------------|-----------------|
-| NVMe-oF/iSCSI | agent.ExpandVolume + **NodeExpansionRequired: true** | handler.Rescan() + resize2fs / xfs_growfs |
+| NVMe-oF/iSCSI | agent.ExpandVolume + **NodeExpansionRequired: true** | handler.Rescan() (iSCSI: 세션의 SCSI 디바이스 rescan) + resize2fs / xfs_growfs (구현됨) |
 | NFS | agent.ExpandVolume + **NodeExpansionRequired: false** | **호출되지 않음** |
 | SMB | agent.ExpandVolume + **NodeExpansionRequired: false** | **호출되지 않음** |
 
@@ -643,6 +643,8 @@ allowedTopologies:
 topology 없이 multi-protocol 볼륨을 스케줄링하면, protocol handler가 없는 노드에
 배치되어 `NodeStageVolume`이 실패한다. 이는 예방 가능한 failure이므로
 topology reporting을 필수로 둔다.
+
+> **구현 상태:** 현재 구현된 topology key는 `pillar-csi.bhyoo.com/nvmeof`뿐이다. iSCSI는 topology key를 게시하지 않는다. pillar-node는 `iscsi_tcp`가 로드되어 있을 때만 iSCSI handler를 등록하고 initiator IQN annotation을 게시하며, 그렇지 않으면 iscsi 볼륨의 NodeStage가 명시적 에러로 실패한다.
 
 ### 5.9 CRD 정합성 (SMB)
 
@@ -892,9 +894,9 @@ identity 계약 교정과 publication은 **동시에** 이루어져야 한다.
 - CRD에 SMB `ProtocolType` 및 config 추가 (Section 5.9).
 - `make manifests` + `make generate` 실행.
 
-### Phase 4. iSCSI 구현 착수
+### Phase 4. iSCSI 구현 — 완료
 
-- 이 시점부터 [`docs/PRD-iscsi.md`](./PRD-iscsi.md)를 구현 대상으로 삼는다.
+- [`docs/PRD-iscsi.md`](./PRD-iscsi.md)의 설계대로 구현되었다 (agent: LIO configfs, node: pure-Go in-process initiator).
 
 ---
 
@@ -1025,7 +1027,7 @@ block + file protocol을 모두 수용하는 방향이다.
 | 우선순위 | Protocol | 유형 | Identity Model |
 |---------|----------|------|---------------|
 | P0 | NVMe-oF TCP | Block | Host NQN |
-| P1 | iSCSI | Block | Initiator IQN |
+| P1 | iSCSI | Block | Initiator IQN (구현됨) |
 | P2 | NFS v4 | File | Client IP |
 | P3 | SMB/CIFS | File | Username/Secret |
 | Future | NVMe/RDMA | Block | Host NQN (TCP와 공유) |
@@ -1051,10 +1053,10 @@ block + file protocol을 모두 수용하는 방향이다.
 
 이 RFC가 구현되면 다음 문서를 실행 대상으로 넘긴다.
 
-- [`docs/PRD-iscsi.md`](./PRD-iscsi.md)
+- [`docs/PRD-iscsi.md`](./PRD-iscsi.md) — 구현 완료
 
 순서:
 
 1. 이 RFC 구현
 2. RFC acceptance criteria 통과 (E2E 포함)
-3. iSCSI PRD 구현 시작
+3. iSCSI PRD 구현 (완료)

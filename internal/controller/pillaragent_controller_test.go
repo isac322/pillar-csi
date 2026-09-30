@@ -1421,6 +1421,7 @@ var _ = Describe("PillarAgent Controller", func() {
 						},
 						SupportedProtocols: []agentv1.ProtocolType{
 							agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
+							agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI,
 						},
 						DiscoveredPools: []*agentv1.PoolInfo{
 							{
@@ -1488,8 +1489,8 @@ var _ = Describe("PillarAgent Controller", func() {
 			fetched := &pillarcsiv1alpha1.PillarAgent{}
 			Expect(k8sClient.Get(bctx, capsNN, fetched)).To(Succeed())
 			Expect(fetched.Status.Capabilities).NotTo(BeNil())
-			Expect(fetched.Status.Capabilities.Protocols).To(ContainElement("nvmeof-tcp"),
-				"protocols should include 'nvmeof-tcp' when agent reports PROTOCOL_TYPE_NVMEOF_TCP")
+			Expect(fetched.Status.Capabilities.Protocols).To(ConsistOf("nvmeof-tcp", "iscsi"),
+				"protocols should carry the served protocol IDs of PROTOCOL_TYPE_NVMEOF_TCP and PROTOCOL_TYPE_ISCSI")
 		})
 
 		It("should populate status.discoveredPools from GetCapabilities response", func() {

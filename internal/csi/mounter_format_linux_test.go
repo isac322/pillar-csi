@@ -135,9 +135,70 @@ func newFormatTestMounter(t *testing.T, dev *fakeDeviceExec) (*KubeMounter, *mou
 	t.Helper()
 	fake := mount.NewFakeMounter(nil)
 	return &KubeMounter{
-		inner:      mount.SafeFormatAndMount{Interface: fake, Exec: dev.exec()},
-		xfsProfile: writeXFSProfile(t, xfsLTS515Profile),
+		inner:         mount.SafeFormatAndMount{Interface: fake, Exec: dev.exec()},
+		xfsProfile:    writeXFSProfile(t, xfsLTS515Profile),
+		checkReadable: func(string) error { return nil },
 	}, fake
+}
+
+// TestKubeMounter_FormatAndMount_UnreadableDeviceIsNeverFormatted covers a
+// device that is not ready yet, e.g. a SCSI disk the kernel is still
+// registering (open fails with ENXIO).  The blkid tool exits 2 for it
+// exactly as for a blank device, so trusting it would run mkfs over existing
+// data.
+// FormatAndMount must fail before probing, formatting or mounting.
+func TestKubeMounter_FormatAndMount_UnreadableDeviceIsNeverFormatted(t *testing.T) {
+	t.Parallel()
+	dev := &fakeDeviceExec{} // blkid would report "blank"
+	km, fake := newFormatTestMounter(t, dev)
+	km.checkReadable = func(string) error { return errors.New("device is not readable: no such device or address") }
+
+	err := km.FormatAndMount(t.Context(), fakeDevice, t.TempDir(), "ext4", nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "no such device or address") {
+		t.Fatalf("FormatAndMount of an unreadable device: error = %v, want the readability failure", err)
+	}
+	if len(dev.calls) != 0 {
+		t.Errorf("commands run on an unreadable device = %v, want none (no blkid, no mkfs)", dev.calls)
+	}
+	if log := fake.GetLog(); len(log) != 0 {
+		t.Errorf("mounter actions = %v, want none", log)
+	}
+}
+
+// TestCheckDeviceReadable verifies the readability probe: a missing device
+// and a zero-capacity device are refused, a readable one of any size (also
+// smaller than the probed region) is accepted.
+func TestCheckDeviceReadable(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	write := func(name string, size int) string {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, make([]byte, size), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	for _, tc := range []struct {
+		name    string
+		path    string
+		wantErr string
+	}{
+		{"missing", filepath.Join(dir, "absent"), "no such file"},
+		{"zero capacity", write("empty", 0), "zero capacity"},
+		{"small", write("small", 4096), ""},
+		{"large", write("large", 2*readProbeBytes), ""},
+	} {
+		err := checkDeviceReadable(tc.path)
+		if tc.wantErr == "" {
+			if err != nil {
+				t.Errorf("%s: checkDeviceReadable = %v, want nil", tc.name, err)
+			}
+			continue
+		}
+		if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+			t.Errorf("%s: checkDeviceReadable = %v, want error containing %q", tc.name, err, tc.wantErr)
+		}
+	}
 }
 
 // TestKubeMounter_FormatAndMount_BlankDeviceUsesMkfsOptions verifies that a

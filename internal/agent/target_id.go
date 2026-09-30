@@ -23,19 +23,30 @@ import (
 	"google.golang.org/grpc/status"
 
 	agentv1 "github.com/isac322/pillar-csi/gen/go/pillar_csi/agent/v1"
+	"github.com/isac322/pillar-csi/internal/agent/lio"
 	"github.com/isac322/pillar-csi/internal/nvmeofnqn"
 )
 
 // volumeTargetID derives a protocol-specific target identifier from a volume
-// ID.  Only NVMe-oF TCP is implemented:
+// ID ("<pool>/<name>"):
 //
-//	nqn.2026-01.com.bhyoo.pillar-csi:<pool>.<name>
+//	NVMe-oF TCP: nqn.2026-01.com.bhyoo.pillar-csi:<pool>.<name>
+//	iSCSI:       iqn.2026-01.com.bhyoo.pillar-csi:<pool>.<name>
 //
-// Every other protocol is rejected as unimplemented.
+// An IQN longer than LIO's limit (223 bytes) is InvalidArgument.  Every other
+// protocol is rejected as unimplemented.
 func volumeTargetID(protocol agentv1.ProtocolType, volumeID string) (string, error) {
 	switch protocol {
 	case agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP:
 		return nvmeofnqn.Prefix + strings.ReplaceAll(volumeID, "/", "."), nil
+	case agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI:
+		iqn := lio.OwnedIQNPrefix + strings.ReplaceAll(volumeID, "/", ".")
+		if len(iqn) > lio.MaxIQNLength {
+			return "", status.Errorf(codes.InvalidArgument,
+				"volumeTargetID: volume %q: target IQN %q is %d bytes, longer than the iSCSI limit of %d",
+				volumeID, iqn, len(iqn), lio.MaxIQNLength)
+		}
+		return iqn, nil
 	case agentv1.ProtocolType_PROTOCOL_TYPE_UNSPECIFIED:
 		return "", status.Errorf(codes.InvalidArgument, "volumeTargetID: protocol_type is required")
 	default:

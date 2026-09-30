@@ -96,6 +96,19 @@ func TestAllHealthy_EmptyPools(t *testing.T) {
 	}
 }
 
+// A storage node without the LIO modules still serves NVMe-oF TCP, so an
+// unusable iSCSI target must not make the agent unhealthy.
+func TestAllHealthy_ISCSIUnavailableIsNotUnhealthy(t *testing.T) {
+	t.Parallel()
+	hs := health.HealthStatus{
+		NvmetConfigfs:       health.OK("configfs mounted"),
+		ISCSITargetConfigfs: health.Degraded("target_core_mod not loaded"),
+	}
+	if !hs.AllHealthy() {
+		t.Error("AllHealthy() should ignore an unavailable iSCSI target")
+	}
+}
+
 // HealthStatus.ToProtoSubsystems tests.
 
 func TestToProtoSubsystems_AlwaysContainsCoreEntries(t *testing.T) {
@@ -106,9 +119,10 @@ func TestToProtoSubsystems_AlwaysContainsCoreEntries(t *testing.T) {
 
 	subs := hs.ToProtoSubsystems()
 
-	// Must always emit exactly one core entry (nvmet_configfs) plus pool entries.
-	if len(subs) != 1 {
-		t.Fatalf("len(subsystems) = %d, want 1", len(subs))
+	// Must always emit exactly the core entries (nvmet_configfs,
+	// iscsi_target_configfs) plus pool entries.
+	if len(subs) != 2 {
+		t.Fatalf("len(subsystems) = %d, want 2", len(subs))
 	}
 }
 
@@ -123,7 +137,7 @@ func TestToProtoSubsystems_NameConventions(t *testing.T) {
 
 	subs := hs.ToProtoSubsystems()
 
-	wantNames := []string{"nvmet_configfs", "pool/tank"}
+	wantNames := []string{"nvmet_configfs", "iscsi_target_configfs", "pool/tank"}
 	if len(subs) != len(wantNames) {
 		t.Fatalf("len(subsystems) = %d, want %d", len(subs), len(wantNames))
 	}
@@ -150,7 +164,7 @@ func TestToProtoSubsystems_HealthyFieldMirrored(t *testing.T) {
 		t.Error("nvmet_configfs subsystem should be healthy")
 	}
 	// pool/tank → unhealthy
-	if subs[1].GetHealthy() {
+	if subs[2].GetHealthy() {
 		t.Error("pool/tank subsystem should be unhealthy")
 	}
 }
@@ -184,13 +198,13 @@ func TestToProtoSubsystems_MultiplePoolsPreserveOrder(t *testing.T) {
 
 	subs := hs.ToProtoSubsystems()
 
-	// 1 core + 3 pool entries = 4 total
-	if len(subs) != 4 {
-		t.Fatalf("len(subsystems) = %d, want 4", len(subs))
+	// 2 core + 3 pool entries = 5 total
+	if len(subs) != 5 {
+		t.Fatalf("len(subsystems) = %d, want 5", len(subs))
 	}
 	wantPoolNames := []string{"pool/alpha", "pool/beta", "pool/gamma"}
 	for i, want := range wantPoolNames {
-		got := subs[i+1].GetName()
+		got := subs[i+2].GetName()
 		if got != want {
 			t.Errorf("subsystems[%d].Name = %q, want %q", i+1, got, want)
 		}

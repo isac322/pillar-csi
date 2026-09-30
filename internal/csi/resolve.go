@@ -468,25 +468,45 @@ func applyBackendOverride(backend *v1alpha1.BackendSpec, ov *v1alpha1.BackendOve
 	return nil
 }
 
+// int32Override pairs an effective tunable with its override value; a nil
+// src leaves dst unchanged.
+type int32Override struct {
+	dst **int32
+	src *int32
+}
+
 // applyProtocolOverride applies an override document onto the effective
 // protocol.  The override member must match the protocol member.
 func applyProtocolOverride(protocol *v1alpha1.ProtocolSpec, ov *v1alpha1.ProtocolOverrides, source string) error {
-	if ov == nil || ov.NVMeOFTCP == nil {
+	if ov == nil {
 		return nil
 	}
-	if protocol.NVMeOFTCP == nil {
-		return fmt.Errorf("%s: nvmeofTcp overrides do not apply to a %s protocol", source, protocol.Kind())
+	var fields []int32Override
+	switch {
+	case ov.NVMeOFTCP != nil:
+		if protocol.NVMeOFTCP == nil {
+			return fmt.Errorf("%s: nvmeofTcp overrides do not apply to a %s protocol", source, protocol.Kind())
+		}
+		dst, src := protocol.NVMeOFTCP, ov.NVMeOFTCP
+		fields = []int32Override{
+			{&dst.MaxQueueSize, src.MaxQueueSize},
+			{&dst.InCapsuleDataSize, src.InCapsuleDataSize},
+			{&dst.CtrlLossTmo, src.CtrlLossTmo},
+			{&dst.ReconnectDelay, src.ReconnectDelay},
+		}
+	case ov.ISCSI != nil:
+		if protocol.ISCSI == nil {
+			return fmt.Errorf("%s: iscsi overrides do not apply to a %s protocol", source, protocol.Kind())
+		}
+		dst, src := protocol.ISCSI, ov.ISCSI
+		fields = []int32Override{
+			{&dst.LoginTimeout, src.LoginTimeout},
+			{&dst.ReplacementTimeout, src.ReplacementTimeout},
+			{&dst.NoopOutInterval, src.NoopOutInterval},
+			{&dst.NoopOutTimeout, src.NoopOutTimeout},
+		}
 	}
-	dst, src := protocol.NVMeOFTCP, ov.NVMeOFTCP
-	for _, f := range []struct {
-		dst **int32
-		src *int32
-	}{
-		{&dst.MaxQueueSize, src.MaxQueueSize},
-		{&dst.InCapsuleDataSize, src.InCapsuleDataSize},
-		{&dst.CtrlLossTmo, src.CtrlLossTmo},
-		{&dst.ReconnectDelay, src.ReconnectDelay},
-	} {
+	for _, f := range fields {
 		if f.src != nil {
 			v := *f.src
 			*f.dst = &v
@@ -562,24 +582,39 @@ func copyList(p *[]string) *[]string {
 
 // nodeVolumeContext returns the VolumeContext entries derived from the
 // resolved configuration that the node needs at stage time: NVMe-oF connect
-// tuning and the filesystem settings.
+// or iSCSI session tuning and the filesystem settings.
 func nodeVolumeContext(resolved *v1alpha1.ResolvedVolumeConfig, volCtx map[string]string) {
 	if resolved == nil {
 		return
 	}
-	if n := resolved.Protocol.NVMeOFTCP; n != nil {
-		for _, f := range []struct {
-			key string
-			v   *int32
-		}{
+	var tuning []int32ContextEntry
+	switch {
+	case resolved.Protocol.NVMeOFTCP != nil:
+		n := resolved.Protocol.NVMeOFTCP
+		tuning = []int32ContextEntry{
 			{paramNVMeOFCtrlLossTmo, n.CtrlLossTmo},
 			{paramNVMeOFReconnectDelay, n.ReconnectDelay},
 			{paramNVMeOFMaxQueueSize, n.MaxQueueSize},
-		} {
-			if f.v != nil {
-				volCtx[f.key] = strconv.FormatInt(int64(*f.v), 10)
-			}
+		}
+	case resolved.Protocol.ISCSI != nil:
+		i := resolved.Protocol.ISCSI
+		tuning = []int32ContextEntry{
+			{VolumeContextKeyISCSILoginTimeout, i.LoginTimeout},
+			{VolumeContextKeyISCSIReplacementTimeout, i.ReplacementTimeout},
+			{VolumeContextKeyISCSINoopOutInterval, i.NoopOutInterval},
+			{VolumeContextKeyISCSINoopOutTimeout, i.NoopOutTimeout},
+		}
+	}
+	for _, f := range tuning {
+		if f.v != nil {
+			volCtx[f.key] = strconv.FormatInt(int64(*f.v), 10)
 		}
 	}
 	filesystemVolumeContext(resolved.Filesystem, volCtx)
+}
+
+// int32ContextEntry is a VolumeContext key and its optional resolved value.
+type int32ContextEntry struct {
+	key string
+	v   *int32
 }

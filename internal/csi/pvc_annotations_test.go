@@ -224,6 +224,8 @@ func TestDecodePVCAnnotations_ProtocolStructuralFieldsRejected(t *testing.T) {
 	for doc, path := range map[string]string{
 		"nvmeofTcp:\n  acl: false\n": "nvmeofTcp.acl",
 		"nvmeofTcp:\n  port: 4421\n": "nvmeofTcp.port",
+		"iscsi:\n  acl: true\n":      "iscsi.acl",
+		"iscsi:\n  port: 3261\n":     "iscsi.port",
 	} {
 		requireDecodeError(t, map[string]string{v1alpha1.AnnotationProtocolDoc: doc},
 			v1alpha1.AnnotationProtocolDoc+": "+path+" is structural and cannot be set per volume")
@@ -236,8 +238,10 @@ func TestDecodePVCAnnotations_ProtocolInvalidDocuments(t *testing.T) {
 		doc       string
 		fragments []string
 	}{
-		"iscsi member":           {"iscsi:\n  loginTimeout: 30\n", []string{`unknown field "iscsi"`}},
 		"nfs member":             {"nfs:\n  version: \"4.2\"\n", []string{`unknown field "nfs"`}},
+		"smb member":             {"smb:\n  share: data\n", []string{`unknown field "smb"`}},
+		"iscsi unknown field":    {"iscsi:\n  headerDigest: CRC32C\n", []string{"unknown field iscsi.headerDigest"}},
+		"iscsi login timeout 0":  {"iscsi:\n  loginTimeout: 0\n", []string{"iscsi.loginTimeout"}},
 		"member scalar":          {"nvmeofTcp: just-a-string", []string{"nvmeofTcp"}},
 		"unknown field":          {"nvmeofTcp:\n  keepAliveTmo: 5\n", []string{"unknown field nvmeofTcp.keepAliveTmo"}},
 		"queue too small":        {"nvmeofTcp:\n  maxQueueSize: 8\n", []string{"nvmeofTcp.maxQueueSize"}},

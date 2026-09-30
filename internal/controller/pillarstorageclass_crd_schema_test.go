@@ -246,4 +246,26 @@ var _ = Describe("PillarStorageClass CRD Schema Validation", func() {
 		Expect(err).To(HaveOccurred(), "structural fields are not part of the override schema")
 		Expect(err.Error()).To(ContainSubstring(".spec.overrides.backend.zfs.pool: field not declared in schema"))
 	})
+
+	// ── E25.2.10 — TestPillarStorageClassCRD_InvalidCreate_TwoProtocolOverrides
+	It("Should reject spec.overrides.protocol with both nvmeofTcp and iscsi", func() {
+		err := applyBinding("crd-test-two-protocol-overrides", `{"storeRef": "p", "protocolRef": "q",
+			"overrides": {"protocol": {"nvmeofTcp": {"ctrlLossTmo": 30}, "iscsi": {"loginTimeout": 30}}}}`)
+		expectUnprocessable(err, "exactly one protocol member must be set (supported: nvmeofTcp, iscsi)")
+	})
+
+	// ── E25.2.11 — TestPillarStorageClassCRD_InvalidCreate_ISCSIStructuralOverride
+	It("Should reject a structural field in an iscsi protocol override (iscsi.acl)", func() {
+		err := applyBinding("crd-test-iscsi-structural-override",
+			`{"storeRef": "p", "protocolRef": "q", "overrides": {"protocol": {"iscsi": {"acl": true}}}}`)
+		Expect(err).To(HaveOccurred(), "structural fields are not part of the override schema")
+		Expect(err.Error()).To(ContainSubstring(".spec.overrides.protocol.iscsi.acl: field not declared in schema"))
+	})
+
+	// ── E25.2.12 — TestPillarStorageClassCRD_ValidCreate_ISCSIOverride ─────────
+	It("Should accept an iscsi protocol override", func() {
+		Expect(applyBinding("crd-test-iscsi-override",
+			`{"storeRef": "p", "protocolRef": "q", "overrides": {"protocol": {"iscsi": {"loginTimeout": 30}}}}`)).
+			To(Succeed())
+	})
 })

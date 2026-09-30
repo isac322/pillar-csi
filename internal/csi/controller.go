@@ -435,6 +435,12 @@ const (
 	// host NQN for this node (read from /etc/nvme/hostnqn).
 	// Example value: "nqn.2014-08.org.nvmexpress:uuid:xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx".
 	AnnotationNVMeOFHostNQN = "pillar-csi.bhyoo.com/nvmeof-host-nqn"
+
+	// AnnotationISCSIInitiatorIQN is the CSINode annotation that stores the
+	// iSCSI initiator IQN for this node (read from, or generated into,
+	// /etc/iscsi/initiatorname.iscsi).
+	// Example value: "iqn.2026-01.com.bhyoo.pillar-csi:node.0123456789abcdef0123456789abcdef".
+	AnnotationISCSIInitiatorIQN = "pillar-csi.bhyoo.com/iscsi-initiator-iqn"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -447,7 +453,7 @@ const (
 //  1. Call agent.CreateVolume — creates the backend storage resource
 //     (ZFS zvol, LVM LV, …).
 //  2. Call agent.ExportVolume — publishes the volume over the configured
-//     network protocol (NVMe-oF TCP).
+//     network protocol (NVMe-oF TCP or iSCSI).
 //
 // The returned VolumeId encodes routing metadata in the form:
 //
@@ -714,7 +720,7 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 	}
 
 	// ── Step 2: Export the volume over the network protocol ───────────────────
-	// The NVMe-oF bind address is the storage node's IP (no port).
+	// The export bind address is the storage node's IP (no port).
 	// agent.ExportVolume is idempotent: if the export already exists (retry
 	// scenario), it returns the existing ExportInfo without error.
 	exportToken, err := s.claimOperation(ctx, pvName, volumeID, pvs.UID)
@@ -1133,6 +1139,8 @@ func mapProtocolType(s string) agentv1.ProtocolType {
 	switch v1alpha1.ProtocolID(s) {
 	case v1alpha1.ProtocolIDNVMeOFTCP:
 		return agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP
+	case v1alpha1.ProtocolIDISCSI:
+		return agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI
 	default:
 		return agentv1.ProtocolType_PROTOCOL_TYPE_UNSPECIFIED
 	}
@@ -1144,6 +1152,7 @@ func mapProtocolType(s string) agentv1.ProtocolType {
 // Identity resolution by protocol:
 //
 //	NVMe-oF TCP → CSINode.annotations["pillar-csi.bhyoo.com/nvmeof-host-nqn"]
+//	iSCSI       → CSINode.annotations["pillar-csi.bhyoo.com/iscsi-initiator-iqn"]
 //	other       → nodeID unchanged (the agent rejects an unsupported protocol)
 //
 // Returns FailedPrecondition if the CSINode does not exist or the required
@@ -1151,10 +1160,15 @@ func mapProtocolType(s string) agentv1.ProtocolType {
 // exponential backoff, giving the node plugin time to publish its identity
 // after a fresh node bootstrap.
 func (s *ControllerServer) resolveInitiatorID(ctx context.Context, nodeID, protocolTypeStr string) (string, error) {
-	if v1alpha1.ProtocolID(protocolTypeStr) != v1alpha1.ProtocolIDNVMeOFTCP {
+	var annotationKey string
+	switch v1alpha1.ProtocolID(protocolTypeStr) {
+	case v1alpha1.ProtocolIDNVMeOFTCP:
+		annotationKey = AnnotationNVMeOFHostNQN
+	case v1alpha1.ProtocolIDISCSI:
+		annotationKey = AnnotationISCSIInitiatorIQN
+	default:
 		return nodeID, nil
 	}
-	annotationKey := AnnotationNVMeOFHostNQN
 
 	csiNode := &storagev1.CSINode{}
 	err := s.k8sClient.Get(ctx, types.NamespacedName{Name: nodeID}, csiNode)
@@ -1229,31 +1243,51 @@ func backendParamsFromResolved(b v1alpha1.BackendSpec) *agentv1.BackendParams {
 // not set one (the CRD default).
 const defaultNVMeOFPort = 4420
 
+// defaultISCSIPort is the iSCSI target portal port when the protocol does not
+// set one (the CRD default).
+const defaultISCSIPort = 3260
+
 // exportParamsFromResolved constructs the agent ExportVolume parameters and
 // the ACL flag from the resolved protocol configuration.  The bind address is
 // the storage node's IP (PillarAgent.status.resolvedAddress without its port).
 func exportParamsFromResolved(p v1alpha1.ProtocolSpec, bindAddress string) (*agentv1.ExportParams, bool) {
-	n := p.NVMeOFTCP
-	if n == nil {
+	switch {
+	case p.NVMeOFTCP != nil:
+		n := p.NVMeOFTCP
+		port := n.Port
+		if port == 0 {
+			port = defaultNVMeOFPort
+		}
+		var inCapsuleDataSize int32
+		if n.InCapsuleDataSize != nil {
+			inCapsuleDataSize = *n.InCapsuleDataSize
+		}
+		return &agentv1.ExportParams{
+			Params: &agentv1.ExportParams_NvmeofTcp{
+				NvmeofTcp: &agentv1.NvmeofTcpExportParams{
+					BindAddress:       bindAddress,
+					Port:              port,
+					InCapsuleDataSize: inCapsuleDataSize,
+				},
+			},
+		}, n.ACL
+	case p.ISCSI != nil:
+		i := p.ISCSI
+		port := i.Port
+		if port == 0 {
+			port = defaultISCSIPort
+		}
+		return &agentv1.ExportParams{
+			Params: &agentv1.ExportParams_Iscsi{
+				Iscsi: &agentv1.IscsiExportParams{
+					BindAddress: bindAddress,
+					Port:        port,
+				},
+			},
+		}, i.ACL
+	default:
 		return nil, false
 	}
-	port := n.Port
-	if port == 0 {
-		port = defaultNVMeOFPort
-	}
-	var inCapsuleDataSize int32
-	if n.InCapsuleDataSize != nil {
-		inCapsuleDataSize = *n.InCapsuleDataSize
-	}
-	return &agentv1.ExportParams{
-		Params: &agentv1.ExportParams_NvmeofTcp{
-			NvmeofTcp: &agentv1.NvmeofTcpExportParams{
-				BindAddress:       bindAddress,
-				Port:              port,
-				InCapsuleDataSize: inCapsuleDataSize,
-			},
-		},
-	}, n.ACL
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1398,6 +1432,7 @@ func (s *ControllerServer) resolvePublishInitiator(
 // startup:
 //
 //	NVMe-oF TCP → CSINode["pillar-csi.bhyoo.com/nvmeof-host-nqn"] (host NQN)
+//	iSCSI       → CSINode["pillar-csi.bhyoo.com/iscsi-initiator-iqn"] (initiator IQN)
 //
 // If the required CSINode annotation is absent, FailedPrecondition is returned
 // and the CO (external-attacher) retries with exponential backoff, giving the
@@ -1719,6 +1754,9 @@ func exportACLEnabled(pvs *v1alpha1.PillarVolumeState) bool {
 	}
 	if r := pvs.Spec.Resolved; r != nil && r.Protocol.NVMeOFTCP != nil {
 		return r.Protocol.NVMeOFTCP.ACL
+	}
+	if r := pvs.Spec.Resolved; r != nil && r.Protocol.ISCSI != nil {
+		return r.Protocol.ISCSI.ACL
 	}
 	return true
 }

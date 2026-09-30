@@ -35,7 +35,9 @@ import (
 // handler in one call, so the handler can prepare all of them before making
 // any reachable (see nvmeof's port ordering contract).  A request without
 // Complete is rejected while the export restore is pending; a Complete
-// request ends it.
+// request ends it.  Only the listed volumes' exports are modified: an export
+// the request does not list is left as is, for every protocol, and is removed
+// only by a fenced UnexportVolume or DeleteVolume.
 func (s *Server) ReconcileState(
 	ctx context.Context,
 	req *agentv1.ReconcileStateRequest,
@@ -48,6 +50,27 @@ func (s *Server) ReconcileState(
 	}
 
 	vols := req.GetVolumes()
+	failures := s.reconcileVolumes(ctx, vols)
+
+	if req.GetComplete() {
+		s.exportRestorePending.Store(false)
+	}
+
+	results := make([]*agentv1.ReconcileItemResult, 0, len(vols))
+	for i, vol := range vols {
+		results = append(results, reconcileResult(vol.GetVolumeId(), failures[i]))
+	}
+	setReconcileSpanAttributes(ctx, req.GetComplete(), failures)
+	return &agentv1.ReconcileStateResponse{
+		Results:      results,
+		ReconciledAt: timestamppb.Now(),
+	}, nil
+}
+
+// reconcileVolumes hands every export of vols to its protocol handler, one
+// Reconcile call per protocol in first-seen order, and returns the first
+// failure of each volume (nil when all its exports were applied).
+func (s *Server) reconcileVolumes(ctx context.Context, vols []*agentv1.VolumeDesiredState) []error {
 	failures := make([]error, len(vols))
 	desiredByProtocol := make(map[agentv1.ProtocolType][]ExportDesiredState)
 	// volumeByProtocol[p][j] is the index in vols of desiredByProtocol[p][j].
@@ -82,20 +105,7 @@ func (s *Server) ReconcileState(
 			}
 		}
 	}
-
-	if req.GetComplete() {
-		s.exportRestorePending.Store(false)
-	}
-
-	results := make([]*agentv1.ReconcileItemResult, 0, len(vols))
-	for i, vol := range vols {
-		results = append(results, reconcileResult(vol.GetVolumeId(), failures[i]))
-	}
-	setReconcileSpanAttributes(ctx, req.GetComplete(), failures)
-	return &agentv1.ReconcileStateResponse{
-		Results:      results,
-		ReconciledAt: timestamppb.Now(),
-	}, nil
+	return failures
 }
 
 // resolveVolumeHandlers resolves the handler of every protocol vol exports,

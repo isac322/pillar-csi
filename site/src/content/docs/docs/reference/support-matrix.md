@@ -1,26 +1,44 @@
 ---
 title: Support matrix
-description: "What pillar-csi v0.3.4 supports: CSI capabilities, access and volume modes, filesystems, ZFS and LVM backends, NVMe-oF/TCP, and features not supported yet."
+description: "What pillar-csi supports: CSI capabilities, access and volume modes, filesystems, ZFS and LVM backends, NVMe-oF/TCP and iSCSI, and features not supported yet."
 sidebar:
   order: 2
 ---
 
-This page describes pillar-csi v0.3.4. The CSI driver name is `pillar-csi.bhyoo.com`.
+This page describes the current pillar-csi release. The CSI driver name is `pillar-csi.bhyoo.com`.
 
 ## Backends and protocols
 
-One driver serves every backend and protocol, and each combination uses the same resources: a `PillarStore` and a `PillarProtocol` joined by a `PillarStorageClass`. v0.3.4 ships ZFS and LVM over NVMe-oF/TCP. Cells marked Planned are not in this release.
+One driver serves every backend and protocol, and each combination uses the same resources: a `PillarStore` and a `PillarProtocol` joined by a `PillarStorageClass`. pillar-csi ships ZFS and LVM over NVMe-oF/TCP and over iSCSI. Cells marked Planned are not in this release.
 
 | Backend | Volume type | NVMe-oF/TCP | iSCSI | NFS | SMB |
 | --- | --- | --- | --- | --- | --- |
-| ZFS | zvol (block) | Shipped | Planned | Not applicable | Not applicable |
+| ZFS | zvol (block) | Shipped | Shipped | Not applicable | Not applicable |
 | ZFS | Dataset (file) | Not applicable | Not applicable | Planned | Planned |
-| LVM | Linear logical volume (block) | Shipped | Planned | Not applicable | Not applicable |
-| LVM | Thin logical volume (block) | Shipped | Planned | Not applicable | Not applicable |
+| LVM | Linear logical volume (block) | Shipped | Shipped | Not applicable | Not applicable |
+| LVM | Thin logical volume (block) | Shipped | Shipped | Not applicable | Not applicable |
 
-A protocol exports either block devices (NVMe-oF, and iSCSI once added) or file systems (NFS and SMB once added). A block volume therefore pairs only with a block protocol, and the planned ZFS dataset only with a file protocol.
+A protocol exports either block devices (NVMe-oF and iSCSI) or file systems (NFS and SMB once added). A block volume therefore pairs only with a block protocol, and the planned ZFS dataset only with a file protocol.
 
-In v0.3.4 the API accepts only `zfs` and `lvm` in `PillarStore.spec.backend` and only `nvmeofTcp` in `PillarProtocol.spec.protocol`. For ZFS, `volumeType` accepts only `zvol`.
+The API accepts only `zfs` and `lvm` in `PillarStore.spec.backend` and only `nvmeofTcp` or `iscsi` in `PillarProtocol.spec.protocol`. For ZFS, `volumeType` accepts only `zvol`.
+
+### Protocol features
+
+| Feature | NVMe-oF/TCP | iSCSI |
+| --- | --- | --- |
+| Storage-node target | Kernel `nvmet`, written through configfs | Kernel LIO target, written through configfs |
+| Node initiator | Kernel `nvme_tcp`, connected through `/dev/nvme-fabrics` | In-process initiator in pillar-node that hands the session to kernel `iscsi_tcp` |
+| Storage-node kernel modules | `nvmet`, `nvmet_tcp` | `target_core_mod`, `target_core_iblock`, `iscsi_target_mod` |
+| Worker kernel modules | `nvme_fabrics`, `nvme_tcp` | `iscsi_tcp` |
+| Default port | 4420 | 3260 |
+| Initiator identity | Host NQN, on CSINode annotation `pillar-csi.bhyoo.com/nvmeof-host-nqn` | Initiator IQN, on CSINode annotation `pillar-csi.bhyoo.com/iscsi-initiator-iqn` |
+| Access control (`acl: true`) | Per host NQN | Per initiator IQN |
+| Online expansion | Yes | Yes, the node rescans the SCSI device |
+| Local attach | Yes | Yes |
+| In-band authentication | Not supported yet (DH-HMAC-CHAP) | Not supported (CHAP) |
+| Addresses per export | One | One portal per target. Multipath and multi-portal are not supported. |
+
+Neither protocol needs a package on the host. The node image has no `nvme-cli`, `iscsiadm` or `iscsid`.
 
 pillar-csi does not replicate data. Each volume lives on one storage node, and it is unavailable while that node is down.
 
@@ -40,7 +58,7 @@ The controller records which nodes a volume is published to. It refuses to publi
 | Volume mode | Supported | Notes |
 | --- | --- | --- |
 | `Filesystem` | Yes | `ext4` (default) or `xfs`. The node formats a volume only when it carries no filesystem. |
-| `Block` | Yes | The raw NVMe namespace is bound into the Pod. |
+| `Block` | Yes | The raw NVMe namespace or SCSI disk is bound into the Pod. |
 
 Filesystem settings (`fsType`, `mkfsOptions`, `mountOptions`) come from `PillarStorageClass.spec.filesystem` or the `pillar-csi.bhyoo.com/filesystem` PVC annotation.
 
@@ -94,7 +112,10 @@ Volume expansion runs online: the agent grows the zvol or logical volume, and th
 | --- | --- | --- |
 | mTLS between controller and agent | Yes, with cert-manager or your own Secrets | Off |
 | NVMe-oF host access control by host NQN | Yes, `PillarProtocol.spec.protocol.nvmeofTcp.acl` | Off (`acl: false` allows any host) |
+| iSCSI initiator access control by initiator IQN | Yes, `PillarProtocol.spec.protocol.iscsi.acl` | Off (`acl: false` allows any initiator) |
 | NVMe-oF in-band authentication (DH-HMAC-CHAP) | Not supported yet | Not applicable |
+| iSCSI CHAP authentication | Not supported | Not applicable |
 | NVMe-oF/TCP transport encryption (TLS) | Not supported yet | Not applicable |
+| iSCSI transport encryption | Not supported. iSCSI data is not encrypted. | Not applicable |
 
 See [Configure mTLS](/docs/how-to/configure-mtls/) and [Prerequisites](/docs/reference/prerequisites/).

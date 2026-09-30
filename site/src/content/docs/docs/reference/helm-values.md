@@ -93,9 +93,19 @@ Init container image tag.
 
 ### <code>agent.<wbr>initModprobe.<wbr>modules</code>
 
-Type: `list`. Default: `["nvmet","nvmet_tcp"]`
+Type: `list`. Default:
 
-Kernel modules to load. Failures are silently ignored (best-effort). nvmet must be listed before nvmet_tcp (it is a dependency).
+```json
+[
+  "nvmet",
+  "nvmet_tcp",
+  "target_core_mod",
+  "target_core_iblock",
+  "iscsi_target_mod"
+]
+```
+
+Kernel modules to load. Failures are silently ignored (best-effort). nvmet must be listed before nvmet_tcp (it is a dependency). target_core_mod, target_core_iblock and iscsi_target_mod provide the LIO iSCSI target (target_core_mod before the other two).
 
 ### <code>agent.<wbr>initModprobe.<wbr>resources</code>
 
@@ -721,9 +731,18 @@ Init container image tag.
 
 ### <code>node.<wbr>initModprobe.<wbr>modules</code>
 
-Type: `list`. Default: `["nvme_fabrics","nvme_tcp","dm_mod"]`
+Type: `list`. Default:
 
-Kernel modules to load. Failures are silently ignored (best-effort). nvme_fabrics must be listed before nvme_tcp (it is a dependency). dm_mod provides the device-mapper target that holds the backend device of a local attach on the storage node.
+```json
+[
+  "nvme_fabrics",
+  "nvme_tcp",
+  "dm_mod",
+  "iscsi_tcp"
+]
+```
+
+Kernel modules to load. Failures are silently ignored (best-effort). nvme_fabrics must be listed before nvme_tcp (it is a dependency). dm_mod provides the device-mapper target that holds the backend device of a local attach on the storage node. iscsi_tcp is the iSCSI initiator transport (pulls libiscsi, libiscsi_tcp and scsi_transport_iscsi).
 
 ### <code>node.<wbr>initModprobe.<wbr>resources</code>
 
@@ -743,6 +762,12 @@ Type: `object`. Default:
 ```
 
 Resource requests/limits for the modprobe init container.
+
+### <code>node.<wbr>iscsi.<wbr>netlinkNetnsPath</code>
+
+Type: `string`. Default: `""`
+
+Path on the node host of the host init network namespace file used for the NETLINK_ISCSI socket. NETLINK_ISCSI only exists in the host init network namespace; production nodes with hostNetwork: true need nothing (leave empty). Set this only for nested-container nodes (e.g. Kind) to a host init netns file visible on the node, e.g. /host/proc/1/ns/net when host /proc is mounted at /host/proc. When set, pillar-node receives `--iscsi-netlink-netns`=&lt;path> and the containing directory is mounted read-only at the same path.
 
 ### <code>node.<wbr>kubeletPluginRegistrationDir</code>
 

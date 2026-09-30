@@ -1,13 +1,13 @@
 ---
 title: Prepare an LVM storage node
-description: "Set up a Linux host as a pillar-csi LVM storage node: load the NVMe-oF target modules at boot, create a volume group and thin pool, and register the node."
+description: "Set up a Linux host as a pillar-csi LVM storage node: load the NVMe-oF or iSCSI target modules at boot, create a volume group and thin pool, and register the node."
 sidebar:
   order: 3
 ---
 
-An LVM storage node is a Kubernetes node with a volume group that pillar-csi carves into logical volumes and exports over NVMe-oF/TCP. This guide covers the one-time operating system setup such a node needs, then registers it with the controller. Run the host commands as root on the storage node.
+An LVM storage node is a Kubernetes node with a volume group that pillar-csi carves into logical volumes and exports over NVMe-oF/TCP or iSCSI. This guide covers the one-time operating system setup such a node needs, then registers it with the controller. Run the host commands as root on the storage node.
 
-pillar-csi installs nothing on the host and does not create volume groups or thin pools. Every step before [Configure the agent](#configure-the-agent) is ordinary LVM and kernel setup. If the node already has a volume group and loads the `nvmet` and `nvmet_tcp` modules at boot, skip to that section.
+pillar-csi installs nothing on the host and does not create volume groups or thin pools. Every step before [Configure the agent](#configure-the-agent) is ordinary LVM and kernel setup. If the node already has a volume group and loads the target modules for your protocol at boot (`nvmet` and `nvmet_tcp` for NVMe-oF/TCP; `target_core_mod`, `target_core_iblock` and `iscsi_target_mod` for iSCSI), skip to that section.
 
 ## Install LVM
 
@@ -54,6 +54,26 @@ sudo modprobe -a nvme_fabrics nvme_tcp
 printf 'nvme_fabrics\nnvme_tcp\n' \
   | sudo tee /etc/modules-load.d/nvme-initiator.conf
 ```
+
+### For iSCSI
+
+To export volumes over iSCSI, load the LIO target modules and keep them at boot:
+
+```sh
+sudo modprobe -a target_core_mod target_core_iblock iscsi_target_mod
+ls /sys/kernel/config/target
+printf 'target_core_mod\ntarget_core_iblock\niscsi_target_mod\n' \
+  | sudo tee /etc/modules-load.d/iscsi-target.conf
+```
+
+The agent Pod runs `modprobe` for these too. If Pods that use pillar-csi iSCSI volumes may also run on this node, load the initiator module:
+
+```sh
+sudo modprobe iscsi_tcp
+printf 'iscsi_tcp\n' | sudo tee /etc/modules-load.d/iscsi-initiator.conf
+```
+
+You do not need `targetcli`, `open-iscsi` or `iscsid`. See [Configure iSCSI](/docs/how-to/configure-iscsi/).
 
 ## Create the volume group
 

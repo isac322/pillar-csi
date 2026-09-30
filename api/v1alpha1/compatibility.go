@@ -53,7 +53,7 @@ const (
 // ProtocolCategoryOf returns the compatibility category for a protocol kind.
 func ProtocolCategoryOf(p ProtocolID) ProtocolCategory {
 	switch p {
-	case ProtocolIDNVMeOFTCP:
+	case ProtocolIDNVMeOFTCP, ProtocolIDISCSI:
 		return ProtocolCategoryBlock
 	default:
 		return ProtocolCategoryUnknown

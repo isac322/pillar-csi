@@ -1,11 +1,15 @@
 {{- /*
-Node DaemonSet — CSI Node service + NVMe-oF/TCP initiator.
+Node DaemonSet — CSI Node service + NVMe-oF/TCP and iSCSI initiators.
 Runs on every worker node. Uses privileged security context for mount operations.
 hostNetwork: true is required for the NVMe-oF data plane: the kernel
 issues `nvme connect` TCP SYNs in the netns of the process that writes
 `/dev/nvme-fabrics`.  With hostNetwork: false the initiator lives in the pod
 netns, which cannot reach the host-network nvmet listener exposed by the
 agent.  See PRD §2.4.
+The in-process iSCSI initiator hands logged-in connections to the kernel
+iscsi_tcp driver over NETLINK_ISCSI, which exists only in the host init
+network namespace; hostNetwork: true provides it.  Nested-container nodes
+(e.g. Kind) set node.iscsi.netlinkNetnsPath instead.
 Init container loads initiator kernel modules best-effort (pod start is NOT blocked on failure).
 */ -}}
 apiVersion: apps/v1
@@ -57,7 +61,7 @@ spec:
       dnsPolicy: ClusterFirstWithHostNet
       {{- end }}
       # ── Init containers ──────────────────────────────────────────────────────
-      # Loads NVMe-oF initiator kernel modules.
+      # Loads NVMe-oF and iSCSI initiator kernel modules.
       # Each modprobe is run with "|| true" so the init container always exits 0.
       # The pod does NOT fail to start if a module cannot be loaded.
       initContainers:
@@ -103,6 +107,9 @@ spec:
             - --csi-socket={{ .Values.node.csiSocketPath }}
             {{- if .Values.metrics.enabled }}
             - --metrics-bind-address={{ include "pillar-csi.metricsBindAddress" (dict "hostNetwork" .Values.node.hostNetwork "port" .Values.metrics.node.port) }}
+            {{- end }}
+            {{- with .Values.node.iscsi.netlinkNetnsPath }}
+            - {{ printf "--iscsi-netlink-netns=%s" . | quote }}
             {{- end }}
             {{- range .Values.node.extraArgs }}
             - {{ . | quote }}
@@ -203,6 +210,21 @@ spec:
             # issues `nvme connect`.
             - name: etc-nvme
               mountPath: /etc/nvme
+            # /etc/iscsi — read/write hostPath holding the persistent iSCSI
+            # initiator IQN in /etc/iscsi/initiatorname.iscsi.  pillar-node
+            # reads InitiatorName= from that file and, when it is absent,
+            # generates an IQN and persists it there.  Persistence on the host
+            # is required so the IQN published to the CSINode annotation (and
+            # used in target ACLs) stays stable across node pod restarts.
+            - name: etc-iscsi
+              mountPath: /etc/iscsi
+            {{- with .Values.node.iscsi.netlinkNetnsPath }}
+            # Host init network namespace file used for the NETLINK_ISCSI
+            # socket (node.iscsi.netlinkNetnsPath); read-only.
+            - name: iscsi-netlink-netns
+              mountPath: {{ dir . | quote }}
+              readOnly: true
+            {{- end }}
             # Node stage state dir — per-volume JSON files that NodeStageVolume
             # writes and NodeUnstageVolume reads to find the mount target and
             # the transport session to detach.  Must survive node pod restarts
@@ -313,6 +335,22 @@ spec:
           hostPath:
             path: /etc/nvme
             type: DirectoryOrCreate
+        # etc-iscsi: persistent storage for /etc/iscsi/initiatorname.iscsi.
+        # DirectoryOrCreate so hosts without open-iscsi still receive a usable
+        # directory; the node plugin generates and persists the file on first
+        # start.  See the /etc/iscsi volumeMount above for the full rationale.
+        - name: etc-iscsi
+          hostPath:
+            path: /etc/iscsi
+            type: DirectoryOrCreate
+        {{- with .Values.node.iscsi.netlinkNetnsPath }}
+        # iscsi-netlink-netns: host directory containing the init netns file
+        # named by node.iscsi.netlinkNetnsPath.
+        - name: iscsi-netlink-netns
+          hostPath:
+            path: {{ dir . | quote }}
+            type: Directory
+        {{- end }}
         # Durable node stage state; see the node container's volumeMount.
         - name: node-state
           hostPath:

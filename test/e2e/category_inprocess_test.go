@@ -243,7 +243,7 @@ var inProcessAssertions = map[string]func(documentedCase){
 	"TestCSIInvalidCR_EmptyTargetAddress":  assertE21_EmptyTargetAddress,
 	"TestCSIInvalidCR_TargetAddressFormat": assertE21_TargetAddressFormat,
 	// ── E22: Incompatible / unsupported backend-protocol selections ──────────
-	"TestCSIProtocol_CreateVolume_ProtocolDoc_ISCSIRejected":           assertE22_CreateVolume_ProtocolDoc_ISCSIRejected,
+	"TestCSIProtocol_CreateVolume_ProtocolDoc_MemberMismatchRejected":  assertE22_CreateVolume_ProtocolDoc_MemberMismatchRejected,
 	"TestCSIProtocol_CreateVolume_ProtocolDoc_NFSRejected":             assertE22_CreateVolume_ProtocolDoc_NFSRejected,
 	"TestCSIProtocol_CreateVolume_LegacyProtocolTypeParamRejected":     assertE22_CreateVolume_LegacyProtocolTypeParamRejected,
 	"TestCSIProtocol_CreateVolume_ProtocolDoc_StructuralFieldRejected": assertE22_CreateVolume_ProtocolDoc_StructuralFieldRejected,

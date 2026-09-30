@@ -15,14 +15,14 @@ To report a bug, [open an issue](https://github.com/isac322/pillar-csi/issues) w
 
 ## Design documents
 
-The repository keeps its design notes under `docs/`. Several are written in Korean. Some describe protocols and backends that are not implemented, and they mark those parts as design notes.
+The repository keeps its design notes under `docs/`. Several are written in Korean. Some describe protocols and backends that are not implemented, such as NFS and SMB, and they mark those parts as design notes.
 
 | Document | Contents | Language |
 | --- | --- | --- |
 | [PRD.md](https://github.com/isac322/pillar-csi/blob/master/docs/PRD.md) | Product requirements: CRD design, parameter override layers, components, volume lifecycle | Korean |
 | [decisions/](https://github.com/isac322/pillar-csi/tree/master/docs/decisions) | Architecture decision records, starting with the reconciler design | English |
-| [RFC-multi-protocol-driver-foundation.md](https://github.com/isac322/pillar-csi/blob/master/docs/RFC-multi-protocol-driver-foundation.md) | How the controller, node plugin and agent dispatch by protocol. Only NVMe-oF/TCP is implemented | Korean |
-| [PRD-iscsi.md](https://github.com/isac322/pillar-csi/blob/master/docs/PRD-iscsi.md) | Design reference for a possible iSCSI protocol. Not implemented, and its configuration interface is obsolete | Korean |
+| [RFC-multi-protocol-driver-foundation.md](https://github.com/isac322/pillar-csi/blob/master/docs/RFC-multi-protocol-driver-foundation.md) | How the controller, node plugin and agent dispatch by protocol. NVMe-oF/TCP and iSCSI are implemented | Korean |
+| [PRD-iscsi.md](https://github.com/isac322/pillar-csi/blob/master/docs/PRD-iscsi.md) | Design of the iSCSI protocol: configuration, LIO target, in-process initiator, what is supported, and why pillar-node does not use `open-iscsi` | Korean |
 | [E2E-TESTCASES.md](https://github.com/isac322/pillar-csi/blob/master/docs/E2E-TESTCASES.md) | The specification every end-to-end test traces back to | Korean |
 | [upgrade-crd-names.md](https://github.com/isac322/pillar-csi/blob/master/docs/upgrade-crd-names.md) | Upgrading across the CRD name changes of [issue #58](https://github.com/isac322/pillar-csi/issues/58) | Korean |
 

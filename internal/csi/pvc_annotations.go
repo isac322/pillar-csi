@@ -26,9 +26,10 @@ package csi
 //
 //	pillar-csi.bhyoo.com/backend:    zfs: {properties: {...}} | lvm: {provisioningMode: ...}
 //	pillar-csi.bhyoo.com/protocol:   nvmeofTcp: {maxQueueSize, inCapsuleDataSize, ctrlLossTmo, reconnectDelay}
+//	                                 | iscsi: {loginTimeout, replacementTimeout, noopOutInterval, noopOutTimeout}
 //	pillar-csi.bhyoo.com/filesystem: {fsType, mkfsOptions, mountOptions}
 //
-// Structural fields (zfs.pool, lvm.volumeGroup, nvmeofTcp.port, nvmeofTcp.acl,
+// Structural fields (zfs.pool, lvm.volumeGroup, nvmeofTcp.port, iscsi.acl,
 // …) and unknown fields are rejected with their full path by the shared
 // decoder (internal/configdocs).  Every other annotation in the
 // pillar-csi.bhyoo.com/ domain is rejected too, so a typo or a key of the

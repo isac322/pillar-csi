@@ -40,6 +40,38 @@ func TestVolumeTargetID_NVMeoFTCP(t *testing.T) {
 	}
 }
 
+func TestVolumeTargetID_ISCSI(t *testing.T) {
+	t.Parallel()
+
+	got, err := volumeTargetID(agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI, "tank/pvc-abc")
+	if err != nil {
+		t.Fatalf("volumeTargetID unexpected error: %v", err)
+	}
+	const want = "iqn.2026-01.com.bhyoo.pillar-csi:tank.pvc-abc"
+	if got != want {
+		t.Fatalf("volumeTargetID = %q, want %q", got, want)
+	}
+}
+
+// TestVolumeTargetID_ISCSILengthLimit verifies the 223-byte LIO IQN limit:
+// the longest accepted volume ID yields exactly 223 bytes, one more byte is
+// InvalidArgument.
+func TestVolumeTargetID_ISCSILengthLimit(t *testing.T) {
+	t.Parallel()
+
+	prefixLen := len("iqn.2026-01.com.bhyoo.pillar-csi:")
+	longest := "tank/" + strings.Repeat("v", 223-prefixLen-len("tank/"))
+	got, err := volumeTargetID(agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI, longest)
+	if err != nil || len(got) != 223 {
+		t.Fatalf("volumeTargetID(%d-byte volume ID) = %q (%d bytes), %v; want 223 bytes, nil",
+			len(longest), got, len(got), err)
+	}
+	_, err = volumeTargetID(agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI, longest+"v")
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("volumeTargetID(224-byte IQN) code = %v (%v), want InvalidArgument", status.Code(err), err)
+	}
+}
+
 func TestVolumeTargetID_ReplacesEverySlashWithDot(t *testing.T) {
 	t.Parallel()
 
@@ -64,7 +96,6 @@ func TestVolumeTargetID_UnimplementedProtocolsRejected(t *testing.T) {
 	t.Parallel()
 
 	for _, protocol := range []agentv1.ProtocolType{
-		agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI,
 		agentv1.ProtocolType_PROTOCOL_TYPE_NFS,
 		agentv1.ProtocolType_PROTOCOL_TYPE_SMB,
 	} {

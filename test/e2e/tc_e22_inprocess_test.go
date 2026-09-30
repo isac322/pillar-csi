@@ -5,10 +5,11 @@ package e2e
 //
 // Backend and protocol are selected by the PillarStore / PillarProtocol a
 // StorageClass references; only the zfs and lvm backend members and the
-// nvmeofTcp protocol member exist.  A hand-written StorageClass may add
-// backend / protocol override documents, and every selection of a removed
-// variant (iscsi, nfs, zfs-dataset, dir, …) or a flat legacy key must be
-// rejected explicitly with InvalidArgument before the agent is called.
+// nvmeofTcp and iscsi protocol members exist.  A hand-written StorageClass may
+// add backend / protocol override documents; an override for a member other
+// than the referenced resource's, a removed variant (nfs, zfs-dataset, dir,
+// …) or a flat legacy key must be rejected explicitly with InvalidArgument
+// before the agent is called.
 
 import (
 	"strings"
@@ -52,13 +53,15 @@ func e22HandWrittenWithDoc(env *controllerTestEnv, docKey, doc string) map[strin
 	return params
 }
 
-func assertE22_CreateVolume_ProtocolDoc_ISCSIRejected(tc documentedCase) {
+func assertE22_CreateVolume_ProtocolDoc_MemberMismatchRejected(tc documentedCase) {
 	env := newControllerTestEnv()
 	defer env.close()
 
-	expectE22Rejected(tc, env, "pvc-e22-iscsi",
-		e22HandWrittenWithDoc(env, e2eDocProtocol, "iscsi:\n  port: 3260\n"),
-		e2eDocProtocol, `unknown field "iscsi"`)
+	// The default protocol is nvmeofTcp: an iscsi override document names a
+	// served member, but not the one the PillarProtocol selected.
+	expectE22Rejected(tc, env, "pvc-e22-iscsi-on-nvmeof",
+		e22HandWrittenWithDoc(env, e2eDocProtocol, "iscsi:\n  loginTimeout: 30\n"),
+		"iscsi overrides do not apply to a nvmeof-tcp protocol")
 }
 
 func assertE22_CreateVolume_ProtocolDoc_NFSRejected(tc documentedCase) {

@@ -11,7 +11,7 @@
 - 실제 커널 모듈, 실제 ZFS, 실제 NVMe-oF 장치를 요구하는 테스트는
   별도로 표시하고 현실적인 인프라 요구사항을 함께 기술한다.
 
-**총 테스트 케이스: 410** (인프로세스 245개 + envtest 통합 117개 + 클러스터 레벨 48개; E28 LVM Agent gRPC 30개 · E29 CSI Controller LVM 파라미터 12개 · E30 LVM LV 중복 방지 3개 · E34 로컬 attach 6개 · E32 LVM CRD 라이프사이클 9개 · E33 default-profile 7개(standalone 7) + teardown-guarantee 4개 + backend-teardown-absence 5개 포함 / 추가 문서화 비기본 TC: E33 core-rpc 9개 · E33 mount 12개 · E33 expansion 5개(e2e_helm 빌드 태그 필요) · F27–F31 LVM 완전 E2E 19개 — 특수 레이블 필터 필요 / 수동 AD 시나리오 3개 · BP 시나리오 3개 별도)
+**총 테스트 케이스: 416** (인프로세스 251개 + envtest 통합 117개 + 클러스터 레벨 48개; E28 LVM Agent gRPC 30개 · E29 CSI Controller LVM 파라미터 12개 · E30 LVM LV 중복 방지 3개 · E34 로컬 attach 6개 · E35 iSCSI 6개 · E32 LVM CRD 라이프사이클 9개 · E33 default-profile 7개(standalone 7) + teardown-guarantee 4개 + backend-teardown-absence 5개 포함 / 추가 문서화 비기본 TC: E33 core-rpc 9개 · E33 mount 12개 · E33 expansion 5개(e2e_helm 빌드 태그 필요) · F27–F31 LVM 완전 E2E 19개 — 특수 레이블 필터 필요 / 수동 AD 시나리오 3개 · BP 시나리오 3개 별도)
 
 ---
 
@@ -85,6 +85,7 @@
 - [E29: CSI Controller LVM 파라미터 전파 및 프로비저닝 모드 오버라이드](#e29-csi-controller-lvm-파라미터-전파-및-프로비저닝-모드-오버라이드)
 - [E30: LVM LV 중복 방지 — skipBackend 최적화](#e30-lvm-lv-중복-방지--skipbackend-최적화)
 - [E34: 로컬 attach — 스토리지 노드 직접 attach와 export 펜싱](#e34-로컬-attach--스토리지-노드-직접-attach와-export-펜싱)
+- [E35: iSCSI 프로토콜 — LIO 타깃 export와 인프로세스 initiator](#e35-iscsi-프로토콜--lio-타깃-export와-인프로세스-initiator)
 
 ### 카테고리 1.5 — Envtest 통합 테스트 (유형 C: envtest 필요) ⚠️
 > 빌드 태그: `//go:build integration` | `make setup-envtest && go test -tags=integration ./internal/...` | envtest API 서버 · Docker/Kind 불필요 · CI 실행 가능
@@ -2230,21 +2231,22 @@ CSI 컨트롤러 또는 Agent가 **존재하지 않는(제거된) 프로토콜·
 **스토어와 맞지 않는 오버라이드 멤버**, 또는 **실제 배포 환경에서의 버전 불일치**를 처리할 때의 오류 경로를 검증한다.
 
 백엔드와 프로토콜은 StorageClass가 참조하는 PillarStore(`spec.backend`: `zfs` | `lvm`)와
-PillarProtocol(`spec.protocol`: `nvmeofTcp`)이 선택한다. iscsi·nfs·smb 프로토콜과 zfs-dataset·dir 백엔드는
+PillarProtocol(`spec.protocol`: `nvmeofTcp` | `iscsi`)이 선택한다. nfs·smb 프로토콜과 zfs-dataset·dir 백엔드는
 스키마에 존재하지 않으며, 직접 작성한 StorageClass의 문서 파라미터(`pillar-csi.bhyoo.com/backend`,
-`pillar-csi.bhyoo.com/protocol`)나 제거된 평면 키(`protocol-type` 등)로 이를 선택하려는 시도는
+`pillar-csi.bhyoo.com/protocol`)나 제거된 평면 키(`protocol-type` 등)로 이를 선택하려는 시도, 그리고
+참조한 PillarProtocol과 다른 멤버(`nvmeofTcp` 프로토콜에 대한 `iscsi` 문서 등)를 지정한 오버라이드는
 agent 호출 전에 `InvalidArgument`로 거부된다.
 
 > **E14·E1.11과의 차이점:**
 > - **E1.11 / E14** — identity 파라미터(`store-ref`/`protocol-ref`) **누락** 또는 알 수 없는 파라미터 키 → `InvalidArgument`
-> - **E22** — 오버라이드 문서가 **존재하지 않는 멤버**(`iscsi`, `nfs`, `zfs-dataset`, `dir`), **구조적 필드**,
->   또는 **스토어와 다른 멤버**를 지정 → `InvalidArgument`; agent gRPC 직접 호출 경로의 미지원 프로토콜 → `Unimplemented`
+> - **E22** — 오버라이드 문서가 **존재하지 않는 멤버**(`nfs`, `zfs-dataset`, `dir`), **구조적 필드**,
+>   또는 **스토어·프로토콜과 다른 멤버**를 지정 → `InvalidArgument`; agent gRPC 직접 호출 경로의 미지원 프로토콜 → `Unimplemented`
 
 **오류 시나리오 분류:**
 
 | 소섹션 | 테스트 유형 | CI 실행 | 핵심 시나리오 |
 |--------|-----------|--------|------------|
-| E22.1 | A (in-process) | ✅ 표준 CI | CSI Controller — 직접 작성한 StorageClass의 프로토콜 문서/레거시 키로 미지원 프로토콜 선택 |
+| E22.1 | A (in-process) | ✅ 표준 CI | CSI Controller — 직접 작성한 StorageClass의 프로토콜 문서/레거시 키로 미지원 프로토콜 또는 프로토콜과 다른 멤버 선택 |
 | E22.2 | A (in-process) | ✅ 표준 CI | Agent gRPC — 각 RPC에서 미지원 프로토콜 거부 |
 | E22.3 | A (in-process) | ✅ 표준 CI | CSI Controller — 백엔드 문서로 제거된 백엔드 변형 또는 스토어와 다른 멤버 선택 |
 | E22.4 | 수동/스테이징 | ❌ CI 불가 | 실제 버전 불일치·커널 모듈 미로드 시나리오 |
@@ -2254,18 +2256,19 @@ agent 호출 전에 `InvalidArgument`로 거부된다.
 CSI Controller (CreateVolume)
         │
         │  StorageClass params: store-ref, protocol-ref
-        │                       + pillar-csi.bhyoo.com/protocol: "iscsi: {...}"
+        │                       + pillar-csi.bhyoo.com/protocol: "nfs: {...}" | "iscsi: {...}"
         │       │
-        │  configdocs.DecodeProtocolOverride → unknown field "iscsi" (supported: nvmeofTcp)
+        │  configdocs.DecodeProtocolOverride → unknown field "nfs" (supported: iscsi or nvmeofTcp)
+        │  applyProtocolOverride            → iscsi overrides do not apply to a nvmeof-tcp protocol
         │       │
         └───────► codes.InvalidArgument (agent 호출 없음)
 
 Agent gRPC Server (직접 호출 경로; proto 열거형은 변경 없음):
-  ExportVolume(PROTOCOL_TYPE_ISCSI)   → Unimplemented (configfs 사이드 이펙트 없음)
-  AllowInitiator(PROTOCOL_TYPE_ISCSI) → Unimplemented (nvmet/hosts 디렉터리 미생성)
-  DenyInitiator(PROTOCOL_TYPE_ISCSI)  → Unimplemented
-  UnexportVolume(PROTOCOL_TYPE_ISCSI) → Unimplemented
-  ReconcileState(iSCSI export) → results[].success=false (타 볼륨 계속 처리)
+  ExportVolume(PROTOCOL_TYPE_NFS)   → Unimplemented (configfs 사이드 이펙트 없음)
+  AllowInitiator(PROTOCOL_TYPE_NFS) → Unimplemented (nvmet/hosts 디렉터리 미생성)
+  DenyInitiator(PROTOCOL_TYPE_NFS)  → Unimplemented
+  UnexportVolume(PROTOCOL_TYPE_NFS) → Unimplemented
+  ReconcileState(NFS export) → results[].success=false (타 볼륨 계속 처리)
 ```
 
 ---
@@ -2283,11 +2286,12 @@ go test ./test/e2e/ -v -run 'TC-E22\.'
 
 **핵심 동작:** 직접 작성한 StorageClass의 `pillar-csi.bhyoo.com/protocol` 문서는 공유 디코더(`internal/configdocs`)가
 엄격하게 검증한다. 알 수 없는 멤버와 구조적 필드(`nvmeofTcp.port`, `nvmeofTcp.acl`)는 전체 경로와 함께 거부되고,
-제거된 평면 키는 `unsupported StorageClass parameter`로 거부된다. 모든 거부는 agent 호출 전에 일어난다.
+참조한 PillarProtocol과 다른 멤버의 문서는 멤버 불일치로, 제거된 평면 키는 `unsupported StorageClass parameter`로
+거부된다. 모든 거부는 agent 호출 전에 일어난다.
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| 171 | `TestCSIProtocol_CreateVolume_ProtocolDoc_ISCSIRejected` | 프로토콜 문서가 제거된 `iscsi` 멤버를 선택하면 거부 | PillarAgent·PillarStore("tank")·PillarProtocol("nvmeof") 등록; StorageClass params `store-ref`="tank", `protocol-ref`="nvmeof", `pillar-csi.bhyoo.com/protocol`=`iscsi: {port: 3260}` | 1) CreateVolumeRequest 전송 | gRPC InvalidArgument; 메시지에 `pillar-csi.bhyoo.com/protocol`과 `unknown field "iscsi"`; agent.CreateVolume 호출 없음 | `CSI-C` |
+| 171 | `TestCSIProtocol_CreateVolume_ProtocolDoc_MemberMismatchRejected` | 프로토콜 문서가 참조한 PillarProtocol(`nvmeofTcp`)과 다른 `iscsi` 멤버를 선택하면 거부 | PillarAgent·PillarStore("tank")·PillarProtocol("nvmeof") 등록; StorageClass params `store-ref`="tank", `protocol-ref`="nvmeof", `pillar-csi.bhyoo.com/protocol`=`iscsi: {loginTimeout: 30}` | 1) CreateVolumeRequest 전송 | gRPC InvalidArgument; 메시지에 `iscsi overrides do not apply to a nvmeof-tcp protocol`; agent.CreateVolume 호출 없음 | `CSI-C` |
 | 172 | `TestCSIProtocol_CreateVolume_ProtocolDoc_NFSRejected` | 프로토콜 문서가 제거된 `nfs` 멤버를 선택하면 거부 | E22.171과 동일; `pillar-csi.bhyoo.com/protocol`=`nfs: {version: "4.2"}` | 1) CreateVolumeRequest 전송 | gRPC InvalidArgument; 메시지에 `unknown field "nfs"`; agent.CreateVolume 호출 없음 | `CSI-C` |
 | 173 | `TestCSIProtocol_CreateVolume_LegacyProtocolTypeParamRejected` | 제거된 평면 키 `pillar-csi.bhyoo.com/protocol-type`(값 `smb-v3-unknown`)을 지정하면 거부 | E22.171과 동일한 identity params에 `pillar-csi.bhyoo.com/protocol-type`="smb-v3-unknown" 추가 | 1) CreateVolumeRequest 전송 | gRPC InvalidArgument; 메시지에 `unsupported StorageClass parameter`와 키 이름; agent.CreateVolume 호출 없음 | `CSI-C` |
 | 174 | `TestCSIProtocol_CreateVolume_ProtocolDoc_StructuralFieldRejected` | 프로토콜 문서가 구조적 필드 `nvmeofTcp.acl`을 지정하면 거부 | E22.171과 동일; `pillar-csi.bhyoo.com/protocol`=`nvmeofTcp: {acl: true}` | 1) CreateVolumeRequest 전송 | gRPC InvalidArgument; 메시지에 `nvmeofTcp.acl is structural and cannot be set per volume`; agent.CreateVolume 호출 없음 | `CSI-C` |
@@ -2314,22 +2318,22 @@ go test ./test/component/ -v -run 'TestAgentProtocol'
 이 검사는 모든 configfs 작업 **이전에** 수행되므로 사이드 이펙트가 없다.
 
 > **기존 구현 테스트 참조:**
-> `TestAgentErrors_ExportVolume_InvalidProtocol_NoConfigfsSideEffects` (iSCSI),
-> `TestAgentErrors_AllowInitiator_InvalidProtocol` (iSCSI),
-> `TestAgentErrors_DenyInitiator_InvalidProtocol` (iSCSI),
-> `TestAgentErrors_UnexportVolume_InvalidProtocol` (iSCSI) —
+> `TestAgentErrors_ExportVolume_InvalidProtocol_NoConfigfsSideEffects` (NFS),
+> `TestAgentErrors_AllowInitiator_InvalidProtocol` (NFS),
+> `TestAgentErrors_DenyInitiator_InvalidProtocol` (NFS),
+> `TestAgentErrors_UnexportVolume_InvalidProtocol` (NFS) —
 > 이 4개 테스트는 **이미 구현되어 있으며** `test/component/agent_errors_test.go`에 존재한다.
 > 아래 E22.2 표는 이들을 E2E 문맥에서 추적 가능하도록 정의하고,
 > 추가적인 UNSPECIFIED 및 ReconcileState 시나리오를 보완한다.
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| 175 | `TestAgentErrors_ExportVolume_InvalidProtocol_NoConfigfsSideEffects` *(기존)* | `ExportVolume`에 `PROTOCOL_TYPE_ISCSI` 지정 시 `codes.Unimplemented` 반환 및 configfs 사이드 이펙트 없음 — `server_export.go:51` 경계 검사 동작 | `agent.NewServer(backends, t.TempDir())`; `mockVolumeBackend`; `AlwaysPresentChecker` | 1) `ExportVolumeRequest{ProtocolType=ISCSI, VolumeId=compTestVolumeID}` 전송; 2) `configfsRoot/nvmet` 디렉터리 존재 여부 확인 | `codes.Unimplemented`; `nvmet` 디렉터리 미생성(configfs 사이드 이펙트 없음) | `Agent`, `NVMeF` |
+| 175 | `TestAgentErrors_ExportVolume_InvalidProtocol_NoConfigfsSideEffects` *(기존)* | `ExportVolume`에 `PROTOCOL_TYPE_NFS` 지정 시 `codes.Unimplemented` 반환 및 configfs 사이드 이펙트 없음 — `server_export.go:51` 경계 검사 동작 | `agent.NewServer(backends, t.TempDir())`; `mockVolumeBackend`; `AlwaysPresentChecker` | 1) `ExportVolumeRequest{ProtocolType=NFS, VolumeId=compTestVolumeID}` 전송; 2) `configfsRoot/nvmet` 디렉터리 존재 여부 확인 | `codes.Unimplemented`; `nvmet` 디렉터리 미생성(configfs 사이드 이펙트 없음) | `Agent`, `NVMeF` |
 | 176 | `TestAgentProtocol_ExportVolume_UNSPECIFIED_Unimplemented` | `ExportVolume`에 `PROTOCOL_TYPE_UNSPECIFIED(0)` 지정 시 `codes.Unimplemented` 반환 — `mapProtocolType`이 알 수 없는 문자열을 UNSPECIFIED로 변환하는 엔드투엔드 경로 커버 | `agent.NewServer(backends, t.TempDir())`; `mockVolumeBackend` | 1) `ExportVolumeRequest{ProtocolType=PROTOCOL_TYPE_UNSPECIFIED}` 전송; 2) configfs 사이드 이펙트 확인 | `codes.Unimplemented`; configfs 미수정; 오류 메시지에 "only NVMe-oF TCP is supported" 포함 | `Agent` |
-| 177 | `TestAgentErrors_AllowInitiator_InvalidProtocol` *(기존)* | `AllowInitiator`에 `PROTOCOL_TYPE_ISCSI` 지정 시 `codes.Unimplemented` 반환 및 `nvmet/hosts` 디렉터리 미생성 — `server_export.go:163` 경계 검사 | `agent.NewServer(backends, t.TempDir())`; `mockVolumeBackend` | 1) `AllowInitiatorRequest{ProtocolType=ISCSI, VolumeId, InitiatorId=compTestHostNQN}` 전송; 2) `nvmet/hosts` 디렉터리 존재 확인 | `codes.Unimplemented`; `nvmet/hosts` 디렉터리 미생성 | `Agent`, `NVMeF` |
-| 178 | `TestAgentErrors_DenyInitiator_InvalidProtocol` *(기존)* | `DenyInitiator`에 `PROTOCOL_TYPE_ISCSI` 지정 시 `codes.Unimplemented` 반환 — `server_export.go:146` 경계 검사 | `agent.NewServer(backends, t.TempDir())`; `mockVolumeBackend` | 1) `DenyInitiatorRequest{ProtocolType=ISCSI, VolumeId, InitiatorId=compTestHostNQN}` 전송 | `codes.Unimplemented` | `Agent` |
-| 179 | `TestAgentErrors_UnexportVolume_InvalidProtocol` *(기존)* | `UnexportVolume`에 `PROTOCOL_TYPE_ISCSI` 지정 시 `codes.Unimplemented` 반환 — 존재하지 않는 iSCSI 서브시스템 삭제 시도 없음; `server_export.go:129` 경계 검사 | `agent.NewServer(backends, t.TempDir())`; `mockVolumeBackend` | 1) `UnexportVolumeRequest{ProtocolType=ISCSI, VolumeId}` 전송 | `codes.Unimplemented`; configfs 미수정 | `Agent` |
-| 180 | `TestAgentProtocol_ReconcileState_UnsupportedProtocol_SkipAndReport` | `ReconcileState`에 NVMe-oF TCP 이외 프로토콜 엔트리 포함 시 해당 항목 `success=false`로 보고하고, NVMe-oF TCP 항목은 정상 처리 — `server_reconcile.go:72` 프로토콜 타입 검사 동작 | `agent.NewServer(backends, t.TempDir())`; `mockVolumeBackend{devicePathResult: "/dev/zvol/tank/pvc-mixed"}`; 볼륨 2개 포함 `ReconcileStateRequest`: `v1`(NVMe-oF TCP 수출, `AllowedInitiators=[hostNQN]`), `v2`(iSCSI 수출) | 1) `ReconcileState({volumes: [v1(NVMeOF), v2(ISCSI)]})` 호출; 2) `results` 슬라이스 검사; 3) configfs 서브시스템 디렉터리 확인 | `results[v1].Success=true`; `results[v2].Success=false`; `results[v2].ErrorMessage` 비어 있지 않음; `tmpdir/nvmet/subsystems/<NQN>` 생성됨(v1 처리 성공); 패닉 없음 | `Agent`, `NVMeF`, `gRPC` |
+| 177 | `TestAgentErrors_AllowInitiator_InvalidProtocol` *(기존)* | `AllowInitiator`에 `PROTOCOL_TYPE_NFS` 지정 시 `codes.Unimplemented` 반환 및 `nvmet/hosts` 디렉터리 미생성 — `server_export.go:163` 경계 검사 | `agent.NewServer(backends, t.TempDir())`; `mockVolumeBackend` | 1) `AllowInitiatorRequest{ProtocolType=NFS, VolumeId, InitiatorId=compTestHostNQN}` 전송; 2) `nvmet/hosts` 디렉터리 존재 확인 | `codes.Unimplemented`; `nvmet/hosts` 디렉터리 미생성 | `Agent`, `NVMeF` |
+| 178 | `TestAgentErrors_DenyInitiator_InvalidProtocol` *(기존)* | `DenyInitiator`에 `PROTOCOL_TYPE_NFS` 지정 시 `codes.Unimplemented` 반환 — `server_export.go:146` 경계 검사 | `agent.NewServer(backends, t.TempDir())`; `mockVolumeBackend` | 1) `DenyInitiatorRequest{ProtocolType=NFS, VolumeId, InitiatorId=compTestHostNQN}` 전송 | `codes.Unimplemented` | `Agent` |
+| 179 | `TestAgentErrors_UnexportVolume_InvalidProtocol` *(기존)* | `UnexportVolume`에 `PROTOCOL_TYPE_NFS` 지정 시 `codes.Unimplemented` 반환 — 존재하지 않는 export 삭제 시도 없음; `server_export.go:129` 경계 검사 | `agent.NewServer(backends, t.TempDir())`; `mockVolumeBackend` | 1) `UnexportVolumeRequest{ProtocolType=NFS, VolumeId}` 전송 | `codes.Unimplemented`; configfs 미수정 | `Agent` |
+| 180 | `TestAgentProtocol_ReconcileState_UnsupportedProtocol_SkipAndReport` | `ReconcileState`에 agent가 서비스하지 않는 프로토콜(NFS) 엔트리 포함 시 해당 항목 `success=false`로 보고하고, NVMe-oF TCP 항목은 정상 처리 — `server_reconcile.go:72` 프로토콜 타입 검사 동작 | `agent.NewServer(backends, t.TempDir())`; `mockVolumeBackend{devicePathResult: "/dev/zvol/tank/pvc-mixed"}`; 볼륨 2개 포함 `ReconcileStateRequest`: `v1`(NVMe-oF TCP 수출, `AllowedInitiators=[hostNQN]`), `v2`(NFS 수출) | 1) `ReconcileState({volumes: [v1(NVMeOF), v2(NFS)]})` 호출; 2) `results` 슬라이스 검사; 3) configfs 확인 | `results[v1].Success=true`; `results[v2].Success=false`; `results[v2].ErrorMessage`에 `protocol PROTOCOL_TYPE_NFS is not supported by this agent`; `tmpdir/nvmet/subsystems/<NQN>` 생성됨(v1 처리 성공); LIO `target` 트리 미생성; 패닉 없음 | `Agent`, `NVMeF`, `gRPC` |
 
 ---
 
@@ -2375,7 +2379,7 @@ StorageClass의 `pillar-csi.bhyoo.com/backend` 문서는 튜너블만 담을 수
 |----|---------|----------|--------------|---------|---------|
 | BP-1 | **Controller-Agent 에이전트 버전 확인 — `GetCapabilitiesResponse.agent_version` 필드 기록 여부** | 실제 Kubernetes 클러스터; pillar-csi-controller 배포; pillar-agent 배포 (`agent_version="0.1.0"` 내장, `internal/agent/server.go:36` 상수) | 1) PillarAgent CRD 등록 후 컨트롤러 재조정 대기; 2) `kubectl get pillaragent <name> -o yaml`로 `status.agentVersion` 또는 관련 조건 메시지 확인; 3) 에이전트 바이너리를 이전 버전으로 교체 후 컨트롤러 반응 확인 | `PillarAgent.status` 또는 이벤트에 에이전트 버전 정보 기록됨; 버전 불일치 경고는 현재 미구현(향후 구현 예정); 버전 불일치 시에도 볼륨 생성 시도 가능 — 미지원 RPC 호출 시 `Unimplemented` 반환으로 오류 감지 | `Agent`, `TgtCRD`, `gRPC` |
 | BP-2 | **스토리지 노드에서 nvmet 커널 모듈 미로드 — HealthCheck 경고 및 ExportVolume 실패** | 실제 스토리지 노드; ZFS 커널 모듈 로드됨; nvmet/nvme-fabrics 모듈 **미로드** (`modprobe -r nvmet nvme-fabrics`) | 1) pillar-agent 프로세스 시작; 2) `agent.HealthCheck()` 응답의 `subsystems` 배열 확인 — `nvmet-configfs` 서브시스템 `healthy` 필드 값 확인; 3) PVC 생성 시도(CSI CreateVolume → `agent.CreateVolume` 성공 → `agent.ExportVolume` 실패 예상); 4) `kubectl describe pvc`에서 오류 이벤트 확인 | `HealthCheck` 응답에 `nvmet-configfs.healthy=false` 표시; `ExportVolume` 호출 시 configfs 디렉터리 생성 실패로 `codes.Internal` 또는 `codes.FailedPrecondition` 반환; PVC가 `Pending` 상태 유지; 오류 메시지에 configfs 관련 진단 정보 포함 | `Agent`, `NVMeF`, `TgtCRD` |
-| BP-3 | **미지원 프로토콜 선택 엔드투엔드 — 직접 작성한 StorageClass의 `pillar-csi.bhyoo.com/protocol: "iscsi: {}"`로 PVC 생성 시 오류 전파** | 실제 Kubernetes 클러스터; PillarStore·PillarProtocol(nvmeofTcp) 준비; 직접 작성한 StorageClass에 `store-ref`/`protocol-ref`와 `pillar-csi.bhyoo.com/protocol: "iscsi: {}"` 설정 | 1) `kubectl apply -f storageclass-iscsi-doc.yaml`; 2) `kubectl apply -f pvc.yaml`; 3) PVC 이벤트 확인 (`kubectl describe pvc <name>`); 4) CSI 컨트롤러 로그에서 `InvalidArgument` 오류 확인 | PVC가 `Pending` 상태 유지; CreateVolume 오류 이벤트에 `InvalidArgument`와 `unknown field "iscsi" (supported: nvmeofTcp)`; agent 호출 없음; PillarVolumeState CRD 미생성 | `CSI-C`, `실제 Kubernetes클러스터` |
+| BP-3 | **미지원 프로토콜 선택 엔드투엔드 — 직접 작성한 StorageClass의 `pillar-csi.bhyoo.com/protocol: "nfs: {}"`로 PVC 생성 시 오류 전파** | 실제 Kubernetes 클러스터; PillarStore·PillarProtocol(nvmeofTcp) 준비; 직접 작성한 StorageClass에 `store-ref`/`protocol-ref`와 `pillar-csi.bhyoo.com/protocol: "nfs: {}"` 설정 | 1) `kubectl apply -f storageclass-nfs-doc.yaml`; 2) `kubectl apply -f pvc.yaml`; 3) PVC 이벤트 확인 (`kubectl describe pvc <name>`); 4) CSI 컨트롤러 로그에서 `InvalidArgument` 오류 확인 | PVC가 `Pending` 상태 유지; CreateVolume 오류 이벤트에 `InvalidArgument`와 `unknown field "nfs" (supported: iscsi or nvmeofTcp)`; agent 호출 없음; PillarVolumeState CRD 미생성 | `CSI-C`, `실제 Kubernetes클러스터` |
 
 ---
 
@@ -2924,6 +2928,62 @@ export를 모든 원격 initiator에 대해 끄고 로컬 PublishContext(`pillar
 
 ---
 
+## E35: iSCSI 프로토콜 — LIO 타깃 export와 인프로세스 initiator
+
+**테스트 유형:** A (인프로세스 E2E) ✅ CI 실행 가능
+
+**위치:** `test/e2e/tc_e35_iscsi_inprocess_test.go` (카탈로그 비경유 독립 Ginkgo 스펙, `Label("default-profile")`)
+
+`iscsi` PillarProtocol(`spec.protocol.iscsi`: `port` 기본 3260, `acl`, `loginTimeout`·`replacementTimeout`·`noopOutInterval`·
+`noopOutTimeout`)은 볼륨을 LIO iSCSI 타깃으로 export한다. agent는 configfs(`/sys/kernel/config/target`)에 타깃
+`iqn.2026-01.com.bhyoo.pillar-csi:<볼륨 ID의 "/"를 "."로>`, TPG `tpgt_1`, LUN 0, iblock 백스토어를 만들고,
+`acl: true`이면 publish된 노드의 initiator IQN(CSINode 주석 `pillar-csi.bhyoo.com/iscsi-initiator-iqn`)만 node ACL로 허용한다.
+노드는 외부 도구 없이 인프로세스 initiator로 login한 뒤 NETLINK_ISCSI로 커널 iscsi_tcp에 세션을 넘기고 `/dev/sd*`를 사용한다.
+
+**테스트 더블:** 컨트롤러 TC는 `fakeAgentServer`(bufconn gRPC; iSCSI export에는 볼륨 ID에서 파생한 IQN을 반환)와
+가짜 K8s 클라이언트를, 웹훅 TC는 `PillarProtocolCustomValidator`·`PillarStorageClassCustomValidator`를 직접 쓴다.
+실제 커널 동작(LIO 타깃·ACL 거부, iscsi_tcp 세션, `/dev/sd*`, 온라인 확장, API 서버 admission)은
+`test/docker-e2e/iscsi_e2e_test.go`의 다중 노드 테스트가 검증한다.
+
+> **CI 실행 가능 여부:** ✅ 인프로세스 E2E — 별도 인프라 불필요
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| E35.1 | `TestISCSI_CreateVolume_ExportsISCSITarget` | iscsi 프로토콜 CreateVolume은 iSCSI export와 iSCSI VolumeContext를 만든다 | `controllerTestEnv` + PillarProtocol `iscsi`(`port: 3260`, `loginTimeout: 30`); ZFS 스토어 `tank` | 1) CreateVolume(`protocol-ref=iscsi`) | volume ID `storage-1/iscsi/zfs-zvol/tank/<name>`; ExportVolume 1회, `PROTOCOL_TYPE_ISCSI`, `IscsiExportParams.port=3260`, NVMe-oF 파라미터 없음; VolumeContext `target_id`=`iqn.2026-01.com.bhyoo.pillar-csi:tank.<name>`, `port=3260`, `protocol-type=iscsi`, `iscsi-login-timeout=30`; 미설정 타임아웃 키와 NVMe-oF 키 없음 | `CSI-C`, `gRPC` |
+| E35.2 | `TestISCSI_CreateVolume_LVMBackend` | LVM 백엔드도 iscsi 프로토콜로 export | E35.1 환경 + LVM 스토어 `lvm-store`(VG `data-vg`) | 1) CreateVolume(`store-ref=lvm-store`, `protocol-ref=iscsi`) | volume ID `storage-1/iscsi/lvm-lv/data-vg/<name>`; ExportVolume 볼륨 ID `data-vg/<name>`, `PROTOCOL_TYPE_ISCSI`; `target_id`=`iqn.2026-01.com.bhyoo.pillar-csi:data-vg.<name>` | `CSI-C`, `gRPC` |
+| E35.3 | `TestISCSI_ControllerPublish_AllowsCSINodeIQN` | `acl: true` publish는 CSINode의 initiator IQN을 허용하고 unpublish는 회수 | E35.1 환경 + PillarProtocol `iscsi-acl`(`acl: true`); `worker-1` CSINode에 `iscsi-initiator-iqn` 주석 | 1) CreateVolume; 2) ControllerPublishVolume(`worker-1`); 3) ControllerUnpublishVolume | AllowInitiator 1회(InitiatorId=주석 IQN, `PROTOCOL_TYPE_ISCSI`); DenyInitiator 1회(같은 IQN, `PROTOCOL_TYPE_ISCSI`) | `CSI-C`, `gRPC` |
+| E35.4 | `TestISCSI_ControllerPublish_MissingIQNAnnotation` | CSINode에 iSCSI IQN 주석이 없으면 `acl: true` publish는 거부 | E35.3 환경이지만 CSINode에는 NVMe host NQN 주석만 존재 | 1) CreateVolume; 2) ControllerPublishVolume(`worker-1`) | `FailedPrecondition`; 메시지에 `pillar-csi.bhyoo.com/iscsi-initiator-iqn`; AllowInitiator 0회 | `CSI-C` |
+| E35.5 | `TestISCSI_PillarProtocolWebhook_ExactlyOneMember` | PillarProtocol 웹훅은 `nvmeofTcp`와 `iscsi`를 동시에 지정하면 거부하고 `iscsi` 단독은 허용 | `PillarProtocolCustomValidator` | 1) 두 멤버를 모두 지정해 ValidateCreate; 2) `iscsi`(`acl: true`)만 지정해 ValidateCreate | 1) 오류, 메시지에 `exactly one protocol member`; 2) 허용 | `PProtWH` |
+| E35.6 | `TestISCSI_PillarStorageClassWebhook_OverrideMemberMismatch` | PillarStorageClass 웹훅은 `nvmeofTcp` 프로토콜에 대한 `iscsi` 오버라이드를 거부 | `PillarStorageClassCustomValidator{Client}`; 스토어 `tank`; 프로토콜 `nvmeof`(nvmeofTcp)·`iscsi` | 1) `protocolRef=nvmeof`, `overrides.protocol.iscsi.loginTimeout=20`으로 ValidateCreate; 2) 같은 오버라이드를 `protocolRef=iscsi`로 ValidateCreate | 1) 오류, 메시지에 `protocol override member "iscsi" does not match the "nvmeofTcp" protocol`; 2) 허용 | `BindWH`, `PProtCRD` |
+
+---
+
+### E35 커버리지 요약
+
+| 소섹션 | 검증 내용 | 테스트 수 | CI 실행 |
+|--------|---------|----------|--------|
+| E35 | iscsi CreateVolume의 export RPC·VolumeContext(ZFS·LVM), initiator IQN 기반 ACL 허용·회수, 프로토콜 유니온과 오버라이드 멤버 admission | 6개 | ✅ 표준 CI |
+
+**CI에서 검증 불가 항목:**
+
+`test/docker-e2e`(`make test-docker-e2e`, 일일 워크플로의 Docker multi-node e2e)가 in-cluster agent와 외부 agent
+두 토폴로지에서 LVM 스토어 + `iscsi` PillarProtocol(`acl: true`)로 실제 커널 경로를 검증한다. Kind 워커는 호스트
+`/proc`를 `/host/proc`로 마운트하고 Helm 값 `node.iscsi.netlinkNetnsPath=/host/proc/1/ns/net`으로 pillar-node가 호스트
+init netns의 NETLINK_ISCSI를 쓴다. 하네스는 시작·종료 시 `iqn.2026-01.com.bhyoo.pillar-csi:<vg>.` 접두사의 호스트 iSCSI
+세션(NETLINK_ISCSI로 stop/destroy)과 LIO 타깃·백스토어를 제거해 zero state를 보장한다.
+
+| 항목 | 이유 | 대안 |
+|------|------|------|
+| ext4·xfs 파일시스템 PVC 마운트, 파드 기록 후 재시작하고 다시 읽기 | 실제 LIO 타깃 + iscsi_tcp + mkfs 필요 | `test/docker-e2e` `TestISCSIFilesystemPodRestart` |
+| raw Block 볼륨을 클라이언트 A가 쓰고 클라이언트 B가 읽기 | 다중 노드 Kind + 실제 SCSI 디스크 필요 | `test/docker-e2e` `TestISCSIRawBlockCrossNodeHandoff` |
+| 마운트된 파일시스템 볼륨의 온라인 확장(LV 확장 → LUN rescan → resize) | 실제 LVM + iscsi_tcp rescan 필요 | `test/docker-e2e` `TestISCSIOnlineFilesystemExpansion` |
+| 크로스 노드: 클라이언트 노드의 파드가 `/dev/sd*`를 쓰고 세션 원격 주소가 스토리지 노드 | 다중 노드 Kind + 실제 세션 sysfs 필요 | `test/docker-e2e` `TestISCSIFilesystemCrossNodeReattach` (모든 iSCSI 테스트가 세션 주소·`/dev/sd*`·노드 netns TCP 연결을 확인) |
+| `acl: true`: 허용 노드는 동작하고 허용되지 않은 initiator의 login은 타깃이 거부(status class 2 / detail 2 target forbidden) | 실제 LIO node ACL 필요 | `test/docker-e2e` `TestISCSIUnauthorizedInitiatorRejected`, 크로스 노드 핸드오프 테스트 |
+| API 서버가 두 프로토콜 멤버를 가진 PillarProtocol과 `nvmeofTcp` 클래스의 `iscsi` 오버라이드를 거부 | 실제 CRD CEL + admission 웹훅 필요 | `test/docker-e2e` `TestISCSIProtocolAdmission`; envtest `internal/controller/pillarprotocol_crd_schema_test.go` |
+| ZFS 백엔드의 실제 iSCSI 데이터 경로 | Docker E2E Kind 노드에는 zvol 디바이스 노드(udev)와 ZFS 도구가 없음 | E35.1(컨트롤러 경로) + 수동 검증 |
+
+---
+
 
 # 카테고리 1.5 — Envtest 통합 테스트 (유형 C: envtest 필요) ⚠️
 
@@ -3268,7 +3328,7 @@ go test -tags=integration ./internal/webhook/... -v -run 'TestWebhooks/PillarPro
 
 **목적:**
 PillarProtocol CRD의 전체 라이프사이클을 검증한다. 이 CRD는 스토리지 볼륨을 노출할 때
-사용할 네트워크 프로토콜 구성(`spec.protocol` exactly-one 유니온; 현재 구현된 멤버는 `nvmeofTcp`뿐이며 iSCSI·NFS·SMB는 미구현으로 스키마에 없음)을 정의하는 클러스터-스코프 리소스이다.
+사용할 네트워크 프로토콜 구성(`spec.protocol` exactly-one 유니온; 구현된 멤버는 `nvmeofTcp`와 `iscsi`이며 NFS·SMB는 미구현으로 스키마에 없음)을 정의하는 클러스터-스코프 리소스이다.
 동일한 PillarProtocol을 여러 PillarStorageClass이 참조할 수 있으며, 다음 동작을 검증한다:
 
 1. **유효/무효 스펙 생성** — `spec.protocol` 유니온(정확히 한 멤버) 검증 및 `nvmeofTcp` 필드 범위 검증
@@ -3301,8 +3361,8 @@ PillarProtocol CRD의 전체 라이프사이클을 검증한다. 이 CRD는 스�
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
 | E23.1.1 | `TestPillarProtocolWebhook_ValidCreate_NVMeOFTCP` | `spec.protocol.nvmeofTcp` 스펙으로 ValidateCreate 통과 | envtest API 서버; PillarProtocol CRD 설치; `PillarProtocolCustomValidator` 인스턴스 생성 | 1) `spec.protocol.nvmeofTcp={port: 4420}`으로 `validator.ValidateCreate(ctx, obj)` 호출 | `warnings=nil`; `err=nil`; 허용 | `PProtWH` |
-| E23.1.2 | `TestPillarProtocolWebhook_InvalidCreate_EmptyProtocol` | 멤버가 없는 `spec.protocol`은 ValidateCreate가 거부 | envtest API 서버; PillarProtocol CRD 설치; `PillarProtocolCustomValidator` 인스턴스 생성 | 1) `spec.protocol={}`으로 `validator.ValidateCreate(ctx, obj)` 호출 | `err != nil`; `spec.protocol` 경로의 Required; "exactly one protocol member must be set (supported: nvmeofTcp)" | `PProtWH` |
-| E23.1.3 | `TestPillarProtocolCRD_InvalidCreate_RemovedProtocolMember` | 제거된 프로토콜 변형(`iscsi`, `nfs`)만 가진 PillarProtocol은 API 서버가 거부 | envtest API 서버; PillarProtocol CRD 설치 (`spec.protocol`은 `nvmeofTcp` 멤버만 정의) | 1) `spec.protocol={iscsi: {port: 3260}}`, `spec.protocol={nfs: {version: "4.2"}}`로 각각 `k8sClient.Create(ctx, protocol)` 호출 | 각각 오류 반환; HTTP 422; 알 수 없는 필드는 제거되고 "exactly one protocol member must be set (supported: nvmeofTcp)" | `PProtCRD` |
+| E23.1.2 | `TestPillarProtocolWebhook_InvalidCreate_EmptyProtocol` | 멤버가 없는 `spec.protocol`은 ValidateCreate가 거부 | envtest API 서버; PillarProtocol CRD 설치; `PillarProtocolCustomValidator` 인스턴스 생성 | 1) `spec.protocol={}`으로 `validator.ValidateCreate(ctx, obj)` 호출 | `err != nil`; `spec.protocol` 경로의 Required; "exactly one protocol member must be set (supported: nvmeofTcp, iscsi)" | `PProtWH` |
+| E23.1.3 | `TestPillarProtocolCRD_InvalidCreate_RemovedProtocolMember` | 서비스되지 않는 프로토콜 변형(`nfs`)만 가진 PillarProtocol은 API 서버가 거부 | envtest API 서버; PillarProtocol CRD 설치 (`spec.protocol`은 `nvmeofTcp`·`iscsi` 멤버만 정의) | 1) `spec.protocol={nfs: {version: "4.2"}}`로 `k8sClient.Create(ctx, protocol)` 호출 | 오류 반환; `.spec.protocol.nfs: field not declared in schema` | `PProtCRD` |
 | E23.1.4 | `TestPillarProtocolController_FinalizerAddedOnFirstReconcile` | PillarProtocol 생성 후 첫 번째 `Reconcile` 호출에서 `protocol-protection` 파이널라이저 자동 추가 | envtest; `PillarProtocolReconciler` 초기화; `spec.protocol.nvmeofTcp` PillarProtocol 생성 | 1) `k8sClient.Create(ctx, protocol)` 실행; 2) `reconciler.Reconcile(ctx, req)` 1회 호출 | PillarProtocol에 `pillar-csi.bhyoo.com/protocol-protection` 파이널라이저 존재; `result.RequeueAfter==0` | `PProtCRD`, `PProtCtrl` |
 | E23.1.5 | `TestPillarProtocolController_FinalizerNotDuplicated` | 동일 PillarProtocol을 두 번 조정해도 파이널라이저 중복 없음 | envtest; PillarProtocol 생성; 첫 조정으로 파이널라이저 추가 완료 | 1) 두 번째 `reconciler.Reconcile(ctx, req)` 호출 | 파이널라이저 개수 정확히 1개; 중복 없음 | `PProtCRD`, `PProtCtrl` |
 
@@ -3310,12 +3370,12 @@ PillarProtocol CRD의 전체 라이프사이클을 검증한다. 이 CRD는 스�
 
 ### E23.2 잘못된 스펙으로 생성 거부 — CRD 스키마 검증
 
-**목적:** CRD 스키마(`x-kubernetes-validations` exactly-one 규칙과 `nvmeofTcp` 필드의 Minimum/Maximum 마커)에 의해
+**목적:** CRD 스키마(`x-kubernetes-validations` exactly-one 규칙과 `nvmeofTcp`·`iscsi` 필드의 Minimum/Maximum 마커)에 의해
 잘못된 필드 값이 Kubernetes API 서버 수준에서 거부됨을 확인한다.
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| E23.2.1 | `TestPillarProtocolCRD_InvalidCreate_EmptyProtocol` | `spec.protocol`에 멤버가 없으면 API 서버가 HTTP 422로 거부 | envtest; PillarProtocol CRD 설치 (`has(self.nvmeofTcp)` CEL 규칙 포함) | 1) `spec.protocol={}`으로 `k8sClient.Create(ctx, protocol)` 호출 | 오류 반환; HTTP 422 UnprocessableEntity; "exactly one protocol member must be set (supported: nvmeofTcp)" | `PProtCRD` |
+| E23.2.1 | `TestPillarProtocolCRD_InvalidCreate_EmptyProtocol` | `spec.protocol`에 멤버가 없으면 API 서버가 HTTP 422로 거부 | envtest; PillarProtocol CRD 설치 (`has(self.nvmeofTcp)`·`has(self.iscsi)` exactly-one CEL 규칙 포함) | 1) `spec.protocol={}`으로 `k8sClient.Create(ctx, protocol)` 호출 | 오류 반환; HTTP 422 UnprocessableEntity; "exactly one protocol member must be set (supported: nvmeofTcp, iscsi)" | `PProtCRD` |
 | E23.2.2 | `TestPillarProtocolCRD_InvalidCreate_NVMeOFTCPPortTooLow` | `spec.protocol.nvmeofTcp.port=0` (최솟값 미달) 시 API 서버가 거부 | envtest; PillarProtocol CRD 설치 (`Minimum=1` 마커 포함) | 1) `spec.protocol.nvmeofTcp.port=0`으로 Create 호출 | 오류 반환; `spec.protocol.nvmeofTcp.port` 값 범위 검증 실패 | `PProtCRD` |
 | E23.2.3 | `TestPillarProtocolCRD_InvalidCreate_NVMeOFTCPPortTooHigh` | `spec.protocol.nvmeofTcp.port=65536` (최댓값 초과) 시 API 서버가 거부 | envtest; PillarProtocol CRD 설치 (`Maximum=65535` 마커 포함) | 1) `spec.protocol.nvmeofTcp.port=65536`으로 Create 호출 | 오류 반환; `spec.protocol.nvmeofTcp.port` 값 범위 검증 실패 | `PProtCRD` |
 | E23.2.4 | `TestPillarProtocolCRD_InvalidCreate_MaxQueueSizeOutOfRange` | `spec.protocol.nvmeofTcp.maxQueueSize`가 커널 허용 범위(16-1024) 밖이면 거부 | envtest; PillarProtocol CRD 설치 (`Minimum=16`, `Maximum=1024` 마커 포함) | 1) `spec.protocol.nvmeofTcp.maxQueueSize=8`로 Create 호출 | 오류 반환; HTTP 422; `spec.protocol.nvmeofTcp.maxQueueSize` 범위 검증 실패 | `PProtCRD` |
@@ -3496,16 +3556,17 @@ StorageClass는 특정 풀과 프로토콜에 묶여 있어, 변경 시 기존 P
 
 **목적:** Validating 웹훅이 참조된 PillarStore의 백엔드 멤버와 PillarProtocol의 프로토콜 멤버의
 호환성(`Compatible(spec.backend, spec.protocol)`)과, 바인딩 `spec.overrides`의 멤버가 참조 대상과 일치하는지를
-검증함을 확인한다. 현재 서비스되는 조합(zfs-zvol/lvm-lv × nvmeof-tcp)은 모두 블록 범주이므로 항상 호환되며,
-오버라이드 멤버가 스토어의 백엔드와 다르면 `spec.overrides.backend` 경로의 Invalid로 거부된다.
-파일 백엔드(zfs-dataset, dir)와 iSCSI·NFS 프로토콜은 구현되지 않아 스키마에 존재하지 않는다.
+검증함을 확인한다. 현재 서비스되는 조합(zfs-zvol/lvm-lv × nvmeof-tcp/iscsi)은 모두 블록 범주이므로 항상 호환되며,
+오버라이드 멤버가 스토어의 백엔드와 다르면 `spec.overrides.backend` 경로의, 프로토콜과 다르면(`nvmeofTcp` 프로토콜에
+`overrides.protocol.iscsi` 등) `spec.overrides.protocol` 경로의 Invalid로 거부된다(E35.6 참고).
+파일 백엔드(zfs-dataset, dir)와 NFS 프로토콜은 구현되지 않아 스키마에 존재하지 않는다.
 
 **호환성 매트릭스 (서비스되는 멤버):**
 
-| 백엔드 멤버 | nvmeofTcp |
-|------------|:---------:|
-| zfs (zfs-zvol) | ✅ |
-| lvm (lvm-lv)   | ✅ |
+| 백엔드 멤버 | nvmeofTcp | iscsi |
+|------------|:---------:|:-----:|
+| zfs (zfs-zvol) | ✅ | ✅ |
+| lvm (lvm-lv)   | ✅ | ✅ |
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|

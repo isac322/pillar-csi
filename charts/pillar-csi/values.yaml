@@ -238,6 +238,17 @@ node:
   # agent.  See PRD §2.4 for the kernel netns rationale.
   hostNetwork: true
 
+  iscsi:
+    # -- Path on the node host of the host init
+    # network namespace file used for the NETLINK_ISCSI socket.  NETLINK_ISCSI
+    # only exists in the host init network namespace; production nodes with
+    # hostNetwork: true need nothing (leave empty).  Set this only for
+    # nested-container nodes (e.g. Kind) to a host init netns file visible on
+    # the node, e.g. /host/proc/1/ns/net when host /proc is mounted at
+    # /host/proc.  When set, pillar-node receives --iscsi-netlink-netns=<path>
+    # and the containing directory is mounted read-only at the same path.
+    netlinkNetnsPath: ""
+
   # Init container that runs modprobe for initiator kernel modules (best-effort).
   # Pod startup is NOT blocked if modprobe fails.
   initModprobe:
@@ -251,10 +262,13 @@ node:
     # nvme_fabrics must be listed before nvme_tcp (it is a dependency).
     # dm_mod provides the device-mapper target that holds the backend device
     # of a local attach on the storage node.
+    # iscsi_tcp is the iSCSI initiator transport (pulls libiscsi,
+    # libiscsi_tcp and scsi_transport_iscsi).
     modules:
       - nvme_fabrics
       - nvme_tcp
       - dm_mod
+      - iscsi_tcp
     # -- Resource requests/limits for the modprobe init container.
     resources:
       limits:
@@ -303,10 +317,10 @@ node:
 # Kubernetes DaemonSet: gRPC agent on storage nodes.
 # Scheduled only on nodes labelled pillar-csi.bhyoo.com/agent-node=true
 # (the controller manages this label automatically via PillarAgent CRs).
-# hostNetwork defaults to true so that nvmet_tcp listeners and `nvme connect`
-# TCP sockets are created in the host network namespace.  Disabling this
-# breaks the NVMe-oF data plane in every clustered deployment; see
-# PRD §2.4 for the kernel netns rationale.
+# hostNetwork defaults to true so that nvmet_tcp / LIO iSCSI listeners and
+# `nvme connect` TCP sockets are created in the host network namespace.
+# Disabling this breaks the NVMe-oF and iSCSI data planes in every clustered
+# deployment; see PRD §2.4 for the kernel netns rationale.
 # Init container: best-effort modprobe for target kernel modules.
 agent:
   image:
@@ -433,9 +447,14 @@ agent:
       pullPolicy: ""
     # -- Kernel modules to load. Failures are silently ignored (best-effort).
     # nvmet must be listed before nvmet_tcp (it is a dependency).
+    # target_core_mod, target_core_iblock and iscsi_target_mod provide the LIO
+    # iSCSI target (target_core_mod before the other two).
     modules:
       - nvmet
       - nvmet_tcp
+      - target_core_mod
+      - target_core_iblock
+      - iscsi_target_mod
     # -- Resource requests/limits for the modprobe init container.
     resources:
       limits:

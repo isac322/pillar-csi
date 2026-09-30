@@ -1669,16 +1669,21 @@ var _ = Describe("evaluateCompatibility", func() {
 	nvmeof := &pillarcsiv1alpha1.PillarProtocol{Spec: pillarcsiv1alpha1.PillarProtocolSpec{
 		Protocol: pillarcsiv1alpha1.ProtocolSpec{NVMeOFTCP: &pillarcsiv1alpha1.NVMeOFTCPConfig{}},
 	}}
+	iscsi := &pillarcsiv1alpha1.PillarProtocol{Spec: pillarcsiv1alpha1.PillarProtocolSpec{
+		Protocol: pillarcsiv1alpha1.ProtocolSpec{ISCSI: &pillarcsiv1alpha1.ISCSIConfig{}},
+	}}
 
 	DescribeTable("served combinations are compatible",
-		func(pool *pillarcsiv1alpha1.PillarStore, backend string) {
-			compat := evaluateCompatibility(pool, nvmeof)
+		func(pool *pillarcsiv1alpha1.PillarStore, protocol *pillarcsiv1alpha1.PillarProtocol, backend, protocolID string) {
+			compat := evaluateCompatibility(pool, protocol)
 			Expect(compat.OK).To(BeTrue(), "expected compatible, got: %s", compat.Message)
 			Expect(compat.Message).To(ContainSubstring(backend))
-			Expect(compat.Message).To(ContainSubstring("nvmeof-tcp"))
+			Expect(compat.Message).To(ContainSubstring(protocolID))
 		},
-		Entry("zfs + nvmeofTcp", zfsPool, "zfs-zvol"),
-		Entry("lvm + nvmeofTcp", lvmPool, "lvm-lv"),
+		Entry("zfs + nvmeofTcp", zfsPool, nvmeof, "zfs-zvol", "nvmeof-tcp"),
+		Entry("lvm + nvmeofTcp", lvmPool, nvmeof, "lvm-lv", "nvmeof-tcp"),
+		Entry("zfs + iscsi", zfsPool, iscsi, "zfs-zvol", "iscsi"),
+		Entry("lvm + iscsi", lvmPool, iscsi, "lvm-lv", "iscsi"),
 	)
 
 	It("reports a backend union without a member as incompatible", func() {

@@ -28,12 +28,12 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
     spec:
-      # hostNetwork: true is required for the NVMe-oF data plane.
-      # The kernel binds nvmet_tcp listening sockets in the netns of the
-      # process that writes configfs `enable=1` (the agent).  With
-      # hostNetwork: false that listener lives in the pod netns and is
-      # unreachable from the host network where initiators connect.  See
-      # PRD §2.4 for the full rationale and operator override.
+      # hostNetwork: true is required for the NVMe-oF and iSCSI data planes.
+      # The kernel binds nvmet_tcp (and LIO iscsi_target_mod network portal)
+      # listening sockets in the netns of the process that writes configfs
+      # (the agent).  With hostNetwork: false those listeners live in the pod
+      # netns and are unreachable from the host network where initiators
+      # connect.  See PRD §2.4 for the full rationale and operator override.
       hostNetwork: {{ .Values.agent.hostNetwork }}
       {{- if .Values.agent.hostNetwork }}
       # When hostNetwork is true the pod uses the host's DNS resolver by
@@ -102,7 +102,7 @@ spec:
               protocol: TCP
             {{- end }}
           securityContext:
-            # CAP_SYS_ADMIN is required for NVMe-oF target management
+            # CAP_SYS_ADMIN is required for NVMe-oF and iSCSI (LIO) target management
             # (configfs writes, block device operations).
             # runAsUser 0 overrides the Dockerfile USER directive because ZFS and
             # configfs operations require root.
@@ -189,7 +189,7 @@ spec:
               exec:
                 command: ["/bin/busybox", "sleep", "5"]
           volumeMounts:
-            # configfs — required for NVMe-oF target configuration via nvmet.
+            # configfs — required for NVMe-oF (nvmet) and iSCSI (LIO) target configuration.
             - name: sys-kernel-config
               mountPath: /sys/kernel/config
             # /dev — required for block device operations (target backstores).
@@ -214,7 +214,7 @@ spec:
             {{- toYaml .Values.agent.resources | nindent 12 }}
       # ── Volumes ────────────────────────────────────────────────────────────
       volumes:
-        # /sys/kernel/config — configfs filesystem for NVMe-oF target management.
+        # /sys/kernel/config — configfs filesystem for nvmet and LIO target management.
         - name: sys-kernel-config
           hostPath:
             path: /sys/kernel/config

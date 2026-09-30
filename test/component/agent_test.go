@@ -643,7 +643,7 @@ func TestAgentServer_ExportVolume_InvalidProtocol(t *testing.T) {
 	_, err := srv.ExportVolume(context.Background(), &agentv1.ExportVolumeRequest{
 		VolumeId:     compTestVolumeID,
 		Fence:        testFence(t),
-		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI,
+		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NFS,
 	})
 	if err == nil {
 		t.Fatal("expected Unimplemented, got nil")
@@ -893,8 +893,8 @@ func TestAgentServer_AllowInitiator_InvalidProtocol(t *testing.T) {
 	_, err := srv.AllowInitiator(context.Background(), &agentv1.AllowInitiatorRequest{
 		VolumeId:     compTestVolumeID,
 		Fence:        testFence(t),
-		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI,
-		InitiatorId:  "iqn.example",
+		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NFS,
+		InitiatorId:  compTestHostNQN,
 	})
 	if err == nil {
 		t.Fatal("expected Unimplemented, got nil")

@@ -15,8 +15,9 @@ limitations under the License.
 */
 
 // Package agent implements the AgentService gRPC server that runs on each
-// storage node.  It manages ZFS zvol volumes and exports them via NVMe-oF TCP
-// using direct configfs manipulation (no external CLI tools).
+// storage node.  It manages ZFS zvol and LVM volumes and exports them via
+// NVMe-oF TCP (nvmet) or iSCSI (LIO) using direct configfs manipulation (no
+// external CLI tools).
 package agent
 
 import (
@@ -33,6 +34,7 @@ import (
 
 	agentv1 "github.com/isac322/pillar-csi/gen/go/pillar_csi/agent/v1"
 	"github.com/isac322/pillar-csi/internal/agent/backend"
+	"github.com/isac322/pillar-csi/internal/agent/lio"
 	"github.com/isac322/pillar-csi/internal/agent/nvmeof"
 	"github.com/isac322/pillar-csi/internal/telemetry"
 )
@@ -118,6 +120,10 @@ type Server struct {
 	// server instance. Production uses the built-in resolver; tests inject a
 	// per-server resolver to verify dispatch without global state.
 	protocolHandlerResolver func(agentv1.ProtocolType) (AgentProtocolHandler, error)
+
+	// lioFS performs the LIO configfs operations of the iSCSI handler.  nil
+	// selects lio.OSFS; tests inject an emulated kernel via WithLIOFS.
+	lioFS lio.FS
 }
 
 // Ensure Server satisfies the interface at compile time.
