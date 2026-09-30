@@ -56,13 +56,11 @@ func TestPeriodicTrimReleasesSpace(t *testing.T) {
 		t.Fatalf("PILLAR_E2E_TRIM_INTERVAL = %q, want a positive duration: %v",
 			os.Getenv("PILLAR_E2E_TRIM_INTERVAL"), err)
 	}
-	// A volume enabled for trim whose last trim ran just before its payload
-	// was deleted is due one interval later, and the node loop wakes at most
-	// every min(interval, 1m).  Watching the opted-out volume for two
-	// intervals after the delete therefore covers at least one trim it would
-	// have received; the margin absorbs the trim itself.
-	optOutWindow := 2*interval + 15*time.Second
-	if optOutWindow > periodicTrimShrinkTimeout {
+	// Once the trimmed volume shrinks, the opted-out volume is watched for a
+	// further interval + margin: if it were enabled, it would be due no later
+	// than one interval after the delete, and the node loop wakes at most
+	// every min(interval, 1m).  The bound is the overall shrink timeout.
+	if interval+30*time.Second > periodicTrimShrinkTimeout {
 		t.Fatalf("trim interval %s is too long for the %s window; install the node with a shorter node.trim.interval",
 			interval, periodicTrimShrinkTimeout)
 	}
@@ -135,40 +133,42 @@ func TestPeriodicTrimReleasesSpace(t *testing.T) {
 			t.Logf("%s:%s allocated %d bytes with both %d-byte payloads written; deleted them at %s",
 				backingContainer, backingFile, written, payloadBytes, deletedAt.Format(time.RFC3339))
 
-			var shrunkAfter time.Duration
+			// The trimmed volume is detected by its own LV discard counter,
+			// not the shared backing file, whose allocation other volumes'
+			// discards also change.  Once the trimmed LV shrinks, the kept LV
+			// is watched for a further interval + margin: had it been
+			// enabled, it was due no later than its last missed trim +
+			// interval, so one full interval after the detection is long
+			// enough to see the trim it would have received.
+			var trimmedAt, watchUntil time.Time
 			for {
 				elapsed := time.Since(deletedAt)
-				if discarded := blockDeviceDiscardedBytes(t, keptLV) - keptBaseline; discarded != 0 {
+				if keptDelta := blockDeviceDiscardedBytes(t, keptLV) - keptBaseline; keptDelta != 0 {
 					t.Fatalf("LV %s of claim kept (periodicTrim: false) received %d discarded bytes %s after the delete, want none",
-						keptLV, discarded, elapsed.Round(time.Second))
+						keptLV, keptDelta, elapsed.Round(time.Second))
 				}
-				allocated := backingAllocatedBytes(t, backingContainer, backingFile)
-				if shrunkAfter == 0 && written-allocated >= payloadBytes/2 {
-					shrunkAfter = elapsed
-					t.Logf("%s:%s allocated %d bytes %s after the delete (released %d)",
-						backingContainer, backingFile, allocated, elapsed.Round(time.Second), written-allocated)
-				}
-				if shrunkAfter != 0 && elapsed >= optOutWindow {
+				trimmedDelta := blockDeviceDiscardedBytes(t, trimmedLV) - trimmedBaseline
+				if trimmedAt.IsZero() {
+					if trimmedDelta >= payloadBytes/2 {
+						trimmedAt = time.Now()
+						watchUntil = trimmedAt.Add(interval + 15*time.Second)
+						t.Logf("LV %s of claim trimmed received %d discarded bytes %s after the delete; watching claim kept until %s",
+							trimmedLV, trimmedDelta, elapsed.Round(time.Second), watchUntil.Format(time.RFC3339))
+					} else if elapsed >= periodicTrimShrinkTimeout {
+						t.Fatalf(
+							"LV %s of claim trimmed received %d discarded bytes within %s (allocated %d), want at least %d of the %d deleted bytes",
+							trimmedLV, trimmedDelta, periodicTrimShrinkTimeout, written, payloadBytes/2, payloadBytes,
+						)
+					}
+				} else if !time.Now().Before(watchUntil) {
 					break
-				}
-				if shrunkAfter == 0 && elapsed >= periodicTrimShrinkTimeout {
-					t.Fatalf(
-						"periodic trim released %d bytes of %s:%s within %s (allocated %d -> %d), want at least %d of the %d deleted bytes; "+
-							"LV %s of claim trimmed received %d discarded bytes",
-						written-allocated, backingContainer, backingFile, periodicTrimShrinkTimeout, written, allocated,
-						payloadBytes/2, payloadBytes, trimmedLV, blockDeviceDiscardedBytes(t, trimmedLV)-trimmedBaseline,
-					)
 				}
 				time.Sleep(periodicTrimPollInterval)
 			}
-
-			// The shrink must come from the trimmed volume: its LV saw the
-			// discards, which also proves the counter the opted-out volume
-			// is judged by does count discards.
-			if discarded := blockDeviceDiscardedBytes(t, trimmedLV) - trimmedBaseline; discarded < payloadBytes/2 {
-				t.Fatalf("LV %s of claim trimmed received %d discarded bytes, want at least %d",
-					trimmedLV, discarded, payloadBytes/2)
-			}
+			allocated := backingAllocatedBytes(t, backingContainer, backingFile)
+			t.Logf("%s:%s allocated %d bytes %s after the delete (released %d); claim kept still discarded none",
+				backingContainer, backingFile, allocated,
+				time.Since(deletedAt).Round(time.Second), written-allocated)
 		})
 	}
 }

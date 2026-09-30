@@ -221,14 +221,16 @@ func TestISCSIOnlineFilesystemExpansion(t *testing.T) {
 // The E2E LVM store is a linear LV in a VG whose only PV is a loop device
 // over a sparse file.  A linear LV's size in lvs(8) never changes, but the
 // loop driver punches a hole in its backing file for every discard, so the
-// file's allocated blocks (st_blocks) are the space the volume really holds
-// on the storage host.  Recycled extents of earlier volumes may already be
-// allocated, so only the drop after fstrim is asserted, not the growth.
+// file's allocated blocks (st_blocks) are the space the volumes really hold
+// on the storage host.  The backing file is shared by every LV, so the pass
+// criterion is this volume's LV: the discard counter of its dm device
+// (/sys/dev/block/<maj:min>/stat) must grow by at least half the payload.
+// The file's numbers are logged for context only.
 //
 // The E2E node trims every few seconds (PILLAR_E2E_TRIM_INTERVAL), which
 // could release the payload before fstrim runs.  The claim opts out with
-// periodicTrim: false so the drop is fstrim's alone; the periodic path is
-// TestPeriodicTrimReleasesSpace.
+// periodicTrim: false so the discards are fstrim's alone; the periodic path
+// is TestPeriodicTrimReleasesSpace.
 func TestISCSIFilesystemTrimReleasesSpace(t *testing.T) {
 	cfg := loadISCSIConfig(t)
 	backingContainer := requireEnv(t, "PILLAR_E2E_BACKING_CONTAINER")
@@ -246,6 +248,8 @@ func TestISCSIFilesystemTrimReleasesSpace(t *testing.T) {
 	iqnA := readISCSIInitiatorIQN(t, cfg.clientNodeA)
 	disk := requirePodUsesISCSIDevice(t, ns, "trimmer", cfg.clientNodeA, target, iqnA, false)
 
+	lv := lvKernelDevice(t, backingContainer, ns, "data")
+
 	if limit := blockDeviceDiscardMaxBytes(t, disk); limit == 0 {
 		t.Fatalf(
 			"iSCSI disk /dev/%s of target %s has queue/discard_max_bytes = 0: the target does not "+
@@ -260,8 +264,9 @@ func TestISCSIFilesystemTrimReleasesSpace(t *testing.T) {
 		"dd if=/dev/urandom of=/data/trim-payload bs=1M count=%d conv=fsync && sync", iscsiTrimPayloadMiB,
 	))
 	written := backingAllocatedBytes(t, backingContainer, backingFile)
-	t.Logf("%s:%s allocated %d bytes before and %d bytes after writing %d bytes",
-		backingContainer, backingFile, baseline, written, payloadBytes)
+	discardBaseline := blockDeviceDiscardedBytes(t, lv)
+	t.Logf("%s:%s allocated %d bytes before and %d bytes after writing %d bytes; LV %s has discarded %d bytes",
+		backingContainer, backingFile, baseline, written, payloadBytes, lv, discardBaseline)
 
 	// sync commits the journal transaction that frees the blocks; ext4 and
 	// xfs trim only committed free space.
@@ -270,13 +275,14 @@ func TestISCSIFilesystemTrimReleasesSpace(t *testing.T) {
 	mount := dockerExec(t, cfg.clientNodeA, "findmnt", "-n", "-o", "SOURCE,FSTYPE", "--mountpoint", mountPath)
 	t.Logf("%s mounts %s at %s", cfg.clientNodeA, mount, mountPath)
 	t.Logf("fstrim on %s: %s", cfg.clientNodeA, dockerExec(t, cfg.clientNodeA, "fstrim", "-v", mountPath))
-
 	trimmed := backingAllocatedBytes(t, backingContainer, backingFile)
-	t.Logf("%s:%s allocated %d bytes after fstrim", backingContainer, backingFile, trimmed)
-	if released := written - trimmed; released < payloadBytes/2 {
+	discarded := blockDeviceDiscardedBytes(t, lv) - discardBaseline
+	t.Logf("%s:%s allocated %d bytes after fstrim; LV %s discarded %d bytes since the write",
+		backingContainer, backingFile, trimmed, lv, discarded)
+	if discarded < payloadBytes/2 {
 		t.Fatalf(
-			"fstrim released %d bytes of %s:%s (allocated %d -> %d), want at least %d of the %d deleted bytes",
-			released, backingContainer, backingFile, written, trimmed, payloadBytes/2, payloadBytes,
+			"fstrim discarded %d bytes of LV %s (shared backing file %s:%s allocated %d -> %d), want at least %d of the %d deleted bytes",
+			discarded, lv, backingContainer, backingFile, written, trimmed, payloadBytes/2, payloadBytes,
 		)
 	}
 }
