@@ -500,8 +500,10 @@ func (k *fakeKernel) destroySession(r fakeReq) *uevent {
 	return nil
 }
 
-// connError simulates the kernel detecting a broken connection.
-func (k *fakeKernel) connError(sid, cid uint32) {
+// connError simulates the kernel detecting a broken connection on the
+// session's only connection (CID 0; the initiator creates one per session).
+func (k *fakeKernel) connError(sid uint32) {
+	const cid = 0
 	k.mu.Lock()
 	k.setConnState(sid, cid, "failed")
 	writeFile(k.t, k.sessionPath(sid, "state"), "FAILED\n")
@@ -551,16 +553,24 @@ func (e fakeEndpoint) Close() error {
 }
 
 type fakeDialer struct {
-	mu     sync.Mutex
-	dials  []Portal
-	fail   int // fail this many upcoming dials
-	closed int
+	mu    sync.Mutex
+	dials []Portal
+	// budgets holds the time left until the dial context's deadline (the
+	// login budget) per dial; 0 when the context has no deadline.
+	budgets []time.Duration
+	fail    int // fail this many upcoming dials
+	closed  int
 }
 
-func (d *fakeDialer) dial(_ context.Context, p Portal) (endpoint, error) {
+func (d *fakeDialer) dial(ctx context.Context, p Portal) (endpoint, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.dials = append(d.dials, p)
+	var budget time.Duration
+	if deadline, ok := ctx.Deadline(); ok {
+		budget = time.Until(deadline)
+	}
+	d.budgets = append(d.budgets, budget)
 	if d.fail > 0 {
 		d.fail--
 		return nil, errors.New("connection refused")

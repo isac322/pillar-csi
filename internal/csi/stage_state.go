@@ -16,7 +16,10 @@ limitations under the License.
 
 package csi
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Protocol type constants
@@ -165,6 +168,13 @@ type ISCSIStageState struct {
 
 	// LUN is the logical unit number of the volume within the target.
 	LUN int `json:"lun"`
+
+	// LoginTimeoutSeconds is the login timeout the session was staged
+	// with.  The initiator keeps it only in memory, so RestoreProtocolSessions
+	// re-applies it to the session adopted after a pillar-node restart.
+	// Zero (records written before the field existed) means unknown: the
+	// initiator default applies.
+	LoginTimeoutSeconds int `json:"login_timeout_seconds,omitempty"`
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -254,10 +264,11 @@ func (s *nodeStageState) ToProtocolState() (ProtocolState, error) {
 			return nil, fmt.Errorf("iSCSI stage state sub-struct is nil")
 		}
 		return &ISCSIProtocolState{
-			TargetIQN: s.ISCSI.TargetIQN,
-			Address:   s.ISCSI.Address,
-			Port:      s.ISCSI.Port,
-			LUN:       s.ISCSI.LUN,
+			TargetIQN:    s.ISCSI.TargetIQN,
+			Address:      s.ISCSI.Address,
+			Port:         s.ISCSI.Port,
+			LUN:          s.ISCSI.LUN,
+			LoginTimeout: time.Duration(s.ISCSI.LoginTimeoutSeconds) * time.Second,
 		}, nil
 	default:
 		return nil, fmt.Errorf("unrecognized protocol type %q in persisted stage state", s.ProtocolType)
@@ -313,10 +324,11 @@ func stageStateFromAttachResult(
 		if attachResult != nil {
 			if iscsiState, ok := attachResult.State.(*ISCSIProtocolState); ok && iscsiState != nil {
 				st = &ISCSIStageState{
-					TargetIQN: iscsiState.TargetIQN,
-					Address:   iscsiState.Address,
-					Port:      iscsiState.Port,
-					LUN:       iscsiState.LUN,
+					TargetIQN:           iscsiState.TargetIQN,
+					Address:             iscsiState.Address,
+					Port:                iscsiState.Port,
+					LUN:                 iscsiState.LUN,
+					LoginTimeoutSeconds: int(iscsiState.LoginTimeout / time.Second),
 				}
 			}
 		}

@@ -39,10 +39,16 @@ import (
 	"strings"
 )
 
-// Kernel session states (iscsi_session_state_names).
+// Kernel session states (iscsi_session_state_names).  FAILED means the
+// connection broke and the kernel queues the session's I/O until it is
+// logged in again or recovery_tmo expires; expiry moves the session to FREE
+// and fails the queued I/O (drivers/scsi/scsi_transport_iscsi.c
+// __iscsi_block_session, session_recovery_timedout).  A session that was
+// never logged in is FREE too.
 const (
 	sessionStateLoggedIn = "LOGGED_IN"
 	sessionStateFailed   = "FAILED"
+	sessionStateFree     = "FREE"
 	// Connection state connection_state_names[ISCSI_CONN_UP].
 	connStateUp = "up"
 )

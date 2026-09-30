@@ -20,9 +20,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -44,17 +46,20 @@ type fakeISCSIInitiator struct {
 
 	device string
 
-	logins   []iscsi.SessionParams
-	luns     []int
-	rescans  []iscsi.Portal
-	logouts  []iscsi.Portal
-	sessions map[string]*iscsi.Session
+	logins        []iscsi.SessionParams
+	luns          []int
+	rescans       []iscsi.Portal
+	logouts       []iscsi.Portal
+	sessions      map[string]*iscsi.Session
+	loginTimeouts map[string]time.Duration // SetLoginTimeout calls by target@portal
 }
 
 var _ ISCSIInitiator = (*fakeISCSIInitiator)(nil)
 
 func newFakeISCSIInitiator() *fakeISCSIInitiator {
-	return &fakeISCSIInitiator{device: "/dev/sdb", sessions: map[string]*iscsi.Session{}}
+	return &fakeISCSIInitiator{
+		device: "/dev/sdb", sessions: map[string]*iscsi.Session{}, loginTimeouts: map[string]time.Duration{},
+	}
 }
 
 func (f *fakeISCSIInitiator) Login(_ context.Context, p iscsi.SessionParams) (*iscsi.Session, error) {
@@ -90,6 +95,15 @@ func (f *fakeISCSIInitiator) Logout(_ context.Context, targetIQN string, portal 
 		return f.logoutErr
 	}
 	delete(f.sessions, targetIQN+"@"+portal.String())
+	return nil
+}
+
+func (f *fakeISCSIInitiator) SetLoginTimeout(targetIQN string, portal iscsi.Portal, d time.Duration) error {
+	key := targetIQN + "@" + portal.String()
+	if _, ok := f.sessions[key]; !ok {
+		return errors.New("no iSCSI session")
+	}
+	f.loginTimeouts[key] = d
 	return nil
 }
 
@@ -138,7 +152,9 @@ func TestISCSIHandler_AttachLogsInAndReturnsDevice(t *testing.T) {
 	if len(ini.luns) != 1 || ini.luns[0] != 3 {
 		t.Errorf("DeviceForLUN luns = %v, want [3]", ini.luns)
 	}
-	wantState := &ISCSIProtocolState{TargetIQN: testTargetIQN, Address: "192.168.1.10", Port: "3260", LUN: 3}
+	wantState := &ISCSIProtocolState{
+		TargetIQN: testTargetIQN, Address: "192.168.1.10", Port: "3260", LUN: 3, LoginTimeout: 30 * time.Second,
+	}
 	if st, ok := res.State.(*ISCSIProtocolState); !ok || *st != *wantState {
 		t.Errorf("State = %#v, want %#v", res.State, wantState)
 	}
@@ -332,7 +348,9 @@ func TestISCSIHandler_Rescan(t *testing.T) {
 // node restart targets the same session.
 func TestISCSIStageState_RoundTrip(t *testing.T) {
 	t.Parallel()
-	orig := &ISCSIProtocolState{TargetIQN: testTargetIQN, Address: "192.168.1.10", Port: "3260", LUN: 2}
+	orig := &ISCSIProtocolState{
+		TargetIQN: testTargetIQN, Address: "192.168.1.10", Port: "3260", LUN: 2, LoginTimeout: 45 * time.Second,
+	}
 	s := stageStateFromAttachResult(ProtocolISCSI, AccessTypeBlock, "ignored-iqn", "ignored", "1",
 		&AttachResult{DevicePath: "/dev/sdc", State: orig})
 
@@ -432,6 +450,72 @@ func TestNodeStageUnstage_ISCSI(t *testing.T) {
 	}
 	if len(ini.logouts) != 1 || len(ini.sessions) != 0 {
 		t.Errorf("logouts = %v, sessions = %d; want one logout and no session", ini.logouts, len(ini.sessions))
+	}
+}
+
+// TestRestoreProtocolSessions_ISCSI verifies that after a pillar-node restart
+// the login timeout a volume was staged with is re-applied to the session
+// the initiator adopted from sysfs (the kernel does not keep it), and that a
+// stage record written before the field existed falls back to the default
+// with a log line.
+func TestRestoreProtocolSessions_ISCSI(t *testing.T) {
+	t.Parallel()
+	before := newHandlerNodeTestEnv(t, map[string]ProtocolHandler{
+		ProtocolISCSI: NewISCSIHandler(newFakeISCSIInitiator(), testInitiatorIQN),
+	})
+	_, err := before.srv.NodeStageVolume(context.Background(), &csi.NodeStageVolumeRequest{
+		VolumeId:          "storage-1/iscsi/zfs-zvol/tank/pvc-45",
+		StagingTargetPath: t.TempDir(),
+		VolumeCapability:  mountCap("ext4"),
+		VolumeContext: map[string]string{
+			VolumeContextKeyTargetID:          testTargetIQN,
+			VolumeContextKeyAddress:           "192.168.1.10",
+			VolumeContextKeyPort:              "3260",
+			VolumeContextKeyProtocolType:      ProtocolISCSI,
+			VolumeContextKeyISCSILoginTimeout: "45",
+		},
+	})
+	if err != nil {
+		t.Fatalf("NodeStageVolume: %v", err)
+	}
+	const legacyIQN = testTargetIQN + "-legacy"
+	err = before.srv.writeStageState("tank/pvc-legacy", stageStateFromAttachResult(
+		ProtocolISCSI, AccessTypeFilesystem, legacyIQN, "192.168.1.11", "3260", nil))
+	if err != nil {
+		t.Fatalf("writeStageState: %v", err)
+	}
+
+	// Restart: a new initiator that adopted both sessions from sysfs.
+	ini := newFakeISCSIInitiator()
+	ini.sessions[testTargetIQN+"@192.168.1.10:3260"] = &iscsi.Session{SID: 1}
+	ini.sessions[legacyIQN+"@192.168.1.11:3260"] = &iscsi.Session{SID: 2}
+	after := &NodeServer{
+		handlers: map[string]ProtocolHandler{ProtocolISCSI: NewISCSIHandler(ini, testInitiatorIQN)},
+		stateDir: before.stateDir,
+	}
+	var logs []string
+	err = after.RestoreProtocolSessions(func(format string, args ...any) {
+		logs = append(logs, fmt.Sprintf(format, args...))
+	})
+	if err != nil {
+		t.Fatalf("RestoreProtocolSessions: %v", err)
+	}
+	want := map[string]time.Duration{
+		testTargetIQN + "@192.168.1.10:3260": 45 * time.Second,
+		legacyIQN + "@192.168.1.11:3260":     0, // initiator default
+	}
+	if !reflect.DeepEqual(ini.loginTimeouts, want) {
+		t.Errorf("restored login timeouts = %v, want %v", ini.loginTimeouts, want)
+	}
+	if len(logs) != 1 || !strings.Contains(logs[0], legacyIQN) {
+		t.Errorf("logs = %q, want one fallback line for %s", logs, legacyIQN)
+	}
+
+	// A staged volume whose session did not survive is reported, not skipped.
+	delete(ini.sessions, legacyIQN+"@192.168.1.11:3260")
+	err = after.RestoreProtocolSessions(func(string, ...any) {})
+	if err == nil || !strings.Contains(err.Error(), legacyIQN) {
+		t.Errorf("restore with a vanished session = %v, want an error naming %s", err, legacyIQN)
 	}
 }
 

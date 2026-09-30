@@ -1032,6 +1032,7 @@ func main() {
 	// attach on the storage node; see csisvc.DeviceMapper.
 	nodeSrv := csisvc.NewNodeServer(*nodeID, handlers, &mkdirMounter{wrapped: csisvc.NewKubeMounter()}).
 		WithDeviceMapper(csisvc.NewExecDeviceMapper())
+	restoreProtocolSessions(nodeSrv)
 
 	lis := listenCSISocketOrExit(*csiSocket)
 
@@ -1164,6 +1165,21 @@ func newNodeGRPCServer() *grpc.Server {
 		grpc.StatsHandler(telemetry.NodeServerHandler()),
 		grpc.ChainUnaryInterceptor(telemetry.UnaryServerFailureInterceptor(failureLog)),
 	)
+}
+
+// restoreProtocolSessions re-applies the userspace-only session parameters
+// (the iSCSI login timeout) to the sessions the initiator adopted from
+// sysfs: kubelet does not repeat NodeStageVolume for volumes that stay
+// mounted.  Not fatal: one volume whose session is gone must not keep the
+// node from serving the others; that volume's session keeps the default.
+func restoreProtocolSessions(nodeSrv *csisvc.NodeServer) {
+	logRestore := func(format string, args ...any) {
+		fmt.Fprintf(os.Stderr, "pillar-node: restore protocol sessions: "+format+"\n", args...)
+	}
+	restoreErr := nodeSrv.RestoreProtocolSessions(logRestore)
+	if restoreErr != nil {
+		logRestore("%v", restoreErr)
+	}
 }
 
 // startISCSIInitiatorOrExit starts the in-process iSCSI initiator when the

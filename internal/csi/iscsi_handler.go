@@ -49,6 +49,7 @@ type ISCSIInitiator interface {
 	DeviceForLUN(ctx context.Context, s *iscsi.Session, lun int) (string, error)
 	Rescan(ctx context.Context, targetIQN string, portal iscsi.Portal) error
 	Logout(ctx context.Context, targetIQN string, portal iscsi.Portal) error
+	SetLoginTimeout(targetIQN string, portal iscsi.Portal, d time.Duration) error
 }
 
 var _ ISCSIInitiator = (*iscsi.Initiator)(nil)
@@ -64,6 +65,10 @@ type ISCSIProtocolState struct {
 	Port string
 	// LUN is the logical unit number of the volume within the target.
 	LUN int
+	// LoginTimeout is the login timeout the session was logged in with;
+	// zero means unknown (a stage record older than the field) and selects
+	// the initiator default.
+	LoginTimeout time.Duration
 }
 
 // ProtocolType satisfies the ProtocolState interface.
@@ -225,13 +230,18 @@ func (h *ISCSIHandler) Attach(ctx context.Context, params AttachParams) (*Attach
 		return nil, err
 	}
 
+	loginTimeout := spec.timeouts.login
+	if loginTimeout <= 0 {
+		loginTimeout = iscsi.DefaultLoginTimeout
+	}
 	return &AttachResult{
 		DevicePath: devicePath,
 		State: &ISCSIProtocolState{
-			TargetIQN: spec.targetIQN,
-			Address:   spec.portal.Address,
-			Port:      strconv.Itoa(spec.portal.Port),
-			LUN:       spec.lun,
+			TargetIQN:    spec.targetIQN,
+			Address:      spec.portal.Address,
+			Port:         strconv.Itoa(spec.portal.Port),
+			LUN:          spec.lun,
+			LoginTimeout: loginTimeout,
 		},
 	}, nil
 }
@@ -261,6 +271,30 @@ func (h *ISCSIHandler) Rescan(ctx context.Context, state ProtocolState) error {
 	rescanErr := h.initiator.Rescan(ctx, targetIQN, portal)
 	if rescanErr != nil {
 		return fmt.Errorf("iscsi Rescan: rescan %s at %s: %w", targetIQN, portal, rescanErr)
+	}
+	return nil
+}
+
+// RestoreSession re-applies to the session identified by state the
+// userspace-only session parameters the kernel does not keep: the login
+// timeout.  The pillar-node process calls it at startup for every staged iSCSI volume,
+// because a session adopted from sysfs after a restart otherwise re-logs in
+// with the initiator default, and kubelet does not repeat NodeStageVolume
+// for a volume that stays mounted.  A zero state.LoginTimeout (a record
+// older than the field) applies the initiator default.
+func (h *ISCSIHandler) RestoreSession(state ProtocolState) error {
+	targetIQN, portal, err := iscsiStatePortal("RestoreSession", state)
+	if err != nil {
+		return err
+	}
+	st, ok := state.(*ISCSIProtocolState)
+	if !ok {
+		return fmt.Errorf("iscsi RestoreSession: unexpected state type %T (want *ISCSIProtocolState)", state)
+	}
+	setErr := h.initiator.SetLoginTimeout(targetIQN, portal, st.LoginTimeout)
+	if setErr != nil {
+		return fmt.Errorf("iscsi RestoreSession: set login timeout %v of %s at %s: %w",
+			st.LoginTimeout, targetIQN, portal, setErr)
 	}
 	return nil
 }

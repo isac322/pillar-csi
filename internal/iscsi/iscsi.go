@@ -59,6 +59,12 @@ const (
 // platforms.
 var ErrNotSupported = errors.New("iSCSI initiator requires Linux")
 
+// ErrSessionRecovering is wrapped by the error Logout returns when it
+// refuses to destroy a session whose connection failed while the kernel
+// still queues its I/O (sysfs state FAILED, recovery timeout not expired).
+// The session keeps being recovered; retry the Logout later.
+var ErrSessionRecovering = errors.New("session is recovering from a connection failure")
+
 // Portal is an iSCSI network portal (target address and TCP port).
 type Portal struct {
 	Address string

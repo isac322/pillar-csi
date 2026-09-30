@@ -99,7 +99,7 @@ func (l opLock) unlock() { <-l }
 type session struct {
 	op     opLock
 	key    sessionKey
-	params SessionParams
+	params SessionParams // LoginTimeout guarded by Initiator.mu, the rest immutable
 	isid   isid
 
 	// Guarded by Initiator.mu.
@@ -424,6 +424,11 @@ func (i *Initiator) Login(ctx context.Context, p SessionParams) (*Session, error
 		}
 		i.mu.Lock()
 		ph := s.phase
+		if ph != phaseRemoved && ph != phaseLoggingOut {
+			// The login timeout is userspace-only: a session adopted
+			// from sysfs cannot know it, so the caller's value wins.
+			s.params.LoginTimeout = p.LoginTimeout
+		}
 		i.mu.Unlock()
 		s.op.unlock()
 		switch ph {
@@ -494,7 +499,10 @@ type loginAttempt struct {
 // the socket closed.  The caller holds s.op.
 func (i *Initiator) connectAndLogin(ctx context.Context, s *session) error {
 	sid, cid, _ := i.ids(s)
-	lctx, cancel := context.WithTimeout(ctx, s.params.LoginTimeout)
+	i.mu.Lock()
+	loginTimeout := s.params.LoginTimeout
+	i.mu.Unlock()
+	lctx, cancel := context.WithTimeout(ctx, loginTimeout)
 	defer cancel()
 
 	a := &loginAttempt{s: s, sid: sid, cid: cid, portal: s.key.portal, tsih: s.tsih}
@@ -1029,9 +1037,58 @@ func (i *Initiator) Rescan(ctx context.Context, targetIQN string, portal Portal)
 	return errors.Join(errs...) //nolint:wrapcheck // multi-error is already wrapped per item
 }
 
+// SetLoginTimeout sets the login timeout the session for (targetIQN,
+// portal) uses for its next re-login.  The login timeout lives only in
+// this process: a session adopted from sysfs after a restart starts with
+// DefaultLoginTimeout, so the caller restores the value the volume was
+// staged with.  Zero or negative d selects DefaultLoginTimeout.  A
+// re-login already in flight keeps its budget.
+func (i *Initiator) SetLoginTimeout(targetIQN string, portal Portal, d time.Duration) error {
+	err := i.running()
+	if err != nil {
+		return fmt.Errorf("set login timeout of target %s at %s: %w", targetIQN, portal, err)
+	}
+	if d <= 0 {
+		d = DefaultLoginTimeout
+	}
+	s, err := i.lookup(sessionKey{target: targetIQN, portal: portal.normalized()})
+	if err != nil {
+		return fmt.Errorf("set login timeout of target %s at %s: %w", targetIQN, portal, err)
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if s == nil || s.phase == phaseRemoved {
+		return fmt.Errorf("set login timeout of target %s at %s: no iSCSI session", targetIQN, portal)
+	}
+	s.params.LoginTimeout = d
+	return nil
+}
+
 // Logout logs out and destroys the session for (targetIQN, portal).  It is
-// a no-op when no such session exists.  The session's SCSI devices are
-// flushed and deleted first, while the connection is still live.
+// a no-op when no such session exists.
+//
+// The session's SCSI devices are flushed and deleted first, while the
+// connection is still live, so data still in their page cache reaches the
+// target (see beginTeardown).  What is possible depends on the kernel's
+// sysfs session state:
+//   - LOGGED_IN: the devices are flushed and deleted, then the session is
+//     logged out and destroyed.
+//   - FAILED: the connection broke and the kernel queues the devices' I/O
+//     until the session is logged in again or its recovery_tmo expires (a
+//     negative recovery_tmo queues forever).  Destroying the session would
+//     fail the queued writes, so Logout refuses with an error wrapping
+//     ErrSessionRecovering and keeps the session recovering; a retry after
+//     the re-login flushes normally.  A FAILED session without SCSI devices
+//     has no I/O to lose and is torn down.
+//   - FREE: recovery_tmo expired and the kernel already failed the queued
+//     I/O back, so a flush cannot help; the session is torn down and the
+//     skipped flush is logged.
+//
+// A failure before teardown starts (the wait for an in-flight operation is
+// canceled, the refusal above, a flush or delete error) leaves the session
+// as it was: Login still returns it and it is recovered when its connection
+// fails.  Once teardown started (Logout PDU, STOP_CONN(TERM)), a failure
+// leaves the session logging out and only a retried Logout completes it.
 func (i *Initiator) Logout(ctx context.Context, targetIQN string, portal Portal) error {
 	err := i.running()
 	if err != nil {
@@ -1045,36 +1102,24 @@ func (i *Initiator) Logout(ctx context.Context, targetIQN string, portal Portal)
 	if s == nil {
 		return nil
 	}
-	i.mu.Lock()
-	prev := s.phase
-	if prev == phaseRemoved {
-		i.mu.Unlock()
-		return nil
-	}
-	s.phase = phaseLoggingOut
-	if s.cancelRecovery != nil {
-		s.cancelRecovery()
-		s.cancelRecovery = nil
-	}
-	i.mu.Unlock()
-
 	err = s.op.lock(ctx)
 	if err != nil {
 		return fmt.Errorf("logout from target %s at %s: wait for in-flight operation: %w", targetIQN, portal, err)
 	}
 	defer s.op.unlock()
 	i.mu.Lock()
-	if s.phase == phaseRemoved {
-		i.mu.Unlock()
+	ph := s.phase
+	i.mu.Unlock()
+	if ph == phaseRemoved {
 		return nil
 	}
-	s.phase = phaseLoggingOut // an in-flight Login may have raced us
-	i.mu.Unlock()
 
 	sid, cid, _ := i.ids(s)
-	err = i.removeSCSIDevices(ctx, s, sid)
-	if err != nil {
-		return fmt.Errorf("logout from target %s at %s: %w", targetIQN, portal, err)
+	if ph != phaseLoggingOut { // phaseLoggingOut: a previous Logout already started teardown
+		err = i.beginTeardown(ctx, s, sid)
+		if err != nil {
+			return fmt.Errorf("logout from target %s at %s: %w", targetIQN, portal, err)
+		}
 	}
 	if !s.connDestroyed {
 		i.sendLogoutPDU(ctx, s, sid, cid)
@@ -1092,49 +1137,129 @@ func (i *Initiator) Logout(ctx context.Context, targetIQN string, portal Portal)
 	return nil
 }
 
-// removeSCSIDevices flushes and deletes the session's SCSI devices while the
-// session is still logged in, so the flush reaches the target.  Tearing the
-// session down first removes the devices after the transport is gone: their
-// dirty page cache (kept when a holder still has the disk open; only the
-// last close writes it back) and the removal-time SYNCHRONIZE CACHE fail,
-// losing data of a raw block volume.  The explicit fsync is needed because
-// deleting a device refuses page-cache write-back once removal has started.
-// A session that is not logged in cannot be flushed (I/O would block until
-// the replacement timeout and then fail), so its devices are left for the
-// kernel to drop with the session.  Open holders do not block deletion;
-// their later I/O fails with ENXIO.
-func (i *Initiator) removeSCSIDevices(ctx context.Context, s *session, sid uint32) error {
-	devs, err := i.fs.sessionLUNs(int(sid))
+// beginTeardown decides from sysfs whether s may be torn down now (see
+// Logout).  When it may, it marks s logging out, which stops recovery, and
+// flushes and deletes the session's SCSI devices while the session is still
+// logged in, so the flush reaches the target.  Tearing the session down
+// first removes the devices after the transport is gone: their dirty page
+// cache (kept when a holder still has the disk open; only the last close
+// writes it back) and the removal-time SYNCHRONIZE CACHE fail, losing data
+// of a raw block volume.  The explicit fsync is needed because deleting a
+// device refuses page-cache write-back once removal has started.  Open
+// holders do not block deletion; their later I/O fails with ENXIO.
+//
+// On any error s is left usable: its phase is unchanged or restored, and
+// recovery runs if its connection failed.  The caller holds s.op.
+func (i *Initiator) beginTeardown(ctx context.Context, s *session, sid uint32) error {
+	devs, state, err := i.teardownState(sid)
 	if err != nil {
 		return err
 	}
-	if len(devs) == 0 {
+	hctls := make([]string, 0, len(devs))
+	for _, d := range devs {
+		hctls = append(hctls, d.HCTL)
+	}
+	if state == sessionStateFailed && len(devs) > 0 && !s.connDestroyed {
+		return i.refuseRecoveringLogout(s, sid, hctls)
+	}
+	i.markLoggingOut(s)
+	if len(devs) == 0 || state == "" {
 		return nil
 	}
-	state, err := readTrimmed(filepath.Join(i.fs.sessionDir(int(sid)), "state"))
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil // session already gone with its devices
-	}
-	if err != nil {
-		return fmt.Errorf("read state of session %d: %w", sid, err)
-	}
 	if s.connDestroyed || state != sessionStateLoggedIn {
-		hctls := make([]string, 0, len(devs))
-		for _, d := range devs {
-			hctls = append(hctls, d.HCTL)
-		}
-		i.log.Info("session is not logged in; SCSI devices cannot be flushed before logout "+
-			"and data still cached for them is lost", "sid", sid, "state", state, "devices", hctls,
-			"target", s.key.target, "portal", s.key.portal.String())
+		i.logUnflushedDevices(s, sid, state, hctls)
 		return nil
 	}
 	for _, d := range devs {
 		err = i.flushAndDeleteDevice(ctx, int(sid), d)
 		if err != nil {
+			i.resumeAfterFailedLogout(s)
 			return fmt.Errorf("flush and delete SCSI device %s of session %d: %w", d.HCTL, sid, err)
 		}
 	}
 	return nil
+}
+
+// teardownState reads the SCSI devices and the sysfs state of session sid.
+// The state is "" when the session is already gone with its devices.
+func (i *Initiator) teardownState(sid uint32) ([]lunDevice, string, error) {
+	devs, err := i.fs.sessionLUNs(int(sid))
+	if err != nil {
+		return nil, "", err
+	}
+	state, err := readTrimmed(filepath.Join(i.fs.sessionDir(int(sid)), "state"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return devs, "", nil
+	}
+	if err != nil {
+		return nil, "", fmt.Errorf("read state of session %d: %w", sid, err)
+	}
+	return devs, state, nil
+}
+
+// markLoggingOut marks s logging out and stops its recovery.
+func (i *Initiator) markLoggingOut(s *session) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	s.phase = phaseLoggingOut
+	if s.cancelRecovery != nil {
+		s.cancelRecovery()
+		s.cancelRecovery = nil
+	}
+}
+
+// logUnflushedDevices records that the SCSI devices of a session that is
+// not logged in are torn down without a flush.
+func (i *Initiator) logUnflushedDevices(s *session, sid uint32, state string, hctls []string) {
+	reason := "the session is not logged in"
+	if state == sessionStateFree {
+		reason = "the session recovery timeout expired and the kernel already failed their pending I/O"
+	}
+	i.log.Info("SCSI devices cannot be flushed before logout; data still cached for them is lost",
+		"reason", reason, "sid", sid, "state", state, "devices", hctls,
+		"target", s.key.target, "portal", s.key.portal.String())
+}
+
+// refuseRecoveringLogout keeps a FAILED session whose SCSI devices still
+// have I/O queued in the kernel, makes sure it is being recovered, and
+// returns the error wrapping ErrSessionRecovering.  The caller holds s.op.
+func (i *Initiator) refuseRecoveringLogout(s *session, sid uint32, hctls []string) error {
+	tmo, err := readOptionalInt(filepath.Join(i.fs.sessionDir(int(sid)), "recovery_tmo"))
+	var expiry string
+	switch {
+	case err != nil:
+		expiry = fmt.Sprintf("unknown (read recovery_tmo: %v)", err)
+	case tmo < 0:
+		expiry = "never (recovery_tmo " + strconv.Itoa(tmo) + ")"
+	default:
+		expiry = "after recovery_tmo " + strconv.Itoa(tmo) + "s"
+	}
+	i.mu.Lock()
+	rctx := i.ctx
+	i.mu.Unlock()
+	// A no-op when recovery is already running; otherwise (the connection
+	// error event was lost or not yet routed) it starts it.
+	i.scheduleRecovery(rctx, s, "sysfs session state "+sessionStateFailed+" at logout")
+	return fmt.Errorf("session %d is %s and the kernel queues I/O of SCSI devices %v until the session is "+
+		"recovered or the queue is failed %s; not destroying it so cached data can still be flushed: %w",
+		sid, sessionStateFailed, hctls, expiry, ErrSessionRecovering)
+}
+
+// resumeAfterFailedLogout undoes beginTeardown's phase change after a
+// failure before teardown started, so Login and recovery treat s as an
+// established session again, and restarts recovery when sysfs reports the
+// session unhealthy (a connection error routed while it was logging out
+// started none).  The caller holds s.op; recovery waits for it.
+func (i *Initiator) resumeAfterFailedLogout(s *session) {
+	i.mu.Lock()
+	if s.phase != phaseLoggingOut {
+		i.mu.Unlock()
+		return
+	}
+	s.phase = phaseEstablished
+	rctx := i.ctx
+	i.mu.Unlock()
+	i.checkSession(rctx, s)
 }
 
 func (i *Initiator) flushAndDeleteDevice(ctx context.Context, sid int, d lunDevice) error {

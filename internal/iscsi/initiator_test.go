@@ -174,7 +174,7 @@ func TestRecoveryReloginsAfterConnError(t *testing.T) {
 	h.dialer.mu.Unlock()
 	before := len(h.kern.callLog())
 
-	h.kern.connError(1, 0)
+	h.kern.connError(1)
 	eventually(t, "session recovered", func() bool {
 		return slices.Contains(h.kern.callLog()[before:], "START_CONN 1:0") &&
 			h.sessionPhase() == phaseEstablished
@@ -217,7 +217,7 @@ func TestRecoveryFallsBackToNewSessionWhenTSIHUnknownToTarget(t *testing.T) {
 		return 0, nil
 	}
 	h.tgt.mu.Unlock()
-	h.kern.connError(1, 0)
+	h.kern.connError(1)
 	eventually(t, "recovered", func() bool {
 		return h.sessionPhase() == phaseEstablished && h.recoveredTSIH() == 0x2222
 	})
@@ -290,6 +290,54 @@ func TestStartAdoptsAndRecoversOwnedSessions(t *testing.T) {
 	got, err := h.ini.Login(context.Background(), h.params())
 	if err != nil || got.SID != 3 || len(h.kern.callLog()) != n {
 		t.Errorf("login on adopted session = %+v, %v", got, err)
+	}
+}
+
+// The login timeout is userspace-only, so a session adopted after a
+// restart starts with the default; the staged value must be restorable,
+// either by a repeated Login or by SetLoginTimeout, and must bound the
+// next recovery re-login.
+func TestAdoptedSessionRecoversWithRestoredLoginTimeout(t *testing.T) {
+	const configured = 45 * time.Second
+	for name, restore := range map[string]func(h *harness) error{
+		"Login": func(h *harness) error {
+			p := h.params()
+			p.LoginTimeout = configured
+			_, err := h.ini.Login(context.Background(), p)
+			return err
+		},
+		"SetLoginTimeout": func(h *harness) error {
+			return h.ini.SetLoginTimeout(testTarget, h.params().Portal, configured)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t)
+			h.kern.adoptExisting(3, 13, testTarget, testInitiator, "LOGGED_IN", "up", h.params().Portal)
+			h.start()
+			if err := restore(h); err != nil {
+				t.Fatalf("restore login timeout: %v", err)
+			}
+
+			h.kern.connError(3)
+			eventually(t, "adopted session recovered", func() bool {
+				return slices.Contains(h.kern.callLog(), "START_CONN 3:0") && h.sessionPhase() == phaseEstablished
+			})
+			h.dialer.mu.Lock()
+			budgets := slices.Clone(h.dialer.budgets)
+			h.dialer.mu.Unlock()
+			if len(budgets) != 1 || budgets[0] <= DefaultLoginTimeout || budgets[0] > configured {
+				t.Errorf("re-login budgets = %v, want one in (%v, %v]", budgets, DefaultLoginTimeout, configured)
+			}
+		})
+	}
+}
+
+func TestSetLoginTimeoutWithoutSessionFails(t *testing.T) {
+	h := newHarness(t)
+	h.start()
+	err := h.ini.SetLoginTimeout(testTarget, h.params().Portal, time.Minute)
+	if err == nil || !strings.Contains(err.Error(), "no iSCSI session") {
+		t.Errorf("SetLoginTimeout without session = %v, want no-session error", err)
 	}
 }
 
@@ -377,8 +425,8 @@ func TestLogoutReportsDeviceDeleteFailureWithoutDestroying(t *testing.T) {
 	if calls := h.kern.callLog()[before:]; !slices.Equal(calls, []string{"FLUSH sdb", "DELETE 11:0:0:0", "FLUSH sdc"}) {
 		t.Errorf("calls after failed delete = %q, want only the first LUN's delete", calls)
 	}
-	if ph := h.sessionPhase(); ph != phaseLoggingOut {
-		t.Fatalf("phase after failed logout = %v, want logging out", ph)
+	if ph := h.sessionPhase(); ph != phaseEstablished {
+		t.Fatalf("phase after failed logout = %v, want established (restored)", ph)
 	}
 
 	if err := os.Remove(del); err != nil {
@@ -419,8 +467,11 @@ func TestLogoutReportsFlushFailureWithoutDeleting(t *testing.T) {
 	if calls := h.kern.callLog()[before:]; len(calls) != 0 {
 		t.Errorf("failed flush must not delete the device or tear down the session: %q", calls)
 	}
-	if ph := h.sessionPhase(); ph != phaseLoggingOut {
-		t.Fatalf("phase after failed logout = %v, want logging out", ph)
+	if ph := h.sessionPhase(); ph != phaseEstablished {
+		t.Fatalf("phase after failed logout = %v, want established (restored)", ph)
+	}
+	if _, err := h.ini.Login(context.Background(), h.params()); err != nil {
+		t.Fatalf("login after failed logout = %v, want the existing session", err)
 	}
 }
 
@@ -457,18 +508,87 @@ func TestLogoutReportsKernelFailureAndCanBeRetried(t *testing.T) {
 	}
 }
 
-func TestLogoutCancelsRecovery(t *testing.T) {
+// While a failed session's recovery timeout runs, the kernel queues the I/O
+// of its SCSI devices; destroying the session would fail those writes.
+// Logout refuses with ErrSessionRecovering and leaves recovery running, and
+// once the connection is back a Logout flushes before destroying.
+func TestLogoutRefusesFailedSessionWhileKernelQueuesIO(t *testing.T) {
 	h := newHarness(t)
 	h.start()
 	if _, err := h.ini.Login(context.Background(), h.params()); err != nil {
 		t.Fatal(err)
 	}
+	mkSysfsLUN(t, h.root, 1, 11, 0, "sdb", "8:16")
 	h.dialer.mu.Lock()
 	h.dialer.fail = 1 << 30 // target unreachable: recovery keeps retrying
 	h.dialer.mu.Unlock()
-	h.kern.connError(1, 0)
+	h.kern.connError(1)
 	eventually(t, "recovery running", func() bool { return h.sessionPhase() == phaseRecovering })
+
+	before := len(h.kern.callLog())
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err := h.ini.Logout(ctx, testTarget, h.params().Portal)
+	if !errors.Is(err, ErrSessionRecovering) {
+		t.Fatalf("logout of a FAILED session = %v, want ErrSessionRecovering", err)
+	}
+	for _, c := range h.kern.callLog()[before:] {
+		if strings.HasPrefix(c, "DESTROY_") || strings.HasPrefix(c, "FLUSH") || strings.HasPrefix(c, "DELETE") ||
+			c == "STOP_CONN 1:0 flag=1" || c == "SEND_PDU 1:0 op=0x06" {
+			t.Errorf("refused logout issued %q", c)
+		}
+	}
+	if ph := h.sessionPhase(); ph != phaseRecovering {
+		t.Fatalf("phase after refused logout = %v, want recovering", ph)
+	}
+	h.dialer.mu.Lock()
+	dials := len(h.dialer.dials)
+	h.dialer.mu.Unlock()
+	eventually(t, "recovery still retrying", func() bool {
+		h.dialer.mu.Lock()
+		defer h.dialer.mu.Unlock()
+		return len(h.dialer.dials) > dials
+	})
+
+	h.dialer.mu.Lock()
+	h.dialer.fail = 0 // connection restored
+	h.dialer.mu.Unlock()
+	eventually(t, "session recovered", func() bool { return h.sessionPhase() == phaseEstablished })
+	before = len(h.kern.callLog())
+	if err := h.ini.Logout(ctx, testTarget, h.params().Portal); err != nil {
+		t.Fatalf("logout after recovery = %v", err)
+	}
+	want := []string{
+		"FLUSH sdb", "DELETE 11:0:0:0",
+		"SEND_PDU 1:0 op=0x06", "STOP_CONN 1:0 flag=1", "DESTROY_CONN 1:0", "DESTROY_SESSION 1",
+	}
+	if calls := h.kern.callLog()[before:]; !slices.Equal(calls, want) {
+		t.Errorf("logout calls after recovery = %q, want %q", calls, want)
+	}
+}
+
+// Once the recovery timeout expired (sysfs state FREE) the kernel already
+// failed the queued I/O back, so there is nothing left to flush: Logout
+// tears the session down without touching its devices and stops recovery.
+func TestLogoutTearsDownSessionWhoseRecoveryTimedOut(t *testing.T) {
+	h := newHarness(t)
+	h.start()
+	if _, err := h.ini.Login(context.Background(), h.params()); err != nil {
+		t.Fatal(err)
+	}
 	hctl := mkSysfsLUN(t, h.root, 1, 11, 0, "sdb", "8:16")
+	h.dialer.mu.Lock()
+	h.dialer.fail = 1 << 30
+	h.dialer.mu.Unlock()
+	h.kern.connError(1)
+	// The first attempt STOP_CONN(RECOVER)s the connection (rewriting FAILED);
+	// later attempts fail at the dial.
+	eventually(t, "recovery stopped the failed connection", func() bool {
+		return slices.Contains(h.kern.callLog(), "STOP_CONN 1:0 flag=3")
+	})
+	h.kern.mu.Lock()
+	writeFile(t, h.kern.sessionPath(1, "state"), "FREE\n") // session_recovery_timedout
+	h.kern.mu.Unlock()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -477,14 +597,85 @@ func TestLogoutCancelsRecovery(t *testing.T) {
 	}
 	calls := h.kern.callLog()
 	if !slices.Contains(calls, "DESTROY_SESSION 1") {
-		t.Errorf("calls = %q", calls)
+		t.Errorf("session not destroyed: %q", calls)
 	}
 	if slices.Contains(calls, "SEND_PDU 1:0 op=0x06") {
 		t.Error("logout PDU must not be sent on a failed connection")
 	}
 	if slices.Contains(calls, "DELETE "+hctl) || slices.Contains(calls, "FLUSH sdb") {
-		t.Error("SCSI devices of a failed session must not be flushed or deleted: the I/O would block until recovery_tmo")
+		t.Error("SCSI devices whose I/O the kernel already failed must not be flushed or deleted")
 	}
+	if ph := h.sessionPhase(); ph != phaseRemoved {
+		t.Errorf("phase after logout = %v, want removed", ph)
+	}
+}
+
+// A FAILED session without SCSI devices has no queued I/O to protect (e.g.
+// Attach rolling back after the LUN never appeared): Logout tears it down
+// and cancels its recovery.
+func TestLogoutTearsDownFailedSessionWithoutDevices(t *testing.T) {
+	h := newHarness(t)
+	h.start()
+	if _, err := h.ini.Login(context.Background(), h.params()); err != nil {
+		t.Fatal(err)
+	}
+	h.dialer.mu.Lock()
+	h.dialer.fail = 1 << 30
+	h.dialer.mu.Unlock()
+	h.kern.connError(1)
+	eventually(t, "recovery running", func() bool { return h.sessionPhase() == phaseRecovering })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := h.ini.Logout(ctx, testTarget, h.params().Portal); err != nil {
+		t.Fatal(err)
+	}
+	if calls := h.kern.callLog(); !slices.Contains(calls, "DESTROY_SESSION 1") {
+		t.Errorf("session not destroyed: %q", calls)
+	}
+	h.dialer.mu.Lock()
+	dials := len(h.dialer.dials)
+	h.dialer.mu.Unlock()
+	time.Sleep(10 * h.ini.opts.RecoveryRetryInterval)
+	h.dialer.mu.Lock()
+	defer h.dialer.mu.Unlock()
+	if n := len(h.dialer.dials); n != dials {
+		t.Errorf("recovery dialed %d more times after logout", n-dials)
+	}
+}
+
+// A Logout whose wait for an in-flight operation is canceled has not
+// touched the session: Login still returns it and a later connection
+// failure is recovered.
+func TestLogoutCanceledWhileWaitingKeepsSessionUsable(t *testing.T) {
+	h := newHarness(t)
+	h.start()
+	if _, err := h.ini.Login(context.Background(), h.params()); err != nil {
+		t.Fatal(err)
+	}
+	h.ini.mu.Lock()
+	s := h.ini.byKey[sessionKey{target: testTarget, portal: h.params().Portal}]
+	h.ini.mu.Unlock()
+	s.op <- struct{}{} // an in-flight operation holds the session
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	err := h.ini.Logout(ctx, testTarget, h.params().Portal)
+	cancel()
+	s.op.unlock()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("logout = %v, want the lock wait's deadline error", err)
+	}
+	if ph := h.sessionPhase(); ph != phaseEstablished {
+		t.Fatalf("phase after canceled logout = %v, want established", ph)
+	}
+	if _, err := h.ini.Login(context.Background(), h.params()); err != nil {
+		t.Fatalf("login after canceled logout = %v, want the existing session", err)
+	}
+	before := len(h.kern.callLog())
+	h.kern.connError(1)
+	eventually(t, "recovery after canceled logout", func() bool {
+		return slices.Contains(h.kern.callLog()[before:], "START_CONN 1:0") && h.sessionPhase() == phaseEstablished
+	})
 }
 
 // A session the kernel already removed (no event reached us) must not make

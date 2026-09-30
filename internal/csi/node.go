@@ -1543,6 +1543,78 @@ func (n *NodeServer) readStageState(volumeID string) (*nodeStageState, error) {
 	return &state, nil
 }
 
+// sessionRestorer is implemented by protocol handlers whose sessions carry
+// userspace-only parameters that must be re-applied after pillar-node
+// restarts (see ISCSIHandler.RestoreSession).
+type sessionRestorer interface {
+	RestoreSession(state ProtocolState) error
+}
+
+// RestoreProtocolSessions re-applies the persisted userspace-only session
+// parameters of every staged volume whose handler needs it.  The pillar-node
+// process calls it once at startup, after the handlers adopted the kernel
+// sessions that survived the restart: kubelet does not repeat
+// NodeStageVolume for a volume that stays mounted, so the stage state files
+// are the only record of those parameters.  The logf callback reports
+// records restored with a fallback; the
+// returned error joins one error per volume that could not be restored.
+func (n *NodeServer) RestoreProtocolSessions(logf func(format string, args ...any)) error {
+	entries, err := os.ReadDir(n.stateDir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("restore protocol sessions: read stage state dir %q: %w", n.stateDir, err)
+	}
+	var errs []error
+	for _, e := range entries {
+		if e.IsDir() || filepath.Ext(e.Name()) != ".json" {
+			continue
+		}
+		stateFile := filepath.Join(n.stateDir, e.Name())
+		restoreErr := n.restoreProtocolSession(stateFile, logf)
+		if restoreErr != nil {
+			errs = append(errs, fmt.Errorf("restore protocol session of %q: %w", stateFile, restoreErr))
+		}
+	}
+	return errors.Join(errs...) //nolint:wrapcheck // every item is wrapped with its state file
+}
+
+// restoreProtocolSession re-applies the session parameters of one stage
+// state file; records of other protocols and local attaches are skipped.
+func (n *NodeServer) restoreProtocolSession(stateFile string, logf func(format string, args ...any)) error {
+	data, err := os.ReadFile(stateFile) //nolint:gosec // G304: entry of the controlled stateDir
+	if err != nil {
+		return fmt.Errorf("read: %w", err)
+	}
+	var state nodeStageState
+	err = json.Unmarshal(data, &state)
+	if err != nil {
+		return fmt.Errorf("unmarshal: %w", err)
+	}
+	if state.ProtocolType != ProtocolISCSI || state.isLocalAttach() {
+		return nil
+	}
+	handler, ok := n.handlers[state.ProtocolType].(sessionRestorer)
+	if !ok {
+		return fmt.Errorf("no session-restoring handler registered for protocol %q%s",
+			state.ProtocolType, missingHandlerHint(state.ProtocolType))
+	}
+	protoState, err := state.ToProtocolState()
+	if err != nil {
+		return fmt.Errorf("convert stage state: %w", err)
+	}
+	if state.ISCSI.LoginTimeoutSeconds == 0 {
+		logf("stage state %q of iSCSI target %s has no login timeout (written by an older pillar-node); "+
+			"its session uses the default login timeout", stateFile, state.ISCSI.TargetIQN)
+	}
+	err = handler.RestoreSession(protoState)
+	if err != nil {
+		return fmt.Errorf("target %s: %w", state.ISCSI.TargetIQN, err)
+	}
+	return nil
+}
+
 // deleteStageState removes the stage state file for volumeID.  It is
 // idempotent: if the file does not exist, the call succeeds silently.
 func (n *NodeServer) deleteStageState(volumeID string) error {

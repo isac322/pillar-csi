@@ -378,7 +378,7 @@ NodeStage / NodeUnstage:
 
 - `NodeStageVolume`: VolumeContext의 target/portal/타이머로 로그인 → LUN 0 디바이스 확인 → `Filesystem`이면 포맷(필요 시)과 staging mount.
 - stage 상태는 `ISCSIStageState{TargetIQN, Address, Port, LUN}`으로 JSON 키 `iscsi` 아래에 저장된다.
-- `NodeUnstageVolume`: unmount 후 logout. logout은 멱등이다. logout은 세션이 `LOGGED_IN`인 동안 LUN 블록 디바이스를 fsync(page cache write-back + SYNCHRONIZE CACHE)하고 sysfs `delete`로 SCSI 디바이스를 제거한 뒤에 Logout PDU / 세션 파기를 수행한다(연결이 이미 끊긴 세션은 flush할 수 없어 건너뛰고 로그로 남긴다).
+- `NodeUnstageVolume`: unmount 후 logout. logout은 멱등이다. logout은 세션이 `LOGGED_IN`인 동안 LUN 블록 디바이스를 fsync(page cache write-back + SYNCHRONIZE CACHE)하고 sysfs `delete`로 SCSI 디바이스를 제거한 뒤에 Logout PDU / 세션 파기를 수행한다. 연결이 끊겨 세션이 `FAILED`(커널이 `replacementTimeout` 동안 I/O를 큐에 보관 중)이면 SCSI 디바이스가 있는 세션은 파기하지 않고 복구를 계속하며 재시도 가능한 오류로 실패해 kubelet이 재시도하게 하고, 이미 timeout이 지나 `FREE`가 된 세션은 flush할 수 없으므로 건너뛰고 로그로 남긴 뒤 파기한다.
 
 세션 복구:
 
