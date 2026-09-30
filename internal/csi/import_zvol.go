@@ -53,6 +53,7 @@ import (
 	agentv1 "github.com/isac322/pillar-csi/gen/go/pillar_csi/agent/v1"
 
 	"k8s.io/apimachinery/pkg/types"
+	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // importInvalid wraps an annotation/layout problem as InvalidArgument (the
@@ -82,6 +83,7 @@ func (s *ControllerServer) resolveImportRequest(
 	existingPV *v1alpha1.PillarVolumeState,
 	resolved *v1alpha1.ResolvedVolumeConfig,
 	annotation string,
+	agentRef string,
 ) (importedFrom, leaf string, err error) {
 	annotation = strings.TrimSpace(annotation)
 	recorded := ""
@@ -119,7 +121,7 @@ func (s *ControllerServer) resolveImportRequest(
 		}
 		leaf = resolvedLeaf
 		agentVolID := resolved.Backend.PoolName() + "/" + leaf
-		conflictErr := s.refuseImportConflict(ctx, pvName, agentVolID, annotation)
+		conflictErr := s.refuseImportConflict(ctx, pvName, agentRef, agentVolID, annotation)
 		if conflictErr != nil {
 			return "", "", conflictErr
 		}
@@ -250,15 +252,18 @@ func resolveImportDataset(
 // it; callers treat that as "this driver never issued the ID" (NotFound for
 // read paths, success for idempotent deletes).  A state owns the volume when
 // its spec.volumeID equals the CSI volume ID (this also covers states written
-// by older versions without spec.agentVolumeID) or its non-empty
-// spec.agentVolumeID equals the ID's backend volume.  A PillarVolumeState
-// named after the leaf matching neither is never returned: it owns a
-// different backend volume.
+// by older versions without spec.agentVolumeID) or, scoped to the same
+// agent, its non-empty spec.agentVolumeID equals the ID's backend volume:
+// agent volume IDs are only unique per storage node, so a same-named backend
+// volume on another agent must never be matched.  A PillarVolumeState named
+// after the leaf matching neither is never returned: it owns a different
+// backend volume.
 func (s *ControllerServer) volumeStateNameForID(ctx context.Context, volumeID string) (string, error) {
 	parts := strings.SplitN(volumeID, "/", volumeIDParts)
 	if len(parts) != volumeIDParts {
 		return "", nil
 	}
+	agentName := parts[0]
 	agentVolID := parts[3]
 	leaf := agentVolID
 	if idx := strings.LastIndex(agentVolID, "/"); idx >= 0 {
@@ -276,28 +281,45 @@ func (s *ControllerServer) volumeStateNameForID(ctx context.Context, volumeID st
 	if err != nil {
 		return "", status.Errorf(codes.Internal, "lookup PillarVolumeState %q: %v", leaf, err)
 	}
-	if exists && ownsVolume(probe, volumeID, agentVolID) {
+	if exists && ownsVolume(probe, volumeID, agentName, agentVolID) {
 		return leaf, nil
 	}
 	// Imported (or otherwise renamed) volume: find the owner by its IDs.
+	// The list runs on the uncached apiReader like readVolumeState: an
+	// informer-cache copy could miss a PillarVolumeState created moments
+	// ago on another controller replica and wrongly report no owner.
 	var list v1alpha1.PillarVolumeStateList
-	listErr := s.k8sClient.List(ctx, &list)
+	listErr := s.uncachedReader().List(ctx, &list)
 	if listErr != nil {
 		return "", status.Errorf(codes.Internal, "list PillarVolumeStates: %v", listErr)
 	}
 	for i := range list.Items {
-		if ownsVolume(&list.Items[i], volumeID, agentVolID) {
+		if ownsVolume(&list.Items[i], volumeID, agentName, agentVolID) {
 			return list.Items[i].Name, nil
 		}
 	}
 	return "", nil // no lifecycle owns this backend volume
 }
 
+// uncachedReader returns the reader that bypasses any informer cache; it
+// falls back to the write client when no dedicated reader was injected
+// (unit tests), mirroring NewControllerServerWithDialer's default.
+func (s *ControllerServer) uncachedReader() ctrlclient.Reader {
+	if s.apiReader != nil {
+		return s.apiReader
+	}
+	return s.k8sClient
+}
+
 // ownsVolume reports whether pvs is the lifecycle record of the CSI volume
-// volumeID whose backend volume is agentVolID.
-func ownsVolume(pvs *v1alpha1.PillarVolumeState, volumeID, agentVolID string) bool {
+// volumeID whose backend volume is agentVolID on the agent agentName.  The
+// exact spec.volumeID match also owns the volume for states written before
+// spec.agentVolumeID existed; the agentVolumeID match is scoped to the same
+// agent because backend volume IDs are only unique per storage node.
+func ownsVolume(pvs *v1alpha1.PillarVolumeState, volumeID, agentName, agentVolID string) bool {
 	return pvs.Spec.VolumeID == volumeID ||
-		(pvs.Spec.AgentVolumeID != "" && pvs.Spec.AgentVolumeID == agentVolID)
+		(pvs.Spec.AgentVolumeID != "" && pvs.Spec.AgentVolumeID == agentVolID &&
+			pvs.Spec.AgentRef == agentName)
 }
 
 // mustVolumeState resolves the owning PillarVolumeState for a CSI volume ID
@@ -326,20 +348,25 @@ func (s *ControllerServer) mustVolumeState(
 
 // refuseImportConflict refuses the import when the backend volume ID
 // "<pool>/<leaf>" the imported zvol maps to is already owned by a different
-// PillarVolumeState.  Two lifecycles must never manage one backend device:
-// either side could then export or delete what the other one serves.
+// PillarVolumeState on the same agent.  Two lifecycles must never manage one
+// backend device: either side could then export or delete what the other one
+// serves.  Ownership is scoped to the agent (backend volume IDs are only
+// unique per storage node) and the scan reads the API server directly, so a
+// state committed moments ago on another replica is still seen — the atomic
+// PillarVolumeReservation then closes the remaining create-create race.
 func (s *ControllerServer) refuseImportConflict(
 	ctx context.Context,
-	pvName, agentVolID, dataset string,
+	pvName, agentName, agentVolID, dataset string,
 ) error {
 	var list v1alpha1.PillarVolumeStateList
-	listErr := s.k8sClient.List(ctx, &list)
+	listErr := s.uncachedReader().List(ctx, &list)
 	if listErr != nil {
 		return status.Errorf(codes.Internal, "list PillarVolumeStates: %v", listErr)
 	}
 	for i := range list.Items {
 		item := &list.Items[i]
-		if item.Name != pvName && item.Spec.AgentVolumeID == agentVolID {
+		if item.Name != pvName && item.Spec.AgentRef == agentName &&
+			item.Spec.AgentVolumeID == agentVolID {
 			return status.Errorf(codes.FailedPrecondition,
 				"%s: zvol %q is already managed by volume %q (PillarVolumeState %q); "+
 					"delete that volume first",
@@ -350,22 +377,24 @@ func (s *ControllerServer) refuseImportConflict(
 }
 
 // refuseAdoptionCollision refuses a normal create when its backend volume ID
-// is already owned by a different PillarVolumeState — which can only happen
-// when that state adopted the zvol via an import annotation whose leaf is
-// this create's volume name.  Without the check the create would silently
-// adopt the imported zvol and both lifecycles would manage one device.
+// is already owned by a different PillarVolumeState on the same agent — which
+// can only happen when that state adopted the zvol via an import annotation
+// whose leaf is this create's volume name.  Without the check the create
+// would silently adopt the imported zvol and both lifecycles would manage
+// one device.
 func (s *ControllerServer) refuseAdoptionCollision(
 	ctx context.Context,
-	pvName, agentVolID string,
+	pvName, agentName, agentVolID string,
 ) error {
 	var list v1alpha1.PillarVolumeStateList
-	listErr := s.k8sClient.List(ctx, &list)
+	listErr := s.uncachedReader().List(ctx, &list)
 	if listErr != nil {
 		return status.Errorf(codes.Internal, "list PillarVolumeStates: %v", listErr)
 	}
 	for i := range list.Items {
 		item := &list.Items[i]
-		if item.Name != pvName && item.Spec.AgentVolumeID == agentVolID {
+		if item.Name != pvName && item.Spec.AgentRef == agentName &&
+			item.Spec.AgentVolumeID == agentVolID {
 			return status.Errorf(codes.FailedPrecondition,
 				"backend volume %q is already managed by volume %q (PillarVolumeState %q, "+
 					"imported from %q); choose a different claim name or delete that volume first",

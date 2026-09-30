@@ -18,6 +18,9 @@ package agent_test
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"google.golang.org/grpc/codes"
@@ -32,18 +35,21 @@ import (
 // satisfy backend.VolumeImporter.
 type mockImporterBackend struct {
 	*mockBackend
-	importDevicePath string
-	importSize       int64
-	importErr        error
-	importCalledWith []string
+	importDevicePath      string
+	importSize            int64
+	importErr             error
+	importCalledWith      []string
+	importExpectedDataset []string
 }
 
 func (m *mockImporterBackend) Import(
 	_ context.Context,
 	volumeID string,
 	_ int64,
+	expectedDataset string,
 ) (devicePath string, sizeBytes int64, err error) {
 	m.importCalledWith = append(m.importCalledWith, volumeID)
+	m.importExpectedDataset = append(m.importExpectedDataset, expectedDataset)
 	return m.importDevicePath, m.importSize, m.importErr
 }
 
@@ -51,12 +57,14 @@ var _ backend.VolumeImporter = (*mockImporterBackend)(nil)
 
 // newImportTestServer registers mb (a full importer) as the backend for
 // testPool, so the volume path exercises the real VolumeImporter assertion.
-func newImportTestServer(t *testing.T, mb *mockImporterBackend) *agent.Server {
+// It returns the agent state dir so tests can inspect the fencing marks.
+func newImportTestServer(t *testing.T, mb *mockImporterBackend) (srv *agent.Server, stateDir string) {
 	t.Helper()
 	backends := map[string]backend.VolumeBackend{
 		testPool: mb,
 	}
-	return agent.NewServer(backends, "", agent.WithDrainStateDir(t.TempDir()))
+	stateDir = t.TempDir()
+	return agent.NewServer(backends, "", agent.WithDrainStateDir(stateDir)), stateDir
 }
 func importRequest(t *testing.T) *agentv1.ImportVolumeRequest {
 	t.Helper()
@@ -75,7 +83,7 @@ func TestImportVolume_Success(t *testing.T) {
 		importDevicePath: "/dev/zvol/tank/k8s/pvc-abc",
 		importSize:       2 << 30, // larger than requested — adopted as-is
 	}
-	srv := newImportTestServer(t, mb)
+	srv, _ := newImportTestServer(t, mb)
 
 	resp, err := srv.ImportVolume(context.Background(), importRequest(t))
 	if err != nil {
@@ -118,7 +126,7 @@ func TestImportVolume_RefusedIsFailedPrecondition(t *testing.T) {
 			Detail:   "device is mounted at /data",
 		},
 	}
-	srv := newImportTestServer(t, mb)
+	srv, _ := newImportTestServer(t, mb)
 
 	_, err := srv.ImportVolume(context.Background(), importRequest(t))
 	if err == nil {
@@ -133,7 +141,7 @@ func TestImportVolume_RefusedIsFailedPrecondition(t *testing.T) {
 func TestImportVolume_InvalidVolumeID(t *testing.T) {
 	t.Parallel()
 	mb := &mockImporterBackend{mockBackend: &mockBackend{}}
-	srv := newImportTestServer(t, mb)
+	srv, _ := newImportTestServer(t, mb)
 
 	req := importRequest(t)
 	req.VolumeId = "no-slash"
@@ -153,7 +161,7 @@ func TestImportVolume_InvalidVolumeID(t *testing.T) {
 func TestImportVolume_BackendTypeMismatch(t *testing.T) {
 	t.Parallel()
 	mb := &mockImporterBackend{mockBackend: &mockBackend{}}
-	srv := newImportTestServer(t, mb)
+	srv, _ := newImportTestServer(t, mb)
 
 	req := importRequest(t)
 	req.BackendType = agentv1.BackendType_BACKEND_TYPE_LVM
@@ -177,7 +185,7 @@ func TestImportVolume_FencedAgainstSecondLifecycle(t *testing.T) {
 		importDevicePath: "/dev/zvol/tank/pvc-abc",
 		importSize:       1 << 30,
 	}
-	srv := newImportTestServer(t, mb)
+	srv, _ := newImportTestServer(t, mb)
 
 	if _, err := srv.ImportVolume(context.Background(), importRequest(t)); err != nil {
 		t.Fatalf("first ImportVolume: %v", err)
@@ -190,5 +198,129 @@ func TestImportVolume_FencedAgainstSecondLifecycle(t *testing.T) {
 	}
 	if st, _ := status.FromError(err); st.Code() == codes.OK {
 		t.Error("import by a second lifecycle must not succeed")
+	}
+}
+
+// importMarkPath locates the single fencing mark file under the agent state
+// dir: <dir>/generations/<escaped-volumeID>.mark.
+func importMarkPath(t *testing.T, stateDir string) string {
+	t.Helper()
+	matches, err := filepath.Glob(filepath.Join(stateDir, "generations", "*.mark"))
+	if err != nil || len(matches) != 1 {
+		t.Fatalf("fencing marks under %q: %v (err %v)", stateDir, matches, err)
+	}
+	return matches[0]
+}
+
+// A refused import must not bind the volume ID: no fencing mark may be
+// written for a lifecycle that never adopted the zvol.  If a mark existed,
+// a reaped lifecycle's controller-side record would point at a zvol the
+// agent still refuses to touch, and a retry after the refusal cause is
+// fixed could be fenced out by its own phantom mark.
+func TestImportVolume_RefusedWritesNoFencingMark(t *testing.T) {
+	t.Parallel()
+	mb := &mockImporterBackend{
+		mockBackend: &mockBackend{},
+		importErr: &backend.ImportRefusedError{
+			VolumeID: testVolumeID,
+			Reason:   "in use",
+			Detail:   "device is mounted at /data",
+		},
+	}
+	srv, stateDir := newImportTestServer(t, mb)
+
+	if _, err := srv.ImportVolume(context.Background(), importRequest(t)); err == nil {
+		t.Fatal("expected refusal, got nil")
+	}
+	matches, err := filepath.Glob(filepath.Join(stateDir, "generations", "*.mark"))
+	if err != nil {
+		t.Fatalf("glob fencing marks: %v", err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("a refused import left fencing marks %v; nothing may be recorded", matches)
+	}
+
+	// The volume ID is still free: once the refusal cause is gone a retry of
+	// the same lifecycle succeeds, and it does not fence itself out.
+	mb.importErr = nil
+	mb.importDevicePath, mb.importSize = "/dev/zvol/tank/pvc-abc", 1<<30
+	if _, err := srv.ImportVolume(context.Background(), importRequest(t)); err != nil {
+		t.Fatalf("retry after the refusal cause cleared: %v", err)
+	}
+	if got := importMarkPath(t, stateDir); got == "" {
+		t.Fatal("a successful import must persist the fencing mark")
+	}
+}
+
+// The import RPC writes its fencing mark only after the backend checks pass.
+// The proof is a refusal of a second lifecycle: a mark written before the
+// checks would still be there from the first attempt and the second
+// lifecycle would be rejected even though the import itself succeeded.
+func TestImportVolume_MarkWrittenAfterChecks(t *testing.T) {
+	t.Parallel()
+	mb := &mockImporterBackend{
+		mockBackend:      &mockBackend{},
+		importDevicePath: "/dev/zvol/tank/pvc-abc",
+		importSize:       1 << 30,
+	}
+	srv, stateDir := newImportTestServer(t, mb)
+
+	if _, err := srv.ImportVolume(context.Background(), importRequest(t)); err != nil {
+		t.Fatalf("ImportVolume: %v", err)
+	}
+	data, err := os.ReadFile(importMarkPath(t, stateDir))
+	if err != nil {
+		t.Fatalf("read fencing mark: %v", err)
+	}
+	if !strings.Contains(string(data), t.Name()) {
+		t.Errorf("fencing mark %q does not name the importing lifecycle uid %q", data, t.Name())
+	}
+}
+
+// A lost ImportVolume response is safe: the same lifecycle retries with the
+// same token, re-runs the read-only import checks, and re-persists its mark.
+func TestImportVolume_RetryAfterLostResponse(t *testing.T) {
+	t.Parallel()
+	mb := &mockImporterBackend{
+		mockBackend:      &mockBackend{},
+		importDevicePath: "/dev/zvol/tank/pvc-abc",
+		importSize:       1 << 30,
+	}
+	srv, _ := newImportTestServer(t, mb)
+
+	req := importRequest(t)
+	for i := range 2 {
+		resp, err := srv.ImportVolume(context.Background(), req)
+		if err != nil {
+			t.Fatalf("ImportVolume attempt %d: %v", i+1, err)
+		}
+		if resp.GetDevicePath() != "/dev/zvol/tank/pvc-abc" {
+			t.Errorf("attempt %d DevicePath = %q", i+1, resp.GetDevicePath())
+		}
+	}
+	if len(mb.importCalledWith) != 2 {
+		t.Errorf("Import calls = %v, want 2 idempotent retries", mb.importCalledWith)
+	}
+}
+
+// The controller sends the recorded source dataset so the agent can refuse
+// an adoption that would resolve to a different dataset than the claim
+// named (its parentDataset disagrees with the store's).
+func TestImportVolume_ExpectedDatasetForwarded(t *testing.T) {
+	t.Parallel()
+	mb := &mockImporterBackend{
+		mockBackend:      &mockBackend{},
+		importDevicePath: "/dev/zvol/tank/pvc-abc",
+		importSize:       1 << 30,
+	}
+	srv, _ := newImportTestServer(t, mb)
+
+	req := importRequest(t)
+	req.ExpectedDataset = "tank/pvc-abc"
+	if _, err := srv.ImportVolume(context.Background(), req); err != nil {
+		t.Fatalf("ImportVolume: %v", err)
+	}
+	if len(mb.importExpectedDataset) != 1 || mb.importExpectedDataset[0] != "tank/pvc-abc" {
+		t.Fatalf("backend saw expectedDataset %v, want [tank/pvc-abc]", mb.importExpectedDataset)
 	}
 }

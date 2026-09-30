@@ -1915,9 +1915,17 @@ type ImportVolumeRequest struct {
 	BackendType BackendType `protobuf:"varint,3,opt,name=backend_type,json=backendType,proto3,enum=pillar_csi.agent.v1.BackendType" json:"backend_type,omitempty"`
 	// Fencing token: the PillarVolumeState UID and the publicationGeneration
 	// the controller committed for this operation.  See FencingToken.
-	Fence         *FencingToken `protobuf:"bytes,4,opt,name=fence,proto3" json:"fence,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Fence *FencingToken `protobuf:"bytes,4,opt,name=fence,proto3" json:"fence,omitempty"`
+	// The full dataset name the caller expects volume_id to resolve to under
+	// the agent backend's configured layout (e.g. "hot-data/k8s/pvc-abc123").
+	// When set, the agent MUST refuse (FAILED_PRECONDITION) unless its resolved
+	// dataset equals this value exactly, before any ownership mark or export:
+	// the request carries only pool + leaf, so without it an agent whose
+	// parentDataset differs from the controller's would silently adopt a
+	// different dataset.  Empty disables the check for older controllers.
+	ExpectedDataset string `protobuf:"bytes,5,opt,name=expected_dataset,json=expectedDataset,proto3" json:"expected_dataset,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *ImportVolumeRequest) Reset() {
@@ -1976,6 +1984,13 @@ func (x *ImportVolumeRequest) GetFence() *FencingToken {
 		return x.Fence
 	}
 	return nil
+}
+
+func (x *ImportVolumeRequest) GetExpectedDataset() string {
+	if x != nil {
+		return x.ExpectedDataset
+	}
+	return ""
 }
 
 type ImportVolumeResponse struct {
@@ -3681,12 +3696,13 @@ const file_pillar_csi_agent_v1_agent_proto_rawDesc = "" +
 	"\x14CreateVolumeResponse\x12\x1f\n" +
 	"\vdevice_path\x18\x01 \x01(\tR\n" +
 	"devicePath\x12%\n" +
-	"\x0ecapacity_bytes\x18\x02 \x01(\x03R\rcapacityBytes\"\xd7\x01\n" +
+	"\x0ecapacity_bytes\x18\x02 \x01(\x03R\rcapacityBytes\"\x82\x02\n" +
 	"\x13ImportVolumeRequest\x12\x1b\n" +
 	"\tvolume_id\x18\x01 \x01(\tR\bvolumeId\x12%\n" +
 	"\x0ecapacity_bytes\x18\x02 \x01(\x03R\rcapacityBytes\x12C\n" +
 	"\fbackend_type\x18\x03 \x01(\x0e2 .pillar_csi.agent.v1.BackendTypeR\vbackendType\x127\n" +
-	"\x05fence\x18\x04 \x01(\v2!.pillar_csi.agent.v1.FencingTokenR\x05fence\"^\n" +
+	"\x05fence\x18\x04 \x01(\v2!.pillar_csi.agent.v1.FencingTokenR\x05fence\x12)\n" +
+	"\x10expected_dataset\x18\x05 \x01(\tR\x0fexpectedDataset\"^\n" +
 	"\x14ImportVolumeResponse\x12\x1f\n" +
 	"\vdevice_path\x18\x01 \x01(\tR\n" +
 	"devicePath\x12%\n" +

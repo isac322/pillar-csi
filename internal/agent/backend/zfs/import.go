@@ -68,14 +68,33 @@ var _ backend.VolumeImporter = (*Backend)(nil)
 
 // Import verifies that volumeID names an existing, idle zvol inside this
 // backend's layout and returns its device path and size without modifying it.
+//
+// The expectedDataset argument is the controller's record of the dataset that must be
+// adopted (the import annotation value).  When it is set, the resolved
+// datasetName must equal it exactly: the request's volumeID carries only the
+// pool and the leaf name, so an agent whose parentDataset differs from the
+// store's would otherwise adopt a different dataset than the claim names.
 func (z *Backend) Import(
 	ctx context.Context,
 	volumeID string,
 	capacityBytes int64,
+	expectedDataset string,
 ) (devicePath string, sizeBytes int64, err error) {
 	ds := z.datasetName(volumeID)
 	refuse := func(reason, detail string) (string, int64, error) {
 		return "", 0, &backend.ImportRefusedError{VolumeID: volumeID, Reason: reason, Detail: detail}
+	}
+
+	// The resolved dataset is authoritative: a caller-declared name that
+	// differs from it means the two sides disagree on where the volume
+	// lives, and adopting anyway could seize a dataset the claim never
+	// named.  Refuse before any existence or in-use probe.
+	if expectedDataset != "" && ds != expectedDataset {
+		return refuse(reasonLayout, fmt.Sprintf(
+			"expected dataset %q does not match the resolved dataset %q "+
+				"(backend layout %q under pool %q); align the PillarStore "+
+				"pool/parentDataset with the agent backend config",
+			expectedDataset, ds, z.parentDataset, z.pool))
 	}
 
 	// The leaf must be a single dataset component inside this backend's
@@ -91,7 +110,6 @@ func (z *Backend) Import(
 				"inside pool %q layout %q", volName, z.pool, z.parentDataset),
 		}
 	}
-
 	// The dataset must exist and be a zvol.  A plain filesystem dataset or a
 	// snapshot named by the annotation must never be adopted as a block device.
 	dtype, volsize, err := z.datasetProps(ctx, ds)

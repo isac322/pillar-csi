@@ -108,7 +108,7 @@ func TestImport_Success(t *testing.T) {
 	t.Parallel()
 	fx := newImportFixture(t, zfsGetProps("volume", "2147483648"), nil)
 
-	devPath, size, err := fx.b.Import(context.Background(), importVolID, 1<<30)
+	devPath, size, err := fx.b.Import(context.Background(), importVolID, 1<<30, importDS)
 	if err != nil {
 		t.Fatalf("Import: %v", err)
 	}
@@ -131,7 +131,7 @@ func TestImport_Missing(t *testing.T) {
 		[]byte("cannot open 'hot-data/k8s/pvc-abc': dataset does not exist"),
 		errors.New("exit status 1"))
 
-	_, _, err := fx.b.Import(context.Background(), importVolID, 1<<30)
+	_, _, err := fx.b.Import(context.Background(), importVolID, 1<<30, importDS)
 	var refused *backend.ImportRefusedError
 	if !errors.As(err, &refused) {
 		t.Fatalf("Import error = %v, want ImportRefusedError", err)
@@ -145,7 +145,7 @@ func TestImport_WrongType(t *testing.T) {
 	t.Parallel()
 	fx := newImportFixture(t, zfsGetProps("filesystem", "-"), nil)
 
-	_, _, err := fx.b.Import(context.Background(), importVolID, 1<<30)
+	_, _, err := fx.b.Import(context.Background(), importVolID, 1<<30, importDS)
 	var refused *backend.ImportRefusedError
 	if !errors.As(err, &refused) || refused.Reason != "wrong type" {
 		t.Fatalf("Import error = %v, want wrong-type refusal", err)
@@ -156,7 +156,7 @@ func TestImport_TooSmall(t *testing.T) {
 	t.Parallel()
 	fx := newImportFixture(t, zfsGetProps("volume", "1073741824"), nil)
 
-	_, _, err := fx.b.Import(context.Background(), importVolID, 2<<30)
+	_, _, err := fx.b.Import(context.Background(), importVolID, 2<<30, importDS)
 	var refused *backend.ImportRefusedError
 	if !errors.As(err, &refused) || refused.Reason != "too small" {
 		t.Fatalf("Import error = %v, want too-small refusal", err)
@@ -168,7 +168,7 @@ func TestImport_LayoutEscape(t *testing.T) {
 	// "hot-data/../sneaky" would resolve outside the backend's layout.
 	fx := newImportFixture(t, zfsGetProps("volume", "2147483648"), nil)
 
-	_, _, err := fx.b.Import(context.Background(), "hot-data/../../nas/x", 1<<30)
+	_, _, err := fx.b.Import(context.Background(), "hot-data/../../nas/x", 1<<30, "")
 	var refused *backend.ImportRefusedError
 	if !errors.As(err, &refused) || refused.Reason != "layout" {
 		t.Fatalf("Import error = %v, want layout refusal", err)
@@ -191,7 +191,7 @@ func TestImport_LIOBackstoreInUse(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, _, err := fx.b.Import(context.Background(), importVolID, 1<<30)
+	_, _, err := fx.b.Import(context.Background(), importVolID, 1<<30, importDS)
 	var refused *backend.ImportRefusedError
 	if !errors.As(err, &refused) || refused.Reason != "in use" {
 		t.Fatalf("Import error = %v, want in-use refusal", err)
@@ -214,7 +214,7 @@ func TestImport_NVMeNamespaceInUse(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, _, err := fx.b.Import(context.Background(), importVolID, 1<<30)
+	_, _, err := fx.b.Import(context.Background(), importVolID, 1<<30, importDS)
 	var refused *backend.ImportRefusedError
 	if !errors.As(err, &refused) || refused.Reason != "in use" {
 		t.Fatalf("Import error = %v, want in-use refusal", err)
@@ -232,7 +232,7 @@ func TestImport_MountedRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, _, err := fx.b.Import(context.Background(), importVolID, 1<<30)
+	_, _, err := fx.b.Import(context.Background(), importVolID, 1<<30, importDS)
 	var refused *backend.ImportRefusedError
 	if !errors.As(err, &refused) || refused.Reason != "in use" {
 		t.Fatalf("Import error = %v, want in-use refusal", err)
@@ -246,7 +246,7 @@ func TestImport_SysfsHoldersRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, _, err := fx.b.Import(context.Background(), importVolID, 1<<30)
+	_, _, err := fx.b.Import(context.Background(), importVolID, 1<<30, importDS)
 	var refused *backend.ImportRefusedError
 	if !errors.As(err, &refused) || refused.Reason != "in use" {
 		t.Fatalf("Import error = %v, want in-use refusal", err)
@@ -260,7 +260,7 @@ func TestImport_ExclusiveClaimRefused(t *testing.T) {
 		return nil, nvmeof.ErrDeviceHeld
 	})
 
-	_, _, err := fx.b.Import(context.Background(), importVolID, 1<<30)
+	_, _, err := fx.b.Import(context.Background(), importVolID, 1<<30, importDS)
 	var refused *backend.ImportRefusedError
 	if !errors.As(err, &refused) || refused.Reason != "in use" {
 		t.Fatalf("Import error = %v, want in-use refusal", err)
@@ -274,9 +274,48 @@ func TestImport_MissingDeviceNode(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, _, err := fx.b.Import(context.Background(), importVolID, 1<<30)
+	_, _, err := fx.b.Import(context.Background(), importVolID, 1<<30, importDS)
 	var refused *backend.ImportRefusedError
 	if !errors.As(err, &refused) || refused.Reason != "missing" {
 		t.Fatalf("Import error = %v, want missing-device refusal", err)
+	}
+}
+
+// The controller sends the exact dataset the claim named (the import
+// annotation).  A backend whose parentDataset differs from the store's
+// resolves a different dataset for the same volume ID; it must refuse
+// instead of adopting it — before any zfs query or device probe.
+func TestImport_ExpectedDatasetMismatch(t *testing.T) {
+	t.Parallel()
+	// The fixture backend resolves "hot-data/k8s/pvc-abc"; the claim named
+	// "hot-data/other/pvc-abc" (store and agent disagree on the layout).
+	fx := newImportFixture(t, zfsGetProps("volume", "2147483648"), nil)
+
+	_, _, err := fx.b.Import(context.Background(), importVolID, 1<<30, "hot-data/other/pvc-abc")
+	var refused *backend.ImportRefusedError
+	if !errors.As(err, &refused) || refused.Reason != "layout" {
+		t.Fatalf("Import error = %v, want layout refusal", err)
+	}
+	if !strings.Contains(refused.Detail, "hot-data/other/pvc-abc") {
+		t.Errorf("detail = %q, want the caller's dataset named", refused.Detail)
+	}
+	if len(fx.exec.calls) != 0 {
+		t.Errorf("import ran zfs commands before refusing the dataset mismatch: %v", fx.exec.calls)
+	}
+}
+
+// An empty expectedDataset keeps the request compatible with controllers
+// that predate the field: the backend resolves volumeID under its own
+// layout as before.
+func TestImport_EmptyExpectedDatasetResolvesLocally(t *testing.T) {
+	t.Parallel()
+	fx := newImportFixture(t, zfsGetProps("volume", "2147483648"), nil)
+
+	devPath, _, err := fx.b.Import(context.Background(), importVolID, 1<<30, "")
+	if err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+	if devPath != fx.devPath {
+		t.Errorf("devicePath = %q, want %q", devPath, fx.devPath)
 	}
 }

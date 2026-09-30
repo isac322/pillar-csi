@@ -101,6 +101,9 @@ func DefaultAgentDialer(ctx context.Context, addr string) (agentv1.AgentServiceC
 // lifecycle state); no reconciler owns it, so its RBAC is declared here.
 // +kubebuilder:rbac:groups=pillar-csi.bhyoo.com,resources=pillarvolumestates,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=pillar-csi.bhyoo.com,resources=pillarvolumestates/status,verbs=get;update;patch
+// PillarVolumeReservation is the atomic backend-volume claim created before a
+// PillarVolumeState exists, so its RBAC is declared here too.
+// +kubebuilder:rbac:groups=pillar-csi.bhyoo.com,resources=pillarvolumereservations,verbs=get;list;create;delete
 // ReapAbandonedVolume reads PersistentVolumes and PersistentVolumeClaims to
 // decide whether a provisioning attempt was abandoned.
 // +kubebuilder:rbac:groups="",resources=persistentvolumes,verbs=get;list
@@ -591,10 +594,10 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 	// dataset replaces the volume name inside the agent volume ID, and the
 	// backend step below adopts instead of creating.  resolveImportRequest
 	// performs every controller-side check (well-formed name, ZFS backend,
-	// pool/parent match, no second lifecycle owning the same zvol) and the
-	// recorded-importedFrom consistency check for retries.
+	// pool/parent match, no second lifecycle owning the same zvol on this
+	// agent) and the recorded-importedFrom consistency check for retries.
 	importedFrom, importLeaf, err := s.resolveImportRequest(
-		ctx, pvName, pvExists, existingPV, resolved, res.importDataset)
+		ctx, pvName, pvExists, existingPV, resolved, res.importDataset, targetName)
 	if err != nil {
 		return nil, err
 	}
@@ -654,6 +657,18 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 	err = s.refuseAbandonedClaim(ctx, attempt)
 	if err != nil {
 		return nil, err
+	}
+	// An import reserves the backend volume before the PillarVolumeState
+	// exists: the reservation's deterministic name makes the claim atomic,
+	// so two concurrent imports of one zvol cannot both start a lifecycle.
+	// The reservation belongs to the lifecycle and outlives refused or
+	// failed attempts until the record is retired; finishDelete releases it.
+	if importedFrom != "" {
+		err = s.reserveBackendVolume(
+			ctx, pvName, targetName, string(backendID), agentVolID, importedFrom, attempt.Spec.ClaimRef)
+		if err != nil {
+			return nil, err
+		}
 	}
 	pvs, err := s.ensureVolumeState(ctx, pvName, spec)
 	if err != nil {
@@ -729,12 +744,14 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 	case importedFrom != "":
 		// Adopt the existing zvol named by the import annotation instead of
 		// creating one.  The agent refuses when the zvol is missing, wrong
-		// type, too small, or still in use.
+		// type, too small, still in use, or resolves to a dataset other than
+		// the recorded source (ExpectedDataset pins the layout).
 		devicePath, actualCapacity, err = s.importBackend(ctx, agentClient, pvName, volumeID, pvs.UID,
 			&agentv1.ImportVolumeRequest{
-				VolumeId:      agentVolID,
-				CapacityBytes: capacityBytes,
-				BackendType:   agentBackendType,
+				VolumeId:        agentVolID,
+				CapacityBytes:   capacityBytes,
+				BackendType:     agentBackendType,
+				ExpectedDataset: importedFrom,
 			}, exportSpec)
 		if err != nil {
 			return nil, err
@@ -742,7 +759,7 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 	default:
 		// A normal create must never silently adopt a zvol that another
 		// lifecycle imported under this volume's name.
-		err = s.refuseAdoptionCollision(ctx, pvName, agentVolID)
+		err = s.refuseAdoptionCollision(ctx, pvName, targetName, agentVolID)
 		if err != nil {
 			return nil, err
 		}
@@ -1004,6 +1021,7 @@ func (s *ControllerServer) DeleteVolume(
 		backendType:  mapBackendType(parts[2]),
 		agentVolID:   parts[3],
 		fence:        fence,
+		metadataOnly: importNeverAdopted(pvs),
 	})
 	if err != nil {
 		return nil, err
@@ -1022,6 +1040,25 @@ type volumeTeardown struct {
 	backendType  agentv1.BackendType
 	agentVolID   string
 	fence        *agentv1.FencingToken
+	// metadataOnly retires the lifecycle record without any agent call: the
+	// volume was an import whose agent never durably adopted the backend
+	// resource, so there is no export to remove and no zvol the lifecycle
+	// may destroy — deleting it would destroy a dataset this driver never
+	// owned.
+	metadataOnly bool
+}
+
+// importNeverAdopted reports whether pvs is an import lifecycle that never
+// durably recorded adoption: status.importAcquired is the explicit record
+// written after a successful agent.ImportVolume; backendDevicePath and
+// exportInfo are set only after the backend call succeeded, so states
+// written by older versions still count as adopted.
+func importNeverAdopted(pvs *v1alpha1.PillarVolumeState) bool {
+	if pvs.Spec.ImportedFrom == "" {
+		return false
+	}
+	return !pvs.Status.ImportAcquired &&
+		pvs.Status.BackendDevicePath == "" && pvs.Status.ExportInfo == nil
 }
 
 // teardownMarkedVolume removes the export and the backend resource of a
@@ -1032,6 +1069,16 @@ type volumeTeardown struct {
 // created and is repeated unchanged on retry.  Any failure keeps the record
 // (still marked deleting) for the retry.
 func (s *ControllerServer) teardownMarkedVolume(ctx context.Context, t volumeTeardown) error {
+	// An import that was never durably adopted owns nothing on the agent:
+	// no export exists (the export step follows adoption) and the zvol is
+	// pre-existing data this lifecycle never claimed.  Skip every agent call
+	// and retire the record — UnexportVolume could disturb the previous
+	// provisioning stack's export, and DeleteVolume would destroy a dataset
+	// this driver never owned.
+	if t.metadataOnly {
+		return s.finishDelete(ctx, t.volumeID, t.pvName, t.uid)
+	}
+
 	// ── Resolve the agent address from PillarAgent ───────────────────────────
 	target := &v1alpha1.PillarAgent{}
 	getTargetErr := s.k8sClient.Get(ctx, types.NamespacedName{Name: t.targetName}, target)
@@ -1103,7 +1150,16 @@ func (s *ControllerServer) finishDelete(
 	volumeID, pvName string,
 	uid types.UID,
 ) error {
-	err := s.deleteVolumeState(ctx, pvName, uid)
+	// Release the backend-volume reservation before the record goes away:
+	// once the PillarVolumeState is gone a leftover reservation is orphaned
+	// and would block a re-import of the same zvol until a contender
+	// reclaims it.  Releasing only while this lifecycle owns it keeps a
+	// reservation a contender already took.
+	err := s.releaseBackendVolume(ctx, pvName, volumeID)
+	if err != nil {
+		return err
+	}
+	err = s.deleteVolumeState(ctx, pvName, uid)
 	if err != nil {
 		return err
 	}

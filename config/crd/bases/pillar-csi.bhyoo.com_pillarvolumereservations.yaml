@@ -1,0 +1,123 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.22.0
+  name: pillarvolumereservations.pillar-csi.bhyoo.com
+spec:
+  group: pillar-csi.bhyoo.com
+  names:
+    kind: PillarVolumeReservation
+    listKind: PillarVolumeReservationList
+    plural: pillarvolumereservations
+    shortNames:
+    - pvrs
+    singular: pillarvolumereservation
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.ownerVolume
+      name: Owner
+      type: string
+    - jsonPath: .spec.agentVolumeID
+      name: BackendVolume
+      type: string
+    - jsonPath: .spec.agentRef
+      name: Target
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          PillarVolumeReservation atomically binds a backend volume
+          (agent + backend + agentVolumeID) to one volume lifecycle.  The CSI
+          controller creates it before the owning PillarVolumeState with a
+          deterministic name, so two concurrent CreateVolume claims on the same
+          backend volume — for example two PVCs importing the same zvol — cannot both
+          start a lifecycle: the loser sees AlreadyExists and is refused.  The
+          reservation is deleted when the owning PillarVolumeState is removed; one
+          whose owner was never written and whose claim is gone is orphaned and may
+          be claimed by a new contender.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              PillarVolumeReservationSpec identifies one backend volume reservation and
+              the volume lifecycle that holds it.
+            properties:
+              agentRef:
+                description: |-
+                  agentRef is the PillarAgent whose storage node holds the reserved
+                  backend volume.
+                minLength: 1
+                type: string
+              agentVolumeID:
+                description: |-
+                  agentVolumeID is the reserved backend volume identifier
+                  ("<pool>/<volume-name>"), the same value the agent RPCs carry.
+                minLength: 1
+                type: string
+              backendType:
+                description: |-
+                  backendType is the storage backend routing token of the reserved
+                  backend volume (e.g. "zfs-zvol").
+                minLength: 1
+                type: string
+              claimRef:
+                description: |-
+                  claimRef identifies the PersistentVolumeClaim the owning lifecycle
+                  provisions for.  It lets a contender recognize a reservation whose
+                  owner record was never written and whose claim is already gone: such a
+                  reservation is orphaned and may be taken over.
+                properties:
+                  name:
+                    description: name is the name of the PersistentVolumeClaim.
+                    type: string
+                  namespace:
+                    description: namespace is the namespace of the PersistentVolumeClaim.
+                    type: string
+                  uid:
+                    description: uid is the UID of the PersistentVolumeClaim.
+                    minLength: 1
+                    type: string
+                required:
+                - uid
+                type: object
+              ownerVolume:
+                description: |-
+                  ownerVolume is the name of the PillarVolumeState lifecycle that holds
+                  the reservation.  A reservation survives the whole lifecycle, including
+                  retries of refused backend calls, and is released only when the owning
+                  lifecycle is retired.
+                minLength: 1
+                type: string
+            required:
+            - agentRef
+            - agentVolumeID
+            - backendType
+            - ownerVolume
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources: {}

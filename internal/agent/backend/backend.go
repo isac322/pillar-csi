@@ -196,10 +196,13 @@ type ProvisionedBytesReporter interface {
 // or openebs zfs-localpv — into a pillar-csi volume lifecycle.  It backs the
 // agent ImportVolume RPC; backends that cannot import return gRPC
 // codes.Unimplemented from the RPC handler.
-//
 // Import is strictly read-only on the backend: unlike Create it MUST NOT
 // create, rename, resize, or format anything.  Implementations refuse with
 // ImportRefusedError when:
+//   - expectedDataset is non-empty and the volumeID's resolved dataset does
+//     not equal it exactly — the request names only pool and leaf, so an
+//     agent whose configured layout differs from the controller's must never
+//     adopt the dataset its own layout resolves to;
 //   - the resolved volumeID does not name an existing resource of the
 //     backend's volume type inside its configured Layout;
 //   - the resource is still in use on the storage node (a target backstore
@@ -211,11 +214,13 @@ type ProvisionedBytesReporter interface {
 // return the same device path and size.
 type VolumeImporter interface {
 	// Import returns the host path to the adopted resource and its current
-	// size in bytes.
+	// size in bytes.  expectedDataset is the full dataset name the caller
+	// expects volumeID to resolve to; empty means unchecked (older callers).
 	Import(
 		ctx context.Context,
 		volumeID string,
 		capacityBytes int64,
+		expectedDataset string,
 	) (devicePath string, sizeBytes int64, err error)
 }
 

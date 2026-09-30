@@ -171,6 +171,60 @@ func (s *Server) fenced(
 	return nil
 }
 
+// fencedImport is the fenced variant for ImportVolume: it validates the
+// token, runs mutate (the backend's read-only import checks), and persists
+// the admitted mark only when mutate succeeded — fenced persists the mark
+// BEFORE its mutation runs because create/export must own the volume ID
+// before they add resources, but an import owns nothing until the resource
+// is proven adoptable.  Persisting a refused import would bind a
+// pre-existing resource to a lifecycle that never adopted it: a later
+// teardown (or a stale second controller) carrying that lifecycle's token
+// could then delete a volume this driver never owned, and a retry after the
+// refusal cause is fixed could be fenced out by its own phantom mark.
+//
+// Admission still runs under the per-volume fencing lock and the mark is
+// still written before the response, under the same lock: two concurrent
+// imports of one volume ID cannot both bind it, and a retry of the same
+// lifecycle after a lost response re-admits idempotently (same UID, same or
+// higher generation).  A refusal leaves a pre-existing mark untouched, so a
+// stale token is still rejected even when the mutation would fail anyway.
+func (s *Server) fencedImport(
+	ctx context.Context,
+	volumeID string,
+	token *agentv1.FencingToken,
+	mutate func() error,
+) error {
+	unlock := s.lockFencing(volumeID)
+	defer unlock()
+
+	stored, exists, err := s.readFencingMark(volumeID)
+	if err != nil {
+		recordFenceDecision(ctx, fenceGrant, telemetry.FenceMarkIOError)
+		return err
+	}
+	adm, err := admitFencingToken(volumeID, token, fenceGrant, stored, exists)
+	if err != nil {
+		recordFenceDecision(ctx, fenceGrant, adm.decision)
+		return err
+	}
+	if mutate != nil {
+		// The import checks run between admission and persistence: a refusal
+		// leaves no durable trace of this lifecycle on the volume ID.
+		err = mutate()
+		if err != nil {
+			recordFenceDecision(ctx, fenceGrant, adm.decision)
+			return err
+		}
+	}
+	err = s.persistFencingMark(volumeID, adm.next, adm.changed)
+	if err != nil {
+		recordFenceDecision(ctx, fenceGrant, telemetry.FenceMarkIOError)
+		return err
+	}
+	recordFenceDecision(ctx, fenceGrant, adm.decision)
+	return nil
+}
+
 // recheckFence runs mutate under volumeID's fencing lock if token is still
 // admitted without advancing the durable mark, i.e. token already passed
 // fenced for op and no newer operation superseded it since.  It writes

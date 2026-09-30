@@ -553,6 +553,16 @@ spec:
                 - bindAddress
                 - port
                 type: object
+              importAcquired:
+                description: |-
+                  importAcquired records that agent.ImportVolume succeeded for a
+                  spec.importedFrom volume: the agent durably adopted the pre-existing
+                  zvol into this lifecycle.  While it is unset the lifecycle cannot prove
+                  the agent ever took ownership, so ReapAbandonedVolume and DeleteVolume
+                  must retire the record without calling UnexportVolume/DeleteVolume on
+                  the agent — a refused or lost-response import that was torn down anyway
+                  would destroy a zvol this driver never owned.
+                type: boolean
               localAttachNode:
                 description: |-
                   localAttachNode is the storage node on which the volume was last

@@ -359,6 +359,16 @@ type PillarVolumeStateStatus struct {
 	// +optional
 	BackendDevicePath string `json:"backendDevicePath,omitempty"`
 
+	// importAcquired records that agent.ImportVolume succeeded for a
+	// spec.importedFrom volume: the agent durably adopted the pre-existing
+	// zvol into this lifecycle.  While it is unset the lifecycle cannot prove
+	// the agent ever took ownership, so ReapAbandonedVolume and DeleteVolume
+	// must retire the record without calling UnexportVolume/DeleteVolume on
+	// the agent — a refused or lost-response import that was torn down anyway
+	// would destroy a zvol this driver never owned.
+	// +optional
+	ImportAcquired bool `json:"importAcquired,omitempty"`
+
 	// exportInfo holds the network export parameters returned by ExportVolume.
 	// Populated when phase is Ready or later.  Used by DeleteVolume to
 	// unmount the export after a controller restart without re-querying the

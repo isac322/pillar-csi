@@ -34,12 +34,14 @@ import (
 // volumeID names an existing, idle resource inside its configured layout and
 // reports its device path and size.
 //
-// The operation is idempotent (a repeated import returns the same device path)
-// and fenced (a grant-class operation): the fence mark the first successful
-// import records binds the backend resource to this lifecycle, so a concurrent
-// or delayed import/create for a different lifecycle is rejected.  A failed
-// import records no mark and the resource is untouched, so the request can
-// simply be retried once the refusal cause is fixed.
+// The operation is idempotent (a repeated import returns the same device
+// path) and fenced (a grant-class operation), but the ownership mark is
+// persisted only after the backend's import checks pass — see fencedImport.
+// A refused import therefore records nothing: the volume ID stays unclaimed,
+// the pre-existing resource is untouched, and retrying after the refusal
+// cause is fixed can still adopt it.  Once the mark is written it binds the
+// resource to this lifecycle, so a concurrent or delayed import/create for a
+// different lifecycle is rejected.
 func (s *Server) ImportVolume(
 	ctx context.Context,
 	req *agentv1.ImportVolumeRequest,
@@ -62,9 +64,10 @@ func (s *Server) ImportVolume(
 		devicePath string
 		sizeBytes  int64
 	)
-	err = s.fenced(ctx, req.GetVolumeId(), req.GetFence(), fenceGrant, func() error {
+	err = s.fencedImport(ctx, req.GetVolumeId(), req.GetFence(), func() error {
 		var importErr error
-		devicePath, sizeBytes, importErr = importer.Import(ctx, req.GetVolumeId(), req.GetCapacityBytes())
+		devicePath, sizeBytes, importErr = importer.Import(
+			ctx, req.GetVolumeId(), req.GetCapacityBytes(), req.GetExpectedDataset())
 		return importVolumeError(importErr)
 	})
 	if err != nil {

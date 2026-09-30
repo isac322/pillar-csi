@@ -417,13 +417,26 @@ func newCSIControllerTestEnv(t *testing.T, extra ...client.Object) *csiControlle
 // authoritative record for ControllerPublishVolume/ControllerUnpublishVolume
 // initiator management), so the grant/revoke RPCs tests assert run against an
 // ACL-enforcing export rather than the legacy no-record fallback.
-func seedComponentPillarVolumeState(t *testing.T, env *csiControllerTestEnv, name string) {
+func seedComponentPillarVolumeState(t *testing.T, env *csiControllerTestEnv) {
+	t.Helper()
+	seedComponentPillarVolumeStateOnAgent(t, env, "pvc-component-test", "storage-node-1")
+}
+
+// seedComponentPillarVolumeStateOnAgent is seedComponentPillarVolumeState for
+// a volume whose ID encodes agentName.
+func seedComponentPillarVolumeStateOnAgent(t *testing.T, env *csiControllerTestEnv, name, agentName string) {
 	t.Helper()
 	pv := &v1alpha1.PillarVolumeState{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
 		Spec: v1alpha1.PillarVolumeStateSpec{
-			// The encoded volume ID's agent segment: <pool>/<leaf>.
+			// The encoded volume ID's agent segment: <pool>/<leaf>.  A real
+			// record also names the owning agent — backend volume IDs are
+			// only unique per storage node, so ownership matching ignores a
+			// state that records a different (or no) agent.
 			AgentVolumeID: "tank/" + name,
+			AgentRef:      agentName,
+			BackendType:   "zfs-zvol",
+			ProtocolType:  "nvmeof-tcp",
 		},
 		Status: v1alpha1.PillarVolumeStateStatus{
 			ExportSpec: &v1alpha1.VolumeExportSpec{
@@ -965,7 +978,7 @@ func TestCSIController_ControllerPublishVolume_Success(t *testing.T) {
 	const nodeNQN = "nqn.2014-08.org.nvmexpress:uuid:test-node-001"
 	// The volume must exist (PillarVolumeState) and the CSINode must carry the
 	// NVMe-oF host NQN so the controller can resolve the initiator identity.
-	seedComponentPillarVolumeState(t, env, "pvc-component-test")
+	seedComponentPillarVolumeState(t, env)
 	seedCSINodeForNVMeOF(ctx, t, env.k8sClient, nodeNQN, nodeNQN)
 
 	var capturedInitiatorID string
@@ -1025,7 +1038,7 @@ func TestCSIController_ControllerPublishVolume_AlreadyPublished(t *testing.T) {
 	ctx := context.Background()
 
 	const nodeID = "nqn.2014-08.org.nvmexpress:uuid:node-abc"
-	seedComponentPillarVolumeState(t, env, "pvc-component-test")
+	seedComponentPillarVolumeState(t, env)
 	// Seed CSINode so the controller can resolve the NVMe-oF initiator identity.
 	seedCSINodeForNVMeOF(ctx, t, env.k8sClient, nodeID, nodeID)
 
@@ -1063,7 +1076,7 @@ func TestCSIController_ControllerUnpublishVolume_Success(t *testing.T) {
 	ctx := context.Background()
 
 	const nodeNQN = "nqn.2014-08.org.nvmexpress:uuid:test-node-001"
-	seedComponentPillarVolumeState(t, env, "pvc-component-test")
+	seedComponentPillarVolumeState(t, env)
 	seedCSINodeForNVMeOF(ctx, t, env.k8sClient, nodeNQN, nodeNQN)
 	// Unpublish only revokes recorded publications, so publish first.
 	publishComponentTestVolume(ctx, t, env, nodeNQN)
@@ -1131,7 +1144,7 @@ func TestCSIController_ControllerUnpublishVolume_AlreadyUnpublished(t *testing.T
 	ctx := context.Background()
 
 	const nodeID = "nqn.2014-08.org.nvmexpress:uuid:node-abc"
-	seedComponentPillarVolumeState(t, env, "pvc-component-test")
+	seedComponentPillarVolumeState(t, env)
 	seedCSINodeForNVMeOF(ctx, t, env.k8sClient, nodeID, nodeID)
 	publishComponentTestVolume(ctx, t, env, nodeID)
 
@@ -1164,7 +1177,7 @@ func TestCSIController_ExpandVolume_Success(t *testing.T) {
 	t.Parallel()
 	env := newCSIControllerTestEnv(t)
 	ctx := context.Background()
-	seedComponentPillarVolumeState(t, env, "pvc-component-test")
+	seedComponentPillarVolumeState(t, env)
 
 	const newBytes = int64(20 << 30) // 20 GiB
 	env.agent.expandVolumeFn = func(
@@ -1201,7 +1214,7 @@ func TestCSIController_ExpandVolume_AgentError(t *testing.T) {
 	t.Parallel()
 	env := newCSIControllerTestEnv(t)
 	ctx := context.Background()
-	seedComponentPillarVolumeState(t, env, "pvc-component-test")
+	seedComponentPillarVolumeState(t, env)
 
 	env.agent.expandVolumeFn = func(
 		_ context.Context, _ *agentv1.ExpandVolumeRequest,
@@ -1231,7 +1244,7 @@ func TestCSIController_ExpandVolume_AgentError(t *testing.T) {
 func TestCSIController_ValidateVolumeCapabilities_Supported(t *testing.T) {
 	t.Parallel()
 	env := newCSIControllerTestEnv(t)
-	seedComponentPillarVolumeState(t, env, "pvc-component-test")
+	seedComponentPillarVolumeState(t, env)
 	ctx := context.Background()
 
 	supported := []csipb.VolumeCapability_AccessMode_Mode{
@@ -1277,7 +1290,7 @@ func TestCSIController_ValidateVolumeCapabilities_Supported(t *testing.T) {
 func TestCSIController_ValidateVolumeCapabilities_Unsupported(t *testing.T) {
 	t.Parallel()
 	env := newCSIControllerTestEnv(t)
-	seedComponentPillarVolumeState(t, env, "pvc-component-test")
+	seedComponentPillarVolumeState(t, env)
 	ctx := context.Background()
 
 	unsupported := []csipb.VolumeCapability_AccessMode_Mode{

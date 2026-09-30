@@ -624,6 +624,15 @@ message ImportVolumeRequest {
   // Fencing token: the PillarVolumeState UID and the publicationGeneration
   // the controller committed for this operation.  See FencingToken.
   FencingToken fence = 4;
+
+  // The full dataset name the caller expects volume_id to resolve to under
+  // the agent backend's configured layout (e.g. "hot-data/k8s/pvc-abc123").
+  // When set, the agent MUST refuse (FAILED_PRECONDITION) unless its resolved
+  // dataset equals this value exactly, before any ownership mark or export:
+  // the request carries only pool + leaf, so without it an agent whose
+  // parentDataset differs from the controller's would silently adopt a
+  // different dataset.  Empty disables the check for older controllers.
+  string expected_dataset = 5;
 }
 
 message ImportVolumeResponse {

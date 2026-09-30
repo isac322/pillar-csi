@@ -490,14 +490,19 @@ func newControllerTestEnv(t *testing.T, extra ...ctrlclient.Object) *controllerT
 // stub carries the metadata Name and the spec.agentVolumeID a provisioned
 // volume carries ("<pool>/<name>", pool tank in these tests): the owner
 // resolution used by every post-create RPC matches on it, so a seed without
-// it would no longer be found by an encoded volume ID.  Tests that need
-// richer status fields should patch the object directly after seeding.
+// richer status fields should patch the object directly after seeding.  The
+// seed carries the agent/backend/protocol fields a real lifecycle always
+// records: backend volume IDs are only unique per agent, so ownership
+// matching ignores a state that names a different agent.
 func seedPillarVolumeState(t *testing.T, env *controllerTestEnv, name string) {
 	t.Helper()
 	pv := &v1alpha1.PillarVolumeState{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
 		Spec: v1alpha1.PillarVolumeStateSpec{
 			AgentVolumeID: "tank/" + name,
+			AgentRef:      "storage-node-1",
+			BackendType:   "zfs-zvol",
+			ProtocolType:  "nvmeof-tcp",
 		},
 	}
 	if err := env.srv.k8sClient.Create(context.Background(), pv); err != nil {
