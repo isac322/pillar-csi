@@ -47,9 +47,11 @@ Check cleanup against the resource owned by the test. For TCP listeners, verify 
 
 ## CI checks
 
-Pull requests and pushes to `master` run the same CI workflow. Code changes run lint, unit and integration tests, CSI conformance, chart rendering, benchmarks, all eight image platforms, and both Kind and upstream External Storage E2E suites. Documentation-only changes skip the code checks; `docs/E2E-TESTCASES.md` still counts as code. Failed change detection runs the checks rather than skipping them. Superseded pull-request runs are cancelled; master and daily runs are retained.
+Pull requests and pushes to `master` run the same CI workflow. Code changes run lint, unit and integration tests, CSI conformance, chart rendering, benchmarks, and both Kind and upstream External Storage E2E suites. Ordinary source PRs compile all eight platforms through the Dockerfile's builder stage. Image-contract changes, master pushes, and failed change detection run the full eight-platform OCI build. Documentation-only changes skip the code checks; `docs/E2E-TESTCASES.md` still counts as code. Failed change detection runs the checks rather than skipping them. Superseded pull-request runs are cancelled; master and daily runs are retained.
 
 TC coverage verification runs once through `make test`, and its report appears in the Test job summary. The daily workflow also runs the separate Docker multi-node data-path suite.
+
+CI builds the exact checkout's amd64 runtime images once in a job parallel to the platform build. Kind and External Storage E2E consume a run-scoped archive after verifying the source SHA, image tag, and image IDs, then load the images into fresh clusters. Local and daily runs still build their own images. Set `E2E_PREBUILT_IMAGES=true` only when the expected images are already loaded in the Docker daemon; the harness still performs Kind loading. CI also supports manual dispatch for measurements.
 
 The Docker suite's internal and external topologies run as independent matrix jobs on separate GitHub-hosted VMs, so storage kernel and configfs state are isolated. Both jobs run the existing NVMe-oF, iSCSI, and data-path scenarios and clean up independently; a failure in one does not cancel the other. Each job repeats image builds and setup, which may increase total job minutes; wall-clock savings must be measured. Local `make test-docker-e2e` still runs both topologies sequentially by default.
 
@@ -57,7 +59,7 @@ Local `make test-docker-e2e` runs keep the nested Docker's pulled images, BuildK
 
 External Storage E2E uses two workers and a 15 GiB sparse LVM backing file in CI. Local defaults remain one worker and 5 GiB. On a Linux host with the required storage modules, set `VG_SIZE=15G` when bootstrapping and `GINKGO_PROCS=2` when running `make test-external-e2e` to use the CI settings. Parallel execution uses the matching Ginkgo binary from the upstream Kubernetes test bundle and keeps the same focus and skip filters.
 
-CI caches versioned tools and test bundles. The multi-platform build reuses a Go compiler cache keyed by the Dockerfile and Go dependencies, not each commit. Go still recompiles changed source packages. Pull requests restore that cache without exporting it; master refreshes it when its dependency key changes. Runtime image layers use separate target caches, exported by master. Release builds restore the same compiler and target-specific runtime caches as read-only consumers; they do not export either cache.
+CI caches versioned tools and test bundles. The multi-platform build reuses a Go compiler cache keyed by the Dockerfile and Go dependencies, not each commit. The runtime-image job has a separate amd64 compiler cache under the same dependency-key scheme. Go still recompiles changed source packages. Pull requests and manual non-master runs restore these caches without exporting them; master refreshes them when their dependency keys change. Runtime image layers use target-specific caches for the full matrix and a separate scope for the shared amd64 artifact, exported by master. Release builds restore the full-matrix compiler and target-specific runtime caches as read-only consumers; they do not export either cache.
 
 ## Before you commit
 
