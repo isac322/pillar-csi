@@ -362,45 +362,8 @@ jobs:
           set: |
             compile.cache-from=type=gha,scope=pillar-ci-compile
 
-          build_target() {
-            local arch="$1"
-            shift
-            local output_dir="${output_root}/${arch}"
-            mkdir -p "${output_dir}"
-            env \
-              CGO_ENABLED=0 \
-              GOOS=linux \
-              GOARCH="${arch}" \
-              "$@" \
-              go build -trimpath -pgo=auto -ldflags="-s -w" \
-                -o "${output_dir}/" ./cmd/...
-          }
-
-          # Each target writes to its own directory, so the independent
-          # cross-compiles can share the runner without serializing six builds.
-          pids=()
-          build_target amd64 GOAMD64=v1 &
-          pids+=("$!")
-          build_target arm64 GOARM64=v8.0 &
-          pids+=("$!")
-          build_target arm GOARM=7 &
-          pids+=("$!")
-          build_target s390x &
-          pids+=("$!")
-          build_target ppc64le &
-          pids+=("$!")
-          build_target riscv64 &
-          pids+=("$!")
-
-          status=0
-          for pid in "${pids[@]}"; do
-            wait "${pid}" || status=1
-          done
-          exit "${status}"
-
-      # Full OCI packaging is deliberately separate from behavior validation.
-      # It remains required for Docker/Bake contract changes and every master
-      # push, while ordinary code PRs retain cross-platform Go compile coverage.
+      # Packaging remains separate from behavior validation. This job runs
+      # beside the runtime-image job so E2E does not wait for the full matrix.
       - name: Build all images for all platforms
         id: full_images
         if: ${{ needs.changes.result != 'success' || needs.changes.outputs.image_contract == 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/master') }}
