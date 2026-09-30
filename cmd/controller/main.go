@@ -573,7 +573,7 @@ func runManager(mgr ctrl.Manager, agentDialer agentclient.Dialer, csiEndpoint st
 	// The CSI controller server is built before setupControllers so that the
 	// PillarAgent reconciler can drive the batch export restore of a restarted
 	// agent and the PillarVolumeState reconciler its per-volume export resync.
-	ctrlSrv := csi.NewControllerServer(mgr.GetClient(), mgr.GetAPIReader(), driverName)
+	ctrlSrv := csi.NewControllerServerWithAgentDialer(mgr.GetClient(), mgr.GetAPIReader(), driverName, agentDialer)
 
 	err := setupControllers(mgr, agentDialer, ctrlSrv, ctrlSrv, ctrlSrv)
 	if err != nil {

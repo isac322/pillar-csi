@@ -169,6 +169,38 @@ func NewControllerServer(k8sClient client.Client, apiReader client.Reader, drive
 	return srv
 }
 
+// NewControllerServerWithAgentDialer constructs a ControllerServer that
+// reaches agents through manager, the controller's shared agent connection
+// manager, so CSI RPCs and export restoration use its transport credentials
+// (mTLS when configured).
+func NewControllerServerWithAgentDialer(
+	k8sClient client.Client,
+	apiReader client.Reader,
+	driverName string,
+	manager agentclient.Dialer,
+) *ControllerServer {
+	srv := NewControllerServerWithDialer(k8sClient, driverName, sharedAgentDialer(manager))
+	srv.apiReader = apiReader
+	return srv
+}
+
+// sharedAgentDialer adapts manager to AgentDialer. The manager owns and
+// caches its connections, so the per-call closer is a no-op: closing the
+// connection after one RPC would break every later RPC to the same agent.
+func sharedAgentDialer(manager agentclient.Dialer) AgentDialer {
+	return func(ctx context.Context, addr string) (agentv1.AgentServiceClient, io.Closer, error) {
+		agentClient, err := manager.Dial(ctx, addr)
+		if err != nil {
+			return nil, nil, fmt.Errorf("agent connection manager: %w", err)
+		}
+		return agentClient, sharedAgentNoopCloser{}, nil
+	}
+}
+
+type sharedAgentNoopCloser struct{}
+
+func (sharedAgentNoopCloser) Close() error { return nil }
+
 // NewControllerServerWithDialer constructs a ControllerServer using the
 // provided AgentDialer.  This variant is used in tests to inject a mock
 // dialer that serves a real gRPC server backed by a mock agent.  K8sClient
