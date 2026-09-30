@@ -61,6 +61,12 @@ const (
 	memberLVM = "lvm"
 )
 
+// Protocol union member names.
+const (
+	memberNVMeOFTCP = "nvmeofTcp"
+	memberISCSI     = "iscsi"
+)
+
 // fieldKind classifies how a document field may be used.
 type fieldKind int
 
@@ -118,8 +124,8 @@ var backendMembers = map[string]memberSpec{
 // protocolMembers is the schema of a protocol document
 // (PillarProtocol.spec.protocol and per-volume protocol override documents).
 var protocolMembers = map[string]memberSpec{
-	"nvmeofTcp": {
-		name: "nvmeofTcp",
+	memberNVMeOFTCP: {
+		name: memberNVMeOFTCP,
 		fields: map[string]fieldSpec{
 			"port":              {kind: fieldStructural, validate: intRange(1, 65535)},
 			"acl":               {kind: fieldStructural, validate: boolValue},
@@ -127,6 +133,17 @@ var protocolMembers = map[string]memberSpec{
 			"inCapsuleDataSize": {kind: fieldTunable, validate: intRange(1024, math.MaxInt32)},
 			"ctrlLossTmo":       {kind: fieldTunable, validate: intRange(0, math.MaxInt32)},
 			"reconnectDelay":    {kind: fieldTunable, validate: intRange(0, math.MaxInt32)},
+		},
+	},
+	memberISCSI: {
+		name: memberISCSI,
+		fields: map[string]fieldSpec{
+			"port":               {kind: fieldStructural, validate: intRange(1, 65535)},
+			"acl":                {kind: fieldStructural, validate: boolValue},
+			"loginTimeout":       {kind: fieldTunable, validate: intRange(1, math.MaxInt32)},
+			"replacementTimeout": {kind: fieldTunable, validate: intRange(0, math.MaxInt32)},
+			"noopOutInterval":    {kind: fieldTunable, validate: intRange(0, math.MaxInt32)},
+			"noopOutTimeout":     {kind: fieldTunable, validate: intRange(0, math.MaxInt32)},
 		},
 	},
 }
@@ -184,12 +201,24 @@ func DecodeProtocolOverride(source, raw string) (*pillarv1alpha1.ProtocolOverrid
 	if err != nil || doc == nil {
 		return nil, err
 	}
-	cfg := &pillarv1alpha1.NVMeOFTCPOverrides{}
-	err = unmarshalMember(source, doc.member, doc.body, cfg)
-	if err != nil {
-		return nil, err
+	out := &pillarv1alpha1.ProtocolOverrides{}
+	switch doc.member {
+	case memberNVMeOFTCP:
+		cfg := &pillarv1alpha1.NVMeOFTCPOverrides{}
+		err := unmarshalMember(source, doc.member, doc.body, cfg)
+		if err != nil {
+			return nil, err
+		}
+		out.NVMeOFTCP = cfg
+	case memberISCSI:
+		cfg := &pillarv1alpha1.ISCSIOverrides{}
+		err := unmarshalMember(source, doc.member, doc.body, cfg)
+		if err != nil {
+			return nil, err
+		}
+		out.ISCSI = cfg
 	}
-	return &pillarv1alpha1.ProtocolOverrides{NVMeOFTCP: cfg}, nil
+	return out, nil
 }
 
 // DecodeFilesystemDoc decodes a filesystem document

@@ -19,22 +19,22 @@ package csi
 // Unit tests for the CSINode annotation publisher (csinode_publisher.go).
 //
 // Tests cover:
-//   - PublishNVMeOfIdentity: generate-and-persist when the host NQN file is missing
-//   - PublishNVMeOfIdentity: regenerate when the host NQN file is empty
-//   - PublishNVMeOfIdentity: error wrapping when patcher returns NotFound
-//   - PublishNVMeOfIdentity: error wrapping when patcher returns a generic error
+//   - PublishNodeIdentity: generate-and-persist when the host NQN file is missing
+//   - PublishNodeIdentity: regenerate when the host NQN file is empty
+//   - PublishNodeIdentity: iSCSI initiator IQN published only when enabled
+//   - PublishNodeIdentity: error wrapping when patcher returns NotFound
+//   - PublishNodeIdentity: error wrapping when patcher returns a generic error
 //   - KubeCSINodePatcher.PatchAnnotations: success via fake k8s client
 //   - KubeCSINodePatcher.PatchAnnotations: error propagated on patch failure
 //
 // Run with:
 //
-//	go test ./internal/csi/ -v -run TestPublishNVMeOfIdentity
+//	go test ./internal/csi/ -v -run TestPublishNodeIdentity
 //	go test ./internal/csi/ -v -run TestKubeCSINodePatcher
 
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -76,55 +76,23 @@ func (m *mockNodeAnnotationPatcher) PatchAnnotations(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// publishNVMeOfIdentityWithFile — testable variant of PublishNVMeOfIdentity
+// PublishNodeIdentity tests
 // ─────────────────────────────────────────────────────────────────────────────
 
-// publishNVMeOfIdentityWithFile is a test-only helper that calls the
-// same logic as PublishNVMeOfIdentity but reads the NQN from path instead
-// of the hard-coded system file.  This allows unit tests to inject a temp
-// file without touching /etc/nvme/hostnqn.
-//
-// This helper exists in the test file (same package) rather than production
-// code to keep the production API clean.
-func publishNVMeOfIdentityWithFile(ctx context.Context, patcher NodeAnnotationPatcher, nodeName, nqnFile string) error {
-	nqn, err := readOrGenerateHostNQN(nqnFile)
-	if err != nil {
-		return fmt.Errorf("PublishNVMeOfIdentity: read host NQN: %w", err)
-	}
-	annotations := map[string]string{
-		AnnotationNVMeOFHostNQN: nqn,
-	}
-	patchErr := patcher.PatchAnnotations(ctx, nodeName, annotations)
-	if patchErr != nil {
-		if k8serrors.IsNotFound(patchErr) {
-			return fmt.Errorf(
-				"PublishNVMeOfIdentity: CSINode %q not found "+
-					"(kubelet may not have registered the driver yet): %w",
-				nodeName, patchErr)
-		}
-		return fmt.Errorf("PublishNVMeOfIdentity: patch CSINode %q: %w", nodeName, patchErr)
-	}
-	return nil
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// PublishNVMeOfIdentity tests
-// ─────────────────────────────────────────────────────────────────────────────
-
-// TestPublishNVMeOfIdentity_MissingNQNFileGenerates verifies that
-// PublishNVMeOfIdentity transparently generates a host NQN when the file is
+// TestPublishNodeIdentity_MissingNQNFileGenerates verifies that
+// PublishNodeIdentity transparently generates a host NQN when the file is
 // absent, persists it, and publishes it through the patcher.  This is the
 // out-of-the-box path on containerized hosts where nvme-cli has not seeded
 // /etc/nvme/hostnqn.
-func TestPublishNVMeOfIdentity_MissingNQNFileGenerates(t *testing.T) {
+func TestPublishNodeIdentity_MissingNQNFileGenerates(t *testing.T) {
 	t.Parallel()
 
 	patcher := &mockNodeAnnotationPatcher{}
 	dir := t.TempDir()
 	f := filepath.Join(dir, "nvme", "hostnqn")
 
-	err := publishNVMeOfIdentityWithFile(
-		context.Background(), patcher, "node-missing-nqn-file", f,
+	err := publishNodeIdentity(
+		context.Background(), patcher, "node-missing-nqn-file", f, "",
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -141,10 +109,10 @@ func TestPublishNVMeOfIdentity_MissingNQNFileGenerates(t *testing.T) {
 	}
 }
 
-// TestPublishNVMeOfIdentity_EmptyNQNFileRegenerates verifies that an existing
+// TestPublishNodeIdentity_EmptyNQNFileRegenerates verifies that an existing
 // but empty hostnqn file is overwritten with a freshly-generated NQN rather
 // than surfacing as an error.
-func TestPublishNVMeOfIdentity_EmptyNQNFileRegenerates(t *testing.T) {
+func TestPublishNodeIdentity_EmptyNQNFileRegenerates(t *testing.T) {
 	t.Parallel()
 
 	f := filepath.Join(t.TempDir(), "hostnqn")
@@ -152,7 +120,7 @@ func TestPublishNVMeOfIdentity_EmptyNQNFileRegenerates(t *testing.T) {
 		t.Fatalf("write temp NQN file: %v", err)
 	}
 	patcher := &mockNodeAnnotationPatcher{}
-	err := publishNVMeOfIdentityWithFile(context.Background(), patcher, "node-empty-nqn", f)
+	err := publishNodeIdentity(context.Background(), patcher, "node-empty-nqn", f, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -165,10 +133,10 @@ func TestPublishNVMeOfIdentity_EmptyNQNFileRegenerates(t *testing.T) {
 	}
 }
 
-// TestPublishNVMeOfIdentity_Success verifies that when both the NQN file is
+// TestPublishNodeIdentity_Success verifies that when both the NQN file is
 // valid and the patcher succeeds, the patcher is called exactly once with the
 // correct node name and annotation key.
-func TestPublishNVMeOfIdentity_Success(t *testing.T) {
+func TestPublishNodeIdentity_Success(t *testing.T) {
 	t.Parallel()
 
 	const (
@@ -182,7 +150,7 @@ func TestPublishNVMeOfIdentity_Success(t *testing.T) {
 	}
 
 	patcher := &mockNodeAnnotationPatcher{}
-	err := publishNVMeOfIdentityWithFile(context.Background(), patcher, nodeName, f)
+	err := publishNodeIdentity(context.Background(), patcher, nodeName, f, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -199,10 +167,50 @@ func TestPublishNVMeOfIdentity_Success(t *testing.T) {
 	}
 }
 
-// TestPublishNVMeOfIdentity_PatcherNotFound verifies that a NotFound error
+// TestPublishNodeIdentity_ISCSIInitiatorIQN verifies that the iSCSI initiator
+// IQN is published in the same patch as the host NQN when the iSCSI handler
+// is enabled, and that no iSCSI annotation is written when it is disabled
+// (so the controller never whitelists an initiator that cannot log in).
+func TestPublishNodeIdentity_ISCSIInitiatorIQN(t *testing.T) {
+	t.Parallel()
+
+	const (
+		wantNQN = "nqn.2014-08.org.nvmexpress:uuid:iscsi-publish"
+		wantIQN = "iqn.2026-01.com.bhyoo.pillar-csi:node.0123456789abcdef0123456789abcdef"
+	)
+	f := filepath.Join(t.TempDir(), "hostnqn")
+	if err := os.WriteFile(f, []byte(wantNQN+"\n"), 0o600); err != nil {
+		t.Fatalf("write temp NQN file: %v", err)
+	}
+
+	enabled := &mockNodeAnnotationPatcher{}
+	if err := publishNodeIdentity(context.Background(), enabled, "worker-iscsi", f, wantIQN); err != nil {
+		t.Fatalf("publish with iSCSI enabled: %v", err)
+	}
+	if enabled.callCount != 1 {
+		t.Fatalf("patcher.callCount = %d, want 1 (single merge patch)", enabled.callCount)
+	}
+	if got := enabled.lastAnnotations[AnnotationISCSIInitiatorIQN]; got != wantIQN {
+		t.Errorf("annotation[%q] = %q, want %q", AnnotationISCSIInitiatorIQN, got, wantIQN)
+	}
+	if got := enabled.lastAnnotations[AnnotationNVMeOFHostNQN]; got != wantNQN {
+		t.Errorf("annotation[%q] = %q, want %q", AnnotationNVMeOFHostNQN, got, wantNQN)
+	}
+
+	disabled := &mockNodeAnnotationPatcher{}
+	if err := publishNodeIdentity(context.Background(), disabled, "worker-no-iscsi", f, ""); err != nil {
+		t.Fatalf("publish with iSCSI disabled: %v", err)
+	}
+	if _, ok := disabled.lastAnnotations[AnnotationISCSIInitiatorIQN]; ok {
+		t.Errorf("iSCSI disabled: annotation %q must not be published: %v",
+			AnnotationISCSIInitiatorIQN, disabled.lastAnnotations)
+	}
+}
+
+// TestPublishNodeIdentity_PatcherNotFound verifies that a NotFound error
 // from the patcher is wrapped and returned as an error wrapping the original.
 // The caller can use k8serrors.IsNotFound to detect this case.
-func TestPublishNVMeOfIdentity_PatcherNotFound(t *testing.T) {
+func TestPublishNodeIdentity_PatcherNotFound(t *testing.T) {
 	t.Parallel()
 
 	f := filepath.Join(t.TempDir(), "hostnqn")
@@ -214,7 +222,7 @@ func TestPublishNVMeOfIdentity_PatcherNotFound(t *testing.T) {
 		schema.GroupResource{Group: "storage.k8s.io", Resource: "csinodes"}, "node-not-found",
 	)
 	patcher := &mockNodeAnnotationPatcher{err: notFoundErr}
-	err := publishNVMeOfIdentityWithFile(context.Background(), patcher, "node-not-found", f)
+	err := publishNodeIdentity(context.Background(), patcher, "node-not-found", f, "")
 	if err == nil {
 		t.Fatal("expected error for patcher NotFound, got nil")
 	}
@@ -224,9 +232,9 @@ func TestPublishNVMeOfIdentity_PatcherNotFound(t *testing.T) {
 	}
 }
 
-// TestPublishNVMeOfIdentity_PatcherGenericError verifies that a generic error
+// TestPublishNodeIdentity_PatcherGenericError verifies that a generic error
 // from the patcher is propagated wrapped.
-func TestPublishNVMeOfIdentity_PatcherGenericError(t *testing.T) {
+func TestPublishNodeIdentity_PatcherGenericError(t *testing.T) {
 	t.Parallel()
 
 	f := filepath.Join(t.TempDir(), "hostnqn")
@@ -236,7 +244,7 @@ func TestPublishNVMeOfIdentity_PatcherGenericError(t *testing.T) {
 
 	patcherErr := errors.New("transient API error")
 	patcher := &mockNodeAnnotationPatcher{err: patcherErr}
-	err := publishNVMeOfIdentityWithFile(context.Background(), patcher, "node-generic-error", f)
+	err := publishNodeIdentity(context.Background(), patcher, "node-generic-error", f, "")
 	if err == nil {
 		t.Fatal("expected error from patcher, got nil")
 	}
@@ -245,9 +253,9 @@ func TestPublishNVMeOfIdentity_PatcherGenericError(t *testing.T) {
 	}
 }
 
-// TestPublishNVMeOfIdentity_NQNWhitespaceIsTrimmed verifies that leading and
+// TestPublishNodeIdentity_NQNWhitespaceIsTrimmed verifies that leading and
 // trailing whitespace in the NQN file is stripped before writing to the annotation.
-func TestPublishNVMeOfIdentity_NQNWhitespaceIsTrimmed(t *testing.T) {
+func TestPublishNodeIdentity_NQNWhitespaceIsTrimmed(t *testing.T) {
 	t.Parallel()
 
 	const wantNQN = "nqn.2014-08.org.nvmexpress:uuid:trim-test"
@@ -257,7 +265,7 @@ func TestPublishNVMeOfIdentity_NQNWhitespaceIsTrimmed(t *testing.T) {
 	}
 
 	patcher := &mockNodeAnnotationPatcher{}
-	err := publishNVMeOfIdentityWithFile(context.Background(), patcher, "worker-node-1", f)
+	err := publishNodeIdentity(context.Background(), patcher, "worker-node-1", f, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

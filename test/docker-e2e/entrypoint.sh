@@ -6,14 +6,19 @@ dns_server=${PILLAR_E2E_DNS:-1.1.1.1}
 
 if ! findmnt -no OPTIONS /sys | tr ',' '\n' | grep -qx rw; then
   if ! mount -o remount,rw /sys; then
-    printf 'failed to remount /sys read-write before sharing NVMe fabrics sysfs\n' >&2
+    printf 'failed to remount /sys read-write before sharing the NVMe fabrics and iSCSI host sysfs subtrees\n' >&2
     exit 1
   fi
 fi
 
-# Kind bind-mounts this host sysfs subtree into its node containers.  Give that
-# subtree its own shared mount so Kind can propagate it without making all of
-# /sys shared between the Docker-in-Docker container and its children.
+# Kind bind-mounts these host sysfs subtrees into its node containers, whose
+# own /sys is a read-only sysfs instance.  Give each subtree its own shared
+# mount so Kind can propagate it without making all of /sys shared between
+# the Docker-in-Docker container and its children.
+#   - nvme-fabrics: pillar-node writes /dev/nvme-fabrics controllers there.
+#   - platform: software iSCSI SCSI hosts (/sys/devices/platform/host<N>);
+#     pillar-node writes scsi_host/host<N>/scan to discover a session's LUN
+#     and <H:C:T:L>/rescan after an online resize.
 if ! modprobe nvme_fabrics >/dev/null 2>&1; then
   printf '%s\n' \
     'failed to load nvme_fabrics before starting Docker' \
@@ -22,15 +27,16 @@ if ! modprobe nvme_fabrics >/dev/null 2>&1; then
     'Then load: sudo modprobe nvmet nvmet-tcp nvme-fabrics nvme-tcp' >&2
   exit 1
 fi
-nvme_fabrics_sysfs=/sys/devices/virtual/nvme-fabrics
-if ! mount --bind "${nvme_fabrics_sysfs}" "${nvme_fabrics_sysfs}"; then
-  printf 'failed to create bind mount for %s\n' "${nvme_fabrics_sysfs}" >&2
-  exit 1
-fi
-if ! mount --make-rshared "${nvme_fabrics_sysfs}"; then
-  printf 'failed to make %s a shared mount\n' "${nvme_fabrics_sysfs}" >&2
-  exit 1
-fi
+for shared_sysfs in /sys/devices/virtual/nvme-fabrics /sys/devices/platform; do
+  if ! mount --bind "${shared_sysfs}" "${shared_sysfs}"; then
+    printf 'failed to create bind mount for %s\n' "${shared_sysfs}" >&2
+    exit 1
+  fi
+  if ! mount --make-rshared "${shared_sysfs}"; then
+    printf 'failed to make %s a shared mount\n' "${shared_sysfs}" >&2
+    exit 1
+  fi
+done
 
 setsid dockerd \
   --host=unix:///var/run/docker.sock \
@@ -85,6 +91,7 @@ cleanup() {
     wait "${dockerd_pid}" 2>/dev/null || true
   fi
   cleanup_docker_mounts || cleanup_rc=1
+  restore_inotify_limits || cleanup_rc=1
   if [[ ${rc} -eq 0 && ${cleanup_rc} -ne 0 ]]; then
     rc=${cleanup_rc}
   fi
@@ -93,6 +100,42 @@ cleanup() {
 trap cleanup EXIT
 trap 'forward_signal TERM 130' INT
 trap 'forward_signal TERM 143' TERM
+
+# Every Kind node runs systemd, containerd and kubelet, whose inotify instances
+# count against root in the host kernel.  A four-node cluster nearly exhausts
+# the common default of 128 instances, and a restarted kubelet then fails to
+# start cAdvisor ("inotify_init: too many open files").  Raise the limits to
+# the values Kind recommends for the duration of the run; cleanup restores
+# the host's values.
+declare -A inotify_originals=()
+raise_inotify_limit() {
+  local name=$1
+  local want=$2
+  local path=/proc/sys/fs/inotify/${name}
+  local current
+  current=$(<"${path}")
+  if (( current >= want )); then
+    return
+  fi
+  if ! printf '%s\n' "${want}" >"${path}"; then
+    printf 'failed to raise %s from %s to %s\n' "${path}" "${current}" "${want}" >&2
+    exit 1
+  fi
+  inotify_originals[${name}]=${current}
+}
+restore_inotify_limits() {
+  local rc=0
+  local name
+  for name in "${!inotify_originals[@]}"; do
+    if ! printf '%s\n' "${inotify_originals[${name}]}" >"/proc/sys/fs/inotify/${name}"; then
+      printf 'failed to restore /proc/sys/fs/inotify/%s to %s\n' "${name}" "${inotify_originals[${name}]}" >&2
+      rc=1
+    fi
+  done
+  return "${rc}"
+}
+raise_inotify_limit max_user_instances 512
+raise_inotify_limit max_user_watches 524288
 
 for _ in $(seq 1 120); do
   if docker info >/dev/null 2>&1; then

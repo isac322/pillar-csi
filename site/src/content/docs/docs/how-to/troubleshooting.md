@@ -149,7 +149,13 @@ With reason `TLSHandshakeFailed`, mTLS is on and the certificates do not match. 
 
 With `AddressNotResolved`, the node has no address of the type in `spec.nodeRef.addressType`, or none inside `spec.nodeRef.addressSelector`.
 
-`AgentConnected` can also be `True` with reason `AgentDegraded`. The agent answers but reports a degraded subsystem, for example a missing `nvmet` module or an unmounted configfs. The agent's init container runs `modprobe nvmet nvmet_tcp` against the host's `/lib/modules`, so the modules must exist in the host kernel.
+`AgentConnected` can also be `True` with reason `AgentDegraded`. The agent answers but reports a degraded subsystem, for example a missing `nvmet` module or an unmounted configfs. The agent's init container runs `modprobe` for `nvmet`, `nvmet_tcp`, `target_core_mod`, `target_core_iblock` and `iscsi_target_mod` against the host's `/lib/modules`, so the modules must exist in the host kernel.
+
+If iSCSI volumes do not provision on a storage node, check that the agent lists `iscsi` among its protocols. It does so only when the LIO iSCSI target works on the node, which needs `target_core_mod`, `target_core_iblock` and `iscsi_target_mod`:
+
+```sh
+kubectl get pillaragent <name> -o jsonpath='{.status.capabilities.protocols}'
+```
 
 ### PillarStore is not Ready: pool not discovered
 
@@ -187,8 +193,13 @@ kubectl -n pillar-csi logs <node-pod> -c node
 | Message contains | Cause | Fix |
 |---|---|---|
 | `CSINode "<node>" is missing annotation "pillar-csi.bhyoo.com/nvmeof-host-nqn"` | The node plugin has not published the worker's host NQN yet. | Check that the node plugin pod runs on that worker. |
+| `CSINode "<node>" is missing annotation "pillar-csi.bhyoo.com/iscsi-initiator-iqn"` | The node plugin has not published the worker's iSCSI initiator IQN. It skips the IQN when `iscsi_tcp` was not loaded at its start. | Check that the node plugin pod runs on that worker and that its log has no `iSCSI initiator disabled` line. If it has, load `iscsi_tcp` on the host and restart the pod. |
 | `CSINode "<node>" not found` | The node plugin never registered on that worker. | Check the `node-driver-registrar` container of the node plugin pod. |
 | an NVMe connect error, or a timeout waiting for the device | The worker cannot reach the storage node's NVMe/TCP port (`4420` by default), or `nvme_tcp` is not loaded. | Open the port on the storage node's firewall. On the worker, check that `/sys/module/nvme_tcp` exists; the init container only runs `modprobe` against the host's `/lib/modules`. |
+| `the iSCSI initiator is disabled on this node because kernel module iscsi_tcp was not loaded when pillar-node started` | `iscsi_tcp` was missing when the node plugin started. | Load `iscsi_tcp` on the host, list it in `/etc/modules-load.d/`, and restart the node plugin pod. |
+| `iscsi Attach: login to <target> at <address>:<port>` followed by a connection or timeout error | The worker cannot reach the storage node's iSCSI port (`3260` by default). | Open the port on the storage node's firewall. With `acl: true`, check that the worker's `pillar-csi.bhyoo.com/iscsi-initiator-iqn` annotation is set. |
+| `create iSCSI initiator (netlink netns ...)` or `start iSCSI initiator` in the node plugin log, and the node plugin pod restarts | The node plugin cannot open the kernel's `NETLINK_ISCSI` socket, which exists only in the host's initial network namespace. | Keep `hostNetwork: true` on the node plugin. On Kind or other nodes that run in containers, set `node.iscsi.netlinkNetnsPath`; see [Prerequisites](/docs/reference/prerequisites/#kubernetes-and-helm). |
+| `read iSCSI initiator IQN` in the node plugin log, and the node plugin pod restarts | `/etc/iscsi/initiatorname.iscsi` on the host holds an `InitiatorName=` that is not a valid iSCSI name, or the file cannot be read or written. The node plugin never overwrites an existing name. | Fix the `InitiatorName=` line, or remove the file so the node plugin generates a new IQN. |
 | `resize2fs` or `xfs_growfs` | Growing the filesystem after an expansion failed. | See [Expand a volume](/docs/how-to/expand-volume/#failures). |
 
 A worker without `nvme_tcp` loaded also lacks the topology key `pillar-csi.bhyoo.com/nvmeof` on its CSINode:
@@ -212,6 +223,8 @@ dmesg -T | grep -i nvme
 ```
 
 If the log shows reconnect attempts followed by the controller being removed, the outage lasted longer than the volume's `ctrlLossTmo` (600 seconds when unset). The kernel removed the device and the filesystem shut down. Stop every pod that uses the volume, wait until its `VolumeAttachment` is gone, and start the workload again. To avoid it next time, see [Maintain storage and worker nodes](/docs/how-to/node-maintenance/).
+
+For an iSCSI volume, the outage lasted longer than its `replacementTimeout` (120 seconds when unset). The kernel failed the queued I/O. pillar-node logs in again once the target is back, but a filesystem that saw the errors may have shut down or turned read-only. Restart the workload the same way. Check the session state with `grep . /sys/class/iscsi_session/session*/state`.
 
 If the log shows `identifiers changed for nsid`, the namespace came back with a different identity. Volumes exported by 0.3.0 keep a fixed identity across reboots. An export created by 0.2.0 or earlier that was lost before an upgraded agent recorded its identity cannot keep it. Restart the workload as above.
 

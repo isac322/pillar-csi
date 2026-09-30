@@ -9,6 +9,7 @@ package e2e
 
 import (
 	"context"
+	"strings"
 	"sync"
 
 	"google.golang.org/grpc"
@@ -119,6 +120,22 @@ func (s *fakeAgentServer) ExportVolume(_ context.Context, req *agentv1.ExportVol
 	s.exportVolumeReqs = append(s.exportVolumeReqs, req)
 	if s.exportVolumeErr != nil {
 		return nil, s.exportVolumeErr
+	}
+	// An iSCSI export names an LIO target: the IQN derived from the agent
+	// volume ID, like the real agent, on the requested portal port.
+	if req.GetProtocolType() == agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI {
+		port := req.GetExportParams().GetIscsi().GetPort()
+		if port == 0 {
+			port = 3260
+		}
+		return &agentv1.ExportVolumeResponse{
+			ExportInfo: &agentv1.ExportInfo{
+				TargetId:  "iqn.2026-01.com.bhyoo.pillar-csi:" + strings.ReplaceAll(req.GetVolumeId(), "/", "."),
+				Address:   "127.0.0.1",
+				Port:      port,
+				VolumeRef: "0",
+			},
+		}, nil
 	}
 	if s.exportVolumeResp != nil {
 		return s.exportVolumeResp, nil

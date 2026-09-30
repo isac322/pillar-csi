@@ -30,6 +30,10 @@ type ProtocolID string
 const (
 	// ProtocolIDNVMeOFTCP exports volumes over NVMe-oF/TCP.
 	ProtocolIDNVMeOFTCP ProtocolID = "nvmeof-tcp"
+
+	// ProtocolIDISCSI exports volumes over iSCSI (LIO target, in-process
+	// initiator on the node).
+	ProtocolIDISCSI ProtocolID = "iscsi"
 )
 
 // NVMeOFTCPConfig holds NVMe-oF/TCP-specific protocol parameters.
@@ -87,27 +91,89 @@ type NVMeOFTCPConfig struct {
 	ReconnectDelay *int32 `json:"reconnectDelay,omitempty"`
 }
 
+// ISCSIConfig holds iSCSI-specific protocol parameters.
+// Target bind IP is not included here — the controller resolves it
+// at runtime from the referenced PillarAgent.  The target IQN is derived by
+// the agent from the volume ID, and the node's initiator IQN is published on
+// its CSINode object, so neither is configured here.
+//
+// All timeouts are in seconds.  An unset timeout keeps the node default
+// (loginTimeout 15, replacementTimeout 120, noopOutInterval 5,
+// noopOutTimeout 5).  Timeouts apply to sessions logged in after the change;
+// a staged volume keeps the values from its CreateVolume.
+type ISCSIConfig struct {
+	// port is the TCP port on which the iSCSI target portal listens.
+	// Defaults to 3260.
+	// +optional
+	// +kubebuilder:default=3260
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	Port int32 `json:"port,omitempty"`
+
+	// acl enables initiator IQN-based access control when true.
+	// When false the target portal group runs in demo mode
+	// (generate_node_acls) and accepts any initiator.
+	// Defaults to false so that e2e tests and simple deployments work
+	// without registering initiator IQNs.
+	// +optional
+	// +kubebuilder:default=false
+	ACL bool `json:"acl"`
+
+	// loginTimeout is the maximum seconds the initiator waits for a login
+	// (TCP connect plus the login PDU exchange) to complete.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	LoginTimeout *int32 `json:"loginTimeout,omitempty"`
+
+	// replacementTimeout is the maximum seconds the initiator keeps I/O
+	// queued while re-establishing a failed session before failing it back
+	// to the block layer.  0 fails I/O immediately on connection loss.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	ReplacementTimeout *int32 `json:"replacementTimeout,omitempty"`
+
+	// noopOutInterval is the interval in seconds between NOP-Out pings the
+	// initiator sends to detect a dead connection.  0 disables the pings.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	NoopOutInterval *int32 `json:"noopOutInterval,omitempty"`
+
+	// noopOutTimeout is the maximum seconds the initiator waits for a
+	// NOP-In reply before declaring the connection failed.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	NoopOutTimeout *int32 `json:"noopOutTimeout,omitempty"`
+}
+
 // ProtocolSpec describes the transport protocol of a PillarProtocol.
 // Exactly one member must be set: the member name selects the protocol
-// (nvmeofTcp) and its value carries that protocol's configuration.
+// (nvmeofTcp or iscsi) and its value carries that protocol's configuration.
 //
 // Per-binding and per-volume override documents use ProtocolOverrides,
 // which keeps only the tunable subset.
 //
-// +kubebuilder:validation:XValidation:rule="has(self.nvmeofTcp)",message="exactly one protocol member must be set (supported: nvmeofTcp)"
+// +kubebuilder:validation:XValidation:rule="(has(self.nvmeofTcp) ? 1 : 0) + (has(self.iscsi) ? 1 : 0) == 1",message="exactly one protocol member must be set (supported: nvmeofTcp, iscsi)"
 type ProtocolSpec struct {
 	// nvmeofTcp holds NVMe-oF/TCP configuration.
 	// +optional
 	NVMeOFTCP *NVMeOFTCPConfig `json:"nvmeofTcp,omitempty"`
+
+	// iscsi holds iSCSI configuration.
+	// +optional
+	ISCSI *ISCSIConfig `json:"iscsi,omitempty"`
 }
 
 // Kind returns the selected protocol member as a ProtocolID, or "" when the
 // union is empty.
 func (p ProtocolSpec) Kind() ProtocolID {
-	if p.NVMeOFTCP != nil {
+	switch {
+	case p.NVMeOFTCP != nil:
 		return ProtocolIDNVMeOFTCP
+	case p.ISCSI != nil:
+		return ProtocolIDISCSI
+	default:
+		return ""
 	}
-	return ""
 }
 
 // PillarProtocolSpec defines the desired state of PillarProtocol.

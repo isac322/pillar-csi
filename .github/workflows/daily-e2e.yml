@@ -142,21 +142,25 @@ jobs:
     if: needs.gate.outputs.run == 'true'
     runs-on: ubuntu-latest
     # Image build inside Docker-in-Docker plus two topologies (in-cluster and
-    # external agent), each with its own Kind cluster; the force-detach test
-    # alone waits several minutes for the attacher.
-    timeout-minutes: 150
+    # external agent), each with its own Kind cluster and both the NVMe-oF and
+    # iSCSI scenario sets; the force-detach test alone waits several minutes
+    # for the attacher.
+    timeout-minutes: 240
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
       # test/docker-e2e/run.sh loads these from the host's /lib/modules inside
-      # the privileged container; linux-modules-extra ships the NVMe target.
+      # the privileged container; linux-modules-extra ships the NVMe target and
+      # the iSCSI initiator / LIO target modules.
       - name: Install and load kernel modules
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y "linux-modules-extra-$(uname -r)"
           sudo modprobe -a dm_mod loop nvme_fabrics nvme_tcp nvmet nvmet_tcp
+          sudo modprobe -a iscsi_tcp target_core_mod target_core_iblock iscsi_target_mod
           test -d /sys/kernel/config/nvmet
+          test -d /sys/kernel/config/target
 
       - name: Run Docker multi-node e2e
         run: make test-docker-e2e

@@ -123,7 +123,7 @@ error-handling logic.
 |---|--------------|-------------|-------|-----------------|
 | 17 | `TestAgentServer_ExportVolume_Success` | Full NVMe-oF export creates configfs entries and returns ExportInfo | Mock backend: devicePath="/dev/zvol/tank/pvc-abc"; real tmpdir configfs | Returns ExportInfo with target_id (NQN), address, port; subsystem dir created in tmpdir |
 | 18 | `TestAgentServer_ExportVolume_Idempotent` | Re-exporting same volume is a no-op | Export called twice with identical params | Both succeed; same ExportInfo returned; no error |
-| 19 | `TestAgentServer_ExportVolume_InvalidProtocol` | Unsupported protocol type returns Unimplemented | protocol_type=PROTOCOL_TYPE_ISCSI | Returns gRPC Unimplemented |
+| 19 | `TestAgentServer_ExportVolume_InvalidProtocol` | Unsupported protocol type returns Unimplemented | protocol_type=PROTOCOL_TYPE_NFS | Returns gRPC Unimplemented |
 | 20 | `TestAgentServer_ExportVolume_MissingParams` | Missing NVMe-oF params return InvalidArgument | protocol_type=NVMEOF_TCP, no ExportParams field | Returns gRPC InvalidArgument |
 | 21 | `TestAgentServer_ExportVolume_DeviceNotReady` | Device never appears within poll window returns FailedPrecondition | DeviceChecker always returns false; poll timeout=20 ms | Returns gRPC FailedPrecondition |
 | 22 | `TestAgentServer_ExportVolume_DeviceAppearsAfterDelay` | Device appears after several poll retries; export succeeds | DeviceChecker returns false twice, then true on 3rd call | Returns ExportInfo successfully; configfs dir created |
@@ -137,7 +137,7 @@ error-handling logic.
 |---|--------------|-------------|-------|-----------------|
 | 24 | `TestAgentServer_UnexportVolume_Success` | Unexport removes configfs entries | Volume exported first; then unexported | Returns empty response; configfs subsystem dir removed |
 | 25 | `TestAgentServer_UnexportVolume_Idempotent` | Unexporting non-exported volume is a no-op | No prior export | Returns empty response; no error |
-| 26 | `TestAgentServer_UnexportVolume_InvalidProtocol` | Unsupported protocol type returns error | protocol_type=PROTOCOL_TYPE_ISCSI | Returns non-OK gRPC status |
+| 26 | `TestAgentServer_UnexportVolume_InvalidProtocol` | Unsupported protocol type returns error | protocol_type=PROTOCOL_TYPE_NFS | Returns non-OK gRPC status |
 
 ---
 
@@ -147,10 +147,10 @@ error-handling logic.
 |---|--------------|-------------|-------|-----------------|
 | 27 | `TestAgentServer_AllowInitiator_Success` | Granting access creates ACL symlink in configfs | Volume exported; AllowInitiator called with host NQN | Returns empty response; symlink created in allowed_hosts/ |
 | 28 | `TestAgentServer_AllowInitiator_Idempotent` | Allowing same initiator twice is a no-op | AllowInitiator called twice with same host NQN | Both succeed; single symlink; no error |
-| 29 | `TestAgentServer_AllowInitiator_InvalidProtocol` | Invalid protocol for AllowInitiator returns error | protocol_type=PROTOCOL_TYPE_ISCSI | Returns non-OK gRPC status |
+| 29 | `TestAgentServer_AllowInitiator_InvalidProtocol` | Invalid protocol for AllowInitiator returns error | protocol_type=PROTOCOL_TYPE_NFS | Returns non-OK gRPC status |
 | 30 | `TestAgentServer_DenyInitiator_Success` | Denying access removes ACL symlink | Volume exported; initiator allowed; DenyInitiator called | Returns empty response; symlink removed from allowed_hosts/ |
 | 31 | `TestAgentServer_DenyInitiator_Idempotent` | Denying already-denied initiator is a no-op | No prior AllowInitiator | Returns empty response; no error |
-| 32 | `TestAgentServer_DenyInitiator_InvalidProtocol` | Invalid protocol for DenyInitiator returns error | protocol_type=PROTOCOL_TYPE_ISCSI | Returns non-OK gRPC status |
+| 32 | `TestAgentServer_DenyInitiator_InvalidProtocol` | Invalid protocol for DenyInitiator returns error | protocol_type=PROTOCOL_TYPE_SMB | Returns non-OK gRPC status |
 
 ---
 
@@ -228,10 +228,10 @@ error-handling logic.
 | 57 | `TestAgentErrors_DeleteVolume_EmptyVolumeID` | Empty VolumeID on DeleteVolume returns InvalidArgument | VolumeID="" in request | Returns gRPC InvalidArgument |
 | 58 | `TestAgentErrors_ExpandVolume_EmptyVolumeID` | Empty VolumeID on ExpandVolume returns InvalidArgument | VolumeID="" in request | Returns gRPC InvalidArgument |
 | 59 | `TestAgentErrors_ExpandVolume_ShrinkRejected_PropagatesAsInternal` | Shrink-rejected error from backend propagates as Internal to caller | Mock backend: expandErr contains "cannot be decreased" | Returns gRPC Internal; message contains backend error detail |
-| 60 | `TestAgentErrors_ExportVolume_InvalidProtocol_NoConfigfsSideEffects` | Unsupported protocol leaves configfs untouched | protocol_type=ISCSI; fresh tmpdir configfs | Returns gRPC Unimplemented; no files created in configfs |
-| 61 | `TestAgentErrors_AllowInitiator_InvalidProtocol` | Invalid protocol for AllowInitiator returns error without touching configfs | protocol_type=PROTOCOL_TYPE_ISCSI; exported volume in tmpdir | Returns non-OK gRPC status; no side-effects |
-| 62 | `TestAgentErrors_DenyInitiator_InvalidProtocol` | Invalid protocol for DenyInitiator returns error | protocol_type=PROTOCOL_TYPE_ISCSI | Returns non-OK gRPC status |
-| 63 | `TestAgentErrors_UnexportVolume_InvalidProtocol` | Invalid protocol for UnexportVolume returns error | protocol_type=PROTOCOL_TYPE_ISCSI | Returns non-OK gRPC status |
+| 60 | `TestAgentErrors_ExportVolume_InvalidProtocol_NoConfigfsSideEffects` | Unsupported protocol leaves configfs untouched | protocol_type=NFS; fresh tmpdir configfs | Returns gRPC Unimplemented; no files created in configfs |
+| 61 | `TestAgentErrors_AllowInitiator_InvalidProtocol` | Invalid protocol for AllowInitiator returns error without touching configfs | protocol_type=PROTOCOL_TYPE_NFS; exported volume in tmpdir | Returns non-OK gRPC status; no side-effects |
+| 62 | `TestAgentErrors_DenyInitiator_InvalidProtocol` | Invalid protocol for DenyInitiator returns error | protocol_type=PROTOCOL_TYPE_NFS | Returns non-OK gRPC status |
+| 63 | `TestAgentErrors_UnexportVolume_InvalidProtocol` | Invalid protocol for UnexportVolume returns error | protocol_type=PROTOCOL_TYPE_NFS | Returns non-OK gRPC status |
 | 64 | `TestAgentErrors_CreateVolume_DiskFullPropagation` | Disk-full error propagates from backend through gRPC layer | Mock backend: createErr=`*backend.InsufficientCapacityError` ("out of space") | Returns gRPC ResourceExhausted; error message preserves detail |
 | 65 | `TestAgentErrors_ExportVolume_MissingNvmeofTcpParams` | Missing NVMe-oF TCP export params returns InvalidArgument | NVMEOF_TCP protocol selected but export_params.nvmeof_tcp is nil | Returns gRPC InvalidArgument |
 

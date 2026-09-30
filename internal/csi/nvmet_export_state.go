@@ -76,7 +76,7 @@ func enabledNvmetNamespaces(root, nqn string) ([]string, error) {
 		return nil, fmt.Errorf("invalid NVMe-oF subsystem NQN %q", nqn)
 	}
 
-	rootInfo, err := os.Stat(root)
+	rootInfo, err := os.Stat(root) // #nosec G703 -- driver-configured configfs root
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, fmt.Errorf("nvmet configfs %s is not available (nvmet not loaded or configfs not "+

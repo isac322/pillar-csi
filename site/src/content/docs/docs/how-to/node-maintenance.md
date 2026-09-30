@@ -1,6 +1,6 @@
 ---
 title: Maintain storage and worker nodes
-description: Reboot a pillar-csi storage node or drain a worker without losing NVMe-oF/TCP volumes, using ctrlLossTmo, export restore status and a safe drain order.
+description: Reboot a pillar-csi storage node or drain a worker without losing NVMe-oF/TCP or iSCSI volumes, using ctrlLossTmo, replacementTimeout, export restore status and a safe drain order.
 sidebar:
   order: 9
 ---
@@ -21,6 +21,14 @@ kubectl get pv <pv-name> -o jsonpath='{.spec.csi.volumeAttributes}'
 
 Look for `pillar-csi.bhyoo.com/nvmeof-ctrl-loss-tmo` and `pillar-csi.bhyoo.com/nvmeof-reconnect-delay`. If a key is absent, the kernel default applies. A new value on the `PillarProtocol` affects only volumes created afterwards; see [Tune NVMe-oF/TCP settings](/docs/how-to/tune-nvmeof/).
 
+### iSCSI volumes
+
+When a worker loses an iSCSI connection, pillar-node logs in to the target again every few seconds and keeps trying for as long as the volume is staged. The kernel holds the volume's I/O for `replacementTimeout` seconds, 120 by default. If the target comes back within that time, I/O continues. If not, the kernel fails the queued I/O and the filesystem sees errors, even though pillar-node reconnects the session later. The filesystem may shut down or turn read-only, and the workload then needs a restart (see [After a timeout](#after-a-timeout)).
+
+Check a volume's value in the same volume attributes: `pillar-csi.bhyoo.com/iscsi-replacement-timeout`. If the key is absent, 120 seconds applies. See [Configure iSCSI](/docs/how-to/configure-iscsi/).
+
+pillar-node does the iSCSI reconnecting itself, so it must be running for a session to recover. If pillar-node restarts, it adopts the pillar-csi sessions already on the node and continues.
+
 ## What the storage node does when it comes back
 
 The agent keeps the state it needs on the storage node's own disk, in hostPath directories under `/var/lib/pillar-csi/agent/`, so it survives reboots:
@@ -28,7 +36,7 @@ The agent keeps the state it needs on the storage node's own disk, in hostPath d
 - `generations/` holds the fencing marks that reject stale requests.
 - `nvmet-identity/` holds namespace identities recorded for older exports.
 
-After a reboot the kernel target (`nvmet`) is empty. The agent starts with its exports gated and reports it through the `ExportsReady` condition on its `PillarAgent`:
+After a reboot the kernel targets (`nvmet` and LIO) are empty. The agent starts with its exports gated and reports it through the `ExportsReady` condition on its `PillarAgent`:
 
 | `ExportsReady` | Reason | Meaning |
 |---|---|---|
@@ -36,11 +44,11 @@ After a reboot the kernel target (`nvmet`) is empty. The agent starts with its e
 | `False` | `ExportRestoreFailed` | The last restore attempt failed; the controller retries. |
 | `True` | `ExportsServing` | Every export is back and the agent serves them. |
 
-The controller sends every export of that storage node in one request. The agent configures all of them, including each namespace's fixed identity and ACL, before it links any subsystem to a port. The port starts listening only when every export is ready. A reconnecting worker therefore meets either a refused connection, which it retries, or its complete subsystem with the same namespace identity as before. `PillarAgent` stays not `Ready` until the restore completes.
+The controller sends every export of that storage node in one request. The agent configures all of them, including each namespace's fixed identity and ACL, before it links any subsystem to a port. The port starts listening only when every export is ready. A reconnecting worker therefore meets either a refused connection, which it retries, or its complete subsystem with the same namespace identity as before. iSCSI targets come back from the same export list with the same IQN, LUN 0 and initiator ACLs, and the agent removes pillar-csi targets that are not in the list. `PillarAgent` stays not `Ready` until the restore completes.
 
 ## Reboot a storage node
 
-1. Estimate the outage: boot time plus the time for the agent pod to start. Compare it with the smallest `ctrlLossTmo` among the volumes on this node.
+1. Estimate the outage: boot time plus the time for the agent pod to start. Compare it with the smallest `ctrlLossTmo` among the NVMe-oF volumes and the smallest `replacementTimeout` among the iSCSI volumes on this node.
 
 2. If the outage may exceed that value, stop the workloads that use those volumes first, for example by scaling them to zero. Wait until their `VolumeAttachment` objects are gone:
 
@@ -56,7 +64,7 @@ The controller sends every export of that storage node in one request. The agent
 
 4. Reboot the node. Keep its IP address: each PersistentVolume records the target address and port it was provisioned with, and workers reconnect only to that address.
 
-5. After boot, the agent's init container loads `nvmet` and `nvmet_tcp` from the host's `/lib/modules`. Wait for the restore:
+5. After boot, the agent's init container loads `nvmet`, `nvmet_tcp`, `target_core_mod`, `target_core_iblock` and `iscsi_target_mod` from the host's `/lib/modules`. Wait for the restore:
 
    ```sh
    kubectl get pillaragent <name> \
@@ -89,6 +97,13 @@ If a worker already gave up (its kernel log shows the controller being removed, 
 dmesg -T | grep -i nvme
 ```
 
+For an iSCSI volume, look for the session and the SCSI disk errors instead, and read the session state:
+
+```sh
+dmesg -T | grep -iE 'iscsi|connection|I/O error'
+grep . /sys/class/iscsi_session/session*/state
+```
+
 ## Drain a worker node
 
 A normal drain is safe:
@@ -97,7 +112,7 @@ A normal drain is safe:
 kubectl drain <worker> --ignore-daemonsets --delete-emptydir-data
 ```
 
-For each evicted pod, kubelet unmounts the volume. The node plugin then disconnects the NVMe controller and waits for the kernel to delete it before it reports the volume unstaged, so a quick restage on the same node cannot reuse a controller that is still being torn down. Finally the controller unpublishes the volume from the node: it removes the node's host NQN from the export's ACL (when `acl` is on) and deletes the node from the volume's publication record.
+For each evicted pod, kubelet unmounts the volume. The node plugin then disconnects the NVMe controller and waits for the kernel to delete it before it reports the volume unstaged, so a quick restage on the same node cannot reuse a controller that is still being torn down. For an iSCSI volume the node plugin logs out of the session instead. Finally the controller unpublishes the volume from the node: it removes the node's host NQN or initiator IQN from the export's ACL (when `acl` is on) and deletes the node from the volume's publication record.
 
 `ReadWriteOnce` and `ReadWriteOncePod` volumes can be published to one node at a time. The replacement pod on another node starts only after that unpublish completes. Until then its attach fails with `FailedPrecondition` and a message that the volume `is published to another node`, and Kubernetes retries.
 

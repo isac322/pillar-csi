@@ -139,16 +139,17 @@ func (n *NodeServer) localAttachRequest(pubCtx map[string]string) (isLocal bool,
 // attachLocal claims backingDevice for volumeID through its device-mapper
 // linear target and returns the path of the device-mapper device.
 //
-// After the claim exists it reads the nvmet enable state of the volume's
-// subsystem targetID (see nvmet_export_state.go).  An enabled namespace
-// means the network export may still serve remote initiators; the stage is
-// then rolled back (see abortLocal) and refused with FailedPrecondition.  A
-// failed check likewise rolls the stage back.  The rollback unmounts the
-// staged surface named by stagingPath and volCap before it releases the
-// claim.
+// After the claim exists it reads the network export state of targetID:
+// the nvmet namespace enable state of the NVMe-oF subsystem (see
+// nvmet_export_state.go) or, for protocolType "iscsi", the presence of LUN 0
+// of the LIO target (see lio_export_state.go).  A live export means remote
+// initiators may still be served; the stage is then rolled back (see
+// abortLocal) and refused with FailedPrecondition.  A failed check likewise
+// rolls the stage back.  The rollback unmounts the staged surface named by
+// stagingPath and volCap before it releases the claim.
 func (n *NodeServer) attachLocal(
 	ctx context.Context,
-	volumeID, targetID, backingDevice, stagingPath string,
+	volumeID, protocolType, targetID, backingDevice, stagingPath string,
 	volCap *csi.VolumeCapability,
 ) (string, error) {
 	name := LocalDMName(volumeID)
@@ -163,8 +164,13 @@ func (n *NodeServer) attachLocal(
 			volumeID, name, backingDevice, err)
 	}
 
-	root := n.nvmetConfigfsRoot()
-	enabled, checkErr := enabledNvmetNamespaces(root, targetID)
+	root, kind, unit := n.nvmetConfigfsRoot(), "nvmet subsystem", "namespace(s)"
+	check := enabledNvmetNamespaces
+	if protocolType == ProtocolISCSI {
+		root, kind, unit = n.lioConfigfsRoot(), "LIO iSCSI target", "LUN(s)"
+		check = enabledLIOLUNs
+	}
+	enabled, checkErr := check(root, targetID)
 	if checkErr != nil {
 		return "", n.abortLocal(ctx, volumeID, stagingPath, volCap, status.Errorf(codes.Internal,
 			"NodeStageVolume: local attach volume %q: verify network export %s under %s is disabled: %v",
@@ -173,8 +179,8 @@ func (n *NodeServer) attachLocal(
 	if len(enabled) > 0 {
 		return "", n.abortLocal(ctx, volumeID, stagingPath, volCap, status.Errorf(codes.FailedPrecondition,
 			"NodeStageVolume: network export of volume %q is still serving remote initiators "+
-				"(nvmet subsystem %s namespace(s) %s enabled)",
-			volumeID, targetID, strings.Join(enabled, ",")))
+				"(%s %s %s %s enabled)",
+			volumeID, kind, targetID, unit, strings.Join(enabled, ",")))
 	}
 	return dmPath, nil
 }

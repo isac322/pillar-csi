@@ -71,7 +71,8 @@ func TestNodeStageState_JSON_NVMeoF(t *testing.T) {
 			t.Errorf("JSON missing key %s: %s", want, raw)
 		}
 	}
-	// Removed protocol sub-structs (iscsi/nfs/smb) are never written.
+	// Other protocol sub-structs (iscsi, and the unimplemented nfs/smb) are
+	// never written for an NVMe-oF state.
 	for _, absent := range []string{`"iscsi"`, `"nfs"`, `"smb"`} {
 		if strings.Contains(raw, absent) {
 			t.Errorf("JSON should not contain %s for NVMeoF state: %s", absent, raw)

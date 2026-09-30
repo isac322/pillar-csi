@@ -120,22 +120,9 @@ func (n *NodeServer) NodeExpandVolume(
 			"NodeExpandVolume: stat %q: %v", volumePath, statErr)
 	}
 
-	// ── Local attach: grow the device-mapper target ─────────────────────────
-	// A local attach presents the backend device through a device-mapper
-	// linear target whose table fixes its length, so the target must be
-	// reloaded to the backend's new size before the block device (and any
-	// filesystem on it) can grow.  No NVMe rescan is involved.
-	stageState, stateErr := n.readStageState(req.GetVolumeId())
-	if stateErr != nil {
-		return nil, status.Errorf(codes.Internal,
-			"NodeExpandVolume: read stage state for %q: %v", req.GetVolumeId(), stateErr)
-	}
-	setSpanAttachMode(ctx, stageState)
-	if stageState.isLocalAttach() {
-		expandErr := n.expandLocal(ctx, req.GetVolumeId(), stageState)
-		if expandErr != nil {
-			return nil, expandErr
-		}
+	stageState, growErr := n.growStagedDevice(ctx, req.GetVolumeId())
+	if growErr != nil {
+		return nil, growErr
 	}
 
 	// ── Block-mode short-circuit ─────────────────────────────────────────────
@@ -143,8 +130,8 @@ func (n *NodeServer) NodeExpandVolume(
 	// already enlarged the backing LV and the kernel's NVMe-oF initiator
 	// picks up the new namespace capacity via the controller's
 	// asynchronous-event "namespace attribute changed" notification (a
-	// local attach was reloaded above), so the only work remaining on the
-	// node is to acknowledge the call.  Detect
+	// local attach was reloaded and an iSCSI LUN rescanned above), so the
+	// only work remaining on the node is to acknowledge the call.  Detect
 	// Block-mode via the explicit VolumeCapability (CSI 1.0+ always carries
 	// one for online expansion) and, when the CO omits it (CSI 1.4+ optional),
 	// fall back to the stat of volume_path: NodeStageVolume Block-mode binds
@@ -180,6 +167,65 @@ func (n *NodeServer) NodeExpandVolume(
 	// the CO can update the PersistentVolume capacity field.  A zero value
 	// means "fill the available block device capacity" — the CO accepts this.
 	return &csi.NodeExpandVolumeResponse{CapacityBytes: blockExpandCapacity(req)}, nil
+}
+
+// growStagedDevice makes an online resize of the staged volume visible to the
+// block layer and returns the stage state (nil when the volume has none).
+func (n *NodeServer) growStagedDevice(ctx context.Context, volumeID string) (*nodeStageState, error) {
+	stageState, stateErr := n.readStageState(volumeID)
+	if stateErr != nil {
+		return nil, status.Errorf(codes.Internal,
+			"NodeExpandVolume: read stage state for %q: %v", volumeID, stateErr)
+	}
+	setSpanAttachMode(ctx, stageState)
+	switch {
+	case stageState.isLocalAttach():
+		// ── Local attach: grow the device-mapper target ─────────────────────
+		// A local attach presents the backend device through a device-mapper
+		// linear target whose table fixes its length, so the target must be
+		// reloaded to the backend's new size before the block device (and any
+		// filesystem on it) can grow.  No NVMe rescan is involved.
+		expandErr := n.expandLocal(ctx, volumeID, stageState)
+		if expandErr != nil {
+			return nil, expandErr
+		}
+	case stageState != nil && stageState.ProtocolType == ProtocolISCSI:
+		// ── iSCSI: rescan the LUN ───────────────────────────────────────────
+		// Unlike NVMe-oF (asynchronous namespace-change event plus the
+		// controller rescan in ResizeFS), the SCSI midlayer only logs the
+		// target's "capacity data has changed" unit attention; the new size
+		// reaches /dev/sdX only after an explicit device rescan.  Run it
+		// before both the Block-mode short-circuit and the filesystem resize.
+		// A SCSI rescan keeps the disk's dev_t, so no device-node refresh
+		// (see refreshNVMeBlockDeviceNode) is needed afterwards.
+		rescanErr := n.rescanProtocol(ctx, volumeID, stageState)
+		if rescanErr != nil {
+			return nil, rescanErr
+		}
+	}
+	return stageState, nil
+}
+
+// rescanProtocol asks the ProtocolHandler of the staged volume to rescan its
+// device so an online resize becomes visible to the block layer.
+func (n *NodeServer) rescanProtocol(ctx context.Context, volumeID string, state *nodeStageState) error {
+	handler := n.handlers[state.ProtocolType]
+	if handler == nil {
+		return status.Errorf(codes.FailedPrecondition,
+			"NodeExpandVolume: no handler registered for protocol %q%s",
+			state.ProtocolType, missingHandlerHint(state.ProtocolType))
+	}
+	protoState, err := state.ToProtocolState()
+	if err != nil {
+		return status.Errorf(codes.Internal,
+			"NodeExpandVolume: convert stage state for %q: %v", volumeID, err)
+	}
+	rescanErr := handler.Rescan(ctx, protoState)
+	if rescanErr != nil {
+		return status.Errorf(codes.Internal,
+			"NodeExpandVolume: rescan volume %q (protocol %q): %v", volumeID, state.ProtocolType, rescanErr)
+	}
+	return nil
 }
 
 // expandFsType returns the filesystem type NodeExpandVolume resizes.  The

@@ -42,6 +42,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/go-logr/logr/funcr"
 	"go.opentelemetry.io/otel/attribute"
 	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 	"go.opentelemetry.io/otel/trace"
@@ -54,6 +55,7 @@ import (
 	csi "github.com/container-storage-interface/spec/lib/go/csi"
 
 	csisvc "github.com/isac322/pillar-csi/internal/csi"
+	"github.com/isac322/pillar-csi/internal/iscsi"
 	"github.com/isac322/pillar-csi/internal/runtimepaths"
 	"github.com/isac322/pillar-csi/internal/telemetry"
 )
@@ -65,6 +67,11 @@ const driverName = "pillar-csi.bhyoo.com"
 const defaultNodeStateDir = "/var/lib/pillar-csi/node"
 
 const defaultNodeShutdownGracePeriod = 5 * time.Second
+
+// iscsiOwnedTargetPrefix is the IQN prefix of every target pillar-csi agents
+// export.  The in-process initiator recovers and adopts existing sessions to
+// such targets after a pillar-node restart.
+const iscsiOwnedTargetPrefix = "iqn.2026-01.com.bhyoo.pillar-csi:"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // fabricsConnector — kernel-native NVMe-oF TCP protocol handler
@@ -949,6 +956,12 @@ func main() {
 	metricsAddr := flag.String("metrics-bind-address", metricsDisabled,
 		"The address the plaintext Prometheus /metrics endpoint binds to, e.g. :9502. "+
 			"Leave as 0 to disable the metrics endpoint.")
+	iscsiNameFile := flag.String("iscsi-initiator-name-file", csisvc.DefaultISCSIInitiatorNameFile,
+		"open-iscsi style file holding this node's iSCSI initiator IQN (InitiatorName=...). "+
+			"Generated and persisted on first start when absent.")
+	iscsiNetns := flag.String("iscsi-netlink-netns", "",
+		"Path to a network namespace file (e.g. /proc/1/ns/net) in which the NETLINK_ISCSI socket is "+
+			"opened. Empty uses the pod's own namespace (hostNetwork). Needed only for nested-container nodes.")
 	flag.Parse()
 
 	if *nodeID == "" {
@@ -964,19 +977,31 @@ func main() {
 	// Determine the driver version from build metadata when available.
 	version, _ := telemetry.BuildVersion()
 
+	// ── iSCSI initiator ────────────────────────────────────────────────────
+	// The in-process initiator needs the kernel iscsi_tcp transport.  When
+	// it is absent the iSCSI handler is not registered and the IQN is not
+	// published, so iscsi volumes fail NodeStage with an explicit error.
+	// ctx lives as long as the gRPC server; canceling it after Serve
+	// returns stops the initiator's netlink reader and session-recovery
+	// supervisor.
+	ctx, cancel := context.WithCancel(context.Background())
+	iscsiInitiator, iscsiIQN := startISCSIInitiatorOrExit(ctx, *iscsiNameFile, *iscsiNetns)
+
 	// ── Publish node identity annotations to the CSINode object ──────────
 	// Read /etc/nvme/hostnqn and write it as the
-	// pillar-csi.bhyoo.com/nvmeof-host-nqn annotation on the CSINode named
-	// after this node.  The controller plugin reads this annotation when
-	// processing ControllerPublishVolume to resolve the initiator identity
-	// without assuming node_id == NQN (RFC §5.2).
+	// pillar-csi.bhyoo.com/nvmeof-host-nqn annotation (plus the iSCSI
+	// initiator IQN as pillar-csi.bhyoo.com/iscsi-initiator-iqn when the
+	// iSCSI initiator is enabled) on the CSINode named after this node.
+	// The controller plugin reads these annotations when processing
+	// ControllerPublishVolume to resolve the initiator identity without
+	// assuming node_id == NQN/IQN (RFC §5.2).
 	//
 	// Publication is best-effort with a short retry loop: the CSINode object
 	// is created by kubelet during driver registration, which may race with
 	// this startup path.  If publication fails after retries we log and
 	// continue — volume attach will return FailedPrecondition until the
 	// annotation is present, which is the expected degraded behavior.
-	publishNodeIdentity(*nodeID)
+	publishNodeIdentity(*nodeID, iscsiIQN)
 
 	// Resolve the local host NQN now that publishNodeIdentity has read or
 	// generated /etc/nvme/hostnqn.  The fabricsConnector must thread this
@@ -988,11 +1013,14 @@ func main() {
 	// Build the protocol handler map.  fabricsConnector provides the
 	// production NVMe-oF TCP implementation using /dev/nvme-fabrics directly
 	// (no nvme-cli required in the container image).
-	//
-	// NVMe-oF TCP is the only implemented transport; iSCSI, NFS and SMB are
-	// not implemented, so NodeStage for them fails with an explicit error.
+	// NVMe-oF TCP is always registered; iSCSI only when the kernel iscsi_tcp
+	// transport is loaded.  NFS and SMB are not implemented, so NodeStage
+	// for them fails with an explicit error.
 	handlers := map[string]csisvc.ProtocolHandler{
 		csisvc.ProtocolNVMeoFTCP: newFabricsConnector(hostNQN, hostID),
+	}
+	if iscsiInitiator != nil {
+		handlers[csisvc.ProtocolISCSI] = csisvc.NewISCSIHandler(iscsiInitiator, iscsiIQN)
 	}
 	stateDir := resolvedDefaultStateDir()
 	identitySrv := csisvc.NewIdentityServerWithReadyFn(
@@ -1004,32 +1032,9 @@ func main() {
 	// attach on the storage node; see csisvc.DeviceMapper.
 	nodeSrv := csisvc.NewNodeServer(*nodeID, handlers, &mkdirMounter{wrapped: csisvc.NewKubeMounter()}).
 		WithDeviceMapper(csisvc.NewExecDeviceMapper())
+	restoreProtocolSessions(nodeSrv)
 
-	// ── Open the Unix socket ───────────────────────────────────────────────
-	// Remove a stale socket file from a previous run so that net.Listen
-	// does not fail with "address already in use".
-	err := os.Remove(*csiSocket)
-	if err != nil && !os.IsNotExist(err) {
-		fmt.Fprintf(os.Stderr, "pillar-node: remove stale socket %s: %v\n", *csiSocket, err)
-		os.Exit(1)
-	}
-
-	// Ensure the parent directory exists (kubelet creates it on modern
-	// distributions, but guard here for dev/CI environments).
-	socketDir := socketParentDir(*csiSocket)
-	if socketDir != "" {
-		err = os.MkdirAll(socketDir, 0o750)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "pillar-node: mkdir %s: %v\n", socketDir, err)
-			os.Exit(1)
-		}
-	}
-
-	lis, err := net.Listen("unix", *csiSocket)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "pillar-node: listen unix %s: %v\n", *csiSocket, err)
-		os.Exit(1)
-	}
+	lis := listenCSISocketOrExit(*csiSocket)
 
 	// ── Tracing, metrics, and the gRPC server ─────────────────────────────
 	obs := startObservability(*metricsAddr, version)
@@ -1054,10 +1059,42 @@ func main() {
 	// os.Exit skips defers: stop the metrics endpoint and flush spans
 	// explicitly on both the clean and the error path.
 	obs.shutdown()
+	cancel()
+	closeISCSIInitiator(iscsiInitiator)
 	if serveErr != nil {
 		fmt.Fprintf(os.Stderr, "pillar-node: serve: %v\n", serveErr)
 		os.Exit(1)
 	}
+}
+
+// listenCSISocketOrExit opens the CSI Unix socket at path, exiting the
+// process non-zero on failure.
+func listenCSISocketOrExit(path string) net.Listener {
+	// Remove a stale socket file from a previous run so that net.Listen
+	// does not fail with "address already in use".
+	err := os.Remove(path)
+	if err != nil && !os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "pillar-node: remove stale socket %s: %v\n", path, err)
+		os.Exit(1)
+	}
+
+	// Ensure the parent directory exists (kubelet creates it on modern
+	// distributions, but guard here for dev/CI environments).
+	socketDir := socketParentDir(path)
+	if socketDir != "" {
+		err = os.MkdirAll(socketDir, 0o750)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "pillar-node: mkdir %s: %v\n", socketDir, err)
+			os.Exit(1)
+		}
+	}
+
+	lis, err := net.Listen("unix", path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "pillar-node: listen unix %s: %v\n", path, err)
+		os.Exit(1)
+	}
+	return lis
 }
 
 func runNodeShutdown(h *healthsrv.Server, gracefulStopFn func(), grace time.Duration) {
@@ -1130,6 +1167,80 @@ func newNodeGRPCServer() *grpc.Server {
 	)
 }
 
+// restoreProtocolSessions re-applies the userspace-only session parameters
+// (the iSCSI login timeout) to the sessions the initiator adopted from
+// sysfs: kubelet does not repeat NodeStageVolume for volumes that stay
+// mounted.  Not fatal: one volume whose session is gone must not keep the
+// node from serving the others; that volume's session keeps the default.
+func restoreProtocolSessions(nodeSrv *csisvc.NodeServer) {
+	logRestore := func(format string, args ...any) {
+		fmt.Fprintf(os.Stderr, "pillar-node: restore protocol sessions: "+format+"\n", args...)
+	}
+	restoreErr := nodeSrv.RestoreProtocolSessions(logRestore)
+	if restoreErr != nil {
+		logRestore("%v", restoreErr)
+	}
+}
+
+// startISCSIInitiatorOrExit starts the in-process iSCSI initiator when the
+// kernel iscsi_tcp transport is available and returns it with this node's
+// initiator IQN.  When iscsi_tcp is not loaded it logs why and returns
+// (nil, ""): the iSCSI handler stays unregistered.  Any other failure exits
+// the process non-zero, like a broken NVMe host identity does.
+func startISCSIInitiatorOrExit(
+	ctx context.Context, nameFile, netnsPath string,
+) (initiator *iscsi.Initiator, iqn string) {
+	availErr := iscsi.Available(nodeSysfsRoot)
+	if availErr != nil {
+		fmt.Fprintf(os.Stderr,
+			"pillar-node: iSCSI initiator disabled: kernel module iscsi_tcp is not loaded (%v); "+
+				"iscsi volumes cannot be staged on this node until iscsi_tcp is loaded and pillar-node restarts\n",
+			availErr)
+		return nil, ""
+	}
+	iqn, err := csisvc.ReadInitiatorIQN(nameFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "pillar-node: read iSCSI initiator IQN: %v\n", err)
+		os.Exit(1)
+	}
+	initiator, err = iscsi.NewInitiator(iscsi.Options{
+		NetlinkNetnsPath:  netnsPath,
+		OwnedTargetPrefix: iscsiOwnedTargetPrefix,
+		// Only sessions logged in as this node's IQN are adopted: Kind
+		// nodes share one kernel and see each other's sessions.
+		InitiatorIQN: iqn,
+		// Recovery and cleanup failures of the initiator must reach the
+		// pod log; the zero logr.Logger would discard them.
+		Logger: funcr.New(func(prefix, args string) {
+			fmt.Fprintf(os.Stderr, "pillar-node: iscsi: %s %s\n", prefix, args)
+		}, funcr.Options{}),
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "pillar-node: create iSCSI initiator (netlink netns %q): %v\n", netnsPath, err)
+		os.Exit(1)
+	}
+	err = initiator.Start(ctx)
+	if err != nil {
+		closeISCSIInitiator(initiator)
+		fmt.Fprintf(os.Stderr, "pillar-node: start iSCSI initiator (netlink netns %q): %v\n", netnsPath, err)
+		os.Exit(1)
+	}
+	fmt.Fprintf(os.Stderr, "pillar-node: iSCSI initiator enabled as %s\n", iqn)
+	return initiator, iqn
+}
+
+// closeISCSIInitiator stops a started initiator, logging a failure.  It is
+// a no-op for nil (iSCSI disabled).
+func closeISCSIInitiator(initiator *iscsi.Initiator) {
+	if initiator == nil {
+		return
+	}
+	closeErr := initiator.Close()
+	if closeErr != nil {
+		fmt.Fprintf(os.Stderr, "pillar-node: close iSCSI initiator: %v\n", closeErr)
+	}
+}
+
 // resolveHostIdentityOrExit reads (and on first start, generates) the local
 // host NQN and host ID from /etc/nvme/{hostnqn,hostid}, exiting the process
 // non-zero on failure.  Both values are required for every nvme-fabrics
@@ -1150,15 +1261,16 @@ func resolveHostIdentityOrExit() (hostNQN, hostID string) {
 	return hostNQN, hostID
 }
 
-// publishNodeIdentity writes the NVMe host NQN to the CSINode object
-// annotations using the in-cluster Kubernetes client.
+// publishNodeIdentity writes the NVMe host NQN — and iscsiIQN when the iSCSI
+// initiator is enabled (non-empty) — to the CSINode object annotations using
+// the in-cluster Kubernetes client.
 //
 // It retries up to 10 times with 3-second back-off to tolerate the race where
 // kubelet has not yet created the CSINode object at driver registration time.
 // Failures after all retries are logged but do not prevent the node plugin
 // from starting — the controller will return FailedPrecondition for attach
 // requests until the annotation is visible (RFC §5.2 degraded behavior).
-func publishNodeIdentity(nodeName string) {
+func publishNodeIdentity(nodeName, iscsiIQN string) {
 	cfg, err := rest.InClusterConfig()
 	if err != nil {
 		fmt.Fprintf(os.Stderr,
@@ -1183,10 +1295,10 @@ func publishNodeIdentity(nodeName string) {
 	defer cancel()
 
 	for attempt := 1; attempt <= maxRetries; attempt++ {
-		pubErr := csisvc.PublishNVMeOfIdentity(ctx, patcher, nodeName)
+		pubErr := csisvc.PublishNodeIdentity(ctx, patcher, nodeName, iscsiIQN)
 		if pubErr == nil {
 			fmt.Fprintf(os.Stderr,
-				"pillar-node: published NVMe host NQN annotation on CSINode %q\n", nodeName)
+				"pillar-node: published node identity annotations on CSINode %q\n", nodeName)
 			return
 		}
 		fmt.Fprintf(os.Stderr,

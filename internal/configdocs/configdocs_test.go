@@ -32,6 +32,30 @@ func TestDecodeOverrides_Rejections(t *testing.T) {
 			wantErr: "pillar-csi.bhyoo.com/protocol: nvmeofTcp.port is structural and cannot be set per volume",
 		},
 		{
+			name:    "iscsi structural acl",
+			decode:  protocolOverride,
+			raw:     "iscsi: {acl: true}",
+			wantErr: "pillar-csi.bhyoo.com/protocol: iscsi.acl is structural and cannot be set per volume",
+		},
+		{
+			name:    "iscsi structural port",
+			decode:  protocolOverride,
+			raw:     "iscsi: {port: 3261}",
+			wantErr: "pillar-csi.bhyoo.com/protocol: iscsi.port is structural and cannot be set per volume",
+		},
+		{
+			name:    "iscsi login timeout must be positive",
+			decode:  protocolOverride,
+			raw:     "iscsi: {loginTimeout: 0}",
+			wantErr: "iscsi.loginTimeout: 0 is out of range [1, 2147483647]",
+		},
+		{
+			name:    "protocol union with two members",
+			decode:  protocolOverride,
+			raw:     "nvmeofTcp: {maxQueueSize: 64}\niscsi: {loginTimeout: 30}",
+			wantErr: "pillar-csi.bhyoo.com/protocol: exactly one of iscsi or nvmeofTcp must be set (got iscsi, nvmeofTcp)",
+		},
+		{
 			name:    "backend structural zfs.pool",
 			decode:  backendOverride,
 			raw:     "zfs: {pool: other}",
@@ -50,10 +74,10 @@ func TestDecodeOverrides_Rejections(t *testing.T) {
 			wantErr: "pillar-csi.bhyoo.com/protocol: unknown field nvmeofTcp.queueDepth",
 		},
 		{
-			name:    "removed protocol variant",
+			name:    "unsupported protocol variant",
 			decode:  protocolOverride,
-			raw:     "iscsi: {loginTimeout: 30}",
-			wantErr: `pillar-csi.bhyoo.com/protocol: unknown field "iscsi" (supported: nvmeofTcp)`,
+			raw:     "nfs: {version: 4}",
+			wantErr: `pillar-csi.bhyoo.com/protocol: unknown field "nfs" (supported: iscsi or nvmeofTcp)`,
 		},
 		{
 			name:    "removed discriminator field",
@@ -199,6 +223,29 @@ func TestDecodeOverrides_AcceptsTunables(t *testing.T) {
 	if n == nil || *n.MaxQueueSize != 64 || *n.InCapsuleDataSize != 8192 || *n.CtrlLossTmo != 0 || *n.ReconnectDelay != 5 {
 		t.Fatalf("protocol = %+v, want all four tunables set", n)
 	}
+}
+
+// TestDecodeOverrides_AcceptsISCSITunables checks that the iSCSI tunables
+// decode into the CRD override type unchanged.
+func TestDecodeOverrides_AcceptsISCSITunables(t *testing.T) {
+	t.Parallel()
+
+	p, err := DecodeProtocolOverride(ProtocolDocKey,
+		"iscsi: {loginTimeout: 30, replacementTimeout: 0, noopOutInterval: 10, noopOutTimeout: 7}")
+	if err != nil {
+		t.Fatalf("DecodeProtocolOverride(iscsi): %v", err)
+	}
+	i := p.ISCSI
+	if p.NVMeOFTCP != nil || i == nil || *i.LoginTimeout != 30 || *i.ReplacementTimeout != 0 ||
+		*i.NoopOutInterval != 10 || *i.NoopOutTimeout != 7 {
+		t.Fatalf("protocol = %+v, want iscsi with all four tunables set", p)
+	}
+}
+
+// TestDecodeOverrides_AbsentDocument checks that an empty, blank or null
+// document decodes to no override.
+func TestDecodeOverrides_AbsentDocument(t *testing.T) {
+	t.Parallel()
 
 	for _, raw := range []string{"", "   \n", "null"} {
 		b, err := DecodeBackendOverride(BackendDocKey, raw)

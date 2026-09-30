@@ -97,13 +97,16 @@ func (p *KubeCSINodePatcher) PatchAnnotations(
 	return nil
 }
 
-// PublishNVMeOfIdentity reads the host NQN from the standard system file and
+// PublishNodeIdentity reads the host NQN from the standard system file and
 // writes it as the pillar-csi.bhyoo.com/nvmeof-host-nqn annotation on the
-// node's CSINode object.
+// node's CSINode object.  When iscsiInitiatorIQN is non-empty (the iSCSI
+// handler is enabled on this node) the same merge patch also writes it as
+// the pillar-csi.bhyoo.com/iscsi-initiator-iqn annotation.
 //
 // This function is called during pillar-node startup so that the controller
-// plugin can look up the NQN by Kubernetes node name when processing
-// ControllerPublishVolume requests (RFC §5.2 node-side publisher contract).
+// plugin can look up the initiator identities by Kubernetes node name when
+// processing ControllerPublishVolume requests (RFC §5.2 node-side publisher
+// contract).
 //
 // Preconditions:
 //   - The node plugin ServiceAccount must have get+update+patch permissions on
@@ -114,24 +117,37 @@ func (p *KubeCSINodePatcher) PatchAnnotations(
 //
 // Returns a NotFound-wrapped error when the CSINode does not yet exist so that
 // callers can distinguish "CSINode not yet created" from other errors.
-func PublishNVMeOfIdentity(ctx context.Context, patcher NodeAnnotationPatcher, nodeName string) error {
-	nqn, err := ReadHostNQN()
+func PublishNodeIdentity(ctx context.Context, patcher NodeAnnotationPatcher, nodeName, iscsiInitiatorIQN string) error {
+	return publishNodeIdentity(ctx, patcher, nodeName, hostNQNFile, iscsiInitiatorIQN)
+}
+
+// publishNodeIdentity is PublishNodeIdentity with the host NQN file path
+// injectable for tests.
+func publishNodeIdentity(
+	ctx context.Context,
+	patcher NodeAnnotationPatcher,
+	nodeName, nqnFile, iscsiInitiatorIQN string,
+) error {
+	nqn, err := readOrGenerateHostNQN(nqnFile)
 	if err != nil {
-		return fmt.Errorf("PublishNVMeOfIdentity: read host NQN: %w", err)
+		return fmt.Errorf("PublishNodeIdentity: read host NQN: %w", err)
 	}
 
 	annotations := map[string]string{
 		AnnotationNVMeOFHostNQN: nqn,
 	}
+	if iscsiInitiatorIQN != "" {
+		annotations[AnnotationISCSIInitiatorIQN] = iscsiInitiatorIQN
+	}
 	patchErr := patcher.PatchAnnotations(ctx, nodeName, annotations)
 	if patchErr != nil {
 		if errors.IsNotFound(patchErr) {
 			return fmt.Errorf(
-				"PublishNVMeOfIdentity: CSINode %q not found "+
+				"PublishNodeIdentity: CSINode %q not found "+
 					"(kubelet may not have registered the driver yet): %w",
 				nodeName, patchErr)
 		}
-		return fmt.Errorf("PublishNVMeOfIdentity: patch CSINode %q: %w", nodeName, patchErr)
+		return fmt.Errorf("PublishNodeIdentity: patch CSINode %q: %w", nodeName, patchErr)
 	}
 	return nil
 }

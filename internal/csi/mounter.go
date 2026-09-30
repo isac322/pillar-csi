@@ -17,7 +17,9 @@ limitations under the License.
 package csi
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"os"
 
 	utilexec "k8s.io/utils/exec"
@@ -50,6 +52,9 @@ type KubeMounter struct {
 	// xfsProfile is the mkfs.xfs configuration file whose options new XFS
 	// filesystems get by default (xfsCompatProfile).
 	xfsProfile string
+	// checkReadable verifies that a block device can be opened and read
+	// before blkid's verdict on it is trusted (checkDeviceReadable).
+	checkReadable func(source string) error
 }
 
 // NewKubeMounter returns a KubeMounter that delegates all privileged
@@ -60,8 +65,36 @@ func NewKubeMounter() *KubeMounter {
 			Interface: mount.New(""),
 			Exec:      utilexec.New(),
 		},
-		xfsProfile: xfsCompatProfile,
+		xfsProfile:    xfsCompatProfile,
+		checkReadable: checkDeviceReadable,
 	}
+}
+
+// readProbeBytes is how much of a device checkDeviceReadable reads: the
+// region holding the partition table and the ext4 and xfs superblocks.
+const readProbeBytes = 64 << 10
+
+// checkDeviceReadable opens the block device at source, requires a non-zero
+// capacity and reads its first readProbeBytes.
+func checkDeviceReadable(source string) error {
+	f, err := os.Open(source) //nolint:gosec // G304: the staged block device path.
+	if err != nil {
+		return fmt.Errorf("device is not readable: %w", err)
+	}
+	defer f.Close() //nolint:errcheck // read-only descriptor; nothing to flush
+	size, err := f.Seek(0, io.SeekEnd)
+	if err != nil {
+		return fmt.Errorf("device is not readable: read capacity: %w", err)
+	}
+	if size == 0 {
+		return errors.New("device is not readable: it reports zero capacity")
+	}
+	buf := make([]byte, min(size, readProbeBytes))
+	_, err = f.ReadAt(buf, 0)
+	if err != nil {
+		return fmt.Errorf("device is not readable: read the first %d bytes: %w", len(buf), err)
+	}
+	return nil
 }
 
 // Mount performs a plain mount of source at target with the given type and

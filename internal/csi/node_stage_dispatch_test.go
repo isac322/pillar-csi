@@ -43,6 +43,8 @@ package csi
 import (
 	"context"
 	"errors"
+	"maps"
+	"strings"
 	"testing"
 
 	csi "github.com/container-storage-interface/spec/lib/go/csi"
@@ -227,27 +229,93 @@ func TestNodeStageVolume_Dispatch_DefaultFallbackHandlerCalled(t *testing.T) {
 func TestNodeStageVolume_Dispatch_NoHandlerRegistered(t *testing.T) {
 	t.Parallel()
 
-	// Only NVMe-oF is registered; the volume declares "iscsi".
+	// Only NVMe-oF is registered; the volume declares "nfs" (not implemented).
 	env := newHandlerNodeTestEnv(t, map[string]ProtocolHandler{
 		ProtocolNVMeoFTCP: &fakeProtocolHandler{},
 	})
 	stagingPath := t.TempDir()
 
 	_, err := env.srv.NodeStageVolume(context.Background(), &csi.NodeStageVolumeRequest{
-		VolumeId:          "tank/pvc-iscsi-no-handler",
+		VolumeId:          "tank/pvc-nfs-no-handler",
 		StagingTargetPath: stagingPath,
 		VolumeCapability:  mountCap("ext4"),
 		VolumeContext: map[string]string{
-			VolumeContextKeyTargetID:     "iqn.2024-01.com.example:vol",
+			VolumeContextKeyTargetID:     "10.0.0.1",
 			VolumeContextKeyAddress:      "10.0.0.1",
-			VolumeContextKeyPort:         "3260",
-			VolumeContextKeyProtocolType: "iscsi",
+			VolumeContextKeyProtocolType: "nfs",
 		},
 	})
 	if err == nil {
 		t.Fatal("expected FailedPrecondition for unregistered protocol, got nil")
 	}
 	requireGRPCCode(t, err, codes.FailedPrecondition)
+}
+
+// TestNodeStageVolume_Dispatch_ISCSIDisabled verifies that staging an iscsi
+// volume on a node whose iSCSI handler is not registered (pillar-node found
+// no iscsi_tcp at startup) fails with FailedPrecondition naming the missing
+// kernel module, so the operator knows how to fix the node.
+func TestNodeStageVolume_Dispatch_ISCSIDisabled(t *testing.T) {
+	t.Parallel()
+
+	env := newHandlerNodeTestEnv(t, map[string]ProtocolHandler{
+		ProtocolNVMeoFTCP: &fakeProtocolHandler{},
+	})
+
+	_, err := env.srv.NodeStageVolume(context.Background(), &csi.NodeStageVolumeRequest{
+		VolumeId:          "tank/pvc-iscsi-disabled",
+		StagingTargetPath: t.TempDir(),
+		VolumeCapability:  mountCap("ext4"),
+		VolumeContext: map[string]string{
+			VolumeContextKeyTargetID:     "iqn.2026-01.com.bhyoo.pillar-csi:tank.pvc-iscsi-disabled",
+			VolumeContextKeyAddress:      "10.0.0.1",
+			VolumeContextKeyPort:         "3260",
+			VolumeContextKeyProtocolType: ProtocolISCSI,
+		},
+	})
+	requireGRPCCode(t, err, codes.FailedPrecondition)
+	if !strings.Contains(err.Error(), "iscsi_tcp") {
+		t.Errorf("error must name the missing iscsi_tcp module, got: %v", err)
+	}
+}
+
+// TestNodeStageVolume_Dispatch_ISCSIInvalidVolumeContext verifies that a
+// malformed iSCSI port, LUN or session timeout is rejected with
+// InvalidArgument before the handler is called.
+func TestNodeStageVolume_Dispatch_ISCSIInvalidVolumeContext(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]map[string]string{
+		"port out of range":     {VolumeContextKeyPort: "70000"},
+		"non-numeric LUN":       {vcVolumeRef: "lun0"},
+		"login timeout zero":    {VolumeContextKeyISCSILoginTimeout: "0"},
+		"negative noop":         {VolumeContextKeyISCSINoopOutInterval: "-1"},
+		"malformed replacement": {VolumeContextKeyISCSIReplacementTimeout: "2m"},
+	}
+	for name, override := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			handler := &fakeProtocolHandler{}
+			env := newHandlerNodeTestEnv(t, map[string]ProtocolHandler{ProtocolISCSI: handler})
+			volCtx := map[string]string{
+				VolumeContextKeyTargetID:     "iqn.2026-01.com.bhyoo.pillar-csi:tank.pvc-bad",
+				VolumeContextKeyAddress:      "10.0.0.1",
+				VolumeContextKeyPort:         "3260",
+				VolumeContextKeyProtocolType: ProtocolISCSI,
+			}
+			maps.Copy(volCtx, override)
+			_, err := env.srv.NodeStageVolume(context.Background(), &csi.NodeStageVolumeRequest{
+				VolumeId:          "tank/pvc-bad",
+				StagingTargetPath: t.TempDir(),
+				VolumeCapability:  mountCap("ext4"),
+				VolumeContext:     volCtx,
+			})
+			requireGRPCCode(t, err, codes.InvalidArgument)
+			if len(handler.attachCalls) != 0 {
+				t.Errorf("Attach called %d times, want 0", len(handler.attachCalls))
+			}
+		})
+	}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

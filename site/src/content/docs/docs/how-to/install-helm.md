@@ -7,7 +7,7 @@ sidebar:
 
 This guide installs the pillar-csi chart from `oci://ghcr.io/isac322/charts/pillar-csi` and configures the storage agent. It assumes your storage nodes are ready: the pool or volume group exists and the kernel modules load. If not, start with [Prepare a ZFS storage node](/docs/how-to/prepare-zfs-node/) or [Prepare an LVM storage node](/docs/how-to/prepare-lvm-node/).
 
-You need Kubernetes 1.24 or later and Helm 3.8 or later. The hosts need nothing beyond the NVMe-oF kernel modules and the pool: the chart's images carry the ZFS, LVM, and filesystem tools, and the driver needs no SSH access, `nvme-cli`, or `targetcli`. [Prerequisites](/docs/reference/prerequisites/) lists the details.
+You need Kubernetes 1.24 or later and Helm 3.8 or later. The hosts need nothing beyond the NVMe-oF or iSCSI kernel modules and the pool: the chart's images carry the ZFS, LVM, and filesystem tools, and the driver needs no SSH access, `nvme-cli`, `targetcli`, `iscsiadm` or `open-iscsi`. [Prerequisites](/docs/reference/prerequisites/) lists the details.
 
 ## Write a values file
 
@@ -151,4 +151,4 @@ Remove the volumes and pillar-csi resources before the chart, while the controll
      pillarvolumestates.pillar-csi.bhyoo.com
    ```
 
-The chart also leaves host state behind. Storage nodes keep `/var/lib/pillar-csi/agent`, and nodes that ran the node plugin keep `/var/lib/pillar-csi/node`. If a node had no `/etc/nvme/hostnqn` or `/etc/nvme/hostid`, the node plugin created them, and they stay too. Your pools and volume groups are not touched.
+The chart also leaves host state behind. Storage nodes keep `/var/lib/pillar-csi/agent`, and nodes that ran the node plugin keep `/var/lib/pillar-csi/node`. If a node had no `/etc/nvme/hostnqn` or `/etc/nvme/hostid`, the node plugin created them, and they stay too. The same holds for `/etc/iscsi/initiatorname.iscsi`. Your pools and volume groups are not touched.

@@ -85,6 +85,10 @@ func TestResolveInitiatorID_AnnotationKeyValues(t *testing.T) {
 		t.Errorf("AnnotationNVMeOFHostNQN = %q, want \"pillar-csi.bhyoo.com/nvmeof-host-nqn\"",
 			AnnotationNVMeOFHostNQN)
 	}
+	if AnnotationISCSIInitiatorIQN != "pillar-csi.bhyoo.com/iscsi-initiator-iqn" {
+		t.Errorf("AnnotationISCSIInitiatorIQN = %q, want \"pillar-csi.bhyoo.com/iscsi-initiator-iqn\"",
+			AnnotationISCSIInitiatorIQN)
+	}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -199,8 +203,8 @@ func TestResolveInitiatorID_NVMeoF_OnlyNVMeoFAnnotationRead(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "multi-proto-node",
 			Annotations: map[string]string{
-				AnnotationNVMeOFHostNQN:                    wantNQN,
-				"pillar-csi.bhyoo.com/iscsi-initiator-iqn": "iqn.1993-08.org.debian:01:multi-proto-node",
+				AnnotationNVMeOFHostNQN:     wantNQN,
+				AnnotationISCSIInitiatorIQN: "iqn.1993-08.org.debian:01:multi-proto-node",
 			},
 		},
 	}
@@ -211,6 +215,32 @@ func TestResolveInitiatorID_NVMeoF_OnlyNVMeoFAnnotationRead(t *testing.T) {
 	}
 	if got != wantNQN {
 		t.Errorf("resolveInitiatorID = %q, want NVMe-oF NQN %q", got, wantNQN)
+	}
+}
+
+// TestResolveInitiatorID_ISCSI_OnlyISCSIAnnotationRead verifies that an iSCSI
+// request resolves the initiator IQN from the iSCSI annotation, never the
+// NVMe-oF host NQN published on the same CSINode.
+func TestResolveInitiatorID_ISCSI_OnlyISCSIAnnotationRead(t *testing.T) {
+	t.Parallel()
+
+	const wantIQN = "iqn.2026-01.com.bhyoo.pillar-csi:node.0123456789abcdef0123456789abcdef"
+	csiNode := &storagev1.CSINode{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "multi-proto-node",
+			Annotations: map[string]string{
+				AnnotationNVMeOFHostNQN:     "nqn.2014-08.org.nvmexpress:uuid:only-nvmeof",
+				AnnotationISCSIInitiatorIQN: wantIQN,
+			},
+		},
+	}
+	srv := newMinimalControllerServer(t, csiNode)
+	got, err := srv.resolveInitiatorID(context.Background(), "multi-proto-node", "iscsi")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != wantIQN {
+		t.Errorf("resolveInitiatorID = %q, want iSCSI IQN %q", got, wantIQN)
 	}
 }
 
@@ -307,6 +337,7 @@ func TestResolveInitiatorID_TableDriven(t *testing.T) {
 
 	const (
 		testNQN  = "nqn.2014-08.org.nvmexpress:uuid:table-test-uuid"
+		testIQN  = "iqn.2026-01.com.bhyoo.pillar-csi:node.table-test"
 		testNode = "node-table-test"
 	)
 
@@ -347,11 +378,25 @@ func TestResolveInitiatorID_TableDriven(t *testing.T) {
 			seedObjs:   []ctrlclient.Object{csiNodeWith(map[string]string{AnnotationNVMeOFHostNQN: testNQN})},
 			wantResult: testNQN,
 		},
-		// Removed protocols are no longer resolved through the CSINode.
+		// iSCSI cases
 		{
-			name:       "iscsi (removed): nodeID passthrough",
+			name:     "iscsi: CSINode not found → FailedPrecondition",
+			protocol: "iscsi",
+			wantErr:  true,
+			wantCode: codes.FailedPrecondition,
+		},
+		{
+			name:     "iscsi: only NVMe-oF annotation → FailedPrecondition",
+			protocol: "iscsi",
+			seedObjs: []ctrlclient.Object{csiNodeWith(map[string]string{AnnotationNVMeOFHostNQN: testNQN})},
+			wantErr:  true,
+			wantCode: codes.FailedPrecondition,
+		},
+		{
+			name:       "iscsi: annotation present → IQN returned",
 			protocol:   "iscsi",
-			wantResult: testNode,
+			seedObjs:   []ctrlclient.Object{csiNodeWith(map[string]string{AnnotationISCSIInitiatorIQN: testIQN})},
+			wantResult: testIQN,
 		},
 		// Passthrough cases
 		{

@@ -66,8 +66,9 @@ type PoolStatus struct {
 // inspect individual components without iterating over a generic list or
 // performing string comparisons on names.
 //
-//	NvmetConfigfs — nvmet configfs tree accessibility
-//	PerPoolStatus — per-pool backend reachability (one entry per registered pool)
+//	NvmetConfigfs       — nvmet configfs tree accessibility
+//	ISCSITargetConfigfs — LIO iSCSI target configfs usability (informational)
+//	PerPoolStatus       — per-pool backend reachability (one entry per registered pool)
 //
 // Backend-specific prerequisite checks (e.g. kernel-module presence) are
 // intentionally omitted from this struct: they are backend-private concerns
@@ -80,13 +81,19 @@ type HealthStatus struct {
 	// mounted and accessible at the expected path.
 	NvmetConfigfs ComponentStatus
 
+	// ISCSITargetConfigfs reports whether the LIO iSCSI target configfs
+	// tree is usable.  It does not affect AllHealthy.
+	ISCSITargetConfigfs ComponentStatus
+
 	// PerPoolStatus holds one entry per registered storage pool, reporting
 	// whether the pool's backend is reachable and responsive.
 	PerPoolStatus []PoolStatus
 }
 
-// AllHealthy returns true only when every component — including all pools —
-// is healthy.
+// AllHealthy returns true only when every required component — nvmet
+// configfs and all pools — is healthy.  ISCSITargetConfigfs is informational:
+// iSCSI is an optional protocol, and a storage node without the LIO modules
+// still serves NVMe-oF TCP (GetCapabilities then omits iSCSI).
 func (h HealthStatus) AllHealthy() bool {
 	if !h.NvmetConfigfs.Healthy {
 		return false
@@ -104,15 +111,21 @@ func (h HealthStatus) AllHealthy() bool {
 //
 // Name conventions used in the output (stable, used by callers that parse the
 // response):
-//   - "nvmet_configfs"    — nvmet configfs check
-//   - "pool/<pool-name>"  — per-pool backend check
+//   - "nvmet_configfs"        — nvmet configfs check
+//   - "iscsi_target_configfs" — LIO iSCSI target configfs check
+//   - "pool/<pool-name>"      — per-pool backend check
 func (h HealthStatus) ToProtoSubsystems() []*agentv1.SubsystemStatus {
 	result := append(
-		make([]*agentv1.SubsystemStatus, 0, 1+len(h.PerPoolStatus)),
+		make([]*agentv1.SubsystemStatus, 0, 2+len(h.PerPoolStatus)),
 		&agentv1.SubsystemStatus{
 			Name:    "nvmet_configfs",
 			Healthy: h.NvmetConfigfs.Healthy,
 			Message: h.NvmetConfigfs.Message,
+		},
+		&agentv1.SubsystemStatus{
+			Name:    "iscsi_target_configfs",
+			Healthy: h.ISCSITargetConfigfs.Healthy,
+			Message: h.ISCSITargetConfigfs.Message,
 		},
 	)
 

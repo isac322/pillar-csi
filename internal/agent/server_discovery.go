@@ -30,6 +30,7 @@ import (
 
 	agentv1 "github.com/isac322/pillar-csi/gen/go/pillar_csi/agent/v1"
 	"github.com/isac322/pillar-csi/internal/agent/health"
+	"github.com/isac322/pillar-csi/internal/agent/lio"
 	"github.com/isac322/pillar-csi/internal/agent/nvmeof"
 	"github.com/isac322/pillar-csi/internal/nvmeofnqn"
 )
@@ -39,17 +40,21 @@ import (
 //
 // SupportedBackends is derived from the registered backends so that the
 // response reflects the actual configuration rather than hardcoded values.
+// NVMe-oF TCP is always reported; iSCSI is reported when the LIO iSCSI
+// target is usable (see lio.Available).
 func (s *Server) GetCapabilities(
 	ctx context.Context,
 	_ *agentv1.GetCapabilitiesRequest,
 ) (*agentv1.GetCapabilitiesResponse, error) {
+	protocols := []agentv1.ProtocolType{agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP}
+	if lio.Available(s.lioFS, s.configfsRoot) == nil {
+		protocols = append(protocols, agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI)
+	}
 	return &agentv1.GetCapabilitiesResponse{
-		AgentVersion:      agentVersion,
-		SupportedBackends: s.collectSupportedBackendTypes(),
-		SupportedProtocols: []agentv1.ProtocolType{
-			agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
-		},
-		DiscoveredPools: s.collectPoolInfo(ctx),
+		AgentVersion:       agentVersion,
+		SupportedBackends:  s.collectSupportedBackendTypes(),
+		SupportedProtocols: protocols,
+		DiscoveredPools:    s.collectPoolInfo(ctx),
 	}, nil
 }
 
@@ -131,7 +136,8 @@ func (s *Server) ListVolumes(
 	return &agentv1.ListVolumesResponse{Volumes: vols}, nil
 }
 
-// ListExports returns all active NVMe-oF TCP exports from configfs.
+// ListExports returns every active NVMe-oF TCP and iSCSI export from
+// configfs, keyed by volume ID.
 func (s *Server) ListExports(
 	_ context.Context,
 	_ *agentv1.ListExportsRequest,
@@ -161,7 +167,37 @@ func (s *Server) ListExports(
 		}
 	}
 
+	err = s.listISCSIExports(exports)
+	if err != nil {
+		return nil, err
+	}
 	return &agentv1.ListExportsResponse{Exports: exports}, nil
+}
+
+// listISCSIExports adds every pillar-csi LIO target to exports.  Address and
+// port are those of the target's portal (the kernel listen address, like
+// nvmet's addr_traddr); VolumeRef is the LUN.
+func (s *Server) listISCSIExports(exports map[string]*agentv1.ExportInfo) error {
+	targets, err := lio.ListTargets(s.lioFS, s.configfsRoot)
+	if err != nil {
+		return status.Errorf(codes.Internal, "list exports: scan iSCSI targets: %v", err)
+	}
+	for _, target := range targets {
+		volumeID := volumeIDFromTargetName(lio.OwnedIQNPrefix, target.IQN)
+		if volumeID == "" {
+			continue
+		}
+		info := &agentv1.ExportInfo{TargetId: target.IQN, VolumeRef: iscsiVolumeRef}
+		if len(target.Portals) > 0 {
+			addr, port, parseErr := lio.ParsePortal(target.Portals[0])
+			if parseErr != nil {
+				return status.Errorf(codes.Internal, "list exports: iSCSI target %q: %v", target.IQN, parseErr)
+			}
+			info.Address, info.Port = addr, port
+		}
+		exports[volumeID] = info
+	}
+	return nil
 }
 
 type portEntry struct {
@@ -235,15 +271,21 @@ func readTrimmedConfigfsFile(path string) (string, error) {
 }
 
 func volumeIDFromNQN(nqn string) string {
-	suffix, ok := strings.CutPrefix(nqn, nvmeofnqn.Prefix)
+	return volumeIDFromTargetName(nvmeofnqn.Prefix, nqn)
+}
+
+// volumeIDFromTargetName inverts volumeTargetID for a target name with the
+// given owned prefix; "" when name is not owned or malformed.
+func volumeIDFromTargetName(prefix, name string) string {
+	suffix, ok := strings.CutPrefix(name, prefix)
 	if !ok {
 		return ""
 	}
-	pool, name, ok := strings.Cut(suffix, ".")
+	pool, rest, ok := strings.Cut(suffix, ".")
 	if !ok {
 		return ""
 	}
-	return pool + "/" + name
+	return pool + "/" + rest
 }
 
 // HealthCheck reports the liveness of the NVMe-oF subsystem as well as
@@ -268,8 +310,9 @@ func (s *Server) HealthCheck(
 // agent instance by probing each known subsystem.
 func (s *Server) collectHealthStatus(ctx context.Context) health.HealthStatus {
 	return health.HealthStatus{
-		NvmetConfigfs: s.checkNvmetConfigfs(),
-		PerPoolStatus: s.checkPerPoolStatus(ctx),
+		NvmetConfigfs:       s.checkNvmetConfigfs(),
+		ISCSITargetConfigfs: s.checkISCSITargetConfigfs(),
+		PerPoolStatus:       s.checkPerPoolStatus(ctx),
 	}
 }
 
@@ -286,6 +329,17 @@ func (s *Server) checkNvmetConfigfs() health.ComponentStatus {
 		return health.OK("nvmet configfs directory accessible.")
 	}
 	return health.Degraded(fmt.Sprintf("nvmet configfs check failed: %v", err))
+}
+
+// checkISCSITargetConfigfs reports whether the LIO iSCSI target is usable
+// (see lio.Available).
+func (s *Server) checkISCSITargetConfigfs() health.ComponentStatus {
+	err := lio.Available(s.lioFS, s.configfsRoot)
+	if err == nil {
+		return health.OK("LIO iSCSI target configfs directory accessible.")
+	}
+	return health.Degraded(fmt.Sprintf("LIO iSCSI target configfs check failed "+
+		"(target_core_mod, target_core_iblock and iscsi_target_mod are required for iSCSI): %v", err))
 }
 
 // checkPerPoolStatus probes each registered backend with a Capacity call to

@@ -36,10 +36,12 @@ import (
 //
 // These tests verify that the Kubernetes API server (running under envtest)
 // enforces the OpenAPI v3 schema constraints embedded in the PillarProtocol CRD:
-//   - spec.protocol is an exactly-one union: a union without a member is rejected
-//   - members the schema does not declare (removed protocols, the removed
+//   - spec.protocol is an exactly-one union: a union without a member, or
+//     with both nvmeofTcp and iscsi, is rejected
+//   - members the schema does not declare (unserved protocols, the removed
 //     spec.type/spec.fsType fields) are rejected, not silently dropped
 //   - spec.protocol.nvmeofTcp.port must be in the range [1, 65535]
+//   - spec.protocol.iscsi defaults port=3260 / acl=false and bounds its timeouts
 //
 // All tests exercise the real CRD validation path through a Server-Side Apply
 // of raw JSON, bypassing Go type safety.
@@ -106,10 +108,10 @@ var _ = Describe("PillarProtocol CRD Schema Validation", func() {
 	})
 
 	// ── E23.2.4 — TestPillarProtocolCRD_InvalidCreate_RemovedProtocolMember ──
-	It("Should reject a protocol member the schema does not serve (iscsi)", func() {
-		err := applyProtocol("crd-test-iscsi", `{"protocol": {"iscsi": {"port": 3260}}}`)
+	It("Should reject a protocol member the schema does not serve (nfs)", func() {
+		err := applyProtocol("crd-test-nfs", `{"protocol": {"nfs": {"version": "4.2"}}}`)
 		Expect(err).To(HaveOccurred(), "an unserved protocol member must not be accepted")
-		Expect(err.Error()).To(ContainSubstring(".spec.protocol.iscsi: field not declared in schema"))
+		Expect(err.Error()).To(ContainSubstring(".spec.protocol.nfs: field not declared in schema"))
 	})
 
 	// ── E23.2.5 — TestPillarProtocolCRD_InvalidCreate_RemovedTopLevelFields ──
@@ -128,5 +130,29 @@ var _ = Describe("PillarProtocol CRD Schema Validation", func() {
 		Expect(got.Spec.Protocol.NVMeOFTCP).NotTo(BeNil())
 		Expect(got.Spec.Protocol.NVMeOFTCP.Port).To(Equal(int32(4420)))
 		Expect(got.Spec.Protocol.NVMeOFTCP.ACL).To(BeFalse())
+	})
+
+	// ── E23.2.7 — TestPillarProtocolCRD_ValidCreate_ISCSIDefaults ─────────────
+	It("Should accept iscsi and default port=3260 and acl=false", func() {
+		Expect(applyProtocol("crd-test-iscsi-defaults", `{"protocol": {"iscsi": {}}}`)).To(Succeed())
+		got := &pillarcsiv1alpha1.PillarProtocol{}
+		Expect(k8sClient.Get(crdCtx, types.NamespacedName{Name: "crd-test-iscsi-defaults"}, got)).To(Succeed())
+		Expect(got.Spec.Protocol.ISCSI).NotTo(BeNil())
+		Expect(got.Spec.Protocol.NVMeOFTCP).To(BeNil())
+		Expect(got.Spec.Protocol.ISCSI.Port).To(Equal(int32(3260)))
+		Expect(got.Spec.Protocol.ISCSI.ACL).To(BeFalse())
+		Expect(got.Spec.Protocol.Kind()).To(Equal(pillarcsiv1alpha1.ProtocolIDISCSI))
+	})
+
+	// ── E23.2.8 — TestPillarProtocolCRD_InvalidCreate_TwoProtocolMembers ──────
+	It("Should reject creation when spec.protocol sets both nvmeofTcp and iscsi", func() {
+		err := applyProtocol("crd-test-two-members", `{"protocol": {"nvmeofTcp": {}, "iscsi": {}}}`)
+		expectUnprocessable(err, "exactly one protocol member must be set (supported: nvmeofTcp, iscsi)")
+	})
+
+	// ── E23.2.9 — TestPillarProtocolCRD_InvalidCreate_ISCSILoginTimeoutZero ───
+	It("Should reject creation when spec.protocol.iscsi.loginTimeout is below the minimum (0 < minimum=1)", func() {
+		err := applyProtocol("crd-test-iscsi-login", `{"protocol": {"iscsi": {"loginTimeout": 0}}}`)
+		expectUnprocessable(err, "spec.protocol.iscsi.loginTimeout")
 	})
 })

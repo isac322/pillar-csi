@@ -39,12 +39,12 @@ kubectl describe pvc postgres-data
 
 1. `csi-resizer` in the controller pod calls `ControllerExpandVolume`.
 2. The controller asks the agent to grow the backend volume: `zfs set volsize=<bytes>` for ZFS, `lvextend -L <bytes>b` for LVM linear and thin volumes.
-3. If the volume is exported, the agent writes `1` to the namespace's `revalidate_size` in nvmet configfs. The namespace stays enabled, so connected workers keep their session.
-4. The controller always reports that node expansion is required. On the worker, `NodeExpandVolume` rescans the NVMe controller so the kernel sees the new size, then grows the filesystem: `resize2fs <device>` for ext4, `xfs_growfs <mount point>` for xfs.
+3. If the volume is exported over NVMe-oF/TCP, the agent writes `1` to the namespace's `revalidate_size` in nvmet configfs. The namespace stays enabled, so connected workers keep their session. An iSCSI target needs no step here: its LIO `iblock` backstore reads the new size of the zvol or logical volume.
+4. The controller always reports that node expansion is required. On the worker, `NodeExpandVolume` makes the kernel see the new size, then grows the filesystem: `resize2fs <device>` for ext4, `xfs_growfs <mount point>` for xfs. For NVMe-oF/TCP it rescans the NVMe controller. For iSCSI it rescans the SCSI disk of the volume's session, which stays logged in.
 
 For a raw block volume (`volumeMode: Block`) there is no filesystem, so step 4 only reports the new size. The application sees the larger device.
 
-For a volume [attached locally on the storage node](/docs/how-to/local-attach/#expansion), the namespace is disabled, so the agent skips `revalidate_size`. `NodeExpandVolume` on the storage node reloads the `pillar-local-*` device-mapper table to the new size and then grows the filesystem on that device.
+For a volume [attached locally on the storage node](/docs/how-to/local-attach/#expansion), the NVMe namespace is disabled, so the agent skips `revalidate_size`; an iSCSI target has no LUN at that time. `NodeExpandVolume` on the storage node reloads the `pillar-local-*` device-mapper table to the new size and then grows the filesystem on that device.
 
 If no pod uses the PVC during expansion, Kubernetes finishes the filesystem step the next time a pod mounts it.
 

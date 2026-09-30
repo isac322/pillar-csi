@@ -1,6 +1,6 @@
 ---
 title: Override settings per binding or per volume
-description: Configure pillar-csi with one YAML shape at every layer, and override ZFS, LVM, NVMe-oF/TCP and filesystem settings per PillarStorageClass or per PVC annotation.
+description: Configure pillar-csi with one YAML shape at every layer, and override ZFS, LVM, NVMe-oF/TCP, iSCSI and filesystem settings per PillarStorageClass or per PVC annotation.
 sidebar:
   order: 6
 ---
@@ -31,10 +31,10 @@ Configuration has three axes: storage, protocol and filesystem. Each axis has a 
 | Axis | Base | Per binding | Per volume |
 |---|---|---|---|
 | Storage | `PillarStore.spec.backend.{zfs,lvm}` | `PillarStorageClass.spec.overrides.backend` | `pillar-csi.bhyoo.com/backend` |
-| Protocol | `PillarProtocol.spec.protocol.nvmeofTcp` | `PillarStorageClass.spec.overrides.protocol` | `pillar-csi.bhyoo.com/protocol` |
+| Protocol | `PillarProtocol.spec.protocol.{nvmeofTcp,iscsi}` | `PillarStorageClass.spec.overrides.protocol` | `pillar-csi.bhyoo.com/protocol` |
 | Filesystem | `fsType: ext4` | `PillarStorageClass.spec.filesystem` | `pillar-csi.bhyoo.com/filesystem` |
 
-`nvmeofTcp` is the only protocol in v0.3.4, and `zfs` and `lvm` are the only backends. iSCSI, NFS and SMB are planned. Each is designed to arrive as another member of the same `protocol` document, next to `nvmeofTcp`, and to follow the same three layers.
+The protocols are `nvmeofTcp` and `iscsi`, and `zfs` and `lvm` are the only backends. NFS and SMB are planned. Each is designed to arrive as another member of the same `protocol` document, next to `nvmeofTcp` and `iscsi`, and to follow the same three layers.
 
 ## What you can override
 
@@ -45,15 +45,16 @@ Only tunable fields are accepted above the base:
 | `backend` with `zfs` | `properties` |
 | `backend` with `lvm` | `provisioningMode` (`linear` or `thin`) |
 | `protocol` with `nvmeofTcp` | `maxQueueSize`, `inCapsuleDataSize`, `ctrlLossTmo`, `reconnectDelay` |
+| `protocol` with `iscsi` | `loginTimeout`, `replacementTimeout`, `noopOutInterval`, `noopOutTimeout` |
 | `filesystem` | `fsType` (`ext4` or `xfs`), `mkfsOptions`, `mountOptions` |
 
-The structural fields `zfs.pool`, `zfs.parentDataset`, `zfs.volumeType`, `lvm.volumeGroup`, `lvm.thinPool`, `nvmeofTcp.port` and `nvmeofTcp.acl` decide where a volume lives and who can reach it. They are rejected with their path, for example:
+The structural fields `zfs.pool`, `zfs.parentDataset`, `zfs.volumeType`, `lvm.volumeGroup`, `lvm.thinPool`, `nvmeofTcp.port`, `nvmeofTcp.acl`, `iscsi.port` and `iscsi.acl` decide where a volume lives and who can reach it. They are rejected with their path, for example:
 
 ```text
 pillar-csi.bhyoo.com/protocol: nvmeofTcp.acl is structural and cannot be set per volume
 ```
 
-The document member must match the base. A `zfs` document on a PVC whose store is LVM fails with `zfs overrides do not apply to a lvm-lv backend`. `provisioningMode: thin` fails unless the `PillarStore` sets `lvm.thinPool`.
+The document member must match the base. A `zfs` document on a PVC whose store is LVM fails with `zfs overrides do not apply to a lvm-lv backend`, and an `iscsi` document on a PVC whose protocol is NVMe-oF/TCP fails with `iscsi overrides do not apply to a nvmeof-tcp protocol`. `provisioningMode: thin` fails unless the `PillarStore` sets `lvm.thinPool`.
 
 ## Per binding
 

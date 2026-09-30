@@ -353,6 +353,54 @@ func TestNodeStageVolume_Local_ExportFencedProceeds(t *testing.T) {
 	}
 }
 
+// TestNodeStageVolume_Local_ISCSIExportFence verifies the LIO half of the
+// local attach fence for iscsi volumes: while LUN 0 of the volume's target is
+// still exported the stage is refused and the claim removed; once the agent
+// removed the LUN (or the target) the stage proceeds.  The nvmet state is
+// not consulted for an iscsi volume.
+func TestNodeStageVolume_Local_ISCSIExportFence(t *testing.T) {
+	const iqn = "iqn.2026-01.com.bhyoo.pillar-csi:pool.pvc-local"
+	iscsiRequest := func(stagingPath string) *csi.NodeStageVolumeRequest {
+		req := localStageRequest(stagingPath, mountCap("xfs"))
+		req.VolumeContext = map[string]string{
+			VolumeContextKeyTargetID:     iqn,
+			VolumeContextKeyProtocolType: ProtocolISCSI,
+		}
+		return req
+	}
+	newEnv := func(t *testing.T) (*localTestEnv, string) {
+		env := newLocalTestEnv(t)
+		// An enabled nvmet namespace under the same name must not matter.
+		env.setNamespaceEnable(t, "1", "1")
+		lioRoot := filepath.Join(t.TempDir(), "target")
+		if err := os.MkdirAll(filepath.Join(lioRoot, "iscsi", iqn, "tpgt_1", "lun"), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		env.srv.WithLIOConfigfsRoot(lioRoot)
+		return env, filepath.Join(lioRoot, "iscsi", iqn, "tpgt_1", "lun", "lun_0")
+	}
+
+	t.Run("lun exported", func(t *testing.T) {
+		env, lunDir := newEnv(t)
+		if err := os.Mkdir(lunDir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		_, err := env.srv.NodeStageVolume(context.Background(), iscsiRequest(t.TempDir()))
+		requireGRPCCode(t, err, codes.FailedPrecondition)
+		if !strings.Contains(err.Error(), "still serving remote initiators") {
+			t.Errorf("error = %v, want it to name the serving export", err)
+		}
+		requireLocalClaimReleased(t, env)
+	})
+	t.Run("lun removed", func(t *testing.T) {
+		env, _ := newEnv(t)
+		if _, err := env.srv.NodeStageVolume(context.Background(), iscsiRequest(t.TempDir())); err != nil {
+			t.Fatalf("NodeStageVolume: %v", err)
+		}
+		requireLocalStageState(t, env.srv, localTestVolumeID, LocalDMName(localTestVolumeID))
+	})
+}
+
 // TestNodeStageVolume_Local_NvmetRootAbsentFails verifies that a missing
 // nvmet configfs root — the export state cannot be verified — fails the
 // stage and removes the claim.

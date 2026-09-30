@@ -116,7 +116,7 @@ type AgentCapabilities struct {
 	Backends []string `json:"backends,omitempty"`
 
 	// protocols lists the network protocols the agent can export storage over
-	// (nvmeof-tcp).
+	// (nvmeof-tcp, iscsi).
 	// +optional
 	Protocols []string `json:"protocols,omitempty"`
 }

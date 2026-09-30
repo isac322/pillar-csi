@@ -46,6 +46,7 @@ RUN set -eux; \
         ca-certificates \
         coreutils \
         curl \
+        device-mapper \
         e2fsprogs \
         git \
         jq \

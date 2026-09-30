@@ -10,7 +10,7 @@ import { REPO_URL, SITE_URL, CHART_VERSION } from '../lib/site';
 
 const title = 'pillar-csi: export your ZFS and LVM pools to Kubernetes';
 const description =
-	'One CSI driver for ZFS pools and LVM volume groups on your storage nodes. The Linux kernel NVMe-oF target serves each volume to your pods over TCP.';
+	'One CSI driver for ZFS pools and LVM volume groups on your storage nodes. The Linux kernel NVMe-oF or iSCSI target serves each volume to your pods over TCP.';
 const zones = [1, 2, 3, 4, 5, 6];
 const jsonLd = [
 	{
@@ -66,8 +66,8 @@ const jsonLd = [
 					<div class="hero-copy">
 						<h1 class="display">Export your ZFS and LVM pools to Kubernetes.</h1>
 						<p class="lede">
-							Run one CSI driver for every pool on your storage nodes. The Linux kernel's NVMe-oF target serves each volume to your pods over
-							TCP.
+							Run one CSI driver for every pool on your storage nodes. The Linux kernel's NVMe-oF or iSCSI target serves each volume to your pods
+							over TCP.
 						</p>
 						<div class="actions">
 							<SurveyDisk id="disk-hero" size={152} />
@@ -105,7 +105,7 @@ const jsonLd = [
 									<th scope="row">Backends</th><td class="shipped">ZFS zvols, LVM logical volumes</td><td class="planned"><span>More backends</span></td>
 								</tr>
 								<tr>
-									<th scope="row">Protocols</th><td class="shipped"><span class="nw">NVMe-oF/TCP</span></td><td class="planned"><span>iSCSI, NFS, SMB</span></td>
+									<th scope="row">Protocols</th><td class="shipped"><span class="nw">NVMe-oF/TCP</span>, iSCSI</td><td class="planned"><span>NFS, SMB</span></td>
 								</tr>
 							</tbody>
 						</table>
@@ -131,8 +131,9 @@ const jsonLd = [
 					<div class="band-text">
 						<h2 id="hosts" class="display">Your hosts need kernel modules and a pool</h2>
 						<p>
-							The driver images carry the ZFS, LVM, and filesystem tools, and the agent writes the NVMe-oF target configuration itself. You install
-							no <span class="nw">pillar-csi</span> packages on the host, and the driver needs no SSH.
+							The driver images carry the ZFS, LVM, and filesystem tools, and the agent writes the NVMe-oF or iSCSI target configuration itself.
+							The node plugin logs in to iSCSI targets on its own. You install no <span class="nw">pillar-csi</span> packages on the host, and the
+							driver needs no SSH.
 						</p>
 						<p><a href="/docs/reference/prerequisites/">Check your kernel</a></p>
 					</div>
@@ -143,17 +144,18 @@ const jsonLd = [
 								<li><code>zfs</code> and <code>zpool</code> from OpenZFS 2.4</li>
 								<li><code>lvm2</code></li>
 								<li><code>mkfs.ext4</code>, <code>mkfs.xfs</code>, and the resize tools</li>
-								<li>NVMe-oF target setup through configfs, replacing <code>nvmetcli</code> and <code>targetcli</code></li>
+								<li>NVMe-oF and iSCSI target setup through configfs, replacing <code>nvmetcli</code> and <code>targetcli</code></li>
 								<li>NVMe-oF connect through <code>/dev/nvme-fabrics</code>, replacing <code>nvme-cli</code></li>
+								<li>iSCSI login in the node plugin, replacing <code>iscsiadm</code> and <code>iscsid</code></li>
 							</ul>
 						</div>
 						<div class="split-col host">
 							<h3 class="lettering">On your hosts</h3>
 							<dl>
 								<dt>Storage nodes</dt>
-								<dd><code>nvmet</code>, <code>nvmet_tcp</code>, and a ZFS pool or LVM volume group</dd>
+								<dd><code>nvmet</code> and <code>nvmet_tcp</code> or the LIO iSCSI modules, and a ZFS pool or LVM volume group</dd>
 								<dt>Workers</dt>
-								<dd><code>nvme_fabrics</code>, <code>nvme_tcp</code></dd>
+								<dd><code>nvme_fabrics</code>, <code>nvme_tcp</code> or <code>iscsi_tcp</code></dd>
 								<dt>Cluster</dt>
 								<dd>Kubernetes 1.24 or later, Helm 3.8 or later</dd>
 							</dl>
@@ -170,7 +172,7 @@ const jsonLd = [
 						<li>
 							The kernel carries every read and write. The controller, agent, and node plugin can restart without interrupting connected volumes.
 						</li>
-						<li>iSCSI, NFS, and SMB are planned as new protocols in the same driver and configuration model. NVMe-oF/TCP ships today.</li>
+						<li>NFS and SMB are planned as new protocols in the same driver and configuration model. NVMe-oF/TCP and iSCSI ship today.</li>
 					</ol>
 				</section>
 

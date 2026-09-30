@@ -13,7 +13,7 @@ tableOfContents:
 
 All pillar-csi resources are cluster-scoped. The controller manages PillarVolumeState objects; do not create them by hand.
 
-The field descriptions come from comments in the Go API types. A few of them mention iSCSI, NFS or other file protocols. Those protocols are not supported yet; NVMe-oF/TCP is the only protocol pillar-csi exports today.
+The field descriptions come from comments in the Go API types. A few of them mention NFS or other file protocols. Those protocols are not supported yet; pillar-csi exports volumes over NVMe-oF/TCP and iSCSI today.
 
 ## Packages
 {{- range $groupVersions }}

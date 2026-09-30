@@ -210,13 +210,63 @@ func TestPillarProtocol_ValidateCreate_NVMeOFTCPDomains(t *testing.T) {
 	}
 }
 
+func TestPillarProtocol_ValidateCreate_ISCSIDomains(t *testing.T) {
+	tests := []struct {
+		name     string
+		spec     pillarcsiv1alpha1.ProtocolSpec
+		wantPath string // empty = admitted
+	}{
+		{name: "defaults", spec: pillarcsiv1alpha1.ProtocolSpec{
+			ISCSI: &pillarcsiv1alpha1.ISCSIConfig{Port: 3260}}},
+		{name: "all timeouts at their minimum", spec: pillarcsiv1alpha1.ProtocolSpec{
+			ISCSI: &pillarcsiv1alpha1.ISCSIConfig{Port: 3260, LoginTimeout: ptr.To[int32](1),
+				ReplacementTimeout: ptr.To[int32](0), NoopOutInterval: ptr.To[int32](0),
+				NoopOutTimeout: ptr.To[int32](0)}}},
+		{name: "port zero", spec: pillarcsiv1alpha1.ProtocolSpec{
+			ISCSI: &pillarcsiv1alpha1.ISCSIConfig{Port: 0}}, wantPath: "spec.protocol.iscsi.port"},
+		{name: "loginTimeout zero", spec: pillarcsiv1alpha1.ProtocolSpec{
+			ISCSI: &pillarcsiv1alpha1.ISCSIConfig{Port: 3260, LoginTimeout: ptr.To[int32](0)}},
+			wantPath: "spec.protocol.iscsi.loginTimeout"},
+		{name: "replacementTimeout negative", spec: pillarcsiv1alpha1.ProtocolSpec{
+			ISCSI: &pillarcsiv1alpha1.ISCSIConfig{Port: 3260, ReplacementTimeout: ptr.To[int32](-1)}},
+			wantPath: "spec.protocol.iscsi.replacementTimeout"},
+		{name: "noopOutTimeout negative", spec: pillarcsiv1alpha1.ProtocolSpec{
+			ISCSI: &pillarcsiv1alpha1.ISCSIConfig{Port: 3260, NoopOutTimeout: ptr.To[int32](-1)}},
+			wantPath: "spec.protocol.iscsi.noopOutTimeout"},
+		{name: "both members set", spec: pillarcsiv1alpha1.ProtocolSpec{
+			NVMeOFTCP: &pillarcsiv1alpha1.NVMeOFTCPConfig{Port: 4420},
+			ISCSI:     &pillarcsiv1alpha1.ISCSIConfig{Port: 3260}}, wantPath: "spec.protocol"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pp := &pillarcsiv1alpha1.PillarProtocol{Spec: pillarcsiv1alpha1.PillarProtocolSpec{Protocol: tt.spec}}
+			_, err := (&PillarProtocolCustomValidator{}).ValidateCreate(context.Background(), pp)
+			if tt.wantPath == "" {
+				if err != nil {
+					t.Fatalf("ValidateCreate() error = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantPath+":") {
+				t.Fatalf("ValidateCreate() error = %v, want error on %s", err, tt.wantPath)
+			}
+		})
+	}
+}
+
 func TestPillarProtocol_ValidateUpdate_MemberImmutable(t *testing.T) {
 	withMember := &pillarcsiv1alpha1.PillarProtocol{Spec: nvmeProtocolSpec(pillarcsiv1alpha1.NVMeOFTCPConfig{Port: 4420})}
+	withISCSI := &pillarcsiv1alpha1.PillarProtocol{Spec: pillarcsiv1alpha1.PillarProtocolSpec{
+		Protocol: pillarcsiv1alpha1.ProtocolSpec{ISCSI: &pillarcsiv1alpha1.ISCSIConfig{Port: 3260}},
+	}}
 	empty := &pillarcsiv1alpha1.PillarProtocol{}
 
 	for name, pair := range map[string][2]*pillarcsiv1alpha1.PillarProtocol{
-		"member removed": {withMember, empty},
-		"member added":   {empty, withMember},
+		"member removed":     {withMember, empty},
+		"member added":       {empty, withMember},
+		"nvmeofTcp to iscsi": {withMember, withISCSI},
+		"iscsi to nvmeofTcp": {withISCSI, withMember},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := (&PillarProtocolCustomValidator{}).ValidateUpdate(context.Background(), pair[0], pair[1])

@@ -60,12 +60,28 @@ func (*PillarProtocolCustomValidator) ValidateCreate(
 }
 
 // protocolMember returns the name of the union member set in a protocol spec
-// ("nvmeofTcp"), or "" when none is set.
+// ("nvmeofTcp" or "iscsi"), or "" when none is set.
 func protocolMember(p pillarcsiv1alpha1.ProtocolSpec) string {
-	if p.NVMeOFTCP != nil {
+	switch {
+	case p.NVMeOFTCP != nil:
 		return "nvmeofTcp"
+	case p.ISCSI != nil:
+		return "iscsi"
+	default:
+		return ""
 	}
-	return ""
+}
+
+// protocolMemberCount returns how many union members a protocol spec sets.
+func protocolMemberCount(p pillarcsiv1alpha1.ProtocolSpec) int {
+	n := 0
+	if p.NVMeOFTCP != nil {
+		n++
+	}
+	if p.ISCSI != nil {
+		n++
+	}
+	return n
 }
 
 // validateProtocolSpec re-checks spec.protocol with the same union rule and
@@ -73,17 +89,19 @@ func protocolMember(p pillarcsiv1alpha1.ProtocolSpec) string {
 // webhook never admits a protocol the agent or node would later reject.
 func validateProtocolSpec(p pillarcsiv1alpha1.ProtocolSpec) error {
 	protocolPath := field.NewPath("spec", "protocol")
-	if protocolMember(p) == "" {
-		return field.ErrorList{field.Required(protocolPath,
-			"exactly one protocol member must be set (supported: nvmeofTcp)")}.ToAggregate()
+	const unionRule = "exactly one protocol member must be set (supported: nvmeofTcp, iscsi)"
+	switch n := protocolMemberCount(p); {
+	case n == 0:
+		return field.ErrorList{field.Required(protocolPath, unionRule)}.ToAggregate()
+	case n > 1:
+		return field.ErrorList{field.Invalid(protocolPath, n, unionRule)}.ToAggregate()
 	}
 
 	var allErrs field.ErrorList
-	cfg := p.NVMeOFTCP
-	nvmePath := protocolPath.Child("nvmeofTcp")
+	memberPath := protocolPath.Child(protocolMember(p))
 	checkRange := func(name string, v int32, minimum, maximum int64) {
 		if int64(v) < minimum || int64(v) > maximum {
-			allErrs = append(allErrs, field.Invalid(nvmePath.Child(name), v,
+			allErrs = append(allErrs, field.Invalid(memberPath.Child(name), v,
 				fmt.Sprintf("must be between %d and %d", minimum, maximum)))
 		}
 	}
@@ -92,11 +110,22 @@ func validateProtocolSpec(p pillarcsiv1alpha1.ProtocolSpec) error {
 			checkRange(name, *v, minimum, maximum)
 		}
 	}
-	checkRange("port", cfg.Port, 1, 65535)
-	checkOptional("maxQueueSize", cfg.MaxQueueSize, 16, 1024)
-	checkOptional("inCapsuleDataSize", cfg.InCapsuleDataSize, 1024, math.MaxInt32)
-	checkOptional("ctrlLossTmo", cfg.CtrlLossTmo, 0, math.MaxInt32)
-	checkOptional("reconnectDelay", cfg.ReconnectDelay, 0, math.MaxInt32)
+	switch {
+	case p.NVMeOFTCP != nil:
+		cfg := p.NVMeOFTCP
+		checkRange("port", cfg.Port, 1, 65535)
+		checkOptional("maxQueueSize", cfg.MaxQueueSize, 16, 1024)
+		checkOptional("inCapsuleDataSize", cfg.InCapsuleDataSize, 1024, math.MaxInt32)
+		checkOptional("ctrlLossTmo", cfg.CtrlLossTmo, 0, math.MaxInt32)
+		checkOptional("reconnectDelay", cfg.ReconnectDelay, 0, math.MaxInt32)
+	case p.ISCSI != nil:
+		cfg := p.ISCSI
+		checkRange("port", cfg.Port, 1, 65535)
+		checkOptional("loginTimeout", cfg.LoginTimeout, 1, math.MaxInt32)
+		checkOptional("replacementTimeout", cfg.ReplacementTimeout, 0, math.MaxInt32)
+		checkOptional("noopOutInterval", cfg.NoopOutInterval, 0, math.MaxInt32)
+		checkOptional("noopOutTimeout", cfg.NoopOutTimeout, 0, math.MaxInt32)
+	}
 
 	if len(allErrs) > 0 {
 		return allErrs.ToAggregate()

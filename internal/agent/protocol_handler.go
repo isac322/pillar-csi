@@ -117,6 +117,8 @@ func (s *Server) handlerForProtocol(protocol agentv1.ProtocolType) (AgentProtoco
 	switch protocol {
 	case agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP:
 		return NewNVMeoFTCPAgentHandler(s), nil
+	case agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI:
+		return NewISCSIAgentHandler(s), nil
 	case agentv1.ProtocolType_PROTOCOL_TYPE_UNSPECIFIED:
 		return nil, status.Errorf(codes.InvalidArgument, "handlerForProtocol: protocol_type is required")
 	default:
@@ -155,7 +157,7 @@ func (h *NVMeoFTCPAgentHandler) Export(
 	if err != nil {
 		return nil, err
 	}
-	waitErr := h.waitForDeviceReady(ctx, devicePath, true)
+	waitErr := h.server.waitForDeviceReady(ctx, devicePath, true)
 	if waitErr != nil {
 		return nil, waitErr
 	}
@@ -467,7 +469,7 @@ func (h *NVMeoFTCPAgentHandler) prepareExport(
 ) (nvmeof.PreparedTarget, error) {
 	var prepared nvmeof.PreparedTarget
 	err := h.server.fenced(ctx, export.VolumeID, export.Fence, fenceGrant, func() error {
-		waitErr := h.waitForDeviceReady(ctx, target.DevicePath, false)
+		waitErr := h.server.waitForDeviceReady(ctx, target.DevicePath, false)
 		if waitErr != nil {
 			return fmt.Errorf("Reconcile: volume %q: %w", export.VolumeID, waitErr)
 		}
@@ -506,21 +508,23 @@ func (h *NVMeoFTCPAgentHandler) targetForVolume(volumeID string) (*nvmeof.NvmetT
 	}, nil
 }
 
-// waitForDeviceReady waits for the backend block device before configfs
-// writes.  When traced, the wait runs inside a pillar_csi.agent.device_wait
-// span (ExportVolume); the ReconcileState prepare loop passes false and
-// reports failures as span events instead.
-func (h *NVMeoFTCPAgentHandler) waitForDeviceReady(ctx context.Context, devicePath string, traced bool) error {
-	realConfigfs := h.server.configfsRoot == "" || h.server.configfsRoot == nvmeof.DefaultConfigfsRoot
-	if !realConfigfs && h.server.deviceChecker == nil {
+// waitForDeviceReady waits for the backend block device of an export to
+// appear before target configuration.  Against a test configfs root without
+// an injected DeviceChecker it does not wait.  When traced, the wait runs
+// inside a pillar_csi.agent.device_wait span (ExportVolume); the
+// ReconcileState prepare loops pass false and report failures as span
+// events instead.
+func (s *Server) waitForDeviceReady(ctx context.Context, devicePath string, traced bool) error {
+	realConfigfs := s.configfsRoot == "" || s.configfsRoot == nvmeof.DefaultConfigfsRoot
+	if !realConfigfs && s.deviceChecker == nil {
 		return nil
 	}
 
-	pollInterval := h.server.devicePollInterval
+	pollInterval := s.devicePollInterval
 	if pollInterval == 0 {
 		pollInterval = nvmeof.DefaultDevicePollInterval
 	}
-	pollTimeout := h.server.devicePollTimeout
+	pollTimeout := s.devicePollTimeout
 	if pollTimeout == 0 {
 		pollTimeout = nvmeof.DefaultDevicePollTimeout
 	}
@@ -531,7 +535,7 @@ func (h *NVMeoFTCPAgentHandler) waitForDeviceReady(ctx context.Context, devicePa
 			telemetry.KeyDevicePath.String(devicePath),
 			telemetry.KeyWaitTimeout.Float64(pollTimeout.Seconds()))
 	}
-	waitErr := nvmeof.WaitForDevice(ctx, devicePath, pollInterval, pollTimeout, h.server.deviceChecker)
+	waitErr := nvmeof.WaitForDevice(ctx, devicePath, pollInterval, pollTimeout, s.deviceChecker)
 	if span != nil {
 		endDeviceWaitSpan(span, waitErr)
 	}

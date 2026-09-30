@@ -17,6 +17,10 @@ services:
       - ../..:/workspace:ro
       - /sys/kernel/config:/sys/kernel/config:rshared
       - /lib/modules:/lib/modules:ro
+      # NETLINK_ISCSI exists only in the host init network namespace; the
+      # harness and the Kind workers (pillar-node) reach it as
+      # /host/proc/1/ns/net.
+      - /proc:/host/proc:ro
       - docker-data:/var/lib/docker
     tmpfs:
       - /run

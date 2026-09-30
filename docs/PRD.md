@@ -45,7 +45,7 @@ pillar-csi는 **분산 파일시스템(DFS)이 아니다.** 여러 backend를 �
 | **멀티 pool** | pool마다 Helm release. SSH 설정, RBAC, 사이드카 모두 중복 | PillarStore CR 하나 추가 |
 | **스토리지 노드 통신** | SSH (셸 명령 파싱, 키 관리, 인젝션 위험) | gRPC agent (타입 안전, 자동 재연결) |
 | **Target 설정** | targetcli/nvmetcli CLI (Python 의존) | configfs 직접 조작 (의존성 제로) |
-| **노드 사전 설치** | 워커 노드에 open-iscsi, nvme-cli 등 필요 | 컨테이너에 번들 + init container modprobe |
+| **노드 사전 설치** | 워커 노드에 open-iscsi, nvme-cli 등 필요 | 커널 모듈만 (init container modprobe). NVMe-oF는 `/dev/nvme-fabrics` 직접 쓰기, iSCSI는 pillar-node 내장 initiator — nvme-cli·open-iscsi 불필요 |
 | **파라미터 커스터마이징** | StorageClass parameters + PVC annotation | Store/Protocol → Binding → PVC annotation 문서. 모든 계층에서 같은 키·같은 YAML 구조 |
 | **프로토콜/백엔드 확장** | 드라이버 타입 하드코딩 (zfs-generic-iscsi 등) | Backend/Protocol 플러그인 아키텍처 |
 
@@ -237,10 +237,10 @@ status:
   activeAgents: [rock5bp]             # 이 Protocol이 사용 중인 Target 목록
 ```
 
-> **미구현 프로토콜 (설계 노트):** 아래 iSCSI·NFS 예시는 설계 참고용이며 **구현되지 않았다.** served CRD schema에는 `iscsi`·`nfs`·`smb` 멤버가 없으므로 이 YAML은 현재 API server가 거부한다. 구현 시에도 같은 union 규칙(`spec.protocol.<member>`, `type` 필드 없음)을 따른다. iSCSI 상세 설계는 [`PRD-iscsi.md`](./PRD-iscsi.md)(미구현) 참조.
+iSCSI는 구현되어 있다. 같은 union 규칙(`spec.protocol.<member>`, `type` 필드 없음)을 따르며 CEL이 `nvmeofTcp`·`iscsi` 중 정확히 하나를 요구한다. 상세 설계는 [`PRD-iscsi.md`](./PRD-iscsi.md) 참조.
 
 ```yaml
-# iSCSI 예시 — 미구현 설계 노트
+# iSCSI 예시
 apiVersion: pillar-csi.bhyoo.com/v1alpha1
 kind: PillarProtocol
 metadata:
@@ -248,13 +248,19 @@ metadata:
 spec:
   protocol:
     iscsi:
-      port: 3260
-      acl: true
-      # iSCSI 타임아웃 파라미터 (pillar-csi가 합리적 기본값 제공)
-      loginTimeout: 15                 # 선택: 초 단위 (기본값: 15)
-      replacementTimeout: 120          # 선택: 초 단위 (기본값: 120)
-      nodeSessionTimeout: 120          # 선택: 초 단위 (기본값: 120)
+      port: 3260                       # 기본값 3260 (1-65535)
+      acl: true                        # 기본값 false (generate_node_acls=1, 모든 initiator 허용)
+      # initiator 타임아웃 (초). 생략 시 pillar-node 기본값 적용.
+      # 값은 CreateVolume 시점에 PillarVolumeState.spec.resolved에 고정되며 이후 로그인하는 세션부터 적용된다.
+      loginTimeout: 15                 # 선택: min 1 (기본값: 15)
+      replacementTimeout: 120          # 선택: min 0 (기본값: 120). 세션 복구 중 I/O를 붙잡는 최대 시간
+      noopOutInterval: 5               # 선택: min 0 (기본값: 5). 0이면 NOP-Out ping 비활성
+      noopOutTimeout: 5                # 선택: min 0 (기본값: 5)
 ```
+
+`port`·`acl`은 구조적 필드라 `PillarStorageClass.spec.overrides.protocol.iscsi`와 PVC annotation `pillar-csi.bhyoo.com/protocol`(예: `iscsi: {loginTimeout: 30}`)에서는 네 타임아웃만 허용된다.
+
+> **미구현 프로토콜 (설계 노트):** 아래 NFS 예시는 설계 참고용이며 **구현되지 않았다.** served CRD schema에는 `nfs`·`smb` 멤버가 없으므로 이 YAML은 현재 API server가 거부한다.
 
 ```yaml
 # NFS 예시 — 미구현 설계 노트
@@ -272,7 +278,7 @@ spec:
 
 PillarStore과 PillarProtocol을 조합하여 Kubernetes StorageClass를 자동 생성한다. **filesystem 축**(`spec.filesystem`)과 바인딩별 backend·protocol 오버라이드(`spec.overrides`)를 담는다. **사용자가 생성한다.**
 
-호환되지 않는 조합(Block backend + File protocol)은 validation webhook이 거부한다. 현재 구현된 조합(`zfs`/`lvm` × `nvmeofTcp`)은 모두 Block이므로 항상 호환된다.
+호환되지 않는 조합(Block backend + File protocol)은 validation webhook이 거부한다. 현재 구현된 조합(`zfs`/`lvm` × `nvmeofTcp`/`iscsi`)은 모두 Block이므로 항상 호환된다.
 
 ```yaml
 apiVersion: pillar-csi.bhyoo.com/v1alpha1
@@ -348,7 +354,7 @@ status:
 | 프로토콜 | 클라이언트 디바이스 | AccessMode | volumeMode |
 |----------|-----------------|------------|------------|
 | NVMe-oF TCP | `/dev/nvmeXnY` | RWO, RWOP, ROX | Block 또는 Filesystem |
-| iSCSI (미구현) | `/dev/sdX` | RWO, RWOP, ROX | Block 또는 Filesystem |
+| iSCSI | `/dev/sdX` | RWO, RWOP, ROX | Block 또는 Filesystem |
 
 - `volumeMode: Filesystem` → 블록 디바이스에 mkfs + mount
 - `volumeMode: Block` → raw 블록 디바이스를 Pod에 직접 제공
@@ -376,7 +382,7 @@ RWX는 Phase 3 (NFS)에서 지원한다.
 
 규칙: **Block backend ↔ Block protocol, Filesystem backend ↔ Filesystem protocol.**
 
-현재 구현되어 served schema에 있는 조합은 **zfs-zvol × NVMe-oF TCP**와 **lvm × NVMe-oF TCP**뿐이다. 나머지 행·열(zfs-dataset, block-device, directory, iSCSI, NFS, SMB)은 미구현 설계 노트다.
+현재 구현되어 served schema에 있는 조합은 **zfs-zvol·lvm × NVMe-oF TCP·iSCSI**다. 나머지 행·열(zfs-dataset, block-device, directory, NFS, SMB)은 미구현 설계 노트다.
 
 ### 2.3 파라미터 오버라이드 계층
 
@@ -395,7 +401,7 @@ PVC annotation 문서 pillar-csi.bhyoo.com/{backend,protocol,filesystem}   (볼�
 | 축 | 기본값 | 바인딩 (PillarStorageClass) | 볼륨 (PVC annotation = 수동 SC 파라미터) |
 |----|--------|---------------------------|----------------------------------------|
 | storage | `PillarStore.spec.backend.{zfs,lvm}` | `spec.overrides.backend.{zfs,lvm}` | `pillar-csi.bhyoo.com/backend` |
-| protocol | `PillarProtocol.spec.protocol.nvmeofTcp` | `spec.overrides.protocol.nvmeofTcp` | `pillar-csi.bhyoo.com/protocol` |
+| protocol | `PillarProtocol.spec.protocol.{nvmeofTcp,iscsi}` | `spec.overrides.protocol.{nvmeofTcp,iscsi}` | `pillar-csi.bhyoo.com/protocol` |
 | filesystem | — (fsType 기본값 ext4) | `spec.filesystem` | `pillar-csi.bhyoo.com/filesystem` |
 
 오버라이드 가능 항목 (튜닝 부분집합):
@@ -405,12 +411,13 @@ PVC annotation 문서 pillar-csi.bhyoo.com/{backend,protocol,filesystem}   (볼�
 | backend | `zfs.properties` (compression, volblocksize 등) | 키 단위 병합. 우선순위: PVC > 바인딩 > store |
 | backend | `lvm.provisioningMode` (`linear` \| `thin`, 기본값 linear) | 마지막 계층의 값 |
 | protocol | `nvmeofTcp.maxQueueSize` (16-1024), `inCapsuleDataSize` (>= 1024), `ctrlLossTmo` (>= 0), `reconnectDelay` (>= 0) | 필드 단위, 마지막 계층의 값 |
+| protocol | `iscsi.loginTimeout` (>= 1), `replacementTimeout` (>= 0), `noopOutInterval` (>= 0), `noopOutTimeout` (>= 0) | 필드 단위, 마지막 계층의 값 |
 | filesystem | `fsType` (`ext4` \| `xfs`) | 마지막 계층의 값 |
 | filesystem | `mkfsOptions`, `mountOptions` | 생략 = 상속, 명시적 `[]` = 비움, 값 = 교체 (모든 계층 동일) |
 
-backend·protocol 문서는 exactly-one union이다: 정확히 하나의 멤버만 쓸 수 있고, 그 멤버는 store의 backend(`zfs`/`lvm`)·protocol(`nvmeofTcp`)과 같아야 한다. 같은 수치 범위와 기본값(ACL 기본값 false, LVM provisioningMode 기본값 linear)이 모든 계층에 적용된다.
+backend·protocol 문서는 exactly-one union이다: 정확히 하나의 멤버만 쓸 수 있고, 그 멤버는 store의 backend(`zfs`/`lvm`)·protocol(`nvmeofTcp`/`iscsi`)과 같아야 한다. 같은 수치 범위와 기본값(ACL 기본값 false, LVM provisioningMode 기본값 linear)이 모든 계층에 적용된다.
 
-**구조적 필드·알 수 없는 키 거부:** PVC annotation·수동 SC 문서에서는 튜닝 부분집합만 허용한다. 구조적 필드(`zfs.pool`, `zfs.parentDataset`, `zfs.volumeType`, `lvm.volumeGroup`, `lvm.thinPool`, `nvmeofTcp.port`, `nvmeofTcp.acl`)와 알 수 없는 키는 하나의 공유 decoder가 전체 경로와 함께 거부한다 (예: `pillar-csi.bhyoo.com/protocol: nvmeofTcp.acl is structural and cannot be set per volume`). PVC의 그 밖의 `pillar-csi.bhyoo.com/` annotation도 알 수 없는 키로 거부된다.
+**구조적 필드·알 수 없는 키 거부:** PVC annotation·수동 SC 문서에서는 튜닝 부분집합만 허용한다. 구조적 필드(`zfs.pool`, `zfs.parentDataset`, `zfs.volumeType`, `lvm.volumeGroup`, `lvm.thinPool`, `nvmeofTcp.port`, `nvmeofTcp.acl`, `iscsi.port`, `iscsi.acl`)와 알 수 없는 키는 하나의 공유 decoder가 전체 경로와 함께 거부한다 (예: `pillar-csi.bhyoo.com/protocol: nvmeofTcp.acl is structural and cannot be set per volume`). PVC의 그 밖의 `pillar-csi.bhyoo.com/` annotation도 알 수 없는 키로 거부된다.
 
 fsType/mkfsOptions 전달 규칙:
 - CreateVolume은 resolve된 fsType을 PV VolumeContext `pillar-csi.bhyoo.com/fs-type`에, mkfsOptions를 `pillar-csi.bhyoo.com/mkfs-options`(JSON 문자열 배열)에 기록한다. PVC `filesystem` 문서가 클래스의 mountOptions를 바꾼 경우에만 `pillar-csi.bhyoo.com/mount-options`(JSON 문자열 배열)를 기록한다.
@@ -536,7 +543,8 @@ namespace가 꺼진 동안에도 ControllerExpandVolume은 백엔드를 키운�
 │  │  • CSI Node service                                   │ │
 │  │  • 프로토콜 initiator 실행                              │ │
 │  │    - NVMe-oF: nvme connect/disconnect                 │ │
-│  │    - iSCSI: iscsiadm login/logout                     │ │
+│  │    - iSCSI: in-process Go initiator (login PDU +      │ │
+│  │      NETLINK_ISCSI로 커널 iscsi_tcp에 연결 인계)          │ │
 │  │    - NFS: mount.nfs / umount                          │ │
 │  │    - SMB: mount.cifs / umount                         │ │
 │  │  • 유저스페이스 도구 컨테이너 번들                         │ │
@@ -555,14 +563,14 @@ namespace가 꺼진 동안에도 ControllerExpandVolume은 백엔드를 키운�
 │  │    - NFS: kernel nfsd 설정                             │ │
 │  │    - SMB: Samba 설정                                   │ │
 │  │  • K8s API 의존성 없음 — 순수 gRPC 서버                  │ │
-│  │  • hostNetwork: true (커널 netns에 nvmet listener 바인딩 필요) │ │
+│  │  • hostNetwork: true (nvmet/LIO listener를 호스트 netns에)│ │
 │  │  • Init container: target 커널 모듈 modprobe            │ │
 │  └───────────────────────────────────────────────────────┘ │
 │                                                           │
 └───────────────────────────────────────────────────────────┘
 ```
 
-위 그림의 iSCSI·NFS·SMB 경로와 directory backend는 미구현 설계 노트다. 현재 구현은 ZFS zvol·LVM backend와 NVMe-oF TCP뿐이다.
+위 그림의 NFS·SMB 경로와 directory backend는 미구현 설계 노트다. 현재 구현은 ZFS zvol·LVM backend와 NVMe-oF TCP·iSCSI다.
 
 **democratic-csi와의 배포 차이:**
 - democratic-csi: backend마다 controller StatefulSet + node DaemonSet = N개 배포
@@ -581,7 +589,7 @@ CLI 도구 없이 **configfs 직접 조작**으로 target을 설정한다:
 | Protocol | configfs 경로 | Go 참조 구현 |
 |----------|-------------|------------|
 | NVMe-oF TCP | `/sys/kernel/config/nvmet/` | `github.com/0xfd4d/nvmet-config` (~150줄) |
-| iSCSI LIO (미구현) | `/sys/kernel/config/target/iscsi/` | `github.com/sapslaj/shortrack` (~1400줄) |
+| iSCSI LIO | `/sys/kernel/config/target/iscsi/` | 직접 작성 (`internal/agent/lio`: 볼륨당 target 1개, TPG 1, iblock backstore의 LUN 0, network portal 1개) |
 | NFS (미구현) | `/etc/exports` + `exportfs` | 직접 작성 |
 
 #### Agent 설정 파일
@@ -615,7 +623,7 @@ PillarAgent CR 생성 시 controller가 해당 노드에 `pillar-csi.bhyoo.com/a
 
 #### Agent 크래시/리부트 복구
 
-Agent는 **완전히 stateless**하다. 로컬 상태를 저장하지 않는다. configfs는 리부트 시 소멸되므로, agent 재시작이나 노드 리부트 후 controller가 해당 target의 모든 볼륨 + export 상태를 gRPC로 push한다. Agent는 받은 상태를 configfs에 다시 적용(reconcile)한다.
+Agent는 **완전히 stateless**하다. 로컬 상태를 저장하지 않는다. configfs는 리부트 시 소멸되므로, agent 재시작이나 노드 리부트 후 controller가 해당 target의 모든 볼륨 + export 상태를 gRPC로 push한다. Agent는 받은 상태를 configfs(nvmet 또는 LIO)에 다시 적용(reconcile)한다. reconcile은 목록에 있는 볼륨의 export만 수정하며, 목록에 없는 export(nvmet subsystem·LIO target)는 fencing이 적용된 UnexportVolume/DeleteVolume으로만 제거된다. 늦게 도착한 controller snapshot이 새로 export된 볼륨을 빠뜨려도 그 export를 지우지 않기 위해서다.
 
 #### Agent가 필요한 호스트 권한
 
@@ -629,7 +637,9 @@ Agent는 **완전히 stateless**하다. 로컬 상태를 저장하지 않는다.
 | `hostPort: 9500` (DaemonSet) | agent gRPC 서버를 노드 IP로 노출 |
 | `hostNetwork: true` (agent + node DaemonSet) | NVMe-oF/iSCSI target listener와 initiator를 호스트 netns에 바인딩 |
 
-**hostNetwork 필수.** 커널의 `nvmet_tcp`는 listening socket을, `nvme-fabrics`는 outbound TCP 연결을 **configfs/`/dev/nvme-fabrics`에 쓴 프로세스의 network namespace에 바인딩한다.** Agent/node DaemonSet을 `hostNetwork: false`로 두면 listener는 agent pod netns에, initiator의 SYN은 node pod netns에서 출발하기 때문에 두 netns 간 격리로 인해 데이터 플레인이 동작하지 않는다 (`NodeStageVolume`에서 `connection refused`). 이는 Kind뿐 아니라 bare-metal에서도 동일하게 재현되며, democratic-csi, OpenEBS Mayastor, Lightbits, NetApp Trident 등 모든 메이저 NVMe-oF/iSCSI CSI 드라이버가 agent + node DaemonSet 둘 다 `hostNetwork: true`로 운용한다. 트레이드오프는 호스트 포트 점유 및 NetworkPolicy 미적용이며, 그 외에 데이터 플레인을 동작시킬 방법이 없으므로 업계 전체가 수용하는 표준 구성이다.
+**hostNetwork 필수.** 커널의 `nvmet_tcp`는 listening socket을, `nvme-fabrics`는 outbound TCP 연결을 **configfs/`/dev/nvme-fabrics`에 쓴 프로세스의 network namespace에 바인딩한다.** LIO `iscsi_target_mod`의 network portal도 configfs를 쓴 agent의 netns에 listener를 만든다. Agent/node DaemonSet을 `hostNetwork: false`로 두면 listener는 agent pod netns에, initiator의 SYN은 node pod netns에서 출발하기 때문에 두 netns 간 격리로 인해 데이터 플레인이 동작하지 않는다 (`NodeStageVolume`에서 `connection refused`). 이는 Kind뿐 아니라 bare-metal에서도 동일하게 재현되며, democratic-csi, OpenEBS Mayastor, Lightbits, NetApp Trident 등 모든 메이저 NVMe-oF/iSCSI CSI 드라이버가 agent + node DaemonSet 둘 다 `hostNetwork: true`로 운용한다. 트레이드오프는 호스트 포트 점유 및 NetworkPolicy 미적용이며, 그 외에 데이터 플레인을 동작시킬 방법이 없으므로 업계 전체가 수용하는 표준 구성이다.
+
+iSCSI initiator는 추가로 `NETLINK_ISCSI` 소켓이 필요한데, 커널은 이 소켓을 init network namespace에만 만든다(`scsi_transport_iscsi.c`의 `netlink_kernel_create(&init_net, NETLINK_ISCSI, ...)`). 따라서 pillar-node도 `hostNetwork: true`여야 한다. Kind처럼 노드 자체가 컨테이너인 환경에서는 차트 값 `node.iscsi.netlinkNetnsPath`(예: `/host/proc/1/ns/net`)가 pillar-node에 `--iscsi-netlink-netns`를 넘기고, pillar-node는 그 netns에서만 netlink 소켓을 연다 (TCP 소켓은 pod netns에 남는다).
 
 Target bind IP는 controller가 PillarAgent nodeRef에서 resolve하여 gRPC로 agent에 전달한다.
 
@@ -660,25 +670,27 @@ Phase 1에서는 평문 gRPC를 사용한다. TLS 지원은 아키텍처에 포�
 | 구성요소 | 번들 가능 | 전략 |
 |---------|:---:|------|
 | **유저스페이스 도구** | | |
-| nvme-cli | O | pillar-node 컨테이너에 포함 |
-| open-iscsi (iscsiadm, iscsid) | O | 동일 |
-| nfs-common (mount.nfs) | O | 동일 |
-| cifs-utils (mount.cifs) | O | 동일 |
-| mkfs/리사이즈 도구 (e2fsprogs, xfsprogs, xfsprogs-extra) | O | 동일 |
+| nvme-cli | 불필요 | pillar-node가 `/dev/nvme-fabrics`에 직접 connect 문자열을 쓴다 |
+| open-iscsi (iscsiadm, iscsid) | 불필요 | pillar-node 안의 pure-Go initiator가 login PDU를 직접 주고받고 연결을 `NETLINK_ISCSI`로 커널 `iscsi_tcp`에 넘긴다. 세션 복구(재로그인)도 pillar-node가 한다. 유저스페이스 도구·데몬 번들 없음 |
+| nfs-common (mount.nfs) | O | pillar-node 컨테이너에 포함 (미구현) |
+| cifs-utils (mount.cifs) | O | 동일 (미구현) |
+| mkfs/리사이즈 도구 (e2fsprogs, xfsprogs, xfsprogs-extra) | O | pillar-node 컨테이너에 포함 |
 | **커널 모듈 (initiator)** | | |
 | nvme_tcp, nvme_fabrics | X | init container modprobe |
-| iscsi_tcp, libiscsi | X | 동일 |
+| iscsi_tcp (libiscsi, libiscsi_tcp, scsi_transport_iscsi를 끌어옴) | X | 동일 |
 | nfs (거의 항상 built-in) | - | 대부분 이미 있음 |
 | cifs | X | init container modprobe |
 | **커널 모듈 (target)** | | |
 | nvmet, nvmet_tcp | X | agent init container modprobe |
-| target_core_mod, iscsi_target_mod | X | 동일 |
+| target_core_mod, target_core_iblock, iscsi_target_mod | X | 동일 |
 | **Target CLI 도구** | | |
 | targetcli, nvmetcli | 불필요 | configfs 직접 조작으로 대체 |
 
+iSCSI initiator IQN은 호스트 `/etc/iscsi/initiatorname.iscsi`의 `InitiatorName=`에서 읽는다 (hostPath `/etc/iscsi`, `DirectoryOrCreate`). 파일이 없으면 `iqn.2026-01.com.bhyoo.pillar-csi:node.<32 hex>`를 생성해 저장하고, CSINode annotation `pillar-csi.bhyoo.com/iscsi-initiator-iqn`으로 게시한다. 호스트에서 open-iscsi의 `iscsid`가 함께 돌아도 pillar-node는 target IQN이 pillar prefix이고 initiator 이름이 노드 IQN인 세션만 관리하므로 공존한다.
+
 **modprobe 실패 정책:** Init container는 best-effort로 modprobe를 실행한다. 실패해도 pod 시작을 차단하지 않는다.
-- **pillar-agent:** 모듈 로딩 실패 시 해당 프로토콜을 capabilities에서 제외하고 계속 동작. PillarAgent status에 반영.
-- **pillar-node:** 모듈 로딩 실패 시 pod은 정상 시작. 해당 프로토콜의 볼륨 마운트 요청이 오면 NodeStageVolume에서 명확한 에러 메시지 반환 (예: "nvme_tcp module not available on this node").
+- **pillar-agent:** 모듈 로딩 실패 시 해당 프로토콜을 capabilities에서 제외하고 계속 동작. PillarAgent status에 반영. iSCSI는 LIO iSCSI fabric(`/sys/kernel/config/target/iscsi`)을 쓸 수 있을 때만 보고한다.
+- **pillar-node:** 모듈 로딩 실패 시 pod은 정상 시작. 해당 프로토콜의 볼륨 마운트 요청이 오면 NodeStageVolume에서 명확한 에러 메시지 반환 (예: "nvme_tcp module not available on this node"). iSCSI는 시작 시 `iscsi_tcp`가 없으면 initiator를 끄고 IQN을 게시하지 않으며, iscsi 볼륨의 NodeStage는 명시적 에러로 실패한다 (모듈 로드 후 pillar-node 재시작 필요).
 
 **한계:** 커널 모듈이 커널에 빌드되지 않은 경우 (예: RPi의 nvme_tcp) modprobe가 실패한다. 이 경우 DKMS 패키지 사전 설치가 필요하다.
 
@@ -689,7 +701,7 @@ CSI `ControllerPublishVolume`/`ControllerUnpublishVolume` RPC를 구현하여 �
 | Protocol | ACL 메커니즘 | acl: true | acl: false |
 |----------|------------|-----------|------------|
 | NVMe-oF TCP | `allowed_hosts` symlink | host NQN 추가/제거 | `attr_allow_any_host=1` |
-| iSCSI (미구현) | LIO ACL | initiator IQN 추가/제거 | `generate_node_acls=1` |
+| iSCSI | LIO node ACL (`tpgt_1/acls/<IQN>`, LUN 0 매핑) | initiator IQN 추가/제거 | `generate_node_acls=1` (demo mode) |
 | NFS (미구현) | export client list | 클라이언트 IP 추가/제거 | 전체 허용 |
 
 `acl: false`이면 ControllerPublish/Unpublish는 no-op이다.
@@ -748,14 +760,16 @@ type ProtocolInitiator interface {
 
 ### Protocol 구현 세부사항
 
-| | NVMe-oF TCP | iSCSI (미구현) | NFS (미구현) | SMB (미구현) |
+| | NVMe-oF TCP | iSCSI | NFS (미구현) | SMB (미구현) |
 |--|--|--|--|--|
-| **Target 구현** | nvmet configfs | LIO configfs | /etc/exports + exportfs | Samba |
-| **Initiator 구현** | nvme-cli | open-iscsi | mount.nfs | mount.cifs |
-| **Initiator ID** | NQN | IQN | Client IP | Client IP |
+| **Target 구현** | nvmet configfs | LIO configfs (`/sys/kernel/config/target/iscsi`, targetcli 없음) | /etc/exports + exportfs | Samba |
+| **Initiator 구현** | `/dev/nvme-fabrics` 직접 쓰기 (nvme-cli 없음) | pillar-node 내장 pure-Go initiator (login PDU + `NETLINK_ISCSI` 인계, iscsiadm/iscsid 없음) | mount.nfs | mount.cifs |
+| **Initiator ID** | NQN (`/etc/nvme/hostnqn`) | IQN (`/etc/iscsi/initiatorname.iscsi`, 없으면 생성) | Client IP | Client IP |
+| **Target ID** | `nqn.2026-01.com.bhyoo.pillar-csi:<pool>.<name>` | `iqn.2026-01.com.bhyoo.pillar-csi:<pool>.<name>` (TPG 1, LUN 0) | - | - |
 | **기본 포트** | 4420 | 3260 | 2049 | 445 |
-| **커널 모듈 (target)** | nvmet, nvmet_tcp | target_core_mod, iscsi_target_mod | nfsd | (user-space) |
-| **커널 모듈 (initiator)** | nvme_tcp, nvme_fabrics | iscsi_tcp, libiscsi | nfs (built-in) | cifs |
+| **커널 모듈 (target)** | nvmet, nvmet_tcp | target_core_mod, target_core_iblock, iscsi_target_mod | nfsd | (user-space) |
+| **커널 모듈 (initiator)** | nvme_tcp, nvme_fabrics | iscsi_tcp (libiscsi, libiscsi_tcp, scsi_transport_iscsi) | nfs (built-in) | cifs |
+| **미지원** | - | CHAP, multipath(다중 portal) | - | - |
 
 ## 5. 볼륨 생명주기
 
@@ -808,7 +822,7 @@ NVMe NQN: nqn.2024-01.com.bhyoo.pillar-csi:rock5bp:pvc-abc123
    b. 대상 노드의 initiator ID 조회 (NodeGetInfo에서 등록된 NQN/IQN)
    c. PillarProtocol의 acl 설정 확인
    d. acl=true: gRPC로 agent에 AllowInitiator 요청
-      (NVMe-oF: allowed_hosts에 NQN symlink / iSCSI: ACL에 IQN)
+      (NVMe-oF: allowed_hosts에 NQN symlink / iSCSI: LIO node ACL에 IQN, CSINode annotation `pillar-csi.bhyoo.com/iscsi-initiator-iqn`에서 조회)
    e. acl=false: no-op
 3. publish_context 반환
 ```
@@ -823,8 +837,8 @@ NVMe NQN: nqn.2024-01.com.bhyoo.pillar-csi:rock5bp:pvc-abc123
       NVMe-oF: nvme connect -t tcp -a <ip> -s <port> -n <nqn>
               (PillarProtocol 타임아웃 파라미터 적용:
                --ctrl-loss-tmo, --reconnect-delay, --keep-alive-tmo)
-      iSCSI: iscsiadm -m discovery + login
-             (타임아웃 파라미터 적용)
+      iSCSI: in-process initiator가 portal에 TCP 연결 + login PDU 교환 후 NETLINK_ISCSI로 커널 iscsi_tcp에 연결 인계,
+             LUN 0의 /dev/sdX 대기 (loginTimeout/replacementTimeout/noopOutInterval/noopOutTimeout 적용)
       NFS: mount.nfs <ip>:<path> <staging>
    c. Block protocol + volumeMode=Filesystem:
       mkfs (디바이스에 파일시스템이 없을 때만, fsType/mkfsOptions 적용) + mount
@@ -872,8 +886,9 @@ NVMe NQN: nqn.2024-01.com.bhyoo.pillar-csi:rock5bp:pvc-abc123
 
 **미포함:** 스냅샷/클론, volumeMode: Block, CSI Topology, RWX, 다른 backend/protocol, 외부 노드, 볼륨 와이핑, 별도 CLI/대시보드
 
-### Phase 2: iSCSI Protocol
-- LIO configfs 직접 조작 (target) + open-iscsi (initiator)
+### Phase 2: iSCSI Protocol — 구현됨
+- LIO configfs 직접 조작 (target, `internal/agent/lio`) + pillar-node 내장 pure-Go initiator (`internal/iscsi`: login PDU, `NETLINK_ISCSI`로 커널 `iscsi_tcp`에 연결 인계, 세션 복구). targetcli·iscsiadm·iscsid 불필요
+- 노드 사전 설치는 커널 모듈뿐이라는 zero-install 요구 때문에 호스트 iscsiadm, 이미지 번들 open-iscsi+iscsid, cgo libiscsi, u-root iscsinl을 검토 후 기각했다. 근거는 [`PRD-iscsi.md`](./PRD-iscsi.md) 참조
 
 ### Phase 3: ZFS Dataset + NFS
 - ZFS dataset backend + NFS export + RWX 지원

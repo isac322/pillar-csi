@@ -101,8 +101,10 @@ jobs:
       # two passes (internal-agent then external-agent), emits per-pass and
       # total wall-clock timing, and deletes the Kind cluster at the end.
       #
-      # linux-modules-extra-$(uname -r) ships all four NVMe modules on ubuntu-latest.
-      - name: Install ZFS, LVM, and NVMe kernel modules
+      # linux-modules-extra-$(uname -r) ships all four NVMe modules and the
+      # iSCSI initiator (iscsi_tcp) / LIO target (target_core_*, iscsi_target_mod)
+      # modules on ubuntu-latest.
+      - name: Install ZFS, LVM, NVMe, and iSCSI kernel modules
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y zfsutils-linux lvm2 thin-provisioning-tools \
@@ -115,6 +117,11 @@ jobs:
           sudo modprobe nvmet
           sudo modprobe nvmet_tcp
           sudo modprobe nvme_tcp
+          sudo modprobe -a iscsi_tcp target_core_mod target_core_iblock iscsi_target_mod
+          # target/iscsi appears only after the agent mkdirs it; the LIO core dir
+          # must exist as soon as target_core_mod is loaded.
+          test -d /sys/kernel/config/target || \
+            (echo "ERROR: LIO configfs /sys/kernel/config/target missing after target_core_mod load" && exit 1)
           # Verify /dev/mapper/control exists (created by dm_mod) so that
           # kind-config.yaml's /dev/mapper Bidirectional extraMount succeeds.
           test -e /dev/mapper/control && echo "LVM: /dev/mapper/control present" || \

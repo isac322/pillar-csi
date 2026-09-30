@@ -357,11 +357,11 @@ func TestAgentErrors_ExportVolume_InvalidProtocol_NoConfigfsSideEffects(t *testi
 	_, err := srv.ExportVolume(context.Background(), &agentv1.ExportVolumeRequest{
 		VolumeId:     compTestVolumeID,
 		Fence:        testFence(t),
-		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI,
+		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NFS,
 	})
 
 	if err == nil {
-		t.Fatal("expected Unimplemented for iSCSI protocol, got nil")
+		t.Fatal("expected Unimplemented for NFS protocol, got nil")
 	}
 	st, _ := status.FromError(err)
 	if st.Code() != codes.Unimplemented {
@@ -391,11 +391,11 @@ func TestAgentErrors_AllowInitiator_InvalidProtocol(t *testing.T) {
 		VolumeId:     compTestVolumeID,
 		Fence:        testFence(t),
 		InitiatorId:  compTestHostNQN,
-		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI,
+		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NFS,
 	})
 
 	if err == nil {
-		t.Fatal("expected Unimplemented for iSCSI protocol, got nil")
+		t.Fatal("expected Unimplemented for NFS protocol, got nil")
 	}
 	st, _ := status.FromError(err)
 	if st.Code() != codes.Unimplemented {
@@ -424,11 +424,11 @@ func TestAgentErrors_DenyInitiator_InvalidProtocol(t *testing.T) {
 		VolumeId:     compTestVolumeID,
 		Fence:        testFence(t),
 		InitiatorId:  compTestHostNQN,
-		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI,
+		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NFS,
 	})
 
 	if err == nil {
-		t.Fatal("expected Unimplemented for iSCSI protocol, got nil")
+		t.Fatal("expected Unimplemented for NFS protocol, got nil")
 	}
 	st, _ := status.FromError(err)
 	if st.Code() != codes.Unimplemented {
@@ -450,11 +450,11 @@ func TestAgentErrors_UnexportVolume_InvalidProtocol(t *testing.T) {
 	_, err := srv.UnexportVolume(context.Background(), &agentv1.UnexportVolumeRequest{
 		VolumeId:     compTestVolumeID,
 		Fence:        testFence(t),
-		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI,
+		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NFS,
 	})
 
 	if err == nil {
-		t.Fatal("expected Unimplemented for iSCSI protocol, got nil")
+		t.Fatal("expected Unimplemented for NFS protocol, got nil")
 	}
 	st, _ := status.FromError(err)
 	if st.Code() != codes.Unimplemented {
@@ -558,7 +558,7 @@ func TestAgentProtocol_ExportVolume_UNSPECIFIED_InvalidArgument(t *testing.T) {
 // reconciling supported volumes.
 //
 //   - v1 (NVMe-oF TCP): fully reconciled → Success=true, subsystem dir created.
-//   - v2 (iSCSI): rejected by handler dispatch → Success=false, no side effects.
+//   - v2 (NFS): rejected by handler dispatch → Success=false, no side effects.
 //
 // E22.2 — test ID 180.
 func TestAgentProtocol_ReconcileState_UnsupportedProtocol_ReportedPerVolume(t *testing.T) {
@@ -566,7 +566,7 @@ func TestAgentProtocol_ReconcileState_UnsupportedProtocol_ReportedPerVolume(t *t
 
 	const (
 		v1VolumeID = "tank/pvc-nvme-v1"
-		v2VolumeID = "tank/pvc-iscsi-v2"
+		v2VolumeID = "tank/pvc-nfs-v2"
 		v1NQN      = "nqn.2026-01.com.bhyoo.pillar-csi:tank.pvc-nvme-v1"
 	)
 
@@ -589,13 +589,13 @@ func TestAgentProtocol_ReconcileState_UnsupportedProtocol_ReportedPerVolume(t *t
 				},
 			},
 			{
-				// v2: iSCSI — unsupported by the current agent handler set.
+				// v2: NFS — unsupported by the current agent handler set.
 				VolumeId:   v2VolumeID,
 				Fence:      testFence(t),
-				DevicePath: "/dev/zvol/tank/pvc-iscsi-v2",
+				DevicePath: "/dev/zvol/tank/pvc-nfs-v2",
 				Exports: []*agentv1.ExportDesiredState{
 					{
-						ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI,
+						ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NFS,
 						// No ExportParams needed — the protocol check fires first.
 					},
 				},
@@ -626,7 +626,7 @@ func TestAgentProtocol_ReconcileState_UnsupportedProtocol_ReportedPerVolume(t *t
 		t.Fatal("result for v1 (NVMe-oF) not found in response")
 	}
 	if r2 == nil {
-		t.Fatal("result for v2 (iSCSI) not found in response")
+		t.Fatal("result for v2 (NFS) not found in response")
 	}
 
 	// v1 must have been reconciled successfully.
@@ -635,10 +635,10 @@ func TestAgentProtocol_ReconcileState_UnsupportedProtocol_ReportedPerVolume(t *t
 	}
 
 	if r2.GetSuccess() {
-		t.Fatal("v2 (iSCSI) Success=true, want handler dispatch failure")
+		t.Fatal("v2 (NFS) Success=true, want handler dispatch failure")
 	}
-	if !strings.Contains(r2.GetErrorMessage(), "protocol PROTOCOL_TYPE_ISCSI is not supported by this agent") {
-		t.Errorf("v2 (iSCSI) ErrorMessage = %q, want unsupported protocol detail", r2.GetErrorMessage())
+	if !strings.Contains(r2.GetErrorMessage(), "protocol PROTOCOL_TYPE_NFS is not supported by this agent") {
+		t.Errorf("v2 (NFS) ErrorMessage = %q, want unsupported protocol detail", r2.GetErrorMessage())
 	}
 
 	// v1 subsystem directory must have been created.
@@ -647,10 +647,15 @@ func TestAgentProtocol_ReconcileState_UnsupportedProtocol_ReportedPerVolume(t *t
 		t.Errorf("v1 subsystem dir not created: %v", statErr)
 	}
 
-	// v2 (iSCSI) must NOT have created any configfs entry.
-	v2ISCSIPattern := filepath.Join(cfgRoot, "iscsi")
-	if _, statErr := os.Stat(v2ISCSIPattern); !os.IsNotExist(statErr) {
-		t.Errorf("iSCSI configfs dir unexpectedly created (statErr=%v)", statErr)
+	// v2 (NFS) must NOT have created any configfs entry: no LIO target tree
+	// and no second nvmet subsystem.
+	for _, unexpected := range []string{
+		filepath.Join(cfgRoot, "target"),
+		filepath.Join(cfgRoot, "nvmet", "subsystems", "nqn.2026-01.com.bhyoo.pillar-csi:tank.pvc-nfs-v2"),
+	} {
+		if _, statErr := os.Stat(unexpected); !os.IsNotExist(statErr) {
+			t.Errorf("configfs entry %s unexpectedly created for NFS export (statErr=%v)", unexpected, statErr)
+		}
 	}
 }
 

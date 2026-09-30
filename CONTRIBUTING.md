@@ -26,7 +26,7 @@ Do not edit these files by hand. CI regenerates them and fails on `git diff --ex
 | `api/v1alpha1/zz_generated.deepcopy.go` | Fields in `api/v1alpha1/*_types.go` | `make generate` |
 | `gen/go/` | `proto/` | `make proto-gen` |
 
-Scaffold new CRDs, controllers, and webhooks with the `kubebuilder` CLI; the `PROJECT` file tracks the scaffolding. Hand-written code lives in `api/v1alpha1/*_types.go`, `internal/controller/`, `internal/webhook/v1alpha1/`, `internal/agent/`, `internal/csi/`, and `proto/`.
+Scaffold new CRDs, controllers, and webhooks with the `kubebuilder` CLI; the `PROJECT` file tracks the scaffolding. Hand-written code lives in `api/v1alpha1/*_types.go`, `internal/controller/`, `internal/webhook/v1alpha1/`, `internal/agent/` (including the LIO iSCSI target in `internal/agent/lio/`), `internal/csi/`, `internal/iscsi/` (the node's in-process iSCSI initiator), and `proto/`.
 
 When you change `proto/`, run `make proto-lint` and `make proto-breaking` to check wire compatibility.
 
@@ -37,7 +37,7 @@ pillar-csi writes to kernel interfaces, and a swallowed error there leaves stora
 - Never drop a failed `configfs` or `sysfs` write with `continue`, a silent ignore, or a debug log.
 - When the resulting state matters, read the value back right after the write and return an error if it differs.
 - On cleanup and rollback paths, return any failure that affects storage or connection state to the caller, or at least log it with `log.Error`.
-- Include the operation (`write`, `disconnect`, `expand`), the target (`path`, `NQN`, `device`, `volumeID`), and the cause (`%w`) in every error message.
+- Include the operation (`write`, `disconnect`, `expand`), the target (`path`, `NQN`, `IQN`, `device`, `volumeID`), and the cause (`%w`) in every error message.
 
 ## End-to-end test cases
 

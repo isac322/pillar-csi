@@ -150,7 +150,7 @@ func TestExportVolume_WrongProtocol(t *testing.T) {
 	_, err := srv.ExportVolume(context.Background(), &agentv1.ExportVolumeRequest{
 		VolumeId:     testVolumeID,
 		Fence:        testFence(t),
-		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI,
+		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NFS,
 	})
 	if err == nil {
 		t.Fatal("expected error for unsupported protocol, got nil")
@@ -420,8 +420,8 @@ func TestAllowInitiator_WrongProtocol(t *testing.T) {
 	_, err := srv.AllowInitiator(context.Background(), &agentv1.AllowInitiatorRequest{
 		VolumeId:     testVolumeID,
 		Fence:        testFence(t),
-		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI,
-		InitiatorId:  "iqn.2023-01.io.example:host-1",
+		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NFS,
+		InitiatorId:  "10.0.0.0/24",
 	})
 	if err == nil {
 		t.Fatal("expected error for unsupported protocol, got nil")

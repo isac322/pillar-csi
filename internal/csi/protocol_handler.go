@@ -23,8 +23,8 @@ import "context"
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ProtocolHandler abstracts transport-level operations for different storage
-// protocols. Each served protocol (NVMe-oF TCP) provides its own
-// implementation; iSCSI, NFS and SMB are designed in docs/PRD.md but not
+// protocols. Each served protocol (NVMe-oF TCP, iSCSI) provides its own
+// implementation; NFS and SMB are designed in docs/PRD.md but not
 // implemented. The three layers of the node runtime are:
 //
 //  1. ProtocolHandler (Layer 1): transport/session setup and teardown.
@@ -32,8 +32,8 @@ import "context"
 //  3. CSI node orchestration (Layer 3): NodeStage/Unstage/Publish/Unpublish/Expand.
 type ProtocolHandler interface {
 	// Attach establishes the transport connection and returns either:
-	//   - Block protocols (NVMe-oF): the local block device path
-	//     (e.g. /dev/nvme0n1) via AttachResult.DevicePath.
+	//   - Block protocols (NVMe-oF, iSCSI): the local block device path
+	//     (e.g. /dev/nvme0n1, /dev/sdb) via AttachResult.DevicePath.
 	//   - File protocols (not implemented): the mount source string via
 	//     AttachResult.MountSource.
 	//
@@ -48,7 +48,8 @@ type ProtocolHandler interface {
 
 	// Rescan triggers a device or share rescan after online volume expansion.
 	//   - NVMe-oF: echo 1 > /sys/class/nvme-ns/<ns>/rescan_controller
-	//   - iSCSI:   iscsiadm -m session --rescan
+	//   - iSCSI:   SCSI device rescan of the session's LUNs by the in-process
+	//              initiator (echo 1 > /sys/block/<sdX>/device/rescan)
 	//   - NFS/SMB: no-op (server-side resize is transparent to the client).
 	Rescan(ctx context.Context, state ProtocolState) error
 }
@@ -62,7 +63,7 @@ type ProtocolHandler interface {
 // protocol; protocol handlers interpret fields according to their own semantics.
 type AttachParams struct {
 	// ProtocolType identifies the storage protocol.
-	// Known values: "nvmeof-tcp" (the only implemented protocol).
+	// Known values: "nvmeof-tcp", "iscsi".
 	ProtocolType string
 
 	// ConnectionID is the protocol-specific identifier for the transport target:
@@ -90,7 +91,7 @@ type AttachParams struct {
 	// Extra carries protocol-specific parameters that do not fit the common
 	// fields above. Examples:
 	//   - NFS version:        Extra["nfs.version"] = "4.2"
-	//   - iSCSI CHAP user:    Extra["chap.username"] = "..."
+	//   - iSCSI timeouts:     Extra["pillar-csi.bhyoo.com/iscsi-login-timeout"] = "15"
 	//   - SMB subdirectory:   Extra["smb.subdir"] = "data"
 	Extra map[string]string
 }
@@ -107,7 +108,7 @@ type AttachResult struct {
 	// DevicePath is set for block protocols (NVMe-oF, iSCSI).
 	// It is the local block device node, e.g.:
 	//   - NVMe-oF: "/dev/nvme0n1"
-	//   - iSCSI:   "/dev/disk/by-path/ip-192.168.1.10:3260-iscsi-iqn.…-lun-0"
+	//   - iSCSI:   "/dev/sdb"
 	// Empty for file protocols.
 	DevicePath string
 

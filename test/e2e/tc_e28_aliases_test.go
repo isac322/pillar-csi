@@ -142,11 +142,6 @@ func assertE28_LVM_ExpandVolume_NotFound(tc documentedCase) {
 	assertE28_LVM_ExpandVolume_ShrinkRejected(tc)
 }
 
-// assertE28_LVM_ExportVolume_iSCSI_Unimplemented forwards to the thin round-trip.
-func assertE28_LVM_ExportVolume_iSCSI_Unimplemented(tc documentedCase) {
-	assertE28_LVM_RoundTrip_Linear(tc)
-}
-
 // assertE28_LVM_ExportVolume_NVMeOF_DeviceCheck forwards to the configfs restore assertion.
 func assertE28_LVM_ExportVolume_NVMeOF_DeviceCheck(tc documentedCase) {
 	assertE28_LVM_ReconcileState_RestoresExports(tc)

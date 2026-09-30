@@ -7,7 +7,7 @@ sidebar:
 
 The controller sends every volume operation to `pillar-agent` over gRPC on port `9500`. By default that channel is plaintext. Set `mtls.enabled=true` to make both ends present certificates signed by one CA. The agent then requires and verifies a client certificate, the controller verifies the agent's server certificate, and both sides accept TLS 1.3 only.
 
-mTLS covers the control channel only. NVMe-oF/TCP data traffic between worker and storage nodes is not encrypted by this setting.
+mTLS covers the control channel only. NVMe-oF/TCP and iSCSI data traffic between worker and storage nodes is not encrypted by this setting.
 
 Pick one of two certificate sources: cert-manager, or Secrets you create yourself.
 

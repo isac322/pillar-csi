@@ -848,6 +848,8 @@ func protocolTypeToString(pt agentv1.ProtocolType) string {
 	switch pt {
 	case agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP:
 		return string(pillarcsiv1alpha1.ProtocolIDNVMeOFTCP)
+	case agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI:
+		return string(pillarcsiv1alpha1.ProtocolIDISCSI)
 	default:
 		return unknownCapability
 	}

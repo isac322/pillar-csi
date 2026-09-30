@@ -484,7 +484,7 @@ func TestHandlerMap_MissingProtocol(t *testing.T) {
 		"nvmeof-tcp": &fakeProtocolHandler{},
 	}
 
-	_, ok := handlers["iscsi"] // not registered
+	_, ok := handlers["nfs"] // not registered
 	if ok {
 		t.Error("expected handler lookup to fail for unregistered protocol")
 	}

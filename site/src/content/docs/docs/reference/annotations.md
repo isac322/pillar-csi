@@ -5,7 +5,7 @@ sidebar:
   order: 5
 ---
 
-You set pillar-csi configuration with three keys: `pillar-csi.bhyoo.com/backend`, `pillar-csi.bhyoo.com/protocol` and `pillar-csi.bhyoo.com/filesystem`. Each value is a YAML document with the same shape as the matching subtree of `PillarStore.spec.backend`, `PillarProtocol.spec.protocol` or `PillarStorageClass.spec.filesystem`. The same three keys and shapes work as PVC annotations and as parameters of a hand-written StorageClass, so a setting reads the same wherever you write it. iSCSI, NFS and SMB are planned and designed to use the same `protocol` document; in v0.3.4 it accepts only `nvmeofTcp`.
+You set pillar-csi configuration with three keys: `pillar-csi.bhyoo.com/backend`, `pillar-csi.bhyoo.com/protocol` and `pillar-csi.bhyoo.com/filesystem`. Each value is a YAML document with the same shape as the matching subtree of `PillarStore.spec.backend`, `PillarProtocol.spec.protocol` or `PillarStorageClass.spec.filesystem`. The same three keys and shapes work as PVC annotations and as parameters of a hand-written StorageClass, so a setting reads the same wherever you write it. The `protocol` document accepts `nvmeofTcp` or `iscsi`, and its member must match the member of the `PillarProtocol`. NFS and SMB are planned and designed to use the same `protocol` document.
 
 All pillar-csi keys live under the `pillar-csi.bhyoo.com/` prefix. The CSI driver name and StorageClass provisioner is `pillar-csi.bhyoo.com`.
 
@@ -18,7 +18,7 @@ Each value is limited to the tunable fields of its subtree. See [Override settin
 | Key | Document shape | Tunable fields |
 |---|---|---|
 | `pillar-csi.bhyoo.com/backend` | `zfs: {...}` or `lvm: {...}` | `zfs.properties`, `lvm.provisioningMode` |
-| `pillar-csi.bhyoo.com/protocol` | `nvmeofTcp: {...}` | `maxQueueSize`, `inCapsuleDataSize`, `ctrlLossTmo`, `reconnectDelay` |
+| `pillar-csi.bhyoo.com/protocol` | `nvmeofTcp: {...}` or `iscsi: {...}` | `nvmeofTcp`: `maxQueueSize`, `inCapsuleDataSize`, `ctrlLossTmo`, `reconnectDelay`. `iscsi`: `loginTimeout`, `replacementTimeout`, `noopOutInterval`, `noopOutTimeout` |
 | `pillar-csi.bhyoo.com/filesystem` | `{fsType, mkfsOptions, mountOptions}` | all three |
 
 Rules:
@@ -67,6 +67,7 @@ You do not set these. They are listed so you can recognize them and leave them a
 | Key | Object | Set by | Meaning |
 |---|---|---|---|
 | `pillar-csi.bhyoo.com/nvmeof-host-nqn` | CSINode | node plugin at startup | The node's NVMe host NQN, read from `/etc/nvme/hostnqn` on the host. If `/etc/nvme/hostnqn` or `/etc/nvme/hostid` is missing, the node plugin writes a generated ID into it. These are ID files; no packages are installed. The controller uses the NQN to grant and revoke ACL access. |
+| `pillar-csi.bhyoo.com/iscsi-initiator-iqn` | CSINode | node plugin at startup | The node's iSCSI initiator IQN, read from `InitiatorName=` in `/etc/iscsi/initiatorname.iscsi` on the host. If the file is missing, the node plugin generates `iqn.2026-01.com.bhyoo.pillar-csi:node.<32 hex digits>` and writes it there. No packages are installed. The controller uses the IQN to grant and revoke ACL access. The node plugin omits the key when the `iscsi_tcp` kernel module is not loaded. |
 | `pillar-csi.bhyoo.com/storage-class-carry-over` | PillarStorageClass | controller | Temporary record of the generated StorageClass's labels, annotations and `allowedTopologies` while the controller deletes and recreates the class. Removed once the new class exists. |
 | `pillar-csi.bhyoo.com/success-recorded` | PillarVolumeState | controller | Marks a volume lifecycle created under the rule that `Ready` is recorded before `CreateVolume` reports success. Used when cleaning up abandoned provisioning attempts. |
 
@@ -89,14 +90,18 @@ The controller writes these into `PersistentVolume.spec.csi.volumeAttributes` at
 
 | Key | Value |
 |---|---|
-| `target_id` | target identifier; for NVMe-oF/TCP, the subsystem NQN |
+| `target_id` | target identifier; for NVMe-oF/TCP, the subsystem NQN; for iSCSI, the target IQN |
 | `address` | storage node address the export listens on, recorded at provisioning |
 | `port` | TCP port the export listens on, recorded at provisioning |
-| `pillar-csi.bhyoo.com/protocol-type` | `nvmeof-tcp` |
-| `pillar-csi.bhyoo.com/volume-ref` | protocol-level reference of the volume (the NVMe subsystem name) |
+| `pillar-csi.bhyoo.com/protocol-type` | `nvmeof-tcp` or `iscsi` |
+| `pillar-csi.bhyoo.com/volume-ref` | protocol-level reference of the volume (the NVMe subsystem name, or the iSCSI LUN number `0`) |
 | `pillar-csi.bhyoo.com/nvmeof-max-queue-size` | resolved `maxQueueSize` |
 | `pillar-csi.bhyoo.com/nvmeof-ctrl-loss-tmo` | resolved `ctrlLossTmo`, seconds |
 | `pillar-csi.bhyoo.com/nvmeof-reconnect-delay` | resolved `reconnectDelay`, seconds |
+| `pillar-csi.bhyoo.com/iscsi-login-timeout` | resolved `loginTimeout`, seconds |
+| `pillar-csi.bhyoo.com/iscsi-replacement-timeout` | resolved `replacementTimeout`, seconds |
+| `pillar-csi.bhyoo.com/iscsi-noop-out-interval` | resolved `noopOutInterval`, seconds |
+| `pillar-csi.bhyoo.com/iscsi-noop-out-timeout` | resolved `noopOutTimeout`, seconds |
 | `pillar-csi.bhyoo.com/fs-type` | resolved `fsType` |
 | `pillar-csi.bhyoo.com/mkfs-options` | resolved `mkfsOptions`, as a JSON string array |
 | `pillar-csi.bhyoo.com/mount-options` | resolved `mountOptions`, as a JSON string array |
@@ -113,4 +118,4 @@ The controller writes these into `PersistentVolume.spec.csi.volumeAttributes` at
 
 ### Topology
 
-The node plugin reports the topology segment `pillar-csi.bhyoo.com/nvmeof: "true"` on nodes where the `nvme_tcp` kernel module is loaded (`/sys/module/nvme_tcp` exists). Nodes without the module omit the key. You can use it in a StorageClass `allowedTopologies`.
+The node plugin reports the topology segment `pillar-csi.bhyoo.com/nvmeof: "true"` on nodes where the `nvme_tcp` kernel module is loaded (`/sys/module/nvme_tcp` exists). Nodes without the module omit the key. You can use it in a StorageClass `allowedTopologies`. There is no topology key for iSCSI.

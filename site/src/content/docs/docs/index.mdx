@@ -1,13 +1,13 @@
 ---
 title: pillar-csi documentation
-description: Docs for pillar-csi, a Kubernetes CSI driver that exports ZFS zvols and LVM volumes to pods over NVMe-oF/TCP. Tutorials, how-to guides, and reference.
+description: Docs for pillar-csi, a Kubernetes CSI driver that exports ZFS zvols and LVM volumes to pods over NVMe-oF/TCP or iSCSI. Tutorials, how-to guides, and reference.
 ---
 
 import { CardGrid, LinkCard } from '@astrojs/starlight/components';
 
-pillar-csi is a Container Storage Interface (CSI) driver for Kubernetes. It creates volumes in the ZFS pools and LVM volume groups on your storage nodes, and the Linux kernel NVMe-oF target serves them to pods over TCP.
+pillar-csi is a Container Storage Interface (CSI) driver for Kubernetes. It creates volumes in the ZFS pools and LVM volume groups on your storage nodes, and the Linux kernel serves them to pods over TCP, with the NVMe-oF target or the LIO iSCSI target.
 
-The driver's container images carry every tool it runs, so your hosts need only the NVMe-oF kernel modules and a ZFS pool or LVM volume group. NVMe-oF/TCP ships today; iSCSI, NFS and SMB are planned.
+The driver's container images carry every tool it runs, so your hosts need only the NVMe-oF or iSCSI kernel modules and a ZFS pool or LVM volume group. NVMe-oF/TCP and iSCSI ship today; NFS and SMB are planned.
 
 If you have not installed pillar-csi yet, start with the tutorial. It takes you from one storage node to a pod with a mounted volume.
 
