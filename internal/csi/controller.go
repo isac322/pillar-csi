@@ -169,6 +169,25 @@ func NewControllerServer(k8sClient client.Client, apiReader client.Reader, drive
 	return srv
 }
 
+// NewControllerServerWithAgentDialer constructs a ControllerServer using the
+// shared agent connection manager. The manager owns cached connections, so the
+// per-call closer required by AgentDialer is intentionally a no-op.
+func NewControllerServerWithAgentDialer(k8sClient client.Client, apiReader client.Reader, driverName string, manager agentclient.Dialer) *ControllerServer {
+	srv := NewControllerServerWithDialer(k8sClient, driverName, func(ctx context.Context, addr string) (agentv1.AgentServiceClient, io.Closer, error) {
+		client, err := manager.Dial(ctx, addr)
+		if err != nil {
+			return nil, nil, fmt.Errorf("dial agent at %q: %w", addr, err)
+		}
+		return client, nopCloser{}, nil
+	})
+	srv.apiReader = apiReader
+	return srv
+}
+
+type nopCloser struct{}
+
+func (nopCloser) Close() error { return nil }
+
 // NewControllerServerWithDialer constructs a ControllerServer using the
 // provided AgentDialer.  This variant is used in tests to inject a mock
 // dialer that serves a real gRPC server backed by a mock agent.  K8sClient
