@@ -395,6 +395,104 @@ func TestApply_EnableEBUSYIsDeviceHeld(t *testing.T) {
 	}
 }
 
+// emulateTPU is the thin-provisioning attribute of testIQN's backstore.
+func (e env) emulateTPU() string {
+	return filepath.Join(e.backstore(testIQN), "attrib", "emulate_tpu")
+}
+
+// A new backstore advertises thin provisioning, so initiators see UNMAP
+// support and discards reach the backing device.
+func TestApply_EnablesThinProvisioning(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	mustApply(t, e.target(testIQN))
+	if got := e.read(t, e.emulateTPU()); got != "1" {
+		t.Fatalf("emulate_tpu = %q, want 1", got)
+	}
+}
+
+// A backstore left enabled without thin provisioning (by an agent predating
+// it) is upgraded in place when the target is prepared again after a
+// restart.
+func TestPrepare_UpgradesEnabledBackstoreThinProvisioning(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	mustApply(t, e.target(testIQN))
+	if err := os.WriteFile(e.emulateTPU(), []byte("0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.target(testIQN).Prepare(); err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	if got := e.read(t, e.emulateTPU()); got != "1" {
+		t.Fatalf("emulate_tpu after Prepare = %q, want 1", got)
+	}
+}
+
+// A device without discard support is still exported, without UNMAP, and
+// the caller is told which device lacks it.
+func TestApply_DiscardUnsupportedExportsWithoutUnmap(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	target := e.target(testIQN)
+	e.k.DisableDiscard(target.DevicePath)
+	var reported []string
+	target.DiscardUnsupported = func(device string) { reported = append(reported, device) }
+	mustApply(t, target)
+	if got := e.read(t, e.emulateTPU()); got != "0" {
+		t.Errorf("emulate_tpu = %q, want 0", got)
+	}
+	if got := e.read(t, filepath.Join(e.tpg(testIQN), "enable")); got != "1" {
+		t.Errorf("TPG enable = %q, want 1", got)
+	}
+	if !slices.Equal(reported, []string{target.DevicePath}) {
+		t.Errorf("DiscardUnsupported calls = %q, want [%s]", reported, target.DevicePath)
+	}
+}
+
+// Any other failure to enable thin provisioning fails the export with the
+// attribute path: a write error, or a write the read-back does not confirm.
+// A new backstore is rolled back; an existing one is kept.
+func TestPrepare_ThinProvisioningFailures(t *testing.T) {
+	t.Parallel()
+	failEIO := func(k *liotest.Kernel, p string) { k.FailWrite(p, syscall.EIO) }
+	drop := func(k *liotest.Kernel, p string) { k.DropWrite(p) }
+	for _, tc := range []struct {
+		name     string
+		existing bool
+		inject   func(k *liotest.Kernel, path string)
+		errno    error
+	}{
+		{name: "write error on new backstore", inject: failEIO, errno: syscall.EIO},
+		{name: "read-back mismatch on new backstore", inject: drop},
+		{name: "write error on enabled backstore", existing: true, inject: failEIO, errno: syscall.EIO},
+		{name: "read-back mismatch on enabled backstore", existing: true, inject: drop},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			e := newEnv(t)
+			path := e.emulateTPU()
+			if tc.existing {
+				mustApply(t, e.target(testIQN))
+				if err := os.WriteFile(path, []byte("0\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			tc.inject(e.k, path)
+			err := e.target(testIQN).Prepare()
+			if err == nil || !strings.Contains(err.Error(), path) {
+				t.Fatalf("Prepare = %v, want error naming %s", err, path)
+			}
+			if tc.errno != nil && !errors.Is(err, tc.errno) {
+				t.Fatalf("Prepare = %v, want %v", err, tc.errno)
+			}
+			if got := e.exists(e.backstore(testIQN)); got != tc.existing {
+				t.Fatalf("backstore exists = %t, want %t", got, tc.existing)
+			}
+		})
+	}
+}
+
 func TestPrepareLocalAttach_NoLUN(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)

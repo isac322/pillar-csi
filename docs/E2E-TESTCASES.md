@@ -2979,6 +2979,7 @@ init netns의 NETLINK_ISCSI를 쓴다. 하네스는 시작·종료 시 `iqn.2026
 | ext4·xfs 파일시스템 PVC 마운트, 파드 기록 후 재시작하고 다시 읽기 | 실제 LIO 타깃 + iscsi_tcp + mkfs 필요 | `test/docker-e2e` `TestISCSIFilesystemPodRestart` |
 | raw Block 볼륨을 클라이언트 A가 쓰고 클라이언트 B가 읽기 | 다중 노드 Kind + 실제 SCSI 디스크 필요 | `test/docker-e2e` `TestISCSIRawBlockCrossNodeHandoff` |
 | 마운트된 파일시스템 볼륨의 온라인 확장(LV 확장 → LUN rescan → resize) | 실제 LVM + iscsi_tcp rescan 필요 | `test/docker-e2e` `TestISCSIOnlineFilesystemExpansion` |
+| 마운트된 파일시스템에서 파일 삭제 후 `fstrim`이 스토리지 노드 공간을 반환(타깃이 UNMAP을 광고해 클라이언트 `/dev/sd*`의 `discard_max_bytes` > 0, LV가 놓인 loop 백킹 파일의 할당 블록 감소) | 실제 LIO `emulate_tpu` + iscsi_tcp + loop 디바이스 hole punch 필요 | `test/docker-e2e` `TestISCSIFilesystemTrimReleasesSpace` |
 | 크로스 노드: 클라이언트 노드의 파드가 `/dev/sd*`를 쓰고 세션 원격 주소가 스토리지 노드 | 다중 노드 Kind + 실제 세션 sysfs 필요 | `test/docker-e2e` `TestISCSIFilesystemCrossNodeReattach` (모든 iSCSI 테스트가 세션 주소·`/dev/sd*`·노드 netns TCP 연결을 확인) |
 | `acl: true`: 허용 노드는 동작하고 허용되지 않은 initiator의 login은 타깃이 거부(status class 2 / detail 2 target forbidden) | 실제 LIO node ACL 필요 | `test/docker-e2e` `TestISCSIUnauthorizedInitiatorRejected`, 크로스 노드 핸드오프 테스트 |
 | API 서버가 두 프로토콜 멤버를 가진 PillarProtocol과 `nvmeofTcp` 클래스의 `iscsi` 오버라이드를 거부 | 실제 CRD CEL + admission 웹훅 필요 | `test/docker-e2e` `TestISCSIProtocolAdmission`; envtest `internal/controller/pillarprotocol_crd_schema_test.go` |

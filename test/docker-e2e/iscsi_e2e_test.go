@@ -212,6 +212,70 @@ func TestISCSIOnlineFilesystemExpansion(t *testing.T) {
 	}
 }
 
+// TestISCSIFilesystemTrimReleasesSpace deletes a file on a mounted iSCSI
+// filesystem, runs fstrim and checks the freed blocks reach the storage
+// backend: the target advertises UNMAP (the client's SCSI disk has a
+// non-zero discard limit) and the discards travel LIO iblock -> LV -> loop
+// device -> backing file.
+//
+// The E2E LVM store is a linear LV in a VG whose only PV is a loop device
+// over a sparse file.  A linear LV's size in lvs(8) never changes, but the
+// loop driver punches a hole in its backing file for every discard, so the
+// file's allocated blocks (st_blocks) are the space the volume really holds
+// on the storage host.  Recycled extents of earlier volumes may already be
+// allocated, so only the drop after fstrim is asserted, not the growth.
+func TestISCSIFilesystemTrimReleasesSpace(t *testing.T) {
+	cfg := loadISCSIConfig(t)
+	backingContainer := requireEnv(t, "PILLAR_E2E_BACKING_CONTAINER")
+	backingFile := requireEnv(t, "PILLAR_E2E_BACKING_FILE")
+	ns := createNamespace(t, "iscsi-trim")
+	defer deleteNamespace(t, ns)
+	createISCSIPVC(t, ns, "data", cfg.storageClass, "Filesystem", iscsiTrimVolumeSize)
+
+	createFilesystemPod(t, ns, "trimmer", "data", cfg.clientNodeA)
+	waitForPodReady(t, ns, "trimmer")
+	assertPodNode(t, ns, "trimmer", cfg.clientNodeA)
+	target := readPVISCSITarget(t, ns, "data", cfg.targetAddress)
+	t.Cleanup(func() { waitForLIOTargetRemoved(t, target) })
+	requireLIOTarget(t, target)
+	iqnA := readISCSIInitiatorIQN(t, cfg.clientNodeA)
+	disk := requirePodUsesISCSIDevice(t, ns, "trimmer", cfg.clientNodeA, target, iqnA, false)
+
+	if limit := blockDeviceDiscardMaxBytes(t, disk); limit == 0 {
+		t.Fatalf(
+			"iSCSI disk /dev/%s of target %s has queue/discard_max_bytes = 0: the target does not "+
+				"advertise UNMAP (LIO backstore attrib/emulate_tpu = %s)",
+			disk, target.iqn, lioBackstoreAttribute(target, "emulate_tpu"),
+		)
+	}
+
+	const payloadBytes = iscsiTrimPayloadMiB * 1024 * 1024
+	baseline := backingAllocatedBytes(t, backingContainer, backingFile)
+	kubectl(t, "-n", ns, "exec", "trimmer", "--", "sh", "-c", fmt.Sprintf(
+		"dd if=/dev/urandom of=/data/trim-payload bs=1M count=%d conv=fsync && sync", iscsiTrimPayloadMiB,
+	))
+	written := backingAllocatedBytes(t, backingContainer, backingFile)
+	t.Logf("%s:%s allocated %d bytes before and %d bytes after writing %d bytes",
+		backingContainer, backingFile, baseline, written, payloadBytes)
+
+	// sync commits the journal transaction that frees the blocks; ext4 and
+	// xfs trim only committed free space.
+	kubectl(t, "-n", ns, "exec", "trimmer", "--", "sh", "-c", "rm /data/trim-payload && sync")
+	mountPath := podVolumeMountPath(t, ns, "trimmer", "data")
+	mount := dockerExec(t, cfg.clientNodeA, "findmnt", "-n", "-o", "SOURCE,FSTYPE", "--mountpoint", mountPath)
+	t.Logf("%s mounts %s at %s", cfg.clientNodeA, mount, mountPath)
+	t.Logf("fstrim on %s: %s", cfg.clientNodeA, dockerExec(t, cfg.clientNodeA, "fstrim", "-v", mountPath))
+
+	trimmed := backingAllocatedBytes(t, backingContainer, backingFile)
+	t.Logf("%s:%s allocated %d bytes after fstrim", backingContainer, backingFile, trimmed)
+	if released := written - trimmed; released < payloadBytes/2 {
+		t.Fatalf(
+			"fstrim released %d bytes of %s:%s (allocated %d -> %d), want at least %d of the %d deleted bytes",
+			released, backingContainer, backingFile, written, trimmed, payloadBytes/2, payloadBytes,
+		)
+	}
+}
+
 // TestISCSIUnauthorizedInitiatorRejected checks the acl: true contract while
 // client node A holds the volume: only A's IQN has a node ACL, a login with
 // client node B's IQN is refused by the target, and A keeps working.
@@ -291,6 +355,13 @@ spec:
 
 // iscsiVolumeSize is the requested size of the iSCSI test volumes.
 const iscsiVolumeSize = "64Mi"
+
+// iscsiTrimVolumeSize and iscsiTrimPayloadMiB size the trim test: the
+// payload must fit the ext4 volume and dwarf filesystem metadata churn.
+const (
+	iscsiTrimVolumeSize = "256Mi"
+	iscsiTrimPayloadMiB = 128
+)
 
 func createISCSIPVC(t *testing.T, namespace, name, storageClass, volumeMode, size string) {
 	t.Helper()
@@ -678,6 +749,59 @@ func blockDeviceBytes(t *testing.T, name string) int64 {
 		t.Fatalf("parse size of block device %s: %v", name, err)
 	}
 	return sectors * 512
+}
+
+// blockDeviceDiscardMaxBytes returns the discard limit of the host block
+// device name; 0 means the device does not support discard.
+func blockDeviceDiscardMaxBytes(t *testing.T, name string) int64 {
+	t.Helper()
+	path := filepath.Join("/sys/class/block", name, "queue", "discard_max_bytes")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read discard limit of block device %s: %v", name, err)
+	}
+	limit, err := strconv.ParseInt(strings.TrimSpace(string(raw)), 10, 64)
+	if err != nil {
+		t.Fatalf("parse %s: %v", path, err)
+	}
+	return limit
+}
+
+// lioBackstoreAttribute returns the value of attribute name of target's
+// iblock backstore in the (host-global) LIO configfs, for diagnostics.
+func lioBackstoreAttribute(target iscsiTarget, name string) string {
+	backstore := filepath.Join(lioIBlockHBA, strings.TrimPrefix(target.iqn, iscsiOwnedIQNPrefix))
+	raw, err := os.ReadFile(filepath.Join(backstore, "attrib", name))
+	if err != nil {
+		return fmt.Sprintf("unreadable: %v", err)
+	}
+	return strings.TrimSpace(string(raw))
+}
+
+// podVolumeMountPath returns the kubelet publish path of volume in pod on
+// the pod's node.
+func podVolumeMountPath(t *testing.T, namespace, pod, claim string) string {
+	t.Helper()
+	uid := kubectl(t, "-n", namespace, "get", "pod", pod, "-o", "jsonpath={.metadata.uid}")
+	pv := kubectl(t, "-n", namespace, "get", "pvc", claim, "-o", "jsonpath={.spec.volumeName}")
+	return "/var/lib/kubelet/pods/" + uid + "/volumes/kubernetes.io~csi/" + pv + "/mount"
+}
+
+// backingAllocatedBytes flushes container's page cache and returns the
+// bytes allocated to file there (st_blocks, not the apparent size).
+func backingAllocatedBytes(t *testing.T, container, file string) int64 {
+	t.Helper()
+	output := dockerExec(t, container, "sh", "-c", `sync && stat -c '%b %B' "$1"`, "backing-usage", file)
+	fields := strings.Fields(output)
+	if len(fields) != 2 {
+		t.Fatalf("stat of %s:%s = %q, want \"<blocks> <block size>\"", container, file, output)
+	}
+	blocks, blocksErr := strconv.ParseInt(fields[0], 10, 64)
+	blockSize, sizeErr := strconv.ParseInt(fields[1], 10, 64)
+	if blocksErr != nil || sizeErr != nil {
+		t.Fatalf("parse stat of %s:%s %q: %v", container, file, output, errors.Join(blocksErr, sizeErr))
+	}
+	return blocks * blockSize
 }
 
 // verifyISCSICrossNodeHandoff checks the handoff of a volume from client A

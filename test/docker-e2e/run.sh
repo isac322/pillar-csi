@@ -1151,6 +1151,15 @@ run_tests() {
   client_b=$4
   target_address=$5
   log "Running CSI lifecycle tests for ${topology} topology"
+  # The LVM store's PV is a loop device over a sparse file; the trim test
+  # measures that file's allocated blocks in the container that owns it.
+  if [[ "${topology}" == internal ]]; then
+    backing_container="${storage_node}"
+    backing_file="${internal_backing_file}"
+  else
+    backing_container="${active_external_agent}"
+    backing_file="${external_backing_file}"
+  fi
   PILLAR_E2E_TOPOLOGY="${topology}" \
   PILLAR_E2E_STORAGE_CLASS="${storage_class}" \
   PILLAR_E2E_LOCAL_STORAGE_CLASS="${local_storage_class}" \
@@ -1158,6 +1167,8 @@ run_tests() {
   PILLAR_E2E_ISCSI_XFS_STORAGE_CLASS="${iscsi_xfs_storage_class}" \
   PILLAR_E2E_ISCSI_PROTOCOL="${iscsi_protocol}" \
   PILLAR_E2E_STORAGE_NODE="${storage_node}" \
+  PILLAR_E2E_BACKING_CONTAINER="${backing_container}" \
+  PILLAR_E2E_BACKING_FILE="${backing_file}" \
   PILLAR_E2E_CLIENT_NODE_A="${client_a}" \
   PILLAR_E2E_CLIENT_NODE_B="${client_b}" \
   PILLAR_E2E_TARGET_ADDRESS="${target_address}" \

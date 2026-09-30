@@ -227,7 +227,11 @@ func serveAgent(srv *agent.Server, cfg serveConfig) {
 		fail("error: %v\n", err)
 	}
 
-	failureLog := telemetry.SlogFailureLogger(slog.New(slog.NewJSONHandler(os.Stderr, nil)))
+	jsonLog := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	// Handlers that log outside a gRPC failure (e.g. the iSCSI handler's
+	// discard notice) use the default logger; keep it in the same JSON form.
+	slog.SetDefault(jsonLog)
+	failureLog := telemetry.SlogFailureLogger(jsonLog)
 	grpcSrv, healthSrv := newAgentGRPCServer(srv, serverMetrics, failureLog, grpcOpts)
 
 	sigs := make(chan os.Signal, 1)

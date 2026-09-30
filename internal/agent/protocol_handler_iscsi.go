@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"slices"
 	"time"
@@ -365,6 +366,11 @@ func (h *ISCSIAgentHandler) targetForVolume(volumeID string) (*lio.Target, error
 		FS:            h.server.lioFS,
 		IQN:           iqn,
 		DeviceClaimer: h.server.deviceClaimer,
+		DiscardUnsupported: func(device string) {
+			slog.Info("iSCSI export without thin provisioning: backing device does not support discard, "+
+				"so LIO cannot advertise UNMAP and freed blocks are not returned",
+				"volume", volumeID, "target", iqn, "device", device)
+		},
 	}, nil
 }
 
