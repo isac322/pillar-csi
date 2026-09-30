@@ -114,13 +114,17 @@ docker exec "${CONTROL_PLANE}" bash -c "
 
 # ── 3. Build + load pillar-csi images ────────────────────────────────────────
 log "Building controller / agent / node images at tag ${IMAGE_TAG}"
-for target in controller agent node; do
-  docker build \
-    --target="${target}" \
-    --tag="pillar-csi/${target}:${IMAGE_TAG}" \
-    "${REPO_ROOT}"
-  kind load docker-image "pillar-csi/${target}:${IMAGE_TAG}" --name "${CLUSTER_NAME}"
-done
+(
+  cd "${REPO_ROOT}"
+  BUILDX_NO_DEFAULT_ATTESTATIONS=1 \
+    REGISTRY=pillar-csi \
+    TAG="${IMAGE_TAG}" \
+    docker buildx bake --load controller agent node
+)
+kind load docker-image --name "${CLUSTER_NAME}" \
+  "pillar-csi/controller:${IMAGE_TAG}" \
+  "pillar-csi/agent:${IMAGE_TAG}" \
+  "pillar-csi/node:${IMAGE_TAG}"
 
 # ── 4. Helm install pillar-csi ──────────────────────────────────────────────
 log "Helm-installing release ${HELM_RELEASE} into namespace ${HELM_NAMESPACE}"

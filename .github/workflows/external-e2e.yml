@@ -1,16 +1,13 @@
 # SIG-Storage External Storage e2e — runs upstream `e2e.test
 # -storage.testdriver=external-driver.yaml` against a freshly bootstrapped
-# Kind cluster with pillar-csi Helm-installed.  Exercised on every PR and
-# master push so the in-cluster storage contract is gated alongside the
-# in-process csi-sanity check.  daily-e2e.yml calls it once a day when code
-# changed since the last daily run.
+# Kind cluster with pillar-csi Helm-installed.  ci.yml calls this reusable
+# workflow for PRs and master pushes to gate the in-cluster storage contract
+# alongside the in-process csi-sanity check.  daily-e2e.yml calls it once a
+# day when code changed since the last daily run.
 
 name: External Storage E2E
 
 on:
-  pull_request: {}
-  push:
-    branches: [master]
   workflow_dispatch: {}
   workflow_call: {}
 
@@ -35,8 +32,10 @@ jobs:
       E2E_HELM_NAMESPACE: "pillar-csi-system"
       DOCKER_HOST: "unix:///var/run/docker.sock"
       # K8S_VERSION pin lets run.sh skip the dl.k8s.io stable.txt lookup so
-      # the cached e2e.test bundle is shared across runs.
+      # the cached upstream e2e.test + matching ginkgo bundle is shared.
       K8S_VERSION: "v1.37.0"
+      GINKGO_PROCS: "2"
+      VG_SIZE: "15G"
 
     steps:
       - name: Checkout
@@ -47,6 +46,12 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+
+      - name: Cache upstream External Storage e2e bundle
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/pillar-csi/external-e2e
+          key: external-e2e-${{ env.K8S_VERSION }}-${{ runner.os }}-${{ runner.arch }}
 
       - name: Install Kind ${{ env.KIND_VERSION }}
         uses: helm/kind-action@v1
@@ -72,15 +77,19 @@ jobs:
           sudo modprobe nvme_tcp
 
       - name: Pre-pull base + sidecar images
+        shell: bash
         run: |
-          docker pull alpine:3.24
-          docker pull golang:1.27-alpine3.24
-          docker pull busybox:1.38.0
-          docker pull registry.k8s.io/sig-storage/csi-provisioner:v6.3.0
-          docker pull registry.k8s.io/sig-storage/csi-attacher:v4.12.0
-          docker pull registry.k8s.io/sig-storage/csi-resizer:v2.2.1
-          docker pull registry.k8s.io/sig-storage/livenessprobe:v2.19.0
-          docker pull registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.17.0
+          images=(
+            alpine:3.24
+            golang:1.27-alpine3.24
+            busybox:1.38.0
+            registry.k8s.io/sig-storage/csi-provisioner:v6.3.0
+            registry.k8s.io/sig-storage/csi-attacher:v4.12.0
+            registry.k8s.io/sig-storage/csi-resizer:v2.2.1
+            registry.k8s.io/sig-storage/livenessprobe:v2.19.0
+            registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.17.0
+          )
+          printf '%s\n' "${images[@]}" | xargs -P4 -n1 docker pull
 
       - name: Bootstrap cluster + Helm-deploy pillar-csi
         env:

@@ -43,6 +43,16 @@ pillar-csi writes to kernel interfaces, and a swallowed error there leaves stora
 
 Each TC ID in [docs/E2E-TESTCASES.md](docs/E2E-TESTCASES.md) maps one-to-one to a Ginkgo node name in `test/e2e/`. When you add or remove a test case, update both and run `make verify-tc-ids`. Gate test cases with `Fail()` or `Expect()`; do not use a conditional `Skip()`.
 
+## CI checks
+
+Pull requests and pushes to `master` run the same CI workflow. Code changes run lint, unit and integration tests, CSI conformance, chart rendering, benchmarks, all eight image platforms, and both Kind and upstream External Storage E2E suites. Documentation-only changes skip the code checks; `docs/E2E-TESTCASES.md` still counts as code. Failed change detection runs the checks rather than skipping them. Superseded pull-request runs are cancelled; master and daily runs are retained.
+
+TC coverage verification runs once through `make test`, and its report appears in the Test job summary. The daily workflow also runs the separate Docker multi-node data-path suite.
+
+External Storage E2E uses two workers and a 15 GiB sparse LVM backing file in CI. Local defaults remain one worker and 5 GiB. On a Linux host with the required storage modules, set `VG_SIZE=15G` when bootstrapping and `GINKGO_PROCS=2` when running `make test-external-e2e` to use the CI settings. Parallel execution uses the matching Ginkgo binary from the upstream Kubernetes test bundle and keeps the same focus and skip filters.
+
+CI caches versioned tools and test bundles. The multi-platform build reuses a Go compiler cache keyed by the Dockerfile and Go dependencies, not each commit. Go still recompiles changed source packages. Pull requests restore that cache without exporting it; master refreshes it when its dependency key changes. Runtime image layers use separate target caches, exported by master.
+
 ## Before you commit
 
 - `make lint` must report 0 issues.
