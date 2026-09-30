@@ -50,9 +50,9 @@ type PillarVolumeReservationSpec struct {
 	OwnerVolume string `json:"ownerVolume"`
 
 	// claimRef identifies the PersistentVolumeClaim the owning lifecycle
-	// provisions for.  It lets a contender recognize a reservation whose
-	// owner record was never written and whose claim is already gone: such a
-	// reservation is orphaned and may be taken over.
+	// provisions for.  A CreateVolume for any other claim (or claim UID) is
+	// refused while the reservation exists; the refusal names this claim so
+	// an operator can verify it is gone before deleting the reservation.
 	// +optional
 	ClaimRef *VolumeClaimRef `json:"claimRef,omitempty"`
 }
@@ -70,9 +70,10 @@ type PillarVolumeReservationSpec struct {
 // deterministic name, so two concurrent CreateVolume claims on the same
 // backend volume — for example two PVCs importing the same zvol — cannot both
 // start a lifecycle: the loser sees AlreadyExists and is refused.  The
-// reservation is deleted when the owning PillarVolumeState is removed; one
-// whose owner was never written and whose claim is gone is orphaned and may
-// be claimed by a new contender.
+// reservation is deleted when the owning PillarVolumeState is removed.  It is
+// never reclaimed automatically: one whose owner never wrote its record (the
+// controller crashed in between) stays until an operator who verified the
+// owning claim is gone deletes it with kubectl.
 type PillarVolumeReservation struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

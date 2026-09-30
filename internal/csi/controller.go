@@ -745,7 +745,14 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 		// Adopt the existing zvol named by the import annotation instead of
 		// creating one.  The agent refuses when the zvol is missing, wrong
 		// type, too small, still in use, or resolves to a dataset other than
-		// the recorded source (ExpectedDataset pins the layout).
+		// the recorded source (ExpectedDataset pins the layout).  The
+		// reservation is re-read uncached right before the agent call: an
+		// attempt that lost it since reserving must not bind the zvol.
+		err = s.verifyReservation(
+			ctx, pvName, targetName, string(backendID), agentVolID, importedFrom, pvs.Spec.ClaimRef)
+		if err != nil {
+			return nil, err
+		}
 		devicePath, actualCapacity, err = s.importBackend(ctx, agentClient, pvName, volumeID, pvs.UID,
 			&agentv1.ImportVolumeRequest{
 				VolumeId:        agentVolID,
@@ -1021,7 +1028,7 @@ func (s *ControllerServer) DeleteVolume(
 		backendType:  mapBackendType(parts[2]),
 		agentVolID:   parts[3],
 		fence:        fence,
-		metadataOnly: importNeverAdopted(pvs),
+		releaseOnly:  importNeverAdopted(pvs),
 	})
 	if err != nil {
 		return nil, err
@@ -1040,12 +1047,11 @@ type volumeTeardown struct {
 	backendType  agentv1.BackendType
 	agentVolID   string
 	fence        *agentv1.FencingToken
-	// metadataOnly retires the lifecycle record without any agent call: the
-	// volume was an import whose agent never durably adopted the backend
-	// resource, so there is no export to remove and no zvol the lifecycle
-	// may destroy — deleting it would destroy a dataset this driver never
-	// owned.
-	metadataOnly bool
+	// releaseOnly ends the lifecycle at the agent with ReleaseVolume instead
+	// of UnexportVolume + DeleteVolume: the volume was an import whose agent
+	// never durably adopted the backend resource, so the zvol is
+	// pre-existing data this driver never owned and must never destroy.
+	releaseOnly bool
 }
 
 // importNeverAdopted reports whether pvs is an import lifecycle that never
@@ -1061,6 +1067,21 @@ func importNeverAdopted(pvs *v1alpha1.PillarVolumeState) bool {
 		pvs.Status.BackendDevicePath == "" && pvs.Status.ExportInfo == nil
 }
 
+// refuseUnadoptedImport refuses a mutating operation op on an import
+// lifecycle that never durably adopted its zvol (see importNeverAdopted):
+// the zvol is still pre-existing data this driver does not own, so it must
+// never be resized or exposed to a node, and a fenced grant for the
+// lifecycle would bind the volume ID at the agent without an adoption.
+func refuseUnadoptedImport(pvs *v1alpha1.PillarVolumeState, volumeID, op string) error {
+	if !importNeverAdopted(pvs) {
+		return nil
+	}
+	return status.Errorf(codes.FailedPrecondition,
+		"cannot %s volume %q: its import of zvol %q was never adopted "+
+			"(status.importAcquired is unset); the pre-existing zvol is left untouched",
+		op, volumeID, pvs.Spec.ImportedFrom)
+}
+
 // teardownMarkedVolume removes the export and the backend resource of a
 // lifecycle already marked deleting, then deletes its PillarVolumeState.  The
 // caller holds the volume lock.  Both agent RPCs are idempotent (a missing
@@ -1069,17 +1090,12 @@ func importNeverAdopted(pvs *v1alpha1.PillarVolumeState) bool {
 // created and is repeated unchanged on retry.  Any failure keeps the record
 // (still marked deleting) for the retry.
 func (s *ControllerServer) teardownMarkedVolume(ctx context.Context, t volumeTeardown) error {
-	// An import that was never durably adopted owns nothing on the agent:
-	// no export exists (the export step follows adoption) and the zvol is
-	// pre-existing data this lifecycle never claimed.  Skip every agent call
-	// and retire the record — UnexportVolume could disturb the previous
-	// provisioning stack's export, and DeleteVolume would destroy a dataset
-	// this driver never owned.
-	if t.metadataOnly {
-		return s.finishDelete(ctx, t.volumeID, t.pvName, t.uid)
-	}
-
 	// ── Resolve the agent address from PillarAgent ───────────────────────────
+	// Every teardown, including the release of an import that was never
+	// adopted, needs the agent: an import whose response was lost may have
+	// bound the volume ID to this lifecycle, and only the agent can retire
+	// that binding so a delayed ImportVolume cannot land after the record is
+	// gone.  An unreachable agent keeps the record for the retry.
 	target := &v1alpha1.PillarAgent{}
 	getTargetErr := s.k8sClient.Get(ctx, types.NamespacedName{Name: t.targetName}, target)
 	if getTargetErr != nil {
@@ -1112,6 +1128,23 @@ func (s *ControllerServer) teardownMarkedVolume(ctx context.Context, t volumeTea
 			"failed to dial agent at %q: %v", agentAddr, err)
 	}
 	defer closer.Close() //nolint:errcheck // best-effort close; dial errors already handled
+
+	// An import that was never durably adopted owns no backend resource:
+	// ReleaseVolume removes this lifecycle's export if its import did land
+	// and retires the lifecycle at the agent, without touching the zvol.
+	// DeleteVolume would destroy a dataset this driver never owned.
+	if t.releaseOnly {
+		_, releaseErr := agentClient.ReleaseVolume(ctx, &agentv1.ReleaseVolumeRequest{
+			VolumeId:     t.agentVolID,
+			ProtocolType: t.protocolType,
+			Fence:        t.fence,
+		})
+		if releaseErr != nil {
+			return status.Errorf(status.Code(releaseErr),
+				"agent ReleaseVolume(%q) failed: %v", t.agentVolID, releaseErr)
+		}
+		return s.finishDelete(ctx, t.volumeID, t.pvName, t.uid)
+	}
 
 	// ── Step 1: Remove the network export (idempotent) ────────────────────────
 	_, unexportErr := agentClient.UnexportVolume(ctx, &agentv1.UnexportVolumeRequest{
@@ -1644,6 +1677,10 @@ func (s *ControllerServer) ControllerPublishVolume(
 		return nil, pvErr
 	}
 	setClaimAttributes(ctx, pvs.Spec.ClaimRef)
+	err := refuseUnadoptedImport(pvs, volumeID, "publish")
+	if err != nil {
+		return nil, err
+	}
 
 	// ── Resolve the storage node's PillarAgent ───────────────────────────────
 	agent, agentErr := s.getReadyAgent(ctx, targetName)
@@ -2207,12 +2244,13 @@ func (s *ControllerServer) ControllerExpandVolume(
 	// ── Expand the backend storage resource ───────────────────────────────────
 	// The request carries the lifecycle's current token: an expand of a
 	// deleted, deleting, or re-created volume is refused here or by the agent.
-	pvName, nameErr := s.volumeStateNameForID(ctx, volumeID)
-	if nameErr != nil {
-		return nil, nameErr
+	pvName, pvs, pvErr := s.mustVolumeState(ctx, volumeID)
+	if pvErr != nil {
+		return nil, pvErr
 	}
-	if pvName == "" {
-		return nil, status.Errorf(codes.NotFound, "volume %q not found", volumeID)
+	err = refuseUnadoptedImport(pvs, volumeID, "expand")
+	if err != nil {
+		return nil, err
 	}
 	fence, err := s.currentToken(ctx, pvName, volumeID)
 	if err != nil {

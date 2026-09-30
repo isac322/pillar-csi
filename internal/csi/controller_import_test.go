@@ -24,12 +24,14 @@ package csi
 import (
 	"context"
 	"io"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -571,17 +573,17 @@ func TestDeleteVolume_LeafNamedStateOwnsOtherVolume(t *testing.T) {
 // Review regressions: reservations, unadopted-import teardown, agent scoping
 // ─────────────────────────────────────────────────────────────────────────────
 
-// reservationOf returns the PillarVolumeReservation for the backend volume
-// (agent, backend, agentVolID), or nil when it does not exist.
-func reservationOf(
-	t *testing.T,
-	env *controllerTestEnv,
-	agentName, backendType, agentVolID string,
-) *v1alpha1.PillarVolumeReservation {
+// legacyVolReservation is the reservation name of hot-data/legacy-vol.
+var legacyVolReservation = reservationName("storage-node-1", "zfs-zvol", "hot-data/legacy-vol")
+
+// legacyVolReservationOf returns the PillarVolumeReservation of the backend
+// volume hot-data/legacy-vol on storage-node-1, or nil when it does not
+// exist.
+func legacyVolReservationOf(t *testing.T, env *controllerTestEnv) *v1alpha1.PillarVolumeReservation {
 	t.Helper()
 	res := &v1alpha1.PillarVolumeReservation{}
 	err := env.srv.k8sClient.Get(context.Background(),
-		types.NamespacedName{Name: reservationName(agentName, backendType, agentVolID)}, res)
+		types.NamespacedName{Name: legacyVolReservation}, res)
 	if k8serrors.IsNotFound(err) {
 		return nil
 	}
@@ -602,7 +604,7 @@ func TestCreateVolume_ImportZvol_ReservationBlocksSecondClaim(t *testing.T) {
 	if _, err := env.srv.CreateVolume(context.Background(), req); err != nil {
 		t.Fatalf("CreateVolume: %v", err)
 	}
-	res := reservationOf(t, env, "storage-node-1", "zfs-zvol", "hot-data/legacy-vol")
+	res := legacyVolReservationOf(t, env)
 	if res == nil {
 		t.Fatal("no PillarVolumeReservation was created for the import")
 	}
@@ -632,49 +634,147 @@ func TestCreateVolume_ImportZvol_ReservationBlocksSecondClaim(t *testing.T) {
 	}
 }
 
-// A reservation whose owner was never written and whose claim is gone is an
-// orphan (controller crashed between reservation and PillarVolumeState); a
-// new contender takes it over instead of being refused forever.
-func TestCreateVolume_ImportZvol_OrphanedReservationIsReclaimed(t *testing.T) {
-	t.Parallel()
-	env, req := newImportTestEnv(t, "data", "hot-data/k8s/legacy-vol")
+// reservationHookReader wraps the uncached reader and runs before/after
+// around its n-th PillarVolumeReservation Get (1-based), so a test can change
+// the stored reservation at an exact point of a CreateVolume or release.
+type reservationHookReader struct {
+	ctrlclient.Reader
+	gets          int
+	before, after func(n int)
+}
 
-	orphan := &v1alpha1.PillarVolumeReservation{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: reservationName("storage-node-1", "zfs-zvol", "hot-data/legacy-vol"),
-		},
+func (r *reservationHookReader) Get(
+	ctx context.Context, key ctrlclient.ObjectKey, obj ctrlclient.Object, opts ...ctrlclient.GetOption,
+) error {
+	_, isReservation := obj.(*v1alpha1.PillarVolumeReservation)
+	if isReservation {
+		r.gets++
+		if r.before != nil {
+			r.before(r.gets)
+		}
+	}
+	err := r.Reader.Get(ctx, key, obj, opts...)
+	if isReservation && r.after != nil {
+		r.after(r.gets)
+	}
+	return err
+}
+
+// replaceReservation deletes the stored reservation of hot-data/legacy-vol
+// and re-creates it for owner, updating it until its resourceVersion differs
+// from the replaced one's (the fake client restarts versions per object) —
+// what another lifecycle taking the reservation over looks like on the API
+// server, where a re-created object never repeats a resourceVersion.
+func replaceReservation(t *testing.T, env *controllerTestEnv, owner string) {
+	t.Helper()
+	ctx := context.Background()
+	old := &v1alpha1.PillarVolumeReservation{}
+	if err := env.srv.k8sClient.Get(ctx, types.NamespacedName{Name: legacyVolReservation}, old); err == nil {
+		if err := env.srv.k8sClient.Delete(ctx, old); err != nil {
+			t.Fatalf("delete reservation: %v", err)
+		}
+	}
+	res := &v1alpha1.PillarVolumeReservation{
+		ObjectMeta: metav1.ObjectMeta{Name: legacyVolReservation},
 		Spec: v1alpha1.PillarVolumeReservationSpec{
 			AgentRef:      "storage-node-1",
 			BackendType:   "zfs-zvol",
 			AgentVolumeID: "hot-data/legacy-vol",
-			OwnerVolume:   "pvc-ghost",
-			ClaimRef: &v1alpha1.VolumeClaimRef{
-				UID:       "dead-claim-uid",
-				Namespace: "default",
-				Name:      "gone-claim",
-			},
+			OwnerVolume:   owner,
+			ClaimRef:      &v1alpha1.VolumeClaimRef{UID: "uid-" + owner, Namespace: "default", Name: owner},
 		},
 	}
-	if err := env.srv.k8sClient.Create(context.Background(), orphan); err != nil {
-		t.Fatalf("seed orphan reservation: %v", err)
+	if err := env.srv.k8sClient.Create(ctx, res); err != nil {
+		t.Fatalf("create replacement reservation: %v", err)
 	}
+	for i := 0; res.ResourceVersion == old.ResourceVersion; i++ {
+		res.Labels = map[string]string{"touched": strconv.Itoa(i)}
+		if err := env.srv.k8sClient.Update(ctx, res); err != nil {
+			t.Fatalf("update replacement reservation: %v", err)
+		}
+	}
+}
 
-	// The first attempt releases the orphan and asks for a retry.
+// A reservation held by another claim is never reclaimed automatically —
+// its creator may only be paused and could still reach the agent.  The
+// import is refused with FailedPrecondition naming the owner and the exact
+// command an operator runs after verifying that claim is gone.  On the
+// reclaiming code the first attempt deleted the reservation.
+func TestCreateVolume_ImportZvol_ForeignReservationRefused(t *testing.T) {
+	t.Parallel()
+	env, req := newImportTestEnv(t, "data", "hot-data/k8s/legacy-vol")
+	replaceReservation(t, env, "pvc-ghost")
+
+	for attempt := range 2 {
+		_, err := env.srv.CreateVolume(context.Background(), req)
+		if st, _ := status.FromError(err); err == nil || st.Code() != codes.FailedPrecondition {
+			t.Fatalf("attempt %d: err = %v, want FailedPrecondition", attempt, err)
+		}
+		want := "kubectl delete pillarvolumereservation " + legacyVolReservation
+		if !strings.Contains(err.Error(), want) || !strings.Contains(err.Error(), "pvc-ghost") {
+			t.Fatalf("attempt %d: refusal %q must name the owner and %q", attempt, err, want)
+		}
+	}
+	res := legacyVolReservationOf(t, env)
+	if res == nil || res.Spec.OwnerVolume != "pvc-ghost" {
+		t.Fatalf("foreign reservation was reclaimed: %+v", res)
+	}
+	if env.agent.importVolumeCalls != 0 {
+		t.Fatal("a claim without the reservation reached the agent")
+	}
+}
+
+// The reservation is re-read uncached right before ImportVolume: an attempt
+// whose reservation was taken over since it reserved (an operator deleted it
+// and another claim reserved the zvol) must not bind the zvol at the agent.
+func TestCreateVolume_ImportZvol_ReservationRecheckedBeforeImport(t *testing.T) {
+	t.Parallel()
+	env, req := newImportTestEnv(t, "data", "hot-data/k8s/legacy-vol")
+	hook := &reservationHookReader{Reader: env.srv.k8sClient}
+	hook.before = func(n int) {
+		if n == 2 { // after reserveBackendVolume created it
+			replaceReservation(t, env, "pvc-other")
+		}
+	}
+	env.srv.apiReader = hook
+
 	_, err := env.srv.CreateVolume(context.Background(), req)
-	if st, _ := status.FromError(err); err == nil || st.Code() != codes.Unavailable {
-		t.Fatalf("first attempt: err = %v, want Unavailable (orphan released)", err)
+	if st, _ := status.FromError(err); err == nil || st.Code() != codes.FailedPrecondition {
+		t.Fatalf("CreateVolume: err = %v, want FailedPrecondition (reservation lost)", err)
 	}
-	resp, err := env.srv.CreateVolume(context.Background(), req)
-	if err != nil {
-		t.Fatalf("retry after orphan release: %v", err)
+	if env.agent.importVolumeCalls != 0 {
+		t.Fatal("ImportVolume ran although the reservation belongs to another claim")
 	}
-	if resp.GetVolume().GetVolumeId() == "" {
-		t.Error("empty VolumeId")
+}
+
+// Releasing a reservation deletes it with the UID and resourceVersion that
+// were read: a reservation replaced between the read and the delete belongs
+// to another lifecycle and survives.  The unconditional delete removed it.
+func TestReleaseBackendVolume_StaleReadKeepsReplacement(t *testing.T) {
+	t.Parallel()
+	env, _ := newImportTestEnv(t, "data", "")
+	replaceReservation(t, env, "pvc-data")
+	hook := &reservationHookReader{Reader: env.srv.k8sClient}
+	hook.after = func(n int) {
+		if n == 1 {
+			replaceReservation(t, env, "pvc-new")
+		}
+	}
+	env.srv.apiReader = hook
+
+	err := env.srv.releaseBackendVolume(context.Background(),
+		"pvc-data", "storage-node-1/nvmeof-tcp/zfs-zvol/hot-data/legacy-vol")
+	if status.Code(err) != codes.Aborted {
+		t.Fatalf("release over a replaced reservation: err = %v, want Aborted", err)
+	}
+	res := legacyVolReservationOf(t, env)
+	if res == nil || res.Spec.OwnerVolume != "pvc-new" {
+		t.Fatalf("stale release deleted the replacement reservation (now %+v)", res)
 	}
 }
 
 // A refused import was never adopted: when the claim is deleted the
-// abandoned lifecycle must retire without any agent call.  On the buggy
+// abandoned lifecycle is ended with ReleaseVolume only.  On the buggy
 // ordering the fenced teardown ran UnexportVolume+DeleteVolume and destroyed
 // the pre-existing zvol the agent refused to adopt.
 func TestReapAbandonedVolume_RefusedImportNeverDestroys(t *testing.T) {
@@ -720,22 +820,27 @@ func TestReapAbandonedVolume_RefusedImportNeverDestroys(t *testing.T) {
 			"unexport=%d delete=%d — that path runs zfs destroy on the pre-existing zvol",
 			env.agent.unexportVolumeCalls, env.agent.deleteVolumeCalls)
 	}
+	if env.agent.releaseVolumeCalls != 1 {
+		t.Fatalf("reap called ReleaseVolume %d times, want 1", env.agent.releaseVolumeCalls)
+	}
 	if env.agent.importVolumeCalls != importCalls {
 		t.Fatalf("reap re-ran import: calls %d → %d", importCalls, env.agent.importVolumeCalls)
 	}
 	if volumeState(t, env, req.GetName()) != nil {
 		t.Fatal("PillarVolumeState still exists after the reap")
 	}
-	if res := reservationOf(t, env, "storage-node-1", "zfs-zvol", "hot-data/legacy-vol"); res != nil {
+	if res := legacyVolReservationOf(t, env); res != nil {
 		t.Fatalf("reservation %q outlived its lifecycle", res.Name)
 	}
 }
 
-// The same guarantee through DeleteVolume (a PV object is never required for
-// an unfinished lifecycle, but a direct delete arrives the same way): an
-// import lifecycle that never durably adopted the zvol is retired without
-// UnexportVolume or DeleteVolume on the agent.
-func TestDeleteVolume_UnadoptedImportRetiresWithoutDestroy(t *testing.T) {
+// The same guarantee through DeleteVolume: an import lifecycle that never
+// durably adopted the zvol is ended with ReleaseVolume — never
+// UnexportVolume or DeleteVolume — carrying the deletion's fencing token, so
+// the agent retires the lifecycle and a delayed ImportVolume cannot land.
+// While the agent is unreachable the record and the reservation are kept
+// for the retry; afterwards a new claim can import the zvol.
+func TestDeleteVolume_UnadoptedImportReleasesWithoutDestroy(t *testing.T) {
 	t.Parallel()
 	env, req := newImportTestEnv(t, "data", "hot-data/k8s/legacy-vol")
 	env.agent.importVolumeErr = status.Error(codes.FailedPrecondition, "missing: dataset does not exist")
@@ -745,21 +850,110 @@ func TestDeleteVolume_UnadoptedImportRetiresWithoutDestroy(t *testing.T) {
 		t.Fatalf("CreateVolume: err = %v, want FailedPrecondition", err)
 	}
 	env.agent.importVolumeErr = nil
+	pvs := volumeState(t, env, req.GetName())
+	if pvs == nil {
+		t.Fatal("refused import left no PillarVolumeState")
+	}
 
 	volumeID := "storage-node-1/nvmeof-tcp/zfs-zvol/hot-data/legacy-vol"
+	env.agent.releaseVolumeErr = status.Error(codes.Unavailable, "agent down")
+	_, err = env.srv.DeleteVolume(context.Background(), &csi.DeleteVolumeRequest{VolumeId: volumeID})
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("DeleteVolume with the agent down: err = %v, want Unavailable", err)
+	}
+	if volumeState(t, env, req.GetName()) == nil {
+		t.Fatal("the record was forgotten although the agent never released the lifecycle")
+	}
+	if legacyVolReservationOf(t, env) == nil {
+		t.Fatal("the reservation was released although the agent never released the lifecycle")
+	}
+
+	env.agent.releaseVolumeErr = nil
 	if _, err := env.srv.DeleteVolume(context.Background(),
 		&csi.DeleteVolumeRequest{VolumeId: volumeID}); err != nil {
 		t.Fatalf("DeleteVolume: %v", err)
 	}
 	if env.agent.unexportVolumeCalls != 0 || env.agent.deleteVolumeCalls != 0 {
-		t.Fatalf("delete called the agent on a never-adopted import: "+
+		t.Fatalf("delete called destructive agent RPCs on a never-adopted import: "+
 			"unexport=%d delete=%d", env.agent.unexportVolumeCalls, env.agent.deleteVolumeCalls)
+	}
+	rel := env.agent.lastReleaseVolumeReq
+	if env.agent.releaseVolumeCalls != 2 || rel.GetVolumeId() != "hot-data/legacy-vol" ||
+		rel.GetFence().GetVolumeUid() != string(pvs.UID) {
+		t.Fatalf("ReleaseVolume calls=%d last=%v, want 2 calls for hot-data/legacy-vol under uid %s",
+			env.agent.releaseVolumeCalls, rel, pvs.UID)
 	}
 	if volumeState(t, env, req.GetName()) != nil {
 		t.Fatal("PillarVolumeState still exists after DeleteVolume")
 	}
-	if res := reservationOf(t, env, "storage-node-1", "zfs-zvol", "hot-data/legacy-vol"); res != nil {
+	if res := legacyVolReservationOf(t, env); res != nil {
 		t.Fatalf("reservation %q outlived its lifecycle", res.Name)
+	}
+
+	requireImportByNewClaim(t, env, req, pvs.UID)
+}
+
+// requireImportByNewClaim creates a second claim "data-2" importing the same
+// zvol as req and requires its CreateVolume to succeed under a lifecycle
+// other than released.
+func requireImportByNewClaim(
+	t *testing.T, env *controllerTestEnv, req *csi.CreateVolumeRequest, released types.UID,
+) {
+	t.Helper()
+	if err := env.srv.k8sClient.Create(context.Background(), &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "data-2", Namespace: "default",
+			Annotations: map[string]string{v1alpha1.AnnotationImportZvol: "hot-data/k8s/legacy-vol"},
+		},
+	}); err != nil {
+		t.Fatalf("create second claim: %v", err)
+	}
+	req2, ok := proto.Clone(req).(*csi.CreateVolumeRequest)
+	if !ok {
+		t.Fatal("clone CreateVolumeRequest")
+	}
+	req2.Name = "pvc-data-2"
+	req2.Parameters[paramPVCNameMeta] = "data-2"
+	if _, err := env.srv.CreateVolume(context.Background(), req2); err != nil {
+		t.Fatalf("re-import by a new claim after release: %v", err)
+	}
+	if env.agent.lastImportVolumeReq.GetFence().GetVolumeUid() == string(released) {
+		t.Fatal("re-import reused the released lifecycle's token")
+	}
+}
+
+// An import lifecycle that never adopted its zvol must not resize it or
+// expose it to a node: ControllerExpandVolume and ControllerPublishVolume
+// refuse it before any agent call.  The expand used to reach agent
+// ExpandVolume, which runs `zfs set volsize` on the pre-existing zvol.
+func TestControllerExpandPublish_UnadoptedImportRefused(t *testing.T) {
+	t.Parallel()
+	env, req := newImportTestEnv(t, "data", "hot-data/k8s/legacy-vol")
+	env.agent.importVolumeErr = status.Error(codes.FailedPrecondition, "in use: mounted at /data")
+	if _, err := env.srv.CreateVolume(context.Background(), req); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("CreateVolume: err = %v, want FailedPrecondition", err)
+	}
+	volumeID := "storage-node-1/nvmeof-tcp/zfs-zvol/hot-data/legacy-vol"
+
+	_, err := env.srv.ControllerExpandVolume(context.Background(), &csi.ControllerExpandVolumeRequest{
+		VolumeId:      volumeID,
+		CapacityRange: &csi.CapacityRange{RequiredBytes: 4 << 30},
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("ControllerExpandVolume: err = %v, want FailedPrecondition", err)
+	}
+	if env.agent.expandVolumeCalls != 0 {
+		t.Fatal("agent ExpandVolume ran on a zvol whose import was never adopted")
+	}
+
+	pub := basePublishRequest()
+	pub.VolumeId = volumeID
+	_, err = env.srv.ControllerPublishVolume(context.Background(), pub)
+	if status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "never adopted") {
+		t.Fatalf("ControllerPublishVolume: err = %v, want FailedPrecondition (never adopted)", err)
+	}
+	if env.agent.allowInitiatorCalls != 0 || len(env.agent.setLocalAttachCalls) != 0 {
+		t.Fatal("publish granted access to a zvol whose import was never adopted")
 	}
 }
 

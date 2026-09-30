@@ -144,7 +144,7 @@ pillar-csi destroys a zvol without `-r`, so while the snapshot exists, `DeleteVo
 
 ## Roll back
 
-**Before the PVC binds.** A refused claim holds nothing. Delete the new PVC. The zvol is unchanged, and the snapshot is only needed if you wrote to the zvol by hand.
+**Before the PVC binds.** A refused claim holds nothing. Delete the new PVC. When the claim is deleted, pillar-csi tells the agent to forget the claim and removes its records. It never destroys, resizes or reformats a zvol whose import did not complete, and it keeps retrying while the agent is unreachable. The zvol is unchanged, and the snapshot is only needed if you wrote to the zvol by hand.
 
 **After the PVC binds.** To restore the data as it was before the move, stop the workload, wait until its `VolumeAttachment` is gone as in step 2, then roll the zvol back on the storage node and start the workload again:
 
@@ -171,8 +171,8 @@ The PVC stays `Pending`, and its events show one of these messages. `<annotation
 | `<annotation> dataset ... lives in pool ... but the PillarStore selects pool ...` | The first component is not the store's `pool`. | Use a StorageClass whose store has that pool. |
 | `<annotation> dataset ... is not under the PillarStore's parent dataset ...` | The path between pool and zvol name is not exactly the store's `parentDataset`: a sibling such as `hot-data/k8s-other/x`, a deeper zvol such as `hot-data/k8s/a/b`, or a pool-root zvol for a store with a `parentDataset`. | Use a store with that `parentDataset`, or `zfs rename` the zvol under the store's `parentDataset`. |
 | `<annotation>: zvol ... is already managed by volume ... (PillarVolumeState ...); delete that volume first` | Another pillar-csi volume already owns the zvol, for example another PVC imported it. | Import each zvol once. |
-| `<annotation>: zvol ... is reserved by volume ... (PillarVolumeReservation ...); delete that volume first` | Another PVC claimed the zvol at the same moment; its reservation won the atomic create. | Import each zvol once; delete the other PVC first if it is stale. |
-| `<annotation>: zvol ... reservation of abandoned volume ... released; retry the import` | The earlier claim's owner record was never written and its PVC is gone (the controller crashed between the reservation and the state record). | Nothing to do; the retry the message asks for proceeds on its own. |
+| ``<annotation>: zvol ... is reserved by volume ... of claim ... (PillarVolumeReservation ...); delete that claim first, or, after verifying that claim and its PillarVolumeState no longer exist, release the reservation with `kubectl delete pillarvolumereservation ...` `` | Another claim holds the zvol's reservation. Usually another PVC imports the same zvol. Rarely, the controller stopped after reserving the zvol for an earlier claim and before recording that claim's volume. | Import each zvol once. If the named claim is stale, delete it. If the claim and its volume are gone, release the reservation by hand (see [Release a stale reservation](#release-a-stale-reservation)). |
+| `cannot expand volume ...` or `cannot publish volume ...: its import of zvol ... was never adopted` | The volume's import has not completed, so pillar-csi does not manage the zvol yet. | Fix the import refusal first. |
 | `<annotation>: volume ... was already provisioned without an import; delete the PersistentVolumeClaim and re-create it to import a zvol` | The annotation was added to a claim whose provisioning had already started. | Delete the PVC and create it again with the annotation. |
 | `<annotation>: volume ... already imported ...; the import source cannot be changed` | The annotation changed after the import started. | Restore the first value, or delete the PVC and create it again. |
 | `import of volume ... refused: missing: dataset ... does not exist` | No dataset with that name exists on the storage node. | Check the name with `zfs list -t volume`. |
@@ -188,3 +188,28 @@ The PVC stays `Pending`, and its events show one of these messages. `<annotation
 | `import of volume ... refused: layout: expected dataset ... does not match the resolved dataset ...` | The store's `pool`/`parentDataset` disagree with the agent's backend layout, so the agent resolved a different dataset than the annotation named. | Align the store with the agent's `backends` entry, then retry. |
 
 Messages that start with `import of volume` and the parent dataset mismatch come from the agent on the storage node. The others come from the controller before it calls the agent.
+
+### Release a stale reservation
+
+pillar-csi reserves a zvol with a `PillarVolumeReservation` before it calls the agent, so that two claims cannot import the same zvol. When the claim is deleted, the reservation is removed with the claim's volume. The controller never removes a reservation on its own: it cannot tell a controller that crashed from one that is only paused and could still reach the agent. If the claim that holds the reservation is gone, release the reservation by hand:
+
+1. Read the owner from the refusal message, or from the reservation:
+
+   ```sh
+   kubectl get pillarvolumereservation <name> -o yaml
+   ```
+
+2. Check that the owning claim (`spec.claimRef`, same namespace, name and UID) no longer exists, and that no `PillarVolumeState` named `spec.ownerVolume` exists:
+
+   ```sh
+   kubectl -n <namespace> get pvc <claim name> -o jsonpath='{.metadata.uid}'
+   kubectl get pillarvolumestate <ownerVolume>
+   ```
+
+3. Only when both are gone, delete the reservation:
+
+   ```sh
+   kubectl delete pillarvolumereservation <name>
+   ```
+
+The next retry of the new claim then reserves the zvol again and imports it.

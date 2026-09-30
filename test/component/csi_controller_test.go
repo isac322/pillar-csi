@@ -89,6 +89,7 @@ type csiMockAgent struct {
 	expandVolumeFn   func(ctx context.Context, req *agentv1.ExpandVolumeRequest) (*agentv1.ExpandVolumeResponse, error)
 	allowInitiatorFn func(ctx context.Context, req *agentv1.AllowInitiatorRequest) (*agentv1.AllowInitiatorResponse, error)
 	denyInitiatorFn  func(ctx context.Context, req *agentv1.DenyInitiatorRequest) (*agentv1.DenyInitiatorResponse, error)
+	releaseVolumeFn  func(ctx context.Context, req *agentv1.ReleaseVolumeRequest) (*agentv1.ReleaseVolumeResponse, error)
 
 	// call counters
 	createVolumeCalls   int
@@ -99,6 +100,7 @@ type csiMockAgent struct {
 	expandVolumeCalls   int
 	allowInitiatorCalls int
 	denyInitiatorCalls  int
+	releaseVolumeCalls  int
 }
 
 // Verify csiMockAgent implements the full AgentServiceClient interface.
@@ -138,6 +140,16 @@ func (m *csiMockAgent) DeleteVolume(
 		return m.deleteVolumeFn(ctx, req)
 	}
 	return &agentv1.DeleteVolumeResponse{}, nil
+}
+
+func (m *csiMockAgent) ReleaseVolume(
+	ctx context.Context, req *agentv1.ReleaseVolumeRequest, _ ...grpc.CallOption,
+) (*agentv1.ReleaseVolumeResponse, error) {
+	m.releaseVolumeCalls++
+	if m.releaseVolumeFn != nil {
+		return m.releaseVolumeFn(ctx, req)
+	}
+	return &agentv1.ReleaseVolumeResponse{}, nil
 }
 
 func (m *csiMockAgent) ExportVolume(

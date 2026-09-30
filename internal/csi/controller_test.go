@@ -90,6 +90,11 @@ type mockAgentClient struct {
 	// Responses for DeleteVolume (DeleteVolume Step 2).
 	deleteVolumeErr error
 
+	// Responses for ReleaseVolume (teardown of an import never adopted).
+	releaseVolumeErr     error
+	releaseVolumeCalls   int
+	lastReleaseVolumeReq *agentv1.ReleaseVolumeRequest
+
 	// Responses for GetCapacity.
 	getCapacityResp *agentv1.GetCapacityResponse
 	getCapacityErr  error
@@ -224,6 +229,19 @@ func (m *mockAgentClient) DeleteVolume(
 		return nil, m.deleteVolumeErr
 	}
 	return &agentv1.DeleteVolumeResponse{}, nil
+}
+
+func (m *mockAgentClient) ReleaseVolume(
+	_ context.Context,
+	req *agentv1.ReleaseVolumeRequest,
+	_ ...grpc.CallOption,
+) (*agentv1.ReleaseVolumeResponse, error) {
+	m.releaseVolumeCalls++
+	m.lastReleaseVolumeReq = req
+	if m.releaseVolumeErr != nil {
+		return nil, m.releaseVolumeErr
+	}
+	return &agentv1.ReleaseVolumeResponse{}, nil
 }
 
 // Stubbed methods — not used by CreateVolume or DeleteVolume.

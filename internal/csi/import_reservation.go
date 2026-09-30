@@ -29,9 +29,13 @@ package csi
 // The reservation is held for the whole lifecycle — refused or failed import
 // retries keep it, because the claim still intends to import — and is
 // released only when the owning PillarVolumeState is removed (see
-// finishDelete).  A reservation whose owner was never written and whose
-// recorded claim no longer exists is orphaned (the controller crashed between
-// the two creates) and may be claimed by a new contender.
+// finishDelete).  It is never reclaimed automatically: a contender cannot
+// tell a crashed creator from one that is merely paused (a GC pause, a
+// partitioned replica) and could still reach the agent, so a reservation
+// whose owner never wrote its record stays until an operator who verified
+// the owning claim is gone deletes it (the refusal names the exact command).
+// Every delete carries UID and resourceVersion preconditions, so a stale
+// read never removes a replacement reservation.
 //
 // Reservations are read and compared through the uncached apiReader like the
 // PillarVolumeState scans: a stale informer copy could hide a reservation
@@ -45,10 +49,10 @@ import (
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1alpha1 "github.com/isac322/pillar-csi/api/v1alpha1"
 )
@@ -67,12 +71,10 @@ func reservationName(agentName, backendType, agentVolID string) string {
 }
 
 // reserveBackendVolume takes the reservation for the backend volume of the
-// import lifecycle pvName, creating it when it does not exist and claiming an
-// orphaned one when its owner record was never written.  A reservation held
-// by a different lifecycle is a FailedPrecondition naming the owner; the
-// claim retries until that lifecycle ends or is reaped.  The claimRef
-// argument records the owning claim so an orphan can be recognized (nil when
-// the provisioner did not report one).
+// import lifecycle pvName, creating it when it does not exist.  A
+// reservation held by any other lifecycle or claim is a FailedPrecondition
+// naming the owner (see reservationOwnerCheck).  The claimRef argument
+// records the owning claim (nil when the provisioner did not report one).
 func (s *ControllerServer) reserveBackendVolume(
 	ctx context.Context,
 	pvName, agentName, backendType, agentVolID, dataset string,
@@ -83,7 +85,7 @@ func (s *ControllerServer) reserveBackendVolume(
 	err := s.uncachedReader().Get(ctx, types.NamespacedName{Name: name}, res)
 	switch {
 	case err == nil:
-		return s.checkReservationOwner(ctx, res, pvName, dataset)
+		return reservationOwnerCheck(res, pvName, dataset, claimRef)
 	case !k8serrors.IsNotFound(err):
 		return status.Errorf(codes.Internal,
 			"get PillarVolumeReservation %q: %v", name, err)
@@ -103,101 +105,78 @@ func (s *ControllerServer) reserveBackendVolume(
 	case err == nil:
 		return nil
 	case k8serrors.IsAlreadyExists(err):
-		// Lost the create race: re-read the winner's record uncached and
-		// refuse (or claim it) on what it actually says.
-		held := &v1alpha1.PillarVolumeReservation{}
-		getErr := s.uncachedReader().Get(ctx, types.NamespacedName{Name: name}, held)
-		if getErr != nil {
-			return status.Errorf(codes.Internal,
-				"get PillarVolumeReservation %q: %v", name, getErr)
-		}
-		return s.checkReservationOwner(ctx, held, pvName, dataset)
+		// Lost the create race: refuse on what the winner's record says.
+		return s.verifyReservation(ctx, pvName, agentName, backendType, agentVolID, dataset, claimRef)
 	default:
 		return status.Errorf(codes.Internal,
 			"create PillarVolumeReservation %q: %v", name, err)
 	}
 }
 
-// checkReservationOwner accepts the reservation when this lifecycle owns it
-// or when it is orphaned; otherwise it refuses the import with
-// FailedPrecondition naming the recorded owner.
-func (s *ControllerServer) checkReservationOwner(
+// verifyReservation re-reads the reservation of the backend volume uncached
+// and refuses unless the lifecycle pvName of claimRef holds it.  CreateVolume
+// calls it immediately before ImportVolume, the first agent call of an
+// import, so a reservation deleted by an operator and re-taken by another
+// claim since this attempt reserved it stops the attempt before it can bind
+// the zvol at the agent.
+func (s *ControllerServer) verifyReservation(
 	ctx context.Context,
-	res *v1alpha1.PillarVolumeReservation,
-	pvName, dataset string,
+	pvName, agentName, backendType, agentVolID, dataset string,
+	claimRef *v1alpha1.VolumeClaimRef,
 ) error {
-	owner := res.Spec.OwnerVolume
-	if owner == pvName {
-		return nil
-	}
-	orphaned, err := s.reservationOrphaned(ctx, res)
-	if err != nil {
-		return err
-	}
-	if !orphaned {
-		return status.Errorf(codes.FailedPrecondition,
-			"%s: zvol %q is reserved by volume %q (PillarVolumeReservation %q); "+
-				"delete that volume first",
-			v1alpha1.AnnotationImportZvol, dataset, owner, res.Name)
-	}
-	// The reservation's owner never completed: delete the stale record so the
-	// next attempt re-creates it.  Delete is preconditions-free on purpose —
-	// any contender deletes the same orphan and only one re-create wins.
-	err = s.k8sClient.Delete(ctx, res)
-	if err != nil && !k8serrors.IsNotFound(err) {
+	name := reservationName(agentName, backendType, agentVolID)
+	res := &v1alpha1.PillarVolumeReservation{}
+	err := s.uncachedReader().Get(ctx, types.NamespacedName{Name: name}, res)
+	switch {
+	case k8serrors.IsNotFound(err):
+		return status.Errorf(codes.Aborted,
+			"%s: zvol %q: PillarVolumeReservation %q of volume %q disappeared; retry the import",
+			v1alpha1.AnnotationImportZvol, dataset, name, pvName)
+	case err != nil:
 		return status.Errorf(codes.Internal,
-			"delete orphaned PillarVolumeReservation %q: %v", res.Name, err)
+			"get PillarVolumeReservation %q: %v", name, err)
 	}
-	return status.Errorf(codes.Unavailable,
-		"%s: zvol %q reservation of abandoned volume %q released; retry the import",
-		v1alpha1.AnnotationImportZvol, dataset, owner)
+	return reservationOwnerCheck(res, pvName, dataset, claimRef)
 }
 
-// reservationOrphaned reports whether the reservation's owning lifecycle is
-// gone for good: the owner PillarVolumeState does not exist — either it was
-// never created (the reservation is created first) or it was already
-// retired — and the recorded claim, when any, no longer exists.
-func (s *ControllerServer) reservationOrphaned(
-	ctx context.Context,
+// reservationOwnerCheck accepts the reservation only when the lifecycle
+// pvName holds it for the same claim: the recorded owner volume must match
+// and, when both sides know the claim UID, so must the UID.  Anything else is
+// refused with FailedPrecondition naming the owner and the command that
+// releases the reservation once an operator verified its claim is gone.
+func reservationOwnerCheck(
 	res *v1alpha1.PillarVolumeReservation,
-) (bool, error) {
-	_, exists, err := s.readVolumeState(ctx, res.Spec.OwnerVolume)
-	if err != nil {
-		return false, status.Errorf(codes.Internal, "%v", err)
+	pvName, dataset string,
+	claimRef *v1alpha1.VolumeClaimRef,
+) error {
+	held := res.Spec.ClaimRef
+	sameClaim := held == nil || claimRef == nil || held.UID == "" || claimRef.UID == "" ||
+		held.UID == claimRef.UID
+	if res.Spec.OwnerVolume == pvName && sameClaim {
+		return nil
 	}
-	if exists {
-		return false, nil
+	owner := "volume " + res.Spec.OwnerVolume
+	if held != nil && held.Name != "" {
+		owner += " of claim " + held.Namespace + "/" + held.Name
+		if held.UID != "" {
+			owner += " (uid " + held.UID + ")"
+		}
 	}
-	ref := res.Spec.ClaimRef
-	if ref == nil || ref.Name == "" || ref.Namespace == "" {
-		// No recorded claim: the owner record is the only trace, and it is
-		// gone.  A claim-less reservation outlives nothing else.
-		return true, nil
-	}
-	claim := &corev1.PersistentVolumeClaim{}
-	getErr := s.uncachedReader().Get(ctx,
-		types.NamespacedName{Namespace: ref.Namespace, Name: ref.Name}, claim)
-	switch {
-	case k8serrors.IsNotFound(getErr):
-		return true, nil
-	case getErr != nil:
-		return false, status.Errorf(codes.Internal,
-			"get PersistentVolumeClaim %s/%s: %v", ref.Namespace, ref.Name, getErr)
-	}
-	// A claim re-created under the same name is a different claim; when no
-	// UID was recorded the named claim's existence still holds the
-	// reservation.
-	if ref.UID != "" && claim.UID != types.UID(ref.UID) {
-		return true, nil
-	}
-	return false, nil
+	return status.Errorf(codes.FailedPrecondition,
+		"%s: zvol %q is reserved by %s (PillarVolumeReservation %q); delete that claim first, "+
+			"or, after verifying that claim and its PillarVolumeState no longer exist, "+
+			"release the reservation with `kubectl delete pillarvolumereservation %s`",
+		v1alpha1.AnnotationImportZvol, dataset, owner, res.Name, res.Name)
 }
 
 // releaseBackendVolume drops the reservation of the backend volume encoded
 // in volumeID — <agent>/<protocol>/<backend>/<agent-vol-id> — but only when
 // it is still held by the ending lifecycle pvName: a reservation recorded
-// for a different owner belongs to a later lifecycle and is left alone.  A
-// missing reservation is success (non-import volumes reserve nothing).
+// for a different owner belongs to a later lifecycle and is left alone.  The
+// delete is preconditioned on the UID and resourceVersion that were read, so
+// a reservation replaced in between is never removed; a conflict is re-read
+// and decided again on the next attempt.  A missing reservation is success
+// (non-import volumes reserve nothing).
 func (s *ControllerServer) releaseBackendVolume(
 	ctx context.Context,
 	pvName, volumeID string,
@@ -219,10 +198,17 @@ func (s *ControllerServer) releaseBackendVolume(
 	if res.Spec.OwnerVolume != pvName {
 		return nil // a later lifecycle already holds the reservation
 	}
-	err = s.k8sClient.Delete(ctx, res)
-	if err != nil && !k8serrors.IsNotFound(err) {
+	uid, rv := res.UID, res.ResourceVersion
+	err = s.k8sClient.Delete(ctx, res,
+		ctrlclient.Preconditions{UID: &uid, ResourceVersion: &rv})
+	switch {
+	case err == nil, k8serrors.IsNotFound(err):
+		return nil
+	case k8serrors.IsConflict(err):
+		return status.Errorf(codes.Aborted,
+			"PillarVolumeReservation %q changed while volume %q released it; retry", name, pvName)
+	default:
 		return status.Errorf(codes.Internal,
 			"delete PillarVolumeReservation %q: %v", name, err)
 	}
-	return nil
 }

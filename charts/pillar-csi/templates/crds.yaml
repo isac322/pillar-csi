@@ -1206,9 +1206,10 @@ spec:
           deterministic name, so two concurrent CreateVolume claims on the same
           backend volume — for example two PVCs importing the same zvol — cannot both
           start a lifecycle: the loser sees AlreadyExists and is refused.  The
-          reservation is deleted when the owning PillarVolumeState is removed; one
-          whose owner was never written and whose claim is gone is orphaned and may
-          be claimed by a new contender.
+          reservation is deleted when the owning PillarVolumeState is removed.  It is
+          never reclaimed automatically: one whose owner never wrote its record (the
+          controller crashed in between) stays until an operator who verified the
+          owning claim is gone deletes it with kubectl.
         properties:
           apiVersion:
             description: |-
@@ -1253,9 +1254,9 @@ spec:
               claimRef:
                 description: |-
                   claimRef identifies the PersistentVolumeClaim the owning lifecycle
-                  provisions for.  It lets a contender recognize a reservation whose
-                  owner record was never written and whose claim is already gone: such a
-                  reservation is orphaned and may be taken over.
+                  provisions for.  A CreateVolume for any other claim (or claim UID) is
+                  refused while the reservation exists; the refusal names this claim so
+                  an operator can verify it is gone before deleting the reservation.
                 properties:
                   name:
                     description: name is the name of the PersistentVolumeClaim.
@@ -1850,9 +1851,11 @@ spec:
                   spec.importedFrom volume: the agent durably adopted the pre-existing
                   zvol into this lifecycle.  While it is unset the lifecycle cannot prove
                   the agent ever took ownership, so ReapAbandonedVolume and DeleteVolume
-                  must retire the record without calling UnexportVolume/DeleteVolume on
-                  the agent — a refused or lost-response import that was torn down anyway
-                  would destroy a zvol this driver never owned.
+                  end the lifecycle with agent.ReleaseVolume — which retires it at the
+                  agent without touching the zvol — instead of UnexportVolume and
+                  DeleteVolume, and ControllerExpandVolume and ControllerPublishVolume
+                  refuse it: a refused or lost-response import that was torn down,
+                  resized or exposed anyway would harm a zvol this driver never owned.
                 type: boolean
               localAttachNode:
                 description: |-

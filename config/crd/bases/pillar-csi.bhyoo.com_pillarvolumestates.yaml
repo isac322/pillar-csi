@@ -559,9 +559,11 @@ spec:
                   spec.importedFrom volume: the agent durably adopted the pre-existing
                   zvol into this lifecycle.  While it is unset the lifecycle cannot prove
                   the agent ever took ownership, so ReapAbandonedVolume and DeleteVolume
-                  must retire the record without calling UnexportVolume/DeleteVolume on
-                  the agent — a refused or lost-response import that was torn down anyway
-                  would destroy a zvol this driver never owned.
+                  end the lifecycle with agent.ReleaseVolume — which retires it at the
+                  agent without touching the zvol — instead of UnexportVolume and
+                  DeleteVolume, and ControllerExpandVolume and ControllerPublishVolume
+                  refuse it: a refused or lost-response import that was torn down,
+                  resized or exposed anyway would harm a zvol this driver never owned.
                 type: boolean
               localAttachNode:
                 description: |-

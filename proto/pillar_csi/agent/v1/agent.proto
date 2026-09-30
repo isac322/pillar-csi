@@ -145,6 +145,23 @@ service AgentService {
   // requested_bytes.  The agent returns the actual allocated size.
   rpc ExpandVolume(ExpandVolumeRequest) returns (ExpandVolumeResponse);
 
+  // ReleaseVolume ends a volume lifecycle's ownership of volume_id without
+  // touching the backend resource.  It retires a lifecycle whose backend
+  // volume it must not destroy — an import that was never durably adopted —
+  // so the pre-existing resource is never destroyed, resized or modified.
+  //
+  // When the fence's lifecycle owns the volume ID, the agent removes the
+  // lifecycle's network export (like UnexportVolume) and records the
+  // lifecycle as ended.  When another lifecycle owns it, or no lifecycle
+  // does, the agent only records the fence's lifecycle as retired and leaves
+  // the other lifecycle's resources untouched.  Afterwards every mutating
+  // request carrying the released lifecycle's token (including a delayed
+  // ImportVolume) is rejected with FAILED_PRECONDITION, while a new
+  // lifecycle may still import or create the volume ID.
+  //
+  // Idempotent: releasing an already released lifecycle returns success.
+  rpc ReleaseVolume(ReleaseVolumeRequest) returns (ReleaseVolumeResponse);
+
   // ── Protocol target (export) lifecycle ────────────────────────────────────
 
   // ExportVolume creates the network-protocol target entry that exposes the
@@ -661,6 +678,24 @@ message DeleteVolumeRequest {
 }
 
 message DeleteVolumeResponse {}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ReleaseVolume — end a lifecycle's ownership without touching the backend
+// ─────────────────────────────────────────────────────────────────────────────
+
+message ReleaseVolumeRequest {
+  // Unique volume identifier: "<pool>/<volume-name>".
+  string volume_id = 1;
+
+  // Protocol type of the lifecycle's export to remove, if any.
+  ProtocolType protocol_type = 2;
+
+  // Fencing token: the PillarVolumeState UID and the publicationGeneration
+  // the controller committed for this operation.  See FencingToken.
+  FencingToken fence = 3;
+}
+
+message ReleaseVolumeResponse {}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ExpandVolume — resize backend storage resource

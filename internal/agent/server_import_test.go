@@ -29,6 +29,7 @@ import (
 	agentv1 "github.com/isac322/pillar-csi/gen/go/pillar_csi/agent/v1"
 	"github.com/isac322/pillar-csi/internal/agent"
 	"github.com/isac322/pillar-csi/internal/agent/backend"
+	"github.com/isac322/pillar-csi/internal/agent/nvmeof"
 )
 
 // mockImporterBackend adds an Import implementation to mockBackend, making it
@@ -322,5 +323,196 @@ func TestImportVolume_ExpectedDatasetForwarded(t *testing.T) {
 	}
 	if len(mb.importExpectedDataset) != 1 || mb.importExpectedDataset[0] != "tank/pvc-abc" {
 		t.Fatalf("backend saw expectedDataset %v, want [tank/pvc-abc]", mb.importExpectedDataset)
+	}
+}
+
+// newReleaseTestServer is newImportTestServer with a temp configfs root so
+// exports can be created and observed.
+func newReleaseTestServer(t *testing.T, mb *mockImporterBackend) (srv *agent.Server, cfgRoot string) {
+	t.Helper()
+	cfgRoot = t.TempDir()
+	srv = agent.NewServer(map[string]backend.VolumeBackend{testPool: mb}, cfgRoot,
+		agent.WithDrainStateDir(t.TempDir()))
+	agent.SetDeviceChecker(t, srv, nvmeof.AlwaysPresentChecker)
+	return srv, cfgRoot
+}
+
+// nvmetSubsystems counts the NVMe-oF subsystems under cfgRoot.
+func nvmetSubsystems(t *testing.T, cfgRoot string) int {
+	t.Helper()
+	subs, err := filepath.Glob(filepath.Join(cfgRoot, "nvmet", "subsystems", "*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return len(subs)
+}
+
+func releaseRequest(fence *agentv1.FencingToken) *agentv1.ReleaseVolumeRequest {
+	return &agentv1.ReleaseVolumeRequest{
+		VolumeId:     testVolumeID,
+		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
+		Fence:        fence,
+	}
+}
+
+// requireFencedOut asserts err is the agent's FailedPrecondition fencing
+// rejection.
+func requireFencedOut(t *testing.T, what string, err error) {
+	t.Helper()
+	if st, _ := status.FromError(err); err == nil || st.Code() != codes.FailedPrecondition {
+		t.Fatalf("%s: err = %v, want FailedPrecondition (fenced out)", what, err)
+	}
+}
+
+// Releasing a lifecycle whose import landed (the controller lost the
+// response, so it never recorded the adoption) removes that lifecycle's
+// export and retires it at the agent without touching the zvol.  A delayed
+// ImportVolume — or any other mutating request — of the released lifecycle
+// is then rejected, while a new claim's lifecycle can still import.
+func TestReleaseVolume_RetiresLandedImportWithoutBackendMutation(t *testing.T) {
+	t.Parallel()
+	mb := &mockImporterBackend{
+		mockBackend:      &mockBackend{},
+		importDevicePath: testDevicePath,
+		importSize:       1 << 30,
+	}
+	srv, cfgRoot := newReleaseTestServer(t, mb)
+	ctx := context.Background()
+	importGen := &agentv1.FencingToken{VolumeUid: "lifecycle-a", Generation: 1}
+
+	importReq := importRequest(t)
+	importReq.Fence = importGen
+	if _, err := srv.ImportVolume(ctx, importReq); err != nil {
+		t.Fatalf("ImportVolume: %v", err)
+	}
+	if _, err := srv.ExportVolume(ctx, &agentv1.ExportVolumeRequest{
+		VolumeId: testVolumeID, ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
+		ExportParams: nvmeofExportParams("10.0.0.1", 4420), DevicePath: testDevicePath,
+		Fence: importGen,
+	}); err != nil {
+		t.Fatalf("ExportVolume: %v", err)
+	}
+	if nvmetSubsystems(t, cfgRoot) != 1 {
+		t.Fatal("export did not create a subsystem")
+	}
+
+	teardown := &agentv1.FencingToken{VolumeUid: "lifecycle-a", Generation: 2}
+	if _, err := srv.ReleaseVolume(ctx, releaseRequest(teardown)); err != nil {
+		t.Fatalf("ReleaseVolume: %v", err)
+	}
+	if n := nvmetSubsystems(t, cfgRoot); n != 0 {
+		t.Fatalf("ReleaseVolume left %d subsystem(s) of the released lifecycle", n)
+	}
+	// Idempotent: a retry after a lost response succeeds.
+	if _, err := srv.ReleaseVolume(ctx, releaseRequest(teardown)); err != nil {
+		t.Fatalf("ReleaseVolume retry: %v", err)
+	}
+
+	// Delayed requests of the released lifecycle, at any generation.
+	for _, fence := range []*agentv1.FencingToken{importGen, teardown} {
+		delayed := importRequest(t)
+		delayed.Fence = fence
+		_, err := srv.ImportVolume(ctx, delayed)
+		requireFencedOut(t, "delayed ImportVolume", err)
+		_, err = srv.DeleteVolume(ctx, &agentv1.DeleteVolumeRequest{
+			VolumeId: testVolumeID, BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL, Fence: fence,
+		})
+		requireFencedOut(t, "stale DeleteVolume", err)
+		_, err = srv.ExpandVolume(ctx, &agentv1.ExpandVolumeRequest{
+			VolumeId: testVolumeID, BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
+			RequestedBytes: 2 << 30, Fence: fence,
+		})
+		requireFencedOut(t, "stale ExpandVolume", err)
+	}
+	if len(mb.deleteCalledWith) != 0 {
+		t.Fatalf("backend Delete ran %v on a released import", mb.deleteCalledWith)
+	}
+	if len(mb.importCalledWith) != 1 {
+		t.Fatalf("backend Import ran %d times, want only the original import", len(mb.importCalledWith))
+	}
+
+	// A new claim's lifecycle can import the same zvol.
+	next := importRequest(t)
+	next.Fence = &agentv1.FencingToken{VolumeUid: "lifecycle-b", Generation: 1}
+	if _, err := srv.ImportVolume(ctx, next); err != nil {
+		t.Fatalf("re-import by a new lifecycle after release: %v", err)
+	}
+}
+
+// An import the agent refused left no fencing mark, so a later ImportVolume
+// of that lifecycle (a delayed retry once the refusal cause is gone) would
+// have been admitted as a new lifecycle after the controller forgot it.
+// ReleaseVolume records the lifecycle as retired even without a mark.
+func TestReleaseVolume_RefusedImportFencesDelayedImport(t *testing.T) {
+	t.Parallel()
+	mb := &mockImporterBackend{
+		mockBackend:      &mockBackend{},
+		importDevicePath: testDevicePath,
+		importSize:       1 << 30,
+		importErr:        &backend.ImportRefusedError{VolumeID: testVolumeID, Reason: "in use"},
+	}
+	srv, _ := newReleaseTestServer(t, mb)
+	ctx := context.Background()
+	fence := &agentv1.FencingToken{VolumeUid: "lifecycle-a", Generation: 1}
+
+	req := importRequest(t)
+	req.Fence = fence
+	_, err := srv.ImportVolume(ctx, req)
+	requireFencedOut(t, "refused ImportVolume", err)
+
+	_, err = srv.ReleaseVolume(ctx,
+		releaseRequest(&agentv1.FencingToken{VolumeUid: "lifecycle-a", Generation: 2}))
+	if err != nil {
+		t.Fatalf("ReleaseVolume: %v", err)
+	}
+	mb.importErr = nil // the refusal cause is gone when the delayed retry lands
+	_, err = srv.ImportVolume(ctx, req)
+	requireFencedOut(t, "delayed ImportVolume of the released lifecycle", err)
+
+	next := importRequest(t)
+	next.Fence = &agentv1.FencingToken{VolumeUid: "lifecycle-b", Generation: 1}
+	_, err = srv.ImportVolume(ctx, next)
+	if err != nil {
+		t.Fatalf("re-import by a new lifecycle after release: %v", err)
+	}
+}
+
+// Releasing a lifecycle that never owned the volume ID leaves the owning
+// lifecycle and its export alone, and still retires the released one.
+func TestReleaseVolume_ForeignOwnerUntouched(t *testing.T) {
+	t.Parallel()
+	mb := &mockImporterBackend{
+		mockBackend:      &mockBackend{},
+		importDevicePath: testDevicePath,
+		importSize:       1 << 30,
+	}
+	srv, cfgRoot := newReleaseTestServer(t, mb)
+	ctx := context.Background()
+	owner := &agentv1.FencingToken{VolumeUid: "owner", Generation: 1}
+
+	req := importRequest(t)
+	req.Fence = owner
+	if _, err := srv.ImportVolume(ctx, req); err != nil {
+		t.Fatalf("owner ImportVolume: %v", err)
+	}
+	if _, err := srv.ExportVolume(ctx, &agentv1.ExportVolumeRequest{
+		VolumeId: testVolumeID, ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
+		ExportParams: nvmeofExportParams("10.0.0.1", 4420), DevicePath: testDevicePath, Fence: owner,
+	}); err != nil {
+		t.Fatalf("owner ExportVolume: %v", err)
+	}
+
+	if _, err := srv.ReleaseVolume(ctx,
+		releaseRequest(&agentv1.FencingToken{VolumeUid: "stranger", Generation: 5})); err != nil {
+		t.Fatalf("ReleaseVolume of a non-owner: %v", err)
+	}
+	if nvmetSubsystems(t, cfgRoot) != 1 {
+		t.Fatal("ReleaseVolume of a non-owner removed the owner's export")
+	}
+	if _, err := srv.ExpandVolume(ctx, &agentv1.ExpandVolumeRequest{
+		VolumeId: testVolumeID, BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
+		RequestedBytes: 1 << 30, Fence: owner,
+	}); err != nil {
+		t.Fatalf("owner lost the volume ID to a non-owner release: %v", err)
 	}
 }
