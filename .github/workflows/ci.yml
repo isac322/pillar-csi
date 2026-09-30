@@ -130,7 +130,17 @@ jobs:
 
       - name: Run tests
         shell: bash
-        run: make test 2>&1 | tee /tmp/tc-coverage-report.txt
+        run: |
+          set +e
+          make test 2>&1 | tee /tmp/make-test.log
+          MAKE_RC=${PIPESTATUS[0]}
+          set -e
+          awk '
+            /^=== TC Coverage Verification/ { capture=1 }
+            capture { print }
+            capture && /^=== done ===$/ { exit }
+          ' /tmp/make-test.log > /tmp/tc-coverage-report.txt
+          exit "${MAKE_RC}"
 
       - name: Emit coverage summary
         if: always()
@@ -139,7 +149,7 @@ jobs:
           {
             echo "## TC Coverage Verification"
             echo ""
-            if [ -f "$REPORT" ]; then
+            if [ -s "$REPORT" ]; then
               echo '```'
               cat "$REPORT"
               echo '```'
