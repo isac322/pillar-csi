@@ -160,15 +160,28 @@ spec:
           # endpoints as soon as readiness fails, which is what preStop
           # waits 5s for before the binary's SIGTERM Drain runs.
           livenessProbe:
+            {{ if .Values.mtls.enabled }}
+            # Kubelet gRPC probes are plaintext and cannot authenticate to the
+            # mTLS listener. TCP probes validate that the TLS listener is
+            # accepting connections without weakening the API's TLS policy.
+            tcpSocket:
+              port: {{ .Values.agent.grpcPort }}
+            {{ else }}
             grpc:
               port: {{ .Values.agent.grpcPort }}
+            {{ end }}
             initialDelaySeconds: 5
             periodSeconds: 10
             timeoutSeconds: 3
             failureThreshold: 3
           readinessProbe:
+            {{ if .Values.mtls.enabled }}
+            tcpSocket:
+              port: {{ .Values.agent.grpcPort }}
+            {{ else }}
             grpc:
               port: {{ .Values.agent.grpcPort }}
+            {{ end }}
             initialDelaySeconds: 2
             periodSeconds: 5
             timeoutSeconds: 3

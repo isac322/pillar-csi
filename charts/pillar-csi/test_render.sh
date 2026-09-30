@@ -410,6 +410,10 @@ assert_contains "${AGT_DS}" "--tls-key=/etc/pillar-csi/mtls/tls.key" \
   "mtls=on: agent must receive --tls-key flag"
 assert_contains "${AGT_DS}" "--tls-ca=/etc/pillar-csi/mtls/ca.crt" \
   "mtls=on: agent must receive --tls-ca flag"
+assert_min_count "${AGT_DS}" "tcpSocket:" 2 \
+  "mtls=on: agent liveness and readiness probes must use TCP (kubelet gRPC probes cannot do TLS)"
+assert_not_contains "${AGT_DS}" "grpc:" \
+  "mtls=on: agent probes must not use plaintext native gRPC probes"
 
 # Secret-mode does not auto-render cert-manager resources.
 assert_not_contains "${MTLS_OUT}" "kind: Issuer" \
