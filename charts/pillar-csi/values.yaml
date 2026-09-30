@@ -249,6 +249,19 @@ node:
     # and the containing directory is mounted read-only at the same path.
     netlinkNetnsPath: ""
 
+  # Periodic filesystem trim (discard) of staged filesystem volumes, so blocks
+  # freed inside a PVC return to the thin zvol / LV on the storage node.
+  # Raw block volumes are never trimmed. Opt a class or PVC out with
+  # `periodicTrim: false` in its filesystem settings.
+  trim:
+    # -- Trim staged filesystem volumes periodically. false renders
+    # --trim-interval=0 and disables the trim loop.
+    enabled: true
+    # -- How often each staged filesystem volume is trimmed (Go duration).
+    # A newly staged volume is first trimmed after a random delay within one
+    # interval.
+    interval: "168h"
+
   # Init container that runs modprobe for initiator kernel modules (best-effort).
   # Pod startup is NOT blocked if modprobe fails.
   initModprobe:

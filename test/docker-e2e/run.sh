@@ -42,6 +42,9 @@ readonly storage_class="pillar-e2e"
 readonly local_storage_class="pillar-e2e-local"
 readonly helm_namespace="pillar-csi-system"
 readonly helm_release="pillar-csi"
+# pillar-node trims staged filesystem volumes every node.trim.interval; the
+# chart default is a week, so the trim test runs the node with a short one.
+readonly trim_interval="30s"
 readonly requested_topologies="${PILLAR_E2E_TOPOLOGIES:-internal external}"
 
 active_cluster=""
@@ -967,6 +970,7 @@ install_driver() {
     --set "node.image.tag=${image_tag}"
     --set "node.image.pullPolicy=Never"
     --set "node.iscsi.netlinkNetnsPath=${host_init_netns}"
+    --set "node.trim.interval=${trim_interval}"
   )
   if [[ "${topology}" == internal ]]; then
     helm_args+=(--set "agent.backends[0].lvm.volumeGroup=${vg_name}")
@@ -1172,6 +1176,7 @@ run_tests() {
   PILLAR_E2E_CLIENT_NODE_A="${client_a}" \
   PILLAR_E2E_CLIENT_NODE_B="${client_b}" \
   PILLAR_E2E_TARGET_ADDRESS="${target_address}" \
+  PILLAR_E2E_TRIM_INTERVAL="${trim_interval}" \
     go test -tags=docker_e2e -count=1 -timeout=150m -v ./test/docker-e2e
 }
 

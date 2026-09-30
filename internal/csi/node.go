@@ -433,6 +433,11 @@ type NodeServer struct {
 	// state file.  When nil, the target is looked up in sysfs.  Override in
 	// tests.
 	dmTargetPresentFn func(name string) (bool, error)
+
+	// volumeLocks serializes, per volume ID, NodeStageVolume,
+	// NodeUnstageVolume, NodeExpandVolume and every periodic trim chunk
+	// (see trim.go).  The zero value is ready to use.
+	volumeLocks volumeLockSet
 }
 
 // Ensure NodeServer satisfies the interface at compile time.
@@ -674,6 +679,12 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 	stagingPath := req.GetStagingTargetPath()
 	volCtx := req.GetVolumeContext()
 	volCap := req.GetVolumeCapability()
+
+	// Serialize with NodeUnstageVolume, NodeExpandVolume and the periodic
+	// trim of the same volume (see trim.go).
+	unlock := n.volumeLocks.lock(volumeID)
+	defer unlock()
+
 	setSpanAccessType(ctx, volCap)
 
 	// ── Step 1: Resolve attach mode ─────────────────────────────────────────
@@ -799,6 +810,12 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 				"NodeStageVolume: check if %q is mounted: %v", bindTarget, mountCheckErr)
 		}
 		if mounted {
+			// Records written before the periodic trim existed lack the
+			// staging path; backfill it so the trim loop need not derive it.
+			if existingState.StagingPath == "" {
+				existingState.VolumeID = volumeID
+				existingState.StagingPath = stagingPath
+			}
 			// Re-persist the committed record so this success is acknowledged
 			// only after the file and directory syncs complete.
 			rewriteErr := n.writeStageState(volumeID, existingState)
@@ -820,6 +837,7 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 	// any attach side effect, so a malformed VolumeContext fails fast.
 	var fsType string
 	var mkfsOpts, mountFlags []string
+	var periodicTrim *bool
 	if volCap.GetMount() != nil {
 		staged, fsErr := stageFilesystem(volCtx, volCap)
 		if fsErr != nil {
@@ -827,6 +845,7 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 				"NodeStageVolume: volume %q: %v", volumeID, fsErr)
 		}
 		fsType, mkfsOpts, mountFlags = staged.fsType, staged.mkfsOptions, staged.mountFlags
+		periodicTrim = staged.PeriodicTrim
 		trace.SpanFromContext(ctx).SetAttributes(telemetry.KeyFSType.String(fsType))
 	}
 
@@ -943,6 +962,9 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 		stageState = stageStateFromAttachResult(protocolType, accessType, targetID, address, port, attachResult)
 	}
 	stageState.FsType = fsType
+	stageState.VolumeID = volumeID
+	stageState.StagingPath = stagingPath
+	stageState.PeriodicTrim = periodicTrim
 	writeErr := n.writeStageState(volumeID, stageState)
 	if writeErr != nil {
 		return nil, failStaged(status.Errorf(codes.Internal,
@@ -1006,6 +1028,11 @@ func (n *NodeServer) NodeUnstageVolume(
 
 	volumeID := req.GetVolumeId()
 	stagingPath := req.GetStagingTargetPath()
+
+	// Serialize with NodeStageVolume, NodeExpandVolume and the periodic trim
+	// of the same volume: trim holds this lock while it trims one chunk.
+	unlock := n.volumeLocks.lock(volumeID)
+	defer unlock()
 
 	// ── State machine ordering guard ────────────────────────────────────────
 	if n.sm != nil {
@@ -1400,8 +1427,16 @@ func (n *NodeServer) NodeUnpublishVolume(
 // given volumeID.  Path separators in the volumeID are replaced with
 // underscores to produce a valid single-file filename.
 func (n *NodeServer) stateFilePath(volumeID string) string {
-	safeID := strings.ReplaceAll(volumeID, "/", "_")
-	return filepath.Join(n.stateDir, safeID+".json")
+	return filepath.Join(n.stateDir, stateFileKey(volumeID)+stateFileExt)
+}
+
+// stateFileExt is the extension of every stage state file.
+const stateFileExt = ".json"
+
+// stateFileKey is the stage state file name of volumeID without extension:
+// path separators become underscores.
+func stateFileKey(volumeID string) string {
+	return strings.ReplaceAll(volumeID, "/", "_")
 }
 
 // writeStageState serializes state to the JSON file for volumeID under

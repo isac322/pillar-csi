@@ -224,13 +224,18 @@ func TestISCSIOnlineFilesystemExpansion(t *testing.T) {
 // file's allocated blocks (st_blocks) are the space the volume really holds
 // on the storage host.  Recycled extents of earlier volumes may already be
 // allocated, so only the drop after fstrim is asserted, not the growth.
+//
+// The E2E node trims every few seconds (PILLAR_E2E_TRIM_INTERVAL), which
+// could release the payload before fstrim runs.  The claim opts out with
+// periodicTrim: false so the drop is fstrim's alone; the periodic path is
+// TestPeriodicTrimReleasesSpace.
 func TestISCSIFilesystemTrimReleasesSpace(t *testing.T) {
 	cfg := loadISCSIConfig(t)
 	backingContainer := requireEnv(t, "PILLAR_E2E_BACKING_CONTAINER")
 	backingFile := requireEnv(t, "PILLAR_E2E_BACKING_FILE")
 	ns := createNamespace(t, "iscsi-trim")
 	defer deleteNamespace(t, ns)
-	createISCSIPVC(t, ns, "data", cfg.storageClass, "Filesystem", iscsiTrimVolumeSize)
+	createAnnotatedFilesystemPVC(t, ns, "data", cfg.storageClass, iscsiTrimVolumeSize, "periodicTrim: false")
 
 	createFilesystemPod(t, ns, "trimmer", "data", cfg.clientNodeA)
 	waitForPodReady(t, ns, "trimmer")

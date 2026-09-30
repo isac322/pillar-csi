@@ -17,7 +17,7 @@ pillar-csi is one Kubernetes CSI driver for self-hosted and bare-metal clusters.
 
 ## What it is
 
-You keep a ZFS pool or an LVM volume group on a Linux machine, and pods on other nodes need block volumes from it. pillar-csi carves a zvol or logical volume for each PersistentVolumeClaim, exports it through the kernel NVMe-oF target (nvmet) or the kernel iSCSI target (LIO), and attaches it to the worker with the kernel NVMe/TCP initiator or the kernel iSCSI initiator (`iscsi_tcp`). The pod gets an ext4 or xfs filesystem, or a raw block device.
+You keep a ZFS pool or an LVM volume group on a Linux machine, and pods on other nodes need block volumes from it. pillar-csi carves a zvol or logical volume for each PersistentVolumeClaim, exports it through the kernel NVMe-oF target (nvmet) or the kernel iSCSI target (LIO), and attaches it to the worker with the kernel NVMe/TCP initiator or the kernel iSCSI initiator (`iscsi_tcp`). The pod gets an ext4 or xfs filesystem, or a raw block device. The node trims filesystem volumes weekly, so space freed inside a PVC goes back to a thin zvol or LV without a cron job ([Reclaiming freed space](https://pillar-csi.bhyoo.com/docs/how-to/volume-overrides/#reclaiming-freed-space)).
 
 One driver covers every pool and protocol you configure. You install one Helm release and describe your storage with four cluster-scoped resources. Each backend and protocol keeps the same YAML shape at every level, so a setting you write on a pool looks the same when you override it for one StorageClass or one PVC. NVMe-oF/TCP and iSCSI ship today. NFS and SMB are planned and will plug into the same resources.
 
@@ -101,7 +101,7 @@ flowchart LR
 |---|---|---|
 | `pillar-controller` | Deployment | Reconciles the `Pillar*` resources and serves the CSI controller calls: create, delete, expand, publish, unpublish |
 | `pillar-agent` | DaemonSet on storage nodes | Creates zvols and LVs, and writes the export to nvmet configfs (NVMe-oF) or LIO configfs (iSCSI) |
-| `pillar-node` | DaemonSet on workers | Connects to the target (NVMe-oF through `/dev/nvme-fabrics`, iSCSI through its in-process initiator), formats new volumes, and mounts them for the pod |
+| `pillar-node` | DaemonSet on workers | Connects to the target (NVMe-oF through `/dev/nvme-fabrics`, iSCSI through its in-process initiator), formats new volumes, mounts them for the pod, and periodically trims mounted filesystems so freed blocks return to the storage node |
 
 The controller labels a node for the agent when you create a `PillarAgent`. Both DaemonSets use the host network, so the NVMe-oF/TCP and iSCSI listeners and connections live in the host network namespace. The iSCSI initiator also needs it: the kernel's `NETLINK_ISCSI` socket exists only in the host network namespace. On nested-container nodes such as Kind, set `node.iscsi.netlinkNetnsPath` instead.
 

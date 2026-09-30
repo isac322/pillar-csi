@@ -39,7 +39,7 @@ A `PillarProtocol` sets exactly one protocol member. One with both `nvmeofTcp` a
 
 The agent exports one iSCSI target per volume. Its IQN is `iqn.2026-01.com.bhyoo.pillar-csi:` followed by the volume's pool path with `/` replaced by `.`, for example `iqn.2026-01.com.bhyoo.pillar-csi:tank.pvc-abc`. The target has one portal group (`tpgt_1`) and serves the zvol or logical volume as LUN 0.
 
-The target advertises thin provisioning (SCSI UNMAP) when the zvol or logical volume supports discard, so the worker's disk accepts discards. Freed space goes back to the pool only when the node discards it: run `fstrim` on the mount, or mount with the `discard` option. If the backing device does not support discard, the volume is still exported without UNMAP, and the agent logs `iSCSI export without thin provisioning` with the volume and device.
+The target advertises thin provisioning (SCSI UNMAP) when the zvol or logical volume supports discard, so the worker's disk accepts discards. Freed space goes back to the pool when the node discards it; pillar-node trims staged filesystem volumes weekly by default, see [Reclaiming freed space](/docs/how-to/volume-overrides/#reclaiming-freed-space). If the backing device does not support discard, the volume is still exported without UNMAP, and the agent logs `iSCSI export without thin provisioning` with the volume and device.
 
 ## Fields
 

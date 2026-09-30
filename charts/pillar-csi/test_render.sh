@@ -551,6 +551,19 @@ NOHOSTNET_AGENT="$(extract_doc "$(render --set metrics.enabled=true --set agent.
 assert_contains "${NOHOSTNET_AGENT}" "- --metrics-bind-address=:9501" \
   "metrics=on, agent.hostNetwork=false: agent must bind metrics on the pod IP (:9501)"
 
+# node.trim: weekly by default; a custom interval is passed through verbatim,
+# and disabling renders --trim-interval=0 (the binary's own default is on).
+assert_contains "${NODE_DS}" '- "--trim-interval=168h"' \
+  "default node must trim weekly (--trim-interval=168h)"
+TRIM_NODE="$(extract_doc "$(render --set node.trim.interval=30s)" "node-daemonset.yaml")"
+assert_contains "${TRIM_NODE}" '- "--trim-interval=30s"' \
+  "node.trim.interval=30s must render --trim-interval=30s"
+NOTRIM_NODE="$(extract_doc "$(render --set node.trim.enabled=false)" "node-daemonset.yaml")"
+assert_contains "${NOTRIM_NODE}" "- --trim-interval=0" \
+  "node.trim.enabled=false must render --trim-interval=0"
+assert_not_contains "${NOTRIM_NODE}" "--trim-interval=168h" \
+  "node.trim.enabled=false must not also pass the default interval"
+
 # tracing.enabled: OTEL_* env on all three binaries, resource attributes
 # expanded from earlier downward-API entries; extraEnv stays last.
 TRACING_OUT="$(render --set tracing.enabled=true --set tracing.endpoint=http://collector:4317 \

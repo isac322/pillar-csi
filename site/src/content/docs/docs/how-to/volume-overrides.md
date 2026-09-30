@@ -46,7 +46,7 @@ Only tunable fields are accepted above the base:
 | `backend` with `lvm` | `provisioningMode` (`linear` or `thin`) |
 | `protocol` with `nvmeofTcp` | `maxQueueSize`, `inCapsuleDataSize`, `ctrlLossTmo`, `reconnectDelay` |
 | `protocol` with `iscsi` | `loginTimeout`, `replacementTimeout`, `noopOutInterval`, `noopOutTimeout` |
-| `filesystem` | `fsType` (`ext4` or `xfs`), `mkfsOptions`, `mountOptions` |
+| `filesystem` | `fsType` (`ext4` or `xfs`), `mkfsOptions`, `mountOptions`, `periodicTrim` |
 
 The structural fields `zfs.pool`, `zfs.parentDataset`, `zfs.volumeType`, `lvm.volumeGroup`, `lvm.thinPool`, `nvmeofTcp.port`, `nvmeofTcp.acl`, `iscsi.port` and `iscsi.acl` decide where a volume lives and who can reach it. They are rejected with their path, for example:
 
@@ -158,5 +158,39 @@ kubectl get pvst <pv-name> -o yaml
 `mkfsOptions` runs as root on the worker, and anyone who can create a PVC can set it. pillar-csi accepts only flags that tune the filesystem being created, from a fixed list per filesystem type. Options that make mkfs read or write another file or device are rejected, and so are positional arguments. Write each flag as its own list element (`["-L", "data"]` or `["-Ldata"]`); clustered flags such as `-Fq` are rejected. The options apply only when the node formats a blank device. A volume that already has a filesystem is never reformatted.
 
 For `xfs`, the node starts from the Linux 5.15 compatibility profile described in [Filesystem compatibility](/docs/reference/support-matrix/#filesystem-compatibility). An option you set replaces the profile value for the same key, so `["-i", "exchange=1", "-n", "parent=1"]` turns on exchange-range and parent pointers. Only do that when every node that can mount the volume runs Linux 6.12 or later. `-c` (a configuration file) is not accepted.
+
+## Reclaiming freed space
+
+A thin zvol or LVM thin volume keeps blocks allocated after you delete files until the worker sends discards for them. Kubernetes does not do that, and the host's `fstrim.timer` skips volumes kubelet mounts. pillar-node does it instead: it trims every filesystem volume staged on the node once a week by default. A newly staged volume gets its first trim after a random delay within one interval, so an install or upgrade does not trim every volume at once.
+
+To keep a binding's volumes out of the periodic trim, set `periodicTrim: false` in its filesystem settings:
+
+```yaml
+spec:
+  filesystem:
+    periodicTrim: false
+```
+
+For one volume, put the same field in the PVC annotation. The PVC value wins over the binding:
+
+```yaml
+metadata:
+  annotations:
+    pillar-csi.bhyoo.com/filesystem: |
+      periodicTrim: false
+```
+
+Volumes staged before the upgrade that added this setting are trimmed like any volume without it.
+
+Change the schedule for every node with Helm:
+
+```yaml
+node:
+  trim:
+    enabled: true    # false turns the periodic trim off on every node
+    interval: 168h   # Go duration
+```
+
+Raw block volumes (`volumeMode: Block`) are never trimmed, because the filesystem inside belongs to the workload. Run discards from inside the workload if you need the space back. A volume whose device or filesystem does not support discard is skipped. pillar-node reports each attempt in `pillar_csi_node_trim_operations_total` by result, along with `pillar_csi_node_trim_bytes_total` and `pillar_csi_node_trim_duration_seconds`.
 
 See the [annotations reference](/docs/reference/annotations/) for every key pillar-csi reads or writes.

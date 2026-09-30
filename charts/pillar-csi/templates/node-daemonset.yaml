@@ -111,6 +111,11 @@ spec:
             {{- with .Values.node.iscsi.netlinkNetnsPath }}
             - {{ printf "--iscsi-netlink-netns=%s" . | quote }}
             {{- end }}
+            {{- if .Values.node.trim.enabled }}
+            - {{ printf "--trim-interval=%s" (required "node.trim.interval is required when node.trim.enabled is true" .Values.node.trim.interval) | quote }}
+            {{- else }}
+            - --trim-interval=0
+            {{- end }}
             {{- range .Values.node.extraArgs }}
             - {{ . | quote }}
             {{- end }}

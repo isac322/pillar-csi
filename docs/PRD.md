@@ -297,6 +297,7 @@ spec:
     fsType: ext4                        # ext4(기본값) | xfs
     mkfsOptions: ["-E", "lazy_itable_init=1"]  # 선택: mkfs 추가 옵션
     mountOptions: [noatime]             # 선택: 생성되는 StorageClass의 mountOptions
+    periodicTrim: true                  # 선택: false면 노드의 주기적 filesystem trim에서 제외 (생략 = 활성)
   localAttach: false                    # 선택: true면 스토리지 노드의 파드가 백엔드 디바이스를 직접 attach (아래 "로컬 attach" 참조)
   overrides:                            # 선택: 튜닝 가능한 부분집합만 허용
     backend:                            # 정확히 하나의 멤버, store의 backend와 같은 멤버여야 한다
@@ -413,6 +414,7 @@ PVC annotation 문서 pillar-csi.bhyoo.com/{backend,protocol,filesystem}   (볼�
 | protocol | `nvmeofTcp.maxQueueSize` (16-1024), `inCapsuleDataSize` (>= 1024), `ctrlLossTmo` (>= 0), `reconnectDelay` (>= 0) | 필드 단위, 마지막 계층의 값 |
 | protocol | `iscsi.loginTimeout` (>= 1), `replacementTimeout` (>= 0), `noopOutInterval` (>= 0), `noopOutTimeout` (>= 0) | 필드 단위, 마지막 계층의 값 |
 | filesystem | `fsType` (`ext4` \| `xfs`) | 마지막 계층의 값 |
+| filesystem | `periodicTrim` (bool, 생략 = 활성) | 마지막 계층의 값 |
 | filesystem | `mkfsOptions`, `mountOptions` | 생략 = 상속, 명시적 `[]` = 비움, 값 = 교체 (모든 계층 동일) |
 
 backend·protocol 문서는 exactly-one union이다: 정확히 하나의 멤버만 쓸 수 있고, 그 멤버는 store의 backend(`zfs`/`lvm`)·protocol(`nvmeofTcp`/`iscsi`)과 같아야 한다. 같은 수치 범위와 기본값(ACL 기본값 false, LVM provisioningMode 기본값 linear)이 모든 계층에 적용된다.
@@ -425,6 +427,7 @@ fsType/mkfsOptions 전달 규칙:
 - 포맷 타입 우선순위: PVC `filesystem` 문서 fsType > 수동 SC `filesystem` 문서 fsType > PillarStorageClass `spec.filesystem.fsType` > ext4. 생성된 StorageClass는 바인딩의 fsType(기본값 ext4)을 `csi.storage.k8s.io/fstype`으로 싣는다. 수동 SC가 `csi.storage.k8s.io/fstype`과 fsType이 있는 `filesystem` 문서를 함께 쓰면 두 값이 같아야 한다 (다르면 `InvalidArgument`). external-provisioner는 PV fsType을 StorageClass에서만 채우므로 PVC fsType을 쓰면 PV의 `spec.csi.fsType`은 클래스 값으로 남는다. 노드는 포맷한 타입을 스테이지 상태 파일에 기록하고, VolumeContext를 받지 않는 NodeExpandVolume은 이 값으로 resize 도구를 고른다.
 - mkfsOptions는 파일시스템별 허용 목록(allowlist)만 받는다. ext4: `-b -C -D -e -E(허용 서브옵션) -F -g -G -i -I -j -J(size,fast_commit_size,location) -L -m -M -N -o -O(journal_dev 제외) -q -r -T -U -v`, xfs: `-b -d -i -l -m -n -s`(각각 허용 서브옵션) `-f -K -L -q`. 다른 파일/디바이스를 여는 옵션(`-J device=`(LABEL=/UUID= 포함), `-l logdev=`, `-r rtdev=`, `-d name=/file=`, ext4 `-d`/`-l`/`-z`, xfs `-p`/`-c`), 파일시스템을 만들지 않거나 다른 결과를 내는 옵션(ext4 `-n`/`-S`/`-V`/`-t`/`-E offset=`, xfs `-N`), 위치 인자·긴 옵션·묶인 플래그(`-Fq`)는 거부된다.
 - 적용될 수 없는 설정은 CreateVolume이 `InvalidArgument`로 거부한다: 잘못된 YAML 문서, 알 수 없는 키·구조적 필드, 허용 목록 밖 mkfs 옵션(포맷할 fsType 기준), ext4/xfs 이외의 fsType, `volumeMode: Block` PVC의 PVC `filesystem` 문서 fsType/mkfsOptions. 클래스 수준 mkfsOptions는 Block 볼륨에서 `csi.storage.k8s.io/fstype`처럼 무시된다.
+- `periodicTrim`이 어느 계층에든 설정되면 CreateVolume은 resolve된 값을 VolumeContext `pillar-csi.bhyoo.com/periodic-trim`(`"true"`\|`"false"`)에 기록한다. 설정이 없으면 키를 싣지 않으며 노드 설정(활성)을 따른다. 노드는 이 값을 스테이지 상태에 저장한다 (§5.5).
 
 **해석 방식 (단일 resolve 지점):** 유효 설정은 CreateVolume에서 한 번만, live CR로부터 resolve한다.
 
@@ -549,6 +552,7 @@ namespace가 꺼진 동안에도 ControllerExpandVolume은 백엔드를 키운�
 │  │    - SMB: mount.cifs / umount                         │ │
 │  │  • 유저스페이스 도구 컨테이너 번들                         │ │
 │  │  • Init container: 커널 모듈 modprobe (best-effort)     │ │
+│  │  • periodic filesystem trim (FITRIM)                  │ │
 │  │  • CSI sidecars: node-driver-registrar, liveness-probe│ │
 │  └───────────────────────────────────────────────────────┘ │
 │                                                           │
@@ -853,6 +857,29 @@ NVMe NQN: nqn.2024-01.com.bhyoo.pillar-csi:rock5bp:pvc-abc123
 2. pillar-node:
    a. volumeMode=Filesystem: staging → pod mount point bind mount
    b. volumeMode=Block: 블록 디바이스를 pod에 device file로 제공
+```
+
+### 5.5 주기적 filesystem trim (pillar-node)
+
+thin zvol·LV는 노드가 discard를 보내야만 해제된 블록을 돌려받는다. Kubernetes와 호스트 `fstrim.timer`는 kubelet이
+마운트한 PVC를 trim하지 않으므로 pillar-node가 스테이지한 filesystem 볼륨을 직접 trim한다 (ceph-csi ReclaimSpace,
+Longhorn filesystem-trim, Portworx auto-fstrim과 같은 역할).
+
+```
+1. pillar-node 안의 백그라운드 루프 하나. CRD·sidecar·fstrim 바이너리 없음.
+   --trim-interval (기본 168h, 0 = 비활성; Helm node.trim.enabled/node.trim.interval)
+2. 대상: 이 노드에 스테이지된 volumeMode=Filesystem 볼륨의 staging 경로(globalmount)만.
+   publish 경로와 raw Block 볼륨(파일시스템은 소비자 소유)은 trim하지 않는다.
+   PVC/클래스 filesystem 문서의 periodicTrim: false 볼륨도 제외.
+3. staging 디렉터리 fd에 FITRIM ioctl. 매 trim·청크 전에 /proc/self/mountinfo로 staging 경로가
+   여전히 그 볼륨 디바이스의 마운트 지점인지 확인하고, 아니면 건너뛴다 (루트 파일시스템 trim 방지).
+4. 노드당 동시에 하나, 볼륨은 순차. 16 GiB 청크 단위로 NodeStage/NodeUnstage/NodeExpand와 같은
+   볼륨 잠금을 잡고 청크 사이에 놓는다. 잠금이 바쁘면 이번 회차는 건너뛰고 다음 tick에 재시도.
+5. 일정: 스테이지 상태의 last_trim 기준 last + interval. 기록이 없으면 스테이지 시각 + [0, interval)
+   무작위 지연. 루프는 min(interval, 1m)마다 깨어나 기한이 된 볼륨을 trim한다.
+6. EOPNOTSUPP/ENOTTY·EROFS는 건너뜀(Info 로그), 그 밖의 오류는 볼륨·경로와 함께 Error 로그.
+   메트릭: pillar_csi_node_trim_operations_total{result}, pillar_csi_node_trim_bytes_total,
+   pillar_csi_node_trim_duration_seconds.
 ```
 
 ## 6. 로드맵

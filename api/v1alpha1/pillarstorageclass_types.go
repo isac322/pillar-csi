@@ -106,6 +106,14 @@ type FilesystemConfig struct {
 	// explicit empty list [] clears them.
 	// +optional
 	MountOptions *[]string `json:"mountOptions,omitempty"`
+
+	// periodicTrim controls whether the CSI node periodically trims (FITRIM)
+	// the staged filesystem of a Filesystem-mode volume so the backend can
+	// reclaim freed blocks.  Unset follows the node setting (enabled unless
+	// the node's --trim-interval is 0); false opts the volume out.  A PVC
+	// annotation value overrides the class value for that volume.
+	// +optional
+	PeriodicTrim *bool `json:"periodicTrim,omitempty"`
 }
 
 // ZFSBackendOverrides holds the per-volume-tunable subset of

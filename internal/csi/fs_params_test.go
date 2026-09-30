@@ -26,6 +26,7 @@ import (
 	"context"
 	"maps"
 	"slices"
+	"strconv"
 	"testing"
 
 	csi "github.com/container-storage-interface/spec/lib/go/csi"
@@ -93,6 +94,119 @@ func TestCreateVolume_FilesystemSettingsReachVolumeContext(t *testing.T) {
 			t.Errorf("VolumeContext mkfs-options = %q, want PVC override", got)
 		}
 	})
+}
+
+// TestCreateVolume_PeriodicTrimPrecedence verifies that periodicTrim is
+// resolved PVC over class, persisted in spec.resolved.filesystem, and sent
+// in the VolumeContext only when some layer sets it (unset = node setting).
+func TestCreateVolume_PeriodicTrimPrecedence(t *testing.T) {
+	t.Parallel()
+	const absent = "<absent>"
+	for name, tc := range map[string]struct {
+		scDoc  string
+		pvcDoc string
+		want   string
+	}{
+		"unset everywhere":            {want: absent},
+		"class false":                 {scDoc: "periodicTrim: false\n", want: "false"},
+		"PVC false overrides class":   {scDoc: "periodicTrim: true\n", pvcDoc: "periodicTrim: false\n", want: "false"},
+		"PVC true overrides class":    {scDoc: "periodicTrim: false\n", pvcDoc: "periodicTrim: true\n", want: "true"},
+		"PVC without key inherits":    {scDoc: "periodicTrim: false\n", pvcDoc: "fsType: xfs\n", want: "false"},
+		"PVC null inherits the class": {scDoc: "periodicTrim: false\n", pvcDoc: "periodicTrim: null\n", want: "false"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			env, req := createWithPeriodicTrimDocs(t, tc.scDoc, tc.pvcDoc)
+			resp, err := env.srv.CreateVolume(context.Background(), req)
+			if err != nil {
+				t.Fatalf("CreateVolume: %v", err)
+			}
+			if got := trimOrAbsent(resp.GetVolume().GetVolumeContext()[paramPeriodicTrim]); got != tc.want {
+				t.Errorf("VolumeContext[%s] = %s, want %s", paramPeriodicTrim, got, tc.want)
+			}
+			resolved := loadResolved(t, env, req.GetName())
+			if got := trimOrAbsent(resolvedPeriodicTrim(resolved)); got != tc.want {
+				t.Errorf("spec.resolved.filesystem.periodicTrim = %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+// createWithPeriodicTrimDocs issues a mount-mode CreateVolume request with
+// the given class filesystem document and PVC filesystem annotation.
+func createWithPeriodicTrimDocs(t *testing.T, scDoc, pvcDoc string) (*controllerTestEnv, *csi.CreateVolumeRequest) {
+	t.Helper()
+	annotations := map[string]string{}
+	if pvcDoc != "" {
+		annotations[v1alpha1.AnnotationFilesystemDoc] = pvcDoc
+	}
+	env, req := newControllerTestEnvWithPVC(t, "tenant-a", "pvc-trim", annotations)
+	req = mountCreateVolumeRequest(req, "ext4")
+	if scDoc != "" {
+		req.Parameters[paramFilesystemDoc] = scDoc
+	}
+	return env, req
+}
+
+// resolvedPeriodicTrim renders the persisted periodicTrim like
+// filesystemVolumeContext would, "" when unset.
+func resolvedPeriodicTrim(resolved *v1alpha1.ResolvedVolumeConfig) string {
+	if resolved.Filesystem == nil || resolved.Filesystem.PeriodicTrim == nil {
+		return ""
+	}
+	return strconv.FormatBool(*resolved.Filesystem.PeriodicTrim)
+}
+
+// trimOrAbsent maps a missing/empty value to "<absent>" for table diffs.
+func trimOrAbsent(v string) string {
+	if v == "" {
+		return "<absent>"
+	}
+	return v
+}
+
+// TestStageFilesystem_PeriodicTrim verifies that stageFilesystem reports
+// the VolumeContext periodicTrim value, nil when the key is absent (the node
+// setting applies), and rejects anything but "true"/"false".
+func TestStageFilesystem_PeriodicTrim(t *testing.T) {
+	t.Parallel()
+	for name, tc := range map[string]struct {
+		value   *string
+		want    string // "nil", "true", "false"
+		wantErr bool
+	}{
+		"absent": {want: "nil"},
+		"true":   {value: new("true"), want: "true"},
+		"false":  {value: new("false"), want: "false"},
+		"empty":  {value: new(""), wantErr: true},
+		"TRUE":   {value: new("TRUE"), wantErr: true},
+		"1":      {value: new("1"), wantErr: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			volCtx := map[string]string{}
+			if tc.value != nil {
+				volCtx[paramPeriodicTrim] = *tc.value
+			}
+			staged, err := stageFilesystem(volCtx, mountCap("ext4"))
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("stageFilesystem accepted %q, want error", *tc.value)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("stageFilesystem: %v", err)
+			}
+			got := "nil"
+			if staged.PeriodicTrim != nil {
+				got = strconv.FormatBool(*staged.PeriodicTrim)
+			}
+			if got != tc.want {
+				t.Errorf("PeriodicTrim = %s, want %s", got, tc.want)
+			}
+		})
+	}
 }
 
 // TestCreateVolume_RejectsInapplicableFilesystemSettings verifies that a
@@ -273,6 +387,7 @@ func TestNodeStageVolume_InvalidFilesystemSettings_NoAttach(t *testing.T) {
 		"non-JSON mkfs":       {paramMkfsOptions: "-E lazy_itable_init=0"},
 		"external journal":    {paramMkfsOptions: `["-J","device=LABEL=journal"]`},
 		"empty mkfs value":    {paramMkfsOptions: `["-L",""]`},
+		"non-boolean trim":    {paramPeriodicTrim: "yes"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()

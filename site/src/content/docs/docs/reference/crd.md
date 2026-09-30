@@ -155,6 +155,7 @@ _Appears in:_
 | `fsType` _string_ | fsType is the filesystem the node formats a new volume with when<br />volumeMode is Filesystem. | ext4 | Enum: [ext4 xfs] <br />Optional <br /> |
 | `mkfsOptions` _string_ | mkfsOptions are additional mkfs arguments used when the node formats a<br />new volume; a volume that already carries a filesystem is never<br />reformatted.  Each element is one argv element (no shell); only<br />filesystem tuning flags of the formatted type are accepted.<br />A null/omitted value inherits the options of the layer below; an<br />explicit empty list [] clears them. |  | Optional <br /> |
 | `mountOptions` _string_ | mountOptions are the mount options the node applies when mounting a<br />Filesystem-mode volume.  On a PillarStorageClass they are written to<br />the generated Kubernetes StorageClass's mountOptions; a PVC annotation<br />value overrides them for that volume.<br />A null/omitted value inherits the options of the layer below; an<br />explicit empty list [] clears them. |  | Optional <br /> |
+| `periodicTrim` _boolean_ | periodicTrim controls whether the CSI node periodically trims (FITRIM)<br />the staged filesystem of a Filesystem-mode volume so the backend can<br />reclaim freed blocks.  Unset follows the node setting (enabled unless<br />the node's `--trim-interval` is 0); false opts the volume out.  A PVC<br />annotation value overrides the class value for that volume. |  | Optional <br /> |
 
 
 #### ISCSIConfig

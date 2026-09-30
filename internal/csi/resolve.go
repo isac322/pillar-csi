@@ -106,6 +106,11 @@ const (
 	// array; when present it replaces the capability's mount flags (the
 	// StorageClass mountOptions).
 	paramMountOptions = "pillar-csi.bhyoo.com/mount-options"
+
+	// ParamPeriodicTrim is the resolved periodicTrim setting ("true" or
+	// "false"), present only when a layer sets it; "false" opts the
+	// staged filesystem out of the node's periodic trim.
+	paramPeriodicTrim = "pillar-csi.bhyoo.com/periodic-trim"
 )
 
 // generatedClassParams are the pillar-csi keys a generated StorageClass may
@@ -547,6 +552,10 @@ func resolveFilesystem(
 		}
 		if layer.MountOptions != nil {
 			fs.MountOptions = copyList(layer.MountOptions)
+		}
+		if layer.PeriodicTrim != nil {
+			v := *layer.PeriodicTrim
+			fs.PeriodicTrim = &v
 		}
 	}
 	return fs, nil

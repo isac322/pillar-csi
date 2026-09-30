@@ -1497,6 +1497,9 @@ func exportParamsFromResolved(p v1alpha1.ProtocolSpec, bindAddress string) (*age
 // the resourceVersion compare-and-swap orders the durable record, and the
 // publicationGeneration fencing token it commits orders the agent RPCs: the
 // agent rejects any request older than the last one it applied.
+//
+// NodeServer keeps its own set that serializes NodeStageVolume,
+// NodeUnstageVolume, NodeExpandVolume and each periodic trim chunk.
 type volumeLockSet struct {
 	mu    sync.Mutex
 	locks map[string]*volumeLock
@@ -1516,24 +1519,52 @@ func newVolumeLockSet() *volumeLockSet {
 // function that releases it.  Idle entries are removed so the set does not
 // grow with the number of volumes ever seen.
 func (l *volumeLockSet) lock(volumeID string) (unlock func()) {
+	vl := l.acquireRef(volumeID)
+	vl.mu.Lock()
+	return func() {
+		vl.mu.Unlock()
+		l.releaseRef(volumeID, vl)
+	}
+}
+
+// tryLock takes the lock for volumeID only when no other caller holds it.
+// It returns ok false (and a nil unlock) when the lock is busy.
+func (l *volumeLockSet) tryLock(volumeID string) (unlock func(), ok bool) {
+	vl := l.acquireRef(volumeID)
+	if !vl.mu.TryLock() {
+		l.releaseRef(volumeID, vl)
+		return nil, false
+	}
+	return func() {
+		vl.mu.Unlock()
+		l.releaseRef(volumeID, vl)
+	}, true
+}
+
+// acquireRef returns the entry of volumeID, creating it, with one more
+// reference.  The zero volumeLockSet is ready to use.
+func (l *volumeLockSet) acquireRef(volumeID string) *volumeLock {
 	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.locks == nil {
+		l.locks = make(map[string]*volumeLock)
+	}
 	vl, ok := l.locks[volumeID]
 	if !ok {
 		vl = &volumeLock{}
 		l.locks[volumeID] = vl
 	}
 	vl.refs++
-	l.mu.Unlock()
+	return vl
+}
 
-	vl.mu.Lock()
-	return func() {
-		vl.mu.Unlock()
-		l.mu.Lock()
-		vl.refs--
-		if vl.refs == 0 {
-			delete(l.locks, volumeID)
-		}
-		l.mu.Unlock()
+// releaseRef drops one reference to vl and removes the idle entry.
+func (l *volumeLockSet) releaseRef(volumeID string, vl *volumeLock) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	vl.refs--
+	if vl.refs == 0 {
+		delete(l.locks, volumeID)
 	}
 }
 
