@@ -76,6 +76,10 @@ type mockAgentClient struct {
 	createVolumeResp *agentv1.CreateVolumeResponse
 	createVolumeErr  error
 
+	// Responses for ImportVolume (the import-zvol annotation path).
+	importVolumeResp *agentv1.ImportVolumeResponse
+	importVolumeErr  error
+
 	// Responses for ExportVolume (Step 2).
 	exportVolumeResp *agentv1.ExportVolumeResponse
 	exportVolumeErr  error
@@ -106,6 +110,7 @@ type mockAgentClient struct {
 
 	// Call counters — verified by tests.
 	createVolumeCalls   int
+	importVolumeCalls   int
 	exportVolumeCalls   int
 	unexportVolumeCalls int
 	deleteVolumeCalls   int
@@ -124,6 +129,8 @@ type mockAgentClient struct {
 	lastCreateVolumeReq *agentv1.CreateVolumeRequest
 	// lastExportVolumeReq captures the most recent ExportVolume request.
 	lastExportVolumeReq *agentv1.ExportVolumeRequest
+	// lastImportVolumeReq captures the most recent ImportVolume request.
+	lastImportVolumeReq *agentv1.ImportVolumeRequest
 	// lastGetCapacityReq captures the most recent GetCapacity request.
 	lastGetCapacityReq *agentv1.GetCapacityRequest
 }
@@ -147,6 +154,28 @@ func (m *mockAgentClient) CreateVolume(
 	return &agentv1.CreateVolumeResponse{
 		DevicePath:    "/dev/zvol/tank/pvc-test",
 		CapacityBytes: 1073741824, // 1 GiB
+	}, nil
+}
+
+// ImportVolume returns the configured import response.  Tests exercising the
+// import annotation set importVolumeResp / importVolumeErr and inspect
+// lastImportVolumeReq.
+func (m *mockAgentClient) ImportVolume(
+	_ context.Context,
+	req *agentv1.ImportVolumeRequest,
+	_ ...grpc.CallOption,
+) (*agentv1.ImportVolumeResponse, error) {
+	m.importVolumeCalls++
+	m.lastImportVolumeReq = req
+	if m.importVolumeErr != nil {
+		return nil, m.importVolumeErr
+	}
+	if m.importVolumeResp != nil {
+		return m.importVolumeResp, nil
+	}
+	return &agentv1.ImportVolumeResponse{
+		DevicePath:    "/dev/zvol/" + req.GetVolumeId(),
+		CapacityBytes: req.GetCapacityBytes(),
 	}, nil
 }
 
@@ -458,12 +487,18 @@ func newControllerTestEnv(t *testing.T, extra ...ctrlclient.Object) *controllerT
 // seedPillarVolumeState creates a stub PillarVolumeState CRD with the given name so
 // that lookups in code paths that gate on volume existence (e.g.
 // ValidateVolumeCapabilities, ControllerPublishVolume) see the object.  The
-// stub carries only the metadata Name; tests that need richer status fields
-// should patch the object directly after seeding.
+// stub carries the metadata Name and the spec.agentVolumeID a provisioned
+// volume carries ("<pool>/<name>", pool tank in these tests): the owner
+// resolution used by every post-create RPC matches on it, so a seed without
+// it would no longer be found by an encoded volume ID.  Tests that need
+// richer status fields should patch the object directly after seeding.
 func seedPillarVolumeState(t *testing.T, env *controllerTestEnv, name string) {
 	t.Helper()
 	pv := &v1alpha1.PillarVolumeState{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec: v1alpha1.PillarVolumeStateSpec{
+			AgentVolumeID: "tank/" + name,
+		},
 	}
 	if err := env.srv.k8sClient.Create(context.Background(), pv); err != nil {
 		t.Fatalf("seed PillarVolumeState %q: %v", name, err)

@@ -286,6 +286,16 @@ type PillarVolumeStateSpec struct {
 	// +optional
 	ClaimRef *VolumeClaimRef `json:"claimRef,omitempty"`
 
+	// importedFrom records the full source dataset name when the volume was
+	// adopted from an existing ZFS zvol via the
+	// "pillar-csi.bhyoo.com/import-zvol" PVC annotation (e.g.
+	// "hot-data/k8s/pvc-abc123"), instead of being created empty.  The field
+	// is informational — the imported zvol keeps its data but becomes a
+	// normal volume: DeleteVolume destroys it, and the annotation has no
+	// effect once the volume exists.
+	// +optional
+	ImportedFrom string `json:"importedFrom,omitempty"`
+
 	// resolved is the effective per-volume configuration resolved at the
 	// first CreateVolume attempt from the PillarStore, PillarProtocol,
 	// PillarStorageClass overrides, StorageClass parameter documents and PVC

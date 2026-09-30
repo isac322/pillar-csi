@@ -83,6 +83,7 @@ import (
 type csiMockAgent struct {
 	createVolumeFn   func(ctx context.Context, req *agentv1.CreateVolumeRequest) (*agentv1.CreateVolumeResponse, error)
 	deleteVolumeFn   func(ctx context.Context, req *agentv1.DeleteVolumeRequest) (*agentv1.DeleteVolumeResponse, error)
+	importVolumeFn   func(ctx context.Context, req *agentv1.ImportVolumeRequest) (*agentv1.ImportVolumeResponse, error)
 	exportVolumeFn   func(ctx context.Context, req *agentv1.ExportVolumeRequest) (*agentv1.ExportVolumeResponse, error)
 	unexportVolumeFn func(ctx context.Context, req *agentv1.UnexportVolumeRequest) (*agentv1.UnexportVolumeResponse, error)
 	expandVolumeFn   func(ctx context.Context, req *agentv1.ExpandVolumeRequest) (*agentv1.ExpandVolumeResponse, error)
@@ -91,6 +92,7 @@ type csiMockAgent struct {
 
 	// call counters
 	createVolumeCalls   int
+	importVolumeCalls   int
 	deleteVolumeCalls   int
 	exportVolumeCalls   int
 	unexportVolumeCalls int
@@ -111,6 +113,19 @@ func (m *csiMockAgent) CreateVolume(
 	}
 	return &agentv1.CreateVolumeResponse{
 		DevicePath:    "/dev/zvol/tank/test-vol",
+		CapacityBytes: req.GetCapacityBytes(),
+	}, nil
+}
+
+func (m *csiMockAgent) ImportVolume(
+	ctx context.Context, req *agentv1.ImportVolumeRequest, _ ...grpc.CallOption,
+) (*agentv1.ImportVolumeResponse, error) {
+	m.importVolumeCalls++
+	if m.importVolumeFn != nil {
+		return m.importVolumeFn(ctx, req)
+	}
+	return &agentv1.ImportVolumeResponse{
+		DevicePath:    "/dev/zvol/" + req.GetVolumeId(),
 		CapacityBytes: req.GetCapacityBytes(),
 	}, nil
 }
@@ -406,6 +421,10 @@ func seedComponentPillarVolumeState(t *testing.T, env *csiControllerTestEnv, nam
 	t.Helper()
 	pv := &v1alpha1.PillarVolumeState{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec: v1alpha1.PillarVolumeStateSpec{
+			// The encoded volume ID's agent segment: <pool>/<leaf>.
+			AgentVolumeID: "tank/" + name,
+		},
 		Status: v1alpha1.PillarVolumeStateStatus{
 			ExportSpec: &v1alpha1.VolumeExportSpec{
 				BindAddress: "192.168.1.10",

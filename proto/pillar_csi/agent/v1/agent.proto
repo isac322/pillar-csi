@@ -116,6 +116,24 @@ service AgentService {
   // agent MUST return success.
   rpc CreateVolume(CreateVolumeRequest) returns (CreateVolumeResponse);
 
+  // ImportVolume adopts an already-existing backend storage resource into a
+  // volume lifecycle instead of creating one.  It backs the CSI CreateVolume
+  // path of a PersistentVolumeClaim that carries the
+  // "pillar-csi.bhyoo.com/import-zvol" annotation.
+  //
+  // Import is strictly read-only on the backend: the agent MUST refuse
+  // (FAILED_PRECONDITION or INVALID_ARGUMENT) when the resolved volume_id
+  // does not name an existing resource of the backend's volume type inside
+  // its configured layout, when that resource is still in use on the storage
+  // node (a target backstore, an nvmet namespace, a mount or an exclusive
+  // device claim), or when capacity_bytes exceeds the resource's current
+  // size.  It must never create or modify the resource.  ZFS zvol backends
+  // implement it; other backends return UNIMPLEMENTED.
+  //
+  // Idempotent: repeated calls for the same volume_id return the same
+  // device path and capacity.  The request is fenced like CreateVolume.
+  rpc ImportVolume(ImportVolumeRequest) returns (ImportVolumeResponse);
+
   // DeleteVolume destroys the backend storage resource.  The export MUST have
   // been removed (UnexportVolume) before calling this RPC; the agent will
   // return FAILED_PRECONDITION otherwise.
@@ -580,6 +598,40 @@ message CreateVolumeResponse {
   string device_path = 1;
 
   // Actual allocated size in bytes (may be >= requested).
+  int64 capacity_bytes = 2;
+}
+
+// ImportVolumeRequest asks the agent to adopt an already-existing backend
+// storage resource — created by another provisioning stack, e.g.
+// democratic-csi or openebs zfs-localpv — into the given volume lifecycle.
+// The request carries no creation parameters: the resource is used as-is
+// and must already satisfy the requested capacity.
+message ImportVolumeRequest {
+  // Unique volume identifier within the agent: "<pool>/<volume-name>".  The
+  // volume-name resolves to the existing resource through the backend's
+  // naming convention (ZFS: "<pool>[/<parent>]/<name>").
+  // Example: "hot-data/pvc-abc123"
+  string volume_id = 1;
+
+  // Minimum required storage size in bytes.  The existing resource must be
+  // at least this large; it is never resized or truncated.
+  int64 capacity_bytes = 2;
+
+  // Backend implementation to use.  Only BACKEND_TYPE_ZFS_ZVOL supports
+  // import; other backends return UNIMPLEMENTED.
+  BackendType backend_type = 3;
+
+  // Fencing token: the PillarVolumeState UID and the publicationGeneration
+  // the controller committed for this operation.  See FencingToken.
+  FencingToken fence = 4;
+}
+
+message ImportVolumeResponse {
+  // Path to the adopted backend resource on the storage node
+  // (e.g. /dev/zvol/hot-data/k8s/pvc-abc123).
+  string device_path = 1;
+
+  // Actual size of the existing resource in bytes (>= requested).
   int64 capacity_bytes = 2;
 }
 

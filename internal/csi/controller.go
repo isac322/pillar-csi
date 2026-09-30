@@ -586,10 +586,29 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 		return nil, status.Errorf(codes.InvalidArgument, "invalid filesystem configuration: %v", fsErr)
 	}
 
+	// ── Zvol import (PVC annotation pillar-csi.bhyoo.com/import-zvol) ────────
+	// When the claim asks to adopt an existing zvol, the leaf of the named
+	// dataset replaces the volume name inside the agent volume ID, and the
+	// backend step below adopts instead of creating.  resolveImportRequest
+	// performs every controller-side check (well-formed name, ZFS backend,
+	// pool/parent match, no second lifecycle owning the same zvol) and the
+	// recorded-importedFrom consistency check for retries.
+	importedFrom, importLeaf, err := s.resolveImportRequest(
+		ctx, pvName, pvExists, existingPV, resolved, res.importDataset)
+	if err != nil {
+		return nil, err
+	}
+
 	// ── Build the agent-level and CSI volume IDs ─────────────────────────────
 	// Agent volume ID: "<pool>/<volume-name>", pool = ZFS pool or LVM VG.
 	// CSI volume ID:   "<agent>/<protocol>/<backend>/<agent-vol-id>".
-	agentVolID := resolved.Backend.PoolName() + "/" + pvName
+	// For an imported zvol the leaf is the source dataset's name, not pvName:
+	// it is what the agent resolves under pool/parentDataset.
+	agentVolLeaf := pvName
+	if importLeaf != "" {
+		agentVolLeaf = importLeaf
+	}
+	agentVolID := resolved.Backend.PoolName() + "/" + agentVolLeaf
 	volumeID := strings.Join(
 		[]string{targetName, string(protocolID), string(backendID), agentVolID},
 		"/",
@@ -619,6 +638,7 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 		ProtocolType:  string(protocolID),
 		CapacityBytes: capacityBytes,
 		Resolved:      resolved,
+		ImportedFrom:  importedFrom,
 	}
 	attempt := existingPV
 	if !pvExists {
@@ -692,7 +712,8 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 	// re-created.
 	devicePath := pvs.Status.BackendDevicePath
 	actualCapacity := capacityBytes
-	if pvs.Status.Phase == v1alpha1.PillarVolumeStatePhaseCreatePartial && devicePath != "" {
+	switch {
+	case pvs.Status.Phase == v1alpha1.PillarVolumeStatePhaseCreatePartial && devicePath != "":
 		if pvs.Spec.CapacityBytes > 0 {
 			actualCapacity = pvs.Spec.CapacityBytes
 		}
@@ -705,7 +726,26 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 				return nil, err
 			}
 		}
-	} else {
+	case importedFrom != "":
+		// Adopt the existing zvol named by the import annotation instead of
+		// creating one.  The agent refuses when the zvol is missing, wrong
+		// type, too small, or still in use.
+		devicePath, actualCapacity, err = s.importBackend(ctx, agentClient, pvName, volumeID, pvs.UID,
+			&agentv1.ImportVolumeRequest{
+				VolumeId:      agentVolID,
+				CapacityBytes: capacityBytes,
+				BackendType:   agentBackendType,
+			}, exportSpec)
+		if err != nil {
+			return nil, err
+		}
+	default:
+		// A normal create must never silently adopt a zvol that another
+		// lifecycle imported under this volume's name.
+		err = s.refuseAdoptionCollision(ctx, pvName, agentVolID)
+		if err != nil {
+			return nil, err
+		}
 		devicePath, actualCapacity, err = s.createBackend(ctx, agentClient, pvName, volumeID, pvs.UID,
 			&agentv1.CreateVolumeRequest{
 				VolumeId:      agentVolID,
@@ -821,11 +861,42 @@ func completedVolumeResponse(
 	}, nil
 }
 
-// createBackend commits a generation on the lifecycle uid, creates the
-// backend storage resource with that fencing token, and records the
+// commitBackendVolume commits a generation on the lifecycle uid, runs the
+// backend RPC (create or import) with that fencing token, and records the
 // CreatePartial state so a retry only re-exports.  It returns the device path
 // and the allocated capacity; exportSpec is the durable export configuration
 // persisted alongside the partial state for later resync.
+func (s *ControllerServer) commitBackendVolume(
+	ctx context.Context,
+	pvName, volumeID string,
+	uid types.UID,
+	exportSpec *v1alpha1.VolumeExportSpec,
+	call func(fence *agentv1.FencingToken) (devicePath string, capacity int64, err error),
+) (devicePath string, capacity int64, err error) {
+	fence, err := s.claimOperation(ctx, pvName, volumeID, uid)
+	if err != nil {
+		return "", 0, err
+	}
+	devicePath, capacity, err = call(fence)
+	if err != nil {
+		return "", 0, err
+	}
+	//nolint:errcheck // transition errors are non-fatal; state is force-set on success
+	_, _ = s.sm.Transition(volumeID, OpCreateVolumeBackend)
+	err = s.recordAllocatedCapacity(ctx, pvName, uid, capacity)
+	if err != nil {
+		return "", 0, err
+	}
+	err = s.persistCreatePartial(ctx, pvName, uid, devicePath, exportSpec)
+	if err != nil {
+		// Cannot durably record the partial state; fail so the CO retries
+		// instead of the backend resource being silently forgotten.
+		return "", 0, err
+	}
+	return devicePath, capacity, nil
+}
+
+// createBackend provisions the backend storage resource via agent.CreateVolume.
 func (s *ControllerServer) createBackend(
 	ctx context.Context,
 	agentClient agentv1.AgentServiceClient,
@@ -834,33 +905,21 @@ func (s *ControllerServer) createBackend(
 	req *agentv1.CreateVolumeRequest,
 	exportSpec *v1alpha1.VolumeExportSpec,
 ) (devicePath string, capacity int64, err error) {
-	req.Fence, err = s.claimOperation(ctx, pvName, volumeID, uid)
-	if err != nil {
-		return "", 0, err
-	}
-	resp, err := agentClient.CreateVolume(ctx, req)
-	if err != nil {
-		grpcSt, _ := status.FromError(err)
-		return "", 0, status.Errorf(grpcSt.Code(),
-			"agent CreateVolume(%q) failed: %v", req.GetVolumeId(), err)
-	}
-	capacity = req.GetCapacityBytes()
-	if allocated := resp.GetCapacityBytes(); allocated != 0 {
-		capacity = allocated
-	}
-	//nolint:errcheck // transition errors are non-fatal; state is force-set on success
-	_, _ = s.sm.Transition(volumeID, OpCreateVolumeBackend)
-	err = s.recordAllocatedCapacity(ctx, pvName, uid, capacity)
-	if err != nil {
-		return "", 0, err
-	}
-	err = s.persistCreatePartial(ctx, pvName, uid, resp.GetDevicePath(), exportSpec)
-	if err != nil {
-		// Cannot durably record the partial state; fail so the CO retries
-		// instead of the backend resource being silently forgotten.
-		return "", 0, err
-	}
-	return resp.GetDevicePath(), capacity, nil
+	return s.commitBackendVolume(ctx, pvName, volumeID, uid, exportSpec,
+		func(fence *agentv1.FencingToken) (string, int64, error) {
+			req.Fence = fence
+			resp, callErr := agentClient.CreateVolume(ctx, req)
+			if callErr != nil {
+				grpcSt, _ := status.FromError(callErr)
+				return "", 0, status.Errorf(grpcSt.Code(),
+					"agent CreateVolume(%q) failed: %v", req.GetVolumeId(), callErr)
+			}
+			capacity = req.GetCapacityBytes()
+			if allocated := resp.GetCapacityBytes(); allocated != 0 {
+				capacity = allocated
+			}
+			return resp.GetDevicePath(), capacity, nil
+		})
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -909,7 +968,17 @@ func (s *ControllerServer) DeleteVolume(
 	}
 	targetName := parts[0]
 
-	pvName := pillarVolumeStateNameFromVolumeID(volumeID)
+	// Resolve the owning PillarVolumeState name; for an imported volume the
+	// leaf is the source dataset name, so the owner is found by agentVolID.
+	pvName, nameErr := s.volumeStateNameForID(ctx, volumeID)
+	if nameErr != nil {
+		return nil, nameErr
+	}
+	if pvName == "" {
+		// No PillarVolumeState owns this backend volume: the driver never
+		// issued the ID, and unknown volumes delete successfully.
+		return &csi.DeleteVolumeResponse{}, nil
+	}
 	unlock := s.volumeLocks.lock(volumeID)
 	defer unlock()
 
@@ -1100,7 +1169,10 @@ func (s *ControllerServer) assertVolumeExists(ctx context.Context, volumeID stri
 	if s.k8sClient == nil {
 		return nil
 	}
-	pvName := pillarVolumeStateNameFromVolumeID(volumeID)
+	pvName, nameErr := s.volumeStateNameForID(ctx, volumeID)
+	if nameErr != nil {
+		return nameErr
+	}
 	if pvName == "" {
 		return status.Errorf(codes.NotFound, "volume %q not found", volumeID)
 	}
@@ -1511,13 +1583,9 @@ func (s *ControllerServer) ControllerPublishVolume(
 	defer unlock()
 
 	// ── The volume must exist (CSI: NotFound for an unknown volume) ──────────
-	pvName := pillarVolumeStateNameFromVolumeID(volumeID)
-	pvs, pvExists, pvErr := s.readVolumeState(ctx, pvName)
+	pvName, pvs, pvErr := s.mustVolumeState(ctx, volumeID)
 	if pvErr != nil {
-		return nil, status.Errorf(codes.Internal, "%v", pvErr)
-	}
-	if !pvExists {
-		return nil, status.Errorf(codes.NotFound, "volume %q not found", volumeID)
+		return nil, pvErr
 	}
 	setClaimAttributes(ctx, pvs.Spec.ClaimRef)
 
@@ -1852,9 +1920,7 @@ func (s *ControllerServer) ControllerUnpublishVolume(
 		// Unknown volume ID format; treat as already unpublished.
 		return &csi.ControllerUnpublishVolumeResponse{}, nil
 	}
-	targetName := parts[0]
-	protocolTypeStr := parts[1]
-	agentVolID := parts[3]
+	targetName, protocolTypeStr, agentVolID := parts[0], parts[1], parts[3]
 
 	agentProtocolType := mapProtocolType(protocolTypeStr)
 	ctx = withAgentName(ctx, targetName)
@@ -1863,7 +1929,15 @@ func (s *ControllerServer) ControllerUnpublishVolume(
 	defer unlock()
 
 	// ── Select the publications to revoke ────────────────────────────────────
-	pvName := pillarVolumeStateNameFromVolumeID(volumeID)
+	pvName, nameErr := s.volumeStateNameForID(ctx, volumeID)
+	if nameErr != nil {
+		return nil, nameErr
+	}
+	if pvName == "" {
+		// No PillarVolumeState owns this backend volume: the driver never
+		// issued the ID, and unpublishing an unknown volume is a no-op.
+		return &csi.ControllerUnpublishVolumeResponse{}, nil
+	}
 	existingPV, pvExists, pvErr := s.readVolumeState(ctx, pvName)
 	if pvErr != nil {
 		return nil, status.Errorf(codes.Internal, "%v", pvErr)
@@ -2059,22 +2133,11 @@ func (s *ControllerServer) ControllerExpandVolume(
 	agentBackendType := mapBackendType(backendTypeStr)
 
 	// ── Resolve the agent address from PillarAgent ───────────────────────────
-	target := &v1alpha1.PillarAgent{}
-	getTargetErrEV := s.k8sClient.Get(ctx, types.NamespacedName{Name: targetName}, target)
-	if getTargetErrEV != nil {
-		if k8serrors.IsNotFound(getTargetErrEV) {
-			return nil, status.Errorf(codes.NotFound,
-				"PillarAgent %q not found", targetName)
-		}
-		return nil, status.Errorf(codes.Internal,
-			"failed to get PillarAgent %q: %v", targetName, getTargetErrEV)
+	target, getTargetErr := s.getReadyAgent(ctx, targetName)
+	if getTargetErr != nil {
+		return nil, getTargetErr
 	}
-
 	agentAddr := target.Status.ResolvedAddress
-	if agentAddr == "" {
-		return nil, status.Errorf(codes.Unavailable,
-			"PillarAgent %q has no resolved address; agent may not be ready", targetName)
-	}
 
 	// ── Dial the agent ────────────────────────────────────────────────────────
 	ctx = withAgentName(ctx, targetName)
@@ -2088,7 +2151,14 @@ func (s *ControllerServer) ControllerExpandVolume(
 	// ── Expand the backend storage resource ───────────────────────────────────
 	// The request carries the lifecycle's current token: an expand of a
 	// deleted, deleting, or re-created volume is refused here or by the agent.
-	fence, err := s.currentToken(ctx, pillarVolumeStateNameFromVolumeID(volumeID), volumeID)
+	pvName, nameErr := s.volumeStateNameForID(ctx, volumeID)
+	if nameErr != nil {
+		return nil, nameErr
+	}
+	if pvName == "" {
+		return nil, status.Errorf(codes.NotFound, "volume %q not found", volumeID)
+	}
+	fence, err := s.currentToken(ctx, pvName, volumeID)
 	if err != nil {
 		return nil, err
 	}

@@ -168,6 +168,12 @@ type resolution struct {
 
 	// storeName is the PillarStore the StorageClass names.
 	storeName string
+
+	// importDataset is the raw value of the claim's
+	// v1alpha1.AnnotationImportZvol annotation ("" when absent).  CreateVolume
+	// validates it against the resolved backend and switches the backend step
+	// from create to adopt.
+	importDataset string
 }
 
 // resolveVolumeConfig resolves the effective configuration of a new volume
@@ -207,7 +213,8 @@ func (s *ControllerServer) resolveVolumeConfig(
 		}
 		exportOnly := recorded.DeepCopy()
 		exportOnly.Protocol = protocol
-		return &resolution{resolved: exportOnly, pvcFS: pvc.Filesystem, storeName: class.storeName}, nil
+		return &resolution{resolved: exportOnly, pvcFS: pvc.Filesystem, storeName: class.storeName,
+			importDataset: pvc.ImportZvol}, nil
 	}
 
 	backend := *class.store.Spec.Backend.DeepCopy()
@@ -245,9 +252,10 @@ func (s *ControllerServer) resolveVolumeConfig(
 			Filesystem:  fs,
 			LocalAttach: class.localAttach,
 		},
-		agentRef:  class.store.Spec.AgentRef,
-		pvcFS:     pvc.Filesystem,
-		storeName: class.storeName,
+		agentRef:      class.store.Spec.AgentRef,
+		pvcFS:         pvc.Filesystem,
+		storeName:     class.storeName,
+		importDataset: pvc.ImportZvol,
 	}, nil
 }
 

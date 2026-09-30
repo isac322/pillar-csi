@@ -28,6 +28,12 @@ Rules:
 - Structural fields fail with `<key>: <path> is structural and cannot be set per volume`. Unknown fields fail with `unknown field`.
 - `pillar-csi.bhyoo.com/filesystem` is rejected on a PVC with `volumeMode: Block`.
 
+One more PVC annotation is not a configuration document:
+
+| Key | Value |
+|---|---|
+| `pillar-csi.bhyoo.com/import-zvol` | full name of an existing ZFS zvol, for example `hot-data/k8s/pvc-0d52...`. `CreateVolume` adopts that zvol instead of creating a volume. The zvol must sit directly under the store's `pool` and `parentDataset` (exactly `<pool>/<parentDataset>/<name>`, or `<pool>/<name>` without a `parentDataset`), be unused on the storage node and be at least the requested size. Valid only on a PVC, not as a StorageClass parameter. See [Import a zvol from another CSI driver](/docs/how-to/import-zvol/). |
+
 ### StorageClass parameters
 
 A StorageClass generated from a `PillarStorageClass` carries one pillar-csi parameter:

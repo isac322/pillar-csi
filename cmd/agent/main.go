@@ -73,7 +73,10 @@ const metricsReadHeaderTimeout = 10 * time.Second
 //
 // Per-volume settings (LVM provisioningMode) are resolved by the controller
 // and sent with each CreateVolume, so the backend only needs placement.
-func buildVolumeBackends(specs []pillarv1alpha1.BackendSpec) (map[string]backend.VolumeBackend, error) {
+func buildVolumeBackends(
+	specs []pillarv1alpha1.BackendSpec,
+	configfsRoot string,
+) (map[string]backend.VolumeBackend, error) {
 	m := make(map[string]backend.VolumeBackend, len(specs))
 	seen := make(map[string]int, len(specs))
 	for i, spec := range specs {
@@ -87,7 +90,7 @@ func buildVolumeBackends(specs []pillarv1alpha1.BackendSpec) (map[string]backend
 		seen[key] = i
 		switch {
 		case spec.ZFS != nil:
-			m[key] = zfs.New(spec.ZFS.Pool, spec.ZFS.ParentDataset)
+			m[key] = zfs.New(spec.ZFS.Pool, spec.ZFS.ParentDataset, zfs.WithConfigfsRoot(configfsRoot))
 		case spec.LVM != nil:
 			mode := lvm.ProvisionModeLinear
 			if spec.LVM.ProvisioningMode == pillarv1alpha1.LVMProvisioningModeThin {
@@ -153,7 +156,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
-	volumeBackends, err := buildVolumeBackends(backendSpecs)
+	volumeBackends, err := buildVolumeBackends(backendSpecs, *cfgRoot)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)

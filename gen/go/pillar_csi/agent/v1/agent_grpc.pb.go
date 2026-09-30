@@ -68,6 +68,7 @@ const (
 	AgentService_ListExports_FullMethodName     = "/pillar_csi.agent.v1.AgentService/ListExports"
 	AgentService_HealthCheck_FullMethodName     = "/pillar_csi.agent.v1.AgentService/HealthCheck"
 	AgentService_CreateVolume_FullMethodName    = "/pillar_csi.agent.v1.AgentService/CreateVolume"
+	AgentService_ImportVolume_FullMethodName    = "/pillar_csi.agent.v1.AgentService/ImportVolume"
 	AgentService_DeleteVolume_FullMethodName    = "/pillar_csi.agent.v1.AgentService/DeleteVolume"
 	AgentService_ExpandVolume_FullMethodName    = "/pillar_csi.agent.v1.AgentService/ExpandVolume"
 	AgentService_ExportVolume_FullMethodName    = "/pillar_csi.agent.v1.AgentService/ExportVolume"
@@ -115,6 +116,23 @@ type AgentServiceClient interface {
 	// Idempotent: if the volume already exists with the same parameters the
 	// agent MUST return success.
 	CreateVolume(ctx context.Context, in *CreateVolumeRequest, opts ...grpc.CallOption) (*CreateVolumeResponse, error)
+	// ImportVolume adopts an already-existing backend storage resource into a
+	// volume lifecycle instead of creating one.  It backs the CSI CreateVolume
+	// path of a PersistentVolumeClaim that carries the
+	// "pillar-csi.bhyoo.com/import-zvol" annotation.
+	//
+	// Import is strictly read-only on the backend: the agent MUST refuse
+	// (FAILED_PRECONDITION or INVALID_ARGUMENT) when the resolved volume_id
+	// does not name an existing resource of the backend's volume type inside
+	// its configured layout, when that resource is still in use on the storage
+	// node (a target backstore, an nvmet namespace, a mount or an exclusive
+	// device claim), or when capacity_bytes exceeds the resource's current
+	// size.  It must never create or modify the resource.  ZFS zvol backends
+	// implement it; other backends return UNIMPLEMENTED.
+	//
+	// Idempotent: repeated calls for the same volume_id return the same
+	// device path and capacity.  The request is fenced like CreateVolume.
+	ImportVolume(ctx context.Context, in *ImportVolumeRequest, opts ...grpc.CallOption) (*ImportVolumeResponse, error)
 	// DeleteVolume destroys the backend storage resource.  The export MUST have
 	// been removed (UnexportVolume) before calling this RPC; the agent will
 	// return FAILED_PRECONDITION otherwise.
@@ -303,6 +321,16 @@ func (c *agentServiceClient) CreateVolume(ctx context.Context, in *CreateVolumeR
 	return out, nil
 }
 
+func (c *agentServiceClient) ImportVolume(ctx context.Context, in *ImportVolumeRequest, opts ...grpc.CallOption) (*ImportVolumeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ImportVolumeResponse)
+	err := c.cc.Invoke(ctx, AgentService_ImportVolume_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *agentServiceClient) DeleteVolume(ctx context.Context, in *DeleteVolumeRequest, opts ...grpc.CallOption) (*DeleteVolumeResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(DeleteVolumeResponse)
@@ -459,6 +487,23 @@ type AgentServiceServer interface {
 	// Idempotent: if the volume already exists with the same parameters the
 	// agent MUST return success.
 	CreateVolume(context.Context, *CreateVolumeRequest) (*CreateVolumeResponse, error)
+	// ImportVolume adopts an already-existing backend storage resource into a
+	// volume lifecycle instead of creating one.  It backs the CSI CreateVolume
+	// path of a PersistentVolumeClaim that carries the
+	// "pillar-csi.bhyoo.com/import-zvol" annotation.
+	//
+	// Import is strictly read-only on the backend: the agent MUST refuse
+	// (FAILED_PRECONDITION or INVALID_ARGUMENT) when the resolved volume_id
+	// does not name an existing resource of the backend's volume type inside
+	// its configured layout, when that resource is still in use on the storage
+	// node (a target backstore, an nvmet namespace, a mount or an exclusive
+	// device claim), or when capacity_bytes exceeds the resource's current
+	// size.  It must never create or modify the resource.  ZFS zvol backends
+	// implement it; other backends return UNIMPLEMENTED.
+	//
+	// Idempotent: repeated calls for the same volume_id return the same
+	// device path and capacity.  The request is fenced like CreateVolume.
+	ImportVolume(context.Context, *ImportVolumeRequest) (*ImportVolumeResponse, error)
 	// DeleteVolume destroys the backend storage resource.  The export MUST have
 	// been removed (UnexportVolume) before calling this RPC; the agent will
 	// return FAILED_PRECONDITION otherwise.
@@ -604,6 +649,9 @@ func (UnimplementedAgentServiceServer) HealthCheck(context.Context, *HealthCheck
 }
 func (UnimplementedAgentServiceServer) CreateVolume(context.Context, *CreateVolumeRequest) (*CreateVolumeResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CreateVolume not implemented")
+}
+func (UnimplementedAgentServiceServer) ImportVolume(context.Context, *ImportVolumeRequest) (*ImportVolumeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ImportVolume not implemented")
 }
 func (UnimplementedAgentServiceServer) DeleteVolume(context.Context, *DeleteVolumeRequest) (*DeleteVolumeResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DeleteVolume not implemented")
@@ -763,6 +811,24 @@ func _AgentService_CreateVolume_Handler(srv interface{}, ctx context.Context, de
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(AgentServiceServer).CreateVolume(ctx, req.(*CreateVolumeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AgentService_ImportVolume_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ImportVolumeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentServiceServer).ImportVolume(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentService_ImportVolume_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentServiceServer).ImportVolume(ctx, req.(*ImportVolumeRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -977,6 +1043,10 @@ var AgentService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "CreateVolume",
 			Handler:    _AgentService_CreateVolume_Handler,
+		},
+		{
+			MethodName: "ImportVolume",
+			Handler:    _AgentService_ImportVolume_Handler,
 		},
 		{
 			MethodName: "DeleteVolume",
