@@ -683,7 +683,7 @@ require_linux_storage_stack() {
     exit 1
   fi
   log "Building the iSCSI session cleanup helper"
-  if ! error=$(cd "${repo_root}" && go build -o "${iscsi_cleanup_bin}" ./test/docker-e2e/cmd/iscsi-session-cleanup 2>&1); then
+  if ! error=$(cd "${repo_root}" && go build -buildvcs=false -o "${iscsi_cleanup_bin}" ./test/docker-e2e/cmd/iscsi-session-cleanup 2>&1); then
     printf 'failed to build the iSCSI session cleanup helper: %s\n' "${error}" >&2
     exit 1
   fi
