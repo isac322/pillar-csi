@@ -248,9 +248,12 @@ func resolveImportDataset(
 // dataset name, so the owner is found by its spec.agentVolumeID.
 // Returns "" when the volume ID does not parse or no PillarVolumeState owns
 // it; callers treat that as "this driver never issued the ID" (NotFound for
-// read paths, success for idempotent deletes).  A PillarVolumeState named
-// after the leaf whose spec.agentVolumeID differs is never returned: it owns
-// a different backend volume.
+// read paths, success for idempotent deletes).  A state owns the volume when
+// its spec.volumeID equals the CSI volume ID (this also covers states written
+// by older versions without spec.agentVolumeID) or its non-empty
+// spec.agentVolumeID equals the ID's backend volume.  A PillarVolumeState
+// named after the leaf matching neither is never returned: it owns a
+// different backend volume.
 func (s *ControllerServer) volumeStateNameForID(ctx context.Context, volumeID string) (string, error) {
 	parts := strings.SplitN(volumeID, "/", volumeIDParts)
 	if len(parts) != volumeIDParts {
@@ -273,21 +276,28 @@ func (s *ControllerServer) volumeStateNameForID(ctx context.Context, volumeID st
 	if err != nil {
 		return "", status.Errorf(codes.Internal, "lookup PillarVolumeState %q: %v", leaf, err)
 	}
-	if exists && probe.Spec.AgentVolumeID == agentVolID {
+	if exists && ownsVolume(probe, volumeID, agentVolID) {
 		return leaf, nil
 	}
-	// Imported (or otherwise renamed) volume: find the owner by agentVolumeID.
+	// Imported (or otherwise renamed) volume: find the owner by its IDs.
 	var list v1alpha1.PillarVolumeStateList
 	listErr := s.k8sClient.List(ctx, &list)
 	if listErr != nil {
 		return "", status.Errorf(codes.Internal, "list PillarVolumeStates: %v", listErr)
 	}
 	for i := range list.Items {
-		if list.Items[i].Spec.AgentVolumeID == agentVolID {
+		if ownsVolume(&list.Items[i], volumeID, agentVolID) {
 			return list.Items[i].Name, nil
 		}
 	}
 	return "", nil // no lifecycle owns this backend volume
+}
+
+// ownsVolume reports whether pvs is the lifecycle record of the CSI volume
+// volumeID whose backend volume is agentVolID.
+func ownsVolume(pvs *v1alpha1.PillarVolumeState, volumeID, agentVolID string) bool {
+	return pvs.Spec.VolumeID == volumeID ||
+		(pvs.Spec.AgentVolumeID != "" && pvs.Spec.AgentVolumeID == agentVolID)
 }
 
 // mustVolumeState resolves the owning PillarVolumeState for a CSI volume ID

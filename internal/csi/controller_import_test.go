@@ -408,6 +408,41 @@ func TestDeleteVolume_ImportedVolume(t *testing.T) {
 	}
 }
 
+// A PillarVolumeState written by an older version records only spec.volumeID
+// (no spec.agentVolumeID).  It still owns its volume: DeleteVolume must find
+// it, delete the backend volume, and remove the state — not report success
+// for an "unknown" volume and leak the zvol.
+func TestDeleteVolume_LegacyStateWithoutAgentVolumeID(t *testing.T) {
+	t.Parallel()
+	const name = "pvc-legacy"
+	volumeID := "storage-node-1/nvmeof-tcp/zfs-zvol/hot-data/" + name
+	legacy := &v1alpha1.PillarVolumeState{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec:       v1alpha1.PillarVolumeStateSpec{VolumeID: volumeID},
+	}
+	env, _ := newImportTestEnv(t, "data", "")
+	if err := env.srv.k8sClient.Create(context.Background(), legacy); err != nil {
+		t.Fatalf("seed legacy PillarVolumeState: %v", err)
+	}
+	got, err := env.srv.volumeStateNameForID(context.Background(), volumeID)
+	if err != nil || got != name {
+		t.Fatalf("volumeStateNameForID = %q, %v; want %q", got, err, name)
+	}
+	_, err = env.srv.DeleteVolume(context.Background(),
+		&csi.DeleteVolumeRequest{VolumeId: volumeID})
+	if err != nil {
+		t.Fatalf("DeleteVolume: %v", err)
+	}
+	if env.agent.deleteVolumeCalls != 1 {
+		t.Fatalf("DeleteVolume agent calls = %d, want 1", env.agent.deleteVolumeCalls)
+	}
+	err = env.srv.k8sClient.Get(context.Background(),
+		types.NamespacedName{Name: name}, &v1alpha1.PillarVolumeState{})
+	if err == nil {
+		t.Fatal("legacy PillarVolumeState still exists after DeleteVolume")
+	}
+}
+
 // resolveImportDataset accepts exactly "<store pool>/<store parentDataset>/<leaf>":
 // a zvol directly under the pool when the store has no parentDataset, and
 // never a sibling, nested, or non-canonical path that merely shares a prefix.
