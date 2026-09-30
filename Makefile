@@ -85,6 +85,10 @@ E2E_IMAGE_TAG ?= e2e
 ## Set to "true" to skip docker build + kind load (reuse images from a previous run).
 ## Useful for iterative test development when image content has not changed.
 E2E_SKIP_IMAGE_BUILD ?=
+## Set to "true" when CI has loaded an exact-checkout runtime image artifact
+## into the Docker daemon. The E2E harness still performs `kind load` into the
+## newly-created cluster; this flag only replaces the redundant image build.
+E2E_PREBUILT_IMAGES ?=
 
 ## Set to "true" to skip Kind cluster creation and reuse an existing cluster.
 ## Requires KUBECONFIG and KIND_CLUSTER to point to the live cluster.
@@ -127,6 +131,7 @@ E2E_COMMON_ENV = $(if $(DOCKER_HOST),DOCKER_HOST=$(DOCKER_HOST)) \
 	KIND_CLUSTER=$(KIND_CLUSTER) \
 	E2E_IMAGE_TAG=$(E2E_IMAGE_TAG) \
 	$(if $(E2E_SKIP_IMAGE_BUILD),E2E_SKIP_IMAGE_BUILD=$(E2E_SKIP_IMAGE_BUILD)) \
+	$(if $(E2E_PREBUILT_IMAGES),E2E_PREBUILT_IMAGES=$(E2E_PREBUILT_IMAGES)) \
 	$(if $(E2E_USE_EXISTING_CLUSTER),E2E_USE_EXISTING_CLUSTER=$(E2E_USE_EXISTING_CLUSTER)) \
 	$(if $(E2E_DOCKER_BUILD_CACHE),E2E_DOCKER_BUILD_CACHE=$(E2E_DOCKER_BUILD_CACHE)) \
 	$(if $(E2E_STAGE_TIMING),E2E_STAGE_TIMING=$(E2E_STAGE_TIMING)) \

@@ -277,6 +277,7 @@ func TestConcurrentWriterNilFallsBackToDiscard(t *testing.T) {
 // bootstrapSuiteImages writes at least the skip-mode log line to the provided
 // output writer. We use E2E_SKIP_IMAGE_BUILD=true to avoid real docker calls.
 func TestBootstrapSuiteImages_OutputForwardedToWriter(t *testing.T) {
+	t.Setenv(prebuiltImagesEnvVar, "")
 	t.Setenv(skipImageBuildEnvVar, "true")
 
 	state := &kindBootstrapState{

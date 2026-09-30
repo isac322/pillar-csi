@@ -11,7 +11,8 @@ concurrency:
 
 jobs:
   # ── changes ────────────────────────────────────────────────────────────────
-  # Detects docs-only changes so the heavy jobs below can be skipped for them.
+  # Detects code and image-contract changes so behavior validation and
+  # multi-platform OCI packaging can use different lanes.
   #
   # A workflow-level `paths-ignore` would not work here: Lint, Test, Build and
   # E2E are required status checks, and a workflow that never starts leaves
@@ -19,13 +20,17 @@ jobs:
   # `if:` reports "skipped", which satisfies a required check.
   #
   # The gate fails closed: a heavy job is skipped only when this job succeeded
-  # and reported no code change. If detection fails, every heavy job runs.
+  # and reported no relevant change. If detection fails, every heavy job runs.
   # `!cancelled()` lets them start after a failed `changes` job, so jobs with
   # other prerequisites also check those results explicitly.
   #
   # `code` is true when any changed file lies outside site/** and **/*.md.
   # docs/E2E-TESTCASES.md is a test input (verify-tc-coverage and the e2e
   # catalog parse it), so it counts as code.
+  #
+  # `image_contract` is limited to files that change the OCI/Docker packaging
+  # contract. Source changes are covered by the exact-checkout runtime image
+  # and cross-platform Go compile lane below.
   changes:
     name: Detect code changes
     runs-on: ubuntu-latest
@@ -34,6 +39,7 @@ jobs:
       pull-requests: read
     outputs:
       code: ${{ steps.filter.outputs.code == 'true' || steps.filter.outputs.tcspec == 'true' }}
+      image_contract: ${{ steps.filter.outputs.image_contract == 'true' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -50,6 +56,11 @@ jobs:
               - '!**/*.md'
             tcspec:
               - 'docs/E2E-TESTCASES.md'
+            image_contract:
+              - 'Dockerfile'
+              - 'docker-bake.hcl'
+              - '.dockerignore'
+              - 'hack/verify-mkfs-baseline.sh'
 
   # ── docs ───────────────────────────────────────────────────────────────────
   # Generated reference docs must match api/v1alpha1 and the chart values, and
@@ -205,37 +216,31 @@ jobs:
     # Run on every push and pull_request (workflow-level triggers already set).
     # Skip if the commit message contains [skip e2e] or [e2e skip].
     # The job body lives in e2e-kind.yml so daily-e2e.yml runs the same suite.
-    needs: [changes]
+    needs: [changes, build]
     if: |
       !cancelled() &&
+      needs.build.result == 'success' &&
       (needs.changes.result != 'success' || needs.changes.outputs.code == 'true') &&
       !contains(github.event.head_commit.message, '[skip e2e]') &&
       !contains(github.event.head_commit.message, '[e2e skip]')
     permissions:
       contents: read
     uses: ./.github/workflows/e2e-kind.yml
+    with:
+      runtime_image_artifact: ${{ needs.build.outputs.runtime_image_artifact }}
+      runtime_image_tag: ${{ needs.build.outputs.runtime_image_tag }}
 
   external-e2e:
     name: External Storage E2E
-    needs: [changes]
-    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.code == 'true') }}
+    needs: [changes, build]
+    if: ${{ !cancelled() && needs.build.result == 'success' && (needs.changes.result != 'success' || needs.changes.outputs.code == 'true') }}
     permissions:
       contents: read
     uses: ./.github/workflows/external-e2e.yml
+    with:
+      runtime_image_artifact: ${{ needs.build.outputs.runtime_image_artifact }}
+      runtime_image_tag: ${{ needs.build.outputs.runtime_image_tag }}
 
-  # ── e2e-bench ──────────────────────────────────────────────────────────────
-  # CI baseline benchmark job.
-  #
-  # Runs the in-process e2e suite (no -tags=e2e → no Kind cluster, no ZFS/LVM)
-  # via `go test ./test/e2e/... -count=1` and fails the build if total
-  # wall-clock time exceeds 120 seconds.
-  #
-  # This job acts as a canary: if a newly added spec or a shared setup change
-  # causes the in-process suite to slow beyond the 2-minute budget the build
-  # breaks immediately, before the heavier Kind-cluster jobs are scheduled.
-  #
-  # Skip with [skip e2e] or [e2e skip] in the commit message (same gate as
-  # the full e2e job so that hotfixes bypass both in one flag).
   e2e-bench:
     name: E2E Baseline Benchmark (≤120s)
     runs-on: ubuntu-latest
@@ -299,13 +304,34 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   build:
+    # Keep the existing job id/name because "Build (all platforms)" is a
+    # required branch-protection check. On ordinary code PRs this required
+    # check is the fast exact-checkout behavior build; the full multi-platform
+    # OCI contract runs only for packaging changes and master pushes.
     name: Build (all platforms)
     runs-on: ubuntu-latest
     needs: [changes]
     if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.code == 'true') }}
+    outputs:
+      runtime_image_artifact: ${{ steps.runtime_meta.outputs.artifact_name }}
+      runtime_image_tag: ${{ steps.runtime_meta.outputs.image_tag }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set exact-checkout runtime image metadata
+        id: runtime_meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "artifact_name=pillar-csi-runtime-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+          echo "image_tag=ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         id: buildx
@@ -340,7 +366,89 @@ jobs:
           cache-dir: buildkit-cache
           skip-extraction: ${{ github.event_name == 'pull_request' || steps.cache-master.outputs.cache-hit == 'true' }}
 
+      # This preserves cross-platform source-compile coverage on ordinary PRs
+      # without rebuilding the full OCI runtime/package layers eight times.
+      - name: Compile Go binaries for all supported Linux targets
+        shell: bash
+        run: |
+          set -euo pipefail
+          output_root="${RUNNER_TEMP}/pillar-csi-platform-binaries"
+          mkdir -p "${output_root}"
+
+          build_target() {
+            local arch="$1"
+            shift
+            local output_dir="${output_root}/${arch}"
+            mkdir -p "${output_dir}"
+            env \
+              CGO_ENABLED=0 \
+              GOOS=linux \
+              GOARCH="${arch}" \
+              "$@" \
+              go build -trimpath -pgo=auto -ldflags="-s -w" \
+                -o "${output_dir}/" ./cmd/...
+          }
+
+          build_target amd64 GOAMD64=v1
+          build_target arm64 GOARM64=v8.0
+          build_target arm GOARM=7
+          build_target s390x
+          build_target ppc64le
+          build_target riscv64
+
+      # Build the exact checked-out source once for the two behavior lanes.
+      # The resulting amd64 images are uploaded only to this workflow run and
+      # consumed by the Kind and External E2E jobs below.
+      - name: Build exact-checkout runtime images (amd64)
+        env:
+          REGISTRY: pillar-csi
+          TAG: ${{ steps.runtime_meta.outputs.image_tag }}
+        uses: docker/bake-action@v7
+        with:
+          files: docker-bake.hcl
+          targets: controller,agent,node
+          load: true
+          set: |
+            *.platform=linux/amd64
+            *.cache-from=type=gha,scope=pillar-ci-runtime
+            ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' && '*.cache-to=type=gha,scope=pillar-ci-runtime,mode=min' || '' }}
+
+      - name: Export exact-checkout runtime image artifact
+        env:
+          IMAGE_TAG: ${{ steps.runtime_meta.outputs.image_tag }}
+          SOURCE_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="${RUNNER_TEMP}/runtime-images.tar"
+          docker save -o "${archive}" \
+            "pillar-csi/controller:${IMAGE_TAG}" \
+            "pillar-csi/agent:${IMAGE_TAG}" \
+            "pillar-csi/node:${IMAGE_TAG}"
+
+          controller_id="$(docker image inspect --format '{{.Id}}' "pillar-csi/controller:${IMAGE_TAG}")"
+          agent_id="$(docker image inspect --format '{{.Id}}' "pillar-csi/agent:${IMAGE_TAG}")"
+          node_id="$(docker image inspect --format '{{.Id}}' "pillar-csi/node:${IMAGE_TAG}")"
+          printf '{"source_sha":"%s","image_tag":"%s","images":{"controller":"%s","agent":"%s","node":"%s"}}\n' \
+            "${SOURCE_SHA}" "${IMAGE_TAG}" "${controller_id}" "${agent_id}" "${node_id}" \
+            > "${RUNNER_TEMP}/runtime-images.json"
+
+      - name: Upload exact-checkout runtime images
+        uses: actions/upload-artifact@v4
+        with:
+          name: pillar-csi-runtime-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/runtime-images.tar
+            ${{ runner.temp }}/runtime-images.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      # Full OCI packaging is deliberately separate from behavior validation.
+      # It remains required for Docker/Bake contract changes and every master
+      # push, while ordinary code PRs retain cross-platform Go compile coverage.
       - name: Build all images for all platforms
+        if: ${{ needs.changes.result != 'success' || needs.changes.outputs.image_contract == 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/master') }}
         uses: docker/bake-action@v7
         with:
           files: docker-bake.hcl
@@ -352,3 +460,24 @@ jobs:
             ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' && 'controller.cache-to=type=gha,scope=pillar-ci-controller,mode=min' || '' }}
             ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' && 'agent.cache-to=type=gha,scope=pillar-ci-agent,mode=min' || '' }}
             ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' && 'node.cache-to=type=gha,scope=pillar-ci-node,mode=min' || '' }}
+
+      - name: Emit build lane summary
+        if: always()
+        env:
+          FULL_IMAGE_CONTRACT: ${{ needs.changes.result != 'success' || needs.changes.outputs.image_contract == 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/master') }}
+          RUNTIME_TAG: ${{ steps.runtime_meta.outputs.image_tag }}
+          ARTIFACT_NAME: ${{ steps.runtime_meta.outputs.artifact_name }}
+        run: |
+          {
+            echo "## Build lanes"
+            echo ""
+            echo "| Lane | Status |"
+            echo "|------|--------|"
+            echo "| Exact-checkout amd64 runtime images | built as \`${RUNTIME_TAG}\` |"
+            echo "| Shared runtime artifact | \`${ARTIFACT_NAME}\` |"
+            if [ "${FULL_IMAGE_CONTRACT}" = "true" ]; then
+              echo "| Full multi-platform OCI contract | executed |"
+            else
+              echo "| Full multi-platform OCI contract | skipped for source-only change |"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
