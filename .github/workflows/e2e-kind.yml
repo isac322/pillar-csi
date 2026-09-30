@@ -114,7 +114,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y zfsutils-linux lvm2 thin-provisioning-tools \
-            linux-modules-extra-$(uname -r) || \
+            "linux-modules-extra-$(uname -r)" || \
             sudo apt-get install -y zfsutils-linux lvm2 thin-provisioning-tools
           sudo modprobe zfs
           sudo modprobe dm_mod
@@ -130,8 +130,12 @@ jobs:
             (echo "ERROR: LIO configfs /sys/kernel/config/target missing after target_core_mod load" && exit 1)
           # Verify /dev/mapper/control exists (created by dm_mod) so that
           # kind-config.yaml's /dev/mapper Bidirectional extraMount succeeds.
-          test -e /dev/mapper/control && echo "LVM: /dev/mapper/control present" || \
-            (echo "ERROR: /dev/mapper/control missing after dm_mod load" && exit 1)
+          if test -e /dev/mapper/control; then
+            echo "LVM: /dev/mapper/control present"
+          else
+            echo "ERROR: /dev/mapper/control missing after dm_mod load"
+            exit 1
+          fi
 
       # ── pre-pull base and third-party images ───────────────────────────────
       # Warm the local Docker daemon before image builds and Kind creation.

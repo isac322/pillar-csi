@@ -66,7 +66,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y zfsutils-linux lvm2 thin-provisioning-tools \
-            linux-modules-extra-$(uname -r) || \
+            "linux-modules-extra-$(uname -r)" || \
             sudo apt-get install -y zfsutils-linux lvm2 thin-provisioning-tools
           sudo modprobe zfs
           sudo modprobe dm_mod

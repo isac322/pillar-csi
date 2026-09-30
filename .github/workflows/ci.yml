@@ -274,7 +274,7 @@ jobs:
           BENCH_ELAPSED=$(( $(date +%s) - BENCH_START ))
           echo "elapsed=${BENCH_ELAPSED}" >> "$GITHUB_OUTPUT"
           echo "::notice title=e2e-bench::Wall-clock ${BENCH_ELAPSED}s (limit 120s)"
-          exit ${BENCH_RC}
+          exit "${BENCH_RC}"
 
       # Always emit a step summary so the elapsed time is visible in the GHA
       # UI regardless of pass/fail.  The summary references the TC budget so

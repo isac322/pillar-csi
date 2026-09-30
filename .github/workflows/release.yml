@@ -82,9 +82,11 @@ jobs:
               do_chart=true
             fi
           fi
-          echo "do_image=${do_image}" >> "$GITHUB_OUTPUT"
-          echo "do_chart=${do_chart}" >> "$GITHUB_OUTPUT"
-          echo "measure_only=${measure_only}" >> "$GITHUB_OUTPUT"
+          {
+            echo "do_image=${do_image}"
+            echo "do_chart=${do_chart}"
+            echo "measure_only=${measure_only}"
+          } >> "$GITHUB_OUTPUT"
           echo "Decision: do_image=${do_image} do_chart=${do_chart} measure_only=${measure_only}"
 
   image:
@@ -101,20 +103,20 @@ jobs:
         uses: docker/setup-buildx-action@v4
 
       - name: Restore BuildKit cache mounts
-        uses: actions/cache@v6
-        id: cache
+        uses: actions/cache/restore@v6
         with:
           path: buildkit-cache
-          key: buildkit-mount-${{ hashFiles('Dockerfile') }}-${{ github.sha }}
+          key: buildkit-mount-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Dockerfile', 'go.mod', 'go.sum') }}
           restore-keys: |
+            buildkit-mount-v2-${{ runner.os }}-${{ runner.arch }}-
             buildkit-mount-${{ hashFiles('Dockerfile') }}-
 
-      - name: Inject/extract BuildKit cache mounts
+      - name: Inject BuildKit cache mounts
         uses: reproducible-containers/buildkit-cache-dance@v3
         with:
           builder: ${{ steps.buildx.outputs.name }}
           cache-dir: buildkit-cache
-          skip-extraction: ${{ steps.cache.outputs.cache-hit }}
+          skip-extraction: true
 
       - name: Login to GHCR
         if: needs.detect.outputs.measure_only != 'true'
@@ -131,6 +133,9 @@ jobs:
           push: ${{ needs.detect.outputs.measure_only != 'true' }}
           set: |
             *.platform=linux/amd64,linux/amd64/v2,linux/amd64/v3,linux/arm64,linux/arm/v7,linux/s390x,linux/ppc64le,linux/riscv64
+            controller.cache-from=type=gha,scope=pillar-ci-controller
+            agent.cache-from=type=gha,scope=pillar-ci-agent
+            node.cache-from=type=gha,scope=pillar-ci-node
             controller.tags=ghcr.io/${{ github.repository }}/controller:${{ needs.detect.outputs.app_version }}
             agent.tags=ghcr.io/${{ github.repository }}/agent:${{ needs.detect.outputs.app_version }}
             node.tags=ghcr.io/${{ github.repository }}/node:${{ needs.detect.outputs.app_version }}

@@ -49,9 +49,11 @@ Pull requests and pushes to `master` run the same CI workflow. Code changes run 
 
 TC coverage verification runs once through `make test`, and its report appears in the Test job summary. The daily workflow also runs the separate Docker multi-node data-path suite.
 
+The Docker suite's internal and external topologies run as independent matrix jobs on separate GitHub-hosted VMs, so storage kernel and configfs state are isolated. Both jobs run the existing NVMe-oF, iSCSI, and data-path scenarios and clean up independently; a failure in one does not cancel the other. Each job repeats image builds and setup, which may increase total job minutes; wall-clock savings must be measured. Local `make test-docker-e2e` still runs both topologies sequentially by default.
+
 External Storage E2E uses two workers and a 15 GiB sparse LVM backing file in CI. Local defaults remain one worker and 5 GiB. On a Linux host with the required storage modules, set `VG_SIZE=15G` when bootstrapping and `GINKGO_PROCS=2` when running `make test-external-e2e` to use the CI settings. Parallel execution uses the matching Ginkgo binary from the upstream Kubernetes test bundle and keeps the same focus and skip filters.
 
-CI caches versioned tools and test bundles. The multi-platform build reuses a Go compiler cache keyed by the Dockerfile and Go dependencies, not each commit. Go still recompiles changed source packages. Pull requests restore that cache without exporting it; master refreshes it when its dependency key changes. Runtime image layers use separate target caches, exported by master.
+CI caches versioned tools and test bundles. The multi-platform build reuses a Go compiler cache keyed by the Dockerfile and Go dependencies, not each commit. Go still recompiles changed source packages. Pull requests restore that cache without exporting it; master refreshes it when its dependency key changes. Runtime image layers use separate target caches, exported by master. Release builds restore the same compiler and target-specific runtime caches as read-only consumers; they do not export either cache.
 
 ## Before you commit
 
