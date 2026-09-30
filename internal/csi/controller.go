@@ -178,15 +178,15 @@ func NewControllerServerWithAgentDialer(k8sClient client.Client, apiReader clien
 		if err != nil {
 			return nil, nil, fmt.Errorf("dial agent at %q: %w", addr, err)
 		}
-		return client, nopCloser{}, nil
+		return client, sharedAgentNoopCloser{}, nil
 	})
 	srv.apiReader = apiReader
 	return srv
 }
 
-type nopCloser struct{}
+type sharedAgentNoopCloser struct{}
 
-func (nopCloser) Close() error { return nil }
+func (sharedAgentNoopCloser) Close() error { return nil }
 
 // NewControllerServerWithDialer constructs a ControllerServer using the
 // provided AgentDialer.  This variant is used in tests to inject a mock
