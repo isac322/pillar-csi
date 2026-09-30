@@ -43,7 +43,7 @@ func (s *Server) CreateVolume(
 	if err != nil {
 		return nil, err
 	}
-	err = checkBackendType(req.GetBackendType(), b.Type(), req.GetVolumeId())
+	err = checkBackendType("CreateVolume", req.GetBackendType(), b.Type(), req.GetVolumeId())
 	if err != nil {
 		return nil, err
 	}
@@ -70,23 +70,23 @@ func (s *Server) CreateVolume(
 	}, nil
 }
 
-// checkBackendType rejects a CreateVolume whose backend_type is missing,
-// names a backend this agent does not implement, or differs from the
-// backend that owns the volume's pool/VG.
-func checkBackendType(requested, configured agentv1.BackendType, volumeID string) error {
+// checkBackendType rejects a volume RPC whose backend_type is missing, names a
+// backend this agent does not implement, or differs from the backend that owns
+// the volume's pool/VG.  Op is the RPC name used in error messages.
+func checkBackendType(op string, requested, configured agentv1.BackendType, volumeID string) error {
 	switch requested {
 	case agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL, agentv1.BackendType_BACKEND_TYPE_LVM:
 		if requested != configured {
 			return status.Errorf(codes.InvalidArgument,
-				"CreateVolume %q: backend_type %s does not match the pool's configured backend %s",
-				volumeID, requested, configured)
+				"%s %q: backend_type %s does not match the pool's configured backend %s",
+				op, volumeID, requested, configured)
 		}
 		return nil
 	case agentv1.BackendType_BACKEND_TYPE_UNSPECIFIED:
-		return status.Errorf(codes.InvalidArgument, "CreateVolume %q: backend_type is required", volumeID)
+		return status.Errorf(codes.InvalidArgument, "%s %q: backend_type is required", op, volumeID)
 	default:
 		return status.Errorf(codes.Unimplemented,
-			"CreateVolume %q: unsupported backend type %s", volumeID, requested)
+			"%s %q: unsupported backend type %s", op, volumeID, requested)
 	}
 }
 

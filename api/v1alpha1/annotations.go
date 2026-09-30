@@ -69,6 +69,24 @@ const (
 	//       fsType: xfs
 	//       mkfsOptions: ["-K"]
 	AnnotationFilesystemDoc = "pillar-csi.bhyoo.com/filesystem"
+
+	// AnnotationImportZvol is a PVC annotation whose plain-string value names
+	// an existing ZFS dataset (zvol) to adopt instead of provisioning a new
+	// volume, e.g. "hot-data/k8s/pvc-abc123" from a democratic-csi or openebs
+	// zfs-localpv installation.  Unlike the document keys above it is not a
+	// YAML document and is not valid as a StorageClass parameter.
+	//
+	// The import is fail-closed: CreateVolume refuses the claim when the
+	// dataset does not exist, is not a zvol, does not resolve under the
+	// PillarStore's pool and parentDataset, is already tracked by a
+	// PillarVolumeState or named by another PVC's import annotation, is
+	// smaller than the requested capacity, or is still in use on the storage
+	// node (LIO backstore, nvmet namespace, mount, or exclusive open).
+	//
+	// Example:
+	//   annotations:
+	//     pillar-csi.bhyoo.com/import-zvol: "hot-data/k8s/pvc-0d5201a5-…"
+	AnnotationImportZvol = "pillar-csi.bhyoo.com/import-zvol"
 )
 
 // PVCBackendOverride is the Go representation of the [AnnotationBackendDoc]

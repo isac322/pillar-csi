@@ -26,6 +26,7 @@ Package v1alpha1 contains API Schema definitions for the pillar-csi v1alpha1 API
 - [PillarProtocol](#pillarprotocol)
 - [PillarStorageClass](#pillarstorageclass)
 - [PillarStore](#pillarstore)
+- [PillarVolumeReservation](#pillarvolumereservation)
 - [PillarVolumeState](#pillarvolumestate)
 
 
@@ -588,6 +589,54 @@ _Appears in:_
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.37/#condition-v1-meta) array_ | conditions represent the current state of the PillarStore resource.<br />Known condition types:<br />• "AgentReady"       – the referenced PillarAgent is in Ready state.<br />• "PoolDiscovered"    – the pool named in spec.backend has been found on the agent<br />                        and the agent creates volumes in it where the store declares<br />                        (zfs.parentDataset, lvm.thinPool); reason BackendLayoutMismatch<br />                        otherwise.<br />• "BackendSupported"  – the backend is listed in the agent's capabilities.<br />• "Ready"             – all checks pass; the pool can provision volumes. |  | Optional <br /> |
 
 
+#### PillarVolumeReservation
+
+
+
+PillarVolumeReservation atomically binds a backend volume
+(agent + backend + agentVolumeID) to one volume lifecycle.  The CSI
+controller creates it before the owning PillarVolumeState with a
+deterministic name, so two concurrent CreateVolume claims on the same
+backend volume — for example two PVCs importing the same zvol — cannot both
+start a lifecycle: the loser sees AlreadyExists and is refused.  The
+reservation is deleted when the owning PillarVolumeState is removed.  It is
+never reclaimed automatically: one whose owner never wrote its record (the
+controller crashed in between) stays until an operator who verified the
+owning claim is gone deletes it with kubectl.
+
+
+
+
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `pillar-csi.bhyoo.com/v1alpha1` | | |
+| `kind` _string_ | `PillarVolumeReservation` | | |
+| `metadata` _[ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.37/#objectmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `spec` _[PillarVolumeReservationSpec](#pillarvolumereservationspec)_ |  |  |  |
+
+
+#### PillarVolumeReservationSpec
+
+
+
+PillarVolumeReservationSpec identifies one backend volume reservation and
+the volume lifecycle that holds it.
+
+
+
+_Appears in:_
+- [PillarVolumeReservation](#pillarvolumereservation)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `agentRef` _string_ | agentRef is the PillarAgent whose storage node holds the reserved<br />backend volume. |  | MinLength: 1 <br />Required <br /> |
+| `backendType` _string_ | backendType is the storage backend routing token of the reserved<br />backend volume (e.g. "zfs-zvol"). |  | MinLength: 1 <br />Required <br /> |
+| `agentVolumeID` _string_ | agentVolumeID is the reserved backend volume identifier<br />("&lt;pool>/&lt;volume-name>"), the same value the agent RPCs carry. |  | MinLength: 1 <br />Required <br /> |
+| `ownerVolume` _string_ | ownerVolume is the name of the PillarVolumeState lifecycle that holds<br />the reservation.  A reservation survives the whole lifecycle, including<br />retries of refused backend calls, and is released only when the owning<br />lifecycle is retired. |  | MinLength: 1 <br />Required <br /> |
+| `claimRef` _[VolumeClaimRef](#volumeclaimref)_ | claimRef identifies the PersistentVolumeClaim the owning lifecycle<br />provisions for.  A CreateVolume for any other claim (or claim UID) is<br />refused while the reservation exists; the refusal names this claim so<br />an operator can verify it is gone before deleting the reservation. |  | Optional <br /> |
+
+
 #### PillarVolumeState
 
 
@@ -672,6 +721,7 @@ _Appears in:_
 | `protocolType` _string_ | protocolType is the network storage protocol routing token<br />(e.g. "nvmeof-tcp").  It is the protocol member selected by the<br />protocol's spec.protocol union at CreateVolume time. |  | Required <br /> |
 | `capacityBytes` _integer_ | capacityBytes is the requested volume size in bytes. |  | Minimum: 0 <br />Optional <br /> |
 | `claimRef` _[VolumeClaimRef](#volumeclaimref)_ | claimRef identifies the PersistentVolumeClaim this volume was<br />provisioned for, when the provisioner named it (external-provisioner<br />`--extra-create-metadata`); its UID is read from the claim at the first<br />CreateVolume.  The controller uses it to recognize a provisioning<br />attempt that was abandoned because its claim was removed before any<br />PersistentVolume was created.  Without it the claim UID is derived from<br />the default "pvc-&lt;claim UID>" volume name. |  | Optional <br /> |
+| `importedFrom` _string_ | importedFrom records the full source dataset name when the volume was<br />adopted from an existing ZFS zvol via the<br />"pillar-csi.bhyoo.com/import-zvol" PVC annotation (e.g.<br />"hot-data/k8s/pvc-abc123"), instead of being created empty.  The field<br />is informational — the imported zvol keeps its data but becomes a<br />normal volume: DeleteVolume destroys it, and the annotation has no<br />effect once the volume exists. |  | Optional <br /> |
 | `resolved` _[ResolvedVolumeConfig](#resolvedvolumeconfig)_ | resolved is the effective per-volume configuration resolved at the<br />first CreateVolume attempt from the PillarStore, PillarProtocol,<br />PillarStorageClass overrides, StorageClass parameter documents and PVC<br />annotations (in that precedence order).  It is replayed on every retry<br />so the volume keeps the settings it was provisioned with even when the<br />claim or the CRDs behind the overrides no longer exist. |  | Optional <br /> |
 
 
@@ -691,6 +741,7 @@ _Appears in:_
 | `phase` _[PillarVolumeStatePhase](#pillarvolumestatephase)_ | phase is the current lifecycle phase of the volume.<br />See PillarVolumeStatePhase for the full state diagram. |  | Enum: [Provisioning CreatePartial Ready ControllerPublished NodeStagePartial NodeStaged NodePublished] <br />Optional <br /> |
 | `partialFailure` _[PartialFailureInfo](#partialfailureinfo)_ | partialFailure is populated whenever the volume is in a partial-failure<br />phase (CreatePartial, NodeStagePartial).  It records what succeeded and<br />what failed so that the recovery controller can take the minimum<br />necessary corrective action.  Cleared when the partial failure is<br />resolved. |  | Optional <br /> |
 | `backendDevicePath` _string_ | backendDevicePath is the device path returned by agent.CreateVolume<br />(e.g. "/dev/zvol/pool/pvc-abc123").  Persisted when the volume enters<br />the CreatePartial phase so that a retry of CreateVolume can skip the<br />backend-creation step and call agent.ExportVolume directly, using this<br />stored path rather than re-querying the agent.<br />Cleared when the volume reaches the Ready phase. |  | Optional <br /> |
+| `importAcquired` _boolean_ | importAcquired records that agent.ImportVolume succeeded for a<br />spec.importedFrom volume: the agent durably adopted the pre-existing<br />zvol into this lifecycle.  While it is unset the lifecycle cannot prove<br />the agent ever took ownership, so ReapAbandonedVolume and DeleteVolume<br />end the lifecycle with agent.ReleaseVolume — which retires it at the<br />agent without touching the zvol — instead of UnexportVolume and<br />DeleteVolume, and ControllerExpandVolume and ControllerPublishVolume<br />refuse it: a refused or lost-response import that was torn down,<br />resized or exposed anyway would harm a zvol this driver never owned. |  | Optional <br /> |
 | `exportInfo` _[VolumeExportInfo](#volumeexportinfo)_ | exportInfo holds the network export parameters returned by ExportVolume.<br />Populated when phase is Ready or later.  Used by DeleteVolume to<br />unmount the export after a controller restart without re-querying the<br />agent. |  | Optional <br /> |
 | `publishedNodes` _[VolumePublication](#volumepublication) array_ | publishedNodes lists every node the volume is currently published to<br />by ControllerPublishVolume.  ControllerPublishVolume rejects a publish<br />that is incompatible with an existing entry (for example a second node<br />for a SINGLE_NODE_* access mode); ControllerUnpublishVolume removes the<br />entry after the agent revoked the node's access; DeleteVolume refuses<br />to delete a volume while this list is non-empty.  Entries are also the<br />exact initiator set the storage target's ACL must contain. |  | Optional <br /> |
 | `exportSpec` _[VolumeExportSpec](#volumeexportspec)_ | exportSpec is the export configuration the controller requested at<br />CreateVolume time.  It is the durable desired state the resync<br />controller uses to re-create the export after the storage node loses<br />its target state.  Volumes created before this field existed have no<br />exportSpec and are reported via the ExportReconciled condition instead<br />of being recovered. |  | Optional <br /> |
@@ -874,6 +925,7 @@ under the same name is a different claim.
 
 
 _Appears in:_
+- [PillarVolumeReservationSpec](#pillarvolumereservationspec)
 - [PillarVolumeStateSpec](#pillarvolumestatespec)
 
 | Field | Description | Default | Validation |

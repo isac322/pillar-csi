@@ -116,6 +116,24 @@ service AgentService {
   // agent MUST return success.
   rpc CreateVolume(CreateVolumeRequest) returns (CreateVolumeResponse);
 
+  // ImportVolume adopts an already-existing backend storage resource into a
+  // volume lifecycle instead of creating one.  It backs the CSI CreateVolume
+  // path of a PersistentVolumeClaim that carries the
+  // "pillar-csi.bhyoo.com/import-zvol" annotation.
+  //
+  // Import is strictly read-only on the backend: the agent MUST refuse
+  // (FAILED_PRECONDITION or INVALID_ARGUMENT) when the resolved volume_id
+  // does not name an existing resource of the backend's volume type inside
+  // its configured layout, when that resource is still in use on the storage
+  // node (a target backstore, an nvmet namespace, a mount or an exclusive
+  // device claim), or when capacity_bytes exceeds the resource's current
+  // size.  It must never create or modify the resource.  ZFS zvol backends
+  // implement it; other backends return UNIMPLEMENTED.
+  //
+  // Idempotent: repeated calls for the same volume_id return the same
+  // device path and capacity.  The request is fenced like CreateVolume.
+  rpc ImportVolume(ImportVolumeRequest) returns (ImportVolumeResponse);
+
   // DeleteVolume destroys the backend storage resource.  The export MUST have
   // been removed (UnexportVolume) before calling this RPC; the agent will
   // return FAILED_PRECONDITION otherwise.
@@ -126,6 +144,23 @@ service AgentService {
   // ExpandVolume resizes the backend storage resource to at least
   // requested_bytes.  The agent returns the actual allocated size.
   rpc ExpandVolume(ExpandVolumeRequest) returns (ExpandVolumeResponse);
+
+  // ReleaseVolume ends a volume lifecycle's ownership of volume_id without
+  // touching the backend resource.  It retires a lifecycle whose backend
+  // volume it must not destroy — an import that was never durably adopted —
+  // so the pre-existing resource is never destroyed, resized or modified.
+  //
+  // When the fence's lifecycle owns the volume ID, the agent removes the
+  // lifecycle's network export (like UnexportVolume) and records the
+  // lifecycle as ended.  When another lifecycle owns it, or no lifecycle
+  // does, the agent only records the fence's lifecycle as retired and leaves
+  // the other lifecycle's resources untouched.  Afterwards every mutating
+  // request carrying the released lifecycle's token (including a delayed
+  // ImportVolume) is rejected with FAILED_PRECONDITION, while a new
+  // lifecycle may still import or create the volume ID.
+  //
+  // Idempotent: releasing an already released lifecycle returns success.
+  rpc ReleaseVolume(ReleaseVolumeRequest) returns (ReleaseVolumeResponse);
 
   // ── Protocol target (export) lifecycle ────────────────────────────────────
 
@@ -583,6 +618,49 @@ message CreateVolumeResponse {
   int64 capacity_bytes = 2;
 }
 
+// ImportVolumeRequest asks the agent to adopt an already-existing backend
+// storage resource — created by another provisioning stack, e.g.
+// democratic-csi or openebs zfs-localpv — into the given volume lifecycle.
+// The request carries no creation parameters: the resource is used as-is
+// and must already satisfy the requested capacity.
+message ImportVolumeRequest {
+  // Unique volume identifier within the agent: "<pool>/<volume-name>".  The
+  // volume-name resolves to the existing resource through the backend's
+  // naming convention (ZFS: "<pool>[/<parent>]/<name>").
+  // Example: "hot-data/pvc-abc123"
+  string volume_id = 1;
+
+  // Minimum required storage size in bytes.  The existing resource must be
+  // at least this large; it is never resized or truncated.
+  int64 capacity_bytes = 2;
+
+  // Backend implementation to use.  Only BACKEND_TYPE_ZFS_ZVOL supports
+  // import; other backends return UNIMPLEMENTED.
+  BackendType backend_type = 3;
+
+  // Fencing token: the PillarVolumeState UID and the publicationGeneration
+  // the controller committed for this operation.  See FencingToken.
+  FencingToken fence = 4;
+
+  // The full dataset name the caller expects volume_id to resolve to under
+  // the agent backend's configured layout (e.g. "hot-data/k8s/pvc-abc123").
+  // When set, the agent MUST refuse (FAILED_PRECONDITION) unless its resolved
+  // dataset equals this value exactly, before any ownership mark or export:
+  // the request carries only pool + leaf, so without it an agent whose
+  // parentDataset differs from the controller's would silently adopt a
+  // different dataset.  Empty disables the check for older controllers.
+  string expected_dataset = 5;
+}
+
+message ImportVolumeResponse {
+  // Path to the adopted backend resource on the storage node
+  // (e.g. /dev/zvol/hot-data/k8s/pvc-abc123).
+  string device_path = 1;
+
+  // Actual size of the existing resource in bytes (>= requested).
+  int64 capacity_bytes = 2;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // DeleteVolume — destroy backend storage resource
 // ─────────────────────────────────────────────────────────────────────────────
@@ -600,6 +678,24 @@ message DeleteVolumeRequest {
 }
 
 message DeleteVolumeResponse {}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ReleaseVolume — end a lifecycle's ownership without touching the backend
+// ─────────────────────────────────────────────────────────────────────────────
+
+message ReleaseVolumeRequest {
+  // Unique volume identifier: "<pool>/<volume-name>".
+  string volume_id = 1;
+
+  // Protocol type of the lifecycle's export to remove, if any.
+  ProtocolType protocol_type = 2;
+
+  // Fencing token: the PillarVolumeState UID and the publicationGeneration
+  // the controller committed for this operation.  See FencingToken.
+  FencingToken fence = 3;
+}
+
+message ReleaseVolumeResponse {}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ExpandVolume — resize backend storage resource

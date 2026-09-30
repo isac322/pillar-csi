@@ -62,4 +62,11 @@ resources:
   kind: PillarVolumeState
   path: github.com/isac322/pillar-csi/api/v1alpha1
   version: v1alpha1
+- api:
+    crdVersion: v1
+  domain: pillar-csi.bhyoo.com
+  group: pillar-csi
+  kind: PillarVolumeReservation
+  path: github.com/isac322/pillar-csi/api/v1alpha1
+  version: v1alpha1
 version: "3"
