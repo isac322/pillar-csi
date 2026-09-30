@@ -98,6 +98,14 @@ spec:
                     items:
                       type: string
                     type: array
+                  periodicTrim:
+                    description: |-
+                      periodicTrim controls whether the CSI node periodically trims (FITRIM)
+                      the staged filesystem of a Filesystem-mode volume so the backend can
+                      reclaim freed blocks.  Unset follows the node setting (enabled unless
+                      the node's --trim-interval is 0); false opts the volume out.  A PVC
+                      annotation value overrides the class value for that volume.
+                    type: boolean
                 type: object
               localAttach:
                 description: |-

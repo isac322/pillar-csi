@@ -152,6 +152,12 @@ func TestDecodeOverrides_Rejections(t *testing.T) {
 			wantErr: "mountOptions[1]: expected a string, got number 5",
 		},
 		{
+			name:    "filesystem periodicTrim is a boolean",
+			decode:  filesystemDoc,
+			raw:     `periodicTrim: "false"`,
+			wantErr: "periodicTrim: expected a boolean, got string",
+		},
+		{
 			name:    "not a mapping",
 			decode:  filesystemDoc,
 			raw:     "- xfs",
@@ -284,6 +290,26 @@ func TestDecodeFilesystemDoc_ListSemantics(t *testing.T) {
 	}
 	if fs.MkfsOptions == nil || strings.Join(*fs.MkfsOptions, " ") != "-L data" {
 		t.Errorf("mkfsOptions = %v, want [-L data]", fs.MkfsOptions)
+	}
+}
+
+// TestDecodeFilesystemDoc_PeriodicTrim verifies periodicTrim decodes as a
+// tri-state: omitted or null inherits (nil), false opts out explicitly.
+func TestDecodeFilesystemDoc_PeriodicTrim(t *testing.T) {
+	t.Parallel()
+	for raw, want := range map[string]*bool{
+		"periodicTrim: false\n": new(false),
+		"periodicTrim: true\n":  new(true),
+		"periodicTrim: null\n":  nil,
+		"fsType: xfs\n":         nil,
+	} {
+		fs, err := DecodeFilesystemDoc(FilesystemDocKey, raw)
+		if err != nil {
+			t.Fatalf("DecodeFilesystemDoc(%q): %v", raw, err)
+		}
+		if (fs.PeriodicTrim == nil) != (want == nil) || (want != nil && *fs.PeriodicTrim != *want) {
+			t.Errorf("DecodeFilesystemDoc(%q).PeriodicTrim = %v, want %v", raw, fs.PeriodicTrim, want)
+		}
 	}
 }
 

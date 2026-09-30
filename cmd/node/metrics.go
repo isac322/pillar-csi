@@ -29,6 +29,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	csisvc "github.com/isac322/pillar-csi/internal/csi"
 	"github.com/isac322/pillar-csi/internal/telemetry"
 )
 
@@ -41,15 +42,19 @@ const metricsDisabled = "0"
 const metricsReadHeaderTimeout = 10 * time.Second
 
 // newNodeMetricsRegistry builds the node's own registry: Go and process
-// collectors (M19), pillar_csi_build_info (M18), the exec histogram (M9) and
-// the NVMe-oF controller collector (M17) over sysfsRoot.
-func newNodeMetricsRegistry(version, sysfsRoot string) (*prometheus.Registry, error) {
+// collectors (M19), pillar_csi_build_info (M18), the exec histogram (M9),
+// the NVMe-oF controller collector (M17) over sysfsRoot and the periodic
+// trim metrics of trim.
+func newNodeMetricsRegistry(version, sysfsRoot string, trim *trimMetrics) (*prometheus.Registry, error) {
 	reg := prometheus.NewRegistry()
 	for _, c := range []prometheus.Collector{
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 		telemetry.BuildInfoCollector(telemetry.ComponentNode, version),
 		newNVMeoFControllersCollector(sysfsRoot),
+		trim.operations,
+		trim.bytes,
+		trim.duration,
 	} {
 		err := reg.Register(c)
 		if err != nil {
@@ -61,6 +66,53 @@ func newNodeMetricsRegistry(version, sysfsRoot string) (*prometheus.Registry, er
 		return nil, fmt.Errorf("register node metrics: %w", err)
 	}
 	return reg, nil
+}
+
+// trimMetrics exports the periodic filesystem trim of the node (see
+// csisvc.NodeServer.StartTrimmer).
+type trimMetrics struct {
+	operations *prometheus.CounterVec
+	bytes      prometheus.Counter
+	duration   prometheus.Histogram
+}
+
+var _ csisvc.TrimObserver = (*trimMetrics)(nil)
+
+func newTrimMetrics() *trimMetrics {
+	m := &trimMetrics{
+		operations: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "pillar_csi_node_trim_operations_total",
+			Help: "Periodic filesystem trim attempts of staged volumes by result " +
+				"(success, skipped, unsupported, error).",
+		}, []string{"result"}),
+		bytes: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "pillar_csi_node_trim_bytes_total",
+			Help: "Bytes the kernel reported discarded by periodic filesystem trim.",
+		}),
+		duration: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name: "pillar_csi_node_trim_duration_seconds",
+			Help: "Duration of successful periodic filesystem trims of one volume.",
+			// One second to about four and a half hours.
+			Buckets: prometheus.ExponentialBuckets(1, 4, 8),
+		}),
+	}
+	// Export every result from the start so rate() sees the first attempt.
+	for _, r := range []csisvc.TrimResult{
+		csisvc.TrimResultSuccess, csisvc.TrimResultSkipped,
+		csisvc.TrimResultUnsupported, csisvc.TrimResultError,
+	} {
+		m.operations.WithLabelValues(string(r))
+	}
+	return m
+}
+
+// ObserveTrim implements csisvc.TrimObserver.
+func (m *trimMetrics) ObserveTrim(result csisvc.TrimResult, trimmedBytes uint64, duration time.Duration) {
+	m.operations.WithLabelValues(string(result)).Inc()
+	m.bytes.Add(float64(trimmedBytes))
+	if result == csisvc.TrimResultSuccess {
+		m.duration.Observe(duration.Seconds())
+	}
 }
 
 // startMetricsServer serves reg on addr at /metrics with OpenMetrics

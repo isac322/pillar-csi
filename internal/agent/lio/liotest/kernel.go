@@ -22,7 +22,9 @@ limitations under the License.
 // "udev_path=" written to a backstore's control shows up in its info
 // attribute as "UDEV PATH: <path>", a
 // backstore can be enabled only with a device that is not held, its unit
-// serial cannot change while a LUN uses it, and portal names must parse.
+// serial cannot change while a LUN uses it, its attrib/emulate_tpu accepts 1
+// only once enabled and only for a device supporting discard, and portal
+// names must parse.
 //
 // It is test support only; production code uses lio.OSFS.
 package liotest
@@ -54,6 +56,10 @@ type Kernel struct {
 	held map[string]bool
 	// failWrites injects write errors per attribute path.
 	failWrites map[string]error
+	// dropWrites makes writes per attribute path succeed without effect.
+	dropWrites map[string]bool
+	// noDiscard marks devices without discard support.
+	noDiscard map[string]bool
 }
 
 var _ lio.FS = (*Kernel)(nil)
@@ -79,6 +85,8 @@ func NewUnloaded(root string) *Kernel {
 		auto:       map[string]bool{},
 		held:       map[string]bool{},
 		failWrites: map[string]error{},
+		dropWrites: map[string]bool{},
+		noDiscard:  map[string]bool{},
 	}
 }
 
@@ -105,6 +113,23 @@ func (k *Kernel) FailWrite(path string, err error) {
 		return
 	}
 	k.failWrites[path] = err
+}
+
+// DropWrite makes every later write to path succeed without changing it, so
+// only the read-back can detect it.
+func (k *Kernel) DropWrite(path string) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.dropWrites[path] = true
+}
+
+// DisableDiscard marks the block device path as not supporting discard:
+// enabling thin provisioning (emulate_tpu=1) on a backstore of it fails
+// with ENOSYS, as target_try_configure_unmap does in the kernel.
+func (k *Kernel) DisableDiscard(path string) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.noDiscard[path] = true
 }
 
 // Claimer is a DeviceClaimer consistent with the emulation: a device is held
@@ -244,7 +269,8 @@ func (k *Kernel) populate(kd kind, path string) {
 		k.autoFile(path, "udev_path", "")
 		k.autoFile(path, "control", "")
 		k.autoFile(path, "info", iblockInfo(""))
-		k.autoDir(path, "attrib")
+		attrib := k.autoDir(path, "attrib")
+		k.autoFile(attrib, "emulate_tpu", "0")
 		wwn := k.autoDir(path, "wwn")
 		k.autoFile(wwn, "vpd_unit_serial", "T10 VPD Unit Serial Number: ")
 	case kindTPG:
@@ -403,18 +429,37 @@ func (k *Kernel) claimedByBackstoreLocked(device string) bool {
 func (k *Kernel) WriteFile(path, content string) error {
 	k.mu.Lock()
 	defer k.mu.Unlock()
+	done, err := k.injectedWriteLocked(path)
+	if done {
+		return err
+	}
+	return k.writeAttrLocked(path, strings.TrimSpace(content))
+}
+
+// injectedWriteLocked applies FailWrite and DropWrite and the checks every
+// attribute write passes, and reports whether the write ends there with
+// err.  The caller must hold k.mu.
+func (k *Kernel) injectedWriteLocked(path string) (done bool, err error) {
 	failErr := k.failWrites[path]
 	if failErr != nil {
-		return &fs.PathError{Op: "write", Path: path, Err: failErr}
+		return true, &fs.PathError{Op: "write", Path: path, Err: failErr}
+	}
+	if k.dropWrites[path] {
+		return true, nil
 	}
 	fi, err := os.Lstat(path)
 	if err != nil {
-		return err //nolint:wrapcheck // emulated syscall
+		return true, err //nolint:wrapcheck // emulated syscall
 	}
 	if fi.IsDir() {
-		return errnoErr("write", path, syscall.EISDIR)
+		return true, errnoErr("write", path, syscall.EISDIR)
 	}
-	value := strings.TrimSpace(content)
+	return false, nil
+}
+
+// writeAttrLocked stores value in the attribute at path with the side
+// effects and checks of its kind; k.mu must be held.
+func (k *Kernel) writeAttrLocked(path, value string) error {
 	dir, name := filepath.Dir(path), filepath.Base(path)
 	dirKind, _ := k.classify(dir)
 	switch {
@@ -422,6 +467,8 @@ func (k *Kernel) WriteFile(path, content string) error {
 		return writeBackstoreControl(path, value)
 	case dirKind == kindBackstore && name == "enable":
 		return k.writeBackstoreEnableLocked(path, value)
+	case name == "emulate_tpu" && filepath.Base(dir) == "attrib" && k.isBackstore(filepath.Dir(dir)):
+		return k.writeEmulateTPULocked(path, value)
 	case name == "vpd_unit_serial" && filepath.Base(dir) == "wwn":
 		if k.linkedTo(filepath.Dir(dir)) {
 			return errnoErr("write", path, syscall.EINVAL)
@@ -462,6 +509,31 @@ func (k *Kernel) writeBackstoreEnableLocked(path, value string) error {
 		return errnoErr("write", path, syscall.EBUSY)
 	}
 	return put(path, "1")
+}
+
+func (k *Kernel) isBackstore(path string) bool {
+	kd, _ := k.classify(path)
+	return kd == kindBackstore
+}
+
+// writeEmulateTPULocked handles a write to a backstore's attrib/emulate_tpu
+// like emulate_tpu_store: enabling it configures UNMAP from the backing
+// device, which requires an enabled backstore (ENODEV) on a device with
+// discard support (ENOSYS); k.mu must be held.
+func (k *Kernel) writeEmulateTPULocked(path, value string) error {
+	if value != "0" && value != "1" {
+		return errnoErr("write", path, syscall.EINVAL)
+	}
+	if value == "1" {
+		dir := filepath.Dir(filepath.Dir(path))
+		switch {
+		case readTrim(filepath.Join(dir, "enable")) != "1":
+			return errnoErr("write", path, syscall.ENODEV)
+		case k.noDiscard[infoDevice(dir)]:
+			return errnoErr("write", path, syscall.ENOSYS)
+		}
+	}
+	return put(path, value)
 }
 
 func put(path, value string) error {

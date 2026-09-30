@@ -336,6 +336,9 @@ agent는 LIO를 configfs(`/sys/kernel/config/target/iscsi/`)로 직접 구성한
   - 예: `iqn.2026-01.com.bhyoo.pillar-csi:tank.pvc-abc`
 - target마다 TPG 1(`tpgt_1`) 하나를 둔다.
 - TPG에 LUN 0 하나를 두고, zvol 또는 LV를 iblock backstore로 연결한다.
+- backstore를 활성화한 뒤 `attrib/emulate_tpu=1`을 써서 thin provisioning(UNMAP)을 광고한다. LIO 기본값은 0이라 광고하지 않으면 node의 `/dev/sdX`가 `discard_max_bytes=0`이 되어 discard가 zvol/LV에 닿지 않는다. 이미 활성화된 backstore(agent 재시작)도 0이면 1로 올린다. 쓴 뒤 다시 읽어 확인한다.
+  - backing 디바이스가 discard를 지원하지 않으면 커널이 `ENOSYS`로 거부한다(`target_try_configure_unmap`). 이때는 0으로 두고 UNMAP 없이 export하며 agent가 Info 로그를 남긴다. 다른 오류는 export 실패다.
+  - 공간은 node가 discard를 보내야 반환된다. pillar-node가 스테이지한 filesystem 볼륨을 주기적으로 trim하므로(기본 매주, `--trim-interval`; PVC·클래스 filesystem 문서의 `periodicTrim: false`로 제외, PRD §5.5) 별도 작업이 필요 없다. 더 빨리 돌려받으려면 `fstrim`을 직접 돌리거나 `discard` 옵션으로 마운트한다. raw Block 볼륨은 trim하지 않는다.
 - network portal은 `<bind 주소>:<port>` 하나다. bind 주소는 `PillarAgent.status.resolvedAddress`의 IP다.
 - `zfs-zvol`과 `lvm-lv`에 동일하게 적용된다.
 

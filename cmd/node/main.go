@@ -962,7 +962,9 @@ func main() {
 	iscsiNetns := flag.String("iscsi-netlink-netns", "",
 		"Path to a network namespace file (e.g. /proc/1/ns/net) in which the NETLINK_ISCSI socket is "+
 			"opened. Empty uses the pod's own namespace (hostNetwork). Needed only for nested-container nodes.")
+	trimInterval := flag.Duration("trim-interval", defaultTrimInterval, trimIntervalUsage)
 	flag.Parse()
+	validateTrimIntervalOrExit(*trimInterval)
 
 	if *nodeID == "" {
 		// Fall back to the NODE_NAME env var injected by the DaemonSet pod spec
@@ -1038,6 +1040,7 @@ func main() {
 
 	// ── Tracing, metrics, and the gRPC server ─────────────────────────────
 	obs := startObservability(*metricsAddr, version)
+	stopTrim := startTrimmerOrExit(ctx, nodeSrv, *trimInterval, obs.trim)
 	grpcSrv := newNodeGRPCServer()
 	csi.RegisterIdentityServer(grpcSrv, identitySrv)
 	csi.RegisterNodeServer(grpcSrv, nodeSrv)
@@ -1056,6 +1059,9 @@ func main() {
 	fmt.Fprintf(os.Stderr, "pillar-node: node-id=%s version=%s socket=%s\n",
 		*nodeID, version, *csiSocket)
 	serveErr := grpcSrv.Serve(lis)
+	// Stop the trim loop (at most one chunk) before the iSCSI initiator it
+	// may be trimming through is closed.
+	stopTrim()
 	// os.Exit skips defers: stop the metrics endpoint and flush spans
 	// explicitly on both the clean and the error path.
 	obs.shutdown()
@@ -1103,6 +1109,47 @@ func runNodeShutdown(h *healthsrv.Server, gracefulStopFn func(), grace time.Dura
 	gracefulStopFn()
 }
 
+// defaultTrimInterval is the --trim-interval default: weekly, like the
+// fstrim.timer of util-linux.
+const defaultTrimInterval = 7 * 24 * time.Hour
+
+// trimIntervalUsage is the --trim-interval help text.
+const trimIntervalUsage = "Interval between two periodic filesystem trims (FITRIM) of each staged " +
+	"Filesystem-mode volume. 0 disables periodic trim."
+
+// validateTrimIntervalOrExit exits the process non-zero when the
+// --trim-interval value is negative.
+func validateTrimIntervalOrExit(interval time.Duration) {
+	if interval < 0 {
+		fmt.Fprintf(os.Stderr, "pillar-node: --trim-interval %s must not be negative\n", interval)
+		os.Exit(1)
+	}
+}
+
+// startTrimmerOrExit starts the periodic trim of the node's staged
+// Filesystem-mode volumes and returns the function that stops it.  An
+// interval of 0 disables it.  A failure to start exits the process
+// non-zero.
+func startTrimmerOrExit(
+	ctx context.Context, nodeSrv *csisvc.NodeServer, interval time.Duration, observer csisvc.TrimObserver,
+) (stop func()) {
+	if interval == 0 {
+		fmt.Fprintln(os.Stderr, "pillar-node: periodic filesystem trim disabled (--trim-interval=0)")
+		return func() {}
+	}
+	stop, err := nodeSrv.StartTrimmer(ctx, csisvc.TrimOptions{
+		Interval:   interval,
+		DriverName: driverName,
+		Logger:     slog.New(slog.NewJSONHandler(os.Stderr, nil)).With("component", "trim"),
+		Observer:   observer,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "pillar-node: %v\n", err)
+		os.Exit(1)
+	}
+	return stop
+}
+
 // nodeSysfsRoot is the production sysfs root.
 const nodeSysfsRoot = "/sys"
 
@@ -1114,6 +1161,7 @@ const observabilityShutdownTimeout = 5 * time.Second
 type nodeObservability struct {
 	metricsSrv      *http.Server // nil when the endpoint is disabled
 	shutdownTracing func(context.Context) error
+	trim            *trimMetrics
 }
 
 // startObservability sets up tracing and starts the metrics endpoint,
@@ -1124,8 +1172,8 @@ func startObservability(metricsAddr, version string) *nodeObservability {
 		fmt.Fprintf(os.Stderr, "pillar-node: %v\n", err)
 		os.Exit(1)
 	}
-	obs := &nodeObservability{shutdownTracing: shutdownTracing}
-	reg, err := newNodeMetricsRegistry(version, nodeSysfsRoot)
+	obs := &nodeObservability{shutdownTracing: shutdownTracing, trim: newTrimMetrics()}
+	reg, err := newNodeMetricsRegistry(version, nodeSysfsRoot, obs.trim)
 	if err == nil {
 		obs.metricsSrv, err = startMetricsServer(metricsAddr, reg)
 	}

@@ -162,6 +162,8 @@ Kubernetes: `>=1.24.0-0`
 | node.sidecars.nodeDriverRegistrar.image.tag | string | `"v2.17.0"` | csi-node-driver-registrar image tag. |
 | node.sidecars.nodeDriverRegistrar.resources | object | `{"limits":{"cpu":"100m","memory":"64Mi"},"requests":{"cpu":"10m","memory":"32Mi"}}` | Resource requests/limits for the node-driver-registrar sidecar. |
 | node.tolerations | list | `[]` | Tolerations applied to node DaemonSet Pods. |
+| node.trim.enabled | bool | `true` | trim-interval=0 and disables the trim loop. |
+| node.trim.interval | string | `"168h"` | How often each staged filesystem volume is trimmed (Go duration). A newly staged volume is first trimmed after a random delay within one interval. |
 | rbac.create | bool | `true` | Set to false to skip ClusterRole/ClusterRoleBinding creation. |
 | serviceAccount.agent.annotations | object | `{}` | Annotations added to the agent ServiceAccount. |
 | serviceAccount.agent.create | bool | `true` | Set to false to skip ServiceAccount creation for pillar-agent. |

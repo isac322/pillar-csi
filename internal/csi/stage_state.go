@@ -105,6 +105,36 @@ type nodeStageState struct {
 	// Local holds the device-mapper claim of a local attach.  Non-nil when
 	// AttachMode == AttachModeLocal.
 	Local *LocalStageState `json:"local,omitempty"`
+
+	// VolumeID is the CSI volume ID the record belongs to.  The state file
+	// name replaces "/" with "_", which cannot be inverted, so the periodic
+	// trim loop reads the ID from here to take the volume's lock.  Empty in
+	// records written before the field existed (see trimmer.legacyTarget).
+	VolumeID string `json:"volume_id,omitempty"`
+
+	// StagingPath is the staging_target_path NodeStageVolume mounted the
+	// volume at.  The periodic trim loop trims this path — never a publish
+	// path.  Empty in records written before the field existed.
+	StagingPath string `json:"staging_path,omitempty"`
+
+	// StagedAt is when the record was first written by NodeStageVolume.
+	// The periodic trim schedules the first trim a random delay after it,
+	// so writeStageState preserves the recorded time across every later
+	// rewrite of the same record.  Nil in records written before the field
+	// existed; the trim loop uses the state file's modification time for
+	// them and the next rewrite backfills the field from it.
+	StagedAt *time.Time `json:"staged_at,omitempty"`
+
+	// PeriodicTrim is the resolved periodicTrim setting of a Filesystem-mode
+	// volume; false opts the volume out of the node's periodic trim.  Nil
+	// (unset, or a record written before the field existed) follows the
+	// node setting.
+	PeriodicTrim *bool `json:"periodic_trim,omitempty"`
+
+	// LastTrim is the start time of the last periodic trim attempt,
+	// whatever its outcome.  The next attempt is due one trim interval
+	// later.  Nil until the first attempt.
+	LastTrim *time.Time `json:"last_trim,omitempty"`
 }
 
 // isLocalAttach reports whether the volume was staged by a local attach.

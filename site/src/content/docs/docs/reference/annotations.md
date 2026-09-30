@@ -19,7 +19,7 @@ Each value is limited to the tunable fields of its subtree. See [Override settin
 |---|---|---|
 | `pillar-csi.bhyoo.com/backend` | `zfs: {...}` or `lvm: {...}` | `zfs.properties`, `lvm.provisioningMode` |
 | `pillar-csi.bhyoo.com/protocol` | `nvmeofTcp: {...}` or `iscsi: {...}` | `nvmeofTcp`: `maxQueueSize`, `inCapsuleDataSize`, `ctrlLossTmo`, `reconnectDelay`. `iscsi`: `loginTimeout`, `replacementTimeout`, `noopOutInterval`, `noopOutTimeout` |
-| `pillar-csi.bhyoo.com/filesystem` | `{fsType, mkfsOptions, mountOptions}` | all three |
+| `pillar-csi.bhyoo.com/filesystem` | `{fsType, mkfsOptions, mountOptions, periodicTrim}` | all four |
 
 Rules:
 
@@ -111,6 +111,7 @@ The controller writes these into `PersistentVolume.spec.csi.volumeAttributes` at
 | `pillar-csi.bhyoo.com/fs-type` | resolved `fsType` |
 | `pillar-csi.bhyoo.com/mkfs-options` | resolved `mkfsOptions`, as a JSON string array |
 | `pillar-csi.bhyoo.com/mount-options` | resolved `mountOptions`, as a JSON string array |
+| `pillar-csi.bhyoo.com/periodic-trim` | resolved `periodicTrim`, `"true"` or `"false"`; omitted when no layer sets it, and the node then trims the volume. See [Reclaiming freed space](/docs/how-to/volume-overrides/#reclaiming-freed-space) |
 
 ### Publish context
 

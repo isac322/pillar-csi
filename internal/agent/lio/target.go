@@ -88,6 +88,12 @@ type Target struct {
 	// is enabled, and verifies that it is free after the backstore was
 	// removed for a local attach.  nil selects nvmeof.ClaimDeviceExclusively.
 	DeviceClaimer DeviceClaimer
+
+	// DiscardUnsupported, when set, is called with DevicePath when the
+	// backing device does not support discard, so the backstore cannot
+	// advertise thin provisioning (UNMAP) and the export is served without
+	// it (see ensureThinProvisioning).
+	DiscardUnsupported func(device string)
 }
 
 func (t *Target) cfs() configfs { return newConfigfs(t.FS, t.ConfigfsRoot) }
@@ -378,9 +384,11 @@ func (t *Target) attachLUN() error {
 	return nil
 }
 
-// ensureBackstore creates and enables the iblock backstore on DevicePath and
-// pins its unit serial.  An enabled backstore must already use DevicePath:
-// LIO cannot change the device of a configured backstore.
+// ensureBackstore creates and enables the iblock backstore on DevicePath,
+// enables thin provisioning (also on an already enabled backstore, e.g. one
+// restored by an older agent) and pins its unit serial.  An enabled
+// backstore must already use DevicePath: LIO cannot change the device of a
+// configured backstore.
 func (t *Target) ensureBackstore() error {
 	c := t.cfs()
 	dir := t.BackstoreDir()
@@ -410,6 +418,10 @@ func (t *Target) ensureBackstore() error {
 		if udevPath != t.DevicePath {
 			return fmt.Errorf("backstore %q is configured for device %q, want %q", dir, udevPath, t.DevicePath)
 		}
+		err = t.ensureThinProvisioning(dir)
+		if err != nil {
+			return err
+		}
 		return t.ensureUnitSerial()
 	}
 	err = t.configureBackstore(dir)
@@ -426,10 +438,11 @@ func (t *Target) ensureBackstore() error {
 	return t.ensureUnitSerial()
 }
 
-// configureBackstore points a not yet enabled backstore at DevicePath and
-// enables it.  The claim probe refuses early while the node holds the
-// device; the enable write itself is LIO's exclusive open, and its EBUSY is
-// reported as ErrDeviceHeld too.
+// configureBackstore points a not yet enabled backstore at DevicePath,
+// enables it and enables thin provisioning, which LIO accepts only once the
+// backstore is enabled.  The claim probe refuses early while the node holds
+// the device; the enable write itself is LIO's exclusive open, and its EBUSY
+// is reported as ErrDeviceHeld too.
 func (t *Target) configureBackstore(dir string) error {
 	c := t.cfs()
 	release, err := t.claimer()(t.DevicePath)
@@ -483,6 +496,48 @@ func (t *Target) configureBackstore(dir string) error {
 	}
 	if got != "1" {
 		return fmt.Errorf("configfs verify %q after write 1: got %q", enable, got)
+	}
+	return t.ensureThinProvisioning(dir)
+}
+
+// ensureThinProvisioning makes the enabled backstore at dir advertise SCSI
+// thin provisioning, so initiators see UNMAP (discard) support and fstrim or
+// "-o discard" on the node return freed blocks to the backing device.  LIO
+// defaults attrib/emulate_tpu to 0; it is written only when it differs and
+// read back.
+//
+// The kernel accepts 1 only when the backing device supports discard:
+// iblock reads the discard limits of its block device when the backstore is
+// enabled, and otherwise emulate_tpu_store fails with ENOSYS from
+// target_try_configure_unmap (drivers/target/target_core_configfs.c).  That
+// ENOSYS leaves the attribute at 0, is reported through DiscardUnsupported,
+// and the backstore is served without UNMAP; any other error is returned.
+func (t *Target) ensureThinProvisioning(dir string) error {
+	c := t.cfs()
+	path := filepath.Join(dir, "attrib", "emulate_tpu")
+	got, err := c.readAttr(path)
+	if err != nil {
+		return err
+	}
+	if got == "1" {
+		return nil
+	}
+	err = c.fs.WriteFile(path, "1")
+	if errors.Is(err, syscall.ENOSYS) {
+		if t.DiscardUnsupported != nil {
+			t.DiscardUnsupported(t.DevicePath)
+		}
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("configfs write %q = 1 (device %s): %w", path, t.DevicePath, err)
+	}
+	got, err = c.readAttr(path)
+	if err != nil {
+		return fmt.Errorf("configfs verify %q after write 1: %w", path, err)
+	}
+	if got != "1" {
+		return fmt.Errorf("configfs verify %q after write 1: got %q", path, got)
 	}
 	return nil
 }

@@ -906,6 +906,18 @@ Type: `list`. Default: `[]`
 
 Tolerations applied to node DaemonSet Pods.
 
+### <code>node.<wbr>trim.<wbr>enabled</code>
+
+Type: `bool`. Default: `true`
+
+trim-interval=0 and disables the trim loop.
+
+### <code>node.<wbr>trim.<wbr>interval</code>
+
+Type: `string`. Default: `"168h"`
+
+How often each staged filesystem volume is trimmed (Go duration). A newly staged volume is first trimmed after a random delay within one interval.
+
 ## rbac
 
 ### <code>rbac.<wbr>create</code>

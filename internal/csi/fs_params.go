@@ -19,6 +19,7 @@ package csi
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 
 	csi "github.com/container-storage-interface/spec/lib/go/csi"
 
@@ -72,6 +73,9 @@ func filesystemVolumeContext(fs *v1alpha1.FilesystemConfig, volCtx map[string]st
 	if fs.MountOptions != nil {
 		volCtx[paramMountOptions] = mustJSON(*fs.MountOptions)
 	}
+	if fs.PeriodicTrim != nil {
+		volCtx[paramPeriodicTrim] = strconv.FormatBool(*fs.PeriodicTrim)
+	}
 }
 
 // stageFilesystem resolves the filesystem type, mkfs options and mount flags
@@ -107,7 +111,16 @@ func stageFilesystem(
 	if err != nil {
 		return stagedFilesystem{}, err
 	}
-	return stagedFilesystem{fsType: fsType, mkfsOptions: mkfsOptions, mountFlags: mountFlags}, nil
+	periodicTrim, err := parsePeriodicTrim(volCtx)
+	if err != nil {
+		return stagedFilesystem{}, err
+	}
+	return stagedFilesystem{
+		fsType:       fsType,
+		mkfsOptions:  mkfsOptions,
+		mountFlags:   mountFlags,
+		PeriodicTrim: periodicTrim,
+	}, nil
 }
 
 // stagedFilesystem is the filesystem configuration NodeStageVolume applies
@@ -116,6 +129,29 @@ type stagedFilesystem struct {
 	fsType      string
 	mkfsOptions []string
 	mountFlags  []string
+	// PeriodicTrim is the resolved periodicTrim setting, nil when no layer
+	// set it (the node setting applies).
+	PeriodicTrim *bool
+}
+
+// parsePeriodicTrim returns the resolved periodicTrim setting from the
+// VolumeContext, or nil when the key is absent.  Only "true" and "false"
+// are accepted — the values filesystemVolumeContext writes.
+func parsePeriodicTrim(volCtx map[string]string) (*bool, error) {
+	raw, ok := volCtx[paramPeriodicTrim]
+	if !ok {
+		return nil, nil //nolint:nilnil // absent key means "not set"
+	}
+	var v bool
+	switch raw {
+	case "true":
+		v = true
+	case "false":
+	default:
+		return nil, fmt.Errorf("volume_context %s %q is unsupported: must be %q or %q",
+			paramPeriodicTrim, raw, "true", "false")
+	}
+	return &v, nil
 }
 
 // resolveMountFlags returns the resolved mount options from the VolumeContext

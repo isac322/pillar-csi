@@ -155,6 +155,7 @@ var filesystemFields = map[string]fieldSpec{
 	"fsType":       {kind: fieldTunable, validate: enumValue("ext4", "xfs")},
 	"mkfsOptions":  {kind: fieldTunable, validate: stringList},
 	"mountOptions": {kind: fieldTunable, validate: stringList},
+	"periodicTrim": {kind: fieldTunable, validate: boolValue},
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

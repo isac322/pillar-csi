@@ -101,6 +101,11 @@ func (n *NodeServer) NodeExpandVolume(
 		return nil, status.Error(codes.InvalidArgument, "NodeExpandVolume: volume_path is required") //nolint:wrapcheck
 	}
 
+	// Serialize with NodeStageVolume, NodeUnstageVolume and the periodic
+	// trim of the same volume (see trim.go).
+	unlock := n.volumeLocks.lock(req.GetVolumeId())
+	defer unlock()
+
 	// CSI spec §4.16: NodeExpandVolume must return NotFound when the volume
 	// the CO references does not exist on this node — i.e. nothing is mounted
 	// at volume_path.  Without this check the call falls through to the
