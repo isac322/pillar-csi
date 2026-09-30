@@ -51,6 +51,12 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Cache pinned Kind e2e tools
+        uses: actions/cache@v6
+        with:
+          path: bin/
+          key: kind-e2e-tools-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Makefile', 'go.mod', 'go.sum') }}
+
       # ── install tooling ────────────────────────────────────────────────────
       # install_only=true: lay down the kind binary without creating a cluster.
       # TestMain in test/e2e/setup_test.go owns cluster lifecycle (create if
@@ -108,7 +114,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y zfsutils-linux lvm2 thin-provisioning-tools \
-            linux-modules-extra-$(uname -r) || \
+            "linux-modules-extra-$(uname -r)" || \
             sudo apt-get install -y zfsutils-linux lvm2 thin-provisioning-tools
           sudo modprobe zfs
           sudo modprobe dm_mod
@@ -124,38 +130,30 @@ jobs:
             (echo "ERROR: LIO configfs /sys/kernel/config/target missing after target_core_mod load" && exit 1)
           # Verify /dev/mapper/control exists (created by dm_mod) so that
           # kind-config.yaml's /dev/mapper Bidirectional extraMount succeeds.
-          test -e /dev/mapper/control && echo "LVM: /dev/mapper/control present" || \
-            (echo "ERROR: /dev/mapper/control missing after dm_mod load" && exit 1)
+          if test -e /dev/mapper/control; then
+            echo "LVM: /dev/mapper/control present"
+          else
+            echo "ERROR: /dev/mapper/control missing after dm_mod load"
+            exit 1
+          fi
 
-      # ── pre-pull third-party images ────────────────────────────────────────
-      # Pull all Docker Hub base images and third-party sidecar images into
-      # the local Docker daemon cache BEFORE any docker build or Kind cluster
-      # creation.  Two categories:
-      #
-      # 1. Dockerfile base images — alpine:3.24 and golang:1.27-alpine3.24 are
-      #    the FROM stages in the unified multi-target Dockerfile.
-      #    Pre-pulling them here means "docker build" finds them in the local
-      #    cache and never contacts Docker Hub, avoiding HTTP 429 rate-limit
-      #    and HTTP 401 auth errors for anonymous runners.
-      #
-      # 2. Helm chart runtime images — buildAndLoadImages() copies them from
-      #    the daemon cache into Kind nodes via docker save + docker cp so that
-      #    pods start without hitting registry rate-limits at runtime.
-      - name: Pre-pull Docker Hub base images (Dockerfile stages)
+      # ── pre-pull base and third-party images ───────────────────────────────
+      # Warm the local Docker daemon before image builds and Kind creation.
+      # Base images serve Dockerfile stages; chart runtime images are copied
+      # into Kind nodes. Any failed pull fails this step before tests can run.
+      - name: Pre-pull base and third-party images
         run: |
-          # Runtime base used by agent and node targets in the unified Dockerfile.
-          docker pull alpine:3.24
-          # Shared builder stage used by all three targets.
-          docker pull golang:1.27-alpine3.24
-
-      - name: Pre-pull third-party images
-        run: |
-          docker pull busybox:1.38.0
-          docker pull registry.k8s.io/sig-storage/csi-provisioner:v6.3.0
-          docker pull registry.k8s.io/sig-storage/csi-attacher:v4.12.0
-          docker pull registry.k8s.io/sig-storage/csi-resizer:v2.2.1
-          docker pull registry.k8s.io/sig-storage/livenessprobe:v2.19.0
-          docker pull registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.17.0
+          images=(
+            alpine:3.24
+            golang:1.27-alpine3.24
+            busybox:1.38.0
+            registry.k8s.io/sig-storage/csi-provisioner:v6.3.0
+            registry.k8s.io/sig-storage/csi-attacher:v4.12.0
+            registry.k8s.io/sig-storage/csi-resizer:v2.2.1
+            registry.k8s.io/sig-storage/livenessprobe:v2.19.0
+            registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.17.0
+          )
+          printf '%s\n' "${images[@]}" | xargs -P 4 -n 1 docker pull
 
       # ── run tests ─────────────────────────────────────────────────────────
       # make test-e2e is the canonical entry point for the full 437-TC Ginkgo

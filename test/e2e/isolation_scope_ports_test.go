@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -164,25 +165,26 @@ var _ = Describe("TC isolation scope — typed port allocation", Label("ac:4b", 
 	// ─── Cleanup ─────────────────────────────────────────────────────────────
 
 	It("AC4b.12 typed port allocations are released on scope.Close", func() {
-		scope, err := NewTestCaseScope("E10.cleanup")
-		Expect(err).NotTo(HaveOccurred())
+		scope := newScope("E10.cleanup")
 
 		agentLease, err := scope.ReserveAgentGRPCPort("t1")
 		Expect(err).NotTo(HaveOccurred())
 		csiLease, err := scope.ReserveCSIGRPCPort("t2")
 		Expect(err).NotTo(HaveOccurred())
 
-		agentAddr := agentLease.Addr
-		csiAddr := csiLease.Addr
+		// Keep the owned listeners: another process may reuse their addresses
+		// as soon as Close releases them.
+		agentListener := agentLease.listener.(*net.TCPListener)
+		csiListener := csiLease.listener.(*net.TCPListener)
+		// A leaked listener must fail promptly rather than block in Accept.
+		Expect(agentListener.SetDeadline(time.Now())).To(Succeed())
+		Expect(csiListener.SetDeadline(time.Now())).To(Succeed())
 
 		Expect(scope.Close()).To(Succeed())
 
-		ln1, err := net.Listen("tcp", agentAddr)
-		Expect(err).NotTo(HaveOccurred(), "agent gRPC port should be freed by scope.Close")
-		Expect(ln1.Close()).To(Succeed())
-
-		ln2, err := net.Listen("tcp", csiAddr)
-		Expect(err).NotTo(HaveOccurred(), "CSI gRPC port should be freed by scope.Close")
-		Expect(ln2.Close()).To(Succeed())
+		_, err = agentListener.Accept()
+		Expect(err).To(MatchError(net.ErrClosed), "agent gRPC listener should be closed by scope.Close")
+		_, err = csiListener.Accept()
+		Expect(err).To(MatchError(net.ErrClosed), "CSI gRPC listener should be closed by scope.Close")
 	})
 })

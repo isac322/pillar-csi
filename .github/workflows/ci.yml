@@ -5,6 +5,10 @@ on:
     branches: [master]
   pull_request:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   # ── changes ────────────────────────────────────────────────────────────────
   # Detects docs-only changes so the heavy jobs below can be skipped for them.
@@ -65,6 +69,12 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Cache documentation tools
+        uses: actions/cache@v6
+        with:
+          path: bin/
+          key: docs-tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Makefile', 'go.mod', 'go.sum') }}
+
       - name: Verify generated docs are up to date
         run: make docs-check
 
@@ -98,16 +108,11 @@ jobs:
         with:
           version: v2.13.2
 
-  verify-tc-coverage:
-    name: TC Coverage Verification
+  test:
+    name: Test
     runs-on: ubuntu-latest
-    # Skip when commit message contains [skip tc-verify] (infrastructure-only
-    # changes that don't affect the E2E spec coverage).
     needs: [changes]
-    if: |
-      !cancelled() &&
-      (needs.changes.result != 'success' || needs.changes.outputs.code == 'true') &&
-      !contains(github.event.head_commit.message, '[skip tc-verify]')
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.code == 'true') }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -116,32 +121,27 @@ jobs:
         uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-          cache: true
 
-      # ── Install Ginkgo CLI ─────────────────────────────────────────────────
-      # Ginkgo is needed by verify-tc-coverage-runtime; the static mode used
-      # in this CI job does not require it, but installing it here keeps the
-      # job self-contained and ready for future upgrade to runtime mode.
-      - name: Install Ginkgo CLI
-        run: go install github.com/onsi/ginkgo/v2/ginkgo@latest
+      - name: Cache test tools
+        uses: actions/cache@v6
+        with:
+          path: bin/
+          key: test-tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Makefile', 'go.mod', 'go.sum') }}
 
-      # ── Static coverage check ───────────────────────────────────────────────
-      # Scans test/e2e/*.go for "[TC-<ID>]" inside Ginkgo It/Describe literals.
-      # Reports MISSING, EXTRA, and DUPLICATE; exits 0 (report-only) so that
-      # the pipeline is not broken while specs are still being implemented.
-      #
-      # Switch to --strict once all 437 specs are implemented to turn this into
-      # a hard gate: make verify-tc-coverage-strict
-      - name: Run TC coverage verification (static, report-only)
-        id: tc_verify
+      - name: Run tests
+        shell: bash
         run: |
-          go mod tidy
-          make verify-tc-coverage 2>&1 | tee /tmp/tc-coverage-report.txt
-          # Extract summary line for the step output
-          SUMMARY=$(grep -m1 '^declared_total=' /tmp/tc-coverage-report.txt || echo "no summary found")
-          echo "summary=${SUMMARY}" >> "$GITHUB_OUTPUT"
+          set +e
+          make test 2>&1 | tee /tmp/make-test.log
+          MAKE_RC=${PIPESTATUS[0]}
+          set -e
+          awk '
+            /^=== TC Coverage Verification/ { capture=1 }
+            capture { print }
+            capture && /^=== done ===$/ { exit }
+          ' /tmp/make-test.log > /tmp/tc-coverage-report.txt
+          exit "${MAKE_RC}"
 
-      # ── Emit step summary ──────────────────────────────────────────────────
       - name: Emit coverage summary
         if: always()
         run: |
@@ -149,7 +149,7 @@ jobs:
           {
             echo "## TC Coverage Verification"
             echo ""
-            if [ -f "$REPORT" ]; then
+            if [ -s "$REPORT" ]; then
               echo '```'
               cat "$REPORT"
               echo '```'
@@ -157,30 +157,6 @@ jobs:
               echo "_Report not generated_"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
-
-  test:
-    name: Test
-    runs-on: ubuntu-latest
-    needs: [changes, verify-tc-coverage]
-    # Runs only after TC coverage verification succeeded, as before the gate
-    # was added ([skip tc-verify] still skips Test).
-    if: |
-      !cancelled() &&
-      needs.verify-tc-coverage.result == 'success' &&
-      (needs.changes.result != 'success' || needs.changes.outputs.code == 'true')
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Setup Go
-        uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-
-      - name: Run tests
-        run: |
-          go mod tidy
-          make test
 
       # make test regenerates manifests; any diff means a generated file
       # (CRDs, RBAC, chart CRD template, deepcopy) was hand-edited or stale.
@@ -239,6 +215,14 @@ jobs:
       contents: read
     uses: ./.github/workflows/e2e-kind.yml
 
+  external-e2e:
+    name: External Storage E2E
+    needs: [changes]
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.code == 'true') }}
+    permissions:
+      contents: read
+    uses: ./.github/workflows/external-e2e.yml
+
   # ── e2e-bench ──────────────────────────────────────────────────────────────
   # CI baseline benchmark job.
   #
@@ -290,7 +274,7 @@ jobs:
           BENCH_ELAPSED=$(( $(date +%s) - BENCH_START ))
           echo "elapsed=${BENCH_ELAPSED}" >> "$GITHUB_OUTPUT"
           echo "::notice title=e2e-bench::Wall-clock ${BENCH_ELAPSED}s (limit 120s)"
-          exit ${BENCH_RC}
+          exit "${BENCH_RC}"
 
       # Always emit a step summary so the elapsed time is visible in the GHA
       # UI regardless of pass/fail.  The summary references the TC budget so
@@ -327,13 +311,26 @@ jobs:
         id: buildx
         uses: docker/setup-buildx-action@v4
 
-      - name: Restore BuildKit cache mounts
-        uses: actions/cache@v6
-        id: cache
+      - name: Restore BuildKit cache mounts (pull request)
+        if: ${{ github.event_name == 'pull_request' }}
+        id: cache-pr
+        uses: actions/cache/restore@v6
         with:
           path: buildkit-cache
-          key: buildkit-mount-${{ hashFiles('Dockerfile') }}-${{ github.sha }}
+          key: buildkit-mount-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Dockerfile', 'go.mod', 'go.sum') }}
           restore-keys: |
+            buildkit-mount-v2-${{ runner.os }}-${{ runner.arch }}-
+            buildkit-mount-${{ hashFiles('Dockerfile') }}-
+
+      - name: Restore and save BuildKit cache mounts (master)
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+        id: cache-master
+        uses: actions/cache@v6
+        with:
+          path: buildkit-cache
+          key: buildkit-mount-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Dockerfile', 'go.mod', 'go.sum') }}
+          restore-keys: |
+            buildkit-mount-v2-${{ runner.os }}-${{ runner.arch }}-
             buildkit-mount-${{ hashFiles('Dockerfile') }}-
 
       - name: Inject/extract BuildKit cache mounts
@@ -341,7 +338,7 @@ jobs:
         with:
           builder: ${{ steps.buildx.outputs.name }}
           cache-dir: buildkit-cache
-          skip-extraction: ${{ steps.cache.outputs.cache-hit }}
+          skip-extraction: ${{ github.event_name == 'pull_request' || steps.cache-master.outputs.cache-hit == 'true' }}
 
       - name: Build all images for all platforms
         uses: docker/bake-action@v7
@@ -349,3 +346,9 @@ jobs:
           files: docker-bake.hcl
           set: |
             *.platform=linux/amd64,linux/amd64/v2,linux/amd64/v3,linux/arm64,linux/arm/v7,linux/s390x,linux/ppc64le,linux/riscv64
+            controller.cache-from=type=gha,scope=pillar-ci-controller
+            agent.cache-from=type=gha,scope=pillar-ci-agent
+            node.cache-from=type=gha,scope=pillar-ci-node
+            ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' && 'controller.cache-to=type=gha,scope=pillar-ci-controller,mode=min' || '' }}
+            ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' && 'agent.cache-to=type=gha,scope=pillar-ci-agent,mode=min' || '' }}
+            ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' && 'node.cache-to=type=gha,scope=pillar-ci-node,mode=min' || '' }}
