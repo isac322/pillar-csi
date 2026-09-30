@@ -169,19 +169,32 @@ func NewControllerServer(k8sClient client.Client, apiReader client.Reader, drive
 	return srv
 }
 
-// NewControllerServerWithAgentDialer constructs a ControllerServer using the
-// shared agent connection manager. The manager owns cached connections, so the
-// per-call closer required by AgentDialer is intentionally a no-op.
-func NewControllerServerWithAgentDialer(k8sClient client.Client, apiReader client.Reader, driverName string, manager agentclient.Dialer) *ControllerServer {
-	srv := NewControllerServerWithDialer(k8sClient, driverName, func(ctx context.Context, addr string) (agentv1.AgentServiceClient, io.Closer, error) {
-		client, err := manager.Dial(ctx, addr)
-		if err != nil {
-			return nil, nil, fmt.Errorf("dial agent at %q: %w", addr, err)
-		}
-		return client, sharedAgentNoopCloser{}, nil
-	})
+// NewControllerServerWithAgentDialer constructs a ControllerServer that
+// reaches agents through manager, the controller's shared agent connection
+// manager, so CSI RPCs and export restoration use its transport credentials
+// (mTLS when configured).
+func NewControllerServerWithAgentDialer(
+	k8sClient client.Client,
+	apiReader client.Reader,
+	driverName string,
+	manager agentclient.Dialer,
+) *ControllerServer {
+	srv := NewControllerServerWithDialer(k8sClient, driverName, sharedAgentDialer(manager))
 	srv.apiReader = apiReader
 	return srv
+}
+
+// sharedAgentDialer adapts manager to AgentDialer. The manager owns and
+// caches its connections, so the per-call closer is a no-op: closing the
+// connection after one RPC would break every later RPC to the same agent.
+func sharedAgentDialer(manager agentclient.Dialer) AgentDialer {
+	return func(ctx context.Context, addr string) (agentv1.AgentServiceClient, io.Closer, error) {
+		agentClient, err := manager.Dial(ctx, addr)
+		if err != nil {
+			return nil, nil, fmt.Errorf("agent connection manager: %w", err)
+		}
+		return agentClient, sharedAgentNoopCloser{}, nil
+	}
 }
 
 type sharedAgentNoopCloser struct{}
