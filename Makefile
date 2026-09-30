@@ -237,11 +237,18 @@ test-external-e2e: ## Run the SIG-Storage External Storage e2e suite against a r
 # NVMe-oF/TCP data plane across isolated storage and workload nodes.  It runs
 # both an in-cluster agent topology and an out-of-cluster Docker agent topology.
 # Override PILLAR_E2E_DNS when the runner cannot reach the default 1.1.1.1 resolver.
+# The nested Docker image/BuildKit cache and the Go caches persist in Compose
+# volumes between runs; the harness still starts and ends with no clusters,
+# containers or networks.  Run clean-docker-e2e-cache to drop the caches.
 .PHONY: test-docker-e2e
 test-docker-e2e: ## Run multi-node real-data-path E2E in privileged Docker-in-Docker. Requires Linux Docker.
-	@$(CONTAINER_TOOL) compose -f test/docker-e2e/compose.yaml down --volumes --remove-orphans >/dev/null; \
-		trap '$(CONTAINER_TOOL) compose -f test/docker-e2e/compose.yaml down --volumes --remove-orphans >/dev/null' EXIT; \
+	@$(CONTAINER_TOOL) compose -f test/docker-e2e/compose.yaml down --remove-orphans >/dev/null; \
+		trap '$(CONTAINER_TOOL) compose -f test/docker-e2e/compose.yaml down --remove-orphans >/dev/null' EXIT; \
 		$(CONTAINER_TOOL) compose -f test/docker-e2e/compose.yaml run --rm --build e2e
+
+.PHONY: clean-docker-e2e-cache
+clean-docker-e2e-cache: ## Remove the Docker multi-node E2E cache volumes (nested images, BuildKit and Go caches).
+	$(CONTAINER_TOOL) compose -f test/docker-e2e/compose.yaml down --volumes --remove-orphans
 
 .PHONY: test-chart
 test-chart: ## Helm chart render regression: assert hostNetwork:true + kubelet-csi-dir Bidirectional + dnsPolicy invariants survive future template edits.

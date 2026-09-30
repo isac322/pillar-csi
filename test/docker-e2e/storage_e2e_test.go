@@ -617,12 +617,13 @@ metadata:
   namespace: %s
 spec:
   restartPolicy: Never
+  terminationGracePeriodSeconds: 5
   nodeSelector:
     kubernetes.io/hostname: %s
   containers:
     - name: test
       image: busybox:1.38.0
-      command: ["sh", "-c", "sleep 3600"]
+      command: ["sh", "-c", "trap 'exit 0' TERM; sleep 3600 & wait"]
       volumeMounts:
         - name: data
           mountPath: /data
@@ -642,12 +643,13 @@ metadata:
   namespace: %s
 spec:
   restartPolicy: Never
+  terminationGracePeriodSeconds: 5
   nodeSelector:
     kubernetes.io/hostname: %s
   containers:
     - name: test
       image: busybox:1.38.0
-      command: ["sh", "-c", "sleep 3600"]
+      command: ["sh", "-c", "trap 'exit 0' TERM; sleep 3600 & wait"]
       volumeDevices:
         - name: data
           devicePath: /dev/pillar
