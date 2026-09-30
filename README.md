@@ -44,7 +44,7 @@ The agent reads back each configfs value it writes and returns an error when the
 | LVM logical volume (linear or thin) | Shipped | Shipped | n/a | n/a |
 | ZFS dataset (planned) | n/a | n/a | Planned | Planned |
 
-Planned items are not available in v0.3.4, and the CRDs reject them. n/a marks combinations that do not apply: block backends are not shared over file protocols, and a dataset is not exported as a block device.
+Planned items are not available in v0.4.0, and the CRDs reject them. n/a marks combinations that do not apply: block backends are not shared over file protocols, and a dataset is not exported as a block device.
 
 iSCSI covers the same features as NVMe-oF/TCP: both volume modes, `ReadWriteOnce` and `ReadWriteOncePod`, an ACL by initiator IQN (`acl: true`) or an open target (`acl: false`, the default), online expansion, usage stats, local attach, and recovery after agent, node plugin, or storage-node restarts. CHAP authentication and multipath (several portals per target) are not supported.
 
@@ -152,7 +152,7 @@ agent:
 
 ```sh
 helm install pillar-csi oci://ghcr.io/isac322/charts/pillar-csi \
-  --version 0.3.4 \
+  --version 0.4.0 \
   --namespace pillar-csi --create-namespace \
   -f values.yaml
 ```
@@ -221,6 +221,16 @@ spec:
 To encrypt controller-to-agent traffic, see [Configure mTLS](https://pillar-csi.bhyoo.com/docs/how-to/configure-mtls/). Upgrading from 0.2.x requires rewriting your resources and reprovisioning volumes, so read the [upgrade guide](https://pillar-csi.bhyoo.com/docs/how-to/upgrade/) before installing 0.3.0.
 
 Upgrading from 0.3.1, 0.3.2 or 0.3.3 to 0.3.4 is a drop-in `helm upgrade`: no CRD, API or wire changes. 0.3.2 fixes the node plugin wiping the CSINode `spec.drivers` entry when it publishes its NQN annotation on restart ([#128](https://github.com/isac322/pillar-csi/issues/128)). 0.3.3 changes only the license file, which now carries the standard Apache-2.0 text. In 0.3.4, new XFS volumes are formatted with the Linux 5.15 LTS profile so they mount on every supported node kernel ([#133](https://github.com/isac322/pillar-csi/issues/133)); existing volumes are unchanged.
+
+Upgrading from 0.3.x to 0.4.0 is a `helm upgrade`, but it adds the `PillarVolumeReservation` CRD, new `PillarVolumeState` fields (`spec.importedFrom`, `status.importAcquired`) and new agent RPCs, so upgrade the controller, agent and node plugin together in one release. With `installCRDs: true` (the default) the chart applies the new and changed CRDs; if you set `installCRDs: false` and manage CRDs through GitOps, apply the 0.4.0 CRDs (server-side apply) before or with the chart. What 0.4.0 adds:
+
+- Import existing ZFS zvols from other CSI drivers without copying ([Import a zvol](https://pillar-csi.bhyoo.com/docs/how-to/import-zvol/)).
+- iSCSI export through the kernel LIO target, with nothing to install on nodes ([Configure iSCSI](https://pillar-csi.bhyoo.com/docs/how-to/configure-iscsi/)).
+- Local attach for pods on the storage node (`localAttach: true`, needs `dm_mod`).
+- Prometheus metrics and OpenTelemetry traces (`metrics.*`, `tracing.*`).
+- mTLS fixes: CSI calls to the agent now use the configured mTLS dialer ([#141](https://github.com/isac322/pillar-csi/issues/141)), and agent probes switch to TCP socket checks when `mtls.enabled=true` so kubelet no longer restarts the agent ([#142](https://github.com/isac322/pillar-csi/issues/142)).
+
+Chart values changes: `metrics.serviceMonitor` is removed (it rendered nothing) and replaced by `metrics.podMonitor` (`enabled`, `interval`, `scrapeTimeout`, `labels`; `additionalLabels` is now `labels`). New values are `metrics.enabled`, `metrics.controller.secure`, `metrics.agent.port`, `metrics.node.port`, `metrics.sidecars.*Port`, `tracing.*` and `node.iscsi.netlinkNetnsPath`. The default `node.initModprobe.modules` adds `dm_mod` and `iscsi_tcp`, and `agent.initModprobe.modules` adds `target_core_mod`, `target_core_iblock` and `iscsi_target_mod`; if you override these lists, add the modules you need.
 
 ### Local attach on the storage node
 
