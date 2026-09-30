@@ -7,6 +7,7 @@ name: Release
 # A push to master that modifies Chart.yaml — or a manual workflow_dispatch —
 # checks whether the corresponding GitHub Releases already exist and skips
 # anything that is already published. Image and chart releases are independent.
+# A manual measure_only dispatch builds all images without publishing anything.
 
 on:
   push:
@@ -23,7 +24,10 @@ on:
         description: Force build+release chart (uses Chart.yaml version)
         type: boolean
         default: false
-
+      measure_only:
+        description: Build all images without publishing
+        type: boolean
+        default: false
 permissions:
   contents: write
   packages: write
@@ -35,6 +39,7 @@ jobs:
     outputs:
       do_image: ${{ steps.check.outputs.do_image }}
       do_chart: ${{ steps.check.outputs.do_chart }}
+      measure_only: ${{ steps.check.outputs.measure_only }}
       app_version: ${{ steps.ver.outputs.app }}
       chart_version: ${{ steps.ver.outputs.chart }}
     steps:
@@ -57,11 +62,18 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          measure_only=false
           do_image=false
           do_chart=false
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            do_image='${{ inputs.release_image }}'
-            do_chart='${{ inputs.release_chart }}'
+            measure_only='${{ inputs.measure_only }}'
+            if [[ "$measure_only" == true ]]; then
+              do_image=true
+              do_chart=false
+            else
+              do_image='${{ inputs.release_image }}'
+              do_chart='${{ inputs.release_chart }}'
+            fi
           else
             if ! gh release view "v${{ steps.ver.outputs.app }}" >/dev/null 2>&1; then
               do_image=true
@@ -72,10 +84,11 @@ jobs:
           fi
           echo "do_image=${do_image}" >> "$GITHUB_OUTPUT"
           echo "do_chart=${do_chart}" >> "$GITHUB_OUTPUT"
-          echo "Decision: do_image=${do_image} do_chart=${do_chart}"
+          echo "measure_only=${measure_only}" >> "$GITHUB_OUTPUT"
+          echo "Decision: do_image=${do_image} do_chart=${do_chart} measure_only=${measure_only}"
 
   image:
-    name: Build, push, release image
+    name: Build, push, release image (measure_only=${{ needs.detect.outputs.measure_only }})
     needs: detect
     if: needs.detect.outputs.do_image == 'true'
     runs-on: ubuntu-latest
@@ -104,17 +117,18 @@ jobs:
           skip-extraction: ${{ steps.cache.outputs.cache-hit }}
 
       - name: Login to GHCR
+        if: needs.detect.outputs.measure_only != 'true'
         uses: docker/login-action@v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push images
+      - name: Build and push images (push disabled in measure-only mode)
         uses: docker/bake-action@v7
         with:
           files: docker-bake.hcl
-          push: true
+          push: ${{ needs.detect.outputs.measure_only != 'true' }}
           set: |
             *.platform=linux/amd64,linux/amd64/v2,linux/amd64/v3,linux/arm64,linux/arm/v7,linux/s390x,linux/ppc64le,linux/riscv64
             controller.tags=ghcr.io/${{ github.repository }}/controller:${{ needs.detect.outputs.app_version }}
@@ -122,6 +136,7 @@ jobs:
             node.tags=ghcr.io/${{ github.repository }}/node:${{ needs.detect.outputs.app_version }}
 
       - name: Create GitHub Release
+        if: needs.detect.outputs.measure_only != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
