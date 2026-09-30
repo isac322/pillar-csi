@@ -154,11 +154,12 @@ spec:
             {{- with .Values.agent.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
-          # gRPC native probes (kubelet >=1.24 beta, >=1.27 GA) read the
-          # standard grpc.health.v1 Health service the binary registers on
-          # the same gRPC port.  Kubelet flips the pod out of the Service
-          # endpoints as soon as readiness fails, which is what preStop
-          # waits 5s for before the binary's SIGTERM Drain runs.
+          # In plaintext mode, native gRPC probes read the standard
+          # grpc.health.v1 Health service on the agent port. With mTLS enabled,
+          # the probes switch to TCP because kubelet cannot present a client
+          # certificate. Kubelet flips the pod out of Service endpoints as
+          # soon as readiness fails, which is what preStop waits 5s for before
+          # the binary's SIGTERM Drain runs.
           livenessProbe:
             {{ if .Values.mtls.enabled }}
             # Kubelet gRPC probes are plaintext and cannot authenticate to the
