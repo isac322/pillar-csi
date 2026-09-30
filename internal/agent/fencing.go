@@ -171,6 +171,123 @@ func (s *Server) fenced(
 	return nil
 }
 
+// fencedImport is the fenced variant for ImportVolume: it validates the
+// token, runs mutate (the backend's read-only import checks), and persists
+// the admitted mark only when mutate succeeded — fenced persists the mark
+// BEFORE its mutation runs because create/export must own the volume ID
+// before they add resources, but an import owns nothing until the resource
+// is proven adoptable.  Persisting a refused import would bind a
+// pre-existing resource to a lifecycle that never adopted it: a later
+// teardown (or a stale second controller) carrying that lifecycle's token
+// could then delete a volume this driver never owned, and a retry after the
+// refusal cause is fixed could be fenced out by its own phantom mark.
+//
+// Admission still runs under the per-volume fencing lock and the mark is
+// still written before the response, under the same lock: two concurrent
+// imports of one volume ID cannot both bind it, and a retry of the same
+// lifecycle after a lost response re-admits idempotently (same UID, same or
+// higher generation).  A refusal leaves a pre-existing mark untouched, so a
+// stale token is still rejected even when the mutation would fail anyway.
+func (s *Server) fencedImport(
+	ctx context.Context,
+	volumeID string,
+	token *agentv1.FencingToken,
+	mutate func() error,
+) error {
+	unlock := s.lockFencing(volumeID)
+	defer unlock()
+
+	stored, exists, err := s.readFencingMark(volumeID)
+	if err != nil {
+		recordFenceDecision(ctx, fenceGrant, telemetry.FenceMarkIOError)
+		return err
+	}
+	adm, err := admitFencingToken(volumeID, token, fenceGrant, stored, exists)
+	if err != nil {
+		recordFenceDecision(ctx, fenceGrant, adm.decision)
+		return err
+	}
+	if mutate != nil {
+		// The import checks run between admission and persistence: a refusal
+		// leaves no durable trace of this lifecycle on the volume ID.
+		err = mutate()
+		if err != nil {
+			recordFenceDecision(ctx, fenceGrant, adm.decision)
+			return err
+		}
+	}
+	err = s.persistFencingMark(volumeID, adm.next, adm.changed)
+	if err != nil {
+		recordFenceDecision(ctx, fenceGrant, telemetry.FenceMarkIOError)
+		return err
+	}
+	recordFenceDecision(ctx, fenceGrant, adm.decision)
+	return nil
+}
+
+// retireFence durably retires token's lifecycle from volumeID without any
+// backend mutation, for ReleaseVolume.  Afterwards the lifecycle's UID is in
+// EndedUIDs, so every later request carrying it — a delayed ImportVolume, a
+// stale DeleteVolume — is rejected as retired, while a new lifecycle may
+// still claim the volume ID.
+//
+// When token's lifecycle currently owns the mark it may hold an export, so
+// the mark is retired only once the caller removed it: with unexported false
+// retireFence then writes nothing and returns owned=true.  A mark owned by a
+// different lifecycle is left owned by it (only token's UID is added to the
+// retired set); without any mark the lifecycle is recorded as the ended,
+// retired owner.  Releasing an already retired lifecycle is a no-op.
+func (s *Server) retireFence(
+	ctx context.Context,
+	volumeID string,
+	token *agentv1.FencingToken,
+	unexported bool,
+) (owned bool, err error) {
+	unlock := s.lockFencing(volumeID)
+	defer unlock()
+
+	stored, exists, err := s.readFencingMark(volumeID)
+	if err != nil {
+		recordFenceDecision(ctx, fenceDestroy, telemetry.FenceMarkIOError)
+		return false, err
+	}
+	uid := token.GetVolumeUid()
+	var next fencingMark
+	switch {
+	case uid == "":
+		adm, admErr := admitFencingToken(volumeID, token, fenceDestroy, stored, exists)
+		recordFenceDecision(ctx, fenceDestroy, adm.decision)
+		return false, admErr
+	case !exists:
+		next = fencingMark{VolumeUID: uid, Generation: token.GetGeneration(), Ended: true, EndedUIDs: []string{uid}}
+	case slices.Contains(stored.EndedUIDs, uid):
+		return false, nil
+	case uid != stored.VolumeUID:
+		next = stored
+		next.EndedUIDs = append(slices.Clone(stored.EndedUIDs), uid)
+	default:
+		// The generation rules still apply to the owning lifecycle: a
+		// superseded token must not end the lifecycle a newer operation owns.
+		adm, admErr := admitFencingToken(volumeID, token, fenceRevoke, stored, exists)
+		if admErr != nil {
+			recordFenceDecision(ctx, fenceDestroy, adm.decision)
+			return false, admErr
+		}
+		if !unexported {
+			return true, nil
+		}
+		next = adm.next
+		next.Ended = true
+		next.EndedUIDs = append(slices.Clone(stored.EndedUIDs), uid)
+	}
+	err = s.writeFencingMark(volumeID, next)
+	if err != nil {
+		recordFenceDecision(ctx, fenceDestroy, telemetry.FenceMarkIOError)
+		return false, err
+	}
+	return false, nil
+}
+
 // recheckFence runs mutate under volumeID's fencing lock if token is still
 // admitted without advancing the durable mark, i.e. token already passed
 // fenced for op and no newer operation superseded it since.  It writes
@@ -252,7 +369,10 @@ func admitFencingToken(
 		if !stored.Ended {
 			return reject(telemetry.FenceRejectOtherOwner, "another lifecycle owns the volume")
 		}
-		retired := append(slices.Clone(stored.EndedUIDs), stored.VolumeUID)
+		retired := slices.Clone(stored.EndedUIDs)
+		if !slices.Contains(retired, stored.VolumeUID) {
+			retired = append(retired, stored.VolumeUID)
+		}
 		return fenceAdmission{
 			next:     fencingMark{VolumeUID: uid, Generation: gen, EndedUIDs: retired},
 			changed:  true,

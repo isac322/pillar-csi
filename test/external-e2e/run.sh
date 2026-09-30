@@ -15,9 +15,12 @@
 #   GINKGO_SKIP       — Ginkgo skip regex (default empty).
 #   E2E_TEST_BIN      — path to a pre-extracted e2e.test binary.  When set, the
 #                       script skips the download/extract steps entirely.
+#   GINKGO_PROCS      — positive worker count (default: 1).  Values greater than
+#                       1 require the matching bundled ginkgo executable beside
+#                       E2E_TEST_BIN.
 #   CACHE_DIR         — where to cache the downloaded bundle
 #                       (default: $HOME/.cache/pillar-csi/external-e2e).
-
+#
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -27,6 +30,12 @@ SC_YAML="${SCRIPT_DIR}/storage-class.yaml"
 K8S_VERSION="${K8S_VERSION:-}"
 CACHE_DIR="${CACHE_DIR:-${HOME}/.cache/pillar-csi/external-e2e}"
 GINKGO_FOCUS="${GINKGO_FOCUS:-External.Storage}"
+GINKGO_PROCS="${GINKGO_PROCS-1}"
+if [[ ! "${GINKGO_PROCS}" =~ ^[1-9][0-9]*$ ]]; then
+  printf 'ERROR: GINKGO_PROCS must be a positive integer (got %q).\n' \
+    "${GINKGO_PROCS}" >&2
+  exit 1
+fi
 
 # Default skip set drops only categories that are intentionally out of scope
 # for the PR-gating job:
@@ -121,15 +130,29 @@ KUBE_ROOT_DIR="$(realpath "${KUBE_TEST_BIN_DIR}/../..")"
 cp "${SC_YAML}" "${KUBE_ROOT_DIR}/storage-class.yaml"
 
 cd "${KUBE_TEST_BIN_DIR}"
-
 if [[ -n "${E2E_FAIL_FAST:-}" ]]; then
   EXTRA_ARGS+=("-ginkgo.fail-fast")
   echo "    fail-fast       : enabled"
 fi
 
-exec "${E2E_TEST_BIN}" \
-  -kubeconfig="${KUBECONFIG}" \
-  -storage.testdriver="${DRIVER_YAML}" \
-  -ginkgo.focus="${GINKGO_FOCUS}" \
-  -ginkgo.v \
+E2E_ARGS=(
+  -kubeconfig="${KUBECONFIG}"
+  -storage.testdriver="${DRIVER_YAML}"
+  -ginkgo.focus="${GINKGO_FOCUS}"
+  -ginkgo.v
   "${EXTRA_ARGS[@]}"
+)
+
+if [[ "${GINKGO_PROCS}" == 1 ]]; then
+  exec "${E2E_TEST_BIN}" "${E2E_ARGS[@]}"
+fi
+
+GINKGO_CLI="${KUBE_TEST_BIN_DIR}/ginkgo"
+if [[ ! -x "${GINKGO_CLI}" ]]; then
+  printf 'ERROR: GINKGO_PROCS=%s requires the matching bundled Ginkgo CLI at %s.\n' \
+    "${GINKGO_PROCS}" "${GINKGO_CLI}" >&2
+  exit 1
+fi
+
+exec "${GINKGO_CLI}" run "--procs=${GINKGO_PROCS}" -v "${E2E_TEST_BIN}" -- \
+  "${E2E_ARGS[@]}"

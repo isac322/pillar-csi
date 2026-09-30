@@ -68,6 +68,15 @@ rules:
   - patch
   - update
 - apiGroups:
+  - pillar-csi.bhyoo.com
+  resources:
+  - pillarvolumereservations
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+- apiGroups:
   - storage.k8s.io
   resources:
   - storageclasses

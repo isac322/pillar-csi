@@ -517,9 +517,8 @@ test-e2e-cache: manifests generate fmt vet ginkgo ## Run test-e2e with Docker Bu
 #   make verify-tc-coverage-runtime      → runtime scan via ginkgo --dry-run
 #   make verify-tc-coverage-strict       → static scan, exit 1 on any mismatch
 #
-# CI wires verify-tc-coverage into the test job so coverage regressions block
-# pull-requests automatically.  Use [skip tc-verify] in the commit message to
-# bypass the check during infrastructure-only changes.
+# CI runs the report-only static scan through make test and publishes the
+# coverage report in the Test job summary.
 #
 # Output columns:
 #   declared_total  — TC count from "총 테스트 케이스:" line in docs/E2E-TESTCASES.md

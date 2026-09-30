@@ -75,16 +75,26 @@ jobs:
           elif [ "${REF}" != refs/heads/master ]; then
             reason="${REF} is not master; always tested"
           else
-            # The newest earlier daily run on master whose Docker e2e job
-            # finished (passed or failed) is the last tested commit.  Skipped
-            # and cancelled runs did not test their commit, so they are ignored.
+            # The newest earlier daily run on master that finished the Docker
+            # suite is the last tested commit: either the legacy serial job or
+            # both matrix topologies must have passed or failed.  Partial,
+            # skipped, cancelled, and still-running matrix runs are ignored.
             runs=$(gh api "repos/${REPO}/actions/workflows/daily-e2e.yml/runs?branch=master&status=completed&per_page=30" \
               --jq ".workflow_runs[] | select(.id != ${RUN_ID}) | select(.event == \"schedule\" or .event == \"workflow_dispatch\") | \"\(.id) \(.head_sha)\"")
             while read -r id sha; do
               [ -n "${id}" ] || continue
+              # The jq variable below must remain literal, not shell-expanded.
+              # shellcheck disable=SC2016
               tested=$(gh api "repos/${REPO}/actions/runs/${id}/jobs?per_page=100" \
-                --jq '[.jobs[] | select(.name == "Docker multi-node e2e") | select(.conclusion == "success" or .conclusion == "failure")] | length')
-              if [ "${tested}" -gt 0 ]; then
+                --jq '
+                  [.jobs[]
+                   | select(.status == "completed")
+                   | select(.conclusion == "success" or .conclusion == "failure")
+                   | .name] as $tested
+                  | ($tested | index("Docker multi-node e2e") != null)
+                    or (($tested | index("Docker multi-node e2e (internal)") != null)
+                        and ($tested | index("Docker multi-node e2e (external)") != null))')
+              if [ "${tested}" = true ]; then
                 last=${sha}
                 break
               fi
@@ -137,14 +147,18 @@ jobs:
     uses: ./.github/workflows/external-e2e.yml
 
   docker:
-    name: Docker multi-node e2e
+    name: Docker multi-node e2e (${{ matrix.topology }})
     needs: [gate]
     if: needs.gate.outputs.run == 'true'
     runs-on: ubuntu-latest
-    # Image build inside Docker-in-Docker plus two topologies (in-cluster and
-    # external agent), each with its own Kind cluster and both the NVMe-oF and
-    # iSCSI scenario sets; the force-detach test alone waits several minutes
-    # for the attacher.
+    # Each topology runs on its own VM: storage kernel modules and configfs
+    # state must not be shared between parallel privileged containers.
+    strategy:
+      fail-fast: false
+      matrix:
+        topology: [internal, external]
+    # Each job builds its Docker-in-Docker image and runs the full NVMe-oF and
+    # iSCSI scenario sets; the force-detach test alone waits several minutes.
     timeout-minutes: 240
     steps:
       - name: Checkout
@@ -163,6 +177,8 @@ jobs:
           test -d /sys/kernel/config/target
 
       - name: Run Docker multi-node e2e
+        env:
+          PILLAR_E2E_TOPOLOGIES: ${{ matrix.topology }}
         run: make test-docker-e2e
 
   report:

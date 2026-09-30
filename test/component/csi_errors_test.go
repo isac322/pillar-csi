@@ -178,7 +178,7 @@ func TestCSIErrors_ControllerExpand_ShrinkRejected(t *testing.T) {
 		},
 	}
 	env := newCSIControllerErrEnv(t, mock)
-	seedComponentPillarVolumeState(t, env, "pvc-component-test")
+	seedComponentPillarVolumeState(t, env)
 
 	_, err := env.srv.ControllerExpandVolume(context.Background(), &csipb.ControllerExpandVolumeRequest{
 		VolumeId:      expectedCSIVolumeID,
@@ -210,7 +210,7 @@ func TestCSIErrors_ControllerExpand_AgentDeadlineExceeded(t *testing.T) {
 		},
 	}
 	env := newCSIControllerErrEnv(t, mock)
-	seedComponentPillarVolumeState(t, env, "pvc-component-test")
+	seedComponentPillarVolumeState(t, env)
 
 	_, err := env.srv.ControllerExpandVolume(context.Background(), &csipb.ControllerExpandVolumeRequest{
 		VolumeId:      expectedCSIVolumeID,
@@ -250,7 +250,7 @@ func TestCSIErrors_ControllerPublish_AllowInitiatorFails(t *testing.T) {
 	ctx := context.Background()
 
 	const nodeID = "nqn.2014-08.org.nvmexpress:uuid:test-node-err"
-	seedComponentPillarVolumeState(t, env, "pvc-component-test")
+	seedComponentPillarVolumeState(t, env)
 	seedCSINodeForNVMeOF(ctx, t, env.k8sClient, nodeID, nodeID)
 
 	_, err := env.srv.ControllerPublishVolume(ctx, &csipb.ControllerPublishVolumeRequest{
@@ -290,7 +290,7 @@ func TestCSIErrors_DeleteVolume_AgentDeadlineExceeded(t *testing.T) {
 		},
 	}
 	env := newCSIControllerErrEnv(t, mock)
-	seedComponentPillarVolumeState(t, env, "pvc-component-test")
+	seedComponentPillarVolumeState(t, env)
 
 	_, err := env.srv.DeleteVolume(context.Background(), &csipb.DeleteVolumeRequest{
 		VolumeId: expectedCSIVolumeID,

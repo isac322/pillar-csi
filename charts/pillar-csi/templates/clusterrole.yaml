@@ -204,6 +204,17 @@ rules:
       - get
       - patch
       - update
+  # PillarVolumeReservation CRD for atomic zvol-import claims (issue #146):
+  # the CSI controller creates one per import before the PillarVolumeState.
+  - apiGroups:
+      - pillar-csi.bhyoo.com
+    resources:
+      - pillarvolumereservations
+    verbs:
+      - create
+      - delete
+      - get
+      - list
   {{- if .Values.metrics.controller.secure }}
   # Secure metrics endpoint (--metrics-secure): controller-runtime authenticates
   # scrapers with TokenReview and authorizes them with SubjectAccessReview.

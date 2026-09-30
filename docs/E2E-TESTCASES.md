@@ -11,7 +11,7 @@
 - 실제 커널 모듈, 실제 ZFS, 실제 NVMe-oF 장치를 요구하는 테스트는
   별도로 표시하고 현실적인 인프라 요구사항을 함께 기술한다.
 
-**총 테스트 케이스: 416** (인프로세스 251개 + envtest 통합 117개 + 클러스터 레벨 48개; E28 LVM Agent gRPC 30개 · E29 CSI Controller LVM 파라미터 12개 · E30 LVM LV 중복 방지 3개 · E34 로컬 attach 6개 · E35 iSCSI 6개 · E32 LVM CRD 라이프사이클 9개 · E33 default-profile 7개(standalone 7) + teardown-guarantee 4개 + backend-teardown-absence 5개 포함 / 추가 문서화 비기본 TC: E33 core-rpc 9개 · E33 mount 12개 · E33 expansion 5개(e2e_helm 빌드 태그 필요) · F27–F31 LVM 완전 E2E 19개 — 특수 레이블 필터 필요 / 수동 AD 시나리오 3개 · BP 시나리오 3개 별도)
+**총 테스트 케이스: 416** (인프로세스 251개 + envtest 통합 117개 + 클러스터 레벨 48개; E28 LVM Agent gRPC 30개 · E29 CSI Controller LVM 파라미터 12개 · E30 LVM LV 중복 방지 3개 · E34 로컬 attach 6개 · E35 iSCSI 6개 · E32 LVM CRD 라이프사이클 9개 · E33 default-profile 7개(standalone 7) + teardown-guarantee 4개 + backend-teardown-absence 5개 포함 / 추가 문서화 비기본 TC: E33 core-rpc 9개 · E33 mount 12개 · E33 expansion 5개 · E36 zvol import 8개(e2e_helm 빌드 태그 필요) · F27–F31 LVM 완전 E2E 19개 — 특수 레이블 필터 필요 / 수동 AD 시나리오 3개 · BP 시나리오 3개 별도)
 
 ---
 
@@ -135,6 +135,8 @@
   - [E33.2: LVM PVC 프로비저닝 및 Pod 마운트](#e332-lvm-pvc-프로비저닝-및-pod-마운트)
   - [E33.3: LVM 볼륨 확장](#e333-lvm-볼륨-확장)
   - [E33.4: LVM 백엔드 독립 E2E (Standalone)](#e334-lvm-백엔드-독립-e2e-standalone)
+- [E36: ZFS zvol import — 기존 zvol 채택 (Kind 클러스터 E2E)](#e36-zfs-zvol-import--기존-zvol-채택-kind-클러스터-e2e)
+  - [E36.1: import-zvol 어노테이션으로 기존 zvol 채택](#e361-import-zvol-어노테이션으로-기존-zvol-채택)
 
 ### 카테고리 3 — 완전 E2E / 수동 스테이징 테스트 (유형 F) ❌
 > 빌드 태그: `//go:build e2e_full` | 실제 ZFS/NVMe-oF 커널 모듈 필요 | 베어메탈/KVM 서버 필요
@@ -5169,6 +5171,62 @@ Docker host에서 블록 디바이스 존재를 직접 확인하므로 실제 `l
 E33 테스트는 표준 GitHub Actions에서 LVM 루프백 VG를 생성할 수 있으므로
 **조건부 CI 실행 가능**하다. 단, NVMe-oF 커널 모듈(`nvmet`, `nvmet-tcp`,
 `nvme-tcp`)이 필요한 E33.2·E33.3은 커널 모듈 지원 러너가 필요하다.
+
+---
+
+## E36: ZFS zvol import — 기존 zvol 채택 (Kind 클러스터 E2E)
+
+**테스트 유형:** D (Kind 클러스터 + 실제 ZFS pool) ⚠️ 멀티 노드 Kind + 실제 ZFS + NVMe-oF 필요
+
+> PVC 어노테이션 `pillar-csi.bhyoo.com/import-zvol: <pool>/<parentDataset>/<leaf>`로
+> pillar-csi 밖에서 만든 zvol을 CreateVolume이 새로 만들지 않고 **채택**하는지 검증한다.
+> 스토리지 노드에서 zvol을 직접 만들고 XFS로 포맷한 뒤 파일을 써 두고, 채택 후 서로 다른
+> 두 노드의 Pod에서 같은 sha256을 읽어 재포맷이 없었음을 확인한다. 거부 경로는 PVC가
+> Pending으로 남고 ProvisioningFailed 이벤트에 거부 사유가 나타나는지 본다.
+
+**인프라 요구사항:**
+
+| 항목 | 버전/사양 | 비고 |
+|------|----------|------|
+| Kind | v0.23+ | Ready·스케줄 가능한 노드 2개 이상 (pillar-csi node 플러그인 실행) |
+| pillar-csi | Helm 배포 | `agent.backends[].zfs`에 `pool`과 비어 있지 않은 `parentDataset` |
+| `PILLAR_E2E_ZFS_POOL` | 환경 변수 | 스토리지 노드의 ZFS pool 이름 |
+| `PILLAR_E2E_BACKEND_CONTAINER` | 환경 변수 | 스토리지 노드 Kind 컨테이너 이름 (= 노드 이름) |
+| 스토리지 노드 도구 | `zfs`, `mkfs.xfs`, `mountpoint`, `sha256sum` | `/dev/zvol/<dataset>` 블록 디바이스가 보여야 함 |
+| 호스트 커널 | `zfs`, `nvmet`, `nvmet-tcp`, `nvme-tcp` | |
+
+**빌드 태그:** `//go:build e2e && e2e_helm`
+
+```bash
+go test ./test/e2e/ -tags=e2e,e2e_helm -v --ginkgo.label-filter="e36"
+```
+
+테스트는 스토리지 노드의 PillarAgent(없으면 생성), PillarStore(zfs zvol, 에이전트가 보고한
+`parentDataset`), PillarProtocol(nvmeof-tcp), PillarStorageClass(`Immediate`, `xfs`)를 만들고,
+끝나면 Pod·PVC·PV·PillarVolumeState, 만든 dataset과 CR, 네임스페이스를 모두 지워 노드를
+테스트 전 상태로 되돌린다.
+
+### E36.1 import-zvol 어노테이션으로 기존 zvol 채택
+
+**위치:** `test/e2e/tc_e36_zvol_import_e2e_test.go`
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| 318 | `It("import PVC binds and the PV capacity equals the zvol volsize")` | 채택한 zvol 크기가 PV 용량이 됨 | 스토리지 노드에 512M sparse zvol `<pool>/<parent>/e36-import-N` 생성·XFS 포맷·파일 기록·언마운트; CR 스택 Ready | 1) import 어노테이션 PVC(256Mi) 생성; 2) Bound 대기; 3) PV capacity 조회 | PVC Bound; PV capacity = zvol volsize (요청 크기 아님) | `CSI-C`, `Agent`, `ZFS`, `VolCRD` |
+| 319 | `It("PillarVolumeState records spec.importedFrom and the adopted backend volume")` | 채택 출처가 PillarVolumeState에 기록됨 | 318 Bound | 1) PV 이름의 PillarVolumeState 조회 | `spec.importedFrom` = 어노테이션 dataset; `spec.agentVolumeID` = `<pool>/e36-import-N` | `CSI-C`, `VolCRD` |
+| 320 | `It("a Pod on the first node reads the file written before the import")` | 채택 전 데이터가 그대로 보임 (재포맷 없음) | 318 Bound | 1) 첫 번째 노드에 Pod 생성; 2) Running 대기; 3) Pod 안에서 `sha256sum` | Pod Running; sha256 = 채택 전 기록한 값 | `CSI-C`, `CSI-N`, `NVMeF`, `Mnt` |
+| 321 | `It("after the first Pod is deleted a Pod on a second node reads the same file")` | 다른 노드로 옮겨도 데이터 유지 | 320 Pod Running | 1) 첫 Pod 삭제; 2) 두 번째 노드에 Pod 생성; 3) `sha256sum` | 두 번째 Pod Running; sha256 동일 | `CSI-C`, `CSI-N`, `NVMeF`, `Mnt` |
+| 322 | `It("importing a dataset that does not exist is refused")` | 없는 dataset 채택 거부 | `<pool>/<parent>/e36-missing-N` 부재 | 1) import PVC 생성; 2) 이벤트 대기 | ProvisioningFailed 이벤트에 `refused: missing`; PVC Pending, volumeName 비어 있음 | `CSI-C`, `Agent`, `ZFS` |
+| 323 | `It("importing a zvol mounted on the storage node is refused")` | 스토리지 노드에서 마운트된 zvol 채택 거부 | `<pool>/<parent>/e36-mounted-N` 생성·XFS 포맷 후 스토리지 노드에 마운트 유지 | 1) import PVC 생성; 2) 이벤트 대기; 3) 마운트 유지 확인 | ProvisioningFailed 이벤트에 `refused: in use`; PVC Pending; 마운트 유지 | `CSI-C`, `Agent`, `ZFS` |
+| 324 | `It("importing a zvol outside the store's parentDataset is refused")` | parentDataset 밖 zvol 채택 거부 | `<pool>/e36-outside-N` 생성 (유휴) | 1) import PVC 생성; 2) 이벤트 대기 | ProvisioningFailed 이벤트에 `is not under the PillarStore's parent dataset`; PVC Pending | `CSI-C` |
+| 325 | `It("deleting the import PVC removes its PV and PillarVolumeState")` | 채택 볼륨 정리 | 321 Pod Running | 1) 두 번째 Pod 삭제; 2) PVC 삭제; 3) PV·PillarVolumeState 삭제 대기 | PV와 PillarVolumeState 제거 | `CSI-C`, `Agent`, `VolCRD` |
+
+### E36 커버리지 요약
+
+| 소섹션 | 검증 내용 | 테스트 수 | 인프라 |
+|--------|---------|----------|--------|
+| E36.1 | 기존 zvol 채택 → 용량·출처 기록 → 두 노드에서 데이터 유지 → 거부 3종 → 정리 | 8개 | 멀티 노드 Kind + ZFS + NVMe-oF |
+| **합계** | | **8개** | ⚠️ |
 
 ---
 
