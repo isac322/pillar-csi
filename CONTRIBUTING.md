@@ -44,6 +44,7 @@ pillar-csi writes to kernel interfaces, and a swallowed error there leaves stora
 Each TC ID in [docs/E2E-TESTCASES.md](docs/E2E-TESTCASES.md) maps one-to-one to a Ginkgo node name in `test/e2e/`. When you add or remove a test case, update both and run `make verify-tc-ids`. Gate test cases with `Fail()` or `Expect()`; do not use a conditional `Skip()`.
 
 Check cleanup against the resource owned by the test. For TCP listeners, verify that the retained listener rejects `Accept()` with `net.ErrClosed`; rebinding a released ephemeral address can race with another parallel worker.
+
 ## CI checks
 
 Pull requests and pushes to `master` run the same CI workflow. Code changes run lint, unit and integration tests, CSI conformance, chart rendering, benchmarks, all eight image platforms, and both Kind and upstream External Storage E2E suites. Documentation-only changes skip the code checks; `docs/E2E-TESTCASES.md` still counts as code. Failed change detection runs the checks rather than skipping them. Superseded pull-request runs are cancelled; master and daily runs are retained.
