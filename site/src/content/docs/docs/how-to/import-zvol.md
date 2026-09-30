@@ -85,7 +85,13 @@ Then remove what the old driver still keeps on the storage node:
   ```
 
 - **democratic-csi over NVMe-oF.** Remove the nvmet subsystem that exports the zvol in the same way.
-- **openebs zfs-localpv.** Keep the `ZFSVolume` resource in the `openebs` namespace. Do not delete it: while the openebs node plugin runs, deleting a `ZFSVolume` makes the plugin destroy the dataset. The openebs node plugin already unmounted the zvol when the pod stopped, so nothing else needs to be removed.
+- **openebs zfs-localpv.** Leave the `ZFSVolume` resource in the `openebs` namespace for now. Deleting it while it still has the `zfs.openebs.io/finalizer` finalizer makes the openebs node plugin destroy the dataset. The openebs node plugin already unmounted the zvol when the pod stopped, so nothing else needs to be removed. Once the import works, you can remove the leftover resource. First remove the finalizer, then delete it. Without the finalizer the plugin only sees a delete event for an object that is already gone, and it leaves the zvol alone:
+
+  ```sh
+  kubectl -n openebs patch zfsvolume "$PV" --type=merge -p '{"metadata":{"finalizers":null}}'
+  kubectl -n openebs delete zfsvolume "$PV"
+  zfs list hot-data/k8s/pvc-0d5201a5-3c1e-4c55-a2a7-3f7d3c4e9b10   # still there
+  ```
 
 You do not need to remove the old driver's ZFS user properties. If you are not sure the zvol is free, the agent checks it in the next step and refuses the claim with the reason.
 
@@ -170,7 +176,7 @@ The PVC stays `Pending`, and its events show one of these messages. `<annotation
 | `<annotation> requires a zfs.zvol PillarStore backend, got backend ...` | The StorageClass's store is LVM or a ZFS filesystem store. | Use a StorageClass of a ZFS zvol store. |
 | `<annotation> dataset ... lives in pool ... but the PillarStore selects pool ...` | The first component is not the store's `pool`. | Use a StorageClass whose store has that pool. |
 | `<annotation> dataset ... is not under the PillarStore's parent dataset ...` | The path between pool and zvol name is not exactly the store's `parentDataset`: a sibling such as `hot-data/k8s-other/x`, a deeper zvol such as `hot-data/k8s/a/b`, or a pool-root zvol for a store with a `parentDataset`. | Use a store with that `parentDataset`, or `zfs rename` the zvol under the store's `parentDataset`. |
-| `<annotation>: zvol ... is already managed by volume ... (PillarVolumeState ...); delete that volume first` | Another pillar-csi volume already owns the zvol, for example another PVC imported it. | Import each zvol once. |
+| `<annotation>: zvol ... is already managed by volume ... (PillarVolumeState ...); delete that volume first` | Another pillar-csi volume already owns the zvol. Either another PVC imported it, or another PVC's import of it is still `Pending`, for example refused because it asked for more than `volsize`. | Import each zvol once. Delete the other PVC if it is a failed attempt. Its cleanup leaves the zvol untouched, and the next retry of this claim proceeds. |
 | ``<annotation>: zvol ... is reserved by volume ... of claim ... (PillarVolumeReservation ...); delete that claim first, or, after verifying that claim and its PillarVolumeState no longer exist, release the reservation with `kubectl delete pillarvolumereservation ...` `` | Another claim holds the zvol's reservation. Usually another PVC imports the same zvol. Rarely, the controller stopped after reserving the zvol for an earlier claim and before recording that claim's volume. | Import each zvol once. If the named claim is stale, delete it. If the claim and its volume are gone, release the reservation by hand (see [Release a stale reservation](#release-a-stale-reservation)). |
 | `cannot expand volume ...` or `cannot publish volume ...: its import of zvol ... was never adopted` | The volume's import has not completed, so pillar-csi does not manage the zvol yet. | Fix the import refusal first. |
 | `<annotation>: volume ... was already provisioned without an import; delete the PersistentVolumeClaim and re-create it to import a zvol` | The annotation was added to a claim whose provisioning had already started. | Delete the PVC and create it again with the annotation. |
