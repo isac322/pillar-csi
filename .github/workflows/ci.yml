@@ -4,6 +4,8 @@ on:
   push:
     branches: [master]
   pull_request:
+  # Manual dispatch is used for reproducible post-merge measurements.
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
