@@ -286,6 +286,16 @@ type PillarVolumeStateSpec struct {
 	// +optional
 	ClaimRef *VolumeClaimRef `json:"claimRef,omitempty"`
 
+	// importedFrom records the full source dataset name when the volume was
+	// adopted from an existing ZFS zvol via the
+	// "pillar-csi.bhyoo.com/import-zvol" PVC annotation (e.g.
+	// "hot-data/k8s/pvc-abc123"), instead of being created empty.  The field
+	// is informational — the imported zvol keeps its data but becomes a
+	// normal volume: DeleteVolume destroys it, and the annotation has no
+	// effect once the volume exists.
+	// +optional
+	ImportedFrom string `json:"importedFrom,omitempty"`
+
 	// resolved is the effective per-volume configuration resolved at the
 	// first CreateVolume attempt from the PillarStore, PillarProtocol,
 	// PillarStorageClass overrides, StorageClass parameter documents and PVC
@@ -348,6 +358,18 @@ type PillarVolumeStateStatus struct {
 	// Cleared when the volume reaches the Ready phase.
 	// +optional
 	BackendDevicePath string `json:"backendDevicePath,omitempty"`
+
+	// importAcquired records that agent.ImportVolume succeeded for a
+	// spec.importedFrom volume: the agent durably adopted the pre-existing
+	// zvol into this lifecycle.  While it is unset the lifecycle cannot prove
+	// the agent ever took ownership, so ReapAbandonedVolume and DeleteVolume
+	// end the lifecycle with agent.ReleaseVolume — which retires it at the
+	// agent without touching the zvol — instead of UnexportVolume and
+	// DeleteVolume, and ControllerExpandVolume and ControllerPublishVolume
+	// refuse it: a refused or lost-response import that was torn down,
+	// resized or exposed anyway would harm a zvol this driver never owned.
+	// +optional
+	ImportAcquired bool `json:"importAcquired,omitempty"`
 
 	// exportInfo holds the network export parameters returned by ExportVolume.
 	// Populated when phase is Ready or later.  Used by DeleteVolume to

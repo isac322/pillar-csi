@@ -43,7 +43,8 @@ Match the message:
 
 | Message contains | Cause | Fix |
 |---|---|---|
-| `unsupported PVC annotation` | The PVC has a `pillar-csi.bhyoo.com/` annotation other than `backend`, `protocol` or `filesystem`, such as a 0.2 key. | Remove it. Use the YAML documents described in [Override settings](/docs/how-to/volume-overrides/). |
+| `unsupported PVC annotation` | The PVC has a `pillar-csi.bhyoo.com/` annotation other than `backend`, `protocol`, `filesystem` or `import-zvol`, such as a 0.2 key. | Remove it. Use the YAML documents described in [Override settings](/docs/how-to/volume-overrides/). |
+| `pillar-csi.bhyoo.com/import-zvol` or `import of volume ... refused` | A zvol import was refused. | See the refusals in [Import a zvol from another CSI driver](/docs/how-to/import-zvol/#refusals). |
 | `is structural and cannot be set per volume` | The annotation sets `pool`, `parentDataset`, `volumeGroup`, `thinPool`, `port` or `acl`. | Remove the field. Create a separate `PillarStore` or `PillarProtocol` instead. |
 | `unknown field` | A typo or a field that does not exist at that path. | Fix the key; the message lists the supported ones. |
 | `mkfs option ... is not allowed` | An `mkfsOptions` entry is not on the allowlist for that filesystem type. | Remove it; the message lists the allowed flags. |

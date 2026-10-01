@@ -68,8 +68,10 @@ const (
 	AgentService_ListExports_FullMethodName     = "/pillar_csi.agent.v1.AgentService/ListExports"
 	AgentService_HealthCheck_FullMethodName     = "/pillar_csi.agent.v1.AgentService/HealthCheck"
 	AgentService_CreateVolume_FullMethodName    = "/pillar_csi.agent.v1.AgentService/CreateVolume"
+	AgentService_ImportVolume_FullMethodName    = "/pillar_csi.agent.v1.AgentService/ImportVolume"
 	AgentService_DeleteVolume_FullMethodName    = "/pillar_csi.agent.v1.AgentService/DeleteVolume"
 	AgentService_ExpandVolume_FullMethodName    = "/pillar_csi.agent.v1.AgentService/ExpandVolume"
+	AgentService_ReleaseVolume_FullMethodName   = "/pillar_csi.agent.v1.AgentService/ReleaseVolume"
 	AgentService_ExportVolume_FullMethodName    = "/pillar_csi.agent.v1.AgentService/ExportVolume"
 	AgentService_UnexportVolume_FullMethodName  = "/pillar_csi.agent.v1.AgentService/UnexportVolume"
 	AgentService_AllowInitiator_FullMethodName  = "/pillar_csi.agent.v1.AgentService/AllowInitiator"
@@ -115,6 +117,23 @@ type AgentServiceClient interface {
 	// Idempotent: if the volume already exists with the same parameters the
 	// agent MUST return success.
 	CreateVolume(ctx context.Context, in *CreateVolumeRequest, opts ...grpc.CallOption) (*CreateVolumeResponse, error)
+	// ImportVolume adopts an already-existing backend storage resource into a
+	// volume lifecycle instead of creating one.  It backs the CSI CreateVolume
+	// path of a PersistentVolumeClaim that carries the
+	// "pillar-csi.bhyoo.com/import-zvol" annotation.
+	//
+	// Import is strictly read-only on the backend: the agent MUST refuse
+	// (FAILED_PRECONDITION or INVALID_ARGUMENT) when the resolved volume_id
+	// does not name an existing resource of the backend's volume type inside
+	// its configured layout, when that resource is still in use on the storage
+	// node (a target backstore, an nvmet namespace, a mount or an exclusive
+	// device claim), or when capacity_bytes exceeds the resource's current
+	// size.  It must never create or modify the resource.  ZFS zvol backends
+	// implement it; other backends return UNIMPLEMENTED.
+	//
+	// Idempotent: repeated calls for the same volume_id return the same
+	// device path and capacity.  The request is fenced like CreateVolume.
+	ImportVolume(ctx context.Context, in *ImportVolumeRequest, opts ...grpc.CallOption) (*ImportVolumeResponse, error)
 	// DeleteVolume destroys the backend storage resource.  The export MUST have
 	// been removed (UnexportVolume) before calling this RPC; the agent will
 	// return FAILED_PRECONDITION otherwise.
@@ -124,6 +143,22 @@ type AgentServiceClient interface {
 	// ExpandVolume resizes the backend storage resource to at least
 	// requested_bytes.  The agent returns the actual allocated size.
 	ExpandVolume(ctx context.Context, in *ExpandVolumeRequest, opts ...grpc.CallOption) (*ExpandVolumeResponse, error)
+	// ReleaseVolume ends a volume lifecycle's ownership of volume_id without
+	// touching the backend resource.  It retires a lifecycle whose backend
+	// volume it must not destroy — an import that was never durably adopted —
+	// so the pre-existing resource is never destroyed, resized or modified.
+	//
+	// When the fence's lifecycle owns the volume ID, the agent removes the
+	// lifecycle's network export (like UnexportVolume) and records the
+	// lifecycle as ended.  When another lifecycle owns it, or no lifecycle
+	// does, the agent only records the fence's lifecycle as retired and leaves
+	// the other lifecycle's resources untouched.  Afterwards every mutating
+	// request carrying the released lifecycle's token (including a delayed
+	// ImportVolume) is rejected with FAILED_PRECONDITION, while a new
+	// lifecycle may still import or create the volume ID.
+	//
+	// Idempotent: releasing an already released lifecycle returns success.
+	ReleaseVolume(ctx context.Context, in *ReleaseVolumeRequest, opts ...grpc.CallOption) (*ReleaseVolumeResponse, error)
 	// ExportVolume creates the network-protocol target entry that exposes the
 	// already-created volume to the network (e.g. adds an NVMe-oF subsystem +
 	// namespace, or an iSCSI LUN, or an NFS export).
@@ -303,6 +338,16 @@ func (c *agentServiceClient) CreateVolume(ctx context.Context, in *CreateVolumeR
 	return out, nil
 }
 
+func (c *agentServiceClient) ImportVolume(ctx context.Context, in *ImportVolumeRequest, opts ...grpc.CallOption) (*ImportVolumeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ImportVolumeResponse)
+	err := c.cc.Invoke(ctx, AgentService_ImportVolume_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *agentServiceClient) DeleteVolume(ctx context.Context, in *DeleteVolumeRequest, opts ...grpc.CallOption) (*DeleteVolumeResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(DeleteVolumeResponse)
@@ -317,6 +362,16 @@ func (c *agentServiceClient) ExpandVolume(ctx context.Context, in *ExpandVolumeR
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ExpandVolumeResponse)
 	err := c.cc.Invoke(ctx, AgentService_ExpandVolume_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *agentServiceClient) ReleaseVolume(ctx context.Context, in *ReleaseVolumeRequest, opts ...grpc.CallOption) (*ReleaseVolumeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ReleaseVolumeResponse)
+	err := c.cc.Invoke(ctx, AgentService_ReleaseVolume_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -459,6 +514,23 @@ type AgentServiceServer interface {
 	// Idempotent: if the volume already exists with the same parameters the
 	// agent MUST return success.
 	CreateVolume(context.Context, *CreateVolumeRequest) (*CreateVolumeResponse, error)
+	// ImportVolume adopts an already-existing backend storage resource into a
+	// volume lifecycle instead of creating one.  It backs the CSI CreateVolume
+	// path of a PersistentVolumeClaim that carries the
+	// "pillar-csi.bhyoo.com/import-zvol" annotation.
+	//
+	// Import is strictly read-only on the backend: the agent MUST refuse
+	// (FAILED_PRECONDITION or INVALID_ARGUMENT) when the resolved volume_id
+	// does not name an existing resource of the backend's volume type inside
+	// its configured layout, when that resource is still in use on the storage
+	// node (a target backstore, an nvmet namespace, a mount or an exclusive
+	// device claim), or when capacity_bytes exceeds the resource's current
+	// size.  It must never create or modify the resource.  ZFS zvol backends
+	// implement it; other backends return UNIMPLEMENTED.
+	//
+	// Idempotent: repeated calls for the same volume_id return the same
+	// device path and capacity.  The request is fenced like CreateVolume.
+	ImportVolume(context.Context, *ImportVolumeRequest) (*ImportVolumeResponse, error)
 	// DeleteVolume destroys the backend storage resource.  The export MUST have
 	// been removed (UnexportVolume) before calling this RPC; the agent will
 	// return FAILED_PRECONDITION otherwise.
@@ -468,6 +540,22 @@ type AgentServiceServer interface {
 	// ExpandVolume resizes the backend storage resource to at least
 	// requested_bytes.  The agent returns the actual allocated size.
 	ExpandVolume(context.Context, *ExpandVolumeRequest) (*ExpandVolumeResponse, error)
+	// ReleaseVolume ends a volume lifecycle's ownership of volume_id without
+	// touching the backend resource.  It retires a lifecycle whose backend
+	// volume it must not destroy — an import that was never durably adopted —
+	// so the pre-existing resource is never destroyed, resized or modified.
+	//
+	// When the fence's lifecycle owns the volume ID, the agent removes the
+	// lifecycle's network export (like UnexportVolume) and records the
+	// lifecycle as ended.  When another lifecycle owns it, or no lifecycle
+	// does, the agent only records the fence's lifecycle as retired and leaves
+	// the other lifecycle's resources untouched.  Afterwards every mutating
+	// request carrying the released lifecycle's token (including a delayed
+	// ImportVolume) is rejected with FAILED_PRECONDITION, while a new
+	// lifecycle may still import or create the volume ID.
+	//
+	// Idempotent: releasing an already released lifecycle returns success.
+	ReleaseVolume(context.Context, *ReleaseVolumeRequest) (*ReleaseVolumeResponse, error)
 	// ExportVolume creates the network-protocol target entry that exposes the
 	// already-created volume to the network (e.g. adds an NVMe-oF subsystem +
 	// namespace, or an iSCSI LUN, or an NFS export).
@@ -605,11 +693,17 @@ func (UnimplementedAgentServiceServer) HealthCheck(context.Context, *HealthCheck
 func (UnimplementedAgentServiceServer) CreateVolume(context.Context, *CreateVolumeRequest) (*CreateVolumeResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CreateVolume not implemented")
 }
+func (UnimplementedAgentServiceServer) ImportVolume(context.Context, *ImportVolumeRequest) (*ImportVolumeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ImportVolume not implemented")
+}
 func (UnimplementedAgentServiceServer) DeleteVolume(context.Context, *DeleteVolumeRequest) (*DeleteVolumeResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DeleteVolume not implemented")
 }
 func (UnimplementedAgentServiceServer) ExpandVolume(context.Context, *ExpandVolumeRequest) (*ExpandVolumeResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ExpandVolume not implemented")
+}
+func (UnimplementedAgentServiceServer) ReleaseVolume(context.Context, *ReleaseVolumeRequest) (*ReleaseVolumeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ReleaseVolume not implemented")
 }
 func (UnimplementedAgentServiceServer) ExportVolume(context.Context, *ExportVolumeRequest) (*ExportVolumeResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ExportVolume not implemented")
@@ -767,6 +861,24 @@ func _AgentService_CreateVolume_Handler(srv interface{}, ctx context.Context, de
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AgentService_ImportVolume_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ImportVolumeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentServiceServer).ImportVolume(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentService_ImportVolume_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentServiceServer).ImportVolume(ctx, req.(*ImportVolumeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _AgentService_DeleteVolume_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(DeleteVolumeRequest)
 	if err := dec(in); err != nil {
@@ -799,6 +911,24 @@ func _AgentService_ExpandVolume_Handler(srv interface{}, ctx context.Context, de
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(AgentServiceServer).ExpandVolume(ctx, req.(*ExpandVolumeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AgentService_ReleaseVolume_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReleaseVolumeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentServiceServer).ReleaseVolume(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentService_ReleaseVolume_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentServiceServer).ReleaseVolume(ctx, req.(*ReleaseVolumeRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -979,12 +1109,20 @@ var AgentService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _AgentService_CreateVolume_Handler,
 		},
 		{
+			MethodName: "ImportVolume",
+			Handler:    _AgentService_ImportVolume_Handler,
+		},
+		{
 			MethodName: "DeleteVolume",
 			Handler:    _AgentService_DeleteVolume_Handler,
 		},
 		{
 			MethodName: "ExpandVolume",
 			Handler:    _AgentService_ExpandVolume_Handler,
+		},
+		{
+			MethodName: "ReleaseVolume",
+			Handler:    _AgentService_ReleaseVolume_Handler,
 		},
 		{
 			MethodName: "ExportVolume",

@@ -182,6 +182,12 @@ func (c *fenceClient) ExportVolume(
 	return c.agent.srv.ExportVolume(ctx, req)
 }
 
+func (c *fenceClient) ReleaseVolume(
+	ctx context.Context, req *agentv1.ReleaseVolumeRequest, _ ...grpc.CallOption,
+) (*agentv1.ReleaseVolumeResponse, error) {
+	return c.agent.srv.ReleaseVolume(ctx, req)
+}
+
 func (c *fenceClient) UnexportVolume(
 	ctx context.Context, req *agentv1.UnexportVolumeRequest, _ ...grpc.CallOption,
 ) (*agentv1.UnexportVolumeResponse, error) {
