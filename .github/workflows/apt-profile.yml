@@ -415,7 +415,10 @@ jobs:
             echo "configfs_children=$(find /sys/kernel/config -mindepth 1 -maxdepth 1 -printf '%f ' 2>/dev/null)"
           } > "${state}"
           cat "${state}"
-          missing="$(grep -c '=MISSING$' "${state}")"
+          # grep -c prints the count and exits 1 on zero matches; only a
+          # status >1 is a read error, which must still fail the step.
+          missing="$(grep -c '=MISSING$' "${state}")" && rc=0 || rc=$?
+          [ "${rc}" -le 1 ]
           [ "${missing}" -eq 0 ]
 
       - name: Collect profile metadata
