@@ -403,6 +403,20 @@ message IscsiExportParams {
   string bind_address = 1;
   // TCP port (default: 3260).
   int32 port = 2;
+  // CHAP credentials the target enforces on every initiator ACL of this
+  // export.  Unset means no authentication (AuthMethod=None).
+  IscsiChap chap = 3;
+}
+
+// IscsiChap carries iSCSI CHAP secrets (RFC 7143 §12.1.3).  username and
+// password authenticate the initiator to the target.  mutual_username and
+// mutual_password, when both set, authenticate the target to the initiator
+// (mutual CHAP).  These are secrets: never log them.
+message IscsiChap {
+  string username = 1;
+  string password = 2;
+  string mutual_username = 3;
+  string mutual_password = 4;
 }
 
 // NfsExportParams holds NFS export configuration.
@@ -864,6 +878,10 @@ message AllowInitiatorRequest {
   // Fencing token: the PillarVolumeState UID and the publicationGeneration
   // the controller committed for this operation.  See FencingToken.
   FencingToken fence = 4;
+
+  // Protocol parameters the grant needs.  iSCSI applies
+  // export_params.iscsi.chap to the new ACL; other protocols ignore it.
+  ExportParams export_params = 5;
 }
 
 message AllowInitiatorResponse {}
