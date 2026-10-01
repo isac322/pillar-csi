@@ -100,11 +100,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # setup-go keys on parseGoVersion(`go version`), i.e. the resolved
-          # toolchain version without the `go` prefix.
+          gv="$(go env GOVERSION)"
           {
             echo "go_spec=${gv#go}"
-            echo "go_version=$(go env GOVERSION)"
+            echo "go_version=$gv"
             echo "gocache=$(go env GOCACHE)"
             echo "gomodcache=$(go env GOMODCACHE)"
           } >> "$GITHUB_OUTPUT"
@@ -208,9 +207,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          gv="$(go env GOVERSION)"
           {
             echo "go_spec=${gv#go}"
-            echo "go_version=$(go env GOVERSION)"
+            echo "go_version=$gv"
             echo "gocache=$(go env GOCACHE)"
             echo "gomodcache=$(go env GOMODCACHE)"
           } >> "$GITHUB_OUTPUT"
@@ -312,9 +312,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          gv="$(go env GOVERSION)"
           {
             echo "go_spec=${gv#go}"
-            echo "go_version=$(go env GOVERSION)"
+            echo "go_version=$gv"
             echo "gocache=$(go env GOCACHE)"
             echo "gomodcache=$(go env GOMODCACHE)"
           } >> "$GITHUB_OUTPUT"
@@ -474,9 +475,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          gv="$(go env GOVERSION)"
           {
             echo "go_spec=${gv#go}"
-            echo "go_version=$(go env GOVERSION)"
+            echo "go_version=$gv"
             echo "gocache=$(go env GOCACHE)"
             echo "gomodcache=$(go env GOMODCACHE)"
           } >> "$GITHUB_OUTPUT"

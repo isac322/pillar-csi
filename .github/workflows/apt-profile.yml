@@ -48,6 +48,7 @@ on:
     branches: [isac322/improve-ci-cache-experiments]
     paths:
       - .github/workflows/apt-profile.yml
+      - hack/ci-prefer-ubuntu-mirror.sh
   workflow_dispatch:
 
 concurrency:
