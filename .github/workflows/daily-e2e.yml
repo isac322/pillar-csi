@@ -20,17 +20,12 @@
 name: Daily E2E
 
 on:
-  schedule:
-    - cron: '0 7 * * *'  # 07:00 UTC daily
   workflow_dispatch:
     inputs:
       force:
         description: Run every suite even if no code changed since the last tested run
         type: boolean
         default: false
-  pull_request:
-    paths:
-      - .github/workflows/daily-e2e.yml
 
 permissions:
   contents: read
@@ -184,12 +179,8 @@ jobs:
   report:
     name: Open issue on failure
     needs: [gate, kind, external, docker]
-    if: |
-      !cancelled() &&
-      github.event_name != 'pull_request' &&
-      (needs.gate.result == 'failure' ||
-       contains(needs.*.result, 'failure') ||
-       contains(needs.*.result, 'cancelled'))
+    # Measurement-only branch: never open or comment on issues.
+    if: false
     runs-on: ubuntu-latest
     permissions:
       actions: read
