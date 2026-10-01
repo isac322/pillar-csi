@@ -47,6 +47,7 @@ const (
 // the same window sets periodicTrim: false in its PVC filesystem document and
 // must receive no discard at all.
 func TestPeriodicTrimReleasesSpace(t *testing.T) {
+	parallelDockerE2E(t)
 	cfg := loadConfig(t)
 	iscsiStorageClass := requireEnv(t, "PILLAR_E2E_ISCSI_STORAGE_CLASS")
 	backingContainer := requireEnv(t, "PILLAR_E2E_BACKING_CONTAINER")

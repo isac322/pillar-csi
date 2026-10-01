@@ -191,7 +191,9 @@ jobs:
           go-version-file: go.mod
 
       - name: Run csi-sanity
-        run: make test-csi-sanity
+        # The required Test job retains the same untagged whole-repo vet.
+        # Tagged go test still vets the sanity package on this runner.
+        run: make test-csi-sanity CSI_SANITY_SKIP_VET=true
 
   chart:
     name: Helm chart render regression

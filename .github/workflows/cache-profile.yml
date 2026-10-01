@@ -1,0 +1,199 @@
+# TEMPORARY — A/B/C experiment for the all-platform Go compile lane.
+#
+# Every arm runs the canonical `compile` Bake target from docker-bake.hcl on
+# the canonical eight PLATFORMS used by the `Build (all platforms)` job in
+# ci.yml, with the same read-only gha layer cache (scope pillar-ci-compile,
+# never cache-to) and the canonical type=cacheonly output, so no builder
+# rootfs is exported.
+#
+#   baseline       — production transport: restore buildkit-cache with the
+#                    exact ci.yml key family, inject via buildkit-cache-dance
+#                    (skip-extraction, nothing is saved back).
+#   candidate      — no mount-cache transport; cache mounts start empty.
+#   shared-modules — baseline transport, but compiled from a scratch copy of
+#                    the Dockerfile that only moves ARG TARGETOS/TARGETARCH/
+#                    TARGETVARIANT (and the variant comment) after `COPY . .`,
+#                    so `go mod download` no longer varies per platform.
+#
+# Timing accounting comes from the Actions API job/step durations only (they
+# include post-action cleanup such as builder removal). Plain BuildKit logs in
+# the job log show which vertices ran and which were CACHED. The uploaded
+# artifact holds small metadata only. Nothing is pushed, published, exported
+# or saved to any cache. Delete this file once the question is answered.
+
+name: cache-profile (temporary)
+
+on:
+  push:
+    branches: [isac322/improve-ci]
+    paths:
+      - .github/workflows/cache-profile.yml
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.run_id }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  profile:
+    name: compile (${{ matrix.arm }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        arm: [baseline, candidate, shared-modules]
+    env:
+      # Canonical platform list — identical to the Build job in ci.yml.
+      PLATFORMS: linux/amd64,linux/amd64/v2,linux/amd64/v3,linux/arm64,linux/arm/v7,linux/s390x,linux/ppc64le,linux/riscv64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        id: buildx
+        uses: docker/setup-buildx-action@v4
+
+      # ── mount-cache transport (baseline, shared-modules) ─────────────────
+      # Same directory, key and restore-keys as the ci.yml pull-request path.
+      - name: Restore BuildKit cache mounts (read-only)
+        if: ${{ matrix.arm != 'candidate' }}
+        id: restore
+        uses: actions/cache/restore@v6
+        with:
+          path: buildkit-cache
+          key: buildkit-mount-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Dockerfile', 'go.mod', 'go.sum') }}
+          restore-keys: |
+            buildkit-mount-v2-${{ runner.os }}-${{ runner.arch }}-
+            buildkit-mount-${{ hashFiles('Dockerfile') }}-
+
+      - name: Inject BuildKit cache mounts (no extraction)
+        if: ${{ matrix.arm != 'candidate' }}
+        uses: reproducible-containers/buildkit-cache-dance@v3
+        with:
+          builder: ${{ steps.buildx.outputs.name }}
+          cache-dir: buildkit-cache
+          skip-extraction: true
+
+      # ── shared-modules scratch Dockerfile ────────────────────────────────
+      # Moves only the three platform ARGs and their comment block from the
+      # top of the builder stage to just after `COPY . .`. The diff check
+      # fails the job if the canonical Dockerfile no longer matches that shape.
+      - name: Generate shared-modules Dockerfile
+        if: ${{ matrix.arm == 'shared-modules' }}
+        shell: bash
+        env:
+          DST: ${{ runner.temp }}/shared-modules/Dockerfile
+        run: |
+          set -euo pipefail
+          mkdir -p "$(dirname "${DST}")"
+          awk '
+            /^ARG TARGETOS$/ { inblock = 1 }
+            inblock {
+              block = block $0 "\n"
+              if ($0 == "ARG TARGETVARIANT") { inblock = 0; moved = 1 }
+              next
+            }
+            { print }
+            $0 == "COPY . ." && moved { printf "%s", block; copied = 1 }
+            END { if (!moved || !copied) exit 1 }
+          ' Dockerfile > "${DST}"
+          diff -u Dockerfile "${DST}" || true
+          # Same lines, different order only.
+          cmp <(sort Dockerfile) <(sort "${DST}") || { echo "::error::scratch Dockerfile changed content, not only order"; exit 1; }
+          [ "$(grep -n '^ARG TARGETOS$' "${DST}" | cut -d: -f1)" -gt "$(grep -n '^COPY \. \.$' "${DST}" | cut -d: -f1)" ]
+          [ "$(grep -n '^ARG TARGETVARIANT$' "${DST}" | cut -d: -f1)" -lt "$(grep -n '^RUN --mount=type=cache,target=/root/.cache/go-build' "${DST}" | cut -d: -f1)" ]
+
+      # Canonical compile lane. Only the shared-modules arm overrides the
+      # Dockerfile; the context stays the checkout for every arm.
+      - name: Compile Go binaries for all supported Linux targets
+        id: bake
+        uses: docker/bake-action@v7
+        env:
+          BUILDKIT_PROGRESS: plain
+        with:
+          source: .
+          builder: ${{ steps.buildx.outputs.name }}
+          files: docker-bake.hcl
+          targets: compile
+          set: |
+            compile.context=.
+            compile.output=type=cacheonly
+            compile.cache-from=type=gha,scope=pillar-ci-compile
+            ${{ matrix.arm == 'shared-modules' && format('compile.dockerfile={0}/shared-modules/Dockerfile', runner.temp) || '' }}
+
+      - name: Collect profile metadata
+        if: always()
+        shell: bash
+        env:
+          PROFILE_DIR: ${{ runner.temp }}/cache-profile
+          ARM: ${{ matrix.arm }}
+          BUILDER: ${{ steps.buildx.outputs.name }}
+          CACHE_HIT: ${{ steps.restore.outputs.cache-hit }}
+          CACHE_MATCHED_KEY: ${{ steps.restore.outputs.cache-matched-key }}
+          BAKE_OUTCOME: ${{ steps.bake.outcome }}
+          BAKE_METADATA: ${{ steps.bake.outputs.metadata }}
+          SCRATCH_DOCKERFILE: ${{ runner.temp }}/shared-modules/Dockerfile
+        run: |
+          set -uo pipefail
+          mkdir -p "${PROFILE_DIR}"
+          if [ "${ARM}" = "shared-modules" ]; then
+            dockerfile="${SCRATCH_DOCKERFILE}"
+            cp "${dockerfile}" "${PROFILE_DIR}/Dockerfile.shared-modules" 2>/dev/null || true
+          else
+            dockerfile=Dockerfile
+          fi
+          {
+            echo "arm=${ARM}"
+            echo "run_id=${GITHUB_RUN_ID}"
+            echo "run_attempt=${GITHUB_RUN_ATTEMPT}"
+            echo "job=${GITHUB_JOB}"
+            echo "source_sha=${GITHUB_SHA}"
+            echo "ref=${GITHUB_REF}"
+            echo "event=${GITHUB_EVENT_NAME}"
+            echo "runner_name=${RUNNER_NAME:-unknown}"
+            echo "image_version=${ImageVersion:-unknown}"
+            echo "platforms=${PLATFORMS}"
+            echo "nproc=$(nproc)"
+            echo "cpu_model=$(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2- | xargs)"
+            echo "mem_total_kb=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)"
+            echo "canonical_dockerfile_sha256=$(sha256sum Dockerfile | cut -d' ' -f1)"
+            echo "build_dockerfile_sha256=$(sha256sum "${dockerfile}" 2>/dev/null | cut -d' ' -f1)"
+            echo "go_sum_sha256=$(sha256sum go.sum | cut -d' ' -f1)"
+            echo "mount_cache_hit=${CACHE_HIT:-not-restored}"
+            echo "mount_cache_matched_key=${CACHE_MATCHED_KEY:-none}"
+            echo "mount_cache_bytes=$(du -sb buildkit-cache 2>/dev/null | cut -f1)"
+            echo "bake_outcome=${BAKE_OUTCOME}"
+            echo "docker_version=$(docker version --format '{{.Server.Version}}')"
+            echo "buildx_version=$(docker buildx version)"
+          } > "${PROFILE_DIR}/env.txt"
+          if [ -n "${BAKE_METADATA}" ] && [ -f "${BAKE_METADATA}" ]; then
+            cp "${BAKE_METADATA}" "${PROFILE_DIR}/bake-metadata.json"
+          elif [ -n "${BAKE_METADATA}" ]; then
+            printf '%s\n' "${BAKE_METADATA}" > "${PROFILE_DIR}/bake-metadata.json"
+          fi
+          if [ -n "${BUILDER}" ]; then
+            docker buildx inspect "${BUILDER}" > "${PROFILE_DIR}/builder.txt" 2>&1
+            docker buildx du --builder "${BUILDER}" > "${PROFILE_DIR}/buildx-du.txt" 2>&1
+          fi
+          {
+            echo "## cache-profile: ${ARM}"
+            echo ""
+            echo '```'
+            cat "${PROFILE_DIR}/env.txt"
+            echo '```'
+            echo ""
+            echo "Durations: use the Actions API job/step timings. Vertex RUN/CACHED status: the compile step log."
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload profile metadata
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cache-profile-${{ matrix.arm }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/cache-profile/
+          if-no-files-found: warn
+          retention-days: 3

@@ -138,6 +138,7 @@ func runISCSICHAPCrossNode(t *testing.T, method string) {
 // the login, so the pod stays pending without any session or SCSI disk; once
 // the node Secret is corrected, kubelet's NodeStage retry logs in.
 func TestISCSICHAPWrongNodeSecretRejected(t *testing.T) {
+	parallelDockerE2E(t)
 	cfg := loadISCSICHAPConfig(t)
 	creds := chapCredentialsFor("CHAP")
 	targetSecret := createCHAPSecret(t, cfg.installNamespace, "pillar-e2e-chap-target-side", creds)
@@ -212,6 +213,8 @@ func TestISCSICHAPWrongNodeSecretRejected(t *testing.T) {
 // admission webhook) refuses a CHAP PillarProtocol without a secretRef or
 // without acl — CHAP credentials live on node ACLs — and admits a complete one.
 func TestISCSICHAPProtocolAdmission(t *testing.T) {
+	parallelDockerE2E(t)
+
 	const protocolTemplate = `apiVersion: pillar-csi.bhyoo.com/v1alpha1
 kind: PillarProtocol
 metadata:

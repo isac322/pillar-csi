@@ -168,6 +168,7 @@ jobs:
       # modules on ubuntu-latest.
       - name: Install ZFS, LVM, NVMe, and iSCSI kernel modules
         run: |
+          bash hack/ci-prefer-ubuntu-mirror.sh
           sudo apt-get update -qq
           sudo apt-get install -y zfsutils-linux lvm2 thin-provisioning-tools \
             "linux-modules-extra-$(uname -r)" || \

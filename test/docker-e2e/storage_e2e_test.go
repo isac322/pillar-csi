@@ -55,7 +55,26 @@ func requireEnv(t *testing.T, name string) string {
 	return value
 }
 
+// parallelDockerE2E opts the calling top-level test into running alongside
+// the other opted-in tests when PILLAR_E2E_PARALLEL is "true"; otherwise the
+// test stays serial.  Call it first, before creating any fixture.  An opted-in
+// test must own its namespace, volumes, targets and Secrets, and must not
+// assert that a node holds no connection or controller to a shared target
+// port: readNVMeNodeState and readISCSINodeState collect every socket to the
+// NVMe/TCP and iSCSI ports, so another test's volume would break the
+// disconnect, detach and handoff checks built on them.  A test that does not
+// call it, such as TestLocalAttachForceDetachFencing, runs alone: go test runs
+// every serial top-level test while the parallel ones are paused, and resumes
+// them only after the last serial test has finished.
+func parallelDockerE2E(t *testing.T) {
+	t.Helper()
+	if os.Getenv("PILLAR_E2E_PARALLEL") == "true" {
+		t.Parallel()
+	}
+}
+
 func TestDeployedTopology(t *testing.T) {
+	parallelDockerE2E(t)
 	cfg := loadConfig(t)
 	for _, node := range []string{cfg.clientNodeA, cfg.clientNodeB} {
 		got := kubectl(t, "get", "node", node, "-o", "jsonpath={.metadata.labels.pillar-csi\\.bhyoo\\.com/e2e-role}")
@@ -175,6 +194,7 @@ spec:
 }
 
 func TestOnlineFilesystemExpansion(t *testing.T) {
+	parallelDockerE2E(t)
 	cfg := loadConfig(t)
 	phases := newPhaseTimer(t)
 	// Registered before deleteNamespace, so it runs after it and times the teardown.

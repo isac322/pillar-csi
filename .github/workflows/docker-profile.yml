@@ -1,0 +1,151 @@
+# TEMPORARY — Docker multi-node e2e serial vs. opt-in parallel profile.
+#
+# Runs `make test-docker-e2e` once per topology and mode on four isolated
+# GitHub-hosted VMs, so job wall-clock times (including cleanup) can be
+# compared through the Actions API before PILLAR_E2E_PARALLEL is enabled in
+# the daily workflow.  Delete this file once the measurement is recorded.
+
+name: Docker e2e profile
+
+on:
+  push:
+    branches: [isac322/improve-ci]
+    paths:
+      - .github/workflows/docker-profile.yml
+      - test/docker-e2e/**
+      - Makefile
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-profile-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  docker:
+    name: Docker profile (${{ matrix.topology }}, ${{ matrix.mode }})
+    runs-on: ubuntu-latest
+    # Same isolation as daily-e2e.yml: every arm has its own VM, kernel
+    # modules and configfs state.
+    strategy:
+      fail-fast: false
+      matrix:
+        topology: [internal, external]
+        mode: [serial, parallel]
+    timeout-minutes: 240
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Identical to the daily Docker job's kernel setup.
+      - name: Install and load kernel modules
+        run: |
+          bash hack/ci-prefer-ubuntu-mirror.sh
+          sudo apt-get update -qq
+          sudo apt-get install -y "linux-modules-extra-$(uname -r)"
+          sudo modprobe -a dm_mod loop nvme_fabrics nvme_tcp nvmet nvmet_tcp
+          sudo modprobe -a iscsi_tcp target_core_mod target_core_iblock iscsi_target_mod
+          test -d /sys/kernel/config/nvmet
+          test -d /sys/kernel/config/target
+
+      - name: Run Docker multi-node e2e
+        env:
+          PILLAR_E2E_TOPOLOGIES: ${{ matrix.topology }}
+          MODE: ${{ matrix.mode }}
+        # pipefail keeps make's exit status through tee.  The serial arm leaves
+        # PILLAR_E2E_PARALLEL unset, exactly like the daily job.
+        run: |
+          set -o pipefail
+          if [ "${MODE}" = parallel ]; then
+            export PILLAR_E2E_PARALLEL=true
+          fi
+          make test-docker-e2e 2>&1 | tee "${RUNNER_TEMP}/docker-e2e.log"
+
+      # Proves from go test's own -v scheduler markers that the opted-in
+      # (PAUSEd) tests resumed only after every serial top-level test had
+      # reported its result, and that nothing else ran, resumed or logged while
+      # TestLocalAttachForceDetachFencing was running.  Also summarizes
+      # top-level results and timings.
+      - name: Check serial exclusivity and summarize
+        if: always()
+        env:
+          TOPOLOGY: ${{ matrix.topology }}
+          MODE: ${{ matrix.mode }}
+        run: |
+          set -euo pipefail
+          log="${RUNNER_TEMP}/docker-e2e.log"
+          if [ ! -f "${log}" ]; then
+            echo "no test log recorded" >>"${GITHUB_STEP_SUMMARY}"
+            exit 1
+          fi
+          fence=TestLocalAttachForceDetachFencing
+          verdict=$(awk -v fence="${fence}" '
+            function name_after(marker,   rest) {
+              rest = substr($0, index($0, marker) + length(marker))
+              sub(/^ +/, "", rest)
+              sub(/[ (].*$/, "", rest)
+              return rest
+            }
+            /=== (RUN|PAUSE|CONT|NAME) / {
+              match($0, /=== (RUN|PAUSE|CONT|NAME) /)
+              marker = substr($0, RSTART, RLENGTH)
+              name = name_after(marker)
+              top = name; sub(/\/.*$/, "", top)
+              if (marker ~ /PAUSE/) { paused[name] = 1; next }
+              if (marker ~ /CONT/ && !first_cont) { first_cont = NR; first_cont_line = $0 }
+              if (marker ~ /RUN/ && name == fence) { running = 1; seen = 1 }
+              else if (running && top != fence) { bad = bad "\n  during fencing: " $0 }
+            }
+            /--- (PASS|FAIL|SKIP): / {
+              match($0, /--- (PASS|FAIL|SKIP): /)
+              marker = substr($0, RSTART, RLENGTH)
+              name = name_after(marker)
+              if (name ~ /\//) next
+              result_line[name] = NR
+              if (name == fence) { running = 0; done = 1; result = marker }
+            }
+            END {
+              for (name in result_line) {
+                if (!(name in paused) && result_line[name] > last_serial) {
+                  last_serial = result_line[name]; last_serial_name = name
+                }
+              }
+              if (first_cont && first_cont < last_serial)
+                bad = bad "\n  paused test resumed before serial " last_serial_name " finished: " first_cont_line
+              npaused = 0
+              for (name in paused) npaused++
+              if (seen && !done) print "VIOLATION: fencing test never finished" bad
+              else if (bad != "") print "VIOLATION:" bad
+              else if (!seen) print "ok: " npaused " opted-in tests resumed after all serial tests; fencing test not run in this log"
+              else print "ok: " npaused " opted-in tests resumed after all serial tests; nothing ran, resumed or logged during " fence " (" result ")"
+            }' "${log}")
+          {
+            echo "### Docker profile (${TOPOLOGY}, ${MODE})"
+            echo '```'
+            echo "${verdict}"
+            printf 'top-level PASS=%s FAIL=%s SKIP=%s PAUSE=%s CONT=%s\n' \
+              "$(grep -cE -- '--- PASS: Test[^/ ]+ \(' "${log}" || true)" \
+              "$(grep -cE -- '--- FAIL: Test[^/ ]+ \(' "${log}" || true)" \
+              "$(grep -cE -- '--- SKIP: Test[^/ ]+ \(' "${log}" || true)" \
+              "$(grep -cE -- '=== PAUSE Test' "${log}" || true)" \
+              "$(grep -cE -- '=== CONT +Test' "${log}" || true)"
+            grep -E -- '--- (PASS|FAIL|SKIP): Test[^/ ]+ \(' "${log}" || true
+            grep -E -- '^(ok|FAIL)[[:space:]]+[^ ]*test/docker-e2e' "${log}" || true
+            grep -o 'phase-timing: .*' "${log}" || echo "no phase-timing lines recorded"
+            echo '```'
+          } >>"${GITHUB_STEP_SUMMARY}"
+          echo "${verdict}"
+          case "${verdict}" in
+            VIOLATION*) exit 1 ;;
+          esac
+
+      - name: Upload Docker e2e log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-profile-log-${{ matrix.topology }}-${{ matrix.mode }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/docker-e2e.log
+          if-no-files-found: ignore
+          retention-days: 7

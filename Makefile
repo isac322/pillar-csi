@@ -236,8 +236,14 @@ test-e2e-lvm: manifests generate fmt vet ## Run LVM-only e2e specs in internal-a
 # ─── De-facto CSI test suites ─────────────────────────────────────────────────
 # Two industry-standard test suites that every CSI driver should pass.
 
+## Set to "true" to drop the `vet` prerequisite from test-csi-sanity.
+## Opt-in only: CI's csi-sanity job sets it because the required Test job
+## already runs vet via `make test`. Local and default runs keep vet.
+CSI_SANITY_SKIP_VET ?=
+CSI_SANITY_VET_PREREQ = $(if $(filter true TRUE 1 yes YES,$(CSI_SANITY_SKIP_VET)),,vet)
+
 .PHONY: test-csi-sanity
-test-csi-sanity: fmt vet ## Run the upstream kubernetes-csi/csi-test sanity suite (in-process, no cluster).
+test-csi-sanity: fmt $(CSI_SANITY_VET_PREREQ) ## Run the upstream kubernetes-csi/csi-test sanity suite (in-process, no cluster).
 	go test -tags=csi_sanity -timeout=180s -v ./test/sanity/...
 
 .PHONY: test-external-e2e
@@ -248,6 +254,8 @@ test-external-e2e: ## Run the SIG-Storage External Storage e2e suite against a r
 # NVMe-oF/TCP data plane across isolated storage and workload nodes.  It runs
 # both an in-cluster agent topology and an out-of-cluster Docker agent topology.
 # Override PILLAR_E2E_DNS when the runner cannot reach the default 1.1.1.1 resolver.
+# PILLAR_E2E_TOPOLOGIES selects internal and/or external; PILLAR_E2E_PARALLEL=true
+# runs the opted-in tests up to four at a time (default false: fully serial).
 # The nested Docker image/BuildKit cache and the Go caches persist in Compose
 # volumes between runs; the harness still starts and ends with no clusters,
 # containers or networks.  Run clean-docker-e2e-cache to drop the caches.

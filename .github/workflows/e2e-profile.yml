@@ -1,0 +1,45 @@
+# TEMPORARY CI experiment: measure the External Storage e2e suite wall time
+# at different GINKGO_PROCS worker counts (2 vs 4) on two independent
+# ubuntu-latest runners.  Each matrix leg calls the reusable external-e2e.yml
+# with no runtime_image_artifact, so every leg builds the canonical
+# same-checkout runtime images itself — identical selection, fail-fast,
+# report, cleanup, and 45-minute timeout as the gated path.
+#
+# Trigger scope: pushes to the experiment branch only touch this workflow
+# (and the reusable workflow it drives), so unrelated pushes stay quiet.
+# workflow_dispatch is registered here because this file does not exist on
+# master yet.  Not wired into ci.yml: this is tooling measurement only and
+# adds no new CI gate.
+#
+# Compare across legs via the external-e2e-report-*-worker-procs-{2,4}
+# artifacts: external-e2e.json holds the suite RunTime and
+# external-e2e-report-status.txt records procs + exit code.
+
+name: E2E procs profile (experiment)
+
+on:
+  push:
+    branches:
+      - isac322/improve-ci
+    paths:
+      - .github/workflows/e2e-profile.yml
+      - .github/workflows/external-e2e.yml
+      - test/external-e2e/**
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  external-e2e:
+    name: External e2e (procs=${{ matrix.procs }})
+    strategy:
+      # Keep both legs running even if one fails so each experiment yields a
+      # comparable report artifact.
+      fail-fast: false
+      matrix:
+        procs: [2, 4]
+    uses: ./.github/workflows/external-e2e.yml
+    with:
+      ginkgo_procs: ${{ matrix.procs }}
+      report_suffix: worker-procs-${{ matrix.procs }}

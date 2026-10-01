@@ -176,6 +176,7 @@ func TestISCSIRawBlockCrossNodeHandoff(t *testing.T) {
 // volume: the LV grows on the agent, the initiator rescans the LUN and the
 // node resizes the mounted filesystem.
 func TestISCSIOnlineFilesystemExpansion(t *testing.T) {
+	parallelDockerE2E(t)
 	cfg := loadISCSIConfig(t)
 	phases := newPhaseTimer(t)
 	// Registered first, so it runs after every later cleanup and times the
@@ -244,6 +245,7 @@ func TestISCSIOnlineFilesystemExpansion(t *testing.T) {
 // periodicTrim: false so the discards are fstrim's alone; the periodic path
 // is TestPeriodicTrimReleasesSpace.
 func TestISCSIFilesystemTrimReleasesSpace(t *testing.T) {
+	parallelDockerE2E(t)
 	cfg := loadISCSIConfig(t)
 	backingContainer := requireEnv(t, "PILLAR_E2E_BACKING_CONTAINER")
 	backingFile := requireEnv(t, "PILLAR_E2E_BACKING_FILE")
@@ -336,6 +338,7 @@ func TestISCSIUnauthorizedInitiatorRejected(t *testing.T) {
 // with two protocol members and an iscsi override on a class whose protocol
 // is nvmeofTcp, and admits an iscsi override on the iscsi protocol.
 func TestISCSIProtocolAdmission(t *testing.T) {
+	parallelDockerE2E(t)
 	cfg := loadISCSIConfig(t)
 
 	err := dryRunApply(t, `apiVersion: pillar-csi.bhyoo.com/v1alpha1
@@ -579,7 +582,9 @@ printf 'netns\t%s\n' "$(readlink /proc/self/ns/net)"
 for s in /sys/class/iscsi_session/session*; do
   [ -d "$s" ] || continue
   sid=${s##*/session}
-  tn=$(cat "$s/targetname" 2>/dev/null) || { printf 'error\tread %s/targetname\n' "$s"; continue; }
+  # A session that vanished after the -d check (another test logging out) is
+  # gone, not unreadable; a session that is still present stays an error.
+  tn=$(cat "$s/targetname" 2>/dev/null) || { [ -d "$s" ] || continue; printf 'error\tread %s/targetname\n' "$s"; continue; }
   [ "$tn" = "$1" ] || continue
   in=$(cat "$s/initiatorname" 2>/dev/null) || { printf 'error\tread %s/initiatorname\n' "$s"; continue; }
   [ "$in" = "$2" ] || continue

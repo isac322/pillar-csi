@@ -169,6 +169,7 @@ jobs:
       # the iSCSI initiator / LIO target modules.
       - name: Install and load kernel modules
         run: |
+          bash hack/ci-prefer-ubuntu-mirror.sh
           sudo apt-get update -qq
           sudo apt-get install -y "linux-modules-extra-$(uname -r)"
           sudo modprobe -a dm_mod loop nvme_fabrics nvme_tcp nvmet nvmet_tcp
