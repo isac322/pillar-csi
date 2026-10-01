@@ -1,0 +1,668 @@
+# TEMPORARY — A/B experiment: does a job-scoped Go object cache repay its
+# transport cost on a genuine source change, beyond the shared setup-go cache?
+#
+# Question: production Lint/Test restore only the shared `setup-go` cache
+# (id 8281492513, ~144 MB, seeded by the Docs job, key frozen because every
+# later run hits the primary key). No per-job ~/.cache/go-build or
+# ~/.cache/golangci-lint archive is restored in the canonical jobs. This
+# workflow measures what a job-specific object cache would add on a real
+# source transition:
+#
+#   OLD_SOURCE_SHA 8edc7397baf6a70bbd4b44ab4a82ef476a18ab42 (master, PR #149)
+#   NEW_SOURCE_SHA d1f790a1c7cb5655aec9e1e6ce4d72bae5cbaddb (master v0.5.0,
+#     includes CHAP #155 and NVMe MDTS) — 124 files, +9980/-791 vs OLD.
+#     go.mod, go.sum and .golangci.yml blobs are identical across both refs.
+#     Each ref runs its own Makefile; the 8edc739..d1f790a Makefile delta is
+#     limited to E2E variables and the test-docker-e2e recipe, so the `test`
+#     target, its prerequisites and all tool versions are byte-identical and
+#     no Makefile overlay is used. Diagnostics record each Makefile sha256.
+#
+#   seed-test / seed-lint — run the canonical workloads on OLD_SOURCE_SHA and
+#     save the resulting object caches under run-scoped `goprof-*` keys.
+#     Both restore production caches first (read-only), so the saved archives
+#     hold the union `production baseline ∪ old-source objects`.
+#   test / lint matrix arms — run on NEW_SOURCE_SHA on separate runners:
+#     baseline  = production cache treatment only (canonical semantics).
+#     candidate = baseline + restore of this run's seeded object cache.
+#
+# Cache-write safety: setup-go runs with `cache: false` and production caches
+# are restored through `actions/cache/restore` (never saves). The
+# golangci-lint action gets `skip-save-cache: true` — its baseline restore is
+# preserved but nothing is written. The only `actions/cache/save` calls target
+# `goprof-*` keys unique to this run (run_id + run_attempt), so no production
+# key family (setup-go-*, test-tools-*, golangci-lint.cache-*) is written.
+# Candidate arms also save their post-run objects to fresh
+# goprof-*-updated-* keys after the canonical checks pass. That is the cache
+# publication a per-source object cache would perform on every new source,
+# so the candidate job cost includes restore and save. Baseline arms save
+# nothing; the seed save is counted separately in the seed jobs.
+# `skip-cache` is deliberately NOT used: it would strip the baseline
+# golangci-lint native cache and confound the comparison.
+#
+# Measurement contract: per-job cost is the Actions API job duration
+# (started_at → completed_at, which includes post-action cache save/restore
+# transport). The `metrics` job dumps the full API job/step records plus a
+# summary table; per-arm diagnostics (cache byte sizes, checked-out SHA,
+# cache-hit outputs, outcomes) are uploaded as small artifacts. Workflow wall
+# time = max(completed_at) - min(started_at) across the experiment jobs; the
+# metrics job itself is excluded because it cannot observe its own completion.
+#
+# Production-receipt anchors (verified 2026-10-01): the setup-go key suffix is
+# hashFiles('go.mod') (reproduced 80b6b06c...); the action caches both
+# `go env GOMODCACHE` and `go env GOCACHE`.
+#
+# Delete this file once the question is answered. Nothing here is pushed,
+# published, or written to a production cache key.
+
+name: go-profile (temporary)
+
+on:
+  push:
+    branches: [isac322/improve-ci-cache-experiments]
+    paths:
+      - .github/workflows/go-profile.yml
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.run_id }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  OLD_SOURCE_SHA: 8edc7397baf6a70bbd4b44ab4a82ef476a18ab42
+  NEW_SOURCE_SHA: d1f790a1c7cb5655aec9e1e6ce4d72bae5cbaddb
+  # golangci-lint-action caches only ~/.cache/golangci-lint (v9 source:
+  # getLintCacheDir -> $HOME/.cache/golangci-lint, sets GOLANGCI_LINT_CACHE).
+  GOLANGCI_CACHE_DIR: ~/.cache/golangci-lint
+
+jobs:
+  # ── seeds: construct job-scoped object caches on the OLD source ──────────
+  seed-test:
+    name: seed (test GOCACHE)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout (old source)
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.OLD_SOURCE_SHA }}
+
+      - name: Setup Go (production cache family restored read-only below)
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Resolve Go toolchain paths
+        id: goenv
+        shell: bash
+        run: |
+          set -euo pipefail
+          # setup-go keys on parseGoVersion(`go version`), i.e. the resolved
+          # toolchain version without the `go` prefix.
+          {
+            echo "go_spec=${gv#go}"
+            echo "go_version=$(go env GOVERSION)"
+            echo "gocache=$(go env GOCACHE)"
+            echo "gomodcache=$(go env GOMODCACHE)"
+          } >> "$GITHUB_OUTPUT"
+
+      # Same paths setup-go caches (go env GOMODCACHE + GOCACHE). Key shape is
+      # the production primary key: setup-go-<RUNNER_OS>-<arch>-<ImageOS>-go-<spec>-<hashFiles('go.mod')>
+      # (arch is lowercase x64 because setup-go uses process.arch; ImageOS on
+      # ubuntu-latest is ubuntu24 — diagnostics record the actual values).
+      - name: Restore production setup-go cache (read-only)
+        id: setupgo-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ${{ steps.goenv.outputs.gomodcache }}
+            ${{ steps.goenv.outputs.gocache }}
+          key: setup-go-Linux-x64-ubuntu24-go-${{ steps.goenv.outputs.go_spec }}-${{ hashFiles('go.mod') }}
+
+      # Same treatment as the canonical Test job (miss tolerated — tool
+      # versions are identical across the two source refs).
+      - name: Restore test tools (read-only)
+        id: test-tools
+        uses: actions/cache/restore@v6
+        with:
+          path: bin/
+          key: test-tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Makefile', 'go.mod', 'go.sum') }}
+
+      - name: Run tests (old source — builds GOCACHE)
+        id: run-tests
+        run: make test
+
+      # Same canonical generated-file gate as the new-source Test arms.
+      - name: Verify generated files are up to date
+        run: git diff --exit-code -- api config charts/pillar-csi/templates/crds.yaml
+
+      - name: Save seeded Test GOCACHE (run-scoped key)
+        if: ${{ success() }}
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ steps.goenv.outputs.gocache }}
+          key: goprof-test-gocache-${{ runner.os }}-${{ runner.arch }}-go${{ steps.goenv.outputs.go_version }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Diagnostics
+        if: always()
+        shell: bash
+        env:
+          PROFILE_DIR: ${{ runner.temp }}/go-profile
+          TEST_OUTCOME: ${{ steps.run-tests.outcome || 'n/a' }}
+        run: |
+          set -uo pipefail
+          mkdir -p "${PROFILE_DIR}"
+          {
+            echo "job=${GITHUB_JOB}"
+            echo "role=seed lane=test"
+            echo "run_id=${GITHUB_RUN_ID} run_attempt=${GITHUB_RUN_ATTEMPT} event=${GITHUB_EVENT_NAME}"
+            echo "workflow_sha=${GITHUB_SHA}"
+            echo "checked_out_sha=$(git rev-parse HEAD)"
+            echo "expected_source_sha=${OLD_SOURCE_SHA}"
+            echo "makefile_sha256=$(sha256sum Makefile | cut -d' ' -f1)"
+            echo "go_version=${{ steps.goenv.outputs.go_version }} go_spec=${{ steps.goenv.outputs.go_spec }}"
+            echo "gocache=${{ steps.goenv.outputs.gocache }}"
+            echo "gomodcache=${{ steps.goenv.outputs.gomodcache }}"
+            echo "runner=${RUNNER_NAME:-unknown} os=${{ runner.os }} arch=${{ runner.arch }} image=${ImageOS:-unknown}/${ImageVersion:-unknown}"
+            echo "nproc=$(nproc) cpu=$(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2- | xargs) mem_kb=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)"
+            echo "setupgo_cache_hit=${{ steps.setupgo-cache.outputs.cache-hit }} matched=${{ steps.setupgo-cache.outputs.cache-matched-key }}"
+            echo "testtools_cache_hit=${{ steps.test-tools.outputs.cache-hit }} matched=${{ steps.test-tools.outputs.cache-matched-key }}"
+            echo "gocache_bytes=$(du -sb "${{ steps.goenv.outputs.gocache }}" 2>/dev/null | cut -f1 || echo 0)"
+            echo "gomodcache_bytes=$(du -sb "${{ steps.goenv.outputs.gomodcache }}" 2>/dev/null | cut -f1 || echo 0)"
+            echo "bin_bytes=$(du -sb bin 2>/dev/null | cut -f1 || echo 0)"
+            echo "test_outcome=${TEST_OUTCOME}"
+            echo "seed_key=goprof-test-gocache-${{ runner.os }}-${{ runner.arch }}-go${{ steps.goenv.outputs.go_version }}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          } > "${PROFILE_DIR}/env.txt"
+          { echo "## go-profile seed (test)"; echo '```'; cat "${PROFILE_DIR}/env.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-profile-seed-test-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/go-profile/
+          if-no-files-found: warn
+          retention-days: 3
+
+  seed-lint:
+    name: seed (lint GOCACHE + golangci-lint cache)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout (old source)
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.OLD_SOURCE_SHA }}
+
+      - name: Setup Go (production cache family restored read-only below)
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Resolve Go toolchain paths
+        id: goenv
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "go_spec=${gv#go}"
+            echo "go_version=$(go env GOVERSION)"
+            echo "gocache=$(go env GOCACHE)"
+            echo "gomodcache=$(go env GOMODCACHE)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Restore production setup-go cache (read-only)
+        id: setupgo-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ${{ steps.goenv.outputs.gomodcache }}
+            ${{ steps.goenv.outputs.gocache }}
+          key: setup-go-Linux-x64-ubuntu24-go-${{ steps.goenv.outputs.go_spec }}-${{ hashFiles('go.mod') }}
+
+      # Canonical Lint step, old source. The action restores its baseline
+      # ~/.cache/golangci-lint itself; skip-save-cache suppresses the
+      # production write. Lint's own GOCACHE (package export data the
+      # analyzers load) and the native cache are saved together below.
+      - name: Run linter (old source — builds native analyzer cache)
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.13.2
+          skip-save-cache: true
+
+      - name: Save seeded Lint object cache (GOCACHE + golangci-lint, run-scoped key)
+        if: ${{ success() }}
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ${{ steps.goenv.outputs.gocache }}
+            ${{ env.GOLANGCI_CACHE_DIR }}
+          key: goprof-lint-objects-${{ runner.os }}-${{ runner.arch }}-go${{ steps.goenv.outputs.go_version }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Diagnostics
+        if: always()
+        shell: bash
+        env:
+          PROFILE_DIR: ${{ runner.temp }}/go-profile
+        run: |
+          set -uo pipefail
+          mkdir -p "${PROFILE_DIR}"
+          {
+            echo "job=${GITHUB_JOB}"
+            echo "role=seed lane=lint"
+            echo "run_id=${GITHUB_RUN_ID} run_attempt=${GITHUB_RUN_ATTEMPT} event=${GITHUB_EVENT_NAME}"
+            echo "workflow_sha=${GITHUB_SHA}"
+            echo "checked_out_sha=$(git rev-parse HEAD)"
+            echo "expected_source_sha=${OLD_SOURCE_SHA}"
+            echo "makefile_sha256=$(sha256sum Makefile | cut -d' ' -f1)"
+            echo "go_version=${{ steps.goenv.outputs.go_version }} go_spec=${{ steps.goenv.outputs.go_spec }}"
+            echo "runner=${RUNNER_NAME:-unknown} os=${{ runner.os }} arch=${{ runner.arch }} image=${ImageOS:-unknown}/${ImageVersion:-unknown}"
+            echo "setupgo_cache_hit=${{ steps.setupgo-cache.outputs.cache-hit }} matched=${{ steps.setupgo-cache.outputs.cache-matched-key }}"
+            echo "golangci_cache_bytes=$(du -sb "${HOME}/.cache/golangci-lint" 2>/dev/null | cut -f1)"
+            echo "gocache_bytes=$(du -sb "${{ steps.goenv.outputs.gocache }}" 2>/dev/null | cut -f1 || echo 0)"
+            echo "gomodcache_bytes=$(du -sb "${{ steps.goenv.outputs.gomodcache }}" 2>/dev/null | cut -f1 || echo 0)"
+            echo "seed_key=goprof-lint-objects-${{ runner.os }}-${{ runner.arch }}-go${{ steps.goenv.outputs.go_version }}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          } > "${PROFILE_DIR}/env.txt"
+          { echo "## go-profile seed (lint)"; echo '```'; cat "${PROFILE_DIR}/env.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-profile-seed-lint-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/go-profile/
+          if-no-files-found: warn
+          retention-days: 3
+
+  # ── Test arms on NEW source ──────────────────────────────────────────────
+  # Identical to the canonical Test job (checkout, setup-go, tool cache,
+  # make test, TC coverage summary, generated-file diff). baseline arm is the
+  # production cache treatment; candidate adds the seeded GOCACHE restore.
+  test:
+    name: test (${{ matrix.arm }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: [seed-test]
+    # `matrix` is unavailable in job-level `if`, so both arms run even after a
+    # failed seed (baseline data point preserved); the candidate's seeded
+    # restore uses fail-on-cache-miss so it never silently degrades to baseline.
+    if: ${{ !cancelled() }}
+    strategy:
+      fail-fast: false
+      matrix:
+        arm: [baseline, candidate]
+    steps:
+      - name: Checkout (new source)
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.NEW_SOURCE_SHA }}
+
+      - name: Setup Go (production cache family restored read-only below)
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Resolve Go toolchain paths
+        id: goenv
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "go_spec=${gv#go}"
+            echo "go_version=$(go env GOVERSION)"
+            echo "gocache=$(go env GOCACHE)"
+            echo "gomodcache=$(go env GOMODCACHE)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Restore production setup-go cache (read-only)
+        id: setupgo-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ${{ steps.goenv.outputs.gomodcache }}
+            ${{ steps.goenv.outputs.gocache }}
+          key: setup-go-Linux-x64-ubuntu24-go-${{ steps.goenv.outputs.go_spec }}-${{ hashFiles('go.mod') }}
+
+      - name: Restore test tools (read-only)
+        id: test-tools
+        uses: actions/cache/restore@v6
+        with:
+          path: bin/
+          key: test-tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Makefile', 'go.mod', 'go.sum') }}
+
+      # Restored after the production caches: merge-union with the seeded
+      # objects (content-addressed names never collide destructively).
+      - name: Restore seeded Test GOCACHE (candidate arm)
+        if: ${{ matrix.arm == 'candidate' }}
+        id: seed-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ steps.goenv.outputs.gocache }}
+          key: goprof-test-gocache-${{ runner.os }}-${{ runner.arch }}-go${{ steps.goenv.outputs.go_version }}-${{ github.run_id }}-${{ github.run_attempt }}
+          fail-on-cache-miss: true
+
+      # fail-on-cache-miss does not cover the service-unavailable early
+      # return, so require an exact hit before measuring the candidate.
+      - name: Require seeded restore hit (candidate arm)
+        if: ${{ matrix.arm == 'candidate' && steps.seed-cache.outputs.cache-hit != 'true' }}
+        run: |
+          echo "::error::seeded Test GOCACHE was not restored; candidate sample invalid"
+          exit 1
+
+      - name: Run tests
+        id: run-tests
+        shell: bash
+        run: |
+          set +e
+          make test 2>&1 | tee /tmp/make-test.log
+          MAKE_RC=${PIPESTATUS[0]}
+          set -e
+          awk '
+            /^=== TC Coverage Verification/ { capture=1 }
+            capture { print }
+            capture && /^=== done ===$/ { exit }
+          ' /tmp/make-test.log > /tmp/tc-coverage-report.txt
+          exit "${MAKE_RC}"
+
+      - name: Emit coverage summary
+        if: always()
+        run: |
+          REPORT=/tmp/tc-coverage-report.txt
+          {
+            echo "## TC Coverage Verification"
+            echo ""
+            if [ -s "$REPORT" ]; then
+              echo '```'
+              cat "$REPORT"
+              echo '```'
+            else
+              echo "_Report not generated_"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Canonical generated-file gate, unchanged.
+      - name: Verify generated files are up to date
+        run: git diff --exit-code -- api config charts/pillar-csi/templates/crds.yaml
+
+      # Candidate-only publication of the new-source objects (same path list
+      # as the seed). Runs only after every canonical check succeeded.
+      - name: Save updated Test GOCACHE (candidate arm)
+        if: ${{ success() && matrix.arm == 'candidate' }}
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ steps.goenv.outputs.gocache }}
+          key: goprof-test-updated-${{ runner.os }}-${{ runner.arch }}-go${{ steps.goenv.outputs.go_version }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Diagnostics
+        if: always()
+        shell: bash
+        env:
+          PROFILE_DIR: ${{ runner.temp }}/go-profile
+          ARM: ${{ matrix.arm }}
+          TEST_OUTCOME: ${{ steps.run-tests.outcome || 'n/a' }}
+        run: |
+          set -uo pipefail
+          mkdir -p "${PROFILE_DIR}"
+          {
+            echo "job=${GITHUB_JOB} arm=${ARM}"
+            echo "role=target lane=test"
+            echo "run_id=${GITHUB_RUN_ID} run_attempt=${GITHUB_RUN_ATTEMPT} event=${GITHUB_EVENT_NAME}"
+            echo "workflow_sha=${GITHUB_SHA}"
+            echo "checked_out_sha=$(git rev-parse HEAD)"
+            echo "expected_source_sha=${NEW_SOURCE_SHA}"
+            echo "makefile_sha256=$(sha256sum Makefile | cut -d' ' -f1)"
+            echo "go_version=${{ steps.goenv.outputs.go_version }} go_spec=${{ steps.goenv.outputs.go_spec }}"
+            echo "runner=${RUNNER_NAME:-unknown} os=${{ runner.os }} arch=${{ runner.arch }} image=${ImageOS:-unknown}/${ImageVersion:-unknown}"
+            echo "nproc=$(nproc) cpu=$(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2- | xargs) mem_kb=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)"
+            echo "setupgo_cache_hit=${{ steps.setupgo-cache.outputs.cache-hit }} matched=${{ steps.setupgo-cache.outputs.cache-matched-key }}"
+            echo "testtools_cache_hit=${{ steps.test-tools.outputs.cache-hit }} matched=${{ steps.test-tools.outputs.cache-matched-key }}"
+            echo "seed_cache_hit=${{ steps.seed-cache.outputs.cache-hit || 'baseline-arm' }} matched=${{ steps.seed-cache.outputs.cache-matched-key || 'none' }}"
+            echo "update_key=$([ "${ARM}" = candidate ] && echo "goprof-test-updated-${{ runner.os }}-${{ runner.arch }}-go${{ steps.goenv.outputs.go_version }}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" || echo none)"
+            echo "gocache_bytes=$(du -sb "${{ steps.goenv.outputs.gocache }}" 2>/dev/null | cut -f1 || echo 0)"
+            echo "gomodcache_bytes=$(du -sb "${{ steps.goenv.outputs.gomodcache }}" 2>/dev/null | cut -f1 || echo 0)"
+            echo "bin_bytes=$(du -sb bin 2>/dev/null | cut -f1 || echo 0)"
+            echo "test_outcome=${TEST_OUTCOME}"
+          } > "${PROFILE_DIR}/env.txt"
+          { echo "## go-profile test (${ARM})"; echo '```'; cat "${PROFILE_DIR}/env.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-profile-test-${{ matrix.arm }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/go-profile/
+          if-no-files-found: warn
+          retention-days: 3
+
+  # ── Lint arms on NEW source ──────────────────────────────────────────────
+  # Identical to the canonical Lint job plus the candidate-only restore of the
+  # seeded Lint GOCACHE + ~/.cache/golangci-lint archive, after the common
+  # setup-go restore. The action's own native restore runs later inside
+  # "Run linter"; @actions/cache extracts with `tar -xf -P -C` after mkdirP
+  # (no rmRF, no --unlink-first), so it only rewrites same-named
+  # content-addressed entries and cannot remove seeded ones. The seed archive
+  # already contains that same production native archive.
+  lint:
+    name: lint (${{ matrix.arm }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [seed-lint]
+    if: ${{ !cancelled() }}
+    strategy:
+      fail-fast: false
+      matrix:
+        arm: [baseline, candidate]
+    steps:
+      - name: Checkout (new source)
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.NEW_SOURCE_SHA }}
+
+      - name: Setup Go (production cache family restored read-only below)
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Resolve Go toolchain paths
+        id: goenv
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "go_spec=${gv#go}"
+            echo "go_version=$(go env GOVERSION)"
+            echo "gocache=$(go env GOCACHE)"
+            echo "gomodcache=$(go env GOMODCACHE)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Restore production setup-go cache (read-only)
+        id: setupgo-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ${{ steps.goenv.outputs.gomodcache }}
+            ${{ steps.goenv.outputs.gocache }}
+          key: setup-go-Linux-x64-ubuntu24-go-${{ steps.goenv.outputs.go_spec }}-${{ hashFiles('go.mod') }}
+
+      - name: Restore seeded Lint object cache (candidate arm)
+        if: ${{ matrix.arm == 'candidate' }}
+        id: seed-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ${{ steps.goenv.outputs.gocache }}
+            ${{ env.GOLANGCI_CACHE_DIR }}
+          key: goprof-lint-objects-${{ runner.os }}-${{ runner.arch }}-go${{ steps.goenv.outputs.go_version }}-${{ github.run_id }}-${{ github.run_attempt }}
+          fail-on-cache-miss: true
+
+      - name: Require seeded restore hit (candidate arm)
+        if: ${{ matrix.arm == 'candidate' && steps.seed-cache.outputs.cache-hit != 'true' }}
+        run: |
+          echo "::error::seeded Lint object cache was not restored; candidate sample invalid"
+          exit 1
+
+      - name: Run linter
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.13.2
+          skip-save-cache: true
+
+      # Candidate-only publication of the new-source objects (same path list
+      # as the seed). Runs only after the full linter run succeeded.
+      - name: Save updated Lint object cache (candidate arm)
+        if: ${{ success() && matrix.arm == 'candidate' }}
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ${{ steps.goenv.outputs.gocache }}
+            ${{ env.GOLANGCI_CACHE_DIR }}
+          key: goprof-lint-updated-${{ runner.os }}-${{ runner.arch }}-go${{ steps.goenv.outputs.go_version }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Diagnostics
+        if: always()
+        shell: bash
+        env:
+          PROFILE_DIR: ${{ runner.temp }}/go-profile
+          ARM: ${{ matrix.arm }}
+        run: |
+          set -uo pipefail
+          mkdir -p "${PROFILE_DIR}"
+          {
+            echo "job=${GITHUB_JOB} arm=${ARM}"
+            echo "role=target lane=lint"
+            echo "run_id=${GITHUB_RUN_ID} run_attempt=${GITHUB_RUN_ATTEMPT} event=${GITHUB_EVENT_NAME}"
+            echo "workflow_sha=${GITHUB_SHA}"
+            echo "checked_out_sha=$(git rev-parse HEAD)"
+            echo "expected_source_sha=${NEW_SOURCE_SHA}"
+            echo "makefile_sha256=$(sha256sum Makefile | cut -d' ' -f1)"
+            echo "go_version=${{ steps.goenv.outputs.go_version }} go_spec=${{ steps.goenv.outputs.go_spec }}"
+            echo "runner=${RUNNER_NAME:-unknown} os=${{ runner.os }} arch=${{ runner.arch }} image=${ImageOS:-unknown}/${ImageVersion:-unknown}"
+            echo "setupgo_cache_hit=${{ steps.setupgo-cache.outputs.cache-hit }} matched=${{ steps.setupgo-cache.outputs.cache-matched-key }}"
+            echo "seed_cache_hit=${{ steps.seed-cache.outputs.cache-hit || 'baseline-arm' }} matched=${{ steps.seed-cache.outputs.cache-matched-key || 'none' }}"
+            echo "update_key=$([ "${ARM}" = candidate ] && echo "goprof-lint-updated-${{ runner.os }}-${{ runner.arch }}-go${{ steps.goenv.outputs.go_version }}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" || echo none)"
+            echo "golangci_cache_bytes=$(du -sb "${HOME}/.cache/golangci-lint" 2>/dev/null | cut -f1)"
+            echo "gocache_bytes=$(du -sb "${{ steps.goenv.outputs.gocache }}" 2>/dev/null | cut -f1 || echo 0)"
+            echo "gomodcache_bytes=$(du -sb "${{ steps.goenv.outputs.gomodcache }}" 2>/dev/null | cut -f1 || echo 0)"
+          } > "${PROFILE_DIR}/env.txt"
+          { echo "## go-profile lint (${ARM})"; echo '```'; cat "${PROFILE_DIR}/env.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-profile-lint-${{ matrix.arm }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/go-profile/
+          if-no-files-found: warn
+          retention-days: 3
+
+  # ── metrics: external API timings for the whole run ──────────────────────
+  # Job cost = completed_at - started_at from the Actions API, which includes
+  # every post-action cache transport (Post Setup Go, Post Run linter,
+  # artifact upload). Internal step elapseds are not used for cost claims.
+  metrics:
+    name: Collect API job timings
+    runs-on: ubuntu-latest
+    needs: [seed-test, seed-lint, test, lint]
+    if: always()
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Fetch run job timings
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PROFILE_DIR: ${{ runner.temp }}/go-profile-metrics
+        run: |
+          set -euo pipefail
+          mkdir -p "${PROFILE_DIR}"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?per_page=100" \
+            > "${PROFILE_DIR}/jobs-raw.json"
+          jq '[.jobs[] | {
+                name, id, conclusion, status,
+                started_at, completed_at,
+                duration_s: (if .completed_at then
+                    ((.completed_at | fromdateiso8601) - (.started_at | fromdateiso8601) | round)
+                  else null end),
+                steps: [.steps[] | {
+                  number, name, conclusion,
+                  started_at, completed_at,
+                  duration_s: (if .completed_at then
+                      ((.completed_at | fromdateiso8601) - (.started_at | fromdateiso8601) | round)
+                    else null end)
+                }]
+              }] | sort_by(.started_at)' "${PROFILE_DIR}/jobs-raw.json" \
+            > "${PROFILE_DIR}/jobs.json"
+          jq -r '
+            . as $jobs |
+            {
+              run_id: env.GITHUB_RUN_ID,
+              run_attempt: env.GITHUB_RUN_ATTEMPT,
+              experiment_wall_s: (
+                ([$jobs[] | select(.name != "Collect API job timings" and .completed_at) | .completed_at | fromdateiso8601] | max) -
+                ([$jobs[] | select(.name != "Collect API job timings") | .started_at | fromdateiso8601] | min)
+              ),
+              jobs: $jobs
+            }' "${PROFILE_DIR}/jobs.json" > "${PROFILE_DIR}/summary.json"
+          {
+            echo "## go-profile: API job timings"
+            echo ""
+            echo "| Job | Conclusion | Started | Completed | Duration (s) |"
+            echo "|-----|-----------|---------|-----------|--------------|"
+            jq -r '.[] | "| \(.name) | \(.conclusion // .status) | \(.started_at) | \(.completed_at // "—") | \(.duration_s // "—") |"' \
+              "${PROFILE_DIR}/jobs.json"
+            echo ""
+            jq -r '"Experiment wall (max completed − min started, metrics job excluded): \(.experiment_wall_s)s"' \
+              "${PROFILE_DIR}/summary.json"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # actions/cache/save logs upload failures as warnings and exits 0, so a
+      # green job does not prove publication. Check every run-scoped key via
+      # the cache API (no extra transport in the measured jobs) and fail this
+      # job if one is missing.
+      - name: Verify run-scoped cache publications
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PROFILE_DIR: ${{ runner.temp }}/go-profile-metrics
+        run: |
+          set -euo pipefail
+          suffix="-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/caches?key=goprof-&per_page=100" \
+            | jq --arg s "${suffix}" '[.actions_caches[] | select(.key | endswith($s)) | {key, size_in_bytes, created_at, ref}]' \
+            > "${PROFILE_DIR}/publications.json"
+          missing=0
+          for family in goprof-test-gocache goprof-lint-objects goprof-test-updated goprof-lint-updated; do
+            entry="$(jq -c --arg f "${family}-" '.[] | select(.key | startswith($f))' "${PROFILE_DIR}/publications.json")"
+            if [ -n "${entry}" ]; then
+              echo "| ${family} | ${entry} |" >> "${PROFILE_DIR}/publications.md"
+            else
+              echo "| ${family} | MISSING |" >> "${PROFILE_DIR}/publications.md"
+              missing=1
+            fi
+          done
+          {
+            echo ""
+            echo "### Run-scoped cache publications"
+            echo "| Family | Cache API entry |"
+            echo "|--------|-----------------|"
+            cat "${PROFILE_DIR}/publications.md"
+            [ "${missing}" -eq 0 ] && echo "Measurement valid: all publications present." \
+              || echo "Measurement INVALID: a seed/updated publication is missing."
+          } >> "$GITHUB_STEP_SUMMARY"
+          [ "${missing}" -eq 0 ] || { echo "::error::run-scoped cache publication missing"; exit 1; }
+
+      - name: Upload timing data
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-profile-timings-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/go-profile-metrics/
+          if-no-files-found: warn
+          retention-days: 3

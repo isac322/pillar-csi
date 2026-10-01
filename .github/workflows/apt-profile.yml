@@ -1,0 +1,506 @@
+# TEMPORARY — APT .deb archive cache experiment for the storage-kernel step.
+#
+# The canonical "Install and load kernel modules" step (daily-e2e.yml docker
+# job, mirrored in docker-profile.yml) spends most of its wall time fetching
+# linux-modules-extra-$(uname -r) and its dependencies.  This workflow
+# measures the whole install-and-verify lifecycle on isolated
+# GitHub-hosted Ubuntu VMs on the runner's current kernel — the package set
+# is keyed by `uname -r` and is independent of the Go source:
+#
+#   seed      — canonical ci-prefer-ubuntu-mirror helper + `apt-get update`,
+#               then `apt-get install --download-only` into a private
+#               Dir::Cache::archives under RUNNER_TEMP so the VM's installed
+#               package set is untouched.  Only the resulting signed *.deb
+#               payloads are staged (runner-owned) into a cache saved under
+#               a per-run key embedding the actual kernel release, Ubuntu
+#               codename and runner OS/arch.
+#   baseline  — the canonical step verbatim on a fresh VM; the default
+#               archive directory starts empty, so it reads no .deb cache.
+#   candidate — restores the seed cache by its exact key (a primary hit
+#               means the same kernel release, codename, OS, runner arch and
+#               native dpkg arch the key was built from).  The restored
+#               files are UNTRUSTED: APT accepts a pre-staged archive whose
+#               size matches the index without re-hashing it
+#               (apt-pkg/acquire-item.cc pkgAcqArchive local-file fast
+#               path).  So inside the measured step, after the canonical
+#               `apt-get update`, every restored regular file is checked
+#               against the SHA256 APT reports from freshly authenticated
+#               indexes (`--print-uris -o Acquire::ForceHash=SHA256`), and only matching
+#               files are copied into a private root-owned archives dir.
+#               Anything else (symlink, unknown name, size/hash mismatch,
+#               unknown hash type) is discarded and APT downloads it
+#               normally.  The install then runs with one added option,
+#               `-o Dir::Cache::archives=...`; no signature/auth checks are
+#               relaxed and global APT configuration is untouched.
+#               The cache key is invalidation hygiene only, never integrity.
+#
+# Whole-job and step costs (including cache save/restore and post-job
+# cleanup) are read from the Actions API; package fetch evidence comes from
+# APT's own Get/Fetched lines plus recorded on-disk byte counts — no
+# estimated figures.  Cache keys are unique to this run, never collide with
+# production cache keys, and no production workflow, helper, CLI or app
+# config is modified.  Delete this file once the measurement is recorded.
+
+name: apt profile (temporary)
+
+on:
+  push:
+    branches: [isac322/improve-ci-cache-experiments]
+    paths:
+      - .github/workflows/apt-profile.yml
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.run_id }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # ── seed ─────────────────────────────────────────────────────────────────
+  # Fetches exactly what the canonical install would fetch (same indexes,
+  # same mirror preference, same package set) without installing anything,
+  # then caches only the signed .deb payloads.
+  seed:
+    name: Seed apt .deb cache
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      kernel: ${{ steps.env.outputs.kernel }}
+      codename: ${{ steps.env.outputs.codename }}
+      package: ${{ steps.env.outputs.package }}
+      cache_key: ${{ steps.env.outputs.cache_key }}
+      deb_count: ${{ steps.stage.outputs.deb_count }}
+      deb_bytes: ${{ steps.stage.outputs.deb_bytes }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Record kernel and suite
+        id: env
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /etc/os-release
+          kernel="$(uname -r)"
+          codename="${VERSION_CODENAME:-unknown}"
+          {
+            echo "kernel=${kernel}"
+            echo "codename=${codename}"
+            echo "package=linux-modules-extra-${kernel}"
+            echo "cache_key=apt-deb-profile-v1-${RUNNER_OS}-${RUNNER_ARCH}-$(dpkg --print-architecture)-${codename}-${kernel}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          } >> "${GITHUB_OUTPUT}"
+
+      # Canonical transport preference, identical to the measured step.
+      - name: Prefer archive.ubuntu.com mirror
+        run: bash hack/ci-prefer-ubuntu-mirror.sh
+
+      - name: Update APT indexes
+        run: sudo apt-get update -qq
+
+      # Resolves and downloads through the signed indexes exactly like the
+      # canonical install; --download-only leaves installed packages alone.
+      # The private archives dir mirrors /var/cache/apt/archives ownership:
+      # root-owned dir, _apt-owned partial/ for the download sandbox.
+      # Global APT configuration is not touched.
+      - name: Download storage kernel packages (no install)
+        env:
+          APT_DIR: ${{ runner.temp }}/apt-archives
+          PACKAGE: ${{ steps.env.outputs.package }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${APT_DIR}/partial"
+          sudo chown root:root "${APT_DIR}"
+          sudo chmod 0755 "${APT_DIR}"
+          sudo chown _apt:root "${APT_DIR}/partial"
+          sudo chmod 0700 "${APT_DIR}/partial"
+          # Keep-Downloaded-Packages is apt-get's default; pinned here so the
+          # fetched archives are retained for staging.
+          sudo apt-get -o "Dir::Cache::archives=${APT_DIR}" \
+            -o APT::Keep-Downloaded-Packages=true \
+            install -y --download-only "${PACKAGE}"
+          echo "# private archive dir after download:"
+          sudo find "${APT_DIR}" -maxdepth 1 -printf '%y %f %s bytes\n' | sort -k2
+
+      # Only *.deb payloads enter the cache; the apt lock file and the
+      # root-only partial/ directory are excluded.  `install` re-owns the
+      # payloads to the runner user so the saved tree needs no sudo to read.
+      - name: Stage .deb payloads for cache
+        id: stage
+        env:
+          APT_DIR: ${{ runner.temp }}/apt-archives
+          STAGE: ${{ runner.temp }}/apt-deb-stage
+        run: |
+          set -euo pipefail
+          mkdir -p "${STAGE}"
+          sudo find "${APT_DIR}" -maxdepth 1 -type f -name '*.deb' -print0 | sort -z \
+            | sudo xargs -0 -r install -m 0644 -o "$(id -un)" -g "$(id -gn)" -t "${STAGE}"
+          count="$(find "${STAGE}" -maxdepth 1 -type f -name '*.deb' | wc -l)"
+          if [ "${count}" -eq 0 ]; then
+            echo "::error::seed downloaded no .deb archives; nothing to cache"
+            exit 1
+          fi
+          bytes="$(du -sb "${STAGE}" | cut -f1)"
+          {
+            echo "deb_count=${count}"
+            echo "deb_bytes=${bytes}"
+            find "${STAGE}" -maxdepth 1 -name '*.deb' -printf '%f %s bytes\n' | sort
+          } | tee "${RUNNER_TEMP}/deb-manifest.txt"
+          {
+            echo "deb_count=${count}"
+            echo "deb_bytes=${bytes}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Save seeded .deb cache
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/apt-deb-stage
+          key: ${{ steps.env.outputs.cache_key }}
+
+      - name: Collect seed metadata
+        if: always()
+        shell: bash
+        env:
+          PROFILE_DIR: ${{ runner.temp }}/apt-profile
+          STAGE: ${{ runner.temp }}/apt-deb-stage
+          KERNEL: ${{ steps.env.outputs.kernel }}
+          CODENAME: ${{ steps.env.outputs.codename }}
+          PACKAGE: ${{ steps.env.outputs.package }}
+          CACHE_KEY: ${{ steps.env.outputs.cache_key }}
+          DEB_COUNT: ${{ steps.stage.outputs.deb_count }}
+          DEB_BYTES: ${{ steps.stage.outputs.deb_bytes }}
+        run: |
+          set -uo pipefail
+          mkdir -p "${PROFILE_DIR}"
+          cp "${RUNNER_TEMP}/deb-manifest.txt" "${PROFILE_DIR}/deb-manifest.txt" 2>/dev/null || true
+          {
+            echo "run_id=${GITHUB_RUN_ID}"
+            echo "run_attempt=${GITHUB_RUN_ATTEMPT}"
+            echo "job=${GITHUB_JOB}"
+            echo "source_sha=${GITHUB_SHA}"
+            echo "ref=${GITHUB_REF}"
+            echo "event=${GITHUB_EVENT_NAME}"
+            echo "runner_name=${RUNNER_NAME:-unknown}"
+            echo "image_version=${ImageVersion:-unknown}"
+            echo "runner_os=${RUNNER_OS} runner_arch=${RUNNER_ARCH}"
+            echo "nproc=$(nproc)"
+            echo "cpu_model=$(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2- | xargs)"
+            echo "mem_total_kb=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)"
+            echo "kernel_release=${KERNEL}"
+            echo "ubuntu_codename=${CODENAME}"
+            echo "package=${PACKAGE}"
+            echo "cache_key=${CACHE_KEY}"
+            echo "deb_count=${DEB_COUNT:-unknown}"
+            echo "deb_bytes=${DEB_BYTES:-unknown}"
+            echo "staged_dir_bytes=$(du -sb "${STAGE}" 2>/dev/null | cut -f1 || echo 0)"
+            echo "candidate_version=$(apt-cache policy "${PACKAGE}" 2>/dev/null | awk '/Candidate:/ {print $2}')"
+          } > "${PROFILE_DIR}/env.txt"
+          {
+            echo "## apt-profile: seed"
+            echo ""
+            echo '```'
+            cat "${PROFILE_DIR}/env.txt"
+            echo "deb_manifest:"
+            cat "${RUNNER_TEMP}/deb-manifest.txt" 2>/dev/null || echo "  (none)"
+            echo '```'
+            echo ""
+            echo "Durations: use the Actions API job/step timings (mirror, update, download, stage, cache save, post cleanup)."
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload seed metadata
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: apt-profile-seed-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/apt-profile/
+          if-no-files-found: warn
+          retention-days: 3
+
+  # ── measure ──────────────────────────────────────────────────────────────
+  # Two isolated VMs run the identical canonical lifecycle.  The candidate
+  # arm pre-stages the seeded signed .debs into a private archives dir; the
+  # baseline arm reads no .deb cache at all.
+  profile:
+    name: kernel install (${{ matrix.arm }})
+    needs: seed
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        arm: [baseline, candidate]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Record kernel and suite
+        id: env
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /etc/os-release
+          kernel="$(uname -r)"
+          codename="${VERSION_CODENAME:-unknown}"
+          {
+            echo "kernel=${kernel}"
+            echo "codename=${codename}"
+            echo "package=linux-modules-extra-${kernel}"
+            echo "cache_key=apt-deb-profile-v1-${RUNNER_OS}-${RUNNER_ARCH}-$(dpkg --print-architecture)-${codename}-${kernel}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          } >> "${GITHUB_OUTPUT}"
+
+      # Exact-key restore, no restore-keys fallback: the key is built from
+      # this runner's own kernel release, Ubuntu codename, runner OS/arch and
+      # dpkg arch, so only a primary hit on the seed's key counts.  An exact
+      # hit on the same kernel/codename/arch is required — the next step fails
+      # the measurement on a miss or any mismatch.  The restored files land in
+      # a runner-owned dir APT never reads directly.
+      - name: Restore seeded .deb cache
+        if: ${{ matrix.arm == 'candidate' }}
+        id: restore
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/apt-deb-stage
+          key: ${{ steps.env.outputs.cache_key }}
+          fail-on-cache-miss: false
+
+      # Controlled A/B needs a positive hit: a miss, or a different kernel,
+      # codename or arch than the seed, invalidates the measurement instead
+      # of silently reporting a cold candidate as the cached arm.
+      - name: Require exact seed cache hit
+        if: ${{ matrix.arm == 'candidate' }}
+        env:
+          CACHE_HIT: ${{ steps.restore.outputs.cache-hit }}
+          OWN_KEY: ${{ steps.env.outputs.cache_key }}
+          SEED_KEY: ${{ needs.seed.outputs.cache_key }}
+          KERNEL: ${{ steps.env.outputs.kernel }}
+          SEED_KERNEL: ${{ needs.seed.outputs.kernel }}
+          CODENAME: ${{ steps.env.outputs.codename }}
+          SEED_CODENAME: ${{ needs.seed.outputs.codename }}
+        run: |
+          set -euo pipefail
+          echo "cache_hit=${CACHE_HIT:-} own_key=${OWN_KEY} seed_key=${SEED_KEY}"
+          if [ "${CACHE_HIT:-}" != true ] || [ "${OWN_KEY}" != "${SEED_KEY}" ] \
+            || [ "${KERNEL}" != "${SEED_KERNEL}" ] || [ "${CODENAME}" != "${SEED_CODENAME}" ]; then
+            echo "::error title=apt-profile::measurement invalid: candidate did not get an exact seed cache hit on the same kernel/codename/arch"
+            exit 1
+          fi
+
+      # Canonical lifecycle, verbatim from daily-e2e.yml's docker job (also
+      # docker-profile.yml): same mirror helper, apt update, package set,
+      # modprobe list and configfs readback.  The candidate arm inserts the
+      # restored-.deb hash verification between update and install (its cost
+      # is part of the measured step) and adds exactly one option pointing
+      # Dir::Cache::archives at the verified copies.
+      - name: Install and verify storage kernel
+        env:
+          ARM: ${{ matrix.arm }}
+          APT_DIR: ${{ runner.temp }}/apt-archives
+          STAGE: ${{ runner.temp }}/apt-deb-stage
+        run: |
+          bash hack/ci-prefer-ubuntu-mirror.sh
+          sudo apt-get update -qq
+          if [ "${ARM}" = candidate ]; then
+            # Expected names/sizes/SHA256 for everything the install needs,
+            # from the indexes just authenticated by `apt-get update`.  An
+            # empty private archives dir makes APT list every package.
+            # --print-uris defaults the printed hash to MD5 via CndSet
+            # (apt-private/private-install.cc); setting Acquire::ForceHash on
+            # this one call makes it print the index SHA256, or nothing if the
+            # index has none (HashStringList::find in contrib/hashes.cc).
+            uris_dir="${RUNNER_TEMP}/apt-uris"
+            mkdir -p "${uris_dir}/partial" "${APT_DIR}/partial"
+            sudo chown root:root "${uris_dir}" "${APT_DIR}"
+            sudo chmod 0755 "${uris_dir}" "${APT_DIR}"
+            sudo chown _apt:root "${uris_dir}/partial" "${APT_DIR}/partial"
+            sudo chmod 0700 "${uris_dir}/partial" "${APT_DIR}/partial"
+            sudo apt-get -o "Dir::Cache::archives=${uris_dir}" -o Acquire::ForceHash=SHA256 \
+              install -y --print-uris \
+              "linux-modules-extra-$(uname -r)" | { grep "^'" || true; } > "${RUNNER_TEMP}/apt-uris.txt"
+            echo "# expected archives (authenticated index): name size hash"
+            awk '{print $2, $3, $4}' "${RUNNER_TEMP}/apt-uris.txt"
+            accepted=0; rejected=0; absent=0; accepted_bytes=0
+            kernel_deb=""
+            while read -r _uri name size hash; do
+              f="${STAGE}/${name}"
+              if [ ! -e "${f}" ] && [ ! -L "${f}" ]; then
+                echo "not-cached ${name}"; absent=$((absent + 1)); continue
+              fi
+              algo="${hash%%:*}"; want="${hash#*:}"; got=""
+              # Type check before reading: a symlink/FIFO/device is never
+              # opened.  Only an index SHA256 is trusted; any other or missing
+              # hash leaves got empty and the file is rejected.
+              if [ -f "${f}" ] && [ ! -L "${f}" ] && [ "$(stat -c %s "${f}")" = "${size}" ] \
+                && [ "${algo^^}" = SHA256 ] && [[ "${want}" =~ ^[0-9a-f]{64}$ ]]; then
+                got="$(sha256sum "${f}" | cut -d' ' -f1)"
+              fi
+              if [ -n "${want}" ] && [ -n "${got}" ] && [ "${got}" = "${want}" ]; then
+                sudo install -m 0644 -o root -g root "${f}" "${APT_DIR}/${name}"
+                echo "verified ${name} ${size} bytes ${algo}"
+                accepted=$((accepted + 1)); accepted_bytes=$((accepted_bytes + size))
+                case "${name}" in
+                  "linux-modules-extra-$(uname -r)_"*.deb) kernel_deb="${name}" ;;
+                esac
+              else
+                echo "::warning title=apt-profile::rejected restored ${name} (type/size/hash mismatch or unsupported ${algo}); APT will download it"
+                rejected=$((rejected + 1))
+              fi
+            done < "${RUNNER_TEMP}/apt-uris.txt"
+            # Unverified leftovers never reach APT.
+            rm -rf "${STAGE}"
+            echo "verified_debs=${accepted} verified_bytes=${accepted_bytes} rejected_debs=${rejected} not_cached_debs=${absent} kernel_deb_verified=${kernel_deb:-none}" \
+              | tee "${RUNNER_TEMP}/apt-verify.txt"
+            # A good seed must yield a verified kernel module archive and no
+            # rejected file; otherwise the A/B measurement is invalid.
+            if [ -z "${kernel_deb}" ] || [ "${rejected}" -ne 0 ]; then
+              echo "::error title=apt-profile::measurement invalid: kernel archive not verified or restored files rejected"
+              exit 1
+            fi
+            kernel_inode_before="$(sudo stat -c %i "${APT_DIR}/${kernel_deb}")"
+          fi
+          archive_opts=()
+          if [ "${ARM}" = candidate ]; then
+            archive_opts=(-o "Dir::Cache::archives=${APT_DIR}")
+          fi
+          sudo apt-get install -y "${archive_opts[@]}" "linux-modules-extra-$(uname -r)"
+          if [ "${ARM}" = candidate ]; then
+            # APT re-downloading would replace the file (new inode); the same
+            # inode proves the verified cached archive was the one installed.
+            kernel_inode_after="$(sudo stat -c %i "${APT_DIR}/${kernel_deb}" 2>/dev/null || echo gone)"
+            echo "kernel_deb_inode before=${kernel_inode_before} after=${kernel_inode_after}" \
+              | tee -a "${RUNNER_TEMP}/apt-verify.txt"
+            if [ "${kernel_inode_before}" != "${kernel_inode_after}" ]; then
+              echo "::error title=apt-profile::verified kernel archive was not the one APT used"
+              exit 1
+            fi
+          fi
+          sudo modprobe -a dm_mod loop nvme_fabrics nvme_tcp nvmet nvmet_tcp
+          sudo modprobe -a iscsi_tcp target_core_mod target_core_iblock iscsi_target_mod
+          test -d /sys/kernel/config/nvmet
+          test -d /sys/kernel/config/target
+
+      # Explicit readback: every required NVMe-oF and iSCSI/LIO module plus
+      # dm/loop is checked individually, and both configfs dirs are recorded —
+      # a missing module fails here instead of being skipped silently.
+      - name: Record module and configfs state
+        if: always()
+        env:
+          PROFILE_DIR: ${{ runner.temp }}/apt-profile
+        run: |
+          set -uo pipefail
+          mkdir -p "${PROFILE_DIR}"
+          missing=0
+          state="${PROFILE_DIR}/kernel-state.txt"
+          {
+            echo "# required modules (NVMe-oF, iSCSI initiator/LIO target, dm, loop)"
+            for m in dm_mod loop nvme_fabrics nvme_tcp nvmet nvmet_tcp \
+                     iscsi_tcp target_core_mod target_core_iblock iscsi_target_mod; do
+              if [ -d "/sys/module/${m}" ]; then
+                echo "module ${m}=loaded"
+              else
+                echo "module ${m}=MISSING"
+                missing=1
+              fi
+            done
+            echo "# configfs state"
+            for d in nvmet target; do
+              if [ -d "/sys/kernel/config/${d}" ]; then
+                echo "configfs ${d}=present"
+              else
+                echo "configfs ${d}=MISSING"
+                missing=1
+              fi
+            done
+            echo "configfs_children=$(find /sys/kernel/config -mindepth 1 -maxdepth 1 -printf '%f ' 2>/dev/null)"
+          } > "${state}"
+          cat "${state}"
+          missing="$(grep -c '=MISSING$' "${state}")"
+          [ "${missing}" -eq 0 ]
+
+      - name: Collect profile metadata
+        if: always()
+        shell: bash
+        env:
+          PROFILE_DIR: ${{ runner.temp }}/apt-profile
+          ARM: ${{ matrix.arm }}
+          APT_DIR: ${{ runner.temp }}/apt-archives
+          KERNEL: ${{ steps.env.outputs.kernel }}
+          CODENAME: ${{ steps.env.outputs.codename }}
+          PACKAGE: ${{ steps.env.outputs.package }}
+          CACHE_KEY: ${{ steps.env.outputs.cache_key }}
+          CACHE_HIT: ${{ steps.restore.outputs.cache-hit || '' }}
+          CACHE_MATCHED_KEY: ${{ steps.restore.outputs.cache-matched-key || '' }}
+          SEED_KERNEL: ${{ needs.seed.outputs.kernel }}
+          SEED_CODENAME: ${{ needs.seed.outputs.codename }}
+          SEED_CACHE_KEY: ${{ needs.seed.outputs.cache_key }}
+          SEED_DEB_COUNT: ${{ needs.seed.outputs.deb_count }}
+          SEED_DEB_BYTES: ${{ needs.seed.outputs.deb_bytes }}
+        run: |
+          set -uo pipefail
+          mkdir -p "${PROFILE_DIR}"
+          {
+            echo "arm=${ARM}"
+            echo "run_id=${GITHUB_RUN_ID}"
+            echo "run_attempt=${GITHUB_RUN_ATTEMPT}"
+            echo "job=${GITHUB_JOB}"
+            echo "source_sha=${GITHUB_SHA}"
+            echo "ref=${GITHUB_REF}"
+            echo "event=${GITHUB_EVENT_NAME}"
+            echo "runner_name=${RUNNER_NAME:-unknown}"
+            echo "image_version=${ImageVersion:-unknown}"
+            echo "runner_os=${RUNNER_OS} runner_arch=${RUNNER_ARCH}"
+            echo "nproc=$(nproc)"
+            echo "cpu_model=$(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2- | xargs)"
+            echo "mem_total_kb=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)"
+            echo "kernel_release=${KERNEL}"
+            echo "ubuntu_codename=${CODENAME}"
+            echo "package=${PACKAGE}"
+            echo "seed_kernel=${SEED_KERNEL}"
+            echo "seed_codename=${SEED_CODENAME}"
+            echo "kernel_matches_seed=$([ "${KERNEL}" = "${SEED_KERNEL}" ] && echo yes || echo NO)"
+            echo "own_cache_key=${CACHE_KEY}"
+            echo "seed_cache_key=${SEED_CACHE_KEY}"
+            echo "cache_hit=${CACHE_HIT:-not-restored}"
+            echo "cache_matched_key=${CACHE_MATCHED_KEY:-none}"
+            echo "primary_hit_same_kernel=$([ "${CACHE_HIT}" = true ] && [ "${KERNEL}" = "${SEED_KERNEL}" ] && echo yes || echo no)"
+            echo "seed_deb_count=${SEED_DEB_COUNT:-unknown}"
+            echo "seed_deb_bytes=${SEED_DEB_BYTES:-unknown}"
+            if [ -d "${APT_DIR}" ]; then
+              echo "apt_archive_bytes=$(sudo du -sb "${APT_DIR}" | cut -f1)"
+              sudo find "${APT_DIR}" -maxdepth 1 -name '*.deb' -printf 'deb %f %s bytes\n' | sort
+            else
+              echo "apt_archive_bytes=none (default empty archives dir)"
+            fi
+            if [ -f "${RUNNER_TEMP}/apt-verify.txt" ]; then
+              cat "${RUNNER_TEMP}/apt-verify.txt"
+            fi
+            echo "# installed package state"
+            dpkg-query -W -f='${binary:Package} ${Version} ${db:Status-Status}\n' "${PACKAGE}" 2>/dev/null \
+              || echo "dpkg: ${PACKAGE} not installed"
+            apt-cache policy "${PACKAGE}" 2>/dev/null | sed 's/^/policy /' || true
+            echo "# apt history (this VM)"
+            grep -hE '^(Commandline|Install|Fetched)' /var/log/apt/history.log 2>/dev/null | tail -n 20 || true
+          } > "${PROFILE_DIR}/env.txt"
+          {
+            echo "## apt-profile: ${ARM}"
+            echo ""
+            echo '```'
+            cat "${PROFILE_DIR}/env.txt"
+            echo '```'
+            echo ""
+            [ -f "${PROFILE_DIR}/kernel-state.txt" ] && {
+              echo '```'
+              cat "${PROFILE_DIR}/kernel-state.txt"
+              echo '```'
+            }
+            echo "Durations: use the Actions API job/step timings (restore, canonical install step, post-job cleanup included)."
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload profile metadata
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: apt-profile-${{ matrix.arm }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/apt-profile/
+          if-no-files-found: warn
+          retention-days: 3

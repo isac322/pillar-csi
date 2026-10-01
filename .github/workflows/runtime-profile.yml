@@ -1,0 +1,477 @@
+# TEMPORARY — controlled runtime-image lifecycle experiment. Delete once the
+# question is answered.
+#
+# Question: on a legitimate source change, do exported BuildKit layer caches
+# alone approach the runtime-images pipeline that also transports the Go
+# compiler object cache via actions/cache + buildkit-cache-dance?
+#
+# Fixed source pair (same go.mod, go.sum, Dockerfile blob; 63 cmd/internal
+# files differ — 7,035 insertions — so `COPY . .` legitimately invalidates the
+# Go compile layer):
+#   OLD_SOURCE 8edc7397baf6a70bbd4b44ab4a82ef476a18ab42  (seed only)
+#   NEW_SOURCE d1f790a1c7cb5655aec9e1e6ce4d72bae5cbaddb  (both arms)
+#
+# Build tool: the canonical Dockerfile from THIS workflow-run checkout is
+# copied over `src/Dockerfile` in every pinned product tree, so seed and arms
+# run the identical, currently approved build tool. The pinned commits carry
+# the pre-move Dockerfile (ARG TARGET* before `COPY . .`); do NOT adapt the
+# old cache-profile awk transform — a verbatim copy is the overlay. Product
+# Dockerfiles stay untouched in git; overlay and product provenance are
+# recorded separately (source_sha = product tree, dockerfile_source_sha =
+# workflow checkout).
+#
+# Jobs:
+#   seed     — builds the three canonical linux/amd64 images from OLD_SOURCE
+#              with an empty mount cache so extracted objects can only come
+#              from the old source. Writes the native layer cache under the
+#              run-unique gha scope runtime-profile-<run_id>-<attempt> and
+#              saves the extracted /root/.cache/go-build objects under the
+#              run-unique actions-cache key
+#              runtime-profile-objects-<run_id>-<attempt>.
+#   arm      — baseline: restores the seed objects and injects them read-only
+#              (skip-extraction). candidate: empty mount cache. Both bake the
+#              three images from NEW_SOURCE, read the OLD_SOURCE native layer
+#              cache (cache-from only — nothing is written back), load them
+#              into the daemon, then export the canonical runtime-images.tar
+#              archive plus a runtime-images.json receipt (canonical fields
+#              plus arm, dockerfile_source_sha and per-image Config.Labels).
+#   consumer — separate job: downloads each arm artifact, verifies the
+#              metadata (source_sha == NEW_SOURCE, image_tag, arm,
+#              dockerfile_source_sha == workflow sha, image IDs), docker-loads
+#              the archive and re-verifies every image ID, label set and
+#              Os/Architecture — the exact e2e-kind.yml ingest contract plus
+#              labels/platform.
+#
+# Isolation: cache writes go only to the run-unique scope/key above. The
+# production families runtime-buildkit-mount-v1-* and the gha scopes
+# pillar-ci-* are never restored or written. Nothing is pushed to GHCR,
+# released or deployed.
+#
+# Timing accounting (external): the Actions API job list
+#   gh api "repos/<owner>/<repo>/actions/runs/<run_id>/jobs" \
+#     --jq '.jobs[] | {name, started_at, completed_at, conclusion}'
+# gives whole-job durations for "seed (8edc739)", "arm (baseline, d1f790a)",
+# "arm (candidate, d1f790a)" and both "consumer (*)" jobs, including
+# post-action cleanup such as builder removal — internal notices are not the
+# total job cost. The per-run gha cache scope is named in each job's
+# runtime-profile-env.txt metadata.
+
+name: runtime-profile (temporary)
+
+on:
+  push:
+    branches: [isac322/improve-ci-cache-experiments]
+    paths:
+      - .github/workflows/runtime-profile.yml
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.run_id }}-${{ github.run_attempt }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  OLD_SOURCE: 8edc7397baf6a70bbd4b44ab4a82ef476a18ab42
+  NEW_SOURCE: d1f790a1c7cb5655aec9e1e6ce4d72bae5cbaddb
+
+jobs:
+  seed:
+    name: seed (8edc739)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # Canonical checkout at the root provides the approved build tool:
+      # Dockerfile, docker-bake.hcl and .dockerignore all come from this
+      # workflow-run commit. The pinned product source lives in src/.
+      - name: Checkout canonical build tool
+        uses: actions/checkout@v7
+
+      - name: Stage canonical Dockerfile overlay
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/overlay"
+          cp Dockerfile "${RUNNER_TEMP}/overlay/Dockerfile"
+
+      - name: Checkout old source (product tree)
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.OLD_SOURCE }}
+          path: src
+
+      - name: Apply build tool overlay
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp "${RUNNER_TEMP}/overlay/Dockerfile" src/Dockerfile
+          cmp "${RUNNER_TEMP}/overlay/Dockerfile" src/Dockerfile
+
+      - name: Set up Docker Buildx
+        id: buildx
+        uses: docker/setup-buildx-action@v4
+
+      # Registered BEFORE the dance step on purpose: post steps run in LIFO
+      # order, so the job tears down as dance extract (fills
+      # runtime-profile-buildkit-cache from the builder) → this cache save
+      # under the run-unique key the baseline arm restores → buildx cleanup.
+      # lookup-only skips the restore so the seed mount cache stays empty.
+      - name: Save seed compiler objects (run-scoped)
+        uses: actions/cache@v6
+        with:
+          path: runtime-profile-buildkit-cache
+          key: runtime-profile-objects-${{ github.run_id }}-${{ github.run_attempt }}
+          lookup-only: true
+
+      # Inject nothing — the seed mount cache must start empty so the objects
+      # extracted below can only have been produced by OLD_SOURCE.
+      - name: Inject empty cache mounts, extract compiled objects
+        uses: reproducible-containers/buildkit-cache-dance@v3
+        with:
+          builder: ${{ steps.buildx.outputs.name }}
+          cache-dir: runtime-profile-buildkit-cache
+          skip-extraction: false
+
+      # Canonical three-image amd64 bake (same targets/set as ci.yml's
+      # runtime-images job) except the build context is the pinned product
+      # tree and cache writes go to the run-unique scope. No load — seed
+      # exports no image artifact.
+      - name: Build seed runtime images (old source, amd64)
+        id: bake
+        uses: docker/bake-action@v7
+        env:
+          REGISTRY: pillar-csi
+          TAG: seed-${{ github.run_id }}-${{ github.run_attempt }}
+          BUILDKIT_PROGRESS: plain
+        with:
+          # Local path context: src/ and the uncommitted overlay exist only
+          # in the workspace, not in the default remote Git context.
+          source: .
+          builder: ${{ steps.buildx.outputs.name }}
+          files: docker-bake.hcl
+          targets: controller,agent,node
+          set: |
+            *.context=./src
+            *.platform=linux/amd64
+            *.cache-from=type=gha,scope=runtime-profile-${{ github.run_id }}-${{ github.run_attempt }}
+            *.cache-to=type=gha,scope=runtime-profile-${{ github.run_id }}-${{ github.run_attempt }},mode=min
+
+      - name: Collect experiment metadata
+        if: always()
+        shell: bash
+        env:
+          PROFILE_DIR: ${{ runner.temp }}/runtime-profile/seed
+        run: |
+          set -uo pipefail
+          mkdir -p "${PROFILE_DIR}"
+          {
+            echo "job=seed"
+            echo "run_id=${GITHUB_RUN_ID}"
+            echo "run_attempt=${GITHUB_RUN_ATTEMPT}"
+            echo "gha_job=${GITHUB_JOB}"
+            echo "source_sha=${OLD_SOURCE}"
+            echo "dockerfile_source_sha=${GITHUB_SHA}"
+            echo "ref=${GITHUB_REF}"
+            echo "event=${GITHUB_EVENT_NAME}"
+            echo "runner_os=${RUNNER_OS}"
+            echo "runner_arch=${RUNNER_ARCH}"
+            echo "runner_name=${RUNNER_NAME:-unknown}"
+            echo "image_version=${ImageVersion:-unknown}"
+            echo "nproc=$(nproc)"
+            echo "cpu_model=$(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2- | xargs)"
+            echo "mem_total_kb=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)"
+            echo "overlay_dockerfile_sha256=$(sha256sum src/Dockerfile | cut -d' ' -f1)"
+            echo "product_dockerfile_sha256=$(git -C src show HEAD:Dockerfile | sha256sum | cut -d' ' -f1)"
+            echo "go_mod_sha256=$(sha256sum src/go.mod | cut -d' ' -f1)"
+            echo "go_sum_sha256=$(sha256sum src/go.sum | cut -d' ' -f1)"
+            echo "go_version_directive=$(awk '/^go / {print $2}' src/go.mod)"
+            echo "gha_layer_cache_scope=runtime-profile-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            echo "docker_bake_hcl_sha256=$(sha256sum docker-bake.hcl | cut -d' ' -f1)"
+            echo "pre_extraction_object_bytes=$(du -sb runtime-profile-buildkit-cache 2>/dev/null | cut -f1)"
+            echo "bake_outcome=${{ steps.bake.outcome }}"
+            echo "docker_version=$(docker version --format '{{.Server.Version}}')"
+            echo "buildx_version=$(docker buildx version)"
+          } > "${PROFILE_DIR}/runtime-profile-env.txt"
+          {
+            echo "## runtime-profile: seed"
+            echo ""
+            echo '```'
+            cat "${PROFILE_DIR}/runtime-profile-env.txt"
+            echo '```'
+            echo ""
+            echo "Durations: Actions API job/step timings for this run; vertex RUN/CACHED status: the bake step log."
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload experiment metadata
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-profile-env-seed-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/runtime-profile/seed/
+          if-no-files-found: warn
+          retention-days: 3
+
+  arm:
+    name: arm (${{ matrix.arm }}, d1f790a)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: [seed]
+    strategy:
+      fail-fast: false
+      matrix:
+        arm: [baseline, candidate]
+    steps:
+      - name: Checkout canonical build tool
+        uses: actions/checkout@v7
+
+      - name: Stage canonical Dockerfile overlay
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/overlay"
+          cp Dockerfile "${RUNNER_TEMP}/overlay/Dockerfile"
+
+      - name: Checkout new source (product tree)
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.NEW_SOURCE }}
+          path: src
+
+      - name: Apply build tool overlay
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp "${RUNNER_TEMP}/overlay/Dockerfile" src/Dockerfile
+          cmp "${RUNNER_TEMP}/overlay/Dockerfile" src/Dockerfile
+
+      - name: Set experiment image metadata
+        id: arm_meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "image_tag=runtime-profile-${{ github.run_id }}-${{ matrix.arm }}" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=runtime-profile-images-${{ matrix.arm }}-${{ github.run_id }}-${{ github.run_attempt }}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        id: buildx
+        uses: docker/setup-buildx-action@v4
+
+      # ── mount object cache (baseline only) ──────────────────────────────
+      # Restores ONLY the seed job's extracted objects — produced exclusively
+      # by OLD_SOURCE — under this run's unique key. The production
+      # runtime-buildkit-mount-v1-* family is never touched.
+      - name: Restore seed compiler objects (read-only)
+        if: ${{ matrix.arm == 'baseline' }}
+        id: restore
+        uses: actions/cache/restore@v6
+        with:
+          path: runtime-profile-buildkit-cache
+          key: runtime-profile-objects-${{ github.run_id }}-${{ github.run_attempt }}
+          fail-on-cache-miss: true
+
+      # fail-on-cache-miss does not fire when the cache service is unavailable
+      # (restore returns early with a warning). Never let the baseline run
+      # silently cold.
+      - name: Require seed compiler objects restored
+        if: ${{ matrix.arm == 'baseline' }}
+        shell: bash
+        env:
+          CACHE_HIT: ${{ steps.restore.outputs.cache-hit }}
+        run: |
+          set -euo pipefail
+          if [ "${CACHE_HIT}" != "true" ]; then
+            echo "::error::seed compiler objects not restored (cache-hit='${CACHE_HIT}'); baseline would run cold"
+            exit 1
+          fi
+
+      - name: Inject seed objects (no extraction)
+        if: ${{ matrix.arm == 'baseline' }}
+        uses: reproducible-containers/buildkit-cache-dance@v3
+        with:
+          builder: ${{ steps.buildx.outputs.name }}
+          cache-dir: runtime-profile-buildkit-cache
+          skip-extraction: true
+
+      # Both arms read the OLD_SOURCE native layer cache (the seed's
+      # cache-to). Nothing is written back. After `COPY . .` invalidates, the
+      # baseline reuses Go objects through the injected mount; the candidate
+      # compiles with an empty mount.
+      - name: Build runtime images (new source, amd64)
+        id: bake
+        uses: docker/bake-action@v7
+        env:
+          REGISTRY: pillar-csi
+          TAG: ${{ steps.arm_meta.outputs.image_tag }}
+          BUILDKIT_PROGRESS: plain
+        with:
+          # Local path context: src/ and the uncommitted overlay exist only
+          # in the workspace, not in the default remote Git context.
+          source: .
+          builder: ${{ steps.buildx.outputs.name }}
+          files: docker-bake.hcl
+          targets: controller,agent,node
+          load: true
+          set: |
+            *.context=./src
+            *.platform=linux/amd64
+            *.cache-from=type=gha,scope=runtime-profile-${{ github.run_id }}-${{ github.run_attempt }}
+
+      # Canonical export contract from ci.yml's runtime-images job, plus arm,
+      # dockerfile_source_sha and per-image Config.Labels so the consumer can
+      # verify labels are preserved across save/load.
+      - name: Export runtime image artifact
+        env:
+          IMAGE_TAG: ${{ steps.arm_meta.outputs.image_tag }}
+          ARM: ${{ matrix.arm }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="${RUNNER_TEMP}/runtime-images.tar"
+          docker save -o "${archive}" \
+            "pillar-csi/controller:${IMAGE_TAG}" \
+            "pillar-csi/agent:${IMAGE_TAG}" \
+            "pillar-csi/node:${IMAGE_TAG}"
+
+          controller_id="$(docker image inspect --format '{{.Id}}' "pillar-csi/controller:${IMAGE_TAG}")"
+          agent_id="$(docker image inspect --format '{{.Id}}' "pillar-csi/agent:${IMAGE_TAG}")"
+          node_id="$(docker image inspect --format '{{.Id}}' "pillar-csi/node:${IMAGE_TAG}")"
+          controller_labels="$(docker image inspect --format '{{json .Config.Labels}}' "pillar-csi/controller:${IMAGE_TAG}")"
+          agent_labels="$(docker image inspect --format '{{json .Config.Labels}}' "pillar-csi/agent:${IMAGE_TAG}")"
+          node_labels="$(docker image inspect --format '{{json .Config.Labels}}' "pillar-csi/node:${IMAGE_TAG}")"
+          printf '{"source_sha":"%s","image_tag":"%s","arm":"%s","dockerfile_source_sha":"%s","images":{"controller":"%s","agent":"%s","node":"%s"},"labels":{"controller":%s,"agent":%s,"node":%s}}\n' \
+            "${NEW_SOURCE}" "${IMAGE_TAG}" "${ARM}" "${GITHUB_SHA}" \
+            "${controller_id}" "${agent_id}" "${node_id}" \
+            "${controller_labels:-null}" "${agent_labels:-null}" "${node_labels:-null}" \
+            > "${RUNNER_TEMP}/runtime-images.json"
+          cat "${RUNNER_TEMP}/runtime-images.json"
+
+      - name: Upload runtime images
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.arm_meta.outputs.artifact_name }}
+          path: |
+            ${{ runner.temp }}/runtime-images.tar
+            ${{ runner.temp }}/runtime-images.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Collect experiment metadata
+        if: always()
+        shell: bash
+        env:
+          PROFILE_DIR: ${{ runner.temp }}/runtime-profile/${{ matrix.arm }}
+          ARM: ${{ matrix.arm }}
+          CACHE_HIT: ${{ steps.restore.outputs.cache-hit }}
+          CACHE_MATCHED_KEY: ${{ steps.restore.outputs.cache-matched-key }}
+        run: |
+          set -uo pipefail
+          mkdir -p "${PROFILE_DIR}"
+          {
+            echo "job=arm"
+            echo "arm=${ARM}"
+            echo "run_id=${GITHUB_RUN_ID}"
+            echo "run_attempt=${GITHUB_RUN_ATTEMPT}"
+            echo "gha_job=${GITHUB_JOB}"
+            echo "source_sha=${NEW_SOURCE}"
+            echo "seed_source_sha=${OLD_SOURCE}"
+            echo "dockerfile_source_sha=${GITHUB_SHA}"
+            echo "ref=${GITHUB_REF}"
+            echo "event=${GITHUB_EVENT_NAME}"
+            echo "runner_os=${RUNNER_OS}"
+            echo "runner_arch=${RUNNER_ARCH}"
+            echo "runner_name=${RUNNER_NAME:-unknown}"
+            echo "image_version=${ImageVersion:-unknown}"
+            echo "nproc=$(nproc)"
+            echo "cpu_model=$(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2- | xargs)"
+            echo "mem_total_kb=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)"
+            echo "overlay_dockerfile_sha256=$(sha256sum src/Dockerfile | cut -d' ' -f1)"
+            echo "product_dockerfile_sha256=$(git -C src show HEAD:Dockerfile | sha256sum | cut -d' ' -f1)"
+            echo "go_mod_sha256=$(sha256sum src/go.mod | cut -d' ' -f1)"
+            echo "go_sum_sha256=$(sha256sum src/go.sum | cut -d' ' -f1)"
+            echo "go_version_directive=$(awk '/^go / {print $2}' src/go.mod)"
+            echo "gha_layer_cache_scope=runtime-profile-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            echo "objects_cache_key=runtime-profile-objects-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            echo "object_cache_hit=${CACHE_HIT:-not-restored}"
+            echo "object_cache_matched_key=${CACHE_MATCHED_KEY:-none}"
+            echo "docker_bake_hcl_sha256=$(sha256sum docker-bake.hcl | cut -d' ' -f1)"
+            echo "docker_version=$(docker version --format '{{.Server.Version}}')"
+            echo "buildx_version=$(docker buildx version)"
+          } > "${PROFILE_DIR}/runtime-profile-env.txt"
+          {
+            echo "## runtime-profile: ${ARM}"
+            echo ""
+            echo '```'
+            cat "${PROFILE_DIR}/runtime-profile-env.txt"
+            echo '```'
+            echo ""
+            echo "Durations: Actions API job/step timings for this run; vertex RUN/CACHED status: the bake step log."
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload experiment metadata
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-profile-env-${{ matrix.arm }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/runtime-profile/${{ matrix.arm }}/
+          if-no-files-found: warn
+          retention-days: 3
+
+  consumer:
+    name: consumer (${{ matrix.arm }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [arm]
+    strategy:
+      fail-fast: false
+      matrix:
+        arm: [baseline, candidate]
+    steps:
+      # Separate-job ingest: the artifact travels through the artifact service
+      # and loads into a different runner's daemon, exactly like e2e-kind.yml.
+      # The artifact name is derived, not a job output: a matrix job's outputs
+      # are overwritten by whichever leg finishes last, so they cannot carry
+      # both arm names.
+      - name: Download runtime images
+        uses: actions/download-artifact@v4
+        with:
+          name: runtime-profile-images-${{ matrix.arm }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/pillar-csi-runtime-images
+
+      - name: Load and verify runtime images
+        env:
+          IMAGE_TAG: runtime-profile-${{ github.run_id }}-${{ matrix.arm }}
+          ARM: ${{ matrix.arm }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          dir="${RUNNER_TEMP}/pillar-csi-runtime-images"
+          archive="${dir}/runtime-images.tar"
+          metadata="${dir}/runtime-images.json"
+          test -s "${archive}"
+          test -s "${metadata}"
+          jq -e --arg sha "${NEW_SOURCE}" --arg tag "${IMAGE_TAG}" --arg arm "${ARM}" --arg dsha "${GITHUB_SHA}" \
+            '.source_sha == $sha and .image_tag == $tag and .arm == $arm and .dockerfile_source_sha == $dsha and
+             (.images.controller | length > 0) and
+             (.images.agent | length > 0) and
+             (.images.node | length > 0)' \
+            "${metadata}" >/dev/null
+          docker load --input "${archive}"
+          for component in controller agent node; do
+            ref="pillar-csi/${component}:${IMAGE_TAG}"
+            image_id="$(docker image inspect --format '{{.Id}}' "${ref}")"
+            expected_id="$(jq -r --arg component "${component}" '.images[$component]' "${metadata}")"
+            test -n "${image_id}"
+            test "${image_id}" = "${expected_id}"
+            expected_labels="$(jq -cS --arg component "${component}" '.labels[$component]' "${metadata}")"
+            loaded_labels="$(docker image inspect --format '{{json .Config.Labels}}' "${ref}" | jq -cS '.')"
+            test "${loaded_labels}" = "${expected_labels}"
+            os_arch="$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "${ref}")"
+            test "${os_arch}" = "linux/amd64"
+          done
+          {
+            echo "## runtime-profile consumer: ${ARM}"
+            echo ""
+            echo "Verified source_sha=${NEW_SOURCE}, tag=${IMAGE_TAG}, dockerfile_source_sha=${GITHUB_SHA}, 3 image IDs, labels and linux/amd64 platform for controller, agent, node."
+          } >> "${GITHUB_STEP_SUMMARY}"
