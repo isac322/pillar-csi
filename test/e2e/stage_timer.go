@@ -351,6 +351,16 @@ func (t *pipelineStageTimer) Emit(output io.Writer) (withinBudget bool) {
 	return withinBudget
 }
 
+// Mark writes a one-line wall-clock marker for an outer span that sits outside
+// the stage table (TestMain prelude, teardown), so it does not change the
+// stage totals or budgets reported by Emit. No-op when timing is disabled.
+func (t *pipelineStageTimer) Mark(output io.Writer, label string, d time.Duration) {
+	if t == nil || !t.enabled || output == nil {
+		return
+	}
+	_, _ = fmt.Fprintf(output, "e2e: [stage-timing] %s: %s\n", label, fmtDur(d))
+}
+
 // fmtDur formats a duration to one decimal place (e.g. "43.5s" or "1.2ms").
 func fmtDur(d time.Duration) string {
 	switch {

@@ -17,6 +17,11 @@ on:
         required: false
         type: string
         default: e2e
+      skip_vet:
+        description: Skip the vet prerequisite of make test-e2e (set by ci.yml, whose Test job already runs vet)
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -49,6 +54,10 @@ jobs:
       E2E_PROCS: "8"
       # Stop scheduling new specs after the first failure.
       E2E_FAIL_FAST: "true"
+      # Drop the duplicate vet prerequisite only when the caller opts in.
+      E2E_SKIP_VET: ${{ inputs.skip_vet && 'true' || '' }}
+      # Emit the TestMain stage breakdown plus go-test/prelude/teardown markers.
+      E2E_STAGE_TIMING: "1"
 
       # ── Docker daemon endpoint ────────────────────────────────────────────
       # Explicitly set the Docker daemon endpoint so that all sub-processes
@@ -212,16 +221,23 @@ jobs:
       # Implementation notes:
       #   - SECONDS is a Bash built-in that auto-increments each second; using
       #     it avoids a second `date` call and is immune to clock skew.
-      #   - The make invocation is run with `&&` so that a test failure is still
+      #   - The make invocation is piped through tee into a run log;
+      #     PIPESTATUS[0] keeps make's exit code so a test failure is still
       #     captured in MAKE_RC and the timing check runs regardless.
       #   - go mod tidy is intentionally placed before SECONDS is read so that
       #     module-cache warm-up time is excluded from the budget measurement.
       - name: Run full e2e suite with 600s timing gate
         id: e2e_run
+        shell: bash
         run: |
           go mod tidy
           E2E_START=$SECONDS
-          make test-e2e && MAKE_RC=0 || MAKE_RC=$?
+          E2E_START_EPOCH=$(date +%s)
+          echo "start_epoch=${E2E_START_EPOCH}" >> "$GITHUB_OUTPUT"
+          set +e
+          make test-e2e 2>&1 | tee "${RUNNER_TEMP}/e2e-kind-run.log"
+          MAKE_RC=${PIPESTATUS[0]}
+          set -e
           E2E_ELAPSED=$(( SECONDS - E2E_START ))
           echo "elapsed=${E2E_ELAPSED}" >> "$GITHUB_OUTPUT"
           echo "::notice title=e2e-timing::make test-e2e wall-clock ${E2E_ELAPSED}s (budget 600s)"
@@ -256,3 +272,45 @@ jobs:
               echo "| Status | ✅ within budget |"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # Stage breakdown from the run log: Make prerequisites (step start →
+      # go test launch), go test span, TestMain prelude/teardown markers and
+      # the TestMain stage table. Informational only; never fails the job.
+      - name: Emit e2e stage timing summary
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          START_EPOCH: ${{ steps.e2e_run.outputs.start_epoch }}
+        run: |
+          LOG="${RUNNER_TEMP}/e2e-kind-run.log"
+          [ -s "$LOG" ] || exit 0
+          GO_START=$(sed -n 's/^e2e: \[stage-timing\] go-test-start epoch=\([0-9]*\).*/\1/p' "$LOG" | head -n 1)
+          {
+            echo "## E2E Stage Timing"
+            echo ""
+            echo "| Skip vet | ${E2E_SKIP_VET:-false} |"
+            echo "|---|---|"
+            if [ -n "$START_EPOCH" ] && [ -n "$GO_START" ]; then
+              echo "| Make prerequisites | $(( GO_START - START_EPOCH ))s |"
+            fi
+            echo ""
+            echo '```'
+            grep -E '^e2e: \[stage-timing\]' "$LOG" || true
+            sed -n '/^=== E2E Pipeline Stage Timing ===$/,/^  tests: /p' "$LOG"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Best-effort: the run log plus the Ginkgo JSON report that TestMain's
+      # ginkgo re-exec writes to $TMPDIR/pillar-csi-e2e-reports/e2e-auto.json.
+      - name: Upload e2e run log and reports
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-kind-reports-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/e2e-kind-run.log
+            /tmp/pillar-csi-e2e-reports/
+          if-no-files-found: ignore
+          retention-days: 7

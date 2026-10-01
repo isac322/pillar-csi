@@ -90,6 +90,12 @@ func TestPeriodicTrimReleasesSpace(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			phases := newPhaseTimer(t)
+			// Registered first, so it runs after every later cleanup (the
+			// iSCSI case waits for its LIO targets) and times it.
+			t.Cleanup(func() { phases.mark("cleanup-complete") })
+			// Registered before deleteNamespace, so it runs after it and times the teardown.
+			defer phases.mark("teardown")
 			ns := createNamespace(t, "trim-"+tc.name)
 			defer deleteNamespace(t, ns)
 
@@ -112,6 +118,7 @@ func TestPeriodicTrimReleasesSpace(t *testing.T) {
 			}
 			trimmedLV := lvKernelDevice(t, backingContainer, ns, "trimmed")
 			keptLV := lvKernelDevice(t, backingContainer, ns, "kept")
+			phases.mark("pods-ready")
 
 			const payloadBytes = periodicTrimPayloadMiB * 1024 * 1024
 			for _, pod := range []string{"trimmed", "kept"} {
@@ -123,6 +130,7 @@ func TestPeriodicTrimReleasesSpace(t *testing.T) {
 			written := backingAllocatedBytes(t, backingContainer, backingFile)
 			trimmedBaseline := blockDeviceDiscardedBytes(t, trimmedLV)
 			keptBaseline := blockDeviceDiscardedBytes(t, keptLV)
+			phases.mark("payloads-written")
 
 			// sync commits the journal transaction that frees the blocks:
 			// ext4 trims only committed free space.
@@ -132,6 +140,7 @@ func TestPeriodicTrimReleasesSpace(t *testing.T) {
 			deletedAt := time.Now()
 			t.Logf("%s:%s allocated %d bytes with both %d-byte payloads written; deleted them at %s",
 				backingContainer, backingFile, written, payloadBytes, deletedAt.Format(time.RFC3339))
+			phases.mark("payloads-deleted")
 
 			// The trimmed volume is detected by its own LV discard counter,
 			// not the shared backing file, whose allocation other volumes'
@@ -154,6 +163,7 @@ func TestPeriodicTrimReleasesSpace(t *testing.T) {
 						watchUntil = trimmedAt.Add(interval + 15*time.Second)
 						t.Logf("LV %s of claim trimmed received %d discarded bytes %s after the delete; watching claim kept until %s",
 							trimmedLV, trimmedDelta, elapsed.Round(time.Second), watchUntil.Format(time.RFC3339))
+						phases.mark("trim-detected")
 					} else if elapsed >= periodicTrimShrinkTimeout {
 						t.Fatalf(
 							"LV %s of claim trimmed received %d discarded bytes within %s (allocated %d), want at least %d of the %d deleted bytes",
@@ -165,6 +175,7 @@ func TestPeriodicTrimReleasesSpace(t *testing.T) {
 				}
 				time.Sleep(periodicTrimPollInterval)
 			}
+			phases.mark("kept-watch-complete")
 			allocated := backingAllocatedBytes(t, backingContainer, backingFile)
 			t.Logf("%s:%s allocated %d bytes %s after the delete (released %d); claim kept still discarded none",
 				backingContainer, backingFile, allocated,

@@ -177,6 +177,12 @@ func TestISCSIRawBlockCrossNodeHandoff(t *testing.T) {
 // node resizes the mounted filesystem.
 func TestISCSIOnlineFilesystemExpansion(t *testing.T) {
 	cfg := loadISCSIConfig(t)
+	phases := newPhaseTimer(t)
+	// Registered first, so it runs after every later cleanup and times the
+	// LIO target removal.
+	t.Cleanup(func() { phases.mark("lio-target-removed") })
+	// Registered before deleteNamespace, so it runs after it and times the teardown.
+	defer phases.mark("teardown")
 	ns := createNamespace(t, "iscsi-expand")
 	defer deleteNamespace(t, ns)
 	createISCSIPVC(t, ns, "expandable", cfg.storageClass, "Filesystem", iscsiVolumeSize)
@@ -187,29 +193,35 @@ func TestISCSIOnlineFilesystemExpansion(t *testing.T) {
 	t.Cleanup(func() { waitForLIOTargetRemoved(t, target) })
 	iqnA := readISCSIInitiatorIQN(t, cfg.clientNodeA)
 	device := requirePodUsesISCSIDevice(t, ns, "expander", cfg.clientNodeA, target, iqnA, false)
+	phases.mark("pod-ready")
 	kubectl(t, "-n", ns, "exec", "expander", "--", "sh", "-c", "printf expansion-data > /data/payload && sync")
 
 	beforeFS := filesystemBytes(t, ns, "expander")
 	beforeDevice := blockDeviceBytes(t, device)
 	kubectl(t, "-n", ns, "patch", "pvc", "expandable", "--type=merge", "-p",
 		`{"spec":{"resources":{"requests":{"storage":"128Mi"}}}}`)
+	phases.mark("resize-requested")
 
 	waitFor(t, "PVC capacity to reach 128Mi", func() (bool, string) {
 		quantity := kubectl(t, "-n", ns, "get", "pvc", "expandable", "-o", "jsonpath={.status.capacity.storage}")
 		return quantityBytes(quantity) >= 128*1024*1024, quantity
 	})
+	phases.mark("pvc-capacity-grown")
 	waitFor(t, "the initiator's SCSI disk to grow", func() (bool, string) {
 		after := blockDeviceBytes(t, device)
 		return after >= 128*1024*1024 && after > beforeDevice,
 			fmt.Sprintf("%s before=%d after=%d", device, beforeDevice, after)
 	})
+	phases.mark("scsi-disk-grown")
 	waitFor(t, "mounted filesystem to grow", func() (bool, string) {
 		after := filesystemBytes(t, ns, "expander")
 		return after > beforeFS, fmt.Sprintf("before=%d after=%d", beforeFS, after)
 	})
+	phases.mark("filesystem-grown")
 	if got := kubectl(t, "-n", ns, "exec", "expander", "--", "cat", "/data/payload"); got != "expansion-data" {
 		t.Fatalf("payload after expansion = %q, want expansion-data", got)
 	}
+	phases.mark("payload-verified")
 }
 
 // TestISCSIFilesystemTrimReleasesSpace deletes a file on a mounted iSCSI

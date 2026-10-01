@@ -176,6 +176,9 @@ spec:
 
 func TestOnlineFilesystemExpansion(t *testing.T) {
 	cfg := loadConfig(t)
+	phases := newPhaseTimer(t)
+	// Registered before deleteNamespace, so it runs after it and times the teardown.
+	defer phases.mark("teardown")
 	ns := createNamespace(t, "expand")
 	defer deleteNamespace(t, ns)
 
@@ -195,6 +198,7 @@ spec:
 	createFilesystemPod(t, ns, "expander", "expandable", cfg.clientNodeA)
 	waitForPodReady(t, ns, "expander")
 	readPVNVMeTarget(t, ns, "expandable", cfg.targetAddress)
+	phases.mark("pod-ready")
 	kubectl(t, "-n", ns, "exec", "expander", "--", "sh", "-c", "printf expansion-data > /data/payload && sync")
 
 	before := filesystemBytes(t, ns, "expander")
@@ -202,20 +206,24 @@ spec:
 		t, "-n", ns, "patch", "pvc", "expandable", "--type=merge", "-p",
 		`{"spec":{"resources":{"requests":{"storage":"128Mi"}}}}`,
 	)
+	phases.mark("resize-requested")
 
 	waitFor(t, "PVC capacity to reach 128Mi", func() (bool, string) {
 		quantity := kubectl(t, "-n", ns, "get", "pvc", "expandable", "-o", "jsonpath={.status.capacity.storage}")
 		return quantityBytes(quantity) >= 128*1024*1024, quantity
 	})
+	phases.mark("pvc-capacity-grown")
 	waitFor(t, "mounted filesystem to grow", func() (bool, string) {
 		after := filesystemBytes(t, ns, "expander")
 		return after > before, fmt.Sprintf("before=%d after=%d", before, after)
 	})
+	phases.mark("filesystem-grown")
 
 	got := kubectl(t, "-n", ns, "exec", "expander", "--", "cat", "/data/payload")
 	if got != "expansion-data" {
 		t.Fatalf("payload after expansion = %q, want expansion-data", got)
 	}
+	phases.mark("payload-verified")
 }
 
 // outOfServiceTaint is the Kubernetes taint that makes the control plane
@@ -346,6 +354,10 @@ func TestLocalAttachRawBlockRoundTrip(t *testing.T) {
 // really releases the device; only then may the reader start.
 func TestLocalAttachForceDetachFencing(t *testing.T) {
 	cfg := loadLocalAttachConfig(t)
+	phases := newPhaseTimer(t)
+	// Registered before deleteNamespace and restore, so it runs after both
+	// and times the teardown; their own LIFO order is unchanged.
+	defer phases.mark("teardown")
 	ns := createNamespace(t, "local-fence")
 	defer deleteNamespace(t, ns)
 
@@ -356,10 +368,12 @@ func TestLocalAttachForceDetachFencing(t *testing.T) {
 	pv := kubectl(t, "-n", ns, "get", "pvc", "data", "-o", "jsonpath={.spec.volumeName}")
 	dmName := localDMName(pvVolumeHandle(t, ns, "data"))
 	requireLocalAttach(t, cfg.storageNode, target, podMountDevice(t, ns, "local-writer"), dmName)
+	phases.mark("local-attach-ready")
 
 	const payload = "pillar-csi-force-detach-payload"
 	kubectl(t, "-n", ns, "exec", "local-writer", "--", "sh", "-c",
 		fmt.Sprintf("printf '%%s' %q > /data/payload && sync", payload))
+	phases.mark("payload-written")
 
 	// Deferred after deleteNamespace so it runs first: namespace teardown
 	// needs a live kubelet on the storage node.
@@ -378,6 +392,7 @@ func TestLocalAttachForceDetachFencing(t *testing.T) {
 		ready := nodeReadyStatus(t, cfg.storageNode)
 		return ready != "True", "Ready=" + ready
 	})
+	phases.mark("storage-node-notready")
 	kubectl(t, "taint", "node", cfg.storageNode, outOfServiceTaint)
 
 	createFilesystemPod(t, ns, "remote-reader", "data", cfg.clientNodeA)
@@ -394,17 +409,22 @@ func TestLocalAttachForceDetachFencing(t *testing.T) {
 	if ok, _ := nvmeConnectedState(target, readNVMeNodeState(t, cfg.clientNodeA, target)); ok {
 		t.Fatalf("%s connected to %s while %s still holds the device", cfg.clientNodeA, target.nqn, cfg.storageNode)
 	}
+	phases.mark("attach-fenced")
 
 	restore()
+	phases.mark("storage-node-restored")
 	waitFor(t, "reader to become Ready after the storage node released the device", func() (bool, string) {
 		ready := podReadyStatus(t, ns, "remote-reader")
 		return ready == "True", "Ready=" + ready + " attachError=" + volumeAttachmentError(t, pv, cfg.clientNodeA)
 	})
+	phases.mark("reader-ready")
 	waitForLocalDMRemoved(t, cfg.storageNode, dmName)
+	phases.mark("local-dm-removed")
 	requireNVMeConnected(t, cfg.clientNodeA, target, readNVMeNodeState(t, cfg.clientNodeA, target))
 	if got := kubectl(t, "-n", ns, "exec", "remote-reader", "--", "cat", "/data/payload"); got != payload {
 		t.Fatalf("reader read %q after the force detach, want %q", got, payload)
 	}
+	phases.mark("payload-verified")
 }
 
 func createLocalAttachPVC(t *testing.T, namespace, name, storageClass, volumeMode string) {
@@ -1218,6 +1238,28 @@ func waitFor(t *testing.T, description string, condition func() (bool, string)) 
 		time.Sleep(2 * time.Second)
 	}
 	t.Fatalf("timed out waiting for %s; last state: %s", description, last)
+}
+
+// phaseTimer logs how long each phase of a slow scenario took as
+// "phase-timing:" lines in the test output, which CI collects into the job
+// summary.  It only logs; it never changes what a test waits for or asserts.
+type phaseTimer struct {
+	t           *testing.T
+	start, last time.Time
+}
+
+func newPhaseTimer(t *testing.T) *phaseTimer {
+	now := time.Now()
+	return &phaseTimer{t: t, start: now, last: now}
+}
+
+// mark logs the time since the previous mark (or the timer start) as phase.
+func (p *phaseTimer) mark(phase string) {
+	p.t.Helper()
+	now := time.Now()
+	p.t.Logf("phase-timing: test=%s phase=%s elapsed=%s total=%s",
+		p.t.Name(), phase, now.Sub(p.last).Round(time.Millisecond), now.Sub(p.start).Round(time.Millisecond))
+	p.last = now
 }
 
 func apply(t *testing.T, manifest string) {

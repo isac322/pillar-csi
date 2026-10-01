@@ -147,7 +147,19 @@ jobs:
         env:
           KUBECONFIG: "/home/runner/.kube/config"
           E2E_FAIL_FAST: "1"
+          EXTERNAL_E2E_REPORT_DIR: ${{ runner.temp }}/external-e2e-reports
         run: make test-external-e2e
+
+      # Best-effort: external-e2e-report-status.txt says whether the JSON
+      # report is complete, partial (non-zero exit such as fail-fast), or
+      # unmeasured (missing).  A hard job timeout may skip this step.
+      - name: Upload External Storage e2e report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: external-e2e-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/external-e2e-reports
+          if-no-files-found: warn
 
       - name: Dump cluster + kernel diagnostics on failure
         if: ${{ failure() || cancelled() }}

@@ -231,6 +231,8 @@ jobs:
     with:
       runtime_image_artifact: ${{ needs['runtime-images'].outputs.runtime_image_artifact }}
       runtime_image_tag: ${{ needs['runtime-images'].outputs.runtime_image_tag }}
+      # The required Test job already runs vet through `make test`.
+      skip_vet: true
 
   external-e2e:
     name: External Storage E2E

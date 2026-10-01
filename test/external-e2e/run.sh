@@ -20,6 +20,13 @@
 #                       E2E_TEST_BIN.
 #   CACHE_DIR         — where to cache the downloaded bundle
 #                       (default: $HOME/.cache/pillar-csi/external-e2e).
+#   EXTERNAL_E2E_REPORT_DIR
+#                     — optional directory for a merged Ginkgo JSON report
+#                       (external-e2e.json) plus a status file
+#                       (external-e2e-report-status.txt).  Only honoured when
+#                       GINKGO_PROCS > 1; the bundled Ginkgo CLI must advertise
+#                       --output-dir and --json-report or the run fails closed.
+#                       The GINKGO_PROCS=1 direct e2e.test path ignores it.
 #
 set -euo pipefail
 
@@ -154,5 +161,73 @@ if [[ ! -x "${GINKGO_CLI}" ]]; then
   exit 1
 fi
 
-exec "${GINKGO_CLI}" run "--procs=${GINKGO_PROCS}" -v "${E2E_TEST_BIN}" -- \
-  "${E2E_ARGS[@]}"
+if [[ -z "${EXTERNAL_E2E_REPORT_DIR:-}" ]]; then
+  exec "${GINKGO_CLI}" run "--procs=${GINKGO_PROCS}" -v "${E2E_TEST_BIN}" -- \
+    "${E2E_ARGS[@]}"
+fi
+
+# Fail closed: only pass report flags the bundled CLI advertises.  `ginkgo help
+# run` prints the run usage (including every flag) to stdout and exits 0
+# without compiling or running anything.
+GINKGO_RUN_HELP="$("${GINKGO_CLI}" help run 2>&1 || true)"
+for flag in --output-dir --json-report; do
+  if [[ "${GINKGO_RUN_HELP}" != *"${flag}"* ]]; then
+    printf 'ERROR: EXTERNAL_E2E_REPORT_DIR is set but %s does not advertise %s.\n' \
+      "${GINKGO_CLI}" "${flag}" >&2
+    exit 1
+  fi
+done
+
+REPORT_NAME="external-e2e.json"
+mkdir -p "${EXTERNAL_E2E_REPORT_DIR}"
+REPORT_DIR="$(realpath "${EXTERNAL_E2E_REPORT_DIR}")"
+REPORT_PATH="${REPORT_DIR}/${REPORT_NAME}"
+STATUS_PATH="${REPORT_DIR}/external-e2e-report-status.txt"
+rm -f "${REPORT_PATH}"
+
+# The status file starts as "unmeasured" and is rewritten only after Ginkgo
+# exits.  A hard kill (runner timeout SIGKILL) leaves it unmeasured; any
+# non-zero exit (fail-fast abort, spec failure, interrupt) marks the report
+# partial even when Ginkgo managed to write it.
+write_report_status() {
+  local status="$1" exit_code="$2" present=false
+  [[ -s "${REPORT_PATH}" ]] && present=true
+  printf 'status=%s\nexit_code=%s\nprocs=%s\nreport=%s\nreport_present=%s\n' \
+    "${status}" "${exit_code}" "${GINKGO_PROCS}" "${REPORT_NAME}" "${present}" \
+    >"${STATUS_PATH}"
+}
+write_report_status unmeasured none
+echo "    json report     : ${REPORT_PATH}"
+
+# Run Ginkgo as a child (not exec) so its exit status can be recorded.  Forward
+# INT/TERM as TERM — Ginkgo treats both as an interrupt, and background jobs in
+# a non-interactive shell start with SIGINT ignored.
+ginkgo_pid=""
+forward_interrupt() {
+  [[ -n "${ginkgo_pid}" ]] && kill -TERM "${ginkgo_pid}" 2>/dev/null || true
+}
+trap forward_interrupt INT TERM
+
+"${GINKGO_CLI}" run "--procs=${GINKGO_PROCS}" -v \
+  "--output-dir=${REPORT_DIR}" "--json-report=${REPORT_NAME}" \
+  "${E2E_TEST_BIN}" -- "${E2E_ARGS[@]}" &
+ginkgo_pid=$!
+
+ginkgo_rc=0
+while :; do
+  ginkgo_rc=0
+  wait "${ginkgo_pid}" || ginkgo_rc=$?
+  # A trapped signal interrupts `wait` while Ginkgo is still draining.
+  kill -0 "${ginkgo_pid}" 2>/dev/null || break
+done
+trap - INT TERM
+
+if [[ "${ginkgo_rc}" -eq 0 && -s "${REPORT_PATH}" ]]; then
+  write_report_status complete "${ginkgo_rc}"
+elif [[ -s "${REPORT_PATH}" ]]; then
+  write_report_status partial "${ginkgo_rc}"
+else
+  write_report_status unmeasured "${ginkgo_rc}"
+fi
+echo "==> External e2e report status ($(tr '\n' ' ' <"${STATUS_PATH}"))"
+exit "${ginkgo_rc}"

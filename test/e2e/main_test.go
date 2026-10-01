@@ -260,6 +260,10 @@ const defaultLabelFilter = "default-profile"
 //	go test -run=TC-E1.2 ./test/e2e/...     → runs only [TC-E1.2] spec
 //	go test -run=TC-F    ./test/e2e/...     → runs all [TC-F*] specs
 func TestMain(m *testing.M) {
+	// Captured before flag parsing, prereq checks, and the orphan reaper so
+	// runPrimary can report this prelude when E2E_STAGE_TIMING is set.
+	testMainStart := time.Now()
+
 	// Parse flags early so we can inspect flag values (e.g. -test.run) before
 	// m.Run() does so internally. flag.Parse() is idempotent.
 	if !flag.Parsed() {
@@ -357,7 +361,7 @@ func TestMain(m *testing.M) {
 	if isGinkgoParallelWorker() || isReexecGuarded() {
 		os.Exit(runWorker(m))
 	}
-	os.Exit(runPrimary(m))
+	os.Exit(runPrimary(m, testMainStart))
 }
 
 // bootstrapSuiteCluster creates (or reuses) the Kind cluster for this test
@@ -474,12 +478,16 @@ func bootstrapSuiteCluster(output io.Writer) (*kindBootstrapState, error) {
 // is bracketed with timer.StartStage() / done() so that Emit at the end of
 // runPrimary prints a wall-clock breakdown identifying the bottleneck.
 //
+// startedAt is the TestMain entry time; the span up to runPrimary is reported
+// as the "testmain-prelude" marker when stage timing is enabled.
+//
 // The return value is the exit code to pass to os.Exit.
-func runPrimary(m *testing.M) (exitCode int) {
+func runPrimary(m *testing.M, startedAt time.Time) (exitCode int) {
 	// Sub-AC 5.4: initialise the stage timer. Emit is deferred so the summary
 	// is always written even when runPrimary returns early on error.
 	stageTimer := newPipelineStageTimer()
 	defer stageTimer.Emit(os.Stderr)
+	stageTimer.Mark(os.Stderr, "testmain-prelude", time.Since(startedAt))
 
 	// ── Phase 2: Kind cluster creation ───────────────────────────────────────
 	doneCluster := stageTimer.StartStage(stageClusterCreate)
@@ -557,6 +565,8 @@ func runPrimary(m *testing.M) (exitCode int) {
 		runner := execCommandRunner{Output: os.Stderr}
 		ctx, cancel := context.WithTimeout(context.Background(), state.DeleteTimeout+30*time.Second)
 		defer cancel()
+		teardownStart := time.Now()
+		defer func() { stageTimer.Mark(os.Stderr, "teardown", time.Since(teardownStart)) }()
 
 		// Phase 6 — Teardown.
 		//
