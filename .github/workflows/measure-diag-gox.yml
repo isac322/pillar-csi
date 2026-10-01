@@ -1,0 +1,73 @@
+# MEASUREMENT-ONLY diagnostic (srcab-20261001, variant B), pushed only after
+# the measured B run finished. Restores the same B seed (S0/BASE) BuildKit
+# cache mount read-only, injects it like the B Build job, and runs the builder
+# stage for linux/amd64 with `go build -x -v` to list the packages compiled for
+# the SOURCE tree. Not CI, not validation, not a timing measurement.
+name: Measure diag B go build -x
+
+on:
+  push:
+    branches: [measure/srcab-20261001-b]
+
+permissions:
+  contents: read
+
+jobs:
+  gox:
+    name: go build -x against restored S0 object cache
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        id: buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Restore BuildKit cache mounts (read-only)
+        id: cache-pr
+        uses: actions/cache/restore@v6
+        with:
+          path: buildkit-cache
+          key: measure-srcab1001-b-buildkit-mount-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Dockerfile', 'go.mod', 'go.sum') }}
+          restore-keys: |
+            measure-srcab1001-b-buildkit-mount-v2-${{ runner.os }}-${{ runner.arch }}-
+            measure-srcab1001-b-buildkit-mount-${{ hashFiles('Dockerfile') }}-
+
+      - name: Inject BuildKit cache mounts
+        uses: reproducible-containers/buildkit-cache-dance@v3
+        with:
+          builder: ${{ steps.buildx.outputs.name }}
+          cache-dir: buildkit-cache
+          skip-extraction: true
+
+      - name: Trace builder stage (linux/amd64)
+        uses: docker/bake-action@v7
+        with:
+          files: docker-bake.hcl
+          targets: compile
+          set: |
+            compile.dockerfile=.github/measure/Dockerfile.gox
+            compile.target=gox-log
+            compile.platform=linux/amd64
+            compile.output=type=local,dest=gox-out
+
+      - name: Summarize compile actions
+        shell: bash
+        run: |
+          set -euo pipefail
+          log=gox-out/gox.log
+          cat gox-out/gox-time.txt
+          echo "cache_restore_hit=${{ steps.cache-pr.outputs.cache-hit }} matched_key=${{ steps.cache-pr.outputs.cache-matched-key }}"
+          grep -E '/compile -o ' "$log" | grep -oE ' -p [^ ]+' | awk '{print $2}' | sort -u > gox-out/compiled-packages.txt
+          echo "compiled_packages=$(wc -l < gox-out/compiled-packages.txt)"
+          echo "compiled_pillar_packages=$(grep -c '^github.com/isac322/pillar-csi' gox-out/compiled-packages.txt || true)"
+          echo "compiled_nonpillar_packages=$(grep -vc '^github.com/isac322/pillar-csi' gox-out/compiled-packages.txt || true)"
+          cat gox-out/compiled-packages.txt
+
+      - name: Upload trace
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: measure-diag-gox-${{ github.run_id }}
+          path: gox-out

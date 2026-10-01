@@ -1,0 +1,41 @@
+# syntax=docker/dockerfile:1
+# MEASUREMENT-ONLY diagnostic (srcab-20261001, variant B, after the measured
+# run). Same builder stage as ./Dockerfile (same base image, cache mount
+# target, flags and package set) but runs `go build -x -v` and exports the
+# trace so package-level compile actions against the restored S0 object cache
+# can be counted. Not used by CI or release.
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine3.24 AS builder
+ARG TARGETOS
+ARG TARGETARCH
+ARG TARGETVARIANT
+
+WORKDIR /workspace
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+RUN --mount=type=cache,target=/root/.cache/go-build set -eu; \
+    GOAMD64=""; GOARM=""; GOARM64=""; \
+    case "$TARGETARCH" in \
+      amd64) GOAMD64="${TARGETVARIANT:-v1}" ;; \
+      arm)   GOARM="${TARGETVARIANT#v}" ;; \
+      arm64) GOARM64="${TARGETVARIANT:-v8.0}" ;; \
+    esac; \
+    start=$(date +%s); \
+    if ! CGO_ENABLED=0 GOOS="${TARGETOS:-linux}" GOARCH="${TARGETARCH}" \
+      GOAMD64="$GOAMD64" GOARM="$GOARM" GOARM64="$GOARM64" \
+      go build -x -v \
+        -trimpath \
+        -pgo=auto \
+        -ldflags="-s -w" \
+        -o /workspace/bin/ \
+        ./cmd/... 2> /workspace/gox.log; then \
+      cat /workspace/gox.log; exit 1; \
+    fi; \
+    echo "go_build_seconds=$(( $(date +%s) - start ))" > /workspace/gox-time.txt; \
+    du -sh /root/.cache/go-build >> /workspace/gox-time.txt
+
+FROM scratch AS gox-log
+COPY --from=builder /workspace/gox.log /workspace/gox-time.txt /
