@@ -1,0 +1,109 @@
+# MEASUREMENT-ONLY (controlled replay srcab-20261001, variant C). Not CI and
+# not validation: runs only the change gate, provenance and the B compile lane
+# on the immutable SOURCE tree, with no BuildKit cache-mount restore/inject and
+# no layer-cache import, to compare against variant B's Build job.
+name: Measure build C (no cache transport)
+
+on:
+  push:
+    branches: [measure/srcab-20261001-c]
+
+permissions:
+  contents: read
+
+jobs:
+  changes:
+    name: Detect code changes
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.filter.outputs.code == 'true' || steps.filter.outputs.tcspec == 'true' }}
+      image_contract: ${{ steps.filter.outputs.image_contract == 'true' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Filter changed paths
+        id: filter
+        uses: dorny/paths-filter@v4
+        with:
+          # Variant B seed commit S0; the gate sees BASE..SOURCE plus this file.
+          base: b7fdd5febe15c8ae7b02e0a2c518691a628bdc31
+          predicate-quantifier: some-with-excludes
+          filters: |
+            code:
+              - '**'
+              - '!site/**'
+              - '!**/*.md'
+            tcspec:
+              - 'docs/E2E-TESTCASES.md'
+            image_contract:
+              - 'Dockerfile'
+              - 'docker-bake.hcl'
+              - '.dockerignore'
+              - 'hack/verify-mkfs-baseline.sh'
+
+  measurement-provenance:
+    name: Measurement provenance
+    runs-on: ubuntu-latest
+    env:
+      SOURCE_REF: a1547c5dc13fd291b92745438e5537d0633c6d69
+      B_SOURCE_COMMIT: 1d89f02a10710ce0d661584fdbee21877b04633d
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Verify replay source provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="${RUNNER_TEMP}/provenance"
+          mkdir -p "${out}"
+          git diff --name-only "${B_SOURCE_COMMIT}" HEAD | tee "${out}/diff-vs-b-source.txt"
+          [ "$(cat "${out}/diff-vs-b-source.txt")" = ".github/workflows/measure-build-c.yml" ]
+          {
+            echo "variant=C github_sha=${GITHUB_SHA} b_source_commit=${B_SOURCE_COMMIT} app_ref=${SOURCE_REF}"
+            for p in api cmd internal proto gen config charts go.mod go.sum Dockerfile docker-bake.hcl .dockerignore; do
+              echo "${p} head=$(git rev-parse "HEAD:${p}") b_source=$(git rev-parse "${B_SOURCE_COMMIT}:${p}")"
+            done
+          } | tee "${out}/provenance.txt"
+          for p in api cmd internal proto gen config charts go.mod go.sum Dockerfile; do
+            [ "$(git rev-parse "HEAD:${p}")" = "$(git rev-parse "${SOURCE_REF}:${p}")" ]
+          done
+          { echo '## Measurement provenance (variant C, build-only)'; echo '```'; cat "${out}/provenance.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload provenance
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: measurement-provenance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/provenance
+
+  build:
+    name: Build (all platforms) - no cache transport
+    runs-on: ubuntu-latest
+    needs: [changes]
+    if: ${{ needs.changes.outputs.code == 'true' && needs.changes.outputs.image_contract != 'true' }}
+    env:
+      PLATFORMS: linux/amd64,linux/amd64/v2,linux/amd64/v3,linux/arm64,linux/arm/v7,linux/s390x,linux/ppc64le,linux/riscv64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        id: buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Record toolchain versions
+        run: |
+          docker version
+          docker buildx version
+          docker buildx inspect "${{ steps.buildx.outputs.name }}"
+
+      - name: Compile Go binaries for all supported Linux targets
+        id: compile
+        uses: docker/bake-action@v7
+        with:
+          files: docker-bake.hcl
+          targets: compile
