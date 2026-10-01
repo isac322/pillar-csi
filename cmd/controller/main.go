@@ -325,11 +325,10 @@ func parseCSIEndpoint(ep string) (scheme, addr string, err error) {
 
 // lastPathComponent returns the final path segment of a slash-delimited string.
 func lastPathComponent(p string) string {
-	idx := strings.LastIndex(p, "/")
-	if idx < 0 {
-		return p
+	if _, suffix, found := strings.CutLast(p, "/"); found {
+		return suffix
 	}
-	return p[idx+1:]
+	return p
 }
 
 func main() {

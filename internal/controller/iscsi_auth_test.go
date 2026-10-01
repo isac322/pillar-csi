@@ -43,10 +43,8 @@ const (
 
 func authTestProtocolObject(method pillarcsiv1alpha1.ISCSIAuthMethod) *pillarcsiv1alpha1.PillarProtocol {
 	return &pillarcsiv1alpha1.PillarProtocol{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:       authTestProtocol,
-			Finalizers: []string{pillarProtocolFinalizer},
-		},
+		Name:       authTestProtocol,
+		Finalizers: []string{pillarProtocolFinalizer},
 		Spec: pillarcsiv1alpha1.PillarProtocolSpec{Protocol: pillarcsiv1alpha1.ProtocolSpec{
 			ISCSI: &pillarcsiv1alpha1.ISCSIConfig{
 				Port: 3260,
@@ -76,7 +74,7 @@ func authTestScheme(t *testing.T) *runtime.Scheme {
 func readyCondition(t *testing.T, r *PillarProtocolReconciler) *metav1.Condition {
 	t.Helper()
 	ctx := context.Background()
-	_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: authTestProtocol}})
+	_, err := r.Reconcile(ctx, ctrl.Request{Name: authTestProtocol})
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
@@ -110,7 +108,7 @@ func TestPillarProtocol_AuthSecretCondition(t *testing.T) {
 	}
 
 	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Namespace: authTestNamespace, Name: authTestSecret},
+		Namespace: authTestNamespace, Name: authTestSecret,
 		Data: map[string][]byte{
 			"username": []byte("initiator"), "password": []byte("initiator-secret"),
 			"mutualUsername": []byte("target"), "mutualPassword": []byte("target-secret-0"),
@@ -170,7 +168,7 @@ func TestPillarProtocol_MapSecretToProtocols(t *testing.T) {
 		Namespace: authTestNamespace,
 	}
 	secretIn := func(namespace string) client.Object {
-		return &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: authTestSecret}}
+		return &corev1.Secret{Namespace: namespace, Name: authTestSecret}
 	}
 	reqs := r.mapSecretToProtocols(context.Background(), secretIn(authTestNamespace))
 	if len(reqs) != 1 || reqs[0].Name != authTestProtocol {
@@ -187,8 +185,8 @@ func newAuthSCReconciler(t *testing.T) (*PillarStorageClassReconciler, *pillarcs
 	t.Helper()
 	scheme := authTestScheme(t)
 	binding := &pillarcsiv1alpha1.PillarStorageClass{
-		ObjectMeta: metav1.ObjectMeta{Name: "chap-binding", UID: types.UID("chap-binding-uid")},
-		Spec:       pillarcsiv1alpha1.PillarStorageClassSpec{StoreRef: "pool", ProtocolRef: authTestProtocol},
+		Name: "chap-binding", UID: types.UID("chap-binding-uid"),
+		Spec: pillarcsiv1alpha1.PillarStorageClassSpec{StoreRef: "pool", ProtocolRef: authTestProtocol},
 	}
 	r := &PillarStorageClassReconciler{
 		Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(binding.DeepCopy()).Build(),

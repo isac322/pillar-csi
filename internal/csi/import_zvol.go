@@ -266,8 +266,8 @@ func (s *ControllerServer) volumeStateNameForID(ctx context.Context, volumeID st
 	agentName := parts[0]
 	agentVolID := parts[3]
 	leaf := agentVolID
-	if idx := strings.LastIndex(agentVolID, "/"); idx >= 0 {
-		leaf = agentVolID[idx+1:]
+	if _, suffix, found := strings.CutLast(agentVolID, "/"); found {
+		leaf = suffix
 	}
 	if leaf == "" {
 		return "", nil

@@ -103,7 +103,7 @@ controller:
         # -- csi-attacher image repository.
         repository: registry.k8s.io/sig-storage/csi-attacher
         # -- csi-attacher image tag.
-        tag: "v4.12.0"
+        tag: "v4.13.0"
         pullPolicy: ""
       # -- Resource requests/limits for the attacher sidecar.
       resources:
@@ -139,7 +139,7 @@ controller:
         # -- livenessprobe image repository.
         repository: registry.k8s.io/sig-storage/livenessprobe
         # -- livenessprobe image tag (shared with node liveness sidecar).
-        tag: "v2.19.0"
+        tag: "v2.20.0"
         pullPolicy: ""
       # -- Resource requests/limits for the liveness-probe sidecar.
       resources:
@@ -297,7 +297,7 @@ node:
         # -- csi-node-driver-registrar image repository.
         repository: registry.k8s.io/sig-storage/csi-node-driver-registrar
         # -- csi-node-driver-registrar image tag.
-        tag: "v2.17.0"
+        tag: "v2.18.0"
         pullPolicy: ""
       # -- Resource requests/limits for the node-driver-registrar sidecar.
       resources:
@@ -315,7 +315,7 @@ node:
         # -- livenessprobe image repository (can differ from controller's).
         repository: registry.k8s.io/sig-storage/livenessprobe
         # -- livenessprobe image tag.
-        tag: "v2.19.0"
+        tag: "v2.20.0"
         pullPolicy: ""
       # -- Resource requests/limits for the liveness-probe sidecar.
       resources:

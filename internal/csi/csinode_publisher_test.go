@@ -292,7 +292,7 @@ func TestKubeCSINodePatcher_PatchAnnotations_Success(t *testing.T) {
 
 	// Create the fake client pre-seeded with a CSINode.
 	existingCSINode := &storagev1.CSINode{
-		ObjectMeta: metav1.ObjectMeta{Name: nodeName},
+		Name: nodeName,
 	}
 	fakeClient := kubefake.NewSimpleClientset(existingCSINode)
 	patcher := NewKubeCSINodePatcher(fakeClient)
@@ -312,7 +312,7 @@ func TestKubeCSINodePatcher_PatchAnnotations_MultipleAnnotations(t *testing.T) {
 
 	const nodeName = "multi-anno-node"
 	existingCSINode := &storagev1.CSINode{
-		ObjectMeta: metav1.ObjectMeta{Name: nodeName},
+		Name: nodeName,
 	}
 	fakeClient := kubefake.NewSimpleClientset(existingCSINode)
 	patcher := NewKubeCSINodePatcher(fakeClient)
@@ -384,10 +384,8 @@ func TestKubeCSINodePatcher_PatchAnnotations_PreservesSpecDrivers(t *testing.T) 
 	// Seed the CSINode the way kubelet leaves it: spec.drivers populated for
 	// our driver and an unrelated one, plus an unrelated annotation.
 	seeded := &storagev1.CSINode{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        nodeName,
-			Annotations: map[string]string{otherAnnotation: otherAnnoValue},
-		},
+		Name:        nodeName,
+		Annotations: map[string]string{otherAnnotation: otherAnnoValue},
 		Spec: storagev1.CSINodeSpec{
 			Drivers: []storagev1.CSINodeDriver{
 				{

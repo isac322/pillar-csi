@@ -1,7 +1,7 @@
 ARG AGENT_IMAGE=pillar-csi/agent:docker-e2e
 FROM ${AGENT_IMAGE} AS agent
 
-FROM alpine:3.24
+FROM alpine:3.24.2
 RUN apk add --no-cache e2fsprogs kmod lvm2 util-linux \
     && sed -i 's/obtain_device_list_from_udev = 1/obtain_device_list_from_udev = 0/' /etc/lvm/lvm.conf \
     && sed -i 's/udev_sync = 1/udev_sync = 0/' /etc/lvm/lvm.conf \

@@ -44,7 +44,6 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	storagev1 "k8s.io/api/storage/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -75,7 +74,7 @@ func newCSIControllerErrEnv(t *testing.T, agnt *csiMockAgent) *csiControllerTest
 	}
 
 	target := &v1alpha1.PillarAgent{
-		ObjectMeta: metav1.ObjectMeta{Name: "storage-node-1"},
+		Name: "storage-node-1",
 		Spec: v1alpha1.PillarAgentSpec{
 			External: &v1alpha1.ExternalSpec{Address: "192.168.1.10", Port: 9500},
 		},

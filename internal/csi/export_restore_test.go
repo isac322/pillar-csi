@@ -45,7 +45,8 @@ import (
 func restorePVS(agentName, name, uid string) *v1alpha1.PillarVolumeState {
 	agentVolID := "tank/" + name
 	return &v1alpha1.PillarVolumeState{
-		ObjectMeta: metav1.ObjectMeta{Name: name, UID: types.UID(uid)},
+		Name: name,
+		UID:  types.UID(uid),
 		Spec: v1alpha1.PillarVolumeStateSpec{
 			VolumeID:      agentName + "/nvmeof-tcp/zfs-zvol/" + agentVolID,
 			AgentVolumeID: agentVolID, AgentRef: agentName,

@@ -38,7 +38,7 @@ func metricsTestVolume(
 	conds ...metav1.Condition,
 ) *pillarcsiv1alpha1.PillarVolumeState {
 	return &pillarcsiv1alpha1.PillarVolumeState{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Name: name,
 		Spec: pillarcsiv1alpha1.PillarVolumeStateSpec{
 			VolumeID:      "agent-a/nvmeof-tcp/zfs-zvol/tank/" + name,
 			AgentVolumeID: "tank/" + name,
@@ -87,13 +87,13 @@ func TestResourceMetricsCollectorLeaderGating(t *testing.T) {
 	}
 
 	agent := &pillarcsiv1alpha1.PillarAgent{
-		ObjectMeta: metav1.ObjectMeta{Name: "agent-a"},
+		Name: "agent-a",
 		Status: pillarcsiv1alpha1.PillarAgentStatus{Conditions: []metav1.Condition{{
 			Type: "AgentConnected", Status: metav1.ConditionFalse, Reason: "HealthCheckFailed",
 		}}},
 	}
 	store := &pillarcsiv1alpha1.PillarStore{
-		ObjectMeta: metav1.ObjectMeta{Name: "store-a"},
+		Name: "store-a",
 		Spec: pillarcsiv1alpha1.PillarStoreSpec{
 			AgentRef: "agent-a",
 			Backend:  pillarcsiv1alpha1.BackendSpec{ZFS: &pillarcsiv1alpha1.ZFSBackendConfig{Pool: "tank"}},

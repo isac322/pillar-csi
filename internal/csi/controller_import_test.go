@@ -34,7 +34,6 @@ import (
 	"google.golang.org/protobuf/proto"
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
@@ -67,7 +66,7 @@ func newImportTestEnv(
 	}
 
 	store := &v1alpha1.PillarStore{
-		ObjectMeta: metav1.ObjectMeta{Name: importStoreName},
+		Name: importStoreName,
 		Spec: v1alpha1.PillarStoreSpec{
 			AgentRef: "storage-node-1",
 			Backend: v1alpha1.BackendSpec{ZFS: &v1alpha1.ZFSBackendConfig{
@@ -78,7 +77,7 @@ func newImportTestEnv(
 		},
 	}
 	target := &v1alpha1.PillarAgent{
-		ObjectMeta: metav1.ObjectMeta{Name: "storage-node-1"},
+		Name: "storage-node-1",
 		Spec: v1alpha1.PillarAgentSpec{
 			External: &v1alpha1.ExternalSpec{Address: "192.168.1.10", Port: 9500},
 		},
@@ -89,11 +88,9 @@ func newImportTestEnv(
 		annotations[v1alpha1.AnnotationImportZvol] = importDataset
 	}
 	pvc := &corev1.PersistentVolumeClaim{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        pvcName,
-			Namespace:   "default",
-			Annotations: annotations,
-		},
+		Name:        pvcName,
+		Namespace:   "default",
+		Annotations: annotations,
 	}
 
 	objs := append(testConfigObjects(), store, target, pvc)
@@ -128,7 +125,7 @@ func seedImportedPVS(
 ) {
 	t.Helper()
 	pvs := &v1alpha1.PillarVolumeState{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Name: name,
 		Spec: v1alpha1.PillarVolumeStateSpec{
 			VolumeID:      "storage-node-1/nvmeof-tcp/zfs-zvol/hot-data/" + leaf,
 			AgentVolumeID: "hot-data/" + leaf,
@@ -261,7 +258,7 @@ func TestCreateVolume_ImportZvol_DuplicateAgentVolumeID(t *testing.T) {
 	// Another PillarVolumeState already owns hot-data/legacy-vol — a second
 	// lifecycle must never manage the same zvol.
 	owner := &v1alpha1.PillarVolumeState{
-		ObjectMeta: metav1.ObjectMeta{Name: "pvc-other"},
+		Name: "pvc-other",
 		Spec: v1alpha1.PillarVolumeStateSpec{
 			VolumeID:      "storage-node-1/nvmeof-tcp/zfs-zvol/hot-data/legacy-vol",
 			AgentVolumeID: "hot-data/legacy-vol",
@@ -319,7 +316,7 @@ func TestCreateVolume_ImportZvol_RefusesLateAnnotation(t *testing.T) {
 	env, req := newImportTestEnv(t, "data", "hot-data/k8s/legacy-vol")
 	// Pre-seed a non-import lifecycle for the same volume name.
 	pvs := &v1alpha1.PillarVolumeState{
-		ObjectMeta: metav1.ObjectMeta{Name: req.GetName()},
+		Name: req.GetName(),
 		Spec: v1alpha1.PillarVolumeStateSpec{
 			VolumeID:      "storage-node-1/nvmeof-tcp/zfs-zvol/hot-data/" + req.GetName(),
 			AgentVolumeID: "hot-data/" + req.GetName(),
@@ -368,7 +365,7 @@ func TestCreateVolume_ImportZvol_RefusesChangedSource(t *testing.T) {
 func TestCreateVolume_NormalCreate_RefusesImportedCollision(t *testing.T) {
 	t.Parallel()
 	owner := &v1alpha1.PillarVolumeState{
-		ObjectMeta: metav1.ObjectMeta{Name: "pvc-imported"},
+		Name: "pvc-imported",
 		Spec: v1alpha1.PillarVolumeStateSpec{
 			VolumeID:      "storage-node-1/nvmeof-tcp/zfs-zvol/hot-data/pvc-data",
 			AgentVolumeID: "hot-data/pvc-data",
@@ -420,8 +417,8 @@ func TestDeleteVolume_LegacyStateWithoutAgentVolumeID(t *testing.T) {
 	const name = "pvc-legacy"
 	volumeID := "storage-node-1/nvmeof-tcp/zfs-zvol/hot-data/" + name
 	legacy := &v1alpha1.PillarVolumeState{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
-		Spec:       v1alpha1.PillarVolumeStateSpec{VolumeID: volumeID},
+		Name: name,
+		Spec: v1alpha1.PillarVolumeStateSpec{VolumeID: volumeID},
 	}
 	env, _ := newImportTestEnv(t, "data", "")
 	if err := env.srv.k8sClient.Create(context.Background(), legacy); err != nil {
@@ -506,7 +503,7 @@ func TestResolveImportDataset_Layout(t *testing.T) {
 // "legacy-vol" provisioned on store "cold".
 func stalePVS(name string) *v1alpha1.PillarVolumeState {
 	return &v1alpha1.PillarVolumeState{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Name: name,
 		Spec: v1alpha1.PillarVolumeStateSpec{
 			VolumeID:      "storage-node-1/nvmeof-tcp/zfs-zvol/cold/" + name,
 			AgentVolumeID: "cold/" + name,
@@ -523,7 +520,7 @@ func stalePVS(name string) *v1alpha1.PillarVolumeState {
 func TestVolumeStateNameForID_LeafNamedStateOwnsOtherVolume(t *testing.T) {
 	t.Parallel()
 	owner := &v1alpha1.PillarVolumeState{
-		ObjectMeta: metav1.ObjectMeta{Name: "pvc-data"},
+		Name: "pvc-data",
 		Spec: v1alpha1.PillarVolumeStateSpec{
 			VolumeID:      "storage-node-1/nvmeof-tcp/zfs-zvol/hot-data/legacy-vol",
 			AgentVolumeID: "hot-data/legacy-vol",
@@ -675,7 +672,7 @@ func replaceReservation(t *testing.T, env *controllerTestEnv, owner string) {
 		}
 	}
 	res := &v1alpha1.PillarVolumeReservation{
-		ObjectMeta: metav1.ObjectMeta{Name: legacyVolReservation},
+		Name: legacyVolReservation,
 		Spec: v1alpha1.PillarVolumeReservationSpec{
 			AgentRef:      "storage-node-1",
 			BackendType:   "zfs-zvol",
@@ -791,10 +788,10 @@ func TestReapAbandonedVolume_RefusedImportNeverDestroys(t *testing.T) {
 	if err := env.srv.k8sClient.Delete(context.Background(), seeded); err != nil {
 		t.Fatalf("delete seeded PVC: %v", err)
 	}
-	pvc := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{
+	pvc := &corev1.PersistentVolumeClaim{
 		Name: "data", Namespace: "default", UID: types.UID(reapClaimUID),
 		Annotations: map[string]string{v1alpha1.AnnotationImportZvol: "hot-data/k8s/legacy-vol"},
-	}}
+	}
 	if err := env.srv.k8sClient.Create(context.Background(), pvc); err != nil {
 		t.Fatalf("recreate PVC with UID: %v", err)
 	}
@@ -901,10 +898,8 @@ func requireImportByNewClaim(
 ) {
 	t.Helper()
 	if err := env.srv.k8sClient.Create(context.Background(), &corev1.PersistentVolumeClaim{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "data-2", Namespace: "default",
-			Annotations: map[string]string{v1alpha1.AnnotationImportZvol: "hot-data/k8s/legacy-vol"},
-		},
+		Name: "data-2", Namespace: "default",
+		Annotations: map[string]string{v1alpha1.AnnotationImportZvol: "hot-data/k8s/legacy-vol"},
 	}); err != nil {
 		t.Fatalf("create second claim: %v", err)
 	}
@@ -963,7 +958,7 @@ func TestControllerExpandPublish_UnadoptedImportRefused(t *testing.T) {
 func TestVolumeStateNameForID_IgnoresSameVolumeOnOtherAgent(t *testing.T) {
 	t.Parallel()
 	remote := &v1alpha1.PillarVolumeState{
-		ObjectMeta: metav1.ObjectMeta{Name: "pvc-remote"},
+		Name: "pvc-remote",
 		Spec: v1alpha1.PillarVolumeStateSpec{
 			VolumeID:      "storage-node-2/nvmeof-tcp/zfs-zvol/hot-data/legacy-vol",
 			AgentVolumeID: "hot-data/legacy-vol",
@@ -997,7 +992,7 @@ func TestVolumeStateNameForID_IgnoresSameVolumeOnOtherAgent(t *testing.T) {
 func TestCreateVolume_ImportZvol_SameDatasetOtherAgentAllowed(t *testing.T) {
 	t.Parallel()
 	remote := &v1alpha1.PillarVolumeState{
-		ObjectMeta: metav1.ObjectMeta{Name: "pvc-remote"},
+		Name: "pvc-remote",
 		Spec: v1alpha1.PillarVolumeStateSpec{
 			VolumeID:      "storage-node-2/nvmeof-tcp/zfs-zvol/hot-data/legacy-vol",
 			AgentVolumeID: "hot-data/legacy-vol",
@@ -1020,7 +1015,7 @@ func TestCreateVolume_ImportZvol_SameDatasetOtherAgentAllowed(t *testing.T) {
 func TestVolumeStateNameForID_ReadsUncachedReader(t *testing.T) {
 	t.Parallel()
 	owner := &v1alpha1.PillarVolumeState{
-		ObjectMeta: metav1.ObjectMeta{Name: "pvc-data"},
+		Name: "pvc-data",
 		Spec: v1alpha1.PillarVolumeStateSpec{
 			VolumeID:      "storage-node-1/nvmeof-tcp/zfs-zvol/hot-data/legacy-vol",
 			AgentVolumeID: "hot-data/legacy-vol",

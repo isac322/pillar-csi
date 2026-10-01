@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1
+# syntax=docker/dockerfile:1.27
 
 # Unified multi-target Dockerfile for all pillar-csi components.
 #
@@ -20,7 +20,7 @@
 # See docker-bake.hcl for the build matrix and CI integration.
 
 # ── Builder stage ─────────────────────────────────────────────────────────────
-FROM --platform=$BUILDPLATFORM golang:1.27-alpine3.24 AS builder
+FROM --platform=$BUILDPLATFORM golang:1.27.1-alpine3.24 AS builder
 
 WORKDIR /workspace
 
@@ -78,7 +78,7 @@ ENTRYPOINT ["/usr/bin/manager"]
 #   --security-opt=no-new-privileges:true
 #   --read-only  (combine with tmpfs mounts for /tmp, /run)
 #   --cap-drop ALL --cap-add SYS_ADMIN  (ZFS + configfs need SYS_ADMIN)
-FROM alpine:3.24 AS agent
+FROM alpine:3.24.2 AS agent
 RUN set -eux \
     && apk add --no-cache 'zfs~=2.4' lvm2 \
     # Configure LVM for container environments where udevd is not running.
@@ -112,7 +112,7 @@ ENTRYPOINT ["/usr/bin/pillar-agent"]
 #   --security-opt=no-new-privileges:true
 #   --read-only  (combine with tmpfs mounts for /tmp, /run)
 #   --cap-drop ALL --cap-add SYS_ADMIN  (mount(8) and NVMe-oF need SYS_ADMIN)
-FROM alpine:3.24 AS node
+FROM alpine:3.24.2 AS node
 RUN --mount=type=bind,source=hack/verify-mkfs-baseline.sh,target=/tmp/verify-mkfs-baseline.sh \
     set -eux \
     && apk add --no-cache \

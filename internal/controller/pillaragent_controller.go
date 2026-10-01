@@ -1105,7 +1105,7 @@ func (r *PillarAgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			t := &targetList.Items[i]
 			if t.Spec.NodeRef != nil && t.Spec.NodeRef.Name == node.Name {
 				requests = append(requests, reconcile.Request{
-					NamespacedName: types.NamespacedName{Name: t.Name},
+					Name: t.Name,
 				})
 			}
 		}
@@ -1125,7 +1125,7 @@ func (r *PillarAgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			return nil
 		}
 		return []reconcile.Request{
-			{NamespacedName: types.NamespacedName{Name: pool.Spec.AgentRef}},
+			{Name: pool.Spec.AgentRef},
 		}
 	}
 

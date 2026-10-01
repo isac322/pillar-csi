@@ -593,9 +593,7 @@ func (r *PillarStorageClassReconciler) reconcileStorageClass(
 	}
 
 	sc := &storagev1.StorageClass{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: scName,
-		},
+		Name: scName,
 	}
 
 	op, err := controllerutil.CreateOrUpdate(ctx, r.Client, sc, func() error {
@@ -775,7 +773,7 @@ func (r *PillarStorageClassReconciler) recreateStorageClass(
 	}
 
 	carryOver := carryOverFrom(existing)
-	replacement := &storagev1.StorageClass{ObjectMeta: metav1.ObjectMeta{Name: existing.Name}}
+	replacement := &storagev1.StorageClass{Name: existing.Name}
 	carryOver.applyTo(replacement)
 	applyDesiredStorageClass(replacement, desired)
 	err := controllerutil.SetControllerReference(binding, replacement, r.Scheme)
@@ -1072,7 +1070,7 @@ func (r *PillarStorageClassReconciler) SetupWithManager(mgr ctrl.Manager) error 
 		for i := range bindingList.Items {
 			if bindingList.Items[i].Spec.StoreRef == pool.Name {
 				requests = append(requests, reconcile.Request{
-					NamespacedName: types.NamespacedName{Name: bindingList.Items[i].Name},
+					Name: bindingList.Items[i].Name,
 				})
 			}
 		}
@@ -1097,7 +1095,7 @@ func (r *PillarStorageClassReconciler) SetupWithManager(mgr ctrl.Manager) error 
 		for i := range bindingList.Items {
 			if bindingList.Items[i].Spec.ProtocolRef == protocol.Name {
 				requests = append(requests, reconcile.Request{
-					NamespacedName: types.NamespacedName{Name: bindingList.Items[i].Name},
+					Name: bindingList.Items[i].Name,
 				})
 			}
 		}

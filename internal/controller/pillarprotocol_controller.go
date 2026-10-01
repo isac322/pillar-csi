@@ -323,7 +323,7 @@ func (r *PillarProtocolReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			return nil
 		}
 		return []reconcile.Request{
-			{NamespacedName: types.NamespacedName{Name: binding.Spec.ProtocolRef}},
+			{Name: binding.Spec.ProtocolRef},
 		}
 	}
 
@@ -357,7 +357,7 @@ func (r *PillarProtocolReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		reqs := make([]reconcile.Request, 0, len(protocolSet))
 		for name := range protocolSet {
 			reqs = append(reqs, reconcile.Request{
-				NamespacedName: types.NamespacedName{Name: name},
+				Name: name,
 			})
 		}
 		return reqs
@@ -405,7 +405,7 @@ func (r *PillarProtocolReconciler) mapSecretToProtocols(ctx context.Context, obj
 			continue
 		}
 		reqs = append(reqs, reconcile.Request{
-			NamespacedName: types.NamespacedName{Name: protocols.Items[i].Name},
+			Name: protocols.Items[i].Name,
 		})
 	}
 	return reqs

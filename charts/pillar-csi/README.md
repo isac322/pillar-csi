@@ -84,11 +84,11 @@ Kubernetes: `>=1.24.0-0`
 | controller.sidecars.attacher.extraArgs | list | `[]` | Extra arguments for csi-attacher. |
 | controller.sidecars.attacher.image.pullPolicy | string | `""` |  |
 | controller.sidecars.attacher.image.repository | string | `"registry.k8s.io/sig-storage/csi-attacher"` | csi-attacher image repository. |
-| controller.sidecars.attacher.image.tag | string | `"v4.12.0"` | csi-attacher image tag. |
+| controller.sidecars.attacher.image.tag | string | `"v4.13.0"` | csi-attacher image tag. |
 | controller.sidecars.attacher.resources | object | `{"limits":{"cpu":"100m","memory":"64Mi"},"requests":{"cpu":"10m","memory":"32Mi"}}` | Resource requests/limits for the attacher sidecar. |
 | controller.sidecars.livenessProbe.image.pullPolicy | string | `""` |  |
 | controller.sidecars.livenessProbe.image.repository | string | `"registry.k8s.io/sig-storage/livenessprobe"` | livenessprobe image repository. |
-| controller.sidecars.livenessProbe.image.tag | string | `"v2.19.0"` | livenessprobe image tag (shared with node liveness sidecar). |
+| controller.sidecars.livenessProbe.image.tag | string | `"v2.20.0"` | livenessprobe image tag (shared with node liveness sidecar). |
 | controller.sidecars.livenessProbe.resources | object | `{"limits":{"cpu":"50m","memory":"32Mi"},"requests":{"cpu":"5m","memory":"16Mi"}}` | Resource requests/limits for the liveness-probe sidecar. |
 | controller.sidecars.provisioner.extraArgs | list | `[]` | Extra arguments for csi-provisioner. `--extra-create-metadata` is always passed: CreateVolume reads the PVC override annotations through it. |
 | controller.sidecars.provisioner.image.pullPolicy | string | `""` |  |
@@ -154,12 +154,12 @@ Kubernetes: `>=1.24.0-0`
 | node.resources | object | `{"limits":{"cpu":"500m","memory":"256Mi"},"requests":{"cpu":"10m","memory":"64Mi"}}` | Resource requests/limits for the pillar-node container. |
 | node.sidecars.livenessProbe.image.pullPolicy | string | `""` |  |
 | node.sidecars.livenessProbe.image.repository | string | `"registry.k8s.io/sig-storage/livenessprobe"` | livenessprobe image repository (can differ from controller's). |
-| node.sidecars.livenessProbe.image.tag | string | `"v2.19.0"` | livenessprobe image tag. |
+| node.sidecars.livenessProbe.image.tag | string | `"v2.20.0"` | livenessprobe image tag. |
 | node.sidecars.livenessProbe.resources | object | `{"limits":{"cpu":"50m","memory":"32Mi"},"requests":{"cpu":"5m","memory":"16Mi"}}` | Resource requests/limits for the liveness-probe sidecar. |
 | node.sidecars.nodeDriverRegistrar.extraArgs | list | `[]` | Extra arguments for csi-node-driver-registrar. |
 | node.sidecars.nodeDriverRegistrar.image.pullPolicy | string | `""` |  |
 | node.sidecars.nodeDriverRegistrar.image.repository | string | `"registry.k8s.io/sig-storage/csi-node-driver-registrar"` | csi-node-driver-registrar image repository. |
-| node.sidecars.nodeDriverRegistrar.image.tag | string | `"v2.17.0"` | csi-node-driver-registrar image tag. |
+| node.sidecars.nodeDriverRegistrar.image.tag | string | `"v2.18.0"` | csi-node-driver-registrar image tag. |
 | node.sidecars.nodeDriverRegistrar.resources | object | `{"limits":{"cpu":"100m","memory":"64Mi"},"requests":{"cpu":"10m","memory":"32Mi"}}` | Resource requests/limits for the node-driver-registrar sidecar. |
 | node.tolerations | list | `[]` | Tolerations applied to node DaemonSet Pods. |
 | node.trim.enabled | bool | `true` | trim-interval=0 and disables the trim loop. |

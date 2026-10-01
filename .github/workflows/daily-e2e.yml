@@ -51,7 +51,7 @@ jobs:
       last_sha: ${{ steps.decide.outputs.last_sha }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
 
@@ -164,7 +164,7 @@ jobs:
     timeout-minutes: 240
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
 
       # test/docker-e2e/run.sh loads these from the host's /lib/modules inside
       # the privileged container; linux-modules-extra ships the NVMe target and

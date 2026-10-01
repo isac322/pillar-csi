@@ -50,7 +50,6 @@ import (
 	"google.golang.org/grpc/status"
 	storagev1 "k8s.io/api/storage/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -705,7 +704,7 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 		if claimFound {
 			spec.ClaimRef = &claimRef
 		}
-		attempt = &v1alpha1.PillarVolumeState{ObjectMeta: metav1.ObjectMeta{Name: pvName}, Spec: spec}
+		attempt = &v1alpha1.PillarVolumeState{Name: pvName, Spec: spec}
 	}
 	err = s.refuseAbandonedClaim(ctx, attempt)
 	if err != nil {
@@ -1294,8 +1293,8 @@ func pillarVolumeStateNameFromVolumeID(volumeID string) string {
 		return ""
 	}
 	agentVolID := parts[3]
-	if idx := strings.LastIndex(agentVolID, "/"); idx >= 0 {
-		return agentVolID[idx+1:]
+	if _, suffix, found := strings.CutLast(agentVolID, "/"); found {
+		return suffix
 	}
 	return agentVolID
 }

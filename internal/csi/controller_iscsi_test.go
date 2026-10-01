@@ -24,7 +24,6 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	storagev1 "k8s.io/api/storage/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	v1alpha1 "github.com/isac322/pillar-csi/api/v1alpha1"
 	agentv1 "github.com/isac322/pillar-csi/gen/go/pillar_csi/agent/v1"
@@ -35,8 +34,8 @@ const testISCSIProtocolName = "iscsi-proto"
 // iscsiProtocol is a PillarProtocol with the iscsi member.
 func iscsiProtocol(cfg *v1alpha1.ISCSIConfig) *v1alpha1.PillarProtocol {
 	return &v1alpha1.PillarProtocol{
-		ObjectMeta: metav1.ObjectMeta{Name: testISCSIProtocolName},
-		Spec:       v1alpha1.PillarProtocolSpec{Protocol: v1alpha1.ProtocolSpec{ISCSI: cfg}},
+		Name: testISCSIProtocolName,
+		Spec: v1alpha1.PillarProtocolSpec{Protocol: v1alpha1.ProtocolSpec{ISCSI: cfg}},
 	}
 }
 
@@ -186,13 +185,13 @@ func TestControllerPublishVolume_ISCSIResolvesInitiatorIQN(t *testing.T) {
 	req.VolumeId = "storage-node-1/iscsi/zfs-zvol/tank/pvc-iscsi"
 	pvs := volumeStateFor(req.GetVolumeId())
 	pvs.Status.ExportSpec = &v1alpha1.VolumeExportSpec{BindAddress: "192.168.1.10", Port: 3260, ACLEnabled: true}
-	csiNode := &storagev1.CSINode{ObjectMeta: metav1.ObjectMeta{
+	csiNode := &storagev1.CSINode{
 		Name: req.GetNodeId(),
 		Annotations: map[string]string{
 			AnnotationNVMeOFHostNQN:     "nqn.2014-08.org.nvmexpress:uuid:w1",
 			AnnotationISCSIInitiatorIQN: initiatorIQN,
 		},
-	}}
+	}
 	env := newPublishTestEnv(t, csiNode, pvs)
 
 	if _, err := env.srv.ControllerPublishVolume(context.Background(), req); err != nil {
@@ -221,10 +220,10 @@ func TestControllerPublishVolume_ISCSIMissingIQNAnnotation(t *testing.T) {
 	req.VolumeId = "storage-node-1/iscsi/zfs-zvol/tank/pvc-iscsi"
 	pvs := volumeStateFor(req.GetVolumeId())
 	pvs.Status.ExportSpec = &v1alpha1.VolumeExportSpec{BindAddress: "192.168.1.10", Port: 3260, ACLEnabled: true}
-	csiNode := &storagev1.CSINode{ObjectMeta: metav1.ObjectMeta{
+	csiNode := &storagev1.CSINode{
 		Name:        req.GetNodeId(),
 		Annotations: map[string]string{AnnotationNVMeOFHostNQN: "nqn.2014-08.org.nvmexpress:uuid:w1"},
-	}}
+	}
 	env := newPublishTestEnv(t, csiNode, pvs)
 
 	_, err := env.srv.ControllerPublishVolume(context.Background(), req)

@@ -110,8 +110,8 @@ func assertSharedDialerServesAgent(t *testing.T, addr, cfgRoot string, manager *
 	vol := restorePVS(resyncAgentName, "pvc-shared-dialer", "aaaaaaaa-0000-0000-0000-000000000141")
 	k8s := fake.NewClientBuilder().WithScheme(scheme).
 		WithObjects(&v1alpha1.PillarAgent{
-			ObjectMeta: metav1.ObjectMeta{Name: resyncAgentName},
-			Status:     v1alpha1.PillarAgentStatus{ResolvedAddress: addr},
+			Name:   resyncAgentName,
+			Status: v1alpha1.PillarAgentStatus{ResolvedAddress: addr},
 		}, vol).
 		WithStatusSubresource(&v1alpha1.PillarAgent{}, &v1alpha1.PillarVolumeState{}).
 		WithInterceptorFuncs(fakeuid.Interceptor()).

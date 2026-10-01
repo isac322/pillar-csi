@@ -22,7 +22,6 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
@@ -114,7 +113,7 @@ func (r *PillarVolumeStateReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		for i := range volumes.Items {
 			if match(&volumes.Items[i]) {
 				requests = append(requests, reconcile.Request{
-					NamespacedName: types.NamespacedName{Name: volumes.Items[i].Name},
+					Name: volumes.Items[i].Name,
 				})
 			}
 		}

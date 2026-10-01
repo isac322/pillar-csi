@@ -50,7 +50,6 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -91,7 +90,7 @@ func (s *ControllerServer) reserveBackendVolume(
 			"get PillarVolumeReservation %q: %v", name, err)
 	}
 	res = &v1alpha1.PillarVolumeReservation{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Name: name,
 		Spec: v1alpha1.PillarVolumeReservationSpec{
 			AgentRef:      agentName,
 			BackendType:   backendType,

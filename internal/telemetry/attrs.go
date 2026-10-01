@@ -154,8 +154,8 @@ func SetAgentVolumeAttributes(ctx context.Context, agentVolumeID string) {
 }
 
 func splitAgentVolumeID(id string) (pool, pv string) {
-	if idx := strings.LastIndex(id, "/"); idx >= 0 {
-		return id[:idx], id[idx+1:]
+	if prefix, suffix, found := strings.CutLast(id, "/"); found {
+		return prefix, suffix
 	}
 	return "", id
 }

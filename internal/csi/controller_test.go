@@ -407,7 +407,7 @@ const (
 func testConfigObjects() []ctrlclient.Object {
 	return []ctrlclient.Object{
 		&v1alpha1.PillarStore{
-			ObjectMeta: metav1.ObjectMeta{Name: testStoreName},
+			Name: testStoreName,
 			Spec: v1alpha1.PillarStoreSpec{
 				AgentRef: "storage-node-1",
 				Backend: v1alpha1.BackendSpec{ZFS: &v1alpha1.ZFSBackendConfig{
@@ -417,7 +417,7 @@ func testConfigObjects() []ctrlclient.Object {
 			},
 		},
 		&v1alpha1.PillarStore{
-			ObjectMeta: metav1.ObjectMeta{Name: testLVMStoreName},
+			Name: testLVMStoreName,
 			Spec: v1alpha1.PillarStoreSpec{
 				AgentRef: "storage-node-1",
 				Backend: v1alpha1.BackendSpec{LVM: &v1alpha1.LVMBackendConfig{
@@ -427,13 +427,13 @@ func testConfigObjects() []ctrlclient.Object {
 			},
 		},
 		&v1alpha1.PillarProtocol{
-			ObjectMeta: metav1.ObjectMeta{Name: testProtocolName},
+			Name: testProtocolName,
 			Spec: v1alpha1.PillarProtocolSpec{
 				Protocol: v1alpha1.ProtocolSpec{NVMeOFTCP: &v1alpha1.NVMeOFTCPConfig{Port: 4420}},
 			},
 		},
 		&v1alpha1.PillarProtocol{
-			ObjectMeta: metav1.ObjectMeta{Name: testACLProtocol},
+			Name: testACLProtocol,
 			Spec: v1alpha1.PillarProtocolSpec{
 				Protocol: v1alpha1.ProtocolSpec{NVMeOFTCP: &v1alpha1.NVMeOFTCPConfig{Port: 4420, ACL: true}},
 			},
@@ -465,9 +465,7 @@ func newControllerTestEnv(t *testing.T, extra ...ctrlclient.Object) *controllerT
 
 	// Seed the fake client with a ready PillarAgent.
 	target := &v1alpha1.PillarAgent{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "storage-node-1",
-		},
+		Name: "storage-node-1",
 		Spec: v1alpha1.PillarAgentSpec{
 			External: &v1alpha1.ExternalSpec{
 				Address: "192.168.1.10",
@@ -516,7 +514,7 @@ func newControllerTestEnv(t *testing.T, extra ...ctrlclient.Object) *controllerT
 func seedPillarVolumeState(t *testing.T, env *controllerTestEnv, name string) {
 	t.Helper()
 	pv := &v1alpha1.PillarVolumeState{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Name: name,
 		Spec: v1alpha1.PillarVolumeStateSpec{
 			AgentVolumeID: "tank/" + name,
 			AgentRef:      "storage-node-1",
@@ -883,7 +881,7 @@ func TestCreateVolume_PartialRetryKeepsResolvedBackend(t *testing.T) {
 			name: "store deleted",
 			patch: func(t *testing.T, env *controllerTestEnv) {
 				t.Helper()
-				store := &v1alpha1.PillarStore{ObjectMeta: metav1.ObjectMeta{Name: testLVMStoreName}}
+				store := &v1alpha1.PillarStore{Name: testLVMStoreName}
 				if err := env.srv.k8sClient.Delete(context.Background(), store); err != nil {
 					t.Fatalf("delete store: %v", err)
 				}
@@ -1532,7 +1530,7 @@ func TestCreateVolume_AgentUnavailable(t *testing.T) {
 	}
 
 	target := &v1alpha1.PillarAgent{
-		ObjectMeta: metav1.ObjectMeta{Name: "storage-node-1"},
+		Name: "storage-node-1",
 		Spec: v1alpha1.PillarAgentSpec{
 			External: &v1alpha1.ExternalSpec{Address: "192.168.1.10", Port: 9500},
 		},
@@ -1659,8 +1657,8 @@ func TestGetCapacity_LVMStoreUsesVolumeGroup(t *testing.T) {
 func TestGetCapacity_BindingIdentity(t *testing.T) {
 	t.Parallel()
 	env := newControllerTestEnv(t, &v1alpha1.PillarStorageClass{
-		ObjectMeta: metav1.ObjectMeta{Name: "lvm-binding"},
-		Spec:       v1alpha1.PillarStorageClassSpec{StoreRef: testLVMStoreName, ProtocolRef: testProtocolName},
+		Name: "lvm-binding",
+		Spec: v1alpha1.PillarStorageClassSpec{StoreRef: testLVMStoreName, ProtocolRef: testProtocolName},
 	})
 	req := &csi.GetCapacityRequest{Parameters: map[string]string{paramBinding: "lvm-binding"}}
 	if _, err := env.srv.GetCapacity(context.Background(), req); err != nil {
@@ -1719,7 +1717,7 @@ func TestGetCapacity_UnknownConfigCR(t *testing.T) {
 func TestGetCapacity_TargetNotFound(t *testing.T) {
 	t.Parallel()
 	env := newControllerTestEnv(t, &v1alpha1.PillarStore{
-		ObjectMeta: metav1.ObjectMeta{Name: "orphan-store"},
+		Name: "orphan-store",
 		Spec: v1alpha1.PillarStoreSpec{
 			AgentRef: "nonexistent-target",
 			Backend:  v1alpha1.BackendSpec{ZFS: &v1alpha1.ZFSBackendConfig{Pool: "tank"}},
@@ -1815,7 +1813,7 @@ func TestGetCapacity_TargetNoAddress(t *testing.T) {
 
 	// Create a PillarAgent with no ResolvedAddress.
 	target := &v1alpha1.PillarAgent{
-		ObjectMeta: metav1.ObjectMeta{Name: "storage-node-1"},
+		Name: "storage-node-1",
 		Spec: v1alpha1.PillarAgentSpec{
 			External: &v1alpha1.ExternalSpec{Address: "192.168.1.10", Port: 9500},
 		},
@@ -1873,7 +1871,7 @@ func newControllerTestEnvWithPVC(
 	}
 
 	target := &v1alpha1.PillarAgent{
-		ObjectMeta: metav1.ObjectMeta{Name: "storage-node-1"},
+		Name: "storage-node-1",
 		Spec: v1alpha1.PillarAgentSpec{
 			External: &v1alpha1.ExternalSpec{Address: "192.168.1.10", Port: 9500},
 		},
@@ -1883,11 +1881,9 @@ func newControllerTestEnvWithPVC(
 	}
 
 	pvc := &corev1.PersistentVolumeClaim{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        pvcName,
-			Namespace:   pvcNamespace,
-			Annotations: annotations,
-		},
+		Name:        pvcName,
+		Namespace:   pvcNamespace,
+		Annotations: annotations,
 	}
 
 	fakeClient := fake.NewClientBuilder().
@@ -2125,12 +2121,12 @@ func TestCreateVolume_PVCLookupFailure_NotSilentlySkipped(t *testing.T) {
 func TestCreateVolume_MissingBindingOrStore_FailedPrecondition(t *testing.T) {
 	t.Parallel()
 	orphanStore := &v1alpha1.PillarStorageClass{
-		ObjectMeta: metav1.ObjectMeta{Name: "orphan-store-binding"},
-		Spec:       v1alpha1.PillarStorageClassSpec{StoreRef: "deleted-store", ProtocolRef: testProtocolName},
+		Name: "orphan-store-binding",
+		Spec: v1alpha1.PillarStorageClassSpec{StoreRef: "deleted-store", ProtocolRef: testProtocolName},
 	}
 	orphanProtocol := &v1alpha1.PillarStorageClass{
-		ObjectMeta: metav1.ObjectMeta{Name: "orphan-protocol-binding"},
-		Spec:       v1alpha1.PillarStorageClassSpec{StoreRef: testStoreName, ProtocolRef: "deleted-protocol"},
+		Name: "orphan-protocol-binding",
+		Spec: v1alpha1.PillarStorageClassSpec{StoreRef: testStoreName, ProtocolRef: "deleted-protocol"},
 	}
 	for name, bindingName := range map[string]string{
 		"binding":  "deleted-binding",
@@ -2173,7 +2169,8 @@ func TestCreateVolume_CompletedRetry_ClaimDeleted(t *testing.T) {
 	}
 
 	pvc := &corev1.PersistentVolumeClaim{
-		ObjectMeta: metav1.ObjectMeta{Name: "pvc-gone-after", Namespace: "default"},
+		Name:      "pvc-gone-after",
+		Namespace: "default",
 	}
 	if delErr := env.srv.k8sClient.Delete(ctx, pvc); delErr != nil {
 		t.Fatalf("delete claim: %v", delErr)
@@ -2204,7 +2201,7 @@ func TestCreateVolume_CompletedRetry_BindingDeleted(t *testing.T) {
 	ctx := context.Background()
 
 	pool := &v1alpha1.PillarStore{
-		ObjectMeta: metav1.ObjectMeta{Name: "gone-pool"},
+		Name: "gone-pool",
 		Spec: v1alpha1.PillarStoreSpec{
 			AgentRef: "storage-node-1",
 			Backend: v1alpha1.BackendSpec{
@@ -2216,8 +2213,8 @@ func TestCreateVolume_CompletedRetry_BindingDeleted(t *testing.T) {
 		},
 	}
 	binding := &v1alpha1.PillarStorageClass{
-		ObjectMeta: metav1.ObjectMeta{Name: "gone-binding"},
-		Spec:       v1alpha1.PillarStorageClassSpec{StoreRef: pool.Name, ProtocolRef: testProtocolName},
+		Name: "gone-binding",
+		Spec: v1alpha1.PillarStorageClassSpec{StoreRef: pool.Name, ProtocolRef: testProtocolName},
 	}
 	for _, obj := range []ctrlclient.Object{pool, binding} {
 		if err := env.srv.k8sClient.Create(ctx, obj); err != nil {
@@ -2379,7 +2376,8 @@ func TestCreateVolume_CompletedRetry_AbsentKeyNotResurrected(t *testing.T) {
 		t.Fatalf("update protocol: %v", err)
 	}
 	pvc := &corev1.PersistentVolumeClaim{
-		ObjectMeta: metav1.ObjectMeta{Name: "pvc-no-delay", Namespace: "default"},
+		Name:      "pvc-no-delay",
+		Namespace: "default",
 	}
 	if delErr := env.srv.k8sClient.Delete(ctx, pvc); delErr != nil {
 		t.Fatalf("delete claim: %v", delErr)
@@ -2508,7 +2506,7 @@ func TestCreateVolume_LVMBindingPrecedence(t *testing.T) {
 			}
 			env, req := newControllerTestEnvWithPVC(t, "default", "pvc-lvm", ann)
 			binding := &v1alpha1.PillarStorageClass{
-				ObjectMeta: metav1.ObjectMeta{Name: "lvm-binding"},
+				Name: "lvm-binding",
 				Spec: v1alpha1.PillarStorageClassSpec{
 					StoreRef:    testLVMStoreName,
 					ProtocolRef: testProtocolName,
@@ -2570,7 +2568,7 @@ func TestCreateVolume_LVMThinPoolSent(t *testing.T) {
 // partially replaces.
 func zfsPrecedenceStore() *v1alpha1.PillarStore {
 	return &v1alpha1.PillarStore{
-		ObjectMeta: metav1.ObjectMeta{Name: "zfs-layers"},
+		Name: "zfs-layers",
 		Spec: v1alpha1.PillarStoreSpec{
 			AgentRef: "storage-node-1",
 			Backend: v1alpha1.BackendSpec{ZFS: &v1alpha1.ZFSBackendConfig{
@@ -2611,7 +2609,7 @@ func TestCreateVolume_ZFSPropertiesPrecedence_Binding(t *testing.T) {
 	})
 	ctx := context.Background()
 	binding := &v1alpha1.PillarStorageClass{
-		ObjectMeta: metav1.ObjectMeta{Name: "zfs-binding"},
+		Name: "zfs-binding",
 		Spec: v1alpha1.PillarStorageClassSpec{
 			StoreRef:    "zfs-layers",
 			ProtocolRef: testProtocolName,
@@ -2684,7 +2682,7 @@ func TestCreateVolume_PVCBackendMemberMustMatchStore(t *testing.T) {
 func TestCreateVolume_ProtocolACLAndPort(t *testing.T) {
 	t.Parallel()
 	env := newControllerTestEnv(t, &v1alpha1.PillarProtocol{
-		ObjectMeta: metav1.ObjectMeta{Name: "nvme-acl"},
+		Name: "nvme-acl",
 		Spec: v1alpha1.PillarProtocolSpec{Protocol: v1alpha1.ProtocolSpec{
 			NVMeOFTCP: &v1alpha1.NVMeOFTCPConfig{Port: 4421, ACL: true},
 		}},
@@ -2714,7 +2712,7 @@ func filesystemBinding() *v1alpha1.PillarStorageClass {
 	mkfs := []string{"-K"}
 	mount := []string{"noatime"}
 	return &v1alpha1.PillarStorageClass{
-		ObjectMeta: metav1.ObjectMeta{Name: "xfs-binding"},
+		Name: "xfs-binding",
 		Spec: v1alpha1.PillarStorageClassSpec{
 			StoreRef:    testStoreName,
 			ProtocolRef: testProtocolName,
@@ -2837,7 +2835,7 @@ func TestCreateVolume_FilesystemListSemantics(t *testing.T) {
 func TestCreateVolume_NVMeoFTuningPrecedence(t *testing.T) {
 	t.Parallel()
 	protocol := &v1alpha1.PillarProtocol{
-		ObjectMeta: metav1.ObjectMeta{Name: "nvme-tuned"},
+		Name: "nvme-tuned",
 		Spec: v1alpha1.PillarProtocolSpec{Protocol: v1alpha1.ProtocolSpec{NVMeOFTCP: &v1alpha1.NVMeOFTCPConfig{
 			Port:                4420,
 			MaxQueueSize:        testInt32(32),
@@ -2879,7 +2877,7 @@ func TestCreateVolume_NVMeoFTuningPrecedence(t *testing.T) {
 			v1alpha1.AnnotationProtocolDoc: pvcDoc,
 		})
 		binding := &v1alpha1.PillarStorageClass{
-			ObjectMeta: metav1.ObjectMeta{Name: "nvme-binding"},
+			Name: "nvme-binding",
 			Spec: v1alpha1.PillarStorageClassSpec{
 				StoreRef:    testStoreName,
 				ProtocolRef: protocol.Name,
@@ -3006,7 +3004,7 @@ func newPublishTestEnv(t *testing.T, objs ...ctrlclient.Object) *controllerTestE
 	}
 
 	target := &v1alpha1.PillarAgent{
-		ObjectMeta: metav1.ObjectMeta{Name: "storage-node-1"},
+		Name: "storage-node-1",
 		Status: v1alpha1.PillarAgentStatus{
 			ResolvedAddress: "192.168.1.10:9500",
 		},
@@ -3050,7 +3048,7 @@ func basePublishRequest() *csi.ControllerPublishVolumeRequest {
 // for volumeID (phase Ready), carrying the given publication records.
 func volumeStateFor(volumeID string, pubs ...v1alpha1.VolumePublication) *v1alpha1.PillarVolumeState {
 	return &v1alpha1.PillarVolumeState{
-		ObjectMeta: metav1.ObjectMeta{Name: pillarVolumeStateNameFromVolumeID(volumeID)},
+		Name: pillarVolumeStateNameFromVolumeID(volumeID),
 		Spec: v1alpha1.PillarVolumeStateSpec{
 			VolumeID:      volumeID,
 			AgentVolumeID: "tank/" + pillarVolumeStateNameFromVolumeID(volumeID),
@@ -3138,10 +3136,10 @@ func TestControllerPublishUnpublish_ACLOffSkipsInitiatorRPCs(t *testing.T) {
 	req := basePublishRequest()
 	pvs := volumeStateFor(req.GetVolumeId())
 	pvs.Status.ExportSpec = &v1alpha1.VolumeExportSpec{BindAddress: "192.168.1.10", Port: 4420, ACLEnabled: false}
-	csiNode := &storagev1.CSINode{ObjectMeta: metav1.ObjectMeta{
+	csiNode := &storagev1.CSINode{
 		Name:        req.GetNodeId(),
 		Annotations: map[string]string{AnnotationNVMeOFHostNQN: "nqn.2014-08.org.nvmexpress:uuid:w1"},
-	}}
+	}
 	env := newPublishTestEnv(t, csiNode, pvs)
 	ctx := context.Background()
 
@@ -3187,11 +3185,9 @@ func TestControllerPublishVolume_SuccessWithAnnotation(t *testing.T) {
 	const hostNQN = "nqn.2014-08.org.nvmexpress:uuid:worker-node-1-nqn"
 
 	csiNode := &storagev1.CSINode{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "worker-node-1",
-			Annotations: map[string]string{
-				AnnotationNVMeOFHostNQN: hostNQN,
-			},
+		Name: "worker-node-1",
+		Annotations: map[string]string{
+			AnnotationNVMeOFHostNQN: hostNQN,
 		},
 	}
 	env := newPublishTestEnv(t, csiNode, volumeStateFor(basePublishRequest().GetVolumeId()))
@@ -3258,10 +3254,10 @@ func exclNQN(node string) string { return "nqn.2014-08.org.nvmexpress:uuid:" + n
 func exclCSINodes() []ctrlclient.Object {
 	objs := make([]ctrlclient.Object, 0, 2)
 	for _, node := range []string{exclNode1, exclNode2} {
-		objs = append(objs, &storagev1.CSINode{ObjectMeta: metav1.ObjectMeta{
+		objs = append(objs, &storagev1.CSINode{
 			Name:        node,
 			Annotations: map[string]string{AnnotationNVMeOFHostNQN: exclNQN(node)},
-		}})
+		})
 	}
 	return objs
 }

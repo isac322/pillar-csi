@@ -66,10 +66,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
       - name: Download exact-checkout runtime images
         if: ${{ inputs.runtime_image_artifact != '' }}
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8.0.1
         with:
           name: ${{ inputs.runtime_image_artifact }}
           path: ${{ runner.temp }}/pillar-csi-runtime-images
@@ -102,13 +102,13 @@ jobs:
           done
 
       - name: Setup Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@v7.0.0
         with:
           go-version-file: go.mod
           cache: true
 
       - name: Cache pinned Kind e2e tools
-        uses: actions/cache@v6
+        uses: actions/cache@v6.1.0
         with:
           path: bin/
           key: kind-e2e-tools-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Makefile', 'go.mod', 'go.sum') }}
@@ -119,13 +119,15 @@ jobs:
       # missing, reuse if healthy, build images, helm install, run tests).
       # Cluster deletion is handled by the selected Make e2e target at the end.
       - name: Install Kind ${{ env.KIND_VERSION }}
-        uses: helm/kind-action@v1
+        uses: helm/kind-action@v1.15.0
         with:
           install_only: true
           version: ${{ env.KIND_VERSION }}
 
       - name: Install Helm
-        uses: azure/setup-helm@v5
+        uses: azure/setup-helm@v5.0.1
+        with:
+          version: v4.3.0
 
       # ── install ZFS, LVM, and NVMe kernel modules ────────────────────────
       # ZFS userspace tools (zpool, zfs, losetup) and LVM tools (pvcreate,
@@ -201,14 +203,14 @@ jobs:
       - name: Pre-pull base and third-party images
         run: |
           images=(
-            alpine:3.24
-            golang:1.27-alpine3.24
+            alpine:3.24.2
+            golang:1.27.1-alpine3.24
             busybox:1.38.0
             registry.k8s.io/sig-storage/csi-provisioner:v6.3.0
-            registry.k8s.io/sig-storage/csi-attacher:v4.12.0
+            registry.k8s.io/sig-storage/csi-attacher:v4.13.0
             registry.k8s.io/sig-storage/csi-resizer:v2.2.1
-            registry.k8s.io/sig-storage/livenessprobe:v2.19.0
-            registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.17.0
+            registry.k8s.io/sig-storage/livenessprobe:v2.20.0
+            registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.18.0
           )
           printf '%s\n' "${images[@]}" | xargs -P 4 -n 1 docker pull
 

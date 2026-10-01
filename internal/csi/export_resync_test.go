@@ -147,8 +147,8 @@ func newResyncEnvObjects(
 		t.Fatalf("AddToScheme: %v", err)
 	}
 	pa := &v1alpha1.PillarAgent{
-		ObjectMeta: metav1.ObjectMeta{Name: resyncAgentName},
-		Status:     v1alpha1.PillarAgentStatus{ResolvedAddress: "127.0.0.1:9500"},
+		Name:   resyncAgentName,
+		Status: v1alpha1.PillarAgentStatus{ResolvedAddress: "127.0.0.1:9500"},
 	}
 	builder := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pa).WithObjects(objs...).
 		WithStatusSubresource(&v1alpha1.PillarAgent{}, &v1alpha1.PillarVolumeState{}).
@@ -168,7 +168,8 @@ func newResyncEnvObjects(
 // generation 1.
 func resyncPVS(spec *v1alpha1.VolumeExportSpec, initiators ...string) *v1alpha1.PillarVolumeState {
 	pvs := &v1alpha1.PillarVolumeState{
-		ObjectMeta: metav1.ObjectMeta{Name: resyncPVSName, UID: types.UID(resyncPVSUID)},
+		Name: resyncPVSName,
+		UID:  types.UID(resyncPVSUID),
 		Spec: v1alpha1.PillarVolumeStateSpec{
 			VolumeID: resyncVolumeID, AgentVolumeID: resyncAgentVolID, AgentRef: resyncAgentName,
 			BackendType: "zfs-zvol", ProtocolType: "nvmeof-tcp",

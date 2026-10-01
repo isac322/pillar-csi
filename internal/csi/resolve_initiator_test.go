@@ -150,11 +150,9 @@ func TestResolveInitiatorID_NVMeoF_EmptyAnnotationValue(t *testing.T) {
 	t.Parallel()
 
 	csiNode := &storagev1.CSINode{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "worker-node-1",
-			Annotations: map[string]string{
-				AnnotationNVMeOFHostNQN: "", // empty value
-			},
+		Name: "worker-node-1",
+		Annotations: map[string]string{
+			AnnotationNVMeOFHostNQN: "", // empty value
 		},
 	}
 	srv := newMinimalControllerServer(t, csiNode)
@@ -175,11 +173,9 @@ func TestResolveInitiatorID_NVMeoF_Success(t *testing.T) {
 
 	const wantNQN = "nqn.2014-08.org.nvmexpress:uuid:aaaabbbb-cccc-dddd-eeee-ffffgggghhhh"
 	csiNode := &storagev1.CSINode{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "worker-node-1",
-			Annotations: map[string]string{
-				AnnotationNVMeOFHostNQN: wantNQN,
-			},
+		Name: "worker-node-1",
+		Annotations: map[string]string{
+			AnnotationNVMeOFHostNQN: wantNQN,
 		},
 	}
 	srv := newMinimalControllerServer(t, csiNode)
@@ -200,12 +196,10 @@ func TestResolveInitiatorID_NVMeoF_OnlyNVMeoFAnnotationRead(t *testing.T) {
 
 	const wantNQN = "nqn.2014-08.org.nvmexpress:uuid:only-nvmeof"
 	csiNode := &storagev1.CSINode{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "multi-proto-node",
-			Annotations: map[string]string{
-				AnnotationNVMeOFHostNQN:     wantNQN,
-				AnnotationISCSIInitiatorIQN: "iqn.1993-08.org.debian:01:multi-proto-node",
-			},
+		Name: "multi-proto-node",
+		Annotations: map[string]string{
+			AnnotationNVMeOFHostNQN:     wantNQN,
+			AnnotationISCSIInitiatorIQN: "iqn.1993-08.org.debian:01:multi-proto-node",
 		},
 	}
 	srv := newMinimalControllerServer(t, csiNode)
@@ -226,12 +220,10 @@ func TestResolveInitiatorID_ISCSI_OnlyISCSIAnnotationRead(t *testing.T) {
 
 	const wantIQN = "iqn.2026-01.com.bhyoo.pillar-csi:node.0123456789abcdef0123456789abcdef"
 	csiNode := &storagev1.CSINode{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "multi-proto-node",
-			Annotations: map[string]string{
-				AnnotationNVMeOFHostNQN:     "nqn.2014-08.org.nvmexpress:uuid:only-nvmeof",
-				AnnotationISCSIInitiatorIQN: wantIQN,
-			},
+		Name: "multi-proto-node",
+		Annotations: map[string]string{
+			AnnotationNVMeOFHostNQN:     "nqn.2014-08.org.nvmexpress:uuid:only-nvmeof",
+			AnnotationISCSIInitiatorIQN: wantIQN,
 		},
 	}
 	srv := newMinimalControllerServer(t, csiNode)
@@ -343,10 +335,8 @@ func TestResolveInitiatorID_TableDriven(t *testing.T) {
 
 	csiNodeWith := func(annotations map[string]string) *storagev1.CSINode {
 		return &storagev1.CSINode{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:        testNode,
-				Annotations: annotations,
-			},
+			Name:        testNode,
+			Annotations: annotations,
 		}
 	}
 

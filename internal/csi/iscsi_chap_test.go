@@ -212,8 +212,8 @@ func chapSecretObject(kv ...string) *corev1.Secret {
 		data[k] = []byte(v)
 	}
 	return &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Namespace: testInstallNamespace, Name: testChapSecretName},
-		Data:       data,
+		Namespace: testInstallNamespace, Name: testChapSecretName,
+		Data: data,
 	}
 }
 
@@ -358,10 +358,10 @@ func chapPublishVolumeState(volumeID string) *v1alpha1.PillarVolumeState {
 }
 
 func chapCSINode(name string) *storagev1.CSINode {
-	return &storagev1.CSINode{ObjectMeta: metav1.ObjectMeta{
+	return &storagev1.CSINode{
 		Name:        name,
 		Annotations: map[string]string{AnnotationISCSIInitiatorIQN: testChapInitiatorIQN},
-	}}
+	}
 }
 
 // TestControllerPublishVolume_ISCSIChap verifies the grant of a CHAP volume
