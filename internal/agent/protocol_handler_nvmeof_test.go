@@ -99,7 +99,7 @@ func TestNVMeoFTCPAgentHandler_AllowAndDenyInitiator(t *testing.T) {
 		t.Fatalf("Export setup unexpected error: %v", err)
 	}
 
-	if err := handler.AllowInitiator(context.Background(), testVolumeID, testHostNQN, testFence(t)); err != nil {
+	if err := handler.AllowInitiator(context.Background(), testVolumeID, testHostNQN, nil, testFence(t)); err != nil {
 		t.Fatalf("AllowInitiator unexpected error: %v", err)
 	}
 

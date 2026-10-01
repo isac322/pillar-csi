@@ -46,8 +46,15 @@ type AgentProtocolHandler interface {
 	Export(ctx context.Context, params ExportParams) (*ExportResult, error)
 	// Unexport removes the protocol target entry.
 	Unexport(ctx context.Context, volumeID string, fence *agentv1.FencingToken) error
-	// AllowInitiator grants access to a specific initiator.
-	AllowInitiator(ctx context.Context, volumeID, initiatorID string, fence *agentv1.FencingToken) error
+	// AllowInitiator grants access to a specific initiator.  protocolParams
+	// are the request's export params (iSCSI takes the ACL's CHAP
+	// credentials from them); they may be nil.
+	AllowInitiator(
+		ctx context.Context,
+		volumeID, initiatorID string,
+		protocolParams *agentv1.ExportParams,
+		fence *agentv1.FencingToken,
+	) error
 	// DenyInitiator revokes access for a specific initiator.
 	DenyInitiator(ctx context.Context, volumeID, initiatorID string, fence *agentv1.FencingToken) error
 	// SetLocalAttach fences the export for a direct attach on the storage
@@ -233,10 +240,12 @@ func (h *NVMeoFTCPAgentHandler) Unexport(ctx context.Context, volumeID string, f
 	})
 }
 
-// AllowInitiator grants NVMe-oF TCP access to the given initiator NQN.
+// AllowInitiator grants NVMe-oF TCP access to the given initiator NQN.  The
+// export params carry nothing NVMe-oF needs for a grant.
 func (h *NVMeoFTCPAgentHandler) AllowInitiator(
 	ctx context.Context,
 	volumeID, initiatorID string,
+	_ *agentv1.ExportParams,
 	fence *agentv1.FencingToken,
 ) error {
 	target, err := h.targetForVolume(volumeID)

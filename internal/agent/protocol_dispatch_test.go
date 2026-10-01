@@ -102,7 +102,7 @@ func (h *recordingProtocolHandler) Unexport(_ context.Context, volumeID string, 
 
 func (h *recordingProtocolHandler) AllowInitiator(
 	_ context.Context,
-	volumeID, initiatorID string, _ *agentv1.FencingToken,
+	volumeID, initiatorID string, _ *agentv1.ExportParams, _ *agentv1.FencingToken,
 ) error {
 	h.allowCalls = append(h.allowCalls, initiatorDispatchCall{
 		volumeID:    volumeID,

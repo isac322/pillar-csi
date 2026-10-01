@@ -16,8 +16,9 @@ limitations under the License.
 
 package iscsi
 
-// RFC 7143 login phase: security negotiation with AuthMethod=None followed by
-// operational parameter negotiation, for a Normal session.
+// RFC 7143 login phase: security negotiation (AuthMethod=None, or CHAP when
+// credentials are configured; see chap.go) followed by operational
+// parameter negotiation, for a Normal session.
 
 import (
 	"context"
@@ -97,6 +98,8 @@ type loginInput struct {
 	ISID         isid
 	TSIH         uint16
 	CID          uint16
+	// CHAP, when set, makes the login offer only AuthMethod=CHAP.
+	CHAP *CHAPCredentials
 }
 
 type loginResult struct {
@@ -124,7 +127,7 @@ var loginStatusText = map[uint16]string{
 	0x0101: "target moved temporarily",
 	0x0102: "target moved permanently",
 	0x0200: "initiator error",
-	0x0201: "authentication failure",
+	0x0201: "authentication failed: the target rejected the CHAP credentials or requires CHAP",
 	0x0202: "authorization failure (initiator IQN not permitted by the target ACL)",
 	0x0203: "target not found",
 	0x0204: "target removed",
@@ -161,6 +164,11 @@ func (e *LoginError) Error() string {
 // action (redirects and target-side errors).
 func (e *LoginError) Retryable() bool {
 	return e.StatusClass == 1 || e.StatusClass == 3
+}
+
+// Is matches ErrAuthenticationFailed for status class 2 detail 1.
+func (e *LoginError) Is(target error) bool {
+	return target == ErrAuthenticationFailed && e.StatusClass == 2 && e.StatusDetail == 0x01
 }
 
 func (e *LoginError) sessionDoesNotExist() bool {
@@ -391,7 +399,11 @@ type loginState struct {
 	// our own offer; they are answered in place and not offered again.
 	answered     map[string]bool
 	authAccepted bool
-	expStatSN    uint32
+	// chap is the CHAP exchange; nil when the login offers AuthMethod=None.
+	chap *chapState
+	// holdTransit keeps the next request in the current stage (T=0).
+	holdTransit bool
+	expStatSN   uint32
 }
 
 func newLoginState(in loginInput, portal Portal) *loginState {
@@ -399,6 +411,12 @@ func newLoginState(in loginInput, portal Portal) *loginState {
 	offerIdx := make(map[string]int, len(offers))
 	for i, k := range offers {
 		offerIdx[k.name] = i
+	}
+	authMethod := valueNone
+	var chap *chapState
+	if in.CHAP != nil {
+		authMethod = authMethodCHAP // never None too: that would allow a downgrade
+		chap = &chapState{creds: in.CHAP, step: chapAwaitMethod}
 	}
 	return &loginState{
 		in:       in,
@@ -411,9 +429,10 @@ func newLoginState(in loginInput, portal Portal) *loginState {
 			{"InitiatorName", in.InitiatorIQN},
 			{"TargetName", in.TargetIQN},
 			{"SessionType", "Normal"},
-			{"AuthMethod", valueNone},
+			{keyAuthMethod, authMethod},
 		},
 		answered: map[string]bool{},
+		chap:     chap,
 	}
 }
 
@@ -426,6 +445,9 @@ func (st *loginState) errorf(format string, args ...any) error {
 // loginSession runs the login phase to completion (full feature phase).
 func loginSession(ctx context.Context, ex loginExchanger, in loginInput, portal Portal) (*loginResult, error) {
 	st := newLoginState(in, portal)
+	if st.chap != nil {
+		defer st.chap.close()
+	}
 	for range maxLoginRounds {
 		req := st.nextRequest()
 		resp, text, err := exchangeComplete(ctx, ex, req, &st.expStatSN)
@@ -437,6 +459,10 @@ func loginSession(ctx context.Context, ex loginExchanger, in loginInput, portal 
 			return nil, err
 		}
 		err = st.applyText(text)
+		if err != nil {
+			return nil, err
+		}
+		err = st.advanceCHAP()
 		if err != nil {
 			return nil, err
 		}
@@ -456,13 +482,18 @@ func loginSession(ctx context.Context, ex loginExchanger, in loginInput, portal 
 
 // nextRequest builds the next Login Request from the pending keys.
 func (st *loginState) nextRequest() *loginRequest {
+	transit := !st.holdTransit
+	st.holdTransit = false
 	nsg := uint8(stageOperational)
 	if st.csg == stageOperational {
 		nsg = stageFullFeature
 		st.offerOperational()
 	}
+	if !transit {
+		nsg = 0 // reserved when T=0
+	}
 	req := &loginRequest{
-		Transit:   true,
+		Transit:   transit,
 		CSG:       st.csg,
 		NSG:       nsg,
 		ISID:      st.in.ISID,
@@ -546,12 +577,8 @@ func (st *loginState) applyText(text []textKV) error {
 
 func (st *loginState) applyKey(kv textKV) error {
 	switch kv.Key {
-	case "AuthMethod":
-		if kv.Value != valueNone {
-			return st.errorf("target requires AuthMethod=%s; only None is supported (disable CHAP on the target)",
-				kv.Value)
-		}
-		st.authAccepted = true
+	case keyAuthMethod, keyCHAPA, keyCHAPI, keyCHAPC, keyCHAPN, keyCHAPR:
+		return st.applyAuthKey(kv)
 	case "TargetPortalGroupTag":
 		tpgt, err := strconv.ParseUint(kv.Value, 0, 16)
 		if err != nil {
@@ -570,6 +597,51 @@ func (st *loginState) applyKey(kv textKV) error {
 	default:
 		return st.applyOperational(kv)
 	}
+	return nil
+}
+
+// applyAuthKey handles AuthMethod and the CHAP_* keys.  Without CHAP
+// credentials only AuthMethod=None is acceptable; with them the keys are
+// collected for advanceCHAP.
+func (st *loginState) applyAuthKey(kv textKV) error {
+	if st.chap != nil {
+		err := st.chap.store(kv.Key, kv.Value)
+		if err != nil {
+			return st.errorf("%w", err)
+		}
+		return nil
+	}
+	if kv.Key != keyAuthMethod {
+		return st.errorf("target sent %s although AuthMethod=None was offered", kv.Key)
+	}
+	if kv.Value != valueNone {
+		return st.errorf("target requires AuthMethod=%s but no CHAP credentials are configured for this volume "+
+			"(set auth on the PillarProtocol, or disable authentication on the target)", kv.Value)
+	}
+	st.authAccepted = true
+	return nil
+}
+
+// advanceCHAP runs the CHAP step for the authentication keys of the
+// response just applied and queues our answer.
+func (st *loginState) advanceCHAP() error {
+	if st.chap == nil {
+		return nil
+	}
+	if st.csg != stageSecurity {
+		err := st.chap.unexpected()
+		st.chap.recv = nil
+		if err != nil {
+			return st.errorf("%w", err)
+		}
+		return nil
+	}
+	send, hold, err := st.chap.advance()
+	if err != nil {
+		return st.errorf("%w", err)
+	}
+	st.pending = append(st.pending, send...)
+	st.holdTransit = hold
 	return nil
 }
 
@@ -614,14 +686,23 @@ func (st *loginState) transition(resp *loginResponse) (done bool, err error) {
 		}
 		return true, nil
 	case stageOperational:
-		if st.csg == stageSecurity && !st.authAccepted {
-			return false, st.errorf("target left the security stage without accepting AuthMethod=None")
+		if st.csg == stageSecurity && !st.securityDone() {
+			return false, st.errorf("target left the security stage before authentication completed")
 		}
 		st.csg = stageOperational
 		return false, nil
 	default:
 		return false, st.errorf("target requested invalid next stage %d", resp.NSG)
 	}
+}
+
+// securityDone reports whether the security stage may end: AuthMethod=None
+// was accepted, or CHAP (including the mutual step) completed.
+func (st *loginState) securityDone() bool {
+	if st.chap != nil {
+		return st.chap.step == chapDone
+	}
+	return st.authAccepted
 }
 
 // finish validates the final login response and records the session.

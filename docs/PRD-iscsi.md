@@ -79,6 +79,7 @@ NVMe-oF는 성능과 현대성 측면에서 유리하지만, self-hosted 환경�
   - `NodeGetVolumeStats`
 - local attach와 재시작 복구를 NVMe-oF와 같은 수준으로 제공한다.
 - 노드 사용자 공간에 iSCSI 도구를 설치하지 않는다. 필요한 것은 커널 모듈뿐이다.
+- Secret 참조 기반 CHAP·MutualCHAP 인증을 노드 무설치 원칙 그대로(순수 Go initiator) 제공한다.
 
 ### 4.2 비목표
 
@@ -87,7 +88,6 @@ NVMe-oF는 성능과 현대성 측면에서 유리하지만, self-hosted 환경�
 - 앱 팀이 `targetPortal`/`IQN`/`LUN`을 직접 입력하는 static PV UX
 - `PillarAgent.spec.external` 또는 외부 SAN/NAS의 pre-existing iSCSI target을 소비하는 static-import UX
 - Windows initiator 지원
-- CHAP 인증
 - multipath / multi-portal
 
 ## 5. 외부 드라이버 조사와 시사점
@@ -132,7 +132,7 @@ NVMe-oF는 성능과 현대성 측면에서 유리하지만, self-hosted 환경�
 시사점:
 
 - expansion은 controller와 node가 결합된 online expansion이며, attach된 상태에서 완결된다.
-- CHAP을 도입한다면 plain-text CRD 필드가 아니라 Secret 참조 기반이어야 한다. 현재 `pillar-csi`는 CHAP을 지원하지 않는다.
+- CHAP을 도입한다면 plain-text CRD 필드가 아니라 Secret 참조 기반이어야 한다. `pillar-csi`도 `PillarProtocol`에는 Secret 이름만 두고 자격 증명은 Secret에서 읽는다 (§8.6.1).
 
 ### 5.4 조사 결론
 
@@ -248,11 +248,12 @@ spec:
 | 계층 | 위치 | 책임 | iSCSI에서 다루는 값 |
 |------|------|------|---------------------|
 | 설치/배포 | Helm values / node DaemonSet | 노드 커널 모듈과 런타임 준비 | `node.initModprobe.modules`(`iscsi_tcp`), `agent.initModprobe.modules`(LIO 모듈), `node.hostNetwork`, `node.iscsi.netlinkNetnsPath` |
-| 프로토콜 기본값 | `PillarProtocol.spec.protocol.iscsi` | 클러스터 공통 transport/security/timer 정책 | `port`, `acl`, `loginTimeout`, `replacementTimeout`, `noopOutInterval`, `noopOutTimeout` |
+| 프로토콜 기본값 | `PillarProtocol.spec.protocol.iscsi` | 클러스터 공통 transport/security/timer 정책 | `port`, `acl`, `auth`(`method`, `secretRef`), `loginTimeout`, `replacementTimeout`, `noopOutInterval`, `noopOutTimeout` |
+| 인증 정보 | 설치 네임스페이스의 Secret | CHAP 자격 증명 | `username`, `password`, `mutualUsername`, `mutualPassword` |
 | 클래스별 조정 | `PillarStorageClass.spec.overrides.protocol.iscsi` | 특정 StorageClass에만 적용할 타이머 정책 | 네 타이머 필드 |
 | 파일시스템 | `PillarStorageClass.spec.filesystem` / PVC annotation `pillar-csi.bhyoo.com/filesystem` | 포맷과 마운트 | `fsType`, `mkfsOptions`, `mountOptions` (프로토콜 공통) |
 | 볼륨 단위 튜닝 | PVC annotation `pillar-csi.bhyoo.com/protocol` | 안전한 미세 조정 | 네 타이머 필드 |
-| 런타임 연결 정보 | PV `volumeAttributes` / CSI `VolumeContext` | attach/mount에 필요한 실제 export 정보 | `target_id`(IQN), `address`, `port`, `protocol-type=iscsi`, 해석된 타이머 |
+| 런타임 연결 정보 | PV `volumeAttributes` / CSI `VolumeContext` | attach/mount에 필요한 실제 export 정보 | `target_id`(IQN), `address`, `port`, `protocol-type=iscsi`, 해석된 타이머, `iscsi-auth-method` |
 
 ### 7.2 `PillarProtocol.spec.protocol.iscsi`
 
@@ -262,6 +263,8 @@ spec:
 |------|------|---------------|------|
 | `port` | int32 | 기본 3260, 1-65535 | agent가 여는 target portal 포트 |
 | `acl` | bool | 기본 `false` | `true`면 publish된 노드의 initiator IQN만 허용 |
+| `auth.method` | enum | `None`(기본) / `CHAP` / `MutualCHAP` | iSCSI 로그인 인증 방식 (§8.6.1). `auth` 생략은 `None`과 같다 |
+| `auth.secretRef.name` | string | `method`가 `None`이 아니면 필수 | 설치 네임스페이스의 CHAP Secret 이름 |
 | `loginTimeout` | int32 | 최소 1, 미설정 시 노드 기본 15 | 로그인 한 번의 제한 시간 |
 | `replacementTimeout` | int32 | 최소 0, 미설정 시 노드 기본 120 | 세션 장애 중 I/O를 큐에 보관하는 시간 (session recovery timeout) |
 | `noopOutInterval` | int32 | 최소 0, 미설정 시 노드 기본 5 | 유휴 연결 NOP-Out ping 간격, 0이면 끔 |
@@ -273,6 +276,9 @@ spec:
 
 - 구체적인 target portal 주소 (agent의 `PillarAgent.status.resolvedAddress`에서 온다)
 - volume별 target 식별자 (controller/agent가 파생한다)
+- CHAP 사용자 이름과 비밀번호 (Secret에 둔다)
+
+CEL과 admission 웹훅은 `method`가 `CHAP`/`MutualCHAP`인데 `secretRef`가 없으면(`auth.secretRef is required when auth.method is CHAP or MutualCHAP`) 또는 `acl: false`이면(`auth.method CHAP and MutualCHAP require acl: true`) 거부한다. CHAP 자격 증명은 node ACL에 걸리기 때문이다.
 
 ### 7.3 `PillarStorageClass`에 둘 값
 
@@ -281,6 +287,8 @@ spec:
 - `spec.overrides.protocol.iscsi`: `loginTimeout`, `replacementTimeout`, `noopOutInterval`, `noopOutTimeout`
 - `spec.filesystem`: `fsType`(`ext4`/`xfs`), `mkfsOptions`, `mountOptions`
 - `spec.storageClass`: `reclaimPolicy`, `volumeBindingMode`, `allowVolumeExpansion`
+
+참조한 프로토콜의 `auth.method`가 `None`이 아니면 generated `StorageClass`에 `csi.storage.k8s.io/node-stage-secret-name`(=`secretRef.name`)과 `csi.storage.k8s.io/node-stage-secret-namespace`(=설치 네임스페이스)가 추가된다. kubelet은 이 Secret을 읽어 `NodeStageVolume`에 넘긴다. 이 파라미터가 바뀌면 StorageClass는 다시 만들어진다(StorageClass 파라미터는 immutable).
 
 override 문서의 멤버는 참조한 `PillarProtocol`의 멤버와 같아야 한다. `nvmeofTcp` 프로토콜을 참조하는 binding에 `iscsi` override를 넣으면 거부된다.
 
@@ -305,8 +313,9 @@ pillar-csi.bhyoo.com/protocol: |
 
 - `port`
 - `acl`
+- `auth`
 
-구조적 필드를 넣으면 `pillar-csi.bhyoo.com/protocol: iscsi.acl is structural and cannot be set per volume` 같은 메시지로 거부된다. 문서의 멤버가 프로토콜 멤버와 다를 때도 거부된다.
+구조적 필드를 넣으면 `pillar-csi.bhyoo.com/protocol: iscsi.acl is structural and cannot be set per volume` 같은 메시지로 거부된다(`auth`는 `iscsi.auth is structural and cannot be set per volume`). `PillarStorageClass.spec.overrides.protocol.iscsi`에는 `auth` 필드가 없다. 문서의 멤버가 프로토콜 멤버와 다를 때도 거부된다.
 
 ### 7.5 값이 VolumeContext로 전달되는 방식
 
@@ -322,6 +331,7 @@ pillar-csi.bhyoo.com/protocol: |
 | `pillar-csi.bhyoo.com/iscsi-replacement-timeout` | 10진수 초, 해석된 값이 있을 때만 |
 | `pillar-csi.bhyoo.com/iscsi-noop-out-interval` | 10진수 초, 해석된 값이 있을 때만 |
 | `pillar-csi.bhyoo.com/iscsi-noop-out-timeout` | 10진수 초, 해석된 값이 있을 때만 |
+| `pillar-csi.bhyoo.com/iscsi-auth-method` | `CHAP` 또는 `MutualCHAP`. `None`이면 키가 없다 |
 
 키가 없으면 node 기본값(15/120/5/5초)을 쓴다.
 
@@ -346,6 +356,7 @@ ACL:
 
 - `acl: false`: TPG demo mode(`generate_node_acls=1`). portal에 도달하는 모든 initiator가 접속할 수 있다.
 - `acl: true`: `ControllerPublishVolume`에서 해당 노드 initiator IQN의 node ACL을 만들고, `ControllerUnpublishVolume`에서 지운다. ACL이 없는 initiator의 로그인은 거부된다.
+- CHAP 볼륨: TPG `attrib/authentication=1`을 쓰고, ACL마다 `auth/userid`·`auth/password`(MutualCHAP은 `auth/userid_mutual`·`auth/password_mutual`, one-way CHAP은 비움)를 쓴 뒤 다시 읽어 확인한다. `None`이면 `authentication=0`이다.
 
 agent는 LIO iSCSI target을 쓸 수 있을 때만(`target_core_mod` 로드, `target/iscsi` 생성 가능) `GetCapabilities`와 `PillarAgent` status의 protocols에 iSCSI를 보고한다.
 
@@ -372,7 +383,7 @@ iSCSI에서 `ControllerPublishVolume`은 node의 initiator IQN을 알아야 한�
 
 node는 `pillar-node` 프로세스 안의 pure-Go iSCSI initiator(`internal/iscsi`)를 쓴다.
 
-- TCP 연결과 iSCSI 로그인(RFC 7143 login PDU, AuthMethod=None)을 Go에서 수행한다.
+- TCP 연결과 iSCSI 로그인(RFC 7143 login PDU)을 Go에서 수행한다. 보안 협상 단계는 `AuthMethod=None` 또는, CHAP 볼륨이면 `AuthMethod=CHAP`이다 (§8.6.1).
 - 로그인이 끝나면 NETLINK_ISCSI로 연결을 커널 `iscsi_tcp`에 넘긴다. 세션/연결 생성, 파라미터 설정, full-feature phase 시작이 모두 이 netlink 프로토콜로 이뤄진다.
 - 커널이 LUN 0에 대한 SCSI 디바이스(`/dev/sdX`)를 만든다. `pillar-node`는 sysfs에서 디바이스를 찾고, 컨테이너 `/dev`에 노드가 없으면 sysfs의 major/minor로 만든다.
 - 로그인은 (target IQN, portal) 단위로 멱등이다.
@@ -380,7 +391,7 @@ node는 `pillar-node` 프로세스 안의 pure-Go iSCSI initiator(`internal/iscs
 NodeStage / NodeUnstage:
 
 - `NodeStageVolume`: VolumeContext의 target/portal/타이머로 로그인 → LUN 0 디바이스 확인 → `Filesystem`이면 포맷(필요 시)과 staging mount.
-- stage 상태는 `ISCSIStageState{TargetIQN, Address, Port, LUN}`으로 JSON 키 `iscsi` 아래에 저장된다.
+- stage 상태는 `ISCSIStageState{TargetIQN, Address, Port, LUN}`으로 JSON 키 `iscsi` 아래에 저장된다. CHAP 볼륨은 재시작 복구용으로 자격 증명도 함께 저장하므로 상태 파일(`/var/lib/pillar-csi/node`)은 0600으로 쓴다(open-iscsi의 node record와 같은 취급).
 - `NodeUnstageVolume`: unmount 후 logout. logout은 멱등이다. logout은 세션이 `LOGGED_IN`인 동안 LUN 블록 디바이스를 fsync(page cache write-back + SYNCHRONIZE CACHE)하고 sysfs `delete`로 SCSI 디바이스를 제거한 뒤에 Logout PDU / 세션 파기를 수행한다. 연결이 끊겨 세션이 `FAILED`(커널이 `replacementTimeout` 동안 I/O를 큐에 보관 중)이면 SCSI 디바이스가 있는 세션은 파기하지 않고 복구를 계속하며 재시도 가능한 오류로 실패해 kubelet이 재시도하게 하고, 이미 timeout이 지나 `FREE`가 된 세션은 flush할 수 없으므로 건너뛰고 로그로 남긴 뒤 파기한다.
 
 세션 복구:
@@ -392,7 +403,7 @@ NodeStage / NodeUnstage:
 재시작 복구:
 
 - `pillar-node`는 시작할 때 sysfs에서 기존 세션을 찾아 입양(adopt)한다. 대상은 target IQN이 pillar prefix(`iqn.2026-01.com.bhyoo.pillar-csi:`)로 시작하고 initiator 이름이 노드 IQN인 세션뿐이다.
-- 입양한 세션도 이후 연결 오류 시 같은 방식으로 복구한다.
+- 입양한 세션도 이후 연결 오류 시 같은 방식으로 복구한다. CHAP 볼륨의 복구·입양 재로그인은 stage 상태에 저장된 같은 자격 증명을 쓴다.
 
 protocol handler 책임:
 
@@ -451,8 +462,61 @@ online expansion을 지원한다.
 
 - `acl: true`면 node initiator IQN 기반 ACL을 쓴다.
 - `acl: false`(기본값)면 portal에 도달하는 모든 initiator가 접속할 수 있다.
-- CHAP은 지원하지 않는다.
-- 데이터는 암호화되지 않는다 (NVMe/TCP와 같음). 스토리지 네트워크를 분리하고 `acl: true`를 쓰는 것을 권장한다.
+- `auth.method: CHAP`/`MutualCHAP`이면 로그인에 CHAP 인증을 요구한다 (§8.6.1). IQN은 위조할 수 있으므로 ACL만으로는 부족한 환경에서 쓴다.
+- 데이터는 암호화되지 않는다 (NVMe/TCP와 같음). CHAP도 로그인만 인증할 뿐 데이터를 암호화하거나 무결성을 보호하지 않는다. 스토리지 네트워크를 분리하고 `acl: true`를 쓰는 것을 권장한다.
+
+#### 8.6.1 CHAP 인증
+
+```yaml
+apiVersion: pillar-csi.bhyoo.com/v1alpha1
+kind: PillarProtocol
+metadata:
+  name: iscsi-chap
+spec:
+  protocol:
+    iscsi:
+      acl: true
+      auth:
+        method: MutualCHAP   # None | CHAP | MutualCHAP
+        secretRef:
+          name: iscsi-chap
+```
+
+| `method` | 동작 |
+|----------|------|
+| `None` | 인증 없음. 기본값이며 `auth` 생략과 같다 |
+| `CHAP` | target이 initiator를 인증한다 (one-way) |
+| `MutualCHAP` | 추가로 initiator가 target을 인증한다 |
+
+Secret은 pillar-csi 설치 네임스페이스(controller pod의 네임스페이스, 보통 Helm release 네임스페이스)에 둔다. controller는 이 네임스페이스의 Secret만 읽는다(chart의 namespaced Role/RoleBinding, `get`). 클러스터 전역 Secret 권한은 없다.
+
+| 키 | 필요 | 검증 |
+|----|------|------|
+| `username` | CHAP, MutualCHAP | 비어 있지 않음, 255바이트 이하, NUL·개행 없음 |
+| `password` | CHAP, MutualCHAP | 12-255바이트(RFC 7143 §12.1.3의 96비트 이상 secret), NUL 없음 |
+| `mutualUsername` | MutualCHAP | `username`과 같은 규칙. CHAP에서는 무시 |
+| `mutualPassword` | MutualCHAP | `password`와 같은 규칙이고 `password`와 달라야 한다(RFC 7143 §12.1.3). CHAP에서는 무시 |
+
+controller는 Secret을 사용할 때마다 검증한다. Secret이 없거나 규칙을 어기면 해당 CSI 호출은 Secret 이름과 키를 담은 `FailedPrecondition`으로 실패하고(값은 메시지에 넣지 않는다) 인증 없는 export나 ACL은 만들지 않는다. `PillarProtocol`은 같은 문제를 `Ready=False`, reason `AuthSecretInvalid` 조건으로 보여 주고, Secret이 바뀌면 다시 reconcile된다.
+
+흐름:
+
+1. `CreateVolume`이 `method`와 `secretRef.name`을 볼륨의 해석된 설정(`PillarVolumeState`)에 고정하고 VolumeContext에 `pillar-csi.bhyoo.com/iscsi-auth-method`를 쓴다. 인증 방식은 볼륨마다 `CreateVolume` 시점에 고정되며, 나중에 `PillarProtocol`의 `auth`를 바꿔도 기존 볼륨에는 적용되지 않는다.
+2. `ExportVolume`, `AllowInitiator`, agent 재시작 restore(`ReconcileState`)는 호출 시점에 Secret을 읽어 `export_params.iscsi.chap`으로 agent에 넘긴다. agent는 TPG `authentication=1`과 ACL의 `auth/` 속성을 쓰고 다시 읽어 확인한다.
+3. kubelet은 generated `StorageClass`의 `node-stage-secret-*` 파라미터로 같은 Secret을 읽어 `NodeStageVolume`에 넘긴다. 직접 만든 StorageClass는 이 두 파라미터를 스스로 지정해야 한다. 키가 빠지면 `NodeStageVolume`은 키 이름을 담은 `InvalidArgument`로 실패한다.
+4. node initiator는 `AuthMethod=CHAP`만 제안하고 `CHAP_A=5`(MD5)로 target의 challenge에 응답한다. MutualCHAP이면 `crypto/rand`로 만든 challenge를 함께 보내고, target 응답과 이름(`mutualUsername`)을 상수 시간 비교로 검증한다. `0x`(hex)·`0b`(base64) 인코딩을 모두 읽는다. MD5 외 알고리즘, 자기 challenge를 되돌려 보내는 reflection, MutualCHAP 응답 누락, CHAP을 제안했는데 target이 `None`을 고르는 downgrade는 모두 거부한다. target이 자격 증명을 거부하면 `NodeStageVolume`은 `authentication failed`를 담은 오류로 실패하고 kubelet이 재시도한다.
+
+자격 증명 교체(rotation):
+
+- Secret의 새 값은 target에는 다음 `ControllerPublishVolume`(ACL 생성·갱신)과 agent restore에, node에는 다음 `NodeStageVolume`에 적용된다.
+- 이미 로그인한 세션은 끊기지 않는다. CHAP은 로그인 시점에만 검사한다.
+- 연결이 끊긴 세션의 복구 재로그인은 stage 시점 자격 증명을 쓴다. 그 사이 target ACL이 새 값으로 바뀌었다면(예: agent 재시작 restore) 복구 로그인이 실패한다. 그래서 Secret을 바꾼 뒤에는 볼륨을 쓰는 파드를 재시작해 unpublish/unstage → publish/stage가 일어나게 한다. 그러면 양쪽이 새 값으로 맞춰진다.
+
+보안 주의:
+
+- CHAP은 MD5 challenge-response다. 비밀번호가 평문으로 오가지는 않지만 로그인 교환을 엿들은 공격자가 오프라인 사전 공격을 할 수 있으므로 길고 무작위인 비밀번호를 쓴다.
+- CHAP 자격 증명은 controller → agent gRPC(`ExportVolume`·`AllowInitiator`·`ReconcileState`)로 전달된다. 이 채널은 기본이 평문이므로 CHAP을 쓰면 mTLS를 켠다(`mtls.enabled=true`). pillar-csi는 자격 증명을 로그에 남기지 않는다.
+- 스토리지 노드의 LIO configfs와 노드의 stage 상태 파일(0600)에는 자격 증명이 남는다. 둘 다 root만 읽을 수 있다.
 
 ### 8.7 multipath
 
@@ -539,6 +603,7 @@ multipath / multi-portal은 지원하지 않는다.
 | Access mode `RWO`, `RWOP` | O | block protocol 정책 동일 |
 | local attach | O | TPG 비활성화 후 backend 디바이스 직접 사용 |
 | 재시작 복구 | O | agent: target 재구성, node: 세션 입양 |
+| CHAP / MutualCHAP | O | `PillarProtocol.spec.protocol.iscsi.auth` + 설치 네임스페이스의 Secret (§8.6.1) |
 | CSI driver registration / Probe / sidecar 연동 | O | 기존 `pillar-csi` driver 배포 모델 유지 |
 
 ### 10.2 지원하지 않는 기능
@@ -546,7 +611,6 @@ multipath / multi-portal은 지원하지 않는다.
 | 기능 | 지원 | 이유 |
 |------|:----:|------|
 | `RWX` | X | iSCSI block protocol 특성과 맞지 않음 |
-| CHAP | X | 인증 정보 관리(Secret, rotation, target+initiator 양쪽)가 필요 |
 | multipath / multi-portal | X | 운영 복잡도와 session 관리 난도 |
 | snapshot / clone | X | 제품 전체에서 미지원 (iSCSI 고유 제약 아님) |
 | topology-aware scheduling | X | iSCSI 전용 topology key 없음 |
@@ -561,19 +625,13 @@ iSCSI를 추가했다고 해서 CSI ecosystem의 모든 optional feature를 한 
 
 ## 11. 후속 단계
 
-### Phase A: CHAP
-
-- generated `StorageClass`에 `csi.storage.k8s.io/node-stage-secret-name/namespace` 매핑
-- cluster-wide 기본 CHAP 또는 per-binding CHAP 선택
-- Secret rotation 정책 문서화
-
-### Phase B: multipath / multi-portal
+### Phase A: multipath / multi-portal
 
 - `PillarAgent` 또는 protocol status에서 복수 portal advertise
 - 노드 측 multipath 구성
 - disconnect reference counting
 
-### Phase C: snapshot / clone 연동
+### Phase B: snapshot / clone 연동
 
 - backend snapshot/clone 기능이 pillar-csi 공통 제품 기능으로 들어오면, iSCSI는 export 경로만 재사용한다.
 
@@ -582,19 +640,19 @@ iSCSI를 추가했다고 해서 CSI ecosystem의 모든 optional feature를 한 
 | 영역 | 위치 |
 |------|------|
 | CRD | `api/v1alpha1/pillarprotocol_types.go`(`ISCSIConfig`), `api/v1alpha1/pillarstorageclass_types.go`(`ISCSIOverrides`), `api/v1alpha1/annotations.go` |
-| controller | `internal/csi/controller.go` (export 파라미터, VolumeContext, `CSINode` IQN 조회) |
-| agent | `internal/agent/protocol_handler_iscsi.go`, `internal/agent/lio/` (LIO configfs) |
-| node initiator | `internal/iscsi/` (login PDU, NETLINK_ISCSI, 세션 복구/입양, sysfs, rescan) |
+| controller | `internal/csi/controller.go` (export 파라미터, VolumeContext, `CSINode` IQN 조회), `internal/csi/iscsi_chap.go` (CHAP Secret 키와 검증), `internal/controller/` (generated StorageClass의 node-stage Secret, `PillarProtocol` Secret 조건) |
+| agent | `internal/agent/protocol_handler_iscsi.go`, `internal/agent/lio/` (LIO configfs, TPG `authentication`, ACL `auth/`) |
+| node initiator | `internal/iscsi/` (login PDU, CHAP·MutualCHAP 보안 협상, NETLINK_ISCSI, 세션 복구/입양, sysfs, rescan) |
 | node 진입점 | `cmd/node/main.go` (`--iscsi-netlink-netns`) |
-| chart | `charts/pillar-csi/values.yaml` (`node.iscsi.netlinkNetnsPath`, modprobe 모듈, `hostNetwork`) |
+| chart | `charts/pillar-csi/values.yaml` (`node.iscsi.netlinkNetnsPath`, modprobe 모듈, `hostNetwork`), 설치 네임스페이스 Secret 읽기 Role/RoleBinding |
 
 ## 13. 검증
 
 ### 13.1 단위 테스트
 
-- `internal/iscsi`: NETLINK_ISCSI 메시지 바이트 레이아웃, login PDU 인코딩, 세션 복구와 입양을 가짜 커널(NETLINK_ISCSI + sysfs 모사)로 검증한다.
-- `internal/agent/lio`: configfs target/TPG/LUN/ACL/portal 구성을 가짜 파일시스템으로 검증한다.
-- `internal/csi`: iscsi publish 시 `CSINode` annotation 조회와 annotation이 없을 때의 `FailedPrecondition`을 검증한다.
+- `internal/iscsi`: NETLINK_ISCSI 메시지 바이트 레이아웃, login PDU 인코딩, 세션 복구와 입양을 가짜 커널(NETLINK_ISCSI + sysfs 모사)로, CHAP·MutualCHAP 성공과 잘못된 비밀번호·잘못된 mutual 응답·downgrade·reflection 거부를 가짜 target으로 검증한다.
+- `internal/agent/lio`: configfs target/TPG/LUN/ACL/portal 구성과 TPG `authentication`·ACL `auth/` 속성을 가짜 파일시스템으로 검증한다.
+- `internal/csi`: iscsi publish 시 `CSINode` annotation 조회와 annotation이 없을 때의 `FailedPrecondition`, CHAP Secret 검증 규칙을 검증한다.
 
 ### 13.2 in-process E2E (`test/e2e`, E35)
 
@@ -603,6 +661,10 @@ iSCSI를 추가했다고 해서 CSI ecosystem의 모든 optional feature를 한 
 - `CSINode`에 IQN annotation이 없으면 `acl: true` publish가 `FailedPrecondition`이다.
 - `PillarProtocol` webhook은 `nvmeofTcp`와 `iscsi`를 동시에 지정하면 거부하고 `iscsi` 단독은 허용한다.
 - `PillarStorageClass` webhook은 `nvmeofTcp` 프로토콜에 대한 `iscsi` override를 거부한다.
+- CHAP 볼륨의 `CreateVolume`·`ExportVolume`·`AllowInitiator`가 Secret 자격 증명을 싣고, Secret 교체가 다음 publish에 반영된다.
+- CHAP Secret이 없거나 유효하지 않으면 `FailedPrecondition`이고 export·ACL을 만들지 않는다.
+- CHAP 프로토콜의 generated `StorageClass`에 node-stage Secret 파라미터가 붙는다.
+- webhook이 `secretRef` 없는 CHAP과 `acl: false`인 CHAP을 거부하고, PVC override 문서의 `iscsi.auth`는 거부된다.
 
 ### 13.3 Kind 클러스터 E2E (`test/docker-e2e`)
 
@@ -613,7 +675,9 @@ iSCSI를 추가했다고 해서 CSI ecosystem의 모든 optional feature를 한 
 - raw block 볼륨의 노드 간 handoff
 - 온라인 filesystem 확장
 - `acl: true`에서 publish되지 않은 노드 IQN의 로그인 거부
-- 프로토콜 admission (iscsi override 허용/거부)
+- 프로토콜 admission (iscsi override 허용/거부, CHAP의 `secretRef`·`acl` 규칙)
+- CHAP·MutualCHAP 볼륨의 노드 간 쓰기/읽기와 LIO ACL의 CHAP 속성
+- 노드 Secret이 틀리면 로그인 거부(세션·SCSI 디스크 없음), Secret을 고치면 kubelet 재시도로 복구
 
 ### 13.4 성공 기준
 

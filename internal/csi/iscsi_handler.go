@@ -34,6 +34,8 @@ import (
 	"strconv"
 	"time"
 
+	v1alpha1 "github.com/isac322/pillar-csi/api/v1alpha1"
+	agentv1 "github.com/isac322/pillar-csi/gen/go/pillar_csi/agent/v1"
 	"github.com/isac322/pillar-csi/internal/iscsi"
 )
 
@@ -49,7 +51,7 @@ type ISCSIInitiator interface {
 	DeviceForLUN(ctx context.Context, s *iscsi.Session, lun int) (string, error)
 	Rescan(ctx context.Context, targetIQN string, portal iscsi.Portal) error
 	Logout(ctx context.Context, targetIQN string, portal iscsi.Portal) error
-	SetLoginTimeout(targetIQN string, portal iscsi.Portal, d time.Duration) error
+	SetLoginParams(targetIQN string, portal iscsi.Portal, loginTimeout time.Duration, chap *iscsi.CHAPCredentials) error
 }
 
 var _ ISCSIInitiator = (*iscsi.Initiator)(nil)
@@ -69,6 +71,9 @@ type ISCSIProtocolState struct {
 	// zero means unknown (a stage record older than the field) and selects
 	// the initiator default.
 	LoginTimeout time.Duration
+	// CHAP holds the credentials the session authenticates with; nil for
+	// AuthMethod=None.
+	CHAP *iscsi.CHAPCredentials
 }
 
 // ProtocolType satisfies the ProtocolState interface.
@@ -95,6 +100,7 @@ type iscsiAttachSpec struct {
 	portal    iscsi.Portal
 	lun       int
 	timeouts  iscsiSessionTimeouts
+	chap      *iscsi.CHAPCredentials
 }
 
 // iscsiSessionTimeouts carries the optional session timeouts from the
@@ -108,10 +114,11 @@ type iscsiSessionTimeouts struct {
 
 // parseISCSIAttachParams validates the AttachParams of an iSCSI volume:
 // ConnectionID (target IQN), Address and Port are required, Port must lie in
-// [1, 65535], VolumeRef is the LUN (empty means LUN 0) and Extra may carry
-// the iscsi-* timeout keys (see parseISCSISessionTimeouts).  NodeStageVolume
-// calls it before any attach side effect so a malformed VolumeContext is
-// reported as InvalidArgument.
+// [1, 65535], VolumeRef is the LUN (empty means LUN 0), Extra may carry
+// the iscsi-* timeout keys (see parseISCSISessionTimeouts) and the auth
+// method, whose credentials Secrets must hold (see parseISCSICHAP).
+// NodeStageVolume calls it before any attach side effect so a malformed
+// VolumeContext or missing secret key is reported as InvalidArgument.
 func parseISCSIAttachParams(params AttachParams) (iscsiAttachSpec, error) {
 	if params.ConnectionID == "" {
 		return iscsiAttachSpec{}, fmt.Errorf("ConnectionID (target IQN) is required")
@@ -136,12 +143,47 @@ func parseISCSIAttachParams(params AttachParams) (iscsiAttachSpec, error) {
 	if err != nil {
 		return iscsiAttachSpec{}, fmt.Errorf("target %s: %w", params.ConnectionID, err)
 	}
+	chap, err := parseISCSICHAP(params)
+	if err != nil {
+		return iscsiAttachSpec{}, fmt.Errorf("target %s: %w", params.ConnectionID, err)
+	}
 	return iscsiAttachSpec{
 		targetIQN: params.ConnectionID,
 		portal:    iscsi.Portal{Address: params.Address, Port: port},
 		lun:       lun,
 		timeouts:  timeouts,
+		chap:      chap,
 	}, nil
+}
+
+// iscsiNodeStageSecretsName names NodeStageVolumeRequest.secrets in errors.
+const iscsiNodeStageSecretsName = "NodeStageVolume secrets"
+
+// parseISCSICHAP returns the CHAP credentials for the auth method in the
+// VolumeContext (absent or None: nil, secrets ignored), read from the
+// node-stage secrets with the Secret format of ParseISCSIChapSecret.
+// Errors name the missing or invalid key, never a value.
+func parseISCSICHAP(params AttachParams) (*iscsi.CHAPCredentials, error) {
+	method := v1alpha1.ISCSIAuthMethod(params.Extra[VolumeContextKeyISCSIAuthMethod])
+	chap, err := ParseISCSIChapSecret(method, iscsiNodeStageSecretsName, params.Secrets)
+	if err != nil {
+		return nil, fmt.Errorf("iSCSI auth method %s: %w", method, err)
+	}
+	return chapCredentials(chap), nil
+}
+
+// chapCredentials converts the validated Secret contents to initiator
+// credentials; nil (method None) stays nil.
+func chapCredentials(chap *agentv1.IscsiChap) *iscsi.CHAPCredentials {
+	if chap == nil {
+		return nil
+	}
+	return &iscsi.CHAPCredentials{
+		Username:       chap.GetUsername(),
+		Secret:         chap.GetPassword(),
+		MutualUsername: chap.GetMutualUsername(),
+		MutualSecret:   chap.GetMutualPassword(),
+	}
 }
 
 // parseISCSISessionTimeouts reads the iscsi-* timeout keys CreateVolume
@@ -193,7 +235,8 @@ func parseISCSISessionTimeouts(volCtx map[string]string) (iscsiSessionTimeouts, 
 //   - Address      — the target portal IP address
 //   - Port         — the target portal TCP port (e.g. "3260")
 //   - VolumeRef    — the LUN (decimal; empty means 0)
-//   - Extra        — optional iscsi-* session timeouts (seconds)
+//   - Extra        — optional iscsi-* session timeouts (seconds) and auth method
+//   - Secrets      — CHAP credentials when the auth method is CHAP or MutualCHAP
 func (h *ISCSIHandler) Attach(ctx context.Context, params AttachParams) (*AttachResult, error) {
 	spec, err := parseISCSIAttachParams(params)
 	if err != nil {
@@ -208,6 +251,7 @@ func (h *ISCSIHandler) Attach(ctx context.Context, params AttachParams) (*Attach
 		ReplacementTimeout: spec.timeouts.replacement,
 		NoopOutInterval:    spec.timeouts.noopOutInterval,
 		NoopOutTimeout:     spec.timeouts.noopOutTimeout,
+		CHAP:               spec.chap,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("iscsi Attach: login to %s at %s: %w", spec.targetIQN, spec.portal, err)
@@ -242,6 +286,7 @@ func (h *ISCSIHandler) Attach(ctx context.Context, params AttachParams) (*Attach
 			Port:         strconv.Itoa(spec.portal.Port),
 			LUN:          spec.lun,
 			LoginTimeout: loginTimeout,
+			CHAP:         spec.chap,
 		},
 	}, nil
 }
@@ -277,11 +322,12 @@ func (h *ISCSIHandler) Rescan(ctx context.Context, state ProtocolState) error {
 
 // RestoreSession re-applies to the session identified by state the
 // userspace-only session parameters the kernel does not keep: the login
-// timeout.  The pillar-node process calls it at startup for every staged iSCSI volume,
-// because a session adopted from sysfs after a restart otherwise re-logs in
-// with the initiator default, and kubelet does not repeat NodeStageVolume
-// for a volume that stays mounted.  A zero state.LoginTimeout (a record
-// older than the field) applies the initiator default.
+// timeout and the CHAP credentials.  The pillar-node process calls it at
+// startup for every staged iSCSI volume, because a session adopted from
+// sysfs after a restart otherwise re-logs in with the initiator default
+// and without credentials, and kubelet does not repeat NodeStageVolume for
+// a volume that stays mounted.  A zero state.LoginTimeout (a record older
+// than the field) applies the initiator default.
 func (h *ISCSIHandler) RestoreSession(state ProtocolState) error {
 	targetIQN, portal, err := iscsiStatePortal("RestoreSession", state)
 	if err != nil {
@@ -291,10 +337,10 @@ func (h *ISCSIHandler) RestoreSession(state ProtocolState) error {
 	if !ok {
 		return fmt.Errorf("iscsi RestoreSession: unexpected state type %T (want *ISCSIProtocolState)", state)
 	}
-	setErr := h.initiator.SetLoginTimeout(targetIQN, portal, st.LoginTimeout)
+	setErr := h.initiator.SetLoginParams(targetIQN, portal, st.LoginTimeout, st.CHAP)
 	if setErr != nil {
-		return fmt.Errorf("iscsi RestoreSession: set login timeout %v of %s at %s: %w",
-			st.LoginTimeout, targetIQN, portal, setErr)
+		return fmt.Errorf("iscsi RestoreSession: set login parameters (timeout %v, CHAP %t) of %s at %s: %w",
+			st.LoginTimeout, st.CHAP != nil, targetIQN, portal, setErr)
 	}
 	return nil
 }

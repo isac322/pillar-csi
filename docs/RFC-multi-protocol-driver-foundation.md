@@ -799,8 +799,9 @@ type AgentProtocolHandler interface {
     Export(ctx context.Context, params ExportParams) (*ExportResult, error)
     // Unexport removes the protocol target entry.
     Unexport(ctx context.Context, volumeID string) error
-    // AllowInitiator grants access to a specific initiator.
-    AllowInitiator(ctx context.Context, volumeID, initiatorID string) error
+    // AllowInitiator grants access to a specific initiator. protocolParams
+    // carries per-initiator protocol settings such as iSCSI CHAP credentials.
+    AllowInitiator(ctx context.Context, volumeID, initiatorID string, protocolParams *agentv1.ExportParams, fence *agentv1.FencingToken) error
     // DenyInitiator revokes access.
     DenyInitiator(ctx context.Context, volumeID, initiatorID string) error
     // Reconcile re-creates protocol state after reboot.

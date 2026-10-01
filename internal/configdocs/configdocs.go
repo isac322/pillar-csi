@@ -144,6 +144,9 @@ var protocolMembers = map[string]memberSpec{
 			"replacementTimeout": {kind: fieldTunable, validate: intRange(0, math.MaxInt32)},
 			"noopOutInterval":    {kind: fieldTunable, validate: intRange(0, math.MaxInt32)},
 			"noopOutTimeout":     {kind: fieldTunable, validate: intRange(0, math.MaxInt32)},
+			// Auth is a security anchor of the PillarProtocol: a binding or
+			// volume must not change which credentials a target requires.
+			"auth": {kind: fieldStructural, validate: mappingValue},
 		},
 	},
 }
@@ -511,6 +514,13 @@ func stringMap(path string, v any) error {
 		if _, ok := mv.(string); !ok {
 			return fmt.Errorf("%s.%s: expected a string value, got %s", path, k, yamlKind(mv))
 		}
+	}
+	return nil
+}
+
+func mappingValue(path string, v any) error {
+	if _, ok := v.(map[string]any); !ok {
+		return fmt.Errorf("%s: expected a mapping, got %s", path, yamlKind(v))
 	}
 	return nil
 }

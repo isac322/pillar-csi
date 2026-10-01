@@ -25,6 +25,8 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/trace"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -46,6 +48,7 @@ const (
 	reasonAgentUnavailable  = "AgentUnavailable"
 	reasonReconcileFailed   = "ReconcileFailed"
 	reasonStaleGeneration   = "StaleGeneration"
+	reasonAuthSecretInvalid = "AuthSecretInvalid"
 )
 
 // errExportReconcile marks a resync attempt that reached a definite failure
@@ -121,8 +124,9 @@ func exportParamsFor(protocol agentv1.ProtocolType, spec *v1alpha1.VolumeExportS
 // so an agent restart or storage-node reboot cannot re-open it to remote
 // initiators.  Fence carries the lifecycle UID and the publication generation
 // committed by the same status read, so the agent rejects this resync when a
-// newer publication transition has already reached it.
-func desiredVolumeState(pvs *v1alpha1.PillarVolumeState) (*agentv1.VolumeDesiredState, error) {
+// newer publication transition has already reached it.  Chap is the iSCSI
+// CHAP configuration the export and its ACLs must carry (nil for none).
+func desiredVolumeState(pvs *v1alpha1.PillarVolumeState, chap *agentv1.IscsiChap) (*agentv1.VolumeDesiredState, error) {
 	protocol := mapProtocolType(pvs.Spec.ProtocolType)
 	initiators := make([]string, 0, len(pvs.Status.PublishedNodes))
 	for _, publication := range pvs.Status.PublishedNodes {
@@ -141,7 +145,7 @@ func desiredVolumeState(pvs *v1alpha1.PillarVolumeState) (*agentv1.VolumeDesired
 		Fence:       fence,
 		Exports: []*agentv1.ExportDesiredState{{
 			ProtocolType:      protocol,
-			ExportParams:      exportParamsFor(protocol, pvs.Status.ExportSpec),
+			ExportParams:      withISCSIChap(exportParamsFor(protocol, pvs.Status.ExportSpec), chap),
 			AllowedInitiators: initiators,
 			AclEnabled:        pvs.Status.ExportSpec.ACLEnabled,
 			LocalAttach:       pvs.Status.LocalAttachNode != "",
@@ -210,7 +214,11 @@ func (s *ControllerServer) reconcileVolumeOnAgent(
 	if err != nil {
 		return reasonAgentUnavailable, err
 	}
-	desired, err := desiredVolumeState(pvs)
+	chap, err := s.volumeISCSIChap(ctx, pvs)
+	if err != nil {
+		return chapErrorReason(err), fmt.Errorf("volume %q: %w", pvs.Spec.AgentVolumeID, err)
+	}
+	desired, err := desiredVolumeState(pvs, chap)
 	if err != nil {
 		return reasonReconcileFailed, fmt.Errorf("build desired state for %q: %w", pvs.Spec.AgentVolumeID, err)
 	}
@@ -232,6 +240,28 @@ func (s *ControllerServer) reconcileVolumeOnAgent(
 			pvs.Spec.AgentVolumeID, results)
 	}
 	return reconcileItemReason(pvs.Spec.AgentVolumeID, results[0])
+}
+
+// volumeISCSIChap returns the CHAP credentials for the volume's recorded
+// iSCSI authentication (nil for none, or for a volume recorded before
+// spec.resolved existed), read from the Secret at call time.
+func (s *ControllerServer) volumeISCSIChap(
+	ctx context.Context,
+	pvs *v1alpha1.PillarVolumeState,
+) (*agentv1.IscsiChap, error) {
+	var protocol *v1alpha1.ProtocolSpec
+	if pvs.Spec.Resolved != nil {
+		protocol = &pvs.Spec.Resolved.Protocol
+	}
+	return s.iscsiChapFor(ctx, protocol)
+}
+
+// chapErrorReason maps an iscsiChapFor error to the ExportReconciled reason.
+func chapErrorReason(err error) string {
+	if status.Code(err) == codes.FailedPrecondition {
+		return reasonAuthSecretInvalid
+	}
+	return reasonReconcileFailed
 }
 
 // agentAddress returns the resolved gRPC address of the named PillarAgent.
@@ -377,7 +407,19 @@ func (s *ControllerServer) restoreAgentExports(
 				"status.exportSpec is not recorded; the export cannot be re-created from durable state"))
 			continue
 		}
-		desired, buildErr := desiredVolumeState(pvs)
+		// A CHAP volume whose Secret is missing or invalid is left out of
+		// the restore (its export stays down, never unauthenticated) and
+		// retried with the next restore.
+		chap, chapErr := s.volumeISCSIChap(ctx, pvs)
+		if chapErr != nil {
+			failed++
+			reason := chapErrorReason(chapErr)
+			chapErr = fmt.Errorf("%w: volume %q: %w", errExportReconcile, pvs.Spec.AgentVolumeID, chapErr)
+			errs = append(errs, chapErr,
+				s.setExportReconciled(ctx, name, metav1.ConditionFalse, reason, chapErr.Error()))
+			continue
+		}
+		desired, buildErr := desiredVolumeState(pvs, chap)
 		if buildErr != nil {
 			failed++
 			buildErr = fmt.Errorf("%w: build desired state for %q: %w", errExportReconcile, pvs.Spec.AgentVolumeID, buildErr)

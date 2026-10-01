@@ -295,7 +295,7 @@ func TestStartAdoptsAndRecoversOwnedSessions(t *testing.T) {
 
 // The login timeout is userspace-only, so a session adopted after a
 // restart starts with the default; the staged value must be restorable,
-// either by a repeated Login or by SetLoginTimeout, and must bound the
+// either by a repeated Login or by SetLoginParams, and must bound the
 // next recovery re-login.
 func TestAdoptedSessionRecoversWithRestoredLoginTimeout(t *testing.T) {
 	const configured = 45 * time.Second
@@ -306,8 +306,8 @@ func TestAdoptedSessionRecoversWithRestoredLoginTimeout(t *testing.T) {
 			_, err := h.ini.Login(context.Background(), p)
 			return err
 		},
-		"SetLoginTimeout": func(h *harness) error {
-			return h.ini.SetLoginTimeout(testTarget, h.params().Portal, configured)
+		"SetLoginParams": func(h *harness) error {
+			return h.ini.SetLoginParams(testTarget, h.params().Portal, configured, nil)
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -332,12 +332,12 @@ func TestAdoptedSessionRecoversWithRestoredLoginTimeout(t *testing.T) {
 	}
 }
 
-func TestSetLoginTimeoutWithoutSessionFails(t *testing.T) {
+func TestSetLoginParamsWithoutSessionFails(t *testing.T) {
 	h := newHarness(t)
 	h.start()
-	err := h.ini.SetLoginTimeout(testTarget, h.params().Portal, time.Minute)
+	err := h.ini.SetLoginParams(testTarget, h.params().Portal, time.Minute, nil)
 	if err == nil || !strings.Contains(err.Error(), "no iSCSI session") {
-		t.Errorf("SetLoginTimeout without session = %v, want no-session error", err)
+		t.Errorf("SetLoginParams without session = %v, want no-session error", err)
 	}
 }
 

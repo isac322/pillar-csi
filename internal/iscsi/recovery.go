@@ -233,7 +233,10 @@ func (i *Initiator) adopt() error {
 // sessionFromSysfs rebuilds session bookkeeping from sysfs.  The TSIH is
 // not exported by the software transport, so the first re-login uses TSIH
 // 0 with the (deterministic) ISID, which the target treats as session
-// reinstatement.
+// reinstatement.  CHAP credentials are never pushed to the kernel (sysfs
+// would expose them), so an adopted session has none until Login or
+// SetLoginParams restores them; a re-login before that fails against a
+// CHAP target and is retried by the recovery loop.
 func sessionFromSysfs(ss *sysfsSession) (*session, error) {
 	portal, ok := ss.portal()
 	if !ok {

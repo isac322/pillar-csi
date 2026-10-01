@@ -1170,6 +1170,7 @@ run_tests() {
   PILLAR_E2E_ISCSI_STORAGE_CLASS="${iscsi_storage_class}" \
   PILLAR_E2E_ISCSI_XFS_STORAGE_CLASS="${iscsi_xfs_storage_class}" \
   PILLAR_E2E_ISCSI_PROTOCOL="${iscsi_protocol}" \
+  PILLAR_E2E_INSTALL_NAMESPACE="${helm_namespace}" \
   PILLAR_E2E_STORAGE_NODE="${storage_node}" \
   PILLAR_E2E_BACKING_CONTAINER="${backing_container}" \
   PILLAR_E2E_BACKING_FILE="${backing_file}" \

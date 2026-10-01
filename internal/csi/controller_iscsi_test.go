@@ -250,7 +250,7 @@ func TestDesiredVolumeState_ISCSI(t *testing.T) {
 		Iscsi: &agentv1.IscsiExportParams{BindAddress: "192.168.1.10", Port: 3261},
 	}}, true)
 
-	desired, err := desiredVolumeState(pvs)
+	desired, err := desiredVolumeState(pvs, nil)
 	if err != nil {
 		t.Fatalf("desiredVolumeState: %v", err)
 	}

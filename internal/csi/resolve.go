@@ -211,15 +211,7 @@ func (s *ControllerServer) resolveVolumeConfig(
 		return nil, err
 	}
 	if recorded != nil {
-		if protocol.Kind() != recorded.Protocol.Kind() {
-			return nil, status.Errorf(codes.FailedPrecondition,
-				"PillarProtocol %q now configures %q but the volume was provisioned over %q",
-				class.protocol.Name, protocol.Kind(), recorded.Protocol.Kind())
-		}
-		exportOnly := recorded.DeepCopy()
-		exportOnly.Protocol = protocol
-		return &resolution{resolved: exportOnly, pvcFS: pvc.Filesystem, storeName: class.storeName,
-			importDataset: pvc.ImportZvol}, nil
+		return replayResolution(class, pvc, protocol, recorded)
 	}
 
 	backend := *class.store.Spec.Backend.DeepCopy()
@@ -281,6 +273,31 @@ func resolveProtocol(class *classLayer, pvc pvcDocs) (v1alpha1.ProtocolSpec, err
 		}
 	}
 	return protocol, nil
+}
+
+// replayResolution is the resolution of a retry: the recorded configuration
+// with the export settings of the live protocol.  The protocol member and
+// the iSCSI authentication stay as recorded: auth is fixed per volume at the
+// first attempt, so a PillarProtocol auth change after it cannot change
+// which credentials the volume's export (and its nodes) use.
+func replayResolution(
+	class *classLayer,
+	pvc pvcDocs,
+	protocol v1alpha1.ProtocolSpec,
+	recorded *v1alpha1.ResolvedVolumeConfig,
+) (*resolution, error) {
+	if protocol.Kind() != recorded.Protocol.Kind() {
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"PillarProtocol %q now configures %q but the volume was provisioned over %q",
+			class.protocol.Name, protocol.Kind(), recorded.Protocol.Kind())
+	}
+	exportOnly := recorded.DeepCopy()
+	exportOnly.Protocol = protocol
+	if iscsi := exportOnly.Protocol.ISCSI; iscsi != nil && recorded.Protocol.ISCSI != nil {
+		iscsi.Auth = recorded.Protocol.ISCSI.Auth.DeepCopy()
+	}
+	return &resolution{resolved: exportOnly, pvcFS: pvc.Filesystem, storeName: class.storeName,
+		importDataset: pvc.ImportZvol}, nil
 }
 
 // resolveClassLayer reads the StorageClass identity parameters and loads the
@@ -599,7 +616,8 @@ func copyList(p *[]string) *[]string {
 
 // nodeVolumeContext returns the VolumeContext entries derived from the
 // resolved configuration that the node needs at stage time: NVMe-oF connect
-// or iSCSI session tuning and the filesystem settings.
+// or iSCSI session tuning, the iSCSI authentication method (absent for
+// None) and the filesystem settings.
 func nodeVolumeContext(resolved *v1alpha1.ResolvedVolumeConfig, volCtx map[string]string) {
 	if resolved == nil {
 		return
@@ -620,6 +638,9 @@ func nodeVolumeContext(resolved *v1alpha1.ResolvedVolumeConfig, volCtx map[strin
 			{VolumeContextKeyISCSIReplacementTimeout, i.ReplacementTimeout},
 			{VolumeContextKeyISCSINoopOutInterval, i.NoopOutInterval},
 			{VolumeContextKeyISCSINoopOutTimeout, i.NoopOutTimeout},
+		}
+		if method := i.Auth.EffectiveMethod(); method != v1alpha1.ISCSIAuthMethodNone {
+			volCtx[VolumeContextKeyISCSIAuthMethod] = string(method)
 		}
 	}
 	for _, f := range tuning {

@@ -102,7 +102,7 @@ func newDriftTestReconciler(t *testing.T, funcs interceptor.Funcs) (
 		t.Fatalf("get binding: %v", err)
 	}
 
-	if err := reconciler.reconcileStorageClass(context.Background(), binding, binding.Name); err != nil {
+	if err := reconciler.reconcileStorageClass(context.Background(), binding, nil, binding.Name); err != nil {
 		t.Fatalf("create StorageClass: %v", err)
 	}
 	return reconciler, recorder, binding
@@ -138,7 +138,7 @@ func TestPillarStorageClass_ParameterDrift_RecreatesStorageClass(t *testing.T) {
 		t.Fatalf("drift StorageClass: %v", err)
 	}
 
-	if err := reconciler.reconcileStorageClass(ctx, binding, binding.Name); err != nil {
+	if err := reconciler.reconcileStorageClass(ctx, binding, nil, binding.Name); err != nil {
 		t.Fatalf("revert StorageClass drift: %v", err)
 	}
 	expectEvent(t, recorder, "StorageClassRecreated")
@@ -179,7 +179,7 @@ func TestPillarStorageClass_MountOptionsDrift_RecreatesWithBindingOptions(t *tes
 		t.Fatalf("drift StorageClass: %v", err)
 	}
 
-	if err := reconciler.reconcileStorageClass(ctx, binding, binding.Name); err != nil {
+	if err := reconciler.reconcileStorageClass(ctx, binding, nil, binding.Name); err != nil {
 		t.Fatalf("revert StorageClass drift: %v", err)
 	}
 	expectEvent(t, recorder, "StorageClassRecreated")
@@ -209,7 +209,7 @@ func TestPillarStorageClass_UpgradeAddsBindingParameter(t *testing.T) {
 		t.Fatalf("revert StorageClass to its pre-#112 parameters: %v", err)
 	}
 
-	if err := reconciler.reconcileStorageClass(ctx, binding, binding.Name); err != nil {
+	if err := reconciler.reconcileStorageClass(ctx, binding, nil, binding.Name); err != nil {
 		t.Fatalf("reconcile pre-#112 StorageClass: %v", err)
 	}
 	expectEvent(t, recorder, "StorageClassRecreated")
@@ -240,7 +240,7 @@ func TestPillarStorageClass_MutableDrift_UpdatesInPlace(t *testing.T) {
 	}
 	driftedUID := sc.UID
 
-	if err := reconciler.reconcileStorageClass(ctx, binding, binding.Name); err != nil {
+	if err := reconciler.reconcileStorageClass(ctx, binding, nil, binding.Name); err != nil {
 		t.Fatalf("revert StorageClass drift: %v", err)
 	}
 	expectEvent(t, recorder, "StorageClassReverted")
@@ -288,7 +288,7 @@ func TestPillarStorageClass_InterruptedRecreate_KeepsCarriedOverFields(t *testin
 	staleBinding := binding.DeepCopy()
 
 	failCreate = true
-	if err := reconciler.reconcileStorageClass(ctx, binding, binding.Name); err == nil {
+	if err := reconciler.reconcileStorageClass(ctx, binding, nil, binding.Name); err == nil {
 		t.Fatal("reconcileStorageClass succeeded despite the injected create failure")
 	}
 	err := reconciler.Get(ctx, types.NamespacedName{Name: binding.Name}, &storagev1.StorageClass{})
@@ -297,7 +297,7 @@ func TestPillarStorageClass_InterruptedRecreate_KeepsCarriedOverFields(t *testin
 	}
 
 	failCreate = false
-	if err := reconciler.reconcileStorageClass(ctx, staleBinding, binding.Name); err != nil {
+	if err := reconciler.reconcileStorageClass(ctx, staleBinding, nil, binding.Name); err != nil {
 		t.Fatalf("complete the interrupted re-create: %v", err)
 	}
 	stored := &pillarcsiv1alpha1.PillarStorageClass{}
@@ -351,7 +351,7 @@ func TestPillarStorageClass_ImmutableDrift_ForeignControllerNotDeleted(t *testin
 	}
 	foreignUID := sc.UID
 
-	err := reconciler.reconcileStorageClass(ctx, binding, binding.Name)
+	err := reconciler.reconcileStorageClass(ctx, binding, nil, binding.Name)
 	if err == nil || !strings.Contains(err.Error(), "other-binding") {
 		t.Fatalf("reconcileStorageClass error = %v, want refusal naming the controlling owner", err)
 	}
@@ -1725,7 +1725,7 @@ var _ = Describe("desiredStorageClassFor", func() {
 	}
 
 	It("emits only the binding identity and the default ext4 fstype, whatever the overrides", func() {
-		desired := desiredStorageClassFor(makeBinding(nil))
+		desired := desiredStorageClassFor(makeBinding(nil), nil)
 		Expect(desired.params).To(Equal(map[string]string{
 			"pillar-csi.bhyoo.com/storage-class": "test-binding",
 			"csi.storage.k8s.io/fstype":          "ext4",
@@ -1734,41 +1734,41 @@ var _ = Describe("desiredStorageClassFor", func() {
 	})
 
 	It("uses spec.filesystem.fsType as the fstype parameter", func() {
-		desired := desiredStorageClassFor(makeBinding(&pillarcsiv1alpha1.FilesystemConfig{FSType: "xfs"}))
+		desired := desiredStorageClassFor(makeBinding(&pillarcsiv1alpha1.FilesystemConfig{FSType: "xfs"}), nil)
 		Expect(desired.params).To(HaveKeyWithValue("csi.storage.k8s.io/fstype", "xfs"))
 	})
 
 	It("does not put mkfsOptions on the StorageClass", func() {
 		mkfs := []string{"-K"}
-		desired := desiredStorageClassFor(makeBinding(&pillarcsiv1alpha1.FilesystemConfig{MkfsOptions: &mkfs}))
+		desired := desiredStorageClassFor(makeBinding(&pillarcsiv1alpha1.FilesystemConfig{MkfsOptions: &mkfs}), nil)
 		Expect(desired.params).To(HaveLen(2))
 	})
 
 	It("copies spec.filesystem.mountOptions: omitted → nil, [] → empty, list → list", func() {
-		Expect(desiredStorageClassFor(makeBinding(&pillarcsiv1alpha1.FilesystemConfig{FSType: "xfs"})).mountOptions).
+		Expect(desiredStorageClassFor(makeBinding(&pillarcsiv1alpha1.FilesystemConfig{FSType: "xfs"}), nil).mountOptions).
 			To(BeNil())
 
 		cleared := []string{}
-		desired := desiredStorageClassFor(makeBinding(&pillarcsiv1alpha1.FilesystemConfig{MountOptions: &cleared}))
+		desired := desiredStorageClassFor(makeBinding(&pillarcsiv1alpha1.FilesystemConfig{MountOptions: &cleared}), nil)
 		Expect(desired.mountOptions).NotTo(BeNil())
 		Expect(desired.mountOptions).To(BeEmpty())
 
 		opts := []string{"noatime", "discard"}
-		desired = desiredStorageClassFor(makeBinding(&pillarcsiv1alpha1.FilesystemConfig{MountOptions: &opts}))
+		desired = desiredStorageClassFor(makeBinding(&pillarcsiv1alpha1.FilesystemConfig{MountOptions: &opts}), nil)
 		Expect(desired.mountOptions).To(Equal([]string{"noatime", "discard"}))
 		desired.mountOptions[0] = "mutated"
 		Expect(opts[0]).To(Equal("noatime"), "the StorageClass must not alias the binding's list")
 	})
 
 	It("defaults allowVolumeExpansion to true and honours an explicit false", func() {
-		desired := desiredStorageClassFor(makeBinding(nil))
+		desired := desiredStorageClassFor(makeBinding(nil), nil)
 		Expect(desired.allowVolumeExpansion).NotTo(BeNil())
 		Expect(*desired.allowVolumeExpansion).To(BeTrue())
 
 		binding := makeBinding(nil)
 		disallow := false
 		binding.Spec.StorageClass.AllowVolumeExpansion = &disallow
-		desired = desiredStorageClassFor(binding)
+		desired = desiredStorageClassFor(binding, nil)
 		Expect(*desired.allowVolumeExpansion).To(BeFalse())
 	})
 })

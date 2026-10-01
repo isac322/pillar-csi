@@ -236,6 +236,22 @@ func TestPillarProtocol_ValidateCreate_ISCSIDomains(t *testing.T) {
 		{name: "both members set", spec: pillarcsiv1alpha1.ProtocolSpec{
 			NVMeOFTCP: &pillarcsiv1alpha1.NVMeOFTCPConfig{Port: 4420},
 			ISCSI:     &pillarcsiv1alpha1.ISCSIConfig{Port: 3260}}, wantPath: "spec.protocol"},
+		{name: "CHAP with secretRef and acl", spec: pillarcsiv1alpha1.ProtocolSpec{
+			ISCSI: &pillarcsiv1alpha1.ISCSIConfig{Port: 3260, ACL: true, Auth: &pillarcsiv1alpha1.ISCSIAuth{
+				Method:    pillarcsiv1alpha1.ISCSIAuthMethodCHAP,
+				SecretRef: &pillarcsiv1alpha1.ISCSIAuthSecretReference{Name: "chap"}}}}},
+		{name: "None without secretRef or acl", spec: pillarcsiv1alpha1.ProtocolSpec{
+			ISCSI: &pillarcsiv1alpha1.ISCSIConfig{Port: 3260, Auth: &pillarcsiv1alpha1.ISCSIAuth{
+				Method: pillarcsiv1alpha1.ISCSIAuthMethodNone}}}},
+		{name: "MutualCHAP without secretRef", spec: pillarcsiv1alpha1.ProtocolSpec{
+			ISCSI: &pillarcsiv1alpha1.ISCSIConfig{Port: 3260, ACL: true, Auth: &pillarcsiv1alpha1.ISCSIAuth{
+				Method: pillarcsiv1alpha1.ISCSIAuthMethodMutualCHAP}}},
+			wantPath: "spec.protocol.iscsi.auth.secretRef"},
+		{name: "CHAP without acl", spec: pillarcsiv1alpha1.ProtocolSpec{
+			ISCSI: &pillarcsiv1alpha1.ISCSIConfig{Port: 3260, Auth: &pillarcsiv1alpha1.ISCSIAuth{
+				Method:    pillarcsiv1alpha1.ISCSIAuthMethodCHAP,
+				SecretRef: &pillarcsiv1alpha1.ISCSIAuthSecretReference{Name: "chap"}}}},
+			wantPath: "spec.protocol.iscsi.acl"},
 	}
 
 	for _, tt := range tests {

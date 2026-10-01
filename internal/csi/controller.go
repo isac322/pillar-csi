@@ -152,6 +152,11 @@ type ControllerServer struct {
 	// a stale cached read could let ControllerUnpublishVolume miss a record
 	// written moments earlier and leave the initiator's ACL granted.
 	apiReader client.Reader
+
+	// installNamespace is the pillar-csi installation namespace, where the
+	// iSCSI CHAP Secrets named by PillarProtocols live.  Empty when unknown:
+	// CHAP volumes then fail with FailedPrecondition.
+	installNamespace string
 }
 
 // Ensure ControllerServer satisfies the CSI interface at compile time.
@@ -228,6 +233,13 @@ func NewControllerServerWithDialer(
 // validation in end-to-end tests.
 func (s *ControllerServer) GetStateMachine() *VolumeStateMachine {
 	return s.sm
+}
+
+// SetInstallNamespace sets the pillar-csi installation namespace (the
+// controller pod's namespace) from which iSCSI CHAP Secrets are read.  It
+// must be called before the server handles requests.
+func (s *ControllerServer) SetInstallNamespace(namespace string) {
+	s.installNamespace = namespace
 }
 
 // LoadStateFromPillarVolumeStates restores the in-memory VolumeStateMachine from
@@ -621,6 +633,15 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 		return nil, status.Errorf(codes.InvalidArgument, "invalid filesystem configuration: %v", fsErr)
 	}
 
+	// A CHAP volume's export carries the credentials read from the Secret.
+	// Read and validate them before any durable state or backend exists, so
+	// a missing or invalid Secret provisions nothing (FailedPrecondition; the
+	// provisioner retries once the Secret is fixed).
+	chap, err := s.iscsiChapFor(ctx, &resolved.Protocol)
+	if err != nil {
+		return nil, err
+	}
+
 	// ── Zvol import (PVC annotation pillar-csi.bhyoo.com/import-zvol) ────────
 	// When the claim asks to adopt an existing zvol, the leaf of the named
 	// dataset replaces the volume name inside the agent volume ID, and the
@@ -826,7 +847,7 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 	exportResp, err := agentClient.ExportVolume(ctx, &agentv1.ExportVolumeRequest{
 		VolumeId:     agentVolID,
 		ProtocolType: agentProtocolType,
-		ExportParams: exportParams,
+		ExportParams: withISCSIChap(exportParams, chap),
 		DevicePath:   devicePath,
 		AclEnabled:   aclEnabled,
 		Fence:        exportToken,
@@ -1754,16 +1775,10 @@ func (s *ControllerServer) ControllerPublishVolume(
 	local := isLocalAttachPublish(pvs, agent, nodeID, mode)
 	setAttachAttributes(ctx, local, req.GetReadonly())
 
-	// ── Resolve initiator identity from CSINode annotation ───────────────────
-	// A local attach grants no initiator: the publication is identified by
-	// the node itself and needs no node-plugin identity.
-	initiatorID := nodeID
-	if !local {
-		var resolveErr error
-		initiatorID, resolveErr = s.resolvePublishInitiator(ctx, nodeID, protocolTypeStr)
-		if resolveErr != nil {
-			return nil, resolveErr
-		}
+	// ── Resolve the grant: initiator identity and CHAP credentials ───────────
+	initiatorID, chap, grantErr := s.resolvePublishGrant(ctx, local, nodeID, protocolTypeStr, pvs)
+	if grantErr != nil {
+		return nil, grantErr
 	}
 
 	// ── Record the publication before granting access ────────────────────────
@@ -1783,14 +1798,15 @@ func (s *ControllerServer) ControllerPublishVolume(
 
 	ctx = withAgentName(ctx, targetName)
 	return s.finishPublish(ctx, local, pvName, agentAddr, volumeID, agentVolID, agentProtocolType,
-		nodeID, initiatorID, pvs, fence)
+		nodeID, initiatorID, pvs, fence, chap)
 }
 
 // finishPublish completes a publish whose publication is already committed
 // under fence: local publishes fence the export and return the backend
 // device path, protocol publishes re-enable the export of a localAttach
 // volume (returning it from a previous local attach when
-// status.localAttachNode is set) and grant the initiator.
+// status.localAttachNode is set) and grant the initiator with the volume's
+// CHAP credentials (chap, nil for none).
 func (s *ControllerServer) finishPublish(
 	ctx context.Context,
 	local bool,
@@ -1799,6 +1815,7 @@ func (s *ControllerServer) finishPublish(
 	nodeID, initiatorID string,
 	pvs *v1alpha1.PillarVolumeState,
 	fence *agentv1.FencingToken,
+	chap *agentv1.IscsiChap,
 ) (*csi.ControllerPublishVolumeResponse, error) {
 	if local {
 		return s.finishLocalPublish(ctx, agentAddr, volumeID, agentVolID, protocolType, nodeID, fence)
@@ -1855,7 +1872,8 @@ func (s *ControllerServer) finishPublish(
 	// above still orders exclusivity; only the grant RPC is skipped (the
 	// unfence above is independent of the ACL).
 	if exportACLEnabled(pvs) {
-		grantErr := s.grantPublication(ctx, agentAddr, agentVolID, protocolType, initiatorID, fence)
+		grantErr := s.grantPublication(ctx, agentAddr, agentVolID, protocolType, initiatorID, fence,
+			grantExportParams(protocolType, pvs.Status.ExportSpec, chap))
 		if grantErr != nil {
 			return nil, grantErr
 		}
@@ -1986,6 +2004,8 @@ func exportACLEnabled(pvs *v1alpha1.PillarVolumeState) bool {
 }
 
 // Grant access using the protocol-specific identity resolved from CSINode.
+// ExportParams carries the grant's protocol parameters (the iSCSI CHAP
+// credentials of the new ACL); nil when the grant needs none.
 func (s *ControllerServer) grantPublication(
 	ctx context.Context,
 	agentAddr string,
@@ -1993,6 +2013,7 @@ func (s *ControllerServer) grantPublication(
 	agentProtocolType agentv1.ProtocolType,
 	initiatorID string,
 	fence *agentv1.FencingToken,
+	exportParams *agentv1.ExportParams,
 ) error {
 	agentClient, closer, err := s.dialAgent(ctx, agentAddr)
 	if err != nil {
@@ -2006,6 +2027,7 @@ func (s *ControllerServer) grantPublication(
 		ProtocolType: agentProtocolType,
 		InitiatorId:  initiatorID,
 		Fence:        fence,
+		ExportParams: exportParams,
 	})
 	_ = allowResp
 	if allowErr != nil {
@@ -2015,6 +2037,54 @@ func (s *ControllerServer) grantPublication(
 			agentVolID, initiatorID, allowErr)
 	}
 	return nil
+}
+
+// grantExportParams returns the AllowInitiator export parameters for a grant
+// with chap: the volume's iSCSI export parameters carrying chap, or nil when
+// chap is nil.
+func grantExportParams(
+	protocolType agentv1.ProtocolType,
+	spec *v1alpha1.VolumeExportSpec,
+	chap *agentv1.IscsiChap,
+) *agentv1.ExportParams {
+	if chap == nil {
+		return nil
+	}
+	params := &agentv1.ExportParams{Params: &agentv1.ExportParams_Iscsi{Iscsi: &agentv1.IscsiExportParams{}}}
+	if spec != nil {
+		params = exportParamsFor(protocolType, spec)
+	}
+	return withISCSIChap(params, chap)
+}
+
+// resolvePublishGrant returns what a publish of pvs to nodeID grants: the
+// initiator identity from the node's CSINode annotation (the node ID itself
+// for a local attach, which grants no initiator and needs no node-plugin
+// identity) and the CHAP credentials, read from the volume's Secret when the
+// export has an ACL to grant.  It runs before the publication is recorded,
+// so a missing identity or a missing or invalid Secret records and grants
+// nothing.
+func (s *ControllerServer) resolvePublishGrant(
+	ctx context.Context,
+	local bool,
+	nodeID, protocolTypeStr string,
+	pvs *v1alpha1.PillarVolumeState,
+) (string, *agentv1.IscsiChap, error) {
+	if local {
+		return nodeID, nil, nil
+	}
+	initiatorID, err := s.resolvePublishInitiator(ctx, nodeID, protocolTypeStr)
+	if err != nil {
+		return "", nil, err
+	}
+	if !exportACLEnabled(pvs) {
+		return initiatorID, nil, nil
+	}
+	chap, err := s.volumeISCSIChap(ctx, pvs)
+	if err != nil {
+		return "", nil, err
+	}
+	return initiatorID, chap, nil
 }
 
 // getReadyAgent returns the PillarAgent targetName once it has a resolved
