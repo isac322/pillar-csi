@@ -438,6 +438,19 @@ type NodeServer struct {
 	// NodeUnstageVolume, NodeExpandVolume and every periodic trim chunk
 	// (see trim.go).  The zero value is ready to use.
 	volumeLocks volumeLockSet
+
+	// pageSize is the memory page size NodeStageVolume checks an NVMe-oF
+	// max data transfer size against (see CheckNVMeoFTransferSizePageSize).
+	// Zero selects os.Getpagesize(); tests set it directly.
+	pageSize int
+}
+
+// workerPageSize returns n.pageSize, or the page size of this node.
+func (n *NodeServer) workerPageSize() int {
+	if n.pageSize > 0 {
+		return n.pageSize
+	}
+	return os.Getpagesize()
 }
 
 // Ensure NodeServer satisfies the interface at compile time.
@@ -721,6 +734,7 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 	}
 
 	var handler ProtocolHandler
+	var nvmeofMaxTransfer int32
 	if !local {
 		// ── Step 3: Protocol handler dispatch ───────────────────────────────
 		// Look up the handler registered for this protocol type.  A nil handlers
@@ -747,6 +761,19 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 				return nil, status.Errorf(codes.InvalidArgument,
 					"NodeStageVolume: volume_context missing required key %q", VolumeContextKeyPort)
 			}
+		}
+		// The NVMe-oF max data transfer size is validated before any attach
+		// side effect, including the page-size floor of max_sectors_kb.
+		if protocolType == ProtocolNVMeoFTCP {
+			size, sizeErr := ParseNVMeoFMaxDataTransferSize(volCtx)
+			if sizeErr == nil {
+				sizeErr = CheckNVMeoFTransferSizePageSize(size, n.workerPageSize())
+			}
+			if sizeErr != nil {
+				return nil, status.Errorf(codes.InvalidArgument,
+					"NodeStageVolume: volume %q: %v", volumeID, sizeErr)
+			}
+			nvmeofMaxTransfer = size
 		}
 		// iSCSI port, LUN and session timeouts are validated before any
 		// attach side effect so a malformed value is InvalidArgument.
@@ -816,6 +843,16 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 			if existingState.StagingPath == "" {
 				existingState.VolumeID = volumeID
 				existingState.StagingPath = stagingPath
+			}
+			// A volume staged by a release without the transfer limit
+			// stays mounted across the upgrade, so a repeated NodeStage
+			// is the chance to cap it; the handler's Attach never runs.
+			if !local && protocolType == ProtocolNVMeoFTCP {
+				limitErr := n.limitStagedNVMeoF(handler, existingState, targetID, nvmeofMaxTransfer)
+				if limitErr != nil {
+					return nil, status.Errorf(codes.Internal,
+						"NodeStageVolume: volume %q: %v", volumeID, limitErr)
+				}
 			}
 			// Re-persist the committed record so this success is acknowledged
 			// only after the file and directory syncs complete.
@@ -970,6 +1007,9 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 	stageState.VolumeID = volumeID
 	stageState.StagingPath = stagingPath
 	stageState.PeriodicTrim = periodicTrim
+	if stageState.NVMeoF != nil && !local {
+		stageState.NVMeoF.MaxDataTransferSize = &nvmeofMaxTransfer
+	}
 	writeErr := n.writeStageState(volumeID, stageState)
 	if writeErr != nil {
 		return nil, failStaged(status.Errorf(codes.Internal,

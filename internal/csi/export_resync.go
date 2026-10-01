@@ -79,6 +79,10 @@ func exportSpecFor(params *agentv1.ExportParams, aclEnabled bool) *v1alpha1.Volu
 		if v := p.GetInCapsuleDataSize(); v != 0 {
 			spec.InCapsuleDataSize = &v
 		}
+		if p.MaxDataTransferSize != nil {
+			v := p.GetMaxDataTransferSize()
+			spec.MaxDataTransferSize = &v
+		}
 		return spec
 	case params.GetIscsi() != nil:
 		p := params.GetIscsi()
@@ -96,11 +100,17 @@ func exportParamsFor(protocol agentv1.ProtocolType, spec *v1alpha1.VolumeExportS
 		if spec.InCapsuleDataSize != nil {
 			inCapsuleDataSize = *spec.InCapsuleDataSize
 		}
+		var maxDataTransferSize *int32
+		if spec.MaxDataTransferSize != nil {
+			v := *spec.MaxDataTransferSize
+			maxDataTransferSize = &v
+		}
 		return &agentv1.ExportParams{Params: &agentv1.ExportParams_NvmeofTcp{
 			NvmeofTcp: &agentv1.NvmeofTcpExportParams{
-				BindAddress:       spec.BindAddress,
-				Port:              spec.Port,
-				InCapsuleDataSize: inCapsuleDataSize,
+				BindAddress:         spec.BindAddress,
+				Port:                spec.Port,
+				InCapsuleDataSize:   inCapsuleDataSize,
+				MaxDataTransferSize: maxDataTransferSize,
 			},
 		}}
 	case agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI:
@@ -318,16 +328,18 @@ type restoreEntry struct {
 
 // restoreRank orders a batch restore.  The agent links exports in request
 // order, and the first export linked to a port fixes the port's
-// param_inline_data_size until no subsystem is linked any more; an export
-// requiring another value is then rejected.  Exports requiring a value come
-// first, those whose volume completed CreateVolume (the value hosts already
-// use) before those whose export never succeeded (CreatePartial), so a
-// failed attempt with a conflicting value cannot displace working volumes.
-// Exports accepting any value come last: they work with whatever value the
-// port gets and must not enable it with the transport default ahead of an
-// export that requires a specific value.
+// param_inline_data_size and param_mdts until no subsystem is linked any
+// more; an export requiring another value is then rejected.  Exports
+// requiring a value come first, those whose volume completed CreateVolume
+// (the value hosts already use) before those whose export never succeeded
+// (CreatePartial), so a failed attempt with a conflicting value cannot
+// displace working volumes.  Exports accepting any value (recorded before
+// either setting existed) come last: they work with whatever value the port
+// gets and must not enable it with the defaults ahead of an export that
+// requires a specific value.
 func restoreRank(pvs *v1alpha1.PillarVolumeState) int {
-	if pvs.Status.ExportSpec.InCapsuleDataSize == nil {
+	spec := pvs.Status.ExportSpec
+	if spec.InCapsuleDataSize == nil && spec.MaxDataTransferSize == nil {
 		return 2
 	}
 	switch pvs.Status.Phase {

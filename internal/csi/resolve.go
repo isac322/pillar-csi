@@ -94,6 +94,13 @@ const (
 	// seconds (resolved nvmeofTcp.reconnectDelay).
 	paramNVMeOFReconnectDelay = "pillar-csi.bhyoo.com/nvmeof-reconnect-delay"
 
+	// ParamNVMeOFMaxDataTransferSize is the resolved
+	// nvmeofTcp.maxDataTransferSize in bytes (0 = no limit).  When the
+	// target advertises no limit (MDTS 0) the node caps the namespace's
+	// queue/max_sectors_kb to it; a volume provisioned before the key
+	// existed is treated as v1alpha1.DefaultMaxDataTransferSize.
+	paramNVMeOFMaxDataTransferSize = "pillar-csi.bhyoo.com/nvmeof-max-data-transfer-size"
+
 	// ParamFSType is the resolved filesystem type (ext4 or xfs);
 	// NodeStageVolume formats and mounts with it in place of the PV's
 	// csi.fsType.
@@ -259,7 +266,11 @@ func (s *ControllerServer) resolveVolumeConfig(
 }
 
 // resolveProtocol applies the class and claim protocol overrides to the
-// referenced PillarProtocol's configuration.
+// referenced PillarProtocol's configuration.  An NVMe-oF/TCP
+// maxDataTransferSize no layer sets resolves to
+// v1alpha1.DefaultMaxDataTransferSize, so the target advertises (and the
+// node enforces) the default limit and the recorded value stays fixed for
+// the volume's lifetime.
 func resolveProtocol(class *classLayer, pvc pvcDocs) (v1alpha1.ProtocolSpec, error) {
 	protocol := *class.protocol.Spec.Protocol.DeepCopy()
 	for _, layer := range []struct {
@@ -273,6 +284,10 @@ func resolveProtocol(class *classLayer, pvc pvcDocs) (v1alpha1.ProtocolSpec, err
 		if err != nil {
 			return v1alpha1.ProtocolSpec{}, invalidConfig("%v", err)
 		}
+	}
+	if n := protocol.NVMeOFTCP; n != nil && n.MaxDataTransferSize == nil {
+		v := v1alpha1.DefaultMaxDataTransferSize
+		n.MaxDataTransferSize = &v
 	}
 	return protocol, nil
 }
@@ -523,6 +538,7 @@ func applyProtocolOverride(protocol *v1alpha1.ProtocolSpec, ov *v1alpha1.Protoco
 		fields = []int32Override{
 			{&dst.MaxQueueSize, src.MaxQueueSize},
 			{&dst.InCapsuleDataSize, src.InCapsuleDataSize},
+			{&dst.MaxDataTransferSize, src.MaxDataTransferSize},
 			{&dst.CtrlLossTmo, src.CtrlLossTmo},
 			{&dst.ReconnectDelay, src.ReconnectDelay},
 		}
@@ -670,6 +686,7 @@ func nodeVolumeContext(resolved *v1alpha1.ResolvedVolumeConfig, volCtx map[strin
 			{paramNVMeOFCtrlLossTmo, n.CtrlLossTmo},
 			{paramNVMeOFReconnectDelay, n.ReconnectDelay},
 			{paramNVMeOFMaxQueueSize, n.MaxQueueSize},
+			{paramNVMeOFMaxDataTransferSize, n.MaxDataTransferSize},
 		}
 	case resolved.Protocol.ISCSI != nil:
 		i := resolved.Protocol.ISCSI

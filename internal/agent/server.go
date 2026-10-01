@@ -40,7 +40,7 @@ import (
 )
 
 // agentVersion is the semver version string embedded in discovery responses.
-const agentVersion = "0.4.0"
+const agentVersion = "0.5.0"
 
 // defaultDrainStateDir is the production directory for the .drained marker.
 const defaultDrainStateDir = "/var/lib/pillar-csi/agent"
@@ -80,6 +80,12 @@ type Server struct {
 	// When nil, nvmeof.ClaimDeviceExclusively is used.  Override via
 	// WithDeviceClaimer or SetDeviceClaimer.
 	deviceClaimer nvmeof.DeviceClaimer
+
+	// mdtsUnsupportedOnce limits the warning that the kernel cannot
+	// advertise a maximum data transfer size (no param_mdts, Linux < 7.1)
+	// to once per agent process: it is a fact about the kernel, not about
+	// any one export.  See reportMDTSUnsupported.
+	mdtsUnsupportedOnce sync.Once
 
 	// targetMu serializes protocol handler operations on the same
 	// protocol-qualified target ID to prevent partial-state races when export

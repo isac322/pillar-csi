@@ -44,7 +44,7 @@ The agent reads back each configfs value it writes and returns an error when the
 | LVM logical volume (linear or thin) | Shipped | Shipped | n/a | n/a |
 | ZFS dataset (planned) | n/a | n/a | Planned | Planned |
 
-Planned items are not available in v0.4.0, and the CRDs reject them. n/a marks combinations that do not apply: block backends are not shared over file protocols, and a dataset is not exported as a block device.
+Planned items are not available in v0.5.0, and the CRDs reject them. n/a marks combinations that do not apply: block backends are not shared over file protocols, and a dataset is not exported as a block device.
 
 iSCSI covers the same features as NVMe-oF/TCP: both volume modes, `ReadWriteOnce` and `ReadWriteOncePod`, an ACL by initiator IQN (`acl: true`) or an open target (`acl: false`, the default), online expansion, usage stats, local attach, and recovery after agent, node plugin, or storage-node restarts. Logins can also be authenticated with CHAP or mutual CHAP, using credentials from a Kubernetes Secret ([Configure iSCSI](https://pillar-csi.bhyoo.com/docs/how-to/configure-iscsi/#authenticate-logins-with-chap)). Multipath (several portals per target) is not supported.
 
@@ -153,7 +153,7 @@ agent:
 
 ```sh
 helm install pillar-csi oci://ghcr.io/isac322/charts/pillar-csi \
-  --version 0.4.0 \
+  --version 0.5.0 \
   --namespace pillar-csi --create-namespace \
   -f values.yaml
 ```
@@ -232,6 +232,15 @@ Upgrading from 0.3.x to 0.4.0 is a `helm upgrade`, but it adds the `PillarVolume
 - mTLS fixes: CSI calls to the agent now use the configured mTLS dialer ([#141](https://github.com/isac322/pillar-csi/issues/141)), and agent probes switch to TCP socket checks when `mtls.enabled=true` so kubelet no longer restarts the agent ([#142](https://github.com/isac322/pillar-csi/issues/142)).
 
 Chart values changes: `metrics.serviceMonitor` is removed (it rendered nothing) and replaced by `metrics.podMonitor` (`enabled`, `interval`, `scrapeTimeout`, `labels`; `additionalLabels` is now `labels`). New values are `metrics.enabled`, `metrics.controller.secure`, `metrics.agent.port`, `metrics.node.port`, `metrics.sidecars.*Port`, `tracing.*` and `node.iscsi.netlinkNetnsPath`. The default `node.initModprobe.modules` adds `dm_mod` and `iscsi_tcp`, and `agent.initModprobe.modules` adds `target_core_mod`, `target_core_iblock` and `iscsi_target_mod`; if you override these lists, add the modules you need.
+
+Upgrading from 0.4.x to 0.5.0 is a `helm upgrade`, but it adds CRD fields (`spec.protocol.iscsi.auth` on `PillarProtocol`, `nvmeofTcp.maxDataTransferSize` on `PillarProtocol` and on `PillarStorageClass` and PVC override documents) and new agent RPC fields, so upgrade the controller, agent and node plugin together in one release. With `installCRDs: true` (the default) the chart applies the changed CRDs; if you set `installCRDs: false` and manage CRDs through GitOps, apply the 0.5.0 CRDs (server-side apply) before or with the chart. What 0.5.0 adds:
+
+- iSCSI CHAP and mutual CHAP login authentication, with the credentials in a Secret in the install namespace ([Configure iSCSI](https://pillar-csi.bhyoo.com/docs/how-to/configure-iscsi/#authenticate-logins-with-chap)).
+- A per-command data size limit (MDTS) for NVMe-oF/TCP, `nvmeofTcp.maxDataTransferSize`, defaulting to 4 MiB, which stops write failures on targets whose memory is too fragmented for large scatterlist allocations ([Tune NVMe-oF/TCP settings](https://pillar-csi.bhyoo.com/docs/how-to/tune-nvmeof/#maximum-data-transfer-size)). Existing NVMe-oF/TCP volumes get the 4 MiB client-side cap automatically after the node plugin restarts when the target kernel lacks `param_mdts` (Linux older than 7.1); no other action is needed.
+- Periodic filesystem trim of staged volumes, so blocks freed inside a PVC return to the thin zvol or LV ([Reclaiming freed space](https://pillar-csi.bhyoo.com/docs/how-to/volume-overrides/#reclaiming-freed-space)).
+- A bug fix: `csi.storage.k8s.io/fstype: xfs` on a hand-written StorageClass now produces an XFS volume instead of ext4.
+
+Chart values changes: new `node.trim.enabled` and `node.trim.interval`. With `rbac.create: true` (the default) the chart also adds a namespaced Role and RoleBinding so the controller can read the Secrets named by `iscsi.auth.secretRef`.
 
 ### Local attach on the storage node
 

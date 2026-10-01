@@ -18,6 +18,7 @@ package csi
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -415,8 +416,8 @@ func rescanNVMeDevice(device string) {
 	// (/dev/nvmeX) may not exist in devtmpfs even though the kernel registered
 	// the controller.  In that case we create the device node on-demand from
 	// the major:minor numbers in sysfs.
-	ctrlDev := ensureNVMeCtrlDev(ctrl)
-	if ctrlDev == "" {
+	ctrlDev, err := ensureNVMeCtrlDev(ctrl)
+	if err != nil {
 		return
 	}
 	ctrlFd, openErr := os.OpenFile(ctrlDev, os.O_RDONLY, 0) //nolint:gosec // ctrl path
@@ -508,38 +509,39 @@ func refreshNVMeBlockDeviceNode(device string) {
 // In containerised environments the devtmpfs may not contain the controller
 // char device even though the kernel registered it.  When the device node is
 // missing, ensureNVMeCtrlDev reads the major:minor numbers from sysfs and
-// creates the node with mknod(2).  Returns "" if the device cannot be ensured.
-func ensureNVMeCtrlDev(ctrl string) string {
+// creates the node with mknod(2).
+func ensureNVMeCtrlDev(ctrl string) (string, error) {
 	ctrlPath := "/dev/" + ctrl
 	_, statErr := os.Stat(ctrlPath)
 	if statErr == nil {
-		return ctrlPath // already exists
+		return ctrlPath, nil // already exists
 	}
 
 	// Read major:minor from sysfs (e.g. "234:2").
 	devFile := "/sys/class/nvme/" + ctrl + "/dev"
 	data, readErr := os.ReadFile(devFile) //nolint:gosec // sysfs path from controller name
 	if readErr != nil {
-		return ""
+		return "", fmt.Errorf("create %s: read %s: %w", ctrlPath, devFile, readErr)
 	}
-	parts := strings.SplitN(strings.TrimSpace(string(data)), ":", 2)
+	raw := strings.TrimSpace(string(data))
+	parts := strings.SplitN(raw, ":", 2)
 	if len(parts) != 2 {
-		return ""
+		return "", fmt.Errorf("create %s: %s holds %q, want major:minor", ctrlPath, devFile, raw)
 	}
 	major, majErr := strconv.Atoi(parts[0])
 	minor, minErr := strconv.Atoi(parts[1])
 	if majErr != nil || minErr != nil {
-		return ""
+		return "", fmt.Errorf("create %s: parse %s %q: %w", ctrlPath, devFile, raw, errors.Join(majErr, minErr))
 	}
 
 	// Create the character device node.  Requires CAP_MKNOD (privileged).
 	// Use the full Linux dev_t encoding so minor numbers >= 256 work.
 	devNum := (minor & 0xff) | (major << 8) | ((minor & 0xfff00) << 12)
 	mknodErr := syscall.Mknod(ctrlPath, syscall.S_IFCHR|0o600, devNum)
-	if mknodErr != nil {
-		return ""
+	if mknodErr != nil && !errors.Is(mknodErr, syscall.EEXIST) {
+		return "", fmt.Errorf("mknod %s (%d:%d): %w", ctrlPath, major, minor, mknodErr)
 	}
-	return ctrlPath
+	return ctrlPath, nil
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

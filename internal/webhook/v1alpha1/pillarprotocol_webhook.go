@@ -116,6 +116,11 @@ func validateProtocolSpec(p pillarcsiv1alpha1.ProtocolSpec) error {
 		checkRange("port", cfg.Port, 1, 65535)
 		checkOptional("maxQueueSize", cfg.MaxQueueSize, 16, 1024)
 		checkOptional("inCapsuleDataSize", cfg.InCapsuleDataSize, 1024, math.MaxInt32)
+		if v := cfg.MaxDataTransferSize; v != nil && !pillarcsiv1alpha1.IsValidMaxDataTransferSize(int64(*v)) {
+			allErrs = append(allErrs, field.Invalid(memberPath.Child("maxDataTransferSize"), *v,
+				fmt.Sprintf("must be 0 (no limit) or a power of two from %d to %d",
+					pillarcsiv1alpha1.MinMaxDataTransferSize, pillarcsiv1alpha1.MaxMaxDataTransferSize)))
+		}
 		checkOptional("ctrlLossTmo", cfg.CtrlLossTmo, 0, math.MaxInt32)
 		checkOptional("reconnectDelay", cfg.ReconnectDelay, 0, math.MaxInt32)
 	case p.ISCSI != nil:

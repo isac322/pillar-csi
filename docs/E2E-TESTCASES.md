@@ -752,7 +752,7 @@ PVC 어노테이션 오버라이드(Layer 4)를 적용한다.
 
 **지원하는 오버라이드 어노테이션:**
 - `pillar-csi.bhyoo.com/backend` — 백엔드 튜너블 YAML 문서 (`zfs: {properties: {...}}` 또는 `lvm: {provisioningMode: ...}`; PillarStorageClass `spec.overrides.backend`와 동일한 형태)
-- `pillar-csi.bhyoo.com/protocol` — 프로토콜 튜너블 YAML 문서 (`nvmeofTcp: {maxQueueSize, inCapsuleDataSize, ctrlLossTmo, reconnectDelay}`)
+- `pillar-csi.bhyoo.com/protocol` — 프로토콜 튜너블 YAML 문서 (`nvmeofTcp: {maxQueueSize, inCapsuleDataSize, maxDataTransferSize, ctrlLossTmo, reconnectDelay}`)
 - `pillar-csi.bhyoo.com/filesystem` — 파일시스템 YAML 문서 (`fsType`, `mkfsOptions`, `mountOptions`; PillarStorageClass `spec.filesystem`과 동일한 형태)
 - 제거된 키(`pillar-csi.bhyoo.com/param.<key>`, `backend-override`, `protocol-override`, `fs-override`)와 그 밖의 알 수 없는 `pillar-csi.bhyoo.com/` 어노테이션은 InvalidArgument로 거부된다
 

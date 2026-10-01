@@ -224,6 +224,19 @@ spec:
       # 링크되는 export가 값을 정하므로 CreateVolume이 완료된 볼륨을 CreatePartial 볼륨보다, 같은 그룹에서는
       # 값을 요구하는 export를 먼저 링크한다. CreatePartial 재시도는 재시도에 쓴 값으로 exportSpec을 갱신한다.
       inCapsuleDataSize: 16384
+      # 명령 하나의 최대 데이터 전송 크기(MDTS, 바이트). 0 = 제한 없음, 그 외 8192..2^30의 2의 거듭제곱.
+      # 생략 시 CreateVolume에서 4194304(4 MiB)로 resolve된다. 제한이 없으면 최신 host 커널이 32 MiB 명령을 보내고,
+      # nvmet_tcp가 명령의 scatterlist를 한 번에 연속 할당(32 MiB → 256 KiB)하다 메모리 단편화로 실패한다.
+      #   - target(Linux >= 7.1): agent가 포트의 param_mdts에 log2(size/4096)을 쓰고 read-back 검증한다.
+      #     값은 포트 공유 속성이지만 상한이다: 포트가 더 작은 제한을 광고하면 명령이 작아질 뿐이므로 안전하다.
+      #     활성 포트에서는 포트가 제한 없음(0, 노드가 직접 제한)이거나 포트 제한 <= 요청(요청 0 = 무제한)이면
+      #     받아들이고, 포트 제한이 0이 아닌 요청보다 클 때만 충돌로 실패한다. agent 재시작 복구는 링크 전에
+      #     빈 포트를 같은 포트 export들의 0이 아닌 최소값으로 설정하므로 순서와 무관하게 복구된다.
+      #     param_mdts가 없는 커널(< 7.1)은 export를 실패시키지 않고 한 번 경고한다.
+      #   - node: Identify Controller로 MDTS를 읽어 0이면 namespace 블록 장치(multipath head와 path 장치)의
+      #     queue/max_sectors_kb를 size/1024로 쓰고 read-back 검증한다. MDTS가 0이 아니면 아무것도 하지 않는다.
+      #     VolumeContext 키가 없는 기존 볼륨은 4 MiB로 취급한다.
+      maxDataTransferSize: 4194304
       # initiator 타임아웃/재연결 파라미터 (pillar-node가 nvme connect 시 적용). 모든 계층에서 같은 범위(>= 0)를 쓴다.
       # 생략 시 connect 문자열에서 빠지고 커널 기본값(600/10)이 적용된다.
       # 커널 의미(Linux fabrics.c): ctrlLossTmo=0 → 재연결 시도 없음.
@@ -415,7 +428,7 @@ PVC annotation 문서 pillar-csi.bhyoo.com/{backend,protocol,filesystem}   (볼�
 |------|---------|-----------|
 | backend | `zfs.properties` (compression, volblocksize 등) | 키 단위 병합. 우선순위: PVC > 바인딩 > store |
 | backend | `lvm.provisioningMode` (`linear` \| `thin`, 기본값 linear) | 마지막 계층의 값 |
-| protocol | `nvmeofTcp.maxQueueSize` (16-1024), `inCapsuleDataSize` (>= 1024), `ctrlLossTmo` (>= 0), `reconnectDelay` (>= 0) | 필드 단위, 마지막 계층의 값 |
+| protocol | `nvmeofTcp.maxQueueSize` (16-1024), `inCapsuleDataSize` (>= 1024), `maxDataTransferSize` (0 또는 8192-2^30의 2의 거듭제곱, 기본값 4 MiB), `ctrlLossTmo` (>= 0), `reconnectDelay` (>= 0) | 필드 단위, 마지막 계층의 값 |
 | protocol | `iscsi.loginTimeout` (>= 1), `replacementTimeout` (>= 0), `noopOutInterval` (>= 0), `noopOutTimeout` (>= 0) | 필드 단위, 마지막 계층의 값 |
 | filesystem | `fsType` (`ext4` \| `xfs`) | 마지막 계층의 값 |
 | filesystem | `periodicTrim` (bool, 생략 = 활성) | 마지막 계층의 값 |

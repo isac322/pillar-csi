@@ -346,6 +346,11 @@ func (in *NVMeOFTCPConfig) DeepCopyInto(out *NVMeOFTCPConfig) {
 		*out = new(int32)
 		**out = **in
 	}
+	if in.MaxDataTransferSize != nil {
+		in, out := &in.MaxDataTransferSize, &out.MaxDataTransferSize
+		*out = new(int32)
+		**out = **in
+	}
 	if in.CtrlLossTmo != nil {
 		in, out := &in.CtrlLossTmo, &out.CtrlLossTmo
 		*out = new(int32)
@@ -378,6 +383,11 @@ func (in *NVMeOFTCPOverrides) DeepCopyInto(out *NVMeOFTCPOverrides) {
 	}
 	if in.InCapsuleDataSize != nil {
 		in, out := &in.InCapsuleDataSize, &out.InCapsuleDataSize
+		*out = new(int32)
+		**out = **in
+	}
+	if in.MaxDataTransferSize != nil {
+		in, out := &in.MaxDataTransferSize, &out.MaxDataTransferSize
 		*out = new(int32)
 		**out = **in
 	}
@@ -1254,6 +1264,11 @@ func (in *VolumeExportSpec) DeepCopyInto(out *VolumeExportSpec) {
 	*out = *in
 	if in.InCapsuleDataSize != nil {
 		in, out := &in.InCapsuleDataSize, &out.InCapsuleDataSize
+		*out = new(int32)
+		**out = **in
+	}
+	if in.MaxDataTransferSize != nil {
+		in, out := &in.MaxDataTransferSize, &out.MaxDataTransferSize
 		*out = new(int32)
 		**out = **in
 	}

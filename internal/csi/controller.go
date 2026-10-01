@@ -1476,12 +1476,18 @@ func exportParamsFromResolved(p v1alpha1.ProtocolSpec, bindAddress string) (*age
 		if n.InCapsuleDataSize != nil {
 			inCapsuleDataSize = *n.InCapsuleDataSize
 		}
+		var maxDataTransferSize *int32
+		if n.MaxDataTransferSize != nil {
+			v := *n.MaxDataTransferSize
+			maxDataTransferSize = &v
+		}
 		return &agentv1.ExportParams{
 			Params: &agentv1.ExportParams_NvmeofTcp{
 				NvmeofTcp: &agentv1.NvmeofTcpExportParams{
-					BindAddress:       bindAddress,
-					Port:              port,
-					InCapsuleDataSize: inCapsuleDataSize,
+					BindAddress:         bindAddress,
+					Port:                port,
+					InCapsuleDataSize:   inCapsuleDataSize,
+					MaxDataTransferSize: maxDataTransferSize,
 				},
 			},
 		}, n.ACL

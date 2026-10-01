@@ -485,9 +485,12 @@ func deleteControllerAndWait(
 
 // writeSysfsAttr writes value to an existing sysfs attribute.  It never
 // creates the file: on sysfs a vanished attribute opened with O_CREAT fails
-// with EACCES, while opening it without O_CREAT reports ENOENT.
+// with EACCES, while opening it without O_CREAT reports ENOENT.  O_TRUNC is
+// a no-op on sysfs (as for a shell "echo >") and keeps a value attribute's
+// read-back exact on a regular file standing in for it.
 func writeSysfsAttr(path, value string) error {
-	f, err := os.OpenFile(path, os.O_WRONLY, 0) //nolint:gosec // G304: sysfs path under connector-controlled root.
+	//nolint:gosec // G304: sysfs path under connector-controlled root.
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0)
 	if err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
 	}

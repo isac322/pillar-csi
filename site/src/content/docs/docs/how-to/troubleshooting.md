@@ -52,6 +52,7 @@ Match the message:
 | `lvm.provisioningMode thin requires PillarStore ... to set lvm.thinPool` | Thin provisioning without a thin pool. | Set `lvm.thinPool` on the store and in `agent.backends`, or use `linear`. |
 | `ResourceExhausted` | The pool or volume group has too little free space. For ZFS the limit is the space available under the store's parent dataset. | Free space, add disks, or request less. |
 | `param_inline_data_size is ... but the export requires` | The volume's `inCapsuleDataSize` differs from the value already set on that storage node port. | Use one `inCapsuleDataSize` for every volume on the port, or leave it unset. See [Tune NVMe-oF/TCP](/docs/how-to/tune-nvmeof/). |
+| `param_mdts is ... but the export allows at most` | The storage node port already advertises a larger limit than the volume's `maxDataTransferSize` (Linux 7.1 or later). | Use the same or a larger `maxDataTransferSize` than the port's, or `0`. See [Tune NVMe-oF/TCP](/docs/how-to/tune-nvmeof/#maximum-data-transfer-size). |
 | `volume_content_source is not supported` | The PVC has `dataSource` or `dataSourceRef`. pillar-csi does not support snapshots or clones. | Remove the data source. |
 
 A PVC that stays `Pending` without these events usually points at a `PillarStorageClass` or `PillarStore` that is not Ready. Check those next.
