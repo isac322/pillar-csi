@@ -610,7 +610,7 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 	if pvExists {
 		recordedCfg = existingPV.Spec.Resolved
 	}
-	res, err := s.resolveVolumeConfig(ctx, scParams, recordedCfg)
+	res, err := s.resolveVolumeConfig(ctx, scParams, req.GetVolumeCapabilities(), recordedCfg)
 	if err != nil {
 		return nil, err
 	}

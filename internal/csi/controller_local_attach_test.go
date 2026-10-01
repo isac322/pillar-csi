@@ -633,7 +633,7 @@ func TestResolveVolumeConfig_ReplaysRecordedLocalAttach(t *testing.T) {
 			paramStoreRef:    testStoreName,
 			paramProtocolRef: testProtocolName,
 			paramLocalAttach: tc.class,
-		}, recorded)
+		}, nil, recorded)
 		if err != nil {
 			t.Fatalf("resolveVolumeConfig: %v", err)
 		}
