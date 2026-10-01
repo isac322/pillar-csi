@@ -569,6 +569,13 @@ func (s *ControllerServer) persistCreatePartial(
 		pvs.Status.Phase = v1alpha1.PillarVolumeStatePhaseCreatePartial
 		pvs.Status.BackendDevicePath = devicePath
 		pvs.Status.ExportSpec = exportSpec
+		if pvs.Spec.ImportedFrom != "" {
+			// ImportVolume succeeded: the agent durably adopted the
+			// pre-existing zvol, so a later teardown may delete it.  While
+			// this is unset the lifecycle cannot prove ownership and cleanup
+			// must retire the record without touching the dataset.
+			pvs.Status.ImportAcquired = true
+		}
 		pvs.Status.PartialFailure = &v1alpha1.PartialFailureInfo{
 			FailedOperation: "ExportVolume",
 			FailedAt:        metav1.Now(),

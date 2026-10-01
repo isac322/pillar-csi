@@ -26,6 +26,8 @@ package zfs
 import (
 	"context"
 	"testing"
+
+	"github.com/isac322/pillar-csi/internal/agent/nvmeof"
 )
 
 // SetBackendDevZvolBase overrides the devZvolBase field of b for the duration
@@ -57,4 +59,23 @@ func SetBackendExec(
 	orig := b.exec
 	b.exec = execFunc(fn)
 	t.Cleanup(func() { b.exec = orig })
+}
+
+// SetBackendHostRoots overrides the configfs/sysfs/mount-table roots of b for
+// the duration of one test.  Like the other per-instance overrides it is safe
+// under t.Parallel because each test owns its own Backend.
+func SetBackendHostRoots(t *testing.T, b *ZfsBackend, configfsRoot, sysBlockRoot, mountsPath string) {
+	t.Helper()
+	orig := struct{ c, s, m string }{b.configfsRoot, b.sysBlockRoot, b.mountsPath}
+	b.configfsRoot, b.sysBlockRoot, b.mountsPath = configfsRoot, sysBlockRoot, mountsPath
+	t.Cleanup(func() { b.configfsRoot, b.sysBlockRoot, b.mountsPath = orig.c, orig.s, orig.m })
+}
+
+// SetBackendClaimDevice overrides the exclusive-open probe of b for the
+// duration of one test.
+func SetBackendClaimDevice(t *testing.T, b *ZfsBackend, fn func(path string) (func() error, error)) {
+	t.Helper()
+	orig := b.claimDevice
+	b.claimDevice = nvmeof.DeviceClaimer(fn)
+	t.Cleanup(func() { b.claimDevice = orig })
 }

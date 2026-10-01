@@ -36,6 +36,7 @@ import (
 	pillarv1alpha1 "github.com/isac322/pillar-csi/api/v1alpha1"
 	"github.com/isac322/pillar-csi/internal/agent/backend"
 	"github.com/isac322/pillar-csi/internal/agent/backend/lvm"
+	"github.com/isac322/pillar-csi/internal/agent/nvmeof"
 )
 
 const testConfigSource = "/etc/pillar-agent/config.yaml"
@@ -53,7 +54,7 @@ func mustParse(t *testing.T, doc string) []pillarv1alpha1.BackendSpec {
 // mustBuild parses an agent config document and builds its registry.
 func mustBuild(t *testing.T, doc string) map[string]backend.VolumeBackend {
 	t.Helper()
-	bs, err := buildVolumeBackends(mustParse(t, doc))
+	bs, err := buildVolumeBackends(mustParse(t, doc), nvmeof.DefaultConfigfsRoot)
 	if err != nil {
 		t.Fatalf("buildVolumeBackends: unexpected error: %v", err)
 	}
@@ -269,7 +270,7 @@ backends:
 	for name, doc := range cases {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			bs, err := buildVolumeBackends(mustParse(t, doc))
+			bs, err := buildVolumeBackends(mustParse(t, doc), nvmeof.DefaultConfigfsRoot)
 			if err == nil {
 				t.Fatal("buildVolumeBackends succeeded; want duplicate-key error")
 			}

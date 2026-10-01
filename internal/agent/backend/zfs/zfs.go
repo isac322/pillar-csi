@@ -43,6 +43,7 @@ import (
 	agentv1 "github.com/isac322/pillar-csi/gen/go/pillar_csi/agent/v1"
 
 	"github.com/isac322/pillar-csi/internal/agent/backend"
+	"github.com/isac322/pillar-csi/internal/agent/nvmeof"
 	"github.com/isac322/pillar-csi/internal/telemetry"
 )
 
@@ -51,6 +52,13 @@ import (
 // own copy of this value so that tests can override it per-instance without
 // affecting any concurrently-running test goroutine.
 const defaultDevZvolBase = "/dev/zvol"
+
+// defaultSysBlockRoot is the production sysfs block-device tree scanned for
+// device-mapper holders during Import.
+const defaultSysBlockRoot = "/sys/block"
+
+// defaultMountsPath is the mount table scanned during Import.
+const defaultMountsPath = "/proc/self/mounts"
 
 // executor abstracts os/exec so that unit tests can inject a fake without
 // running real ZFS commands.  The production path always uses osExecutor.
@@ -157,6 +165,24 @@ type Backend struct {
 	// defaultDevZvolBase ("/dev/zvol") and can be overridden per-instance in
 	// tests via SetBackendDevZvolBase, keeping parallel tests isolated.
 	devZvolBase string
+
+	// configfsRoot is the kernel configfs mount root scanned during Import
+	// for LIO backstores (target/core) and nvmet namespaces (nvmet/).  It
+	// defaults to nvmeof.DefaultConfigfsRoot.
+	configfsRoot string
+
+	// sysBlockRoot is the sysfs block-device tree scanned during Import for
+	// device-mapper holders.  It defaults to defaultSysBlockRoot.
+	sysBlockRoot string
+
+	// mountsPath is the mount table scanned during Import.  It defaults to
+	// defaultMountsPath (/proc/self/mounts, which for the privileged agent
+	// pod is the host mount table).
+	mountsPath string
+
+	// claimDevice is the exclusive-open probe used during Import.  It
+	// defaults to nvmeof.ClaimDeviceExclusively.
+	claimDevice nvmeof.DeviceClaimer
 }
 
 // ZfsBackend is a type alias kept for API compatibility. Prefer Backend.
@@ -167,16 +193,46 @@ type ZfsBackend = Backend
 // Verify at compile time that Backend satisfies the VolumeBackend interface.
 var _ backend.VolumeBackend = (*Backend)(nil)
 
-// New creates a Backend bound to the given pool and parentDataset.
-// Neither argument is validated here; callers should supply values that have
-// already been sanitized (no slashes in individual components, no empty pool).
-func New(pool, parentDataset string) *Backend {
+// Option customizes a Backend at construction.  Production code only needs
+// WithConfigfsRoot; the remaining hooks exist for tests that simulate the
+// host's sysfs, mount table, and device-exclusion state.
+type Option func(*Backend)
+
+// WithConfigfsRoot overrides the configfs mount root that Import scans for
+// LIO backstores and nvmet namespaces.  The agent wires its --configfs-root
+// flag through this option so Import inspects the same tree as exports.
+func WithConfigfsRoot(root string) Option {
+	return func(b *Backend) {
+		if root != "" {
+			b.configfsRoot = root
+		}
+	}
+}
+
+// defaults returns a Backend with every host-interface field set to its
+// production default; constructors then overlay their explicit arguments.
+func defaults(pool, parentDataset string) *Backend {
 	return &Backend{
 		pool:          pool,
 		parentDataset: parentDataset,
 		exec:          osExecutor{},
 		devZvolBase:   defaultDevZvolBase,
+		configfsRoot:  nvmeof.DefaultConfigfsRoot,
+		sysBlockRoot:  defaultSysBlockRoot,
+		mountsPath:    defaultMountsPath,
+		claimDevice:   nvmeof.ClaimDeviceExclusively,
 	}
+}
+
+// New creates a Backend bound to the given pool and parentDataset.
+// Neither argument is validated here; callers should supply values that have
+// already been sanitized (no slashes in individual components, no empty pool).
+func New(pool, parentDataset string, opts ...Option) *Backend {
+	b := defaults(pool, parentDataset)
+	for _, opt := range opts {
+		opt(b)
+	}
+	return b
 }
 
 // NewWithExecFn creates a Backend that delegates all ZFS command execution to
@@ -192,13 +248,14 @@ func New(pool, parentDataset string) *Backend {
 func NewWithExecFn(
 	pool, parentDataset string,
 	fn func(ctx context.Context, name string, args ...string) ([]byte, error),
+	opts ...Option,
 ) *Backend {
-	return &Backend{
-		pool:          pool,
-		parentDataset: parentDataset,
-		exec:          execFunc(fn),
-		devZvolBase:   defaultDevZvolBase,
+	b := defaults(pool, parentDataset)
+	b.exec = execFunc(fn)
+	for _, opt := range opts {
+		opt(b)
 	}
+	return b
 }
 
 // datasetName returns the fully-qualified ZFS dataset name for a volume.

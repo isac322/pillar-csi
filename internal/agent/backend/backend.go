@@ -190,3 +190,53 @@ type CapacityDetailer interface {
 type ProvisionedBytesReporter interface {
 	ProvisionedBytes(ctx context.Context) (bytes int64, ok bool, err error)
 }
+
+// VolumeImporter is implemented by backends that can adopt an already-existing
+// storage resource — created by another provisioning stack, e.g. democratic-csi
+// or openebs zfs-localpv — into a pillar-csi volume lifecycle.  It backs the
+// agent ImportVolume RPC; backends that cannot import return gRPC
+// codes.Unimplemented from the RPC handler.
+// Import is strictly read-only on the backend: unlike Create it MUST NOT
+// create, rename, resize, or format anything.  Implementations refuse with
+// ImportRefusedError when:
+//   - expectedDataset is non-empty and the volumeID's resolved dataset does
+//     not equal it exactly — the request names only pool and leaf, so an
+//     agent whose configured layout differs from the controller's must never
+//     adopt the dataset its own layout resolves to;
+//   - the resolved volumeID does not name an existing resource of the
+//     backend's volume type inside its configured Layout;
+//   - the resource is still in use on the storage node (a target backstore
+//     udev_path, an nvmet namespace device_path, a mount, or an exclusive
+//     device claim);
+//   - the resource is smaller than capacityBytes.
+//
+// Idempotent: repeated calls with the same volumeID and compatible capacity
+// return the same device path and size.
+type VolumeImporter interface {
+	// Import returns the host path to the adopted resource and its current
+	// size in bytes.  expectedDataset is the full dataset name the caller
+	// expects volumeID to resolve to; empty means unchecked (older callers).
+	Import(
+		ctx context.Context,
+		volumeID string,
+		capacityBytes int64,
+		expectedDataset string,
+	) (devicePath string, sizeBytes int64, err error)
+}
+
+// ImportRefusedError is returned by VolumeImporter.Import when the resource
+// cannot safely be adopted.  Callers should map it to gRPC
+// codes.FailedPrecondition.  Reason names the refusal class for operator
+// diagnosis ("missing", "wrong type", "in use", "too small", "layout").
+type ImportRefusedError struct {
+	VolumeID string
+	Reason   string
+	// Detail explains the concrete observation (e.g. "mounted at /data",
+	// "nvmet subsystem nqn.… owns /dev/zd0").
+	Detail string
+}
+
+func (e *ImportRefusedError) Error() string {
+	return fmt.Sprintf("import of volume %q refused: %s: %s",
+		e.VolumeID, e.Reason, e.Detail)
+}

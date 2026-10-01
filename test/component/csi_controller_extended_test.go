@@ -261,7 +261,7 @@ func TestCSIController_ControllerUnpublishVolume_EmptyNodeID(t *testing.T) {
 	ctx := context.Background()
 
 	const nodeID = "nqn.test:node-empty-unpublish"
-	seedComponentPillarVolumeState(t, env, "pvc-component-test")
+	seedComponentPillarVolumeState(t, env)
 	seedCSINodeForNVMeOF(ctx, t, env.k8sClient, nodeID, nodeID)
 	publishComponentTestVolume(ctx, t, env, nodeID)
 
@@ -398,7 +398,7 @@ func TestCSIController_DeleteVolume_TargetNotFound(t *testing.T) {
 	t.Parallel()
 	env := newCSIControllerTestEnvNoTarget(t)
 	ctx := context.Background()
-	seedComponentPillarVolumeState(t, env, "pvc-test")
+	seedComponentPillarVolumeStateOnAgent(t, env, "pvc-test", "nonexistent-node")
 
 	// VolumeID encodes "nonexistent-node" which has no PillarAgent.
 	volumeID := "nonexistent-node/nvmeof-tcp/zfs-zvol/tank/pvc-test"
@@ -427,7 +427,7 @@ func TestCSIController_DeleteVolume_TargetNoResolvedAddress(t *testing.T) {
 	t.Parallel()
 	env := newCSIControllerTestEnvNoResolvedAddr(t)
 	ctx := context.Background()
-	seedComponentPillarVolumeState(t, env, "pvc-component-test")
+	seedComponentPillarVolumeState(t, env)
 
 	_, err := env.srv.DeleteVolume(ctx, &csipb.DeleteVolumeRequest{
 		VolumeId: expectedCSIVolumeID,
@@ -446,7 +446,7 @@ func TestCSIController_ControllerPublishVolume_TargetNotFound(t *testing.T) {
 	env := newCSIControllerTestEnvNoTarget(t)
 	ctx := context.Background()
 	// Seed the volume so the PillarAgent lookup (not the volume lookup) fails.
-	seedComponentPillarVolumeState(t, env, "pvc-test")
+	seedComponentPillarVolumeStateOnAgent(t, env, "pvc-test", "nonexistent-node")
 
 	req := baseControllerPublishRequest()
 	req.VolumeId = "nonexistent-node/nvmeof-tcp/zfs-zvol/tank/pvc-test"
@@ -468,7 +468,7 @@ func TestCSIController_ControllerPublishVolume_TargetNoResolvedAddress(t *testin
 	ctx := context.Background()
 	// Seed the volume so the publish passes the existence check and reaches
 	// the PillarAgent address resolution.
-	seedComponentPillarVolumeState(t, env, "pvc-component-test")
+	seedComponentPillarVolumeState(t, env)
 	_, err := env.srv.ControllerPublishVolume(ctx, baseControllerPublishRequest())
 	requireGRPCCode(t, err, codes.Unavailable)
 }
@@ -578,7 +578,7 @@ func TestCSIController_ExpandVolume_AgentReturnsZeroBytes(t *testing.T) {
 	t.Parallel()
 	env := newCSIControllerTestEnv(t)
 	ctx := context.Background()
-	seedComponentPillarVolumeState(t, env, "pvc-component-test")
+	seedComponentPillarVolumeState(t, env)
 
 	const wantBytes = int64(20 << 30) // 20 GiB
 
@@ -616,7 +616,7 @@ func TestCSIErrors_ControllerUnpublish_DenyInitiatorNonNotFound(t *testing.T) {
 	const nodeID = "nqn.test:node-deny-fail"
 	// Unpublish only revokes recorded publications: seed the volume and CSINode,
 	// then publish so DenyInitiator is reached.
-	seedComponentPillarVolumeState(t, env, "pvc-component-test")
+	seedComponentPillarVolumeState(t, env)
 	seedCSINodeForNVMeOF(ctx, t, env.k8sClient, nodeID, nodeID)
 	publishComponentTestVolume(ctx, t, env, nodeID)
 

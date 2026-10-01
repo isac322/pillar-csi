@@ -42,8 +42,11 @@ package csi
 //     attempt whose later CRD write or response was lost.  An abandoned
 //     lifecycle is therefore always ended by the same fenced teardown as
 //     DeleteVolume (UnexportVolume and DeleteVolume, both idempotent) before
-//     its record is removed, never by deleting the record alone.
-
+//     its record is removed — except an import lifecycle that never durably
+//     recorded adoption (status.importAcquired unset, no backend device path
+//     or export info): its backend resource is pre-existing data this driver
+//     never owned, so it is ended with ReleaseVolume, which retires the
+//     lifecycle at the agent without touching the zvol.
 import (
 	"context"
 	"fmt"
@@ -296,6 +299,7 @@ func (s *ControllerServer) reapAbandoned(
 		backendType:  mapBackendType(marked.Spec.BackendType),
 		agentVolID:   marked.Spec.AgentVolumeID,
 		fence:        fence,
+		releaseOnly:  importNeverAdopted(marked),
 	})
 	if err != nil {
 		return reapResultError, fmt.Errorf("tear down abandoned volume %q: %w", volumeID, err)
