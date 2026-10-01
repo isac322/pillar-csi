@@ -148,10 +148,13 @@ func e34LocalPublishContext(localNode, devicePath string) map[string]string {
 
 // e34NvmetRoot creates a fake nvmet configfs root whose subsystems directory
 // exists but holds no subsystem, so the export of any volume reads as
-// fenced.
+// fenced. The root is removed when the calling spec ends.
 func e34NvmetRoot() string {
 	root, err := os.MkdirTemp(tcTempRoot, "pillar-csi-e34-nvmet-*")
 	Expect(err).NotTo(HaveOccurred())
+	DeferCleanup(func() {
+		Expect(os.RemoveAll(root)).To(Succeed())
+	})
 	Expect(os.MkdirAll(filepath.Join(root, "subsystems"), 0o750)).To(Succeed())
 	return root
 }
