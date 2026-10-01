@@ -332,7 +332,7 @@ func TestResolveVolumeConfig_RetryKeepsRecordedAuth(t *testing.T) {
 	res, err := env.srv.resolveVolumeConfig(context.Background(), map[string]string{
 		paramStoreRef:    testStoreName,
 		paramProtocolRef: testISCSIProtocolName,
-	}, recorded)
+	}, nil, recorded)
 	if err != nil {
 		t.Fatalf("resolveVolumeConfig: %v", err)
 	}

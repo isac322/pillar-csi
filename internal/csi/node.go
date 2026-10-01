@@ -872,6 +872,10 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 					"NodeStageVolume: timed out waiting for device for volume %q (protocol %q)",
 					volumeID, protocolType)
 			}
+			if isISCSIAuthenticationError(attachErr) {
+				return nil, status.Errorf(codes.Unauthenticated,
+					"NodeStageVolume: attach volume %q (protocol %q): %v", volumeID, protocolType, attachErr)
+			}
 			return nil, status.Errorf(codes.Internal,
 				"NodeStageVolume: attach volume %q (protocol %q): %v", volumeID, protocolType, attachErr)
 		}

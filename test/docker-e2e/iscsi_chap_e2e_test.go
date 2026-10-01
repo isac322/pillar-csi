@@ -26,8 +26,7 @@ import (
 const (
 	// The iscsiStatusDetailAuthFailed value is the Login Response status detail
 	// (RFC 7143 §11.13.5) for "authentication failure"; with class 2 it is
-	// what a target enforcing CHAP answers an initiator that offers no
-	// acceptable AuthMethod.
+	// what LIO answers when it refuses a login for authentication.
 	iscsiStatusDetailAuthFailed = 0x01
 
 	// The iscsiAuthMethodAttribute key records a CHAP volume's auth method
@@ -172,15 +171,27 @@ func TestISCSICHAPWrongNodeSecretRejected(t *testing.T) {
 	}
 	requireNoISCSISession(t, cfg.clientNodeA, target, iqnA)
 
-	// The ACL exists, so the target does not answer "forbidden": it refuses a
-	// login that skips CHAP as an authentication failure.
-	class, detail := iscsiLoginStatus(t, cfg.clientNodeA, target, iqnA)
-	if class != iscsiStatusClassInitiatorError || detail == iscsiStatusDetailForbidden {
+	// A login that skips CHAP must be refused.  On a TPG with
+	// attrib/authentication=1 LIO narrows its AuthMethod list to "CHAP"
+	// (iscsi_target_tpg.c iscsit_ta_authentication, v6.8 lines 605-626), so
+	// the offered AuthMethod=None matches nothing: iscsi_check_acceptor_state
+	// fails (iscsi_target_parameters.c lines 1061-1069), iscsi_decode_text_input
+	// returns -1 (lines 1407-1408, 1417-1419) and iscsi_target_handle_csg_zero
+	// returns -1 without iscsit_tx_login_rsp (iscsi_target_nego.c lines
+	// 865-872); iscsi_target_start_negotiation then releases the connection
+	// (lines 1383-1391).  The class 2 / auth-failed response of lines 910-918
+	// is reached only when the target still lists None, so accept either a
+	// closed connection or a class 2 status, never an accepted login.
+	class, detail, answered := iscsiLoginAttempt(t, cfg.clientNodeA, target, iqnA)
+	switch {
+	case !answered:
+		t.Logf("login without CHAP as %q from Kind node %q: target closed the connection without a response",
+			iqnA, cfg.clientNodeA)
+	case class != iscsiStatusClassInitiatorError || detail == iscsiStatusDetailForbidden:
 		t.Fatalf("login without CHAP as %q from Kind node %q: status class %#x detail %#x, want class %#x with an "+
-			"authentication (not %#x target forbidden) detail", iqnA, cfg.clientNodeA, class, detail,
-			iscsiStatusClassInitiatorError, iscsiStatusDetailForbidden)
-	}
-	if detail != iscsiStatusDetailAuthFailed {
+			"authentication (not %#x target forbidden) detail or a closed connection", iqnA, cfg.clientNodeA,
+			class, detail, iscsiStatusClassInitiatorError, iscsiStatusDetailForbidden)
+	case detail != iscsiStatusDetailAuthFailed:
 		t.Logf("login without CHAP refused with detail %#x (initiator error) instead of %#x (authentication failure)",
 			detail, iscsiStatusDetailAuthFailed)
 	}

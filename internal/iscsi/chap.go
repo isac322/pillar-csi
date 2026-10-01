@@ -69,6 +69,12 @@ const (
 // did not present.
 var ErrAuthenticationFailed = errors.New("authentication failed")
 
+// ErrTargetAuthenticationFailed is wrapped by the error of a mutual CHAP
+// login whose target did not prove it knows the mutual secret (wrong or
+// missing CHAP_N/CHAP_R): the target may be an impostor, or the mutual
+// credentials on the two sides differ.
+var ErrTargetAuthenticationFailed = errors.New("mutual CHAP authentication of the target failed")
+
 // CHAPCredentials are the CHAP secrets of one session.  Username and
 // Secret authenticate the initiator to the target.  MutualUsername and
 // MutualSecret, when set, make the authentication mutual: the target must
@@ -381,18 +387,19 @@ func (c *chapState) onMutualResponse() error {
 	name, okN := c.recv[keyCHAPN]
 	resp, okR := c.recv[keyCHAPR]
 	if !okN || !okR {
-		return errors.New("target did not answer the mutual CHAP challenge (CHAP_N/CHAP_R missing)")
+		return fmt.Errorf("%w: target did not answer the mutual CHAP challenge (CHAP_N/CHAP_R missing)",
+			ErrTargetAuthenticationFailed)
 	}
 	if subtle.ConstantTimeCompare([]byte(name), []byte(c.creds.MutualUsername)) != 1 {
-		return errors.New("mutual CHAP authentication of the target failed: CHAP_N does not match the mutual username")
+		return fmt.Errorf("%w: CHAP_N does not match the mutual username", ErrTargetAuthenticationFailed)
 	}
 	got, err := decodeCHAPBinary(keyCHAPR, resp)
 	if err != nil {
-		return fmt.Errorf("mutual CHAP authentication of the target failed: %w", err)
+		return fmt.Errorf("%w: %w", ErrTargetAuthenticationFailed, err)
 	}
 	want := chapResponse(c.id, c.creds.MutualSecret, c.challenge)
 	if subtle.ConstantTimeCompare(got, want) != 1 {
-		return errors.New("mutual CHAP authentication of the target failed: wrong CHAP_R (mutual secret mismatch)")
+		return fmt.Errorf("%w: wrong CHAP_R (mutual secret mismatch)", ErrTargetAuthenticationFailed)
 	}
 	c.close()
 	c.step = chapDone

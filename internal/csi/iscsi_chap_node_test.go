@@ -18,6 +18,8 @@ package csi
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -173,5 +175,46 @@ func TestNodeStage_ISCSINoAuthIgnoresSecrets(t *testing.T) {
 	}
 	if strings.Contains(string(data), "chap") {
 		t.Errorf("stage state of an AuthMethod=None volume carries CHAP: %s", data)
+	}
+}
+
+// CHAP failures in either direction are Unauthenticated; other login
+// failures keep Internal.  The initiator's message is kept.
+func TestNodeStage_ISCSIAuthenticationFailureCode(t *testing.T) {
+	t.Parallel()
+	portal := iscsi.Portal{Address: "192.168.1.10", Port: 3260}
+	for name, tc := range map[string]struct {
+		loginErr error
+		want     codes.Code
+	}{
+		"target rejected credentials": {
+			loginErr: &iscsi.LoginError{Target: testTargetIQN, Portal: portal, StatusClass: 2, StatusDetail: 1},
+			want:     codes.Unauthenticated,
+		},
+		"target failed mutual CHAP": {
+			loginErr: fmt.Errorf("login to target %s at %s: %w: wrong CHAP_R (mutual secret mismatch)",
+				testTargetIQN, portal, iscsi.ErrTargetAuthenticationFailed),
+			want: codes.Unauthenticated,
+		},
+		"ACL authorization failure": {
+			loginErr: &iscsi.LoginError{Target: testTargetIQN, Portal: portal, StatusClass: 2, StatusDetail: 2},
+			want:     codes.Internal,
+		},
+		"downgrade refused": {
+			loginErr: errors.New("target selected AuthMethod=None although CHAP credentials are configured"),
+			want:     codes.Internal,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			ini := newFakeISCSIInitiator()
+			ini.loginErr = tc.loginErr
+			env := newHandlerNodeTestEnv(t, map[string]ProtocolHandler{ProtocolISCSI: NewISCSIHandler(ini, testInitiatorIQN)})
+			_, err := env.srv.NodeStageVolume(context.Background(),
+				chapStageRequest("storage-1/iscsi/zfs-zvol/tank/pvc-a", t.TempDir(), "MutualCHAP", mutualCHAPSecrets()))
+			if status.Code(err) != tc.want || !strings.Contains(err.Error(), tc.loginErr.Error()) {
+				t.Fatalf("err = %v, want code %v carrying %q", err, tc.want, tc.loginErr)
+			}
+		})
 	}
 }

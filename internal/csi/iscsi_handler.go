@@ -186,6 +186,14 @@ func chapCredentials(chap *agentv1.IscsiChap) *iscsi.CHAPCredentials {
 	}
 }
 
+// isISCSIAuthenticationError reports whether an Attach error is a CHAP
+// authentication failure in either direction: the target refused the
+// initiator's credentials (login status class 2 detail 1), or the target
+// failed mutual CHAP.  NodeStageVolume reports these as Unauthenticated.
+func isISCSIAuthenticationError(err error) bool {
+	return errors.Is(err, iscsi.ErrAuthenticationFailed) || errors.Is(err, iscsi.ErrTargetAuthenticationFailed)
+}
+
 // parseISCSISessionTimeouts reads the iscsi-* timeout keys CreateVolume
 // copied into the VolumeContext.  Absent or empty keys keep the initiator
 // default; a present value must be a base-10 number of seconds within the

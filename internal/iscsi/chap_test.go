@@ -137,22 +137,26 @@ func TestCHAPLoginRejections(t *testing.T) {
 		target func(*fakeTarget)
 		creds  *CHAPCredentials
 		want   string
+		// sentinel is the authentication error the failure matches; nil
+		// for protocol violations, which match neither.
+		sentinel error
 	}{
 		"wrong initiator secret": {
 			target: func(tgt *fakeTarget) { tgt.chap.secret = "another-secret-1" },
-			creds:  oneWayCreds(), want: "authentication failed",
+			creds:  oneWayCreds(), want: "authentication failed", sentinel: ErrAuthenticationFailed,
 		},
 		"wrong mutual response": {
 			target: func(tgt *fakeTarget) { tgt.chap.wrongMutual = true },
-			creds:  mutualCreds(), want: "wrong CHAP_R",
+			creds:  mutualCreds(), want: "wrong CHAP_R", sentinel: ErrTargetAuthenticationFailed,
 		},
 		"missing mutual response": {
 			target: func(tgt *fakeTarget) { tgt.chap.skipMutual = true },
 			creds:  mutualCreds(), want: "did not answer the mutual CHAP challenge",
+			sentinel: ErrTargetAuthenticationFailed,
 		},
 		"wrong mutual name": {
 			target: func(tgt *fakeTarget) { tgt.chap.mutualUser = "impostor" },
-			creds:  mutualCreds(), want: "CHAP_N does not match",
+			creds:  mutualCreds(), want: "CHAP_N does not match", sentinel: ErrTargetAuthenticationFailed,
 		},
 		"downgrade to None": {
 			target: func(tgt *fakeTarget) { tgt.chap.selectNone = true },
@@ -182,7 +186,20 @@ func TestCHAPLoginRejections(t *testing.T) {
 			if n := operationalRequests(tgt); n != 0 {
 				t.Errorf("%d operational requests after failed authentication", n)
 			}
+			checkAuthSentinel(t, err, tc.sentinel)
 		})
+	}
+}
+
+// checkAuthSentinel checks that err matches exactly the expected
+// authentication sentinel (none when want is nil).
+func checkAuthSentinel(t *testing.T, err, want error) {
+	t.Helper()
+	for _, s := range []error{ErrAuthenticationFailed, ErrTargetAuthenticationFailed} {
+		wantIs := want != nil && errors.Is(want, s)
+		if got := errors.Is(err, s); got != wantIs {
+			t.Errorf("errors.Is(err, %q) = %v, want %v (err = %v)", s, got, wantIs, err)
+		}
 	}
 }
 
