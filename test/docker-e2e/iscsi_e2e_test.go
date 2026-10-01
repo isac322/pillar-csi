@@ -900,31 +900,7 @@ func iscsiLoginRequest(initiator, target string) []byte {
 // refuse it as forbidden (no node ACL).
 func assertUnauthorizedISCSILoginRejected(t *testing.T, node string, target iscsiTarget, iqn string) {
 	t.Helper()
-	var escaped strings.Builder
-	for _, b := range iscsiLoginRequest(iqn, target.iqn) {
-		fmt.Fprintf(&escaped, `\x%02x`, b)
-	}
-	const loginScript = `set -eu
-exec 3<>"/dev/tcp/$1/$2"
-printf '%b' "$3" >&3
-timeout 10 head -c 48 <&3 | od -An -v -tx1`
-	ctx, cancel := context.WithTimeout(context.Background(), iscsiLoginTimeout)
-	defer cancel()
-	stdout, stderr, err := runDockerExec(ctx, node, "bash", "-ceu", loginScript, "unauthorized-iscsi-login",
-		target.address, target.port, escaped.String())
-	if err != nil {
-		t.Fatalf("unauthorized iSCSI login from Kind node %q to %s failed before a response: %v\nstdout:\n%s\nstderr:\n%s",
-			node, target.endpoint, err, stdout, stderr)
-	}
-	response, err := hex.DecodeString(strings.Join(strings.Fields(stdout), ""))
-	if err != nil || len(response) != 48 {
-		t.Fatalf("unauthorized iSCSI login from Kind node %q: want a 48-byte login response header, got %q (%v)",
-			node, stdout, err)
-	}
-	if opcode := response[0] & 0x3f; opcode != 0x23 {
-		t.Fatalf("unauthorized iSCSI login from Kind node %q: response opcode %#x, want Login Response 0x23", node, opcode)
-	}
-	class, detail := response[36], response[37]
+	class, detail := iscsiLoginStatus(t, node, target, iqn)
 	if class == 0 {
 		t.Fatalf("iSCSI target %s accepted a login from unauthorized initiator %q on Kind node %q", target.iqn, iqn, node)
 	}
@@ -932,4 +908,61 @@ timeout 10 head -c 48 <&3 | od -An -v -tx1`
 		t.Fatalf("unauthorized iSCSI login from Kind node %q: status class %#x detail %#x, want %#x/%#x (target forbidden)",
 			node, class, detail, iscsiStatusClassInitiatorError, iscsiStatusDetailForbidden)
 	}
+}
+
+// iscsiLoginStatus sends the AuthMethod=None login of iscsiLoginRequest for
+// target with initiator iqn from node's network namespace and returns the
+// status class and detail of the target's first Login Response.
+func iscsiLoginStatus(t *testing.T, node string, target iscsiTarget, iqn string) (class, detail byte) {
+	t.Helper()
+	class, detail, answered := iscsiLoginAttempt(t, node, target, iqn)
+	if !answered {
+		t.Fatalf("raw iSCSI login as %q from Kind node %q: want a 48-byte login response header, "+
+			"the target closed the connection without one", iqn, node)
+	}
+	return class, detail
+}
+
+// iscsiLoginAttempt sends the AuthMethod=None login of iscsiLoginRequest for
+// target with initiator iqn from node's network namespace.  It returns the
+// status class and detail of the target's first Login Response, or
+// answered=false when the target closed (or reset) the connection without
+// sending any byte.  A target that neither answers nor closes within 10
+// seconds fails the test.
+func iscsiLoginAttempt(t *testing.T, node string, target iscsiTarget, iqn string) (class, detail byte, answered bool) {
+	t.Helper()
+	var escaped strings.Builder
+	for _, b := range iscsiLoginRequest(iqn, target.iqn) {
+		fmt.Fprintf(&escaped, `\x%02x`, b)
+	}
+	const loginScript = `set -euo pipefail
+exec 3<>"/dev/tcp/$1/$2"
+printf '%b' "$3" >&3
+timeout 10 head -c 48 <&3 | od -An -v -tx1`
+	ctx, cancel := context.WithTimeout(context.Background(), iscsiLoginTimeout)
+	defer cancel()
+	stdout, stderr, err := runDockerExec(ctx, node, "bash", "-ceu", loginScript, "raw-iscsi-login",
+		target.address, target.port, escaped.String())
+	if err != nil && stdout == "" && strings.Contains(stderr, "Connection reset by peer") {
+		return 0, 0, false
+	}
+	if err != nil {
+		t.Fatalf("raw iSCSI login as %q from Kind node %q to %s failed before a response: %v\nstdout:\n%s\nstderr:\n%s",
+			iqn, node, target.endpoint, err, stdout, stderr)
+	}
+	response, err := hex.DecodeString(strings.Join(strings.Fields(stdout), ""))
+	if err != nil {
+		t.Fatalf("raw iSCSI login as %q from Kind node %q: decode response %q: %v", iqn, node, stdout, err)
+	}
+	if len(response) == 0 {
+		return 0, 0, false
+	}
+	if len(response) != 48 {
+		t.Fatalf("raw iSCSI login as %q from Kind node %q: want a 48-byte login response header, got %d bytes %q",
+			iqn, node, len(response), stdout)
+	}
+	if opcode := response[0] & 0x3f; opcode != 0x23 {
+		t.Fatalf("raw iSCSI login as %q from Kind node %q: response opcode %#x, want Login Response 0x23", iqn, node, opcode)
+	}
+	return response[36], response[37], true
 }

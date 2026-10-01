@@ -101,6 +101,9 @@ type NVMeOFTCPConfig struct {
 // (loginTimeout 15, replacementTimeout 120, noopOutInterval 5,
 // noopOutTimeout 5).  Timeouts apply to sessions logged in after the change;
 // a staged volume keeps the values from its CreateVolume.
+//
+// +kubebuilder:validation:XValidation:rule="!has(self.auth) || self.auth.method == 'None' || has(self.auth.secretRef)",message="auth.secretRef is required when auth.method is CHAP or MutualCHAP"
+// +kubebuilder:validation:XValidation:rule="!has(self.auth) || self.auth.method == 'None' || self.acl",message="auth.method CHAP and MutualCHAP require acl: true"
 type ISCSIConfig struct {
 	// port is the TCP port on which the iSCSI target portal listens.
 	// Defaults to 3260.
@@ -143,6 +146,72 @@ type ISCSIConfig struct {
 	// +optional
 	// +kubebuilder:validation:Minimum=0
 	NoopOutTimeout *int32 `json:"noopOutTimeout,omitempty"`
+
+	// auth configures iSCSI CHAP authentication.  Unset is method None
+	// (initiator IQN ACLs only).  Auth is fixed per volume at CreateVolume:
+	// a later change applies only to volumes provisioned afterwards, and it
+	// cannot be overridden per binding or per volume.  CHAP credentials are
+	// set on the per-initiator ACLs, so CHAP and MutualCHAP require acl: true.
+	// +optional
+	Auth *ISCSIAuth `json:"auth,omitempty"`
+}
+
+// ISCSIAuthMethod selects the iSCSI authentication method.
+// +kubebuilder:validation:Enum=None;CHAP;MutualCHAP
+type ISCSIAuthMethod string
+
+// Supported ISCSIAuthMethod values.
+const (
+	// ISCSIAuthMethodNone disables authentication: initiator IQN ACLs only.
+	ISCSIAuthMethodNone ISCSIAuthMethod = "None"
+
+	// ISCSIAuthMethodCHAP is one-way CHAP: the target authenticates the
+	// initiator.
+	ISCSIAuthMethodCHAP ISCSIAuthMethod = "CHAP"
+
+	// ISCSIAuthMethodMutualCHAP is CHAP in both directions: the initiator
+	// also authenticates the target.
+	ISCSIAuthMethodMutualCHAP ISCSIAuthMethod = "MutualCHAP"
+)
+
+// ISCSIAuth configures iSCSI CHAP authentication.
+//
+// The credentials live in a Secret in the pillar-csi installation namespace
+// (the controller's namespace) with the keys username and password (CHAP and
+// MutualCHAP) plus mutualUsername and mutualPassword (MutualCHAP only).
+// Passwords must be 12 to 255 bytes, and mutualPassword must differ from
+// password (RFC 7143 §12.1.3).  The controller reads the Secret each time it
+// configures a target: new contents apply to the target at the next
+// ControllerPublishVolume or export restore, and to the node at the next
+// NodeStageVolume.
+type ISCSIAuth struct {
+	// method selects the authentication method.
+	// +optional
+	// +kubebuilder:default=None
+	Method ISCSIAuthMethod `json:"method,omitempty"`
+
+	// secretRef names the Secret holding the CHAP credentials in the
+	// pillar-csi installation namespace.  Required unless method is None.
+	// +optional
+	SecretRef *ISCSIAuthSecretReference `json:"secretRef,omitempty"`
+}
+
+// ISCSIAuthSecretReference names a Secret in the pillar-csi installation
+// namespace.
+type ISCSIAuthSecretReference struct {
+	// name is the name of the Secret.
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+}
+
+// EffectiveMethod returns the configured method, None when auth is unset
+// or its method is empty.
+func (a *ISCSIAuth) EffectiveMethod() ISCSIAuthMethod {
+	if a == nil || a.Method == "" {
+		return ISCSIAuthMethodNone
+	}
+	return a.Method
 }
 
 // ProtocolSpec describes the transport protocol of a PillarProtocol.

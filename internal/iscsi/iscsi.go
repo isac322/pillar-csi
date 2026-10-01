@@ -107,6 +107,12 @@ type SessionParams struct {
 	// declares the connection failed (ISCSI_PARAM_PING_TMO).  nil selects
 	// DefaultNoopOutTimeout; an explicit 0 disables the ping timeout.
 	NoopOutTimeout *time.Duration
+	// CHAP, when set, authenticates the login with CHAP (mutual CHAP when
+	// its mutual pair is set) and refuses targets that do not run it.  nil
+	// logs in with AuthMethod=None.  The credentials are kept in memory
+	// for re-logins after connection loss; a session adopted from sysfs
+	// after a restart has none until Login or SetLoginParams supplies them.
+	CHAP *CHAPCredentials
 }
 
 // withDefaults fills unset fields.  Every timeout pointer of the result is
@@ -122,6 +128,7 @@ func (p SessionParams) withDefaults() SessionParams {
 		p.Portal.Port = DefaultPort
 	}
 	p.Portal = p.Portal.normalized()
+	p.CHAP = cloneCHAP(p.CHAP)
 	return p
 }
 
@@ -149,6 +156,8 @@ func (p SessionParams) validate() error {
 		return errors.New("NOP-Out interval " + p.NoopOutInterval.String() + " is negative")
 	case *p.NoopOutTimeout < 0:
 		return errors.New("NOP-Out timeout " + p.NoopOutTimeout.String() + " is negative")
+	case p.CHAP != nil:
+		return p.CHAP.validate()
 	}
 	return nil
 }

@@ -30,13 +30,16 @@ limitations under the License.
 //	    wwn/vpd_unit_serial       stable T10 unit serial (see DeriveUnitSerial)
 //	  iscsi/<target IQN>/tpgt_1/
 //	    enable                    "1" to accept logins
-//	    attrib/authentication     "0" (no CHAP)
+//	    attrib/authentication     "1" with CHAP, "0" without (see chap.go)
 //	    attrib/generate_node_acls "1" demo mode (ACL off) / "0" explicit ACLs
 //	    attrib/cache_dynamic_acls, attrib/demo_mode_write_protect (demo mode)
 //	    lun/lun_0/<link>          → core/iblock_<HBAIndex>/<backstore>
 //	    np/<addr>:<port>          network portal on the family's wildcard address
 //	                              ("0.0.0.0:<port>" or "[::]:<port>", see Target.Portal)
 //	    acls/<initiator IQN>/lun_0/<link> → ../../lun/lun_0 (mapped LUN)
+//	    acls/<initiator IQN>/attrib/authentication "-1" (inherit the TPG's)
+//	    acls/<initiator IQN>/auth/{userid,password,userid_mutual,password_mutual}
+//	                              CHAP credentials ("NULL" = unset)
 //
 // Kernel modules: target_core_mod, target_core_iblock, iscsi_target_mod.
 // The iscsi fabric directory is not created by loading the modules; the

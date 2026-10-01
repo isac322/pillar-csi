@@ -19,6 +19,8 @@ package csi
 import (
 	"fmt"
 	"time"
+
+	"github.com/isac322/pillar-csi/internal/iscsi"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -205,6 +207,52 @@ type ISCSIStageState struct {
 	// Zero (records written before the field existed) means unknown: the
 	// initiator default applies.
 	LoginTimeoutSeconds int `json:"login_timeout_seconds,omitempty"`
+
+	// CHAP holds the credentials the session logged in with (absent for
+	// AuthMethod=None).  The initiator keeps them only in memory and
+	// kubelet does not repeat NodeStageVolume for a mounted volume, so
+	// RestoreProtocolSessions re-applies them to the session adopted after
+	// a pillar-node restart, for its next re-login.  Like open-iscsi's
+	// node records, the stage state file is therefore written mode 0600
+	// in a 0700 directory (see writeStageState); never log it.
+	CHAP *ISCSIStageCHAP `json:"chap,omitempty"`
+}
+
+// ISCSIStageCHAP is the persisted form of iscsi.CHAPCredentials.
+type ISCSIStageCHAP struct {
+	Username       string `json:"username"`
+	Secret         string `json:"secret"`
+	MutualUsername string `json:"mutual_username,omitempty"`
+	MutualSecret   string `json:"mutual_secret,omitempty"`
+}
+
+// String redacts the credentials, so a stage state formatted by mistake
+// leaks nothing.
+func (ISCSIStageCHAP) String() string {
+	return "CHAP{secrets redacted}"
+}
+
+// GoString redacts the credentials for %#v.
+func (c ISCSIStageCHAP) GoString() string {
+	return c.String()
+}
+
+func iscsiStageCHAP(c *iscsi.CHAPCredentials) *ISCSIStageCHAP {
+	if c == nil {
+		return nil
+	}
+	return &ISCSIStageCHAP{
+		Username: c.Username, Secret: c.Secret, MutualUsername: c.MutualUsername, MutualSecret: c.MutualSecret,
+	}
+}
+
+func (c *ISCSIStageCHAP) credentials() *iscsi.CHAPCredentials {
+	if c == nil {
+		return nil
+	}
+	return &iscsi.CHAPCredentials{
+		Username: c.Username, Secret: c.Secret, MutualUsername: c.MutualUsername, MutualSecret: c.MutualSecret,
+	}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -299,6 +347,7 @@ func (s *nodeStageState) ToProtocolState() (ProtocolState, error) {
 			Port:         s.ISCSI.Port,
 			LUN:          s.ISCSI.LUN,
 			LoginTimeout: time.Duration(s.ISCSI.LoginTimeoutSeconds) * time.Second,
+			CHAP:         s.ISCSI.CHAP.credentials(),
 		}, nil
 	default:
 		return nil, fmt.Errorf("unrecognized protocol type %q in persisted stage state", s.ProtocolType)
@@ -359,6 +408,7 @@ func stageStateFromAttachResult(
 					Port:                iscsiState.Port,
 					LUN:                 iscsiState.LUN,
 					LoginTimeoutSeconds: int(iscsiState.LoginTimeout / time.Second),
+					CHAP:                iscsiStageCHAP(iscsiState.CHAP),
 				}
 			}
 		}

@@ -99,7 +99,7 @@ func (l opLock) unlock() { <-l }
 type session struct {
 	op     opLock
 	key    sessionKey
-	params SessionParams // LoginTimeout guarded by Initiator.mu, the rest immutable
+	params SessionParams // LoginTimeout and CHAP guarded by Initiator.mu, the rest immutable
 	isid   isid
 
 	// Guarded by Initiator.mu.
@@ -425,9 +425,12 @@ func (i *Initiator) Login(ctx context.Context, p SessionParams) (*Session, error
 		i.mu.Lock()
 		ph := s.phase
 		if ph != phaseRemoved && ph != phaseLoggingOut {
-			// The login timeout is userspace-only: a session adopted
-			// from sysfs cannot know it, so the caller's value wins.
+			// The login timeout and CHAP credentials are userspace-only:
+			// a session adopted from sysfs cannot know them, so the
+			// caller's values win (and rotated credentials apply to the
+			// next re-login).
 			s.params.LoginTimeout = p.LoginTimeout
+			s.params.CHAP = p.CHAP
 		}
 		i.mu.Unlock()
 		s.op.unlock()
@@ -524,12 +527,16 @@ func (i *Initiator) loginOnce(ctx context.Context, a *loginAttempt) (retry bool,
 	if err != nil {
 		return false, err
 	}
+	i.mu.Lock()
+	chap := a.s.params.CHAP
+	i.mu.Unlock()
 	res, err := loginSession(ctx, i.exchanger(a.s, a.sid, a.cid), loginInput{
 		InitiatorIQN: a.s.params.InitiatorIQN,
 		TargetIQN:    a.s.key.target,
 		ISID:         a.s.isid,
 		TSIH:         a.tsih,
 		CID:          uint16(a.cid), //nolint:gosec // G115: the kernel allocates CIDs from 0 per session.
+		CHAP:         chap,
 	}, a.portal)
 	if err != nil {
 		return i.retryLogin(ctx, a, ep, err)
@@ -1037,30 +1044,40 @@ func (i *Initiator) Rescan(ctx context.Context, targetIQN string, portal Portal)
 	return errors.Join(errs...) //nolint:wrapcheck // multi-error is already wrapped per item
 }
 
-// SetLoginTimeout sets the login timeout the session for (targetIQN,
-// portal) uses for its next re-login.  The login timeout lives only in
+// SetLoginParams sets the login timeout and CHAP credentials the session
+// for (targetIQN, portal) uses for its next re-login.  Both live only in
 // this process: a session adopted from sysfs after a restart starts with
-// DefaultLoginTimeout, so the caller restores the value the volume was
-// staged with.  Zero or negative d selects DefaultLoginTimeout.  A
-// re-login already in flight keeps its budget.
-func (i *Initiator) SetLoginTimeout(targetIQN string, portal Portal, d time.Duration) error {
+// DefaultLoginTimeout and no credentials, so the caller restores the
+// values the volume was staged with.  Zero or negative loginTimeout
+// selects DefaultLoginTimeout; nil chap selects AuthMethod=None.  A
+// re-login already in flight keeps its budget and credentials.
+func (i *Initiator) SetLoginParams(targetIQN string, portal Portal, loginTimeout time.Duration,
+	chap *CHAPCredentials,
+) error {
 	err := i.running()
 	if err != nil {
-		return fmt.Errorf("set login timeout of target %s at %s: %w", targetIQN, portal, err)
+		return fmt.Errorf("set login parameters of target %s at %s: %w", targetIQN, portal, err)
 	}
-	if d <= 0 {
-		d = DefaultLoginTimeout
+	if loginTimeout <= 0 {
+		loginTimeout = DefaultLoginTimeout
+	}
+	if chap != nil {
+		err = chap.validate()
+		if err != nil {
+			return fmt.Errorf("set login parameters of target %s at %s: %w", targetIQN, portal, err)
+		}
 	}
 	s, err := i.lookup(sessionKey{target: targetIQN, portal: portal.normalized()})
 	if err != nil {
-		return fmt.Errorf("set login timeout of target %s at %s: %w", targetIQN, portal, err)
+		return fmt.Errorf("set login parameters of target %s at %s: %w", targetIQN, portal, err)
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	if s == nil || s.phase == phaseRemoved {
-		return fmt.Errorf("set login timeout of target %s at %s: no iSCSI session", targetIQN, portal)
+		return fmt.Errorf("set login parameters of target %s at %s: no iSCSI session", targetIQN, portal)
 	}
-	s.params.LoginTimeout = d
+	s.params.LoginTimeout = loginTimeout
+	s.params.CHAP = cloneCHAP(chap)
 	return nil
 }
 

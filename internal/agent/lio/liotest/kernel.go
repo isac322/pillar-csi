@@ -23,8 +23,11 @@ limitations under the License.
 // attribute as "UDEV PATH: <path>", a
 // backstore can be enabled only with a device that is not held, its unit
 // serial cannot change while a LUN uses it, its attrib/emulate_tpu accepts 1
-// only once enabled and only for a device supporting discard, and portal
-// names must parse.
+// only once enabled and only for a device supporting discard, portal
+// names must parse, attrib/authentication accepts only 0/1 (TPG) or
+// -1/0/1 (node ACL), and a node ACL's auth attributes store values below
+// 256 bytes verbatim (read back with one trailing newline), refuse empty
+// writes, and keep the read-only authenticate_target in sync.
 //
 // It is test support only; production code uses lio.OSFS.
 package liotest
@@ -35,6 +38,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -287,9 +291,14 @@ func (k *Kernel) populate(kd kind, path string) {
 		k.autoFile(path, "alua_tg_pt_gp", "default_tg_pt_gp")
 		k.autoDir(path, "statistics")
 	case kindACL:
-		for _, d := range []string{"attrib", "auth", "param"} {
-			k.autoDir(path, d)
+		k.autoDir(path, "param")
+		attrib := k.autoDir(path, "attrib")
+		k.autoFile(attrib, "authentication", "-1")
+		auth := k.autoDir(path, "auth")
+		for _, name := range aclAuthStrings {
+			k.autoFile(auth, name, "")
 		}
+		k.autoFile(auth, "authenticate_target", "0")
 	case kindMappedLUN:
 		k.autoFile(path, "write_protect", "0")
 	case kindTarget, kindPortal, kindUnknown:
@@ -433,7 +442,60 @@ func (k *Kernel) WriteFile(path, content string) error {
 	if done {
 		return err
 	}
+	if k.isACLAuthAttr(path) {
+		return writeACLAuth(path, content)
+	}
 	return k.writeAttrLocked(path, strings.TrimSpace(content))
+}
+
+// aclAuthStrings are the writable string attributes of a node ACL's auth
+// group (lio_target_nacl_auth_attrs).
+var aclAuthStrings = []string{"userid", "password", "userid_mutual", "password_mutual"}
+
+// isACLAuthAttr reports whether path is an attribute of a node ACL's auth
+// group.
+func (k *Kernel) isACLAuthAttr(path string) bool {
+	dir := filepath.Dir(path)
+	if filepath.Base(dir) != "auth" {
+		return false
+	}
+	kd, _ := k.classify(filepath.Dir(dir))
+	return kd == kindACL
+}
+
+// writeACLAuth handles a write to a node ACL's auth attribute like
+// __DEF_NACL_AUTH_STR: a value of 256 bytes or more is EINVAL, the bytes up
+// to the first NUL are stored verbatim (no trimming), and
+// authenticate_target (read-only) becomes 1 while both mutual values are
+// set, a value starting with "NULL" counting as unset.
+func writeACLAuth(path, content string) error {
+	name := filepath.Base(path)
+	if !slices.Contains(aclAuthStrings, name) {
+		return errnoErr("write", path, syscall.EACCES)
+	}
+	if content == "" {
+		// configfs_write_iter: an empty write never reaches the store.
+		return errnoErr("write", path, syscall.EFAULT)
+	}
+	if len(content) >= 256 {
+		return errnoErr("write", path, syscall.EINVAL)
+	}
+	value, _, _ := strings.Cut(content, "\x00")
+	err := os.WriteFile(path, []byte(value+"\n"), 0o600)
+	if err != nil {
+		return err //nolint:wrapcheck // emulated syscall
+	}
+	dir := filepath.Dir(path)
+	isSet := func(n string) bool {
+		data, readErr := os.ReadFile(filepath.Join(dir, n)) //nolint:gosec // test tree
+		v := strings.TrimSuffix(string(data), "\n")
+		return readErr == nil && v != "" && !strings.HasPrefix(v, "NULL")
+	}
+	authenticate := "0"
+	if isSet("userid_mutual") && isSet("password_mutual") {
+		authenticate = "1"
+	}
+	return put(filepath.Join(dir, "authenticate_target"), authenticate)
 }
 
 // injectedWriteLocked applies FailWrite and DropWrite and the checks every
@@ -461,24 +523,63 @@ func (k *Kernel) injectedWriteLocked(path string) (done bool, err error) {
 // effects and checks of its kind; k.mu must be held.
 func (k *Kernel) writeAttrLocked(path, value string) error {
 	dir, name := filepath.Dir(path), filepath.Base(path)
+	done, err := k.writeAttrHandoffLocked(dir, name, path, value)
+	if done {
+		return err
+	}
+	return put(path, value)
+}
+
+// writeAttrHandoffLocked dispatches writes with side effects and checks
+// beyond storing the value and reports whether the write ends there; the
+// caller must hold k.mu.
+func (k *Kernel) writeAttrHandoffLocked(dir, name, path, value string) (bool, error) {
 	dirKind, _ := k.classify(dir)
+	parent := filepath.Base(dir)
 	switch {
 	case dirKind == kindBackstore && name == "control":
-		return writeBackstoreControl(path, value)
+		return true, writeBackstoreControl(path, value)
 	case dirKind == kindBackstore && name == "enable":
-		return k.writeBackstoreEnableLocked(path, value)
-	case name == "emulate_tpu" && filepath.Base(dir) == "attrib" && k.isBackstore(filepath.Dir(dir)):
-		return k.writeEmulateTPULocked(path, value)
-	case name == "vpd_unit_serial" && filepath.Base(dir) == "wwn":
-		if k.linkedTo(filepath.Dir(dir)) {
-			return errnoErr("write", path, syscall.EINVAL)
-		}
-		return put(path, "T10 VPD Unit Serial Number: "+value)
+		return true, k.writeBackstoreEnableLocked(path, value)
+	case name == "emulate_tpu" && parent == "attrib" && k.isBackstore(filepath.Dir(dir)):
+		return true, k.writeEmulateTPULocked(path, value)
+	case name == "vpd_unit_serial" && parent == "wwn":
+		return true, k.writeUnitSerialLocked(dir, path, value)
 	case name == "enable" && dirKind == kindTPG:
-		if value != "0" && value != "1" {
-			return errnoErr("write", path, syscall.EINVAL)
-		}
-		return put(path, value)
+		return true, putBool(path, value)
+	case name == "authentication" && parent == "attrib":
+		return true, k.writeAuthenticationLocked(path, value)
+	}
+	return false, nil
+}
+
+// writeUnitSerialLocked handles a write to a backstore's wwn/vpd_unit_serial;
+// k.mu must be held.
+func (k *Kernel) writeUnitSerialLocked(wwnDir, path, value string) error {
+	if k.linkedTo(filepath.Dir(wwnDir)) {
+		return errnoErr("write", path, syscall.EINVAL)
+	}
+	return put(path, "T10 VPD Unit Serial Number: "+value)
+}
+
+// putBool writes value, which must be "0" or "1", to the attribute at path.
+func putBool(path, value string) error {
+	if value != "0" && value != "1" {
+		return errnoErr("write", path, syscall.EINVAL)
+	}
+	return put(path, value)
+}
+
+// writeAuthenticationLocked handles a write to attrib/authentication: the
+// TPG's accepts 0 or 1 (iscsit_ta_authentication), a node ACL's also -1
+// (inherit, iscsi_nacl_attrib_authentication_store); k.mu must be held.
+func (k *Kernel) writeAuthenticationLocked(path, value string) error {
+	owner, _ := k.classify(filepath.Dir(filepath.Dir(path)))
+	switch {
+	case owner == kindTPG && (value == "0" || value == "1"):
+	case owner == kindACL && (value == "0" || value == "1" || value == "-1"):
+	default:
+		return errnoErr("write", path, syscall.EINVAL)
 	}
 	return put(path, value)
 }

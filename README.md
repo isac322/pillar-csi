@@ -46,7 +46,7 @@ The agent reads back each configfs value it writes and returns an error when the
 
 Planned items are not available in v0.4.0, and the CRDs reject them. n/a marks combinations that do not apply: block backends are not shared over file protocols, and a dataset is not exported as a block device.
 
-iSCSI covers the same features as NVMe-oF/TCP: both volume modes, `ReadWriteOnce` and `ReadWriteOncePod`, an ACL by initiator IQN (`acl: true`) or an open target (`acl: false`, the default), online expansion, usage stats, local attach, and recovery after agent, node plugin, or storage-node restarts. CHAP authentication and multipath (several portals per target) are not supported.
+iSCSI covers the same features as NVMe-oF/TCP: both volume modes, `ReadWriteOnce` and `ReadWriteOncePod`, an ACL by initiator IQN (`acl: true`) or an open target (`acl: false`, the default), online expansion, usage stats, local attach, and recovery after agent, node plugin, or storage-node restarts. Logins can also be authenticated with CHAP or mutual CHAP, using credentials from a Kubernetes Secret ([Configure iSCSI](https://pillar-csi.bhyoo.com/docs/how-to/configure-iscsi/#authenticate-logins-with-chap)). Multipath (several portals per target) is not supported.
 
 What works today:
 
@@ -55,6 +55,7 @@ What works today:
 - Volume expansion, volume usage stats, and capacity reporting to the scheduler.
 - Per-volume tuning of ZFS properties, LVM provisioning mode, NVMe-oF/TCP queue and reconnect settings, iSCSI login, replacement and NOP-Out timeouts, and filesystem options through PVC annotations.
 - Optional mTLS between the controller and the agents (off by default).
+- iSCSI CHAP and mutual CHAP login authentication, with the credentials in a Secret in the install namespace.
 
 Not supported yet: `ReadWriteMany` volumes (rejected at provisioning), snapshots, and clones.
 
@@ -109,7 +110,7 @@ The controller labels a node for the agent when you create a `PillarAgent`. Both
 |---|---|
 | `PillarAgent` | Where a storage agent runs: a cluster node (`nodeRef`) or an external address |
 | `PillarStore` | One ZFS pool or LVM volume group on an agent |
-| `PillarProtocol` | Transport settings, exactly one member: `nvmeofTcp` (port, ACL, queue size, reconnect timeouts) or `iscsi` (port, ACL, login, replacement and NOP-Out timeouts) |
+| `PillarProtocol` | Transport settings, exactly one member: `nvmeofTcp` (port, ACL, queue size, reconnect timeouts) or `iscsi` (port, ACL, CHAP authentication, login, replacement and NOP-Out timeouts) |
 | `PillarStorageClass` | Binds a store to a protocol and generates a Kubernetes StorageClass |
 
 The controller also keeps an internal `PillarVolumeState` per volume, which records what was provisioned and which nodes the volume is published to. You never write it.

@@ -94,6 +94,10 @@ type AttachParams struct {
 	//   - iSCSI timeouts:     Extra["pillar-csi.bhyoo.com/iscsi-login-timeout"] = "15"
 	//   - SMB subdirectory:   Extra["smb.subdir"] = "data"
 	Extra map[string]string
+
+	// Secrets is NodeStageVolumeRequest.secrets (e.g. the iSCSI CHAP
+	// credentials).  Never log it.
+	Secrets map[string]string
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

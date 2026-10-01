@@ -40,6 +40,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/recorder"
 
 	pillarcsiv1alpha1 "github.com/isac322/pillar-csi/api/v1alpha1"
+	"github.com/isac322/pillar-csi/internal/csi"
 )
 
 const (
@@ -90,6 +91,11 @@ type PillarStorageClassReconciler struct {
 	APIReader client.Reader
 	Scheme    *runtime.Scheme
 	Recorder  recorder.EventRecorder
+
+	// Namespace is the pillar-csi installation namespace; a generated
+	// StorageClass over an iSCSI CHAP protocol names its node-stage Secret
+	// there.
+	Namespace string
 }
 
 type desiredStorageClass struct {
@@ -378,7 +384,7 @@ func (r *PillarStorageClassReconciler) reconcileNormal(
 
 	// --- 4. Create / update owned StorageClass (StorageClassCreated condition) ---
 	scName := storageClassNameFor(binding)
-	scErr := r.reconcileStorageClass(ctx, binding, scName)
+	scErr := r.reconcileStorageClass(ctx, binding, protocol, scName)
 	if scErr != nil {
 		log.Error(scErr, "Failed to reconcile StorageClass", "binding", binding.Name, "storageClass", scName)
 		meta.SetStatusCondition(&binding.Status.Conditions, metav1.Condition{
@@ -444,9 +450,11 @@ func evaluateCompatibility(
 }
 
 // Parameters of a generated StorageClass.  The generated class carries only
-// the identity of its PillarStorageClass plus what Kubernetes itself needs:
-// backend, protocol and filesystem tunables are resolved from the live CRs at
-// CreateVolume, so editing them never forces a StorageClass re-create.
+// the identity of its PillarStorageClass plus what Kubernetes itself needs
+// (the fsType and, for an iSCSI CHAP protocol, the node-stage Secret kubelet
+// hands to NodeStageVolume): backend, protocol and filesystem tunables are
+// resolved from the live CRs at CreateVolume, so editing them never forces a
+// StorageClass re-create.
 const (
 	// ScParamStorageClass names the PillarStorageClass that generated the
 	// StorageClass; CreateVolume receives only the StorageClass parameters,
@@ -463,16 +471,67 @@ const (
 )
 
 // buildStorageClassParams constructs the parameter map of the StorageClass
-// generated for binding: the binding identity and the resolved class fsType.
-func buildStorageClassParams(binding *pillarcsiv1alpha1.PillarStorageClass) map[string]string {
+// generated for binding: the binding identity, the resolved class fsType and,
+// when stageSecret is non-nil, the node-stage Secret.
+func buildStorageClassParams(
+	binding *pillarcsiv1alpha1.PillarStorageClass,
+	stageSecret *types.NamespacedName,
+) map[string]string {
 	fsType := defaultFSType
 	if fs := binding.Spec.Filesystem; fs != nil && fs.FSType != "" {
 		fsType = fs.FSType
 	}
-	return map[string]string{
+	params := map[string]string{
 		scParamStorageClass: binding.Name,
 		scParamFSType:       fsType,
 	}
+	if stageSecret != nil {
+		params[csi.StorageClassParamNodeStageSecretName] = stageSecret.Name
+		params[csi.StorageClassParamNodeStageSecretNamespace] = stageSecret.Namespace
+	}
+	return params
+}
+
+// nodeStageSecretFor returns the node-stage Secret the StorageClass of a
+// binding over protocol must name, and whether there is one: the iSCSI CHAP
+// Secret in namespace when the protocol authenticates.  The
+// external-provisioner records it on every PersistentVolume of the class,
+// so kubelet passes the credentials to NodeStageVolume.
+func nodeStageSecretFor(
+	protocol *pillarcsiv1alpha1.PillarProtocol,
+	namespace string,
+) (types.NamespacedName, bool, error) {
+	if protocol == nil || protocol.Spec.Protocol.ISCSI == nil {
+		return types.NamespacedName{}, false, nil
+	}
+	auth := protocol.Spec.Protocol.ISCSI.Auth
+	if auth.EffectiveMethod() == pillarcsiv1alpha1.ISCSIAuthMethodNone {
+		return types.NamespacedName{}, false, nil
+	}
+	if auth.SecretRef == nil || auth.SecretRef.Name == "" {
+		return types.NamespacedName{}, false, fmt.Errorf(
+			"PillarProtocol %q: iSCSI auth method %s requires auth.secretRef",
+			protocol.Name, auth.EffectiveMethod())
+	}
+	if namespace == "" {
+		return types.NamespacedName{}, false, fmt.Errorf("PillarProtocol %q: name node-stage secret %q: "+
+			"the pillar-csi installation namespace is unknown (POD_NAMESPACE is unset)",
+			protocol.Name, auth.SecretRef.Name)
+	}
+	return types.NamespacedName{Namespace: namespace, Name: auth.SecretRef.Name}, true, nil
+}
+
+// desiredStorageClassOver computes the managed StorageClass fields for
+// binding over protocol, including the node-stage Secret of a CHAP protocol.
+func (r *PillarStorageClassReconciler) desiredStorageClassOver(
+	binding *pillarcsiv1alpha1.PillarStorageClass,
+	protocol *pillarcsiv1alpha1.PillarProtocol,
+) (desiredStorageClass, error) {
+	stageSecret, ok, err := nodeStageSecretFor(protocol, r.Namespace)
+	if err != nil || !ok {
+		return desiredStorageClassFor(binding, nil), err
+	}
+	return desiredStorageClassFor(binding, &stageSecret), nil
 }
 
 // storageClassMountOptions returns the mountOptions of the StorageClass
@@ -506,10 +565,14 @@ func storageClassMountOptions(binding *pillarcsiv1alpha1.PillarStorageClass) []s
 func (r *PillarStorageClassReconciler) reconcileStorageClass(
 	ctx context.Context,
 	binding *pillarcsiv1alpha1.PillarStorageClass,
+	protocol *pillarcsiv1alpha1.PillarProtocol,
 	scName string,
 ) error {
 	log := logf.FromContext(ctx)
-	desired := desiredStorageClassFor(binding)
+	desired, err := r.desiredStorageClassOver(binding, protocol)
+	if err != nil {
+		return err
+	}
 
 	existing := &storagev1.StorageClass{}
 	getErr := r.Get(ctx, types.NamespacedName{Name: scName}, existing)
@@ -520,17 +583,9 @@ func (r *PillarStorageClassReconciler) reconcileStorageClass(
 		return fmt.Errorf("failed to get StorageClass %q: %w", scName, getErr)
 	}
 
-	// An absent StorageClass may be the gap of an interrupted re-create.  The
-	// informer caches of StorageClasses and PillarStorageClasses advance
-	// independently, so the cached binding may predate the carry-over record
-	// written before the delete; read the record from the API server.
-	checkpoint := binding
-	if getErr != nil {
-		var err error
-		checkpoint, err = r.currentBinding(ctx, binding)
-		if err != nil {
-			return err
-		}
+	checkpoint, err := r.carryOverCheckpoint(ctx, binding, getErr != nil)
+	if err != nil {
+		return err
 	}
 	carryOver, pending, err := pendingCarryOver(checkpoint)
 	if err != nil {
@@ -575,6 +630,23 @@ func (r *PillarStorageClassReconciler) reconcileStorageClass(
 		return r.recordCarryOver(ctx, checkpoint, nil)
 	}
 	return nil
+}
+
+// carryOverCheckpoint returns the binding holding the carry-over record of an
+// interrupted re-create.  An absent StorageClass may be the gap of an
+// interrupted re-create.  The informer caches of StorageClasses and
+// PillarStorageClasses advance independently, so the cached binding may
+// predate the carry-over record written before the delete; when the
+// StorageClass is absent the binding is read from the API server.
+func (r *PillarStorageClassReconciler) carryOverCheckpoint(
+	ctx context.Context,
+	binding *pillarcsiv1alpha1.PillarStorageClass,
+	scAbsent bool,
+) (*pillarcsiv1alpha1.PillarStorageClass, error) {
+	if !scAbsent {
+		return binding, nil
+	}
+	return r.currentBinding(ctx, binding)
 }
 
 // currentBinding returns binding as stored in the API server: binding itself
@@ -737,8 +809,12 @@ func (r *PillarStorageClassReconciler) recreateStorageClass(
 	return r.recordCarryOver(ctx, binding, nil)
 }
 
-// desiredStorageClassFor computes the managed StorageClass fields for binding.
-func desiredStorageClassFor(binding *pillarcsiv1alpha1.PillarStorageClass) desiredStorageClass {
+// desiredStorageClassFor computes the managed StorageClass fields for
+// binding; stageSecret is the node-stage Secret to name (nil for none).
+func desiredStorageClassFor(
+	binding *pillarcsiv1alpha1.PillarStorageClass,
+	stageSecret *types.NamespacedName,
+) desiredStorageClass {
 	reclaimPolicy := corev1.PersistentVolumeReclaimDelete
 	if binding.Spec.StorageClass.ReclaimPolicy == pillarcsiv1alpha1.ReclaimPolicyRetain {
 		reclaimPolicy = corev1.PersistentVolumeReclaimRetain
@@ -757,7 +833,7 @@ func desiredStorageClassFor(binding *pillarcsiv1alpha1.PillarStorageClass) desir
 		allowVolumeExpansion = &defaultAllow
 	}
 	return desiredStorageClass{
-		params:               buildStorageClassParams(binding),
+		params:               buildStorageClassParams(binding, stageSecret),
 		mountOptions:         storageClassMountOptions(binding),
 		reclaimPolicy:        reclaimPolicy,
 		volumeBindingMode:    volumeBindingMode,

@@ -11,7 +11,7 @@
 - 실제 커널 모듈, 실제 ZFS, 실제 NVMe-oF 장치를 요구하는 테스트는
   별도로 표시하고 현실적인 인프라 요구사항을 함께 기술한다.
 
-**총 테스트 케이스: 416** (인프로세스 251개 + envtest 통합 117개 + 클러스터 레벨 48개; E28 LVM Agent gRPC 30개 · E29 CSI Controller LVM 파라미터 12개 · E30 LVM LV 중복 방지 3개 · E34 로컬 attach 6개 · E35 iSCSI 6개 · E32 LVM CRD 라이프사이클 9개 · E33 default-profile 7개(standalone 7) + teardown-guarantee 4개 + backend-teardown-absence 5개 포함 / 추가 문서화 비기본 TC: E33 core-rpc 9개 · E33 mount 12개 · E33 expansion 5개 · E36 zvol import 8개(e2e_helm 빌드 태그 필요) · F27–F31 LVM 완전 E2E 19개 — 특수 레이블 필터 필요 / 수동 AD 시나리오 3개 · BP 시나리오 3개 별도)
+**총 테스트 케이스: 422** (인프로세스 257개 + envtest 통합 117개 + 클러스터 레벨 48개; E28 LVM Agent gRPC 30개 · E29 CSI Controller LVM 파라미터 12개 · E30 LVM LV 중복 방지 3개 · E34 로컬 attach 6개 · E35 iSCSI 12개 · E32 LVM CRD 라이프사이클 9개 · E33 default-profile 7개(standalone 7) + teardown-guarantee 4개 + backend-teardown-absence 5개 포함 / 추가 문서화 비기본 TC: E33 core-rpc 9개 · E33 mount 12개 · E33 expansion 5개 · E36 zvol import 8개(e2e_helm 빌드 태그 필요) · F27–F31 LVM 완전 E2E 19개 — 특수 레이블 필터 필요 / 수동 AD 시나리오 3개 · BP 시나리오 3개 별도)
 
 ---
 
@@ -2941,11 +2941,17 @@ export를 모든 원격 initiator에 대해 끄고 로컬 PublishContext(`pillar
 `iqn.2026-01.com.bhyoo.pillar-csi:<볼륨 ID의 "/"를 "."로>`, TPG `tpgt_1`, LUN 0, iblock 백스토어를 만들고,
 `acl: true`이면 publish된 노드의 initiator IQN(CSINode 주석 `pillar-csi.bhyoo.com/iscsi-initiator-iqn`)만 node ACL로 허용한다.
 노드는 외부 도구 없이 인프로세스 initiator로 login한 뒤 NETLINK_ISCSI로 커널 iscsi_tcp에 세션을 넘기고 `/dev/sd*`를 사용한다.
+`auth`(`method`: `None`·`CHAP`·`MutualCHAP`, `secretRef.name`)를 지정하면 컨트롤러가 설치 네임스페이스의 Secret
+(`username`·`password`, MutualCHAP은 `mutualUsername`·`mutualPassword`)을 호출 시점에 읽어 ExportVolume·AllowInitiator의
+`export_params.iscsi.chap`으로 agent에 넘기고(agent는 node ACL의 `auth/`에 기록), VolumeContext에
+`pillar-csi.bhyoo.com/iscsi-auth-method`를 남긴다. 생성 StorageClass는 같은 Secret을 `node-stage-secret-*` 파라미터로
+지정해 kubelet이 NodeStage에 자격 증명을 전달한다. `auth`는 구조 필드라 PillarStorageClass·PVC 오버라이드로 바꿀 수 없다.
 
 **테스트 더블:** 컨트롤러 TC는 `fakeAgentServer`(bufconn gRPC; iSCSI export에는 볼륨 ID에서 파생한 IQN을 반환)와
-가짜 K8s 클라이언트를, 웹훅 TC는 `PillarProtocolCustomValidator`·`PillarStorageClassCustomValidator`를 직접 쓴다.
-실제 커널 동작(LIO 타깃·ACL 거부, iscsi_tcp 세션, `/dev/sd*`, 온라인 확장, API 서버 admission)은
-`test/docker-e2e/iscsi_e2e_test.go`의 다중 노드 테스트가 검증한다.
+가짜 K8s 클라이언트(CHAP Secret 포함)를, 웹훅 TC는 `PillarProtocolCustomValidator`·`PillarStorageClassCustomValidator`를,
+생성 StorageClass TC는 가짜 클라이언트 위의 `PillarStorageClassReconciler`를 직접 쓴다.
+실제 커널 동작(LIO 타깃·ACL 거부, CHAP 인증, iscsi_tcp 세션, `/dev/sd*`, 온라인 확장, API 서버 admission)은
+`test/docker-e2e/iscsi_e2e_test.go`·`iscsi_chap_e2e_test.go`의 다중 노드 테스트가 검증한다.
 
 > **CI 실행 가능 여부:** ✅ 인프로세스 E2E — 별도 인프라 불필요
 
@@ -2957,6 +2963,12 @@ export를 모든 원격 initiator에 대해 끄고 로컬 PublishContext(`pillar
 | E35.4 | `TestISCSI_ControllerPublish_MissingIQNAnnotation` | CSINode에 iSCSI IQN 주석이 없으면 `acl: true` publish는 거부 | E35.3 환경이지만 CSINode에는 NVMe host NQN 주석만 존재 | 1) CreateVolume; 2) ControllerPublishVolume(`worker-1`) | `FailedPrecondition`; 메시지에 `pillar-csi.bhyoo.com/iscsi-initiator-iqn`; AllowInitiator 0회 | `CSI-C` |
 | E35.5 | `TestISCSI_PillarProtocolWebhook_ExactlyOneMember` | PillarProtocol 웹훅은 `nvmeofTcp`와 `iscsi`를 동시에 지정하면 거부하고 `iscsi` 단독은 허용 | `PillarProtocolCustomValidator` | 1) 두 멤버를 모두 지정해 ValidateCreate; 2) `iscsi`(`acl: true`)만 지정해 ValidateCreate | 1) 오류, 메시지에 `exactly one protocol member`; 2) 허용 | `PProtWH` |
 | E35.6 | `TestISCSI_PillarStorageClassWebhook_OverrideMemberMismatch` | PillarStorageClass 웹훅은 `nvmeofTcp` 프로토콜에 대한 `iscsi` 오버라이드를 거부 | `PillarStorageClassCustomValidator{Client}`; 스토어 `tank`; 프로토콜 `nvmeof`(nvmeofTcp)·`iscsi` | 1) `protocolRef=nvmeof`, `overrides.protocol.iscsi.loginTimeout=20`으로 ValidateCreate; 2) 같은 오버라이드를 `protocolRef=iscsi`로 ValidateCreate | 1) 오류, 메시지에 `protocol override member "iscsi" does not match the "nvmeofTcp" protocol`; 2) 허용 | `BindWH`, `PProtCRD` |
+| E35.7 | `TestISCSI_CreateVolume_CHAPExportCarriesSecret` | CHAP 프로토콜 CreateVolume은 Secret 자격 증명을 export에 싣고 VolumeContext에 auth method를 기록 | E35.1 환경 + 설치 네임스페이스 `pillar-csi-system`(`SetInstallNamespace`); PillarProtocol `iscsi-chap`(`acl: true`, `auth.method: CHAP`, `secretRef: iscsi-chap-credentials`)과 그 Secret(`username`·`password`) | 1) CreateVolume(`protocol-ref=iscsi-chap`); 2) CreateVolume(`protocol-ref=iscsi-acl`, method None) | 1) VolumeContext `iscsi-auth-method=CHAP`; ExportVolume `IscsiExportParams.chap`의 username·password가 Secret 값, mutual 필드 비어 있음; 2) auth 키 없음, `chap` 없음 | `CSI-C`, `gRPC` |
+| E35.8 | `TestISCSI_ControllerPublish_MutualCHAPGrant` | MutualCHAP publish는 AllowInitiator에 양방향 자격 증명을 싣고 Secret 교체는 다음 publish에 반영 | E35.7 환경 + PillarProtocol `iscsi-mutual-chap`(`MutualCHAP`); Secret에 `mutualUsername`·`mutualPassword` 추가; `worker-1` CSINode에 IQN 주석 | 1) CreateVolume; 2) ControllerPublishVolume(`worker-1`); 3) Unpublish 후 Secret `password` 교체; 4) 다시 Publish | 1) VolumeContext `iscsi-auth-method=MutualCHAP`; 2) AllowInitiator `export_params.iscsi.chap`에 네 값 모두; 4) 두 번째 AllowInitiator의 password가 교체된 값 | `CSI-C`, `gRPC` |
+| E35.9 | `TestISCSI_CHAPSecretMissingOrInvalid` | CHAP Secret이 없거나 유효하지 않으면 FailedPrecondition이고 인증 없는 export·ACL은 만들지 않는다 | E35.7 환경, Secret 없음; `worker-1` CSINode에 IQN 주석 | 1) Secret 없이 CreateVolume; 2) `password`가 12바이트 미만인 Secret으로 CreateVolume; 3) 유효한 Secret으로 CreateVolume 후 Secret 삭제하고 ControllerPublishVolume | 1) `FailedPrecondition`, 메시지에 Secret 이름; 2) `FailedPrecondition`, 메시지에 키 `password`, 값은 없음; 1·2) ExportVolume 0회; 3) `FailedPrecondition`, 메시지에 Secret 이름, AllowInitiator 0회 | `CSI-C` |
+| E35.10 | `TestISCSI_PillarStorageClass_GeneratedSCNodeStageSecret` | CHAP 프로토콜의 생성 StorageClass는 node-stage Secret 파라미터를 가진다 | `PillarStorageClassReconciler{Namespace: pillar-csi-system}` + 가짜 클라이언트; Ready인 스토어 `tank`, Ready인 `iscsi-chap`·`iscsi-acl` 프로토콜; 각 프로토콜을 참조하는 PillarStorageClass | 1) 두 바인딩을 reconcile(파이널라이저 추가 후 생성) | CHAP 클래스: `csi.storage.k8s.io/node-stage-secret-name=iscsi-chap-credentials`, `csi.storage.k8s.io/node-stage-secret-namespace=pillar-csi-system`; method None 클래스: 두 키 없음 | `BindCtrl`, `SC` |
+| E35.11 | `TestISCSI_PillarProtocolWebhook_CHAPRequiresSecretRefAndACL` | PillarProtocol 웹훅은 secretRef 없는 CHAP과 acl false인 CHAP을 거부 | `PillarProtocolCustomValidator` | 1) `CHAP`, `secretRef` 없음; 2) `MutualCHAP`, `acl: false`; 3) `CHAP` + `secretRef` + `acl: true` | 1) 오류, `auth.secretRef is required`; 2) 오류, `require acl: true`; 3) 허용 | `PProtWH` |
+| E35.12 | `TestISCSI_ProtocolOverrideDoc_RejectsAuth` | PVC 프로토콜 오버라이드 문서의 iscsi.auth는 구조 필드로 거부 | E35.7 환경; PVC 주석 `pillar-csi.bhyoo.com/protocol`=`iscsi: {auth: {method: None}}` | 1) PVC 메타데이터 키와 함께 CreateVolume(`protocol-ref=iscsi-chap`) | `InvalidArgument`, 메시지에 `iscsi.auth is structural and cannot be set per volume`; agent CreateVolume 0회 | `CSI-C` |
 
 ---
 
@@ -2964,7 +2976,7 @@ export를 모든 원격 initiator에 대해 끄고 로컬 PublishContext(`pillar
 
 | 소섹션 | 검증 내용 | 테스트 수 | CI 실행 |
 |--------|---------|----------|--------|
-| E35 | iscsi CreateVolume의 export RPC·VolumeContext(ZFS·LVM), initiator IQN 기반 ACL 허용·회수, 프로토콜 유니온과 오버라이드 멤버 admission | 6개 | ✅ 표준 CI |
+| E35 | iscsi CreateVolume의 export RPC·VolumeContext(ZFS·LVM), initiator IQN 기반 ACL 허용·회수, 프로토콜 유니온과 오버라이드 멤버 admission, CHAP·MutualCHAP 자격 증명의 export·ACL 전달과 Secret 오류, 생성 StorageClass의 node-stage Secret, auth admission과 오버라이드 거부 | 12개 | ✅ 표준 CI |
 
 **CI에서 검증 불가 항목:**
 
@@ -2984,6 +2996,9 @@ init netns의 NETLINK_ISCSI를 쓴다. 하네스는 시작·종료 시 `iqn.2026
 | 크로스 노드: 클라이언트 노드의 파드가 `/dev/sd*`를 쓰고 세션 원격 주소가 스토리지 노드 | 다중 노드 Kind + 실제 세션 sysfs 필요 | `test/docker-e2e` `TestISCSIFilesystemCrossNodeReattach` (모든 iSCSI 테스트가 세션 주소·`/dev/sd*`·노드 netns TCP 연결을 확인) |
 | `acl: true`: 허용 노드는 동작하고 허용되지 않은 initiator의 login은 타깃이 거부(status class 2 / detail 2 target forbidden) | 실제 LIO node ACL 필요 | `test/docker-e2e` `TestISCSIUnauthorizedInitiatorRejected`, 크로스 노드 핸드오프 테스트 |
 | API 서버가 두 프로토콜 멤버를 가진 PillarProtocol과 `nvmeofTcp` 클래스의 `iscsi` 오버라이드를 거부 | 실제 CRD CEL + admission 웹훅 필요 | `test/docker-e2e` `TestISCSIProtocolAdmission`; envtest `internal/controller/pillarprotocol_crd_schema_test.go` |
+| CHAP·MutualCHAP: 생성 StorageClass로 만든 ext4 PVC를 노드 A가 쓰고 노드 B가 읽기; TPG `attrib/authentication=1`, 각 노드 ACL의 `auth/userid`·`password`(MutualCHAP은 `userid_mutual`·`password_mutual`)가 Secret 값; PV의 `iscsi-auth-method`와 `nodeStageSecretRef` | 실제 LIO CHAP + 인프로세스 initiator의 CHAP 응답·타깃 검증 필요 | `test/docker-e2e` `TestISCSICHAPFilesystemCrossNode`, `TestISCSIMutualCHAPFilesystemCrossNode` |
+| 노드 Secret이 틀리면(수동 StorageClass가 다른 password의 Secret을 node-stage Secret으로 지정) 파드는 Pending, FailedMount 이벤트에 `authentication failed`, 세션·SCSI 디스크 없음; CHAP 없이(AuthMethod=None) 보낸 login은 거부(LIO는 AuthMethod 목록이 `CHAP`뿐이라 응답 없이 연결을 닫거나 class 2 응답, forbidden·성공은 실패); Secret을 고치면 kubelet 재시도로 마운트되어 읽기·쓰기 | 실제 LIO 인증 거부 + kubelet NodeStage 재시도 필요 | `test/docker-e2e` `TestISCSICHAPWrongNodeSecretRejected` |
+| API 서버가 secretRef 없는 CHAP과 `acl: false`인 MutualCHAP PillarProtocol을 거부 | 실제 CRD CEL + admission 웹훅 필요 | `test/docker-e2e` `TestISCSICHAPProtocolAdmission` |
 | ZFS 백엔드의 실제 iSCSI 데이터 경로 | Docker E2E Kind 노드에는 zvol 디바이스 노드(udev)와 ZFS 도구가 없음 | E35.1(컨트롤러 경로) + 수동 검증 |
 
 ---

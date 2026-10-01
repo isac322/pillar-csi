@@ -23,6 +23,7 @@ import (
 	"strings"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -35,6 +36,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	pillarcsiv1alpha1 "github.com/isac322/pillar-csi/api/v1alpha1"
+	"github.com/isac322/pillar-csi/internal/csi"
 )
 
 const (
@@ -44,12 +46,22 @@ const (
 
 	// Requeue interval before re-checking whether blocking PillarStorageClasss have been removed.
 	requeueAfterProtocolDeletionBlock = 10 * time.Second
+
+	// ReasonAuthSecretInvalid is the Ready=False reason of a PillarProtocol
+	// whose iSCSI CHAP Secret is missing or invalid.
+	ReasonAuthSecretInvalid = "AuthSecretInvalid"
 )
 
 // PillarProtocolReconciler reconciles a PillarProtocol object.
 type PillarProtocolReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+
+	// Namespace is the pillar-csi installation namespace, where the iSCSI
+	// CHAP Secrets named by spec.protocol.iscsi.auth.secretRef live.  When
+	// set, Secrets in it are watched; the manager cache must be restricted
+	// to it for Secrets (the controller may read Secrets only there).
+	Namespace string
 }
 
 // +kubebuilder:rbac:groups=pillar-csi.bhyoo.com,resources=pillarprotocols,verbs=get;list;watch;create;update;patch;delete
@@ -57,6 +69,11 @@ type PillarProtocolReconciler struct {
 // +kubebuilder:rbac:groups=pillar-csi.bhyoo.com,resources=pillarprotocols/finalizers,verbs=update
 // +kubebuilder:rbac:groups=pillar-csi.bhyoo.com,resources=pillarstorageclasses,verbs=get;list;watch
 // +kubebuilder:rbac:groups=pillar-csi.bhyoo.com,resources=pillarstores,verbs=get;list;watch
+//
+// Secrets (iSCSI CHAP credentials) are read and watched only in the
+// installation namespace, through the namespaced Role in the Helm chart
+// (templates/secret-reader-role.yaml); no marker grants cluster-wide Secret
+// access.
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -173,7 +190,7 @@ func (r *PillarProtocolReconciler) reconcileNormal(
 	protocol.Status.StorageClassCount = count
 	protocol.Status.ActiveAgents = activeAgents
 
-	meta.SetStatusCondition(&protocol.Status.Conditions, metav1.Condition{
+	ready := metav1.Condition{
 		Type:               "Ready",
 		Status:             metav1.ConditionTrue,
 		ObservedGeneration: protocol.Generation,
@@ -182,7 +199,12 @@ func (r *PillarProtocolReconciler) reconcileNormal(
 			"PillarProtocol is configured with protocol %q; referenced by %d binding(s) across %d active target(s)",
 			protocol.Spec.Protocol.Kind(), count, len(activeAgents),
 		),
-	})
+	}
+	err = r.applyAuthSecretCheck(ctx, protocol, &ready)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	meta.SetStatusCondition(&protocol.Status.Conditions, ready)
 
 	err = r.Status().Update(ctx, protocol)
 	if err != nil {
@@ -190,6 +212,30 @@ func (r *PillarProtocolReconciler) reconcileNormal(
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// applyAuthSecretCheck turns ready into Ready=False/AuthSecretInvalid when
+// the protocol's iSCSI CHAP Secret is missing or invalid.  An error reading
+// the Secret is returned so the reconcile is retried.
+func (r *PillarProtocolReconciler) applyAuthSecretCheck(
+	ctx context.Context,
+	protocol *pillarcsiv1alpha1.PillarProtocol,
+	ready *metav1.Condition,
+) error {
+	iscsi := protocol.Spec.Protocol.ISCSI
+	if iscsi == nil {
+		return nil
+	}
+	_, err := csi.ReadISCSIChapSecret(ctx, r.Client, r.Namespace, iscsi.Auth)
+	switch {
+	case csi.IsISCSIChapSecretUnusable(err):
+		ready.Status = metav1.ConditionFalse
+		ready.Reason = ReasonAuthSecretInvalid
+		ready.Message = err.Error()
+	case err != nil:
+		return fmt.Errorf("check PillarProtocol %q auth: %w", protocol.Name, err)
+	}
+	return nil
 }
 
 // reconcileDelete handles the deletion flow.  The finalizer is only removed
@@ -317,7 +363,7 @@ func (r *PillarProtocolReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		return reqs
 	}
 
-	return ctrl.NewControllerManagedBy(mgr).
+	b := ctrl.NewControllerManagedBy(mgr).
 		For(&pillarcsiv1alpha1.PillarProtocol{}).
 		// Re-enqueue the protocol whenever a referencing binding changes.
 		Watches(
@@ -328,7 +374,39 @@ func (r *PillarProtocolReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(
 			&pillarcsiv1alpha1.PillarStore{},
 			handler.EnqueueRequestsFromMapFunc(mapPoolToProtocol),
-		).
-		Named("pillarprotocol").
-		Complete(r)
+		)
+	if r.Namespace != "" {
+		// Re-enqueue the protocols whose CHAP Secret was created, changed or
+		// deleted, so the Ready condition follows the Secret.
+		b = b.Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.mapSecretToProtocols))
+	}
+	return b.Named("pillarprotocol").Complete(r)
+}
+
+// mapSecretToProtocols returns a request for every PillarProtocol whose
+// iSCSI auth names the Secret obj in the installation namespace.
+func (r *PillarProtocolReconciler) mapSecretToProtocols(ctx context.Context, obj client.Object) []reconcile.Request {
+	if obj.GetNamespace() != r.Namespace {
+		return nil
+	}
+	protocols := &pillarcsiv1alpha1.PillarProtocolList{}
+	err := r.List(ctx, protocols)
+	if err != nil {
+		// Cannot propagate error from a watch handler; log and return empty.
+		logf.FromContext(ctx).Error(err, "Failed to list PillarProtocols while mapping a Secret event",
+			"secret", obj.GetName())
+		return nil
+	}
+	var reqs []reconcile.Request
+	for i := range protocols.Items {
+		iscsi := protocols.Items[i].Spec.Protocol.ISCSI
+		if iscsi == nil || iscsi.Auth == nil || iscsi.Auth.SecretRef == nil ||
+			iscsi.Auth.SecretRef.Name != obj.GetName() {
+			continue
+		}
+		reqs = append(reqs, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: protocols.Items[i].Name},
+		})
+	}
+	return reqs
 }

@@ -121,7 +121,7 @@ func (s *Server) AllowInitiator(
 	if err != nil {
 		return nil, err
 	}
-	err = handler.AllowInitiator(ctx, req.GetVolumeId(), req.GetInitiatorId(), req.GetFence())
+	err = handler.AllowInitiator(ctx, req.GetVolumeId(), req.GetInitiatorId(), req.GetExportParams(), req.GetFence())
 	if err != nil {
 		return nil, protocolRPCError(err)
 	}

@@ -532,7 +532,7 @@ func TestDesiredVolumeState_LocalAttach(t *testing.T) {
 			pvs.ObjectMeta = metav1.ObjectMeta{Name: pvs.Name, UID: "uid-local"}
 			pvs.Status.LocalAttachNode = tc.localNode
 
-			desired, err := desiredVolumeState(pvs)
+			desired, err := desiredVolumeState(pvs, nil)
 			if err != nil {
 				t.Fatalf("desiredVolumeState: %v", err)
 			}
@@ -633,7 +633,7 @@ func TestResolveVolumeConfig_ReplaysRecordedLocalAttach(t *testing.T) {
 			paramStoreRef:    testStoreName,
 			paramProtocolRef: testProtocolName,
 			paramLocalAttach: tc.class,
-		}, recorded)
+		}, nil, recorded)
 		if err != nil {
 			t.Fatalf("resolveVolumeConfig: %v", err)
 		}

@@ -125,12 +125,44 @@ func validateProtocolSpec(p pillarcsiv1alpha1.ProtocolSpec) error {
 		checkOptional("replacementTimeout", cfg.ReplacementTimeout, 0, math.MaxInt32)
 		checkOptional("noopOutInterval", cfg.NoopOutInterval, 0, math.MaxInt32)
 		checkOptional("noopOutTimeout", cfg.NoopOutTimeout, 0, math.MaxInt32)
+		allErrs = append(allErrs, validateISCSIAuth(memberPath, cfg)...)
 	}
 
 	if len(allErrs) > 0 {
 		return allErrs.ToAggregate()
 	}
 	return nil
+}
+
+// validateISCSIAuth mirrors the ISCSIConfig auth CEL rules: CHAP and
+// MutualCHAP name their Secret and run with ACLs, because the credentials
+// are set on the per-initiator ACLs.
+func validateISCSIAuth(memberPath *field.Path, cfg *pillarcsiv1alpha1.ISCSIConfig) field.ErrorList {
+	if cfg.Auth == nil {
+		return nil
+	}
+	authPath := memberPath.Child("auth")
+	switch cfg.Auth.Method {
+	case "", pillarcsiv1alpha1.ISCSIAuthMethodNone:
+		return nil
+	case pillarcsiv1alpha1.ISCSIAuthMethodCHAP, pillarcsiv1alpha1.ISCSIAuthMethodMutualCHAP:
+	default:
+		return field.ErrorList{field.NotSupported(authPath.Child("method"), cfg.Auth.Method, []string{
+			string(pillarcsiv1alpha1.ISCSIAuthMethodNone),
+			string(pillarcsiv1alpha1.ISCSIAuthMethodCHAP),
+			string(pillarcsiv1alpha1.ISCSIAuthMethodMutualCHAP),
+		})}
+	}
+	var errs field.ErrorList
+	if cfg.Auth.SecretRef == nil || cfg.Auth.SecretRef.Name == "" {
+		errs = append(errs, field.Required(authPath.Child("secretRef"),
+			"auth.secretRef is required when auth.method is CHAP or MutualCHAP"))
+	}
+	if !cfg.ACL {
+		errs = append(errs, field.Invalid(memberPath.Child("acl"), cfg.ACL,
+			"auth.method CHAP and MutualCHAP require acl: true"))
+	}
+	return errs
 }
 
 // ValidateUpdate implements admission.Validator so a webhook will be registered for the type PillarProtocol.

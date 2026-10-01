@@ -38,6 +38,7 @@ import (
 	"maps"
 	"strconv"
 
+	csi "github.com/container-storage-interface/spec/lib/go/csi"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	corev1 "k8s.io/api/core/v1"
@@ -195,6 +196,7 @@ type resolution struct {
 func (s *ControllerServer) resolveVolumeConfig(
 	ctx context.Context,
 	scParams map[string]string,
+	caps []*csi.VolumeCapability,
 	recorded *v1alpha1.ResolvedVolumeConfig,
 ) (*resolution, error) {
 	class, err := s.resolveClassLayer(ctx, scParams, recorded == nil)
@@ -211,15 +213,7 @@ func (s *ControllerServer) resolveVolumeConfig(
 		return nil, err
 	}
 	if recorded != nil {
-		if protocol.Kind() != recorded.Protocol.Kind() {
-			return nil, status.Errorf(codes.FailedPrecondition,
-				"PillarProtocol %q now configures %q but the volume was provisioned over %q",
-				class.protocol.Name, protocol.Kind(), recorded.Protocol.Kind())
-		}
-		exportOnly := recorded.DeepCopy()
-		exportOnly.Protocol = protocol
-		return &resolution{resolved: exportOnly, pvcFS: pvc.Filesystem, storeName: class.storeName,
-			importDataset: pvc.ImportZvol}, nil
+		return replayResolution(class, pvc, protocol, recorded)
 	}
 
 	backend := *class.store.Spec.Backend.DeepCopy()
@@ -245,7 +239,7 @@ func (s *ControllerServer) resolveVolumeConfig(
 			"lvm.provisioningMode thin requires PillarStore %q to set lvm.thinPool", class.store.Name)
 	}
 
-	fs, err := resolveFilesystem(scParams, class.filesystem, pvc.Filesystem)
+	fs, err := resolveFilesystem(scParams, caps, class.filesystem, pvc.Filesystem)
 	if err != nil {
 		return nil, err
 	}
@@ -281,6 +275,31 @@ func resolveProtocol(class *classLayer, pvc pvcDocs) (v1alpha1.ProtocolSpec, err
 		}
 	}
 	return protocol, nil
+}
+
+// replayResolution is the resolution of a retry: the recorded configuration
+// with the export settings of the live protocol.  The protocol member and
+// the iSCSI authentication stay as recorded: auth is fixed per volume at the
+// first attempt, so a PillarProtocol auth change after it cannot change
+// which credentials the volume's export (and its nodes) use.
+func replayResolution(
+	class *classLayer,
+	pvc pvcDocs,
+	protocol v1alpha1.ProtocolSpec,
+	recorded *v1alpha1.ResolvedVolumeConfig,
+) (*resolution, error) {
+	if protocol.Kind() != recorded.Protocol.Kind() {
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"PillarProtocol %q now configures %q but the volume was provisioned over %q",
+			class.protocol.Name, protocol.Kind(), recorded.Protocol.Kind())
+	}
+	exportOnly := recorded.DeepCopy()
+	exportOnly.Protocol = protocol
+	if iscsi := exportOnly.Protocol.ISCSI; iscsi != nil && recorded.Protocol.ISCSI != nil {
+		iscsi.Auth = recorded.Protocol.ISCSI.Auth.DeepCopy()
+	}
+	return &resolution{resolved: exportOnly, pvcFS: pvc.Filesystem, storeName: class.storeName,
+		importDataset: pvc.ImportZvol}, nil
 }
 
 // resolveClassLayer reads the StorageClass identity parameters and loads the
@@ -531,12 +550,20 @@ func applyProtocolOverride(protocol *v1alpha1.ProtocolSpec, ov *v1alpha1.Protoco
 // resolveFilesystem layers the filesystem documents: ext4 default, the
 // class document (with a hand-written class's csi.storage.k8s.io/fstype),
 // then the PVC document.  Lists follow list semantics: nil inherits, an
-// explicit empty list clears.
+// explicit empty list clears.  Caps are the request's volume capabilities:
+// the external-provisioner delivers the class's csi.storage.k8s.io/fstype as
+// the mount capability's fsType (it strips csi.storage.k8s.io/* keys from
+// the parameters).
 func resolveFilesystem(
 	scParams map[string]string,
+	caps []*csi.VolumeCapability,
 	classFS, pvcFS *v1alpha1.FilesystemConfig,
 ) (*v1alpha1.FilesystemConfig, error) {
-	fs, err := classFilesystemBase(scParams, classFS)
+	capFSType, err := capabilityFSType(caps)
+	if err != nil {
+		return nil, err
+	}
+	fs, err := classFilesystemBase(scParams, capFSType, classFS)
 	if err != nil {
 		return nil, err
 	}
@@ -563,12 +590,17 @@ func resolveFilesystem(
 
 // classFilesystemBase is the filesystem configuration below the class
 // document: the ext4 default and, for a hand-written class, its
-// csi.storage.k8s.io/fstype.  A generated class's fstype and mountOptions
-// are only copies of the live binding's spec.filesystem (and may be stale),
-// so a generated class starts from ext4 and an explicit empty mount list,
-// which keeps a stale copy from reaching the node through the capability.
+// csi.storage.k8s.io/fstype.  The external-provisioner removes that key from
+// the CreateVolume parameters and passes its value as the mount
+// capability's fsType (capFSType); the parameter itself is still honored
+// for callers that send it directly, and both must agree.  A generated
+// class's fstype and mountOptions are only copies of the live binding's
+// spec.filesystem (and may be stale), so a generated class starts from ext4
+// and an explicit empty mount list, which keeps a stale copy from reaching
+// the node through the capability.
 func classFilesystemBase(
 	scParams map[string]string,
+	capFSType string,
 	classFS *v1alpha1.FilesystemConfig,
 ) (*v1alpha1.FilesystemConfig, error) {
 	fs := &v1alpha1.FilesystemConfig{FSType: defaultFsType}
@@ -577,6 +609,13 @@ func classFilesystemBase(
 		return fs, nil
 	}
 	scFSType := scParams[paramFSTypeSC]
+	if scFSType != "" && capFSType != "" && scFSType != capFSType {
+		return nil, invalidConfig("StorageClass parameter %s %q conflicts with the volume capability fsType %q",
+			paramFSTypeSC, scFSType, capFSType)
+	}
+	if scFSType == "" {
+		scFSType = capFSType
+	}
 	if scFSType == "" {
 		return fs, nil
 	}
@@ -592,6 +631,24 @@ func classFilesystemBase(
 	return fs, nil
 }
 
+// capabilityFSType returns the fsType the request's mount capabilities name
+// ("" when none does).  Capabilities naming different fsTypes are
+// InvalidArgument.
+func capabilityFSType(caps []*csi.VolumeCapability) (string, error) {
+	fsType := ""
+	for _, c := range caps {
+		v := c.GetMount().GetFsType()
+		if v == "" || v == fsType {
+			continue
+		}
+		if fsType != "" {
+			return "", invalidConfig("volume capabilities name conflicting fsTypes %q and %q", fsType, v)
+		}
+		fsType = v
+	}
+	return fsType, nil
+}
+
 func copyList(p *[]string) *[]string {
 	out := append([]string{}, (*p)...)
 	return &out
@@ -599,7 +656,8 @@ func copyList(p *[]string) *[]string {
 
 // nodeVolumeContext returns the VolumeContext entries derived from the
 // resolved configuration that the node needs at stage time: NVMe-oF connect
-// or iSCSI session tuning and the filesystem settings.
+// or iSCSI session tuning, the iSCSI authentication method (absent for
+// None) and the filesystem settings.
 func nodeVolumeContext(resolved *v1alpha1.ResolvedVolumeConfig, volCtx map[string]string) {
 	if resolved == nil {
 		return
@@ -620,6 +678,9 @@ func nodeVolumeContext(resolved *v1alpha1.ResolvedVolumeConfig, volCtx map[strin
 			{VolumeContextKeyISCSIReplacementTimeout, i.ReplacementTimeout},
 			{VolumeContextKeyISCSINoopOutInterval, i.NoopOutInterval},
 			{VolumeContextKeyISCSINoopOutTimeout, i.NoopOutTimeout},
+		}
+		if method := i.Auth.EffectiveMethod(); method != v1alpha1.ISCSIAuthMethodNone {
+			volCtx[VolumeContextKeyISCSIAuthMethod] = string(method)
 		}
 	}
 	for _, f := range tuning {

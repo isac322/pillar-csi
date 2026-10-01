@@ -717,6 +717,7 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 		Port:         port,
 		VolumeRef:    volCtx[vcVolumeRef],
 		Extra:        volCtx,
+		Secrets:      req.GetSecrets(),
 	}
 
 	var handler ProtocolHandler
@@ -753,7 +754,7 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 			_, parseErr := parseISCSIAttachParams(attachParams)
 			if parseErr != nil {
 				return nil, status.Errorf(codes.InvalidArgument,
-					"NodeStageVolume: volume %q: invalid iSCSI volume_context: %v", volumeID, parseErr)
+					"NodeStageVolume: volume %q: invalid iSCSI volume_context or secrets: %v", volumeID, parseErr)
 			}
 		}
 	} else if targetID == "" {
@@ -870,6 +871,10 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 				return nil, status.Errorf(codes.DeadlineExceeded,
 					"NodeStageVolume: timed out waiting for device for volume %q (protocol %q)",
 					volumeID, protocolType)
+			}
+			if isISCSIAuthenticationError(attachErr) {
+				return nil, status.Errorf(codes.Unauthenticated,
+					"NodeStageVolume: attach volume %q (protocol %q): %v", volumeID, protocolType, attachErr)
 			}
 			return nil, status.Errorf(codes.Internal,
 				"NodeStageVolume: attach volume %q (protocol %q): %v", volumeID, protocolType, attachErr)
@@ -1482,7 +1487,8 @@ func (n *NodeServer) writeStageState(volumeID string, state *nodeStageState) err
 
 	// A unique temp file per attempt: concurrent NodeStageVolume calls for the
 	// same volumeID must not share a temp path, and a stale temp file left by
-	// a crash must never be reused.  CreateTemp applies mode 0600.
+	// a crash must never be reused.  CreateTemp applies mode 0600, which the
+	// rename keeps: iSCSI records hold CHAP credentials (ISCSIStageCHAP).
 	f, openErr := os.CreateTemp(n.stateDir, filepath.Base(stateFile)+".*.tmp")
 	if openErr != nil {
 		return fmt.Errorf("create temp state file in %q: %w", n.stateDir, openErr)

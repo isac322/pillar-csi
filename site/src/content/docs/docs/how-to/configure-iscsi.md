@@ -1,13 +1,13 @@
 ---
 title: Configure iSCSI
-description: Export pillar-csi volumes over iSCSI. Set the port, initiator ACL, login, replacement and NOP-Out timeouts per PillarProtocol, binding or volume, and prepare the nodes.
+description: Export pillar-csi volumes over iSCSI. Set the port, initiator ACL, CHAP authentication, login, replacement and NOP-Out timeouts per PillarProtocol, binding or volume, and prepare the nodes.
 sidebar:
   order: 5
 ---
 
 A `PillarProtocol` with an `iscsi` member exports volumes over iSCSI instead of NVMe-oF/TCP. The storage node serves each volume from the kernel LIO target, and pillar-node logs in with its own initiator and hands the session to the kernel. No host needs `targetcli`, `iscsiadm`, `iscsid` or the `open-iscsi` package; the hosts need only kernel modules.
 
-iSCSI volumes support the same features as NVMe-oF/TCP volumes: ZFS zvols and LVM logical volumes, `Filesystem` (ext4 or xfs) and `Block` volume modes, RWO and RWOP, online expansion, volume stats and [local attach](/docs/how-to/local-attach/). CHAP authentication, multipath and multiple portals are not supported. iSCSI traffic is not encrypted.
+iSCSI volumes support the same features as NVMe-oF/TCP volumes: ZFS zvols and LVM logical volumes, `Filesystem` (ext4 or xfs) and `Block` volume modes, RWO and RWOP, online expansion, volume stats and [local attach](/docs/how-to/local-attach/). Logins can be authenticated with [CHAP or mutual CHAP](#authenticate-logins-with-chap). Multipath and multiple portals are not supported. iSCSI traffic is not encrypted.
 
 ## Create the protocol and a binding
 
@@ -47,6 +47,8 @@ The target advertises thin provisioning (SCSI UNMAP) when the zvol or logical vo
 |---|---|---|---|---|
 | `port` | target | `3260` | 1 to 65535 | no (structural) |
 | `acl` | target | `false` | `true`, `false` | no (structural) |
+| `auth.method` | both | `None` | `None`, `CHAP`, `MutualCHAP` | no (structural) |
+| `auth.secretRef.name` | both | unset | a Secret name; required unless `method` is `None` | no (structural) |
 | `loginTimeout` | initiator | unset: 15 seconds | 1 or more | yes |
 | `replacementTimeout` | initiator | unset: 120 seconds | 0 or more | yes |
 | `noopOutInterval` | initiator | unset: 5 seconds | 0 or more | yes |
@@ -96,9 +98,109 @@ metadata:
       iscsi: {loginTimeout: 30}
 ```
 
-`port` and `acl` are rejected in both places. A PVC that sets one fails provisioning with a message such as `pillar-csi.bhyoo.com/protocol: iscsi.acl is structural and cannot be set per volume`. The override member must match the protocol: an `iscsi` document on a volume whose `PillarProtocol` uses `nvmeofTcp` fails with `iscsi overrides do not apply to a nvmeof-tcp protocol`, and the reverse fails the same way. To use a different port or ACL policy, create a second `PillarProtocol` and a `PillarStorageClass` that references it.
+`port`, `acl` and `auth` are rejected in both places. A PVC that sets one fails provisioning with a message such as `pillar-csi.bhyoo.com/protocol: iscsi.acl is structural and cannot be set per volume`. The override member must match the protocol: an `iscsi` document on a volume whose `PillarProtocol` uses `nvmeofTcp` fails with `iscsi overrides do not apply to a nvmeof-tcp protocol`, and the reverse fails the same way. To use a different port, ACL or authentication policy, create a second `PillarProtocol` and a `PillarStorageClass` that references it.
 
 [Per-volume overrides](/docs/how-to/volume-overrides/) covers precedence across all layers.
+
+## Authenticate logins with CHAP
+
+With `acl: true` the target admits a node by its initiator IQN, and anyone who can reach the portal can claim any IQN. CHAP adds a shared secret to the login. pillar-node answers the challenge itself; the nodes still need no iSCSI tools.
+
+| `auth.method` | What is checked |
+|---|---|
+| `None` (default) | Nothing beyond the ACL. Same as leaving out `auth`. |
+| `CHAP` | The target checks the initiator's username and password. |
+| `MutualCHAP` | The target checks the initiator, and the initiator checks the target with a second username and password. |
+
+CHAP credentials are set on each node ACL, so `CHAP` and `MutualCHAP` require `acl: true`. The API server rejects a protocol that breaks either rule with `auth.method CHAP and MutualCHAP require acl: true` or `auth.secretRef is required when auth.method is CHAP or MutualCHAP`.
+
+### Create the Secret, protocol and binding
+
+Put the Secret in the namespace pillar-csi is installed in (`pillar-csi` here). The controller reads Secrets only from that namespace.
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: iscsi-chap
+  namespace: pillar-csi
+type: Opaque
+stringData:
+  username: pillar-initiator
+  password: replace-with-a-long-random-secret
+  # MutualCHAP only:
+  mutualUsername: pillar-target
+  mutualPassword: replace-with-another-long-random-secret
+---
+apiVersion: pillar-csi.bhyoo.com/v1alpha1
+kind: PillarProtocol
+metadata:
+  name: iscsi-chap
+spec:
+  protocol:
+    iscsi:
+      port: 3260
+      acl: true
+      auth:
+        method: MutualCHAP
+        secretRef:
+          name: iscsi-chap
+---
+apiVersion: pillar-csi.bhyoo.com/v1alpha1
+kind: PillarStorageClass
+metadata:
+  name: pillar-iscsi-chap
+spec:
+  storeRef: storage-1-hot
+  protocolRef: iscsi-chap
+```
+
+Generate the passwords, for example with `openssl rand -base64 24`. For one-way `CHAP`, leave out `mutualUsername` and `mutualPassword`; they are ignored if present.
+
+| Key | Needed for | Rules |
+|---|---|---|
+| `username` | `CHAP`, `MutualCHAP` | 1 to 255 bytes of valid UTF-8, no NUL or newline, not starting with `NULL` |
+| `password` | `CHAP`, `MutualCHAP` | 12 to 255 bytes, otherwise the same rules as `username` |
+| `mutualUsername` | `MutualCHAP` | same as `username` |
+| `mutualPassword` | `MutualCHAP` | same as `password`, and different from `password` |
+
+The 12-byte minimum is the 96-bit secret length RFC 7143 requires. The same secret in both directions is forbidden by the same RFC.
+
+The generated StorageClass gets two extra parameters, `csi.storage.k8s.io/node-stage-secret-name: iscsi-chap` and `csi.storage.k8s.io/node-stage-secret-namespace: pillar-csi`. kubelet uses them to pass the Secret to pillar-node when it stages a volume. A StorageClass you write by hand must set both parameters itself.
+
+### Check the setup
+
+The protocol reports a missing or invalid Secret in its `Ready` condition with reason `AuthSecretInvalid`. The message names the Secret and the key, never the value:
+
+```sh
+kubectl get pillarprotocol iscsi-chap -o jsonpath='{.status.conditions[?(@.type=="Ready")]}'
+```
+
+Provisioning or attaching a CHAP volume while the Secret is broken fails with `FailedPrecondition` naming the Secret and key, and the target gets no export or ACL without credentials. A node-stage Secret that lacks a key fails staging with `InvalidArgument` naming the key.
+
+Each volume records its method in the volume attribute `pillar-csi.bhyoo.com/iscsi-auth-method` (absent for `None`). The method is fixed when the volume is created: changing `auth` on the `PillarProtocol` later does not change existing volumes.
+
+On the storage node, the target of a CHAP volume has `attrib/authentication` set to `1`, and each ACL holds the username:
+
+```sh
+cat /sys/kernel/config/target/iscsi/<target-iqn>/tpgt_1/attrib/authentication
+cat /sys/kernel/config/target/iscsi/<target-iqn>/tpgt_1/acls/<initiator-iqn>/auth/userid
+```
+
+If the node's credentials do not match the target's, the Pod stays in `ContainerCreating`, no session or disk appears on the node, and the Pod's events show a `FailedMount` with `authentication failed`. kubelet keeps retrying, so the volume mounts once the Secret is fixed.
+
+### Rotate the credentials
+
+pillar-csi reads the Secret each time it needs it. New values reach the target the next time the volume is published to a node (or the agent restores its exports after a restart), and reach the node the next time it stages the volume. A session that is already logged in keeps running, because CHAP is checked only at login.
+
+A session that loses its connection logs in again with the credentials it was staged with. If the target already has the new values by then, for example after an agent restart, that login fails. So after you change the Secret, restart the Pods that use CHAP volumes. Their volumes are unstaged and unpublished, then published and staged again, and both sides pick up the new values.
+
+### Security notes
+
+- CHAP authenticates the login only. It does not encrypt or integrity-protect the data. Keep iSCSI on a separate storage network.
+- CHAP uses MD5 challenge-response. The password never crosses the wire, but a captured login exchange can be attacked offline, so use long random passwords.
+- The controller sends the credentials to the agent over gRPC, which is plaintext unless you [turn on mTLS](/docs/how-to/configure-mtls/). Turn it on when you use CHAP. pillar-csi never logs the credentials.
+- The credentials are stored on the storage node in the LIO configuration under `/sys/kernel/config/target`, and on each worker in pillar-node's stage state under `/var/lib/pillar-csi/node` with mode `0600`, so a restarted pillar-node can log in again. Both are readable only by root.
 
 ## Prepare the nodes
 

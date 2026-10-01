@@ -149,7 +149,7 @@ func assertPendingGate(t *testing.T, env *resyncEnv, vol *v1alpha1.PillarVolumeS
 	}
 	// The per-volume resync path is refused while the restore is pending,
 	// so no single volume can make the shared port listen early.
-	desired, err := desiredVolumeState(vol)
+	desired, err := desiredVolumeState(vol, nil)
 	if err != nil {
 		t.Fatalf("desiredVolumeState: %v", err)
 	}

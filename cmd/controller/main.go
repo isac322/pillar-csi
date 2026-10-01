@@ -34,10 +34,13 @@ import (
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
 	"google.golang.org/grpc"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
@@ -67,6 +70,29 @@ func init() {
 	// +kubebuilder:scaffold:scheme
 }
 
+// installNamespaceEnv names the downward-API variable carrying the
+// controller pod's namespace: the pillar-csi installation namespace, where
+// iSCSI CHAP Secrets live.
+const installNamespaceEnv = "POD_NAMESPACE"
+
+// installNamespace returns the pillar-csi installation namespace, or "" when
+// POD_NAMESPACE is unset (iSCSI CHAP is then unavailable).
+func installNamespace() string {
+	return os.Getenv(installNamespaceEnv)
+}
+
+// secretCacheOptions restricts the manager's Secret informer to namespace:
+// the controller may read Secrets only in its installation namespace (a
+// namespaced Role), so a cluster-wide Secret watch would be forbidden.
+func secretCacheOptions(namespace string) cache.Options {
+	if namespace == "" {
+		return cache.Options{}
+	}
+	return cache.Options{ByObject: map[client.Object]cache.ByObject{
+		&corev1.Secret{}: {Namespaces: map[string]cache.Config{namespace: {}}},
+	}}
+}
+
 // setupControllers registers all pillar-csi controllers with the manager.
 // Extracted from main to keep the entry point under the funlen statement limit.
 //
@@ -82,6 +108,7 @@ func setupControllers(
 	agentExports controller.AgentExportRestorer,
 	exports controller.VolumeExportReconciler,
 	reaper controller.VolumeReaper,
+	namespace string,
 ) error {
 	err := (&controller.PillarAgentReconciler{
 		Client:  mgr.GetClient(),
@@ -100,8 +127,9 @@ func setupControllers(
 		return fmt.Errorf("PillarStore controller: %w", err)
 	}
 	err = (&controller.PillarProtocolReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:    mgr.GetClient(),
+		Scheme:    mgr.GetScheme(),
+		Namespace: namespace,
 	}).SetupWithManager(mgr)
 	if err != nil {
 		return fmt.Errorf("PillarProtocol controller: %w", err)
@@ -111,6 +139,7 @@ func setupControllers(
 		APIReader: mgr.GetAPIReader(),
 		Scheme:    mgr.GetScheme(),
 		Recorder:  mgr.GetEventRecorder("pillarstorageclass-controller"),
+		Namespace: namespace,
 	}).SetupWithManager(mgr)
 	if err != nil {
 		return fmt.Errorf("PillarStorageClass controller: %w", err)
@@ -449,6 +478,7 @@ func main() {
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 scheme,
+		Cache:                  secretCacheOptions(installNamespace()),
 		Metrics:                metricsServerOptions,
 		WebhookServer:          webhookServer,
 		HealthProbeBindAddress: probeAddr,
@@ -574,8 +604,13 @@ func runManager(mgr ctrl.Manager, agentDialer agentclient.Dialer, csiEndpoint st
 	// PillarAgent reconciler can drive the batch export restore of a restarted
 	// agent and the PillarVolumeState reconciler its per-volume export resync.
 	ctrlSrv := csi.NewControllerServerWithAgentDialer(mgr.GetClient(), mgr.GetAPIReader(), driverName, agentDialer)
+	namespace := installNamespace()
+	if namespace == "" {
+		setupLog.Info("POD_NAMESPACE is unset: iSCSI CHAP authentication is unavailable")
+	}
+	ctrlSrv.SetInstallNamespace(namespace)
 
-	err := setupControllers(mgr, agentDialer, ctrlSrv, ctrlSrv, ctrlSrv)
+	err := setupControllers(mgr, agentDialer, ctrlSrv, ctrlSrv, ctrlSrv, namespace)
 	if err != nil {
 		return fmt.Errorf("unable to create controllers: %w", err)
 	}

@@ -256,9 +256,13 @@ spec:
       replacementTimeout: 120          # 선택: min 0 (기본값: 120). 세션 복구 중 I/O를 붙잡는 최대 시간
       noopOutInterval: 5               # 선택: min 0 (기본값: 5). 0이면 NOP-Out ping 비활성
       noopOutTimeout: 5                # 선택: min 0 (기본값: 5)
+      auth:                            # 선택: 생략 시 method None
+        method: CHAP                   # None | CHAP | MutualCHAP. CHAP 계열은 acl: true 필요
+        secretRef:
+          name: iscsi-chap             # 설치 네임스페이스의 Secret (username/password, MutualCHAP은 mutualUsername/mutualPassword 추가)
 ```
 
-`port`·`acl`은 구조적 필드라 `PillarStorageClass.spec.overrides.protocol.iscsi`와 PVC annotation `pillar-csi.bhyoo.com/protocol`(예: `iscsi: {loginTimeout: 30}`)에서는 네 타임아웃만 허용된다.
+`port`·`acl`·`auth`는 구조적 필드라 `PillarStorageClass.spec.overrides.protocol.iscsi`와 PVC annotation `pillar-csi.bhyoo.com/protocol`(예: `iscsi: {loginTimeout: 30}`)에서는 네 타임아웃만 허용된다. `auth.method`가 `None`이 아니면 생성된 StorageClass에 `csi.storage.k8s.io/node-stage-secret-name`/`-namespace`가 붙어 kubelet이 같은 Secret을 NodeStage에 넘긴다. CHAP Secret 규칙, 교체 의미와 보안 주의는 [`PRD-iscsi.md`](./PRD-iscsi.md) §8.6.1을 따른다.
 
 > **미구현 프로토콜 (설계 노트):** 아래 NFS 예시는 설계 참고용이며 **구현되지 않았다.** served CRD schema에는 `nfs`·`smb` 멤버가 없으므로 이 YAML은 현재 API server가 거부한다.
 
@@ -419,7 +423,7 @@ PVC annotation 문서 pillar-csi.bhyoo.com/{backend,protocol,filesystem}   (볼�
 
 backend·protocol 문서는 exactly-one union이다: 정확히 하나의 멤버만 쓸 수 있고, 그 멤버는 store의 backend(`zfs`/`lvm`)·protocol(`nvmeofTcp`/`iscsi`)과 같아야 한다. 같은 수치 범위와 기본값(ACL 기본값 false, LVM provisioningMode 기본값 linear)이 모든 계층에 적용된다.
 
-**구조적 필드·알 수 없는 키 거부:** PVC annotation·수동 SC 문서에서는 튜닝 부분집합만 허용한다. 구조적 필드(`zfs.pool`, `zfs.parentDataset`, `zfs.volumeType`, `lvm.volumeGroup`, `lvm.thinPool`, `nvmeofTcp.port`, `nvmeofTcp.acl`, `iscsi.port`, `iscsi.acl`)와 알 수 없는 키는 하나의 공유 decoder가 전체 경로와 함께 거부한다 (예: `pillar-csi.bhyoo.com/protocol: nvmeofTcp.acl is structural and cannot be set per volume`). PVC의 그 밖의 `pillar-csi.bhyoo.com/` annotation도 알 수 없는 키로 거부된다.
+**구조적 필드·알 수 없는 키 거부:** PVC annotation·수동 SC 문서에서는 튜닝 부분집합만 허용한다. 구조적 필드(`zfs.pool`, `zfs.parentDataset`, `zfs.volumeType`, `lvm.volumeGroup`, `lvm.thinPool`, `nvmeofTcp.port`, `nvmeofTcp.acl`, `iscsi.port`, `iscsi.acl`, `iscsi.auth`)와 알 수 없는 키는 하나의 공유 decoder가 전체 경로와 함께 거부한다 (예: `pillar-csi.bhyoo.com/protocol: nvmeofTcp.acl is structural and cannot be set per volume`). PVC의 그 밖의 `pillar-csi.bhyoo.com/` annotation도 알 수 없는 키로 거부된다.
 
 fsType/mkfsOptions 전달 규칙:
 - CreateVolume은 resolve된 fsType을 PV VolumeContext `pillar-csi.bhyoo.com/fs-type`에, mkfsOptions를 `pillar-csi.bhyoo.com/mkfs-options`(JSON 문자열 배열)에 기록한다. PVC `filesystem` 문서가 클래스의 mountOptions를 바꾼 경우에만 `pillar-csi.bhyoo.com/mount-options`(JSON 문자열 배열)를 기록한다.
@@ -452,6 +456,7 @@ StorageClass 파라미터 (`pillar-csi.bhyoo.com/` 접두사):
 | `pillar-csi.bhyoo.com/filesystem` | 수동 SC | filesystem YAML 문서 |
 | `pillar-csi.bhyoo.com/local-attach` | 수동 SC | `"true"` \| `"false"` (기본 false). 바인딩의 `spec.localAttach`와 같은 의미. 다른 값은 `InvalidArgument` |
 | `csi.storage.k8s.io/fstype` | 생성된 SC, 수동 SC | PV fsType (생성된 SC: 바인딩 `spec.filesystem.fsType`, 기본값 ext4) |
+| `csi.storage.k8s.io/node-stage-secret-name` / `-namespace` | 생성된 SC(iSCSI `auth.method`가 CHAP·MutualCHAP일 때), 수동 SC | kubelet이 NodeStage에 넘길 CHAP Secret (프로토콜의 `secretRef.name`, 설치 네임스페이스) |
 
 그 밖의 `pillar-csi.bhyoo.com/` 파라미터 키는 `unsupported StorageClass parameter "<key>"`로 `InvalidArgument` 거부된다.
 
@@ -705,7 +710,7 @@ CSI `ControllerPublishVolume`/`ControllerUnpublishVolume` RPC를 구현하여 �
 | Protocol | ACL 메커니즘 | acl: true | acl: false |
 |----------|------------|-----------|------------|
 | NVMe-oF TCP | `allowed_hosts` symlink | host NQN 추가/제거 | `attr_allow_any_host=1` |
-| iSCSI | LIO node ACL (`tpgt_1/acls/<IQN>`, LUN 0 매핑) | initiator IQN 추가/제거 | `generate_node_acls=1` (demo mode) |
+| iSCSI | LIO node ACL (`tpgt_1/acls/<IQN>`, LUN 0 매핑; CHAP이면 ACL `auth/`에 자격 증명) | initiator IQN 추가/제거 | `generate_node_acls=1` (demo mode) |
 | NFS (미구현) | export client list | 클라이언트 IP 추가/제거 | 전체 허용 |
 
 `acl: false`이면 ControllerPublish/Unpublish는 no-op이다.
@@ -773,7 +778,8 @@ type ProtocolInitiator interface {
 | **기본 포트** | 4420 | 3260 | 2049 | 445 |
 | **커널 모듈 (target)** | nvmet, nvmet_tcp | target_core_mod, target_core_iblock, iscsi_target_mod | nfsd | (user-space) |
 | **커널 모듈 (initiator)** | nvme_tcp, nvme_fabrics | iscsi_tcp (libiscsi, libiscsi_tcp, scsi_transport_iscsi) | nfs (built-in) | cifs |
-| **미지원** | - | CHAP, multipath(다중 portal) | - | - |
+| **인증** | - | CHAP·MutualCHAP (Secret 참조, MD5) | - | - |
+| **미지원** | - | multipath(다중 portal) | - | - |
 
 ## 5. 볼륨 생명주기
 
@@ -1021,6 +1027,7 @@ Controller는 사전 용량 검증을 하지 않는다. Agent에 요청을 보�
 - Phase 1: 평문 gRPC (클러스터 내부 신뢰). TLS 옵션 아키텍처에 포함, 비활성
 - Phase N: Agent ↔ controller 간 mTLS (외부 노드 지원 시)
 - NVMe-oF/iSCSI ACL on/off (PillarProtocol acl 필드)
+- iSCSI CHAP·MutualCHAP (PillarProtocol `iscsi.auth`, 설치 네임스페이스 Secret). controller는 그 네임스페이스의 Secret만 읽고, 자격 증명은 controller → agent gRPC로 전달되므로 CHAP을 쓰면 mTLS를 켠다
 - PVC annotation 파라미터 validation — 튜닝 파라미터만 허용, 구조적 참조 거부
 - RBAC: CRD별 세분화된 권한
 

@@ -351,6 +351,35 @@ spec:
                           Defaults to false so that e2e tests and simple deployments work
                           without registering initiator IQNs.
                         type: boolean
+                      auth:
+                        description: |-
+                          auth configures iSCSI CHAP authentication.  Unset is method None
+                          (initiator IQN ACLs only).  Auth is fixed per volume at CreateVolume:
+                          a later change applies only to volumes provisioned afterwards, and it
+                          cannot be overridden per binding or per volume.  CHAP credentials are
+                          set on the per-initiator ACLs, so CHAP and MutualCHAP require acl: true.
+                        properties:
+                          method:
+                            default: None
+                            description: method selects the authentication method.
+                            enum:
+                            - None
+                            - CHAP
+                            - MutualCHAP
+                            type: string
+                          secretRef:
+                            description: |-
+                              secretRef names the Secret holding the CHAP credentials in the
+                              pillar-csi installation namespace.  Required unless method is None.
+                            properties:
+                              name:
+                                description: name is the name of the Secret.
+                                minLength: 1
+                                type: string
+                            required:
+                            - name
+                            type: object
+                        type: object
                       loginTimeout:
                         description: |-
                           loginTimeout is the maximum seconds the initiator waits for a login
@@ -390,6 +419,12 @@ spec:
                         minimum: 0
                         type: integer
                     type: object
+                    x-kubernetes-validations:
+                    - message: auth.secretRef is required when auth.method is CHAP
+                        or MutualCHAP
+                      rule: '!has(self.auth) || self.auth.method == ''None'' || has(self.auth.secretRef)'
+                    - message: 'auth.method CHAP and MutualCHAP require acl: true'
+                      rule: '!has(self.auth) || self.auth.method == ''None'' || self.acl'
                   nvmeofTcp:
                     description: nvmeofTcp holds NVMe-oF/TCP configuration.
                     properties:
@@ -1587,6 +1622,35 @@ spec:
                               Defaults to false so that e2e tests and simple deployments work
                               without registering initiator IQNs.
                             type: boolean
+                          auth:
+                            description: |-
+                              auth configures iSCSI CHAP authentication.  Unset is method None
+                              (initiator IQN ACLs only).  Auth is fixed per volume at CreateVolume:
+                              a later change applies only to volumes provisioned afterwards, and it
+                              cannot be overridden per binding or per volume.  CHAP credentials are
+                              set on the per-initiator ACLs, so CHAP and MutualCHAP require acl: true.
+                            properties:
+                              method:
+                                default: None
+                                description: method selects the authentication method.
+                                enum:
+                                - None
+                                - CHAP
+                                - MutualCHAP
+                                type: string
+                              secretRef:
+                                description: |-
+                                  secretRef names the Secret holding the CHAP credentials in the
+                                  pillar-csi installation namespace.  Required unless method is None.
+                                properties:
+                                  name:
+                                    description: name is the name of the Secret.
+                                    minLength: 1
+                                    type: string
+                                required:
+                                - name
+                                type: object
+                            type: object
                           loginTimeout:
                             description: |-
                               loginTimeout is the maximum seconds the initiator waits for a login
@@ -1626,6 +1690,14 @@ spec:
                             minimum: 0
                             type: integer
                         type: object
+                        x-kubernetes-validations:
+                        - message: auth.secretRef is required when auth.method is
+                            CHAP or MutualCHAP
+                          rule: '!has(self.auth) || self.auth.method == ''None'' ||
+                            has(self.auth.secretRef)'
+                        - message: 'auth.method CHAP and MutualCHAP require acl: true'
+                          rule: '!has(self.auth) || self.auth.method == ''None'' ||
+                            self.acl'
                       nvmeofTcp:
                         description: nvmeofTcp holds NVMe-oF/TCP configuration.
                         properties:

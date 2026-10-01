@@ -17,11 +17,44 @@ limitations under the License.
 package iscsi
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/binary"
 	"fmt"
+	"slices"
+	"strconv"
+	"strings"
 	"sync"
 )
+
+// fakeCHAP configures the fake target's CHAP authentication, modeled on
+// LIO's iscsi_target_auth.c.
+type fakeCHAP struct {
+	// The initiator credentials the ACL accepts.
+	user, secret string
+	// Non-empty mutualUser makes the target require and answer a mutual
+	// challenge, with mutualSecret.
+	mutualUser, mutualSecret string
+
+	// Misbehavior knobs.
+	selectNone      bool   // answer AuthMethod=None to a CHAP-only offer (downgrade)
+	algorithm       string // CHAP_A to select instead of 5
+	base64Challenge bool   // encode CHAP_C as 0b base64
+	challenge       []byte // fixed challenge instead of the default
+	skipMutual      bool   // transit without answering the mutual challenge
+	wrongMutual     bool   // answer the mutual challenge with a wrong secret
+	// beforeMutualAnswer runs (without the target lock) once the initiator's
+	// mutual challenge is known, before the target answers it.
+	beforeMutualAnswer func(challenge []byte)
+}
+
+// fakeCHAPLogin is the per-login CHAP progress of the fake target.
+type fakeCHAPLogin struct {
+	step      int // 0 await AuthMethod, 1 await CHAP_A, 2 await CHAP_N/R, 3 done
+	id        byte
+	challenge []byte
+}
 
 // fakeTarget is a scripted LIO-like login responder.
 type fakeTarget struct {
@@ -34,10 +67,15 @@ type fakeTarget struct {
 	status func(attempt int, req *loginRequestView) (uint16, []textKV)
 	tsih   uint16
 	statSN uint32
+	chap   *fakeCHAP
 
 	attempts int
 	logins   []loginRequestView // every request seen
 	logouts  int
+	// chapLogin is the CHAP progress of the login in flight.
+	chapLogin fakeCHAPLogin
+	// initiatorChallenges records every mutual challenge the initiator sent.
+	initiatorChallenges [][]byte
 }
 
 type loginRequestView struct {
@@ -143,6 +181,9 @@ func (t *fakeTarget) respond(hdr, data []byte) ([]byte, error) {
 				return buildLoginResponse(req, false, stageSecurity, 0, 0, t.statSN, st, extra), nil
 			}
 		}
+		if t.chap != nil {
+			return t.respondCHAP(req)
+		}
 		return buildLoginResponse(req, true, stageSecurity, stageOperational, 0, t.statSN, 0,
 			[]textKV{{"AuthMethod", "None"}, {"TargetPortalGroupTag", "1"}}), nil
 	case stageOperational:
@@ -159,6 +200,108 @@ func (t *fakeTarget) respond(hdr, data []byte) ([]byte, error) {
 		return buildLoginResponse(req, true, stageOperational, stageFullFeature, tsih, t.statSN, 0, text), nil
 	}
 	return nil, fmt.Errorf("unexpected CSG %d", req.CSG)
+}
+
+// authFailure is LIO's answer to a failed CHAP step: status class 2
+// detail 1.
+func (t *fakeTarget) authFailure(req *loginRequestView) []byte {
+	t.chapLogin = fakeCHAPLogin{}
+	return buildLoginResponse(req, false, stageSecurity, 0, 0, t.statSN, 0x0201, nil)
+}
+
+// respondCHAP runs one security-stage step of the CHAP exchange.  The
+// caller holds t.mu.
+func (t *fakeTarget) respondCHAP(req *loginRequestView) ([]byte, error) {
+	c := t.chap
+	if textValue(req.Text, "InitiatorName") != "" {
+		t.chapLogin = fakeCHAPLogin{} // first request of a new login
+	}
+	l := &t.chapLogin
+	switch l.step {
+	case 0:
+		offer := strings.Split(textValue(req.Text, "AuthMethod"), ",")
+		if c.selectNone {
+			return buildLoginResponse(req, true, stageSecurity, stageOperational, 0, t.statSN, 0,
+				[]textKV{{"AuthMethod", "None"}, {"TargetPortalGroupTag", "1"}}), nil
+		}
+		if !slices.Contains(offer, "CHAP") {
+			return t.authFailure(req), nil
+		}
+		l.step = 1
+		return buildLoginResponse(req, false, stageSecurity, 0, 0, t.statSN, 0,
+			[]textKV{{"AuthMethod", "CHAP"}, {"TargetPortalGroupTag", "1"}}), nil
+	case 1:
+		if !slices.Contains(strings.Split(textValue(req.Text, "CHAP_A"), ","), "5") {
+			return t.authFailure(req), nil
+		}
+		l.step = 2
+		l.id = 0x2a
+		l.challenge = c.challenge
+		if l.challenge == nil {
+			l.challenge = bytes.Repeat([]byte{0x5a, 0xa5}, 8)
+		}
+		alg := c.algorithm
+		if alg == "" {
+			alg = "5"
+		}
+		enc := encodeCHAPBinary(l.challenge)
+		if c.base64Challenge {
+			enc = "0b" + base64.StdEncoding.EncodeToString(l.challenge)
+		}
+		return buildLoginResponse(req, false, stageSecurity, 0, 0, t.statSN, 0,
+			[]textKV{{"CHAP_A", alg}, {"CHAP_I", strconv.Itoa(int(l.id))}, {"CHAP_C", enc}}), nil
+	case 2:
+		return t.verifyCHAPResponse(req)
+	}
+	return nil, fmt.Errorf("security request after CHAP completed")
+}
+
+// verifyCHAPResponse checks the initiator's CHAP_N/CHAP_R and answers its
+// mutual challenge.  The caller holds t.mu; beforeMutualAnswer runs with it
+// released.
+func (t *fakeTarget) verifyCHAPResponse(req *loginRequestView) ([]byte, error) {
+	c, l := t.chap, &t.chapLogin
+	if !t.initiatorResponseValid(req) {
+		return t.authFailure(req), nil
+	}
+	var text []textKV
+	if c.mutualUser != "" {
+		id, chal, ok := mutualChallengeOf(req)
+		if !ok || bytes.Equal(chal, l.challenge) {
+			return t.authFailure(req), nil // LIO also refuses a reflected challenge
+		}
+		t.initiatorChallenges = append(t.initiatorChallenges, chal)
+		if c.beforeMutualAnswer != nil {
+			t.mu.Unlock()
+			c.beforeMutualAnswer(chal)
+			t.mu.Lock()
+		}
+		secret := c.mutualSecret
+		if c.wrongMutual {
+			secret += "-wrong"
+		}
+		if !c.skipMutual {
+			text = []textKV{{"CHAP_N", c.mutualUser}, {"CHAP_R", encodeCHAPBinary(chapResponse(id, secret, chal))}}
+		}
+	}
+	l.step = 3
+	return buildLoginResponse(req, req.Transit, stageSecurity, stageOperational, 0, t.statSN, 0, text), nil
+}
+
+// initiatorResponseValid reports whether the request carries the expected
+// CHAP_N and CHAP_R.  The caller holds t.mu.
+func (t *fakeTarget) initiatorResponseValid(req *loginRequestView) bool {
+	c, l := t.chap, &t.chapLogin
+	got, err := decodeCHAPBinary("CHAP_R", textValue(req.Text, "CHAP_R"))
+	return err == nil && textValue(req.Text, "CHAP_N") == c.user &&
+		bytes.Equal(got, chapResponse(l.id, c.secret, l.challenge))
+}
+
+// mutualChallengeOf parses the initiator's mutual CHAP_I and CHAP_C.
+func mutualChallengeOf(req *loginRequestView) (id byte, challenge []byte, ok bool) {
+	id, idErr := parseCHAPID(textValue(req.Text, "CHAP_I"))
+	challenge, chalErr := decodeCHAPBinary("CHAP_C", textValue(req.Text, "CHAP_C"))
+	return id, challenge, idErr == nil && chalErr == nil
 }
 
 // exchanger adapts the fake target to a loginExchanger.

@@ -158,6 +158,68 @@ _Appears in:_
 | `periodicTrim` _boolean_ | periodicTrim controls whether the CSI node periodically trims (FITRIM)<br />the staged filesystem of a Filesystem-mode volume so the backend can<br />reclaim freed blocks.  Unset follows the node setting (enabled unless<br />the node's `--trim-interval` is 0); false opts the volume out.  A PVC<br />annotation value overrides the class value for that volume. |  | Optional <br /> |
 
 
+#### ISCSIAuth
+
+
+
+ISCSIAuth configures iSCSI CHAP authentication.
+
+The credentials live in a Secret in the pillar-csi installation namespace
+(the controller's namespace) with the keys username and password (CHAP and
+MutualCHAP) plus mutualUsername and mutualPassword (MutualCHAP only).
+Passwords must be 12 to 255 bytes, and mutualPassword must differ from
+password (RFC 7143 §12.1.3).  The controller reads the Secret each time it
+configures a target: new contents apply to the target at the next
+ControllerPublishVolume or export restore, and to the node at the next
+NodeStageVolume.
+
+
+
+_Appears in:_
+- [ISCSIConfig](#iscsiconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `method` _[ISCSIAuthMethod](#iscsiauthmethod)_ | method selects the authentication method. | None | Enum: [None CHAP MutualCHAP] <br />Optional <br /> |
+| `secretRef` _[ISCSIAuthSecretReference](#iscsiauthsecretreference)_ | secretRef names the Secret holding the CHAP credentials in the<br />pillar-csi installation namespace.  Required unless method is None. |  | Optional <br /> |
+
+
+#### ISCSIAuthMethod
+
+_Underlying type:_ _string_
+
+ISCSIAuthMethod selects the iSCSI authentication method.
+
+_Validation:_
+- Enum: [None CHAP MutualCHAP]
+
+_Appears in:_
+- [ISCSIAuth](#iscsiauth)
+
+| Field | Description |
+| --- | --- |
+| `None` | ISCSIAuthMethodNone disables authentication: initiator IQN ACLs only.<br /> |
+| `CHAP` | ISCSIAuthMethodCHAP is one-way CHAP: the target authenticates the<br />initiator.<br /> |
+| `MutualCHAP` | ISCSIAuthMethodMutualCHAP is CHAP in both directions: the initiator<br />also authenticates the target.<br /> |
+
+
+#### ISCSIAuthSecretReference
+
+
+
+ISCSIAuthSecretReference names a Secret in the pillar-csi installation
+namespace.
+
+
+
+_Appears in:_
+- [ISCSIAuth](#iscsiauth)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `name` _string_ | name is the name of the Secret. |  | MinLength: 1 <br />Required <br /> |
+
+
 #### ISCSIConfig
 
 
@@ -186,6 +248,7 @@ _Appears in:_
 | `replacementTimeout` _integer_ | replacementTimeout is the maximum seconds the initiator keeps I/O<br />queued while re-establishing a failed session before failing it back<br />to the block layer.  0 fails I/O immediately on connection loss. |  | Minimum: 0 <br />Optional <br /> |
 | `noopOutInterval` _integer_ | noopOutInterval is the interval in seconds between NOP-Out pings the<br />initiator sends to detect a dead connection.  0 disables the pings. |  | Minimum: 0 <br />Optional <br /> |
 | `noopOutTimeout` _integer_ | noopOutTimeout is the maximum seconds the initiator waits for a<br />NOP-In reply before declaring the connection failed. |  | Minimum: 0 <br />Optional <br /> |
+| `auth` _[ISCSIAuth](#iscsiauth)_ | auth configures iSCSI CHAP authentication.  Unset is method None<br />(initiator IQN ACLs only).  Auth is fixed per volume at CreateVolume:<br />a later change applies only to volumes provisioned afterwards, and it<br />cannot be overridden per binding or per volume.  CHAP credentials are<br />set on the per-initiator ACLs, so CHAP and MutualCHAP require acl: true. |  | Optional <br /> |
 
 
 #### ISCSIOverrides

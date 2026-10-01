@@ -59,7 +59,8 @@ func NewISCSIAgentHandler(server *Server) *ISCSIAgentHandler {
 // Export creates (or converges) the LIO target of a volume: backstore, LUN,
 // TPG policy, portal and TPG enable.  An export in the local-attach state is
 // returned to serving remote initiators, which fails with FailedPrecondition
-// while the device is still held on the storage node.
+// while the device is still held on the storage node.  CHAP credentials in
+// the iSCSI export params enable CHAP and are written to every node ACL.
 func (h *ISCSIAgentHandler) Export(ctx context.Context, params ExportParams) (*ExportResult, error) {
 	bindAddress, port, err := iscsiEndpoint(params.ProtocolParams)
 	if err != nil {
@@ -73,6 +74,10 @@ func (h *ISCSIAgentHandler) Export(ctx context.Context, params ExportParams) (*E
 	if err != nil {
 		return nil, err
 	}
+	chap, err := iscsiCHAP("ExportVolume", params.VolumeID, params.ProtocolParams, params.ACLEnabled)
+	if err != nil {
+		return nil, err
+	}
 	target, err := h.targetForVolume(params.VolumeID)
 	if err != nil {
 		return nil, err
@@ -81,6 +86,7 @@ func (h *ISCSIAgentHandler) Export(ctx context.Context, params ExportParams) (*E
 	target.BindAddress = bindAddress
 	target.Port = port
 	target.ACLEnabled = params.ACLEnabled
+	target.CHAP = chap
 
 	unlock := h.server.lockTarget(ctx, agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI, target.IQN)
 	defer unlock()
@@ -114,20 +120,28 @@ func (h *ISCSIAgentHandler) Unexport(ctx context.Context, volumeID string, fence
 }
 
 // AllowInitiator creates the node ACL of the initiator IQN (with LUN 0
-// mapped while the export is not locally attached).
+// mapped while the export is not locally attached).  CHAP credentials in
+// protocolParams are written to the ACL, also to an existing one.
 func (h *ISCSIAgentHandler) AllowInitiator(
 	ctx context.Context,
 	volumeID, initiatorID string,
+	protocolParams *agentv1.ExportParams,
 	fence *agentv1.FencingToken,
 ) error {
 	err := lio.ValidateIQN(initiatorID)
 	if err != nil {
 		return status.Errorf(codes.InvalidArgument, "AllowInitiator: volume %q: initiator: %v", volumeID, err)
 	}
+	// The grant only adds an ACL, so ACL enforcement is not re-checked here.
+	chap, err := iscsiCHAP("AllowInitiator", volumeID, protocolParams, true)
+	if err != nil {
+		return err
+	}
 	target, err := h.targetForVolume(volumeID)
 	if err != nil {
 		return err
 	}
+	target.CHAP = chap
 	unlock := h.server.lockTarget(ctx, agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI, target.IQN)
 	defer unlock()
 
@@ -316,6 +330,10 @@ func (h *ISCSIAgentHandler) reconcileTarget(export ExportDesiredState) (*lio.Tar
 	target.BindAddress = bindAddress
 	target.Port = port
 	target.ACLEnabled = export.ACLEnabled
+	target.CHAP, err = iscsiCHAP("Reconcile", export.VolumeID, export.ProtocolParams, export.ACLEnabled)
+	if err != nil {
+		return nil, err
+	}
 	target.LocalAttach = export.LocalAttach
 	// Without ACL enforcement node ACLs have no effect on admission.
 	if export.ACLEnabled {
@@ -394,6 +412,34 @@ func iscsiEndpoint(protocolParams *agentv1.ExportParams) (bindAddress string, po
 		return "", 0, status.Errorf(codes.InvalidArgument, "iscsiEndpoint: port %d is out of range 1-65535", port)
 	}
 	return bindAddress, port, nil
+}
+
+// iscsiCHAP returns the CHAP credentials of protocolParams.iscsi.chap, nil
+// when absent.  Invalid credentials, or credentials on an export without
+// explicit node ACLs (aclEnabled false), are InvalidArgument; the error
+// never contains a credential value.
+func iscsiCHAP(
+	op, volumeID string, protocolParams *agentv1.ExportParams, aclEnabled bool,
+) (*lio.CHAP, error) {
+	params := protocolParams.GetIscsi().GetChap()
+	if params == nil {
+		return nil, nil //nolint:nilnil // no CHAP is a valid configuration
+	}
+	chap := &lio.CHAP{
+		Username:       params.GetUsername(),
+		Password:       params.GetPassword(),
+		MutualUsername: params.GetMutualUsername(),
+		MutualPassword: params.GetMutualPassword(),
+	}
+	err := chap.Validate()
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "%s: volume %q: %v", op, volumeID, err)
+	}
+	if !aclEnabled {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"%s: volume %q: CHAP requires acl_enabled (credentials live on node ACLs)", op, volumeID)
+	}
+	return chap, nil
 }
 
 // iscsiStatus maps a lio error onto a gRPC status: a missing target is

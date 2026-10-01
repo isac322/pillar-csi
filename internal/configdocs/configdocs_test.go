@@ -44,6 +44,12 @@ func TestDecodeOverrides_Rejections(t *testing.T) {
 			wantErr: "pillar-csi.bhyoo.com/protocol: iscsi.port is structural and cannot be set per volume",
 		},
 		{
+			name:    "iscsi structural auth",
+			decode:  protocolOverride,
+			raw:     "iscsi: {auth: {method: None}}",
+			wantErr: "pillar-csi.bhyoo.com/protocol: iscsi.auth is structural and cannot be set per volume",
+		},
+		{
 			name:    "iscsi login timeout must be positive",
 			decode:  protocolOverride,
 			raw:     "iscsi: {loginTimeout: 0}",

@@ -94,6 +94,12 @@ type Target struct {
 	// advertise thin provisioning (UNMAP) and the export is served without
 	// it (see ensureThinProvisioning).
 	DiscardUnsupported func(device string)
+
+	// CHAP, when set, enables CHAP authentication: the TPG attribute
+	// authentication is 1 and every node ACL carries these credentials
+	// (see ensureACLAuth).  nil keeps authentication=0.  CHAP requires
+	// ACLEnabled: the credentials live on explicit node ACLs.
+	CHAP *CHAP
 }
 
 func (t *Target) cfs() configfs { return newConfigfs(t.FS, t.ConfigfsRoot) }
@@ -199,6 +205,15 @@ func (t *Target) validate() error {
 			return fmt.Errorf("iSCSI target %q: allowed initiator: %w", t.IQN, err)
 		}
 	}
+	if t.CHAP != nil {
+		if !t.ACLEnabled {
+			return fmt.Errorf("iSCSI target %q: CHAP requires explicit node ACLs", t.IQN)
+		}
+		err = t.CHAP.Validate()
+		if err != nil {
+			return fmt.Errorf("iSCSI target %q: %w", t.IQN, err)
+		}
+	}
 	_, err = t.Portal()
 	return err
 }
@@ -222,11 +237,12 @@ func (t *Target) requireTPG() error {
 // Prepare configures everything a host needs before the target becomes
 // reachable, in dependency order: the iscsi fabric, target and TPG; then
 // either backstore and LUN 0 (or, with LocalAttach, the local-attach state);
-// the TPG attributes (no authentication, demo mode or explicit ACLs); the
-// node ACLs of AllowedInitiators; and LUN 0 mapped into every node ACL.  It
-// neither creates the portal nor enables the TPG (see Activate), and it
-// never disables an already enabled TPG unless LocalAttach asks for it.
-// Every step is idempotent.
+// the TPG attributes (authentication 1 with CHAP and 0 without, demo mode or
+// explicit ACLs); the node ACLs of AllowedInitiators; LUN 0 mapped into every
+// node ACL; and the CHAP credentials of every node ACL, so existing ACLs
+// pick up changed credentials.  It neither creates the portal nor enables
+// the TPG (see Activate), and it never disables an already enabled TPG
+// unless LocalAttach asks for it.  Every step is idempotent.
 func (t *Target) Prepare() error {
 	err := t.validate()
 	if err != nil {
@@ -257,6 +273,16 @@ func (t *Target) Prepare() error {
 	}
 	for _, iqn := range t.AllowedInitiators {
 		err = t.allowInitiator(iqn)
+		if err != nil {
+			return fmt.Errorf("prepare iSCSI target %q: %w", t.IQN, err)
+		}
+	}
+	acls, err := t.Initiators()
+	if err != nil {
+		return fmt.Errorf("prepare iSCSI target %q: %w", t.IQN, err)
+	}
+	for _, iqn := range acls {
+		err = t.ensureACLAuth(iqn)
 		if err != nil {
 			return fmt.Errorf("prepare iSCSI target %q: %w", t.IQN, err)
 		}
@@ -329,10 +355,16 @@ func (t *Target) Apply() error {
 	return t.Activate()
 }
 
-// ensureTPGAttribs writes the TPG's access policy.
+// ensureTPGAttribs writes the TPG's access policy.  The authentication
+// attribute is the TPG's CHAP switch (see chap.go); the per-ACL credentials
+// are written by ensureACLAuth.
 func (t *Target) ensureTPGAttribs() error {
 	c := t.cfs()
-	attrs := [][2]string{{"authentication", "0"}}
+	authentication := "0"
+	if t.CHAP != nil {
+		authentication = "1"
+	}
+	attrs := [][2]string{{"authentication", authentication}}
 	if t.ACLEnabled {
 		attrs = append(attrs, [2]string{"generate_node_acls", "0"})
 	} else {
@@ -872,12 +904,20 @@ func (t *Target) removeTPG() error {
 	return c.removeDir(t.tpgDir())
 }
 
-// AllowInitiator creates the node ACL of iqn and, while LUN 0 exists, maps
-// it.  A missing target returns ErrTargetNotFound.
+// AllowInitiator creates the node ACL of iqn, writes CHAP's credentials to
+// it (also when it already exists, so changed credentials apply) and, while
+// LUN 0 exists, maps it.  It does not change the TPG's authentication
+// switch.  A missing target returns ErrTargetNotFound.
 func (t *Target) AllowInitiator(iqn string) error {
 	err := ValidateIQN(iqn)
 	if err != nil {
 		return fmt.Errorf("AllowInitiator %q: %w", t.IQN, err)
+	}
+	if t.CHAP != nil {
+		err = t.CHAP.Validate()
+		if err != nil {
+			return fmt.Errorf("AllowInitiator %q: %w", t.IQN, err)
+		}
 	}
 	err = t.requireTPG()
 	if err != nil {
@@ -897,6 +937,10 @@ func (t *Target) allowInitiator(iqn string) error {
 		if err != nil {
 			return fmt.Errorf("create node ACL %q: %w", iqn, err)
 		}
+	}
+	err := t.ensureACLAuth(iqn)
+	if err != nil {
+		return err
 	}
 	ok, err := c.exists(t.lunDir())
 	if err != nil || !ok {

@@ -51,7 +51,8 @@ type fakeISCSIInitiator struct {
 	rescans       []iscsi.Portal
 	logouts       []iscsi.Portal
 	sessions      map[string]*iscsi.Session
-	loginTimeouts map[string]time.Duration // SetLoginTimeout calls by target@portal
+	loginTimeouts map[string]time.Duration          // SetLoginParams timeouts by target@portal
+	loginCHAP     map[string]*iscsi.CHAPCredentials // SetLoginParams credentials by target@portal
 }
 
 var _ ISCSIInitiator = (*fakeISCSIInitiator)(nil)
@@ -59,6 +60,7 @@ var _ ISCSIInitiator = (*fakeISCSIInitiator)(nil)
 func newFakeISCSIInitiator() *fakeISCSIInitiator {
 	return &fakeISCSIInitiator{
 		device: "/dev/sdb", sessions: map[string]*iscsi.Session{}, loginTimeouts: map[string]time.Duration{},
+		loginCHAP: map[string]*iscsi.CHAPCredentials{},
 	}
 }
 
@@ -98,12 +100,15 @@ func (f *fakeISCSIInitiator) Logout(_ context.Context, targetIQN string, portal 
 	return nil
 }
 
-func (f *fakeISCSIInitiator) SetLoginTimeout(targetIQN string, portal iscsi.Portal, d time.Duration) error {
+func (f *fakeISCSIInitiator) SetLoginParams(
+	targetIQN string, portal iscsi.Portal, d time.Duration, chap *iscsi.CHAPCredentials,
+) error {
 	key := targetIQN + "@" + portal.String()
 	if _, ok := f.sessions[key]; !ok {
 		return errors.New("no iSCSI session")
 	}
 	f.loginTimeouts[key] = d
+	f.loginCHAP[key] = chap
 	return nil
 }
 
