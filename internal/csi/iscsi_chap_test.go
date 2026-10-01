@@ -146,6 +146,11 @@ func TestParseISCSIChapSecret(t *testing.T) {
 			wantErr: `key "username" must not contain NUL or newline`,
 		},
 		{
+			name: "invalid UTF-8 password cannot cross protobuf", method: v1alpha1.ISCSIAuthMethodCHAP,
+			data:    chapData("username", "u", "password", "secret-\xff\xfe-bytes"),
+			wantErr: `key "password" must be valid UTF-8`,
+		},
+		{
 			name: "NULL prefix is unset in LIO", method: v1alpha1.ISCSIAuthMethodCHAP,
 			data:    chapData("username", "NULLuser", "password", testChapPassword),
 			wantErr: `key "username" must not start with "NULL"`,

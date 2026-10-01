@@ -159,8 +159,8 @@ Generate the passwords, for example with `openssl rand -base64 24`. For one-way 
 
 | Key | Needed for | Rules |
 |---|---|---|
-| `username` | `CHAP`, `MutualCHAP` | 1 to 255 bytes, no NUL or newline |
-| `password` | `CHAP`, `MutualCHAP` | 12 to 255 bytes, no NUL |
+| `username` | `CHAP`, `MutualCHAP` | 1 to 255 bytes of valid UTF-8, no NUL or newline, not starting with `NULL` |
+| `password` | `CHAP`, `MutualCHAP` | 12 to 255 bytes, otherwise the same rules as `username` |
 | `mutualUsername` | `MutualCHAP` | same as `username` |
 | `mutualPassword` | `MutualCHAP` | same as `password`, and different from `password` |
 

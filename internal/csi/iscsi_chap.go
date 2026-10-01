@@ -25,6 +25,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -81,8 +82,8 @@ const (
 // and password and ignores the mutual keys; MutualCHAP also requires
 // mutualUsername and mutualPassword, and mutualPassword must differ from
 // password (RFC 7143 §12.1.3 forbids one secret in both directions).
-// Every value is at most 255 bytes, contains no NUL or newline and does not
-// start with "NULL" (LIO stores such a value as unset); passwords are at
+// Every value is at most 255 bytes, valid UTF-8, contains no NUL or newline
+// and does not start with "NULL" (LIO stores such a value as unset); passwords are at
 // least 12 bytes.  SecretName is used only in error messages.  Errors name
 // the offending key but never contain a secret value.
 func ParseISCSIChapSecret(
@@ -149,6 +150,10 @@ func chapValue(secretName, key string, data map[string]string, minLen int) (stri
 			secretName, key, len(v), minLen, iscsiChapMaxLen)
 	case strings.ContainsAny(v, "\x00\n"):
 		return "", fmt.Errorf("iSCSI CHAP secret %q: key %q must not contain NUL or newline", secretName, key)
+	case !utf8.ValidString(v):
+		// Protobuf string fields carry only valid UTF-8, so the agent RPC
+		// (and kubelet's NodeStage secrets) could not send this value.
+		return "", fmt.Errorf("iSCSI CHAP secret %q: key %q must be valid UTF-8", secretName, key)
 	case strings.HasPrefix(v, "NULL"):
 		return "", fmt.Errorf("iSCSI CHAP secret %q: key %q must not start with \"NULL\"", secretName, key)
 	}

@@ -492,8 +492,8 @@ Secret은 pillar-csi 설치 네임스페이스(controller pod의 네임스페이
 
 | 키 | 필요 | 검증 |
 |----|------|------|
-| `username` | CHAP, MutualCHAP | 비어 있지 않음, 255바이트 이하, NUL·개행 없음 |
-| `password` | CHAP, MutualCHAP | 12-255바이트(RFC 7143 §12.1.3의 96비트 이상 secret), NUL 없음 |
+| `username` | CHAP, MutualCHAP | 비어 있지 않음, 255바이트 이하, 유효한 UTF-8, NUL·개행 없음, `NULL`로 시작하지 않음 |
+| `password` | CHAP, MutualCHAP | 12-255바이트(RFC 7143 §12.1.3의 96비트 이상 secret), 그 밖에는 `username`과 같은 규칙 |
 | `mutualUsername` | MutualCHAP | `username`과 같은 규칙. CHAP에서는 무시 |
 | `mutualPassword` | MutualCHAP | `password`와 같은 규칙이고 `password`와 달라야 한다(RFC 7143 §12.1.3). CHAP에서는 무시 |
 
