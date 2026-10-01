@@ -38,6 +38,23 @@ for shared_sysfs in /sys/devices/virtual/nvme-fabrics /sys/devices/platform; do
   fi
 done
 
+# /var/lib/docker is a cache volume that outlives this container (see
+# compose.yaml): pulled images and the BuildKit cache, including the Go build
+# cache mount, are reused by the next run.  Containers, networks and volumes
+# are run state, not cache.  An interrupted run can leave Kind nodes or the
+# external agent behind with a restart policy, and dockerd would restart them
+# on startup against the host storage stack.  Clear those restart policies
+# before dockerd reads them; purge_docker_state then removes the containers
+# through the daemon.
+for hostconfig in /var/lib/docker/containers/*/hostconfig.json; do
+  [[ -e "${hostconfig}" ]] || continue
+  if ! jq '.RestartPolicy = {"Name": "no", "MaximumRetryCount": 0}' "${hostconfig}" >"${hostconfig}.tmp" \
+    || ! mv "${hostconfig}.tmp" "${hostconfig}"; then
+    printf 'failed to disable the restart policy in stale %s\n' "${hostconfig}" >&2
+    exit 1
+  fi
+done
+
 setsid dockerd \
   --host=unix:///var/run/docker.sock \
   --dns="${dns_server}" \
@@ -59,6 +76,23 @@ forward_signal() {
     return
   fi
   exit "${exit_code}"
+}
+
+# purge_docker_state returns the nested daemon to zero run state while keeping
+# tagged images and the BuildKit cache: it removes every container with its
+# anonymous volumes, every unused network and volume, and dangling images left
+# behind when a rebuild moved an image tag.
+purge_docker_state() {
+  local containers
+  containers=$(docker ps -aq) || return 1
+  if [[ -n "${containers}" ]]; then
+    printf 'removing leftover nested Docker containers: %s\n' "${containers//$'\n'/ }" >&2
+    # shellcheck disable=SC2086 # container IDs are whitespace-separated words.
+    docker rm -f -v ${containers} >/dev/null || return 1
+  fi
+  docker network prune -f >/dev/null || return 1
+  docker volume prune --all -f >/dev/null || return 1
+  docker image prune -f >/dev/null || return 1
 }
 
 cleanup_docker_mounts() {
@@ -87,6 +121,9 @@ cleanup() {
     wait "${run_pid}" 2>/dev/null || true
   fi
   if kill -0 "${dockerd_pid}" 2>/dev/null; then
+    if docker info >/dev/null 2>&1; then
+      purge_docker_state || cleanup_rc=1
+    fi
     kill "${dockerd_pid}" 2>/dev/null || cleanup_rc=1
     wait "${dockerd_pid}" 2>/dev/null || true
   fi
@@ -139,6 +176,10 @@ raise_inotify_limit max_user_watches 524288
 
 for _ in $(seq 1 120); do
   if docker info >/dev/null 2>&1; then
+    if ! purge_docker_state; then
+      printf 'failed to remove leftover nested Docker state from a previous run\n' >&2
+      exit 1
+    fi
     set +e
     setsid /usr/local/bin/pillar-csi-docker-e2e-run &
     run_pid=$!

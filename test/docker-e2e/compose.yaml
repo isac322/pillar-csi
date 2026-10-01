@@ -21,9 +21,16 @@ services:
       # harness and the Kind workers (pillar-node) reach it as
       # /host/proc/1/ns/net.
       - /proc:/host/proc:ro
+      # Build caches that outlive the run.  `make test-docker-e2e` keeps these
+      # volumes; `make clean-docker-e2e-cache` removes them.  docker-data holds
+      # the nested Docker's images and BuildKit cache; entrypoint.sh removes its
+      # containers, networks and volumes at the start and end of every run.
+      # go-cache holds GOCACHE and GOMODCACHE for the harness's `go test`.
       - docker-data:/var/lib/docker
+      - go-cache:/var/cache/pillar-csi
     tmpfs:
       - /run
 
 volumes:
   docker-data:
+  go-cache:
