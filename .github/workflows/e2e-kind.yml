@@ -5,7 +5,18 @@
 name: Kind E2E
 
 on:
-  workflow_call: {}
+  workflow_call:
+    inputs:
+      runtime_image_artifact:
+        description: Run-scoped exact-checkout runtime image artifact from CI
+        required: false
+        type: string
+        default: ''
+      runtime_image_tag:
+        description: Tag contained in runtime_image_artifact
+        required: false
+        type: string
+        default: e2e
 
 permissions:
   contents: read
@@ -28,7 +39,10 @@ jobs:
 
       # ── Cluster & image names ─────────────────────────────────────────────
       KIND_CLUSTER: "pillar-csi-e2e"
-      E2E_IMAGE_TAG: "e2e"
+      E2E_IMAGE_TAG: ${{ inputs.runtime_image_tag || 'e2e' }}
+      # When true, the Go harness skips Docker builds but still loads the
+      # prebuilt exact-checkout images into the newly-created Kind cluster.
+      E2E_PREBUILT_IMAGES: ${{ inputs.runtime_image_artifact != '' && 'true' || '' }}
       # Helm namespace where pillar-csi is deployed.
       E2E_HELM_NAMESPACE: "pillar-csi-system"
       # Ginkgo parallel worker count for the full e2e suite.
@@ -44,18 +58,54 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+      - name: Download exact-checkout runtime images
+        if: ${{ inputs.runtime_image_artifact != '' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.runtime_image_artifact }}
+          path: ${{ runner.temp }}/pillar-csi-runtime-images
+
+      - name: Load and verify exact-checkout runtime images
+        if: ${{ inputs.runtime_image_artifact != '' }}
+        env:
+          IMAGE_TAG: ${{ inputs.runtime_image_tag }}
+          SOURCE_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="${RUNNER_TEMP}/pillar-csi-runtime-images/runtime-images.tar"
+          metadata="${RUNNER_TEMP}/pillar-csi-runtime-images/runtime-images.json"
+          test -s "${archive}"
+          test -s "${metadata}"
+          jq -e --arg sha "${SOURCE_SHA}" --arg tag "${IMAGE_TAG}" \
+            '.source_sha == $sha and .image_tag == $tag and
+             (.images.controller | length > 0) and
+             (.images.agent | length > 0) and
+             (.images.node | length > 0)' \
+            "${metadata}" >/dev/null
+          docker load --input "${archive}"
+          for component in controller agent node; do
+            ref="pillar-csi/${component}:${IMAGE_TAG}"
+            image_id="$(docker image inspect --format '{{.Id}}' "${ref}")"
+            expected_id="$(jq -r --arg component "${component}" '.images[$component]' "${metadata}")"
+            test -n "${image_id}"
+            test "${image_id}" = "${expected_id}"
+          done
 
       - name: Setup Go
         uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            .github/measure-cache-salt
           cache: true
 
       - name: Cache pinned Kind e2e tools
         uses: actions/cache@v6
         with:
           path: bin/
-          key: kind-e2e-tools-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Makefile', 'go.mod', 'go.sum') }}
+          key: measure-srcab1001-b-kind-e2e-tools-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Makefile', 'go.mod', 'go.sum') }}
 
       # ── install tooling ────────────────────────────────────────────────────
       # install_only=true: lay down the kind binary without creating a cluster.

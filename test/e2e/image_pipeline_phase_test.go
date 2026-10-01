@@ -197,6 +197,7 @@ func TestAC8_BootstrapSuiteImages_NilStateFails(t *testing.T) {
 // modifying the provided cluster state. This preserves the state struct so
 // that subsequent backend-provisioning (Phase 4) can proceed unaffected.
 func TestAC8_BootstrapSuiteImages_SkipPreservesClusterState(t *testing.T) {
+	t.Setenv(prebuiltImagesEnvVar, "")
 	t.Setenv(skipImageBuildEnvVar, "true")
 
 	state := &kindBootstrapState{
@@ -308,6 +309,7 @@ func TestAC8_StageImageBuild_ConstantValue(t *testing.T) {
 // cluster-creation phase.  The test exercises a non-nil state to confirm the
 // function completes without crashing on the fast-skip path.
 func TestAC8_ImagePhase_ClusterStateIsExplicitInput(t *testing.T) {
+	t.Setenv(prebuiltImagesEnvVar, "")
 	t.Setenv(skipImageBuildEnvVar, "true")
 
 	// Construct a minimal cluster state — equivalent to what bootstrapSuiteCluster

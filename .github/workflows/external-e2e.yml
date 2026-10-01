@@ -9,7 +9,18 @@ name: External Storage E2E
 
 on:
   workflow_dispatch: {}
-  workflow_call: {}
+  workflow_call:
+    inputs:
+      runtime_image_artifact:
+        description: Run-scoped exact-checkout runtime image artifact from CI
+        required: false
+        type: string
+        default: ''
+      runtime_image_tag:
+        description: Tag contained in runtime_image_artifact
+        required: false
+        type: string
+        default: ext-e2e
 
 permissions:
   contents: read
@@ -31,6 +42,8 @@ jobs:
       KIND_CLUSTER: "pillar-csi-ext-e2e"
       E2E_HELM_NAMESPACE: "pillar-csi-system"
       DOCKER_HOST: "unix:///var/run/docker.sock"
+      IMAGE_TAG: ${{ inputs.runtime_image_tag || 'ext-e2e' }}
+      E2E_PREBUILT_IMAGES: ${{ inputs.runtime_image_artifact != '' && 'true' || '' }}
       # K8S_VERSION pin lets run.sh skip the dl.k8s.io stable.txt lookup so
       # the cached upstream e2e.test + matching ginkgo bundle is shared.
       K8S_VERSION: "v1.37.0"
@@ -40,18 +53,54 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+      - name: Download exact-checkout runtime images
+        if: ${{ inputs.runtime_image_artifact != '' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.runtime_image_artifact }}
+          path: ${{ runner.temp }}/pillar-csi-runtime-images
+
+      - name: Load and verify exact-checkout runtime images
+        if: ${{ inputs.runtime_image_artifact != '' }}
+        env:
+          IMAGE_TAG: ${{ inputs.runtime_image_tag }}
+          SOURCE_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="${RUNNER_TEMP}/pillar-csi-runtime-images/runtime-images.tar"
+          metadata="${RUNNER_TEMP}/pillar-csi-runtime-images/runtime-images.json"
+          test -s "${archive}"
+          test -s "${metadata}"
+          jq -e --arg sha "${SOURCE_SHA}" --arg tag "${IMAGE_TAG}" \
+            '.source_sha == $sha and .image_tag == $tag and
+             (.images.controller | length > 0) and
+             (.images.agent | length > 0) and
+             (.images.node | length > 0)' \
+            "${metadata}" >/dev/null
+          docker load --input "${archive}"
+          for component in controller agent node; do
+            ref="pillar-csi/${component}:${IMAGE_TAG}"
+            image_id="$(docker image inspect --format '{{.Id}}' "${ref}")"
+            expected_id="$(jq -r --arg component "${component}" '.images[$component]' "${metadata}")"
+            test -n "${image_id}"
+            test "${image_id}" = "${expected_id}"
+          done
 
       - name: Setup Go
         uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            .github/measure-cache-salt
           cache: true
 
       - name: Cache upstream External Storage e2e bundle
         uses: actions/cache@v6
         with:
           path: ~/.cache/pillar-csi/external-e2e
-          key: external-e2e-${{ env.K8S_VERSION }}-${{ runner.os }}-${{ runner.arch }}
+          key: measure-srcab1001-b-external-e2e-${{ env.K8S_VERSION }}-${{ runner.os }}-${{ runner.arch }}
 
       - name: Install Kind ${{ env.KIND_VERSION }}
         uses: helm/kind-action@v1

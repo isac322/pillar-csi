@@ -4,6 +4,21 @@ on:
   push:
     branches: [master]
   pull_request:
+  # Manual dispatch is used for reproducible post-merge measurements.
+  # MEASUREMENT-ONLY (controlled source-change replay srcab-20261001, variant B):
+  # seed = BASE tree, exports caches like a master push; measure = SOURCE tree,
+  # read-only caches like a pull request. Not a production PR run.
+  workflow_dispatch:
+    inputs:
+      measure_role:
+        description: seed (export caches) or measure (read-only caches)
+        type: choice
+        options: [seed, measure]
+        required: true
+      paths_base:
+        description: Commit the change filter diffs against
+        type: string
+        required: true
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
@@ -11,7 +26,8 @@ concurrency:
 
 jobs:
   # ── changes ────────────────────────────────────────────────────────────────
-  # Detects docs-only changes so the heavy jobs below can be skipped for them.
+  # Detects code and image-contract changes so behavior validation and
+  # multi-platform OCI packaging can use different lanes.
   #
   # A workflow-level `paths-ignore` would not work here: Lint, Test, Build and
   # E2E are required status checks, and a workflow that never starts leaves
@@ -19,13 +35,17 @@ jobs:
   # `if:` reports "skipped", which satisfies a required check.
   #
   # The gate fails closed: a heavy job is skipped only when this job succeeded
-  # and reported no code change. If detection fails, every heavy job runs.
+  # and reported no relevant change. If detection fails, every heavy job runs.
   # `!cancelled()` lets them start after a failed `changes` job, so jobs with
   # other prerequisites also check those results explicitly.
   #
   # `code` is true when any changed file lies outside site/** and **/*.md.
   # docs/E2E-TESTCASES.md is a test input (verify-tc-coverage and the e2e
   # catalog parse it), so it counts as code.
+  #
+  # `image_contract` is limited to files that change the OCI/Docker packaging
+  # contract. Source changes are covered by the exact-checkout runtime image
+  # and cross-platform Go compile lane below.
   changes:
     name: Detect code changes
     runs-on: ubuntu-latest
@@ -34,6 +54,7 @@ jobs:
       pull-requests: read
     outputs:
       code: ${{ steps.filter.outputs.code == 'true' || steps.filter.outputs.tcspec == 'true' }}
+      image_contract: ${{ steps.filter.outputs.image_contract == 'true' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -42,6 +63,9 @@ jobs:
         id: filter
         uses: dorny/paths-filter@v4
         with:
+          # MEASUREMENT-ONLY: diff the replay commit against the explicit
+          # parent so overlay files never reach the change gate.
+          base: ${{ inputs.paths_base }}
           predicate-quantifier: some-with-excludes
           filters: |
             code:
@@ -50,6 +74,84 @@ jobs:
               - '!**/*.md'
             tcspec:
               - 'docs/E2E-TESTCASES.md'
+            image_contract:
+              - 'Dockerfile'
+              - 'docker-bake.hcl'
+              - '.dockerignore'
+              - 'hack/verify-mkfs-baseline.sh'
+
+  # MEASUREMENT-ONLY: proves which application/test source this replay ran.
+  measurement-provenance:
+    name: Measurement provenance
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      VARIANT: B
+      MEASURE_ROLE: ${{ inputs.measure_role }}
+      PATHS_BASE: ${{ inputs.paths_base }}
+      BASE_REF: 5854c6895c179b1728423050344763db1a8423e3
+      SOURCE_REF: a1547c5dc13fd291b92745438e5537d0633c6d69
+      OVERLAY_FILES: >-
+        .github/measure-cache-salt
+        .github/workflows/ci.yml
+        .github/workflows/e2e-kind.yml
+        .github/workflows/external-e2e.yml
+        Makefile
+        docker-bake.hcl
+        test/e2e/image_bootstrap.go
+        test/e2e/image_bootstrap_test.go
+        test/e2e/image_pipeline_phase_test.go
+        test/e2e/main_test.go
+        test/e2e/parallel_image_build_test.go
+        test/external-e2e/bootstrap.sh
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Verify replay source provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${MEASURE_ROLE}" in
+            seed) app_ref="${BASE_REF}" ;;
+            measure) app_ref="${SOURCE_REF}" ;;
+            *) echo "unknown role ${MEASURE_ROLE}"; exit 1 ;;
+          esac
+          out="${RUNNER_TEMP}/provenance"
+          mkdir -p "${out}"
+          printf '%s\n' ${OVERLAY_FILES} | sort > "${out}/overlay-expected.txt"
+          git diff --name-only "${app_ref}" HEAD | sort > "${out}/overlay-actual.txt"
+          diff -u "${out}/overlay-expected.txt" "${out}/overlay-actual.txt"
+          git diff --name-only "${PATHS_BASE}" HEAD | sort > "${out}/gate-diff.txt"
+          if [ "${MEASURE_ROLE}" = measure ]; then
+            git diff --name-only "${BASE_REF}" "${SOURCE_REF}" | sort > "${out}/source-diff-expected.txt"
+            diff -u "${out}/source-diff-expected.txt" "${out}/gate-diff.txt"
+          fi
+          {
+            echo "variant=${VARIANT} role=${MEASURE_ROLE} github_sha=${GITHUB_SHA} app_ref=${app_ref} paths_base=${PATHS_BASE}"
+            echo "head_tree=$(git rev-parse 'HEAD^{tree}')"
+            for p in api cmd internal proto gen config charts hack test docs/E2E-TESTCASES.md go.mod go.sum Dockerfile; do
+              head_obj="$(git rev-parse "HEAD:${p}")"
+              ref_obj="$(git rev-parse "${app_ref}:${p}")"
+              echo "${p} head=${head_obj} app_ref=${ref_obj} equal=$([ "${head_obj}" = "${ref_obj}" ] && echo yes || echo no)"
+            done
+            echo "gate_diff_files=$(wc -l < "${out}/gate-diff.txt") gate_diff_go_nontest=$(grep '\.go$' "${out}/gate-diff.txt" | grep -vc '_test\.go$' || true)"
+          } | tee "${out}/provenance.txt"
+          for p in api cmd internal proto gen config charts go.mod go.sum Dockerfile; do
+            [ "$(git rev-parse "HEAD:${p}")" = "$(git rev-parse "${app_ref}:${p}")" ]
+          done
+          { echo '## Measurement provenance (controlled replay)'; echo '```'; cat "${out}/provenance.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload provenance
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: measurement-provenance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/provenance
 
   # ── docs ───────────────────────────────────────────────────────────────────
   # Generated reference docs must match api/v1alpha1 and the chart values, and
@@ -67,13 +169,16 @@ jobs:
         uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            .github/measure-cache-salt
           cache: true
 
       - name: Cache documentation tools
         uses: actions/cache@v6
         with:
           path: bin/
-          key: docs-tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Makefile', 'go.mod', 'go.sum') }}
+          key: measure-srcab1001-b-docs-tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Makefile', 'go.mod', 'go.sum') }}
 
       - name: Verify generated docs are up to date
         run: make docs-check
@@ -102,6 +207,9 @@ jobs:
         uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            .github/measure-cache-salt
 
       - name: Run linter
         uses: golangci/golangci-lint-action@v9
@@ -121,12 +229,15 @@ jobs:
         uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            .github/measure-cache-salt
 
       - name: Cache test tools
         uses: actions/cache@v6
         with:
           path: bin/
-          key: test-tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Makefile', 'go.mod', 'go.sum') }}
+          key: measure-srcab1001-b-test-tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Makefile', 'go.mod', 'go.sum') }}
 
       - name: Run tests
         shell: bash
@@ -176,6 +287,9 @@ jobs:
         uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            .github/measure-cache-salt
 
       - name: Run csi-sanity
         run: make test-csi-sanity
@@ -193,6 +307,9 @@ jobs:
         uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            .github/measure-cache-salt
 
       - name: Install Helm
         uses: azure/setup-helm@v5
@@ -205,37 +322,31 @@ jobs:
     # Run on every push and pull_request (workflow-level triggers already set).
     # Skip if the commit message contains [skip e2e] or [e2e skip].
     # The job body lives in e2e-kind.yml so daily-e2e.yml runs the same suite.
-    needs: [changes]
+    needs: [changes, runtime-images]
     if: |
       !cancelled() &&
+      needs['runtime-images'].result == 'success' &&
       (needs.changes.result != 'success' || needs.changes.outputs.code == 'true') &&
       !contains(github.event.head_commit.message, '[skip e2e]') &&
       !contains(github.event.head_commit.message, '[e2e skip]')
     permissions:
       contents: read
     uses: ./.github/workflows/e2e-kind.yml
+    with:
+      runtime_image_artifact: ${{ needs['runtime-images'].outputs.runtime_image_artifact }}
+      runtime_image_tag: ${{ needs['runtime-images'].outputs.runtime_image_tag }}
 
   external-e2e:
     name: External Storage E2E
-    needs: [changes]
-    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.code == 'true') }}
+    needs: [changes, runtime-images]
+    if: ${{ !cancelled() && needs['runtime-images'].result == 'success' && (needs.changes.result != 'success' || needs.changes.outputs.code == 'true') }}
     permissions:
       contents: read
     uses: ./.github/workflows/external-e2e.yml
+    with:
+      runtime_image_artifact: ${{ needs['runtime-images'].outputs.runtime_image_artifact }}
+      runtime_image_tag: ${{ needs['runtime-images'].outputs.runtime_image_tag }}
 
-  # ── e2e-bench ──────────────────────────────────────────────────────────────
-  # CI baseline benchmark job.
-  #
-  # Runs the in-process e2e suite (no -tags=e2e → no Kind cluster, no ZFS/LVM)
-  # via `go test ./test/e2e/... -count=1` and fails the build if total
-  # wall-clock time exceeds 120 seconds.
-  #
-  # This job acts as a canary: if a newly added spec or a shared setup change
-  # causes the in-process suite to slow beyond the 2-minute budget the build
-  # breaks immediately, before the heavier Kind-cluster jobs are scheduled.
-  #
-  # Skip with [skip e2e] or [e2e skip] in the commit message (same gate as
-  # the full e2e job so that hotfixes bypass both in one flag).
   e2e-bench:
     name: E2E Baseline Benchmark (≤120s)
     runs-on: ubuntu-latest
@@ -256,6 +367,9 @@ jobs:
         uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            .github/measure-cache-salt
           cache: true
 
       # go mod tidy ensures the module cache is warm before timing begins so
@@ -299,10 +413,15 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   build:
+    # Keep the existing job id/name because "Build (all platforms)" is a
+    # required branch-protection check. Both lanes compile all eight platforms
+    # with the canonical Dockerfile/toolchain and shared BuildKit cache.
     name: Build (all platforms)
     runs-on: ubuntu-latest
     needs: [changes]
     if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.code == 'true') }}
+    env:
+      PLATFORMS: linux/amd64,linux/amd64/v2,linux/amd64/v3,linux/arm64,linux/arm/v7,linux/s390x,linux/ppc64le,linux/riscv64
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -311,44 +430,177 @@ jobs:
         id: buildx
         uses: docker/setup-buildx-action@v4
 
-      - name: Restore BuildKit cache mounts (pull request)
-        if: ${{ github.event_name == 'pull_request' }}
+      - name: Restore BuildKit cache mounts (read-only)
+        if: ${{ !((github.event_name == 'push' && github.ref == 'refs/heads/master') || (github.event_name == 'workflow_dispatch' && inputs.measure_role == 'seed')) }}
         id: cache-pr
         uses: actions/cache/restore@v6
         with:
           path: buildkit-cache
-          key: buildkit-mount-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Dockerfile', 'go.mod', 'go.sum') }}
+          key: measure-srcab1001-b-buildkit-mount-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Dockerfile', 'go.mod', 'go.sum') }}
           restore-keys: |
-            buildkit-mount-v2-${{ runner.os }}-${{ runner.arch }}-
-            buildkit-mount-${{ hashFiles('Dockerfile') }}-
+            measure-srcab1001-b-buildkit-mount-v2-${{ runner.os }}-${{ runner.arch }}-
+            measure-srcab1001-b-buildkit-mount-${{ hashFiles('Dockerfile') }}-
 
       - name: Restore and save BuildKit cache mounts (master)
-        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+        if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/master') || (github.event_name == 'workflow_dispatch' && inputs.measure_role == 'seed') }}
         id: cache-master
         uses: actions/cache@v6
         with:
           path: buildkit-cache
-          key: buildkit-mount-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Dockerfile', 'go.mod', 'go.sum') }}
+          key: measure-srcab1001-b-buildkit-mount-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Dockerfile', 'go.mod', 'go.sum') }}
           restore-keys: |
-            buildkit-mount-v2-${{ runner.os }}-${{ runner.arch }}-
-            buildkit-mount-${{ hashFiles('Dockerfile') }}-
+            measure-srcab1001-b-buildkit-mount-v2-${{ runner.os }}-${{ runner.arch }}-
+            measure-srcab1001-b-buildkit-mount-${{ hashFiles('Dockerfile') }}-
 
       - name: Inject/extract BuildKit cache mounts
         uses: reproducible-containers/buildkit-cache-dance@v3
         with:
           builder: ${{ steps.buildx.outputs.name }}
           cache-dir: buildkit-cache
-          skip-extraction: ${{ github.event_name == 'pull_request' || steps.cache-master.outputs.cache-hit == 'true' }}
+          skip-extraction: ${{ !((github.event_name == 'push' && github.ref == 'refs/heads/master') || (github.event_name == 'workflow_dispatch' && inputs.measure_role == 'seed')) || steps.cache-master.outputs.cache-hit == 'true' }}
 
+      - name: Compile Go binaries for all supported Linux targets
+        id: compile
+        if: ${{ needs.changes.result == 'success' && needs.changes.outputs.image_contract != 'true' && !((github.event_name == 'push' && github.ref == 'refs/heads/master') || (github.event_name == 'workflow_dispatch' && inputs.measure_role == 'seed')) }}
+        uses: docker/bake-action@v7
+        with:
+          files: docker-bake.hcl
+          targets: compile
+          set: |
+            compile.cache-from=type=gha,scope=measure-srcab1001-b-pillar-ci-compile
+
+      # Packaging remains separate from behavior validation. This job runs
+      # beside the runtime-image job so E2E does not wait for the full matrix.
       - name: Build all images for all platforms
+        id: full_images
+        if: ${{ needs.changes.result != 'success' || needs.changes.outputs.image_contract == 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/master') || (github.event_name == 'workflow_dispatch' && inputs.measure_role == 'seed') }}
         uses: docker/bake-action@v7
         with:
           files: docker-bake.hcl
           set: |
-            *.platform=linux/amd64,linux/amd64/v2,linux/amd64/v3,linux/arm64,linux/arm/v7,linux/s390x,linux/ppc64le,linux/riscv64
-            controller.cache-from=type=gha,scope=pillar-ci-controller
-            agent.cache-from=type=gha,scope=pillar-ci-agent
-            node.cache-from=type=gha,scope=pillar-ci-node
-            ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' && 'controller.cache-to=type=gha,scope=pillar-ci-controller,mode=min' || '' }}
-            ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' && 'agent.cache-to=type=gha,scope=pillar-ci-agent,mode=min' || '' }}
-            ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' && 'node.cache-to=type=gha,scope=pillar-ci-node,mode=min' || '' }}
+            controller.cache-from=type=gha,scope=measure-srcab1001-b-pillar-ci-controller
+            agent.cache-from=type=gha,scope=measure-srcab1001-b-pillar-ci-agent
+            node.cache-from=type=gha,scope=measure-srcab1001-b-pillar-ci-node
+            ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/master') || (github.event_name == 'workflow_dispatch' && inputs.measure_role == 'seed')) && 'controller.cache-to=type=gha,scope=measure-srcab1001-b-pillar-ci-controller,mode=min' || '' }}
+            ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/master') || (github.event_name == 'workflow_dispatch' && inputs.measure_role == 'seed')) && 'agent.cache-to=type=gha,scope=measure-srcab1001-b-pillar-ci-agent,mode=min' || '' }}
+            ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/master') || (github.event_name == 'workflow_dispatch' && inputs.measure_role == 'seed')) && 'node.cache-to=type=gha,scope=measure-srcab1001-b-pillar-ci-node,mode=min' || '' }}
+
+      - name: Emit build lane summary
+        if: always()
+        env:
+          COMPILE_STATUS: ${{ steps.compile.conclusion || 'not run' }}
+          FULL_IMAGE_CONTRACT: ${{ needs.changes.result != 'success' || needs.changes.outputs.image_contract == 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/master') || (github.event_name == 'workflow_dispatch' && inputs.measure_role == 'seed') }}
+          FULL_IMAGE_STATUS: ${{ steps.full_images.conclusion || 'not run' }}
+        run: |
+          {
+            echo "## Build lanes"
+            echo ""
+            echo "| Lane | Status |"
+            echo "|------|--------|"
+            echo "| All-target Go compile | ${COMPILE_STATUS} |"
+            if [ "${FULL_IMAGE_CONTRACT}" = "true" ]; then
+              echo "| Full multi-platform OCI contract | ${FULL_IMAGE_STATUS} |"
+            else
+              echo "| Full multi-platform OCI contract | skipped for source-only change |"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Build the exact checkout once for the behavior-validation lanes. This job
+  # runs beside the required cross-platform compile/package job so E2E does not
+  # wait for the platform compile or packaging matrix it does not consume.
+  runtime-images:
+    name: Build exact-checkout runtime images
+    runs-on: ubuntu-latest
+    needs: [changes]
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.code == 'true') }}
+    outputs:
+      runtime_image_artifact: ${{ steps.runtime_meta.outputs.artifact_name }}
+      runtime_image_tag: ${{ steps.runtime_meta.outputs.image_tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set exact-checkout runtime image metadata
+        id: runtime_meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "artifact_name=pillar-csi-runtime-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+          echo "image_tag=ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        id: buildx
+        uses: docker/setup-buildx-action@v4
+
+      # Seed only the amd64 compiler cache here; importing the much larger
+      # eight-platform cache would delay the two behavior-validation lanes.
+      - name: Restore runtime compiler cache (read-only)
+        if: ${{ !((github.event_name == 'push' && github.ref == 'refs/heads/master') || (github.event_name == 'workflow_dispatch' && inputs.measure_role == 'seed')) }}
+        uses: actions/cache/restore@v6
+        with:
+          path: runtime-buildkit-cache
+          key: measure-srcab1001-b-runtime-buildkit-mount-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Dockerfile', 'go.mod', 'go.sum') }}
+          restore-keys: |
+            measure-srcab1001-b-runtime-buildkit-mount-v1-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Restore and save runtime compiler cache (master)
+        if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/master') || (github.event_name == 'workflow_dispatch' && inputs.measure_role == 'seed') }}
+        id: runtime-cache-master
+        uses: actions/cache@v6
+        with:
+          path: runtime-buildkit-cache
+          key: measure-srcab1001-b-runtime-buildkit-mount-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Dockerfile', 'go.mod', 'go.sum') }}
+          restore-keys: |
+            measure-srcab1001-b-runtime-buildkit-mount-v1-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Inject/extract runtime compiler cache
+        uses: reproducible-containers/buildkit-cache-dance@v3
+        with:
+          builder: ${{ steps.buildx.outputs.name }}
+          cache-dir: runtime-buildkit-cache
+          skip-extraction: ${{ !((github.event_name == 'push' && github.ref == 'refs/heads/master') || (github.event_name == 'workflow_dispatch' && inputs.measure_role == 'seed')) || steps.runtime-cache-master.outputs.cache-hit == 'true' }}
+
+      - name: Build exact-checkout runtime images (amd64)
+        env:
+          REGISTRY: pillar-csi
+          TAG: ${{ steps.runtime_meta.outputs.image_tag }}
+        uses: docker/bake-action@v7
+        with:
+          files: docker-bake.hcl
+          targets: controller,agent,node
+          load: true
+          set: |
+            *.platform=linux/amd64
+            *.cache-from=type=gha,scope=measure-srcab1001-b-pillar-ci-runtime
+            ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/master') || (github.event_name == 'workflow_dispatch' && inputs.measure_role == 'seed')) && '*.cache-to=type=gha,scope=measure-srcab1001-b-pillar-ci-runtime,mode=min' || '' }}
+
+      - name: Export exact-checkout runtime image artifact
+        env:
+          IMAGE_TAG: ${{ steps.runtime_meta.outputs.image_tag }}
+          SOURCE_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="${RUNNER_TEMP}/runtime-images.tar"
+          docker save -o "${archive}" \
+            "pillar-csi/controller:${IMAGE_TAG}" \
+            "pillar-csi/agent:${IMAGE_TAG}" \
+            "pillar-csi/node:${IMAGE_TAG}"
+
+          controller_id="$(docker image inspect --format '{{.Id}}' "pillar-csi/controller:${IMAGE_TAG}")"
+          agent_id="$(docker image inspect --format '{{.Id}}' "pillar-csi/agent:${IMAGE_TAG}")"
+          node_id="$(docker image inspect --format '{{.Id}}' "pillar-csi/node:${IMAGE_TAG}")"
+          printf '{"source_sha":"%s","image_tag":"%s","images":{"controller":"%s","agent":"%s","node":"%s"}}\n' \
+            "${SOURCE_SHA}" "${IMAGE_TAG}" "${controller_id}" "${agent_id}" "${node_id}" \
+            > "${RUNNER_TEMP}/runtime-images.json"
+
+      - name: Upload exact-checkout runtime images
+        uses: actions/upload-artifact@v4
+        with:
+          name: pillar-csi-runtime-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/runtime-images.tar
+            ${{ runner.temp }}/runtime-images.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
