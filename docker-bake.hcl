@@ -39,6 +39,14 @@ group "default" {
   targets = ["controller", "agent", "node"]
 }
 
+// Compile every component with the canonical Docker toolchain, without
+// rebuilding runtime packaging for source-only changes.
+target "compile" {
+  inherits = ["_common"]
+  target   = "builder"
+  output   = ["type=cacheonly"]
+}
+
 target "controller" {
   inherits = ["_common"]
   target   = "controller"

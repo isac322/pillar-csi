@@ -3,7 +3,7 @@
 //
 //	Phase 1 — prereq check       : Docker daemon reachable + kernel modules loaded
 //	Phase 2 — cluster creation   : Kind cluster created and kubeconfig exported
-//	Phase 3 — image build/load   : docker build × 3 + kind load × 3
+//	Phase 3 — image build/load   : local build or exact-artifact load + kind load
 //	Phase 4 — backend provision  : ZFS pool + LVM VG provisioned in Kind container
 //	Phase 5 — parallel test exec : ginkgo CLI re-exec with N workers (or sequential)
 //	Phase 6 — teardown           : backends destroyed, cluster deleted, temp dirs removed
@@ -16,7 +16,8 @@
 //	DOCKER_HOST              — Docker daemon endpoint (env only, never hardcoded)
 //	KIND_CLUSTER             — Kind cluster name
 //	E2E_IMAGE_TAG            — image tag for all three component images
-//	E2E_SKIP_IMAGE_BUILD     — "true" skips docker build + kind load
+//	E2E_SKIP_IMAGE_BUILD     — "true" skips build + Kind load for an existing cluster
+//	E2E_PREBUILT_IMAGES      — "true" verifies daemon images and performs Kind load
 //	E2E_USE_EXISTING_CLUSTER — "true" skips Kind cluster creation
 //	E2E_DOCKER_BUILD_CACHE   — "true" enables --cache-from for faster rebuilds
 //	E2E_STAGE_TIMING         — "1" emits wall-clock stage breakdown

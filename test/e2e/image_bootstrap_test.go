@@ -68,6 +68,41 @@ func TestResolveSkipImageBuild_FalseValues(t *testing.T) {
 	}
 }
 
+// ─── resolvePrebuiltImages ───────────────────────────────────────────────────
+
+func TestResolvePrebuiltImages_FalseByDefault(t *testing.T) {
+	t.Parallel()
+	if resolvePrebuiltImagesFromValue("") {
+		t.Error("resolvePrebuiltImagesFromValue(\"\")=true, want false")
+	}
+}
+
+func TestResolvePrebuiltImages_TrueValues(t *testing.T) {
+	t.Parallel()
+	for _, val := range []string{"true", "TRUE", "True", "1"} {
+		val := val
+		t.Run(val, func(t *testing.T) {
+			t.Parallel()
+			if !resolvePrebuiltImagesFromValue(val) {
+				t.Errorf("resolvePrebuiltImagesFromValue(%q)=false, want true", val)
+			}
+		})
+	}
+}
+
+func TestResolvePrebuiltImages_FalseValues(t *testing.T) {
+	t.Parallel()
+	for _, val := range []string{"false", "0", "no", "off"} {
+		val := val
+		t.Run(val, func(t *testing.T) {
+			t.Parallel()
+			if resolvePrebuiltImagesFromValue(val) {
+				t.Errorf("resolvePrebuiltImagesFromValue(%q)=true, want false", val)
+			}
+		})
+	}
+}
+
 // ─── findRepoRoot ─────────────────────────────────────────────────────────────
 
 func TestFindRepoRoot_Success(t *testing.T) {

@@ -80,8 +80,9 @@ on-demand runs. The workflow:
    sidecar images, identical to the in-PR `e2e` job.
 2. Invokes [`bootstrap.sh`](./bootstrap.sh) — creates a Kind cluster,
    provisions an LVM Volume Group inside the control-plane node container,
-   builds and `kind load`s the controller / agent / node images,
-   `helm install`s pillar-csi, and applies the PillarAgent / PillarStore /
+   then either loads the exact-checkout runtime image artifact supplied by the
+   PR CI build or builds and `kind load`s the controller / agent / node images.
+   It `helm install`s pillar-csi and applies the PillarAgent / PillarStore /
    PillarProtocol triple that the StorageClass references.
 3. Runs `make test-external-e2e` against the prepared cluster.
 4. Deletes the Kind cluster on completion (success or failure).

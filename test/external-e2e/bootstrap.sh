@@ -22,6 +22,7 @@ CLUSTER_NAME="${CLUSTER_NAME:-pillar-csi-ext-e2e}"
 HELM_NAMESPACE="${HELM_NAMESPACE:-pillar-csi-system}"
 HELM_RELEASE="${HELM_RELEASE:-pillar-csi}"
 IMAGE_TAG="${IMAGE_TAG:-ext-e2e}"
+PREBUILT_IMAGES="${E2E_PREBUILT_IMAGES:-}"
 # LVM (not ZFS) for the in-cluster backend.  ZFS userland in the Kind node
 # image must match the kernel module version loaded on the runner; LVM has
 # no such coupling and Just Works once dm_mod / dm_thin_pool are loaded.
@@ -112,19 +113,32 @@ docker exec "${CONTROL_PLANE}" bash -c "
   vgs ${VG_NAME}
 "
 
-# ── 3. Build + load pillar-csi images ────────────────────────────────────────
-log "Building controller / agent / node images at tag ${IMAGE_TAG}"
-(
-  cd "${REPO_ROOT}"
-  BUILDX_NO_DEFAULT_ATTESTATIONS=1 \
-    REGISTRY=pillar-csi \
-    TAG="${IMAGE_TAG}" \
-    docker buildx bake --load controller agent node
-)
-kind load docker-image --name "${CLUSTER_NAME}" \
-  "pillar-csi/controller:${IMAGE_TAG}" \
-  "pillar-csi/agent:${IMAGE_TAG}" \
+# ── 3. Load exact-checkout or build pillar-csi images ────────────────────────
+IMAGE_REFS=(
+  "pillar-csi/controller:${IMAGE_TAG}"
+  "pillar-csi/agent:${IMAGE_TAG}"
   "pillar-csi/node:${IMAGE_TAG}"
+)
+
+if [[ "${PREBUILT_IMAGES}" == "true" || "${PREBUILT_IMAGES}" == "1" ]]; then
+  log "Using exact-checkout runtime images already loaded into Docker at tag ${IMAGE_TAG}"
+else
+  log "Building controller / agent / node images at tag ${IMAGE_TAG}"
+  (
+    cd "${REPO_ROOT}"
+    BUILDX_NO_DEFAULT_ATTESTATIONS=1 \
+      REGISTRY=pillar-csi \
+      TAG="${IMAGE_TAG}" \
+      docker buildx bake --load controller agent node
+  )
+fi
+
+# Both paths fail closed if any expected image is missing.  In prebuilt mode
+# this prevents a stale or incomplete artifact from reaching pullPolicy=Never.
+for ref in "${IMAGE_REFS[@]}"; do
+  docker image inspect "${ref}" >/dev/null
+done
+kind load docker-image --name "${CLUSTER_NAME}" "${IMAGE_REFS[@]}"
 
 # ── 4. Helm install pillar-csi ──────────────────────────────────────────────
 log "Helm-installing release ${HELM_RELEASE} into namespace ${HELM_NAMESPACE}"

@@ -1,17 +1,20 @@
 package e2e
 
-// image_bootstrap.go — AC8: docker build + kind load images for the E2E suite.
+// image_bootstrap.go — AC8: image build or exact-artifact load + Kind load.
 //
-// All three pillar-csi component images (controller, agent, node) are built
-// once per `go test` invocation and loaded into every Kind node via
-// `kind load docker-image`. This ensures that DaemonSet / Deployment manifests
-// can pull images locally without an external registry.
+// All three pillar-csi component images (controller, agent, node) are loaded
+// into every Kind node via `kind load docker-image`. In the normal path they
+// are built once per `go test` invocation. CI behavior lanes can instead set
+// E2E_PREBUILT_IMAGES after loading an exact-checkout artifact into the local
+// Docker daemon; the Kind load phase still runs for the fresh cluster.
 //
 // Environment variables:
 //
 //	E2E_IMAGE_TAG        — image tag applied to every image (default: "e2e")
 //	E2E_SKIP_IMAGE_BUILD — set to "true" or "1" to skip build+load and reuse
-//	                       images that were loaded in a previous run.
+//	                       images already loaded in an existing Kind cluster.
+//	E2E_PREBUILT_IMAGES  — set to "true" or "1" when exact-checkout images are
+//	                       present in Docker and must be loaded into Kind.
 //	DOCKER_HOST          — forwarded as-is to Docker (env-only, never hardcoded).
 //
 // DOCKER_HOST handling:
@@ -23,18 +26,13 @@ package e2e
 //
 // # Parallel build and load (Sub-AC 5.2)
 //
-// bootstrapSuiteImages performs two phases:
+// bootstrapSuiteImages performs either:
 //
-//  1. Parallel build phase — all three docker build commands run concurrently
-//     using errgroup. Concurrent writes to output are serialised by
-//     concurrentWriter so log lines are never interleaved.
+//  1. Parallel local build followed by parallel Kind load; or
+//  2. Prebuilt-image verification followed by parallel Kind load.
 //
-//  2. Parallel load phase — all three kind load docker-image commands run
-//     concurrently after every build completes. This phase also uses errgroup
-//     and concurrentWriter.
-//
-// Typical wall-clock savings vs. sequential: 40–60 s → 15–25 s for fresh builds
-// on a 4-core machine, cutting total pipeline time from ~120 s to ~80 s.
+// In both modes image loading completes before backend provisioning, preserving
+// the AC8 phase ordering and pullPolicy=Never deployment contract.
 
 import (
 	"bytes"
@@ -75,6 +73,10 @@ const (
 	//
 	// Typical speedup: 40-60 seconds → 5-15 seconds for unchanged images.
 	dockerBuildCacheEnvVar = "E2E_DOCKER_BUILD_CACHE"
+	// prebuiltImagesEnvVar tells the harness that CI has already loaded exact-
+	// checkout images into the runner Docker daemon. The harness still performs
+	// kind load after creating the fresh cluster.
+	prebuiltImagesEnvVar = "E2E_PREBUILT_IMAGES"
 )
 
 // e2eImageSpec describes one component image to build and load into Kind.
@@ -97,15 +99,15 @@ var e2eImageSpecs = []e2eImageSpec{
 // repository root and loads each one into the Kind cluster identified by
 // state.ClusterName.
 //
-// It is called from runPrimary (suite_test.go) after the Kind cluster is live
-// and before ZFS/LVM backend provisioning.
+// When E2E_PREBUILT_IMAGES is true, CI has already loaded an exact-checkout
+// image artifact into the Docker daemon. In that mode this function verifies
+// the three expected local image references and only performs the required
+// kind load phase. This is intentionally distinct from E2E_SKIP_IMAGE_BUILD:
+// the latter assumes images are already present in the existing Kind nodes,
+// while the prebuilt mode supports a newly-created cluster.
 //
-// When E2E_SKIP_IMAGE_BUILD is "true" or "1", the function logs a message and
-// returns nil immediately so that iterative test runs reuse previously loaded
-// images.
-//
-// DOCKER_HOST is never hardcoded; it reaches the Docker CLI automatically via
-// the inherited process environment (see package-level comment above).
+// When E2E_SKIP_IMAGE_BUILD is true and no prebuilt images are configured, the
+// historical iterative-development fast path is preserved unchanged.
 func bootstrapSuiteImages(
 	ctx context.Context,
 	state *kindBootstrapState,
@@ -118,25 +120,50 @@ func bootstrapSuiteImages(
 		output = io.Discard
 	}
 
-	// Fast-path: skip build/load when explicitly disabled.
-	return bootstrapSuiteImagesDirect(ctx, state, output, resolveSkipImageBuild())
+	return bootstrapSuiteImagesDirectWithPrebuilt(
+		ctx,
+		state,
+		output,
+		resolveSkipImageBuild(),
+		resolvePrebuiltImages(),
+	)
 }
 
-// bootstrapSuiteImagesDirect is the injectable form of bootstrapSuiteImages.
-// The skipBuild parameter controls whether the fast-path (no docker build/load) is
-// taken. Tests use this directly to avoid t.Setenv (which is incompatible with
-// t.Parallel in Go 1.21+).
+// bootstrapSuiteImagesDirect is the injectable form used by unit tests. The
+// prebuilt-image path is disabled so existing skip/build tests continue to
+// exercise the local-build contract directly.
 func bootstrapSuiteImagesDirect(
 	ctx context.Context,
 	state *kindBootstrapState,
 	output io.Writer,
 	skipBuild bool,
 ) error {
+	return bootstrapSuiteImagesDirectWithPrebuilt(ctx, state, output, skipBuild, false)
+}
+
+func bootstrapSuiteImagesDirectWithPrebuilt(
+	ctx context.Context,
+	state *kindBootstrapState,
+	output io.Writer,
+	skipBuild bool,
+	prebuiltImages bool,
+) error {
 	if state == nil {
 		return fmt.Errorf("[AC8] bootstrapSuiteImages: cluster state is nil")
 	}
 	if output == nil {
 		output = io.Discard
+	}
+
+	tag := resolveE2EImageTag()
+	if prebuiltImages {
+		_, _ = fmt.Fprintf(output,
+			"[AC8] %s set — verifying and loading prebuilt images (tag=%s)\n",
+			prebuiltImagesEnvVar, tag)
+		if err := verifyPrebuiltImages(ctx, output, tag); err != nil {
+			return err
+		}
+		return loadImagesIntoKind(ctx, state, output, tag)
 	}
 
 	if skipBuild {
@@ -146,7 +173,6 @@ func bootstrapSuiteImagesDirect(
 		return nil
 	}
 
-	tag := resolveE2EImageTag()
 	buildCtx, err := findRepoRoot()
 	if err != nil {
 		return fmt.Errorf("[AC8] locate repo root for docker build: %w", err)
@@ -157,12 +183,9 @@ func bootstrapSuiteImagesDirect(
 	buildEnv := buildCommandEnv(buildCacheEnabled)
 
 	// ── Phase 1: parallel docker build ───────────────────────────────────────
-	// All three component images are built concurrently. Each goroutine gets its
-	// own execCommandRunnerWithEnv so that build output is streamed through the
-	// thread-safe concurrentWriter without interleaving.
 	buildGroup, buildCtxGroup := errgroup.WithContext(ctx)
 	for _, img := range e2eImageSpecs {
-		img := img // capture loop variable
+		img := img
 		ref := img.Name + ":" + tag
 
 		buildGroup.Go(func() error {
@@ -194,14 +217,46 @@ func bootstrapSuiteImagesDirect(
 		return err
 	}
 
-	// ── Phase 2: parallel kind load docker-image ─────────────────────────────
-	// All three images are loaded into the Kind cluster concurrently after every
-	// build has completed. kind load is safe to parallelize because each image
-	// is a distinct archive and Kind's node container handles concurrent imports.
+	// ── Phase 2: parallel kind load ──────────────────────────────────────────
+	return loadImagesIntoKind(ctx, state, output, tag)
+}
+
+func verifyPrebuiltImages(ctx context.Context, output io.Writer, tag string) error {
+	runner := execCommandRunner{Output: output}
+	for _, img := range e2eImageSpecs {
+		ref := img.Name + ":" + tag
+		inspectOutput, err := runner.Run(ctx, commandSpec{
+			Name: "docker",
+			Args: []string{"image", "inspect", "--format", "{{.Id}}", ref},
+		})
+		if err != nil {
+			return fmt.Errorf("[AC8] prebuilt image %s unavailable: %w", ref, err)
+		}
+		if strings.TrimSpace(inspectOutput) == "" {
+			return fmt.Errorf("[AC8] prebuilt image %s has no image ID", ref)
+		}
+	}
+	return nil
+}
+
+func loadImagesIntoKind(
+	ctx context.Context,
+	state *kindBootstrapState,
+	output io.Writer,
+	tag string,
+) error {
+	if state == nil {
+		return fmt.Errorf("[AC8] loadImagesIntoKind: cluster state is nil")
+	}
+	if output == nil {
+		output = io.Discard
+	}
+
+	cw := newConcurrentWriter(output)
 	runner := execCommandRunner{Output: cw}
 	loadGroup, loadCtxGroup := errgroup.WithContext(ctx)
 	for _, img := range e2eImageSpecs {
-		img := img // capture loop variable
+		img := img
 		ref := img.Name + ":" + tag
 
 		loadGroup.Go(func() error {
@@ -225,7 +280,7 @@ func bootstrapSuiteImagesDirect(
 	}
 
 	_, _ = fmt.Fprintf(output,
-		"[AC8] all images (tag=%s) built and loaded into Kind cluster %q\n",
+		"[AC8] all images (tag=%s) loaded into Kind cluster %q\n",
 		tag, state.ClusterName)
 	return nil
 }
@@ -282,6 +337,19 @@ func resolveSkipImageBuild() bool {
 // explicit value string. This allows tests to verify the resolution logic without
 // setting environment variables (which is incompatible with t.Parallel).
 func resolveSkipImageBuildFromValue(val string) bool {
+	v := strings.TrimSpace(strings.ToLower(val))
+	return v == "true" || v == "1"
+}
+
+// resolvePrebuiltImages returns true when CI has loaded the exact-checkout
+// runtime image artifact into the local Docker daemon.
+func resolvePrebuiltImages() bool {
+	return resolvePrebuiltImagesFromValue(os.Getenv(prebuiltImagesEnvVar))
+}
+
+// resolvePrebuiltImagesFromValue resolves the prebuilt-image setting without
+// reading process state, allowing parallel unit tests to exercise it safely.
+func resolvePrebuiltImagesFromValue(val string) bool {
 	v := strings.TrimSpace(strings.ToLower(val))
 	return v == "true" || v == "1"
 }
