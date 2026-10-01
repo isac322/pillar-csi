@@ -81,8 +81,18 @@ type NVMeoFTCPHandler struct {
 	readMDTS NVMeMDTSReader
 }
 
-// Ensure NVMeoFTCPHandler satisfies the ProtocolHandler interface at compile time.
-var _ ProtocolHandler = (*NVMeoFTCPHandler)(nil)
+// Ensure NVMeoFTCPHandler satisfies the ProtocolHandler and
+// NVMeoFTransferLimiter interfaces at compile time.
+var (
+	_ ProtocolHandler       = (*NVMeoFTCPHandler)(nil)
+	_ NVMeoFTransferLimiter = (*NVMeoFTCPHandler)(nil)
+)
+
+// LimitTransferSize applies LimitNVMeoFTransferSize to the connected
+// subsystem subsysNQN.
+func (h *NVMeoFTCPHandler) LimitTransferSize(subsysNQN string, size int32) error {
+	return LimitNVMeoFTransferSize(h.connector.sysfsRoot, subsysNQN, size, h.readMDTS)
+}
 
 // NewNVMeoFTCPHandler constructs a production-ready NVMeoFTCPHandler.
 // It uses the default poll timeout (30 s) and poll interval (500 ms) from

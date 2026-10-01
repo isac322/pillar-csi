@@ -92,7 +92,11 @@ type NVMeOFTCPConfig struct {
 	// queue/max_sectors_kb to this size itself, which keeps large writes from
 	// failing on a storage node whose memory is too fragmented to allocate
 	// a whole command's scatterlist.  A node whose target advertises any
-	// limit leaves the device unchanged.
+	// limit leaves the device unchanged.  The node cannot set
+	// queue/max_sectors_kb below one memory page, so on a worker with
+	// 16 KiB or 64 KiB pages a non-zero value smaller than the page size
+	// fails NodeStageVolume with InvalidArgument instead of being rounded
+	// up.
 	// +optional
 	// +kubebuilder:validation:Enum=0;8192;16384;32768;65536;131072;262144;524288;1048576;2097152;4194304;8388608;16777216;33554432;67108864;134217728;268435456;536870912;1073741824
 	MaxDataTransferSize *int32 `json:"maxDataTransferSize,omitempty"`

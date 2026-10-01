@@ -17,9 +17,11 @@ limitations under the License.
 package csi
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -27,6 +29,45 @@ import (
 
 	v1alpha1 "github.com/isac322/pillar-csi/api/v1alpha1"
 )
+
+// ErrNVMeoFSubsystemNotConnected reports that LimitNVMeoFTransferSize found
+// no subsystem with the requested NQN in sysfs.
+var ErrNVMeoFSubsystemNotConnected = errors.New("NVMe-oF subsystem is not connected")
+
+// NVMeoFTransferLimiter is implemented by NVMe-oF protocol handlers that
+// can apply LimitNVMeoFTransferSize to a subsystem that is already
+// connected.  NodeStageVolume uses it when the volume is already staged,
+// and ReconcileNVMeoFTransferLimits at pillar-node startup: neither runs
+// the handler's Attach, which caps the devices of a new stage.
+type NVMeoFTransferLimiter interface {
+	LimitTransferSize(subsysNQN string, size int32) error
+}
+
+// NVMeoFDeviceLimitError is the failure to cap one namespace block device
+// (e.g. "nvme0n1") in LimitNVMeoFTransferSize.
+type NVMeoFDeviceLimitError struct {
+	Device string
+	Err    error
+}
+
+func (e *NVMeoFDeviceLimitError) Error() string { return e.Err.Error() }
+
+func (e *NVMeoFDeviceLimitError) Unwrap() error { return e.Err }
+
+// CheckNVMeoFTransferSizePageSize rejects a max data transfer size the
+// worker cannot apply: the kernel refuses a queue/max_sectors_kb below
+// PAGE_SIZE/1024 (queue_max_sectors_store), so on a worker with 16 KiB or
+// 64 KiB pages a smaller limit would only fail later, after connecting.
+// A size of 0 (no limit) is always accepted.  The value is never rounded
+// up: the caller asked for a limit the node cannot enforce.
+func CheckNVMeoFTransferSizePageSize(size int32, pageSize int) error {
+	if size > 0 && int64(size) < int64(pageSize) {
+		return fmt.Errorf("%s=%d bytes is smaller than this node's page size of %d bytes; "+
+			"queue/max_sectors_kb cannot be set below one page, so use 0 or at least %d",
+			paramNVMeOFMaxDataTransferSize, size, pageSize, pageSize)
+	}
+	return nil
+}
 
 // NVMeMDTSReader returns the MDTS field (byte 77 of the Identify Controller
 // data) of the NVMe controller ctrl (e.g. "nvme0"): the maximum data
@@ -93,6 +134,9 @@ func LimitNVMeoFTransferSize(sysfsRoot, subsysNQN string, size int32, readMDTS N
 	if err != nil {
 		return err
 	}
+	if len(subsysPaths) == 0 {
+		return fmt.Errorf("limit transfer size of subsystem %q: %w", subsysNQN, ErrNVMeoFSubsystemNotConnected)
+	}
 
 	limited, err := subsystemAdvertisesMDTS(subsysPaths, readMDTS)
 	if err != nil {
@@ -111,7 +155,7 @@ func LimitNVMeoFTransferSize(sysfsRoot, subsysNQN string, size int32, readMDTS N
 	for _, dev := range devices {
 		capErr := capQueueMaxSectorsKB(sysfsRoot, dev, wantKB)
 		if capErr != nil {
-			errs = append(errs, capErr)
+			errs = append(errs, &NVMeoFDeviceLimitError{Device: dev, Err: capErr})
 		}
 	}
 	if len(errs) > 0 {
@@ -295,6 +339,141 @@ func capQueueMaxSectorsKB(sysfsRoot, dev string, wantKB int64) error {
 	if strings.TrimSpace(string(got)) != want {
 		return fmt.Errorf("limit %s: %s reads %q after writing %q",
 			dev, path, strings.TrimSpace(string(got)), want)
+	}
+	return nil
+}
+
+// nvmeofStageLimit returns the transfer limit of an NVMe-oF stage record:
+// the persisted value, or v1alpha1.DefaultMaxDataTransferSize for a record
+// written before NodeStageVolume persisted it.
+func nvmeofStageLimit(s *NVMeoFStageState) int32 {
+	if s.MaxDataTransferSize != nil {
+		return *s.MaxDataTransferSize
+	}
+	return v1alpha1.DefaultMaxDataTransferSize
+}
+
+// limitStagedNVMeoF caps the connected subsystem of an already-staged
+// NVMe-oF volume to size (see LimitNVMeoFTransferSize) and records size in
+// state, which the caller persists.  Local attaches, other protocols and
+// handlers that cannot cap a connected subsystem are left alone.
+func (*NodeServer) limitStagedNVMeoF(
+	handler ProtocolHandler, state *nodeStageState, targetID string, size int32,
+) error {
+	if state.ProtocolType != ProtocolNVMeoFTCP || state.isLocalAttach() || state.NVMeoF == nil {
+		return nil
+	}
+	limiter, ok := handler.(NVMeoFTransferLimiter)
+	if !ok {
+		return nil
+	}
+	nqn := state.NVMeoF.SubsysNQN
+	if nqn == "" {
+		nqn = targetID
+	}
+	err := limiter.LimitTransferSize(nqn, size)
+	if err != nil {
+		return fmt.Errorf("limit transfer size for %q: %w", nqn, err)
+	}
+	state.NVMeoF.MaxDataTransferSize = &size
+	return nil
+}
+
+// ReconcileNVMeoFTransferLimits applies LimitNVMeoFTransferSize to the
+// connected subsystem of every NVMe-oF stage record in the state
+// directory.  The pillar-node process calls it once at startup: kubelet
+// does not repeat NodeStageVolume for a volume that stays mounted across a
+// pillar-node upgrade, so a volume staged by a release without the cap
+// would never get it.  A record without a persisted limit uses the 4 MiB
+// default, like a VolumeContext without the key.  As on the stage path,
+// devices are only capped when every live controller reports MDTS 0.
+//
+// Records of other protocols, local attaches and subsystems that are no
+// longer connected (the next NodeStageVolume reconnects and caps them) are
+// skipped.  Every other failure is logged with the volume, the device and
+// the cause and does not stop the remaining records.
+func (n *NodeServer) ReconcileNVMeoFTransferLimits(log *slog.Logger) {
+	limiter, ok := n.handlers[ProtocolNVMeoFTCP].(NVMeoFTransferLimiter)
+	if !ok {
+		return
+	}
+	entries, err := os.ReadDir(n.stateDir)
+	if errors.Is(err, os.ErrNotExist) {
+		return
+	}
+	if err != nil {
+		log.Error("reconcile NVMe-oF transfer limits: read stage state dir", "dir", n.stateDir, "error", err)
+		return
+	}
+	for _, e := range entries {
+		if e.IsDir() || filepath.Ext(e.Name()) != ".json" {
+			continue
+		}
+		n.reconcileNVMeoFTransferLimit(filepath.Join(n.stateDir, e.Name()), limiter, log)
+	}
+}
+
+// reconcileNVMeoFTransferLimit applies the transfer limit of one stage
+// state file; see ReconcileNVMeoFTransferLimits.
+func (*NodeServer) reconcileNVMeoFTransferLimit(stateFile string, limiter NVMeoFTransferLimiter, log *slog.Logger) {
+	volumeID := strings.TrimSuffix(filepath.Base(stateFile), ".json")
+	data, err := os.ReadFile(stateFile) //nolint:gosec // G304: entry of the controlled stateDir
+	if err != nil {
+		log.Error("reconcile NVMe-oF transfer limit: read stage state",
+			"volume", volumeID, "device", "", "stateFile", stateFile, "error", err)
+		return
+	}
+	var state nodeStageState
+	err = json.Unmarshal(data, &state)
+	if err != nil {
+		log.Error("reconcile NVMe-oF transfer limit: decode stage state",
+			"volume", volumeID, "device", "", "stateFile", stateFile, "error", err)
+		return
+	}
+	if state.ProtocolType == "" {
+		var raw legacyNodeStageState
+		if json.Unmarshal(data, &raw) == nil && isLegacyFormat(&raw) {
+			state = *migrateFromLegacy(&raw)
+		}
+	}
+	if state.ProtocolType != ProtocolNVMeoFTCP || state.isLocalAttach() ||
+		state.NVMeoF == nil || state.NVMeoF.SubsysNQN == "" {
+		return
+	}
+	if state.VolumeID != "" {
+		volumeID = state.VolumeID
+	}
+	nqn := state.NVMeoF.SubsysNQN
+	err = limiter.LimitTransferSize(nqn, nvmeofStageLimit(state.NVMeoF))
+	if err == nil || errors.Is(err, ErrNVMeoFSubsystemNotConnected) {
+		return
+	}
+	devErrs := nvmeofDeviceLimitErrors(err)
+	if len(devErrs) == 0 {
+		log.Error("reconcile NVMe-oF transfer limit: cap request size",
+			"volume", volumeID, "subsystem", nqn, "device", nqn, "error", err)
+		return
+	}
+	for _, d := range devErrs {
+		log.Error("reconcile NVMe-oF transfer limit: cap request size",
+			"volume", volumeID, "subsystem", nqn, "device", d.Device, "error", d.Err)
+	}
+}
+
+// nvmeofDeviceLimitErrors returns the per-device failures joined into err
+// by LimitNVMeoFTransferSize.
+func nvmeofDeviceLimitErrors(err error) []*NVMeoFDeviceLimitError {
+	switch u := err.(type) { //nolint:errorlint // walks the error tree itself
+	case *NVMeoFDeviceLimitError:
+		return []*NVMeoFDeviceLimitError{u}
+	case interface{ Unwrap() []error }:
+		var out []*NVMeoFDeviceLimitError
+		for _, child := range u.Unwrap() {
+			out = append(out, nvmeofDeviceLimitErrors(child)...)
+		}
+		return out
+	case interface{ Unwrap() error }:
+		return nvmeofDeviceLimitErrors(u.Unwrap())
 	}
 	return nil
 }

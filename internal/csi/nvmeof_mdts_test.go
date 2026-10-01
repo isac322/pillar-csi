@@ -17,13 +17,22 @@ limitations under the License.
 package csi
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/container-storage-interface/spec/lib/go/csi"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 const mdtsTestNQN = "nqn.2024-01.com.example:mdts"
@@ -218,5 +227,326 @@ func TestNVMeoFTCPHandler_Attach_InvalidMaxDataTransferSize_NoConnect(t *testing
 				t.Fatalf("no connect must be issued, got %q", content)
 			}
 		})
+	}
+}
+
+// mdtsNodeServer returns a NodeServer whose NVMe-oF handler works on the
+// fake sysfs root and reads controller MDTS with readMDTS, with a temporary
+// state directory, and the fabrics device that records connects.
+func mdtsNodeServer(t *testing.T, root string, readMDTS NVMeMDTSReader) (*NodeServer, *mockMounter, string) {
+	t.Helper()
+	fabricsDev := fakeFabricsDev(t)
+	h := newTestHandler(root, fabricsDev)
+	h.readMDTS = readMDTS
+	mnt := newMockMounter()
+	srv := NewNodeServer("test-node", map[string]ProtocolHandler{ProtocolNVMeoFTCP: h}, mnt)
+	srv.stateDir = t.TempDir()
+	return srv, mnt, fabricsDev
+}
+
+// legacyNVMeoFStageState is a record written by a release that did not
+// persist the transfer limit.
+func legacyNVMeoFStageState(volumeID, nqn, stagingPath string) *nodeStageState {
+	s := stageStateFromAttachResult(ProtocolNVMeoFTCP, AccessTypeFilesystem, nqn, "192.168.1.10", "4420", nil)
+	s.VolumeID = volumeID
+	s.StagingPath = stagingPath
+	return s
+}
+
+func mdtsVolumeContext(size string) map[string]string {
+	volCtx := map[string]string{
+		VolumeContextKeyTargetID: mdtsTestNQN,
+		VolumeContextKeyAddress:  "192.168.1.10",
+		VolumeContextKeyPort:     "4420",
+	}
+	if size != "" {
+		volCtx[paramNVMeOFMaxDataTransferSize] = size
+	}
+	return volCtx
+}
+
+func requireNoConnect(t *testing.T, fabricsDev string) {
+	t.Helper()
+	content, _ := os.ReadFile(fabricsDev) //nolint:gosec,errcheck // temp file
+	if len(content) != 0 {
+		t.Fatalf("no connect must be issued, got %q", content)
+	}
+}
+
+// A volume staged by a release without the limit stays mounted across the
+// upgrade; a repeated NodeStageVolume returns early without Attach, so it
+// must cap the connected devices itself (only when the target advertises
+// no MDTS), record the limit, and fail when the cap cannot be applied.
+func TestNodeStageVolume_AlreadyStagedNVMeoF_CapsTransferSize(t *testing.T) {
+	const volumeID = "tank/pvc-staged"
+	cases := []struct {
+		name     string
+		readMDTS NVMeMDTSReader
+		size     string
+		want     string
+		wantSize int32
+		wantCode codes.Code
+	}{
+		{name: "no MDTS, key absent", readMDTS: fixedMDTS(0), want: "4096", wantSize: 4 << 20},
+		{name: "no MDTS, explicit 1 MiB", readMDTS: fixedMDTS(0), size: "1048576", want: "1024", wantSize: 1 << 20},
+		{name: "MDTS advertised", readMDTS: fixedMDTS(5), want: "32768", wantSize: 4 << 20},
+		{
+			name:     "MDTS read fails",
+			readMDTS: func(string) (uint8, error) { return 0, errors.New("identify failed") },
+			want:     "32768",
+			wantCode: codes.Internal,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := mdtsSysfs(t, "")
+			srv, mnt, fabricsDev := mdtsNodeServer(t, root, tc.readMDTS)
+			stagingPath := t.TempDir()
+			mnt.mountedPaths[stagingPath] = true
+			err := srv.writeStageState(volumeID, legacyNVMeoFStageState(volumeID, mdtsTestNQN, stagingPath))
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			_, err = srv.NodeStageVolume(context.Background(), &csi.NodeStageVolumeRequest{
+				VolumeId:          volumeID,
+				StagingTargetPath: stagingPath,
+				VolumeCapability:  mountCap("ext4"),
+				VolumeContext:     mdtsVolumeContext(tc.size),
+			})
+			if status.Code(err) != tc.wantCode {
+				t.Fatalf("NodeStageVolume error = %v, want code %v", err, tc.wantCode)
+			}
+			requireNoConnect(t, fabricsDev)
+			if len(mnt.formatAndMountCalls) != 0 {
+				t.Errorf("FormatAndMount called %d times on an already-staged volume", len(mnt.formatAndMountCalls))
+			}
+			requireMaxSectorsKB(t, root, map[string]string{"nvme0n1": tc.want, "nvme0c0n1": tc.want})
+			if tc.wantCode == codes.OK {
+				requireRecordedTransferSize(t, srv, volumeID, tc.wantSize)
+			}
+		})
+	}
+}
+
+func fixedMDTS(mdts uint8) NVMeMDTSReader {
+	return func(string) (uint8, error) { return mdts, nil }
+}
+
+func requireMaxSectorsKB(t *testing.T, root string, want map[string]string) {
+	t.Helper()
+	for dev, w := range want {
+		if got := maxSectorsKB(t, root, dev); got != w {
+			t.Errorf("%s max_sectors_kb = %q, want %q", dev, got, w)
+		}
+	}
+}
+
+func requireRecordedTransferSize(t *testing.T, srv *NodeServer, volumeID string, want int32) {
+	t.Helper()
+	state, err := srv.readStageState(volumeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := state.NVMeoF.MaxDataTransferSize; got == nil || *got != want {
+		t.Errorf("recorded max data transfer size = %v, want %d", got, want)
+	}
+}
+
+// A fresh stage records the limit it applied so the startup reconcile can
+// re-apply it.
+func TestNodeStageVolume_NVMeoF_RecordsTransferSize(t *testing.T) {
+	const volumeID = "tank/pvc-new"
+	root := mdtsSysfs(t, "")
+	srv, _, _ := mdtsNodeServer(t, root, fixedMDTS(0))
+	_, err := srv.NodeStageVolume(context.Background(), &csi.NodeStageVolumeRequest{
+		VolumeId:          volumeID,
+		StagingTargetPath: t.TempDir(),
+		VolumeCapability:  mountCap("ext4"),
+		VolumeContext:     mdtsVolumeContext("2097152"),
+	})
+	if err != nil {
+		t.Fatalf("NodeStageVolume: %v", err)
+	}
+	requireRecordedTransferSize(t, srv, volumeID, 2097152)
+	requireMaxSectorsKB(t, root, map[string]string{"nvme0n1": "2048", "nvme0c0n1": "2048"})
+}
+
+// decodeLogLines parses the JSON lines slog wrote to buf.
+func decodeLogLines(t *testing.T, buf *bytes.Buffer) []map[string]any {
+	t.Helper()
+	var lines []map[string]any
+	for line := range strings.SplitSeq(strings.TrimSpace(buf.String()), "\n") {
+		if line == "" {
+			continue
+		}
+		var m map[string]any
+		if err := json.Unmarshal([]byte(line), &m); err != nil {
+			t.Fatalf("log line %q: %v", line, err)
+		}
+		lines = append(lines, m)
+	}
+	return lines
+}
+
+// pillar-node startup caps the devices of NVMe-oF volumes that stayed
+// staged across the upgrade: a record without the persisted limit (both
+// discriminated-union and Phase 1 formats) gets the 4 MiB default, a
+// persisted limit wins, a target advertising MDTS, a subsystem that is no
+// longer connected and a local attach are left alone, and a device that
+// cannot be capped is logged at error level with the volume, device and
+// cause while the other devices are still capped.
+func TestReconcileNVMeoFTransferLimits(t *testing.T) {
+	const volumeID = "tank/pvc-upgrade"
+	oneMiB := int32(1 << 20)
+	legacy := func(nqn string) func(srv *NodeServer) error {
+		return func(srv *NodeServer) error {
+			return srv.writeStageState(volumeID, legacyNVMeoFStageState(volumeID, nqn, "/staging"))
+		}
+	}
+	untouched := map[string]string{"nvme0n1": "32768", "nvme0c0n1": "32768"}
+	cases := []struct {
+		name       string
+		mdts       uint8
+		record     func(srv *NodeServer) error
+		breakDev   string
+		want       map[string]string
+		wantErrDev string
+	}{
+		{
+			name:   "legacy record, no MDTS",
+			record: legacy(mdtsTestNQN),
+			want:   map[string]string{"nvme0n1": "4096", "nvme0c0n1": "4096"},
+		},
+		{
+			name: "phase 1 record, no MDTS",
+			record: func(srv *NodeServer) error {
+				return os.WriteFile(filepath.Join(srv.stateDir, "pvc-phase1.json"),
+					[]byte(`{"subsys_nqn":"`+mdtsTestNQN+`"}`), 0o600)
+			},
+			want: map[string]string{"nvme0n1": "4096", "nvme0c0n1": "4096"},
+		},
+		{
+			name: "persisted limit",
+			record: func(srv *NodeServer) error {
+				s := legacyNVMeoFStageState(volumeID, mdtsTestNQN, "/staging")
+				s.NVMeoF.MaxDataTransferSize = &oneMiB
+				return srv.writeStageState(volumeID, s)
+			},
+			want: map[string]string{"nvme0n1": "1024", "nvme0c0n1": "1024"},
+		},
+		{name: "MDTS advertised", mdts: 5, record: legacy(mdtsTestNQN), want: untouched},
+		{name: "subsystem not connected", record: legacy("nqn.2024-01.com.example:gone"), want: untouched},
+		{
+			name: "local attach",
+			record: func(srv *NodeServer) error {
+				return srv.writeStageState(volumeID,
+					localStageState(ProtocolNVMeoFTCP, AccessTypeFilesystem, "pillar-x", "/dev/zvol/x"))
+			},
+			want: untouched,
+		},
+		{
+			name:       "one device cannot be capped",
+			record:     legacy(mdtsTestNQN),
+			breakDev:   "nvme0c0n1",
+			want:       map[string]string{"nvme0n1": "4096"},
+			wantErrDev: "nvme0c0n1",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := mdtsSysfs(t, "")
+			if tc.breakDev != "" {
+				breakMaxSectorsKB(t, root, tc.breakDev)
+			}
+			srv, _, _ := mdtsNodeServer(t, root, fixedMDTS(tc.mdts))
+			if err := tc.record(srv); err != nil {
+				t.Fatal(err)
+			}
+			var buf bytes.Buffer
+
+			srv.ReconcileNVMeoFTransferLimits(slog.New(slog.NewJSONHandler(&buf, nil)))
+
+			requireMaxSectorsKB(t, root, tc.want)
+			requireReconcileLog(t, decodeLogLines(t, &buf), volumeID, tc.wantErrDev)
+		})
+	}
+}
+
+// breakMaxSectorsKB replaces queue/max_sectors_kb of dev with a directory,
+// so reading it fails.
+func breakMaxSectorsKB(t *testing.T, root, dev string) {
+	t.Helper()
+	attr := filepath.Join(root, "block", dev, "queue", "max_sectors_kb")
+	if err := os.Remove(attr); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(attr, 0o750); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// requireReconcileLog checks that the reconcile logged nothing, or exactly
+// one error naming volumeID, errDev and a cause mentioning errDev.
+func requireReconcileLog(t *testing.T, lines []map[string]any, volumeID, errDev string) {
+	t.Helper()
+	if errDev == "" {
+		if len(lines) != 0 {
+			t.Fatalf("unexpected log lines: %v", lines)
+		}
+		return
+	}
+	if len(lines) != 1 {
+		t.Fatalf("log lines = %v, want one error", lines)
+	}
+	l := lines[0]
+	if l["level"] != "ERROR" || l["volume"] != volumeID || l["device"] != errDev ||
+		!strings.Contains(fmt.Sprint(l["error"]), errDev) {
+		t.Errorf("log line = %v, want ERROR for volume %q device %q with its cause", l, volumeID, errDev)
+	}
+}
+
+// The kernel refuses queue/max_sectors_kb below one page, so a limit
+// smaller than the worker's page size (16 KiB or 64 KiB pages on arm64)
+// fails NodeStage with InvalidArgument before connecting instead of being
+// rounded up; a limit of at least one page, or no limit, is accepted.
+func TestNodeStageVolume_NVMeoFTransferSizeBelowPageSize_Rejected(t *testing.T) {
+	cases := []struct {
+		size     string
+		pageSize int
+	}{
+		{size: "8192", pageSize: 16384},
+		{size: "32768", pageSize: 65536},
+	}
+	for _, tc := range cases {
+		t.Run(tc.size, func(t *testing.T) {
+			srv, mnt, fabricsDev := mdtsNodeServer(t, mdtsSysfs(t, ""), fixedMDTS(0))
+			srv.pageSize = tc.pageSize
+
+			_, err := srv.NodeStageVolume(context.Background(), &csi.NodeStageVolumeRequest{
+				VolumeId:          "tank/pvc-page",
+				StagingTargetPath: t.TempDir(),
+				VolumeCapability:  mountCap("ext4"),
+				VolumeContext:     mdtsVolumeContext(tc.size),
+			})
+			requireGRPCCode(t, err, codes.InvalidArgument)
+			msg := status.Convert(err).Message()
+			if !strings.Contains(msg, tc.size) || !strings.Contains(msg, strconv.Itoa(tc.pageSize)) {
+				t.Errorf("message %q must name the size %s and the page size %d", msg, tc.size, tc.pageSize)
+			}
+			requireNoConnect(t, fabricsDev)
+			if len(mnt.formatAndMountCalls) != 0 {
+				t.Error("FormatAndMount must not run")
+			}
+		})
+	}
+
+	for _, tc := range []struct {
+		size     int32
+		pageSize int
+	}{{0, 65536}, {8192, 4096}, {16384, 16384}} {
+		if err := CheckNVMeoFTransferSizePageSize(tc.size, tc.pageSize); err != nil {
+			t.Errorf("CheckNVMeoFTransferSizePageSize(%d, %d) = %v, want accepted", tc.size, tc.pageSize, err)
+		}
 	}
 }

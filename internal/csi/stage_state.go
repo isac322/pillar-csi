@@ -183,6 +183,13 @@ type NVMeoFStageState struct {
 
 	// Port is the TCP port of the NVMe-oF TCP target (e.g. "4420").
 	Port string `json:"port"`
+
+	// MaxDataTransferSize is the volume's max data transfer size in bytes
+	// (0: no limit) that NodeStageVolume applied to the namespace devices
+	// when the target advertised no MDTS.  ReconcileNVMeoFTransferLimits
+	// re-applies it at pillar-node startup.  Nil in records written before
+	// the field existed, which resolve to v1alpha1.DefaultMaxDataTransferSize.
+	MaxDataTransferSize *int32 `json:"max_data_transfer_size,omitempty"`
 }
 
 // ISCSIStageState holds the iSCSI parameters needed to log out of an iSCSI

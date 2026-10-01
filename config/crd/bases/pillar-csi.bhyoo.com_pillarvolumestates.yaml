@@ -410,7 +410,11 @@ spec:
                               queue/max_sectors_kb to this size itself, which keeps large writes from
                               failing on a storage node whose memory is too fragmented to allocate
                               a whole command's scatterlist.  A node whose target advertises any
-                              limit leaves the device unchanged.
+                              limit leaves the device unchanged.  The node cannot set
+                              queue/max_sectors_kb below one memory page, so on a worker with
+                              16 KiB or 64 KiB pages a non-zero value smaller than the page size
+                              fails NodeStageVolume with InvalidArgument instead of being rounded
+                              up.
                             enum:
                             - 0
                             - 8192

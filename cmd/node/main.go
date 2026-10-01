@@ -740,8 +740,18 @@ func (c *fabricsConnector) isConnected(ctx context.Context, subsysNQN string) (b
 // ProtocolHandler interface implementation
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Compile-time assertion that fabricsConnector satisfies ProtocolHandler.
-var _ csisvc.ProtocolHandler = (*fabricsConnector)(nil)
+// Compile-time assertion that fabricsConnector satisfies ProtocolHandler
+// and NVMeoFTransferLimiter.
+var (
+	_ csisvc.ProtocolHandler       = (*fabricsConnector)(nil)
+	_ csisvc.NVMeoFTransferLimiter = (*fabricsConnector)(nil)
+)
+
+// LimitTransferSize applies csisvc.LimitNVMeoFTransferSize to the connected
+// subsystem subsysNQN.
+func (c *fabricsConnector) LimitTransferSize(subsysNQN string, size int32) error {
+	return csisvc.LimitNVMeoFTransferSize(c.sysfsRoot, subsysNQN, size, c.readMDTS)
+}
 
 // nvmeAttachTimeout is the maximum time Attach waits for the NVMe block
 // device to appear in /dev after a successful nvmeConnect call.
@@ -1257,9 +1267,11 @@ func newNodeGRPCServer() *grpc.Server {
 
 // restoreProtocolSessions re-applies the userspace-only session parameters
 // (the iSCSI login timeout) to the sessions the initiator adopted from
-// sysfs: kubelet does not repeat NodeStageVolume for volumes that stay
-// mounted.  Not fatal: one volume whose session is gone must not keep the
-// node from serving the others; that volume's session keeps the default.
+// sysfs, and the NVMe-oF request size cap to the namespace devices of
+// staged volumes: kubelet does not repeat NodeStageVolume for volumes that
+// stay mounted, e.g. across a pillar-node upgrade.  Not fatal: one volume
+// whose session is gone or whose device cannot be capped must not keep the
+// node from serving the others; each failure is logged.
 func restoreProtocolSessions(nodeSrv *csisvc.NodeServer) {
 	logRestore := func(format string, args ...any) {
 		fmt.Fprintf(os.Stderr, "pillar-node: restore protocol sessions: "+format+"\n", args...)
@@ -1268,6 +1280,8 @@ func restoreProtocolSessions(nodeSrv *csisvc.NodeServer) {
 	if restoreErr != nil {
 		logRestore("%v", restoreErr)
 	}
+	nodeSrv.ReconcileNVMeoFTransferLimits(
+		slog.New(slog.NewJSONHandler(os.Stderr, nil)).With("component", "nvmeof-transfer-limit"))
 }
 
 // startISCSIInitiatorOrExit starts the in-process iSCSI initiator when the
