@@ -112,9 +112,40 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Setup Go
+        id: setup-go
         uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+
+      - name: Resolve Go build cache path
+        id: goenv
+        shell: bash
+        run: |
+          set -euo pipefail
+          gocache="$(go env GOCACHE)"
+          echo "gocache=${gocache}" >> "$GITHUB_OUTPUT"
+
+      # The archive holds the Go build cache plus golangci-lint's native
+      # analysis results (~/.cache/golangci-lint). The dependency-pinned
+      # primary key avoids a per-source archive; Go verifies content-
+      # addressed entries so changed sources still recompile.
+      - name: Restore Go build and golangci-lint caches (read-only)
+        if: ${{ github.event_name != 'push' || github.ref != 'refs/heads/master' }}
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ${{ steps.goenv.outputs.gocache }}
+            ~/.cache/golangci-lint
+          key: lint-objects-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.mod', 'go.sum', '.golangci.yml') }}
+
+      - name: Restore and save Go build and golangci-lint caches (master)
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+        uses: actions/cache@v6
+        with:
+          path: |
+            ${{ steps.goenv.outputs.gocache }}
+            ~/.cache/golangci-lint
+          key: lint-objects-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.mod', 'go.sum', '.golangci.yml') }}
 
       - name: Run linter
         uses: golangci/golangci-lint-action@v9
@@ -131,9 +162,35 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Setup Go
+        id: setup-go
         uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+
+      - name: Resolve Go build cache path
+        id: goenv
+        shell: bash
+        run: |
+          set -euo pipefail
+          gocache="$(go env GOCACHE)"
+          echo "gocache=${gocache}" >> "$GITHUB_OUTPUT"
+
+      # Dependency-pinned key keeps one object archive per toolchain and
+      # module set instead of publishing a new archive per source SHA;
+      # Go still revalidates changed sources against content hashes.
+      - name: Restore Go build cache (read-only)
+        if: ${{ github.event_name != 'push' || github.ref != 'refs/heads/master' }}
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ steps.goenv.outputs.gocache }}
+          key: test-gocache-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.mod', 'go.sum') }}
+
+      - name: Restore and save Go build cache (master)
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+        uses: actions/cache@v6
+        with:
+          path: ${{ steps.goenv.outputs.gocache }}
+          key: test-gocache-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.mod', 'go.sum') }}
 
       - name: Cache test tools
         uses: actions/cache@v6
