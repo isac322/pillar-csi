@@ -389,14 +389,14 @@ func decodeLogLines(t *testing.T, buf *bytes.Buffer) []map[string]any {
 	return lines
 }
 
-// pillar-node startup caps the devices of NVMe-oF volumes that stayed
-// staged across the upgrade: a record without the persisted limit (both
-// discriminated-union and Phase 1 formats) gets the 4 MiB default, a
+// A transfer limit reconciler pass caps the devices of NVMe-oF volumes that
+// stayed staged across the upgrade: a record without the persisted limit
+// (both discriminated-union and Phase 1 formats) gets the 4 MiB default, a
 // persisted limit wins, a target advertising MDTS, a subsystem that is no
 // longer connected and a local attach are left alone, and a device that
 // cannot be capped is logged at error level with the volume, device and
 // cause while the other devices are still capped.
-func TestReconcileNVMeoFTransferLimits(t *testing.T) {
+func TestTransferLimitReconcilerPass(t *testing.T) {
 	const volumeID = "tank/pvc-upgrade"
 	oneMiB := int32(1 << 20)
 	legacy := func(nqn string) func(srv *NodeServer) error {
@@ -465,7 +465,7 @@ func TestReconcileNVMeoFTransferLimits(t *testing.T) {
 			}
 			var buf bytes.Buffer
 
-			srv.ReconcileNVMeoFTransferLimits(slog.New(slog.NewJSONHandler(&buf, nil)))
+			transferLimitPass(t, srv, &buf)
 
 			requireMaxSectorsKB(t, root, tc.want)
 			requireReconcileLog(t, decodeLogLines(t, &buf), volumeID, tc.wantErrDev)
@@ -486,13 +486,37 @@ func breakMaxSectorsKB(t *testing.T, root, dev string) {
 	}
 }
 
-// requireReconcileLog checks that the reconcile logged nothing, or exactly
+// transferLimitPass runs one transfer limit reconciler pass over srv's
+// stage records, logging to buf, and returns the reconciler.
+func transferLimitPass(t *testing.T, srv *NodeServer, buf *bytes.Buffer) *transferLimitReconciler {
+	t.Helper()
+	r := srv.newTransferLimitReconciler(slog.New(slog.NewJSONHandler(buf, nil)))
+	if r == nil {
+		t.Fatal("NVMe-oF handler cannot cap a connected subsystem")
+	}
+	r.pass(context.Background())
+	return r
+}
+
+// errorLogLines returns the ERROR-level lines of lines.
+func errorLogLines(lines []map[string]any) []map[string]any {
+	var errs []map[string]any
+	for _, l := range lines {
+		if l["level"] == "ERROR" {
+			errs = append(errs, l)
+		}
+	}
+	return errs
+}
+
+// requireReconcileLog checks that the reconcile logged no error, or exactly
 // one error naming volumeID, errDev and a cause mentioning errDev.
 func requireReconcileLog(t *testing.T, lines []map[string]any, volumeID, errDev string) {
 	t.Helper()
+	lines = errorLogLines(lines)
 	if errDev == "" {
 		if len(lines) != 0 {
-			t.Fatalf("unexpected log lines: %v", lines)
+			t.Fatalf("unexpected error log lines: %v", lines)
 		}
 		return
 	}

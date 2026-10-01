@@ -40,6 +40,12 @@ const (
 	nvmeIDCtrlMDTSOffset      = 77
 )
 
+// nvmeIdentifyTimeoutMS bounds the Identify Controller admin command.  With
+// a zero timeout the kernel applies its admin default (60 s), so a stalled
+// controller would hold up NodeStageVolume and the transfer limit
+// reconciler for a minute per controller.
+const nvmeIdentifyTimeoutMS = 5000
+
 // nvmePassthruCmd is struct nvme_passthru_cmd of <linux/nvme_ioctl.h>
 // (72 bytes; the field order gives the same layout without padding).
 type nvmePassthruCmd struct {
@@ -89,10 +95,11 @@ func ReadNVMeControllerMDTS(ctrl string) (uint8, error) {
 	defer pinner.Unpin()
 
 	cmd := nvmePassthruCmd{
-		Opcode:  nvmeAdminIdentify,
-		Addr:    uint64(uintptr(unsafe.Pointer(&data[0]))), //nolint:gosec // G103: kernel data buffer address
-		DataLen: nvmeIdentifyDataLen,
-		CDW10:   nvmeIdentifyCNSController,
+		Opcode:    nvmeAdminIdentify,
+		Addr:      uint64(uintptr(unsafe.Pointer(&data[0]))), //nolint:gosec // G103: kernel data buffer address
+		DataLen:   nvmeIdentifyDataLen,
+		CDW10:     nvmeIdentifyCNSController,
+		TimeoutMS: nvmeIdentifyTimeoutMS,
 	}
 	status, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), nvmeIoctlAdminCmd,
 		uintptr(unsafe.Pointer(&cmd))) //nolint:gosec // G103: NVME_IOCTL_ADMIN_CMD takes a struct pointer

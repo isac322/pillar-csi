@@ -88,10 +88,10 @@ var (
 	_ NVMeoFTransferLimiter = (*NVMeoFTCPHandler)(nil)
 )
 
-// LimitTransferSize applies LimitNVMeoFTransferSize to the connected
-// subsystem subsysNQN.
-func (h *NVMeoFTCPHandler) LimitTransferSize(subsysNQN string, size int32) error {
-	return LimitNVMeoFTransferSize(h.connector.sysfsRoot, subsysNQN, size, h.readMDTS)
+// TransferLimitSysfs returns the sysfs root and the MDTS reader Attach
+// passes to LimitNVMeoFTransferSize.
+func (h *NVMeoFTCPHandler) TransferLimitSysfs() (sysfsRoot string, readMDTS NVMeMDTSReader) {
+	return h.connector.sysfsRoot, h.readMDTS
 }
 
 // NewNVMeoFTCPHandler constructs a production-ready NVMeoFTCPHandler.

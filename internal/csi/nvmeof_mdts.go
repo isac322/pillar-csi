@@ -17,13 +17,12 @@ limitations under the License.
 package csi
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
-	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -34,13 +33,20 @@ import (
 // no subsystem with the requested NQN in sysfs.
 var ErrNVMeoFSubsystemNotConnected = errors.New("NVMe-oF subsystem is not connected")
 
-// NVMeoFTransferLimiter is implemented by NVMe-oF protocol handlers that
-// can apply LimitNVMeoFTransferSize to a subsystem that is already
-// connected.  NodeStageVolume uses it when the volume is already staged,
-// and ReconcileNVMeoFTransferLimits at pillar-node startup: neither runs
-// the handler's Attach, which caps the devices of a new stage.
+// errNoLiveNVMeController reports that no controller of a subsystem was
+// live, so none could be asked for its MDTS.
+var errNoLiveNVMeController = errors.New("no live controller")
+
+// NVMeoFTransferLimiter is implemented by NVMe-oF protocol handlers whose
+// connected subsystems can be capped with LimitNVMeoFTransferSize outside
+// the handler's Attach (which caps the devices of a new stage):
+// NodeStageVolume does so when the volume is already staged, and the
+// background transfer limit reconciler (see
+// StartNVMeoFTransferLimitReconciler) for every staged volume.
 type NVMeoFTransferLimiter interface {
-	LimitTransferSize(subsysNQN string, size int32) error
+	// TransferLimitSysfs returns the sysfs root and the MDTS reader the
+	// handler's Attach passes to LimitNVMeoFTransferSize.
+	TransferLimitSysfs() (sysfsRoot string, readMDTS NVMeMDTSReader)
 }
 
 // NVMeoFDeviceLimitError is the failure to cap one namespace block device
@@ -126,31 +132,56 @@ func LimitNVMeoFTransferSize(sysfsRoot, subsysNQN string, size int32, readMDTS N
 	if size == 0 {
 		return nil
 	}
-	var subsysPaths []string
-	err := forEachMatchingSubsystem(sysfsRoot, subsysNQN, func(subsysDir, name string) error {
-		subsysPaths = append(subsysPaths, filepath.Join(subsysDir, name))
-		return nil
-	})
+	subsysPaths, err := nvmeofSubsystemPaths(sysfsRoot, subsysNQN)
 	if err != nil {
 		return err
 	}
-	if len(subsysPaths) == 0 {
-		return fmt.Errorf("limit transfer size of subsystem %q: %w", subsysNQN, ErrNVMeoFSubsystemNotConnected)
+	ctrls, err := liveControllersOf(subsysPaths)
+	if err != nil {
+		return fmt.Errorf("read MDTS of subsystem %q: %w", subsysNQN, err)
 	}
-
-	limited, err := subsystemAdvertisesMDTS(subsysPaths, readMDTS)
+	limited, err := controllersAdvertiseMDTS(ctrls, readMDTS)
 	if err != nil {
 		return fmt.Errorf("read MDTS of subsystem %q: %w", subsysNQN, err)
 	}
 	if limited {
 		return nil
 	}
+	return capNVMeoFDevices(sysfsRoot, subsysNQN, subsysPaths, nvmeofSizeKB(size))
+}
 
+// nvmeofSizeKB converts a transfer limit in bytes to KiB, the unit of
+// queue/max_sectors_kb.
+func nvmeofSizeKB(size int32) int64 {
+	return int64(size) / 1024 //nolint:mnd // bytes to KiB
+}
+
+// nvmeofSubsystemPaths returns the sysfs directories of the connected
+// subsystems with NQN subsysNQN, or an error wrapping
+// ErrNVMeoFSubsystemNotConnected when there is none.
+func nvmeofSubsystemPaths(sysfsRoot, subsysNQN string) ([]string, error) {
+	var subsysPaths []string
+	err := forEachMatchingSubsystem(sysfsRoot, subsysNQN, func(subsysDir, name string) error {
+		subsysPaths = append(subsysPaths, filepath.Join(subsysDir, name))
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(subsysPaths) == 0 {
+		return nil, fmt.Errorf("limit transfer size of subsystem %q: %w", subsysNQN, ErrNVMeoFSubsystemNotConnected)
+	}
+	return subsysPaths, nil
+}
+
+// capNVMeoFDevices caps every namespace device of the subsystems to wantKB
+// (see capQueueMaxSectorsKB).  Each device that cannot be capped is joined
+// into the error as an NVMeoFDeviceLimitError; the others are still capped.
+func capNVMeoFDevices(sysfsRoot, subsysNQN string, subsysPaths []string, wantKB int64) error {
 	devices, err := nvmeNamespaceDevices(sysfsRoot, subsysPaths)
 	if err != nil {
 		return fmt.Errorf("list namespace devices of subsystem %q: %w", subsysNQN, err)
 	}
-	wantKB := int64(size) / 1024 //nolint:mnd // bytes to KiB, the unit of max_sectors_kb
 	var errs []error
 	for _, dev := range devices {
 		capErr := capQueueMaxSectorsKB(sysfsRoot, dev, wantKB)
@@ -164,28 +195,35 @@ func LimitNVMeoFTransferSize(sysfsRoot, subsysNQN string, size int32, readMDTS N
 	return nil
 }
 
-// subsystemAdvertisesMDTS reports whether any live controller of the
-// subsystems reports a non-zero MDTS.
-func subsystemAdvertisesMDTS(subsysPaths []string, readMDTS NVMeMDTSReader) (bool, error) {
-	queried := 0
+// liveControllersOf returns the live controllers of the subsystems (see
+// liveSubsystemControllers), sorted.
+func liveControllersOf(subsysPaths []string) ([]string, error) {
+	var live []string
 	for _, subsysPath := range subsysPaths {
 		ctrls, err := liveSubsystemControllers(subsysPath)
 		if err != nil {
-			return false, err
+			return nil, err
 		}
-		for _, ctrl := range ctrls {
-			mdts, readErr := readMDTS(ctrl)
-			if readErr != nil {
-				return false, fmt.Errorf("controller %s: %w", ctrl, readErr)
-			}
-			if mdts != 0 {
-				return true, nil
-			}
-			queried++
-		}
+		live = append(live, ctrls...)
 	}
-	if queried == 0 {
-		return false, errors.New("no live controller")
+	slices.Sort(live)
+	return live, nil
+}
+
+// controllersAdvertiseMDTS reports whether any of the live controllers
+// ctrls reports a non-zero MDTS.  It fails when ctrls is empty.
+func controllersAdvertiseMDTS(ctrls []string, readMDTS NVMeMDTSReader) (bool, error) {
+	if len(ctrls) == 0 {
+		return false, errNoLiveNVMeController
+	}
+	for _, ctrl := range ctrls {
+		mdts, err := readMDTS(ctrl)
+		if err != nil {
+			return false, fmt.Errorf("controller %s: %w", ctrl, err)
+		}
+		if mdts != 0 {
+			return true, nil
+		}
 	}
 	return false, nil
 }
@@ -371,93 +409,13 @@ func (*NodeServer) limitStagedNVMeoF(
 	if nqn == "" {
 		nqn = targetID
 	}
-	err := limiter.LimitTransferSize(nqn, size)
+	sysfsRoot, readMDTS := limiter.TransferLimitSysfs()
+	err := LimitNVMeoFTransferSize(sysfsRoot, nqn, size, readMDTS)
 	if err != nil {
 		return fmt.Errorf("limit transfer size for %q: %w", nqn, err)
 	}
 	state.NVMeoF.MaxDataTransferSize = &size
 	return nil
-}
-
-// ReconcileNVMeoFTransferLimits applies LimitNVMeoFTransferSize to the
-// connected subsystem of every NVMe-oF stage record in the state
-// directory.  The pillar-node process calls it once at startup: kubelet
-// does not repeat NodeStageVolume for a volume that stays mounted across a
-// pillar-node upgrade, so a volume staged by a release without the cap
-// would never get it.  A record without a persisted limit uses the 4 MiB
-// default, like a VolumeContext without the key.  As on the stage path,
-// devices are only capped when every live controller reports MDTS 0.
-//
-// Records of other protocols, local attaches and subsystems that are no
-// longer connected (the next NodeStageVolume reconnects and caps them) are
-// skipped.  Every other failure is logged with the volume, the device and
-// the cause and does not stop the remaining records.
-func (n *NodeServer) ReconcileNVMeoFTransferLimits(log *slog.Logger) {
-	limiter, ok := n.handlers[ProtocolNVMeoFTCP].(NVMeoFTransferLimiter)
-	if !ok {
-		return
-	}
-	entries, err := os.ReadDir(n.stateDir)
-	if errors.Is(err, os.ErrNotExist) {
-		return
-	}
-	if err != nil {
-		log.Error("reconcile NVMe-oF transfer limits: read stage state dir", "dir", n.stateDir, "error", err)
-		return
-	}
-	for _, e := range entries {
-		if e.IsDir() || filepath.Ext(e.Name()) != ".json" {
-			continue
-		}
-		n.reconcileNVMeoFTransferLimit(filepath.Join(n.stateDir, e.Name()), limiter, log)
-	}
-}
-
-// reconcileNVMeoFTransferLimit applies the transfer limit of one stage
-// state file; see ReconcileNVMeoFTransferLimits.
-func (*NodeServer) reconcileNVMeoFTransferLimit(stateFile string, limiter NVMeoFTransferLimiter, log *slog.Logger) {
-	volumeID := strings.TrimSuffix(filepath.Base(stateFile), ".json")
-	data, err := os.ReadFile(stateFile) //nolint:gosec // G304: entry of the controlled stateDir
-	if err != nil {
-		log.Error("reconcile NVMe-oF transfer limit: read stage state",
-			"volume", volumeID, "device", "", "stateFile", stateFile, "error", err)
-		return
-	}
-	var state nodeStageState
-	err = json.Unmarshal(data, &state)
-	if err != nil {
-		log.Error("reconcile NVMe-oF transfer limit: decode stage state",
-			"volume", volumeID, "device", "", "stateFile", stateFile, "error", err)
-		return
-	}
-	if state.ProtocolType == "" {
-		var raw legacyNodeStageState
-		if json.Unmarshal(data, &raw) == nil && isLegacyFormat(&raw) {
-			state = *migrateFromLegacy(&raw)
-		}
-	}
-	if state.ProtocolType != ProtocolNVMeoFTCP || state.isLocalAttach() ||
-		state.NVMeoF == nil || state.NVMeoF.SubsysNQN == "" {
-		return
-	}
-	if state.VolumeID != "" {
-		volumeID = state.VolumeID
-	}
-	nqn := state.NVMeoF.SubsysNQN
-	err = limiter.LimitTransferSize(nqn, nvmeofStageLimit(state.NVMeoF))
-	if err == nil || errors.Is(err, ErrNVMeoFSubsystemNotConnected) {
-		return
-	}
-	devErrs := nvmeofDeviceLimitErrors(err)
-	if len(devErrs) == 0 {
-		log.Error("reconcile NVMe-oF transfer limit: cap request size",
-			"volume", volumeID, "subsystem", nqn, "device", nqn, "error", err)
-		return
-	}
-	for _, d := range devErrs {
-		log.Error("reconcile NVMe-oF transfer limit: cap request size",
-			"volume", volumeID, "subsystem", nqn, "device", d.Device, "error", d.Err)
-	}
 }
 
 // nvmeofDeviceLimitErrors returns the per-device failures joined into err

@@ -186,9 +186,10 @@ type NVMeoFStageState struct {
 
 	// MaxDataTransferSize is the volume's max data transfer size in bytes
 	// (0: no limit) that NodeStageVolume applied to the namespace devices
-	// when the target advertised no MDTS.  ReconcileNVMeoFTransferLimits
-	// re-applies it at pillar-node startup.  Nil in records written before
-	// the field existed, which resolve to v1alpha1.DefaultMaxDataTransferSize.
+	// when the target advertised no MDTS.  The transfer limit reconciler
+	// (StartNVMeoFTransferLimitReconciler) keeps re-applying it while the
+	// volume stays staged.  Nil in records written before the field
+	// existed, which resolve to v1alpha1.DefaultMaxDataTransferSize.
 	MaxDataTransferSize *int32 `json:"max_data_transfer_size,omitempty"`
 }
 

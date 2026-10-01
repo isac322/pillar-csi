@@ -747,10 +747,10 @@ var (
 	_ csisvc.NVMeoFTransferLimiter = (*fabricsConnector)(nil)
 )
 
-// LimitTransferSize applies csisvc.LimitNVMeoFTransferSize to the connected
-// subsystem subsysNQN.
-func (c *fabricsConnector) LimitTransferSize(subsysNQN string, size int32) error {
-	return csisvc.LimitNVMeoFTransferSize(c.sysfsRoot, subsysNQN, size, c.readMDTS)
+// TransferLimitSysfs returns the sysfs root and the MDTS reader Attach
+// passes to csisvc.LimitNVMeoFTransferSize.
+func (c *fabricsConnector) TransferLimitSysfs() (sysfsRoot string, readMDTS csisvc.NVMeMDTSReader) {
+	return c.sysfsRoot, c.readMDTS
 }
 
 // nvmeAttachTimeout is the maximum time Attach waits for the NVMe block
@@ -1091,6 +1091,7 @@ func main() {
 	// ── Tracing, metrics, and the gRPC server ─────────────────────────────
 	obs := startObservability(*metricsAddr, version)
 	stopTrim := startTrimmerOrExit(ctx, nodeSrv, *trimInterval, obs.trim)
+	startTransferLimitReconciler(ctx, nodeSrv)
 	grpcSrv := newNodeGRPCServer()
 	csi.RegisterIdentityServer(grpcSrv, identitySrv)
 	csi.RegisterNodeServer(grpcSrv, nodeSrv)
@@ -1267,11 +1268,12 @@ func newNodeGRPCServer() *grpc.Server {
 
 // restoreProtocolSessions re-applies the userspace-only session parameters
 // (the iSCSI login timeout) to the sessions the initiator adopted from
-// sysfs, and the NVMe-oF request size cap to the namespace devices of
-// staged volumes: kubelet does not repeat NodeStageVolume for volumes that
-// stay mounted, e.g. across a pillar-node upgrade.  Not fatal: one volume
-// whose session is gone or whose device cannot be capped must not keep the
-// node from serving the others; each failure is logged.
+// sysfs: kubelet does not repeat NodeStageVolume for volumes that stay
+// mounted, e.g. across a pillar-node upgrade.  Not fatal: one volume whose
+// session is gone must not keep the node from serving the others; each
+// failure is logged.  The NVMe-oF request size cap of staged volumes is
+// re-applied in the background (see
+// csisvc.NodeServer.StartNVMeoFTransferLimitReconciler).
 func restoreProtocolSessions(nodeSrv *csisvc.NodeServer) {
 	logRestore := func(format string, args ...any) {
 		fmt.Fprintf(os.Stderr, "pillar-node: restore protocol sessions: "+format+"\n", args...)
@@ -1280,7 +1282,18 @@ func restoreProtocolSessions(nodeSrv *csisvc.NodeServer) {
 	if restoreErr != nil {
 		logRestore("%v", restoreErr)
 	}
-	nodeSrv.ReconcileNVMeoFTransferLimits(
+}
+
+// startTransferLimitReconciler keeps the NVMe-oF request size cap on the
+// devices of staged volumes (see
+// csisvc.NodeServer.StartNVMeoFTransferLimitReconciler).  It issues
+// Identify Controller admin commands that can stall on an unresponsive
+// target, so it runs in the background and never delays serving CSI calls.
+// It runs until ctx is canceled; shutdown does not wait for it, since it
+// only writes sysfs attributes and holds nothing another shutdown step
+// closes.
+func startTransferLimitReconciler(ctx context.Context, nodeSrv *csisvc.NodeServer) {
+	_ = nodeSrv.StartNVMeoFTransferLimitReconciler(ctx,
 		slog.New(slog.NewJSONHandler(os.Stderr, nil)).With("component", "nvmeof-transfer-limit"))
 }
 
