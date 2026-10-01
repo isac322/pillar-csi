@@ -246,7 +246,7 @@ jobs:
     with:
       runtime_image_artifact: ${{ needs['runtime-images'].outputs.runtime_image_artifact }}
       runtime_image_tag: ${{ needs['runtime-images'].outputs.runtime_image_tag }}
-
+      ginkgo_procs: 4
   e2e-bench:
     name: E2E Baseline Benchmark (≤120s)
     runs-on: ubuntu-latest

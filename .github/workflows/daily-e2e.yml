@@ -145,6 +145,8 @@ jobs:
     permissions:
       contents: read
     uses: ./.github/workflows/external-e2e.yml
+    with:
+      ginkgo_procs: 4
 
   docker:
     name: Docker multi-node e2e (${{ matrix.topology }})
@@ -180,6 +182,7 @@ jobs:
       - name: Run Docker multi-node e2e
         env:
           PILLAR_E2E_TOPOLOGIES: ${{ matrix.topology }}
+          PILLAR_E2E_PARALLEL: "true"
         # The output is also teed to a file so the next steps can collect the
         # tests' "phase-timing:" lines; pipefail keeps make's exit status.
         run: |
