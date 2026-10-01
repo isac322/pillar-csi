@@ -25,7 +25,8 @@ package csi
 // tunable subset of them):
 //
 //	pillar-csi.bhyoo.com/backend:    zfs: {properties: {...}} | lvm: {provisioningMode: ...}
-//	pillar-csi.bhyoo.com/protocol:   nvmeofTcp: {maxQueueSize, inCapsuleDataSize, ctrlLossTmo, reconnectDelay}
+//	pillar-csi.bhyoo.com/protocol:   nvmeofTcp: {maxQueueSize, inCapsuleDataSize, maxDataTransferSize,
+//	                                             ctrlLossTmo, reconnectDelay}
 //	                                 | iscsi: {loginTimeout, replacementTimeout, noopOutInterval, noopOutTimeout}
 //	pillar-csi.bhyoo.com/filesystem: {fsType, mkfsOptions, mountOptions}
 //

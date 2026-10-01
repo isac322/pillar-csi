@@ -122,6 +122,18 @@ func TestDecodeOverrides_Rejections(t *testing.T) {
 			wantErr: "nvmeofTcp.inCapsuleDataSize: 512 is out of range [1024, 2147483647]",
 		},
 		{
+			name:    "transfer size not a power of two",
+			decode:  protocolOverride,
+			raw:     "nvmeofTcp: {maxDataTransferSize: 3145728}",
+			wantErr: "nvmeofTcp.maxDataTransferSize: 3145728 must be 0 (no limit) or a power of two from 8192 to 1073741824",
+		},
+		{
+			name:    "transfer size of one page",
+			decode:  protocolOverride,
+			raw:     "nvmeofTcp: {maxDataTransferSize: 4096}",
+			wantErr: "nvmeofTcp.maxDataTransferSize: 4096 must be 0 (no limit) or a power of two from 8192 to 1073741824",
+		},
+		{
 			name:    "type mismatch",
 			decode:  protocolOverride,
 			raw:     `nvmeofTcp: {maxQueueSize: "64"}`,
@@ -227,13 +239,24 @@ func TestDecodeOverrides_AcceptsTunables(t *testing.T) {
 	}
 
 	p, err := DecodeProtocolOverride(ProtocolDocKey,
-		"nvmeofTcp: {maxQueueSize: 64, inCapsuleDataSize: 8192, ctrlLossTmo: 0, reconnectDelay: 5}")
+		"nvmeofTcp: {maxQueueSize: 64, inCapsuleDataSize: 8192, maxDataTransferSize: 1048576, "+
+			"ctrlLossTmo: 0, reconnectDelay: 5}")
 	if err != nil {
 		t.Fatalf("DecodeProtocolOverride: %v", err)
 	}
 	n := p.NVMeOFTCP
-	if n == nil || *n.MaxQueueSize != 64 || *n.InCapsuleDataSize != 8192 || *n.CtrlLossTmo != 0 || *n.ReconnectDelay != 5 {
-		t.Fatalf("protocol = %+v, want all four tunables set", n)
+	if n == nil || *n.MaxQueueSize != 64 || *n.InCapsuleDataSize != 8192 || *n.MaxDataTransferSize != 1048576 ||
+		*n.CtrlLossTmo != 0 || *n.ReconnectDelay != 5 {
+		t.Fatalf("protocol = %+v, want all five tunables set", n)
+	}
+
+	// 0 is a value (no limit), not an absent override.
+	p, err = DecodeProtocolOverride(ProtocolDocKey, "nvmeofTcp: {maxDataTransferSize: 0}")
+	if err != nil {
+		t.Fatalf("DecodeProtocolOverride(maxDataTransferSize: 0): %v", err)
+	}
+	if v := p.NVMeOFTCP.MaxDataTransferSize; v == nil || *v != 0 {
+		t.Fatalf("maxDataTransferSize = %v, want explicit 0", v)
 	}
 }
 

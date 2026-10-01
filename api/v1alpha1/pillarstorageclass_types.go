@@ -191,6 +191,14 @@ type NVMeOFTCPOverrides struct {
 	// +kubebuilder:validation:Minimum=1024
 	InCapsuleDataSize *int32 `json:"inCapsuleDataSize,omitempty"`
 
+	// maxDataTransferSize overrides the protocol-level maxDataTransferSize
+	// (bytes per NVMe I/O command; 0 or a power of two from 8192 to
+	// 1073741824; shared by every volume exported on the same storage node
+	// address and port).
+	// +optional
+	// +kubebuilder:validation:Enum=0;8192;16384;32768;65536;131072;262144;524288;1048576;2097152;4194304;8388608;16777216;33554432;67108864;134217728;268435456;536870912;1073741824
+	MaxDataTransferSize *int32 `json:"maxDataTransferSize,omitempty"`
+
 	// ctrlLossTmo overrides the protocol-level ctrlLossTmo (seconds before
 	// declaring a target permanently lost).
 	// +optional

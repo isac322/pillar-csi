@@ -79,6 +79,24 @@ type NVMeOFTCPConfig struct {
 	// +kubebuilder:validation:Minimum=1024
 	InCapsuleDataSize *int32 `json:"inCapsuleDataSize,omitempty"`
 
+	// maxDataTransferSize is the largest data transfer, in bytes, of one
+	// NVMe I/O command (MDTS).  Unset resolves to 4194304 (4 MiB); 0 means
+	// no limit.  Any other value is a power of two from 8192 to 1073741824.
+	//
+	// The target advertises it through the nvmet port's param_mdts on
+	// Linux 7.1 and later.  Like inCapsuleDataSize it is a property of the
+	// listening port, shared by every volume exported on the same storage
+	// node address and port, so exporting a volume that requests a value
+	// different from the port's current one fails.  An older target kernel
+	// cannot advertise a limit (MDTS 0); the node then caps the volume's
+	// queue/max_sectors_kb to this size itself, which keeps large writes from
+	// failing on a storage node whose memory is too fragmented to allocate
+	// a whole command's scatterlist.  A node whose target advertises any
+	// limit leaves the device unchanged.
+	// +optional
+	// +kubebuilder:validation:Enum=0;8192;16384;32768;65536;131072;262144;524288;1048576;2097152;4194304;8388608;16777216;33554432;67108864;134217728;268435456;536870912;1073741824
+	MaxDataTransferSize *int32 `json:"maxDataTransferSize,omitempty"`
+
 	// ctrlLossTmo is the maximum seconds to wait before declaring a target
 	// permanently lost after connectivity failure.
 	// +optional

@@ -570,8 +570,21 @@ type NvmeofTcpExportParams struct {
 	// not set, a port without linked subsystems is reset to the transport
 	// default and an active port is used as is.
 	InCapsuleDataSize int32 `protobuf:"varint,4,opt,name=in_capsule_data_size,json=inCapsuleDataSize,proto3" json:"in_capsule_data_size,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// Maximum data transfer size in bytes the target advertises to hosts
+	// (Identify Controller MDTS), applied as the nvmet port's param_mdts.
+	// 0 means no limit; any other value is a power of two of at least 8192
+	// (param_mdts holds log2(size / 4096), and its value 0 means no limit).
+	// Unset (a controller that predates the field) accepts the port's value.
+	// Like in_capsule_data_size the value belongs to the port shared by every
+	// volume exported on the same bind_address and port and can change only
+	// while no subsystem is linked to it: ExportVolume writes it to a port
+	// without linked subsystems and fails with FAILED_PRECONDITION when the
+	// port already serves other volumes with a different value.  A kernel
+	// without param_mdts (Linux < 7.1) cannot advertise a limit; the export
+	// then proceeds and hosts cap their own request size.
+	MaxDataTransferSize *int32 `protobuf:"varint,5,opt,name=max_data_transfer_size,json=maxDataTransferSize,proto3,oneof" json:"max_data_transfer_size,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *NvmeofTcpExportParams) Reset() {
@@ -628,6 +641,13 @@ func (x *NvmeofTcpExportParams) GetMaxQueueSize() int32 {
 func (x *NvmeofTcpExportParams) GetInCapsuleDataSize() int32 {
 	if x != nil {
 		return x.InCapsuleDataSize
+	}
+	return 0
+}
+
+func (x *NvmeofTcpExportParams) GetMaxDataTransferSize() int32 {
+	if x != nil && x.MaxDataTransferSize != nil {
+		return *x.MaxDataTransferSize
 	}
 	return 0
 }
@@ -3793,12 +3813,14 @@ const file_pillar_csi_agent_v1_agent_proto_rawDesc = "" +
 	"\rBackendParams\x128\n" +
 	"\x03zfs\x18\x01 \x01(\v2$.pillar_csi.agent.v1.ZfsVolumeParamsH\x00R\x03zfs\x128\n" +
 	"\x03lvm\x18\x02 \x01(\v2$.pillar_csi.agent.v1.LvmVolumeParamsH\x00R\x03lvmB\b\n" +
-	"\x06params\"\xa5\x01\n" +
+	"\x06params\"\xfa\x01\n" +
 	"\x15NvmeofTcpExportParams\x12!\n" +
 	"\fbind_address\x18\x01 \x01(\tR\vbindAddress\x12\x12\n" +
 	"\x04port\x18\x02 \x01(\x05R\x04port\x12$\n" +
 	"\x0emax_queue_size\x18\x03 \x01(\x05R\fmaxQueueSize\x12/\n" +
-	"\x14in_capsule_data_size\x18\x04 \x01(\x05R\x11inCapsuleDataSize\"~\n" +
+	"\x14in_capsule_data_size\x18\x04 \x01(\x05R\x11inCapsuleDataSize\x128\n" +
+	"\x16max_data_transfer_size\x18\x05 \x01(\x05H\x00R\x13maxDataTransferSize\x88\x01\x01B\x19\n" +
+	"\x17_max_data_transfer_size\"~\n" +
 	"\x11IscsiExportParams\x12!\n" +
 	"\fbind_address\x18\x01 \x01(\tR\vbindAddress\x12\x12\n" +
 	"\x04port\x18\x02 \x01(\x05R\x04port\x122\n" +
@@ -4234,6 +4256,7 @@ func file_pillar_csi_agent_v1_agent_proto_init() {
 		(*BackendParams_Zfs)(nil),
 		(*BackendParams_Lvm)(nil),
 	}
+	file_pillar_csi_agent_v1_agent_proto_msgTypes[4].OneofWrappers = []any{}
 	file_pillar_csi_agent_v1_agent_proto_msgTypes[9].OneofWrappers = []any{
 		(*ExportParams_NvmeofTcp)(nil),
 		(*ExportParams_Iscsi)(nil),

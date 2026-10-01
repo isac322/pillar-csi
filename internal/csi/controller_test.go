@@ -41,6 +41,7 @@ import (
 	"io"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -792,6 +793,65 @@ func TestCreateVolume_PartialRetryRecordsCorrectedInCapsuleSize(t *testing.T) {
 	}
 }
 
+// TestCreateVolume_NVMeoFMaxDataTransferSize verifies that the resolved
+// maxDataTransferSize reaches the agent in ExportVolume (param_mdts), the
+// durable exportSpec used by export restore, and the node through the
+// VolumeContext; that an unset value resolves to the 4 MiB default on all
+// three; and that 0 (no limit) stays an explicit value instead of collapsing
+// into "unset", which the agent would read as "accept the port's value".
+func TestCreateVolume_NVMeoFMaxDataTransferSize(t *testing.T) {
+	t.Parallel()
+	for name, tc := range map[string]struct {
+		doc  string
+		want int32
+	}{
+		"unset resolves to the default": {doc: "", want: v1alpha1.DefaultMaxDataTransferSize},
+		"explicit size":                 {doc: "nvmeofTcp:\n  maxDataTransferSize: 1048576\n", want: 1 << 20},
+		"no limit":                      {doc: "nvmeofTcp:\n  maxDataTransferSize: 0\n", want: 0},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			env := newControllerTestEnv(t)
+			req := baseCreateVolumeRequest()
+			if tc.doc != "" {
+				req.Parameters[paramProtocolDoc] = tc.doc
+			}
+			resp, err := env.srv.CreateVolume(ctx, req)
+			if err != nil {
+				t.Fatalf("CreateVolume: %v", err)
+			}
+			wantStr := strconv.FormatInt(int64(tc.want), 10)
+			if got := resp.GetVolume().GetVolumeContext()[paramNVMeOFMaxDataTransferSize]; got != wantStr {
+				t.Errorf("VolumeContext[%s] = %q, want %q", paramNVMeOFMaxDataTransferSize, got, wantStr)
+			}
+			got := env.agent.lastExportVolumeReq.GetExportParams().GetNvmeofTcp().MaxDataTransferSize
+			if got == nil || *got != tc.want {
+				t.Errorf("ExportVolume max_data_transfer_size = %v, want %d set", got, tc.want)
+			}
+			assertRecordedMaxDataTransferSize(t, env, req.GetName(), tc.want)
+		})
+	}
+}
+
+// assertRecordedMaxDataTransferSize checks that the volume's exportSpec
+// records want and that export restore sends it back to the agent.
+func assertRecordedMaxDataTransferSize(t *testing.T, env *controllerTestEnv, name string, want int32) {
+	t.Helper()
+	pvs, _, err := env.srv.loadPillarVolumeState(context.Background(), name)
+	if err != nil {
+		t.Fatalf("load PillarVolumeState: %v", err)
+	}
+	spec := pvs.Status.ExportSpec
+	if spec == nil || spec.MaxDataTransferSize == nil || *spec.MaxDataTransferSize != want {
+		t.Fatalf("status.exportSpec = %+v, want maxDataTransferSize %d", spec, want)
+	}
+	restored := exportParamsFor(agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP, spec).GetNvmeofTcp()
+	if v := restored.MaxDataTransferSize; v == nil || *v != want {
+		t.Errorf("restored max_data_transfer_size = %v, want %d set", v, want)
+	}
+}
+
 // TestCreateVolume_PartialRetryKeepsResolvedBackend verifies that once the
 // first attempt persisted spec.resolved (CreatePartial), a retry re-resolves
 // only the protocol axis from the live CRs: the backend and agentRef come
@@ -910,6 +970,10 @@ func TestCreateVolume_InvalidNVMeoFQueueOrInCapsuleSize_RejectedBeforeProvisioni
 		{"inCapsuleDataSize", "0"},
 		{"inCapsuleDataSize", "1023"},
 		{"inCapsuleDataSize", "16K"},
+		{"maxDataTransferSize", "2048"},
+		{"maxDataTransferSize", "4096"},
+		{"maxDataTransferSize", "5000"},
+		{"maxDataTransferSize", "-4096"},
 	} {
 		env := newControllerTestEnv(t)
 		req := baseCreateVolumeRequest()
@@ -2768,38 +2832,44 @@ func TestCreateVolume_FilesystemListSemantics(t *testing.T) {
 // TestCreateVolume_NVMeoFTuningPrecedence verifies PVC > binding > protocol
 // (generated StorageClass) and PVC > StorageClass document > protocol
 // (hand-written StorageClass) for every per-volume NVMe-oF tunable: the
-// connect settings reach the VolumeContext, inCapsuleDataSize reaches
-// ExportVolume.
+// connect settings and maxDataTransferSize reach the VolumeContext,
+// inCapsuleDataSize and maxDataTransferSize reach ExportVolume.
 func TestCreateVolume_NVMeoFTuningPrecedence(t *testing.T) {
 	t.Parallel()
 	protocol := &v1alpha1.PillarProtocol{
 		ObjectMeta: metav1.ObjectMeta{Name: "nvme-tuned"},
 		Spec: v1alpha1.PillarProtocolSpec{Protocol: v1alpha1.ProtocolSpec{NVMeOFTCP: &v1alpha1.NVMeOFTCPConfig{
-			Port:              4420,
-			MaxQueueSize:      testInt32(32),
-			InCapsuleDataSize: testInt32(4096),
-			CtrlLossTmo:       testInt32(600),
-			ReconnectDelay:    testInt32(10),
+			Port:                4420,
+			MaxQueueSize:        testInt32(32),
+			InCapsuleDataSize:   testInt32(4096),
+			CtrlLossTmo:         testInt32(600),
+			ReconnectDelay:      testInt32(10),
+			MaxDataTransferSize: testInt32(8 << 20),
 		}}},
 	}
 	// Middle layer sets three fields, the PVC one; each layer leaves the
 	// rest to the layer below.
 	const middleDoc = "nvmeofTcp:\n  maxQueueSize: 64\n  inCapsuleDataSize: 8192\n  ctrlLossTmo: 1200\n"
-	const pvcDoc = "nvmeofTcp:\n  ctrlLossTmo: 1800\n"
+	const pvcDoc = "nvmeofTcp:\n  ctrlLossTmo: 1800\n  maxDataTransferSize: 1048576\n"
 	check := func(t *testing.T, env *controllerTestEnv, resp *csi.CreateVolumeResponse) {
 		t.Helper()
 		vc := resp.GetVolume().GetVolumeContext()
 		for key, want := range map[string]string{
-			paramNVMeOFMaxQueueSize:   "64",   // middle layer
-			paramNVMeOFCtrlLossTmo:    "1800", // PVC
-			paramNVMeOFReconnectDelay: "10",   // protocol
+			paramNVMeOFMaxQueueSize:        "64",      // middle layer
+			paramNVMeOFCtrlLossTmo:         "1800",    // PVC
+			paramNVMeOFReconnectDelay:      "10",      // protocol
+			paramNVMeOFMaxDataTransferSize: "1048576", // PVC
 		} {
 			if vc[key] != want {
 				t.Errorf("VolumeContext[%s] = %q, want %q", key, vc[key], want)
 			}
 		}
-		if got := env.agent.lastExportVolumeReq.GetExportParams().GetNvmeofTcp().GetInCapsuleDataSize(); got != 8192 {
+		nvme := env.agent.lastExportVolumeReq.GetExportParams().GetNvmeofTcp()
+		if got := nvme.GetInCapsuleDataSize(); got != 8192 {
 			t.Errorf("ExportVolume in_capsule_data_size = %d, want 8192 (middle layer)", got)
+		}
+		if got := nvme.GetMaxDataTransferSize(); got != 1<<20 {
+			t.Errorf("ExportVolume max_data_transfer_size = %d, want 1048576 (PVC)", got)
 		}
 	}
 

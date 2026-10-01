@@ -124,7 +124,7 @@ What each ACL value does:
 
 You may deliberately change the historical intent, but only after recording the choice and its connectivity and security consequences.
 
-Leave out the optional `inCapsuleDataSize`. Controllers that recorded no `exportSpec` never set an in-capsule data size on the export, so the restored export keeps accepting the port's value as before.
+Leave out the optional `inCapsuleDataSize` and `maxDataTransferSize`. Controllers that recorded no `exportSpec` never set either on the export, so the restored export keeps accepting the port's values as before.
 
 Look at the evidence:
 

@@ -18,7 +18,7 @@ Each value is limited to the tunable fields of its subtree. See [Override settin
 | Key | Document shape | Tunable fields |
 |---|---|---|
 | `pillar-csi.bhyoo.com/backend` | `zfs: {...}` or `lvm: {...}` | `zfs.properties`, `lvm.provisioningMode` |
-| `pillar-csi.bhyoo.com/protocol` | `nvmeofTcp: {...}` or `iscsi: {...}` | `nvmeofTcp`: `maxQueueSize`, `inCapsuleDataSize`, `ctrlLossTmo`, `reconnectDelay`. `iscsi`: `loginTimeout`, `replacementTimeout`, `noopOutInterval`, `noopOutTimeout` |
+| `pillar-csi.bhyoo.com/protocol` | `nvmeofTcp: {...}` or `iscsi: {...}` | `nvmeofTcp`: `maxQueueSize`, `inCapsuleDataSize`, `maxDataTransferSize`, `ctrlLossTmo`, `reconnectDelay`. `iscsi`: `loginTimeout`, `replacementTimeout`, `noopOutInterval`, `noopOutTimeout` |
 | `pillar-csi.bhyoo.com/filesystem` | `{fsType, mkfsOptions, mountOptions, periodicTrim}` | all four |
 
 Rules:

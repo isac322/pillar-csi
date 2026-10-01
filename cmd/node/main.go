@@ -127,6 +127,30 @@ type fabricsConnector struct {
 	// removalWait bounds the Detach wait for deleted controllers to leave
 	// sysfs.  The zero value selects csisvc.DefaultControllerRemovalWait.
 	removalWait csisvc.ControllerRemovalWait
+
+	// readMDTS reads a controller's advertised MDTS for
+	// csisvc.LimitNVMeoFTransferSize.  Production value:
+	// csisvc.ReadNVMeControllerMDTS.
+	readMDTS csisvc.NVMeMDTSReader
+
+	// devDir is where namespace block-device nodes are ensured and mknod
+	// creates them.  Empty values select "/dev" and syscall.Mknod; tests
+	// point them at a temp dir and a fake so no real node is touched.
+	devDir string
+	mknod  func(path string, mode uint32, dev int) error
+}
+
+// ensureDevNode ensures the device node of block device name matches the
+// sysfs dev file (see mknodFromSysfsDev) and returns its path.
+func (c *fabricsConnector) ensureDevNode(name, devFile string) (string, error) {
+	devPath := "/dev/" + name
+	if c.devDir != "" {
+		devPath = filepath.Join(c.devDir, name)
+	}
+	if c.mknod == nil {
+		return mknodFromSysfsDev(devPath, devFile)
+	}
+	return mknodFromSysfsDevWith(devPath, devFile, c.mknod)
 }
 
 // newFabricsConnector returns a production-ready fabricsConnector that uses
@@ -137,6 +161,7 @@ func newFabricsConnector(hostNQN, hostID string) *fabricsConnector {
 		fabricsDev: csisvc.NvmeFabricsDevice,
 		hostNQN:    hostNQN,
 		hostID:     hostID,
+		readMDTS:   csisvc.ReadNVMeControllerMDTS,
 	}
 }
 
@@ -418,13 +443,12 @@ func (c *fabricsConnector) nvmeGetDevicePath(ctx context.Context, subsysNQN stri
 				// Always validate the existing node against the live sysfs
 				// dev_t. A prior disconnect can leave /dev/nvmeXnY behind
 				// while the kernel reuses the name with a new minor.
-				devPath := "/dev/" + name
 				devFile := filepath.Join(subsysPath, name, "dev")
-				dp, mkErr := mknodFromSysfsDev(devPath, devFile)
+				dp, mkErr := c.ensureDevNode(name, devFile)
 				if mkErr != nil {
 					fmt.Fprintf(os.Stderr,
 						"pillar-node: nvmeGetDevicePath: ensure %s from %s: %v\n",
-						devPath, devFile, mkErr)
+						name, devFile, mkErr)
 					continue
 				}
 				return dp, nil
@@ -514,13 +538,12 @@ func (c *fabricsConnector) getDevicePathViaController(subsysPath string) (string
 			if afterN == "" || strings.ContainsAny(afterN, "p") {
 				continue // empty or partition
 			}
-			devPath := "/dev/" + nsName
 			devFile := filepath.Join(ctrlSysPath, nsName, "dev")
-			dp, mkErr := mknodFromSysfsDev(devPath, devFile)
+			dp, mkErr := c.ensureDevNode(nsName, devFile)
 			if mkErr != nil {
 				fmt.Fprintf(os.Stderr,
 					"pillar-node: getDevicePathViaController: ensure %s from %s: %v\n",
-					devPath, devFile, mkErr)
+					nsName, devFile, mkErr)
 				continue
 			}
 			return dp, nil
@@ -733,6 +756,13 @@ const nvmeAttachPollInterval = 500 * time.Millisecond
 //
 // Attach is idempotent: if the subsystem NQN is already connected the
 // nvmeConnect step is a no-op and the polling resolves immediately.
+//
+// Once the device is present — on a fresh connect and on an existing
+// connection alike — Attach caps the namespace devices' max_sectors_kb to
+// the volume's max data transfer size when the target advertises no MDTS
+// (csisvc.LimitNVMeoFTransferSize); a failure fails the Attach.  The size
+// is parsed with the fabrics tuning before connecting, so a malformed
+// VolumeContext never connects.
 func (c *fabricsConnector) Attach(ctx context.Context, params csisvc.AttachParams) (*csisvc.AttachResult, error) {
 	subsysNQN := params.ConnectionID
 	trAddr := params.Address
@@ -741,6 +771,10 @@ func (c *fabricsConnector) Attach(ctx context.Context, params csisvc.AttachParam
 	connectOpts, optsErr := csisvc.ParseNVMeoFConnectOptions(params.Extra)
 	if optsErr != nil {
 		return nil, fmt.Errorf("fabricsConnector Attach: %w", optsErr)
+	}
+	maxTransferSize, sizeErr := csisvc.ParseNVMeoFMaxDataTransferSize(params.Extra)
+	if sizeErr != nil {
+		return nil, fmt.Errorf("fabricsConnector Attach: %w", sizeErr)
 	}
 
 	// Step 1: establish the NVMe-oF TCP connection (idempotent).
@@ -754,6 +788,12 @@ func (c *fabricsConnector) Attach(ctx context.Context, params csisvc.AttachParam
 	devPath, waitErr := c.waitForDevice(ctx, subsysNQN)
 	if waitErr != nil {
 		return nil, waitErr
+	}
+
+	// Step 3: limit the request size when the target advertises no MDTS.
+	limitErr := csisvc.LimitNVMeoFTransferSize(c.sysfsRoot, subsysNQN, maxTransferSize, c.readMDTS)
+	if limitErr != nil {
+		return nil, fmt.Errorf("fabricsConnector Attach: limit transfer size for %q: %w", subsysNQN, limitErr)
 	}
 	return &csisvc.AttachResult{
 		DevicePath: devPath,

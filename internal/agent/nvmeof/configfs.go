@@ -158,6 +158,20 @@ type NvmetTarget struct {
 	// ensureInlineDataSizeLocked for the shared-port contract.
 	InlineDataSize *int32
 
+	// MaxDataTransferSize is the maximum data transfer size in bytes the
+	// export requires its port to advertise (param_mdts): 0 for no limit,
+	// otherwise a power of two from MinMaxDataTransferSize to
+	// MaxMaxDataTransferSize.  nil accepts the port's value.  See
+	// ensureMDTSLocked for the shared-port contract.
+	MaxDataTransferSize *int32
+
+	// MDTSUnsupported, when set, is called with the port ("<bind
+	// address>:<port>") when MaxDataTransferSize requests a limit but the
+	// kernel has no param_mdts port attribute (Linux < 7.1), so the port
+	// advertises no limit and the export is served without it (see
+	// ensureMDTSLocked).
+	MDTSUnsupported func(port string)
+
 	// Identity is the host-visible namespace and subsystem identity written
 	// before the namespace is enabled.  The zero value selects
 	// DeriveIdentity(SubsystemNQN, NamespaceID).
@@ -665,6 +679,10 @@ type portSpec struct {
 	// inlineDataSize is the param_inline_data_size the export requires, or
 	// nil when it accepts the port's value (see ensureInlineDataSizeLocked).
 	inlineDataSize *int32
+	// maxDataTransferSize is the maximum data transfer size in bytes the
+	// export requires, or nil when it accepts the port's value (see
+	// ensureMDTSLocked).
+	maxDataTransferSize *int32
 	// desc names the endpoint in error messages ("<bind address>:<port>").
 	desc string
 }
@@ -695,6 +713,10 @@ func (t *NvmetTarget) portSpec() (portSpec, error) {
 	if v := t.InlineDataSize; v != nil && *v < MinInlineDataSize {
 		return portSpec{}, fmt.Errorf("port: invalid InlineDataSize %d: must be at least %d", *v, MinInlineDataSize)
 	}
+	if v := t.MaxDataTransferSize; v != nil && !ValidMaxDataTransferSize(*v) {
+		return portSpec{}, fmt.Errorf("port: invalid MaxDataTransferSize %d: must be 0 or a power of two "+
+			"from %d to %d", *v, MinMaxDataTransferSize, MaxMaxDataTransferSize)
+	}
 	adrfam, wildcard := "ipv4", listenWildcard
 	if ip.To4() == nil {
 		adrfam, wildcard = "ipv6", listenWildcardV6
@@ -708,8 +730,9 @@ func (t *NvmetTarget) portSpec() (portSpec, error) {
 			"addr_traddr":  wildcard,
 			"addr_trsvcid": trsvcid,
 		},
-		inlineDataSize: t.InlineDataSize,
-		desc:           net.JoinHostPort(t.BindAddress, trsvcid),
+		inlineDataSize:      t.InlineDataSize,
+		maxDataTransferSize: t.MaxDataTransferSize,
+		desc:                net.JoinHostPort(t.BindAddress, trsvcid),
 	}, nil
 }
 
@@ -740,7 +763,11 @@ func (t *NvmetTarget) ensurePortLocked(spec portSpec) error {
 			return fmt.Errorf("port %s attr %s: %w", spec.desc, attr, err)
 		}
 	}
-	return ensureInlineDataSizeLocked(pDir, spec)
+	err = ensureInlineDataSizeLocked(pDir, spec)
+	if err != nil {
+		return err
+	}
+	return t.ensureMDTSLocked(pDir, spec)
 }
 
 // portInlineDataSizeAttr is the port attribute holding the in-capsule data
@@ -814,6 +841,135 @@ func ensureInlineDataSizeLocked(pDir string, spec portSpec) error {
 	err = writeFile(attrPath, want)
 	if err != nil {
 		return fmt.Errorf("port %s attr %s: %w", spec.desc, portInlineDataSizeAttr, err)
+	}
+	return nil
+}
+
+// portMDTSAttr is the port attribute holding the maximum data transfer size
+// (MDTS) the target advertises in Identify Controller to hosts connecting
+// through the port.  It exists since Linux 7.1.
+const portMDTSAttr = "param_mdts"
+
+// Maximum data transfer size domain.  The port's param_mdts holds an
+// exponent n: the limit is 2^n memory pages of 4 KiB (the NVMe MPSMIN unit
+// nvmet uses), and 0 means no limit.
+const (
+	// MinMaxDataTransferSize is the smallest expressible limit: two 4 KiB
+	// pages (n = 1).  One page would be n = 0, which hosts read as no limit.
+	MinMaxDataTransferSize int32 = 8192
+	// MaxMaxDataTransferSize is the largest power of two an int32 holds.
+	MaxMaxDataTransferSize int32 = 1 << 30
+	// The shift between a size in bytes and the number of 4 KiB pages
+	// param_mdts counts.
+	mdtsUnitShift = 12
+	// The param_mdts value advertising no limit, the kernel default.
+	mdtsNoLimit = "0"
+)
+
+// ErrPortMDTSConflict reports that an export requires a maximum data
+// transfer size other than the one its shared, already active port
+// advertises.
+var ErrPortMDTSConflict = errors.New("port maximum data transfer size conflict")
+
+// ValidMaxDataTransferSize reports whether v is an accepted maximum data
+// transfer size: 0 (no limit) or a power of two from MinMaxDataTransferSize
+// to MaxMaxDataTransferSize.
+func ValidMaxDataTransferSize(v int32) bool {
+	if v == 0 {
+		return true
+	}
+	return v >= MinMaxDataTransferSize && v <= MaxMaxDataTransferSize && v&(v-1) == 0
+}
+
+// mdtsValue encodes a valid maximum data transfer size as its param_mdts
+// exponent: 0 stays "0" (no limit), 4 MiB becomes "10".
+func mdtsValue(size int32) string {
+	exp := 0
+	for pages := size >> mdtsUnitShift; pages > 1; pages >>= 1 {
+		exp++
+	}
+	return strconv.Itoa(exp)
+}
+
+// describeMDTS renders a param_mdts value for error messages with the limit
+// it stands for in bytes, e.g. `"10" (4194304 bytes)`.
+func describeMDTS(value string) string {
+	n, err := strconv.Atoi(value)
+	switch {
+	case err != nil || n < 0:
+		return strconv.Quote(value)
+	case n == 0:
+		return strconv.Quote(value) + " (no limit)"
+	case n+mdtsUnitShift >= 63:
+		return fmt.Sprintf("%q (2^%d bytes)", value, n+mdtsUnitShift)
+	default:
+		return fmt.Sprintf("%q (%d bytes)", value, uint64(1)<<(n+mdtsUnitShift))
+	}
+}
+
+// ensureMDTSLocked makes the port's param_mdts satisfy spec.  Like
+// param_inline_data_size the attribute belongs to the port, which every
+// volume exported on the same address and port shares, and Linux accepts
+// writes to it only while no subsystem is linked to the port.  Hence:
+//
+//   - attribute missing: the kernel predates param_mdts (Linux < 7.1) and the
+//     port advertises no limit.  The export is never failed for it: a
+//     requested limit is reported through MDTSUnsupported, and the
+//     pillar-csi node caps the device to it instead;
+//   - port without linked subsystems: the requested value, or "0" (no limit,
+//     the kernel default) when none is requested, is written and read back;
+//   - port with linked subsystems: a requested value must equal the value
+//     the port already advertises, otherwise ErrPortMDTSConflict is returned
+//     instead of silently exporting with the port's value; an export without
+//     a requested value uses the port as is.
+//
+// One deliberate exception on a port with linked subsystems: a requested
+// limit is accepted without a write when the port advertises no limit
+// ("0").  Hosts then see MDTS 0 and the pillar-csi node caps the device to
+// the requested size itself, so the volume still gets its limit.  This keeps
+// volumes provisioned after an upgrade from being rejected on a port that
+// existing volumes, exported without a limit, keep enabled.  The reverse,
+// requesting no limit from a port that advertises one, is a conflict.
+//
+// The caller holds the port's writeFileLock.
+func (t *NvmetTarget) ensureMDTSLocked(pDir string, spec portSpec) error {
+	attrPath := filepath.Join(pDir, portMDTSAttr)
+	_, err := os.Lstat(attrPath)
+	if os.IsNotExist(err) {
+		if spec.maxDataTransferSize != nil && *spec.maxDataTransferSize > 0 && t.MDTSUnsupported != nil {
+			t.MDTSUnsupported(spec.desc)
+		}
+		return nil
+	}
+	current, err := readFileTrimmed(attrPath)
+	if err != nil {
+		return fmt.Errorf("port %s attr %s read: %w", spec.desc, portMDTSAttr, err)
+	}
+	linked, err := portHasSubsystems(pDir)
+	if err != nil {
+		return fmt.Errorf("port %s: %w", spec.desc, err)
+	}
+
+	want := mdtsNoLimit
+	if spec.maxDataTransferSize != nil {
+		want = mdtsValue(*spec.maxDataTransferSize)
+	}
+	if linked {
+		if spec.maxDataTransferSize == nil || current == want || current == mdtsNoLimit {
+			return nil
+		}
+		return fmt.Errorf("port %s: %s is %s but the export requires %s; the maximum data transfer "+
+			"size is shared by every volume exported on this port and can change only while no "+
+			"volume is exported on it: %w",
+			spec.desc, portMDTSAttr, describeMDTS(current), describeMDTS(want), ErrPortMDTSConflict)
+	}
+
+	if current == want {
+		return nil
+	}
+	err = writeFile(attrPath, want)
+	if err != nil {
+		return fmt.Errorf("port %s attr %s: %w", spec.desc, portMDTSAttr, err)
 	}
 	return nil
 }
@@ -1084,7 +1240,10 @@ func restoreLink(oldname, newname string) error {
 }
 
 // portAttrs are the attributes ensurePortLocked writes to a port.
-var portAttrs = []string{"addr_trtype", "addr_adrfam", "addr_traddr", "addr_trsvcid", portInlineDataSizeAttr}
+var portAttrs = []string{
+	"addr_trtype", "addr_adrfam", "addr_traddr", "addr_trsvcid",
+	portInlineDataSizeAttr, portMDTSAttr,
+}
 
 // prunePortLocked removes the port directory at pDir when no subsystem is
 // linked to it, and reads back that it is gone.  A port without subsystems

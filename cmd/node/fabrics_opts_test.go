@@ -273,6 +273,65 @@ func TestFabricsConnectorAttach_ForwardsReconnectTuning(t *testing.T) {
 	}
 }
 
+// TestFabricsConnectorAttach_LimitsTransferSizeWithoutMDTS covers the
+// production NVMe-oF handler: once the namespace device is present (here an
+// existing connection), a target without MDTS gets the default 4 MiB cap on
+// the namespace queue, and an MDTS read failure fails the Attach.
+func TestFabricsConnectorAttach_LimitsTransferSizeWithoutMDTS(t *testing.T) {
+	const nqn = "nqn.2026-01.io.pillar-csi:pvc-mdts"
+	setup := func(t *testing.T) (*fabricsConnector, string) {
+		t.Helper()
+		c, _ := newTestFabricsConnector(t, nqn, map[string]string{"nvme0": "live"})
+		// The device poll ensures the node in a temp dir through a fake
+		// mknod, so no real device node is created.
+		c.devDir = t.TempDir()
+		c.mknod = func(string, uint32, int) error { return nil }
+		subsys := filepath.Join(c.sysfsRoot, "class", "nvme-subsystem", "nvme-subsys0")
+		if err := os.WriteFile(filepath.Join(subsys, "nvme0n1", "dev"), []byte("259:0\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		queue := filepath.Join(c.sysfsRoot, "block", "nvme0n1", "queue")
+		if err := os.MkdirAll(queue, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		attr := filepath.Join(queue, "max_sectors_kb")
+		if err := os.WriteFile(attr, []byte("32768\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return c, attr
+	}
+	params := csisvc.AttachParams{
+		ProtocolType: csisvc.ProtocolNVMeoFTCP,
+		ConnectionID: nqn,
+		Address:      "10.0.0.7",
+		Port:         "4420",
+	}
+
+	t.Run("capped", func(t *testing.T) {
+		c, attr := setup(t)
+		c.readMDTS = func(string) (uint8, error) { return 0, nil }
+		if _, err := c.Attach(context.Background(), params); err != nil {
+			t.Fatalf("Attach: %v", err)
+		}
+		got, err := os.ReadFile(attr) //nolint:gosec // temp dir
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.TrimSpace(string(got)) != "4096" {
+			t.Fatalf("max_sectors_kb = %q, want 4096", got)
+		}
+	})
+
+	t.Run("MDTS read error", func(t *testing.T) {
+		c, _ := setup(t)
+		sentinel := errors.New("identify failed")
+		c.readMDTS = func(string) (uint8, error) { return 0, sentinel }
+		if _, err := c.Attach(context.Background(), params); !errors.Is(err, sentinel) {
+			t.Fatalf("Attach error = %v, want %v", err, sentinel)
+		}
+	})
+}
+
 func TestMknodFromSysfsDevReplacesStaleDeviceNode(t *testing.T) {
 	dir := t.TempDir()
 	devPath := filepath.Join(dir, "nvme0n1")

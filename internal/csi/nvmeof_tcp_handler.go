@@ -75,6 +75,10 @@ type NVMeoFTCPHandler struct {
 
 	// pollInterval is the sleep between successive GetDevicePath polls.
 	pollInterval time.Duration
+
+	// readMDTS reads a controller's advertised MDTS for
+	// LimitNVMeoFTransferSize.  Production value: ReadNVMeControllerMDTS.
+	readMDTS NVMeMDTSReader
 }
 
 // Ensure NVMeoFTCPHandler satisfies the ProtocolHandler interface at compile time.
@@ -88,6 +92,7 @@ func NewNVMeoFTCPHandler() *NVMeoFTCPHandler {
 		connector:    NewNVMeoFConnector(),
 		pollTimeout:  deviceWaitTimeout,
 		pollInterval: devicePollInterval,
+		readMDTS:     ReadNVMeControllerMDTS,
 	}
 }
 
@@ -99,6 +104,7 @@ func newNVMeoFTCPHandlerWithConnector(c *NVMeoFConnector) *NVMeoFTCPHandler {
 		connector:    c,
 		pollTimeout:  deviceWaitTimeout,
 		pollInterval: devicePollInterval,
+		readMDTS:     ReadNVMeControllerMDTS,
 	}
 }
 
@@ -109,11 +115,16 @@ func newNVMeoFTCPHandlerWithConnector(c *NVMeoFConnector) *NVMeoFTCPHandler {
 // Attach establishes the NVMe-oF TCP connection and waits for the block device
 // to appear in sysfs.
 //
-// It performs two steps:
+// It performs three steps:
 //  1. connector.Connect — writes the connect string to /dev/nvme-fabrics.
 //     Idempotent: a no-op if the subsystem NQN is already connected.
 //  2. Poll connector.GetDevicePath until the /dev/nvmeXnY path appears or
 //     the poll timeout (30 s) is exceeded.
+//  3. LimitNVMeoFTransferSize — caps the namespace devices' max_sectors_kb
+//     to the volume's max data transfer size when the target advertises no
+//     MDTS.  It runs on every Attach, including one that found the
+//     controller already connected, so a restage re-applies the cap; a
+//     failure fails the Attach.
 //
 // On success it returns an AttachResult with DevicePath set to the block device
 // path and State populated with NVMeoFProtocolState so that Detach/Rescan can
@@ -125,7 +136,8 @@ func newNVMeoFTCPHandlerWithConnector(c *NVMeoFConnector) *NVMeoFTCPHandler {
 //   - Port         — the NVMe-oF TCP target port (e.g. "4420")
 //   - Extra        — optional ctrl_loss_tmo / reconnect_delay / queue_size
 //     tuning (see ParseNVMeoFConnectOptions); absent keys keep the kernel
-//     defaults
+//     defaults.  Also the max data transfer size (see
+//     ParseNVMeoFMaxDataTransferSize).  Both are validated before connecting.
 func (h *NVMeoFTCPHandler) Attach(ctx context.Context, params AttachParams) (*AttachResult, error) {
 	subsysNQN := params.ConnectionID
 	trAddr := params.Address
@@ -145,6 +157,10 @@ func (h *NVMeoFTCPHandler) Attach(ctx context.Context, params AttachParams) (*At
 	if err != nil {
 		return nil, fmt.Errorf("nvmeof-tcp Attach: %w", err)
 	}
+	maxTransferSize, err := ParseNVMeoFMaxDataTransferSize(params.Extra)
+	if err != nil {
+		return nil, fmt.Errorf("nvmeof-tcp Attach: %w", err)
+	}
 
 	// Step 1: Connect to the NVMe-oF TCP target.
 	err = h.connector.Connect(ctx, subsysNQN, trAddr, trSvcID, connectOpts)
@@ -161,9 +177,9 @@ func (h *NVMeoFTCPHandler) Attach(ctx context.Context, params AttachParams) (*At
 
 	var devicePath string
 	for {
-		devPath, err := h.connector.GetDevicePath(pollCtx, subsysNQN)
-		if err != nil {
-			return nil, fmt.Errorf("nvmeof-tcp Attach: get device path for %q: %w", subsysNQN, err)
+		devPath, pathErr := h.connector.GetDevicePath(pollCtx, subsysNQN)
+		if pathErr != nil {
+			return nil, fmt.Errorf("nvmeof-tcp Attach: get device path for %q: %w", subsysNQN, pathErr)
 		}
 		if devPath != "" {
 			devicePath = devPath
@@ -176,6 +192,12 @@ func (h *NVMeoFTCPHandler) Attach(ctx context.Context, params AttachParams) (*At
 		case <-time.After(h.pollInterval):
 			// next iteration
 		}
+	}
+
+	// Step 3: limit the request size when the target advertises no MDTS.
+	err = LimitNVMeoFTransferSize(h.connector.sysfsRoot, subsysNQN, maxTransferSize, h.readMDTS)
+	if err != nil {
+		return nil, fmt.Errorf("nvmeof-tcp Attach: limit transfer size for %q: %w", subsysNQN, err)
 	}
 
 	return &AttachResult{
