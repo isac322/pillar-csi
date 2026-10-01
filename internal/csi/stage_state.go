@@ -110,8 +110,9 @@ type nodeStageState struct {
 
 	// VolumeID is the CSI volume ID the record belongs to.  The state file
 	// name replaces "/" with "_", which cannot be inverted, so the periodic
-	// trim loop reads the ID from here to take the volume's lock.  Empty in
-	// records written before the field existed (see trimmer.legacyTarget).
+	// trim loop and the NVMe-oF transfer limit reconciler read the ID from
+	// here to take the volume's lock.  Empty in records written before the
+	// field existed (see kubeletStagingTarget).
 	VolumeID string `json:"volume_id,omitempty"`
 
 	// StagingPath is the staging_target_path NodeStageVolume mounted the

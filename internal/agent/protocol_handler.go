@@ -363,9 +363,12 @@ func localAttachStatus(volumeID string, local bool, err error) error {
 //  2. link: create the port if needed and link every prepared export in one
 //     tight loop, in request order.  The first link enables a port and
 //     freezes its param_inline_data_size and param_mdts, so the caller
-//     orders exports whose in-capsule data size and maximum data transfer
-//     size must win first; a later export requiring another value fails with
-//     nvmeof.ErrPortInlineDataSizeConflict or nvmeof.ErrPortMDTSConflict.
+//     orders exports whose in-capsule data size must win first; a later
+//     export requiring another value fails with
+//     nvmeof.ErrPortInlineDataSizeConflict.  The maximum data transfer size
+//     does not depend on the order: every export carries the smallest
+//     limit requested on its port (see setPortMDTSFloors), which the first
+//     link writes, and every export allows a port limit at most its own.
 //
 // The target locks of all entries are held across both phases.  The device
 // check runs inside the fenced mutation so a destroyed backend never gets a
@@ -385,6 +388,7 @@ func (h *NVMeoFTCPAgentHandler) Reconcile(
 			recordReconcileItemFailed(ctx, export.VolumeID, reconcilePhasePrepare, errs[i])
 		}
 	}
+	setPortMDTSFloors(targets)
 
 	unlock := h.lockTargets(ctx, targets)
 	defer unlock()
@@ -445,6 +449,49 @@ func (h *NVMeoFTCPAgentHandler) reconcileTarget(export ExportDesiredState) (*nvm
 		target.AllowedHosts = export.AllowedInitiators
 	}
 	return target, nil
+}
+
+// setPortMDTSFloors sets nvmeof.NvmetTarget.PortMDTSFloor of every non-nil
+// target to the smallest non-zero MaxDataTransferSize among the targets on
+// the same address and port.  0 (no limit) counts as larger than any limit,
+// and a target without a value (an export spec recorded before the field
+// existed) or with an invalid one, which its Prepare rejects, imposes none.
+// Whichever export a restore links first then sets an idle port to a limit
+// every other export on it allows, so a restore never fails because the
+// volumes sharing a port asked for different limits.
+func setPortMDTSFloors(targets []*nvmeof.NvmetTarget) {
+	type endpoint struct {
+		address string
+		port    int32
+	}
+	key := func(t *nvmeof.NvmetTarget) endpoint {
+		port := t.Port
+		if port == 0 {
+			port = nvmeof.DefaultPort
+		}
+		return endpoint{t.BindAddress, port}
+	}
+	floors := make(map[endpoint]int32)
+	for _, t := range targets {
+		if t == nil || t.MaxDataTransferSize == nil {
+			continue
+		}
+		size := *t.MaxDataTransferSize
+		if size == 0 || !nvmeof.ValidMaxDataTransferSize(size) {
+			continue
+		}
+		if cur, ok := floors[key(t)]; !ok || size < cur {
+			floors[key(t)] = size
+		}
+	}
+	for _, t := range targets {
+		if t == nil {
+			continue
+		}
+		if floor, ok := floors[key(t)]; ok {
+			t.PortMDTSFloor = &floor
+		}
+	}
 }
 
 // lockTargets acquires the target locks of every non-nil target once, in

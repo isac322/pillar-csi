@@ -168,8 +168,8 @@ type VolumeExportSpec struct {
 	InCapsuleDataSize *int32 `json:"inCapsuleDataSize,omitempty"`
 
 	// maxDataTransferSize is the NVMe-oF/TCP maximum data transfer size in
-	// bytes (0 = no limit) the export requires on its port; absent when the
-	// export accepts the port's value.  NVMe-oF/TCP only.
+	// bytes (0 = no limit) the export allows its port to advertise at most;
+	// absent when the export accepts the port's value.  NVMe-oF/TCP only.
 	// +optional
 	// +kubebuilder:validation:Enum=0;8192;16384;32768;65536;131072;262144;524288;1048576;2097152;4194304;8388608;16777216;33554432;67108864;134217728;268435456;536870912;1073741824
 	MaxDataTransferSize *int32 `json:"maxDataTransferSize,omitempty"`

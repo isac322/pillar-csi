@@ -490,7 +490,7 @@ func breakMaxSectorsKB(t *testing.T, root, dev string) {
 // stage records, logging to buf, and returns the reconciler.
 func transferLimitPass(t *testing.T, srv *NodeServer, buf *bytes.Buffer) *transferLimitReconciler {
 	t.Helper()
-	r := srv.newTransferLimitReconciler(slog.New(slog.NewJSONHandler(buf, nil)))
+	r := srv.newTransferLimitReconciler(slog.New(slog.NewJSONHandler(buf, nil)), t.TempDir())
 	if r == nil {
 		t.Fatal("NVMe-oF handler cannot cap a connected subsystem")
 	}

@@ -1293,7 +1293,7 @@ func restoreProtocolSessions(nodeSrv *csisvc.NodeServer) {
 // only writes sysfs attributes and holds nothing another shutdown step
 // closes.
 func startTransferLimitReconciler(ctx context.Context, nodeSrv *csisvc.NodeServer) {
-	_ = nodeSrv.StartNVMeoFTransferLimitReconciler(ctx,
+	_ = nodeSrv.StartNVMeoFTransferLimitReconciler(ctx, driverName,
 		slog.New(slog.NewJSONHandler(os.Stderr, nil)).With("component", "nvmeof-transfer-limit"))
 }
 

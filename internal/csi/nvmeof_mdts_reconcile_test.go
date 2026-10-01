@@ -19,6 +19,8 @@ package csi
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"log/slog"
 	"os"
@@ -40,7 +42,7 @@ func reconcileTestServer(
 	srv, _, _ = mdtsNodeServer(t, mdtsSysfs(t, ""), readMDTS)
 	stageReconcileTestVolume(t, srv)
 	buf = &bytes.Buffer{}
-	r = srv.newTransferLimitReconciler(slog.New(slog.NewJSONHandler(buf, nil)))
+	r = srv.newTransferLimitReconciler(slog.New(slog.NewJSONHandler(buf, nil)), t.TempDir())
 	if r == nil {
 		t.Fatal("NVMe-oF handler cannot cap a connected subsystem")
 	}
@@ -86,7 +88,8 @@ func TestStartNVMeoFTransferLimitReconciler_DoesNotWaitForFirstPass(t *testing.T
 	srv, _, _ := mdtsNodeServer(t, root, readMDTS)
 	stageReconcileTestVolume(t, srv)
 
-	stop := srv.StartNVMeoFTransferLimitReconciler(context.Background(), slog.New(slog.DiscardHandler))
+	stop := srv.StartNVMeoFTransferLimitReconciler(context.Background(), "pillar-csi.bhyoo.com",
+		slog.New(slog.DiscardHandler))
 
 	select {
 	case <-entered:
@@ -262,5 +265,115 @@ func TestTransferLimitReconciler_VolumeLock(t *testing.T) {
 	requireMaxSectorsKB(t, root, reconcileCapped)
 	if !lockFreeDuringRead.Load() {
 		t.Error("the volume lock was held while reading the MDTS")
+	}
+}
+
+// A cached non-zero MDTS is dropped once a pass finds the controller not
+// live, and is re-read after a bounded number of passes even when no pass
+// saw the controller change: a controller reconnecting under the same name
+// to a target that now advertises MDTS 0 gets the cap.
+func TestTransferLimitReconciler_RereadsMDTSAfterReconnect(t *testing.T) {
+	// r.pass reads the MDTS synchronously, so a plain variable suffices.
+	setup := func(t *testing.T) (*transferLimitReconciler, *uint8) {
+		t.Helper()
+		mdts := uint8(5)
+		_, r, _ := reconcileTestServer(t, func(string) (uint8, error) { return mdts, nil })
+		r.pass(context.Background())
+		requireMaxSectorsKB(t, r.sysfsRoot, reconcileUncapped)
+		return r, &mdts
+	}
+	t.Run("reconnect seen", func(t *testing.T) {
+		r, mdts := setup(t)
+		addSubsysController(t, r.sysfsRoot, "nvme0", "connecting")
+		r.pass(context.Background())
+		*mdts = 0
+		addSubsysController(t, r.sysfsRoot, "nvme0", "live")
+		r.pass(context.Background())
+		requireMaxSectorsKB(t, r.sysfsRoot, reconcileCapped)
+	})
+	t.Run("reconnect between passes", func(t *testing.T) {
+		r, mdts := setup(t)
+		*mdts = 0
+		for range nvmeofMDTSRecheckPasses {
+			r.pass(context.Background())
+		}
+		requireMaxSectorsKB(t, r.sysfsRoot, reconcileCapped)
+	})
+}
+
+// A stage record written before the volume ID was persisted is capped
+// under the lock NodeStageVolume and NodeUnstageVolume take, the volume ID
+// kubelet records for its staging directory, not the lock of its state
+// file name.  A record whose volume ID cannot be found is skipped and
+// logged once.
+func TestTransferLimitReconciler_LegacyRecordVolumeLock(t *testing.T) {
+	const volumeID = "tank/pvc-legacy"
+	setup := func(t *testing.T) (*NodeServer, *transferLimitReconciler, *bytes.Buffer) {
+		t.Helper()
+		readMDTS, _ := countingMDTS(0)
+		srv, r, buf := reconcileTestServer(t, readMDTS)
+		if err := os.Remove(srv.stateFilePath(reconcileTestVolume)); err != nil {
+			t.Fatal(err)
+		}
+		s := legacyNVMeoFStageState("", mdtsTestNQN, "")
+		if err := srv.writeStageState(volumeID, s); err != nil {
+			t.Fatal(err)
+		}
+		return srv, r, buf
+	}
+	t.Run("volume ID from kubelet", func(t *testing.T) {
+		srv, r, _ := setup(t)
+		sum := sha256.Sum256([]byte(volumeID))
+		dir := filepath.Join(r.kubeletDriverDir, hex.EncodeToString(sum[:]))
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		writeTestFile(t, filepath.Join(dir, kubeletVolDataFile), `{"volumeHandle":"`+volumeID+`"}`)
+
+		unlock := srv.volumeLocks.lock(volumeID)
+		r.pass(context.Background())
+		requireMaxSectorsKB(t, r.sysfsRoot, reconcileUncapped)
+		unlock()
+
+		r.pass(context.Background())
+		requireMaxSectorsKB(t, r.sysfsRoot, reconcileCapped)
+	})
+	t.Run("volume ID unknown", func(t *testing.T) {
+		_, r, buf := setup(t)
+		r.pass(context.Background())
+		r.pass(context.Background())
+		requireMaxSectorsKB(t, r.sysfsRoot, reconcileUncapped)
+		lines := decodeLogLines(t, buf)
+		if len(lines) != 1 || lines[0]["level"] != "WARN" {
+			t.Fatalf("log lines = %v, want one WARN line", lines)
+		}
+	})
+}
+
+// A device whose cap keeps failing the same way is logged once even when
+// another device of the volume fails differently on a later pass.
+func TestTransferLimitReconciler_LogsOncePerDevice(t *testing.T) {
+	readMDTS, _ := countingMDTS(0)
+	_, r, buf := reconcileTestServer(t, readMDTS)
+	root := r.sysfsRoot
+	breakMaxSectorsKB(t, root, "nvme0n1")
+	breakMaxSectorsKB(t, root, "nvme0c0n1")
+	r.pass(context.Background())
+	if n := len(errorLogLines(decodeLogLines(t, buf))); n != 2 {
+		t.Fatalf("error lines = %d, want one per device", n)
+	}
+
+	queue := filepath.Join(root, "block", "nvme0c0n1", "queue")
+	if err := os.Remove(filepath.Join(queue, "max_sectors_kb")); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(queue, "max_sectors_kb"), "32768\n")
+	writeTestFile(t, filepath.Join(queue, "max_hw_sectors_kb"), "bogus\n")
+	buf.Reset()
+	r.pass(context.Background())
+
+	lines := errorLogLines(decodeLogLines(t, buf))
+	if len(lines) != 1 || lines[0]["device"] != "nvme0c0n1" {
+		t.Fatalf("error lines = %v, want one for the device whose error changed", lines)
 	}
 }

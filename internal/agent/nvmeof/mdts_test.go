@@ -128,10 +128,11 @@ func TestApply_MDTSMissingAttributeIsReported(t *testing.T) {
 	}
 }
 
-// TestApply_MDTSConflictOnActivePort verifies that an export requiring a
-// limit other than the one its already active port advertises fails with
-// ErrPortMDTSConflict and is not linked, while an export requiring the same
-// limit, or none, joins the port unchanged.
+// TestApply_MDTSConflictOnActivePort verifies that an export allowing a
+// smaller limit than its already active port advertises fails with
+// ErrPortMDTSConflict and is not linked, while an export allowing the same
+// or a larger limit, no limit, or accepting any value joins the port
+// unchanged: a smaller advertised limit only makes commands smaller.
 func TestApply_MDTSConflictOnActivePort(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
@@ -141,15 +142,13 @@ func TestApply_MDTSConflictOnActivePort(t *testing.T) {
 		t.Fatalf("Apply first: %v", err)
 	}
 
-	for _, size := range []int32{2 * fourMiB, 0} {
-		conflicting := mdtsTarget(root, "b", int32Ptr(size))
-		err := conflicting.Apply()
-		if !errors.Is(err, ErrPortMDTSConflict) {
-			t.Fatalf("Apply requiring %d = %v, want ErrPortMDTSConflict", size, err)
-		}
-		if portLinked(conflicting) {
-			t.Fatalf("export requiring %d was linked to the port", size)
-		}
+	conflicting := mdtsTarget(root, "b", int32Ptr(fourMiB/2))
+	err := conflicting.Apply()
+	if !errors.Is(err, ErrPortMDTSConflict) {
+		t.Fatalf("Apply allowing %d = %v, want ErrPortMDTSConflict", fourMiB/2, err)
+	}
+	if portLinked(conflicting) {
+		t.Fatal("export allowing a smaller limit was linked to the port")
 	}
 	if !portLinked(first) {
 		t.Fatal("first export lost its port link")
@@ -158,6 +157,8 @@ func TestApply_MDTSConflictOnActivePort(t *testing.T) {
 
 	for _, tgt := range []*NvmetTarget{
 		mdtsTarget(root, "same", int32Ptr(fourMiB)),
+		mdtsTarget(root, "larger", int32Ptr(2*fourMiB)),
+		mdtsTarget(root, "unlimited", int32Ptr(0)),
 		mdtsTarget(root, "unset", nil),
 	} {
 		if err := tgt.Apply(); err != nil {

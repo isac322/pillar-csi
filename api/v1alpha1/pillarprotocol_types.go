@@ -86,13 +86,18 @@ type NVMeOFTCPConfig struct {
 	// The target advertises it through the nvmet port's param_mdts on
 	// Linux 7.1 and later.  Like inCapsuleDataSize it is a property of the
 	// listening port, shared by every volume exported on the same storage
-	// node address and port, so exporting a volume that requests a value
-	// different from the port's current one fails.  An older target kernel
-	// cannot advertise a limit (MDTS 0); the node then caps the volume's
-	// queue/max_sectors_kb to this size itself, which keeps large writes from
-	// failing on a storage node whose memory is too fragmented to allocate
-	// a whole command's scatterlist.  A node whose target advertises any
-	// limit leaves the device unchanged.  The node cannot set
+	// node address and port, but a volume's value is an upper bound: a port
+	// advertising a smaller limit only makes commands smaller.  Exporting a
+	// volume therefore fails only when the port already advertises a larger
+	// limit than the volume's (non-zero) value.  A port that advertises no
+	// limit accepts any value, and when the agent restores the exports of a
+	// port, for example after the storage node rebooted, it sets the port to
+	// the smallest value among them before exporting any.  An older target
+	// kernel cannot advertise a limit (MDTS 0); the node then caps the
+	// volume's queue/max_sectors_kb to this size itself, which keeps large
+	// writes from failing on a storage node whose memory is too fragmented
+	// to allocate a whole command's scatterlist.  A node whose target
+	// advertises any limit leaves the device unchanged.  The node cannot set
 	// queue/max_sectors_kb below one memory page, so on a worker with
 	// 16 KiB or 64 KiB pages a non-zero value smaller than the page size
 	// fails NodeStageVolume with InvalidArgument instead of being rounded

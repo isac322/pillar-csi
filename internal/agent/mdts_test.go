@@ -82,36 +82,86 @@ func portMDTS(t *testing.T, cfgRoot string) string {
 }
 
 // TestNVMeoFTCPAgentHandler_ExportMDTSConflict verifies that ExportVolume
-// applies the requested maximum data transfer size to the port and rejects,
-// with FailedPrecondition, a second volume on the same port that requires a
-// different limit, instead of exporting it with the port's limit.
+// applies the requested maximum data transfer size to the port, rejects
+// with FailedPrecondition a second volume on the same port that allows only
+// a smaller limit, instead of exporting it with the port's larger limit,
+// and accepts one that allows a larger limit.
 func TestNVMeoFTCPAgentHandler_ExportMDTSConflict(t *testing.T) {
 	t.Parallel()
 	handler, cfgRoot := newNVMeoFTCPHandler(t)
 	emulateMDTSKernel(t, handler, cfgRoot)
 	ctx := context.Background()
+	export := func(volumeID string, size int32) error {
+		_, err := handler.Export(ctx, agent.ExportParams{
+			VolumeID: volumeID, Fence: inlineFence(t, volumeID), DevicePath: "/dev/zvol/" + volumeID,
+			ProtocolParams: nvmeofExportParamsMDTS(size),
+		})
+		return err
+	}
 
-	const first, second = testPool + "/pvc-mdts-a", testPool + "/pvc-mdts-b"
-	_, err := handler.Export(ctx, agent.ExportParams{
-		VolumeID: first, Fence: inlineFence(t, first), DevicePath: "/dev/zvol/" + first,
-		ProtocolParams: nvmeofExportParamsMDTS(4 << 20),
-	})
-	if err != nil {
+	const first, smaller, larger = testPool + "/pvc-mdts-a", testPool + "/pvc-mdts-b", testPool + "/pvc-mdts-c"
+	if err := export(first, 4<<20); err != nil {
 		t.Fatalf("Export %s: %v", first, err)
 	}
 	if got := portMDTS(t, cfgRoot); got != "10" {
 		t.Fatalf("param_mdts = %q, want 10", got)
 	}
 
-	_, err = handler.Export(ctx, agent.ExportParams{
-		VolumeID: second, Fence: inlineFence(t, second), DevicePath: "/dev/zvol/" + second,
-		ProtocolParams: nvmeofExportParamsMDTS(8 << 20),
-	})
+	err := export(smaller, 2<<20)
 	if status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "param_mdts") {
 		t.Fatalf("conflicting Export err = %v, want FailedPrecondition naming param_mdts", err)
 	}
+	if err := export(larger, 8<<20); err != nil {
+		t.Fatalf("Export %s allowing a larger limit: %v", larger, err)
+	}
 	if got := portMDTS(t, cfgRoot); got != "10" {
 		t.Fatalf("param_mdts after conflict = %q, want 10", got)
+	}
+}
+
+// TestNVMeoFTCPAgentHandler_ReconcileRestoresMixedMDTS verifies that exports
+// a port advertising no limit accepted with different limits are restored
+// after a reboot cleared configfs, whatever their order: the port is set to
+// the smallest limit before the first link, which every export allows.
+func TestNVMeoFTCPAgentHandler_ReconcileRestoresMixedMDTS(t *testing.T) {
+	t.Parallel()
+	handler, cfgRoot := newNVMeoFTCPHandler(t)
+	emulateMDTSKernel(t, handler, cfgRoot)
+	ctx := context.Background()
+
+	const unlimited, four, eight = testPool + "/pvc-mdts-old", testPool + "/pvc-mdts-4m", testPool + "/pvc-mdts-8m"
+	desired := func(volumeID string, params *agentv1.ExportParams) agent.ExportDesiredState {
+		return agent.ExportDesiredState{
+			VolumeID: volumeID, Fence: inlineFence(t, volumeID), DevicePath: "/dev/zvol/" + volumeID,
+			ProtocolParams: params,
+		}
+	}
+	exportFour, exportEight := desired(four, nvmeofExportParamsMDTS(4<<20)), desired(eight, nvmeofExportParamsMDTS(8<<20))
+	for _, export := range []agent.ExportDesiredState{
+		desired(unlimited, nvmeofExportParamsMDTS(0)), exportFour, exportEight,
+	} {
+		if errs := handler.Reconcile(ctx, []agent.ExportDesiredState{export}); errs[0] != nil {
+			t.Fatalf("export %s: %v", export.VolumeID, errs[0])
+		}
+	}
+	if got := portMDTS(t, cfgRoot); got != "0" {
+		t.Fatalf("param_mdts before reboot = %q, want 0", got)
+	}
+
+	for _, order := range [][]agent.ExportDesiredState{{exportFour, exportEight}, {exportEight, exportFour}} {
+		if err := os.RemoveAll(filepath.Join(cfgRoot, "nvmet")); err != nil {
+			t.Fatal(err)
+		}
+		emulateMDTSKernel(t, handler, cfgRoot)
+		errs := handler.Reconcile(ctx, order)
+		for i, err := range errs {
+			if err != nil {
+				t.Fatalf("restore %s after %s: %v", order[i].VolumeID, order[0].VolumeID, err)
+			}
+		}
+		if got := portMDTS(t, cfgRoot); got != "10" {
+			t.Fatalf("param_mdts after restoring %s first = %q, want 10", order[0].VolumeID, got)
+		}
 	}
 }
 

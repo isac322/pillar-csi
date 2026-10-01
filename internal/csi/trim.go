@@ -338,31 +338,32 @@ func (t *trimmer) dueAt(rec *nodeStageState, fileModTime time.Time, key string) 
 }
 
 // target returns the volume ID and the staging path of rec.  Records
-// written before both were persisted fall back to legacyTarget.
+// written before both were persisted fall back to kubeletStagingTarget.
 func (t *trimmer) target(rec *nodeStageState, key string) (volumeID, stagingPath string, err error) {
 	if rec.VolumeID != "" && rec.StagingPath != "" {
 		return rec.VolumeID, rec.StagingPath, nil
 	}
-	return t.legacyTarget(key)
+	return kubeletStagingTarget(t.kubeletDriverDir, key)
 }
 
-// legacyTarget derives the volume ID and kubelet's staging path
-// <plugin dir>/<driver>/<sha256hex(volumeID)>/globalmount of a stage
-// record that lacks them.  The state file name is not invertible ("/" became
-// "_"), so the volume handle is read from the vol_data.json kubelet keeps
-// in each staging directory.  The path is only a candidate: the mount check
-// before every chunk still decides whether it is trimmed.
-func (t *trimmer) legacyTarget(key string) (volumeID, stagingPath string, err error) {
-	entries, err := os.ReadDir(t.kubeletDriverDir)
+// kubeletStagingTarget derives the volume ID and kubelet's staging path
+// <kubeletDriverDir>/<sha256hex(volumeID)>/globalmount of the stage record
+// key when the record lacks them.  The state file name is not invertible
+// ("/" became "_"), so the volume handle is read from the vol_data.json
+// kubelet keeps in each staging directory.  The path is only a candidate:
+// the periodic trim's mount check before every chunk still decides whether
+// it is trimmed.
+func kubeletStagingTarget(kubeletDriverDir, key string) (volumeID, stagingPath string, err error) {
+	entries, err := os.ReadDir(kubeletDriverDir)
 	if err != nil {
-		return "", "", fmt.Errorf("list kubelet staging directories in %q: %w", t.kubeletDriverDir, err)
+		return "", "", fmt.Errorf("list kubelet staging directories in %q: %w", kubeletDriverDir, err)
 	}
 	var errs []error
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
 		}
-		dataPath := filepath.Join(t.kubeletDriverDir, e.Name(), kubeletVolDataFile)
+		dataPath := filepath.Join(kubeletDriverDir, e.Name(), kubeletVolDataFile)
 		handle, readErr := readKubeletVolumeHandle(dataPath)
 		if errors.Is(readErr, fs.ErrNotExist) {
 			continue
@@ -375,10 +376,10 @@ func (t *trimmer) legacyTarget(key string) (volumeID, stagingPath string, err er
 		if stateFileKey(handle) != key || e.Name() != hex.EncodeToString(sum[:]) {
 			continue
 		}
-		return handle, filepath.Join(t.kubeletDriverDir, e.Name(), kubeletGlobalMountDir), nil
+		return handle, filepath.Join(kubeletDriverDir, e.Name(), kubeletGlobalMountDir), nil
 	}
 	notFound := fmt.Errorf("no kubelet staging directory in %q records a volume handle for stage state %q",
-		t.kubeletDriverDir, key)
+		kubeletDriverDir, key)
 	return "", "", errors.Join(append([]error{notFound}, errs...)...) //nolint:wrapcheck // items wrapped
 }
 

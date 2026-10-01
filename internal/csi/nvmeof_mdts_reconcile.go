@@ -34,6 +34,13 @@ import (
 // reconciler's passes over the staged NVMe-oF volumes.
 const nvmeofTransferLimitInterval = 30 * time.Second
 
+// nvmeofMDTSRecheckPasses bounds how long a non-zero MDTS answer is
+// trusted: the live controllers are asked again after this many passes (5
+// minutes), even when no pass saw them change.  A controller that
+// reconnects between two passes keeps its name, and the target may answer
+// differently after it restarted, e.g. on an older kernel.
+const nvmeofMDTSRecheckPasses = 10
+
 // transferLimitReconciler keeps the NVMe-oF request size cap (see
 // LimitNVMeoFTransferSize) on the namespace devices of every staged NVMe-oF
 // volume.  Kubelet does not repeat NodeStageVolume for a volume that stays
@@ -49,15 +56,34 @@ type transferLimitReconciler struct {
 	log       *slog.Logger
 	tryLock   func(volumeID string) (unlock func(), ok bool)
 
-	// advertised maps a stage state key to the subsystem, limit and live
-	// controllers (see limitSignature) last found to advertise an MDTS.
-	// The kernel already splits requests for such a subsystem, so its
-	// controllers are not asked again until the signature changes.
-	advertised map[string]string
+	// kubeletDriverDir is kubelet's staging directory of this driver, read
+	// to find the volume ID of a stage record written before the ID was
+	// persisted (see kubeletStagingTarget).
+	kubeletDriverDir string
 
-	// reported maps a stage state key to the last outcome logged for it,
-	// so an unchanged failure or pending reason is logged once.
-	reported map[string]string
+	// passes counts the passes run so far.
+	passes uint64
+
+	// advertised maps a stage state key to the subsystem, limit and live
+	// controllers (see limitSignature) last found to advertise an MDTS, and
+	// the pass from which that answer is stale.  The kernel already splits
+	// requests for such a subsystem, so its controllers are not asked again
+	// until the signature changes, the answer is stale, or a pass finds the
+	// subsystem disconnected or without a live controller.
+	advertised map[string]advertisedMDTS
+
+	// reported maps a stage state key to the outcomes last logged for it,
+	// per device for a cap that failed on some devices and under "" for
+	// any other outcome, so an unchanged failure or pending reason is
+	// logged once.
+	reported map[string]map[string]string
+}
+
+// advertisedMDTS is a cached answer that the live controllers of a stage
+// record's subsystem advertise an MDTS.
+type advertisedMDTS struct {
+	signature string
+	staleAt   uint64 // the pass number from which it is asked again
 }
 
 // nvmeofLimitTarget is what the reconciler applies for one stage record.
@@ -69,11 +95,14 @@ type nvmeofLimitTarget struct {
 
 // StartNVMeoFTransferLimitReconciler starts, in the background, a pass
 // over the NVMe-oF stage records now and then every 30 seconds until ctx
-// is canceled; see transferLimitReconciler.  It returns at once: a target
-// that does not answer Identify Controller never delays the caller.  The
+// is canceled; see transferLimitReconciler.  Kubelet's staging directories
+// of the driver are found from driverName.  It returns at once: a target that
+// does not answer Identify Controller never delays the caller.  The
 // returned stop cancels the loop and waits for the pass in progress.
-func (n *NodeServer) StartNVMeoFTransferLimitReconciler(ctx context.Context, log *slog.Logger) (stop func()) {
-	r := n.newTransferLimitReconciler(log)
+func (n *NodeServer) StartNVMeoFTransferLimitReconciler(
+	ctx context.Context, driverName string, log *slog.Logger,
+) (stop func()) {
+	r := n.newTransferLimitReconciler(log, filepath.Join(kubeletCSIPluginDir, driverName))
 	if r == nil {
 		return func() {}
 	}
@@ -87,20 +116,21 @@ func (n *NodeServer) StartNVMeoFTransferLimitReconciler(ctx context.Context, log
 
 // newTransferLimitReconciler returns the reconciler of n's NVMe-oF
 // handler, or nil when the handler cannot cap a connected subsystem.
-func (n *NodeServer) newTransferLimitReconciler(log *slog.Logger) *transferLimitReconciler {
+func (n *NodeServer) newTransferLimitReconciler(log *slog.Logger, kubeletDriverDir string) *transferLimitReconciler {
 	limiter, ok := n.handlers[ProtocolNVMeoFTCP].(NVMeoFTransferLimiter)
 	if !ok {
 		return nil
 	}
 	sysfsRoot, readMDTS := limiter.TransferLimitSysfs()
 	return &transferLimitReconciler{
-		n:          n,
-		sysfsRoot:  sysfsRoot,
-		readMDTS:   readMDTS,
-		log:        log,
-		tryLock:    n.volumeLocks.tryLock,
-		advertised: make(map[string]string),
-		reported:   make(map[string]string),
+		n:                n,
+		sysfsRoot:        sysfsRoot,
+		readMDTS:         readMDTS,
+		log:              log,
+		tryLock:          n.volumeLocks.tryLock,
+		kubeletDriverDir: kubeletDriverDir,
+		advertised:       make(map[string]advertisedMDTS),
+		reported:         make(map[string]map[string]string),
 	}
 }
 
@@ -129,6 +159,7 @@ func (r *transferLimitReconciler) start(ctx context.Context, ticks <-chan time.T
 // pass reconciles every stage record once and forgets the records that
 // are gone.
 func (r *transferLimitReconciler) pass(ctx context.Context) {
+	r.passes++
 	entries, err := os.ReadDir(r.n.stateDir)
 	if errors.Is(err, fs.ErrNotExist) {
 		r.prune(nil) // nothing is staged on this node
@@ -172,7 +203,9 @@ func (r *transferLimitReconciler) prune(seen map[string]bool) {
 // its limit and every live controller reports MDTS 0.  A device already at
 // or below the limit costs no admin command.  A record whose subsystem is
 // disconnected, has no live controller or no namespace device yet, or
-// whose volume lock is held by a CSI call stays pending for the next pass.
+// whose volume lock is held by a CSI call stays pending for the next pass,
+// and its cached MDTS answer is dropped: the controllers that answer after
+// a reconnect may keep their names but not their MDTS.
 //
 // The MDTS is read without the volume lock (Identify Controller can block
 // for its timeout); the devices are then capped under the lock after
@@ -216,7 +249,7 @@ func (r *transferLimitReconciler) reconcile(key string) {
 		return
 	}
 	sig := limitSignature(t, ctrls)
-	if r.advertised[key] == sig {
+	if a, ok := r.advertised[key]; ok && a.signature == sig && r.passes < a.staleAt {
 		return
 	}
 	advertised, err := controllersAdvertiseMDTS(ctrls, r.readMDTS)
@@ -225,7 +258,7 @@ func (r *transferLimitReconciler) reconcile(key string) {
 		return
 	}
 	if advertised {
-		r.advertised[key] = sig
+		r.advertised[key] = advertisedMDTS{signature: sig, staleAt: r.passes + nvmeofMDTSRecheckPasses}
 		delete(r.reported, key)
 		return
 	}
@@ -265,7 +298,8 @@ func (r *transferLimitReconciler) capLocked(key string, t nvmeofLimitTarget, wan
 
 // target reads the stage record key and returns what to apply, or false
 // for a record that is gone, not an NVMe-oF remote attach, or has no
-// limit.  An unreadable record is logged.
+// limit.  An unreadable record, and one whose volume ID cannot be
+// determined, is logged.
 func (r *transferLimitReconciler) target(key string) (nvmeofLimitTarget, bool) {
 	stateFile := filepath.Join(r.n.stateDir, key+stateFileExt)
 	data, err := os.ReadFile(stateFile) //nolint:gosec // G304: entry of the controlled stateDir
@@ -291,13 +325,34 @@ func (r *transferLimitReconciler) target(key string) (nvmeofLimitTarget, bool) {
 	if size == 0 {
 		return nvmeofLimitTarget{}, false
 	}
-	// A record written before the volume ID was persisted has only its
-	// state key; NodeStageVolume adds the volume ID when it sees it again.
-	volumeID := state.VolumeID
-	if volumeID == "" {
-		volumeID = key
+	volumeID, err := r.volumeID(key, state)
+	if err != nil {
+		r.report(key, "skip:"+err.Error(), r.log.Warn,
+			"NVMe-oF transfer limit skipped: cannot determine the volume ID of a stage record written "+
+				"before it was recorded; the next NodeStageVolume of the volume records it",
+			"stateFile", stateFile, "subsystem", state.NVMeoF.SubsysNQN, "error", err)
+		return nvmeofLimitTarget{}, false
 	}
 	return nvmeofLimitTarget{volumeID: volumeID, nqn: state.NVMeoF.SubsysNQN, size: size}, true
+}
+
+// volumeID returns the CSI volume ID of the stage record key, the ID
+// NodeStageVolume and NodeUnstageVolume lock the volume by.  A record
+// written before the ID was persisted has only its state key, which
+// stateFileKey derived by replacing "/" with "_": a key without "_" is the
+// ID itself, any other is looked up in kubelet's staging directories.
+func (r *transferLimitReconciler) volumeID(key string, state *nodeStageState) (string, error) {
+	if state.VolumeID != "" {
+		return state.VolumeID, nil
+	}
+	if !strings.Contains(key, "_") {
+		return key, nil
+	}
+	volumeID, _, err := kubeletStagingTarget(r.kubeletDriverDir, key)
+	if err != nil {
+		return "", err
+	}
+	return volumeID, nil
 }
 
 // decodeStageRecord decodes a stage state file, converting the Phase 1
@@ -342,37 +397,43 @@ func limitSignature(t nvmeofLimitTarget, ctrls []string) string {
 	return t.nqn + "\x00" + strconv.FormatInt(int64(t.size), 10) + "\x00" + strings.Join(ctrls, ",")
 }
 
-// pending logs, once per reason, that the record waits for the next pass.
+// pending logs, once per reason, that the record waits for the next pass,
+// and drops its cached MDTS answer.
 func (r *transferLimitReconciler) pending(key string, t nvmeofLimitTarget, reason string) {
+	delete(r.advertised, key)
 	r.report(key, "pending:"+reason, r.log.Info, "NVMe-oF transfer limit pending; retrying",
 		"volume", t.volumeID, "subsystem", t.nqn, "reason", reason,
 		"retryInterval", nvmeofTransferLimitInterval.String())
 }
 
-// fail logs err at error level once while it stays the same: one line per
-// device that could not be capped, or one line for any other failure.
+// fail logs err at error level: one line per device that could not be
+// capped, each only while its own error changes, or one line for any other
+// failure while it stays the same.
 func (r *transferLimitReconciler) fail(key string, t nvmeofLimitTarget, err error) {
-	outcome := "error:" + err.Error()
-	if r.reported[key] == outcome {
-		return
-	}
-	r.reported[key] = outcome
 	const msg = "reconcile NVMe-oF transfer limit: cap request size"
 	devErrs := nvmeofDeviceLimitErrors(err)
 	if len(devErrs) == 0 {
-		r.log.Error(msg, "volume", t.volumeID, "subsystem", t.nqn, "device", t.nqn, "error", err)
+		r.report(key, "error:"+err.Error(), r.log.Error, msg,
+			"volume", t.volumeID, "subsystem", t.nqn, "device", t.nqn, "error", err)
 		return
 	}
+	prev := r.reported[key]
+	cur := make(map[string]string, len(devErrs))
 	for _, d := range devErrs {
-		r.log.Error(msg, "volume", t.volumeID, "subsystem", t.nqn, "device", d.Device, "error", d.Err)
+		outcome := "error:" + d.Err.Error()
+		cur[d.Device] = outcome
+		if prev[d.Device] != outcome {
+			r.log.Error(msg, "volume", t.volumeID, "subsystem", t.nqn, "device", d.Device, "error", d.Err)
+		}
 	}
+	r.reported[key] = cur
 }
 
 // report logs msg with logf unless outcome is what key last reported.
 func (r *transferLimitReconciler) report(key, outcome string, logf func(string, ...any), msg string, args ...any) {
-	if r.reported[key] == outcome {
+	if prev := r.reported[key]; len(prev) == 1 && prev[""] == outcome {
 		return
 	}
-	r.reported[key] = outcome
+	r.reported[key] = map[string]string{"": outcome}
 	logf(msg, args...)
 }

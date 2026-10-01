@@ -570,18 +570,21 @@ type NvmeofTcpExportParams struct {
 	// not set, a port without linked subsystems is reset to the transport
 	// default and an active port is used as is.
 	InCapsuleDataSize int32 `protobuf:"varint,4,opt,name=in_capsule_data_size,json=inCapsuleDataSize,proto3" json:"in_capsule_data_size,omitempty"`
-	// Maximum data transfer size in bytes the target advertises to hosts
-	// (Identify Controller MDTS), applied as the nvmet port's param_mdts.
-	// 0 means no limit; any other value is a power of two of at least 8192
-	// (param_mdts holds log2(size / 4096), and its value 0 means no limit).
-	// Unset (a controller that predates the field) accepts the port's value.
-	// Like in_capsule_data_size the value belongs to the port shared by every
-	// volume exported on the same bind_address and port and can change only
-	// while no subsystem is linked to it: ExportVolume writes it to a port
-	// without linked subsystems and fails with FAILED_PRECONDITION when the
-	// port already serves other volumes with a different value.  A kernel
-	// without param_mdts (Linux < 7.1) cannot advertise a limit; the export
-	// then proceeds and hosts cap their own request size.
+	// Maximum data transfer size in bytes the target may advertise to hosts
+	// at most (Identify Controller MDTS), applied as the nvmet port's
+	// param_mdts.  0 means no limit; any other value is a power of two of at
+	// least 8192 (param_mdts holds log2(size / 4096), and its value 0 means
+	// no limit).  Unset (a controller that predates the field) accepts the
+	// port's value.  Like in_capsule_data_size the value belongs to the port
+	// shared by every volume exported on the same bind_address and port and
+	// can change only while no subsystem is linked to it: ExportVolume writes
+	// it to a port without linked subsystems and fails with
+	// FAILED_PRECONDITION only when the port already advertises a larger
+	// non-zero limit; a smaller one only makes commands smaller.
+	// ReconcileState sets an idle port to the smallest non-zero value among
+	// the exports it restores on the port.  A kernel without param_mdts
+	// (Linux < 7.1) cannot advertise a limit; the export then proceeds and
+	// hosts cap their own request size.
 	MaxDataTransferSize *int32 `protobuf:"varint,5,opt,name=max_data_transfer_size,json=maxDataTransferSize,proto3,oneof" json:"max_data_transfer_size,omitempty"`
 	unknownFields       protoimpl.UnknownFields
 	sizeCache           protoimpl.SizeCache
