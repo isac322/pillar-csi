@@ -45,13 +45,16 @@ jobs:
         uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            .github/measure-cache-salt
           cache: true
 
       - name: Cache upstream External Storage e2e bundle
         uses: actions/cache@v6
         with:
           path: ~/.cache/pillar-csi/external-e2e
-          key: external-e2e-${{ env.K8S_VERSION }}-${{ runner.os }}-${{ runner.arch }}
+          key: measure-srcab1001-a-external-e2e-${{ env.K8S_VERSION }}-${{ runner.os }}-${{ runner.arch }}
 
       - name: Install Kind ${{ env.KIND_VERSION }}
         uses: helm/kind-action@v1

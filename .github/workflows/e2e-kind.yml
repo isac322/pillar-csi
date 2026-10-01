@@ -49,13 +49,16 @@ jobs:
         uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            .github/measure-cache-salt
           cache: true
 
       - name: Cache pinned Kind e2e tools
         uses: actions/cache@v6
         with:
           path: bin/
-          key: kind-e2e-tools-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Makefile', 'go.mod', 'go.sum') }}
+          key: measure-srcab1001-a-kind-e2e-tools-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Makefile', 'go.mod', 'go.sum') }}
 
       # ── install tooling ────────────────────────────────────────────────────
       # install_only=true: lay down the kind binary without creating a cluster.
