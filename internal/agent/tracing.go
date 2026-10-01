@@ -34,6 +34,7 @@ import (
 // Span-specific error.type values of the nvmet spans (SP7).
 const (
 	errorTypePortInlineDataSizeConflict = "port_inline_data_size_conflict"
+	errorTypePortMDTSConflict           = "port_mdts_conflict"
 	errorTypeDeviceHeld                 = "device_held"
 )
 
@@ -165,6 +166,8 @@ func setNvmetSpanError(span trace.Span, configfsRoot string, err error) {
 	switch {
 	case errors.Is(err, nvmeof.ErrPortInlineDataSizeConflict):
 		errorType = errorTypePortInlineDataSizeConflict
+	case errors.Is(err, nvmeof.ErrPortMDTSConflict):
+		errorType = errorTypePortMDTSConflict
 	case errors.Is(err, nvmeof.ErrDeviceHeld):
 		errorType = errorTypeDeviceHeld
 	}

@@ -271,7 +271,7 @@ ReconcileState event `pillar_csi.reconcile.item_failed`: one per failed volume, 
 - **SERVER spans (SP1, SP5, SP9):** status follows otelgrpc. In addition, every non-OK call sets `error.type` to the canonical code, e.g. `FAILED_PRECONDITION`, so client errors are searchable too: `{ span.error.type != nil }`.
 - **CLIENT spans (SP2):** status Error and `rpc.response.status_code` on any non-OK code.
 - **INTERNAL spans:** status Error with the message (up to 512 bytes), and `error.type` set to the first that applies:
-  - the span's own value: SP6 and SP11 `timeout`; SP7 `port_inline_data_size_conflict` or `device_held`; SP8 `exit_<code>`, `start_error`, `context_canceled`, `deadline_exceeded`; SP10 the errno of the `/dev/nvme-fabrics` write (`EIO` usually means the target rejected this host's NQN);
+  - the span's own value: SP6 and SP11 `timeout`; SP7 `port_inline_data_size_conflict`, `port_mdts_conflict` or `device_held`; SP8 `exit_<code>`, `start_error`, `context_canceled`, `deadline_exceeded`; SP10 the errno of the `/dev/nvme-fabrics` write (`EIO` usually means the target rejected this host's NQN);
   - the canonical gRPC code for a gRPC status error;
   - the errno name, such as `EBUSY`;
   - `timeout` for a context deadline;

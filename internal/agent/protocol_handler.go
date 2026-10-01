@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"time"
 
@@ -153,11 +154,9 @@ func (h *NVMeoFTCPAgentHandler) Export(
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "Export: nvmeof_tcp export params required")
 	}
-	inlineDataSize := nvmeofInlineDataSize(params.ProtocolParams)
-	if inlineDataSize != nil && *inlineDataSize < nvmeof.MinInlineDataSize {
-		return nil, status.Errorf(codes.InvalidArgument,
-			"Export: volume %q: in_capsule_data_size %d is below the minimum %d",
-			params.VolumeID, *inlineDataSize, nvmeof.MinInlineDataSize)
+	inlineDataSize, maxDataTransferSize, err := nvmeofPortParams(params.VolumeID, params.ProtocolParams)
+	if err != nil {
+		return nil, err
 	}
 
 	devicePath, err := h.server.resolveExportDevicePath(params.VolumeID, params.DevicePath)
@@ -174,15 +173,17 @@ func (h *NVMeoFTCPAgentHandler) Export(
 		return nil, err
 	}
 	target := &nvmeof.NvmetTarget{
-		ConfigfsRoot:   h.server.configfsRoot,
-		SubsystemNQN:   targetID,
-		NamespaceID:    1,
-		DevicePath:     devicePath,
-		BindAddress:    bindAddress,
-		Port:           port,
-		ACLEnabled:     params.ACLEnabled,
-		InlineDataSize: inlineDataSize,
-		DeviceClaimer:  h.server.deviceClaimer,
+		ConfigfsRoot:        h.server.configfsRoot,
+		SubsystemNQN:        targetID,
+		NamespaceID:         1,
+		DevicePath:          devicePath,
+		BindAddress:         bindAddress,
+		Port:                port,
+		ACLEnabled:          params.ACLEnabled,
+		InlineDataSize:      inlineDataSize,
+		MaxDataTransferSize: maxDataTransferSize,
+		MDTSUnsupported:     h.server.reportMDTSUnsupported,
+		DeviceClaimer:       h.server.deviceClaimer,
 	}
 
 	unlock := h.server.lockTarget(ctx, agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP, targetID)
@@ -195,7 +196,9 @@ func (h *NVMeoFTCPAgentHandler) Export(
 		}
 		target.Identity = identity
 		applyErr := traceNvmet(ctx, telemetry.SpanAgentNVMetApply, target, "", target.Apply)
-		if errors.Is(applyErr, nvmeof.ErrPortInlineDataSizeConflict) || errors.Is(applyErr, nvmeof.ErrDeviceHeld) {
+		if errors.Is(applyErr, nvmeof.ErrPortInlineDataSizeConflict) ||
+			errors.Is(applyErr, nvmeof.ErrPortMDTSConflict) ||
+			errors.Is(applyErr, nvmeof.ErrDeviceHeld) {
 			return status.Errorf(codes.FailedPrecondition, "ExportVolume: %v", applyErr)
 		}
 		if applyErr != nil {
@@ -359,9 +362,13 @@ func localAttachStatus(volumeID string, local bool, err error) error {
 //     namespace) without creating or linking its port;
 //  2. link: create the port if needed and link every prepared export in one
 //     tight loop, in request order.  The first link enables a port and
-//     freezes its param_inline_data_size, so the caller orders exports whose
-//     in-capsule data size must win first; a later export requiring another
-//     value fails with nvmeof.ErrPortInlineDataSizeConflict.
+//     freezes its param_inline_data_size and param_mdts, so the caller
+//     orders exports whose in-capsule data size must win first; a later
+//     export requiring another value fails with
+//     nvmeof.ErrPortInlineDataSizeConflict.  The maximum data transfer size
+//     does not depend on the order: every export carries the smallest
+//     limit requested on its port (see setPortMDTSFloors), which the first
+//     link writes, and every export allows a port limit at most its own.
 //
 // The target locks of all entries are held across both phases.  The device
 // check runs inside the fenced mutation so a destroyed backend never gets a
@@ -381,6 +388,7 @@ func (h *NVMeoFTCPAgentHandler) Reconcile(
 			recordReconcileItemFailed(ctx, export.VolumeID, reconcilePhasePrepare, errs[i])
 		}
 	}
+	setPortMDTSFloors(targets)
 
 	unlock := h.lockTargets(ctx, targets)
 	defer unlock()
@@ -422,16 +430,18 @@ func (h *NVMeoFTCPAgentHandler) reconcileTarget(export ExportDesiredState) (*nvm
 		return nil, err
 	}
 	target := &nvmeof.NvmetTarget{
-		ConfigfsRoot:   h.server.configfsRoot,
-		SubsystemNQN:   targetID,
-		NamespaceID:    1,
-		DevicePath:     devicePath,
-		BindAddress:    bindAddress,
-		Port:           port,
-		ACLEnabled:     export.ACLEnabled,
-		InlineDataSize: nvmeofInlineDataSize(export.ProtocolParams),
-		LocalAttach:    export.LocalAttach,
-		DeviceClaimer:  h.server.deviceClaimer,
+		ConfigfsRoot:        h.server.configfsRoot,
+		SubsystemNQN:        targetID,
+		NamespaceID:         1,
+		DevicePath:          devicePath,
+		BindAddress:         bindAddress,
+		Port:                port,
+		ACLEnabled:          export.ACLEnabled,
+		InlineDataSize:      nvmeofInlineDataSize(export.ProtocolParams),
+		MaxDataTransferSize: nvmeofMaxDataTransferSize(export.ProtocolParams),
+		MDTSUnsupported:     h.server.reportMDTSUnsupported,
+		LocalAttach:         export.LocalAttach,
+		DeviceClaimer:       h.server.deviceClaimer,
 	}
 	// Without ACL enforcement allowed_hosts has no effect, and Prepare would
 	// close the subsystem (attr_allow_any_host=0) for a non-empty host list.
@@ -439,6 +449,49 @@ func (h *NVMeoFTCPAgentHandler) reconcileTarget(export ExportDesiredState) (*nvm
 		target.AllowedHosts = export.AllowedInitiators
 	}
 	return target, nil
+}
+
+// setPortMDTSFloors sets nvmeof.NvmetTarget.PortMDTSFloor of every non-nil
+// target to the smallest non-zero MaxDataTransferSize among the targets on
+// the same address and port.  0 (no limit) counts as larger than any limit,
+// and a target without a value (an export spec recorded before the field
+// existed) or with an invalid one, which its Prepare rejects, imposes none.
+// Whichever export a restore links first then sets an idle port to a limit
+// every other export on it allows, so a restore never fails because the
+// volumes sharing a port asked for different limits.
+func setPortMDTSFloors(targets []*nvmeof.NvmetTarget) {
+	type endpoint struct {
+		address string
+		port    int32
+	}
+	key := func(t *nvmeof.NvmetTarget) endpoint {
+		port := t.Port
+		if port == 0 {
+			port = nvmeof.DefaultPort
+		}
+		return endpoint{t.BindAddress, port}
+	}
+	floors := make(map[endpoint]int32)
+	for _, t := range targets {
+		if t == nil || t.MaxDataTransferSize == nil {
+			continue
+		}
+		size := *t.MaxDataTransferSize
+		if size == 0 || !nvmeof.ValidMaxDataTransferSize(size) {
+			continue
+		}
+		if cur, ok := floors[key(t)]; !ok || size < cur {
+			floors[key(t)] = size
+		}
+	}
+	for _, t := range targets {
+		if t == nil {
+			continue
+		}
+		if floor, ok := floors[key(t)]; ok {
+			t.PortMDTSFloor = &floor
+		}
+	}
 }
 
 // lockTargets acquires the target locks of every non-nil target once, in
@@ -579,6 +632,51 @@ func nvmeofInlineDataSize(protocolParams *agentv1.ExportParams) *int32 {
 		return &v
 	}
 	return nil
+}
+
+// nvmeofMaxDataTransferSize returns the maximum data transfer size the
+// export requires its port to advertise, or nil when the caller predates
+// max_data_transfer_size and accepts the port's value.  0 is a request for
+// no limit, not an absent value.
+func nvmeofMaxDataTransferSize(protocolParams *agentv1.ExportParams) *int32 {
+	v := protocolParams.GetNvmeofTcp().MaxDataTransferSize
+	if v == nil {
+		return nil
+	}
+	return new(*v)
+}
+
+// nvmeofPortParams returns the port parameters an export requires, rejecting
+// invalid values with InvalidArgument before any configfs change.
+func nvmeofPortParams(
+	volumeID string,
+	protocolParams *agentv1.ExportParams,
+) (inlineDataSize, maxDataTransferSize *int32, err error) {
+	inlineDataSize = nvmeofInlineDataSize(protocolParams)
+	if inlineDataSize != nil && *inlineDataSize < nvmeof.MinInlineDataSize {
+		return nil, nil, status.Errorf(codes.InvalidArgument,
+			"Export: volume %q: in_capsule_data_size %d is below the minimum %d",
+			volumeID, *inlineDataSize, nvmeof.MinInlineDataSize)
+	}
+	maxDataTransferSize = nvmeofMaxDataTransferSize(protocolParams)
+	if maxDataTransferSize != nil && !nvmeof.ValidMaxDataTransferSize(*maxDataTransferSize) {
+		return nil, nil, status.Errorf(codes.InvalidArgument,
+			"Export: volume %q: max_data_transfer_size %d must be 0 (no limit) or a power of two from %d to %d",
+			volumeID, *maxDataTransferSize, nvmeof.MinMaxDataTransferSize, nvmeof.MaxMaxDataTransferSize)
+	}
+	return inlineDataSize, maxDataTransferSize, nil
+}
+
+// reportMDTSUnsupported is the nvmeof.NvmetTarget.MDTSUnsupported callback.
+// It warns once per agent process, since a missing param_mdts is a fact
+// about the kernel and every NVMe/TCP export would repeat it.
+func (s *Server) reportMDTSUnsupported(port string) {
+	s.mdtsUnsupportedOnce.Do(func() {
+		slog.Warn("nvmet target cannot advertise a maximum data transfer size: the kernel has no "+
+			"ports/<id>/param_mdts (Linux < 7.1), so NVMe/TCP hosts see MDTS 0 and pillar-csi nodes "+
+			"cap queue/max_sectors_kb to the volume's maxDataTransferSize themselves",
+			"port", port)
+	})
 }
 
 func nvmeofEndpoint(

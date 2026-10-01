@@ -44,7 +44,7 @@ Only tunable fields are accepted above the base:
 |---|---|
 | `backend` with `zfs` | `properties` |
 | `backend` with `lvm` | `provisioningMode` (`linear` or `thin`) |
-| `protocol` with `nvmeofTcp` | `maxQueueSize`, `inCapsuleDataSize`, `ctrlLossTmo`, `reconnectDelay` |
+| `protocol` with `nvmeofTcp` | `maxQueueSize`, `inCapsuleDataSize`, `maxDataTransferSize`, `ctrlLossTmo`, `reconnectDelay` |
 | `protocol` with `iscsi` | `loginTimeout`, `replacementTimeout`, `noopOutInterval`, `noopOutTimeout` |
 | `filesystem` | `fsType` (`ext4` or `xfs`), `mkfsOptions`, `mountOptions`, `periodicTrim` |
 

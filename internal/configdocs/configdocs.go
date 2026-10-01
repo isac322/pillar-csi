@@ -127,12 +127,13 @@ var protocolMembers = map[string]memberSpec{
 	memberNVMeOFTCP: {
 		name: memberNVMeOFTCP,
 		fields: map[string]fieldSpec{
-			"port":              {kind: fieldStructural, validate: intRange(1, 65535)},
-			"acl":               {kind: fieldStructural, validate: boolValue},
-			"maxQueueSize":      {kind: fieldTunable, validate: intRange(16, 1024)},
-			"inCapsuleDataSize": {kind: fieldTunable, validate: intRange(1024, math.MaxInt32)},
-			"ctrlLossTmo":       {kind: fieldTunable, validate: intRange(0, math.MaxInt32)},
-			"reconnectDelay":    {kind: fieldTunable, validate: intRange(0, math.MaxInt32)},
+			"port":                {kind: fieldStructural, validate: intRange(1, 65535)},
+			"acl":                 {kind: fieldStructural, validate: boolValue},
+			"maxQueueSize":        {kind: fieldTunable, validate: intRange(16, 1024)},
+			"inCapsuleDataSize":   {kind: fieldTunable, validate: intRange(1024, math.MaxInt32)},
+			"maxDataTransferSize": {kind: fieldTunable, validate: maxDataTransferSize},
+			"ctrlLossTmo":         {kind: fieldTunable, validate: intRange(0, math.MaxInt32)},
+			"reconnectDelay":      {kind: fieldTunable, validate: intRange(0, math.MaxInt32)},
 		},
 	},
 	memberISCSI: {
@@ -503,6 +504,21 @@ func intRange(minimum, maximum int64) func(path string, v any) error {
 		}
 		return nil
 	}
+}
+
+// maxDataTransferSize accepts 0 (no limit) or a power of two from
+// pillarv1alpha1.MinMaxDataTransferSize to MaxMaxDataTransferSize: the nvmet
+// port encodes the limit as a power-of-two multiple of 4 KiB.
+func maxDataTransferSize(path string, v any) error {
+	n, ok := int64Value(v)
+	if !ok {
+		return fmt.Errorf("%s: expected an integer, got %s", path, yamlKind(v))
+	}
+	if !pillarv1alpha1.IsValidMaxDataTransferSize(n) {
+		return fmt.Errorf("%s: %d must be 0 (no limit) or a power of two from %d to %d",
+			path, n, pillarv1alpha1.MinMaxDataTransferSize, pillarv1alpha1.MaxMaxDataTransferSize)
+	}
+	return nil
 }
 
 func stringMap(path string, v any) error {

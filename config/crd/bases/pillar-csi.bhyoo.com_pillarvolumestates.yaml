@@ -395,6 +395,53 @@ spec:
                             format: int32
                             minimum: 1024
                             type: integer
+                          maxDataTransferSize:
+                            description: |-
+                              maxDataTransferSize is the largest data transfer, in bytes, of one
+                              NVMe I/O command (MDTS).  Unset resolves to 4194304 (4 MiB); 0 means
+                              no limit.  Any other value is a power of two from 8192 to 1073741824.
+
+                              The target advertises it through the nvmet port's param_mdts on
+                              Linux 7.1 and later.  Like inCapsuleDataSize it is a property of the
+                              listening port, shared by every volume exported on the same storage
+                              node address and port, but a volume's value is an upper bound: a port
+                              advertising a smaller limit only makes commands smaller.  Exporting a
+                              volume therefore fails only when the port already advertises a larger
+                              limit than the volume's (non-zero) value.  A port that advertises no
+                              limit accepts any value, and when the agent restores the exports of a
+                              port, for example after the storage node rebooted, it sets the port to
+                              the smallest value among them before exporting any.  An older target
+                              kernel cannot advertise a limit (MDTS 0); the node then caps the
+                              volume's queue/max_sectors_kb to this size itself, which keeps large
+                              writes from failing on a storage node whose memory is too fragmented
+                              to allocate a whole command's scatterlist.  A node whose target
+                              advertises any limit leaves the device unchanged.  The node cannot set
+                              queue/max_sectors_kb below one memory page, so on a worker with
+                              16 KiB or 64 KiB pages a non-zero value smaller than the page size
+                              fails NodeStageVolume with InvalidArgument instead of being rounded
+                              up.
+                            enum:
+                            - 0
+                            - 8192
+                            - 16384
+                            - 32768
+                            - 65536
+                            - 131072
+                            - 262144
+                            - 524288
+                            - 1048576
+                            - 2097152
+                            - 4194304
+                            - 8388608
+                            - 16777216
+                            - 33554432
+                            - 67108864
+                            - 134217728
+                            - 268435456
+                            - 536870912
+                            - 1073741824
+                            format: int32
+                            type: integer
                           maxQueueSize:
                             description: |-
                               maxQueueSize is the I/O queue depth the initiator requests for each
@@ -584,6 +631,33 @@ spec:
                       value.  NVMe-oF/TCP only.
                     format: int32
                     minimum: 1024
+                    type: integer
+                  maxDataTransferSize:
+                    description: |-
+                      maxDataTransferSize is the NVMe-oF/TCP maximum data transfer size in
+                      bytes (0 = no limit) the export allows its port to advertise at most;
+                      absent when the export accepts the port's value.  NVMe-oF/TCP only.
+                    enum:
+                    - 0
+                    - 8192
+                    - 16384
+                    - 32768
+                    - 65536
+                    - 131072
+                    - 262144
+                    - 524288
+                    - 1048576
+                    - 2097152
+                    - 4194304
+                    - 8388608
+                    - 16777216
+                    - 33554432
+                    - 67108864
+                    - 134217728
+                    - 268435456
+                    - 536870912
+                    - 1073741824
+                    format: int32
                     type: integer
                   port:
                     description: |-

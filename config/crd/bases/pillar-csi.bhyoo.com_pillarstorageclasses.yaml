@@ -220,6 +220,34 @@ spec:
                             format: int32
                             minimum: 1024
                             type: integer
+                          maxDataTransferSize:
+                            description: |-
+                              maxDataTransferSize overrides the protocol-level maxDataTransferSize
+                              (bytes per NVMe I/O command; 0 or a power of two from 8192 to
+                              1073741824; shared by every volume exported on the same storage node
+                              address and port).
+                            enum:
+                            - 0
+                            - 8192
+                            - 16384
+                            - 32768
+                            - 65536
+                            - 131072
+                            - 262144
+                            - 524288
+                            - 1048576
+                            - 2097152
+                            - 4194304
+                            - 8388608
+                            - 16777216
+                            - 33554432
+                            - 67108864
+                            - 134217728
+                            - 268435456
+                            - 536870912
+                            - 1073741824
+                            format: int32
+                            type: integer
                           maxQueueSize:
                             description: |-
                               maxQueueSize overrides the protocol-level maxQueueSize (the initiator's

@@ -41,11 +41,14 @@ import (
 
 // newTestHandler constructs an NVMeoFTCPHandler with fake sysfs and fabricsDev
 // paths using newNVMeoFTCPHandlerWithConnector.  Poll timeout is set to 100 ms
-// and poll interval to 10 ms to keep unit tests fast without hanging.
+// and poll interval to 10 ms to keep unit tests fast without hanging.  The
+// fake controllers advertise an MDTS, so Attach leaves max_sectors_kb alone
+// unless a test replaces readMDTS.
 func newTestHandler(sysfsRoot, fabricsDev string) *NVMeoFTCPHandler {
 	h := newNVMeoFTCPHandlerWithConnector(&NVMeoFConnector{sysfsRoot: sysfsRoot, fabricsDev: fabricsDev})
 	h.pollTimeout = 100 * time.Millisecond
 	h.pollInterval = 10 * time.Millisecond
+	h.readMDTS = func(string) (uint8, error) { return 5, nil }
 	return h
 }
 

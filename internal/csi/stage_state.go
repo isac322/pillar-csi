@@ -110,8 +110,9 @@ type nodeStageState struct {
 
 	// VolumeID is the CSI volume ID the record belongs to.  The state file
 	// name replaces "/" with "_", which cannot be inverted, so the periodic
-	// trim loop reads the ID from here to take the volume's lock.  Empty in
-	// records written before the field existed (see trimmer.legacyTarget).
+	// trim loop and the NVMe-oF transfer limit reconciler read the ID from
+	// here to take the volume's lock.  Empty in records written before the
+	// field existed (see kubeletStagingTarget).
 	VolumeID string `json:"volume_id,omitempty"`
 
 	// StagingPath is the staging_target_path NodeStageVolume mounted the
@@ -183,6 +184,14 @@ type NVMeoFStageState struct {
 
 	// Port is the TCP port of the NVMe-oF TCP target (e.g. "4420").
 	Port string `json:"port"`
+
+	// MaxDataTransferSize is the volume's max data transfer size in bytes
+	// (0: no limit) that NodeStageVolume applied to the namespace devices
+	// when the target advertised no MDTS.  The transfer limit reconciler
+	// (StartNVMeoFTransferLimitReconciler) keeps re-applying it while the
+	// volume stays staged.  Nil in records written before the field
+	// existed, which resolve to v1alpha1.DefaultMaxDataTransferSize.
+	MaxDataTransferSize *int32 `json:"max_data_transfer_size,omitempty"`
 }
 
 // ISCSIStageState holds the iSCSI parameters needed to log out of an iSCSI
