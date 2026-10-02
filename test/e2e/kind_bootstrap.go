@@ -193,7 +193,8 @@ func (s *kindBootstrapState) createCluster(ctx context.Context, runner commandRu
 		if err := os.MkdirAll(s.GeneratedDir, 0o755); err != nil {
 			return fmt.Errorf("create NFS Kind config directory: %w", err)
 		}
-		config := "kind: Cluster\napiVersion: kind.x-k8s.io/v1alpha4\nnodes:\n  - role: control-plane\n  - role: worker\n  - role: worker\n"
+		// NFS zvol device nodes and udev symlinks must share the host /dev view.
+		config := "kind: Cluster\napiVersion: kind.x-k8s.io/v1alpha4\nnodes:\n  - role: control-plane\n    extraMounts:\n      - hostPath: /dev\n        containerPath: /dev\n  - role: worker\n  - role: worker\n"
 		if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
 			return fmt.Errorf("write NFS Kind config: %w", err)
 		}

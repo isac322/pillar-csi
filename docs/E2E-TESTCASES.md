@@ -5287,6 +5287,15 @@ agent hostPath의 container overlay는 NFS pseudoroot로 사용하지 않는다.
 lane-owned tmpfs를 미리 마운트하고 `findmnt`의 실제 backing filesystem을
 검증한다. ZFS child dataset은 이 root 아래에 마운트되며 agent Pod 재시작
 사이에도 tmpfs와 child mount는 유지된다. teardown은 자신의 mount만 제거한다.
+NFS 물리 profile은 storage control-plane Kind node에만 host `/dev` bind mount를
+필요로 한다. 이 mount는 기본 private이며 bidirectional mount propagation을
+사용하지 않아도 host udev가 만든 zvol device와 symlink를 container에서
+그대로 확인할 수 있다. NFS client worker와 default profile에는 이 설정이
+적용되지 않는다.
+
+NFS 물리 profile의 전체 실행 시간 budget은 20분이며, CLI/context/suite cap과
+일치한다. default profile의 120초 performance budget은 변경하지 않는다.
+
 
 
 각 테스트는 namespace/PVC/Pod/PV/PillarVolumeState를 정리하고, lane 종료 시

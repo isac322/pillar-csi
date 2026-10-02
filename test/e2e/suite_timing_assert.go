@@ -19,6 +19,8 @@ package e2e
 
 import (
 	"fmt"
+	"os"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -65,7 +67,8 @@ func suiteElapsedFromReport(report types.Report) time.Duration {
 }
 
 // suiteBudgetAssertionHook is the ReportAfterSuite handler that asserts the
-// total suite elapsed time stayed within the 120-second budget.
+// total suite elapsed time stayed within the profile budget: 120 seconds by
+// default, or 20 minutes for the physical NFS E2E profile.
 // Runs on the primary Ginkgo process after all spec results are collected.
 //
 // When the budget is exceeded, Fail() is called with a human-readable message
@@ -73,7 +76,13 @@ func suiteElapsedFromReport(report types.Report) time.Duration {
 // timeout), making the actual elapsed time visible in CI output.
 var _ = ReportAfterSuite("suite elapsed budget", func(report types.Report) {
 	elapsed := suiteElapsedFromReport(report)
-	if msg := checkSuiteElapsedBudget(elapsed, stageBudgetSeconds); msg != "" {
+	budgetSecs := stageBudgetSeconds
+	// The physical NFS profile needs a 20-minute budget; the default
+	// performance profile remains protected by the 120-second budget.
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("E2E_NFS_E2E")), "true") {
+		budgetSecs = 20 * 60
+	}
+	if msg := checkSuiteElapsedBudget(elapsed, budgetSecs); msg != "" {
 		Fail(msg)
 	}
 })
