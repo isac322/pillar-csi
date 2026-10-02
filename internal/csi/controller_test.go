@@ -1070,6 +1070,108 @@ func TestCreateVolume_AccessModeRevalidatedOnReadyRetry(t *testing.T) {
 	}
 }
 
+func TestCreateVolume_ReadonlyNFSReadyRetryRejectsWriters(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	env := newControllerTestEnv(t,
+		&v1alpha1.PillarStore{
+			Name: "nfs-datasets",
+			Spec: v1alpha1.PillarStoreSpec{
+				AgentRef: "storage-node-1",
+				Backend: v1alpha1.BackendSpec{ZFS: &v1alpha1.ZFSBackendConfig{
+					VolumeType: v1alpha1.ZFSVolumeTypeDataset,
+					Pool:       "tank",
+				}},
+			},
+		},
+		&v1alpha1.PillarProtocol{
+			Name: "nfs",
+			Spec: v1alpha1.PillarProtocolSpec{
+				Protocol: v1alpha1.ProtocolSpec{NFS: &v1alpha1.NFSConfig{}},
+			},
+		},
+	)
+	env.agent.createVolumeResp = &agentv1.CreateVolumeResponse{
+		DevicePath:    "/var/lib/pillar-csi/datasets/pvc-abc123",
+		CapacityBytes: 1073741824,
+	}
+	env.agent.exportVolumeResp = &agentv1.ExportVolumeResponse{
+		ExportInfo: &agentv1.ExportInfo{
+			TargetId:  "/pvc-abc123",
+			Address:   "192.168.1.10",
+			Port:      2049,
+			VolumeRef: "/pvc-abc123",
+		},
+	}
+	req := baseCreateVolumeRequest()
+	req.Parameters[paramStoreRef] = "nfs-datasets"
+	req.Parameters[paramProtocolRef] = "nfs"
+	req.VolumeCapabilities = []*csi.VolumeCapability{
+		nfsVolumeCapability(csi.VolumeCapability_AccessMode_MULTI_NODE_READER_ONLY),
+	}
+	first, firstErr := env.srv.CreateVolume(ctx, req)
+	if firstErr != nil {
+		t.Fatalf("first ROX CreateVolume: %v", firstErr)
+	}
+	pvs := &v1alpha1.PillarVolumeState{}
+	if getErr := env.srv.k8sClient.Get(ctx, ctrlKey(req.GetName()), pvs); getErr != nil {
+		t.Fatalf("get completed NFS volume: %v", getErr)
+	}
+	if pvs.Status.Phase != v1alpha1.PillarVolumeStatePhaseReady ||
+		pvs.Status.ExportSpec == nil || pvs.Status.ExportSpec.NFS == nil ||
+		!pvs.Status.ExportSpec.NFS.Readonly {
+		t.Fatalf("ROX volume did not persist a Ready read-only export: %+v", pvs.Status)
+	}
+	assertReadonlyNFSWriterRetriesRejected(ctx, t, env, req)
+	req.VolumeCapabilities = []*csi.VolumeCapability{
+		nfsVolumeCapability(csi.VolumeCapability_AccessMode_MULTI_NODE_READER_ONLY),
+	}
+	retry, retryErr := env.srv.CreateVolume(ctx, req)
+	if retryErr != nil {
+		t.Fatalf("ROX retry after rejected writers: %v", retryErr)
+	}
+	if retry.GetVolume().GetVolumeId() != first.GetVolume().GetVolumeId() {
+		t.Fatalf("ROX retry returned a different volume: %q", retry.GetVolume().GetVolumeId())
+	}
+	confirmed, readbackErr := env.srv.ValidateVolumeCapabilities(ctx, &csi.ValidateVolumeCapabilitiesRequest{
+		VolumeId:           retry.GetVolume().GetVolumeId(),
+		VolumeCapabilities: req.GetVolumeCapabilities(),
+	})
+	if readbackErr != nil {
+		t.Fatalf("read back ROX capabilities: %v", readbackErr)
+	}
+	if confirmed.GetConfirmed() == nil {
+		t.Fatalf("ROX retry capabilities were not confirmed: %+v", confirmed)
+	}
+	caps := confirmed.GetConfirmed().GetVolumeCapabilities()
+	if len(caps) != 1 || caps[0].GetAccessMode().GetMode() != csi.VolumeCapability_AccessMode_MULTI_NODE_READER_ONLY {
+		t.Fatalf("ROX capability readback = %+v", caps)
+	}
+	if env.agent.createVolumeCalls != 1 || env.agent.exportVolumeCalls != 1 {
+		t.Fatalf("completed retries contacted agent: create=%d export=%d",
+			env.agent.createVolumeCalls, env.agent.exportVolumeCalls)
+	}
+}
+
+func assertReadonlyNFSWriterRetriesRejected(
+	ctx context.Context,
+	t *testing.T,
+	env *controllerTestEnv,
+	req *csi.CreateVolumeRequest,
+) {
+	t.Helper()
+	for _, mode := range []csi.VolumeCapability_AccessMode_Mode{
+		csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER,
+		csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER,
+	} {
+		req.VolumeCapabilities = []*csi.VolumeCapability{nfsVolumeCapability(mode)}
+		resp, retryErr := env.srv.CreateVolume(ctx, req)
+		if status.Code(retryErr) != codes.AlreadyExists || resp != nil {
+			t.Fatalf("%s retry = (%+v, %v), want no response and AlreadyExists", mode, resp, retryErr)
+		}
+	}
+}
+
 // TestCreateVolume_IdempotentWhenAlreadyCreated verifies the CSI §5.1.1
 // idempotency requirement: a second CreateVolume call for a volume that is
 // already in the Ready phase (StateCreated) must return the cached response

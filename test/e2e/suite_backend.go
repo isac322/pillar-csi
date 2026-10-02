@@ -167,8 +167,9 @@ func bootstrapSuiteBackends(
 	if output == nil {
 		output = io.Discard
 	}
-	if strings.EqualFold(strings.TrimSpace(os.Getenv("E2E_NFS_E2E")), "true") &&
-		(resolveUseExistingCluster() || !clusterState.clusterCreated) {
+	dedicatedNFSLane := len(provisioners) == 0 &&
+		strings.EqualFold(strings.TrimSpace(os.Getenv("E2E_NFS_E2E")), "true")
+	if dedicatedNFSLane && (resolveUseExistingCluster() || !clusterState.clusterCreated) {
 		return nil, fmt.Errorf("[AC5] E2E_NFS_E2E requires a newly created, exclusively owned Kind cluster; refusing reused or unowned fixture")
 	}
 
@@ -319,10 +320,14 @@ func bootstrapSuiteBackends(
 			}
 		}
 	}
-	// Dataset/NFS fixtures share one stable parent so the agent and controller
-	// validate the same ZFS layout.  The parent is part of the ephemeral pool
-	// and is removed automatically by Pool.Destroy during suite teardown.
-	if state.ZFSPool != nil {
+	// Keep the legacy parent dataset for the normal default ZFS/zvol path.
+	// Injected provisioners may return an in-memory *zfs.Pool whose pool name
+	// does not exist in Docker, so only the real default pipeline may create it.
+	if state.ZFSPool != nil && len(provisioners) == 0 {
+		// Dataset/NFS fixtures share one stable parent so the agent and
+		// controller validate the same ZFS layout.  The parent is part of the
+		// ephemeral pool and is removed automatically by Pool.Destroy during
+		// suite teardown.
 		parentDataset := state.ZFSPool.PoolName + "/k8s"
 		parentCtx, parentCancel := context.WithTimeout(ctx, 30*time.Second)
 		_, parentErr := kindContainerExec(parentCtx, nodeContainer, "zfs", "create", parentDataset)
@@ -333,7 +338,8 @@ func bootstrapSuiteBackends(
 		_, _ = fmt.Fprintf(output,
 			"[AC5] NFS parent dataset %q created on container %s\n",
 			parentDataset, nodeContainer)
-		if strings.EqualFold(strings.TrimSpace(os.Getenv("E2E_NFS_E2E")), "true") {
+
+		if dedicatedNFSLane {
 			mountCtx, mountCancel := context.WithTimeout(ctx, 30*time.Second)
 			if _, err := kindContainerExec(mountCtx, nodeContainer, "mkdir", "-p", suiteNFSDatasetRoot); err != nil {
 				mountCancel()

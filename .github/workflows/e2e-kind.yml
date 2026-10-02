@@ -264,6 +264,8 @@ jobs:
           E2E_HELM_BOOTSTRAP: "true"
           E2E_LABEL_FILTER: "nfs"
           E2E_PROCS: "1"
+          PILLAR_E2E_SEQUENTIAL: "true"
+          E2E_RUN: "^TestE2E$$"
           E2E_REPORT_DIR: "${{ runner.temp }}/e2e-kind-nfs-reports"
         run: |
           set -Eeuo pipefail

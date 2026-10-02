@@ -45,6 +45,64 @@ const (
 	e34ClientHostNQN = "nqn.2026-01.io.example:worker-1"
 )
 
+// e34ReconcileBackend is a stateful backend fixture for the direct agent
+// ReconcileState contract. Its DevicePath map models the durable backend
+// resource without invoking ZFS commands.
+type e34ReconcileBackend struct {
+	devicePaths map[string]string
+}
+
+func newE34ReconcileBackend() *e34ReconcileBackend {
+	return &e34ReconcileBackend{
+		devicePaths: map[string]string{e34AgentVolumeID: e34AgentDevicePath},
+	}
+}
+
+func (b *e34ReconcileBackend) Create(
+	_ context.Context,
+	volumeID string,
+	capacityBytes int64,
+	_ *agentv1.BackendParams,
+) (string, int64, error) {
+	devicePath := b.DevicePath(volumeID)
+	if devicePath == "" {
+		devicePath = "/dev/zvol/" + volumeID
+		b.devicePaths[volumeID] = devicePath
+	}
+	return devicePath, capacityBytes, nil
+}
+
+func (b *e34ReconcileBackend) Delete(_ context.Context, volumeID string) error {
+	delete(b.devicePaths, volumeID)
+	return nil
+}
+
+func (*e34ReconcileBackend) Expand(_ context.Context, _ string, requestedBytes int64) (int64, error) {
+	return requestedBytes, nil
+}
+
+func (*e34ReconcileBackend) Capacity(_ context.Context) (int64, int64, error) {
+	return 1 << 30, 1 << 30, nil
+}
+
+func (*e34ReconcileBackend) ListVolumes(_ context.Context) ([]*agentv1.VolumeInfo, error) {
+	return nil, nil
+}
+
+func (b *e34ReconcileBackend) DevicePath(volumeID string) string {
+	return b.devicePaths[volumeID]
+}
+
+func (*e34ReconcileBackend) Type() agentv1.BackendType {
+	return agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL
+}
+
+func (*e34ReconcileBackend) Layout() agentbackend.Layout {
+	return agentbackend.Layout{}
+}
+
+var _ agentbackend.VolumeBackend = (*e34ReconcileBackend)(nil)
+
 // newE34ControllerEnv returns a controller environment whose PillarAgent is
 // bound to e34StorageNode through spec.nodeRef, so a local attach can apply.
 func newE34ControllerEnv() *controllerTestEnv {
@@ -184,9 +242,9 @@ func e34NamespaceEnable(configfsRoot string) string {
 func e34Reconcile(srv *agentsvc.Server, fence *agentv1.FencingToken, local bool) *agentv1.ReconcileItemResult {
 	resp, err := srv.ReconcileState(context.Background(), &agentv1.ReconcileStateRequest{
 		Volumes: []*agentv1.VolumeDesiredState{{
-			VolumeId:   e34AgentVolumeID,
-			DevicePath: e34AgentDevicePath,
-			Fence:      fence,
+			VolumeId:    e34AgentVolumeID,
+			BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
+			Fence:       fence,
 			Exports: []*agentv1.ExportDesiredState{{
 				ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 				ExportParams: nvmeofTCPExportParams("127.0.0.1", 4420),
@@ -316,7 +374,9 @@ var _ = Describe("E34: 로컬 attach — 스토리지 노드 직접 attach와 ex
 		var held atomic.Bool
 		var probed atomic.Value
 		srv := agentsvc.NewServer(
-			map[string]agentbackend.VolumeBackend{},
+			map[string]agentbackend.VolumeBackend{
+				"tank": newE34ReconcileBackend(),
+			},
 			configfsRoot,
 			agentsvc.WithDeviceChecker(nvmeof.AlwaysPresentChecker),
 			agentsvc.WithDrainStateDir(filepath.Join(configfsRoot, ".agent-state")),

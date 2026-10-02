@@ -1015,6 +1015,12 @@ func completedVolumeResponse(
 	if capabilityErr != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "%v", capabilityErr)
 	}
+	if v1alpha1.ProtocolID(pvs.Spec.ProtocolType) == v1alpha1.ProtocolIDNFS &&
+		pvs.Status.ExportSpec != nil && pvs.Status.ExportSpec.NFS != nil &&
+		pvs.Status.ExportSpec.NFS.Readonly && hasWritableVolumeCapability(req.GetVolumeCapabilities()) {
+		return nil, status.Errorf(codes.AlreadyExists,
+			"volume %q already exists with a read-only NFS export", req.GetName())
+	}
 	existingCap := pvs.Spec.CapacityBytes
 
 	// CSI spec §5.1.1: if the existing volume doesn't satisfy the new
