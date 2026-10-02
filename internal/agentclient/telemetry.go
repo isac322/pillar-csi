@@ -86,8 +86,8 @@ func unaryClientMetricsInterceptor(
 // rpcMethodName returns the method part of a full gRPC method name
 // ("/pkg.Service/Method" -> "Method").
 func rpcMethodName(fullMethod string) string {
-	if idx := strings.LastIndex(fullMethod, "/"); idx >= 0 {
-		return fullMethod[idx+1:]
+	if _, suffix, found := strings.CutLast(fullMethod, "/"); found {
+		return suffix
 	}
 	return fullMethod
 }

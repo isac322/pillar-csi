@@ -59,7 +59,6 @@ import (
 	"google.golang.org/grpc/status"
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/isac322/pillar-csi/api/v1alpha1"
@@ -104,7 +103,7 @@ func (s *ControllerServer) claimRefFor(
 	case err != nil:
 		return ref, false, status.Errorf(codes.Internal, "get PersistentVolumeClaim %s/%s: %v", namespace, name, err)
 	}
-	nameUID := volumeClaimUID(&v1alpha1.PillarVolumeState{ObjectMeta: metav1.ObjectMeta{Name: volumeName}})
+	nameUID := volumeClaimUID(&v1alpha1.PillarVolumeState{Name: volumeName})
 	if nameUID != "" && nameUID != claim.UID {
 		return ref, false, status.Errorf(codes.FailedPrecondition,
 			"PersistentVolumeClaim %s/%s is now claim %s, not claim %s of volume %q; provisioning abandoned",

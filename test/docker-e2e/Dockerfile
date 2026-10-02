@@ -1,6 +1,7 @@
-# syntax=docker/dockerfile:1.11
+# syntax=docker/dockerfile:1.27
 
-ARG GO_VERSION=1.27
+ARG GO_VERSION=1.27.1
+# Official Go images publish Alpine branch tags, not Alpine patch tags.
 ARG ALPINE_VERSION=3.24
 ARG KIND_VERSION=v0.33.0
 
@@ -33,10 +34,10 @@ RUN go build -trimpath -o /kind ./cmd/kind
 
 FROM golang:${GO_VERSION}-alpine${ALPINE_VERSION} AS go
 
-FROM docker:29-dind
+FROM docker:29.8.2-dind
 
-ARG KUBERNETES_VERSION=v1.37.0
-ARG HELM_VERSION=v3.18.4
+ARG KUBERNETES_VERSION=v1.37.1
+ARG HELM_VERSION=v4.3.0
 ARG TARGETARCH
 
 RUN set -eux; \

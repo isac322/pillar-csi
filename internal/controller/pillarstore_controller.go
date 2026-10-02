@@ -742,7 +742,7 @@ func (r *PillarStoreReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		for i := range poolList.Items {
 			if poolList.Items[i].Spec.AgentRef == target.Name {
 				requests = append(requests, reconcile.Request{
-					NamespacedName: types.NamespacedName{Name: poolList.Items[i].Name},
+					Name: poolList.Items[i].Name,
 				})
 			}
 		}
@@ -759,7 +759,7 @@ func (r *PillarStoreReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			return nil
 		}
 		return []reconcile.Request{
-			{NamespacedName: types.NamespacedName{Name: binding.Spec.StoreRef}},
+			{Name: binding.Spec.StoreRef},
 		}
 	}
 

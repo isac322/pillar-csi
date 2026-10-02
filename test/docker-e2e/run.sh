@@ -11,14 +11,14 @@ readonly workload_base_image="busybox:1.38.0"
 readonly kind_node_image="kindest/node:v1.37.0"
 readonly -a sidecar_images=(
   "registry.k8s.io/sig-storage/csi-provisioner:v6.3.0"
-  "registry.k8s.io/sig-storage/csi-attacher:v4.12.0"
+  "registry.k8s.io/sig-storage/csi-attacher:v4.13.0"
   "registry.k8s.io/sig-storage/csi-resizer:v2.2.1"
-  "registry.k8s.io/sig-storage/livenessprobe:v2.19.0"
-  "registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.17.0"
+  "registry.k8s.io/sig-storage/livenessprobe:v2.20.0"
+  "registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.18.0"
 )
 readonly -a build_base_images=(
-  "golang:1.27-alpine3.24"
-  "alpine:3.24"
+  "golang:1.27.1-alpine3.24"
+  "alpine:3.24.2"
   "gcr.io/distroless/static:nonroot"
 )
 readonly vg_name="pillar-e2e-vg"

@@ -595,7 +595,7 @@ func TestCreateVolume_LocalAttachParameter(t *testing.T) {
 func TestCreateVolume_LocalAttachFromBinding(t *testing.T) {
 	t.Parallel()
 	env := newControllerTestEnv(t, &v1alpha1.PillarStorageClass{
-		ObjectMeta: metav1.ObjectMeta{Name: "local-binding"},
+		Name: "local-binding",
 		Spec: v1alpha1.PillarStorageClassSpec{
 			StoreRef:    testStoreName,
 			ProtocolRef: testProtocolName,

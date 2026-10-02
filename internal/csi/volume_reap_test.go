@@ -24,7 +24,6 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
 	v1alpha1 "github.com/isac322/pillar-csi/api/v1alpha1"
@@ -35,9 +34,9 @@ const reapClaimUID = "0f3c2a5e-7b41-4c8e-9d3a-1e2f3a4b5c6d"
 
 func createClaim(t *testing.T, env *controllerTestEnv, finalizers ...string) *corev1.PersistentVolumeClaim {
 	t.Helper()
-	pvc := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{
+	pvc := &corev1.PersistentVolumeClaim{
 		Name: "data", Namespace: "default", UID: types.UID(reapClaimUID), Finalizers: finalizers,
-	}}
+	}
 	if err := env.srv.k8sClient.Create(context.Background(), pvc); err != nil {
 		t.Fatalf("create PVC: %v", err)
 	}
@@ -267,7 +266,7 @@ func TestReapAbandonedVolume_PersistentVolumeOwnsLifecycle(t *testing.T) {
 			deleteClaim(t, env, pvc)
 			pvs := volumeState(t, env, req.Name)
 			pv := &corev1.PersistentVolume{
-				ObjectMeta: metav1.ObjectMeta{Name: pvName},
+				Name: pvName,
 				Spec: corev1.PersistentVolumeSpec{PersistentVolumeSource: corev1.PersistentVolumeSource{
 					CSI: &corev1.CSIPersistentVolumeSource{Driver: "pillar-csi.bhyoo.com", VolumeHandle: pvs.Spec.VolumeID},
 				}},
@@ -436,9 +435,9 @@ func TestCreateVolume_NamedClaimGoneOrReplaced(t *testing.T) {
 			t.Parallel()
 			env := newControllerTestEnv(t)
 			if replace {
-				pvc := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{
+				pvc := &corev1.PersistentVolumeClaim{
 					Name: "data", Namespace: "default", UID: "11111111-2222-3333-4444-555555555555",
-				}}
+				}
 				if err := env.srv.k8sClient.Create(context.Background(), pvc); err != nil {
 					t.Fatalf("create PVC: %v", err)
 				}

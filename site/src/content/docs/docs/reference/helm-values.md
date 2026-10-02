@@ -310,7 +310,7 @@ csi-attacher image repository.
 
 ### <code>controller.<wbr>sidecars.<wbr>attacher.<wbr>image.<wbr>tag</code>
 
-Type: `string`. Default: `"v4.12.0"`
+Type: `string`. Default: `"v4.13.0"`
 
 csi-attacher image tag.
 
@@ -345,7 +345,7 @@ livenessprobe image repository.
 
 ### <code>controller.<wbr>sidecars.<wbr>livenessProbe.<wbr>image.<wbr>tag</code>
 
-Type: `string`. Default: `"v2.19.0"`
+Type: `string`. Default: `"v2.20.0"`
 
 livenessprobe image tag (shared with node liveness sidecar).
 
@@ -836,7 +836,7 @@ livenessprobe image repository (can differ from controller's).
 
 ### <code>node.<wbr>sidecars.<wbr>livenessProbe.<wbr>image.<wbr>tag</code>
 
-Type: `string`. Default: `"v2.19.0"`
+Type: `string`. Default: `"v2.20.0"`
 
 livenessprobe image tag.
 
@@ -877,7 +877,7 @@ csi-node-driver-registrar image repository.
 
 ### <code>node.<wbr>sidecars.<wbr>nodeDriverRegistrar.<wbr>image.<wbr>tag</code>
 
-Type: `string`. Default: `"v2.17.0"`
+Type: `string`. Default: `"v2.18.0"`
 
 csi-node-driver-registrar image tag.
 

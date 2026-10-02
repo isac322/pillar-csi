@@ -32,7 +32,6 @@ import (
 	"google.golang.org/grpc/status"
 	storagev1 "k8s.io/api/storage/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -332,7 +331,7 @@ const (
 // by agentRef.
 func compZFSStore(name, agentRef string) *v1alpha1.PillarStore {
 	return &v1alpha1.PillarStore{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Name: name,
 		Spec: v1alpha1.PillarStoreSpec{
 			AgentRef: agentRef,
 			Backend: v1alpha1.BackendSpec{ZFS: &v1alpha1.ZFSBackendConfig{
@@ -347,7 +346,7 @@ func compZFSStore(name, agentRef string) *v1alpha1.PillarStore {
 // 4420 with the given ACL setting.
 func compNVMeOFProtocol(name string, acl bool) *v1alpha1.PillarProtocol {
 	return &v1alpha1.PillarProtocol{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Name: name,
 		Spec: v1alpha1.PillarProtocolSpec{
 			Protocol: v1alpha1.ProtocolSpec{NVMeOFTCP: &v1alpha1.NVMeOFTCPConfig{Port: 4420, ACL: acl}},
 		},
@@ -381,9 +380,7 @@ func newCSIControllerTestEnv(t *testing.T, extra ...client.Object) *csiControlle
 	}
 
 	target := &v1alpha1.PillarAgent{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "storage-node-1",
-		},
+		Name: "storage-node-1",
 		Spec: v1alpha1.PillarAgentSpec{
 			External: &v1alpha1.ExternalSpec{
 				Address: "192.168.1.10",
@@ -439,7 +436,7 @@ func seedComponentPillarVolumeState(t *testing.T, env *csiControllerTestEnv) {
 func seedComponentPillarVolumeStateOnAgent(t *testing.T, env *csiControllerTestEnv, name, agentName string) {
 	t.Helper()
 	pv := &v1alpha1.PillarVolumeState{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Name: name,
 		Spec: v1alpha1.PillarVolumeStateSpec{
 			// The encoded volume ID's agent segment: <pool>/<leaf>.  A real
 			// record also names the owning agent — backend volume IDs are
@@ -477,8 +474,8 @@ func newCSIControllerTestEnvWithDialErr(t *testing.T, dialErr error) *csiControl
 	}
 
 	target := &v1alpha1.PillarAgent{
-		ObjectMeta: metav1.ObjectMeta{Name: "storage-node-1"},
-		Status:     v1alpha1.PillarAgentStatus{ResolvedAddress: "192.168.1.10:9500"},
+		Name:   "storage-node-1",
+		Status: v1alpha1.PillarAgentStatus{ResolvedAddress: "192.168.1.10:9500"},
 	}
 
 	fakeClient := fake.NewClientBuilder().
@@ -506,11 +503,9 @@ func newCSIControllerTestEnvWithDialErr(t *testing.T, dialErr error) *csiControl
 func seedCSINodeForNVMeOF(ctx context.Context, t *testing.T, k8sClient client.Client, nodeID, hostNQN string) {
 	t.Helper()
 	csiNode := &storagev1.CSINode{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: nodeID,
-			Annotations: map[string]string{
-				pillarcsi.AnnotationNVMeOFHostNQN: hostNQN,
-			},
+		Name: nodeID,
+		Annotations: map[string]string{
+			pillarcsi.AnnotationNVMeOFHostNQN: hostNQN,
 		},
 	}
 	if err := k8sClient.Create(ctx, csiNode); err != nil {

@@ -176,10 +176,9 @@ type AgentServiceClient interface {
 	// exported volume.  Corresponds to CSI ControllerPublishVolume.
 	//
 	// The meaning of initiator_id depends on the protocol:
-	//
-	//	NVMe-oF TCP → host NQN   (added to allowed_hosts)
-	//	iSCSI       → IQN        (added to LIO ACL)
-	//	NFS         → client IP  (added to /etc/exports client list)
+	//   NVMe-oF TCP → host NQN   (added to allowed_hosts)
+	//   iSCSI       → IQN        (added to LIO ACL)
+	//   NFS         → client IP  (added to /etc/exports client list)
 	//
 	// Idempotent: if the ACL entry already exists the agent MUST return success.
 	AllowInitiator(ctx context.Context, in *AllowInitiatorRequest, opts ...grpc.CallOption) (*AllowInitiatorResponse, error)
@@ -195,15 +194,12 @@ type AgentServiceClient interface {
 	// a remote node after a local attach (local = false).
 	//
 	// local = true:  the agent stops the export from serving I/O to every
-	//
-	//	remote initiator (NVMe-oF TCP: namespace enable = 0) and
-	//	returns the backend device path the storage node mounts.
-	//
+	//                remote initiator (NVMe-oF TCP: namespace enable = 0) and
+	//                returns the backend device path the storage node mounts.
 	// local = false: the agent refuses with FAILED_PRECONDITION while the
-	//
-	//	backend device is still held exclusively on the storage
-	//	node (a local mount or device-mapper claim is still
-	//	present), and otherwise re-enables the export.
+	//                backend device is still held exclusively on the storage
+	//                node (a local mount or device-mapper claim is still
+	//                present), and otherwise re-enables the export.
 	//
 	// Idempotent in both directions.
 	SetLocalAttach(ctx context.Context, in *SetLocalAttachRequest, opts ...grpc.CallOption) (*SetLocalAttachResponse, error)
@@ -573,10 +569,9 @@ type AgentServiceServer interface {
 	// exported volume.  Corresponds to CSI ControllerPublishVolume.
 	//
 	// The meaning of initiator_id depends on the protocol:
-	//
-	//	NVMe-oF TCP → host NQN   (added to allowed_hosts)
-	//	iSCSI       → IQN        (added to LIO ACL)
-	//	NFS         → client IP  (added to /etc/exports client list)
+	//   NVMe-oF TCP → host NQN   (added to allowed_hosts)
+	//   iSCSI       → IQN        (added to LIO ACL)
+	//   NFS         → client IP  (added to /etc/exports client list)
 	//
 	// Idempotent: if the ACL entry already exists the agent MUST return success.
 	AllowInitiator(context.Context, *AllowInitiatorRequest) (*AllowInitiatorResponse, error)
@@ -592,15 +587,12 @@ type AgentServiceServer interface {
 	// a remote node after a local attach (local = false).
 	//
 	// local = true:  the agent stops the export from serving I/O to every
-	//
-	//	remote initiator (NVMe-oF TCP: namespace enable = 0) and
-	//	returns the backend device path the storage node mounts.
-	//
+	//                remote initiator (NVMe-oF TCP: namespace enable = 0) and
+	//                returns the backend device path the storage node mounts.
 	// local = false: the agent refuses with FAILED_PRECONDITION while the
-	//
-	//	backend device is still held exclusively on the storage
-	//	node (a local mount or device-mapper claim is still
-	//	present), and otherwise re-enables the export.
+	//                backend device is still held exclusively on the storage
+	//                node (a local mount or device-mapper claim is still
+	//                present), and otherwise re-enables the export.
 	//
 	// Idempotent in both directions.
 	SetLocalAttach(context.Context, *SetLocalAttachRequest) (*SetLocalAttachResponse, error)

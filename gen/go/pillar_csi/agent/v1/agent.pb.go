@@ -1005,11 +1005,10 @@ func (*ExportParams_Smb) isExportParams_Params() {}
 type ExportInfo struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Protocol-specific connection string:
-	//
-	//	NVMe-oF TCP → NQN of the subsystem
-	//	iSCSI       → IQN of the target
-	//	NFS         → exported path
-	//	SMB         → UNC path (\\server\share)
+	//   NVMe-oF TCP → NQN of the subsystem
+	//   iSCSI       → IQN of the target
+	//   NFS         → exported path
+	//   SMB         → UNC path (\\server\share)
 	TargetId string `protobuf:"bytes,1,opt,name=target_id,json=targetId,proto3" json:"target_id,omitempty"`
 	// IP address of the storage node (resolved from PillarAgent).
 	Address string `protobuf:"bytes,2,opt,name=address,proto3" json:"address,omitempty"`
@@ -1090,10 +1089,9 @@ type VolumeInfo struct {
 	// Actual allocated size in bytes.
 	CapacityBytes int64 `protobuf:"varint,2,opt,name=capacity_bytes,json=capacityBytes,proto3" json:"capacity_bytes,omitempty"`
 	// Path to the volume on the storage node.
-	//
-	//	ZFS zvol  → /dev/zvol/<pool>/<name>
-	//	LVM LV    → /dev/<vg>/<lv>
-	//	Directory → /path/to/dir
+	//   ZFS zvol  → /dev/zvol/<pool>/<name>
+	//   LVM LV    → /dev/<vg>/<lv>
+	//   Directory → /path/to/dir
 	DevicePath string `protobuf:"bytes,3,opt,name=device_path,json=devicePath,proto3" json:"device_path,omitempty"`
 	// True if a network export (ExportVolume) has been applied to this volume.
 	Exported      bool `protobuf:"varint,4,opt,name=exported,proto3" json:"exported,omitempty"`
@@ -2720,10 +2718,8 @@ type SendVolumeRequest struct {
 	// Backend type (required for routing to the correct backend plugin).
 	BackendType BackendType `protobuf:"varint,2,opt,name=backend_type,json=backendType,proto3,enum=pillar_csi.agent.v1.BackendType" json:"backend_type,omitempty"`
 	// Optional snapshot name to send from.
-	//
-	//	ZFS   → snapshot component, e.g. "snap0" → zfs send pool/vol@snap0
-	//	LVM   → LV snapshot name
-	//
+	//   ZFS   → snapshot component, e.g. "snap0" → zfs send pool/vol@snap0
+	//   LVM   → LV snapshot name
 	// If empty the agent sends the current (live) state.  The caller is
 	// responsible for quiescing the volume before requesting a live send.
 	SnapshotName  string `protobuf:"bytes,3,opt,name=snapshot_name,json=snapshotName,proto3" json:"snapshot_name,omitempty"`
@@ -2997,10 +2993,9 @@ type AllowInitiatorRequest struct {
 	// Protocol type of the export.
 	ProtocolType ProtocolType `protobuf:"varint,2,opt,name=protocol_type,json=protocolType,proto3,enum=pillar_csi.agent.v1.ProtocolType" json:"protocol_type,omitempty"`
 	// Initiator identifier:
-	//
-	//	NVMe-oF TCP → host NQN (nqn.…)
-	//	iSCSI       → IQN (iqn.…)
-	//	NFS/SMB     → client IP address or CIDR
+	//   NVMe-oF TCP → host NQN (nqn.…)
+	//   iSCSI       → IQN (iqn.…)
+	//   NFS/SMB     → client IP address or CIDR
 	InitiatorId string `protobuf:"bytes,3,opt,name=initiator_id,json=initiatorId,proto3" json:"initiator_id,omitempty"`
 	// Fencing token: the PillarVolumeState UID and the publicationGeneration
 	// the controller committed for this operation.  See FencingToken.

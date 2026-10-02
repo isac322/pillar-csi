@@ -165,11 +165,9 @@ func (s *ControllerServer) ensureVolumeState(
 		return pvs, nil
 	}
 	created := &v1alpha1.PillarVolumeState{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        pvName,
-			Annotations: map[string]string{annotationSuccessRecorded: annotationValueTrue},
-		},
-		Spec: spec,
+		Name:        pvName,
+		Annotations: map[string]string{annotationSuccessRecorded: annotationValueTrue},
+		Spec:        spec,
 	}
 	err = s.k8sClient.Create(ctx, created)
 	if err != nil && !k8serrors.IsAlreadyExists(err) {
@@ -500,7 +498,7 @@ func (s *ControllerServer) markVolumeDeleting(
 // UID precondition guarantees a stale controller never deletes the record of
 // a later lifecycle with the same name.  A missing object is success.
 func (s *ControllerServer) deleteVolumeState(ctx context.Context, pvName string, uid types.UID) error {
-	pvs := &v1alpha1.PillarVolumeState{ObjectMeta: metav1.ObjectMeta{Name: pvName}}
+	pvs := &v1alpha1.PillarVolumeState{Name: pvName}
 	err := s.k8sClient.Delete(ctx, pvs, ctrlclient.Preconditions{UID: &uid})
 	if err == nil || k8serrors.IsNotFound(err) {
 		return nil

@@ -34,7 +34,6 @@ import (
 	csipb "github.com/container-storage-interface/spec/lib/go/csi"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -61,8 +60,8 @@ func newCSIControllerTestEnvNoResolvedAddr(t *testing.T) *csiControllerTestEnv {
 	}
 
 	target := &v1alpha1.PillarAgent{
-		ObjectMeta: metav1.ObjectMeta{Name: "storage-node-1"},
-		Status:     v1alpha1.PillarAgentStatus{ResolvedAddress: ""}, // no address
+		Name:   "storage-node-1",
+		Status: v1alpha1.PillarAgentStatus{ResolvedAddress: ""}, // no address
 	}
 
 	fakeClient := fake.NewClientBuilder().
@@ -529,8 +528,8 @@ func TestCSIController_CreateVolume_ExportFails_RecordsCreatePartial(t *testing.
 	}
 
 	target := &v1alpha1.PillarAgent{
-		ObjectMeta: metav1.ObjectMeta{Name: "storage-node-1"},
-		Status:     v1alpha1.PillarAgentStatus{ResolvedAddress: "192.168.1.10:9500"},
+		Name:   "storage-node-1",
+		Status: v1alpha1.PillarAgentStatus{ResolvedAddress: "192.168.1.10:9500"},
 	}
 	fakeClient := fake.NewClientBuilder().
 		WithInterceptorFuncs(fakeuid.Interceptor()).

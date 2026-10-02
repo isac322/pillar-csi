@@ -26,7 +26,6 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
@@ -78,7 +77,7 @@ func deletingObjectRequests(ctx context.Context, reader client.Reader, list clie
 	err = apimeta.EachListItem(list, func(item runtime.Object) error {
 		obj, ok := item.(client.Object)
 		if ok && !obj.GetDeletionTimestamp().IsZero() {
-			requests = append(requests, reconcile.Request{NamespacedName: types.NamespacedName{Name: obj.GetName()}})
+			requests = append(requests, reconcile.Request{Name: obj.GetName()})
 		}
 		return nil
 	})

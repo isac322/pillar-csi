@@ -44,11 +44,11 @@ jobs:
       image_contract: ${{ steps.filter.outputs.image_contract == 'true' }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
 
       - name: Filter changed paths
         id: filter
-        uses: dorny/paths-filter@v4
+        uses: dorny/paths-filter@v4.0.3
         with:
           predicate-quantifier: some-with-excludes
           filters: |
@@ -74,16 +74,16 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
 
       - name: Setup Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@v7.0.0
         with:
           go-version-file: go.mod
           cache: true
 
       - name: Cache documentation tools
-        uses: actions/cache@v6
+        uses: actions/cache@v6.1.0
         with:
           path: bin/
           key: docs-tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Makefile', 'go.mod', 'go.sum') }}
@@ -92,7 +92,7 @@ jobs:
         run: make docs-check
 
       - name: Check links
-        uses: lycheeverse/lychee-action@v2
+        uses: lycheeverse/lychee-action@v2.9.0
         with:
           args: >-
             --config hack/docs/lychee.toml
@@ -109,11 +109,11 @@ jobs:
     if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.code == 'true') }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
 
       - name: Setup Go
         id: setup-go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@v7.0.0
         with:
           go-version-file: go.mod
 
@@ -148,9 +148,9 @@ jobs:
           key: lint-objects-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.mod', 'go.sum', '.golangci.yml') }}
 
       - name: Run linter
-        uses: golangci/golangci-lint-action@v9
+        uses: golangci/golangci-lint-action@v9.3.0
         with:
-          version: v2.13.2
+          version: v2.14.0
 
   test:
     name: Test
@@ -159,11 +159,11 @@ jobs:
     if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.code == 'true') }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
 
       - name: Setup Go
         id: setup-go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@v7.0.0
         with:
           go-version-file: go.mod
 
@@ -193,7 +193,7 @@ jobs:
           key: test-gocache-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.mod', 'go.sum') }}
 
       - name: Cache test tools
-        uses: actions/cache@v6
+        uses: actions/cache@v6.1.0
         with:
           path: bin/
           key: test-tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Makefile', 'go.mod', 'go.sum') }}
@@ -240,10 +240,10 @@ jobs:
     if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.code == 'true') }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
 
       - name: Setup Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@v7.0.0
         with:
           go-version-file: go.mod
 
@@ -259,15 +259,17 @@ jobs:
     if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.code == 'true') }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
 
       - name: Setup Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@v7.0.0
         with:
           go-version-file: go.mod
 
       - name: Install Helm
-        uses: azure/setup-helm@v5
+        uses: azure/setup-helm@v5.0.1
+        with:
+          version: v4.3.0
 
       - name: Run chart render regression tests
         run: make test-chart
@@ -318,10 +320,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
 
       - name: Setup Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@v7.0.0
         with:
           go-version-file: go.mod
           cache: true
@@ -407,16 +409,16 @@ jobs:
       PLATFORMS: linux/amd64,linux/amd64/v2,linux/amd64/v3,linux/arm64,linux/arm/v7,linux/s390x,linux/ppc64le,linux/riscv64
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
 
       - name: Set up Docker Buildx
         id: buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@v4.4.1
 
       - name: Restore BuildKit cache mounts (read-only)
         if: ${{ github.event_name != 'push' || github.ref != 'refs/heads/master' }}
         id: cache-pr
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@v6.1.0
         with:
           path: buildkit-cache
           key: buildkit-mount-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Dockerfile', 'go.mod', 'go.sum') }}
@@ -427,7 +429,7 @@ jobs:
       - name: Restore and save BuildKit cache mounts (master)
         if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
         id: cache-master
-        uses: actions/cache@v6
+        uses: actions/cache@v6.1.0
         with:
           path: buildkit-cache
           key: buildkit-mount-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Dockerfile', 'go.mod', 'go.sum') }}
@@ -436,7 +438,7 @@ jobs:
             buildkit-mount-${{ hashFiles('Dockerfile') }}-
 
       - name: Inject/extract BuildKit cache mounts
-        uses: reproducible-containers/buildkit-cache-dance@v3
+        uses: reproducible-containers/buildkit-cache-dance@v3.4.0
         with:
           builder: ${{ steps.buildx.outputs.name }}
           cache-dir: buildkit-cache
@@ -445,7 +447,7 @@ jobs:
       - name: Compile Go binaries for all supported Linux targets
         id: compile
         if: ${{ needs.changes.result == 'success' && needs.changes.outputs.image_contract != 'true' && !(github.event_name == 'push' && github.ref == 'refs/heads/master') }}
-        uses: docker/bake-action@v7
+        uses: docker/bake-action@v7.4.0
         with:
           files: docker-bake.hcl
           targets: compile
@@ -457,7 +459,7 @@ jobs:
       - name: Build all images for all platforms
         id: full_images
         if: ${{ needs.changes.result != 'success' || needs.changes.outputs.image_contract == 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/master') }}
-        uses: docker/bake-action@v7
+        uses: docker/bake-action@v7.4.0
         with:
           files: docker-bake.hcl
           set: |
@@ -501,7 +503,7 @@ jobs:
       runtime_image_tag: ${{ steps.runtime_meta.outputs.image_tag }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
 
       - name: Set exact-checkout runtime image metadata
         id: runtime_meta
@@ -513,13 +515,13 @@ jobs:
 
       - name: Set up Docker Buildx
         id: buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@v4.4.1
 
       # Seed only the amd64 compiler cache here; importing the much larger
       # eight-platform cache would delay the two behavior-validation lanes.
       - name: Restore runtime compiler cache (read-only)
         if: ${{ github.event_name != 'push' || github.ref != 'refs/heads/master' }}
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@v6.1.0
         with:
           path: runtime-buildkit-cache
           key: runtime-buildkit-mount-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Dockerfile', 'go.mod', 'go.sum') }}
@@ -529,7 +531,7 @@ jobs:
       - name: Restore and save runtime compiler cache (master)
         if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
         id: runtime-cache-master
-        uses: actions/cache@v6
+        uses: actions/cache@v6.1.0
         with:
           path: runtime-buildkit-cache
           key: runtime-buildkit-mount-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Dockerfile', 'go.mod', 'go.sum') }}
@@ -537,7 +539,7 @@ jobs:
             runtime-buildkit-mount-v1-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Inject/extract runtime compiler cache
-        uses: reproducible-containers/buildkit-cache-dance@v3
+        uses: reproducible-containers/buildkit-cache-dance@v3.4.0
         with:
           builder: ${{ steps.buildx.outputs.name }}
           cache-dir: runtime-buildkit-cache
@@ -547,7 +549,7 @@ jobs:
         env:
           REGISTRY: pillar-csi
           TAG: ${{ steps.runtime_meta.outputs.image_tag }}
-        uses: docker/bake-action@v7
+        uses: docker/bake-action@v7.4.0
         with:
           files: docker-bake.hcl
           targets: controller,agent,node
@@ -578,7 +580,7 @@ jobs:
             > "${RUNNER_TEMP}/runtime-images.json"
 
       - name: Upload exact-checkout runtime images
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: pillar-csi-runtime-${{ github.run_id }}-${{ github.run_attempt }}
           path: |

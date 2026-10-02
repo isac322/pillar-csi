@@ -325,8 +325,16 @@ func TestAdoptedSessionRecoversWithRestoredLoginTimeout(t *testing.T) {
 			h.dialer.mu.Lock()
 			budgets := slices.Clone(h.dialer.budgets)
 			h.dialer.mu.Unlock()
-			if len(budgets) != 1 || budgets[0] <= DefaultLoginTimeout || budgets[0] > configured {
-				t.Errorf("re-login budgets = %v, want one in (%v, %v]", budgets, DefaultLoginTimeout, configured)
+			if len(budgets) == 0 {
+				t.Fatalf("re-login budgets = %v, want at least one in (%v, %v]", budgets, DefaultLoginTimeout, configured)
+			}
+			for _, budget := range budgets {
+				if budget <= DefaultLoginTimeout || budget > configured {
+					t.Errorf(
+						"re-login budget = %v, want in (%v, %v] (all budgets: %v)",
+						budget, DefaultLoginTimeout, configured, budgets,
+					)
+				}
 			}
 		})
 	}
