@@ -278,6 +278,10 @@ node:
     # iscsi_tcp is the iSCSI initiator transport (pulls libiscsi,
     # libiscsi_tcp and scsi_transport_iscsi).
     # nfs and nfsv4 enable NFSv4.2 mounts using the bundled mount.nfs helper.
+    # Register NFSv4 client support before pillar-node starts: this best-effort
+    # BusyBox loader can fail on compressed host modules (`.ko.zst`). Preload
+    # nfs and nfsv4 with the host module loader and persist them in
+    # /etc/modules-load.d/.
     modules:
       - nvme_fabrics
       - nvme_tcp

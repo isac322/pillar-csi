@@ -35,6 +35,8 @@ You need the NVMe-oF modules only for NVMe-oF volumes, iSCSI modules only for iS
 
 The agent and node Pods each start with an init container that runs `modprobe` against the host's `/lib/modules`. It loads the modules required by the configured protocols when present; it cannot install missing modules, and failures remain visible in protocol capabilities or NodeStage errors. Load modules on the host and list them in `/etc/modules-load.d/` so they return after a reboot. To change the lists, set `agent.initModprobe.modules` and `node.initModprobe.modules`.
 
+For NFS, NFSv4 client support must be available before `pillar-node` starts. The node init container's BusyBox `modprobe` is best-effort and cannot be relied on to load compressed host modules such as `.ko.zst`; preload `nfs` and `nfsv4` with the host module loader and persist them in `/etc/modules-load.d/`. Built-in kernel support needs no loadable module. This is host kernel-module setup; no NFS userspace package installation is required. The client check runs at node-plugin startup, so restart the `pillar-node` Pod if you load modules after startup.
+
 Check a storage node:
 
 ```sh

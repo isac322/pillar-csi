@@ -165,10 +165,11 @@ jobs:
       # two passes (internal-agent then external-agent), emits per-pass and
       # total wall-clock timing, and deletes the Kind cluster at the end.
       #
-      # linux-modules-extra-$(uname -r) ships all four NVMe modules and the
-      # iSCSI initiator (iscsi_tcp) / LIO target (target_core_*, iscsi_target_mod)
-      # modules on ubuntu-latest.
-      - name: Install ZFS, LVM, NVMe, and iSCSI kernel modules
+      # linux-modules-extra-$(uname -r) ships all four NVMe modules, the
+      # iSCSI initiator (iscsi_tcp) / LIO target (target_core_*, iscsi_target_mod),
+      # and compressed NFS modules on ubuntu-latest; load them on the host before
+      # Kind starts.
+      - name: Install ZFS, LVM, NVMe, iSCSI, and NFS kernel modules
         run: |
           bash hack/ci-prefer-ubuntu-mirror.sh
           sudo apt-get update -qq
@@ -182,7 +183,12 @@ jobs:
           sudo modprobe nvmet
           sudo modprobe nvmet_tcp
           sudo modprobe nvme_tcp
-          sudo modprobe -a iscsi_tcp target_core_mod target_core_iblock iscsi_target_mod nfsd
+          sudo modprobe -a iscsi_tcp target_core_mod target_core_iblock iscsi_target_mod nfsd nfs nfsv4
+          if ! grep -qw nfs4 /proc/filesystems; then
+            echo "ERROR: nfs4 is not registered in /proc/filesystems after NFS module load"
+            exit 1
+          fi
+          echo "NFS: nfs4 registered in /proc/filesystems"
           # target/iscsi appears only after the agent mkdirs it; the LIO core dir
           # must exist as soon as target_core_mod is loaded.
           test -d /sys/kernel/config/target || \

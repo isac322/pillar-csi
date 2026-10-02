@@ -745,7 +745,7 @@ Type: `list`. Default:
 ]
 ```
 
-Kernel modules to load. Failures are silently ignored (best-effort). nvme_fabrics must be listed before nvme_tcp (it is a dependency). dm_mod provides the device-mapper target that holds the backend device of a local attach on the storage node. iscsi_tcp is the iSCSI initiator transport (pulls libiscsi, libiscsi_tcp and scsi_transport_iscsi). nfs and nfsv4 enable NFSv4.2 mounts using the bundled mount.nfs helper.
+Kernel modules to load. Failures are silently ignored (best-effort). nvme_fabrics must be listed before nvme_tcp (it is a dependency). dm_mod provides the device-mapper target that holds the backend device of a local attach on the storage node. iscsi_tcp is the iSCSI initiator transport (pulls libiscsi, libiscsi_tcp and scsi_transport_iscsi). nfs and nfsv4 enable NFSv4.2 mounts using the bundled mount.nfs helper. Register NFSv4 client support before pillar-node starts: this best-effort BusyBox loader can fail on compressed host modules (`.ko.zst`). Preload nfs and nfsv4 with the host module loader and persist them in /etc/modules-load.d/.
 
 ### <code>node.<wbr>initModprobe.<wbr>resources</code>
 
