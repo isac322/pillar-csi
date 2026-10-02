@@ -108,6 +108,12 @@ E2E_DOCKER_BUILD_CACHE ?=
 ## and flags the bottleneck stage.  Sub-AC 5.4.
 E2E_STAGE_TIMING ?=
 
+## Set to "true" to drop the `vet` prerequisite from test-e2e. Opt-in only:
+## CI's Kind job sets it because the required Test job already runs vet via
+## `make test`. Local and default runs keep vet.
+E2E_SKIP_VET ?=
+E2E_VET_PREREQ = $(if $(filter true TRUE 1 yes YES,$(E2E_SKIP_VET)),,vet)
+
 ## Helm release name and namespace for the e2e deployment.
 E2E_HELM_RELEASE ?= pillar-csi
 E2E_HELM_NAMESPACE ?= pillar-csi-system
@@ -230,8 +236,14 @@ test-e2e-lvm: manifests generate fmt vet ## Run LVM-only e2e specs in internal-a
 # ─── De-facto CSI test suites ─────────────────────────────────────────────────
 # Two industry-standard test suites that every CSI driver should pass.
 
+## Set to "true" to drop the `vet` prerequisite from test-csi-sanity.
+## Opt-in only: CI's csi-sanity job sets it because the required Test job
+## already runs vet via `make test`. Local and default runs keep vet.
+CSI_SANITY_SKIP_VET ?=
+CSI_SANITY_VET_PREREQ = $(if $(filter true TRUE 1 yes YES,$(CSI_SANITY_SKIP_VET)),,vet)
+
 .PHONY: test-csi-sanity
-test-csi-sanity: fmt vet ## Run the upstream kubernetes-csi/csi-test sanity suite (in-process, no cluster).
+test-csi-sanity: fmt $(CSI_SANITY_VET_PREREQ) ## Run the upstream kubernetes-csi/csi-test sanity suite (in-process, no cluster).
 	go test -tags=csi_sanity -timeout=180s -v ./test/sanity/...
 
 .PHONY: test-external-e2e
@@ -242,6 +254,8 @@ test-external-e2e: ## Run the SIG-Storage External Storage e2e suite against a r
 # NVMe-oF/TCP data plane across isolated storage and workload nodes.  It runs
 # both an in-cluster agent topology and an out-of-cluster Docker agent topology.
 # Override PILLAR_E2E_DNS when the runner cannot reach the default 1.1.1.1 resolver.
+# PILLAR_E2E_TOPOLOGIES selects internal and/or external; PILLAR_E2E_PARALLEL=true
+# runs the opted-in tests up to four at a time (default false: fully serial).
 # The nested Docker image/BuildKit cache and the Go caches persist in Compose
 # volumes between runs; the harness still starts and ends with no clusters,
 # containers or networks.  Run clean-docker-e2e-cache to drop the caches.
@@ -325,7 +339,8 @@ E2E_GINKGO_TEST_FLAGS = -- -test.run='^TestE2E$$'
 #   E2E_SKIP_IMAGE_BUILD     — "true" skips docker build + kind load (reuse previous images)
 #   E2E_USE_EXISTING_CLUSTER — "true" skips Kind cluster creation (reuse live cluster)
 #   E2E_DOCKER_BUILD_CACHE   — "true" enables --cache-from for faster rebuilds
-#   E2E_STAGE_TIMING         — "1" emits wall-clock breakdown per pipeline stage
+#   E2E_STAGE_TIMING         — "1" emits wall-clock breakdown per pipeline stage, plus
+#                              go-test start/span markers from this recipe
 #   E2E_HELM_RELEASE         — Helm release name
 #   E2E_HELM_NAMESPACE       — Helm release namespace
 #   GINKGO                   — absolute path to the ginkgo binary (used by reexecViaGinkgoCLI)
@@ -337,13 +352,15 @@ E2E_GINKGO_TEST_FLAGS = -- -test.run='^TestE2E$$'
 #   make test-e2e E2E_RUN=ZFS                            # ZFS specs only
 #   make test-e2e E2E_RUN=TC-F-ZFS-001                  # single TC
 #   make test-e2e E2E_STAGE_TIMING=1                     # emit stage timing summary
+#   make test-e2e E2E_SKIP_VET=true                      # skip vet (CI: Test job runs it)
 #   make test-e2e E2E_USE_EXISTING_CLUSTER=true \
 #                 E2E_SKIP_IMAGE_BUILD=true              # fast iteration (skip phases 2-3)
 .PHONY: test-e2e
-test-e2e: manifests generate fmt vet ginkgo ## Phase-sequenced e2e: prereq→cluster→images→backends→parallel tests→teardown.
+test-e2e: manifests generate fmt $(E2E_VET_PREREQ) ginkgo ## Phase-sequenced e2e: prereq→cluster→images→backends→parallel tests→teardown.
 	@mkdir -p "$(E2E_REPORT_DIR)"
 	@echo "=== e2e pipeline: prereq → cluster-create → image-build → backend-setup → $(E2E_PROCS)-worker tests → teardown ==="
-	@_e2e_pid=; \
+	@_e2e_pid=; _e2e_rc=0; _e2e_go_start=$$(date +%s); \
+	$(if $(E2E_STAGE_TIMING),echo "e2e: [stage-timing] go-test-start epoch=$$_e2e_go_start";) \
 	_e2e_cleanup() { \
 		if [ -n "$$_e2e_pid" ]; then \
 			kill -TERM "$$_e2e_pid" 2>/dev/null || true; \
@@ -356,7 +373,9 @@ test-e2e: manifests generate fmt vet ginkgo ## Phase-sequenced e2e: prereq→clu
 		$(if $(E2E_RUN),-run $(E2E_RUN)) \
 		./test/e2e/... & \
 	_e2e_pid=$$!; \
-	wait $$_e2e_pid
+	wait $$_e2e_pid || _e2e_rc=$$?; \
+	$(if $(E2E_STAGE_TIMING),echo "e2e: [stage-timing] go-test: $$(( $$(date +%s) - _e2e_go_start ))s (exit $$_e2e_rc)";) \
+	exit $$_e2e_rc
 
 # test-e2e-parallel is kept as an alias for backward compatibility.
 .PHONY: test-e2e-parallel

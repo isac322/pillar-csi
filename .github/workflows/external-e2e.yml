@@ -8,7 +8,18 @@
 name: External Storage E2E
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      ginkgo_procs:
+        description: Ginkgo parallel worker count for the e2e suite
+        required: false
+        type: number
+        default: 2
+      report_suffix:
+        description: Optional suffix appended to the report artifact name
+        required: false
+        type: string
+        default: ''
   workflow_call:
     inputs:
       runtime_image_artifact:
@@ -21,6 +32,16 @@ on:
         required: false
         type: string
         default: ext-e2e
+      ginkgo_procs:
+        description: Ginkgo parallel worker count for the e2e suite
+        required: false
+        type: number
+        default: 2
+      report_suffix:
+        description: Optional suffix appended to the report artifact name
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -47,7 +68,7 @@ jobs:
       # K8S_VERSION pin lets run.sh skip the dl.k8s.io stable.txt lookup so
       # the cached upstream e2e.test + matching ginkgo bundle is shared.
       K8S_VERSION: "v1.37.0"
-      GINKGO_PROCS: "2"
+      GINKGO_PROCS: ${{ inputs.ginkgo_procs || 2 }}
       VG_SIZE: "15G"
 
     steps:
@@ -110,6 +131,7 @@ jobs:
 
       - name: Install ZFS, LVM, and NVMe-oF kernel modules
         run: |
+          bash hack/ci-prefer-ubuntu-mirror.sh
           sudo apt-get update -qq
           sudo apt-get install -y zfsutils-linux lvm2 thin-provisioning-tools \
             "linux-modules-extra-$(uname -r)" || \
@@ -147,7 +169,19 @@ jobs:
         env:
           KUBECONFIG: "/home/runner/.kube/config"
           E2E_FAIL_FAST: "1"
+          EXTERNAL_E2E_REPORT_DIR: ${{ runner.temp }}/external-e2e-reports
         run: make test-external-e2e
+
+      # Best-effort: external-e2e-report-status.txt says whether the JSON
+      # report is complete, partial (non-zero exit such as fail-fast), or
+      # unmeasured (missing).  A hard job timeout may skip this step.
+      - name: Upload External Storage e2e report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: external-e2e-report-${{ github.run_id }}-${{ github.run_attempt }}${{ inputs.report_suffix != '' && format('-{0}', inputs.report_suffix) || '' }}
+          path: ${{ runner.temp }}/external-e2e-reports
+          if-no-files-found: warn
 
       - name: Dump cluster + kernel diagnostics on failure
         if: ${{ failure() || cancelled() }}

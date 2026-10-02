@@ -176,7 +176,14 @@ func TestISCSIRawBlockCrossNodeHandoff(t *testing.T) {
 // volume: the LV grows on the agent, the initiator rescans the LUN and the
 // node resizes the mounted filesystem.
 func TestISCSIOnlineFilesystemExpansion(t *testing.T) {
+	parallelDockerE2E(t)
 	cfg := loadISCSIConfig(t)
+	phases := newPhaseTimer(t)
+	// Registered first, so it runs after every later cleanup and times the
+	// LIO target removal.
+	t.Cleanup(func() { phases.mark("lio-target-removed") })
+	// Registered before deleteNamespace, so it runs after it and times the teardown.
+	defer phases.mark("teardown")
 	ns := createNamespace(t, "iscsi-expand")
 	defer deleteNamespace(t, ns)
 	createISCSIPVC(t, ns, "expandable", cfg.storageClass, "Filesystem", iscsiVolumeSize)
@@ -187,29 +194,35 @@ func TestISCSIOnlineFilesystemExpansion(t *testing.T) {
 	t.Cleanup(func() { waitForLIOTargetRemoved(t, target) })
 	iqnA := readISCSIInitiatorIQN(t, cfg.clientNodeA)
 	device := requirePodUsesISCSIDevice(t, ns, "expander", cfg.clientNodeA, target, iqnA, false)
+	phases.mark("pod-ready")
 	kubectl(t, "-n", ns, "exec", "expander", "--", "sh", "-c", "printf expansion-data > /data/payload && sync")
 
 	beforeFS := filesystemBytes(t, ns, "expander")
 	beforeDevice := blockDeviceBytes(t, device)
 	kubectl(t, "-n", ns, "patch", "pvc", "expandable", "--type=merge", "-p",
 		`{"spec":{"resources":{"requests":{"storage":"128Mi"}}}}`)
+	phases.mark("resize-requested")
 
 	waitFor(t, "PVC capacity to reach 128Mi", func() (bool, string) {
 		quantity := kubectl(t, "-n", ns, "get", "pvc", "expandable", "-o", "jsonpath={.status.capacity.storage}")
 		return quantityBytes(quantity) >= 128*1024*1024, quantity
 	})
+	phases.mark("pvc-capacity-grown")
 	waitFor(t, "the initiator's SCSI disk to grow", func() (bool, string) {
 		after := blockDeviceBytes(t, device)
 		return after >= 128*1024*1024 && after > beforeDevice,
 			fmt.Sprintf("%s before=%d after=%d", device, beforeDevice, after)
 	})
+	phases.mark("scsi-disk-grown")
 	waitFor(t, "mounted filesystem to grow", func() (bool, string) {
 		after := filesystemBytes(t, ns, "expander")
 		return after > beforeFS, fmt.Sprintf("before=%d after=%d", beforeFS, after)
 	})
+	phases.mark("filesystem-grown")
 	if got := kubectl(t, "-n", ns, "exec", "expander", "--", "cat", "/data/payload"); got != "expansion-data" {
 		t.Fatalf("payload after expansion = %q, want expansion-data", got)
 	}
+	phases.mark("payload-verified")
 }
 
 // TestISCSIFilesystemTrimReleasesSpace deletes a file on a mounted iSCSI
@@ -232,6 +245,7 @@ func TestISCSIOnlineFilesystemExpansion(t *testing.T) {
 // periodicTrim: false so the discards are fstrim's alone; the periodic path
 // is TestPeriodicTrimReleasesSpace.
 func TestISCSIFilesystemTrimReleasesSpace(t *testing.T) {
+	parallelDockerE2E(t)
 	cfg := loadISCSIConfig(t)
 	backingContainer := requireEnv(t, "PILLAR_E2E_BACKING_CONTAINER")
 	backingFile := requireEnv(t, "PILLAR_E2E_BACKING_FILE")
@@ -324,6 +338,7 @@ func TestISCSIUnauthorizedInitiatorRejected(t *testing.T) {
 // with two protocol members and an iscsi override on a class whose protocol
 // is nvmeofTcp, and admits an iscsi override on the iscsi protocol.
 func TestISCSIProtocolAdmission(t *testing.T) {
+	parallelDockerE2E(t)
 	cfg := loadISCSIConfig(t)
 
 	err := dryRunApply(t, `apiVersion: pillar-csi.bhyoo.com/v1alpha1
@@ -567,7 +582,9 @@ printf 'netns\t%s\n' "$(readlink /proc/self/ns/net)"
 for s in /sys/class/iscsi_session/session*; do
   [ -d "$s" ] || continue
   sid=${s##*/session}
-  tn=$(cat "$s/targetname" 2>/dev/null) || { printf 'error\tread %s/targetname\n' "$s"; continue; }
+  # A session that vanished after the -d check (another test logging out) is
+  # gone, not unreadable; a session that is still present stays an error.
+  tn=$(cat "$s/targetname" 2>/dev/null) || { [ -d "$s" ] || continue; printf 'error\tread %s/targetname\n' "$s"; continue; }
   [ "$tn" = "$1" ] || continue
   in=$(cat "$s/initiatorname" 2>/dev/null) || { printf 'error\tread %s/initiatorname\n' "$s"; continue; }
   [ "$in" = "$2" ] || continue

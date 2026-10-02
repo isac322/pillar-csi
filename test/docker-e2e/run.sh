@@ -46,6 +46,19 @@ readonly helm_release="pillar-csi"
 # chart default is a week, so the trim test runs the node with a short one.
 readonly trim_interval="10s"
 readonly requested_topologies="${PILLAR_E2E_TOPOLOGIES:-internal external}"
+# PILLAR_E2E_PARALLEL=true lets the top-level tests that call
+# parallelDockerE2E run up to four at a time; every other test still runs
+# alone, while the opted-in tests are paused.  Unset or false keeps the whole
+# suite serial.
+readonly parallel_tests="${PILLAR_E2E_PARALLEL:-false}"
+case "${parallel_tests}" in
+  true) readonly -a go_test_parallel_args=(-parallel=4) ;;
+  false) readonly -a go_test_parallel_args=() ;;
+  *)
+    printf 'unsupported PILLAR_E2E_PARALLEL %q; expected true or false\n' "${parallel_tests}" >&2
+    exit 2
+    ;;
+esac
 
 active_cluster=""
 active_external_agent=""
@@ -1154,7 +1167,7 @@ run_tests() {
   client_a=$3
   client_b=$4
   target_address=$5
-  log "Running CSI lifecycle tests for ${topology} topology"
+  log "Running CSI lifecycle tests for ${topology} topology (parallel=${parallel_tests})"
   # The LVM store's PV is a loop device over a sparse file; the trim test
   # measures that file's allocated blocks in the container that owns it.
   if [[ "${topology}" == internal ]]; then
@@ -1164,6 +1177,7 @@ run_tests() {
     backing_container="${active_external_agent}"
     backing_file="${external_backing_file}"
   fi
+  PILLAR_E2E_PARALLEL="${parallel_tests}" \
   PILLAR_E2E_TOPOLOGY="${topology}" \
   PILLAR_E2E_STORAGE_CLASS="${storage_class}" \
   PILLAR_E2E_LOCAL_STORAGE_CLASS="${local_storage_class}" \
@@ -1178,7 +1192,7 @@ run_tests() {
   PILLAR_E2E_CLIENT_NODE_B="${client_b}" \
   PILLAR_E2E_TARGET_ADDRESS="${target_address}" \
   PILLAR_E2E_TRIM_INTERVAL="${trim_interval}" \
-    go test -tags=docker_e2e -count=1 -timeout=150m -v ./test/docker-e2e
+    go test -tags=docker_e2e -count=1 -timeout=150m -v "${go_test_parallel_args[@]}" ./test/docker-e2e
 }
 
 create_kind_cluster() {

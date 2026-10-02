@@ -145,6 +145,8 @@ jobs:
     permissions:
       contents: read
     uses: ./.github/workflows/external-e2e.yml
+    with:
+      ginkgo_procs: 4
 
   docker:
     name: Docker multi-node e2e (${{ matrix.topology }})
@@ -169,6 +171,7 @@ jobs:
       # the iSCSI initiator / LIO target modules.
       - name: Install and load kernel modules
         run: |
+          bash hack/ci-prefer-ubuntu-mirror.sh
           sudo apt-get update -qq
           sudo apt-get install -y "linux-modules-extra-$(uname -r)"
           sudo modprobe -a dm_mod loop nvme_fabrics nvme_tcp nvmet nvmet_tcp
@@ -179,7 +182,38 @@ jobs:
       - name: Run Docker multi-node e2e
         env:
           PILLAR_E2E_TOPOLOGIES: ${{ matrix.topology }}
-        run: make test-docker-e2e
+          PILLAR_E2E_PARALLEL: "true"
+        # The output is also teed to a file so the next steps can collect the
+        # tests' "phase-timing:" lines; pipefail keeps make's exit status.
+        run: |
+          set -o pipefail
+          make test-docker-e2e 2>&1 | tee "${RUNNER_TEMP}/docker-e2e.log"
+
+      - name: Emit Docker e2e phase timing summary
+        if: always()
+        env:
+          TOPOLOGY: ${{ matrix.topology }}
+        run: |
+          log="${RUNNER_TEMP}/docker-e2e.log"
+          {
+            echo "### Docker e2e phase timings (${TOPOLOGY})"
+            echo '```'
+            if [ -f "${log}" ]; then
+              grep -o 'phase-timing: .*' "${log}" || echo "no phase-timing lines recorded"
+            else
+              echo "no test log recorded"
+            fi
+            echo '```'
+          } >>"${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload Docker e2e log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-e2e-log-${{ matrix.topology }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/docker-e2e.log
+          if-no-files-found: ignore
+          retention-days: 7
 
   report:
     name: Open issue on failure

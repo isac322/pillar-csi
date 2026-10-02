@@ -21,12 +21,6 @@
 
 # ── Builder stage ─────────────────────────────────────────────────────────────
 FROM --platform=$BUILDPLATFORM golang:1.27-alpine3.24 AS builder
-ARG TARGETOS
-ARG TARGETARCH
-# TARGETVARIANT is set by buildx for sub-architecture levels (e.g. "v3" for
-# linux/amd64/v3, "v7" for linux/arm/v7, "v8.2" for linux/arm64/v8.2).  Empty
-# for the architecture default (linux/amd64, linux/arm64).
-ARG TARGETVARIANT
 
 WORKDIR /workspace
 
@@ -35,6 +29,12 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
+ARG TARGETOS
+ARG TARGETARCH
+# TARGETVARIANT is set by buildx for sub-architecture levels (e.g. "v3" for
+# linux/amd64/v3, "v7" for linux/arm/v7, "v8.2" for linux/arm64/v8.2).  Empty
+# for the architecture default (linux/amd64, linux/arm64).
+ARG TARGETVARIANT
 
 # Build all binaries under cmd/ in one invocation.  The -o flag with a
 # directory target writes each binary (named after its package directory)

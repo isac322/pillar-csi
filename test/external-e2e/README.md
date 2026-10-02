@@ -49,6 +49,13 @@ make test-external-e2e
 | `GINKGO_SKIP` | Ginkgo `-skip` regex. | _empty_ |
 | `E2E_TEST_BIN` | Pre-extracted `e2e.test` binary path; skips download. | _empty_ |
 | `CACHE_DIR` | Where to cache downloads. | `$HOME/.cache/pillar-csi/external-e2e` |
+| `GINKGO_PROCS` | Worker count. Values above 1 run through the bundled `ginkgo` CLI; `1` executes `e2e.test` directly. | `1` |
+| `EXTERNAL_E2E_REPORT_DIR` | Parallel runs only (`GINKGO_PROCS` > 1): writes a merged Ginkgo JSON report `external-e2e.json` and `external-e2e-report-status.txt`. The run fails closed if the bundled `ginkgo` does not advertise `--output-dir` and `--json-report`. Ignored when `GINKGO_PROCS=1`. | _empty_ |
+
+The status file records `status=complete` (exit 0 with a report),
+`status=partial` (non-zero exit such as a fail-fast abort, but a report was
+written), or `status=unmeasured` (no report, or the run was killed before
+Ginkgo exited). Treat partial and unmeasured reports as incomplete timing data.
 
 ## Files
 
@@ -84,7 +91,10 @@ on-demand runs. The workflow:
    PR CI build or builds and `kind load`s the controller / agent / node images.
    It `helm install`s pillar-csi and applies the PillarAgent / PillarStore /
    PillarProtocol triple that the StorageClass references.
-3. Runs `make test-external-e2e` against the prepared cluster.
+3. Runs `make test-external-e2e` against the prepared cluster with
+   `EXTERNAL_E2E_REPORT_DIR` set, then uploads the report directory as the
+   `external-e2e-report-<run_id>-<attempt>` artifact (best effort; a hard job
+   timeout can skip the upload).
 4. Deletes the Kind cluster on completion (success or failure).
 
 ### Skipped spec categories
