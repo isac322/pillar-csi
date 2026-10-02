@@ -188,7 +188,8 @@ func (s *kindBootstrapState) createCluster(ctx context.Context, runner commandRu
 		"--kubeconfig", s.KubeconfigPath,
 		"--wait", s.CreateTimeout.String(),
 	}
-	if strings.EqualFold(strings.TrimSpace(os.Getenv("E2E_NFS_E2E")), "true") {
+	nfsEnabled := strings.EqualFold(strings.TrimSpace(os.Getenv("E2E_NFS_E2E")), "true")
+	if nfsEnabled {
 		configPath := filepath.Join(s.GeneratedDir, "nfs-kind.yaml")
 		if err := os.MkdirAll(s.GeneratedDir, 0o755); err != nil {
 			return fmt.Errorf("create NFS Kind config directory: %w", err)
@@ -205,6 +206,35 @@ func (s *kindBootstrapState) createCluster(ctx context.Context, runner commandRu
 		return err
 	}
 	s.clusterCreated = true
+
+	if nfsEnabled {
+		// Kind mounts /sys read-only; prepare workers before node Pods inherit it.
+		for _, node := range []string{s.ClusterName + "-worker", s.ClusterName + "-worker2"} {
+			if _, err := runner.Run(ctx, commandSpec{
+				Name: "docker",
+				Args: []string{"exec", node, "mount", "-o", "remount,rw", "/sys"},
+			}); err != nil {
+				return fmt.Errorf("remount /sys read-write in NFS Kind node %q: %w", node, err)
+			}
+			options, err := runner.Run(ctx, commandSpec{
+				Name: "docker",
+				Args: []string{"exec", node, "findmnt", "-no", "OPTIONS", "/sys"},
+			})
+			if err != nil {
+				return fmt.Errorf("read back /sys mount options in NFS Kind node %q: %w", node, err)
+			}
+			writable := false
+			for option := range strings.SplitSeq(strings.TrimSpace(options), ",") {
+				if strings.TrimSpace(option) == "rw" {
+					writable = true
+					break
+				}
+			}
+			if !writable {
+				return fmt.Errorf("verify read-write /sys in NFS Kind node %q: mount options %q lack rw", node, strings.TrimSpace(options))
+			}
+		}
+	}
 
 	contextName, err := runner.Run(ctx, commandSpec{
 		Name: s.KubectlBinary,

@@ -5292,6 +5292,8 @@ NFS 물리 profile은 storage control-plane Kind node에만 host `/dev` bind mou
 사용하지 않아도 host udev가 만든 zvol device와 symlink를 container에서
 그대로 확인할 수 있다. NFS client worker와 default profile에는 이 설정이
 적용되지 않는다.
+새로 생성해 소유권을 확인한 NFS Kind 클러스터의 두 client worker는 CSI node Pod 배포 전에 `/sys`를 read-write로 remount하고 readback의 `rw` 옵션을 검증한다. 재사용·외부 클러스터와 default-profile은 변경하지 않는다.
+
 
 NFS 물리 profile의 전체 실행 시간 budget은 20분이며, CLI/context/suite cap과
 일치한다. default profile의 120초 performance budget은 변경하지 않는다.
