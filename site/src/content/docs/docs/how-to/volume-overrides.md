@@ -1,6 +1,6 @@
 ---
 title: Override settings per binding or per volume
-description: Configure pillar-csi with one YAML shape at every layer, and override ZFS, LVM, NVMe-oF/TCP, iSCSI and filesystem settings per PillarStorageClass or per PVC annotation.
+description: Configure pillar-csi with one YAML shape at every layer, and override ZFS, LVM, NVMe-oF/TCP, iSCSI, NFS structural policy and filesystem settings per PillarStorageClass or per PVC annotation.
 sidebar:
   order: 6
 ---
@@ -31,10 +31,10 @@ Configuration has three axes: storage, protocol and filesystem. Each axis has a 
 | Axis | Base | Per binding | Per volume |
 |---|---|---|---|
 | Storage | `PillarStore.spec.backend.{zfs,lvm}` | `PillarStorageClass.spec.overrides.backend` | `pillar-csi.bhyoo.com/backend` |
-| Protocol | `PillarProtocol.spec.protocol.{nvmeofTcp,iscsi}` | `PillarStorageClass.spec.overrides.protocol` | `pillar-csi.bhyoo.com/protocol` |
+| Protocol | `PillarProtocol.spec.protocol.{nvmeofTcp,iscsi,nfs}` | `PillarStorageClass.spec.overrides.protocol` | `pillar-csi.bhyoo.com/protocol` |
 | Filesystem | `fsType: ext4` | `PillarStorageClass.spec.filesystem` | `pillar-csi.bhyoo.com/filesystem` |
 
-The protocols are `nvmeofTcp` and `iscsi`, and `zfs` and `lvm` are the only backends. NFS and SMB are planned. Each is designed to arrive as another member of the same `protocol` document, next to `nvmeofTcp` and `iscsi`, and to follow the same three layers.
+The protocols are `nvmeofTcp`, `iscsi`, and `nfs`; `zfs` and `lvm` are the backends, with `zfs.volumeType: dataset` required for NFS. NFS uses the same resource shape but its version, port, ACL and squash fields are structural and cannot be overridden per binding or PVC. SMB and directory backends are unavailable.
 
 ## What you can override
 
@@ -46,9 +46,10 @@ Only tunable fields are accepted above the base:
 | `backend` with `lvm` | `provisioningMode` (`linear` or `thin`) |
 | `protocol` with `nvmeofTcp` | `maxQueueSize`, `inCapsuleDataSize`, `maxDataTransferSize`, `ctrlLossTmo`, `reconnectDelay` |
 | `protocol` with `iscsi` | `loginTimeout`, `replacementTimeout`, `noopOutInterval`, `noopOutTimeout` |
-| `filesystem` | `fsType` (`ext4` or `xfs`), `mkfsOptions`, `mountOptions`, `periodicTrim` |
+| `protocol` with `nfs` | no per-volume tunables; `mountOptions` belong to `filesystem` |
+| `filesystem` | block: `fsType`, `mkfsOptions`, `mountOptions`, `periodicTrim`; NFS: `mountOptions` only |
 
-The structural fields `zfs.pool`, `zfs.parentDataset`, `zfs.volumeType`, `lvm.volumeGroup`, `lvm.thinPool`, `nvmeofTcp.port`, `nvmeofTcp.acl`, `iscsi.port` and `iscsi.acl` decide where a volume lives and who can reach it. They are rejected with their path, for example:
+The structural fields `zfs.pool`, `zfs.parentDataset`, `zfs.volumeType`, `lvm.volumeGroup`, `lvm.thinPool`, `nvmeofTcp.port`, `nvmeofTcp.acl`, `iscsi.port`, `iscsi.acl`, `nfs.version`, `nfs.port`, `nfs.acl` and `nfs.squash` decide where a volume lives, which protocol it uses, and who can reach it. They are rejected with their path. NFS is fixed to version 4.2 and port 2049, defaults to root squash, and rejects fsType, mkfsOptions, periodic trim, localAttach and contradictory mount flags.
 
 ```text
 pillar-csi.bhyoo.com/protocol: nvmeofTcp.acl is structural and cannot be set per volume

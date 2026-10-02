@@ -23,6 +23,7 @@
 //	E2E_STAGE_TIMING         — "1" emits wall-clock stage breakdown
 //	GINKGO                   — absolute path to the ginkgo binary
 //	PILLAR_E2E_PROCS         — parallel worker count (default: nproc)
+//	E2E_REPORT_DIR          — Ginkgo report directory (defaults to os.TempDir())
 //	E2E_FAIL_FAST            — "true" stops after the first spec failure
 package e2e
 
@@ -268,6 +269,12 @@ func TestMain(m *testing.M) {
 	// m.Run() does so internally. flag.Parse() is idempotent.
 	if !flag.Parsed() {
 		flag.Parse()
+	}
+	// Catalog enumeration must not mutate a cluster, provision storage, or run
+	// the orphan reaper. Ginkgo dry-run registers and lists nodes without
+	// executing BeforeSuite/BeforeAll/spec bodies.
+	if dryRun := flag.Lookup("ginkgo.dry-run"); dryRun != nil && dryRun.Value.String() == "true" {
+		os.Exit(m.Run())
 	}
 
 	// Reset invocation-scoped environment variables only in the primary
@@ -816,7 +823,12 @@ func reexecViaGinkgoCLI(stdout, stderr io.Writer) int {
 		procs = p
 	}
 
+	// E2E_REPORT_DIR is lane-scoped by CI when needed; when unset, preserve
+	// the historical default so existing local and default-lane runs are unchanged.
 	reportDir := filepath.Join(os.TempDir(), "pillar-csi-e2e-reports")
+	if configuredReportDir := strings.TrimSpace(os.Getenv("E2E_REPORT_DIR")); configuredReportDir != "" {
+		reportDir = configuredReportDir
+	}
 	_ = os.MkdirAll(reportDir, 0o755)
 
 	// Sub-AC 2.2: resolve the path of the already-compiled test binary so ginkgo
@@ -830,9 +842,13 @@ func reexecViaGinkgoCLI(stdout, stderr io.Writer) int {
 			testBinPath)
 	}
 
+	cliTimeout := ginkgoCliTimeout
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("E2E_NFS_E2E")), "true") {
+		cliTimeout = "20m"
+	}
 	ginkgoArgs := []string{
 		"--procs=" + procs,
-		"--timeout=" + ginkgoCliTimeout,
+		"--timeout=" + cliTimeout,
 		"--output-dir=" + reportDir,
 		"--json-report=e2e-auto.json",
 		testBinPath,

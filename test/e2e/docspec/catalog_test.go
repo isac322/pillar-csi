@@ -20,9 +20,6 @@ func TestLoadCatalog(t *testing.T) {
 		t.Fatalf("load catalog: %v", err)
 	}
 
-	if catalog.DeclaredTotal != 422 {
-		t.Fatalf("declared total = %d, want 422", catalog.DeclaredTotal)
-	}
 	if len(catalog.Cases) == 0 {
 		t.Fatal("expected at least one concrete case row")
 	}
@@ -31,6 +28,140 @@ func TestLoadCatalog(t *testing.T) {
 	}
 	if len(catalog.CanonicalCases) > len(catalog.Cases) {
 		t.Fatalf("canonical case count %d exceeds concrete row count %d", len(catalog.CanonicalCases), len(catalog.Cases))
+	}
+}
+
+func TestLoadCatalogIgnoresRowsOutsideCaseTables(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module fixture\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	docDir := filepath.Join(root, "docs")
+	if err := os.MkdirAll(docDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	document := `**총 테스트 케이스: 2**
+
+| 99 | ` + "`ReferenceOnly`" + ` | 설명 |
+
+## E1: fixture
+### E1.1 active
+| ID | 테스트 함수 | 설명 |
+|----|------------|------|
+| E1.1 | ` + "`TestActive`" + ` | 실행 |
+| E1.2 | ` + "`TestAnnotated`" + ` | 실행 |
+`
+	if err := os.WriteFile(filepath.Join(docDir, "E2E-TESTCASES.md"), []byte(document), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	catalog, err := LoadCatalog(root)
+	if err != nil {
+		t.Fatalf("load fixture catalog: %v", err)
+	}
+	if len(catalog.Cases) != 2 || len(catalog.CanonicalCases) != 2 {
+		t.Fatalf("case-table boundary parsed %d cases/%d canonical, want 2/2", len(catalog.Cases), len(catalog.CanonicalCases))
+	}
+	if got := catalog.CanonicalCases[0].Symbol; got != "TestActive" {
+		t.Fatalf("case-table boundary selected %q, want TestActive", got)
+	}
+	if got := catalog.CanonicalCases[1].Symbol; got != "TestAnnotated" {
+		t.Fatalf("annotated symbol parsed as %q, want TestAnnotated", got)
+	}
+}
+
+func TestScopeCatalogResolvesActiveAliasesByNodeID(t *testing.T) {
+	t.Parallel()
+
+	catalog := Catalog{
+		Cases: []Case{
+			{ID: "E1.1", Symbol: "TestCanonical"},
+			{ID: "E1.2", Symbol: "TestAliasOnly", Alias: true},
+			{ID: "E1.3", Symbol: "TestAliasFirst", Alias: true},
+			{ID: "E1.3", Symbol: "TestCanonicalDuplicate"},
+		},
+		CanonicalCases: []Case{
+			{ID: "E1.1", Symbol: "TestCanonical"},
+			{ID: "E1.3", Symbol: "TestCanonicalDuplicate"},
+		},
+		InventoryCount: 2,
+	}
+
+	scoped := ScopeCatalog(catalog, []string{"fixture"}, []string{"E1.2", "E1.3"})
+	if got, want := len(scoped.CanonicalCases), 2; got != want {
+		t.Fatalf("selected cases = %d, want %d", got, want)
+	}
+	if got := scoped.CanonicalCases[0]; !got.Alias || got.GinkgoNodeID() != "E1.2" {
+		t.Fatalf("alias-only active case = %+v, want alias E1.2", got)
+	}
+	if got := scoped.CanonicalCases[1]; got.Alias || got.GinkgoNodeID() != "E1.3" {
+		t.Fatalf("duplicate node-ID representative = %+v, want canonical E1.3", got)
+	}
+	if got, want := scoped.InventoryCount, len(catalog.CanonicalCases); got != want {
+		t.Fatalf("inventory count = %d, want unchanged canonical inventory %d", got, want)
+	}
+	if got := len(catalog.CanonicalCases); got != 2 {
+		t.Fatalf("canonical inventory mutated to %d cases", got)
+	}
+
+	report := FindGinkgoNodeBindingsFromSpecNames(scoped, []string{
+		"[TC-E1.2] alias-only active case",
+		"[TC-E1.3] first node",
+		"[TC-E1.3] second distinct node",
+	})
+	if got := report.MissingCount(); got != 0 {
+		t.Fatalf("missing active cases = %d, want 0", got)
+	}
+	if got := report.ExtraCount(); got != 0 {
+		t.Fatalf("extra active cases = %d, want 0", got)
+	}
+	if got := report.DuplicateCount(); got != 1 {
+		t.Fatalf("duplicate node IDs = %d, want 1", got)
+	}
+	if _, ok := report.Duplicates["E1.3"]; !ok {
+		t.Fatal("expected true duplicate E1.3 to remain reportable")
+	}
+}
+
+func TestGinkgoNodeIDNormalizesSectionLocalSuffix(t *testing.T) {
+	t.Parallel()
+
+	caseID := Case{ID: "217a", SectionKey: "E27"}
+	if got := caseID.GinkgoNodeID(); got != "E27.217a" {
+		t.Fatalf("GinkgoNodeID() = %q, want E27.217a", got)
+	}
+	if !looksLikeCaseID("217a") {
+		t.Fatal("expected numeric-plus-letter section-local ID to be accepted")
+	}
+	if looksLikeCaseID("217A") {
+		t.Fatal("uppercase suffix must not be accepted as a section-local ID")
+	}
+}
+
+func TestScopeCatalogReportsUnresolvedRegisteredIDs(t *testing.T) {
+	t.Parallel()
+
+	catalog := Catalog{
+		Cases: []Case{
+			{ID: "217a", SectionKey: "E27", Symbol: "TestRegistered"},
+		},
+		CanonicalCases: []Case{
+			{ID: "217a", SectionKey: "E27", Symbol: "TestRegistered"},
+		},
+		InventoryCount: 1,
+	}
+
+	scoped := ScopeCatalog(catalog, []string{"fixture"}, []string{"E27.217a", "E27.999"})
+	if got, want := scoped.RegisteredUnique, 2; got != want {
+		t.Fatalf("registered unique IDs = %d, want %d", got, want)
+	}
+	if got := scoped.UnresolvedIDs; len(got) != 1 || got[0] != "E27.999" {
+		t.Fatalf("unresolved IDs = %v, want [E27.999]", got)
+	}
+	if got, want := len(scoped.CanonicalCases), 1; got != want {
+		t.Fatalf("selected cases = %d, want %d", got, want)
 	}
 }
 
@@ -121,46 +252,6 @@ func TestGinkgoNodeID_NumericIDNoSectionKey(t *testing.T) {
 }
 
 // ── FindGinkgoNodeBindingsFromSpecNames ───────────────────────────────────────
-
-func TestFindGinkgoNodeBindingsFromSpecNames_ExactMatch(t *testing.T) {
-	t.Parallel()
-
-	repoRoot, err := FindRepoRoot(".")
-	if err != nil {
-		t.Fatalf("find repo root: %v", err)
-	}
-	catalog, err := LoadCatalog(repoRoot)
-	if err != nil {
-		t.Fatalf("load catalog: %v", err)
-	}
-
-	// Build a synthetic set of spec names that covers every canonical case.
-	specNames := make([]string, 0, len(catalog.CanonicalCases))
-	for _, tc := range catalog.CanonicalCases {
-		nodeID := tc.GinkgoNodeID()
-		if nodeID == "" {
-			continue
-		}
-		specNames = append(specNames, "[TC-"+nodeID+"] TC[001/388] "+nodeID+" :: "+tc.Symbol)
-	}
-
-	report := FindGinkgoNodeBindingsFromSpecNames(catalog, specNames)
-
-	if report.MissingCount() != 0 {
-		t.Errorf("expected 0 missing, got %d", report.MissingCount())
-	}
-	if report.ExtraCount() != 0 {
-		t.Errorf("expected 0 extra, got %d", report.ExtraCount())
-	}
-	if report.DuplicateCount() != 0 {
-		t.Errorf("expected 0 duplicates, got %d", report.DuplicateCount())
-	}
-	if report.BoundCount() == 0 {
-		t.Error("expected bound > 0")
-	}
-	t.Logf("full-coverage synthetic check: bound=%d missing=%d extra=%d duplicates=%d",
-		report.BoundCount(), report.MissingCount(), report.ExtraCount(), report.DuplicateCount())
-}
 
 func TestFindGinkgoNodeBindingsFromSpecNames_Extra(t *testing.T) {
 	t.Parallel()

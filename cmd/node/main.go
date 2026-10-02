@@ -998,6 +998,21 @@ func (m *mkdirMounter) IsMounted(target string) (bool, error) {
 // main
 // ─────────────────────────────────────────────────────────────────────────────
 
+func nodeProtocolHandlers(
+	hostNQN, hostID string, iscsiInitiator *iscsi.Initiator, iscsiIQN string,
+) map[string]csisvc.ProtocolHandler {
+	handlers := map[string]csisvc.ProtocolHandler{
+		csisvc.ProtocolNVMeoFTCP: newFabricsConnector(hostNQN, hostID),
+	}
+	if iscsiInitiator != nil {
+		handlers[csisvc.ProtocolISCSI] = csisvc.NewISCSIHandler(iscsiInitiator, iscsiIQN)
+	}
+	if csisvc.NFSClientAvailable() {
+		handlers[csisvc.ProtocolNFS] = csisvc.NewNFSHandler()
+	}
+	return handlers
+}
+
 func main() {
 	nodeID := flag.String("node-id", "",
 		"Unique identifier for this Kubernetes node (typically the Node name). Required.")
@@ -1062,18 +1077,9 @@ func main() {
 	hostNQN, hostID := resolveHostIdentityOrExit()
 
 	// ── Build the CSI service implementations ──────────────────────────────
-	// Build the protocol handler map.  fabricsConnector provides the
-	// production NVMe-oF TCP implementation using /dev/nvme-fabrics directly
-	// (no nvme-cli required in the container image).
-	// NVMe-oF TCP is always registered; iSCSI only when the kernel iscsi_tcp
-	// transport is loaded.  NFS and SMB are not implemented, so NodeStage
-	// for them fails with an explicit error.
-	handlers := map[string]csisvc.ProtocolHandler{
-		csisvc.ProtocolNVMeoFTCP: newFabricsConnector(hostNQN, hostID),
-	}
-	if iscsiInitiator != nil {
-		handlers[csisvc.ProtocolISCSI] = csisvc.NewISCSIHandler(iscsiInitiator, iscsiIQN)
-	}
+	// Build the protocol handlers. NVMe-oF is always available; iSCSI and NFS
+	// are registered only when their node-side prerequisites are present.
+	handlers := nodeProtocolHandlers(hostNQN, hostID, iscsiInitiator, iscsiIQN)
 	stateDir := resolvedDefaultStateDir()
 	identitySrv := csisvc.NewIdentityServerWithReadyFn(
 		driverName,

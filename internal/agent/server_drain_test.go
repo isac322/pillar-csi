@@ -84,7 +84,10 @@ func TestDrain_BlocksNewMutatingRPCs(t *testing.T) {
 	}
 
 	handlerCalled := false
-	req := &agentv1.GetCapacityRequest{PoolName: drainTestPool}
+	req := &agentv1.GetCapacityRequest{
+		PoolName:    drainTestPool,
+		BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
+	}
 	got, err := DrainGuardInterceptor(srv)(
 		ctx,
 		req,

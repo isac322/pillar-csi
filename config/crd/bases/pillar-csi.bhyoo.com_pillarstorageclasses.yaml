@@ -68,13 +68,14 @@ spec:
                   which filesystem the node formats and which mount options it applies.
                 properties:
                   fsType:
-                    default: ext4
                     description: |-
-                      fsType is the filesystem the node formats a new volume with when
-                      volumeMode is Filesystem.
+                      fsType is the filesystem type the node uses for a block volume in
+                      Filesystem mode.  The controller defaults omitted values to ext4;
+                      file protocols such as NFS use their protocol filesystem instead.
                     enum:
                     - ext4
                     - xfs
+                    - nfs
                     type: string
                   mkfsOptions:
                     description: |-
@@ -200,6 +201,11 @@ spec:
                             minimum: 0
                             type: integer
                         type: object
+                      nfs:
+                        description: |-
+                          nfs is an empty override member; NFS settings are structural and fixed
+                          by the referenced PillarProtocol.
+                        type: object
                       nvmeofTcp:
                         description: |-
                           nvmeofTcp overrides NVMe-oF/TCP tunables; valid only when the
@@ -267,9 +273,9 @@ spec:
                     type: object
                     x-kubernetes-validations:
                     - message: 'exactly one protocol member must be set (supported:
-                        nvmeofTcp, iscsi)'
+                        nvmeofTcp, iscsi, nfs)'
                       rule: '(has(self.nvmeofTcp) ? 1 : 0) + (has(self.iscsi) ? 1
-                        : 0) == 1'
+                        : 0) + (has(self.nfs) ? 1 : 0) == 1'
                 type: object
               protocolRef:
                 description: protocolRef is the name of the PillarProtocol used to

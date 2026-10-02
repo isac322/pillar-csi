@@ -98,9 +98,12 @@ func (d *PillarStorageClassCustomDefaulter) defaultAllowVolumeExpansion(
 }
 
 // backendSupportsVolumeExpansion returns true when the given backend can
-// resize volumes online: every block-device backend (zfs zvol, lvm LV) can.
+// resize volumes online.  Both block devices and ZFS datasets support
+// server-side expansion.
 func backendSupportsVolumeExpansion(id pillarcsiv1alpha1.BackendID) bool {
-	return pillarcsiv1alpha1.CategoryOf(id) == pillarcsiv1alpha1.BackendCategoryBlock
+	category := pillarcsiv1alpha1.CategoryOf(id)
+	return category == pillarcsiv1alpha1.BackendCategoryBlock ||
+		category == pillarcsiv1alpha1.BackendCategoryFilesystem
 }
 
 // NOTE: If you want to customize the 'path', use the flags '--defaulting-path' or '--validation-path'.
@@ -231,58 +234,151 @@ func (v *PillarStorageClassCustomValidator) validateCompatibility(
 		return nil
 	}
 
-	var allErrs field.ErrorList
-	overridesPath := field.NewPath("spec", "overrides")
+	store, storeErr := v.lookupStore(ctx, pb)
+	protocol, protocolErr := v.lookupProtocol(ctx, pb)
 
+	var allErrs field.ErrorList
+	allErrs = append(allErrs, validateBackendOverride(pb, store, storeErr)...)
+	allErrs = append(allErrs, validateProtocolOverride(pb, protocol, protocolErr)...)
+	if storeErr == nil && protocolErr == nil {
+		allErrs = append(allErrs, validateCompatibleStorageClass(pb, store, protocol)...)
+	}
+	if len(allErrs) == 0 {
+		return nil
+	}
+	return allErrs.ToAggregate()
+}
+
+func (v *PillarStorageClassCustomValidator) lookupStore(
+	ctx context.Context, pb *pillarcsiv1alpha1.PillarStorageClass,
+) (*pillarcsiv1alpha1.PillarStore, error) {
 	store := &pillarcsiv1alpha1.PillarStore{}
-	storeErr := v.Client.Get(ctx, types.NamespacedName{Name: pb.Spec.StoreRef}, store)
-	if storeErr != nil {
+	err := v.Client.Get(ctx, types.NamespacedName{Name: pb.Spec.StoreRef}, store)
+	if err != nil {
 		// Store not found yet — skip; controller reconciliation handles this case.
 		pillarstorageclasslog.V(1).Info("Skipping store-dependent checks: cannot fetch store",
-			"storeRef", pb.Spec.StoreRef, "reason", storeErr.Error())
-	} else if pb.Spec.Overrides != nil && pb.Spec.Overrides.Backend != nil {
-		overrideMember := pb.Spec.Overrides.Backend.Kind()
-		storeMember := backendMember(store.Spec.Backend)
-		if overrideMember != storeMember {
-			allErrs = append(allErrs, field.Invalid(
-				overridesPath.Child("backend"), overrideMember,
-				fmt.Sprintf("backend override member %q does not match the %q backend of PillarStore %q",
-					overrideMember, storeMember, pb.Spec.StoreRef),
-			))
-		}
+			"storeRef", pb.Spec.StoreRef, "reason", err.Error())
+		return store, fmt.Errorf("cannot look up PillarStore %q: %w", pb.Spec.StoreRef, err)
 	}
+	return store, nil
+}
 
+func (v *PillarStorageClassCustomValidator) lookupProtocol(
+	ctx context.Context, pb *pillarcsiv1alpha1.PillarStorageClass,
+) (*pillarcsiv1alpha1.PillarProtocol, error) {
 	protocol := &pillarcsiv1alpha1.PillarProtocol{}
-	protoErr := v.Client.Get(ctx, types.NamespacedName{Name: pb.Spec.ProtocolRef}, protocol)
-	if protoErr != nil {
+	err := v.Client.Get(ctx, types.NamespacedName{Name: pb.Spec.ProtocolRef}, protocol)
+	if err != nil {
 		// Protocol not found yet — skip; controller reconciliation handles this case.
 		pillarstorageclasslog.V(1).Info("Skipping protocol-dependent checks: cannot fetch protocol",
-			"protocolRef", pb.Spec.ProtocolRef, "reason", protoErr.Error())
-	} else if pb.Spec.Overrides != nil && pb.Spec.Overrides.Protocol != nil {
-		overrideMember := pb.Spec.Overrides.Protocol.Kind()
-		protocolMemberName := protocolMember(protocol.Spec.Protocol)
-		if overrideMember != protocolMemberName {
-			allErrs = append(allErrs, field.Invalid(
-				overridesPath.Child("protocol"), overrideMember,
-				fmt.Sprintf("protocol override member %q does not match the %q protocol of PillarProtocol %q",
-					overrideMember, protocolMemberName, pb.Spec.ProtocolRef),
-			))
-		}
+			"protocolRef", pb.Spec.ProtocolRef, "reason", err.Error())
+		return protocol, fmt.Errorf("cannot look up PillarProtocol %q: %w", pb.Spec.ProtocolRef, err)
 	}
+	return protocol, nil
+}
 
-	if storeErr == nil && protoErr == nil {
-		compat := pillarcsiv1alpha1.Compatible(store.Spec.Backend, protocol.Spec.Protocol)
-		if !compat.OK {
-			allErrs = append(allErrs, field.Invalid(
-				field.NewPath("spec", "protocolRef"),
-				pb.Spec.ProtocolRef,
-				compat.Message,
-			))
-		}
+func validateBackendOverride(
+	pb *pillarcsiv1alpha1.PillarStorageClass,
+	store *pillarcsiv1alpha1.PillarStore,
+	storeErr error,
+) field.ErrorList {
+	if storeErr != nil || pb.Spec.Overrides == nil || pb.Spec.Overrides.Backend == nil {
+		return nil
 	}
+	overrideMember := pb.Spec.Overrides.Backend.Kind()
+	storeMember := backendMember(store.Spec.Backend)
+	if overrideMember == storeMember {
+		return nil
+	}
+	return field.ErrorList{field.Invalid(
+		field.NewPath("spec", "overrides", "backend"), overrideMember,
+		fmt.Sprintf("backend override member %q does not match the %q backend of PillarStore %q",
+			overrideMember, storeMember, pb.Spec.StoreRef),
+	)}
+}
 
-	if len(allErrs) > 0 {
-		return allErrs.ToAggregate()
+func validateProtocolOverride(
+	pb *pillarcsiv1alpha1.PillarStorageClass,
+	protocol *pillarcsiv1alpha1.PillarProtocol,
+	protocolErr error,
+) field.ErrorList {
+	if protocolErr != nil || pb.Spec.Overrides == nil || pb.Spec.Overrides.Protocol == nil {
+		return nil
 	}
-	return nil
+	overrideMember := pb.Spec.Overrides.Protocol.Kind()
+	protocolMemberName := protocolMember(protocol.Spec.Protocol)
+	if overrideMember == protocolMemberName {
+		return nil
+	}
+	return field.ErrorList{field.Invalid(
+		field.NewPath("spec", "overrides", "protocol"), overrideMember,
+		fmt.Sprintf("protocol override member %q does not match the %q protocol of PillarProtocol %q",
+			overrideMember, protocolMemberName, pb.Spec.ProtocolRef),
+	)}
+}
+
+func validateCompatibleStorageClass(
+	pb *pillarcsiv1alpha1.PillarStorageClass,
+	store *pillarcsiv1alpha1.PillarStore,
+	protocol *pillarcsiv1alpha1.PillarProtocol,
+) field.ErrorList {
+	compat := pillarcsiv1alpha1.Compatible(store.Spec.Backend, protocol.Spec.Protocol)
+	if !compat.OK {
+		return field.ErrorList{field.Invalid(
+			field.NewPath("spec", "protocolRef"), pb.Spec.ProtocolRef, compat.Message,
+		)}
+	}
+	if compat.ProtocolID == pillarcsiv1alpha1.ProtocolIDNFS {
+		return validateNFSStorageClass(pb)
+	}
+	return validateNonNFSStorageClass(pb)
+}
+
+func validateNFSStorageClass(pb *pillarcsiv1alpha1.PillarStorageClass) field.ErrorList {
+	var errs field.ErrorList
+	if pb.Spec.LocalAttach {
+		errs = append(errs, field.Forbidden(
+			field.NewPath("spec", "localAttach"),
+			"localAttach is not supported for NFS volumes",
+		))
+	}
+	if fs := pb.Spec.Filesystem; fs != nil {
+		errs = append(errs, validateNFSFilesystem(fs)...)
+	}
+	return errs
+}
+
+func validateNFSFilesystem(fs *pillarcsiv1alpha1.FilesystemConfig) field.ErrorList {
+	filesystemPath := field.NewPath("spec", "filesystem")
+	var errs field.ErrorList
+	if fs.FSType != "" && fs.FSType != nfsProtocolMember {
+		errs = append(errs, field.Invalid(
+			filesystemPath.Child("fsType"), fs.FSType,
+			"NFS volumes only accept fsType nfs",
+		))
+	}
+	if fs.MkfsOptions != nil && len(*fs.MkfsOptions) > 0 {
+		errs = append(errs, field.Invalid(
+			filesystemPath.Child("mkfsOptions"), *fs.MkfsOptions,
+			"NFS volumes are not formatted",
+		))
+	}
+	if fs.PeriodicTrim != nil && *fs.PeriodicTrim {
+		errs = append(errs, field.Invalid(
+			filesystemPath.Child("periodicTrim"), *fs.PeriodicTrim,
+			"periodicTrim is not supported for NFS volumes",
+		))
+	}
+	return errs
+}
+
+func validateNonNFSStorageClass(pb *pillarcsiv1alpha1.PillarStorageClass) field.ErrorList {
+	fs := pb.Spec.Filesystem
+	if fs == nil || fs.FSType != nfsProtocolMember {
+		return nil
+	}
+	return field.ErrorList{field.Invalid(
+		field.NewPath("spec", "filesystem", "fsType"), fs.FSType,
+		"fsType nfs requires the NFS protocol",
+	)}
 }

@@ -1,4 +1,4 @@
-> **Design reference — NVMe-oF/TCP and iSCSI are implemented.** The NFS and SMB paths in this RFC are future-protocol design notes. The served CRD schema contains the `nvmeofTcp` and `iscsi` protocol members (and the `zfs`/`lvm` backend members). Configuration follows the current interface in [`PRD.md`](./PRD.md) §2.3; the implemented iSCSI design (LIO configfs on the agent, pure-Go in-process initiator over `NETLINK_ISCSI` in pillar-node, no `iscsiadm`/`iscsid`) is in [`PRD-iscsi.md`](./PRD-iscsi.md).
+> **Design reference — NVMe-oF/TCP, iSCSI and NFSv4.2 are implemented.** The SMB path in this RFC remains a future-protocol design note. The served CRD schema contains `nvmeofTcp`, `iscsi` and `nfs` protocol members plus `zfs`/`lvm` backends, with `zfs.volumeType: dataset` required for NFS. Configuration follows the current interface in [`PRD.md`](./PRD.md) §2.3; the implemented iSCSI design is in [`PRD-iscsi.md`](./PRD-iscsi.md).
 
 # pillar-csi Multi-Protocol Driver Foundation RFC
 
@@ -35,7 +35,7 @@
 - **Agent proto 정의** (`agent.proto`): `ProtocolType` enum, `ExportParams` oneof,
   `AllowInitiator`/`DenyInitiator` RPC가 protocol-agnostic하게 설계됨.
 - **CRD 정의** (`PillarProtocol`, `PillarStorageClass`): exactly-one union 패턴
-  (`spec.protocol.<member>`, `type` 필드 없음)으로 protocol별 config를 분리. 현재 served 멤버는 `nvmeofTcp` 하나이며, 새 protocol은 union 멤버를 추가하는 방식으로 수용한다.
+  (`spec.protocol.<member>`, `type` 필드 없음)으로 protocol별 config를 분리. 현재 served 멤버는 `nvmeofTcp`, `iscsi`, `nfs`이며, SMB 같은 새 protocol은 union 멤버를 추가하는 방식으로 수용한다.
 - **Volume ID 라우팅**: `<target>/<protocol>/<backend>/<vol-id>` 포맷이
   모든 CSI 호출에서 protocol type과 backend type을 모두 포함.
 - **Controller CreateVolume/DeleteVolume**: protocol type을 파라미터로 전달하며
@@ -58,7 +58,7 @@
    - `Connect(subsysNQN, trAddr, trSvcID)`, `Disconnect(subsysNQN)`,
      `GetDevicePath(subsysNQN)` — 모두 NVMe-oF TCP 전용.
    - iSCSI는 discovery→login→SCSI device resolve가 필요하고,
-     NFS/SMB는 block device가 아닌 mount source를 반환해야 한다.
+     NFS는 block device가 아닌 NFS mount source를 반환하고, SMB은 향후 mount source를 반환해야 한다.
 
 3. **`NodeStageVolume`의 하드코딩된 NVMe-oF 경로**
    (`node.go:356-525`)
@@ -89,12 +89,11 @@
 - 에러 메시지가 NVMe-oF를 직접 참조 (`node.go:24,48,337,448,481`).
 - state machine 주석이 NVMe-oF 가정 (`statemachine.go:42,75-93,175`).
 - CRD의 `ProtocolType` enum에 SMB가 누락 (proto에는 있음).
-- `NodeExpandVolume`이 block device resize만 수행 (file protocol은 고려 안 함).
-- `ControllerExpandVolume`이 무조건 `NodeExpansionRequired: true` 반환 (file protocol은 `false`여야 함).
-- `supportedAccessModes`(`controller.go:238-258`)가 `MULTI_NODE_MULTI_WRITER`를 제외 — NFS/SMB RWX 차단.
+- `NodeExpandVolume`이 block device resize만 수행 (NFS file protocol은 server-side quota 확장으로 node expansion이 불필요).
+- `ControllerExpandVolume`이 무조건 `NodeExpansionRequired: true` 반환 (NFS는 `false`여야 함).
+- `supportedAccessModes`가 `MULTI_NODE_MULTI_WRITER`를 제외 — NFS RWX를 protocol-aware하게 허용해야 한다.
 
-이 상태에서 iSCSI를 바로 구현하면, iSCSI는 들어가더라도
-앞으로 NFS/SMB 같은 protocol을 추가할 때 다시 구조를 뒤집게 된다.
+이 상태에서 새 file protocol인 SMB를 바로 구현하면 기존 block 가정을 다시 뒤집을 수 있으므로, NFS에서 확정한 protocol-aware 계약을 유지한다.
 
 지금은 아직 public release도 아니고 production compatibility burden도 없으므로,
 이 타이밍에 foundation을 바로잡는 것이 맞다.
@@ -110,9 +109,8 @@
   거기서 protocol-specific identity를 해석해야 한다.
 - node runtime과 agent runtime 모두 protocol handler와 common lifecycle로
   분리돼야 한다.
-- future protocol(NFS/SMB) 추가 시 `node_id` 의미를 다시 바꾸지 않게 해야 한다.
-- future file protocol은 block protocol과 동일한 publish/stage semantics를 자동 상속한다고
-  가정하지 않아야 한다.
+- new protocol(SMB) 추가 시 `node_id` 의미를 다시 바꾸지 않게 해야 한다.
+- NFS에서 구현한 file protocol은 block protocol과 동일한 publish/stage semantics를 자동 상속하지 않으며, SMB도 같은 protocol-aware 계약을 따라야 한다.
 - driver-wide CSI capability(`STAGE_UNSTAGE_VOLUME`, `EXPAND_VOLUME`)가
   보고되더라도, 각 protocol은 해당 capability의 의미를 자체 정의할 수 있어야 한다.
 - file protocol의 ReadWriteMany (RWX) access mode를 수용할 수 있는 구조여야 한다.
@@ -125,7 +123,7 @@
 - iSCSI target/LIO 구현 자체
 - CHAP/multipath 구체 설계 (단, ProtocolHandler가 향후 이를 수용할 수 있어야 함)
 - snapshot/clone 제품 요구사항 (단, 이들은 backend-only 연산이며 protocol 코드와 무관함을 확인)
-- NFS/SMB 제품 PRD 작성
+- SMB 제품 PRD 작성
 - 외부 SAN/NAS import UX 정의
 - NVMe/RDMA transport variant 구현
 
@@ -158,12 +156,11 @@ NetApp Trident(가장 성숙한 multi-protocol CSI driver)도 Kubernetes node na
 
 ### 5.2 protocol-specific identity publication
 
-- transport-specific identity는 Kubernetes `Node` 본문이 아니라
-  `CSINode.metadata.annotations`에 publish한다.
+- transport-specific block identity는 Kubernetes `CSINode.metadata.annotations`에 publish한다. NFS는 이 예외로 `Node.status.addresses[InternalIP]`를 `ControllerPublishVolume` 시점에 직접 resolve한다.
 - 예시:
   - `pillar-csi.bhyoo.com/nvmeof-host-nqn` — NVMe host NQN (`/etc/nvme/hostnqn`)
   - `pillar-csi.bhyoo.com/iscsi-initiator-iqn` — iSCSI IQN (`/etc/iscsi/initiatorname.iscsi`)
-  - `pillar-csi.bhyoo.com/node-ip` — NFS/SMB client IP
+  - NFS client identity — target Node `InternalIP` (별도 CSINode annotation 없음)
 - `CSINode`는 kubelet이 CSI driver 등록 시 생성/갱신하는 CSI-scoped node object이며,
   이름은 Kubernetes node name과 같다.
 - 이 annotation은 node-side publisher가 자동으로 채운다.
@@ -176,18 +173,10 @@ Identity source별 특성:
 | NVMe-oF TCP | Host NQN | `/etc/nvme/hostnqn` | 파일 기반, 노드 고정 |
 | NVMe-oF RDMA | Host NQN | 동일 | NVMe/TCP와 identity 공유 |
 | iSCSI | Initiator IQN | `/etc/iscsi/initiatorname.iscsi` (`InitiatorName=`; 없으면 pillar-node가 `iqn.2026-01.com.bhyoo.pillar-csi:node.<hex>`를 생성·저장) → CSINode annotation `pillar-csi.bhyoo.com/iscsi-initiator-iqn` | 파일 기반, 노드 고정 (구현됨) |
-| NFS | Client IP | `Node.status.addresses` | IP 변경 가능 — 아래 참고 |
-| SMB | Credentials | K8s Secret (`nodeStageSecretRef`) | annotation 불필요 |
+| NFS | Client InternalIP | `Node.status.addresses[InternalIP]` at publish time | ACL identity is numeric and may change with node networking |
+| SMB | Credentials | K8s Secret (`nodeStageSecretRef`) | annotation 불필요; future protocol |
 
-NFS identity 특수성:
-
-- NFS ACL은 client IP 기반이다.
-- IP는 노드 재시작이나 네트워크 재구성 시 변경될 수 있다.
-- `CSINode` annotation에 IP를 정적 저장하는 대신, controller가 `ControllerPublishVolume`
-  시점에 `Node.status.addresses`에서 직접 읽는 것이 더 정확할 수 있다.
-- 또는 `PillarAgent.status.resolvedAddress`와 동일한 패턴으로 노드 IP를 resolve.
-- 이 결정은 NFS PRD 시점에 확정하되, CSINode annotation 스키마에 NFS IP key를
-  **예약만** 해둔다.
+NFS ACL identity is resolved from the target node's current `InternalIP` at `ControllerPublishVolume`. The controller validates numeric address and address family, and the agent restores the exact allowed set; an empty set denies volume data even if an unauthorized mount reaches an empty backing stub. A stale or changed node IP requires unpublish/publish to refresh ACL membership.
 
 SMB identity 특수성:
 
@@ -197,13 +186,11 @@ SMB identity 특수성:
 - `ControllerPublishVolume`에서 ACL 관리가 필요한 경우,
   controller가 Secret에서 username을 읽어 agent에 전달하는 flow.
 
-보안 모델 참고 (비목표지만 인터페이스 호환 필요):
+보안 모델 참고:
 
-- **iSCSI CHAP**: mutual CHAP은 initiator/target 양쪽에 credentials 필요.
-  CSI `NodeStageVolume.secrets`로 전달. ProtocolHandler.Attach()의 `Extra` 맵으로 수용 가능.
-- **NFS Kerberos**: `sec=krb5/krb5i/krb5p` mount option. Kerberos 인프라 필요.
-  mount options로 전달 가능.
-- **SMB AD**: Active Directory 기반 인증. `mount.cifs`의 `-o sec=krb5` 옵션.
+- **iSCSI CHAP**: mutual CHAP은 initiator/target 양쪽에 credentials 필요. CSI `NodeStageVolume.secrets`로 전달한다.
+- **NFS**: RPC TLS/Kerberos 보안은 이 제품에서 제공하지 않는다. `filesystem.mountOptions`는 support defaults를 바꿀 수 없으며 ACL과 squash는 접근 제어/권한 정책일 뿐 암호화가 아니다.
+- **SMB AD**: SMB이 구현될 때 Active Directory 기반 인증을 별도 설계한다.
 
 RBAC 요구사항:
 

@@ -1,11 +1,11 @@
 ---
 title: Fencing and consistency
-description: "How pillar-csi fences stale operations with publication generations, keeps RWO volumes on one node, and pins NVMe namespace and iSCSI LUN identity across storage reboots."
+description: "How pillar-csi fences stale operations with publication generations, keeps block RWO volumes on one node, tracks NFS RWX ACL membership, and preserves export state across storage reboots."
 sidebar:
   order: 2
 ---
 
-A CSI driver that exports block devices over the network can corrupt data in ways a local driver cannot. Two nodes can mount the same ext4 filesystem. A delayed request from an old controller can re-grant access that a newer request revoked. A reboot can change a namespace's identity under a connected host. This page describes how pillar-csi prevents each of these, and why it refuses to proceed when it cannot prove an operation is safe.
+A CSI driver that exports block devices or NFS filesystems over the network can corrupt data when access is not fenced. Two nodes can mount the same ext4 filesystem, or a stale request can re-grant access after a revoke. NFS intentionally permits concurrent RWX mounts, so its node-IP ACL membership and owned export state must remain exact. This page describes how pillar-csi prevents unsafe block sharing and fails closed when it cannot prove an operation is safe.
 
 ## One writer per volume
 
@@ -17,14 +17,15 @@ The controller records every node a volume is published to in the `status.publis
 | --- | --- | --- |
 | RWO or RWOP on node A | any mode on node B | `FAILED_PRECONDITION` |
 | ROX on node A | ROX on node B | allowed |
+| NFS RWX on node A | NFS RWX on node B | allowed; each node IP is tracked in the export ACL when enabled |
 | any mode on node A | a different mode on node A | `ALREADY_EXISTS` |
 | node A, unpublish still revoking | node A again | `ABORTED`, retry |
 
-Kubernetes retries a failed publish, so a pod scheduled to a second node waits until the first node unpublishes. RWX (`MULTI_NODE_MULTI_WRITER`) is not a supported access mode and is rejected when the PVC is provisioned.
+Kubernetes retries a failed block publish, so a pod scheduled to a second node waits until the first node unpublishes. NFS `ReadWriteMany` is the supported exception: concurrent publications are expected, but an empty ACL set denies volume data even if an unauthorized mount reaches an empty backing stub.
 
 Unpublish removes a record only after the agent confirms the grant is revoked. If the revoke fails, the record stays and the call returns an error; if the `PillarAgent` object is gone, it returns `FAILED_PRECONDITION`. Either way the volume remains unavailable to other single-writer publishers until Kubernetes retries and the revoke succeeds. `DeleteVolume` also refuses to run while any publication is recorded.
 
-The publication record is enforced by the controller. On the wire, the storage node's kernel target enforces it only when the `PillarProtocol` sets `acl: true`: an NVMe-oF subsystem then admits only the host NQNs of published nodes, and an iSCSI target only their initiator IQNs. The default is `acl: false`, which sets `allow_any_host` on an NVMe-oF subsystem and demo mode (`generate_node_acls`) on an iSCSI portal group, so any host that can reach the port can connect. Turn ACLs on if other machines share that network.
+The publication record is enforced by the controller. On the wire, `acl: true` enforces protocol-specific access: NVMe-oF admits published host NQNs, iSCSI admits published IQNs, and NFS admits published numeric node IPs. The default `acl: false` leaves the protocol open to reachable clients. ACLs are access control, not encryption; NFS RPC TLS is not offered.
 
 ## Stale-operation fencing
 
@@ -60,7 +61,7 @@ An iSCSI initiator identifies a disk by the SCSI identifiers LUN 0 reports. LIO 
 
 ## Local attach
 
-A volume provisioned with [`localAttach`](/docs/how-to/local-attach/) is used on the storage node through the backend device itself, and on every other node through the network export. Two paths to the same blocks mean two ways to write them, and the publication record alone does not keep them apart. Kubernetes can force-detach a volume from a node whose kubelet is dead while the node's containers keep running and writing. A new publish on another node then succeeds as far as Kubernetes is concerned, and the old writer is still there. pillar-csi fences each path from the other on the storage node itself, where both writers would meet.
+A volume provisioned with [`localAttach`](/docs/how-to/local-attach/) is used on the storage node through the backend device itself, and on every other node through the network export. This fencing path applies only to block zvol/LV volumes. NFS never uses localAttach: even on the storage node it uses the NFSv4.2 network mount and its normal ACL/recovery state.
 
 **The export is off while the volume may be local.** A local publish first commits `status.localAttachNode` on the `PillarVolumeState`, in the same compare-and-swap that reserves the publication, and then asks the agent to disable the export for remote initiators. For NVMe-oF/TCP the agent writes `0` to the namespace's `enable` file and reads it back. For iSCSI the agent disables the portal group, which ends its sessions, and removes LUN 0 and its backstore. A remote host that kept its session, because it was force-detached and never disconnected, gets I/O errors instead of reaching the disk. Export resync sends the same flag, so the export comes back disabled after an agent restart or a storage-node reboot.
 

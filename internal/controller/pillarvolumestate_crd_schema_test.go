@@ -101,6 +101,58 @@ var _ = Describe("PillarVolumeState CRD Schema Validation", func() {
 			"error should be HTTP 422 for enum violation in status.phase")
 	})
 
+	It("NFS export state version accepts 4.2 and rejects unsupported versions without persistence", func() {
+		const objName = "e214-volume-nfs-export-version"
+		vol := &pillarcsiv1alpha1.PillarVolumeState{
+			ObjectMeta: metav1.ObjectMeta{Name: objName},
+			Spec: pillarcsiv1alpha1.PillarVolumeStateSpec{
+				VolumeID:      "storage-1/nfs/zfs-dataset/tank/pvc-schema-nfs",
+				AgentVolumeID: "tank/pvc-schema-nfs",
+				AgentRef:      "storage-1",
+				BackendType:   "zfs-dataset",
+				ProtocolType:  "nfs",
+				CapacityBytes: 1 << 30,
+			},
+		}
+		Expect(k8sClient.Create(crdCtx, vol)).To(Succeed())
+		DeferCleanup(func() { deleteVolumeIfExists(objName) })
+
+		By("persisting the supported NFS version with its export configuration")
+		exportSpec := &pillarcsiv1alpha1.VolumeExportSpec{
+			BindAddress: "10.0.0.10",
+			Port:        2049,
+			ACLEnabled:  true,
+			NFS: &pillarcsiv1alpha1.NFSExportSpec{
+				Version:  "4.2",
+				Squash:   pillarcsiv1alpha1.NFSSquashRoot,
+				Readonly: true,
+			},
+		}
+		vol.Status.ExportSpec = exportSpec
+		Expect(k8sClient.Status().Update(crdCtx, vol)).To(Succeed())
+
+		key := types.NamespacedName{Name: objName}
+		stored := &pillarcsiv1alpha1.PillarVolumeState{}
+		Expect(k8sClient.Get(crdCtx, key, stored)).To(Succeed())
+		Expect(stored.Status.ExportSpec).To(Equal(exportSpec))
+
+		By("rejecting an unsupported NFS version at the status field")
+		stored.Status.ExportSpec.NFS.Version = "4.1"
+		err := k8sClient.Status().Update(crdCtx, stored)
+		Expect(errors.IsInvalid(err)).To(BeTrue())
+		statusErr, ok := err.(*errors.StatusError)
+		Expect(ok).To(BeTrue())
+		Expect(statusErr.ErrStatus.Details).NotTo(BeNil())
+		Expect(statusErr.ErrStatus.Details.Causes).To(ContainElement(
+			HaveField("Field", "status.exportSpec.nfs.version"),
+		))
+
+		By("retaining the supported version after the rejected update")
+		retained := &pillarcsiv1alpha1.PillarVolumeState{}
+		Expect(k8sClient.Get(crdCtx, key, retained)).To(Succeed())
+		Expect(retained.Status.ExportSpec).To(Equal(exportSpec))
+	})
+
 	// ── E21.4 TC-170 — TestCRDSchema_PillarVolumeState_CapacityBytes_Negative ────
 	// spec.capacityBytes is annotated +kubebuilder:validation:Minimum=0.
 	// A negative value should be rejected at create time.

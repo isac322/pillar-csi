@@ -11,7 +11,7 @@
 - 실제 커널 모듈, 실제 ZFS, 실제 NVMe-oF 장치를 요구하는 테스트는
   별도로 표시하고 현실적인 인프라 요구사항을 함께 기술한다.
 
-**총 테스트 케이스: 422** (인프로세스 257개 + envtest 통합 117개 + 클러스터 레벨 48개; E28 LVM Agent gRPC 30개 · E29 CSI Controller LVM 파라미터 12개 · E30 LVM LV 중복 방지 3개 · E34 로컬 attach 6개 · E35 iSCSI 12개 · E32 LVM CRD 라이프사이클 9개 · E33 default-profile 7개(standalone 7) + teardown-guarantee 4개 + backend-teardown-absence 5개 포함 / 추가 문서화 비기본 TC: E33 core-rpc 9개 · E33 mount 12개 · E33 expansion 5개 · E36 zvol import 8개(e2e_helm 빌드 태그 필요) · F27–F31 LVM 완전 E2E 19개 — 특수 레이블 필터 필요 / 수동 AD 시나리오 3개 · BP 시나리오 3개 별도)
+**총 테스트 케이스: 435** (실제 실행 spec 435개; strict TC 라벨 426개: 기존 default-profile 413개 + E37 dedicated NFS lane 13개; 라벨 없는 teardown 보장 9개 포함. 전체 문서 inventory는 **701개**이며 비기본 E33·E36·F27–F31 및 reference 항목을 포함하며 strict gate에서 별도로 보고한다.)
 
 ---
 
@@ -137,6 +137,8 @@
   - [E33.4: LVM 백엔드 독립 E2E (Standalone)](#e334-lvm-백엔드-독립-e2e-standalone)
 - [E36: ZFS zvol import — 기존 zvol 채택 (Kind 클러스터 E2E)](#e36-zfs-zvol-import--기존-zvol-채택-kind-클러스터-e2e)
   - [E36.1: import-zvol 어노테이션으로 기존 zvol 채택](#e361-import-zvol-어노테이션으로-기존-zvol-채택)
+- [E37: ZFS dataset + NFS 멀티노드 RWX E2E](#e37-zfs-dataset--nfs-멀티노드-rwx-e2e)
+  - [E37.1: 실제 dataset/NFS 프로비저닝](#e371-실제-datasetnfs-프로비저닝)
 
 ### 카테고리 3 — 완전 E2E / 수동 스테이징 테스트 (유형 F) ❌
 > 빌드 태그: `//go:build e2e_full` | 실제 ZFS/NVMe-oF 커널 모듈 필요 | 베어메탈/KVM 서버 필요
@@ -2233,16 +2235,18 @@ CSI 컨트롤러 또는 Agent가 **존재하지 않는(제거된) 프로토콜·
 **스토어와 맞지 않는 오버라이드 멤버**, 또는 **실제 배포 환경에서의 버전 불일치**를 처리할 때의 오류 경로를 검증한다.
 
 백엔드와 프로토콜은 StorageClass가 참조하는 PillarStore(`spec.backend`: `zfs` | `lvm`)와
-PillarProtocol(`spec.protocol`: `nvmeofTcp` | `iscsi`)이 선택한다. nfs·smb 프로토콜과 zfs-dataset·dir 백엔드는
-스키마에 존재하지 않으며, 직접 작성한 StorageClass의 문서 파라미터(`pillar-csi.bhyoo.com/backend`,
-`pillar-csi.bhyoo.com/protocol`)나 제거된 평면 키(`protocol-type` 등)로 이를 선택하려는 시도, 그리고
-참조한 PillarProtocol과 다른 멤버(`nvmeofTcp` 프로토콜에 대한 `iscsi` 문서 등)를 지정한 오버라이드는
-agent 호출 전에 `InvalidArgument`로 거부된다.
+PillarProtocol(`spec.protocol`: `nvmeofTcp` | `iscsi` | `nfs`)이 선택한다. NFS는
+`zfs-dataset` 파일 백엔드와 조합할 때만 지원되며, NFS 구조 설정은 PillarProtocol에서
+고정한다. 직접 작성한 StorageClass의 문서 파라미터(`pillar-csi.bhyoo.com/backend`,
+`pillar-csi.bhyoo.com/protocol`)나 제거된 평면 키(`protocol-type` 등)로 선택을
+우회하려는 시도, 참조한 PillarProtocol과 다른 멤버를 지정한 오버라이드는 agent 호출
+전에 `InvalidArgument`로 거부된다.
 
 > **E14·E1.11과의 차이점:**
 > - **E1.11 / E14** — identity 파라미터(`store-ref`/`protocol-ref`) **누락** 또는 알 수 없는 파라미터 키 → `InvalidArgument`
-> - **E22** — 오버라이드 문서가 **존재하지 않는 멤버**(`nfs`, `zfs-dataset`, `dir`), **구조적 필드**,
->   또는 **스토어·프로토콜과 다른 멤버**를 지정 → `InvalidArgument`; agent gRPC 직접 호출 경로의 미지원 프로토콜 → `Unimplemented`
+> - **E22** — 오버라이드 문서가 **지원되지 않는 멤버**, **구조적 필드**,
+>   또는 **스토어·프로토콜과 다른 멤버**를 지정 → `InvalidArgument`; NFS의
+>   version/port/acl/squash는 per-volume 구조 오버라이드가 불가
 
 **오류 시나리오 분류:**
 
@@ -2260,17 +2264,18 @@ CSI Controller (CreateVolume)
         │  StorageClass params: store-ref, protocol-ref
         │                       + pillar-csi.bhyoo.com/protocol: "nfs: {...}" | "iscsi: {...}"
         │       │
-        │  configdocs.DecodeProtocolOverride → unknown field "nfs" (supported: iscsi or nvmeofTcp)
-        │  applyProtocolOverride            → iscsi overrides do not apply to a nvmeof-tcp protocol
+        │  configdocs.DecodeProtocolOverride → NFS member accepts only empty nfs:{}
+        │  applyProtocolOverride            → NFS structural fields are rejected
+        │                                  → iscsi overrides do not apply to nvmeof-tcp
         │       │
-        └───────► codes.InvalidArgument (agent 호출 없음)
+        └───────► codes.InvalidArgument (invalid override; valid NFS path reaches agent)
 
-Agent gRPC Server (직접 호출 경로; proto 열거형은 변경 없음):
-  ExportVolume(PROTOCOL_TYPE_NFS)   → Unimplemented (configfs 사이드 이펙트 없음)
-  AllowInitiator(PROTOCOL_TYPE_NFS) → Unimplemented (nvmet/hosts 디렉터리 미생성)
-  DenyInitiator(PROTOCOL_TYPE_NFS)  → Unimplemented
-  UnexportVolume(PROTOCOL_TYPE_NFS) → Unimplemented
-  ReconcileState(NFS export) → results[].success=false (타 볼륨 계속 처리)
+Agent gRPC Server (직접 호출 경로):
+  ExportVolume(PROTOCOL_TYPE_NFS)   → kernel NFS export + durable ownership state
+  AllowInitiator(PROTOCOL_TYPE_NFS) → ACL grant for numeric node InternalIP
+  DenyInitiator(PROTOCOL_TYPE_NFS)  → ACL revoke without disturbing peers
+  UnexportVolume(PROTOCOL_TYPE_NFS) → exact export removal
+  ReconcileState(NFS export) → persisted NFS exports restored and stale grants fenced
 ```
 
 ---
@@ -2294,7 +2299,7 @@ go test ./test/e2e/ -v -run 'TC-E22\.'
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
 | 171 | `TestCSIProtocol_CreateVolume_ProtocolDoc_MemberMismatchRejected` | 프로토콜 문서가 참조한 PillarProtocol(`nvmeofTcp`)과 다른 `iscsi` 멤버를 선택하면 거부 | PillarAgent·PillarStore("tank")·PillarProtocol("nvmeof") 등록; StorageClass params `store-ref`="tank", `protocol-ref`="nvmeof", `pillar-csi.bhyoo.com/protocol`=`iscsi: {loginTimeout: 30}` | 1) CreateVolumeRequest 전송 | gRPC InvalidArgument; 메시지에 `iscsi overrides do not apply to a nvmeof-tcp protocol`; agent.CreateVolume 호출 없음 | `CSI-C` |
-| 172 | `TestCSIProtocol_CreateVolume_ProtocolDoc_NFSRejected` | 프로토콜 문서가 제거된 `nfs` 멤버를 선택하면 거부 | E22.171과 동일; `pillar-csi.bhyoo.com/protocol`=`nfs: {version: "4.2"}` | 1) CreateVolumeRequest 전송 | gRPC InvalidArgument; 메시지에 `unknown field "nfs"`; agent.CreateVolume 호출 없음 | `CSI-C` |
+| 172 | `TestCSIProtocol_CreateVolume_ProtocolDoc_NFSStructuralOverrideRejected` | NFS 프로토콜의 구조적 필드(`version`, `port`, `acl`, `squash`)를 per-volume 문서로 덮어쓰면 거부 | E22.171과 동일; `pillar-csi.bhyoo.com/protocol`=`nfs: {version: "3"}` | 1) CreateVolumeRequest 전송 | gRPC InvalidArgument; NFS structural override 거부; agent.CreateVolume 호출 없음 | `CSI-C` |
 | 173 | `TestCSIProtocol_CreateVolume_LegacyProtocolTypeParamRejected` | 제거된 평면 키 `pillar-csi.bhyoo.com/protocol-type`(값 `smb-v3-unknown`)을 지정하면 거부 | E22.171과 동일한 identity params에 `pillar-csi.bhyoo.com/protocol-type`="smb-v3-unknown" 추가 | 1) CreateVolumeRequest 전송 | gRPC InvalidArgument; 메시지에 `unsupported StorageClass parameter`와 키 이름; agent.CreateVolume 호출 없음 | `CSI-C` |
 | 174 | `TestCSIProtocol_CreateVolume_ProtocolDoc_StructuralFieldRejected` | 프로토콜 문서가 구조적 필드 `nvmeofTcp.acl`을 지정하면 거부 | E22.171과 동일; `pillar-csi.bhyoo.com/protocol`=`nvmeofTcp: {acl: true}` | 1) CreateVolumeRequest 전송 | gRPC InvalidArgument; 메시지에 `nvmeofTcp.acl is structural and cannot be set per volume`; agent.CreateVolume 호출 없음 | `CSI-C` |
 
@@ -2314,28 +2319,27 @@ go test ./test/component/ -v -run 'TestAgentProtocol'
 
 **위치:** `test/component/agent_errors_test.go`
 
-**핵심 동작:** `agent.Server`는 각 export/initiator RPC에서 프로토콜 타입이
-`PROTOCOL_TYPE_NVMEOF_TCP`가 아닌 경우 즉시 `codes.Unimplemented`와 함께
-`"only NVMe-oF TCP is supported"` 메시지를 반환한다 (`internal/agent/server.go:39`의 `errOnlyNvmeofTCP` 상수).
-이 검사는 모든 configfs 작업 **이전에** 수행되므로 사이드 이펙트가 없다.
+**핵심 동작:** `agent.Server`는 NVMe-oF TCP, iSCSI, NFS를 지원한다. 각
+export/initiator RPC는 UNSPECIFIED 또는 알 수 없는 enum을 거부하며,
+미지원 입력은 protocol-specific kernel state를 변경하지 않는다.
 
 > **기존 구현 테스트 참조:**
-> `TestAgentErrors_ExportVolume_InvalidProtocol_NoConfigfsSideEffects` (NFS),
-> `TestAgentErrors_AllowInitiator_InvalidProtocol` (NFS),
-> `TestAgentErrors_DenyInitiator_InvalidProtocol` (NFS),
-> `TestAgentErrors_UnexportVolume_InvalidProtocol` (NFS) —
-> 이 4개 테스트는 **이미 구현되어 있으며** `test/component/agent_errors_test.go`에 존재한다.
-> 아래 E22.2 표는 이들을 E2E 문맥에서 추적 가능하도록 정의하고,
-> 추가적인 UNSPECIFIED 및 ReconcileState 시나리오를 보완한다.
+> `TestAgentErrors_ExportVolume_InvalidProtocol_NoConfigfsSideEffects`,
+> `TestAgentErrors_AllowInitiator_InvalidProtocol`,
+> `TestAgentErrors_DenyInitiator_InvalidProtocol`,
+> `TestAgentErrors_UnexportVolume_InvalidProtocol` —
+> 미지원 enum을 사용한다. NFS는 미지원 enum이 아니다.
+> `test/component/agent_errors_test.go`의 agent error coverage를 E2E 문맥에서
+> 추적하고, 아래 UNSPECIFIED 및 ReconcileState 시나리오로 보완한다.
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| 175 | `TestAgentErrors_ExportVolume_InvalidProtocol_NoConfigfsSideEffects` *(기존)* | `ExportVolume`에 `PROTOCOL_TYPE_NFS` 지정 시 `codes.Unimplemented` 반환 및 configfs 사이드 이펙트 없음 — `server_export.go:51` 경계 검사 동작 | `agent.NewServer(backends, t.TempDir())`; `mockVolumeBackend`; `AlwaysPresentChecker` | 1) `ExportVolumeRequest{ProtocolType=NFS, VolumeId=compTestVolumeID}` 전송; 2) `configfsRoot/nvmet` 디렉터리 존재 여부 확인 | `codes.Unimplemented`; `nvmet` 디렉터리 미생성(configfs 사이드 이펙트 없음) | `Agent`, `NVMeF` |
-| 176 | `TestAgentProtocol_ExportVolume_UNSPECIFIED_Unimplemented` | `ExportVolume`에 `PROTOCOL_TYPE_UNSPECIFIED(0)` 지정 시 `codes.Unimplemented` 반환 — `mapProtocolType`이 알 수 없는 문자열을 UNSPECIFIED로 변환하는 엔드투엔드 경로 커버 | `agent.NewServer(backends, t.TempDir())`; `mockVolumeBackend` | 1) `ExportVolumeRequest{ProtocolType=PROTOCOL_TYPE_UNSPECIFIED}` 전송; 2) configfs 사이드 이펙트 확인 | `codes.Unimplemented`; configfs 미수정; 오류 메시지에 "only NVMe-oF TCP is supported" 포함 | `Agent` |
-| 177 | `TestAgentErrors_AllowInitiator_InvalidProtocol` *(기존)* | `AllowInitiator`에 `PROTOCOL_TYPE_NFS` 지정 시 `codes.Unimplemented` 반환 및 `nvmet/hosts` 디렉터리 미생성 — `server_export.go:163` 경계 검사 | `agent.NewServer(backends, t.TempDir())`; `mockVolumeBackend` | 1) `AllowInitiatorRequest{ProtocolType=NFS, VolumeId, InitiatorId=compTestHostNQN}` 전송; 2) `nvmet/hosts` 디렉터리 존재 확인 | `codes.Unimplemented`; `nvmet/hosts` 디렉터리 미생성 | `Agent`, `NVMeF` |
-| 178 | `TestAgentErrors_DenyInitiator_InvalidProtocol` *(기존)* | `DenyInitiator`에 `PROTOCOL_TYPE_NFS` 지정 시 `codes.Unimplemented` 반환 — `server_export.go:146` 경계 검사 | `agent.NewServer(backends, t.TempDir())`; `mockVolumeBackend` | 1) `DenyInitiatorRequest{ProtocolType=NFS, VolumeId, InitiatorId=compTestHostNQN}` 전송 | `codes.Unimplemented` | `Agent` |
-| 179 | `TestAgentErrors_UnexportVolume_InvalidProtocol` *(기존)* | `UnexportVolume`에 `PROTOCOL_TYPE_NFS` 지정 시 `codes.Unimplemented` 반환 — 존재하지 않는 export 삭제 시도 없음; `server_export.go:129` 경계 검사 | `agent.NewServer(backends, t.TempDir())`; `mockVolumeBackend` | 1) `UnexportVolumeRequest{ProtocolType=NFS, VolumeId}` 전송 | `codes.Unimplemented`; configfs 미수정 | `Agent` |
-| 180 | `TestAgentProtocol_ReconcileState_UnsupportedProtocol_SkipAndReport` | `ReconcileState`에 agent가 서비스하지 않는 프로토콜(NFS) 엔트리 포함 시 해당 항목 `success=false`로 보고하고, NVMe-oF TCP 항목은 정상 처리 — `server_reconcile.go:72` 프로토콜 타입 검사 동작 | `agent.NewServer(backends, t.TempDir())`; `mockVolumeBackend{devicePathResult: "/dev/zvol/tank/pvc-mixed"}`; 볼륨 2개 포함 `ReconcileStateRequest`: `v1`(NVMe-oF TCP 수출, `AllowedInitiators=[hostNQN]`), `v2`(NFS 수출) | 1) `ReconcileState({volumes: [v1(NVMeOF), v2(NFS)]})` 호출; 2) `results` 슬라이스 검사; 3) configfs 확인 | `results[v1].Success=true`; `results[v2].Success=false`; `results[v2].ErrorMessage`에 `protocol PROTOCOL_TYPE_NFS is not supported by this agent`; `tmpdir/nvmet/subsystems/<NQN>` 생성됨(v1 처리 성공); LIO `target` 트리 미생성; 패닉 없음 | `Agent`, `NVMeF`, `gRPC` |
+| 175 | `TestAgentErrors_ExportVolume_InvalidProtocol_NoConfigfsSideEffects` *(기존)* | 미지원 enum ExportVolume 거부, configfs 사이드 이펙트 없음 | agent server; invalid protocol enum | ExportVolume 요청; configfs 확인 | 오류 반환; configfs 미수정 | `Agent`, `NVMeF` |
+| 176 | `TestAgentProtocol_ExportVolume_UNSPECIFIED_Unimplemented` | UNSPECIFIED ExportVolume 거부 | agent server | ExportVolume(UNSPECIFIED) | Unimplemented; configfs 미수정 | `Agent` |
+| 177 | `TestAgentErrors_AllowInitiator_InvalidProtocol` *(기존)* | 미지원 enum AllowInitiator 거부 | agent server | AllowInitiator(invalid enum) | 오류 반환; hosts 미생성 | `Agent`, `NVMeF` |
+| 178 | `TestAgentErrors_DenyInitiator_InvalidProtocol` *(기존)* | 미지원 enum DenyInitiator 거부 | agent server | DenyInitiator(invalid enum) | 오류 반환 | `Agent` |
+| 179 | `TestAgentErrors_UnexportVolume_InvalidProtocol` *(기존)* | 미지원 enum UnexportVolume 거부 | agent server | UnexportVolume(invalid enum) | 오류 반환; configfs 미수정 | `Agent` |
+| 180 | `TestAgentProtocol_ReconcileState_UnsupportedProtocol_SkipAndReport` | 미지원 enum entry 실패 보고, 유효 NVMe entry 계속 처리 | mixed valid NVMe + invalid enum reconcile entries | ReconcileState; results/configfs 검사 | invalid item Success=false; valid item Success=true | `Agent`, `NVMeF` |
 
 ---
 
@@ -2381,7 +2385,7 @@ StorageClass의 `pillar-csi.bhyoo.com/backend` 문서는 튜너블만 담을 수
 |----|---------|----------|--------------|---------|---------|
 | BP-1 | **Controller-Agent 에이전트 버전 확인 — `GetCapabilitiesResponse.agent_version` 필드 기록 여부** | 실제 Kubernetes 클러스터; pillar-csi-controller 배포; pillar-agent 배포 (`agent_version="0.1.0"` 내장, `internal/agent/server.go:36` 상수) | 1) PillarAgent CRD 등록 후 컨트롤러 재조정 대기; 2) `kubectl get pillaragent <name> -o yaml`로 `status.agentVersion` 또는 관련 조건 메시지 확인; 3) 에이전트 바이너리를 이전 버전으로 교체 후 컨트롤러 반응 확인 | `PillarAgent.status` 또는 이벤트에 에이전트 버전 정보 기록됨; 버전 불일치 경고는 현재 미구현(향후 구현 예정); 버전 불일치 시에도 볼륨 생성 시도 가능 — 미지원 RPC 호출 시 `Unimplemented` 반환으로 오류 감지 | `Agent`, `TgtCRD`, `gRPC` |
 | BP-2 | **스토리지 노드에서 nvmet 커널 모듈 미로드 — HealthCheck 경고 및 ExportVolume 실패** | 실제 스토리지 노드; ZFS 커널 모듈 로드됨; nvmet/nvme-fabrics 모듈 **미로드** (`modprobe -r nvmet nvme-fabrics`) | 1) pillar-agent 프로세스 시작; 2) `agent.HealthCheck()` 응답의 `subsystems` 배열 확인 — `nvmet-configfs` 서브시스템 `healthy` 필드 값 확인; 3) PVC 생성 시도(CSI CreateVolume → `agent.CreateVolume` 성공 → `agent.ExportVolume` 실패 예상); 4) `kubectl describe pvc`에서 오류 이벤트 확인 | `HealthCheck` 응답에 `nvmet-configfs.healthy=false` 표시; `ExportVolume` 호출 시 configfs 디렉터리 생성 실패로 `codes.Internal` 또는 `codes.FailedPrecondition` 반환; PVC가 `Pending` 상태 유지; 오류 메시지에 configfs 관련 진단 정보 포함 | `Agent`, `NVMeF`, `TgtCRD` |
-| BP-3 | **미지원 프로토콜 선택 엔드투엔드 — 직접 작성한 StorageClass의 `pillar-csi.bhyoo.com/protocol: "nfs: {}"`로 PVC 생성 시 오류 전파** | 실제 Kubernetes 클러스터; PillarStore·PillarProtocol(nvmeofTcp) 준비; 직접 작성한 StorageClass에 `store-ref`/`protocol-ref`와 `pillar-csi.bhyoo.com/protocol: "nfs: {}"` 설정 | 1) `kubectl apply -f storageclass-nfs-doc.yaml`; 2) `kubectl apply -f pvc.yaml`; 3) PVC 이벤트 확인 (`kubectl describe pvc <name>`); 4) CSI 컨트롤러 로그에서 `InvalidArgument` 오류 확인 | PVC가 `Pending` 상태 유지; CreateVolume 오류 이벤트에 `InvalidArgument`와 `unknown field "nfs" (supported: iscsi or nvmeofTcp)`; agent 호출 없음; PillarVolumeState CRD 미생성 | `CSI-C`, `실제 Kubernetes클러스터` |
+| BP-3 | **구조적 NFS 오버라이드 거부** | 실제 Kubernetes 클러스터; PillarStore·PillarProtocol(NFS) 준비; StorageClass 문서 `nfs: {version: "3"}` | StorageClass/PVC 적용; 이벤트와 CSI 로그 확인 | Pending; InvalidArgument structural field 거부; agent 호출·PillarVolumeState 생성 없음 | `CSI-C`, `실제 Kubernetes클러스터` |
 
 ---
 
@@ -3347,7 +3351,7 @@ go test -tags=integration ./internal/webhook/... -v -run 'TestWebhooks/PillarPro
 
 **목적:**
 PillarProtocol CRD의 전체 라이프사이클을 검증한다. 이 CRD는 스토리지 볼륨을 노출할 때
-사용할 네트워크 프로토콜 구성(`spec.protocol` exactly-one 유니온; 구현된 멤버는 `nvmeofTcp`와 `iscsi`이며 NFS·SMB는 미구현으로 스키마에 없음)을 정의하는 클러스터-스코프 리소스이다.
+사용할 네트워크 프로토콜 구성(`spec.protocol` exactly-one 유니온; 구현된 멤버는 `nvmeofTcp`, `iscsi`, `nfs`이며 SMB는 스키마에 없음)을 정의하는 클러스터-스코프 리소스이다.
 동일한 PillarProtocol을 여러 PillarStorageClass이 참조할 수 있으며, 다음 동작을 검증한다:
 
 1. **유효/무효 스펙 생성** — `spec.protocol` 유니온(정확히 한 멤버) 검증 및 `nvmeofTcp` 필드 범위 검증
@@ -3380,8 +3384,8 @@ PillarProtocol CRD의 전체 라이프사이클을 검증한다. 이 CRD는 스�
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
 | E23.1.1 | `TestPillarProtocolWebhook_ValidCreate_NVMeOFTCP` | `spec.protocol.nvmeofTcp` 스펙으로 ValidateCreate 통과 | envtest API 서버; PillarProtocol CRD 설치; `PillarProtocolCustomValidator` 인스턴스 생성 | 1) `spec.protocol.nvmeofTcp={port: 4420}`으로 `validator.ValidateCreate(ctx, obj)` 호출 | `warnings=nil`; `err=nil`; 허용 | `PProtWH` |
-| E23.1.2 | `TestPillarProtocolWebhook_InvalidCreate_EmptyProtocol` | 멤버가 없는 `spec.protocol`은 ValidateCreate가 거부 | envtest API 서버; PillarProtocol CRD 설치; `PillarProtocolCustomValidator` 인스턴스 생성 | 1) `spec.protocol={}`으로 `validator.ValidateCreate(ctx, obj)` 호출 | `err != nil`; `spec.protocol` 경로의 Required; "exactly one protocol member must be set (supported: nvmeofTcp, iscsi)" | `PProtWH` |
-| E23.1.3 | `TestPillarProtocolCRD_InvalidCreate_RemovedProtocolMember` | 서비스되지 않는 프로토콜 변형(`nfs`)만 가진 PillarProtocol은 API 서버가 거부 | envtest API 서버; PillarProtocol CRD 설치 (`spec.protocol`은 `nvmeofTcp`·`iscsi` 멤버만 정의) | 1) `spec.protocol={nfs: {version: "4.2"}}`로 `k8sClient.Create(ctx, protocol)` 호출 | 오류 반환; `.spec.protocol.nfs: field not declared in schema` | `PProtCRD` |
+| E23.1.2 | `TestPillarProtocolWebhook_InvalidCreate_EmptyProtocol` | 멤버가 없는 `spec.protocol`은 ValidateCreate가 거부 | envtest API 서버; PillarProtocol CRD 설치; `PillarProtocolCustomValidator` 인스턴스 생성 | 1) `spec.protocol={}`으로 `validator.ValidateCreate(ctx, obj)` 호출 | `err != nil`; `spec.protocol` 경로의 Required; exactly-one member error | `PProtWH` |
+| E23.1.3 | `TestPillarProtocolCRD_InvalidCreate_RemovedProtocolMember` | 서비스되지 않는 SMB 멤버만 가진 PillarProtocol은 API 서버가 거부 | envtest API 서버; PillarProtocol CRD 설치 | 1) `spec.protocol={smb: {shareName: data}}`로 API create 호출 | 오류 반환; `.spec.protocol.smb: field not declared in schema` | `PProtCRD` |
 | E23.1.4 | `TestPillarProtocolController_FinalizerAddedOnFirstReconcile` | PillarProtocol 생성 후 첫 번째 `Reconcile` 호출에서 `protocol-protection` 파이널라이저 자동 추가 | envtest; `PillarProtocolReconciler` 초기화; `spec.protocol.nvmeofTcp` PillarProtocol 생성 | 1) `k8sClient.Create(ctx, protocol)` 실행; 2) `reconciler.Reconcile(ctx, req)` 1회 호출 | PillarProtocol에 `pillar-csi.bhyoo.com/protocol-protection` 파이널라이저 존재; `result.RequeueAfter==0` | `PProtCRD`, `PProtCtrl` |
 | E23.1.5 | `TestPillarProtocolController_FinalizerNotDuplicated` | 동일 PillarProtocol을 두 번 조정해도 파이널라이저 중복 없음 | envtest; PillarProtocol 생성; 첫 조정으로 파이널라이저 추가 완료 | 1) 두 번째 `reconciler.Reconcile(ctx, req)` 호출 | 파이널라이저 개수 정확히 1개; 중복 없음 | `PProtCRD`, `PProtCtrl` |
 
@@ -3575,17 +3579,18 @@ StorageClass는 특정 풀과 프로토콜에 묶여 있어, 변경 시 기존 P
 
 **목적:** Validating 웹훅이 참조된 PillarStore의 백엔드 멤버와 PillarProtocol의 프로토콜 멤버의
 호환성(`Compatible(spec.backend, spec.protocol)`)과, 바인딩 `spec.overrides`의 멤버가 참조 대상과 일치하는지를
-검증함을 확인한다. 현재 서비스되는 조합(zfs-zvol/lvm-lv × nvmeof-tcp/iscsi)은 모두 블록 범주이므로 항상 호환되며,
-오버라이드 멤버가 스토어의 백엔드와 다르면 `spec.overrides.backend` 경로의, 프로토콜과 다르면(`nvmeofTcp` 프로토콜에
-`overrides.protocol.iscsi` 등) `spec.overrides.protocol` 경로의 Invalid로 거부된다(E35.6 참고).
-파일 백엔드(zfs-dataset, dir)와 NFS 프로토콜은 구현되지 않아 스키마에 존재하지 않는다.
+검증함을 확인한다. `zfs-zvol`/`lvm-lv`는 `nvmeof-tcp`/`iscsi` 블록 프로토콜에,
+`zfs-dataset`은 `nfs` 파일 프로토콜에만 호환된다. 오버라이드 멤버가 스토어의
+백엔드와 다르면 `spec.overrides.backend`, 프로토콜과 다르면
+`spec.overrides.protocol` 경로의 Invalid로 거부된다.
 
 **호환성 매트릭스 (서비스되는 멤버):**
 
-| 백엔드 멤버 | nvmeofTcp | iscsi |
-|------------|:---------:|:-----:|
-| zfs (zfs-zvol) | ✅ | ✅ |
-| lvm (lvm-lv)   | ✅ | ✅ |
+| 백엔드 멤버 | nvmeofTcp | iscsi | nfs |
+|------------|:---------:|:-----:|:---:|
+| zfs (zfs-zvol) | ✅ | ✅ | ❌ |
+| lvm (lvm-lv)   | ✅ | ✅ | ❌ |
+| zfs (zfs-dataset) | ❌ | ❌ | ✅ |
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
@@ -5245,7 +5250,77 @@ go test ./test/e2e/ -tags=e2e,e2e_helm -v --ginkgo.label-filter="e36"
 | E36.1 | 기존 zvol 채택 → 용량·출처 기록 → 두 노드에서 데이터 유지 → 거부 3종 → 정리 | 8개 | 멀티 노드 Kind + ZFS + NVMe-oF |
 | **합계** | | **8개** | ⚠️ |
 
+## E37: ZFS dataset + NFS 멀티노드 RWX E2E
+
+**테스트 유형:** D (Kind 클러스터 + 실제 ZFS dataset + 커널 NFS 서버) ⚠️ PR CI 전용
+
+이 섹션은 디렉터리·mock backend가 아닌 실제 ZFS dataset을 pillar-agent가
+NFSv4.2로 export하고, 서로 다른 Kind worker의 CSI node가 같은 filesystem을
+마운트하는 경로를 검증한다. CI는 dedicated internal-agent lane으로 실행하며,
+NFS userspace helper는 agent/node 이미지에서만 제공한다. Kind worker와 CI
+호스트에는 `nfs-utils`, `mount.nfs`, `exportfs`, `rpc.mountd`를 설치하지 않는다.
+
+**인프라 요구사항:**
+
+| 항목 | 사양 | 비고 |
+|------|------|------|
+| Kind | control-plane + 2 worker | writer/reader/revoked 세 identity 분리 |
+| ZFS | 실제 zpool + `parentDataset` | loop-backed pool, `volumeType: dataset` |
+| NFS | kernel `nfsd` + bundled `rpc.mountd`/`exportfs` | fixed TCP 2049, NFSv4.2 |
+| CSI | Helm internal-agent deployment | agent binds storage-node InternalIP |
+| 실행 | `E2E_NFS_E2E=true E2E_HELM_BOOTSTRAP=true E2E_LABEL_FILTER=nfs` | conditional Skip 없음 |
+
+**정확한 실행 명령:**
+
+```bash
+E2E_NFS_E2E=true E2E_HELM_BOOTSTRAP=true E2E_LABEL_FILTER=nfs \
+E2E_PROCS=1 make test-e2e-internal
+```
+dedicated lane은 Kind client worker의 기존 `mount.nfs`/`mount.nfs4`를
+lane-owned backup 경로로 임시 rename하고 ledger를 남긴다. 따라서 host
+filesystem에는 설치 작업이 없고, 테스트 중 client node의 helper는 실제로
+사용 불가여야 한다. CSI node Pod의 bundled `mount.nfs -V`와 실제 NFS I/O가
+성공하는 것을 확인한 뒤, AfterAll에서 정확한 경로를 복원한다.
+
+agent hostPath의 container overlay는 NFS pseudoroot로 사용하지 않는다.
+전용 ephemeral storage-node의 `/var/lib/pillar-csi/agent/datasets`에
+lane-owned tmpfs를 미리 마운트하고 `findmnt`의 실제 backing filesystem을
+검증한다. ZFS child dataset은 이 root 아래에 마운트되며 agent Pod 재시작
+사이에도 tmpfs와 child mount는 유지된다. teardown은 자신의 mount만 제거한다.
+
+
+각 테스트는 namespace/PVC/Pod/PV/PillarVolumeState를 정리하고, lane 종료 시
+ZFS child dataset, exportfs 항목, node mount 및 publication 상태가 모두 사라져야 한다.
+
+### E37.1 실제 dataset/NFS 프로비저닝
+
+**위치:** `test/e2e/tc_nfs_dataset_e2e_test.go`
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| E37.1 | `It("[TC-E37.1] provisions an NFS filesystem with explicit version, address, port, and dataset evidence")` | 실제 ZFS dataset을 NFS filesystem으로 프로비저닝 | ZFS pool/parentDataset와 internal agent Ready | PVC 생성; PV·PillarVolumeState·zfs list·NFS attributes 조회 | PVC Bound; fstype nfs; address=storage-node IP; port=2049; dataset child 존재 | `CSI-C`, `CSI-N`, `ZFS`, `NFS` |
+| E37.2 | `It("[TC-E37.2] permits bidirectional RWX data across two worker nodes")` | 두 노드에서 동시에 읽고 쓰는 RWX | E37.1 PVC Bound | worker A/B에 Pod; 양방향 파일 쓰기/읽기 | 양쪽 payload가 반대 노드에서 즉시 읽힘 | `CSI-C`, `CSI-N`, `NFS`, `Mnt` |
+| E37.3 | `It("[TC-E37.3] keeps the surviving publisher readable after the peer is revoked")` | peer revoke 뒤 생존 publisher 유지 | E37.2 두 Pod mounted | reader 삭제로 unpublish; writer read/write | writer mount와 파일핸들 유지; stale peer mutation 없음 | `CSI-C`, `CSI-N`, `NFS` |
+| E37.4 | `It("[TC-E37.4] denies a client IP that was never published and a revoked peer")` | 미게시·revoked IP deny, public/private sibling 격리 | ACL-enabled private + ACL-disabled public dataset; worker/control-plane IP 분리 | listener reachability 확인; unauthorized/revoked direct mount; private marker read/write 시도; survivor/public read | 실제 private 데이터 read/write 거부; 빈 mountpoint stub mount 성공은 허용; public sibling이 private ACL 우회 못 함 | `Agent`, `NFS`, `ACL`, `Net` |
+| E37.5 | `It("[TC-E37.5] grows the server-side quota and reports the growth through statfs")` | 온라인 quota expansion과 statfs | mounted 64Mi dataset | PVC 128Mi patch; df/statfs와 `zfs get refquota` 조회 | server quota·PV capacity·mounted statfs가 함께 증가 | `CSI-C`, `ZFS`, `NFS`, `statfs` |
+| E37.6 | `It("[TC-E37.6] exposes ROX as read-only while preserving previously written data")` | ROX read-only semantics | pre-written dataset; ReadOnlyMany PVC | ROX Pod read/write attempt | read succeeds; write denied; export `ro` | `CSI-N`, `NFS`, `ROX` |
+| E37.7 | `It("[TC-E37.7] permits non-root fsGroup writes with squash=none")` | squash=none + non-root fsGroup | NFS protocol squash=none | runAsUser/group + fsGroup Pod writes file | write/chown initialization succeeds; ownership evidence recorded | `CSI-N`, `NFS`, `fsGroup` |
+| E37.8 | `It("[TC-E37.8] recovers NFS filehandles after the agent pod restarts")` | agent restart/recovery | durable export state and mounted writer | delete/recreate agent Pod; reread existing file | filehandle/data survives; export state restored | `Agent`, `NFS`, `Recovery` |
+| E37.9 | `It("[TC-E37.9] rejects Block volumes and forbidden filesystem options for NFS")` | NFS의 Block/fsType/mkfsOptions/periodicTrim provisioning 거부와 mountOptions 검증 | NFS dataset binding | Block PVC 및 fsType ext4/xfs, mkfsOptions, periodicTrim은 PVC provisioning 시도; soft/vers=3/nfsvers=4.1/proto=udp mountOptions는 PVC가 Bound된 뒤 Pod mount 시도 | Block/fsType/mkfsOptions/periodicTrim은 `ProvisioningFailed` 이벤트에 `InvalidArgument`를 남기고 PVC에 PV가 할당되지 않음(`spec.volumeName` 없음); mountOptions는 PVC가 Bound되지만 Pod가 Ready가 되지 않고 `FailedMount` 이벤트에 `InvalidArgument`를 남김 | `CSI-C`, `Config`, `CSI-N`, `NFS` |
+| E37.10 | `It("[TC-E37.10] rejects an incompatible backend/protocol binding")` | zvol/LVM+NFS 등 backend matrix 거부 | invalid PillarStore/StorageClass | server-side apply invalid binding | InvalidArgument/admission error; agent not invoked | `Webhook`, `CSI-C`, `NFS` |
+| E37.11 | `It("[TC-E37.11] records exact export and publication state while mounted")` | export/mount/publication 증거 | RWX writer mounted | exportfs, `/proc/mounts`, PV attrs, publication state 조회 | path/clients/options/version/fsid all match; mount is nfs4 | `Agent`, `CSI-N`, `NFS`, `Evidence` |
+| E37.12 | `It("[TC-E37.12] removes dataset, export, mount, and publication state on cleanup")` | exact cleanup | all E37 volumes/pods | delete workloads/PVCs; poll PV/CR/state and ZFS/exportfs/mounts | no child dataset, export, mount, publication, or state leak | `CSI-C`, `Agent`, `ZFS`, `NFS`, `Cleanup` |
+| E37.13 | `It("[TC-E37.13] keeps dataset RWX and NVMe zvol I/O independent in the same ZFS pool")` | 같은 pool의 typed backend 공존 | same-pool zvol+dataset agent registry; RWX mounted | NVMe zvol PVC/Pod 생성·파일 write/read; NFS survivor write/read; backend type 조회 | ext4/zvol과 nfs/dataset 경로 독립; 양쪽 payload 유지 | `CSI-C`, `CSI-N`, `ZFS`, `NVMeF`, `NFS` |
+
+### E37 커버리지 요약
+
+| 소섹션 | 검증 내용 | 테스트 수 | 인프라 |
+|--------|---------|----------|--------|
+| E37.1 | 실제 dataset/NFS 프로비저닝·RWX·ACL·quota·ROX·squash·restart·invalid·cleanup·same-pool zvol 공존 | 13개 | 멀티 노드 Kind + 실제 ZFS + kernel NFS |
+| **합계** | | **13개** | PR CI dedicated internal lane |
+
 ---
+
 
 # 카테고리 3 — 완전 E2E / 수동 스테이징 테스트 (유형 F) ❌
 

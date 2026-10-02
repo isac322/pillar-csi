@@ -58,6 +58,9 @@ func TestE2E(t *testing.T) {
 		// full parallel run is guaranteed to terminate within the budget.
 		if suiteConfig.Timeout <= 0 {
 			suiteConfig.Timeout = suiteLevelTimeout
+			if strings.EqualFold(strings.TrimSpace(os.Getenv("E2E_NFS_E2E")), "true") {
+				suiteConfig.Timeout = 20 * time.Minute
+			}
 		}
 
 		// Restrict to the default execution profile unless the caller has
@@ -65,7 +68,7 @@ func TestE2E(t *testing.T) {
 		// E2E_LABEL_FILTER env var allows overriding the label filter from
 		// outside — used by make test-e2e-bench to exclude cluster-required
 		// in-process tests (E9, E28) that would panic without a Kind cluster.
-		if strings.TrimSpace(suiteConfig.LabelFilter) == "" {
+		if !suiteConfig.DryRun && strings.TrimSpace(suiteConfig.LabelFilter) == "" {
 			if envFilter := os.Getenv("E2E_LABEL_FILTER"); envFilter != "" {
 				suiteConfig.LabelFilter = envFilter
 			} else {

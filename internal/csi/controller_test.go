@@ -3044,6 +3044,41 @@ func basePublishRequest() *csi.ControllerPublishVolumeRequest {
 	}
 }
 
+func nfsVolumeCapability(mode csi.VolumeCapability_AccessMode_Mode) *csi.VolumeCapability {
+	return &csi.VolumeCapability{
+		AccessType: &csi.VolumeCapability_Mount{
+			Mount: &csi.VolumeCapability_MountVolume{FsType: ProtocolNFS},
+		},
+		AccessMode: &csi.VolumeCapability_AccessMode{Mode: mode},
+	}
+}
+
+func nfsPublishRequest(
+	volumeID string,
+	mode csi.VolumeCapability_AccessMode_Mode,
+	readonly bool,
+) *csi.ControllerPublishVolumeRequest {
+	return &csi.ControllerPublishVolumeRequest{
+		VolumeId:         volumeID,
+		NodeId:           "worker-node-1",
+		Readonly:         readonly,
+		VolumeCapability: nfsVolumeCapability(mode),
+	}
+}
+
+func readonlyNFSExportSpec() *v1alpha1.VolumeExportSpec {
+	return &v1alpha1.VolumeExportSpec{
+		BindAddress: "192.168.1.10",
+		Port:        2049,
+		ACLEnabled:  true,
+		NFS: &v1alpha1.NFSExportSpec{
+			Version:  "4.2",
+			Squash:   v1alpha1.NFSSquashRoot,
+			Readonly: true,
+		},
+	}
+}
+
 // volumeStateFor returns the PillarVolumeState CreateVolume would have left
 // for volumeID (phase Ready), carrying the given publication records.
 func volumeStateFor(volumeID string, pubs ...v1alpha1.VolumePublication) *v1alpha1.PillarVolumeState {
@@ -3235,6 +3270,125 @@ func TestValidateVolumeCapabilities_AllowsFilesystemVolumeMode(t *testing.T) {
 	}
 	if resp.GetConfirmed() == nil {
 		t.Fatal("Confirmed is nil")
+	}
+}
+
+func TestValidateVolumeCapabilities_ReadonlyNFSExportConfirmsOnlyROX(t *testing.T) {
+	t.Parallel()
+
+	volumeID := "storage-node-1/nfs/zfs-dataset/tank/pvc-nfs-readonly"
+	pvs := volumeStateFor(volumeID)
+	pvs.Status.ExportSpec = readonlyNFSExportSpec()
+	env := newControllerTestEnv(t, pvs)
+
+	for _, tc := range []struct {
+		name        string
+		mode        csi.VolumeCapability_AccessMode_Mode
+		wantConfirm bool
+	}{
+		{
+			name:        "ROX",
+			mode:        csi.VolumeCapability_AccessMode_MULTI_NODE_READER_ONLY,
+			wantConfirm: true,
+		},
+		{
+			name:        "writer",
+			mode:        csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER,
+			wantConfirm: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := &csi.ValidateVolumeCapabilitiesRequest{
+				VolumeId:           volumeID,
+				VolumeCapabilities: []*csi.VolumeCapability{nfsVolumeCapability(tc.mode)},
+			}
+			resp, err := env.srv.ValidateVolumeCapabilities(context.Background(), req)
+			if err != nil {
+				t.Fatalf("ValidateVolumeCapabilities unexpected error: %v", err)
+			}
+			if got := resp.GetConfirmed() != nil; got != tc.wantConfirm {
+				t.Fatalf("Confirmed present = %t, want %t (response=%+v)",
+					got, tc.wantConfirm, resp)
+			}
+			if tc.wantConfirm && resp.GetMessage() != "" {
+				t.Fatalf("ROX response Message = %q, want empty", resp.GetMessage())
+			}
+			if !tc.wantConfirm && resp.GetMessage() == "" {
+				t.Fatal("writer rejection Message is empty")
+			}
+		})
+	}
+}
+
+func TestControllerPublishVolume_ReadonlyNFSExportAllowsROXWithoutPublishReadonly(t *testing.T) {
+	t.Parallel()
+
+	volumeID := "storage-node-1/nfs/zfs-dataset/tank/pvc-nfs-readonly"
+	pvs := volumeStateFor(volumeID)
+	pvs.Status.ExportSpec = readonlyNFSExportSpec()
+	node := nodeWithStatus("worker-node-1", corev1.NodeStatus{
+		Addresses: []corev1.NodeAddress{
+			{Type: corev1.NodeInternalIP, Address: "192.168.1.20"},
+		},
+	})
+	env := newPublishTestEnv(t, node, pvs)
+
+	req := nfsPublishRequest(
+		volumeID,
+		csi.VolumeCapability_AccessMode_MULTI_NODE_READER_ONLY,
+		false,
+	)
+	if _, err := env.srv.ControllerPublishVolume(context.Background(), req); err != nil {
+		t.Fatalf("ControllerPublishVolume ROX with readonly=false: %v", err)
+	}
+	if env.agent.allowInitiatorCalls != 1 {
+		t.Fatalf("AllowInitiator calls = %d, want 1", env.agent.allowInitiatorCalls)
+	}
+	if got := env.agent.lastAllowInitiator.GetInitiatorId(); got != "192.168.1.20" {
+		t.Fatalf("AllowInitiator initiator_id = %q, want node InternalIP", got)
+	}
+	published, _, err := env.srv.loadPillarVolumeState(
+		context.Background(), pillarVolumeStateNameFromVolumeID(volumeID),
+	)
+	if err != nil {
+		t.Fatalf("load published NFS volume state: %v", err)
+	}
+	if len(published.Status.PublishedNodes) != 1 {
+		t.Fatalf("publishedNodes = %+v, want one ROX publication", published.Status.PublishedNodes)
+	}
+	if published.Status.PublishedNodes[0].Readonly {
+		t.Fatal("ROX publication unexpectedly recorded readonly=true from the absent driver flag")
+	}
+}
+
+func TestControllerPublishVolume_ReadonlyNFSExportRejectsWriter(t *testing.T) {
+	t.Parallel()
+
+	volumeID := "storage-node-1/nfs/zfs-dataset/tank/pvc-nfs-readonly"
+	pvs := volumeStateFor(volumeID)
+	pvs.Status.ExportSpec = readonlyNFSExportSpec()
+	node := nodeWithStatus("worker-node-1", corev1.NodeStatus{
+		Addresses: []corev1.NodeAddress{
+			{Type: corev1.NodeInternalIP, Address: "192.168.1.20"},
+		},
+	})
+	env := newPublishTestEnv(t, node, pvs)
+
+	req := nfsPublishRequest(
+		volumeID,
+		csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER,
+		true,
+	)
+	_, err := env.srv.ControllerPublishVolume(context.Background(), req)
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("ControllerPublishVolume code = %v (err=%v), want InvalidArgument",
+			status.Code(err), err)
+	}
+	if !strings.Contains(err.Error(), "read-only") {
+		t.Fatalf("ControllerPublishVolume error = %v, want read-only explanation", err)
+	}
+	if env.agent.allowInitiatorCalls != 0 {
+		t.Fatalf("AllowInitiator calls = %d, want 0 for rejected writer", env.agent.allowInitiatorCalls)
 	}
 }
 

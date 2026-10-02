@@ -130,6 +130,9 @@ func (n *NodeServer) NodeExpandVolume(
 	if growErr != nil {
 		return nil, growErr
 	}
+	if stageState != nil && stageState.ProtocolType == ProtocolNFS {
+		return &csi.NodeExpandVolumeResponse{CapacityBytes: blockExpandCapacity(req)}, nil
+	}
 
 	// ── Block-mode short-circuit ─────────────────────────────────────────────
 	// Block-mode volumes have no filesystem to grow.  ControllerExpandVolume

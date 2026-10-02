@@ -108,11 +108,8 @@ spec:
                       parentDataset:
                         description: |-
                           parentDataset is the ZFS dataset path under which pillar-csi will
-                          create per-volume zvols (e.g. "k8s").  It must equal the parentDataset
-                          of the agent's backend configuration for this pool (chart
-                          agent.backends[].zfs.parentDataset; empty = pool root): on a mismatch
-                          the store is not Ready (PoolDiscovered=False, BackendLayoutMismatch)
-                          and CreateVolume fails instead of placing volumes elsewhere.
+                          create per-volume zvols or datasets (e.g. "k8s").  It must equal the
+                          parentDataset of the agent's backend configuration for this pool.
                         type: string
                       pool:
                         description: pool is the ZFS pool name (e.g. "hot-data").
@@ -127,10 +124,10 @@ spec:
                         type: object
                       volumeType:
                         default: zvol
-                        description: volumeType selects the ZFS volume kind.  Only
-                          "zvol" is implemented.
+                        description: volumeType selects the ZFS volume kind.
                         enum:
                         - zvol
+                        - dataset
                         type: string
                     required:
                     - pool

@@ -182,15 +182,24 @@ func (s *kindBootstrapState) createCluster(ctx context.Context, runner commandRu
 		return fmt.Errorf("create kubeconfig directory: %w", err)
 	}
 
-	_, err = runner.Run(ctx, commandSpec{
-		Name: s.KindBinary,
-		Args: []string{
-			"create", "cluster",
-			"--name", s.ClusterName,
-			"--kubeconfig", s.KubeconfigPath,
-			"--wait", s.CreateTimeout.String(),
-		},
-	})
+	args := []string{
+		"create", "cluster",
+		"--name", s.ClusterName,
+		"--kubeconfig", s.KubeconfigPath,
+		"--wait", s.CreateTimeout.String(),
+	}
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("E2E_NFS_E2E")), "true") {
+		configPath := filepath.Join(s.GeneratedDir, "nfs-kind.yaml")
+		if err := os.MkdirAll(s.GeneratedDir, 0o755); err != nil {
+			return fmt.Errorf("create NFS Kind config directory: %w", err)
+		}
+		config := "kind: Cluster\napiVersion: kind.x-k8s.io/v1alpha4\nnodes:\n  - role: control-plane\n  - role: worker\n  - role: worker\n"
+		if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+			return fmt.Errorf("write NFS Kind config: %w", err)
+		}
+		args = append(args, "--config", configPath)
+	}
+	_, err = runner.Run(ctx, commandSpec{Name: s.KindBinary, Args: args})
 	if err != nil {
 		return err
 	}

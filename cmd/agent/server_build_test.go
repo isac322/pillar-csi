@@ -109,7 +109,10 @@ func TestNewAgentGRPCServer_DrainGuardWired(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	t.Cleanup(cancel)
 
-	_, preErr := client.GetCapacity(ctx, &agentv1.GetCapacityRequest{PoolName: "missing"})
+	_, preErr := client.GetCapacity(ctx, &agentv1.GetCapacityRequest{
+		PoolName:    "missing",
+		BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
+	})
 	if status.Code(preErr) == codes.Unavailable {
 		t.Fatalf("pre-drain GetCapacity was Unavailable; the guard should be inert before Drain: %v", preErr)
 	}
@@ -118,7 +121,10 @@ func TestNewAgentGRPCServer_DrainGuardWired(t *testing.T) {
 		t.Fatalf("Drain RPC failed: %v", err)
 	}
 
-	_, postErr := client.GetCapacity(ctx, &agentv1.GetCapacityRequest{PoolName: "missing"})
+	_, postErr := client.GetCapacity(ctx, &agentv1.GetCapacityRequest{
+		PoolName:    "missing",
+		BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
+	})
 	if status.Code(postErr) != codes.Unavailable {
 		t.Fatalf("post-drain GetCapacity should be Unavailable; got code=%v err=%v", status.Code(postErr), postErr)
 	}
@@ -138,7 +144,10 @@ func TestNewAgentGRPCServer_DrainRejectionCountedAndLogged(t *testing.T) {
 	if _, err := ts.client.Drain(ctx, &agentv1.DrainRequest{}); err != nil {
 		t.Fatalf("Drain RPC failed: %v", err)
 	}
-	_, err := ts.client.CreateVolume(ctx, &agentv1.CreateVolumeRequest{VolumeId: "tank/pvc-drained"})
+	_, err := ts.client.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
+		VolumeId:    "tank/pvc-drained",
+		BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
+	})
 	if status.Code(err) != codes.Unavailable {
 		t.Fatalf("post-drain CreateVolume: code=%v err=%v, want Unavailable", status.Code(err), err)
 	}

@@ -63,10 +63,11 @@ func (v restoreVolume) desired(t *testing.T) *agentv1.VolumeDesiredState {
 		export.AllowedInitiators = []string{restoreHostNQN}
 	}
 	return &agentv1.VolumeDesiredState{
-		VolumeId:   v.id,
-		DevicePath: v.device,
-		Exports:    []*agentv1.ExportDesiredState{export},
-		Fence:      &agentv1.FencingToken{VolumeUid: t.Name() + "/" + v.id, Generation: 1},
+		VolumeId:    v.id,
+		BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
+		DevicePath:  v.device,
+		Exports:     []*agentv1.ExportDesiredState{export},
+		Fence:       &agentv1.FencingToken{VolumeUid: t.Name() + "/" + v.id, Generation: 1},
 	}
 }
 
@@ -229,10 +230,11 @@ func TestExportRestore_GateRejectsExportCreatingRPCs(t *testing.T) {
 	})
 	_, reconcileErr := srv.ReconcileState(ctx, &agentv1.ReconcileStateRequest{
 		Volumes: []*agentv1.VolumeDesiredState{{
-			VolumeId:   testVolumeID,
-			DevicePath: testDevicePath,
-			Exports:    []*agentv1.ExportDesiredState{nvmeofExportState("10.0.0.1")},
-			Fence:      testFence(t),
+			VolumeId:    testVolumeID,
+			BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
+			DevicePath:  testDevicePath,
+			Exports:     []*agentv1.ExportDesiredState{nvmeofExportState("10.0.0.1")},
+			Fence:       testFence(t),
 		}},
 	})
 	for name, err := range map[string]error{

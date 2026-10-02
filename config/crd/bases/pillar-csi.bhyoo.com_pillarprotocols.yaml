@@ -146,6 +146,39 @@ spec:
                       rule: '!has(self.auth) || self.auth.method == ''None'' || has(self.auth.secretRef)'
                     - message: 'auth.method CHAP and MutualCHAP require acl: true'
                       rule: '!has(self.auth) || self.auth.method == ''None'' || self.acl'
+                  nfs:
+                    description: nfs holds NFS configuration.
+                    properties:
+                      acl:
+                        default: false
+                        description: |-
+                          acl enables client-IP access control.
+                          Defaults to false.
+                        type: boolean
+                      port:
+                        default: 2049
+                        description: port is the fixed NFS listener port.
+                        format: int32
+                        maximum: 2049
+                        minimum: 2049
+                        type: integer
+                      squash:
+                        default: root
+                        description: |-
+                          squash selects the NFS identity squashing policy.
+                          Defaults to root.
+                        enum:
+                        - root
+                        - none
+                        - all
+                        type: string
+                      version:
+                        default: "4.2"
+                        description: version is the NFS protocol version.
+                        enum:
+                        - "4.2"
+                        type: string
+                    type: object
                   nvmeofTcp:
                     description: nvmeofTcp holds NVMe-oF/TCP configuration.
                     properties:
@@ -255,9 +288,9 @@ spec:
                 type: object
                 x-kubernetes-validations:
                 - message: 'exactly one protocol member must be set (supported: nvmeofTcp,
-                    iscsi)'
+                    iscsi, nfs)'
                   rule: '(has(self.nvmeofTcp) ? 1 : 0) + (has(self.iscsi) ? 1 : 0)
-                    == 1'
+                    + (has(self.nfs) ? 1 : 0) == 1'
             required:
             - protocol
             type: object

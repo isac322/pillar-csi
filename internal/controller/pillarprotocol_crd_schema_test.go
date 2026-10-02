@@ -80,19 +80,20 @@ var _ = Describe("PillarProtocol CRD Schema Validation", func() {
 		)
 	}
 
-	expectUnprocessable := func(err error, contains string) {
+	expectUnprocessable := func(err error, field string) {
 		Expect(err).To(HaveOccurred())
 		statusErr, ok := err.(*errors.StatusError)
 		Expect(ok).To(BeTrue(), "error should be a *errors.StatusError: %v", err)
 		Expect(statusErr.ErrStatus.Code).To(Equal(int32(422)),
 			"HTTP status code should be 422 UnprocessableEntity: %v", err)
-		Expect(err.Error()).To(ContainSubstring(contains))
+		Expect(statusErr.ErrStatus.Details).NotTo(BeNil())
+		Expect(statusErr.ErrStatus.Details.Causes).To(ContainElement(HaveField("Field", field)))
 	}
 
 	// ── E23.2.1 — TestPillarProtocolCRD_InvalidCreate_NoProtocolMember ────────
 	It("Should reject creation when spec.protocol sets no member", func() {
 		err := applyProtocol("crd-test-no-member", `{"protocol": {}}`)
-		expectUnprocessable(err, "exactly one protocol member must be set")
+		expectUnprocessable(err, "spec.protocol")
 	})
 
 	// ── E23.2.2 — TestPillarProtocolCRD_InvalidCreate_NVMeOFTCPPortTooLow ────
@@ -108,10 +109,10 @@ var _ = Describe("PillarProtocol CRD Schema Validation", func() {
 	})
 
 	// ── E23.2.4 — TestPillarProtocolCRD_InvalidCreate_RemovedProtocolMember ──
-	It("Should reject a protocol member the schema does not serve (nfs)", func() {
-		err := applyProtocol("crd-test-nfs", `{"protocol": {"nfs": {"version": "4.2"}}}`)
+	It("Should reject a protocol member the schema does not serve (smb)", func() {
+		err := applyProtocol("crd-test-smb", `{"protocol": {"smb": {"shareName": "data"}}}`)
 		Expect(err).To(HaveOccurred(), "an unserved protocol member must not be accepted")
-		Expect(err.Error()).To(ContainSubstring(".spec.protocol.nfs: field not declared in schema"))
+		Expect(err.Error()).To(ContainSubstring(".spec.protocol.smb: field not declared in schema"))
 	})
 
 	// ── E23.2.5 — TestPillarProtocolCRD_InvalidCreate_RemovedTopLevelFields ──
@@ -147,7 +148,7 @@ var _ = Describe("PillarProtocol CRD Schema Validation", func() {
 	// ── E23.2.8 — TestPillarProtocolCRD_InvalidCreate_TwoProtocolMembers ──────
 	It("Should reject creation when spec.protocol sets both nvmeofTcp and iscsi", func() {
 		err := applyProtocol("crd-test-two-members", `{"protocol": {"nvmeofTcp": {}, "iscsi": {}}}`)
-		expectUnprocessable(err, "exactly one protocol member must be set (supported: nvmeofTcp, iscsi)")
+		expectUnprocessable(err, "spec.protocol")
 	})
 
 	// ── E23.2.9 — TestPillarProtocolCRD_InvalidCreate_ISCSILoginTimeoutZero ───

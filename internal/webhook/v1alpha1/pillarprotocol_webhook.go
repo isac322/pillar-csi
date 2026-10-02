@@ -31,42 +31,18 @@ import (
 
 var pillarprotocollog = logf.Log.WithName("pillarprotocol-resource")
 
-// SetupPillarProtocolWebhookWithManager registers the webhook for PillarProtocol in the manager.
-func SetupPillarProtocolWebhookWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewWebhookManagedBy(mgr, &pillarcsiv1alpha1.PillarProtocol{}).
-		WithValidator(&PillarProtocolCustomValidator{}).
-		Complete()
-}
-
-// NOTE: If you want to customize the 'path', use the flags '--defaulting-path' or '--validation-path'.
-// +kubebuilder:webhook:path=/validate-pillar-csi-bhyoo-com-v1alpha1-pillarprotocol,mutating=false,failurePolicy=fail,sideEffects=None,groups=pillar-csi.bhyoo.com,resources=pillarprotocols,verbs=create;update,versions=v1alpha1,name=vpillarprotocol-v1alpha1.kb.io,admissionReviewVersions=v1
-
-// PillarProtocolCustomValidator struct is responsible for validating the PillarProtocol resource
-// when it is created, updated, or deleted.
-//
-// NOTE: The +kubebuilder:object:generate=false marker prevents controller-gen from generating DeepCopy methods,
-// as this struct is used only for temporary operations and does not need to be deeply copied.
-type PillarProtocolCustomValidator struct{}
-
-var _ admission.Validator[*pillarcsiv1alpha1.PillarProtocol] = &PillarProtocolCustomValidator{}
-
-// ValidateCreate implements admission.Validator so a webhook will be registered for the type PillarProtocol.
-func (*PillarProtocolCustomValidator) ValidateCreate(
-	_ context.Context, pillarprotocol *pillarcsiv1alpha1.PillarProtocol,
-) (admission.Warnings, error) {
-	pillarprotocollog.Info("Validation for PillarProtocol upon creation", "name", pillarprotocol.GetName())
-
-	return nil, validateProtocolSpec(pillarprotocol.Spec.Protocol)
-}
+const nfsProtocolMember = string(pillarcsiv1alpha1.ProtocolIDNFS)
 
 // protocolMember returns the name of the union member set in a protocol spec
-// ("nvmeofTcp" or "iscsi"), or "" when none is set.
+// ("nvmeofTcp", "iscsi", or "nfs"), or "" when none is set.
 func protocolMember(p pillarcsiv1alpha1.ProtocolSpec) string {
 	switch {
 	case p.NVMeOFTCP != nil:
 		return "nvmeofTcp"
 	case p.ISCSI != nil:
 		return "iscsi"
+	case p.NFS != nil:
+		return nfsProtocolMember
 	default:
 		return ""
 	}
@@ -81,6 +57,9 @@ func protocolMemberCount(p pillarcsiv1alpha1.ProtocolSpec) int {
 	if p.ISCSI != nil {
 		n++
 	}
+	if p.NFS != nil {
+		n++
+	}
 	return n
 }
 
@@ -89,54 +68,106 @@ func protocolMemberCount(p pillarcsiv1alpha1.ProtocolSpec) int {
 // webhook never admits a protocol the agent or node would later reject.
 func validateProtocolSpec(p pillarcsiv1alpha1.ProtocolSpec) error {
 	protocolPath := field.NewPath("spec", "protocol")
-	const unionRule = "exactly one protocol member must be set (supported: nvmeofTcp, iscsi)"
+	err := validateProtocolUnion(protocolPath, p)
+	if err != nil {
+		return err
+	}
+
+	memberPath := protocolPath.Child(protocolMember(p))
+	var errs field.ErrorList
+	switch {
+	case p.NVMeOFTCP != nil:
+		errs = validateNVMeOFTCP(memberPath, p.NVMeOFTCP)
+	case p.ISCSI != nil:
+		errs = validateISCSI(memberPath, p.ISCSI)
+	case p.NFS != nil:
+		errs = validateNFS(memberPath, p.NFS)
+	}
+	if len(errs) == 0 {
+		return nil
+	}
+	return errs.ToAggregate()
+}
+
+func validateProtocolUnion(protocolPath *field.Path, p pillarcsiv1alpha1.ProtocolSpec) error {
+	const unionRule = "exactly one protocol member must be set (supported: nvmeofTcp, iscsi, nfs)"
 	switch n := protocolMemberCount(p); {
 	case n == 0:
 		return field.ErrorList{field.Required(protocolPath, unionRule)}.ToAggregate()
 	case n > 1:
 		return field.ErrorList{field.Invalid(protocolPath, n, unionRule)}.ToAggregate()
+	default:
+		return nil
 	}
+}
 
-	var allErrs field.ErrorList
-	memberPath := protocolPath.Child(protocolMember(p))
-	checkRange := func(name string, v int32, minimum, maximum int64) {
-		if int64(v) < minimum || int64(v) > maximum {
-			allErrs = append(allErrs, field.Invalid(memberPath.Child(name), v,
-				fmt.Sprintf("must be between %d and %d", minimum, maximum)))
-		}
+func validateNVMeOFTCP(memberPath *field.Path, cfg *pillarcsiv1alpha1.NVMeOFTCPConfig) field.ErrorList {
+	var errs field.ErrorList
+	errs = append(errs, validateInt32Range(memberPath, "port", cfg.Port, 1, 65535)...)
+	errs = append(errs, validateOptionalInt32Range(memberPath, "maxQueueSize", cfg.MaxQueueSize, 16, 1024)...)
+	errs = append(errs, validateOptionalInt32Range(
+		memberPath, "inCapsuleDataSize", cfg.InCapsuleDataSize, 1024, math.MaxInt32,
+	)...)
+	if v := cfg.MaxDataTransferSize; v != nil && !pillarcsiv1alpha1.IsValidMaxDataTransferSize(int64(*v)) {
+		errs = append(errs, field.Invalid(memberPath.Child("maxDataTransferSize"), *v,
+			fmt.Sprintf("must be 0 (no limit) or a power of two from %d to %d",
+				pillarcsiv1alpha1.MinMaxDataTransferSize, pillarcsiv1alpha1.MaxMaxDataTransferSize)))
 	}
-	checkOptional := func(name string, v *int32, minimum, maximum int64) {
-		if v != nil {
-			checkRange(name, *v, minimum, maximum)
-		}
-	}
-	switch {
-	case p.NVMeOFTCP != nil:
-		cfg := p.NVMeOFTCP
-		checkRange("port", cfg.Port, 1, 65535)
-		checkOptional("maxQueueSize", cfg.MaxQueueSize, 16, 1024)
-		checkOptional("inCapsuleDataSize", cfg.InCapsuleDataSize, 1024, math.MaxInt32)
-		if v := cfg.MaxDataTransferSize; v != nil && !pillarcsiv1alpha1.IsValidMaxDataTransferSize(int64(*v)) {
-			allErrs = append(allErrs, field.Invalid(memberPath.Child("maxDataTransferSize"), *v,
-				fmt.Sprintf("must be 0 (no limit) or a power of two from %d to %d",
-					pillarcsiv1alpha1.MinMaxDataTransferSize, pillarcsiv1alpha1.MaxMaxDataTransferSize)))
-		}
-		checkOptional("ctrlLossTmo", cfg.CtrlLossTmo, 0, math.MaxInt32)
-		checkOptional("reconnectDelay", cfg.ReconnectDelay, 0, math.MaxInt32)
-	case p.ISCSI != nil:
-		cfg := p.ISCSI
-		checkRange("port", cfg.Port, 1, 65535)
-		checkOptional("loginTimeout", cfg.LoginTimeout, 1, math.MaxInt32)
-		checkOptional("replacementTimeout", cfg.ReplacementTimeout, 0, math.MaxInt32)
-		checkOptional("noopOutInterval", cfg.NoopOutInterval, 0, math.MaxInt32)
-		checkOptional("noopOutTimeout", cfg.NoopOutTimeout, 0, math.MaxInt32)
-		allErrs = append(allErrs, validateISCSIAuth(memberPath, cfg)...)
-	}
+	errs = append(errs, validateOptionalInt32Range(memberPath, "ctrlLossTmo", cfg.CtrlLossTmo, 0, math.MaxInt32)...)
+	errs = append(errs, validateOptionalInt32Range(memberPath, "reconnectDelay", cfg.ReconnectDelay, 0, math.MaxInt32)...)
+	return errs
+}
 
-	if len(allErrs) > 0 {
-		return allErrs.ToAggregate()
+func validateISCSI(memberPath *field.Path, cfg *pillarcsiv1alpha1.ISCSIConfig) field.ErrorList {
+	var errs field.ErrorList
+	errs = append(errs, validateInt32Range(memberPath, "port", cfg.Port, 1, 65535)...)
+	errs = append(errs, validateOptionalInt32Range(memberPath, "loginTimeout", cfg.LoginTimeout, 1, math.MaxInt32)...)
+	errs = append(errs, validateOptionalInt32Range(
+		memberPath, "replacementTimeout", cfg.ReplacementTimeout, 0, math.MaxInt32,
+	)...)
+	errs = append(errs, validateOptionalInt32Range(
+		memberPath, "noopOutInterval", cfg.NoopOutInterval, 0, math.MaxInt32,
+	)...)
+	errs = append(errs, validateOptionalInt32Range(memberPath, "noopOutTimeout", cfg.NoopOutTimeout, 0, math.MaxInt32)...)
+	return append(errs, validateISCSIAuth(memberPath, cfg)...)
+}
+
+func validateNFS(memberPath *field.Path, cfg *pillarcsiv1alpha1.NFSConfig) field.ErrorList {
+	var errs field.ErrorList
+	if cfg.Version != "" && cfg.Version != "4.2" {
+		errs = append(errs, field.NotSupported(memberPath.Child("version"), cfg.Version, []string{"4.2"}))
+	}
+	if cfg.Port != 0 && cfg.Port != 2049 {
+		errs = append(errs, field.Invalid(memberPath.Child("port"), cfg.Port, "must be 2049"))
+	}
+	switch cfg.Squash {
+	case "", pillarcsiv1alpha1.NFSSquashRoot, pillarcsiv1alpha1.NFSSquashNone, pillarcsiv1alpha1.NFSSquashAll:
+	default:
+		errs = append(errs, field.NotSupported(memberPath.Child("squash"), cfg.Squash,
+			[]string{
+				string(pillarcsiv1alpha1.NFSSquashRoot),
+				string(pillarcsiv1alpha1.NFSSquashNone),
+				string(pillarcsiv1alpha1.NFSSquashAll),
+			}))
+	}
+	return errs
+}
+
+func validateInt32Range(memberPath *field.Path, name string, value int32, minimum, maximum int64) field.ErrorList {
+	if int64(value) < minimum || int64(value) > maximum {
+		return field.ErrorList{field.Invalid(memberPath.Child(name), value,
+			fmt.Sprintf("must be between %d and %d", minimum, maximum))}
 	}
 	return nil
+}
+
+func validateOptionalInt32Range(
+	memberPath *field.Path, name string, value *int32, minimum, maximum int64,
+) field.ErrorList {
+	if value == nil {
+		return nil
+	}
+	return validateInt32Range(memberPath, name, *value, minimum, maximum)
 }
 
 // validateISCSIAuth mirrors the ISCSIConfig auth CEL rules: CHAP and
@@ -168,6 +199,34 @@ func validateISCSIAuth(memberPath *field.Path, cfg *pillarcsiv1alpha1.ISCSIConfi
 			"auth.method CHAP and MutualCHAP require acl: true"))
 	}
 	return errs
+}
+
+// SetupPillarProtocolWebhookWithManager registers the webhook for PillarProtocol in the manager.
+func SetupPillarProtocolWebhookWithManager(mgr ctrl.Manager) error {
+	return ctrl.NewWebhookManagedBy(mgr, &pillarcsiv1alpha1.PillarProtocol{}).
+		WithValidator(&PillarProtocolCustomValidator{}).
+		Complete()
+}
+
+// NOTE: If you want to customize the 'path', use the flags '--defaulting-path' or '--validation-path'.
+// +kubebuilder:webhook:path=/validate-pillar-csi-bhyoo-com-v1alpha1-pillarprotocol,mutating=false,failurePolicy=fail,sideEffects=None,groups=pillar-csi.bhyoo.com,resources=pillarprotocols,verbs=create;update,versions=v1alpha1,name=vpillarprotocol-v1alpha1.kb.io,admissionReviewVersions=v1
+
+// PillarProtocolCustomValidator struct is responsible for validating the PillarProtocol resource
+// when it is created, updated, or deleted.
+//
+// NOTE: The +kubebuilder:object:generate=false marker prevents controller-gen from generating DeepCopy methods,
+// as this struct is used only for temporary operations and does not need to be deeply copied.
+type PillarProtocolCustomValidator struct{}
+
+var _ admission.Validator[*pillarcsiv1alpha1.PillarProtocol] = &PillarProtocolCustomValidator{}
+
+// ValidateCreate implements admission.Validator so a webhook will be registered for the type PillarProtocol.
+func (*PillarProtocolCustomValidator) ValidateCreate(
+	_ context.Context, pillarprotocol *pillarcsiv1alpha1.PillarProtocol,
+) (admission.Warnings, error) {
+	pillarprotocollog.Info("Validation for PillarProtocol upon creation", "name", pillarprotocol.GetName())
+
+	return nil, validateProtocolSpec(pillarprotocol.Spec.Protocol)
 }
 
 // ValidateUpdate implements admission.Validator so a webhook will be registered for the type PillarProtocol.

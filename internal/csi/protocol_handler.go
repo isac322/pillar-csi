@@ -23,9 +23,8 @@ import "context"
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ProtocolHandler abstracts transport-level operations for different storage
-// protocols. Each served protocol (NVMe-oF TCP, iSCSI) provides its own
-// implementation; NFS and SMB are designed in docs/PRD.md but not
-// implemented. The three layers of the node runtime are:
+// protocols. Each served protocol (NVMe-oF TCP, iSCSI, NFS) provides its own
+// implementation. The three layers of the node runtime are:
 //
 //  1. ProtocolHandler (Layer 1): transport/session setup and teardown.
 //  2. VolumePresenter (Layer 2): convert Layer 1 output to workload-accessible form.
@@ -34,7 +33,7 @@ type ProtocolHandler interface {
 	// Attach establishes the transport connection and returns either:
 	//   - Block protocols (NVMe-oF, iSCSI): the local block device path
 	//     (e.g. /dev/nvme0n1, /dev/sdb) via AttachResult.DevicePath.
-	//   - File protocols (not implemented): the mount source string via
+	//   - File protocols (NFS): the mount source string via
 	//     AttachResult.MountSource.
 	//
 	// The returned AttachResult indicates which presentation path Layer 3 should

@@ -15,7 +15,7 @@ Checked on 2026-09-28 against each project's own documentation, linked below. Ot
 
 | Driver | Serves pods on other nodes | Replicas | Snapshots | RWX |
 | --- | --- | --- | --- | --- |
-| pillar-csi | Yes, NVMe-oF/TCP or iSCSI | No | Not yet | Not yet |
+| pillar-csi | Yes, NVMe-oF/TCP, iSCSI or NFSv4.2 | No | Not yet | Yes, NFS only |
 | democratic-csi | Yes, NFS, iSCSI, SMB or NVMe-oF | No | Yes, plus clones | Yes, NFS and SMB drivers |
 | Longhorn | Yes | Yes, synchronous | Yes, plus backups to NFS or S3 | Yes, NFSv4 share-manager pod |
 | OpenEBS LocalPV | No, node-bound | No | ZFS: yes, plus clones. LVM: yes | No |
@@ -35,7 +35,7 @@ Checked on 2026-09-28 against each project's own documentation, linked below. Ot
 
 | Driver | Drivers for several pools and protocols | Host packages |
 | --- | --- | --- |
-| pillar-csi | One driver, one Helm release, for NVMe-oF/TCP and iSCSI. NFS and SMB are planned in the same driver | None. Hosts provide the kernel modules and the pool; the images carry `zfs`, `lvm2` and the mkfs tools. iSCSI uses an initiator built into the node plugin, so nodes need no `open-iscsi` |
+| pillar-csi | One driver, one Helm release, for NVMe-oF/TCP, iSCSI and NFSv4.2. SMB remains planned | None. Hosts provide kernel support and storage; images carry ZFS, LVM, block filesystem and NFS mount/export helpers |
 | democratic-csi | One Helm release per driver, for example one for NVMe-oF and one for NFS | Storage host: SSH, `zfs`, and `targetcli` or `nvmetcli`. Nodes: `nfs-common`, `cifs-utils` or `open-iscsi` for those protocols |
 | Longhorn | One installation | Every node: `open-iscsi` with `iscsid`, an NFSv4 client for RWX, and tools such as `findmnt`, `blkid` and `lsblk` |
 | OpenEBS LocalPV | Separate drivers for ZFS and LVM | ZFS: `zfsutils-linux` on every node. LVM: `lvm2` and the `dm-snapshot` module on every node |
@@ -49,15 +49,15 @@ democratic-csi is the closest match. Its `zfs-generic-nvmeof` driver also export
 
 The two differ in how they manage the storage host. For ZFS-on-Linux hosts, democratic-csi "executes many commands over an ssh connection", and its NVMe-oF setup asks you to install `nvmetcli` and a systemd unit and create the target ports by hand. pillar-csi runs its own agent on the storage node. The agent carries the `zfs` and `lvm2` tools in its image, creates the volumes, writes the kernel target configuration (nvmet for NVMe-oF, LIO for iSCSI) directly and reads it back, so the storage host needs no SSH access and no target CLI such as `nvmetcli` or `targetcli`. On the workers, democratic-csi's iSCSI drivers need `open-iscsi`; pillar-csi's node plugin logs in to iSCSI targets itself and needs only the `iscsi_tcp` kernel module. The agent also fences stale requests and keeps namespace identity stable across reboots (see [fencing and consistency](/docs/explanation/fencing-and-consistency/)).
 
-They also differ in how many drivers you run. Each democratic-csi deployment runs one driver type, and its README asks for a new Helm release and a unique driver name for each additional deployment. pillar-csi is one driver: you add a pool by listing it in `agent.backends` and creating a `PillarStore`, and every backend and protocol uses the same configuration shape. That model covers ZFS, LVM, NVMe-oF/TCP and iSCSI today; NFS and SMB are planned for the same driver.
+They also differ in how many drivers you run. Each democratic-csi deployment runs one driver type, and its README asks for a new Helm release and a unique driver name for each additional deployment. pillar-csi is one driver: you add a pool by listing it in `agent.backends` and creating a `PillarStore`, and every backend and protocol uses the same configuration shape. That model covers ZFS zvols, ZFS datasets, LVM, NVMe-oF/TCP, iSCSI and NFSv4.2 today; SMB remains planned.
 
-Choose democratic-csi if your storage is a TrueNAS or Synology appliance, if you need NFS or SMB, or if you need snapshots or RWX today.
+Choose democratic-csi if your storage is a TrueNAS or Synology appliance, if you need SMB, snapshots or clones, or if you need a protocol or appliance integration pillar-csi does not offer.
 
 ## Longhorn
 
 Longhorn is distributed block storage. It keeps synchronous replicas of each volume on several nodes, so a volume survives the loss of one node, and it adds scheduled snapshots, backups to NFS or S3, and RWX through an NFSv4 share-manager pod.
 
-pillar-csi has no replication, snapshots, backups or RWX. It exports one copy of each volume from one storage node, and the volume is unavailable while that node is down. It also adds no storage engine of its own: the data sits in your existing ZFS pool or LVM volume group, and the I/O path runs through kernel code only.
+pillar-csi has no replication, snapshots or backups. It exports one copy of each volume from one storage node, and the volume is unavailable while that node is down. It now supports RWX through NFSv4.2, but NFS remains a single-storage-node export and does not provide replication.
 
 Choose Longhorn if you need a volume to survive a node failure, or if you have no dedicated storage node and want to pool disks across the cluster.
 
@@ -80,11 +80,9 @@ Choose TopoLVM if every node has its own disks and you want Kubernetes to place 
 pillar-csi fits a cluster where one or a few machines hold the disks in ZFS or LVM and other nodes run the workloads. It is the wrong choice if you need any of the following today:
 
 - Replication or high availability. Each volume lives on one storage node, and it is unavailable while that node is down.
-- ReadWriteMany volumes. pillar-csi supports RWO, RWOP and ROX, and rejects RWX.
 - Snapshots or clones.
-- NFS or SMB. The protocols are NVMe-oF over TCP and iSCSI. NVMe-oF needs the `nvmet` and `nvmet_tcp` modules on the storage node and `nvme_tcp` and `nvme_fabrics` on the workers. iSCSI needs `target_core_mod`, `target_core_iblock` and `iscsi_target_mod` on the storage node and `iscsi_tcp` on the workers.
+- SMB or directory backends. NFSv4.2 is supported only with a ZFS dataset.
 - iSCSI multipath.
 - A storage host outside the cluster. The chart runs the agent as a DaemonSet, so the storage node must be a Kubernetes node.
-- Backends other than ZFS zvols and LVM logical volumes.
 
 The [support matrix](/docs/reference/support-matrix/) lists what the current release supports.

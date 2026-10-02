@@ -1418,10 +1418,12 @@ var _ = Describe("PillarAgent Controller", func() {
 						AgentVersion: "v0.1.0",
 						SupportedBackends: []agentv1.BackendType{
 							agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
+							agentv1.BackendType_BACKEND_TYPE_ZFS_DATASET,
 						},
 						SupportedProtocols: []agentv1.ProtocolType{
 							agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 							agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI,
+							agentv1.ProtocolType_PROTOCOL_TYPE_NFS,
 						},
 						DiscoveredPools: []*agentv1.PoolInfo{
 							{
@@ -1430,6 +1432,11 @@ var _ = Describe("PillarAgent Controller", func() {
 								TotalBytes:     10 * 1024 * 1024 * 1024, // 10Gi
 								AvailableBytes: 8 * 1024 * 1024 * 1024,  // 8Gi
 								ParentDataset:  "k8s",
+							},
+							{
+								Name:          "tank",
+								BackendType:   agentv1.BackendType_BACKEND_TYPE_ZFS_DATASET,
+								ParentDataset: "datasets",
 							},
 						},
 					},
@@ -1478,8 +1485,8 @@ var _ = Describe("PillarAgent Controller", func() {
 			Expect(k8sClient.Get(bctx, capsNN, fetched)).To(Succeed())
 			Expect(fetched.Status.Capabilities).NotTo(BeNil(),
 				"capabilities should be set when agent is healthy")
-			Expect(fetched.Status.Capabilities.Backends).To(ContainElement("zfs-zvol"),
-				"backends should include 'zfs-zvol' when agent reports BACKEND_TYPE_ZFS_ZVOL")
+			Expect(fetched.Status.Capabilities.Backends).To(ContainElements("zfs-zvol", "zfs-dataset"),
+				"backends should include both ZFS volume variants reported by the agent")
 		})
 
 		It("should populate status.capabilities.protocols from GetCapabilities response", func() {
@@ -1489,8 +1496,8 @@ var _ = Describe("PillarAgent Controller", func() {
 			fetched := &pillarcsiv1alpha1.PillarAgent{}
 			Expect(k8sClient.Get(bctx, capsNN, fetched)).To(Succeed())
 			Expect(fetched.Status.Capabilities).NotTo(BeNil())
-			Expect(fetched.Status.Capabilities.Protocols).To(ConsistOf("nvmeof-tcp", "iscsi"),
-				"protocols should carry the served protocol IDs of PROTOCOL_TYPE_NVMEOF_TCP and PROTOCOL_TYPE_ISCSI")
+			Expect(fetched.Status.Capabilities.Protocols).To(ConsistOf("nvmeof-tcp", "iscsi", "nfs"),
+				"protocols should carry the served protocol IDs reported by the agent")
 		})
 
 		It("should populate status.discoveredPools from GetCapabilities response", func() {
@@ -1499,11 +1506,12 @@ var _ = Describe("PillarAgent Controller", func() {
 
 			fetched := &pillarcsiv1alpha1.PillarAgent{}
 			Expect(k8sClient.Get(bctx, capsNN, fetched)).To(Succeed())
-			Expect(fetched.Status.DiscoveredPools).To(HaveLen(1),
-				"discoveredPools should contain one entry for the 'tank' pool")
+			Expect(fetched.Status.DiscoveredPools).To(HaveLen(2),
+				"discoveredPools should contain both typed variants for the 'tank' pool")
 			pool := fetched.Status.DiscoveredPools[0]
 			Expect(pool.Name).To(Equal("tank"))
 			Expect(pool.Type).To(Equal("zfs-zvol"))
+			Expect(fetched.Status.DiscoveredPools[1].Type).To(Equal("zfs-dataset"))
 			Expect(pool.Total).NotTo(BeNil(), "Total capacity should be set")
 			Expect(pool.Available).NotTo(BeNil(), "Available capacity should be set")
 			// The layout is what PillarStore readiness compares against (issue #113).

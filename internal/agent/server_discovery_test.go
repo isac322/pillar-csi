@@ -59,7 +59,8 @@ func TestGetCapacity_LVM_LinearVGFreeReturned(t *testing.T) {
 	srv := newTestServer(t, mb)
 
 	resp, err := srv.GetCapacity(context.Background(), &agentv1.GetCapacityRequest{
-		PoolName: testPool,
+		PoolName:    testPool,
+		BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
 	})
 	if err != nil {
 		t.Fatalf("GetCapacity (LVM linear): unexpected error: %v", err)
@@ -88,7 +89,8 @@ func TestGetCapacity_LVM_ZeroVGFree(t *testing.T) {
 	srv := newTestServer(t, mb)
 
 	resp, err := srv.GetCapacity(context.Background(), &agentv1.GetCapacityRequest{
-		PoolName: testPool,
+		PoolName:    testPool,
+		BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
 	})
 	if err != nil {
 		t.Fatalf("GetCapacity (LVM full VG): unexpected error: %v", err)
@@ -113,7 +115,8 @@ func TestGetCapacity_LVM_VGNotFound(t *testing.T) {
 	srv := newTestServer(t, mb)
 
 	_, err := srv.GetCapacity(context.Background(), &agentv1.GetCapacityRequest{
-		PoolName: testPool,
+		PoolName:    testPool,
+		BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
 	})
 	if err == nil {
 		t.Fatal("GetCapacity (LVM VG not found): expected error, got nil")

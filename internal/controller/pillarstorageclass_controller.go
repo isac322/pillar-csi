@@ -472,14 +472,19 @@ const (
 
 // buildStorageClassParams constructs the parameter map of the StorageClass
 // generated for binding: the binding identity, the resolved class fsType and,
-// when stageSecret is non-nil, the node-stage Secret.
+// when stageSecret is non-nil, the node-stage Secret.  NFS is already a
+// filesystem protocol, so it uses fstype nfs rather than a block filesystem.
 func buildStorageClassParams(
 	binding *pillarcsiv1alpha1.PillarStorageClass,
+	protocol *pillarcsiv1alpha1.PillarProtocol,
 	stageSecret *types.NamespacedName,
 ) map[string]string {
 	fsType := defaultFSType
 	if fs := binding.Spec.Filesystem; fs != nil && fs.FSType != "" {
 		fsType = fs.FSType
+	}
+	if protocol != nil && protocol.Spec.Protocol.Kind() == pillarcsiv1alpha1.ProtocolIDNFS {
+		fsType = "nfs"
 	}
 	params := map[string]string{
 		scParamStorageClass: binding.Name,
@@ -529,9 +534,9 @@ func (r *PillarStorageClassReconciler) desiredStorageClassOver(
 ) (desiredStorageClass, error) {
 	stageSecret, ok, err := nodeStageSecretFor(protocol, r.Namespace)
 	if err != nil || !ok {
-		return desiredStorageClassFor(binding, nil), err
+		return desiredStorageClassFor(binding, protocol, nil), err
 	}
-	return desiredStorageClassFor(binding, &stageSecret), nil
+	return desiredStorageClassFor(binding, protocol, &stageSecret), nil
 }
 
 // storageClassMountOptions returns the mountOptions of the StorageClass
@@ -808,9 +813,11 @@ func (r *PillarStorageClassReconciler) recreateStorageClass(
 }
 
 // desiredStorageClassFor computes the managed StorageClass fields for
-// binding; stageSecret is the node-stage Secret to name (nil for none).
+// binding over protocol; stageSecret is the node-stage Secret to name
+// (nil for none).
 func desiredStorageClassFor(
 	binding *pillarcsiv1alpha1.PillarStorageClass,
+	protocol *pillarcsiv1alpha1.PillarProtocol,
 	stageSecret *types.NamespacedName,
 ) desiredStorageClass {
 	reclaimPolicy := corev1.PersistentVolumeReclaimDelete
@@ -823,15 +830,15 @@ func desiredStorageClassFor(
 		volumeBindingMode = storagev1.VolumeBindingWaitForFirstConsumer
 	}
 
-	// Every served backend is a block backend the CSI controller can expand,
-	// so expansion is allowed unless the binding disables it.
+	// Expansion is enabled by default; the CSI controller applies the
+	// protocol-specific expansion semantics.
 	allowVolumeExpansion := binding.Spec.StorageClass.AllowVolumeExpansion
 	if allowVolumeExpansion == nil {
 		defaultAllow := true
 		allowVolumeExpansion = &defaultAllow
 	}
 	return desiredStorageClass{
-		params:               buildStorageClassParams(binding, stageSecret),
+		params:               buildStorageClassParams(binding, protocol, stageSecret),
 		mountOptions:         storageClassMountOptions(binding),
 		reclaimPolicy:        reclaimPolicy,
 		volumeBindingMode:    volumeBindingMode,

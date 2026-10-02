@@ -1,11 +1,11 @@
 ---
 title: Prerequisites
-description: "Host and cluster requirements for pillar-csi: NVMe-oF and iSCSI kernel modules per node role, Kubernetes and Helm versions, filesystems, kubelet paths, and ports."
+description: "Host and cluster requirements for pillar-csi: kernel support for NVMe-oF, iSCSI or NFS, Kubernetes and Helm versions, file systems, kubelet paths, and ports."
 sidebar:
   order: 1
 ---
 
-pillar-csi runs its data path in the Linux kernel: the storage node exports volumes with the kernel NVMe-oF target or the kernel LIO iSCSI target, and the worker connects with the kernel NVMe-oF/TCP or iSCSI initiator. The container images carry the userspace tools the driver runs. The host provides the kernel modules and the storage pool, because a container cannot supply either.
+pillar-csi runs its data path in the Linux kernel: storage nodes export block volumes with the kernel NVMe-oF or LIO iSCSI target, or serve ZFS datasets with the kernel NFS server; workers connect with the matching initiator or NFS client. Container images carry the user-space tools the driver runs. Hosts provide kernel support and the storage pool, because a container cannot supply either.
 
 ## Node roles
 
@@ -19,25 +19,21 @@ A storage node that also runs Pods using pillar-csi volumes needs the worker req
 
 ## Kernel modules
 
-| Module | Needed on | Kernel option | Purpose |
+| Module/support | Needed on | Kernel option | Purpose |
 | --- | --- | --- | --- |
-| `nvmet` | Storage nodes | `CONFIG_NVME_TARGET` | NVMe-oF target core and its configfs tree at `/sys/kernel/config/nvmet` |
-| `nvmet_tcp` | Storage nodes | `CONFIG_NVME_TARGET_TCP` | TCP transport for the target |
-| `zfs` | ZFS storage nodes | OpenZFS, built out of tree | zvols and `/dev/zfs` |
+| `nvmet`, `nvmet_tcp` | Storage nodes using NVMe-oF | `CONFIG_NVME_TARGET`, `CONFIG_NVME_TARGET_TCP` | NVMe-oF target and TCP transport |
+| `zfs` | ZFS storage nodes | OpenZFS, built out of tree | zvols, datasets and `/dev/zfs` |
+| `nfsd`/NFS server support | Storage nodes using NFS | Kernel NFS server support | NFSv4.2 server for ZFS datasets |
 | `dm_thin_pool` | LVM storage nodes with a thin pool | `CONFIG_DM_THIN_PROVISIONING` | Thin logical volumes |
-| `dm_mod` | Storage nodes, for [local attach](/docs/how-to/local-attach/) | `CONFIG_BLK_DEV_DM` | Device-mapper target that holds the backend device while a pod on the storage node uses it directly |
-| `nvme_fabrics` | Worker nodes | `CONFIG_NVME_FABRICS` | Fabrics layer and `/dev/nvme-fabrics` |
-| `nvme_tcp` | Worker nodes | `CONFIG_NVME_TCP` | NVMe-oF/TCP initiator |
-| `target_core_mod` | Storage nodes, for iSCSI | `CONFIG_TARGET_CORE` | LIO target core and its configfs tree at `/sys/kernel/config/target` |
-| `target_core_iblock` | Storage nodes, for iSCSI | `CONFIG_TCM_IBLOCK` | LIO backstore for block devices such as zvols and logical volumes |
-| `iscsi_target_mod` | Storage nodes, for iSCSI | `CONFIG_ISCSI_TARGET` | LIO iSCSI target, at `/sys/kernel/config/target/iscsi` |
-| `iscsi_tcp` | Worker nodes, for iSCSI | `CONFIG_ISCSI_TCP` | iSCSI/TCP initiator transport. It pulls in `libiscsi`, `libiscsi_tcp` and `scsi_transport_iscsi` |
+| `dm_mod` | Storage nodes, for block local attach | `CONFIG_BLK_DEV_DM` | Device-mapper claim for a local block volume |
+| `nvme_fabrics`, `nvme_tcp` | Worker nodes using NVMe-oF | `CONFIG_NVME_FABRICS`, `CONFIG_NVME_TCP` | NVMe-oF/TCP initiator |
+| `target_core_mod`, `target_core_iblock`, `iscsi_target_mod` | Storage nodes using iSCSI | `CONFIG_TARGET_CORE`, `CONFIG_TCM_IBLOCK`, `CONFIG_ISCSI_TARGET` | LIO iSCSI target |
+| `iscsi_tcp` | Worker nodes using iSCSI | `CONFIG_ISCSI_TCP` | iSCSI/TCP initiator |
+| NFS client support | Worker nodes using NFS | Kernel NFS client support | NFSv4.2 mounts |
 
-You need the NVMe-oF modules only for NVMe-oF volumes and the iSCSI modules only for iSCSI volumes.
+You need the NVMe-oF modules only for NVMe-oF volumes, iSCSI modules only for iSCSI volumes, and NFS server/client support only for NFS volumes.
 
-The agent and node Pods each start with an init container that runs `modprobe` against the host's `/lib/modules`. By default it loads `nvmet`, `nvmet_tcp`, `target_core_mod`, `target_core_iblock` and `iscsi_target_mod` on storage nodes, and `nvme_fabrics`, `nvme_tcp`, `dm_mod` and `iscsi_tcp` on every node the node plugin runs on. The init container ignores `modprobe` failures, so the Pod starts even when a module is missing. Load the modules on the host and list them in `/etc/modules-load.d/` so they return after a reboot. The [ZFS](/docs/how-to/prepare-zfs-node/) and [LVM](/docs/how-to/prepare-lvm-node/) node guides show how. To change the lists, set `agent.initModprobe.modules` and `node.initModprobe.modules`.
-
-pillar-node checks for `iscsi_tcp` once, when it starts. If the module is not loaded then, pillar-node disables iSCSI until it restarts: it logs `iSCSI initiator disabled: kernel module iscsi_tcp is not loaded`, it does not publish an initiator IQN, and iSCSI volumes fail to stage on that node. Load the module, then restart the pillar-node Pod.
+The agent and node Pods each start with an init container that runs `modprobe` against the host's `/lib/modules`. It loads the modules required by the configured protocols when present; it cannot install missing modules, and failures remain visible in protocol capabilities or NodeStage errors. Load modules on the host and list them in `/etc/modules-load.d/` so they return after a reboot. To change the lists, set `agent.initModprobe.modules` and `node.initModprobe.modules`.
 
 Check a storage node:
 
@@ -67,7 +63,7 @@ On Ubuntu, `nvmet` and `nvmet_tcp` ship in the `linux-modules-extra-$(uname -r)`
 
 ### Vendor kernels
 
-Many vendor kernels, including some built for single-board computers, leave out NVMe-oF target support. Run the storage node check above before you choose hardware for a storage node. If it fails, you need a kernel built with `CONFIG_NVME_TARGET` and `CONFIG_NVME_TARGET_TCP`. For iSCSI, the kernel needs `CONFIG_TARGET_CORE`, `CONFIG_TCM_IBLOCK` and `CONFIG_ISCSI_TARGET` on the storage node and `CONFIG_ISCSI_TCP` on the workers.
+Many vendor kernels, including some built for single-board computers, leave out NVMe-oF target support or NFS server/client support. Run the storage node checks above before you choose hardware. If NVMe checks fail, use a kernel built with `CONFIG_NVME_TARGET` and `CONFIG_NVME_TARGET_TCP`; for iSCSI use `CONFIG_TARGET_CORE`, `CONFIG_TCM_IBLOCK` and `CONFIG_ISCSI_TARGET` on storage nodes plus `CONFIG_ISCSI_TCP` on workers; for NFS use kernel NFS server support on storage nodes and NFS client support on workers.
 
 ## What the images carry and what the host provides
 
@@ -75,21 +71,40 @@ Many vendor kernels, including some built for single-board computers, leave out 
 | --- | --- | --- |
 | ZFS volume management | `zfs` and `zpool` from OpenZFS 2.4, in the agent image | The `zfs` kernel module, `/dev/zfs`, and an existing pool |
 | LVM volume management | `lvm2` tools, in the agent image | An existing volume group, the `dm_thin_pool` module and a thin pool if you use thin volumes |
-| NVMe-oF target setup | The agent writes `/sys/kernel/config/nvmet` itself, with no `nvmetcli` or `targetcli` | The `nvmet` and `nvmet_tcp` modules |
-| NVMe-oF connect | The node plugin writes `/dev/nvme-fabrics` itself, with no `nvme-cli` | The `nvme_fabrics` and `nvme_tcp` modules |
-| iSCSI target setup | The agent writes `/sys/kernel/config/target` itself, with no `targetcli` | The `target_core_mod`, `target_core_iblock` and `iscsi_target_mod` modules |
-| iSCSI login | The node plugin logs in with its own initiator and hands the connection to the kernel, with no `iscsiadm`, `iscsid` or `open-iscsi` | The `iscsi_tcp` module |
-| Local attach on the storage node | `dmsetup`, in the node image | The `dm_mod` module |
-| Formatting, mounting, resizing | `util-linux`, `e2fsprogs`, and `xfsprogs`, in the node image | Nothing |
+| NFS dataset/export management | Bundled export supervision helpers and private state paths | Kernel NFS server support, an existing ZFS dataset parent, and persistent NFS-exportable pseudoroot backing |
+| NFS mounting | Bundled NFS client mount helper in the node image | Kernel NFS client support |
+| NVMe-oF target/connect | Agent and node write configfs or `/dev/nvme-fabrics` directly; no `nvmetcli`, `targetcli` or `nvme-cli` | NVMe target and initiator modules |
+| iSCSI target/login | Agent writes configfs; node uses its own initiator; no `targetcli`, `iscsiadm`, `iscsid` or `open-iscsi` | iSCSI target and initiator modules |
+| Block local attach | `dmsetup`, in the node image | The `dm_mod` module |
+| Formatting, mounting, resizing | `util-linux`, `e2fsprogs`, `xfsprogs`, and NFS mount utilities in the images | Nothing beyond protocol kernel support |
 | Controller to agent traffic | gRPC from the controller to each agent, with no SSH | Nothing |
 
-On the host you install no pillar-csi packages. You need the OpenZFS or LVM tools only to create the pool or volume group in the first place.
+On the host you install no pillar-csi packages and no host NFS/iSCSI utilities. You need OpenZFS or LVM tools only to create the pool or volume group in the first place.
 
 The node plugin reads the NVMe host NQN from `/etc/nvme/hostnqn` and the host ID from `/etc/nvme/hostid`. It generates and writes either file if it is missing or empty.
 
 The node plugin reads the iSCSI initiator IQN from the `InitiatorName=` line of `/etc/iscsi/initiatorname.iscsi`, which it mounts from the host with a `DirectoryOrCreate` hostPath. If the file is missing, it generates an IQN of the form `iqn.2026-01.com.bhyoo.pillar-csi:node.<32 hex digits>` and writes it there. Uninstalling pillar-csi leaves the file in place. If the host also runs `open-iscsi` and `iscsid`, the node plugin uses the same IQN and manages only the sessions to pillar-csi targets.
 
 The agent runs privileged by default (`agent.privileged: true`) because it opens host device nodes such as `/dev/zfs`, `/dev/mapper/control`, and the physical volumes.
+
+### NFS persistent backing
+
+Before deploying a ZFS dataset backend, provide persistent storage at the chart's fixed `agent-state` hostPath, `/var/lib/pillar-csi/agent`. The dedicated NFSv4 pseudoroot is `/var/lib/pillar-csi/agent/datasets`: it must sit on an NFS-exportable filesystem that can encode export filehandles. Do not leave it on container overlay/rootfs. A ZFS pool for volume datasets does not by itself provide backing for this separate pseudoroot.
+
+Use these canonical paths without symlinks:
+
+| Path | Purpose and requirement |
+| --- | --- |
+| `/var/lib/pillar-csi/agent` | Persistent host agent state; must survive agent and storage-node restarts |
+| `/var/lib/pillar-csi/agent/datasets` | Dedicated NFS-exportable pseudoroot and parent of managed ZFS dataset mountpoints; persistent production backing |
+| `/var/lib/pillar-csi/agent/nfs` | Private export/recovery state; `nfs/lib` is also mounted at the agent container's `/var/lib/nfs`, not the host's foreign NFS state |
+
+Prepare the backing on the storage node before the agent starts, and preserve it across reboots. The chart enables bidirectional dataset mount propagation, host PID visibility for foreign `mountd` detection, privileged access, and host networking for dataset backends. These settings do not make an unexportable backing filesystem exportable. Do not use a PVC served by pillar-csi for agent state.
+
+NFS server startup rejects a pseudoroot that cannot encode export filehandles and reports NFS as unavailable. Correct the backing before using the configured dataset/NFS deployment; it is not a supported optional or degraded storage layout. The agent does not create a `tmpfs` fallback.
+
+The dedicated Kind NFS QA fixture mounts a temporary `tmpfs` at the pseudoroot to avoid the node container's overlay backing. That fixture is for ephemeral tests only: it does not meet production persistence requirements. The images still provide all NFS user-space helpers; no host NFS package installation is required.
+
 
 ## Kubernetes and Helm
 
@@ -108,13 +123,16 @@ The end-to-end test scripts in the repository run on Kind with Kubernetes 1.37.
 
 | Setting | Values |
 | --- | --- |
-| `fsType` | `ext4` (default) or `xfs` |
-| Volume modes | `Filesystem` and `Block` |
-| Oldest node kernel for `Filesystem` volumes | Linux 5.15 |
+| Block `fsType` | `ext4` (default) or `xfs` |
+| NFS `fsType` | Omit; NFS is already a filesystem |
+| Volume modes | `Filesystem` for NFS; `Filesystem` and `Block` for block protocols |
+| NFS mount flags | `filesystem.mountOptions` only; defaults hard, NFSv4.2 and TCP cannot be contradicted |
+| NFS restrictions | No `mkfsOptions`, explicit ext4/xfs, periodic trim, or `localAttach` |
+| Oldest node kernel for block `Filesystem` volumes | Linux 5.15 |
 
-Set `fsType`, `mkfsOptions`, and `mountOptions` under `spec.filesystem` of a `PillarStorageClass`, or per volume with the `pillar-csi.bhyoo.com/filesystem` PVC annotation. [Support matrix](/docs/reference/support-matrix/) lists access modes and CSI features.
+Set filesystem options under `spec.filesystem` of a `PillarStorageClass`, or per volume with the `pillar-csi.bhyoo.com/filesystem` PVC annotation. [Support matrix](/docs/reference/support-matrix/) lists access modes and CSI features. NFS mount flags do not install or configure host packages.
 
-The node formats a new volume with only the on-disk features that Linux 5.15 can mount, because the volume can later be mounted by any worker. A node with an older kernel may be unable to mount it. [Filesystem compatibility](/docs/reference/support-matrix/#filesystem-compatibility) lists the features and how to opt in to newer ones.
+The node formats a new block volume with only the on-disk features that Linux 5.15 can mount. NFS datasets are never formatted.
 
 ## Network ports
 
@@ -122,6 +140,7 @@ The node formats a new volume with only the on-disk features that Linux 5.15 can
 | --- | --- | --- | --- | --- |
 | 9500 | TCP (gRPC) | `pillar-agent` on each storage node, bound on the host network | `pillar-controller` Pods | `agent.grpcPort`, `agent.hostPort`; per agent with `PillarAgent.spec.nodeRef.port` |
 | 4420 | TCP (NVMe-oF) | Kernel target on each storage node | Worker nodes | `PillarProtocol.spec.protocol.nvmeofTcp.port` |
+| 2049 | TCP (NFSv4.2) | Kernel NFS server and owned export supervisor on each storage node | Worker nodes | Fixed; `PillarProtocol.spec.protocol.nfs.port` must be 2049 |
 | 3260 | TCP (iSCSI) | Kernel LIO target on each storage node | Worker nodes | `PillarProtocol.spec.protocol.iscsi.port` |
 | 9808 | TCP (HTTP) | Node plugin liveness probe, bound on each node's host network | kubelet | `node.livenessPort` |
 | 9443 | TCP (HTTPS) | Admission webhook in the controller Pod, behind a Service on port 443 | Kubernetes API server | `webhook.port` |
@@ -129,7 +148,7 @@ The node formats a new volume with only the on-disk features that Linux 5.15 can
 | 8081 | TCP (HTTP) | Controller health and readiness, Pod network | kubelet | `controller.healthProbePort` |
 | 9809 | TCP (HTTP) | Controller CSI liveness probe, Pod network | kubelet | `controller.livenessPort` |
 
-The controller reaches each agent at the node's `InternalIP` by default; `PillarAgent.spec.nodeRef.addressType` selects `ExternalIP` instead. Firewalls between nodes must allow 9500 from the controller's Pods to storage nodes, and the NVMe-oF or iSCSI port from worker nodes to storage nodes.
+The controller reaches each agent at the node's `InternalIP` by default; `PillarAgent.spec.nodeRef.addressType` selects `ExternalIP` instead. Firewalls between nodes must allow 9500 from the controller's Pods to storage nodes, and the protocol port from worker nodes to storage nodes: 4420 for NVMe-oF, 3260 for iSCSI, or 2049 for NFS. NFS RPC TLS is not offered; protect the network separately.
 
 Port 9808 is a common default for CSI liveness probes. If another CSI driver's node plugin already uses host port 9808, set `node.livenessPort` to a free port.
 

@@ -374,13 +374,18 @@ func iscsiStatePortal(op string, state ProtocolState) (string, iscsi.Portal, err
 	return st.TargetIQN, iscsi.Portal{Address: st.Address, Port: port}, nil
 }
 
-// missingHandlerHint explains why no ProtocolHandler is registered for
-// protocolType.  The pillar-node process registers the iSCSI handler only when the kernel
-// iscsi_tcp transport is present at startup (see iscsi.Available).
+// missingHandlerHint explains why no ProtocolHandler is registered for a
+// protocol whose runtime prerequisites were unavailable at pillar-node startup.
+// The iSCSI handler requires iscsi_tcp; NFS requires the kernel client and mount helper.
 func missingHandlerHint(protocolType string) string {
-	if protocolType != ProtocolISCSI {
+	switch protocolType {
+	case ProtocolISCSI:
+		return ": the iSCSI initiator is disabled on this node because kernel module iscsi_tcp " +
+			"was not loaded when pillar-node started (load iscsi_tcp and restart the pillar-node pod)"
+	case ProtocolNFS:
+		return ": the NFS client is disabled on this node because the kernel NFS client or " +
+			"bundled mount.nfs helper was unavailable at startup"
+	default:
 		return ""
 	}
-	return ": the iSCSI initiator is disabled on this node because kernel module iscsi_tcp " +
-		"was not loaded when pillar-node started (load iscsi_tcp and restart the pillar-node pod)"
 }

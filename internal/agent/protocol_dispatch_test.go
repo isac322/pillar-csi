@@ -26,6 +26,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	agentv1 "github.com/isac322/pillar-csi/gen/go/pillar_csi/agent/v1"
+	"github.com/isac322/pillar-csi/internal/agent/backend"
 )
 
 const (
@@ -249,16 +250,16 @@ func TestExportVolume_DispatchesToResolvedHandler(t *testing.T) {
 }
 
 // TestExportVolume_UnimplementedProtocolRejectedBeforeHandler verifies that an
-// export for a protocol without export parameter support (NFS/SMB are not
-// implemented) is rejected explicitly, even when a resolver would supply a
-// handler, and that the handler is never invoked.
+// export for a protocol without export parameter support (SMB) is rejected
+// explicitly, even when a resolver would supply a handler, and that the handler
+// is never invoked.
 func TestExportVolume_UnimplementedProtocolRejectedBeforeHandler(t *testing.T) {
 	t.Parallel()
 
 	handler := &recordingProtocolHandler{}
 	resolver := &recordingProtocolResolver{
 		handlers: map[agentv1.ProtocolType]AgentProtocolHandler{
-			agentv1.ProtocolType_PROTOCOL_TYPE_NFS: handler,
+			agentv1.ProtocolType_PROTOCOL_TYPE_SMB: handler,
 		},
 	}
 	srv := NewServer(nil, "", WithDrainStateDir(t.TempDir()))
@@ -267,8 +268,8 @@ func TestExportVolume_UnimplementedProtocolRejectedBeforeHandler(t *testing.T) {
 	_, err := srv.ExportVolume(context.Background(), &agentv1.ExportVolumeRequest{
 		VolumeId:     dispatchTestVolumeID,
 		DevicePath:   dispatchTestDevicePath,
-		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NFS,
-		ExportParams: dispatchNfsExportParams("4.2"),
+		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_SMB,
+		ExportParams: &agentv1.ExportParams{},
 	})
 	if status.Code(err) != codes.Unimplemented {
 		t.Fatalf("ExportVolume code = %v (err=%v), want Unimplemented", status.Code(err), err)
@@ -388,14 +389,19 @@ func TestReconcileState_DispatchesDesiredStateByProtocol(t *testing.T) {
 		},
 	}
 
-	srv := NewServer(nil, "", WithDrainStateDir(t.TempDir()))
+	srv := NewServer(
+		map[string]backend.VolumeBackend{"tank": &drainTestBackend{}},
+		"",
+		WithDrainStateDir(t.TempDir()),
+	)
 	srv.protocolHandlerResolver = resolver.Resolve
 
 	req := &agentv1.ReconcileStateRequest{
 		Volumes: []*agentv1.VolumeDesiredState{
 			{
-				VolumeId:   dispatchTestVolumeID,
-				DevicePath: dispatchTestDevicePath,
+				VolumeId:    dispatchTestVolumeID,
+				BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
+				DevicePath:  dispatchTestDevicePath,
 				Exports: []*agentv1.ExportDesiredState{
 					{
 						ProtocolType:      agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
@@ -509,7 +515,7 @@ func TestSetLocalAttach_RejectedBeforeHandler(t *testing.T) {
 		{"invalid volume id", "no-slash", agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP, false, codes.InvalidArgument},
 		{"unspecified protocol", dispatchTestVolumeID, agentv1.ProtocolType_PROTOCOL_TYPE_UNSPECIFIED, false,
 			codes.InvalidArgument},
-		{"unsupported protocol", dispatchTestVolumeID, agentv1.ProtocolType_PROTOCOL_TYPE_NFS, false,
+		{"unsupported protocol", dispatchTestVolumeID, agentv1.ProtocolType_PROTOCOL_TYPE_SMB, false,
 			codes.Unimplemented},
 		{"export restore pending", dispatchTestVolumeID, agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP, true,
 			codes.Unavailable},

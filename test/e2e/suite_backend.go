@@ -46,10 +46,16 @@ const (
 	// into all ginkgo workers.
 	suiteLVMVGEnvVar = "PILLAR_E2E_LVM_VG"
 
-	// suiteLVMThinPoolEnvVar carries the LVM thin pool logical volume name
-	// created inside the suite VG. Workers use this name to configure thin
-	// provisioning in the LVM backend.
+	// suiteLVMThinPoolEnvVar carries the thin-pool name into Ginkgo workers.
 	suiteLVMThinPoolEnvVar = "PILLAR_E2E_LVM_THIN_POOL"
+
+	// suiteNFSParentDatasetEnvVar names the persistent parent dataset used by
+	// the real dataset/NFS lane.  It is created once below the ephemeral pool
+	// and inherited by the dedicated Helm fixture.
+	suiteNFSParentDatasetEnvVar = "PILLAR_E2E_NFS_PARENT_DATASET"
+	// suiteNFSDatasetRoot is a dedicated ephemeral mount target for the NFS
+	// export pseudoroot. It is mounted only by the dedicated NFS lane.
+	suiteNFSDatasetRoot = "/var/lib/pillar-csi/agent/datasets"
 
 	// suiteBackendContainerEnvVar carries the Kind control-plane Docker container
 	// name where backend resources were provisioned.
@@ -68,6 +74,7 @@ var suiteOwnedBackendEnvVars = []string{
 	suiteZFSPoolEnvVar,
 	suiteLVMVGEnvVar,
 	suiteLVMThinPoolEnvVar,
+	suiteNFSParentDatasetEnvVar,
 	suiteBackendContainerEnvVar,
 	suiteBackendProvisionedEnvVar,
 }
@@ -102,6 +109,9 @@ type suiteBackendState struct {
 	// Workers use this name to configure the LVM backend in thin-provisioning
 	// mode.
 	LVMThinPool string
+	// NFSDatasetMounted records ownership of the dedicated tmpfs export root so
+	// teardown never unmounts a pre-existing or foreign mount.
+	NFSDatasetMounted bool
 }
 
 // ─── Provisioning ─────────────────────────────────────────────────────────────
@@ -156,6 +166,10 @@ func bootstrapSuiteBackends(
 	}
 	if output == nil {
 		output = io.Discard
+	}
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("E2E_NFS_E2E")), "true") &&
+		(resolveUseExistingCluster() || !clusterState.clusterCreated) {
+		return nil, fmt.Errorf("[AC5] E2E_NFS_E2E requires a newly created, exclusively owned Kind cluster; refusing reused or unowned fixture")
 	}
 
 	nodeContainer := zfs.KindNodeContainerName(clusterState.ClusterName, 0)
@@ -249,6 +263,16 @@ func bootstrapSuiteBackends(
 	// Results from unknown backend types or from errored backends are
 	// ignored — they are not part of the suite state.
 	state := &suiteBackendState{NodeContainer: nodeContainer}
+	setupComplete := false
+	defer func() {
+		if !setupComplete {
+			cleanCtx, cleanCancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cleanCancel()
+			if err := state.teardown(cleanCtx, output); err != nil {
+				_, _ = fmt.Fprintf(output, "[AC5] failed setup cleanup: %v\n", err)
+			}
+		}
+	}()
 
 	for _, r := range results {
 		if r.Err != nil || r.Resource == nil {
@@ -295,7 +319,44 @@ func bootstrapSuiteBackends(
 			}
 		}
 	}
+	// Dataset/NFS fixtures share one stable parent so the agent and controller
+	// validate the same ZFS layout.  The parent is part of the ephemeral pool
+	// and is removed automatically by Pool.Destroy during suite teardown.
+	if state.ZFSPool != nil {
+		parentDataset := state.ZFSPool.PoolName + "/k8s"
+		parentCtx, parentCancel := context.WithTimeout(ctx, 30*time.Second)
+		_, parentErr := kindContainerExec(parentCtx, nodeContainer, "zfs", "create", parentDataset)
+		parentCancel()
+		if parentErr != nil {
+			return nil, fmt.Errorf("[AC5] create NFS parent dataset %q: %w", parentDataset, parentErr)
+		}
+		_, _ = fmt.Fprintf(output,
+			"[AC5] NFS parent dataset %q created on container %s\n",
+			parentDataset, nodeContainer)
+		if strings.EqualFold(strings.TrimSpace(os.Getenv("E2E_NFS_E2E")), "true") {
+			mountCtx, mountCancel := context.WithTimeout(ctx, 30*time.Second)
+			if _, err := kindContainerExec(mountCtx, nodeContainer, "mkdir", "-p", suiteNFSDatasetRoot); err != nil {
+				mountCancel()
+				return nil, fmt.Errorf("[AC5] create NFS export root %q: %w", suiteNFSDatasetRoot, err)
+			}
+			if _, err := kindContainerExec(mountCtx, nodeContainer, "mount", "-t", "tmpfs", "-o", "size=256m", "pillar-csi-e2e-nfs", suiteNFSDatasetRoot); err != nil {
+				mountCancel()
+				return nil, fmt.Errorf("[AC5] mount dedicated NFS export root %q: %w", suiteNFSDatasetRoot, err)
+			}
+			state.NFSDatasetMounted = true
+			filesystem, fsErr := kindContainerExec(mountCtx, nodeContainer, "findmnt", "-no", "FSTYPE", suiteNFSDatasetRoot)
+			if fsErr != nil || strings.TrimSpace(filesystem) != "tmpfs" {
+				mountCancel()
+				return nil, fmt.Errorf("[AC5] NFS export root %q is not backed by dedicated tmpfs (got %q): %v", suiteNFSDatasetRoot, strings.TrimSpace(filesystem), fsErr)
+			}
+			mountCancel()
+			_, _ = fmt.Fprintf(output,
+				"[AC5] dedicated tmpfs NFS export root %q mounted on container %s\n",
+				suiteNFSDatasetRoot, nodeContainer)
+		}
+	}
 
+	setupComplete = true
 	return state, nil
 }
 
@@ -320,6 +381,9 @@ func (s *suiteBackendState) exportBackendEnvironment() error {
 	if s.ZFSPool != nil {
 		if err := os.Setenv(suiteZFSPoolEnvVar, s.ZFSPool.PoolName); err != nil {
 			return fmt.Errorf("[AC5] export %s: %w", suiteZFSPoolEnvVar, err)
+		}
+		if err := os.Setenv(suiteNFSParentDatasetEnvVar, "k8s"); err != nil {
+			return fmt.Errorf("[AC5] export %s: %w", suiteNFSParentDatasetEnvVar, err)
 		}
 	}
 
@@ -395,6 +459,19 @@ func (s *suiteBackendState) teardown(ctx context.Context, output io.Writer) erro
 					"[AC4] ZFS pool %q confirmed absent on container %s\n",
 					s.ZFSPool.PoolName, s.ZFSPool.NodeContainer)
 			}
+		}
+	}
+	// Destroying the pool releases any remaining nested ZFS dataset mounts.
+	// Then remove the lane-owned pseudoroot and private propagation bind.
+	// This keeps the host-path root scoped to this dedicated invocation.
+	if s.NFSDatasetMounted {
+		if _, err := kindContainerExec(ctx, s.NodeContainer, "umount", suiteNFSDatasetRoot); err != nil {
+			errs = append(errs, fmt.Errorf("[AC5] unmount NFS export root %q: %w", suiteNFSDatasetRoot, err))
+		} else {
+			s.NFSDatasetMounted = false
+			_, _ = fmt.Fprintf(output,
+				"[AC5] NFS export root %q unmounted on container %s\n",
+				suiteNFSDatasetRoot, s.NodeContainer)
 		}
 	}
 

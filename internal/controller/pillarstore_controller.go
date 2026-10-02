@@ -402,19 +402,14 @@ func (r *PillarStoreReconciler) reconcileNormal(
 	return ctrl.Result{}, nil
 }
 
-// evaluatePoolDiscovered checks whether the pool named in spec.backend is
-// present in the target's status.discoveredPools list and whether the agent
-// creates volumes in it where the store declares (ZFS parent dataset, LVM
-// thin pool).
+// evaluatePoolDiscovered checks whether the pool and backend kind named in
+// spec.backend are present in the target's status.discoveredPools list and
+// whether the agent creates volumes in it where the store declares (ZFS
+// parent dataset, LVM thin pool).
 //
 // When the target has not yet reported any discovered pools (i.e. agent gRPC
 // has not yet been established), it returns Unknown so that the caller can
 // distinguish "we haven't checked yet" from "pool is not there".
-//
-// ZFS stores are matched by spec.backend.zfs.pool and LVM stores by
-// spec.backend.lvm.volumeGroup (the agent reports a VG under its name).  A
-// store whose backend union selects no member names no pool and is reported
-// as not discovered.
 func evaluatePoolDiscovered(
 	pool *pillarcsiv1alpha1.PillarStore,
 	target *pillarcsiv1alpha1.PillarAgent,
@@ -428,40 +423,44 @@ func evaluatePoolDiscovered(
 	}
 
 	expectedPoolName := pool.Spec.Backend.PoolName()
-	if expectedPoolName == "" {
+	expectedType := string(pool.Spec.Backend.Kind())
+	if expectedPoolName == "" || expectedType == "" {
 		// The CRD schema requires exactly one backend member with a
 		// non-empty pool/volumeGroup; an object that bypassed it names no
-		// pool, so there is nothing to discover.
+		// pool or backend kind, so there is nothing to discover.
 		return metav1.ConditionFalse, "BackendNotConfigured",
-			"spec.backend names no pool: exactly one of zfs.pool or lvm.volumeGroup must be set"
+			"spec.backend names no supported pool: exactly one backend member with a non-empty pool/volumeGroup is required"
 	}
 
-	// Search for the expected pool in the target's discovered list.
+	// Search for the expected pool and backend variant in the target's
+	// discovered list.  A single physical pool can expose both zvol and
+	// dataset variants, so matching by name alone can select the wrong layout
+	// and capacity.
 	var discoveredNames []string
 	for i := range target.Status.DiscoveredPools {
 		dp := &target.Status.DiscoveredPools[i]
-		discoveredNames = append(discoveredNames, dp.Name)
-		if dp.Name != expectedPoolName {
+		discoveredNames = append(discoveredNames, fmt.Sprintf("%s/%s", dp.Name, dp.Type))
+		if dp.Name != expectedPoolName || dp.Type != expectedType {
 			continue
 		}
 		if mismatch := layoutMismatch(pool, dp); mismatch != "" {
 			return metav1.ConditionFalse, "BackendLayoutMismatch",
 				fmt.Sprintf(
-					"Pool %q on PillarAgent %q: %s; CreateVolume is refused until the PillarStore spec "+
+					"Pool %q (%s) on PillarAgent %q: %s; CreateVolume is refused until the PillarStore spec "+
 						"and the agent backend config (chart agent.backends) agree",
-					expectedPoolName, pool.Spec.AgentRef, mismatch,
+					expectedPoolName, expectedType, pool.Spec.AgentRef, mismatch,
 				)
 		}
 		return metav1.ConditionTrue, "PoolDiscovered",
 			fmt.Sprintf(
-				"Pool %q was found in PillarAgent %q discovered pools",
-				expectedPoolName, pool.Spec.AgentRef,
+				"Pool %q (%s) was found in PillarAgent %q discovered pools",
+				expectedPoolName, expectedType, pool.Spec.AgentRef,
 			)
 	}
 
 	return metav1.ConditionFalse, "PoolNotFound",
-		fmt.Sprintf("Pool %q was not found in PillarAgent %q discovered pools (found: [%s])",
-			expectedPoolName, pool.Spec.AgentRef, strings.Join(discoveredNames, ", "))
+		fmt.Sprintf("Pool %q (%s) was not found in PillarAgent %q discovered pools (found: [%s])",
+			expectedPoolName, expectedType, pool.Spec.AgentRef, strings.Join(discoveredNames, ", "))
 }
 
 // layoutMismatch compares where the store declares volumes live inside the
@@ -528,16 +527,13 @@ func evaluateBackendSupported(
 			backendType, pool.Spec.AgentRef, strings.Join(target.Status.Capabilities.Backends, ", "))
 }
 
-// syncCapacityFromTarget reads capacity data for this pool from the matching
-// entry in target.Status.DiscoveredPools and writes it to pool.Status.Capacity.
+// syncCapacityFromTarget reads capacity data for this store from the matching
+// name+backend-kind entry in target.Status.DiscoveredPools and writes it to
+// pool.Status.Capacity.  Matching both fields is required because one physical
+// pool may report independent zvol and dataset variants.
 //
-// Matching logic (spec.backend.PoolName):
-//   - ZFS backends: match by pool name (spec.backend.zfs.pool).
-//   - LVM backends: match by volume group (spec.backend.lvm.volumeGroup).
-//   - A backend naming no pool matches no entry.
-//
-// The function computes Used = Total − Available when both quantities are present,
-// clamping the result at zero to protect against corrupted agent data.
+// The function computes Used = Total − Available when both quantities are
+// present, clamping the result at zero to protect against corrupted agent data.
 //
 // Returns true when capacity fields were updated, false when no matching entry
 // or no capacity data was found (both Total and Available are nil).
@@ -550,15 +546,16 @@ func syncCapacityFromTarget(
 	}
 
 	expectedName := pool.Spec.Backend.PoolName()
-	if expectedName == "" {
+	expectedType := string(pool.Spec.Backend.Kind())
+	if expectedName == "" || expectedType == "" {
 		return false
 	}
 
-	// Walk the discovered pool list and find the first matching entry.
+	// Walk the discovered pool list and find the exact backend variant.
 	var found *pillarcsiv1alpha1.DiscoveredPool
 	for i := range target.Status.DiscoveredPools {
 		dp := &target.Status.DiscoveredPools[i]
-		if dp.Name == expectedName {
+		if dp.Name == expectedName && dp.Type == expectedType {
 			found = dp
 			break
 		}
