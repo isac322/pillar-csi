@@ -37,6 +37,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -934,32 +935,15 @@ func (m *mkdirMounter) FormatAndMount(
 }
 
 // Mount provisions the target before delegating to the wrapped Mounter.
-//
-// For directory bind-mounts (NodePublishVolume of a Filesystem-mode volume)
-// the target must be an empty directory and we mkdir -p it.
-//
-// For block-device bind-mounts (NodeStageVolume / NodePublishVolume of a
-// Block-mode volume) the kernel rejects mount --bind when the target file
-// type does not match the source file type (the linux kernel requires
-// source and target to both be a regular file or both be a directory for
-// bind, and a block-device source can only be bound onto a regular-file
-// target — bound onto a directory it returns EXT_SOURCEMOUNTREJECTED which
-// surfaces as mount exit status 32).  We therefore detect a block source
-// by stat'ing it and touch an empty regular file at the target path.
+// Non-bind filesystem mounts need a directory target; their source may be a
+// remote export rather than a local path. Bind mounts need a directory target
+// for directory sources and a regular-file target for device or file sources.
 func (m *mkdirMounter) Mount(source, target, fsType string, options []string) error {
-	// Linux bind-mount requires source and target to have matching file
-	// types: directory-to-directory for Filesystem-mode mounts and
-	// (block-device or regular-file) -to-regular-file for block-mode
-	// mounts.  A type mismatch surfaces as mount(8) exit 32
-	// (EXT_SOURCEMOUNTREJECTED).  Pick the target provisioning strategy
-	// from the source type:
-	//   * directory   → mkdir -p target  (NodePublishVolume Filesystem)
-	//   * everything  → mkdir -p parent + touch regular file at target
-	//                  (block-device source on NodeStageVolume, or the
-	//                  staged block-mode regular-file source on the
-	//                  subsequent NodePublishVolume bind to the pod path).
-	st, statErr := os.Stat(source)
-	sourceIsDir := statErr == nil && st.IsDir()
+	sourceIsDir := true
+	if slices.Contains(options, "bind") {
+		st, statErr := os.Stat(source)
+		sourceIsDir = statErr == nil && st.IsDir()
+	}
 	if sourceIsDir {
 		mkdirErr := os.MkdirAll(target, 0o750)
 		if mkdirErr != nil {
