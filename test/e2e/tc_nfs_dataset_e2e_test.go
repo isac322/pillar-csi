@@ -10,8 +10,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -50,6 +53,111 @@ func nfsMust(ctx context.Context, args ...string) string {
 	out, err := nfsKubectl(ctx, "", args...)
 	Expect(err).NotTo(HaveOccurred())
 	return out
+}
+
+// Only public fixture state is selected below. Drop credential-bearing log
+// lines as an additional safeguard; never collect Secrets, pod env, or config.
+var nfsDiagnosticSensitiveLine = regexp.MustCompile(`(?i)(password|passwd|token|secret|credential|authorization|dh.?chap|private[ _-]?key|://[^/\s]+@)`)
+
+func nfsCaptureFailureDiagnostics(createdPVs []string) {
+	report := CurrentSpecReport()
+	tcID := extractTCIDFromReport(report)
+	if tcID == "" {
+		tcID = "E37-setup"
+	}
+	var writer io.Writer = os.Stderr
+	reportDir := strings.TrimSpace(os.Getenv("E2E_REPORT_DIR"))
+	if reportDir == "" {
+		reportDir = filepath.Join(os.TempDir(), "pillar-csi-e2e-reports")
+	}
+	path := filepath.Join(reportDir, fmt.Sprintf("nfs-%s-%d-pre-cleanup.log", tcID, time.Now().UnixNano()))
+	if err := os.MkdirAll(reportDir, 0o755); err != nil {
+		fmt.Fprintf(writer, "[TC-%s] diagnostic artifact directory: %v\n", tcID, err)
+	} else if file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o600); err != nil {
+		fmt.Fprintf(writer, "[TC-%s] diagnostic artifact open: %v\n", tcID, err)
+	} else {
+		defer file.Close()
+		writer = io.MultiWriter(os.Stderr, file)
+		fmt.Fprintf(writer, "[TC-%s] pre-cleanup diagnostic artifact: %s\n", tcID, path)
+	}
+	fmt.Fprintf(writer, "[TC-%s] failure node=%s; capturing owned NFS fixture before teardown\n", tcID, report.Failure.FailureNodeType)
+	writeSafe := func(text string) {
+		inPEM := false
+		for _, line := range strings.Split(text, "\n") {
+			if strings.Contains(line, "-----BEGIN ") {
+				inPEM = true
+			}
+			if inPEM || nfsDiagnosticSensitiveLine.MatchString(line) {
+				fmt.Fprintln(writer, "[credential-bearing diagnostic line omitted]")
+			} else {
+				fmt.Fprintln(writer, line)
+			}
+			if strings.Contains(line, "-----END ") {
+				inPEM = false
+			}
+		}
+	}
+	// Diagnostic failures are recorded, not asserted, so they cannot replace
+	// the original spec failure or prevent the existing owned-resource cleanup.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	capture := func(source string, args ...string) {
+		fmt.Fprintf(writer, "\n[TC-%s] source=%s\n", tcID, source)
+		commandCtx, commandCancel := context.WithTimeout(ctx, 25*time.Second)
+		defer commandCancel()
+		out, err := nfsKubectl(commandCtx, "", args...)
+		writeSafe(out)
+		if err != nil {
+			writeSafe(fmt.Sprintf("diagnostic command failed (%s): %v", source, err))
+		}
+	}
+	capture("owned-pvc-describe", "-n", nfsNamespace, "describe", "pvc")
+	capture("owned-namespace-events", "-n", nfsNamespace, "get", "events", "--sort-by=.lastTimestamp")
+	capture("owned-workload-pod-status", "-n", nfsNamespace, "get", "pods", "-o",
+		`jsonpath={range .items[*]}{"pod="}{.metadata.name}{" uid="}{.metadata.uid}{" node="}{.spec.nodeName}{" status="}{.status}{"\n"}{end}`)
+	capture("owned-pv-public-state", "get", "pv", "-o",
+		`jsonpath={range .items[?(@.spec.claimRef.namespace=="pillar-e2e-nfs")]}{"pv="}{.metadata.name}{" uid="}{.metadata.uid}{" deleting="}{.metadata.deletionTimestamp}{" finalizers="}{.metadata.finalizers}{" claim="}{.spec.claimRef}{" class="}{.spec.storageClassName}{" capacity="}{.spec.capacity}{" modes="}{.spec.accessModes}{" driver="}{.spec.csi.driver}{" handle="}{.spec.csi.volumeHandle}{" target="}{.spec.csi.volumeAttributes.target_id}{" address="}{.spec.csi.volumeAttributes.address}{" port="}{.spec.csi.volumeAttributes.port}{" fsType="}{.spec.csi.fsType}{" status="}{.status}{"\n"}{end}`)
+	// Claim namespace also finds partially provisioned states whose PV never
+	// became Bound and therefore was not added to createdPVs.
+	stateFields := `{"state="}{.metadata.name}{" uid="}{.metadata.uid}{" deleting="}{.metadata.deletionTimestamp}{" finalizers="}{.metadata.finalizers}{" volumeID="}{.spec.volumeID}{" agentVolumeID="}{.spec.agentVolumeID}{" agentRef="}{.spec.agentRef}{" backend="}{.spec.backendType}{" protocol="}{.spec.protocolType}{" claim="}{.spec.claimRef}{" status="}{.status}{"\n"}`
+	capture("owned-volume-state-by-claim", "get", "pillarvolumestate", "-o",
+		`jsonpath={range .items[?(@.spec.claimRef.namespace=="pillar-e2e-nfs")]}`+stateFields+`{end}`)
+	if len(createdPVs) > 0 {
+		args := append([]string{"get", "pillarvolumestate"}, createdPVs...)
+		format := stateFields
+		if len(createdPVs) > 1 {
+			format = `{range .items[*]}` + format + `{end}`
+		}
+		capture("tracked-volume-state", append(args, "--ignore-not-found=true", "-o", "jsonpath="+format)...)
+	}
+	publicFields := `{"name="}{.metadata.name}{" uid="}{.metadata.uid}{" generation="}{.metadata.generation}{" deleting="}{.metadata.deletionTimestamp}{" finalizers="}{.metadata.finalizers}{" storeRef="}{.spec.storeRef}{" protocolRef="}{.spec.protocolRef}{" agentRef="}{.spec.agentRef}{" nodeRef="}{.spec.nodeRef}{" zfs="}{.spec.backend.zfs}{" lvm="}{.spec.backend.lvm}{" nfs="}{.spec.protocol.nfs}{" class="}{.spec.storageClass}{" status="}{.status}{"\n"}`
+	for _, resource := range []struct {
+		kind  string
+		names []string
+	}{
+		{"pillarstorageclass", []string{nfsClass, nfsRootClass, nfsPublicClass, "pillar-e37-local", "pillar-e37-zvol-block"}},
+		{"pillarstore", []string{nfsStore, "pillar-e37-zvol", "pillar-e37-lvm"}},
+		{"pillarprotocol", []string{nfsProtocol, nfsRootProto, nfsPublicProto, "pillar-e37-nvme"}},
+		{"pillaragent", []string{nfsAgent}},
+	} {
+		format := publicFields
+		if len(resource.names) > 1 {
+			format = `{range .items[*]}` + format + `{end}`
+		}
+		args := append([]string{"get", resource.kind}, resource.names...)
+		capture("owned-"+resource.kind+"-public-state", append(args, "--ignore-not-found=true", "-o", "jsonpath="+format)...)
+	}
+	capture("owned-storageclass-routing", "get", "storageclass", nfsClass, nfsRootClass, nfsPublicClass, "pillar-e37-local", "pillar-e37-zvol-nfs", "pillar-e37-lvm-nfs", "pillar-e37-zvol-block", "--ignore-not-found=true", "-o",
+		`jsonpath={range .items[*]}{"class="}{.metadata.name}{" provisioner="}{.provisioner}{" bindingMode="}{.volumeBindingMode}{" storeRef="}{.parameters.pillar-csi\.bhyoo\.com/store-ref}{" protocolRef="}{.parameters.pillar-csi\.bhyoo\.com/protocol-ref}{"\n"}{end}`)
+	for _, component := range []string{"controller", "agent", "node"} {
+		selector := "app.kubernetes.io/component=" + component
+		capture(component+"-pod-status", "-n", resolveHelmNamespace(), "get", "pods", "-l", selector, "-o",
+			`jsonpath={range .items[*]}{"pod="}{.metadata.name}{" uid="}{.metadata.uid}{" node="}{.spec.nodeName}{" status="}{.status}{"\n"}{end}`)
+		for _, previous := range []bool{false, true} {
+			capture(fmt.Sprintf("%s-pod-logs-previous=%t", component, previous), "-n", resolveHelmNamespace(), "logs", "-l", selector,
+				"--all-containers=true", "--prefix=true", "--timestamps=true", "--tail=120", "--limit-bytes=32768", "--max-log-requests=4", fmt.Sprintf("--previous=%t", previous))
+		}
+	}
 }
 
 func nfsApply(ctx context.Context, manifest string) {
@@ -387,7 +495,19 @@ var _ = Describe("E37: real ZFS dataset + NFS multi-node E2E", Label("nfs", "e37
 	var backend, pool, parent, address, pv, dataset, target string
 	var createdPVs []string
 	var stageFile string
+	failureDiagnosticsCaptured := false
+	captureFailure := func() {
+		if !CurrentSpecReport().Failed() || failureDiagnosticsCaptured {
+			return
+		}
+		failureDiagnosticsCaptured = true
+		nfsCaptureFailureDiagnostics(createdPVs)
+	}
+	// JustAfterEach runs before AfterEach/DeferCleanup/AfterAll. The defer
+	// additionally captures a failed BeforeAll before ordered teardown starts.
+	JustAfterEach(captureFailure)
 	BeforeAll(func() {
+		defer captureFailure()
 		ctx, cancel = context.WithTimeout(context.Background(), 20*time.Minute)
 		Expect(os.Getenv("E2E_NFS_E2E")).To(Equal("true"), "run the dedicated NFS lane, not the unprepared default profile")
 		Expect(resolveUseExistingCluster()).To(BeFalse(),
